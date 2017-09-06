@@ -1,0 +1,2715 @@
+From 41a90e24c272c84fb8c6d23ac451f0c725dcded6 Mon Sep 17 00:00:00 2001
+From: popcornmix <popcornmix@gmail.com>
+Date: Mon, 26 Mar 2012 22:15:50 +0100
+Subject: [PATCH] bcm2708: alsa sound driver
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: popcornmix <popcornmix@gmail.com>
+
+alsa: add mmap support and some cleanups to bcm2835 ALSA driver
+
+snd-bcm2835: Add support for spdif/hdmi passthrough
+
+This adds a dedicated subdevice which can be used for passthrough of non-audio
+formats (ie encoded a52) through the hdmi audio link. In addition to this
+driver extension an appropriate card config is required to make alsa-lib
+support the AES parameters for this device.
+
+snd-bcm2708: Add mutex, improve logging
+
+Fix for ALSA driver crash
+
+Avoids an issue when closing and opening vchiq where a message can arrive before service handle has been written
+
+alsa: reduce severity of expected warning message
+
+snd-bcm2708: Fix dmesg spam for non-error case
+
+alsa: Ensure mutexes are released through error paths
+
+alsa: Make interrupted close paths quieter
+
+BCM270x: Add onboard sound device to Device Tree
+
+Add Device Tree support to alsa driver.
+Add device to Device Tree.
+Don't add platform devices when booting in DT mode.
+
+Signed-off-by: Noralf Trønnes <noralf@tronnes.org>
+
+bcm2835: access controls under the audio mutex
+
+I don't think the ALSA framework provides any kind of automatic
+synchronization within the control callbacks. We most likely need
+to ensure this manually, so add locking around all access to shared
+mutable data. In particular, bcm2835_audio_set_ctls() should
+probably always be called under our own audio lock.
+
+snd-bcm2835: Don't allow responses from VC to be interrupted by user signals
+
+There should always be a response, and retry after a signal interruption is not handled, so don't report
+we are interruptible.
+
+See: https://github.com/raspberrypi/linux/issues/1560
+
+snd-bcm2835: Use bcm2835_hw params in preallocate
+---
+ sound/arm/Kconfig                  |   7 +
+ sound/arm/Makefile                 |   5 +
+ sound/arm/bcm2835-ctl.c            | 350 +++++++++++++++
+ sound/arm/bcm2835-pcm.c            | 563 +++++++++++++++++++++++
+ sound/arm/bcm2835-vchiq.c          | 889 +++++++++++++++++++++++++++++++++++++
+ sound/arm/bcm2835.c                | 511 +++++++++++++++++++++
+ sound/arm/bcm2835.h                | 167 +++++++
+ sound/arm/vc_vchi_audioserv_defs.h | 116 +++++
+ 8 files changed, 2608 insertions(+)
+ create mode 100755 sound/arm/bcm2835-ctl.c
+ create mode 100755 sound/arm/bcm2835-pcm.c
+ create mode 100755 sound/arm/bcm2835-vchiq.c
+ create mode 100644 sound/arm/bcm2835.c
+ create mode 100755 sound/arm/bcm2835.h
+ create mode 100644 sound/arm/vc_vchi_audioserv_defs.h
+
+--- a/sound/arm/Kconfig
++++ b/sound/arm/Kconfig
+@@ -32,6 +32,13 @@ config SND_PXA2XX_AC97
+ 	  Say Y or M if you want to support any AC97 codec attached to
+ 	  the PXA2xx AC97 interface.
+ 
++config SND_BCM2835
++	tristate "BCM2835 ALSA driver"
++	depends on ARCH_BCM2835 && BCM2708_VCHIQ && SND
++	select SND_PCM
++	help
++	  Say Y or M if you want to support BCM2835 Alsa pcm card driver
++
+ endif	# SND_ARM
+ 
+ config SND_PXA2XX_LIB
+--- a/sound/arm/Makefile
++++ b/sound/arm/Makefile
+@@ -14,3 +14,8 @@ snd-pxa2xx-lib-$(CONFIG_SND_PXA2XX_LIB_A
+ 
+ obj-$(CONFIG_SND_PXA2XX_AC97)	+= snd-pxa2xx-ac97.o
+ snd-pxa2xx-ac97-objs		:= pxa2xx-ac97.o
++
++obj-$(CONFIG_SND_BCM2835)	+= snd-bcm2835.o
++snd-bcm2835-objs		:= bcm2835.o bcm2835-ctl.o bcm2835-pcm.o bcm2835-vchiq.o
++
++ccflags-y += -Idrivers/staging/vc04_services -Idrivers/staging/vc04_services/interface/vcos/linuxkernel -D__VCCOREVER__=0x04000000
+--- /dev/null
++++ b/sound/arm/bcm2835-ctl.c
+@@ -0,0 +1,350 @@
++/*****************************************************************************
++* Copyright 2011 Broadcom Corporation.  All rights reserved.
++*
++* Unless you and Broadcom execute a separate written software license
++* agreement governing use of this software, this software is licensed to you
++* under the terms of the GNU General Public License version 2, available at
++* http://www.broadcom.com/licenses/GPLv2.php (the "GPL").
++*
++* Notwithstanding the above, under no circumstances may you combine this
++* software in any way with any other Broadcom software provided under a
++* license other than the GPL, without Broadcom's express prior written
++* consent.
++*****************************************************************************/
++
++#include <linux/platform_device.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/jiffies.h>
++#include <linux/slab.h>
++#include <linux/time.h>
++#include <linux/wait.h>
++#include <linux/delay.h>
++#include <linux/moduleparam.h>
++#include <linux/sched.h>
++
++#include <sound/core.h>
++#include <sound/control.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/rawmidi.h>
++#include <sound/initval.h>
++#include <sound/tlv.h>
++#include <sound/asoundef.h>
++
++#include "bcm2835.h"
++
++/* volume maximum and minimum in terms of 0.01dB */
++#define CTRL_VOL_MAX 400
++#define CTRL_VOL_MIN -10239 /* originally -10240 */
++
++
++static int snd_bcm2835_ctl_info(struct snd_kcontrol *kcontrol,
++				struct snd_ctl_elem_info *uinfo)
++{
++	audio_info(" ... IN\n");
++	if (kcontrol->private_value == PCM_PLAYBACK_VOLUME) {
++		uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
++		uinfo->count = 1;
++		uinfo->value.integer.min = CTRL_VOL_MIN;
++		uinfo->value.integer.max = CTRL_VOL_MAX;      /* 2303 */
++	} else if (kcontrol->private_value == PCM_PLAYBACK_MUTE) {
++		uinfo->type = SNDRV_CTL_ELEM_TYPE_BOOLEAN;
++		uinfo->count = 1;
++		uinfo->value.integer.min = 0;
++		uinfo->value.integer.max = 1;
++	} else if (kcontrol->private_value == PCM_PLAYBACK_DEVICE) {
++		uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
++		uinfo->count = 1;
++		uinfo->value.integer.min = 0;
++		uinfo->value.integer.max = AUDIO_DEST_MAX-1;
++	}
++	audio_info(" ... OUT\n");
++	return 0;
++}
++
++/* toggles mute on or off depending on the value of nmute, and returns
++ * 1 if the mute value was changed, otherwise 0
++ */
++static int toggle_mute(struct bcm2835_chip *chip, int nmute)
++{
++	/* if settings are ok, just return 0 */
++	if(chip->mute == nmute)
++		return 0;
++
++	/* if the sound is muted then we need to unmute */
++	if(chip->mute == CTRL_VOL_MUTE)
++	{
++		chip->volume = chip->old_volume; /* copy the old volume back */
++		audio_info("Unmuting, old_volume = %d, volume = %d ...\n", chip->old_volume, chip->volume);
++	}
++	else /* otherwise we mute */
++	{
++		chip->old_volume = chip->volume;
++		chip->volume = 26214; /* set volume to minimum level AKA mute */
++		audio_info("Muting, old_volume = %d, volume = %d ...\n", chip->old_volume, chip->volume);
++	}
++
++	chip->mute = nmute;
++	return 1;
++}
++
++static int snd_bcm2835_ctl_get(struct snd_kcontrol *kcontrol,
++			       struct snd_ctl_elem_value *ucontrol)
++{
++	struct bcm2835_chip *chip = snd_kcontrol_chip(kcontrol);
++
++	if (mutex_lock_interruptible(&chip->audio_mutex))
++		return -EINTR;
++
++	BUG_ON(!chip && !(chip->avail_substreams & AVAIL_SUBSTREAMS_MASK));
++
++	if (kcontrol->private_value == PCM_PLAYBACK_VOLUME)
++		ucontrol->value.integer.value[0] = chip2alsa(chip->volume);
++	else if (kcontrol->private_value == PCM_PLAYBACK_MUTE)
++		ucontrol->value.integer.value[0] = chip->mute;
++	else if (kcontrol->private_value == PCM_PLAYBACK_DEVICE)
++		ucontrol->value.integer.value[0] = chip->dest;
++
++	mutex_unlock(&chip->audio_mutex);
++	return 0;
++}
++
++static int snd_bcm2835_ctl_put(struct snd_kcontrol *kcontrol,
++			       struct snd_ctl_elem_value *ucontrol)
++{
++	struct bcm2835_chip *chip = snd_kcontrol_chip(kcontrol);
++	int changed = 0;
++
++	if (mutex_lock_interruptible(&chip->audio_mutex))
++		return -EINTR;
++
++	if (kcontrol->private_value == PCM_PLAYBACK_VOLUME) {
++		audio_info("Volume change attempted.. volume = %d new_volume = %d\n", chip->volume, (int)ucontrol->value.integer.value[0]);
++		if (chip->mute == CTRL_VOL_MUTE) {
++			/* changed = toggle_mute(chip, CTRL_VOL_UNMUTE); */
++			changed = 1; /* should return 0 to signify no change but the mixer takes this as the opposite sign (no idea why) */
++			goto unlock;
++		}
++		if (changed
++		    || (ucontrol->value.integer.value[0] != chip2alsa(chip->volume))) {
++
++			chip->volume = alsa2chip(ucontrol->value.integer.value[0]);
++			changed = 1;
++		}
++
++	} else if (kcontrol->private_value == PCM_PLAYBACK_MUTE) {
++		/* Now implemented */
++		audio_info(" Mute attempted\n");
++		changed = toggle_mute(chip, ucontrol->value.integer.value[0]);
++
++	} else if (kcontrol->private_value == PCM_PLAYBACK_DEVICE) {
++		if (ucontrol->value.integer.value[0] != chip->dest) {
++			chip->dest = ucontrol->value.integer.value[0];
++			changed = 1;
++		}
++	}
++
++	if (changed) {
++		if (bcm2835_audio_set_ctls(chip))
++			printk(KERN_ERR "Failed to set ALSA controls..\n");
++	}
++
++unlock:
++	mutex_unlock(&chip->audio_mutex);
++	return changed;
++}
++
++static DECLARE_TLV_DB_SCALE(snd_bcm2835_db_scale, CTRL_VOL_MIN, 1, 1);
++
++static struct snd_kcontrol_new snd_bcm2835_ctl[] = {
++	{
++	 .iface = SNDRV_CTL_ELEM_IFACE_MIXER,
++	 .name = "PCM Playback Volume",
++	 .index = 0,
++	 .access = SNDRV_CTL_ELEM_ACCESS_READWRITE | SNDRV_CTL_ELEM_ACCESS_TLV_READ,
++	 .private_value = PCM_PLAYBACK_VOLUME,
++	 .info = snd_bcm2835_ctl_info,
++	 .get = snd_bcm2835_ctl_get,
++	 .put = snd_bcm2835_ctl_put,
++	 .count = 1,
++	 .tlv = {.p = snd_bcm2835_db_scale}
++	},
++	{
++	 .iface = SNDRV_CTL_ELEM_IFACE_MIXER,
++	 .name = "PCM Playback Switch",
++	 .index = 0,
++	 .access = SNDRV_CTL_ELEM_ACCESS_READWRITE,
++	 .private_value = PCM_PLAYBACK_MUTE,
++	 .info = snd_bcm2835_ctl_info,
++	 .get = snd_bcm2835_ctl_get,
++	 .put = snd_bcm2835_ctl_put,
++	 .count = 1,
++	 },
++	{
++	 .iface = SNDRV_CTL_ELEM_IFACE_MIXER,
++	 .name = "PCM Playback Route",
++	 .index = 0,
++	 .access = SNDRV_CTL_ELEM_ACCESS_READWRITE,
++	 .private_value = PCM_PLAYBACK_DEVICE,
++	 .info = snd_bcm2835_ctl_info,
++	 .get = snd_bcm2835_ctl_get,
++	 .put = snd_bcm2835_ctl_put,
++	 .count = 1,
++	},
++};
++
++static int snd_bcm2835_spdif_default_info(struct snd_kcontrol *kcontrol,
++					  struct snd_ctl_elem_info *uinfo)
++{
++	uinfo->type = SNDRV_CTL_ELEM_TYPE_IEC958;
++	uinfo->count = 1;
++	return 0;
++}
++
++static int snd_bcm2835_spdif_default_get(struct snd_kcontrol *kcontrol,
++					 struct snd_ctl_elem_value *ucontrol)
++{
++	struct bcm2835_chip *chip = snd_kcontrol_chip(kcontrol);
++	int i;
++
++	if (mutex_lock_interruptible(&chip->audio_mutex))
++		return -EINTR;
++
++	for (i = 0; i < 4; i++)
++		ucontrol->value.iec958.status[i] =
++			(chip->spdif_status >> (i * 8)) && 0xff;
++
++	mutex_unlock(&chip->audio_mutex);
++	return 0;
++}
++
++static int snd_bcm2835_spdif_default_put(struct snd_kcontrol *kcontrol,
++					 struct snd_ctl_elem_value *ucontrol)
++{
++	struct bcm2835_chip *chip = snd_kcontrol_chip(kcontrol);
++	unsigned int val = 0;
++	int i, change;
++
++	if (mutex_lock_interruptible(&chip->audio_mutex))
++		return -EINTR;
++
++	for (i = 0; i < 4; i++)
++		val |= (unsigned int)ucontrol->value.iec958.status[i] << (i * 8);
++
++	change = val != chip->spdif_status;
++	chip->spdif_status = val;
++
++	mutex_unlock(&chip->audio_mutex);
++	return change;
++}
++
++static int snd_bcm2835_spdif_mask_info(struct snd_kcontrol *kcontrol,
++				       struct snd_ctl_elem_info *uinfo)
++{
++	uinfo->type = SNDRV_CTL_ELEM_TYPE_IEC958;
++	uinfo->count = 1;
++	return 0;
++}
++
++static int snd_bcm2835_spdif_mask_get(struct snd_kcontrol *kcontrol,
++				      struct snd_ctl_elem_value *ucontrol)
++{
++	/* bcm2835 supports only consumer mode and sets all other format flags
++	 * automatically. So the only thing left is signalling non-audio
++	 * content */
++	ucontrol->value.iec958.status[0] = IEC958_AES0_NONAUDIO;
++	return 0;
++}
++
++static int snd_bcm2835_spdif_stream_info(struct snd_kcontrol *kcontrol,
++					 struct snd_ctl_elem_info *uinfo)
++{
++	uinfo->type = SNDRV_CTL_ELEM_TYPE_IEC958;
++	uinfo->count = 1;
++	return 0;
++}
++
++static int snd_bcm2835_spdif_stream_get(struct snd_kcontrol *kcontrol,
++					struct snd_ctl_elem_value *ucontrol)
++{
++	struct bcm2835_chip *chip = snd_kcontrol_chip(kcontrol);
++	int i;
++
++	if (mutex_lock_interruptible(&chip->audio_mutex))
++		return -EINTR;
++
++	for (i = 0; i < 4; i++)
++		ucontrol->value.iec958.status[i] =
++			(chip->spdif_status >> (i * 8)) & 0xff;
++
++	mutex_unlock(&chip->audio_mutex);
++	return 0;
++}
++
++static int snd_bcm2835_spdif_stream_put(struct snd_kcontrol *kcontrol,
++					struct snd_ctl_elem_value *ucontrol)
++{
++	struct bcm2835_chip *chip = snd_kcontrol_chip(kcontrol);
++	unsigned int val = 0;
++	int i, change;
++
++	if (mutex_lock_interruptible(&chip->audio_mutex))
++		return -EINTR;
++
++	for (i = 0; i < 4; i++)
++		val |= (unsigned int)ucontrol->value.iec958.status[i] << (i * 8);
++	change = val != chip->spdif_status;
++	chip->spdif_status = val;
++
++	mutex_unlock(&chip->audio_mutex);
++	return change;
++}
++
++static struct snd_kcontrol_new snd_bcm2835_spdif[] = {
++	{
++		.iface = SNDRV_CTL_ELEM_IFACE_PCM,
++		.name = SNDRV_CTL_NAME_IEC958("", PLAYBACK, DEFAULT),
++		.info = snd_bcm2835_spdif_default_info,
++		.get = snd_bcm2835_spdif_default_get,
++		.put = snd_bcm2835_spdif_default_put
++	},
++	{
++		.access = SNDRV_CTL_ELEM_ACCESS_READ,
++		.iface = SNDRV_CTL_ELEM_IFACE_PCM,
++		.name = SNDRV_CTL_NAME_IEC958("", PLAYBACK, CON_MASK),
++		.info = snd_bcm2835_spdif_mask_info,
++		.get = snd_bcm2835_spdif_mask_get,
++	},
++	{
++		.access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
++			SNDRV_CTL_ELEM_ACCESS_INACTIVE,
++		.iface = SNDRV_CTL_ELEM_IFACE_PCM,
++		.name = SNDRV_CTL_NAME_IEC958("", PLAYBACK, PCM_STREAM),
++		.info = snd_bcm2835_spdif_stream_info,
++		.get = snd_bcm2835_spdif_stream_get,
++		.put = snd_bcm2835_spdif_stream_put,
++	},
++};
++
++int snd_bcm2835_new_ctl(bcm2835_chip_t * chip)
++{
++	int err;
++	unsigned int idx;
++
++	strcpy(chip->card->mixername, "Broadcom Mixer");
++	for (idx = 0; idx < ARRAY_SIZE(snd_bcm2835_ctl); idx++) {
++		err =
++		    snd_ctl_add(chip->card,
++				snd_ctl_new1(&snd_bcm2835_ctl[idx], chip));
++		if (err < 0)
++			return err;
++	}
++	for (idx = 0; idx < ARRAY_SIZE(snd_bcm2835_spdif); idx++) {
++		err = snd_ctl_add(chip->card,
++				snd_ctl_new1(&snd_bcm2835_spdif[idx], chip));
++		if (err < 0)
++			return err;
++	}
++	return 0;
++}
+--- /dev/null
++++ b/sound/arm/bcm2835-pcm.c
+@@ -0,0 +1,563 @@
++/*****************************************************************************
++* Copyright 2011 Broadcom Corporation.  All rights reserved.
++*
++* Unless you and Broadcom execute a separate written software license
++* agreement governing use of this software, this software is licensed to you
++* under the terms of the GNU General Public License version 2, available at
++* http://www.broadcom.com/licenses/GPLv2.php (the "GPL").
++*
++* Notwithstanding the above, under no circumstances may you combine this
++* software in any way with any other Broadcom software provided under a
++* license other than the GPL, without Broadcom's express prior written
++* consent.
++*****************************************************************************/
++
++#include <linux/interrupt.h>
++#include <linux/slab.h>
++
++#include <sound/asoundef.h>
++
++#include "bcm2835.h"
++
++/* hardware definition */
++static struct snd_pcm_hardware snd_bcm2835_playback_hw = {
++	.info = (SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER |
++		 SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID),
++	.formats = SNDRV_PCM_FMTBIT_U8 | SNDRV_PCM_FMTBIT_S16_LE,
++	.rates = SNDRV_PCM_RATE_CONTINUOUS | SNDRV_PCM_RATE_8000_48000,
++	.rate_min = 8000,
++	.rate_max = 48000,
++	.channels_min = 1,
++	.channels_max = 2,
++	.buffer_bytes_max = 128 * 1024,
++	.period_bytes_min =   1 * 1024,
++	.period_bytes_max = 128 * 1024,
++	.periods_min = 1,
++	.periods_max = 128,
++};
++
++static struct snd_pcm_hardware snd_bcm2835_playback_spdif_hw = {
++	.info = (SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER |
++		 SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID),
++	.formats = SNDRV_PCM_FMTBIT_S16_LE,
++	.rates = SNDRV_PCM_RATE_CONTINUOUS | SNDRV_PCM_RATE_44100 |
++		SNDRV_PCM_RATE_48000,
++	.rate_min = 44100,
++	.rate_max = 48000,
++	.channels_min = 2,
++	.channels_max = 2,
++	.buffer_bytes_max = 128 * 1024,
++	.period_bytes_min =   1 * 1024,
++	.period_bytes_max = 128 * 1024,
++	.periods_min = 1,
++	.periods_max = 128,
++};
++
++static void snd_bcm2835_playback_free(struct snd_pcm_runtime *runtime)
++{
++	audio_info("Freeing up alsa stream here ..\n");
++	if (runtime->private_data)
++		kfree(runtime->private_data);
++	runtime->private_data = NULL;
++}
++
++static irqreturn_t bcm2835_playback_fifo_irq(int irq, void *dev_id)
++{
++	bcm2835_alsa_stream_t *alsa_stream = (bcm2835_alsa_stream_t *) dev_id;
++	uint32_t consumed = 0;
++	int new_period = 0;
++
++	audio_info(" .. IN\n");
++
++	audio_info("alsa_stream=%p substream=%p\n", alsa_stream,
++		   alsa_stream ? alsa_stream->substream : 0);
++
++	if (alsa_stream->open)
++		consumed = bcm2835_audio_retrieve_buffers(alsa_stream);
++
++	/* We get called only if playback was triggered, So, the number of buffers we retrieve in
++	 * each iteration are the buffers that have been played out already
++	 */
++
++	if (alsa_stream->period_size) {
++		if ((alsa_stream->pos / alsa_stream->period_size) !=
++		    ((alsa_stream->pos + consumed) / alsa_stream->period_size))
++			new_period = 1;
++	}
++	audio_debug("updating pos cur: %d + %d max:%d period_bytes:%d, hw_ptr: %d new_period:%d\n",
++		      alsa_stream->pos,
++		      consumed,
++		      alsa_stream->buffer_size,
++			  (int)(alsa_stream->period_size*alsa_stream->substream->runtime->periods),
++			  frames_to_bytes(alsa_stream->substream->runtime, alsa_stream->substream->runtime->status->hw_ptr),
++			  new_period);
++	if (alsa_stream->buffer_size) {
++		alsa_stream->pos += consumed &~ (1<<30);
++		alsa_stream->pos %= alsa_stream->buffer_size;
++	}
++
++	if (alsa_stream->substream) {
++		if (new_period)
++			snd_pcm_period_elapsed(alsa_stream->substream);
++	} else {
++		audio_warning(" unexpected NULL substream\n");
++	}
++	audio_info(" .. OUT\n");
++
++	return IRQ_HANDLED;
++}
++
++/* open callback */
++static int snd_bcm2835_playback_open_generic(
++		struct snd_pcm_substream *substream, int spdif)
++{
++	bcm2835_chip_t *chip = snd_pcm_substream_chip(substream);
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	bcm2835_alsa_stream_t *alsa_stream;
++	int idx;
++	int err;
++
++	audio_info(" .. IN (%d)\n", substream->number);
++
++	if(mutex_lock_interruptible(&chip->audio_mutex))
++	{
++		audio_error("Interrupted whilst waiting for lock\n");
++		return -EINTR;
++	}
++	audio_info("Alsa open (%d)\n", substream->number);
++	idx = substream->number;
++
++	if (spdif && chip->opened != 0) {
++		err = -EBUSY;
++		goto out;
++	}
++	else if (!spdif && (chip->opened & (1 << idx))) {
++		err = -EBUSY;
++		goto out;
++	}
++	if (idx > MAX_SUBSTREAMS) {
++		audio_error
++		    ("substream(%d) device doesn't exist max(%d) substreams allowed\n",
++		     idx, MAX_SUBSTREAMS);
++		err = -ENODEV;
++		goto out;
++	}
++
++	/* Check if we are ready */
++	if (!(chip->avail_substreams & (1 << idx))) {
++		/* We are not ready yet */
++		audio_error("substream(%d) device is not ready yet\n", idx);
++		err = -EAGAIN;
++		goto out;
++	}
++
++	alsa_stream = kzalloc(sizeof(bcm2835_alsa_stream_t), GFP_KERNEL);
++	if (alsa_stream == NULL) {
++		err = -ENOMEM;
++		goto out;
++	}
++
++	/* Initialise alsa_stream */
++	alsa_stream->chip = chip;
++	alsa_stream->substream = substream;
++	alsa_stream->idx = idx;
++
++	sema_init(&alsa_stream->buffers_update_sem, 0);
++	sema_init(&alsa_stream->control_sem, 0);
++	spin_lock_init(&alsa_stream->lock);
++
++	/* Enabled in start trigger, called on each "fifo irq" after that */
++	alsa_stream->enable_fifo_irq = 0;
++	alsa_stream->fifo_irq_handler = bcm2835_playback_fifo_irq;
++
++	err = bcm2835_audio_open(alsa_stream);
++	if (err != 0) {
++		kfree(alsa_stream);
++		goto out;
++	}
++	runtime->private_data = alsa_stream;
++	runtime->private_free = snd_bcm2835_playback_free;
++	if (spdif) {
++		runtime->hw = snd_bcm2835_playback_spdif_hw;
++	} else {
++		/* clear spdif status, as we are not in spdif mode */
++		chip->spdif_status = 0;
++		runtime->hw = snd_bcm2835_playback_hw;
++	}
++	/* minimum 16 bytes alignment (for vchiq bulk transfers) */
++	snd_pcm_hw_constraint_step(runtime, 0, SNDRV_PCM_HW_PARAM_PERIOD_BYTES,
++				   16);
++
++	chip->alsa_stream[idx] = alsa_stream;
++
++	chip->opened |= (1 << idx);
++	alsa_stream->open = 1;
++	alsa_stream->draining = 1;
++
++out:
++	mutex_unlock(&chip->audio_mutex);
++
++	audio_info(" .. OUT =%d\n", err);
++
++	return err;
++}
++
++static int snd_bcm2835_playback_open(struct snd_pcm_substream *substream)
++{
++	return snd_bcm2835_playback_open_generic(substream, 0);
++}
++
++static int snd_bcm2835_playback_spdif_open(struct snd_pcm_substream *substream)
++{
++	return snd_bcm2835_playback_open_generic(substream, 1);
++}
++
++/* close callback */
++static int snd_bcm2835_playback_close(struct snd_pcm_substream *substream)
++{
++	/* the hardware-specific codes will be here */
++
++	bcm2835_chip_t *chip;
++	struct snd_pcm_runtime *runtime;
++	bcm2835_alsa_stream_t *alsa_stream;
++
++	audio_info(" .. IN\n");
++
++	chip = snd_pcm_substream_chip(substream);
++	if(mutex_lock_interruptible(&chip->audio_mutex))
++	{
++		audio_error("Interrupted whilst waiting for lock\n");
++		return -EINTR;
++	}
++	runtime = substream->runtime;
++	alsa_stream = runtime->private_data;
++
++	audio_info("Alsa close\n");
++
++	/*
++	 * Call stop if it's still running. This happens when app
++	 * is force killed and we don't get a stop trigger.
++	 */
++	if (alsa_stream->running) {
++		int err;
++		err = bcm2835_audio_stop(alsa_stream);
++		alsa_stream->running = 0;
++		if (err != 0)
++			audio_error(" Failed to STOP alsa device\n");
++	}
++
++	alsa_stream->period_size = 0;
++	alsa_stream->buffer_size = 0;
++
++	if (alsa_stream->open) {
++		alsa_stream->open = 0;
++		bcm2835_audio_close(alsa_stream);
++	}
++	if (alsa_stream->chip)
++		alsa_stream->chip->alsa_stream[alsa_stream->idx] = NULL;
++	/*
++	 * Do not free up alsa_stream here, it will be freed up by
++	 * runtime->private_free callback we registered in *_open above
++	 */
++
++	chip->opened &= ~(1 << substream->number);
++
++	mutex_unlock(&chip->audio_mutex);
++	audio_info(" .. OUT\n");
++
++	return 0;
++}
++
++/* hw_params callback */
++static int snd_bcm2835_pcm_hw_params(struct snd_pcm_substream *substream,
++				     struct snd_pcm_hw_params *params)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	bcm2835_alsa_stream_t *alsa_stream = runtime->private_data;
++	int err;
++
++	audio_info(" .. IN\n");
++
++	err = snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(params));
++	if (err < 0) {
++		audio_error
++		    (" pcm_lib_malloc failed to allocated pages for buffers\n");
++		return err;
++	}
++
++	alsa_stream->channels = params_channels(params);
++	alsa_stream->params_rate = params_rate(params);
++	alsa_stream->pcm_format_width = snd_pcm_format_width(params_format (params));
++	audio_info(" .. OUT\n");
++
++	return err;
++}
++
++/* hw_free callback */
++static int snd_bcm2835_pcm_hw_free(struct snd_pcm_substream *substream)
++{
++	audio_info(" .. IN\n");
++	return snd_pcm_lib_free_pages(substream);
++}
++
++/* prepare callback */
++static int snd_bcm2835_pcm_prepare(struct snd_pcm_substream *substream)
++{
++	bcm2835_chip_t *chip = snd_pcm_substream_chip(substream);
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	bcm2835_alsa_stream_t *alsa_stream = runtime->private_data;
++	int channels;
++	int err;
++
++	audio_info(" .. IN\n");
++
++	if (mutex_lock_interruptible(&chip->audio_mutex))
++		return -EINTR;
++
++	/* notify the vchiq that it should enter spdif passthrough mode by
++	 * setting channels=0 (see
++	 * https://github.com/raspberrypi/linux/issues/528) */
++	if (chip->spdif_status & IEC958_AES0_NONAUDIO)
++		channels = 0;
++	else
++		channels = alsa_stream->channels;
++
++	err = bcm2835_audio_set_params(alsa_stream, channels,
++				       alsa_stream->params_rate,
++				       alsa_stream->pcm_format_width);
++	if (err < 0) {
++		audio_error(" error setting hw params\n");
++	}
++
++	bcm2835_audio_setup(alsa_stream);
++
++	/* in preparation of the stream, set the controls (volume level) of the stream */
++	bcm2835_audio_set_ctls(alsa_stream->chip);
++
++
++	memset(&alsa_stream->pcm_indirect, 0, sizeof(alsa_stream->pcm_indirect));
++
++	alsa_stream->pcm_indirect.hw_buffer_size =
++	alsa_stream->pcm_indirect.sw_buffer_size =
++		snd_pcm_lib_buffer_bytes(substream);
++
++	alsa_stream->buffer_size = snd_pcm_lib_buffer_bytes(substream);
++	alsa_stream->period_size = snd_pcm_lib_period_bytes(substream);
++	alsa_stream->pos = 0;
++
++	audio_debug("buffer_size=%d, period_size=%d pos=%d frame_bits=%d\n",
++		      alsa_stream->buffer_size, alsa_stream->period_size,
++		      alsa_stream->pos, runtime->frame_bits);
++
++	mutex_unlock(&chip->audio_mutex);
++	audio_info(" .. OUT\n");
++	return 0;
++}
++
++static void snd_bcm2835_pcm_transfer(struct snd_pcm_substream *substream,
++				    struct snd_pcm_indirect *rec, size_t bytes)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	bcm2835_alsa_stream_t *alsa_stream = runtime->private_data;
++	void *src = (void *)(substream->runtime->dma_area + rec->sw_data);
++	int err;
++
++	err = bcm2835_audio_write(alsa_stream, bytes, src);
++	if (err)
++		audio_error(" Failed to transfer to alsa device (%d)\n", err);
++
++}
++
++static int snd_bcm2835_pcm_ack(struct snd_pcm_substream *substream)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	bcm2835_alsa_stream_t *alsa_stream = runtime->private_data;
++	struct snd_pcm_indirect *pcm_indirect = &alsa_stream->pcm_indirect;
++
++	pcm_indirect->hw_queue_size = runtime->hw.buffer_bytes_max;
++	snd_pcm_indirect_playback_transfer(substream, pcm_indirect,
++					   snd_bcm2835_pcm_transfer);
++	return 0;
++}
++
++/* trigger callback */
++static int snd_bcm2835_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	bcm2835_alsa_stream_t *alsa_stream = runtime->private_data;
++	int err = 0;
++
++	audio_info(" .. IN\n");
++
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++		audio_debug("bcm2835_AUDIO_TRIGGER_START running=%d\n",
++			      alsa_stream->running);
++		if (!alsa_stream->running) {
++			err = bcm2835_audio_start(alsa_stream);
++			if (err == 0) {
++				alsa_stream->pcm_indirect.hw_io =
++				alsa_stream->pcm_indirect.hw_data =
++					bytes_to_frames(runtime,
++							alsa_stream->pos);
++				substream->ops->ack(substream);
++				alsa_stream->running = 1;
++				alsa_stream->draining = 1;
++			} else {
++				audio_error(" Failed to START alsa device (%d)\n", err);
++			}
++		}
++		break;
++	case SNDRV_PCM_TRIGGER_STOP:
++		audio_debug
++		    ("bcm2835_AUDIO_TRIGGER_STOP running=%d draining=%d\n",
++			     alsa_stream->running, runtime->status->state == SNDRV_PCM_STATE_DRAINING);
++		if (runtime->status->state == SNDRV_PCM_STATE_DRAINING) {
++			audio_info("DRAINING\n");
++			alsa_stream->draining = 1;
++		} else {
++			audio_info("DROPPING\n");
++			alsa_stream->draining = 0;
++		}
++		if (alsa_stream->running) {
++			err = bcm2835_audio_stop(alsa_stream);
++			if (err != 0)
++				audio_error(" Failed to STOP alsa device (%d)\n", err);
++			alsa_stream->running = 0;
++		}
++		break;
++	default:
++		err = -EINVAL;
++	}
++
++	audio_info(" .. OUT\n");
++	return err;
++}
++
++/* pointer callback */
++static snd_pcm_uframes_t
++snd_bcm2835_pcm_pointer(struct snd_pcm_substream *substream)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	bcm2835_alsa_stream_t *alsa_stream = runtime->private_data;
++
++	audio_info(" .. IN\n");
++
++	audio_debug("pcm_pointer... (%d) hwptr=%d appl=%d pos=%d\n", 0,
++		      frames_to_bytes(runtime, runtime->status->hw_ptr),
++		      frames_to_bytes(runtime, runtime->control->appl_ptr),
++		      alsa_stream->pos);
++
++	audio_info(" .. OUT\n");
++	return snd_pcm_indirect_playback_pointer(substream,
++						 &alsa_stream->pcm_indirect,
++						 alsa_stream->pos);
++}
++
++static int snd_bcm2835_pcm_lib_ioctl(struct snd_pcm_substream *substream,
++				     unsigned int cmd, void *arg)
++{
++	int ret = snd_pcm_lib_ioctl(substream, cmd, arg);
++	audio_info(" .. substream=%p, cmd=%d, arg=%p (%x) ret=%d\n", substream,
++		    cmd, arg, arg ? *(unsigned *)arg : 0, ret);
++	return ret;
++}
++
++/* operators */
++static struct snd_pcm_ops snd_bcm2835_playback_ops = {
++	.open = snd_bcm2835_playback_open,
++	.close = snd_bcm2835_playback_close,
++	.ioctl = snd_bcm2835_pcm_lib_ioctl,
++	.hw_params = snd_bcm2835_pcm_hw_params,
++	.hw_free = snd_bcm2835_pcm_hw_free,
++	.prepare = snd_bcm2835_pcm_prepare,
++	.trigger = snd_bcm2835_pcm_trigger,
++	.pointer = snd_bcm2835_pcm_pointer,
++	.ack = snd_bcm2835_pcm_ack,
++};
++
++static struct snd_pcm_ops snd_bcm2835_playback_spdif_ops = {
++	.open = snd_bcm2835_playback_spdif_open,
++	.close = snd_bcm2835_playback_close,
++	.ioctl = snd_bcm2835_pcm_lib_ioctl,
++	.hw_params = snd_bcm2835_pcm_hw_params,
++	.hw_free = snd_bcm2835_pcm_hw_free,
++	.prepare = snd_bcm2835_pcm_prepare,
++	.trigger = snd_bcm2835_pcm_trigger,
++	.pointer = snd_bcm2835_pcm_pointer,
++	.ack = snd_bcm2835_pcm_ack,
++};
++
++/* create a pcm device */
++int snd_bcm2835_new_pcm(bcm2835_chip_t * chip)
++{
++	struct snd_pcm *pcm;
++	int err;
++
++	audio_info(" .. IN\n");
++	mutex_init(&chip->audio_mutex);
++	if(mutex_lock_interruptible(&chip->audio_mutex))
++	{
++		audio_error("Interrupted whilst waiting for lock\n");
++		return -EINTR;
++	}
++	err =
++	    snd_pcm_new(chip->card, "bcm2835 ALSA", 0, MAX_SUBSTREAMS, 0, &pcm);
++	if (err < 0)
++		goto out;
++	pcm->private_data = chip;
++	strcpy(pcm->name, "bcm2835 ALSA");
++	chip->pcm = pcm;
++	chip->dest = AUDIO_DEST_AUTO;
++	chip->volume = alsa2chip(0);
++	chip->mute = CTRL_VOL_UNMUTE;	/*disable mute on startup */
++	/* set operators */
++	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK,
++			&snd_bcm2835_playback_ops);
++
++	/* pre-allocation of buffers */
++	/* NOTE: this may fail */
++	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_CONTINUOUS,
++					      snd_dma_continuous_data (GFP_KERNEL),
++					      snd_bcm2835_playback_hw.buffer_bytes_max, snd_bcm2835_playback_hw.buffer_bytes_max);
++
++
++out:
++	mutex_unlock(&chip->audio_mutex);
++	audio_info(" .. OUT\n");
++
++	return 0;
++}
++
++int snd_bcm2835_new_spdif_pcm(bcm2835_chip_t * chip)
++{
++	struct snd_pcm *pcm;
++	int err;
++
++	audio_info(" .. IN\n");
++	if(mutex_lock_interruptible(&chip->audio_mutex))
++	{
++		audio_error("Interrupted whilst waiting for lock\n");
++		return -EINTR;
++	}
++	err = snd_pcm_new(chip->card, "bcm2835 ALSA", 1, 1, 0, &pcm);
++	if (err < 0)
++		goto out;
++
++	pcm->private_data = chip;
++	strcpy(pcm->name, "bcm2835 IEC958/HDMI");
++	chip->pcm_spdif = pcm;
++	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK,
++			&snd_bcm2835_playback_spdif_ops);
++
++	/* pre-allocation of buffers */
++	/* NOTE: this may fail */
++	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_CONTINUOUS,
++					      snd_dma_continuous_data (GFP_KERNEL),
++					      snd_bcm2835_playback_spdif_hw.buffer_bytes_max, snd_bcm2835_playback_spdif_hw.buffer_bytes_max);
++out:
++	mutex_unlock(&chip->audio_mutex);
++	audio_info(" .. OUT\n");
++
++	return 0;
++}
+--- /dev/null
++++ b/sound/arm/bcm2835-vchiq.c
+@@ -0,0 +1,889 @@
++/*****************************************************************************
++* Copyright 2011 Broadcom Corporation.  All rights reserved.
++*
++* Unless you and Broadcom execute a separate written software license
++* agreement governing use of this software, this software is licensed to you
++* under the terms of the GNU General Public License version 2, available at
++* http://www.broadcom.com/licenses/GPLv2.php (the "GPL").
++*
++* Notwithstanding the above, under no circumstances may you combine this
++* software in any way with any other Broadcom software provided under a
++* license other than the GPL, without Broadcom's express prior written
++* consent.
++*****************************************************************************/
++
++#include <linux/device.h>
++#include <sound/core.h>
++#include <sound/initval.h>
++#include <sound/pcm.h>
++#include <linux/io.h>
++#include <linux/interrupt.h>
++#include <linux/fs.h>
++#include <linux/file.h>
++#include <linux/mm.h>
++#include <linux/syscalls.h>
++#include <asm/uaccess.h>
++#include <linux/slab.h>
++#include <linux/delay.h>
++#include <linux/atomic.h>
++#include <linux/module.h>
++#include <linux/completion.h>
++
++#include "bcm2835.h"
++
++/* ---- Include Files -------------------------------------------------------- */
++
++#include "interface/vchi/vchi.h"
++#include "vc_vchi_audioserv_defs.h"
++
++/* ---- Private Constants and Types ------------------------------------------ */
++
++#define BCM2835_AUDIO_STOP           0
++#define BCM2835_AUDIO_START          1
++#define BCM2835_AUDIO_WRITE          2
++
++/* Logging macros (for remapping to other logging mechanisms, i.e., printf) */
++#ifdef AUDIO_DEBUG_ENABLE
++	#define LOG_ERR( fmt, arg... )   pr_err( "%s:%d " fmt, __func__, __LINE__, ##arg)
++	#define LOG_WARN( fmt, arg... )  pr_info( "%s:%d " fmt, __func__, __LINE__, ##arg)
++	#define LOG_INFO( fmt, arg... )  pr_info( "%s:%d " fmt, __func__, __LINE__, ##arg)
++	#define LOG_DBG( fmt, arg... )   pr_info( "%s:%d " fmt, __func__, __LINE__, ##arg)
++#else
++	#define LOG_ERR( fmt, arg... )   pr_err( "%s:%d " fmt, __func__, __LINE__, ##arg)
++	#define LOG_WARN( fmt, arg... )
++	#define LOG_INFO( fmt, arg... )
++	#define LOG_DBG( fmt, arg... )
++#endif
++
++typedef struct opaque_AUDIO_INSTANCE_T {
++	uint32_t num_connections;
++	VCHI_SERVICE_HANDLE_T vchi_handle[VCHI_MAX_NUM_CONNECTIONS];
++	struct completion msg_avail_comp;
++	struct mutex vchi_mutex;
++	bcm2835_alsa_stream_t *alsa_stream;
++	int32_t result;
++	short peer_version;
++} AUDIO_INSTANCE_T;
++
++bool force_bulk = false;
++
++/* ---- Private Variables ---------------------------------------------------- */
++
++/* ---- Private Function Prototypes ------------------------------------------ */
++
++/* ---- Private Functions ---------------------------------------------------- */
++
++static int bcm2835_audio_stop_worker(bcm2835_alsa_stream_t * alsa_stream);
++static int bcm2835_audio_start_worker(bcm2835_alsa_stream_t * alsa_stream);
++static int bcm2835_audio_write_worker(bcm2835_alsa_stream_t *alsa_stream,
++				      uint32_t count, void *src);
++
++typedef struct {
++	struct work_struct my_work;
++	bcm2835_alsa_stream_t *alsa_stream;
++	int cmd;
++	void *src;
++	uint32_t count;
++} my_work_t;
++
++static void my_wq_function(struct work_struct *work)
++{
++	my_work_t *w = (my_work_t *) work;
++	int ret = -9;
++	LOG_DBG(" .. IN %p:%d\n", w->alsa_stream, w->cmd);
++	switch (w->cmd) {
++	case BCM2835_AUDIO_START:
++		ret = bcm2835_audio_start_worker(w->alsa_stream);
++		break;
++	case BCM2835_AUDIO_STOP:
++		ret = bcm2835_audio_stop_worker(w->alsa_stream);
++		break;
++	case BCM2835_AUDIO_WRITE:
++		ret = bcm2835_audio_write_worker(w->alsa_stream, w->count,
++						 w->src);
++		break;
++	default:
++		LOG_ERR(" Unexpected work: %p:%d\n", w->alsa_stream, w->cmd);
++		break;
++	}
++	kfree((void *)work);
++	LOG_DBG(" .. OUT %d\n", ret);
++}
++
++int bcm2835_audio_start(bcm2835_alsa_stream_t * alsa_stream)
++{
++	int ret = -1;
++	LOG_DBG(" .. IN\n");
++	if (alsa_stream->my_wq) {
++		my_work_t *work = kmalloc(sizeof(my_work_t), GFP_ATOMIC);
++		/*--- Queue some work (item 1) ---*/
++		if (work) {
++			INIT_WORK((struct work_struct *)work, my_wq_function);
++			work->alsa_stream = alsa_stream;
++			work->cmd = BCM2835_AUDIO_START;
++			if (queue_work
++			    (alsa_stream->my_wq, (struct work_struct *)work))
++				ret = 0;
++		} else
++			LOG_ERR(" .. Error: NULL work kmalloc\n");
++	}
++	LOG_DBG(" .. OUT %d\n", ret);
++	return ret;
++}
++
++int bcm2835_audio_stop(bcm2835_alsa_stream_t * alsa_stream)
++{
++	int ret = -1;
++	LOG_DBG(" .. IN\n");
++	if (alsa_stream->my_wq) {
++		my_work_t *work = kmalloc(sizeof(my_work_t), GFP_ATOMIC);
++		 /*--- Queue some work (item 1) ---*/
++		if (work) {
++			INIT_WORK((struct work_struct *)work, my_wq_function);
++			work->alsa_stream = alsa_stream;
++			work->cmd = BCM2835_AUDIO_STOP;
++			if (queue_work
++			    (alsa_stream->my_wq, (struct work_struct *)work))
++				ret = 0;
++		} else
++			LOG_ERR(" .. Error: NULL work kmalloc\n");
++	}
++	LOG_DBG(" .. OUT %d\n", ret);
++	return ret;
++}
++
++int bcm2835_audio_write(bcm2835_alsa_stream_t *alsa_stream,
++			uint32_t count, void *src)
++{
++	int ret = -1;
++	LOG_DBG(" .. IN\n");
++	if (alsa_stream->my_wq) {
++		my_work_t *work = kmalloc(sizeof(my_work_t), GFP_ATOMIC);
++		 /*--- Queue some work (item 1) ---*/
++		if (work) {
++			INIT_WORK((struct work_struct *)work, my_wq_function);
++			work->alsa_stream = alsa_stream;
++			work->cmd = BCM2835_AUDIO_WRITE;
++			work->src = src;
++			work->count = count;
++			if (queue_work
++			    (alsa_stream->my_wq, (struct work_struct *)work))
++				ret = 0;
++		} else
++			LOG_ERR(" .. Error: NULL work kmalloc\n");
++	}
++	LOG_DBG(" .. OUT %d\n", ret);
++	return ret;
++}
++
++void my_workqueue_init(bcm2835_alsa_stream_t * alsa_stream)
++{
++	alsa_stream->my_wq = alloc_workqueue("my_queue", WQ_HIGHPRI, 1);
++	return;
++}
++
++void my_workqueue_quit(bcm2835_alsa_stream_t * alsa_stream)
++{
++	if (alsa_stream->my_wq) {
++		flush_workqueue(alsa_stream->my_wq);
++		destroy_workqueue(alsa_stream->my_wq);
++		alsa_stream->my_wq = NULL;
++	}
++	return;
++}
++
++static void audio_vchi_callback(void *param,
++				const VCHI_CALLBACK_REASON_T reason,
++				void *msg_handle)
++{
++	AUDIO_INSTANCE_T *instance = (AUDIO_INSTANCE_T *) param;
++	int32_t status;
++	int32_t msg_len;
++	VC_AUDIO_MSG_T m;
++	LOG_DBG(" .. IN instance=%p, handle=%p, alsa=%p, reason=%d, handle=%p\n",
++		instance, instance ? instance->vchi_handle[0] : NULL, instance ? instance->alsa_stream : NULL, reason, msg_handle);
++
++	if (reason != VCHI_CALLBACK_MSG_AVAILABLE) {
++		return;
++	}
++	if (!instance) {
++		LOG_ERR(" .. instance is null\n");
++		BUG();
++		return;
++  }
++  if (!instance->vchi_handle[0]) {
++		LOG_ERR(" .. instance->vchi_handle[0] is null\n");
++		BUG();
++		return;
++  }
++	status = vchi_msg_dequeue(instance->vchi_handle[0],
++				  &m, sizeof m, &msg_len, VCHI_FLAGS_NONE);
++	if (m.type == VC_AUDIO_MSG_TYPE_RESULT) {
++		LOG_DBG
++		    (" .. instance=%p, m.type=VC_AUDIO_MSG_TYPE_RESULT, success=%d\n",
++		     instance, m.u.result.success);
++		instance->result = m.u.result.success;
++		complete(&instance->msg_avail_comp);
++	} else if (m.type == VC_AUDIO_MSG_TYPE_COMPLETE) {
++		bcm2835_alsa_stream_t *alsa_stream = instance->alsa_stream;
++		irq_handler_t callback = (irq_handler_t) m.u.complete.callback;
++		LOG_DBG
++		    (" .. instance=%p, m.type=VC_AUDIO_MSG_TYPE_COMPLETE, complete=%d\n",
++		     instance, m.u.complete.count);
++		if (alsa_stream && callback) {
++			atomic_add(m.u.complete.count, &alsa_stream->retrieved);
++			callback(0, alsa_stream);
++		} else {
++			LOG_ERR(" .. unexpected alsa_stream=%p, callback=%p\n",
++				alsa_stream, callback);
++		}
++	} else {
++		LOG_ERR(" .. unexpected m.type=%d\n", m.type);
++	}
++	LOG_DBG(" .. OUT\n");
++}
++
++static AUDIO_INSTANCE_T *vc_vchi_audio_init(VCHI_INSTANCE_T vchi_instance,
++					    VCHI_CONNECTION_T **
++					    vchi_connections,
++					    uint32_t num_connections)
++{
++	uint32_t i;
++	AUDIO_INSTANCE_T *instance;
++	int status;
++
++	LOG_DBG("%s: start", __func__);
++
++	if (num_connections > VCHI_MAX_NUM_CONNECTIONS) {
++		LOG_ERR("%s: unsupported number of connections %u (max=%u)\n",
++			__func__, num_connections, VCHI_MAX_NUM_CONNECTIONS);
++
++		return NULL;
++	}
++	/* Allocate memory for this instance */
++	instance = kmalloc(sizeof(*instance), GFP_KERNEL);
++	if (!instance)
++		return NULL;
++
++	memset(instance, 0, sizeof(*instance));
++	instance->num_connections = num_connections;
++
++	/* Create a lock for exclusive, serialized VCHI connection access */
++	mutex_init(&instance->vchi_mutex);
++	/* Open the VCHI service connections */
++	for (i = 0; i < num_connections; i++) {
++		SERVICE_CREATION_T params = {
++			VCHI_VERSION_EX(VC_AUDIOSERV_VER, VC_AUDIOSERV_MIN_VER),
++			VC_AUDIO_SERVER_NAME,	// 4cc service code
++			vchi_connections[i],	// passed in fn pointers
++			0,	// rx fifo size (unused)
++			0,	// tx fifo size (unused)
++			audio_vchi_callback,	// service callback
++			instance,	// service callback parameter
++			1,	//TODO: remove VCOS_FALSE,   // unaligned bulk recieves
++			1,	//TODO: remove VCOS_FALSE,   // unaligned bulk transmits
++			0	// want crc check on bulk transfers
++		};
++
++		LOG_DBG("%s: about to open %i\n", __func__, i);
++		status = vchi_service_open(vchi_instance, &params,
++					   &instance->vchi_handle[i]);
++		LOG_DBG("%s: opened %i: %p=%d\n", __func__, i, instance->vchi_handle[i], status);
++		if (status) {
++			LOG_ERR
++			    ("%s: failed to open VCHI service connection (status=%d)\n",
++			     __func__, status);
++
++			goto err_close_services;
++		}
++		/* Finished with the service for now */
++		vchi_service_release(instance->vchi_handle[i]);
++	}
++
++	LOG_DBG("%s: okay\n", __func__);
++	return instance;
++
++err_close_services:
++	for (i = 0; i < instance->num_connections; i++) {
++		LOG_ERR("%s: closing %i: %p\n", __func__, i, instance->vchi_handle[i]);
++		if (instance->vchi_handle[i])
++			vchi_service_close(instance->vchi_handle[i]);
++	}
++
++	kfree(instance);
++	LOG_ERR("%s: error\n", __func__);
++
++	return NULL;
++}
++
++static int32_t vc_vchi_audio_deinit(AUDIO_INSTANCE_T * instance)
++{
++	uint32_t i;
++
++	LOG_DBG(" .. IN\n");
++
++	if (instance == NULL) {
++		LOG_ERR("%s: invalid handle %p\n", __func__, instance);
++
++		return -1;
++	}
++
++	LOG_DBG(" .. about to lock (%d)\n", instance->num_connections);
++	if(mutex_lock_interruptible(&instance->vchi_mutex))
++	{
++		LOG_DBG("Interrupted whilst waiting for lock on (%d)\n",instance->num_connections);
++		return -EINTR;
++	}
++
++	/* Close all VCHI service connections */
++	for (i = 0; i < instance->num_connections; i++) {
++		int32_t success;
++		LOG_DBG(" .. %i:closing %p\n", i, instance->vchi_handle[i]);
++		vchi_service_use(instance->vchi_handle[i]);
++
++		success = vchi_service_close(instance->vchi_handle[i]);
++		if (success != 0) {
++			LOG_DBG
++			    ("%s: failed to close VCHI service connection (status=%d)\n",
++			     __func__, success);
++		}
++	}
++
++	mutex_unlock(&instance->vchi_mutex);
++
++	kfree(instance);
++
++	LOG_DBG(" .. OUT\n");
++
++	return 0;
++}
++
++static int bcm2835_audio_open_connection(bcm2835_alsa_stream_t * alsa_stream)
++{
++	static VCHI_INSTANCE_T vchi_instance;
++	static VCHI_CONNECTION_T *vchi_connection;
++	static int initted;
++	AUDIO_INSTANCE_T *instance = alsa_stream->instance;
++	int ret;
++	LOG_DBG(" .. IN\n");
++
++	LOG_INFO("%s: start\n", __func__);
++	BUG_ON(instance);
++	if (instance) {
++		LOG_ERR("%s: VCHI instance already open (%p)\n",
++			__func__, instance);
++		instance->alsa_stream = alsa_stream;
++		alsa_stream->instance = instance;
++		ret = 0;	// xxx todo -1;
++		goto err_free_mem;
++	}
++
++	/* Initialize and create a VCHI connection */
++	if (!initted) {
++	  ret = vchi_initialise(&vchi_instance);
++	  if (ret != 0) {
++		  LOG_ERR("%s: failed to initialise VCHI instance (ret=%d)\n",
++			  __func__, ret);
++
++		  ret = -EIO;
++		  goto err_free_mem;
++	  }
++	  ret = vchi_connect(NULL, 0, vchi_instance);
++	  if (ret != 0) {
++		  LOG_ERR("%s: failed to connect VCHI instance (ret=%d)\n",
++			  __func__, ret);
++
++		  ret = -EIO;
++		  goto err_free_mem;
++	  }
++	initted = 1;
++	}
++
++	/* Initialize an instance of the audio service */
++	instance = vc_vchi_audio_init(vchi_instance, &vchi_connection, 1);
++
++	if (instance == NULL) {
++		LOG_ERR("%s: failed to initialize audio service\n", __func__);
++
++		ret = -EPERM;
++		goto err_free_mem;
++	}
++
++	instance->alsa_stream = alsa_stream;
++	alsa_stream->instance = instance;
++
++	LOG_DBG(" success !\n");
++err_free_mem:
++	LOG_DBG(" .. OUT\n");
++
++	return ret;
++}
++
++int bcm2835_audio_open(bcm2835_alsa_stream_t * alsa_stream)
++{
++	AUDIO_INSTANCE_T *instance;
++	VC_AUDIO_MSG_T m;
++	int32_t success;
++	int ret;
++	LOG_DBG(" .. IN\n");
++
++	my_workqueue_init(alsa_stream);
++
++	ret = bcm2835_audio_open_connection(alsa_stream);
++	if (ret != 0) {
++		ret = -1;
++		goto exit;
++	}
++	instance = alsa_stream->instance;
++	LOG_DBG(" instance (%p)\n", instance);
++
++	if(mutex_lock_interruptible(&instance->vchi_mutex))
++	{
++		LOG_DBG("Interrupted whilst waiting for lock on (%d)\n",instance->num_connections);
++		return -EINTR;
++	}
++	vchi_service_use(instance->vchi_handle[0]);
++
++	m.type = VC_AUDIO_MSG_TYPE_OPEN;
++
++	/* Send the message to the videocore */
++	success = vchi_msg_queue(instance->vchi_handle[0],
++				 &m, sizeof m,
++				 VCHI_FLAGS_BLOCK_UNTIL_QUEUED, NULL);
++
++	if (success != 0) {
++		LOG_ERR("%s: failed on vchi_msg_queue (status=%d)\n",
++			__func__, success);
++
++		ret = -1;
++		goto unlock;
++	}
++
++	ret = 0;
++
++unlock:
++	vchi_service_release(instance->vchi_handle[0]);
++	mutex_unlock(&instance->vchi_mutex);
++exit:
++	LOG_DBG(" .. OUT\n");
++	return ret;
++}
++
++static int bcm2835_audio_set_ctls_chan(bcm2835_alsa_stream_t * alsa_stream,
++				       bcm2835_chip_t * chip)
++{
++	VC_AUDIO_MSG_T m;
++	AUDIO_INSTANCE_T *instance = alsa_stream->instance;
++	int32_t success;
++	int ret;
++	LOG_DBG(" .. IN\n");
++
++	LOG_INFO
++	    (" Setting ALSA dest(%d), volume(%d)\n", chip->dest, chip->volume);
++
++	if(mutex_lock_interruptible(&instance->vchi_mutex))
++	{
++		LOG_DBG("Interrupted whilst waiting for lock on (%d)\n",instance->num_connections);
++		return -EINTR;
++	}
++	vchi_service_use(instance->vchi_handle[0]);
++
++	instance->result = -1;
++
++	m.type = VC_AUDIO_MSG_TYPE_CONTROL;
++	m.u.control.dest = chip->dest;
++	m.u.control.volume = chip->volume;
++
++	/* Create the message available completion */
++	init_completion(&instance->msg_avail_comp);
++
++	/* Send the message to the videocore */
++	success = vchi_msg_queue(instance->vchi_handle[0],
++				 &m, sizeof m,
++				 VCHI_FLAGS_BLOCK_UNTIL_QUEUED, NULL);
++
++	if (success != 0) {
++		LOG_ERR("%s: failed on vchi_msg_queue (status=%d)\n",
++			__func__, success);
++
++		ret = -1;
++		goto unlock;
++	}
++
++	/* We are expecting a reply from the videocore */
++	wait_for_completion(&instance->msg_avail_comp);
++
++	if (instance->result != 0) {
++		LOG_ERR("%s: result=%d\n", __func__, instance->result);
++
++		ret = -1;
++		goto unlock;
++	}
++
++	ret = 0;
++
++unlock:
++	vchi_service_release(instance->vchi_handle[0]);
++	mutex_unlock(&instance->vchi_mutex);
++
++	LOG_DBG(" .. OUT\n");
++	return ret;
++}
++
++int bcm2835_audio_set_ctls(bcm2835_chip_t * chip)
++{
++	int i;
++	int ret = 0;
++	LOG_DBG(" .. IN\n");
++	LOG_DBG(" Setting ALSA dest(%d), volume(%d)\n", chip->dest, chip->volume);
++
++	/* change ctls for all substreams */
++	for (i = 0; i < MAX_SUBSTREAMS; i++) {
++		if (chip->avail_substreams & (1 << i)) {
++			if (!chip->alsa_stream[i])
++			{
++				LOG_DBG(" No ALSA stream available?! %i:%p (%x)\n", i, chip->alsa_stream[i], chip->avail_substreams);
++				ret = 0;
++			}
++			else if (bcm2835_audio_set_ctls_chan /* returns 0 on success */
++				 (chip->alsa_stream[i], chip) != 0)
++				 {
++					LOG_ERR("Couldn't set the controls for stream %d\n", i);
++					ret = -1;
++				 }
++			else LOG_DBG(" Controls set for stream %d\n", i);
++		}
++	}
++	LOG_DBG(" .. OUT ret=%d\n", ret);
++	return ret;
++}
++
++int bcm2835_audio_set_params(bcm2835_alsa_stream_t * alsa_stream,
++			     uint32_t channels, uint32_t samplerate,
++			     uint32_t bps)
++{
++	VC_AUDIO_MSG_T m;
++	AUDIO_INSTANCE_T *instance = alsa_stream->instance;
++	int32_t success;
++	int ret;
++	LOG_DBG(" .. IN\n");
++
++	LOG_INFO
++	    (" Setting ALSA channels(%d), samplerate(%d), bits-per-sample(%d)\n",
++	     channels, samplerate, bps);
++
++	/* resend ctls - alsa_stream may not have been open when first send */
++	ret = bcm2835_audio_set_ctls_chan(alsa_stream, alsa_stream->chip);
++	if (ret != 0) {
++		LOG_ERR(" Alsa controls not supported\n");
++		return -EINVAL;
++	}
++
++	if(mutex_lock_interruptible(&instance->vchi_mutex))
++	{
++		LOG_DBG("Interrupted whilst waiting for lock on (%d)\n",instance->num_connections);
++		return -EINTR;
++	}
++	vchi_service_use(instance->vchi_handle[0]);
++
++	instance->result = -1;
++
++	m.type = VC_AUDIO_MSG_TYPE_CONFIG;
++	m.u.config.channels = channels;
++	m.u.config.samplerate = samplerate;
++	m.u.config.bps = bps;
++
++	/* Create the message available completion */
++	init_completion(&instance->msg_avail_comp);
++
++	/* Send the message to the videocore */
++	success = vchi_msg_queue(instance->vchi_handle[0],
++				 &m, sizeof m,
++				 VCHI_FLAGS_BLOCK_UNTIL_QUEUED, NULL);
++
++	if (success != 0) {
++		LOG_ERR("%s: failed on vchi_msg_queue (status=%d)\n",
++			__func__, success);
++
++		ret = -1;
++		goto unlock;
++	}
++
++	/* We are expecting a reply from the videocore */
++	wait_for_completion(&instance->msg_avail_comp);
++
++	if (instance->result != 0) {
++		LOG_ERR("%s: result=%d", __func__, instance->result);
++
++		ret = -1;
++		goto unlock;
++	}
++
++	ret = 0;
++
++unlock:
++	vchi_service_release(instance->vchi_handle[0]);
++	mutex_unlock(&instance->vchi_mutex);
++
++	LOG_DBG(" .. OUT\n");
++	return ret;
++}
++
++int bcm2835_audio_setup(bcm2835_alsa_stream_t * alsa_stream)
++{
++	LOG_DBG(" .. IN\n");
++
++	LOG_DBG(" .. OUT\n");
++
++	return 0;
++}
++
++static int bcm2835_audio_start_worker(bcm2835_alsa_stream_t * alsa_stream)
++{
++	VC_AUDIO_MSG_T m;
++	AUDIO_INSTANCE_T *instance = alsa_stream->instance;
++	int32_t success;
++	int ret;
++	LOG_DBG(" .. IN\n");
++
++	if(mutex_lock_interruptible(&instance->vchi_mutex))
++	{
++		LOG_DBG("Interrupted whilst waiting for lock on (%d)\n",instance->num_connections);
++		return -EINTR;
++	}
++	vchi_service_use(instance->vchi_handle[0]);
++
++	m.type = VC_AUDIO_MSG_TYPE_START;
++
++	/* Send the message to the videocore */
++	success = vchi_msg_queue(instance->vchi_handle[0],
++				 &m, sizeof m,
++				 VCHI_FLAGS_BLOCK_UNTIL_QUEUED, NULL);
++
++	if (success != 0) {
++		LOG_ERR("%s: failed on vchi_msg_queue (status=%d)\n",
++			__func__, success);
++
++		ret = -1;
++		goto unlock;
++	}
++
++	ret = 0;
++
++unlock:
++	vchi_service_release(instance->vchi_handle[0]);
++	mutex_unlock(&instance->vchi_mutex);
++	LOG_DBG(" .. OUT\n");
++	return ret;
++}
++
++static int bcm2835_audio_stop_worker(bcm2835_alsa_stream_t * alsa_stream)
++{
++	VC_AUDIO_MSG_T m;
++	AUDIO_INSTANCE_T *instance = alsa_stream->instance;
++	int32_t success;
++	int ret;
++	LOG_DBG(" .. IN\n");
++
++	if(mutex_lock_interruptible(&instance->vchi_mutex))
++	{
++		LOG_DBG("Interrupted whilst waiting for lock on (%d)\n",instance->num_connections);
++		return -EINTR;
++	}
++	vchi_service_use(instance->vchi_handle[0]);
++
++	m.type = VC_AUDIO_MSG_TYPE_STOP;
++	m.u.stop.draining = alsa_stream->draining;
++
++	/* Send the message to the videocore */
++	success = vchi_msg_queue(instance->vchi_handle[0],
++				 &m, sizeof m,
++				 VCHI_FLAGS_BLOCK_UNTIL_QUEUED, NULL);
++
++	if (success != 0) {
++		LOG_ERR("%s: failed on vchi_msg_queue (status=%d)\n",
++			__func__, success);
++
++		ret = -1;
++		goto unlock;
++	}
++
++	ret = 0;
++
++unlock:
++	vchi_service_release(instance->vchi_handle[0]);
++	mutex_unlock(&instance->vchi_mutex);
++	LOG_DBG(" .. OUT\n");
++	return ret;
++}
++
++int bcm2835_audio_close(bcm2835_alsa_stream_t * alsa_stream)
++{
++	VC_AUDIO_MSG_T m;
++	AUDIO_INSTANCE_T *instance = alsa_stream->instance;
++	int32_t success;
++	int ret;
++	LOG_DBG(" .. IN\n");
++
++	my_workqueue_quit(alsa_stream);
++
++	if(mutex_lock_interruptible(&instance->vchi_mutex))
++	{
++		LOG_DBG("Interrupted whilst waiting for lock on (%d)\n",instance->num_connections);
++		return -EINTR;
++	}
++	vchi_service_use(instance->vchi_handle[0]);
++
++	m.type = VC_AUDIO_MSG_TYPE_CLOSE;
++
++	/* Create the message available completion */
++	init_completion(&instance->msg_avail_comp);
++
++	/* Send the message to the videocore */
++	success = vchi_msg_queue(instance->vchi_handle[0],
++				 &m, sizeof m,
++				 VCHI_FLAGS_BLOCK_UNTIL_QUEUED, NULL);
++
++	if (success != 0) {
++		LOG_ERR("%s: failed on vchi_msg_queue (status=%d)\n",
++			__func__, success);
++		ret = -1;
++		goto unlock;
++	}
++
++	/* We are expecting a reply from the videocore */
++	wait_for_completion(&instance->msg_avail_comp);
++
++	if (instance->result != 0) {
++		LOG_ERR("%s: failed result (result=%d)\n",
++			__func__, instance->result);
++
++		ret = -1;
++		goto unlock;
++	}
++
++	ret = 0;
++
++unlock:
++	vchi_service_release(instance->vchi_handle[0]);
++	mutex_unlock(&instance->vchi_mutex);
++
++	/* Stop the audio service */
++	if (instance) {
++		vc_vchi_audio_deinit(instance);
++		alsa_stream->instance = NULL;
++	}
++	LOG_DBG(" .. OUT\n");
++	return ret;
++}
++
++int bcm2835_audio_write_worker(bcm2835_alsa_stream_t *alsa_stream,
++			       uint32_t count, void *src)
++{
++	VC_AUDIO_MSG_T m;
++	AUDIO_INSTANCE_T *instance = alsa_stream->instance;
++	int32_t success;
++	int ret;
++
++	LOG_DBG(" .. IN\n");
++
++	LOG_INFO(" Writing %d bytes from %p\n", count, src);
++
++	if(mutex_lock_interruptible(&instance->vchi_mutex))
++	{
++		LOG_DBG("Interrupted whilst waiting for lock on (%d)\n",instance->num_connections);
++		return -EINTR;
++	}
++	vchi_service_use(instance->vchi_handle[0]);
++
++	if ( instance->peer_version==0 && vchi_get_peer_version(instance->vchi_handle[0], &instance->peer_version) == 0 ) {
++		LOG_DBG("%s: client version %d connected\n", __func__, instance->peer_version);
++	}
++	m.type = VC_AUDIO_MSG_TYPE_WRITE;
++	m.u.write.count = count;
++	// old version uses bulk, new version uses control
++	m.u.write.max_packet = instance->peer_version < 2 || force_bulk ? 0:4000;
++	m.u.write.callback = alsa_stream->fifo_irq_handler;
++	m.u.write.cookie = alsa_stream;
++	m.u.write.silence = src == NULL;
++
++	/* Send the message to the videocore */
++	success = vchi_msg_queue(instance->vchi_handle[0],
++				 &m, sizeof m,
++				 VCHI_FLAGS_BLOCK_UNTIL_QUEUED, NULL);
++
++	if (success != 0) {
++		LOG_ERR("%s: failed on vchi_msg_queue (status=%d)\n",
++			__func__, success);
++
++		ret = -1;
++		goto unlock;
++	}
++	if (!m.u.write.silence) {
++		if (m.u.write.max_packet == 0) {
++			/* Send the message to the videocore */
++			success = vchi_bulk_queue_transmit(instance->vchi_handle[0],
++							   src, count,
++							   0 *
++							   VCHI_FLAGS_BLOCK_UNTIL_QUEUED
++							   +
++							   1 *
++							   VCHI_FLAGS_BLOCK_UNTIL_DATA_READ,
++							   NULL);
++		} else {
++			while (count > 0) {
++				int bytes = min((int)m.u.write.max_packet, (int)count);
++				success = vchi_msg_queue(instance->vchi_handle[0],
++							 src, bytes,
++							 VCHI_FLAGS_BLOCK_UNTIL_QUEUED, NULL);
++				src = (char *)src + bytes;
++				count -= bytes;
++			}
++		}
++		if (success != 0) {
++			LOG_ERR
++			    ("%s: failed on vchi_bulk_queue_transmit (status=%d)\n",
++			     __func__, success);
++
++			ret = -1;
++			goto unlock;
++		}
++	}
++	ret = 0;
++
++unlock:
++	vchi_service_release(instance->vchi_handle[0]);
++	mutex_unlock(&instance->vchi_mutex);
++	LOG_DBG(" .. OUT\n");
++	return ret;
++}
++
++/**
++  * Returns all buffers from arm->vc
++  */
++void bcm2835_audio_flush_buffers(bcm2835_alsa_stream_t * alsa_stream)
++{
++	LOG_DBG(" .. IN\n");
++	LOG_DBG(" .. OUT\n");
++	return;
++}
++
++/**
++  * Forces VC to flush(drop) its filled playback buffers and
++  * return them the us. (VC->ARM)
++  */
++void bcm2835_audio_flush_playback_buffers(bcm2835_alsa_stream_t * alsa_stream)
++{
++	LOG_DBG(" .. IN\n");
++	LOG_DBG(" .. OUT\n");
++}
++
++uint32_t bcm2835_audio_retrieve_buffers(bcm2835_alsa_stream_t * alsa_stream)
++{
++	uint32_t count = atomic_read(&alsa_stream->retrieved);
++	atomic_sub(count, &alsa_stream->retrieved);
++	return count;
++}
++
++module_param(force_bulk, bool, 0444);
++MODULE_PARM_DESC(force_bulk, "Force use of vchiq bulk for audio");
+--- /dev/null
++++ b/sound/arm/bcm2835.c
+@@ -0,0 +1,511 @@
++/*****************************************************************************
++* Copyright 2011 Broadcom Corporation.  All rights reserved.
++*
++* Unless you and Broadcom execute a separate written software license
++* agreement governing use of this software, this software is licensed to you
++* under the terms of the GNU General Public License version 2, available at
++* http://www.broadcom.com/licenses/GPLv2.php (the "GPL").
++*
++* Notwithstanding the above, under no circumstances may you combine this
++* software in any way with any other Broadcom software provided under a
++* license other than the GPL, without Broadcom's express prior written
++* consent.
++*****************************************************************************/
++
++#include <linux/platform_device.h>
++
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/module.h>
++#include <linux/of.h>
++
++#include "bcm2835.h"
++
++/* module parameters (see "Module Parameters") */
++/* SNDRV_CARDS: maximum number of cards supported by this module */
++static int index[MAX_SUBSTREAMS] = {[0 ... (MAX_SUBSTREAMS - 1)] = -1 };
++static char *id[MAX_SUBSTREAMS] = {[0 ... (MAX_SUBSTREAMS - 1)] = NULL };
++static int enable[MAX_SUBSTREAMS] = {[0 ... (MAX_SUBSTREAMS - 1)] = 1 };
++
++/* HACKY global pointers needed for successive probes to work : ssp
++ * But compared against the changes we will have to do in VC audio_ipc code
++ * to export 8 audio_ipc devices as a single IPC device and then monitor all
++ * four devices in a thread, this gets things done quickly and should be easier
++ * to debug if we run into issues
++ */
++
++static struct snd_card *g_card = NULL;
++static bcm2835_chip_t *g_chip = NULL;
++
++static int snd_bcm2835_free(bcm2835_chip_t * chip)
++{
++	kfree(chip);
++	return 0;
++}
++
++/* component-destructor
++ * (see "Management of Cards and Components")
++ */
++static int snd_bcm2835_dev_free(struct snd_device *device)
++{
++	return snd_bcm2835_free(device->device_data);
++}
++
++/* chip-specific constructor
++ * (see "Management of Cards and Components")
++ */
++static int snd_bcm2835_create(struct snd_card *card,
++					struct platform_device *pdev,
++					bcm2835_chip_t ** rchip)
++{
++	bcm2835_chip_t *chip;
++	int err;
++	static struct snd_device_ops ops = {
++		.dev_free = snd_bcm2835_dev_free,
++	};
++
++	*rchip = NULL;
++
++	chip = kzalloc(sizeof(*chip), GFP_KERNEL);
++	if (chip == NULL)
++		return -ENOMEM;
++
++	chip->card = card;
++
++	err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, chip, &ops);
++	if (err < 0) {
++		snd_bcm2835_free(chip);
++		return err;
++	}
++
++	*rchip = chip;
++	return 0;
++}
++
++static int snd_bcm2835_alsa_probe_dt(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	bcm2835_chip_t *chip;
++	struct snd_card *card;
++	u32 numchans;
++	int err, i;
++
++	err = of_property_read_u32(dev->of_node, "brcm,pwm-channels",
++				   &numchans);
++	if (err) {
++		dev_err(dev, "Failed to get DT property 'brcm,pwm-channels'");
++		return err;
++	}
++
++	if (numchans == 0 || numchans > MAX_SUBSTREAMS) {
++		numchans = MAX_SUBSTREAMS;
++		dev_warn(dev, "Illegal 'brcm,pwm-channels' value, will use %u\n",
++			 numchans);
++	}
++
++	err = snd_card_new(&pdev->dev, -1, NULL, THIS_MODULE, 0, &card);
++	if (err) {
++		dev_err(dev, "Failed to create soundcard structure\n");
++		return err;
++	}
++
++	snd_card_set_dev(card, dev);
++	strcpy(card->driver, "bcm2835");
++	strcpy(card->shortname, "bcm2835 ALSA");
++	sprintf(card->longname, "%s", card->shortname);
++
++	err = snd_bcm2835_create(card, pdev, &chip);
++	if (err < 0) {
++		dev_err(dev, "Failed to create bcm2835 chip\n");
++		goto err_free;
++	}
++
++	err = snd_bcm2835_new_pcm(chip);
++	if (err < 0) {
++		dev_err(dev, "Failed to create new bcm2835 pcm device\n");
++		goto err_free;
++	}
++
++	err = snd_bcm2835_new_spdif_pcm(chip);
++	if (err < 0) {
++		dev_err(dev, "Failed to create new bcm2835 spdif pcm device\n");
++		goto err_free;
++	}
++
++	err = snd_bcm2835_new_ctl(chip);
++	if (err < 0) {
++		dev_err(dev, "Failed to create new bcm2835 ctl\n");
++		goto err_free;
++	}
++
++	for (i = 0; i < numchans; i++) {
++		chip->avail_substreams |= (1 << i);
++		chip->pdev[i] = pdev;
++	}
++
++	err = snd_card_register(card);
++	if (err) {
++		dev_err(dev, "Failed to register bcm2835 ALSA card \n");
++		goto err_free;
++	}
++
++	g_card = card;
++	g_chip = chip;
++	platform_set_drvdata(pdev, card);
++	audio_info("bcm2835 ALSA card created with %u channels\n", numchans);
++
++	return 0;
++
++err_free:
++	snd_card_free(card);
++
++	return err;
++}
++
++static int snd_bcm2835_alsa_probe(struct platform_device *pdev)
++{
++	static int dev;
++	bcm2835_chip_t *chip;
++	struct snd_card *card;
++	int err;
++
++	if (pdev->dev.of_node)
++		return snd_bcm2835_alsa_probe_dt(pdev);
++
++	if (dev >= MAX_SUBSTREAMS)
++		return -ENODEV;
++
++	if (!enable[dev]) {
++		dev++;
++		return -ENOENT;
++	}
++
++	if (dev > 0)
++		goto add_register_map;
++
++	err = snd_card_new(&pdev->dev, index[dev], id[dev], THIS_MODULE, 0, &g_card);
++	if (err < 0)
++		goto out;
++
++	snd_card_set_dev(g_card, &pdev->dev);
++	strcpy(g_card->driver, "bcm2835");
++	strcpy(g_card->shortname, "bcm2835 ALSA");
++	sprintf(g_card->longname, "%s", g_card->shortname);
++
++	err = snd_bcm2835_create(g_card, pdev, &chip);
++	if (err < 0) {
++		dev_err(&pdev->dev, "Failed to create bcm2835 chip\n");
++		goto out_bcm2835_create;
++	}
++
++	g_chip = chip;
++	err = snd_bcm2835_new_pcm(chip);
++	if (err < 0) {
++		dev_err(&pdev->dev, "Failed to create new BCM2835 pcm device\n");
++		goto out_bcm2835_new_pcm;
++	}
++
++	err = snd_bcm2835_new_spdif_pcm(chip);
++	if (err < 0) {
++		dev_err(&pdev->dev, "Failed to create new BCM2835 spdif pcm device\n");
++		goto out_bcm2835_new_spdif;
++	}
++
++	err = snd_bcm2835_new_ctl(chip);
++	if (err < 0) {
++		dev_err(&pdev->dev, "Failed to create new BCM2835 ctl\n");
++		goto out_bcm2835_new_ctl;
++	}
++
++add_register_map:
++	card = g_card;
++	chip = g_chip;
++
++	BUG_ON(!(card && chip));
++
++	chip->avail_substreams |= (1 << dev);
++	chip->pdev[dev] = pdev;
++
++	if (dev == 0) {
++		err = snd_card_register(card);
++		if (err < 0) {
++			dev_err(&pdev->dev,
++				"Failed to register bcm2835 ALSA card \n");
++			goto out_card_register;
++		}
++		platform_set_drvdata(pdev, card);
++		audio_info("bcm2835 ALSA card created!\n");
++	} else {
++		audio_info("bcm2835 ALSA chip created!\n");
++		platform_set_drvdata(pdev, (void *)dev);
++	}
++
++	dev++;
++
++	return 0;
++
++out_card_register:
++out_bcm2835_new_ctl:
++out_bcm2835_new_spdif:
++out_bcm2835_new_pcm:
++out_bcm2835_create:
++	BUG_ON(!g_card);
++	if (snd_card_free(g_card))
++		dev_err(&pdev->dev, "Failed to free Registered alsa card\n");
++	g_card = NULL;
++out:
++	dev = SNDRV_CARDS;	/* stop more avail_substreams from being probed */
++	dev_err(&pdev->dev, "BCM2835 ALSA Probe failed !!\n");
++	return err;
++}
++
++static int snd_bcm2835_alsa_remove(struct platform_device *pdev)
++{
++	uint32_t idx;
++	void *drv_data;
++
++	drv_data = platform_get_drvdata(pdev);
++
++	if (drv_data == (void *)g_card) {
++		/* This is the card device */
++		snd_card_free((struct snd_card *)drv_data);
++		g_card = NULL;
++		g_chip = NULL;
++	} else {
++		idx = (uint32_t) drv_data;
++		if (g_card != NULL) {
++			BUG_ON(!g_chip);
++			/* We pass chip device numbers in audio ipc devices
++			 * other than the one we registered our card with
++			 */
++			idx = (uint32_t) drv_data;
++			BUG_ON(!idx || idx > MAX_SUBSTREAMS);
++			g_chip->avail_substreams &= ~(1 << idx);
++			/* There should be atleast one substream registered
++			 * after we are done here, as it wil be removed when
++			 * the *remove* is called for the card device
++			 */
++			BUG_ON(!g_chip->avail_substreams);
++		}
++	}
++
++	platform_set_drvdata(pdev, NULL);
++
++	return 0;
++}
++
++#ifdef CONFIG_PM
++static int snd_bcm2835_alsa_suspend(struct platform_device *pdev,
++				    pm_message_t state)
++{
++	return 0;
++}
++
++static int snd_bcm2835_alsa_resume(struct platform_device *pdev)
++{
++	return 0;
++}
++
++#endif
++
++static const struct of_device_id snd_bcm2835_of_match_table[] = {
++	{ .compatible = "brcm,bcm2835-audio", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, snd_bcm2835_of_match_table);
++
++static struct platform_driver bcm2835_alsa0_driver = {
++	.probe = snd_bcm2835_alsa_probe,
++	.remove = snd_bcm2835_alsa_remove,
++#ifdef CONFIG_PM
++	.suspend = snd_bcm2835_alsa_suspend,
++	.resume = snd_bcm2835_alsa_resume,
++#endif
++	.driver = {
++		   .name = "bcm2835_AUD0",
++		   .owner = THIS_MODULE,
++		   .of_match_table = snd_bcm2835_of_match_table,
++		   },
++};
++
++static struct platform_driver bcm2835_alsa1_driver = {
++	.probe = snd_bcm2835_alsa_probe,
++	.remove = snd_bcm2835_alsa_remove,
++#ifdef CONFIG_PM
++	.suspend = snd_bcm2835_alsa_suspend,
++	.resume = snd_bcm2835_alsa_resume,
++#endif
++	.driver = {
++		   .name = "bcm2835_AUD1",
++		   .owner = THIS_MODULE,
++		   },
++};
++
++static struct platform_driver bcm2835_alsa2_driver = {
++	.probe = snd_bcm2835_alsa_probe,
++	.remove = snd_bcm2835_alsa_remove,
++#ifdef CONFIG_PM
++	.suspend = snd_bcm2835_alsa_suspend,
++	.resume = snd_bcm2835_alsa_resume,
++#endif
++	.driver = {
++		   .name = "bcm2835_AUD2",
++		   .owner = THIS_MODULE,
++		   },
++};
++
++static struct platform_driver bcm2835_alsa3_driver = {
++	.probe = snd_bcm2835_alsa_probe,
++	.remove = snd_bcm2835_alsa_remove,
++#ifdef CONFIG_PM
++	.suspend = snd_bcm2835_alsa_suspend,
++	.resume = snd_bcm2835_alsa_resume,
++#endif
++	.driver = {
++		   .name = "bcm2835_AUD3",
++		   .owner = THIS_MODULE,
++		   },
++};
++
++static struct platform_driver bcm2835_alsa4_driver = {
++	.probe = snd_bcm2835_alsa_probe,
++	.remove = snd_bcm2835_alsa_remove,
++#ifdef CONFIG_PM
++	.suspend = snd_bcm2835_alsa_suspend,
++	.resume = snd_bcm2835_alsa_resume,
++#endif
++	.driver = {
++		   .name = "bcm2835_AUD4",
++		   .owner = THIS_MODULE,
++		   },
++};
++
++static struct platform_driver bcm2835_alsa5_driver = {
++	.probe = snd_bcm2835_alsa_probe,
++	.remove = snd_bcm2835_alsa_remove,
++#ifdef CONFIG_PM
++	.suspend = snd_bcm2835_alsa_suspend,
++	.resume = snd_bcm2835_alsa_resume,
++#endif
++	.driver = {
++		   .name = "bcm2835_AUD5",
++		   .owner = THIS_MODULE,
++		   },
++};
++
++static struct platform_driver bcm2835_alsa6_driver = {
++	.probe = snd_bcm2835_alsa_probe,
++	.remove = snd_bcm2835_alsa_remove,
++#ifdef CONFIG_PM
++	.suspend = snd_bcm2835_alsa_suspend,
++	.resume = snd_bcm2835_alsa_resume,
++#endif
++	.driver = {
++		   .name = "bcm2835_AUD6",
++		   .owner = THIS_MODULE,
++		   },
++};
++
++static struct platform_driver bcm2835_alsa7_driver = {
++	.probe = snd_bcm2835_alsa_probe,
++	.remove = snd_bcm2835_alsa_remove,
++#ifdef CONFIG_PM
++	.suspend = snd_bcm2835_alsa_suspend,
++	.resume = snd_bcm2835_alsa_resume,
++#endif
++	.driver = {
++		   .name = "bcm2835_AUD7",
++		   .owner = THIS_MODULE,
++		   },
++};
++
++static int bcm2835_alsa_device_init(void)
++{
++	int err;
++	err = platform_driver_register(&bcm2835_alsa0_driver);
++	if (err) {
++		pr_err("Error registering bcm2835_alsa0_driver %d .\n", err);
++		goto out;
++	}
++
++	err = platform_driver_register(&bcm2835_alsa1_driver);
++	if (err) {
++		pr_err("Error registering bcm2835_alsa0_driver %d .\n", err);
++		goto unregister_0;
++	}
++
++	err = platform_driver_register(&bcm2835_alsa2_driver);
++	if (err) {
++		pr_err("Error registering bcm2835_alsa0_driver %d .\n", err);
++		goto unregister_1;
++	}
++
++	err = platform_driver_register(&bcm2835_alsa3_driver);
++	if (err) {
++		pr_err("Error registering bcm2835_alsa0_driver %d .\n", err);
++		goto unregister_2;
++	}
++
++	err = platform_driver_register(&bcm2835_alsa4_driver);
++	if (err) {
++		pr_err("Error registering bcm2835_alsa0_driver %d .\n", err);
++		goto unregister_3;
++	}
++
++	err = platform_driver_register(&bcm2835_alsa5_driver);
++	if (err) {
++		pr_err("Error registering bcm2835_alsa0_driver %d .\n", err);
++		goto unregister_4;
++	}
++
++	err = platform_driver_register(&bcm2835_alsa6_driver);
++	if (err) {
++		pr_err("Error registering bcm2835_alsa0_driver %d .\n", err);
++		goto unregister_5;
++	}
++
++	err = platform_driver_register(&bcm2835_alsa7_driver);
++	if (err) {
++		pr_err("Error registering bcm2835_alsa0_driver %d .\n", err);
++		goto unregister_6;
++	}
++
++	return 0;
++
++unregister_6:
++	platform_driver_unregister(&bcm2835_alsa6_driver);
++unregister_5:
++	platform_driver_unregister(&bcm2835_alsa5_driver);
++unregister_4:
++	platform_driver_unregister(&bcm2835_alsa4_driver);
++unregister_3:
++	platform_driver_unregister(&bcm2835_alsa3_driver);
++unregister_2:
++	platform_driver_unregister(&bcm2835_alsa2_driver);
++unregister_1:
++	platform_driver_unregister(&bcm2835_alsa1_driver);
++unregister_0:
++	platform_driver_unregister(&bcm2835_alsa0_driver);
++out:
++	return err;
++}
++
++static void bcm2835_alsa_device_exit(void)
++{
++	platform_driver_unregister(&bcm2835_alsa0_driver);
++	platform_driver_unregister(&bcm2835_alsa1_driver);
++	platform_driver_unregister(&bcm2835_alsa2_driver);
++	platform_driver_unregister(&bcm2835_alsa3_driver);
++	platform_driver_unregister(&bcm2835_alsa4_driver);
++	platform_driver_unregister(&bcm2835_alsa5_driver);
++	platform_driver_unregister(&bcm2835_alsa6_driver);
++	platform_driver_unregister(&bcm2835_alsa7_driver);
++}
++
++late_initcall(bcm2835_alsa_device_init);
++module_exit(bcm2835_alsa_device_exit);
++
++MODULE_AUTHOR("Dom Cobley");
++MODULE_DESCRIPTION("Alsa driver for BCM2835 chip");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:bcm2835_alsa");
+--- /dev/null
++++ b/sound/arm/bcm2835.h
+@@ -0,0 +1,167 @@
++/*****************************************************************************
++* Copyright 2011 Broadcom Corporation.  All rights reserved.
++*
++* Unless you and Broadcom execute a separate written software license
++* agreement governing use of this software, this software is licensed to you
++* under the terms of the GNU General Public License version 2, available at
++* http://www.broadcom.com/licenses/GPLv2.php (the "GPL").
++*
++* Notwithstanding the above, under no circumstances may you combine this
++* software in any way with any other Broadcom software provided under a
++* license other than the GPL, without Broadcom's express prior written
++* consent.
++*****************************************************************************/
++
++#ifndef __SOUND_ARM_BCM2835_H
++#define __SOUND_ARM_BCM2835_H
++
++#include <linux/device.h>
++#include <linux/list.h>
++#include <linux/interrupt.h>
++#include <linux/wait.h>
++#include <sound/core.h>
++#include <sound/initval.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/pcm-indirect.h>
++#include <linux/workqueue.h>
++
++/*
++#define AUDIO_DEBUG_ENABLE
++#define AUDIO_VERBOSE_DEBUG_ENABLE
++*/
++
++/* Debug macros */
++
++#ifdef AUDIO_DEBUG_ENABLE
++#ifdef AUDIO_VERBOSE_DEBUG_ENABLE
++
++#define audio_debug(fmt, arg...)	\
++	printk(KERN_INFO"%s:%d " fmt, __func__, __LINE__, ##arg)
++
++#define audio_info(fmt, arg...)	\
++	printk(KERN_INFO"%s:%d " fmt, __func__, __LINE__, ##arg)
++
++#else
++
++#define audio_debug(fmt, arg...)
++
++#define audio_info(fmt, arg...)
++
++#endif /* AUDIO_VERBOSE_DEBUG_ENABLE */
++
++#else
++
++#define audio_debug(fmt, arg...)
++
++#define audio_info(fmt, arg...)
++
++#endif /* AUDIO_DEBUG_ENABLE */
++
++#define audio_error(fmt, arg...)	\
++	printk(KERN_ERR"%s:%d " fmt, __func__, __LINE__, ##arg)
++
++#define audio_warning(fmt, arg...)	\
++	printk(KERN_WARNING"%s:%d " fmt, __func__, __LINE__, ##arg)
++
++#define audio_alert(fmt, arg...)	\
++	printk(KERN_ALERT"%s:%d " fmt, __func__, __LINE__, ##arg)
++
++#define MAX_SUBSTREAMS			(8)
++#define AVAIL_SUBSTREAMS_MASK		(0xff)
++enum {
++	CTRL_VOL_MUTE,
++	CTRL_VOL_UNMUTE
++};
++
++/* macros for alsa2chip and chip2alsa, instead of functions */
++
++#define alsa2chip(vol) (uint)(-((vol << 8) / 100))	/* convert alsa to chip volume (defined as macro rather than function call) */
++#define chip2alsa(vol) -((vol * 100) >> 8)			/* convert chip to alsa volume */
++
++/* Some constants for values .. */
++typedef enum {
++	AUDIO_DEST_AUTO = 0,
++	AUDIO_DEST_HEADPHONES = 1,
++	AUDIO_DEST_HDMI = 2,
++	AUDIO_DEST_MAX,
++} SND_BCM2835_ROUTE_T;
++
++typedef enum {
++	PCM_PLAYBACK_VOLUME,
++	PCM_PLAYBACK_MUTE,
++	PCM_PLAYBACK_DEVICE,
++} SND_BCM2835_CTRL_T;
++
++/* definition of the chip-specific record */
++typedef struct bcm2835_chip {
++	struct snd_card *card;
++	struct snd_pcm *pcm;
++	struct snd_pcm *pcm_spdif;
++	/* Bitmat for valid reg_base and irq numbers */
++	uint32_t avail_substreams;
++	struct platform_device *pdev[MAX_SUBSTREAMS];
++	struct bcm2835_alsa_stream *alsa_stream[MAX_SUBSTREAMS];
++
++	int volume;
++	int old_volume; /* stores the volume value whist muted */
++	int dest;
++	int mute;
++
++	unsigned int opened;
++	unsigned int spdif_status;
++	struct mutex audio_mutex;
++} bcm2835_chip_t;
++
++typedef struct bcm2835_alsa_stream {
++	bcm2835_chip_t *chip;
++	struct snd_pcm_substream *substream;
++	struct snd_pcm_indirect pcm_indirect;
++
++	struct semaphore buffers_update_sem;
++	struct semaphore control_sem;
++	spinlock_t lock;
++	volatile uint32_t control;
++	volatile uint32_t status;
++
++	int open;
++	int running;
++	int draining;
++
++	int channels;
++	int params_rate;
++	int pcm_format_width;
++
++	unsigned int pos;
++	unsigned int buffer_size;
++	unsigned int period_size;
++
++	uint32_t enable_fifo_irq;
++	irq_handler_t fifo_irq_handler;
++
++	atomic_t retrieved;
++	struct opaque_AUDIO_INSTANCE_T *instance;
++	struct workqueue_struct *my_wq;
++	int idx;
++} bcm2835_alsa_stream_t;
++
++int snd_bcm2835_new_ctl(bcm2835_chip_t * chip);
++int snd_bcm2835_new_pcm(bcm2835_chip_t * chip);
++int snd_bcm2835_new_spdif_pcm(bcm2835_chip_t * chip);
++
++int bcm2835_audio_open(bcm2835_alsa_stream_t * alsa_stream);
++int bcm2835_audio_close(bcm2835_alsa_stream_t * alsa_stream);
++int bcm2835_audio_set_params(bcm2835_alsa_stream_t * alsa_stream,
++			     uint32_t channels, uint32_t samplerate,
++			     uint32_t bps);
++int bcm2835_audio_setup(bcm2835_alsa_stream_t * alsa_stream);
++int bcm2835_audio_start(bcm2835_alsa_stream_t * alsa_stream);
++int bcm2835_audio_stop(bcm2835_alsa_stream_t * alsa_stream);
++int bcm2835_audio_set_ctls(bcm2835_chip_t * chip);
++int bcm2835_audio_write(bcm2835_alsa_stream_t * alsa_stream, uint32_t count,
++			void *src);
++uint32_t bcm2835_audio_retrieve_buffers(bcm2835_alsa_stream_t * alsa_stream);
++void bcm2835_audio_flush_buffers(bcm2835_alsa_stream_t * alsa_stream);
++void bcm2835_audio_flush_playback_buffers(bcm2835_alsa_stream_t * alsa_stream);
++
++#endif /* __SOUND_ARM_BCM2835_H */
+--- /dev/null
++++ b/sound/arm/vc_vchi_audioserv_defs.h
+@@ -0,0 +1,116 @@
++/*****************************************************************************
++* Copyright 2011 Broadcom Corporation.  All rights reserved.
++*
++* Unless you and Broadcom execute a separate written software license
++* agreement governing use of this software, this software is licensed to you
++* under the terms of the GNU General Public License version 2, available at
++* http://www.broadcom.com/licenses/GPLv2.php (the "GPL").
++*
++* Notwithstanding the above, under no circumstances may you combine this
++* software in any way with any other Broadcom software provided under a
++* license other than the GPL, without Broadcom's express prior written
++* consent.
++*****************************************************************************/
++
++#ifndef _VC_AUDIO_DEFS_H_
++#define _VC_AUDIO_DEFS_H_
++
++#define VC_AUDIOSERV_MIN_VER 1
++#define VC_AUDIOSERV_VER 2
++
++// FourCC code used for VCHI connection
++#define VC_AUDIO_SERVER_NAME  MAKE_FOURCC("AUDS")
++
++// Maximum message length
++#define VC_AUDIO_MAX_MSG_LEN  (sizeof( VC_AUDIO_MSG_T ))
++
++// List of screens that are currently supported
++// All message types supported for HOST->VC direction
++typedef enum {
++	VC_AUDIO_MSG_TYPE_RESULT,	// Generic result
++	VC_AUDIO_MSG_TYPE_COMPLETE,	// Generic result
++	VC_AUDIO_MSG_TYPE_CONFIG,	// Configure audio
++	VC_AUDIO_MSG_TYPE_CONTROL,	// Configure audio
++	VC_AUDIO_MSG_TYPE_OPEN,	// Configure audio
++	VC_AUDIO_MSG_TYPE_CLOSE,	// Configure audio
++	VC_AUDIO_MSG_TYPE_START,	// Configure audio
++	VC_AUDIO_MSG_TYPE_STOP,	// Configure audio
++	VC_AUDIO_MSG_TYPE_WRITE,	// Configure audio
++	VC_AUDIO_MSG_TYPE_MAX
++} VC_AUDIO_MSG_TYPE;
++
++// configure the audio
++typedef struct {
++	uint32_t channels;
++	uint32_t samplerate;
++	uint32_t bps;
++
++} VC_AUDIO_CONFIG_T;
++
++typedef struct {
++	uint32_t volume;
++	uint32_t dest;
++
++} VC_AUDIO_CONTROL_T;
++
++// audio
++typedef struct {
++	uint32_t dummy;
++
++} VC_AUDIO_OPEN_T;
++
++// audio
++typedef struct {
++	uint32_t dummy;
++
++} VC_AUDIO_CLOSE_T;
++// audio
++typedef struct {
++	uint32_t dummy;
++
++} VC_AUDIO_START_T;
++// audio
++typedef struct {
++	uint32_t draining;
++
++} VC_AUDIO_STOP_T;
++
++// configure the write audio samples
++typedef struct {
++	uint32_t count;		// in bytes
++	void *callback;
++	void *cookie;
++	uint16_t silence;
++	uint16_t max_packet;
++} VC_AUDIO_WRITE_T;
++
++// Generic result for a request (VC->HOST)
++typedef struct {
++	int32_t success;	// Success value
++
++} VC_AUDIO_RESULT_T;
++
++// Generic result for a request (VC->HOST)
++typedef struct {
++	int32_t count;		// Success value
++	void *callback;
++	void *cookie;
++} VC_AUDIO_COMPLETE_T;
++
++// Message header for all messages in HOST->VC direction
++typedef struct {
++	int32_t type;		// Message type (VC_AUDIO_MSG_TYPE)
++	union {
++		VC_AUDIO_CONFIG_T config;
++		VC_AUDIO_CONTROL_T control;
++		VC_AUDIO_OPEN_T open;
++		VC_AUDIO_CLOSE_T close;
++		VC_AUDIO_START_T start;
++		VC_AUDIO_STOP_T stop;
++		VC_AUDIO_WRITE_T write;
++		VC_AUDIO_RESULT_T result;
++		VC_AUDIO_COMPLETE_T complete;
++	} u;
++} VC_AUDIO_MSG_T;
++
++#endif // _VC_AUDIO_DEFS_H_

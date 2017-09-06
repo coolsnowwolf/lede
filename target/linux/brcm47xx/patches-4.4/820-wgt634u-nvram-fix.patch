@@ -1,0 +1,293 @@
+The Netgear wgt634u uses a different format for storing the 
+configuration. This patch is needed to read out the correct 
+configuration. The cfe_env.c file uses a different method way to read 
+out the configuration than the in kernel cfe config reader.
+
+--- a/drivers/firmware/broadcom/Makefile
++++ b/drivers/firmware/broadcom/Makefile
+@@ -1 +1 @@
+-obj-$(CONFIG_BCM47XX_NVRAM)		+= bcm47xx_nvram.o
++obj-$(CONFIG_BCM47XX_NVRAM)		+= bcm47xx_nvram.o cfe_env.o
+--- /dev/null
++++ b/drivers/firmware/broadcom/cfe_env.c
+@@ -0,0 +1,228 @@
++/*
++ * CFE environment variable access
++ *
++ * Copyright 2001-2003, Broadcom Corporation
++ * Copyright 2006, Felix Fietkau <nbd@nbd.name>
++ * 
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of  the GNU General  Public License as published by the
++ * Free Software Foundation;  either version 2 of the  License, or (at your
++ * option) any later version.
++ */
++
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <asm/io.h>
++#include <asm/uaccess.h>
++
++#define NVRAM_SIZE       (0x1ff0)
++static char _nvdata[NVRAM_SIZE];
++static char _valuestr[256];
++
++/*
++ * TLV types.  These codes are used in the "type-length-value"
++ * encoding of the items stored in the NVRAM device (flash or EEPROM)
++ *
++ * The layout of the flash/nvram is as follows:
++ *
++ * <type> <length> <data ...> <type> <length> <data ...> <type_end>
++ *
++ * The type code of "ENV_TLV_TYPE_END" marks the end of the list.
++ * The "length" field marks the length of the data section, not
++ * including the type and length fields.
++ *
++ * Environment variables are stored as follows:
++ *
++ * <type_env> <length> <flags> <name> = <value>
++ *
++ * If bit 0 (low bit) is set, the length is an 8-bit value.
++ * If bit 0 (low bit) is clear, the length is a 16-bit value
++ * 
++ * Bit 7 set indicates "user" TLVs.  In this case, bit 0 still
++ * indicates the size of the length field.  
++ *
++ * Flags are from the constants below:
++ *
++ */
++#define ENV_LENGTH_16BITS	0x00	/* for low bit */
++#define ENV_LENGTH_8BITS	0x01
++
++#define ENV_TYPE_USER		0x80
++
++#define ENV_CODE_SYS(n,l) (((n)<<1)|(l))
++#define ENV_CODE_USER(n,l) ((((n)<<1)|(l)) | ENV_TYPE_USER)
++
++/*
++ * The actual TLV types we support
++ */
++
++#define ENV_TLV_TYPE_END	0x00	
++#define ENV_TLV_TYPE_ENV	ENV_CODE_SYS(0,ENV_LENGTH_8BITS)
++
++/*
++ * Environment variable flags 
++ */
++
++#define ENV_FLG_NORMAL		0x00	/* normal read/write */
++#define ENV_FLG_BUILTIN		0x01	/* builtin - not stored in flash */
++#define ENV_FLG_READONLY	0x02	/* read-only - cannot be changed */
++
++#define ENV_FLG_MASK		0xFF	/* mask of attributes we keep */
++#define ENV_FLG_ADMIN		0x100	/* lets us internally override permissions */
++
++
++/*  *********************************************************************
++    *  _nvram_read(buffer,offset,length)
++    *  
++    *  Read data from the NVRAM device
++    *  
++    *  Input parameters: 
++    *  	   buffer - destination buffer
++    *  	   offset - offset of data to read
++    *  	   length - number of bytes to read
++    *  	   
++    *  Return value:
++    *  	   number of bytes read, or <0 if error occured
++    ********************************************************************* */
++static int
++_nvram_read(unsigned char *nv_buf, unsigned char *buffer, int offset, int length)
++{
++    int i;
++    if (offset > NVRAM_SIZE)
++	return -1; 
++
++    for ( i = 0; i < length; i++) {
++	buffer[i] = ((volatile unsigned char*)nv_buf)[offset + i];
++    }
++    return length;
++}
++
++
++static char*
++_strnchr(const char *dest,int c,size_t cnt)
++{
++	while (*dest && (cnt > 0)) {
++	if (*dest == c) return (char *) dest;
++	dest++;
++	cnt--;
++	}
++	return NULL;
++}
++
++
++
++/*
++ * Core support API: Externally visible.
++ */
++
++/*
++ * Get the value of an NVRAM variable
++ * @param	name	name of variable to get
++ * @return	value of variable or NULL if undefined
++ */
++
++char *cfe_env_get(unsigned char *nv_buf, const char *name)
++{
++    int size;
++    unsigned char *buffer;
++    unsigned char *ptr;
++    unsigned char *envval;
++    unsigned int reclen;
++    unsigned int rectype;
++    int offset;
++    int flg;
++    
++	if (!strcmp(name, "nvram_type"))
++		return "cfe";
++	
++    size = NVRAM_SIZE;
++    buffer = &_nvdata[0];
++
++    ptr = buffer;
++    offset = 0;
++
++    /* Read the record type and length */
++    if (_nvram_read(nv_buf, ptr,offset,1) != 1) {
++	goto error;
++    }
++    
++    while ((*ptr != ENV_TLV_TYPE_END)  && (size > 1)) {
++
++	/* Adjust pointer for TLV type */
++	rectype = *(ptr);
++	offset++;
++	size--;
++
++	/* 
++	 * Read the length.  It can be either 1 or 2 bytes
++	 * depending on the code 
++	 */
++	if (rectype & ENV_LENGTH_8BITS) {
++	    /* Read the record type and length - 8 bits */
++	    if (_nvram_read(nv_buf, ptr,offset,1) != 1) {
++		goto error;
++	    }
++	    reclen = *(ptr);
++	    size--;
++	    offset++;
++	}
++	else {
++	    /* Read the record type and length - 16 bits, MSB first */
++	    if (_nvram_read(nv_buf, ptr,offset,2) != 2) {
++		goto error;
++	    }
++	    reclen = (((unsigned int) *(ptr)) << 8) + (unsigned int) *(ptr+1);
++	    size -= 2;
++	    offset += 2;
++	}
++
++	if (reclen > size)
++	    break;	/* should not happen, bad NVRAM */
++
++	switch (rectype) {
++	    case ENV_TLV_TYPE_ENV:
++		/* Read the TLV data */
++		if (_nvram_read(nv_buf, ptr,offset,reclen) != reclen)
++		    goto error;
++		flg = *ptr++;
++		envval = (unsigned char *) _strnchr(ptr,'=',(reclen-1));
++		if (envval) {
++		    *envval++ = '\0';
++		    memcpy(_valuestr,envval,(reclen-1)-(envval-ptr));
++		    _valuestr[(reclen-1)-(envval-ptr)] = '\0';
++#if 0			
++		    printk(KERN_INFO "NVRAM:%s=%s\n", ptr, _valuestr);
++#endif
++		    if(!strcmp(ptr, name)){
++			return _valuestr;
++		    }
++		    if((strlen(ptr) > 1) && !strcmp(&ptr[1], name))
++			return _valuestr;
++		}
++		break;
++		
++	    default: 
++		/* Unknown TLV type, skip it. */
++		break;
++	    }
++
++	/*
++	 * Advance to next TLV 
++	 */
++		
++	size -= (int)reclen;
++	offset += reclen;
++
++	/* Read the next record type */
++	ptr = buffer;
++	if (_nvram_read(nv_buf, ptr,offset,1) != 1)
++	    goto error;
++	}
++
++error:
++    return NULL;
++
++}
++
+--- a/drivers/firmware/broadcom/bcm47xx_nvram.c
++++ b/drivers/firmware/broadcom/bcm47xx_nvram.c
+@@ -37,6 +37,8 @@ struct nvram_header {
+ static char nvram_buf[NVRAM_SPACE];
+ static size_t nvram_len;
+ static const u32 nvram_sizes[] = {0x8000, 0xF000, 0x10000};
++static int cfe_env;
++extern char *cfe_env_get(char *nv_buf, const char *name);
+ 
+ static u32 find_nvram_size(void __iomem *end)
+ {
+@@ -66,6 +68,26 @@ static int nvram_find_and_copy(void __io
+ 		return -EEXIST;
+ 	}
+ 
++	cfe_env = 0;
++
++	/* XXX: hack for supporting the CFE environment stuff on WGT634U */
++	if (lim >= 8 * 1024 * 1024) {
++		src = (u32 *)(iobase + 8 * 1024 * 1024 - 0x2000);
++		dst = (u32 *)nvram_buf;
++
++		if ((*src & 0xff00ff) == 0x000001) {
++			printk("early_nvram_init: WGT634U NVRAM found.\n");
++
++			for (i = 0; i < 0x1ff0; i++) {
++				if (*src == 0xFFFFFFFF)
++					break;
++				*dst++ = *src++;
++			}
++			cfe_env = 1;
++			return 0;
++		}
++	}
++
+ 	/* TODO: when nvram is on nand flash check for bad blocks first. */
+ 	off = FLASH_MIN;
+ 	while (off <= lim) {
+@@ -180,6 +202,13 @@ int bcm47xx_nvram_getenv(const char *nam
+ 	if (!name)
+ 		return -EINVAL;
+ 
++	if (cfe_env) {
++		value = cfe_env_get(nvram_buf, name);
++		if (!value)
++			return -ENOENT;
++		return snprintf(val, val_len, "%s", value);
++	}
++
+ 	if (!nvram_len) {
+ 		err = nvram_init();
+ 		if (err)

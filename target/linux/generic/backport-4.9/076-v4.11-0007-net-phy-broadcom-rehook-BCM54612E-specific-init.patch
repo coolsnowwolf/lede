@@ -1,0 +1,121 @@
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Tue, 31 Jan 2017 22:54:54 +0100
+Subject: [PATCH] net: phy: broadcom: rehook BCM54612E specific init
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This extra BCM54612E code in PHY driver isn't really aneg specific. Even
+without it aneg works OK but the problem is no packets pass through PHY.
+
+Moreover putting this code inside config_aneg callback didn't allow
+resuming PHY correctly. When driver called phy_stop and phy_start it was
+putting PHY machine into RESUMING state. After that machine was
+switching into AN and NOLINK without ever calling phy_start_aneg. This
+prevented this extra setup from being called and PHY didn't work.
+
+This change has been verified to fix network on BCM47186B0 SoC device
+with BCM54612E.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+
+--- a/drivers/net/phy/broadcom.c
++++ b/drivers/net/phy/broadcom.c
+@@ -46,6 +46,34 @@ static int bcm54210e_config_init(struct
+ 	return 0;
+ }
+ 
++static int bcm54612e_config_init(struct phy_device *phydev)
++{
++	/* Clear TX internal delay unless requested. */
++	if ((phydev->interface != PHY_INTERFACE_MODE_RGMII_ID) &&
++	    (phydev->interface != PHY_INTERFACE_MODE_RGMII_TXID)) {
++		/* Disable TXD to GTXCLK clock delay (default set) */
++		/* Bit 9 is the only field in shadow register 00011 */
++		bcm_phy_write_shadow(phydev, 0x03, 0);
++	}
++
++	/* Clear RX internal delay unless requested. */
++	if ((phydev->interface != PHY_INTERFACE_MODE_RGMII_ID) &&
++	    (phydev->interface != PHY_INTERFACE_MODE_RGMII_RXID)) {
++		u16 reg;
++
++		reg = bcm54xx_auxctl_read(phydev,
++					  MII_BCM54XX_AUXCTL_SHDWSEL_MISC);
++		/* Disable RXD to RXC delay (default set) */
++		reg &= ~MII_BCM54XX_AUXCTL_SHDWSEL_MISC_RGMII_SKEW_EN;
++		/* Clear shadow selector field */
++		reg &= ~MII_BCM54XX_AUXCTL_SHDWSEL_MASK;
++		bcm54xx_auxctl_write(phydev, MII_BCM54XX_AUXCTL_SHDWSEL_MISC,
++				     MII_BCM54XX_AUXCTL_MISC_WREN | reg);
++	}
++
++	return 0;
++}
++
+ static int bcm54810_config(struct phy_device *phydev)
+ {
+ 	int rc, val;
+@@ -250,6 +278,10 @@ static int bcm54xx_config_init(struct ph
+ 		err = bcm54210e_config_init(phydev);
+ 		if (err)
+ 			return err;
++	} else if (BRCM_PHY_MODEL(phydev) == PHY_ID_BCM54612E) {
++		err = bcm54612e_config_init(phydev);
++		if (err)
++			return err;
+ 	} else if (BRCM_PHY_MODEL(phydev) == PHY_ID_BCM54810) {
+ 		err = bcm54810_config(phydev);
+ 		if (err)
+@@ -395,39 +427,6 @@ static int bcm5481_config_aneg(struct ph
+ 	return ret;
+ }
+ 
+-static int bcm54612e_config_aneg(struct phy_device *phydev)
+-{
+-	int ret;
+-
+-	/* First, auto-negotiate. */
+-	ret = genphy_config_aneg(phydev);
+-
+-	/* Clear TX internal delay unless requested. */
+-	if ((phydev->interface != PHY_INTERFACE_MODE_RGMII_ID) &&
+-	    (phydev->interface != PHY_INTERFACE_MODE_RGMII_TXID)) {
+-		/* Disable TXD to GTXCLK clock delay (default set) */
+-		/* Bit 9 is the only field in shadow register 00011 */
+-		bcm_phy_write_shadow(phydev, 0x03, 0);
+-	}
+-
+-	/* Clear RX internal delay unless requested. */
+-	if ((phydev->interface != PHY_INTERFACE_MODE_RGMII_ID) &&
+-	    (phydev->interface != PHY_INTERFACE_MODE_RGMII_RXID)) {
+-		u16 reg;
+-
+-		reg = bcm54xx_auxctl_read(phydev,
+-					  MII_BCM54XX_AUXCTL_SHDWSEL_MISC);
+-		/* Disable RXD to RXC delay (default set) */
+-		reg &= ~MII_BCM54XX_AUXCTL_MISC_RXD_RXC_SKEW;
+-		/* Clear shadow selector field */
+-		reg &= ~MII_BCM54XX_AUXCTL_SHDWSEL_MASK;
+-		bcm54xx_auxctl_write(phydev, MII_BCM54XX_AUXCTL_SHDWSEL_MISC,
+-				     MII_BCM54XX_AUXCTL_MISC_WREN | reg);
+-	}
+-
+-	return ret;
+-}
+-
+ static int brcm_phy_setbits(struct phy_device *phydev, int reg, int set)
+ {
+ 	int val;
+@@ -594,7 +593,7 @@ static struct phy_driver broadcom_driver
+ 			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
+ 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
+ 	.config_init	= bcm54xx_config_init,
+-	.config_aneg	= bcm54612e_config_aneg,
++	.config_aneg	= genphy_config_aneg,
+ 	.read_status	= genphy_read_status,
+ 	.ack_interrupt	= bcm_phy_ack_intr,
+ 	.config_intr	= bcm_phy_config_intr,

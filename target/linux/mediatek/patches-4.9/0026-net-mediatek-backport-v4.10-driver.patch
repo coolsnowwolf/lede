@@ -1,0 +1,1788 @@
+From 99d9d02a05df503184be094de336e7515fe3e235 Mon Sep 17 00:00:00 2001
+From: John Crispin <john@phrozen.org>
+Date: Thu, 10 Aug 2017 14:26:29 +0200
+Subject: [PATCH 26/57] net: mediatek: backport v4.10 driver
+
+Signed-off-by: John Crispin <john@phrozen.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c        |  49 ++-
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h        |  16 +-
+ drivers/net/ethernet/mediatek/mtk_hnat/Makefile    |   4 +
+ drivers/net/ethernet/mediatek/mtk_hnat/hnat.c      | 315 +++++++++++++++
+ drivers/net/ethernet/mediatek/mtk_hnat/hnat.h      | 425 +++++++++++++++++++++
+ .../net/ethernet/mediatek/mtk_hnat/hnat_debugfs.c  | 259 +++++++++++++
+ .../net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c  | 289 ++++++++++++++
+ .../net/ethernet/mediatek/mtk_hnat/nf_hnat_mtk.h   |  44 +++
+ 8 files changed, 1378 insertions(+), 23 deletions(-)
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_hnat/Makefile
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_hnat/hnat.c
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_hnat/hnat.h
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_hnat/hnat_debugfs.c
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_hnat/nf_hnat_mtk.h
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -462,8 +462,8 @@ static void mtk_stats_update(struct mtk_
+ 	}
+ }
+ 
+-static struct rtnl_link_stats64 *mtk_get_stats64(struct net_device *dev,
+-					struct rtnl_link_stats64 *storage)
++static struct rtnl_link_stats64 * mtk_get_stats64(struct net_device *dev,
++			    struct rtnl_link_stats64 *storage)
+ {
+ 	struct mtk_mac *mac = netdev_priv(dev);
+ 	struct mtk_hw_stats *hw_stats = mac->hw_stats;
+@@ -615,7 +615,7 @@ static int mtk_tx_map(struct sk_buff *sk
+ 	struct mtk_mac *mac = netdev_priv(dev);
+ 	struct mtk_eth *eth = mac->hw;
+ 	struct mtk_tx_dma *itxd, *txd;
+-	struct mtk_tx_buf *tx_buf;
++	struct mtk_tx_buf *itx_buf, *tx_buf;
+ 	dma_addr_t mapped_addr;
+ 	unsigned int nr_frags;
+ 	int i, n_desc = 1;
+@@ -629,8 +629,8 @@ static int mtk_tx_map(struct sk_buff *sk
+ 	fport = (mac->id + 1) << TX_DMA_FPORT_SHIFT;
+ 	txd4 |= fport;
+ 
+-	tx_buf = mtk_desc_to_tx_buf(ring, itxd);
+-	memset(tx_buf, 0, sizeof(*tx_buf));
++	itx_buf = mtk_desc_to_tx_buf(ring, itxd);
++	memset(itx_buf, 0, sizeof(*itx_buf));
+ 
+ 	if (gso)
+ 		txd4 |= TX_DMA_TSO;
+@@ -649,9 +649,11 @@ static int mtk_tx_map(struct sk_buff *sk
+ 		return -ENOMEM;
+ 
+ 	WRITE_ONCE(itxd->txd1, mapped_addr);
+-	tx_buf->flags |= MTK_TX_FLAGS_SINGLE0;
+-	dma_unmap_addr_set(tx_buf, dma_addr0, mapped_addr);
+-	dma_unmap_len_set(tx_buf, dma_len0, skb_headlen(skb));
++	itx_buf->flags |= MTK_TX_FLAGS_SINGLE0;
++	itx_buf->flags |= (!mac->id) ? MTK_TX_FLAGS_FPORT0 :
++			  MTK_TX_FLAGS_FPORT1;
++	dma_unmap_addr_set(itx_buf, dma_addr0, mapped_addr);
++	dma_unmap_len_set(itx_buf, dma_len0, skb_headlen(skb));
+ 
+ 	/* TX SG offload */
+ 	txd = itxd;
+@@ -687,11 +689,13 @@ static int mtk_tx_map(struct sk_buff *sk
+ 					       last_frag * TX_DMA_LS0));
+ 			WRITE_ONCE(txd->txd4, fport);
+ 
+-			tx_buf->skb = (struct sk_buff *)MTK_DMA_DUMMY_DESC;
+ 			tx_buf = mtk_desc_to_tx_buf(ring, txd);
+ 			memset(tx_buf, 0, sizeof(*tx_buf));
+-
++			tx_buf->skb = (struct sk_buff *)MTK_DMA_DUMMY_DESC;
+ 			tx_buf->flags |= MTK_TX_FLAGS_PAGE0;
++			tx_buf->flags |= (!mac->id) ? MTK_TX_FLAGS_FPORT0 :
++					 MTK_TX_FLAGS_FPORT1;
++
+ 			dma_unmap_addr_set(tx_buf, dma_addr0, mapped_addr);
+ 			dma_unmap_len_set(tx_buf, dma_len0, frag_map_size);
+ 			frag_size -= frag_map_size;
+@@ -700,7 +704,7 @@ static int mtk_tx_map(struct sk_buff *sk
+ 	}
+ 
+ 	/* store skb to cleanup */
+-	tx_buf->skb = skb;
++	itx_buf->skb = skb;
+ 
+ 	WRITE_ONCE(itxd->txd4, txd4);
+ 	WRITE_ONCE(itxd->txd3, (TX_DMA_SWC | TX_DMA_PLEN0(skb_headlen(skb)) |
+@@ -845,7 +849,7 @@ static int mtk_start_xmit(struct sk_buff
+ drop:
+ 	spin_unlock(&eth->page_lock);
+ 	stats->tx_dropped++;
+-	dev_kfree_skb(skb);
++	dev_kfree_skb_any(skb);
+ 	return NETDEV_TX_OK;
+ }
+ 
+@@ -1014,17 +1018,16 @@ static int mtk_poll_tx(struct mtk_eth *e
+ 
+ 	while ((cpu != dma) && budget) {
+ 		u32 next_cpu = desc->txd2;
+-		int mac;
++		int mac = 0;
+ 
+ 		desc = mtk_qdma_phys_to_virt(ring, desc->txd2);
+ 		if ((desc->txd3 & TX_DMA_OWNER_CPU) == 0)
+ 			break;
+ 
+-		mac = (desc->txd4 >> TX_DMA_FPORT_SHIFT) &
+-		       TX_DMA_FPORT_MASK;
+-		mac--;
+-
+ 		tx_buf = mtk_desc_to_tx_buf(ring, desc);
++		if (tx_buf->flags & MTK_TX_FLAGS_FPORT1)
++			mac = 1;
++
+ 		skb = tx_buf->skb;
+ 		if (!skb) {
+ 			condition = 1;
+@@ -1848,6 +1851,12 @@ static int mtk_hw_init(struct mtk_eth *e
+ 	/* GE2, Force 1000M/FD, FC ON */
+ 	mtk_w32(eth, MAC_MCR_FIXED_LINK, MTK_MAC_MCR(1));
+ 
++	/* Indicates CDM to parse the MTK special tag from CPU
++	 * which also is working out for untag packets.
++	 */
++	val = mtk_r32(eth, MTK_CDMQ_IG_CTRL);
++	mtk_w32(eth, val | MTK_CDMQ_STAG_EN, MTK_CDMQ_IG_CTRL);
++
+ 	/* Enable RX VLan Offloading */
+ 	mtk_w32(eth, 1, MTK_CDMP_EG_CTRL);
+ 
+@@ -1910,10 +1919,9 @@ static int __init mtk_init(struct net_de
+ 
+ 	/* If the mac address is invalid, use random mac address  */
+ 	if (!is_valid_ether_addr(dev->dev_addr)) {
+-		random_ether_addr(dev->dev_addr);
++		eth_hw_addr_random(dev);
+ 		dev_err(eth->dev, "generated random MAC address %pM\n",
+ 			dev->dev_addr);
+-		dev->addr_assign_type = NET_ADDR_RANDOM;
+ 	}
+ 
+ 	return mtk_phy_connect(dev);
+@@ -2247,7 +2255,6 @@ static const struct net_device_ops mtk_n
+ 	.ndo_set_mac_address	= mtk_set_mac_address,
+ 	.ndo_validate_addr	= eth_validate_addr,
+ 	.ndo_do_ioctl		= mtk_do_ioctl,
+-	.ndo_change_mtu		= eth_change_mtu,
+ 	.ndo_tx_timeout		= mtk_tx_timeout,
+ 	.ndo_get_stats64        = mtk_get_stats64,
+ 	.ndo_fix_features	= mtk_fix_features,
+@@ -2320,6 +2327,8 @@ static int mtk_add_mac(struct mtk_eth *e
+ 	eth->netdev[id]->ethtool_ops = &mtk_ethtool_ops;
+ 
+ 	eth->netdev[id]->irq = eth->irq[0];
++	eth->netdev[id]->dev.of_node = np;
++
+ 	return 0;
+ 
+ free_netdev:
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -70,6 +70,10 @@
+ /* Frame Engine Interrupt Grouping Register */
+ #define MTK_FE_INT_GRP		0x20
+ 
++/* CDMP Ingress Control Register */
++#define MTK_CDMQ_IG_CTRL	0x1400
++#define MTK_CDMQ_STAG_EN	BIT(0)
++
+ /* CDMP Exgress Control Register */
+ #define MTK_CDMP_EG_CTRL	0x404
+ 
+@@ -406,12 +410,18 @@ struct mtk_hw_stats {
+ 	struct u64_stats_sync	syncp;
+ };
+ 
+-/* PDMA descriptor can point at 1-2 segments. This enum allows us to track how
+- * memory was allocated so that it can be freed properly
+- */
+ enum mtk_tx_flags {
++	/* PDMA descriptor can point at 1-2 segments. This enum allows us to
++	 * track how memory was allocated so that it can be freed properly.
++	 */
+ 	MTK_TX_FLAGS_SINGLE0	= 0x01,
+ 	MTK_TX_FLAGS_PAGE0	= 0x02,
++
++	/* MTK_TX_FLAGS_FPORTx allows tracking which port the transmitted
++	 * SKB out instead of looking up through hardware TX descriptor.
++	 */
++	MTK_TX_FLAGS_FPORT0	= 0x04,
++	MTK_TX_FLAGS_FPORT1	= 0x08,
+ };
+ 
+ /* This enum allows us to identify how the clock is defined on the array of the
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/Makefile
+@@ -0,0 +1,4 @@
++ccflags-y=-Werror
++
++obj-$(CONFIG_NET_MEDIATEK_HNAT)         += mtkhnat.o
++mtkhnat-objs := hnat.o hnat_nf_hook.o hnat_debugfs.o
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat.c
+@@ -0,0 +1,315 @@
++/*   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; version 2 of the License
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   Copyright (C) 2014-2016 Sean Wang <sean.wang@mediatek.com>
++ *   Copyright (C) 2016-2017 John Crispin <blogic@openwrt.org>
++ */
++
++#include <linux/dma-mapping.h>
++#include <linux/delay.h>
++#include <linux/if.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of_device.h>
++#include <linux/platform_device.h>
++#include <linux/reset.h>
++
++#include "hnat.h"
++
++struct hnat_priv *host;
++
++static void cr_set_bits(void __iomem * reg, u32 bs)
++{
++	u32 val = readl(reg);
++
++	val |= bs;
++	writel(val, reg);
++}
++
++static void cr_clr_bits(void __iomem * reg, u32 bs)
++{
++	u32 val = readl(reg);
++
++	val &= ~bs;
++	writel(val, reg);
++}
++
++static void cr_set_field(void __iomem * reg, u32 field, u32 val)
++{
++	unsigned int tv = readl(reg);
++
++	tv &= ~field;
++	tv |= ((val) << (ffs((unsigned int)field) - 1));
++	writel(tv, reg);
++}
++
++static int hnat_start(void)
++{
++	u32 foe_table_sz;
++
++	/* mapp the FOE table */
++	foe_table_sz = FOE_4TB_SIZ * sizeof(struct foe_entry);
++	host->foe_table_cpu =
++	    dma_alloc_coherent(host->dev, foe_table_sz, &host->foe_table_dev,
++			       GFP_KERNEL);
++	if (!host->foe_table_cpu)
++		return -1;
++
++	writel(host->foe_table_dev, host->ppe_base + PPE_TB_BASE);
++	memset(host->foe_table_cpu, 0, foe_table_sz);
++
++	/* setup hashing */
++	cr_set_field(host->ppe_base + PPE_TB_CFG, TB_ETRY_NUM, TABLE_4K);
++	cr_set_field(host->ppe_base + PPE_TB_CFG, HASH_MODE, HASH_MODE_1);
++	writel(HASH_SEED_KEY, host->ppe_base + PPE_HASH_SEED);
++	cr_set_field(host->ppe_base + PPE_TB_CFG, XMODE, 0);
++	cr_set_field(host->ppe_base + PPE_TB_CFG, TB_ENTRY_SIZE, ENTRY_64B);
++	cr_set_field(host->ppe_base + PPE_TB_CFG, SMA, SMA_FWD_CPU_BUILD_ENTRY);
++
++	/* set ip proto */
++	writel(0xFFFFFFFF, host->ppe_base + PPE_IP_PROT_CHK);
++
++	/* setup caching */
++	cr_set_field(host->ppe_base + PPE_CAH_CTRL, CAH_X_MODE, 1);
++	cr_set_field(host->ppe_base + PPE_CAH_CTRL, CAH_X_MODE, 0);
++	cr_set_field(host->ppe_base + PPE_CAH_CTRL, CAH_EN, 1);
++
++	/* enable FOE */
++	cr_set_bits(host->ppe_base + PPE_FLOW_CFG,
++			    BIT_IPV4_NAT_EN | BIT_IPV4_NAPT_EN |
++			    BIT_IPV4_NAT_FRAG_EN | BIT_IPV4_HASH_GREK);
++
++	/* setup FOE aging */
++	cr_set_field(host->ppe_base + PPE_TB_CFG, NTU_AGE, 1);
++	cr_set_field(host->ppe_base + PPE_TB_CFG, UNBD_AGE, 1);
++	cr_set_field(host->ppe_base + PPE_UNB_AGE, UNB_MNP, 1000);
++	cr_set_field(host->ppe_base + PPE_UNB_AGE, UNB_DLTA, 3);
++	cr_set_field(host->ppe_base + PPE_TB_CFG, TCP_AGE, 1);
++	cr_set_field(host->ppe_base + PPE_TB_CFG, UDP_AGE, 1);
++	cr_set_field(host->ppe_base + PPE_TB_CFG, FIN_AGE, 1);
++	cr_set_field(host->ppe_base + PPE_BND_AGE_0, UDP_DLTA, 5);
++	cr_set_field(host->ppe_base + PPE_BND_AGE_0, NTU_DLTA, 5);
++	cr_set_field(host->ppe_base + PPE_BND_AGE_1, FIN_DLTA, 5);
++	cr_set_field(host->ppe_base + PPE_BND_AGE_1, TCP_DLTA, 5);
++
++	/* setup FOE ka */
++	cr_set_field(host->ppe_base + PPE_TB_CFG, KA_CFG, 3);
++	cr_set_field(host->ppe_base + PPE_KA, KA_T, 1);
++	cr_set_field(host->ppe_base + PPE_KA, TCP_KA, 1);
++	cr_set_field(host->ppe_base + PPE_KA, UDP_KA, 1);
++	cr_set_field(host->ppe_base + PPE_BIND_LMT_1, NTU_KA, 1);
++
++	/* setup FOE rate limit */
++	cr_set_field(host->ppe_base + PPE_BIND_LMT_0, QURT_LMT, 16383);
++	cr_set_field(host->ppe_base + PPE_BIND_LMT_0, HALF_LMT, 16383);
++	cr_set_field(host->ppe_base + PPE_BIND_LMT_1, FULL_LMT, 16383);
++	cr_set_field(host->ppe_base + PPE_BNDR, BIND_RATE, 1);
++
++	/* setup FOE cf gen */
++	cr_set_field(host->ppe_base + PPE_GLO_CFG, PPE_EN, 1);
++	writel(0, host->ppe_base + PPE_DFT_CPORT); // pdma
++	//writel(0x55555555, host->ppe_base + PPE_DFT_CPORT); //qdma
++	cr_set_field(host->ppe_base + PPE_GLO_CFG, TTL0_DRP, 1);
++
++	/* fwd packets from gmac to PPE */
++	cr_clr_bits(host->fe_base + GDMA1_FWD_CFG, GDM1_ALL_FRC_MASK);
++	cr_set_bits(host->fe_base + GDMA1_FWD_CFG,
++		    BITS_GDM1_ALL_FRC_P_PPE);
++	cr_clr_bits(host->fe_base + GDMA2_FWD_CFG, GDM2_ALL_FRC_MASK);
++	cr_set_bits(host->fe_base + GDMA2_FWD_CFG,
++		    BITS_GDM2_ALL_FRC_P_PPE);
++
++	dev_info(host->dev, "hwnat start\n");
++
++	return 0;
++}
++
++static int ppe_busy_wait(void)
++{
++	unsigned long t_start = jiffies;
++	u32 r = 0;
++
++	while (1) {
++		r = readl((host->ppe_base + 0x0));
++		if (!(r & BIT(31)))
++			return 0;
++		if (time_after(jiffies, t_start + HZ))
++			break;
++		usleep_range(10, 20);
++	}
++
++	dev_err(host->dev, "ppe:%s timeout\n", __func__);
++
++	return -1;
++}
++
++static void hnat_stop(void)
++{
++	u32 foe_table_sz;
++	struct foe_entry *entry, *end;
++	u32 r1 = 0, r2 = 0;
++
++	/* discard all traffic while we disable the PPE */
++	cr_clr_bits(host->fe_base + GDMA1_FWD_CFG, GDM1_ALL_FRC_MASK);
++	cr_set_bits(host->fe_base + GDMA1_FWD_CFG,
++		    BITS_GDM1_ALL_FRC_P_DISCARD);
++	cr_clr_bits(host->fe_base + GDMA2_FWD_CFG, GDM2_ALL_FRC_MASK);
++	cr_set_bits(host->fe_base + GDMA2_FWD_CFG,
++		    BITS_GDM2_ALL_FRC_P_DISCARD);
++
++	if (ppe_busy_wait()) {
++		reset_control_reset(host->rstc);
++		msleep(2000);
++		return;
++	}
++
++	entry = host->foe_table_cpu;
++        end = host->foe_table_cpu + FOE_4TB_SIZ;
++        while (entry < end) {
++		entry->bfib1.state = INVALID;
++                entry++;
++        }
++
++	/* disable caching */
++	cr_set_field(host->ppe_base + PPE_CAH_CTRL, CAH_X_MODE, 1);
++	cr_set_field(host->ppe_base + PPE_CAH_CTRL, CAH_X_MODE, 0);
++	cr_set_field(host->ppe_base + PPE_CAH_CTRL, CAH_EN, 0);
++
++	/* flush cache has to be ahead of hnat diable --*/
++	cr_set_field(host->ppe_base + PPE_GLO_CFG, PPE_EN, 0);
++
++	/* disable FOE */
++	cr_clr_bits(host->ppe_base + PPE_FLOW_CFG,
++			    BIT_IPV4_NAPT_EN | BIT_IPV4_NAT_EN |
++			    BIT_IPV4_NAT_FRAG_EN |
++			    BIT_FUC_FOE | BIT_FMC_FOE | BIT_FUC_FOE);
++
++	/* disable FOE aging */
++	cr_set_field(host->ppe_base + PPE_TB_CFG, NTU_AGE, 0);
++	cr_set_field(host->ppe_base + PPE_TB_CFG, UNBD_AGE, 0);
++	cr_set_field(host->ppe_base + PPE_TB_CFG, TCP_AGE, 0);
++	cr_set_field(host->ppe_base + PPE_TB_CFG, UDP_AGE, 0);
++	cr_set_field(host->ppe_base + PPE_TB_CFG, FIN_AGE, 0);
++
++	r1 = readl(host->fe_base + 0x100);
++	r2 = readl(host->fe_base + 0x10c);
++
++	dev_info(host->dev, "0x100 = 0x%x, 0x10c = 0x%x\n", r1, r2);
++
++	if (((r1 & 0xff00) >> 0x8) >= (r1 & 0xff) ||
++	    ((r1 & 0xff00) >> 0x8) >= (r2 & 0xff)) {
++		dev_info(host->dev, "reset pse\n");
++		writel(0x1, host->fe_base + 0x4);
++	}
++
++	/* free the FOE table */
++	foe_table_sz = FOE_4TB_SIZ * sizeof(struct foe_entry);
++	dma_free_coherent(NULL, foe_table_sz, host->foe_table_cpu,
++			  host->foe_table_dev);
++	writel(0, host->ppe_base + PPE_TB_BASE);
++
++	if (ppe_busy_wait()) {
++		reset_control_reset(host->rstc);
++		msleep(2000);
++		return;
++	}
++
++	/* send all traffic back to the DMA engine */
++	cr_clr_bits(host->fe_base + GDMA1_FWD_CFG, GDM1_ALL_FRC_MASK);
++	cr_set_bits(host->fe_base + GDMA1_FWD_CFG,
++		    BITS_GDM1_ALL_FRC_P_CPU_PDMA);
++	cr_clr_bits(host->fe_base + GDMA2_FWD_CFG, GDM2_ALL_FRC_MASK);
++	cr_set_bits(host->fe_base + GDMA2_FWD_CFG,
++		    BITS_GDM2_ALL_FRC_P_CPU_PDMA);
++}
++
++static int hnat_probe(struct platform_device *pdev)
++{
++	int err = 0;
++	struct resource *res ;
++	const char *name;
++	struct device_node *np;
++
++	host = devm_kzalloc(&pdev->dev, sizeof(struct hnat_priv), GFP_KERNEL);
++	if (!host)
++		return -ENOMEM;
++
++	host->dev = &pdev->dev;
++	np = host->dev->of_node;
++
++	err = of_property_read_string(np, "mtketh-wan", &name);
++	if (err < 0)
++		return -EINVAL;
++
++	strncpy(host->wan, (char *)name, IFNAMSIZ);
++	dev_info(&pdev->dev, "wan = %s\n", host->wan);
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res)
++		return -ENOENT;
++
++	host->fe_base = devm_ioremap_nocache(&pdev->dev, res->start,
++					     res->end - res->start + 1);
++	if (!host->fe_base)
++		return -EADDRNOTAVAIL;
++
++	host->ppe_base = host->fe_base + 0xe00;
++	err = hnat_init_debugfs(host);
++	if (err)
++		return err;
++
++	host->rstc = devm_reset_control_get(&pdev->dev, NULL);
++	if (IS_ERR(host->rstc))
++		return PTR_ERR(host->rstc);
++
++	err = hnat_start();
++	if (err)
++		goto err_out;
++
++	err = hnat_register_nf_hooks();
++	if (err)
++		goto err_out;
++
++	return 0;
++
++err_out:
++	hnat_stop();
++	hnat_deinit_debugfs(host);
++	return err;
++}
++
++static int hnat_remove(struct platform_device *pdev)
++{
++	hnat_unregister_nf_hooks();
++	hnat_stop();
++	hnat_deinit_debugfs(host);
++
++	return 0;
++}
++
++const struct of_device_id of_hnat_match[] = {
++	{ .compatible = "mediatek,mt7623-hnat" },
++	{},
++};
++
++static struct platform_driver hnat_driver = {
++	.probe = hnat_probe,
++	.remove = hnat_remove,
++	.driver = {
++		.name = "mediatek_soc_hnat",
++		.of_match_table = of_hnat_match,
++	},
++};
++
++module_platform_driver(hnat_driver);
++
++MODULE_LICENSE("GPL v2");
++MODULE_AUTHOR("Sean Wang <sean.wang@mediatek.com>");
++MODULE_AUTHOR("John Crispin <john@phrozen.org>");
++MODULE_DESCRIPTION("Mediatek Hardware NAT");
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat.h
+@@ -0,0 +1,425 @@
++/*   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; version 2 of the License
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   Copyright (C) 2014-2016 Sean Wang <sean.wang@mediatek.com>
++ *   Copyright (C) 2016-2017 John Crispin <blogic@openwrt.org>
++ */
++
++#include <linux/debugfs.h>
++#include <linux/string.h>
++#include <linux/if.h>
++#include <linux/if_ether.h>
++
++/*--------------------------------------------------------------------------*/
++/* Register Offset*/
++/*--------------------------------------------------------------------------*/
++#define PPE_GLO_CFG		0x00
++#define PPE_FLOW_CFG		0x04
++#define PPE_IP_PROT_CHK		0x08
++#define PPE_IP_PROT_0		0x0C
++#define PPE_IP_PROT_1		0x10
++#define PPE_IP_PROT_2		0x14
++#define PPE_IP_PROT_3		0x18
++#define PPE_TB_CFG		0x1C
++#define PPE_TB_BASE		0x20
++#define PPE_TB_USED		0x24
++#define PPE_BNDR		0x28
++#define PPE_BIND_LMT_0		0x2C
++#define PPE_BIND_LMT_1		0x30
++#define PPE_KA			0x34
++#define PPE_UNB_AGE		0x38
++#define PPE_BND_AGE_0		0x3C
++#define PPE_BND_AGE_1		0x40
++#define PPE_HASH_SEED		0x44
++#define PPE_DFT_CPORT		0x48
++#define PPE_MCAST_PPSE		0x84
++#define PPE_MCAST_L_0		0x88
++#define PPE_MCAST_H_0		0x8C
++#define PPE_MCAST_L_1		0x90
++#define PPE_MCAST_H_1		0x94
++#define PPE_MCAST_L_2		0x98
++#define PPE_MCAST_H_2		0x9C
++#define PPE_MCAST_L_3		0xA0
++#define PPE_MCAST_H_3		0xA4
++#define PPE_MCAST_L_4		0xA8
++#define PPE_MCAST_H_4		0xAC
++#define PPE_MCAST_L_5		0xB0
++#define PPE_MCAST_H_5		0xB4
++#define PPE_MCAST_L_6		0xBC
++#define PPE_MCAST_H_6		0xC0
++#define PPE_MCAST_L_7		0xC4
++#define PPE_MCAST_H_7		0xC8
++#define PPE_MCAST_L_8		0xCC
++#define PPE_MCAST_H_8		0xD0
++#define PPE_MCAST_L_9		0xD4
++#define PPE_MCAST_H_9		0xD8
++#define PPE_MCAST_L_A		0xDC
++#define PPE_MCAST_H_A		0xE0
++#define PPE_MCAST_L_B		0xE4
++#define PPE_MCAST_H_B		0xE8
++#define PPE_MCAST_L_C		0xEC
++#define PPE_MCAST_H_C		0xF0
++#define PPE_MCAST_L_D		0xF4
++#define PPE_MCAST_H_D		0xF8
++#define PPE_MCAST_L_E		0xFC
++#define PPE_MCAST_H_E		0xE0
++#define PPE_MCAST_L_F		0x100
++#define PPE_MCAST_H_F		0x104
++#define PPE_MTU_DRP		0x108
++#define PPE_MTU_VLYR_0		0x10C
++#define PPE_MTU_VLYR_1		0x110
++#define PPE_MTU_VLYR_2		0x114
++#define PPE_VPM_TPID		0x118
++#define PPE_CAH_CTRL		0x120
++#define PPE_CAH_TAG_SRH		0x124
++#define PPE_CAH_LINE_RW		0x128
++#define PPE_CAH_WDATA		0x12C
++#define PPE_CAH_RDATA		0x130
++
++#define GDMA1_FWD_CFG		0x500
++#define GDMA2_FWD_CFG		0x1500
++/*--------------------------------------------------------------------------*/
++/* Register Mask*/
++/*--------------------------------------------------------------------------*/
++/* PPE_TB_CFG mask */
++#define TB_ETRY_NUM		(0x7 << 0)	/* RW */
++#define TB_ENTRY_SIZE		(0x1 << 3)	/* RW */
++#define SMA			(0x3 << 4)		/* RW */
++#define NTU_AGE			(0x1 << 7)	/* RW */
++#define UNBD_AGE		(0x1 << 8)	/* RW */
++#define TCP_AGE			(0x1 << 9)	/* RW */
++#define UDP_AGE			(0x1 << 10)	/* RW */
++#define FIN_AGE			(0x1 << 11)	/* RW */
++#define KA_CFG			(0x3<< 12)
++#define HASH_MODE		(0x3 << 14)	/* RW */
++#define XMODE			(0x3 << 18)	/* RW */
++
++/*PPE_CAH_CTRL mask*/
++#define CAH_EN			(0x1 << 0)	/* RW */
++#define CAH_X_MODE		(0x1 << 9)	/* RW */
++
++/*PPE_UNB_AGE mask*/
++#define UNB_DLTA		(0xff << 0)	/* RW */
++#define UNB_MNP			(0xffff << 16)	/* RW */
++
++/*PPE_BND_AGE_0 mask*/
++#define UDP_DLTA		(0xffff << 0)	/* RW */
++#define NTU_DLTA		(0xffff << 16)	/* RW */
++
++/*PPE_BND_AGE_1 mask*/
++#define TCP_DLTA		(0xffff << 0)	/* RW */
++#define FIN_DLTA		(0xffff << 16)	/* RW */
++
++/*PPE_KA mask*/
++#define KA_T			(0xffff << 0)	/* RW */
++#define TCP_KA			(0xff << 16)	/* RW */
++#define UDP_KA			(0xff << 24)	/* RW */
++
++/*PPE_BIND_LMT_0 mask*/
++#define QURT_LMT		(0x3ff << 0)	/* RW */
++#define HALF_LMT		(0x3ff << 16)	/* RW */
++
++/*PPE_BIND_LMT_1 mask*/
++#define FULL_LMT		(0x3fff << 0)	/* RW */
++#define NTU_KA			(0xff << 16)	/* RW */
++
++/*PPE_BNDR mask*/
++#define BIND_RATE		(0xffff << 0)	/* RW */
++#define PBND_RD_PRD		(0xffff << 16)	/* RW */
++
++/*PPE_GLO_CFG mask*/
++#define PPE_EN			(0x1 << 0)	/* RW */
++#define TTL0_DRP		(0x1 << 4)	/* RW */
++
++/*GDMA1_FWD_CFG mask */
++#define GDM1_UFRC_MASK		(0x7 << 12)	/* RW */
++#define GDM1_BFRC_MASK		(0x7 << 8) /*RW*/
++#define GDM1_MFRC_MASK		(0x7 << 4) /*RW*/
++#define GDM1_OFRC_MASK		(0x7 << 0) /*RW*/
++#define GDM1_ALL_FRC_MASK	(GDM1_UFRC_MASK | GDM1_BFRC_MASK | GDM1_MFRC_MASK | GDM1_OFRC_MASK)
++
++#define GDM2_UFRC_MASK		(0x7 << 12)	/* RW */
++#define GDM2_BFRC_MASK		(0x7 << 8) /*RW*/
++#define GDM2_MFRC_MASK		(0x7 << 4) /*RW*/
++#define GDM2_OFRC_MASK		(0x7 << 0) /*RW*/
++#define GDM2_ALL_FRC_MASK	(GDM2_UFRC_MASK | GDM2_BFRC_MASK | GDM2_MFRC_MASK | GDM2_OFRC_MASK)
++
++/*--------------------------------------------------------------------------*/
++/* Descriptor Structure */
++/*--------------------------------------------------------------------------*/
++#define HNAT_SKB_CB(__skb) ((struct hnat_skb_cb *)&((__skb)->cb[40]))
++struct hnat_skb_cb {
++	__u16 iif;
++};
++
++struct hnat_unbind_info_blk {
++	u32 time_stamp:8;
++	u32 pcnt:16;		/* packet count */
++	u32 preb:1;
++	u32 pkt_type:3;
++	u32 state:2;
++	u32 udp:1;
++	u32 sta:1;		/* static entry */
++} __attribute__ ((packed));
++
++struct hnat_bind_info_blk {
++	u32 time_stamp:15;
++	u32 ka:1;		/* keep alive */
++	u32 vlan_layer:3;
++	u32 psn:1;		/* egress packet has PPPoE session */
++	u32 vpm:1;		/* 0:ethertype remark, 1:0x8100(CR default) */
++	u32 ps:1;		/* packet sampling */
++	u32 cah:1;		/* cacheable flag */
++	u32 rmt:1;		/* remove tunnel ip header (6rd/dslite only) */
++	u32 ttl:1;
++	u32 pkt_type:3;
++	u32 state:2;
++	u32 udp:1;
++	u32 sta:1;		/* static entry */
++} __attribute__ ((packed));
++
++struct hnat_info_blk2 {
++	u32 qid:4;		/* QID in Qos Port */
++	u32 fqos:1;		/* force to PSE QoS port */
++	u32 dp:3;		/* force to PSE port x 
++				 0:PSE,1:GSW, 2:GMAC,4:PPE,5:QDMA,7=DROP */
++	u32 mcast:1;		/* multicast this packet to CPU */
++	u32 pcpl:1;		/* OSBN */
++	u32 mlen:1;		/* 0:post 1:pre packet length in meter */
++	u32 alen:1;		/* 0:post 1:pre packet length in accounting */
++	u32 port_mg:6;		/* port meter group */
++	u32 port_ag:6;		/* port account group */
++	u32 dscp:8;		/* DSCP value */
++} __attribute__ ((packed));
++
++struct hnat_ipv4_hnapt {
++	union {
++		struct hnat_bind_info_blk bfib1;
++		struct hnat_unbind_info_blk udib1;
++		u32 info_blk1;
++	};
++	u32 sip;
++	u32 dip;
++	u16 dport;
++	u16 sport;
++	union {
++		struct hnat_info_blk2 iblk2;
++		u32 info_blk2;
++	};
++	u32 new_sip;
++	u32 new_dip;
++	u16 new_dport;
++	u16 new_sport;
++	u32 resv1;
++	u32 resv2;
++	u32 resv3:26;
++	u32 act_dp:6;		/* UDF */
++	u16 vlan1;
++	u16 etype;
++	u32 dmac_hi;
++	u16 vlan2;
++	u16 dmac_lo;
++	u32 smac_hi;
++	u16 pppoe_id;
++	u16 smac_lo;
++} __attribute__ ((packed));
++
++struct foe_entry {
++	union {
++		struct hnat_unbind_info_blk udib1;
++		struct hnat_bind_info_blk bfib1;
++		struct hnat_ipv4_hnapt ipv4_hnapt;
++	};
++};
++
++#define HNAT_AC_BYTE_LO(x)		(0x2000 + (x * 16))
++#define HNAT_AC_BYTE_HI(x)		(0x2004 + (x * 16))
++#define HNAT_AC_PACKET(x)		(0x2008 + (x * 16))
++#define HNAT_COUNTER_MAX		64
++#define HNAT_AC_TIMER_INTERVAL		(HZ)
++
++struct hnat_accounting {
++	u64 bytes;
++	u64 packets;
++};
++
++struct hnat_priv {
++	struct device *dev;
++	void __iomem *fe_base;
++	void __iomem *ppe_base;
++	struct foe_entry *foe_table_cpu;
++	dma_addr_t foe_table_dev;
++	u8 enable;
++	u8 enable1;
++	struct dentry *root;
++	struct debugfs_regset32 *regset;
++
++	struct timer_list ac_timer;
++	struct hnat_accounting acct[HNAT_COUNTER_MAX];
++
++	/*devices we plays for*/
++	char wan[IFNAMSIZ];
++
++	struct reset_control	*rstc;
++};
++
++enum FoeEntryState {
++	INVALID = 0,
++	UNBIND = 1,
++	BIND = 2,
++	FIN = 3
++};
++/*--------------------------------------------------------------------------*/
++/* Common Definition*/
++/*--------------------------------------------------------------------------*/
++
++#define FOE_4TB_SIZ		4096
++#define HASH_SEED_KEY		0x12345678
++
++/*PPE_TB_CFG value*/
++#define ENTRY_80B		1
++#define ENTRY_64B		0
++#define TABLE_1K		0
++#define TABLE_2K		1
++#define TABLE_4K		2
++#define TABLE_8K		3
++#define TABLE_16K		4
++#define SMA_DROP		0		/* Drop the packet */
++#define SMA_DROP2		1		/* Drop the packet */
++#define SMA_ONLY_FWD_CPU	2	/* Only Forward to CPU */
++#define SMA_FWD_CPU_BUILD_ENTRY	3	/* Forward to CPU and build new FOE entry */
++#define HASH_MODE_0		0
++#define HASH_MODE_1		1
++#define HASH_MODE_2		2
++#define HASH_MODE_3		3
++
++/*PPE_FLOW_CFG*/
++#define BIT_FUC_FOE		BIT(2)
++#define BIT_FMC_FOE		BIT(1)
++#define BIT_FBC_FOE		BIT(0)
++#define BIT_IPV4_NAT_EN		BIT(12)
++#define BIT_IPV4_NAPT_EN	BIT(13)
++#define BIT_IPV4_NAT_FRAG_EN	BIT(17)
++#define BIT_IPV4_HASH_GREK	BIT(19)
++
++/*GDMA1_FWD_CFG value */
++#define BITS_GDM1_UFRC_P_PPE	(NR_PPE_PORT << 12)
++#define BITS_GDM1_BFRC_P_PPE	(NR_PPE_PORT << 8)
++#define BITS_GDM1_MFRC_P_PPE	(NR_PPE_PORT << 4)
++#define BITS_GDM1_OFRC_P_PPE	(NR_PPE_PORT << 0)
++#define BITS_GDM1_ALL_FRC_P_PPE	(BITS_GDM1_UFRC_P_PPE | BITS_GDM1_BFRC_P_PPE | BITS_GDM1_MFRC_P_PPE | BITS_GDM1_OFRC_P_PPE)
++
++#define BITS_GDM1_UFRC_P_CPU_PDMA	(NR_PDMA_PORT << 12)
++#define BITS_GDM1_BFRC_P_CPU_PDMA	(NR_PDMA_PORT << 8)
++#define BITS_GDM1_MFRC_P_CPU_PDMA	(NR_PDMA_PORT << 4)
++#define BITS_GDM1_OFRC_P_CPU_PDMA	(NR_PDMA_PORT << 0)
++#define BITS_GDM1_ALL_FRC_P_CPU_PDMA	(BITS_GDM1_UFRC_P_CPU_PDMA | BITS_GDM1_BFRC_P_CPU_PDMA | BITS_GDM1_MFRC_P_CPU_PDMA | BITS_GDM1_OFRC_P_CPU_PDMA)
++
++#define BITS_GDM1_UFRC_P_CPU_QDMA	(NR_QDMA_PORT << 12)
++#define BITS_GDM1_BFRC_P_CPU_QDMA	(NR_QDMA_PORT << 8)
++#define BITS_GDM1_MFRC_P_CPU_QDMA	(NR_QDMA_PORT << 4)
++#define BITS_GDM1_OFRC_P_CPU_QDMA	(NR_QDMA_PORT << 0)
++#define BITS_GDM1_ALL_FRC_P_CPU_QDMA	(BITS_GDM1_UFRC_P_CPU_QDMA | BITS_GDM1_BFRC_P_CPU_QDMA | BITS_GDM1_MFRC_P_CPU_QDMA | BITS_GDM1_OFRC_P_CPU_QDMA)
++
++#define BITS_GDM1_UFRC_P_DISCARD	(NR_DISCARD << 12)
++#define BITS_GDM1_BFRC_P_DISCARD	(NR_DISCARD << 8)
++#define BITS_GDM1_MFRC_P_DISCARD	(NR_DISCARD << 4)
++#define BITS_GDM1_OFRC_P_DISCARD	(NR_DISCARD << 0)
++#define BITS_GDM1_ALL_FRC_P_DISCARD	(BITS_GDM1_UFRC_P_DISCARD | BITS_GDM1_BFRC_P_DISCARD | BITS_GDM1_MFRC_P_DISCARD | BITS_GDM1_OFRC_P_DISCARD)
++
++#define BITS_GDM2_UFRC_P_PPE	(NR_PPE_PORT << 12)
++#define BITS_GDM2_BFRC_P_PPE	(NR_PPE_PORT << 8)
++#define BITS_GDM2_MFRC_P_PPE	(NR_PPE_PORT << 4)
++#define BITS_GDM2_OFRC_P_PPE	(NR_PPE_PORT << 0)
++#define BITS_GDM2_ALL_FRC_P_PPE	(BITS_GDM2_UFRC_P_PPE | BITS_GDM2_BFRC_P_PPE | BITS_GDM2_MFRC_P_PPE | BITS_GDM2_OFRC_P_PPE)
++
++#define BITS_GDM2_UFRC_P_CPU_PDMA	(NR_PDMA_PORT << 12)
++#define BITS_GDM2_BFRC_P_CPU_PDMA	(NR_PDMA_PORT << 8)
++#define BITS_GDM2_MFRC_P_CPU_PDMA	(NR_PDMA_PORT << 4)
++#define BITS_GDM2_OFRC_P_CPU_PDMA	(NR_PDMA_PORT << 0)
++#define BITS_GDM2_ALL_FRC_P_CPU_PDMA	(BITS_GDM2_UFRC_P_CPU_PDMA | BITS_GDM2_BFRC_P_CPU_PDMA | BITS_GDM2_MFRC_P_CPU_PDMA | BITS_GDM2_OFRC_P_CPU_PDMA)
++
++#define BITS_GDM2_UFRC_P_CPU_QDMA	(NR_QDMA_PORT << 12)
++#define BITS_GDM2_BFRC_P_CPU_QDMA	(NR_QDMA_PORT << 8)
++#define BITS_GDM2_MFRC_P_CPU_QDMA	(NR_QDMA_PORT << 4)
++#define BITS_GDM2_OFRC_P_CPU_QDMA	(NR_QDMA_PORT << 0)
++#define BITS_GDM2_ALL_FRC_P_CPU_QDMA	(BITS_GDM2_UFRC_P_CPU_QDMA | BITS_GDM2_BFRC_P_CPU_QDMA | BITS_GDM2_MFRC_P_CPU_QDMA | BITS_GDM2_OFRC_P_CPU_QDMA)
++
++#define BITS_GDM2_UFRC_P_DISCARD	(NR_DISCARD << 12)
++#define BITS_GDM2_BFRC_P_DISCARD	(NR_DISCARD << 8)
++#define BITS_GDM2_MFRC_P_DISCARD	(NR_DISCARD << 4)
++#define BITS_GDM2_OFRC_P_DISCARD	(NR_DISCARD << 0)
++#define BITS_GDM2_ALL_FRC_P_DISCARD	(BITS_GDM2_UFRC_P_DISCARD | BITS_GDM2_BFRC_P_DISCARD | BITS_GDM2_MFRC_P_DISCARD | BITS_GDM2_OFRC_P_DISCARD)
++
++#define hnat_is_enabled(host)	(host->enable)
++#define hnat_enabled(host)	(host->enable = 1)
++#define hnat_disabled(host)	(host->enable = 0)
++#define hnat_is_enabled1(host)	(host->enable1)
++#define hnat_enabled1(host)	(host->enable1 = 1)
++#define hnat_disabled1(host)	(host->enable1 = 0)
++
++#define entry_hnat_is_bound(e)	(e->bfib1.state == BIND)
++#define entry_hnat_state(e)	(e->bfib1.state)
++
++#define skb_hnat_is_hashed(skb)	(skb_hnat_entry(skb)!=0x3fff && skb_hnat_entry(skb)< FOE_4TB_SIZ)
++#define FROM_GE_LAN(skb)	(HNAT_SKB_CB(skb)->iif == FOE_MAGIC_GE_LAN)
++#define FROM_GE_WAN(skb)	(HNAT_SKB_CB(skb)->iif == FOE_MAGIC_GE_WAN)
++#define FROM_GE_PPD(skb)	(HNAT_SKB_CB(skb)->iif == FOE_MAGIC_GE_PPD)
++#define FOE_MAGIC_GE_WAN	0x7273
++#define FOE_MAGIC_GE_LAN	0x7272
++#define FOE_INVALID		0xffff
++
++#define TCP_FIN_SYN_RST		0x0C /* Ingress packet is TCP fin/syn/rst (for IPv4 NAPT/DS-Lite or IPv6 5T-route/6RD) */
++#define UN_HIT			0x0D/* FOE Un-hit */
++#define HIT_UNBIND		0x0E/* FOE Hit unbind */
++#define HIT_UNBIND_RATE_REACH	0xf
++#define HNAT_HIT_BIND_OLD_DUP_HDR	0x15
++#define HNAT_HIT_BIND_FORCE_TO_CPU	0x16
++
++#define HIT_BIND_KEEPALIVE_MC_NEW_HDR	0x14
++#define HIT_BIND_KEEPALIVE_DUP_OLD_HDR	0x15
++#define IPV4_HNAPT			0
++#define IPV4_HNAT			1
++#define IP_FORMAT(addr) \
++		((unsigned char *)&addr)[3], \
++		((unsigned char *)&addr)[2], \
++		((unsigned char *)&addr)[1], \
++		((unsigned char *)&addr)[0]
++
++/*PSE Ports*/
++#define NR_PDMA_PORT		0
++#define NR_GMAC1_PORT		1
++#define NR_GMAC2_PORT		2
++#define NR_PPE_PORT		4
++#define NR_QDMA_PORT		5
++#define NR_DISCARD		7
++#define IS_LAN(dev)		(!strncmp(dev->name, "lan", 3))
++#define IS_WAN(dev)		(!strcmp(dev->name, host->wan))
++#define IS_BR(dev)		(!strncmp(dev->name, "br", 2))
++#define IS_IPV4_HNAPT(x)	(((x)->bfib1.pkt_type == IPV4_HNAPT) ? 1: 0)
++#define IS_IPV4_HNAT(x)		(((x)->bfib1.pkt_type == IPV4_HNAT) ? 1 : 0)
++#define IS_IPV4_GRP(x)		(IS_IPV4_HNAPT(x) | IS_IPV4_HNAT(x))
++
++#define es(entry)		(entry_state[entry->bfib1.state])
++#define ei(entry, end)		(FOE_4TB_SIZ - (int)(end - entry))
++#define pt(entry)		(packet_type[entry->ipv4_hnapt.bfib1.pkt_type])
++#define ipv4_smac(mac,e)	({mac[0]=e->ipv4_hnapt.smac_hi[3]; mac[1]=e->ipv4_hnapt.smac_hi[2];\
++				 mac[2]=e->ipv4_hnapt.smac_hi[1]; mac[3]=e->ipv4_hnapt.smac_hi[0];\
++				 mac[4]=e->ipv4_hnapt.smac_lo[1]; mac[5]=e->ipv4_hnapt.smac_lo[0];})
++#define ipv4_dmac(mac,e)	({mac[0]=e->ipv4_hnapt.dmac_hi[3]; mac[1]=e->ipv4_hnapt.dmac_hi[2];\
++				 mac[2]=e->ipv4_hnapt.dmac_hi[1]; mac[3]=e->ipv4_hnapt.dmac_hi[0];\
++				 mac[4]=e->ipv4_hnapt.dmac_lo[1]; mac[5]=e->ipv4_hnapt.dmac_lo[0];})
++
++extern struct hnat_priv *host;
++
++extern void hnat_deinit_debugfs(struct hnat_priv *h);
++extern int __init hnat_init_debugfs(struct hnat_priv *h);
++extern int hnat_register_nf_hooks(void);
++extern void hnat_unregister_nf_hooks(void);
++
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat_debugfs.c
+@@ -0,0 +1,489 @@
++/*   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; version 2 of the License
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   Copyright (C) 2014-2016 Sean Wang <sean.wang@mediatek.com>
++ *   Copyright (C) 2016-2017 John Crispin <blogic@openwrt.org>
++ */
++
++#include <linux/kernel.h>
++#include <linux/slab.h>
++#include <linux/dma-mapping.h>
++
++#include "hnat.h"
++
++static const char *entry_state[] = {
++	"INVALID",
++	"UNBIND",
++	"BIND",
++	"FIN"
++};
++
++static const char *packet_type[] = {
++	"IPV4_HNAPT",
++	"IPV4_HNAT",
++	"IPV6_1T_ROUTE",
++	"IPV4_DSLITE",
++	"IPV6_3T_ROUTE",
++	"IPV6_5T_ROUTE",
++	"IPV6_6RD",
++};
++
++static int hnat_debug_show(struct seq_file *m, void *private)
++{
++	struct hnat_priv *h = host;
++	struct foe_entry *entry, *end;
++
++	entry = h->foe_table_cpu;
++	end = h->foe_table_cpu + FOE_4TB_SIZ;
++	while (entry < end) {
++		if (!entry->bfib1.state) {
++			entry++;
++			continue;
++		}
++
++		if (IS_IPV4_HNAPT(entry)) {
++			__be32 saddr = htonl(entry->ipv4_hnapt.sip);
++			__be32 daddr = htonl(entry->ipv4_hnapt.dip);
++			__be32 nsaddr = htonl(entry->ipv4_hnapt.new_sip);
++			__be32 ndaddr = htonl(entry->ipv4_hnapt.new_dip);
++			unsigned char h_dest[ETH_ALEN];
++			unsigned char h_source[ETH_ALEN];
++
++			*((u32*) h_source) = swab32(entry->ipv4_hnapt.smac_hi);
++			*((u16*) &h_source[4]) = swab16(entry->ipv4_hnapt.smac_lo);
++			*((u32*) h_dest) = swab32(entry->ipv4_hnapt.dmac_hi);
++			*((u16*) &h_dest[4]) = swab16(entry->ipv4_hnapt.dmac_lo);
++			seq_printf(m,
++				   "(%p)0x%05x|state=%s|type=%s|%pI4:%d->%pI4:%d=>%pI4:%d->%pI4:%d|%pM=>%pM|etype=0x%04x|info1=0x%x|info2=0x%x|vlan1=%d|vlan2=%d\n",
++				   (void *)h->foe_table_dev + ((void *)(entry) - (void *)h->foe_table_cpu),
++				   ei(entry, end), es(entry), pt(entry),
++				   &saddr, entry->ipv4_hnapt.sport,
++				   &daddr, entry->ipv4_hnapt.dport,
++				   &nsaddr, entry->ipv4_hnapt.new_sport,
++				   &ndaddr, entry->ipv4_hnapt.new_dport, h_source,
++				   h_dest, ntohs(entry->ipv4_hnapt.etype),
++				   entry->ipv4_hnapt.info_blk1,
++				   entry->ipv4_hnapt.info_blk2,
++				   entry->ipv4_hnapt.vlan1,
++				   entry->ipv4_hnapt.vlan2);
++		} else
++			seq_printf(m, "0x%05x state=%s\n",
++				   ei(entry, end), es(entry));
++		entry++;
++	}
++
++	return 0;
++}
++
++static int hnat_debug_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, hnat_debug_show, file->private_data);
++}
++
++static const struct file_operations hnat_debug_fops = {
++	.open = hnat_debug_open,
++	.read = seq_read,
++	.llseek = seq_lseek,
++	.release = single_release,
++};
++
++#define QDMA_TX_SCH_TX		0x1a14
++
++static ssize_t hnat_sched_show(struct file *file, char __user *user_buf,
++			       size_t count, loff_t *ppos)
++{
++	int id = (int) file->private_data;
++	struct hnat_priv *h = host;
++	u32 reg = readl(h->fe_base + QDMA_TX_SCH_TX);
++	int enable;
++	int max_rate;
++	char *buf;
++	unsigned int len = 0, buf_len = 1500;
++	ssize_t ret_cnt;
++
++	buf = kzalloc(buf_len, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++
++
++	if (id)
++		reg >>= 16;
++	reg &= 0xffff;
++	enable = !! (reg & BIT(11));
++	max_rate = ((reg >> 4) & 0x7f);
++	reg &= 0xf;
++	while (reg--)
++		max_rate *= 10;
++
++	len += scnprintf(buf + len, buf_len - len,
++			 "EN\tMAX\n%d\t%d\n", enable, max_rate);
++
++	if (len > buf_len)
++		len = buf_len;
++
++	ret_cnt = simple_read_from_buffer(user_buf, count, ppos, buf, len);
++
++	kfree(buf);
++	return ret_cnt;
++}
++
++static ssize_t hnat_sched_write(struct file *file,
++				const char __user *buf, size_t length, loff_t *offset)
++{
++	int id = (int) file->private_data;
++	struct hnat_priv *h = host;
++	char line[64];
++	int enable, rate, exp = 0, shift = 0;
++	size_t size;
++	u32 reg = readl(h->fe_base + QDMA_TX_SCH_TX);
++	u32 val = 0;
++
++	if (length > sizeof(line))
++		return -EINVAL;
++
++        if (copy_from_user(line, buf, length))
++		return -EFAULT;
++
++	sscanf(line, "%d %d", &enable, &rate);
++
++	while (rate > 127) {
++		rate /= 10;
++		exp++;
++	}
++
++	if (enable)
++		val |= BIT(11);
++	val |= (rate & 0x7f) << 4;
++	val |= exp & 0xf;
++	if (id)
++		shift = 16;
++	reg &= ~(0xffff << shift);
++	reg |= val << shift;
++	writel(reg, h->fe_base + QDMA_TX_SCH_TX);
++
++	size = strlen(line);
++	*offset += size;
++
++	return length;
++}
++
++static const struct file_operations hnat_sched_fops = {
++	.open = simple_open,
++	.read = hnat_sched_show,
++	.write = hnat_sched_write,
++	.llseek = default_llseek,
++};
++
++#define QTX_CFG(x)	(0x1800 + (x * 0x10))
++#define QTX_SCH(x)	(0x1804 + (x * 0x10))
++
++static ssize_t hnat_queue_show(struct file *file, char __user *user_buf,
++			       size_t count, loff_t *ppos)
++{
++	struct hnat_priv *h = host;
++	int id = (int) file->private_data;
++	u32 reg = readl(h->fe_base + QTX_SCH(id));
++	u32 cfg = readl(h->fe_base + QTX_CFG(id));
++	int scheduler = !!(reg & BIT(31));
++	int min_rate_en = !!(reg & BIT(27));
++	int min_rate = (reg >> 20) & 0x7f;
++	int min_rate_exp = (reg >> 16) & 0xf;
++	int max_rate_en = !!(reg & BIT(11));
++	int max_weight = (reg >> 12) & 0xf;
++	int max_rate = (reg >> 4) & 0x7f;
++	int max_rate_exp = reg & 0xf;
++	char *buf;
++	unsigned int len = 0, buf_len = 1500;
++	ssize_t ret_cnt;
++
++	buf = kzalloc(buf_len, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++
++	while (min_rate_exp--)
++		min_rate *= 10;
++
++	while (max_rate_exp--)
++		max_rate *= 10;
++
++	len += scnprintf(buf + len, buf_len - len,
++			"scheduler: %d\nhw resv: %d\nsw resv: %d\n",
++			scheduler, (cfg >> 8) & 0xff, cfg & 0xff);
++	len += scnprintf(buf + len, buf_len - len,
++			"\tEN\tRATE\t\tWEIGHT\n");
++	len += scnprintf(buf + len, buf_len - len,
++			"max\t%d\t%8d\t%d\n", max_rate_en, max_rate, max_weight);
++	len += scnprintf(buf + len, buf_len - len,
++			"min\t%d\t%8d\t-\n", min_rate_en, min_rate);
++
++	if (len > buf_len)
++		len = buf_len;
++
++	ret_cnt = simple_read_from_buffer(user_buf, count, ppos, buf, len);
++
++	kfree(buf);
++	return ret_cnt;
++}
++
++static ssize_t hnat_queue_write(struct file *file,
++				const char __user *buf, size_t length, loff_t *offset)
++{
++	int id = (int) file->private_data;
++	struct hnat_priv *h = host;
++	char line[64];
++	int max_enable, max_rate, max_exp = 0;
++	int min_enable, min_rate, min_exp = 0;
++	int weight;
++	int resv;
++	int scheduler;
++	size_t size;
++	u32 reg = readl(h->fe_base + QTX_SCH(id));
++
++	if (length > sizeof(line))
++		return -EINVAL;
++
++        if (copy_from_user(line, buf, length))
++		return -EFAULT;
++
++	sscanf(line, "%d %d %d %d %d %d %d", &scheduler, &min_enable, &min_rate, &max_enable, &max_rate, &weight, &resv);
++
++	while (max_rate > 127) {
++		max_rate /= 10;
++		max_exp++;
++	}
++
++	while (min_rate > 127) {
++		min_rate /= 10;
++		min_exp++;
++	}
++
++	reg &= 0x70000000;
++	if (scheduler)
++		reg |= BIT(31);
++	if (min_enable)
++		reg |= BIT(27);
++	reg |= (min_rate & 0x7f) << 20;
++	reg |= (min_exp & 0xf) << 16;
++	if (max_enable)
++		reg |= BIT(11);
++	reg |= (weight & 0xf) << 12;
++	reg |= (max_rate & 0x7f) << 4;
++	reg |= max_exp & 0xf;
++	writel(reg, h->fe_base + QTX_SCH(id));
++
++	resv &= 0xff;
++	reg = readl(h->fe_base + QTX_CFG(id));
++	reg &= 0xffff0000;
++	reg |= (resv << 8) | resv;
++	writel(reg, h->fe_base + QTX_CFG(id));
++
++	size = strlen(line);
++	*offset += size;
++
++	return length;
++}
++
++static const struct file_operations hnat_queue_fops = {
++	.open = simple_open,
++	.read = hnat_queue_show,
++	.write = hnat_queue_write,
++	.llseek = default_llseek,
++};
++
++static void hnat_ac_timer_handle(unsigned long priv)
++{
++	struct hnat_priv *h = (struct hnat_priv*) priv;
++	int i;
++
++	for (i = 0; i < HNAT_COUNTER_MAX; i++) {
++		u32 b_hi, b_lo;
++		u64 b;
++
++		b_lo = readl(h->fe_base + HNAT_AC_BYTE_LO(i));
++		b_hi = readl(h->fe_base + HNAT_AC_BYTE_HI(i));
++		b = b_hi;
++		b <<= 32;
++		b += b_lo;
++		h->acct[i].bytes += b;
++		h->acct[i].packets += readl(h->fe_base + HNAT_AC_PACKET(i));
++	}
++
++	mod_timer(&h->ac_timer, jiffies + HNAT_AC_TIMER_INTERVAL);
++}
++
++static ssize_t hnat_counter_show(struct file *file, char __user *user_buf,
++				 size_t count, loff_t *ppos)
++{
++	struct hnat_priv *h = host;
++	int id = (int) file->private_data;
++	char *buf;
++	unsigned int len = 0, buf_len = 1500;
++	ssize_t ret_cnt;
++	int id2 = id + (HNAT_COUNTER_MAX / 2);
++
++	buf = kzalloc(buf_len, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++
++	len += scnprintf(buf + len, buf_len - len,
++			 "tx pkts : %llu\ntx bytes: %llu\nrx pktks : %llu\nrx bytes : %llu\n",
++			 h->acct[id].packets, h->acct[id].bytes,
++			 h->acct[id2].packets, h->acct[id2].bytes);
++
++	if (len > buf_len)
++		len = buf_len;
++
++	ret_cnt = simple_read_from_buffer(user_buf, count, ppos, buf, len);
++
++	kfree(buf);
++	return ret_cnt;
++}
++
++static const struct file_operations hnat_counter_fops = {
++	.open = simple_open,
++	.read = hnat_counter_show,
++	.llseek = default_llseek,
++};
++
++#define dump_register(nm)				\
++{							\
++	.name	= __stringify(nm),			\
++	.offset	= PPE_ ##nm ,	\
++}
++
++static const struct debugfs_reg32 hnat_regs[] = {
++	dump_register(GLO_CFG),
++	dump_register(FLOW_CFG),
++	dump_register(IP_PROT_CHK),
++	dump_register(IP_PROT_0),
++	dump_register(IP_PROT_1),
++	dump_register(IP_PROT_2),
++	dump_register(IP_PROT_3),
++	dump_register(TB_CFG),
++	dump_register(TB_BASE),
++	dump_register(TB_USED),
++	dump_register(BNDR),
++	dump_register(BIND_LMT_0),
++	dump_register(BIND_LMT_1),
++	dump_register(KA),
++	dump_register(UNB_AGE),
++	dump_register(BND_AGE_0),
++	dump_register(BND_AGE_1),
++	dump_register(HASH_SEED),
++	dump_register(DFT_CPORT),
++	dump_register(MCAST_PPSE),
++	dump_register(MCAST_L_0),
++	dump_register(MCAST_H_0),
++	dump_register(MCAST_L_1),
++	dump_register(MCAST_H_1),
++	dump_register(MCAST_L_2),
++	dump_register(MCAST_H_2),
++	dump_register(MCAST_L_3),
++	dump_register(MCAST_H_3),
++	dump_register(MCAST_L_4),
++	dump_register(MCAST_H_4),
++	dump_register(MCAST_L_5),
++	dump_register(MCAST_H_5),
++	dump_register(MCAST_L_6),
++	dump_register(MCAST_H_6),
++	dump_register(MCAST_L_7),
++	dump_register(MCAST_H_7),
++	dump_register(MCAST_L_8),
++	dump_register(MCAST_H_8),
++	dump_register(MCAST_L_9),
++	dump_register(MCAST_H_9),
++	dump_register(MCAST_L_A),
++	dump_register(MCAST_H_A),
++	dump_register(MCAST_L_B),
++	dump_register(MCAST_H_B),
++	dump_register(MCAST_L_C),
++	dump_register(MCAST_H_C),
++	dump_register(MCAST_L_D),
++	dump_register(MCAST_H_D),
++	dump_register(MCAST_L_E),
++	dump_register(MCAST_H_E),
++	dump_register(MCAST_L_F),
++	dump_register(MCAST_H_F),
++	dump_register(MTU_DRP),
++	dump_register(MTU_VLYR_0),
++	dump_register(MTU_VLYR_1),
++	dump_register(MTU_VLYR_2),
++	dump_register(VPM_TPID),
++	dump_register(VPM_TPID),
++	dump_register(CAH_CTRL),
++	dump_register(CAH_TAG_SRH),
++	dump_register(CAH_LINE_RW),
++	dump_register(CAH_WDATA),
++	dump_register(CAH_RDATA),
++};
++
++int __init hnat_init_debugfs(struct hnat_priv *h)
++{
++	int ret = 0;
++	struct dentry *root;
++	struct dentry *file;
++	int i;
++	char name[16];
++
++	root = debugfs_create_dir("hnat", NULL);
++	if (!root) {
++		dev_err(h->dev, "%s:err at %d\n", __func__, __LINE__);
++		ret = -ENOMEM;
++		goto err0;
++	}
++	h->root = root;
++	h->regset = kzalloc(sizeof(*h->regset), GFP_KERNEL);
++	if (!h->regset) {
++		dev_err(h->dev, "%s:err at %d\n", __func__, __LINE__);
++		ret = -ENOMEM;
++		goto err1;
++	}
++	h->regset->regs = hnat_regs;
++	h->regset->nregs = ARRAY_SIZE(hnat_regs);
++	h->regset->base = h->ppe_base;
++
++	file = debugfs_create_regset32("regdump", S_IRUGO, root, h->regset);
++	if (!file) {
++		dev_err(h->dev, "%s:err at %d\n", __func__, __LINE__);
++		ret = -ENOMEM;
++		goto err1;
++	}
++	debugfs_create_file("all_entry", S_IRUGO, root, h, &hnat_debug_fops);
++	for (i = 0; i < HNAT_COUNTER_MAX / 2; i++) {
++		snprintf(name, sizeof(name), "counter%d", i);
++		debugfs_create_file(name, S_IRUGO, root, (void *)i, &hnat_counter_fops);
++	}
++
++	for (i = 0; i < 2; i++) {
++		snprintf(name, sizeof(name), "scheduler%d", i);
++		debugfs_create_file(name, S_IRUGO, root, (void *)i, &hnat_sched_fops);
++	}
++
++	for (i = 0; i < 16; i++) {
++		snprintf(name, sizeof(name), "queue%d", i);
++		debugfs_create_file(name, S_IRUGO, root, (void *)i, &hnat_queue_fops);
++	}
++
++	setup_timer(&h->ac_timer, hnat_ac_timer_handle, (unsigned long) h);
++	mod_timer(&h->ac_timer, jiffies + HNAT_AC_TIMER_INTERVAL);
++
++	return 0;
++
++ err1:
++	debugfs_remove_recursive(root);
++ err0:
++	return ret;
++}
++
++void hnat_deinit_debugfs(struct hnat_priv *h)
++{
++	del_timer(&h->ac_timer);
++	debugfs_remove_recursive(h->root);
++	h->root = NULL;
++}
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/hnat_nf_hook.c
+@@ -0,0 +1,289 @@
++/*   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; version 2 of the License
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   Copyright (C) 2014-2016 Sean Wang <sean.wang@mediatek.com>
++ *   Copyright (C) 2016-2017 John Crispin <blogic@openwrt.org>
++ */
++
++#include <linux/netfilter_bridge.h>
++
++#include <net/arp.h>
++#include <net/neighbour.h>
++#include <net/netfilter/nf_conntrack_helper.h>
++
++#include "nf_hnat_mtk.h"
++#include "hnat.h"
++
++#include "../mtk_eth_soc.h"
++
++static unsigned int skb_to_hnat_info(struct sk_buff *skb,
++				     const struct net_device *dev,
++				     struct foe_entry *foe)
++{
++	struct foe_entry entry = { 0 };
++	int lan = IS_LAN(dev);
++	struct ethhdr *eth;
++	struct iphdr *iph;
++	struct tcphdr *tcph;
++	struct udphdr *udph;
++	int tcp = 0;
++	int ipv4 = 0;
++	u32 gmac;
++
++	eth = eth_hdr(skb);
++	switch (ntohs(eth->h_proto)) {
++	case ETH_P_IP:
++		ipv4 = 1;
++		break;
++
++	default:
++		return -1;
++	}
++
++	iph = ip_hdr(skb);
++	switch (iph->protocol) {
++	case IPPROTO_TCP:
++		tcph = tcp_hdr(skb);
++		tcp = 1;
++		break;
++
++	case IPPROTO_UDP:
++		udph = udp_hdr(skb);
++		break;
++
++	default:
++		return -1;
++	}
++
++	entry.ipv4_hnapt.etype = htons(ETH_P_IP);
++
++	if (lan) {
++		entry.ipv4_hnapt.etype = htons(ETH_P_8021Q);
++		entry.bfib1.vlan_layer = 1;
++		entry.ipv4_hnapt.vlan1 = BIT(dev->name[3] - '0');
++	}
++
++	if (dev->priv_flags & IFF_802_1Q_VLAN) {
++		struct vlan_dev_priv *vlan = vlan_dev_priv(dev);
++
++		entry.ipv4_hnapt.etype = htons(ETH_P_8021Q);
++		entry.bfib1.vlan_layer = 1;
++		if (lan)
++			entry.ipv4_hnapt.vlan2 = vlan->vlan_id;
++		else
++			entry.ipv4_hnapt.vlan1 = vlan->vlan_id;
++	}
++
++	entry.ipv4_hnapt.dmac_hi = swab32(*((u32*) eth->h_dest));
++	entry.ipv4_hnapt.dmac_lo = swab16(*((u16*) &eth->h_dest[4]));
++	entry.ipv4_hnapt.smac_hi = swab32(*((u32*) eth->h_source));
++	entry.ipv4_hnapt.smac_lo = swab16(*((u16*) &eth->h_source[4]));
++	entry.ipv4_hnapt.pppoe_id = 0;
++	entry.bfib1.psn = 0;
++	entry.ipv4_hnapt.bfib1.vpm = 1;
++
++	if (ipv4)
++		entry.ipv4_hnapt.bfib1.pkt_type = IPV4_HNAPT;
++
++	entry.ipv4_hnapt.new_sip = ntohl(iph->saddr);
++	entry.ipv4_hnapt.new_dip = ntohl(iph->daddr);
++	entry.ipv4_hnapt.iblk2.dscp = iph->tos;
++#if defined(CONFIG_NET_MEDIATEK_HW_QOS)
++	entry.ipv4_hnapt.iblk2.qid = skb->mark & 0x7;
++	if (lan)
++		entry.ipv4_hnapt.iblk2.qid += 8;
++	entry.ipv4_hnapt.iblk2.fqos = 1;
++#endif
++	if (tcp) {
++		entry.ipv4_hnapt.new_sport = ntohs(tcph->source);
++		entry.ipv4_hnapt.new_dport = ntohs(tcph->dest);
++		entry.ipv4_hnapt.bfib1.udp = 0;
++	} else {
++		entry.ipv4_hnapt.new_sport = ntohs(udph->source);
++		entry.ipv4_hnapt.new_dport = ntohs(udph->dest);
++		entry.ipv4_hnapt.bfib1.udp = 1;
++	}
++
++	if (IS_LAN(dev))
++		gmac = NR_GMAC1_PORT;
++	else if (IS_WAN(dev))
++		gmac = NR_GMAC2_PORT;
++
++	if (is_multicast_ether_addr(&eth->h_dest[0]))
++		entry.ipv4_hnapt.iblk2.mcast = 1;
++	else
++		entry.ipv4_hnapt.iblk2.mcast = 0;
++
++	entry.ipv4_hnapt.iblk2.dp = gmac;
++	entry.ipv4_hnapt.iblk2.port_mg = 0x3f;
++	entry.ipv4_hnapt.iblk2.port_ag = (skb->mark >> 3) & 0x1f;
++	if (IS_LAN(dev))
++		entry.ipv4_hnapt.iblk2.port_ag += 32;
++	entry.bfib1.time_stamp = readl((host->fe_base + 0x0010)) & (0xFFFF);
++	entry.ipv4_hnapt.bfib1.ttl = 1;
++	entry.ipv4_hnapt.bfib1.cah = 1;
++	entry.ipv4_hnapt.bfib1.ka = 1;
++	entry.bfib1.state = BIND;
++
++	entry.ipv4_hnapt.sip = foe->ipv4_hnapt.sip;
++	entry.ipv4_hnapt.dip = foe->ipv4_hnapt.dip;
++	entry.ipv4_hnapt.sport = foe->ipv4_hnapt.sport;
++	entry.ipv4_hnapt.dport = foe->ipv4_hnapt.dport;
++
++	memcpy(foe, &entry, sizeof(entry));
++
++	return 0;
++}
++
++static unsigned int mtk_hnat_nf_post_routing(struct sk_buff *skb,
++					     const struct net_device *out,
++					     unsigned int (*fn)(struct sk_buff *, const struct net_device *),
++					     const char *func)
++{
++	struct foe_entry *entry;
++	struct nf_conn *ct;
++	enum ip_conntrack_info ctinfo;
++	const struct nf_conn_help *help;
++
++	if ((skb->mark & 0x7) < 4)
++		return 0;
++
++	ct = nf_ct_get(skb, &ctinfo);
++	if (!ct)
++		return 0;
++
++	/* rcu_read_lock()ed by nf_hook_slow */
++	help = nfct_help(ct);
++	if (help && rcu_dereference(help->helper))
++		return 0;
++
++	if ((FROM_GE_WAN(skb) || FROM_GE_LAN(skb)) &&
++	    skb_hnat_is_hashed(skb) &&
++	    (skb_hnat_reason(skb) == HIT_BIND_KEEPALIVE_DUP_OLD_HDR))
++		return -1;
++
++	if ((IS_LAN(out) && FROM_GE_WAN(skb)) ||
++	    (IS_WAN(out) && FROM_GE_LAN(skb))) {
++		if (!skb_hnat_is_hashed(skb))
++			return 0;
++
++		entry = &host->foe_table_cpu[skb_hnat_entry(skb)];
++		if (entry_hnat_is_bound(entry))
++			return 0;
++
++		if (skb_hnat_reason(skb) == HIT_UNBIND_RATE_REACH &&
++		    skb_hnat_alg(skb) == 0) {
++			if (fn && fn(skb, out))
++				return 0;
++			skb_to_hnat_info(skb, out, entry);
++		}
++	}
++
++	return 0;
++}
++
++static unsigned int mtk_hnat_nf_pre_routing(void *priv,
++					    struct sk_buff *skb,
++					    const struct nf_hook_state *state)
++{
++	if (IS_WAN(state->in))
++		HNAT_SKB_CB(skb)->iif = FOE_MAGIC_GE_WAN;
++	else if (IS_LAN(state->in))
++		HNAT_SKB_CB(skb)->iif = FOE_MAGIC_GE_LAN;
++	else if (!IS_BR(state->in))
++		HNAT_SKB_CB(skb)->iif = FOE_INVALID;
++
++	return NF_ACCEPT;
++}
++
++static unsigned int hnat_get_nexthop(struct sk_buff *skb, const struct net_device *out) {
++
++	u32 nexthop;
++	struct neighbour *neigh;
++	struct dst_entry *dst = skb_dst(skb);
++	struct rtable *rt = (struct rtable *)dst;
++	struct net_device *dev = (__force struct net_device *)out;
++
++	rcu_read_lock_bh();
++	nexthop = (__force u32) rt_nexthop(rt, ip_hdr(skb)->daddr);
++	neigh = __ipv4_neigh_lookup_noref(dev, nexthop);
++	if (unlikely(!neigh)) {
++		dev_err(host->dev, "%s:++ no neigh\n", __func__);
++		return -1;
++	}
++
++	/* why do we get all zero ethernet address ? */
++	if (!is_valid_ether_addr(neigh->ha)){
++		rcu_read_unlock_bh();
++		return -1;
++	}
++
++	memcpy(eth_hdr(skb)->h_dest, neigh->ha, ETH_ALEN);
++	memcpy(eth_hdr(skb)->h_source, out->dev_addr, ETH_ALEN);
++
++	rcu_read_unlock_bh();
++
++	return 0;
++}
++
++static unsigned int mtk_hnat_ipv4_nf_post_routing(void *priv,
++						 struct sk_buff *skb,
++						 const struct nf_hook_state *state)
++{
++	if (!mtk_hnat_nf_post_routing(skb, state->out, hnat_get_nexthop, __func__))
++		return NF_ACCEPT;
++
++	return NF_DROP;
++}
++
++static unsigned int mtk_hnat_br_nf_post_routing(void *priv,
++						 struct sk_buff *skb,
++						 const struct nf_hook_state *state)
++{
++	if (!mtk_hnat_nf_post_routing(skb, state->out , 0, __func__))
++		return NF_ACCEPT;
++
++	return NF_DROP;
++}
++
++static struct nf_hook_ops mtk_hnat_nf_ops[] __read_mostly = {
++	{
++		.hook = mtk_hnat_nf_pre_routing,
++		.pf = NFPROTO_IPV4,
++		.hooknum = NF_INET_PRE_ROUTING,
++		.priority = NF_IP_PRI_FIRST,
++	}, {
++		.hook = mtk_hnat_ipv4_nf_post_routing,
++		.pf = NFPROTO_IPV4,
++		.hooknum = NF_INET_POST_ROUTING,
++		.priority = NF_IP_PRI_LAST,
++	}, {
++		.hook = mtk_hnat_nf_pre_routing,
++		.pf = NFPROTO_BRIDGE,
++		.hooknum = NF_BR_PRE_ROUTING,
++		.priority = NF_BR_PRI_FIRST,
++	}, {
++		.hook = mtk_hnat_br_nf_post_routing,
++		.pf = NFPROTO_BRIDGE,
++		.hooknum = NF_BR_POST_ROUTING,
++		.priority = NF_BR_PRI_LAST - 1,
++	},
++};
++
++int hnat_register_nf_hooks(void)
++{
++	return nf_register_hooks(mtk_hnat_nf_ops,
++				 ARRAY_SIZE(mtk_hnat_nf_ops));
++}
++
++void hnat_unregister_nf_hooks(void)
++{
++	nf_unregister_hooks(mtk_hnat_nf_ops,
++			    ARRAY_SIZE(mtk_hnat_nf_ops));
++}
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_hnat/nf_hnat_mtk.h
+@@ -0,0 +1,44 @@
++/*   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; version 2 of the License
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   Copyright (C) 2014-2016 Sean Wang <sean.wang@mediatek.com>
++ *   Copyright (C) 2016-2017 John Crispin <blogic@openwrt.org>
++ */
++
++#ifndef NF_HNAT_MTK_H
++#define NF_HNAT_MTK_H
++
++#include <asm/dma-mapping.h>
++#include <linux/netdevice.h>
++
++#define HNAT_SKB_CB2(__skb)		((struct hnat_skb_cb2 *)&((__skb)->cb[44]))
++struct hnat_skb_cb2 {
++	__u32  magic;
++};
++
++struct hnat_desc {
++	u32 entry:14;
++	u32 crsn:5;
++	u32 sport:4;
++	u32 alg:9;
++} __attribute__ ((packed));
++
++#define skb_hnat_magic(skb)  (((struct hnat_desc *)(skb->head))->magic)
++#define skb_hnat_reason(skb) (((struct hnat_desc *)(skb->head))->crsn)
++#define skb_hnat_entry(skb)  (((struct hnat_desc *)(skb->head))->entry)
++#define skb_hnat_sport(skb)  (((struct hnat_desc *)(skb->head))->sport)
++#define skb_hnat_alg(skb)  (((struct hnat_desc *)(skb->head))->alg)
++
++u32 hnat_tx(struct sk_buff *skb);
++u32 hnat_set_skb_info(struct sk_buff *skb, u32 *rxd);
++u32 hnat_reg(struct net_device *, void __iomem *);
++u32 hnat_unreg(void);
++
++#endif
++

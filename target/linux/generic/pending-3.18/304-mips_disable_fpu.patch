@@ -1,0 +1,105 @@
+From:   Manuel Lauss <manuel.lauss@gmail.com>
+Subject: [RFC PATCH v4 2/2] MIPS: make FPU emulator optional
+Date:   Mon,  7 Apr 2014 12:57:04 +0200
+Message-Id: <1396868224-252888-2-git-send-email-manuel.lauss@gmail.com>
+
+This small patch makes the MIPS FPU emulator optional. The kernel
+kills float-users on systems without a hardware FPU by sending a SIGILL.
+
+Disabling the emulator shrinks vmlinux by about 54kBytes (32bit,
+optimizing for size).
+
+Signed-off-by: Manuel Lauss <manuel.lauss@gmail.com>
+---
+v4: rediffed because of patch 1/2, should now work with micromips as well
+v3: updated patch description with size savings.
+v2: incorporated changes suggested by Jonas Gorski
+    force the fpu emulator on for micromips: relocating the parts
+    of the mmips code in the emulator to other areas would be a
+    much larger change; I went the cheap route instead with this.
+
+ arch/mips/Kbuild                     |  2 +-
+ arch/mips/Kconfig                    | 14 ++++++++++++++
+ arch/mips/include/asm/fpu.h          |  5 +++--
+ arch/mips/include/asm/fpu_emulator.h | 15 +++++++++++++++
+ 4 files changed, 33 insertions(+), 3 deletions(-)
+
+--- a/arch/mips/Kconfig
++++ b/arch/mips/Kconfig
+@@ -2495,6 +2495,20 @@ config MIPS_O32_FP64_SUPPORT
+ 
+ 	  If unsure, say N.
+ 
++config MIPS_FPU_EMULATOR
++	bool "MIPS FPU Emulator"
++	default y
++	help
++	  This option lets you disable the built-in MIPS FPU (Coprocessor 1)
++	  emulator, which handles floating-point instructions on processors
++	  without a hardware FPU.  It is generally a good idea to keep the
++	  emulator built-in, unless you are perfectly sure you have a
++	  complete soft-float environment.  With the emulator disabled, all
++	  users of float operations will be killed with an illegal instr-
++	  uction exception.
++
++	  Say Y, please.
++
+ config USE_OF
+ 	bool
+ 	select OF
+--- a/arch/mips/Makefile
++++ b/arch/mips/Makefile
+@@ -275,7 +275,7 @@ OBJCOPYFLAGS		+= --remove-section=.regin
+ head-y := arch/mips/kernel/head.o
+ 
+ libs-y			+= arch/mips/lib/
+-libs-y			+= arch/mips/math-emu/
++libs-$(CONFIG_MIPS_FPU_EMULATOR)	+= arch/mips/math-emu/
+ 
+ # See arch/mips/Kbuild for content of core part of the kernel
+ core-y += arch/mips/
+--- a/arch/mips/include/asm/fpu.h
++++ b/arch/mips/include/asm/fpu.h
+@@ -169,8 +169,10 @@ static inline int init_fpu(void)
+ 		ret = __own_fpu();
+ 		if (!ret)
+ 			_init_fpu();
+-	} else
++	} else if (IS_ENABLED(CONFIG_MIPS_FPU_EMULATOR))
+ 		fpu_emulator_init_fpu();
++	else
++		ret = SIGILL;
+ 
+ 	return ret;
+ }
+--- a/arch/mips/include/asm/fpu_emulator.h
++++ b/arch/mips/include/asm/fpu_emulator.h
+@@ -30,6 +30,7 @@
+ #include <asm/local.h>
+ #include <asm/processor.h>
+ 
++#ifdef CONFIG_MIPS_FPU_EMULATOR
+ #ifdef CONFIG_DEBUG_FS
+ 
+ struct mips_fpu_emulator_stats {
+@@ -65,6 +66,20 @@ extern int do_dsemulret(struct pt_regs *
+ extern int fpu_emulator_cop1Handler(struct pt_regs *xcp,
+ 				    struct mips_fpu_struct *ctx, int has_fpu,
+ 				    void *__user *fault_addr);
++#else	/* no CONFIG_MIPS_FPU_EMULATOR */
++static inline int do_dsemulret(struct pt_regs *xcp)
++{
++	return 0;	/* 0 means error, should never get here anyway */
++}
++
++static inline int fpu_emulator_cop1Handler(struct pt_regs *xcp,
++				struct mips_fpu_struct *ctx, int has_fpu,
++				void *__user *fault_addr)
++{
++	return SIGILL;	/* we don't speak MIPS FPU */
++}
++#endif	/* CONFIG_MIPS_FPU_EMULATOR */
++
+ int process_fpemu_return(int sig, void __user *fault_addr);
+ int mm_isBranchInstr(struct pt_regs *regs, struct mm_decoded_insn dec_insn,
+ 		     unsigned long *contpc);

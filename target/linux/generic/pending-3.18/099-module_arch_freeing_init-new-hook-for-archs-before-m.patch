@@ -1,0 +1,182 @@
+From: Rusty Russell <rusty@rustcorp.com.au>
+Date: Tue, 20 Jan 2015 09:07:04 +1030
+Subject: [PATCH] module_arch_freeing_init(): new hook for archs before module->module_init freed.
+
+Archs have been abusing module_free() to clean up their arch-specific
+allocations.  Since module_free() is also (ab)used by BPF and trace code,
+let's keep it to simple allocations, and provide a hook called before
+that.
+
+This means that avr32, ia64, parisc and s390 no longer need to implement
+their own module_free() at all.  avr32 doesn't need module_finalize()
+either.
+
+Signed-off-by: Rusty Russell <rusty@rustcorp.com.au>
+Cc: Chris Metcalf <cmetcalf@ezchip.com>
+Cc: Haavard Skinnemoen <hskinnemoen@gmail.com>
+Cc: Hans-Christian Egtvedt <egtvedt@samfundet.no>
+Cc: Tony Luck <tony.luck@intel.com>
+Cc: Fenghua Yu <fenghua.yu@intel.com>
+Cc: "James E.J. Bottomley" <jejb@parisc-linux.org>
+Cc: Helge Deller <deller@gmx.de>
+Cc: Martin Schwidefsky <schwidefsky@de.ibm.com>
+Cc: Heiko Carstens <heiko.carstens@de.ibm.com>
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-ia64@vger.kernel.org
+Cc: linux-parisc@vger.kernel.org
+Cc: linux-s390@vger.kernel.org
+
+Origin: backport, https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=d453cded05ee219b77815ea194dc36efa5398bca
+---
+ arch/avr32/kernel/module.c   | 13 +------------
+ arch/ia64/kernel/module.c    |  6 ++----
+ arch/parisc/kernel/module.c  |  6 +-----
+ arch/s390/kernel/module.c    | 10 +++-------
+ arch/tile/kernel/module.c    |  2 +-
+ include/linux/moduleloader.h |  2 ++
+ kernel/module.c              |  7 +++++++
+ 7 files changed, 17 insertions(+), 29 deletions(-)
+
+--- a/arch/avr32/kernel/module.c
++++ b/arch/avr32/kernel/module.c
+@@ -19,12 +19,10 @@
+ #include <linux/moduleloader.h>
+ #include <linux/vmalloc.h>
+ 
+-void module_free(struct module *mod, void *module_region)
++void module_arch_freeing_init(struct module *mod)
+ {
+ 	vfree(mod->arch.syminfo);
+ 	mod->arch.syminfo = NULL;
+-
+-	vfree(module_region);
+ }
+ 
+ static inline int check_rela(Elf32_Rela *rela, struct module *module,
+@@ -291,12 +289,3 @@ int apply_relocate_add(Elf32_Shdr *sechd
+ 
+ 	return ret;
+ }
+-
+-int module_finalize(const Elf_Ehdr *hdr, const Elf_Shdr *sechdrs,
+-		    struct module *module)
+-{
+-	vfree(module->arch.syminfo);
+-	module->arch.syminfo = NULL;
+-
+-	return 0;
+-}
+--- a/arch/ia64/kernel/module.c
++++ b/arch/ia64/kernel/module.c
+@@ -305,14 +305,12 @@ plt_target (struct plt_entry *plt)
+ #endif /* !USE_BRL */
+ 
+ void
+-module_free (struct module *mod, void *module_region)
++module_arch_freeing_init (struct module *mod)
+ {
+-	if (mod && mod->arch.init_unw_table &&
+-	    module_region == mod->module_init) {
++	if (mod->arch.init_unw_table) {
+ 		unw_remove_unwind_table(mod->arch.init_unw_table);
+ 		mod->arch.init_unw_table = NULL;
+ 	}
+-	vfree(module_region);
+ }
+ 
+ /* Have we already seen one of these relocations? */
+--- a/arch/parisc/kernel/module.c
++++ b/arch/parisc/kernel/module.c
+@@ -298,14 +298,10 @@ static inline unsigned long count_stubs(
+ }
+ #endif
+ 
+-
+-/* Free memory returned from module_alloc */
+-void module_free(struct module *mod, void *module_region)
++void module_arch_freeing_init(struct module *mod)
+ {
+ 	kfree(mod->arch.section);
+ 	mod->arch.section = NULL;
+-
+-	vfree(module_region);
+ }
+ 
+ /* Additional bytes needed in front of individual sections */
+--- a/arch/s390/kernel/module.c
++++ b/arch/s390/kernel/module.c
+@@ -55,14 +55,10 @@ void *module_alloc(unsigned long size)
+ }
+ #endif
+ 
+-/* Free memory returned from module_alloc */
+-void module_free(struct module *mod, void *module_region)
++void module_arch_freeing_init(struct module *mod)
+ {
+-	if (mod) {
+-		vfree(mod->arch.syminfo);
+-		mod->arch.syminfo = NULL;
+-	}
+-	vfree(module_region);
++	vfree(mod->arch.syminfo);
++	mod->arch.syminfo = NULL;
+ }
+ 
+ static void check_rela(Elf_Rela *rela, struct module *me)
+--- a/arch/tile/kernel/module.c
++++ b/arch/tile/kernel/module.c
+@@ -83,7 +83,7 @@ void module_free(struct module *mod, voi
+ 		     0, 0, 0, NULL, NULL, 0);
+ 
+ 	/*
+-	 * FIXME: If module_region == mod->module_init, trim exception
++	 * FIXME: Add module_arch_freeing_init to trim exception
+ 	 * table entries.
+ 	 */
+ }
+--- a/include/linux/moduleloader.h
++++ b/include/linux/moduleloader.h
+@@ -82,4 +82,6 @@ int module_finalize(const Elf_Ehdr *hdr,
+ /* Any cleanup needed when module leaves. */
+ void module_arch_cleanup(struct module *mod);
+ 
++/* Any cleanup before freeing mod->module_init */
++void module_arch_freeing_init(struct module *mod);
+ #endif
+--- a/kernel/module.c
++++ b/kernel/module.c
+@@ -1840,6 +1840,10 @@ void __weak module_arch_cleanup(struct m
+ {
+ }
+ 
++void __weak module_arch_freeing_init(struct module *mod)
++{
++}
++
+ /* Free a module, remove from lists, etc. */
+ static void free_module(struct module *mod)
+ {
+@@ -1872,6 +1876,7 @@ static void free_module(struct module *m
+ 
+ 	/* This may be NULL, but that's OK */
+ 	unset_module_init_ro_nx(mod);
++	module_arch_freeing_init(mod);
+ 	module_free(mod, mod->module_init);
+ 	kfree(mod->args);
+ 	percpu_modfree(mod);
+@@ -2983,6 +2988,7 @@ static struct module *layout_and_allocat
+ static void module_deallocate(struct module *mod, struct load_info *info)
+ {
+ 	percpu_modfree(mod);
++	module_arch_freeing_init(mod);
+ 	module_free(mod, mod->module_init);
+ 	module_free(mod, mod->module_core);
+ }
+@@ -3105,6 +3111,7 @@ static int do_init_module(struct module
+ 	rcu_assign_pointer(mod->kallsyms, &mod->core_kallsyms);
+ #endif
+ 	unset_module_init_ro_nx(mod);
++	module_arch_freeing_init(mod);
+ 	module_free(mod, mod->module_init);
+ 	mod->module_init = NULL;
+ 	mod->init_size = 0;

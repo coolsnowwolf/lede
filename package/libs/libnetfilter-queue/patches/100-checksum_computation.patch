@@ -1,0 +1,115 @@
+--- a/src/extra/checksum.c
++++ b/src/extra/checksum.c
+@@ -11,6 +11,7 @@
+ 
+ #include <stdio.h>
+ #include <stdbool.h>
++#include <endian.h>
+ #include <arpa/inet.h>
+ #include <netinet/ip.h>
+ #include <netinet/ip6.h>
+@@ -26,8 +27,13 @@ uint16_t nfq_checksum(uint32_t sum, uint16_t *buf, int size)
+ 		sum += *buf++;
+ 		size -= sizeof(uint16_t);
+ 	}
+-	if (size)
+-		sum += *(uint8_t *)buf;
++	if (size) {
++#if __BYTE_ORDER == __BIG_ENDIAN
++		sum += (uint16_t)*(uint8_t *)buf << 8;
++#else
++		sum += (uint16_t)*(uint8_t *)buf;
++#endif
++	}
+ 
+ 	sum = (sum >> 16) + (sum & 0xffff);
+ 	sum += (sum >>16);
+@@ -35,7 +41,7 @@ uint16_t nfq_checksum(uint32_t sum, uint16_t *buf, int size)
+ 	return (uint16_t)(~sum);
+ }
+ 
+-uint16_t nfq_checksum_tcpudp_ipv4(struct iphdr *iph)
++uint16_t nfq_checksum_tcpudp_ipv4(struct iphdr *iph, uint16_t protocol_id)
+ {
+ 	uint32_t sum = 0;
+ 	uint32_t iph_len = iph->ihl*4;
+@@ -46,13 +52,13 @@ uint16_t nfq_checksum_tcpudp_ipv4(struct iphdr *iph)
+ 	sum += (iph->saddr) & 0xFFFF;
+ 	sum += (iph->daddr >> 16) & 0xFFFF;
+ 	sum += (iph->daddr) & 0xFFFF;
+-	sum += htons(IPPROTO_TCP);
++	sum += htons(protocol_id);
+ 	sum += htons(len);
+ 
+ 	return nfq_checksum(sum, (uint16_t *)payload, len);
+ }
+ 
+-uint16_t nfq_checksum_tcpudp_ipv6(struct ip6_hdr *ip6h, void *transport_hdr)
++uint16_t nfq_checksum_tcpudp_ipv6(struct ip6_hdr *ip6h, void *transport_hdr, uint16_t protocol_id)
+ {
+ 	uint32_t sum = 0;
+ 	uint32_t hdr_len = (uint32_t *)transport_hdr - (uint32_t *)ip6h;
+@@ -68,7 +74,7 @@ uint16_t nfq_checksum_tcpudp_ipv6(struct ip6_hdr *ip6h, void *transport_hdr)
+ 		sum += (ip6h->ip6_dst.s6_addr16[i] >> 16) & 0xFFFF;
+ 		sum += (ip6h->ip6_dst.s6_addr16[i]) & 0xFFFF;
+ 	}
+-	sum += htons(IPPROTO_TCP);
++	sum += htons(protocol_id);
+ 	sum += htons(ip6h->ip6_plen);
+ 
+ 	return nfq_checksum(sum, (uint16_t *)payload, len);
+diff --git a/src/extra/tcp.c b/src/extra/tcp.c
+index d1cd79d..a66f392 100644
+--- a/src/extra/tcp.c
++++ b/src/extra/tcp.c
+@@ -96,7 +96,7 @@ nfq_tcp_compute_checksum_ipv4(struct tcphdr *tcph, struct iphdr *iph)
+ {
+ 	/* checksum field in header needs to be zero for calculation. */
+ 	tcph->check = 0;
+-	tcph->check = nfq_checksum_tcpudp_ipv4(iph);
++	tcph->check = nfq_checksum_tcpudp_ipv4(iph, IPPROTO_TCP);
+ }
+ EXPORT_SYMBOL(nfq_tcp_compute_checksum_ipv4);
+ 
+@@ -110,7 +110,7 @@ nfq_tcp_compute_checksum_ipv6(struct tcphdr *tcph, struct ip6_hdr *ip6h)
+ {
+ 	/* checksum field in header needs to be zero for calculation. */
+ 	tcph->check = 0;
+-	tcph->check = nfq_checksum_tcpudp_ipv6(ip6h, tcph);
++	tcph->check = nfq_checksum_tcpudp_ipv6(ip6h, tcph, IPPROTO_TCP);
+ }
+ EXPORT_SYMBOL(nfq_tcp_compute_checksum_ipv6);
+ 
+--- a/src/extra/udp.c
++++ b/src/extra/udp.c
+@@ -96,7 +96,7 @@ nfq_udp_compute_checksum_ipv4(struct udphdr *udph, struct iphdr *iph)
+ {
+ 	/* checksum field in header needs to be zero for calculation. */
+ 	udph->check = 0;
+-	udph->check = nfq_checksum_tcpudp_ipv4(iph);
++	udph->check = nfq_checksum_tcpudp_ipv4(iph, IPPROTO_UDP);
+ }
+ EXPORT_SYMBOL(nfq_udp_compute_checksum_ipv4);
+ 
+@@ -115,7 +115,7 @@ nfq_udp_compute_checksum_ipv6(struct udphdr *udph, struct ip6_hdr *ip6h)
+ {
+ 	/* checksum field in header needs to be zero for calculation. */
+ 	udph->check = 0;
+-	udph->check = nfq_checksum_tcpudp_ipv6(ip6h, udph);
++	udph->check = nfq_checksum_tcpudp_ipv6(ip6h, udph, IPPROTO_UDP);
+ }
+ EXPORT_SYMBOL(nfq_udp_compute_checksum_ipv6);
+ 
+--- a/src/internal.h
++++ b/src/internal.h
+@@ -15,8 +15,8 @@ struct iphdr;
+ struct ip6_hdr;
+ 
+ uint16_t nfq_checksum(uint32_t sum, uint16_t *buf, int size);
+-uint16_t nfq_checksum_tcpudp_ipv4(struct iphdr *iph);
+-uint16_t nfq_checksum_tcpudp_ipv6(struct ip6_hdr *ip6h, void *transport_hdr);
++uint16_t nfq_checksum_tcpudp_ipv4(struct iphdr *iph, uint16_t protocol_id);
++uint16_t nfq_checksum_tcpudp_ipv6(struct ip6_hdr *ip6h, void *transport_hdr, uint16_t protocol_id);
+ 
+ struct pkt_buff {
+ 	uint8_t *mac_header;

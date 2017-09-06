@@ -1,0 +1,88 @@
+From: George Kashperko <george@znau.edu.ua>
+
+broadcom-wl driver bound to ssb device with ssb driver probe
+have osh handle struct pdev pointer value initialized with
+ssb_device pointer. Later on pdev is used with legacy pci
+dma api as pci_dev thus causing oops sometimes.
+
+The patch replaces legacy pci dma api and pass relevant
+device struct pointer to avoid crashes.
+Signed-off-by: George Kashperko <george@znau.edu.ua>
+---
+ driver/linux_osl.c |   28 +++++++++++++++++++++++-----
+ 1 file changed, 23 insertions(+), 5 deletions(-)
+--- a/driver/linux_osl.c
++++ b/driver/linux_osl.c
+@@ -25,6 +25,9 @@
+ #include <asm/paccess.h>
+ #endif /* mips */
+ #include <pcicfg.h>
++#ifdef CONFIG_SSB
++#include <linux/ssb/ssb.h>
++#endif
+ 
+ #define PCI_CFG_RETRY 		10
+ 
+@@ -364,12 +367,27 @@ osl_dma_consistent_align(void)
+ 	return (PAGE_SIZE);
+ }
+ 
++static struct device *
++osl_get_dmadev(osl_t *osh)
++{
++#ifdef CONFIG_SSB
++	if (osh->bustype == SI_BUS) {
++		/* This can be SiliconBackplane emulated as pci with Broadcom or
++		 * ssb device. Less harmful is to check for pci_bus_type and if
++		 * no match then assume we got ssb */
++		if (((struct pci_dev *)osh->pdev)->dev.bus != &pci_bus_type)
++			return ((struct ssb_device *)osh->pdev)->dma_dev;
++	}
++#endif
++	return &((struct pci_dev *)osh->pdev)->dev;
++}
++
+ void*
+ osl_dma_alloc_consistent(osl_t *osh, uint size, ulong *pap)
+ {
+ 	ASSERT((osh && (osh->magic == OS_HANDLE_MAGIC)));
+ 
+-	return (pci_alloc_consistent(osh->pdev, size, (dma_addr_t*)pap));
++	return (dma_alloc_coherent(osl_get_dmadev(osh), size, (dma_addr_t*)pap, GFP_ATOMIC));
+ }
+ 
+ void
+@@ -377,7 +395,7 @@ osl_dma_free_consistent(osl_t *osh, void
+ {
+ 	ASSERT((osh && (osh->magic == OS_HANDLE_MAGIC)));
+ 
+-	pci_free_consistent(osh->pdev, size, va, (dma_addr_t)pa);
++	dma_free_coherent(osl_get_dmadev(osh), size, va, (dma_addr_t)pa);
+ }
+ 
+ uint BCMFASTPATH
+@@ -386,13 +404,13 @@ osl_dma_map(osl_t *osh, void *va, uint s
+ 	ASSERT((osh && (osh->magic == OS_HANDLE_MAGIC)));
+ 
+ 	if (direction == DMA_TX)
+-		return (pci_map_single(osh->pdev, va, size, PCI_DMA_TODEVICE));
++		return (dma_map_single(osl_get_dmadev(osh), va, size, PCI_DMA_TODEVICE));
+ 	else {
+ #ifdef mips
+ 		dma_cache_inv((uint)va, size);
+ 		return (virt_to_phys(va));
+ #else /* mips */
+-		return (pci_map_single(osh->pdev, va, size, PCI_DMA_FROMDEVICE));
++		return (dma_map_single(osl_get_dmadev(osh), va, size, PCI_DMA_FROMDEVICE));
+ #endif /* mips */
+ 	}
+ }
+@@ -404,7 +422,7 @@ osl_dma_unmap(osl_t *osh, uint pa, uint
+ 
+ 	ASSERT((osh && (osh->magic == OS_HANDLE_MAGIC)));
+ 	dir = (direction == DMA_TX)? PCI_DMA_TODEVICE: PCI_DMA_FROMDEVICE;
+-	pci_unmap_single(osh->pdev, (uint32)pa, size, dir);
++	dma_unmap_single(osl_get_dmadev(osh), (uint32)pa, size, dir);
+ }
+ 
+ 

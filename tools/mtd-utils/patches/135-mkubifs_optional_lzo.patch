@@ -1,0 +1,119 @@
+--- a/mkfs.ubifs/compr.c
++++ b/mkfs.ubifs/compr.c
+@@ -24,7 +24,6 @@
+ #include <stdio.h>
+ #include <stdint.h>
+ #include <string.h>
+-#include <lzo/lzo1x.h>
+ #include <linux/types.h>
+ 
+ #define crc32 __zlib_crc32
+@@ -34,7 +33,6 @@
+ #include "compr.h"
+ #include "mkfs.ubifs.h"
+ 
+-static void *lzo_mem;
+ static unsigned long long errcnt = 0;
+ static struct ubifs_info *c = &info_;
+ 
+@@ -85,6 +83,25 @@ static int zlib_deflate(void *in_buf, si
+ 	return 0;
+ }
+ 
++#ifndef WITHOUT_LZO
++#include <lzo/lzo1x.h>
++
++static void *lzo_mem;
++
++static int lzo_init(void)
++{
++	lzo_mem = malloc(LZO1X_999_MEM_COMPRESS);
++	if (!lzo_mem)
++		return -1;
++
++	return 0;
++}
++
++static void lzo_fini(void)
++{
++	free(lzo_mem);
++}
++
+ static int lzo_compress(void *in_buf, size_t in_len, void *out_buf,
+ 			size_t *out_len)
+ {
+@@ -102,6 +119,12 @@ static int lzo_compress(void *in_buf, si
+ 
+ 	return 0;
+ }
++#else
++static inline int lzo_compress(void *in_buf, size_t in_len, void *out_buf,
++			       size_t *out_len) { return -1; }
++static inline int lzo_init(void) { return 0; }
++static inline void lzo_fini(void) { }
++#endif
+ 
+ static int no_compress(void *in_buf, size_t in_len, void *out_buf,
+ 		       size_t *out_len)
+@@ -122,7 +145,6 @@ static int favor_lzo_compress(void *in_b
+ 	lzo_len = zlib_len = *out_len;
+ 	lzo_ret = lzo_compress(in_buf, in_len, out_buf, &lzo_len);
+ 	zlib_ret = zlib_deflate(in_buf, in_len, zlib_buf, &zlib_len);
+-
+ 	if (lzo_ret && zlib_ret)
+ 		/* Both compressors failed */
+ 		return -1;
+@@ -197,23 +219,28 @@ int compress_data(void *in_buf, size_t i
+ 
+ int init_compression(void)
+ {
+-	lzo_mem = malloc(LZO1X_999_MEM_COMPRESS);
+-	if (!lzo_mem)
+-		return -1;
++	int ret;
++
++	ret = lzo_init();
++	if (ret)
++		goto err;
+ 
+ 	zlib_buf = malloc(UBIFS_BLOCK_SIZE * WORST_COMPR_FACTOR);
+-	if (!zlib_buf) {
+-		free(lzo_mem);
+-		return -1;
+-	}
++	if (!zlib_buf)
++		goto err_lzo;
+ 
+ 	return 0;
++
++err_lzo:
++	lzo_fini();
++err:
++	return ret;
+ }
+ 
+ void destroy_compression(void)
+ {
+ 	free(zlib_buf);
+-	free(lzo_mem);
++	lzo_fini();
+ 	if (errcnt)
+ 		fprintf(stderr, "%llu compression errors occurred\n", errcnt);
+ }
+--- a/Makefile
++++ b/Makefile
+@@ -108,7 +108,13 @@ $(call _mkdep,lib/,libmtd.a)
+ obj-mkfs.ubifs = crc16.o lpt.o compr.o devtable.o \
+ 	hashtable/hashtable.o hashtable/hashtable_itr.o
+ LDFLAGS_mkfs.ubifs = $(ZLIBLDFLAGS) $(LZOLDFLAGS) $(UUIDLDFLAGS)
+-LDLIBS_mkfs.ubifs = -lz -llzo2 -lm -luuid
++ifeq ($(WITHOUT_LZO), 1)
++  CPPFLAGS += -DWITHOUT_LZO
++else
++  LZOLDLIBS = -llzo2
++endif
++
++LDLIBS_mkfs.ubifs = -lz $(LZOLDLIBS) -lm -luuid
+ $(call mkdep,mkfs.ubifs/,mkfs.ubifs,,ubi-utils/libubi.a)
+ 
+ #

@@ -1,0 +1,433 @@
+--- a/drivers/ata/Kconfig
++++ b/drivers/ata/Kconfig
+@@ -234,6 +234,16 @@ config PDC_ADMA
+ 
+ 	  If unsure, say N.
+ 
++config PATA_MAGICBOX_CF
++	tristate "Magicbox/OpenRB Compact Flash support"
++	depends on MAGICBOX || OPENRB
++	help
++	  This option enables support for a Compact Flash conected on
++	  the ppc405ep expansion bus. This driver had been written for
++	  the Magicbox v2 and OpenRB boards.
++
++	  If unsure, say N.
++
+ config PATA_OCTEON_CF
+ 	tristate "OCTEON Boot Bus Compact Flash support"
+ 	depends on CAVIUM_OCTEON_SOC
+--- a/drivers/ata/Makefile
++++ b/drivers/ata/Makefile
+@@ -91,6 +91,7 @@ obj-$(CONFIG_PATA_AT91)		+= pata_at91.o
+ obj-$(CONFIG_PATA_CMD640_PCI)	+= pata_cmd640.o
+ obj-$(CONFIG_PATA_ISAPNP)	+= pata_isapnp.o
+ obj-$(CONFIG_PATA_IXP4XX_CF)	+= pata_ixp4xx_cf.o
++obj-$(CONFIG_PATA_MAGICBOX_CF)	+= pata_magicbox_cf.o
+ obj-$(CONFIG_PATA_MPIIX)	+= pata_mpiix.o
+ obj-$(CONFIG_PATA_NS87410)	+= pata_ns87410.o
+ obj-$(CONFIG_PATA_OPTI)		+= pata_opti.o
+--- /dev/null
++++ b/drivers/ata/pata_magicbox_cf.c
+@@ -0,0 +1,401 @@
++/*
++ *  PATA/CompactFlash driver for the MagicBox v2/OpenRB boards.
++ *
++ *  Copyright (C) 2009,2012 Gabor Juhos <juhosg@openwrt.org>
++ *
++ *  Based on the IDE driver by Wojtek Kaniewski <wojtekka@toxygen.net>
++ *
++ *  This program is free software; you can redistribute it and/or modify it
++ *  under the terms of the GNU General Public License version 2 as published
++ *  by the Free Software Foundation.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/slab.h>
++#include <linux/types.h>
++#include <linux/ioport.h>
++#include <linux/libata.h>
++#include <linux/irq.h>
++//#include <linux/of.h>
++//#include <linux/of_device.h>
++#include <linux/of_platform.h>
++#include <scsi/scsi_host.h>
++
++#define DRV_DESC	"PATA/CompactFlash driver for Magicbox/OpenRB boards"
++#define DRV_NAME	"pata_magicbox_cf"
++#define DRV_VERSION	"0.1.0"
++
++#define MAGICBOX_CF_REG_CMD		(2 * ATA_REG_CMD)
++#define MAGICBOX_CF_REG_DATA		(2 * ATA_REG_DATA)
++#define MAGICBOX_CF_REG_ERR		(2 * ATA_REG_ERR)
++#define MAGICBOX_CF_REG_FEATURE 	(2 * ATA_REG_FEATURE)
++#define MAGICBOX_CF_REG_NSECT		(2 * ATA_REG_NSECT)
++#define MAGICBOX_CF_REG_LBAL		(2 * ATA_REG_LBAL)
++#define MAGICBOX_CF_REG_LBAM		(2 * ATA_REG_LBAM)
++#define MAGICBOX_CF_REG_LBAH		(2 * ATA_REG_LBAH)
++#define MAGICBOX_CF_REG_DEVICE		(2 * ATA_REG_DEVICE)
++#define MAGICBOX_CF_REG_STATUS		(2 * ATA_REG_STATUS)
++#define MAGICBOX_CF_REG_ALTSTATUS	(2 * 6)
++#define MAGICBOX_CF_REG_CTL		(2 * 6)
++
++#define MAGICBOX_CF_MAXPORTS	1
++
++struct magicbox_cf_info {
++	void __iomem	*base;
++	void __iomem	*ctrl;
++};
++
++static inline u8 magicbox_cf_inb(void __iomem *port)
++{
++	return (u8) (readw(port) >> 8) & 0xff;
++}
++
++static inline void magicbox_cf_outb(void __iomem *port, u8 value)
++{
++	writew(value << 8, port);
++}
++
++static int magicbox_cf_set_mode(struct ata_link *link,
++				struct ata_device **error)
++{
++	struct ata_device *dev;
++
++	ata_for_each_dev(dev, link, ENABLED) {
++		ata_dev_printk(dev, KERN_INFO, "configured for PIO0\n");
++		dev->pio_mode = XFER_PIO_0;
++		dev->xfer_mode = XFER_PIO_0;
++		dev->xfer_shift = ATA_SHIFT_PIO;
++		dev->flags |= ATA_DFLAG_PIO;
++	}
++
++	return 0;
++}
++
++static void magicbox_cf_exec_command(struct ata_port *ap,
++				     const struct ata_taskfile *tf)
++{
++	DPRINTK("ata%u: cmd 0x%X\n", ap->print_id, tf->command);
++
++	magicbox_cf_outb(ap->ioaddr.command_addr, tf->command);
++	ata_sff_pause(ap);
++}
++
++static u8 magicbox_cf_check_status(struct ata_port *ap)
++{
++	u8 status;
++
++	status = magicbox_cf_inb(ap->ioaddr.status_addr);
++
++	DPRINTK("ata%u: status 0x%X, from %p\n", ap->print_id, status,
++		ap->ioaddr.status_addr);
++
++	return status;
++}
++
++static u8 magicbox_cf_check_altstatus(struct ata_port *ap)
++{
++	u8 altstatus;
++
++	altstatus = magicbox_cf_inb(ap->ioaddr.altstatus_addr);
++
++	DPRINTK("ata%u: altstatus 0x%X, from %p\n", ap->print_id,
++		altstatus, ap->ioaddr.altstatus_addr);
++
++	return altstatus;
++}
++
++static void magicbox_cf_dev_select(struct ata_port *ap, unsigned int device)
++{
++	/* Nothing to do. We are supporting one device only. */
++}
++
++static void magicbox_cf_tf_load(struct ata_port *ap,
++			        const struct ata_taskfile *tf)
++{
++	struct ata_ioports *ioaddr = &ap->ioaddr;
++	unsigned int is_addr = tf->flags & ATA_TFLAG_ISADDR;
++
++	if (tf->ctl != ap->last_ctl) {
++		magicbox_cf_outb(ioaddr->ctl_addr, tf->ctl);
++		ap->last_ctl = tf->ctl;
++		ata_wait_idle(ap);
++	}
++
++	if (is_addr && (tf->flags & ATA_TFLAG_LBA48)) {
++		magicbox_cf_outb(ioaddr->feature_addr, tf->hob_feature);
++		magicbox_cf_outb(ioaddr->nsect_addr, tf->hob_nsect);
++		magicbox_cf_outb(ioaddr->lbal_addr, tf->hob_lbal);
++		magicbox_cf_outb(ioaddr->lbam_addr, tf->hob_lbam);
++		magicbox_cf_outb(ioaddr->lbah_addr, tf->hob_lbah);
++		VPRINTK("hob: feat 0x%X nsect 0x%X, lba 0x%X 0x%X 0x%X\n",
++			tf->hob_feature,
++			tf->hob_nsect,
++			tf->hob_lbal,
++			tf->hob_lbam,
++			tf->hob_lbah);
++	}
++
++	if (is_addr) {
++		magicbox_cf_outb(ioaddr->feature_addr, tf->feature);
++		magicbox_cf_outb(ioaddr->nsect_addr, tf->nsect);
++		magicbox_cf_outb(ioaddr->lbal_addr, tf->lbal);
++		magicbox_cf_outb(ioaddr->lbam_addr, tf->lbam);
++		magicbox_cf_outb(ioaddr->lbah_addr, tf->lbah);
++		VPRINTK("feat 0x%X nsect 0x%X lba 0x%X 0x%X 0x%X\n",
++			tf->feature,
++			tf->nsect,
++			tf->lbal,
++			tf->lbam,
++			tf->lbah);
++	}
++
++	if (tf->flags & ATA_TFLAG_DEVICE) {
++		magicbox_cf_outb(ioaddr->device_addr, tf->device);
++		VPRINTK("device 0x%X\n", tf->device);
++	}
++
++	ata_wait_idle(ap);
++}
++
++static void magicbox_cf_tf_read(struct ata_port *ap, struct ata_taskfile *tf)
++{
++	struct ata_ioports *ioaddr = &ap->ioaddr;
++
++	tf->command = magicbox_cf_inb(ap->ioaddr.status_addr);
++	tf->feature = magicbox_cf_inb(ioaddr->error_addr);
++	tf->nsect = magicbox_cf_inb(ioaddr->nsect_addr);
++	tf->lbal = magicbox_cf_inb(ioaddr->lbal_addr);
++	tf->lbam = magicbox_cf_inb(ioaddr->lbam_addr);
++	tf->lbah = magicbox_cf_inb(ioaddr->lbah_addr);
++	tf->device = magicbox_cf_inb(ioaddr->device_addr);
++	VPRINTK("feat 0x%X nsect 0x%X lba 0x%X 0x%X 0x%X\n",
++		tf->feature,
++		tf->nsect,
++		tf->lbal,
++		tf->lbam,
++		tf->lbah);
++
++	if (tf->flags & ATA_TFLAG_LBA48) {
++		magicbox_cf_outb(ioaddr->ctl_addr, tf->ctl | ATA_HOB);
++		tf->hob_feature = magicbox_cf_inb(ioaddr->error_addr);
++		tf->hob_nsect = magicbox_cf_inb(ioaddr->nsect_addr);
++		tf->hob_lbal = magicbox_cf_inb(ioaddr->lbal_addr);
++		tf->hob_lbam = magicbox_cf_inb(ioaddr->lbam_addr);
++		tf->hob_lbah = magicbox_cf_inb(ioaddr->lbah_addr);
++		magicbox_cf_outb(ioaddr->ctl_addr, tf->ctl);
++		ap->last_ctl = tf->ctl;
++		VPRINTK("hob: feat 0x%X nsect 0x%X lba 0x%X 0x%X 0x%X\n",
++			tf->feature,
++			tf->nsect,
++			tf->lbal,
++			tf->lbam,
++			tf->lbah);
++	}
++}
++
++static unsigned int magicbox_cf_data_xfer(struct ata_device *dev,
++					  unsigned char *buf,
++					  unsigned int buflen, int rw)
++{
++	struct ata_port *ap = dev->link->ap;
++	unsigned int words = buflen >> 1;
++	unsigned int i;
++	u16 *buf16 = (u16 *) buf;
++	void __iomem *mmio = ap->ioaddr.data_addr;
++
++	/* Transfer multiple of 2 bytes */
++	if (rw == READ)
++		for (i = 0; i < words; i++)
++			buf16[i] = readw(mmio);
++	else
++		for (i = 0; i < words; i++)
++			writew(buf16[i], mmio);
++
++	/* Transfer trailing 1 byte, if any. */
++	if (unlikely(buflen & 0x01)) {
++		u16 align_buf[1] = { 0 };
++		unsigned char *trailing_buf = buf + buflen - 1;
++
++		if (rw == READ) {
++			align_buf[0] = readw(mmio);
++			memcpy(trailing_buf, align_buf, 1);
++		} else {
++			memcpy(align_buf, trailing_buf, 1);
++			writew(align_buf[0], mmio);
++		}
++		words++;
++	}
++
++	return words << 1;
++}
++
++static void magicbox_cf_irq_on(struct ata_port *ap)
++{
++	/* Nothing to do. */
++}
++
++static void magicbox_cf_irq_clear(struct ata_port *ap)
++{
++	/* Nothing to do. */
++}
++
++static struct ata_port_operations magicbox_cf_port_ops = {
++	.inherits		= &ata_sff_port_ops,
++
++	.cable_detect		= ata_cable_40wire,
++	.set_mode		= magicbox_cf_set_mode,
++
++	.sff_exec_command	= magicbox_cf_exec_command,
++	.sff_check_status	= magicbox_cf_check_status,
++	.sff_check_altstatus	= magicbox_cf_check_altstatus,
++	.sff_dev_select		= magicbox_cf_dev_select,
++	.sff_tf_load		= magicbox_cf_tf_load,
++	.sff_tf_read		= magicbox_cf_tf_read,
++	.sff_data_xfer		= magicbox_cf_data_xfer,
++
++	.sff_irq_on		= magicbox_cf_irq_on,
++	.sff_irq_clear		= magicbox_cf_irq_clear,
++
++	.port_start		= ATA_OP_NULL,
++};
++
++static struct scsi_host_template magicbox_cf_sht = {
++	ATA_PIO_SHT(DRV_NAME),
++};
++
++static inline void magicbox_cf_setup_port(struct ata_host *host)
++{
++	struct magicbox_cf_info *info = host->private_data;
++	struct ata_port *ap;
++
++	ap = host->ports[0];
++
++	ap->ops	= &magicbox_cf_port_ops;
++	ap->pio_mask = ATA_PIO4;
++	ap->flags |= ATA_FLAG_NO_ATAPI;
++
++	ap->ioaddr.cmd_addr = info->base + MAGICBOX_CF_REG_CMD;
++	ap->ioaddr.data_addr = info->base + MAGICBOX_CF_REG_DATA;
++	ap->ioaddr.error_addr = info->base + MAGICBOX_CF_REG_ERR;
++	ap->ioaddr.feature_addr = info->base + MAGICBOX_CF_REG_FEATURE;
++	ap->ioaddr.nsect_addr = info->base + MAGICBOX_CF_REG_NSECT;
++	ap->ioaddr.lbal_addr = info->base + MAGICBOX_CF_REG_LBAL;
++	ap->ioaddr.lbam_addr = info->base + MAGICBOX_CF_REG_LBAM;
++	ap->ioaddr.lbah_addr = info->base + MAGICBOX_CF_REG_LBAH;
++	ap->ioaddr.device_addr = info->base + MAGICBOX_CF_REG_DEVICE;
++	ap->ioaddr.status_addr = info->base + MAGICBOX_CF_REG_STATUS;
++	ap->ioaddr.command_addr = info->base + MAGICBOX_CF_REG_CMD;
++
++	ap->ioaddr.altstatus_addr = info->ctrl + MAGICBOX_CF_REG_ALTSTATUS;
++	ap->ioaddr.ctl_addr = info->ctrl + MAGICBOX_CF_REG_CTL;
++
++	ata_port_desc(ap, "cmd 0x%p ctl 0x%p", ap->ioaddr.cmd_addr,
++		      ap->ioaddr.ctl_addr);
++}
++
++static int magicbox_cf_of_probe(struct platform_device *op)
++{
++	struct magicbox_cf_info *info;
++	struct ata_host *host;
++	int irq;
++	int ret = 0;
++
++	info = kzalloc(sizeof(struct magicbox_cf_info), GFP_KERNEL);
++	if (info == NULL) {
++		ret = -ENOMEM;
++		goto err_exit;
++	}
++
++	irq = irq_of_parse_and_map(op->dev.of_node, 0);
++	if (irq < 0) {
++		dev_err(&op->dev, "invalid irq\n");
++		ret = -EINVAL;
++		goto err_free_info;
++	}
++
++	info->base = of_iomap(op->dev.of_node, 0);
++	if (info->base == NULL) {
++		ret = -ENOMEM;
++		goto err_free_info;
++	}
++
++	info->ctrl = of_iomap(op->dev.of_node, 1);
++	if (info->ctrl == NULL) {
++		ret = -ENOMEM;
++		goto err_unmap_base;
++	}
++
++	host = ata_host_alloc(&op->dev, MAGICBOX_CF_MAXPORTS);
++	if (host == NULL) {
++		ret = -ENOMEM;
++		goto err_unmap_ctrl;
++	}
++
++	host->private_data = info;
++	magicbox_cf_setup_port(host);
++
++	ret = ata_host_activate(host, irq, ata_sff_interrupt,
++				IRQF_TRIGGER_RISING, &magicbox_cf_sht);
++	if (ret)
++		goto err_unmap_ctrl;
++
++	dev_set_drvdata(&op->dev, host);
++	return 0;
++
++ err_unmap_ctrl:
++	iounmap(info->ctrl);
++ err_unmap_base:
++	iounmap(info->base);
++ err_free_info:
++	kfree(info);
++ err_exit:
++	return ret;
++}
++
++static int magicbox_cf_of_remove(struct platform_device *op)
++{
++	struct ata_host *host = dev_get_drvdata(&op->dev);
++	struct magicbox_cf_info *info = host->private_data;
++
++	ata_host_detach(host);
++	iounmap(info->ctrl);
++	iounmap(info->base);
++	kfree(info);
++
++	return 0;
++}
++
++static struct of_device_id magicbox_cf_of_match[] = {
++	{ .compatible = "pata-magicbox-cf", },
++	{},
++};
++
++static struct platform_driver magicbox_cf_of_platform_driver = {
++	.probe		= magicbox_cf_of_probe,
++	.remove		= magicbox_cf_of_remove,
++	.driver		= {
++		.name = DRV_NAME,
++		.owner = THIS_MODULE,
++		.of_match_table = magicbox_cf_of_match,
++	},
++};
++
++static int __init magicbox_cf_init(void)
++{
++	return platform_driver_register(&magicbox_cf_of_platform_driver);
++}
++
++static void __exit magicbox_cf_exit(void)
++{
++	platform_driver_unregister(&magicbox_cf_of_platform_driver);
++}
++
++module_init(magicbox_cf_init);
++module_exit(magicbox_cf_exit);
++
++MODULE_DESCRIPTION(DRV_DESC);
++MODULE_AUTHOR("Gabor Juhos <juhosg@openwrt.org>");
++MODULE_LICENSE("GPL v2");
++MODULE_VERSION(DRV_VERSION);
++MODULE_DEVICE_TABLE(of, magicbox_cf_of_match);

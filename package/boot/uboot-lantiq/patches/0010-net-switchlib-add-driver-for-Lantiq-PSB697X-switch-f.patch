@@ -1,0 +1,161 @@
+From e2c59cedebf72e4a002134a2932f722b508a5448 Mon Sep 17 00:00:00 2001
+From: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+Date: Wed, 29 Aug 2012 22:08:15 +0200
+Subject: net: switchlib: add driver for Lantiq PSB697X switch family
+
+Signed-off-by: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+
+--- a/drivers/net/switch/Makefile
++++ b/drivers/net/switch/Makefile
+@@ -10,6 +10,7 @@ include $(TOPDIR)/config.mk
+ LIB	:= $(obj)libswitch.o
+ 
+ COBJS-$(CONFIG_SWITCH_MULTI) += switch.o
++COBJS-$(CONFIG_SWITCH_PSB697X) += psb697x.o
+ 
+ COBJS	:= $(COBJS-y)
+ SRCS	:= $(COBJS:.o=.c)
+--- /dev/null
++++ b/drivers/net/switch/psb697x.c
+@@ -0,0 +1,118 @@
++/*
++ * Copyright (C) 2011-2013 Daniel Schwierzeck, daniel.schwierzeck@gmail.com
++ *
++ * SPDX-License-Identifier:	GPL-2.0+
++ */
++
++#include <common.h>
++#include <malloc.h>
++#include <switch.h>
++#include <miiphy.h>
++
++#define PSB697X_CHIPID1		0x2599
++#define PSB697X_PORT_COUNT	7
++
++#define PSB697X_PORT_BASE(p)	(p * 0x20)
++#define PSB697X_REG_PS(p)	(PSB697X_PORT_BASE(p) + 0x00)
++#define PSB697X_REG_PBC(p)	(PSB697X_PORT_BASE(p) + 0x01)
++#define PSB697X_REG_PEC(p)	(PSB697X_PORT_BASE(p) + 0x02)
++
++#define PSB697X_REG_SGC1	0x0E0	/* Switch Global Control Register 1 */
++#define PSB697X_REG_SGC2	0x0E1	/* Switch Global Control Register 2 */
++#define PSB697X_REG_CMH		0x0E2	/* CPU Port & Mirror Control */
++#define PSB697X_REG_MIICR	0x0F5	/* MII Port Control */
++#define PSB697X_REG_CI0		0x100	/* Chip Identifier 0 */
++#define PSB697X_REG_CI1		0x101	/* Chip Identifier 1 */
++#define PSB697X_REG_MIIAC	0x120	/* MII Indirect Access Control */
++#define PSB697X_REG_MIIWD	0x121	/* MII Indirect Write Data */
++#define PSB697X_REG_MIIRD	0x122	/* MII Indirect Read Data */
++
++#define PSB697X_REG_PORT_FLP	(1 << 2)	/* Force link up */
++#define PSB697X_REG_PORT_FLD	(1 << 1)	/* Force link down */
++
++#define PSB697X_REG_SGC2_SE	(1 << 15)	/* Switch enable */
++
++#define PSB697X_REG_CMH_CPN_MASK	0x7
++#define PSB697X_REG_CMH_CPN_SHIFT	5
++
++
++static inline int psb697x_mii_read(struct mii_dev *bus, u16 reg)
++{
++	int ret;
++
++	ret = bus->read(bus, (reg >> 5) & 0x1f, MDIO_DEVAD_NONE, reg & 0x1f);
++
++	return ret;
++}
++
++static inline int psb697x_mii_write(struct mii_dev *bus, u16 reg, u16 val)
++{
++	int ret;
++
++	ret = bus->write(bus, (reg >> 5) & 0x1f, MDIO_DEVAD_NONE,
++		reg & 0x1f, val);
++
++	return ret;
++}
++
++static int psb697x_probe(struct switch_device *dev)
++{
++	struct mii_dev *bus = dev->bus;
++	int ci1;
++
++	ci1 = psb697x_mii_read(bus, PSB697X_REG_CI1);
++
++	if (ci1 == PSB697X_CHIPID1)
++		return 0;
++
++	return 1;
++}
++
++static void psb697x_setup(struct switch_device *dev)
++{
++	struct mii_dev *bus = dev->bus;
++	int i, state;
++
++	/* Enable switch */
++	psb697x_mii_write(bus, PSB697X_REG_SGC2, PSB697X_REG_SGC2_SE);
++
++	/*
++	 * Force 100 Mbps as default value for CPU ports 5 and 6 to get
++	 * full speed.
++	 */
++	psb697x_mii_write(bus, PSB697X_REG_MIICR, 0x0773);
++
++	for (i = 0; i < PSB697X_PORT_COUNT; i++) {
++		state = dev->port_mask & (1 << i);
++
++		/*
++		 * Software workaround from Errata Sheet:
++		 * Force link down and reset internal PHY, keep that state
++		 * for all unconnected ports and disable force link down
++		 * for all connected ports
++		 */
++		psb697x_mii_write(bus, PSB697X_REG_PBC(i),
++			PSB697X_REG_PORT_FLD);
++
++		if (i == dev->cpu_port)
++			/* Force link up for CPU port */
++			psb697x_mii_write(bus, PSB697X_REG_PBC(i),
++				PSB697X_REG_PORT_FLP);
++		else if (state)
++			/* Disable force link down for active LAN ports */
++			psb697x_mii_write(bus, PSB697X_REG_PBC(i), 0);
++	}
++}
++
++static struct switch_driver psb697x_drv = {
++	.name = "psb697x",
++};
++
++void switch_psb697x_init(void)
++{
++	/* For archs with manual relocation */
++	psb697x_drv.probe = psb697x_probe;
++	psb697x_drv.setup = psb697x_setup;
++
++	switch_driver_register(&psb697x_drv);
++}
+--- a/drivers/net/switch/switch.c
++++ b/drivers/net/switch/switch.c
+@@ -17,6 +17,10 @@ void switch_init(void)
+ 	INIT_LIST_HEAD(&switch_drivers);
+ 	INIT_LIST_HEAD(&switch_devices);
+ 
++#if defined(CONFIG_SWITCH_PSB697X)
++	switch_psb697x_init();
++#endif
++
+ 	board_switch_init();
+ }
+ 
+--- a/include/switch.h
++++ b/include/switch.h
+@@ -97,6 +97,7 @@ static inline void switch_setup(struct s
+ }
+ 
+ /* Init functions for supported Switch drivers */
++extern void switch_psb697x_init(void);
+ 
+ #endif /* __SWITCH_H */
+ 

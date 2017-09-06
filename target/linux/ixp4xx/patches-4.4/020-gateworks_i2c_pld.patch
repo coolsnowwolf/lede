@@ -1,0 +1,424 @@
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -697,6 +697,14 @@ config GPIO_SX150X
+ 	  8 bits:  sx1508q
+ 	  16 bits: sx1509q
+ 
++config GPIO_GW_I2C_PLD
++	tristate "Gateworks I2C PLD GPIO Expander"
++	depends on I2C
++	help
++		Say yes here to provide access to the Gateworks I2C PLD GPIO
++		Expander. This is used at least on the GW2358-4.
++
++
+ endmenu
+ 
+ menu "MFD GPIO expanders"
+--- a/drivers/gpio/Makefile
++++ b/drivers/gpio/Makefile
+@@ -40,6 +40,7 @@ obj-$(CONFIG_GPIO_ETRAXFS)	+= gpio-etrax
+ obj-$(CONFIG_GPIO_F7188X)	+= gpio-f7188x.o
+ obj-$(CONFIG_GPIO_GE_FPGA)	+= gpio-ge.o
+ obj-$(CONFIG_GPIO_GRGPIO)	+= gpio-grgpio.o
++obj-$(CONFIG_GPIO_GW_I2C_PLD)	+= gw_i2c_pld.o
+ obj-$(CONFIG_GPIO_ICH)		+= gpio-ich.o
+ obj-$(CONFIG_GPIO_IOP)		+= gpio-iop.o
+ obj-$(CONFIG_GPIO_IT87)		+= gpio-it87.o
+--- /dev/null
++++ b/drivers/gpio/gw_i2c_pld.c
+@@ -0,0 +1,371 @@
++/*
++ * Gateworks I2C PLD GPIO expander
++ *
++ * Copyright (C) 2009 Gateworks Corporation
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
++ */
++
++#include <linux/kernel.h>
++#include <linux/slab.h>
++#include <linux/hardirq.h>
++#include <linux/i2c.h>
++#include <linux/i2c/gw_i2c_pld.h>
++#include <linux/module.h>
++#include <linux/export.h>
++#include <asm/gpio.h>
++#include <mach/hardware.h>
++
++static const struct i2c_device_id gw_i2c_pld_id[] = {
++	{ "gw_i2c_pld", 8 },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, gw_i2c_pld_id);
++
++/*
++ * The Gateworks I2C PLD chip only expose one read and one
++ * write register.  Writing a "one" bit (to match the reset state) lets
++ * that pin be used as an input. It is an open-drain model.
++ */
++
++struct gw_i2c_pld {
++	struct gpio_chip	chip;
++	struct i2c_client	*client;
++	unsigned		out;		/* software latch */
++};
++
++/*-------------------------------------------------------------------------*/
++
++/*
++ * The Gateworks I2C PLD chip does not properly send the acknowledge bit
++ * thus we cannot use standard i2c_smbus functions. We have recreated
++ * our own here, but we still use the rt_mutex_lock to lock the i2c_bus
++ * as the device still exists on the I2C bus.
++*/
++
++#define PLD_SCL_GPIO 6
++#define PLD_SDA_GPIO 7
++
++#define SCL_LO()  gpio_line_set(PLD_SCL_GPIO, IXP4XX_GPIO_LOW)
++#define SCL_HI()  gpio_line_set(PLD_SCL_GPIO, IXP4XX_GPIO_HIGH)
++#define SCL_EN()  gpio_line_config(PLD_SCL_GPIO, IXP4XX_GPIO_OUT)
++#define SDA_LO()  gpio_line_set(PLD_SDA_GPIO, IXP4XX_GPIO_LOW)
++#define SDA_HI()  gpio_line_set(PLD_SDA_GPIO, IXP4XX_GPIO_HIGH)
++#define SDA_EN()  gpio_line_config(PLD_SDA_GPIO, IXP4XX_GPIO_OUT)
++#define SDA_DIS() gpio_line_config(PLD_SDA_GPIO, IXP4XX_GPIO_IN)
++#define SDA_IN(x) gpio_line_get(PLD_SDA_GPIO, &x);
++
++static int i2c_pld_write_byte(int address, int byte)
++{
++	int i;
++
++	address = (address << 1) & ~0x1;
++
++	SDA_HI();
++	SDA_EN();
++	SCL_EN();
++	SCL_HI();
++	SDA_LO();
++	SCL_LO();
++
++	for (i = 7; i >= 0; i--)
++	{
++		if (address & (1 << i))
++			SDA_HI();
++		else
++			SDA_LO();
++
++		SCL_HI();
++		SCL_LO();
++	}
++
++	SDA_DIS();
++	SCL_HI();
++	SDA_IN(i);
++	SCL_LO();
++	SDA_EN();
++
++	for (i = 7; i >= 0; i--)
++	{
++		if (byte & (1 << i))
++      SDA_HI();
++		else
++			SDA_LO();
++		SCL_HI();
++		SCL_LO();
++	}
++
++	SDA_DIS();
++	SCL_HI();
++	SDA_IN(i);
++	SCL_LO();
++
++	SDA_HI();
++	SDA_EN();
++
++	SDA_LO();
++	SCL_HI();
++	SDA_HI();
++	SCL_LO();
++	SCL_HI();
++
++	return 0;
++}
++
++static unsigned int i2c_pld_read_byte(int address)
++{
++	int i = 0, byte = 0;
++	int bit;
++
++	address = (address << 1) | 0x1;
++
++	SDA_HI();
++	SDA_EN();
++	SCL_EN();
++	SCL_HI();
++	SDA_LO();
++	SCL_LO();
++
++	for (i = 7; i >= 0; i--)
++	{
++		if (address & (1 << i))
++			SDA_HI();
++		else
++			SDA_LO();
++
++		SCL_HI();
++		SCL_LO();
++	}
++
++	SDA_DIS();
++	SCL_HI();
++	SDA_IN(i);
++	SCL_LO();
++	SDA_EN();
++
++	SDA_DIS();
++	for (i = 7; i >= 0; i--)
++	{
++		SCL_HI();
++		SDA_IN(bit);
++		byte |= bit << i;
++		SCL_LO();
++	}
++
++	SDA_LO();
++	SCL_HI();
++	SDA_HI();
++	SCL_LO();
++	SCL_HI();
++
++	return byte;
++}
++
++
++static int gw_i2c_pld_input8(struct gpio_chip *chip, unsigned offset)
++{
++	int ret;
++	struct gw_i2c_pld *gpio = container_of(chip, struct gw_i2c_pld, chip);
++	struct i2c_adapter *adap = gpio->client->adapter;
++
++	if (in_atomic() || irqs_disabled()) {
++		ret = rt_mutex_trylock(&adap->bus_lock);
++		if (!ret)
++			/* I2C activity is ongoing. */
++			return -EAGAIN;
++	} else {
++		rt_mutex_lock(&adap->bus_lock);
++	}
++
++	gpio->out |= (1 << offset);
++
++	ret = i2c_pld_write_byte(gpio->client->addr, gpio->out);
++
++	rt_mutex_unlock(&adap->bus_lock);
++
++	return ret;
++}
++
++static int gw_i2c_pld_get8(struct gpio_chip *chip, unsigned offset)
++{
++	int ret;
++	s32	value;
++	struct gw_i2c_pld *gpio = container_of(chip, struct gw_i2c_pld, chip);
++	struct i2c_adapter *adap = gpio->client->adapter;
++
++	if (in_atomic() || irqs_disabled()) {
++		ret = rt_mutex_trylock(&adap->bus_lock);
++		if (!ret)
++			/* I2C activity is ongoing. */
++			return -EAGAIN;
++	} else {
++		rt_mutex_lock(&adap->bus_lock);
++	}
++
++	value = i2c_pld_read_byte(gpio->client->addr);
++
++	rt_mutex_unlock(&adap->bus_lock);
++
++	return (value < 0) ? 0 : (value & (1 << offset));
++}
++
++static int gw_i2c_pld_output8(struct gpio_chip *chip, unsigned offset, int value)
++{
++	int ret;
++
++	struct gw_i2c_pld *gpio = container_of(chip, struct gw_i2c_pld, chip);
++	struct i2c_adapter *adap = gpio->client->adapter;
++
++	unsigned bit = 1 << offset;
++
++	if (in_atomic() || irqs_disabled()) {
++		ret = rt_mutex_trylock(&adap->bus_lock);
++		if (!ret)
++			/* I2C activity is ongoing. */
++			return -EAGAIN;
++	} else {
++		rt_mutex_lock(&adap->bus_lock);
++	}
++
++
++	if (value)
++		gpio->out |= bit;
++	else
++		gpio->out &= ~bit;
++
++	ret = i2c_pld_write_byte(gpio->client->addr, gpio->out);
++
++	rt_mutex_unlock(&adap->bus_lock);
++
++	return ret;
++}
++
++static void gw_i2c_pld_set8(struct gpio_chip *chip, unsigned offset, int value)
++{
++	gw_i2c_pld_output8(chip, offset, value);
++}
++
++/*-------------------------------------------------------------------------*/
++
++static int gw_i2c_pld_probe(struct i2c_client *client,
++			 const struct i2c_device_id *id)
++{
++	struct gw_i2c_pld_platform_data	*pdata;
++	struct gw_i2c_pld *gpio;
++	int status;
++
++	pdata = client->dev.platform_data;
++	if (!pdata)
++		return -ENODEV;
++
++	/* Allocate, initialize, and register this gpio_chip. */
++	gpio = kzalloc(sizeof *gpio, GFP_KERNEL);
++	if (!gpio)
++		return -ENOMEM;
++
++	gpio->chip.base = pdata->gpio_base;
++	gpio->chip.can_sleep = 1;
++	gpio->chip.dev = &client->dev;
++	gpio->chip.owner = THIS_MODULE;
++
++	gpio->chip.ngpio = pdata->nr_gpio;
++	gpio->chip.direction_input = gw_i2c_pld_input8;
++	gpio->chip.get = gw_i2c_pld_get8;
++	gpio->chip.direction_output = gw_i2c_pld_output8;
++	gpio->chip.set = gw_i2c_pld_set8;
++
++	gpio->chip.label = client->name;
++
++	gpio->client = client;
++	i2c_set_clientdata(client, gpio);
++
++	gpio->out = 0xFF;
++
++	status = gpiochip_add(&gpio->chip);
++	if (status < 0)
++		goto fail;
++
++	dev_info(&client->dev, "gpios %d..%d on a %s%s\n",
++			gpio->chip.base,
++			gpio->chip.base + gpio->chip.ngpio - 1,
++			client->name,
++			client->irq ? " (irq ignored)" : "");
++
++	/* Let platform code set up the GPIOs and their users.
++	 * Now is the first time anyone could use them.
++	 */
++	if (pdata->setup) {
++		status = pdata->setup(client,
++				gpio->chip.base, gpio->chip.ngpio,
++				pdata->context);
++		if (status < 0)
++			dev_warn(&client->dev, "setup --> %d\n", status);
++	}
++
++	return 0;
++
++fail:
++	dev_dbg(&client->dev, "probe error %d for '%s'\n",
++			status, client->name);
++	kfree(gpio);
++	return status;
++}
++
++static int gw_i2c_pld_remove(struct i2c_client *client)
++{
++	struct gw_i2c_pld_platform_data	*pdata = client->dev.platform_data;
++	struct gw_i2c_pld *gpio = i2c_get_clientdata(client);
++	int				status = 0;
++
++	if (pdata->teardown) {
++		status = pdata->teardown(client,
++				gpio->chip.base, gpio->chip.ngpio,
++				pdata->context);
++		if (status < 0) {
++			dev_err(&client->dev, "%s --> %d\n",
++					"teardown", status);
++			return status;
++		}
++	}
++
++	gpiochip_remove(&gpio->chip);
++	kfree(gpio);
++	return 0;
++}
++
++static struct i2c_driver gw_i2c_pld_driver = {
++	.driver = {
++		.name	= "gw_i2c_pld",
++		.owner	= THIS_MODULE,
++	},
++	.probe	= gw_i2c_pld_probe,
++	.remove	= gw_i2c_pld_remove,
++	.id_table = gw_i2c_pld_id,
++};
++
++static int __init gw_i2c_pld_init(void)
++{
++	return i2c_add_driver(&gw_i2c_pld_driver);
++}
++module_init(gw_i2c_pld_init);
++
++static void __exit gw_i2c_pld_exit(void)
++{
++	i2c_del_driver(&gw_i2c_pld_driver);
++}
++module_exit(gw_i2c_pld_exit);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Chris Lang");
+--- /dev/null
++++ b/include/linux/i2c/gw_i2c_pld.h
+@@ -0,0 +1,20 @@
++#ifndef __LINUX_GW_I2C_PLD_H
++#define __LINUX_GW_I2C_PLD_H
++
++/**
++ * The Gateworks I2C PLD Implements an additional 8 bits of GPIO through the PLD
++ */
++
++struct gw_i2c_pld_platform_data {
++	unsigned gpio_base;
++	unsigned nr_gpio;
++	int		(*setup)(struct i2c_client *client,
++					int gpio, unsigned ngpio,
++					void *context);
++	int		(*teardown)(struct i2c_client *client,
++					int gpio, unsigned ngpio,
++					void *context);
++	void		*context;
++};
++
++#endif /* __LINUX_GW_I2C_PLD_H */

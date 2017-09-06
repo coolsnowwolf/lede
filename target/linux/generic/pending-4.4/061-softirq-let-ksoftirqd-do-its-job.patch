@@ -1,0 +1,83 @@
+From: Eric Dumazet <edumazet@google.com>
+Date: Wed, 31 Aug 2016 10:42:29 -0700
+Subject: [PATCH] softirq: let ksoftirqd do its job
+
+A while back, Paolo and Hannes sent an RFC patch adding threaded-able
+napi poll loop support : (https://patchwork.ozlabs.org/patch/620657/)
+
+The problem seems to be that softirqs are very aggressive and are often
+handled by the current process, even if we are under stress and that
+ksoftirqd was scheduled, so that innocent threads would have more chance
+to make progress.
+
+This patch makes sure that if ksoftirq is running, we let it
+perform the softirq work.
+
+Jonathan Corbet summarized the issue in https://lwn.net/Articles/687617/
+
+Tested:
+
+ - NIC receiving traffic handled by CPU 0
+ - UDP receiver running on CPU 0, using a single UDP socket.
+ - Incoming flood of UDP packets targeting the UDP socket.
+
+Before the patch, the UDP receiver could almost never get cpu cycles and
+could only receive ~2,000 packets per second.
+
+After the patch, cpu cycles are split 50/50 between user application and
+ksoftirqd/0, and we can effectively read ~900,000 packets per second,
+a huge improvement in DOS situation. (Note that more packets are now
+dropped by the NIC itself, since the BH handlers get less cpu cycles to
+drain RX ring buffer)
+
+Since the load runs in well identified threads context, an admin can
+more easily tune process scheduling parameters if needed.
+
+Reported-by: Paolo Abeni <pabeni@redhat.com>
+Reported-by: Hannes Frederic Sowa <hannes@stressinduktion.org>
+Signed-off-by: Eric Dumazet <edumazet@google.com>
+Cc: David Miller <davem@davemloft.net
+Cc: Jesper Dangaard Brouer <jbrouer@redhat.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Rik van Riel <riel@redhat.com>
+---
+
+--- a/kernel/softirq.c
++++ b/kernel/softirq.c
+@@ -78,6 +78,17 @@ static void wakeup_softirqd(void)
+ }
+ 
+ /*
++ * If ksoftirqd is scheduled, we do not want to process pending softirqs
++ * right now. Let ksoftirqd handle this at its own rate, to get fairness.
++ */
++static bool ksoftirqd_running(void)
++{
++	struct task_struct *tsk = __this_cpu_read(ksoftirqd);
++
++	return tsk && (tsk->state == TASK_RUNNING);
++}
++
++/*
+  * preempt_count and SOFTIRQ_OFFSET usage:
+  * - preempt_count is changed by SOFTIRQ_OFFSET on entering or leaving
+  *   softirq processing.
+@@ -313,7 +324,7 @@ asmlinkage __visible void do_softirq(voi
+ 
+ 	pending = local_softirq_pending();
+ 
+-	if (pending)
++	if (pending && !ksoftirqd_running())
+ 		do_softirq_own_stack();
+ 
+ 	local_irq_restore(flags);
+@@ -340,6 +351,9 @@ void irq_enter(void)
+ 
+ static inline void invoke_softirq(void)
+ {
++	if (ksoftirqd_running())
++		return;
++
+ 	if (!force_irqthreads) {
+ #ifdef CONFIG_HAVE_IRQ_EXIT_ON_IRQ_STACK
+ 		/*

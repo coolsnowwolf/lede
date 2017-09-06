@@ -1,0 +1,106 @@
+From 2df13a365ecda7e3321cf9d4e1a9ebd63e58c28b Mon Sep 17 00:00:00 2001
+From: Itai Katz <itai.katz@nxp.com>
+Date: Mon, 11 Apr 2016 11:55:55 -0500
+Subject: [PATCH 173/226] staging: fsl-mc: get version of root dprc from MC
+ hardware
+
+The root dprc is discovered as a platform device in the device tree.  The
+version of that dprc was previously set using hardcoded values from the API
+header in the kernel).  This patch removes the use of the hardcoded version
+numbers and instead reads the actual dprc version from the hardware.
+
+Signed-off-by: Itai Katz <itai.katz@nxp.com>
+(Stuart: resolved merge conflict, updated commit subject/log)
+Signed-off-by: Stuart Yoder <stuart.yoder@nxp.com>
+Acked-by: German Rivera <german.rivera@nxp.com>
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/staging/fsl-mc/bus/mc-bus.c |   45 ++++++++++++++++++++++++++++-------
+ 1 file changed, 37 insertions(+), 8 deletions(-)
+
+--- a/drivers/staging/fsl-mc/bus/mc-bus.c
++++ b/drivers/staging/fsl-mc/bus/mc-bus.c
+@@ -229,11 +229,10 @@ static bool fsl_mc_is_root_dprc(struct d
+ 	return dev == root_dprc_dev;
+ }
+ 
+-static int get_dprc_icid(struct fsl_mc_io *mc_io,
+-			 int container_id, u16 *icid)
++static int get_dprc_attr(struct fsl_mc_io *mc_io,
++			 int container_id, struct dprc_attributes *attr)
+ {
+ 	u16 dprc_handle;
+-	struct dprc_attributes attr;
+ 	int error;
+ 
+ 	error = dprc_open(mc_io, 0, container_id, &dprc_handle);
+@@ -242,15 +241,14 @@ static int get_dprc_icid(struct fsl_mc_i
+ 		return error;
+ 	}
+ 
+-	memset(&attr, 0, sizeof(attr));
+-	error = dprc_get_attributes(mc_io, 0, dprc_handle, &attr);
++	memset(attr, 0, sizeof(struct dprc_attributes));
++	error = dprc_get_attributes(mc_io, 0, dprc_handle, attr);
+ 	if (error < 0) {
+ 		dev_err(mc_io->dev, "dprc_get_attributes() failed: %d\n",
+ 			error);
+ 		goto common_cleanup;
+ 	}
+ 
+-	*icid = attr.icid;
+ 	error = 0;
+ 
+ common_cleanup:
+@@ -258,6 +256,34 @@ common_cleanup:
+ 	return error;
+ }
+ 
++static int get_dprc_icid(struct fsl_mc_io *mc_io,
++			 int container_id, u16 *icid)
++{
++	struct dprc_attributes attr;
++	int error;
++
++	error = get_dprc_attr(mc_io, container_id, &attr);
++	if (error == 0)
++		*icid = attr.icid;
++
++	return error;
++}
++
++static int get_dprc_version(struct fsl_mc_io *mc_io,
++			    int container_id, u16 *major, u16 *minor)
++{
++	struct dprc_attributes attr;
++	int error;
++
++	error = get_dprc_attr(mc_io, container_id, &attr);
++	if (error == 0) {
++		*major = attr.version.major;
++		*minor = attr.version.minor;
++	}
++
++	return error;
++}
++
+ static int translate_mc_addr(struct fsl_mc_device *mc_dev,
+ 			     enum dprc_region_type mc_region_type,
+ 			     u64 mc_offset, phys_addr_t *phys_addr)
+@@ -719,11 +745,14 @@ static int fsl_mc_bus_probe(struct platf
+ 		goto error_cleanup_mc_io;
+ 	}
+ 
++	error = get_dprc_version(mc_io, container_id,
++				 &obj_desc.ver_major, &obj_desc.ver_minor);
++	if (error < 0)
++		goto error_cleanup_mc_io;
++
+ 	obj_desc.vendor = FSL_MC_VENDOR_FREESCALE;
+ 	strcpy(obj_desc.type, "dprc");
+ 	obj_desc.id = container_id;
+-	obj_desc.ver_major = DPRC_VER_MAJOR;
+-	obj_desc.ver_minor = DPRC_VER_MINOR;
+ 	obj_desc.irq_count = 1;
+ 	obj_desc.region_count = 0;
+ 

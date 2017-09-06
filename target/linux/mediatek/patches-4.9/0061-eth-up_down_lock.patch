@@ -1,0 +1,72 @@
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -1904,12 +1904,16 @@ static int mtk_open(struct net_device *d
+ 	struct mtk_mac *mac = netdev_priv(dev);
+ 	struct mtk_eth *eth = mac->hw;
+ 
++	spin_lock(&eth->iface_lock);
++
+ 	/* we run 2 netdevs on the same dma ring so we only bring it up once */
+ 	if (!atomic_read(&eth->dma_refcnt)) {
+ 		int err = mtk_start_dma(eth);
+ 
+-		if (err)
++		if (err) {
++			spin_unlock(&eth->iface_lock);
+ 			return err;
++		}
+ 
+ 		napi_enable(&eth->tx_napi);
+ 		napi_enable(&eth->rx_napi);
+@@ -1923,6 +1927,7 @@ static int mtk_open(struct net_device *d
+ 
+ 	phy_start(dev->phydev);
+ 	netif_start_queue(dev);
++	spin_unlock(&eth->iface_lock);
+ 
+ 	return 0;
+ }
+@@ -1955,12 +1960,15 @@ static int mtk_stop(struct net_device *d
+ 	struct mtk_mac *mac = netdev_priv(dev);
+ 	struct mtk_eth *eth = mac->hw;
+ 
++	spin_lock(&eth->iface_lock);
+ 	netif_tx_disable(dev);
+ 	phy_stop(dev->phydev);
+ 
+ 	/* only shutdown DMA if this is the last user */
+-	if (!atomic_dec_and_test(&eth->dma_refcnt))
++	if (!atomic_dec_and_test(&eth->dma_refcnt)) {
++		spin_unlock(&eth->iface_lock);
+ 		return 0;
++	}
+ 
+ 	del_timer(&eth->napi_timer);
+ 
+@@ -1974,6 +1982,8 @@ static int mtk_stop(struct net_device *d
+ 
+ 	mtk_dma_free(eth);
+ 
++	spin_unlock(&eth->iface_lock);
++
+ 	return 0;
+ }
+ 
+@@ -2623,6 +2633,7 @@ static int mtk_probe(struct platform_dev
+ 	if (IS_ERR(eth->base))
+ 		return PTR_ERR(eth->base);
+ 
++	spin_lock_init(&eth->iface_lock);
+ 	spin_lock_init(&eth->page_lock);
+ 	spin_lock_init(&eth->tx_irq_lock);
+ 	spin_lock_init(&eth->rx_irq_lock);
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -573,6 +573,7 @@ struct mtk_rx_ring {
+ struct mtk_eth {
+ 	struct device			*dev;
+ 	void __iomem			*base;
++	spinlock_t			iface_lock;
+ 	spinlock_t			page_lock;
+ 	spinlock_t			tx_irq_lock;
+ 	spinlock_t			rx_irq_lock;

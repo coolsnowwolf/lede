@@ -1,0 +1,94 @@
+From cd4a93d1532b2f0ffe508f7fb5d464ec49634dcd Mon Sep 17 00:00:00 2001
+From: Jes Sorensen <Jes.Sorensen@redhat.com>
+Date: Fri, 22 Jul 2016 13:55:24 -0400
+Subject: [PATCH] rtl8xxxu: Implement rtl8188e_set_tx_power()
+
+This matches the code used to set TX power on 8192eu, except it only
+handles path A.
+
+We should be able to consolidate this code.
+
+Signed-off-by: Jes Sorensen <Jes.Sorensen@redhat.com>
+---
+ .../net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c | 63 ++++++++++++++++++++++
+ 1 file changed, 63 insertions(+)
+
+--- a/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c
++++ b/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c
+@@ -283,6 +283,68 @@ static struct rtl8xxxu_rfregval rtl8188e
+ 	{0xff, 0xffffffff}
+ };
+ 
++int rtl8xxxu_8188e_channel_to_group(int channel)
++{
++	int group;
++
++	if (channel < 3)
++		group = 0;
++	else if (channel < 6)
++		group = 1;
++	else if (channel < 9)
++		group = 2;
++	else if (channel < 12)
++		group = 3;
++	else if (channel < 14)
++		group = 4;
++	else
++		group = 5;
++
++	return group;
++}
++
++static void
++rtl8188e_set_tx_power(struct rtl8xxxu_priv *priv, int channel, bool ht40)
++{
++	u32 val32, ofdm, mcs;
++	u8 cck, ofdmbase, mcsbase;
++	int group, tx_idx;
++
++	tx_idx = 0;
++	group = rtl8xxxu_8188e_channel_to_group(channel);
++
++	cck = priv->cck_tx_power_index_A[group];
++
++	val32 = rtl8xxxu_read32(priv, REG_TX_AGC_A_CCK1_MCS32);
++	val32 &= 0xffff00ff;
++	val32 |= (cck << 8);
++	rtl8xxxu_write32(priv, REG_TX_AGC_A_CCK1_MCS32, val32);
++
++	val32 = rtl8xxxu_read32(priv, REG_TX_AGC_B_CCK11_A_CCK2_11);
++	val32 &= 0xff;
++	val32 |= ((cck << 8) | (cck << 16) | (cck << 24));
++	rtl8xxxu_write32(priv, REG_TX_AGC_B_CCK11_A_CCK2_11, val32);
++
++	ofdmbase = priv->ht40_1s_tx_power_index_A[group];
++	ofdmbase += priv->ofdm_tx_power_diff[tx_idx].a;
++	ofdm = ofdmbase | ofdmbase << 8 | ofdmbase << 16 | ofdmbase << 24;
++
++	rtl8xxxu_write32(priv, REG_TX_AGC_A_RATE18_06, ofdm);
++	rtl8xxxu_write32(priv, REG_TX_AGC_A_RATE54_24, ofdm);
++
++	mcsbase = priv->ht40_1s_tx_power_index_A[group];
++	if (ht40)
++		mcsbase += priv->ht40_tx_power_diff[tx_idx++].a;
++	else
++		mcsbase += priv->ht20_tx_power_diff[tx_idx++].a;
++	mcs = mcsbase | mcsbase << 8 | mcsbase << 16 | mcsbase << 24;
++
++	rtl8xxxu_write32(priv, REG_TX_AGC_A_MCS03_MCS00, mcs);
++	rtl8xxxu_write32(priv, REG_TX_AGC_A_MCS07_MCS04, mcs);
++	rtl8xxxu_write32(priv, REG_TX_AGC_A_MCS11_MCS08, mcs);
++	rtl8xxxu_write32(priv, REG_TX_AGC_A_MCS15_MCS12, mcs);
++}
++
+ void rtl8188eu_config_channel(struct ieee80211_hw *hw)
+ {
+ 	struct rtl8xxxu_priv *priv = hw->priv;
+@@ -1152,6 +1214,7 @@ struct rtl8xxxu_fileops rtl8188eu_fops =
+ 	.enable_rf = rtl8188e_enable_rf,
+ 	.disable_rf = rtl8188e_disable_rf,
+ 	.usb_quirks = rtl8188e_usb_quirks,
++	.set_tx_power = rtl8188e_set_tx_power,
+ 	.update_rate_mask = rtl8xxxu_gen2_update_rate_mask,
+ 	.report_connect = rtl8xxxu_gen2_report_connect,
+ 	.writeN_block_size = 128,

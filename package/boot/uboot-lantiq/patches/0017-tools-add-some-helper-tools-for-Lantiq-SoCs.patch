@@ -1,0 +1,477 @@
+From 1da5479d59b39d7931a2b0efabdfa314f6788b6d Mon Sep 17 00:00:00 2001
+From: Luka Perkov <luka@openwrt.org>
+Date: Sat, 2 Mar 2013 23:34:00 +0100
+Subject: tools: add some helper tools for Lantiq SoCs
+
+Signed-off-by: Luka Perkov Luka Perkov <luka@openwrt.org>
+Signed-off-by: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+
+--- /dev/null
++++ b/tools/gct.pl
+@@ -0,0 +1,155 @@
++#!/usr/bin/perl
++
++#use strict;
++#use Cwd;
++#use Env;
++
++my $aline;
++my $lineid;
++my $length;
++my $address;
++my @bytes;
++my $addstr;
++my $chsum=0;
++my $count=0;
++my $firstime=1;
++my $i;
++my $currentaddr;
++my $tmp;
++my $holder="";
++my $loadaddr;
++
++if(@ARGV < 2){
++	die("\n Syntax: perl gct.pl uart_ddr_settings.conf u-boot.srec u-boot.asc\n");
++}
++
++open(IN_UART_DDR_SETTINGS, "<$ARGV[0]") || die("failed to open uart_ddr_settings.conf\n");
++open(IN_UART_SREC, "<$ARGV[1]") || die("failed to open u-boot.srec\n");
++open(OUT_UBOOT_ASC, ">$ARGV[2]") || die("failed to open u-boot.asc\n");
++
++$i=0;
++while ($line = <IN_UART_DDR_SETTINGS>){
++	if($line=~/\w/){
++		if($line!~/[;#\*]/){
++			if($i eq 0){
++				printf OUT_UBOOT_ASC ("33333333");
++			}
++			chomp($line);
++			$line=~s/\t//;
++			@array=split(/ +/,$line);
++			$j=0;
++			while(@array[$j]!~/\w/){
++				$j=$j+1;
++			}
++			$addr=@array[$j];
++			$regval=@array[$j+1];
++			$addr=~s/0x//;
++			$regval=~s/0x//;
++			printf OUT_UBOOT_ASC ("%08x%08x",hex($addr),hex($regval));
++			$i=$i+1;
++			if($i eq 8){
++				$i=0;
++				printf OUT_UBOOT_ASC ("\n");
++			}
++		}
++	}
++}
++
++while($i lt 8 && $i gt 0){
++	printf OUT_UBOOT_ASC "00"x8;
++	$i=$i+1;
++}
++
++if($i eq 8){
++	printf OUT_UBOOT_ASC ("\n");
++}
++
++while($aline=<IN_UART_SREC>){
++	$aline=uc($aline);
++	chomp($aline);
++	next if(($aline=~/^S0/) || ($aline=~/^S7/));
++	($lineid, $length, $address, @bytes) = unpack"A2A2A8"."A2"x300, $aline;
++	$length = hex($length);
++	$address = hex($address);
++	$length -=5;
++	$i=0;
++
++	while($length>0){
++		if($firstime==1){
++			$addstr = sprintf("%x", $address);
++			$addstr = "0"x(8-length($addstr)).$addstr;
++			print OUT_UBOOT_ASC $addstr;
++			addchsum($addstr);
++			$firstime=0;
++			$currentaddr=$address;
++			$loadaddr = $addstr;
++		}
++		else{
++			if($count==64){
++				$addstr = sprintf("%x", $currentaddr);
++				$addstr = "0"x(8-length($addstr)).$addstr;
++				print OUT_UBOOT_ASC $addstr;
++				addchsum($addstr);
++				$count=0;
++			}
++#printf("*** %x != %x\n", $address, $currentaddr) if $address != $currentaddr;
++		}
++		if($currentaddr < $address) {
++			print OUT_UBOOT_ASC "00";
++			addchsum("00");
++			$count++;
++			$currentaddr++;
++		}
++		else {
++			while($count<64){
++				$bytes[$i]=~tr/ABCDEF/abcdef/;
++				print OUT_UBOOT_ASC "$bytes[$i]";
++				addchsum($bytes[$i]);
++				$i++;
++				$count++;
++				$currentaddr++;
++				$length--;
++				last if($length==0);
++			}
++		}
++		if($count==64){
++			print OUT_UBOOT_ASC "\n";
++		}
++	}
++}
++if($count != 64){
++	$tmp = "00";
++	for($i=0;$i<(64-$count);$i++){
++		print OUT_UBOOT_ASC "00";
++		addchsum($tmp);
++	}
++	print OUT_UBOOT_ASC "\n";
++}
++
++
++print OUT_UBOOT_ASC "11"x4;
++use integer;
++$chsum=$chsum & 0xffffffff;
++$chsum = sprintf("%X", $chsum);
++$chsum = "0"x(8-length($chsum)).$chsum;
++$chsum =~tr/ABCDEF/abcdef/;
++print OUT_UBOOT_ASC $chsum;
++print OUT_UBOOT_ASC "00"x60;
++print OUT_UBOOT_ASC "\n";
++
++print OUT_UBOOT_ASC "99"x4;
++print OUT_UBOOT_ASC $loadaddr;
++print OUT_UBOOT_ASC "00"x60;
++print OUT_UBOOT_ASC "\n";
++
++close OUT_UBOOT_ASC;
++
++sub addchsum{
++	my $cc=$_[0];
++	$holder=$holder.$cc;
++	if(length($holder)==8){
++		$holder = hex($holder);
++		$chsum+=$holder;
++		$holder="";
++	}
++}
+--- /dev/null
++++ b/tools/lantiq_bdi_conf.awk
+@@ -0,0 +1,116 @@
++#!/usr/bin/awk -f
++#
++# Copyright (C) 2013 Luka Perkov <luka@openwrt.org>
++# Copyright (C) 2013 Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
++#
++# Usage:
++#  awk -f lantiq_bdi_conf.awk -v soc=ar9 board=<name> PATH_TO_BOARD/ddr_settings.h
++#
++# Additional information:
++#  http://www.abatron.ch/fileadmin/user_upload/products/pdf/ManGDBR4K-3000.pdf
++#
++# SPDX-License-Identifier:	GPL-2.0+
++#
++
++function print_header()
++{
++	print ";                                                                         "
++	print "; Copyright (C) 2013 Luka Perkov <luka@openwrt.org>                       "
++	print "; Copyright (C) 2013 Daniel Schwierzeck <daniel.schwierzeck@gmail.com>    "
++	print ";                                                                         "
++	print "; This file has been generated with lantiq_bdi_conf.awk script.           "
++	print ";                                                                         "
++	print "; SPDX-License-Identifier:	GPL-2.0+                                 "
++	print ";                                                                         "
++	print ""
++}
++
++function init_ar9_prologue()
++{
++	print "WM32 0xBF103010 0x80		; CGU for CPU 333Mhz, DDR 167Mhz"
++	print "WM32 0xBF103014 0x01		; CGU update"
++	print "WM32 0xBF800010 0x0		; Clear error access log register"
++	print "WM32 0xBF800020 0x0		; Clear error access log register"
++	print "WM32 0xBF800060 0xD		; Enable FPI, DDR and SRAM module in memory controller"
++	print "WM32 0xBF801030 0x0		; Clear start bit of DDR memory controller"
++}
++
++function init_ar9_epilogue()
++{
++	print "WM32 0xBE105360 0x4001D7FF	; EBU setup"
++}
++
++function init_ddr1_epilogue()
++{
++	print "WM32 0xBF801030 0x100		; Set start bit of DDR memory controller"
++}
++
++function ar9_target()
++{
++	print "CPUTYPE		M34K"
++	print "ENDIAN		BIG"
++	print "JTAGCLOCK	1"
++	print "BDIMODE		AGENT		; [ LOADONLY, AGENT ]"
++	print "RESET		JTAG		; [ NONE, JTAG, HARD ]"
++	print "POWERUP		100"
++	print "WAKEUP		100"
++	print "BREAKMODE	HARD		; [ SOFT, HARD ]"
++	print  "STEPMODE	SWBP		; [ JTAG, HWBP, SWBP ]"
++	print "VECTOR		CATCH"
++	print  "SCANSUCC	1 5"
++}
++
++function flash_p2601hnfx()
++{
++	print "CHIPTYPE	MIRRORX16"
++	print "CHIPSIZE	0x1000000"
++	print "BUSWIDTH	16"
++}
++
++BEGIN {
++	switch (soc) {
++	case "ar9":
++		reg_base = 0xbf801000
++		print_header()
++		print "[INIT]"
++		init_ar9_prologue()
++		break
++	default:
++		print "Invalid or no value for SoC specified!"
++		exit 1
++	}
++}
++
++/^#define/ {
++	/* DC03 contains MC enable bit and must not be set here */
++	if (tolower($2) != "mc_dc03_value")
++		printf("WM32 0x%x %s\n", reg_base, tolower($3))
++
++	reg_base += 0x10
++}
++
++END {
++	switch (soc) {
++	case "ar9":
++		init_ddr1_epilogue()
++		init_ar9_epilogue()
++		print ""
++		print "[TARGET]"
++		ar9_target()
++		print ""
++		print "[HOST]"
++		print "PROMPT		\"ar9> \""
++		print ""
++		break
++	default:
++	}
++
++	switch (board) {
++	case "p2601hnfx":
++		print "[FLASH]"
++		flash_p2601hnfx()
++		print ""
++		break
++	default:
++	}
++}
+--- /dev/null
++++ b/tools/lantiq_ram_extract_magic.awk
+@@ -0,0 +1,69 @@
++#
++# Copyright (C) 2011-2013 Luka Perkov <luka@openwrt.org>
++#
++# Usage:
++# mips-openwrt-linux-objdump -EB -b binary -m mips:isa32r2 -D YOUR_IMAGE_DUMP | awk -f lantiq_ram_extract_magic.awk
++#
++# SPDX-License-Identifier:	GPL-2.0+
++#
++
++BEGIN {
++	print "/*                                                                            "
++	print " * Copyright (C) 2011-2013 Luka Perkov <luka@openwrt.org>                     "
++	print " *                                                                            "
++	print " * This file has been generated with lantiq_ram_extract_magic.awk script.     "
++	print " *                                                                            "
++	print " * SPDX-License-Identifier:	GPL-2.0+                                     "
++	print " */                                                                           "
++	print ""
++
++	mc_dc_value=0
++	mc_dc_number=0
++	right_section=0
++	mc_dc_value_print=0
++	mc_dc_number_print=0
++}
++
++/t2,[0-9]+$/ {
++	if (right_section) {
++		split($4, tmp, ",")
++		mc_dc_value=sprintf("%X", tmp[2])
++		mc_dc_value_print=1
++	}
++}
++
++/t2,0x[0-9a-f]+$/ {
++	if (right_section) {
++		split($4, tmp, ",0x")
++		mc_dc_value=sprintf("%s", tmp[2])
++		mc_dc_value=toupper(mc_dc_value)
++		mc_dc_value_print=1
++	}
++}
++
++/t2,[0-9]+\(t1\)$/ {
++	if (right_section) {
++		split($4, tmp, ",")
++		split(tmp[2], tmp, "(")
++		mc_dc_number=tmp[1]/16
++		mc_dc_number_print=1
++	}
++}
++
++{
++	if (right_section && mc_dc_number_print && mc_dc_value_print) {
++		if (mc_dc_number < 10)
++			print "#define MC_DC0" mc_dc_number "_VALUE\t0x" mc_dc_value
++		else
++			print "#define MC_DC" mc_dc_number "_VALUE\t0x" mc_dc_value
++		mc_dc_value_print=0
++		mc_dc_number_print=0
++	}
++
++	if ($4 == "t1,t1,0x1000")
++		right_section=1
++
++
++	if ($4 == "t2,736(t1)")
++		right_section=0
++}
+--- /dev/null
++++ b/tools/lantiq_ram_init_uart.awk
+@@ -0,0 +1,117 @@
++#!/usr/bin/awk -f
++#
++# Copyright (C) 2011-2012 Luka Perkov <luka@openwrt.org>
++# Copyright (C) 2012 Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
++#
++# Usage:
++# awk -f lantiq_ram_init_uart.awk -v soc=<danube|ar9|vr9> PATH_TO_BOARD/ddr_settings.h
++#
++# SPDX-License-Identifier:	GPL-2.0+
++#
++
++function print_header()
++{
++	print ";                                                                            "
++	print "; Copyright (C) 2011-2013 Luka Perkov <luka@openwrt.org>                     "
++	print "; Copyright (C) 2012-2013 Daniel Schwierzeck <daniel.schwierzeck@gmail.com>  "
++	print ";                                                                            "
++	print "; This file has been generated with lantiq_ram_init_uart.awk script.         "
++	print ";                                                                            "
++	print "; SPDX-License-Identifier:	GPL-2.0+                                    "
++	print ""
++}
++
++function mc_danube_prologue()
++{
++	/* Clear access error log registers */
++	print "0xbf800010", "0x0"
++	print "0xbf800020", "0x0"
++
++	/* Enable DDR and SRAM module in memory controller */
++	print "0xbf800060", "0x5"
++
++	/* Clear start bit of DDR memory controller */
++	print "0xbf801030", "0x0"
++}
++
++function mc_ar9_prologue()
++{
++	/* Clear access error log registers */
++	print "0xbf800010", "0x0"
++	print "0xbf800020", "0x0"
++
++	/* Enable FPI, DDR and SRAM module in memory controller */
++	print "0xbf800060", "0xD"
++
++	/* Clear start bit of DDR memory controller */
++	print "0xbf801030", "0x0"
++}
++
++function mc_ddr1_epilogue()
++{
++	/* Set start bit of DDR memory controller */
++	print "0xbf801030", "0x100"
++}
++
++function mc_ddr2_prologue()
++{
++	/* Put memory controller in inactive mode */
++	print "0xbf401070", "0x0"
++}
++
++function mc_ddr2_epilogue(mc_ccr07_value)
++{
++	/* Put memory controller in active mode */
++	mc_ccr07_value = or(mc_ccr07_value, 0x100)
++	printf("0xbf401070 0x%x\n", mc_ccr07_value)
++}
++
++BEGIN {
++	switch (soc) {
++	case "danube":
++		reg_base = 0xbf801000
++		print_header()
++		mc_danube_prologue()
++		break
++	case "ar9":
++		reg_base = 0xbf801000
++		print_header()
++		mc_ar9_prologue()
++		break
++	case "vr9":
++		reg_base = 0xbf401000
++		print_header()
++		mc_ddr2_prologue()
++		break
++	default:
++		print "Invalid or no value for soc specified!"
++		exit 1
++	}
++
++	mc_ccr07_value = 0
++}
++
++/^#define/ {
++	/* CCR07 contains MC enable bit and must not be set here */
++	if (tolower($2) == "mc_ccr07_value")
++		mc_ccr07_value = strtonum($3)
++	if (tolower($2) == "mc_dc03_value")
++		/* CCR07 contains MC enable bit and must not be set here */
++	else
++		printf("0x%x %s\n", reg_base, tolower($3))
++
++	reg_base += 0x10
++}
++
++END {
++	switch (soc) {
++	case "danube":
++	case "ar9":
++		mc_ddr1_epilogue()
++		break
++	case "vr9":
++		mc_ddr2_epilogue(mc_ccr07_value)
++		break
++	default:
++	}
++}

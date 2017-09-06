@@ -1,0 +1,157 @@
+From c291443dc97dadcf0c6afd04688a7d9f79a221b5 Mon Sep 17 00:00:00 2001
+From: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+Date: Wed, 29 Aug 2012 22:08:16 +0200
+Subject: net: switchlib: add driver for Lantiq ADM6996I switch family
+
+Signed-off-by: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+
+--- a/drivers/net/switch/Makefile
++++ b/drivers/net/switch/Makefile
+@@ -11,6 +11,7 @@ LIB	:= $(obj)libswitch.o
+ 
+ COBJS-$(CONFIG_SWITCH_MULTI) += switch.o
+ COBJS-$(CONFIG_SWITCH_PSB697X) += psb697x.o
++COBJS-$(CONFIG_SWITCH_ADM6996I) += adm6996i.o
+ 
+ COBJS	:= $(COBJS-y)
+ SRCS	:= $(COBJS:.o=.c)
+--- /dev/null
++++ b/drivers/net/switch/adm6996i.c
+@@ -0,0 +1,115 @@
++/*
++ * Copyright (C) 2011-2013 Daniel Schwierzeck, daniel.schwierzeck@gmail.com
++ *
++ * SPDX-License-Identifier:	GPL-2.0+
++ */
++
++#include <common.h>
++#include <malloc.h>
++#include <switch.h>
++#include <miiphy.h>
++
++#define ADM6996I_CHIPID0	0x1020
++#define ADM6996I_CHIPID1	0x0007
++#define ADM6996I_PORT_COUNT	6
++
++#define ADM6996I_REG_P0BC	0x001	/* P0 Basic Control */
++#define ADM6996I_REG_P1BC	0x003	/* P1 Basic Control */
++#define ADM6996I_REG_P2BC	0x005	/* P2 Basic Control */
++#define ADM6996I_REG_P3BC	0x007	/* P3 Basic Control */
++#define ADM6996I_REG_P4BC	0x008	/* P4 Basic Control */
++#define ADM6996I_REG_P5BC	0x009	/* P5 Basic Control */
++
++#define ADM6996I_REG_P0EC	0x002	/* P0 Extended Control */
++#define ADM6996I_REG_P1EC	0x002	/* P1 Extended Control */
++#define ADM6996I_REG_P2EC	0x004	/* P2 Extended Control */
++#define ADM6996I_REG_P3EC	0x004	/* P3 Extended Control */
++#define ADM6996I_REG_P4EC	0x006	/* P4 Extended Control */
++#define ADM6996I_REG_P5EC	0x006	/* P5 Extended Control */
++
++#define ADM6996I_REG_SC4	0x012	/* System Control 4 */
++
++#define ADM6996I_REG_CI0	0xA0	/* Chip Identifier 0 */
++#define ADM6996I_REG_CI1	0xA1	/* Chip Identifier 1 */
++
++#define ADM6996I_REG_PXBC_DEFAULT	0x040F
++#define ADM6996I_REG_PXBC_CROSS_EE	(1 << 15)
++#define ADM6996I_REG_PXBC_PD		(1 << 5)
++
++#define ADM6996I_REG_SC4_DEFAULT	0x3600
++#define ADM6996I_REG_SC4_LED_ENABLE	(1 << 1)
++
++#define ADM6996I_REG_CI0_PC_MASK	0xFFF0
++#define ADM6996I_REG_CI0_VN_MASK	0xF
++#define ADM6996I_REG_CI1_PC_MASK	0xF
++
++
++static inline int adm6996i_mii_read(struct mii_dev *bus, u16 reg)
++{
++	int ret;
++
++	ret = bus->read(bus, (reg >> 5) & 0x1f, MDIO_DEVAD_NONE, reg & 0x1f);
++
++	return ret;
++}
++
++static inline int adm6996i_mii_write(struct mii_dev *bus, u16 reg, u16 val)
++{
++	int ret;
++
++	ret = bus->write(bus, (reg >> 5) & 0x1f, MDIO_DEVAD_NONE,
++		reg & 0x1f, val);
++
++	return ret;
++}
++
++static int adm6996i_probe(struct switch_device *dev)
++{
++	struct mii_dev *bus = dev->bus;
++	u16 ci0, ci1;
++
++	ci0 = adm6996i_mii_read(bus, ADM6996I_REG_CI0);
++	ci1 = adm6996i_mii_read(bus, ADM6996I_REG_CI1);
++
++	ci0 &= ADM6996I_REG_CI0_PC_MASK;
++	ci1 &= ADM6996I_REG_CI1_PC_MASK;
++
++	if (ci0 == ADM6996I_CHIPID0 && ci1 == ADM6996I_CHIPID1)
++		return 0;
++
++	return 1;
++}
++
++static void adm6996i_setup(struct switch_device *dev)
++{
++	struct mii_dev *bus = dev->bus;
++	u16 val;
++
++	/*
++	 * Write default values (Port enable, 100 Mbps, Full Duplex,
++	 * Auto negotiation, Flow control) and enable crossover auto-detect
++	 */
++	val = ADM6996I_REG_PXBC_DEFAULT | ADM6996I_REG_PXBC_CROSS_EE;
++	adm6996i_mii_write(bus, ADM6996I_REG_P0BC, val);
++	adm6996i_mii_write(bus, ADM6996I_REG_P1BC, val);
++	adm6996i_mii_write(bus, ADM6996I_REG_P2BC, val);
++	adm6996i_mii_write(bus, ADM6996I_REG_P3BC, val);
++	adm6996i_mii_write(bus, ADM6996I_REG_P4BC, val);
++	adm6996i_mii_write(bus, ADM6996I_REG_P5BC, val);
++
++	val = ADM6996I_REG_SC4_DEFAULT | ADM6996I_REG_SC4_LED_ENABLE;
++	adm6996i_mii_write(bus, ADM6996I_REG_SC4, val);
++}
++
++static struct switch_driver adm6996i_drv = {
++	.name = "adm6996i",
++};
++
++void switch_adm6996i_init(void)
++{
++	/* For archs with manual relocation */
++	adm6996i_drv.probe = adm6996i_probe;
++	adm6996i_drv.setup = adm6996i_setup;
++
++	switch_driver_register(&adm6996i_drv);
++}
+--- a/drivers/net/switch/switch.c
++++ b/drivers/net/switch/switch.c
+@@ -20,6 +20,9 @@ void switch_init(void)
+ #if defined(CONFIG_SWITCH_PSB697X)
+ 	switch_psb697x_init();
+ #endif
++#if defined(CONFIG_SWITCH_ADM6996I)
++	switch_adm6996i_init();
++#endif
+ 
+ 	board_switch_init();
+ }
+--- a/include/switch.h
++++ b/include/switch.h
+@@ -98,6 +98,7 @@ static inline void switch_setup(struct s
+ 
+ /* Init functions for supported Switch drivers */
+ extern void switch_psb697x_init(void);
++extern void switch_adm6996i_init(void);
+ 
+ #endif /* __SWITCH_H */
+ 

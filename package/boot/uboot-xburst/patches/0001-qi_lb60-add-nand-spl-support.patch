@@ -1,0 +1,894 @@
+From 0329cf7965956a5a7044827e0ce88ae8d5150e54 Mon Sep 17 00:00:00 2001
+From: Xiangfu <xiangfu@openmobilefree.net>
+Date: Fri, 12 Oct 2012 09:46:58 +0800
+Subject: [PATCH 1/6] qi_lb60: add nand spl support
+
+  The JZ4740 CPU can load 8KB from two different addresses:
+   1. the normal area up to 8KB starting from NAND flash address 0x00000000
+   2. the backup area up to 8KB starting from NAND flash address 0x00002000
+
+Signed-off-by: Xiangfu <xiangfu@openmobilefree.net>
+---
+ Makefile                          |   12 +++
+ arch/mips/cpu/xburst/Makefile     |    7 +-
+ arch/mips/cpu/xburst/cpu.c        |    4 +
+ arch/mips/cpu/xburst/jz4740.c     |   82 +++++++----------
+ arch/mips/cpu/xburst/spl/Makefile |   47 ++++++++++
+ arch/mips/cpu/xburst/spl/start.S  |   63 +++++++++++++
+ board/qi/qi_lb60/Makefile         |    4 +
+ board/qi/qi_lb60/qi_lb60-spl.c    |   30 +++++++
+ board/qi/qi_lb60/qi_lb60.c        |    8 +-
+ board/qi/qi_lb60/u-boot-spl.lds   |   61 +++++++++++++
+ drivers/mtd/nand/jz4740_nand.c    |   39 ++++++++-
+ include/configs/qi_lb60.h         |  175 ++++++++++++++++++-------------------
+ 12 files changed, 386 insertions(+), 146 deletions(-)
+ create mode 100644 arch/mips/cpu/xburst/spl/Makefile
+ create mode 100644 arch/mips/cpu/xburst/spl/start.S
+ create mode 100644 board/qi/qi_lb60/qi_lb60-spl.c
+ create mode 100644 board/qi/qi_lb60/u-boot-spl.lds
+
+diff --git a/Makefile b/Makefile
+index 34d9075..a22778e 100644
+--- a/Makefile
++++ b/Makefile
+@@ -393,6 +393,10 @@ ALL-y += $(obj)u-boot-nodtb-tegra.bin
+ endif
+ endif
+ 
++ifeq ($(CPU),xburst)
++ALL-y += $(obj)u-boot-xburst.bin
++endif
++
+ all:		$(ALL-y) $(SUBDIR_EXAMPLES)
+ 
+ $(obj)u-boot.dtb:	$(obj)u-boot
+@@ -506,6 +510,14 @@ $(obj)u-boot-nodtb-tegra.bin:	$(obj)spl/u-boot-spl.bin $(obj)u-boot.bin
+ endif
+ endif
+ 
++ifeq ($(CPU),xburst)
++$(obj)u-boot-xburst.bin:	$(obj)spl/u-boot-spl.bin $(obj)u-boot.bin
++	        dd if=$(obj)spl/u-boot-spl.bin of=$(obj)spl/u-boot-pad.bin conv=sync bs=8192 count=1
++		dd if=$(obj)spl/u-boot-spl.bin of=$(obj)spl/u-boot-pad.bin conv=sync,notrunc oflag=append bs=8192 count=1
++	        tr '\0' '\377' < /dev/zero | dd of=$(obj)spl/u-boot-pad.bin conv=sync,notrunc oflag=append bs=16384 count=1
++	        cat $(obj)spl/u-boot-pad.bin u-boot.bin > $@
++endif
++
+ ifeq ($(CONFIG_SANDBOX),y)
+ GEN_UBOOT = \
+ 		cd $(LNDIR) && $(CC) $(SYMS) -T $(obj)u-boot.lds \
+diff --git a/arch/mips/cpu/xburst/Makefile b/arch/mips/cpu/xburst/Makefile
+index b1f2ae4..ec35e55 100644
+--- a/arch/mips/cpu/xburst/Makefile
++++ b/arch/mips/cpu/xburst/Makefile
+@@ -24,9 +24,12 @@ include $(TOPDIR)/config.mk
+ 
+ LIB	= $(obj)lib$(CPU).o
+ 
++COBJS-y	= cpu.o jz_serial.o
++
++ifneq ($(CONFIG_SPL_BUILD),y)
+ START	= start.o
+-SOBJS-y	=
+-COBJS-y	= cpu.o timer.o jz_serial.o
++COBJS-y += timer.o
++endif
+ 
+ COBJS-$(CONFIG_JZ4740) += jz4740.o
+ 
+diff --git a/arch/mips/cpu/xburst/cpu.c b/arch/mips/cpu/xburst/cpu.c
+index ddcbfaa..1432838 100644
+--- a/arch/mips/cpu/xburst/cpu.c
++++ b/arch/mips/cpu/xburst/cpu.c
+@@ -42,6 +42,8 @@
+ 		:			\
+ 		: "i" (op), "R" (*(unsigned char *)(addr)))
+ 
++#ifndef CONFIG_SPL_BUILD
++
+ void __attribute__((weak)) _machine_restart(void)
+ {
+ 	struct jz4740_wdt *wdt = (struct jz4740_wdt *)JZ4740_WDT_BASE;
+@@ -109,6 +111,8 @@ void invalidate_dcache_range(ulong start_addr, ulong stop)
+ 		cache_op(Hit_Invalidate_D, addr);
+ }
+ 
++#endif
++
+ void flush_icache_all(void)
+ {
+ 	u32 addr, t = 0;
+diff --git a/arch/mips/cpu/xburst/jz4740.c b/arch/mips/cpu/xburst/jz4740.c
+index c0b9817..8816aa3 100644
+--- a/arch/mips/cpu/xburst/jz4740.c
++++ b/arch/mips/cpu/xburst/jz4740.c
+@@ -32,31 +32,19 @@ int disable_interrupts(void)
+ 	return 0;
+ }
+ 
+-/*
+- * PLL output clock = EXTAL * NF / (NR * NO)
+- * NF = FD + 2, NR = RD + 2
+- * NO = 1 (if OD = 0), NO = 2 (if OD = 1 or 2), NO = 4 (if OD = 3)
+- */
+ void pll_init(void)
+ {
+ 	struct jz4740_cpm *cpm = (struct jz4740_cpm *)JZ4740_CPM_BASE;
+ 
+-	register unsigned int cfcr, plcr1;
+-	int n2FR[33] = {
+-		0, 0, 1, 2, 3, 0, 4, 0, 5, 0, 0, 0, 6, 0, 0, 0,
+-		7, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0,
+-		9
+-	};
+-	int div[5] = {1, 3, 3, 3, 3}; /* divisors of I:S:P:L:M */
+-	int nf, pllout2;
++	register unsigned int cfcr, plcr;
++	unsigned int nf, pllout2;
+ 
+ 	cfcr =	CPM_CPCCR_CLKOEN |
+-		CPM_CPCCR_PCS |
+-		(n2FR[div[0]] << CPM_CPCCR_CDIV_BIT) |
+-		(n2FR[div[1]] << CPM_CPCCR_HDIV_BIT) |
+-		(n2FR[div[2]] << CPM_CPCCR_PDIV_BIT) |
+-		(n2FR[div[3]] << CPM_CPCCR_MDIV_BIT) |
+-		(n2FR[div[4]] << CPM_CPCCR_LDIV_BIT);
++		(0 << CPM_CPCCR_CDIV_BIT) |
++		(2 << CPM_CPCCR_HDIV_BIT) |
++		(2 << CPM_CPCCR_PDIV_BIT) |
++		(2 << CPM_CPCCR_MDIV_BIT) |
++		(2 << CPM_CPCCR_LDIV_BIT);
+ 
+ 	pllout2 = (cfcr & CPM_CPCCR_PCS) ?
+ 		CONFIG_SYS_CPU_SPEED : (CONFIG_SYS_CPU_SPEED / 2);
+@@ -65,15 +53,18 @@ void pll_init(void)
+ 	writel(pllout2 / 48000000 - 1, &cpm->uhccdr);
+ 
+ 	nf = CONFIG_SYS_CPU_SPEED * 2 / CONFIG_SYS_EXTAL;
+-	plcr1 = ((nf - 2) << CPM_CPPCR_PLLM_BIT) | /* FD */
++	plcr = ((nf - 2) << CPM_CPPCR_PLLM_BIT) | /* FD */
+ 		(0 << CPM_CPPCR_PLLN_BIT) |	/* RD=0, NR=2 */
+ 		(0 << CPM_CPPCR_PLLOD_BIT) |	/* OD=0, NO=1 */
+-		(0x20 << CPM_CPPCR_PLLST_BIT) |	/* PLL stable time */
++		(0x32 << CPM_CPPCR_PLLST_BIT) |	/* PLL stable time */
+ 		CPM_CPPCR_PLLEN;		/* enable PLL */
+ 
+ 	/* init PLL */
+ 	writel(cfcr, &cpm->cpccr);
+-	writel(plcr1, &cpm->cppcr);
++	writel(plcr, &cpm->cppcr);
++
++	while (!(readl(&cpm->cppcr) & CPM_CPPCR_PLLS))
++		;
+ }
+ 
+ void sdram_init(void)
+@@ -92,26 +83,12 @@ void sdram_init(void)
+ 		2 << EMC_DMCR_TCL_BIT	/* CAS latency is 3 */
+ 	};
+ 
+-	int div[] = {1, 2, 3, 4, 6, 8, 12, 16, 24, 32};
+-
+ 	cpu_clk = CONFIG_SYS_CPU_SPEED;
+-	mem_clk = cpu_clk * div[__cpm_get_cdiv()] / div[__cpm_get_mdiv()];
++	mem_clk = 84000000;
+ 
+ 	writel(0, &emc->bcr);	/* Disable bus release */
+ 	writew(0, &emc->rtcsr);	/* Disable clock for counting */
+ 
+-	/* Fault DMCR value for mode register setting*/
+-#define SDRAM_ROW0	11
+-#define SDRAM_COL0	8
+-#define SDRAM_BANK40	0
+-
+-	dmcr0 = ((SDRAM_ROW0 - 11) << EMC_DMCR_RA_BIT) |
+-		((SDRAM_COL0 - 8) << EMC_DMCR_CA_BIT) |
+-		(SDRAM_BANK40 << EMC_DMCR_BA_BIT) |
+-		(SDRAM_BW16 << EMC_DMCR_BW_BIT) |
+-		EMC_DMCR_EPIN |
+-		cas_latency_dmcr[((SDRAM_CASL == 3) ? 1 : 0)];
+-
+ 	/* Basic DMCR value */
+ 	dmcr = ((SDRAM_ROW - 11) << EMC_DMCR_RA_BIT) |
+ 		((SDRAM_COL - 8) << EMC_DMCR_CA_BIT) |
+@@ -128,31 +105,31 @@ void sdram_init(void)
+ 	if (tmp > 11)
+ 		tmp = 11;
+ 	dmcr |= (tmp - 4) << EMC_DMCR_TRAS_BIT;
+-	tmp = SDRAM_RCD / ns;
+ 
++	tmp = SDRAM_RCD / ns;
+ 	if (tmp > 3)
+ 		tmp = 3;
+ 	dmcr |= tmp << EMC_DMCR_RCD_BIT;
+-	tmp = SDRAM_TPC / ns;
+ 
++	tmp = SDRAM_TPC / ns;
+ 	if (tmp > 7)
+ 		tmp = 7;
+ 	dmcr |= tmp << EMC_DMCR_TPC_BIT;
+-	tmp = SDRAM_TRWL / ns;
+ 
++	tmp = SDRAM_TRWL / ns;
+ 	if (tmp > 3)
+ 		tmp = 3;
+ 	dmcr |= tmp << EMC_DMCR_TRWL_BIT;
+-	tmp = (SDRAM_TRAS + SDRAM_TPC) / ns;
+ 
++	tmp = (SDRAM_TRAS + SDRAM_TPC) / ns;
+ 	if (tmp > 14)
+ 		tmp = 14;
+ 	dmcr |= ((tmp + 1) >> 1) << EMC_DMCR_TRC_BIT;
+ 
+ 	/* SDRAM mode value */
+-	sdmode = EMC_SDMR_BT_SEQ |
+-		 EMC_SDMR_OM_NORMAL |
+-		 EMC_SDMR_BL_4 |
++	sdmode = EMC_SDMR_BT_SEQ	|
++		 EMC_SDMR_OM_NORMAL	|
++		 EMC_SDMR_BL_4		|
+ 		 cas_latency_sdmr[((SDRAM_CASL == 3) ? 1 : 0)];
+ 
+ 	/* Stage 1. Precharge all banks by writing SDMR with DMCR.MRSET=0 */
+@@ -172,8 +149,8 @@ void sdram_init(void)
+ 	if (tmp > 0xff)
+ 		tmp = 0xff;
+ 	writew(tmp, &emc->rtcor);
++
+ 	writew(0, &emc->rtcnt);
+-	/* Divisor is 64, CKO/64 */
+ 	writew(EMC_RTCSR_CKS_64, &emc->rtcsr);
+ 
+ 	/* Wait for number of auto-refresh cycles */
+@@ -182,13 +159,17 @@ void sdram_init(void)
+ 		;
+ 
+ 	/* Stage 3. Mode Register Set */
++	dmcr0 = (11 << EMC_DMCR_RA_BIT)	|
++		(8 << EMC_DMCR_CA_BIT)	|
++		(0 << EMC_DMCR_BA_BIT)	|
++		EMC_DMCR_EPIN		|
++		(SDRAM_BW16 << EMC_DMCR_BW_BIT) |
++		cas_latency_dmcr[((SDRAM_CASL == 3) ? 1 : 0)];
+ 	writel(dmcr0 | EMC_DMCR_RFSH | EMC_DMCR_MRSET, &emc->dmcr);
+ 	writeb(0, JZ4740_EMC_SDMR0 | sdmode);
+ 
+ 	/* Set back to basic DMCR value */
+ 	writel(dmcr | EMC_DMCR_RFSH | EMC_DMCR_MRSET, &emc->dmcr);
+-
+-	/* everything is ok now */
+ }
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+@@ -232,9 +213,10 @@ void rtc_init(void)
+ phys_size_t initdram(int board_type)
+ {
+ 	struct jz4740_emc *emc = (struct jz4740_emc *)JZ4740_EMC_BASE;
+-	u32 dmcr;
+-	u32 rows, cols, dw, banks;
+-	ulong size;
++
++	unsigned int dmcr;
++	unsigned int rows, cols, dw, banks;
++	unsigned long size;
+ 
+ 	dmcr = readl(&emc->dmcr);
+ 	rows = 11 + ((dmcr & EMC_DMCR_RA_MASK) >> EMC_DMCR_RA_BIT);
+diff --git a/arch/mips/cpu/xburst/spl/Makefile b/arch/mips/cpu/xburst/spl/Makefile
+new file mode 100644
+index 0000000..f45e8c8
+--- /dev/null
++++ b/arch/mips/cpu/xburst/spl/Makefile
+@@ -0,0 +1,47 @@
++#
++# Copyright (C) 2011 Xiangfu Liu <xiangfu@openmobilefree.net>
++#
++# See file CREDITS for list of people who contributed to this
++# project.
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License as
++# published by the Free Software Foundation; either version 2 of
++# the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 59 Temple Place, Suite 330, Boston,
++# MA 02111-1307 USA
++#
++
++include $(TOPDIR)/config.mk
++
++LIB	= $(obj)lib$(CPU).o
++
++START	= start.o
++SOBJS-y	=
++COBJS-y	=
++
++SRCS	:= $(START:.o=.S) $(SOBJS-y:.o=.S) $(COBJS-y:.o=.c)
++OBJS	:= $(addprefix $(obj),$(SOBJS-y) $(COBJS-y))
++START	:= $(addprefix $(obj),$(START))
++
++all:	$(obj).depend $(START) $(LIB)
++
++$(LIB):	$(OBJS)
++	$(call cmd_link_o_target, $(OBJS))
++
++#########################################################################
++
++# defines $(obj).depend target
++include $(SRCTREE)/rules.mk
++
++sinclude $(obj).depend
++
++#########################################################################
+diff --git a/arch/mips/cpu/xburst/spl/start.S b/arch/mips/cpu/xburst/spl/start.S
+new file mode 100644
+index 0000000..e31c4c8
+--- /dev/null
++++ b/arch/mips/cpu/xburst/spl/start.S
+@@ -0,0 +1,63 @@
++/*
++ * Copyright (c) 2010 Xiangfu Liu <xiangfu@openmobilefree.net>
++ *
++ * See file CREDITS for list of people who contributed to this
++ * project.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 3 of
++ * the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston,
++ * MA 02111-1307 USA
++ */
++
++#include <config.h>
++#include <version.h>
++#include <asm/regdef.h>
++#include <asm/mipsregs.h>
++#include <asm/addrspace.h>
++#include <asm/cacheops.h>
++
++#include <asm/jz4740.h>
++
++	.set noreorder
++
++	.globl _start
++	.text
++_start:
++	.word JZ4740_NANDBOOT_CFG /* fetched during NAND Boot */
++reset:
++	/*
++	 * STATUS register
++	 * CU0=UM=EXL=IE=0, BEV=ERL=1, IP2~7=1
++	 */
++	li	t0, 0x0040FC04
++	mtc0	t0, CP0_STATUS
++	/*
++	 * CAUSE register
++	 * IV=1, use the specical interrupt vector (0x200)
++	 */
++	li	t1, 0x00800000
++	mtc0	t1, CP0_CAUSE
++
++	bal     1f
++	 nop
++	.word   _GLOBAL_OFFSET_TABLE_
++1:
++	move    gp, ra
++	lw      t1, 0(ra)
++	move	gp, t1
++
++	la	sp, 0x80004000
++	la	t9, nand_spl_boot
++	j	t9
++	nop
+diff --git a/board/qi/qi_lb60/Makefile b/board/qi/qi_lb60/Makefile
+index 5dae11b..e399246 100644
+--- a/board/qi/qi_lb60/Makefile
++++ b/board/qi/qi_lb60/Makefile
+@@ -22,7 +22,11 @@ include $(TOPDIR)/config.mk
+ 
+ LIB	= $(obj)lib$(BOARD).o
+ 
++ifeq ($(CONFIG_SPL_BUILD),y)
++COBJS	:= $(BOARD)-spl.o
++else
+ COBJS	:= $(BOARD).o
++endif
+ 
+ SRCS	:= $(SOBJS:.o=.S) $(COBJS:.o=.c)
+ OBJS	:= $(addprefix $(obj),$(SOBJS) $(COBJS))
+diff --git a/board/qi/qi_lb60/qi_lb60-spl.c b/board/qi/qi_lb60/qi_lb60-spl.c
+new file mode 100644
+index 0000000..3fe3fa3
+--- /dev/null
++++ b/board/qi/qi_lb60/qi_lb60-spl.c
+@@ -0,0 +1,30 @@
++/*
++ * Authors: Xiangfu Liu <xiangfu@openmobilefree.cc>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version
++ * 3 of the License, or (at your option) any later version.
++ */
++
++#include <common.h>
++#include <nand.h>
++#include <asm/io.h>
++#include <asm/jz4740.h>
++
++void nand_spl_boot(void)
++{
++	__gpio_as_sdram_16bit_4720();
++	__gpio_as_uart0();
++	__gpio_jtag_to_uart0();
++
++	serial_init();
++
++	pll_init();
++	sdram_init();
++
++	nand_init();
++
++	puts("\nQi LB60 SPL: Starting U-Boot ...\n");
++	nand_boot();
++}
+diff --git a/board/qi/qi_lb60/qi_lb60.c b/board/qi/qi_lb60/qi_lb60.c
+index d975209..3bd4e2f 100644
+--- a/board/qi/qi_lb60/qi_lb60.c
++++ b/board/qi/qi_lb60/qi_lb60.c
+@@ -1,5 +1,5 @@
+ /*
+- * Authors: Xiangfu Liu <xiangfu@sharism.cc>
++ * Authors: Xiangfu Liu <xiangfu@openmobilefree.net>
+  *
+  * This program is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU General Public License
+@@ -97,8 +97,10 @@ int board_early_init_f(void)
+ /* U-Boot common routines */
+ int checkboard(void)
+ {
+-	printf("Board: Qi LB60 (Ingenic XBurst Jz4740 SoC, Speed %ld MHz)\n",
+-	       gd->cpu_clk / 1000000);
++	printf("Board: Qi LB60 (Ingenic XBurst Jz4740 SoC)\n");
++	printf(" CPU: %ld\n", gd->cpu_clk);
++	printf(" MEM: %ld\n", gd->mem_clk);
++	printf(" DEV: %ld\n", gd->dev_clk);
+ 
+ 	return 0;
+ }
+diff --git a/board/qi/qi_lb60/u-boot-spl.lds b/board/qi/qi_lb60/u-boot-spl.lds
+new file mode 100644
+index 0000000..930537f
+--- /dev/null
++++ b/board/qi/qi_lb60/u-boot-spl.lds
+@@ -0,0 +1,61 @@
++/*
++ * (C) Copyright 2012 Xiangfu Liu <xiangfu@openmobilefree.net>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of
++ * the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston,
++ * MA 02111-1307 USA
++ */
++
++OUTPUT_FORMAT("elf32-tradlittlemips", "elf32-tradlittlemips", "elf32-tradlittlemips")
++
++OUTPUT_ARCH(mips)
++ENTRY(_start)
++SECTIONS
++{
++	. = 0x80000000;
++	. = ALIGN(4);
++	.text :
++	{
++	  *(.text)
++	}
++
++	. = ALIGN(4);
++	.rodata  : { *(SORT_BY_ALIGNMENT(SORT_BY_NAME(.rodata*))) }
++
++	. = ALIGN(4);
++	.data  : { *(.data) }
++
++	. = ALIGN(4);
++	.sdata  : { *(.sdata) }
++
++	_gp = ALIGN(16);
++
++	__got_start = .;
++	.got  : { *(.got) }
++	__got_end = .;
++
++	. = .;
++	__u_boot_cmd_start = .;
++	.u_boot_cmd : { *(.u_boot_cmd) }
++	__u_boot_cmd_end = .;
++
++	uboot_end_data = .;
++	num_got_entries = (__got_end - __got_start) >> 2;
++
++	. = ALIGN(4);
++	.sbss  : { *(.sbss) }
++	.bss  : { *(.bss) }
++	uboot_end = .;
++}
++ASSERT(uboot_end <= 0x80002000, "NAND bootstrap too big");
+diff --git a/drivers/mtd/nand/jz4740_nand.c b/drivers/mtd/nand/jz4740_nand.c
+index 3ec34f3..24a4921 100644
+--- a/drivers/mtd/nand/jz4740_nand.c
++++ b/drivers/mtd/nand/jz4740_nand.c
+@@ -15,6 +15,9 @@
+ #include <asm/io.h>
+ #include <asm/jz4740.h>
+ 
++#ifdef CONFIG_SPL_BUILD
++#define printf(s) puts(s)
++#endif
+ #define JZ_NAND_DATA_ADDR ((void __iomem *)0xB8000000)
+ #define JZ_NAND_CMD_ADDR (JZ_NAND_DATA_ADDR + 0x8000)
+ #define JZ_NAND_ADDR_ADDR (JZ_NAND_DATA_ADDR + 0x10000)
+@@ -176,7 +179,7 @@ static int jz_nand_rs_correct_data(struct mtd_info *mtd, u_char *dat,
+ 		for (k = 0; k < 9; k++)
+ 			writeb(read_ecc[k], &emc->nfpar[k]);
+ 	}
+-	/* Set PRDY */
++
+ 	writel(readl(&emc->nfecr) | EMC_NFECR_PRDY, &emc->nfecr);
+ 
+ 	/* Wait for completion */
+@@ -184,7 +187,7 @@ static int jz_nand_rs_correct_data(struct mtd_info *mtd, u_char *dat,
+ 		status = readl(&emc->nfints);
+ 	} while (!(status & EMC_NFINTS_DECF));
+ 
+-	/* disable ecc */
++	/* Disable ECC */
+ 	writel(readl(&emc->nfecr) & ~EMC_NFECR_ECCE, &emc->nfecr);
+ 
+ 	/* Check decoding */
+@@ -192,7 +195,7 @@ static int jz_nand_rs_correct_data(struct mtd_info *mtd, u_char *dat,
+ 		return 0;
+ 
+ 	if (status & EMC_NFINTS_UNCOR) {
+-		printf("uncorrectable ecc\n");
++		printf("JZ4740 uncorrectable ECC\n");
+ 		return -1;
+ 	}
+ 
+@@ -230,6 +233,32 @@ static int jz_nand_rs_correct_data(struct mtd_info *mtd, u_char *dat,
+ 	return errcnt;
+ }
+ 
++#ifdef CONFIG_SPL_BUILD
++static void jz_nand_read_buf(struct mtd_info *mtd, uint8_t *buf, int len)
++{
++	int i;
++	struct nand_chip *this = mtd->priv;
++
++#if (JZ4740_NANDBOOT_CFG == JZ4740_NANDBOOT_B16R3) || \
++	(JZ4740_NANDBOOT_CFG == JZ4740_NANDBOOT_B16R2)
++	for (i = 0; i < len; i += 2)
++		buf[i] = readw(this->IO_ADDR_R);
++#elif (JZ4740_NANDBOOT_CFG == JZ4740_NANDBOOT_B8R3) || \
++	(JZ4740_NANDBOOT_CFG == JZ4740_NANDBOOT_B8R2)
++	for (i = 0; i < len; i++)
++		buf[i] = readb(this->IO_ADDR_R);
++#else
++	#error JZ4740_NANDBOOT_CFG not defined or wrong
++#endif
++}
++
++static uint8_t jz_nand_read_byte(struct mtd_info *mtd)
++{
++	struct nand_chip *this = mtd->priv;
++	return readb(this->IO_ADDR_R);
++}
++#endif
++
+ /*
+  * Main initialization routine
+  */
+@@ -254,6 +283,10 @@ int board_nand_init(struct nand_chip *nand)
+ 	nand->ecc.size		= CONFIG_SYS_NAND_ECCSIZE;
+ 	nand->ecc.bytes		= CONFIG_SYS_NAND_ECCBYTES;
+ 	nand->ecc.layout	= &qi_lb60_ecclayout_2gb;
++#ifdef CONFIG_SPL_BUILD
++	nand->read_byte		= jz_nand_read_byte;
++	nand->read_buf		= jz_nand_read_buf;
++#endif
+ 	nand->chip_delay	= 50;
+ 	nand->options		= NAND_USE_FLASH_BBT;
+ 
+diff --git a/include/configs/qi_lb60.h b/include/configs/qi_lb60.h
+index 4bb5bbc..7bff444 100644
+--- a/include/configs/qi_lb60.h
++++ b/include/configs/qi_lb60.h
+@@ -1,5 +1,5 @@
+ /*
+- * Authors: Xiangfu Liu <xiangfu.z@gmail.com>
++ * Authors: Xiangfu Liu <xiangfu@openmobilefree.net>
+  *
+  * This program is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU General Public License
+@@ -14,7 +14,6 @@
+ #define CONFIG_SYS_LITTLE_ENDIAN
+ #define CONFIG_JZSOC		/* Jz SoC */
+ #define CONFIG_JZ4740		/* Jz4740 SoC */
+-#define CONFIG_NAND_JZ4740
+ 
+ #define CONFIG_SYS_CPU_SPEED	336000000	/* CPU clock: 336 MHz */
+ #define CONFIG_SYS_EXTAL	12000000	/* EXTAL freq: 12 MHz */
+@@ -24,24 +23,43 @@
+ #define CONFIG_SYS_UART_BASE	JZ4740_UART0_BASE /* Base of the UART channel */
+ #define CONFIG_BAUDRATE		57600
+ 
++#define CONFIG_BOOTP_MASK	(CONFIG_BOOTP_DEFAUL)
++#define CONFIG_BOOTDELAY	0
++#define CONFIG_BOOTARGS "mem=32M console=tty0 console=ttyS0,57600n8 ubi.mtd=2 rootfstype=ubifs root=ubi0:rootfs rw rootwait"
++#define CONFIG_BOOTCOMMAND	"nand read 0x80600000 0x400000 0x280000;bootm"
++
++/*
++ * Miscellaneous configurable options
++ */
++#define CONFIG_SYS_SDRAM_BASE		0x80000000	/* Cached addr */
++#define CONFIG_SYS_INIT_SP_OFFSET	0x400000
++#define CONFIG_SYS_LOAD_ADDR		0x80600000
++#define CONFIG_SYS_MEMTEST_START	0x80100000
++#define CONFIG_SYS_MEMTEST_END		0x80A00000
++#define CONFIG_SYS_TEXT_BASE		0x80100000
++#define CONFIG_SYS_MONITOR_BASE		CONFIG_SYS_TEXT_BASE
++
++#define CONFIG_SYS_MALLOC_LEN		(4 * 1024 * 1024)
++#define CONFIG_SYS_BOOTPARAMS_LEN	(128 * 1024)
++
++#define CONFIG_SYS_CBSIZE	256 /* Console I/O Buffer Size */
++#define CONFIG_SYS_PBSIZE (CONFIG_SYS_CBSIZE + sizeof(CONFIG_SYS_PROMPT) + 16)
++
++#define CONFIG_SYS_LONGHELP
++#define CONFIG_SYS_MAXARGS	16
++#define CONFIG_SYS_PROMPT	"NanoNote# "
++
+ #define CONFIG_SKIP_LOWLEVEL_INIT
+ #define CONFIG_BOARD_EARLY_INIT_F
+ #define CONFIG_SYS_NO_FLASH
+ #define CONFIG_SYS_FLASH_BASE	0 /* init flash_base as 0 */
+-#define CONFIG_ENV_OVERWRITE
+-
+-#define CONFIG_BOOTP_MASK	(CONFIG_BOOTP_DEFAUL)
+-#define CONFIG_BOOTDELAY	0
+-#define CONFIG_BOOTARGS		"mem=32M console=tty0 console=ttyS0,57600n8 ubi.mtd=2 rootfstype=ubifs root=ubi0:rootfs rw rootwait"
+-#define CONFIG_BOOTCOMMAND	"nand read 0x80600000 0x400000 0x200000;bootm"
+ 
+ /*
+- * Command line configuration.
++ * Command line configuration
+  */
+ #define CONFIG_CMD_BOOTD	/* bootd			*/
+ #define CONFIG_CMD_CONSOLE	/* coninfo			*/
+ #define CONFIG_CMD_ECHO		/* echo arguments		*/
+-
+ #define CONFIG_CMD_LOADB	/* loadb			*/
+ #define CONFIG_CMD_LOADS	/* loads			*/
+ #define CONFIG_CMD_MEMORY	/* md mm nm mw cp cmp crc base loop mtest */
+@@ -58,45 +76,16 @@
+ #define CONFIG_LOADS_ECHO	1	/* echo on for serial download */
+ 
+ /*
+- * Miscellaneous configurable options
+- */
+-#define CONFIG_SYS_MAXARGS 16
+-#define CONFIG_SYS_LONGHELP
+-#define CONFIG_SYS_PROMPT "NanoNote# "
+-#define CONFIG_SYS_CBSIZE 256 /* Console I/O Buffer Size */
+-#define CONFIG_SYS_PBSIZE (CONFIG_SYS_CBSIZE + sizeof(CONFIG_SYS_PROMPT) + 16)
+-
+-#define CONFIG_SYS_MALLOC_LEN		(4 * 1024 * 1024)
+-#define CONFIG_SYS_BOOTPARAMS_LEN	(128 * 1024)
+-
+-#define CONFIG_SYS_SDRAM_BASE		0x80000000	/* Cached addr */
+-#define CONFIG_SYS_INIT_SP_OFFSET	0x400000
+-#define CONFIG_SYS_LOAD_ADDR		0x80600000
+-#define CONFIG_SYS_MEMTEST_START	0x80100000
+-#define CONFIG_SYS_MEMTEST_END		0x80800000
+-
+-/*
+- * Environment
++ * NAND driver configuration
+  */
+-#define CONFIG_ENV_IS_IN_NAND		/* use NAND for environment vars */
+-
+-#define CONFIG_SYS_NAND_5_ADDR_CYCLE
+-/*
+- * if board nand flash is 1GB, set to 1
+- * if board nand flash is 2GB, set to 2
+- * for change the PAGE_SIZE and BLOCK_SIZE
+- * will delete when there is no 1GB flash
+- */
+-#define NANONOTE_NAND_SIZE	2
+-
+-#define CONFIG_SYS_NAND_PAGE_SIZE	(2048 * NANONOTE_NAND_SIZE)
+-#define CONFIG_SYS_NAND_BLOCK_SIZE	(256 * NANONOTE_NAND_SIZE << 10)
+-/* nand bad block was marked at this page in a block, start from 0 */
++#define CONFIG_NAND_JZ4740
++#define CONFIG_SYS_NAND_PAGE_SIZE	4096
++#define CONFIG_SYS_NAND_BLOCK_SIZE	(512 << 10)
++/* NAND bad block was marked at this page in a block, start from 0 */
+ #define CONFIG_SYS_NAND_BADBLOCK_PAGE	127
+ #define CONFIG_SYS_NAND_PAGE_COUNT	128
+ #define CONFIG_SYS_NAND_BAD_BLOCK_POS	0
+-/* ECC offset position in oob area, default value is 6 if it isn't defined */
+-#define CONFIG_SYS_NAND_ECC_POS		(6 * NANONOTE_NAND_SIZE)
++#define CONFIG_SYS_NAND_ECC_POS		12
+ #define CONFIG_SYS_NAND_ECCSIZE		512
+ #define CONFIG_SYS_NAND_ECCBYTES	9
+ #define CONFIG_SYS_NAND_ECCPOS		\
+@@ -115,10 +104,9 @@
+ #define CONFIG_SYS_ONENAND_BASE		CONFIG_SYS_NAND_BASE
+ #define CONFIG_SYS_MAX_NAND_DEVICE	1
+ #define CONFIG_SYS_NAND_SELECT_DEVICE	1 /* nand driver supports mutipl.*/
+-#define CONFIG_NAND_SPL_TEXT_BASE	0x80000000
+ 
+ /*
+- * IPL (Initial Program Loader, integrated inside CPU)
++ * IPL (Initial Program Loader, integrated inside Ingenic Xburst JZ4740 CPU)
+  * Will load first 8k from NAND (SPL) into cache and execute it from there.
+  *
+  * SPL (Secondary Program Loader)
+@@ -130,77 +118,88 @@
+  * NUB (NAND U-Boot)
+  * This NAND U-Boot (NUB) is a special U-Boot version which can be started
+  * from RAM. Therefore it mustn't (re-)configure the SDRAM controller.
+- *
+  */
++
++/*
++ * NAND SPL configuration
++ */
++#define CONFIG_SPL
++#define CONFIG_SPL_LIBGENERIC_SUPPORT
++#define CONFIG_SPL_LIBCOMMON_SUPPORT
++#define CONFIG_SPL_NAND_LOAD
++#define CONFIG_SPL_NAND_SIMPLE
++#define CONFIG_SPL_NAND_SUPPORT
++#define CONFIG_SPL_TEXT_BASE	0x80000000
++#define CONFIG_SPL_START_S_PATH	"arch/mips/cpu/xburst/spl"
++
++#define CONFIG_SYS_NAND_5_ADDR_CYCLE
++#define CONFIG_SYS_NAND_HW_ECC_OOBFIRST
++#define JZ4740_NANDBOOT_CFG		JZ4740_NANDBOOT_B8R3
++
+ #define CONFIG_SYS_NAND_U_BOOT_DST	0x80100000 /* Load NUB to this addr */
+ #define CONFIG_SYS_NAND_U_BOOT_START	CONFIG_SYS_NAND_U_BOOT_DST
+-/* Start NUB from this addr*/
++					/* Start NUB from this addr */
++#define CONFIG_SYS_NAND_U_BOOT_OFFS (32  << 10) /* Offset of NUB */
++#define CONFIG_SYS_NAND_U_BOOT_SIZE (256 << 10) /* Size of NUB */
+ 
+ /*
+- * Define the partitioning of the NAND chip (only RAM U-Boot is needed here)
++ * Environment configuration
+  */
+-#define CONFIG_SYS_NAND_U_BOOT_OFFS (256 << 10) /* Offset to RAM U-Boot image */
+-#define CONFIG_SYS_NAND_U_BOOT_SIZE (512 << 10) /* Size of RAM U-Boot image */
+-
++#define CONFIG_ENV_OVERWRITE
++#define CONFIG_ENV_IS_IN_NAND
+ #define CONFIG_ENV_SIZE		(4 << 10)
+ #define CONFIG_ENV_OFFSET	\
+ 	(CONFIG_SYS_NAND_BLOCK_SIZE + CONFIG_SYS_NAND_U_BOOT_SIZE)
+ #define CONFIG_ENV_OFFSET_REDUND \
+ 	(CONFIG_ENV_OFFSET  + CONFIG_SYS_NAND_BLOCK_SIZE)
+ 
+-#define CONFIG_SYS_TEXT_BASE	0x80100000
+-#define CONFIG_SYS_MONITOR_BASE	CONFIG_SYS_TEXT_BASE
+-
+ /*
+- * SDRAM Info.
++ * CPU cache configuration
+  */
+-#define CONFIG_NR_DRAM_BANKS	1
++#define CONFIG_SYS_DCACHE_SIZE		16384
++#define CONFIG_SYS_ICACHE_SIZE		16384
++#define CONFIG_SYS_CACHELINE_SIZE	32
+ 
+ /*
+- * Cache Configuration
++ * SDRAM configuration
+  */
+-#define CONFIG_SYS_DCACHE_SIZE	16384
+-#define CONFIG_SYS_ICACHE_SIZE	16384
+-#define CONFIG_SYS_CACHELINE_SIZE	32
++#define CONFIG_NR_DRAM_BANKS	1
++
++#define SDRAM_BW16		1	/* Data bus width: 0-32bit, 1-16bit */
++#define SDRAM_BANK4		1	/* Banks each chip: 0-2bank, 1-4bank */
++#define SDRAM_ROW		13	/* Row address: 11 to 13 */
++#define SDRAM_COL		9	/* Column address: 8 to 12 */
++#define SDRAM_CASL		2	/* CAS latency: 2 or 3 */
++#define SDRAM_TRAS		45	/* RAS# Active Time */
++#define SDRAM_RCD		20	/* RAS# to CAS# Delay */
++#define SDRAM_TPC		20	/* RAS# Precharge Time */
++#define SDRAM_TRWL		7	/* Write Latency Time */
++#define SDRAM_TREF		15625	/* Refresh period: 8192 cycles/64ms */
+ 
+ /*
+- * GPIO definition
++ * GPIO configuration
+  */
+-#define GPIO_LCD_CS	(2 * 32 + 21)
+-#define GPIO_AMP_EN	(3 * 32 + 4)
++#define GPIO_LCD_CS		(2 * 32 + 21)
++#define GPIO_AMP_EN		(3 * 32 + 4)
+ 
+-#define GPIO_SDPW_EN	(3 * 32 + 2)
+-#define GPIO_SD_DETECT	(3 * 32 + 0)
++#define GPIO_SDPW_EN		(3 * 32 + 2)
++#define GPIO_SD_DETECT		(3 * 32 + 0)
+ 
+-#define GPIO_BUZZ_PWM	(3 * 32 + 27)
+-#define GPIO_USB_DETECT	(3 * 32 + 28)
++#define GPIO_BUZZ_PWM		(3 * 32 + 27)
++#define GPIO_USB_DETECT		(3 * 32 + 28)
+ 
+-#define GPIO_AUDIO_POP	(1 * 32 + 29)
+-#define GPIO_COB_TEST	(1 * 32 + 30)
++#define GPIO_AUDIO_POP		(1 * 32 + 29)
++#define GPIO_COB_TEST		(1 * 32 + 30)
+ 
+ #define GPIO_KEYOUT_BASE	(2 * 32 + 10)
+-#define GPIO_KEYIN_BASE	(3 * 32 + 18)
+-#define GPIO_KEYIN_8	(3 * 32 + 26)
++#define GPIO_KEYIN_BASE		(3 * 32 + 18)
++#define GPIO_KEYIN_8		(3 * 32 + 26)
+ 
+-#define GPIO_SD_CD_N	GPIO_SD_DETECT		/* SD Card insert detect */
++#define GPIO_SD_CD_N		GPIO_SD_DETECT	/* SD Card insert detect */
+ #define GPIO_SD_VCC_EN_N	GPIO_SDPW_EN	/* SD Card Power Enable */
+ 
+ #define SPEN	GPIO_LCD_CS	/* LCDCS :Serial command enable      */
+ #define SPDA	(2 * 32 + 22)	/* LCDSCL:Serial command clock input */
+ #define SPCK	(2 * 32 + 23)	/* LCDSDA:Serial command data input  */
+ 
+-/* SDRAM paramters */
+-#define SDRAM_BW16		1	/* Data bus width: 0-32bit, 1-16bit */
+-#define SDRAM_BANK4		1	/* Banks each chip: 0-2bank, 1-4bank */
+-#define SDRAM_ROW		13	/* Row address: 11 to 13 */
+-#define SDRAM_COL		9	/* Column address: 8 to 12 */
+-#define SDRAM_CASL		2	/* CAS latency: 2 or 3 */
+-
+-/* SDRAM Timings, unit: ns */
+-#define SDRAM_TRAS		45	/* RAS# Active Time */
+-#define SDRAM_RCD		20	/* RAS# to CAS# Delay */
+-#define SDRAM_TPC		20	/* RAS# Precharge Time */
+-#define SDRAM_TRWL		7	/* Write Latency Time */
+-#define SDRAM_TREF		15625	/* Refresh period: 8192 cycles/64ms */
+-
+ #endif
+-- 
+1.7.9.5
+

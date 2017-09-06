@@ -1,0 +1,145 @@
+From 3c50918b180d091a49e412742a4f7aa1a89802b1 Mon Sep 17 00:00:00 2001
+From: Jes Sorensen <Jes.Sorensen@redhat.com>
+Date: Tue, 26 Jul 2016 14:01:14 -0400
+Subject: [PATCH] rtl8xxxu: Implement rtl8xxxu_fill_txdesc_v3() for 8188eu
+
+Getting closer but still no cigar.
+
+Signed-off-by: Jes Sorensen <Jes.Sorensen@redhat.com>
+---
+ drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu.h   | 11 +++
+ .../net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c |  1 +
+ .../net/wireless/realtek/rtl8xxxu/rtl8xxxu_core.c  | 78 ++++++++++++++++++++++
+ 3 files changed, 90 insertions(+)
+
+--- a/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu.h
++++ b/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu.h
+@@ -510,6 +510,8 @@ struct rtl8xxxu_txdesc40 {
+ #define TXDESC_AMPDU_DENSITY_SHIFT	20
+ #define TXDESC40_BT_INT			BIT(23)
+ #define TXDESC40_GID_SHIFT		24
++#define TXDESC_ANTENNA_SELECT_A		BIT(24)
++#define TXDESC_ANTENNA_SELECT_B		BIT(25)
+ 
+ /* Word 3 */
+ #define TXDESC40_USE_DRIVER_RATE	BIT(8)
+@@ -554,6 +556,10 @@ struct rtl8xxxu_txdesc40 {
+ 
+ /* Word 6 */
+ #define TXDESC_MAX_AGG_SHIFT		11
++#define TXDESC_USB_TX_AGG_SHIT		24
++
++/* Word 7 */
++#define TXDESC_ANTENNA_SELECT_C		BIT(29)
+ 
+ /* Word 8 */
+ #define TXDESC40_HW_SEQ_ENABLE		BIT(15)
+@@ -1487,6 +1493,11 @@ void rtl8xxxu_fill_txdesc_v2(struct ieee
+ 			     struct ieee80211_tx_info *tx_info,
+ 			     struct rtl8xxxu_txdesc32 *tx_desc32, bool sgi,
+ 			     bool short_preamble, bool ampdu_enable,
++			     u32 rts_rate);
++void rtl8xxxu_fill_txdesc_v3(struct ieee80211_hw *hw, struct ieee80211_hdr *hdr,
++			     struct ieee80211_tx_info *tx_info,
++			     struct rtl8xxxu_txdesc32 *tx_desc32, bool sgi,
++			     bool short_preamble, bool ampdu_enable,
+ 			     u32 rts_rate);
+ 
+ extern struct rtl8xxxu_fileops rtl8188eu_fops;
+--- a/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c
++++ b/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c
+@@ -1217,6 +1217,7 @@ struct rtl8xxxu_fileops rtl8188eu_fops =
+ 	.set_tx_power = rtl8188e_set_tx_power,
+ 	.update_rate_mask = rtl8xxxu_gen2_update_rate_mask,
+ 	.report_connect = rtl8xxxu_gen2_report_connect,
++	.fill_txdesc = rtl8xxxu_fill_txdesc_v3,
+ 	.writeN_block_size = 128,
+ 	.rx_desc_size = sizeof(struct rtl8xxxu_rxdesc16),
+ 	.tx_desc_size = sizeof(struct rtl8xxxu_txdesc32),
+--- a/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_core.c
++++ b/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_core.c
+@@ -4931,6 +4931,84 @@ rtl8xxxu_fill_txdesc_v2(struct ieee80211
+ 	}
+ }
+ 
++/*
++ * Fill in v3 (gen1) specific TX descriptor bits.
++ * This format is a hybrid between the v1 and v2 formats, only seen
++ * on 8188eu devices so far.
++ */
++void
++rtl8xxxu_fill_txdesc_v3(struct ieee80211_hw *hw, struct ieee80211_hdr *hdr,
++			struct ieee80211_tx_info *tx_info,
++			struct rtl8xxxu_txdesc32 *tx_desc, bool sgi,
++			bool short_preamble, bool ampdu_enable, u32 rts_rate)
++{
++	struct ieee80211_rate *tx_rate = ieee80211_get_tx_rate(hw, tx_info);
++	struct rtl8xxxu_priv *priv = hw->priv;
++	struct device *dev = &priv->udev->dev;
++	u32 rate;
++	u16 rate_flags = tx_info->control.rates[0].flags;
++	u16 seq_number;
++
++	if (rate_flags & IEEE80211_TX_RC_MCS &&
++	    !ieee80211_is_mgmt(hdr->frame_control))
++		rate = tx_info->control.rates[0].idx + DESC_RATE_MCS0;
++	else
++		rate = tx_rate->hw_value;
++
++	if (rtl8xxxu_debug & RTL8XXXU_DEBUG_TX)
++		dev_info(dev, "%s: TX rate: %d, pkt size %d\n",
++			 __func__, rate, cpu_to_le16(tx_desc->pkt_size));
++
++	seq_number = IEEE80211_SEQ_TO_SN(le16_to_cpu(hdr->seq_ctrl));
++
++	tx_desc->txdw5 = cpu_to_le32(rate);
++
++	/*
++	 * Data/RTS rate FB limit
++	 */
++	if (ieee80211_is_data(hdr->frame_control))
++		tx_desc->txdw5 |= cpu_to_le32(0x0001ff00);
++
++	tx_desc->txdw3 = cpu_to_le32((u32)seq_number << TXDESC32_SEQ_SHIFT);
++
++	if (ampdu_enable)
++		tx_desc->txdw2 |= cpu_to_le32(TXDESC40_AGG_ENABLE);
++	else
++		tx_desc->txdw2 |= cpu_to_le32(TXDESC40_AGG_BREAK);
++
++	if (ieee80211_is_mgmt(hdr->frame_control)) {
++		tx_desc->txdw5 = cpu_to_le32(rate);
++		tx_desc->txdw4 |= cpu_to_le32(TXDESC32_USE_DRIVER_RATE);
++		tx_desc->txdw5 |= cpu_to_le32(6 << TXDESC32_RETRY_LIMIT_SHIFT);
++		tx_desc->txdw5 |= cpu_to_le32(TXDESC32_RETRY_LIMIT_ENABLE);
++	}
++
++	if (ieee80211_is_data_qos(hdr->frame_control))
++		tx_desc->txdw4 |= cpu_to_le32(TXDESC32_QOS);
++
++	if (short_preamble)
++		tx_desc->txdw4 |= cpu_to_le32(TXDESC32_SHORT_PREAMBLE);
++
++	if (sgi)
++		tx_desc->txdw5 |= cpu_to_le32(TXDESC32_SHORT_GI);
++
++	/*
++	 * rts_rate is zero if RTS/CTS or CTS to SELF are not enabled
++	 */
++	tx_desc->txdw4 |= cpu_to_le32(rts_rate << TXDESC32_RTS_RATE_SHIFT);
++	if (rate_flags & IEEE80211_TX_RC_USE_RTS_CTS) {
++		tx_desc->txdw4 |= cpu_to_le32(TXDESC32_RTS_CTS_ENABLE);
++		tx_desc->txdw4 |= cpu_to_le32(TXDESC32_HW_RTS_ENABLE);
++	} else if (rate_flags & IEEE80211_TX_RC_USE_CTS_PROTECT) {
++		tx_desc->txdw4 |= cpu_to_le32(TXDESC32_CTS_SELF_ENABLE);
++		tx_desc->txdw4 |= cpu_to_le32(TXDESC32_HW_RTS_ENABLE);
++	}
++
++	tx_desc->txdw2 |= cpu_to_le32(TXDESC_ANTENNA_SELECT_A |
++				      TXDESC_ANTENNA_SELECT_B);
++	tx_desc->txdw7 |= cpu_to_le32(TXDESC_ANTENNA_SELECT_C);
++}
++
+ static void rtl8xxxu_tx(struct ieee80211_hw *hw,
+ 			struct ieee80211_tx_control *control,
+ 			struct sk_buff *skb)

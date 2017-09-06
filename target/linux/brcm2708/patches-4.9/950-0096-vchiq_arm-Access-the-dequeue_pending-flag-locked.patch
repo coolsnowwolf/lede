@@ -1,0 +1,58 @@
+From 64e39b18b8d51eb332a84ef79ed3ce0dd2a76808 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Wed, 23 Mar 2016 14:16:25 +0000
+Subject: [PATCH] vchiq_arm: Access the dequeue_pending flag locked
+
+Reading through this code looking for another problem (now found in userland)
+the use of dequeue_pending outside a lock didn't seem safe.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ .../vc04_services/interface/vchiq_arm/vchiq_arm.c       | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+--- a/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_arm.c
++++ b/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_arm.c
+@@ -279,6 +279,7 @@ service_callback(VCHIQ_REASON_T reason,
+ 	USER_SERVICE_T *user_service;
+ 	VCHIQ_SERVICE_T *service;
+ 	VCHIQ_INSTANCE_T instance;
++	int skip_completion = 0;
+ 	DEBUG_INITIALISE(g_state.local)
+ 
+ 	DEBUG_TRACE(SERVICE_CALLBACK_LINE);
+@@ -345,9 +346,6 @@ service_callback(VCHIQ_REASON_T reason,
+ 		user_service->msg_queue[user_service->msg_insert &
+ 			(MSG_QUEUE_SIZE - 1)] = header;
+ 		user_service->msg_insert++;
+-		spin_unlock(&msg_queue_spinlock);
+-
+-		up(&user_service->insert_event);
+ 
+ 		/* If there is a thread waiting in DEQUEUE_MESSAGE, or if
+ 		** there is a MESSAGE_AVAILABLE in the completion queue then
+@@ -356,13 +354,22 @@ service_callback(VCHIQ_REASON_T reason,
+ 		if (((user_service->message_available_pos -
+ 			instance->completion_remove) >= 0) ||
+ 			user_service->dequeue_pending) {
+-			DEBUG_TRACE(SERVICE_CALLBACK_LINE);
+ 			user_service->dequeue_pending = 0;
+-			return VCHIQ_SUCCESS;
++			skip_completion = 1;
+ 		}
+ 
++		spin_unlock(&msg_queue_spinlock);
++
++		up(&user_service->insert_event);
++
+ 		header = NULL;
+ 	}
++
++	if (skip_completion) {
++		DEBUG_TRACE(SERVICE_CALLBACK_LINE);
++		return VCHIQ_SUCCESS;
++	}
++
+ 	DEBUG_TRACE(SERVICE_CALLBACK_LINE);
+ 
+ 	return add_completion(instance, reason, header, user_service,

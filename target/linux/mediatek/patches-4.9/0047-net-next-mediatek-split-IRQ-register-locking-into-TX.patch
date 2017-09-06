@@ -1,0 +1,208 @@
+From 5afceece38fa30e3c71e7ed9ac62aa70ba8cfbb1 Mon Sep 17 00:00:00 2001
+From: John Crispin <john@phrozen.org>
+Date: Fri, 16 Jun 2017 10:00:30 +0200
+Subject: [PATCH 47/57] net-next: mediatek: split IRQ register locking into TX
+ and RX
+
+Originally the driver only utilized the new QDMA engine. The current code
+still assumes this is the case when locking the IRQ mask register. Since
+RX now runs on the old style PDMA engine we can add a second lock. This
+patch reduces the IRQ latency as the TX and RX path no longer need to wait
+on each other under heavy load.
+
+Signed-off-by: John Crispin <john@phrozen.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 79 ++++++++++++++++++-----------
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h |  5 +-
+ 2 files changed, 54 insertions(+), 30 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -372,28 +372,48 @@ static void mtk_mdio_cleanup(struct mtk_
+ 	mdiobus_unregister(eth->mii_bus);
+ }
+ 
+-static inline void mtk_irq_disable(struct mtk_eth *eth,
+-				   unsigned reg, u32 mask)
++static inline void mtk_tx_irq_disable(struct mtk_eth *eth, u32 mask)
+ {
+ 	unsigned long flags;
+ 	u32 val;
+ 
+-	spin_lock_irqsave(&eth->irq_lock, flags);
+-	val = mtk_r32(eth, reg);
+-	mtk_w32(eth, val & ~mask, reg);
+-	spin_unlock_irqrestore(&eth->irq_lock, flags);
++	spin_lock_irqsave(&eth->tx_irq_lock, flags);
++	val = mtk_r32(eth, MTK_QDMA_INT_MASK);
++	mtk_w32(eth, val & ~mask, MTK_QDMA_INT_MASK);
++	spin_unlock_irqrestore(&eth->tx_irq_lock, flags);
+ }
+ 
+-static inline void mtk_irq_enable(struct mtk_eth *eth,
+-				  unsigned reg, u32 mask)
++static inline void mtk_tx_irq_enable(struct mtk_eth *eth, u32 mask)
+ {
+ 	unsigned long flags;
+ 	u32 val;
+ 
+-	spin_lock_irqsave(&eth->irq_lock, flags);
+-	val = mtk_r32(eth, reg);
+-	mtk_w32(eth, val | mask, reg);
+-	spin_unlock_irqrestore(&eth->irq_lock, flags);
++	spin_lock_irqsave(&eth->tx_irq_lock, flags);
++	val = mtk_r32(eth, MTK_QDMA_INT_MASK);
++	mtk_w32(eth, val | mask, MTK_QDMA_INT_MASK);
++	spin_unlock_irqrestore(&eth->tx_irq_lock, flags);
++}
++
++static inline void mtk_rx_irq_disable(struct mtk_eth *eth, u32 mask)
++{
++	unsigned long flags;
++	u32 val;
++
++	spin_lock_irqsave(&eth->rx_irq_lock, flags);
++	val = mtk_r32(eth, MTK_PDMA_INT_MASK);
++	mtk_w32(eth, val & ~mask, MTK_PDMA_INT_MASK);
++	spin_unlock_irqrestore(&eth->rx_irq_lock, flags);
++}
++
++static inline void mtk_rx_irq_enable(struct mtk_eth *eth, u32 mask)
++{
++	unsigned long flags;
++	u32 val;
++
++	spin_lock_irqsave(&eth->rx_irq_lock, flags);
++	val = mtk_r32(eth, MTK_PDMA_INT_MASK);
++	mtk_w32(eth, val | mask, MTK_PDMA_INT_MASK);
++	spin_unlock_irqrestore(&eth->rx_irq_lock, flags);
+ }
+ 
+ static int mtk_set_mac_address(struct net_device *dev, void *p)
+@@ -1116,7 +1136,7 @@ static int mtk_napi_tx(struct napi_struc
+ 		return budget;
+ 
+ 	napi_complete(napi);
+-	mtk_irq_enable(eth, MTK_QDMA_INT_MASK, MTK_TX_DONE_INT);
++	mtk_tx_irq_enable(eth, MTK_TX_DONE_INT);
+ 
+ 	return tx_done;
+ }
+@@ -1150,7 +1170,7 @@ poll_again:
+ 		goto poll_again;
+ 	}
+ 	napi_complete(napi);
+-	mtk_irq_enable(eth, MTK_PDMA_INT_MASK, MTK_RX_DONE_INT);
++	mtk_rx_irq_enable(eth, MTK_RX_DONE_INT);
+ 
+ 	return rx_done + budget - remain_budget;
+ }
+@@ -1699,7 +1719,7 @@ static irqreturn_t mtk_handle_irq_rx(int
+ 
+ 	if (likely(napi_schedule_prep(&eth->rx_napi))) {
+ 		__napi_schedule(&eth->rx_napi);
+-		mtk_irq_disable(eth, MTK_PDMA_INT_MASK, MTK_RX_DONE_INT);
++		mtk_rx_irq_disable(eth, MTK_RX_DONE_INT);
+ 	}
+ 
+ 	return IRQ_HANDLED;
+@@ -1711,7 +1731,7 @@ static irqreturn_t mtk_handle_irq_tx(int
+ 
+ 	if (likely(napi_schedule_prep(&eth->tx_napi))) {
+ 		__napi_schedule(&eth->tx_napi);
+-		mtk_irq_disable(eth, MTK_QDMA_INT_MASK, MTK_TX_DONE_INT);
++		mtk_tx_irq_disable(eth, MTK_TX_DONE_INT);
+ 	}
+ 
+ 	return IRQ_HANDLED;
+@@ -1723,11 +1743,11 @@ static void mtk_poll_controller(struct n
+ 	struct mtk_mac *mac = netdev_priv(dev);
+ 	struct mtk_eth *eth = mac->hw;
+ 
+-	mtk_irq_disable(eth, MTK_QDMA_INT_MASK, MTK_TX_DONE_INT);
+-	mtk_irq_disable(eth, MTK_PDMA_INT_MASK, MTK_RX_DONE_INT);
++	mtk_tx_irq_disable(eth, MTK_TX_DONE_INT);
++	mtk_rx_irq_disable(eth, MTK_RX_DONE_INT);
+ 	mtk_handle_irq_rx(eth->irq[2], dev);
+-	mtk_irq_enable(eth, MTK_QDMA_INT_MASK, MTK_TX_DONE_INT);
+-	mtk_irq_enable(eth, MTK_PDMA_INT_MASK, MTK_RX_DONE_INT);
++	mtk_tx_irq_enable(eth, MTK_TX_DONE_INT);
++	mtk_rx_irq_enable(eth, MTK_RX_DONE_INT);
+ }
+ #endif
+ 
+@@ -1770,8 +1790,8 @@ static int mtk_open(struct net_device *d
+ 
+ 		napi_enable(&eth->tx_napi);
+ 		napi_enable(&eth->rx_napi);
+-		mtk_irq_enable(eth, MTK_QDMA_INT_MASK, MTK_TX_DONE_INT);
+-		mtk_irq_enable(eth, MTK_PDMA_INT_MASK, MTK_RX_DONE_INT);
++		mtk_tx_irq_enable(eth, MTK_TX_DONE_INT);
++		mtk_rx_irq_enable(eth, MTK_RX_DONE_INT);
+ 	}
+ 	atomic_inc(&eth->dma_refcnt);
+ 
+@@ -1816,8 +1836,8 @@ static int mtk_stop(struct net_device *d
+ 	if (!atomic_dec_and_test(&eth->dma_refcnt))
+ 		return 0;
+ 
+-	mtk_irq_disable(eth, MTK_QDMA_INT_MASK, MTK_TX_DONE_INT);
+-	mtk_irq_disable(eth, MTK_PDMA_INT_MASK, MTK_RX_DONE_INT);
++	mtk_tx_irq_disable(eth, MTK_TX_DONE_INT);
++	mtk_rx_irq_disable(eth, MTK_RX_DONE_INT);
+ 	napi_disable(&eth->tx_napi);
+ 	napi_disable(&eth->rx_napi);
+ 
+@@ -1911,8 +1931,8 @@ static int mtk_hw_init(struct mtk_eth *e
+ 	mtk_w32(eth, 0, MTK_PDMA_DELAY_INT);
+ 	mtk_w32(eth, 0, MTK_QDMA_DELAY_INT);
+ #endif
+-	mtk_irq_disable(eth, MTK_QDMA_INT_MASK, ~0);
+-	mtk_irq_disable(eth, MTK_PDMA_INT_MASK, ~0);
++	mtk_tx_irq_disable(eth, ~0);
++	mtk_rx_irq_disable(eth, ~0);
+ 	mtk_w32(eth, RST_GL_PSE, MTK_RST_GL);
+ 	mtk_w32(eth, 0, MTK_RST_GL);
+ 
+@@ -1983,8 +2003,8 @@ static void mtk_uninit(struct net_device
+ 	phy_disconnect(dev->phydev);
+ 	if (of_phy_is_fixed_link(mac->of_node))
+ 		of_phy_deregister_fixed_link(mac->of_node);
+-	mtk_irq_disable(eth, MTK_QDMA_INT_MASK, ~0);
+-	mtk_irq_disable(eth, MTK_PDMA_INT_MASK, ~0);
++	mtk_tx_irq_disable(eth, ~0);
++	mtk_rx_irq_disable(eth, ~0);
+ }
+ 
+ static int mtk_do_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
+@@ -2442,7 +2462,8 @@ static int mtk_probe(struct platform_dev
+ 		return PTR_ERR(eth->base);
+ 
+ 	spin_lock_init(&eth->page_lock);
+-	spin_lock_init(&eth->irq_lock);
++	spin_lock_init(&eth->tx_irq_lock);
++	spin_lock_init(&eth->rx_irq_lock);
+ 
+ 	eth->ethsys = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
+ 						      "mediatek,ethsys");
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -526,6 +526,8 @@ struct mtk_rx_ring {
+  * @dev:		The device pointer
+  * @base:		The mapped register i/o base
+  * @page_lock:		Make sure that register operations are atomic
++ * @tx_irq__lock:	Make sure that IRQ register operations are atomic
++ * @rx_irq__lock:	Make sure that IRQ register operations are atomic
+  * @dummy_dev:		we run 2 netdevs on 1 physical DMA ring and need a
+  *			dummy for NAPI to work
+  * @netdev:		The netdev instances
+@@ -555,7 +557,8 @@ struct mtk_eth {
+ 	struct device			*dev;
+ 	void __iomem			*base;
+ 	spinlock_t			page_lock;
+-	spinlock_t			irq_lock;
++	spinlock_t			tx_irq_lock;
++	spinlock_t			rx_irq_lock;
+ 	struct net_device		dummy_dev;
+ 	struct net_device		*netdev[MTK_MAX_DEVS];
+ 	struct mtk_mac			*mac[MTK_MAX_DEVS];

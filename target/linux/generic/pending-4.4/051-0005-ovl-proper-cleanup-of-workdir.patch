@@ -1,0 +1,131 @@
+From eea2fb4851e9dcbab6b991aaf47e2e024f1f55a0 Mon Sep 17 00:00:00 2001
+From: Miklos Szeredi <mszeredi@redhat.com>
+Date: Thu, 1 Sep 2016 11:11:59 +0200
+Subject: [PATCH] ovl: proper cleanup of workdir
+
+When mounting overlayfs it needs a clean "work" directory under the
+supplied workdir.
+
+Previously the mount code removed this directory if it already existed and
+created a new one.  If the removal failed (e.g. directory was not empty)
+then it fell back to a read-only mount not using the workdir.
+
+While this has never been reported, it is possible to get a non-empty
+"work" dir from a previous mount of overlayfs in case of crash in the
+middle of an operation using the work directory.
+
+In this case the left over state should be discarded and the overlay
+filesystem will be consistent, guaranteed by the atomicity of operations on
+moving to/from the workdir to the upper layer.
+
+This patch implements cleaning out any files left in workdir.  It is
+implemented using real recursion for simplicity, but the depth is limited
+to 2, because the worst case is that of a directory containing whiteouts
+under "work".
+
+Signed-off-by: Miklos Szeredi <mszeredi@redhat.com>
+Cc: <stable@vger.kernel.org>
+---
+ fs/overlayfs/overlayfs.h |  2 ++
+ fs/overlayfs/readdir.c   | 63 +++++++++++++++++++++++++++++++++++++++++++++++-
+ fs/overlayfs/super.c     |  2 +-
+ 3 files changed, 65 insertions(+), 2 deletions(-)
+
+--- a/fs/overlayfs/overlayfs.h
++++ b/fs/overlayfs/overlayfs.h
+@@ -164,6 +164,8 @@ extern const struct file_operations ovl_
+ int ovl_check_empty_dir(struct dentry *dentry, struct list_head *list);
+ void ovl_cleanup_whiteouts(struct dentry *upper, struct list_head *list);
+ void ovl_cache_free(struct list_head *list);
++void ovl_workdir_cleanup(struct inode *dir, struct vfsmount *mnt,
++			 struct dentry *dentry, int level);
+ 
+ /* inode.c */
+ int ovl_setattr(struct dentry *dentry, struct iattr *attr);
+--- a/fs/overlayfs/readdir.c
++++ b/fs/overlayfs/readdir.c
+@@ -247,7 +247,7 @@ static inline int ovl_dir_read(struct pa
+ 			err = rdd->err;
+ 	} while (!err && rdd->count);
+ 
+-	if (!err && rdd->first_maybe_whiteout)
++	if (!err && rdd->first_maybe_whiteout && rdd->dentry)
+ 		err = ovl_check_whiteouts(realpath->dentry, rdd);
+ 
+ 	fput(realfile);
+@@ -569,3 +569,64 @@ void ovl_cleanup_whiteouts(struct dentry
+ 	}
+ 	mutex_unlock(&upper->d_inode->i_mutex);
+ }
++
++static void ovl_workdir_cleanup_recurse(struct path *path, int level)
++{
++	int err;
++	struct inode *dir = path->dentry->d_inode;
++	LIST_HEAD(list);
++	struct ovl_cache_entry *p;
++	struct ovl_readdir_data rdd = {
++		.ctx.actor = ovl_fill_merge,
++		.dentry = NULL,
++		.list = &list,
++		.root = RB_ROOT,
++		.is_lowest = false,
++	};
++
++	err = ovl_dir_read(path, &rdd);
++	if (err)
++		goto out;
++
++	mutex_lock_nested(&dir->i_mutex, I_MUTEX_PARENT);
++	list_for_each_entry(p, &list, l_node) {
++		struct dentry *dentry;
++
++		if (p->name[0] == '.') {
++			if (p->len == 1)
++				continue;
++			if (p->len == 2 && p->name[1] == '.')
++				continue;
++		}
++		dentry = lookup_one_len(p->name, path->dentry, p->len);
++		if (IS_ERR(dentry))
++			continue;
++		if (dentry->d_inode)
++			ovl_workdir_cleanup(dir, path->mnt, dentry, level);
++		dput(dentry);
++	}
++	mutex_unlock(&dir->i_mutex);
++out:
++	ovl_cache_free(&list);
++}
++
++void ovl_workdir_cleanup(struct inode *dir, struct vfsmount *mnt,
++			 struct dentry *dentry, int level)
++{
++	int err;
++
++	if (!d_is_dir(dentry) || level > 1) {
++		ovl_cleanup(dir, dentry);
++		return;
++	}
++
++	err = ovl_do_rmdir(dir, dentry);
++	if (err) {
++		struct path path = { .mnt = mnt, .dentry = dentry };
++
++		mutex_unlock(&dir->i_mutex);
++		ovl_workdir_cleanup_recurse(&path, level + 1);
++		mutex_lock_nested(&dir->i_mutex, I_MUTEX_PARENT);
++		ovl_cleanup(dir, dentry);
++	}
++}
+--- a/fs/overlayfs/super.c
++++ b/fs/overlayfs/super.c
+@@ -784,7 +784,7 @@ retry:
+ 				goto out_dput;
+ 
+ 			retried = true;
+-			ovl_cleanup(dir, work);
++			ovl_workdir_cleanup(dir, mnt, work, 0);
+ 			dput(work);
+ 			goto retry;
+ 		}

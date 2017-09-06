@@ -1,0 +1,185 @@
+From 34e65b6f310234cf3e3629bd3d896a4f84df71f4 Mon Sep 17 00:00:00 2001
+From: Jes Sorensen <Jes.Sorensen@redhat.com>
+Date: Fri, 26 Aug 2016 16:09:00 -0400
+Subject: [PATCH] rtl8xxxu: Implement rtl8188eu_power_off()
+
+This makes the driver match the poweroff sequence of the vendor driver
+and allows the firmware to reload correctly upon rmmod/insmod.
+However the device still doesn't receive data upon reloading.
+
+Signed-off-by: Jes Sorensen <Jes.Sorensen@redhat.com>
+---
+ .../net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c | 136 ++++++++++++++++++++-
+ .../net/wireless/realtek/rtl8xxxu/rtl8xxxu_regs.h  |   2 +
+ 2 files changed, 137 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c
++++ b/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c
+@@ -1191,6 +1191,71 @@ exit:
+ 	return ret;
+ }
+ 
++static int rtl8188eu_emu_to_disabled(struct rtl8xxxu_priv *priv)
++{
++	u8 val8;
++
++	/* 0x04[12:11] = 01 enable WL suspend */
++	val8 = rtl8xxxu_read8(priv, REG_APS_FSMCO + 2);
++	val8 &= ~BIT(0);
++	rtl8xxxu_write8(priv, REG_APS_FSMCO + 2, val8);
++
++	val8 = rtl8xxxu_read8(priv, REG_APS_FSMCO + 1);
++	val8 |= BIT(7);
++	rtl8xxxu_write8(priv, REG_APS_FSMCO + 1, val8);
++
++	return 0;
++}
++
++static int rtl8188eu_active_to_lps(struct rtl8xxxu_priv *priv)
++{
++	struct device *dev = &priv->udev->dev;
++	u8 val8;
++	u16 val16;
++	u32 val32;
++	int retry, retval;
++
++	rtl8xxxu_write8(priv, REG_TXPAUSE, 0x7f);
++
++	retry = 100;
++	retval = -EBUSY;
++	/*
++	 * Poll 32 bit wide 0x05f8 for 0x00000000 to ensure no TX is pending.
++	 */
++	do {
++		val32 = rtl8xxxu_read32(priv, 0x05f8);
++		if (!val32) {
++			retval = 0;
++			break;
++		}
++	} while (retry--);
++
++	if (!retry) {
++		dev_warn(dev, "Failed to flush TX queue\n");
++		retval = -EBUSY;
++		goto out;
++	}
++
++	/* Disable CCK and OFDM, clock gated */
++	val8 = rtl8xxxu_read8(priv, REG_SYS_FUNC);
++	val8 &= ~SYS_FUNC_BBRSTB;
++	rtl8xxxu_write8(priv, REG_SYS_FUNC, val8);
++
++	udelay(2);
++
++	/* Reset MAC TRX */
++	val16 = rtl8xxxu_read16(priv, REG_CR);
++	val16 &= ~(CR_MAC_TX_ENABLE | CR_MAC_RX_ENABLE | CR_SECURITY_ENABLE);
++	rtl8xxxu_write16(priv, REG_CR, val16);
++
++	val8 = rtl8xxxu_read8(priv, REG_DUAL_TSF_RST);
++	val8 |= DUAL_TSF_TX_OK;
++	rtl8xxxu_write8(priv, REG_DUAL_TSF_RST, val8);
++
++out:
++	return retval;
++}
++
+ static int rtl8188eu_power_on(struct rtl8xxxu_priv *priv)
+ {
+ 	u16 val16;
+@@ -1221,6 +1286,75 @@ exit:
+ 	return ret;
+ }
+ 
++void rtl8188eu_power_off(struct rtl8xxxu_priv *priv)
++{
++	u8 val8;
++	u16 val16;
++
++	rtl8xxxu_flush_fifo(priv);
++
++	val8 = rtl8xxxu_read8(priv, REG_TX_REPORT_CTRL);
++	val8 &= ~TX_REPORT_CTRL_TIMER_ENABLE;
++	rtl8xxxu_write8(priv, REG_TX_REPORT_CTRL, val8);
++
++	/* Turn off RF */
++	rtl8xxxu_write8(priv, REG_RF_CTRL, 0x00);
++
++	rtl8188eu_active_to_lps(priv);
++
++	/* Reset Firmware if running in RAM */
++	if (rtl8xxxu_read8(priv, REG_MCU_FW_DL) & MCU_FW_RAM_SEL)
++		rtl8xxxu_firmware_self_reset(priv);
++
++	/* Reset MCU */
++	val16 = rtl8xxxu_read16(priv, REG_SYS_FUNC);
++	val16 &= ~SYS_FUNC_CPU_ENABLE;
++	rtl8xxxu_write16(priv, REG_SYS_FUNC, val16);
++
++	/* Reset MCU ready status */
++	rtl8xxxu_write8(priv, REG_MCU_FW_DL, 0x00);
++
++	/* 32K_CTRL looks to be very 8188e specific */
++	val8 = rtl8xxxu_read8(priv, REG_32K_CTRL);
++	val8 &= ~BIT(0);
++	rtl8xxxu_write8(priv, REG_32K_CTRL, val8);
++
++	rtl8188eu_active_to_emu(priv);
++	rtl8188eu_emu_to_disabled(priv);
++
++	/* Reset MCU IO Wrapper */
++	val8 = rtl8xxxu_read8(priv, REG_RSV_CTRL + 1);
++	val8 &= ~BIT(3);
++	rtl8xxxu_write8(priv, REG_RSV_CTRL + 1, val8);
++
++	val8 = rtl8xxxu_read8(priv, REG_RSV_CTRL + 1);
++	val8 |= BIT(3);
++	rtl8xxxu_write8(priv, REG_RSV_CTRL + 1, val8);
++
++	/* Vendor driver refers to GPIO_IN */
++	val8 = rtl8xxxu_read8(priv, REG_GPIO_PIN_CTRL);
++	/* Vendor driver refers to GPIO_OUT */
++	rtl8xxxu_write8(priv, REG_GPIO_PIN_CTRL + 1, val8);
++	rtl8xxxu_write8(priv, REG_GPIO_PIN_CTRL + 2, 0xff);
++
++	val8 = rtl8xxxu_read8(priv, REG_GPIO_IO_SEL);
++	rtl8xxxu_write8(priv, REG_GPIO_IO_SEL + 1, val8 << 4);
++	val8 = rtl8xxxu_read8(priv, REG_GPIO_IO_SEL + 1);
++	rtl8xxxu_write8(priv, REG_GPIO_IO_SEL + 1, val8 | 0x0f);
++
++	/*
++	 * Set LNA, TRSW, EX_PA Pin to output mode
++	 * Referred to as REG_BB_PAD_CTRL in 8188eu vendor driver
++	 */
++	rtl8xxxu_write32(priv, REG_PAD_CTRL1, 0x00080808);
++
++	rtl8xxxu_write8(priv, REG_RSV_CTRL, 0x00);
++
++	val16 = rtl8xxxu_read16(priv, REG_APS_FSMCO);
++	val16 |= APS_FSMCO_ENABLE_POWERDOWN | APS_FSMCO_HW_POWERDOWN;
++	rtl8xxxu_write16(priv, REG_APS_FSMCO, val16);
++}
++
+ static void rtl8188e_enable_rf(struct rtl8xxxu_priv *priv)
+ {
+ 	rtl8xxxu_write8(priv, REG_TXPAUSE, 0x00);
+@@ -1265,7 +1399,7 @@ struct rtl8xxxu_fileops rtl8188eu_fops =
+ 	.parse_efuse = rtl8188eu_parse_efuse,
+ 	.load_firmware = rtl8188eu_load_firmware,
+ 	.power_on = rtl8188eu_power_on,
+-	.power_off = rtl8xxxu_power_off,
++	.power_off = rtl8188eu_power_off,
+ 	.reset_8051 = rtl8188eu_reset_8051,
+ 	.llt_init = rtl8xxxu_init_llt_table,
+ 	.init_phy_bb = rtl8188eu_init_phy_bb,
+--- a/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_regs.h
++++ b/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_regs.h
+@@ -418,6 +418,8 @@
+ #define REG_MBIST_START			0x0174
+ #define REG_MBIST_DONE			0x0178
+ #define REG_MBIST_FAIL			0x017c
++/* 8188EU */
++#define REG_32K_CTRL			0x0194
+ #define REG_C2HEVT_MSG_NORMAL		0x01a0
+ /* 8192EU/8723BU/8812 */
+ #define REG_C2HEVT_CMD_ID_8723B		0x01ae

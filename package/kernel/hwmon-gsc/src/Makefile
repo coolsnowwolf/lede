@@ -1,0 +1,1 @@
+obj-m := gsc.o

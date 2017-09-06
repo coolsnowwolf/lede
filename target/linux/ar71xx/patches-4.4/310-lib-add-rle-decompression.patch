@@ -1,0 +1,124 @@
+--- a/lib/Kconfig
++++ b/lib/Kconfig
+@@ -247,6 +247,9 @@ config LZMA_COMPRESS
+ config LZMA_DECOMPRESS
+     tristate
+ 
++config RLE_DECOMPRESS
++	tristate
++
+ #
+ # These all provide a common interface (hence the apparent duplication with
+ # ZLIB_INFLATE; DECOMPRESS_GZIP is just a wrapper.)
+--- a/lib/Makefile
++++ b/lib/Makefile
+@@ -110,6 +110,7 @@ obj-$(CONFIG_XZ_DEC) += xz/
+ obj-$(CONFIG_RAID6_PQ) += raid6/
+ obj-$(CONFIG_LZMA_COMPRESS) += lzma/
+ obj-$(CONFIG_LZMA_DECOMPRESS) += lzma/
++obj-$(CONFIG_RLE_DECOMPRESS) += rle.o
+ 
+ lib-$(CONFIG_DECOMPRESS_GZIP) += decompress_inflate.o
+ lib-$(CONFIG_DECOMPRESS_BZIP2) += decompress_bunzip2.o
+--- /dev/null
++++ b/include/linux/rle.h
+@@ -0,0 +1,18 @@
++#ifndef _RLE_H_
++#define _RLE_H_
++
++#ifdef CONFIG_RLE_DECOMPRESS
++int rle_decode(const unsigned char *src, size_t srclen,
++	       unsigned char *dst, size_t dstlen,
++	       size_t *src_done, size_t *dst_done);
++#else
++static inline int
++rle_decode(const unsigned char *src, size_t srclen,
++	   unsigned char *dst, size_t dstlen,
++	   size_t *src_done, size_t *dst_done)
++{
++	return -ENOTSUPP;
++}
++#endif /* CONFIG_RLE_DECOMPRESS */
++
++#endif /* _RLE_H_ */
+--- /dev/null
++++ b/lib/rle.c
+@@ -0,0 +1,78 @@
++/*
++ *  RLE decoding routine
++ *
++ *  Copyright (C) 2012 Gabor Juhos <juhosg@openwrt.org>
++ *
++ *  This program is free software; you can redistribute it and/or modify it
++ *  under the terms of the GNU General Public License version 2 as published
++ *  by the Free Software Foundation.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/rle.h>
++
++int rle_decode(const unsigned char *src, size_t srclen,
++	       unsigned char *dst, size_t dstlen,
++	       size_t *src_done, size_t *dst_done)
++{
++	size_t srcpos, dstpos;
++	int ret;
++
++	srcpos = 0;
++	dstpos = 0;
++	ret = -EINVAL;
++
++	/* sanity checks */
++	if (!src || !srclen || !dst || !dstlen)
++		goto out;
++
++	while (1) {
++		char count;
++
++		if (srcpos >= srclen)
++			break;
++
++		count = (char) src[srcpos++];
++		if (count == 0) {
++			ret = 0;
++			break;
++		}
++
++		if (count > 0) {
++			unsigned char c;
++
++			if (srcpos >= srclen)
++				break;
++
++			c = src[srcpos++];
++
++			while (count--) {
++				if (dstpos >= dstlen)
++					break;
++
++				dst[dstpos++] = c;
++			}
++		} else {
++			count *= -1;
++
++			while (count--) {
++				if (srcpos >= srclen)
++					break;
++				if (dstpos >= dstlen)
++					break;
++				dst[dstpos++] = src[srcpos++];
++			}
++		}
++	}
++
++out:
++	if (src_done)
++		*src_done = srcpos;
++	if (dst_done)
++		*dst_done = dstpos;
++
++	return ret;
++}
++
++EXPORT_SYMBOL_GPL(rle_decode);

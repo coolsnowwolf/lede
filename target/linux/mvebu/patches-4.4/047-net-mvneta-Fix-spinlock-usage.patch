@@ -1,0 +1,52 @@
+From: Gregory CLEMENT <gregory.clement@free-electrons.com>
+Date: Sat, 12 Mar 2016 18:44:17 +0100
+Subject: [PATCH] net: mvneta: Fix spinlock usage
+
+In the previous patch, the spinlock was not initialized. While it didn't
+cause any trouble yet it could be a problem to use it uninitialized.
+
+The most annoying part was the critical section protected by the spinlock
+in mvneta_stop(). Some of the functions could sleep as pointed when
+activated CONFIG_DEBUG_ATOMIC_SLEEP. Actually, in mvneta_stop() we only
+need to protect the is_stopped flagged, indeed the code of the notifier
+for CPU online is protected by the same spinlock, so when we get the
+lock, the notifer work is done.
+
+Reported-by: Patrick Uiterwijk <patrick@puiterwijk.org>
+Signed-off-by: Gregory CLEMENT <gregory.clement@free-electrons.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+
+--- a/drivers/net/ethernet/marvell/mvneta.c
++++ b/drivers/net/ethernet/marvell/mvneta.c
+@@ -3484,17 +3484,17 @@ static int mvneta_stop(struct net_device
+ 	struct mvneta_port *pp = netdev_priv(dev);
+ 
+ 	/* Inform that we are stopping so we don't want to setup the
+-	 * driver for new CPUs in the notifiers
++	 * driver for new CPUs in the notifiers. The code of the
++	 * notifier for CPU online is protected by the same spinlock,
++	 * so when we get the lock, the notifer work is done.
+ 	 */
+ 	spin_lock(&pp->lock);
+ 	pp->is_stopped = true;
++	spin_unlock(&pp->lock);
++
+ 	mvneta_stop_dev(pp);
+ 	mvneta_mdio_remove(pp);
+ 	unregister_cpu_notifier(&pp->cpu_notifier);
+-	/* Now that the notifier are unregistered, we can release le
+-	 * lock
+-	 */
+-	spin_unlock(&pp->lock);
+ 	on_each_cpu(mvneta_percpu_disable, pp, true);
+ 	free_percpu_irq(dev->irq, pp->ports);
+ 	mvneta_cleanup_rxqs(pp);
+@@ -4027,6 +4027,7 @@ static int mvneta_probe(struct platform_
+ 	dev->ethtool_ops = &mvneta_eth_tool_ops;
+ 
+ 	pp = netdev_priv(dev);
++	spin_lock_init(&pp->lock);
+ 	pp->phy_node = phy_node;
+ 	pp->phy_interface = phy_mode;
+ 

@@ -1,0 +1,134 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2010-2014 OpenWrt.org
+
+START=99
+USE_PROCD=1
+PROG=/usr/sbin/igmpproxy
+CONFIGFILE=/var/etc/igmpproxy.conf
+
+igmp_header() {
+	local quickleave verbose
+	config_get_bool quickleave "$1" quickleave 0
+	config_get verbose "$1" verbose 0
+
+	[ $verbose = "1" ] && logopts="-v"
+	[ $verbose = "2" ] && logopts="-v -v"
+
+	mkdir -p /var/etc
+	rm -f /var/etc/igmpproxy.conf
+	[ $quickleave -gt 0 ] && echo "quickleave" >> /var/etc/igmpproxy.conf
+
+	[ -L /etc/igmpproxy.conf ] || ln -nsf /var/etc/igmpproxy.conf /etc/igmpproxy.conf
+}
+
+igmp_add_phyint() {
+	local network direction altnets device up
+
+	config_get network $1 network
+	config_get direction $1 direction
+	config_get altnets $1 altnet
+
+	local status="$(ubus -S call "network.interface.$network" status)"
+	[ -n "$status" ] || return
+
+	json_load "$status"
+	json_get_var device l3_device
+	json_get_var up up
+
+	[ -n "$device" -a "$up" = "1" ] || {
+		procd_append_param error "$network is not up"
+		return;
+	}
+
+	append netdevs "$device"
+
+	[[ "$direction" = "upstream" ]] && has_upstream=1
+
+	echo -e "\nphyint $device $direction ratelimit 0 threshold 1" >> /var/etc/igmpproxy.conf
+
+	if [ -n "$altnets" ]; then
+		local altnet
+		for altnet in $altnets; do
+			echo -e "\taltnet $altnet" >> /var/etc/igmpproxy.conf
+		done
+	fi
+}
+
+igmp_add_network() {
+	local network
+
+	config_get network $1 network
+	procd_add_interface_trigger "interface.*" $network /etc/init.d/igmpproxy reload
+}
+
+igmp_add_firewall_routing() {
+	config_get network $1 network
+	config_get direction $1 direction
+
+	[[ "$direction" = "downstream" ]] || return 0
+
+	json_add_object ""
+	json_add_string type rule
+	json_add_string src "$upstream"
+	json_add_string dest "$network"
+	json_add_string family ipv4
+	json_add_string proto udp
+	json_add_string dest_ip "224.0.0.0/4"
+	json_add_string target ACCEPT
+	json_close_object
+}
+
+igmp_add_firewall_network() {
+	config_get network $1 network
+	config_get direction $1 direction
+
+	json_add_object ""
+	json_add_string type rule
+	json_add_string src "$network"
+	json_add_string proto igmp
+	json_add_string target ACCEPT
+	json_close_object
+
+	[[ "$direction" = "upstream" ]] && {
+		upstream="$network"
+		config_foreach igmp_add_firewall_routing phyint
+	}
+}
+
+service_triggers() {
+	procd_add_reload_trigger "igmpproxy"
+	config_foreach igmp_add_network phyint
+}
+
+start_service() {
+	has_upstream=
+	netdevs=
+	logopts=
+	config_load igmpproxy
+
+	config_foreach igmp_header igmpproxy
+	config_foreach igmp_add_phyint phyint
+	[ -n "$has_upstream" ] || return
+
+	procd_open_instance
+	procd_set_param command $PROG
+	[ -n "$logopts" ] && procd_append_param command $logopts
+	procd_append_param command $CONFIGFILE
+	procd_set_param file $CONFIGFILE
+	procd_set_param netdev $netdevs
+	procd_set_param respawn
+
+	procd_open_data
+
+	json_add_array firewall
+	config_foreach igmp_add_firewall_network phyint
+	json_close_array
+
+	procd_close_data
+
+	procd_close_instance
+}
+
+service_started() {
+	procd_set_config_changed firewall
+}

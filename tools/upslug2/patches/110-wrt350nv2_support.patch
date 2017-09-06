@@ -1,0 +1,279 @@
+--- a/nslu2_image.cc
++++ b/nslu2_image.cc
+@@ -54,28 +54,44 @@ namespace NSLU2Image {
+ 				int &address, int &length) {
+ 			address = image.tellg();
+ 			length = buffer_length;
+-			if (address+length > NSLU2Protocol::FlashSize)
+-				length = NSLU2Protocol::FlashSize-address;
++			if (address+length > EndAddress)
++				length = EndAddress-address;
+ 			if (length > 0)
+ 				SafeRead(&image, buffer, length, "image (read)");
+ 		}
+ 
++		virtual void GetBoundaries(int &start, int &end)
++		{
++			start = BaseAddress;
++			end = EndAddress;
++		}
++
+ 		/* Rewind to the start of the image (or the Kernel if not
+ 		 * doing a complete reprogram).
+ 		 */
+ 		virtual void Rewind(void) {
+-			SafeSeek(&image, reprogram ? 0 : NSLU2Protocol::BaseAddress,
++			SafeSeek(&image, reprogram ? 0 : BaseAddress,
+ 					"image (seek)");
+ 		}
+ 
+ 	private:
++		int BaseAddress;
++		int EndAddress;
++
+ 		/* Validate that this really is an image file. */
+ 		void Validate(const char *i) {
+ 			char signature[8];
+ 
+ 			SafeSeek(&image, -8, i, std::ios::end);
+ 			SafeRead(&image, signature, 8, i);
+-			if (memcmp(signature, "eRcOmM", 6) != 0)
++
++			if (memcmp(signature, "eRcOmM", 6) == 0) {
++				BaseAddress = NSLU2Protocol::BaseAddress;
++				EndAddress = NSLU2Protocol::FlashSize;
++			} else if (memcmp(signature + 1, "sErCoMm", 7) == 0) {
++				BaseAddress = 0;
++				EndAddress = NSLU2Protocol::FlashSize - 0x40000;
++			} else
+ 				throw NSLU2Image::FileError(DataError, i, 0);
+ 		}
+ 
+@@ -93,6 +109,12 @@ namespace NSLU2Image {
+ 		virtual ~SynthesiseImage() {
+ 		}
+ 
++		void GetBoundaries(int &start, int &end)
++		{
++			start = NSLU2Protocol::BaseAddress;
++			end = NSLU2Protocol::FlashSize;
++		}
++
+ 		/* Get the next block of bytes, returns an address and length, false if
+ 		 * there is a problem.
+ 		 */
+--- a/nslu2_image.h
++++ b/nslu2_image.h
+@@ -35,6 +35,8 @@ namespace NSLU2Image {
+ 		virtual ~Image() {
+ 		}
+ 
++		virtual void GetBoundaries(int &start, int &end) = 0;
++
+ 		/* Get the next block of bytes, returns an address and length.
+ 		 */
+ 		virtual void GetBytes(char *buffer, size_t buffer_length,
+--- a/nslu2_upgrade.cc
++++ b/nslu2_upgrade.cc
+@@ -95,7 +95,7 @@ namespace NSLU2Upgrade {
+ 
+ 	class RealDoUpgrade : public DoUpgrade {
+ 	public:
+-		RealDoUpgrade(Wire *w, Progress *p, bool r) :
++		RealDoUpgrade(Wire *w, Progress *p, bool r, int start, int end) :
+ 			wire(w), progress(p), sequenceError(-1), reprogram(r),
+ 			lastType(NSLU2Protocol::InvalidType) {
+ 			if (reprogram) {
+@@ -105,6 +105,8 @@ namespace NSLU2Upgrade {
+ 				NSLU2Protocol::UpgradeStartPacket packet(seq);
+ 				wire->Send(packet.PacketBuffer(), packet.PacketLength());
+ 			}
++			BaseAddress = start;
++			EndAddress = end;
+ 		}
+ 
+ 		virtual ~RealDoUpgrade() {
+@@ -205,8 +207,8 @@ namespace NSLU2Upgrade {
+ 
+ 	};
+ 
+-	DoUpgrade *DoUpgrade::MakeDoUpgrade(Wire *wire, Progress *progress, bool reprogram) {
+-		return new RealDoUpgrade(wire, progress, reprogram);
++	DoUpgrade *DoUpgrade::MakeDoUpgrade(Wire *wire, Progress *progress, bool reprogram, int start, int end) {
++		return new RealDoUpgrade(wire, progress, reprogram, start, end);
+ 	}
+ };
+ 
+@@ -421,13 +423,18 @@ void NSLU2Upgrade::RealDoUpgrade::Upgrad
+ 	/* Simple upgrade programs only the addresses beyound BaseAddress,
+ 	 * reprogram overwrites the whole flash.
+ 	 */
+-	if (!reprogram && address < NSLU2Protocol::BaseAddress) {
++	if (!reprogram && address < BaseAddress) {
+ 		length += address;
+-		if (length <= NSLU2Protocol::BaseAddress)
++		if (length <= BaseAddress)
+ 			return; /* nothing to do. */
+-		address = NSLU2Protocol::BaseAddress;
++		address = BaseAddress;
+ 		length -= address;
+ 	}
++	if (!reprogram && address + length > EndAddress) {
++		if (address >= EndAddress)
++			return; /* nothing to do. */
++		length -= EndAddress - address;
++	}
+ 
+ #if 1
+ 	/* Skip blocks of 255 valued bytes - the erase clears the flash to this
+@@ -495,11 +502,11 @@ void NSLU2Upgrade::RealDoUpgrade::Verify
+ 		Finish();
+ 
+ 	/* Verify never verifies anything below BaseAddress. */
+-	if (address < NSLU2Protocol::BaseAddress) {
++	if (address < BaseAddress) {
+ 		length += address;
+-		if (length <= NSLU2Protocol::BaseAddress)
++		if (length <= BaseAddress)
+ 			return; /* nothing to do. */
+-		address = NSLU2Protocol::BaseAddress;
++		address = BaseAddress;
+ 		length -= address;
+ 	}
+ 
+--- a/nslu2_upgrade.h
++++ b/nslu2_upgrade.h
+@@ -206,6 +206,8 @@ namespace NSLU2Upgrade {
+ 
+ 	class DoUpgrade {
+ 	public:
++		int BaseAddress;
++		int EndAddress;
+ 		virtual ~DoUpgrade() {
+ 		}
+ 
+@@ -228,7 +230,7 @@ namespace NSLU2Upgrade {
+ 		virtual void Reboot(void) = 0;
+ 			/* Reboot the NSLU2. */
+ 
+-		static DoUpgrade *MakeDoUpgrade(Wire *wire, Progress *progress, bool reprogram);
++		static DoUpgrade *MakeDoUpgrade(Wire *wire, Progress *progress, bool reprogram, int start, int end);
+ 			/* Instantiate a real DoUpgrade, returns NULL if the object
+ 			 * cannot be instantiated.
+ 			 *
+--- a/upslug2.cc
++++ b/upslug2.cc
+@@ -21,8 +21,8 @@
+ 
+ class ProgressBar : public UpSlug2::CharacterProgressBar<80> {
+ public:
+-	ProgressBar(bool reprogram, const unsigned char *t) :
+-		UpSlug2::CharacterProgressBar<80>(reprogram, 64),
++	ProgressBar(bool reprogram, const unsigned char *t, int start, int end) :
++		UpSlug2::CharacterProgressBar<80>(reprogram, 64, start, end),
+ 		target(t), displayed(false), ticker(0) {
+ 	}
+ 
+@@ -95,7 +95,7 @@ private:
+ 			else if (seen == -1) {
+ 				seen = 0;
+ 				if (!reprogram)
+-					sent -= NSLU2Protocol::BaseAddress;
++					sent -= NSLU2Protocol::FlashSize - (EndAddress - BaseAddress);
+ 			} else
+ 				sent -= seen;
+ 
+@@ -423,7 +423,7 @@ int main(int argc, char **argv) {
+ { 0,                                                            0,                 0,  0  }
+ 	};
+ 
+-	do switch (getopt_long(argc, argv, "he:d:t:f:vUni:Ck:r:R:j:p:P:T:F:E:", options, 0)) {
++	do switch (getopt_long(argc, argv, "he:d:t:f:vUni:Ck:r:R:j:op:P:T:F:E:", options, 0)) {
+ 	case  -1: if (optind < argc) {
+ 			  std::fprintf(stderr, "%s: unrecognised option\n", argv[optind]);
+ 			  std::exit(1);
+@@ -523,16 +523,22 @@ done:
+ 
+ 		if (mac && got_kernel) {
+ 			Pointer<NSLU2Upgrade::Wire> wire(NSLU2Upgrade::Wire::MakeWire(device, fromMac, mac, euid));
+-			ProgressBar progress(reprogram, mac);
++			int BaseAddress = NSLU2Protocol::BaseAddress;
++			int EndAddress = NSLU2Protocol::FlashSize;
+ 
+ 			if (full_image) { /* complete image. */
+ 				/* The full image case allows a complete reprogram. */
++				NSLU2Image::Image *image_p;
+ 				Pointer<NSLU2Image::Image> image(
+ 						NSLU2Image::Image::MakeImage(
+ 							reprogram, full_image));
++				image_p = image.p;
++				image_p->GetBoundaries(BaseAddress, EndAddress);
++				ProgressBar progress(reprogram, mac, BaseAddress, EndAddress);
+ 				Pointer<NSLU2Upgrade::DoUpgrade> upgrade(
+ 					NSLU2Upgrade::DoUpgrade::MakeDoUpgrade(
+-						wire.p, &progress, reprogram));
++						wire.p, &progress, reprogram,
++						BaseAddress, EndAddress));
+ 				progress.FirstDisplay();
+ 				Upgrade(upgrade.p, image.p, no_upgrade, no_verify);
+ 				progress.EndDisplay();
+@@ -551,9 +557,11 @@ done:
+ 							fis_payload,
+ 							product_id, protocol_id,
+ 							firmware_version, extra_version));
++				ProgressBar progress(reprogram, mac, BaseAddress, EndAddress);
+ 				Pointer<NSLU2Upgrade::DoUpgrade> upgrade(
+ 					NSLU2Upgrade::DoUpgrade::MakeDoUpgrade(
+-						wire.p, &progress, false));
++						wire.p, &progress, false,
++						BaseAddress, EndAddress));
+ 				progress.FirstDisplay();
+ 				Upgrade(upgrade.p, image.p, no_upgrade, no_verify);
+ 				progress.EndDisplay();
+--- a/upslug2_progress.h
++++ b/upslug2_progress.h
+@@ -161,15 +161,19 @@ namespace UpSlug2 {
+ 			Timedout,   /* *: timeout on a sent packet for this address. */
+ 			NumberOfStates
+ 		} Status;
+-		
++		int BaseAddress;
++		int EndAddress;
++
+ 		/* reprogram says whether this is a full reprogram (the entire
+ 		 * flash will be erased) or not (the leading, RedBoot, SysConf
+ 		 * partitions are not erased).
+ 		 * resolution should be about 6 for a command line (character)
+ 		 * progress bar and 8 for a GUI (pixel) progress bar.
+ 		 */
+-		ProgressBar(bool r) :
++		ProgressBar(bool r, int start, int end) :
+ 			reprogram(r), timeout(false), retransmit(false), status(Init) {
++			BaseAddress = start;
++			EndAddress = end;
+ 		}
+ 
+ 		/* lowWaterMark..(highWaterMark-1) bytes are in state 'st',
+@@ -179,8 +183,8 @@ namespace UpSlug2 {
+ 			/* These initial settings cover the majority of cases
+ 			 * correctly.
+ 			 */
+-			lowWaterMark = reprogram ? 0 : NSLU2Protocol::BaseAddress;
+-			highWaterMark = status >= st ? NSLU2Protocol::FlashSize-1 : 0;
++			lowWaterMark = reprogram ? 0 : BaseAddress;
++			highWaterMark = status >= st ? EndAddress-1 : 0;
+ 			switch (st) {
+ 			case Init:
+ 				/* Everything has an initial value... */
+@@ -286,9 +290,9 @@ namespace UpSlug2 {
+ 	 */
+ 	template <int characters> class CharacterProgressBar : public ProgressBar {
+ 	public:
+-		CharacterProgressBar(bool reprogram, int n, const char ind[NumberOfStates] = 0) :
++		CharacterProgressBar(bool reprogram, int n, int start, int end, const char ind[NumberOfStates] = 0) :
+ 			numberOfCharacters(n > characters || n < 1 ? characters : n),
+-			ProgressBar(reprogram) {
++			ProgressBar(reprogram, start, end) {
+ 			if (ind)
+ 				std::memcpy(indicators, ind, NumberOfStates);
+ 			else

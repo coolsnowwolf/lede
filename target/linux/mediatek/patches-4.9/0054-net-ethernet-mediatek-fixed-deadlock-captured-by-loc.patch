@@ -1,0 +1,105 @@
+From 746bf1c3e561aba396cd40e6540245646461117d Mon Sep 17 00:00:00 2001
+From: Sean Wang <sean.wang@mediatek.com>
+Date: Tue, 4 Jul 2017 11:17:36 +0800
+Subject: [PATCH 54/57] net: ethernet: mediatek: fixed deadlock captured by
+ lockdep
+
+Lockdep found an inconsistent lock state when mtk_get_stats64 is called
+in user context while NAPI updates MAC statistics in softirq.
+
+Use spin_trylock_bh/spin_unlock_bh fix following lockdep warning.
+
+[   81.321030] WARNING: inconsistent lock state
+[   81.325266] 4.12.0-rc1-00035-gd9dda65 #32 Not tainted
+[   81.330273] --------------------------------
+[   81.334505] inconsistent {SOFTIRQ-ON-W} -> {IN-SOFTIRQ-W} usage.
+[   81.340464] ksoftirqd/0/7 [HC0[0]:SC1[1]:HE1:SE0] takes:
+[   81.345731]  (&syncp->seq#2){+.?...}, at: [<c054ba3c>] mtk_handle_status_irq.part.6+0x70/0x84
+[   81.354219] {SOFTIRQ-ON-W} state was registered at:
+[   81.359062]   lock_acquire+0xfc/0x2b0
+[   81.362696]   mtk_stats_update_mac+0x60/0x2c0
+[   81.367017]   mtk_get_stats64+0x17c/0x18c
+[   81.370995]   dev_get_stats+0x48/0xbc
+[   81.374628]   rtnl_fill_stats+0x48/0x128
+[   81.378520]   rtnl_fill_ifinfo+0x4ac/0xd1c
+[   81.382584]   rtmsg_ifinfo_build_skb+0x7c/0xe0
+[   81.386991]   rtmsg_ifinfo.part.5+0x24/0x54
+[   81.391139]   rtmsg_ifinfo+0x24/0x28
+[   81.394685]   __dev_notify_flags+0xa4/0xac
+[   81.398749]   dev_change_flags+0x50/0x58
+[   81.402640]   devinet_ioctl+0x768/0x85c
+[   81.406444]   inet_ioctl+0x1a4/0x1d0
+[   81.409990]   sock_ioctl+0x16c/0x33c
+[   81.413538]   do_vfs_ioctl+0xb4/0xa34
+[   81.417169]   SyS_ioctl+0x44/0x6c
+[   81.420458]   ret_fast_syscall+0x0/0x1c
+[   81.424260] irq event stamp: 3354692
+[   81.427806] hardirqs last  enabled at (3354692): [<c0678168>] net_rx_action+0xc0/0x504
+[   81.435660] hardirqs last disabled at (3354691): [<c0678134>] net_rx_action+0x8c/0x504
+[   81.443515] softirqs last  enabled at (3354106): [<c0101944>] __do_softirq+0x4b4/0x614
+[   81.451370] softirqs last disabled at (3354109): [<c012f0c4>] run_ksoftirqd+0x44/0x80
+[   81.459134]
+[   81.459134] other info that might help us debug this:
+[   81.465608]  Possible unsafe locking scenario:
+[   81.465608]
+[   81.471478]        CPU0
+[   81.473900]        ----
+[   81.476321]   lock(&syncp->seq#2);
+[   81.479701]   <Interrupt>
+[   81.482294]     lock(&syncp->seq#2);
+[   81.485847]
+[   81.485847]  *** DEADLOCK ***
+[   81.485847]
+[   81.491720] 1 lock held by ksoftirqd/0/7:
+[   81.495693]  #0:  (&(&mac->hw_stats->stats_lock)->rlock){+.+...}, at: [<c054ba14>] mtk_handle_status_irq.part.6+0x48/0x84
+[   81.506579]
+[   81.506579] stack backtrace:
+[   81.510904] CPU: 0 PID: 7 Comm: ksoftirqd/0 Not tainted 4.12.0-rc1-00035-gd9dda65 #32
+[   81.518668] Hardware name: Mediatek Cortex-A7 (Device Tree)
+[   81.524208] [<c0113dc4>] (unwind_backtrace) from [<c010e3f0>] (show_stack+0x20/0x24)
+[   81.531899] [<c010e3f0>] (show_stack) from [<c03f9c64>] (dump_stack+0xb4/0xe0)
+[   81.539072] [<c03f9c64>] (dump_stack) from [<c017e970>] (print_usage_bug+0x234/0x2e0)
+[   81.546846] [<c017e970>] (print_usage_bug) from [<c017f058>] (mark_lock+0x63c/0x7bc)
+[   81.554532] [<c017f058>] (mark_lock) from [<c017fe90>] (__lock_acquire+0x654/0x1bfc)
+[   81.562217] [<c017fe90>] (__lock_acquire) from [<c0181d04>] (lock_acquire+0xfc/0x2b0)
+[   81.569990] [<c0181d04>] (lock_acquire) from [<c054b76c>] (mtk_stats_update_mac+0x60/0x2c0)
+[   81.578283] [<c054b76c>] (mtk_stats_update_mac) from [<c054ba3c>] (mtk_handle_status_irq.part.6+0x70/0x84)
+[   81.587865] [<c054ba3c>] (mtk_handle_status_irq.part.6) from [<c054c2b8>] (mtk_napi_tx+0x358/0x37c)
+[   81.596845] [<c054c2b8>] (mtk_napi_tx) from [<c06782ec>] (net_rx_action+0x244/0x504)
+[   81.604533] [<c06782ec>] (net_rx_action) from [<c01015c4>] (__do_softirq+0x134/0x614)
+[   81.612306] [<c01015c4>] (__do_softirq) from [<c012f0c4>] (run_ksoftirqd+0x44/0x80)
+[   81.619907] [<c012f0c4>] (run_ksoftirqd) from [<c0154680>] (smpboot_thread_fn+0x14c/0x25c)
+[   81.628110] [<c0154680>] (smpboot_thread_fn) from [<c014f8cc>] (kthread+0x150/0x180)
+[   81.635798] [<c014f8cc>] (kthread) from [<c0109290>] (ret_from_fork+0x14/0x24)
+
+Signed-off-by: Sean Wang <sean.wang@mediatek.com>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -493,9 +493,9 @@ static struct rtnl_link_stats64 * mtk_ge
+ 	unsigned int start;
+ 
+ 	if (netif_running(dev) && netif_device_present(dev)) {
+-		if (spin_trylock(&hw_stats->stats_lock)) {
++		if (spin_trylock_bh(&hw_stats->stats_lock)) {
+ 			mtk_stats_update_mac(mac);
+-			spin_unlock(&hw_stats->stats_lock);
++			spin_unlock_bh(&hw_stats->stats_lock);
+ 		}
+ 	}
+ 
+@@ -2229,9 +2229,9 @@ static void mtk_get_ethtool_stats(struct
+ 		return;
+ 
+ 	if (netif_running(dev) && netif_device_present(dev)) {
+-		if (spin_trylock(&hwstats->stats_lock)) {
++		if (spin_trylock_bh(&hwstats->stats_lock)) {
+ 			mtk_stats_update_mac(mac);
+-			spin_unlock(&hwstats->stats_lock);
++			spin_unlock_bh(&hwstats->stats_lock);
+ 		}
+ 	}
+ 

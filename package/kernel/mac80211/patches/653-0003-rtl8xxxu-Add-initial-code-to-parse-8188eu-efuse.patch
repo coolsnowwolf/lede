@@ -1,0 +1,113 @@
+From 6d5b4ef30046d74efe773613767d13d9ab95ed3d Mon Sep 17 00:00:00 2001
+From: Jes Sorensen <Jes.Sorensen@redhat.com>
+Date: Mon, 27 Jun 2016 15:19:04 -0400
+Subject: [PATCH] rtl8xxxu: Add initial code to parse 8188eu efuse
+
+This obtains the MAC address, but work is still needed to handle TX
+power settings.
+
+Signed-off-by: Jes Sorensen <Jes.Sorensen@redhat.com>
+---
+ drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu.h   | 40 ++++++++++++++++++++++
+ .../net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c | 34 ++++++++++++++++++
+ 2 files changed, 74 insertions(+)
+
+--- a/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu.h
++++ b/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu.h
+@@ -872,6 +872,45 @@ struct rtl8192eu_efuse {
+ 	u8 res14[0xc3];
+ };
+ 
++struct rtl8188eu_efuse {
++	__le16 rtl_id;
++	u8 res0[0x0e];
++	u8 cck_tx_power_index_A[3];	/* 0x10 */
++	u8 cck_tx_power_index_B[3];
++	u8 ht40_1s_tx_power_index_A[3];	/* 0x16 */
++	u8 ht40_1s_tx_power_index_B[3];
++	u8 res1[0x9c];
++	u8 channel_plan;		/* 0xb8 */
++	u8 xtal_k;
++	u8 thermal_meter;
++	u8 iqk_lck;
++	u8 res2[5];
++	u8 rf_board_option;
++	u8 rf_feature_option;
++	u8 rf_bt_setting;
++	u8 eeprom_version;
++	u8 eeprom_customer_id;
++	u8 res3[3];
++	u8 rf_antenna_option;		/* 0xc9 */
++	u8 res4[6];
++	u8 vid;				/* 0xd0 */
++	u8 res5[1];
++	u8 pid;				/* 0xd2 */
++	u8 res6[1];
++	u8 usb_optional_function;
++	u8 res7[2];
++	u8 mac_addr[ETH_ALEN];		/* 0xd7 */
++	u8 res8[2];
++	u8 vendor_name[7];
++	u8 res9[2];
++	u8 device_name[0x0b];		/* 0xe8 */
++	u8 res10[2];
++	u8 serial[0x0b];		/* 0xf5 */
++	u8 res11[0x30];
++	u8 unknown[0x0d];		/* 0x130 */
++	u8 res12[0xc3];
++};
++
+ struct rtl8xxxu_reg8val {
+ 	u16 reg;
+ 	u8 val;
+@@ -1290,6 +1329,7 @@ struct rtl8xxxu_priv {
+ 		struct rtl8723bu_efuse efuse8723bu;
+ 		struct rtl8192cu_efuse efuse8192;
+ 		struct rtl8192eu_efuse efuse8192eu;
++		struct rtl8188eu_efuse efuse8188eu;
+ 	} efuse_wifi;
+ 	u32 adda_backup[RTL8XXXU_ADDA_REGS];
+ 	u32 mac_backup[RTL8XXXU_MAC_REGS];
+--- a/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c
++++ b/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c
+@@ -42,6 +42,40 @@
+ 
+ static int rtl8188eu_parse_efuse(struct rtl8xxxu_priv *priv)
+ {
++	struct rtl8188eu_efuse *efuse = &priv->efuse_wifi.efuse8188eu;
++	int i;
++
++	if (efuse->rtl_id != cpu_to_le16(0x8129))
++		return -EINVAL;
++
++	ether_addr_copy(priv->mac_addr, efuse->mac_addr);
++
++	memcpy(priv->cck_tx_power_index_A, efuse->cck_tx_power_index_A,
++	       sizeof(efuse->cck_tx_power_index_A));
++	memcpy(priv->cck_tx_power_index_B, efuse->cck_tx_power_index_B,
++	       sizeof(efuse->cck_tx_power_index_B));
++
++	memcpy(priv->ht40_1s_tx_power_index_A,
++	       priv->efuse_wifi.efuse8188eu.ht40_1s_tx_power_index_A,
++	       sizeof(priv->ht40_1s_tx_power_index_A));
++	memcpy(priv->ht40_1s_tx_power_index_B,
++	       priv->efuse_wifi.efuse8188eu.ht40_1s_tx_power_index_B,
++	       sizeof(priv->ht40_1s_tx_power_index_B));
++
++	dev_info(&priv->udev->dev, "Vendor: %.7s\n", efuse->vendor_name);
++	dev_info(&priv->udev->dev, "Product: %.11s\n", efuse->device_name);
++	dev_info(&priv->udev->dev, "Serial: %.11s\n", efuse->serial);
++
++	if (rtl8xxxu_debug & RTL8XXXU_DEBUG_EFUSE) {
++		unsigned char *raw = priv->efuse_wifi.raw;
++
++		dev_info(&priv->udev->dev,
++			 "%s: dumping efuse (0x%02zx bytes):\n",
++			 __func__, sizeof(struct rtl8188eu_efuse));
++		for (i = 0; i < sizeof(struct rtl8188eu_efuse); i += 8)
++			dev_info(&priv->udev->dev, "%02x: %8ph\n", i, &raw[i]);
++	}
++
+ 	return 0;
+ }
+ 

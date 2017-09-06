@@ -1,0 +1,100 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2013 OpenWrt.org
+
+# start after and stop before networking
+START=12
+STOP=89
+PIDCOUNT=0
+
+USE_PROCD=1
+PROG=/sbin/logread
+
+validate_log_section()
+{
+	uci_validate_section system system "${1}" \
+		'log_file:string' \
+		'log_size:uinteger' \
+		'log_hostname:string' \
+		'log_ip:ipaddr' \
+		'log_remote:bool:1' \
+		'log_port:port:514' \
+		'log_proto:or("tcp", "udp"):udp' \
+		'log_trailer_null:bool:0' \
+		'log_prefix:string'
+}
+
+validate_log_daemon()
+{
+	uci_validate_section system system "${1}" \
+		'log_size:uinteger:0' \
+		'log_buffer_size:uinteger:0'
+}
+
+start_service_daemon()
+{
+	local log_buffer_size log_size
+	validate_log_daemon "${1}"
+	[ $log_buffer_size -eq 0 -a $log_size -gt 0 ] && log_buffer_size=$log_size
+	[ $log_buffer_size -eq 0 ] && log_buffer_size=64
+	procd_open_instance
+	procd_set_param command "/sbin/logd"
+	procd_append_param command -S "${log_buffer_size}"
+	procd_set_param respawn
+	procd_close_instance
+}
+
+start_service_file()
+{
+	PIDCOUNT="$(( ${PIDCOUNT} + 1))"
+	local pid_file="/var/run/logread.${PIDCOUNT}.pid"
+	local log_file log_size
+
+	validate_log_section "${1}" || {
+		echo "validation failed"
+		return 1
+	}
+	[ -z "${log_file}" ] && return
+
+	procd_open_instance
+	procd_set_param command "$PROG" -f -F "$log_file" -p "$pid_file"
+	[ -n "${log_size}" ] && procd_append_param command -S "$log_size"
+	procd_close_instance
+}
+
+start_service_remote()
+{
+	PIDCOUNT="$(( ${PIDCOUNT} + 1))"
+	local pid_file="/var/run/logread.${PIDCOUNT}.pid"
+	local log_ip log_port log_proto log_prefix log_remote log_trailer_null log_hostname
+
+	validate_log_section "${1}" || {
+		echo "validation failed"
+		return 1
+	}
+	[ "${log_remote}" -ne 0 ] || return
+	[ -z "${log_ip}" ] && return
+	[ -z "${log_hostname}" ] && log_hostname=$(cat /proc/sys/kernel/hostname)
+
+	procd_open_instance
+	procd_set_param command "$PROG" -f -h "$log_hostname" -r "$log_ip" "${log_port}" -p "$pid_file"
+	case "${log_proto}" in
+		"udp") procd_append_param command -u;;
+		"tcp") [ "${log_trailer_null}" -eq 1 ] && procd_append_param command -0;;
+	esac
+	[ -z "${log_prefix}" ] || procd_append_param command -P "${log_prefix}"
+	procd_close_instance
+}
+
+service_triggers()
+{
+	procd_add_reload_trigger "system"
+	procd_add_validation validate_log_section
+}
+
+start_service()
+{
+	config_load system
+	config_foreach start_service_daemon system
+	config_foreach start_service_file system
+	config_foreach start_service_remote system
+}

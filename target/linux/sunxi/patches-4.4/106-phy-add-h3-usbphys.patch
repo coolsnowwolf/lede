@@ -1,0 +1,124 @@
+From 317c5224795b41a08ba8c08573d74ba95096faa5 Mon Sep 17 00:00:00 2001
+From: Reinder de Haan <patchesrdh@mveas.com>
+Date: Fri, 11 Dec 2015 16:32:18 +0100
+Subject: [PATCH] phy-sun4i-usb: Add support for the host usb-phys found on the
+ H3 SoC
+
+Note this commit only adds support for phys 1-3, phy 0, the otg phy, is
+not yet (fully) supported after this commit.
+
+Signed-off-by: Reinder de Haan <patchesrdh@mveas.com>
+Signed-off-by: Hans de Goede <hdegoede@redhat.com>
+Acked-by: Rob Herring <robh@kernel.org>
+Signed-off-by: Kishon Vijay Abraham I <kishon@ti.com>
+---
+ .../devicetree/bindings/phy/sun4i-usb-phy.txt      |  1 +
+ drivers/phy/phy-sun4i-usb.c                        | 41 +++++++++++++++++-----
+ 2 files changed, 33 insertions(+), 9 deletions(-)
+
+--- a/Documentation/devicetree/bindings/phy/sun4i-usb-phy.txt
++++ b/Documentation/devicetree/bindings/phy/sun4i-usb-phy.txt
+@@ -9,6 +9,7 @@ Required properties:
+   * allwinner,sun7i-a20-usb-phy
+   * allwinner,sun8i-a23-usb-phy
+   * allwinner,sun8i-a33-usb-phy
++  * allwinner,sun8i-h3-usb-phy
+ - reg : a list of offset + length pairs
+ - reg-names :
+   * "phy_ctrl"
+--- a/drivers/phy/phy-sun4i-usb.c
++++ b/drivers/phy/phy-sun4i-usb.c
+@@ -47,6 +47,9 @@
+ #define REG_PHYBIST			0x08
+ #define REG_PHYTUNE			0x0c
+ #define REG_PHYCTL_A33			0x10
++#define REG_PHY_UNK_H3			0x20
++
++#define REG_PMU_UNK_H3			0x10
+ 
+ #define PHYCTL_DATA			BIT(7)
+ 
+@@ -80,7 +83,7 @@
+ #define PHY_DISCON_TH_SEL		0x2a
+ #define PHY_SQUELCH_DETECT		0x3c
+ 
+-#define MAX_PHYS			3
++#define MAX_PHYS			4
+ 
+ /*
+  * Note do not raise the debounce time, we must report Vusb high within 100ms
+@@ -92,6 +95,7 @@
+ enum sun4i_usb_phy_type {
+ 	sun4i_a10_phy,
+ 	sun8i_a33_phy,
++	sun8i_h3_phy,
+ };
+ 
+ struct sun4i_usb_phy_cfg {
+@@ -239,6 +243,7 @@ static int sun4i_usb_phy_init(struct phy
+ 	struct sun4i_usb_phy *phy = phy_get_drvdata(_phy);
+ 	struct sun4i_usb_phy_data *data = to_sun4i_usb_phy_data(phy);
+ 	int ret;
++	u32 val;
+ 
+ 	ret = clk_prepare_enable(phy->clk);
+ 	if (ret)
+@@ -250,16 +255,26 @@ static int sun4i_usb_phy_init(struct phy
+ 		return ret;
+ 	}
+ 
+-	/* Enable USB 45 Ohm resistor calibration */
+-	if (phy->index == 0)
+-		sun4i_usb_phy_write(phy, PHY_RES45_CAL_EN, 0x01, 1);
+-
+-	/* Adjust PHY's magnitude and rate */
+-	sun4i_usb_phy_write(phy, PHY_TX_AMPLITUDE_TUNE, 0x14, 5);
+-
+-	/* Disconnect threshold adjustment */
+-	sun4i_usb_phy_write(phy, PHY_DISCON_TH_SEL,
+-			    data->cfg->disc_thresh, 2);
++	if (data->cfg->type == sun8i_h3_phy) {
++		if (phy->index == 0) {
++			val = readl(data->base + REG_PHY_UNK_H3);
++			writel(val & ~1, data->base + REG_PHY_UNK_H3);
++		}
++
++		val = readl(phy->pmu + REG_PMU_UNK_H3);
++		writel(val & ~2, phy->pmu + REG_PMU_UNK_H3);
++	} else {
++		/* Enable USB 45 Ohm resistor calibration */
++		if (phy->index == 0)
++			sun4i_usb_phy_write(phy, PHY_RES45_CAL_EN, 0x01, 1);
++
++		/* Adjust PHY's magnitude and rate */
++		sun4i_usb_phy_write(phy, PHY_TX_AMPLITUDE_TUNE, 0x14, 5);
++
++		/* Disconnect threshold adjustment */
++		sun4i_usb_phy_write(phy, PHY_DISCON_TH_SEL,
++				    data->cfg->disc_thresh, 2);
++	}
+ 
+ 	sun4i_usb_phy_passby(phy, 1);
+ 
+@@ -726,6 +741,13 @@ static const struct sun4i_usb_phy_cfg su
+ 	.dedicated_clocks = true,
+ };
+ 
++static const struct sun4i_usb_phy_cfg sun8i_h3_cfg = {
++	.num_phys = 4,
++	.type = sun8i_h3_phy,
++	.disc_thresh = 3,
++	.dedicated_clocks = true,
++};
++
+ static const struct of_device_id sun4i_usb_phy_of_match[] = {
+ 	{ .compatible = "allwinner,sun4i-a10-usb-phy", .data = &sun4i_a10_cfg },
+ 	{ .compatible = "allwinner,sun5i-a13-usb-phy", .data = &sun5i_a13_cfg },
+@@ -733,6 +755,7 @@ static const struct of_device_id sun4i_u
+ 	{ .compatible = "allwinner,sun7i-a20-usb-phy", .data = &sun7i_a20_cfg },
+ 	{ .compatible = "allwinner,sun8i-a23-usb-phy", .data = &sun8i_a23_cfg },
+ 	{ .compatible = "allwinner,sun8i-a33-usb-phy", .data = &sun8i_a33_cfg },
++	{ .compatible = "allwinner,sun8i-h3-usb-phy", .data = &sun8i_h3_cfg },
+ 	{ },
+ };
+ MODULE_DEVICE_TABLE(of, sun4i_usb_phy_of_match);

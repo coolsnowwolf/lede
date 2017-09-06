@@ -1,0 +1,507 @@
+--- a/arch/arm/configs/ixp4xx_defconfig
++++ b/arch/arm/configs/ixp4xx_defconfig
+@@ -26,6 +26,7 @@ CONFIG_MACH_NAS100D=y
+ CONFIG_MACH_DSMG600=y
+ CONFIG_MACH_FSG=y
+ CONFIG_MACH_GTWX5715=y
++CONFIG_MACH_MI424WR=y
+ CONFIG_IXP4XX_QMGR=y
+ CONFIG_IXP4XX_NPE=y
+ # CONFIG_ARM_THUMB is not set
+--- a/arch/arm/mach-ixp4xx/Kconfig
++++ b/arch/arm/mach-ixp4xx/Kconfig
+@@ -258,6 +258,13 @@ config MACH_MIC256
+ 	  Say 'Y' here if you want your kernel to support the MIC256
+ 	  board from OMICRON electronics GmbH.
+ 
++config MACH_MI424WR
++	bool "Actiontec MI424WR"
++	depends on ARCH_IXP4XX
++	select PCI
++	help
++		Add support for the Actiontec MI424-WR.
++
+ comment "IXP4xx Options"
+ 
+ config IXP4XX_INDIRECT_PCI
+--- a/arch/arm/mach-ixp4xx/Makefile
++++ b/arch/arm/mach-ixp4xx/Makefile
+@@ -25,6 +25,7 @@ obj-pci-$(CONFIG_MACH_COMPEXWP18)	+= ixd
+ obj-pci-$(CONFIG_MACH_WRT300NV2)		+= wrt300nv2-pci.o
+ obj-pci-$(CONFIG_MACH_AP1000)		+= ixdp425-pci.o
+ obj-pci-$(CONFIG_MACH_TW5334)		+= tw5334-pci.o
++obj-pci-$(CONFIG_MACH_MI424WR)		+= mi424wr-pci.o
+ 
+ obj-y	+= common.o
+ 
+@@ -51,6 +52,7 @@ obj-$(CONFIG_MACH_COMPEXWP18)	+= compex4
+ obj-$(CONFIG_MACH_WRT300NV2)	+= wrt300nv2-setup.o
+ obj-$(CONFIG_MACH_AP1000)	+= ap1000-setup.o
+ obj-$(CONFIG_MACH_TW5334)	+= tw5334-setup.o
++obj-$(CONFIG_MACH_MI424WR)	+= mi424wr-setup.o
+ 
+ obj-$(CONFIG_PCI)		+= $(obj-pci-$(CONFIG_PCI)) common-pci.o
+ obj-$(CONFIG_IXP4XX_QMGR)	+= ixp4xx_qmgr.o
+--- /dev/null
++++ b/arch/arm/mach-ixp4xx/mi424wr-pci.c
+@@ -0,0 +1,70 @@
++/*
++ * arch/arm/mach-ixp4xx/mi424wr-pci.c
++ *
++ * Actiontec MI424WR board-level PCI initialization
++ *
++ * Copyright (C) 2008 Jose Vasconcellos
++ *
++ * Maintainer: Jose Vasconcellos <jvasco@verizon.net>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++
++#include <linux/kernel.h>
++#include <linux/pci.h>
++#include <linux/init.h>
++#include <linux/irq.h>
++
++#include <asm/mach-types.h>
++#include <asm/mach/pci.h>
++
++/* PCI controller GPIO to IRQ pin mappings
++ * This information was obtained from Actiontec's GPL release.
++ *
++ *		INTA		INTB
++ * SLOT 13	8		6
++ * SLOT 14	7		8
++ * SLOT 15	6		7
++ */
++
++void __init mi424wr_pci_preinit(void)
++{
++	irq_set_irq_type(IRQ_IXP4XX_GPIO6, IRQ_TYPE_LEVEL_LOW);
++	irq_set_irq_type(IRQ_IXP4XX_GPIO7, IRQ_TYPE_LEVEL_LOW);
++	irq_set_irq_type(IRQ_IXP4XX_GPIO8, IRQ_TYPE_LEVEL_LOW);
++
++	ixp4xx_pci_preinit();
++}
++
++static int __init mi424wr_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
++{
++	if (slot == 13)
++		return IRQ_IXP4XX_GPIO8;
++	if (slot == 14)
++		return IRQ_IXP4XX_GPIO7;
++	if (slot == 15)
++		return IRQ_IXP4XX_GPIO6;
++
++	return -1;
++}
++
++struct hw_pci mi424wr_pci __initdata = {
++	.nr_controllers = 1,
++	.preinit	= mi424wr_pci_preinit,
++	.ops		= &ixp4xx_ops,
++	.setup		= ixp4xx_setup,
++	.map_irq	= mi424wr_map_irq,
++};
++
++int __init mi424wr_pci_init(void)
++{
++	if (machine_is_mi424wr())
++		pci_common_init(&mi424wr_pci);
++	return 0;
++}
++
++subsys_initcall(mi424wr_pci_init);
++
+--- /dev/null
++++ b/arch/arm/mach-ixp4xx/mi424wr-setup.c
+@@ -0,0 +1,387 @@
++/*
++ * arch/arm/mach-ixp4xx/mi424wr-setup.c
++ *
++ * Actiontec MI424-WR board setup
++ * Copyright (c) 2008 Jose Vasconcellos
++ *
++ * Based on Gemtek GTWX5715 by
++ * Copyright (C) 2004 George T. Joseph
++ * Derived from Coyote
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
++ *
++ */
++
++#include <linux/init.h>
++#include <linux/device.h>
++#include <linux/serial.h>
++#include <linux/serial_8250.h>
++#include <linux/types.h>
++#include <linux/memory.h>
++#include <linux/leds.h>
++#include <linux/spi/spi_gpio_old.h>
++#include <linux/dma-mapping.h>
++
++#include <asm/setup.h>
++#include <asm/system_info.h>
++#include <asm/irq.h>
++#include <asm/io.h>
++#include <asm/mach-types.h>
++#include <asm/mach/arch.h>
++#include <asm/mach/flash.h>
++
++/*
++ * GPIO 2,3,4 and 9 are hard wired to the Micrel/Kendin KS8995M Switch
++ * and operate as an SPI type interface.  The details of the interface
++ * are available on Kendin/Micrel's web site.
++ */
++
++#define MI424WR_KSSPI_SELECT		9
++#define MI424WR_KSSPI_TXD		4
++#define MI424WR_KSSPI_CLOCK		2
++#define MI424WR_KSSPI_RXD		3
++
++/*
++ * The "reset" button is wired to GPIO 10.
++ * The GPIO is brought "low" when the button is pushed.
++ */
++
++#define MI424WR_BUTTON_GPIO	10
++#define MI424WR_BUTTON_IRQ	IRQ_IXP4XX_GPIO10
++
++#define MI424WR_MOCA_WAN_LED	11
++
++/* Latch on CS1 - taken from Actiontec's 2.4 source code
++ * 
++ * default latch value
++ * 0  - power alarm led (red)           0 (off)
++ * 1  - power led (green)               0 (off)
++ * 2  - wireless led    (green)         1 (off)
++ * 3  - no internet led (red)           0 (off)
++ * 4  - internet ok led (green)         0 (off)
++ * 5  - moca LAN                        0 (off)
++ * 6  - WAN alarm led (red)		0 (off)
++ * 7  - PCI reset                       1 (not reset)
++ * 8  - IP phone 1 led (green)          1 (off)
++ * 9  - IP phone 2 led (green)          1 (off)
++ * 10 - VOIP ready led (green)          1 (off)
++ * 11 - PSTN relay 1 control            0 (PSTN)
++ * 12 - PSTN relay 1 control            0 (PSTN)
++ * 13 - N/A
++ * 14 - N/A
++ * 15 - N/A
++ */
++
++#define MI424WR_LATCH_MASK              0x04
++#define MI424WR_LATCH_DEFAULT           0x1f86
++
++#define MI424WR_LATCH_ALARM_LED         0x00
++#define MI424WR_LATCH_POWER_LED         0x01
++#define MI424WR_LATCH_WIRELESS_LED      0x02
++#define MI424WR_LATCH_INET_DOWN_LED     0x03
++#define MI424WR_LATCH_INET_OK_LED       0x04
++#define MI424WR_LATCH_MOCA_LAN_LED      0x05
++#define MI424WR_LATCH_WAN_ALARM_LED     0x06
++#define MI424WR_LATCH_PCI_RESET         0x07
++#define MI424WR_LATCH_PHONE1_LED        0x08
++#define MI424WR_LATCH_PHONE2_LED        0x09
++#define MI424WR_LATCH_VOIP_LED          0x10
++#define MI424WR_LATCH_PSTN_RELAY1       0x11
++#define MI424WR_LATCH_PSTN_RELAY2       0x12
++
++/* initialize CS1 to default timings, Intel style, 16-bit bus */
++#define MI424WR_CS1_CONFIG	0x80000002
++
++/* Define both UARTs but they are not easily accessible.
++ */
++
++static struct resource mi424wr_uart_resources[] = {
++	{
++		.start	= IXP4XX_UART1_BASE_PHYS,
++		.end	= IXP4XX_UART1_BASE_PHYS + 0x0fff,
++		.flags	= IORESOURCE_MEM,
++	},
++	{
++		.start	= IXP4XX_UART2_BASE_PHYS,
++		.end	= IXP4XX_UART2_BASE_PHYS + 0x0fff,
++		.flags	= IORESOURCE_MEM,
++	}
++};
++
++
++static struct plat_serial8250_port mi424wr_uart_platform_data[] = {
++	{
++		.mapbase	= IXP4XX_UART1_BASE_PHYS,
++		.membase	= (char *)IXP4XX_UART1_BASE_VIRT + REG_OFFSET,
++		.irq		= IRQ_IXP4XX_UART1,
++		.flags		= UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,
++		.iotype		= UPIO_MEM,
++		.regshift	= 2,
++		.uartclk	= IXP4XX_UART_XTAL,
++	},
++	{
++		.mapbase	= IXP4XX_UART2_BASE_PHYS,
++		.membase	= (char *)IXP4XX_UART2_BASE_VIRT + REG_OFFSET,
++		.irq		= IRQ_IXP4XX_UART2,
++		.flags		= UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,
++		.iotype		= UPIO_MEM,
++		.regshift	= 2,
++		.uartclk	= IXP4XX_UART_XTAL,
++	},
++	{ },
++};
++
++static struct platform_device mi424wr_uart_device = {
++	.name		= "serial8250",
++	.id		= PLAT8250_DEV_PLATFORM,
++	.dev.platform_data	= mi424wr_uart_platform_data,
++	.num_resources	= ARRAY_SIZE(mi424wr_uart_resources),
++	.resource	= mi424wr_uart_resources,
++};
++
++static struct flash_platform_data mi424wr_flash_data = {
++	.map_name	= "cfi_probe",
++	.width		= 2,
++};
++
++static struct resource mi424wr_flash_resource = {
++	.flags		= IORESOURCE_MEM,
++};
++
++static struct platform_device mi424wr_flash = {
++	.name		= "IXP4XX-Flash",
++	.id		= 0,
++	.dev.platform_data = &mi424wr_flash_data,
++	.num_resources	= 1,
++	.resource	= &mi424wr_flash_resource,
++};
++
++static int mi424wr_spi_boardinfo_setup(struct spi_board_info *bi,
++		struct spi_master *master, void *data)
++{
++
++	strlcpy(bi->modalias, "spi-ks8995", sizeof(bi->modalias));
++
++	bi->max_speed_hz = 5000000 /* Hz */;
++	bi->bus_num = master->bus_num;
++	bi->mode = SPI_MODE_0;
++
++	return 0;
++}
++
++static struct spi_gpio_platform_data mi424wr_spi_bus_data = {
++	.pin_cs			= MI424WR_KSSPI_SELECT,
++	.pin_clk		= MI424WR_KSSPI_CLOCK,
++	.pin_miso		= MI424WR_KSSPI_RXD,
++	.pin_mosi		= MI424WR_KSSPI_TXD,
++	.cs_activelow		= 1,
++	.no_spi_delay		= 1,
++	.boardinfo_setup	= mi424wr_spi_boardinfo_setup,
++};
++
++static struct gpio_led mi424wr_gpio_led[] = {
++	{
++		.name		= "moca-wan",	/* green led */
++		.gpio		= MI424WR_MOCA_WAN_LED,
++		.active_low	= 0,
++	}
++};
++
++static struct gpio_led_platform_data mi424wr_gpio_leds_data = {
++	.num_leds	= 1,
++	.leds		= mi424wr_gpio_led,
++};
++
++static struct platform_device mi424wr_gpio_leds = {
++	.name		= "leds-gpio",
++	.id		= -1,
++	.dev.platform_data = &mi424wr_gpio_leds_data,
++};
++
++static uint16_t latch_value = MI424WR_LATCH_DEFAULT;
++static uint16_t __iomem *iobase;
++
++static void mi424wr_latch_set_led(u8 bit, enum led_brightness value)
++{
++
++	if (((MI424WR_LATCH_MASK >> bit) & 1) ^ (value == LED_OFF))
++		latch_value &= ~(0x1 << bit);
++	else
++		latch_value |= (0x1 << bit);
++
++	__raw_writew(latch_value, iobase);
++
++}
++
++static struct latch_led mi424wr_latch_led[] = {
++	{
++		.name	= "power-alarm",
++		.bit	= MI424WR_LATCH_ALARM_LED,
++	},
++	{
++		.name	= "power-ok",
++		.bit	= MI424WR_LATCH_POWER_LED,
++	},
++	{
++		.name	= "wireless",	/* green led */
++		.bit	= MI424WR_LATCH_WIRELESS_LED,
++	},
++	{
++		.name	= "inet-down",	/* red led */
++		.bit	= MI424WR_LATCH_INET_DOWN_LED,
++	},
++	{
++		.name	= "inet-up",	/* green led */
++		.bit	= MI424WR_LATCH_INET_OK_LED,
++	},
++	{
++		.name	= "moca-lan",	/* green led */
++		.bit	= MI424WR_LATCH_MOCA_LAN_LED,
++	},
++	{
++		.name	= "wan-alarm",	/* red led */
++		.bit	= MI424WR_LATCH_WAN_ALARM_LED,
++	}
++};
++
++static struct latch_led_platform_data mi424wr_latch_leds_data = {
++	.num_leds	= ARRAY_SIZE(mi424wr_latch_led),
++	.mem		= 0x51000000,
++	.leds		= mi424wr_latch_led,
++	.set_led        = mi424wr_latch_set_led,
++};
++
++static struct platform_device mi424wr_latch_leds = {
++	.name		= "leds-latch",
++	.id		= -1,
++	.dev.platform_data = &mi424wr_latch_leds_data,
++};
++
++static struct platform_device mi424wr_spi_bus = {
++	.name		= "spi-gpio",
++	.id		= 0,
++	.dev.platform_data = &mi424wr_spi_bus_data,
++};
++
++static struct eth_plat_info mi424wr_wan_data = {
++	.phy		= 17,	/* KS8721 */
++	.rxq		= 3,
++	.txreadyq	= 20,
++};
++
++static struct eth_plat_info mi424wr_lan_data = {
++	.phy		= IXP4XX_ETH_PHY_MAX_ADDR,
++	.phy_mask	= 0x1e, /* ports 1-4 of the KS8995 switch */
++	.rxq		= 4,
++	.txreadyq	= 21,
++};
++
++static struct platform_device mi424wr_npe_devices[] = {
++	{
++		.name			= "ixp4xx_eth",
++		.id			= IXP4XX_ETH_NPEC,
++		.dev.platform_data	= &mi424wr_lan_data,
++		.dev.coherent_dma_mask	= DMA_BIT_MASK(32),
++	}, {
++		.name			= "ixp4xx_eth",
++		.id			= IXP4XX_ETH_NPEB,
++		.dev.platform_data	= &mi424wr_wan_data,
++		.dev.coherent_dma_mask	= DMA_BIT_MASK(32),
++	}
++};
++
++static struct eth_plat_info mi424wr_wanD_data = {
++	.phy		= 5,
++	.rxq		= 4,
++	.txreadyq	= 21,
++};
++
++static struct eth_plat_info mi424wr_lanD_data = {
++	.phy		= IXP4XX_ETH_PHY_MAX_ADDR,
++	.phy_mask	= 0x1e, /* ports 1-4 of the KS8995 switch */
++	.rxq		= 3,
++	.txreadyq	= 20,
++};
++
++static struct platform_device mi424wr_npeD_devices[] = {
++	{
++		.name                   = "ixp4xx_eth",
++		.id                     = IXP4XX_ETH_NPEB,
++		.dev.platform_data      = &mi424wr_lanD_data,
++		.dev.coherent_dma_mask	= DMA_BIT_MASK(32),
++	}, {
++		.name                   = "ixp4xx_eth",
++		.id                     = IXP4XX_ETH_NPEC,
++		.dev.platform_data      = &mi424wr_wanD_data,
++		.dev.coherent_dma_mask	= DMA_BIT_MASK(32),
++	}
++};
++
++static struct platform_device *mi424wr_devices[] __initdata = {
++	&mi424wr_uart_device,
++	&mi424wr_flash,
++	&mi424wr_gpio_leds,
++	&mi424wr_latch_leds,
++	&mi424wr_spi_bus,
++};
++
++static void __init mi424wr_init(void)
++{
++	ixp4xx_sys_init();
++
++	mi424wr_flash_resource.start = IXP4XX_EXP_BUS_BASE(0);
++	mi424wr_flash_resource.end = IXP4XX_EXP_BUS_BASE(0) + SZ_8M - 1;
++
++	*IXP4XX_EXP_CS0 |= IXP4XX_FLASH_WRITABLE;
++	*IXP4XX_EXP_CS1 = MI424WR_CS1_CONFIG;
++
++	/* configure button as input
++	 */
++	gpio_line_config(MI424WR_BUTTON_GPIO, IXP4XX_GPIO_IN);
++
++	/* Initialize LEDs and enables PCI bus.
++	 */
++	iobase = ioremap_nocache(IXP4XX_EXP_BUS_BASE(1), 0x1000);
++	__raw_writew(latch_value, iobase);
++
++	platform_add_devices(mi424wr_devices, ARRAY_SIZE(mi424wr_devices));
++
++	/* Need to figure out how to detect revD.
++	 * Look for a revision argument sent by redboot.
++	 */
++#define revD 4
++	if (system_rev == revD) {
++		platform_device_register(&mi424wr_npeD_devices[0]);
++		platform_device_register(&mi424wr_npeD_devices[1]);
++	} else {
++		platform_device_register(&mi424wr_npe_devices[0]);
++		platform_device_register(&mi424wr_npe_devices[1]);
++	}
++}
++
++
++MACHINE_START(MI424WR, "Actiontec MI424WR")
++	/* Maintainer: Jose Vasconcellos */
++	.map_io		= ixp4xx_map_io,
++	.init_irq	= ixp4xx_init_irq,
++	.init_time	= ixp4xx_timer_init,
++	.atag_offset	= 0x0100,
++	.init_machine	= mi424wr_init,
++#if defined(CONFIG_PCI)
++	.dma_zone_size	= SZ_64M,
++#endif
++	.restart	= ixp4xx_restart,
++MACHINE_END
++

@@ -1,0 +1,192 @@
+--- a/arch/arm/mach-gemini/include/mach/global_reg.h
++++ b/arch/arm/mach-gemini/include/mach/global_reg.h
+@@ -227,7 +227,13 @@
+ #define USB0_PLUG_MINIB			(1 << 29)
+ #define GMAC_GMII			(1 << 28)
+ #define GMAC_1_ENABLE			(1 << 27)
+-/* TODO: define ATA/SATA bits */
++/* 011 - ata0 <-> sata0, sata1; bring out ata1
++ * 010 - ata1 <-> sata1, sata0; bring out ata0
++ * 001 - ata0 <-> sata0, ata1 <-> sata1; bring out ata1
++ * 000 - ata0 <-> sata0, ata1 <-> sata1; bring out ata0 */
++#define IDE_IOMUX_MASK			(7 << 24)
++#define IDE_IOMUX_SATA1_SATA0	(2 << 24)
++#define IDE_IOMUX_SATA0_SATA1	(3 << 24)
+ #define USB1_VBUS_ON			(1 << 23)
+ #define USB0_VBUS_ON			(1 << 22)
+ #define APB_CLKOUT_ENABLE		(1 << 21)
+--- a/arch/arm/mach-gemini/irq.c
++++ b/arch/arm/mach-gemini/irq.c
+@@ -89,6 +89,9 @@ void __init gemini_init_irq(void)
+ 			irq_set_handler(i, handle_edge_irq);
+ 			mode |= 1 << i;
+ 			level |= 1 << i;
++ 		} else if (i >= IRQ_IDE0 && i <= IRQ_IDE1) {
++ 			irq_set_handler(i, handle_edge_irq);
++ 			mode |= 1 << i;
+ 		} else {			
+ 			irq_set_handler(i, handle_level_irq);
+ 		}
+--- a/arch/arm/mach-gemini/common.h
++++ b/arch/arm/mach-gemini/common.h
+@@ -31,6 +31,7 @@ extern int platform_register_pflash(unsi
+ extern int platform_register_watchdog(void);
+ extern int platform_register_ethernet(struct gemini_gmac_platform_data *pdata);
+ extern int platform_register_usb(unsigned int id);
++extern int platform_register_pata(unsigned int id);
+ 
+ extern void gemini_restart(enum reboot_mode mode, const char *cmd);
+ 
+--- a/arch/arm/mach-gemini/devices.c
++++ b/arch/arm/mach-gemini/devices.c
+@@ -248,3 +248,67 @@ int __init platform_register_usb(unsigne
+ 	return platform_device_register(&usb_device[id]);
+ }
+ 
++static u64 pata_gemini_dmamask0 = 0xffffffffUL;
++static u64 pata_gemini_dmamask1 = 0xffffffffUL;
++
++static struct resource pata_gemini_resources0[] =
++{
++	[0] =	{
++			.start	= GEMINI_IDE0_BASE,
++			.end	= GEMINI_IDE0_BASE + 0x40,
++			.flags	= IORESOURCE_MEM,
++		},
++	[1] =	{
++			.start	= IRQ_IDE0,
++			.end	= IRQ_IDE0,
++			.flags  = IORESOURCE_IRQ,
++		},
++};
++
++static struct resource pata_gemini_resources1[] =
++{
++	[0] =	{
++			.start	= GEMINI_IDE1_BASE,
++			.end	= GEMINI_IDE1_BASE + 0x40,
++			.flags	= IORESOURCE_MEM,
++		},
++	[1] =	{
++			.start  = IRQ_IDE1,
++			.end    = IRQ_IDE1,
++			.flags  = IORESOURCE_IRQ,
++		},
++};
++
++static struct platform_device pata_gemini_devices[] =
++{
++	{
++		.name		= "pata-gemini",
++		.id		= 0,
++		.dev		=
++		{
++			.dma_mask		= &pata_gemini_dmamask0,
++			.coherent_dma_mask	= 0xffffffff,
++		},
++		.num_resources	= ARRAY_SIZE(pata_gemini_resources0),
++		.resource	= pata_gemini_resources0,
++	},
++	{
++		.name		= "pata-gemini",
++		.id		= 1,
++		.dev		=
++		{
++			.dma_mask		= &pata_gemini_dmamask1,
++			.coherent_dma_mask	= 0xffffffff,
++		},
++		.num_resources	= ARRAY_SIZE(pata_gemini_resources1),
++		.resource	= pata_gemini_resources1,
++	},
++};
++
++int __init platform_register_pata(unsigned int id)
++{
++	if (id > 1)
++		return -EINVAL;
++
++	return platform_device_register(&pata_gemini_devices[id]);
++}
+--- a/arch/arm/mach-gemini/mm.c
++++ b/arch/arm/mach-gemini/mm.c
+@@ -24,6 +24,11 @@ static struct map_desc gemini_io_desc[]
+ 		.length		= SZ_512K,
+ 		.type 		= MT_DEVICE,
+ 	}, {
++		.virtual	= (unsigned long)IO_ADDRESS(GEMINI_SATA_BASE),
++		.pfn		= __phys_to_pfn(GEMINI_SATA_BASE),
++		.length		= SZ_512K,
++		.type		= MT_DEVICE,
++	}, {
+ 		.virtual	= (unsigned long)IO_ADDRESS(GEMINI_UART_BASE),
+ 		.pfn		= __phys_to_pfn(GEMINI_UART_BASE),
+ 		.length		= SZ_512K,
+--- a/drivers/ata/Kconfig
++++ b/drivers/ata/Kconfig
+@@ -564,6 +564,16 @@ config PATA_EP93XX
+ 
+ 	  If unsure, say N.
+ 
++config PATA_GEMINI
++	tristate "Gemini PATA support (Experimental)"
++	depends on ARCH_GEMINI
++	help
++	  This option enables support for the Gemini PATA-Controller.
++	  Note that the Gemini SoC has no native SATA-Controller but an
++	  onboard PATA-SATA bridge.
++
++	  If unsure, say N.
++
+ config PATA_HPT366
+ 	tristate "HPT 366/368 PATA support"
+ 	depends on PCI
+--- a/drivers/ata/Makefile
++++ b/drivers/ata/Makefile
+@@ -56,6 +56,7 @@ obj-$(CONFIG_PATA_CS5536)	+= pata_cs5536
+ obj-$(CONFIG_PATA_CYPRESS)	+= pata_cypress.o
+ obj-$(CONFIG_PATA_EFAR)		+= pata_efar.o
+ obj-$(CONFIG_PATA_EP93XX)	+= pata_ep93xx.o
++obj-$(CONFIG_PATA_GEMINI)	+= pata_gemini.o
+ obj-$(CONFIG_PATA_HPT366)	+= pata_hpt366.o
+ obj-$(CONFIG_PATA_HPT37X)	+= pata_hpt37x.o
+ obj-$(CONFIG_PATA_HPT3X2N)	+= pata_hpt3x2n.o
+--- a/arch/arm/mach-gemini/board-nas4220b.c
++++ b/arch/arm/mach-gemini/board-nas4220b.c
+@@ -146,11 +146,28 @@ static void __init usb_ib4220b_init(void
+ 		GLOBAL_MISC_CTRL));
+ }
+ 
++static void __init sata_ib4220b_init(void)
++{
++	unsigned val;
++
++	val = readl((void __iomem*)(IO_ADDRESS(GEMINI_GLOBAL_BASE) +
++		GLOBAL_MISC_CTRL));
++	val &= ~(IDE_IOMUX_MASK | PFLASH_PADS_DISABLE);
++	val |= IDE_PADS_ENABLE;
++	writel(val, (void __iomem*)(IO_ADDRESS(GEMINI_GLOBAL_BASE) +
++		GLOBAL_MISC_CTRL));
++
++	/* enabling ports for presence detection, master only */
++	writel(0x00000001, (void __iomem*)(IO_ADDRESS(GEMINI_SATA_BASE) + 0x18));
++	writel(0x00000001, (void __iomem*)(IO_ADDRESS(GEMINI_SATA_BASE) + 0x1c));
++}
++
+ static void __init ib4220b_init(void)
+ {
+ 	gemini_gpio_init();
+ 	ib4220b_gmac_init();
+ 	usb_ib4220b_init();
++	sata_ib4220b_init();
+ 	platform_register_uart();
+ 	platform_register_pflash(SZ_16M, NULL, 0);
+ 	platform_device_register(&ib4220b_led_device);
+@@ -161,6 +178,8 @@ static void __init ib4220b_init(void)
+ 	platform_register_ethernet(&ib4220b_gmac_data);
+ 	platform_register_usb(0);
+ 	platform_register_usb(1);
++	platform_register_pata(0);
++	platform_register_pata(1);
+ }
+ 
+ MACHINE_START(NAS4220B, "Raidsonic NAS IB-4220-B")

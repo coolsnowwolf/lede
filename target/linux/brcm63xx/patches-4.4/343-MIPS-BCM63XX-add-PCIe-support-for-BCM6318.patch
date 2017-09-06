@@ -1,0 +1,342 @@
+From 11a8ab8dac4ef5d0d70199843043927edce1d4db Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jogo@openwrt.org>
+Date: Sun, 15 Dec 2013 20:47:34 +0100
+Subject: [PATCH 53/53] MIPS: BCM63XX: add PCIe support for BCM6318
+
+---
+ arch/mips/bcm63xx/clk.c                           |  25 ++++-
+ arch/mips/include/asm/mach-bcm63xx/bcm63xx_io.h   |   6 ++
+ arch/mips/include/asm/mach-bcm63xx/bcm63xx_regs.h |  60 +++++++++++-
+ arch/mips/pci/ops-bcm63xx.c                       |  16 +++-
+ arch/mips/pci/pci-bcm63xx.c                       | 106 ++++++++++++++++++----
+ 5 files changed, 184 insertions(+), 29 deletions(-)
+
+--- a/arch/mips/bcm63xx/clk.c
++++ b/arch/mips/bcm63xx/clk.c
+@@ -50,6 +50,18 @@ static void bcm_hwclock_set(u32 mask, in
+ 	bcm_perf_writel(reg, PERF_CKCTL_REG);
+ }
+ 
++static void bcm_ub_hwclock_set(u32 mask, int enable)
++{
++	u32 reg;
++
++	reg = bcm_perf_readl(PERF_UB_CKCTL_REG);
++	if (enable)
++		reg |= mask;
++	else
++		reg &= ~mask;
++	bcm_perf_writel(reg, PERF_UB_CKCTL_REG);
++}
++
+ /*
+  * Ethernet MAC "misc" clock: dma clocks and main clock on 6348
+  */
+@@ -317,12 +329,17 @@ static struct clk clk_ipsec = {
+ 
+ static void pcie_set(struct clk *clk, int enable)
+ {
+-	if (BCMCPU_IS_6328())
++	if (BCMCPU_IS_6318()) {
++		bcm_hwclock_set(CKCTL_6318_PCIE_EN, enable);
++		bcm_hwclock_set(CKCTL_6318_PCIE25_EN, enable);
++		bcm_ub_hwclock_set(UB_CKCTL_6318_PCIE_EN, enable);
++	} else if (BCMCPU_IS_6328()) {
+ 		bcm_hwclock_set(CKCTL_6328_PCIE_EN, enable);
+-	else if (BCMCPU_IS_6362())
++	} else if (BCMCPU_IS_6362()) {
+ 		bcm_hwclock_set(CKCTL_6362_PCIE_EN, enable);
+-	else if (BCMCPU_IS_63268())
++	} else if (BCMCPU_IS_63268()) {
+ 		bcm_hwclock_set(CKCTL_63268_PCIE_EN, enable);
++	}
+ }
+ 
+ static struct clk clk_pcie = {
+@@ -408,7 +425,7 @@ struct clk *clk_get(struct device *dev,
+ 	if ((BCMCPU_IS_6362() || BCMCPU_IS_6368() || BCMCPU_IS_63268()) &&
+ 	    !strcmp(id, "ipsec"))
+ 		return &clk_ipsec;
+-	if ((BCMCPU_IS_6328() || BCMCPU_IS_6362() || BCMCPU_IS_63268()) &&
++	if ((BCMCPU_IS_6318() || BCMCPU_IS_6328() || BCMCPU_IS_6362() || BCMCPU_IS_63268()) &&
+ 	    !strcmp(id, "pcie"))
+ 		return &clk_pcie;
+ 	return ERR_PTR(-ENOENT);
+--- a/arch/mips/include/asm/mach-bcm63xx/bcm63xx_io.h
++++ b/arch/mips/include/asm/mach-bcm63xx/bcm63xx_io.h
+@@ -40,6 +40,12 @@
+ #define BCM_CB_MEM_END_PA		(BCM_CB_MEM_BASE_PA +		\
+ 					BCM_CB_MEM_SIZE - 1)
+ 
++#define BCM_PCIE_MEM_BASE_PA_6318	0x10200000
++#define BCM_PCIE_MEM_SIZE_6318		(1 * 1024 * 1024)
++#define BCM_PCIE_MEM_END_PA_6318	(BCM_PCIE_MEM_BASE_PA_6318 +	\
++					BCM_PCIE_MEM_SIZE_6318 - 1)
++
++
+ #define BCM_PCIE_MEM_BASE_PA_6328	0x10f00000
+ #define BCM_PCIE_MEM_SIZE_6328		(1 * 1024 * 1024)
+ #define BCM_PCIE_MEM_END_PA_6328	(BCM_PCIE_MEM_BASE_PA_6328 +	\
+--- a/arch/mips/include/asm/mach-bcm63xx/bcm63xx_regs.h
++++ b/arch/mips/include/asm/mach-bcm63xx/bcm63xx_regs.h
+@@ -1529,6 +1529,17 @@
+  * _REG relative to RSET_PCIE
+  *************************************************************************/
+ 
++#define PCIE_SPECIFIC_REG		0x188
++#define SPECIFIC_ENDIAN_MODE_BAR1_SHIFT	0
++#define SPECIFIC_ENDIAN_MODE_BAR1_MASK	(0x3 << SPECIFIC_ENDIAN_MODE_BAR1_SHIFT)
++#define SPECIFIC_ENDIAN_MODE_BAR2_SHIFT	2
++#define SPECIFIC_ENDIAN_MODE_BAR2_MASK	(0x3 << SPECIFIC_ENDIAN_MODE_BAR1_SHIFT)
++#define SPECIFIC_ENDIAN_MODE_BAR3_SHIFT	4
++#define SPECIFIC_ENDIAN_MODE_BAR3_MASK	(0x3 << SPECIFIC_ENDIAN_MODE_BAR1_SHIFT)
++#define SPECIFIC_ENDIAN_MODE_WORD_ALIGN	0
++#define SPECIFIC_ENDIAN_MODE_HALFWORD_ALIGN 1
++#define SPECIFIC_ENDIAN_MODE_BYTE_ALIGN	2
++
+ #define PCIE_CONFIG2_REG		0x408
+ #define CONFIG2_BAR1_SIZE_EN		1
+ #define CONFIG2_BAR1_SIZE_MASK		0xf
+@@ -1574,7 +1585,54 @@
+ #define PCIE_RC_INT_C			(1 << 2)
+ #define PCIE_RC_INT_D			(1 << 3)
+ 
+-#define PCIE_DEVICE_OFFSET		0x8000
++#define PCIE_CPU_2_PCIE_MEM_WIN0_LO_REG	0x400c
++#define C2P_MEM_WIN_ENDIAN_MODE_MASK	0x3
++#define C2P_MEM_WIN_ENDIAN_NO_SWAP	0
++#define C2P_MEM_WIN_ENDIAN_HALF_WORD_SWAP 1
++#define C2P_MEM_WIN_ENDIAN_HALF_BYTE_SWAP 2
++#define C2P_MEM_WIN_BASE_ADDR_SHIFT	20
++#define C2P_MEM_WIN_BASE_ADDR_MASK	(0xfff << C2P_MEM_WIN_BASE_ADDR_SHIFT)
++
++#define PCIE_RC_BAR1_CONFIG_LO_REG	0x402c
++#define RC_BAR_CFG_LO_SIZE_256MB	0xd
++#define RC_BAR_CFG_LO_MATCH_ADDR_SHIFT	20
++#define RC_BAR_CFG_LO_MATCH_ADDR_MASK	(0xfff << RC_BAR_CFG_LO_MATCH_ADDR_SHIFT)
++
++#define PCIE_CPU_2_PCIE_MEM_WIN0_BASELIMIT_REG 0x4070
++#define C2P_BASELIMIT_LIMIT_SHIFT	20
++#define C2P_BASELIMIT_LIMIT_MASK	(0xfff << C2P_BASELIMIT_LIMIT_SHIFT)
++#define C2P_BASELIMIT_BASE_SHIFT	4
++#define C2P_BASELIMIT_BASE_MASK		(0xfff << C2P_BASELIMIT_BASE_SHIFT)
++
++#define PCIE_UBUS_BAR1_CFG_REMAP_REG	0x4088
++#define BAR1_CFG_REMAP_OFFSET_SHIFT	20
++#define BAR1_CFG_REMAP_OFFSET_MASK	(0xfff << BAR1_CFG_REMAP_OFFSET_SHIFT)
++#define BAR1_CFG_REMAP_ACCESS_EN	1
++
++#define PCIE_HARD_DEBUG_REG		0x4204
++#define HARD_DEBUG_SERDES_IDDQ		(1 << 23)
++
++#define PCIE_CPU_INT1_MASK_CLEAR_REG	0x830c
++#define CPU_INT_PCIE_ERR_ATTN_CPU	(1 << 0)
++#define CPU_INT_PCIE_INTA		(1 << 1)
++#define CPU_INT_PCIE_INTB		(1 << 2)
++#define CPU_INT_PCIE_INTC		(1 << 3)
++#define CPU_INT_PCIE_INTD		(1 << 4)
++#define CPU_INT_PCIE_INTR		(1 << 5)
++#define CPU_INT_PCIE_NMI		(1 << 6)
++#define CPU_INT_PCIE_UBUS		(1 << 7)
++#define CPU_INT_IPI			(1 << 8)
++
++#define PCIE_EXT_CFG_INDEX_REG		0x8400
++#define EXT_CFG_FUNC_NUM_SHIFT		12
++#define EXT_CFG_FUNC_NUM_MASK		(0x7 << EXT_CFG_FUNC_NUM_SHIFT)
++#define EXT_CFG_DEV_NUM_SHIFT		15
++#define EXT_CFG_DEV_NUM_MASK		(0xf << EXT_CFG_DEV_NUM_SHIFT)
++#define EXT_CFG_BUS_NUM_SHIFT		20
++#define EXT_CFG_BUS_NUM_MASK		(0xff << EXT_CFG_BUS_NUM_SHIFT)
++
++#define PCIE_DEVICE_OFFSET_6318		0x9000
++#define PCIE_DEVICE_OFFSET_6328		0x8000
+ 
+ /*************************************************************************
+  * _REG relative to RSET_OTP
+--- a/arch/mips/pci/ops-bcm63xx.c
++++ b/arch/mips/pci/ops-bcm63xx.c
+@@ -488,8 +488,12 @@ static int bcm63xx_pcie_read(struct pci_
+ 	if (!bcm63xx_pcie_can_access(bus, devfn))
+ 		return PCIBIOS_DEVICE_NOT_FOUND;
+ 
+-	if (bus->number == PCIE_BUS_DEVICE)
+-		reg += PCIE_DEVICE_OFFSET;
++	if (bus->number == PCIE_BUS_DEVICE) {
++		if (BCMCPU_IS_6318())
++			reg += PCIE_DEVICE_OFFSET_6318;
++		else
++			reg += PCIE_DEVICE_OFFSET_6328;
++	}
+ 
+ 	data = bcm_pcie_readl(reg);
+ 
+@@ -508,8 +512,12 @@ static int bcm63xx_pcie_write(struct pci
+ 	if (!bcm63xx_pcie_can_access(bus, devfn))
+ 		return PCIBIOS_DEVICE_NOT_FOUND;
+ 
+-	if (bus->number == PCIE_BUS_DEVICE)
+-		reg += PCIE_DEVICE_OFFSET;
++	if (bus->number == PCIE_BUS_DEVICE) {
++		if (BCMCPU_IS_6318())
++			reg += PCIE_DEVICE_OFFSET_6318;
++		else
++			reg += PCIE_DEVICE_OFFSET_6328;
++	}
+ 
+ 
+ 	data = bcm_pcie_readl(reg);
+--- a/arch/mips/pci/pci-bcm63xx.c
++++ b/arch/mips/pci/pci-bcm63xx.c
+@@ -118,7 +118,7 @@ static void bcm63xx_int_cfg_writel(u32 v
+ 
+ void __iomem *pci_iospace_start;
+ 
+-static void __init bcm63xx_reset_pcie(void)
++static void __init bcm63xx_reset_pcie_gen1(void)
+ {
+ 	u32 val;
+ 	u32 reg;
+@@ -152,20 +152,32 @@ static void __init bcm63xx_reset_pcie(vo
+ 	mdelay(200);
+ }
+ 
+-static struct clk *pcie_clk;
+-
+-static int __init bcm63xx_register_pcie(void)
++static void __init bcm63xx_reset_pcie_gen2(void)
+ {
+ 	u32 val;
+ 
+-	/* enable clock */
+-	pcie_clk = clk_get(NULL, "pcie");
+-	if (IS_ERR_OR_NULL(pcie_clk))
+-		return -ENODEV;
++	bcm63xx_core_set_reset(BCM63XX_RESET_PCIE_HARD, 0);
+ 
+-	clk_prepare_enable(pcie_clk);
++	/* reset the PCIe core */
++	bcm63xx_core_set_reset(BCM63XX_RESET_PCIE, 1);
++	bcm63xx_core_set_reset(BCM63XX_RESET_PCIE_EXT, 1);
++	bcm63xx_core_set_reset(BCM63XX_RESET_PCIE_CORE, 1);
++	mdelay(10);
++	bcm63xx_core_set_reset(BCM63XX_RESET_PCIE_EXT, 0);
++	mdelay(10);
++	bcm63xx_core_set_reset(BCM63XX_RESET_PCIE, 0);
++	mdelay(10);
++	val = bcm_pcie_readl(PCIE_HARD_DEBUG_REG);
++	val &= ~HARD_DEBUG_SERDES_IDDQ;
++	bcm_pcie_writel(val, PCIE_HARD_DEBUG_REG);
++	mdelay(10);
++	bcm63xx_core_set_reset(BCM63XX_RESET_PCIE_CORE, 0);
++	mdelay(200);
++}
+ 
+-	bcm63xx_reset_pcie();
++static void __init bcm63xx_init_pcie_gen1(void)
++{
++	u32 val;
+ 
+ 	/* configure the PCIe bridge */
+ 	val = bcm_pcie_readl(PCIE_BRIDGE_OPT1_REG);
+@@ -190,6 +202,65 @@ static int __init bcm63xx_register_pcie(
+ 	val |= OPT2_CFG_TYPE1_BD_SEL;
+ 	bcm_pcie_writel(val, PCIE_BRIDGE_OPT2_REG);
+ 
++	/* set bar0 to little endian */
++	val = (bcm_pcie_mem_resource.start >> 20) << BASEMASK_BASE_SHIFT;
++	val |= (bcm_pcie_mem_resource.end >> 20) << BASEMASK_MASK_SHIFT;
++	val |= BASEMASK_REMAP_EN;
++	bcm_pcie_writel(val, PCIE_BRIDGE_BAR0_BASEMASK_REG);
++
++	val = (bcm_pcie_mem_resource.start >> 20) << REBASE_ADDR_BASE_SHIFT;
++	bcm_pcie_writel(val, PCIE_BRIDGE_BAR0_REBASE_ADDR_REG);
++}
++
++static void __init bcm63xx_init_pcie_gen2(void)
++{
++	u32 val;
++
++	bcm_pcie_writel(CPU_INT_PCIE_INTA | CPU_INT_PCIE_INTB |
++			CPU_INT_PCIE_INTC | CPU_INT_PCIE_INTD,
++			PCIE_CPU_INT1_MASK_CLEAR_REG);
++
++	val = bcm_pcie_mem_resource.end & C2P_BASELIMIT_LIMIT_MASK;
++	val |= (bcm_pcie_mem_resource.start >> C2P_BASELIMIT_LIMIT_SHIFT) <<
++	       C2P_BASELIMIT_BASE_SHIFT;
++
++	bcm_pcie_writel(val, PCIE_CPU_2_PCIE_MEM_WIN0_BASELIMIT_REG);
++
++	/* set bar0 to little endian */
++	val = bcm_pcie_readl(PCIE_CPU_2_PCIE_MEM_WIN0_LO_REG);
++	val |= bcm_pcie_mem_resource.start & C2P_MEM_WIN_BASE_ADDR_MASK;
++	val |= C2P_MEM_WIN_ENDIAN_HALF_BYTE_SWAP;
++	bcm_pcie_writel(val, PCIE_CPU_2_PCIE_MEM_WIN0_LO_REG);
++
++	bcm_pcie_writel(SPECIFIC_ENDIAN_MODE_BYTE_ALIGN, PCIE_SPECIFIC_REG);
++	bcm_pcie_writel(RC_BAR_CFG_LO_SIZE_256MB, PCIE_RC_BAR1_CONFIG_LO_REG);
++	bcm_pcie_writel(BAR1_CFG_REMAP_ACCESS_EN, PCIE_UBUS_BAR1_CFG_REMAP_REG);
++
++	bcm_pcie_writel(PCIE_BUS_DEVICE << EXT_CFG_BUS_NUM_SHIFT,
++			PCIE_EXT_CFG_INDEX_REG);
++}
++
++static struct clk *pcie_clk;
++
++static int __init bcm63xx_register_pcie(void)
++{
++	u32 val;
++
++	/* enable clock */
++	pcie_clk = clk_get(NULL, "pcie");
++	if (IS_ERR_OR_NULL(pcie_clk))
++		return -ENODEV;
++
++	clk_prepare_enable(pcie_clk);
++
++	if (BCMCPU_IS_6328() || BCMCPU_IS_6362() || BCMCPU_IS_63268()) {
++		bcm63xx_reset_pcie_gen1();
++		bcm63xx_init_pcie_gen1();
++	} else {
++		bcm63xx_reset_pcie_gen2();
++		bcm63xx_init_pcie_gen2();
++	}
++
+ 	/* setup class code as bridge */
+ 	val = bcm_pcie_readl(PCIE_IDVAL3_REG);
+ 	val &= ~IDVAL3_CLASS_CODE_MASK;
+@@ -201,15 +272,6 @@ static int __init bcm63xx_register_pcie(
+ 	val &= ~CONFIG2_BAR1_SIZE_MASK;
+ 	bcm_pcie_writel(val, PCIE_CONFIG2_REG);
+ 
+-	/* set bar0 to little endian */
+-	val = (bcm_pcie_mem_resource.start >> 20) << BASEMASK_BASE_SHIFT;
+-	val |= (bcm_pcie_mem_resource.end >> 20) << BASEMASK_MASK_SHIFT;
+-	val |= BASEMASK_REMAP_EN;
+-	bcm_pcie_writel(val, PCIE_BRIDGE_BAR0_BASEMASK_REG);
+-
+-	val = (bcm_pcie_mem_resource.start >> 20) << REBASE_ADDR_BASE_SHIFT;
+-	bcm_pcie_writel(val, PCIE_BRIDGE_BAR0_REBASE_ADDR_REG);
+-
+ 	register_pci_controller(&bcm63xx_pcie_controller);
+ 
+ 	return 0;
+@@ -341,7 +403,10 @@ static int __init bcm63xx_pci_init(void)
+ 	if (!bcm63xx_pci_enabled)
+ 		return -ENODEV;
+ 
+-	if (BCMCPU_IS_6328() || BCMCPU_IS_6362()) {
++	if (BCMCPU_IS_6318()) {
++		bcm_pcie_mem_resource.start = BCM_PCIE_MEM_BASE_PA_6318;
++		bcm_pcie_mem_resource.end = BCM_PCIE_MEM_END_PA_6318;
++	} if (BCMCPU_IS_6328() || BCMCPU_IS_6362()) {
+ 		bcm_pcie_mem_resource.start = BCM_PCIE_MEM_BASE_PA_6328;
+ 		bcm_pcie_mem_resource.end = BCM_PCIE_MEM_END_PA_6328;
+ 	} else if (BCMCPU_IS_63268()) {
+@@ -350,6 +415,7 @@ static int __init bcm63xx_pci_init(void)
+ 	}
+ 
+ 	switch (bcm63xx_get_cpu_id()) {
++	case BCM6318_CPU_ID:
+ 	case BCM6328_CPU_ID:
+ 	case BCM6362_CPU_ID:
+ 	case BCM63268_CPU_ID:

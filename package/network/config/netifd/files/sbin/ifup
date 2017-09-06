@@ -1,0 +1,77 @@
+#!/bin/sh
+
+ifup_all=
+setup_wifi=
+
+if_call() {
+	local interface="$1"
+	for mode in $modes; do
+		ubus call network.interface $mode "{ \"interface\" : \"$interface\" }"
+	done
+}
+
+case "$0" in
+	*ifdown) modes=down;;
+	*ifup)
+		modes="down up"
+		setup_wifi=1
+	;;
+	*) echo "Invalid command: $0";;
+esac
+
+while :; do
+	case "$1" in
+		-a)
+			ifup_all=1
+			shift
+		;;
+		-w)
+			setup_wifi=
+			shift
+		;;
+		*)
+			break
+		;;
+	esac
+done
+
+[ "$modes" = "down up" ] && ubus call network reload
+if [ -n "$ifup_all" ]; then
+	for interface in `ubus -S list 'network.interface.*'`; do
+		if_call "${interface##network.interface.}"
+	done
+	[ -n "$setup_wifi" ] && /sbin/wifi up
+	exit
+else
+	ubus -S list "network.interface.$1" > /dev/null || {
+		echo "Interface $1 not found"
+		exit
+	}
+	if_call "$1"
+fi
+
+if [ -n "$setup_wifi" ] && grep -sq config /etc/config/wireless; then
+	. /lib/functions.sh
+
+	find_related_radios() {
+		local wdev wnet
+		config_get wdev "$1" device
+		config_get wnet "$1" network
+
+		if [ -n "$wdev" ]; then
+			for wnet in $wnet; do
+				if [ "$wnet" = "$network" ]; then
+					append radio_devs "$wdev" "$N"
+				fi
+			done
+		fi
+	}
+
+	network="$1"
+	config_load wireless
+	config_foreach find_related_radios wifi-iface
+
+	for dev in $(echo "$radio_devs" | sort -u); do
+		/sbin/wifi up "$dev"
+	done
+fi

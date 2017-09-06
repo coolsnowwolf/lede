@@ -1,0 +1,1 @@
+obj-${CONFIG_SPI_GPIO_CUSTOM}	+= spi-gpio-custom.o

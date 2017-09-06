@@ -1,0 +1,81 @@
+#!/bin/sh /etc/rc.common
+
+START=50
+USE_PROCD=1
+
+start_daemon() {
+	local cfg="$1"
+
+	local atmdev disabled
+
+	config_get_bool disabled "$cfg" disabled 0
+	[ "$disabled" -eq 1 ] && return
+
+	config_get atmdev "$cfg" atmdev 0
+
+	local unit
+	config_get unit "$cfg" unit 0
+
+	local vpi
+	config_get vpi "$cfg" vpi 8
+
+	local vci
+	config_get vci "$cfg" vci 35
+
+	local encaps
+	config_get encaps "$cfg" encaps
+
+	case "$encaps" in
+		1|vc) encaps=1;;
+		*) encaps=0;;
+	esac
+
+	local payload
+	config_get payload "$cfg" payload
+
+	case "$payload" in
+		0|routed) payload=0;;
+		*) payload=1;;
+	esac
+
+	local qos
+	config_get qos "$cfg" qos
+
+	local sendsize
+	config_get sendsize "$cfg" sendsize
+
+	found=
+	for device in /sys/class/atm/*; do
+		[ -d "$device" ] || break
+		[ "$(cat $device/atmindex)" = "$atmdev" ] || continue
+		found=1
+		break
+	done
+
+	[ -n "$found" ] || return
+
+	local circuit="$atmdev.$vpi.$vci"
+
+	procd_open_instance
+	procd_set_param command \
+		/usr/sbin/br2684ctl_wrap "nas$unit" \
+		-c "$unit" -e "$encaps" -p "$payload" \
+		-a "$circuit" ${qos:+-q "$qos"} ${sendsize:+-s "$sendsize"} \
+		-S /lib/netifd/br2684-up
+	procd_close_instance
+}
+
+service_triggers() {
+	local script=$(readlink "$initscript")
+	local name=$(basename ${script:-$initscript})
+
+	procd_open_trigger
+	procd_add_raw_trigger hotplug.atm 2000 /etc/init.d/$name reload
+	procd_add_config_trigger "config.change" "network" /etc/init.d/$name reload
+	procd_close_trigger
+}
+
+start_service() {
+	config_load network
+	config_foreach start_daemon atm-bridge
+}

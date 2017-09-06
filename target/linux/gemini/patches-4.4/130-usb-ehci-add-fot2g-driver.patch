@@ -1,0 +1,133 @@
+--- a/drivers/usb/host/ehci-hcd.c
++++ b/drivers/usb/host/ehci-hcd.c
+@@ -352,11 +352,13 @@ static void ehci_silence_controller(stru
+ 	ehci->rh_state = EHCI_RH_HALTED;
+ 	ehci_turn_off_all_ports(ehci);
+ 
++#ifndef CONFIG_ARCH_GEMINI
+ 	/* make BIOS/etc use companion controller during reboot */
+ 	ehci_writel(ehci, 0, &ehci->regs->configured_flag);
+ 
+ 	/* unblock posted writes */
+ 	ehci_readl(ehci, &ehci->regs->configured_flag);
++#endif
+ 	spin_unlock_irq(&ehci->lock);
+ }
+ 
+@@ -608,7 +610,9 @@ static int ehci_run (struct usb_hcd *hcd
+ 	// Philips, Intel, and maybe others need CMD_RUN before the
+ 	// root hub will detect new devices (why?); NEC doesn't
+ 	ehci->command &= ~(CMD_LRESET|CMD_IAAD|CMD_PSE|CMD_ASE|CMD_RESET);
++#ifndef CONFIG_ARCH_GEMINI
+ 	ehci->command |= CMD_RUN;
++#endif
+ 	ehci_writel(ehci, ehci->command, &ehci->regs->command);
+ 	dbg_cmd (ehci, "init", ehci->command);
+ 
+@@ -628,9 +632,11 @@ static int ehci_run (struct usb_hcd *hcd
+ 	 */
+ 	down_write(&ehci_cf_port_reset_rwsem);
+ 	ehci->rh_state = EHCI_RH_RUNNING;
++#ifndef CONFIG_ARCH_GEMINI
+ 	ehci_writel(ehci, FLAG_CF, &ehci->regs->configured_flag);
+ 	ehci_readl(ehci, &ehci->regs->command);	/* unblock posted writes */
+ 	msleep(5);
++#endif
+ 	up_write(&ehci_cf_port_reset_rwsem);
+ 	ehci->last_periodic_enable = ktime_get_real();
+ 
+@@ -768,9 +774,10 @@ static irqreturn_t ehci_irq (struct usb_
+ 		pcd_status = status;
+ 
+ 		/* resume root hub? */
++#ifndef CONFIG_ARCH_GEMINI
+ 		if (ehci->rh_state == EHCI_RH_SUSPENDED)
+ 			usb_hcd_resume_root_hub(hcd);
+-
++#endif
+ 		/* get per-port change detect bits */
+ 		if (ehci->has_ppcd)
+ 			ppcd = status >> 16;
+@@ -1296,6 +1303,11 @@ MODULE_LICENSE ("GPL");
+ #define	PLATFORM_DRIVER		ehci_hcd_sead3_driver
+ #endif
+ 
++#ifdef CONFIG_ARCH_GEMINI
++#include "ehci-fotg2.c"
++#define PLATFORM_DRIVER		ehci_fotg2_driver
++#endif
++
+ static int __init ehci_hcd_init(void)
+ {
+ 	int retval = 0;
+--- a/drivers/usb/host/ehci-timer.c
++++ b/drivers/usb/host/ehci-timer.c
+@@ -208,7 +208,9 @@ static void ehci_handle_controller_death
+ 
+ 	/* Clean up the mess */
+ 	ehci->rh_state = EHCI_RH_HALTED;
++#ifndef CONFIG_ARCH_GEMINI
+ 	ehci_writel(ehci, 0, &ehci->regs->configured_flag);
++#endif
+ 	ehci_writel(ehci, 0, &ehci->regs->intr_enable);
+ 	ehci_work(ehci);
+ 	end_unlink_async(ehci);
+--- a/drivers/usb/host/ehci.h
++++ b/drivers/usb/host/ehci.h
+@@ -657,7 +657,12 @@ static inline unsigned int
+ ehci_port_speed(struct ehci_hcd *ehci, unsigned int portsc)
+ {
+ 	if (ehci_is_TDI(ehci)) {
+-		switch ((portsc >> (ehci->has_hostpc ? 25 : 26)) & 3) {
++#ifdef CONFIG_ARCH_GEMINI
++		portsc = readl(ehci_to_hcd(ehci)->regs + 0x80);
++		switch ((portsc>>22)&3) {
++#else
++		switch ((portsc>>26)&3) {
++#endif
+ 		case 0:
+ 			return 0;
+ 		case 1:
+--- a/drivers/usb/host/ehci-hub.c
++++ b/drivers/usb/host/ehci-hub.c
+@@ -1076,6 +1076,11 @@ int ehci_hub_control(
+ 			/* see what we found out */
+ 			temp = check_reset_complete (ehci, wIndex, status_reg,
+ 					ehci_readl(ehci, status_reg));
++#ifdef CONFIG_ARCH_GEMINI
++			/* restart schedule */
++		 	ehci->command |= CMD_RUN;
++			ehci_writel(ehci, ehci->command, &ehci->regs->command);
++#endif
+ 		}
+ 
+ 		/* transfer dedicated ports to the companion hc */
+--- a/include/linux/usb/ehci_def.h
++++ b/include/linux/usb/ehci_def.h
+@@ -112,8 +112,13 @@ struct ehci_regs {
+ 	u32		frame_list;	/* points to periodic list */
+ 	/* ASYNCLISTADDR: offset 0x18 */
+ 	u32		async_next;	/* address of next async queue head */
+-
++#ifndef CONFIG_ARCH_GEMINI
+ 	u32		reserved1[2];
++#else
++	u32		reserved1;
++	/* PORTSC: offset 0x20 for Faraday OTG */
++	u32		port_status[1];
++#endif
+ 
+ 	/* TXFILLTUNING: offset 0x24 */
+ 	u32		txfill_tuning;	/* TX FIFO Tuning register */
+@@ -125,8 +130,11 @@ struct ehci_regs {
+ 	u32		configured_flag;
+ #define FLAG_CF		(1<<0)		/* true: we'll support "high speed" */
+ 
++#ifndef CONFIG_ARCH_GEMINI
+ 	/* PORTSC: offset 0x44 */
+ 	u32		port_status[0];	/* up to N_PORTS */
++#endif
++
+ /* EHCI 1.1 addendum */
+ #define PORTSC_SUSPEND_STS_ACK 0
+ #define PORTSC_SUSPEND_STS_NYET 1

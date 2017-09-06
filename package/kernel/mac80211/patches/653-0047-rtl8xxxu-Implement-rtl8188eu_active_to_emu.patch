@@ -1,0 +1,68 @@
+From b3edeceb7c8c3b0eb70b26e3237afa5086afe8ed Mon Sep 17 00:00:00 2001
+From: Jes Sorensen <Jes.Sorensen@redhat.com>
+Date: Fri, 26 Aug 2016 15:16:32 -0400
+Subject: [PATCH] rtl8xxxu: Implement rtl8188eu_active_to_emu()
+
+Per the vendor driver's sequence table, this seems to be the correct
+way to disable RF on the 8188eu, even if the driver doesn't actually
+call the sequence by itself.
+
+Signed-off-by: Jes Sorensen <Jes.Sorensen@redhat.com>
+---
+ .../net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c | 38 ++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+--- a/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c
++++ b/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu_8188e.c
+@@ -1155,6 +1155,42 @@ exit:
+ 	return ret;
+ }
+ 
++static int rtl8188eu_active_to_emu(struct rtl8xxxu_priv *priv)
++{
++	u8 val8;
++	int count, ret = 0;
++
++	/* Turn off RF */
++	rtl8xxxu_write8(priv, REG_RF_CTRL, 0);
++
++	/* LDO Sleep mode */
++	val8 = rtl8xxxu_read8(priv, REG_LPLDO_CTRL);
++	val8 |= BIT(4);
++	rtl8xxxu_write8(priv, REG_LPLDO_CTRL, val8);
++
++	/* 0x0005[1] = 1 turn off MAC by HW state machine*/
++	val8 = rtl8xxxu_read8(priv, REG_APS_FSMCO + 1);
++	val8 |= BIT(1);
++	rtl8xxxu_write8(priv, REG_APS_FSMCO + 1, val8);
++
++	for (count = RTL8XXXU_MAX_REG_POLL; count; count--) {
++		val8 = rtl8xxxu_read8(priv, REG_APS_FSMCO + 1);
++		if ((val8 & BIT(1)) == 0)
++			break;
++		udelay(10);
++	}
++
++	if (!count) {
++		dev_warn(&priv->udev->dev, "%s: Disabling MAC timed out\n",
++			 __func__);
++		ret = -EBUSY;
++		goto exit;
++	}
++
++exit:
++	return ret;
++}
++
+ static int rtl8188eu_power_on(struct rtl8xxxu_priv *priv)
+ {
+ 	u16 val16;
+@@ -1202,6 +1238,8 @@ static void rtl8188e_disable_rf(struct r
+ 	rtl8xxxu_write_rfreg(priv, RF_A, RF6052_REG_AC, 0);
+ 	if (priv->rf_paths == 2)
+ 		rtl8xxxu_write_rfreg(priv, RF_B, RF6052_REG_AC, 0);
++
++	rtl8188eu_active_to_emu(priv);
+ }
+ 
+ static void rtl8188e_usb_quirks(struct rtl8xxxu_priv *priv)

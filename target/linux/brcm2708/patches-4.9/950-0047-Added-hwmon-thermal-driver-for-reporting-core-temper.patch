@@ -1,0 +1,161 @@
+From 3c847bc6c9d6f4115c82943c869c55244b39a5c4 Mon Sep 17 00:00:00 2001
+From: popcornmix <popcornmix@gmail.com>
+Date: Tue, 26 Mar 2013 19:24:24 +0000
+Subject: [PATCH] Added hwmon/thermal driver for reporting core temperature.
+ Thanks Dorian
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BCM270x: Move thermal sensor to Device Tree
+
+Add Device Tree support to bcm2835-thermal driver.
+Add thermal sensor device to Device Tree.
+Don't add platform device when booting in DT mode.
+
+Signed-off-by: Noralf Trønnes <noralf@tronnes.org>
+---
+ drivers/thermal/Kconfig           |   7 +++
+ drivers/thermal/Makefile          |   1 +
+ drivers/thermal/bcm2835-thermal.c | 109 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 117 insertions(+)
+ create mode 100644 drivers/thermal/bcm2835-thermal.c
+
+--- a/drivers/thermal/Kconfig
++++ b/drivers/thermal/Kconfig
+@@ -302,6 +302,13 @@ config INTEL_POWERCLAMP
+ 	  enforce idle time which results in more package C-state residency. The
+ 	  user interface is exposed via generic thermal framework.
+ 
++config THERMAL_BCM2835
++	depends on RASPBERRYPI_FIRMWARE
++	tristate "BCM2835 Thermal Driver"
++	help
++	  This will enable temperature monitoring for the Broadcom BCM2835
++	  chip. If built as a module, it will be called 'bcm2835-thermal'.
++
+ config X86_PKG_TEMP_THERMAL
+ 	tristate "X86 package temperature thermal driver"
+ 	depends on X86_THERMAL_VECTOR
+--- a/drivers/thermal/Makefile
++++ b/drivers/thermal/Makefile
+@@ -42,6 +42,7 @@ obj-$(CONFIG_MAX77620_THERMAL)	+= max776
+ obj-$(CONFIG_QORIQ_THERMAL)	+= qoriq_thermal.o
+ obj-$(CONFIG_DB8500_CPUFREQ_COOLING)	+= db8500_cpufreq_cooling.o
+ obj-$(CONFIG_INTEL_POWERCLAMP)	+= intel_powerclamp.o
++obj-$(CONFIG_THERMAL_BCM2835)	+= bcm2835-thermal.o
+ obj-$(CONFIG_X86_PKG_TEMP_THERMAL)	+= x86_pkg_temp_thermal.o
+ obj-$(CONFIG_INTEL_SOC_DTS_IOSF_CORE)	+= intel_soc_dts_iosf.o
+ obj-$(CONFIG_INTEL_SOC_DTS_THERMAL)	+= intel_soc_dts_thermal.o
+--- /dev/null
++++ b/drivers/thermal/bcm2835-thermal.c
+@@ -0,0 +1,109 @@
++/*****************************************************************************
++* Copyright 2011 Broadcom Corporation.  All rights reserved.
++*
++* Unless you and Broadcom execute a separate written software license
++* agreement governing use of this software, this software is licensed to you
++* under the terms of the GNU General Public License version 2, available at
++* http://www.broadcom.com/licenses/GPLv2.php (the "GPL").
++*
++* Notwithstanding the above, under no circumstances may you combine this
++* software in any way with any other Broadcom software provided under a
++* license other than the GPL, without Broadcom's express prior written
++* consent.
++*****************************************************************************/
++
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/thermal.h>
++#include <soc/bcm2835/raspberrypi-firmware.h>
++
++static int bcm2835_thermal_get_property(struct thermal_zone_device *tz,
++					int *temp, u32 tag)
++{
++	struct rpi_firmware *fw = tz->devdata;
++	struct {
++		u32 id;
++		u32 val;
++	} packet;
++	int ret;
++
++	*temp = 0;
++	packet.id = 0;
++	ret = rpi_firmware_property(fw, tag, &packet, sizeof(packet));
++	if (ret) {
++		dev_err(&tz->device, "Failed to get temperature\n");
++		return ret;
++	}
++
++	*temp = packet.val;
++	dev_dbg(&tz->device, "%stemp=%d\n",
++		tag == RPI_FIRMWARE_GET_MAX_TEMPERATURE ? "max" : "", *temp);
++
++	return 0;
++}
++
++static int bcm2835_thermal_get_temp(struct thermal_zone_device *tz,
++				    int *temp)
++{
++	return bcm2835_thermal_get_property(tz, temp,
++					    RPI_FIRMWARE_GET_TEMPERATURE);
++}
++
++static struct thermal_zone_device_ops ops  = {
++	.get_temp = bcm2835_thermal_get_temp,
++};
++
++static int bcm2835_thermal_probe(struct platform_device *pdev)
++{
++	struct device_node *fw_np;
++	struct rpi_firmware *fw;
++	struct thermal_zone_device *tz;
++
++	fw_np = of_parse_phandle(pdev->dev.of_node, "firmware", 0);
++	if (!fw_np) {
++		dev_err(&pdev->dev, "Missing firmware node\n");
++		return -ENOENT;
++	}
++	fw = rpi_firmware_get(fw_np);
++	if (!fw)
++		return -EPROBE_DEFER;
++
++	tz = thermal_zone_device_register("bcm2835_thermal", 0, 0, fw, &ops,
++					  NULL, 0, 0);
++	if (IS_ERR(tz)) {
++		dev_err(&pdev->dev, "Failed to register the thermal device\n");
++		return PTR_ERR(tz);
++	}
++
++	platform_set_drvdata(pdev, tz);
++
++	return 0;
++}
++
++static int bcm2835_thermal_remove(struct platform_device *pdev)
++{
++	thermal_zone_device_unregister(platform_get_drvdata(pdev));
++
++	return 0;
++}
++
++static const struct of_device_id bcm2835_thermal_of_match_table[] = {
++	{ .compatible = "brcm,bcm2835-thermal", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, bcm2835_thermal_of_match_table);
++
++static struct platform_driver bcm2835_thermal_driver = {
++	.probe = bcm2835_thermal_probe,
++	.remove = bcm2835_thermal_remove,
++	.driver = {
++		.name = "bcm2835_thermal",
++		.of_match_table = bcm2835_thermal_of_match_table,
++	},
++};
++module_platform_driver(bcm2835_thermal_driver);
++
++MODULE_AUTHOR("Dorian Peake");
++MODULE_AUTHOR("Noralf Trønnes");
++MODULE_DESCRIPTION("Thermal driver for bcm2835 chip");
++MODULE_LICENSE("GPL");

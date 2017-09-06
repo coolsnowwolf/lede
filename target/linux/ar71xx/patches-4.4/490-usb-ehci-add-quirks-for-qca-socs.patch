@@ -1,0 +1,103 @@
+--- a/drivers/usb/host/ehci-hcd.c
++++ b/drivers/usb/host/ehci-hcd.c
+@@ -252,6 +252,37 @@ int ehci_reset(struct ehci_hcd *ehci)
+ 	command |= CMD_RESET;
+ 	dbg_cmd (ehci, "reset", command);
+ 	ehci_writel(ehci, command, &ehci->regs->command);
++
++	if (ehci->qca_force_host_mode) {
++		u32 usbmode;
++
++		udelay(1000);
++
++		usbmode = ehci_readl(ehci, &ehci->regs->usbmode);
++		usbmode |= USBMODE_CM_HC | (1 << 4);
++		ehci_writel(ehci, usbmode, &ehci->regs->usbmode);
++
++		ehci_dbg(ehci, "forced host mode, usbmode: %08x\n",
++			 ehci_readl(ehci, &ehci->regs->usbmode));
++	}
++
++	if (ehci->qca_force_16bit_ptw) {
++		u32 port_status;
++
++		udelay(1000);
++
++		/* enable 16-bit UTMI interface */
++		port_status = ehci_readl(ehci, &ehci->regs->port_status[0]);
++		port_status |= BIT(28);
++		ehci_writel(ehci, port_status, &ehci->regs->port_status[0]);
++
++		ehci_dbg(ehci, "16-bit UTMI interface enabled, status: %08x\n",
++			 ehci_readl(ehci, &ehci->regs->port_status[0]));
++	}
++
++	if (ehci->reset_notifier)
++		ehci->reset_notifier(ehci_to_hcd(ehci));
++
+ 	ehci->rh_state = EHCI_RH_HALTED;
+ 	ehci->next_statechange = jiffies;
+ 	retval = ehci_handshake(ehci, &ehci->regs->command,
+--- a/drivers/usb/host/ehci.h
++++ b/drivers/usb/host/ehci.h
+@@ -228,6 +228,10 @@ struct ehci_hcd {			/* one per controlle
+ 	unsigned		need_oc_pp_cycle:1; /* MPC834X port power */
+ 	unsigned		imx28_write_fix:1; /* For Freescale i.MX28 */
+ 	unsigned		ignore_oc:1;
++	unsigned		qca_force_host_mode:1;
++	unsigned		qca_force_16bit_ptw:1; /* force 16 bit UTMI */
++
++	void (*reset_notifier)(struct usb_hcd *hcd);
+ 
+ 	/* required for usb32 quirk */
+ 	#define OHCI_CTRL_HCFS          (3 << 6)
+--- a/include/linux/usb/ehci_pdriver.h
++++ b/include/linux/usb/ehci_pdriver.h
+@@ -50,6 +50,8 @@ struct usb_ehci_pdata {
+ 	unsigned	reset_on_resume:1;
+ 	unsigned	dma_mask_64:1;
+ 	unsigned	ignore_oc:1;
++	unsigned	qca_force_host_mode:1;
++	unsigned	qca_force_16bit_ptw:1;
+ 
+ 	/* Turn on all power and clocks */
+ 	int (*power_on)(struct platform_device *pdev);
+@@ -59,6 +61,7 @@ struct usb_ehci_pdata {
+ 	 * turn off everything else */
+ 	void (*power_suspend)(struct platform_device *pdev);
+ 	int (*pre_setup)(struct usb_hcd *hcd);
++	void (*reset_notifier)(struct platform_device *pdev);
+ };
+ 
+ #endif /* __USB_CORE_EHCI_PDRIVER_H */
+--- a/drivers/usb/host/ehci-platform.c
++++ b/drivers/usb/host/ehci-platform.c
+@@ -51,6 +51,14 @@ struct ehci_platform_priv {
+ 
+ static const char hcd_name[] = "ehci-platform";
+ 
++static void ehci_platform_reset_notifier(struct usb_hcd *hcd)
++{
++	struct platform_device *pdev = to_platform_device(hcd->self.controller);
++	struct usb_ehci_pdata *pdata = pdev->dev.platform_data;
++
++	pdata->reset_notifier(pdev);
++}
++
+ static int ehci_platform_reset(struct usb_hcd *hcd)
+ {
+ 	struct platform_device *pdev = to_platform_device(hcd->self.controller);
+@@ -256,6 +264,13 @@ static int ehci_platform_probe(struct pl
+ 		priv->reset_on_resume = true;
+ 	if (pdata->ignore_oc)
+ 		ehci->ignore_oc = 1;
++	if (pdata->qca_force_host_mode)
++		ehci->qca_force_host_mode = 1;
++	if (pdata->qca_force_16bit_ptw)
++		ehci->qca_force_16bit_ptw = 1;
++
++	if (pdata->reset_notifier)
++		ehci->reset_notifier = ehci_platform_reset_notifier;
+ 
+ #ifndef CONFIG_USB_EHCI_BIG_ENDIAN_MMIO
+ 	if (ehci->big_endian_mmio) {

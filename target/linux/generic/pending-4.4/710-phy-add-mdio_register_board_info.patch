@@ -1,0 +1,193 @@
+--- a/drivers/net/phy/mdio_bus.c
++++ b/drivers/net/phy/mdio_bus.c
+@@ -38,6 +38,8 @@
+ 
+ #include <asm/irq.h>
+ 
++#include "mdio-boardinfo.h"
++
+ /**
+  * mdiobus_alloc_size - allocate a mii_bus structure
+  * @size: extra amount of memory to allocate for private storage.
+@@ -346,9 +348,21 @@ void mdiobus_free(struct mii_bus *bus)
+ }
+ EXPORT_SYMBOL(mdiobus_free);
+ 
++static void mdiobus_setup_phydev_from_boardinfo(struct mii_bus *bus,
++						struct phy_device *phydev,
++						struct mdio_board_info *bi)
++{
++	if (strcmp(bus->id, bi->bus_id) ||
++	    bi->phy_addr != phydev->addr)
++	    return;
++
++	phydev->dev.platform_data = (void *) bi->platform_data;
++}
++
+ struct phy_device *mdiobus_scan(struct mii_bus *bus, int addr)
+ {
+ 	struct phy_device *phydev;
++	struct mdio_board_entry *be;
+ 	int err;
+ 
+ 	phydev = get_phy_device(bus, addr, false);
+@@ -361,6 +375,12 @@ struct phy_device *mdiobus_scan(struct m
+ 	 */
+ 	of_mdiobus_link_phydev(bus, phydev);
+ 
++	mutex_lock(&__mdio_board_lock);
++	list_for_each_entry(be, &__mdio_board_list, list)
++		mdiobus_setup_phydev_from_boardinfo(bus, phydev,
++						    &be->board_info);
++	mutex_unlock(&__mdio_board_lock);
++
+ 	err = phy_device_register(phydev);
+ 	if (err) {
+ 		phy_device_free(phydev);
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -839,6 +839,23 @@ void mdio_bus_exit(void);
+ 
+ extern struct bus_type mdio_bus_type;
+ 
++struct mdio_board_info {
++	const char	*bus_id;
++	int		phy_addr;
++
++	const void	*platform_data;
++};
++
++#ifdef CONFIG_MDIO_BOARDINFO
++int mdiobus_register_board_info(const struct mdio_board_info *info, unsigned n);
++#else
++static inline int
++mdiobus_register_board_info(const struct mdio_board_info *info, unsigned n)
++{
++	return 0;
++}
++#endif
++
+ /**
+  * module_phy_driver() - Helper macro for registering PHY drivers
+  * @__phy_drivers: array of PHY drivers to register
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -12,6 +12,10 @@ menuconfig PHYLIB
+ 
+ if PHYLIB
+ 
++config MDIO_BOARDINFO
++	bool
++	default y
++
+ config SWCONFIG
+ 	tristate "Switch configuration API"
+ 	---help---
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -2,6 +2,8 @@
+ 
+ libphy-objs			:= phy.o phy_device.o mdio_bus.o
+ 
++obj-$(CONFIG_MDIO_BOARDINFO)	+= mdio-boardinfo.o
++
+ obj-$(CONFIG_PHYLIB)		+= libphy.o
+ obj-$(CONFIG_SWCONFIG)		+= swconfig.o
+ obj-$(CONFIG_AQUANTIA_PHY)	+= aquantia.o
+--- /dev/null
++++ b/drivers/net/phy/mdio-boardinfo.c
+@@ -0,0 +1,58 @@
++/*
++ * mdio-boardinfo.c - collect pre-declarations of PHY devices
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of  the GNU General  Public License as published by the
++ * Free Software Foundation;  either version 2 of the  License, or (at your
++ * option) any later version.
++ *
++ */
++
++#include <linux/kernel.h>
++#include <linux/phy.h>
++#include <linux/slab.h>
++#include <linux/export.h>
++#include <linux/mutex.h>
++#include <linux/phy.h>
++
++#include "mdio-boardinfo.h"
++
++/*
++ * These symbols are exported ONLY FOR the mdio_bus component.
++ * No other users will be supported.
++ */
++
++LIST_HEAD(__mdio_board_list);
++EXPORT_SYMBOL_GPL(__mdio_board_list);
++
++DEFINE_MUTEX(__mdio_board_lock);
++EXPORT_SYMBOL_GPL(__mdio_board_lock);
++
++/**
++ * mdio_register_board_info - register PHY devices for a given board
++ * @info: array of chip descriptors
++ * @n: how many descriptors are provided
++ * Context: can sleep
++ *
++ * The board info passed can safely be __initdata ... but be careful of
++ * any embedded pointers (platform_data, etc), they're copied as-is.
++ */
++int __init
++mdiobus_register_board_info(struct mdio_board_info const *info, unsigned n)
++{
++	struct mdio_board_entry *be;
++	int i;
++
++	be = kzalloc(n * sizeof(*be), GFP_KERNEL);
++	if (!be)
++		return -ENOMEM;
++
++	for (i = 0; i < n; i++, be++, info++) {
++		memcpy(&be->board_info, info, sizeof(*info));
++		mutex_lock(&__mdio_board_lock);
++		list_add_tail(&be->list, &__mdio_board_list);
++		mutex_unlock(&__mdio_board_lock);
++	}
++
++	return 0;
++}
+--- /dev/null
++++ b/drivers/net/phy/mdio-boardinfo.h
+@@ -0,0 +1,22 @@
++/*
++ * mdio-boardinfo.h - boardinfo interface internal to the mdio_bus component
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of  the GNU General  Public License as published by the
++ * Free Software Foundation;  either version 2 of the  License, or (at your
++ * option) any later version.
++ *
++ */
++
++#include <linux/mutex.h>
++
++struct mdio_board_entry {
++	struct list_head	list;
++	struct mdio_board_info	board_info;
++};
++
++/* __mdio_board_lock protects __mdio_board_list
++ * only mdio_bus components are allowed to use these symbols.
++ */
++extern struct mutex __mdio_board_lock;
++extern struct list_head __mdio_board_list;
+--- a/drivers/net/Makefile
++++ b/drivers/net/Makefile
+@@ -16,7 +16,7 @@ obj-$(CONFIG_MII) += mii.o
+ obj-$(CONFIG_MDIO) += mdio.o
+ obj-$(CONFIG_NET) += Space.o loopback.o
+ obj-$(CONFIG_NETCONSOLE) += netconsole.o
+-obj-$(CONFIG_PHYLIB) += phy/
++obj-y += phy/
+ obj-$(CONFIG_RIONET) += rionet.o
+ obj-$(CONFIG_NET_TEAM) += team/
+ obj-$(CONFIG_TUN) += tun.o

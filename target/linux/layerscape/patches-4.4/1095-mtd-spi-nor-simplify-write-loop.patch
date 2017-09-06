@@ -1,0 +1,100 @@
+From 93b40e12f7e580a41c4aee5597579cc539fd8544 Mon Sep 17 00:00:00 2001
+From: Michal Suchanek <hramrach@gmail.com>
+Date: Wed, 2 Dec 2015 10:38:20 +0000
+Subject: [PATCH 095/113] mtd: spi-nor: simplify write loop
+
+The spi-nor write loop assumes that what is passed to the hardware
+driver write() is what gets written.
+
+When write() writes less than page size at once data is dropped on the
+floor. Check the amount of data writen and exit if it does not match
+requested amount.
+
+Signed-off-by: Michal Suchanek <hramrach@gmail.com>
+Signed-off-by: Hou Zhiqiang <Zhiqiang.Hou@freescale.com>
+---
+ drivers/mtd/spi-nor/spi-nor.c |   58 ++++++++++++++++++-----------------------
+ 1 file changed, 25 insertions(+), 33 deletions(-)
+
+--- a/drivers/mtd/spi-nor/spi-nor.c
++++ b/drivers/mtd/spi-nor/spi-nor.c
+@@ -1019,8 +1019,8 @@ static int spi_nor_write(struct mtd_info
+ 	size_t *retlen, const u_char *buf)
+ {
+ 	struct spi_nor *nor = mtd_to_spi_nor(mtd);
+-	u32 page_offset, page_size, i;
+-	int ret;
++	size_t page_offset, page_remain, i;
++	ssize_t ret;
+ 
+ 	dev_dbg(nor->dev, "to 0x%08x, len %zd\n", (u32)to, len);
+ 
+@@ -1028,45 +1028,37 @@ static int spi_nor_write(struct mtd_info
+ 	if (ret)
+ 		return ret;
+ 
+-	write_enable(nor);
++	for (i = 0; i < len; ) {
++		ssize_t written;
+ 
+-	page_offset = to & (nor->page_size - 1);
+-
+-	/* do all the bytes fit onto one page? */
+-	if (page_offset + len <= nor->page_size) {
+-		ret = nor->write(nor, to, len, buf);
+-		if (ret < 0)
+-			goto write_err;
+-		*retlen += ret;
+-	} else {
++		page_offset = to & (nor->page_size - 1);
++		WARN_ONCE(page_offset,
++			  "Writing at offset %zu into a NOR page. Writing partial pages may decrease reliability and increase wear of NOR flash.",
++			  page_offset);
+ 		/* the size of data remaining on the first page */
+-		page_size = nor->page_size - page_offset;
+-		ret = nor->write(nor, to, page_size, buf);
++		page_remain = min_t(size_t,
++				    nor->page_size - page_offset, len - i);
++
++		write_enable(nor);
++		ret = nor->write(nor, to + i, page_remain, buf + i);
+ 		if (ret < 0)
+ 			goto write_err;
+-		*retlen += ret;
++		written = ret;
+ 
+-		/* write everything in nor->page_size chunks */
+-		for (i = ret; i < len; ) {
+-			page_size = len - i;
+-			if (page_size > nor->page_size)
+-				page_size = nor->page_size;
+-
+-			ret = spi_nor_wait_till_ready(nor);
+-			if (ret)
+-				goto write_err;
+-
+-			write_enable(nor);
+-
+-			ret = nor->write(nor, to + i, page_size, buf + i);
+-			if (ret < 0)
+-				goto write_err;
+-			*retlen += ret;
+-			i += ret;
++		ret = spi_nor_wait_till_ready(nor);
++		if (ret)
++			goto write_err;
++		*retlen += written;
++		i += written;
++		if (written != page_remain) {
++			dev_err(nor->dev,
++				"While writing %zu bytes written %zd bytes\n",
++				page_remain, written);
++			ret = -EIO;
++			goto write_err;
+ 		}
+ 	}
+ 
+-	ret = spi_nor_wait_till_ready(nor);
+ write_err:
+ 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_WRITE);
+ 	return ret;

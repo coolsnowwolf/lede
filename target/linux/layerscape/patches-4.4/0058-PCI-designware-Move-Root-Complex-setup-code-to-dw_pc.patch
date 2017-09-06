@@ -1,0 +1,109 @@
+From 892a427f8a2b25b561298941cf1fc0373a98b269 Mon Sep 17 00:00:00 2001
+From: Jisheng Zhang <jszhang@marvell.com>
+Date: Wed, 16 Mar 2016 19:40:33 +0800
+Subject: [PATCH 58/70] PCI: designware: Move Root Complex setup code to
+ dw_pcie_setup_rc()
+
+dw_pcie_host_init() looks up host bridge resources, ioremaps them, creates
+IRQ domains, and enumerates devices below the bridge.  dw_pcie_setup_rc()
+programs the Root Complex registers.  The Root Complex may lose power
+during suspend-to-RAM, and when we resume, we want to redo the latter but
+not the former.
+
+Move some Root Complex programming from dw_pcie_host_init() to
+dw_pcie_setup_rc() where it belongs.  DesignWare-based drivers can call
+dw_pcie_setup_rc() in their resume paths.
+
+[Niklas Cassel <niklas.cassel@axis.com>:  This change moves outbound ATU
+programming, which uses pp->mem_base, to dw_pcie_setup_rc().  Apply the
+dra7xx pp->mem_base update before calling dw_pcie_setup_rc().]
+
+[bhelgaas: changelog, fold in dra7xx fix from Niklas]
+Signed-off-by: Jisheng Zhang <jszhang@marvell.com>
+Signed-off-by: Bjorn Helgaas <bhelgaas@google.com>
+Acked-by: Pratyush Anand <pratyush.anand@gmail.com>
+---
+ drivers/pci/host/pci-dra7xx.c      |    4 ++--
+ drivers/pci/host/pcie-designware.c |   39 ++++++++++++++++++------------------
+ 2 files changed, 21 insertions(+), 22 deletions(-)
+
+--- a/drivers/pci/host/pci-dra7xx.c
++++ b/drivers/pci/host/pci-dra7xx.c
+@@ -142,13 +142,13 @@ static void dra7xx_pcie_enable_interrupt
+ 
+ static void dra7xx_pcie_host_init(struct pcie_port *pp)
+ {
+-	dw_pcie_setup_rc(pp);
+-
+ 	pp->io_base &= DRA7XX_CPU_TO_BUS_ADDR;
+ 	pp->mem_base &= DRA7XX_CPU_TO_BUS_ADDR;
+ 	pp->cfg0_base &= DRA7XX_CPU_TO_BUS_ADDR;
+ 	pp->cfg1_base &= DRA7XX_CPU_TO_BUS_ADDR;
+ 
++	dw_pcie_setup_rc(pp);
++
+ 	dra7xx_pcie_establish_link(pp);
+ 	if (IS_ENABLED(CONFIG_PCI_MSI))
+ 		dw_pcie_msi_init(pp);
+--- a/drivers/pci/host/pcie-designware.c
++++ b/drivers/pci/host/pcie-designware.c
+@@ -434,7 +434,6 @@ int dw_pcie_host_init(struct pcie_port *
+ 	struct platform_device *pdev = to_platform_device(pp->dev);
+ 	struct pci_bus *bus, *child;
+ 	struct resource *cfg_res;
+-	u32 val;
+ 	int i, ret;
+ 	LIST_HEAD(res);
+ 	struct resource_entry *win;
+@@ -544,25 +543,6 @@ int dw_pcie_host_init(struct pcie_port *
+ 	if (pp->ops->host_init)
+ 		pp->ops->host_init(pp);
+ 
+-	/*
+-	 * If the platform provides ->rd_other_conf, it means the platform
+-	 * uses its own address translation component rather than ATU, so
+-	 * we should not program the ATU here.
+-	 */
+-	if (!pp->ops->rd_other_conf)
+-		dw_pcie_prog_outbound_atu(pp, PCIE_ATU_REGION_INDEX1,
+-					  PCIE_ATU_TYPE_MEM, pp->mem_base,
+-					  pp->mem_bus_addr, pp->mem_size);
+-
+-	dw_pcie_wr_own_conf(pp, PCI_BASE_ADDRESS_0, 4, 0);
+-
+-	/* program correct class for RC */
+-	dw_pcie_wr_own_conf(pp, PCI_CLASS_DEVICE, 2, PCI_CLASS_BRIDGE_PCI);
+-
+-	dw_pcie_rd_own_conf(pp, PCIE_LINK_WIDTH_SPEED_CONTROL, 4, &val);
+-	val |= PORT_LOGIC_SPEED_CHANGE;
+-	dw_pcie_wr_own_conf(pp, PCIE_LINK_WIDTH_SPEED_CONTROL, 4, val);
+-
+ 	pp->root_bus_nr = pp->busn->start;
+ 	if (IS_ENABLED(CONFIG_PCI_MSI)) {
+ 		bus = pci_scan_root_bus_msi(pp->dev, pp->root_bus_nr,
+@@ -800,6 +780,25 @@ void dw_pcie_setup_rc(struct pcie_port *
+ 	val |= PCI_COMMAND_IO | PCI_COMMAND_MEMORY |
+ 		PCI_COMMAND_MASTER | PCI_COMMAND_SERR;
+ 	dw_pcie_writel_rc(pp, val, PCI_COMMAND);
++
++	/*
++	 * If the platform provides ->rd_other_conf, it means the platform
++	 * uses its own address translation component rather than ATU, so
++	 * we should not program the ATU here.
++	 */
++	if (!pp->ops->rd_other_conf)
++		dw_pcie_prog_outbound_atu(pp, PCIE_ATU_REGION_INDEX1,
++					  PCIE_ATU_TYPE_MEM, pp->mem_base,
++					  pp->mem_bus_addr, pp->mem_size);
++
++	dw_pcie_wr_own_conf(pp, PCI_BASE_ADDRESS_0, 4, 0);
++
++	/* program correct class for RC */
++	dw_pcie_wr_own_conf(pp, PCI_CLASS_DEVICE, 2, PCI_CLASS_BRIDGE_PCI);
++
++	dw_pcie_rd_own_conf(pp, PCIE_LINK_WIDTH_SPEED_CONTROL, 4, &val);
++	val |= PORT_LOGIC_SPEED_CHANGE;
++	dw_pcie_wr_own_conf(pp, PCIE_LINK_WIDTH_SPEED_CONTROL, 4, val);
+ }
+ 
+ MODULE_AUTHOR("Jingoo Han <jg1.han@samsung.com>");

@@ -1,0 +1,553 @@
+From 4d9a32780ec795b9edc83c7b3a1e947cec49a5a4 Mon Sep 17 00:00:00 2001
+From: Michael Heimpold <mhei@heimpold.de>
+Date: Sat, 15 Aug 2015 20:26:18 +0200
+Subject: [PATCH] Add support for I2SE Duckbill boards
+
+Signed-off-by: Michael Heimpold <mhei@heimpold.de>
+---
+ arch/arm/Kconfig                  |    6 ++
+ arch/arm/include/asm/mach-types.h |   13 +++
+ board/i2se/duckbill/Kconfig       |   15 ++++
+ board/i2se/duckbill/MAINTAINERS   |    6 ++
+ board/i2se/duckbill/Makefile      |   12 +++
+ board/i2se/duckbill/duckbill.c    |  112 +++++++++++++++++++++++
+ board/i2se/duckbill/iomux.c       |  125 ++++++++++++++++++++++++++
+ configs/duckbill_defconfig        |    9 ++
+ include/configs/duckbill.h        |  177 +++++++++++++++++++++++++++++++++++++
+ 9 files changed, 475 insertions(+)
+ create mode 100644 board/i2se/duckbill/Kconfig
+ create mode 100644 board/i2se/duckbill/MAINTAINERS
+ create mode 100644 board/i2se/duckbill/Makefile
+ create mode 100644 board/i2se/duckbill/duckbill.c
+ create mode 100644 board/i2se/duckbill/iomux.c
+ create mode 100644 configs/duckbill_defconfig
+ create mode 100644 include/configs/duckbill.h
+
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -178,6 +178,11 @@ config TARGET_MX28EVK
+ 	select CPU_ARM926EJS
+ 	select SUPPORT_SPL
+ 
++config TARGET_DUCKBILL
++	bool "Support I2SE Duckbill"
++	select CPU_ARM926EJS
++	select SUPPORT_SPL
++
+ config TARGET_MX23_OLINUXINO
+ 	bool "Support mx23_olinuxino"
+ 	select CPU_ARM926EJS
+@@ -926,6 +931,7 @@ source "board/genesi/mx51_efikamx/Kconfi
+ source "board/gumstix/pepper/Kconfig"
+ source "board/h2200/Kconfig"
+ source "board/hisilicon/hikey/Kconfig"
++source "board/i2se/duckbill/Kconfig"
+ source "board/imx31_phycore/Kconfig"
+ source "board/isee/igep0033/Kconfig"
+ source "board/maxbcm/Kconfig"
+--- a/arch/arm/include/asm/mach-types.h
++++ b/arch/arm/include/asm/mach-types.h
+@@ -1109,6 +1109,7 @@ extern unsigned int __machine_arch_type;
+ #define MACH_TYPE_COLIBRI_T30          4493
+ #define MACH_TYPE_APALIS_T30           4513
+ #define MACH_TYPE_OMAPL138_LCDK        2495
++#define MACH_TYPE_DUCKBILL             4754
+ 
+ #ifdef CONFIG_ARCH_EBSA110
+ # ifdef machine_arch_type
+@@ -14262,6 +14263,18 @@ extern unsigned int __machine_arch_type;
+ # define machine_is_apalis_t30()	(0)
+ #endif
+ 
++#ifdef CONFIG_MACH_DUCKBILL
++# ifdef machine_arch_type
++#  undef machine_arch_type
++#  define machine_arch_type	__machine_arch_type
++# else
++#  define machine_arch_type	MACH_TYPE_DUCKBILL
++# endif
++# define machine_is_duckbill()	(machine_arch_type == MACH_TYPE_DUCKBILL)
++#else
++# define machine_is_duckbill()	(0)
++#endif
++
+ /*
+  * These have not yet been registered
+  */
+--- /dev/null
++++ b/board/i2se/duckbill/Kconfig
+@@ -0,0 +1,15 @@
++if TARGET_DUCKBILL
++
++config SYS_BOARD
++	default "duckbill"
++
++config SYS_VENDOR
++	default "i2se"
++
++config SYS_SOC
++	default "mxs"
++
++config SYS_CONFIG_NAME
++	default "duckbill"
++
++endif
+--- /dev/null
++++ b/board/i2se/duckbill/MAINTAINERS
+@@ -0,0 +1,6 @@
++I2SE DUCKBILL BOARD
++M:	Michael Heimpold <mhei@heimpold.de>
++S:	Maintained
++F:	board/i2se/duckbill/
++F:	include/configs/duckbill.h
++F:	configs/duckbill_defconfig
+--- /dev/null
++++ b/board/i2se/duckbill/Makefile
+@@ -0,0 +1,12 @@
++#
++# (C) Copyright 2014-2015
++# Michael Heimpold, mhei@heimpold.de.
++#
++# SPDX-License-Identifier:	GPL-2.0+
++#
++
++ifndef	CONFIG_SPL_BUILD
++obj-y	:= duckbill.o
++else
++obj-y	:= iomux.o
++endif
+--- /dev/null
++++ b/board/i2se/duckbill/duckbill.c
+@@ -0,0 +1,112 @@
++/*
++ * I2SE Duckbill board
++ *
++ * (C) Copyright 2014-2015 Michael Heimpold <mhei@heimpold.de>
++ *
++ * SPDX-License-Identifier:	GPL-2.0+
++ */
++
++#include <common.h>
++#include <asm/gpio.h>
++#include <asm/io.h>
++#include <asm/arch/imx-regs.h>
++#include <asm/arch/iomux-mx28.h>
++#include <asm/arch/clock.h>
++#include <asm/arch/sys_proto.h>
++#include <linux/mii.h>
++#include <miiphy.h>
++#include <netdev.h>
++#include <errno.h>
++
++#define GPIO_PHY_RESET MX28_PAD_SSP0_DATA7__GPIO_2_7
++#define GPIO_LED_GREEN MX28_PAD_AUART1_TX__GPIO_3_5
++#define GPIO_LED_RED   MX28_PAD_AUART1_RX__GPIO_3_4
++
++DECLARE_GLOBAL_DATA_PTR;
++
++/*
++ * Functions
++ */
++int board_early_init_f(void)
++{
++	/* IO0 clock at 480MHz */
++	mxs_set_ioclk(MXC_IOCLK0, 480000);
++	/* IO1 clock at 480MHz */
++	mxs_set_ioclk(MXC_IOCLK1, 480000);
++
++	/* SSP0 clock at 96MHz */
++	mxs_set_sspclk(MXC_SSPCLK0, 96000, 0);
++
++	return 0;
++}
++
++int dram_init(void)
++{
++	return mxs_dram_init();
++}
++
++int board_init(void)
++{
++	/* Adress of boot parameters */
++	gd->bd->bi_boot_params = PHYS_SDRAM_1 + 0x100;
++
++	return 0;
++}
++
++#ifdef	CONFIG_CMD_MMC
++int board_mmc_init(bd_t *bis)
++{
++	return mxsmmc_initialize(bis, 0, NULL, NULL);
++}
++#endif
++
++#ifdef	CONFIG_CMD_NET
++int board_eth_init(bd_t *bis)
++{
++	int ret;
++
++	ret = cpu_eth_init(bis);
++
++	/* Reset PHY */
++	gpio_direction_output(GPIO_PHY_RESET, 0);
++	udelay(200);
++	gpio_set_value(GPIO_PHY_RESET, 1);
++
++	/* give PHY some time to get out of the reset */
++	udelay(10000);
++
++	ret = fecmxc_initialize(bis);
++	if (ret) {
++		puts("FEC MXS: Unable to init FEC\n");
++		return ret;
++	}
++
++	return ret;
++}
++
++void mx28_adjust_mac(int dev_id, unsigned char *mac)
++{
++	mac[0] = 0x00;
++	mac[1] = 0x01;
++
++	if (dev_id == 1) /* Let MAC1 be MAC0 + 1 by default */
++		mac[5] += 1;
++}
++#endif
++
++int misc_init_r(void)
++{
++	char *s = getenv("serial#");
++
++	/* enable red LED to indicate a running bootloader */
++	gpio_direction_output(GPIO_LED_RED, 1);
++
++	puts("Board: I2SE Duckbill\n");
++	if (s && s[0]) {
++		puts("Serial: ");
++		puts(s);
++		putc('\n');
++	}
++
++	return 0;
++}
+--- /dev/null
++++ b/board/i2se/duckbill/iomux.c
+@@ -0,0 +1,125 @@
++/*
++ * I2SE Duckbill IOMUX setup
++ *
++ * Copyright (C) 2013-2015 Michael Heimpold <mhei@heimpold.de>
++ *
++ * SPDX-License-Identifier:	GPL-2.0+
++ */
++
++#include <common.h>
++#include <config.h>
++#include <asm/io.h>
++#include <asm/arch/iomux-mx28.h>
++#include <asm/arch/imx-regs.h>
++#include <asm/arch/sys_proto.h>
++
++#define	MUX_CONFIG_SSP0	(MXS_PAD_3V3 | MXS_PAD_8MA | MXS_PAD_PULLUP)
++#define	MUX_CONFIG_ENET	(MXS_PAD_3V3 | MXS_PAD_8MA | MXS_PAD_PULLUP)
++#define	MUX_CONFIG_EMI	(MXS_PAD_3V3 | MXS_PAD_12MA | MXS_PAD_NOPULL)
++
++const iomux_cfg_t iomux_setup[] = {
++	/* DUART */
++	MX28_PAD_PWM0__DUART_RX,
++	MX28_PAD_PWM1__DUART_TX,
++
++	/* SD card */
++	MX28_PAD_SSP0_DATA0__SSP0_D0 | MUX_CONFIG_SSP0,
++	MX28_PAD_SSP0_DATA1__SSP0_D1 | MUX_CONFIG_SSP0,
++	MX28_PAD_SSP0_DATA2__SSP0_D2 | MUX_CONFIG_SSP0,
++	MX28_PAD_SSP0_DATA3__SSP0_D3 | MUX_CONFIG_SSP0,
++	MX28_PAD_SSP0_CMD__SSP0_CMD | MUX_CONFIG_SSP0,
++	MX28_PAD_SSP0_DETECT__SSP0_CARD_DETECT |
++		(MXS_PAD_8MA | MXS_PAD_3V3 | MXS_PAD_NOPULL),
++	MX28_PAD_SSP0_SCK__SSP0_SCK |
++		(MXS_PAD_12MA | MXS_PAD_3V3 | MXS_PAD_NOPULL),
++
++	/* Ethernet */
++	MX28_PAD_ENET0_MDC__ENET0_MDC | MUX_CONFIG_ENET,
++	MX28_PAD_ENET0_MDIO__ENET0_MDIO | MUX_CONFIG_ENET,
++	MX28_PAD_ENET0_RX_EN__ENET0_RX_EN | MUX_CONFIG_ENET,
++	MX28_PAD_ENET0_TX_EN__ENET0_TX_EN | MUX_CONFIG_ENET,
++	MX28_PAD_ENET0_RXD0__ENET0_RXD0 | MUX_CONFIG_ENET,
++	MX28_PAD_ENET0_RXD1__ENET0_RXD1 | MUX_CONFIG_ENET,
++	MX28_PAD_ENET0_TXD0__ENET0_TXD0 | MUX_CONFIG_ENET,
++	MX28_PAD_ENET0_TXD1__ENET0_TXD1 | MUX_CONFIG_ENET,
++	MX28_PAD_ENET_CLK__CLKCTRL_ENET | MUX_CONFIG_ENET,
++
++	/* PHY reset */
++	MX28_PAD_SSP0_DATA7__GPIO_2_7 |
++		(MXS_PAD_4MA | MXS_PAD_3V3 | MXS_PAD_PULLUP),
++
++	/* EMI */
++	MX28_PAD_EMI_D00__EMI_DATA0 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D01__EMI_DATA1 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D02__EMI_DATA2 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D03__EMI_DATA3 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D04__EMI_DATA4 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D05__EMI_DATA5 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D06__EMI_DATA6 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D07__EMI_DATA7 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D08__EMI_DATA8 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D09__EMI_DATA9 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D10__EMI_DATA10 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D11__EMI_DATA11 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D12__EMI_DATA12 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D13__EMI_DATA13 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D14__EMI_DATA14 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_D15__EMI_DATA15 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_ODT0__EMI_ODT0 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_DQM0__EMI_DQM0 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_ODT1__EMI_ODT1 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_DQM1__EMI_DQM1 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_DDR_OPEN_FB__EMI_DDR_OPEN_FEEDBACK | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_CLK__EMI_CLK | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_DQS0__EMI_DQS0 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_DQS1__EMI_DQS1 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_DDR_OPEN__EMI_DDR_OPEN | MUX_CONFIG_EMI,
++
++	MX28_PAD_EMI_A00__EMI_ADDR0 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A01__EMI_ADDR1 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A02__EMI_ADDR2 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A03__EMI_ADDR3 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A04__EMI_ADDR4 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A05__EMI_ADDR5 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A06__EMI_ADDR6 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A07__EMI_ADDR7 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A08__EMI_ADDR8 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A09__EMI_ADDR9 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A10__EMI_ADDR10 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A11__EMI_ADDR11 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A12__EMI_ADDR12 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A13__EMI_ADDR13 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_A14__EMI_ADDR14 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_BA0__EMI_BA0 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_BA1__EMI_BA1 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_BA2__EMI_BA2 | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_CASN__EMI_CASN | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_RASN__EMI_RASN | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_WEN__EMI_WEN | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_CE0N__EMI_CE0N | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_CE1N__EMI_CE1N | MUX_CONFIG_EMI,
++	MX28_PAD_EMI_CKE__EMI_CKE | MUX_CONFIG_EMI,
++
++	/* LEDs */
++	MX28_PAD_AUART1_RX__GPIO_3_4,
++	MX28_PAD_AUART1_TX__GPIO_3_5,
++};
++
++#define HW_DRAM_CTL29	(0x74 >> 2)
++#define CS_MAP		0xf
++#define COLUMN_SIZE	0x2
++#define ADDR_PINS	0x1
++#define APREBIT		0xa
++
++#define HW_DRAM_CTL29_CONFIG	(CS_MAP << 24 | COLUMN_SIZE << 16 | \
++					ADDR_PINS << 8 | APREBIT)
++
++void mxs_adjust_memory_params(uint32_t *dram_vals)
++{
++	dram_vals[HW_DRAM_CTL29] = HW_DRAM_CTL29_CONFIG;
++}
++
++void board_init_ll(const uint32_t arg, const uint32_t *resptr)
++{
++	mxs_common_spl_init(arg, resptr, iomux_setup, ARRAY_SIZE(iomux_setup));
++}
+--- /dev/null
++++ b/configs/duckbill_defconfig
+@@ -0,0 +1,9 @@
++CONFIG_ARM=y
++CONFIG_TARGET_DUCKBILL=y
++CONFIG_SPL=y
++CONFIG_SYS_EXTRA_OPTIONS="ENV_IS_IN_MMC"
++# CONFIG_CMD_IMLS is not set
++# CONFIG_CMD_FLASH is not set
++# CONFIG_SPI_FLASH is not set
++# CONFIG_CMD_FPGA is not set
++CONFIG_CMD_PING=y
+--- /dev/null
++++ b/include/configs/duckbill.h
+@@ -0,0 +1,177 @@
++/*
++ * Copyright (C) 2014-2015 Michael Heimpold <mhei@heimpold.de>
++ *
++ * SPDX-License-Identifier:	GPL-2.0+
++ */
++#ifndef __CONFIGS_DUCKBILL_H__
++#define __CONFIGS_DUCKBILL_H__
++
++/* System configurations */
++#define CONFIG_MX28				/* i.MX28 SoC */
++#define CONFIG_MACH_TYPE	MACH_TYPE_DUCKBILL
++
++#define CONFIG_MISC_INIT_R
++
++#define CONFIG_SYS_MXS_VDD5V_ONLY
++
++/* U-Boot Commands */
++#define CONFIG_SYS_NO_FLASH
++#define CONFIG_DISPLAY_CPUINFO
++#define CONFIG_DOS_PARTITION
++
++#define CONFIG_CMD_BOOTZ
++#define CONFIG_CMD_CACHE
++#define CONFIG_CMD_DHCP
++#define CONFIG_CMD_EXT4
++#define CONFIG_CMD_EXT4_WRITE
++#define CONFIG_CMD_FAT
++#define CONFIG_CMD_FUSE
++#define CONFIG_CMD_GPIO
++#define CONFIG_CMD_I2C
++#define CONFIG_CMD_MII
++#define CONFIG_CMD_MMC
++#define CONFIG_CMD_SPI
++#define CONFIG_CMD_UNZIP
++
++/* Memory configuration */
++#define CONFIG_NR_DRAM_BANKS		1		/* 1 bank of DRAM */
++#define PHYS_SDRAM_1			0x40000000	/* Base address */
++#define PHYS_SDRAM_1_SIZE		0x40000000	/* Max 1 GB RAM */
++#define CONFIG_SYS_SDRAM_BASE		PHYS_SDRAM_1
++
++/* Environment is in MMC */
++#define CONFIG_ENV_OVERWRITE
++#define CONFIG_ENV_IS_IN_MMC		1
++#define CONFIG_ENV_SIZE			(128 * 1024)
++#define CONFIG_ENV_OFFSET		(128 * 1024)
++#define CONFIG_ENV_OFFSET_REDUND	(256 * 1024)
++#define CONFIG_SYS_MMC_ENV_DEV		0
++#define CONFIG_SYS_REDUNDAND_ENVIRONMENT
++
++/* FEC Ethernet on SoC */
++#ifdef	CONFIG_CMD_NET
++#define CONFIG_FEC_MXC
++#define CONFIG_NET_MULTI
++#define CONFIG_MX28_FEC_MAC_IN_OCOTP
++#define CONFIG_FEC_MXC_PHYADDR	1
++#define IMX_FEC_BASE		MXS_ENET0_BASE
++#endif
++
++#define CONFIG_IPADDR		192.168.1.10
++#define CONFIG_SERVERIP		192.168.1.1
++#define CONFIG_NETMASK		255.255.255.0
++#define CONFIG_GATEWAYIP	192.168.1.254
++
++/* BOOTP options */
++#define CONFIG_BOOTP_SUBNETMASK
++#define CONFIG_BOOTP_GATEWAY
++#define CONFIG_BOOTP_HOSTNAME
++
++/* SPI */
++#ifdef CONFIG_CMD_SPI
++#define CONFIG_DEFAULT_SPI_BUS		2
++#define CONFIG_DEFAULT_SPI_MODE		SPI_MODE_0
++#endif
++
++/* Boot Linux */
++#define CONFIG_BOOTDELAY	1
++#define CONFIG_BOOTFILE		"zImage"
++#define CONFIG_LOADADDR		0x42000000
++#define CONFIG_SYS_LOAD_ADDR	CONFIG_LOADADDR
++
++/* Extra Environment */
++#define CONFIG_EXTRA_ENV_SETTINGS \
++	"update_sd_firmware_filename=openwrt-mxs-root.ext4\0" \
++	"update_sd_firmware=" \
++		"if mmc rescan; then " \
++		"if tftp ${update_sd_firmware_filename}; then " \
++		"setexpr fw_sz ${filesize} / 200; " \
++		"setexpr fw_sz ${fw_sz} + 1; " \
++		"mmc dev ${mmcdev} 3; " \
++		"mmc write ${loadaddr} 0 ${fw_sz}; " \
++		"mmc dev ${mmcdev} 2; " \
++		"mmc write ${loadaddr} 0 ${fw_sz}; " \
++		"mmc dev ${mmcdev}; " \
++		"fi; " \
++		"fi\0" \
++	"erase_mmc=mmc erase 0 2\0" \
++	"erase_env1=mmc erase 100 100\0" \
++	"erase_env2=mmc erase 200 100\0" \
++	"script=boot.scr\0" \
++	"image=zImage\0" \
++	"console=ttyAMA0\0" \
++	"fdt_file=imx28-duckbill.dtb\0" \
++	"fdt_addr=0x41000000\0" \
++	"boot_fdt=try\0" \
++	"ip_dyn=yes\0" \
++	"bootsys=1\0" \
++	"mmcdev=0\0" \
++	"mmcpart=2\0" \
++	"mmcroot=/dev/mmcblk0p2\0" \
++	"mmcargs=setenv bootargs console=${console},${baudrate} " \
++		"root=${mmcroot} " \
++		"rootwait bootsys=${bootsys} panic=1\0" \
++	"loadbootscript="  \
++		"fatload mmc ${mmcdev}:${mmcpart} ${loadaddr} ${script};\0" \
++	"bootscript=echo Running bootscript from mmc ...; "	\
++		"source\0" \
++	"loadimage=ext4load mmc ${mmcdev}:${mmcpart} ${loadaddr} /boot/${image}\0" \
++	"loadfdt=ext4load mmc ${mmcdev}:${mmcpart} ${fdt_addr} /boot/${fdt_file}\0" \
++	"mmcboot=echo Booting from mmc ...; " \
++		"setexpr mmcpart 1 + ${bootsys}; " \
++		"setenv mmcroot /dev/mmcblk0p${mmcpart}; " \
++		"run mmcargs; " \
++		"if test ${boot_fdt} = yes || test ${boot_fdt} = try; then " \
++			"if run loadfdt; then " \
++				"bootz ${loadaddr} - ${fdt_addr}; " \
++			"else " \
++				"if test ${boot_fdt} = try; then " \
++					"bootz; " \
++				"else " \
++					"echo WARN: Cannot load the DT; " \
++				"fi; " \
++			"fi; " \
++		"else " \
++			"bootz; " \
++		"fi;\0" \
++	"netargs=setenv bootargs console=${console},${baudrate} " \
++		"root=/dev/nfs " \
++		"ip=dhcp nfsroot=${serverip}:${nfsroot},v3,tcp\0" \
++	"netboot=echo Booting from net ...; " \
++		"run netargs; "	\
++		"if test ${ip_dyn} = yes; then " \
++			"setenv get_cmd dhcp; " \
++		"else " \
++			"setenv get_cmd tftp; " \
++		"fi; " \
++		"${get_cmd} ${image}; " \
++		"if test ${boot_fdt} = yes; then " \
++			"if ${get_cmd} ${fdt_addr} ${fdt_file}; then " \
++				"bootz ${loadaddr} - ${fdt_addr}; " \
++			"else " \
++				"if test ${boot_fdt} = try; then " \
++					"bootz; " \
++				"else " \
++					"echo WARN: Cannot load the DT; " \
++				"fi;" \
++			"fi; " \
++		"else " \
++			"bootz; " \
++		"fi;\0"
++
++#define CONFIG_BOOTCOMMAND \
++	"mmc dev ${mmcdev}; if mmc rescan; then " \
++		"if run loadbootscript; then " \
++			"run bootscript; " \
++		"else " \
++			"if run loadimage; then " \
++				"run mmcboot; " \
++			"else run netboot; " \
++			"fi; " \
++		"fi; " \
++	"else run netboot; fi"
++
++/* The rest of the configuration is shared */
++#include <configs/mxs.h>
++
++#endif /* __CONFIGS_DUCKBILL_H__ */

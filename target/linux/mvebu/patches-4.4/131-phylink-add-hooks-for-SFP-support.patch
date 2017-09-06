@@ -1,0 +1,156 @@
+From 0a0c4b3dd4f34df4532f254a5940b520015d766f Mon Sep 17 00:00:00 2001
+From: Russell King <rmk+kernel@arm.linux.org.uk>
+Date: Thu, 24 Sep 2015 11:01:13 +0100
+Subject: [PATCH 719/744] phylink: add hooks for SFP support
+
+Add support to phylink for SFP, which needs to control and configure
+the ethernet MAC link state.  Specifically, SFP needs to:
+
+1. set the negotiation mode between SGMII and 1000base-X
+2. attach and detach the module PHY
+3. prevent the link coming up when errors are reported
+
+In the absence of a PHY, we also need to set the ethtool port type
+according to the module plugged in.
+
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: Russell King <rmk+kernel@arm.linux.org.uk>
+---
+ drivers/net/phy/phylink.c | 82 +++++++++++++++++++++++++++++++++++++++++++++++
+ include/linux/phylink.h   |  6 ++++
+ 2 files changed, 88 insertions(+)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -11,6 +11,7 @@
+ #include <linux/ethtool.h>
+ #include <linux/export.h>
+ #include <linux/gpio/consumer.h>
++#include <linux/list.h>
+ #include <linux/netdevice.h>
+ #include <linux/of.h>
+ #include <linux/of_mdio.h>
+@@ -29,11 +30,16 @@
+ 	(ADVERTISED_TP | ADVERTISED_MII | ADVERTISED_FIBRE | \
+ 	 ADVERTISED_BNC | ADVERTISED_AUI | ADVERTISED_Backplane)
+ 
++static LIST_HEAD(phylinks);
++static DEFINE_MUTEX(phylink_mutex);
++
+ enum {
+ 	PHYLINK_DISABLE_STOPPED,
++	PHYLINK_DISABLE_LINK,
+ };
+ 
+ struct phylink {
++	struct list_head node;
+ 	struct net_device *netdev;
+ 	const struct phylink_mac_ops *ops;
+ 	struct mutex config_mutex;
+@@ -341,12 +347,20 @@ struct phylink *phylink_create(struct ne
+ 		return ERR_PTR(ret);
+ 	}
+ 
++	mutex_lock(&phylink_mutex);
++	list_add_tail(&pl->node, &phylinks);
++	mutex_unlock(&phylink_mutex);
++
+ 	return pl;
+ }
+ EXPORT_SYMBOL_GPL(phylink_create);
+ 
+ void phylink_destroy(struct phylink *pl)
+ {
++	mutex_lock(&phylink_mutex);
++	list_del(&pl->node);
++	mutex_unlock(&phylink_mutex);
++
+ 	cancel_work_sync(&pl->resolve);
+ 	kfree(pl);
+ }
+@@ -813,4 +827,72 @@ int phylink_mii_ioctl(struct phylink *pl
+ }
+ EXPORT_SYMBOL_GPL(phylink_mii_ioctl);
+ 
++
++
++void phylink_disable(struct phylink *pl)
++{
++	set_bit(PHYLINK_DISABLE_LINK, &pl->phylink_disable_state);
++	flush_work(&pl->resolve);
++
++	netif_carrier_off(pl->netdev);
++}
++EXPORT_SYMBOL_GPL(phylink_disable);
++
++void phylink_enable(struct phylink *pl)
++{
++	clear_bit(PHYLINK_DISABLE_LINK, &pl->phylink_disable_state);
++	phylink_run_resolve(pl);
++}
++EXPORT_SYMBOL_GPL(phylink_enable);
++
++void phylink_set_link_port(struct phylink *pl, u32 support, u8 port)
++{
++	WARN_ON(support & ~SUPPORTED_INTERFACES);
++
++	mutex_lock(&pl->config_mutex);
++	pl->link_port_support = support;
++	pl->link_port = port;
++	mutex_unlock(&pl->config_mutex);
++}
++EXPORT_SYMBOL_GPL(phylink_set_link_port);
++
++int phylink_set_link_an_mode(struct phylink *pl, unsigned int mode)
++{
++	int ret = 0;
++
++	mutex_lock(&pl->config_mutex);
++	if (pl->link_an_mode != mode) {
++		ret = phylink_get_support(pl, mode);
++		if (ret == 0) {
++			if (!test_bit(PHYLINK_DISABLE_STOPPED,
++				      &pl->phylink_disable_state))
++				phylink_mac_config(pl, &pl->link_config);
++
++			netdev_info(pl->netdev, "switched to %s link mode\n",
++				    phylink_an_mode_str(mode));
++		}
++	}
++	mutex_unlock(&pl->config_mutex);
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(phylink_set_link_an_mode);
++
++struct phylink *phylink_lookup_by_netdev(struct net_device *ndev)
++{
++	struct phylink *pl, *found = NULL;
++
++	mutex_lock(&phylink_mutex);
++	list_for_each_entry(pl, &phylinks, node)
++		if (pl->netdev == ndev) {
++			found = pl;
++			break;
++		}
++
++	mutex_unlock(&phylink_mutex);
++
++	return found;
++}
++EXPORT_SYMBOL_GPL(phylink_lookup_by_netdev);
++
+ MODULE_LICENSE("GPL");
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -67,4 +67,10 @@ int phylink_ethtool_get_settings(struct
+ int phylink_ethtool_set_settings(struct phylink *, struct ethtool_cmd *);
+ int phylink_mii_ioctl(struct phylink *, struct ifreq *, int);
+ 
++void phylink_set_link_port(struct phylink *pl, u32 support, u8 port);
++int phylink_set_link_an_mode(struct phylink *pl, unsigned int mode);
++void phylink_disable(struct phylink *pl);
++void phylink_enable(struct phylink *pl);
++struct phylink *phylink_lookup_by_netdev(struct net_device *ndev);
++
+ #endif

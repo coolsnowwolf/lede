@@ -1,0 +1,143 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2010-2014 OpenWrt.org
+
+START=99
+USE_PROCD=1
+PROG=/usr/sbin/omcproxy
+
+# Uncomment to enable verbosity 
+#OPTIONS="-v" 
+PROXIES=""
+
+
+omcproxy_add_proxy() {
+	local uplink downlink scope proxy
+	config_get uplink $1 uplink
+	config_get downlink $1 downlink
+	config_get scope $1 scope
+
+	proxy=""
+
+	network_get_device updev $uplink
+	[ -n "$updev" ] || return 0
+
+	for network in $downlink; do
+		network_get_device downdev $network
+		[ -n "$downdev" ] && proxy="$proxy,$downdev"
+
+		# Disable in-kernel querier while ours is active
+		[ -f /sys/class/net/$downdev/bridge/multicast_querier ] && \
+			echo 0 > /sys/class/net/$downdev/bridge/multicast_querier
+	done
+
+	[ -n "$proxy" ] || return 0
+	[ -n "$scope" ] && proxy="$proxy,scope=$scope"
+
+	PROXIES="$PROXIES $updev$proxy"
+
+}
+
+omcproxy_add_trigger() {
+	local uplink downlink
+	config_get uplink $1 uplink
+	config_get downlink $1 downlink
+
+	for network in $uplink $downlink; do
+		procd_add_interface_trigger "interface.*" $network /etc/init.d/omcproxy restart
+	done
+}
+
+omcproxy_add_firewall() {
+	config_get uplink $1 uplink
+	config_get downlink $1 downlink
+
+	upzone=$(fw3 network $uplink)
+	[ -n "$upzone" ] || return 0
+
+	json_add_object ""
+	json_add_string type rule
+	json_add_string src "$upzone"
+	json_add_string proto igmp
+	json_add_string target ACCEPT
+	json_close_object
+
+	json_add_object ""
+	json_add_string type rule
+	json_add_string family ipv6
+	json_add_string src "$upzone"
+	json_add_string proto icmp
+	json_add_string src_ip fe80::/10
+	json_add_array icmp_type
+		json_add_string "" 130/0
+		json_add_string "" 131/0
+		json_add_string "" 132/0
+		json_add_string "" 143/0
+	json_close_array
+	json_add_string target ACCEPT
+	json_close_object
+
+	for network in $downlink; do
+		downzone=$(fw3 network $network)
+		[ -n "$downzone" ] || continue
+
+		json_add_object ""
+		json_add_string type rule
+		json_add_string src "$upzone"
+		json_add_string dest "$downzone"
+		json_add_string family ipv4
+		json_add_string proto any
+		json_add_string dest_ip "224.0.0.0/4"
+		json_add_string target ACCEPT
+		json_close_object
+
+		json_add_object ""
+		json_add_string type rule
+		json_add_string src "$upzone"
+		json_add_string dest "$downzone"
+		json_add_string family ipv6
+		json_add_string proto any
+		json_add_string dest_ip "ff00::/8"
+		json_add_string target ACCEPT
+		json_close_object
+	done
+}
+
+service_triggers() {
+	procd_add_reload_trigger "omcproxy"
+}
+
+start_service() {
+	include /lib/functions
+
+	config_load omcproxy
+	config_foreach omcproxy_add_proxy proxy
+
+	[ -n "$PROXIES" ] || return 0
+
+	procd_open_instance
+	procd_set_param command $PROG
+	[ -n "$OPTIONS" ] && procd_append_param command $OPTIONS
+	procd_append_param command $PROXIES
+	procd_set_param respawn
+
+	procd_open_trigger
+	config_foreach omcproxy_add_trigger proxy
+	procd_close_trigger
+
+	procd_open_data
+
+	json_add_array firewall
+	config_foreach omcproxy_add_firewall proxy
+	json_close_array
+
+	procd_close_data
+
+	procd_close_instance
+
+	# Increase maximum IPv4 group memberships per socket
+	echo 128 > /proc/sys/net/ipv4/igmp_max_memberships
+}
+
+service_started() {
+	procd_set_config_changed firewall
+}

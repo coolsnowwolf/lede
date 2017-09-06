@@ -1,0 +1,200 @@
+From c52b6168979d03fc31205444c3278c537787472a Mon Sep 17 00:00:00 2001
+From: Xiangfu <xiangfu@openmobilefree.net>
+Date: Wed, 10 Oct 2012 18:39:55 +0800
+Subject: [PATCH 4/6] add more boot options(F1/F2/F3/F4/M/S)
+
+---
+ arch/mips/include/asm/global_data.h |    3 +++
+ arch/mips/lib/bootm.c               |   17 ++++++++++++++++-
+ board/qi/qi_lb60/qi_lb60.c          |   26 +++++++++++++++++++++++---
+ common/main.c                       |   21 +++++++++++++++++++--
+ include/configs/qi_lb60.h           |   32 ++++++++++++++++++++++++++++++++
+ 5 files changed, 93 insertions(+), 6 deletions(-)
+
+diff --git a/arch/mips/include/asm/global_data.h b/arch/mips/include/asm/global_data.h
+index 6e2cdc7..cd03d7e 100644
+--- a/arch/mips/include/asm/global_data.h
++++ b/arch/mips/include/asm/global_data.h
+@@ -59,6 +59,9 @@ typedef	struct	global_data {
+ 	unsigned long	env_valid;	/* Checksum of Environment valid? */
+ 	void		**jt;		/* jump table */
+ 	char		env_buf[32];	/* buffer for getenv() before reloc. */
++#if defined(CONFIG_NANONOTE)
++        unsigned long   boot_option;
++#endif
+ } gd_t;
+ 
+ #include <asm-generic/global_data_flags.h>
+diff --git a/arch/mips/lib/bootm.c b/arch/mips/lib/bootm.c
+index 608c1a7..e00416b 100644
+--- a/arch/mips/lib/bootm.c
++++ b/arch/mips/lib/bootm.c
+@@ -47,10 +47,25 @@ int do_bootm_linux(int flag, int argc, char * const argv[],
+ 			bootm_headers_t *images)
+ {
+ 	void (*theKernel) (int, char **, char **, int *);
+-	char *commandline = getenv("bootargs");
++	char *commandline;
+ 	char env_buf[12];
+ 	char *cp;
+ 
++#if defined(CONFIG_NANONOTE)
++        if (gd->boot_option & BOOT_FROM_MEMCARD)
++                commandline = getenv ("bootargsfromsd");
++        else if (gd->boot_option & BOOT_WITH_F1)
++                commandline = getenv ("bootargsf1");
++        else if (gd->boot_option & BOOT_WITH_F2)
++                commandline = getenv ("bootargsf2");
++        else if (gd->boot_option & BOOT_WITH_F3)
++                commandline = getenv ("bootargsf3");
++        else if (gd->boot_option & BOOT_WITH_F4)
++                commandline = getenv ("bootargsf4");
++        else
++#endif
++                commandline = getenv ("bootargs");
++
+ 	if ((flag != 0) && (flag != BOOTM_STATE_OS_GO))
+ 		return 1;
+ 
+diff --git a/board/qi/qi_lb60/qi_lb60.c b/board/qi/qi_lb60/qi_lb60.c
+index a2ba648..d622219 100644
+--- a/board/qi/qi_lb60/qi_lb60.c
++++ b/board/qi/qi_lb60/qi_lb60.c
+@@ -15,7 +15,7 @@ DECLARE_GLOBAL_DATA_PTR;
+ 
+ static void gpio_init(void)
+ {
+-	unsigned int i;
++	unsigned int i, j;
+ 
+ 	/* Initialize NAND Flash Pins */
+ 	__gpio_as_nand();
+@@ -42,14 +42,34 @@ static void gpio_init(void)
+ 
+ 	if (__gpio_get_pin(GPIO_KEYIN_BASE + 2) == 0){
+ 		printf("[S] pressed, enable UART0\n");
++		gd->boot_option |= BOOT_WITH_ENABLE_UART;
+ 		__gpio_as_uart0();
+ 	} else {
+ 		__gpio_as_input(GPIO_KEYIN_8);
+ 		__gpio_enable_pull(GPIO_KEYIN_8);
+ 	}
+ 
+-	/* enable the TP4, TP5 as UART0 */
+-	__gpio_jtag_to_uart0();
++	if (__gpio_get_pin(GPIO_KEYIN_BASE + 3) == 0) {
++		printf("[M] pressed, boot from memory card\n");
++		gd->boot_option |= BOOT_FROM_MEMCARD;
++		__gpio_jtag_to_uart0();
++	}
++
++	for (j = 0; j < 4; j++) {
++		for (i = 0; i < 4; i++)
++			__gpio_set_pin(GPIO_KEYOUT_BASE + i);
++
++		__gpio_clear_pin(GPIO_KEYOUT_BASE + j);
++
++		if (__gpio_get_pin(GPIO_KEYIN_BASE) == 0) {
++			printf("[F%d] pressed", (j + 1));
++			gd->boot_option |= (1 << (j + 2));
++			/* BOOT_WITH_F1	(1 << 2) */
++			/* BOOT_WITH_F2	(1 << 3) */
++			/* BOOT_WITH_F3	(1 << 4) */
++			/* BOOT_WITH_F4	(1 << 5) */
++		}
++	}
+ 
+ 	__gpio_as_output(GPIO_AUDIO_POP);
+ 	__gpio_set_pin(GPIO_AUDIO_POP);
+diff --git a/common/main.c b/common/main.c
+index 9507cec..dbfb7ca 100644
+--- a/common/main.c
++++ b/common/main.c
+@@ -355,7 +355,11 @@ void main_loop (void)
+ #if defined(CONFIG_BOOTDELAY) && (CONFIG_BOOTDELAY >= 0)
+ 	s = getenv ("bootdelay");
+ 	bootdelay = s ? (int)simple_strtol(s, NULL, 10) : CONFIG_BOOTDELAY;
+-
++#if defined(CONFIG_NANONOTE)
++	DECLARE_GLOBAL_DATA_PTR;
++	if (gd->boot_option & BOOT_WITH_ENABLE_UART)
++		bootdelay = 3;
++# endif
+ 	debug ("### main_loop entered: bootdelay=%d\n\n", bootdelay);
+ 
+ #if defined(CONFIG_MENU_SHOW)
+@@ -379,7 +383,20 @@ void main_loop (void)
+ 	}
+ 	else
+ #endif /* CONFIG_BOOTCOUNT_LIMIT */
+-		s = getenv ("bootcmd");
++#if defined(CONFIG_NANONOTE)
++		if (gd->boot_option & BOOT_FROM_MEMCARD)
++			s = getenv ("bootcmdfromsd");
++		else if (gd->boot_option & BOOT_WITH_F1)
++			s = getenv ("bootcmdf1");
++		else if (gd->boot_option & BOOT_WITH_F2)
++			s = getenv ("bootcmdf2");
++		else if (gd->boot_option & BOOT_WITH_F3)
++			s = getenv ("bootcmdf3");
++		else if (gd->boot_option & BOOT_WITH_F4)
++			s = getenv ("bootcmdf4");
++		else
++#endif
++			s = getenv ("bootcmd");
+ 
+ 	debug ("### main_loop: bootcmd=\"%s\"\n", s ? s : "<UNDEFINED>");
+ 
+diff --git a/include/configs/qi_lb60.h b/include/configs/qi_lb60.h
+index 7b33be0..52b370c 100644
+--- a/include/configs/qi_lb60.h
++++ b/include/configs/qi_lb60.h
+@@ -31,6 +31,7 @@
+ /*
+  * Miscellaneous configurable options
+  */
++#define CONFIG_NANONOTE
+ #define CONFIG_JZ4740_MMC
+ #define CONFIG_MMC      	1
+ #define CONFIG_FAT      	1
+@@ -39,6 +40,37 @@
+ #define CONFIG_CMD_FAT
+ #define CONFIG_CMD_EXT2
+ 
++#define CONFIG_CMD_UBIFS
++#define CONFIG_CMD_UBI
++#define CONFIG_MTD_PARTITIONS
++#define CONFIG_MTD_DEVICE
++#define CONFIG_CMD_MTDPARTS
++#define CONFIG_CMD_UBI
++#define CONFIG_CMD_UBIFS
++#define CONFIG_LZO
++#define CONFIG_RBTREE
++
++#define MTDIDS_DEFAULT		"nand0=jz4740-nand"
++#define MTDPARTS_DEFAULT	"mtdparts=jz4740-nand:4M@0(uboot)ro,4M@4M(kernel)ro,512M@8M(rootfs)ro,-(data)ro"
++
++#define BOOT_FROM_MEMCARD	1
++#define BOOT_WITH_ENABLE_UART	(1 << 1)	/* Vaule for global_data.h gd->boot_option */
++#define BOOT_WITH_F1		(1 << 2)
++#define BOOT_WITH_F2		(1 << 3)
++#define BOOT_WITH_F3		(1 << 4)
++#define BOOT_WITH_F4		(1 << 5)
++
++#define CONFIG_EXTRA_ENV_SETTINGS \
++	"bootcmdfromsd=mmc init; ext2load mmc 0 0x80600000 /boot/uImage; bootm;\0" \
++	"bootargsfromsd=mem=32M console=tty0 console=ttyS0,57600n8 rootfstype=ext2 root=/dev/mmcblk0p1 rw rootwait\0" \
++	"bootcmdf1=mmc init; ext2load mmc 0:1 0x80600000 /boot/uImage; bootm;\0" \
++	"bootargsf1=mem=32M console=tty0 console=ttyS0,57600n8 rootfstype=ext2 root=/dev/mmcblk0p1 rw rootwait\0" \
++	"bootcmdf2=mmc init; ext2load mmc 0:2 0x80600000 /boot/uImage; bootm;\0" \
++	"bootargsf2=mem=32M console=tty0 console=ttyS0,57600n8 rootfstype=ext2 root=/dev/mmcblk0p2 rw rootwait\0" \
++	"bootcmdf3=mmc init; ext2load mmc 0:3 0x80600000 /boot/uImage; bootm;\0" \
++	"bootargsf3=mem=32M console=tty0 console=ttyS0,57600n8 rootfstype=ext2 root=/dev/mmcblk0p3 rw rootwait\0" \
++	"bootcmdf4=mtdparts default;ubi part rootfs;ubifsmount rootfs;ubifsload 0x80600000 /boot/uImage; bootm;\0" \
++	"bootargsf4=mem=32M console=tty0 console=ttyS0,57600n8 ubi.mtd=2 rootfstype=ubifs root=ubi0:rootfs rw rootwait"
+ 
+ #define CONFIG_SYS_SDRAM_BASE		0x80000000	/* Cached addr */
+ #define CONFIG_SYS_INIT_SP_OFFSET	0x400000
+-- 
+1.7.9.5
+

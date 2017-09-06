@@ -1,0 +1,89 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use FindBin '$Bin';
+use File::Temp 'tempfile';
+
+@ARGV == 2 || do {
+	die "Usage: $0 <corefile|host:port> <executable>\n";
+	exit 1;
+};
+
+if( opendir SD, "$Bin/../staging_dir" )
+{
+	my ( $tid, $arch, $libc, @arches );
+
+	if( $ARGV[1] =~ m!\btarget-(.+?)_(([^/_]+libc|musl)[^/_]*)\b!i )
+	{
+		print("Using target $1 ($2)\n");
+		($arch, $libc) = ($1, $2);
+	}
+	else
+	{
+		# Find arches
+		print("Choose target:\n");
+
+		while( defined( my $e = readdir SD ) )
+		{
+			if( -d "$Bin/../staging_dir/$e" && $e =~ /^target-(.+?)_(([^_]+libc|musl).*)/i )
+			{
+				push @arches, [ $1, $2 ];
+				printf(" %2d) %s (%s)\n", @arches + 0, $1, $2);
+			}
+		}
+
+		if( @arches > 1 )
+		{
+			# Query arch
+			do {
+				print("Target? > ");
+				chomp($tid = <STDIN>);
+			} while( !defined($tid) || $tid !~ /^\d+$/ || $tid < 1 || $tid > @arches );
+
+			($arch, $libc) = @{$arches[$tid-1]};
+		}
+		else
+		{
+			($arch, $libc) = @{$arches[0]};
+		}
+	}
+
+	closedir SD;
+
+	# Find gdb
+	my ($gdb) = glob("$Bin/../staging_dir/toolchain-${arch}_*_${libc}*/bin/*-gdb");
+	if( defined($gdb) && -x $gdb )
+	{
+		my ( $fh, $fp ) = tempfile();
+
+		# Find sysroot
+		my ($sysroot) = glob("$Bin/../staging_dir/target-${arch}_${libc}*/root-*/");
+
+		print $fh "set sysroot $sysroot\n" if $sysroot;
+		my $cmd = "target extended-remote";
+		-f $ARGV[0] and $cmd = "core-file";
+		print $fh "$cmd $ARGV[0]\n";
+
+		# History settings
+		print $fh "set history filename $Bin/../tmp/.gdb_history\n";
+		print $fh "set history size 100000000\n";
+		print $fh "set history save on\n";
+
+		my $file = -f "$sysroot/$ARGV[1]" ? "$sysroot/$ARGV[1]" : $ARGV[1];
+		system($gdb, '-x', $fp, $file);
+
+		close($fh);
+		unlink($fp);
+	}
+	else
+	{
+		print("No gdb found! Make sure that CONFIG_GDB is set!\n");
+		exit(1);
+	}
+}
+else
+{
+	print("No staging_dir found! You need to compile at least once!\n");
+	exit(1);
+}

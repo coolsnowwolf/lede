@@ -1,0 +1,80 @@
+--- a/drivers/net/ethernet/xscale/ixp4xx_eth.c
++++ b/drivers/net/ethernet/xscale/ixp4xx_eth.c
+@@ -57,7 +57,7 @@
+ 
+ #define POOL_ALLOC_SIZE		(sizeof(struct desc) * (RX_DESCS + TX_DESCS))
+ #define REGS_SIZE		0x1000
+-#define MAX_MRU			1536 /* 0x600 */
++#define MAX_MRU			(14320 - ETH_HLEN - ETH_FCS_LEN)
+ #define RX_BUFF_SIZE		ALIGN((NET_IP_ALIGN) + MAX_MRU, 4)
+ 
+ #define NAPI_WEIGHT		16
+@@ -1315,6 +1315,32 @@ static void destroy_queues(struct port *
+ 	}
+ }
+ 
++static int eth_do_change_mtu(struct net_device *dev, int mtu)
++{
++	struct port *port;
++	struct msg msg;
++	/* adjust for ethernet headers */
++	int framesize = mtu + ETH_HLEN + ETH_FCS_LEN;
++
++	port = netdev_priv(dev);
++
++	memset(&msg, 0, sizeof(msg));
++	msg.cmd = NPE_SETMAXFRAMELENGTHS;
++	msg.eth_id = port->id;
++
++	/* max rx/tx 64 byte blocks */
++	msg.byte2 = ((framesize + 63) / 64) << 8;
++	msg.byte3 = ((framesize + 63) / 64) << 8;
++
++	msg.byte4 = msg.byte6 = framesize >> 8;
++	msg.byte5 = msg.byte7 = framesize & 0xff;
++
++	if (npe_send_recv_message(port->npe, &msg, "ETH_SET_MAX_FRAME_LENGTH"))
++		return -EIO;
++
++	return 0;
++}
++
+ static int eth_open(struct net_device *dev)
+ {
+ 	struct port *port = netdev_priv(dev);
+@@ -1366,6 +1392,8 @@ static int eth_open(struct net_device *d
+ 	if (npe_send_recv_message(port->npe, &msg, "ETH_SET_FIREWALL_MODE"))
+ 		return -EIO;
+ 
++	eth_do_change_mtu(dev, dev->mtu);
++
+ 	if ((err = request_queues(port)) != 0)
+ 		return err;
+ 
+@@ -1505,7 +1533,26 @@ static int eth_close(struct net_device *
+ 	return 0;
+ }
+ 
++static int ixp_eth_change_mtu(struct net_device *dev, int mtu)
++{
++	int ret;
++
++	if (mtu > MAX_MRU)
++		return -EINVAL;
++
++	if (dev->flags & IFF_UP) {
++		ret = eth_do_change_mtu(dev, mtu);
++		if (ret < 0)
++			return ret;
++	}
++
++	dev->mtu = mtu;
++
++	return 0;
++}
++
+ static const struct net_device_ops ixp4xx_netdev_ops = {
++	.ndo_change_mtu = ixp_eth_change_mtu,
+ 	.ndo_open = eth_open,
+ 	.ndo_stop = eth_close,
+ 	.ndo_start_xmit = eth_xmit,

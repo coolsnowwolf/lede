@@ -1,0 +1,825 @@
+From 0f11b0757d5950ee7a8ba00e49ebefd2c649a6ba Mon Sep 17 00:00:00 2001
+From: Daniel Matuschek <info@crazy-audio.com>
+Date: Mon, 4 Aug 2014 11:09:58 +0200
+Subject: [PATCH] Added driver for HiFiBerry Amp amplifier add-on board
+
+The driver contains a low-level hardware driver for the TAS5713 and the
+drivers for the Raspberry Pi I2S subsystem.
+
+TAS5713: return error if initialisation fails
+
+Existing TAS5713 driver logs errors during initialisation, but does not return
+an error code. Therefore even if initialisation fails, the driver will still be
+loaded, but won't work. This patch fixes this. I2C communication error will now
+reported correctly by a non-zero return code.
+
+HiFiBerry Amp: fix device-tree problems
+
+Some code to load the driver based on device-tree-overlays was missing. This is added by this patch.
+
+hifiberry-amp: Adjust for ALSA object refactoring
+
+See: https://github.com/raspberrypi/linux/issues/1775
+---
+ sound/soc/bcm/Kconfig         |   7 +
+ sound/soc/bcm/Makefile        |   2 +
+ sound/soc/bcm/hifiberry_amp.c | 129 +++++++++++++++
+ sound/soc/codecs/Kconfig      |   4 +
+ sound/soc/codecs/Makefile     |   2 +
+ sound/soc/codecs/tas5713.c    | 371 ++++++++++++++++++++++++++++++++++++++++++
+ sound/soc/codecs/tas5713.h    | 210 ++++++++++++++++++++++++
+ 7 files changed, 725 insertions(+)
+ create mode 100644 sound/soc/bcm/hifiberry_amp.c
+ create mode 100644 sound/soc/codecs/tas5713.c
+ create mode 100644 sound/soc/codecs/tas5713.h
+
+--- a/sound/soc/bcm/Kconfig
++++ b/sound/soc/bcm/Kconfig
+@@ -38,6 +38,13 @@ config SND_BCM2708_SOC_HIFIBERRY_DIGI
+         help
+          Say Y or M if you want to add support for HifiBerry Digi S/PDIF output board.
+ 
++config SND_BCM2708_SOC_HIFIBERRY_AMP
++        tristate "Support for the HifiBerry Amp"
++        depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
++        select SND_SOC_TAS5713
++        help
++         Say Y or M if you want to add support for the HifiBerry Amp amplifier board.
++
+ config SND_BCM2708_SOC_RPI_DAC
+         tristate "Support for RPi-DAC"
+         depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
+--- a/sound/soc/bcm/Makefile
++++ b/sound/soc/bcm/Makefile
+@@ -9,12 +9,14 @@ snd-soc-cygnus-objs := cygnus-pcm.o cygn
+ obj-$(CONFIG_SND_SOC_CYGNUS) += snd-soc-cygnus.o
+ 
+ # BCM2708 Machine Support
++snd-soc-hifiberry-amp-objs := hifiberry_amp.o
+ snd-soc-hifiberry-dac-objs := hifiberry_dac.o
+ snd-soc-hifiberry-dacplus-objs := hifiberry_dacplus.o
+ snd-soc-hifiberry-digi-objs := hifiberry_digi.o
+ snd-soc-rpi-dac-objs := rpi-dac.o
+ snd-soc-iqaudio-dac-objs := iqaudio-dac.o
+ 
++obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_AMP) += snd-soc-hifiberry-amp.o
+ obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_DAC) += snd-soc-hifiberry-dac.o
+ obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUS) += snd-soc-hifiberry-dacplus.o
+ obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_DIGI) += snd-soc-hifiberry-digi.o
+--- /dev/null
++++ b/sound/soc/bcm/hifiberry_amp.c
+@@ -0,0 +1,129 @@
++/*
++ * ASoC Driver for HifiBerry AMP
++ *
++ * Author:	Sebastian Eickhoff <basti.eickhoff@googlemail.com>
++ *		Copyright 2014
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ */
++
++#include <linux/module.h>
++#include <linux/platform_device.h>
++
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++#include <sound/jack.h>
++
++static int snd_rpi_hifiberry_amp_init(struct snd_soc_pcm_runtime *rtd)
++{
++	// ToDo: init of the dsp-registers.
++	return 0;
++}
++
++static int snd_rpi_hifiberry_amp_hw_params( struct snd_pcm_substream *substream,
++				       struct snd_pcm_hw_params *params )
++{
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
++
++	return snd_soc_dai_set_bclk_ratio(cpu_dai, 64);
++}
++
++static struct snd_soc_ops snd_rpi_hifiberry_amp_ops = {
++	.hw_params = snd_rpi_hifiberry_amp_hw_params,
++};
++
++static struct snd_soc_dai_link snd_rpi_hifiberry_amp_dai[] = {
++    {
++		.name			= "HifiBerry AMP",
++		.stream_name	= "HifiBerry AMP HiFi",
++		.cpu_dai_name	= "bcm2708-i2s.0",
++		.codec_dai_name	= "tas5713-hifi",
++		.platform_name	= "bcm2708-i2s.0",
++		.codec_name		= "tas5713.1-001b",
++		.dai_fmt		= SND_SOC_DAIFMT_I2S |
++						  SND_SOC_DAIFMT_NB_NF |
++						  SND_SOC_DAIFMT_CBS_CFS,
++		.ops			= &snd_rpi_hifiberry_amp_ops,
++		.init			= snd_rpi_hifiberry_amp_init,
++	},
++};
++
++
++static struct snd_soc_card snd_rpi_hifiberry_amp = {
++	.name         = "snd_rpi_hifiberry_amp",
++	.driver_name  = "HifiberryAmp",
++	.owner        = THIS_MODULE,
++	.dai_link     = snd_rpi_hifiberry_amp_dai,
++	.num_links    = ARRAY_SIZE(snd_rpi_hifiberry_amp_dai),
++};
++
++static const struct of_device_id snd_rpi_hifiberry_amp_of_match[] = {
++        { .compatible = "hifiberry,hifiberry-amp", },
++        {},
++};
++MODULE_DEVICE_TABLE(of, snd_rpi_hifiberry_amp_of_match);
++
++
++static int snd_rpi_hifiberry_amp_probe(struct platform_device *pdev)
++{
++	int ret = 0;
++
++	snd_rpi_hifiberry_amp.dev = &pdev->dev;
++
++        if (pdev->dev.of_node) {
++            struct device_node *i2s_node;
++            struct snd_soc_dai_link *dai = &snd_rpi_hifiberry_amp_dai[0];
++            i2s_node = of_parse_phandle(pdev->dev.of_node,
++                                        "i2s-controller", 0);
++
++            if (i2s_node) {
++                dai->cpu_dai_name = NULL;
++                dai->cpu_of_node = i2s_node;
++                dai->platform_name = NULL;
++                dai->platform_of_node = i2s_node;
++            }
++        }
++
++	ret = snd_soc_register_card(&snd_rpi_hifiberry_amp);
++
++	if (ret != 0) {
++		dev_err(&pdev->dev, "snd_soc_register_card() failed: %d\n", ret);
++	}
++
++	return ret;
++}
++
++
++static int snd_rpi_hifiberry_amp_remove(struct platform_device *pdev)
++{
++	return snd_soc_unregister_card(&snd_rpi_hifiberry_amp);
++}
++
++
++static struct platform_driver snd_rpi_hifiberry_amp_driver = {
++        .driver = {
++                .name   = "snd-hifiberry-amp",
++                .owner  = THIS_MODULE,
++		.of_match_table = snd_rpi_hifiberry_amp_of_match,
++        },
++        .probe          = snd_rpi_hifiberry_amp_probe,
++        .remove         = snd_rpi_hifiberry_amp_remove,
++};
++
++
++module_platform_driver(snd_rpi_hifiberry_amp_driver);
++
++
++MODULE_AUTHOR("Sebastian Eickhoff <basti.eickhoff@googlemail.com>");
++MODULE_DESCRIPTION("ASoC driver for HiFiBerry-AMP");
++MODULE_LICENSE("GPL v2");
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -139,6 +139,7 @@ config SND_SOC_ALL_CODECS
+ 	select SND_SOC_TFA9879 if I2C
+ 	select SND_SOC_TLV320AIC23_I2C if I2C
+ 	select SND_SOC_TLV320AIC23_SPI if SPI_MASTER
++	select SND_SOC_TAS5713 if I2C
+ 	select SND_SOC_TLV320AIC26 if SPI_MASTER
+ 	select SND_SOC_TLV320AIC31XX if I2C
+ 	select SND_SOC_TLV320AIC32X4_I2C if I2C
+@@ -821,6 +822,9 @@ config SND_SOC_TFA9879
+ 	tristate "NXP Semiconductors TFA9879 amplifier"
+ 	depends on I2C
+ 
++config SND_SOC_TAS5713
++	tristate
++
+ config SND_SOC_TLV320AIC23
+ 	tristate
+ 
+--- a/sound/soc/codecs/Makefile
++++ b/sound/soc/codecs/Makefile
+@@ -144,6 +144,7 @@ snd-soc-tas5086-objs := tas5086.o
+ snd-soc-tas571x-objs := tas571x.o
+ snd-soc-tas5720-objs := tas5720.o
+ snd-soc-tfa9879-objs := tfa9879.o
++snd-soc-tas5713-objs := tas5713.o
+ snd-soc-tlv320aic23-objs := tlv320aic23.o
+ snd-soc-tlv320aic23-i2c-objs := tlv320aic23-i2c.o
+ snd-soc-tlv320aic23-spi-objs := tlv320aic23-spi.o
+@@ -366,6 +367,7 @@ obj-$(CONFIG_SND_SOC_TAS5086)	+= snd-soc
+ obj-$(CONFIG_SND_SOC_TAS571X)	+= snd-soc-tas571x.o
+ obj-$(CONFIG_SND_SOC_TAS5720)	+= snd-soc-tas5720.o
+ obj-$(CONFIG_SND_SOC_TFA9879)	+= snd-soc-tfa9879.o
++obj-$(CONFIG_SND_SOC_TAS5713)	+= snd-soc-tas5713.o
+ obj-$(CONFIG_SND_SOC_TLV320AIC23)	+= snd-soc-tlv320aic23.o
+ obj-$(CONFIG_SND_SOC_TLV320AIC23_I2C)	+= snd-soc-tlv320aic23-i2c.o
+ obj-$(CONFIG_SND_SOC_TLV320AIC23_SPI)	+= snd-soc-tlv320aic23-spi.o
+--- /dev/null
++++ b/sound/soc/codecs/tas5713.c
+@@ -0,0 +1,371 @@
++/*
++ * ASoC Driver for TAS5713
++ *
++ * Author:	Sebastian Eickhoff <basti.eickhoff@googlemail.com>
++ *		Copyright 2014
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ */
++
++#include <linux/module.h>
++#include <linux/moduleparam.h>
++#include <linux/init.h>
++#include <linux/delay.h>
++#include <linux/pm.h>
++#include <linux/i2c.h>
++#include <linux/of_device.h>
++#include <linux/spi/spi.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++#include <linux/slab.h>
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++#include <sound/initval.h>
++#include <sound/tlv.h>
++
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/fs.h>
++#include <asm/uaccess.h>
++
++#include "tas5713.h"
++
++
++static struct i2c_client *i2c;
++
++struct tas5713_priv {
++	struct regmap *regmap;
++	int mclk_div;
++	struct snd_soc_codec *codec;
++};
++
++static struct tas5713_priv *priv_data;
++
++
++
++
++/*
++ *    _   _    ___   _      ___         _           _
++ *   /_\ | |  / __| /_\    / __|___ _ _| |_ _ _ ___| |___
++ *  / _ \| |__\__ \/ _ \  | (__/ _ \ ' \  _| '_/ _ \ (_-<
++ * /_/ \_\____|___/_/ \_\  \___\___/_||_\__|_| \___/_/__/
++ *
++ */
++
++static const DECLARE_TLV_DB_SCALE(tas5713_vol_tlv, -10000, 50, 1);
++
++
++static const struct snd_kcontrol_new tas5713_snd_controls[] = {
++	SOC_SINGLE_TLV  ("Master"    , TAS5713_VOL_MASTER, 0, 248, 1, tas5713_vol_tlv),
++	SOC_DOUBLE_R_TLV("Channels"  , TAS5713_VOL_CH1, TAS5713_VOL_CH2, 0, 248, 1, tas5713_vol_tlv)
++};
++
++
++
++
++/*
++ *  __  __         _    _            ___      _
++ * |  \/  |__ _ __| |_ (_)_ _  ___  |   \ _ _(_)_ _____ _ _
++ * | |\/| / _` / _| ' \| | ' \/ -_) | |) | '_| \ V / -_) '_|
++ * |_|  |_\__,_\__|_||_|_|_||_\___| |___/|_| |_|\_/\___|_|
++ *
++ */
++
++static int tas5713_hw_params(struct snd_pcm_substream *substream,
++			    struct snd_pcm_hw_params *params,
++			    struct snd_soc_dai *dai)
++{
++	u16 blen = 0x00;
++
++	struct snd_soc_codec *codec;
++	codec = dai->codec;
++	priv_data->codec = dai->codec;
++
++	switch (params_format(params)) {
++	case SNDRV_PCM_FORMAT_S16_LE:
++		blen = 0x03;
++		break;
++	case SNDRV_PCM_FORMAT_S20_3LE:
++		blen = 0x1;
++		break;
++	case SNDRV_PCM_FORMAT_S24_LE:
++		blen = 0x04;
++		break;
++	case SNDRV_PCM_FORMAT_S32_LE:
++		blen = 0x05;
++		break;
++	default:
++		dev_err(dai->dev, "Unsupported word length: %u\n",
++			params_format(params));
++		return -EINVAL;
++	}
++
++	// set word length
++	snd_soc_update_bits(codec, TAS5713_SERIAL_DATA_INTERFACE, 0x7, blen);
++
++	return 0;
++}
++
++
++static int tas5713_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
++{
++	unsigned int val = 0;
++
++	struct tas5713_priv *tas5713;
++	struct snd_soc_codec *codec = dai->codec;
++	tas5713 = snd_soc_codec_get_drvdata(codec);
++
++	if (mute) {
++		val = TAS5713_SOFT_MUTE_ALL;
++	}
++
++	return regmap_write(tas5713->regmap, TAS5713_SOFT_MUTE, val);
++}
++
++
++static const struct snd_soc_dai_ops tas5713_dai_ops = {
++	.hw_params 		= tas5713_hw_params,
++	.mute_stream	= tas5713_mute_stream,
++};
++
++
++static struct snd_soc_dai_driver tas5713_dai = {
++	.name		= "tas5713-hifi",
++	.playback 	= {
++		.stream_name	= "Playback",
++		.channels_min	= 2,
++		.channels_max	= 2,
++		.rates		    = SNDRV_PCM_RATE_8000_48000,
++		.formats	    = (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S32_LE ),
++	},
++	.ops        = &tas5713_dai_ops,
++};
++
++
++
++
++/*
++ *   ___         _          ___      _
++ *  / __|___  __| |___ __  |   \ _ _(_)_ _____ _ _
++ * | (__/ _ \/ _` / -_) _| | |) | '_| \ V / -_) '_|
++ *  \___\___/\__,_\___\__| |___/|_| |_|\_/\___|_|
++ *
++ */
++
++static int tas5713_remove(struct snd_soc_codec *codec)
++{
++	struct tas5713_priv *tas5713;
++
++	tas5713 = snd_soc_codec_get_drvdata(codec);
++
++	return 0;
++}
++
++
++static int tas5713_probe(struct snd_soc_codec *codec)
++{
++	struct tas5713_priv *tas5713;
++	int i, ret;
++
++	i2c = container_of(codec->dev, struct i2c_client, dev);
++
++	tas5713 = snd_soc_codec_get_drvdata(codec);
++
++	// Reset error
++	ret = snd_soc_write(codec, TAS5713_ERROR_STATUS, 0x00);
++	if (ret < 0) return ret;
++
++	// Trim oscillator
++	ret = snd_soc_write(codec, TAS5713_OSC_TRIM, 0x00);
++	if (ret < 0) return ret;
++	msleep(1000);
++
++	// Reset error
++	ret = snd_soc_write(codec, TAS5713_ERROR_STATUS, 0x00);
++	if (ret < 0) return ret;
++
++	// Clock mode: 44/48kHz, MCLK=64xfs
++	ret = snd_soc_write(codec, TAS5713_CLOCK_CTRL, 0x60);
++	if (ret < 0) return ret;
++
++	// I2S 24bit
++	ret = snd_soc_write(codec, TAS5713_SERIAL_DATA_INTERFACE, 0x05);
++	if (ret < 0) return ret;
++
++	// Unmute
++	ret = snd_soc_write(codec, TAS5713_SYSTEM_CTRL2, 0x00);
++	if (ret < 0) return ret;
++	ret = snd_soc_write(codec, TAS5713_SOFT_MUTE, 0x00);
++	if (ret < 0) return ret;
++
++	// Set volume to 0db
++	ret = snd_soc_write(codec, TAS5713_VOL_MASTER, 0x00);
++	if (ret < 0) return ret;
++
++	// Now start programming the default initialization sequence
++	for (i = 0; i < ARRAY_SIZE(tas5713_init_sequence); ++i) {
++		ret = i2c_master_send(i2c,
++				     tas5713_init_sequence[i].data,
++				     tas5713_init_sequence[i].size);
++		if (ret < 0) {
++			printk(KERN_INFO "TAS5713 CODEC PROBE: InitSeq returns: %d\n", ret);
++		}
++	}
++
++	// Unmute
++	ret = snd_soc_write(codec, TAS5713_SYSTEM_CTRL2, 0x00);
++	if (ret < 0) return ret;
++
++	return 0;
++}
++
++
++static struct snd_soc_codec_driver soc_codec_dev_tas5713 = {
++	.probe = tas5713_probe,
++	.remove = tas5713_remove,
++	.component_driver = {
++		.controls = tas5713_snd_controls,
++		.num_controls = ARRAY_SIZE(tas5713_snd_controls),
++	},
++};
++
++
++
++
++/*
++ *   ___ ___ ___   ___      _
++ *  |_ _|_  ) __| |   \ _ _(_)_ _____ _ _
++ *   | | / / (__  | |) | '_| \ V / -_) '_|
++ *  |___/___\___| |___/|_| |_|\_/\___|_|
++ *
++ */
++
++static const struct reg_default tas5713_reg_defaults[] = {
++	{ 0x07 ,0x80 },     // R7  - VOL_MASTER    - -40dB
++	{ 0x08 ,  30 },     // R8  - VOL_CH1	   -   0dB
++	{ 0x09 ,  30 },     // R9  - VOL_CH2       -   0dB
++	{ 0x0A ,0x80 },     // R10 - VOL_HEADPHONE - -40dB
++};
++
++
++static bool tas5713_reg_volatile(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++		case TAS5713_DEVICE_ID:
++		case TAS5713_ERROR_STATUS:
++			return true;
++	default:
++			return false;
++	}
++}
++
++
++static const struct of_device_id tas5713_of_match[] = {
++	{ .compatible = "ti,tas5713", },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, tas5713_of_match);
++
++
++static struct regmap_config tas5713_regmap_config = {
++	.reg_bits = 8,
++	.val_bits = 8,
++
++	.max_register = TAS5713_MAX_REGISTER,
++	.volatile_reg = tas5713_reg_volatile,
++
++	.cache_type = REGCACHE_RBTREE,
++	.reg_defaults = tas5713_reg_defaults,
++	.num_reg_defaults = ARRAY_SIZE(tas5713_reg_defaults),
++};
++
++
++static int tas5713_i2c_probe(struct i2c_client *i2c,
++			    const struct i2c_device_id *id)
++{
++	int ret;
++
++	priv_data = devm_kzalloc(&i2c->dev, sizeof *priv_data, GFP_KERNEL);
++	if (!priv_data)
++		return -ENOMEM;
++
++	priv_data->regmap = devm_regmap_init_i2c(i2c, &tas5713_regmap_config);
++	if (IS_ERR(priv_data->regmap)) {
++		ret = PTR_ERR(priv_data->regmap);
++		return ret;
++	}
++
++	i2c_set_clientdata(i2c, priv_data);
++
++	ret = snd_soc_register_codec(&i2c->dev,
++				     &soc_codec_dev_tas5713, &tas5713_dai, 1);
++
++	return ret;
++}
++
++
++static int tas5713_i2c_remove(struct i2c_client *i2c)
++{
++	snd_soc_unregister_codec(&i2c->dev);
++	i2c_set_clientdata(i2c, NULL);
++
++	kfree(priv_data);
++
++	return 0;
++}
++
++
++static const struct i2c_device_id tas5713_i2c_id[] = {
++	{ "tas5713", 0 },
++	{ }
++};
++
++MODULE_DEVICE_TABLE(i2c, tas5713_i2c_id);
++
++
++static struct i2c_driver tas5713_i2c_driver = {
++	.driver = {
++		.name = "tas5713",
++		.owner = THIS_MODULE,
++		.of_match_table = tas5713_of_match,
++	},
++	.probe = tas5713_i2c_probe,
++	.remove = tas5713_i2c_remove,
++	.id_table = tas5713_i2c_id
++};
++
++
++static int __init tas5713_modinit(void)
++{
++	int ret = 0;
++
++	ret = i2c_add_driver(&tas5713_i2c_driver);
++	if (ret) {
++		printk(KERN_ERR "Failed to register tas5713 I2C driver: %d\n",
++		       ret);
++	}
++
++	return ret;
++}
++module_init(tas5713_modinit);
++
++
++static void __exit tas5713_exit(void)
++{
++	i2c_del_driver(&tas5713_i2c_driver);
++}
++module_exit(tas5713_exit);
++
++
++MODULE_AUTHOR("Sebastian Eickhoff <basti.eickhoff@googlemail.com>");
++MODULE_DESCRIPTION("ASoC driver for TAS5713");
++MODULE_LICENSE("GPL v2");
+--- /dev/null
++++ b/sound/soc/codecs/tas5713.h
+@@ -0,0 +1,210 @@
++/*
++ * ASoC Driver for TAS5713
++ *
++ * Author:      Sebastian Eickhoff <basti.eickhoff@googlemail.com>
++ *              Copyright 2014
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ */
++
++#ifndef _TAS5713_H
++#define _TAS5713_H
++
++
++// TAS5713 I2C-bus register addresses
++
++#define TAS5713_CLOCK_CTRL              0x00
++#define TAS5713_DEVICE_ID               0x01
++#define TAS5713_ERROR_STATUS            0x02
++#define TAS5713_SYSTEM_CTRL1            0x03
++#define TAS5713_SERIAL_DATA_INTERFACE   0x04
++#define TAS5713_SYSTEM_CTRL2            0x05
++#define TAS5713_SOFT_MUTE               0x06
++#define TAS5713_VOL_MASTER              0x07
++#define TAS5713_VOL_CH1                 0x08
++#define TAS5713_VOL_CH2                 0x09
++#define TAS5713_VOL_HEADPHONE           0x0A
++#define TAS5713_VOL_CONFIG              0x0E
++#define TAS5713_MODULATION_LIMIT        0x10
++#define TAS5713_IC_DLY_CH1              0x11
++#define TAS5713_IC_DLY_CH2              0x12
++#define TAS5713_IC_DLY_CH3              0x13
++#define TAS5713_IC_DLY_CH4              0x14
++
++#define TAS5713_START_STOP_PERIOD       0x1A
++#define TAS5713_OSC_TRIM                0x1B
++#define TAS5713_BKND_ERR                0x1C
++
++#define TAS5713_INPUT_MUX               0x20
++#define TAS5713_SRC_SELECT_CH4          0x21
++#define TAS5713_PWM_MUX                 0x25
++
++#define TAS5713_CH1_BQ0                 0x29
++#define TAS5713_CH1_BQ1                 0x2A
++#define TAS5713_CH1_BQ2                 0x2B
++#define TAS5713_CH1_BQ3                 0x2C
++#define TAS5713_CH1_BQ4                 0x2D
++#define TAS5713_CH1_BQ5                 0x2E
++#define TAS5713_CH1_BQ6                 0x2F
++#define TAS5713_CH1_BQ7                 0x58
++#define TAS5713_CH1_BQ8                 0x59
++
++#define TAS5713_CH2_BQ0                 0x30
++#define TAS5713_CH2_BQ1                 0x31
++#define TAS5713_CH2_BQ2                 0x32
++#define TAS5713_CH2_BQ3                 0x33
++#define TAS5713_CH2_BQ4                 0x34
++#define TAS5713_CH2_BQ5                 0x35
++#define TAS5713_CH2_BQ6                 0x36
++#define TAS5713_CH2_BQ7                 0x5C
++#define TAS5713_CH2_BQ8                 0x5D
++
++#define TAS5713_CH4_BQ0                 0x5A
++#define TAS5713_CH4_BQ1                 0x5B
++#define TAS5713_CH3_BQ0                 0x5E
++#define TAS5713_CH3_BQ1                 0x5F
++
++#define TAS5713_DRC1_SOFTENING_FILTER_ALPHA_OMEGA       0x3B
++#define TAS5713_DRC1_ATTACK_RELEASE_RATE                0x3C
++#define TAS5713_DRC2_SOFTENING_FILTER_ALPHA_OMEGA       0x3E
++#define TAS5713_DRC2_ATTACK_RELEASE_RATE                0x3F
++#define TAS5713_DRC1_ATTACK_RELEASE_THRES               0x40
++#define TAS5713_DRC2_ATTACK_RELEASE_THRES               0x43
++#define TAS5713_DRC_CTRL                                0x46
++
++#define TAS5713_BANK_SW_CTRL            0x50
++#define TAS5713_CH1_OUTPUT_MIXER        0x51
++#define TAS5713_CH2_OUTPUT_MIXER        0x52
++#define TAS5713_CH1_INPUT_MIXER         0x53
++#define TAS5713_CH2_INPUT_MIXER         0x54
++#define TAS5713_OUTPUT_POST_SCALE       0x56
++#define TAS5713_OUTPUT_PRESCALE         0x57
++
++#define TAS5713_IDF_POST_SCALE          0x62
++
++#define TAS5713_CH1_INLINE_MIXER        0x70
++#define TAS5713_CH1_INLINE_DRC_EN_MIXER 0x71
++#define TAS5713_CH1_R_CHANNEL_MIXER     0x72
++#define TAS5713_CH1_L_CHANNEL_MIXER     0x73
++#define TAS5713_CH2_INLINE_MIXER        0x74
++#define TAS5713_CH2_INLINE_DRC_EN_MIXER 0x75
++#define TAS5713_CH2_L_CHANNEL_MIXER     0x76
++#define TAS5713_CH2_R_CHANNEL_MIXER     0x77
++
++#define TAS5713_UPDATE_DEV_ADDR_KEY     0xF8
++#define TAS5713_UPDATE_DEV_ADDR_REG     0xF9
++
++#define TAS5713_REGISTER_COUNT          0x46
++#define TAS5713_MAX_REGISTER            0xF9
++
++
++// Bitmasks for registers
++#define TAS5713_SOFT_MUTE_ALL           0x07
++
++
++
++struct tas5713_init_command {
++        const int size;
++        const char *const data;
++};
++
++static const struct tas5713_init_command tas5713_init_sequence[] = {
++
++        // Trim oscillator
++    { .size = 2,  .data = "\x1B\x00" },
++    // System control register 1 (0x03): block DC
++    { .size = 2,  .data = "\x03\x80" },
++    // Mute everything
++    { .size = 2,  .data = "\x05\x40" },
++    // Modulation limit register (0x10): 97.7%
++    { .size = 2,  .data = "\x10\x02" },
++    // Interchannel delay registers
++    // (0x11, 0x12, 0x13, and 0x14): BD mode
++    { .size = 2,  .data = "\x11\xB8" },
++    { .size = 2,  .data = "\x12\x60" },
++    { .size = 2,  .data = "\x13\xA0" },
++    { .size = 2,  .data = "\x14\x48" },
++    // PWM shutdown group register (0x19): no shutdown
++    { .size = 2,  .data = "\x19\x00" },
++    // Input multiplexer register (0x20): BD mode
++    { .size = 2,  .data = "\x20\x00\x89\x77\x72" },
++    // PWM output mux register (0x25)
++    // Channel 1 --> OUTA, channel 1 neg --> OUTB
++    // Channel 2 --> OUTC, channel 2 neg --> OUTD
++    { .size = 5,  .data = "\x25\x01\x02\x13\x45" },
++    // DRC control (0x46): DRC off
++    { .size = 5,  .data = "\x46\x00\x00\x00\x00" },
++    // BKND_ERR register (0x1C): 299ms reset period
++    { .size = 2,  .data = "\x1C\x07" },
++    // Mute channel 3
++    { .size = 2,  .data = "\x0A\xFF" },
++    // Volume configuration register (0x0E): volume slew 512 steps
++    { .size = 2,  .data = "\x0E\x90" },
++    // Clock control register (0x00): 44/48kHz, MCLK=64xfs
++    { .size = 2,  .data = "\x00\x60" },
++    // Bank switch and eq control (0x50): no bank switching
++    { .size = 5,  .data = "\x50\x00\x00\x00\x00" },
++    // Volume registers (0x07, 0x08, 0x09, 0x0A)
++    { .size = 2,  .data = "\x07\x20" },
++    { .size = 2,  .data = "\x08\x30" },
++    { .size = 2,  .data = "\x09\x30" },
++    { .size = 2,  .data = "\x0A\xFF" },
++    // 0x72, 0x73, 0x76, 0x77 input mixer:
++    // no intermix between channels
++    { .size = 5,  .data = "\x72\x00\x00\x00\x00" },
++    { .size = 5,  .data = "\x73\x00\x80\x00\x00" },
++    { .size = 5,  .data = "\x76\x00\x00\x00\x00" },
++    { .size = 5,  .data = "\x77\x00\x80\x00\x00" },
++    // 0x70, 0x71, 0x74, 0x75 inline DRC mixer:
++    // no inline DRC inmix
++    { .size = 5,  .data = "\x70\x00\x80\x00\x00" },
++    { .size = 5,  .data = "\x71\x00\x00\x00\x00" },
++    { .size = 5,  .data = "\x74\x00\x80\x00\x00" },
++    { .size = 5,  .data = "\x75\x00\x00\x00\x00" },
++    // 0x56, 0x57 Output scale
++    { .size = 5,  .data = "\x56\x00\x80\x00\x00" },
++    { .size = 5,  .data = "\x57\x00\x02\x00\x00" },
++    // 0x3B, 0x3c
++    { .size = 9,  .data = "\x3B\x00\x08\x00\x00\x00\x78\x00\x00" },
++    { .size = 9,  .data = "\x3C\x00\x00\x01\x00\xFF\xFF\xFF\x00" },
++    { .size = 9,  .data = "\x3E\x00\x08\x00\x00\x00\x78\x00\x00" },
++    { .size = 9,  .data = "\x3F\x00\x00\x01\x00\xFF\xFF\xFF\x00" },
++    { .size = 9,  .data = "\x40\x00\x00\x01\x00\xFF\xFF\xFF\x00" },
++    { .size = 9,  .data = "\x43\x00\x00\x01\x00\xFF\xFF\xFF\x00" },
++    // 0x51, 0x52: output mixer
++    { .size = 9,  .data = "\x51\x00\x80\x00\x00\x00\x00\x00\x00" },
++    { .size = 9,  .data = "\x52\x00\x80\x00\x00\x00\x00\x00\x00" },
++    // PEQ defaults
++    { .size = 21,  .data = "\x29\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x2A\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x2B\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x2C\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x2D\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x2E\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x2F\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x30\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x31\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x32\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x33\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x34\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x35\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x36\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x58\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x59\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x5C\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x5D\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x5E\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x5F\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x5A\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++    { .size = 21,  .data = "\x5B\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" },
++};
++
++
++#endif  /* _TAS5713_H */

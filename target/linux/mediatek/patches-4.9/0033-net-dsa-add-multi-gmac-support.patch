@@ -1,0 +1,272 @@
+From cce5dd6034ed1651ee25c910edee708e6b84a44a Mon Sep 17 00:00:00 2001
+From: John Crispin <john@phrozen.org>
+Date: Thu, 10 Aug 2017 14:45:08 +0200
+Subject: [PATCH 33/57] net: dsa: add multi gmac support
+
+Signed-off-by: John Crispin <john@phrozen.org>
+---
+ drivers/net/dsa/mt7530.c | 10 +---------
+ include/net/dsa.h        | 21 ++++++++++++++++++++-
+ net/dsa/dsa2.c           | 40 +++++++++++++++++++++++++++++++++-------
+ net/dsa/dsa_priv.h       |  1 +
+ net/dsa/slave.c          | 26 ++++++++++++++++----------
+ 5 files changed, 71 insertions(+), 27 deletions(-)
+
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -996,15 +996,7 @@ err:
+ static enum dsa_tag_protocol
+ mtk_get_tag_protocol(struct dsa_switch *ds)
+ {
+-	struct mt7530_priv *priv = ds->priv;
+-
+-	if (!dsa_is_cpu_port(ds, MT7530_CPU_PORT)) {
+-		dev_warn(priv->dev,
+-			 "port not matched with tagging CPU port\n");
+-		return DSA_TAG_PROTO_NONE;
+-	} else {
+-		return DSA_TAG_PROTO_MTK;
+-	}
++	return DSA_TAG_PROTO_MTK;
+ }
+ 
+ static struct dsa_switch_ops mt7530_switch_ops = {
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -145,6 +145,8 @@ struct dsa_port {
+ 	struct device_node	*dn;
+ 	unsigned int		ageing_time;
+ 	u8			stp_state;
++	struct net_device	*ethernet;
++	int			upstream;
+ };
+ 
+ struct dsa_switch {
+@@ -205,7 +207,7 @@ struct dsa_switch {
+ 
+ static inline bool dsa_is_cpu_port(struct dsa_switch *ds, int p)
+ {
+-	return !!(ds->index == ds->dst->cpu_switch && p == ds->dst->cpu_port);
++	return !!(ds->cpu_port_mask & (1 << p));
+ }
+ 
+ static inline bool dsa_is_dsa_port(struct dsa_switch *ds, int p)
+@@ -218,6 +220,11 @@ static inline bool dsa_is_port_initializ
+ 	return ds->enabled_port_mask & (1 << p) && ds->ports[p].netdev;
+ }
+ 
++static inline bool dsa_is_upstream_port(struct dsa_switch *ds, int p)
++{
++	return dsa_is_cpu_port(ds, p) || dsa_is_dsa_port(ds, p);
++}
++
+ static inline u8 dsa_upstream_port(struct dsa_switch *ds)
+ {
+ 	struct dsa_switch_tree *dst = ds->dst;
+@@ -234,6 +241,18 @@ static inline u8 dsa_upstream_port(struc
+ 		return ds->rtable[dst->cpu_switch];
+ }
+ 
++static inline u8 dsa_port_upstream_port(struct dsa_switch *ds, int port)
++{
++	/*
++	 * If this port has a specific upstream cpu port, use it,
++	 * otherwise use the switch default.
++	 */
++	if (ds->ports[port].upstream)
++		return ds->ports[port].upstream;
++	else
++		return dsa_upstream_port(ds);
++}
++
+ struct switchdev_trans;
+ struct switchdev_obj;
+ struct switchdev_obj_port_fdb;
+--- a/net/dsa/dsa2.c
++++ b/net/dsa/dsa2.c
+@@ -248,8 +248,6 @@ static int dsa_cpu_port_apply(struct dev
+ 		return err;
+ 	}
+ 
+-	ds->cpu_port_mask |= BIT(index);
+-
+ 	return 0;
+ }
+ 
+@@ -259,6 +257,10 @@ static void dsa_cpu_port_unapply(struct
+ 	dsa_cpu_dsa_destroy(port);
+ 	ds->cpu_port_mask &= ~BIT(index);
+ 
++	if (ds->ports[index].ethernet) {
++		dev_put(ds->ports[index].ethernet);
++		ds->ports[index].ethernet = NULL;
++	}
+ }
+ 
+ static int dsa_user_port_apply(struct device_node *port, u32 index,
+@@ -479,6 +481,29 @@ static int dsa_cpu_parse(struct device_n
+ 
+ 	dst->rcv = dst->tag_ops->rcv;
+ 
++	dev_hold(ethernet_dev);
++	ds->ports[index].ethernet = ethernet_dev;
++	ds->cpu_port_mask |= BIT(index);
++
++	return 0;
++}
++
++static int dsa_user_parse(struct device_node *port, u32 index,
++			  struct dsa_switch *ds)
++{
++	struct device_node *cpu_port;
++	const unsigned int *cpu_port_reg;
++	int cpu_port_index;
++
++	cpu_port = of_parse_phandle(port, "cpu", 0);
++	if (cpu_port) {
++		cpu_port_reg = of_get_property(cpu_port, "reg", NULL);
++		if (!cpu_port_reg)
++			return -EINVAL;
++		cpu_port_index = be32_to_cpup(cpu_port_reg);
++		ds->ports[index].upstream = cpu_port_index;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -486,18 +511,19 @@ static int dsa_ds_parse(struct dsa_switc
+ {
+ 	struct device_node *port;
+ 	u32 index;
+-	int err;
++	int err = 0;
+ 
+ 	for (index = 0; index < DSA_MAX_PORTS; index++) {
+ 		port = ds->ports[index].dn;
+ 		if (!port)
+ 			continue;
+ 
+-		if (dsa_port_is_cpu(port)) {
++		if (dsa_port_is_cpu(port))
+ 			err = dsa_cpu_parse(port, index, dst, ds);
+-			if (err)
+-				return err;
+-		}
++		else if (!dsa_port_is_dsa(port))
++			err = dsa_user_parse(port, index,  ds);
++		if (err)
++			return err;
+ 	}
+ 
+ 	pr_info("DSA: switch %d %d parsed\n", dst->tree, ds->index);
+--- a/net/dsa/dsa_priv.h
++++ b/net/dsa/dsa_priv.h
+@@ -43,6 +43,7 @@ struct dsa_slave_priv {
+ 	int			old_duplex;
+ 
+ 	struct net_device	*bridge_dev;
++	struct net_device	*master;
+ #ifdef CONFIG_NET_POLL_CONTROLLER
+ 	struct netpoll		*netpoll;
+ #endif
+--- a/net/dsa/slave.c
++++ b/net/dsa/slave.c
+@@ -61,7 +61,7 @@ static int dsa_slave_get_iflink(const st
+ {
+ 	struct dsa_slave_priv *p = netdev_priv(dev);
+ 
+-	return p->parent->dst->master_netdev->ifindex;
++	return p->master->ifindex;
+ }
+ 
+ static inline bool dsa_port_is_bridged(struct dsa_slave_priv *p)
+@@ -96,7 +96,7 @@ static void dsa_port_set_stp_state(struc
+ static int dsa_slave_open(struct net_device *dev)
+ {
+ 	struct dsa_slave_priv *p = netdev_priv(dev);
+-	struct net_device *master = p->parent->dst->master_netdev;
++	struct net_device *master = p->master;
+ 	struct dsa_switch *ds = p->parent;
+ 	u8 stp_state = dsa_port_is_bridged(p) ?
+ 			BR_STATE_BLOCKING : BR_STATE_FORWARDING;
+@@ -151,7 +151,7 @@ out:
+ static int dsa_slave_close(struct net_device *dev)
+ {
+ 	struct dsa_slave_priv *p = netdev_priv(dev);
+-	struct net_device *master = p->parent->dst->master_netdev;
++	struct net_device *master = p->master;
+ 	struct dsa_switch *ds = p->parent;
+ 
+ 	if (p->phy)
+@@ -178,7 +178,7 @@ static int dsa_slave_close(struct net_de
+ static void dsa_slave_change_rx_flags(struct net_device *dev, int change)
+ {
+ 	struct dsa_slave_priv *p = netdev_priv(dev);
+-	struct net_device *master = p->parent->dst->master_netdev;
++	struct net_device *master = p->master;
+ 
+ 	if (change & IFF_ALLMULTI)
+ 		dev_set_allmulti(master, dev->flags & IFF_ALLMULTI ? 1 : -1);
+@@ -189,7 +189,7 @@ static void dsa_slave_change_rx_flags(st
+ static void dsa_slave_set_rx_mode(struct net_device *dev)
+ {
+ 	struct dsa_slave_priv *p = netdev_priv(dev);
+-	struct net_device *master = p->parent->dst->master_netdev;
++	struct net_device *master = p->master;
+ 
+ 	dev_mc_sync(master, dev);
+ 	dev_uc_sync(master, dev);
+@@ -198,7 +198,7 @@ static void dsa_slave_set_rx_mode(struct
+ static int dsa_slave_set_mac_address(struct net_device *dev, void *a)
+ {
+ 	struct dsa_slave_priv *p = netdev_priv(dev);
+-	struct net_device *master = p->parent->dst->master_netdev;
++	struct net_device *master = p->master;
+ 	struct sockaddr *addr = a;
+ 	int err;
+ 
+@@ -633,7 +633,7 @@ static netdev_tx_t dsa_slave_xmit(struct
+ 	/* Queue the SKB for transmission on the parent interface, but
+ 	 * do not modify its EtherType
+ 	 */
+-	nskb->dev = p->parent->dst->master_netdev;
++	nskb->dev = p->master;
+ 	dev_queue_xmit(nskb);
+ 
+ 	return NETDEV_TX_OK;
+@@ -945,7 +945,7 @@ static int dsa_slave_netpoll_setup(struc
+ {
+ 	struct dsa_slave_priv *p = netdev_priv(dev);
+ 	struct dsa_switch *ds = p->parent;
+-	struct net_device *master = ds->dst->master_netdev;
++	struct net_device *master = p->master;
+ 	struct netpoll *netpoll;
+ 	int err = 0;
+ 
+@@ -1233,11 +1233,16 @@ int dsa_slave_create(struct dsa_switch *
+ 	struct net_device *master;
+ 	struct net_device *slave_dev;
+ 	struct dsa_slave_priv *p;
++	int port_cpu = ds->ports[port].upstream;
+ 	int ret;
+ 
+-	master = ds->dst->master_netdev;
+-	if (ds->master_netdev)
++	if (port_cpu && ds->ports[port_cpu].ethernet)
++		master = ds->ports[port_cpu].ethernet;
++	else if (ds->master_netdev)
+ 		master = ds->master_netdev;
++	else
++		master = ds->dst->master_netdev;
++	master->dsa_ptr = (void *)ds->dst;
+ 
+ 	slave_dev = alloc_netdev(sizeof(struct dsa_slave_priv), name,
+ 				 NET_NAME_UNKNOWN, ether_setup);
+@@ -1263,6 +1268,7 @@ int dsa_slave_create(struct dsa_switch *
+ 	p->parent = ds;
+ 	p->port = port;
+ 	p->xmit = dst->tag_ops->xmit;
++	p->master = master;
+ 
+ 	p->old_pause = -1;
+ 	p->old_link = -1;

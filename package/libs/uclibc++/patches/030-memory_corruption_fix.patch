@@ -1,0 +1,114 @@
+From 1dc865b8bbb3911abc8ce53c7ae8a59dc90f6fc3 Mon Sep 17 00:00:00 2001
+From: Ivan Kold <pixus.ru@gmail.com>
+Date: Thu, 3 Mar 2016 12:56:30 -0800
+Subject: [PATCH] Fix throw statement causing memory corruption
+
+The __cxxabiv1::__cxa_throw in the GCC's libsupc++ expects
+sizeof(__cxa_refcounted_exception) bytes be allocated before
+exception object.
+uClibc++ allocates only sizeof(__cxa_exception) before an
+exception object.
+The __cxxabiv1::__cxa_throw writes in memory before allocated:
+// gcc-5.2.0/libstdc++-v3/libsupc++/eh_throw.cc:69
+__cxa_refcounted_exception *header
+  = __get_refcounted_exception_header_from_obj (obj);
+header->referenceCount = 1;
+
+Signed-off-by: Ivan Kold <pixus.ru@gmail.com>
+---
+ include/unwind-cxx.h | 34 +++++++++++++++++++++++++++++++++-
+ src/eh_alloc.cpp     |  8 ++++----
+ 2 files changed, 37 insertions(+), 5 deletions(-)
+
+--- a/include/unwind-cxx.h
++++ b/include/unwind-cxx.h
+@@ -1,5 +1,5 @@
+ // -*- C++ -*- Exception handling and frame unwind runtime interface routines.
+-// Copyright (C) 2001 Free Software Foundation, Inc.
++// Copyright (C) 2001-2015 Free Software Foundation, Inc.
+ //
+ // This file is part of GCC.
+ //
+@@ -13,6 +13,10 @@
+ // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ // GNU General Public License for more details.
+ //
++// Under Section 7 of GPL version 3, you are granted additional
++// permissions described in the GCC Runtime Library Exception, version
++// 3.1, as published by the Free Software Foundation.
++//
+ // You should have received a copy of the GNU General Public License
+ // along with GCC; see the file COPYING.  If not, write to
+ // the Free Software Foundation, 59 Temple Place - Suite 330,
+@@ -40,6 +44,12 @@
+ #include <cstddef>
+ #include "unwind.h"
+ 
++// Original unwind-cxx.h also includes bits/atomic_word.h which is CPU-specific, 
++// but always defines _Atomic_word as typedef int .
++// Only thing that differs is memory-barrier macroses.
++typedef int _Atomic_word;
++
++
+ #pragma GCC visibility push(default)
+ 
+ namespace __cxxabiv1
+@@ -79,6 +89,13 @@ struct __cxa_exception
+   _Unwind_Exception unwindHeader;
+ };
+ 
++struct __cxa_refcounted_exception
++{
++  // Manage this header.
++  _Atomic_word referenceCount;
++  // __cxa_exception must be last, and no padding can be after it.
++  __cxa_exception exc;
++};
+ 
+ // A dependent C++ exception object consists of a header, which is a wrapper
+ // around an unwind object header with additional C++ specific information,
+@@ -210,6 +227,21 @@ __get_exception_header_from_ue (_Unwind_
+   return reinterpret_cast<__cxa_exception *>(exc + 1) - 1;
+ }
+ 
++// Acquire the C++ refcounted exception header from the C++ object.
++static inline __cxa_refcounted_exception *
++__get_refcounted_exception_header_from_obj (void *ptr)
++{
++  return reinterpret_cast<__cxa_refcounted_exception *>(ptr) - 1;
++}
++
++// Acquire the C++ refcounted exception header from the generic exception
++// header.
++static inline __cxa_refcounted_exception *
++__get_refcounted_exception_header_from_ue (_Unwind_Exception *exc)
++{
++  return reinterpret_cast<__cxa_refcounted_exception *>(exc + 1) - 1;
++}
++
+ } /* namespace __cxxabiv1 */
+ 
+ #pragma GCC visibility pop
+--- a/src/eh_alloc.cpp
++++ b/src/eh_alloc.cpp
+@@ -30,16 +30,16 @@ extern "C" void * __cxa_allocate_excepti
+ 	void *retval;
+ 	//The sizeof crap is required by Itanium ABI because we need to provide space for
+ 	//accounting information which is implementaion (gcc) specified
+-	retval = malloc (thrown_size + sizeof(__cxa_exception));
++	retval = malloc (thrown_size + sizeof(__cxa_refcounted_exception));
+ 	if (0 == retval){
+ 		std::terminate();
+ 	}
+-	memset (retval, 0, sizeof(__cxa_exception));
+-	return (void *)((unsigned char *)retval + sizeof(__cxa_exception));
++	memset (retval, 0, sizeof(__cxa_refcounted_exception));
++	return (void *)((unsigned char *)retval + sizeof(__cxa_refcounted_exception));
+ }
+ 
+ extern "C" void __cxa_free_exception(void *vptr) throw(){
+-	free( (char *)(vptr) - sizeof(__cxa_exception) );
++	free( (char *)(vptr) - sizeof(__cxa_refcounted_exception) );
+ }
+ 
+ 

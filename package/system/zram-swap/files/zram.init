@@ -1,0 +1,132 @@
+#!/bin/sh /etc/rc.common
+
+START=15
+
+ram_size()
+{
+	local line
+
+	while read line; do case "$line" in MemTotal:*) set $line; echo "$2"; break ;; esac; done </proc/meminfo
+}
+
+zram_size()	# in megabytes
+{
+	local zram_size="$( uci -q get system.@system[0].zram_size_mb )"
+	local ram_size="$( ram_size )"
+
+	if [ -z "$zram_size" ]; then
+		# e.g. 6mb for 16mb-routers or 61mb for 128mb-routers
+		echo $(( $ram_size / 2048 ))
+	else
+		echo "$zram_size"
+	fi
+}
+
+zram_applicable()
+{
+	local zram_dev="$1"
+
+	grep -sq ^"$zram_dev " /proc/swaps && {
+		logger -s -t zram_applicable -p daemon.notice "[OK] '$zram_dev' already active"
+		return 1
+	}
+
+	[ -e "$zram_dev" ] || {
+		logger -s -t zram_applicable -p daemon.crit "[ERROR] device '$zram_dev' not found"
+		return 1
+	}
+
+	which mkswap >/dev/null || {
+		logger -s -t zram_applicable -p daemon.err "[ERROR] 'mkswap' not installed"
+		return 1
+	}
+
+	which swapon >/dev/null || {
+		logger -s -t zram_applicable -p daemon.err "[ERROR] 'swapon' not installed"
+		return 1
+	}
+
+	which swapoff >/dev/null || {
+		logger -s -t zram_applicable -p daemon.err "[ERROR] 'swapoff' not installed"
+		return 1
+	}
+}
+
+zram_dev()
+{
+	local core="$1"
+
+	echo "/dev/zram${core:-0}"
+}
+
+zram_reset()
+{
+	local dev="$1"
+	local message="$2"
+	local proc_entry="/sys/block/$( basename "$dev" )/reset"
+
+	logger -s -t zram_reset -p daemon.debug "$message via $proc_entry"
+	echo "1" >"$proc_entry"
+}
+
+list_cpu_idx()
+{
+	# Offset by 1 if /dev/zram0 is in use by /tmp
+	if [ "$(mount | grep /dev/zram0)" ]; then
+		local line i=1
+		# Hot-add new ZRAM device (if necessary)
+		if [ ! -b /dev/zram1 ]; then 
+			cat /sys/class/zram-control/hot_add
+		fi
+	else
+		local line i=0
+	fi
+	
+	while read line; do {
+		case "$line" in
+			[Pp]rocessor*)
+				echo $i
+				i=$(( $i + 1 ))
+			;;
+		esac
+	} done <"/proc/cpuinfo"
+}
+
+start()
+{
+	# http://shmilyxbq-compcache.googlecode.com/hg/README
+	# if >1 cpu_core, reinit kmodule with e.g. num_devices=4
+
+	local zram_size="$( zram_size )"
+	local zram_dev core
+
+	for core in $( list_cpu_idx ); do {
+		zram_dev="$( zram_dev "$core" )"
+		zram_applicable "$zram_dev" || return 1
+
+		logger -s -t zram_start -p daemon.debug "activating '$zram_dev' for swapping ($zram_size MegaBytes)"
+
+		zram_reset "$zram_dev" "enforcing defaults"
+		echo $(( $zram_size * 1024 * 1024 )) >"/sys/block/$( basename $zram_dev )/disksize"
+		mkswap "$zram_dev"
+		swapon "$zram_dev"
+	} done
+}
+
+stop()
+{
+	local zram_dev proc_entry
+
+	for core in $( list_cpu_idx ); do {
+		zram_dev="$( zram_dev "$core" )"
+		proc_entry="/sys/block/$( basename "$zram_dev" )/reset"
+
+		grep -sq ^"$zram_dev " /proc/swaps && {
+			logger -s -t zram_stop -p daemon.debug "deactivate swap $zram_dev"
+			swapoff "$zram_dev"
+		}
+
+		zram_reset "$zram_dev" "claiming memory back"
+	} done
+}
+

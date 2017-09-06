@@ -1,0 +1,206 @@
+From 45dce4cd82ddc618ade56747620a2a29f7d9a99d Mon Sep 17 00:00:00 2001
+From: Stuart Yoder <stuart.yoder@nxp.com>
+Date: Mon, 11 Apr 2016 11:48:59 -0500
+Subject: [PATCH 169/226] staging: fsl-mc: update dprc binary interface to
+ v5.1
+
+The meaning of the "status" parameter in dprc_get_irq_status
+has changed, and this patch updates the flib and caller
+of the API.
+
+Signed-off-by: Stuart Yoder <stuart.yoder@nxp.com>
+Acked-by: German Rivera <german.rivera@nxp.com>
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/staging/fsl-mc/bus/dprc-cmd.h    |    4 ++--
+ drivers/staging/fsl-mc/bus/dprc-driver.c |    1 +
+ drivers/staging/fsl-mc/bus/dprc.c        |   26 +++++++++++++-------------
+ drivers/staging/fsl-mc/bus/mc-msi.c      |    2 +-
+ drivers/staging/fsl-mc/include/dprc.h    |   19 ++++++++++++-------
+ 5 files changed, 29 insertions(+), 23 deletions(-)
+
+--- a/drivers/staging/fsl-mc/bus/dprc-cmd.h
++++ b/drivers/staging/fsl-mc/bus/dprc-cmd.h
+@@ -41,8 +41,8 @@
+ #define _FSL_DPRC_CMD_H
+ 
+ /* DPRC Version */
+-#define DPRC_VER_MAJOR				4
+-#define DPRC_VER_MINOR				0
++#define DPRC_VER_MAJOR				5
++#define DPRC_VER_MINOR				1
+ 
+ /* Command IDs */
+ #define DPRC_CMDID_CLOSE			0x800
+--- a/drivers/staging/fsl-mc/bus/dprc-driver.c
++++ b/drivers/staging/fsl-mc/bus/dprc-driver.c
+@@ -423,6 +423,7 @@ static irqreturn_t dprc_irq0_handler_thr
+ 	if (WARN_ON(!msi_desc || msi_desc->irq != (u32)irq_num))
+ 		goto out;
+ 
++	status = 0;
+ 	error = dprc_get_irq_status(mc_io, 0, mc_dev->mc_handle, 0,
+ 				    &status);
+ 	if (error < 0) {
+--- a/drivers/staging/fsl-mc/bus/dprc.c
++++ b/drivers/staging/fsl-mc/bus/dprc.c
+@@ -265,7 +265,7 @@ int dprc_get_irq(struct fsl_mc_io *mc_io
+ 	/* retrieve response parameters */
+ 	irq_cfg->val = mc_dec(cmd.params[0], 0, 32);
+ 	irq_cfg->paddr = mc_dec(cmd.params[1], 0, 64);
+-	irq_cfg->user_irq_id = mc_dec(cmd.params[2], 0, 32);
++	irq_cfg->irq_num = mc_dec(cmd.params[2], 0, 32);
+ 	*type = mc_dec(cmd.params[2], 32, 32);
+ 
+ 	return 0;
+@@ -296,7 +296,7 @@ int dprc_set_irq(struct fsl_mc_io *mc_io
+ 	cmd.params[0] |= mc_enc(32, 8, irq_index);
+ 	cmd.params[0] |= mc_enc(0, 32, irq_cfg->val);
+ 	cmd.params[1] |= mc_enc(0, 64, irq_cfg->paddr);
+-	cmd.params[2] |= mc_enc(0, 32, irq_cfg->user_irq_id);
++	cmd.params[2] |= mc_enc(0, 32, irq_cfg->irq_num);
+ 
+ 	/* send command to mc*/
+ 	return mc_send_command(mc_io, &cmd);
+@@ -466,6 +466,7 @@ int dprc_get_irq_status(struct fsl_mc_io
+ 	/* prepare command */
+ 	cmd.header = mc_encode_cmd_header(DPRC_CMDID_GET_IRQ_STATUS,
+ 					  cmd_flags, token);
++	cmd.params[0] |= mc_enc(0, 32, *status);
+ 	cmd.params[0] |= mc_enc(32, 8, irq_index);
+ 
+ 	/* send command to mc*/
+@@ -948,6 +949,7 @@ int dprc_get_obj(struct fsl_mc_io *mc_io
+ 	obj_desc->state = mc_dec(cmd.params[1], 32, 32);
+ 	obj_desc->ver_major = mc_dec(cmd.params[2], 0, 16);
+ 	obj_desc->ver_minor = mc_dec(cmd.params[2], 16, 16);
++	obj_desc->flags = mc_dec(cmd.params[2], 32, 16);
+ 	obj_desc->type[0] = mc_dec(cmd.params[3], 0, 8);
+ 	obj_desc->type[1] = mc_dec(cmd.params[3], 8, 8);
+ 	obj_desc->type[2] = mc_dec(cmd.params[3], 16, 8);
+@@ -1042,6 +1044,7 @@ int dprc_get_obj_desc(struct fsl_mc_io *
+ 	obj_desc->state = (u32)mc_dec(cmd.params[1], 32, 32);
+ 	obj_desc->ver_major = (u16)mc_dec(cmd.params[2], 0, 16);
+ 	obj_desc->ver_minor = (u16)mc_dec(cmd.params[2], 16, 16);
++	obj_desc->flags = mc_dec(cmd.params[2], 32, 16);
+ 	obj_desc->type[0] = (char)mc_dec(cmd.params[3], 0, 8);
+ 	obj_desc->type[1] = (char)mc_dec(cmd.params[3], 8, 8);
+ 	obj_desc->type[2] = (char)mc_dec(cmd.params[3], 16, 8);
+@@ -1108,7 +1111,7 @@ int dprc_set_obj_irq(struct fsl_mc_io *m
+ 	cmd.params[0] |= mc_enc(32, 8, irq_index);
+ 	cmd.params[0] |= mc_enc(0, 32, irq_cfg->val);
+ 	cmd.params[1] |= mc_enc(0, 64, irq_cfg->paddr);
+-	cmd.params[2] |= mc_enc(0, 32, irq_cfg->user_irq_id);
++	cmd.params[2] |= mc_enc(0, 32, irq_cfg->irq_num);
+ 	cmd.params[2] |= mc_enc(32, 32, obj_id);
+ 	cmd.params[3] |= mc_enc(0, 8, obj_type[0]);
+ 	cmd.params[3] |= mc_enc(8, 8, obj_type[1]);
+@@ -1189,7 +1192,7 @@ int dprc_get_obj_irq(struct fsl_mc_io *m
+ 	/* retrieve response parameters */
+ 	irq_cfg->val = (u32)mc_dec(cmd.params[0], 0, 32);
+ 	irq_cfg->paddr = (u64)mc_dec(cmd.params[1], 0, 64);
+-	irq_cfg->user_irq_id = (int)mc_dec(cmd.params[2], 0, 32);
++	irq_cfg->irq_num = (int)mc_dec(cmd.params[2], 0, 32);
+ 	*type = (int)mc_dec(cmd.params[2], 32, 32);
+ 
+ 	return 0;
+@@ -1437,14 +1440,8 @@ EXPORT_SYMBOL(dprc_set_obj_label);
+  * @endpoint1:	Endpoint 1 configuration parameters
+  * @endpoint2:	Endpoint 2 configuration parameters
+  * @cfg: Connection configuration. The connection configuration is ignored for
+- *	connections made to DPMAC objects, where rate is set according to
+- *	MAC configuration.
+- *	The committed rate is the guaranteed rate for the connection.
+- *	The maximum rate is an upper limit allowed for the connection; it is
+- *	expected to be equal or higher than the committed rate.
+- *	When committed and maximum rates are both zero, the connection is set
+- *	to "best effort" mode, having lower priority compared to connections
+- *	with committed or maximum rates.
++ *	 connections made to DPMAC objects, where rate is retrieved from the
++ *	 MAC configuration.
+  *
+  * Return:	'0' on Success; Error code otherwise.
+  */
+@@ -1555,7 +1552,10 @@ int dprc_disconnect(struct fsl_mc_io *mc
+ * @token:	Token of DPRC object
+ * @endpoint1:	Endpoint 1 configuration parameters
+ * @endpoint2:	Returned endpoint 2 configuration parameters
+-* @state:	Returned link state: 1 - link is up, 0 - link is down
++* @state:	Returned link state:
++*		1 - link is up;
++*		0 - link is down;
++*		-1 - no connection (endpoint2 information is irrelevant)
+ *
+ * Return:     '0' on Success; -ENAVAIL if connection does not exist.
+ */
+--- a/drivers/staging/fsl-mc/bus/mc-msi.c
++++ b/drivers/staging/fsl-mc/bus/mc-msi.c
+@@ -65,7 +65,7 @@ static void __fsl_mc_msi_write_msg(struc
+ 	irq_cfg.paddr = ((u64)msi_desc->msg.address_hi << 32) |
+ 			msi_desc->msg.address_lo;
+ 	irq_cfg.val = msi_desc->msg.data;
+-	irq_cfg.user_irq_id = msi_desc->irq;
++	irq_cfg.irq_num = msi_desc->irq;
+ 
+ 	if (owner_mc_dev == mc_bus_dev) {
+ 		/*
+--- a/drivers/staging/fsl-mc/include/dprc.h
++++ b/drivers/staging/fsl-mc/include/dprc.h
+@@ -94,11 +94,6 @@ int dprc_close(struct fsl_mc_io *mc_io,
+  */
+ #define DPRC_CFG_OPT_TOPOLOGY_CHANGES_ALLOWED	0x00000008
+ 
+-/* IOMMU bypass - indicates whether objects of this container are permitted
+- * to bypass the IOMMU.
+- */
+-#define DPRC_CFG_OPT_IOMMU_BYPASS		0x00000010
+-
+ /* AIOP - Indicates that container belongs to AIOP.  */
+ #define DPRC_CFG_OPT_AIOP			0x00000020
+ 
+@@ -173,12 +168,12 @@ int dprc_reset_container(struct fsl_mc_i
+  * struct dprc_irq_cfg - IRQ configuration
+  * @paddr:	Address that must be written to signal a message-based interrupt
+  * @val:	Value to write into irq_addr address
+- * @user_irq_id: A user defined number associated with this IRQ
++ * @irq_num:	A user defined number associated with this IRQ
+  */
+ struct dprc_irq_cfg {
+ 	     phys_addr_t	paddr;
+ 	     u32		val;
+-	     int		user_irq_id;
++	     int		irq_num;
+ };
+ 
+ int dprc_set_irq(struct fsl_mc_io	*mc_io,
+@@ -353,6 +348,14 @@ int dprc_get_obj_count(struct fsl_mc_io
+ #define DPRC_OBJ_STATE_PLUGGED		0x00000002
+ 
+ /**
++ * Shareability flag - Object flag indicating no memory shareability.
++ * the object generates memory accesses that are non coherent with other
++ * masters;
++ * user is responsible for proper memory handling through IOMMU configuration.
++ */
++#define DPRC_OBJ_FLAG_NO_MEM_SHAREABILITY		0x0001
++
++/**
+  * struct dprc_obj_desc - Object descriptor, returned from dprc_get_obj()
+  * @type: Type of object: NULL terminated string
+  * @id: ID of logical object resource
+@@ -363,6 +366,7 @@ int dprc_get_obj_count(struct fsl_mc_io
+  * @region_count: Number of mappable regions supported by the object
+  * @state: Object state: combination of DPRC_OBJ_STATE_ states
+  * @label: Object label
++ * @flags: Object's flags
+  */
+ struct dprc_obj_desc {
+ 	char type[16];
+@@ -374,6 +378,7 @@ struct dprc_obj_desc {
+ 	u8 region_count;
+ 	u32 state;
+ 	char label[16];
++	u16 flags;
+ };
+ 
+ int dprc_get_obj(struct fsl_mc_io	*mc_io,

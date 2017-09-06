@@ -1,0 +1,106 @@
+--- a/hostapd/ctrl_iface.c
++++ b/hostapd/ctrl_iface.c
+@@ -55,6 +55,7 @@
+ #include "fst/fst_ctrl_iface.h"
+ #include "config_file.h"
+ #include "ctrl_iface.h"
++#include "config_file.h"
+ 
+ 
+ #define HOSTAPD_CLI_DUP_VALUE_MAX_LEN 256
+@@ -73,6 +74,7 @@ static void hostapd_ctrl_iface_send(stru
+ 				    enum wpa_msg_type type,
+ 				    const char *buf, size_t len);
+ 
++static char *reload_opts = NULL;
+ 
+ static int hostapd_ctrl_iface_attach(struct hostapd_data *hapd,
+ 				     struct sockaddr_storage *from,
+@@ -124,6 +126,61 @@ static int hostapd_ctrl_iface_new_sta(st
+ 	return 0;
+ }
+ 
++static char *get_option(char *opt, char *str)
++{
++	int len = strlen(str);
++
++	if (!strncmp(opt, str, len))
++		return opt + len;
++	else
++		return NULL;
++}
++
++static struct hostapd_config *hostapd_ctrl_iface_config_read(const char *fname)
++{
++	struct hostapd_config *conf;
++	char *opt, *val;
++
++	conf = hostapd_config_read(fname);
++	if (!conf)
++		return NULL;
++
++	for (opt = strtok(reload_opts, " ");
++	     opt;
++		 opt = strtok(NULL, " ")) {
++
++		if ((val = get_option(opt, "channel=")))
++			conf->channel = atoi(val);
++		else if ((val = get_option(opt, "ht_capab=")))
++			conf->ht_capab = atoi(val);
++		else if ((val = get_option(opt, "ht_capab_mask=")))
++			conf->ht_capab &= atoi(val);
++		else if ((val = get_option(opt, "sec_chan=")))
++			conf->secondary_channel = atoi(val);
++		else if ((val = get_option(opt, "hw_mode=")))
++			conf->hw_mode = atoi(val);
++		else if ((val = get_option(opt, "ieee80211n=")))
++			conf->ieee80211n = atoi(val);
++		else
++			break;
++	}
++
++	return conf;
++}
++
++static int hostapd_ctrl_iface_update(struct hostapd_data *hapd, char *txt)
++{
++	struct hostapd_config * (*config_read_cb)(const char *config_fname);
++	struct hostapd_iface *iface = hapd->iface;
++
++	config_read_cb = iface->interfaces->config_read_cb;
++	iface->interfaces->config_read_cb = hostapd_ctrl_iface_config_read;
++	reload_opts = txt;
++
++	hostapd_reload_config(iface);
++
++	iface->interfaces->config_read_cb = config_read_cb;
++}
+ 
+ #ifdef CONFIG_IEEE80211W
+ #ifdef NEED_AP_MLME
+@@ -2620,6 +2677,8 @@ static int hostapd_ctrl_iface_receive_pr
+ 	} else if (os_strncmp(buf, "VENDOR ", 7) == 0) {
+ 		reply_len = hostapd_ctrl_iface_vendor(hapd, buf + 7, reply,
+ 						      reply_size);
++	} else if (os_strncmp(buf, "UPDATE ", 7) == 0) {
++		hostapd_ctrl_iface_update(hapd, buf + 7);
+ 	} else if (os_strcmp(buf, "ERP_FLUSH") == 0) {
+ 		ieee802_1x_erp_flush(hapd);
+ #ifdef RADIUS_SERVER
+--- a/src/ap/ctrl_iface_ap.c
++++ b/src/ap/ctrl_iface_ap.c
+@@ -624,7 +624,13 @@ int hostapd_parse_csa_settings(const cha
+ 
+ int hostapd_ctrl_iface_stop_ap(struct hostapd_data *hapd)
+ {
+-	return hostapd_drv_stop_ap(hapd);
++	struct hostapd_iface *iface = hapd->iface;
++	int i;
++
++	for (i = 0; i < iface->num_bss; i++)
++		hostapd_drv_stop_ap(iface->bss[i]);
++
++	return 0;
+ }
+ 
+ 

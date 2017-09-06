@@ -1,0 +1,105 @@
+From a4be9046c3a3fc39a06089553df8cc19a2abd814 Mon Sep 17 00:00:00 2001
+From: Priyanka Jain <Priyanka.Jain@freescale.com>
+Date: Tue, 3 Nov 2015 11:25:24 +0530
+Subject: [PATCH 233/238] i2c: pca954x: Add option to skip disabling PCA954x
+ Mux device
+
+On some Layerscape boards like LS2085ARDB/LS2080ARDB,
+input pull-up resistors on PCA954x Mux device are
+missing on board. So, if mux are disabled after powered-on,
+input lines will float leading to incorrect functionality.
+
+Hence, PCA954x Mux device should never be turned-off after
+power-on.
+
+Add option to skip disabling PCA954x Mux device
+if device tree contians "i2c-mux-never-disable" property
+for pca954x device node.
+
+Signed-off-by: Priyanka Jain <Priyanka.Jain@freescale.com>
+---
+ drivers/i2c/muxes/i2c-mux-pca954x.c |   38 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+--- a/drivers/i2c/muxes/i2c-mux-pca954x.c
++++ b/drivers/i2c/muxes/i2c-mux-pca954x.c
+@@ -63,6 +63,7 @@ struct pca954x {
+ 	struct i2c_adapter *virt_adaps[PCA954X_MAX_NCHANS];
+ 
+ 	u8 last_chan;		/* last register value */
++	u8 disable_mux;		/* do not disable mux if val not 0 */
+ };
+ 
+ struct chip_desc {
+@@ -174,6 +175,13 @@ static int pca954x_deselect_mux(struct i
+ {
+ 	struct pca954x *data = i2c_get_clientdata(client);
+ 
++#ifdef CONFIG_ARCH_LAYERSCAPE
++	if (data->disable_mux != 0)
++		data->last_chan = chips[data->type].nchans;
++	else
++		data->last_chan = 0;
++	return pca954x_reg_write(adap, client, data->disable_mux);
++#endif
+ 	/* Deselect active channel */
+ 	data->last_chan = 0;
+ 	return pca954x_reg_write(adap, client, data->last_chan);
+@@ -201,6 +209,23 @@ static int pca954x_probe(struct i2c_clie
+ 	if (!data)
+ 		return -ENOMEM;
+ 
++#ifdef CONFIG_ARCH_LAYERSCAPE
++	/* The point here is that you must not disable a mux if there
++	 * are no pullups on the input or you mess up the I2C. This
++	 * needs to be put into the DTS really as the kernel cannot
++	 * know this otherwise.
++	 */
++	data->type = id->driver_data;
++	data->disable_mux = of_node &&
++		of_property_read_bool(of_node, "i2c-mux-never-disable") &&
++		chips[data->type].muxtype == pca954x_ismux ?
++		chips[data->type].enable : 0;
++	/* force the first selection */
++	if (data->disable_mux != 0)
++		data->last_chan = chips[data->type].nchans;
++	else
++		data->last_chan = 0;
++#endif
+ 	i2c_set_clientdata(client, data);
+ 
+ 	/* Get the mux out of reset if a reset GPIO is specified. */
+@@ -212,13 +237,19 @@ static int pca954x_probe(struct i2c_clie
+ 	 * that the mux is in fact present. This also
+ 	 * initializes the mux to disconnected state.
+ 	 */
++#ifdef CONFIG_ARCH_LAYERSCAPE
++	if (i2c_smbus_write_byte(client, data->disable_mux) < 0) {
++#else
+ 	if (i2c_smbus_write_byte(client, 0) < 0) {
++#endif
+ 		dev_warn(&client->dev, "probe failed\n");
+ 		return -ENODEV;
+ 	}
+ 
++#ifndef CONFIG_ARCH_LAYERSCAPE
+ 	data->type = id->driver_data;
+ 	data->last_chan = 0;		   /* force the first selection */
++#endif
+ 
+ 	idle_disconnect_dt = of_node &&
+ 		of_property_read_bool(of_node, "i2c-mux-idle-disconnect");
+@@ -289,6 +320,13 @@ static int pca954x_resume(struct device
+ 	struct i2c_client *client = to_i2c_client(dev);
+ 	struct pca954x *data = i2c_get_clientdata(client);
+ 
++#ifdef CONFIG_ARCH_LAYERSCAPE
++	if (data->disable_mux != 0)
++		data->last_chan = chips[data->type].nchans;
++	else
++		data->last_chan = 0;
++	return i2c_smbus_write_byte(client, data->disable_mux);
++#endif
+ 	data->last_chan = 0;
+ 	return i2c_smbus_write_byte(client, 0);
+ }

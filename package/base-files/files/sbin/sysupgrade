@@ -1,0 +1,264 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /lib/functions/system.sh
+
+# initialize defaults
+export MTD_CONFIG_ARGS=""
+export INTERACTIVE=0
+export VERBOSE=1
+export SAVE_CONFIG=1
+export SAVE_OVERLAY=0
+export SAVE_PARTITIONS=1
+export CONF_IMAGE=
+export CONF_BACKUP_LIST=0
+export CONF_BACKUP=
+export CONF_RESTORE=
+export NEED_IMAGE=
+export HELP=0
+export FORCE=0
+export TEST=0
+
+# parse options
+while [ -n "$1" ]; do
+	case "$1" in
+		-i) export INTERACTIVE=1;;
+		-v) export VERBOSE="$(($VERBOSE + 1))";;
+		-q) export VERBOSE="$(($VERBOSE - 1))";;
+		-n) export SAVE_CONFIG=0;;
+		-c) export SAVE_OVERLAY=1;;
+		-p) export SAVE_PARTITIONS=0;;
+		-b|--create-backup) export CONF_BACKUP="$2" NEED_IMAGE=1; shift;;
+		-r|--restore-backup) export CONF_RESTORE="$2" NEED_IMAGE=1; shift;;
+		-l|--list-backup) export CONF_BACKUP_LIST=1; break;;
+		-f) export CONF_IMAGE="$2"; shift;;
+		-F|--force) export FORCE=1;;
+		-T|--test) export TEST=1;;
+		-h|--help) export HELP=1; break;;
+		-*)
+			echo "Invalid option: $1"
+			exit 1
+		;;
+		*) break;;
+	esac
+	shift;
+done
+
+export CONFFILES=/tmp/sysupgrade.conffiles
+export CONF_TAR=/tmp/sysupgrade.tgz
+
+IMAGE="$1"
+
+[ -z "$IMAGE" -a -z "$NEED_IMAGE" -o $HELP -gt 0 ] && {
+	cat <<EOF
+Usage: $0 [<upgrade-option>...] <image file or URL>
+       $0 [-q] [-i] <backup-command> <file>
+
+upgrade-option:
+	-d <delay>   add a delay before rebooting
+	-f <config>  restore configuration from .tar.gz (file or url)
+	-i           interactive mode
+	-c           attempt to preserve all changed files in /etc/
+	-n           do not save configuration over reflash
+	-p           do not attempt to restore the partition table after flash.
+	-T | --test
+	             Verify image and config .tar.gz but do not actually flash.
+	-F | --force
+	             Flash image even if image checks fail, this is dangerous!
+	-q           less verbose
+	-v           more verbose
+	-h | --help  display this help
+
+backup-command:
+	-b | --create-backup <file>
+	             create .tar.gz of files specified in sysupgrade.conf
+	             then exit. Does not flash an image. If file is '-',
+	             i.e. stdout, verbosity is set to 0 (i.e. quiet).
+	-r | --restore-backup <file>
+	             restore a .tar.gz created with sysupgrade -b
+	             then exit. Does not flash an image. If file is '-',
+	             the archive is read from stdin.
+	-l | --list-backup
+	             list the files that would be backed up when calling
+	             sysupgrade -b. Does not create a backup file.
+
+EOF
+	exit 1
+}
+
+[ -n "$IMAGE" -a -n "$NEED_IMAGE" ] && {
+	cat <<-EOF
+		-b|--create-backup and -r|--restore-backup do not perform a firmware upgrade.
+		Do not specify both -b|-r and a firmware image.
+	EOF
+	exit 1
+}
+
+# prevent messages from clobbering the tarball when using stdout
+[ "$CONF_BACKUP" = "-" ] && export VERBOSE=0
+
+add_uci_conffiles() {
+	local file="$1"
+	( find $(sed -ne '/^[[:space:]]*$/d; /^#/d; p' \
+		/etc/sysupgrade.conf /lib/upgrade/keep.d/* 2>/dev/null) \
+		-type f -o -type l 2>/dev/null;
+	  opkg list-changed-conffiles ) | sort -u > "$file"
+	return 0
+}
+
+add_overlayfiles() {
+	local file="$1"
+	if [ -d /overlay/upper ]; then
+		local overlaydir="/overlay/upper"
+	else
+		local overlaydir="/overlay"
+	fi
+	find $overlaydir/etc/ -type f -o -type l | sed \
+		-e 's,^/overlay\/upper/,/,' \
+		-e 's,^/overlay/,/,' \
+		-e '\,/META_[a-zA-Z0-9]*$,d' \
+		-e '\,/functions.sh$,d' \
+		-e '\,/[^/]*-opkg$,d' \
+	> "$file"
+	return 0
+}
+
+# hooks
+sysupgrade_image_check="fwtool_check_image platform_check_image"
+sysupgrade_pre_upgrade="fwtool_pre_upgrade"
+[ $SAVE_OVERLAY = 0 -o ! -d /overlay/etc ] && \
+	sysupgrade_init_conffiles="add_uci_conffiles" || \
+	sysupgrade_init_conffiles="add_overlayfiles"
+
+include /lib/upgrade
+
+do_save_conffiles() {
+	local conf_tar="${1:-$CONF_TAR}"
+
+	[ -z "$(rootfs_type)" ] && {
+		echo "Cannot save config while running from ramdisk."
+		ask_bool 0 "Abort" && exit
+		rm -f "$conf_tar"
+		return 0
+	}
+	run_hooks "$CONFFILES" $sysupgrade_init_conffiles
+	ask_bool 0 "Edit config file list" && vi "$CONFFILES"
+
+	v "Saving config files..."
+	[ "$VERBOSE" -gt 1 ] && TAR_V="v" || TAR_V=""
+	tar c${TAR_V}zf "$conf_tar" -T "$CONFFILES" 2>/dev/null
+
+	rm -f "$CONFFILES"
+}
+
+if [ $CONF_BACKUP_LIST -eq 1 ]; then
+	add_uci_conffiles "$CONFFILES"
+	cat "$CONFFILES"
+	rm -f "$CONFFILES"
+	exit 0
+fi
+
+if [ -n "$CONF_BACKUP" ]; then
+	do_save_conffiles "$CONF_BACKUP"
+	exit $?
+fi
+
+if [ -n "$CONF_RESTORE" ]; then
+	if [ "$CONF_RESTORE" != "-" ] && [ ! -f "$CONF_RESTORE" ]; then
+		echo "Backup archive '$CONF_RESTORE' not found."
+		exit 1
+	fi
+
+	[ "$VERBOSE" -gt 1 ] && TAR_V="v" || TAR_V=""
+	tar -C / -x${TAR_V}zf "$CONF_RESTORE"
+	exit $?
+fi
+
+type platform_check_image >/dev/null 2>/dev/null || {
+	echo "Firmware upgrade is not implemented for this platform."
+	exit 1
+}
+
+case "$IMAGE" in
+	http://*)
+		wget -O/tmp/sysupgrade.img "$IMAGE"
+		IMAGE=/tmp/sysupgrade.img
+		;;
+esac
+
+IMAGE="$(readlink -f "$IMAGE")"
+
+case "$IMAGE" in
+	'')
+		echo "Image file not found."
+		exit 1
+		;;
+	/tmp/*)	;;
+	*)
+		v "Image not in /tmp, copying..."
+		cp -f "$IMAGE" /tmp/sysupgrade.img
+		IMAGE=/tmp/sysupgrade.img
+		;;
+esac
+
+export ARGV="$IMAGE"
+export ARGC=1
+
+for check in $sysupgrade_image_check; do
+	( $check "$IMAGE" ) || {
+		if [ $FORCE -eq 1 ]; then
+			echo "Image check '$check' failed but --force given - will update anyway!"
+			break
+		else
+			echo "Image check '$check' failed."
+			exit 1
+		fi
+	}
+done
+
+if [ -n "$CONF_IMAGE" ]; then
+	case "$(get_magic_word $CONF_IMAGE cat)" in
+		# .gz files
+		1f8b) ;;
+		*)
+			echo "Invalid config file. Please use only .tar.gz files"
+			exit 1
+		;;
+	esac
+	get_image "$CONF_IMAGE" "cat" > "$CONF_TAR"
+	export SAVE_CONFIG=1
+elif ask_bool $SAVE_CONFIG "Keep config files over reflash"; then
+	[ $TEST -eq 1 ] || do_save_conffiles
+	export SAVE_CONFIG=1
+else
+	[ $TEST -eq 1 ] || rm -f "$CONF_TAR"
+	export SAVE_CONFIG=0
+fi
+
+if [ $TEST -eq 1 ]; then
+	exit 0
+fi
+
+if [ $SAVE_PARTITIONS -eq 0 ]; then
+	touch /tmp/sysupgrade.always.overwrite.bootdisk.partmap
+else
+	rm -f /tmp/sysupgrade.always.overwrite.bootdisk.partmap
+fi
+
+run_hooks "" $sysupgrade_pre_upgrade
+
+install_bin /sbin/upgraded
+v "Commencing upgrade. All shell sessions will be closed now."
+
+COMMAND='. /lib/functions.sh; include /lib/upgrade; do_upgrade_stage2'
+
+if [ -n "$FAILSAFE" ]; then
+	printf '%s\x00%s\x00%s' "$RAM_ROOT" "$IMAGE" "$COMMAND" >/tmp/sysupgrade
+	lock -u /tmp/.failsafe
+else
+	ubus call system sysupgrade "{
+		\"prefix\": $(json_string "$RAM_ROOT"),
+		\"path\": $(json_string "$IMAGE"),
+		\"command\": $(json_string "$COMMAND")
+	}"
+fi

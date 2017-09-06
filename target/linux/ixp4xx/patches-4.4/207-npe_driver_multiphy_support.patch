@@ -1,0 +1,145 @@
+TODO: take care of additional PHYs through the PHY abstraction layer
+
+--- a/arch/arm/mach-ixp4xx/include/mach/platform.h
++++ b/arch/arm/mach-ixp4xx/include/mach/platform.h
+@@ -95,12 +95,23 @@ struct ixp4xx_pata_data {
+ #define IXP4XX_ETH_NPEB		0x10
+ #define IXP4XX_ETH_NPEC		0x20
+ 
++#define IXP4XX_ETH_PHY_MAX_ADDR	32
++
+ /* Information about built-in Ethernet MAC interfaces */
+ struct eth_plat_info {
+ 	u8 phy;		/* MII PHY ID, 0 - 31 */
+ 	u8 rxq;		/* configurable, currently 0 - 31 only */
+ 	u8 txreadyq;
+ 	u8 hwaddr[6];
++
++	u32 phy_mask;
++#if 0
++	int speed;
++	int duplex;
++#else
++	int speed_10;
++	int half_duplex;
++#endif
+ };
+ 
+ /* Information about built-in HSS (synchronous serial) interfaces */
+--- a/drivers/net/ethernet/xscale/ixp4xx_eth.c
++++ b/drivers/net/ethernet/xscale/ixp4xx_eth.c
+@@ -610,6 +610,37 @@ static int ixp4xx_phy_connect(struct net
+ 	struct eth_plat_info *plat = port->plat;
+ 	char phy_id[MII_BUS_ID_SIZE + 3];
+ 
++	if (plat->phy == IXP4XX_ETH_PHY_MAX_ADDR) {
++#if 0
++		switch (plat->speed) {
++		case SPEED_10:
++		case SPEED_100:
++			break;
++		default:
++			printk(KERN_ERR "%s: invalid speed (%d)\n",
++					dev->name, plat->speed);
++			return -EINVAL;
++		}
++
++		switch (plat->duplex) {
++		case DUPLEX_HALF:
++		case DUPLEX_FULL:
++			break;
++		default:
++			printk(KERN_ERR "%s: invalid duplex mode (%d)\n",
++					dev->name, plat->duplex);
++			return -EINVAL;
++		}
++		port->speed = plat->speed;
++		port->duplex = plat->duplex;
++#else
++		port->speed = plat->speed_10 ? SPEED_10 : SPEED_100;
++		port->duplex = plat->half_duplex ? DUPLEX_HALF : DUPLEX_FULL;
++#endif
++
++		return 0;
++	}
++
+ 	snprintf(phy_id, MII_BUS_ID_SIZE + 3, PHY_ID_FMT,
+ 		mdio_bus->id, plat->phy);
+ 	port->phydev = phy_connect(dev, phy_id, &ixp4xx_adjust_link,
+@@ -632,21 +663,32 @@ static void ixp4xx_phy_disconnect(struct
+ {
+ 	struct port *port = netdev_priv(dev);
+ 
+-	phy_disconnect(port->phydev);
++	if (port->phydev)
++		phy_disconnect(port->phydev);
+ }
+ 
+ static void ixp4xx_phy_start(struct net_device *dev)
+ {
+ 	struct port *port = netdev_priv(dev);
+ 
+-	phy_start(port->phydev);
++	if (port->phydev) {
++		phy_start(port->phydev);
++	} else {
++		port->link = 1;
++		ixp4xx_update_link(dev);
++	}
+ }
+ 
+ static void ixp4xx_phy_stop(struct net_device *dev)
+ {
+ 	struct port *port = netdev_priv(dev);
+ 
+-	phy_stop(port->phydev);
++	if (port->phydev) {
++		phy_stop(port->phydev);
++	} else {
++		port->link = 0;
++		ixp4xx_update_link(dev);
++	}
+ }
+ 
+ static inline void debug_pkt(struct net_device *dev, const char *func,
+@@ -1048,6 +1090,9 @@ static int eth_ioctl(struct net_device *
+ 			return hwtstamp_get(dev, req);
+ 	}
+ 
++	if (!port->phydev)
++		return -EOPNOTSUPP;
++
+ 	return phy_mii_ioctl(port->phydev, req, cmd);
+ }
+ 
+@@ -1068,18 +1113,30 @@ static void ixp4xx_get_drvinfo(struct ne
+ static int ixp4xx_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+ {
+ 	struct port *port = netdev_priv(dev);
++
++	if (!port->phydev)
++		return -EOPNOTSUPP;
++
+ 	return phy_ethtool_gset(port->phydev, cmd);
+ }
+ 
+ static int ixp4xx_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+ {
+ 	struct port *port = netdev_priv(dev);
++
++	if (!port->phydev)
++		return -EOPNOTSUPP;
++
+ 	return phy_ethtool_sset(port->phydev, cmd);
+ }
+ 
+ static int ixp4xx_nway_reset(struct net_device *dev)
+ {
+ 	struct port *port = netdev_priv(dev);
++
++	if (!port->phydev)
++		return -EOPNOTSUPP;
++
+ 	return phy_start_aneg(port->phydev);
+ }
+ 

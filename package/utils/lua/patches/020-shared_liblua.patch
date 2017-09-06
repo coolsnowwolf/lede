@@ -1,0 +1,140 @@
+--- a/Makefile
++++ b/Makefile
+@@ -42,8 +42,8 @@ PLATS= aix ansi bsd freebsd generic linu
+ 
+ # What to install.
+ TO_BIN= lua luac
+-TO_INC= lua.h luaconf.h lualib.h lauxlib.h ../etc/lua.hpp
+-TO_LIB= liblua.a
++TO_INC= lua.h luaconf.h lualib.h lauxlib.h ../etc/lua.hpp lnum_config.h
++TO_LIB= liblua.a liblua.so.$R
+ TO_MAN= lua.1 luac.1
+ 
+ # Lua version and release.
+@@ -63,6 +63,7 @@ install: dummy
+ 	cd src && $(INSTALL_EXEC) $(TO_BIN) $(INSTALL_BIN)
+ 	cd src && $(INSTALL_DATA) $(TO_INC) $(INSTALL_INC)
+ 	cd src && $(INSTALL_DATA) $(TO_LIB) $(INSTALL_LIB)
++	ln -s liblua.so.$R $(INSTALL_LIB)/liblua.so
+ 	cd doc && $(INSTALL_DATA) $(TO_MAN) $(INSTALL_MAN)
+ 
+ ranlib:
+--- a/src/ldo.h
++++ b/src/ldo.h
+@@ -46,7 +46,7 @@ LUAI_FUNC int luaD_pcall (lua_State *L, 
+ LUAI_FUNC int luaD_poscall (lua_State *L, StkId firstResult);
+ LUAI_FUNC void luaD_reallocCI (lua_State *L, int newsize);
+ LUAI_FUNC void luaD_reallocstack (lua_State *L, int newsize);
+-LUAI_FUNC void luaD_growstack (lua_State *L, int n);
++LUA_API void luaD_growstack (lua_State *L, int n);
+ 
+ LUAI_FUNC void luaD_throw (lua_State *L, int errcode);
+ LUAI_FUNC int luaD_rawrunprotected (lua_State *L, Pfunc f, void *ud);
+--- a/src/lfunc.h
++++ b/src/lfunc.h
+@@ -18,7 +18,7 @@
+                          cast(int, sizeof(TValue *)*((n)-1)))
+ 
+ 
+-LUAI_FUNC Proto *luaF_newproto (lua_State *L);
++LUA_API Proto *luaF_newproto (lua_State *L);
+ LUAI_FUNC Closure *luaF_newCclosure (lua_State *L, int nelems, Table *e);
+ LUAI_FUNC Closure *luaF_newLclosure (lua_State *L, int nelems, Table *e);
+ LUAI_FUNC UpVal *luaF_newupval (lua_State *L);
+--- a/src/lmem.h
++++ b/src/lmem.h
+@@ -38,9 +38,9 @@
+    ((v)=cast(t *, luaM_reallocv(L, v, oldn, n, sizeof(t))))
+ 
+ 
+-LUAI_FUNC void *luaM_realloc_ (lua_State *L, void *block, size_t oldsize,
++LUA_API void *luaM_realloc_ (lua_State *L, void *block, size_t oldsize,
+                                                           size_t size);
+-LUAI_FUNC void *luaM_toobig (lua_State *L);
++LUA_API void *luaM_toobig (lua_State *L);
+ LUAI_FUNC void *luaM_growaux_ (lua_State *L, void *block, int *size,
+                                size_t size_elem, int limit,
+                                const char *errormsg);
+--- a/src/lstring.h
++++ b/src/lstring.h
+@@ -25,7 +25,7 @@
+ 
+ LUAI_FUNC void luaS_resize (lua_State *L, int newsize);
+ LUAI_FUNC Udata *luaS_newudata (lua_State *L, size_t s, Table *e);
+-LUAI_FUNC TString *luaS_newlstr (lua_State *L, const char *str, size_t l);
++LUA_API TString *luaS_newlstr (lua_State *L, const char *str, size_t l);
+ 
+ 
+ #endif
+--- a/src/lundump.h
++++ b/src/lundump.h
+@@ -17,7 +17,7 @@ LUAI_FUNC Proto* luaU_undump (lua_State*
+ LUAI_FUNC void luaU_header (char* h);
+ 
+ /* dump one chunk; from ldump.c */
+-LUAI_FUNC int luaU_dump (lua_State* L, const Proto* f, lua_Writer w, void* data, int strip);
++LUA_API int luaU_dump (lua_State* L, const Proto* f, lua_Writer w, void* data, int strip);
+ 
+ #ifdef luac_c
+ /* print one chunk; from print.c */
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -23,6 +23,7 @@ MYLIBS=
+ PLATS= aix ansi bsd freebsd generic linux macosx mingw posix solaris
+ 
+ LUA_A=	liblua.a
++LUA_SO= liblua.so
+ CORE_O=	lapi.o lcode.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o \
+ 	lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o  \
+ 	lundump.o lvm.o lzio.o lnum.o
+@@ -33,11 +34,12 @@ LUA_T=	lua
+ LUA_O=	lua.o
+ 
+ LUAC_T=	luac
+-LUAC_O=	luac.o print.o
++LUAC_O=	luac.o print.o lopcodes.o
+ 
+ ALL_O= $(CORE_O) $(LIB_O) $(LUA_O) $(LUAC_O)
+-ALL_T= $(LUA_A) $(LUA_T) $(LUAC_T)
++ALL_T= $(LUA_A) $(LUA_SO) $(LUA_T) $(LUAC_T)
+ ALL_A= $(LUA_A)
++ALL_SO= $(LUA_SO)
+ 
+ default: $(PLAT)
+ 
+@@ -47,14 +49,23 @@ o:	$(ALL_O)
+ 
+ a:	$(ALL_A)
+ 
++so:	$(ALL_SO)
++
+ $(LUA_A): $(CORE_O) $(LIB_O)
+ 	$(AR) $@ $(CORE_O) $(LIB_O)	# DLL needs all object files
+ 	$(RANLIB) $@
+ 
+-$(LUA_T): $(LUA_O) $(LUA_A)
+-	$(CC) -o $@ $(MYLDFLAGS) $(LUA_O) $(LUA_A) $(LIBS)
++$(LUA_SO): $(CORE_O) $(LIB_O)
++	$(CC) -o $@.$(PKG_VERSION) -shared -Wl,-soname="$@.$(PKG_VERSION)" $?
++	ln -fs $@.$(PKG_VERSION) $@
++
++$(LUA_T): $(LUA_O) $(LUA_SO)
++	$(CC) -o $@ -L. -llua $(MYLDFLAGS) $(LUA_O) $(LIBS)
++
++$(LUAC_T): $(LUAC_O) $(LUA_SO)
++	$(CC) -o $@ -L. -llua $(MYLDFLAGS) $(LUAC_O) $(LIBS)
+ 
+-$(LUAC_T): $(LUAC_O) $(LUA_A)
++$(LUAC_T)-host: $(LUAC_O) $(LUA_A)
+ 	$(CC) -o $@ $(MYLDFLAGS) $(LUAC_O) $(LUA_A) $(LIBS)
+ 
+ clean:
+@@ -96,7 +107,7 @@ generic:
+ 	$(MAKE) all MYCFLAGS=
+ 
+ linux:
+-	$(MAKE) all MYCFLAGS=-DLUA_USE_LINUX MYLIBS="-Wl,-E -ldl -lreadline -lhistory -lncurses"
++	$(MAKE) all MYCFLAGS+=-DLUA_USE_LINUX MYLIBS="-Wl,-E -ldl -lreadline -lhistory -lncurses"
+ 
+ macosx:
+ 	$(MAKE) all MYCFLAGS=-DLUA_USE_LINUX MYLIBS="-lreadline"

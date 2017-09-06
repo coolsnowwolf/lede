@@ -1,0 +1,160 @@
+--- a/ltmain.sh
++++ b/ltmain.sh
+@@ -443,7 +443,7 @@ opt_warning=:
+ # name if it has been set yet.
+ func_echo ()
+ {
+-    $ECHO "$progname: ${opt_mode+$opt_mode: }$*"
++    $ECHO "OpenWrt-$progname-patched-2.4: ${opt_mode+$opt_mode: }$*"
+ }
+ 
+ # func_verbose arg...
+@@ -469,14 +469,14 @@ func_echo_all ()
+ # Echo program name prefixed message to standard error.
+ func_error ()
+ {
+-    $ECHO "$progname: ${opt_mode+$opt_mode: }"${1+"$@"} 1>&2
++    $ECHO "OpenWrt-$progname-patched-2.4: ${opt_mode+$opt_mode: }"${1+"$@"} 1>&2
+ }
+ 
+ # func_warning arg...
+ # Echo program name prefixed warning message to standard error.
+ func_warning ()
+ {
+-    $opt_warning && $ECHO "$progname: ${opt_mode+$opt_mode: }warning: "${1+"$@"} 1>&2
++    $opt_warning && $ECHO "OpenWrt-$progname-patched-2.4: ${opt_mode+$opt_mode: }warning: "${1+"$@"} 1>&2
+ 
+     # bash bug again:
+     :
+@@ -1416,8 +1416,8 @@ func_infer_tag ()
+ 	# was found and let the user know that the "--tag" command
+ 	# line option must be used.
+ 	if test -z "$tagname"; then
+-	  func_echo "unable to infer tagged configuration"
+-	  func_fatal_error "specify a tag with \`--tag'"
++	  func_echo "defaulting to \`CC'"
++	  func_echo "if this is not correct, specify a tag with \`--tag'"
+ #	else
+ #	  func_verbose "using $tagname tagged configuration"
+ 	fi
+@@ -2953,8 +2953,15 @@ func_mode_install ()
+ 	func_append dir "$objdir"
+ 
+ 	if test -n "$relink_command"; then
++	  # Strip any trailing slash from the destination.
++	  func_stripname '' '/' "$libdir"
++	  s_libdir=$func_stripname_result
++
++	  func_stripname '' '/' "$destdir"
++	  s_destdir=$func_stripname_result
++
+ 	  # Determine the prefix the user has applied to our future dir.
+-	  inst_prefix_dir=`$ECHO "$destdir" | $SED -e "s%$libdir\$%%"`
++	  inst_prefix_dir=`$ECHO "$s_destdir" | $SED -e "s%$s_libdir\$%%"`
+ 
+ 	  # Don't allow the user to place us outside of our expected
+ 	  # location b/c this prevents finding dependent libraries that
+@@ -2962,8 +2969,11 @@ func_mode_install ()
+ 	  # At present, this check doesn't affect windows .dll's that
+ 	  # are installed into $libdir/../bin (currently, that works fine)
+ 	  # but it's something to keep an eye on.
+-	  test "$inst_prefix_dir" = "$destdir" && \
+-	    func_fatal_error "error: cannot install \`$file' to a directory not ending in $libdir"
++	  #
++	  # This breaks install into our staging area.  -PB
++	  #
++	  # test "$inst_prefix_dir" = "$destdir" && \
++	  #   func_fatal_error "error: cannot install \`$file' to a directory not ending in $libdir"
+ 
+ 	  if test -n "$inst_prefix_dir"; then
+ 	    # Stick the inst_prefix_dir data into the link command.
+@@ -2972,6 +2982,9 @@ func_mode_install ()
+ 	    relink_command=`$ECHO "$relink_command" | $SED "s%@inst_prefix_dir@%%"`
+ 	  fi
+ 
++	  relink_command=`$ECHO "$relink_command" | $SED "s%-L[[:space:]]*/lib[^[:space:]]*%%"`
++	  relink_command=`$ECHO "$relink_command" | $SED "s%-L[[:space:]]*/usr/lib[^[:space:]]*%%"`
++
+ 	  func_warning "relinking \`$file'"
+ 	  func_show_eval "$relink_command" \
+ 	    'func_fatal_error "error: relink \`$file'\'' with the above command before installing it"'
+@@ -6504,8 +6517,12 @@ func_mode_link ()
+ 	    absdir="$abs_ladir"
+ 	    libdir="$abs_ladir"
+ 	  else
+-	    dir="$lt_sysroot$libdir"
+-	    absdir="$lt_sysroot$libdir"
++	    # Adding 'libdir' from the .la file to our library search paths
++	    # breaks crosscompilation horribly.  We cheat here and don't add
++	    # it, instead adding the path where we found the .la.  -CL
++	    dir="$lt_sysroot$abs_ladir"
++	    absdir="$abs_ladir"
++	    libdir="$abs_ladir"
+ 	  fi
+ 	  test "X$hardcode_automatic" = Xyes && avoidtemprpath=yes
+ 	else
+@@ -6683,7 +6700,7 @@ func_mode_link ()
+ 	  *)
+ 	    if test "$installed" = no; then
+ 	      func_append notinst_deplibs " $lib"
+-	      need_relink=yes
++	      need_relink=no
+ 	    fi
+ 	    ;;
+ 	  esac
+@@ -6887,7 +6904,6 @@ func_mode_link ()
+ 	       test "$hardcode_direct_absolute" = no; then
+ 	      add="$libdir/$linklib"
+ 	    elif test "$hardcode_minus_L" = yes; then
+-	      add_dir="-L$libdir"
+ 	      add="-l$name"
+ 	    elif test "$hardcode_shlibpath_var" = yes; then
+ 	      case :$finalize_shlibpath: in
+@@ -6903,8 +6919,6 @@ func_mode_link ()
+ 		add="$libdir/$linklib"
+ 	      fi
+ 	    else
+-	      # We cannot seem to hardcode it, guess we'll fake it.
+-	      add_dir="-L$libdir"
+ 	      # Try looking first in the location we're being installed to.
+ 	      if test -n "$inst_prefix_dir"; then
+ 		case $libdir in
+@@ -7059,7 +7073,17 @@ func_mode_link ()
+ 		  fi
+ 		  ;;
+ 		*)
+-		  path="-L$absdir/$objdir"
++		  # OE sets installed=no in staging. We need to look in $objdir and $absdir,
++		  # preferring $objdir. RP 31/04/2008
++		  if test -f "$absdir/$objdir/$depdepl" ; then
++		    depdepl="$absdir/$objdir/$depdepl"
++		    path="-L$absdir/$objdir"
++		  elif test -f "$absdir/$depdepl" ; then
++		    depdepl="$absdir/$depdepl"
++		    path="-L$absdir"
++		  else
++		    path="-L$absdir/$objdir"
++		  fi
+ 		  ;;
+ 		esac
+ 		else
+@@ -8050,7 +8074,7 @@ EOF
+ 	    elif test -n "$runpath_var"; then
+ 	      case "$perm_rpath " in
+ 	      *" $libdir "*) ;;
+-	      *) func_apped perm_rpath " $libdir" ;;
++	      *) func_append perm_rpath " $libdir" ;;
+ 	      esac
+ 	    fi
+ 	  done
+@@ -9257,6 +9281,10 @@ EOF
+ 	    # Replace all uninstalled libtool libraries with the installed ones
+ 	    newdependency_libs=
+ 	    for deplib in $dependency_libs; do
++	      # Replacing uninstalled with installed can easily break crosscompilation,
++	      # since the installed path is generally the wrong architecture.  -CL
++	      newdependency_libs="$newdependency_libs $deplib"
++	      continue
+ 	      case $deplib in
+ 	      *.la)
+ 		func_basename "$deplib"

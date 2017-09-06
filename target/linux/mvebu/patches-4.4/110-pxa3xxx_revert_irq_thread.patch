@@ -1,0 +1,69 @@
+Revert "mtd: pxa3xx-nand: handle PIO in threaded interrupt"
+
+This reverts commit 24542257a3b987025d4b998ec2d15e556c98ad3f
+This upstream change has been causing spurious timeouts on accesses
+to the NAND flash if something else on the system is causing
+significant latency.
+
+Nothing guarantees that the thread will run in time, so the
+usual timeout is unreliable.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+
+--- a/drivers/mtd/nand/pxa3xx_nand.c
++++ b/drivers/mtd/nand/pxa3xx_nand.c
+@@ -765,24 +765,11 @@ static void start_data_dma(struct pxa3xx
+ 		__func__, direction, info->dma_cookie, info->sg.length);
+ }
+ 
+-static irqreturn_t pxa3xx_nand_irq_thread(int irq, void *data)
+-{
+-	struct pxa3xx_nand_info *info = data;
+-
+-	handle_data_pio(info);
+-
+-	info->state = STATE_CMD_DONE;
+-	nand_writel(info, NDSR, NDSR_WRDREQ | NDSR_RDDREQ);
+-
+-	return IRQ_HANDLED;
+-}
+-
+ static irqreturn_t pxa3xx_nand_irq(int irq, void *devid)
+ {
+ 	struct pxa3xx_nand_info *info = devid;
+ 	unsigned int status, is_completed = 0, is_ready = 0;
+ 	unsigned int ready, cmd_done;
+-	irqreturn_t ret = IRQ_HANDLED;
+ 
+ 	if (info->cs == 0) {
+ 		ready           = NDSR_FLASH_RDY;
+@@ -824,8 +811,7 @@ static irqreturn_t pxa3xx_nand_irq(int i
+ 		} else {
+ 			info->state = (status & NDSR_RDDREQ) ?
+ 				      STATE_PIO_READING : STATE_PIO_WRITING;
+-			ret = IRQ_WAKE_THREAD;
+-			goto NORMAL_IRQ_EXIT;
++			handle_data_pio(info);
+ 		}
+ 	}
+ 	if (status & cmd_done) {
+@@ -870,7 +856,7 @@ static irqreturn_t pxa3xx_nand_irq(int i
+ 	if (is_ready)
+ 		complete(&info->dev_ready);
+ NORMAL_IRQ_EXIT:
+-	return ret;
++	return IRQ_HANDLED;
+ }
+ 
+ static inline int is_buf_blank(uint8_t *buf, size_t len)
+@@ -1849,9 +1835,7 @@ static int alloc_nand_resource(struct pl
+ 	/* initialize all interrupts to be disabled */
+ 	disable_int(info, NDSR_MASK);
+ 
+-	ret = request_threaded_irq(irq, pxa3xx_nand_irq,
+-				   pxa3xx_nand_irq_thread, IRQF_ONESHOT,
+-				   pdev->name, info);
++	ret = request_irq(irq, pxa3xx_nand_irq, 0, pdev->name, info);
+ 	if (ret < 0) {
+ 		dev_err(&pdev->dev, "failed to request IRQ\n");
+ 		goto fail_free_buf;

@@ -1,0 +1,100 @@
+#!/bin/sh
+# Copyright (C) 2006-2010 OpenWrt.org
+# Copyright (C) 2010 Vertical Communications
+
+fs_wait_for_key () {
+	local timeout=$3
+	local timer
+	local do_keypress
+	local keypress_true="$(mktemp)"
+	local keypress_wait="$(mktemp)"
+	local keypress_sec="$(mktemp)"
+	if [ -z "$keypress_wait" ]; then
+		keypress_wait=/tmp/.keypress_wait
+		touch $keypress_wait
+	fi
+	if [ -z "$keypress_true" ]; then
+		keypress_true=/tmp/.keypress_true
+		touch $keypress_true
+	fi
+	if [ -z "$keypress_sec" ]; then
+		keypress_sec=/tmp/.keypress_sec
+		touch $keypress_sec
+	fi
+
+	trap "echo 'true' >$keypress_true; lock -u $keypress_wait ; rm -f $keypress_wait" INT
+	trap "echo 'true' >$keypress_true; lock -u $keypress_wait ; rm -f $keypress_wait" USR1
+
+	[ -n "$timeout" ] || timeout=1
+	[ $timeout -ge 1 ] || timeout=1
+	timer=$timeout
+	lock $keypress_wait
+	{
+		while [ $timer -gt 0 ]; do
+			echo "$timer" >$keypress_sec
+			timer=$(($timer - 1))
+			sleep 1
+		done
+		lock -u $keypress_wait
+		rm -f $keypress_wait
+	} &
+
+	[ "$pi_preinit_no_failsafe" != "y" ] && echo "Press the [$1] key and hit [enter] $2"
+	echo "Press the [1], [2], [3] or [4] key and hit [enter] to select the debug level"
+	# if we're on the console we wait for input
+	{
+		while [ -r $keypress_wait ]; do
+			timer="$(cat $keypress_sec)"
+
+			[ -n "$timer" ] || timer=1
+			timer="${timer%%\ *}"
+			[ $timer -ge 1 ] || timer=1
+			do_keypress=""
+			{
+				read -t "$timer" do_keypress
+				case "$do_keypress" in
+				$1)
+					echo "true" >$keypress_true
+					;;
+				1 | 2 | 3 | 4)
+					echo "$do_keypress" >/tmp/debug_level
+					;;
+				*)
+					continue;
+					;;
+				esac
+				lock -u $keypress_wait
+				rm -f $keypress_wait
+			}
+		done
+	}
+	lock -w $keypress_wait
+
+	keypressed=1
+	[ "$(cat $keypress_true)" = "true" ] && keypressed=0
+
+	rm -f $keypress_true
+	rm -f $keypress_wait
+	rm -f $keypress_sec
+
+	return $keypressed
+}
+
+failsafe_wait() {
+	FAILSAFE=
+	[ "$pi_preinit_no_failsafe" == "y" ] && {
+		fs_wait_for_key "" "" $fs_failsafe_wait_timeout
+		return
+	}
+	grep -q 'failsafe=' /proc/cmdline && FAILSAFE=true && export FAILSAFE
+	if [ "$FAILSAFE" != "true" ]; then
+		pi_failsafe_net_message=true
+		preinit_net_echo "Please press button now to enter failsafe"
+		pi_failsafe_net_message=false
+		fs_wait_for_key f 'to enter failsafe mode' $fs_failsafe_wait_timeout && FAILSAFE=true
+		[ -f "/tmp/failsafe_button" ] && FAILSAFE=true && echo "- failsafe button "`cat /tmp/failsafe_button`" was pressed -"
+		[ "$FAILSAFE" = "true" ] && export FAILSAFE && touch /tmp/failsafe
+	fi
+}
+
+boot_hook_add preinit_main failsafe_wait

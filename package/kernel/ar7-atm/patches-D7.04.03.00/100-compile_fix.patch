@@ -1,0 +1,768 @@
+--- a/cppi_cpaal5.c
++++ b/cppi_cpaal5.c
+@@ -352,7 +352,7 @@ static int halRxReturn(HAL_RECEIVEINFO *
+            {
+             /* malloc failed, add this RCB to Needs Buffer List */
+             TempRcb->FragCount = 1;                                             /*MJH+030417*/
+-            (HAL_RCB *)TempRcb->Eop = TempRcb;                                  /* GSG +030430 */
++            TempRcb->Eop = TempRcb;                                             /* GSG +030430 */
+ 
+             if(HalDev->NeedsCount < MAX_NEEDS)                                  /* +MJH 030410 */
+               {                                                                 /* +MJH 030410 */
+--- a/dsl_hal_api.c
++++ b/dsl_hal_api.c
+@@ -254,15 +254,15 @@
+ *                            of phyEnableDisableWord & phyControlWord to avoid changing API struct
+ *                            which may cause change required to application data structure.
+ ******************************************************************************/
+-#include <dev_host_interface.h>
+-#include <dsl_hal_register.h>
+-#include <dsl_hal_support.h>
++#include "dev_host_interface.h"
++#include "dsl_hal_register.h"
++#include "dsl_hal_support.h"
+ 
+ #ifndef NO_ADV_STATS
+-#include <dsl_hal_logtable.h>
++#include "dsl_hal_logtable.h"
+ #endif
+ 
+-#include <dsl_hal_version.h>
++#include "dsl_hal_version.h"
+ 
+ //  UR8_MERGE_START CQ11054   Jack Zhang
+ static unsigned int highprecision_selected = 0;  //By default we use low precision for backward compt.
+--- a/dsl_hal_support.c
++++ b/dsl_hal_support.c
+@@ -140,9 +140,9 @@
+ *                                          oamFeature are overriden
+ // UR8_MERGE_END CQ10774 Ram
+ *******************************************************************************/
+-#include <dev_host_interface.h>
+-#include <dsl_hal_register.h>
+-#include <dsl_hal_support.h>
++#include "dev_host_interface.h"
++#include "dsl_hal_register.h"
++#include "dsl_hal_support.h"
+ 
+ #define NUM_READ_RETRIES 3
+ static unsigned int dslhal_support_adsl2ByteSwap32(unsigned int in32Bits);
+--- a/dsl_hal_support.h
++++ b/dsl_hal_support.h
+@@ -49,7 +49,7 @@
+ *    04Nov05     0.11.00            CPH    Fixed T1413 mode got Zero DS/US rate when DSL_BIT_TMODE is set.
+ *******************************************************************************/
+ 
+-#include <dsl_hal_api.h>
++#include "dsl_hal_api.h"
+ 
+ #define virtual2Physical(a)    (((int)a)&~0xe0000000)
+ /* External Function Prototype Declarations */
+--- a/Makefile
++++ b/Makefile
+@@ -1,18 +1,9 @@
+-# File: drivers/atm/ti_evm3/Makefile
+ #
+-# Makefile for the Texas Instruments EVM3 ADSL/ATM driver.
++# Makefile for the TIATM device driver.
+ #
+-#
+-# Copyright (c) 2000 Texas Instruments Incorporated.
+-# 	Jeff Harrell (jharrell@telogy.com)
+-# 	Viren Balar  (vbalar@ti.com)
+-# 	Victor Wells (vwells@telogy.com)
+-#
+-include $(TOPDIR)/Rules.make
+-
+-
+-
+-
+-
+-
+ 
++CONFIG_SANGAM_ATM=m
++#EXTRA_CFLAGS += -DEL -I. -DPOST_SILICON -DCOMMON_NSP -DCONFIG_LED_MODULE -DDEREGISTER_LED -DNO_ACT
++EXTRA_CFLAGS += -DEL -I$(PWD) -DPOST_SILICON -DCOMMON_NSP -DNO_ACT -D__NO__VOICE_PATCH__ -DEL
++obj-$(CONFIG_SANGAM_ATM) := tiatm.o
++tiatm-objs += cpsar.o aal5sar.o tn7sar.o tn7atm.o tn7dsl.o dsl_hal_api.o dsl_hal_support.o
+--- a/tn7atm.c
++++ b/tn7atm.c
+@@ -61,7 +61,6 @@
+  *    UR8_MERGE_END   CQ11057*
+ *********************************************************************************************/
+ 
+-#include <linux/config.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/init.h>
+@@ -69,11 +68,14 @@
+ #include <linux/delay.h>
+ #include <linux/spinlock.h>
+ #include <linux/smp_lock.h>
+-#include <asm/io.h>
+-#include <asm/mips-boards/prom.h>
+ #include <linux/proc_fs.h>
+ #include <linux/string.h>
+ #include <linux/ctype.h>
++
++#include <asm/io.h>
++#include <asm/ar7/ar7.h>
++#include <asm/ar7/prom.h>
++
+ #include "dsl_hal_api.h"
+ #include "tn7atm.h"
+ #include "tn7api.h"
+@@ -82,6 +84,7 @@
+ #include "dsl_hal_register.h"
+ 
+ #ifdef MODULE
++MODULE_LICENSE("GPL");
+ MODULE_DESCRIPTION ("Tnetd73xx ATM Device Driver");
+ MODULE_AUTHOR ("Zhicheng Tang");
+ #endif
+@@ -100,9 +103,9 @@ MODULE_AUTHOR ("Zhicheng Tang");
+ 
+ /*end of externs */
+ 
+-#ifndef TI_STATIC_ALLOCATIONS
+-#define TI_STATIC_ALLOCATIONS
+-#endif
++//#ifndef TI_STATIC_ALLOCATIONS
++//#define TI_STATIC_ALLOCATIONS
++//#endif
+ 
+ #define tn7atm_kfree_skb(x)     dev_kfree_skb(x)
+ 
+@@ -114,7 +117,7 @@ static int EnableQoS = FALSE;
+ /* prototypes */
+ static int tn7atm_set_can_support_adsl2 (int can);
+ 
+-static int tn7atm_open (struct atm_vcc *vcc, short vpi, int vci);
++static int tn7atm_open (struct atm_vcc *vcc);
+ 
+ static void tn7atm_close (struct atm_vcc *vcc);
+ 
+@@ -257,13 +260,12 @@ static const struct atmdev_ops tn7atm_op
+         getsockopt:     NULL,
+         setsockopt:     NULL,
+         send:           tn7atm_send,
+-        sg_send:        NULL,
+         phy_put:        NULL,
+         phy_get:        NULL,
+         change_qos:     tn7atm_change_qos,
+ };
+ 
+-const char drv_proc_root_folder[] = "avalanche/";
++const char drv_proc_root_folder[] = "avalanche";
+ static struct proc_dir_entry *root_proc_dir_entry = NULL;
+ #define DRV_PROC_MODE 0644
+ static int proc_root_already_exists = TRUE;
+@@ -559,56 +561,6 @@ static int turbodsl_check_priority_type(
+ 
+ /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  *
+- *  Function: int tn7atm_walk_vccs(struct atm_dev *dev, short *vcc, int *vci)
+- *
+- *  Description: retrieve VPI/VCI for connection
+- *
+- *~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+-static int tn7atm_walk_vccs (struct atm_vcc *vcc, short *vpi, int *vci)
+-{
+-  struct atm_vcc *walk;
+-
+-  /*
+-   * find a free VPI
+-   */
+-  if (*vpi == ATM_VPI_ANY)
+-  {
+-
+-    for (*vpi = 0, walk = vcc->dev->vccs; walk; walk = walk->next)
+-    {
+-
+-      if ((walk->vci == *vci) && (walk->vpi == *vpi))
+-      {
+-        (*vpi)++;
+-        walk = vcc->dev->vccs;
+-      }
+-    }
+-  }
+-
+-  /*
+-   * find a free VCI
+-   */
+-  if (*vci == ATM_VCI_ANY)
+-  {
+-
+-    for (*vci = ATM_NOT_RSV_VCI, walk = vcc->dev->vccs; walk;
+-         walk = walk->next)
+-    {
+-
+-      if ((walk->vpi = *vpi) && (walk->vci == *vci))
+-      {
+-        *vci = walk->vci + 1;
+-        walk = vcc->dev->vccs;
+-      }
+-    }
+-  }
+-
+-  return 0;
+-}
+-
+-
+-/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+- *
+  *  Function: int tn7atm_sar_irq(void)
+  *
+  *  Description: tnetd73xx SAR interrupt.
+@@ -693,7 +645,7 @@ static int __init tn7atm_irq_request (st
+    * Register SAR interrupt
+    */
+   priv->sar_irq = LNXINTNUM (ATM_SAR_INT);      /* Interrupt line # */
+-  if (request_irq (priv->sar_irq, tn7atm_sar_irq, SA_INTERRUPT, "SAR ", dev))
++  if (request_irq (priv->sar_irq, tn7atm_sar_irq, IRQF_DISABLED, "SAR ", dev))
+     printk ("Could not register tn7atm_sar_irq\n");
+ 
+   /*
+@@ -704,14 +656,14 @@ static int __init tn7atm_irq_request (st
+   {
+     def_sar_inter_pace = os_atoi (ptr);
+   }
+-  avalanche_request_pacing (priv->sar_irq, ATM_SAR_INT_PACING_BLOCK_NUM,
+-                            def_sar_inter_pace);
++/*  avalanche_request_pacing (priv->sar_irq, ATM_SAR_INT_PACING_BLOCK_NUM,
++                            def_sar_inter_pace);*/
+ 
+   /*
+    * Reigster Receive interrupt A
+    */
+   priv->dsl_irq = LNXINTNUM (ATM_DSL_INT);      /* Interrupt line # */
+-  if (request_irq (priv->dsl_irq, tn7atm_dsl_irq, SA_INTERRUPT, "DSL ", dev))
++  if (request_irq (priv->dsl_irq, tn7atm_dsl_irq, IRQF_DISABLED, "DSL ", dev))
+     printk ("Could not register tn7atm_dsl_irq\n");
+ 
+ /***** VRB Tasklet Mode ****/
+@@ -875,11 +827,15 @@ static int __init tn7atm_get_ESI (struct
+ #define ATM_VBR_RT     5
+ #endif
+ 
+-int tn7atm_open (struct atm_vcc *vcc, short vpi, int vci)
++int tn7atm_open (struct atm_vcc *vcc)
+ {
+   tn7atm_activate_vc_parm_t tn7atm_activate_vc_parm;
+   int rc;
+   //int flags;
++  tn7atm_activate_vc_parm.pcr = 0x20000;
++  tn7atm_activate_vc_parm.scr = 0x20000;
++  tn7atm_activate_vc_parm.mbs = 0x20000;
++  tn7atm_activate_vc_parm.cdvt = 10000;
+ 
+   dgprintf(1, "tn7atm_open()\n");
+ 
+@@ -891,24 +847,18 @@ int tn7atm_open (struct atm_vcc *vcc, sh
+     return -1;
+   }
+ 
+-  MOD_INC_USE_COUNT;
++//  MOD_INC_USE_COUNT;
+ 
+-  /* find a free VPI/VCI */
+-  tn7atm_walk_vccs(vcc, &vpi, &vci);
+-
+-  vcc->vpi = vpi;
+-  vcc->vci = vci;
+-
+-  if ((vci == ATM_VCI_UNSPEC) || (vpi == ATM_VCI_UNSPEC))
++  if ((vcc->vci == ATM_VCI_UNSPEC) || (vcc->vpi == ATM_VCI_UNSPEC))
+   {
+-    MOD_DEC_USE_COUNT;
++//    MOD_DEC_USE_COUNT;
+     return -EBUSY;
+   }
+ 
+-  tn7atm_activate_vc_parm.vpi = vpi;
+-  tn7atm_activate_vc_parm.vci = vci;
++  tn7atm_activate_vc_parm.vpi = vcc->vpi;
++  tn7atm_activate_vc_parm.vci = vcc->vci;
+ 
+-  if ((vpi == CLEAR_EOC_VPI) && (vci == CLEAR_EOC_VCI))
++  if ((vcc->vpi == CLEAR_EOC_VPI) && (vcc->vci == CLEAR_EOC_VCI))
+   {
+     /* always use (max_dma_chan+1) for clear eoc */
+     tn7atm_activate_vc_parm.chan = EOC_DMA_CHAN;
+@@ -916,7 +866,7 @@ int tn7atm_open (struct atm_vcc *vcc, sh
+     /* check to see whether clear eoc is opened or not */
+     if (tn7atm_activate_vc_parm.priv->lut[tn7atm_activate_vc_parm.chan].inuse)
+     {
+-      MOD_DEC_USE_COUNT;
++//      MOD_DEC_USE_COUNT;
+       printk("tn7atm_open: Clear EOC channel (dmachan=%d) already in use.\n", tn7atm_activate_vc_parm.chan);
+       return -EBUSY;
+     }
+@@ -925,7 +875,7 @@ int tn7atm_open (struct atm_vcc *vcc, sh
+     if (rc)
+     {
+       printk("tn7atm_open: failed to setup clear_eoc\n");
+-      MOD_DEC_USE_COUNT;
++//      MOD_DEC_USE_COUNT;
+       return -EBUSY;
+     }
+     tn7atm_set_lut(tn7atm_activate_vc_parm.priv,vcc, tn7atm_activate_vc_parm.chan);
+@@ -934,17 +884,17 @@ int tn7atm_open (struct atm_vcc *vcc, sh
+   }
+   else  /* PVC channel setup */
+   {
+-    if ((vpi==REMOTE_MGMT_VPI) && (vci==REMOTE_MGMT_VCI))
++    if ((vcc->vpi==REMOTE_MGMT_VPI) && (vcc->vci==REMOTE_MGMT_VCI))
+     {
+       tn7atm_activate_vc_parm.chan = 14;   /* always use chan 14 for MII PVC-base romote mgmt */
+     }
+     else
+     {
+-       rc = tn7atm_lut_find(vpi, vci);
++       rc = tn7atm_lut_find(vcc->vpi, vcc->vci);
+       /* check to see whether PVC is opened or not */
+       if(ATM_NO_DMA_CHAN != rc)
+       {
+-        MOD_DEC_USE_COUNT;
++//        MOD_DEC_USE_COUNT;
+         printk("PVC already opened. dmachan = %d\n", rc);
+         return -EBUSY;
+       }
+@@ -976,6 +926,7 @@ int tn7atm_open (struct atm_vcc *vcc, sh
+        tn7atm_activate_vc_parm.priority = 2;
+        break;
+ 
++#if 0
+      case ATM_VBR: /* Variable Bit Rate-Non RealTime*/
+        tn7atm_activate_vc_parm.qos = 1;
+        tn7atm_activate_vc_parm.priority = 1;
+@@ -997,6 +948,7 @@ int tn7atm_open (struct atm_vcc *vcc, sh
+            tn7atm_activate_vc_parm.mbs = vcc->qos.txtp.max_pcr;
+        tn7atm_activate_vc_parm.cdvt = vcc->qos.txtp.max_cdv;
+        break;
++#endif
+ 
+      default:
+          tn7atm_activate_vc_parm.qos = 2;
+@@ -1024,7 +976,7 @@ int tn7atm_open (struct atm_vcc *vcc, sh
+    if (rc < 0)
+    {
+       printk("failed to activate hw channel\n");
+-      MOD_DEC_USE_COUNT;
++//      MOD_DEC_USE_COUNT;
+       tn7atm_lut_clear(vcc, tn7atm_activate_vc_parm.chan);
+       //spin_unlock_irqrestore(&chan_init_lock, flags);
+       return -EBUSY;
+@@ -1114,7 +1066,7 @@ void tn7atm_close (struct atm_vcc *vcc)
+   tn7atm_lut_clear (vcc, dmachan);
+   //spin_unlock_irqrestore (&closeLock, closeFlag);
+ 
+-  MOD_DEC_USE_COUNT;
++//  MOD_DEC_USE_COUNT;
+ 
+   dgprintf (1, "Leave tn7atm_close\n");
+ }
+@@ -1528,8 +1480,7 @@ int tn7atm_receive (void *os_dev, int ch
+                                  * firewall is on */
+ 
+   dgprintf (3, "pushing the skb...\n");
+-
+-  skb->stamp = vcc->timestamp = xtime;
++  __net_timestamp(skb);
+ 
+   xdump ((unsigned char *) skb->data, skb->len, 5);
+ 
+@@ -1725,8 +1676,7 @@ static void tn7atm_exit (void)
+ 
+   kfree (dev->dev_data);
+ 
+-  // atm_dev_deregister (dev);
+-  shutdown_atm_dev (dev);
++  atm_dev_deregister (dev);
+ 
+   /*
+    * remove proc entries
+@@ -1885,9 +1835,6 @@ static int __init tn7atm_detect (void)
+   /*
+    * Set up proc entry for atm stats
+    */
+-  if (tn7atm_xlate_proc_name
+-      (drv_proc_root_folder, &root_proc_dir_entry, &residual))
+-  {
+     printk ("Creating new root folder %s in the proc for the driver stats \n",
+             drv_proc_root_folder);
+     root_proc_dir_entry = proc_mkdir (drv_proc_root_folder, NULL);
+@@ -1897,7 +1844,6 @@ static int __init tn7atm_detect (void)
+       return -ENOMEM;
+     }
+     proc_root_already_exists = FALSE;
+-  }
+ 
+   /*
+    * AV: Clean-up. Moved all the definitions to the data structure.
+@@ -2479,7 +2425,5 @@ static int tn7atm_proc_qos_write(struct
+     return count;
+ }
+ 
+-#ifdef MODULE
+ module_init (tn7atm_detect);
+ module_exit (tn7atm_exit);
+-#endif /* MODULE */
+--- a/tn7atm.h
++++ b/tn7atm.h
+@@ -19,7 +19,8 @@
+ //#include  "mips_support.h"
+ #include  <linux/list.h>
+ 
+-#include <linux/config.h>
++#define MIPS_EXCEPTION_OFFSET 8
++#define LNXINTNUM(x)((x) + MIPS_EXCEPTION_OFFSET)
+ 
+ #ifdef CONFIG_MODVERSIONS
+ #include <linux/modversions.h>
+--- a/tn7dsl.c
++++ b/tn7dsl.c
+@@ -94,7 +94,6 @@
+ *  1/02/07  JZ     CQ11054: Data Precision and Range Changes for TR-069 Conformance
+ *  UR8_MERGE_END   CQ11054*
+  *********************************************************************************************/
+-#include <linux/config.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/init.h>
+@@ -102,8 +101,6 @@
+ #include <linux/delay.h>
+ #include <linux/spinlock.h>
+ #include <linux/smp_lock.h>
+-#include <asm/io.h>
+-#include <asm/mips-boards/prom.h>
+ #include <linux/proc_fs.h>
+ #include <linux/string.h>
+ #include <linux/ctype.h>
+@@ -111,6 +108,12 @@
+ #include <linux/timer.h>
+ #include <linux/vmalloc.h>
+ #include <linux/file.h>
++#include <linux/firmware.h>
++
++#include <asm/io.h>
++#include <asm/ar7/ar7.h>
++#include <asm/ar7/prom.h>
++
+ /* Modules specific header files */
+ #include "tn7atm.h"
+ #include "tn7api.h"
+@@ -173,7 +176,7 @@ led_reg_t ledreg[2];
+ static struct led_funcs ledreg[2];
+ #endif
+ 
+-#define DEV_DSLMOD       1
++#define DEV_DSLMOD       CTL_UNNUMBERED
+ #define MAX_STR_SIZE     256
+ #define DSL_MOD_SIZE     256
+ 
+@@ -299,7 +302,7 @@ static PITIDSLHW_T    pIhw;
+ static volatile int bshutdown;
+ static char info[MAX_STR_SIZE];
+ /* Used for DSL Polling enable */
+-static DECLARE_MUTEX_LOCKED (adsl_sem_overlay);
++static struct semaphore adsl_sem_overlay;
+ 
+ //kthread_t overlay_thread;
+ /* end of module wide declars */
+@@ -323,6 +326,14 @@ static int tn7dsl_proc_snr_print (char *
+ #define gDot1(a) ((a>0)?(a%10):((-a)%10))
+ //  UR8_MERGE_END   CQ11054*
+ 
++int avalanche_request_intr_pacing(int irq_nr, unsigned int blk_num,
++                            unsigned int pace_value)
++{
++	printk("avalanche_request_pacing(%d, %u, %u); // not implemented\n", irq_nr, blk_num, pace_value);
++	return 0;
++}
++
++
+ int os_atoi(const char *pStr)
+ {
+   int MulNeg = (*pStr == '-' ? -1 : 1);
+@@ -359,39 +370,6 @@ void dprintf (int uDbgLevel, char *szFmt
+ #endif
+ }
+ 
+-int strcmp(const char *s1, const char *s2)
+-{
+-
+-  int size = strlen(s1);
+-
+-  return(strncmp(s1, s2, size));
+-}
+-
+-int strncmp(const char *s1, const char *s2, size_t size)
+-{
+-  int i = 0;
+-  int max_size = (int)size;
+-
+-  while((s1[i] != 0) && i < max_size)
+-  {
+-    if(s2[i] == 0)
+-    {
+-      return -1;
+-    }
+-    if(s1[i] != s2[i])
+-    {
+-       return 1;
+-    }
+-    i++;
+-  }
+-  if(s2[i] != 0)
+-  {
+-    return 1;
+-  }
+-
+-  return 0;
+-}
+-
+ // * UR8_MERGE_START CQ10640   Jack Zhang
+ int tn7dsl_dump_dsp_memory(char *input_str) //cph99
+   {
+@@ -441,101 +419,74 @@ unsigned int shim_osGetCpuFrequency(void
+   return CpuFrequency;
+ }
+ 
+-int shim_osLoadFWImage(unsigned char *ptr)
++static void avsar_release(struct device *dev)
+ {
+-  unsigned int bytesRead;
+-  mm_segment_t  oldfs;
+-  static struct file *filp;
+-  unsigned int imageLength=0x5ffff;
+-
+-
+-  dgprintf(4, "tn7dsl_read_dsp()\n");
+-
+-  dgprintf(4,"open file %s\n", DSP_FIRMWARE_PATH);
+-
+-  filp=filp_open(DSP_FIRMWARE_PATH,00,O_RDONLY);
+-  if(filp ==NULL)
+-  {
+-    printk("Failed: Could not open DSP binary file\n");
+-          return -1;
+-  }
+-
+-  if (filp->f_dentry != NULL)
+-  {
+-    if (filp->f_dentry->d_inode != NULL)
+-    {
+-      printk ("DSP binary filesize = %d bytes\n",
+-              (int) filp->f_dentry->d_inode->i_size);
+-      imageLength = (unsigned int)filp->f_dentry->d_inode->i_size + 0x200;
+-    }
+-  }
+-
+-  if (filp->f_op->read==NULL)
+-          return -1;  /* File(system) doesn't allow reads */
+-
+-  /*
+-   * Disable parameter checking
+-   */
+-  oldfs = get_fs();
+-  set_fs(KERNEL_DS);
+-
+-  /*
+-   * Now read bytes from postion "StartPos"
+-   */
+-  filp->f_pos = 0;
+-
+-  bytesRead = filp->f_op->read(filp,ptr,imageLength,&filp->f_pos);
+-
+-  dgprintf(4,"file length = %d\n", bytesRead);
+-
+-  set_fs(oldfs);
+-
+-  /*
+-   * Close the file
+-   */
+-  fput(filp);
+-
+-  return bytesRead;
++	printk(KERN_DEBUG "avsar firmware released\n");
+ }
+ 
++static struct device avsar = {
++	.bus_id    = "vlynq",
++	.release   = avsar_release,
++};
+ 
+-unsigned int shim_read_overlay_page (void *ptr, unsigned int secOffset,
+-                                     unsigned int secLength)
++int shim_osLoadFWImage(unsigned char *ptr)
+ {
+-  unsigned int bytesRead;
+-  mm_segment_t  oldfs;
+-  struct file *filp;
+-
+-  dgprintf(4,"shim_read_overlay_page\n");
+-  //dgprintf(4,"sec offset=%d, sec length =%d\n", secOffset, secLength);
++	const struct firmware *fw_entry;
++	size_t size;
+ 
+-  filp=filp_open(DSP_FIRMWARE_PATH,00,O_RDONLY);
+-  if(filp ==NULL)
+-  {
+-    printk("Failed: Could not open DSP binary file\n");
+-          return -1;
+-  }
+-
+-  if (filp->f_op->read==NULL)
+-          return -1;  /* File(system) doesn't allow reads */
+-
+-  /*
+-   * Now read bytes from postion "StartPos"
+-   */
+-
+-  if(filp->f_op->llseek)
+-    filp->f_op->llseek(filp,secOffset, 0);
+-  oldfs = get_fs();
+-  set_fs(KERNEL_DS);
+-  filp->f_pos = secOffset;
+-  bytesRead = filp->f_op->read(filp,ptr,secLength,&filp->f_pos);
+-
+-  set_fs(oldfs);
+-  /*
+-   * Close the file
+-   */
+-  fput(filp);
+-  return bytesRead;
++	printk("requesting firmware image \"ar0700xx.bin\"\n");
++	if(device_register(&avsar) < 0) {
++		printk(KERN_ERR
++			"avsar: device_register fails\n");
++		return -1;
++	}
++
++	if(request_firmware(&fw_entry, "ar0700xx.bin", &avsar)) {
++		printk(KERN_ERR
++			"avsar: Firmware not available\n");
++		device_unregister(&avsar);
++		return -1;
++	}
++	size = fw_entry->size;
++	device_unregister(&avsar);
++	if(size > 0x5ffff) {
++			printk(KERN_ERR
++			"avsar: Firmware too big (%d bytes)\n", size);
++			release_firmware(fw_entry);
++			return -1;
++		}
++	memcpy(ptr, fw_entry->data, size);
++	release_firmware(fw_entry);
++	return size;
++}
++
++unsigned int shim_read_overlay_page(void *ptr, unsigned int secOffset, unsigned int secLength)
++{
++	const struct firmware *fw_entry;
++
++	printk("requesting firmware image \"ar0700xx.bin\"\n");
++	if(device_register(&avsar) < 0) {
++		printk(KERN_ERR
++			"avsar: device_register fails\n");
++		return -1;
++	}
++
++	if(request_firmware(&fw_entry, "ar0700xx.bin", &avsar)) {
++		printk(KERN_ERR
++			"avsar: Firmware not available\n");
++		device_unregister(&avsar);
++		return -1;
++	}
++	device_unregister(&avsar);
++	if(fw_entry->size > secLength) {
++		printk(KERN_ERR
++			"avsar: Firmware too big (%d bytes)\n", fw_entry->size);
++		release_firmware(fw_entry);
++		return -1;
++	}
++	memcpy(ptr + secOffset, fw_entry->data, secLength);
++	release_firmware(fw_entry);
++	return secLength;
+ }
+ 
+ int shim_osLoadDebugFWImage(unsigned char *ptr)
+@@ -3064,6 +3015,7 @@ int tn7dsl_init(void *priv)
+   int high_precision_selected = 0;  
+ //  UR8_MERGE_END   CQ11054*
+ 
++  sema_init(&adsl_sem_overlay, 0);
+   /*
+    * start dsl
+    */
+@@ -3442,7 +3394,7 @@ static int dslmod_sysctl(ctl_table *ctl,
+    */
+   if(write)
+     {
+-    ret = proc_dostring(ctl, write, filp, buffer, lenp);
++    ret = proc_dostring(ctl, write, filp, buffer, lenp, 0);
+ 
+     switch (ctl->ctl_name)
+       {
+@@ -3528,14 +3480,14 @@ static int dslmod_sysctl(ctl_table *ctl,
+   else
+     {
+     len += sprintf(info+len, mod_req);
+-    ret = proc_dostring(ctl, write, filp, buffer, lenp);
++    ret = proc_dostring(ctl, write, filp, buffer, lenp, 0);
+     }
+   return ret;
+ }
+ 
+ 
+ ctl_table dslmod_table[] = {
+-  {DEV_DSLMOD, "dslmod", info, DSL_MOD_SIZE, 0644, NULL, &dslmod_sysctl}
++  {DEV_DSLMOD, "dslmod", info, DSL_MOD_SIZE, 0644, NULL, NULL, &dslmod_sysctl, &sysctl_string}
+   ,
+   {0}
+   };
+@@ -3558,8 +3510,7 @@ void tn7dsl_dslmod_sysctl_register(void)
+   if (initialized == 1)
+     return;
+ 
+-  dslmod_sysctl_header = register_sysctl_table(dslmod_root_table, 1);
+-  dslmod_root_table->child->de->owner = THIS_MODULE;
++  dslmod_sysctl_header = register_sysctl_table(dslmod_root_table);
+ 
+   /*
+    * set the defaults
+@@ -4821,4 +4772,4 @@ int tn7dsl_proc_PMDus(char* buf, char **
+ }
+ #endif //NO_ADV_STATS
+ #endif //TR69_PMD_IN
+-// *    UR8_MERGE_END   CQ11057 *
+\ No newline at end of file
++// *    UR8_MERGE_END   CQ11057 *
+--- a/tn7sar.c
++++ b/tn7sar.c
+@@ -42,7 +42,6 @@
+  * UR8_MERGE_END CQ10700
+  *******************************************************************************/
+ 
+-#include <linux/config.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/init.h>
+@@ -50,12 +49,13 @@
+ #include <linux/delay.h>
+ #include <linux/spinlock.h>
+ #include <linux/smp_lock.h>
+-#include <asm/io.h>
+-#include <asm/mips-boards/prom.h>
+ #include <linux/proc_fs.h>
+ #include <linux/string.h>
+ #include <linux/ctype.h>
+ 
++#include <asm/io.h>
++#include <asm/ar7/ar7.h>
++#include <asm/ar7/prom.h>
+ 
+ #define _CPHAL_AAL5
+ #define _CPHAL_SAR

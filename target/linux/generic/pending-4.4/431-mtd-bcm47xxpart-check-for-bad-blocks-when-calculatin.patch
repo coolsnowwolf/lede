@@ -1,0 +1,91 @@
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <zajec5@gmail.com>
+Date: Sat, 2 Jan 2016 01:04:52 +0100
+Subject: [PATCH] mtd: bcm47xxpart: check for bad blocks when calculating
+ offsets
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Rafał Miłecki <zajec5@gmail.com>
+---
+ drivers/mtd/bcm47xxpart.c | 50 +++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 40 insertions(+), 10 deletions(-)
+
+--- a/drivers/mtd/bcm47xxpart.c
++++ b/drivers/mtd/bcm47xxpart.c
+@@ -62,6 +62,34 @@ static void bcm47xxpart_add_part(struct
+ 	part->mask_flags = mask_flags;
+ }
+ 
++/*
++ * Calculate real end offset (address) for a given amount of data. It checks
++ * all blocks skipping bad ones.
++ */
++static size_t bcm47xxpart_real_offset(struct mtd_info *master, size_t offset,
++				      size_t bytes)
++{
++	size_t real_offset = offset;
++
++	if (mtd_block_isbad(master, real_offset))
++		pr_warn("Base offset shouldn't be at bad block");
++
++	while (bytes >= master->erasesize) {
++		bytes -= master->erasesize;
++		real_offset += master->erasesize;
++		while (mtd_block_isbad(master, real_offset)) {
++			real_offset += master->erasesize;
++
++			if (real_offset >= master->size)
++				return real_offset - master->erasesize;
++		}
++	}
++
++	real_offset += bytes;
++
++	return real_offset;
++}
++
+ static const char *bcm47xxpart_trx_data_part_name(struct mtd_info *master,
+ 						  size_t offset)
+ {
+@@ -91,6 +119,7 @@ static int bcm47xxpart_parse_trx(struct
+ {
+ 	struct trx_header header;
+ 	size_t bytes_read;
++	size_t offset;
+ 	int curr_part = 0;
+ 	int i, err;
+ 
+@@ -110,21 +139,25 @@ static int bcm47xxpart_parse_trx(struct
+ 
+ 	/* We have LZMA loader if offset[2] points to sth */
+ 	if (header.offset[2]) {
+-		bcm47xxpart_add_part(&parts[curr_part++], "loader",
+-				     trx->offset + header.offset[i], 0);
++		offset = bcm47xxpart_real_offset(master, trx->offset,
++						 header.offset[i]);
++		bcm47xxpart_add_part(&parts[curr_part++], "loader", offset, 0);
+ 		i++;
+ 	}
+ 
+ 	if (header.offset[i]) {
+-		bcm47xxpart_add_part(&parts[curr_part++], "linux",
+-				     trx->offset + header.offset[i], 0);
++		offset = bcm47xxpart_real_offset(master, trx->offset,
++						 header.offset[i]);
++		bcm47xxpart_add_part(&parts[curr_part++], "linux", offset, 0);
+ 		i++;
+ 	}
+ 
+ 	if (header.offset[i]) {
+-		size_t offset = trx->offset + header.offset[i];
+-		const char *name = bcm47xxpart_trx_data_part_name(master,
+-								  offset);
++		const char *name;
++
++		offset = bcm47xxpart_real_offset(master, trx->offset,
++						 header.offset[i]);
++		name = bcm47xxpart_trx_data_part_name(master, offset);
+ 
+ 		bcm47xxpart_add_part(&parts[curr_part++], name, offset, 0);
+ 		i++;

@@ -1,0 +1,333 @@
+--- a/src/mps/drv_mps_vmmc_ar9.c
++++ b/src/mps/drv_mps_vmmc_ar9.c
+@@ -30,15 +30,24 @@
+ #include "ifxos_interrupt.h"
+ 
+ /* board specific headers */
++#if !defined CONFIG_LANTIQ
+ #include <asm/ifx/ifx_regs.h>
+ #include <asm/ifx_vpe.h>
+ #include <asm/ifx/ifx_gpio.h>
++#endif
++
++#include <lantiq_soc.h>
++#include <asm/vpe.h>
+ 
+ /* device specific headers */
+ #include "drv_mps_vmmc.h"
+ #include "drv_mps_vmmc_dbg.h"
+ #include "drv_mps_vmmc_device.h"
+ 
++const void (*ifx_bsp_basic_mps_decrypt)(unsigned int addr, int n) = NULL;
++
++#define IFX_MPS_SRAM IFXMIPS_MPS_SRAM
++
+ /* ============================= */
+ /* Local Macros & Definitions    */
+ /* ============================= */
+@@ -65,12 +74,7 @@ extern mps_comm_dev *pMPSDev;
+ IFX_void_t ifx_mps_release (IFX_void_t);
+ extern IFX_uint32_t ifx_mps_reset_structures (mps_comm_dev * pMPSDev);
+ extern IFX_int32_t ifx_mps_bufman_close (IFX_void_t);
+-IFX_int32_t ifx_mps_wdog_callback (IFX_uint32_t wdog_cleared_ok_count);
+ extern IFXOS_event_t fw_ready_evt;
+-/* ============================= */
+-/* Local function declaration    */
+-/* ============================= */
+-static IFX_int32_t ifx_mps_fw_wdog_start_ar9(IFX_void_t);
+ 
+ /* ============================= */
+ /* Local variable definition     */
+@@ -88,61 +92,6 @@ IFX_int32_t (*ifx_wdog_callback) (IFX_ui
+  ******************************************************************************/
+ 
+ /**
+- * Start AR9 EDSP firmware watchdog mechanism.
+- * Called after download and startup of VPE1.
+- *
+- * \param   none
+- * \return  0         IFX_SUCCESS
+- * \return  -1        IFX_ERROR
+- * \ingroup Internal
+- */
+-IFX_int32_t ifx_mps_fw_wdog_start_ar9()
+-{
+-   /* vpe1_wdog_ctr should be set up in u-boot as
+-      "vpe1_wdog_ctr_addr=0xBF2001B0"; protection from incorrect or missing
+-      setting */
+-   if (vpe1_wdog_ctr != VPE1_WDOG_CTR_ADDR)
+-   {
+-      vpe1_wdog_ctr = VPE1_WDOG_CTR_ADDR;
+-   }
+-
+-   /* vpe1_wdog_timeout should be set up in u-boot as "vpe1_wdog_timeout =
+-      <value in ms>"; protection from insane setting */
+-   if (vpe1_wdog_timeout < VPE1_WDOG_TMOUT_MIN)
+-   {
+-      vpe1_wdog_timeout = VPE1_WDOG_TMOUT_MIN;
+-   }
+-   if (vpe1_wdog_timeout > VPE1_WDOG_TMOUT_MAX)
+-   {
+-      vpe1_wdog_timeout = VPE1_WDOG_TMOUT_MAX;
+-   }
+-
+-   /* recalculate in jiffies */
+-   vpe1_wdog_timeout = vpe1_wdog_timeout * HZ / 1000;
+-
+-   /* register BSP callback function */
+-   if (IFX_SUCCESS !=
+-       vpe1_sw_wdog_register_reset_handler (ifx_mps_wdog_callback))
+-   {
+-      TRACE (MPS, DBG_LEVEL_HIGH,
+-             (KERN_ERR "[%s %s %d]: Unable to register WDT callback.\r\n",
+-              __FILE__, __func__, __LINE__));
+-      return IFX_ERROR;;
+-   }
+-
+-   /* start software watchdog timer */
+-   if (IFX_SUCCESS != vpe1_sw_wdog_start (0))
+-   {
+-      TRACE (MPS, DBG_LEVEL_HIGH,
+-             (KERN_ERR
+-              "[%s %s %d]: Error starting software watchdog timer.\r\n",
+-              __FILE__, __func__, __LINE__));
+-      return IFX_ERROR;
+-   }
+-   return IFX_SUCCESS;
+-}
+-
+-/**
+  * Firmware download to Voice CPU
+  * This function performs a firmware download to the coprocessor.
+  *
+@@ -292,6 +241,18 @@ IFX_int32_t ifx_mps_download_firmware (m
+          decryption. Subtract sizeof(u32) from length to avoid decryption
+          of data beyond the FW image code */
+       pFWDwnld->length -= sizeof(IFX_uint32_t);
++      switch(ltq_soc_type()) {
++   	   case SOC_TYPE_AR9:
++		   ifx_bsp_basic_mps_decrypt = (const void (*)(unsigned int, int))0xbf0017c4;
++		   break;
++	   case SOC_TYPE_VR9:
++		   ifx_bsp_basic_mps_decrypt = (const void (*)(unsigned int, int))0xbf001ea4;
++		   break;
++	   case SOC_TYPE_VR9_2:
++		   ifx_bsp_basic_mps_decrypt = (const void (*)(unsigned int, int))0xbf001f38;
++		   break;
++      }
++      if (ifx_bsp_basic_mps_decrypt)
+       ifx_bsp_basic_mps_decrypt((IFX_uint32_t)cpu1_base_addr, pFWDwnld->length);
+    }
+ 
+@@ -318,9 +279,6 @@ IFX_int32_t ifx_mps_download_firmware (m
+    /* start VPE1 */
+    ifx_mps_release ();
+ 
+-   /* start FW watchdog mechanism */
+-   ifx_mps_fw_wdog_start_ar9();
+-
+    /* get FW version */
+    return ifx_mps_get_fw_version (0);
+ }
+@@ -345,8 +303,6 @@ IFX_int32_t ifx_mps_restart (IFX_void_t)
+    ifx_mps_init_gpt ();
+    /* let CPU1 run */
+    ifx_mps_release ();
+-   /* start FW watchdog mechanism */
+-   ifx_mps_fw_wdog_start_ar9();
+    TRACE (MPS, DBG_LEVEL_HIGH, ("IFX_MPS: Restarting firmware..."));
+    return ifx_mps_get_fw_version (0);
+ }
+@@ -361,10 +317,6 @@ IFX_void_t ifx_mps_shutdown (IFX_void_t)
+ {
+    if (vpe1_started)
+    {
+-      /* stop software watchdog timer */
+-      vpe1_sw_wdog_stop (0);
+-      /* clean up the BSP callback function */
+-      vpe1_sw_wdog_register_reset_handler (IFX_NULL);
+       /* stop VPE1 */
+       vpe1_sw_stop (0);
+       vpe1_started = 0;
+@@ -387,8 +339,6 @@ IFX_void_t ifx_mps_reset (IFX_void_t)
+    /* if VPE1 is already started, stop it */
+    if (vpe1_started)
+    {
+-      /* stop software watchdog timer first */
+-      vpe1_sw_wdog_stop (0);
+       vpe1_sw_stop (0);
+       vpe1_started = 0;
+    }
+@@ -436,101 +386,6 @@ IFX_void_t ifx_mps_release (IFX_void_t)
+ }
+ 
+ /**
+- * WDT callback.
+- * This function is called by BSP (module softdog_vpe) in case if software
+- * watchdog timer expiration is detected by BSP.
+- * This function needs to be registered at BSP as WDT callback using
+- * vpe1_sw_wdog_register_reset_handler() API.
+- *
+- * \return  0        IFX_SUCCESS, cannot fail
+- * \ingroup Internal
+- */
+-IFX_int32_t ifx_mps_wdog_callback (IFX_uint32_t wdog_cleared_ok_count)
+-{
+-   IFX_uint32_t flags;
+-#ifdef DEBUG
+-   TRACE (MPS, DBG_LEVEL_HIGH,
+-          ("MPS: watchdog callback! arg=0x%08x\r\n", wdog_cleared_ok_count));
+-#endif /* DEBUG */
+-
+-   /* reset SmartSLIC */
+-   IFXOS_LOCKINT (flags);
+-   if (ifx_gpio_pin_reserve
+-       (IFX_GPIO_PIN_ID (SSLIC_RST_PORT, SSLIC_RST_PIN), IFX_MPS_MODULE_ID))
+-   {
+-      TRACE (MPS, DBG_LEVEL_HIGH,
+-             (KERN_ERR "[%s %s %d]: GPIO port/pin reservation error.\r\n",
+-              __FILE__, __func__, __LINE__));
+-   }
+-   /* P1_ALTSEL0.15 = 0 */
+-   if (ifx_gpio_altsel0_clear
+-       (IFX_GPIO_PIN_ID (SSLIC_RST_PORT, SSLIC_RST_PIN), IFX_MPS_MODULE_ID))
+-   {
+-      TRACE (MPS, DBG_LEVEL_HIGH,
+-             (KERN_ERR "[%s %s %d]: GPIO error clearing ALTSEL0.\r\n", __FILE__,
+-              __func__, __LINE__));
+-   }
+-   /* P1_ALTSEL1.15 = 0 */
+-   if (ifx_gpio_altsel1_clear
+-       (IFX_GPIO_PIN_ID (SSLIC_RST_PORT, SSLIC_RST_PIN), IFX_MPS_MODULE_ID))
+-   {
+-      TRACE (MPS, DBG_LEVEL_HIGH,
+-             (KERN_ERR "[%s %s %d]: GPIO error clearing ALTSEL1.\r\n", __FILE__,
+-              __func__, __LINE__));
+-   }
+-   /* P1_DIR.15 = 1 */
+-   if (ifx_gpio_dir_out_set
+-       (IFX_GPIO_PIN_ID (SSLIC_RST_PORT, SSLIC_RST_PIN), IFX_MPS_MODULE_ID))
+-   {
+-      TRACE (MPS, DBG_LEVEL_HIGH,
+-             (KERN_ERR "[%s %s %d]: GPIO error setting DIR.\r\n", __FILE__,
+-              __func__, __LINE__));
+-   }
+-   /* P1_OD.15 = 1 */
+-   if (ifx_gpio_open_drain_set
+-       (IFX_GPIO_PIN_ID (SSLIC_RST_PORT, SSLIC_RST_PIN), IFX_MPS_MODULE_ID))
+-   {
+-      TRACE (MPS, DBG_LEVEL_HIGH,
+-             (KERN_ERR "[%s %s %d]: GPIO error setting OD.\r\n", __FILE__,
+-              __func__, __LINE__));
+-   }
+-   /* P1_OUT.15 = 0 */
+-   if (ifx_gpio_output_clear
+-       (IFX_GPIO_PIN_ID (SSLIC_RST_PORT, SSLIC_RST_PIN), IFX_MPS_MODULE_ID))
+-   {
+-      TRACE (MPS, DBG_LEVEL_HIGH,
+-             (KERN_ERR "[%s %s %d]: GPIO error clearing OUT.\r\n", __FILE__,
+-              __func__, __LINE__));
+-   }
+-   if (ifx_gpio_pin_free
+-       (IFX_GPIO_PIN_ID (SSLIC_RST_PORT, SSLIC_RST_PIN), IFX_MPS_MODULE_ID))
+-   {
+-      TRACE (MPS, DBG_LEVEL_HIGH,
+-             (KERN_ERR "[%s %s %d]: GPIO port/pin freeing error.\r\n", __FILE__,
+-              __func__, __LINE__));
+-   }
+-   IFXOS_UNLOCKINT (flags);
+-
+-   /* recalculate and compare the firmware checksum */
+-   ifx_mps_fw_crc_compare(cpu1_base_addr, pFW_img_data);
+-
+-   /* dump exception area on a console */
+-   ifx_mps_dump_fw_xcpt(cpu1_base_addr, pFW_img_data);
+-
+-   if (IFX_NULL != ifx_wdog_callback)
+-   {
+-      /* call VMMC driver */
+-      ifx_wdog_callback (wdog_cleared_ok_count);
+-   }
+-   else
+-   {
+-      TRACE (MPS, DBG_LEVEL_HIGH,
+-             (KERN_WARNING "MPS: VMMC watchdog timer callback is NULL.\r\n"));
+-   }
+-   return 0;
+-}
+-
+-/**
+  * Register WDT callback.
+  * This function is called by VMMC driver to register its callback in
+  * the MPS driver.
+--- a/src/drv_vmmc_amazon_s.h
++++ b/src/drv_vmmc_amazon_s.h
+@@ -15,9 +15,7 @@
+ */
+ 
+ 
+-#if defined(SYSTEM_AR9) || defined(SYSTEM_VR9)
+-#include <asm/ifx/ifx_gpio.h>
+-#else
++#if !defined(SYSTEM_AR9) && !defined(SYSTEM_VR9)
+ #error no system selected
+ #endif
+ 
+@@ -27,45 +25,6 @@
+ */
+ #define VMMC_PCM_IF_CFG_HOOK(mode, GPIOreserved, ret) \
+ do { \
+-   ret = VMMC_statusOk; \
+-   /* Reserve P0.0 as TDM/FSC */ \
+-   if (!GPIOreserved) \
+-      ret |= ifx_gpio_pin_reserve(IFX_GPIO_PIN_ID(0, 0), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_altsel0_set(IFX_GPIO_PIN_ID(0, 0), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_altsel1_set(IFX_GPIO_PIN_ID(0, 0), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_open_drain_set(IFX_GPIO_PIN_ID(0, 0), VMMC_TAPI_GPIO_MODULE_ID);\
+-   \
+-   /* Reserve P1.9 as TDM/DO */ \
+-   if (!GPIOreserved) \
+-      ret |= ifx_gpio_pin_reserve(IFX_GPIO_PIN_ID(1, 9), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_altsel0_set(IFX_GPIO_PIN_ID(1, 9), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_altsel1_clear(IFX_GPIO_PIN_ID(1, 9), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_dir_out_set(IFX_GPIO_PIN_ID(1, 9), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_open_drain_set(IFX_GPIO_PIN_ID(1, 9), VMMC_TAPI_GPIO_MODULE_ID); \
+-   \
+-   /* Reserve P2.9 as TDM/DI */ \
+-   if (!GPIOreserved) \
+-      ret |= ifx_gpio_pin_reserve(IFX_GPIO_PIN_ID(2, 9), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_altsel0_clear(IFX_GPIO_PIN_ID(2, 9), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_altsel1_set(IFX_GPIO_PIN_ID(2, 9), VMMC_TAPI_GPIO_MODULE_ID);\
+-   ret |= ifx_gpio_dir_in_set(IFX_GPIO_PIN_ID(2, 9), VMMC_TAPI_GPIO_MODULE_ID); \
+-   \
+-   /* Reserve P2.8 as TDM/DCL */ \
+-   if (!GPIOreserved) \
+-      ret |= ifx_gpio_pin_reserve(IFX_GPIO_PIN_ID(2, 8), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_altsel0_clear(IFX_GPIO_PIN_ID(2, 8), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_altsel1_set(IFX_GPIO_PIN_ID(2, 8), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_open_drain_set(IFX_GPIO_PIN_ID(2, 8), VMMC_TAPI_GPIO_MODULE_ID); \
+-   \
+-   if (mode == 2) { \
+-      /* TDM/FSC+DCL Master */ \
+-      ret |= ifx_gpio_dir_out_set(IFX_GPIO_PIN_ID(0, 0), VMMC_TAPI_GPIO_MODULE_ID); \
+-      ret |= ifx_gpio_dir_out_set(IFX_GPIO_PIN_ID(2, 8), VMMC_TAPI_GPIO_MODULE_ID); \
+-   } else { \
+-      /* TDM/FSC+DCL Slave */ \
+-      ret |= ifx_gpio_dir_in_set(IFX_GPIO_PIN_ID(0, 0), VMMC_TAPI_GPIO_MODULE_ID); \
+-      ret |= ifx_gpio_dir_in_set(IFX_GPIO_PIN_ID(2, 8), VMMC_TAPI_GPIO_MODULE_ID); \
+-   } \
+ } while(0);
+ 
+ /**
+@@ -73,11 +32,6 @@ do { \
+ */
+ #define VMMC_DRIVER_UNLOAD_HOOK(ret) \
+ do { \
+-   ret = VMMC_statusOk; \
+-   ret |= ifx_gpio_pin_free(IFX_GPIO_PIN_ID(0, 0), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_pin_free(IFX_GPIO_PIN_ID(1, 9), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_pin_free(IFX_GPIO_PIN_ID(2, 9), VMMC_TAPI_GPIO_MODULE_ID); \
+-   ret |= ifx_gpio_pin_free(IFX_GPIO_PIN_ID(2, 8), VMMC_TAPI_GPIO_MODULE_ID); \
+ } while (0)
+ 
+ #endif /* _DRV_VMMC_AMAZON_S_H */

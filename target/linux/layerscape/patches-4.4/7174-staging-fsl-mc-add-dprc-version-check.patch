@@ -1,0 +1,90 @@
+From 653898b483e5448084b15214a8c20959b418dbe7 Mon Sep 17 00:00:00 2001
+From: Itai Katz <itai.katz@nxp.com>
+Date: Mon, 11 Apr 2016 11:56:05 -0500
+Subject: [PATCH 174/226] staging: fsl-mc: add dprc version check
+
+The dprc driver supports dprc version 5.0 and above.
+This patch adds the code to check the version.
+
+Signed-off-by: Itai Katz <itai.katz@nxp.com>
+(Stuart: resolved merge conflicts, split dpseci quirk into separate patch)
+Signed-off-by: Stuart Yoder <stuart.yoder@nxp.com>
+Acked-by: German Rivera <german.rivera@nxp.com>
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/staging/fsl-mc/bus/dprc-cmd.h       |    6 +++---
+ drivers/staging/fsl-mc/bus/dprc-driver.c    |   19 +++++++++++++++++++
+ drivers/staging/fsl-mc/bus/mc-bus.c         |    1 +
+ drivers/staging/fsl-mc/include/mc-private.h |    2 ++
+ 4 files changed, 25 insertions(+), 3 deletions(-)
+
+--- a/drivers/staging/fsl-mc/bus/dprc-cmd.h
++++ b/drivers/staging/fsl-mc/bus/dprc-cmd.h
+@@ -40,9 +40,9 @@
+ #ifndef _FSL_DPRC_CMD_H
+ #define _FSL_DPRC_CMD_H
+ 
+-/* DPRC Version */
+-#define DPRC_VER_MAJOR				5
+-#define DPRC_VER_MINOR				1
++/* Minimal supported DPRC Version */
++#define DPRC_MIN_VER_MAJOR			5
++#define DPRC_MIN_VER_MINOR			0
+ 
+ /* Command IDs */
+ #define DPRC_CMDID_CLOSE			0x800
+--- a/drivers/staging/fsl-mc/bus/dprc-driver.c
++++ b/drivers/staging/fsl-mc/bus/dprc-driver.c
+@@ -693,6 +693,25 @@ static int dprc_probe(struct fsl_mc_devi
+ 		goto error_cleanup_msi_domain;
+ 	}
+ 
++	error = dprc_get_attributes(mc_dev->mc_io, 0, mc_dev->mc_handle,
++				    &mc_bus->dprc_attr);
++	if (error < 0) {
++		dev_err(&mc_dev->dev, "dprc_get_attributes() failed: %d\n",
++			error);
++		goto error_cleanup_open;
++	}
++
++	if (mc_bus->dprc_attr.version.major < DPRC_MIN_VER_MAJOR ||
++	   (mc_bus->dprc_attr.version.major == DPRC_MIN_VER_MAJOR &&
++	    mc_bus->dprc_attr.version.minor < DPRC_MIN_VER_MINOR)) {
++		dev_err(&mc_dev->dev,
++			"ERROR: DPRC version %d.%d not supported\n",
++			mc_bus->dprc_attr.version.major,
++			mc_bus->dprc_attr.version.minor);
++		error = -ENOTSUPP;
++		goto error_cleanup_open;
++	}
++
+ 	mutex_init(&mc_bus->scan_mutex);
+ 
+ 	/*
+--- a/drivers/staging/fsl-mc/bus/mc-bus.c
++++ b/drivers/staging/fsl-mc/bus/mc-bus.c
+@@ -745,6 +745,7 @@ static int fsl_mc_bus_probe(struct platf
+ 		goto error_cleanup_mc_io;
+ 	}
+ 
++	memset(&obj_desc, 0, sizeof(struct dprc_obj_desc));
+ 	error = get_dprc_version(mc_io, container_id,
+ 				 &obj_desc.ver_major, &obj_desc.ver_minor);
+ 	if (error < 0)
+--- a/drivers/staging/fsl-mc/include/mc-private.h
++++ b/drivers/staging/fsl-mc/include/mc-private.h
+@@ -94,12 +94,14 @@ struct fsl_mc_resource_pool {
+  * from the physical DPRC.
+  * @irq_resources: Pointer to array of IRQ objects for the IRQ pool
+  * @scan_mutex: Serializes bus scanning
++ * @dprc_attr: DPRC attributes
+  */
+ struct fsl_mc_bus {
+ 	struct fsl_mc_device mc_dev;
+ 	struct fsl_mc_resource_pool resource_pools[FSL_MC_NUM_POOL_TYPES];
+ 	struct fsl_mc_device_irq *irq_resources;
+ 	struct mutex scan_mutex;    /* serializes bus scanning */
++	struct dprc_attributes dprc_attr;
+ };
+ 
+ #define to_fsl_mc_bus(_mc_dev) \

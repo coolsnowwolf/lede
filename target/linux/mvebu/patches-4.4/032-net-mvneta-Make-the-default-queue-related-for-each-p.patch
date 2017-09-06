@@ -1,0 +1,131 @@
+From: Gregory CLEMENT <gregory.clement@free-electrons.com>
+Date: Wed, 9 Dec 2015 18:23:48 +0100
+Subject: [PATCH] net: mvneta: Make the default queue related for each port
+
+Instead of using the same default queue for all the port. Move it in the
+port struct. It will allow have a different default queue for each port.
+
+Signed-off-by: Gregory CLEMENT <gregory.clement@free-electrons.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+
+--- a/drivers/net/ethernet/marvell/mvneta.c
++++ b/drivers/net/ethernet/marvell/mvneta.c
+@@ -356,6 +356,7 @@ struct mvneta_port {
+ 	struct mvneta_tx_queue *txqs;
+ 	struct net_device *dev;
+ 	struct notifier_block cpu_notifier;
++	int rxq_def;
+ 
+ 	/* Core clock */
+ 	struct clk *clk;
+@@ -819,7 +820,7 @@ static void mvneta_port_up(struct mvneta
+ 	mvreg_write(pp, MVNETA_TXQ_CMD, q_map);
+ 
+ 	/* Enable all initialized RXQs. */
+-	mvreg_write(pp, MVNETA_RXQ_CMD, BIT(rxq_def));
++	mvreg_write(pp, MVNETA_RXQ_CMD, BIT(pp->rxq_def));
+ }
+ 
+ /* Stop the Ethernet port activity */
+@@ -1067,7 +1068,7 @@ static void mvneta_defaults_set(struct m
+ 	mvreg_write(pp, MVNETA_ACC_MODE, val);
+ 
+ 	/* Update val of portCfg register accordingly with all RxQueue types */
+-	val = MVNETA_PORT_CONFIG_DEFL_VALUE(rxq_def);
++	val = MVNETA_PORT_CONFIG_DEFL_VALUE(pp->rxq_def);
+ 	mvreg_write(pp, MVNETA_PORT_CONFIG, val);
+ 
+ 	val = 0;
+@@ -2101,19 +2102,19 @@ static void mvneta_set_rx_mode(struct ne
+ 	if (dev->flags & IFF_PROMISC) {
+ 		/* Accept all: Multicast + Unicast */
+ 		mvneta_rx_unicast_promisc_set(pp, 1);
+-		mvneta_set_ucast_table(pp, rxq_def);
+-		mvneta_set_special_mcast_table(pp, rxq_def);
+-		mvneta_set_other_mcast_table(pp, rxq_def);
++		mvneta_set_ucast_table(pp, pp->rxq_def);
++		mvneta_set_special_mcast_table(pp, pp->rxq_def);
++		mvneta_set_other_mcast_table(pp, pp->rxq_def);
+ 	} else {
+ 		/* Accept single Unicast */
+ 		mvneta_rx_unicast_promisc_set(pp, 0);
+ 		mvneta_set_ucast_table(pp, -1);
+-		mvneta_mac_addr_set(pp, dev->dev_addr, rxq_def);
++		mvneta_mac_addr_set(pp, dev->dev_addr, pp->rxq_def);
+ 
+ 		if (dev->flags & IFF_ALLMULTI) {
+ 			/* Accept all multicast */
+-			mvneta_set_special_mcast_table(pp, rxq_def);
+-			mvneta_set_other_mcast_table(pp, rxq_def);
++			mvneta_set_special_mcast_table(pp, pp->rxq_def);
++			mvneta_set_other_mcast_table(pp, pp->rxq_def);
+ 		} else {
+ 			/* Accept only initialized multicast */
+ 			mvneta_set_special_mcast_table(pp, -1);
+@@ -2122,7 +2123,7 @@ static void mvneta_set_rx_mode(struct ne
+ 			if (!netdev_mc_empty(dev)) {
+ 				netdev_for_each_mc_addr(ha, dev) {
+ 					mvneta_mcast_addr_set(pp, ha->addr,
+-							      rxq_def);
++							      pp->rxq_def);
+ 				}
+ 			}
+ 		}
+@@ -2205,7 +2206,7 @@ static int mvneta_poll(struct napi_struc
+ 	 * RX packets
+ 	 */
+ 	cause_rx_tx |= port->cause_rx_tx;
+-	rx_done = mvneta_rx(pp, budget, &pp->rxqs[rxq_def]);
++	rx_done = mvneta_rx(pp, budget, &pp->rxqs[pp->rxq_def]);
+ 	budget -= rx_done;
+ 
+ 	if (budget > 0) {
+@@ -2418,17 +2419,17 @@ static void mvneta_cleanup_txqs(struct m
+ /* Cleanup all Rx queues */
+ static void mvneta_cleanup_rxqs(struct mvneta_port *pp)
+ {
+-	mvneta_rxq_deinit(pp, &pp->rxqs[rxq_def]);
++	mvneta_rxq_deinit(pp, &pp->rxqs[pp->rxq_def]);
+ }
+ 
+ 
+ /* Init all Rx queues */
+ static int mvneta_setup_rxqs(struct mvneta_port *pp)
+ {
+-	int err = mvneta_rxq_init(pp, &pp->rxqs[rxq_def]);
++	int err = mvneta_rxq_init(pp, &pp->rxqs[pp->rxq_def]);
+ 	if (err) {
+ 		netdev_err(pp->dev, "%s: can't create rxq=%d\n",
+-			   __func__, rxq_def);
++			   __func__, pp->rxq_def);
+ 		mvneta_cleanup_rxqs(pp);
+ 		return err;
+ 	}
+@@ -2634,7 +2635,7 @@ static int mvneta_set_mac_addr(struct ne
+ 	mvneta_mac_addr_set(pp, dev->dev_addr, -1);
+ 
+ 	/* Set new addr in hw */
+-	mvneta_mac_addr_set(pp, sockaddr->sa_data, rxq_def);
++	mvneta_mac_addr_set(pp, sockaddr->sa_data, pp->rxq_def);
+ 
+ 	eth_commit_mac_addr_change(dev, addr);
+ 	return 0;
+@@ -2753,7 +2754,7 @@ static void mvneta_percpu_elect(struct m
+ {
+ 	int online_cpu_idx, cpu, i = 0;
+ 
+-	online_cpu_idx = rxq_def % num_online_cpus();
++	online_cpu_idx = pp->rxq_def % num_online_cpus();
+ 
+ 	for_each_online_cpu(cpu) {
+ 		if (i == online_cpu_idx)
+@@ -3361,6 +3362,8 @@ static int mvneta_probe(struct platform_
+ 				 strcmp(managed, "in-band-status") == 0);
+ 	pp->cpu_notifier.notifier_call = mvneta_percpu_notifier;
+ 
++	pp->rxq_def = rxq_def;
++
+ 	pp->clk = devm_clk_get(&pdev->dev, NULL);
+ 	if (IS_ERR(pp->clk)) {
+ 		err = PTR_ERR(pp->clk);

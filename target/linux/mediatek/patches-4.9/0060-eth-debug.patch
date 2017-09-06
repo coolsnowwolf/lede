@@ -1,0 +1,69 @@
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -851,6 +851,7 @@ static void mtk_stop_queue(struct mtk_et
+ 			continue;
+ 		netif_stop_queue(eth->netdev[i]);
+ 	}
++	mtk_tx_irq_enable(eth, MTK_TX_DONE_INT);
+ }
+ 
+ static int mtk_start_xmit(struct sk_buff *skb, struct net_device *dev)
+@@ -1885,6 +1886,19 @@ static int mtk_start_dma(struct mtk_eth
+ 	return 0;
+ }
+ 
++#define NAPI_TIMER_EXPIRE		HZ
++
++static void napi_timer_handler(unsigned long priv)
++{
++	struct mtk_eth *eth = (struct mtk_eth*) priv;
++
++	mtk_wake_queue(eth);
++	mtk_handle_irq_rx(0, eth);
++	mtk_handle_irq_tx(0, eth);
++
++	mod_timer(&eth->napi_timer, jiffies + NAPI_TIMER_EXPIRE);
++}
++
+ static int mtk_open(struct net_device *dev)
+ {
+ 	struct mtk_mac *mac = netdev_priv(dev);
+@@ -1901,6 +1915,9 @@ static int mtk_open(struct net_device *d
+ 		napi_enable(&eth->rx_napi);
+ 		mtk_tx_irq_enable(eth, MTK_TX_DONE_INT);
+ 		mtk_rx_irq_enable(eth, MTK_RX_DONE_INT);
++
++		setup_timer(&eth->napi_timer, napi_timer_handler, (unsigned long) eth);
++		mod_timer(&eth->napi_timer, jiffies + NAPI_TIMER_EXPIRE);
+ 	}
+ 	atomic_inc(&eth->dma_refcnt);
+ 
+@@ -1945,6 +1962,8 @@ static int mtk_stop(struct net_device *d
+ 	if (!atomic_dec_and_test(&eth->dma_refcnt))
+ 		return 0;
+ 
++	del_timer(&eth->napi_timer);
++
+ 	mtk_tx_irq_disable(eth, MTK_TX_DONE_INT);
+ 	mtk_rx_irq_disable(eth, MTK_RX_DONE_INT);
+ 	napi_disable(&eth->tx_napi);
+@@ -2524,7 +2543,7 @@ static int mtk_add_mac(struct mtk_eth *e
+ 	mac->hw_stats->reg_offset = id * MTK_STAT_OFFSET;
+ 
+ 	SET_NETDEV_DEV(eth->netdev[id], eth->dev);
+-	eth->netdev[id]->watchdog_timeo = 15 * HZ;
++	eth->netdev[id]->watchdog_timeo = 30 * HZ;
+ 	eth->netdev[id]->netdev_ops = &mtk_netdev_ops;
+ 	eth->netdev[id]->base_addr = (unsigned long)eth->base;
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -601,6 +601,8 @@ struct mtk_eth {
+ 	struct mii_bus			*mii_bus;
+ 	struct work_struct		pending_work;
+ 	unsigned long			state;
++
++	struct timer_list		napi_timer;
+ };
+ 
+ /* struct mtk_mac -	the structure that holds the info about the MACs of the

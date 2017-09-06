@@ -1,0 +1,675 @@
+From 60c29522a8c77d96145d965589c56befda7d4c3d Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jogo@openwrt.org>
+Date: Sun, 8 Dec 2013 01:24:09 +0100
+Subject: [PATCH 51/53] MIPS: BCM63XX: add support for BCM6318
+
+---
+ arch/mips/bcm63xx/Kconfig                         |   5 +
+ arch/mips/bcm63xx/boards/board_bcm963xx.c         |   2 +-
+ arch/mips/bcm63xx/clk.c                           |   8 +-
+ arch/mips/bcm63xx/cpu.c                           |  53 +++++++++++
+ arch/mips/bcm63xx/dev-flash.c                     |   3 +
+ arch/mips/bcm63xx/dev-spi.c                       |   2 +-
+ arch/mips/bcm63xx/irq.c                           |  10 ++
+ arch/mips/bcm63xx/prom.c                          |   2 +-
+ arch/mips/bcm63xx/reset.c                         |  24 +++++
+ arch/mips/bcm63xx/setup.c                         |   5 +-
+ arch/mips/include/asm/mach-bcm63xx/bcm63xx_cpu.h  | 107 ++++++++++++++++++++++
+ arch/mips/include/asm/mach-bcm63xx/bcm63xx_regs.h |  75 ++++++++++++++-
+ arch/mips/include/asm/mach-bcm63xx/ioremap.h      |   1 +
+ 13 files changed, 291 insertions(+), 6 deletions(-)
+
+--- a/arch/mips/bcm63xx/Kconfig
++++ b/arch/mips/bcm63xx/Kconfig
+@@ -18,6 +18,11 @@ config BCM63XX_EHCI
+ 	select USB_EHCI_BIG_ENDIAN_DESC if USB_EHCI_HCD
+ 	select USB_EHCI_BIG_ENDIAN_MMIO if USB_EHCI_HCD
+ 
++config BCM63XX_CPU_6318
++	bool "support 6318 CPU"
++	select SYS_HAS_CPU_BMIPS32_3300
++	select HW_HAS_PCI
++
+ config BCM63XX_CPU_6328
+ 	bool "support 6328 CPU"
+ 	select SYS_HAS_CPU_BMIPS4350
+--- a/arch/mips/bcm63xx/boards/board_bcm963xx.c
++++ b/arch/mips/bcm63xx/boards/board_bcm963xx.c
+@@ -713,7 +713,7 @@ void __init board_prom_init(void)
+ 	/* read base address of boot chip select (0)
+ 	 * 6328/6362 do not have MPI but boot from a fixed address
+ 	 */
+-	if (BCMCPU_IS_6328() || BCMCPU_IS_6362() || BCMCPU_IS_63268()) {
++	if (BCMCPU_IS_6318() || BCMCPU_IS_6328() || BCMCPU_IS_6362() || BCMCPU_IS_63268()) {
+ 		val = 0x18000000;
+ 	} else {
+ 		val = bcm_mpi_readl(MPI_CSBASE_REG(0));
+--- a/arch/mips/bcm63xx/clk.c
++++ b/arch/mips/bcm63xx/clk.c
+@@ -252,7 +252,9 @@ static void hsspi_set(struct clk *clk, i
+ {
+ 	u32 mask;
+ 
+-	if (BCMCPU_IS_6328())
++	if (BCMCPU_IS_6318())
++		mask = CKCTL_6318_HSSPI_EN;
++	else if (BCMCPU_IS_6328())
+ 		mask = CKCTL_6328_HSSPI_EN;
+ 	else if (BCMCPU_IS_6362())
+ 		mask = CKCTL_6362_HSSPI_EN;
+@@ -420,12 +422,16 @@ void clk_put(struct clk *clk)
+ 
+ EXPORT_SYMBOL(clk_put);
+ 
++#define HSSPI_PLL_HZ_6318	250000000
+ #define HSSPI_PLL_HZ_6328	133333333
+ #define HSSPI_PLL_HZ_6362	400000000
+ 
+ static int __init bcm63xx_clk_init(void)
+ {
+ 	switch (bcm63xx_get_cpu_id()) {
++	case BCM6318_CPU_ID:
++		clk_hsspi.rate = HSSPI_PLL_HZ_6318;
++		break;
+ 	case BCM6328_CPU_ID:
+ 		clk_hsspi.rate = HSSPI_PLL_HZ_6328;
+ 		break;
+--- a/arch/mips/bcm63xx/cpu.c
++++ b/arch/mips/bcm63xx/cpu.c
+@@ -41,6 +41,14 @@ static const int bcm3368_irqs[] = {
+ 	__GEN_CPU_IRQ_TABLE(3368)
+ };
+ 
++static const unsigned long bcm6318_regs_base[] = {
++	__GEN_CPU_REGS_TABLE(6318)
++};
++
++static const int bcm6318_irqs[] = {
++	__GEN_CPU_IRQ_TABLE(6318)
++};
++
+ static const unsigned long bcm6328_regs_base[] = {
+ 	__GEN_CPU_REGS_TABLE(6328)
+ };
+@@ -134,6 +142,10 @@ unsigned int bcm63xx_get_memory_size(voi
+ 	return bcm63xx_memory_size;
+ }
+ 
++#define STRAP_OVERRIDE_BUS_REG		0x0
++#define OVERRIDE_BUS_MIPS_FREQ_SHIFT	23
++#define OVERRIDE_BUS_MIPS_FREQ_MASK	(0x3 << OVERRIDE_BUS_MIPS_FREQ_SHIFT)
++
+ static unsigned int detect_cpu_clock(void)
+ {
+ 	u32 cpu_id = bcm63xx_get_cpu_id();
+@@ -142,6 +154,28 @@ static unsigned int detect_cpu_clock(voi
+ 	case BCM3368_CPU_ID:
+ 		return 300000000;
+ 
++	case BCM6318_CPU_ID:
++	{
++		unsigned int tmp, mips_pll_fcvo;
++
++		tmp = bcm_readl(BCM_6318_STRAP_BASE + STRAP_OVERRIDE_BUS_REG);
++
++		pr_info("strap_override_bus = %08x\n", tmp);
++
++		mips_pll_fcvo = (tmp & OVERRIDE_BUS_MIPS_FREQ_MASK)
++				>> OVERRIDE_BUS_MIPS_FREQ_SHIFT;
++
++		switch (mips_pll_fcvo) {
++		case 0:
++			return 166000000;
++		case 1:
++			return 400000000;
++		case 2:
++			return 250000000;
++		case 3:
++			return 333000000;
++		};
++	}
+ 	case BCM6328_CPU_ID:
+ 	{
+ 		unsigned int tmp, mips_pll_fcvo;
+@@ -297,6 +331,13 @@ static unsigned int detect_memory_size(v
+ 	unsigned int cols = 0, rows = 0, is_32bits = 0, banks = 0;
+ 	u32 val;
+ 
++	if (BCMCPU_IS_6318()) {
++		val = bcm_sdram_readl(SDRAM_CFG_REG);
++		val = val & SDRAM_CFG_6318_SPACE_MASK;
++		val >>= SDRAM_CFG_6318_SPACE_SHIFT;
++		return 1 << (val + 20);
++	}
++
+ 	if (BCMCPU_IS_6328() || BCMCPU_IS_6362() || BCMCPU_IS_63268())
+ 		return bcm_ddr_readl(DDR_CSEND_REG) << 24;
+ 
+@@ -343,6 +384,12 @@ void __init bcm63xx_cpu_init(void)
+ 
+ 	switch (current_cpu_type()) {
+ 	case CPU_BMIPS3300:
++		if ((read_c0_prid() & 0xff) >= 0x33) {
++			/* BCM6318 */
++			chipid_reg = BCM_6368_PERF_BASE;
++			break;
++		}
++
+ 		if ((read_c0_prid() & PRID_IMP_MASK) != PRID_IMP_BMIPS3300_ALT)
+ 			__cpu_name[cpu] = "Broadcom BCM6338";
+ 		/* fall-through */
+@@ -390,6 +437,10 @@ void __init bcm63xx_cpu_init(void)
+ 	bcm63xx_cpu_variant = bcm63xx_cpu_id;
+ 
+ 	switch (bcm63xx_cpu_id) {
++	case BCM6318_CPU_ID:
++		bcm63xx_regs_base = bcm6318_regs_base;
++		bcm63xx_irqs = bcm6318_irqs;
++		break;
+ 	case BCM3368_CPU_ID:
+ 		bcm63xx_regs_base = bcm3368_regs_base;
+ 		bcm63xx_irqs = bcm3368_irqs;
+--- a/arch/mips/bcm63xx/dev-flash.c
++++ b/arch/mips/bcm63xx/dev-flash.c
+@@ -60,6 +60,9 @@ static int __init bcm63xx_detect_flash_t
+ 	u32 val;
+ 
+ 	switch (bcm63xx_get_cpu_id()) {
++	case BCM6318_CPU_ID:
++		/* only support serial flash */
++		return BCM63XX_FLASH_TYPE_SERIAL;
+ 	case BCM6328_CPU_ID:
+ 		val = bcm_misc_readl(MISC_STRAPBUS_6328_REG);
+ 		if (val & STRAPBUS_6328_BOOT_SEL_SERIAL)
+--- a/arch/mips/bcm63xx/dev-spi.c
++++ b/arch/mips/bcm63xx/dev-spi.c
+@@ -38,7 +38,7 @@ static struct platform_device bcm63xx_sp
+ 
+ int __init bcm63xx_spi_register(void)
+ {
+-	if (BCMCPU_IS_6328() || BCMCPU_IS_6345())
++	if (BCMCPU_IS_6318() || BCMCPU_IS_6328() || BCMCPU_IS_6345())
+ 		return -ENODEV;
+ 
+ 	spi_resources[0].start = bcm63xx_regset_address(RSET_SPI);
+--- a/arch/mips/bcm63xx/irq.c
++++ b/arch/mips/bcm63xx/irq.c
+@@ -49,6 +49,19 @@ void __init arch_init_irq(void)
+ 		ext_irqs[3] = BCM_3368_EXT_IRQ3;
+ 		ext_shift = 4;
+ 		break;
++	case BCM6318_CPU_ID:
++		periph_bases[0] += PERF_IRQMASK_6318_REG;
++		periph_irq_count = 1;
++		periph_width = 4;
++
++		ext_intc_bases[0] += PERF_EXTIRQ_CFG_REG_6318;
++		ext_irq_count = 4;
++		ext_irqs[0] = BCM_6318_EXT_IRQ0;
++		ext_irqs[1] = BCM_6318_EXT_IRQ0;
++		ext_irqs[2] = BCM_6318_EXT_IRQ0;
++		ext_irqs[3] = BCM_6318_EXT_IRQ0;
++		ext_shift = 4;
++		break;
+ 	case BCM6328_CPU_ID:
+ 		periph_bases[0] += PERF_IRQMASK_6328_REG(0);
+ 		periph_bases[1] += PERF_IRQMASK_6328_REG(1);
+--- a/arch/mips/bcm63xx/prom.c
++++ b/arch/mips/bcm63xx/prom.c
+@@ -68,7 +68,7 @@ void __init prom_init(void)
+ 
+ 			if (reg & OTP_6328_REG3_TP1_DISABLED)
+ 				bmips_smp_enabled = 0;
+-		} else if (BCMCPU_IS_3368() || BCMCPU_IS_6358()) {
++		} else if (BCMCPU_IS_6318() || BCMCPU_IS_3368() || BCMCPU_IS_6358()) {
+ 			bmips_smp_enabled = 0;
+ 		}
+ 
+--- a/arch/mips/bcm63xx/reset.c
++++ b/arch/mips/bcm63xx/reset.c
+@@ -43,6 +43,23 @@
+ #define BCM3368_RESET_PCIE	0
+ #define BCM3368_RESET_PCIE_EXT	0
+ 
++
++#define BCM6318_RESET_SPI	SOFTRESET_6318_SPI_MASK
++#define BCM6318_RESET_ENET	0
++#define BCM6318_RESET_USBH	SOFTRESET_6318_USBH_MASK
++#define BCM6318_RESET_USBD	SOFTRESET_6318_USBS_MASK
++#define BCM6318_RESET_DSL	0
++#define BCM6318_RESET_SAR	SOFTRESET_6318_SAR_MASK
++#define BCM6318_RESET_EPHY	SOFTRESET_6318_EPHY_MASK
++#define BCM6318_RESET_ENETSW	SOFTRESET_6318_ENETSW_MASK
++#define BCM6318_RESET_PCM	0
++#define BCM6318_RESET_MPI	0
++#define BCM6318_RESET_PCIE	\
++				(SOFTRESET_6318_PCIE_MASK |		\
++				 SOFTRESET_6318_PCIE_CORE_MASK |	\
++				 SOFTRESET_6318_PCIE_HARD_MASK)
++#define BCM6318_RESET_PCIE_EXT	SOFTRESET_6318_PCIE_EXT_MASK
++
+ #define BCM6328_RESET_SPI	SOFTRESET_6328_SPI_MASK
+ #define BCM6328_RESET_ENET	0
+ #define BCM6328_RESET_USBH	SOFTRESET_6328_USBH_MASK
+@@ -147,6 +164,10 @@ static const u32 bcm3368_reset_bits[] =
+ 	__GEN_RESET_BITS_TABLE(3368)
+ };
+ 
++static const u32 bcm6318_reset_bits[] = {
++	__GEN_RESET_BITS_TABLE(6318)
++};
++
+ static const u32 bcm6328_reset_bits[] = {
+ 	__GEN_RESET_BITS_TABLE(6328)
+ };
+@@ -183,6 +204,9 @@ static int __init bcm63xx_reset_bits_ini
+ 	if (BCMCPU_IS_3368()) {
+ 		reset_reg = PERF_SOFTRESET_6358_REG;
+ 		bcm63xx_reset_bits = bcm3368_reset_bits;
++	} else if (BCMCPU_IS_6318()) {
++		reset_reg = PERF_SOFTRESET_6318_REG;
++		bcm63xx_reset_bits = bcm6318_reset_bits;
+ 	} else if (BCMCPU_IS_6328()) {
+ 		reset_reg = PERF_SOFTRESET_6328_REG;
+ 		bcm63xx_reset_bits = bcm6328_reset_bits;
+--- a/arch/mips/bcm63xx/setup.c
++++ b/arch/mips/bcm63xx/setup.c
+@@ -72,6 +72,9 @@ void bcm63xx_machine_reboot(void)
+ 	case BCM3368_CPU_ID:
+ 		perf_regs[0] = PERF_EXTIRQ_CFG_REG_3368;
+ 		break;
++	case BCM6318_CPU_ID:
++		perf_regs[0] = PERF_EXTIRQ_CFG_REG_6318;
++		break;
+ 	case BCM6328_CPU_ID:
+ 		perf_regs[0] = PERF_EXTIRQ_CFG_REG_6328;
+ 		break;
+@@ -111,7 +114,7 @@ void bcm63xx_machine_reboot(void)
+ 		bcm6348_a1_reboot();
+ 
+ 	pr_info("triggering watchdog soft-reset...\n");
+-	if (BCMCPU_IS_6328()) {
++	if (BCMCPU_IS_6318() || BCMCPU_IS_6328()) {
+ 		bcm_wdt_writel(1, WDT_SOFTRESET_REG);
+ 	} else {
+ 		reg = bcm_perf_readl(PERF_SYS_PLL_CTL_REG);
+--- a/arch/mips/include/asm/mach-bcm63xx/bcm63xx_cpu.h
++++ b/arch/mips/include/asm/mach-bcm63xx/bcm63xx_cpu.h
+@@ -10,6 +10,7 @@
+  * arm mach-types)
+  */
+ #define BCM3368_CPU_ID		0x3368
++#define BCM6318_CPU_ID		0x6318
+ #define BCM6328_CPU_ID		0x6328
+ #define BCM63281_CPU_ID		0x63281
+ #define BCM63283_CPU_ID		0x63283
+@@ -38,6 +39,10 @@ static inline u32 __pure __bcm63xx_get_c
+ 		case BCM3368_CPU_ID:
+ #endif
+ 
++#ifdef CONFIG_BCM63XX_CPU_6318
++		case BCM6318_CPU_ID:
++#endif
++
+ #ifdef CONFIG_BCM63XX_CPU_6328
+ 		case BCM6328_CPU_ID:
+ #endif
+@@ -87,6 +92,7 @@ static inline u32 __pure bcm63xx_get_cpu
+ }
+ 
+ #define BCMCPU_IS_3368()	(bcm63xx_get_cpu_id() == BCM3368_CPU_ID)
++#define BCMCPU_IS_6318()	(bcm63xx_get_cpu_id() == BCM6318_CPU_ID)
+ #define BCMCPU_IS_6328()	(bcm63xx_get_cpu_id() == BCM6328_CPU_ID)
+ #define BCMCPU_IS_6338()	(bcm63xx_get_cpu_id() == BCM6338_CPU_ID)
+ #define BCMCPU_IS_6345()	(bcm63xx_get_cpu_id() == BCM6345_CPU_ID)
+@@ -98,6 +104,8 @@ static inline u32 __pure bcm63xx_get_cpu
+ 
+ #define BCMCPU_VARIANT_IS_3368() \
+ 	(bcm63xx_get_cpu_variant() == BCM3368_CPU_ID)
++#define BCMCPU_VARIANT_IS_6318() \
++	(bcm63xx_get_cpu_variant() == BCM6318_CPU_ID)
+ #define BCMCPU_VARIANT_IS_63281() \
+ 	(bcm63xx_get_cpu_variant() == BCM63281_CPU_ID)
+ #define BCMCPU_VARIANT_IS_63283() \
+@@ -252,6 +260,56 @@ enum bcm63xx_regs_set {
+ #define BCM_3368_MISC_BASE		(0xdeadbeef)
+ 
+ /*
++ * 6318 register sets base address
++ */
++#define BCM_6318_DSL_LMEM_BASE		(0xdeadbeef)
++#define BCM_6318_PERF_BASE		(0xb0000000)
++#define BCM_6318_TIMER_BASE		(0xb0000040)
++#define BCM_6318_WDT_BASE		(0xb0000068)
++#define BCM_6318_UART0_BASE		(0xb0000100)
++#define BCM_6318_UART1_BASE		(0xdeadbeef)
++#define BCM_6318_GPIO_BASE		(0xb0000080)
++#define BCM_6318_SPI_BASE		(0xdeadbeef)
++#define BCM_6318_HSSPI_BASE		(0xb0003000)
++#define BCM_6318_UDC0_BASE		(0xdeadbeef)
++#define BCM_6318_USBDMA_BASE		(0xb0006800)
++#define BCM_6318_OHCI0_BASE		(0xb0005100)
++#define BCM_6318_OHCI_PRIV_BASE		(0xdeadbeef)
++#define BCM_6318_USBH_PRIV_BASE		(0xb0005200)
++#define BCM_6318_USBD_BASE		(0xb0006000)
++#define BCM_6318_MPI_BASE		(0xdeadbeef)
++#define BCM_6318_PCMCIA_BASE		(0xdeadbeef)
++#define BCM_6318_PCIE_BASE		(0xb0010000)
++#define BCM_6318_SDRAM_REGS_BASE	(0xdeadbeef)
++#define BCM_6318_DSL_BASE		(0xdeadbeef)
++#define BCM_6318_UBUS_BASE		(0xdeadbeef)
++#define BCM_6318_ENET0_BASE		(0xdeadbeef)
++#define BCM_6318_ENET1_BASE		(0xdeadbeef)
++#define BCM_6318_ENETDMA_BASE		(0xb0088000)
++#define BCM_6318_ENETDMAC_BASE		(0xb0088200)
++#define BCM_6318_ENETDMAS_BASE		(0xb0088400)
++#define BCM_6318_ENETSW_BASE		(0xb0080000)
++#define BCM_6318_EHCI0_BASE		(0xb0005000)
++#define BCM_6318_SDRAM_BASE		(0xb0004000)
++#define BCM_6318_MEMC_BASE		(0xdeadbeef)
++#define BCM_6318_DDR_BASE		(0xdeadbeef)
++#define BCM_6318_M2M_BASE		(0xdeadbeef)
++#define BCM_6318_ATM_BASE		(0xdeadbeef)
++#define BCM_6318_XTM_BASE		(0xdeadbeef)
++#define BCM_6318_XTMDMA_BASE		(0xb000c000)
++#define BCM_6318_XTMDMAC_BASE		(0xdeadbeef)
++#define BCM_6318_XTMDMAS_BASE		(0xdeadbeef)
++#define BCM_6318_PCM_BASE		(0xdeadbeef)
++#define BCM_6318_PCMDMA_BASE		(0xdeadbeef)
++#define BCM_6318_PCMDMAC_BASE		(0xdeadbeef)
++#define BCM_6318_PCMDMAS_BASE		(0xdeadbeef)
++#define BCM_6318_RNG_BASE		(0xdeadbeef)
++#define BCM_6318_MISC_BASE		(0xb0000280)
++#define BCM_6318_OTP_BASE		(0xdeadbeef)
++
++#define BCM_6318_STRAP_BASE		(0xb0000900)
++
++/*
+  * 6328 register sets base address
+  */
+ #define BCM_6328_DSL_LMEM_BASE		(0xdeadbeef)
+@@ -774,6 +832,55 @@ enum bcm63xx_irq {
+ #define BCM_3368_EXT_IRQ2		(IRQ_INTERNAL_BASE + 27)
+ #define BCM_3368_EXT_IRQ3		(IRQ_INTERNAL_BASE + 28)
+ 
++/*
++ * 6318 irqs
++ */
++#define BCM_6318_HIGH_IRQ_BASE		(IRQ_INTERNAL_BASE + 32)
++#define BCM_6318_VERY_HIGH_IRQ_BASE	(BCM_6318_HIGH_IRQ_BASE + 32)
++
++#define BCM_6318_TIMER_IRQ		(IRQ_INTERNAL_BASE + 31)
++#define BCM_6318_SPI_IRQ		0
++#define BCM_6318_UART0_IRQ		(IRQ_INTERNAL_BASE + 28)
++#define BCM_6318_UART1_IRQ		0
++#define BCM_6318_DSL_IRQ		(IRQ_INTERNAL_BASE + 21)
++#define BCM_6318_UDC0_IRQ		0
++#define BCM_6318_ENET0_IRQ		0
++#define BCM_6318_ENET1_IRQ		0
++#define BCM_6318_ENET_PHY_IRQ		(IRQ_INTERNAL_BASE + 12)
++#define BCM_6318_HSSPI_IRQ		(IRQ_INTERNAL_BASE + 29)
++#define BCM_6318_OHCI0_IRQ		(BCM_6318_HIGH_IRQ_BASE + 9)
++#define BCM_6318_EHCI0_IRQ		(BCM_6318_HIGH_IRQ_BASE + 10)
++#define BCM_6318_USBD_IRQ		(IRQ_INTERNAL_BASE + 4)
++#define BCM_6318_USBD_RXDMA0_IRQ	(IRQ_INTERNAL_BASE + 5)
++#define BCM_6318_USBD_TXDMA0_IRQ	(IRQ_INTERNAL_BASE + 6)
++#define BCM_6318_USBD_RXDMA1_IRQ	(IRQ_INTERNAL_BASE + 7)
++#define BCM_6318_USBD_TXDMA1_IRQ	(IRQ_INTERNAL_BASE + 8)
++#define BCM_6318_USBD_RXDMA2_IRQ	(IRQ_INTERNAL_BASE + 9)
++#define BCM_6318_USBD_TXDMA2_IRQ	(IRQ_INTERNAL_BASE + 10)
++#define BCM_6318_PCMCIA_IRQ		0
++#define BCM_6318_ENET0_RXDMA_IRQ	0
++#define BCM_6318_ENET0_TXDMA_IRQ	0
++#define BCM_6318_ENET1_RXDMA_IRQ	0
++#define BCM_6318_ENET1_TXDMA_IRQ	0
++#define BCM_6318_PCI_IRQ		(IRQ_INTERNAL_BASE + 23)
++#define BCM_6318_ATM_IRQ		0
++#define BCM_6318_ENETSW_RXDMA0_IRQ	(BCM_6318_HIGH_IRQ_BASE + 0)
++#define BCM_6318_ENETSW_RXDMA1_IRQ	(BCM_6318_HIGH_IRQ_BASE + 1)
++#define BCM_6318_ENETSW_RXDMA2_IRQ	(BCM_6318_HIGH_IRQ_BASE + 2)
++#define BCM_6318_ENETSW_RXDMA3_IRQ	(BCM_6318_HIGH_IRQ_BASE + 3)
++#define BCM_6318_ENETSW_TXDMA0_IRQ	(BCM_6318_VERY_HIGH_IRQ_BASE + 10)
++#define BCM_6318_ENETSW_TXDMA1_IRQ	(BCM_6318_VERY_HIGH_IRQ_BASE + 11)
++#define BCM_6318_ENETSW_TXDMA2_IRQ	(BCM_6318_VERY_HIGH_IRQ_BASE + 12)
++#define BCM_6318_ENETSW_TXDMA3_IRQ	(BCM_6318_VERY_HIGH_IRQ_BASE + 13)
++#define BCM_6318_XTM_IRQ		(BCM_6318_HIGH_IRQ_BASE + 31)
++#define BCM_6318_XTM_DMA0_IRQ		(BCM_6318_HIGH_IRQ_BASE + 11)
++
++#define BCM_6318_PCM_DMA0_IRQ		(IRQ_INTERNAL_BASE + 2)
++#define BCM_6318_PCM_DMA1_IRQ		(IRQ_INTERNAL_BASE + 3)
++#define BCM_6318_EXT_IRQ0		(IRQ_INTERNAL_BASE + 24)
++#define BCM_6318_EXT_IRQ1		(IRQ_INTERNAL_BASE + 25)
++#define BCM_6318_EXT_IRQ2		(IRQ_INTERNAL_BASE + 26)
++#define BCM_6318_EXT_IRQ3		(IRQ_INTERNAL_BASE + 27)
+ 
+ /*
+  * 6328 irqs
+--- a/arch/mips/include/asm/mach-bcm63xx/bcm63xx_regs.h
++++ b/arch/mips/include/asm/mach-bcm63xx/bcm63xx_regs.h
+@@ -52,6 +52,39 @@
+ 					 CKCTL_3368_EMUSB_EN | \
+ 					 CKCTL_3368_USBU_EN)
+ 
++#define CKCTL_6318_ADSL_ASB_EN		(1 << 0)
++#define CKCTL_6318_USB_ASB_EN		(1 << 1)
++#define CKCTL_6318_MIPS_ASB_EN		(1 << 2)
++#define CKCTL_6318_PCIE_ASB_EN		(1 << 3)
++#define CKCTL_6318_PHYMIPS_ASB_EN	(1 << 4)
++#define CKCTL_6318_ROBOSW_ASB_EN	(1 << 5)
++#define CKCTL_6318_SAR_ASB_EN		(1 << 6)
++#define CKCTL_6318_SDR_ASB_EN		(1 << 7)
++#define CKCTL_6318_SWREG_ASB_EN		(1 << 8)
++#define CKCTL_6318_PERIPH_ASB_EN	(1 << 9)
++#define CKCTL_6318_CPUBUS160_EN		(1 << 10)
++#define CKCTL_6318_ADSL_EN		(1 << 11)
++#define CKCTL_6318_SAR125_EN		(1 << 12)
++#define CKCTL_6318_MIPS_EN		(1 << 13)
++#define CKCTL_6318_PCIE_EN		(1 << 14)
++#define CKCTL_6318_ROBOSW250_EN		(1 << 16)
++#define CKCTL_6318_ROBOSW025_EN		(1 << 17)
++#define CKCTL_6318_SDR_EN		(1 << 19)
++#define CKCTL_6318_USB_EN		(1 << 20) /* both device and host */
++#define CKCTL_6318_HSSPI_EN		(1 << 25)
++#define CKCTL_6318_PCIE25_EN		(1 << 27)
++#define CKCTL_6318_PHYMIPS_EN		(1 << 28)
++#define CKCTL_6318_ADSL_AFE_EN		(1 << 29)
++#define CKCTL_6318_ADSL_QPROC_EN	(1 << 30)
++
++#define CKCTL_6318_ALL_SAFE_EN		(CKCTL_6318_PHYMIPS_EN |	\
++					CKCTL_6318_ADSL_QPROC_EN |	\
++					CKCTL_6318_ADSL_AFE_EN |	\
++					CKCTL_6318_ADSL_EN |		\
++					CKCTL_6318_SAR_EN  |		\
++					CKCTL_6318_USB_EN |		\
++					CKCTL_6318_PCIE_EN)
++
+ #define CKCTL_6328_PHYMIPS_EN		(1 << 0)
+ #define CKCTL_6328_ADSL_QPROC_EN	(1 << 1)
+ #define CKCTL_6328_ADSL_AFE_EN		(1 << 2)
+@@ -259,12 +292,27 @@
+ 					CKCTL_63268_TBUS_EN |		\
+ 					CKCTL_63268_ROBOSW250_EN)
+ 
++/* UBUS Clock Control register */
++#define PERF_UB_CKCTL_REG		0x10
++
++#define UB_CKCTL_6318_ADSL_EN		(1 << 0)
++#define UB_CKCTL_6318_ARB_EN		(1 << 1)
++#define UB_CKCTL_6318_MIPS_EN		(1 << 2)
++#define UB_CKCTL_6318_PCIE_EN		(1 << 3)
++#define UB_CKCTL_6318_PERIPH_EN		(1 << 4)
++#define UB_CKCTL_6318_PHYMIPS_EN	(1 << 5)
++#define UB_CKCTL_6318_ROBOSW_EN		(1 << 6)
++#define UB_CKCTL_6318_SAR_EN		(1 << 7)
++#define UB_CKCTL_6318_SDR_EN		(1 << 8)
++#define UB_CKCTL_6318_USB_EN		(1 << 9)
++
+ /* System PLL Control register	*/
+ #define PERF_SYS_PLL_CTL_REG		0x8
+ #define SYS_PLL_SOFT_RESET		0x1
+ 
+ /* Interrupt Mask register */
+ #define PERF_IRQMASK_3368_REG		0xc
++#define PERF_IRQMASK_6318_REG		0x20
+ #define PERF_IRQMASK_6328_REG(x)	(0x20 + (x) * 0x10)
+ #define PERF_IRQMASK_6338_REG		0xc
+ #define PERF_IRQMASK_6345_REG		0xc
+@@ -276,6 +324,7 @@
+ 
+ /* Interrupt Status register */
+ #define PERF_IRQSTAT_3368_REG		0x10
++#define PERF_IRQSTAT_6318_REG		0x30
+ #define PERF_IRQSTAT_6328_REG(x)	(0x28 + (x) * 0x10)
+ #define PERF_IRQSTAT_6338_REG		0x10
+ #define PERF_IRQSTAT_6345_REG		0x10
+@@ -287,6 +336,7 @@
+ 
+ /* External Interrupt Configuration register */
+ #define PERF_EXTIRQ_CFG_REG_3368	0x14
++#define PERF_EXTIRQ_CFG_REG_6318	0x18
+ #define PERF_EXTIRQ_CFG_REG_6328	0x18
+ #define PERF_EXTIRQ_CFG_REG_6338	0x14
+ #define PERF_EXTIRQ_CFG_REG_6345	0x14
+@@ -321,6 +371,7 @@
+ 
+ /* Soft Reset register */
+ #define PERF_SOFTRESET_REG		0x28
++#define PERF_SOFTRESET_6318_REG		0x10
+ #define PERF_SOFTRESET_6328_REG		0x10
+ #define PERF_SOFTRESET_6358_REG		0x34
+ #define PERF_SOFTRESET_6362_REG		0x10
+@@ -334,6 +385,18 @@
+ #define SOFTRESET_3368_USBS_MASK	(1 << 11)
+ #define SOFTRESET_3368_PCM_MASK		(1 << 13)
+ 
++#define SOFTRESET_6318_SPI_MASK		(1 << 0)
++#define SOFTRESET_6318_EPHY_MASK	(1 << 1)
++#define SOFTRESET_6318_SAR_MASK		(1 << 2)
++#define SOFTRESET_6318_ENETSW_MASK	(1 << 3)
++#define SOFTRESET_6318_USBS_MASK	(1 << 4)
++#define SOFTRESET_6318_USBH_MASK	(1 << 5)
++#define SOFTRESET_6318_PCIE_CORE_MASK	(1 << 6)
++#define SOFTRESET_6318_PCIE_MASK	(1 << 7)
++#define SOFTRESET_6318_PCIE_EXT_MASK	(1 << 8)
++#define SOFTRESET_6318_PCIE_HARD_MASK	(1 << 9)
++#define SOFTRESET_6318_ADSL_MASK	(1 << 10)
++
+ #define SOFTRESET_6328_SPI_MASK		(1 << 0)
+ #define SOFTRESET_6328_EPHY_MASK	(1 << 1)
+ #define SOFTRESET_6328_SAR_MASK		(1 << 2)
+@@ -505,8 +568,17 @@
+ #define TIMER_IRQSTAT_TIMER1_IR_EN	(1 << 9)
+ #define TIMER_IRQSTAT_TIMER2_IR_EN	(1 << 10)
+ 
++#define TIMER_IRQMASK_6318_REG		0x0
++#define TIMER_IRQSTAT_6318_REG		0x4
++#define IRQSTATMASK_TIMER0		(1 << 0)
++#define IRQSTATMASK_TIMER1		(1 << 1)
++#define IRQSTATMASK_TIMER2		(1 << 2)
++#define IRQSTATMASK_TIMER3		(1 << 3)
++#define IRQSTATMASK_WDT			(1 << 4)
++
+ /* Timer control register */
+ #define TIMER_CTLx_REG(x)		(0x4 + (x * 4))
++#define TIMER_CTRx_6318_REG(x)		(0x8 + (x * 4))
+ #define TIMER_CTL0_REG			0x4
+ #define TIMER_CTL1_REG			0x8
+ #define TIMER_CTL2_REG			0xC
+@@ -1253,6 +1325,8 @@
+ #define SDRAM_CFG_32B_MASK		(1 << SDRAM_CFG_32B_SHIFT)
+ #define SDRAM_CFG_BANK_SHIFT		13
+ #define SDRAM_CFG_BANK_MASK		(1 << SDRAM_CFG_BANK_SHIFT)
++#define SDRAM_CFG_6318_SPACE_SHIFT	4
++#define SDRAM_CFG_6318_SPACE_MASK	(0xf << SDRAM_CFG_6318_SPACE_SHIFT)
+ 
+ #define SDRAM_MBASE_REG			0xc
+ 
+--- a/arch/mips/include/asm/mach-bcm63xx/ioremap.h
++++ b/arch/mips/include/asm/mach-bcm63xx/ioremap.h
+@@ -22,6 +22,7 @@ static inline int is_bcm63xx_internal_re
+ 		if (offset >= 0xfff00000)
+ 			return 1;
+ 		break;
++	case BCM6318_CPU_ID:
+ 	case BCM6328_CPU_ID:
+ 	case BCM6362_CPU_ID:
+ 	case BCM6368_CPU_ID:
+--- a/arch/mips/bcm63xx/dev-hsspi.c
++++ b/arch/mips/bcm63xx/dev-hsspi.c
+@@ -35,7 +35,8 @@ static struct platform_device bcm63xx_hs
+ 
+ int __init bcm63xx_hsspi_register(void)
+ {
+-	if (!BCMCPU_IS_6328() && !BCMCPU_IS_6362() && !BCMCPU_IS_63268())
++	if (!BCMCPU_IS_6318() && !BCMCPU_IS_6328() && !BCMCPU_IS_6362() &&
++		!BCMCPU_IS_63268())
+ 		return -ENODEV;
+ 
+ 	spi_resources[0].start = bcm63xx_regset_address(RSET_HSSPI);
+--- a/arch/mips/bcm63xx/dev-usb-usbd.c
++++ b/arch/mips/bcm63xx/dev-usb-usbd.c
+@@ -41,7 +41,7 @@ int __init bcm63xx_usbd_register(const s
+ 		IRQ_USBD_RXDMA2, IRQ_USBD_TXDMA2 };
+ 	int i;
+ 
+-	if (!BCMCPU_IS_6328() && !BCMCPU_IS_6368())
++	if (!BCMCPU_IS_6318() && !BCMCPU_IS_6328() && !BCMCPU_IS_6368())
+ 		return 0;
+ 
+ 	usbd_resources[0].start = bcm63xx_regset_address(RSET_USBD);
+--- a/arch/mips/bcm63xx/dev-enet.c
++++ b/arch/mips/bcm63xx/dev-enet.c
+@@ -176,8 +176,8 @@ static int __init register_shared(void)
+ 	else
+ 		shared_res[0].end += (RSET_ENETDMA_SIZE)  - 1;
+ 
+-	if (BCMCPU_IS_6328() || BCMCPU_IS_6362() || BCMCPU_IS_6368() ||
+-		BCMCPU_IS_63268())
++	if (BCMCPU_IS_6318() || BCMCPU_IS_6328() || BCMCPU_IS_6362() ||
++		BCMCPU_IS_6368() || BCMCPU_IS_63268())
+ 		chan_count = 32;
+ 	else if (BCMCPU_IS_6345())
+ 		chan_count = 8;
+@@ -277,8 +277,8 @@ bcm63xx_enetsw_register(const struct bcm
+ {
+ 	int ret;
+ 
+-	if (!BCMCPU_IS_6328() && !BCMCPU_IS_6362() && !BCMCPU_IS_6368() &&
+-		!BCMCPU_IS_63268())
++	if (!BCMCPU_IS_6318() && !BCMCPU_IS_6328() && !BCMCPU_IS_6362() &&
++		!BCMCPU_IS_6368() && !BCMCPU_IS_63268())
+ 		return -ENODEV;
+ 
+ 	ret = register_shared();
+@@ -295,7 +295,7 @@ bcm63xx_enetsw_register(const struct bcm
+ 
+ 	memcpy(bcm63xx_enetsw_device.dev.platform_data, pd, sizeof(*pd));
+ 
+-	if (BCMCPU_IS_6328())
++	if (BCMCPU_IS_6318() || BCMCPU_IS_6328())
+ 		enetsw_pd.num_ports = ENETSW_PORTS_6328;
+ 	else if (BCMCPU_IS_6362() || BCMCPU_IS_6368())
+ 		enetsw_pd.num_ports = ENETSW_PORTS_6368;
+--- a/arch/mips/include/asm/mach-bcm63xx/bcm63xx_gpio.h
++++ b/arch/mips/include/asm/mach-bcm63xx/bcm63xx_gpio.h
+@@ -9,6 +9,8 @@ int __init bcm63xx_gpio_init(void);
+ static inline unsigned long bcm63xx_gpio_count(void)
+ {
+ 	switch (bcm63xx_get_cpu_id()) {
++	case BCM6318_CPU_ID:
++		return 50;
+ 	case BCM6328_CPU_ID:
+ 		return 32;
+ 	case BCM3368_CPU_ID:
+--- a/arch/mips/bcm63xx/dev-usb-ehci.c
++++ b/arch/mips/bcm63xx/dev-usb-ehci.c
+@@ -81,7 +81,8 @@ static struct platform_device bcm63xx_eh
+ 
+ int __init bcm63xx_ehci_register(void)
+ {
+-	if (!BCMCPU_IS_6328() && !BCMCPU_IS_6358() && !BCMCPU_IS_6362() && !BCMCPU_IS_6368())
++	if (!BCMCPU_IS_6318() && !BCMCPU_IS_6328() && !BCMCPU_IS_6358() &&
++		!BCMCPU_IS_6362() && !BCMCPU_IS_6368())
+ 		return 0;
+ 
+ 	ehci_resources[0].start = bcm63xx_regset_address(RSET_EHCI0);

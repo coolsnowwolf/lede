@@ -1,0 +1,253 @@
+From 5185c91385d73cdf79836eb8548e4726e43ae831 Mon Sep 17 00:00:00 2001
+From: Tim Harvey <tharvey@gateworks.com>
+Date: Mon, 23 May 2016 06:58:41 -0700
+Subject: [PATCH] usb: gadget: net2280: add USB2380 support
+
+The PLX USB2380 is a PCIe version of the NET2280 and behaves more like the
+USB338x but without the USB3.0 superspeed support.
+
+This was tested with g_ether, g_serial, g_mass_storage on a Gateworks
+Ventana GW2383.
+
+Cc: Justin DeFields <justindefields@gmail.com>
+Signed-off-by: Tim Harvey <tharvey@gateworks.com>
+Signed-off-by: Felipe Balbi <felipe.balbi@linux.intel.com>
+---
+ drivers/usb/gadget/udc/Kconfig   |  4 +++-
+ drivers/usb/gadget/udc/net2280.c | 51 +++++++++++++++++++++++-----------------
+ drivers/usb/gadget/udc/net2280.h |  1 +
+ 3 files changed, 34 insertions(+), 22 deletions(-)
+
+--- a/drivers/usb/gadget/udc/Kconfig
++++ b/drivers/usb/gadget/udc/Kconfig
+@@ -298,7 +298,7 @@ config USB_NET2272_DMA
+ 	  If unsure, say "N" here.  The driver works fine in PIO mode.
+ 
+ config USB_NET2280
+-	tristate "NetChip 228x / PLX USB338x"
++	tristate "NetChip NET228x / PLX USB3x8x"
+ 	depends on PCI
+ 	help
+ 	   NetChip 2280 / 2282 is a PCI based USB peripheral controller which
+@@ -308,6 +308,8 @@ config USB_NET2280
+ 	   (for control transfers) and several endpoints with dedicated
+ 	   functions.
+ 
++	   PLX 2380 is a PCIe version of the PLX 2380.
++
+ 	   PLX 3380 / 3382 is a PCIe based USB peripheral controller which
+ 	   supports full, high speed USB 2.0 and super speed USB 3.0
+ 	   data transfers.
+--- a/drivers/usb/gadget/udc/net2280.c
++++ b/drivers/usb/gadget/udc/net2280.c
+@@ -211,7 +211,7 @@ net2280_enable(struct usb_ep *_ep, const
+ 		goto print_err;
+ 	}
+ 
+-	if (dev->quirks & PLX_SUPERSPEED) {
++	if (dev->quirks & PLX_PCIE) {
+ 		if ((desc->bEndpointAddress & 0x0f) >= 0x0c) {
+ 			ret = -EDOM;
+ 			goto print_err;
+@@ -245,7 +245,7 @@ net2280_enable(struct usb_ep *_ep, const
+ 	/* set type, direction, address; reset fifo counters */
+ 	writel(BIT(FIFO_FLUSH), &ep->regs->ep_stat);
+ 
+-	if ((dev->quirks & PLX_SUPERSPEED) && dev->enhanced_mode) {
++	if ((dev->quirks & PLX_PCIE) && dev->enhanced_mode) {
+ 		tmp = readl(&ep->cfg->ep_cfg);
+ 		/* If USB ep number doesn't match hardware ep number */
+ 		if ((tmp & 0xf) != usb_endpoint_num(desc)) {
+@@ -316,7 +316,7 @@ net2280_enable(struct usb_ep *_ep, const
+ 			BIT(CLEAR_NAK_OUT_PACKETS_MODE), &ep->regs->ep_rsp);
+ 	}
+ 
+-	if (dev->quirks & PLX_SUPERSPEED)
++	if (dev->quirks & PLX_PCIE)
+ 		ep_clear_seqnum(ep);
+ 	writel(tmp, &ep->cfg->ep_cfg);
+ 
+@@ -527,7 +527,7 @@ static int net2280_disable(struct usb_ep
+ 	spin_lock_irqsave(&ep->dev->lock, flags);
+ 	nuke(ep);
+ 
+-	if (ep->dev->quirks & PLX_SUPERSPEED)
++	if (ep->dev->quirks & PLX_PCIE)
+ 		ep_reset_338x(ep->dev->regs, ep);
+ 	else
+ 		ep_reset_228x(ep->dev->regs, ep);
+@@ -862,7 +862,7 @@ static void start_queue(struct net2280_e
+ 	writel(readl(&dma->dmastat), &dma->dmastat);
+ 
+ 	writel(td_dma, &dma->dmadesc);
+-	if (ep->dev->quirks & PLX_SUPERSPEED)
++	if (ep->dev->quirks & PLX_PCIE)
+ 		dmactl |= BIT(DMA_REQUEST_OUTSTANDING);
+ 	writel(dmactl, &dma->dmactl);
+ 
+@@ -1046,7 +1046,7 @@ net2280_queue(struct usb_ep *_ep, struct
+ 
+ 	/* kickstart this i/o queue? */
+ 	if  (list_empty(&ep->queue) && !ep->stopped &&
+-		!((dev->quirks & PLX_SUPERSPEED) && ep->dma &&
++		!((dev->quirks & PLX_PCIE) && ep->dma &&
+ 		  (readl(&ep->regs->ep_rsp) & BIT(CLEAR_ENDPOINT_HALT)))) {
+ 
+ 		/* use DMA if the endpoint supports it, else pio */
+@@ -1169,7 +1169,7 @@ static void scan_dma_completions(struct
+ 			break;
+ 		} else if (!ep->is_in &&
+ 			   (req->req.length % ep->ep.maxpacket) &&
+-			   !(ep->dev->quirks & PLX_SUPERSPEED)) {
++			   !(ep->dev->quirks & PLX_PCIE)) {
+ 
+ 			tmp = readl(&ep->regs->ep_stat);
+ 			/* AVOID TROUBLE HERE by not issuing short reads from
+@@ -1367,7 +1367,7 @@ net2280_set_halt_and_wedge(struct usb_ep
+ 				ep->wedged = 1;
+ 		} else {
+ 			clear_halt(ep);
+-			if (ep->dev->quirks & PLX_SUPERSPEED &&
++			if (ep->dev->quirks & PLX_PCIE &&
+ 				!list_empty(&ep->queue) && ep->td_dma)
+ 					restart_dma(ep);
+ 			ep->wedged = 0;
+@@ -2394,7 +2394,7 @@ static int net2280_start(struct usb_gadg
+ 	 */
+ 	net2280_led_active(dev, 1);
+ 
+-	if ((dev->quirks & PLX_SUPERSPEED) && !dev->bug7734_patched)
++	if ((dev->quirks & PLX_PCIE) && !dev->bug7734_patched)
+ 		defect7374_enable_data_eps_zero(dev);
+ 
+ 	ep0_start(dev);
+@@ -3060,7 +3060,7 @@ static void handle_stat0_irqs(struct net
+ 		}
+ 		ep->stopped = 0;
+ 		dev->protocol_stall = 0;
+-		if (!(dev->quirks & PLX_SUPERSPEED)) {
++		if (!(dev->quirks & PLX_PCIE)) {
+ 			if (ep->dev->quirks & PLX_2280)
+ 				tmp = BIT(FIFO_OVERFLOW) |
+ 				    BIT(FIFO_UNDERFLOW);
+@@ -3087,7 +3087,7 @@ static void handle_stat0_irqs(struct net
+ 		cpu_to_le32s(&u.raw[0]);
+ 		cpu_to_le32s(&u.raw[1]);
+ 
+-		if ((dev->quirks & PLX_SUPERSPEED) && !dev->bug7734_patched)
++		if ((dev->quirks & PLX_PCIE) && !dev->bug7734_patched)
+ 			defect7374_workaround(dev, u.r);
+ 
+ 		tmp = 0;
+@@ -3170,7 +3170,7 @@ static void handle_stat0_irqs(struct net
+ 			} else {
+ 				ep_vdbg(dev, "%s clear halt\n", e->ep.name);
+ 				clear_halt(e);
+-				if ((ep->dev->quirks & PLX_SUPERSPEED) &&
++				if ((ep->dev->quirks & PLX_PCIE) &&
+ 					!list_empty(&e->queue) && e->td_dma)
+ 						restart_dma(e);
+ 			}
+@@ -3192,7 +3192,7 @@ static void handle_stat0_irqs(struct net
+ 			if (e->ep.name == ep0name)
+ 				goto do_stall;
+ 			set_halt(e);
+-			if ((dev->quirks & PLX_SUPERSPEED) && e->dma)
++			if ((dev->quirks & PLX_PCIE) && e->dma)
+ 				abort_dma(e);
+ 			allow_status(ep);
+ 			ep_vdbg(dev, "%s set halt\n", ep->ep.name);
+@@ -3231,7 +3231,7 @@ do_stall:
+ #undef	w_length
+ 
+ next_endpoints:
+-	if ((dev->quirks & PLX_SUPERSPEED) && dev->enhanced_mode) {
++	if ((dev->quirks & PLX_PCIE) && dev->enhanced_mode) {
+ 		u32 mask = (BIT(ENDPOINT_0_INTERRUPT) |
+ 			USB3380_IRQSTAT0_EP_INTR_MASK_IN |
+ 			USB3380_IRQSTAT0_EP_INTR_MASK_OUT);
+@@ -3392,7 +3392,7 @@ static void handle_stat1_irqs(struct net
+ 		writel(tmp, &dma->dmastat);
+ 
+ 		/* dma sync*/
+-		if (dev->quirks & PLX_SUPERSPEED) {
++		if (dev->quirks & PLX_PCIE) {
+ 			u32 r_dmacount = readl(&dma->dmacount);
+ 			if (!ep->is_in &&  (r_dmacount & 0x00FFFFFF) &&
+ 			    (tmp & BIT(DMA_TRANSACTION_DONE_INTERRUPT)))
+@@ -3461,7 +3461,7 @@ static irqreturn_t net2280_irq(int irq,
+ 	/* control requests and PIO */
+ 	handle_stat0_irqs(dev, readl(&dev->regs->irqstat0));
+ 
+-	if (dev->quirks & PLX_SUPERSPEED) {
++	if (dev->quirks & PLX_PCIE) {
+ 		/* re-enable interrupt to trigger any possible new interrupt */
+ 		u32 pciirqenb1 = readl(&dev->regs->pciirqenb1);
+ 		writel(pciirqenb1 & 0x7FFFFFFF, &dev->regs->pciirqenb1);
+@@ -3506,7 +3506,7 @@ static void net2280_remove(struct pci_de
+ 	}
+ 	if (dev->got_irq)
+ 		free_irq(pdev->irq, dev);
+-	if (dev->quirks & PLX_SUPERSPEED)
++	if (dev->quirks & PLX_PCIE)
+ 		pci_disable_msi(pdev);
+ 	if (dev->regs)
+ 		iounmap(dev->regs);
+@@ -3586,7 +3586,7 @@ static int net2280_probe(struct pci_dev
+ 	dev->dep = (struct net2280_dep_regs __iomem *) (base + 0x0200);
+ 	dev->epregs = (struct net2280_ep_regs __iomem *) (base + 0x0300);
+ 
+-	if (dev->quirks & PLX_SUPERSPEED) {
++	if (dev->quirks & PLX_PCIE) {
+ 		u32 fsmvalue;
+ 		u32 usbstat;
+ 		dev->usb_ext = (struct usb338x_usb_ext_regs __iomem *)
+@@ -3630,7 +3630,7 @@ static int net2280_probe(struct pci_dev
+ 		goto done;
+ 	}
+ 
+-	if (dev->quirks & PLX_SUPERSPEED)
++	if (dev->quirks & PLX_PCIE)
+ 		if (pci_enable_msi(pdev))
+ 			ep_err(dev, "Failed to enable MSI mode\n");
+ 
+@@ -3748,10 +3748,19 @@ static const struct pci_device_id pci_id
+ 	.class =	((PCI_CLASS_SERIAL_USB << 8) | 0xfe),
+ 	.class_mask =	~0,
+ 	.vendor =	PCI_VENDOR_ID_PLX,
++	.device =	0x2380,
++	.subvendor =	PCI_ANY_ID,
++	.subdevice =	PCI_ANY_ID,
++	.driver_data =	PLX_PCIE,
++	 },
++	{
++	.class =	((PCI_CLASS_SERIAL_USB << 8) | 0xfe),
++	.class_mask =	~0,
++	.vendor =	PCI_VENDOR_ID_PLX,
+ 	.device =	0x3380,
+ 	.subvendor =	PCI_ANY_ID,
+ 	.subdevice =	PCI_ANY_ID,
+-	.driver_data =	PLX_SUPERSPEED,
++	.driver_data =	PLX_PCIE | PLX_SUPERSPEED,
+ 	 },
+ 	{
+ 	.class =	((PCI_CLASS_SERIAL_USB << 8) | 0xfe),
+@@ -3760,7 +3769,7 @@ static const struct pci_device_id pci_id
+ 	.device =	0x3382,
+ 	.subvendor =	PCI_ANY_ID,
+ 	.subdevice =	PCI_ANY_ID,
+-	.driver_data =	PLX_SUPERSPEED,
++	.driver_data =	PLX_PCIE | PLX_SUPERSPEED,
+ 	 },
+ { /* end: all zeroes */ }
+ };
+--- a/drivers/usb/gadget/udc/net2280.h
++++ b/drivers/usb/gadget/udc/net2280.h
+@@ -47,6 +47,7 @@ set_idx_reg(struct net2280_regs __iomem
+ #define PLX_LEGACY		BIT(0)
+ #define PLX_2280		BIT(1)
+ #define PLX_SUPERSPEED		BIT(2)
++#define PLX_PCIE		BIT(3)
+ 
+ #define REG_DIAG		0x0
+ #define     RETRY_COUNTER                                       16

@@ -1,0 +1,93 @@
+From 4885eb650b27f5639c8c72b8d4daa37f533b0b4d Mon Sep 17 00:00:00 2001
+From: Yutang Jiang <yutang.jiang@nxp.com>
+Date: Fri, 22 Jul 2016 01:03:29 +0800
+Subject: [PATCH 69/70] Revert "arm64: simplify dma_get_ops"
+
+This reverts commit 1dccb598df549d892b6450c261da54cdd7af44b4.
+---
+ arch/arm64/include/asm/dma-mapping.h |   13 ++++++++++---
+ arch/arm64/mm/dma-mapping.c          |   16 ++++++++++++----
+ 2 files changed, 22 insertions(+), 7 deletions(-)
+
+--- a/arch/arm64/include/asm/dma-mapping.h
++++ b/arch/arm64/include/asm/dma-mapping.h
+@@ -18,6 +18,7 @@
+ 
+ #ifdef __KERNEL__
+ 
++#include <linux/acpi.h>
+ #include <linux/types.h>
+ #include <linux/vmalloc.h>
+ 
+@@ -25,16 +26,22 @@
+ #include <asm/xen/hypervisor.h>
+ 
+ #define DMA_ERROR_CODE	(~(dma_addr_t)0)
++extern struct dma_map_ops *dma_ops;
+ extern struct dma_map_ops dummy_dma_ops;
+ 
+ static inline struct dma_map_ops *__generic_dma_ops(struct device *dev)
+ {
+-	if (dev && dev->archdata.dma_ops)
++	if (unlikely(!dev))
++		return dma_ops;
++	else if (dev->archdata.dma_ops)
+ 		return dev->archdata.dma_ops;
++	else if (acpi_disabled)
++		return dma_ops;
+ 
+ 	/*
+-	 * We expect no ISA devices, and all other DMA masters are expected to
+-	 * have someone call arch_setup_dma_ops at device creation time.
++	 * When ACPI is enabled, if arch_set_dma_ops is not called,
++	 * we will disable device DMA capability by setting it
++	 * to dummy_dma_ops.
+ 	 */
+ 	return &dummy_dma_ops;
+ }
+--- a/arch/arm64/mm/dma-mapping.c
++++ b/arch/arm64/mm/dma-mapping.c
+@@ -18,7 +18,6 @@
+  */
+ 
+ #include <linux/gfp.h>
+-#include <linux/acpi.h>
+ #include <linux/export.h>
+ #include <linux/slab.h>
+ #include <linux/genalloc.h>
+@@ -29,6 +28,9 @@
+ 
+ #include <asm/cacheflush.h>
+ 
++struct dma_map_ops *dma_ops;
++EXPORT_SYMBOL(dma_ops);
++
+ static pgprot_t __get_dma_pgprot(struct dma_attrs *attrs, pgprot_t prot,
+ 				 bool coherent)
+ {
+@@ -513,7 +515,13 @@ EXPORT_SYMBOL(dummy_dma_ops);
+ 
+ static int __init arm64_dma_init(void)
+ {
+-	return atomic_pool_init();
++	int ret;
++
++	dma_ops = &swiotlb_dma_ops;
++
++	ret = atomic_pool_init();
++
++	return ret;
+ }
+ arch_initcall(arm64_dma_init);
+ 
+@@ -987,8 +995,8 @@ static void __iommu_setup_dma_ops(struct
+ void arch_setup_dma_ops(struct device *dev, u64 dma_base, u64 size,
+ 			struct iommu_ops *iommu, bool coherent)
+ {
+-	if (!dev->archdata.dma_ops)
+-		dev->archdata.dma_ops = &swiotlb_dma_ops;
++	if (!acpi_disabled && !dev->archdata.dma_ops)
++		dev->archdata.dma_ops = dma_ops;
+ 
+ 	dev->archdata.dma_coherent = coherent;
+ 	__iommu_setup_dma_ops(dev, dma_base, size, iommu);

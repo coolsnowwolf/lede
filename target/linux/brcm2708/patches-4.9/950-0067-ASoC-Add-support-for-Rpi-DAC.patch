@@ -1,0 +1,272 @@
+From 3a890b43d08fbfe10895f733578f095a6449ba0b Mon Sep 17 00:00:00 2001
+From: Florian Meier <florian.meier@koalo.de>
+Date: Mon, 25 Jan 2016 15:48:59 +0000
+Subject: [PATCH] ASoC: Add support for Rpi-DAC
+
+---
+ sound/soc/bcm/Kconfig       |   7 +++
+ sound/soc/bcm/Makefile      |   2 +
+ sound/soc/bcm/rpi-dac.c     | 119 ++++++++++++++++++++++++++++++++++++++++++++
+ sound/soc/codecs/Kconfig    |   5 ++
+ sound/soc/codecs/Makefile   |   2 +
+ sound/soc/codecs/pcm1794a.c |  69 +++++++++++++++++++++++++
+ 6 files changed, 204 insertions(+)
+ create mode 100644 sound/soc/bcm/rpi-dac.c
+ create mode 100644 sound/soc/codecs/pcm1794a.c
+
+--- a/sound/soc/bcm/Kconfig
++++ b/sound/soc/bcm/Kconfig
+@@ -23,3 +23,10 @@ config SND_BCM2708_SOC_HIFIBERRY_DAC
+         select SND_SOC_PCM5102A
+         help
+          Say Y or M if you want to add support for HifiBerry DAC.
++
++config SND_BCM2708_SOC_RPI_DAC
++        tristate "Support for RPi-DAC"
++        depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
++        select SND_SOC_PCM1794A
++        help
++         Say Y or M if you want to add support for RPi-DAC.
+--- a/sound/soc/bcm/Makefile
++++ b/sound/soc/bcm/Makefile
+@@ -10,5 +10,7 @@ obj-$(CONFIG_SND_SOC_CYGNUS) += snd-soc-
+ 
+ # BCM2708 Machine Support
+ snd-soc-hifiberry-dac-objs := hifiberry_dac.o
++snd-soc-rpi-dac-objs := rpi-dac.o
+ 
+ obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_DAC) += snd-soc-hifiberry-dac.o
++obj-$(CONFIG_SND_BCM2708_SOC_RPI_DAC) += snd-soc-rpi-dac.o
+--- /dev/null
++++ b/sound/soc/bcm/rpi-dac.c
+@@ -0,0 +1,119 @@
++/*
++ * ASoC Driver for RPi-DAC.
++ *
++ * Author:	Florian Meier <florian.meier@koalo.de>
++ *		Copyright 2013
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ */
++
++#include <linux/module.h>
++#include <linux/platform_device.h>
++
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++#include <sound/jack.h>
++
++static int snd_rpi_rpi_dac_init(struct snd_soc_pcm_runtime *rtd)
++{
++	return 0;
++}
++
++static int snd_rpi_rpi_dac_hw_params(struct snd_pcm_substream *substream,
++				       struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
++
++	return snd_soc_dai_set_bclk_ratio(cpu_dai, 32*2);
++}
++
++/* machine stream operations */
++static struct snd_soc_ops snd_rpi_rpi_dac_ops = {
++	.hw_params = snd_rpi_rpi_dac_hw_params,
++};
++
++static struct snd_soc_dai_link snd_rpi_rpi_dac_dai[] = {
++{
++	.name		= "RPi-DAC",
++	.stream_name	= "RPi-DAC HiFi",
++	.cpu_dai_name	= "bcm2708-i2s.0",
++	.codec_dai_name	= "pcm1794a-hifi",
++	.platform_name	= "bcm2708-i2s.0",
++	.codec_name	= "pcm1794a-codec",
++	.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
++				SND_SOC_DAIFMT_CBS_CFS,
++	.ops		= &snd_rpi_rpi_dac_ops,
++	.init		= snd_rpi_rpi_dac_init,
++},
++};
++
++/* audio machine driver */
++static struct snd_soc_card snd_rpi_rpi_dac = {
++	.name         = "snd_rpi_rpi_dac",
++	.owner        = THIS_MODULE,
++	.dai_link     = snd_rpi_rpi_dac_dai,
++	.num_links    = ARRAY_SIZE(snd_rpi_rpi_dac_dai),
++};
++
++static int snd_rpi_rpi_dac_probe(struct platform_device *pdev)
++{
++	int ret = 0;
++
++	snd_rpi_rpi_dac.dev = &pdev->dev;
++	
++	if (pdev->dev.of_node) {
++		struct device_node *i2s_node;
++		struct snd_soc_dai_link *dai = &snd_rpi_rpi_dac_dai[0];
++		i2s_node = of_parse_phandle(pdev->dev.of_node, "i2s-controller", 0);
++
++		if (i2s_node) {
++			dai->cpu_dai_name = NULL;
++			dai->cpu_of_node = i2s_node;
++			dai->platform_name = NULL;
++			dai->platform_of_node = i2s_node;
++		}
++	}
++	
++	ret = snd_soc_register_card(&snd_rpi_rpi_dac);
++	if (ret)
++		dev_err(&pdev->dev, "snd_soc_register_card() failed: %d\n", ret);
++
++	return ret;
++}
++
++static int snd_rpi_rpi_dac_remove(struct platform_device *pdev)
++{
++	return snd_soc_unregister_card(&snd_rpi_rpi_dac);
++}
++
++static const struct of_device_id snd_rpi_rpi_dac_of_match[] = {
++	{ .compatible = "rpi,rpi-dac", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, snd_rpi_rpi_dac_of_match);
++
++static struct platform_driver snd_rpi_rpi_dac_driver = {
++        .driver = {
++                .name   = "snd-rpi-dac",
++                .owner  = THIS_MODULE,
++                .of_match_table = snd_rpi_rpi_dac_of_match,
++        },
++        .probe          = snd_rpi_rpi_dac_probe,
++        .remove         = snd_rpi_rpi_dac_remove,
++};
++
++module_platform_driver(snd_rpi_rpi_dac_driver);
++
++MODULE_AUTHOR("Florian Meier <florian.meier@koalo.de>");
++MODULE_DESCRIPTION("ASoC Driver for RPi-DAC");
++MODULE_LICENSE("GPL v2");
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -98,6 +98,7 @@ config SND_SOC_ALL_CODECS
+ 	select SND_SOC_PCM1681 if I2C
+ 	select SND_SOC_PCM179X_I2C if I2C
+ 	select SND_SOC_PCM179X_SPI if SPI_MASTER
++	select SND_SOC_PCM1794A if I2C
+ 	select SND_SOC_PCM3008
+ 	select SND_SOC_PCM3168A_I2C if I2C
+ 	select SND_SOC_PCM3168A_SPI if SPI_MASTER
+@@ -689,6 +690,10 @@ config SND_SOC_RT5616
+ 	tristate "Realtek RT5616 CODEC"
+ 	depends on I2C
+ 
++config SND_SOC_PCM1794A
++	tristate
++	depends on I2C
++
+ config SND_SOC_RT5631
+ 	tristate "Realtek ALC5631/RT5631 CODEC"
+ 	depends on I2C
+--- a/sound/soc/codecs/Makefile
++++ b/sound/soc/codecs/Makefile
+@@ -93,6 +93,7 @@ snd-soc-pcm1681-objs := pcm1681.o
+ snd-soc-pcm179x-codec-objs := pcm179x.o
+ snd-soc-pcm179x-i2c-objs := pcm179x-i2c.o
+ snd-soc-pcm179x-spi-objs := pcm179x-spi.o
++snd-soc-pcm1794a-objs := pcm1794a.o
+ snd-soc-pcm3008-objs := pcm3008.o
+ snd-soc-pcm3168a-objs := pcm3168a.o
+ snd-soc-pcm3168a-i2c-objs := pcm3168a-i2c.o
+@@ -325,6 +326,7 @@ obj-$(CONFIG_SND_SOC_PCM5102A)	+= snd-so
+ obj-$(CONFIG_SND_SOC_PCM512x)	+= snd-soc-pcm512x.o
+ obj-$(CONFIG_SND_SOC_PCM512x_I2C)	+= snd-soc-pcm512x-i2c.o
+ obj-$(CONFIG_SND_SOC_PCM512x_SPI)	+= snd-soc-pcm512x-spi.o
++obj-$(CONFIG_SND_SOC_PCM1794A)	+= snd-soc-pcm1794a.o
+ obj-$(CONFIG_SND_SOC_RL6231)	+= snd-soc-rl6231.o
+ obj-$(CONFIG_SND_SOC_RL6347A)	+= snd-soc-rl6347a.o
+ obj-$(CONFIG_SND_SOC_RT286)	+= snd-soc-rt286.o
+--- /dev/null
++++ b/sound/soc/codecs/pcm1794a.c
+@@ -0,0 +1,69 @@
++/*
++ * Driver for the PCM1794A codec
++ *
++ * Author:	Florian Meier <florian.meier@koalo.de>
++ *		Copyright 2013
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ */
++
++
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++
++#include <sound/soc.h>
++
++static struct snd_soc_dai_driver pcm1794a_dai = {
++	.name = "pcm1794a-hifi",
++	.playback = {
++		.channels_min = 2,
++		.channels_max = 2,
++		.rates = SNDRV_PCM_RATE_8000_192000,
++		.formats = SNDRV_PCM_FMTBIT_S16_LE |
++			   SNDRV_PCM_FMTBIT_S24_LE
++	},
++};
++
++static struct snd_soc_codec_driver soc_codec_dev_pcm1794a;
++
++static int pcm1794a_probe(struct platform_device *pdev)
++{
++	return snd_soc_register_codec(&pdev->dev, &soc_codec_dev_pcm1794a,
++			&pcm1794a_dai, 1);
++}
++
++static int pcm1794a_remove(struct platform_device *pdev)
++{
++	snd_soc_unregister_codec(&pdev->dev);
++	return 0;
++}
++
++static const struct of_device_id pcm1794a_of_match[] = {
++	{ .compatible = "ti,pcm1794a", },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, pcm1794a_of_match);
++
++static struct platform_driver pcm1794a_codec_driver = {
++	.probe 		= pcm1794a_probe,
++	.remove 	= pcm1794a_remove,
++	.driver		= {
++		.name	= "pcm1794a-codec",
++		.owner	= THIS_MODULE,
++		.of_match_table = of_match_ptr(pcm1794a_of_match),
++	},
++};
++
++module_platform_driver(pcm1794a_codec_driver);
++
++MODULE_DESCRIPTION("ASoC PCM1794A codec driver");
++MODULE_AUTHOR("Florian Meier <florian.meier@koalo.de>");
++MODULE_LICENSE("GPL v2");

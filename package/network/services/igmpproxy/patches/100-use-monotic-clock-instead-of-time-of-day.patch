@@ -1,0 +1,120 @@
+From d0e66e0719ae8eb549f7cc220fdc66575d3db332 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Thu, 29 Mar 2012 17:01:11 +0200
+Subject: [PATCH 4/4] use monotic clock instead of time of day
+
+The time of day might chance e.g. by daylight savings time during the
+runtime, which causes timers to fire repeatedly for a long time.
+
+Contributed by T-Labs, Deutsche Telekom Innovation Laboratories
+
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+---
+ configure.ac    |    2 ++
+ src/igmpproxy.c |   26 +++++++++++++-------------
+ src/igmpproxy.h |    3 ++-
+ 3 files changed, 17 insertions(+), 14 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 85beb08..bd84eba 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -25,6 +25,8 @@ AC_CHECK_MEMBERS([struct sockaddr_in.sin_len], [], [], [[
+ #include <netinet/in.h>
+ ]])
+ 
++AC_SEARCH_LIBS([clock_gettime],[rt])
++
+ AC_CONFIG_FILES([
+ 	Makefile
+ 	doc/Makefile
+diff --git a/src/igmpproxy.c b/src/igmpproxy.c
+index 35000c7..3a9ccad 100644
+--- a/src/igmpproxy.c
++++ b/src/igmpproxy.c
+@@ -234,13 +234,13 @@ void igmpProxyRun() {
+     int     MaxFD, Rt, secs;
+     fd_set  ReadFDS;
+     socklen_t dummy = 0;
+-    struct  timeval  curtime, lasttime, difftime, tv; 
++    struct  timespec  curtime, lasttime, difftime, tv; 
+     // The timeout is a pointer in order to set it to NULL if nessecary.
+-    struct  timeval  *timeout = &tv;
++    struct  timespec  *timeout = &tv;
+ 
+     // Initialize timer vars
+-    difftime.tv_usec = 0;
+-    gettimeofday(&curtime, NULL);
++    difftime.tv_nsec = 0;
++    clock_gettime(CLOCK_MONOTONIC, &curtime);
+     lasttime = curtime;
+ 
+     // First thing we send a membership query in downstream VIF's...
+@@ -263,7 +263,7 @@ void igmpProxyRun() {
+         if(secs == -1) {
+             timeout = NULL;
+         } else {
+-            timeout->tv_usec = 0;
++            timeout->tv_nsec = 0;
+             timeout->tv_sec = secs;
+         }
+ 
+@@ -274,7 +274,7 @@ void igmpProxyRun() {
+         FD_SET( MRouterFD, &ReadFDS );
+ 
+         // wait for input
+-        Rt = select( MaxFD +1, &ReadFDS, NULL, NULL, timeout );
++        Rt = pselect( MaxFD +1, &ReadFDS, NULL, NULL, timeout, NULL );
+ 
+         // log and ignore failures
+         if( Rt < 0 ) {
+@@ -307,20 +307,20 @@ void igmpProxyRun() {
+              */
+             if (Rt == 0) {
+                 curtime.tv_sec = lasttime.tv_sec + secs;
+-                curtime.tv_usec = lasttime.tv_usec;
++                curtime.tv_nsec = lasttime.tv_nsec;
+                 Rt = -1; /* don't do this next time through the loop */
+             } else {
+-                gettimeofday(&curtime, NULL);
++                clock_gettime(CLOCK_MONOTONIC, &curtime);
+             }
+             difftime.tv_sec = curtime.tv_sec - lasttime.tv_sec;
+-            difftime.tv_usec += curtime.tv_usec - lasttime.tv_usec;
+-            while (difftime.tv_usec > 1000000) {
++            difftime.tv_nsec += curtime.tv_nsec - lasttime.tv_nsec;
++            while (difftime.tv_nsec > 1000000000) {
+                 difftime.tv_sec++;
+-                difftime.tv_usec -= 1000000;
++                difftime.tv_nsec -= 1000000000;
+             }
+-            if (difftime.tv_usec < 0) {
++            if (difftime.tv_nsec < 0) {
+                 difftime.tv_sec--;
+-                difftime.tv_usec += 1000000;
++                difftime.tv_nsec += 1000000000;
+             }
+             lasttime = curtime;
+             if (secs == 0 || difftime.tv_sec > 0)
+diff --git a/src/igmpproxy.h b/src/igmpproxy.h
+index 4df8a79..36a4f04 100644
+--- a/src/igmpproxy.h
++++ b/src/igmpproxy.h
+@@ -44,12 +44,13 @@
+ #include <string.h>
+ #include <fcntl.h>
+ #include <stdbool.h>
++#include <time.h>
+ 
+ #include <sys/socket.h>
+ #include <sys/un.h>
+-#include <sys/time.h>
+ #include <sys/ioctl.h>
+ #include <sys/param.h>
++#include <sys/select.h>
+ 
+ #include <net/if.h>
+ #include <netinet/in.h>
+-- 
+1.7.2.5
+

@@ -1,0 +1,106 @@
+From 387b75f8b31437792e8334390fdf5cf060d1e3da Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <zajec5@gmail.com>
+Date: Tue, 2 Feb 2016 07:47:14 +0100
+Subject: [PATCH] bgmac: add helper checking for BCM4707 / BCM53018 chip id
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Chipsets with BCM4707 / BCM53018 ID require special handling at a few
+places in the code. It's likely there will be more IDs to check in the
+future. To simplify it add this trivial helper.
+
+Signed-off-by: Rafał Miłecki <zajec5@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/ethernet/broadcom/bgmac.c | 30 ++++++++++++++++--------------
+ 1 file changed, 16 insertions(+), 14 deletions(-)
+
+--- a/drivers/net/ethernet/broadcom/bgmac.c
++++ b/drivers/net/ethernet/broadcom/bgmac.c
+@@ -26,6 +26,17 @@ static const struct bcma_device_id bgmac
+ };
+ MODULE_DEVICE_TABLE(bcma, bgmac_bcma_tbl);
+ 
++static inline bool bgmac_is_bcm4707_family(struct bgmac *bgmac)
++{
++	switch (bgmac->core->bus->chipinfo.id) {
++	case BCMA_CHIP_ID_BCM4707:
++	case BCMA_CHIP_ID_BCM53018:
++		return true;
++	default:
++		return false;
++	}
++}
++
+ static bool bgmac_wait_value(struct bcma_device *core, u16 reg, u32 mask,
+ 			     u32 value, int timeout)
+ {
+@@ -991,11 +1002,9 @@ static void bgmac_mac_speed(struct bgmac
+ static void bgmac_miiconfig(struct bgmac *bgmac)
+ {
+ 	struct bcma_device *core = bgmac->core;
+-	struct bcma_chipinfo *ci = &core->bus->chipinfo;
+ 	u8 imode;
+ 
+-	if (ci->id == BCMA_CHIP_ID_BCM4707 ||
+-	    ci->id == BCMA_CHIP_ID_BCM53018) {
++	if (bgmac_is_bcm4707_family(bgmac)) {
+ 		bcma_awrite32(core, BCMA_IOCTL,
+ 			      bcma_aread32(core, BCMA_IOCTL) | 0x40 |
+ 			      BGMAC_BCMA_IOCTL_SW_CLKEN);
+@@ -1059,9 +1068,7 @@ static void bgmac_chip_reset(struct bgma
+ 	}
+ 
+ 	/* Request Misc PLL for corerev > 2 */
+-	if (core->id.rev > 2 &&
+-	    ci->id != BCMA_CHIP_ID_BCM4707 &&
+-	    ci->id != BCMA_CHIP_ID_BCM53018) {
++	if (core->id.rev > 2 && !bgmac_is_bcm4707_family(bgmac)) {
+ 		bgmac_set(bgmac, BCMA_CLKCTLST,
+ 			  BGMAC_BCMA_CLKCTLST_MISC_PLL_REQ);
+ 		bgmac_wait_value(bgmac->core, BCMA_CLKCTLST,
+@@ -1197,8 +1204,7 @@ static void bgmac_enable(struct bgmac *b
+ 		break;
+ 	}
+ 
+-	if (ci->id != BCMA_CHIP_ID_BCM4707 &&
+-	    ci->id != BCMA_CHIP_ID_BCM53018) {
++	if (!bgmac_is_bcm4707_family(bgmac)) {
+ 		rxq_ctl = bgmac_read(bgmac, BGMAC_RXQ_CTL);
+ 		rxq_ctl &= ~BGMAC_RXQ_CTL_MDP_MASK;
+ 		bp_clk = bcma_pmu_get_bus_clock(&bgmac->core->bus->drv_cc) /
+@@ -1477,14 +1483,12 @@ static int bgmac_fixed_phy_register(stru
+ 
+ static int bgmac_mii_register(struct bgmac *bgmac)
+ {
+-	struct bcma_chipinfo *ci = &bgmac->core->bus->chipinfo;
+ 	struct mii_bus *mii_bus;
+ 	struct phy_device *phy_dev;
+ 	char bus_id[MII_BUS_ID_SIZE + 3];
+ 	int i, err = 0;
+ 
+-	if (ci->id == BCMA_CHIP_ID_BCM4707 ||
+-	    ci->id == BCMA_CHIP_ID_BCM53018)
++	if (bgmac_is_bcm4707_family(bgmac))
+ 		return bgmac_fixed_phy_register(bgmac);
+ 
+ 	mii_bus = mdiobus_alloc();
+@@ -1555,7 +1559,6 @@ static void bgmac_mii_unregister(struct
+ /* http://bcm-v4.sipsolutions.net/mac-gbit/gmac/chipattach */
+ static int bgmac_probe(struct bcma_device *core)
+ {
+-	struct bcma_chipinfo *ci = &core->bus->chipinfo;
+ 	struct net_device *net_dev;
+ 	struct bgmac *bgmac;
+ 	struct ssb_sprom *sprom = &core->bus->sprom;
+@@ -1641,8 +1644,7 @@ static int bgmac_probe(struct bcma_devic
+ 	bgmac_chip_reset(bgmac);
+ 
+ 	/* For Northstar, we have to take all GMAC core out of reset */
+-	if (ci->id == BCMA_CHIP_ID_BCM4707 ||
+-	    ci->id == BCMA_CHIP_ID_BCM53018) {
++	if (bgmac_is_bcm4707_family(bgmac)) {
+ 		struct bcma_device *ns_core;
+ 		int ns_gmac;
+ 

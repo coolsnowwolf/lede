@@ -1,0 +1,310 @@
+--- a/hostapd/Makefile
++++ b/hostapd/Makefile
+@@ -165,6 +165,11 @@ OBJS += ../src/common/hw_features_common
+ 
+ OBJS += ../src/eapol_auth/eapol_auth_sm.o
+ 
++ifdef CONFIG_UBUS
++CFLAGS += -DUBUS_SUPPORT
++OBJS += ../src/ap/ubus.o
++LIBS += -lubox -lubus
++endif
+ 
+ ifdef CONFIG_CODE_COVERAGE
+ CFLAGS += -O0 -fprofile-arcs -ftest-coverage
+--- a/src/ap/hostapd.h
++++ b/src/ap/hostapd.h
+@@ -13,6 +13,7 @@
+ #include "utils/list.h"
+ #include "ap_config.h"
+ #include "drivers/driver.h"
++#include "ubus.h"
+ 
+ struct wpa_ctrl_dst;
+ struct radius_server_data;
+@@ -119,6 +120,7 @@ struct hostapd_data {
+ 	struct hostapd_iface *iface;
+ 	struct hostapd_config *iconf;
+ 	struct hostapd_bss_config *conf;
++	struct hostapd_ubus_bss ubus;
+ 	int interface_added; /* virtual interface added for this BSS */
+ 	unsigned int started:1;
+ 	unsigned int disabled:1;
+@@ -328,6 +330,8 @@ struct hostapd_iface {
+ 	struct hostapd_config *conf;
+ 	char phy[16]; /* Name of the PHY (radio) */
+ 
++	struct hostapd_ubus_iface ubus;
++
+ 	enum hostapd_iface_state {
+ 		HAPD_IFACE_UNINITIALIZED,
+ 		HAPD_IFACE_DISABLED,
+--- a/src/ap/hostapd.c
++++ b/src/ap/hostapd.c
+@@ -302,6 +302,7 @@ static void hostapd_free_hapd_data(struc
+ 	hapd->started = 0;
+ 
+ 	wpa_printf(MSG_DEBUG, "%s(%s)", __func__, hapd->conf->iface);
++	hostapd_ubus_free_bss(hapd);
+ 	iapp_deinit(hapd->iapp);
+ 	hapd->iapp = NULL;
+ 	accounting_deinit(hapd);
+@@ -1160,6 +1161,8 @@ static int hostapd_setup_bss(struct host
+ 	if (hapd->driver && hapd->driver->set_operstate)
+ 		hapd->driver->set_operstate(hapd->drv_priv, 1);
+ 
++	hostapd_ubus_add_bss(hapd);
++
+ 	return 0;
+ }
+ 
+@@ -1683,6 +1686,7 @@ static int hostapd_setup_interface_compl
+ 	if (err)
+ 		goto fail;
+ 
++	hostapd_ubus_add_iface(iface);
+ 	wpa_printf(MSG_DEBUG, "Completing interface initialization");
+ 	if (iface->conf->channel) {
+ #ifdef NEED_AP_MLME
+@@ -1862,6 +1866,7 @@ dfs_offload:
+ 
+ fail:
+ 	wpa_printf(MSG_ERROR, "Interface initialization failed");
++	hostapd_ubus_free_iface(iface);
+ 	hostapd_set_state(iface, HAPD_IFACE_DISABLED);
+ 	wpa_msg(hapd->msg_ctx, MSG_INFO, AP_EVENT_DISABLED);
+ #ifdef CONFIG_FST
+@@ -2310,6 +2315,7 @@ void hostapd_interface_deinit_free(struc
+ 		   (unsigned int) iface->conf->num_bss);
+ 	driver = iface->bss[0]->driver;
+ 	drv_priv = iface->bss[0]->drv_priv;
++	hostapd_ubus_free_iface(iface);
+ 	hostapd_interface_deinit(iface);
+ 	wpa_printf(MSG_DEBUG, "%s: driver=%p drv_priv=%p -> hapd_deinit",
+ 		   __func__, driver, drv_priv);
+--- a/src/ap/ieee802_11.c
++++ b/src/ap/ieee802_11.c
+@@ -1293,7 +1293,8 @@ void ieee802_11_finish_fils_auth(struct
+ 
+ 
+ static void handle_auth(struct hostapd_data *hapd,
+-			const struct ieee80211_mgmt *mgmt, size_t len)
++			const struct ieee80211_mgmt *mgmt, size_t len,
++			struct hostapd_frame_info *fi)
+ {
+ 	u16 auth_alg, auth_transaction, status_code;
+ 	u16 resp = WLAN_STATUS_SUCCESS;
+@@ -1309,6 +1310,11 @@ static void handle_auth(struct hostapd_d
+ 	char *identity = NULL;
+ 	char *radius_cui = NULL;
+ 	u16 seq_ctrl;
++	struct hostapd_ubus_request req = {
++		.type = HOSTAPD_UBUS_AUTH_REQ,
++		.mgmt_frame = mgmt,
++		.frame_info = fi,
++	};
+ 
+ 	os_memset(&vlan_id, 0, sizeof(vlan_id));
+ 
+@@ -1466,6 +1472,14 @@ static void handle_auth(struct hostapd_d
+ 		resp = WLAN_STATUS_UNSPECIFIED_FAILURE;
+ 		goto fail;
+ 	}
++
++	if (hostapd_ubus_handle_event(hapd, &req)) {
++		wpa_printf(MSG_DEBUG, "Station " MACSTR " rejected by ubus handler.\n",
++		       MAC2STR(mgmt->sa));
++		resp = WLAN_STATUS_UNSPECIFIED_FAILURE;
++		goto fail;
++	}
++
+ 	if (res == HOSTAPD_ACL_PENDING) {
+ 		wpa_printf(MSG_DEBUG, "Authentication frame from " MACSTR
+ 			   " waiting for an external authentication",
+@@ -2391,7 +2405,7 @@ static u16 send_assoc_resp(struct hostap
+ 
+ static void handle_assoc(struct hostapd_data *hapd,
+ 			 const struct ieee80211_mgmt *mgmt, size_t len,
+-			 int reassoc)
++			 int reassoc, struct hostapd_frame_info *fi)
+ {
+ 	u16 capab_info, listen_interval, seq_ctrl, fc;
+ 	u16 resp = WLAN_STATUS_SUCCESS, reply_res;
+@@ -2399,6 +2413,11 @@ static void handle_assoc(struct hostapd_
+ 	int left, i;
+ 	struct sta_info *sta;
+ 	u8 *tmp = NULL;
++	struct hostapd_ubus_request req = {
++		.type = HOSTAPD_UBUS_ASSOC_REQ,
++		.mgmt_frame = mgmt,
++		.frame_info = fi,
++	};
+ 
+ 	if (len < IEEE80211_HDRLEN + (reassoc ? sizeof(mgmt->u.reassoc_req) :
+ 				      sizeof(mgmt->u.assoc_req))) {
+@@ -2518,6 +2537,13 @@ static void handle_assoc(struct hostapd_
+ 	}
+ #endif /* CONFIG_MBO */
+ 
++	if (hostapd_ubus_handle_event(hapd, &req)) {
++		wpa_printf(MSG_DEBUG, "Station " MACSTR " assoc rejected by ubus handler.\n",
++		       MAC2STR(mgmt->sa));
++		resp = WLAN_STATUS_UNSPECIFIED_FAILURE;
++		goto fail;
++	}
++
+ 	/*
+ 	 * sta->capability is used in check_assoc_ies() for RRM enabled
+ 	 * capability element.
+@@ -2688,6 +2714,7 @@ static void handle_disassoc(struct hosta
+ 	wpa_printf(MSG_DEBUG, "disassocation: STA=" MACSTR " reason_code=%d",
+ 		   MAC2STR(mgmt->sa),
+ 		   le_to_host16(mgmt->u.disassoc.reason_code));
++	hostapd_ubus_notify(hapd, "disassoc", mgmt->sa);
+ 
+ 	sta = ap_get_sta(hapd, mgmt->sa);
+ 	if (sta == NULL) {
+@@ -2742,6 +2769,8 @@ static void handle_deauth(struct hostapd
+ 		" reason_code=%d",
+ 		MAC2STR(mgmt->sa), le_to_host16(mgmt->u.deauth.reason_code));
+ 
++	hostapd_ubus_notify(hapd, "deauth", mgmt->sa);
++
+ 	sta = ap_get_sta(hapd, mgmt->sa);
+ 	if (sta == NULL) {
+ 		wpa_msg(hapd->msg_ctx, MSG_DEBUG, "Station " MACSTR " trying "
+@@ -3025,7 +3054,7 @@ int ieee802_11_mgmt(struct hostapd_data
+ 
+ 
+ 	if (stype == WLAN_FC_STYPE_PROBE_REQ) {
+-		handle_probe_req(hapd, mgmt, len, fi->ssi_signal);
++		handle_probe_req(hapd, mgmt, len, fi);
+ 		return 1;
+ 	}
+ 
+@@ -3043,17 +3072,17 @@ int ieee802_11_mgmt(struct hostapd_data
+ 	switch (stype) {
+ 	case WLAN_FC_STYPE_AUTH:
+ 		wpa_printf(MSG_DEBUG, "mgmt::auth");
+-		handle_auth(hapd, mgmt, len);
++		handle_auth(hapd, mgmt, len, fi);
+ 		ret = 1;
+ 		break;
+ 	case WLAN_FC_STYPE_ASSOC_REQ:
+ 		wpa_printf(MSG_DEBUG, "mgmt::assoc_req");
+-		handle_assoc(hapd, mgmt, len, 0);
++		handle_assoc(hapd, mgmt, len, 0, fi);
+ 		ret = 1;
+ 		break;
+ 	case WLAN_FC_STYPE_REASSOC_REQ:
+ 		wpa_printf(MSG_DEBUG, "mgmt::reassoc_req");
+-		handle_assoc(hapd, mgmt, len, 1);
++		handle_assoc(hapd, mgmt, len, 1, fi);
+ 		ret = 1;
+ 		break;
+ 	case WLAN_FC_STYPE_DISASSOC:
+--- a/src/ap/beacon.c
++++ b/src/ap/beacon.c
+@@ -702,7 +702,7 @@ void sta_track_claim_taxonomy_info(struc
+ 
+ void handle_probe_req(struct hostapd_data *hapd,
+ 		      const struct ieee80211_mgmt *mgmt, size_t len,
+-		      int ssi_signal)
++		      struct hostapd_frame_info *fi)
+ {
+ 	u8 *resp;
+ 	struct ieee802_11_elems elems;
+@@ -711,9 +711,15 @@ void handle_probe_req(struct hostapd_dat
+ 	size_t i, resp_len;
+ 	int noack;
+ 	enum ssid_match_result res;
++	int ssi_signal = fi->ssi_signal;
+ 	int ret;
+ 	u16 csa_offs[2];
+ 	size_t csa_offs_len;
++	struct hostapd_ubus_request req = {
++		.type = HOSTAPD_UBUS_PROBE_REQ,
++		.mgmt_frame = mgmt,
++		.frame_info = fi,
++	};
+ 
+ 	if (len < IEEE80211_HDRLEN)
+ 		return;
+@@ -880,6 +886,12 @@ void handle_probe_req(struct hostapd_dat
+ 	}
+ #endif /* CONFIG_P2P */
+ 
++	if (hostapd_ubus_handle_event(hapd, &req)) {
++		wpa_printf(MSG_DEBUG, "Probe request for " MACSTR " rejected by ubus handler.\n",
++		       MAC2STR(mgmt->sa));
++		return;
++	}
++
+ 	/* TODO: verify that supp_rates contains at least one matching rate
+ 	 * with AP configuration */
+ 
+--- a/src/ap/beacon.h
++++ b/src/ap/beacon.h
+@@ -14,7 +14,7 @@ struct ieee80211_mgmt;
+ 
+ void handle_probe_req(struct hostapd_data *hapd,
+ 		      const struct ieee80211_mgmt *mgmt, size_t len,
+-		      int ssi_signal);
++		      struct hostapd_frame_info *fi);
+ int ieee802_11_set_beacon(struct hostapd_data *hapd);
+ int ieee802_11_set_beacons(struct hostapd_iface *iface);
+ int ieee802_11_update_beacons(struct hostapd_iface *iface);
+--- a/src/ap/drv_callbacks.c
++++ b/src/ap/drv_callbacks.c
+@@ -52,6 +52,10 @@ int hostapd_notif_assoc(struct hostapd_d
+ 	u16 reason = WLAN_REASON_UNSPECIFIED;
+ 	u16 status = WLAN_STATUS_SUCCESS;
+ 	const u8 *p2p_dev_addr = NULL;
++	struct hostapd_ubus_request req = {
++		.type = HOSTAPD_UBUS_ASSOC_REQ,
++		.addr = addr,
++	};
+ 
+ 	if (addr == NULL) {
+ 		/*
+@@ -131,6 +135,12 @@ int hostapd_notif_assoc(struct hostapd_d
+ 		goto fail;
+ 	}
+ 
++	if (hostapd_ubus_handle_event(hapd, &req)) {
++		wpa_printf(MSG_DEBUG, "Station " MACSTR " assoc rejected by ubus handler.\n",
++			   MAC2STR(req.addr));
++		goto fail;
++	}
++
+ #ifdef CONFIG_P2P
+ 	if (elems.p2p) {
+ 		wpabuf_free(sta->p2p_ie);
+--- a/src/ap/sta_info.c
++++ b/src/ap/sta_info.c
+@@ -386,6 +386,7 @@ void ap_handle_timer(void *eloop_ctx, vo
+ 			       HOSTAPD_LEVEL_INFO, "deauthenticated due to "
+ 			       "local deauth request");
+ 		ap_free_sta(hapd, sta);
++		hostapd_ubus_notify(hapd, "local-deauth", sta->addr);
+ 		return;
+ 	}
+ 
+@@ -533,6 +534,7 @@ skip_poll:
+ 			hapd, sta,
+ 			WLAN_REASON_PREV_AUTH_NOT_VALID);
+ 		ap_free_sta(hapd, sta);
++		hostapd_ubus_notify(hapd, "inactive-deauth", sta->addr);
+ 		break;
+ 	}
+ }
+--- a/src/ap/wpa_auth_glue.c
++++ b/src/ap/wpa_auth_glue.c
+@@ -159,6 +159,7 @@ static void hostapd_wpa_auth_psk_failure
+ 	struct hostapd_data *hapd = ctx;
+ 	wpa_msg(hapd->msg_ctx, MSG_INFO, AP_STA_POSSIBLE_PSK_MISMATCH MACSTR,
+ 		MAC2STR(addr));
++	hostapd_ubus_notify(hapd, "key-mismatch", addr);
+ }
+ 
+ 

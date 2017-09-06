@@ -1,0 +1,132 @@
+--- a/driver/wl_linux.c
++++ b/driver/wl_linux.c
+@@ -354,6 +354,7 @@ static int wl_read_proc(char *buffer, ch
+ static int wl_dump(wl_info_t *wl, struct bcmstrbuf *b);
+ #endif /* BCMDBG */
+ struct wl_if *wl_alloc_if(wl_info_t *wl, int iftype, uint unit, struct wlc_if* wlc_if);
++static void wl_link_if(wl_info_t *wl, wl_if_t *wlif);
+ static void wl_free_if(wl_info_t *wl, wl_if_t *wlif);
+ 
+ 
+@@ -566,6 +567,9 @@ wl_attach(uint16 vendor, uint16 device,
+ 	wl->dev = dev;
+ 	wl_if_setup(dev);
+ 
++	/* add the interface to the interface linked list */
++	wl_link_if(wl, wlif);
++
+ 	/* map chip registers (47xx: and sprom) */
+ 	dev->base_addr = regs;
+ 
+@@ -1106,10 +1110,14 @@ wl_free(wl_info_t *wl)
+ 			free_irq(wl->dev->irq, wl);
+ 	}
+ 
+-	if (wl->dev) {
+-		wl_free_if(wl, WL_DEV_IF(wl->dev));
+-		wl->dev = NULL;
++	/* free all interfaces */
++	while (wl->if_list) {
++        	if ((wl->if_list->dev != wl->dev) || wl->if_list->next == NULL)
++			wl_free_if(wl, wl->if_list);
++		else
++			wl_free_if(wl, wl->if_list->next);
+ 	}
++	wl->dev = NULL;
+ 
+ #ifdef TOE
+ 	wl_toe_detach(wl->toei);
+@@ -1355,10 +1363,12 @@ wl_txflowcontrol(wl_info_t *wl, bool sta
+ 
+ 	ASSERT(prio == ALLPRIO);
+ 	for (wlif = wl->if_list; wlif != NULL; wlif = wlif->next) {
+-		if (state == ON)
+-			netif_stop_queue(wlif->dev);
+-		else
+-			netif_wake_queue(wlif->dev);
++		if (wlif->dev_registed) {
++			if (state == ON)
++				netif_stop_queue(wlif->dev);
++			else
++				netif_wake_queue(wlif->dev);
++		}
+ 	}
+ }
+ 
+@@ -1398,7 +1408,6 @@ wl_alloc_if(wl_info_t *wl, int iftype, u
+ {
+ 	struct net_device *dev;
+ 	wl_if_t *wlif;
+-	wl_if_t *p;
+ 
+ 	dev = alloc_etherdev(sizeof(wl_if_t));
+ 	wlif = netdev_priv(dev);
+@@ -1411,9 +1420,13 @@ wl_alloc_if(wl_info_t *wl, int iftype, u
+ 	wlif->wlcif = wlcif;
+ 	wlif->subunit = subunit;
+ 
+-	/* match current flow control state */
+-	if (iftype != WL_IFTYPE_MON && wl->dev && netif_queue_stopped(wl->dev))
+-		netif_stop_queue(dev);
++	return wlif;
++}
++
++static void
++wl_link_if(wl_info_t *wl, wl_if_t *wlif)
++{
++	wl_if_t *p;
+ 
+ 	/* add the interface to the interface linked list */
+ 	if (wl->if_list == NULL)
+@@ -1424,7 +1437,6 @@ wl_alloc_if(wl_info_t *wl, int iftype, u
+ 			p = p->next;
+ 		p->next = wlif;
+ 	}
+-	return wlif;
+ }
+ 
+ static void
+@@ -1504,6 +1516,9 @@ _wl_add_if(wl_task_t *task)
+ 	wl_info_t *wl = wlif->wl;
+ 	struct net_device *dev = wlif->dev;
+ 
++	/* add the interface to the interface linked list */
++	wl_link_if(wl, wlif);
++
+ 	if (wlif->type == WL_IFTYPE_WDS)
+ 		dev->netdev_ops = &wl_wds_ops;
+ 
+@@ -1516,6 +1531,14 @@ _wl_add_if(wl_task_t *task)
+ 	}
+ 	wlif->dev_registed = TRUE;
+ 
++	/* match current flow control state */
++	if (wl->dev) {
++		if (netif_queue_stopped(wl->dev))
++			netif_stop_queue(dev);
++		else
++			netif_wake_queue(dev);
++	}
++
+ done:
+ 	MFREE(wl->osh, task, sizeof(wl_task_t));
+ 	atomic_dec(&wl->callbacks);
+@@ -1545,6 +1568,8 @@ wl_add_if(wl_info_t *wl, struct wlc_if*
+ 		return NULL;
+ 	}
+ 
++	wl_if_setup(wlif->dev);
++
+ 	sprintf(wlif->dev->name, "%s%d.%d", devname, wl->pub->unit, wlif->subunit);
+ 	if (remote)
+ 		bcopy(remote, &wlif->remote, ETHER_ADDR_LEN);
+@@ -2778,6 +2803,9 @@ wl_add_monitor(wl_task_t *task)
+ 	dev = wlif->dev;
+ 	wl->monitor = dev;
+ 
++	/* add the interface to the interface linked list */
++	wl_link_if(wl, wlif);
++
+ 	/* override some fields */
+ 	sprintf(dev->name, "prism%d", wl->pub->unit);
+ 	bcopy(wl->dev->dev_addr, dev->dev_addr, ETHER_ADDR_LEN);

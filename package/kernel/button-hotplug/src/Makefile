@@ -1,0 +1,1 @@
+obj-${CONFIG_BUTTON_HOTPLUG}	+= button-hotplug.o

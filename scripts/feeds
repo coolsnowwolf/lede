@@ -1,0 +1,843 @@
+#!/usr/bin/env perl
+use Getopt::Std;
+use FindBin;
+use Cwd;
+use lib "$FindBin::Bin";
+use metadata;
+use warnings;
+use strict;
+use Cwd 'abs_path';
+
+chdir "$FindBin::Bin/..";
+$ENV{TOPDIR} //= getcwd();
+chdir $ENV{TOPDIR};
+$ENV{GIT_CONFIG_PARAMETERS}="'core.autocrlf=false'";
+$ENV{GREP_OPTIONS}="";
+
+my $mk=`which gmake 2>/dev/null`;	# select the right 'make' program
+chomp($mk);		# trim trailing newline
+$mk or $mk = "make";	# default to 'make'
+
+# check version of make
+my @mkver = split /\s+/, `$mk -v`, 4;
+my $valid_mk = 1;
+$mkver[0] =~ /^GNU/ or $valid_mk = 0;
+$mkver[1] =~ /^Make/ or $valid_mk = 0;
+
+my ($mkv1, $mkv2) = split /\./, $mkver[2];
+($mkv1 >= 4 || ($mkv1 == 3 && $mkv2 >= 81)) or $valid_mk = 0;
+
+$valid_mk or die "Unsupported version of make found: $mk\n";
+
+my @feeds;
+my %build_packages;
+my %installed;
+my %installed_targets;
+my %feed_cache;
+
+my $feed_package = {};
+my $feed_src = {};
+my $feed_target = {};
+
+sub parse_config() {
+	my $line = 0;
+	my %name;
+
+	open FEEDS, "feeds.conf" or
+		open FEEDS, "feeds.conf.default" or
+		die "Unable to open feeds configuration";
+	while (<FEEDS>) {
+		chomp;
+		s/#.+$//;
+		next unless /\S/;
+		my @line = split /\s+/, $_, 3;
+		my @src;
+		$line++;
+
+		my $valid = 1;
+		$line[0] =~ /^src-[\w-]+$/ or $valid = 0;
+		$line[1] =~ /^\w+$/ or $valid = 0;
+		@src = split /\s+/, $line[2];
+		$valid or die "Syntax error in feeds.conf, line: $line\n";
+
+		$name{$line[1]} and die "Duplicate feed name '$line[1]', line: $line\n";
+		$name{$line[1]} = 1;
+
+		push @feeds, [$line[0], $line[1], \@src];
+	}
+	close FEEDS;
+}
+
+sub update_location($$)
+{
+	my $name = shift;
+	my $url  = shift;
+	my $old_url;
+
+	-d "./feeds/$name.tmp" or mkdir "./feeds/$name.tmp" or return 1;
+
+	if( open LOC, "< ./feeds/$name.tmp/location" )
+	{
+		chomp($old_url = readline LOC);
+		close LOC;
+	}
+
+	if( !$old_url || $old_url ne $url )
+	{
+		if( open LOC, "> ./feeds/$name.tmp/location" )
+		{
+			print LOC $url, "\n";
+			close LOC;
+		}
+		return $old_url ? 1 : 0;
+	}
+
+	return 0;
+}
+
+sub update_index($)
+{
+	my $name = shift;
+
+	-d "./feeds/$name.tmp" or mkdir "./feeds/$name.tmp" or return 1;
+	-d "./feeds/$name.tmp/info" or mkdir "./feeds/$name.tmp/info" or return 1;
+
+	system("$mk -s prepare-mk OPENWRT_BUILD= TMP_DIR=\"$ENV{TOPDIR}/feeds/$name.tmp\"");
+	system("$mk -s -f include/scan.mk IS_TTY=1 SCAN_TARGET=\"packageinfo\" SCAN_DIR=\"feeds/$name\" SCAN_NAME=\"package\" SCAN_DEPS=\"$ENV{TOPDIR}/include/package*.mk\" SCAN_DEPTH=5 SCAN_EXTRA=\"\" TMP_DIR=\"$ENV{TOPDIR}/feeds/$name.tmp\"");
+	system("$mk -s -f include/scan.mk IS_TTY=1 SCAN_TARGET=\"targetinfo\" SCAN_DIR=\"feeds/$name\" SCAN_NAME=\"target\" SCAN_DEPS=\"profiles/*.mk $ENV{TOPDIR}/include/target.mk\" SCAN_DEPTH=5 SCAN_EXTRA=\"\" SCAN_MAKEOPTS=\"TARGET_BUILD=1\" TMP_DIR=\"$ENV{TOPDIR}/feeds/$name.tmp\"");
+	system("ln -sf $name.tmp/.packageinfo ./feeds/$name.index");
+	system("ln -sf $name.tmp/.targetinfo ./feeds/$name.targetindex");
+
+	return 0;
+}
+
+my %update_method = (
+	'src-svn' => {
+		'init'		=> "svn checkout '%s' '%s'",
+		'update'	=> "svn update",
+		'controldir'	=> ".svn",
+		'revision'	=> "svn info | grep 'Revision' | cut -d ' ' -f 2 | tr -d '\n'"},
+	'src-cpy' => {
+		'init'		=> "cp -Rf '%s' '%s'",
+		'update'	=> "",
+		'revision'	=> "echo -n 'local'"},
+	'src-link' => {
+		'init'		=> "ln -s '%s' '%s'",
+		'update'	=> "",
+		'revision'	=> "echo -n 'local'"},
+	'src-git' => {
+		'init'          => "git clone --depth 1 '%s' '%s'",
+		'init_branch'   => "git clone --depth 1 --branch '%s' '%s' '%s'",
+		'init_commit'   => "git clone '%s' '%s' && cd '%s' && git checkout -b '%s' '%s' && cd -",
+		'update'	=> "git pull --ff",
+		'update_force'	=> "git pull --ff || (git reset --hard HEAD; git pull --ff; exit 1)",
+		'controldir'	=> ".git",
+		'revision'	=> "git rev-parse --short HEAD | tr -d '\n'"},
+	'src-git-full' => {
+		'init'          => "git clone '%s' '%s'",
+		'init_branch'   => "git clone --branch '%s' '%s' '%s'",
+		'init_commit'   => "git clone '%s' '%s' && cd '%s' && git checkout -b '%s' '%s' && cd -",
+		'update'	=> "git pull --ff",
+		'update_force'	=> "git pull --ff || (git reset --hard HEAD; git pull --ff; exit 1)",
+		'controldir'	=> ".git",
+		'revision'	=> "git rev-parse --short HEAD | tr -d '\n'"},
+	'src-gitsvn' => {
+		'init'	=> "git svn clone -r HEAD '%s' '%s'",
+		'update'	=> "git svn rebase",
+		'controldir'	=> ".git",
+		'revision'	=> "git rev-parse --short HEAD | tr -d '\n'"},
+	'src-bzr' => {
+		'init'		=> "bzr checkout --lightweight '%s' '%s'",
+		'update'	=> "bzr update",
+		'controldir'	=> ".bzr"},
+	'src-hg' => {
+		'init'		=> "hg clone '%s' '%s'",
+		'update'	=> "hg pull --update",
+		'controldir'	=> ".hg"},
+	'src-darcs' => {
+		'init'    => "darcs get '%s' '%s'",
+		'update'  => "darcs pull -a",
+		'controldir' => "_darcs"},
+);
+
+# src-git: pull broken
+# src-cpy: broken if `basename $src` != $name
+
+sub update_feed_via($$$$$) {
+	my $type = shift;
+	my $name = shift;
+	my $src = shift;
+	my $relocate = shift;
+	my $force = shift;
+
+	my $m = $update_method{$type};
+	my $localpath = "./feeds/$name";
+	my $safepath = $localpath;
+	$safepath =~ s/'/'\\''/;
+	my ($base_branch, $branch) = split(/;/, $src, 2);
+	my ($base_commit, $commit) = split(/\^/, $src, 2);
+
+	if( $relocate || !$m->{'update'} || !-d "$localpath/$m->{'controldir'}" ) {
+		system("rm -rf '$safepath'");
+		if ($m->{'init_branch'} and $branch) {
+			system(sprintf($m->{'init_branch'}, $branch, $base_branch, $safepath)) == 0 or return 1;
+		} elsif ($m->{'init_commit'} and $commit) {
+			system(sprintf($m->{'init_commit'}, $base_commit, $safepath, $safepath, $commit, $commit)) == 0 or return 1;
+		} else {
+			system(sprintf($m->{'init'}, $src, $safepath)) == 0 or return 1;
+		}
+	} elsif ($m->{'init_commit'} and $commit) {
+		# in case git hash has been provided don't update the feed
+	} else {
+		my $update_cmd = $m->{'update'};
+		if ($force && exists $m->{'update_force'}) {
+			$update_cmd = $m->{'update_force'};
+		}
+		system("cd '$safepath'; $update_cmd") == 0 or return 1;
+	}
+
+	return 0;
+}
+
+sub get_targets($) {
+	my $file = shift;
+	my @target = parse_target_metadata($file);
+	my %target;
+	foreach my $target (@target) {
+		$target{$target->{id}} = $target;
+	}
+	return %target
+}
+
+sub get_feed($) {
+	my $feed = shift;
+
+	if (!defined($feed_cache{$feed})) {
+		my $file = "./feeds/$feed.index";
+
+		clear_packages();
+		-f $file or do {
+			print "Ignoring feed '$feed' - index missing\n";
+			return;
+		};
+		parse_package_metadata($file) or return;
+		my %target = get_targets("./feeds/$feed.targetindex");
+
+		$feed_cache{$feed} = [ { %package }, { %srcpackage }, { %target } ];
+	}
+
+	$feed_package = $feed_cache{$feed}->[0];
+	$feed_src = $feed_cache{$feed}->[1];
+	$feed_target = $feed_cache{$feed}->[2];
+	return $feed_cache{$feed}->[0];
+}
+
+sub get_installed() {
+	system("$mk -s prepare-tmpinfo OPENWRT_BUILD=");
+	clear_packages();
+	parse_package_metadata("./tmp/.packageinfo");
+	%installed = %package;
+	%installed_targets = get_targets("./tmp/.targetinfo");
+}
+
+sub search_feed {
+	my $feed = shift;
+	my @substr = @_;
+	my $display;
+
+	return unless @substr > 0;
+	get_feed($feed);
+	foreach my $name (sort { lc($a) cmp lc($b) } keys %$feed_package) {
+		my $pkg = $feed_package->{$name};
+		my $substr;
+		my $pkgmatch = 1;
+
+		next if $pkg->{vdepends};
+		foreach my $substr (@substr) {
+			my $match;
+			foreach my $key (qw(name title description src)) {
+				$pkg->{$key} and $substr and $pkg->{$key} =~ m/$substr/i and $match = 1;
+			}
+			$match or undef $pkgmatch;
+		};
+		$pkgmatch and do {
+			$display or do {
+				print "Search results in feed '$feed':\n";
+				$display = 1;
+			};
+			printf "\%-25s\t\%s\n", $pkg->{name}, $pkg->{title};
+		};
+	}
+
+	foreach my $name (sort { lc($a) cmp lc($b) } keys %$feed_target) {
+		my $target = $feed_target->{$name};
+		my $targetmatch = 1;
+
+		foreach my $substr (@substr) {
+			my $match;
+			foreach my $key (qw(id name description)) {
+				$target->{$key} and $substr and $target->{$key} =~ m/$substr/i and $match = 1;
+			}
+			$match or undef $targetmatch;
+		};
+		$targetmatch and do {
+			$display or do {
+				print "Search results in feed '$feed':\n";
+				$display = 1;
+			};
+			printf "TARGET: \%-17s\t\%s\n", $target->{id}, $target->{name};
+		};
+	}
+	return 0;
+}
+
+sub search {
+	my %opts;
+
+	getopt('r:', \%opts);
+	foreach my $feed (@feeds) {
+		search_feed($feed->[1], @ARGV) if (!defined($opts{r}) or $opts{r} eq $feed->[1]);
+	}
+}
+
+sub list_feed {
+	my $feed = shift;
+
+	get_feed($feed);
+	foreach my $name (sort { lc($a) cmp lc($b) } keys %$feed_package) {
+		my $pkg = $feed_package->{$name};
+		next if $pkg->{vdepends};
+		if($pkg->{name}) {
+			printf "\%-32s\t\%s\n", $pkg->{name}, $pkg->{title};
+		}
+	}
+
+	foreach my $name (sort { lc($a) cmp lc($b) } keys %$feed_target) {
+		my $target = $feed_target->{$name};
+		if($target->{name}) {
+			printf "TARGET: \%-24s\t\%s\n", $target->{id}, $target->{name};
+		}
+	}
+
+	return 0;
+}
+
+sub list {
+	my %opts;
+
+	getopts('r:d:nshf', \%opts);
+	if ($opts{h}) {
+		usage();
+		return 0;
+	}
+	if ($opts{n}) {
+		foreach my $feed (@feeds) {
+			printf "%s\n", $feed->[1];
+		}
+		return 0;
+	}
+	if ($opts{s}) {
+		foreach my $feed (@feeds) {
+			my $localpath = "./feeds/$feed->[1]";
+			my $m = $update_method{$feed->[0]};
+			my $revision;
+			if (!-d "$localpath" || !$m->{'revision'}) {
+				$revision = "X";
+			}
+			elsif( $m->{'controldir'} && -d "$localpath/$m->{'controldir'}" ) {
+				$revision = `cd '$localpath'; $m->{'revision'}`;
+			}
+			else {
+				$revision = "local";
+			}
+			if ($opts{d}) {
+				printf "%s%s%s%s%s%s%s\n", $feed->[1], $opts{d}, $feed->[0], $opts{d}, $revision, $opts{d}, join(", ", @{$feed->[2]});
+			}
+			elsif ($opts{f}) {
+				my $uri = join(", ", @{$feed->[2]});
+				if ($revision ne "local" && $revision ne "X") {
+					$uri =~ s/[;^].*//;
+					$uri .= "^" . $revision;
+				}
+				printf "%s %s %s\n", $feed->[0], $feed->[1], $uri;
+			}
+			else {
+				printf "\%-10s \%-8s \%-8s \%s\n", $feed->[1], $feed->[0], $revision, join(", ", @{$feed->[2]});
+			}
+		}
+		return 0;
+	}
+	foreach my $feed (@feeds) {
+		list_feed($feed->[1], @ARGV) if (!defined($opts{r}) or $opts{r} eq $feed->[1]);
+	}
+	return 0;
+}
+
+sub do_install_package($$) {
+	my $feed = shift;
+	my $pkg = shift;
+	my $path = $pkg->{makefile};
+
+	if($path) {
+		$path =~ s/\/Makefile$//;
+
+		-d "./package/feeds" or mkdir "./package/feeds";
+		-d "./package/feeds/$feed->[1]" or mkdir "./package/feeds/$feed->[1]";
+		system("ln -sf ../../../$path ./package/feeds/$feed->[1]/");
+	} else {
+		warn "Package is not valid\n";
+		return 1;
+	}
+
+	return 0;
+}
+
+sub do_install_target($) {
+	my $target = shift;
+	my $path = $target->{makefile};
+
+	if ($path) {
+		$path =~ s/\/Makefile$//;
+		my $name = $path;
+		$name =~ s/.*\///;
+		my $dest = "./target/linux/$name";
+
+		-e $dest and do {
+			warn "Path $dest already exists";
+			return 1;
+		};
+
+		system("ln -sf ../../$path ./target/linux/");
+	} else {
+		warn "Target is not valid\n";
+		return 1;
+	}
+
+	return 0;
+}
+
+sub lookup_package($$) {
+	my $feed = shift;
+	my $package = shift;
+
+	foreach my $feed ($feed, @feeds) {
+		next unless $feed->[1];
+		next unless $feed_cache{$feed->[1]};
+		$feed_cache{$feed->[1]}->[0]->{$package} and return $feed;
+	}
+	return;
+}
+
+sub lookup_target($$) {
+	my $feed = shift;
+	my $target = shift;
+
+	foreach my $feed ($feed, @feeds) {
+		next unless $feed->[1];
+		next unless $feed_cache{$feed->[1]};
+		$feed_cache{$feed->[1]}->[2]->{$target} and return $feed;
+	}
+	return;
+}
+
+sub is_core_package($) {
+	my $package = shift;
+	foreach my $file ("tmp/info/.packageinfo-$package", glob("tmp/info/.packageinfo-*_$package")) {
+		next unless index($file, "tmp/info/.packageinfo-feeds_");
+		return 1 if -s $file;
+	}
+	return 0;
+}
+
+sub install_target {
+	my $feed = shift;
+	my $name = shift;
+
+	$feed = $feed_cache{$feed->[1]}->[2];
+	$feed or return 0;
+
+	my $target = $feed->{$name};
+	$target or return 0;
+
+	warn "Installing target '$name'\n";
+	return do_install_target($target);
+}
+
+sub install_package {
+	my $feed = shift;
+	my $name = shift;
+	my $force = shift;
+	my $ret = 0;
+
+	my $this_feed_target = lookup_target($feed, $name);
+	$this_feed_target and do {
+		$installed_targets{$name} and return 0;
+		install_target($this_feed_target, $name);
+		return 0;
+	};
+
+	$feed = lookup_package($feed, $name);
+	$feed or do {
+		$installed{$name} and return 0;
+		# TODO: check if it's already installed within ./package directory
+		$feed_src->{$name} or is_core_package($name) or warn "WARNING: No feed for package '$name' found, maybe it's already part of the standard packages?\n";
+		return 0;
+	};
+
+	# switch to the metadata for the selected feed
+	my $cur = get_feed($feed->[1]);
+
+	my $pkg = $cur->{$name} or return 1;
+	$pkg->{name} or do {
+		$installed{$name} and return 0;
+		# TODO: check if this is an alias package, maybe it's known by another name
+		warn "WARNING: Package '$name' is not available in feed $feed->[1].\n";
+		return 0;
+	};
+	my $src = $pkg->{src};
+	my $type = $feed->[0];
+	$src or $src = $name;
+
+	# If it's a core package and we don't want to override, just return
+	!$force and is_core_package($src) and return 0;
+
+	# previously installed packages set the runtime package
+	# newly installed packages set the source package to 1
+	$installed{$src} and $installed{$src} == 1 and return 0;
+
+	# we'll trigger the override only with the 3 conditions below:
+	# - override is allowed by command line (-f)
+	# - a package with the same src exists in the core packages list
+	# - the package previously installed is not from a feed
+	my $override = 1 if ($force and is_core_package($src) and !$installed{$name}->{feed});
+
+	# check previously installed packages
+	$installed{$name} and !$override and return 0;
+	$installed{$src} = 1;
+
+	defined($override) and $override == 1
+		and warn "Overriding core package '$src' with version from $feed->[1]\n"
+		or warn "Installing package '$src' from $feed->[1]\n";
+
+	do_install_package($feed, $pkg) == 0 or do {
+		warn "failed.\n";
+		return 1;
+	};
+
+	# install all dependencies referenced from the source package
+	foreach my $vpkg (@{$feed_src->{$src}}) {
+		foreach my $dep (@{$vpkg->{depends}}, @{$vpkg->{builddepends}}, @{$vpkg->{"builddepends/host"}}) {
+			next if $dep =~ /@/;
+			$dep =~ s/^\+//;
+			$dep =~ s/^.+://;
+			$dep =~ s/\/.+$//;
+			next unless $dep;
+			install_package($feed, $dep, 0) == 0 or $ret = 1;
+		}
+	}
+
+	return $ret;
+}
+
+sub refresh_config {
+	my $default = shift;
+
+	# Don't create .config if it doesn't already exist so that making a
+	# config only occurs when the user intends it do (however we do
+	# want to refresh an existing config).
+	return if not (-e '.config');
+
+	# workaround for timestamp check
+	system("rm -f tmp/.packageinfo");
+
+	# refresh the config
+	if ($default) {
+		system("$mk oldconfig CONFDEFAULT=\"$default\" Config.in >/dev/null 2>/dev/null");
+	} else {
+		system("$mk defconfig Config.in >/dev/null 2>/dev/null");
+	}
+}
+
+sub install {
+	my $name;
+	my %opts;
+	my $feed;
+	my $ret = 0;
+
+	getopts('ap:d:fh', \%opts);
+
+	if ($opts{h}) {
+		usage();
+		return 0;
+	}
+
+	get_installed();
+
+	foreach my $f (@feeds) {
+		# fetch all feeds
+		get_feed($f->[1]);
+
+		# look up the preferred feed
+		$opts{p} and $f->[1] eq $opts{p} and $feed = $f;
+	}
+
+	if($opts{a}) {
+		foreach my $f (@feeds) {
+			if (!defined($opts{p}) or $opts{p} eq $f->[1]) {
+				printf "Installing all packages from feed %s.\n", $f->[1];
+				get_feed($f->[1]);
+				foreach my $name (sort { lc($a) cmp lc($b) } keys %$feed_package) {
+					my $p = $feed_package->{$name};
+					next if $p->{vdepends};
+					if( $p->{name} ) {
+						install_package($feed, $p->{name}, exists($opts{f})) == 0 or $ret = 1;
+						get_feed($f->[1]);
+					}
+				}
+			}
+		}
+	} else {
+		while ($name = shift @ARGV) {
+			install_package($feed, $name, exists($opts{f})) == 0 or $ret = 1;
+		}
+	}
+
+	# workaround for timestamp check
+
+	# set the defaults
+	if ($opts{d} and $opts{d} =~ /^[ymn]$/) {
+		refresh_config($opts{d});
+	}
+
+	return $ret;
+}
+
+sub uninstall_target($) {
+	my $dir = shift;
+	my $name = $dir;
+	$name =~ s/.*\///g;
+
+	my $dest = readlink $dir;
+	return unless $dest =~ /..\/..\/feeds/;
+	warn "Uninstalling target '$name'\n";
+	unlink "$dir";
+}
+
+sub uninstall {
+	my %opts;
+	my $name;
+	my $uninstall;
+
+	getopts('ah', \%opts);
+
+	if ($opts{h}) {
+		usage();
+		return 0;
+	}
+
+	if ($opts{a}) {
+		system("rm -rvf ./package/feeds");
+		foreach my $dir (glob "target/linux/*") {
+			next unless -l $dir;
+			uninstall_target($dir);
+		}
+		$uninstall = 1;
+	} else {
+		if($#ARGV == -1) {
+			warn "WARNING: no package to uninstall\n";
+			return 0;
+		}
+		get_installed();
+		while ($name = shift @ARGV) {
+			my $target = "target/linux/$name";
+			-l "$target" and do {
+				uninstall_target($target);
+				$uninstall = 1;
+				next;
+			};
+
+			my $pkg = $installed{$name};
+			$pkg or do {
+				warn "WARNING: $name not installed\n";
+				next;
+			};
+			$pkg->{src} and $name = $pkg->{src};
+			warn "Uninstalling package '$name'\n";
+			system("rm -f ./package/feeds/*/$name");
+			$uninstall = 1;
+		}
+	}
+	$uninstall and refresh_config();
+	return 0;
+}
+
+sub update_feed($$$$$)
+{
+	my $type=shift;
+	my $name=shift;
+	my $src=shift;
+	my $perform_update=shift;
+	my $force_update=shift;
+	my $force_relocate=update_location( $name, "@$src" );
+	my $rv=0;
+
+	if( $force_relocate ) {
+		warn "Source of feed $name has changed, replacing copy\n";
+	}
+	$update_method{$type} or do {
+		warn "Unknown type '$type' in feed $name\n";
+		return 1;
+	};
+	$perform_update and do {
+		my $failed = 1;
+		foreach my $feedsrc (@$src) {
+			warn "Updating feed '$name' from '$feedsrc' ...\n";
+			if (update_feed_via($type, $name, $feedsrc, $force_relocate, $force_update) != 0) {
+				if ($force_update) {
+					$rv=1;
+					$failed=0;
+					warn "failed, ignore.\n";
+					next;
+				}
+				last;
+			}
+			$failed = 0;
+		}
+		$failed and do {
+			warn "failed.\n";
+			return 1;
+		};
+	};
+	warn "Create index file './feeds/$name.index' \n";
+	update_index($name) == 0 or do {
+		warn "failed.\n";
+		return 1;
+	};
+	return $rv;
+}
+
+sub update {
+	my %opts;
+	my $feed_name;
+	my $perform_update=1;
+	my $failed=0;
+
+	$ENV{SCAN_COOKIE} = $$;
+	$ENV{OPENWRT_VERBOSE} = 's';
+
+	getopts('ahif', \%opts);
+
+	if ($opts{h}) {
+		usage();
+		return 0;
+	}
+
+	if ($opts{i}) {
+		# don't update from (remote) repository
+		# only re-create index information
+		$perform_update=0;
+	}
+
+	-d "feeds" or do {
+			mkdir "feeds" or die "Unable to create the feeds directory";
+		};
+
+	if ( ($#ARGV == -1) or $opts{a}) {
+		foreach my $feed (@feeds) {
+			my ($type, $name, $src) = @$feed;
+			update_feed($type, $name, $src, $perform_update, $opts{f}) == 0 or $failed=1;
+		}
+	} else {
+		while ($feed_name = shift @ARGV) {
+			foreach my $feed (@feeds) {
+				my ($type, $name, $src) = @$feed;
+				if($feed_name ne $name) {
+					next;
+				}
+				update_feed($type, $name, $src, $perform_update, $opts{f}) == 0 or $failed=1;
+			}
+		}
+	}
+
+	refresh_config();
+
+	return $failed;
+}
+
+sub feed_config() {
+	foreach my $feed (@feeds) {
+		my $installed = (-f "feeds/$feed->[1].index");
+
+		printf "\tconfig FEED_%s\n", $feed->[1];
+		printf "\t\tbool \"Enable feed %s\"\n", $feed->[1];
+		printf "\t\tdepends on PER_FEED_REPO\n";
+		printf "\t\tdefault y\n" if $installed;
+		printf "\t\thelp\n";
+		printf "\t\t Enable the \\\"%s\\\" feed at %s.\n", $feed->[1], $feed->[2][0];
+		printf "\n";
+	}
+
+	return 0;
+}
+
+sub usage() {
+	print <<EOF;
+Usage: $0 <command> [options]
+
+Commands:
+	list [options]: List feeds, their content and revisions (if installed)
+	Options:
+	    -n :            List of feed names.
+	    -s :            List of feed names and their URL.
+	    -r <feedname>:  List packages of specified feed.
+	    -d <delimiter>: Use specified delimiter to distinguish rows (default: spaces)
+	    -f :            List feeds in feeds.conf compatible format (when using -s).
+
+	install [options] <package>: Install a package
+	Options:
+	    -a :           Install all packages from all feeds or from the specified feed using the -p option.
+	    -p <feedname>: Prefer this feed when installing packages.
+	    -d <y|m|n>:    Set default for newly installed packages.
+	    -f :           Install will be forced even if the package exists in core OpenWrt (override)
+
+	search [options] <substring>: Search for a package
+	Options:
+	    -r <feedname>: Only search in this feed
+
+	uninstall -a|<package>: Uninstall a package
+	Options:
+	    -a :           Uninstalls all packages.
+
+	update -a|<feedname(s)>: Update packages and lists of feeds in feeds.conf .
+	Options:
+	    -a :           Update all feeds listed within feeds.conf. Otherwise the specified feeds will be updated.
+	    -i :           Recreate the index only. No feed update from repository is performed.
+	    -f :           Force updating feeds even if there are changed, uncommitted files.
+
+	clean:             Remove downloaded/generated files.
+
+EOF
+	exit(1);
+}
+
+my %commands = (
+	'list' => \&list,
+	'update' => \&update,
+	'install' => \&install,
+	'search' => \&search,
+	'uninstall' => \&uninstall,
+	'feed_config' => \&feed_config,
+	'clean' => sub {
+		system("rm -rf ./feeds ./package/feeds");
+	}
+);
+
+my $arg = shift @ARGV;
+$arg or usage();
+parse_config;
+foreach my $cmd (keys %commands) {
+	$arg eq $cmd and do {
+		exit(&{$commands{$cmd}}());
+	};
+}
+usage();

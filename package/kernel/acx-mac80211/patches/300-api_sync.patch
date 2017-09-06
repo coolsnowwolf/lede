@@ -1,0 +1,112 @@
+--- a/main.c
++++ b/main.c
+@@ -497,7 +497,7 @@ int acx_free_mechanics(acx_device_t *ade
+ 
+ int acx_init_ieee80211(acx_device_t *adev, struct ieee80211_hw *hw)
+ {
+-	hw->flags &= ~IEEE80211_HW_RX_INCLUDES_FCS;
++	__clear_bit(IEEE80211_HW_RX_INCLUDES_FCS, hw->flags);
+ 	hw->queues = 1;
+ 	hw->wiphy->max_scan_ssids = 1;
+ 
+@@ -525,14 +525,14 @@ int acx_init_ieee80211(acx_device_t *ade
+ 	/* We base signal quality on winlevel approach of previous driver
+ 	 * TODO OW 20100615 This should into a common init code
+ 	 */
+-	hw->flags |= IEEE80211_HW_SIGNAL_UNSPEC;
++	__set_bit(IEEE80211_HW_SIGNAL_UNSPEC, hw->flags);
+ 	hw->max_signal = 100;
+ 
+ 	if (IS_ACX100(adev)) {
+-		adev->hw->wiphy->bands[IEEE80211_BAND_2GHZ] =
++		adev->hw->wiphy->bands[NL80211_BAND_2GHZ] =
+ 			&acx100_band_2GHz;
+ 	} else if (IS_ACX111(adev))
+-		adev->hw->wiphy->bands[IEEE80211_BAND_2GHZ] =
++		adev->hw->wiphy->bands[NL80211_BAND_2GHZ] =
+ 			&acx111_band_2GHz;
+ 	else {
+ 		log(L_ANY, "Error: Unknown device");
+@@ -945,8 +945,8 @@ void acx_op_configure_filter(struct ieee
+ 		changed_flags, *total_flags);
+ 
+ 	/* OWI TODO: Set also FIF_PROBE_REQ ? */
+-	*total_flags &= (FIF_PROMISC_IN_BSS | FIF_ALLMULTI | FIF_FCSFAIL
+-			| FIF_CONTROL | FIF_OTHER_BSS);
++	*total_flags &= (FIF_ALLMULTI | FIF_FCSFAIL | FIF_CONTROL
++			| FIF_OTHER_BSS);
+ 
+ 	logf1(L_DEBUG, "2: *total_flags=0x%08x\n", *total_flags);
+ 
+@@ -1045,9 +1045,10 @@ void acx_op_tx(struct ieee80211_hw *hw,
+ }
+ 
+ int acx_op_hw_scan(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+-                   struct cfg80211_scan_request *req)
++                   struct ieee80211_scan_request *hw_req)
+ {
+ 	acx_device_t *adev = hw2adev(hw);
++	struct cfg80211_scan_request *req = &hw_req->req;
+ 	struct sk_buff *skb;
+ 	size_t ssid_len = 0;
+ 	u8 *ssid = NULL;
+@@ -1082,7 +1083,7 @@ int acx_op_hw_scan(struct ieee80211_hw *
+ 		goto out;
+ 	}
+ #else
+-	skb = ieee80211_probereq_get(adev->hw, adev->vif, ssid, ssid_len,
++	skb = ieee80211_probereq_get(adev->hw, vif->addr, ssid, ssid_len,
+ 		req->ie_len);
+ 	if (!skb) {
+ 		ret = -ENOMEM;
+--- a/main.h
++++ b/main.h
+@@ -62,7 +62,7 @@ void acx_op_tx(struct ieee80211_hw *hw,
+ #endif
+ 
+ int acx_op_hw_scan(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+-                   struct cfg80211_scan_request *req);
++                   struct ieee80211_scan_request *req);
+ 
+ int acx_recover_hw(acx_device_t *adev);
+ 
+--- a/cardsetting.c
++++ b/cardsetting.c
+@@ -159,7 +159,7 @@ int acx_set_channel(acx_device_t *adev,
+ 	int res = 0;
+ 
+ 	adev->rx_status.freq = freq;
+-	adev->rx_status.band = IEEE80211_BAND_2GHZ;
++	adev->rx_status.band = NL80211_BAND_2GHZ;
+ 
+ 	adev->channel = channel;
+ 
+--- a/merge.c
++++ b/merge.c
+@@ -2776,7 +2776,10 @@ void acx_irq_work(struct work_struct *wo
+ 		/* HOST_INT_SCAN_COMPLETE */
+ 		if (irqmasked & HOST_INT_SCAN_COMPLETE) {
+ 			if (test_bit(ACX_FLAG_SCANNING, &adev->flags)) {
+-				ieee80211_scan_completed(adev->hw, false);
++				struct cfg80211_scan_info info = {
++					.aborted = false
++				};
++				ieee80211_scan_completed(adev->hw, &info);
+ 				log(L_INIT, "scan completed\n");
+ 				clear_bit(ACX_FLAG_SCANNING, &adev->flags);
+ 			}
+@@ -3138,10 +3141,13 @@ int acx_op_start(struct ieee80211_hw *hw
+ 
+ void acx_stop(acx_device_t *adev)
+ {
++	struct cfg80211_scan_info info = {
++		.aborted = true
++	};
+ 	acxmem_lock_flags;
+ 
+ 	if (test_bit(ACX_FLAG_SCANNING, &adev->flags)) {
+-		ieee80211_scan_completed(adev->hw, true);
++		ieee80211_scan_completed(adev->hw, &info);
+ 		acx_issue_cmd(adev, ACX1xx_CMD_STOP_SCAN, NULL, 0);
+ 		clear_bit(ACX_FLAG_SCANNING, &adev->flags);
+ 	}

@@ -1,0 +1,177 @@
+From 9bbd8a3c8378eac9e605e0f37f4005583e122527 Mon Sep 17 00:00:00 2001
+From: Andrey Grodzovsky <andrey2805@gmail.com>
+Date: Tue, 3 May 2016 22:10:59 -0400
+Subject: [PATCH] ARM: adau1977-adc: Add basic machine driver for adau1977
+ codec driver.
+
+This commit adds basic support for the codec usage including: Device tree overlay,
+binding I2S bus and setting I2S mode, clock source and frequency setting according
+to spec.
+
+Signed-off-by: Andrey Grodzovsky <andrey2805@gmail.com>
+---
+ sound/soc/bcm/Kconfig        |   7 +++
+ sound/soc/bcm/Makefile       |   2 +
+ sound/soc/bcm/adau1977-adc.c | 125 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 134 insertions(+)
+ create mode 100644 sound/soc/bcm/adau1977-adc.c
+
+--- a/sound/soc/bcm/Kconfig
++++ b/sound/soc/bcm/Kconfig
+@@ -87,3 +87,10 @@ config SND_BCM2708_SOC_RASPIDAC3
+ 	select SND_SOC_TPA6130A2
+ 	help
+ 	  Say Y or M if you want to add support for RaspiDAC Rev.3x.
++
++config SND_BCM2708_SOC_ADAU1977_ADC
++	tristate "Support for ADAU1977 ADC"
++	depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
++	select SND_SOC_ADAU1977_I2C
++	help
++	  Say Y or M if you want to add support for ADAU1977 ADC.
+--- a/sound/soc/bcm/Makefile
++++ b/sound/soc/bcm/Makefile
+@@ -9,6 +9,7 @@ snd-soc-cygnus-objs := cygnus-pcm.o cygn
+ obj-$(CONFIG_SND_SOC_CYGNUS) += snd-soc-cygnus.o
+ 
+ # BCM2708 Machine Support
++snd-soc-adau1977-adc-objs := adau1977-adc.o
+ snd-soc-hifiberry-amp-objs := hifiberry_amp.o
+ snd-soc-hifiberry-dac-objs := hifiberry_dac.o
+ snd-soc-hifiberry-dacplus-objs := hifiberry_dacplus.o
+@@ -20,6 +21,7 @@ snd-soc-rpi-proto-objs := rpi-proto.o
+ snd-soc-iqaudio-dac-objs := iqaudio-dac.o
+ snd-soc-raspidac3-objs := raspidac3.o
+ 
++obj-$(CONFIG_SND_BCM2708_SOC_ADAU1977_ADC) += snd-soc-adau1977-adc.o
+ obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_AMP) += snd-soc-hifiberry-amp.o
+ obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_DAC) += snd-soc-hifiberry-dac.o
+ obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUS) += snd-soc-hifiberry-dacplus.o
+--- /dev/null
++++ b/sound/soc/bcm/adau1977-adc.c
+@@ -0,0 +1,125 @@
++/*
++ * ASoC Driver for ADAU1977 ADC
++ *
++ * Author:	Andrey Grodzovsky <andrey2805@gmail.com>
++ *		Copyright 2016
++ *
++ * This file is based on hifibery_dac driver by Florian Meier.
++ * 
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ */
++
++#include <linux/module.h>
++#include <linux/platform_device.h>
++
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++#include <sound/jack.h>
++
++enum adau1977_clk_id {
++    ADAU1977_SYSCLK,
++};
++ 
++enum adau1977_sysclk_src {
++    ADAU1977_SYSCLK_SRC_MCLK,
++    ADAU1977_SYSCLK_SRC_LRCLK,
++};
++
++static int eval_adau1977_init(struct snd_soc_pcm_runtime *rtd)
++{
++	int ret;
++	struct snd_soc_dai *codec_dai = rtd->codec_dai;
++	
++	ret = snd_soc_dai_set_tdm_slot(codec_dai, 0, 0, 0, 0);
++	if (ret < 0)
++		return ret;
++
++	return snd_soc_codec_set_sysclk(rtd->codec, ADAU1977_SYSCLK,
++			ADAU1977_SYSCLK_SRC_MCLK, 11289600, SND_SOC_CLOCK_IN);
++}
++ 
++static struct snd_soc_dai_link snd_rpi_adau1977_dai[] = {
++	{
++	.name = "adau1977",
++	.stream_name = "ADAU1977", 
++	.cpu_dai_name = "bcm2708-i2s.0", 
++	.codec_dai_name = "adau1977-hifi",
++	.platform_name = "bcm2708-i2s.0",
++	.codec_name = "adau1977.1-0011",
++	.init = eval_adau1977_init,
++	.dai_fmt = SND_SOC_DAIFMT_I2S |
++		SND_SOC_DAIFMT_NB_NF |
++		SND_SOC_DAIFMT_CBM_CFM,
++	},
++};
++
++/* audio machine driver */
++static struct snd_soc_card snd_adau1977_adc = {
++	.name         = "snd_rpi_adau1977_adc",
++	.owner        = THIS_MODULE,
++	.dai_link     = snd_rpi_adau1977_dai,
++	.num_links    = ARRAY_SIZE(snd_rpi_adau1977_dai),
++};
++
++static int snd_adau1977_adc_probe(struct platform_device *pdev)
++{
++	int ret = 0;
++
++	snd_adau1977_adc.dev = &pdev->dev;
++	if (pdev->dev.of_node) {
++	    struct device_node *i2s_node;
++	    struct snd_soc_dai_link *dai = &snd_rpi_adau1977_dai[0];
++	    i2s_node = of_parse_phandle(pdev->dev.of_node,
++					"i2s-controller", 0);
++
++	    if (i2s_node) {
++		dai->cpu_dai_name = NULL;
++		dai->cpu_of_node = i2s_node;
++		dai->platform_name = NULL;
++		dai->platform_of_node = i2s_node;
++	    }
++	}
++
++	ret = snd_soc_register_card(&snd_adau1977_adc);
++	if (ret)
++		dev_err(&pdev->dev, "snd_soc_register_card() failed: %d\n", ret);
++
++	return ret;
++}
++
++static int snd_adau1977_adc_remove(struct platform_device *pdev)
++{
++	return snd_soc_unregister_card(&snd_adau1977_adc);
++}
++
++static const struct of_device_id snd_adau1977_adc_of_match[] = {
++	{ .compatible = "adi,adau1977-adc", },
++	{},
++};
++
++MODULE_DEVICE_TABLE(of, snd_adau1977_adc_of_match);
++
++static struct platform_driver snd_adau1977_adc_driver = {
++        .driver = {
++                .name   = "snd-adau1977-adc",
++                .owner  = THIS_MODULE,
++		.of_match_table = snd_adau1977_adc_of_match,
++        },
++        .probe          = snd_adau1977_adc_probe,
++        .remove         = snd_adau1977_adc_remove,
++};
++
++module_platform_driver(snd_adau1977_adc_driver);
++
++MODULE_AUTHOR("Andrey Grodzovsky <andrey2805@gmail.com>");
++MODULE_DESCRIPTION("ASoC Driver for ADAU1977 ADC");
++MODULE_LICENSE("GPL v2");

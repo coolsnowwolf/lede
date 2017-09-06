@@ -1,0 +1,59 @@
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <zajec5@gmail.com>
+Subject: [PATCH] mtd: m25p80: use single SPI message for writing data
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On all 3 tested Northstar devices with following flash memories:
+mx25l6405d (8192 Kbytes)
+mx25l12805d (16384 Kbytes)
+mx25l25635e (32768 Kbytes)
+I noticed writing to be broken. Not a single bit was changed leaving all
+bytes set to 0xff.
+
+This is most likely some problem related to the SPI controller or its
+driver. Using a single SPI message seems to workaround this. Of course
+it's not perfect solution as copying whole data into a new buffer makes
+writing slower.
+
+Signed-off-by: Rafał Miłecki <zajec5@gmail.com>
+---
+
+--- a/drivers/mtd/devices/m25p80.c
++++ b/drivers/mtd/devices/m25p80.c
+@@ -78,6 +78,7 @@ static void m25p80_write(struct spi_nor
+ {
+ 	struct m25p *flash = nor->priv;
+ 	struct spi_device *spi = flash->spi;
++	u8 *command = kzalloc(MAX_CMD_SIZE + len, GFP_KERNEL);
+ 	struct spi_transfer t[2] = {};
+ 	struct spi_message m;
+ 	int cmd_sz = m25p_cmdsz(nor);
+@@ -87,20 +88,19 @@ static void m25p80_write(struct spi_nor
+ 	if (nor->program_opcode == SPINOR_OP_AAI_WP && nor->sst_write_second)
+ 		cmd_sz = 1;
+ 
+-	flash->command[0] = nor->program_opcode;
+-	m25p_addr2cmd(nor, to, flash->command);
++	command[0] = nor->program_opcode;
++	m25p_addr2cmd(nor, to, command);
++	memcpy(&command[cmd_sz], buf, len);
+ 
+-	t[0].tx_buf = flash->command;
+-	t[0].len = cmd_sz;
++	t[0].tx_buf = command;
++	t[0].len = cmd_sz + len;
+ 	spi_message_add_tail(&t[0], &m);
+ 
+-	t[1].tx_buf = buf;
+-	t[1].len = len;
+-	spi_message_add_tail(&t[1], &m);
+-
+ 	spi_sync(spi, &m);
+ 
+ 	*retlen += m.actual_length - cmd_sz;
++
++	kfree(command);
+ }
+ 
+ static inline unsigned int m25p80_rx_nbits(struct spi_nor *nor)

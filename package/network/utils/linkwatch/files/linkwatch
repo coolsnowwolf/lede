@@ -1,0 +1,125 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /lib/functions/network.sh
+. /usr/share/libubox/jshn.sh
+
+[ -x /sbin/swconfig -a -r /etc/board.json ] || exit 1
+
+INTERVAL=2	# Sleep interval in Seconds
+PREVSTATE=-1	# -1 = Don't Know, 0 = Down, 1 = Up
+WAN=
+DEV=
+PHY=
+SWITCH=
+WANPORT=
+
+find_wan_port() {
+
+	local key keys port ports device role num device found
+
+	json_get_keys keys switch
+
+	json_select switch
+	for key in $keys; do
+		json_select $key
+
+		if json_is_a ports array; then
+			json_get_keys ports ports
+			json_select ports
+
+			found=0
+			for port in $ports; do
+				json_select "$port"
+				json_get_vars num role device
+				json_select ..
+
+				[ "$device" = "$PHY" ] && found=1
+
+				[ "$found" = "1" -a "$role" = "$WAN" ] && {
+					WANPORT="$num"
+					SWITCH="$key"
+					json_select ..
+					json_select ..
+					json_select ..
+					return
+				}
+			done
+
+			json_select ..
+		fi
+		json_select ..
+	done
+
+	json_select ..
+}
+
+find_dev() {
+	local key keys ifname
+
+	json_get_keys keys network
+	json_select network
+	for key in $keys; do
+		[ "$key" = "$WAN" ] && {
+			json_select $key
+			json_get_vars ifname
+			DEV="$ifname"
+			json_select ..
+			break
+		}
+	done
+	json_select ..
+}
+
+setup() {
+	json_init
+	json_load "$(cat /tmp/board.json)"
+
+	[ -z "$WAN" ] && network_find_wan WAN
+
+	[ -z "$WAN" ] || {
+		[ -z "$DEV" ] && find_dev
+		[ -z "$PHY" ] && PHY=${DEV%.*}
+		[ -z "$DEV" -o -z "$PHY" ] || find_wan_port
+	}
+}
+
+watch() {
+	logger "monitor connections on $WAN($DEV)"
+
+	while $(/bin/ubus call network.interface.$WAN status &> /dev/null); do
+		link=$(swconfig dev "$SWITCH" port "$WANPORT" get link)
+		case "$link" in
+		*"link:up"*)
+			[ "$PREVSTATE" = "1" ] || {
+				logger "Detected Interface UP"
+				[ "$PREVSTATE" = "0" ] && {
+					ip link set $DEV up
+					ubus call network.interface.$WAN renew
+				}
+			}
+			PREVSTATE=1
+			;;
+		*"link:down"*)
+			[ "$PREVSTATE" = "0" ] || {
+				logger "Detected Interface DOWN"
+				[ "$PREVSTATE" = "1" ] && {
+					ip link set $DEV down
+				}
+			}
+			PREVSTATE=0
+			;;
+		esac
+		sleep $INTERVAL
+	done
+}
+
+logger "Started Linkwatch"
+while (/bin/true); do
+	setup
+
+	[ -z "$WAN" -o -z "$DEV" -o -z "$SWITCH" -o -z "$WANPORT" ] || watch
+
+	echo wait
+	sleep 10
+done

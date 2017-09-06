@@ -1,0 +1,96 @@
+From e16e888b525503be05b3aea64190e8b3bdef44d0 Mon Sep 17 00:00:00 2001
+From: Markus Stenberg <markus.stenberg@iki.fi>
+Date: Tue, 5 May 2015 13:36:59 +0300
+Subject: [PATCH] ipv6: Fixed source specific default route handling.
+
+If there are only IPv6 source specific default routes present, the
+host gets -ENETUNREACH on e.g. connect() because ip6_dst_lookup_tail
+calls ip6_route_output first, and given source address any, it fails,
+and ip6_route_get_saddr is never called.
+
+The change is to use the ip6_route_get_saddr, even if the initial
+ip6_route_output fails, and then doing ip6_route_output _again_ after
+we have appropriate source address available.
+
+Note that this is '99% fix' to the problem; a correct fix would be to
+do route lookups only within addrconf.c when picking a source address,
+and never call ip6_route_output before source address has been
+populated.
+
+Signed-off-by: Markus Stenberg <markus.stenberg@iki.fi>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ net/ipv6/ip6_output.c | 39 +++++++++++++++++++++++++++++++--------
+ net/ipv6/route.c      |  5 +++--
+ 2 files changed, 34 insertions(+), 10 deletions(-)
+
+--- a/net/ipv6/ip6_output.c
++++ b/net/ipv6/ip6_output.c
+@@ -903,21 +903,45 @@ static int ip6_dst_lookup_tail(struct so
+ #endif
+ 	int err;
+ 
+-	if (*dst == NULL)
+-		*dst = ip6_route_output(net, sk, fl6);
+-
+-	if ((err = (*dst)->error))
+-		goto out_err_release;
++	/* The correct way to handle this would be to do
++	 * ip6_route_get_saddr, and then ip6_route_output; however,
++	 * the route-specific preferred source forces the
++	 * ip6_route_output call _before_ ip6_route_get_saddr.
++	 *
++	 * In source specific routing (no src=any default route),
++	 * ip6_route_output will fail given src=any saddr, though, so
++	 * that's why we try it again later.
++	 */
++	if (ipv6_addr_any(&fl6->saddr) && (!*dst || !(*dst)->error)) {
++		struct rt6_info *rt;
++		bool had_dst = *dst != NULL;
+ 
+-	if (ipv6_addr_any(&fl6->saddr)) {
+-		struct rt6_info *rt = (struct rt6_info *) *dst;
++		if (!had_dst)
++			*dst = ip6_route_output(net, sk, fl6);
++		rt = (*dst)->error ? NULL : (struct rt6_info *)*dst;
+ 		err = ip6_route_get_saddr(net, rt, &fl6->daddr,
+ 					  sk ? inet6_sk(sk)->srcprefs : 0,
+ 					  &fl6->saddr);
+ 		if (err)
+ 			goto out_err_release;
++
++		/* If we had an erroneous initial result, pretend it
++		 * never existed and let the SA-enabled version take
++		 * over.
++		 */
++		if (!had_dst && (*dst)->error) {
++			dst_release(*dst);
++			*dst = NULL;
++		}
+ 	}
+ 
++	if (!*dst)
++		*dst = ip6_route_output(net, sk, fl6);
++
++	err = (*dst)->error;
++	if (err)
++		goto out_err_release;
++
+ #ifdef CONFIG_IPV6_OPTIMISTIC_DAD
+ 	/*
+ 	 * Here if the dst entry we've looked up
+--- a/net/ipv6/route.c
++++ b/net/ipv6/route.c
+@@ -2182,9 +2182,10 @@ int ip6_route_get_saddr(struct net *net,
+ 			unsigned int prefs,
+ 			struct in6_addr *saddr)
+ {
+-	struct inet6_dev *idev = ip6_dst_idev((struct dst_entry *)rt);
++	struct inet6_dev *idev =
++		rt ? ip6_dst_idev((struct dst_entry *)rt) : NULL;
+ 	int err = 0;
+-	if (rt->rt6i_prefsrc.plen)
++	if (rt && rt->rt6i_prefsrc.plen)
+ 		*saddr = rt->rt6i_prefsrc.addr;
+ 	else
+ 		err = ipv6_dev_get_saddr(net, idev ? idev->dev : NULL,

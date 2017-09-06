@@ -1,0 +1,170 @@
+--- a/compr_lzo.c
++++ b/compr_lzo.c
+@@ -26,7 +26,6 @@
+ #include <string.h>
+ 
+ #ifndef WITHOUT_LZO
+-#include <asm/types.h>
+ #include <linux/jffs2.h>
+ #include <lzo/lzo1x.h>
+ #include "compr.h"
+--- a/compr_zlib.c
++++ b/compr_zlib.c
+@@ -39,7 +39,6 @@
+ #include <zlib.h>
+ #undef crc32
+ #include <stdio.h>
+-#include <asm/types.h>
+ #include <linux/jffs2.h>
+ #include "common.h"
+ #include "compr.h"
+--- a/rbtree.h
++++ b/rbtree.h
+@@ -94,8 +94,7 @@ static inline struct page * rb_insert_pa
+ #ifndef	_LINUX_RBTREE_H
+ #define	_LINUX_RBTREE_H
+ 
+-#include <linux/kernel.h>
+-#include <linux/stddef.h>
++#include <stddef.h>
+ 
+ struct rb_node
+ {
+--- a/include/mtd/ubi-media.h
++++ b/include/mtd/ubi-media.h
+@@ -30,7 +30,15 @@
+ #ifndef __UBI_MEDIA_H__
+ #define __UBI_MEDIA_H__
+ 
++#ifdef __linux__
+ #include <asm/byteorder.h>
++#else
++#include <stdint.h>
++typedef uint8_t __u8;
++typedef uint16_t __be16;
++typedef uint32_t __be32;
++typedef uint64_t __be64;
++#endif
+ 
+ /* The version of UBI images supported by this implementation */
+ #define UBI_VERSION 1
+--- a/mkfs.ubifs/mkfs.ubifs.h
++++ b/mkfs.ubifs/mkfs.ubifs.h
+@@ -32,7 +32,17 @@
+ #include <endian.h>
+ #include <byteswap.h>
+ #include <linux/types.h>
++#ifdef __linux__
+ #include <linux/fs.h>
++# if defined(__x86_64__) && defined(__ILP32__)
++#  define llseek lseek64
++# endif
++#else
++# ifndef O_LARGEFILE
++#  define O_LARGEFILE 0
++# endif
++# define llseek lseek
++#endif
+ 
+ #include <getopt.h>
+ #include <sys/types.h>
+--- a/mkfs.ubifs/mkfs.ubifs.c
++++ b/mkfs.ubifs/mkfs.ubifs.c
+@@ -1010,6 +1010,7 @@ static int add_inode_with_data(struct st
+ 
+ 	if (c->default_compr != UBIFS_COMPR_NONE)
+ 		use_flags |= UBIFS_COMPR_FL;
++#ifndef NO_NATIVE_SUPPORT
+ 	if (flags & FS_COMPR_FL)
+ 		use_flags |= UBIFS_COMPR_FL;
+ 	if (flags & FS_SYNC_FL)
+@@ -1020,6 +1021,7 @@ static int add_inode_with_data(struct st
+ 		use_flags |= UBIFS_APPEND_FL;
+ 	if (flags & FS_DIRSYNC_FL && S_ISDIR(st->st_mode))
+ 		use_flags |= UBIFS_DIRSYNC_FL;
++#endif
+ 
+ 	memset(ino, 0, UBIFS_INO_NODE_SZ);
+ 
+@@ -1089,7 +1091,9 @@ static int add_dir_inode(DIR *dir, ino_t
+ 		fd = dirfd(dir);
+ 		if (fd == -1)
+ 			return sys_err_msg("dirfd failed");
++#ifndef NO_NATIVE_SUPPORT
+ 		if (ioctl(fd, FS_IOC_GETFLAGS, &flags) == -1)
++#endif
+ 			flags = 0;
+ 	}
+ 
+@@ -1274,10 +1278,12 @@ static int add_file(const char *path_nam
+ 		key_write(&key, &dn->key);
+ 		dn->size = cpu_to_le32(bytes_read);
+ 		out_len = NODE_BUFFER_SIZE - UBIFS_DATA_NODE_SZ;
++#ifndef NO_NATIVE_SUPPORT
+ 		if (c->default_compr == UBIFS_COMPR_NONE &&
+ 		    (flags & FS_COMPR_FL))
+ 			use_compr = UBIFS_COMPR_LZO;
+ 		else
++#endif
+ 			use_compr = c->default_compr;
+ 		compr_type = compress_data(buf, bytes_read, &dn->data,
+ 					   &out_len, use_compr);
+@@ -1319,7 +1325,9 @@ static int add_non_dir(const char *path_
+ 		if (fd == -1)
+ 			return sys_err_msg("failed to open file '%s'",
+ 					   path_name);
++#ifndef NO_NATIVE_SUPPORT
+ 		if (ioctl(fd, FS_IOC_GETFLAGS, &flags) == -1)
++#endif
+ 			flags = 0;
+ 		if (close(fd) == -1)
+ 			return sys_err_msg("failed to close file '%s'",
+--- a/mkfs.ubifs/devtable.c
++++ b/mkfs.ubifs/devtable.c
+@@ -134,6 +134,7 @@ static int interpret_table_entry(const c
+ 	unsigned int mode = 0755, uid = 0, gid = 0, major = 0, minor = 0;
+ 	unsigned int start = 0, increment = 0, count = 0;
+ 
++	buf[1023] = 0;
+ 	if (sscanf(line, "%1023s %c %o %u %u %u %u %u %u %u",
+ 		   buf, &type, &mode, &uid, &gid, &major, &minor,
+ 		   &start, &increment, &count) < 0)
+@@ -144,8 +145,8 @@ static int interpret_table_entry(const c
+ 		buf, type, mode, uid, gid, major, minor, start,
+ 		increment, count);
+ 
+-	len = strnlen(buf, 1024);
+-	if (len == 1024)
++	len = strlen(buf);
++	if (len == 1023)
+ 		return err_msg("too long path");
+ 
+ 	if (!strcmp(buf, "/"))
+--- a/include/common.h
++++ b/include/common.h
+@@ -26,7 +26,6 @@
+ #include <string.h>
+ #include <fcntl.h>
+ #include <errno.h>
+-#include <features.h>
+ #include <inttypes.h>
+ #include "version.h"
+ 
+--- a/include/mtd/ubifs-media.h
++++ b/include/mtd/ubifs-media.h
+@@ -33,7 +33,15 @@
+ #ifndef __UBIFS_MEDIA_H__
+ #define __UBIFS_MEDIA_H__
+ 
++#ifdef __linux__
+ #include <asm/byteorder.h>
++#else
++#include <stdint.h>
++typedef uint8_t __u8;
++typedef uint16_t __be16;
++typedef uint32_t __be32;
++typedef uint64_t __be64;
++#endif
+ 
+ /* UBIFS node magic number (must not have the padding byte first or last) */
+ #define UBIFS_NODE_MAGIC  0x06101831

@@ -1,0 +1,166 @@
+From 766357a4f8476461035dcfe2c6b43f532366f533 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Fri, 6 Feb 2015 13:50:57 +0000
+Subject: [PATCH] BCM270x_DT: Add pwr_led, and the required "input" trigger
+
+The "input" trigger makes the associated GPIO an input.  This is to support
+the Raspberry Pi PWR LED, which is driven by external hardware in normal use.
+
+N.B. pwr_led is not available on Model A or B boards.
+
+leds-gpio: Implement the brightness_get method
+
+The power LED uses some clever logic that means it is driven
+by a voltage measuring circuit when configured as input, otherwise
+it is driven by the GPIO output value. This patch wires up the
+brightness_get method for leds-gpio so that user-space can monitor
+the LED value via /sys/class/gpio/led1/brightness. Using the input
+trigger this returns an indication of the system power health,
+otherwise it is just whatever value the trigger has written most
+recently.
+
+See: https://github.com/raspberrypi/linux/issues/1064
+---
+ drivers/leds/leds-gpio.c             | 18 +++++++++++-
+ drivers/leds/trigger/Kconfig         |  7 +++++
+ drivers/leds/trigger/Makefile        |  1 +
+ drivers/leds/trigger/ledtrig-input.c | 54 ++++++++++++++++++++++++++++++++++++
+ include/linux/leds.h                 |  3 ++
+ 5 files changed, 82 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/leds/trigger/ledtrig-input.c
+
+--- a/drivers/leds/leds-gpio.c
++++ b/drivers/leds/leds-gpio.c
+@@ -50,8 +50,15 @@ static void gpio_led_set(struct led_clas
+ 		led_dat->platform_gpio_blink_set(led_dat->gpiod, level,
+ 						 NULL, NULL);
+ 		led_dat->blinking = 0;
++	} else if (led_dat->cdev.flags & SET_GPIO_INPUT) {
++		gpiod_direction_input(led_dat->gpiod);
++		led_dat->cdev.flags &= ~SET_GPIO_INPUT;
++	} else if (led_dat->cdev.flags & SET_GPIO_OUTPUT) {
++		gpiod_direction_output(led_dat->gpiod, level);
++		led_dat->cdev.flags &= ~SET_GPIO_OUTPUT;
+ 	} else {
+-		if (led_dat->can_sleep)
++		if (led_dat->can_sleep ||
++			(led_dat->cdev.flags & (SET_GPIO_INPUT | SET_GPIO_OUTPUT) ))
+ 			gpiod_set_value_cansleep(led_dat->gpiod, level);
+ 		else
+ 			gpiod_set_value(led_dat->gpiod, level);
+@@ -65,6 +72,13 @@ static int gpio_led_set_blocking(struct
+ 	return 0;
+ }
+ 
++static enum led_brightness gpio_led_get(struct led_classdev *led_cdev)
++{
++	struct gpio_led_data *led_dat =
++		container_of(led_cdev, struct gpio_led_data, cdev);
++	return gpiod_get_value_cansleep(led_dat->gpiod) ? LED_FULL : LED_OFF;
++}
++
+ static int gpio_blink_set(struct led_classdev *led_cdev,
+ 	unsigned long *delay_on, unsigned long *delay_off)
+ {
+@@ -122,6 +136,8 @@ static int create_gpio_led(const struct
+ 		led_dat->platform_gpio_blink_set = blink_set;
+ 		led_dat->cdev.blink_set = gpio_blink_set;
+ 	}
++	led_dat->cdev.brightness_set = gpio_led_set;
++	led_dat->cdev.brightness_get = gpio_led_get;
+ 	if (template->default_state == LEDS_GPIO_DEFSTATE_KEEP) {
+ 		state = gpiod_get_value_cansleep(led_dat->gpiod);
+ 		if (state < 0)
+--- a/drivers/leds/trigger/Kconfig
++++ b/drivers/leds/trigger/Kconfig
+@@ -116,6 +116,13 @@ config LEDS_TRIGGER_CAMERA
+ 	  This enables direct flash/torch on/off by the driver, kernel space.
+ 	  If unsure, say Y.
+ 
++config LEDS_TRIGGER_INPUT
++	tristate "LED Input Trigger"
++	depends on LEDS_TRIGGERS
++	help
++	  This allows the GPIOs assigned to be LEDs to be initialised to inputs.
++	  If unsure, say Y.
++
+ config LEDS_TRIGGER_PANIC
+ 	bool "LED Panic Trigger"
+ 	depends on LEDS_TRIGGERS
+--- a/drivers/leds/trigger/Makefile
++++ b/drivers/leds/trigger/Makefile
+@@ -9,4 +9,5 @@ obj-$(CONFIG_LEDS_TRIGGER_CPU)		+= ledtr
+ obj-$(CONFIG_LEDS_TRIGGER_DEFAULT_ON)	+= ledtrig-default-on.o
+ obj-$(CONFIG_LEDS_TRIGGER_TRANSIENT)	+= ledtrig-transient.o
+ obj-$(CONFIG_LEDS_TRIGGER_CAMERA)	+= ledtrig-camera.o
++obj-$(CONFIG_LEDS_TRIGGER_INPUT)	+= ledtrig-input.o
+ obj-$(CONFIG_LEDS_TRIGGER_PANIC)	+= ledtrig-panic.o
+--- /dev/null
++++ b/drivers/leds/trigger/ledtrig-input.c
+@@ -0,0 +1,54 @@
++/*
++ * Set LED GPIO to Input "Trigger"
++ *
++ * Copyright 2015 Phil Elwell <phil@raspberrypi.org>
++ *
++ * Based on Nick Forbes's ledtrig-default-on.c.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/leds.h>
++#include <linux/gpio.h>
++#include "../leds.h"
++
++static void input_trig_activate(struct led_classdev *led_cdev)
++{
++	led_cdev->flags |= SET_GPIO_INPUT;
++	led_set_brightness(led_cdev, 0);
++}
++
++static void input_trig_deactivate(struct led_classdev *led_cdev)
++{
++	led_cdev->flags |= SET_GPIO_OUTPUT;
++	led_set_brightness(led_cdev, 0);
++}
++
++static struct led_trigger input_led_trigger = {
++	.name     = "input",
++	.activate = input_trig_activate,
++	.deactivate = input_trig_deactivate,
++};
++
++static int __init input_trig_init(void)
++{
++	return led_trigger_register(&input_led_trigger);
++}
++
++static void __exit input_trig_exit(void)
++{
++	led_trigger_unregister(&input_led_trigger);
++}
++
++module_init(input_trig_init);
++module_exit(input_trig_exit);
++
++MODULE_AUTHOR("Phil Elwell <phil@raspberrypi.org>");
++MODULE_DESCRIPTION("Set LED GPIO to Input \"trigger\"");
++MODULE_LICENSE("GPL");
+--- a/include/linux/leds.h
++++ b/include/linux/leds.h
+@@ -52,6 +52,9 @@ struct led_classdev {
+ #define LED_DEV_CAP_FLASH	(1 << 24)
+ #define LED_HW_PLUGGABLE	(1 << 25)
+ #define LED_PANIC_INDICATOR	(1 << 26)
++	/* Additions for Raspberry Pi PWR LED */
++#define SET_GPIO_INPUT		(1 << 30)
++#define SET_GPIO_OUTPUT		(1 << 31)
+ 
+ 	/* Set LED brightness level
+ 	 * Must not sleep. Use brightness_set_blocking for drivers

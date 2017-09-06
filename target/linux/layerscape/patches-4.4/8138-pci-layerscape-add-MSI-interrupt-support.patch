@@ -1,0 +1,259 @@
+From b0e74277164b17bb0d207ffe16056e13e558f6ba Mon Sep 17 00:00:00 2001
+From: Zhao Qiang <qiang.zhao@nxp.com>
+Date: Tue, 11 Oct 2016 16:25:07 +0800
+Subject: [PATCH 138/141] pci-layerscape: add MSI interrupt support
+
+Signed-off-by: Zhao Qiang <qiang.zhao@nxp.com>
+---
+ drivers/iommu/amd_iommu.c         |    5 +++--
+ drivers/iommu/arm-smmu.c          |   21 ++++++++++++++++++
+ drivers/iommu/iommu.c             |    8 +++----
+ drivers/pci/host/pci-layerscape.c |   43 +++++++++++++++++++++++++++++++++++++
+ drivers/pci/host/pci-layerscape.h |   17 +++++++++++++++
+ drivers/pci/quirks.c              |   19 +++++++++-------
+ drivers/pci/search.c              |    5 ++---
+ include/linux/pci.h               |    6 +++---
+ 8 files changed, 104 insertions(+), 20 deletions(-)
+ create mode 100644 drivers/pci/host/pci-layerscape.h
+
+--- a/drivers/iommu/amd_iommu.c
++++ b/drivers/iommu/amd_iommu.c
+@@ -222,8 +222,9 @@ static u16 get_alias(struct device *dev)
+ 	 */
+ 	if (pci_alias == devid &&
+ 	    PCI_BUS_NUM(ivrs_alias) == pdev->bus->number) {
+-		pdev->dev_flags |= PCI_DEV_FLAGS_DMA_ALIAS_DEVFN;
+-		pdev->dma_alias_devfn = ivrs_alias & 0xff;
++		pdev->dev_flags |= PCI_DEV_FLAGS_DMA_ALIAS_DEVID;
++		pdev->dma_alias_devid = PCI_DEVID(pdev->bus->number,
++						  ivrs_alias & 0xff);
+ 		pr_info("AMD-Vi: Added PCI DMA alias %02x.%d for %s\n",
+ 			PCI_SLOT(ivrs_alias), PCI_FUNC(ivrs_alias),
+ 			dev_name(dev));
+--- a/drivers/iommu/arm-smmu.c
++++ b/drivers/iommu/arm-smmu.c
+@@ -45,6 +45,10 @@
+ 
+ #include <linux/amba/bus.h>
+ 
++#ifdef CONFIG_PCI_LAYERSCAPE
++#include <../drivers/pci/host/pci-layerscape.h>
++#endif
++
+ #include "io-pgtable.h"
+ 
+ /* Maximum number of stream IDs assigned to a single device */
+@@ -1352,6 +1356,23 @@ static int arm_smmu_init_platform_device
+ static int arm_smmu_add_device(struct device *dev)
+ {
+ 	struct iommu_group *group;
++#ifdef CONFIG_PCI_LAYERSCAPE
++	u16 sid;
++	u32 streamid;
++	struct pci_dev *pdev;
++	if (dev_is_pci(dev)) {
++		pdev = to_pci_dev(dev);
++
++		pci_for_each_dma_alias(pdev, __arm_smmu_get_pci_sid, &sid);
++		streamid = set_pcie_streamid_translation(pdev, sid);
++		if (~streamid == 0) {
++			return -ENODEV;
++		}
++
++		pdev->dev_flags |= PCI_DEV_FLAGS_DMA_ALIAS_DEVID;
++		pdev->dma_alias_devid = streamid;
++	}
++#endif
+ 
+ 	group = iommu_group_get_for_dev(dev);
+ 	if (IS_ERR(group))
+--- a/drivers/iommu/iommu.c
++++ b/drivers/iommu/iommu.c
+@@ -697,10 +697,10 @@ static struct iommu_group *get_pci_alias
+ 			continue;
+ 
+ 		/* We alias them or they alias us */
+-		if (((pdev->dev_flags & PCI_DEV_FLAGS_DMA_ALIAS_DEVFN) &&
+-		     pdev->dma_alias_devfn == tmp->devfn) ||
+-		    ((tmp->dev_flags & PCI_DEV_FLAGS_DMA_ALIAS_DEVFN) &&
+-		     tmp->dma_alias_devfn == pdev->devfn)) {
++		if (((pdev->dev_flags & PCI_DEV_FLAGS_DMA_ALIAS_DEVID) &&
++		     (pdev->dma_alias_devid & 0xff) == tmp->devfn) ||
++		    ((tmp->dev_flags & PCI_DEV_FLAGS_DMA_ALIAS_DEVID) &&
++		     (tmp->dma_alias_devid & 0xff) == pdev->devfn)) {
+ 
+ 			group = get_pci_alias_group(tmp, devfns);
+ 			if (group) {
+--- a/drivers/pci/host/pci-layerscape.c
++++ b/drivers/pci/host/pci-layerscape.c
+@@ -37,6 +37,11 @@
+ 
+ /* PEX LUT registers */
+ #define PCIE_LUT_DBG		0x7FC /* PEX LUT Debug Register */
++#define PCIE_LUT_UDR(n)		(0x800 + (n) * 8)
++#define PCIE_LUT_LDR(n)		(0x804 + (n) * 8)
++#define PCIE_LUT_MASK_ALL	0xffff
++#define PCIE_LUT_DR_NUM		32
++#define PCIE_LUT_ENABLE		(1 << 31)
+ 
+ struct ls_pcie_drvdata {
+ 	u32 lut_offset;
+@@ -52,10 +57,30 @@ struct ls_pcie {
+ 	struct pcie_port pp;
+ 	const struct ls_pcie_drvdata *drvdata;
+ 	int index;
++	const u32 *avail_streamids;
++	int streamid_index;
+ };
+ 
+ #define to_ls_pcie(x)	container_of(x, struct ls_pcie, pp)
+ 
++u32 set_pcie_streamid_translation(struct pci_dev *pdev, u32 devid)
++{
++	u32 index, streamid;
++	struct pcie_port *pp = pdev->bus->sysdata;
++	struct ls_pcie *pcie = to_ls_pcie(pp);
++
++	if (!pcie->avail_streamids || !pcie->streamid_index)
++		return ~(u32)0;
++
++	index = --pcie->streamid_index;
++	/* mask is set as all zeroes, want to match all bits */
++	iowrite32((devid << 16), pcie->lut + PCIE_LUT_UDR(index));
++	streamid = be32_to_cpup(&pcie->avail_streamids[index]);
++	iowrite32(streamid | PCIE_LUT_ENABLE, pcie->lut + PCIE_LUT_LDR(index));
++
++	return streamid;
++}
++
+ static bool ls_pcie_is_bridge(struct ls_pcie *pcie)
+ {
+ 	u32 header_type;
+@@ -284,10 +309,28 @@ static int __init ls_pcie_probe(struct p
+ 
+ 	pcie->drvdata = match->data;
+ 	pcie->lut = pcie->dbi + pcie->drvdata->lut_offset;
++	/* Disable LDR zero */
++	iowrite32(0, pcie->lut + PCIE_LUT_LDR(0));
+ 
+ 	if (!ls_pcie_is_bridge(pcie))
+ 		return -ENODEV;
+ 
++	if (of_device_is_compatible(pdev->dev.of_node, "fsl,ls2085a-pcie") ||
++	of_device_is_compatible(pdev->dev.of_node, "fsl,ls2080a-pcie") ||
++	of_device_is_compatible(pdev->dev.of_node, "fsl,ls1088a-pcie")) {
++		int len;
++		const u32 *prop;
++		struct device_node *np;
++
++		np = pdev->dev.of_node;
++		prop = (u32 *)of_get_property(np, "available-stream-ids", &len);
++		if (prop) {
++			pcie->avail_streamids = prop;
++			pcie->streamid_index = len/sizeof(u32);
++		} else
++			dev_err(&pdev->dev, "PCIe endpoint partitioning not possible\n");
++	}
++
+ 	ret = ls_add_pcie_port(&pcie->pp, pdev);
+ 	if (ret < 0)
+ 		return ret;
+--- /dev/null
++++ b/drivers/pci/host/pci-layerscape.h
+@@ -0,0 +1,17 @@
++/*
++ * Copyright (C) 2015 Freescale Semiconductor.
++ *
++ * Author: Varun Sethi <Varun.Sethi@freescale.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef _PCI_LAYERSCAPE_H
++#define _PCI_LAYERSCAPE_H
++
++/* function for setting up stream id to device id translation */
++u32 set_pcie_streamid_translation(struct pci_dev *pdev, u32 devid);
++
++#endif /* _PCI_LAYERSCAPE_H */
+--- a/drivers/pci/quirks.c
++++ b/drivers/pci/quirks.c
+@@ -3589,8 +3589,9 @@ int pci_dev_specific_reset(struct pci_de
+ static void quirk_dma_func0_alias(struct pci_dev *dev)
+ {
+ 	if (PCI_FUNC(dev->devfn) != 0) {
+-		dev->dma_alias_devfn = PCI_DEVFN(PCI_SLOT(dev->devfn), 0);
+-		dev->dev_flags |= PCI_DEV_FLAGS_DMA_ALIAS_DEVFN;
++		dev->dma_alias_devid = PCI_DEVID(dev->bus->number,
++				       PCI_DEVFN(PCI_SLOT(dev->devfn), 0));
++		dev->dev_flags |= PCI_DEV_FLAGS_DMA_ALIAS_DEVID;
+ 	}
+ }
+ 
+@@ -3605,8 +3606,9 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_R
+ static void quirk_dma_func1_alias(struct pci_dev *dev)
+ {
+ 	if (PCI_FUNC(dev->devfn) != 1) {
+-		dev->dma_alias_devfn = PCI_DEVFN(PCI_SLOT(dev->devfn), 1);
+-		dev->dev_flags |= PCI_DEV_FLAGS_DMA_ALIAS_DEVFN;
++		dev->dma_alias_devid = PCI_DEVID(dev->bus->number,
++				       PCI_DEVFN(PCI_SLOT(dev->devfn), 1));
++		dev->dev_flags |= PCI_DEV_FLAGS_DMA_ALIAS_DEVID;
+ 	}
+ }
+ 
+@@ -3670,11 +3672,12 @@ static void quirk_fixed_dma_alias(struct
+ 
+ 	id = pci_match_id(fixed_dma_alias_tbl, dev);
+ 	if (id) {
+-		dev->dma_alias_devfn = id->driver_data;
+-		dev->dev_flags |= PCI_DEV_FLAGS_DMA_ALIAS_DEVFN;
++		dev->dma_alias_devid = PCI_DEVID(dev->bus->number,
++						 id->driver_data);
++		dev->dev_flags |= PCI_DEV_FLAGS_DMA_ALIAS_DEVID;
+ 		dev_info(&dev->dev, "Enabling fixed DMA alias to %02x.%d\n",
+-			 PCI_SLOT(dev->dma_alias_devfn),
+-			 PCI_FUNC(dev->dma_alias_devfn));
++			 PCI_SLOT(dev->dma_alias_devid),
++			 PCI_FUNC(dev->dma_alias_devid));
+ 	}
+ }
+ 
+--- a/drivers/pci/search.c
++++ b/drivers/pci/search.c
+@@ -40,9 +40,8 @@ int pci_for_each_dma_alias(struct pci_de
+ 	 * If the device is broken and uses an alias requester ID for
+ 	 * DMA, iterate over that too.
+ 	 */
+-	if (unlikely(pdev->dev_flags & PCI_DEV_FLAGS_DMA_ALIAS_DEVFN)) {
+-		ret = fn(pdev, PCI_DEVID(pdev->bus->number,
+-					 pdev->dma_alias_devfn), data);
++	if (unlikely(pdev->dev_flags & PCI_DEV_FLAGS_DMA_ALIAS_DEVID)) {
++		ret = fn(pdev, pdev->dma_alias_devid, data);
+ 		if (ret)
+ 			return ret;
+ 	}
+--- a/include/linux/pci.h
++++ b/include/linux/pci.h
+@@ -172,8 +172,8 @@ enum pci_dev_flags {
+ 	PCI_DEV_FLAGS_ASSIGNED = (__force pci_dev_flags_t) (1 << 2),
+ 	/* Flag for quirk use to store if quirk-specific ACS is enabled */
+ 	PCI_DEV_FLAGS_ACS_ENABLED_QUIRK = (__force pci_dev_flags_t) (1 << 3),
+-	/* Flag to indicate the device uses dma_alias_devfn */
+-	PCI_DEV_FLAGS_DMA_ALIAS_DEVFN = (__force pci_dev_flags_t) (1 << 4),
++	/* Flag to indicate the device uses dma_alias_devid */
++	PCI_DEV_FLAGS_DMA_ALIAS_DEVID = (__force pci_dev_flags_t) (1 << 4),
+ 	/* Use a PCIe-to-PCI bridge alias even if !pci_is_pcie */
+ 	PCI_DEV_FLAG_PCIE_BRIDGE_ALIAS = (__force pci_dev_flags_t) (1 << 5),
+ 	/* Do not use bus resets for device */
+@@ -279,7 +279,7 @@ struct pci_dev {
+ 	u8		rom_base_reg;	/* which config register controls the ROM */
+ 	u8		pin;		/* which interrupt pin this device uses */
+ 	u16		pcie_flags_reg;	/* cached PCIe Capabilities Register */
+-	u8		dma_alias_devfn;/* devfn of DMA alias, if any */
++	u32		dma_alias_devid;/* devid of DMA alias */
+ 
+ 	struct pci_driver *driver;	/* which driver has allocated this device */
+ 	u64		dma_mask;	/* Mask of the bits of bus address this

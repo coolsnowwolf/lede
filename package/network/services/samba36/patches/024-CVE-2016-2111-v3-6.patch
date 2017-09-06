@@ -1,0 +1,681 @@
+From ee105156fa151ebfd34b8febc2928e144b3b7b0e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Deschner?= <gd@samba.org>
+Date: Sat, 26 Sep 2015 01:29:10 +0200
+Subject: [PATCH 01/15] CVE-2016-2111: s3:rpc_server/netlogon: always go
+ through netr_creds_server_step_check()
+
+The ensures we apply the "server schannel = yes" restrictions.
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=11749
+
+Pair-Programmed-With: Stefan Metzmacher <metze@samba.org>
+
+Signed-off-by: Guenther Deschner <gd@samba.org>
+Signed-off-by: Stefan Metzmacher <metze@samba.org>
+---
+ source3/rpc_server/netlogon/srv_netlog_nt.c | 24 ++++++++++++++----------
+ 1 file changed, 14 insertions(+), 10 deletions(-)
+
+--- a/source3/rpc_server/netlogon/srv_netlog_nt.c
++++ b/source3/rpc_server/netlogon/srv_netlog_nt.c
+@@ -1508,6 +1508,7 @@ static NTSTATUS _netr_LogonSamLogon_base
+ 	case NetlogonNetworkTransitiveInformation:
+ 	{
+ 		const char *wksname = nt_workstation;
++		const char *workgroup = lp_workgroup();
+ 
+ 		status = make_auth_context_fixed(talloc_tos(), &auth_context,
+ 						 logon->network->challenge);
+@@ -1532,6 +1533,14 @@ static NTSTATUS _netr_LogonSamLogon_base
+ 						     logon->network->nt.length)) {
+ 			status = NT_STATUS_NO_MEMORY;
+ 		}
++
++		if (NT_STATUS_IS_OK(status)) {
++			status = NTLMv2_RESPONSE_verify_netlogon_creds(
++						user_info->client.account_name,
++						user_info->client.domain_name,
++						user_info->password.response.nt,
++						creds, workgroup);
++		}
+ 		break;
+ 	}
+ 	case NetlogonInteractiveInformation:
+@@ -1636,6 +1645,14 @@ static NTSTATUS _netr_LogonSamLogon_base
+ 						r->out.validation->sam3);
+ 		break;
+ 	case 6:
++		/* Only allow this if the pipe is protected. */
++		if (p->auth.auth_level < DCERPC_AUTH_LEVEL_PRIVACY) {
++			DEBUG(0,("netr_Validation6: client %s not using privacy for netlogon\n",
++				get_remote_machine_name()));
++			status = NT_STATUS_INVALID_PARAMETER;
++			break;
++		}
++
+ 		status = serverinfo_to_SamInfo6(server_info, pipe_session_key, 16,
+ 						r->out.validation->sam6);
+ 		break;
+@@ -2271,11 +2288,13 @@ NTSTATUS _netr_GetForestTrustInformation
+ 
+ 	/* TODO: check server name */
+ 
+-	status = schannel_check_creds_state(p->mem_ctx, lp_private_dir(),
+-					    r->in.computer_name,
+-					    r->in.credential,
+-					    r->out.return_authenticator,
+-					    &creds);
++	become_root();
++	status = netr_creds_server_step_check(p, p->mem_ctx,
++					      r->in.computer_name,
++					      r->in.credential,
++					      r->out.return_authenticator,
++					      &creds);
++	unbecome_root();
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		return status;
+ 	}
+@@ -2371,11 +2390,13 @@ NTSTATUS _netr_ServerGetTrustInfo(struct
+ 
+ 	/* TODO: check server name */
+ 
+-	status = schannel_check_creds_state(p->mem_ctx, lp_private_dir(),
+-					    r->in.computer_name,
+-					    r->in.credential,
+-					    r->out.return_authenticator,
+-					    &creds);
++	become_root();
++	status = netr_creds_server_step_check(p, p->mem_ctx,
++					      r->in.computer_name,
++					      r->in.credential,
++					      r->out.return_authenticator,
++					      &creds);
++	unbecome_root();
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		return status;
+ 	}
+--- a/source4/torture/rpc/samba3rpc.c
++++ b/source4/torture/rpc/samba3rpc.c
+@@ -1122,8 +1122,8 @@ static bool schan(struct torture_context
+ 		generate_random_buffer(chal.data, chal.length);
+ 		names_blob = NTLMv2_generate_names_blob(
+ 			mem_ctx,
+-			cli_credentials_get_workstation(user_creds),
+-			cli_credentials_get_domain(user_creds));
++			cli_credentials_get_workstation(wks_creds),
++			cli_credentials_get_domain(wks_creds));
+ 		status = cli_credentials_get_ntlm_response(
+ 			user_creds, mem_ctx, &flags, chal, names_blob,
+ 			&lm_resp, &nt_resp, NULL, NULL);
+--- a/libcli/auth/proto.h
++++ b/libcli/auth/proto.h
+@@ -139,6 +139,11 @@ bool SMBNTLMv2encrypt(TALLOC_CTX *mem_ct
+ 		      const DATA_BLOB *names_blob,
+ 		      DATA_BLOB *lm_response, DATA_BLOB *nt_response, 
+ 		      DATA_BLOB *lm_session_key, DATA_BLOB *user_session_key) ;
++NTSTATUS NTLMv2_RESPONSE_verify_netlogon_creds(const char *account_name,
++			const char *account_domain,
++			const DATA_BLOB response,
++			const struct netlogon_creds_CredentialState *creds,
++			const char *workgroup);
+ 
+ /***********************************************************
+  encode a password buffer with a unicode password.  The buffer
+--- a/libcli/auth/smbencrypt.c
++++ b/libcli/auth/smbencrypt.c
+@@ -26,7 +26,7 @@
+ #include "../libcli/auth/msrpc_parse.h"
+ #include "../lib/crypto/crypto.h"
+ #include "../libcli/auth/libcli_auth.h"
+-#include "../librpc/gen_ndr/ntlmssp.h"
++#include "../librpc/gen_ndr/ndr_ntlmssp.h"
+ 
+ void SMBencrypt_hash(const uint8_t lm_hash[16], const uint8_t *c8, uint8_t p24[24])
+ {
+@@ -522,6 +522,146 @@ bool SMBNTLMv2encrypt(TALLOC_CTX *mem_ct
+ 				     lm_response, nt_response, lm_session_key, user_session_key);
+ }
+ 
++NTSTATUS NTLMv2_RESPONSE_verify_netlogon_creds(const char *account_name,
++			const char *account_domain,
++			const DATA_BLOB response,
++			const struct netlogon_creds_CredentialState *creds,
++			const char *workgroup)
++{
++	TALLOC_CTX *frame = NULL;
++	/* RespType + HiRespType */
++	static const char *magic = "\x01\x01";
++	int cmp;
++	struct NTLMv2_RESPONSE v2_resp;
++	enum ndr_err_code err;
++	const struct AV_PAIR *av_nb_cn = NULL;
++	const struct AV_PAIR *av_nb_dn = NULL;
++
++	if (response.length < 48) {
++		/*
++		 * NTLMv2_RESPONSE has at least 48 bytes.
++		 */
++		return NT_STATUS_OK;
++	}
++
++	cmp = memcmp(response.data + 16, magic, 2);
++	if (cmp != 0) {
++		/*
++		 * It doesn't look like a valid NTLMv2_RESPONSE
++		 */
++		return NT_STATUS_OK;
++	}
++
++	frame = talloc_stackframe();
++
++	err = ndr_pull_struct_blob(&response, frame, &v2_resp,
++		(ndr_pull_flags_fn_t)ndr_pull_NTLMv2_RESPONSE);
++	if (!NDR_ERR_CODE_IS_SUCCESS(err)) {
++		NTSTATUS status;
++		status = ndr_map_error2ntstatus(err);
++		DEBUG(2,("Failed to parse NTLMv2_RESPONSE "
++			 "length %u - %s - %s\n",
++			 (unsigned)response.length,
++			 ndr_map_error2string(err),
++			 nt_errstr(status)));
++		dump_data(2, response.data, response.length);
++		TALLOC_FREE(frame);
++		return status;
++	}
++
++	if (DEBUGLVL(10)) {
++		NDR_PRINT_DEBUG(NTLMv2_RESPONSE, &v2_resp);
++	}
++
++	/*
++	 * Make sure the netbios computer name in the
++	 * NTLMv2_RESPONSE matches the computer name
++	 * in the secure channel credentials for workstation
++	 * trusts.
++	 *
++	 * And the netbios domain name matches our
++	 * workgroup.
++	 *
++	 * This prevents workstations from requesting
++	 * the session key of NTLMSSP sessions of clients
++	 * to other hosts.
++	 */
++	if (creds->secure_channel_type == SEC_CHAN_WKSTA) {
++		av_nb_cn = ndr_ntlmssp_find_av(&v2_resp.Challenge.AvPairs,
++					       MsvAvNbComputerName);
++		av_nb_dn = ndr_ntlmssp_find_av(&v2_resp.Challenge.AvPairs,
++					       MsvAvNbDomainName);
++	}
++
++	if (av_nb_cn != NULL) {
++		const char *v = NULL;
++		char *a = NULL;
++		size_t len;
++
++		v = av_nb_cn->Value.AvNbComputerName;
++
++		a = talloc_strdup(frame, creds->account_name);
++		if (a == NULL) {
++			TALLOC_FREE(frame);
++			return NT_STATUS_NO_MEMORY;
++		}
++		len = strlen(a);
++		if (len > 0 && a[len - 1] == '$') {
++			a[len - 1] = '\0';
++		}
++
++#ifdef SAMBA4_INTERNAL_HEIMDAL /* smbtorture4 for make test */
++		cmp = strcasecmp_m(a, v);
++#else /* smbd */
++		cmp = StrCaseCmp(a, v);
++#endif
++		if (cmp != 0) {
++			DEBUG(2,("%s: NTLMv2_RESPONSE with "
++				 "NbComputerName[%s] rejected "
++				 "for user[%s\\%s] "
++				 "against SEC_CHAN_WKSTA[%s/%s] "
++				 "in workgroup[%s]\n",
++				 __func__, v,
++				 account_domain,
++				 account_name,
++				 creds->computer_name,
++				 creds->account_name,
++				 workgroup));
++			TALLOC_FREE(frame);
++			return NT_STATUS_LOGON_FAILURE;
++		}
++	}
++	if (av_nb_dn != NULL) {
++		const char *v = NULL;
++
++		v = av_nb_dn->Value.AvNbDomainName;
++
++#ifdef SAMBA4_INTERNAL_HEIMDAL /* smbtorture4 for make test */
++		cmp = strcasecmp_m(workgroup, v);
++#else /* smbd */
++		cmp = StrCaseCmp(workgroup, v);
++#endif
++		if (cmp != 0) {
++			DEBUG(2,("%s: NTLMv2_RESPONSE with "
++				 "NbDomainName[%s] rejected "
++				 "for user[%s\\%s] "
++				 "against SEC_CHAN_WKSTA[%s/%s] "
++				 "in workgroup[%s]\n",
++				 __func__, v,
++				 account_domain,
++				 account_name,
++				 creds->computer_name,
++				 creds->account_name,
++				 workgroup));
++			TALLOC_FREE(frame);
++			return NT_STATUS_LOGON_FAILURE;
++		}
++	}
++
++	TALLOC_FREE(frame);
++	return NT_STATUS_OK;
++}
++
+ /***********************************************************
+  encode a password buffer with a unicode password.  The buffer
+  is filled with random data to make it harder to attack.
+--- a/libcli/auth/wscript_build
++++ b/libcli/auth/wscript_build
+@@ -19,7 +19,7 @@ bld.SAMBA_SUBSYSTEM('MSRPC_PARSE',
+ 
+ bld.SAMBA_SUBSYSTEM('LIBCLI_AUTH',
+ 	source='credentials.c session.c smbencrypt.c smbdes.c',
+-	public_deps='MSRPC_PARSE',
++	public_deps='MSRPC_PARSE NDR_NTLMSSP',
+ 	public_headers='credentials.h:domain_credentials.h'
+ 	)
+ 
+--- a/source3/Makefile.in
++++ b/source3/Makefile.in
+@@ -783,6 +783,7 @@ GROUPDB_OBJ = groupdb/mapping.o groupdb/
+ PROFILE_OBJ = profile/profile.o
+ PROFILES_OBJ = utils/profiles.o \
+ 	       $(LIBSMB_ERR_OBJ) \
++	       $(LIBNDR_NTLMSSP_OBJ) \
+ 	       $(PARAM_OBJ) \
+                $(LIB_OBJ) $(LIB_DUMMY_OBJ) \
+                $(POPT_LIB_OBJ) \
+@@ -995,10 +996,10 @@ SWAT_OBJ = $(SWAT_OBJ1) $(PARAM_OBJ) $(P
+ STATUS_OBJ = utils/status.o utils/status_profile.o \
+ 	     $(LOCKING_OBJ) $(PARAM_OBJ) \
+              $(PROFILE_OBJ) $(LIB_NONSMBD_OBJ) $(POPT_LIB_OBJ) \
+-	     $(LIBSMB_ERR_OBJ) $(FNAME_UTIL_OBJ)
++	     $(LIBSMB_ERR_OBJ) $(LIBNDR_NTLMSSP_OBJ) $(FNAME_UTIL_OBJ)
+ 
+ SMBCONTROL_OBJ = utils/smbcontrol.o $(PARAM_OBJ) $(LIB_NONSMBD_OBJ) \
+-	$(LIBSMB_ERR_OBJ) $(POPT_LIB_OBJ) $(PRINTBASE_OBJ)
++	$(LIBSMB_ERR_OBJ) $(LIBNDR_NTLMSSP_OBJ) $(POPT_LIB_OBJ) $(PRINTBASE_OBJ)
+ 
+ SMBTREE_OBJ = utils/smbtree.o $(PARAM_OBJ) \
+              $(PROFILE_OBJ) $(LIB_NONSMBD_OBJ) $(LIBSMB_OBJ) \
+@@ -1012,11 +1013,11 @@ SMBTREE_OBJ = utils/smbtree.o $(PARAM_OB
+ 
+ TESTPARM_OBJ = utils/testparm.o \
+                $(PARAM_OBJ) $(LIB_NONSMBD_OBJ) $(POPT_LIB_OBJ) \
+-	       $(LIBSMB_ERR_OBJ)
++	       $(LIBSMB_ERR_OBJ) $(LIBNDR_NTLMSSP_OBJ)
+ 
+ SMBTA_UTIL_OBJ = utils/smbta-util.o $(PARAM_OBJ) $(POPT_LIB_OBJ) \
+ 	$(LIB_NONSMBD_OBJ) \
+-	$(LIBSMB_ERR_OBJ) $(FNAME_UTIL_OBJ)
++	$(LIBSMB_ERR_OBJ) $(LIBNDR_NTLMSSP_OBJ) $(FNAME_UTIL_OBJ)
+ 
+ TEST_LP_LOAD_OBJ = param/test_lp_load.o \
+ 		   $(PARAM_OBJ) $(LIB_NONSMBD_OBJ) \
+@@ -1146,6 +1147,7 @@ SMBCONFTORT_OBJ = $(SMBCONFTORT_OBJ0) \
+ 		  $(LIB_NONSMBD_OBJ) \
+ 		  $(PARAM_OBJ) \
+ 		  $(LIBSMB_ERR_OBJ) \
++		  $(LIBNDR_NTLMSSP_OBJ) \
+ 		  $(POPT_LIB_OBJ)
+ 
+ PTHREADPOOLTEST_OBJ = lib/pthreadpool/pthreadpool.o \
+@@ -1229,7 +1231,7 @@ CUPS_OBJ = client/smbspool.o $(PARAM_OBJ
+ 	  $(LIBNDR_GEN_OBJ0)
+ 
+ NMBLOOKUP_OBJ = utils/nmblookup.o $(PARAM_OBJ) $(LIBNMB_OBJ) \
+-               $(LIB_NONSMBD_OBJ) $(POPT_LIB_OBJ) $(LIBSMB_ERR_OBJ)
++               $(LIB_NONSMBD_OBJ) $(POPT_LIB_OBJ) $(LIBSMB_ERR_OBJ) $(LIBNDR_NTLMSSP_OBJ)
+ 
+ SMBTORTURE_OBJ1 = torture/torture.o torture/nbio.o torture/scanner.o torture/utable.o \
+ 		torture/denytest.o torture/mangle_test.o \
+@@ -1253,6 +1255,7 @@ MASKTEST_OBJ = torture/masktest.o $(PARA
+ 		 $(LIBNDR_GEN_OBJ0)
+ 
+ MSGTEST_OBJ = torture/msgtest.o $(PARAM_OBJ) $(LIBSMB_ERR_OBJ) \
++		 $(LIBNDR_NTLMSSP_OBJ) \
+                  $(LIB_NONSMBD_OBJ) \
+ 		 $(LIBNDR_GEN_OBJ0)
+ 
+@@ -1269,7 +1272,7 @@ PDBTEST_OBJ = torture/pdbtest.o $(PARAM_
+ 
+ VFSTEST_OBJ = torture/cmd_vfs.o torture/vfstest.o $(SMBD_OBJ_BASE) $(READLINE_OBJ)
+ 
+-SMBICONV_OBJ = $(PARAM_OBJ) torture/smbiconv.o $(LIB_NONSMBD_OBJ) $(POPT_LIB_OBJ) $(LIBSMB_ERR_OBJ)
++SMBICONV_OBJ = $(PARAM_OBJ) torture/smbiconv.o $(LIB_NONSMBD_OBJ) $(POPT_LIB_OBJ) $(LIBSMB_ERR_OBJ) $(LIBNDR_NTLMSSP_OBJ)
+ 
+ LOG2PCAP_OBJ = utils/log2pcaphex.o
+ 
+@@ -1297,17 +1300,17 @@ SMBCQUOTAS_OBJ = utils/smbcquotas.o $(LI
+ EVTLOGADM_OBJ0	= utils/eventlogadm.o
+ 
+ EVTLOGADM_OBJ	= $(EVTLOGADM_OBJ0) $(PARAM_OBJ) $(LIB_NONSMBD_OBJ) \
+-		$(LIBSMB_ERR_OBJ) $(LIB_EVENTLOG_OBJ) \
++		$(LIBSMB_ERR_OBJ) $(LIBNDR_NTLMSSP_OBJ) $(LIB_EVENTLOG_OBJ) \
+ 		librpc/gen_ndr/ndr_eventlog.o \
+ 		librpc/gen_ndr/ndr_lsa.o
+ 
+ SHARESEC_OBJ0 = utils/sharesec.o
+ SHARESEC_OBJ  = $(SHARESEC_OBJ0) $(PARAM_OBJ) $(LIB_NONSMBD_OBJ) \
+-		$(LIBSMB_ERR_OBJ) \
++		$(LIBSMB_ERR_OBJ) $(LIBNDR_NTLMSSP_OBJ) \
+                 $(POPT_LIB_OBJ)
+ 
+ TALLOCTORT_OBJ = @tallocdir@/testsuite.o @tallocdir@/testsuite_main.o \
+-		$(PARAM_OBJ) $(LIB_NONSMBD_OBJ) $(LIBSMB_ERR_OBJ)
++		$(PARAM_OBJ) $(LIB_NONSMBD_OBJ) $(LIBSMB_ERR_OBJ) $(LIBNDR_NTLMSSP_OBJ)
+ 
+ REPLACETORT_OBJ = @libreplacedir@/test/testsuite.o \
+ 		@libreplacedir@/test/getifaddrs.o \
+@@ -1323,7 +1326,7 @@ SMBFILTER_OBJ = utils/smbfilter.o $(PARA
+ 		 $(LIBNDR_GEN_OBJ0)
+ 
+ WINBIND_WINS_NSS_OBJ = ../nsswitch/wins.o $(PARAM_OBJ) \
+-	$(LIB_NONSMBD_OBJ) $(LIBSMB_ERR_OBJ) $(LIBNMB_OBJ)
++	$(LIB_NONSMBD_OBJ) $(LIBSMB_ERR_OBJ) $(LIBNDR_NTLMSSP_OBJ) $(LIBNMB_OBJ)
+ 
+ PAM_SMBPASS_OBJ_0 = pam_smbpass/pam_smb_auth.o pam_smbpass/pam_smb_passwd.o \
+ 		pam_smbpass/pam_smb_acct.o pam_smbpass/support.o ../lib/util/asn1.o
+@@ -1531,12 +1534,14 @@ RPC_OPEN_TCP_OBJ = torture/rpc_open_tcp.
+ DBWRAP_TOOL_OBJ = utils/dbwrap_tool.o \
+ 		  $(PARAM_OBJ) \
+ 		  $(LIB_NONSMBD_OBJ) \
+-		  $(LIBSMB_ERR_OBJ)
++		  $(LIBSMB_ERR_OBJ) \
++		  $(LIBNDR_NTLMSSP_OBJ)
+ 
+ DBWRAP_TORTURE_OBJ = utils/dbwrap_torture.o \
+ 		     $(PARAM_OBJ) \
+ 		     $(LIB_NONSMBD_OBJ) \
+ 		     $(LIBSMB_ERR_OBJ) \
++		     $(LIBNDR_NTLMSSP_OBJ) \
+ 		     $(POPT_LIB_OBJ)
+ 
+ SPLIT_TOKENS_OBJ = utils/split_tokens.o \
+--- a/source4/torture/raw/samba3misc.c
++++ b/source4/torture/raw/samba3misc.c
+@@ -340,6 +340,7 @@ bool torture_samba3_badpath(struct tortu
+ 	bool ret = true;
+ 	TALLOC_CTX *mem_ctx;
+ 	bool nt_status_support;
++	bool client_ntlmv2_auth;
+ 
+ 	if (!(mem_ctx = talloc_init("torture_samba3_badpath"))) {
+ 		d_printf("talloc_init failed\n");
+@@ -347,20 +348,17 @@ bool torture_samba3_badpath(struct tortu
+ 	}
+ 
+ 	nt_status_support = lpcfg_nt_status_support(torture->lp_ctx);
++	client_ntlmv2_auth = lpcfg_client_ntlmv2_auth(torture->lp_ctx);
+ 
+-	if (!lpcfg_set_cmdline(torture->lp_ctx, "nt status support", "yes")) {
+-		printf("Could not set 'nt status support = yes'\n");
+-		goto fail;
+-	}
++	torture_assert_goto(torture, lpcfg_set_cmdline(torture->lp_ctx, "nt status support", "yes"), ret, fail, "Could not set 'nt status support = yes'\n");
++	torture_assert_goto(torture, lpcfg_set_cmdline(torture->lp_ctx, "client ntlmv2 auth", "yes"), ret, fail, "Could not set 'client ntlmv2 auth = yes'\n");
+ 
+ 	if (!torture_open_connection(&cli_nt, torture, 0)) {
+ 		goto fail;
+ 	}
+ 
+-	if (!lpcfg_set_cmdline(torture->lp_ctx, "nt status support", "no")) {
+-		printf("Could not set 'nt status support = yes'\n");
+-		goto fail;
+-	}
++	torture_assert_goto(torture, lpcfg_set_cmdline(torture->lp_ctx, "nt status support", "no"), ret, fail, "Could not set 'nt status support = no'\n");
++	torture_assert_goto(torture, lpcfg_set_cmdline(torture->lp_ctx, "client ntlmv2 auth", "no"), ret, fail, "Could not set 'client ntlmv2 auth = no'\n");
+ 
+ 	if (!torture_open_connection(&cli_dos, torture, 1)) {
+ 		goto fail;
+@@ -373,6 +371,12 @@ bool torture_samba3_badpath(struct tortu
+ 	}
+ 
+ 	smbcli_deltree(cli_nt->tree, dirname);
++	torture_assert_goto(torture, lpcfg_set_cmdline(torture->lp_ctx, "nt status support",
++						       nt_status_support ? "yes":"no"),
++			    ret, fail, "Could not set 'nt status support' back to where it was\n");
++	torture_assert_goto(torture, lpcfg_set_cmdline(torture->lp_ctx, "client ntlmv2 auth",
++						       client_ntlmv2_auth ? "yes":"no"),
++			    ret, fail, "Could not set 'client ntlmv2 auth' back to where it was\n");
+ 
+ 	status = smbcli_mkdir(cli_nt->tree, dirname);
+ 	if (!NT_STATUS_IS_OK(status)) {
+--- a/source4/torture/basic/base.c
++++ b/source4/torture/basic/base.c
+@@ -1476,6 +1476,7 @@ static bool torture_chkpath_test(struct
+ static bool torture_samba3_errorpaths(struct torture_context *tctx)
+ {
+ 	bool nt_status_support;
++	bool client_ntlmv2_auth;
+ 	struct smbcli_state *cli_nt = NULL, *cli_dos = NULL;
+ 	bool result = false;
+ 	int fnum;
+@@ -1485,18 +1486,27 @@ static bool torture_samba3_errorpaths(st
+ 	NTSTATUS status;
+ 
+ 	nt_status_support = lpcfg_nt_status_support(tctx->lp_ctx);
++	client_ntlmv2_auth = lpcfg_client_ntlmv2_auth(tctx->lp_ctx);
+ 
+ 	if (!lpcfg_set_cmdline(tctx->lp_ctx, "nt status support", "yes")) {
+ 		torture_comment(tctx, "Could not set 'nt status support = yes'\n");
+ 		goto fail;
+ 	}
++	if (!lpcfg_set_cmdline(tctx->lp_ctx, "client ntlmv2 auth", "yes")) {
++		torture_result(tctx, TORTURE_FAIL, "Could not set 'client ntlmv2 auth = yes'\n");
++		goto fail;
++	}
+ 
+ 	if (!torture_open_connection(&cli_nt, tctx, 0)) {
+ 		goto fail;
+ 	}
+ 
+ 	if (!lpcfg_set_cmdline(tctx->lp_ctx, "nt status support", "no")) {
+-		torture_comment(tctx, "Could not set 'nt status support = yes'\n");
++		torture_result(tctx, TORTURE_FAIL, "Could not set 'nt status support = no'\n");
++		goto fail;
++	}
++	if (!lpcfg_set_cmdline(tctx->lp_ctx, "client ntlmv2 auth", "no")) {
++		torture_result(tctx, TORTURE_FAIL, "Could not set 'client ntlmv2 auth = no'\n");
+ 		goto fail;
+ 	}
+ 
+@@ -1506,7 +1516,12 @@ static bool torture_samba3_errorpaths(st
+ 
+ 	if (!lpcfg_set_cmdline(tctx->lp_ctx, "nt status support",
+ 			    nt_status_support ? "yes":"no")) {
+-		torture_comment(tctx, "Could not reset 'nt status support = yes'");
++		torture_result(tctx, TORTURE_FAIL, "Could not reset 'nt status support'");
++		goto fail;
++	}
++	if (!lpcfg_set_cmdline(tctx->lp_ctx, "client ntlmv2 auth",
++			       client_ntlmv2_auth ? "yes":"no")) {
++		torture_result(tctx, TORTURE_FAIL, "Could not reset 'client ntlmv2 auth'");
+ 		goto fail;
+ 	}
+ 
+--- a/source3/libsmb/cliconnect.c
++++ b/source3/libsmb/cliconnect.c
+@@ -2077,6 +2077,17 @@ NTSTATUS cli_session_setup(struct cli_st
+ 		NTSTATUS status;
+ 
+ 		/* otherwise do a NT1 style session setup */
++		if (lp_client_ntlmv2_auth() && lp_client_use_spnego()) {
++			/*
++			 * Don't send an NTLMv2 response without NTLMSSP
++			 * if we want to use spnego support
++			 */
++			DEBUG(1, ("Server does not support EXTENDED_SECURITY "
++				  " but 'client use spnego = yes"
++				  " and 'client ntlmv2 auth = yes'\n"));
++			return NT_STATUS_ACCESS_DENIED;
++		}
++
+ 		status = cli_session_setup_nt1(cli, user, pass, passlen,
+ 					       ntpass, ntpasslen, workgroup);
+ 		if (!NT_STATUS_IS_OK(status)) {
+--- a/docs-xml/smbdotconf/protocol/clientusespnego.xml
++++ b/docs-xml/smbdotconf/protocol/clientusespnego.xml
+@@ -9,6 +9,11 @@
+     supporting servers (including WindowsXP, Windows2000 and Samba
+     3.0) to agree upon an authentication
+     mechanism.  This enables Kerberos authentication in particular.</para>
++
++    <para>When <smbconfoption name="client NTLMv2 auth"/> is also set to
++    <constant>yes</constant> extended security (SPNEGO) is required
++    in order to use NTLMv2 only within NTLMSSP. This behavior was
++    introduced with the patches for CVE-2016-2111.</para>
+ </description>
+ 
+ <value type="default">yes</value>
+--- a/docs-xml/smbdotconf/security/clientntlmv2auth.xml
++++ b/docs-xml/smbdotconf/security/clientntlmv2auth.xml
+@@ -28,6 +28,11 @@
+     NTLMv2 by default, and some sites (particularly those following
+     'best practice' security polices) only allow NTLMv2 responses, and
+     not the weaker LM or NTLM.</para>
++
++    <para>When <smbconfoption name="client use spnego"/> is also set to
++    <constant>yes</constant> extended security (SPNEGO) is required
++    in order to use NTLMv2 only within NTLMSSP. This behavior was
++    introduced with the patches for CVE-2016-2111.</para>
+ </description>
+ <value type="default">yes</value>
+ </samba:parameter>
+--- /dev/null
++++ b/docs-xml/smbdotconf/security/rawntlmv2auth.xml
+@@ -0,0 +1,19 @@
++<samba:parameter name="raw NTLMv2 auth"
++                 context="G"
++                 type="boolean"
++                 xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
++<description>
++    <para>This parameter determines whether or not <citerefentry><refentrytitle>smbd</refentrytitle>
++    <manvolnum>8</manvolnum></citerefentry> will allow SMB1 clients without
++    extended security (without SPNEGO) to use NTLMv2 authentication.</para>
++
++    <para>If this option, <command moreinfo="none">lanman auth</command>
++    and <command moreinfo="none">ntlm auth</command> are all disabled,
++    then only clients with SPNEGO support will be permitted.
++    That means NTLMv2 is only supported within NTLMSSP.</para>
++</description>
++
++<related>lanman auth</related>
++<related>ntlm auth</related>
++<value type="default">no</value>
++</samba:parameter>
+--- a/source3/include/proto.h
++++ b/source3/include/proto.h
+@@ -1489,6 +1489,7 @@ bool lp_map_untrusted_to_domain(void);
+ int lp_restrict_anonymous(void);
+ bool lp_lanman_auth(void);
+ bool lp_ntlm_auth(void);
++bool lp_raw_ntlmv2_auth(void);
+ bool lp_client_plaintext_auth(void);
+ bool lp_client_lanman_auth(void);
+ bool lp_client_ntlmv2_auth(void);
+--- a/source3/param/loadparm.c
++++ b/source3/param/loadparm.c
+@@ -336,6 +336,7 @@ struct global {
+ 	bool bAllowTrustedDomains;
+ 	bool bLanmanAuth;
+ 	bool bNTLMAuth;
++	bool bRawNTLMv2Auth;
+ 	bool bUseSpnego;
+ 	bool bClientLanManAuth;
+ 	bool bClientNTLMv2Auth;
+@@ -1383,6 +1384,15 @@ static struct parm_struct parm_table[] =
+ 		.flags		= FLAG_ADVANCED,
+ 	},
+ 	{
++		.label		= "raw NTLMv2 auth",
++		.type		= P_BOOL,
++		.p_class	= P_GLOBAL,
++		.ptr		= &Globals.bRawNTLMv2Auth,
++		.special	= NULL,
++		.enum_list	= NULL,
++		.flags		= FLAG_ADVANCED,
++	},
++	{
+ 		.label		= "client NTLMv2 auth",
+ 		.type		= P_BOOL,
+ 		.p_class	= P_GLOBAL,
+@@ -5337,6 +5347,7 @@ static void init_globals(bool reinit_glo
+ 	Globals.bClientPlaintextAuth = False;	/* Do NOT use a plaintext password even if is requested by the server */
+ 	Globals.bLanmanAuth = False;	/* Do NOT use the LanMan hash, even if it is supplied */
+ 	Globals.bNTLMAuth = True;	/* Do use NTLMv1 if it is supplied by the client (otherwise NTLMv2) */
++	Globals.bRawNTLMv2Auth = false;	/* Allow NTLMv2 without NTLMSSP */
+ 	Globals.bClientNTLMv2Auth = True; /* Client should always use use NTLMv2, as we can't tell that the server supports it, but most modern servers do */
+ 	/* Note, that we will also use NTLM2 session security (which is different), if it is available */
+ 
+@@ -5819,6 +5830,7 @@ FN_GLOBAL_BOOL(lp_map_untrusted_to_domai
+ FN_GLOBAL_INTEGER(lp_restrict_anonymous, &Globals.restrict_anonymous)
+ FN_GLOBAL_BOOL(lp_lanman_auth, &Globals.bLanmanAuth)
+ FN_GLOBAL_BOOL(lp_ntlm_auth, &Globals.bNTLMAuth)
++FN_GLOBAL_BOOL(lp_raw_ntlmv2_auth, &Globals.bRawNTLMv2Auth)
+ FN_GLOBAL_BOOL(lp_client_plaintext_auth, &Globals.bClientPlaintextAuth)
+ FN_GLOBAL_BOOL(lp_client_lanman_auth, &Globals.bClientLanManAuth)
+ FN_GLOBAL_BOOL(lp_client_ntlmv2_auth, &Globals.bClientNTLMv2Auth)
+--- a/source3/auth/auth_util.c
++++ b/source3/auth/auth_util.c
+@@ -30,6 +30,7 @@
+ #include "../lib/util/util_pw.h"
+ #include "lib/winbind_util.h"
+ #include "passdb.h"
++#include "../lib/tsocket/tsocket.h"
+ 
+ #undef DBGC_CLASS
+ #define DBGC_CLASS DBGC_AUTH
+@@ -367,6 +368,19 @@ NTSTATUS make_user_info_for_reply_enc(st
+                                       const char *client_domain, 
+                                       DATA_BLOB lm_resp, DATA_BLOB nt_resp)
+ {
++	bool allow_raw = lp_raw_ntlmv2_auth();
++
++	if (!allow_raw && nt_resp.length >= 48) {
++		/*
++		 * NTLMv2_RESPONSE has at least 48 bytes
++		 * and should only be supported via NTLMSSP.
++		 */
++		DEBUG(2,("Rejecting raw NTLMv2 authentication with "
++			 "user [%s\\%s]\n",
++			 client_domain, smb_name));
++		return NT_STATUS_INVALID_PARAMETER;
++	}
++
+ 	return make_user_info_map(user_info, smb_name, 
+ 				  client_domain, 
+ 				  get_remote_machine_name(), 
+--- a/selftest/target/Samba3.pm
++++ b/selftest/target/Samba3.pm
+@@ -127,6 +127,7 @@ sub setup_dc($$)
+ 	domain master = yes
+ 	domain logons = yes
+ 	lanman auth = yes
++	raw NTLMv2 auth = yes
+ ";
+ 
+ 	my $vars = $self->provision($path,
+@@ -230,6 +231,7 @@ sub setup_secserver($$$)
+ 	my $secserver_options = "
+ 	security = server
+         password server = $s3dcvars->{SERVER_IP}
++	client ntlmv2 auth = no
+ ";
+ 
+ 	my $ret = $self->provision($prefix,
