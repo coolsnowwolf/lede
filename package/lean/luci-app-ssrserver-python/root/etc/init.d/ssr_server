@@ -1,0 +1,95 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2015 OpenWrt-dist
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
+START=91
+
+CONFIG=ssr_server
+CONFIG_FILE=/var/etc/$CONFIG.json
+PID_FILE=/var/run/$CONFIG.pid
+LOG_FILE=/var/log/$CONFIG.log
+
+uci_get_by_type() {
+	local index=0
+	if [ -n $4 ]; then
+		index=$4
+	fi
+	local ret=$(uci get $CONFIG.@$1[$index].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+is_true() {
+	case $1 in
+		1|on|true|yes|enabled) echo 0;;
+		*) echo 1;;
+	esac
+}
+
+load_config() {
+	ENABLED=$(uci_get_by_type server enable)
+	return $(is_true $ENABLED)
+}
+
+start_server() {
+	mkdir -p  /var/etc
+	/usr/bin/python \
+	/usr/share/ssr/shadowsocks/server.py  \
+	-c $CONFIG_FILE  \
+	--pid-file $PID_FILE  \
+  --log-file $LOG_FILE  \
+  -d start  \
+	>/dev/null 2>&1 &
+}
+
+gen_config_file() {
+	cat <<-EOF >$CONFIG_FILE
+		{
+		    "server": "0.0.0.0",
+		    "server_port": $(uci_get_by_type server server_port),
+        "local_address":"127.0.0.1",
+        "local_port":1086,
+		    "password": "$(uci_get_by_type server password)",
+		    "timeout": $(uci_get_by_type server timeout 60),
+		    "method": "$(uci_get_by_type server encrypt_method)",
+		    "protocol": "$(uci_get_by_type server protocol)",
+		    "protocol_param": "$(uci_get_by_type server protocol_param)",
+		    "obfs": "$(uci_get_by_type server obfs)",
+		    "obfs_param": "$(uci_get_by_type server obfs_param)",
+		    "redirect": "$(uci_get_by_type server redirect)",
+		    "fast_open": "$(uci_get_by_type server fast_open)"
+		}
+EOF
+}
+
+
+add_rule() {
+    serverport=$(uci_get_by_type server server_port)
+    uci set firewall.ssrs.dest_port=$serverport && uci commit firewall &&  /etc/init.d/firewall restart
+}
+
+del_rule() {
+    serverport=$(uci_get_by_type server server_port)
+}
+
+start() {
+	! load_config && exit 0
+	gen_config_file "server"
+	start_server	
+	add_rule
+}
+
+stop() {
+  del_rule
+	/usr/bin/python \
+	/usr/share/ssr/shadowsocks/server.py  \
+	-c $CONFIG_FILE  \
+	--pid-file $PID_FILE  \
+  --log-file $LOG_FILE  \
+	-d stop  \
+	>/dev/null 2>&1 &
+	rm -f $LOG_FILE
+}
