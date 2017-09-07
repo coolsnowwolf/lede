@@ -160,6 +160,7 @@ end
 
 function mp.on_after_commit(self)
   os.execute("/etc/ipsecvpn restart >/dev/null 2>&1 &")
+  os.execute("/etc/init.d/firewall restart >/dev/null 2>&1 &")
 end
 
 
