@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=dnsmasq
-PKG_VERSION:=2.77
-PKG_RELEASE:=10
+PKG_VERSION:=2.76
+PKG_RELEASE:=12
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
-PKG_SOURCE_URL:=http://thekelleys.org.uk/dnsmasq/
-PKG_HASH:=6eac3b1c50ae25170e3ff8c96ddb55236cf45007633fdb8a35b1f3e02f5f8b8a
+PKG_SOURCE_URL:=http://thekelleys.org.uk/dnsmasq
+PKG_MD5SUM:=00f5ee66b4e4b7f14538bf62ae3c9461
 
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=COPYING
@@ -37,7 +37,6 @@ define Package/dnsmasq/Default
   CATEGORY:=Base system
   TITLE:=DNS and DHCP server
   URL:=http://www.thekelleys.org.uk/dnsmasq/
-  DEPENDS:=+libubus
   USERID:=dnsmasq=453:dnsmasq=453
 endef
 
@@ -49,14 +48,14 @@ endef
 define Package/dnsmasq-dhcpv6
 $(call Package/dnsmasq/Default)
   TITLE += (with DHCPv6 support)
-  DEPENDS+=@IPV6
+  DEPENDS:=@IPV6
   VARIANT:=dhcpv6
 endef
 
 define Package/dnsmasq-full
 $(call Package/dnsmasq/Default)
   TITLE += (with DNSSEC, DHCPv6, Auth DNS, IPset, Conntrack, NO_ID enabled by default)
-  DEPENDS+=+PACKAGE_dnsmasq_full_dnssec:libnettle \
+  DEPENDS:=+PACKAGE_dnsmasq_full_dnssec:libnettle \
 	+PACKAGE_dnsmasq_full_ipset:kmod-ipt-ipset \
 	+PACKAGE_dnsmasq_full_conntrack:libnetfilter-conntrack
   VARIANT:=full
@@ -89,22 +88,22 @@ define Package/dnsmasq-full/config
 	config PACKAGE_dnsmasq_full_dhcpv6
 		bool "Build with DHCPv6 support."
 		depends on IPV6
-		default y
+		default n
 	config PACKAGE_dnsmasq_full_dnssec
 		bool "Build with DNSSEC support."
-		default y
+		default n
 	config PACKAGE_dnsmasq_full_auth
 		bool "Build with the facility to act as an authoritative DNS server."
-		default y
+		default n
 	config PACKAGE_dnsmasq_full_ipset
 		bool "Build with IPset support."
 		default y
 	config PACKAGE_dnsmasq_full_conntrack
 		bool "Build with Conntrack support."
-		default y
+		default n
 	config PACKAGE_dnsmasq_full_noid
 		bool "Build with NO_ID. (hide *.bind pseudo domain)"
-		default y
+		default n
 	config PACKAGE_dnsmasq_full_broken_rtc
 		bool "Build with HAVE_BROKEN_RTC."
 		default n
@@ -151,17 +150,8 @@ define Package/dnsmasq/install
 	$(INSTALL_DATA) ./files/dnsmasq.conf $(1)/etc/dnsmasq.conf
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/dnsmasq.init $(1)/etc/init.d/dnsmasq
-	$(INSTALL_DIR) $(1)/etc/hotplug.d/dhcp
-	$(INSTALL_DIR) $(1)/etc/hotplug.d/neigh
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/ntp
-	$(INSTALL_DIR) $(1)/etc/hotplug.d/tftp
 	$(INSTALL_DATA) ./files/dnsmasqsec.hotplug $(1)/etc/hotplug.d/ntp/25-dnsmasqsec
-	$(INSTALL_DIR) $(1)/usr/share/dnsmasq
-	$(INSTALL_DATA) ./files/rfc6761.conf $(1)/usr/share/dnsmasq/
-	$(INSTALL_DIR) $(1)/usr/lib/dnsmasq
-	$(INSTALL_BIN) ./files/dhcp-script.sh $(1)/usr/lib/dnsmasq/dhcp-script.sh
-	$(INSTALL_DIR) $(1)/usr/share/acl.d
-	$(INSTALL_DATA) ./files/dnsmasq_acl.json $(1)/usr/share/acl.d/
 endef
 
 Package/dnsmasq-dhcpv6/install = $(Package/dnsmasq/install)
