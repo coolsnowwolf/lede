@@ -592,7 +592,11 @@ rtl_get_port_link(struct switch_dev *dev, int port, struct switch_port_link *lin
 	if (port >= RTL8306_NUM_PORTS)
 		return -EINVAL;
 
+	/* in case the link changes from down to up, the register is only updated on read */
 	link->link = rtl_get(dev, RTL_PORT_REG(port, LINK));
+	if (!link->link)
+		link->link = rtl_get(dev, RTL_PORT_REG(port, LINK));
+
 	if (!link->link)
 		return 0;
 

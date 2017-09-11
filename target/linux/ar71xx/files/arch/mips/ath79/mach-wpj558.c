@@ -50,7 +50,7 @@
 #define WPJ558_KEYS_POLL_INTERVAL	20	/* msecs */
 #define WPJ558_KEYS_DEBOUNCE_INTERVAL	(3 * WPJ558_KEYS_POLL_INTERVAL)
 
-#define WPJ558_MAC_OFFSET			0x1002
+#define WPJ558_MAC_OFFSET		0x10
 #define WPJ558_WMAC_CALDATA_OFFSET	0x1000
 
 static struct gpio_led wpj558_leds_gpio[] __initdata = {
@@ -135,6 +135,7 @@ static struct mdio_board_info wpj558_mdio0_info[] = {
 static void __init wpj558_setup(void)
 {
 	u8 *art = (u8 *) KSEG1ADDR(0x1fff0000);
+	u8 *mac = (u8 *) KSEG1ADDR(0x1f02e000);
 
 	ath79_register_m25p80(NULL);
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(wpj558_leds_gpio),
@@ -153,8 +154,7 @@ static void __init wpj558_setup(void)
 					ARRAY_SIZE(wpj558_mdio0_info));
 	ath79_register_mdio(0, 0x0);
 
-	ath79_init_mac(ath79_eth0_data.mac_addr, art + WPJ558_MAC_OFFSET, 0);
-	ath79_init_mac(ath79_eth1_data.mac_addr, art + WPJ558_MAC_OFFSET, 0);
+	ath79_init_mac(ath79_eth0_data.mac_addr, mac + WPJ558_MAC_OFFSET, 0);
 
 	ath79_setup_qca955x_eth_cfg(QCA955X_ETH_CFG_RGMII_EN);
 
@@ -164,14 +164,7 @@ static void __init wpj558_setup(void)
 	ath79_eth0_data.mii_bus_dev = &ath79_mdio0_device.dev;
 	ath79_eth0_pll_data.pll_1000 = 0x56000000;
 
-	/* GMAC1 is connected to the SGMII interface */
-	ath79_eth1_data.phy_if_mode = PHY_INTERFACE_MODE_SGMII;
-	ath79_eth1_data.speed = SPEED_1000;
-	ath79_eth1_data.duplex = DUPLEX_FULL;
-	ath79_eth1_pll_data.pll_1000 = 0x03000101;
-
 	ath79_register_eth(0);
-	ath79_register_eth(1);
 }
 
 MIPS_MACHINE(ATH79_MACH_WPJ558, "WPJ558", "Compex WPJ558", wpj558_setup);

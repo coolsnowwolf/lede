@@ -152,9 +152,6 @@ hostapd_common_add_bss_config() {
 	config_add_string auth_secret
 	config_add_int 'auth_port:port' 'port:port'
 
-	config_add_int eap_server
-	config_add_string ca_cert server_cert private_key eap_user_file
-
 	config_add_string acct_server
 	config_add_string acct_secret
 	config_add_int acct_port
@@ -293,47 +290,24 @@ hostapd_set_bss_options() {
 			json_get_vars \
 				auth_server auth_secret auth_port \
 				dae_client dae_secret dae_port \
-				ownip eap_server \
+				ownip \
 				eap_reauth_period
 
 			# radius can provide VLAN ID for clients
 			vlan_possible=1
-			set_default eap_server 1
-			append bss_conf "eap_server=$eap_server" "$N"
 
-			if [ "$eap_server" = "1" ]; then
-				json_get_vars \
-					server_cert private_key \
-					eap_user_file ca_cert
+			# legacy compatibility
+			[ -n "$auth_server" ] || json_get_var auth_server server
+			[ -n "$auth_port" ] || json_get_var auth_port port
+			[ -n "$auth_secret" ] || json_get_var auth_secret key
 
-				set_default private_key /etc/ssl/private/N3TW0RK-SAT02-key.pem
-				set_default server_cert /etc/ssl/private/N3TW0RK-SAT02-cert.pem
-				set_default eap_user_file /etc/config/eap_user_file
+			set_default auth_port 1812
+			set_default dae_port 3799
 
-				append bss_conf "ca_cert=$ca_cert" "$N"
-				append bss_conf "server_cert=$server_cert" "$N"
-				append bss_conf "private_key=$private_key" "$N"
-				append bss_conf "eap_user_file=$eap_user_file" "$N"
-			else
-				# legacy compatibility
-				[ -n "$auth_server" ] || json_get_var auth_server server
-				[ -n "$auth_port" ] || json_get_var auth_port port
-				[ -n "$auth_secret" ] || json_get_var auth_secret key
 
-				set_default auth_port 1812
-				set_default dae_port 3799
-
-				append bss_conf "auth_server_addr=$auth_server" "$N"
-				append bss_conf "auth_server_port=$auth_port" "$N"
-				append bss_conf "auth_server_shared_secret=$auth_secret" "$N"
-
-				[ -n "$acct_server" ] && {
-					append bss_conf "acct_server_addr=$acct_server" "$N"
-					append bss_conf "acct_server_port=$acct_port" "$N"
-					[ -n "$acct_secret" ] && \
-						append bss_conf "acct_server_shared_secret=$acct_secret" "$N"
-				}
-			fi
+			append bss_conf "auth_server_addr=$auth_server" "$N"
+			append bss_conf "auth_server_port=$auth_port" "$N"
+			append bss_conf "auth_server_shared_secret=$auth_secret" "$N"
 
 			[ -n "$eap_reauth_period" ] && append bss_conf "eap_reauth_period=$eap_reauth_period" "$N"
 
@@ -398,7 +372,7 @@ hostapd_set_bss_options() {
 	[ -n "$network_bridge" ] && append bss_conf "bridge=$network_bridge" "$N"
 	[ -n "$iapp_interface" ] && {
 		local ifname
-		network_get_device ifname "$iapp_interface" || ifname = "$iapp_interface"
+		network_get_device ifname "$iapp_interface" || ifname="$iapp_interface"
 		append bss_conf "iapp_interface=$ifname" "$N"
 	}
 

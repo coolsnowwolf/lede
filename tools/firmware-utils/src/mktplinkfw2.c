@@ -424,16 +424,14 @@ static int check_options(void)
 
 		board->hw_id = strtoul(opt_hw_id, NULL, 0);
 
-		if (opt_hw_rev)
-			board->hw_rev = strtoul(opt_hw_rev, NULL, 0);
-		else
-			board->hw_rev = 1;
-
-		if (opt_hw_ver_add)
-			board->hw_ver_add = strtoul(opt_hw_ver_add, NULL, 0);
-		else
-			board->hw_ver_add = 0;
+		board->hw_rev = 1;
+		board->hw_ver_add = 0;
 	}
+
+	if (opt_hw_rev)
+		board->hw_rev = strtoul(opt_hw_rev, NULL, 0);
+	if (opt_hw_ver_add)
+		board->hw_ver_add = strtoul(opt_hw_ver_add, NULL, 0);
 
 	layout = find_layout(layout_id);
 	if (layout == NULL) {
