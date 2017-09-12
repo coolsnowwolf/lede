@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=automount
 PKG_VERSION:=1
-PKG_RELEASE:=13
+PKG_RELEASE:=14
 PKG_ARCH:=all
 
 include $(INCLUDE_DIR)/package.mk
@@ -31,7 +31,7 @@ endef
 
 define Package/automount/install
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/block
-	$(INSTALL_BIN) ./files/10-automount $(1)/etc/hotplug.d/block/10-automount
+	$(INSTALL_BIN) ./files/15-automount $(1)/etc/hotplug.d/block/15-automount
 endef
 
 $(eval $(call BuildPackage,automount))
