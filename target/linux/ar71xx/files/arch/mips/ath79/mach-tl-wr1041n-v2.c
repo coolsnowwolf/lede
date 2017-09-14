@@ -74,6 +74,22 @@ static struct gpio_keys_button tl_wr1041nv2_gpio_keys[] __initdata = {
 	}
 };
 
+static const struct ar8327_led_info tl_wr1041n_leds_ar8327[] = {
+	AR8327_LED_INFO(PHY0_0, HW, "tp-link:green:wan"),
+	AR8327_LED_INFO(PHY1_0, HW, "tp-link:green:lan1"),
+	AR8327_LED_INFO(PHY2_0, HW, "tp-link:green:lan2"),
+	AR8327_LED_INFO(PHY3_0, HW, "tp-link:green:lan3"),
+	AR8327_LED_INFO(PHY4_0, HW, "tp-link:green:lan4"),
+};
+
+static struct ar8327_led_cfg wr1041n_v2_ar8327_led_cfg = {
+	.led_ctrl0 = 0xcf35cf35,	/* LED0: blink at 10/100/1000M */
+	.led_ctrl1 = 0xcf35cf35,	/* LED1: blink at 10/100/1000M: anyway, no LED1 on tl-wr1041n */
+	.led_ctrl2 = 0xcf35cf35,	/* LED2: blink at 10/100/1000M: anyway, no LED2 on tl-wr1041n */
+	.led_ctrl3 = 0x03ffff00,	/* Pattern enabled for LED 0-2 of port 1-3 */
+	.open_drain = true,
+};
+
 static struct ar8327_pad_cfg db120_ar8327_pad0_cfg = {
 	.mode = AR8327_PAD_MAC_RGMII,
 	.txclk_delay_en = true,
@@ -90,7 +106,10 @@ static struct ar8327_platform_data db120_ar8327_data = {
 		.duplex = 1,
 		.txpause = 1,
 		.rxpause = 1,
-	}
+	},
+	.led_cfg = &wr1041n_v2_ar8327_led_cfg,
+	.num_leds = ARRAY_SIZE(tl_wr1041n_leds_ar8327),
+	.leds = tl_wr1041n_leds_ar8327
 };
 
 static struct mdio_board_info db120_mdio0_info[] = {

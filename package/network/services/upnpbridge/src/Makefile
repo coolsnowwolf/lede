@@ -1,1 +1,0 @@
-upnpbridge: upnpbridge.c

@@ -10,7 +10,7 @@ end
 
 m = Map("sfe")
 m.title	= translate("Shortcut Forwarding Engine Acceleration Settings")
-m.description = translate("Add an opensource Qualcomm Shortcut FE driver (Fast Path)")
+m.description = translate("Opensource Qualcomm Shortcut FE driver (Fast Path)")
 
 s = m:section(TypedSection, "sfe", "")
 s.addremove = false

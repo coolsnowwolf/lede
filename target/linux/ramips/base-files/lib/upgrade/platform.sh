@@ -29,6 +29,7 @@ platform_check_image() {
 	awm002-evb-8M|\
 	bc2|\
 	broadway|\
+	c108|\
 	carambola|\
 	cf-wr800n|\
 	cs-qr10|\

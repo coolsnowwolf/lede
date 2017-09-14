@@ -85,6 +85,9 @@ ramips_board_detect() {
 	*"Broadway")
 		name="broadway"
 		;;
+	*"C108")
+		name="c108"
+		;;
 	*"C20i")
 		name="c20i"
 		;;

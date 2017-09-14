@@ -2,6 +2,7 @@
  *  Support for COMFAST boards:
  *  - CF-E316N v2 (AR9341)
  *  - CF-E320N v2 (QCA9531)
+ *  - CF-E355AC (QCA9531)
  *  - CF-E380AC v1/v2 (QCA9558)
  *  - CF-E520N/CF-E530N (QCA9531)
  *
@@ -126,6 +127,42 @@ static struct gpio_keys_button cf_e320n_v2_gpio_keys[] __initdata = {
 		.code		= KEY_RESTART,
 		.debounce_interval = CF_EXXXN_KEYS_DEBOUNCE_INTERVAL,
 		.gpio		= CF_E320N_V2_GPIO_BTN_RESET,
+		.active_low	= 1,
+	},
+};
+
+/* CF-E355AC */
+#define CF_E355AC_GPIO_LED_LAN		3
+#define CF_E355AC_GPIO_LED_WLAN2G	0
+#define CF_E355AC_GPIO_LED_WLAN5G	2
+
+#define CF_E355AC_GPIO_EXT_WDT		13
+
+#define CF_E355AC_GPIO_BTN_RESET	17
+
+static struct gpio_led cf_e355ac_leds_gpio[] __initdata = {
+	{
+		.name		= "cf-e355ac:green:lan",
+		.gpio		= CF_E355AC_GPIO_LED_LAN,
+		.active_low	= 0,
+	}, {
+		.name		= "cf-e355ac:blue:wlan2g",
+		.gpio		= CF_E355AC_GPIO_LED_WLAN2G,
+		.active_low	= 0,
+	}, {
+		.name		= "cf-e355ac:red:wlan5g",
+		.gpio		= CF_E355AC_GPIO_LED_WLAN5G,
+		.active_low	= 0,
+	},
+};
+
+static struct gpio_keys_button cf_e355ac_gpio_keys[] __initdata = {
+	{
+		.desc		= "Reset button",
+		.type		= EV_KEY,
+		.code		= KEY_RESTART,
+		.debounce_interval = CF_EXXXN_KEYS_DEBOUNCE_INTERVAL,
+		.gpio		= CF_E355AC_GPIO_BTN_RESET,
 		.active_low	= 1,
 	},
 };
@@ -354,6 +391,34 @@ static void __init cf_e320n_v2_setup(void)
 
 MIPS_MACHINE(ATH79_MACH_CF_E320N_V2, "CF-E320N-V2", "COMFAST CF-E320N v2",
 	     cf_e320n_v2_setup);
+
+static void __init cf_e355ac_setup(void)
+{
+	u8 *art = (u8 *) KSEG1ADDR(0x1f010000);
+
+	/* Disable JTAG, enabling GPIOs 0-3 */
+	ath79_gpio_function_setup(AR934X_GPIO_FUNC_JTAG_DISABLE, 0);
+
+	cf_exxxn_common_setup(0x10000, CF_E355AC_GPIO_EXT_WDT);
+
+	cf_exxxn_qca953x_eth_setup();
+
+	ath79_gpio_output_select(CF_E355AC_GPIO_LED_LAN, 0);
+	ath79_gpio_output_select(CF_E355AC_GPIO_LED_WLAN2G, 0);
+	ath79_gpio_output_select(CF_E355AC_GPIO_LED_WLAN5G, 0);
+
+	ap91_pci_init(art + 0x5000, NULL);
+
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(cf_e355ac_leds_gpio),
+				 cf_e355ac_leds_gpio);
+
+	ath79_register_gpio_keys_polled(1, CF_EXXXN_KEYS_POLL_INTERVAL,
+					ARRAY_SIZE(cf_e355ac_gpio_keys),
+					cf_e355ac_gpio_keys);
+}
+
+MIPS_MACHINE(ATH79_MACH_CF_E355AC, "CF-E355AC", "COMFAST CF-E355AC",
+	     cf_e355ac_setup);
 
 static void __init cf_e380ac_v1v2_common_setup(unsigned long art_ofs)
 {
