@@ -103,6 +103,9 @@ get_status_led() {
 	wrh-300cr)
 		status_led="$board:green:wps"
 		;;
+	c108)
+		status_led="$board:green:lan"
+		;;
 	cf-wr800n|\
 	psg1208)
 		status_led="$board:white:wps"

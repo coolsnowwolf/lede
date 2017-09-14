@@ -1009,18 +1009,3 @@ define KernelPackage/mdio/description
 endef
 
 $(eval $(call KernelPackage,mdio))
-
-define KernelPackage/macsec
-  SUBMENU:=$(NETWORK_SUPPORT_MENU)
-  TITLE:=IEEE 802.1AE MAC-level encryption (MAC)
-  DEPENDS:=+kmod-crypto-gcm @!LINUX_3_18 @!LINUX_4_4
-  KCONFIG:=CONFIG_MACSEC
-  FILES:=$(LINUX_DIR)/drivers/net/macsec.ko
-  AUTOLOAD:=$(call AutoLoad,13,macsec)
-endef
-
-define KernelPackage/macsec/description
- MACsec is an encryption standard for Ethernet.
-endef
-
-$(eval $(call KernelPackage,macsec))

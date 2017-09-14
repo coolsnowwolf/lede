@@ -10,7 +10,7 @@ OTHER_MENU:=Other modules
 define KernelPackage/pwm-mediatek
   SUBMENU:=Other modules
   TITLE:=MT7628 PWM
-  DEPENDS:=@(TARGET_ramips_mt7628||TARGET_ramips_mt7688)
+  DEPENDS:=@(TARGET_ramips_mt76x8)
   KCONFIG:= \
 	CONFIG_PWM=y \
 	CONFIG_PWM_MEDIATEK \
@@ -29,7 +29,7 @@ $(eval $(call KernelPackage,pwm-mediatek))
 define KernelPackage/sdhci-mt7620
   SUBMENU:=Other modules
   TITLE:=MT7620 SDCI
-  DEPENDS:=@(TARGET_ramips_mt7620||TARGET_ramips_mt7628||TARGET_ramips_mt7621||TARGET_ramips_mt7688) +kmod-mmc
+  DEPENDS:=@(TARGET_ramips_mt7620||TARGET_ramips_mt76x8||TARGET_ramips_mt7621) +kmod-mmc
   KCONFIG:= \
 	CONFIG_MTK_MMC \
 	CONFIG_MTK_AEE_KDUMP=n \
@@ -48,7 +48,7 @@ define KernelPackage/i2c-ralink
   $(call i2c_defaults,$(I2C_RALINK_MODULES),59)
   TITLE:=Ralink I2C Controller
   DEPENDS:=kmod-i2c-core @TARGET_ramips \
-	@!(TARGET_ramips_mt7621||TARGET_ramips_mt7628||TARGET_ramips_mt7688)
+	@!(TARGET_ramips_mt7621||TARGET_ramips_mt76x8)
 endef
 
 define KernelPackage/i2c-ralink/description
@@ -65,7 +65,7 @@ define KernelPackage/i2c-mt7628
   $(call i2c_defaults,$(I2C_MT7621_MODULES),59)
   TITLE:=MT7628/88 I2C Controller
   DEPENDS:=kmod-i2c-core \
-	@(TARGET_ramips_mt7628||TARGET_ramips_mt7688)
+	@(TARGET_ramips_mt76x8)
 endef
 
 define KernelPackage/i2c-mt7628/description

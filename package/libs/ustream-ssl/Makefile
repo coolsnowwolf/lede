@@ -68,5 +68,5 @@ Package/libustream-cyassl/install = $(Package/libustream/default/install)
 Package/libustream-mbedtls/install = $(Package/libustream/default/install)
 
 $(eval $(call BuildPackage,libustream-mbedtls))
-#$(eval $(call BuildPackage,libustream-cyassl))
-#$(eval $(call BuildPackage,libustream-openssl))
+$(eval $(call BuildPackage,libustream-cyassl))
+$(eval $(call BuildPackage,libustream-openssl))

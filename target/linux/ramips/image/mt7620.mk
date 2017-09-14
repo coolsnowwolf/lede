@@ -42,15 +42,17 @@ define Device/ArcherC20i
 endef
 TARGET_DEVICES += ArcherC20i
 
-define Device/ArcherC50
+define Device/ArcherC50v1
   $(Device/Archer)
   DTS := ArcherC50
   SUPPORTED_DEVICES := c50
   TPLINK_BOARD_ID := ArcherC50
-  IMAGES += factory.bin
-  DEVICE_TITLE := TP-Link ArcherC50
+  IMAGES += factory-us.bin factory-eu.bin
+  IMAGE/factory-us.bin := tplink-v2-image -w 0
+  IMAGE/factory-eu.bin := tplink-v2-image -w 2
+  DEVICE_TITLE := TP-Link ArcherC50v1
 endef
-TARGET_DEVICES += ArcherC50
+TARGET_DEVICES += ArcherC50v1
 
 define Device/ArcherMR200
   $(Device/Archer)
@@ -61,6 +63,14 @@ define Device/ArcherMR200
   DEVICE_TITLE := TP-Link ArcherMR200
 endef
 TARGET_DEVICES += ArcherMR200
+
+define Device/c108
+  DTS := C108
+  IMAGE_SIZE := 16777216
+  DEVICE_TITLE := HNET C108
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-sdhci-mt7620
+endef
+TARGET_DEVICES += c108
 
 define Device/cf-wr800n
   DTS := CF-WR800N
