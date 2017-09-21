@@ -30,8 +30,8 @@ define Build/Compile
 endef
 
 define Package/automount/install
-	$(INSTALL_DIR) $(1)/etc/hotplug.d/block
-	$(INSTALL_BIN) ./files/15-automount $(1)/etc/hotplug.d/block/15-automount
+	$(INSTALL_DIR) $(1)/etc
+	$(INSTALL_BIN) ./files/10-automount $(1)/etc/10-automount
 endef
 
 $(eval $(call BuildPackage,automount))
