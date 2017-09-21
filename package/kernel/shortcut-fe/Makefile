@@ -117,5 +117,5 @@ endef
 $(eval $(call KernelPackage,shortcut-fe))
 $(eval $(call KernelPackage,shortcut-fe-cm))
 $(eval $(call KernelPackage,fast-classifier))
-$(eval $(call BuildPackage,fast-classifier-example))
+#$(eval $(call BuildPackage,fast-classifier-example))
 
