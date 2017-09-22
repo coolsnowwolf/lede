@@ -99,7 +99,6 @@ if pid == "" then
   function start.write(self, section)
         luci.util.exec("uci set openvpn.myvpn.enabled=='1' &&  uci commit openvpn")
         message = luci.util.exec("/etc/init.d/openvpn start 2>&1")
-        luci.util.exec("/etc/init.d/openvpn enable")
         luci.util.exec("sleep 2")
         luci.http.redirect(
                 luci.dispatcher.build_url("admin", "vpn", "openvpn-server") .. "?message=" .. message
@@ -111,7 +110,6 @@ else
   function stop.write(self, section)
         luci.util.exec("uci set openvpn.myvpn.enabled=='0' &&  uci commit openvpn")
         luci.util.exec("/etc/init.d/openvpn stop")
-        luci.util.exec("/etc/init.d/openvpn disable")
         luci.util.exec("sleep 2")
         luci.http.redirect(
                 luci.dispatcher.build_url("admin", "vpn", "openvpn-server")
