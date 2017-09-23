@@ -11,7 +11,7 @@ include $(INCLUDE_DIR)/kernel.mk
 PKG_NAME:=mac80211
 
 PKG_VERSION:=2017-01-31
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources
 PKG_BACKPORT_VERSION:=
 PKG_HASH:=75e6d39e34cf156212a2509172a4a62b673b69eb4a1d9aaa565f7fa719fa2317
@@ -793,7 +793,7 @@ endef
 
 define KernelPackage/iwlwifi
   $(call KernelPackage/mac80211/Default)
-  DEPENDS:= +kmod-mac80211 @PCI_SUPPORT +@DRIVER_11N_SUPPORT +iwlwifi-firmware @!LINUX_3_18
+  DEPENDS:= +kmod-mac80211 @PCI_SUPPORT +@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT @!LINUX_3_18
   TITLE:=Intel AGN Wireless support
   FILES:= \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/intel/iwlwifi/iwlwifi.ko \
@@ -1576,7 +1576,7 @@ config-$(call config_package,brcmfmac) += BRCMFMAC
 config-$(CONFIG_BRCMFMAC_SDIO) += BRCMFMAC_SDIO
 config-$(CONFIG_BRCMFMAC_USB) += BRCMFMAC_USB
 config-$(CONFIG_BRCMFMAC_PCIE) += BRCMFMAC_PCIE
-config-$(CONFIG_PACKAGE_BRCM80211_DEBUG) += BRCMDBG BRCM_TRACING
+config-$(CONFIG_PACKAGE_BRCM80211_DEBUG) += BRCMDBG
 
 config-$(call config_package,mac80211-hwsim) += MAC80211_HWSIM
 config-$(call config_package,mt7601u) += MT7601U

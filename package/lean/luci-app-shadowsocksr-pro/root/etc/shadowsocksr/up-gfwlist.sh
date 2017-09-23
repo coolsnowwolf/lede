@@ -17,5 +17,5 @@ fi
 rm -f /tmp/gfwlist.txt
 rm -f /tmp/ol-gfw.txt
 
-/etc/init.d/ssrpro.sh restart
+/etc/init.d/ssrpro restart
 
