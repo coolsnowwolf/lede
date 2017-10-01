@@ -250,7 +250,7 @@ endef
 
 define Device/phicomm-k3
   DEVICE_TITLE := PHICOMM K3
-  DEVICE_PACKAGES := $(BRCMFMAC_4366C0) $(USB3_PACKAGES)
+  DEVICE_PACKAGES := $(BRCMFMAC_4366C0) $(USB3_PACKAGES) + k3wifi + k3screenctrl
   IMAGES := trx
 endef
 TARGET_DEVICES += phicomm-k3
@@ -315,7 +315,7 @@ define Device/smartrg-sr400ac
   IMAGES := trx
   IMAGE/trx := append-rootfs | trx-serial
 endef
-TARGET_DEVICES += smartrg-sr400ac
+# TARGET_DEVICES += smartrg-sr400ac
 
 define Device/tenda-ac9
   DEVICE_TITLE := Tenda AC9
@@ -323,7 +323,7 @@ define Device/tenda-ac9
   IMAGES := trx
   IMAGE/trx := append-rootfs | trx-serial
 endef
-TARGET_DEVICES += tenda-ac9
+# TARGET_DEVICES += tenda-ac9
 
 define Device/tplink-archer-c5-v2
   DEVICE_TITLE := TP-LINK Archer C5 V2
@@ -332,7 +332,7 @@ define Device/tplink-archer-c5-v2
   IMAGE/bin := append-rootfs | bcm53xx-tplink-safeloader
   TPLINK_BOARD := ARCHER-C5-V2
 endef
-TARGET_DEVICES += tplink-archer-c5-v2
+# TARGET_DEVICES += tplink-archer-c5-v2
 
 define Device/tplink-archer-c9-v1
   DEVICE_TITLE := TP-LINK Archer C9 V1
@@ -341,6 +341,6 @@ define Device/tplink-archer-c9-v1
   IMAGE/bin := append-rootfs | bcm53xx-tplink-safeloader
   TPLINK_BOARD := ARCHERC9
 endef
-TARGET_DEVICES += tplink-archer-c9-v1
+# TARGET_DEVICES += tplink-archer-c9-v1
 
 $(eval $(call BuildImage))
