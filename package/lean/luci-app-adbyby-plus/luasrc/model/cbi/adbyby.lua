@@ -70,7 +70,8 @@ o.description = translate(string.format("%s<br /><br />", Status))
 o.description = translate(string.format("<strong>Lazy Rule：</strong>%s <strong>&nbsp;&nbsp;Video Rule：</strong>%s<br /><strong>Third Party Subscription Rule：</strong>%d lines&nbsp;&nbsp;<strong>User-defined Rule：</strong>%d lines", DL, DV, math.abs(NR-NU), NR))
 o.inputstyle = "reload"
 o.write = function()
-	SYS.call("/etc/init.d/adbyby restart")
+	SYS.call("nohup sh /usr/share/adbyby/adupdate.sh > /tmp/adupdate.log 2>&1 &")
+	SYS.call("sleep 4")
 	HTTP.redirect(DISP.build_url("admin", "services", "adbyby"))
 end
 
@@ -82,13 +83,17 @@ o.default = 0
 o.rmempty = false
 o.description = translate(string.format("<strong><font color=blue>Adblock Plus Host List：</font></strong> %s Lines<br /><br />", ND))
 
-
 updatead = s:taboption("advanced", Button, "updatead", translate("Manually force update<br />Adblock Plus Host List"), translate("Note: It needs to download and convert the rules. The background process may takes 60-120 seconds to run. <br / > After completed it would automatically refresh, please do not duplicate click!"))
 updatead.inputtitle = translate("Manually force update")
 updatead.inputstyle = "apply"
 updatead.write = function()
 	SYS.call("nohup sh /usr/share/adbyby/adblock.sh > /tmp/adupdate.log 2>&1 &")
 end
+
+o = s:taboption("advanced", Flag, "update_source")
+o.title = translate("Update adbyby rules form official website first")
+o.default = 1
+o.rmempty = false
 
 o = s:taboption("advanced", Flag, "block_ios")
 o.title = translate("Block Apple iOS OTA update")
