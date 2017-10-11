@@ -122,6 +122,8 @@ protocol:value("auth_chain_a")
 protocol:value("auth_chain_b")
 protocol:value("auth_chain_c")
 protocol:value("auth_chain_d")
+protocol:value("auth_chain_e")
+protocol:value("auth_chain_f")
 
 obfs = s:taboption("main",ListValue, "obfs", translate("Obfs Param"))
 obfs:value("plain")
@@ -142,8 +144,6 @@ obfs_param = s:taboption("main",Value, "obfs_param", translate("Confusing plug-i
 obfs_param.rmempty = true
 obfs_param.datatype = "host"
 obfs_param:depends("plugin_param", "1")
-
-
 
 s:tab("list",  translate("User-defined GFW-List"))
 gfwlist = s:taboption("list", TextValue, "conf")
