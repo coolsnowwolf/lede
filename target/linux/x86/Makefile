@@ -20,7 +20,7 @@ KERNELNAME:=bzImage
 include $(INCLUDE_DIR)/target.mk
 
 DEFAULT_PACKAGES += partx-utils mkf2fs e2fsprogs wpad kmod-usb-hid kmod-usb-net-asix kmod-usb-net-asix-ax88179 \
-kmod-ath5k kmod-ath9k kmod-ath10k kmod-rt2800-usb kmod-e1000e kmod-igb kmod-igbvf kmod-ixgbe kmod-vmxnet3 htop lm-sensors
+kmod-ath5k kmod-ath9k kmod-ath10k kmod-rt2800-usb kmod-e1000e kmod-igb kmod-igbvf kmod-ixgbe kmod-vmxnet3 htop lm-sensors autocore
 
 $(eval $(call BuildTarget))
 
