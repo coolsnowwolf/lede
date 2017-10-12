@@ -148,7 +148,7 @@ static struct spi_gpio_platform_data tl_wr942n_v1_spi_data = {
 	.num_chipselect	= 1,
 };
 
-static u8 tl_wr942n_v1_ssr_initdata[] __initdata = {
+static u8 tl_wr942n_v1_ssr_initdata[] = {
 	BIT(TL_WR942N_V1_SSR_BIT_7) |
 	BIT(TL_WR942N_V1_SSR_BIT_6) |
 	BIT(TL_WR942N_V1_SSR_BIT_5) |

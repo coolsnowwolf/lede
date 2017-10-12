@@ -23,6 +23,7 @@
 #include <linux/io.h>
 #include <linux/gpio.h>
 #include <linux/slab.h>
+#include <linux/version.h>
 
 #include <asm/mach-ath79/ath79.h>
 #include <asm/mach-ath79/rb4xx_cpld.h>
@@ -41,6 +42,7 @@ struct rb4xx_nand_info {
 	struct mtd_info		mtd;
 };
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 /*
  * We need to use the OLD Yaffs-1 OOB layout, otherwise the RB bootloader
  * will not be able to find the kernel that we load.
@@ -51,6 +53,56 @@ static struct nand_ecclayout rb4xx_nand_ecclayout = {
 	.oobavail	= 9,
 	.oobfree	= { { 0, 4 }, { 6, 2 }, { 11, 2 }, { 4, 1 } }
 };
+
+#else
+
+static int rb4xx_ooblayout_ecc(struct mtd_info *mtd, int section,
+			       struct mtd_oob_region *oobregion)
+{
+	switch (section) {
+	case 0:
+		oobregion->offset = 8;
+		oobregion->length = 3;
+		return 0;
+	case 1:
+		oobregion->offset = 13;
+		oobregion->length = 3;
+		return 0;
+	default:
+		return -ERANGE;
+	}
+}
+
+static int rb4xx_ooblayout_free(struct mtd_info *mtd, int section,
+				struct mtd_oob_region *oobregion)
+{
+	switch (section) {
+	case 0:
+		oobregion->offset = 0;
+		oobregion->length = 4;
+		return 0;
+	case 1:
+		oobregion->offset = 4;
+		oobregion->length = 1;
+		return 0;
+	case 2:
+		oobregion->offset = 6;
+		oobregion->length = 2;
+		return 0;
+	case 3:
+		oobregion->offset = 11;
+		oobregion->length = 2;
+		return 0;
+	default:
+		return -ERANGE;
+	}
+}
+
+static const struct mtd_ooblayout_ops rb4xx_nand_ecclayout_ops = {
+	.ecc = rb4xx_ooblayout_ecc,
+	.free = rb4xx_ooblayout_free,
+};
+#endif /* < 4.6 */
 
 static struct mtd_partition rb4xx_nand_partitions[] = {
 	{
@@ -229,7 +281,11 @@ static int rb4xx_nand_probe(struct platform_device *pdev)
 	}
 
 	if (info->mtd.writesize == 512)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 		info->chip.ecc.layout = &rb4xx_nand_ecclayout;
+#else
+		mtd_set_ooblayout(&info->mtd, &rb4xx_nand_ecclayout_ops);
+#endif
 
 	ret = nand_scan_tail(&info->mtd);
 	if (ret) {

@@ -74,7 +74,7 @@ static struct spi_gpio_platform_data archer_c25_v1_spi_data = {
 	.num_chipselect	= 1,
 };
 
-static u8 archer_c25_v1_ssr_initdata[] __initdata = {
+static u8 archer_c25_v1_ssr_initdata[] = {
 	BIT(ARCHER_C25_V1_SSR_BIT_7) |
 	BIT(ARCHER_C25_V1_SSR_BIT_6) |
 	BIT(ARCHER_C25_V1_SSR_BIT_5) |

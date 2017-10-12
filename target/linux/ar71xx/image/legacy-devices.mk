@@ -132,24 +132,6 @@ define LegacyDevice/DB120
 endef
 LEGACY_DEVICES += DB120
 
-define LegacyDevice/EWDORINAP
-  DEVICE_TITLE := Embedded Wireless Dorin Platform (4MB flash)
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport kmod-usb-storage
-endef
-LEGACY_DEVICES += EWDORINAP
-
-define LegacyDevice/EWDORINRT
-  DEVICE_TITLE := Embedded Wireless Dorin Router
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport kmod-usb-storage
-endef
-LEGACY_DEVICES += EWDORINRT
-
-define LegacyDevice/EWDORIN16M
-  DEVICE_TITLE := Embedded Wireless Dorin Platform (16MB flash)
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport kmod-usb-storage
-endef
-LEGACY_DEVICES += EWDORIN16M
-
 define LegacyDevice/HORNETUBx2
   DEVICE_TITLE := ALFA Network Hornet-UB-x2 board (16MB flash, 64MB ram)
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
