@@ -15,6 +15,7 @@
 
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
+#include <linux/version.h>
 
 #define TPLINK_NUM_PARTS	5
 #define TPLINK_HEADER_V1	0x01000000
@@ -109,7 +110,11 @@ static int tplink_check_rootfs_magic(struct mtd_info *mtd, size_t offset)
 }
 
 static int tplink_parse_partitions_offset(struct mtd_info *master,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,5,0)
 				   struct mtd_partition **pparts,
+#else
+				   const struct mtd_partition **pparts,
+#endif
 				   struct mtd_part_parser_data *data,
 				   size_t offset)
 {
@@ -181,7 +186,11 @@ err:
 }
 
 static int tplink_parse_partitions(struct mtd_info *master,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,5,0)
 				   struct mtd_partition **pparts,
+#else
+				   const struct mtd_partition **pparts,
+#endif
 				   struct mtd_part_parser_data *data)
 {
 	return tplink_parse_partitions_offset(master, pparts, data,
@@ -189,7 +198,11 @@ static int tplink_parse_partitions(struct mtd_info *master,
 }
 
 static int tplink_parse_64k_partitions(struct mtd_info *master,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,5,0)
 				   struct mtd_partition **pparts,
+#else
+				   const struct mtd_partition **pparts,
+#endif
 				   struct mtd_part_parser_data *data)
 {
 	return tplink_parse_partitions_offset(master, pparts, data,

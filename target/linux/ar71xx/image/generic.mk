@@ -229,6 +229,26 @@ define Device/dragino2
 endef
 TARGET_DEVICES += dragino2
 
+define Device/ew-dorin
+  DEVICE_TITLE := Embedded Wireless Dorin Platform
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb-chipidea 
+  BOARDNAME = EW-DORIN
+  CONSOLE := ttyATH0,115200
+  IMAGE_SIZE = 16000k
+  MTDPARTS = spi0.0:256k(u-boot)ro,64k(u-boot-env),16000k(firmware),64k(art)ro
+endef
+TARGET_DEVICES += ew-dorin
+
+define Device/ew-dorin-router
+  DEVICE_TITLE := Embedded Wireless Dorin Router Platform
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb-chipidea 
+  BOARDNAME = EW-DORIN-ROUTER
+  CONSOLE := ttyATH0,115200
+  IMAGE_SIZE = 16000k
+  MTDPARTS = spi0.0:256k(u-boot)ro,64k(u-boot-env),16000k(firmware),64k(art)ro
+endef
+TARGET_DEVICES += ew-dorin-router
+
 define Device/weio
   DEVICE_TITLE := WeIO
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2

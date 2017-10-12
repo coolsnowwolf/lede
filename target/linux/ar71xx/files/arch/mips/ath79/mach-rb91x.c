@@ -140,7 +140,7 @@ static struct rb91x_nand_platform_data rb711gr100_nand_data __initdata = {
 	.gpio_nle = RB91X_GPIO_NLE,
 };
 
-static u8 rb711gr100_ssr_initdata[] __initdata = {
+static u8 rb711gr100_ssr_initdata[] = {
 	BIT(RB91X_SSR_BIT_PCIE_POWER) |
 	BIT(RB91X_SSR_BIT_USB_POWER) |
 	BIT(RB91X_SSR_BIT_5)

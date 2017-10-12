@@ -76,7 +76,7 @@ define Device/tplink-8m
   IMAGE_SIZE := 7936k
 endef
 
-define Device/tplink-8mlzma
+define Device/tplink-4mlzma
   $(Device/tplink)
   TPLINK_FLASHLAYOUT := 4Mlzma
   IMAGE_SIZE := 3904k
@@ -486,6 +486,7 @@ endef
 define Device/tl-wa850re-v1
   $(Device/tplink-8mlzma)
   DEVICE_TITLE := TP-LINK TL-WA850RE v1
+  DEVICE_PACKAGES := rssileds
   BOARDNAME := TL-WA850RE
   DEVICE_PROFILE := TLWA850
   TPLINK_HWID := 0x08500001

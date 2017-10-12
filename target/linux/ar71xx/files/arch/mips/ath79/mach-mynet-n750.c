@@ -98,7 +98,7 @@ static struct gpio_keys_button mynet_n750_gpio_keys[] __initdata = {
 	},
 };
 
-static const struct ar8327_led_info mynet_n750_leds_ar8327[] __initconst = {
+static const struct ar8327_led_info mynet_n750_leds_ar8327[] = {
 	AR8327_LED_INFO(PHY0_0, HW, "wd:green:lan1"),
 	AR8327_LED_INFO(PHY1_0, HW, "wd:green:lan2"),
 	AR8327_LED_INFO(PHY2_0, HW, "wd:green:lan3"),
