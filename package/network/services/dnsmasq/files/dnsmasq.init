@@ -23,22 +23,22 @@ xappend() {
 }
 
 hex_to_hostid() {
-        local var="$1"
-        local hex="${2#0x}"     # strip optional "0x" prefix
+	local var="$1"
+	local hex="${2#0x}" # strip optional "0x" prefix
 
-        if [ -n "${hex//[0-9a-fA-F]/}" ]; then
-                # is invalid hex literal
-                return 1
-        fi
+	if [ -n "${hex//[0-9a-fA-F]/}" ]; then
+		# is invalid hex literal
+		return 1
+	fi
 
-        # convert into host id
-        export "$var=$(
-                printf "%0x:%0x"  \
-                        $(((0x$hex >> 16) % 65536)) \
-                        $(( 0x$hex        % 256))
-        )"
+	# convert into host id
+	export "$var=$(
+		printf "%0x:%0x" \
+		$(((0x$hex >> 16) % 65536)) \
+		$(( 0x$hex        % 65536))
+		)"
 
-        return 0
+	return 0
 }
 
 dhcp_calc() {
@@ -278,6 +278,7 @@ dhcp_host_add() {
 	config_get tag "$cfg" tag
 
 	if [ "$DHCPv6CAPABLE" -eq 1 ]; then
+		config_get duid "$cfg" duid
 		config_get hostid "$cfg" hostid
 		if [ -n "$hostid" ]; then
 			hex_to_hostid hostid "$hostid"
@@ -289,7 +290,7 @@ dhcp_host_add() {
 
 	config_get leasetime "$cfg" leasetime
 
-	xappend "--dhcp-host=$macs${networkid:+,net:$networkid}${broadcast:+,set:needs-broadcast}${tag:+,set:$tag}${ip:+,$ip${hostid:+,[::$hostid]}}${name:+,$name}${leasetime:+,$leasetime}"
+	xappend "--dhcp-host=$macs${duid:+,id:$duid}${networkid:+,net:$networkid}${broadcast:+,set:needs-broadcast}${tag:+,set:$tag}${ip:+,$ip${hostid:+,[::$hostid]}}${name:+,$name}${leasetime:+,$leasetime}"
 }
 
 dhcp_tag_add() {
@@ -391,6 +392,14 @@ dhcp_add() {
 	dhcp_option_add "$cfg" "$networkid"
 }
 
+dhcp_option_append() {
+	local option="$1"
+	local networkid="$2"
+	local force="$3"
+
+	xappend "--dhcp-option${force:+-force}=${networkid:+$networkid,}$option"
+}
+
 dhcp_option_add() {
 	local cfg="$1"
 	local networkid="$2"
@@ -398,11 +407,21 @@ dhcp_option_add() {
 
 	[ "$force" = "0" ] && force=
 
-	config_get dhcp_option "$cfg" dhcp_option
-	for o in $dhcp_option; do
-		xappend "--dhcp-option${force:+-force}=${networkid:+$networkid,}$o"
-	done
+	local list_len
+	config_get list_len "$cfg" dhcp_option_LENGTH
 
+	if [ -n "$list_len" ]; then
+		config_list_foreach "$cfg" dhcp_option dhcp_option_append "$networkid" "$force"
+	else
+		config_get dhcp_option "$cfg" dhcp_option
+
+		[ -n "$dhcp_option" ] && echo "Warning: the 'option dhcp_option' syntax is deprecated, use 'list dhcp_option'" >&2
+
+		local option
+		for option in $dhcp_option; do
+			dhcp_option_append "$option" "$networkid" "$force"
+		done
+	fi
 }
 
 dhcp_domain_add() {
@@ -507,7 +526,8 @@ dhcp_relay_add() {
 	if [ -z "$interface" ]; then
 		xappend "--dhcp-relay=$local_addr,$server_addr"
 	else
-		xappend "--dhcp-relay=$local_addr,$server_addr,$interface"
+		network_get_device ifname "$interface" || return
+		xappend "--dhcp-relay=$local_addr,$server_addr,$ifname"
 	fi
 }
 
@@ -561,7 +581,7 @@ dnsmasq_start()
 	append_bool "$cfg" boguspriv "--bogus-priv"
 	append_bool "$cfg" expandhosts "--expand-hosts"
 	config_get tftp_root "$cfg" "tftp_root"
-	[ -d "$tftp_root" ] && append_bool "$cfg" enable_tftp "--enable-tftp"
+	[ -n "$tftp_root" ] && mkdir -p "$tftp_root" && append_bool "$cfg" enable_tftp "--enable-tftp"
 	append_bool "$cfg" tftp_no_fail "--tftp-no-fail"
 	append_bool "$cfg" nonwildcard "--bind-dynamic"
 	append_bool "$cfg" fqdn "--dhcp-fqdn"
@@ -573,6 +593,7 @@ dnsmasq_start()
 	append_bool "$cfg" allservers "--all-servers"
 	append_bool "$cfg" noping "--no-ping"
 
+	append_parm "$cfg" logfacility "--log-facility"
 	append_parm "$cfg" dhcpscript "--dhcp-script"
 	append_parm "$cfg" cachesize "--cache-size"
 	append_parm "$cfg" dnsforwardmax "--dns-forward-max"
@@ -670,7 +691,7 @@ dnsmasq_start()
 
 	xappend "--dhcp-broadcast=tag:needs-broadcast"
 
-	xappend "--addn-hosts=$HOSTFILE"
+	xappend "--addn-hosts=$(dirname $HOSTFILE)"
 
 	config_get dnsmasqconfdir "$cfg" confdir "/tmp/dnsmasq.d"
 	[ ! -d "$dnsmasqconfdir" ] && mkdir -p $dnsmasqconfdir
