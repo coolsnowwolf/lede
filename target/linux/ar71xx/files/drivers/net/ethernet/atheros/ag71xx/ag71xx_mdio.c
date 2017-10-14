@@ -254,7 +254,11 @@ static int ag71xx_mdio_probe(struct platform_device *pdev)
 	am->mii_bus->read = ag71xx_mdio_read;
 	am->mii_bus->write = ag71xx_mdio_write;
 	am->mii_bus->reset = ag71xx_mdio_reset;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,5,0)
 	am->mii_bus->irq = am->mii_irq;
+#else
+	memcpy(am->mii_bus->irq, am->mii_irq, sizeof(am->mii_bus->irq));
+#endif
 	am->mii_bus->priv = am;
 	am->mii_bus->parent = &pdev->dev;
 	snprintf(am->mii_bus->id, MII_BUS_ID_SIZE, "%s", dev_name(&pdev->dev));

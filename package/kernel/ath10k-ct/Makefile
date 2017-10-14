@@ -8,12 +8,17 @@ PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/greearb/ath10k-ct.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2017-05-16
-PKG_SOURCE_VERSION:=c048ef0c3eedf99b41bc12b3f4e47ef3d9fab484
-PKG_MIRROR_HASH:=7936293962a10a0da7469759623013fc151019a6a584cfc6416bc0b605bd74d7
+PKG_SOURCE_DATE:=2017-06-13
+PKG_SOURCE_VERSION:=bded1823912549017d819d1796273b3134c3de20
+PKG_MIRROR_HASH:=616174650e12a82edb6b6bd18ac186e2c6a48fdad0082df9d2011ab20940814b
 
 PKG_MAINTAINER:=Ben Greear <greearb@candelatech.com>
 PKG_BUILD_PARALLEL:=1
+
+# Build the 4.13 ath10k-ct driver version.  Other options are "-4.9", or
+# leave un-defined for 4.7 kernel.  Probably this should match as closely as
+# possible to whatever mac80211 backports version is being used.
+CT_KVER="-4.13"
 
 STAMP_CONFIGURED_DEPENDS := $(STAGING_DIR)/usr/include/mac80211-backport/backport/autoconf.h
 
@@ -25,8 +30,8 @@ define KernelPackage/ath10k-ct
   TITLE:=ath10k-ct driver optimized for CT ath10k firmware
   DEPENDS:=+kmod-mac80211 +kmod-ath +@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT @PCI_SUPPORT +@KERNEL_RELAY +kmod-hwmon-core
   FILES:=\
-	$(PKG_BUILD_DIR)/ath10k/ath10k_pci.ko \
-	$(PKG_BUILD_DIR)/ath10k/ath10k_core.ko
+	$(PKG_BUILD_DIR)/ath10k$(CT_KVER)/ath10k_pci.ko \
+	$(PKG_BUILD_DIR)/ath10k$(CT_KVER)/ath10k_core.ko
   AUTOLOAD:=$(call AutoLoad,50,mac80211 ath ath10k_core ath10k_pci)
 endef
 
@@ -75,7 +80,7 @@ define Build/Compile
 	+$(MAKE) $(CT_MAKEDEFS) $(PKG_JOBS) -C "$(LINUX_DIR)" \
 		ARCH="$(LINUX_KARCH)" \
 		CROSS_COMPILE="$(TARGET_CROSS)" \
-		SUBDIRS="$(PKG_BUILD_DIR)/ath10k" \
+		SUBDIRS="$(PKG_BUILD_DIR)/ath10k$(CT_KVER)" \
 		NOSTDINC_FLAGS="$(NOSTDINC_FLAGS)" \
 		modules
 endef

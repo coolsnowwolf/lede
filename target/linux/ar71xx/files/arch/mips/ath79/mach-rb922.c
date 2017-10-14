@@ -20,6 +20,7 @@
 #include <linux/routerboot.h>
 #include <linux/gpio.h>
 #include <linux/platform_data/phy-at803x.h>
+#include <linux/version.h>
 
 #include <asm/prom.h>
 #include <asm/mach-ath79/ath79.h>
@@ -132,6 +133,7 @@ static void rb922gs_nand_select_chip(int chip_no)
 	ndelay(500);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 static struct nand_ecclayout rb922gs_nand_ecclayout = {
 	.eccbytes	= 6,
 	.eccpos		= { 8, 9, 10, 13, 14, 15 },
@@ -139,16 +141,72 @@ static struct nand_ecclayout rb922gs_nand_ecclayout = {
 	.oobfree	= { { 0, 4 }, { 6, 2 }, { 11, 2 }, { 4, 1 } }
 };
 
+#else
+
+static int rb922gs_ooblayout_ecc(struct mtd_info *mtd, int section,
+				 struct mtd_oob_region *oobregion)
+{
+	switch (section) {
+	case 0:
+		oobregion->offset = 8;
+		oobregion->length = 3;
+		return 0;
+	case 1:
+		oobregion->offset = 13;
+		oobregion->length = 3;
+		return 0;
+	default:
+		return -ERANGE;
+	}
+}
+
+static int rb922gs_ooblayout_free(struct mtd_info *mtd, int section,
+				  struct mtd_oob_region *oobregion)
+{
+	switch (section) {
+	case 0:
+		oobregion->offset = 0;
+		oobregion->length = 4;
+		return 0;
+	case 1:
+		oobregion->offset = 4;
+		oobregion->length = 1;
+		return 0;
+	case 2:
+		oobregion->offset = 6;
+		oobregion->length = 2;
+		return 0;
+	case 3:
+		oobregion->offset = 11;
+		oobregion->length = 2;
+		return 0;
+	default:
+		return -ERANGE;
+	}
+}
+
+static const struct mtd_ooblayout_ops rb922gs_nand_ecclayout_ops = {
+	.ecc = rb922gs_ooblayout_ecc,
+	.free = rb922gs_ooblayout_free,
+};
+#endif /* < 4.6 */
+
 static int rb922gs_nand_scan_fixup(struct mtd_info *mtd)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 	struct nand_chip *chip = mtd->priv;
+#endif
 
 	if (mtd->writesize == 512) {
 		/*
 		 * Use the OLD Yaffs-1 OOB layout, otherwise RouterBoot
 		 * will not be able to find the kernel that we load.
 		 */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 		chip->ecc.layout = &rb922gs_nand_ecclayout;
+#else
+		mtd_set_ooblayout(mtd, &rb922gs_nand_ecclayout_ops);
+#endif
 	}
 
 	return 0;

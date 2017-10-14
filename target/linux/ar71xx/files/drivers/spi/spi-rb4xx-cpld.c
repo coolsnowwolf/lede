@@ -21,6 +21,7 @@
 #include <linux/spi/spi.h>
 #include <linux/gpio.h>
 #include <linux/slab.h>
+#include <linux/version.h>
 
 #include <asm/mach-ath79/rb4xx_cpld.h>
 
@@ -246,7 +247,11 @@ static int rb4xx_cpld_gpio_init(struct rb4xx_cpld *cpld, unsigned int base)
 	cpld->chip.base = base;
 	cpld->chip.ngpio = CPLD_NUM_GPIOS;
 	cpld->chip.can_sleep = 1;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,5,0)
 	cpld->chip.dev = &cpld->spi->dev;
+#else
+	cpld->chip.parent = &cpld->spi->dev;
+#endif
 	cpld->chip.owner = THIS_MODULE;
 
 	err = gpiochip_add(&cpld->chip);

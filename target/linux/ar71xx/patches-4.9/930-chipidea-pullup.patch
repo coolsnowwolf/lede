@@ -1,0 +1,72 @@
+--- a/drivers/usb/chipidea/ci.h
++++ b/drivers/usb/chipidea/ci.h
+@@ -199,6 +199,7 @@ struct hw_bank {
+  * @in_lpm: if the core in low power mode
+  * @wakeup_int: if wakeup interrupt occur
+  * @rev: The revision number for controller
++ * @dp_always_pullup: keep dp always pullup at device mode
+  */
+ struct ci_hdrc {
+ 	struct device			*dev;
+@@ -248,6 +249,7 @@ struct ci_hdrc {
+ 	bool				in_lpm;
+ 	bool				wakeup_int;
+ 	enum ci_revision		rev;
++	bool				dp_always_pullup;
+ };
+ 
+ static inline struct ci_role_driver *ci_role(struct ci_hdrc *ci)
+--- a/drivers/usb/chipidea/core.c
++++ b/drivers/usb/chipidea/core.c
+@@ -839,7 +839,7 @@ static inline void ci_role_destroy(struc
+ {
+ 	ci_hdrc_gadget_destroy(ci);
+ 	ci_hdrc_host_destroy(ci);
+-	if (ci->is_otg)
++	if (!ci->dp_always_pullup && ci->roles[CI_ROLE_GADGET])
+ 		ci_hdrc_otg_destroy(ci);
+ }
+ 
+@@ -890,6 +890,9 @@ static int ci_hdrc_probe(struct platform
+ 	ci->supports_runtime_pm = !!(ci->platdata->flags &
+ 		CI_HDRC_SUPPORTS_RUNTIME_PM);
+ 
++	ci->dp_always_pullup = !!(ci->platdata->flags &
++					 CI_HDRC_DP_ALWAYS_PULLUP);
++
+ 	ret = hw_device_init(ci, base);
+ 	if (ret < 0) {
+ 		dev_err(dev, "can't initialize hardware\n");
+@@ -955,7 +958,7 @@ static int ci_hdrc_probe(struct platform
+ 		goto deinit_phy;
+ 	}
+ 
+-	if (ci->is_otg && ci->roles[CI_ROLE_GADGET]) {
++	if (!ci->dp_always_pullup && ci->roles[CI_ROLE_GADGET]) {
+ 		ret = ci_hdrc_otg_init(ci);
+ 		if (ret) {
+ 			dev_err(dev, "init otg fails, ret = %d\n", ret);
+--- a/drivers/usb/chipidea/otg.c
++++ b/drivers/usb/chipidea/otg.c
+@@ -131,8 +131,10 @@ enum ci_role ci_otg_role(struct ci_hdrc
+ 
+ void ci_handle_vbus_change(struct ci_hdrc *ci)
+ {
+-	if (!ci->is_otg)
++	if (ci->dp_always_pullup) {
++		usb_gadget_vbus_connect(&ci->gadget);
+ 		return;
++	}
+ 
+ 	if (hw_read_otgsc(ci, OTGSC_BSV) && !ci->vbus_active)
+ 		usb_gadget_vbus_connect(&ci->gadget);
+--- a/include/linux/usb/chipidea.h
++++ b/include/linux/usb/chipidea.h
+@@ -57,6 +57,7 @@ struct ci_hdrc_platform_data {
+ #define CI_HDRC_OVERRIDE_AHB_BURST	BIT(9)
+ #define CI_HDRC_OVERRIDE_TX_BURST	BIT(10)
+ #define CI_HDRC_OVERRIDE_RX_BURST	BIT(11)
++#define CI_HDRC_DP_ALWAYS_PULLUP BIT(12)
+ 	enum usb_dr_mode	dr_mode;
+ #define CI_HDRC_CONTROLLER_RESET_EVENT		0
+ #define CI_HDRC_CONTROLLER_STOPPED_EVENT	1
