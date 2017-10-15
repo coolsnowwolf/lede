@@ -46,10 +46,11 @@ define Package/pdnsd-alt/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/pdnsd-ctl/pdnsd-ctl $(1)/usr/bin/
 
-	#$(INSTALL_DIR) $(1)/etc/init.d
-	#$(INSTALL_BIN) ./files/pdnsd.init $(1)/etc/init.d/pdnsd
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/pdnsd.init $(1)/etc/init.d/pdnsd
 	$(INSTALL_DIR) $(1)/etc
-	$(INSTALL_CONF) $(PKG_BUILD_DIR)/doc/pdnsd.conf $(1)/etc/
+	#$(INSTALL_CONF) $(PKG_BUILD_DIR)/doc/pdnsd.conf $(1)/etc/
+	$(INSTALL_CONF) ./files/pdnsd.conf $(1)/etc/
 endef
 
 $(eval $(call BuildPackage,pdnsd-alt))
