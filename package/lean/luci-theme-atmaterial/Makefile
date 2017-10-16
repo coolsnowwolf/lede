@@ -8,6 +8,8 @@ include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=Advanced Tomato Material
 LUCI_DEPENDS:=
+PKG_VERSION:=1.0
+PKG_RELEASE:=3
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
