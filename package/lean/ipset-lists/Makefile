@@ -6,8 +6,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ipset-lists
-PKG_VERSION:=20161112
-PKG_RELEASE:=
+PKG_VERSION:=20171019
+PKG_RELEASE:=2
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
@@ -17,7 +17,7 @@ define Package/ipset-lists
   CATEGORY:=Network
   TITLE:=Service for IPSET address tables
   MAINTAINER:=Justin Liu <rssnsj@gmail.com>
-  DEPENDS:=+ipset +luci
+  DEPENDS:=+ipset
 endef
 
 define Package/ipset-lists/conffiles
