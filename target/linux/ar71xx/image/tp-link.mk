@@ -200,7 +200,20 @@ define Device/tl-wdr7500-v3
   DEVICE_PROFILE := ARCHERC7
   TPLINK_HWID := 0x75000003
 endef
-TARGET_DEVICES += archer-c5-v1 archer-c7-v1 archer-c7-v2 archer-c7-v2-il tl-wdr7500-v3
+
+define Device/archer-c7-v4
+  $(Device/archer-cxx)
+  DEVICE_TITLE := TP-LINK Archer C7 v4
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca988x
+  BOARDNAME := ARCHER-C7-V4
+  TPLINK_BOARD_ID := ARCHER-C7-V4
+  IMAGE_SIZE := 15104k
+  LOADER_TYPE := elf
+  MTDPARTS := spi0.0:128k(factory-uboot)ro,128k(u-boot)ro,1536k(kernel),13568k(rootfs),960k(config)ro,64k(art)ro,15104k@0x40000(firmware)
+  SUPPORTED_DEVICES := archer-c7-v4
+endef
+
+TARGET_DEVICES += archer-c5-v1 archer-c7-v1 archer-c7-v2 archer-c7-v2-il tl-wdr7500-v3 archer-c7-v4
 
 define Device/cpe510-520-v1
   DEVICE_TITLE := TP-LINK CPE510/520 v1

@@ -39,6 +39,7 @@ obj-$(CONFIG_ATH79_ROUTERBOOT)		+= routerboot.o
 # Machines
 #
 obj-$(CONFIG_ATH79_MACH_A60)			+= mach-a60.o
+obj-$(CONFIG_ATH79_MACH_WI2A_AC200I)		+= mach-wi2a-ac200i.o
 obj-$(CONFIG_ATH79_MACH_ALFA_AP120C)		+= mach-alfa-ap120c.o
 obj-$(CONFIG_ATH79_MACH_ALFA_AP96)		+= mach-alfa-ap96.o
 obj-$(CONFIG_ATH79_MACH_ALFA_NX)		+= mach-alfa-nx.o
@@ -62,6 +63,7 @@ obj-$(CONFIG_ATH79_MACH_ARCHER_C58_V1)		+= mach-archer-c59-v1.o
 obj-$(CONFIG_ATH79_MACH_ARCHER_C59_V1)		+= mach-archer-c59-v1.o
 obj-$(CONFIG_ATH79_MACH_ARCHER_C60_V1)		+= mach-archer-c60-v1.o
 obj-$(CONFIG_ATH79_MACH_ARCHER_C7)		+= mach-archer-c7.o
+obj-$(CONFIG_ATH79_MACH_ARCHER_C7)		+= mach-archer-c7-v4.o
 obj-$(CONFIG_ATH79_MACH_ARDUINO_YUN)		+= mach-arduino-yun.o
 obj-$(CONFIG_ATH79_MACH_AW_NR580)		+= mach-aw-nr580.o
 obj-$(CONFIG_ATH79_MACH_BHR_4GRV2)		+= mach-bhr-4grv2.o

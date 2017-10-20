@@ -149,6 +149,7 @@ hostapd_common_add_bss_config() {
 	config_add_int \
 		wep_rekey eap_reauth_period \
 		wpa_group_rekey wpa_pair_rekey wpa_master_rekey
+	config_add_boolean wpa_disable_eapol_key_retries
 
 	config_add_boolean rsn_preauth auth_cache
 	config_add_int ieee80211w
@@ -214,6 +215,7 @@ hostapd_set_bss_options() {
 
 	json_get_vars \
 		wep_rekey wpa_group_rekey wpa_pair_rekey wpa_master_rekey \
+		wpa_disable_eapol_key_retries \
 		maxassoc max_inactivity disassoc_low_ack isolate auth_cache \
 		wps_pushbutton wps_label ext_registrar wps_pbc_in_m1 wps_ap_setup_locked \
 		wps_independent wps_device_type wps_device_name wps_manufacturer wps_pin \
@@ -229,6 +231,7 @@ hostapd_set_bss_options() {
 	set_default hidden 0
 	set_default wmm 1
 	set_default uapsd 1
+	set_default wpa_disable_eapol_key_retries 0
 	set_default eapol_version 0
 	set_default acct_port 1813
 
@@ -415,6 +418,8 @@ hostapd_set_bss_options() {
 				append bss_conf "r1kh=${kh//,/ }" "$N"
 			done
 		fi
+
+		append bss_conf "wpa_disable_eapol_key_retries=$wpa_disable_eapol_key_retries" "$N"
 
 		hostapd_append_wpa_key_mgmt
 		[ -n "$wpa_key_mgmt" ] && append bss_conf "wpa_key_mgmt=$wpa_key_mgmt" "$N"

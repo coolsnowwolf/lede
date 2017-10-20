@@ -34,8 +34,8 @@ define Device/domywifi-dw33d
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-usb-ledtrig-usbport kmod-ath10k ath10k-firmware-qca988x
   BOARDNAME := DW33D
   IMAGE_SIZE := 16000k
-  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,14528k(rootfs),1472k(kernel),64k(art)ro,16000k@0x50000(firmware);ar934x-nfc:96m(rootfs_data),32m(backup)ro
-  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to 14528k | append-kernel | check-size $$$$(IMAGE_SIZE)
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,13952k(rootfs),2048k(kernel),64k(art)ro,16000k@0x50000(firmware);ar934x-nfc:96m(rootfs_data),32m(backup)ro
+  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to 13952k | append-kernel | check-size $$$$(IMAGE_SIZE)
 endef
 TARGET_DEVICES += domywifi-dw33d
 
@@ -83,6 +83,21 @@ define Device/rambutan
   IMAGE/factory.ubi := append-ubi
 endef
 TARGET_DEVICES += rambutan
+
+define Device/wi2a-ac200i
+  SUPPORTED_DEVICES = $(1)
+  DEVICE_TITLE := Nokia WI2A-AC200i
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ath9k kmod-ath10k ath10k-firmware-qca988x
+  BOARDNAME := WI2A-AC200i
+  BLOCKSIZE := 64k
+  KERNEL_SIZE := 3648k
+  IMAGE_SIZE := 32m
+  IMAGES := sysupgrade.tar
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(envFacA)ro,64k(envFacB)ro,64k(ART)ro,128k(u-boot-env)
+  KERNEL := kernel-bin | patch-cmdline | lzma | uImage lzma
+  IMAGE/sysupgrade.tar := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += wi2a-ac200i
 
 define Device/z1
   DEVICE_TITLE := Meraki Z1

@@ -10,8 +10,8 @@ define KernelPackage/rtc-sunxi
     DEPENDS:=@TARGET_sunxi
     $(call AddDepends/rtc)
     KCONFIG:= \
-	CONFIG_RTC_CLASS=y \
-	CONFIG_RTC_DRV_SUNXI=m
+	CONFIG_RTC_DRV_SUNXI \
+	CONFIG_RTC_CLASS=y
     FILES:=$(LINUX_DIR)/drivers/rtc/rtc-sunxi.ko
     AUTOLOAD:=$(call AutoLoad,50,rtc-sunxi)
 endef
