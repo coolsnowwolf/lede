@@ -7,6 +7,7 @@
  *  - MikroTik RouterBOARD 952Ui-5ac2nD
  *  - MikroTik RouterBOARD 962UiGS-5HacT2HnT
  *  - MikroTik RouterBOARD 750UP r2
+ *  - MikroTik RouterBOARD 750P-PBr2
  *  - MikroTik RouterBOARD 750 r2
  *  - MikroTik RouterBOARD LHG 5nD
  *
@@ -763,7 +764,8 @@ static void __init rb952_setup(void)
  * Init the hEX (PoE) lite hardware (QCA953x).
  * The 750UP r2 (hEX PoE lite) is nearly identical to the hAP, only without
  * WLAN. The 750 r2 (hEX lite) is nearly identical to the 750UP r2, only
- * without USB and POE. It shares the same bootloader board identifier.
+ * without USB and POE. The 750P Pbr2 (Powerbox) is nearly identical to hEX PoE
+ * lite, only without USB. It shares the same bootloader board identifier.
  */
 static void __init rb750upr2_setup(void)
 {
@@ -775,6 +777,10 @@ static void __init rb750upr2_setup(void)
 	/* differentiate the hEX lite from the hEX PoE lite */
 	if (strstr(mips_get_machine_name(), "750UP r2"))
 		flags |= RBSPI_HAS_USB | RBSPI_HAS_POE;
+
+	/* differentiate the Powerbox from the hEX lite */
+	else if (strstr(mips_get_machine_name(), "750P r2"))
+		flags |= RBSPI_HAS_POE;
 
 	rbspi_952_750r2_setup(flags);
 }

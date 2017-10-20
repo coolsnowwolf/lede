@@ -58,6 +58,7 @@ get_status_led() {
 	archer-c58-v1|\
 	archer-c59-v1|\
 	archer-c60-v1|\
+	archer-c7-v4|\
 	fritz300e|\
 	gl-usb150|\
 	mr12|\
@@ -316,6 +317,7 @@ get_status_led() {
 		status_led="rb750:green:act"
 		;;
 	rb-750-r2|\
+	rb-750p-pbr2|\
 	rb-750up-r2|\
 	rb-911g-2hpnd|\
 	rb-911g-5hpacd|\
@@ -458,6 +460,9 @@ get_status_led() {
 	airgatewaypro)
 		status_led="ubnt:white:status"
 		;;
+	wi2a-ac200i)
+		status_led="nokia:green:ctrl"
+		;;
 	whr-g301n|\
 	whr-hp-g300n|\
 	whr-hp-gn|\
@@ -527,6 +532,9 @@ set_state() {
 		qihoo-c301)
 			local n=$(fw_printenv activeregion | cut -d = -f 2)
 			fw_setenv "image${n}trynum" 0
+			;;
+		wi2a-ac200i)
+			fw_setenv PKRstCnt 0
 			;;
 		esac
 		;;
