@@ -16,10 +16,7 @@ platform_do_upgrade() {
 	armada-385-linksys-caiman|armada-385-linksys-cobra|armada-385-linksys-rango|armada-385-linksys-shelby|armada-xp-linksys-mamba)
 		platform_do_upgrade_linksys "$ARGV"
 		;;
-	armada-388-clearfog-pro)
-		platform_do_upgrade_clearfog "$ARGV"
-		;;
-	armada-388-clearfog-base)
+	armada-388-clearfog-base|armada-388-clearfog-pro)
 		platform_do_upgrade_clearfog "$ARGV"
 		;;
 	*)
@@ -32,7 +29,7 @@ platform_copy_config() {
 	armada-385-linksys-caiman|armada-385-linksys-cobra|armada-385-linksys-rango|armada-385-linksys-shelby|armada-xp-linksys-mamba)
 		platform_copy_config_linksys
 		;;
-	armada-388-clearfog)
+	armada-388-clearfog-base|armada-388-clearfog-pro)
 		platform_copy_config_clearfog "$ARGV"
 		;;
 	esac
