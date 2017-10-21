@@ -21,8 +21,6 @@ include $(INCLUDE_DIR)/package.mk
 
 define Package/he-6in4
 	SECTION:=ipv6
-	CATEGORY:=Gmod
-	SUBMENU:=Network
 	TITLE:=Dynamic Update he.net of ip
 	PKGARCH:=all
 	DEPENDS:=+luci-proto-ipv6 +6in4 +curl

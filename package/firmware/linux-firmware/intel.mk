@@ -21,12 +21,12 @@ define Package/iwl4965-firmware/install
 endef
 $(eval $(call BuildPackage,iwl4965-firmware))
 
-Package/iwlwifi-firmware-iwl1000 = $(call Package/firmware-default,Intel Centrino Wireless-N 100 firmware)
-define Package/iwlwifi-firmware-iwl1000/install
+Package/iwlwifi-firmware-iwl100 = $(call Package/firmware-default,Intel Centrino Wireless-N 100 firmware)
+define Package/iwlwifi-firmware-iwl100/install
 	$(INSTALL_DIR) $(1)/lib/firmware
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-100-5.ucode $(1)/lib/firmware
 endef
-$(eval $(call BuildPackage,iwlwifi-firmware-iwl1000))
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl100))
 
 Package/iwlwifi-firmware-iwl1000 = $(call Package/firmware-default,Intel Centrino Wireless-N 1000 firmware)
 define Package/iwlwifi-firmware-iwl1000/install
