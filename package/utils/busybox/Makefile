@@ -47,6 +47,7 @@ define Package/busybox
   URL:=http://busybox.net/
   DEPENDS:=+BUSYBOX_USE_LIBRPC:librpc +BUSYBOX_CONFIG_PAM:libpam +BUSYBOX_CONFIG_NTPD:jsonfilter
   MENU:=1
+  PROVIDES:=ip
   ALTERNATIVES:=\
     $(call BUSYBOX_IF_ENABLED,KILL,	100:/bin/kill:/bin/busybox) \
     $(call BUSYBOX_IF_ENABLED,PS,	100:/bin/ps:/bin/busybox) \
