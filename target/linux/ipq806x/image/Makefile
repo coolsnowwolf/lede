@@ -252,6 +252,24 @@ define Device/RT-AC58U
 	DEVICE_PACKAGES := kmod-usb-phy-qcom-ipq4019 ipq-wifi-rt-ac58u
 endef
 
+define Device/RT-ACRH17
+	$(call Device/FitImageLzma)
+	DEVICE_DTS := qcom-ipq4019-rt-acrh17
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DTB_SIZE := 65536
+	BOARD_NAME := rt-acrh17
+	KERNEL_LOADADDR := 0x80208000
+	DEVICE_TITLE := Asus RT-ACRH17
+	IMAGE_SIZE := 20439364
+	FILESYSTEMS := squashfs
+	UIMAGE_NAME:=$(shell echo -e '\03\01\01\01RT-ACRH17')
+	IMAGES = sysupgrade.tar flash-factory.trx
+	IMAGE/flash-factory.trx := copy-file $(KDIR)/tmp/$$(KERNEL_INITRAMFS_IMAGE) | uImage none
+	IMAGE/sysupgrade.tar := sysupgrade-tar | append-metadata
+	DEVICE_PACKAGES := kmod-usb-phy-qcom-ipq4019 ipq-wifi-rt-ac58u ath10k-firmware-qca9984
+endef
+
 define Device/NBG6817
 	DEVICE_DTS := qcom-ipq8065-nbg6817
 	KERNEL_SIZE := 4096k
@@ -293,7 +311,7 @@ define Device/AP-DK04.1-C1
 endef
 
 TARGET_DEVICES += AP148 AP148-legacy C2600 D7800 DB149 EA8500 FRITZ4040 R7500 \
-		  R7500v2 R7800 RT-AC58U NBG6817 VR2600v AP-DK04.1-C1
+		  R7500v2 R7800 RT-AC58U RT-ACRH17 NBG6817 VR2600v AP-DK04.1-C1
 
 .NOTPARALLEL:
 
