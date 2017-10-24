@@ -21,6 +21,7 @@ include $(INCLUDE_DIR)/host-build.mk
 define Host/Compile
 	$(MAKE) -C $(HOST_BUILD_DIR)/squashfs-tools \
 		CC="$(HOSTCC)" \
+		CFLAGS="$(HOST_CFLAGS) -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -I." \
 		CXX="$(CXX)" \
 		LZMAPATH=$(STAGING_DIR_HOST)/lib \
 		mksquashfs-lzma unsquashfs-lzma 
