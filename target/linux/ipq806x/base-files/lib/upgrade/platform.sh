@@ -8,6 +8,7 @@ platform_check_image() {
 	local board=$(board_name)
 
 	case "$board" in
+	rt-acrh17 |\
 	rt-ac58u)
 		CI_UBIPART="UBI_DEV"
 		local ubidev=$(nand_find_ubi $CI_UBIPART)
