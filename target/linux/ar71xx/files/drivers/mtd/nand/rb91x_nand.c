@@ -40,7 +40,9 @@
 
 struct rb91x_nand_info {
 	struct nand_chip chip;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 	struct mtd_info mtd;
+#endif
 	struct device *dev;
 
 	int gpio_nce;
@@ -54,8 +56,24 @@ struct rb91x_nand_info {
 
 static inline struct rb91x_nand_info *mtd_to_rbinfo(struct mtd_info *mtd)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 	return container_of(mtd, struct rb91x_nand_info, mtd);
+#else
+	struct nand_chip *chip = mtd_to_nand(mtd);
+
+	return container_of(chip, struct rb91x_nand_info, chip);
+#endif
 }
+
+static struct mtd_info *rbinfo_to_mtd(struct rb91x_nand_info *nfc)
+{
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
+	return &nfc->mtd;
+#else
+	return nand_to_mtd(&nfc->chip);
+#endif
+}
+
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 /*
@@ -340,6 +358,7 @@ static int rb91x_nand_probe(struct platform_device *pdev)
 {
 	struct rb91x_nand_info	*rbni;
 	struct rb91x_nand_platform_data *pdata;
+	struct mtd_info *mtd;
 	int ret;
 
 	pr_info(DRV_DESC "\n");
@@ -362,8 +381,12 @@ static int rb91x_nand_probe(struct platform_device *pdev)
 	rbni->gpio_nle = pdata->gpio_nle;
 
 	rbni->chip.priv	= &rbni;
-	rbni->mtd.priv	= &rbni->chip;
-	rbni->mtd.owner	= THIS_MODULE;
+	mtd = rbinfo_to_mtd(rbni);
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
+	mtd->priv	= &rbni->chip;
+#endif
+	mtd->owner	= THIS_MODULE;
 
 	rbni->chip.cmd_ctrl	= rb91x_nand_cmd_ctrl;
 	rbni->chip.dev_ready	= rb91x_nand_dev_ready;
@@ -373,6 +396,9 @@ static int rb91x_nand_probe(struct platform_device *pdev)
 
 	rbni->chip.chip_delay	= 25;
 	rbni->chip.ecc.mode	= NAND_ECC_SOFT;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
+	rbni->chip.ecc.algo = NAND_ECC_HAMMING;
+#endif
 	rbni->chip.options = NAND_NO_SUBPAGE_WRITE;
 
 	platform_set_drvdata(pdev, rbni);
@@ -381,22 +407,22 @@ static int rb91x_nand_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = nand_scan_ident(&rbni->mtd, 1, NULL);
+	ret = nand_scan_ident(mtd, 1, NULL);
 	if (ret)
 		return ret;
 
-	if (rbni->mtd.writesize == 512)
+	if (mtd->writesize == 512)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 		rbni->chip.ecc.layout = &rb91x_nand_ecclayout;
 #else
-		mtd_set_ooblayout(&rbni->mtd, &rb91x_nand_ecclayout_ops);
+		mtd_set_ooblayout(mtd, &rb91x_nand_ecclayout_ops);
 #endif
 
-	ret = nand_scan_tail(&rbni->mtd);
+	ret = nand_scan_tail(mtd);
 	if (ret)
 		return ret;
 
-	ret = mtd_device_register(&rbni->mtd, rb91x_nand_partitions,
+	ret = mtd_device_register(mtd, rb91x_nand_partitions,
 				 ARRAY_SIZE(rb91x_nand_partitions));
 	if (ret)
 		goto err_release_nand;
@@ -404,7 +430,7 @@ static int rb91x_nand_probe(struct platform_device *pdev)
 	return 0;
 
 err_release_nand:
-	nand_release(&rbni->mtd);
+	nand_release(mtd);
 	return ret;
 }
 
@@ -412,7 +438,7 @@ static int rb91x_nand_remove(struct platform_device *pdev)
 {
 	struct rb91x_nand_info *info = platform_get_drvdata(pdev);
 
-	nand_release(&info->mtd);
+	nand_release(rbinfo_to_mtd(info));
 
 	return 0;
 }
