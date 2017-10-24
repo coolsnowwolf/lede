@@ -37,11 +37,13 @@ CFLAGS		= -D__KERNEL__ -Wall -Wstrict-prototypes -Wno-trigraphs -Os \
 		  -mabi=32 -march=mips32r2 \
 		  -Wa,-32 -Wa,-march=mips32r2 -Wa,-mips32r2 -Wa,--trap
 CFLAGS		+= -D_LZMA_PROB32
+CFLAGS		+= -flto
 
 ASFLAGS		= $(CFLAGS) -D__ASSEMBLY__
 
-LDFLAGS		= -static --gc-sections -no-warn-mismatch
-LDFLAGS		+= -e startup -T loader.lds -Ttext $(LZMA_TEXT_START)
+LDFLAGS		= -static -Wl,--gc-sections -Wl,-no-warn-mismatch
+LDFLAGS		+= -Wl,-e,startup -T loader.lds -Wl,-Ttext,$(LZMA_TEXT_START)
+LDFLAGS		+= -flto -fwhole-program
 
 O_FORMAT 	= $(shell $(OBJDUMP) -i | head -2 | grep elf32)
 
@@ -86,7 +88,7 @@ data.o: $(LOADER_DATA)
 	$(LD) -r -b binary --oformat $(O_FORMAT) -T lzma-data.lds -o $@ $<
 
 loader: $(OBJECTS)
-	$(LD) $(LDFLAGS) -o $@ $(OBJECTS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJECTS)
 
 loader.bin: loader
 	$(OBJCOPY) $(BIN_FLAGS) $< $@
