@@ -256,4 +256,3 @@ define Device/ubnt-unifi-outdoor-plus
   BOARDNAME := UBNT-UOP
   DEVICE_PROFILE := UBNT
 endef
-TARGET_DEVICES += ubnt-uap-pro ubnt-unifi-outdoor-plus

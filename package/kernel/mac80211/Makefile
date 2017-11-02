@@ -24,7 +24,7 @@ PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_DRIVERS = \
 	adm8211 \
 	airo \
-	ath ath5k ath9k ath9k-common ath9k-htc ath10k \
+	ath ath5k ath6kl ath6kl-sdio ath6kl-usb ath9k ath9k-common ath9k-htc ath10k \
 	b43 b43legacy \
 	carl9170 \
 	hermes hermes-pci hermes-pcmcia hermes-plx\
@@ -215,6 +215,43 @@ endef
 define KernelPackage/ath5k/description
  This module adds support for wireless adapters based on
  Atheros 5xxx chipset.
+endef
+
+define KernelPackage/ath6kl
+  $(call KernelPackage/mac80211/Default)
+  TITLE:=Atheros FullMAC wireless devices (common code for ath6kl_sdio and ath6kl_usb)
+  URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath6kl
+  HIDDEN:=1
+  DEPENDS+= +kmod-ath +@DRIVER_11N_SUPPORT +@KERNEL_RELAY
+  FILES:= $(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath6kl/ath6kl_core.ko
+endef
+
+define KernelPackage/ath6kl-sdio
+  $(call KernelPackage/mac80211/Default)
+  TITLE:=Atheros 802.11n SDIO wireless cards support
+  URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath6kl
+  DEPENDS+= +kmod-mmc +kmod-ath6kl
+  FILES:= $(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath6kl/ath6kl_sdio.ko
+  AUTOLOAD:=$(call AutoProbe,ath6kl_sdio)
+endef
+
+define KernelPackage/ath6kl-sdio/description
+This module adds support for wireless adapters based on
+Atheros IEEE 802.11n AR6003 and AR6004 family of chipsets.
+endef
+
+define KernelPackage/ath6kl-usb
+  $(call KernelPackage/mac80211/Default)
+  TITLE:=Atheros 802.11n USB wireless cards support
+  URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath6kl
+  DEPENDS+= @USB_SUPPORT +kmod-usb-core +kmod-ath6kl
+  FILES:= $(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath6kl/ath6kl_usb.ko
+  AUTOLOAD:=$(call AutoProbe,ath6kl_usb)
+endef
+
+define KernelPackage/ath6kl-usb/description
+This module adds support for wireless adapters based on the
+Atheros IEEE 802.11n AR6004 chipset.
 endef
 
 define KernelPackage/ath9k-common
@@ -1513,7 +1550,8 @@ ifdef CONFIG_PACKAGE_MAC80211_DEBUGFS
 	ATH9K_HTC_DEBUGFS \
 	ATH10K_DEBUGFS \
 	CARL9170_DEBUGFS \
-	ATH5K_DEBUG
+	ATH5K_DEBUG \
+	ATH6KL_DEBUG
 endif
 
 ifdef CONFIG_PACKAGE_MAC80211_TRACING
@@ -1553,6 +1591,10 @@ ifdef CONFIG_TARGET_ath25
 else
   config-y += ATH5K_PCI
 endif
+
+config-$(call config_package,ath6kl) += ATH6KL
+config-$(call config_package,ath6kl-sdio) += ATH6KL_SDIO
+config-$(call config_package,ath6kl-usb) += ATH6KL_USB
 
 config-$(call config_package,carl9170) += CARL9170
 
@@ -1795,6 +1837,9 @@ $(eval $(call KernelPackage,airo))
 $(eval $(call KernelPackage,ath))
 $(eval $(call KernelPackage,ath10k))
 $(eval $(call KernelPackage,ath5k))
+$(eval $(call KernelPackage,ath6kl))
+$(eval $(call KernelPackage,ath6kl-sdio))
+$(eval $(call KernelPackage,ath6kl-usb))
 $(eval $(call KernelPackage,ath9k))
 $(eval $(call KernelPackage,ath9k-common))
 $(eval $(call KernelPackage,ath9k-htc))

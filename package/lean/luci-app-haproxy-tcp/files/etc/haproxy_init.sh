@@ -16,7 +16,7 @@ stop(){
 }
 start(){
 	echo "starting haproxy"
-	logger -t alex restarting haproxy
+	logger -t restarting haproxy
 	echo global > $CFG_FILE
 	cat >> $CFG_FILE <<EOF
   log 127.0.0.1   local0           #[日志输出配置，所有日志都记录在本机，通过local0输出]
@@ -112,7 +112,7 @@ restart(){
 	echo luci for haproxy
 	sleep 1s
 	local vt_enabled=`uci get haproxy.@arguments[0].enabled 2>/dev/null`
-	logger -t alex !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!haproxy is initializing enabled is $vt_enabled
+	logger -t haproxy is initializing enabled is $vt_enabled
 	echo $vt_enabled 
 	if [ "$vt_enabled" = 1 ]; then
 		[ -f /etc/haproxy_backup ] && {

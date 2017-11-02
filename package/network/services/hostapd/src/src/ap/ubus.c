@@ -743,18 +743,14 @@ int hostapd_ubus_handle_event(struct hostapd_data *hapd, struct hostapd_ubus_req
 
 void hostapd_ubus_notify(struct hostapd_data *hapd, const char *type, const u8 *addr)
 {
-	char mac[18];
-
 	if (!hapd->ubus.obj.has_subscribers)
 		return;
 
 	if (!addr)
 		return;
 
-	snprintf(mac, sizeof(mac), MACSTR, MAC2STR(addr));
-
 	blob_buf_init(&b, 0);
-	blobmsg_add_macaddr(&b, "address", mac);
+	blobmsg_add_macaddr(&b, "address", addr);
 
 	ubus_notify(ctx, &hapd->ubus.obj, type, b.head, -1);
 }
