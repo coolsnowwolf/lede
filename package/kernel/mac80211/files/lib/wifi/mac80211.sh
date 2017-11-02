@@ -92,7 +92,6 @@ detect_mac80211() {
 			htmode="VHT80"
 		}
 
-
 		[ -n "$htmode" ] && ht_capab="set wireless.radio${devidx}.htmode=$htmode"
 
 		if [ -x /usr/bin/readlink -a -h /sys/class/ieee80211/${dev} ]; then
@@ -100,7 +99,6 @@ detect_mac80211() {
 		else
 			path=""
 		fi
-
 		if [ -n "$path" ]; then
 			path="${path##/sys/devices/}"
 			case "$path" in
@@ -127,12 +125,8 @@ detect_mac80211() {
 			set wireless.radio${devidx}.hwmode=11${mode_band}
 			${dev_id}
 			${ht_capab}
-<<<<<<< HEAD
 			set wireless.radio${devidx}.noscan=1
-=======
 			set wireless.radio${devidx}.disabled=0
->>>>>>> upstream/master
-
 			set wireless.default_radio${devidx}=wifi-iface
 			set wireless.default_radio${devidx}.device=radio${devidx}
 			set wireless.default_radio${devidx}.network=lan
