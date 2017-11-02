@@ -263,7 +263,7 @@ define Device/RT-ACRH17
 	DEVICE_TITLE := Asus RT-ACRH17
 	IMAGE_SIZE := 20439364
 	FILESYSTEMS := squashfs
-	UIMAGE_NAME:=$(shell echo -e '\03\01\01\01RT-ACRH17')
+	UIMAGE_NAME:=$(shell echo -e '\03\01\01\01RT-AC82U')
 	IMAGES = sysupgrade.tar flash-factory.trx
 	IMAGE/flash-factory.trx := copy-file $(KDIR)/tmp/$$(KERNEL_INITRAMFS_IMAGE) | uImage none
 	IMAGE/sysupgrade.tar := sysupgrade-tar | append-metadata
