@@ -49,7 +49,6 @@ struct ath9k_platform_data {
 
 	int num_leds;
 	const struct gpio_led *leds;
-	const char *led_name;
 
 	unsigned num_btns;
 	const struct gpio_keys_button *btns;
