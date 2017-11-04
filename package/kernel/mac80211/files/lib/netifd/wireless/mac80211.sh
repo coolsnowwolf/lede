@@ -411,6 +411,34 @@ mac80211_check_ap() {
 	has_ap=1
 }
 
+mac80211_iw_interface_add() {
+	local phy="$1"
+	local ifname="$2"
+	local type="$3"
+	local wdsflag="$4"
+	local rc
+
+	iw phy "$phy" interface add "$ifname" type "$type" $wdsflag
+	rc="$?"
+
+	[ "$rc" = 233 ] && {
+		# Device might have just been deleted, give the kernel some time to finish cleaning it up
+		sleep 1
+
+		iw phy "$phy" interface add "$ifname" type "$type" $wdsflag
+		rc="$?"
+	}
+
+	[ "$rc" = 233 ] && {
+		# Device might not support virtual interfaces, so the interface never got deleted in the first place.
+		# Check if the interface already exists, and avoid failing in this case.
+		ip link show dev "$ifname" >/dev/null 2>/dev/null && rc=0
+	}
+
+	[ "$rc" != 0 ] && wireless_setup_failed INTERFACE_CREATION_FAILED
+	return $rc
+}
+
 mac80211_prepare_vif() {
 	json_select config
 
@@ -437,7 +465,7 @@ mac80211_prepare_vif() {
 	# It is far easier to delete and create the desired interface
 	case "$mode" in
 		adhoc)
-			iw phy "$phy" interface add "$ifname" type adhoc
+			mac80211_iw_interface_add "$phy" "$ifname" adhoc || return
 		;;
 		ap)
 			# Hostapd will handle recreating the interface and
@@ -451,21 +479,21 @@ mac80211_prepare_vif() {
 			mac80211_hostapd_setup_bss "$phy" "$ifname" "$macaddr" "$type" || return
 
 			[ -n "$hostapd_ctrl" ] || {
-				iw phy "$phy" interface add "$ifname" type __ap
+				mac80211_iw_interface_add "$phy" "$ifname" __ap || return
 				hostapd_ctrl="${hostapd_ctrl:-/var/run/hostapd/$ifname}"
 			}
 		;;
 		mesh)
-			iw phy "$phy" interface add "$ifname" type mp
+			mac80211_iw_interface_add "$phy" "$ifname" mp || return
 		;;
 		monitor)
-			iw phy "$phy" interface add "$ifname" type monitor
+			mac80211_iw_interface_add "$phy" "$ifname" monitor || return
 		;;
 		sta)
 			local wdsflag=
 			staidx="$(($staidx + 1))"
 			[ "$wds" -gt 0 ] && wdsflag="4addr on"
-			iw phy "$phy" interface add "$ifname" type managed $wdsflag
+			mac80211_iw_interface_add "$phy" "$ifname" managed "$wdsflag" || return
 			[ "$powersave" -gt 0 ] && powersave="on" || powersave="off"
 			iw "$ifname" set power_save "$powersave"
 		;;
