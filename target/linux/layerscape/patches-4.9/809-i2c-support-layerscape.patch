@@ -1,0 +1,133 @@
+From 3c5032fe34f1af50e9e5fe58d40bf93c1717302f Mon Sep 17 00:00:00 2001
+From: Yangbo Lu <yangbo.lu@nxp.com>
+Date: Mon, 25 Sep 2017 12:19:53 +0800
+Subject: [PATCH] i2c: support layerscape
+
+This is a integrated patch for layerscape i2c support.
+
+Signed-off-by: Zhang Ying-22455 <ying.zhang22455@nxp.com>
+Signed-off-by: Priyanka Jain <Priyanka.Jain@freescale.com>
+Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
+---
+ drivers/i2c/busses/i2c-imx.c        | 10 ++++++++-
+ drivers/i2c/muxes/i2c-mux-pca954x.c | 43 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 52 insertions(+), 1 deletion(-)
+
+--- a/drivers/i2c/busses/i2c-imx.c
++++ b/drivers/i2c/busses/i2c-imx.c
+@@ -889,6 +889,14 @@ static int i2c_imx_xfer(struct i2c_adapt
+ 
+ 	dev_dbg(&i2c_imx->adapter.dev, "<%s>\n", __func__);
+ 
++	/*
++	 * workround for ERR010027: ensure that the I2C BUS is idle
++	 * before switching to master mode and attempting a Start cycle
++	 */
++	result =  i2c_imx_bus_busy(i2c_imx, 0);
++	if (result)
++		goto out;
++
+ 	result = pm_runtime_get_sync(i2c_imx->adapter.dev.parent);
+ 	if (result < 0)
+ 		goto out;
+@@ -1100,7 +1108,7 @@ static int i2c_imx_probe(struct platform
+ 	}
+ 
+ 	/* Request IRQ */
+-	ret = devm_request_irq(&pdev->dev, irq, i2c_imx_isr, 0,
++	ret = devm_request_irq(&pdev->dev, irq, i2c_imx_isr, IRQF_SHARED,
+ 				pdev->name, i2c_imx);
+ 	if (ret) {
+ 		dev_err(&pdev->dev, "can't claim irq %d\n", irq);
+--- a/drivers/i2c/muxes/i2c-mux-pca954x.c
++++ b/drivers/i2c/muxes/i2c-mux-pca954x.c
+@@ -74,6 +74,7 @@ struct pca954x {
+ 	u8 last_chan;		/* last register value */
+ 	u8 deselect;
+ 	struct i2c_client *client;
++	u8 disable_mux;		/* do not disable mux if val not 0 */
+ };
+ 
+ /* Provide specs for the PCA954x types we know about */
+@@ -196,6 +197,13 @@ static int pca954x_deselect_mux(struct i
+ 	if (!(data->deselect & (1 << chan)))
+ 		return 0;
+ 
++#ifdef CONFIG_ARCH_LAYERSCAPE
++	if (data->disable_mux != 0)
++		data->last_chan = data->chip->nchans;
++	else
++		data->last_chan = 0;
++	return pca954x_reg_write(muxc->parent, client, data->disable_mux);
++#endif
+ 	/* Deselect active channel */
+ 	data->last_chan = 0;
+ 	return pca954x_reg_write(muxc->parent, client, data->last_chan);
+@@ -228,6 +236,28 @@ static int pca954x_probe(struct i2c_clie
+ 		return -ENOMEM;
+ 	data = i2c_mux_priv(muxc);
+ 
++#ifdef CONFIG_ARCH_LAYERSCAPE
++	/* The point here is that you must not disable a mux if there
++	 * are no pullups on the input or you mess up the I2C. This
++	 * needs to be put into the DTS really as the kernel cannot
++	 * know this otherwise.
++	 */
++	match = of_match_device(of_match_ptr(pca954x_of_match), &client->dev);
++	if (match)
++		data->chip = of_device_get_match_data(&client->dev);
++	else
++		data->chip = &chips[id->driver_data];
++
++	data->disable_mux = of_node &&
++		of_property_read_bool(of_node, "i2c-mux-never-disable") &&
++		data->chip->muxtype == pca954x_ismux ?
++		data->chip->enable : 0;
++	/* force the first selection */
++	if (data->disable_mux != 0)
++		data->last_chan = data->chip->nchans;
++	else
++		data->last_chan = 0;
++#endif
+ 	i2c_set_clientdata(client, muxc);
+ 	data->client = client;
+ 
+@@ -240,11 +270,16 @@ static int pca954x_probe(struct i2c_clie
+ 	 * that the mux is in fact present. This also
+ 	 * initializes the mux to disconnected state.
+ 	 */
++#ifdef CONFIG_ARCH_LAYERSCAPE
++	if (i2c_smbus_write_byte(client, data->disable_mux) < 0) {
++#else
+ 	if (i2c_smbus_write_byte(client, 0) < 0) {
++#endif
+ 		dev_warn(&client->dev, "probe failed\n");
+ 		return -ENODEV;
+ 	}
+ 
++#ifndef CONFIG_ARCH_LAYERSCAPE
+ 	match = of_match_device(of_match_ptr(pca954x_of_match), &client->dev);
+ 	if (match)
+ 		data->chip = of_device_get_match_data(&client->dev);
+@@ -252,6 +287,7 @@ static int pca954x_probe(struct i2c_clie
+ 		data->chip = &chips[id->driver_data];
+ 
+ 	data->last_chan = 0;		   /* force the first selection */
++#endif
+ 
+ 	idle_disconnect_dt = of_node &&
+ 		of_property_read_bool(of_node, "i2c-mux-idle-disconnect");
+@@ -312,6 +348,13 @@ static int pca954x_resume(struct device
+ 	struct i2c_mux_core *muxc = i2c_get_clientdata(client);
+ 	struct pca954x *data = i2c_mux_priv(muxc);
+ 
++#ifdef CONFIG_ARCH_LAYERSCAPE
++	if (data->disable_mux != 0)
++		data->last_chan = data->chip->nchans;
++	else
++		data->last_chan = 0;
++	return i2c_smbus_write_byte(client, data->disable_mux);
++#endif
+ 	data->last_chan = 0;
+ 	return i2c_smbus_write_byte(client, 0);
+ }

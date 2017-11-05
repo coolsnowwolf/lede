@@ -11,7 +11,7 @@ PKG_NAME:=openssl
 PKG_BASE:=1.0.2
 PKG_BUGFIX:=l
 PKG_VERSION:=$(PKG_BASE)$(PKG_BUGFIX)
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_USE_MIPS16:=0
 
 PKG_BUILD_PARALLEL:=0
@@ -168,6 +168,8 @@ else
   OPENSSL_OPTIONS+=no-sse2
   ifeq ($(CONFIG_mips)$(CONFIG_mipsel),y)
     OPENSSL_TARGET:=linux-mips-openwrt
+  else ifeq ($(CONFIG_aarch64),y)
+    OPENSSL_TARGET:=linux-aarch64-openwrt
   else ifeq ($(CONFIG_arm)$(CONFIG_armeb),y)
     OPENSSL_TARGET:=linux-armv4-openwrt
   else

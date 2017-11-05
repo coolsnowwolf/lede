@@ -229,6 +229,26 @@ define Device/dragino2
 endef
 TARGET_DEVICES += dragino2
 
+define Device/ew-dorin
+  DEVICE_TITLE := Embedded Wireless Dorin Platform
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb-chipidea 
+  BOARDNAME = EW-DORIN
+  CONSOLE := ttyATH0,115200
+  IMAGE_SIZE = 16000k
+  MTDPARTS = spi0.0:256k(u-boot)ro,64k(u-boot-env),16000k(firmware),64k(art)ro
+endef
+TARGET_DEVICES += ew-dorin
+
+define Device/ew-dorin-router
+  DEVICE_TITLE := Embedded Wireless Dorin Router Platform
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb-chipidea 
+  BOARDNAME = EW-DORIN-ROUTER
+  CONSOLE := ttyATH0,115200
+  IMAGE_SIZE = 16000k
+  MTDPARTS = spi0.0:256k(u-boot)ro,64k(u-boot-env),16000k(firmware),64k(art)ro
+endef
+TARGET_DEVICES += ew-dorin-router
+
 define Device/weio
   DEVICE_TITLE := WeIO
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2
@@ -338,7 +358,6 @@ define Device/dr344
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,6336k(rootfs),1408k(kernel),64k(nvram),64k(art)ro,7744k@0x50000(firmware)
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to $$$$(ROOTFS_SIZE) | append-kernel | check-size $$$$(IMAGE_SIZE)
 endef
-TARGET_DEVICES += dr344
 
 define Device/dr531
   DEVICE_TITLE := Wallys DR531

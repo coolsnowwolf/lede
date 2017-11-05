@@ -7,6 +7,16 @@ define Package/ar3k-firmware/install
 endef
 $(eval $(call BuildPackage,ar3k-firmware))
 
+
+Package/ath6k-firmware = $(call Package/firmware-default,AR600X firmware)
+define Package/ath6k-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/ath6k
+	$(CP) \
+		$(PKG_BUILD_DIR)/ath6k/* \
+		$(1)/lib/firmware/ath6k
+endef
+$(eval $(call BuildPackage,ath6k-firmware))
+
 Package/ath9k-htc-firmware = $(call Package/firmware-default,AR9271/AR7010 firmware)
 define Package/ath9k-htc-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/ath9k_htc

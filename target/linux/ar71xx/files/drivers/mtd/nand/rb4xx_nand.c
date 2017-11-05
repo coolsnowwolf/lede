@@ -23,6 +23,7 @@
 #include <linux/io.h>
 #include <linux/gpio.h>
 #include <linux/slab.h>
+#include <linux/version.h>
 
 #include <asm/mach-ath79/ath79.h>
 #include <asm/mach-ath79/rb4xx_cpld.h>
@@ -38,9 +39,32 @@
 
 struct rb4xx_nand_info {
 	struct nand_chip	chip;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 	struct mtd_info		mtd;
+#endif
 };
 
+static inline struct rb4xx_nand_info *mtd_to_rbinfo(struct mtd_info *mtd)
+{
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
+	return container_of(mtd, struct rb4xx_nand_info, mtd);
+#else
+	struct nand_chip *chip = mtd_to_nand(mtd);
+
+	return container_of(chip, struct rb4xx_nand_info, chip);
+#endif
+}
+
+static struct mtd_info *rbinfo_to_mtd(struct rb4xx_nand_info *nfc)
+{
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
+	return &nfc->mtd;
+#else
+	return nand_to_mtd(&nfc->chip);
+#endif
+}
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 /*
  * We need to use the OLD Yaffs-1 OOB layout, otherwise the RB bootloader
  * will not be able to find the kernel that we load.
@@ -51,6 +75,56 @@ static struct nand_ecclayout rb4xx_nand_ecclayout = {
 	.oobavail	= 9,
 	.oobfree	= { { 0, 4 }, { 6, 2 }, { 11, 2 }, { 4, 1 } }
 };
+
+#else
+
+static int rb4xx_ooblayout_ecc(struct mtd_info *mtd, int section,
+			       struct mtd_oob_region *oobregion)
+{
+	switch (section) {
+	case 0:
+		oobregion->offset = 8;
+		oobregion->length = 3;
+		return 0;
+	case 1:
+		oobregion->offset = 13;
+		oobregion->length = 3;
+		return 0;
+	default:
+		return -ERANGE;
+	}
+}
+
+static int rb4xx_ooblayout_free(struct mtd_info *mtd, int section,
+				struct mtd_oob_region *oobregion)
+{
+	switch (section) {
+	case 0:
+		oobregion->offset = 0;
+		oobregion->length = 4;
+		return 0;
+	case 1:
+		oobregion->offset = 4;
+		oobregion->length = 1;
+		return 0;
+	case 2:
+		oobregion->offset = 6;
+		oobregion->length = 2;
+		return 0;
+	case 3:
+		oobregion->offset = 11;
+		oobregion->length = 2;
+		return 0;
+	default:
+		return -ERANGE;
+	}
+}
+
+static const struct mtd_ooblayout_ops rb4xx_nand_ecclayout_ops = {
+	.ecc = rb4xx_ooblayout_ecc,
+	.free = rb4xx_ooblayout_free,
+};
+#endif /* < 4.6 */
 
 static struct mtd_partition rb4xx_nand_partitions[] = {
 	{
@@ -139,6 +213,7 @@ static void rb4xx_nand_read_buf(struct mtd_info *mtd, unsigned char *buf,
 static int rb4xx_nand_probe(struct platform_device *pdev)
 {
 	struct rb4xx_nand_info	*info;
+	struct mtd_info *mtd;
 	int ret;
 
 	printk(KERN_INFO DRV_DESC " version " DRV_VERSION "\n");
@@ -207,8 +282,12 @@ static int rb4xx_nand_probe(struct platform_device *pdev)
 	}
 
 	info->chip.priv	= &info;
-	info->mtd.priv	= &info->chip;
-	info->mtd.owner	= THIS_MODULE;
+	mtd = rbinfo_to_mtd(info);
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
+	mtd->priv	= &info->chip;
+#endif
+	mtd->owner	= THIS_MODULE;
 
 	info->chip.cmd_ctrl	= rb4xx_nand_cmd_ctrl;
 	info->chip.dev_ready	= rb4xx_nand_dev_ready;
@@ -218,26 +297,33 @@ static int rb4xx_nand_probe(struct platform_device *pdev)
 
 	info->chip.chip_delay	= 25;
 	info->chip.ecc.mode	= NAND_ECC_SOFT;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
+	info->chip.ecc.algo = NAND_ECC_HAMMING;
+#endif
 	info->chip.options = NAND_NO_SUBPAGE_WRITE;
 
 	platform_set_drvdata(pdev, info);
 
-	ret = nand_scan_ident(&info->mtd, 1, NULL);
+	ret = nand_scan_ident(mtd, 1, NULL);
 	if (ret) {
 		ret = -ENXIO;
 		goto err_free_info;
 	}
 
-	if (info->mtd.writesize == 512)
+	if (mtd->writesize == 512)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 		info->chip.ecc.layout = &rb4xx_nand_ecclayout;
+#else
+		mtd_set_ooblayout(mtd, &rb4xx_nand_ecclayout_ops);
+#endif
 
-	ret = nand_scan_tail(&info->mtd);
+	ret = nand_scan_tail(mtd);
 	if (ret) {
 		return -ENXIO;
 		goto err_set_drvdata;
 	}
 
-	mtd_device_register(&info->mtd, rb4xx_nand_partitions,
+	mtd_device_register(mtd, rb4xx_nand_partitions,
 				ARRAY_SIZE(rb4xx_nand_partitions));
 	if (ret)
 		goto err_release_nand;
@@ -245,7 +331,7 @@ static int rb4xx_nand_probe(struct platform_device *pdev)
 	return 0;
 
 err_release_nand:
-	nand_release(&info->mtd);
+	nand_release(mtd);
 err_set_drvdata:
 	platform_set_drvdata(pdev, NULL);
 err_free_info:
@@ -266,7 +352,7 @@ static int rb4xx_nand_remove(struct platform_device *pdev)
 {
 	struct rb4xx_nand_info *info = platform_get_drvdata(pdev);
 
-	nand_release(&info->mtd);
+	nand_release(rbinfo_to_mtd(info));
 	platform_set_drvdata(pdev, NULL);
 	kfree(info);
 	gpio_free(RB4XX_NAND_GPIO_NCE);

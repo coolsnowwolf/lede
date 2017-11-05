@@ -98,7 +98,7 @@ static void led_nu801_set(struct led_classdev *led_cdev,
 	}
 }
 
-static int __init led_nu801_create(struct led_nu801_data *controller,
+static int led_nu801_create(struct led_nu801_data *controller,
 				    struct device *parent,
 				    int index,
 				    enum led_brightness brightness,
@@ -131,7 +131,7 @@ err:
 	return ret;
 }
 
-static int __init
+static int
 led_nu801_create_chain(const struct led_nu801_template *template,
 			struct led_nu801_data *controller,
 			struct device *parent)
@@ -237,7 +237,7 @@ static void led_nu801_delete_chain(struct led_nu801_data *controller)
 	kfree(led_chain);
 }
 
-static struct led_nu801_data * __init
+static struct led_nu801_data *
 leds_nu801_create_of(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node, *child;
@@ -307,7 +307,7 @@ err:
 	return NULL;
 }
 
-static int __init led_nu801_probe(struct platform_device *pdev)
+static int led_nu801_probe(struct platform_device *pdev)
 {
 	struct led_nu801_platform_data *pdata = pdev->dev.platform_data;
 	struct led_nu801_data *controllers;

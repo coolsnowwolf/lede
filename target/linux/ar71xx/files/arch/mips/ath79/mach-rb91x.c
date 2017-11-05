@@ -53,7 +53,7 @@
 #define RB91X_FLAG_USB		BIT(0)
 #define RB91X_FLAG_PCIE		BIT(1)
 
-#define RB91X_LATCH_GPIO_BASE	AR934X_GPIO_COUNT
+#define RB91X_LATCH_GPIO_BASE	32
 #define RB91X_LATCH_GPIO(_x)	(RB91X_LATCH_GPIO_BASE + (_x))
 
 #define RB91X_SSR_GPIO_BASE	(RB91X_LATCH_GPIO_BASE + AR934X_GPIO_COUNT)
@@ -140,7 +140,7 @@ static struct rb91x_nand_platform_data rb711gr100_nand_data __initdata = {
 	.gpio_nle = RB91X_GPIO_NLE,
 };
 
-static u8 rb711gr100_ssr_initdata[] __initdata = {
+static u8 rb711gr100_ssr_initdata[] = {
 	BIT(RB91X_SSR_BIT_PCIE_POWER) |
 	BIT(RB91X_SSR_BIT_USB_POWER) |
 	BIT(RB91X_SSR_BIT_5)
