@@ -318,6 +318,9 @@ tplink_board_detect() {
 	"65000002")
 		model="TP-Link TL-WDR6500"
 		;;
+	"65000006")
+		model="TP-Link TL-WDR6500"
+		;;
 	"721000"*)
 		model="TP-Link TL-WA7210N"
 		;;
@@ -1111,6 +1114,9 @@ ar71xx_board_detect() {
 		;;
 	*"TL-WDR6500 v2")
 		name="tl-wdr6500-v2"
+		;;
+	*"TL-WDR6500 v6")
+		name="tl-wdr6500-v6"
 		;;
 	*"TL-WPA8630")
 		name="tl-wpa8630"

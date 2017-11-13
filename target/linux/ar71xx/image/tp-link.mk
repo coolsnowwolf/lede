@@ -1129,3 +1129,15 @@ define Device/tl-wr941n-v7
 endef
 TARGET_DEVICES += tl-wr941n-v7
 
+define Device/tl-wdr6500-v6
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WDR6500 v6
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
+  KERNEL := kernel-bin | patch-cmdline | lzma | uImage lzma
+  KERNEL_INITRAMFS := kernel-bin | patch-cmdline | lzma | uImage lzma | mktplinkfw-combined
+  BOARDNAME := TL-WDR6500-v6
+  DEVICE_PROFILE := TLWDR6500V6
+  TPLINK_HWID := 0x65000006
+  TPLINK_HEADER_VERSION := 2
+endef
+TARGET_DEVICES += tl-wdr6500-v6
