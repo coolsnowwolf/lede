@@ -1141,3 +1141,22 @@ define Device/tl-wdr6500-v6
   TPLINK_HEADER_VERSION := 2
 endef
 TARGET_DEVICES += tl-wdr6500-v6
+
+define Device/tl-wr842n-v9
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR842N/ND v9
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
+  BOARDNAME := TL-WR842N-v9
+  DEVICE_PROFILE := TLWR842
+  TPLINK_HWID := 0x08420009
+endef
+TARGET_DEVICES += tl-wr842n-v9
+
+define Device/tl-wr882n-v1
+    $(Device/tplink-8mlzma)
+    DEVICE_TITLE := TP-LINK TL-WR882N v1
+    BOARDNAME := TL-WR882N-v1
+    DEVICE_PROFILE := TLWR882
+    TPLINK_HWID := 0x08820001
+endef
+TARGET_DEVICES += tl-wr882n-v1
