@@ -42,31 +42,6 @@ $(Package/ath10k-firmware-default)
   TITLE:=ath10k-CT firmware for QCA9887 devices
 endef
 
-QCA9887_REV:=3920dbf0a04c8918b839d5e5d9e2b8fbd5c7e692
-QCA9887_FIRMWARE_VERSION:=10.2.4-1.0
-QCA9887_FIRMWARE_FILE:=firmware-5.bin_10.2.4-1.0-00029
-QCA9887_FIRMWARE_FILE_HASH:=b27b4a2117b578a334b9b744e2095c4f86378fd4badfb7619c7e11712d714ab3
-QCA9887_FIRMWARE_FILE_DL:=$(QCA9887_FIRMWARE_FILE).$(QCA9887_FIRMWARE_FILE_HASH)
-QCA9887_BOARD_FILE:=board.bin
-QCA9887_BOARD_FILE_HASH:=cf4df099f6ee05c181f55ce17297a1d32c61d725eb96246fd315ad5587c42426
-QCA9887_BOARD_FILE_DL:=$(QCA9887_BOARD_FILE).$(QCA9887_BOARD_FILE_HASH)
-
-define Download/ath10k-qca9887-firmware
-  URL:=https://github.com/kvalo/ath10k-firmware/raw/$(QCA9887_REV)/QCA9887/hw1.0/$(QCA9887_FIRMWARE_VERSION)/
-  URL_FILE:=$(QCA9887_FIRMWARE_FILE)
-  FILE:=$(QCA9887_FIRMWARE_FILE_DL)
-  HASH:=$(QCA9887_FIRMWARE_FILE_HASH)
-endef
-$(eval $(call Download,ath10k-qca9887-firmware))
-
-define Download/ath10k-qca9887-board
-  URL:=https://github.com/kvalo/ath10k-firmware/raw/$(QCA9887_REV)/QCA9887/hw1.0/
-  URL_FILE:=$(QCA9887_BOARD_FILE)
-  FILE:=$(QCA9887_BOARD_FILE_DL)
-  HASH:=$(QCA9887_BOARD_FILE_HASH)
-endef
-$(eval $(call Download,ath10k-qca9887-board))
-
 define Package/ath10k-firmware-qca988x
 $(Package/ath10k-firmware-default)
   TITLE:=ath10k firmware for QCA988x devices
@@ -255,10 +230,10 @@ endef
 define Package/ath10k-firmware-qca9887/install
 	$(INSTALL_DIR) $(1)/lib/firmware/ath10k/QCA9887/hw1.0
 	$(INSTALL_DATA) \
-		$(DL_DIR)/$(QCA9887_FIRMWARE_FILE_DL) \
+		$(PKG_BUILD_DIR)/QCA9887/hw1.0/10.2.4-1.0/firmware-5.bin_10.2.4-1.0-00029 \
 		$(1)/lib/firmware/ath10k/QCA9887/hw1.0/firmware-5.bin
 	$(INSTALL_DATA) \
-		$(DL_DIR)/$(QCA9887_BOARD_FILE_DL) \
+		$(PKG_BUILD_DIR)/QCA9887/hw1.0/board.bin \
 		$(1)/lib/firmware/ath10k/QCA9887/hw1.0/board.bin
 endef
 
@@ -267,9 +242,6 @@ define Package/ath10k-firmware-qca9888/install
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/QCA9888/hw2.0/board-2.bin \
 		$(1)/lib/firmware/ath10k/QCA9888/hw2.0/board-2.bin
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/QCA9888/hw2.0/board-2.bin \
-		$(1)/lib/firmware/ath10k/QCA9888/hw2.0/board.bin
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/QCA9888/hw2.0/firmware-5.bin_10.4-3.2-00072 \
 		$(1)/lib/firmware/ath10k/QCA9888/hw2.0/firmware-5.bin
@@ -291,7 +263,7 @@ define Package/ath10k-firmware-qca9887-ct/install
 		$(DL_DIR)/$(call CT_FIRMWARE_FILE,QCA9887) \
 		$(1)/lib/firmware/ath10k/QCA9887/hw1.0/firmware-2.bin
 	$(INSTALL_DATA) \
-		$(DL_DIR)/$(QCA9887_BOARD_FILE_DL) \
+		$(PKG_BUILD_DIR)/QCA9887/hw1.0/board.bin \
 		$(1)/lib/firmware/ath10k/QCA9887/hw1.0/board.bin
 endef
 

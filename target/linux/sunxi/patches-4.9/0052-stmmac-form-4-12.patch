@@ -2887,7 +2887,7 @@
 +
 +		/* Display RX ring */
 +		priv->hw->desc->display_ring(head_rx, DMA_RX_SIZE, true);
-+	}
+ 	}
 +}
 +
 +static void stmmac_display_tx_rings(struct stmmac_priv *priv)
@@ -2906,15 +2906,15 @@
 +			head_tx = (void *)tx_q->dma_etx;
 +		else
 +			head_tx = (void *)tx_q->dma_tx;
-+
-+		priv->hw->desc->display_ring(head_tx, DMA_TX_SIZE, false);
- 	}
-+}
  
 -	/* Display Rx ring */
 -	priv->hw->desc->display_ring(head_rx, DMA_RX_SIZE, true);
 -	/* Display Tx ring */
 -	priv->hw->desc->display_ring(head_tx, DMA_TX_SIZE, false);
++		priv->hw->desc->display_ring(head_tx, DMA_TX_SIZE, false);
++	}
++}
++
 +static void stmmac_display_rings(struct stmmac_priv *priv)
 +{
 +	/* Display RX ring */
@@ -3131,7 +3131,7 @@
  
  	if (priv->hw->mode->set_16kib_bfsize)
  		bfsize = priv->hw->mode->set_16kib_bfsize(dev->mtu);
-@@ -1018,257 +1228,516 @@ static int init_dma_desc_rings(struct ne
+@@ -1018,235 +1228,409 @@ static int init_dma_desc_rings(struct ne
  
  	priv->dma_buf_sz = bfsize;
  
@@ -3163,10 +3163,7 @@
 +				p = &((rx_q->dma_erx + i)->basic);
 +			else
 +				p = rx_q->dma_rx + i;
- 
--		ret = stmmac_init_rx_buffers(priv, p, i, flags);
--		if (ret)
--			goto err_init_rx_buffers;
++
 +			ret = stmmac_init_rx_buffers(priv, p, i, flags,
 +						     queue);
 +			if (ret)
@@ -3176,15 +3173,18 @@
 +				  rx_q->rx_skbuff[i], rx_q->rx_skbuff[i]->data,
 +				  (unsigned int)rx_q->rx_skbuff_dma[i]);
 +		}
-+
+ 
+-		ret = stmmac_init_rx_buffers(priv, p, i, flags);
+-		if (ret)
+-			goto err_init_rx_buffers;
 +		rx_q->cur_rx = 0;
 +		rx_q->dirty_rx = (unsigned int)(i - DMA_RX_SIZE);
-+
-+		stmmac_clear_rx_descriptors(priv, queue);
  
 -		netif_dbg(priv, probe, priv->dev, "[%p]\t[%p]\t[%x]\n",
 -			  priv->rx_skbuff[i], priv->rx_skbuff[i]->data,
 -			  (unsigned int)priv->rx_skbuff_dma[i]);
++		stmmac_clear_rx_descriptors(priv, queue);
++
 +		/* Setup the chained descriptor addresses */
 +		if (priv->mode == STMMAC_CHAIN_MODE) {
 +			if (priv->extend_desc)
@@ -3277,13 +3277,8 @@
 +				priv->hw->mode->init(tx_q->dma_tx,
 +						     tx_q->dma_tx_phy,
 +						     DMA_TX_SIZE, 0);
- 		}
- 
--		priv->tx_skbuff_dma[i].buf = 0;
--		priv->tx_skbuff_dma[i].map_as_page = false;
--		priv->tx_skbuff_dma[i].len = 0;
--		priv->tx_skbuff_dma[i].last_segment = false;
--		priv->tx_skbuff[i] = NULL;
++		}
++
 +		for (i = 0; i < DMA_TX_SIZE; i++) {
 +			struct dma_desc *p;
 +			if (priv->extend_desc)
@@ -3305,8 +3300,13 @@
 +			tx_q->tx_skbuff_dma[i].len = 0;
 +			tx_q->tx_skbuff_dma[i].last_segment = false;
 +			tx_q->tx_skbuff[i] = NULL;
-+		}
-+
+ 		}
+ 
+-		priv->tx_skbuff_dma[i].buf = 0;
+-		priv->tx_skbuff_dma[i].map_as_page = false;
+-		priv->tx_skbuff_dma[i].len = 0;
+-		priv->tx_skbuff_dma[i].last_segment = false;
+-		priv->tx_skbuff[i] = NULL;
 +		tx_q->dirty_tx = 0;
 +		tx_q->cur_tx = 0;
 +
@@ -3387,10 +3387,17 @@
 -						 priv->tx_skbuff_dma[i].buf,
 -						 priv->tx_skbuff_dma[i].len,
 -						 DMA_TO_DEVICE);
+-		}
 +	for (i = 0; i < DMA_TX_SIZE; i++)
 +		stmmac_free_tx_buffer(priv, queue, i);
 +}
-+
+ 
+-		if (priv->tx_skbuff[i]) {
+-			dev_kfree_skb_any(priv->tx_skbuff[i]);
+-			priv->tx_skbuff[i] = NULL;
+-			priv->tx_skbuff_dma[i].buf = 0;
+-			priv->tx_skbuff_dma[i].map_as_page = false;
+-		}
 +/**
 + * free_dma_rx_desc_resources - free RX dma desc resources
 + * @priv: private structure
@@ -3419,10 +3426,11 @@
 +
 +		kfree(rx_q->rx_skbuff_dma);
 +		kfree(rx_q->rx_skbuff);
-+	}
-+}
-+
-+/**
+ 	}
+ }
+ 
+ /**
+- * alloc_dma_desc_resources - alloc TX/RX resources.
 + * free_dma_tx_desc_resources - free TX dma desc resources
 + * @priv: private structure
 + */
@@ -3455,36 +3463,90 @@
 +
 +/**
 + * alloc_dma_rx_desc_resources - alloc RX resources.
-+ * @priv: private structure
-+ * Description: according to which descriptor can be used (extend or basic)
-+ * this function allocates the resources for TX and RX paths. In case of
-+ * reception, for example, it pre-allocated the RX socket buffer in order to
-+ * allow zero-copy mechanism.
-+ */
+  * @priv: private structure
+  * Description: according to which descriptor can be used (extend or basic)
+  * this function allocates the resources for TX and RX paths. In case of
+  * reception, for example, it pre-allocated the RX socket buffer in order to
+  * allow zero-copy mechanism.
+  */
+-static int alloc_dma_desc_resources(struct stmmac_priv *priv)
 +static int alloc_dma_rx_desc_resources(struct stmmac_priv *priv)
-+{
+ {
 +	u32 rx_count = priv->plat->rx_queues_to_use;
-+	int ret = -ENOMEM;
+ 	int ret = -ENOMEM;
 +	u32 queue;
-+
+ 
+-	priv->rx_skbuff_dma = kmalloc_array(DMA_RX_SIZE, sizeof(dma_addr_t),
+-					    GFP_KERNEL);
+-	if (!priv->rx_skbuff_dma)
+-		return -ENOMEM;
 +	/* RX queues buffers and DMA */
 +	for (queue = 0; queue < rx_count; queue++) {
 +		struct stmmac_rx_queue *rx_q = &priv->rx_queue[queue];
-+
+ 
+-	priv->rx_skbuff = kmalloc_array(DMA_RX_SIZE, sizeof(struct sk_buff *),
+-					GFP_KERNEL);
+-	if (!priv->rx_skbuff)
+-		goto err_rx_skbuff;
+-
+-	priv->tx_skbuff_dma = kmalloc_array(DMA_TX_SIZE,
+-					    sizeof(*priv->tx_skbuff_dma),
+-					    GFP_KERNEL);
+-	if (!priv->tx_skbuff_dma)
+-		goto err_tx_skbuff_dma;
+-
+-	priv->tx_skbuff = kmalloc_array(DMA_TX_SIZE, sizeof(struct sk_buff *),
+-					GFP_KERNEL);
+-	if (!priv->tx_skbuff)
+-		goto err_tx_skbuff;
+-
+-	if (priv->extend_desc) {
+-		priv->dma_erx = dma_zalloc_coherent(priv->device, DMA_RX_SIZE *
+-						    sizeof(struct
+-							   dma_extended_desc),
+-						    &priv->dma_rx_phy,
+-						    GFP_KERNEL);
+-		if (!priv->dma_erx)
+-			goto err_dma;
 +		rx_q->queue_index = queue;
 +		rx_q->priv_data = priv;
-+
+ 
+-		priv->dma_etx = dma_zalloc_coherent(priv->device, DMA_TX_SIZE *
+-						    sizeof(struct
+-							   dma_extended_desc),
+-						    &priv->dma_tx_phy,
 +		rx_q->rx_skbuff_dma = kmalloc_array(DMA_RX_SIZE,
 +						    sizeof(dma_addr_t),
-+						    GFP_KERNEL);
+ 						    GFP_KERNEL);
+-		if (!priv->dma_etx) {
+-			dma_free_coherent(priv->device, DMA_RX_SIZE *
+-					  sizeof(struct dma_extended_desc),
+-					  priv->dma_erx, priv->dma_rx_phy);
+-			goto err_dma;
+-		}
+-	} else {
+-		priv->dma_rx = dma_zalloc_coherent(priv->device, DMA_RX_SIZE *
+-						   sizeof(struct dma_desc),
+-						   &priv->dma_rx_phy,
+-						   GFP_KERNEL);
+-		if (!priv->dma_rx)
+-			goto err_dma;
 +		if (!rx_q->rx_skbuff_dma)
 +			return -ENOMEM;
-+
+ 
+-		priv->dma_tx = dma_zalloc_coherent(priv->device, DMA_TX_SIZE *
+-						   sizeof(struct dma_desc),
+-						   &priv->dma_tx_phy,
+-						   GFP_KERNEL);
+-		if (!priv->dma_tx) {
+-			dma_free_coherent(priv->device, DMA_RX_SIZE *
+-					  sizeof(struct dma_desc),
+-					  priv->dma_rx, priv->dma_rx_phy);
 +		rx_q->rx_skbuff = kmalloc_array(DMA_RX_SIZE,
 +						sizeof(struct sk_buff *),
 +						GFP_KERNEL);
 +		if (!rx_q->rx_skbuff)
-+			goto err_dma;
+ 			goto err_dma;
 +
 +		if (priv->extend_desc) {
 +			rx_q->dma_erx = dma_zalloc_coherent(priv->device,
@@ -3505,12 +3567,19 @@
 +							   GFP_KERNEL);
 +			if (!rx_q->dma_rx)
 +				goto err_dma;
-+		}
-+	}
-+
-+	return 0;
-+
-+err_dma:
+ 		}
+ 	}
+ 
+ 	return 0;
+ 
+ err_dma:
+-	kfree(priv->tx_skbuff);
+-err_tx_skbuff:
+-	kfree(priv->tx_skbuff_dma);
+-err_tx_skbuff_dma:
+-	kfree(priv->rx_skbuff);
+-err_rx_skbuff:
+-	kfree(priv->rx_skbuff_dma);
 +	free_dma_rx_desc_resources(priv);
 +
 +	return ret;
@@ -3567,7 +3636,7 @@
 +							   GFP_KERNEL);
 +			if (!tx_q->dma_tx)
 +				goto err_dma_buffers;
- 		}
++		}
 +	}
 +
 +	return 0;
@@ -3575,9 +3644,9 @@
 +err_dma_buffers:
 +	free_dma_tx_desc_resources(priv);
 +
-+	return ret;
-+}
-+
+ 	return ret;
+ }
+ 
 +/**
 + * alloc_dma_desc_resources - alloc TX/RX resources.
 + * @priv: private structure
@@ -3603,176 +3672,7 @@
 + * free_dma_desc_resources - free dma desc resources
 + * @priv: private structure
 + */
-+static void free_dma_desc_resources(struct stmmac_priv *priv)
-+{
-+	/* Release the DMA RX socket buffers */
-+	free_dma_rx_desc_resources(priv);
-+
-+	/* Release the DMA TX socket buffers */
-+	free_dma_tx_desc_resources(priv);
-+}
-+
-+/**
-+ *  stmmac_mac_enable_rx_queues - Enable MAC rx queues
-+ *  @priv: driver private structure
-+ *  Description: It is used for enabling the rx queues in the MAC
-+ */
-+static void stmmac_mac_enable_rx_queues(struct stmmac_priv *priv)
-+{
-+	u32 rx_queues_count = priv->plat->rx_queues_to_use;
-+	int queue;
-+	u8 mode;
- 
--		if (priv->tx_skbuff[i]) {
--			dev_kfree_skb_any(priv->tx_skbuff[i]);
--			priv->tx_skbuff[i] = NULL;
--			priv->tx_skbuff_dma[i].buf = 0;
--			priv->tx_skbuff_dma[i].map_as_page = false;
--		}
-+	for (queue = 0; queue < rx_queues_count; queue++) {
-+		mode = priv->plat->rx_queues_cfg[queue].mode_to_use;
-+		priv->hw->mac->rx_queue_enable(priv->hw, mode, queue);
- 	}
- }
- 
- /**
-- * alloc_dma_desc_resources - alloc TX/RX resources.
-- * @priv: private structure
-- * Description: according to which descriptor can be used (extend or basic)
-- * this function allocates the resources for TX and RX paths. In case of
-- * reception, for example, it pre-allocated the RX socket buffer in order to
-- * allow zero-copy mechanism.
-+ * stmmac_start_rx_dma - start RX DMA channel
-+ * @priv: driver private structure
-+ * @chan: RX channel index
-+ * Description:
-+ * This starts a RX DMA channel
-  */
--static int alloc_dma_desc_resources(struct stmmac_priv *priv)
-+static void stmmac_start_rx_dma(struct stmmac_priv *priv, u32 chan)
- {
--	int ret = -ENOMEM;
--
--	priv->rx_skbuff_dma = kmalloc_array(DMA_RX_SIZE, sizeof(dma_addr_t),
--					    GFP_KERNEL);
--	if (!priv->rx_skbuff_dma)
--		return -ENOMEM;
--
--	priv->rx_skbuff = kmalloc_array(DMA_RX_SIZE, sizeof(struct sk_buff *),
--					GFP_KERNEL);
--	if (!priv->rx_skbuff)
--		goto err_rx_skbuff;
--
--	priv->tx_skbuff_dma = kmalloc_array(DMA_TX_SIZE,
--					    sizeof(*priv->tx_skbuff_dma),
--					    GFP_KERNEL);
--	if (!priv->tx_skbuff_dma)
--		goto err_tx_skbuff_dma;
--
--	priv->tx_skbuff = kmalloc_array(DMA_TX_SIZE, sizeof(struct sk_buff *),
--					GFP_KERNEL);
--	if (!priv->tx_skbuff)
--		goto err_tx_skbuff;
--
--	if (priv->extend_desc) {
--		priv->dma_erx = dma_zalloc_coherent(priv->device, DMA_RX_SIZE *
--						    sizeof(struct
--							   dma_extended_desc),
--						    &priv->dma_rx_phy,
--						    GFP_KERNEL);
--		if (!priv->dma_erx)
--			goto err_dma;
--
--		priv->dma_etx = dma_zalloc_coherent(priv->device, DMA_TX_SIZE *
--						    sizeof(struct
--							   dma_extended_desc),
--						    &priv->dma_tx_phy,
--						    GFP_KERNEL);
--		if (!priv->dma_etx) {
--			dma_free_coherent(priv->device, DMA_RX_SIZE *
--					  sizeof(struct dma_extended_desc),
--					  priv->dma_erx, priv->dma_rx_phy);
--			goto err_dma;
--		}
--	} else {
--		priv->dma_rx = dma_zalloc_coherent(priv->device, DMA_RX_SIZE *
--						   sizeof(struct dma_desc),
--						   &priv->dma_rx_phy,
--						   GFP_KERNEL);
--		if (!priv->dma_rx)
--			goto err_dma;
-+	netdev_dbg(priv->dev, "DMA RX processes started in channel %d\n", chan);
-+	priv->hw->dma->start_rx(priv->ioaddr, chan);
-+}
- 
--		priv->dma_tx = dma_zalloc_coherent(priv->device, DMA_TX_SIZE *
--						   sizeof(struct dma_desc),
--						   &priv->dma_tx_phy,
--						   GFP_KERNEL);
--		if (!priv->dma_tx) {
--			dma_free_coherent(priv->device, DMA_RX_SIZE *
--					  sizeof(struct dma_desc),
--					  priv->dma_rx, priv->dma_rx_phy);
--			goto err_dma;
--		}
--	}
-+/**
-+ * stmmac_start_tx_dma - start TX DMA channel
-+ * @priv: driver private structure
-+ * @chan: TX channel index
-+ * Description:
-+ * This starts a TX DMA channel
-+ */
-+static void stmmac_start_tx_dma(struct stmmac_priv *priv, u32 chan)
-+{
-+	netdev_dbg(priv->dev, "DMA TX processes started in channel %d\n", chan);
-+	priv->hw->dma->start_tx(priv->ioaddr, chan);
-+}
- 
--	return 0;
-+/**
-+ * stmmac_stop_rx_dma - stop RX DMA channel
-+ * @priv: driver private structure
-+ * @chan: RX channel index
-+ * Description:
-+ * This stops a RX DMA channel
-+ */
-+static void stmmac_stop_rx_dma(struct stmmac_priv *priv, u32 chan)
-+{
-+	netdev_dbg(priv->dev, "DMA RX processes stopped in channel %d\n", chan);
-+	priv->hw->dma->stop_rx(priv->ioaddr, chan);
-+}
- 
--err_dma:
--	kfree(priv->tx_skbuff);
--err_tx_skbuff:
--	kfree(priv->tx_skbuff_dma);
--err_tx_skbuff_dma:
--	kfree(priv->rx_skbuff);
--err_rx_skbuff:
--	kfree(priv->rx_skbuff_dma);
--	return ret;
-+/**
-+ * stmmac_stop_tx_dma - stop TX DMA channel
-+ * @priv: driver private structure
-+ * @chan: TX channel index
-+ * Description:
-+ * This stops a TX DMA channel
-+ */
-+static void stmmac_stop_tx_dma(struct stmmac_priv *priv, u32 chan)
-+{
-+	netdev_dbg(priv->dev, "DMA TX processes stopped in channel %d\n", chan);
-+	priv->hw->dma->stop_tx(priv->ioaddr, chan);
- }
- 
--static void free_dma_desc_resources(struct stmmac_priv *priv)
-+/**
-+ * stmmac_start_all_dma - start all RX and TX DMA channels
-+ * @priv: driver private structure
-+ * Description:
-+ * This starts all the RX and TX DMA channels
-+ */
-+static void stmmac_start_all_dma(struct stmmac_priv *priv)
+ static void free_dma_desc_resources(struct stmmac_priv *priv)
  {
 -	/* Release the DMA TX/RX socket buffers */
 -	dma_free_rx_skbufs(priv);
@@ -3798,6 +3698,99 @@
 -	kfree(priv->rx_skbuff);
 -	kfree(priv->tx_skbuff_dma);
 -	kfree(priv->tx_skbuff);
++	/* Release the DMA RX socket buffers */
++	free_dma_rx_desc_resources(priv);
++
++	/* Release the DMA TX socket buffers */
++	free_dma_tx_desc_resources(priv);
+ }
+ 
+ /**
+@@ -1256,19 +1640,104 @@ static void free_dma_desc_resources(stru
+  */
+ static void stmmac_mac_enable_rx_queues(struct stmmac_priv *priv)
+ {
+-	int rx_count = priv->dma_cap.number_rx_queues;
+-	int queue = 0;
++	u32 rx_queues_count = priv->plat->rx_queues_to_use;
++	int queue;
++	u8 mode;
+ 
+-	/* If GMAC does not have multiple queues, then this is not necessary*/
+-	if (rx_count == 1)
+-		return;
++	for (queue = 0; queue < rx_queues_count; queue++) {
++		mode = priv->plat->rx_queues_cfg[queue].mode_to_use;
++		priv->hw->mac->rx_queue_enable(priv->hw, mode, queue);
++	}
++}
+ 
+-	/**
+-	 *  If the core is synthesized with multiple rx queues / multiple
+-	 *  dma channels, then rx queues will be disabled by default.
+-	 *  For now only rx queue 0 is enabled.
+-	 */
+-	priv->hw->mac->rx_queue_enable(priv->hw, queue);
++/**
++ * stmmac_start_rx_dma - start RX DMA channel
++ * @priv: driver private structure
++ * @chan: RX channel index
++ * Description:
++ * This starts a RX DMA channel
++ */
++static void stmmac_start_rx_dma(struct stmmac_priv *priv, u32 chan)
++{
++	netdev_dbg(priv->dev, "DMA RX processes started in channel %d\n", chan);
++	priv->hw->dma->start_rx(priv->ioaddr, chan);
++}
++
++/**
++ * stmmac_start_tx_dma - start TX DMA channel
++ * @priv: driver private structure
++ * @chan: TX channel index
++ * Description:
++ * This starts a TX DMA channel
++ */
++static void stmmac_start_tx_dma(struct stmmac_priv *priv, u32 chan)
++{
++	netdev_dbg(priv->dev, "DMA TX processes started in channel %d\n", chan);
++	priv->hw->dma->start_tx(priv->ioaddr, chan);
++}
++
++/**
++ * stmmac_stop_rx_dma - stop RX DMA channel
++ * @priv: driver private structure
++ * @chan: RX channel index
++ * Description:
++ * This stops a RX DMA channel
++ */
++static void stmmac_stop_rx_dma(struct stmmac_priv *priv, u32 chan)
++{
++	netdev_dbg(priv->dev, "DMA RX processes stopped in channel %d\n", chan);
++	priv->hw->dma->stop_rx(priv->ioaddr, chan);
++}
++
++/**
++ * stmmac_stop_tx_dma - stop TX DMA channel
++ * @priv: driver private structure
++ * @chan: TX channel index
++ * Description:
++ * This stops a TX DMA channel
++ */
++static void stmmac_stop_tx_dma(struct stmmac_priv *priv, u32 chan)
++{
++	netdev_dbg(priv->dev, "DMA TX processes stopped in channel %d\n", chan);
++	priv->hw->dma->stop_tx(priv->ioaddr, chan);
++}
++
++/**
++ * stmmac_start_all_dma - start all RX and TX DMA channels
++ * @priv: driver private structure
++ * Description:
++ * This starts all the RX and TX DMA channels
++ */
++static void stmmac_start_all_dma(struct stmmac_priv *priv)
++{
 +	u32 rx_channels_count = priv->plat->rx_queues_to_use;
 +	u32 tx_channels_count = priv->plat->tx_queues_to_use;
 +	u32 chan = 0;
@@ -3807,38 +3800,23 @@
 +
 +	for (chan = 0; chan < tx_channels_count; chan++)
 +		stmmac_start_tx_dma(priv, chan);
- }
- 
- /**
-- *  stmmac_mac_enable_rx_queues - Enable MAC rx queues
-- *  @priv: driver private structure
-- *  Description: It is used for enabling the rx queues in the MAC
++}
++
++/**
 + * stmmac_stop_all_dma - stop all RX and TX DMA channels
 + * @priv: driver private structure
 + * Description:
 + * This stops the RX and TX DMA channels
-  */
--static void stmmac_mac_enable_rx_queues(struct stmmac_priv *priv)
++ */
 +static void stmmac_stop_all_dma(struct stmmac_priv *priv)
- {
--	int rx_count = priv->dma_cap.number_rx_queues;
--	int queue = 0;
++{
 +	u32 rx_channels_count = priv->plat->rx_queues_to_use;
 +	u32 tx_channels_count = priv->plat->tx_queues_to_use;
 +	u32 chan = 0;
- 
--	/* If GMAC does not have multiple queues, then this is not necessary*/
--	if (rx_count == 1)
--		return;
++
 +	for (chan = 0; chan < rx_channels_count; chan++)
 +		stmmac_stop_rx_dma(priv, chan);
- 
--	/**
--	 *  If the core is synthesized with multiple rx queues / multiple
--	 *  dma channels, then rx queues will be disabled by default.
--	 *  For now only rx queue 0 is enabled.
--	 */
--	priv->hw->mac->rx_queue_enable(priv->hw, queue);
++
 +	for (chan = 0; chan < tx_channels_count; chan++)
 +		stmmac_stop_tx_dma(priv, chan);
  }

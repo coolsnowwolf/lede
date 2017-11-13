@@ -44,6 +44,9 @@ ipq806x_board_detect() {
 	*"R7800")
 		name="r7800"
 		;;
+	*"RT-ACRH17")
+		name="rt-acrh17"
+		;;
 	*"RT-AC58U")
 		name="rt-ac58u"
 		;;
