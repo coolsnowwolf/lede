@@ -1117,4 +1117,15 @@ define Device/tl-wr942n-v1
   MTDPARTS := spi0.0:128k(u-boot)ro,1344k(kernel),13120k(rootfs),64k(product-info)ro,64k(partition-table)ro,256k(oem-config)ro,1344k(oem-vars)ro,64k(ART)ro,14464k@0x20000(firmware)
   SUPPORTED_DEVICES := tl-wr942n-v1
 endef
-TARGET_DEVICES += tl-wr940n-v4 tl-wr941nd-v2 tl-wr941nd-v3 tl-wr941nd-v4 tl-wr941nd-v5 tl-wr941nd-v6 tl-wr941nd-v6-cn
+
+TARGET_DEVICES += tl-wr940n-v4 tl-wr941nd-v2 tl-wr941nd-v3 tl-wr941nd-v4 tl-wr941nd-v5 tl-wr941nd-v6 tl-wr941nd-v6-cn tl-wr942n-v1
+
+define Device/tl-wr941n-v7
+    $(Device/tplink-8mlzma)
+    DEVICE_TITLE := TP-LINK WR941N v7
+    BOARDNAME := TL-WR941N-v7
+    DEVICE_PROFILE := TLWR941
+    TPLINK_HWID := 0x09410007
+endef
+TARGET_DEVICES += tl-wr941n-v7
+
