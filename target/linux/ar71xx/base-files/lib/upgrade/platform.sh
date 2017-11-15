@@ -454,6 +454,7 @@ platform_check_image() {
 	tl-wr902ac-v1|\
 	tl-wr941nd-v5|\
 	tl-wr941nd-v6|\
+        tl-wr941n-v7|\
 	tl-wr940n-v4|\
 	tl-wr941nd)
 		local magic_ver="0100"
