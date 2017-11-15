@@ -413,6 +413,7 @@ get_status_led() {
 	tl-wa830re-v2|\
 	tl-wr842n-v2|\
 	tl-wr842n-v3|\
+	tl-wr842n-v9|\
 	tl-wr941nd|\
         tl-wr941n-v7|\
 	tl-wr941nd-v5)
@@ -437,9 +438,13 @@ get_status_led() {
 	tl-wr841n-v9)
 		status_led="tp-link:green:qss"
 		;;
+	tl-wr882n-v1)
+		status_led="tp-link:white:status"
+		;;
 	tl-wr2543n)
 		status_led="tp-link:green:wps"
 		;;
+        tl-wdr6500-v6|\
 	tl-wdr6500-v2)
 		status_led="tp-link:white:system"
 		;;
