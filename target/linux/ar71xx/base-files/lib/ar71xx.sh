@@ -992,6 +992,9 @@ ar71xx_board_detect() {
 	*"SC450")
 		name="sc450"
 		;;
+	"GRENTECH SGR-W500-N85b v2.0")
+		name="sgr-w500-n85b-v2"
+		;;
 	*"SMART-300")
 		name="smart-300"
 		;;
