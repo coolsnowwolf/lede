@@ -318,6 +318,9 @@ tplink_board_detect() {
 	"65000002")
 		model="TP-Link TL-WDR6500"
 		;;
+	"65000006")
+		model="TP-Link TL-WDR6500"
+		;;
 	"721000"*)
 		model="TP-Link TL-WA7210N"
 		;;
@@ -1112,6 +1115,9 @@ ar71xx_board_detect() {
 	*"TL-WDR6500 v2")
 		name="tl-wdr6500-v2"
 		;;
+	*"TL-WDR6500 v6")
+		name="tl-wdr6500-v6"
+		;;
 	*"TL-WPA8630")
 		name="tl-wpa8630"
 		;;
@@ -1183,6 +1189,12 @@ ar71xx_board_detect() {
 		;;
 	*"TL-WR842N/ND v3")
 		name="tl-wr842n-v3"
+		;;
+	*"TL-WR842N/ND v9")
+		name="tl-wr842n-v9"
+		;;
+	*"TL-WR882N v1")
+		name="tl-wr882n-v1"
 		;;
 	*"TL-WR902AC v1")
 		name="tl-wr902ac-v1"

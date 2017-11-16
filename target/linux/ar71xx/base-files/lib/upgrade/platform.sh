@@ -427,6 +427,7 @@ platform_check_image() {
 	tl-wdr4300|\
 	tl-wdr4900-v2|\
 	tl-wdr6500-v2|\
+	tl-wdr6500-v6|\
 	tl-wpa8630|\
 	tl-wr1041n-v2|\
 	tl-wr1043nd-v2|\
@@ -451,6 +452,8 @@ platform_check_image() {
 	tl-wr841n-v9|\
 	tl-wr842n-v2|\
 	tl-wr842n-v3|\
+	tl-wr842n-v9|\
+	tl-wr882n-v1|\
 	tl-wr902ac-v1|\
 	tl-wr941nd-v5|\
 	tl-wr941nd-v6|\
@@ -460,6 +463,8 @@ platform_check_image() {
 		local magic_ver="0100"
 
 		case "$board" in
+		tl-wdr6500-v6|\
+		tl-wdr3320-v2|\
 		tl-wdr6500-v2)
 			magic_ver="0200"
 			;;

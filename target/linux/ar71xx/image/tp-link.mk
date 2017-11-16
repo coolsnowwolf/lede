@@ -1129,3 +1129,34 @@ define Device/tl-wr941n-v7
 endef
 TARGET_DEVICES += tl-wr941n-v7
 
+define Device/tl-wdr6500-v6
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WDR6500 v6
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
+  KERNEL := kernel-bin | patch-cmdline | lzma | uImage lzma
+  KERNEL_INITRAMFS := kernel-bin | patch-cmdline | lzma | uImage lzma | mktplinkfw-combined
+  BOARDNAME := TL-WDR6500-v6
+  DEVICE_PROFILE := TLWDR6500V6
+  TPLINK_HWID := 0x65000006
+  TPLINK_HEADER_VERSION := 2
+endef
+TARGET_DEVICES += tl-wdr6500-v6
+
+define Device/tl-wr842n-v9
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR842N/ND v9
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
+  BOARDNAME := TL-WR842N-v9
+  DEVICE_PROFILE := TLWR842
+  TPLINK_HWID := 0x08420009
+endef
+TARGET_DEVICES += tl-wr842n-v9
+
+define Device/tl-wr882n-v1
+    $(Device/tplink-8mlzma)
+    DEVICE_TITLE := TP-LINK TL-WR882N v1
+    BOARDNAME := TL-WR882N-v1
+    DEVICE_PROFILE := TLWR882
+    TPLINK_HWID := 0x08820001
+endef
+TARGET_DEVICES += tl-wr882n-v1
