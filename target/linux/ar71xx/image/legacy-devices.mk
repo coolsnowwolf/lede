@@ -589,3 +589,9 @@ define LegacyDevice/NBG_460N_550N_550NH
   DEVICE_PACKAGES := kmod-rtc-pcf8563
 endef
 LEGACY_DEVICES += NBG_460N_550N_550NH
+
+define LegacyDevice/SGRW500N85BV2
+   DEVICE_TITLE := GRENTECH SGR-W500-N85b v2.0 board
+   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage
+endef
+LEGACY_DEVICES += SGRW500N85BV2

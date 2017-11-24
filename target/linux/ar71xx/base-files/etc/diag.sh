@@ -350,6 +350,9 @@ get_status_led() {
 	rw2458n)
 		status_led="$board:green:d3"
 		;;
+        sgr-w500-n85b-v2)
+		status_led="grentech:green:status"
+		;;
 	smart-300)
 		status_led="nc-link:green:system"
 		;;
