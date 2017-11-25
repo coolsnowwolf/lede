@@ -203,6 +203,7 @@ enum ath79_mach_type {
 	ATH79_MACH_SC1750,			/* Abicom SC1750 */
 	ATH79_MACH_SC300M,			/* Abicom SC300M */
 	ATH79_MACH_SC450,			/* Abicom SC450 */
+        ATH79_MACH_SGR_W500_N85B_V2,	        /* GRENTECH SGR-W500-N85B v2 */
 	ATH79_MACH_SMART_300,			/* NC-LINK SMART-300 */
 	ATH79_MACH_SOM9331,			/* OpenEmbed SOM9331 */
 	ATH79_MACH_SR3200,			/* YunCore SR3200 */
