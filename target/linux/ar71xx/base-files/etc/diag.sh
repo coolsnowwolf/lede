@@ -350,6 +350,9 @@ get_status_led() {
 	rw2458n)
 		status_led="$board:green:d3"
 		;;
+        sgr-w500-n85b-v2)
+		status_led="grentech:green:status"
+		;;
 	smart-300)
 		status_led="nc-link:green:system"
 		;;
@@ -413,7 +416,9 @@ get_status_led() {
 	tl-wa830re-v2|\
 	tl-wr842n-v2|\
 	tl-wr842n-v3|\
+	tl-wr842n-v9|\
 	tl-wr941nd|\
+        tl-wr941n-v7|\
 	tl-wr941nd-v5)
 		status_led="tp-link:green:system"
 		;;
@@ -436,9 +441,13 @@ get_status_led() {
 	tl-wr841n-v9)
 		status_led="tp-link:green:qss"
 		;;
+	tl-wr882n-v1)
+		status_led="tp-link:white:status"
+		;;
 	tl-wr2543n)
 		status_led="tp-link:green:wps"
 		;;
+        tl-wdr6500-v6|\
 	tl-wdr6500-v2)
 		status_led="tp-link:white:system"
 		;;

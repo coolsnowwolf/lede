@@ -1004,6 +1004,7 @@ $(eval $(call SingleProfile,Zcomax,64k,ZCN1523H28,zcn-1523h-2-8,ZCN-1523H-2,ttyS
 $(eval $(call SingleProfile,Zcomax,64k,ZCN1523H516,zcn-1523h-5-16,ZCN-1523H-5,ttyS0,115200,$$(zcn1523h_mtdlayout)))
 
 $(eval $(call SingleProfile,ZyXEL,64k,NBG_460N_550N_550NH,nbg460n_550n_550nh,NBG460N,ttyS0,115200,NBG-460N))
+$(eval $(call SingleProfile,AthLzma,64k,SGRW500N85BV2,sgr-w500-n85b-v2,SGRW500N85BV2,ttyS0,115200,$$(ap147_mtdlayout),RKuImage))
 
 endif # ifeq ($(SUBTARGET),generic)
 
