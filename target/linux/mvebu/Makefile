@@ -14,7 +14,7 @@ CPU_TYPE:=cortex-a9
 CPU_SUBTYPE:=vfpv3
 MAINTAINER:=Imre Kaloz <kaloz@openwrt.org>
 
-KERNEL_PATCHVER:=4.4
+KERNEL_PATCHVER:=4.9
 
 include $(INCLUDE_DIR)/target.mk
 
