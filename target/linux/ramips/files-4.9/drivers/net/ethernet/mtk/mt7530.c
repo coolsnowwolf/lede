@@ -220,6 +220,12 @@ struct mt7530_mapping {
 		.members = { 0, 0x7e, 0x41 },
 		.etags = { 0, 0x40, 0x40 },
 		.vids = { 0, 1, 2 },
+	}, {
+		.name = "lwlll",
+		.pvids = { 1, 2, 1, 1, 1, 1, 1 },
+		.members = { 0, 0x7d, 0x42 },
+		.etags = { 0, 0x40, 0x40 },
+		.vids = { 0, 1, 2 },
 	},
 };
 
@@ -922,7 +928,7 @@ mt7530_probe(struct device *dev, void __iomem *base, struct mii_bus *bus, int vl
 
 	/* magic vodoo */
 	if (!IS_ENABLED(CONFIG_SOC_MT7621) && bus && mt7530_r32(mt7530, REG_HWTRAP) !=  0x1117edf) {
-	        dev_info(dev, "fixing up MHWTRAP register - bootloader probably played with it\n");
+		dev_info(dev, "fixing up MHWTRAP register - bootloader probably played with it\n");
 		mt7530_w32(mt7530, REG_HWTRAP, 0x1117edf);
 	}
 	dev_info(dev, "loaded %s driver\n", swdev->name);
