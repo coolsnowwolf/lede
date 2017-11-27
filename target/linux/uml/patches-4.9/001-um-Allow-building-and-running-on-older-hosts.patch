@@ -1,0 +1,99 @@
+From 0a987645672ebde7844a9c0732a5a25f3d4bb6c6 Mon Sep 17 00:00:00 2001
+From: Florian Fainelli <f.fainelli@gmail.com>
+Date: Thu, 25 May 2017 11:36:26 -0700
+Subject: [PATCH] um: Allow building and running on older hosts
+
+[ Upstream commit 0a987645672ebde7844a9c0732a5a25f3d4bb6c6 ]
+
+Commit a78ff1112263 ("um: add extended processor state save/restore
+support") and b6024b21fec8 ("um: extend fpstate to _xstate to support
+YMM registers") forced the use of the x86 FP _xstate and
+PTRACE_GETREGSET/SETREGSET. On older hosts, we would neither be able to
+build UML nor run it anymore with these two commits applied because we
+don't have definitions for struct _xstate nor these two ptrace requests.
+
+We can determine at build time which fp context structure to check
+against, just like we can keep using the old i387 fp save/restore if
+PTRACE_GETRESET/SETREGSET are not defined.
+
+Fixes: a78ff1112263 ("um: add extended processor state save/restore support")
+Fixes: b6024b21fec8 ("um: extend fpstate to _xstate to support YMM registers")
+Signed-off-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: Richard Weinberger <richard@nod.at>
+---
+ arch/x86/um/os-Linux/registers.c | 12 ++++++++----
+ arch/x86/um/user-offsets.c       |  4 ++++
+ 2 files changed, 12 insertions(+), 4 deletions(-)
+
+--- a/arch/x86/um/os-Linux/registers.c
++++ b/arch/x86/um/os-Linux/registers.c
+@@ -26,6 +26,7 @@ int save_i387_registers(int pid, unsigne
+ 
+ int save_fp_registers(int pid, unsigned long *fp_regs)
+ {
++#ifdef PTRACE_GETREGSET
+ 	struct iovec iov;
+ 
+ 	if (have_xstate_support) {
+@@ -34,9 +35,9 @@ int save_fp_registers(int pid, unsigned
+ 		if (ptrace(PTRACE_GETREGSET, pid, NT_X86_XSTATE, &iov) < 0)
+ 			return -errno;
+ 		return 0;
+-	} else {
++	} else
++#endif
+ 		return save_i387_registers(pid, fp_regs);
+-	}
+ }
+ 
+ int restore_i387_registers(int pid, unsigned long *fp_regs)
+@@ -48,6 +49,7 @@ int restore_i387_registers(int pid, unsi
+ 
+ int restore_fp_registers(int pid, unsigned long *fp_regs)
+ {
++#ifdef PTRACE_SETREGSET
+ 	struct iovec iov;
+ 
+ 	if (have_xstate_support) {
+@@ -56,9 +58,9 @@ int restore_fp_registers(int pid, unsign
+ 		if (ptrace(PTRACE_SETREGSET, pid, NT_X86_XSTATE, &iov) < 0)
+ 			return -errno;
+ 		return 0;
+-	} else {
++	} else
++#endif
+ 		return restore_i387_registers(pid, fp_regs);
+-	}
+ }
+ 
+ #ifdef __i386__
+@@ -122,6 +124,7 @@ int put_fp_registers(int pid, unsigned l
+ 
+ void arch_init_registers(int pid)
+ {
++#ifdef PTRACE_GETREGSET
+ 	struct _xstate fp_regs;
+ 	struct iovec iov;
+ 
+@@ -129,6 +132,7 @@ void arch_init_registers(int pid)
+ 	iov.iov_len = sizeof(struct _xstate);
+ 	if (ptrace(PTRACE_GETREGSET, pid, NT_X86_XSTATE, &iov) == 0)
+ 		have_xstate_support = 1;
++#endif
+ }
+ #endif
+ 
+--- a/arch/x86/um/user-offsets.c
++++ b/arch/x86/um/user-offsets.c
+@@ -50,7 +50,11 @@ void foo(void)
+ 	DEFINE(HOST_GS, GS);
+ 	DEFINE(HOST_ORIG_AX, ORIG_EAX);
+ #else
++#if defined(PTRACE_GETREGSET) && defined(PTRACE_SETREGSET)
+ 	DEFINE(HOST_FP_SIZE, sizeof(struct _xstate) / sizeof(unsigned long));
++#else
++	DEFINE(HOST_FP_SIZE, sizeof(struct _fpstate) / sizeof(unsigned long));
++#endif
+ 	DEFINE_LONGS(HOST_BX, RBX);
+ 	DEFINE_LONGS(HOST_CX, RCX);
+ 	DEFINE_LONGS(HOST_DI, RDI);

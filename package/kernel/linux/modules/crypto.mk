@@ -363,6 +363,17 @@ endef
 
 $(eval $(call KernelPackage,crypto-ecb))
 
+define KernelPackage/crypto-cts
+  TITLE:=Cipher Text Stealing CryptoAPI module
+  DEPENDS:=+kmod-crypto-manager
+  KCONFIG:=CONFIG_CRYPTO_CTS
+  FILES:=$(LINUX_DIR)/crypto/cts.ko
+  AUTOLOAD:=$(call AutoLoad,09,cts)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-cts))
+
 
 define KernelPackage/crypto-hmac
   TITLE:=HMAC digest CryptoAPI module

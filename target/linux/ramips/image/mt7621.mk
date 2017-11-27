@@ -121,7 +121,7 @@ define Device/mir3g
   SUPPORTED_DEVICES += R3G
   DEVICE_PACKAGES := \
 	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-mini \
-	kmod-softdog
+	uboot-envtools
 endef
 TARGET_DEVICES += mir3g
 
@@ -225,6 +225,14 @@ define Device/timecloud
 endef
 TARGET_DEVICES += timecloud
 
+define Device/u7621-06-256M-16M
+  DTS := U7621-06-256M-16M
+  IMAGE_SIZE := 16064k
+  DEVICE_TITLE := UniElec U7621-06 (256M RAM/16M flash)
+  DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-sdhci-mt7620 kmod-usb3
+endef
+TARGET_DEVICES += u7621-06-256M-16M
+
 define Device/ubnt-erx
   DTS := UBNT-ERX
   FILESYSTEMS := squashfs
@@ -320,6 +328,17 @@ define Device/zbt-we1326
 	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-sdhci-mt7620 wpad-mini
 endef
 TARGET_DEVICES += zbt-we1326
+
+define Device/zbt-we3526
+  DTS := ZBT-WE3526
+  IMAGE_SIZE := $(ralink_default_fw_size_16M)
+  SUPPORTED_DEVICES += zbt-we3526
+  DEVICE_TITLE := ZBT WE3526
+  DEVICE_PACKAGES := \
+	kmod-sdhci-mt7620 kmod-mt7603 kmod-mt76x2 \
+	kmod-usb3 kmod-usb-ledtrig-usbport wpad-mini
+endef
+TARGET_DEVICES += zbt-we3526
 
 define Device/zbt-wg2626
   DTS := ZBT-WG2626

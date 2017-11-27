@@ -2,7 +2,7 @@
 # MT76x8 Profiles
 #
 
-DEVICE_VARS += TPLINK_BOARD_ID
+DEVICE_VARS += TPLINK_FLASHLAYOUT TPLINK_HWID TPLINK_HWREV TPLINK_HWREVADD TPLINK_HVERSION
 
 define Device/duzun-dm06
   DTS := DUZUN-DM06
@@ -85,12 +85,32 @@ define Device/tl-wr840n-v4
   DTS := TL-WR840NV4
   IMAGE_SIZE := 7808k
   DEVICE_TITLE := TP-Link TL-WR840N v4
-  TPLINK_BOARD_ID := TL-WR840NV4
+  TPLINK_FLASHLAYOUT := 8Mmtk
+  TPLINK_HWID := 0x08400004
+  TPLINK_HWREV := 0x1
+  TPLINK_HWREVADD := 0x4
+  TPLINK_HVERSION := 3
   KERNEL := $(KERNEL_DTB)
+  KERNEL_INITRAMFS := $(KERNEL_DTB) | tplink-v2-header -e
   IMAGES += tftp-recovery.bin
-  IMAGE/factory.bin := tplink-v2-image
+  IMAGE/factory.bin := tplink-v2-image -e
   IMAGE/tftp-recovery.bin := pad-extra 128k | $$(IMAGE/factory.bin)
-  IMAGE/sysupgrade.bin := tplink-v2-image -s | append-metadata | \
+  IMAGE/sysupgrade.bin := tplink-v2-image -s -e | append-metadata | \
+	check-size $$$$(IMAGE_SIZE)
+endef
+
+define Device/tl-wr840n-v5
+  DTS := TL-WR840NV5
+  IMAGE_SIZE := 3840k
+  DEVICE_TITLE := TP-Link TL-WR840N v5
+  TPLINK_FLASHLAYOUT := 4Mmtk
+  TPLINK_HWID := 0x08400005
+  TPLINK_HWREV := 0x1
+  TPLINK_HWREVADD := 0x5
+  TPLINK_HVERSION := 3
+  KERNEL := $(KERNEL_DTB)
+  KERNEL_INITRAMFS := $(KERNEL_DTB) | tplink-v2-header -e
+  IMAGE/sysupgrade.bin := tplink-v2-image -s -e | append-metadata | \
 	check-size $$$$(IMAGE_SIZE)
 endef
 
@@ -98,9 +118,19 @@ define Device/tl-wr841n-v13
   $(Device/tl-wr840n-v4)
   DTS := TL-WR841NV13
   DEVICE_TITLE := TP-Link TL-WR841N v13
-  TPLINK_BOARD_ID := TL-WR841NV13
+  TPLINK_HWID := 0x08410013
+  TPLINK_HWREV := 0x268
+  TPLINK_HWREVADD := 0x13
 endef
-TARGET_DEVICES += tl-wr840n-v4 tl-wr841n-v13
+TARGET_DEVICES += tl-wr840n-v4 tl-wr840n-v5 tl-wr841n-v13
+
+define Device/u7628-01-128M-16M
+  DTS := U7628-01-128M-16M
+  IMAGE_SIZE := 16064k
+  DEVICE_TITLE := UniElec U7628-01 (128M RAM/16M flash)
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += u7628-01-128M-16M
 
 define Device/vocore2
   DTS := VOCORE2
