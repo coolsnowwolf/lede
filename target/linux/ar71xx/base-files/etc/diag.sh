@@ -230,6 +230,13 @@ get_status_led() {
 	ls-sr71)
 		status_led="ubnt:green:d22"
 		;;
+	maselink-ap2600i)
+		status_led="ap2600i:green:power"
+		;;
+        maselink-ap2600ifm)
+		status_led="ap2600ifm:green:power"
+		;;
+        mw316r-v1|\
 	mc-mac1200r)
 		status_led="mercury:green:system"
 		;;
@@ -351,6 +358,9 @@ get_status_led() {
 		status_led="$board:green:d3"
 		;;
         sgr-w500-n85b-v2)
+		status_led="grentech:green:status"
+		;;
+	sgr-w500-ebi-fit-v3)
 		status_led="grentech:green:status"
 		;;
 	smart-300)

@@ -263,6 +263,9 @@ tplink_board_detect() {
 	"120000"*)
 		model="MERCURY MAC1200R"
 		;;
++	"031600"*)
+		model="Mercury MW316R"
+		;;
 	"254300"*)
 		model="TP-Link TL-WR2543N/ND"
 		;;
@@ -720,6 +723,15 @@ ar71xx_board_detect() {
 	*"MAC1200R")
 		name="mc-mac1200r"
 		;;
+        *"MW316R v1")
+		name="mw316r-v1"
+		;;
+        *"MASELink AP2600-I")
+		name="maselink-ap2600i"
+		;;
+        *"MASELink AP2600-IFM")
+		name="maselink-ap2600ifm"
+		;;
 	*"MiniBox V1.0")
 		name="minibox-v1"
 		;;
@@ -994,6 +1006,9 @@ ar71xx_board_detect() {
 		;;
 	"GRENTECH SGR-W500-N85b v2.0")
 		name="sgr-w500-n85b-v2"
+		;;
+	"GRENTECH SGR-W500-EBI(FIT) v3.0")
+		name="sgr-w500-ebi-fit-v3"
 		;;
 	*"SMART-300")
 		name="smart-300"

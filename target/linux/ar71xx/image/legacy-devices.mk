@@ -591,7 +591,25 @@ endef
 LEGACY_DEVICES += NBG_460N_550N_550NH
 
 define LegacyDevice/SGRW500N85BV2
-   DEVICE_TITLE := GRENTECH SGR-W500-N85b v2.0 board
-   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage
+  DEVICE_TITLE := GRENTECH SGR-W500-N85b v2.0 board
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage
 endef
 LEGACY_DEVICES += SGRW500N85BV2
+
+define LegacyDevice/SGRW500EBIFITV3
+  DEVICE_TITLE := GRENTECH SGR-W500-EBI(FIT) v3.0
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage
+endef
+LEGACY_DEVICES += SGRW500EBIFITV3
+
+define LegacyDevice/AP2600I
+  DEVICE_TITLE := Comba MASELink AP2600-I board
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage
+endef
+LEGACY_DEVICES += AP2600I
+
+define LegacyDevice/AP2600IFM
+  DEVICE_TITLE := Comba MASELink AP2600-IFM board
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage
+endef
+LEGACY_DEVICES += AP2600IFM
