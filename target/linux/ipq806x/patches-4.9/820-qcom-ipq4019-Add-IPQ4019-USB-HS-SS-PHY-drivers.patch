@@ -291,7 +291,7 @@ Changed:
 +MODULE_DESCRIPTION("USB3 QCA BALDUR HSPHY driver");
 --- /dev/null
 +++ b/drivers/usb/phy/phy-qca-uniphy.c
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,202 @@
 +/* Copyright (c) 2015, The Linux Foundation. All rights reserved.
 + *
 + * Permission to use, copy, modify, and/or distribute this software for any
@@ -318,6 +318,18 @@ Changed:
 +#include <linux/usb/phy.h>
 +#include <linux/reset.h>
 +#include <linux/of_device.h>
++#include <linux/qcom_scm.h>
++
++#define USB_CALIBRATION_CMD	0x10
++#define USB3PHY_SPARE_1		0x7FC
++#define RX_LOS_1		0x7C8
++#define MISC_SOURCE_REG		0x21c
++#define CDR_CONTROL_REG_1	0x80
++#define PCS_INTERNAL_CONTROL14	0x364
++#define MMD1_REG_REG_MASK	(0x7F << 8)
++#define OTP_MASK		(0x7F << 5)
++#define MMD1_REG_AUTOLOAD_MASK	(0x1 << 7)
++#define SPARE_1_BIT14_MASK	(0x1 << 14)
 +
 +struct qca_uni_ss_phy {
 +	struct usb_phy phy;
@@ -338,6 +350,60 @@ Changed:
 +	reset_control_assert(phy->por_rst);
 +}
 +
++int qca_uni_ss_phy_usb_los_calibration(void __iomem *base)
++{
++	int err;
++	uint32_t data, otp_val = 0;
++
++	/* Get OTP value */
++	err = qcom_scm_fuse(USB_CALIBRATION_CMD, &otp_val);
++	if (err < 0 || !(otp_val & OTP_MASK)) {
++		pr_err("USB Calibration Failed with error %d %d\n", err, otp_val);
++		return 0;
++	}
++
++	pr_info("Raw USB3 Calibration value %x\n", otp_val);
++
++	/*
++	 * Read the USB3PHY_SPARE_1 register and
++	 * set bit 14 to 0
++	 */
++	data = readl_relaxed(base + USB3PHY_SPARE_1);
++	data = data & (~SPARE_1_BIT14_MASK);
++	writel(data, base + USB3PHY_SPARE_1);
++	udelay(100);
++
++	/*
++	 * Get bit 11:5 value, add with 0x14 and set to the
++	 * register USB3PHY_RX_LOS_1 bit MMD1_REG_REG
++	 */
++	data = readl_relaxed(base + RX_LOS_1);
++	otp_val = ((otp_val & OTP_MASK) >> 5) + 0x14;
++	otp_val = otp_val << 8;
++	data = data & (~MMD1_REG_REG_MASK);
++	data = data | otp_val;
++	writel(data, base + RX_LOS_1);
++	udelay(100);
++
++	/*
++	 * Set bit MMD1_REG_AUTOLOAD_SEL_RX_LOS_THRES in
++	 * USB3PHY_RX_LOS_1 to 1
++	 */
++	data = readl_relaxed(base + RX_LOS_1);
++	data = data | MMD1_REG_AUTOLOAD_MASK;
++	writel(data, base + RX_LOS_1);
++	udelay(100);
++
++	writel(0x4000, base + PCS_INTERNAL_CONTROL14);
++	udelay(100);
++	writel(0xaa0a, base + MISC_SOURCE_REG);
++	udelay(100);
++	writel(0x0202, base + CDR_CONTROL_REG_1);
++	udelay(100);
++
++	return 0;
++}
++
 +static int qca_uni_ss_phy_init(struct usb_phy *x)
 +{
 +	struct qca_uni_ss_phy *phy = phy_to_dw_phy(x);
@@ -350,7 +416,8 @@ Changed:
 +	/* deassert SS PHY POR reset */
 +	reset_control_deassert(phy->por_rst);
 +
-+	return 0;
++	/* USB LOS Calibration */
++	return qca_uni_ss_phy_usb_los_calibration(phy->base);
 +}
 +
 +static int qca_uni_ss_get_resources(struct platform_device *pdev,
