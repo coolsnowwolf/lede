@@ -263,8 +263,11 @@ tplink_board_detect() {
 	"120000"*)
 		model="MERCURY MAC1200R"
 		;;
-+	"031600"*)
+	"031600"*)
 		model="Mercury MW316R"
+		;;
+	"204100"*)
+		model="TP-Link TL-WR2041N"
 		;;
 	"254300"*)
 		model="TP-Link TL-WR2543N/ND"
@@ -1150,6 +1153,12 @@ ar71xx_board_detect() {
 		;;
 	*"TL-WR1043ND v4")
 		name="tl-wr1043nd-v4"
+		;;
+        *"TL-WR2041N v1")
+		name="tl-wr2041n-v1"
+		;;
+        *"TL-WR2041N v2")
+		name="tl-wr2041n-v2"
 		;;
 	*"TL-WR2543N"*)
 		name="tl-wr2543n"
