@@ -643,12 +643,24 @@ define Device/tl-wdr6500-v2
   TPLINK_HEADER_VERSION := 2
 endef
 
+define Device/tl-wdr6500-v6
+$(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WDR6500 v6
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca9888
+  KERNEL := kernel-bin | patch-cmdline | lzma | uImage lzma
+  KERNEL_INITRAMFS := kernel-bin | patch-cmdline | lzma | uImage lzma | tplink-v1-header
+  BOARDNAME = TL-WDR6500-v6
+  DEVICE_PROFILE = TLWDR6500V6
+  TPLINK_HWID := 0x65000006
+  TPLINK_HEADER_VERSION := 2
+endef
+
 define Device/mw4530r-v1
   $(Device/tl-wdr4300-v1)
   DEVICE_TITLE := Mercury MW4530R v1
   TPLINK_HWID := 0x45300001
 endef
-TARGET_DEVICES += tl-wdr3320-v2 tl-wdr3500-v1 tl-wdr3600-v1 tl-wdr4300-v1 tl-wdr4300-v1-il tl-wdr4310-v1 tl-wdr4900-v2 tl-wdr6500-v2 mw4530r-v1
+TARGET_DEVICES += tl-wdr3320-v2 tl-wdr3500-v1 tl-wdr3600-v1 tl-wdr4300-v1 tl-wdr4300-v1-il tl-wdr4310-v1 tl-wdr4900-v2 tl-wdr6500-v2 tl-wdr6500-v6 mw4530r-v1
 
 define Device/tl-wpa8630-v1
   $(Device/tplink-8mlzma)
@@ -1136,19 +1148,6 @@ define Device/tl-wr941n-v7
     TPLINK_HWID := 0x09410007
 endef
 TARGET_DEVICES += tl-wr941n-v7
-
-define Device/tl-wdr6500-v6
-  $(Device/tplink-8mlzma)
-  DEVICE_TITLE := TP-LINK TL-WDR6500 v6
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
-  KERNEL := kernel-bin | patch-cmdline | lzma | uImage lzma
-  KERNEL_INITRAMFS := kernel-bin | patch-cmdline | lzma | uImage lzma | mktplinkfw-combined
-  BOARDNAME := TL-WDR6500-v6
-  DEVICE_PROFILE := TLWDR6500V6
-  TPLINK_HWID := 0x65000006
-  TPLINK_HEADER_VERSION := 2
-endef
-TARGET_DEVICES += tl-wdr6500-v6
 
 define Device/tl-wr842n-v9
   $(Device/tplink-8mlzma)
