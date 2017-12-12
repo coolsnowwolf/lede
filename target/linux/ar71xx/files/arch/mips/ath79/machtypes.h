@@ -127,6 +127,9 @@ enum ath79_mach_type {
 	ATH79_MACH_JWAP230,			/* jjPlus JWAP230 */
 	ATH79_MACH_LIMA,			/* 8devices Lima */
 	ATH79_MACH_MC_MAC1200R,			/* MERCURY MAC1200R */
+        ATH79_MACH_MW316R_V1,		        /* Mercury MW316R v1 */
+        ATH79_MACH_MASELINK_AP2600I,	        /* Comba MASELink AP2600-I */
+        ATH79_MACH_MASELINK_AP2600IFM,	        /* Comba MASELink AP2600-IFM */
 	ATH79_MACH_MR12,			/* Cisco Meraki MR12 */
 	ATH79_MACH_MR16,			/* Cisco Meraki MR16 */
 	ATH79_MACH_MR1750,			/* OpenMesh MR1750 */
@@ -204,6 +207,7 @@ enum ath79_mach_type {
 	ATH79_MACH_SC300M,			/* Abicom SC300M */
 	ATH79_MACH_SC450,			/* Abicom SC450 */
         ATH79_MACH_SGR_W500_N85B_V2,	        /* GRENTECH SGR-W500-N85B v2 */
+	ATH79_MACH_SGR_W500_EBI_FIT_V3,	        /* GRENTECH SGR-W500-EBI(FIT) v3.0 */
 	ATH79_MACH_SMART_300,			/* NC-LINK SMART-300 */
 	ATH79_MACH_SOM9331,			/* OpenEmbed SOM9331 */
 	ATH79_MACH_SR3200,			/* YunCore SR3200 */

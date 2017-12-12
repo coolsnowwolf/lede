@@ -597,6 +597,15 @@ define Device/mc-mac1200r
 endef
 TARGET_DEVICES += mc-mac1200r
 
+define Device/mw316r-v1
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := Mercury MW316R v1
+  BOARDNAME := MW316R-v1
+  DEVICE_PROFILE := MW316R
+  TPLINK_HWID := 0x03160001
+endef
+TARGET_DEVICES += mw316r-v1
+
 define Device/minibox-v1
   $(Device/tplink-16mlzma)
   DEVICE_TITLE := Gainstrong MiniBox V1.0

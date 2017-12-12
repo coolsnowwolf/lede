@@ -326,9 +326,12 @@ platform_check_image() {
 	dw33d|\
 	f9k1115v2|\
 	hornet-ub|\
+        maselink-ap2600i|\
+        maselink-ap2600ifm|\
 	mr12|\
 	mr16|\
         sgr-w500-n85b-v2|\
+        sgr-w500-ebi-fit-v3|\
 	zbt-we1526|\
 	zcn-1523h-2|\
 	zcn-1523h-5)
@@ -387,6 +390,7 @@ platform_check_image() {
 	el-mini|\
 	gl-inet|\
 	mc-mac1200r|\
+        mw316r-v1|\
 	minibox-v1|\
 	omy-g1|\
 	omy-x1|\
