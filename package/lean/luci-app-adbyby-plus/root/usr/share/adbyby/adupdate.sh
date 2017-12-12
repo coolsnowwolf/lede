@@ -13,6 +13,12 @@ if [ $update_source -eq 1 ]; then
   
 fi
 
+killall -q adbyby
+if mount | grep adbyby >/dev/null 2>&1; then
+      echo "umount adbyby"
+      umount /usr/share/adbyby/data
+    fi
+
 [ ! -s "/tmp/lazy.txt" ] && wget-ssl --no-check-certificate -O /tmp/lazy.txt https://raw.githubusercontent.com/adbyby/xwhyc-rules/master/lazy.txt
 [ ! -s "/tmp/video.txt" ] && wget-ssl --no-check-certificate -O /tmp/video.txt https://raw.githubusercontent.com/adbyby/xwhyc-rules/master/video.txt
 
@@ -21,5 +27,5 @@ fi
 [ -s "/tmp/user.action" ] && ( ! cmp -s /tmp/user.action /usr/share/adbyby/user.action ) && mv /tmp/user.action /usr/share/adbyby/user.action	
 
 rm -f /tmp/lazy.txt /tmp/video.txt /tmp/user.action
-
+rm -rf /tmp/adbyby
 /etc/init.d/adbyby restart
