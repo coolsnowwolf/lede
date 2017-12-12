@@ -469,7 +469,7 @@ detect_broadcom() {
 			set wireless.default_wl${i}.device=wl${i}
 			set wireless.default_wl${i}.network=lan
 			set wireless.default_wl${i}.mode=ap
-			set wireless.default_wl${i}.ssid=Lede${i#0}
+			set wireless.default_wl${i}.ssid=OpenWrt${i#0}
 			set wireless.default_wl${i}.encryption=none
 EOF
 		uci -q commit wireless
