@@ -39,7 +39,7 @@ endef
 
 define Build/fullimage
 	mkimage -A mips -O linux -C lzma -T filesystem -a 0x00  \
-		-e 0x00 -n 'LEDE RootFS' \
+		-e 0x00 -n 'OpenWrt RootFS' \
 		-d $(IMAGE_ROOTFS) $(IMAGE_ROOTFS).new
 
 	cat $(IMAGE_KERNEL) $(IMAGE_ROOTFS).new > $@.tmp

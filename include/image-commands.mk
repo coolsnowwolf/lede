@@ -7,7 +7,7 @@ define Build/uImage
 	mkimage -A $(LINUX_KARCH) \
 		-O linux -T kernel \
 		-C $(1) -a $(KERNEL_LOADADDR) -e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
-		-n '$(if $(UIMAGE_NAME),$(UIMAGE_NAME),$(call toupper,$(LINUX_KARCH)) LEDE Linux-$(LINUX_VERSION))' -d $@ $@.new
+		-n '$(if $(UIMAGE_NAME),$(UIMAGE_NAME),$(call toupper,$(LINUX_KARCH)) OpenWrt Linux-$(LINUX_VERSION))' -d $@ $@.new
 	mv $@.new $@
 endef
 
@@ -60,7 +60,7 @@ endef
 
 define Build/netgear-dni
 	$(STAGING_DIR_HOST)/bin/mkdniimg \
-		-B $(NETGEAR_BOARD_ID) -v LEDE.$(REVISION) \
+		-B $(NETGEAR_BOARD_ID) -v OpenWrt.$(REVISION) \
 		$(if $(NETGEAR_HW_ID),-H $(NETGEAR_HW_ID)) \
 		-r "$(1)" \
 		-i $@ -o $@.new
@@ -83,7 +83,7 @@ define Build/append-uImage-fakeroot-hdr
 	rm -f $@.fakeroot
 	$(STAGING_DIR_HOST)/bin/mkimage \
 		-A $(LINUX_KARCH) -O linux -T filesystem -C none \
-		-n '$(call toupper,$(LINUX_KARCH)) LEDE fakeroot' \
+		-n '$(call toupper,$(LINUX_KARCH)) OpenWrt fakeroot' \
 		-s \
 		$@.fakeroot
 	cat $@.fakeroot >> $@

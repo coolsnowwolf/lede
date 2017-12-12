@@ -275,6 +275,7 @@ wndr4300_mtdlayout=mtdparts=ar934x-nfc:256k(u-boot)ro,256k(u-boot-env)ro,256k(ca
 zcn1523h_mtdlayout=mtdparts=spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,6208k(rootfs),1472k(kernel),64k(configure)ro,64k(mfg)ro,64k(art)ro,7680k@0x50000(firmware)
 mynet_rext_mtdlayout=mtdparts=spi0.0:256k(u-boot)ro,7808k(firmware),64k(nvram)ro,64k(ART)ro
 zyx_nbg6716_mtdlayout=mtdparts=spi0.0:256k(u-boot)ro,64k(env)ro,64k(RFdata)ro,-(nbu);ar934x-nfc:2048k(zyxel_rfsd),2048k(romd),1024k(header),2048k(kernel),-(ubi)
+ap2600ifm_256kblk_mtdlayout=mtdparts=spi0.0:256k(breed)ro,256k(breed-env)ro,1536k(kernel),14336k(rootfs),15872k@0x80000(firmware)
 
 define Image/BuildKernel
 	cp $(KDIR)/vmlinux.elf $(VMLINUX).elf
@@ -485,11 +486,11 @@ define Image/Build/Belkin
 	$(eval rootsize=$(call mtdpartsize,rootfs,$(4)))
 	$(call Sysupgrade/RKuImage,$(1),$(2),$(kernsize),$(rootsize))
 	if [ -e "$(call sysupname,$(1),$(2))" ]; then \
-		edimax_fw_header -m $(5) -v "$(shell echo -n LEDE$(REVISION) | cut -c -13)" \
+		edimax_fw_header -m $(5) -v "$(shell echo -n OpenWrt$(REVISION) | cut -c -13)" \
 			-n "uImage" \
 			-i $(KDIR_TMP)/vmlinux-$(2).uImage \
 			-o $(KDIR_TMP)/$(2)-uImage; \
-		edimax_fw_header -m $(5) -v "$(shell echo -n LEDE$(REVISION) | cut -c -13)" \
+		edimax_fw_header -m $(5) -v "$(shell echo -n OpenWrt$(REVISION) | cut -c -13)" \
 			-n "rootfs" \
 			-i $(KDIR)/root.$(1) \
 			-o $(KDIR_TMP)/$(2)-rootfs; \
@@ -1005,6 +1006,9 @@ $(eval $(call SingleProfile,Zcomax,64k,ZCN1523H516,zcn-1523h-5-16,ZCN-1523H-5,tt
 
 $(eval $(call SingleProfile,ZyXEL,64k,NBG_460N_550N_550NH,nbg460n_550n_550nh,NBG460N,ttyS0,115200,NBG-460N))
 $(eval $(call SingleProfile,AthLzma,64k,SGRW500N85BV2,sgr-w500-n85b-v2,SGRW500N85BV2,ttyS0,115200,$$(ap147_mtdlayout),RKuImage))
+$(eval $(call SingleProfile,AthLzma,64k,SGRW500EBIFITV3,sgr-w500-ebi-fit-v3,SGRW500EBIFITV3,ttyS0,115200,$$(ap96_mtdlayout),RKuImage))
+$(eval $(call SingleProfile,AthLzma,64k,AP2600I,maselink-ap2600i,AP2600I,ttyS0,115200,$$(ap147_mtdlayout),RKuImage))
+$(eval $(call SingleProfile,AthLzma,256k,AP2600IFM,maselink-ap2600ifm,AP2600IFM,ttyS0,115200,$$(ap2600ifm_256kblk_mtdlayout) ahbskip=1,KRuImage))
 
 endif # ifeq ($(SUBTARGET),generic)
 

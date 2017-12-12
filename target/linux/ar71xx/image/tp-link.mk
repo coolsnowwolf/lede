@@ -39,7 +39,7 @@ define Build/uImageArcher
 	mkimage -A $(LINUX_KARCH) \
 		-O linux -T kernel \
 		-C $(1) -a $(KERNEL_LOADADDR) -e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
-		-n '$(call toupper,$(LINUX_KARCH)) LEDE Linux-$(LINUX_VERSION)' -d $@ $@.new
+		-n '$(call toupper,$(LINUX_KARCH)) OpenWrt Linux-$(LINUX_VERSION)' -d $@ $@.new
 	@mv $@.new $@
 endef
 
@@ -643,12 +643,24 @@ define Device/tl-wdr6500-v2
   TPLINK_HEADER_VERSION := 2
 endef
 
+define Device/tl-wdr6500-v6
+$(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WDR6500 v6
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca9888
+  KERNEL := kernel-bin | patch-cmdline | lzma | uImage lzma
+  KERNEL_INITRAMFS := kernel-bin | patch-cmdline | lzma | uImage lzma | tplink-v1-header
+  BOARDNAME = TL-WDR6500-v6
+  DEVICE_PROFILE = TLWDR6500V6
+  TPLINK_HWID := 0x65000006
+  TPLINK_HEADER_VERSION := 2
+endef
+
 define Device/mw4530r-v1
   $(Device/tl-wdr4300-v1)
   DEVICE_TITLE := Mercury MW4530R v1
   TPLINK_HWID := 0x45300001
 endef
-TARGET_DEVICES += tl-wdr3320-v2 tl-wdr3500-v1 tl-wdr3600-v1 tl-wdr4300-v1 tl-wdr4300-v1-il tl-wdr4310-v1 tl-wdr4900-v2 tl-wdr6500-v2 mw4530r-v1
+TARGET_DEVICES += tl-wdr3320-v2 tl-wdr3500-v1 tl-wdr3600-v1 tl-wdr4300-v1 tl-wdr4300-v1-il tl-wdr4310-v1 tl-wdr4900-v2 tl-wdr6500-v2 tl-wdr6500-v6 mw4530r-v1
 
 define Device/tl-wpa8630-v1
   $(Device/tplink-8mlzma)
@@ -1102,12 +1114,28 @@ define Device/tl-wr941nd-v6-cn
   TPLINK_HWID := 0x09410006
 endef
 
-define Device/tl-wr2041nd-v1
+define Device/tl-wr941n-v7
+    $(Device/tplink-8mlzma)
+    DEVICE_TITLE := TP-LINK TL-WR941N/ND v7
+    BOARDNAME := TL-WR941N-v7
+    DEVICE_PROFILE := TLWR941
+    TPLINK_HWID := 0x09410007
+endef
+
+define Device/tl-wr2041n-v1
   $(Device/tplink-8mlzma)
-  DEVICE_TITLE := TP-LINK TL-WR2041N/ND v1
+  DEVICE_TITLE := TP-LINK TL-WR2041N v1
   BOARDNAME := TL-WDR3500
   DEVICE_PROFILE := TLWR2041
   TPLINK_HWID := 0x20410001
+endef
+
+define Device/tl-wr2041n-v2
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR2041N v2
+  BOARDNAME := TL-WR941N-v7
+  DEVICE_PROFILE := TLWR2041
+  TPLINK_HWID := 0x20410002
 endef
 
 define Device/tl-wr942n-v1
@@ -1125,30 +1153,7 @@ define Device/tl-wr942n-v1
   MTDPARTS := spi0.0:128k(u-boot)ro,1344k(kernel),13120k(rootfs),64k(product-info)ro,64k(partition-table)ro,256k(oem-config)ro,1344k(oem-vars)ro,64k(ART)ro,14464k@0x20000(firmware)
   SUPPORTED_DEVICES := tl-wr942n-v1
 endef
-
-TARGET_DEVICES += tl-wr940n-v4 tl-wr941nd-v2 tl-wr941nd-v3 tl-wr941nd-v4 tl-wr941nd-v5 tl-wr941nd-v6 tl-wr941nd-v6-cn tl-wr942n-v1 tl-wr2041nd-v1
-
-define Device/tl-wr941n-v7
-    $(Device/tplink-8mlzma)
-    DEVICE_TITLE := TP-LINK WR941N v7
-    BOARDNAME := TL-WR941N-v7
-    DEVICE_PROFILE := TLWR941
-    TPLINK_HWID := 0x09410007
-endef
-TARGET_DEVICES += tl-wr941n-v7
-
-define Device/tl-wdr6500-v6
-  $(Device/tplink-8mlzma)
-  DEVICE_TITLE := TP-LINK TL-WDR6500 v6
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
-  KERNEL := kernel-bin | patch-cmdline | lzma | uImage lzma
-  KERNEL_INITRAMFS := kernel-bin | patch-cmdline | lzma | uImage lzma | mktplinkfw-combined
-  BOARDNAME := TL-WDR6500-v6
-  DEVICE_PROFILE := TLWDR6500V6
-  TPLINK_HWID := 0x65000006
-  TPLINK_HEADER_VERSION := 2
-endef
-TARGET_DEVICES += tl-wdr6500-v6
+TARGET_DEVICES += tl-wr940n-v4 tl-wr941nd-v2 tl-wr941nd-v3 tl-wr941nd-v4 tl-wr941nd-v5 tl-wr941nd-v6 tl-wr941nd-v6-cn tl-wr941n-v7 tl-wr942n-v1 tl-wr2041n-v1 tl-wr2041n-v2
 
 define Device/tl-wr842n-v9
   $(Device/tplink-8mlzma)
@@ -1168,12 +1173,3 @@ define Device/tl-wr882n-v1
     TPLINK_HWID := 0x08820001
 endef
 TARGET_DEVICES += tl-wr882n-v1
-
-define Device/tl-wr2041nd-v2
-  $(Device/tplink-8mlzma)
-  DEVICE_TITLE := TP-LINK TL-WR2041N/ND v2
-  BOARDNAME := TL-WR941N-v7
-  DEVICE_PROFILE := TLWR2041
-  TPLINK_HWID := 0x20410002
-endef
-TARGET_DEVICES += tl-wr2041nd-v2
