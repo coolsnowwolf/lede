@@ -1,0 +1,110 @@
+From: Felix Fietkau <nbd@nbd.name>
+Subject: kernel: add a new version of my netfilter speedup patches for linux 2.6.39 and 3.0
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ include/uapi/linux/netfilter_ipv4/ip_tables.h |  1 +
+ net/ipv4/netfilter/ip_tables.c                | 37 +++++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+
+--- a/include/uapi/linux/netfilter_ipv4/ip_tables.h
++++ b/include/uapi/linux/netfilter_ipv4/ip_tables.h
+@@ -89,6 +89,7 @@ struct ipt_ip {
+ #define IPT_F_FRAG		0x01	/* Set if rule is a fragment rule */
+ #define IPT_F_GOTO		0x02	/* Set if jump is a goto */
+ #define IPT_F_MASK		0x03	/* All possible flag bits mask. */
++#define IPT_F_NO_DEF_MATCH	0x80	/* Internal: no default match rules present */
+ 
+ /* Values for "inv" field in struct ipt_ip. */
+ #define IPT_INV_VIA_IN		0x01	/* Invert the sense of IN IFACE. */
+--- a/net/ipv4/netfilter/ip_tables.c
++++ b/net/ipv4/netfilter/ip_tables.c
+@@ -52,6 +52,9 @@ ip_packet_match(const struct iphdr *ip,
+ {
+ 	unsigned long ret;
+ 
++	if (ipinfo->flags & IPT_F_NO_DEF_MATCH)
++		return true;
++
+ 	if (NF_INVF(ipinfo, IPT_INV_SRCIP,
+ 		    (ip->saddr & ipinfo->smsk.s_addr) != ipinfo->src.s_addr) ||
+ 	    NF_INVF(ipinfo, IPT_INV_DSTIP,
+@@ -82,6 +85,29 @@ ip_packet_match(const struct iphdr *ip,
+ 	return true;
+ }
+ 
++static void
++ip_checkdefault(struct ipt_ip *ip)
++{
++	static const char iface_mask[IFNAMSIZ] = {};
++
++	if (ip->invflags || ip->flags & IPT_F_FRAG)
++		return;
++
++	if (memcmp(ip->iniface_mask, iface_mask, IFNAMSIZ) != 0)
++		return;
++
++	if (memcmp(ip->outiface_mask, iface_mask, IFNAMSIZ) != 0)
++		return;
++
++	if (ip->smsk.s_addr || ip->dmsk.s_addr)
++		return;
++
++	if (ip->proto)
++		return;
++
++	ip->flags |= IPT_F_NO_DEF_MATCH;
++}
++
+ static bool
+ ip_checkentry(const struct ipt_ip *ip)
+ {
+@@ -532,6 +558,8 @@ find_check_entry(struct ipt_entry *e, st
+ 	struct xt_mtchk_param mtpar;
+ 	struct xt_entry_match *ematch;
+ 
++	ip_checkdefault(&e->ip);
++
+ 	if (!xt_percpu_counter_alloc(alloc_state, &e->counters))
+ 		return -ENOMEM;
+ 
+@@ -812,6 +840,7 @@ copy_entries_to_user(unsigned int total_
+ 	const struct xt_table_info *private = table->private;
+ 	int ret = 0;
+ 	const void *loc_cpu_entry;
++	u8 flags;
+ 
+ 	counters = alloc_counters(table);
+ 	if (IS_ERR(counters))
+@@ -839,6 +868,14 @@ copy_entries_to_user(unsigned int total_
+ 			goto free_counters;
+ 		}
+ 
++		flags = e->ip.flags & IPT_F_MASK;
++		if (copy_to_user(userptr + off
++				 + offsetof(struct ipt_entry, ip.flags),
++				 &flags, sizeof(flags)) != 0) {
++			ret = -EFAULT;
++			goto free_counters;
++		}
++
+ 		for (i = sizeof(struct ipt_entry);
+ 		     i < e->target_offset;
+ 		     i += m->u.match_size) {
+@@ -1219,12 +1256,15 @@ compat_copy_entry_to_user(struct ipt_ent
+ 	compat_uint_t origsize;
+ 	const struct xt_entry_match *ematch;
+ 	int ret = 0;
++	u8 flags = e->ip.flags & IPT_F_MASK;
+ 
+ 	origsize = *size;
+ 	ce = *dstptr;
+ 	if (copy_to_user(ce, e, sizeof(struct ipt_entry)) != 0 ||
+ 	    copy_to_user(&ce->counters, &counters[i],
+-	    sizeof(counters[i])) != 0)
++	    sizeof(counters[i])) != 0 ||
++	    copy_to_user(&ce->ip.flags, &flags,
++	    sizeof(flags)) != 0)
+ 		return -EFAULT;
+ 
+ 	*dstptr += sizeof(struct compat_ipt_entry);

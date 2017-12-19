@@ -1,0 +1,338 @@
+From 6b1ab74a9917012d0c559edc4ed299d9228ac89f Mon Sep 17 00:00:00 2001
+From: Felix Fietkau <nbd@nbd.name>
+Date: Sat, 8 Jul 2017 08:26:47 +0200
+Subject: kernel: add the new 'crashlog' feature
+
+this tries to store kernel oops/panic logs in a fixed location in RAM to
+recover them available to user space using debugfs
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ include/linux/crashlog.h |  17 ++++
+ init/Kconfig             |   4 +
+ kernel/Makefile          |   1 +
+ kernel/crashlog.c        | 213 +++++++++++++++++++++++++++++++++++++++++++++++
+ kernel/module.c          |   3 +
+ mm/bootmem.c             |   2 +
+ mm/memblock.c            |   5 ++
+ 7 files changed, 245 insertions(+)
+ create mode 100644 include/linux/crashlog.h
+ create mode 100644 kernel/crashlog.c
+
+--- /dev/null
++++ b/include/linux/crashlog.h
+@@ -0,0 +1,17 @@
++#ifndef __CRASHLOG_H
++#define __CRASHLOG_H
++
++#ifdef CONFIG_CRASHLOG
++void crashlog_init_bootmem(struct bootmem_data *bdata);
++void crashlog_init_memblock(phys_addr_t addr, phys_addr_t size);
++#else
++static inline void crashlog_init_bootmem(struct bootmem_data *bdata)
++{
++}
++
++static inline void crashlog_init_memblock(phys_addr_t addr, phys_addr_t size)
++{
++}
++#endif
++
++#endif
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -1009,6 +1009,10 @@ config RELAY
+ 
+ 	  If unsure, say N.
+ 
++config CRASHLOG
++	bool "Crash logging"
++	depends on (!NO_BOOTMEM || HAVE_MEMBLOCK)
++
+ config BLK_DEV_INITRD
+ 	bool "Initial RAM filesystem and RAM disk (initramfs/initrd) support"
+ 	depends on BROKEN || !FRV
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -112,6 +112,7 @@ obj-$(CONFIG_CONTEXT_TRACKING) += contex
+ obj-$(CONFIG_TORTURE_TEST) += torture.o
+ 
+ obj-$(CONFIG_HAS_IOMEM) += memremap.o
++obj-$(CONFIG_CRASHLOG) += crashlog.o
+ 
+ $(obj)/configs.o: $(obj)/config_data.h
+ 
+--- /dev/null
++++ b/kernel/crashlog.c
+@@ -0,0 +1,213 @@
++/*
++ * Crash information logger
++ * Copyright (C) 2010 Felix Fietkau <nbd@nbd.name>
++ *
++ * Based on ramoops.c
++ *   Copyright (C) 2010 Marco Stornelli <marco.stornelli@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
++ * 02110-1301 USA
++ *
++ */
++
++#include <linux/module.h>
++#include <linux/bootmem.h>
++#include <linux/memblock.h>
++#include <linux/debugfs.h>
++#include <linux/crashlog.h>
++#include <linux/kmsg_dump.h>
++#include <linux/module.h>
++#include <linux/pfn.h>
++#include <linux/vmalloc.h>
++#include <asm/io.h>
++
++#define CRASHLOG_PAGES	4
++#define CRASHLOG_SIZE	(CRASHLOG_PAGES * PAGE_SIZE)
++#define CRASHLOG_MAGIC	0xa1eedead
++
++/*
++ * Start the log at 1M before the end of RAM, as some boot loaders like
++ * to use the end of the RAM for stack usage and other things
++ * If this fails, fall back to using the last part.
++ */
++#define CRASHLOG_OFFSET	(1024 * 1024)
++
++struct crashlog_data {
++	u32 magic;
++	u32 len;
++	u8 data[];
++};
++
++static struct debugfs_blob_wrapper crashlog_blob;
++static unsigned long crashlog_addr = 0;
++static struct crashlog_data *crashlog_buf;
++static struct kmsg_dumper dump;
++static bool first = true;
++
++extern struct list_head *crashlog_modules;
++
++static bool crashlog_set_addr(phys_addr_t addr, phys_addr_t size)
++{
++	/* Limit to lower 64 MB to avoid highmem */
++	phys_addr_t limit = 64 * 1024 * 1024;
++
++	if (crashlog_addr)
++		return false;
++
++	if (addr > limit)
++		return false;
++
++	if (addr + size > limit)
++		size = limit - addr;
++
++	crashlog_addr = addr;
++
++	if (addr + size > CRASHLOG_OFFSET)
++		crashlog_addr += size - CRASHLOG_OFFSET;
++
++	return true;
++}
++
++#ifndef CONFIG_NO_BOOTMEM
++void __init crashlog_init_bootmem(bootmem_data_t *bdata)
++{
++	phys_addr_t start, end;
++
++	start = PFN_PHYS(bdata->node_low_pfn);
++	end = PFN_PHYS(bdata->node_min_pfn);
++	if (!crashlog_set_addr(start, end - start))
++		return;
++
++	if (reserve_bootmem(crashlog_addr, CRASHLOG_SIZE, BOOTMEM_EXCLUSIVE) < 0) {
++		printk("Crashlog failed to allocate RAM at address 0x%lx\n",
++		       crashlog_addr);
++		crashlog_addr = 0;
++	}
++}
++#endif
++
++#ifdef CONFIG_HAVE_MEMBLOCK
++void __init_memblock crashlog_init_memblock(phys_addr_t addr, phys_addr_t size)
++{
++	if (!crashlog_set_addr(addr, size))
++		return;
++
++	if (memblock_reserve(crashlog_addr, CRASHLOG_SIZE)) {
++		printk("Crashlog failed to allocate RAM at address 0x%lx\n",
++		       crashlog_addr);
++		crashlog_addr = 0;
++	}
++}
++#endif
++
++static void __init crashlog_copy(void)
++{
++	if (crashlog_buf->magic != CRASHLOG_MAGIC)
++		return;
++
++	if (!crashlog_buf->len || crashlog_buf->len >
++	    CRASHLOG_SIZE - sizeof(*crashlog_buf))
++		return;
++
++	crashlog_blob.size = crashlog_buf->len;
++	crashlog_blob.data = kmemdup(crashlog_buf->data,
++		crashlog_buf->len, GFP_KERNEL);
++
++	debugfs_create_blob("crashlog", 0700, NULL, &crashlog_blob);
++}
++
++static int get_maxlen(void)
++{
++	return CRASHLOG_SIZE - sizeof(*crashlog_buf) - crashlog_buf->len;
++}
++
++static void crashlog_printf(const char *fmt, ...)
++{
++	va_list args;
++	int len = get_maxlen();
++
++	if (!len)
++		return;
++
++	va_start(args, fmt);
++	crashlog_buf->len += vscnprintf(
++		&crashlog_buf->data[crashlog_buf->len],
++		len, fmt, args);
++	va_end(args);
++}
++
++static void crashlog_do_dump(struct kmsg_dumper *dumper,
++		enum kmsg_dump_reason reason)
++{
++	struct timeval tv;
++	struct module *m;
++	char *buf;
++	size_t len;
++
++	if (!first)
++		crashlog_printf("\n===================================\n");
++
++	do_gettimeofday(&tv);
++	crashlog_printf("Time: %lu.%lu\n",
++		(long)tv.tv_sec, (long)tv.tv_usec);
++
++	if (first) {
++		crashlog_printf("Modules:");
++		list_for_each_entry(m, crashlog_modules, list) {
++			crashlog_printf("\t%s@%p+%x", m->name,
++			m->core_layout.base, m->core_layout.size,
++			m->init_layout.base, m->init_layout.size);
++		}
++		crashlog_printf("\n");
++		first = false;
++	}
++
++	buf = (char *)&crashlog_buf->data[crashlog_buf->len];
++
++	kmsg_dump_get_buffer(dumper, true, buf, get_maxlen(), &len);
++
++	crashlog_buf->len += len;
++}
++
++
++int __init crashlog_init_fs(void)
++{
++	struct page *pages[CRASHLOG_PAGES];
++	pgprot_t prot;
++	int i;
++
++	if (!crashlog_addr) {
++		printk("No memory allocated for crashlog\n");
++		return -ENOMEM;
++	}
++
++	printk("Crashlog allocated RAM at address 0x%lx\n", (unsigned long) crashlog_addr);
++	for (i = 0; i < CRASHLOG_PAGES; i++)
++		pages[i] = pfn_to_page((crashlog_addr >> PAGE_SHIFT) + i);
++
++	prot = pgprot_writecombine(PAGE_KERNEL);
++	crashlog_buf = vmap(pages, CRASHLOG_PAGES, VM_MAP, prot);
++
++	crashlog_copy();
++
++	crashlog_buf->magic = CRASHLOG_MAGIC;
++	crashlog_buf->len = 0;
++
++	dump.max_reason = KMSG_DUMP_OOPS;
++	dump.dump = crashlog_do_dump;
++	kmsg_dump_register(&dump);
++
++	return 0;
++}
++module_init(crashlog_init_fs);
+--- a/kernel/module.c
++++ b/kernel/module.c
+@@ -256,6 +256,9 @@ static void mod_update_bounds(struct mod
+ #ifdef CONFIG_KGDB_KDB
+ struct list_head *kdb_modules = &modules; /* kdb needs the list of modules */
+ #endif /* CONFIG_KGDB_KDB */
++#ifdef CONFIG_CRASHLOG
++struct list_head *crashlog_modules = &modules;
++#endif
+ 
+ static void module_assert_mutex(void)
+ {
+--- a/mm/bootmem.c
++++ b/mm/bootmem.c
+@@ -15,6 +15,7 @@
+ #include <linux/export.h>
+ #include <linux/kmemleak.h>
+ #include <linux/range.h>
++#include <linux/crashlog.h>
+ #include <linux/bug.h>
+ #include <linux/io.h>
+ #include <linux/bootmem.h>
+@@ -175,6 +176,7 @@ static unsigned long __init free_all_boo
+ 	if (!bdata->node_bootmem_map)
+ 		return 0;
+ 
++	crashlog_init_bootmem(bdata);
+ 	map = bdata->node_bootmem_map;
+ 	start = bdata->node_min_pfn;
+ 	end = bdata->node_low_pfn;
+--- a/mm/memblock.c
++++ b/mm/memblock.c
+@@ -19,6 +19,7 @@
+ #include <linux/debugfs.h>
+ #include <linux/seq_file.h>
+ #include <linux/memblock.h>
++#include <linux/crashlog.h>
+ 
+ #include <asm/sections.h>
+ #include <linux/io.h>
+@@ -483,6 +484,8 @@ static void __init_memblock memblock_ins
+ 	memblock_set_region_node(rgn, nid);
+ 	type->cnt++;
+ 	type->total_size += size;
++	if (type == &memblock.memory)
++		crashlog_init_memblock(base, size);
+ }
+ 
+ /**
+@@ -522,6 +525,8 @@ int __init_memblock memblock_add_range(s
+ 		type->regions[0].flags = flags;
+ 		memblock_set_region_node(&type->regions[0], nid);
+ 		type->total_size = size;
++		if (type == &memblock.memory)
++			crashlog_init_memblock(base, size);
+ 		return 0;
+ 	}
+ repeat:
