@@ -142,6 +142,32 @@ endef
 $(eval $(call KernelPackage,i2c-piix4))
 
 
+I2C_I801_MODULES:= \
+  CONFIG_I2C_I801:drivers/i2c/busses/i2c-i801 \
+  CONFIG_I2C_SMBUS:drivers/i2c/i2c-smbus
+
+define KernelPackage/i2c-i801
+  $(call i2c_defaults,$(I2C_I801_MODULES),59)
+  TITLE:=Intel I801 and compatible I2C interfaces
+  DEPENDS:=@PCI_SUPPORT @TARGET_x86 kmod-i2c-core
+endef
+
+define KernelPackage/i2c-i801/description
+ Support for the Intel I801 family of mainboard I2C interfaces,
+ specifically 82801AA, 82801AB, 82801BA, 82801CA/CAM, 82801DB,
+ 82801EB/ER (ICH5/ICH5R), 6300ESB, ICH6, ICH7, ESB2, ICH8, ICH9,
+ EP80579 (Tolapai), ICH10, 5/3400 Series (PCH), 6 Series (PCH),
+ Patsburg (PCH), DH89xxCC (PCH), Panther Point (PCH),
+ Lynx Point (PCH), Lynx Point-LP (PCH), Avoton (SOC),
+ Wellsburg (PCH), Coleto Creek (PCH), Wildcat Point (PCH),
+ Wildcat Point-LP (PCH), BayTrail (SOC), Sunrise Point-H (PCH),
+ Sunrise Point-LP (PCH), DNV (SOC), Broxton (SOC),
+ Lewisburg (PCH).
+endef
+
+$(eval $(call KernelPackage,i2c-i801))
+
+
 I2C_MUX_MODULES:= \
   CONFIG_I2C_MUX:drivers/i2c/i2c-mux
 

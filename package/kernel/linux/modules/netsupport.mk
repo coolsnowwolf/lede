@@ -271,7 +271,8 @@ define KernelPackage/ipsec4
 	CONFIG_INET_XFRM_MODE_BEET \
 	CONFIG_INET_XFRM_MODE_TRANSPORT \
 	CONFIG_INET_XFRM_MODE_TUNNEL \
-	CONFIG_INET_XFRM_TUNNEL
+	CONFIG_INET_XFRM_TUNNEL \
+	CONFIG_INET_ESP_OFFLOAD=n
   FILES:=$(foreach mod,$(IPSEC4-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoLoad,32,$(notdir $(IPSEC4-m)))
 endef
@@ -311,7 +312,8 @@ define KernelPackage/ipsec6
 	CONFIG_INET6_XFRM_MODE_BEET \
 	CONFIG_INET6_XFRM_MODE_TRANSPORT \
 	CONFIG_INET6_XFRM_MODE_TUNNEL \
-	CONFIG_INET6_XFRM_TUNNEL
+	CONFIG_INET6_XFRM_TUNNEL \
+	CONFIG_INET6_ESP_OFFLOAD=n
   FILES:=$(foreach mod,$(IPSEC6-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoLoad,32,$(notdir $(IPSEC6-m)))
 endef
@@ -923,9 +925,10 @@ define KernelPackage/rxrpc
 	CONFIG_RXKAD=m \
 	CONFIG_AF_RXRPC_DEBUG=n
   FILES:= \
-	$(LINUX_DIR)/net/rxrpc/af-rxrpc.ko \
+	$(LINUX_DIR)/net/rxrpc/af-rxrpc.ko@lt4.11 \
+	$(LINUX_DIR)/net/rxrpc/rxrpc.ko@ge4.11 \
 	$(LINUX_DIR)/net/rxrpc/rxkad.ko@lt4.7
-  AUTOLOAD:=$(call AutoLoad,30,rxkad@lt4.7 af-rxrpc)
+  AUTOLOAD:=$(call AutoLoad,30,rxkad@lt4.7 af-rxrpc.ko@lt4.11 rxrpc.ko@ge4.11)
   DEPENDS:= +kmod-crypto-manager +kmod-crypto-pcbc +kmod-crypto-fcrypt
 endef
 
@@ -942,6 +945,7 @@ define KernelPackage/mpls
   KCONFIG:= \
 	CONFIG_MPLS=y \
 	CONFIG_LWTUNNEL=y \
+	CONFIG_LWTUNNEL_BPF=n \
 	CONFIG_NET_MPLS_GSO=m \
 	CONFIG_MPLS_ROUTING=m \
 	CONFIG_MPLS_IPTUNNEL=m
@@ -965,6 +969,7 @@ define KernelPackage/9pnet
   KCONFIG:= \
 	CONFIG_NET_9P \
 	CONFIG_NET_9P_DEBUG=n \
+	CONFIG_NET_9P_XEN=n \
 	CONFIG_NET_9P_VIRTIO
   FILES:= \
 	$(LINUX_DIR)/net/9p/9pnet.ko \
@@ -1009,3 +1014,18 @@ define KernelPackage/mdio/description
 endef
 
 $(eval $(call KernelPackage,mdio))
+
+define KernelPackage/macsec
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=IEEE 802.1AE MAC-level encryption (MAC)
+  DEPENDS:=+kmod-crypto-gcm @!LINUX_3_18 @!LINUX_4_1 @!LINUX_4_4
+  KCONFIG:=CONFIG_MACSEC
+  FILES:=$(LINUX_DIR)/drivers/net/macsec.ko
+  AUTOLOAD:=$(call AutoLoad,13,macsec)
+endef
+
+define KernelPackage/macsec/description
+ MACsec is an encryption standard for Ethernet.
+endef
+
+$(eval $(call KernelPackage,macsec))

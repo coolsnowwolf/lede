@@ -529,6 +529,23 @@ endef
 
 $(eval $(call KernelPackage,ipt-u32))
 
+define KernelPackage/ipt-checksum
+  TITLE:=CHECKSUM support
+  KCONFIG:= \
+  	CONFIG_NETFILTER_XT_TARGET_CHECKSUM
+  FILES:= \
+  	$(LINUX_DIR)/net/netfilter/xt_CHECKSUM.ko \
+  	$(foreach mod,$(IPT_CHECKSUM-m),$(LINUX_DIR)/net/$(mod).ko)
+  AUTOLOAD:=$(call AutoProbe,$(notdir $(IPT_CHECKSUM-m)))
+  $(call AddDepends/ipt)
+endef
+
+define KernelPackage/ipt-checksum/description
+  Kernel modules for CHECKSUM fillin target
+endef
+
+$(eval $(call KernelPackage,ipt-checksum))
+
 
 define KernelPackage/ipt-iprange
   TITLE:=Module for matching ip ranges

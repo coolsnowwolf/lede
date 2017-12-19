@@ -36,13 +36,9 @@ HOST_EXTRACFLAGS=
 LINUX_HAS_HEADERS_INSTALL:=y
 
 KMAKE := $(MAKE) -C $(HOST_BUILD_DIR) \
-	HOSTCFLAGS="$(HOST_CFLAGS) -Wall -Wmissing-prototypes -Wstrict-prototypes" \
-	ARCH=$(LINUX_KARCH) \
+	$(KERNEL_MAKE_FLAGS) \
 	CC="$(KERNEL_CC)" \
-	CFLAGS="$(TARGET_CFLAGS)" \
-	CROSS_COMPILE=$(TARGET_CROSS) \
-	KBUILD_HAVE_NLS=no \
-	CONFIG_SHELL=$(BASH)
+	CFLAGS="$(TARGET_CFLAGS)"
 
 define Host/Configure/all
 	mkdir -p $(BUILD_DIR_TOOLCHAIN)/linux-dev
