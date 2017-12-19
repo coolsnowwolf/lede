@@ -1,0 +1,142 @@
+From: Gabor Juhos <juhosg@openwrt.org>
+Subject: net: phy: allow to configure AR803x PHYs via platform data
+
+Add a patch for the at803x phy driver, in order to be able
+to configure some register settings via platform data.
+
+Signed-off-by: Gabor Juhos <juhosg@openwrt.org>
+---
+ drivers/net/phy/at803x.c                 | 56 ++++++++++++++++++++++++++++++++
+ include/linux/platform_data/phy-at803x.h | 11 +++++++
+ 2 files changed, 67 insertions(+)
+ create mode 100644 include/linux/platform_data/phy-at803x.h
+
+--- a/drivers/net/phy/at803x.c
++++ b/drivers/net/phy/at803x.c
+@@ -12,12 +12,14 @@
+  */
+ 
+ #include <linux/phy.h>
++#include <linux/mdio.h>
+ #include <linux/module.h>
+ #include <linux/string.h>
+ #include <linux/netdevice.h>
+ #include <linux/etherdevice.h>
+ #include <linux/of_gpio.h>
+ #include <linux/gpio/consumer.h>
++#include <linux/platform_data/phy-at803x.h>
+ 
+ #define AT803X_INTR_ENABLE			0x12
+ #define AT803X_INTR_ENABLE_AUTONEG_ERR		BIT(15)
+@@ -45,6 +47,11 @@
+ #define AT803X_REG_CHIP_CONFIG			0x1f
+ #define AT803X_BT_BX_REG_SEL			0x8000
+ 
++#define AT803X_PCS_SMART_EEE_CTRL3			0x805D
++#define AT803X_SMART_EEE_CTRL3_LPI_TX_DELAY_SEL_MASK	0x3
++#define AT803X_SMART_EEE_CTRL3_LPI_TX_DELAY_SEL_SHIFT	12
++#define AT803X_SMART_EEE_CTRL3_LPI_EN			BIT(8)
++
+ #define AT803X_DEBUG_ADDR			0x1D
+ #define AT803X_DEBUG_DATA			0x1E
+ 
+@@ -73,6 +80,7 @@ MODULE_LICENSE("GPL");
+ struct at803x_priv {
+ 	bool phy_reset:1;
+ 	struct gpio_desc *gpiod_reset;
++	int prev_speed;
+ };
+ 
+ struct at803x_context {
+@@ -277,8 +285,16 @@ does_not_require_reset_workaround:
+ 	return 0;
+ }
+ 
++static void at803x_disable_smarteee(struct phy_device *phydev)
++{
++	phy_write_mmd(phydev, MDIO_MMD_PCS, AT803X_PCS_SMART_EEE_CTRL3,
++		1 << AT803X_SMART_EEE_CTRL3_LPI_TX_DELAY_SEL_SHIFT);
++	phy_write_mmd(phydev, MDIO_MMD_AN, MDIO_AN_EEE_ADV, 0);
++}
++
+ static int at803x_config_init(struct phy_device *phydev)
+ {
++	struct at803x_platform_data *pdata;
+ 	int ret;
+ 
+ 	ret = genphy_config_init(phydev);
+@@ -299,6 +315,26 @@ static int at803x_config_init(struct phy
+ 			return ret;
+ 	}
+ 
++	pdata = dev_get_platdata(&phydev->mdio.dev);
++	if (pdata) {
++		if (pdata->disable_smarteee)
++			at803x_disable_smarteee(phydev);
++
++		if (pdata->enable_rgmii_rx_delay)
++			at803x_debug_reg_mask(phydev, AT803X_DEBUG_REG_0, 0,
++				AT803X_DEBUG_RX_CLK_DLY_EN);
++		else
++			at803x_debug_reg_mask(phydev, AT803X_DEBUG_REG_0,
++				AT803X_DEBUG_RX_CLK_DLY_EN, 0);
++
++		if (pdata->enable_rgmii_tx_delay)
++			at803x_debug_reg_mask(phydev, AT803X_DEBUG_REG_5, 0,
++				AT803X_DEBUG_TX_CLK_DLY_EN);
++		else
++			at803x_debug_reg_mask(phydev, AT803X_DEBUG_REG_5,
++				AT803X_DEBUG_TX_CLK_DLY_EN, 0);
++	}
++
+ 	return 0;
+ }
+ 
+@@ -336,6 +372,8 @@ static int at803x_config_intr(struct phy
+ static void at803x_link_change_notify(struct phy_device *phydev)
+ {
+ 	struct at803x_priv *priv = phydev->priv;
++	struct at803x_platform_data *pdata;
++	pdata = dev_get_platdata(&phydev->mdio.dev);
+ 
+ 	/*
+ 	 * Conduct a hardware reset for AT8030/2 every time a link loss is
+@@ -364,6 +402,24 @@ static void at803x_link_change_notify(st
+ 	} else {
+ 		priv->phy_reset = false;
+ 	}
++	if (pdata && pdata->fixup_rgmii_tx_delay &&
++	    phydev->speed != priv->prev_speed) {
++		switch (phydev->speed) {
++		case SPEED_10:
++		case SPEED_100:
++			at803x_debug_reg_mask(phydev, AT803X_DEBUG_REG_5, 0,
++				AT803X_DEBUG_TX_CLK_DLY_EN);
++			break;
++		case SPEED_1000:
++			at803x_debug_reg_mask(phydev, AT803X_DEBUG_REG_5,
++				AT803X_DEBUG_TX_CLK_DLY_EN, 0);
++			break;
++		default:
++			break;
++		}
++
++		priv->prev_speed = phydev->speed;
++	}
+ }
+ 
+ static int at803x_aneg_done(struct phy_device *phydev)
+--- /dev/null
++++ b/include/linux/platform_data/phy-at803x.h
+@@ -0,0 +1,11 @@
++#ifndef _PHY_AT803X_PDATA_H
++#define _PHY_AT803X_PDATA_H
++
++struct at803x_platform_data {
++	int disable_smarteee:1;
++	int enable_rgmii_tx_delay:1;
++	int enable_rgmii_rx_delay:1;
++	int fixup_rgmii_tx_delay:1;
++};
++
++#endif /* _PHY_AT803X_PDATA_H */

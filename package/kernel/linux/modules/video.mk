@@ -81,7 +81,7 @@ $(eval $(call KernelPackage,fb))
 define KernelPackage/fbcon
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Framebuffer Console support
-  DEPENDS:=+kmod-fb
+  DEPENDS:=+kmod-fb @!LINUX_4_14
   KCONFIG:= \
 	CONFIG_FRAMEBUFFER_CONSOLE \
 	CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y \

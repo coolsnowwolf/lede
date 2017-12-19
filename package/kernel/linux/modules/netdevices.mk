@@ -304,6 +304,22 @@ endef
 $(eval $(call KernelPackage,r6040))
 
 
+define KernelPackage/niu
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Sun Neptune 10Gbit Ethernet support
+  DEPENDS:=@PCI_SUPPORT
+  KCONFIG:=CONFIG_NIU
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/sun/niu.ko
+  AUTOLOAD:=$(call AutoProbe,niu)
+endef
+
+define KernelPackage/niu/description
+ This enables support for cards based upon Sun's Neptune chipset.
+endef
+
+$(eval $(call KernelPackage,niu))
+
+
 define KernelPackage/sis900
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=SiS 900 Ethernet support
@@ -488,6 +504,9 @@ define KernelPackage/e1000e
   KCONFIG:=CONFIG_E1000E
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/e1000e/e1000e.ko
   AUTOLOAD:=$(call AutoProbe,e1000e)
+  MODPARAMS.e1000e:= \
+    IntMode=1 \
+    InterruptThrottleRate=4,4,4,4,4,4,4,4
 endef
 
 define KernelPackage/e1000e/description
@@ -552,6 +571,25 @@ endef
 $(eval $(call KernelPackage,ixgbe))
 
 
+define KernelPackage/ixgbevf
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Intel(R) 82599 Virtual Function Ethernet support
+  DEPENDS:=@PCI_SUPPORT +kmod-ixgbe
+  KCONFIG:=CONFIG_IXGBEVF \
+    CONFIG_IXGBE_VXLAN=n \
+    CONFIG_IXGBE_HWMON=n \
+    CONFIG_IXGBE_DCA=n
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/ixgbevf/ixgbevf.ko
+  AUTOLOAD:=$(call AutoLoad,35,ixgbevf)
+endef
+
+define KernelPackage/ixgbevf/description
+ Kernel modules for Intel(R) 82599 Virtual Function Ethernet adapters.
+endef
+
+$(eval $(call KernelPackage,ixgbevf))
+
+
 define KernelPackage/b44
   TITLE:=Broadcom 44xx driver
   KCONFIG:=CONFIG_B44
@@ -608,8 +646,9 @@ $(eval $(call KernelPackage,pcnet32))
 
 define KernelPackage/tg3
   TITLE:=Broadcom Tigon3 Gigabit Ethernet
-  KCONFIG:=CONFIG_TIGON3
-  DEPENDS:=+!TARGET_brcm47xx:kmod-libphy +kmod-hwmon-core +kmod-ptp
+  KCONFIG:=CONFIG_TIGON3 \
+	CONFIG_TIGON3_HWMON=n
+  DEPENDS:=+!TARGET_brcm47xx:kmod-libphy +!LINUX_4_14:kmod-hwmon-core +kmod-ptp
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/broadcom/tg3.ko
   AUTOLOAD:=$(call AutoLoad,19,tg3,1)
