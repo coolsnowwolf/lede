@@ -971,6 +971,18 @@ define Device/FAST2704V2
 endef
 TARGET_DEVICES += FAST2704V2
 
+### Sercomm ###
+define Device/AD1018-SPI_flash
+  $(Device/bcm63xx)
+  DEVICE_TITLE := Sercomm AD1018 (SPI flash mod)
+  DEVICE_DTS := ad1018-nor
+  CFE_BOARD_ID := 96328avngr
+  CFE_CHIP_ID := 6328
+  DEVICE_PACKAGES := \
+    $(B43_PACKAGES) $(USB2_PACKAGES)
+endef
+TARGET_DEVICES += AD1018-SPI_flash
+
 ### SFR ###
 define Device/NEUFBOX4-SER
   $(Device/bcm63xx)
