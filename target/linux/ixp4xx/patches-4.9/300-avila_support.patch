@@ -1,0 +1,726 @@
+--- a/arch/arm/mach-ixp4xx/avila-pci.c
++++ b/arch/arm/mach-ixp4xx/avila-pci.c
+@@ -27,8 +27,8 @@
+ #include <mach/hardware.h>
+ #include <asm/mach-types.h>
+ 
+-#define AVILA_MAX_DEV	4
+-#define LOFT_MAX_DEV	6
++#define AVILA_MAX_DEV	6
++
+ #define IRQ_LINES	4
+ 
+ /* PCI controller GPIO to IRQ pin mappings */
+@@ -55,10 +55,8 @@ static int __init avila_map_irq(const st
+ 		IXP4XX_GPIO_IRQ(INTD)
+ 	};
+ 
+-	if (slot >= 1 &&
+-	    slot <= (machine_is_loft() ? LOFT_MAX_DEV : AVILA_MAX_DEV) &&
+-	    pin >= 1 && pin <= IRQ_LINES)
+-		return pci_irq_table[(slot + pin - 2) % 4];
++	if (slot >= 1 && slot <= AVILA_MAX_DEV && pin >= 1 && pin <= IRQ_LINES)
++		return pci_irq_table[(slot + pin - 2) % IRQ_LINES];
+ 
+ 	return -1;
+ }
+--- a/arch/arm/mach-ixp4xx/avila-setup.c
++++ b/arch/arm/mach-ixp4xx/avila-setup.c
+@@ -14,9 +14,16 @@
+ #include <linux/kernel.h>
+ #include <linux/init.h>
+ #include <linux/device.h>
++#include <linux/if_ether.h>
++#include <linux/socket.h>
++#include <linux/netdevice.h>
+ #include <linux/serial.h>
+ #include <linux/tty.h>
+ #include <linux/serial_8250.h>
++#include <linux/i2c.h>
++#include <linux/platform_data/at24.h>
++#include <linux/leds.h>
++#include <linux/platform_data/pca953x.h>
+ #include <linux/i2c-gpio.h>
+ #include <asm/types.h>
+ #include <asm/setup.h>
+@@ -26,10 +33,25 @@
+ #include <asm/irq.h>
+ #include <asm/mach/arch.h>
+ #include <asm/mach/flash.h>
++#include <linux/irq.h>
+ 
+ #define AVILA_SDA_PIN	7
+ #define AVILA_SCL_PIN	6
+ 
++/* User LEDs */
++#define AVILA_GW23XX_LED_USER_GPIO     3
++#define AVILA_GW23X7_LED_USER_GPIO     4
++
++/* gpio mask used by platform device */
++#define AVILA_GPIO_MASK        (1 << 1) | (1 << 3) | (1 << 5) | (1 << 7) | (1 << 9)
++
++struct avila_board_info {
++	unsigned char	*model;
++	void		(*setup)(void);
++};
++
++static struct avila_board_info *avila_info __initdata;
++
+ static struct flash_platform_data avila_flash_data = {
+ 	.map_name	= "cfi_probe",
+ 	.width		= 2,
+@@ -105,14 +127,69 @@ static struct platform_device avila_uart
+ 	.resource		= avila_uart_resources
+ };
+ 
+-static struct resource avila_pata_resources[] = {
++static struct resource avila_optional_uart_resources[] = {
+ 	{
+-		.flags	= IORESOURCE_MEM
+-	},
++		.start  = 0x54000000,
++		.end  = 0x54000fff,
++		.flags  = IORESOURCE_MEM
++	},{
++		.start  = 0x55000000,
++		.end  = 0x55000fff,
++		.flags  = IORESOURCE_MEM
++	},{
++		.start  = 0x56000000,
++		.end  = 0x56000fff,
++		.flags  = IORESOURCE_MEM
++	},{
++		.start  = 0x57000000,
++		.end  = 0x57000fff,
++		.flags  = IORESOURCE_MEM
++	}
++};
++
++static struct plat_serial8250_port avila_optional_uart_data[] = {
+ 	{
+-		.flags	= IORESOURCE_MEM,
++		.flags    = UPF_BOOT_AUTOCONF,
++		.iotype   = UPIO_MEM,
++		.regshift = 0,
++		.uartclk  = 18432000,
++		.rw_delay = 2,
++	},{
++		.flags    = UPF_BOOT_AUTOCONF,
++		.iotype   = UPIO_MEM,
++		.regshift = 0,
++		.uartclk  = 18432000,
++		.rw_delay = 2,
++	},{
++		.flags    = UPF_BOOT_AUTOCONF,
++		.iotype   = UPIO_MEM,
++		.regshift = 0,
++		.uartclk  = 18432000,
++		.rw_delay = 2,
++	},{
++		.flags    = UPF_BOOT_AUTOCONF,
++		.iotype   = UPIO_MEM,
++		.regshift = 0,
++		.uartclk  = 18432000,
++		.rw_delay = 2,
+ 	},
++	{ }
++};
++
++static struct platform_device avila_optional_uart = {
++  .name   = "serial8250",
++  .id   = PLAT8250_DEV_PLATFORM1,
++  .dev.platform_data  = avila_optional_uart_data,
++  .num_resources  = 4,
++  .resource = avila_optional_uart_resources,
++};
++
++static struct resource avila_pata_resources[] = {
+ 	{
++		.flags	= IORESOURCE_MEM
++	},{
++		.flags	= IORESOURCE_MEM,
++	},{
+ 		.name	= "intrq",
+ 		.start	= IRQ_IXP4XX_GPIO12,
+ 		.end	= IRQ_IXP4XX_GPIO12,
+@@ -133,21 +210,237 @@ static struct platform_device avila_pata
+ 	.resource		= avila_pata_resources,
+ };
+ 
++/* Built-in 10/100 Ethernet MAC interfaces */
++static struct eth_plat_info avila_npeb_data = {
++	.phy		= 0,
++	.rxq		= 3,
++	.txreadyq	= 20,
++};
++
++static struct eth_plat_info avila_npec_data = {
++	.phy		= 1,
++	.rxq		= 4,
++	.txreadyq	= 21,
++};
++
++static struct platform_device avila_npeb_device = {
++	.name			= "ixp4xx_eth",
++	.id			= IXP4XX_ETH_NPEB,
++	.dev.platform_data	= &avila_npeb_data,
++	.dev.coherent_dma_mask	= DMA_BIT_MASK(32),
++};
++
++static struct platform_device avila_npec_device = {
++	.name			= "ixp4xx_eth",
++	.id			= IXP4XX_ETH_NPEC,
++	.dev.platform_data	= &avila_npec_data,
++	.dev.coherent_dma_mask	= DMA_BIT_MASK(32),
++};
++
++static struct gpio_led avila_gpio_leds[] = {
++	{
++		.name		= "user",  /* green led */
++		.gpio		= AVILA_GW23XX_LED_USER_GPIO,
++		.active_low	= 1,
++	},
++	{
++		.name		= "radio1",  /* green led */
++		.gpio		= 104,
++		.active_low	= 1,
++	},
++	{
++		.name		= "radio2",  /* green led */
++		.gpio		= 105,
++		.active_low	= 1,
++	},
++	{
++		.name		= "radio3",  /* green led */
++		.gpio		= 106,
++		.active_low	= 1,
++	},
++	{
++		.name		= "radio4",  /* green led */
++		.gpio		= 107,
++		.active_low	= 1,
++	},
++
++};
++
++static struct gpio_led_platform_data avila_gpio_leds_data = {
++	.num_leds		= 1,
++	.leds			= avila_gpio_leds,
++};
++
++static struct platform_device avila_gpio_leds_device = {
++	.name			= "leds-gpio",
++	.id			= -1,
++	.dev.platform_data	= &avila_gpio_leds_data,
++};
++
++static struct latch_led avila_latch_leds[] = {
++	{
++		.name	= "led0",  /* green led */
++		.bit	= 0,
++	},
++	{
++		.name	= "led1",  /* green led */
++		.bit	= 1,
++	},
++	{
++		.name	= "led2",  /* green led */
++		.bit	= 2,
++	},
++	{
++		.name	= "led3",  /* green led */
++		.bit	= 3,
++	},
++	{
++		.name	= "led4",  /* green led */
++		.bit	= 4,
++	},
++	{
++		.name	= "led5",  /* green led */
++		.bit	= 5,
++	},
++	{
++		.name	= "led6",  /* green led */
++		.bit	= 6,
++	},
++	{
++		.name	= "led7",  /* green led */
++		.bit	= 7,
++	}
++};
++
++static struct latch_led_platform_data avila_latch_leds_data = {
++	.num_leds	= 8,
++	.leds		= avila_latch_leds,
++	.mem		= 0x51000000,
++};
++
++static struct platform_device avila_latch_leds_device = {
++	.name			= "leds-latch",
++	.id			= -1,
++	.dev.platform_data	= &avila_latch_leds_data,
++};
++
+ static struct platform_device *avila_devices[] __initdata = {
+ 	&avila_i2c_gpio,
+-	&avila_flash,
+ 	&avila_uart
+ };
+ 
+-static void __init avila_init(void)
++/*
++ * Audio Devices
++ */
++
++static struct platform_device avila_hss_device[] = {
++	{
++		.name = "gw_avila_hss",
++		.id = 0,
++	},{
++		.name = "gw_avila_hss",
++		.id = 1,
++	},{
++		.name = "gw_avila_hss",
++		.id = 2,
++	},{
++		.name = "gw_avila_hss",
++		.id = 3,
++	},
++};
++
++static struct platform_device avila_pcm_device[] = {
++	{
++		.name = "gw_avila-audio",
++		.id = 0,
++	},{
++		.name = "gw_avila-audio",
++		.id = 1,
++	},{
++		.name = "gw_avila-audio",
++		.id = 2,
++	},{
++		.name = "gw_avila-audio",
++		.id = 3,
++	}
++};
++
++static void setup_audio_devices(void) {
++	platform_device_register(&avila_hss_device[0]);
++	platform_device_register(&avila_hss_device[1]);
++	platform_device_register(&avila_hss_device[2]);
++	platform_device_register(&avila_hss_device[3]);
++
++	platform_device_register(&avila_pcm_device[0]);
++	platform_device_register(&avila_pcm_device[1]);
++	platform_device_register(&avila_pcm_device[2]);
++	platform_device_register(&avila_pcm_device[3]);
++}
++
++static void __init avila_gw23xx_setup(void)
+ {
+-	ixp4xx_sys_init();
++	platform_device_register(&avila_npeb_device);
++	platform_device_register(&avila_npec_device);
+ 
+-	avila_flash_resource.start = IXP4XX_EXP_BUS_BASE(0);
+-	avila_flash_resource.end =
+-		IXP4XX_EXP_BUS_BASE(0) + ixp4xx_exp_bus_size - 1;
++	platform_device_register(&avila_gpio_leds_device);
++}
+ 
+-	platform_add_devices(avila_devices, ARRAY_SIZE(avila_devices));
++static void __init avila_gw2342_setup(void)
++{
++	platform_device_register(&avila_npeb_device);
++	platform_device_register(&avila_npec_device);
++
++	platform_device_register(&avila_gpio_leds_device);
++
++	avila_pata_resources[0].start = IXP4XX_EXP_BUS_BASE(1);
++	avila_pata_resources[0].end = IXP4XX_EXP_BUS_END(1);
++
++	avila_pata_resources[1].start = IXP4XX_EXP_BUS_BASE(2);
++	avila_pata_resources[1].end = IXP4XX_EXP_BUS_END(2);
++
++	avila_pata_data.cs0_cfg = IXP4XX_EXP_CS1;
++	avila_pata_data.cs1_cfg = IXP4XX_EXP_CS2;
++
++	platform_device_register(&avila_pata);
++}
++
++static void __init avila_gw2345_setup(void)
++{
++	avila_npeb_data.phy = IXP4XX_ETH_PHY_MAX_ADDR;
++	avila_npeb_data.phy_mask = 0x1e; /* ports 1-4 of the KS8995 switch */
++	platform_device_register(&avila_npeb_device);
++
++	avila_npec_data.phy = 5; /* port 5 of the KS8995 switch */
++	platform_device_register(&avila_npec_device);
++
++	platform_device_register(&avila_gpio_leds_device);
++
++	avila_pata_resources[0].start = IXP4XX_EXP_BUS_BASE(1);
++	avila_pata_resources[0].end = IXP4XX_EXP_BUS_END(1);
++
++	avila_pata_resources[1].start = IXP4XX_EXP_BUS_BASE(2);
++	avila_pata_resources[1].end = IXP4XX_EXP_BUS_END(2);
++
++	avila_pata_data.cs0_cfg = IXP4XX_EXP_CS1;
++	avila_pata_data.cs1_cfg = IXP4XX_EXP_CS2;
++
++	platform_device_register(&avila_pata);
++}
++
++static void __init avila_gw2347_setup(void)
++{
++	platform_device_register(&avila_npeb_device);
++
++	avila_gpio_leds[0].gpio = AVILA_GW23X7_LED_USER_GPIO;
++	platform_device_register(&avila_gpio_leds_device);
++}
++
++static void __init avila_gw2348_setup(void)
++{
++	platform_device_register(&avila_npeb_device);
++	platform_device_register(&avila_npec_device);
++
++	platform_device_register(&avila_gpio_leds_device);
+ 
+ 	avila_pata_resources[0].start = IXP4XX_EXP_BUS_BASE(1);
+ 	avila_pata_resources[0].end = IXP4XX_EXP_BUS_END(1);
+@@ -159,8 +452,335 @@ static void __init avila_init(void)
+ 	avila_pata_data.cs1_cfg = IXP4XX_EXP_CS2;
+ 
+ 	platform_device_register(&avila_pata);
++}
++
++static void __init avila_gw2353_setup(void)
++{
++	platform_device_register(&avila_npeb_device);
++	platform_device_register(&avila_gpio_leds_device);
++}
++
++static void __init avila_gw2355_setup(void)
++{
++	avila_npeb_data.phy = IXP4XX_ETH_PHY_MAX_ADDR;
++	avila_npeb_data.phy_mask = 0x1e; /* ports 1-4 of the KS8995 switch */
++	platform_device_register(&avila_npeb_device);
++
++	avila_npec_data.phy = 16;
++	platform_device_register(&avila_npec_device);
++
++	avila_gpio_leds[0].gpio = AVILA_GW23X7_LED_USER_GPIO;
++	platform_device_register(&avila_gpio_leds_device);
++
++	*IXP4XX_EXP_CS4 |= 0xbfff3c03;
++	avila_latch_leds[0].name = "RXD";
++	avila_latch_leds[1].name = "TXD";
++	avila_latch_leds[2].name = "POL";
++	avila_latch_leds[3].name = "LNK";
++	avila_latch_leds[4].name = "ERR";
++	avila_latch_leds_data.num_leds = 5;
++	avila_latch_leds_data.mem = 0x54000000;
++	platform_device_register(&avila_latch_leds_device);
++
++	avila_pata_resources[0].start = IXP4XX_EXP_BUS_BASE(1);
++	avila_pata_resources[0].end = IXP4XX_EXP_BUS_END(1);
++
++	avila_pata_resources[1].start = IXP4XX_EXP_BUS_BASE(2);
++	avila_pata_resources[1].end = IXP4XX_EXP_BUS_END(2);
++
++	avila_pata_data.cs0_cfg = IXP4XX_EXP_CS1;
++	avila_pata_data.cs1_cfg = IXP4XX_EXP_CS2;
++
++	platform_device_register(&avila_pata);
++}
++
++static void __init avila_gw2357_setup(void)
++{
++	platform_device_register(&avila_npeb_device);
++
++	avila_gpio_leds[0].gpio = AVILA_GW23X7_LED_USER_GPIO;
++	platform_device_register(&avila_gpio_leds_device);
++
++	*IXP4XX_EXP_CS1 |= 0xbfff3c03;
++	platform_device_register(&avila_latch_leds_device);
++}
++
++static void __init avila_gw2365_setup(void)
++{
++	avila_flash_resource.end = IXP4XX_EXP_BUS_BASE(0) + SZ_32M - 1;
++
++	*IXP4XX_EXP_CS4 = 0xBFFF3C43;
++	irq_set_irq_type(IRQ_IXP4XX_GPIO0, IRQ_TYPE_EDGE_RISING);
++	avila_optional_uart_data[0].mapbase = 0x54000000;
++	avila_optional_uart_data[0].membase = (void __iomem *)ioremap(0x54000000, 0x0fff);
++	avila_optional_uart_data[0].irq   = IRQ_IXP4XX_GPIO0;
++
++	*IXP4XX_EXP_CS5 = 0xBFFF3C43;
++	irq_set_irq_type(IRQ_IXP4XX_GPIO1, IRQ_TYPE_EDGE_RISING);
++	avila_optional_uart_data[1].mapbase = 0x55000000;
++	avila_optional_uart_data[1].membase = (void __iomem *)ioremap(0x55000000, 0x0fff);
++	avila_optional_uart_data[1].irq   = IRQ_IXP4XX_GPIO1;
++
++	*IXP4XX_EXP_CS6 = 0xBFFF3C43;
++	irq_set_irq_type(IRQ_IXP4XX_GPIO2, IRQ_TYPE_EDGE_RISING);
++	avila_optional_uart_data[2].mapbase = 0x56000000;
++	avila_optional_uart_data[2].membase = (void __iomem *)ioremap(0x56000000, 0x0fff);
++	avila_optional_uart_data[2].irq   = IRQ_IXP4XX_GPIO2;
++
++	*IXP4XX_EXP_CS7 = 0xBFFF3C43;
++	irq_set_irq_type(IRQ_IXP4XX_GPIO3, IRQ_TYPE_EDGE_RISING);
++	avila_optional_uart_data[3].mapbase = 0x57000000;
++	avila_optional_uart_data[3].membase = (void __iomem *)ioremap(0x57000000, 0x0fff);
++	avila_optional_uart_data[3].irq   = IRQ_IXP4XX_GPIO3;
++
++	platform_device_register(&avila_optional_uart);
++
++	avila_npeb_data.phy = 1;
++	platform_device_register(&avila_npeb_device);
++
++	avila_npec_data.phy = 2;
++	platform_device_register(&avila_npec_device);
++
++	avila_pata_resources[0].start = IXP4XX_EXP_BUS_BASE(2);
++	avila_pata_resources[0].end = IXP4XX_EXP_BUS_END(2);
++
++	avila_pata_resources[1].start = IXP4XX_EXP_BUS_BASE(3);
++	avila_pata_resources[1].end = IXP4XX_EXP_BUS_END(3);
++
++	avila_pata_data.cs0_cfg = IXP4XX_EXP_CS2;
++	avila_pata_data.cs1_cfg = IXP4XX_EXP_CS3;
++
++	platform_device_register(&avila_pata);
++
++	avila_gpio_leds[0].gpio = 109;
++	avila_gpio_leds_data.num_leds = 5;
++	platform_device_register(&avila_gpio_leds_device);
++
++	setup_audio_devices();
++}
++
++static void __init avila_gw2369_setup(void)
++{
++	avila_flash_resource.end = IXP4XX_EXP_BUS_BASE(0) + SZ_32M - 1;
++
++	avila_npeb_data.phy = 1;
++	platform_device_register(&avila_npeb_device);
++
++	avila_npec_data.phy = 2;
++	platform_device_register(&avila_npec_device);
++
++	setup_audio_devices();
++}
++
++static void __init avila_gw2370_setup(void)
++{
++	avila_flash_resource.end = IXP4XX_EXP_BUS_BASE(0) + SZ_32M - 1;
++
++	avila_npeb_data.phy = 5;
++	platform_device_register(&avila_npeb_device);
++
++	avila_npec_data.phy = IXP4XX_ETH_PHY_MAX_ADDR;
++	avila_npec_data.phy_mask = 0x1e; /* ports 1-4 of the KS8995 switch */
++	platform_device_register(&avila_npec_device);
++
++	*IXP4XX_EXP_CS2 = 0xBFFF3C43;
++	irq_set_irq_type(IRQ_IXP4XX_GPIO2, IRQ_TYPE_EDGE_RISING);
++	avila_optional_uart_data[0].mapbase = 0x52000000;
++	avila_optional_uart_data[0].membase = (void __iomem *)ioremap(0x52000000, 0x0fff);
++	avila_optional_uart_data[0].irq   = IRQ_IXP4XX_GPIO2;
++
++	*IXP4XX_EXP_CS3 = 0xBFFF3C43;
++	irq_set_irq_type(IRQ_IXP4XX_GPIO3, IRQ_TYPE_EDGE_RISING);
++	avila_optional_uart_data[1].mapbase = 0x53000000;
++	avila_optional_uart_data[1].membase = (void __iomem *)ioremap(0x53000000, 0x0fff);
++	avila_optional_uart_data[1].irq   = IRQ_IXP4XX_GPIO3;
++
++	avila_optional_uart.num_resources = 2;
++
++	platform_device_register(&avila_optional_uart);
++
++	avila_gpio_leds[0].gpio = 101;
++	platform_device_register(&avila_gpio_leds_device);
++
++	setup_audio_devices();
++}
++
++static void __init avila_gw2375_setup(void)
++{
++	avila_npeb_data.phy = 1;
++	platform_device_register(&avila_npeb_device);
++
++	avila_npec_data.phy = 2;
++	platform_device_register(&avila_npec_device);
++
++	*IXP4XX_EXP_CS2 = 0xBFFF3C43;
++	irq_set_irq_type(IRQ_IXP4XX_GPIO10, IRQ_TYPE_EDGE_RISING);
++	avila_optional_uart_data[0].mapbase = 0x52000000;
++	avila_optional_uart_data[0].membase = (void __iomem *)ioremap(0x52000000, 0x0fff);
++	avila_optional_uart_data[0].irq   = IRQ_IXP4XX_GPIO10;
++
++	avila_optional_uart.num_resources = 1;
++
++	platform_device_register(&avila_optional_uart);
++
++	setup_audio_devices();
++}
++
++
++static struct avila_board_info avila_boards[] __initdata = {
++	{
++		.model		= "GW2342",
++		.setup		= avila_gw2342_setup,
++	}, {
++		.model		= "GW2345",
++		.setup		= avila_gw2345_setup,
++	}, {
++		.model		= "GW2347",
++		.setup		= avila_gw2347_setup,
++	}, {
++		.model		= "GW2348",
++		.setup		= avila_gw2348_setup,
++	}, {
++		.model		= "GW2353",
++		.setup		= avila_gw2353_setup,
++	}, {
++		.model		= "GW2355",
++		.setup		= avila_gw2355_setup,
++	}, {
++		.model		= "GW2357",
++		.setup		= avila_gw2357_setup,
++	}, {
++		.model		= "GW2365",
++		.setup		= avila_gw2365_setup,
++	}, {
++		.model		= "GW2369",
++		.setup		= avila_gw2369_setup,
++	}, {
++		.model		= "GW2370",
++		.setup		= avila_gw2370_setup,
++	}, {
++		.model		= "GW2373",
++		.setup		= avila_gw2369_setup,
++	}, {
++		.model		= "GW2375",
++		.setup		= avila_gw2375_setup,
++	}
++};
++
++static struct avila_board_info * __init avila_find_board_info(char *model)
++{
++	int i;
++	model[6] = '\0';
++
++	for (i = 0; i < ARRAY_SIZE(avila_boards); i++) {
++		struct avila_board_info *info = &avila_boards[i];
++		if (strcmp(info->model, model) == 0)
++			return info;
++	}
++
++	return NULL;
++}
++
++static struct nvmem_device *at24_nvmem;
++
++static void at24_setup(struct nvmem_device *mem_acc, void *context)
++{
++	char mac_addr[ETH_ALEN];
++	char model[7];
++
++	at24_nvmem = mem_acc;
++
++	/* Read MAC addresses */
++	if (nvmem_device_read(at24_nvmem, 0x0, 6, mac_addr) == 6) {
++		memcpy(&avila_npeb_data.hwaddr, mac_addr, ETH_ALEN);
++	}
++	if (nvmem_device_read(at24_nvmem, 0x6, 6, mac_addr) == 6) {
++		memcpy(&avila_npec_data.hwaddr, mac_addr, ETH_ALEN);
++	}
++
++	/* Read the first 6 bytes of the model number */
++	if (nvmem_device_read(at24_nvmem, 0x20, 6, model) == 6) {
++		avila_info = avila_find_board_info(model);
++	}
++
++}
++
++static struct at24_platform_data avila_eeprom_info = {
++	.byte_len	= 1024,
++	.page_size	= 16,
++//	.flags		= AT24_FLAG_READONLY,
++	.setup		= at24_setup,
++};
++
++static struct pca953x_platform_data avila_pca_data = {
++	.gpio_base  = 100,
++};
++
++static struct i2c_board_info __initdata avila_i2c_board_info[] = {
++	{
++		I2C_BOARD_INFO("ds1672", 0x68),
++	},
++	{
++		I2C_BOARD_INFO("gsp", 0x29),
++	},
++	{
++		I2C_BOARD_INFO("pca9555", 0x23),
++		.platform_data = &avila_pca_data,
++	},
++	{
++		I2C_BOARD_INFO("ad7418", 0x28),
++	},
++	{
++		I2C_BOARD_INFO("24c08", 0x51),
++		.platform_data	= &avila_eeprom_info
++	},
++	{
++		I2C_BOARD_INFO("tlv320aic33", 0x1b),
++	},
++	{
++		I2C_BOARD_INFO("tlv320aic33", 0x1a),
++	},
++	{
++		I2C_BOARD_INFO("tlv320aic33", 0x19),
++	},
++	{
++		I2C_BOARD_INFO("tlv320aic33", 0x18),
++	},
++};
++
++static void __init avila_init(void)
++{
++	ixp4xx_sys_init();
++
++	platform_add_devices(avila_devices, ARRAY_SIZE(avila_devices));
++
++	i2c_register_board_info(0, avila_i2c_board_info,
++			ARRAY_SIZE(avila_i2c_board_info));
++}
++
++static int __init avila_model_setup(void)
++{
++	if (!machine_is_avila())
++		return 0;
++
++	/* default 16MB flash */
++	avila_flash_resource.start = IXP4XX_EXP_BUS_BASE(0);
++	avila_flash_resource.end = IXP4XX_EXP_BUS_BASE(0) + SZ_16M - 1;
++
++	if (avila_info) {
++		printk(KERN_DEBUG "Running on Gateworks Avila %s\n",
++							avila_info->model);
++		avila_info->setup();
++	} else {
++		printk(KERN_INFO "Unknown/missing Avila model number"
++						" -- defaults will be used\n");
++		avila_gw23xx_setup();
++	}
++	platform_device_register(&avila_flash);
+ 
++	return 0;
+ }
++late_initcall(avila_model_setup);
+ 
+ MACHINE_START(AVILA, "Gateworks Avila Network Platform")
+ 	/* Maintainer: Deepak Saxena <dsaxena@plexity.net> */
