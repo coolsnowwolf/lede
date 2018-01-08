@@ -3,9 +3,6 @@
 # Copyright (C) 2010-2013 OpenWrt.org
 #
 
-RAMIPS_BOARD_NAME=
-RAMIPS_MODEL=
-
 ramips_board_detect() {
 	local machine
 	local name
@@ -278,13 +275,7 @@ ramips_board_detect() {
 		name="m4-8M"
 		;;
 	*"MediaTek LinkIt Smart 7688")
-		linkit="$(dd bs=1 skip=1024 count=12 if=/dev/mtd2 2> /dev/null)"
-		if [ "${linkit}" = "LINKITS7688D" ]; then
-			name="linkits7688d"
-			RAMIPS_MODEL="${machine} DUO"
-		else
-			name="linkits7688"
-		fi
+		name="linkits7688"
 		;;
 	*"Memory 2 Move")
 		name="m2m"
@@ -459,6 +450,9 @@ ramips_board_detect() {
 		;;
 	*"RT-N10+")
 		name="rt-n10-plus"
+		;;
+	*"RT-N12+")
+		name="rt-n12p"
 		;;
 	*"RT-N13U")
 		name="rt-n13u"
@@ -736,18 +730,13 @@ ramips_board_detect() {
 	*"YK1")
 		name="youku-yk1"
 		;;
-	*)
-		name="$(strings /proc/device-tree/compatible | head -1)"
-		name="${name##*,}"
-		name="${name:-generic}"
-		;;
 	esac
 
-	[ -z "$RAMIPS_BOARD_NAME" ] && RAMIPS_BOARD_NAME="$name"
-	[ -z "$RAMIPS_MODEL" ] && RAMIPS_MODEL="$machine"
+	# use generic board detect if no name is set
+	[ -z "$name" ] && return
 
 	[ -e "/tmp/sysinfo/" ] || mkdir -p "/tmp/sysinfo/"
 
-	echo "$RAMIPS_BOARD_NAME" > /tmp/sysinfo/board_name
-	echo "$RAMIPS_MODEL" > /tmp/sysinfo/model
+	echo "$name" > /tmp/sysinfo/board_name
+	echo "$machine" > /tmp/sysinfo/model
 }
