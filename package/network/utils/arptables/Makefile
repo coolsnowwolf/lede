@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=arptables
 PKG_RELEASE:=1
 
-PKG_SOURCE_URL:=git://git.netfilter.org/arptables
+PKG_SOURCE_URL:=https://git.netfilter.org/arptables
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_DATE:=2015-05-20
 PKG_SOURCE_VERSION:=f4ab8f63f11a72f14687a6646d04ae1bae3fa45f

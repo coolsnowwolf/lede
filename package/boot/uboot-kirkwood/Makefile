@@ -7,10 +7,10 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_VERSION:=2017.03
+PKG_VERSION:=2017.09
 PKG_RELEASE:=1
 
-PKG_HASH:=f54baf3f9325bf444c7905f3a5b6f83680edb1e6e1a4d5f8a5ad80abe885113f
+PKG_HASH:=b2d15f2cf5f72e706025cde73d67247c6da8cd35f7e10891eefe7d9095089744
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk

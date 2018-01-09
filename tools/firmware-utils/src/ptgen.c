@@ -1,4 +1,4 @@
-/* 
+/*
  * ptgen - partition table generator
  * Copyright (C) 2006 by Felix Fietkau <nbd@nbd.name>
  *
@@ -9,12 +9,12 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
@@ -63,25 +63,26 @@ struct partinfo parts[4];
 char *filename = NULL;
 
 
-/* 
+/*
  * parse the size argument, which is either
  * a simple number (K assumed) or
  * K, M or G
  *
  * returns the size in KByte
  */
-static long to_kbytes(const char *string) {
+static long to_kbytes(const char *string)
+{
 	int exp = 0;
 	long result;
 	char *end;
 
 	result = strtoul(string, &end, 0);
 	switch (tolower(*end)) {
-			case 'k' :
-			case '\0' : exp = 0; break;
-			case 'm' : exp = 1; break;
-			case 'g' : exp = 2; break;
-			default: return 0;
+		case 'k' :
+		case '\0' : exp = 0; break;
+		case 'm' : exp = 1; break;
+		case 'g' : exp = 2; break;
+		default: return 0;
 	}
 
 	if (*end)
@@ -99,9 +100,10 @@ static long to_kbytes(const char *string) {
 }
 
 /* convert the sector number into a CHS value for the partition table */
-static void to_chs(long sect, unsigned char chs[3]) {
+static void to_chs(long sect, unsigned char chs[3])
+{
 	int c,h,s;
-	
+
 	s = (sect % sectors) + 1;
 	sect = sect / sectors;
 	h = sect % heads;
@@ -116,10 +118,11 @@ static void to_chs(long sect, unsigned char chs[3]) {
 }
 
 /* round the sector number up to the next cylinder */
-static inline unsigned long round_to_cyl(long sect) {
+static inline unsigned long round_to_cyl(long sect)
+{
 	int cyl_size = heads * sectors;
 
-	return sect + cyl_size - (sect % cyl_size); 
+	return sect + cyl_size - (sect % cyl_size);
 }
 
 /* round the sector number up to the kb_align boundary */
@@ -131,7 +134,7 @@ static inline unsigned long round_to_kb(long sect) {
 static int gen_ptable(uint32_t signature, int nr)
 {
 	struct pte pte[4];
-	unsigned long sect = 0; 
+	unsigned long sect = 0;
 	int i, fd, ret = -1, start, len;
 
 	memset(pte, 0, sizeof(struct pte) * 4);
@@ -140,22 +143,27 @@ static int gen_ptable(uint32_t signature, int nr)
 			fprintf(stderr, "Invalid size in partition %d!\n", i);
 			return -1;
 		}
+
 		pte[i].active = ((i + 1) == active) ? 0x80 : 0;
 		pte[i].type = parts[i].type;
+
 		start = sect + sectors;
 		if (kb_align != 0)
 			start = round_to_kb(start);
 		pte[i].start = cpu_to_le32(start);
+
 		sect = start + parts[i].size * 2;
 		if (kb_align == 0)
 			sect = round_to_cyl(sect);
 		pte[i].length = cpu_to_le32(len = sect - start);
+
 		to_chs(start, pte[i].chs_start);
 		to_chs(start + len - 1, pte[i].chs_end);
+
 		if (verbose)
-			fprintf(stderr, "Partition %d: start=%ld, end=%ld, size=%ld\n", i, (long) start * 512, ((long) start + (long) len) * 512, (long) len * 512);
-		printf("%ld\n", ((long) start * 512));
-		printf("%ld\n", ((long) len * 512));
+			fprintf(stderr, "Partition %d: start=%ld, end=%ld, size=%ld\n", i, (long)start * 512, ((long)start + (long)len) * 512, (long)len * 512);
+		printf("%ld\n", (long)start * 512);
+		printf("%ld\n", (long)len * 512);
 	}
 
 	if ((fd = open(filename, O_WRONLY|O_CREAT|O_TRUNC, 0644)) < 0) {
@@ -179,7 +187,7 @@ static int gen_ptable(uint32_t signature, int nr)
 		fprintf(stderr, "write failed.\n");
 		goto fail;
 	}
-	
+
 	ret = 0;
 fail:
 	close(fd);
@@ -188,8 +196,8 @@ fail:
 
 static void usage(char *prog)
 {
-	fprintf(stderr,	"Usage: %s [-v] -h <heads> -s <sectors> -o <outputfile> [-a 0..4] [-l <align kB>] [[-t <type>] -p <size>...] \n", prog);
-	exit(1);
+	fprintf(stderr, "Usage: %s [-v] -h <heads> -s <sectors> -o <outputfile> [-a 0..4] [-l <align kB>] [[-t <type>] -p <size>...] \n", prog);
+	exit(EXIT_FAILURE);
 }
 
 int main (int argc, char **argv)
@@ -208,29 +216,29 @@ int main (int argc, char **argv)
 			verbose++;
 			break;
 		case 'h':
-			heads = (int) strtoul(optarg, NULL, 0);
+			heads = (int)strtoul(optarg, NULL, 0);
 			break;
 		case 's':
-			sectors = (int) strtoul(optarg, NULL, 0);
+			sectors = (int)strtoul(optarg, NULL, 0);
 			break;
 		case 'p':
 			if (part > 3) {
 				fprintf(stderr, "Too many partitions\n");
-				exit(1);
+				exit(EXIT_FAILURE);
 			}
 			parts[part].size = to_kbytes(optarg);
 			parts[part++].type = type;
 			break;
 		case 't':
-			type = (char) strtoul(optarg, NULL, 16);
+			type = (char)strtoul(optarg, NULL, 16);
 			break;
 		case 'a':
-			active = (int) strtoul(optarg, NULL, 0);
+			active = (int)strtoul(optarg, NULL, 0);
 			if ((active < 0) || (active > 4))
 				active = 0;
 			break;
 		case 'l':
-			kb_align = (int) strtoul(optarg, NULL, 0) * 2;
+			kb_align = (int)strtoul(optarg, NULL, 0) * 2;
 			break;
 		case 'S':
 			signature = strtoul(optarg, NULL, 0);
@@ -241,8 +249,8 @@ int main (int argc, char **argv)
 		}
 	}
 	argc -= optind;
-	if (argc || (heads <= 0) || (sectors <= 0) || !filename) 
+	if (argc || (heads <= 0) || (sectors <= 0) || !filename)
 		usage(argv[0]);
 
-	return gen_ptable(signature, part);
+	return gen_ptable(signature, part) ? EXIT_FAILURE : EXIT_SUCCESS;
 }

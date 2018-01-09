@@ -21,7 +21,7 @@ luci-app-pptp-server luci-app-ipsec-vpnd luci-app-vlmcsd luci-app-wifischedule l
 # For nas targets
 DEFAULT_PACKAGES.nas:=block-mount fdisk lsblk mdadm
 # For router targets
-DEFAULT_PACKAGES.router:=dnsmasq-full iptables ip6tables ppp ppp-mod-pppoe firewall
+DEFAULT_PACKAGES.router:=dnsmasq-full iptables ip6tables ppp ppp-mod-pppoe firewall odhcpd-ipv6only odhcp6c
 DEFAULT_PACKAGES.bootloader:=
 
 ifneq ($(DUMP),)
@@ -190,7 +190,7 @@ ifeq ($(DUMP),1)
     CPU_CFLAGS_cortex-a7 = -mcpu=cortex-a7
     CPU_CFLAGS_cortex-a8 = -mcpu=cortex-a8
     CPU_CFLAGS_cortex-a9 = -mcpu=cortex-a9
-    CPU_CFLAGS_cortex-a15 = -mcpu=cortex-a15 -mtune=cortex-a15
+    CPU_CFLAGS_cortex-a15 = -mcpu=cortex-a15
     CPU_CFLAGS_cortex-a53 = -mcpu=cortex-a53
     CPU_CFLAGS_fa526 = -mcpu=fa526
     CPU_CFLAGS_mpcore = -mcpu=mpcore
@@ -208,6 +208,10 @@ ifeq ($(DUMP),1)
     CPU_CFLAGS_405:=-mcpu=405
     CPU_CFLAGS_440:=-mcpu=440
     CPU_CFLAGS_464fp:=-mcpu=464fp
+  endif
+  ifeq ($(ARCH),powerpc64)
+    CPU_TYPE ?= powerpc64
+    CPU_CFLAGS_powerpc64:=-mcpu=powerpc64
   endif
   ifeq ($(ARCH),sparc)
     CPU_TYPE = sparc

@@ -8,6 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=dosfstools
+PKG_CPE_ID:=cpe:/a:dosfstools_project:dosfstools
 PKG_VERSION:=4.1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz

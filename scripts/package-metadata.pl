@@ -535,11 +535,6 @@ sub gen_package_mk() {
 							$pkg->{makefile}, $pkg_dep->{src}, $deptype, $pkg_dep->{makefile}, $deptype;
 						next;
 					}
-					unless ($pkg->{src} ne $pkg_dep->{sec}.$suffix) {
-						warn sprintf "WARNING: Makefile '%s' has a build dependency on itself\n",
-							$pkg->{makefile};
-						next;
-					}
 					$idx = $pkg_dep->{subdir}.$pkg_dep->{src};
 				} elsif (defined($srcpackage{$dep})) {
 					$idx = $subdir{$dep}.$dep;

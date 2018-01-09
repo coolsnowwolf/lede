@@ -7,6 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=qemu
+PKG_CPE_ID:=cpe:/a:qemu:qemu
 PKG_VERSION:=0.14.1
 PKG_RELEASE:=1
 

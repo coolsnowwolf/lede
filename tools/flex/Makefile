@@ -7,6 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=flex
+PKG_CPE_ID:=cpe:/a:flex_project:flex
 PKG_VERSION:=2.6.4
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz

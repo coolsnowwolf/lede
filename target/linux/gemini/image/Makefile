@@ -10,19 +10,19 @@ include $(INCLUDE_DIR)/image.mk
 ifeq ($(SUBTARGET),wiligear)
 define Image/Prepare
 # WBD111: mach id 1690 (0x69a)
-	echo -en "\x06\x1c\xa0\xe3\x9a\x10\x81\xe3" > $(KDIR)/$(IMG_PREFIX)-wbd111-zImage
-	cat $(KDIR)/zImage >> $(KDIR)/$(IMG_PREFIX)-wbd111-zImage
+	echo -en "\x06\x1c\xa0\xe3\x9a\x10\x81\xe3" > $(KDIR)/wbd111-zImage
+	cat $(KDIR)/zImage >> $(KDIR)/wbd111-zImage
 # WBD222: mach id 2753 (0xAC1)
-	echo -en "\x0a\x1c\xa0\xe3\xc1\x10\x81\xe3" > $(KDIR)/$(IMG_PREFIX)-wbd222-zImage
-	cat $(KDIR)/zImage >> $(KDIR)/$(IMG_PREFIX)-wbd222-zImage
+	echo -en "\x0a\x1c\xa0\xe3\xc1\x10\x81\xe3" > $(KDIR)/wbd222-zImage
+	cat $(KDIR)/zImage >> $(KDIR)/wbd222-zImage
 endef
 endif
 
 ifeq ($(SUBTARGET),raidsonic)
 define Image/Prepare
 # NAS4220: mach id 2038 (0x7F6)
-	echo -en "\x07\x1c\xa0\xe3\xf6\x10\x81\xe3" > $(KDIR)/$(IMG_PREFIX)-nas4220-zImage
-	cat $(KDIR)/zImage >> $(KDIR)/$(IMG_PREFIX)-nas4220-zImage
+	echo -en "\x07\x1c\xa0\xe3\xf6\x10\x81\xe3" > $(KDIR)/nas4220-zImage
+	cat $(KDIR)/zImage >> $(KDIR)/nas4220-zImage
 endef
 endif
 
@@ -30,9 +30,9 @@ ifeq ($(SUBTARGET),wiligear)
 define Image/BuildKernel
 # workaround the bootloader's bug with extra nops
 	echo -en "\x00\x00\xa0\xe1\x00\x00\xa0\xe1\x00\x00\xa0\xe1\x00\x00\xa0\xe1" > $(BIN_DIR)/$(IMG_PREFIX)-wbd111-zImage
-	cat $(KDIR)/$(IMG_PREFIX)-wbd111-zImage >> $(BIN_DIR)/$(IMG_PREFIX)-wbd111-zImage
+	cat $(KDIR)/wbd111-zImage >> $(BIN_DIR)/$(IMG_PREFIX)-wbd111-zImage
 	echo -en "\x00\x00\xa0\xe1\x00\x00\xa0\xe1\x00\x00\xa0\xe1\x00\x00\xa0\xe1" > $(BIN_DIR)/$(IMG_PREFIX)-wbd222-zImage
-	cat $(KDIR)/$(IMG_PREFIX)-wbd222-zImage >> $(BIN_DIR)/$(IMG_PREFIX)-wbd222-zImage
+	cat $(KDIR)/wbd222-zImage >> $(BIN_DIR)/$(IMG_PREFIX)-wbd222-zImage
 endef
 endif
 
@@ -74,7 +74,7 @@ define Image/Build
 	dd if=$(BIN_DIR)/$(IMG_PREFIX)-$(1).img of=$(BIN_DIR)/rd.gz bs=6144k count=1
 #	dd if=/dev/zero of=$(BIN_DIR)/hddapp.tgz bs=6144k count=1
 	dd if=$(BIN_DIR)/$(IMG_PREFIX)-$(1).img of=$(BIN_DIR)/hddapp.tgz bs=6144k count=1 seek=1
-	cp $(KDIR)/$(IMG_PREFIX)-nas4220-zImage $(BIN_DIR)/
+	cp $(KDIR)/nas4220-zImage $(BIN_DIR)/$(IMG_PREFIX)-nas4220-zImage
 	cp $(BIN_DIR)/$(IMG_PREFIX)-nas4220-zImage $(BIN_DIR)/zImage
 	cp ./ImageInfo-ib4220 $(BIN_DIR)/ImageInfo
 	(cd $(BIN_DIR); tar -czf $(IMG_PREFIX)-sysupgrade-ib4220.tar.gz ImageInfo zImage rd.gz hddapp.tgz)

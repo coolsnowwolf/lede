@@ -16,16 +16,9 @@ SUBTARGETS:=generic p1020
 
 KERNEL_PATCHVER:=4.9
 
-define Target/Description
-	Build images for the Freescale MPC85xx based boards.
-endef
+KERNELNAME:=zImage
 
 include $(INCLUDE_DIR)/target.mk
-
-KERNEL_IMAGES := zImage
-ifeq ($(SUBTARGET),generic)
-KERNEL_IMAGES += cuImage.tl-wdr4900-v1
-endif
 
 DEFAULT_PACKAGES += \
 	kmod-input-core kmod-input-gpio-keys kmod-button-hotplug \

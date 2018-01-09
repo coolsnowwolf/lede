@@ -435,7 +435,27 @@ define Device/Build/compile
 
 endef
 
+ifndef IB
+define Device/Build/dtb
+  ifndef BUILD_DTS_$(1)
+  BUILD_DTS_$(1) := 1
+  $(KDIR)/image-$(1).dtb: FORCE
+	$(call Image/BuildDTB,$(strip $(2))/$(strip $(3)).dts,$$@)
+
+  image_prepare: $(KDIR)/image-$(1).dtb
+  endif
+
+endef
+endif
+
 define Device/Build/kernel
+  $$(eval $$(foreach dts,$$(DEVICE_DTS), \
+	$$(call Device/Build/dtb,$$(notdir $$(dts)), \
+		$$(if $$(DEVICE_DTS_DIR),$$(DEVICE_DTS_DIR),$$(DTS_DIR)), \
+		$$(dts) \
+	) \
+  ))
+
   $(KDIR)/$$(KERNEL_NAME):: image_prepare
   $$(_TARGET): $$(if $$(KERNEL_INSTALL),$(BIN_DIR)/$$(KERNEL_IMAGE))
   $(call Device/Export,$$(KDIR_KERNEL_IMAGE),$(1))

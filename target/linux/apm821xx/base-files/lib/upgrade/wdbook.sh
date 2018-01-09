@@ -1,36 +1,99 @@
 . /lib/functions.sh
 
-get_magic_at() {
-	local file="$1"
-	local pos="$2"
-	get_image "$file" | dd bs=1 count=2 skip="$pos" 2>/dev/null | hexdump -v -n 2 -e '1/1 "%02x"'
-}
+# copied from x86's platform.sh
 
 mbl_do_platform_check() {
-	local board="$1"
-	local file="$2"
-	local magic
+	local diskdev partdev diff
 
-	magic=$(get_magic_at "$file" 510)
+	[ "$#" -gt 1 ] && return 1
 
-	[ "$magic" != "55aa" ] && {
-		echo "Failed to verify MBR boot signature."
+	export_bootdevice && export_partdevice diskdev -2 || {
+		echo "Unable to determine upgrade device"
 		return 1
 	}
+
+	get_partitions "/dev/$diskdev" bootdisk
+
+	#extract the boot sector from the image
+	get_image "$@" | dd of=/tmp/image.bs count=1 bs=512b 2>/dev/null
+
+	get_partitions /tmp/image.bs image
+
+	#compare tables
+	diff="$(grep -F -x -v -f /tmp/partmap.bootdisk /tmp/partmap.image)"
+
+	rm -f /tmp/image.bs /tmp/partmap.bootdisk /tmp/partmap.image
+
+	if [ -n "$diff" ]; then
+		echo "Partition layout has changed. Full image will be written."
+		ask_bool 0 "Abort" && exit 1
+		return 0
+	fi
 
 	return 0;
 }
 
 mbl_do_upgrade() {
+	local diskdev partdev diff
+
+	export_bootdevice && export_partdevice diskdev -2 || {
+		echo "Unable to determine upgrade device"
+		return 1
+	}
+
 	sync
-	get_image "$1" | dd of=/dev/sda bs=2M conv=fsync
-	sleep 1
+
+	if [ "$SAVE_PARTITIONS" = "1" ]; then
+		get_partitions "/dev/$diskdev" bootdisk
+
+		#extract the boot sector from the image
+		get_image "$@" | dd of=/tmp/image.bs count=1 bs=512b
+
+		get_partitions /tmp/image.bs image
+
+		#compare tables
+		diff="$(grep -F -x -v -f /tmp/partmap.bootdisk /tmp/partmap.image)"
+	else
+		diff=1
+	fi
+
+	if [ -n "$diff" ]; then
+		get_image "$@" | dd of="/dev/$diskdev" bs=4096 conv=fsync
+
+		# Separate removal and addtion is necessary; otherwise, partition 1
+		# will be missing if it overlaps with the old partition 2
+		partx -d - "/dev/$diskdev"
+		partx -a - "/dev/$diskdev"
+
+		return 0
+	fi
+
+	#iterate over each partition from the image and write it to the boot disk
+	while read part start size; do
+		# root is /dev/sd[a|b]2 and not /dev/sd[a|b] this causes some problem
+		# one of which is this offset, I'm not sure what's the best fix, so
+		# here's a WA.
+		let part=$((part - 2))
+		if export_partdevice partdev $part; then
+			echo "Writing image to /dev/$partdev..."
+			get_image "$@" | dd of="/dev/$partdev" ibs="512" obs=1M skip="$start" count="$size" conv=fsync
+		else
+			echo "Unable to find partition $part device, skipped."
+	fi
+	done < /tmp/partmap.image
+
+	#copy partition uuid
+	echo "Writing new UUID to /dev/$diskdev..."
+	get_image "$@" | dd of="/dev/$diskdev" bs=1 skip=440 count=4 seek=440 conv=fsync
 }
 
 mbl_copy_config() {
-	mkdir -p /boot
-	[ -f /boot/uImage ] || mount -t ext4 -o rw,noatime /dev/sda1 /boot
-	cp -af "$CONF_TAR" /boot/
-	sync
-	umount /boot
+	local partdev
+
+	# Same as above /dev/sd[a|b]2 is root, so /boot is -1
+	if export_partdevice partdev -1; then
+		mount -t ext4 -o rw,noatime "/dev/$partdev" /mnt
+		cp -af "$CONF_TAR" /mnt/
+		umount /mnt
+	fi
 }

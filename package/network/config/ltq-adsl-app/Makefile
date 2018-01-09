@@ -10,7 +10,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=dsl_cpe_control_danube
 PKG_VERSION:=3.24.4.4
-PKG_RELEASE:=2
+PKG_RELEASE:=5
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_BUILD_DIR:=$(BUILD_DIR)/dsl_cpe_control-$(PKG_VERSION)
 PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources/
@@ -35,7 +35,7 @@ define Package/ltq-adsl-app
   CATEGORY:=Network
   TITLE:=Lantiq DSL userland tool
   URL:=http://www.lantiq.com/
-  DEPENDS:=@(TARGET_lantiq_xway||TARGET_lantiq_xway_legacy||TARGET_lantiq_ase) +libpthread
+  DEPENDS:=@(TARGET_lantiq_xway||TARGET_lantiq_xway_legacy||TARGET_lantiq_ase) +libpthread +ip
   MENU:=1
 endef
 
@@ -76,10 +76,11 @@ CONFIGURE_ARGS += \
 TARGET_CFLAGS += -I$(LINUX_DIR)/include
 
 define Package/ltq-adsl-app/install
-	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_DIR) $(1)/etc/init.d $(1)/sbin $(1)/etc/hotplug.d/dsl $(1)/etc/hotplug.d/net
 	$(INSTALL_BIN) ./files/dsl_control $(1)/etc/init.d/
-
-	$(INSTALL_DIR) $(1)/sbin
+	$(INSTALL_BIN) ./files/10_atm.sh $(1)/etc/hotplug.d/dsl
+	$(INSTALL_BIN) ./files/10_ptm.sh $(1)/etc/hotplug.d/dsl
+	$(INSTALL_BIN) ./files/10-adsl_rename $(1)/etc/hotplug.d/net
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/dsl_cpe_control $(1)/sbin
 endef
 

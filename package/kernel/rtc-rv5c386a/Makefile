@@ -23,8 +23,7 @@ endef
 
 define Build/Compile
 	$(MAKE) -C "$(LINUX_DIR)" \
-		CROSS_COMPILE="$(TARGET_CROSS)" \
-		ARCH="$(LINUX_KARCH)" \
+		$(KERNEL_MAKE_FLAGS) \
 		SUBDIRS="$(PKG_BUILD_DIR)" \
 		EXTRA_CFLAGS="$(BUILDFLAGS)" \
 		modules
