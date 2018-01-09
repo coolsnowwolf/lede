@@ -1,6 +1,7 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/version.mk
 
+PKG_NAME:=ipq-wifi
 PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk

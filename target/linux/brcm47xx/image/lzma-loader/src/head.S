@@ -38,6 +38,7 @@
 	.text
 	LEAF(startup)
 	.set noreorder
+	li	sp, BZ_STACK_START
 	addi    sp, -48
 	sw      a0, 16(sp)
 	sw      a1, 20(sp)

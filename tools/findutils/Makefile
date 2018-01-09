@@ -7,6 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=findutils
+PKG_CPE_ID:=cpe:/a:gnu:findutils
 PKG_VERSION:=4.6.0
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz

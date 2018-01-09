@@ -103,7 +103,7 @@ hash_var = $(if $(filter-out x,$(1)),MD5SUM,HASH)
 endif
 
 define DownloadMethod/unknown
-	@echo "ERROR: No download method available"; false
+	echo "ERROR: No download method available"; false
 endef
 
 define DownloadMethod/default

@@ -59,6 +59,7 @@
 #include	<unistd.h>
 #include	<fcntl.h>
 #include	<elf.h>
+#include	<byteswap.h>
 
 #ifndef TRUE
 #define	TRUE		1
@@ -103,7 +104,7 @@ static int do_reverse_endian;
 		} else if (sizeof(X) == 8) { \
 			__res = bswap_64((X)); \
 		} else { \
-			fprintf(stderr, "%s: %s: EGET failed for size %d\n", \
+			fprintf(stderr, "%s: %s: EGET failed for size %zu\n", \
 					progname, filename, sizeof(X)); \
 			exit(EXIT_FAILURE); \
 		} \
@@ -124,7 +125,7 @@ static int do_reverse_endian;
 		} else if (sizeof(Y) == 8) { \
 			Y = bswap_64((uint64_t)(X)); \
 		} else { \
-			fprintf(stderr, "%s: %s: ESET failed for size %d\n", \
+			fprintf(stderr, "%s: %s: ESET failed for size %zu\n", \
 					progname, filename, sizeof(Y)); \
 			exit(EXIT_FAILURE); \
 		} while (0)
@@ -197,7 +198,7 @@ static int getmemorysize ## CLASS (Elf ## CLASS ## _Ehdr const *ehdr, \
 { \
 	Elf ## CLASS ## _Phdr const   *phdr; \
 	unsigned long	size, n; \
-	int			i; \
+	size_t			i; \
  \
 	/* Start by setting the size to include the ELF header and the \
 	 * complete program segment header table. \
@@ -230,7 +231,7 @@ static int modifyheaders ## CLASS (Elf ## CLASS ## _Ehdr *ehdr, \
 								   unsigned long newsize) \
 { \
 	Elf ## CLASS ## _Phdr *phdr; \
-	int		i; \
+	size_t		i; \
  \
 	/* If the section header table is gone, then remove all references \
 	 * to it in the ELF header. \

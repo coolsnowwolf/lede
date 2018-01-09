@@ -28,7 +28,7 @@ define Package/ltq-vdsl-app
   CATEGORY:=Network
   TITLE:=Lantiq VDSL userland tool
   URL:=http://www.lantiq.com/
-  DEPENDS:=@TARGET_lantiq_xrx200 +libpthread +librt
+  DEPENDS:=@TARGET_lantiq_xrx200 +libpthread +librt +ip
 endef
 
 define Package/ltq-vdsl-app/description
@@ -58,10 +58,11 @@ CONFIGURE_ARGS += \
 #CONFIGURE_ARGS += --enable-model=debug
 
 define Package/ltq-vdsl-app/install
-	$(INSTALL_DIR) $(1)/etc/init.d $(1)/sbin $(1)/etc/hotplug.d/dsl
+	$(INSTALL_DIR) $(1)/etc/init.d $(1)/sbin $(1)/etc/hotplug.d/dsl $(1)/etc/hotplug.d/net
 	$(INSTALL_BIN) ./files/dsl_control $(1)/etc/init.d/
 	$(INSTALL_BIN) ./files/10_atm.sh $(1)/etc/hotplug.d/dsl
 	$(INSTALL_BIN) ./files/10_ptm.sh $(1)/etc/hotplug.d/dsl
+	$(INSTALL_BIN) ./files/10-xdsl_rename $(1)/etc/hotplug.d/net
 
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/dsl_cpe_control $(1)/sbin/vdsl_cpe_control
 	$(INSTALL_BIN) ./files/dsl_cpe_pipe.sh $(1)/sbin/

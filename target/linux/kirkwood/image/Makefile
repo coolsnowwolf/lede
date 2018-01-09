@@ -11,7 +11,6 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
 KERNEL_LOADADDR:=0x8000
-TARGET_DEVICES = linksys-audi linksys-viper dockstar goflexnet goflexhome iconnect pogo_e02 ib62x0 nsa310b nsa325 on100
 
 UBI_OPTS := -m 2048 -p 128KiB -s 512
 UBIFS_OPTS := -m 2048 -e 126KiB -c 4096
@@ -39,18 +38,21 @@ define Device/dockstar
   IMAGE/factory.bin := append-ubi
   KERNEL_IN_UBI := 1
 endef
+TARGET_DEVICES += dockstar
 
 define Device/goflexnet
 $(Device/dockstar)
   DEVICE_TITLE := Seagate GoFlexNet
   DEVICE_DTS := kirkwood-goflexnet
 endef
+TARGET_DEVICES += goflexnet
 
 define Device/goflexhome
 $(Device/dockstar)
   DEVICE_TITLE := Seagate GoFlexHome
   DEVICE_DTS := kirkwood-goflexhome
 endef
+TARGET_DEVICES += goflexhome
 
 define Device/linksys-audi
   DEVICE_TITLE := Linksys EA3500 (Audi)
@@ -62,6 +64,7 @@ define Device/linksys-audi
   UBINIZE_OPTS := -E 5
   IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi
 endef
+TARGET_DEVICES += linksys-audi
 
 define Device/linksys-viper
   DEVICE_TITLE := Linksys E4200v2 / EA4500 (Viper)
@@ -73,12 +76,14 @@ define Device/linksys-viper
   UBINIZE_OPTS := -E 5
   IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi
 endef
+TARGET_DEVICES += linksys-viper
 
 define Device/iconnect
 $(Device/dockstar)
   DEVICE_TITLE := Iomega Iconnect
   DEVICE_DTS := kirkwood-iconnect
 endef
+TARGET_DEVICES += iconnect
 
 define Device/nsa310b
 $(Device/dockstar)
@@ -86,6 +91,7 @@ $(Device/dockstar)
   DEVICE_DTS := kirkwood-nsa310b
   DEVICE_PACKAGES := kmod-r8169 kmod-gpio-button-hotplug kmod-hwmon-lm85
 endef
+TARGET_DEVICES += nsa310b
 
 define Device/nsa325
 $(Device/dockstar)
@@ -93,6 +99,7 @@ $(Device/dockstar)
   DEVICE_DTS := kirkwood-nsa325
   DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-rtc-pcf8563 kmod-usb3
 endef
+TARGET_DEVICES += nsa325
 
 define Device/on100
   DEVICE_TITLE := Cisco Systems ON100
@@ -104,17 +111,20 @@ define Device/on100
   IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi
   UBINIZE_OPTS := -E 5
 endef
+TARGET_DEVICES += on100
 
 define Device/pogo_e02
 $(Device/dockstar)
   DEVICE_TITLE := Cloud Engines Pogoplug E02
   DEVICE_DTS := kirkwood-pogo_e02
 endef
+TARGET_DEVICES += pogo_e02
 
 define Device/ib62x0
 $(Device/dockstar)
   DEVICE_TITLE := RaidSonic ICY BOX IB-NAS62x0
   DEVICE_DTS := kirkwood-ib62x0
 endef
+TARGET_DEVICES += ib62x0
 
 $(eval $(call BuildImage))

@@ -28,7 +28,7 @@ define Package/adb
   DEPENDS:=+zlib +libopenssl +libpthread
 endef
 
-define Package/bridge/description
+define Package/adb/description
  Android Debug Bridge (adb) is a versatile command line tool that lets you communicate with an emulator instance or connected Android-powered device.
 endef
 

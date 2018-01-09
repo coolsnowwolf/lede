@@ -7,6 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=automake
+PKG_CPE_ID:=cpe:/a:gnu:automake
 PKG_VERSION:=1.15.1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz

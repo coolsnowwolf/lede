@@ -11,7 +11,7 @@ PKG_NAME:=ebtables
 PKG_SOURCE_DATE:=2015-10-28
 PKG_RELEASE:=1
 
-PKG_SOURCE_URL:=git://git.netfilter.org/ebtables
+PKG_SOURCE_URL:=https://git.netfilter.org/ebtables
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_VERSION:=4c3e5cd3dbae3ea773e9dcca7cf019b2713af70d
 PKG_MIRROR_HASH:=997a877da02d6e2141e6d31c5d4dd005737facecfdbea07308c0e1286db8591c

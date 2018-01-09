@@ -32,6 +32,7 @@
 #define RB_ID_BOOT_PROTOCOL	9
 #define RB_ID_SOFT_10		10
 #define RB_ID_SOFT_11		11
+#define RB_ID_CPU_FREQ		12
 #define RB_ID_BOOTER		13
 
 #define RB_UART_SPEED_115200	0
@@ -70,6 +71,13 @@
 
 #define RB_BOOT_PROTOCOL_BOOTP	0
 #define RB_BOOT_PROTOCOL_DHCP	1
+
+#define RB_CPU_FREQ_L2		(0 << 3)
+#define RB_CPU_FREQ_L1		(1 << 3)
+#define RB_CPU_FREQ_N0		(2 << 3)
+#define RB_CPU_FREQ_H1		(3 << 3)
+#define RB_CPU_FREQ_H2		(4 << 3)
+#define RB_CPU_FREQ_H3		(5 << 3)
 
 #define RB_BOOTER_REGULAR	0
 #define RB_BOOTER_BACKUP	1

@@ -28,19 +28,10 @@
 #include <netinet/in.h>
 
 #include "md5.h"
-
-#define ALIGN(x,a) ({ typeof(a) __a = (a); (((x) + __a - 1) & ~(__a - 1)); })
-#define ARRAY_SIZE(a) (sizeof((a)) / sizeof((a)[0]))
+#include "mktplinkfw-lib.h"
 
 #define HEADER_VERSION_V1	0x01000000
 #define HEADER_VERSION_V2	0x02000000
-
-#define MD5SUM_LEN	16
-
-struct file_info {
-	char		*file_name;	/* name of the file */
-	uint32_t	file_size;	/* length of the file */
-};
 
 struct fw_header {
 	uint32_t	version;	/* header version */
@@ -71,14 +62,6 @@ struct fw_header {
 	uint8_t		pad2[160];
 } __attribute__ ((packed));
 
-struct flash_layout {
-	char		*id;
-	uint32_t	fw_max_len;
-	uint32_t	kernel_la;
-	uint32_t	kernel_ep;
-	uint32_t	rootfs_ofs;
-};
-
 struct fw_region {
 	char		name[4];
 	uint32_t	code;
@@ -88,15 +71,15 @@ struct fw_region {
 /*
  * Globals
  */
-static char *ofname;
-static char *progname;
+char *ofname;
+char *progname;
 static char *vendor = "TP-LINK Technologies";
 static char *version = "ver. 1.0";
 static char *fw_ver = "0.0.0";
 static uint32_t hdr_ver = HEADER_VERSION_V1;
 
 static char *layout_id;
-static struct flash_layout *layout;
+struct flash_layout *layout;
 static char *opt_hw_id;
 static uint32_t hw_id;
 static char *opt_hw_rev;
@@ -107,18 +90,17 @@ static const struct fw_region *region;
 static int fw_ver_lo;
 static int fw_ver_mid;
 static int fw_ver_hi;
-static struct file_info kernel_info;
+struct file_info kernel_info;
 static uint32_t kernel_la = 0;
 static uint32_t kernel_ep = 0;
-static uint32_t kernel_len = 0;
-static struct file_info rootfs_info;
-static uint32_t rootfs_ofs = 0;
-static uint32_t rootfs_align;
+uint32_t kernel_len = 0;
+struct file_info rootfs_info;
+uint32_t rootfs_ofs = 0;
+uint32_t rootfs_align;
 static struct file_info boot_info;
-static int combined;
-static int strip_padding;
-static int add_jffs2_eof;
-static unsigned char jffs2_eof_mark[4] = {0xde, 0xad, 0xc0, 0xde};
+int combined;
+int strip_padding;
+int add_jffs2_eof;
 static uint32_t fw_max_len;
 static uint32_t reserved_space;
 
@@ -188,43 +170,8 @@ static const struct fw_region regions[] = {
 	/* Default region (universal) uses code 0 as well */
 	{"US", 1},
 	{"EU", 0},
+	{"BR", 0},
 };
-
-/*
- * Message macros
- */
-#define ERR(fmt, ...) do { \
-	fflush(0); \
-	fprintf(stderr, "[%s] *** error: " fmt "\n", \
-			progname, ## __VA_ARGS__ ); \
-} while (0)
-
-#define ERRS(fmt, ...) do { \
-	int save = errno; \
-	fflush(0); \
-	fprintf(stderr, "[%s] *** error: " fmt ": %s\n", \
-			progname, ## __VA_ARGS__, strerror(save)); \
-} while (0)
-
-#define DBG(fmt, ...) do { \
-	fprintf(stderr, "[%s] " fmt "\n", progname, ## __VA_ARGS__ ); \
-} while (0)
-
-static struct flash_layout *find_layout(const char *id)
-{
-	struct flash_layout *ret;
-	struct flash_layout *l;
-
-	ret = NULL;
-	for (l = layouts; l->id != NULL; l++){
-		if (strcasecmp(id, l->id) == 0) {
-			ret = l;
-			break;
-		}
-	};
-
-	return ret;
-}
 
 static const struct fw_region * find_region(const char *country) {
 	size_t i;
@@ -269,59 +216,6 @@ static void usage(int status)
 	);
 
 	exit(status);
-}
-
-static void get_md5(const char *data, int size, uint8_t *md5)
-{
-	MD5_CTX ctx;
-
-	MD5_Init(&ctx);
-	MD5_Update(&ctx, data, size);
-	MD5_Final(md5, &ctx);
-}
-
-static int get_file_stat(struct file_info *fdata)
-{
-	struct stat st;
-	int res;
-
-	if (fdata->file_name == NULL)
-		return 0;
-
-	res = stat(fdata->file_name, &st);
-	if (res){
-		ERRS("stat failed on %s", fdata->file_name);
-		return res;
-	}
-
-	fdata->file_size = st.st_size;
-	return 0;
-}
-
-static int read_to_buf(const struct file_info *fdata, char *buf)
-{
-	FILE *f;
-	int ret = EXIT_FAILURE;
-
-	f = fopen(fdata->file_name, "r");
-	if (f == NULL) {
-		ERRS("could not open \"%s\" for reading", fdata->file_name);
-		goto out;
-	}
-
-	errno = 0;
-	fread(buf, fdata->file_size, 1, f);
-	if (errno != 0) {
-		ERRS("unable to read from file \"%s\"", fdata->file_name);
-		goto out_close;
-	}
-
-	ret = EXIT_SUCCESS;
-
- out_close:
-	fclose(f);
- out:
-	return ret;
 }
 
 static int check_options(void)
@@ -370,7 +264,7 @@ static int check_options(void)
 			return -1;
 		}
 	} else {
-		layout = find_layout(layout_id);
+		layout = find_layout(layouts, layout_id);
 		if (layout == NULL) {
 			ERR("unknown flash layout \"%s\"", layout_id);
 			return -1;
@@ -414,10 +308,10 @@ static int check_options(void)
 
 		if (rootfs_align) {
 			kernel_len += sizeof(struct fw_header);
-			kernel_len = ALIGN(kernel_len, rootfs_align);
+			rootfs_ofs = ALIGN(kernel_len, rootfs_align);
 			kernel_len -= sizeof(struct fw_header);
 
-			DBG("kernel length aligned to %u", kernel_len);
+			DBG("rootfs offset aligned to 0x%u", rootfs_ofs);
 
 			exceed_bytes = kernel_len + rootfs_info.file_size - (fw_max_len - sizeof(struct fw_header));
 			if (exceed_bytes > 0) {
@@ -462,7 +356,7 @@ static int check_options(void)
 	return 0;
 }
 
-static void fill_header(char *buf, int len)
+void fill_header(char *buf, int len)
 {
 	struct fw_header *hdr = (struct fw_header *)buf;
 
@@ -513,161 +407,6 @@ static void fill_header(char *buf, int len)
 
 	if (!combined)
 		get_md5(buf, len, hdr->md5sum1);
-}
-
-static int pad_jffs2(char *buf, int currlen)
-{
-	int len;
-	uint32_t pad_mask;
-
-	len = currlen;
-	pad_mask = (64 * 1024);
-	while ((len < layout->fw_max_len) && (pad_mask != 0)) {
-		uint32_t mask;
-		int i;
-
-		for (i = 10; i < 32; i++) {
-			mask = 1 << i;
-			if (pad_mask & mask)
-				break;
-		}
-
-		len = ALIGN(len, mask);
-
-		for (i = 10; i < 32; i++) {
-			mask = 1 << i;
-			if ((len & (mask - 1)) == 0)
-				pad_mask &= ~mask;
-		}
-
-		for (i = 0; i < sizeof(jffs2_eof_mark); i++)
-			buf[len + i] = jffs2_eof_mark[i];
-
-		len += sizeof(jffs2_eof_mark);
-	}
-
-	return len;
-}
-
-static int write_fw(const char *data, int len)
-{
-	FILE *f;
-	int ret = EXIT_FAILURE;
-
-	f = fopen(ofname, "w");
-	if (f == NULL) {
-		ERRS("could not open \"%s\" for writing", ofname);
-		goto out;
-	}
-
-	errno = 0;
-	fwrite(data, len, 1, f);
-	if (errno) {
-		ERRS("unable to write output file");
-		goto out_flush;
-	}
-
-	DBG("firmware file \"%s\" completed", ofname);
-
-	ret = EXIT_SUCCESS;
-
- out_flush:
-	fflush(f);
-	fclose(f);
-	if (ret != EXIT_SUCCESS) {
-		unlink(ofname);
-	}
- out:
-	return ret;
-}
-
-static int build_fw(void)
-{
-	int buflen;
-	char *buf;
-	char *p;
-	int ret = EXIT_FAILURE;
-	int writelen = 0;
-
-	writelen = sizeof(struct fw_header) + kernel_len;
-
-	if (combined)
-		buflen = writelen;
-	else
-		buflen = layout->fw_max_len;
-
-	buf = malloc(buflen);
-	if (!buf) {
-		ERR("no memory for buffer\n");
-		goto out;
-	}
-
-	memset(buf, 0xff, buflen);
-	p = buf + sizeof(struct fw_header);
-	ret = read_to_buf(&kernel_info, p);
-	if (ret)
-		goto out_free_buf;
-
-
-	if (!combined) {
-		if (rootfs_align)
-			p = buf + writelen;
-		else
-			p = buf + rootfs_ofs;
-
-		ret = read_to_buf(&rootfs_info, p);
-		if (ret)
-			goto out_free_buf;
-
-		if (rootfs_align)
-			writelen += rootfs_info.file_size;
-		else
-			writelen = rootfs_ofs + rootfs_info.file_size;
-
-		if (add_jffs2_eof)
-			writelen = pad_jffs2(buf, writelen);
-	}
-
-	if (!strip_padding)
-		writelen = buflen;
-
-	fill_header(buf, writelen);
-	ret = write_fw(buf, writelen);
-	if (ret)
-		goto out_free_buf;
-
-	ret = EXIT_SUCCESS;
-
- out_free_buf:
-	free(buf);
- out:
-	return ret;
-}
-
-/* Helper functions to inspect_fw() representing different output formats */
-static inline void inspect_fw_pstr(const char *label, const char *str)
-{
-	printf("%-23s: %s\n", label, str);
-}
-
-static inline void inspect_fw_phex(const char *label, uint32_t val)
-{
-	printf("%-23s: 0x%08x\n", label, val);
-}
-
-static inline void inspect_fw_phexdec(const char *label, uint32_t val)
-{
-	printf("%-23s: 0x%08x / %8u bytes\n", label, val, val);
-}
-
-static inline void inspect_fw_pmd5sum(const char *label, const uint8_t *val, const char *text)
-{
-	int i;
-
-	printf("%-23s:", label);
-	for (i=0; i<MD5SUM_LEN; i++)
-		printf(" %02x", val[i]);
-	printf(" %s\n", text);
 }
 
 static int inspect_fw(void)
@@ -885,7 +624,7 @@ int main(int argc, char *argv[])
 		goto out;
 
 	if (!inspect_info.file_name)
-		ret = build_fw();
+		ret = build_fw(sizeof(struct fw_header));
 	else
 		ret = inspect_fw();
 

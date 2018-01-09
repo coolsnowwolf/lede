@@ -8,6 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xfsprogs
+PKG_CPE_ID:=cpe:/a:sgi:xfsprogs
 PKG_RELEASE:=1
 PKG_VERSION:=4.11.0
 PKG_SOURCE_URL:=@KERNEL/linux/utils/fs/xfs/xfsprogs
