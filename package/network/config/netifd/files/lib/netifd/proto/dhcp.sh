@@ -40,7 +40,6 @@ proto_dhcp_setup() {
 		append dhcpopts "-x $opt"
 	done
 
-	[ -z "$hostname" ] && hostname="$(cat /proc/sys/kernel/hostname)"
 	[ "$broadcast" = 1 ] && broadcast="-B" || broadcast=
 	[ "$release" = 1 ] && release="-R" || release=
 	[ -n "$clientid" ] && clientid="-x 0x3d:${clientid//:/}" || clientid="-C"
