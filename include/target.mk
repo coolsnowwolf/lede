@@ -21,7 +21,7 @@ luci-app-pptp-server luci-app-ipsec-vpnd luci-app-vlmcsd luci-app-wifischedule l
 # For nas targets
 DEFAULT_PACKAGES.nas:=block-mount fdisk lsblk mdadm
 # For router targets
-DEFAULT_PACKAGES.router:=dnsmasq-full iptables ip6tables ppp ppp-mod-pppoe firewall odhcpd-ipv6only odhcp6c
+DEFAULT_PACKAGES.router:=dnsmasq-full iptables ip6tables ppp ppp-mod-pppoe firewall
 DEFAULT_PACKAGES.bootloader:=
 
 ifneq ($(DUMP),)
