@@ -7,76 +7,93 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_VERSION:=2017.09
+PKG_NAME:=u-boot
+PKG_VERSION:=2016.09.01
 PKG_RELEASE:=1
 
-PKG_HASH:=b2d15f2cf5f72e706025cde73d67247c6da8cd35f7e10891eefe7d9095089744
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(BUILD_VARIANT)/$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
+PKG_SOURCE_URL:=\
+	http://mirror2.openwrt.org/sources \
+	ftp://ftp.denx.de/pub/u-boot
+PKG_HASH:=95728e89dd476d17428f94080752ab48884be477b6a678941582aeef618b70bb
+PKG_TARGETS:=bin
 
-include $(INCLUDE_DIR)/u-boot.mk
+PKG_LICENSE:=GPL-2.0 GPL-2.0+
+PKG_LICENSE_FILES:=Licenses/README
+
+PKG_BUILD_PARALLEL:=1
+
 include $(INCLUDE_DIR)/package.mk
 
-define U-Boot/Default
-  BUILD_TARGET:=kirkwood
-  BUILD_DEVICES:=$(patsubst %_second_stage,%,$(1))
+define uboot/Default
+  TITLE:=
 endef
 
-define U-Boot/dockstar
-  NAME:=Seagate DockStar
+define uboot/dockstar
+  TITLE:=U-Boot for Seagate DockStar
 endef
 
-define U-Boot/dockstar_second_stage
-  NAME:=Seagate DockStar (second stage)
+define uboot/dockstar_second_stage
+  TITLE:=second stage U-Boot for Seagate DockStar
 endef
 
-define U-Boot/goflexhome
-  NAME:=the Seagate GoFlexHome/GoFlexNet
+define uboot/goflexhome
+  TITLE:=U-Boot for the Seagate GoFlexHome/GoFlexNet
 endef
 
-define U-Boot/ib62x0
-  NAME:=RaidSonic ICY BOX NAS6210 and NAS6220
+define uboot/ib62x0
+  TITLE:=U-Boot for RaidSonic ICY BOX NAS6210 and NAS6220
 endef
 
-define U-Boot/ib62x0_second_stage
-  NAME:=RaidSonic ICY BOX NAS6210 and NAS6220 (second stage)
+define uboot/ib62x0_second_stage
+  TITLE:=second stage U-Boot for RaidSonic ICY BOX NAS6210 and NAS6220
 endef
 
-define U-Boot/iconnect
-  NAME:=Iomega iConnect Wireless
+define uboot/iconnect
+  TITLE:=U-Boot for Iomega iConnect Wireless
 endef
 
-define U-Boot/iconnect_second_stage
-  NAME:=Iomega iConnect Wireless (second stage)
+define uboot/iconnect_second_stage
+  TITLE:=second stage U-Boot for Iomega iConnect Wireless
 endef
 
-define U-Boot/nsa310
-  NAME:=Zyxel NSA310
+define uboot/pogo_e02
+  TITLE:=U-Boot for Cloud Engines Pogoplug E02
 endef
 
-define U-Boot/nsa325
-  NAME:=Zyxel NSA325v1 and v2
+define uboot/pogo_e02_second_stage
+  TITLE:=second stage U-Boot for Cloud Engines Pogoplug E02
 endef
 
-define U-Boot/pogo_e02
-  NAME:=Cloud Engines Pogoplug E02
+define uboot/sheevaplug
+  TITLE:=U-Boot for SheevaPlug
 endef
 
-define U-Boot/pogo_e02_second_stage
-  NAME:=Cloud Engines Pogoplug E02 (second stage)
-endef
-
-define U-Boot/sheevaplug
-  NAME:=SheevaPlug
-endef
-
-UBOOT_TARGETS := \
+UBOOTS:= \
 	dockstar dockstar_second_stage \
 	goflexhome \
 	ib62x0 ib62x0_second_stage \
 	iconnect iconnect_second_stage \
-	nsa310 \
-	nsa325 \
 	pogo_e02 pogo_e02_second_stage \
 	sheevaplug
+
+define Package/uboot/template
+define Package/uboot-kirkwood-$(1)
+  SECTION:=boot
+  CATEGORY:=Boot Loaders
+  DEPENDS:=@TARGET_kirkwood
+  TITLE:=$(2)
+  URL:=http://www.denx.de/wiki/U-Boot
+  VARIANT:=$(1)
+endef
+endef
+
+define BuildUBootPackage
+	$(eval $(uboot/Default))
+	$(eval $(uboot/$(1)))
+	$(call Package/uboot/template,$(1),$(TITLE))
+endef
 
 define Build/Configure
 	$(if $(findstring _second_stage,$(BUILD_VARIANT)),
@@ -95,21 +112,34 @@ define Build/Compile
 		CROSS_COMPILE=$(TARGET_CROSS)
 	mkimage -A $(ARCH) -O linux -T kernel -C none \
 		-a 0x600000 -e 0x600000 \
-		-n 'U-Boot uImage' \
+		-n 'OpenWrt Das U-Boot uImage' \
 		-d $(PKG_BUILD_DIR)/u-boot.bin $(PKG_BUILD_DIR)/u-boot.img
 endef
 
-define Package/u-boot/install
-	$(CP) \
-		$(PKG_BUILD_DIR)/u-boot.bin \
-		$(PKG_BUILD_DIR)/u-boot.kwb \
-		$(PKG_BUILD_DIR)/u-boot.img \
-		$(1)/
+define Package/uboot/install/default
+	$(INSTALL_DIR) $(BIN_DIR)/uboot-$(BOARD)-$(1)
+	$(CP) $(PKG_BUILD_DIR)/u-boot.bin \
+		$(BIN_DIR)/uboot-$(BOARD)-$(1)/openwrt-$(BOARD)-$(1)-u-boot.bin
+	$(CP) $(PKG_BUILD_DIR)/u-boot.kwb \
+		$(BIN_DIR)/uboot-$(BOARD)-$(1)/openwrt-$(BOARD)-$(1)-u-boot.kwb
+	$(CP) $(PKG_BUILD_DIR)/u-boot.img \
+		$(BIN_DIR)/uboot-$(BOARD)-$(1)/openwrt-$(BOARD)-$(1)-u-boot.img
+	$(INSTALL_DIR) $(BIN_DIR)/u-boot-kwboot/
+	$(CP) $(PKG_BUILD_DIR)/tools/kwboot \
+		$(BIN_DIR)/u-boot-kwboot/
 endef
 
-define Build/InstallDev
-	$(INSTALL_DIR) $(STAGING_DIR_HOST)/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/tools/kwboot $(STAGING_DIR_HOST)/bin/
+define Package/uboot/install/template
+define Package/uboot-kirkwood-$(1)/install
+	$(call Package/uboot/install/default,$(2))
+endef
 endef
 
-$(eval $(call BuildPackage/U-Boot))
+$(foreach u,$(UBOOTS), \
+	$(eval $(call Package/uboot/install/template,$(u),$(u))) \
+)
+
+$(foreach u,$(UBOOTS), \
+	$(eval $(call BuildUBootPackage,$(u))) \
+	$(eval $(call BuildPackage,uboot-kirkwood-$(u))) \
+)

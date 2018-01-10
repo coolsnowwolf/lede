@@ -1,0 +1,154 @@
+From: Mathy Vanhoef <Mathy.Vanhoef@cs.kuleuven.be>
+Date: Fri, 14 Jul 2017 15:15:35 +0200
+Subject: [PATCH] hostapd: Avoid key reinstallation in FT handshake
+
+Do not reinstall TK to the driver during Reassociation Response frame
+processing if the first attempt of setting the TK succeeded. This avoids
+issues related to clearing the TX/RX PN that could result in reusing
+same PN values for transmitted frames (e.g., due to CCM nonce reuse and
+also hitting replay protection on the receiver) and accepting replayed
+frames on RX side.
+
+This issue was introduced by the commit
+0e84c25434e6a1f283c7b4e62e483729085b78d2 ('FT: Fix PTK configuration in
+authenticator') which allowed wpa_ft_install_ptk() to be called multiple
+times with the same PTK. While the second configuration attempt is
+needed with some drivers, it must be done only if the first attempt
+failed.
+
+Signed-off-by: Mathy Vanhoef <Mathy.Vanhoef@cs.kuleuven.be>
+---
+
+--- a/src/ap/ieee802_11.c
++++ b/src/ap/ieee802_11.c
+@@ -2154,6 +2154,7 @@ static int add_associated_sta(struct hos
+ {
+ 	struct ieee80211_ht_capabilities ht_cap;
+ 	struct ieee80211_vht_capabilities vht_cap;
++	int set = 1;
+ 
+ 	/*
+ 	 * Remove the STA entry to ensure the STA PS state gets cleared and
+@@ -2161,9 +2162,18 @@ static int add_associated_sta(struct hos
+ 	 * FT-over-the-DS, where a station re-associates back to the same AP but
+ 	 * skips the authentication flow, or if working with a driver that
+ 	 * does not support full AP client state.
++	 *
++	 * Skip this if the STA has already completed FT reassociation and the
++	 * TK has been configured since the TX/RX PN must not be reset to 0 for
++	 * the same key.
+ 	 */
+-	if (!sta->added_unassoc)
++	if (!sta->added_unassoc &&
++	    (!(sta->flags & WLAN_STA_AUTHORIZED) ||
++	     !wpa_auth_sta_ft_tk_already_set(sta->wpa_sm))) {
+ 		hostapd_drv_sta_remove(hapd, sta->addr);
++		wpa_auth_sm_event(sta->wpa_sm, WPA_DRV_STA_REMOVED);
++		set = 0;
++	}
+ 
+ #ifdef CONFIG_IEEE80211N
+ 	if (sta->flags & WLAN_STA_HT)
+@@ -2186,11 +2196,11 @@ static int add_associated_sta(struct hos
+ 			    sta->flags & WLAN_STA_VHT ? &vht_cap : NULL,
+ 			    sta->flags | WLAN_STA_ASSOC, sta->qosinfo,
+ 			    sta->vht_opmode, sta->p2p_ie ? 1 : 0,
+-			    sta->added_unassoc)) {
++			    set)) {
+ 		hostapd_logger(hapd, sta->addr,
+ 			       HOSTAPD_MODULE_IEEE80211, HOSTAPD_LEVEL_NOTICE,
+ 			       "Could not %s STA to kernel driver",
+-			       sta->added_unassoc ? "set" : "add");
++			       set ? "set" : "add");
+ 
+ 		if (sta->added_unassoc) {
+ 			hostapd_drv_sta_remove(hapd, sta->addr);
+--- a/src/ap/wpa_auth.c
++++ b/src/ap/wpa_auth.c
+@@ -1751,6 +1751,9 @@ int wpa_auth_sm_event(struct wpa_state_m
+ #else /* CONFIG_IEEE80211R_AP */
+ 		break;
+ #endif /* CONFIG_IEEE80211R_AP */
++	case WPA_DRV_STA_REMOVED:
++		sm->tk_already_set = FALSE;
++		return 0;
+ 	}
+ 
+ #ifdef CONFIG_IEEE80211R_AP
+@@ -3725,6 +3728,14 @@ int wpa_auth_sta_wpa_version(struct wpa_
+ }
+ 
+ 
++int wpa_auth_sta_ft_tk_already_set(struct wpa_state_machine *sm)
++{
++	if (!sm || !wpa_key_mgmt_ft(sm->wpa_key_mgmt))
++		return 0;
++	return sm->tk_already_set;
++}
++
++
+ int wpa_auth_sta_clear_pmksa(struct wpa_state_machine *sm,
+ 			     struct rsn_pmksa_cache_entry *entry)
+ {
+--- a/src/ap/wpa_auth_ft.c
++++ b/src/ap/wpa_auth_ft.c
+@@ -794,6 +794,14 @@ void wpa_ft_install_ptk(struct wpa_state
+ 		return;
+ 	}
+ 
++	if (sm->tk_already_set) {
++		/* Must avoid TK reconfiguration to prevent clearing of TX/RX
++		 * PN in the driver */
++		wpa_printf(MSG_DEBUG,
++			   "FT: Do not re-install same PTK to the driver");
++		return;
++	}
++
+ 	/* FIX: add STA entry to kernel/driver here? The set_key will fail
+ 	 * most likely without this.. At the moment, STA entry is added only
+ 	 * after association has been completed. This function will be called
+@@ -806,6 +814,7 @@ void wpa_ft_install_ptk(struct wpa_state
+ 
+ 	/* FIX: MLME-SetProtection.Request(TA, Tx_Rx) */
+ 	sm->pairwise_set = TRUE;
++	sm->tk_already_set = TRUE;
+ }
+ 
+ 
+@@ -1002,6 +1011,7 @@ static int wpa_ft_process_auth_req(struc
+ 
+ 	sm->pairwise = pairwise;
+ 	sm->PTK_valid = TRUE;
++	sm->tk_already_set = FALSE;
+ 	wpa_ft_install_ptk(sm);
+ 
+ 	buflen = 2 + sizeof(struct rsn_mdie) + 2 + sizeof(struct rsn_ftie) +
+--- a/src/ap/wpa_auth.h
++++ b/src/ap/wpa_auth.h
+@@ -268,7 +268,7 @@ void wpa_receive(struct wpa_authenticato
+ 		 u8 *data, size_t data_len);
+ enum wpa_event {
+ 	WPA_AUTH, WPA_ASSOC, WPA_DISASSOC, WPA_DEAUTH, WPA_REAUTH,
+-	WPA_REAUTH_EAPOL, WPA_ASSOC_FT
++	WPA_REAUTH_EAPOL, WPA_ASSOC_FT, WPA_DRV_STA_REMOVED
+ };
+ void wpa_remove_ptk(struct wpa_state_machine *sm);
+ int wpa_auth_sm_event(struct wpa_state_machine *sm, enum wpa_event event);
+@@ -281,6 +281,7 @@ int wpa_auth_pairwise_set(struct wpa_sta
+ int wpa_auth_get_pairwise(struct wpa_state_machine *sm);
+ int wpa_auth_sta_key_mgmt(struct wpa_state_machine *sm);
+ int wpa_auth_sta_wpa_version(struct wpa_state_machine *sm);
++int wpa_auth_sta_ft_tk_already_set(struct wpa_state_machine *sm);
+ int wpa_auth_sta_clear_pmksa(struct wpa_state_machine *sm,
+ 			     struct rsn_pmksa_cache_entry *entry);
+ struct rsn_pmksa_cache_entry *
+--- a/src/ap/wpa_auth_i.h
++++ b/src/ap/wpa_auth_i.h
+@@ -65,6 +65,7 @@ struct wpa_state_machine {
+ 	struct wpa_ptk PTK;
+ 	Boolean PTK_valid;
+ 	Boolean pairwise_set;
++	Boolean tk_already_set;
+ 	int keycount;
+ 	Boolean Pair;
+ 	struct wpa_key_replay_counter {

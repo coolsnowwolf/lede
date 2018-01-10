@@ -1,0 +1,100 @@
+From e88608eae24ae5934034e1ecb6c494fefbf1b9ae Mon Sep 17 00:00:00 2001
+From: Denys Vlasenko <vda.linux@googlemail.com>
+Date: Mon, 13 Mar 2017 20:50:42 +0100
+Subject: [PATCH 1/2] vi: don't touch file with :x when modified_count == 0
+
+Along with it, there are other changes
+
+ - Check for uppercase X is removed as the expression will be always false and
+   :X itself is another totally different command in standard vim
+ - The status line will show number of written lines instead of lines requested
+   by the colon command.  This is also how the standard vim is doing, though
+   the difference is that '!' has to be explicitly specified in vim to allow
+   partial writes
+
+Signed-off-by: Yousong Zhou <yszhou4tech@gmail.com>
+Signed-off-by: Denys Vlasenko <vda.linux@googlemail.com>
+---
+ editors/vi.c | 43 ++++++++++++++++++++++++++-----------------
+ 1 file changed, 26 insertions(+), 17 deletions(-)
+
+--- a/editors/vi.c
++++ b/editors/vi.c
+@@ -1038,7 +1038,9 @@ static void colon(char *buf)
+ 	 || strncmp(p, "wn", cnt) == 0
+ 	 || (p[0] == 'x' && !p[1])
+ 	) {
+-		cnt = file_write(current_filename, text, end - 1);
++		if (modified_count != 0 || p[0] != 'x') {
++			cnt = file_write(current_filename, text, end - 1);
++		}
+ 		if (cnt < 0) {
+ 			if (cnt == -1)
+ 				status_line_bold("Write error: %s", strerror(errno));
+@@ -1049,8 +1051,9 @@ static void colon(char *buf)
+ 				current_filename,
+ 				count_lines(text, end - 1), cnt
+ 			);
+-			if (p[0] == 'x' || p[1] == 'q' || p[1] == 'n'
+-			 || p[0] == 'X' || p[1] == 'Q' || p[1] == 'N'
++			if (p[0] == 'x'
++			 || p[1] == 'q' || p[1] == 'n'
++			 || p[1] == 'Q' || p[1] == 'N'
+ 			) {
+ 				editing = 0;
+ 			}
+@@ -1480,16 +1483,19 @@ static void colon(char *buf)
+ 			goto ret;
+ 		}
+ #endif
+-		// how many lines in text[]?
+-		li = count_lines(q, r);
+-		size = r - q + 1;
+ 		//if (useforce) {
+ 			// if "fn" is not write-able, chmod u+w
+ 			// sprintf(syscmd, "chmod u+w %s", fn);
+ 			// system(syscmd);
+ 			// forced = TRUE;
+ 		//}
+-		l = file_write(fn, q, r);
++		if (modified_count != 0 || cmd[0] != 'x') {
++			size = r - q + 1;
++			l = file_write(fn, q, r);
++		} else {
++			size = 0;
++			l = 0;
++		}
+ 		//if (useforce && forced) {
+ 			// chmod u-w
+ 			// sprintf(syscmd, "chmod u-w %s", fn);
+@@ -1500,17 +1506,20 @@ static void colon(char *buf)
+ 			if (l == -1)
+ 				status_line_bold_errno(fn);
+ 		} else {
++			// how many lines written
++			li = count_lines(q, q + l - 1);
+ 			status_line("'%s' %dL, %dC", fn, li, l);
+-			if (q == text && r == end - 1 && l == size) {
+-				modified_count = 0;
+-				last_modified_count = -1;
+-			}
+-			if ((cmd[0] == 'x' || cmd[1] == 'q' || cmd[1] == 'n'
+-			    || cmd[0] == 'X' || cmd[1] == 'Q' || cmd[1] == 'N'
+-			    )
+-			 && l == size
+-			) {
+-				editing = 0;
++			if (l == size) {
++				if (q == text && q + l == end) {
++					modified_count = 0;
++					last_modified_count = -1;
++				}
++				if (cmd[0] == 'x'
++				 || cmd[1] == 'q' || cmd[1] == 'n'
++				 || cmd[1] == 'Q' || cmd[1] == 'N'
++				) {
++					editing = 0;
++				}
+ 			}
+ 		}
+ #if ENABLE_FEATURE_VI_YANKMARK

@@ -66,9 +66,6 @@ hostapd_common_add_device_config() {
 	config_add_string require_mode
 	config_add_boolean legacy_rates
 
-	config_add_string acs_chan_bias
-	config_add_array hostapd_options
-
 	hostapd_add_log_config
 }
 
@@ -79,7 +76,7 @@ hostapd_prepare_device_config() {
 	local base="${config%%.conf}"
 	local base_cfg=
 
-	json_get_vars country country_ie beacon_int:100 doth require_mode legacy_rates acs_chan_bias
+	json_get_vars country country_ie beacon_int:100 doth require_mode legacy_rates
 
 	hostapd_set_log_options base_cfg
 
@@ -95,8 +92,6 @@ hostapd_prepare_device_config() {
 		[ "$country_ie" -gt 0 ] && append base_cfg "ieee80211d=1" "$N"
 		[ "$hwmode" = "a" -a "$doth" -gt 0 ] && append base_cfg "ieee80211h=1" "$N"
 	}
-
-	[ -n "$acs_chan_bias" ] && append base_cfg "acs_chan_bias=$acs_chan_bias" "$N"
 
 	local brlist= br
 	json_get_values basic_rate_list basic_rate
@@ -127,11 +122,6 @@ hostapd_prepare_device_config() {
 	[ -n "$rlist" ] && append base_cfg "supported_rates=$rlist" "$N"
 	[ -n "$brlist" ] && append base_cfg "basic_rates=$brlist" "$N"
 	append base_cfg "beacon_int=$beacon_int" "$N"
-
-	json_get_values opts hostapd_options
-	for val in $opts; do
-		append base_cfg "$val" "$N"
-	done
 
 	cat > "$config" <<EOF
 driver=$driver
@@ -174,7 +164,6 @@ hostapd_common_add_bss_config() {
 	config_add_string ownip
 	config_add_string iapp_interface
 	config_add_string eap_type ca_cert client_cert identity anonymous_identity auth priv_key priv_key_pwd
-	config_add_string ieee80211w_mgmt_cipher
 
 	config_add_int dynamic_vlan vlan_naming
 	config_add_string vlan_tagged_interface vlan_bridge
@@ -188,7 +177,7 @@ hostapd_common_add_bss_config() {
 	config_add_int wps_ap_setup_locked wps_independent
 	config_add_string wps_device_type wps_device_name wps_manufacturer wps_pin
 
-	config_add_boolean ieee80211r pmk_r1_push ft_psk_generate_local ft_over_ds
+	config_add_boolean ieee80211r pmk_r1_push
 	config_add_int r0_key_lifetime reassociation_deadline
 	config_add_string mobility_domain r1_key_holder
 	config_add_array r0kh r1kh
@@ -362,8 +351,8 @@ hostapd_set_bss_options() {
 	[ -n "$wps_possible" -a -n "$config_methods" ] && {
 		set_default ext_registrar 0
 		set_default wps_device_type "6-0050F204-1"
-		set_default wps_device_name "OpenWrt AP"
-		set_default wps_manufacturer "www.openwrt.org"
+		set_default wps_device_name "Lede AP"
+		set_default wps_manufacturer "www.lede-project.org"
 		set_default wps_independent 1
 
 		wps_state=2
@@ -397,24 +386,21 @@ hostapd_set_bss_options() {
 
 		if [ "$ieee80211r" -gt "0" ]; then
 			json_get_vars mobility_domain r0_key_lifetime r1_key_holder \
-				reassociation_deadline pmk_r1_push ft_psk_generate_local ft_over_ds
+			reassociation_deadline pmk_r1_push
 			json_get_values r0kh r0kh
 			json_get_values r1kh r1kh
 
 			set_default mobility_domain "4f57"
 			set_default r0_key_lifetime 10000
+			set_default r1_key_holder "00004f577274"
 			set_default reassociation_deadline 1000
 			set_default pmk_r1_push 0
-			set_default ft_psk_generate_local 0
-			set_default ft_over_ds 1
 
 			append bss_conf "mobility_domain=$mobility_domain" "$N"
 			append bss_conf "r0_key_lifetime=$r0_key_lifetime" "$N"
-			[ -n "$r1_key_holder" ] && append bss_conf "r1_key_holder=$r1_key_holder" "$N"
+			append bss_conf "r1_key_holder=$r1_key_holder" "$N"
 			append bss_conf "reassociation_deadline=$reassociation_deadline" "$N"
 			append bss_conf "pmk_r1_push=$pmk_r1_push" "$N"
-			append bss_conf "ft_psk_generate_local=$ft_psk_generate_local" "$N"
-			append bss_conf "ft_over_ds=$ft_over_ds" "$N"
 
 			for kh in $r0kh; do
 				append bss_conf "r0kh=${kh//,/ }" "$N"
@@ -445,10 +431,9 @@ hostapd_set_bss_options() {
 		# RSN -> allow management frame protection
 		case "$ieee80211w" in
 			[012])
-				json_get_vars ieee80211w_mgmt_cipher ieee80211w_max_timeout ieee80211w_retry_timeout
+				json_get_vars ieee80211w_max_timeout ieee80211w_retry_timeout
 				append bss_conf "ieee80211w=$ieee80211w" "$N"
 				[ "$ieee80211w" -gt "0" ] && {
-					append bss_conf "group_mgmt_cipher=${ieee80211w_mgmt_cipher:-AES-128-CMAC}" "$N"
 					[ -n "$ieee80211w_max_timeout" ] && \
 						append bss_conf "assoc_sa_query_max_timeout=$ieee80211w_max_timeout" "$N"
 					[ -n "$ieee80211w_retry_timeout" ] && \
@@ -601,31 +586,8 @@ EOF
 	return 0
 }
 
-wpa_supplicant_set_fixed_freq() {
-	local freq="$1"
-	local htmode="$2"
-
-	append network_data "fixed_freq=1" "$N$T"
-	append network_data "frequency=$freq" "$N$T"
-	case "$htmode" in
-		NOHT) append network_data "disable_ht=1" "$N$T";;
-		HT20|VHT20) append network_data "disable_ht40=1" "$N$T";;
-		HT40*|VHT40*|VHT80*|VHT160*) append network_data "ht40=1" "$N$T";;
-	esac
-	case "$htmode" in
-		VHT*) append network_data "vht=1" "$N$T";;
-	esac
-	case "$htmode" in
-		VHT80) append network_data "max_oper_chwidth=1" "$N$T";;
-		VHT160) append network_data "max_oper_chwidth=2" "$N$T";;
-		*) append network_data "max_oper_chwidth=0" "$N$T";;
-	esac
-}
-
 wpa_supplicant_add_network() {
 	local ifname="$1"
-	local freq="$2"
-	local htmode="$3"
 
 	_wpa_supplicant_common "$1"
 	wireless_vif_parse_encryption
@@ -647,7 +609,11 @@ wpa_supplicant_add_network() {
 
 	[[ "$_w_mode" = "adhoc" ]] && {
 		append network_data "mode=1" "$N$T"
-		[ -n "$channel" ] && wpa_supplicant_set_fixed_freq "$freq" "$htmode"
+		[ -n "$channel" ] && {
+			freq="$(get_freq "$phy" "$channel")"
+			append network_data "fixed_freq=1" "$N$T"
+			append network_data "frequency=$freq" "$N$T"
+		}
 
 		scan_ssid="scan_ssid=0"
 
@@ -659,7 +625,10 @@ wpa_supplicant_add_network() {
 		ssid="${mesh_id}"
 
 		append network_data "mode=5" "$N$T"
-		[ -n "$channel" ] && wpa_supplicant_set_fixed_freq "$freq" "$htmode"
+		[ -n "$channel" ] && {
+			freq="$(get_freq "$phy" "$channel")"
+			append network_data "frequency=$freq" "$N$T"
+		}
 		append wpa_key_mgmt "SAE"
 		scan_ssid=""
 	}
@@ -752,6 +721,7 @@ wpa_supplicant_add_network() {
 			;;
 		esac
 	}
+	local beacon_int brates mrate
 	[ -n "$bssid" ] && append network_data "bssid=$bssid" "$N$T"
 	[ -n "$beacon_int" ] && append network_data "beacon_int=$beacon_int" "$N$T"
 
