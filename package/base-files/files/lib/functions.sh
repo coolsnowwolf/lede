@@ -202,7 +202,7 @@ add_group_and_user() {
 			if [ -n "$gname" ] && [ -n "$gid" ]; then
 				group_exists "$gname" || group_add "$gname" "$gid"
 			elif [ -n "$gname" ]; then
-				gid="$(group_add_next "$gname")"
+				group_add_next "$gname"; gid=$?
 			fi
 
 			if [ -n "$uname" ]; then
@@ -233,10 +233,6 @@ default_postinst() {
 	if [ -d "$root/rootfs-overlay" ]; then
 		cp -R $root/rootfs-overlay/. $root/
 		rm -fR $root/rootfs-overlay/
-	fi
-
-	if [ -z "$root" ] && grep -q -s "^/etc/modules.d/" "/usr/lib/opkg/info/${pkgname}.list"; then
-		kmodloader
 	fi
 
 	if [ -z "$root" ] && grep -q -s "^/etc/uci-defaults/" "/usr/lib/opkg/info/${pkgname}.list"; then
@@ -296,7 +292,9 @@ group_add() {
 	[ -f "${IPKG_INSTROOT}/etc/group" ] || return 1
 	[ -n "$IPKG_INSTROOT" ] || lock /var/lock/group
 	echo "${name}:x:${gid}:" >> ${IPKG_INSTROOT}/etc/group
+	rc=$?
 	[ -n "$IPKG_INSTROOT" ] || lock -u /var/lock/group
+	return $rc
 }
 
 group_exists() {
@@ -306,17 +304,14 @@ group_exists() {
 group_add_next() {
 	local gid gids
 	gid=$(grep -s "^${1}:" ${IPKG_INSTROOT}/etc/group | cut -d: -f3)
-	if [ -n "$gid" ]; then
-		echo $gid
-		return
-	fi
+	[ -n "$gid" ] && return $gid
 	gids=$(cat ${IPKG_INSTROOT}/etc/group | cut -d: -f3)
-	gid=65536
-	while [ -n "$(echo "$gids" | grep "^$gid$")" ] ; do
+	gid=100
+	while [ -n "$(echo $gids | grep $gid)" ] ; do
 	        gid=$((gid + 1))
 	done
 	group_add $1 $gid
-	echo $gid
+	return $gid
 }
 
 group_add_user() {
@@ -339,8 +334,8 @@ user_add() {
 	local rc
 	[ -z "$uid" ] && {
 		uids=$(cat ${IPKG_INSTROOT}/etc/passwd | cut -d: -f3)
-		uid=65536
-		while [ -n "$(echo "$uids" | grep "^$uid$")" ] ; do
+		uid=100
+		while [ -n "$(echo $uids | grep $uid)" ] ; do
 		        uid=$((uid + 1))
 		done
 	}
@@ -349,7 +344,9 @@ user_add() {
 	[ -n "$IPKG_INSTROOT" ] || lock /var/lock/passwd
 	echo "${name}:x:${uid}:${gid}:${desc}:${home}:${shell}" >> ${IPKG_INSTROOT}/etc/passwd
 	echo "${name}:x:0:0:99999:7:::" >> ${IPKG_INSTROOT}/etc/shadow
+	rc=$?
 	[ -n "$IPKG_INSTROOT" ] || lock -u /var/lock/passwd
+	return $rc
 }
 
 user_exists() {

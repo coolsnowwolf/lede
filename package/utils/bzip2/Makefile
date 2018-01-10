@@ -18,7 +18,6 @@ PKG_MAINTAINER:=Steven Barth <cyrus@openwrt.org>
 
 PKG_LICENSE:=BZIP2
 PKG_LICENSE_FILES:=LICENSE
-PKG_CPE_ID:=cpe:/a:bzip:bzip2
 
 include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/package.mk

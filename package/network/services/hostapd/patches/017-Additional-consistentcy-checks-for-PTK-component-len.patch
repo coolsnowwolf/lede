@@ -1,0 +1,92 @@
+From a6ea665300919d6a3af22b1f4237203647fda93a Mon Sep 17 00:00:00 2001
+From: Jouni Malinen <j@w1.fi>
+Date: Tue, 17 Oct 2017 00:01:11 +0300
+Subject: [PATCH] Additional consistentcy checks for PTK component lengths
+
+Verify that TK, KCK, and KEK lengths are set to consistent values within
+struct wpa_ptk before using them in supplicant. This is an additional
+layer of protection against unexpected states.
+
+Signed-off-by: Jouni Malinen <j@w1.fi>
+---
+ src/common/wpa_common.c |  6 ++++++
+ src/rsn_supp/wpa.c      | 26 ++++++++++++++++++++------
+ 2 files changed, 26 insertions(+), 6 deletions(-)
+
+--- a/src/common/wpa_common.c
++++ b/src/common/wpa_common.c
+@@ -93,6 +93,12 @@ int wpa_eapol_key_mic(const u8 *key, siz
+ {
+ 	u8 hash[SHA384_MAC_LEN];
+ 
++	if (key_len == 0) {
++		wpa_printf(MSG_DEBUG,
++			   "WPA: KCK not set - cannot calculate MIC");
++		return -1;
++	}
++
+ 	switch (ver) {
+ #ifndef CONFIG_FIPS
+ 	case WPA_KEY_INFO_TYPE_HMAC_MD5_RC4:
+--- a/src/rsn_supp/wpa.c
++++ b/src/rsn_supp/wpa.c
+@@ -710,6 +710,11 @@ static int wpa_supplicant_install_ptk(st
+ 
+ 	alg = wpa_cipher_to_alg(sm->pairwise_cipher);
+ 	keylen = wpa_cipher_key_len(sm->pairwise_cipher);
++	if (keylen <= 0 || (unsigned int) keylen != sm->ptk.tk_len) {
++		wpa_printf(MSG_DEBUG, "WPA: TK length mismatch: %d != %lu",
++			   keylen, (long unsigned int) sm->ptk.tk_len);
++		return -1;
++	}
+ 	rsclen = wpa_cipher_rsc_len(sm->pairwise_cipher);
+ 
+ 	if (sm->proto == WPA_PROTO_RSN || sm->proto == WPA_PROTO_OSEN) {
+@@ -730,6 +735,7 @@ static int wpa_supplicant_install_ptk(st
+ 
+ 	/* TK is not needed anymore in supplicant */
+ 	os_memset(sm->ptk.tk, 0, WPA_TK_MAX_LEN);
++	sm->ptk.tk_len = 0;
+ 	sm->ptk.installed = 1;
+ 
+ 	if (sm->wpa_ptk_rekey) {
+@@ -1699,9 +1705,10 @@ static int wpa_supplicant_verify_eapol_k
+ 	os_memcpy(mic, key + 1, mic_len);
+ 	if (sm->tptk_set) {
+ 		os_memset(key + 1, 0, mic_len);
+-		wpa_eapol_key_mic(sm->tptk.kck, sm->tptk.kck_len, sm->key_mgmt,
+-				  ver, buf, len, (u8 *) (key + 1));
+-		if (os_memcmp_const(mic, key + 1, mic_len) != 0) {
++		if (wpa_eapol_key_mic(sm->tptk.kck, sm->tptk.kck_len,
++				      sm->key_mgmt,
++				      ver, buf, len, (u8 *) (key + 1)) < 0 ||
++		    os_memcmp_const(mic, key + 1, mic_len) != 0) {
+ 			wpa_msg(sm->ctx->msg_ctx, MSG_WARNING,
+ 				"WPA: Invalid EAPOL-Key MIC "
+ 				"when using TPTK - ignoring TPTK");
+@@ -1724,9 +1731,10 @@ static int wpa_supplicant_verify_eapol_k
+ 
+ 	if (!ok && sm->ptk_set) {
+ 		os_memset(key + 1, 0, mic_len);
+-		wpa_eapol_key_mic(sm->ptk.kck, sm->ptk.kck_len, sm->key_mgmt,
+-				  ver, buf, len, (u8 *) (key + 1));
+-		if (os_memcmp_const(mic, key + 1, mic_len) != 0) {
++		if (wpa_eapol_key_mic(sm->ptk.kck, sm->ptk.kck_len,
++				      sm->key_mgmt,
++				      ver, buf, len, (u8 *) (key + 1)) < 0 ||
++		    os_memcmp_const(mic, key + 1, mic_len) != 0) {
+ 			wpa_msg(sm->ctx->msg_ctx, MSG_WARNING,
+ 				"WPA: Invalid EAPOL-Key MIC - "
+ 				"dropping packet");
+@@ -3689,6 +3697,11 @@ int fils_process_assoc_resp(struct wpa_s
+ 
+ 	alg = wpa_cipher_to_alg(sm->pairwise_cipher);
+ 	keylen = wpa_cipher_key_len(sm->pairwise_cipher);
++	if (keylen <= 0 || (unsigned int) keylen != sm->ptk.tk_len) {
++		wpa_printf(MSG_DEBUG, "FILS: TK length mismatch: %u != %lu",
++			   keylen, (long unsigned int) sm->ptk.tk_len);
++		goto fail;
++	}
+ 	rsclen = wpa_cipher_rsc_len(sm->pairwise_cipher);
+ 	wpa_hexdump_key(MSG_DEBUG, "FILS: Set TK to driver",
+ 			sm->ptk.tk, keylen);

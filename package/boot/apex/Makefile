@@ -56,8 +56,7 @@ define Package/apex/install
 endef
 
 define Build/InstallDev
-	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)
-	$(CP) $(PKG_BUILD_DIR)/out/*.bin $(STAGING_DIR_IMAGE)/
+	$(CP) $(PKG_BUILD_DIR)/out/*.bin $(KERNEL_BUILD_DIR)
 endef
 
 $(eval $(call BuildPackage,apex))

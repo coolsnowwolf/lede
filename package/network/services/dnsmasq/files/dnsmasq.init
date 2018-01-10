@@ -8,18 +8,13 @@ PROG=/usr/sbin/dnsmasq
 
 ADD_LOCAL_DOMAIN=1
 ADD_LOCAL_HOSTNAME=1
-ADD_WAN_FQDN=0
-ADD_LOCAL_FQDN=""
 
 BASECONFIGFILE="/var/etc/dnsmasq.conf"
 BASEHOSTFILE="/tmp/hosts/dhcp"
+BASETIMESTAMPFILE="/etc/dnsmasq.time"
 TRUSTANCHORSFILE="/usr/share/dnsmasq/trust-anchors.conf"
 TIMEVALIDFILE="/var/state/dnsmasqsec"
 BASEDHCPSTAMPFILE="/var/run/dnsmasq"
-RFC6761FILE="/usr/share/dnsmasq/rfc6761.conf"
-DHCPSCRIPT="/usr/lib/dnsmasq/dhcp-script.sh"
-
-DNSMASQ_DHCP_VER=4
 
 xappend() {
 	local value="$1"
@@ -88,24 +83,12 @@ log_once() {
 		logger -t dnsmasq "$@"
 }
 
-has_handler() {
-	local file
-
-	for file in /etc/hotplug.d/dhcp/* /etc/hotplug.d/tftp/* /etc/hotplug.d/neigh/*; do
-		[ -f "$file" ] && return 0
-	done
-
-	return 1
-}
-
 append_bool() {
 	local section="$1"
 	local option="$2"
 	local value="$3"
-	local default="$4"
 	local _loctmp
-	[ -z "$default" ] && default="0"
-	config_get_bool _loctmp "$section" "$option" "$default"
+	config_get_bool _loctmp "$section" "$option" 0
 	[ $_loctmp -gt 0 ] && xappend "$value"
 }
 
@@ -124,10 +107,6 @@ append_server() {
 	xappend "--server=$1"
 }
 
-append_rev_server() {
-        xappend "--rev-server=$1"
-}
-
 append_address() {
 	xappend "--address=$1"
 }
@@ -139,10 +118,6 @@ append_ipset() {
 append_interface() {
 	network_get_device ifname "$1" || ifname="$1"
 	xappend "--interface=$ifname"
-}
-
-append_listenaddress() {
-	xappend "--listen-address=$1"
 }
 
 append_notinterface() {
@@ -160,10 +135,6 @@ append_bogusnxdomain() {
 
 append_pxe_service() {
 	xappend "--pxe-service=$1"
-}
-
-append_interface_name() {
-	xappend "--interface-name=$1,$2"
 }
 
 filter_dnsmasq() {
@@ -209,7 +180,6 @@ dhcp_remoteid_add() {
 }
 
 dhcp_circuitid_add() {
-	# TODO: DHCPV6 does not have circuitid; catch "option6:"
 	local cfg="$1"
 
 	config_get networkid "$cfg" networkid
@@ -242,7 +212,6 @@ dhcp_userclass_add() {
 }
 
 dhcp_vendorclass_add() {
-	# TODO: DHCPV6 vendor class has stricter definitions; catch? fixup?
 	local cfg="$1"
 
 	config_get networkid "$cfg" networkid
@@ -276,7 +245,6 @@ dhcp_match_add() {
 
 dhcp_host_add() {
 	local cfg="$1"
-	local hosttag nametime addrs duids macs tags
 
 	config_get_bool force "$cfg" force 0
 
@@ -288,113 +256,44 @@ dhcp_host_add() {
 
 	config_get name "$cfg" name
 	config_get ip "$cfg" ip
-	config_get hostid "$cfg" hostid
-
-	[ -n "$ip" -o -n "$name" -o -n "$hostid" ] || return 0
+	[ -n "$ip" -o -n "$name" ] || return 0
 
 	config_get_bool dns "$cfg" dns 0
 	[ "$dns" = "1" -a -n "$ip" -a -n "$name" ] && {
-		echo "$ip $name${DOMAIN:+.$DOMAIN}" >> $HOSTFILE_TMP
+		echo "$ip $name${DOMAIN:+.$DOMAIN}" >> $HOSTFILE
 	}
 
 	config_get mac "$cfg" mac
-	config_get duid "$cfg" duid
-	config_get tag "$cfg" tag
-
 	if [ -n "$mac" ]; then
 		# --dhcp-host=00:20:e0:3b:13:af,192.168.0.199,lap
-		# many MAC are possible to track a laptop ON/OFF dock
+		macs=""
 		for m in $mac; do append macs "$m" ","; done
-	fi
-
-	if [ $DNSMASQ_DHCP_VER -eq 6 -a -n "$duid" ]; then
-		# --dhcp-host=id:00:03:00:01:12:00:00:01:02:03,[::beef],lap
-		# one (virtual) machine gets one DUID per RFC3315
-		duids="id:${duid// */}"
-	fi
-
-	if [ -z "$macs" -a -z "$duids" ]; then
-		# --dhcp-host=lap,192.168.0.199,[::beef]
+	else
+		# --dhcp-host=lap,192.168.0.199
 		[ -n "$name" ] || return 0
 		macs="$name"
 		name=""
 	fi
 
-	if [ -n "$hostid" ]; then
-		hex_to_hostid hostid "$hostid"
-	fi
+	config_get tag "$cfg" tag
 
-	if [ -n "$tag" ]; then
-		for t in $tag; do append tags "$t" ",set:"; done
+	if [ "$DHCPv6CAPABLE" -eq 1 ]; then
+		config_get duid "$cfg" duid
+		config_get hostid "$cfg" hostid
+		if [ -n "$hostid" ]; then
+			hex_to_hostid hostid "$hostid"
+		fi
 	fi
 
 	config_get_bool broadcast "$cfg" broadcast 0
+	[ "$broadcast" = "0" ] && broadcast=
+
 	config_get leasetime "$cfg" leasetime
 
-	[ "$broadcast" = "0" ] && broadcast= || broadcast=",set:needs-broadcast"
-
-	hosttag="${networkid:+,set:${networkid}}${tags:+,set:${tags}}$broadcast"
-	nametime="${name:+,$name}${leasetime:+,$leasetime}"
-
-	if [ $DNSMASQ_DHCP_VER -eq 6 ]; then
-		addrs="${ip:+,$ip}${hostid:+,[::$hostid]}"
-		xappend "--dhcp-host=$macs${duids:+,$duids}$hosttag$addrs$nametime"
-	else
-		xappend "--dhcp-host=$macs$hosttag${ip:+,$ip}$nametime"
-	fi
-}
-
-dhcp_this_host_add() {
-	local net="$1"
-	local ifname="$2"
-	local mode="$3"
-	local routerstub routername ifdashname
-	local lanaddr lanaddr6 lanaddrs6 ulaprefix
-
-	if [ "$mode" -gt 0 ] ; then
-		ifdashname="${ifname//./-}"
-		routerstub="$( md5sum /etc/os-release )"
-		routerstub="router-${routerstub// */}"
-		routername="$( uci_get system @system[0] hostname $routerstub )"
-
-		if [ "$mode" -gt 1 ] ; then
-			if [ "$mode" -gt 2 ] ; then
-				if [ "$mode" -gt 3 ] ; then
-					append_interface_name "$ifdashname.$routername.$DOMAIN" "$ifname"
-				fi
-
-				append_interface_name "$routername.$DOMAIN" "$ifname"
-			fi
-
-			# All IP addresses discovered by dnsmasq will be labeled (except fe80::)
-			append_interface_name "$routername" "$ifname"
-
-		else
-			# This uses a static host file entry for only limited addresses.
-			# Use dnsmasq option "--expandhosts" to enable FQDN on host files.
-			ulaprefix="$(uci_get network @globals[0] ula_prefix)"
-			network_get_ipaddr lanaddr "$net"
-			network_get_ipaddrs6 lanaddrs6 "$net"
-
-			if [ -n "$lanaddr" ] ; then
-				dhcp_domain_add "" "$routername" "$lanaddr"
-			fi
-
-			if [ -n "$ulaprefix" -a -n "$lanaddrs6" ] ; then
-				for lanaddr6 in $lanaddrs6 ; do
-					case "$lanaddr6" in
-					"${ulaprefix%%:/*}"*)
-						dhcp_domain_add "" "$routername" "$lanaddr6"
-						;;
-					esac
-				done
-			fi
-		fi
-	fi
+	xappend "--dhcp-host=$macs${duid:+,id:$duid}${networkid:+,net:$networkid}${broadcast:+,set:needs-broadcast}${tag:+,set:$tag}${ip:+,$ip${hostid:+,[::$hostid]}}${name:+,$name}${leasetime:+,$leasetime}"
 }
 
 dhcp_tag_add() {
-	# NOTE: dnsmasq has explicit "option6:" prefix for DHCPv6 so no collisions
 	local cfg="$1"
 
 	tag="$cfg"
@@ -425,7 +324,6 @@ dhcp_mac_add() {
 }
 
 dhcp_boot_add() {
-	# TODO: BOOTURL is different between DHCPv4 and DHCPv6
 	local cfg="$1"
 
 	config_get networkid "$cfg" networkid
@@ -448,30 +346,24 @@ dhcp_boot_add() {
 
 dhcp_add() {
 	local cfg="$1"
-	local dhcp6range="::"
-	local nettag
-	local tags
-
 	config_get net "$cfg" interface
 	[ -n "$net" ] || return 0
+
+	config_get dhcpv4 "$cfg" dhcpv4
+	[ "$dhcpv4" != "disabled" ] || return 0
 
 	config_get networkid "$cfg" networkid
 	[ -n "$networkid" ] || networkid="$net"
 
+	network_get_subnet subnet "$net" || return 0
 	network_get_device ifname "$net" || return 0
+	network_get_protocol proto "$net" || return 0
 
 	[ "$cachelocal" = "0" ] && network_get_dnsserver dnsserver "$net" && {
 		DNS_SERVERS="$DNS_SERVERS $dnsserver"
 	}
 
-	append_bool "$cfg" ignore "--no-dhcp-interface=$ifname" && {
-		# Many ISP do not have useful names for DHCP customers (your WAN).
-		dhcp_this_host_add "$net" "$ifname" "$ADD_WAN_FQDN"
-		return 0
-	}
-
-	network_get_subnet subnet "$net" || return 0
-	network_get_protocol proto "$net" || return 0
+	append_bool "$cfg" ignore "--no-dhcp-interface=$ifname" && return 0
 
 	# Do not support non-static interfaces for now
 	[ static = "$proto" ] || return 0
@@ -483,107 +375,21 @@ dhcp_add() {
 	config_get_bool force "$cfg" force 0
 	[ $force -gt 0 ] || dhcp_check "$ifname" || return 0
 
-	config_get start "$cfg" start 100
-	config_get limit "$cfg" limit 150
-	config_get leasetime "$cfg" leasetime 12h
+	config_get start "$cfg" start
+	config_get limit "$cfg" limit
+	config_get leasetime "$cfg" leasetime
 	config_get options "$cfg" options
 	config_get_bool dynamicdhcp "$cfg" dynamicdhcp 1
 
-	config_get dhcpv4 "$cfg" dhcpv4
-	config_get dhcpv6 "$cfg" dhcpv6
-
-	config_get ra "$cfg" ra
-	config_get ra_management "$cfg" ra_management
-	config_get ra_preference "$cfg" ra_preference
-	config_get dns "$cfg" dns
-
-	config_list_foreach "$cfg" "interface_name" append_interface_name "$ifname"
-
-	# Put the router host name on this DHCP served interface address(es)
-	dhcp_this_host_add "$net" "$ifname" "$ADD_LOCAL_FQDN"
-
-	start="$( dhcp_calc "$start" )"
-
-	add_tag() {
-		tags="${tags}tag:$1,"
-	}
-	config_list_foreach "$cfg" tag add_tag
-
-	nettag="${networkid:+set:${networkid},}"
-
-	if [ "$limit" -gt 0 ] ; then
-		limit=$((limit-1))
-	fi
-
+	leasetime="${leasetime:-12h}"
+	start="$(dhcp_calc "${start:-100}")"
+	limit="${limit:-150}"
+	[ "$limit" -gt 0 ] && limit=$((limit-1))
 	eval "$(ipcalc.sh "${subnet%%/*}" $netmask $start $limit)"
+	if [ "$dynamicdhcp" = "0" ]; then END="static"; fi
+	xappend "--dhcp-range=$networkid,$START,$END,$NETMASK,$leasetime${options:+ $options}"
 
-	if [ "$dynamicdhcp" = "0" ] ; then
-		END="static"
-		dhcp6range="::,static"
-	else
-		dhcp6range="::1000,::ffff"
-	fi
-
-
-	if [ "$dhcpv4" != "disabled" ] ; then
-		xappend "--dhcp-range=$tags$nettag$START,$END,$NETMASK,$leasetime${options:+ $options}"
-	fi
-
-
-	if [ $DNSMASQ_DHCP_VER -eq 6 -a "$ra" = "server" ] ; then
-		# Note: dnsmasq cannot just be a DHCPv6 server (all-in-1)
-		# and let some other machine(s) send RA pointing to it.
-
-		case $ra_preference in
-		*high*)
-			xappend "--ra-param=$ifname,high,0,7200"
-			;;
-		*low*)
-			xappend "--ra-param=$ifname,low,0,7200"
-			;;
-		*)
-			# Send UNSOLICITED RA at default interval and live for 2 hours.
-			# TODO: convert flexible lease time into route life time (only seconds).
-			xappend "--ra-param=$ifname,0,7200"
-			;;
-		esac
-
-		if [ "$dhcpv6" = "disabled" ] ; then
-			ra_management="3"
-		fi
-
-
-		case $ra_management in
-		0)
-			# SLACC with DCHP for extended options
-			xappend "--dhcp-range=$nettag::,constructor:$ifname,ra-stateless,ra-names"
-			;;
-		2)
-			# DHCP address and RA only for management redirection
-			xappend "--dhcp-range=$nettag$dhcp6range,constructor:$ifname,$leasetime"
-			;;
-		3)
-			# SLAAC only but dnsmasq attempts to link HOSTNAME, DHCPv4 MAC, and SLAAC
-			xappend "--dhcp-range=$nettag::,constructor:$ifname,ra-only,ra-names"
-			;;
-		*)
-			# SLAAC and full DHCP
-			xappend "--dhcp-range=$nettag$dhcp6range,constructor:$ifname,slaac,ra-names,$leasetime"
-			;;
-		esac
-
-		if [ -n "$dns" ]; then
-			dnss=""
-			for d in $dns; do append dnss "[$d]" ","; done
-		else
-			dnss="[::]"
-		fi
-
-		dhcp_option_append "option6:dns-server,$dnss" "$networkid"
-	fi
-
-	dhcp_option_add "$cfg" "$networkid" 0
-	dhcp_option_add "$cfg" "$networkid" 2
+	dhcp_option_add "$cfg" "$networkid"
 }
 
 dhcp_option_append() {
@@ -595,24 +401,21 @@ dhcp_option_append() {
 }
 
 dhcp_option_add() {
-	# NOTE: dnsmasq has explicit "option6:" prefix for DHCPv6 so no collisions
 	local cfg="$1"
 	local networkid="$2"
 	local force="$3"
-	local opt="dhcp_option"
 
 	[ "$force" = "0" ] && force=
-	[ "$force" = "2" ] && opt="dhcp_option_force"
 
 	local list_len
-	config_get list_len "$cfg" "${opt}_LENGTH"
+	config_get list_len "$cfg" dhcp_option_LENGTH
 
 	if [ -n "$list_len" ]; then
-		config_list_foreach "$cfg" "$opt" dhcp_option_append "$networkid" "$force"
+		config_list_foreach "$cfg" dhcp_option dhcp_option_append "$networkid" "$force"
 	else
-		config_get dhcp_option "$cfg" "$opt"
+		config_get dhcp_option "$cfg" dhcp_option
 
-		[ -n "$dhcp_option" ] && echo "Warning: the 'option $opt' syntax is deprecated, use 'list $opt'" >&2
+		[ -n "$dhcp_option" ] && echo "Warning: the 'option dhcp_option' syntax is deprecated, use 'list dhcp_option'" >&2
 
 		local option
 		for option in $dhcp_option; do
@@ -635,7 +438,7 @@ dhcp_domain_add() {
 		record="${record:+$record }$name"
 	done
 
-	echo "$ip $record" >> $HOSTFILE_TMP
+	echo "$ip $record" >> $HOSTFILE
 }
 
 dhcp_srv_add() {
@@ -730,7 +533,7 @@ dhcp_relay_add() {
 
 dnsmasq_start()
 {
-	local cfg="$1" disabled resolvfile user_dhcpscript
+	local cfg="$1" disabled
 
 	config_get_bool disabled "$cfg" disabled 0
 	[ "$disabled" -gt 0 ] && return 0
@@ -741,7 +544,7 @@ dnsmasq_start()
 	CONFIGFILE="${BASECONFIGFILE}.${cfg}"
 	CONFIGFILE_TMP="${CONFIGFILE}.$$"
 	HOSTFILE="${BASEHOSTFILE}.${cfg}"
-	HOSTFILE_TMP="${HOSTFILE}.$$"
+	TIMESTAMPFILE="${BASETIMESTAMPFILE}.${cfg}"
 	BASEDHCPSTAMPFILE_CFG="${BASEDHCPSTAMPFILE}.${cfg}"
 
 	# before we can call xappend
@@ -751,8 +554,10 @@ dnsmasq_start()
 	mkdir -p /var/lib/misc
 	chown dnsmasq:dnsmasq /var/run/dnsmasq
 
+	[ -f "$TIMESTAMPFILE" ] && rm -f "$TIMESTAMPFILE"
+
 	echo "# auto-generated config file from /etc/config/dhcp" > $CONFIGFILE_TMP
-	echo "# auto-generated config file from /etc/config/dhcp" > $HOSTFILE_TMP
+	echo "# auto-generated config file from /etc/config/dhcp" > $HOSTFILE
 
 	local dnsmasqconffile="/etc/dnsmasq.${cfg}.conf"
 	if [ ! -r "$dnsmasqconffile" ]; then
@@ -766,41 +571,6 @@ dnsmasq_start()
 
 	$PROG --version | grep -osqE "^Compile time options:.* DHCPv6( |$)" && DHCPv6CAPABLE=1 || DHCPv6CAPABLE=0
 
-
-	if [ -x /usr/sbin/odhcpd -a -x /etc/init.d/odhcpd ] ; then
-		local odhcpd_is_main odhcpd_is_enabled
-		config_get odhcpd_is_main odhcpd maindhcp 0
-		/etc/init.d/odhcpd enabled && odhcpd_is_enabled=1 || odhcpd_is_enabled=0
-
-
-		if [ "$odhcpd_is_enabled" -eq 0 -a "$DHCPv6CAPABLE" -eq 1 ] ; then
-			# DHCP V4 and V6 in DNSMASQ
-			DNSMASQ_DHCP_VER=6
-		elif [ "$odhcpd_is_main" -gt 0 ] ; then
-			# ODHCPD is doing it all
-			DNSMASQ_DHCP_VER=0
-		else
-			# You have ODHCPD but use DNSMASQ for DHCPV4
-			DNSMASQ_DHCP_VER=4
-		fi
-
-	elif [ "$DHCPv6CAPABLE" -eq 1 ] ; then
-		# DHCP V4 and V6 in DNSMASQ
-		DNSMASQ_DHCP_VER=6
-	else
-		DNSMASQ_DHCP_VER=4
-	fi
-
-	# Allow DHCP/DHCPv6 to be handled by ISC DHCPD
-	if [ -x /usr/sbin/dhcpd ] ; then
-		if [ -x /etc/init.d/dhcpd ] ; then
-			/etc/init.d/dhcpd enabled && DNSMASQ_DHCP_VER=0
-		fi
-		if [ -x /etc/init.d/dhcpd6 -a "$DNSMASQ_DHCP_VER" -gt 0 ] ; then
-			/etc/init.d/dhcpd6 enabled && DNSMASQ_DHCP_VER=4
-		fi
-	fi
-
 	append_bool "$cfg" authoritative "--dhcp-authoritative"
 	append_bool "$cfg" nodaemon "--no-daemon"
 	append_bool "$cfg" domainneeded "--domain-needed"
@@ -813,11 +583,12 @@ dnsmasq_start()
 	append_bool "$cfg" localise_queries "--localise-queries"
 	append_bool "$cfg" readethers "--read-ethers"
 	append_bool "$cfg" dbus "--enable-dbus"
+	append_bool "$cfg" boguspriv "--bogus-priv"
 	append_bool "$cfg" expandhosts "--expand-hosts"
 	config_get tftp_root "$cfg" "tftp_root"
 	[ -n "$tftp_root" ] && mkdir -p "$tftp_root" && append_bool "$cfg" enable_tftp "--enable-tftp"
 	append_bool "$cfg" tftp_no_fail "--tftp-no-fail"
-	append_bool "$cfg" nonwildcard "--bind-dynamic" 1
+	append_bool "$cfg" nonwildcard "--bind-dynamic"
 	append_bool "$cfg" fqdn "--dhcp-fqdn"
 	append_bool "$cfg" proxydnssec "--proxy-dnssec"
 	append_bool "$cfg" localservice "--local-service"
@@ -828,7 +599,7 @@ dnsmasq_start()
 	append_bool "$cfg" noping "--no-ping"
 
 	append_parm "$cfg" logfacility "--log-facility"
-
+	append_parm "$cfg" dhcpscript "--dhcp-script"
 	append_parm "$cfg" cachesize "--cache-size"
 	append_parm "$cfg" dnsforwardmax "--dns-forward-max"
 	append_parm "$cfg" port "--port"
@@ -839,9 +610,7 @@ dnsmasq_start()
 	append_parm "$cfg" "maxport" "--max-port"
 	append_parm "$cfg" "domain" "--domain"
 	append_parm "$cfg" "local" "--server"
-	config_list_foreach "$cfg" "listen_address" append_listenaddress
 	config_list_foreach "$cfg" "server" append_server
-	config_list_foreach "$cfg" "rev_server" append_rev_server
 	config_list_foreach "$cfg" "address" append_address
 	config_list_foreach "$cfg" "ipset" append_ipset
 	config_list_foreach "$cfg" "interface" append_interface
@@ -849,6 +618,7 @@ dnsmasq_start()
 	config_list_foreach "$cfg" "addnhosts" append_addnhosts
 	config_list_foreach "$cfg" "bogusnxdomain" append_bogusnxdomain
 	append_parm "$cfg" "leasefile" "--dhcp-leasefile" "/tmp/dhcp.leases"
+	append_parm "$cfg" "resolvfile" "--resolv-file" "/tmp/resolv.conf.auto"
 	append_parm "$cfg" "serversfile" "--servers-file"
 	append_parm "$cfg" "tftp_root" "--tftp-root"
 	append_parm "$cfg" "dhcp_boot" "--dhcp-boot"
@@ -859,21 +629,12 @@ dnsmasq_start()
 
 	config_get_bool ADD_LOCAL_DOMAIN "$cfg" add_local_domain 1
 	config_get_bool ADD_LOCAL_HOSTNAME "$cfg" add_local_hostname 1
-	config_get ADD_LOCAL_FQDN "$cfg" add_local_fqdn ""
-	config_get ADD_WAN_FQDN "$cfg" add_wan_fqdn 0
-
-	if [ -z "$ADD_LOCAL_FQDN" ] ; then
-		# maintain support for previous UCI
-		ADD_LOCAL_FQDN="$ADD_LOCAL_HOSTNAME"
-	fi
 
 	config_get_bool readethers "$cfg" readethers
 	[ "$readethers" = "1" -a \! -e "/etc/ethers" ] && touch /etc/ethers
 
-	config_get user_dhcpscript $cfg dhcpscript
-	if has_handler || [ -n "$user_dhcpscript" ]; then
-		xappend "--dhcp-script=$DHCPSCRIPT"
-	fi
+	config_get resolvfile $cfg resolvfile
+	config_get dhcpscript $cfg dhcpscript
 
 	config_get leasefile $cfg leasefile "/tmp/dhcp.leases"
 	[ -n "$leasefile" -a \! -e "$leasefile" ] && touch "$leasefile"
@@ -885,8 +646,6 @@ dnsmasq_start()
 		# So jail doesn't complain if file missing
 		[ -n "$resolvfile" -a \! -e "$resolvfile" ] && touch "$resolvfile"
 	fi
-
-	[ -n "$resolvfile" ] && xappend "--resolv-file=$resolvfile"
 
 	config_get hostsfile "$cfg" dhcphostsfile
 	[ -e "$hostsfile" ] && xappend "--dhcp-hostsfile=$hostsfile"
@@ -934,7 +693,6 @@ dnsmasq_start()
 	}
 
 	dhcp_option_add "$cfg" "" 0
-	dhcp_option_add "$cfg" "" 2
 
 	xappend "--dhcp-broadcast=tag:needs-broadcast"
 
@@ -968,30 +726,36 @@ dnsmasq_start()
 	config_foreach filter_dnsmasq hostrecord dhcp_hostrecord_add "$cfg"
 	config_foreach filter_dnsmasq relay dhcp_relay_add "$cfg"
 
+	# add own hostname
+	[ $ADD_LOCAL_HOSTNAME -eq 1 ] && {
+		local lanaddr lanaddr6
+		local ulaprefix="$(uci_get network @globals[0] ula_prefix)"
+		local hostname="$(uci_get system @system[0] hostname Lede)"
+
+		network_get_ipaddr lanaddr "lan" && {
+			dhcp_domain_add "" "$hostname" "$lanaddr"
+		}
+
+		[ -n "$ulaprefix" ] && network_get_ipaddrs6 lanaddr6 "lan" && {
+			for lanaddr6 in $lanaddr6; do
+				case "$lanaddr6" in
+					"${ulaprefix%%:/*}"*)
+						dhcp_domain_add "" "$hostname" "$lanaddr6"
+					;;
+				esac
+			done
+		}
+	}
+
 	echo >> $CONFIGFILE_TMP
 	config_foreach filter_dnsmasq srvhost dhcp_srv_add "$cfg"
 	config_foreach filter_dnsmasq mxhost dhcp_mx_add "$cfg"
 	echo >> $CONFIGFILE_TMP
 
-	config_get_bool boguspriv "$cfg" boguspriv 1
-	[ "$boguspriv" -gt 0 ] && {
-		xappend "--bogus-priv"
-		[ -r "$RFC6761FILE" ] && xappend "--conf-file=$RFC6761FILE"
-	}
-
-	if [ "$DNSMASQ_DHCP_VER" -gt 4 ] ; then
-		# Enable RA feature for when/if it is constructed,
-		# and RA is selected per interface pool (RA, DHCP, or both),
-		# but no one (should) want RA broadcast in syslog
-		config_foreach filter_dnsmasq dhcp dhcp_add "$cfg"
-		xappend "--enable-ra"
-		xappend "--quiet-ra"
-		append_bool "$cfg" quietdhcp "--quiet-dhcp6"
-
-	elif [ "$DNSMASQ_DHCP_VER" -gt 0 ] ; then
+	config_get odhcpd_is_active odhcpd maindhcp
+	if [ "$odhcpd_is_active" != "1" ]; then
 		config_foreach filter_dnsmasq dhcp dhcp_add "$cfg"
 	fi
-
 
 	echo >> $CONFIGFILE_TMP
 	config_foreach filter_dnsmasq cname dhcp_cname_add "$cfg"
@@ -999,7 +763,6 @@ dnsmasq_start()
 
 	echo >> $CONFIGFILE_TMP
 	mv -f $CONFIGFILE_TMP $CONFIGFILE
-	mv -f $HOSTFILE_TMP $HOSTFILE
 
 	[ "$resolvfile" = "/tmp/resolv.conf.auto" ] && {
 		rm -f /tmp/resolv.conf
@@ -1015,11 +778,10 @@ dnsmasq_start()
 	procd_open_instance $cfg
 	procd_set_param command $PROG -C $CONFIGFILE -k -x /var/run/dnsmasq/dnsmasq."${cfg}".pid
 	procd_set_param file $CONFIGFILE
-	[ -n "$user_dhcpscript" ] && procd_set_param env USER_DHCPSCRIPT="$user_dhcpscript"
 	procd_set_param respawn
 
 	procd_add_jail dnsmasq ubus log
-	procd_add_jail_mount $CONFIGFILE $TRUSTANCHORSFILE $HOSTFILE $RFC6761FILE /etc/passwd /etc/group /etc/TZ /dev/null /dev/urandom $dnsmasqconffile $dnsmasqconfdir $resolvfile $user_dhcpscript /etc/hosts /etc/ethers /sbin/hotplug-call $EXTRA_MOUNT $DHCPSCRIPT
+	procd_add_jail_mount $CONFIGFILE $TRUSTANCHORSFILE $HOSTFILE /etc/passwd /etc/group /etc/TZ /dev/null /dev/urandom $dnsmasqconffile $dnsmasqconfdir $resolvfile $dhcpscript /etc/hosts /etc/ethers $EXTRA_MOUNT
 	procd_add_jail_mount_rw /var/run/dnsmasq/ $leasefile
 
 	procd_close_instance
@@ -1044,7 +806,7 @@ dnsmasq_stop()
 
 service_triggers()
 {
-	procd_add_reload_trigger "dhcp" "system"
+	procd_add_reload_trigger "dhcp"
 	procd_add_raw_trigger "interface.*" 2000 /etc/init.d/dnsmasq reload
 }
 
@@ -1084,7 +846,7 @@ start_service() {
 
 reload_service() {
 	rc_procd start_service "$@"
-	procd_send_signal dnsmasq "$@"
+	return 0
 }
 
 stop_service() {

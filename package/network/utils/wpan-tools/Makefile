@@ -31,7 +31,6 @@ endef
 define Package/wpan-tools/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/iwpan $(1)/usr/sbin/
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/wpan-ping/wpan-ping $(1)/usr/sbin/
 endef
 
 $(eval $(call BuildPackage,wpan-tools))

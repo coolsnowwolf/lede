@@ -1,0 +1,305 @@
+From 41f140d38617e1fd3fa88c1667c1bce0cad79224 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Kelleter?= <guenther.kelleter@devolo.de>
+Date: Thu, 5 Jan 2017 17:00:33 +0100
+Subject: [PATCH] Add hostapd options wpa_group_update_count and
+ wpa_pairwise_update_count
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+wpa_group_update_count and wpa_pairwise_update_count can now be used to
+set the GTK and PTK rekey retry limits (dot11RSNAConfigGroupUpdateCount
+and dot11RSNAConfigPairwiseUpdateCount). Defaults set to current
+hardcoded value (4).
+
+Some stations may suffer from frequent deauthentications due to GTK
+rekey failures: EAPOL 1/2 frame is not answered during the total timeout
+period of currently ~3.5 seconds. For example, a Galaxy S6 with Android
+6.0.1 appears to go into power save mode for up to 5 seconds. Increasing
+wpa_group_update_count to 6 fixed this issue.
+
+Signed-off-by: Günther Kelleter <guenther.kelleter@devolo.de>
+---
+ hostapd/config_file.c     | 22 ++++++++++++++++++++++
+ hostapd/hostapd.conf      | 11 +++++++++++
+ src/ap/ap_config.c        |  2 ++
+ src/ap/ap_config.h        |  2 ++
+ src/ap/wpa_auth.c         | 37 ++++++++++++++++++-------------------
+ src/ap/wpa_auth.h         |  2 ++
+ src/ap/wpa_auth_glue.c    |  2 ++
+ src/ap/wpa_auth_i.h       |  4 ++--
+ wpa_supplicant/ibss_rsn.c |  2 ++
+ wpa_supplicant/mesh_rsn.c |  2 ++
+ 10 files changed, 65 insertions(+), 21 deletions(-)
+
+diff --git a/hostapd/config_file.c b/hostapd/config_file.c
+index 8cfa198c3..02693a5b1 100644
+--- a/hostapd/config_file.c
++++ b/hostapd/config_file.c
+@@ -2489,6 +2489,28 @@ static int hostapd_config_fill(struct hostapd_config *conf,
+ 		bss->wpa_gmk_rekey = atoi(pos);
+ 	} else if (os_strcmp(buf, "wpa_ptk_rekey") == 0) {
+ 		bss->wpa_ptk_rekey = atoi(pos);
++	} else if (os_strcmp(buf, "wpa_group_update_count") == 0) {
++		char *endp;
++		unsigned long val = strtoul(pos, &endp, 0);
++
++		if (*endp || val < 1 || val > (u32) -1) {
++			wpa_printf(MSG_ERROR,
++				   "Line %d: Invalid wpa_group_update_count=%lu; allowed range 1..4294967295",
++				   line, val);
++			return 1;
++		}
++		bss->wpa_group_update_count = (u32) val;
++	} else if (os_strcmp(buf, "wpa_pairwise_update_count") == 0) {
++		char *endp;
++		unsigned long val = strtoul(pos, &endp, 0);
++
++		if (*endp || val < 1 || val > (u32) -1) {
++			wpa_printf(MSG_ERROR,
++				   "Line %d: Invalid wpa_pairwise_update_count=%lu; allowed range 1..4294967295",
++				   line, val);
++			return 1;
++		}
++		bss->wpa_pairwise_update_count = (u32) val;
+ 	} else if (os_strcmp(buf, "wpa_passphrase") == 0) {
+ 		int len = os_strlen(pos);
+ 		if (len < 8 || len > 63) {
+diff --git a/hostapd/hostapd.conf b/hostapd/hostapd.conf
+index 314f3842b..1fb1bd987 100644
+--- a/hostapd/hostapd.conf
++++ b/hostapd/hostapd.conf
+@@ -1221,6 +1221,11 @@ own_ip_addr=127.0.0.1
+ # (dot11RSNAConfigGroupRekeyStrict)
+ #wpa_strict_rekey=1
+ 
++# The number of times EAPOL-Key Message 1/2 in the RSN Group Key Handshake is
++#retried per GTK Handshake attempt. (dot11RSNAConfigGroupUpdateCount)
++# Range 1..4294967295; default: 4
++#wpa_group_update_count=4
++
+ # Time interval for rekeying GMK (master key used internally to generate GTKs
+ # (in seconds).
+ #wpa_gmk_rekey=86400
+@@ -1229,6 +1234,12 @@ own_ip_addr=127.0.0.1
+ # PTK to mitigate some attacks against TKIP deficiencies.
+ #wpa_ptk_rekey=600
+ 
++# The number of times EAPOL-Key Message 1/4 and Message 3/4 in the RSN 4-Way
++# Handshake are retried per 4-Way Handshake attempt.
++# (dot11RSNAConfigPairwiseUpdateCount)
++# Range 1..4294967295; default: 4
++#wpa_pairwise_update_count=4
++
+ # Enable IEEE 802.11i/RSN/WPA2 pre-authentication. This is used to speed up
+ # roaming be pre-authenticating IEEE 802.1X/EAP part of the full RSN
+ # authentication and key handshake before actually associating with a new AP.
+diff --git a/src/ap/ap_config.c b/src/ap/ap_config.c
+index c2b80ad97..9abcab7fb 100644
+--- a/src/ap/ap_config.c
++++ b/src/ap/ap_config.c
+@@ -56,6 +56,8 @@ void hostapd_config_defaults_bss(struct hostapd_bss_config *bss)
+ 
+ 	bss->wpa_group_rekey = 600;
+ 	bss->wpa_gmk_rekey = 86400;
++	bss->wpa_group_update_count = 4;
++	bss->wpa_pairwise_update_count = 4;
+ 	bss->wpa_key_mgmt = WPA_KEY_MGMT_PSK;
+ 	bss->wpa_pairwise = WPA_CIPHER_TKIP;
+ 	bss->wpa_group = WPA_CIPHER_TKIP;
+diff --git a/src/ap/ap_config.h b/src/ap/ap_config.h
+index 31b1e7762..7495dc96f 100644
+--- a/src/ap/ap_config.h
++++ b/src/ap/ap_config.h
+@@ -330,6 +330,8 @@ struct hostapd_bss_config {
+ 	int wpa_strict_rekey;
+ 	int wpa_gmk_rekey;
+ 	int wpa_ptk_rekey;
++	u32 wpa_group_update_count;
++	u32 wpa_pairwise_update_count;
+ 	int rsn_pairwise;
+ 	int rsn_preauth;
+ 	char *rsn_preauth_interfaces;
+diff --git a/src/ap/wpa_auth.c b/src/ap/wpa_auth.c
+index 0bd901fbf..8c082f426 100644
+--- a/src/ap/wpa_auth.c
++++ b/src/ap/wpa_auth.c
+@@ -60,8 +60,6 @@ static void wpa_group_put(struct wpa_authenticator *wpa_auth,
+ 			  struct wpa_group *group);
+ static u8 * ieee80211w_kde_add(struct wpa_state_machine *sm, u8 *pos);
+ 
+-static const u32 dot11RSNAConfigGroupUpdateCount = 4;
+-static const u32 dot11RSNAConfigPairwiseUpdateCount = 4;
+ static const u32 eapol_key_timeout_first = 100; /* ms */
+ static const u32 eapol_key_timeout_subseq = 1000; /* ms */
+ static const u32 eapol_key_timeout_first_group = 500; /* ms */
+@@ -1623,7 +1621,7 @@ static void wpa_send_eapol(struct wpa_authenticator *wpa_auth,
+ {
+ 	int timeout_ms;
+ 	int pairwise = key_info & WPA_KEY_INFO_KEY_TYPE;
+-	int ctr;
++	u32 ctr;
+ 
+ 	if (sm == NULL)
+ 		return;
+@@ -1640,7 +1638,7 @@ static void wpa_send_eapol(struct wpa_authenticator *wpa_auth,
+ 	if (pairwise && ctr == 1 && !(key_info & WPA_KEY_INFO_MIC))
+ 		sm->pending_1_of_4_timeout = 1;
+ 	wpa_printf(MSG_DEBUG, "WPA: Use EAPOL-Key timeout of %u ms (retry "
+-		   "counter %d)", timeout_ms, ctr);
++		   "counter %u)", timeout_ms, ctr);
+ 	eloop_register_timeout(timeout_ms / 1000, (timeout_ms % 1000) * 1000,
+ 			       wpa_send_eapol_timeout, wpa_auth, sm);
+ }
+@@ -2002,7 +2000,7 @@ SM_STATE(WPA_PTK, PTKSTART)
+ 	sm->alt_snonce_valid = FALSE;
+ 
+ 	sm->TimeoutCtr++;
+-	if (sm->TimeoutCtr > (int) dot11RSNAConfigPairwiseUpdateCount) {
++	if (sm->TimeoutCtr > sm->wpa_auth->conf.wpa_pairwise_update_count) {
+ 		/* No point in sending the EAPOL-Key - we will disconnect
+ 		 * immediately following this. */
+ 		return;
+@@ -2693,7 +2691,7 @@ SM_STATE(WPA_PTK, PTKINITNEGOTIATING)
+ 	sm->TimeoutEvt = FALSE;
+ 
+ 	sm->TimeoutCtr++;
+-	if (sm->TimeoutCtr > (int) dot11RSNAConfigPairwiseUpdateCount) {
++	if (sm->TimeoutCtr > sm->wpa_auth->conf.wpa_pairwise_update_count) {
+ 		/* No point in sending the EAPOL-Key - we will disconnect
+ 		 * immediately following this. */
+ 		return;
+@@ -2988,11 +2986,12 @@ SM_STEP(WPA_PTK)
+ 		    sm->EAPOLKeyPairwise)
+ 			SM_ENTER(WPA_PTK, PTKCALCNEGOTIATING);
+ 		else if (sm->TimeoutCtr >
+-			 (int) dot11RSNAConfigPairwiseUpdateCount) {
++			 sm->wpa_auth->conf.wpa_pairwise_update_count) {
+ 			wpa_auth->dot11RSNA4WayHandshakeFailures++;
+-			wpa_auth_vlogger(sm->wpa_auth, sm->addr, LOGGER_DEBUG,
+-					 "PTKSTART: Retry limit %d reached",
+-					 dot11RSNAConfigPairwiseUpdateCount);
++			wpa_auth_vlogger(
++				sm->wpa_auth, sm->addr, LOGGER_DEBUG,
++				"PTKSTART: Retry limit %u reached",
++				sm->wpa_auth->conf.wpa_pairwise_update_count);
+ 			SM_ENTER(WPA_PTK, DISCONNECT);
+ 		} else if (sm->TimeoutEvt)
+ 			SM_ENTER(WPA_PTK, PTKSTART);
+@@ -3016,12 +3015,12 @@ SM_STEP(WPA_PTK)
+ 			 sm->EAPOLKeyPairwise && sm->MICVerified)
+ 			SM_ENTER(WPA_PTK, PTKINITDONE);
+ 		else if (sm->TimeoutCtr >
+-			 (int) dot11RSNAConfigPairwiseUpdateCount) {
++			 sm->wpa_auth->conf.wpa_pairwise_update_count) {
+ 			wpa_auth->dot11RSNA4WayHandshakeFailures++;
+-			wpa_auth_vlogger(sm->wpa_auth, sm->addr, LOGGER_DEBUG,
+-					 "PTKINITNEGOTIATING: Retry limit %d "
+-					 "reached",
+-					 dot11RSNAConfigPairwiseUpdateCount);
++			wpa_auth_vlogger(
++				sm->wpa_auth, sm->addr, LOGGER_DEBUG,
++				"PTKINITNEGOTIATING: Retry limit %u reached",
++				sm->wpa_auth->conf.wpa_pairwise_update_count);
+ 			SM_ENTER(WPA_PTK, DISCONNECT);
+ 		} else if (sm->TimeoutEvt)
+ 			SM_ENTER(WPA_PTK, PTKINITNEGOTIATING);
+@@ -3056,7 +3055,7 @@ SM_STATE(WPA_PTK_GROUP, REKEYNEGOTIATING)
+ 	SM_ENTRY_MA(WPA_PTK_GROUP, REKEYNEGOTIATING, wpa_ptk_group);
+ 
+ 	sm->GTimeoutCtr++;
+-	if (sm->GTimeoutCtr > (int) dot11RSNAConfigGroupUpdateCount) {
++	if (sm->GTimeoutCtr > sm->wpa_auth->conf.wpa_group_update_count) {
+ 		/* No point in sending the EAPOL-Key - we will disconnect
+ 		 * immediately following this. */
+ 		return;
+@@ -3154,7 +3153,7 @@ SM_STEP(WPA_PTK_GROUP)
+ 		    !sm->EAPOLKeyPairwise && sm->MICVerified)
+ 			SM_ENTER(WPA_PTK_GROUP, REKEYESTABLISHED);
+ 		else if (sm->GTimeoutCtr >
+-			 (int) dot11RSNAConfigGroupUpdateCount)
++			 sm->wpa_auth->conf.wpa_group_update_count)
+ 			SM_ENTER(WPA_PTK_GROUP, KEYERROR);
+ 		else if (sm->TimeoutEvt)
+ 			SM_ENTER(WPA_PTK_GROUP, REKEYNEGOTIATING);
+@@ -3614,8 +3613,8 @@ int wpa_get_mib(struct wpa_authenticator *wpa_auth, char *buf, size_t buflen)
+ 		"dot11RSNAConfigNumberOfGTKSAReplayCounters=0\n",
+ 		RSN_VERSION,
+ 		!!wpa_auth->conf.wpa_strict_rekey,
+-		dot11RSNAConfigGroupUpdateCount,
+-		dot11RSNAConfigPairwiseUpdateCount,
++		wpa_auth->conf.wpa_group_update_count,
++		wpa_auth->conf.wpa_pairwise_update_count,
+ 		wpa_cipher_key_len(wpa_auth->conf.wpa_group) * 8,
+ 		dot11RSNAConfigPMKLifetime,
+ 		dot11RSNAConfigPMKReauthThreshold,
+diff --git a/src/ap/wpa_auth.h b/src/ap/wpa_auth.h
+index 9cbe3889b..0920a169d 100644
+--- a/src/ap/wpa_auth.h
++++ b/src/ap/wpa_auth.h
+@@ -144,6 +144,8 @@ struct wpa_auth_config {
+ 	int wpa_strict_rekey;
+ 	int wpa_gmk_rekey;
+ 	int wpa_ptk_rekey;
++	u32 wpa_group_update_count;
++	u32 wpa_pairwise_update_count;
+ 	int rsn_pairwise;
+ 	int rsn_preauth;
+ 	int eapol_version;
+diff --git a/src/ap/wpa_auth_glue.c b/src/ap/wpa_auth_glue.c
+index 22518a1f1..394f77a66 100644
+--- a/src/ap/wpa_auth_glue.c
++++ b/src/ap/wpa_auth_glue.c
+@@ -41,6 +41,8 @@ static void hostapd_wpa_auth_conf(struct hostapd_bss_config *conf,
+ 	wconf->wpa_strict_rekey = conf->wpa_strict_rekey;
+ 	wconf->wpa_gmk_rekey = conf->wpa_gmk_rekey;
+ 	wconf->wpa_ptk_rekey = conf->wpa_ptk_rekey;
++	wconf->wpa_group_update_count = conf->wpa_group_update_count;
++	wconf->wpa_pairwise_update_count = conf->wpa_pairwise_update_count;
+ 	wconf->rsn_pairwise = conf->rsn_pairwise;
+ 	wconf->rsn_preauth = conf->rsn_preauth;
+ 	wconf->eapol_version = conf->eapol_version;
+diff --git a/src/ap/wpa_auth_i.h b/src/ap/wpa_auth_i.h
+index 065a624ad..cda2c5065 100644
+--- a/src/ap/wpa_auth_i.h
++++ b/src/ap/wpa_auth_i.h
+@@ -48,8 +48,8 @@ struct wpa_state_machine {
+ 	Boolean AuthenticationRequest;
+ 	Boolean ReAuthenticationRequest;
+ 	Boolean Disconnect;
+-	int TimeoutCtr;
+-	int GTimeoutCtr;
++	u32 TimeoutCtr;
++	u32 GTimeoutCtr;
+ 	Boolean TimeoutEvt;
+ 	Boolean EAPOLKeyReceived;
+ 	Boolean EAPOLKeyPairwise;
+diff --git a/wpa_supplicant/ibss_rsn.c b/wpa_supplicant/ibss_rsn.c
+index 521a692ba..954061ae4 100644
+--- a/wpa_supplicant/ibss_rsn.c
++++ b/wpa_supplicant/ibss_rsn.c
+@@ -428,6 +428,8 @@ static int ibss_rsn_auth_init_group(struct ibss_rsn *ibss_rsn,
+ 	conf.wpa_group = WPA_CIPHER_CCMP;
+ 	conf.eapol_version = 2;
+ 	conf.wpa_group_rekey = ssid->group_rekey ? ssid->group_rekey : 600;
++	conf.wpa_group_update_count = 4;
++	conf.wpa_pairwise_update_count = 4;
+ 
+ 	ibss_rsn->auth_group = wpa_init(own_addr, &conf, &cb, ibss_rsn);
+ 	if (ibss_rsn->auth_group == NULL) {
+diff --git a/wpa_supplicant/mesh_rsn.c b/wpa_supplicant/mesh_rsn.c
+index 33040f30b..628382cbf 100644
+--- a/wpa_supplicant/mesh_rsn.c
++++ b/wpa_supplicant/mesh_rsn.c
+@@ -158,6 +158,8 @@ static int __mesh_rsn_auth_init(struct mesh_rsn *rsn, const u8 *addr,
+ 	conf.wpa_group = rsn->group_cipher;
+ 	conf.eapol_version = 0;
+ 	conf.wpa_group_rekey = -1;
++	conf.wpa_group_update_count = 4;
++	conf.wpa_pairwise_update_count = 4;
+ #ifdef CONFIG_IEEE80211W
+ 	conf.ieee80211w = ieee80211w;
+ 	if (ieee80211w != NO_MGMT_FRAME_PROTECTION)
+-- 
+2.13.6
+

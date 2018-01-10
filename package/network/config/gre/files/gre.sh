@@ -31,16 +31,7 @@ gre_generic_setup() {
 	json_add_string local "$local"
 	json_add_string remote "$remote"
 	[ -n "$tunlink" ] && json_add_string link "$tunlink"
-
-	json_add_object 'data'
-	[ -n "$ikey" ] && json_add_int ikey "$ikey"
-	[ -n "$okey" ] && json_add_int okey "$okey"
-	[ -n "$icsum" ] && json_add_boolean icsum "$icsum"
-	[ -n "$ocsum" ] && json_add_boolean ocsum "$ocsum"
-	[ -n "$iseqno" ] && json_add_boolean iseqno "$iseqno"
-	[ -n "$oseqno" ] && json_add_boolean oseqno "$oseqno"
-	json_close_object
-
+	json_add_string info "${ikey:-0},${okey:-0},${icsum:-0},${ocsum:-0},${iseqno:-0},${oseqno:-0}"
 	proto_close_tunnel
 
 	proto_add_data

@@ -21,7 +21,6 @@ PKG_BUILD_PARALLEL:=1
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=BSD-3-Clause
-PKG_CPE_ID:=cpe:/a:tcpdump:tcpdump
 
 PKG_INSTALL:=1
 

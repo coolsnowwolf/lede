@@ -10,8 +10,8 @@ curdir:=package
 include $(INCLUDE_DIR)/rootfs.mk
 
 -include $(TMP_DIR)/.packagedeps
-$(curdir)/autoremove:=1
 $(curdir)/builddirs:=$(sort $(package-) $(package-y) $(package-m))
+$(curdir)/builddirs-install:=.
 $(curdir)/builddirs-default:=. $(sort $(package-y) $(package-m))
 $(curdir)/builddirs-prereq:=. $(sort $(prereq-y) $(prereq-m))
 ifdef CHECK_ALL
@@ -56,14 +56,10 @@ $(curdir)/merge:
 $(curdir)/merge-index: $(curdir)/merge
 	(cd $(PACKAGE_DIR_ALL) && $(SCRIPT_DIR)/ipkg-make-index.sh . 2>&1 > Packages; )
 
-ifndef SDK
-  $(curdir)/compile: $(curdir)/system/opkg/host/compile
-endif
-
-$(curdir)/install: $(TMP_DIR)/.build $(curdir)/merge $(if $(CONFIG_TARGET_PER_DEVICE_ROOTFS),$(curdir)/merge-index)
+$(curdir)/install: $(TMP_DIR)/.build $(curdir)/system/opkg/host/compile $(curdir)/merge $(if $(CONFIG_TARGET_PER_DEVICE_ROOTFS),$(curdir)/merge-index)
 	- find $(STAGING_DIR_ROOT) -type d | $(XARGS) chmod 0755
 	rm -rf $(TARGET_DIR) $(TARGET_DIR_ORIG)
-	mkdir -p $(TARGET_DIR)/tmp
+	[ -d $(TARGET_DIR)/tmp ] || mkdir -p $(TARGET_DIR)/tmp
 	$(call opkg,$(TARGET_DIR)) install \
 		$(call opkg_package_files,$(shell cat $(PACKAGE_INSTALL_FILES) 2>/dev/null))
 	@for file in $(PACKAGE_INSTALL_FILES); do \

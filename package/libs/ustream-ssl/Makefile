@@ -35,11 +35,11 @@ define Package/libustream-openssl
   VARIANT:=openssl
 endef
 
-define Package/libustream-wolfssl
+define Package/libustream-cyassl
   $(Package/libustream/default)
-  TITLE += (wolfssl)
-  DEPENDS += +PACKAGE_libustream-wolfssl:libwolfssl
-  VARIANT:=wolfssl
+  TITLE += (cyassl)
+  DEPENDS += +PACKAGE_libustream-cyassl:libcyassl
+  VARIANT:=cyassl
 endef
 
 define Package/libustream-mbedtls
@@ -50,7 +50,7 @@ define Package/libustream-mbedtls
   DEFAULT_VARIANT:=1
 endef
 
-ifeq ($(BUILD_VARIANT),wolfssl)
+ifeq ($(BUILD_VARIANT),cyassl)
   TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include/cyassl -DHAVE_SNI
   CMAKE_OPTIONS += -DCYASSL=on
 endif
@@ -64,9 +64,9 @@ define Package/libustream/default/install
 endef
 
 Package/libustream-openssl/install = $(Package/libustream/default/install)
-Package/libustream-wolfssl/install = $(Package/libustream/default/install)
+Package/libustream-cyassl/install = $(Package/libustream/default/install)
 Package/libustream-mbedtls/install = $(Package/libustream/default/install)
 
 $(eval $(call BuildPackage,libustream-mbedtls))
-$(eval $(call BuildPackage,libustream-wolfssl))
+$(eval $(call BuildPackage,libustream-cyassl))
 $(eval $(call BuildPackage,libustream-openssl))

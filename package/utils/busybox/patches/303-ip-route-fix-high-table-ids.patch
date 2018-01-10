@@ -1,0 +1,486 @@
+From 485fcc89b99eae9cc7501eaff344b104e52ab7bf Mon Sep 17 00:00:00 2001
+From: Jo-Philipp Wich <jo@mein.io>
+Date: Mon, 26 Sep 2016 17:48:22 +0200
+Subject: [PATCH] iproute: properly support high routing table IDs
+
+The Linux kernel uses two distinct fields to denote the routing table ID in
+use by network routes; the 8 bit `rtm_table` member of `struct rtmsg` and the
+32 bit `RTA_TABLE` netlink attribute.
+
+If a routing table ID is larger than 255, the `RT_TABLE` attribute must be used
+and the `rtm_table` field has to be set to the special `RT_TABLE_UNSPEC` value.
+
+This commit ...
+ - switches the *_n2a() and *_a2n() functions of rt_names.c to use dynamically
+   sized, name-sorted arrays instead of fixed arrays limited to 1024 slots in
+   order to support IDs up to 65535
+ - adds proper handling of high table IDs to iprule.c and iproute.c when
+   adding, removing and dumping ip rules and network routes
+
+After this change, the Busybox ip applet fully supports IP rules with high ID
+numbers, using the same logic as the full iproute2.
+
+Signed-off-by: Jo-Philipp Wich <jo@mein.io>
+---
+ networking/libiproute/iproute.c  |  75 ++++++++------
+ networking/libiproute/iprule.c   |   4 +-
+ networking/libiproute/rt_names.c | 204 +++++++++++++++++++++++----------------
+ 3 files changed, 169 insertions(+), 114 deletions(-)
+
+--- a/networking/libiproute/iproute.c
++++ b/networking/libiproute/iproute.c
+@@ -66,6 +66,7 @@ static int FAST_FUNC print_route(const s
+ 	inet_prefix dst;
+ 	inet_prefix src;
+ 	int host_len = -1;
++	uint32_t rtable;
+ 
+ 	if (n->nlmsg_type != RTM_NEWROUTE && n->nlmsg_type != RTM_DELROUTE) {
+ 		fprintf(stderr, "Not a route: %08x %08x %08x\n",
+@@ -83,34 +84,6 @@ static int FAST_FUNC print_route(const s
+ 	else if (r->rtm_family == AF_INET)
+ 		host_len = 32;
+ 
+-	if (r->rtm_family == AF_INET6) {
+-		if (G_filter.tb) {
+-			if (G_filter.tb < 0) {
+-				if (!(r->rtm_flags & RTM_F_CLONED)) {
+-					return 0;
+-				}
+-			} else {
+-				if (r->rtm_flags & RTM_F_CLONED) {
+-					return 0;
+-				}
+-				if (G_filter.tb == RT_TABLE_LOCAL) {
+-					if (r->rtm_type != RTN_LOCAL) {
+-						return 0;
+-					}
+-				} else if (G_filter.tb == RT_TABLE_MAIN) {
+-					if (r->rtm_type == RTN_LOCAL) {
+-						return 0;
+-					}
+-				} else {
+-					return 0;
+-				}
+-			}
+-		}
+-	} else {
+-		if (G_filter.tb > 0 && G_filter.tb != r->rtm_table) {
+-			return 0;
+-		}
+-	}
+ 	if (G_filter.rdst.family
+ 	 && (r->rtm_family != G_filter.rdst.family || G_filter.rdst.bitlen > r->rtm_dst_len)
+ 	) {
+@@ -141,6 +114,37 @@ static int FAST_FUNC print_route(const s
+ 	memset(&dst, 0, sizeof(dst));
+ 	parse_rtattr(tb, RTA_MAX, RTM_RTA(r), len);
+ 
++	rtable = tb[RTA_TABLE] ? *(uint32_t*)RTA_DATA(tb[RTA_TABLE]) : r->rtm_table;
++
++	if (G_filter.tb) {
++		if (r->rtm_family == AF_INET6) {
++			if (G_filter.tb < 0) {
++				if (!(r->rtm_flags & RTM_F_CLONED)) {
++					return 0;
++				}
++			} else {
++				if (r->rtm_flags & RTM_F_CLONED) {
++					return 0;
++				}
++				if (G_filter.tb == RT_TABLE_LOCAL) {
++					if (r->rtm_type != RTN_LOCAL) {
++						return 0;
++					}
++				} else if (G_filter.tb == RT_TABLE_MAIN) {
++					if (r->rtm_type == RTN_LOCAL) {
++						return 0;
++					}
++				} else if (G_filter.tb != rtable) {
++					return 0;
++				}
++			}
++		} else {
++			if (G_filter.tb != rtable) {
++				return 0;
++			}
++		}
++	}
++
+ 	if (tb[RTA_SRC]) {
+ 		src.bitlen = r->rtm_src_len;
+ 		src.bytelen = (r->rtm_family == AF_INET6 ? 16 : 4);
+@@ -349,7 +353,9 @@ IF_FEATURE_IP_RULE(ARG_table,)
+ 	smalluint ok = 0;
+ 	smalluint scope_ok = 0;
+ 	int arg;
+-
++#if ENABLE_FEATURE_IP_RULE
++	uint32_t rtable = 0;
++#endif
+ 	memset(&req, 0, sizeof(req));
+ 
+ 	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+@@ -419,7 +425,7 @@ IF_FEATURE_IP_RULE(ARG_table,)
+ 			NEXT_ARG();
+ 			if (rtnl_rttable_a2n(&tid, *argv))
+ 				invarg_1_to_2(*argv, "table");
+-			req.r.rtm_table = tid;
++			rtable = tid;
+ #endif
+ 		} else if (arg == ARG_dev || arg == ARG_oif) {
+ 			NEXT_ARG();
+@@ -475,6 +481,15 @@ IF_FEATURE_IP_RULE(ARG_table,)
+ 		}
+ 	}
+ 
++#if ENABLE_FEATURE_IP_RULE
++	if (rtable >= 256) {
++		addattr32(&req.n, sizeof(req), RTA_TABLE, rtable);
++		req.r.rtm_table = RT_TABLE_UNSPEC;
++	} else if (rtable > 0) {
++		req.r.rtm_table = rtable;
++	}
++#endif
++
+ 	if (mxrta->rta_len > RTA_LENGTH(0)) {
+ 		if (mxlock) {
+ 			rta_addattr32(mxrta, sizeof(mxbuf), RTAX_LOCK, mxlock);
+--- a/networking/libiproute/iprule.c
++++ b/networking/libiproute/iprule.c
+@@ -114,7 +114,9 @@ static int FAST_FUNC print_rule(const st
+ 		printf("iif %s ", (char*)RTA_DATA(tb[RTA_IIF]));
+ 	}
+ 
+-	if (r->rtm_table)
++	if (tb[RTA_TABLE])
++		printf("lookup %s ", rtnl_rttable_n2a(*(uint32_t*)RTA_DATA(tb[RTA_TABLE])));
++	else if (r->rtm_table)
+ 		printf("lookup %s ", rtnl_rttable_n2a(r->rtm_table));
+ 
+ 	if (tb[RTA_FLOW]) {
+--- a/networking/libiproute/rt_names.c
++++ b/networking/libiproute/rt_names.c
+@@ -11,21 +11,26 @@
+ #include "rt_names.h"
+ 
+ #define CONFDIR          CONFIG_FEATURE_IP_ROUTE_DIR
++#define RT_TABLE_MAX	65535
++
++struct rtnl_tab_entry {
++	unsigned int id;
++	const char *name;
++};
+ 
+ typedef struct rtnl_tab_t {
+-	const char *cached_str;
+-	unsigned cached_result;
+-	/* upstream version switched to a hash table and removed
+-	 * id < 256 limit. For now bbox bumps this array size from 256
+-	 * to 1024. If you plan to change this to a hash table,
+-	 * consider merging several hash tables we have (for example,
+-	 * awk has resizable one!
+-	 */
+-#define RT_TABLE_MAX 1023
+-	const char *tab[RT_TABLE_MAX+1];
++	struct rtnl_tab_entry *tab;
++	size_t length;
+ } rtnl_tab_t;
+ 
+-static void rtnl_tab_initialize(const char *file, const char **tab)
++static int tabcmp(const void *p1, const void *p2)
++{
++	const struct rtnl_tab_entry *e1 = p1;
++	const struct rtnl_tab_entry *e2 = p2;
++	return strcmp(e1->name, e2->name);
++}
++
++static void rtnl_tab_initialize(const char *file, rtnl_tab_t *tab)
+ {
+ 	char *token[2];
+ 	char fullname[sizeof(CONFDIR"/rt_dsfield") + 8];
+@@ -40,34 +45,42 @@ static void rtnl_tab_initialize(const ch
+ 				file, parser->lineno);
+ 			break;
+ 		}
+-		tab[id] = xstrdup(token[1]);
++
++		tab->tab = xrealloc(tab->tab, (tab->length + 1) * sizeof(*tab->tab));
++		tab->tab[tab->length].id = id;
++		tab->tab[tab->length].name = xstrdup(token[1]);
++		tab->length++;
+ 	}
+ 	config_close(parser);
++	qsort(tab->tab, tab->length, sizeof(*tab->tab), tabcmp);
+ }
+ 
+ static int rtnl_a2n(rtnl_tab_t *tab, uint32_t *id, const char *arg, int base)
+ {
+-	unsigned i;
+-
+-	if (tab->cached_str && strcmp(tab->cached_str, arg) == 0) {
+-		*id = tab->cached_result;
+-		return 0;
+-	}
++	int delta;
++	ssize_t l = 0;
++	ssize_t r = tab->length - 1;
++	ssize_t m;
++	uint32_t i;
++
++	while (l <= r) {
++		m = l + (r - l) / 2;
++		delta = strcmp(tab->tab[m].name, arg);
+ 
+-	for (i = 0; i <= RT_TABLE_MAX; i++) {
+-		if (tab->tab[i]
+-		 && strcmp(tab->tab[i], arg) == 0
+-		) {
+-			tab->cached_str = tab->tab[i];
+-			tab->cached_result = i;
+-			*id = i;
++		if (delta == 0) {
++			*id = tab->tab[m].id;
+ 			return 0;
++		} else if (delta < 0) {
++			l = m + 1;
++		} else {
++			r = m - 1;
+ 		}
+ 	}
+ 
+ 	i = bb_strtou(arg, NULL, base);
+ 	if (i > RT_TABLE_MAX)
+ 		return -1;
++
+ 	*id = i;
+ 	return 0;
+ }
+@@ -77,40 +90,39 @@ static rtnl_tab_t *rtnl_rtprot_tab;
+ 
+ static void rtnl_rtprot_initialize(void)
+ {
+-	static const char *const init_tab[] = {
+-		"none",
+-		"redirect",
+-		"kernel",
+-		"boot",
+-		"static",
+-		NULL,
+-		NULL,
+-		NULL,
+-		"gated",
+-		"ra",
+-		"mrt",
+-		"zebra",
+-		"bird",
++	static const struct rtnl_tab_entry init_tab[] = {
++		{  0, "none"     },
++		{  1, "redirect" },
++		{  2, "kernel"   },
++		{  3, "boot"     },
++		{  4, "static"   },
++		{  8, "gated"    },
++		{  9, "ra"       },
++		{ 10, "mrt"      },
++		{ 11, "zebra"    },
++		{ 12, "bird"     }
+ 	};
+ 
+ 	if (rtnl_rtprot_tab)
+ 		return;
+ 	rtnl_rtprot_tab = xzalloc(sizeof(*rtnl_rtprot_tab));
++	rtnl_rtprot_tab->tab = xzalloc(sizeof(init_tab));
++	rtnl_rtprot_tab->length = sizeof(init_tab) / sizeof(init_tab[0]);
+ 	memcpy(rtnl_rtprot_tab->tab, init_tab, sizeof(init_tab));
+-	rtnl_tab_initialize("protos", rtnl_rtprot_tab->tab);
++	rtnl_tab_initialize("protos", rtnl_rtprot_tab);
+ }
+ 
+ #if 0 /* UNUSED */
+ const char* FAST_FUNC rtnl_rtprot_n2a(int id)
+ {
+-	if (id < 0 || id > RT_TABLE_MAX) {
+-		return itoa(id);
+-	}
++	size_t i;
+ 
+ 	rtnl_rtprot_initialize();
+ 
+-	if (rtnl_rtprot_tab->tab[id])
+-		return rtnl_rtprot_tab->tab[id];
++	for (i = 0; i < rtnl_rtprot_tab->length; i++)
++		if (rtnl_rtprot_tab->tab[i].id == id)
++			return rtnl_rtprot_tab->tab[i].name;
++
+ 	return itoa(id);
+ }
+ #endif
+@@ -126,27 +138,33 @@ static rtnl_tab_t *rtnl_rtscope_tab;
+ 
+ static void rtnl_rtscope_initialize(void)
+ {
++	static const struct rtnl_tab_entry init_tab[] = {
++		{   0, "global"  },
++		{ 200, "site"    },
++		{ 253, "link"    },
++		{ 254, "host"    },
++		{ 255, "nowhere" }
++	};
++
+ 	if (rtnl_rtscope_tab)
+ 		return;
+ 	rtnl_rtscope_tab = xzalloc(sizeof(*rtnl_rtscope_tab));
+-	rtnl_rtscope_tab->tab[0] = "global";
+-	rtnl_rtscope_tab->tab[255] = "nowhere";
+-	rtnl_rtscope_tab->tab[254] = "host";
+-	rtnl_rtscope_tab->tab[253] = "link";
+-	rtnl_rtscope_tab->tab[200] = "site";
+-	rtnl_tab_initialize("scopes", rtnl_rtscope_tab->tab);
++	rtnl_rtscope_tab->tab = xzalloc(sizeof(init_tab));
++	rtnl_rtscope_tab->length = sizeof(init_tab) / sizeof(init_tab[0]);
++	memcpy(rtnl_rtscope_tab->tab, init_tab, sizeof(init_tab));
++	rtnl_tab_initialize("scopes", rtnl_rtscope_tab);
+ }
+ 
+ const char* FAST_FUNC rtnl_rtscope_n2a(int id)
+ {
+-	if (id < 0 || id > RT_TABLE_MAX) {
+-		return itoa(id);
+-	}
++	size_t i;
+ 
+ 	rtnl_rtscope_initialize();
+ 
+-	if (rtnl_rtscope_tab->tab[id])
+-		return rtnl_rtscope_tab->tab[id];
++	for (i = 0; i < rtnl_rtscope_tab->length; i++)
++		if (rtnl_rtscope_tab->tab[i].id == id)
++			return rtnl_rtscope_tab->tab[i].name;
++
+ 	return itoa(id);
+ }
+ 
+@@ -161,10 +179,17 @@ static rtnl_tab_t *rtnl_rtrealm_tab;
+ 
+ static void rtnl_rtrealm_initialize(void)
+ {
+-	if (rtnl_rtrealm_tab) return;
++	static const struct rtnl_tab_entry init_tab[] = {
++		{ 0, "unknown" }
++	};
++
++	if (rtnl_rtrealm_tab)
++		return;
+ 	rtnl_rtrealm_tab = xzalloc(sizeof(*rtnl_rtrealm_tab));
+-	rtnl_rtrealm_tab->tab[0] = "unknown";
+-	rtnl_tab_initialize("realms", rtnl_rtrealm_tab->tab);
++	rtnl_rtrealm_tab->tab = xzalloc(sizeof(init_tab));
++	rtnl_rtrealm_tab->length = sizeof(init_tab) / sizeof(init_tab[0]);
++	memcpy(rtnl_rtrealm_tab->tab, init_tab, sizeof(init_tab));
++	rtnl_tab_initialize("realms", rtnl_rtrealm_tab);
+ }
+ 
+ int FAST_FUNC rtnl_rtrealm_a2n(uint32_t *id, char *arg)
+@@ -176,14 +201,14 @@ int FAST_FUNC rtnl_rtrealm_a2n(uint32_t
+ #if ENABLE_FEATURE_IP_RULE
+ const char* FAST_FUNC rtnl_rtrealm_n2a(int id)
+ {
+-	if (id < 0 || id > RT_TABLE_MAX) {
+-		return itoa(id);
+-	}
++	size_t i;
+ 
+ 	rtnl_rtrealm_initialize();
+ 
+-	if (rtnl_rtrealm_tab->tab[id])
+-		return rtnl_rtrealm_tab->tab[id];
++	for (i = 0; i < rtnl_rtrealm_tab->length; i++)
++		if (rtnl_rtrealm_tab->tab[i].id == id)
++			return rtnl_rtrealm_tab->tab[i].name;
++
+ 	return itoa(id);
+ }
+ #endif
+@@ -193,22 +218,29 @@ static rtnl_tab_t *rtnl_rtdsfield_tab;
+ 
+ static void rtnl_rtdsfield_initialize(void)
+ {
+-	if (rtnl_rtdsfield_tab) return;
++	static const struct rtnl_tab_entry init_tab[] = {
++		{ 0, "0" }
++	};
++
++	if (rtnl_rtdsfield_tab)
++		return;
+ 	rtnl_rtdsfield_tab = xzalloc(sizeof(*rtnl_rtdsfield_tab));
+-	rtnl_rtdsfield_tab->tab[0] = "0";
+-	rtnl_tab_initialize("dsfield", rtnl_rtdsfield_tab->tab);
++	rtnl_rtdsfield_tab->tab = xzalloc(sizeof(init_tab));
++	rtnl_rtdsfield_tab->length = sizeof(init_tab) / sizeof(init_tab[0]);
++	memcpy(rtnl_rtdsfield_tab->tab, init_tab, sizeof(init_tab));
++	rtnl_tab_initialize("dsfield", rtnl_rtdsfield_tab);
+ }
+ 
+ const char* FAST_FUNC rtnl_dsfield_n2a(int id)
+ {
+-	if (id < 0 || id > RT_TABLE_MAX) {
+-		return itoa(id);
+-	}
++	size_t i;
+ 
+ 	rtnl_rtdsfield_initialize();
+ 
+-	if (rtnl_rtdsfield_tab->tab[id])
+-		return rtnl_rtdsfield_tab->tab[id];
++	for (i = 0; i < rtnl_rtdsfield_tab->length; i++)
++		if (rtnl_rtdsfield_tab->tab[i].id == id)
++			return rtnl_rtdsfield_tab->tab[i].name;
++
+ 	return itoa(id);
+ }
+ 
+@@ -224,27 +256,33 @@ static rtnl_tab_t *rtnl_rttable_tab;
+ 
+ static void rtnl_rttable_initialize(void)
+ {
++	static const struct rtnl_tab_entry tab_init[] = {
++		{   0, "unspec"  },
++		{ 253, "default" },
++		{ 254, "main"    },
++		{ 255, "local"   }
++	};
++
+ 	if (rtnl_rttable_tab)
+ 		return;
+ 
+ 	rtnl_rttable_tab = xzalloc(sizeof(*rtnl_rttable_tab));
+-	rtnl_rttable_tab->tab[0] = "unspec";
+-	rtnl_rttable_tab->tab[255] = "local";
+-	rtnl_rttable_tab->tab[254] = "main";
+-	rtnl_rttable_tab->tab[253] = "default";
+-	rtnl_tab_initialize("tables", rtnl_rttable_tab->tab);
++	rtnl_rttable_tab->tab = xzalloc(sizeof(tab_init));
++	rtnl_rttable_tab->length = sizeof(tab_init) / sizeof(tab_init[0]);
++	memcpy(rtnl_rttable_tab->tab, tab_init, sizeof(tab_init));
++	rtnl_tab_initialize("tables", rtnl_rttable_tab);
+ }
+ 
+ const char* FAST_FUNC rtnl_rttable_n2a(int id)
+ {
+-	if (id < 0 || id > RT_TABLE_MAX) {
+-		return itoa(id);
+-	}
++	size_t i;
+ 
+ 	rtnl_rttable_initialize();
+ 
+-	if (rtnl_rttable_tab->tab[id])
+-		return rtnl_rttable_tab->tab[id];
++	for (i = 0; i < rtnl_rttable_tab->length; i++)
++		if (rtnl_rttable_tab->tab[i].id == id)
++			return rtnl_rttable_tab->tab[i].name;
++
+ 	return itoa(id);
+ }
+ 
