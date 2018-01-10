@@ -223,7 +223,16 @@ proto_pppoe_setup() {
 	json_get_var service service
 	json_get_var host_uniq host_uniq
 
+#By 蝈蝈：并发拨号同步的前期准备
+	syncppp_option=""
+	[ "$(uci get syncdial.config.enabled)" == "1" ] && {
+		ppp_if_cnt=$(cat /etc/config/network | grep -c "proto 'pppoe'")
+		syncppp_option="syncppp $ppp_if_cnt"
+		shellsync $ppp_if_cnt 10
+	}
+
 	ppp_generic_setup "$config" \
+		$syncppp_option \
 		plugin rp-pppoe.so \
 		${ac:+rp_pppoe_ac "$ac"} \
 		${service:+rp_pppoe_service "$service"} \
