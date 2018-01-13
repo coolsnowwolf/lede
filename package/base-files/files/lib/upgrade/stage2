@@ -1,0 +1,150 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /lib/functions/system.sh
+
+export IMAGE="$1"
+COMMAND="$2"
+
+export ARGV="$IMAGE"
+export ARGC=1
+
+export SAVE_CONFIG=1
+export SAVE_PARTITIONS=1
+
+export INTERACTIVE=0
+export VERBOSE=1
+export CONFFILES=/tmp/sysupgrade.conffiles
+export CONF_TAR=/tmp/sysupgrade.tgz
+
+RAMFS_COPY_BIN=		# extra programs for temporary ramfs root
+RAMFS_COPY_DATA=	# extra data files
+
+
+[ -f "$CONF_TAR" ] || export SAVE_CONFIG=0
+[ -f /tmp/sysupgrade.always.overwrite.bootdisk.partmap ] && export SAVE_PARTITIONS=0
+
+include /lib/upgrade
+
+
+supivot() { # <new_root> <old_root>
+	/bin/mount | grep "on $1 type" 2>&- 1>&- || /bin/mount -o bind $1 $1
+	mkdir -p $1$2 $1/proc $1/sys $1/dev $1/tmp $1/overlay && \
+	/bin/mount -o noatime,move /proc $1/proc && \
+	pivot_root $1 $1$2 || {
+		/bin/umount -l $1 $1
+		return 1
+	}
+
+	/bin/mount -o noatime,move $2/sys /sys
+	/bin/mount -o noatime,move $2/dev /dev
+	/bin/mount -o noatime,move $2/tmp /tmp
+	/bin/mount -o noatime,move $2/overlay /overlay 2>&-
+	return 0
+}
+
+switch_to_ramfs() {
+	for binary in \
+		/bin/busybox /bin/ash /bin/sh /bin/mount /bin/umount	\
+		pivot_root mount_root reboot sync kill sleep		\
+		md5sum hexdump cat zcat bzcat dd tar			\
+		ls basename find cp mv rm mkdir rmdir mknod touch chmod \
+		'[' printf wc grep awk sed cut				\
+		mtd partx losetup mkfs.ext4				\
+		ubiupdatevol ubiattach ubiblock ubiformat		\
+		ubidetach ubirsvol ubirmvol ubimkvol			\
+		snapshot snapshot_tool					\
+		$RAMFS_COPY_BIN
+	do
+		local file="$(which "$binary" 2>/dev/null)"
+		[ -n "$file" ] && install_bin "$file"
+	done
+	install_file /etc/resolv.conf /lib/*.sh /lib/functions/*.sh /lib/upgrade/*.sh $RAMFS_COPY_DATA
+
+	[ -L "/lib64" ] && ln -s /lib $RAM_ROOT/lib64
+
+	supivot $RAM_ROOT /mnt || {
+		echo "Failed to switch over to ramfs. Please reboot."
+		exit 1
+	}
+
+	/bin/mount -o remount,ro /mnt
+	/bin/umount -l /mnt
+
+	grep /overlay /proc/mounts > /dev/null && {
+		/bin/mount -o noatime,remount,ro /overlay
+		/bin/umount -l /overlay
+	}
+}
+
+kill_remaining() { # [ <signal> [ <loop> ] ]
+	local loop_limit=10
+
+	local sig="${1:-TERM}"
+	local loop="${2:-0}"
+	local run=true
+	local stat
+	local proc_ppid=$(cut -d' ' -f4  /proc/$$/stat)
+
+	echo -n "Sending $sig to remaining processes ... "
+
+	while $run; do
+		run=false
+		for stat in /proc/[0-9]*/stat; do
+			[ -f "$stat" ] || continue
+
+			local pid name state ppid rest
+			read pid name state ppid rest < $stat
+			name="${name#(}"; name="${name%)}"
+
+			# Skip PID1, our parent, ourself and our children
+			[ $pid -ne 1 -a $pid -ne $proc_ppid -a $pid -ne $$ -a $ppid -ne $$ ] || continue
+
+			local cmdline
+			read cmdline < /proc/$pid/cmdline
+
+			# Skip kernel threads
+			[ -n "$cmdline" ] || continue
+
+			echo -n "$name "
+			kill -$sig $pid 2>/dev/null
+
+			[ $loop -eq 1 ] && run=true
+		done
+
+		let loop_limit--
+		[ $loop_limit -eq 0 ] && {
+			echo
+			echo "Failed to kill all processes."
+			exit 1
+		}
+	done
+	echo
+}
+
+
+killall -9 telnetd
+killall -9 dropbear
+killall -9 ash
+
+kill_remaining TERM
+sleep 3
+kill_remaining KILL 1
+
+sleep 1
+
+
+if [ -n "$IMAGE" ] && type 'platform_pre_upgrade' >/dev/null 2>/dev/null; then
+	IS_PRE_UPGRADE=1 platform_pre_upgrade "$IMAGE"
+
+	# Needs to be unset again because of busybox weirdness ...
+	IS_PRE_UPGRADE=
+fi
+
+if [ -n "$(rootfs_type)" ]; then
+	echo "Switching to ramdisk..."
+	switch_to_ramfs
+fi
+
+# Exec new shell from ramfs
+exec /bin/busybox ash -c "$COMMAND"
