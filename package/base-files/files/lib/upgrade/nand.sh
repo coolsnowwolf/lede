@@ -5,10 +5,10 @@
 . /lib/functions.sh
 
 # 'kernel' partition on NAND contains the kernel
-CI_KERNPART="kernel"
+CI_KERNPART="${CI_KERNPART:-kernel}"
 
 # 'ubi' partition on NAND contains UBI
-CI_UBIPART="ubi"
+CI_UBIPART="${CI_UBIPART:-ubi}"
 
 ubi_mknod() {
 	local dir="$1"
@@ -142,7 +142,7 @@ nand_upgrade_prepare_ubi() {
 		}
 	fi
 
-	local kern_ubivol="$( nand_find_volume $ubidev kernel )"
+	local kern_ubivol="$( nand_find_volume $ubidev $CI_KERNPART )"
 	local root_ubivol="$( nand_find_volume $ubidev rootfs )"
 	local data_ubivol="$( nand_find_volume $ubidev rootfs_data )"
 
@@ -157,13 +157,13 @@ nand_upgrade_prepare_ubi() {
 	fi
 
 	# kill volumes
-	[ "$kern_ubivol" ] && ubirmvol /dev/$ubidev -N kernel || true
+	[ "$kern_ubivol" ] && ubirmvol /dev/$ubidev -N $CI_KERNPART || true
 	[ "$root_ubivol" ] && ubirmvol /dev/$ubidev -N rootfs || true
 	[ "$data_ubivol" ] && ubirmvol /dev/$ubidev -N rootfs_data || true
 
 	# update kernel
 	if [ "$has_kernel" = "1" ]; then
-		if ! ubimkvol /dev/$ubidev -N kernel -s $kernel_length; then
+		if ! ubimkvol /dev/$ubidev -N $CI_KERNPART -s $kernel_length; then
 			echo "cannot create kernel volume"
 			return 1;
 		fi
@@ -194,7 +194,7 @@ nand_upgrade_prepare_ubi() {
 
 nand_do_upgrade_success() {
 	local conf_tar="/tmp/sysupgrade.tgz"
-	
+
 	sync
 	[ -f "$conf_tar" ] && nand_restore_config "$conf_tar"
 	echo "sysupgrade successful"
@@ -231,7 +231,7 @@ nand_upgrade_ubifs() {
 	local rootfs_length=`(cat $1 | wc -c) 2> /dev/null`
 
 	nand_upgrade_prepare_ubi "$rootfs_length" "ubifs" "0" "0"
-	
+
 	local ubidev="$( nand_find_ubi "$CI_UBIPART" )"
 	local root_ubivol="$(nand_find_volume $ubidev rootfs)"
 	ubiupdatevol /dev/$root_ubivol -s $rootfs_length $1
@@ -239,30 +239,23 @@ nand_upgrade_ubifs() {
 	nand_do_upgrade_success
 }
 
-nand_board_name() {
-	if type 'platform_nand_board_name' >/dev/null 2>/dev/null; then
-		platform_nand_board_name
-		return
-	fi
-
-	cat /tmp/sysinfo/board_name
-}
-
 nand_upgrade_tar() {
 	local tar_file="$1"
-	local board_name="$(nand_board_name)"
 	local kernel_mtd="$(find_mtd_index $CI_KERNPART)"
 
-	local kernel_length=`(tar xf $tar_file sysupgrade-$board_name/kernel -O | wc -c) 2> /dev/null`
-	local rootfs_length=`(tar xf $tar_file sysupgrade-$board_name/root -O | wc -c) 2> /dev/null`
+	local board_dir=$(tar tf $tar_file | grep -m 1 '^sysupgrade-.*/$')
+	board_dir=${board_dir%/}
 
-	local rootfs_type="$(identify_tar "$tar_file" sysupgrade-$board_name/root)"
+	local kernel_length=`(tar xf $tar_file ${board_dir}/kernel -O | wc -c) 2> /dev/null`
+	local rootfs_length=`(tar xf $tar_file ${board_dir}/root -O | wc -c) 2> /dev/null`
+
+	local rootfs_type="$(identify_tar "$tar_file" ${board_dir}/root)"
 
 	local has_kernel=1
 	local has_env=0
 
 	[ "$kernel_length" != 0 -a -n "$kernel_mtd" ] && {
-		tar xf $tar_file sysupgrade-$board_name/kernel -O | mtd write - $CI_KERNPART
+		tar xf $tar_file ${board_dir}/kernel -O | mtd write - $CI_KERNPART
 	}
 	[ "$kernel_length" = 0 -o ! -z "$kernel_mtd" ] && has_kernel=0
 
@@ -270,20 +263,29 @@ nand_upgrade_tar() {
 
 	local ubidev="$( nand_find_ubi "$CI_UBIPART" )"
 	[ "$has_kernel" = "1" ] && {
-		local kern_ubivol="$(nand_find_volume $ubidev kernel)"
-	 	tar xf $tar_file sysupgrade-$board_name/kernel -O | \
+		local kern_ubivol="$(nand_find_volume $ubidev $CI_KERNPART)"
+		tar xf $tar_file ${board_dir}/kernel -O | \
 			ubiupdatevol /dev/$kern_ubivol -s $kernel_length -
 	}
 
 	local root_ubivol="$(nand_find_volume $ubidev rootfs)"
-	tar xf $tar_file sysupgrade-$board_name/root -O | \
+	tar xf $tar_file ${board_dir}/root -O | \
 		ubiupdatevol /dev/$root_ubivol -s $rootfs_length -
 
 	nand_do_upgrade_success
 }
 
 # Recognize type of passed file and start the upgrade process
-nand_do_upgrade_stage2() {
+nand_do_upgrade() {
+	if [ -n "$IS_PRE_UPGRADE" ]; then
+		# Previously, nand_do_upgrade was called from the platform_pre_upgrade
+		# hook; this piece of code handles scripts that haven't been
+		# updated. All scripts should gradually move to call nand_do_upgrade
+		# from platform_do_upgrade instead.
+		export do_upgrade="nand_do_upgrade '$1'"
+		return
+	fi
+
 	local file_type=$(identify $1)
 
 	if type 'platform_nand_pre_upgrade' >/dev/null 2>/dev/null; then
@@ -297,45 +299,6 @@ nand_do_upgrade_stage2() {
 		"ubifs")	nand_upgrade_ubifs $1;;
 		*)		nand_upgrade_tar $1;;
 	esac
-}
-
-nand_upgrade_stage2() {
-	[ $1 = "nand" ] && {
-		[ -f "$2" ] && {
-			touch /tmp/sysupgrade
-
-			killall -9 telnetd
-			killall -9 dropbear
-			killall -9 ash
-
-			kill_remaining TERM
-			sleep 3
-			kill_remaining KILL
-
-			sleep 1
-
-			if [ -n "$(rootfs_type)" ]; then
-				v "Switching to ramdisk..."
-				run_ramfs ". /lib/functions.sh; include /lib/upgrade; nand_do_upgrade_stage2 $2"
-			else
-				nand_do_upgrade_stage2 $2
-			fi
-			return 0
-		}
-		echo "Nand upgrade failed"
-		exit 1
-	}
-}
-
-nand_upgrade_stage1() {
-	[ -f /tmp/sysupgrade-nand-path ] && {
-		path="$(cat /tmp/sysupgrade-nand-path)"
-		[ "$SAVE_CONFIG" != 1 -a -f "$CONF_TAR" ] &&
-			rm $CONF_TAR
-
-		ubus call system nandupgrade "{\"path\": \"$path\" }"
-		exit 0
-	}
 }
 
 # Check if passed file is a valid one for NAND sysupgrade. Currently it accepts
@@ -363,13 +326,4 @@ nand_do_platform_check() {
 	}
 
 	return 0
-}
-
-# Start NAND upgrade process
-#
-# $(1): file to be used for upgrade
-nand_do_upgrade() {
-	echo -n $1 > /tmp/sysupgrade-nand-path
-	cp /sbin/upgraded /tmp/
-	nand_upgrade_stage1
 }

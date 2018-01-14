@@ -267,7 +267,7 @@ define Device/RT-ACRH17
 	IMAGES = sysupgrade.tar flash-factory.trx
 	IMAGE/flash-factory.trx := copy-file $(KDIR)/tmp/$$(KERNEL_INITRAMFS_IMAGE) | uImage none
 	IMAGE/sysupgrade.tar := sysupgrade-tar | append-metadata
-	DEVICE_PACKAGES := kmod-usb-phy-qcom-ipq4019 ipq-wifi-rt-ac58u ath10k-firmware-qca9984
+	DEVICE_PACKAGES := kmod-usb-phy-qcom-ipq4019 ath10k-firmware-qca4019 ath10k-firmware-qca9984
 endef
 
 define Device/NBG6817
