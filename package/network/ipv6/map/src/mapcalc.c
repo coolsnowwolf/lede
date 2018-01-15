@@ -118,7 +118,7 @@ static void match_prefix(int *pdlen, struct in6_addr *pd, struct blob_attr *cur,
 	struct blob_attr *d;
 	unsigned drem;
 
-	if (!cur || blobmsg_type(cur) != BLOBMSG_TYPE_ARRAY || !blobmsg_check_attr(cur, NULL))
+	if (!cur || blobmsg_type(cur) != BLOBMSG_TYPE_ARRAY || !blobmsg_check_attr(cur, false))
 		return;
 
 	blobmsg_for_each_attr(d, cur, drem) {

@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libnftnl
-PKG_VERSION:=1.0.6
+PKG_VERSION:=1.0.7
 PKG_RELEASE:=1
 
-PKG_SOURCE_URL:=git://git.netfilter.org/libnftnl
+PKG_SOURCE_URL:=https://git.netfilter.org/libnftnl
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_VERSION:=libnftnl-1.0.6
-PKG_MIRROR_HASH:=c9e066e3fd29951cbe96d2898b4d6cdcfe802b3a4f09f8273a508e7a0a20a357
+PKG_SOURCE_VERSION:=libnftnl-1.0.7
+PKG_MIRROR_HASH:=d38a409d52074a5b20f5b7477b385506692a9a05ec6f4ac3d14a8a80aa4f81d9
 PKG_MAINTAINER:=Steven Barth <steven@midlink.org>
 PKG_LICENSE:=GPL-2.0+
 

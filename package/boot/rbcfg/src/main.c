@@ -2,6 +2,7 @@
  *  RouterBOOT configuration utility
  *
  *  Copyright (C) 2010 Gabor Juhos <juhosg@openwrt.org>
+ *  Copyright (C) 2017 Thibaut VARENE <varenet@parisc-linux.org>
  *
  *  This program is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License version 2 as published
@@ -29,6 +30,7 @@
 #define RB_ERR_INVALID		2
 #define RB_ERR_NOMEM		3
 #define RB_ERR_IO		4
+#define RB_ERR_NOTWANTED	5
 
 #define ARRAY_SIZE(_a)	(sizeof((_a)) / sizeof((_a)[0]))
 
@@ -67,6 +69,11 @@ struct rbcfg_command {
 	int		(*exec)(int argc, const char *argv[]);
 };
 
+struct rbcfg_soc {
+	const char	*needle;
+	const int	type;
+};
+
 static void usage(void);
 
 /* Globals */
@@ -101,6 +108,10 @@ static const struct rbcfg_value rbcfg_boot_device[] = {
 		RB_BOOT_DEVICE_ETHONCE),
 	CFG_U32("nand", "boot from NAND only",
 		RB_BOOT_DEVICE_NANDONLY),
+	CFG_U32("flash", "boot in flash configuration mode",
+		RB_BOOT_DEVICE_FLASHCFG),
+	CFG_U32("flashnand", "boot in flash configuration mode once, then NAND",
+		RB_BOOT_DEVICE_FLSHONCE),
 };
 
 static const struct rbcfg_value rbcfg_boot_key[] = {
@@ -131,12 +142,32 @@ static const struct rbcfg_value rbcfg_cpu_mode[] = {
 		RB_CPU_MODE_REGULAR),
 };
 
+static const struct rbcfg_value rbcfg_cpu_freq_dummy[] = {
+};
+
+static const struct rbcfg_value rbcfg_cpu_freq_qca953x[] = {
+	CFG_U32("-2", "-100MHz", RB_CPU_FREQ_L2),
+	CFG_U32("-1", "- 50MHz", RB_CPU_FREQ_L1),
+	CFG_U32("0", "Factory", RB_CPU_FREQ_N0),
+	CFG_U32("+1", "+ 50MHz", RB_CPU_FREQ_H1),
+	CFG_U32("+2", "+100MHz", RB_CPU_FREQ_H2),
+};
+
+static const struct rbcfg_value rbcfg_cpu_freq_ar9344[] = {
+	CFG_U32("-2", "-100MHz", RB_CPU_FREQ_L2),
+	CFG_U32("-1", "- 50MHz", RB_CPU_FREQ_L1),
+	CFG_U32("0", "Factory", RB_CPU_FREQ_N0),
+	CFG_U32("+1", "+ 50MHz", RB_CPU_FREQ_H1),
+	CFG_U32("+2", "+100MHz", RB_CPU_FREQ_H2),
+	CFG_U32("+3", "+150MHz", RB_CPU_FREQ_H3),
+};
+
 static const struct rbcfg_value rbcfg_booter[] = {
 	CFG_U32("regular", "load regular booter", RB_BOOTER_REGULAR),
 	CFG_U32("backup", "force backup-booter loading", RB_BOOTER_BACKUP),
 };
 
-static const struct rbcfg_env rbcfg_envs[] = {
+static struct rbcfg_env rbcfg_envs[] = {
 	{
 		.name		= "boot_delay",
 		.id		= RB_ID_BOOT_DELAY,
@@ -173,6 +204,12 @@ static const struct rbcfg_env rbcfg_envs[] = {
 		.type		= RBCFG_ENV_TYPE_U32,
 		.values		= rbcfg_cpu_mode,
 		.num_values	= ARRAY_SIZE(rbcfg_cpu_mode),
+	}, {
+		.name		= "cpu_freq",
+		.id		= RB_ID_CPU_FREQ,
+		.type		= RBCFG_ENV_TYPE_U32,
+		.values		= rbcfg_cpu_freq_dummy,
+		.num_values	= ARRAY_SIZE(rbcfg_cpu_freq_dummy),
 	}, {
 		.name		= "uart_speed",
 		.id		= RB_ID_UART_SPEED,
@@ -236,8 +273,10 @@ rbcfg_find_tag(struct rbcfg_ctx *ctx, uint16_t tag_id, uint16_t *tag_len,
 		buf += 2;
 		buflen -= 2;
 
-		if (id == RB_ID_TERMINATOR)
+		if (id == RB_ID_TERMINATOR) {
+			ret = RB_ERR_NOTWANTED;
 			break;
+		}
 
 		if (buflen < len)
 			break;
@@ -253,7 +292,7 @@ rbcfg_find_tag(struct rbcfg_ctx *ctx, uint16_t tag_id, uint16_t *tag_len,
 		buflen -= len;
 	}
 
-	if (ret)
+	if (RB_ERR_NOTFOUND == ret)
 		fprintf(stderr, "no tag found with id=%u\n", tag_id);
 
 	return ret;
@@ -744,6 +783,96 @@ usage(void)
 	fprintf(stderr, "\n");
 }
 
+#define RBCFG_SOC_UNKNOWN	0
+#define RBCFG_SOC_QCA953X	1
+#define RBCFG_SOC_AR9344	2
+
+static const struct rbcfg_soc rbcfg_socs[] = {
+	{
+		.needle = "QCA953",
+		.type = RBCFG_SOC_QCA953X,
+	}, {
+		.needle = "AR9344",
+		.type = RBCFG_SOC_AR9344,
+	},
+};
+
+#define CPUINFO_BUFSIZE		128	/* lines of interest are < 80 chars */
+
+static int cpuinfo_find_soc(void)
+{
+	FILE *fp;
+	char temp[CPUINFO_BUFSIZE];
+	char *haystack, *needle;
+	int i, found = 0, soc_type = RBCFG_SOC_UNKNOWN;
+
+	fp = fopen("/proc/cpuinfo", "r");
+	if (!fp)
+		goto end;
+
+	/* first, extract the system type line */
+	needle = "system type";
+	while(fgets(temp, CPUINFO_BUFSIZE, fp)) {
+		if (!strncmp(temp, needle, strlen(needle))) {
+			found = 1;
+			break;
+		}
+	}
+
+	fclose(fp);
+
+	/* failsafe in case cpuinfo format changes */
+	if (!found)
+		goto end;
+
+	/* skip the field header */
+	haystack = strchr(temp, ':');
+
+	/* then, try to identify known SoC, stop at first match */
+	for (i = 0; i < ARRAY_SIZE(rbcfg_socs); i++) {
+		if ((strstr(haystack, rbcfg_socs[i].needle))) {
+			soc_type = rbcfg_socs[i].type;
+			break;
+		}
+	}
+
+end:
+	return soc_type;
+}
+
+static void fixup_rbcfg_envs(void)
+{
+	int i, num_val, soc_type;
+	const struct rbcfg_value * env_value;
+
+	/* detect SoC */
+	soc_type = cpuinfo_find_soc();
+
+	/* update rbcfg_envs */
+	switch (soc_type) {
+		case RBCFG_SOC_QCA953X:
+			env_value = rbcfg_cpu_freq_qca953x;
+			num_val = ARRAY_SIZE(rbcfg_cpu_freq_qca953x);
+			break;
+		case RBCFG_SOC_AR9344:
+			env_value = rbcfg_cpu_freq_ar9344;
+			num_val = ARRAY_SIZE(rbcfg_cpu_freq_ar9344);
+			break;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(rbcfg_envs); i++) {
+		if (RB_ID_CPU_FREQ == rbcfg_envs[i].id) {
+			if (RBCFG_SOC_UNKNOWN == soc_type)
+				rbcfg_envs[i].id = RB_ID_TERMINATOR;
+			else {
+				rbcfg_envs[i].values = env_value;
+				rbcfg_envs[i].num_values = num_val;
+			}
+			break;
+		}
+	}
+}
+
 int main(int argc, const char *argv[])
 {
 	const struct rbcfg_command *cmd = NULL;
@@ -751,6 +880,8 @@ int main(int argc, const char *argv[])
 	int i;
 
 	rbcfg_name = (char *) argv[0];
+
+	fixup_rbcfg_envs();
 
 	if (argc < 2) {
 		usage();

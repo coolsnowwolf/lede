@@ -65,6 +65,7 @@ proto_qmi_setup() {
 	[ -n "$delay" ] && sleep "$delay"
 
 	while uqmi -s -d "$device" --get-pin-status | grep '"UIM uninitialized"' > /dev/null; do
+		[ -e "$device" ] || return 1
 		sleep 1;
 	done
 
@@ -102,6 +103,7 @@ proto_qmi_setup() {
 
 	echo "Waiting for network registration"
 	while uqmi -s -d "$device" --get-serving-system | grep '"searching"' > /dev/null; do
+		[ -e "$device" ] || return 1
 		sleep 5;
 	done
 

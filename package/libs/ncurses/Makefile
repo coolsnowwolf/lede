@@ -44,6 +44,14 @@ define Package/libncurses
   ABI_VERSION:=$(PKG_VERSION)
 endef
 
+define Package/libncurses-dev
+  SECTION:=devel
+  CATEGORY:=Development
+  SUBMENU:=Libraries
+  DEPENDS:=zlib
+  TITLE:=Development files for the ncurses library
+endef
+
 TARGET_CFLAGS += $(FPIC)
 
 CONFIGURE_ARGS += \
@@ -124,6 +132,17 @@ define Package/libncurses/install
 	done
 endef
 
+define Package/libncurses-dev/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/* $(1)/usr/bin/
+	$(INSTALL_DIR) $(1)/usr/include
+	$(CP) $(PKG_INSTALL_DIR)/usr/include/*.h $(1)/usr/include/
+	$(INSTALL_DIR) $(1)/usr/lib
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/*.a $(1)/usr/lib/
+	$(INSTALL_DIR) $(1)/usr/lib/pkgconfig
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/pkgconfig/*.pc $(1)/usr/lib/pkgconfig/
+endef
+
 define Build/InstallDev
 	$(CP) $(PKG_INSTALL_DIR)/* $(1)
 	for lib in ncurses panel menu form; do \
@@ -150,3 +169,4 @@ endef
 $(eval $(call HostBuild))
 $(eval $(call BuildPackage,terminfo))
 $(eval $(call BuildPackage,libncurses))
+$(eval $(call BuildPackage,libncurses-dev))

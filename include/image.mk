@@ -303,9 +303,9 @@ target-dir-%: FORCE
 		$(opkg_target) update && \
 		$(opkg_target) install \
 			$(call opkg_package_files,$(mkfs_packages_add)))
+	-$(CP) -T $(mkfs_cur_target_dir).opkg/ $(mkfs_cur_target_dir)/etc/opkg/
+	rm -rf $(mkfs_cur_target_dir).opkg $(mkfs_cur_target_dir).conf
 	$(call prepare_rootfs,$(mkfs_cur_target_dir))
-	-mv $(mkfs_cur_target_dir).opkg $(mkfs_cur_target_dir)/etc/opkg
-	rm -f $(mkfs_cur_target_dir).conf
 
 $(KDIR)/root.%: kernel_prepare
 	$(call Image/mkfs/$(word 1,$(target_params)),$(target_params))

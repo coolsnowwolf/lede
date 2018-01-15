@@ -20,16 +20,16 @@ define Build/at91-sdcard
      mcopy -i $@.boot $(BIN_DIR)/BOOT.bin ::BOOT.bin;)
 
   ./gen_at91_sdcard_img.sh \
-      $(dir $@)$(IMG_PREFIX)-$(PROFILE_SANITIZED)-sdcard.img \
+      $(dir $@)$(IMG_PREFIX)-$(DEVICE_NAME)-sdcard.img \
       $@.boot \
       $(KDIR)/root.ext4 \
       $(AT91_SD_BOOT_PARTSIZE) \
       $(CONFIG_TARGET_ROOTFS_PARTSIZE)
 
-  gzip -nc9 $(dir $@)$(IMG_PREFIX)-$(PROFILE_SANITIZED)-sdcard.img \
-         > $(dir $@)$(IMG_PREFIX)-$(PROFILE_SANITIZED)-sdcard.img.gz
+  gzip -nc9 $(dir $@)$(IMG_PREFIX)-$(DEVICE_NAME)-sdcard.img \
+         > $(dir $@)$(IMG_PREFIX)-$(DEVICE_NAME)-sdcard.img.gz
 
-  $(CP) $(dir $@)$(IMG_PREFIX)-$(PROFILE_SANITIZED)-sdcard.img.gz \
+  $(CP) $(dir $@)$(IMG_PREFIX)-$(DEVICE_NAME)-sdcard.img.gz \
         $(BIN_DIR)/
 
   rm -f $(BIN_DIR)/BOOT.bin

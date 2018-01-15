@@ -242,6 +242,7 @@ platform_check_image() {
 	gl-ar150|\
 	gl-ar300m|\
 	gl-ar300|\
+	gl-ar750|\
 	gl-domino|\
 	gl-mifi|\
 	gl-usb150|\
@@ -252,10 +253,12 @@ platform_check_image() {
 	loco-m-xw|\
 	mzk-w04nu|\
 	mzk-w300nh|\
+	n5q|\
 	nanostation-m|\
 	nanostation-m-xw|\
 	nbg460n_550n_550nh|\
 	pqi-air-pen|\
+	r36a|\
 	r602n|\
 	rocket-m|\
 	rocket-m-ti|\
@@ -310,6 +313,7 @@ platform_check_image() {
 	ap136-020|\
 	ap147-010|\
 	ap152|\
+	ap91-5g|\
 	ap96|\
 	arduino-yun|\
 	bhr-4grv2|\
@@ -385,6 +389,7 @@ platform_check_image() {
 	onion-omega|\
 	oolite|\
 	re450|\
+	rut900|\
 	smart-300|\
 	som9331|\
 	tellstick-znet-lite|\
@@ -450,8 +455,7 @@ platform_check_image() {
 	tl-wr940n-v4|\
 	tl-wr941nd|\
 	tl-wr941nd-v5|\
-	tl-wr941nd-v6|\
-  tl-wr941n-v7)
+	tl-wr941nd-v6)
 		local magic_ver="0100"
 
 		case "$board" in
@@ -663,7 +667,8 @@ platform_check_image() {
 	rb-lhg-5nd|\
 	rb-map-2nd|\
 	rb-mapl-2nd|\
-	rb-wap-2nd)
+	rb-wap-2nd|\
+	rb-wapg-5hact2hnd)
 		return 0
 		;;
 	esac
@@ -725,7 +730,8 @@ platform_pre_upgrade() {
 	rb-lhg-5nd|\
 	rb-map-2nd|\
 	rb-mapl-2nd|\
-	rb-wap-2nd)
+	rb-wap-2nd|\
+	rb-wapg-5hact2hnd)
 		# erase firmware if booted from initramfs
 		[ -z "$(rootfs_type)" ] && mtd erase firmware
 		;;

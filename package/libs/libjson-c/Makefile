@@ -19,6 +19,7 @@ PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=COPYING
+PKG_CPE_ID:=cpe:/a:json-c_project:json-c
 
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
@@ -27,7 +28,7 @@ PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
 include $(INCLUDE_DIR)/package.mk
 
-TARGET_CFLAGS += $(FPIC)
+TARGET_CFLAGS += $(FPIC) -Wno-implicit-fallthrough
 
 define Package/libjson-c
   SECTION:=libs

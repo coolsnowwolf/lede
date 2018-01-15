@@ -9,6 +9,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=grub
+PKG_CPE_ID:=cpe:/a:gnu:grub2
 PKG_VERSION:=2.02
 PKG_RELEASE:=1
 

@@ -7,23 +7,17 @@
 
 ifneq ($(DUMP),)
 
-dumpinfo: FORCE
 
-define Config/template
-Preconfig: $(1)
-Preconfig-Type: $(2)
-Preconfig-Default: $(3)
-Preconfig-Label: $(4)
+define SOURCE_INFO
+$(if $(PKG_BUILD_DEPENDS),Build-Depends: $(PKG_BUILD_DEPENDS)
+)$(if $(HOST_BUILD_DEPENDS),Build-Depends/host: $(HOST_BUILD_DEPENDS)
+)$(if $(BUILD_TYPES),Build-Types: $(BUILD_TYPES)
+)
 
-endef
-
-define Config
-  Preconfig/$(1) = $$(call Config/template,$(1),$(2),$(3),$(4))
-  preconfig_$$(1) += $(1)
 endef
 
 define Dumpinfo/Package
-$(info Package: $(1)
+$(info $(SOURCE_INFO)Package: $(1)
 $(if $(MENU),Menu: $(MENU)
 )$(if $(SUBMENU),Submenu: $(SUBMENU)
 )$(if $(SUBMENUDEP),Submenu-Depends: $(SUBMENUDEP)
@@ -36,10 +30,7 @@ Menu-Depends: $(MDEPENDS)
 Provides: $(PROVIDES)
 $(if $(VARIANT),Build-Variant: $(VARIANT)
 $(if $(DEFAULT_VARIANT),Default-Variant: $(VARIANT)
-))$(if $(PKG_BUILD_DEPENDS),Build-Depends: $(PKG_BUILD_DEPENDS)
-)$(if $(HOST_BUILD_DEPENDS),Build-Depends/host: $(HOST_BUILD_DEPENDS)
-)$(if $(BUILD_TYPES),Build-Types: $(BUILD_TYPES)
-)Section: $(SECTION)
+))Section: $(SECTION)
 Category: $(CATEGORY)
 $(if $(filter nonshared,$(PKGFLAGS)),,Repository: $(if $(FEED),$(FEED),base)
 )Title: $(TITLE)
@@ -59,33 +50,11 @@ $(if $(URL),$(URL)
 $(if $(Package/$(1)/config),Config:
 $(Package/$(1)/config)
 @@
-)$(foreach pc,$(preconfig_$(1)),
-$(Preconfig/$(pc))))
+))
+SOURCE_INFO :=
 endef
 
-define Feature/Default
-  TARGET_NAME:=
-  TARGET_TITLE:=
-  PRIORITY:=
-  NAME:=
-endef
-
-define Feature
-  $(eval $(Feature/Default))
-  $(eval $(Feature/$(1)))
-  $(if $(DUMP),$(call Dumpinfo/Feature,$(1)))
-endef
-
-define Dumpinfo/Feature
-$(info Feature: $(TARGET_NAME)_$(1)
-Target-Name: $(TARGET_NAME)
-Target-Title: $(TARGET_TITLE)
-Feature-Name: $(NAME)
-$(if $(PRIORITY),Feature-Priority: $(PRIORITY)
-)Feature-Description:
-$(Feature/$(1)/description)
-@@
-)
-endef
+dumpinfo: FORCE
+	$(if $(SOURCE_INFO),$(info $(SOURCE_INFO)))
 
 endif

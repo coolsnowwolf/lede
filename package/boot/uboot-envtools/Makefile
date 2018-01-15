@@ -19,7 +19,7 @@ PKG_SOURCE_URL:=\
 	ftp://ftp.denx.de/pub/u-boot
 PKG_HASH:=bdc68d5f9455ad933b059c735d983f2c8b6b552dafb062e5ff1444f623021955
 
-PKG_BUILD_DEPENDS:=+fstools
+PKG_BUILD_DEPENDS:=fstools
 
 PKG_LICENSE:=GPL-2.0 GPL-2.0+
 PKG_LICENSE_FILES:=Licenses/README
@@ -111,6 +111,10 @@ endif
 ifneq ($(CONFIG_TARGET_oxnas),)
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) ./files/oxnas $(1)/etc/uci-defaults/30_uboot-envtools
+endif
+ifneq ($(CONFIG_TARGET_pistachio),)
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_DATA) ./files/pistachio $(1)/etc/uci-defaults/30_uboot-envtools
 endif
 ifneq ($(CONFIG_TARGET_ramips),)
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
