@@ -207,7 +207,11 @@ static const struct mtd_ooblayout_ops rb95x_nand_ecclayout_ops = {
 
 static int rb95x_nand_scan_fixup(struct mtd_info *mtd)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 	struct nand_chip *chip = mtd->priv;
+#else
+	struct nand_chip *chip = mtd_to_nand(mtd);
+#endif /* < 4.6.0 */
 
 	if (mtd->writesize == 512) {
 		/*

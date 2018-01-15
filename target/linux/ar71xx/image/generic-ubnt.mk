@@ -71,31 +71,35 @@ define Device/rw2458n
   DEVICE_TITLE := Ubiquiti RW2458N
   BOARDNAME := RW2458N
 endef
+TARGET_DEVICES += rw2458n
 
 define Device/ubnt-airrouter
   $(Device/ubnt-xm)
   DEVICE_TITLE := Ubiquiti AirRouter
   BOARDNAME := UBNT-AR
 endef
+TARGET_DEVICES += ubnt-airrouter
 
 define Device/ubnt-bullet-m
   $(Device/ubnt-xm)
   DEVICE_TITLE := Ubiquiti Bullet-M
   BOARDNAME := UBNT-BM
 endef
+TARGET_DEVICES += ubnt-bullet-m
 
 define Device/ubnt-rocket-m
   $(Device/ubnt-xm)
   DEVICE_TITLE := Ubiquiti Rocket-M
   BOARDNAME := UBNT-RM
 endef
+TARGET_DEVICES += ubnt-rocket-m
 
 define Device/ubnt-nano-m
   $(Device/ubnt-xm)
   DEVICE_TITLE := Ubiquiti Nano-M
   BOARDNAME := UBNT-NM
 endef
-TARGET_DEVICES += rw2458n ubnt-airrouter ubnt-bullet-m ubnt-rocket-m ubnt-nano-m
+TARGET_DEVICES += ubnt-nano-m
 
 define Device/ubnt-unifi
   $(Device/ubnt-bz)
@@ -103,6 +107,7 @@ define Device/ubnt-unifi
   BOARDNAME := UBNT-UF
   DEVICE_PROFILE += UBNTUNIFI
 endef
+TARGET_DEVICES += ubnt-unifi
 
 define Device/ubnt-unifiac
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2
@@ -120,11 +125,13 @@ define Device/ubnt-unifiac-lite
   DEVICE_PROFILE += UBNTUNIFIACLITE
   BOARDNAME := UBNT-UF-AC-LITE
 endef
+TARGET_DEVICES += ubnt-unifiac-lite
 
 define Device/ubnt-unifiac-mesh
   $(Device/ubnt-unifiac-lite)
   DEVICE_TITLE := Ubiquiti UniFi AC-Mesh
 endef
+TARGET_DEVICES += ubnt-unifiac-mesh
 
 define Device/ubnt-unifiac-pro
   $(Device/ubnt-unifiac)
@@ -133,6 +140,7 @@ define Device/ubnt-unifiac-pro
   DEVICE_PROFILE += UBNTUNIFIACPRO
   BOARDNAME := UBNT-UF-AC-PRO
 endef
+TARGET_DEVICES += ubnt-unifiac-pro
 
 define Device/ubnt-unifi-outdoor
   $(Device/ubnt-bz)
@@ -140,25 +148,28 @@ define Device/ubnt-unifi-outdoor
   BOARDNAME := UBNT-U20
   DEVICE_PROFILE += UBNTUNIFIOUTDOOR
 endef
-TARGET_DEVICES += ubnt-unifi ubnt-unifiac-lite ubnt-unifiac-mesh ubnt-unifiac-pro ubnt-unifi-outdoor
+TARGET_DEVICES += ubnt-unifi-outdoor
 
 define Device/ubnt-nano-m-xw
   $(Device/ubnt-xw)
   DEVICE_TITLE := Ubiquiti Nano M XW
   BOARDNAME := UBNT-NM-XW
 endef
+TARGET_DEVICES += ubnt-nano-m-xw
 
 define Device/ubnt-loco-m-xw
   $(Device/ubnt-xw)
   DEVICE_TITLE := Ubiquiti Loco XW
   BOARDNAME := UBNT-LOCO-XW
 endef
+TARGET_DEVICES += ubnt-loco-m-xw
 
 define Device/ubnt-rocket-m-xw
   $(Device/ubnt-xw)
   DEVICE_TITLE := Ubiquiti Rocket M XW
   BOARDNAME := UBNT-RM-XW
 endef
+TARGET_DEVICES += ubnt-rocket-m-xw
 
 define Device/ubnt-rocket-m-ti
   $(Device/ubnt-xw)
@@ -166,7 +177,7 @@ define Device/ubnt-rocket-m-ti
   BOARDNAME := UBNT-RM-TI
   UBNT_TYPE := TI
 endef
-TARGET_DEVICES += ubnt-nano-m-xw ubnt-loco-m-xw ubnt-rocket-m-xw ubnt-rocket-m-ti
+TARGET_DEVICES += ubnt-rocket-m-ti
 
 define Device/ubnt-air-gateway
   $(Device/ubnt-xm)
@@ -176,6 +187,7 @@ define Device/ubnt-air-gateway
   UBNT_CHIP := ar933x
   CONSOLE := ttyATH0,115200
 endef
+TARGET_DEVICES += ubnt-air-gateway
 
 define Device/ubnt-air-gateway-pro
   $(Device/ubnt-xm)
@@ -184,6 +196,7 @@ define Device/ubnt-air-gateway-pro
   UBNT_TYPE := AirGWP
   UBNT_CHIP := ar934x
 endef
+TARGET_DEVICES += ubnt-air-gateway-pro
 
 define Device/ubdev01
   $(Device/ubnt-xm)
@@ -192,7 +205,7 @@ define Device/ubdev01
   BOARDNAME := UBNT-UF
   UBNT_BOARD := UBDEV01
 endef
-TARGET_DEVICES += ubnt-air-gateway ubnt-air-gateway-pro ubdev01
+TARGET_DEVICES += ubdev01
 
 define Device/ubnt-routerstation
   DEVICE_PACKAGES := kmod-usb-core kmod-usb-ohci kmod-usb2
@@ -213,6 +226,7 @@ define Device/ubnt-rs
   UBNT_TYPE := RSx
   UBNT_CHIP := ar7100
 endef
+TARGET_DEVICES += ubnt-rs
 
 define Device/ubnt-rspro
   $(Device/ubnt-routerstation)
@@ -223,6 +237,7 @@ define Device/ubnt-rspro
   UBNT_TYPE := RSPRO
   UBNT_CHIP := ar7100pro
 endef
+TARGET_DEVICES += ubnt-rspro
 
 define Device/ubnt-ls-sr71
   $(Device/ubnt-routerstation)
@@ -232,7 +247,7 @@ define Device/ubnt-ls-sr71
   UBNT_TYPE := LS-SR71
   UBNT_CHIP := ar7100
 endef
-TARGET_DEVICES += ubnt-rs ubnt-rspro ubnt-ls-sr71
+TARGET_DEVICES += ubnt-ls-sr71
 
 define Device/ubnt-uap-pro
   DEVICE_TITLE := Ubiquiti UAP Pro

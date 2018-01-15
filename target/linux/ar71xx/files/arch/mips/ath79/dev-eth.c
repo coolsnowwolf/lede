@@ -996,6 +996,9 @@ void __init ath79_register_eth(unsigned int id)
 			pdata->reset_bit = AR934X_RESET_GE0_MAC |
 					   AR934X_RESET_GE0_MDIO;
 			pdata->set_speed = ar934x_set_speed_ge0;
+
+			if (ath79_soc == ATH79_SOC_QCA9533)
+				pdata->disable_inline_checksum_engine = 1;
 		} else {
 			pdata->reset_bit = AR934X_RESET_GE1_MAC |
 					   AR934X_RESET_GE1_MDIO;
@@ -1097,6 +1100,8 @@ void __init ath79_register_eth(unsigned int id)
 				pdata->set_speed = qca956x_set_speed_sgmii;
 			else
 				pdata->set_speed = ar934x_set_speed_ge0;
+
+			pdata->disable_inline_checksum_engine = 1;
 		} else {
 			pdata->reset_bit = QCA955X_RESET_GE1_MAC |
 					   QCA955X_RESET_GE1_MDIO;

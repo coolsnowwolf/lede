@@ -11,12 +11,7 @@
 
 #include <linux/platform_device.h>
 #include <linux/irq.h>
-#include <linux/version.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,4,0)
-#include <linux/mdio-gpio.h>
-#else
 #include <linux/platform_data/mdio-gpio.h> 
-#endif
 #include <linux/mmc/host.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/flash.h>

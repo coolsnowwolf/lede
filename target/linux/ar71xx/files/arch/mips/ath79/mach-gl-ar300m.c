@@ -58,7 +58,7 @@ static struct gpio_led gl_ar300m_leds_gpio[] __initdata = {
 		.active_low = 1,
 	},
 	{
-		.name = "gl-ar300m::green:lan",
+		.name = "gl-ar300m:green:lan",
 		.gpio = GL_AR300M_GPIO_LED_LAN,
 		.active_low = 1,
 	},

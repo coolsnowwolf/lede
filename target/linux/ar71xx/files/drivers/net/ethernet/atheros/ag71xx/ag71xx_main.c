@@ -13,13 +13,6 @@
 
 #include "ag71xx.h"
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,2,0)
-static inline void skb_free_frag(void *data)
-{
-	put_page(virt_to_head_page(data));
-}
-#endif
-
 #define AG71XX_DEFAULT_MSG_ENABLE	\
 	(NETIF_MSG_DRV			\
 	| NETIF_MSG_PROBE		\
@@ -629,6 +622,22 @@ __ag71xx_link_adjust(struct ag71xx *ag, bool update)
 	ag71xx_wr(ag, AG71XX_REG_MAC_CFG2, cfg2);
 	ag71xx_wr(ag, AG71XX_REG_FIFO_CFG5, fifo5);
 	ag71xx_wr(ag, AG71XX_REG_MAC_IFCTL, ifctl);
+
+	if (pdata->disable_inline_checksum_engine) {
+		/*
+		 * The rx ring buffer can stall on small packets on QCA953x and
+		 * QCA956x. Disabling the inline checksum engine fixes the stall.
+		 * The wr, rr functions cannot be used since this hidden register
+		 * is outside of the normal ag71xx register block.
+		 */
+		void __iomem *dam = ioremap_nocache(0xb90001bc, 0x4);
+		if (dam) {
+			__raw_writel(__raw_readl(dam) & ~BIT(27), dam);
+			(void)__raw_readl(dam);
+			iounmap(dam);
+		}
+	}
+
 	ag71xx_hw_start(ag);
 
 	netif_carrier_on(ag->dev);
