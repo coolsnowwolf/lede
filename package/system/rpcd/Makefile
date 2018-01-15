@@ -11,7 +11,7 @@ PKG_NAME:=rpcd
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL=$(LEDE_GIT)/project/rpcd.git
+PKG_SOURCE_URL=$(PROJECT_GIT)/project/rpcd.git
 PKG_SOURCE_DATE:=2017-12-07
 PKG_SOURCE_VERSION:=cfe1e75c91bc1bac82e6caab3e652b0ebee59524
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>

@@ -6,91 +6,40 @@
 #
 
 include $(TOPDIR)/rules.mk
+include $(INCLUDE_DIR)/kernel.mk
 
-PKG_NAME:=u-boot
 PKG_VERSION:=2016.01
 PKG_RELEASE:=1
 
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(BUILD_VARIANT)/$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
-PKG_SOURCE_URL:= \
-	http://mirror2.openwrt.org/sources \
-	ftp://ftp.denx.de/pub/u-boot
 PKG_HASH:=e5792fba9399d9804aa2ef667f14ff771e2cdece72367d340250265bf095a5d5
 
-PKG_LICENSE:=GPL-2.0 GPL-2.0+
-PKG_LICENSE_FILES:=Licenses/README
-
+include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
 
-define uboot/Default
-  TITLE:=
-  CONFIG:=
-  IMAGE:=
+define U-Boot/Default
+  BUILD_TARGET:=mxs
+  UBOOT_IMAGE:=u-boot.sb
+  DEFAULT:=y
+  HIDDEN:=1
 endef
 
-define uboot/mx23_olinuxino
-  TITLE:=U-Boot 2016.01 for the Olinuxino i.MX233
+define U-Boot/mx23_olinuxino
+  NAME:=Olinuxino i.MX233
 endef
 
-define uboot/duckbill
-  TITLE:=U-Boot 2016.01 for the I2SE Duckbill
+define U-Boot/duckbill
+  NAME:=I2SE Duckbill
 endef
 
-UBOOTS := \
+UBOOT_TARGETS := \
 	mx23_olinuxino \
 	duckbill
 
-define Package/uboot/template
-define Package/uboot-mxs-$(1)
-  SECTION:=boot
-  CATEGORY:=Boot Loaders
-  DEPENDS:=@TARGET_mxs
-  TITLE:=$(2)
-  URL:=http://www.denx.de/wiki/U-Boot
-  VARIANT:=$(1)
-  MAINTAINER:=Zoltan HERPAI <wigyori@uid0.hu>
-endef
+UBOOT_MAKE_FLAGS += $(UBOOT_IMAGE)
+
+define Build/InstallDev
+	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/$(UBOOT_IMAGE) $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-$(UBOOT_IMAGE)
 endef
 
-define BuildUBootPackage
-	$(eval $(uboot/Default))
-	$(eval $(uboot/$(1)))
-	$(call Package/uboot/template,$(1),$(TITLE))
-endef
-
-ifdef BUILD_VARIANT
-$(eval $(call uboot/$(BUILD_VARIANT)))
-UBOOT_CONFIG:=$(if $(CONFIG),$(CONFIG),$(BUILD_VARIANT))
-UBOOT_IMAGE:=$(if $(IMAGE),$(IMAGE),u-boot.sb)
-endif
-
-define Build/Configure
-	$(MAKE) -C $(PKG_BUILD_DIR) \
-		$(UBOOT_CONFIG)_config
-endef
-
-define Build/Compile
-	$(MAKE) -C $(PKG_BUILD_DIR) \
-		CROSS_COMPILE=$(TARGET_CROSS) $(UBOOT_IMAGE)
-endef
-
-define Package/uboot/install/default
-	$(INSTALL_DIR) $(BIN_DIR)/uboot-$(BOARD)-$(1)
-	$(CP) $(PKG_BUILD_DIR)/$(UBOOT_IMAGE) $(BIN_DIR)/uboot-$(BOARD)-$(1)/uboot-$(BOARD)-$(1).sb
-endef
-
-define Package/uboot/install/template
-define Package/uboot-mxs-$(1)/install
-	$(call Package/uboot/install/default,$(2))
-endef
-endef
-
-$(foreach u,$(UBOOTS), \
-	$(eval $(call Package/uboot/install/template,$(u),$(u))) \
-)
-
-$(foreach u,$(UBOOTS), \
-	$(eval $(call BuildUBootPackage,$(u))) \
-	$(eval $(call BuildPackage,uboot-mxs-$(u))) \
-)
+$(eval $(call BuildPackage/U-Boot))

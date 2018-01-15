@@ -1,0 +1,248 @@
+From f2a13e7cba9e2b16f4888fbd9cf2bc25b95945be Mon Sep 17 00:00:00 2001
+From: Christian Lamparter <chunkeey@googlemail.com>
+Date: Fri, 25 Aug 2017 15:47:21 +0200
+Subject: [PATCH 08/25] crypto: crypto4xx - enable AES RFC3686, ECB, CFB and
+ OFB offloads
+
+The crypto engine supports more than just aes-cbc. This patch
+enables the remaining AES block cipher modes that pass the
+testmanager's test vectors.
+
+Signed-off-by: Christian Lamparter <chunkeey@googlemail.com>
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+---
+ drivers/crypto/amcc/crypto4xx_alg.c  | 66 ++++++++++++++++++++++++
+ drivers/crypto/amcc/crypto4xx_core.c | 98 ++++++++++++++++++++++++++++++++++++
+ drivers/crypto/amcc/crypto4xx_core.h | 10 ++++
+ drivers/crypto/amcc/crypto4xx_sa.h   |  3 ++
+ 4 files changed, 177 insertions(+)
+
+--- a/drivers/crypto/amcc/crypto4xx_alg.c
++++ b/drivers/crypto/amcc/crypto4xx_alg.c
+@@ -28,6 +28,7 @@
+ #include <crypto/algapi.h>
+ #include <crypto/aes.h>
+ #include <crypto/sha.h>
++#include <crypto/ctr.h>
+ #include "crypto4xx_reg_def.h"
+ #include "crypto4xx_core.h"
+ #include "crypto4xx_sa.h"
+@@ -171,6 +172,71 @@ int crypto4xx_setkey_aes_cbc(struct cryp
+ 				    CRYPTO_FEEDBACK_MODE_NO_FB);
+ }
+ 
++int crypto4xx_setkey_aes_cfb(struct crypto_ablkcipher *cipher,
++			     const u8 *key, unsigned int keylen)
++{
++	return crypto4xx_setkey_aes(cipher, key, keylen, CRYPTO_MODE_CFB,
++				    CRYPTO_FEEDBACK_MODE_128BIT_CFB);
++}
++
++int crypto4xx_setkey_aes_ecb(struct crypto_ablkcipher *cipher,
++			     const u8 *key, unsigned int keylen)
++{
++	return crypto4xx_setkey_aes(cipher, key, keylen, CRYPTO_MODE_ECB,
++				    CRYPTO_FEEDBACK_MODE_NO_FB);
++}
++
++int crypto4xx_setkey_aes_ofb(struct crypto_ablkcipher *cipher,
++			     const u8 *key, unsigned int keylen)
++{
++	return crypto4xx_setkey_aes(cipher, key, keylen, CRYPTO_MODE_OFB,
++				    CRYPTO_FEEDBACK_MODE_64BIT_OFB);
++}
++
++int crypto4xx_setkey_rfc3686(struct crypto_ablkcipher *cipher,
++			     const u8 *key, unsigned int keylen)
++{
++	struct crypto_tfm *tfm = crypto_ablkcipher_tfm(cipher);
++	struct crypto4xx_ctx *ctx = crypto_tfm_ctx(tfm);
++	int rc;
++
++	rc = crypto4xx_setkey_aes(cipher, key, keylen - CTR_RFC3686_NONCE_SIZE,
++		CRYPTO_MODE_CTR, CRYPTO_FEEDBACK_MODE_NO_FB);
++	if (rc)
++		return rc;
++
++	memcpy(ctx->state_record,
++		key + keylen - CTR_RFC3686_NONCE_SIZE, CTR_RFC3686_NONCE_SIZE);
++
++	return 0;
++}
++
++int crypto4xx_rfc3686_encrypt(struct ablkcipher_request *req)
++{
++	struct crypto4xx_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
++	__be32 iv[AES_IV_SIZE / 4] = { *(u32 *)ctx->state_record,
++		*(u32 *) req->info, *(u32 *) (req->info + 4), cpu_to_be32(1) };
++
++	ctx->direction = DIR_OUTBOUND;
++	ctx->pd_ctl = 1;
++
++	return crypto4xx_build_pd(&req->base, ctx, req->src, req->dst,
++				  req->nbytes, iv, AES_IV_SIZE);
++}
++
++int crypto4xx_rfc3686_decrypt(struct ablkcipher_request *req)
++{
++	struct crypto4xx_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
++	__be32 iv[AES_IV_SIZE / 4] = { *(u32 *)ctx->state_record,
++		*(u32 *) req->info, *(u32 *) (req->info + 4), cpu_to_be32(1) };
++
++	ctx->direction = DIR_INBOUND;
++	ctx->pd_ctl = 1;
++
++	return crypto4xx_build_pd(&req->base, ctx, req->src, req->dst,
++				  req->nbytes, iv, AES_IV_SIZE);
++}
++
+ /**
+  * HASH SHA1 Functions
+  */
+--- a/drivers/crypto/amcc/crypto4xx_core.c
++++ b/drivers/crypto/amcc/crypto4xx_core.c
+@@ -36,6 +36,7 @@
+ #include <asm/dcr-regs.h>
+ #include <asm/cacheflush.h>
+ #include <crypto/aes.h>
++#include <crypto/ctr.h>
+ #include <crypto/sha.h>
+ #include "crypto4xx_reg_def.h"
+ #include "crypto4xx_core.h"
+@@ -1133,6 +1134,103 @@ struct crypto4xx_alg_common crypto4xx_al
+ 			}
+ 		}
+ 	}},
++	{ .type = CRYPTO_ALG_TYPE_ABLKCIPHER, .u.cipher = {
++		.cra_name	= "cfb(aes)",
++		.cra_driver_name = "cfb-aes-ppc4xx",
++		.cra_priority	= CRYPTO4XX_CRYPTO_PRIORITY,
++		.cra_flags	= CRYPTO_ALG_TYPE_ABLKCIPHER |
++				  CRYPTO_ALG_ASYNC |
++				  CRYPTO_ALG_KERN_DRIVER_ONLY,
++		.cra_blocksize	= AES_BLOCK_SIZE,
++		.cra_ctxsize	= sizeof(struct crypto4xx_ctx),
++		.cra_type	= &crypto_ablkcipher_type,
++		.cra_init	= crypto4xx_alg_init,
++		.cra_exit	= crypto4xx_alg_exit,
++		.cra_module	= THIS_MODULE,
++		.cra_u		= {
++			.ablkcipher = {
++				.min_keysize	= AES_MIN_KEY_SIZE,
++				.max_keysize	= AES_MAX_KEY_SIZE,
++				.ivsize		= AES_IV_SIZE,
++				.setkey		= crypto4xx_setkey_aes_cfb,
++				.encrypt	= crypto4xx_encrypt,
++				.decrypt	= crypto4xx_decrypt,
++			}
++		}
++	} },
++	{ .type = CRYPTO_ALG_TYPE_ABLKCIPHER, .u.cipher = {
++		.cra_name	= "rfc3686(ctr(aes))",
++		.cra_driver_name = "rfc3686-ctr-aes-ppc4xx",
++		.cra_priority	= CRYPTO4XX_CRYPTO_PRIORITY,
++		.cra_flags	= CRYPTO_ALG_TYPE_ABLKCIPHER |
++				  CRYPTO_ALG_ASYNC |
++				  CRYPTO_ALG_KERN_DRIVER_ONLY,
++		.cra_blocksize	= AES_BLOCK_SIZE,
++		.cra_ctxsize	= sizeof(struct crypto4xx_ctx),
++		.cra_type	= &crypto_ablkcipher_type,
++		.cra_init	= crypto4xx_alg_init,
++		.cra_exit	= crypto4xx_alg_exit,
++		.cra_module	= THIS_MODULE,
++		.cra_u		= {
++			.ablkcipher = {
++				.min_keysize	= AES_MIN_KEY_SIZE +
++						  CTR_RFC3686_NONCE_SIZE,
++				.max_keysize	= AES_MAX_KEY_SIZE +
++						  CTR_RFC3686_NONCE_SIZE,
++				.ivsize		= CTR_RFC3686_IV_SIZE,
++				.setkey		= crypto4xx_setkey_rfc3686,
++				.encrypt	= crypto4xx_rfc3686_encrypt,
++				.decrypt	= crypto4xx_rfc3686_decrypt,
++			}
++		}
++	} },
++	{ .type = CRYPTO_ALG_TYPE_ABLKCIPHER, .u.cipher = {
++		.cra_name	= "ecb(aes)",
++		.cra_driver_name = "ecb-aes-ppc4xx",
++		.cra_priority	= CRYPTO4XX_CRYPTO_PRIORITY,
++		.cra_flags	= CRYPTO_ALG_TYPE_ABLKCIPHER |
++				  CRYPTO_ALG_ASYNC |
++				  CRYPTO_ALG_KERN_DRIVER_ONLY,
++		.cra_blocksize	= AES_BLOCK_SIZE,
++		.cra_ctxsize	= sizeof(struct crypto4xx_ctx),
++		.cra_type	= &crypto_ablkcipher_type,
++		.cra_init	= crypto4xx_alg_init,
++		.cra_exit	= crypto4xx_alg_exit,
++		.cra_module	= THIS_MODULE,
++		.cra_u		= {
++			.ablkcipher = {
++				.min_keysize	= AES_MIN_KEY_SIZE,
++				.max_keysize	= AES_MAX_KEY_SIZE,
++				.setkey		= crypto4xx_setkey_aes_ecb,
++				.encrypt	= crypto4xx_encrypt,
++				.decrypt	= crypto4xx_decrypt,
++			}
++		}
++	} },
++	{ .type = CRYPTO_ALG_TYPE_ABLKCIPHER, .u.cipher = {
++		.cra_name	= "ofb(aes)",
++		.cra_driver_name = "ofb-aes-ppc4xx",
++		.cra_priority	= CRYPTO4XX_CRYPTO_PRIORITY,
++		.cra_flags	= CRYPTO_ALG_TYPE_ABLKCIPHER |
++				  CRYPTO_ALG_ASYNC |
++				  CRYPTO_ALG_KERN_DRIVER_ONLY,
++		.cra_blocksize	= AES_BLOCK_SIZE,
++		.cra_ctxsize	= sizeof(struct crypto4xx_ctx),
++		.cra_type	= &crypto_ablkcipher_type,
++		.cra_init	= crypto4xx_alg_init,
++		.cra_exit	= crypto4xx_alg_exit,
++		.cra_module	= THIS_MODULE,
++		.cra_u		= {
++			.ablkcipher = {
++				.min_keysize	= AES_MIN_KEY_SIZE,
++				.max_keysize	= AES_MAX_KEY_SIZE,
++				.ivsize		= AES_IV_SIZE,
++				.setkey		= crypto4xx_setkey_aes_cbc,
++				.encrypt	= crypto4xx_encrypt,
++				.decrypt	= crypto4xx_decrypt,
++			}
++		}
++	} },
+ };
+ 
+ /**
+--- a/drivers/crypto/amcc/crypto4xx_core.h
++++ b/drivers/crypto/amcc/crypto4xx_core.h
+@@ -171,8 +171,18 @@ u32 crypto4xx_build_pd(struct crypto_asy
+ 		       void *iv, u32 iv_len);
+ int crypto4xx_setkey_aes_cbc(struct crypto_ablkcipher *cipher,
+ 			     const u8 *key, unsigned int keylen);
++int crypto4xx_setkey_aes_cfb(struct crypto_ablkcipher *cipher,
++			     const u8 *key, unsigned int keylen);
++int crypto4xx_setkey_aes_ecb(struct crypto_ablkcipher *cipher,
++			     const u8 *key, unsigned int keylen);
++int crypto4xx_setkey_aes_ofb(struct crypto_ablkcipher *cipher,
++			     const u8 *key, unsigned int keylen);
++int crypto4xx_setkey_rfc3686(struct crypto_ablkcipher *cipher,
++			     const u8 *key, unsigned int keylen);
+ int crypto4xx_encrypt(struct ablkcipher_request *req);
+ int crypto4xx_decrypt(struct ablkcipher_request *req);
++int crypto4xx_rfc3686_encrypt(struct ablkcipher_request *req);
++int crypto4xx_rfc3686_decrypt(struct ablkcipher_request *req);
+ int crypto4xx_sha1_alg_init(struct crypto_tfm *tfm);
+ int crypto4xx_hash_digest(struct ahash_request *req);
+ int crypto4xx_hash_final(struct ahash_request *req);
+--- a/drivers/crypto/amcc/crypto4xx_sa.h
++++ b/drivers/crypto/amcc/crypto4xx_sa.h
+@@ -112,6 +112,9 @@ union sa_command_0 {
+ 
+ #define CRYPTO_MODE_ECB				0
+ #define CRYPTO_MODE_CBC				1
++#define CRYPTO_MODE_OFB				2
++#define CRYPTO_MODE_CFB				3
++#define CRYPTO_MODE_CTR				4
+ 
+ #define CRYPTO_FEEDBACK_MODE_NO_FB		0
+ #define CRYPTO_FEEDBACK_MODE_64BIT_OFB		0

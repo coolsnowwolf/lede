@@ -18,6 +18,7 @@ PKG_HASH:=a99959d7360def22f9108d2d487c9de384fe76c349697176b1f22370080d5810
 
 PKG_BUILD_PARALLEL:=1
 PKG_LICENSE:=GPL-2.0+
+PKG_CPE_ID:=cpe:/a:arm:mbed_tls
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk

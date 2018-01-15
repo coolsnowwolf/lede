@@ -20,6 +20,7 @@ PKG_INSTALL:=1
 
 PKG_LICENSE:=X11
 PKG_LICENSE_FILES:=LICENSE
+PKG_CPE_ID:=cpe:/a:libunwind_project:libunwind
 
 PKG_MAINTAINER:=Yousong Zhou <yszhou4tech@gmail.com>
 

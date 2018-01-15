@@ -25,6 +25,7 @@ get_status_led() {
 	ex2700|\
 	ex3700|\
 	fonera20n|\
+	firewrt|\
 	hg255d|\
 	kn|\
 	kn_rc|\
@@ -68,6 +69,13 @@ get_status_led() {
 	ht-tm02)
 		status_led="$boardname:blue:wlan"
 		;;
+	alfa-network,ac1200rm|\
+	awapn2403|\
+	dir-645|\
+	sk-wb8|\
+	wrh-300cr)
+		status_led="$boardname:green:wps"
+		;;
 	all0239-3g|\
 	dcs-930|\
 	dir-300-b1|\
@@ -100,12 +108,6 @@ get_status_led() {
 	ew1200|\
 	ip2202)
 		status_led="$boardname:green:run"
-		;;
-	awapn2403|\
-	dir-645|\
-	sk-wb8|\
-	wrh-300cr)
-		status_led="$boardname:green:wps"
 		;;
 	c108)
 		status_led="$boardname:green:lan"

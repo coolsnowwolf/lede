@@ -25,7 +25,7 @@ proto_ncm_init_config() {
 proto_ncm_setup() {
 	local interface="$1"
 
-	local manufacturer initialize setmode connect ifname devname devpath
+	local manufacturer initialize setmode connect finalize ifname devname devpath
 
 	local device apn auth username password pincode delay mode pdptype profile $PROTO_DEFAULT_OPTIONS
 	json_get_vars device apn auth username password pincode delay mode pdptype profile $PROTO_DEFAULT_OPTIONS
@@ -105,9 +105,21 @@ proto_ncm_setup() {
 			return 1
 		}
 	}
+
+	json_get_values configure configure
+	echo "Configuring modem"
+	for i in $configure; do
+		eval COMMAND="$i" gcom -d "$device" -s /etc/gcom/runcommand.gcom || {
+			echo "Failed to configure modem"
+			proto_notify_error "$interface" CONFIGURE_FAILED
+			return 1
+		}
+	done
+
 	[ -n "$mode" ] && {
 		json_select modes
 		json_get_var setmode "$mode"
+		echo "Setting mode"
 		eval COMMAND="$setmode" gcom -d "$device" -s /etc/gcom/runcommand.gcom || {
 			echo "Failed to set operating mode"
 			proto_notify_error "$interface" SETMODE_FAILED
@@ -118,14 +130,16 @@ proto_ncm_setup() {
 
 	echo "Starting network $interface"
 	json_get_vars connect
+	echo "Connecting modem"
 	eval COMMAND="$connect" gcom -d "$device" -s /etc/gcom/runcommand.gcom || {
 		echo "Failed to connect"
 		proto_notify_error "$interface" CONNECT_FAILED
 		return 1
 	}
 
+	json_get_vars finalize
+
 	echo "Setting up $ifname"
-	
 	proto_init_update "$ifname" 1
 	proto_add_data
 	json_add_string "manufacturer" "$manufacturer"
@@ -150,6 +164,15 @@ proto_ncm_setup() {
 		proto_add_dynamic_defaults
 		ubus call network add_dynamic "$(json_dump)"
 	}
+
+	[ -n "$finalize" ] && {
+		eval COMMAND="$finalize" gcom -d "$device" -s /etc/gcom/runcommand.gcom || {
+			echo "Failed to configure modem"
+			proto_notify_error "$interface" FINALIZE_FAILED
+			return 1
+		}
+	}
+
 }
 
 proto_ncm_teardown() {

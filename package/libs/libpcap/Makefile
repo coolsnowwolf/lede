@@ -12,7 +12,8 @@ PKG_VERSION:=1.8.1
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=http://www.tcpdump.org/release/
+PKG_SOURCE_URL:=http://www.us.tcpdump.org/release/ \
+        http://www.tcpdump.org/release/
 PKG_HASH:=673dbc69fdc3f5a86fb5759ab19899039a8e5e6c631749e48dcd9c6f0c83541e
 PKG_FIXUP:=patch-libtool
 

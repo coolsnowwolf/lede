@@ -41,6 +41,7 @@ enum ath79_mach_type {
 	ATH79_MACH_AP152,			/* Atheros AP152 reference board */
 	ATH79_MACH_AP531B0,			/* Rockeetech AP531B0 */
 	ATH79_MACH_AP90Q,			/* YunCore AP90Q */
+	ATH79_MACH_AP91_5G,			/* ALFA Network AP91-5G */
 	ATH79_MACH_AP96,			/* Atheros AP96 */
 	ATH79_MACH_ARCHER_C25_V1,		/* TP-LINK Archer C25 V1 board */
 	ATH79_MACH_ARCHER_C5,			/* TP-LINK Archer C5 board */
@@ -113,6 +114,7 @@ enum ath79_mach_type {
 	ATH79_MACH_GL_AR150,			/* GL-AR150 support */
 	ATH79_MACH_GL_AR300,			/* GL-AR300 */
 	ATH79_MACH_GL_AR300M,			/* GL-AR300M */
+	ATH79_MACH_GL_AR750,			/* GL.iNet GL-AR750 */
 	ATH79_MACH_GL_DOMINO,			/* Domino */
 	ATH79_MACH_GL_INET,			/* GL-CONNECT GL-INET */
 	ATH79_MACH_GL_MIFI,			/* GL-MIFI support */
@@ -142,6 +144,7 @@ enum ath79_mach_type {
 	ATH79_MACH_MYNET_REXT,			/* WD My Net Wi-Fi Range Extender */
 	ATH79_MACH_MZK_W04NU,			/* Planex MZK-W04NU */
 	ATH79_MACH_MZK_W300NH,			/* Planex MZK-W300NH */
+	ATH79_MACH_N5Q,				/* ALFA Network N5Q */
 	ATH79_MACH_NBG460N,			/* Zyxel NBG460N/550N/550NH */
 	ATH79_MACH_NBG6616,			/* Zyxel NBG6616 */
 	ATH79_MACH_NBG6716,			/* Zyxel NBG6716 */
@@ -164,6 +167,7 @@ enum ath79_mach_type {
 	ATH79_MACH_PB44,			/* Atheros PB44 reference board */
 	ATH79_MACH_PQI_AIR_PEN,			/* PQI Air Pen */
 	ATH79_MACH_QIHOO_C301,			/* Qihoo 360 C301 */
+	ATH79_MACH_R36A,			/* ALFA Network R36A */
 	ATH79_MACH_R602N,			/* P&W R602N */
 	ATH79_MACH_R6100,			/* NETGEAR R6100 */
 	ATH79_MACH_RAMBUTAN,			/* 8devices Rambutan */
@@ -197,9 +201,11 @@ enum ath79_mach_type {
 	ATH79_MACH_RB_MAP,			/* Mikrotik RouterBOARD mAP2nD */
 	ATH79_MACH_RB_MAPL,			/* Mikrotik RouterBOARD mAP L-2nD */
 	ATH79_MACH_RB_WAP,			/* Mikrotik RouterBOARD wAP2nD */
+	ATH79_MACH_RB_WAPAC,			/* Mikrotik RouterBOARD wAPG-5HacT2HnD */
 	ATH79_MACH_RB_SXTLITE2ND,		/* Mikrotik RouterBOARD SXT Lite 2nD */
 	ATH79_MACH_RB_SXTLITE5ND,		/* Mikrotik RouterBOARD SXT Lite 5nD */
 	ATH79_MACH_RE450,			/* TP-LINK RE450 */
+	ATH79_MACH_RUT9XX,			/* Teltonika RUT900 series */
 	ATH79_MACH_RW2458N,			/* Redwave RW2458N */
 	ATH79_MACH_SC1750,			/* Abicom SC1750 */
 	ATH79_MACH_SC300M,			/* Abicom SC300M */

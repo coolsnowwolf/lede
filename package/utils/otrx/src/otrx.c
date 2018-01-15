@@ -1,7 +1,7 @@
 /*
  * otrx
  *
- * Copyright (C) 2015 Rafał Miłecki <zajec5@gmail.com>
+ * Copyright (C) 2015-2017 Rafał Miłecki <zajec5@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -124,9 +124,7 @@ static const uint32_t crc32_tbl[] = {
 	0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d,
 };
 
-uint32_t otrx_crc32(uint8_t *buf, size_t len) {
-	uint32_t crc = 0xffffffff;
-
+uint32_t otrx_crc32(uint32_t crc, uint8_t *buf, size_t len) {
 	while (len) {
 		crc = crc32_tbl[(crc ^ *buf) & 0xff] ^ (crc >> 8);
 		buf++;
@@ -158,7 +156,6 @@ static int otrx_check(int argc, char **argv) {
 	size_t bytes, length;
 	uint8_t buf[1024];
 	uint32_t crc32;
-	int i;
 	int err = 0;
 
 	if (argc < 3) {
@@ -203,8 +200,7 @@ static int otrx_check(int argc, char **argv) {
 	fseek(trx, trx_offset + TRX_FLAGS_OFFSET, SEEK_SET);
 	length -= TRX_FLAGS_OFFSET;
 	while ((bytes = fread(buf, 1, otrx_min(sizeof(buf), length), trx)) > 0) {
-		for (i = 0; i < bytes; i++)
-			crc32 = crc32_tbl[(crc32 ^ buf[i]) & 0xff] ^ (crc32 >> 8);
+		crc32 = otrx_crc32(crc32, buf, bytes);
 		length -= bytes;
 	}
 
@@ -232,14 +228,11 @@ out:
  * Create
  **************************************************/
 
-static void otrx_create_parse_options(int argc, char **argv) {
-}
-
 static ssize_t otrx_create_append_file(FILE *trx, const char *in_path) {
 	FILE *in;
 	size_t bytes;
 	ssize_t length = 0;
-	uint8_t buf[128];
+	uint8_t buf[1024];
 
 	in = fopen(in_path, "r");
 	if (!in) {
@@ -271,8 +264,11 @@ static ssize_t otrx_create_append_zeros(FILE *trx, size_t length) {
 
 	if (fwrite(buf, 1, length, trx) != length) {
 		fprintf(stderr, "Couldn't write %zu B to %s\n", length, trx_path);
+		free(buf);
 		return -EIO;
 	}
+
+	free(buf);
 
 	return length;
 }
@@ -288,7 +284,7 @@ static ssize_t otrx_create_align(FILE *trx, size_t curr_offset, size_t alignment
 
 static int otrx_create_write_hdr(FILE *trx, struct trx_header *hdr) {
 	size_t bytes, length;
-	uint8_t *buf;
+	uint8_t buf[1024];
 	uint32_t crc32;
 
 	hdr->magic = cpu_to_le32(TRX_MAGIC);
@@ -303,20 +299,13 @@ static int otrx_create_write_hdr(FILE *trx, struct trx_header *hdr) {
 
 	length = le32_to_cpu(hdr->length);
 
-	buf = malloc(length);
-	if (!buf) {
-		fprintf(stderr, "Couldn't alloc %zu B buffer\n", length);
-		return -ENOMEM;
+	crc32 = 0xffffffff;
+	fseek(trx, TRX_FLAGS_OFFSET, SEEK_SET);
+	length -= TRX_FLAGS_OFFSET;
+	while ((bytes = fread(buf, 1, otrx_min(sizeof(buf), length), trx)) > 0) {
+		crc32 = otrx_crc32(crc32, buf, bytes);
+		length -= bytes;
 	}
-
-	fseek(trx, 0, SEEK_SET);
-	bytes = fread(buf, 1, length, trx);
-	if (bytes != length) {
-		fprintf(stderr, "Couldn't read %zu B of data from %s\n", length, trx_path);
-		return -ENOMEM;
-	}
-
-	crc32 = otrx_crc32(buf + TRX_FLAGS_OFFSET, length - TRX_FLAGS_OFFSET);
 	hdr->crc32 = cpu_to_le32(crc32);
 
 	fseek(trx, 0, SEEK_SET);
@@ -345,9 +334,6 @@ static int otrx_create(int argc, char **argv) {
 	}
 	trx_path = argv[2];
 
-	optind = 3;
-	otrx_create_parse_options(argc, argv);
-
 	trx = fopen(trx_path, "w+");
 	if (!trx) {
 		fprintf(stderr, "Couldn't open %s\n", trx_path);
@@ -357,7 +343,7 @@ static int otrx_create(int argc, char **argv) {
 	fseek(trx, curr_offset, SEEK_SET);
 
 	optind = 3;
-	while ((c = getopt(argc, argv, "f:b:")) != -1) {
+	while ((c = getopt(argc, argv, "f:A:a:b:")) != -1) {
 		switch (c) {
 		case 'f':
 			if (curr_idx >= TRX_MAX_PARTS) {
@@ -381,6 +367,27 @@ static int otrx_create(int argc, char **argv) {
 				curr_offset += sbytes;
 
 			break;
+		case 'A':
+			sbytes = otrx_create_append_file(trx, optarg);
+			if (sbytes < 0) {
+				fprintf(stderr, "Failed to append file %s\n", optarg);
+			} else {
+				curr_offset += sbytes;
+			}
+
+			sbytes = otrx_create_align(trx, curr_offset, 4);
+			if (sbytes < 0)
+				fprintf(stderr, "Failed to append zeros\n");
+			else
+				curr_offset += sbytes;
+			break;
+		case 'a':
+			sbytes = otrx_create_align(trx, curr_offset, strtol(optarg, NULL, 0));
+			if (sbytes < 0)
+				fprintf(stderr, "Failed to append zeros\n");
+			else
+				curr_offset += sbytes;
+			break;
 		case 'b':
 			sbytes = strtol(optarg, NULL, 0) - curr_offset;
 			if (sbytes < 0) {
@@ -397,6 +404,12 @@ static int otrx_create(int argc, char **argv) {
 		if (err)
 			break;
 	}
+
+	sbytes = otrx_create_align(trx, curr_offset, 0x1000);
+	if (sbytes < 0)
+		fprintf(stderr, "Failed to append zeros\n");
+	else
+		curr_offset += sbytes;
 
 	hdr.length = curr_offset;
 	otrx_create_write_hdr(trx, &hdr);
@@ -552,6 +565,8 @@ static void usage() {
 	printf("Creating new TRX file:\n");
 	printf("\totrx create <file> [options] [partitions]\n");
 	printf("\t-f file\t\t\t\t[partition] start new partition with content copied from file\n");
+	printf("\t-A file\t\t\t\t[partition] append current partition with content copied from file\n");
+	printf("\t-a alignment\t\t\t[partition] align current partition\n");
 	printf("\t-b offset\t\t\t[partition] append zeros to partition till reaching absolute offset\n");
 	printf("\n");
 	printf("Extracting from TRX file:\n");

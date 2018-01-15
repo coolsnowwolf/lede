@@ -27,6 +27,15 @@ define Device/ai-br100
 endef
 TARGET_DEVICES += ai-br100
 
+define Device/alfa-network_ac1200rm
+  DTS := AC1200RM
+  IMAGE_SIZE := 16064k
+  DEVICE_TITLE := ALFA Network AC1200RM
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
+  SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
+endef
+TARGET_DEVICES += alfa-network_ac1200rm
+
 define Device/Archer
   TPLINK_HWREVADD := 0
   TPLINK_HVERSION := 3

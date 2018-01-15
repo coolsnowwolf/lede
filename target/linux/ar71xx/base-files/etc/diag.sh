@@ -40,6 +40,7 @@ get_status_led() {
 	db120|\
 	dr342|\
 	dr344|\
+	rut900|\
 	tew-632brp|\
 	tl-wr942n-v1|\
 	wpj344|\
@@ -79,6 +80,10 @@ get_status_led() {
 	gl-inet|\
 	gl-mifi)
 		status_led="$board:green:lan"
+		;;
+	ap91-5g|\
+	n5q)
+		status_led="$board:green:signal4"
 		;;
 	ap96)
 		status_led="$board:green:led2"
@@ -176,7 +181,8 @@ get_status_led() {
 	oolite)
 		status_led="$board:red:system"
 		;;
-	dw33d)
+	dw33d|\
+	r36a)
 		status_led="$board:blue:status"
 		;;
 	eap300v2)
@@ -204,6 +210,7 @@ get_status_led() {
 	esr1750)
 		status_led="$board:amber:power"
 		;;
+	gl-ar750|\
 	hiveap-121|\
 	nbg6716)
 		status_led="$board:white:power"
@@ -521,7 +528,8 @@ set_state() {
 	done)
 		status_led_on
 		case $(board_name) in
-		gl-ar300m)
+		gl-ar300m|\
+		gl-ar750)
 			fw_printenv lc >/dev/null 2>&1 && fw_setenv "bootcount" 0
 			;;
 		qihoo-c301)

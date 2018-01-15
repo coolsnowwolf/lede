@@ -180,6 +180,7 @@ start_service() {
 	local xtse
 	local xfer_mode
 	local line_mode
+	local tc_layer
 	local mode
 	local lowlevel
 	local snr
@@ -194,36 +195,43 @@ start_service() {
 
 	eval "xtse=\"\${xtse_xdsl_$annex}\""
 
-	[ -z "${xfer_mode}" ] && xfer_mode=ptm
-
 	case "${xfer_mode}" in
 	atm)
-		LOAD=ltq_atm_vr9
-		UNLOAD=ltq_ptm_vr9
-
-		# in most cases atm is used on top of adsl
-		[ -z "${line_mode}" ] && line_mode=adsl
+		tc_layer="-T1:0x1:0x1_1:0x1:0x1"
 		;;
-	*)
-		LOAD=ltq_ptm_vr9
-		UNLOAD=ltq_atm_vr9
-
-		# in most cases ptm is used on top of vdsl
-		[ -z "${line_mode}" ] && line_mode=vdsl
+	ptm)
+		tc_layer="-T2:0x1:0x1_2:0x1:0x1"
 		;;
 	esac
 
 	case "${line_mode}" in
 	adsl)
-		mode=1
+		mode="-M1"
 
-		# mask out VDSL bits when ATM is requested
+		# mask out VDSL bits when ADSL is requested
 		xtse="${xtse%_*}_00"
 		;;
-	*)
-		mode=2
+	vdsl)
+		mode="-M2"
+
+		# mask out ADSL bits when VDSL is requested
+		xtse="00_00_00_00_00_00_00_${xtse##*_}"
 		;;
 	esac
+
+	local annexgpio="/sys/class/gpio/annex"
+	if [ -d "${annexgpio}a" ] && [ -d "${annexgpio}b" ]; then
+		case "${annex}" in
+			a*|l*|m*)
+				echo 1 > "${annexgpio}a/value"
+				echo 0 > "${annexgpio}b/value"
+				;;
+			b*|j*)
+				echo 0 > "${annexgpio}a/value"
+				echo 1 > "${annexgpio}b/value"
+				;;
+		esac
+	fi
 
 	if [ -z "${firmware}" ]; then
 		# search for the firmware provided by dsl-vrx200-firmware-xdsl-*
@@ -287,14 +295,14 @@ start_service() {
 	}
 
 	procd_open_instance
-	procd_set_param command /sbin/vdsl_cpe_control_wrapper \
+	procd_set_param command /sbin/vdsl_cpe_control \
 			-i$xtse \
 			-n /sbin/dsl_notify.sh \
 			-f ${firmware} \
 			$lowlevel \
-			-M ${mode} \
+			${mode} \
+			${tc_layer} \
 			$autoboot
-	procd_append_param env "LOAD=$LOAD" "UNLOAD=$UNLOAD"
 	procd_close_instance
 }
 

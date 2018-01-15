@@ -16,6 +16,7 @@ platform_check_image() {
 	a5-v11|\
 	ai-br100|\
 	air3gii|\
+	alfa-network,ac1200rm|\
 	all0239-3g|\
 	all0256n-4M|\
 	all0256n-8M|\
