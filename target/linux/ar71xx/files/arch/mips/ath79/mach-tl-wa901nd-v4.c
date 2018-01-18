@@ -1,5 +1,5 @@
 /*
- *  TP-LINK TL-WA901ND v4 board
+ *  TP-LINK TL-WA901ND v4, v5 board
  *
  *  Copyright (C) 2015 Matthias Schiffer <mschiffer@universe-factory.net>
  *  Copyright (C) 2016 Tiziano Bacocco <tizbac2@gmail.com>
@@ -109,4 +109,7 @@ static void __init TL_WA901ND_V4_setup(void)
 }
 
 MIPS_MACHINE(ATH79_MACH_TL_WA901ND_V4, "TL-WA901ND-v4", "TP-LINK TL-WA901ND v4",
+	     TL_WA901ND_V4_setup);
+
+MIPS_MACHINE(ATH79_MACH_TL_WA901ND_V5, "TL-WA901ND-v5", "TP-LINK TL-WA901ND v5",
 	     TL_WA901ND_V4_setup);

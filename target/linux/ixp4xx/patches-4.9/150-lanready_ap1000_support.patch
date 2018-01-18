@@ -1,0 +1,201 @@
+--- a/arch/arm/mach-ixp4xx/Kconfig
++++ b/arch/arm/mach-ixp4xx/Kconfig
+@@ -101,6 +101,14 @@ config MACH_WRT300NV2
+ 	  WRT300N v2 router. For more information on this
+ 	  platform, see http://openwrt.org
+ 
++config MACH_AP1000
++	bool "Lanready AP-1000"
++	select PCI
++	help
++	  Say 'Y' here if you want your kernel to support Lanready's
++	  AP1000 board. For more information on this
++	  platform, see http://openwrt.org
++
+ config ARCH_IXDP425
+ 	bool "IXDP425"
+ 	help
+--- a/arch/arm/mach-ixp4xx/Makefile
++++ b/arch/arm/mach-ixp4xx/Makefile
+@@ -23,6 +23,7 @@ obj-pci-$(CONFIG_MACH_PRONGHORN)	+= pron
+ obj-pci-$(CONFIG_MACH_SIDEWINDER)	+= sidewinder-pci.o
+ obj-pci-$(CONFIG_MACH_COMPEXWP18)	+= ixdp425-pci.o
+ obj-pci-$(CONFIG_MACH_WRT300NV2)		+= wrt300nv2-pci.o
++obj-pci-$(CONFIG_MACH_AP1000)		+= ixdp425-pci.o
+ 
+ obj-y	+= common.o
+ 
+@@ -47,6 +48,7 @@ obj-$(CONFIG_MACH_PRONGHORN)	+= pronghor
+ obj-$(CONFIG_MACH_SIDEWINDER)	+= sidewinder-setup.o
+ obj-$(CONFIG_MACH_COMPEXWP18)	+= compex42x-setup.o
+ obj-$(CONFIG_MACH_WRT300NV2)	+= wrt300nv2-setup.o
++obj-$(CONFIG_MACH_AP1000)	+= ap1000-setup.o
+ 
+ obj-$(CONFIG_PCI)		+= $(obj-pci-$(CONFIG_PCI)) common-pci.o
+ obj-$(CONFIG_IXP4XX_QMGR)	+= ixp4xx_qmgr.o
+--- /dev/null
++++ b/arch/arm/mach-ixp4xx/ap1000-setup.c
+@@ -0,0 +1,152 @@
++/*
++ * arch/arm/mach-ixp4xx/ap1000-setup.c
++ *
++ * Lanready AP-1000
++ *
++ * Copyright (C) 2007 Imre Kaloz <Kaloz@openwrt.org>
++ *
++ * based on ixdp425-setup.c:
++ *	Copyright (C) 2003-2005 MontaVista Software, Inc.
++ *
++ * Author: Imre Kaloz <Kaloz@openwrt.org>
++ */
++
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/device.h>
++#include <linux/serial.h>
++#include <linux/tty.h>
++#include <linux/serial_8250.h>
++#include <linux/slab.h>
++#include <linux/dma-mapping.h>
++
++#include <asm/types.h>
++#include <asm/setup.h>
++#include <asm/memory.h>
++#include <mach/hardware.h>
++#include <asm/mach-types.h>
++#include <asm/irq.h>
++#include <asm/mach/arch.h>
++#include <asm/mach/flash.h>
++
++static struct flash_platform_data ap1000_flash_data = {
++	.map_name	= "cfi_probe",
++	.width		= 2,
++};
++
++static struct resource ap1000_flash_resource = {
++	.flags		= IORESOURCE_MEM,
++};
++
++static struct platform_device ap1000_flash = {
++	.name		= "IXP4XX-Flash",
++	.id		= 0,
++	.dev		= {
++		.platform_data = &ap1000_flash_data,
++	},
++	.num_resources	= 1,
++	.resource	= &ap1000_flash_resource,
++};
++
++static struct resource ap1000_uart_resources[] = {
++	{
++		.start		= IXP4XX_UART1_BASE_PHYS,
++		.end		= IXP4XX_UART1_BASE_PHYS + 0x0fff,
++		.flags		= IORESOURCE_MEM
++	},
++	{
++		.start		= IXP4XX_UART2_BASE_PHYS,
++		.end		= IXP4XX_UART2_BASE_PHYS + 0x0fff,
++		.flags		= IORESOURCE_MEM
++	}
++};
++
++static struct plat_serial8250_port ap1000_uart_data[] = {
++	{
++		.mapbase	= IXP4XX_UART1_BASE_PHYS,
++		.membase	= (char *)IXP4XX_UART1_BASE_VIRT + REG_OFFSET,
++		.irq		= IRQ_IXP4XX_UART1,
++		.flags		= UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,
++		.iotype		= UPIO_MEM,
++		.regshift	= 2,
++		.uartclk	= IXP4XX_UART_XTAL,
++	},
++	{
++		.mapbase	= IXP4XX_UART2_BASE_PHYS,
++		.membase	= (char *)IXP4XX_UART2_BASE_VIRT + REG_OFFSET,
++		.irq		= IRQ_IXP4XX_UART2,
++		.flags		= UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,
++		.iotype		= UPIO_MEM,
++		.regshift	= 2,
++		.uartclk	= IXP4XX_UART_XTAL,
++	},
++	{ },
++};
++
++static struct platform_device ap1000_uart = {
++	.name			= "serial8250",
++	.id			= PLAT8250_DEV_PLATFORM,
++	.dev.platform_data	= ap1000_uart_data,
++	.num_resources		= 2,
++	.resource		= ap1000_uart_resources
++};
++
++static struct platform_device *ap1000_devices[] __initdata = {
++	&ap1000_flash,
++	&ap1000_uart
++};
++
++static char ap1000_mem_fixup[] __initdata = "mem=64M ";
++
++static void __init ap1000_fixup(struct tag *tags, char **cmdline)
++{
++	struct tag *t = tags;
++	char *p = *cmdline;
++
++	/* Find the end of the tags table, taking note of any cmdline tag. */
++	for (; t->hdr.size; t = tag_next(t)) {
++		if (t->hdr.tag == ATAG_CMDLINE) {
++			p = t->u.cmdline.cmdline;
++		}
++	}
++
++	/* Overwrite the end of the table with a new cmdline tag. */
++	t->hdr.tag = ATAG_CMDLINE;
++	t->hdr.size = (sizeof (struct tag_header) +
++		strlen(ap1000_mem_fixup) + strlen(p) + 1 + 4) >> 2;
++	strlcpy(t->u.cmdline.cmdline, ap1000_mem_fixup, COMMAND_LINE_SIZE);
++	strlcpy(t->u.cmdline.cmdline + strlen(ap1000_mem_fixup), p,
++		COMMAND_LINE_SIZE - strlen(ap1000_mem_fixup));
++
++	/* Terminate the table. */
++	t = tag_next(t);
++	t->hdr.tag = ATAG_NONE;
++	t->hdr.size = 0;
++}
++
++static void __init ap1000_init(void)
++{
++	ixp4xx_sys_init();
++
++	ap1000_flash_resource.start = IXP4XX_EXP_BUS_BASE(0);
++	ap1000_flash_resource.end =
++		IXP4XX_EXP_BUS_BASE(0) + ixp4xx_exp_bus_size - 1;
++
++	platform_add_devices(ap1000_devices, ARRAY_SIZE(ap1000_devices));
++}
++
++#ifdef CONFIG_MACH_AP1000
++MACHINE_START(AP1000, "Lanready AP-1000")
++	/* Maintainer: Imre Kaloz <Kaloz@openwrt.org> */
++	.fixup		= ap1000_fixup,
++	.map_io		= ixp4xx_map_io,
++	.init_irq	= ixp4xx_init_irq,
++	.init_time	= ixp4xx_timer_init,
++	.atag_offset	= 0x0100,
++	.init_machine	= ap1000_init,
++#if defined(CONFIG_PCI)
++	.dma_zone_size	= SZ_64M,
++#endif
++	.restart	= ixp4xx_restart,
++MACHINE_END
++#endif
+--- a/arch/arm/mach-ixp4xx/ixdp425-pci.c
++++ b/arch/arm/mach-ixp4xx/ixdp425-pci.c
+@@ -70,7 +70,7 @@ int __init ixdp425_pci_init(void)
+ {
+ 	if (machine_is_ixdp425() || machine_is_ixcdp1100() ||
+ 			machine_is_ixdp465() || machine_is_kixrp435() ||
+-			machine_is_compex42x())
++			machine_is_compex42x() || machine_is_ap1000())
+ 		pci_common_init(&ixdp425_pci);
+ 	return 0;
+ }

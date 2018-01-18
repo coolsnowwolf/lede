@@ -1,0 +1,121 @@
+#!/bin/sh /etc/rc.common
+
+START=88
+USE_PROCD=1
+
+UDP2RAW=udp2raw
+
+_log() {
+	local level="$1"
+	local msg="$2"
+
+	logger -p "daemon.${level}" -t "$UDP2RAW" "$msg"
+}
+
+gen_client_config_file() {
+	local config_file="$1"
+	echo "# auto-generated config file from /etc/config/udp2raw" > $config_file
+
+	echo "-c" >> $config_file
+	echo "-l ${listen_addr}:${listen_port}" >> $config_file && _log "info" "listening on: ${listen_addr}:${listen_port}"
+	echo "-r ${server_addr}:${server_port}" >> $config_file && _log "info" "remote address: ${server_addr}:${server_port}"
+
+	[ -n "$raw_mode" ] && echo "--raw-mode ${raw_mode}" >> $config_file && _log "info" "raw-mode: ${raw_mode}"
+	[ -n "$key" ] && echo "--key ${key}" >> $config_file
+	[ -n "$cipher_mode" ] && echo "--cipher-mode ${cipher_mode}" >> $config_file && _log "info" "cipher-mode: ${cipher_mode}"
+	[ -n "$auth_mode" ] && echo "--auth-mode ${auth_mode}" >> $config_file && _log "info" "auth-mode: ${auth_mode}"
+
+	[ "$auto_rule" -ne 0 ] && echo "--auto-rule" >> $config_file && _log "info" "auto-rule: true"
+	[ "$auto_rule" -ne 0 -a "$keep_rule" -ne 0 ] && echo "--keep-rule" >> $config_file && _log "info" "keep-rule: true"
+
+	[ -n "$seq_mode" ] && echo "--seq-mode ${seq_mode}" >> $config_file && _log "info" "seq-mode: ${seq_mode}"
+	[ -n "$lower_level" ] && echo "--lower-level ${lower_level}" >> $config_file && _log "info" "lower-level: ${lower_level}"
+	[ -n "$source_ip" ] && echo "--source-ip ${source_ip}" >> $config_file
+	[ -n "$source_port" ] && echo "--source-port ${source_port}" >> $config_file
+
+	[ -n "$log_level" ] && echo "--log-level ${log_level}" >> $config_file
+	echo "--disable-color" >> $config_file
+	_log "info" "running from ${daemon_user} user"
+}
+
+validate_config_section() {
+	uci_validate_section "$UDP2RAW" general "$1" \
+		'server:uciname' \
+		'daemon_user:string:root'
+}
+
+validate_server_section() {
+	uci_validate_section "$UDP2RAW" servers "$1" \
+		'server_addr:host' \
+		'server_port:port:8080' \
+		'listen_addr:ipaddr:127.0.0.1' \
+		'listen_port:port:2080' \
+		'raw_mode:or("faketcp", "udp", "icmp"):faketcp' \
+		'key:string' \
+		'cipher_mode:or("aes128cbc", "xor", "none"):aes128cbc' \
+		'auth_mode:or("md5", "crc32", "simple", "none"):md5' \
+		'auto_rule:bool:1' \
+		'keep_rule:bool:0' \
+		'seq_mode:range(0,4)' \
+		'lower_level:string' \
+		'source_ip:ipaddr' \
+		'source_port:port' \
+		'log_level:range(0,6)'
+}
+
+start_udp2raw_instance() {
+	local section="$1"
+
+	if ! validate_config_section "$section" ; then
+		_log "err" "Config validate failed."
+		return 1
+	fi
+
+	if [ -z "$server" ] || [ "$server" = "nil" ]; then
+		return 0
+	elif ! validate_server_section "$server"; then
+		_log "err" "Server config validation failed."
+		return 1
+	elif [ -z "$server_addr" ]; then
+		_log "err" "Server address validation failed."
+		return 1
+	fi
+
+	is_ipv6_address() {
+		echo "$1" | grep -q ":"
+	}
+
+	is_ipv6_address "$server_addr" && server_addr="[${server_addr}]"
+	is_ipv6_address "$listen_addr" && listen_addr="[${listen_addr}]"
+
+	_log "notice" "udp2raw-tunnel start."
+	[ -d /var/etc ] || mkdir -p /var/etc
+	local config_file=/var/etc/${UDP2RAW}.${server}.conf
+
+	if ! ( gen_client_config_file "$config_file" ); then
+		_log "err" "Can't create config file".
+		return 1
+	fi
+
+	procd_open_instance
+	procd_set_param command /usr/bin/udp2raw
+	procd_append_param command --conf-file "$config_file"
+	procd_set_param respawn
+	procd_set_param file "$config_file"
+	procd_set_param user "$daemon_user"
+	procd_set_param pidfile /var/run/${UDP2RAW}.${server}.pid
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$UDP2RAW"
+}
+
+start_service() {
+	config_load "$UDP2RAW"
+	config_foreach start_udp2raw_instance "general"
+}
+
+stop_service() {
+	_log "notice" "udp2raw-tunnel stop."
+}

@@ -1,0 +1,130 @@
+From f44f1e7da7c8e3f4575d5d61c4df978496903fcc Mon Sep 17 00:00:00 2001
+From: Florian Fainelli <f.fainelli@gmail.com>
+Date: Tue, 23 May 2017 17:32:31 -0700
+Subject: [PATCH] um: Avoid longjmp/setjmp symbol clashes with libpthread.a
+
+[ Upstream commit f44f1e7da7c8e3f4575d5d61c4df978496903fcc ]
+
+Building a statically linked UML kernel on a Centos 6.9 host resulted in
+the following linking failure (GCC 4.4, glibc-2.12):
+
+/usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../lib64/libpthread.a(libpthread.o):
+In function `siglongjmp':
+(.text+0x8490): multiple definition of `longjmp'
+arch/x86/um/built-in.o:/local/users/fainelli/openwrt/trunk/build_dir/target-x86_64_musl/linux-uml/linux-4.4.69/arch/x86/um/setjmp_64.S:44:
+first defined here
+/usr/lib/gcc/x86_64-redhat-linux/4.4.7/../../../../lib64/libpthread.a(libpthread.o):
+In function `sem_open':
+(.text+0x77cd): warning: the use of `mktemp' is dangerous, better use
+`mkstemp'
+collect2: ld returned 1 exit status
+make[4]: *** [vmlinux] Error 1
+
+Adopt a solution similar to the one done for vmap where we define
+longjmp/setjmp to be kernel_longjmp/setjmp. In the process, make sure we
+do rename the functions in arch/x86/um/setjmp_*.S accordingly.
+
+Fixes: a7df4716d195 ("um: link with -lpthread")
+Signed-off-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: Richard Weinberger <richard@nod.at>
+---
+ arch/um/Makefile        |  4 ++++
+ arch/x86/um/setjmp_32.S | 16 ++++++++--------
+ arch/x86/um/setjmp_64.S | 16 ++++++++--------
+ 3 files changed, 20 insertions(+), 16 deletions(-)
+
+--- a/arch/um/Makefile
++++ b/arch/um/Makefile
+@@ -59,10 +59,14 @@ KBUILD_CPPFLAGS += -I$(srctree)/$(HOST_D
+ # Same things for in6addr_loopback and mktime - found in libc. For these two we
+ # only get link-time error, luckily.
+ #
++# -Dlongjmp=kernel_longjmp prevents anything from referencing the libpthread.a
++# embedded copy of longjmp, same thing for setjmp.
++#
+ # These apply to USER_CFLAGS to.
+ 
+ KBUILD_CFLAGS += $(CFLAGS) $(CFLAGS-y) -D__arch_um__ \
+ 	$(ARCH_INCLUDE) $(MODE_INCLUDE) -Dvmap=kernel_vmap	\
++	-Dlongjmp=kernel_longjmp -Dsetjmp=kernel_setjmp \
+ 	-Din6addr_loopback=kernel_in6addr_loopback \
+ 	-Din6addr_any=kernel_in6addr_any -Dstrrchr=kernel_strrchr
+ 
+--- a/arch/x86/um/setjmp_32.S
++++ b/arch/x86/um/setjmp_32.S
+@@ -16,9 +16,9 @@
+ 
+ 	.text
+ 	.align 4
+-	.globl setjmp
+-	.type setjmp, @function
+-setjmp:
++	.globl kernel_setjmp
++	.type kernel_setjmp, @function
++kernel_setjmp:
+ #ifdef _REGPARM
+ 	movl %eax,%edx
+ #else
+@@ -35,13 +35,13 @@ setjmp:
+ 	movl %ecx,20(%edx)		# Return address
+ 	ret
+ 
+-	.size setjmp,.-setjmp
++	.size kernel_setjmp,.-kernel_setjmp
+ 
+ 	.text
+ 	.align 4
+-	.globl longjmp
+-	.type longjmp, @function
+-longjmp:
++	.globl kernel_longjmp
++	.type kernel_longjmp, @function
++kernel_longjmp:
+ #ifdef _REGPARM
+ 	xchgl %eax,%edx
+ #else
+@@ -55,4 +55,4 @@ longjmp:
+ 	movl 16(%edx),%edi
+ 	jmp *20(%edx)
+ 
+-	.size longjmp,.-longjmp
++	.size kernel_longjmp,.-kernel_longjmp
+--- a/arch/x86/um/setjmp_64.S
++++ b/arch/x86/um/setjmp_64.S
+@@ -18,9 +18,9 @@
+ 
+ 	.text
+ 	.align 4
+-	.globl setjmp
+-	.type setjmp, @function
+-setjmp:
++	.globl kernel_setjmp
++	.type kernel_setjmp, @function
++kernel_setjmp:
+ 	pop  %rsi			# Return address, and adjust the stack
+ 	xorl %eax,%eax			# Return value
+ 	movq %rbx,(%rdi)
+@@ -34,13 +34,13 @@ setjmp:
+ 	movq %rsi,56(%rdi)		# Return address
+ 	ret
+ 
+-	.size setjmp,.-setjmp
++	.size kernel_setjmp,.-kernel_setjmp
+ 
+ 	.text
+ 	.align 4
+-	.globl longjmp
+-	.type longjmp, @function
+-longjmp:
++	.globl kernel_longjmp
++	.type kernel_longjmp, @function
++kernel_longjmp:
+ 	movl %esi,%eax			# Return value (int)
+ 	movq (%rdi),%rbx
+ 	movq 8(%rdi),%rsp
+@@ -51,4 +51,4 @@ longjmp:
+ 	movq 48(%rdi),%r15
+ 	jmp *56(%rdi)
+ 
+-	.size longjmp,.-longjmp
++	.size kernel_longjmp,.-kernel_longjmp

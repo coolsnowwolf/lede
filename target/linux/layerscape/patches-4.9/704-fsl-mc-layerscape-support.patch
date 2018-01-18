@@ -1,4 +1,4 @@
-From 464b4d9b8282e0f1e5040e4914505f91ce4d3750 Mon Sep 17 00:00:00 2001
+From afb7254de9f03c3efaf4e306dcf5f88e1873fc6b Mon Sep 17 00:00:00 2001
 From: Yangbo Lu <yangbo.lu@nxp.com>
 Date: Mon, 25 Sep 2017 12:06:25 +0800
 Subject: [PATCH] fsl-mc: layerscape support
@@ -29,7 +29,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  .../{include/dpcon-cmd.h => bus/dpio/dpio-cmd.h}   |   73 +-
  drivers/staging/fsl-mc/bus/dpio/dpio-driver.c      |  296 ++++++
  drivers/staging/fsl-mc/bus/dpio/dpio-driver.txt    |  135 +++
- drivers/staging/fsl-mc/bus/dpio/dpio-service.c     |  689 +++++++++++++
+ drivers/staging/fsl-mc/bus/dpio/dpio-service.c     |  693 +++++++++++++
  drivers/staging/fsl-mc/bus/dpio/dpio.c             |  224 +++++
  drivers/staging/fsl-mc/bus/dpio/dpio.h             |  109 ++
  drivers/staging/fsl-mc/bus/dpio/qbman-portal.c     | 1049 ++++++++++++++++++++
@@ -68,7 +68,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  drivers/staging/fsl-mc/include/mc-cmd.h            |   44 +-
  drivers/staging/fsl-mc/include/mc-sys.h            |    3 +-
  drivers/staging/fsl-mc/include/mc.h                |   17 +-
- 49 files changed, 7380 insertions(+), 2612 deletions(-)
+ 49 files changed, 7384 insertions(+), 2612 deletions(-)
  create mode 100644 drivers/staging/fsl-mc/bus/dpbp-cmd.h
  create mode 100644 drivers/staging/fsl-mc/bus/dpcon-cmd.h
  create mode 100644 drivers/staging/fsl-mc/bus/dpcon.c
@@ -1772,7 +1772,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +   Dequeue result struct and parsing APIs are defined in dpaa2-global.h.
 --- /dev/null
 +++ b/drivers/staging/fsl-mc/bus/dpio/dpio-service.c
-@@ -0,0 +1,689 @@
+@@ -0,0 +1,693 @@
 +/*
 + * Copyright 2014-2016 Freescale Semiconductor Inc.
 + * Copyright 2016 NXP
@@ -1852,14 +1852,14 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	if (d)
 +		return d;
 +
-+	if (unlikely(cpu >= num_possible_cpus()))
++	if (unlikely(cpu >= (int)num_possible_cpus()))
 +		return NULL;
 +
 +	/*
 +	 * If cpu == -1, choose the current cpu, with no guarantees about
 +	 * potentially being migrated away.
 +	 */
-+	if (unlikely(cpu < 0))
++	if (cpu < 0)
 +		cpu = smp_processor_id();
 +
 +	/* If a specific cpu was requested, pick it up immediately */
@@ -1868,6 +1868,10 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +
 +static inline struct dpaa2_io *service_select(struct dpaa2_io *d)
 +{
++	if (d)
++		return d;
++
++	d = service_select_by_cpu(d, -1);
 +	if (d)
 +		return d;
 +
@@ -1897,7 +1901,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		return NULL;
 +
 +	/* check if CPU is out of range (-1 means any cpu) */
-+	if (desc->cpu >= num_possible_cpus()) {
++	if (desc->cpu >= (int)num_possible_cpus()) {
 +		kfree(obj);
 +		return NULL;
 +	}
@@ -8354,14 +8358,6 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
   * Author: German Rivera <German.Rivera@freescale.com>
   *
   * This file is licensed under the terms of the GNU General Public
-@@ -17,6 +17,7 @@
- #include <linux/irqdomain.h>
- #include <linux/msi.h>
- #include "../include/mc-bus.h"
-+#include "fsl-mc-private.h"
- 
- /*
-  * Generate a unique ID identifying the interrupt (only used within the MSI
 --- a/drivers/staging/fsl-mc/bus/fsl-mc-private.h
 +++ b/drivers/staging/fsl-mc/bus/fsl-mc-private.h
 @@ -10,13 +10,15 @@
@@ -8393,11 +8389,8 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
   * Author: German Rivera <German.Rivera@freescale.com>
   *
   * This file is licensed under the terms of the GNU General Public
-@@ -17,9 +17,10 @@
- #include <linux/of.h>
- #include <linux/of_irq.h>
- #include "../include/mc-bus.h"
-+#include "fsl-mc-private.h"
+@@ -20,7 +20,7 @@
+ #include "fsl-mc-private.h"
  
  static struct irq_chip its_msi_irq_chip = {
 -	.name = "fsl-mc-bus-msi",
@@ -8405,7 +8398,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	.irq_mask = irq_chip_mask_parent,
  	.irq_unmask = irq_chip_unmask_parent,
  	.irq_eoi = irq_chip_eoi_parent,
-@@ -51,7 +52,7 @@ static int its_fsl_mc_msi_prepare(struct
+@@ -52,7 +52,7 @@ static int its_fsl_mc_msi_prepare(struct
  	return msi_info->ops->msi_prepare(msi_domain->parent, dev, nvec, info);
  }
  
@@ -8414,7 +8407,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	.msi_prepare = its_fsl_mc_msi_prepare,
  };
  
-@@ -94,8 +95,8 @@ int __init its_fsl_mc_msi_init(void)
+@@ -95,8 +95,8 @@ int __init its_fsl_mc_msi_init(void)
  			continue;
  		}
  

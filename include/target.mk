@@ -13,11 +13,11 @@ __target_inc=1
 DEVICE_TYPE?=router
 
 # Default packages - the really basic set
-DEFAULT_PACKAGES:=base-files libc libgcc busybox dropbear mtd uci opkg netifd fstools uclient-fetch logd \
+DEFAULT_PACKAGES:=base-files libc libgcc busybox dropbear mtd uci opkg netifd fstools uclient-fetch logd ip-full \
 iptables-mod-nat-extra kmod-nf-nathelper kmod-nf-nathelper-extra kmod-macvlan block-mount automount \
 default-settings ipset-lists luci luci-app-ddns luci-app-sqm luci-app-upnp luci-app-adbyby-plus luci-app-autoreboot \
-luci-app-filetransfer luci-app-shadowsocksr-pro luci-app-usb-printer luci-app-vsftpd luci-app-sfe \
-luci-app-pptp-server luci-app-ipsec-vpnd luci-app-vlmcsd luci-app-wifischedule luci-app-wol luci-app-nlbwmon
+luci-app-filetransfer luci-app-shadowsocksr-pro luci-app-usb-printer luci-app-vsftpd ddns-scripts_aliyun luci-app-xlnetacc \
+luci-app-pptp-server luci-app-ipsec-vpnd luci-app-vlmcsd luci-app-wifischedule luci-app-wol luci-app-sfe luci-app-nlbwmon
 # For nas targets
 DEFAULT_PACKAGES.nas:=block-mount fdisk lsblk mdadm
 # For router targets
@@ -190,7 +190,7 @@ ifeq ($(DUMP),1)
     CPU_CFLAGS_cortex-a7 = -mcpu=cortex-a7
     CPU_CFLAGS_cortex-a8 = -mcpu=cortex-a8
     CPU_CFLAGS_cortex-a9 = -mcpu=cortex-a9
-    CPU_CFLAGS_cortex-a15 = -mcpu=cortex-a15 -mtune=cortex-a15
+    CPU_CFLAGS_cortex-a15 = -mcpu=cortex-a15
     CPU_CFLAGS_cortex-a53 = -mcpu=cortex-a53
     CPU_CFLAGS_fa526 = -mcpu=fa526
     CPU_CFLAGS_mpcore = -mcpu=mpcore
@@ -208,6 +208,10 @@ ifeq ($(DUMP),1)
     CPU_CFLAGS_405:=-mcpu=405
     CPU_CFLAGS_440:=-mcpu=440
     CPU_CFLAGS_464fp:=-mcpu=464fp
+  endif
+  ifeq ($(ARCH),powerpc64)
+    CPU_TYPE ?= powerpc64
+    CPU_CFLAGS_powerpc64:=-mcpu=powerpc64
   endif
   ifeq ($(ARCH),sparc)
     CPU_TYPE = sparc

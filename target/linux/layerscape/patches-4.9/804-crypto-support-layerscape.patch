@@ -1,4 +1,4 @@
-From 0a5b97d1f524c1769b4059e3c7123b52755f7121 Mon Sep 17 00:00:00 2001
+From 9c9579d76ccd6e738ab98c9b4c73c168912cdb8a Mon Sep 17 00:00:00 2001
 From: Yangbo Lu <yangbo.lu@nxp.com>
 Date: Wed, 27 Sep 2017 15:02:01 +0800
 Subject: [PATCH] crypto: support layerscape
@@ -54,7 +54,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  drivers/crypto/caam/compat.h                      |    1 +
  drivers/crypto/caam/ctrl.c                        |  356 +-
  drivers/crypto/caam/ctrl.h                        |    2 +
- drivers/crypto/caam/desc.h                        |   52 +-
+ drivers/crypto/caam/desc.h                        |   55 +-
  drivers/crypto/caam/desc_constr.h                 |  139 +-
  drivers/crypto/caam/dpseci.c                      |  859 ++++
  drivers/crypto/caam/dpseci.h                      |  395 ++
@@ -62,7 +62,8 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  drivers/crypto/caam/error.c                       |  127 +-
  drivers/crypto/caam/error.h                       |   10 +-
  drivers/crypto/caam/intern.h                      |   31 +-
- drivers/crypto/caam/jr.c                          |   55 +-
+ drivers/crypto/caam/jr.c                          |   97 +-
+ drivers/crypto/caam/jr.h                          |    2 +
  drivers/crypto/caam/key_gen.c                     |   32 +-
  drivers/crypto/caam/key_gen.h                     |   36 +-
  drivers/crypto/caam/pdb.h                         |   62 +
@@ -83,7 +84,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  include/uapi/linux/cryptouser.h                   |    5 +
  scripts/spelling.txt                              |    3 +
  sound/soc/amd/acp-pcm-dma.c                       |    2 +-
- 54 files changed, 17263 insertions(+), 3955 deletions(-)
+ 55 files changed, 17310 insertions(+), 3955 deletions(-)
  create mode 100644 crypto/acompress.c
  create mode 100644 crypto/scompress.c
  create mode 100644 crypto/tls.c
@@ -776,7 +777,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  };
  
  struct tcrypt_result {
-@@ -1329,6 +1329,10 @@ static int do_test(const char *alg, u32
+@@ -1331,6 +1331,10 @@ static int do_test(const char *alg, u32
  		ret += tcrypt_test("hmac(sha3-512)");
  		break;
  
@@ -787,7 +788,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	case 150:
  		ret += tcrypt_test("ansi_cprng");
  		break;
-@@ -1390,6 +1394,9 @@ static int do_test(const char *alg, u32
+@@ -1392,6 +1396,9 @@ static int do_test(const char *alg, u32
  	case 190:
  		ret += tcrypt_test("authenc(hmac(sha512),cbc(des3_ede))");
  		break;
@@ -797,7 +798,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	case 200:
  		test_cipher_speed("ecb(aes)", ENCRYPT, sec, NULL, 0,
  				speed_template_16_24_32);
-@@ -1404,9 +1411,9 @@ static int do_test(const char *alg, u32
+@@ -1406,9 +1413,9 @@ static int do_test(const char *alg, u32
  		test_cipher_speed("lrw(aes)", DECRYPT, sec, NULL, 0,
  				speed_template_32_40_48);
  		test_cipher_speed("xts(aes)", ENCRYPT, sec, NULL, 0,
@@ -809,7 +810,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  		test_cipher_speed("cts(cbc(aes))", ENCRYPT, sec, NULL, 0,
  				speed_template_16_24_32);
  		test_cipher_speed("cts(cbc(aes))", DECRYPT, sec, NULL, 0,
-@@ -1837,9 +1844,9 @@ static int do_test(const char *alg, u32
+@@ -1839,9 +1846,9 @@ static int do_test(const char *alg, u32
  		test_acipher_speed("lrw(aes)", DECRYPT, sec, NULL, 0,
  				   speed_template_32_40_48);
  		test_acipher_speed("xts(aes)", ENCRYPT, sec, NULL, 0,
@@ -15259,9 +15260,9 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +}
 +
 +/*
-+ * qi_cache_alloc - Allocate buffers from CAAM-QI cache
++ * qi_cache_zalloc - Allocate buffers from CAAM-QI cache
 + *
-+ * Allocate data on the hotpath. Instead of using kmalloc, one can use the
++ * Allocate data on the hotpath. Instead of using kzalloc, one can use the
 + * services of the CAAM QI memory cache (backed by kmem_cache). The buffers
 + * will have a size of CAAM_QI_MEMCACHE_SIZE, which should be sufficient for
 + * hosting 16 SG entries.
@@ -15270,15 +15271,15 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 + *
 + * Returns a pointer to a retrieved buffer on success or NULL on failure.
 + */
-+static inline void *qi_cache_alloc(gfp_t flags)
++static inline void *qi_cache_zalloc(gfp_t flags)
 +{
-+	return kmem_cache_alloc(qi_cache, flags);
++	return kmem_cache_zalloc(qi_cache, flags);
 +}
 +
 +/*
 + * qi_cache_free - Frees buffers allocated from CAAM-QI cache
 + *
-+ * @obj - buffer previously allocated by qi_cache_alloc
++ * @obj - buffer previously allocated by qi_cache_zalloc
 + *
 + * No checking is being done, the call is a passthrough call to
 + * kmem_cache_free(...)
@@ -15690,7 +15691,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	enum optype op_type = encrypt ? ENCRYPT : DECRYPT;
 +
 +	/* allocate space for base edesc and link tables */
-+	edesc = qi_cache_alloc(GFP_DMA | flags);
++	edesc = qi_cache_zalloc(GFP_DMA | flags);
 +	if (unlikely(!edesc)) {
 +		dev_err(dev, "could not allocate extended descriptor\n");
 +		return ERR_PTR(-ENOMEM);
@@ -15895,7 +15896,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	}
 +
 +	/* allocate space for base edesc and link tables */
-+	edesc = qi_cache_alloc(GFP_DMA | flags);
++	edesc = qi_cache_zalloc(GFP_DMA | flags);
 +	if (unlikely(!edesc)) {
 +		dev_err(dev, "could not allocate extended descriptor\n");
 +		return ERR_PTR(-ENOMEM);
@@ -16761,7 +16762,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	}
 +
 +	/* allocate space for base edesc and link tables */
-+	edesc = qi_cache_alloc(GFP_DMA | flags);
++	edesc = qi_cache_zalloc(GFP_DMA | flags);
 +	if (unlikely(!edesc)) {
 +		dev_err(dev, "could not allocate extended descriptor\n");
 +		caam_unmap(dev, req->src, req->dst, src_nents, dst_nents,
@@ -16916,7 +16917,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	}
 +
 +	/* allocate space for base edesc and link tables */
-+	edesc = qi_cache_alloc(GFP_DMA | flags);
++	edesc = qi_cache_zalloc(GFP_DMA | flags);
 +	if (!edesc) {
 +		dev_err(dev, "could not allocate extended descriptor\n");
 +		caam_unmap(dev, req->src, req->dst, src_nents, dst_nents,
@@ -22122,7 +22123,15 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  #define LDST_SRCDST_WORD_ALTDS_CLASS1	(0x0f << LDST_SRCDST_SHIFT)
  #define LDST_SRCDST_WORD_PKHA_A_SZ	(0x10 << LDST_SRCDST_SHIFT)
  #define LDST_SRCDST_WORD_PKHA_B_SZ	(0x11 << LDST_SRCDST_SHIFT)
-@@ -400,7 +395,7 @@ struct sec4_sg_entry {
+@@ -360,6 +355,7 @@ struct sec4_sg_entry {
+ #define FIFOLD_TYPE_PK_N	(0x08 << FIFOLD_TYPE_SHIFT)
+ #define FIFOLD_TYPE_PK_A	(0x0c << FIFOLD_TYPE_SHIFT)
+ #define FIFOLD_TYPE_PK_B	(0x0d << FIFOLD_TYPE_SHIFT)
++#define FIFOLD_TYPE_IFIFO	(0x0f << FIFOLD_TYPE_SHIFT)
+ 
+ /* Other types. Need to OR in last/flush bits as desired */
+ #define FIFOLD_TYPE_MSG_MASK	(0x38 << FIFOLD_TYPE_SHIFT)
+@@ -400,7 +396,7 @@ struct sec4_sg_entry {
  #define FIFOST_TYPE_PKHA_N	 (0x08 << FIFOST_TYPE_SHIFT)
  #define FIFOST_TYPE_PKHA_A	 (0x0c << FIFOST_TYPE_SHIFT)
  #define FIFOST_TYPE_PKHA_B	 (0x0d << FIFOST_TYPE_SHIFT)
@@ -22131,7 +22140,15 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  #define FIFOST_TYPE_AF_SBOX_TKEK (0x21 << FIFOST_TYPE_SHIFT)
  #define FIFOST_TYPE_PKHA_E_JKEK	 (0x22 << FIFOST_TYPE_SHIFT)
  #define FIFOST_TYPE_PKHA_E_TKEK	 (0x23 << FIFOST_TYPE_SHIFT)
-@@ -1107,8 +1102,8 @@ struct sec4_sg_entry {
+@@ -413,6 +409,7 @@ struct sec4_sg_entry {
+ #define FIFOST_TYPE_MESSAGE_DATA (0x30 << FIFOST_TYPE_SHIFT)
+ #define FIFOST_TYPE_RNGSTORE	 (0x34 << FIFOST_TYPE_SHIFT)
+ #define FIFOST_TYPE_RNGFIFO	 (0x35 << FIFOST_TYPE_SHIFT)
++#define FIFOST_TYPE_METADATA	 (0x3e << FIFOST_TYPE_SHIFT)
+ #define FIFOST_TYPE_SKIP	 (0x3f << FIFOST_TYPE_SHIFT)
+ 
+ /*
+@@ -1107,8 +1104,8 @@ struct sec4_sg_entry {
  /* For non-protocol/alg-only op commands */
  #define OP_ALG_TYPE_SHIFT	24
  #define OP_ALG_TYPE_MASK	(0x7 << OP_ALG_TYPE_SHIFT)
@@ -22142,7 +22159,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  #define OP_ALG_ALGSEL_SHIFT	16
  #define OP_ALG_ALGSEL_MASK	(0xff << OP_ALG_ALGSEL_SHIFT)
-@@ -1249,7 +1244,7 @@ struct sec4_sg_entry {
+@@ -1249,7 +1246,7 @@ struct sec4_sg_entry {
  #define OP_ALG_PKMODE_MOD_PRIMALITY	0x00f
  
  /* PKHA mode copy-memory functions */
@@ -22151,7 +22168,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  #define OP_ALG_PKMODE_SRC_REG_MASK	(7 << OP_ALG_PKMODE_SRC_REG_SHIFT)
  #define OP_ALG_PKMODE_DST_REG_SHIFT	10
  #define OP_ALG_PKMODE_DST_REG_MASK	(7 << OP_ALG_PKMODE_DST_REG_SHIFT)
-@@ -1445,7 +1440,7 @@ struct sec4_sg_entry {
+@@ -1445,10 +1442,11 @@ struct sec4_sg_entry {
  #define MATH_SRC1_REG2		(0x02 << MATH_SRC1_SHIFT)
  #define MATH_SRC1_REG3		(0x03 << MATH_SRC1_SHIFT)
  #define MATH_SRC1_IMM		(0x04 << MATH_SRC1_SHIFT)
@@ -22160,7 +22177,11 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  #define MATH_SRC1_INFIFO	(0x0a << MATH_SRC1_SHIFT)
  #define MATH_SRC1_OUTFIFO	(0x0b << MATH_SRC1_SHIFT)
  #define MATH_SRC1_ONE		(0x0c << MATH_SRC1_SHIFT)
-@@ -1629,4 +1624,31 @@ struct sec4_sg_entry {
++#define MATH_SRC1_ZERO		(0x0f << MATH_SRC1_SHIFT)
+ 
+ /* Destination selectors */
+ #define MATH_DEST_SHIFT		8
+@@ -1629,4 +1627,31 @@ struct sec4_sg_entry {
  /* Frame Descriptor Command for Replacement Job Descriptor */
  #define FD_CMD_REPLACE_JOB_DESC				0x20000000
  
@@ -24260,15 +24281,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  #endif /* CAAM_ERROR_H */
 --- a/drivers/crypto/caam/intern.h
 +++ b/drivers/crypto/caam/intern.h
-@@ -41,6 +41,7 @@ struct caam_drv_private_jr {
- 	struct device		*dev;
- 	int ridx;
- 	struct caam_job_ring __iomem *rregs;	/* JobR's register space */
-+	struct tasklet_struct irqtask;
- 	int irq;			/* One per queue */
- 
- 	/* Number of scatterlist crypt transforms active on the JobR */
-@@ -63,10 +64,9 @@ struct caam_drv_private_jr {
+@@ -64,10 +64,9 @@ struct caam_drv_private_jr {
   * Driver-private storage for a single CAAM block instance
   */
  struct caam_drv_private {
@@ -24282,7 +24295,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  	/* Physical-presence section */
  	struct caam_ctrl __iomem *ctrl; /* controller region */
-@@ -102,11 +102,6 @@ struct caam_drv_private {
+@@ -103,11 +102,6 @@ struct caam_drv_private {
  #ifdef CONFIG_DEBUG_FS
  	struct dentry *dfs_root;
  	struct dentry *ctl; /* controller dir */
@@ -24294,7 +24307,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	struct debugfs_blob_wrapper ctl_kek_wrap, ctl_tkek_wrap, ctl_tdsk_wrap;
  	struct dentry *ctl_kek, *ctl_tkek, *ctl_tdsk;
  #endif
-@@ -114,4 +109,22 @@ struct caam_drv_private {
+@@ -115,4 +109,22 @@ struct caam_drv_private {
  
  void caam_jr_algapi_init(struct device *dev);
  void caam_jr_algapi_remove(struct device *dev);
@@ -24327,79 +24340,68 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  #include "regs.h"
  #include "jr.h"
  #include "desc.h"
-@@ -73,6 +74,8 @@ static int caam_jr_shutdown(struct devic
+@@ -22,6 +23,14 @@ struct jr_driver_data {
  
- 	ret = caam_reset_hw_jr(dev);
+ static struct jr_driver_data driver_data;
  
-+	tasklet_kill(&jrp->irqtask);
++static int jr_driver_probed;
 +
- 	/* Release interrupt */
- 	free_irq(jrp->irq, dev);
- 
-@@ -128,7 +131,7 @@ static irqreturn_t caam_jr_interrupt(int
- 
- 	/*
- 	 * Check the output ring for ready responses, kick
--	 * the threaded irq if jobs done.
-+	 * tasklet if jobs done.
- 	 */
- 	irqstate = rd_reg32(&jrp->rregs->jrintstatus);
- 	if (!irqstate)
-@@ -150,13 +153,18 @@ static irqreturn_t caam_jr_interrupt(int
- 	/* Have valid interrupt at this point, just ACK and trigger */
- 	wr_reg32(&jrp->rregs->jrintstatus, irqstate);
- 
--	return IRQ_WAKE_THREAD;
-+	preempt_disable();
-+	tasklet_schedule(&jrp->irqtask);
-+	preempt_enable();
++int caam_jr_driver_probed(void)
++{
++	return jr_driver_probed;
++}
++EXPORT_SYMBOL(caam_jr_driver_probed);
 +
-+	return IRQ_HANDLED;
- }
- 
--static irqreturn_t caam_jr_threadirq(int irq, void *st_dev)
-+/* Deferred service handler, run as interrupt-fired tasklet */
-+static void caam_jr_dequeue(unsigned long devarg)
+ static int caam_reset_hw_jr(struct device *dev)
  {
- 	int hw_idx, sw_idx, i, head, tail;
--	struct device *dev = st_dev;
-+	struct device *dev = (struct device *)devarg;
  	struct caam_drv_private_jr *jrp = dev_get_drvdata(dev);
- 	void (*usercall)(struct device *dev, u32 *desc, u32 status, void *arg);
- 	u32 *userdesc, userstatus;
-@@ -230,8 +238,6 @@ static irqreturn_t caam_jr_threadirq(int
+@@ -118,6 +127,8 @@ static int caam_jr_remove(struct platfor
+ 		dev_err(jrdev, "Failed to shut down job ring\n");
+ 	irq_dispose_mapping(jrpriv->irq);
  
- 	/* reenable / unmask IRQs */
- 	clrsetbits_32(&jrp->rregs->rconfig_lo, JRCFG_IMSK, 0);
--
--	return IRQ_HANDLED;
++	jr_driver_probed--;
++
+ 	return ret;
  }
+ 
+@@ -280,6 +291,36 @@ struct device *caam_jr_alloc(void)
+ EXPORT_SYMBOL(caam_jr_alloc);
  
  /**
-@@ -389,10 +395,11 @@ static int caam_jr_init(struct device *d
- 
- 	jrp = dev_get_drvdata(dev);
- 
-+	tasklet_init(&jrp->irqtask, caam_jr_dequeue, (unsigned long)dev);
++ * caam_jridx_alloc() - Alloc a specific job ring based on its index.
++ *
++ * returns :  pointer to the newly allocated physical
++ *	      JobR dev can be written to if successful.
++ **/
++struct device *caam_jridx_alloc(int idx)
++{
++	struct caam_drv_private_jr *jrpriv;
++	struct device *dev = ERR_PTR(-ENODEV);
 +
- 	/* Connect job ring interrupt handler. */
--	error = request_threaded_irq(jrp->irq, caam_jr_interrupt,
--				     caam_jr_threadirq, IRQF_SHARED,
--				     dev_name(dev), dev);
-+	error = request_irq(jrp->irq, caam_jr_interrupt, IRQF_SHARED,
-+			    dev_name(dev), dev);
- 	if (error) {
- 		dev_err(dev, "can't connect JobR %d interrupt (%d)\n",
- 			jrp->ridx, jrp->irq);
-@@ -454,6 +461,7 @@ out_free_inpring:
- out_free_irq:
- 	free_irq(jrp->irq, dev);
- out_kill_deq:
-+	tasklet_kill(&jrp->irqtask);
- 	return error;
- }
- 
-@@ -489,15 +497,28 @@ static int caam_jr_probe(struct platform
++	spin_lock(&driver_data.jr_alloc_lock);
++
++	if (list_empty(&driver_data.jr_list))
++		goto end;
++
++	list_for_each_entry(jrpriv, &driver_data.jr_list, list_node) {
++		if (jrpriv->ridx == idx) {
++			atomic_inc(&jrpriv->tfm_count);
++			dev = jrpriv->dev;
++			break;
++		}
++	}
++
++end:
++	spin_unlock(&driver_data.jr_alloc_lock);
++	return dev;
++}
++EXPORT_SYMBOL(caam_jridx_alloc);
++
++/**
+  * caam_jr_free() - Free the Job Ring
+  * @rdev     - points to the dev that identifies the Job ring to
+  *             be released.
+@@ -496,15 +537,28 @@ static int caam_jr_probe(struct platform
  		return -ENOMEM;
  	}
  
@@ -24435,7 +24437,12 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  	/* Identify the interrupt */
  	jrpriv->irq = irq_of_parse_and_map(nprop, 0);
-@@ -520,7 +541,7 @@ static int caam_jr_probe(struct platform
+@@ -524,10 +578,12 @@ static int caam_jr_probe(struct platform
+ 
+ 	atomic_set(&jrpriv->tfm_count, 0);
+ 
++	jr_driver_probed++;
++
  	return 0;
  }
  
@@ -24444,6 +24451,18 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	{
  		.compatible = "fsl,sec-v4.0-job-ring",
  	},
+--- a/drivers/crypto/caam/jr.h
++++ b/drivers/crypto/caam/jr.h
+@@ -8,7 +8,9 @@
+ #define JR_H
+ 
+ /* Prototypes for backend-level services exposed to APIs */
++int caam_jr_driver_probed(void);
+ struct device *caam_jr_alloc(void);
++struct device *caam_jridx_alloc(int idx);
+ void caam_jr_free(struct device *rdev);
+ int caam_jr_enqueue(struct device *dev, u32 *desc,
+ 		    void (*cbk)(struct device *dev, u32 *desc, u32 status,
 --- a/drivers/crypto/caam/key_gen.c
 +++ b/drivers/crypto/caam/key_gen.c
 @@ -41,15 +41,29 @@ Split key generation--------------------

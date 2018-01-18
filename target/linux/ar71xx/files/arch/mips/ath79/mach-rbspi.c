@@ -1,6 +1,7 @@
 /*
  *  MikroTik SPI-NOR RouterBOARDs support
  *
+ *  - MikroTik RouterBOARD mAP 2nD
  *  - MikroTik RouterBOARD mAP L-2nD
  *  - MikroTik RouterBOARD 941L-2nD
  *  - MikroTik RouterBOARD 951Ui-2nD
@@ -10,11 +11,11 @@
  *  - MikroTik RouterBOARD 750P-PBr2
  *  - MikroTik RouterBOARD 750 r2
  *  - MikroTik RouterBOARD LHG 5nD
+ *  - MikroTik RouterBOARD wAP2nD
+ *  - MikroTik RouterBOARD wAP G-5HacT2HnDwAP (wAP AC)
  *
  *  Preliminary support for the following hardware
- *  - MikroTik RouterBOARD wAP2nD
  *  - MikroTik RouterBOARD cAP2nD
- *  - MikroTik RouterBOARD mAP2nD
  *  Furthermore, the cAP lite (cAPL2nD) appears to feature the exact same
  *  hardware as the mAP L-2nD. It is unknown if they share the same board
  *  identifier.
@@ -41,6 +42,8 @@
 #include <linux/mtd/partitions.h>
 
 #include <linux/ar8216_platform.h>
+#include <linux/platform_data/phy-at803x.h>
+#include <linux/platform_data/mdio-gpio.h>
 
 #include <asm/prom.h>
 #include <asm/mach-ath79/ar71xx_regs.h>
@@ -134,9 +137,21 @@ static struct flash_platform_data rbspi_spi_flash_data = {
 	.nr_parts = ARRAY_SIZE(rbspi_spi_partitions),
 };
 
-/* Several boards only have a single reset button wired to GPIO 16 */
+/* Several boards only have a single reset button, wired to GPIO 1, 16 or 20 */
+#define RBSPI_GPIO_BTN_RESET01	1
 #define RBSPI_GPIO_BTN_RESET16	16
 #define RBSPI_GPIO_BTN_RESET20	20
+
+static struct gpio_keys_button rbspi_gpio_keys_reset01[] __initdata = {
+	{
+		.desc = "Reset button",
+		.type = EV_KEY,
+		.code = KEY_RESTART,
+		.debounce_interval = RBSPI_KEYS_DEBOUNCE_INTERVAL,
+		.gpio = RBSPI_GPIO_BTN_RESET01,
+		.active_low = 1,
+	},
+};
 
 static struct gpio_keys_button rbspi_gpio_keys_reset16[] __initdata = {
 	{
@@ -405,7 +420,7 @@ static struct gpio_led rbmap_leds[] __initdata = {
 		.active_low = 1,
 	}, {
 		.name = "rb:green:eth2",
-		.gpio = RBMAP_GPIO_LED_WLAN,
+		.gpio = RBMAP_GPIO_LED_LAN2,
 		.active_low = 1,
 	}, {
 		.name = "rb:red:poe_out",
@@ -485,9 +500,44 @@ static struct gpio_keys_button rblhg_gpio_keys[] __initdata = {
 	},
 };
 
+/* RB w APG-5HacT2HnD (wAP AC) gpios*/
+#define RBWAPGSC_LED1		1
+#define RBWAPGSC_LED2		8
+#define RBWAPGSC_LED3		9
+#define RBWAPGSC_POWERLED		16
+#define RBWAPGSC_GPIO_MDIO_MDC		12
+#define RBWAPGSC_GPIO_MDIO_DATA		11
+#define RBWAPGSC_MDIO_PHYADDR		0
+
+static struct gpio_led rbwapgsc_leds[] __initdata = {
+	{
+		.name = "rb:green:led1",
+		.gpio = RBWAPGSC_LED1,
+		.active_low = 1,
+	},{
+		.name = "rb:blue:power",
+		.gpio = RBWAPGSC_POWERLED,
+		.active_low = 1,
+	},
+};
+
+static struct mdio_gpio_platform_data rbwapgsc_mdio_data = {
+	.mdc = RBWAPGSC_GPIO_MDIO_MDC,
+	.mdio = RBWAPGSC_GPIO_MDIO_DATA,
+	.phy_mask = ~BIT(RBWAPGSC_MDIO_PHYADDR),
+};
+
+static struct platform_device rbwapgsc_phy_device = {
+	.name = "mdio-gpio",
+	.id = 1,
+	.dev = {
+		.platform_data = &rbwapgsc_mdio_data
+	},
+};
 
 static struct gen_74x164_chip_platform_data rbspi_ssr_data = {
 	.base = RBSPI_SSR_GPIO_BASE,
+	.num_registers = 1,
 };
 
 /* the spi-ath79 driver can only natively handle CS0. Other CS are bit-banged */
@@ -537,7 +587,7 @@ void __init rbspi_wlan_init(u16 id, int wmac_offset)
 }
 
 #define RBSPI_MACH_BUFLEN	64
-/* 
+/*
  * Common platform init routine for all SPI NOR devices.
  */
 static int __init rbspi_platform_setup(void)
@@ -640,7 +690,7 @@ static void __init rbspi_network_setup(u32 flags, int gmac1_offset,
 		rbspi_wlan_init(1, wmac1_offset);
 }
 
-/* 
+/*
  * Init the mAP lite hardware (QCA953x).
  * The mAP L-2nD (mAP lite) has a single ethernet port, connected to PHY0.
  * Trying to use GMAC0 in direct mode was unsucessful, so we're
@@ -872,7 +922,7 @@ static void __init rblhg_setup(void)
 }
 
 /*
- * Init the wAP hardware (EXPERIMENTAL).
+ * Init the wAP hardware.
  * The wAP 2nD has a single ethernet port.
  */
 static void __init rbwap_setup(void)
@@ -888,6 +938,11 @@ static void __init rbwap_setup(void)
 	rbspi_network_setup(flags, 0, 1, 0);
 
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(rbwap_leds), rbwap_leds);
+
+	/* wAP has a single reset button as GPIO 16 */
+	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
+					ARRAY_SIZE(rbspi_gpio_keys_reset16),
+					rbspi_gpio_keys_reset16);
 }
 
 /*
@@ -914,13 +969,14 @@ static void __init rbcap_setup(void)
 }
 
 /*
- * Init the mAP hardware (EXPERIMENTAL).
- * The mAP 2nD has two ethernet ports, PoE output and an SSR for LED
- * multiplexing.
+ * Init the mAP hardware.
+ * The mAP 2nD has two ethernet ports, PoE output, SSR for LED
+ * multiplexing and USB port.
  */
 static void __init rbmap_setup(void)
 {
-	u32 flags = RBSPI_HAS_WLAN0 | RBSPI_HAS_SSR | RBSPI_HAS_POE;
+	u32 flags = RBSPI_HAS_USB | RBSPI_HAS_WLAN0 |
+			RBSPI_HAS_SSR | RBSPI_HAS_POE;
 
 	if (rbspi_platform_setup())
 		return;
@@ -933,12 +989,65 @@ static void __init rbmap_setup(void)
 
 	if (flags & RBSPI_HAS_POE)
 		gpio_request_one(RBMAP_GPIO_POE_POWER,
-				GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT_DIR_FIXED,
+				GPIOF_OUT_INIT_LOW | GPIOF_EXPORT_DIR_FIXED,
 				"POE power");
 
+	/* USB power GPIO is inverted, set GPIOF_ACTIVE_LOW for consistency */
+	if (flags & RBSPI_HAS_USB)
+		gpio_request_one(RBMAP_GPIO_USB_POWER,
+				GPIOF_OUT_INIT_HIGH | GPIOF_ACTIVE_LOW |
+					GPIOF_EXPORT_DIR_FIXED,
+				"USB power");
+
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(rbmap_leds), rbmap_leds);
+
+	/* mAP 2nD has a single reset button as gpio 16 */
+	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
+					ARRAY_SIZE(rbspi_gpio_keys_reset16),
+					rbspi_gpio_keys_reset16);
 }
 
+/*
+ * Init the wAPGSC (RB wAPG-5HacT2HnD // wAP AC) hardware.
+ * The wAPGSC has one Ethernet port via AR8033 with PoE input, dual radio (SoC
+ * 2.4 GHz and external QCA9880) and a ZT2046Q temperature and voltage sensor
+ * (currently not supported).
+ */
+static void __init rbwapgsc_setup(void)
+{
+	u32 flags = RBSPI_HAS_PCI;
+
+	if (rbspi_platform_setup())
+		return;
+
+	rbspi_peripherals_setup(flags);
+
+	platform_device_register(&rbwapgsc_phy_device);
+
+	ath79_init_mac(ath79_eth1_data.mac_addr, ath79_mac_base, 0);
+	ath79_eth1_data.mii_bus_dev = &rbwapgsc_phy_device.dev;
+	ath79_eth1_data.phy_if_mode = PHY_INTERFACE_MODE_SGMII;
+	ath79_eth1_data.phy_mask = BIT(RBWAPGSC_MDIO_PHYADDR);
+	ath79_eth1_pll_data.pll_1000 = 0x03000101;
+	ath79_eth1_pll_data.pll_100 = 0x80000101;
+	ath79_eth1_pll_data.pll_10 = 0x80001313;
+	ath79_eth1_data.speed = SPEED_1000;
+	ath79_eth1_data.duplex = DUPLEX_FULL;
+	ath79_register_eth(1);
+
+	rbspi_wlan_init(1, 2);
+
+	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
+		ARRAY_SIZE(rbspi_gpio_keys_reset01),
+		rbspi_gpio_keys_reset01);
+
+	ath79_gpio_function_enable(QCA955X_GPIO_FUNC_JTAG_DISABLE|
+				QCA955X_GPIO_REG_OUT_FUNC4|
+				QCA955X_GPIO_REG_OUT_FUNC3);
+
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(rbwapgsc_leds),
+			rbwapgsc_leds);
+}
 
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_MAPL, "map-hb", rbmapl_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_941, "H951L", rbhapl_setup);
@@ -949,3 +1058,4 @@ MIPS_MACHINE_NONAME(ATH79_MACH_RB_LHG5, "lhg", rblhg_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_WAP, "wap-hb", rbwap_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_CAP, "cap-hb", rbcap_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_MAP, "map2-hb", rbmap_setup);
+MIPS_MACHINE_NONAME(ATH79_MACH_RB_WAPAC, "wapg-sc", rbwapgsc_setup);

@@ -21,6 +21,10 @@ ifeq ($(PKG_VERSION),2.28)
   PKG_HASH:=6297433ee120b11b4b0a1c8f3512d7d73501753142ab9e2daa13c5a3edd32a72
 endif
 
+ifeq ($(PKG_VERSION),2.29.1)
+  PKG_HASH:=1509dff41369fb70aed23682351b663b56db894034773e6dbf7d5d6071fc55cc
+endif
+
 ifneq ($(CONFIG_BINUTILS_VERSION_2_28_ARC),)
   PKG_REV:=arc-2017.03-release
   PKG_SOURCE_URL:=https://github.com/foss-for-synopsys-dwc-arc-processors/binutils-gdb/archive/$(PKG_REV)/

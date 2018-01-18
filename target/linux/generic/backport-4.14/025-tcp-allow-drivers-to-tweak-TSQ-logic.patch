@@ -1,0 +1,85 @@
+From: Eric Dumazet <edumazet@google.com>
+Date: Sat, 11 Nov 2017 15:54:12 -0800
+Subject: [PATCH] tcp: allow drivers to tweak TSQ logic
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+I had many reports that TSQ logic breaks wifi aggregation.
+
+Current logic is to allow up to 1 ms of bytes to be queued into qdisc
+and drivers queues.
+
+But Wifi aggregation needs a bigger budget to allow bigger rates to
+be discovered by various TCP Congestion Controls algorithms.
+
+This patch adds an extra socket field, allowing wifi drivers to select
+another log scale to derive TCP Small Queue credit from current pacing
+rate.
+
+Initial value is 10, meaning that this patch does not change current
+behavior.
+
+We expect wifi drivers to set this field to smaller values (tests have
+been done with values from 6 to 9)
+
+They would have to use following template :
+
+if (skb->sk && skb->sk->sk_pacing_shift != MY_PACING_SHIFT)
+     skb->sk->sk_pacing_shift = MY_PACING_SHIFT;
+
+Ref: https://bugs.launchpad.net/ubuntu/+source/linux/+bug/1670041
+Signed-off-by: Eric Dumazet <edumazet@google.com>
+Cc: Johannes Berg <johannes.berg@intel.com>
+Cc: Toke HÃ¸iland-JÃ¸rgensen <toke@toke.dk>
+Cc: Kir Kolyshkin <kir@openvz.org>
+---
+--- a/include/net/sock.h
++++ b/include/net/sock.h
+@@ -267,6 +267,7 @@ struct sock_common {
+   *	@sk_gso_type: GSO type (e.g. %SKB_GSO_TCPV4)
+   *	@sk_gso_max_size: Maximum GSO segment size to build
+   *	@sk_gso_max_segs: Maximum number of GSO segments
++  *	@sk_pacing_shift: scaling factor for TCP Small Queues
+   *	@sk_lingertime: %SO_LINGER l_linger setting
+   *	@sk_backlog: always used with the per-socket spinlock held
+   *	@sk_callback_lock: used with the callbacks in the end of this struct
+@@ -448,6 +449,8 @@ struct sock {
+ 	kmemcheck_bitfield_end(flags);
+ 
+ 	u16			sk_gso_max_segs;
++#define sk_pacing_shift sk_pacing_shift /* for backport checks */
++	u8			sk_pacing_shift;
+ 	unsigned long	        sk_lingertime;
+ 	struct proto		*sk_prot_creator;
+ 	rwlock_t		sk_callback_lock;
+--- a/net/core/sock.c
++++ b/net/core/sock.c
+@@ -2744,6 +2744,7 @@ void sock_init_data(struct socket *sock,
+ 
+ 	sk->sk_max_pacing_rate = ~0U;
+ 	sk->sk_pacing_rate = ~0U;
++	sk->sk_pacing_shift = 10;
+ 	sk->sk_incoming_cpu = -1;
+ 	/*
+ 	 * Before updating sk_refcnt, we must commit prior changes to memory
+--- a/net/ipv4/tcp_output.c
++++ b/net/ipv4/tcp_output.c
+@@ -1671,7 +1671,7 @@ u32 tcp_tso_autosize(const struct sock *
+ {
+ 	u32 bytes, segs;
+ 
+-	bytes = min(sk->sk_pacing_rate >> 10,
++	bytes = min(sk->sk_pacing_rate >> sk->sk_pacing_shift,
+ 		    sk->sk_gso_max_size - 1 - MAX_TCP_HEADER);
+ 
+ 	/* Goal is to send at least one packet per ms,
+@@ -2145,7 +2145,7 @@ static bool tcp_small_queue_check(struct
+ {
+ 	unsigned int limit;
+ 
+-	limit = max(2 * skb->truesize, sk->sk_pacing_rate >> 10);
++	limit = max(2 * skb->truesize, sk->sk_pacing_rate >> sk->sk_pacing_shift);
+ 	limit = min_t(u32, limit, sysctl_tcp_limit_output_bytes);
+ 	limit <<= factor;
+ 

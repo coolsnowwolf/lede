@@ -18,6 +18,7 @@ PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
 PKG_SOURCE:=libevent-$(PKG_VERSION)-stable.tar.gz
 PKG_MAINTAINER:=Dengfeng Liu <liudengfeng@kunteng.org>
 PKG_LICENSE:=BSD-3-Clause
+PKG_CPE_ID:=cpe:/a:libevent_project:libevent
 
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1

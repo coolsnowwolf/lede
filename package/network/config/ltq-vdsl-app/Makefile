@@ -9,7 +9,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=ltq-vdsl-app
 PKG_VERSION:=4.17.18.6
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_BASE_NAME:=dsl_cpe_control
 PKG_SOURCE:=$(PKG_BASE_NAME)_vrx-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources
@@ -17,7 +17,7 @@ PKG_HASH:=da8bb929526a61aea0e153ef524331fcd472a1ebbc6d88ca017735a4f82ece02
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_BASE_NAME)-$(PKG_VERSION)
 PKG_LICENSE:=BSD-2-Clause
 
-PKG_BUILD_DEPENDS:=kmod-ltq-vdsl-vr9
+PKG_BUILD_DEPENDS:=ltq-vdsl
 
 PKG_FLAGS:=nonshared
 

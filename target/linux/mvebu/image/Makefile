@@ -163,11 +163,25 @@ define Device/marvell-nand
   DEVICE_TITLE := Marvell Armada $(1)
 endef
 
-Device/armada-370-db = $(call Device/marvell-nand,370 DB (DB-88F6710-BP-DDR3))
-Device/armada-370-rd = $(call Device/marvell-nand,370 RD (RD-88F6710-A1))
-Device/armada-xp-db = $(call Device/marvell-nand,XP DB (DB-78460-BP))
-Device/armada-xp-gp = $(call Device/marvell-nand,XP GP (DB-MV784MP-GP))
-TARGET_DEVICES += armada-370-db armada-370-rd armada-xp-db armada-xp-gp
+define Device/armada-370-db
+	$(call Device/marvell-nand,370 DB (DB-88F6710-BP-DDR3))
+endef
+TARGET_DEVICES += armada-370-db
+
+define Device/armada-370-rd
+	$(call Device/marvell-nand,370 RD (RD-88F6710-A1))
+endef
+TARGET_DEVICES += armada-370-rd
+
+define Device/armada-xp-db
+	$(call Device/marvell-nand,XP DB (DB-78460-BP))
+endef
+TARGET_DEVICES += armada-xp-db
+
+define Device/armada-xp-gp
+	$(call Device/marvell-nand,XP GP (DB-MV784MP-GP))
+endef
+TARGET_DEVICES += armada-xp-gp
 
 define Device/armada-388-rd
   DEVICE_TITLE := Marvell Armada 388 RD (RD-88F6820-AP)

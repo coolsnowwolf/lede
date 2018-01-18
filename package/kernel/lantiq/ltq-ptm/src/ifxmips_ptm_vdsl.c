@@ -121,7 +121,7 @@ static struct net_device_ops g_ptm_netdev_ops = {
 };
 
 static struct net_device *g_net_dev[1] = {0};
-static char *g_net_dev_name[1] = {"ptm0"};
+static char *g_net_dev_name[1] = {"dsl0"};
 
 static int g_ptm_prio_queue_map[8];
 

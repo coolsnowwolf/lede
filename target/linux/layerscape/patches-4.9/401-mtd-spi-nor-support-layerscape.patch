@@ -1,4 +1,4 @@
-From 120fa458ffe2250ea58578ccfc85e674005463dc Mon Sep 17 00:00:00 2001
+From a3757157751a8a5302ee5e11faf828dc5db02018 Mon Sep 17 00:00:00 2001
 From: Yangbo Lu <yangbo.lu@nxp.com>
 Date: Mon, 25 Sep 2017 10:53:50 +0800
 Subject: [PATCH] mtd: spi-nor: support layerscape
@@ -18,10 +18,10 @@ Signed-off-by: Ash Benz <ash.benz@bk.ru>
 Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 ---
  drivers/mtd/mtdchar.c             |   2 +-
- drivers/mtd/spi-nor/fsl-quadspi.c | 356 +++++++++++++++++++++++++++++++-------
- drivers/mtd/spi-nor/spi-nor.c     | 136 +++++++++++++--
+ drivers/mtd/spi-nor/fsl-quadspi.c | 327 +++++++++++++++++++++++++++++++-------
+ drivers/mtd/spi-nor/spi-nor.c     | 136 ++++++++++++++--
  include/linux/mtd/spi-nor.h       |  14 +-
- 4 files changed, 432 insertions(+), 76 deletions(-)
+ 4 files changed, 409 insertions(+), 70 deletions(-)
 
 --- a/drivers/mtd/mtdchar.c
 +++ b/drivers/mtd/mtdchar.c
@@ -209,13 +209,15 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  	fsl_qspi_unlock_lut(q);
  
-@@ -382,25 +449,51 @@ static void fsl_qspi_init_lut(struct fsl
+@@ -382,24 +449,50 @@ static void fsl_qspi_init_lut(struct fsl
  	for (i = 0; i < QUADSPI_LUT_NUM; i++)
  		qspi_writel(q, 0, base + QUADSPI_LUT_BASE + i * 4);
  
 -	/* Quad Read */
 -	lut_base = SEQID_QUAD_READ * 4;
--
++	/* Read */
++	lut_base = SEQID_READ * 4;
+ 
 -	if (q->nor_size <= SZ_16M) {
 -		cmd = SPINOR_OP_READ_1_1_4;
 -		addrlen = ADDR24BIT;
@@ -226,9 +228,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 -		addrlen = ADDR32BIT;
 -		dummy = 8;
 -	}
-+	/* Read */
-+	lut_base = SEQID_READ * 4;
- 
+-
 -	qspi_writel(q, LUT0(CMD, PAD1, cmd) | LUT1(ADDR, PAD1, addrlen),
 +	if (nor->flash_read == SPI_NOR_FAST) {
 +		qspi_writel(q, LUT0(CMD, PAD1, read_op) |
@@ -242,10 +242,11 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			read_op = 0xEC;
 +		qspi_writel(q,
 +			LUT0(CMD, PAD1, read_op) | LUT1(ADDR, PAD4, addrlen),
-+			base + QUADSPI_LUT(lut_base));
+ 			base + QUADSPI_LUT(lut_base));
+-	qspi_writel(q, LUT0(DUMMY, PAD1, dummy) | LUT1(FSL_READ, PAD4, rxfifo),
 +		qspi_writel(q,
 +			LUT0(MODE, PAD4, 0xff) | LUT1(DUMMY, PAD4, read_dm),
-+			base + QUADSPI_LUT(lut_base + 1));
+ 			base + QUADSPI_LUT(lut_base + 1));
 +		qspi_writel(q,
 +			LUT0(FSL_READ, PAD4, rxfifo),
 +			base + QUADSPI_LUT(lut_base + 2));
@@ -261,21 +262,19 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		/* read mode : 1-4-4, such as Spansion s25fl128s. */
 +		qspi_writel(q, LUT0(CMD, PAD1, read_op)
 +			| LUT1(ADDR_DDR, PAD4, addrlen),
- 			base + QUADSPI_LUT(lut_base));
--	qspi_writel(q, LUT0(DUMMY, PAD1, dummy) | LUT1(FSL_READ, PAD4, rxfifo),
++			base + QUADSPI_LUT(lut_base));
 +
 +		qspi_writel(q, LUT0(MODE_DDR, PAD4, 0xff)
 +			| LUT1(DUMMY, PAD1, read_dm),
- 			base + QUADSPI_LUT(lut_base + 1));
- 
++			base + QUADSPI_LUT(lut_base + 1));
++
 +		qspi_writel(q, LUT0(FSL_READ_DDR, PAD4, rxfifo)
 +			| LUT1(JMP_ON_CS, PAD1, 0),
 +			base + QUADSPI_LUT(lut_base + 2));
 +	}
-+
+ 
  	/* Write enable */
  	lut_base = SEQID_WREN * 4;
- 	qspi_writel(q, LUT0(CMD, PAD1, SPINOR_OP_WREN),
 @@ -409,16 +502,8 @@ static void fsl_qspi_init_lut(struct fsl
  	/* Page Program */
  	lut_base = SEQID_PP * 4;
@@ -501,50 +500,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  }
  
  /*
-@@ -681,19 +860,36 @@ static void fsl_qspi_init_abh_read(struc
- {
- 	void __iomem *base = q->iobase;
- 	int seqid;
-+	const struct fsl_qspi_devtype_data *devtype_data = q->devtype_data;
- 
- 	/* AHB configuration for access buffer 0/1/2 .*/
- 	qspi_writel(q, QUADSPI_BUFXCR_INVALID_MSTRID, base + QUADSPI_BUF0CR);
- 	qspi_writel(q, QUADSPI_BUFXCR_INVALID_MSTRID, base + QUADSPI_BUF1CR);
- 	qspi_writel(q, QUADSPI_BUFXCR_INVALID_MSTRID, base + QUADSPI_BUF2CR);
-+
- 	/*
--	 * Set ADATSZ with the maximum AHB buffer size to improve the
--	 * read performance.
-+	 * Errata: A-009282: QuadSPI data prefetch may result in incorrect data
-+	 * Workaround: Keep the read data size to 64 bits (8 bytes).
-+	 * This disables the prefetch on the AHB buffer and
-+	 * prevents this issue from occurring.
- 	 */
--	qspi_writel(q, QUADSPI_BUF3CR_ALLMST_MASK |
--			((q->devtype_data->ahb_buf_size / 8)
--			<< QUADSPI_BUF3CR_ADATSZ_SHIFT),
--			base + QUADSPI_BUF3CR);
-+	if (devtype_data->devtype == FSL_QUADSPI_LS2080A ||
-+	    devtype_data->devtype == FSL_QUADSPI_LS1021A) {
-+
-+		qspi_writel(q, QUADSPI_BUF3CR_ALLMST_MASK |
-+				(1 << QUADSPI_BUF3CR_ADATSZ_SHIFT),
-+				base + QUADSPI_BUF3CR);
-+
-+	} else {
-+		/*
-+		 * Set ADATSZ with the maximum AHB buffer size to improve the
-+		 * read performance.
-+		*/
-+		qspi_writel(q, QUADSPI_BUF3CR_ALLMST_MASK |
-+				((q->devtype_data->ahb_buf_size / 8)
-+				<< QUADSPI_BUF3CR_ADATSZ_SHIFT),
-+				base + QUADSPI_BUF3CR);
-+	}
- 
- 	/* We only use the buffer3 */
- 	qspi_writel(q, 0, base + QUADSPI_BUF0IND);
-@@ -704,6 +900,11 @@ static void fsl_qspi_init_abh_read(struc
+@@ -704,6 +883,11 @@ static void fsl_qspi_init_abh_read(struc
  	seqid = fsl_qspi_get_seqid(q, q->nor[0].read_opcode);
  	qspi_writel(q, seqid << QUADSPI_BFGENCR_SEQID_SHIFT,
  		q->iobase + QUADSPI_BFGENCR);
@@ -556,7 +512,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  }
  
  /* This function was used to prepare and enable QSPI clock */
-@@ -822,6 +1023,7 @@ static const struct of_device_id fsl_qsp
+@@ -822,6 +1006,7 @@ static const struct of_device_id fsl_qsp
  	{ .compatible = "fsl,imx7d-qspi", .data = (void *)&imx7d_data, },
  	{ .compatible = "fsl,imx6ul-qspi", .data = (void *)&imx6ul_data, },
  	{ .compatible = "fsl,ls1021a-qspi", .data = (void *)&ls1021a_data, },
@@ -564,21 +520,21 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	{ /* sentinel */ }
  };
  MODULE_DEVICE_TABLE(of, fsl_qspi_dt_ids);
-@@ -835,8 +1037,12 @@ static int fsl_qspi_read_reg(struct spi_
+@@ -835,8 +1020,12 @@ static int fsl_qspi_read_reg(struct spi_
  {
  	int ret;
  	struct fsl_qspi *q = nor->priv;
 +	u32 to = 0;
-+
-+	if (opcode == SPINOR_OP_SPANSION_RDAR)
-+		u8tou32(&to, nor->cmd_buf, 4);
  
 -	ret = fsl_qspi_runcmd(q, opcode, 0, len);
++	if (opcode == SPINOR_OP_SPANSION_RDAR)
++		u8tou32(&to, nor->cmd_buf, 4);
++
 +	ret = fsl_qspi_runcmd(q, opcode, to, len);
  	if (ret)
  		return ret;
  
-@@ -848,9 +1054,13 @@ static int fsl_qspi_write_reg(struct spi
+@@ -848,9 +1037,13 @@ static int fsl_qspi_write_reg(struct spi
  {
  	struct fsl_qspi *q = nor->priv;
  	int ret;
@@ -593,7 +549,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  		if (ret)
  			return ret;
  
-@@ -859,7 +1069,7 @@ static int fsl_qspi_write_reg(struct spi
+@@ -859,7 +1052,7 @@ static int fsl_qspi_write_reg(struct spi
  
  	} else if (len > 0) {
  		ret = fsl_qspi_nor_write(q, nor, opcode, 0,
@@ -602,7 +558,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  		if (ret > 0)
  			return 0;
  	} else {
-@@ -875,7 +1085,7 @@ static ssize_t fsl_qspi_write(struct spi
+@@ -875,7 +1068,7 @@ static ssize_t fsl_qspi_write(struct spi
  {
  	struct fsl_qspi *q = nor->priv;
  	ssize_t ret = fsl_qspi_nor_write(q, nor, nor->program_opcode, to,
@@ -611,7 +567,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  	/* invalid the data in the AHB buffer. */
  	fsl_qspi_invalid(q);
-@@ -922,7 +1132,7 @@ static ssize_t fsl_qspi_read(struct spi_
+@@ -922,7 +1115,7 @@ static ssize_t fsl_qspi_read(struct spi_
  		len);
  
  	/* Read out the data directly from the AHB buffer.*/
@@ -620,7 +576,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  		len);
  
  	return len;
-@@ -980,6 +1190,8 @@ static int fsl_qspi_probe(struct platfor
+@@ -980,6 +1173,8 @@ static int fsl_qspi_probe(struct platfor
  	struct spi_nor *nor;
  	struct mtd_info *mtd;
  	int ret, i = 0;
@@ -629,7 +585,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  	q = devm_kzalloc(dev, sizeof(*q), GFP_KERNEL);
  	if (!q)
-@@ -1027,6 +1239,12 @@ static int fsl_qspi_probe(struct platfor
+@@ -1027,6 +1222,12 @@ static int fsl_qspi_probe(struct platfor
  		goto clk_failed;
  	}
  
@@ -642,7 +598,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	/* find the irq */
  	ret = platform_get_irq(pdev, 0);
  	if (ret < 0) {
-@@ -1050,6 +1268,7 @@ static int fsl_qspi_probe(struct platfor
+@@ -1050,6 +1251,7 @@ static int fsl_qspi_probe(struct platfor
  
  	mutex_init(&q->lock);
  
@@ -650,7 +606,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	/* iterate the subnodes. */
  	for_each_available_child_of_node(dev->of_node, np) {
  		/* skip the holes */
-@@ -1076,18 +1295,25 @@ static int fsl_qspi_probe(struct platfor
+@@ -1076,18 +1278,25 @@ static int fsl_qspi_probe(struct platfor
  		ret = of_property_read_u32(np, "spi-max-frequency",
  				&q->clk_rate);
  		if (ret < 0)
@@ -680,7 +636,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  		/* Set the correct NOR size now. */
  		if (q->nor_size == 0) {
-@@ -1110,8 +1336,12 @@ static int fsl_qspi_probe(struct platfor
+@@ -1110,8 +1319,12 @@ static int fsl_qspi_probe(struct platfor
  			nor->page_size = q->devtype_data->txfifo;
  
  		i++;
@@ -935,7 +891,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  #ifdef CONFIG_MTD_SPI_NOR_USE_4K_SECTORS
  	/* prefer "small sector" erase if possible */
-@@ -1676,9 +1783,15 @@ int spi_nor_scan(struct spi_nor *nor, co
+@@ -1678,9 +1785,15 @@ int spi_nor_scan(struct spi_nor *nor, co
  	/* Some devices cannot do fast-read, no matter what DT tells us */
  	if (info->flags & SPI_NOR_NO_FR)
  		nor->flash_read = SPI_NOR_NORMAL;
@@ -954,7 +910,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  		ret = set_quad_mode(nor, info);
  		if (ret) {
  			dev_err(dev, "quad mode not supported\n");
-@@ -1691,6 +1804,9 @@ int spi_nor_scan(struct spi_nor *nor, co
+@@ -1693,6 +1806,9 @@ int spi_nor_scan(struct spi_nor *nor, co
  
  	/* Default commands */
  	switch (nor->flash_read) {

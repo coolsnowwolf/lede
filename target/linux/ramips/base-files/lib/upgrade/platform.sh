@@ -16,6 +16,7 @@ platform_check_image() {
 	a5-v11|\
 	ai-br100|\
 	air3gii|\
+	alfa-network,ac1200rm|\
 	all0239-3g|\
 	all0256n-4M|\
 	all0256n-8M|\
@@ -81,7 +82,6 @@ platform_check_image() {
 	kn_rf|\
 	kng_rc|\
 	linkits7688|\
-	linkits7688d|\
 	m2m|\
 	m3|\
 	m4-4M|\
@@ -108,6 +108,7 @@ platform_check_image() {
 	nbg-419n|\
 	nbg-419n2|\
 	newifi-d1|\
+	d-team,newifi-d2|\
 	nixcore-x1-8M|\
 	nixcore-x1-16M|\
 	nw718|\
@@ -130,6 +131,7 @@ platform_check_image() {
 	rt-ac51u|\
 	rt-g32-b1|\
 	rt-n10-plus|\
+	rt-n12p|\
 	rt-n13u|\
 	rt-n14u|\
 	rt-n15|\
@@ -144,9 +146,13 @@ platform_check_image() {
 	tew-714tru|\
 	timecloud|\
 	tiny-ac|\
+	u25awf-h1|\
+	u7621-06-256M-16M|\
+	u7628-01-128M-16M|\
 	ur-326n4g|\
 	ur-336un|\
 	v22rw-2x2|\
+	vonets,var11n-300|\
 	vocore-8M|\
 	vocore-16M|\
 	vocore2|\
@@ -193,11 +199,13 @@ platform_check_image() {
 	x8|\
 	y1|\
 	y1s|\
+	we1026-5g-16m|\
 	zbt-ape522ii|\
 	zbt-cpe102|\
 	zbt-wa05|\
 	zbt-we1326|\
 	zbt-we2026|\
+	zbtlink,zbt-we3526|\
 	zbt-we826-16M|\
 	zbt-we826-32M|\
 	zbt-wg2626|\
@@ -229,10 +237,13 @@ platform_check_image() {
 		}
 		return 0
 		;;
+	c20|\
 	c20i|\
 	c50|\
 	mr200|\
+	tplink,tl-mr3420-v5|\
 	tl-wr840n-v4|\
+	tl-wr840n-v5|\
 	tl-wr841n-v13)
 		[ "$magic" != "03000000" ] && {
 			echo "Invalid image type."

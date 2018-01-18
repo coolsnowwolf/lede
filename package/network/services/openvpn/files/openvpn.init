@@ -60,7 +60,7 @@ openvpn_add_instance() {
 	local dir="$2"
 	local conf="$3"
 
-	procd_open_instance
+	procd_open_instance "$name"
 	procd_set_param command "$PROG"	\
 		--syslog "openvpn($name)" \
 		--status "/var/run/openvpn.$name.status" \
@@ -103,28 +103,47 @@ start_instance() {
 }
 
 start_service() {
+	local instance="$1"
+	local instance_found=0
+
+	config_cb() {
+		local type="$1"
+		local name="$2"
+		if [ "$type" = "openvpn" ]; then
+			if [ -n "$instance" -a "$instance" = "$name" ]; then
+				instance_found=1
+			fi
+		fi
+	}
+
 	. /usr/share/openvpn/openvpn.options
 	config_load 'openvpn'
-	config_foreach start_instance 'openvpn'
 
-	local path name
-	for path in /etc/openvpn/*.conf; do
-		if [ -f "$path" ]; then
-			name="${path##*/}"; name="${name%.conf}"
+	if [ -n "$instance" ]; then
+		[ "$instance_found" -gt 0 ] || return
+		start_instance "$instance"
+	else
+		config_foreach start_instance 'openvpn'
 
-			# don't start configs again that are already started by uci
-			if echo "$UCI_STARTED" | grep -qxF "$path"; then
-				continue
+		local path name
+		for path in /etc/openvpn/*.conf; do
+			if [ -f "$path" ]; then
+				name="${path##*/}"; name="${name%.conf}"
 
-			# don't start configs which are set to disabled in uci
-			elif echo "$UCI_DISABLED" | grep -qxF "$path"; then
-				logger -t openvpn "$name.conf is disabled in /etc/config/openvpn"
-				continue
+				# don't start configs again that are already started by uci
+				if echo "$UCI_STARTED" | grep -qxF "$path"; then
+					continue
+
+				# don't start configs which are set to disabled in uci
+				elif echo "$UCI_DISABLED" | grep -qxF "$path"; then
+					logger -t openvpn "$name.conf is disabled in /etc/config/openvpn"
+					continue
+				fi
+
+				openvpn_add_instance "$name" "${path%/*}" "$path"
 			fi
-
-			openvpn_add_instance "$name" "${path%/*}" "$path"
-		fi
-	done
+		done
+	fi
 }
 
 service_triggers() {

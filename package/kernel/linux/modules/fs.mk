@@ -82,7 +82,7 @@ $(eval $(call KernelPackage,fs-autofs4))
 define KernelPackage/fs-btrfs
   SUBMENU:=$(FS_MENU)
   TITLE:=BTRFS filesystem support
-  DEPENDS:=+kmod-lib-crc32c +kmod-lib-lzo +kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +kmod-lib-raid6 +kmod-lib-xor
+  DEPENDS:=+kmod-lib-crc32c +kmod-lib-lzo +kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +kmod-lib-raid6 +kmod-lib-xor +LINUX_4_14:kmod-lib-zstd
   KCONFIG:=\
 	CONFIG_BTRFS_FS \
 	CONFIG_BTRFS_FS_POSIX_ACL=n \
@@ -106,7 +106,8 @@ define KernelPackage/fs-cifs
 	CONFIG_CIFS \
 	CONFIG_CIFS_XATTR=y \
 	CONFIG_CIFS_DFS_UPCALL=n \
-	CONFIG_CIFS_UPCALL=n
+	CONFIG_CIFS_UPCALL=n \
+	CONFIG_CIFS_SMB311=n
   FILES:=$(LINUX_DIR)/fs/cifs/cifs.ko
   AUTOLOAD:=$(call AutoLoad,30,cifs)
   $(call AddDepends/nls)
@@ -317,24 +318,54 @@ $(eval $(call KernelPackage,fs-msdos))
 
 define KernelPackage/fs-nfs
   SUBMENU:=$(FS_MENU)
-  TITLE:=NFS filesystem support
+  TITLE:=NFS filesystem client support
   DEPENDS:=+kmod-fs-nfs-common +kmod-dnsresolver
   KCONFIG:= \
 	CONFIG_NFS_FS \
 	CONFIG_NFS_USE_LEGACY_DNS=n \
 	CONFIG_NFS_USE_NEW_IDMAPPER=n
   FILES:= \
-	$(LINUX_DIR)/fs/nfs/nfs.ko \
-	$(LINUX_DIR)/fs/nfs/nfsv3.ko
-  AUTOLOAD:=$(call AutoLoad,40,nfs nfsv3)
+	$(LINUX_DIR)/fs/nfs/nfs.ko
+  AUTOLOAD:=$(call AutoLoad,40,nfs)
 endef
 
 define KernelPackage/fs-nfs/description
- Kernel module for NFS support
+ Kernel module for NFS client support
 endef
 
 $(eval $(call KernelPackage,fs-nfs))
 
+define KernelPackage/fs-nfs-v3
+  SUBMENU:=$(FS_MENU)
+  TITLE:=NFS3 filesystem client support
+  DEPENDS:=+kmod-fs-nfs
+  FILES:= \
+	$(LINUX_DIR)/fs/nfs/nfsv3.ko
+  AUTOLOAD:=$(call AutoLoad,41,nfsv3)
+endef
+
+define KernelPackage/fs-nfs-v3/description
+ Kernel module for NFS v3 client support
+endef
+
+$(eval $(call KernelPackage,fs-nfs-v3))
+
+define KernelPackage/fs-nfs-v4
+  SUBMENU:=$(FS_MENU)
+  TITLE:=NFS4 filesystem client support
+  DEPENDS:=+kmod-fs-nfs
+  KCONFIG:= \
+	CONFIG_NFS_V4=y
+  FILES:= \
+	$(LINUX_DIR)/fs/nfs/nfsv4.ko
+  AUTOLOAD:=$(call AutoLoad,41,nfsv4)
+endef
+
+define KernelPackage/fs-nfs-v4/description
+ Kernel module for NFS v4 support
+endef
+
+$(eval $(call KernelPackage,fs-nfs-v4))
 
 define KernelPackage/fs-nfs-common
   SUBMENU:=$(FS_MENU)
@@ -353,23 +384,33 @@ endef
 $(eval $(call KernelPackage,fs-nfs-common))
 
 
-define KernelPackage/fs-nfs-common-v4
+define KernelPackage/fs-nfs-common-rpcsec
   SUBMENU:=$(FS_MENU)
-  TITLE:=Common NFS V4 filesystem modules
-  KCONFIG+=\
-	CONFIG_SUNRPC_GSS\
-	CONFIG_NFS_V4=y\
-	CONFIG_NFSD_V4=y
-  DEPENDS:= @BROKEN
-  FILES+=$(LINUX_DIR)/net/sunrpc/auth_gss/auth_rpcgss.ko
-  AUTOLOAD=$(call AutoLoad,30,auth_rpcgss)
+  TITLE:=NFS Secure RPC
+  DEPENDS:= \
+	+kmod-fs-nfs-common \
+	+kmod-crypto-des \
+	+kmod-crypto-cbc \
+	+kmod-crypto-cts \
+	+kmod-crypto-md5 \
+	+kmod-crypto-sha1 \
+	+kmod-crypto-hmac \
+	+kmod-crypto-ecb
+  KCONFIG:= \
+	CONFIG_SUNRPC_GSS \
+	CONFIG_RPCSEC_GSS_KRB5
+  FILES:= \
+	$(LINUX_DIR)/lib/oid_registry.ko \
+	$(LINUX_DIR)/net/sunrpc/auth_gss/auth_rpcgss.ko \
+	$(LINUX_DIR)/net/sunrpc/auth_gss/rpcsec_gss_krb5.ko
+  AUTOLOAD:=$(call AutoLoad,31,oid_registry auth_rpcgss rpcsec_gss_krb5)
 endef
 
-define KernelPackage/fs-nfs-common-v4/description
- Kernel modules for NFS V4 & NFSD V4 kernel support
+define KernelPackage/fs-nfs-common-rpcsec/description
+ Kernel modules for NFS Secure RPC
 endef
 
-$(eval $(call KernelPackage,fs-nfs-common-v4))
+$(eval $(call KernelPackage,fs-nfs-common-rpcsec))
 
 
 define KernelPackage/fs-nfsd

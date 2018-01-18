@@ -30,8 +30,7 @@ endef
 
 define Build/Configure
 	echo "const char iw_version[] = \"$(PKG_VERSION)\";" > $(PKG_BUILD_DIR)/version.c
-	rm -f $(PKG_BUILD_DIR)/version.sh
-	touch $(PKG_BUILD_DIR)/version.sh
+	echo "#!/bin/sh" > $(PKG_BUILD_DIR)/version.sh
 	chmod +x $(PKG_BUILD_DIR)/version.sh
 endef
 

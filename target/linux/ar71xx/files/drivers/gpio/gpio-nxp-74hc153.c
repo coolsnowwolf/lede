@@ -203,19 +203,7 @@ static int nxp_74hc153_remove(struct platform_device *pdev)
 	struct nxp_74hc153_platform_data *pdata = pdev->dev.platform_data;
 
 	if (nxp) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,15,0)
-		int err;
-
-		err = gpiochip_remove(&nxp->gpio_chip);
-		if (err) {
-			dev_err(&pdev->dev,
-				"unable to remove gpio chip, err=%d\n",
-				err);
-			return err;
-		}
-#else
 		gpiochip_remove(&nxp->gpio_chip);
-#endif
 		gpio_free(pdata->gpio_pin_2y);
 		gpio_free(pdata->gpio_pin_1y);
 		gpio_free(pdata->gpio_pin_s1);

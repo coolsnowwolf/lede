@@ -25,7 +25,7 @@ gre_generic_setup() {
 	json_add_string mode "$mode"
 	json_add_int mtu "${mtu:-1280}"
 	[ -n "$df" ] && json_add_boolean df "$df"
-	[ -n "ttl" ] && json_add_int ttl "$ttl"
+	[ -n "$ttl" ] && json_add_int ttl "$ttl"
 	[ -n "$tos" ] && json_add_string tos "$tos"
 	json_add_boolean multicast "$multicast"
 	json_add_string local "$local"
