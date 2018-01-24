@@ -194,6 +194,25 @@ define Device/asus_rt-ac58u
 endef
 TARGET_DEVICES += asus_rt-ac58u
 
+define Device/asus_rt-acrh17
+	$(call Device/FitImageLzma)
+	DEVICE_DTS := qcom-ipq4019-rt-acrh17
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DTB_SIZE := 65536
+	BOARD_NAME := rt-acrh17
+	KERNEL_LOADADDR := 0x80208000
+	DEVICE_TITLE := Asus RT-ACRH17
+	IMAGE_SIZE := 20439364
+	FILESYSTEMS := squashfs
+	UIMAGE_NAME:=$(shell echo -e '\03\01\01\01RT-AC82U')
+	IMAGES = sysupgrade.tar flash-factory.trx
+	IMAGE/flash-factory.trx := copy-file $(KDIR)/tmp/$$(KERNEL_INITRAMFS_IMAGE) | uImage none
+	IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+	DEVICE_PACKAGES := ath10k-firmware-qca4019 ath10k-firmware-qca9984
+endef
+TARGET_DEVICES += asus_rt-acrh17
+
 define Device/openmesh_a42
 	$(call Device/FitImageLzma)
 	DEVICE_DTS := qcom-ipq4019-a42

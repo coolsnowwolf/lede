@@ -33,6 +33,17 @@ EOF
 
 platform_do_upgrade() {
 	case "$(board_name)" in
+	asus,rt-acrh17)
+		CI_UBIPART="UBI_DEV"
+		CI_KERNPART="linux"
+
+		local ubidev=$(nand_find_ubi $CI_UBIPART)
+		local jffs2=$(nand_find_volume $ubidev jffs2)
+		local linux2=$(nand_find_volume $ubidev linux2)
+		[ -n "$jffs2" ] && ubirmvol /dev/$ubidev --name=jffs2
+		[ -n "$linux2" ] && ubirmvol /dev/$ubidev --name=linux2
+		nand_do_upgrade "$1"
+		;;
 	asus,rt-ac58u)
 		CI_UBIPART="UBI_DEV"
 		CI_KERNPART="linux"
