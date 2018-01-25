@@ -64,6 +64,19 @@ define KernelPackage/usb-phy-nop
   $(call AddDepends/usb)
 endef
 
+define KernelPackage/usb-musb-tusb6010
+  TITLE:=Support for TUSB 6010
+  KCONFIG:=CONFIG_USB_MUSB_TUSB6010
+  DEPENDS:=@TARGET_omap24xx
+  $(call AddDepends/usb)
+endef
+
+define KernelPackage/usb-musb-tusb6010/description
+  TUSB6010 support
+endef
+
+$(eval $(call KernelPackage,usb-musb-tusb6010))
+
 define KernelPackage/usb-phy-nop/description
   Support for USB NOP transceiver
 endef

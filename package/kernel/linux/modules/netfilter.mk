@@ -68,6 +68,7 @@ define KernelPackage/nf-conntrack
   KCONFIG:= \
         CONFIG_NETFILTER=y \
         CONFIG_NETFILTER_ADVANCED=y \
+        CONFIG_NF_CONNTRACK_MARK=y \
         CONFIG_NF_CONNTRACK_ZONES=y \
 	$(KCONFIG_NF_CONNTRACK)
   FILES:=$(foreach mod,$(NF_CONNTRACK-m),$(LINUX_DIR)/net/$(mod).ko)
