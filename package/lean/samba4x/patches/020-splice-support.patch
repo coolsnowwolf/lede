@@ -1,0 +1,91 @@
+From d78eafdbd5ae00f77ce11f80ad142eb3c109278b Mon Sep 17 00:00:00 2001
+From: Lior Amsalem <alior@marvell.com>
+Date: Mon, 2 Dec 2013 11:04:56 +0200
+Subject: [PATCH 1/4] samba 4.0.9 splice support
+
+Signed-off-by: Lior Amsalem <alior@marvell.com>
+---
+ source3/lib/recvfile.c |   46 ++++++++++++++++++++--------------------------
+ 1 file changed, 20 insertions(+), 26 deletions(-)
+
+--- a/source3/lib/recvfile.c
++++ b/source3/lib/recvfile.c
+@@ -43,6 +43,10 @@
+ #define TRANSFER_BUF_SIZE (128*1024)
+ #endif
+ 
++#define SPLICE_F_COPY 0
++#define MAX_ITERATIONS 4
++#define RECEIVE_BUF_SIZE 131072
++
+ static ssize_t default_sys_recvfile(int fromfd,
+ 			int tofd,
+ 			off_t offset,
+@@ -158,10 +162,10 @@ ssize_t sys_recvfile(int fromfd,
+ 			off_t offset,
+ 			size_t count)
+ {
+-	static int pipefd[2] = { -1, -1 };
+-	static bool try_splice_call = false;
++	static bool try_splice_call = true;
+ 	size_t total_written = 0;
+ 	loff_t splice_offset = offset;
++	size_t current_count;
+ 
+ 	DEBUG(10,("sys_recvfile: from = %d, to = %d, "
+ 		"offset=%.0f, count = %lu\n",
+@@ -186,20 +190,22 @@ ssize_t sys_recvfile(int fromfd,
+ 				count);
+ 	}
+ 
+-	if ((pipefd[0] == -1) && (pipe(pipefd) == -1)) {
+-		try_splice_call = false;
+-		return default_sys_recvfile(fromfd, tofd, offset, count);
+-	}
+-
+ 	while (count > 0) {
+-		int nread, to_write;
++		int nread, try_again;
++
++		if (count > RECEIVE_BUF_SIZE){
++			current_count=RECEIVE_BUF_SIZE;
++		} else {
++			current_count=count;
++		}
++		try_again = MAX_ITERATIONS;
++		do {
++			nread = splice(fromfd, NULL, tofd, &offset, current_count, SPLICE_F_COPY);
++			if (nread == -1)
++				try_again--;	
++		} while(nread ==-1 && try_again);
+ 
+-		nread = splice(fromfd, NULL, pipefd[1], NULL,
+-			       MIN(count, 16384), SPLICE_F_MOVE);
+ 		if (nread == -1) {
+-			if (errno == EINTR) {
+-				continue;
+-			}
+ 			if (total_written == 0 &&
+ 			    (errno == EBADF || errno == EINVAL)) {
+ 				try_splice_call = false;
+@@ -221,19 +227,7 @@ ssize_t sys_recvfile(int fromfd,
+ 			}
+ 			break;
+ 		}
+-
+-		to_write = nread;
+-		while (to_write > 0) {
+-			int thistime;
+-			thistime = splice(pipefd[0], NULL, tofd,
+-					  &splice_offset, to_write,
+-					  SPLICE_F_MOVE);
+-			if (thistime == -1) {
+-				goto done;
+-			}
+-			to_write -= thistime;
+-		}
+-
++		
+ 		total_written += nread;
+ 		count -= nread;
+ 	}
