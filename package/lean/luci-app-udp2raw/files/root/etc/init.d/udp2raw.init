@@ -2,7 +2,6 @@
 
 START=88
 STOP=15
-USE_PROCD=1
 
 NAME=udp2raw
 
@@ -52,10 +51,10 @@ create_config() {
 	echo "# auto-generated config file from /etc/config/udp2raw" > $config_file
 
 	echo "-c" >> $config_file
-	echo "-l ${listen_addr}:${listen_port}" >> $config_file && _log "info" "listening on: ${listen_addr}:${listen_port}"
+	echo "-l ${listen_addr}:${listen_port}" >> $config_file
 	echo "-r ${server_addr}:${server_port}" >> $config_file
 
-	[ -n "$raw_mode" ] && echo "--raw-mode ${raw_mode}" >> $config_file && _log "info" "raw-mode: ${raw_mode}"
+	[ -n "$raw_mode" ] && echo "--raw-mode ${raw_mode}" >> $config_file
 	[ -n "$key" ] && echo "--key ${key}" >> $config_file
 	[ -n "$cipher_mode" ] && echo "--cipher-mode ${cipher_mode}" >> $config_file
 	[ -n "$auth_mode" ] && echo "--auth-mode ${auth_mode}" >> $config_file
@@ -74,13 +73,16 @@ create_config() {
 }
 
 validate_config_section() {
-	uci_validate_section "$NAME" general "$1" \
+	local ret=$(/sbin/validate_data "$NAME" general "$1" \
 		'server:uciname' \
-		'daemon_user:string:root'
+		'daemon_user:string:root' \
+		2> /dev/null)
+	[ $? -ne 0 ] && return 1
+	eval "$ret"
 }
 
 validate_server_section() {
-	uci_validate_section "$NAME" servers "$1" \
+	local ret=$(/sbin/validate_data "$NAME" servers "$1" \
 		'server_addr:host' \
 		'server_port:port:8080' \
 		'listen_addr:ipaddr:127.0.0.1' \
@@ -95,7 +97,10 @@ validate_server_section() {
 		'lower_level:string' \
 		'source_ip:ipaddr' \
 		'source_port:port' \
-		'log_level:range(0,6)'
+		'log_level:range(0,6)' \
+		2> /dev/null)
+	[ $? -ne 0 ] && return 1
+	eval "$ret"
 }
 
 start_instance() {
@@ -119,26 +124,20 @@ start_instance() {
 	[ -d /var/etc ] || mkdir -p /var/etc
 	local config_file="/var/etc/${NAME}.${server}.conf"
 	create_config "$config_file" || return 1
+	[ -d "/var/log/${NAME}" ] || mkdir -p "/var/log/${NAME}"
 
 	if [ $auto_rule -eq 1 -a $keep_rule -ne 1 ]; then
 		add_ipt_rule || { _log "err" "added iptables rule failed."; return 1; }
 	fi
 
-	procd_open_instance
-	procd_set_param command /usr/bin/udp2raw
-	procd_append_param command --conf-file "$config_file"
-	procd_set_param respawn
-	procd_set_param file "$config_file"
-	[ -n "$daemon_user" ] && procd_set_param user "$daemon_user" && _log "info" "running from ${daemon_user} user"
-	procd_set_param pidfile "/var/run/${NAME}.${server}.pid"
-	procd_close_instance
+	/usr/bin/udp2raw --conf-file "$config_file" >> "/var/log/${NAME}/${NAME}.${server}.log" &
+	echo $! > "/var/run/${NAME}.${server}.pid"
+	return 0
 }
 
-service_triggers() {
-	procd_add_reload_trigger "$NAME"
-}
+start() {
+	pgrep "/usr/bin/${NAME}" >/dev/null 2>&1 && return
 
-start_service() {
 	if ! validate_config_section "general" ; then
 		_log "err" "Config validate failed."
 		return 1
@@ -151,6 +150,18 @@ start_service() {
 	export_ipt_rules
 }
 
-stop_service() {
+stop() {
+	local pids=$(pgrep "/usr/bin/${NAME}" 2> /dev/null)
+	[ $? -ne 0 ] && return
+	for pid in $pids; do
+		kill $pid >/dev/null 2>&1
+	done
 	flush_ipt_rules
+	return 0
+}
+
+restart() {
+	stop
+	sleep 1
+	start
 }
