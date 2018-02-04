@@ -8,9 +8,9 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ath10k-firmware
-PKG_SOURCE_DATE:=2017-03-29
-PKG_SOURCE_VERSION:=956e2609b7e42c8c710bba10ef925a5be1be5137
-PKG_MIRROR_HASH:=25f724ff38c830281b3efba4a4ddffaae0c4bd8fea0f4c1061591229ff05535b
+PKG_SOURCE_DATE:=2017-10-30
+PKG_SOURCE_VERSION:=476a2850b1e8582d51187799d7de209daf1a57b2
+PKG_MIRROR_HASH:=77ba59f75c5897c842c5c525945de019fd23f1e2d8bea6239924857e500bf73a
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
@@ -223,7 +223,7 @@ define Package/ath10k-firmware-qca4019/install
 		$(PKG_BUILD_DIR)/QCA4019/hw1.0/board-2.bin \
 		$(1)/lib/firmware/ath10k/QCA4019/hw1.0/
 	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/QCA4019/hw1.0/3.2.1/firmware-5.bin_10.4-3.2.1-00053 \
+		$(PKG_BUILD_DIR)/QCA4019/hw1.0/3.2.1/firmware-5.bin_10.4-3.2.1-00058 \
 		$(1)/lib/firmware/ath10k/QCA4019/hw1.0/firmware-5.bin
 endef
 

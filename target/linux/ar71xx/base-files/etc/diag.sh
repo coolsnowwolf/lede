@@ -23,6 +23,7 @@ get_status_led() {
 	antminer-s1|\
 	antminer-s3|\
 	antminer-r1|\
+	eap120|\
 	minibox-v1|\
 	som9331|\
 	sr3200|\
@@ -37,7 +38,9 @@ get_status_led() {
 	ap531b0|\
 	cpe505n|\
 	db120|\
+	dr342|\
 	dr344|\
+	rut900|\
 	tew-632brp|\
 	tl-wr942n-v1|\
 	wpj344|\
@@ -73,10 +76,14 @@ get_status_led() {
 	ap90q|\
 	cpe830|\
 	cpe870|\
+	gl-ar300m|\
 	gl-inet|\
-	gl-mifi|\
-	gl-ar300m)
+	gl-mifi)
 		status_led="$board:green:lan"
+		;;
+	ap91-5g|\
+	n5q)
+		status_led="$board:green:signal4"
 		;;
 	ap96)
 		status_led="$board:green:led2"
@@ -93,12 +100,12 @@ get_status_led() {
 		status_led="$board:red:sys"
 		;;
 	bullet-m|\
-	rocket-m|\
-	rocket-m-xw|\
+	loco-m-xw|\
 	nano-m|\
 	nanostation-m|\
 	nanostation-m-xw|\
-	loco-m-xw)
+	rocket-m|\
+	rocket-m-xw)
 		status_led="ubnt:green:link4"
 		;;
 	rocket-m-ti)
@@ -132,9 +139,7 @@ get_status_led() {
 	cpe510)
 		status_led="tp-link:green:link4"
 		;;
-	cr3000)
-		status_led="pcs:amber:power"
-		;;
+	cr3000|\
 	cr5000)
 		status_led="pcs:amber:power"
 		;;
@@ -176,23 +181,22 @@ get_status_led() {
 	oolite)
 		status_led="$board:red:system"
 		;;
-	dw33d)
+	dw33d|\
+	r36a)
 		status_led="$board:blue:status"
-		;;
-	eap120)
-		status_led="$board:green:system"
 		;;
 	eap300v2)
 		status_led="engenius:blue:power"
 		;;
-	ens202ext)
+	ens202ext|\
+	esr900)
 		status_led="engenius:amber:power"
 		;;
 	eap7660d)
 		status_led="$board:green:ds4"
 		;;
-	el-mini|\
-	el-m150)
+	el-m150|\
+	el-mini)
 		status_led="easylink:green:system"
 		;;
 	ew-dorin|\
@@ -206,9 +210,7 @@ get_status_led() {
 	esr1750)
 		status_led="$board:amber:power"
 		;;
-	esr900)
-		status_led="engenius:amber:power"
-		;;
+	gl-ar750|\
 	hiveap-121|\
 	nbg6716)
 		status_led="$board:white:power"
@@ -230,13 +232,6 @@ get_status_led() {
 	ls-sr71)
 		status_led="ubnt:green:d22"
 		;;
-	maselink-ap2600i)
-		status_led="ap2600i:green:power"
-		;;
-        maselink-ap2600ifm)
-		status_led="ap2600ifm:green:power"
-		;;
-        mw316r-v1|\
 	mc-mac1200r)
 		status_led="mercury:green:system"
 		;;
@@ -259,9 +254,7 @@ get_status_led() {
 		status_led="mr900:blue:power"
 		;;
 	mynet-n600|\
-	mynet-n750)
-		status_led="wd:blue:power"
-		;;
+	mynet-n750|\
 	mynet-rext)
 		status_led="wd:blue:power"
 		;;
@@ -273,13 +266,13 @@ get_status_led() {
 		status_led="nbg460n:green:power"
 		;;
 	om2p|\
-	om2pv2|\
-	om2pv4|\
 	om2p-hs|\
 	om2p-hsv2|\
 	om2p-hsv3|\
 	om2p-hsv4|\
-	om2p-lc)
+	om2p-lc|\
+	om2pv2|\
+	om2pv4)
 		status_led="om2p:blue:power"
 		;;
 	om5p|\
@@ -334,6 +327,7 @@ get_status_led() {
 	rb-952ui-5ac2nd|\
 	rb-962uigs-5hact2hnt|\
 	rb-lhg-5nd|\
+	rb-map-2nd|\
 	rb-mapl-2nd)
 		status_led="rb:green:user"
 		;;
@@ -357,12 +351,6 @@ get_status_led() {
 	rw2458n)
 		status_led="$board:green:d3"
 		;;
-        sgr-w500-n85b-v2)
-		status_led="grentech:green:status"
-		;;
-	sgr-w500-ebi-fit-v3)
-		status_led="grentech:green:status"
-		;;
 	smart-300)
 		status_led="nc-link:green:system"
 		;;
@@ -380,7 +368,8 @@ get_status_led() {
 	tew-823dru)
 		status_led="trendnet:green:power"
 		;;
-	tl-mr3020)
+	tl-mr3020|\
+	tl-wr2543n)
 		status_led="tp-link:green:wps"
 		;;
 	tl-wa750re)
@@ -403,47 +392,48 @@ get_status_led() {
 	tl-mr3420-v2|\
 	tl-wa701nd-v2|\
 	tl-wa801nd-v2|\
+	tl-wa801nd-v3|\
+	tl-wa830re-v2|\
 	tl-wa901nd|\
 	tl-wa901nd-v2|\
 	tl-wa901nd-v3|\
 	tl-wa901nd-v4|\
+	tl-wa901nd-v5|\
 	tl-wdr3320-v2|\
 	tl-wdr3500|\
 	tl-wr1041n-v2|\
+	tl-wr1043n-v5|\
 	tl-wr1043nd|\
 	tl-wr1043nd-v2|\
 	tl-wr1043nd-v4|\
 	tl-wr740n-v6|\
 	tl-wr741nd|\
 	tl-wr741nd-v4|\
-	tl-wa801nd-v3|\
 	tl-wr840n-v2|\
 	tl-wr840n-v3|\
 	tl-wr841n-v1|\
 	tl-wr841n-v7|\
 	tl-wr841n-v8|\
 	tl-wr841n-v11|\
-	tl-wa830re-v2|\
 	tl-wr842n-v2|\
 	tl-wr842n-v3|\
-	tl-wr842n-v9|\
 	tl-wr941nd|\
-        tl-wr941n-v7|\
 	tl-wr941nd-v5)
 		status_led="tp-link:green:system"
 		;;
 	archer-c5|\
 	archer-c7|\
-	tl-wdr4900-v2|\
 	tl-mr10u|\
 	tl-mr12u|\
 	tl-mr13u|\
 	tl-wdr4300|\
+	tl-wdr4900-v2|\
 	tl-wr703n|\
 	tl-wr710n|\
 	tl-wr720n-v3|\
 	tl-wr802n-v1|\
 	tl-wr810n|\
+	tl-wr810n-v2|\
 	tl-wr940n-v4|\
 	tl-wr941nd-v6)
 		status_led="tp-link:blue:system"
@@ -451,13 +441,6 @@ get_status_led() {
 	tl-wr841n-v9)
 		status_led="tp-link:green:qss"
 		;;
-	tl-wr882n-v1)
-		status_led="tp-link:white:status"
-		;;
-	tl-wr2543n)
-		status_led="tp-link:green:wps"
-		;;
-        tl-wdr6500-v6|\
 	tl-wdr6500-v2)
 		status_led="tp-link:white:system"
 		;;
@@ -515,8 +498,8 @@ get_status_led() {
 	wpj563)
 		status_led="$board:green:sig1"
 		;;
-	wrt400n|\
-	wrt160nl)
+	wrt160nl|\
+	wrt400n)
 		status_led="$board:blue:wps"
 		;;
 	zcn-1523h-2|\
@@ -545,7 +528,8 @@ set_state() {
 	done)
 		status_led_on
 		case $(board_name) in
-		gl-ar300m)
+		gl-ar300m|\
+		gl-ar750)
 			fw_printenv lc >/dev/null 2>&1 && fw_setenv "bootcount" 0
 			;;
 		qihoo-c301)

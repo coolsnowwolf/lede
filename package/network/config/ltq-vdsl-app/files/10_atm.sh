@@ -12,5 +12,3 @@ if grep -q "ltq_ptm_vr9" /proc/modules ; then
 fi
 
 modprobe ltq_atm_vr9
-
-/etc/init.d/br2684ctl reload

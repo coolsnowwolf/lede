@@ -17,6 +17,7 @@ PKG_HASH:=d76680ef03f00cd5e970bbdcd4e57fb1f6df7d2e2c071635ef2be74790190c3b
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=GPL-2.0+
+PKG_CPE_ID:=cpe:/a:valgrind:valgrind
 
 PKG_FIXUP = autoreconf
 PKG_INSTALL := 1

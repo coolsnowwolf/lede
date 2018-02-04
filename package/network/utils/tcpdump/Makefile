@@ -21,6 +21,7 @@ PKG_BUILD_PARALLEL:=1
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=BSD-3-Clause
+PKG_CPE_ID:=cpe:/a:tcpdump:tcpdump
 
 PKG_INSTALL:=1
 
@@ -75,7 +76,6 @@ endif
 
 MAKE_FLAGS += \
 	CCOPT="$(TARGET_CFLAGS)" INCLS="-I. $(TARGET_CPPFLAGS)"
-
 
 define Package/tcpdump/install
 	$(INSTALL_DIR) $(1)/usr/sbin

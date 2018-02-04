@@ -1,0 +1,120 @@
+From d396e84c56047b303cac378dde4b2e5cc430b336 Mon Sep 17 00:00:00 2001
+From: Sergei Shtylyov <sergei.shtylyov@cogentembedded.com>
+Date: Mon, 12 Jun 2017 23:55:38 +0300
+Subject: [PATCH] mdio_bus: handle only single PHY reset GPIO
+
+Commit 4c5e7a2c0501 ("dt-bindings: mdio: Clarify binding document")
+declared that a MDIO reset GPIO property should have only a single GPIO
+reference/specifier, however the supporting code was left intact, still
+burdening the kernel with now apparently useless loops -- get rid of them.
+
+Signed-off-by: Sergei Shtylyov <sergei.shtylyov@cogentembedded.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/mdio_bus.c | 53 +++++++++++++++++-----------------------------
+ drivers/of/of_mdio.c       |  1 -
+ include/linux/phy.h        |  6 ++----
+ 3 files changed, 21 insertions(+), 39 deletions(-)
+
+--- a/drivers/net/phy/mdio_bus.c
++++ b/drivers/net/phy/mdio_bus.c
+@@ -279,33 +279,22 @@ int __mdiobus_register(struct mii_bus *b
+ 
+ 	mutex_init(&bus->mdio_lock);
+ 
+-	/* de-assert bus level PHY GPIO resets */
+-	if (bus->num_reset_gpios > 0) {
+-		bus->reset_gpiod = devm_kcalloc(&bus->dev,
+-						 bus->num_reset_gpios,
+-						 sizeof(struct gpio_desc *),
+-						 GFP_KERNEL);
+-		if (!bus->reset_gpiod)
+-			return -ENOMEM;
+-	}
+-
+-	for (i = 0; i < bus->num_reset_gpios; i++) {
+-		gpiod = devm_gpiod_get_index(&bus->dev, "reset", i,
+-					     GPIOD_OUT_LOW);
+-		if (IS_ERR(gpiod)) {
+-			err = PTR_ERR(gpiod);
+-			if (err != -ENOENT) {
+-				dev_err(&bus->dev,
+-					"mii_bus %s couldn't get reset GPIO\n",
+-					bus->id);
+-				return err;
+-			}
+-		} else {
+-			bus->reset_gpiod[i] = gpiod;
+-			gpiod_set_value_cansleep(gpiod, 1);
+-			udelay(bus->reset_delay_us);
+-			gpiod_set_value_cansleep(gpiod, 0);
++	/* de-assert bus level PHY GPIO reset */
++	gpiod = devm_gpiod_get(&bus->dev, "reset", GPIOD_OUT_LOW);
++	if (IS_ERR(gpiod)) {
++		err = PTR_ERR(gpiod);
++		if (err != -ENOENT) {
++			dev_err(&bus->dev,
++				"mii_bus %s couldn't get reset GPIO\n",
++				bus->id);
++			return err;
+ 		}
++	} else	{
++		bus->reset_gpiod = gpiod;
++
++		gpiod_set_value_cansleep(gpiod, 1);
++		udelay(bus->reset_delay_us);
++		gpiod_set_value_cansleep(gpiod, 0);
+ 	}
+ 
+ 	if (bus->reset)
+@@ -337,10 +326,8 @@ error:
+ 	}
+ 
+ 	/* Put PHYs in RESET to save power */
+-	for (i = 0; i < bus->num_reset_gpios; i++) {
+-		if (bus->reset_gpiod[i])
+-			gpiod_set_value_cansleep(bus->reset_gpiod[i], 1);
+-	}
++	if (bus->reset_gpiod)
++		gpiod_set_value_cansleep(bus->reset_gpiod, 1);
+ 
+ 	device_del(&bus->dev);
+ 	return err;
+@@ -363,10 +350,8 @@ void mdiobus_unregister(struct mii_bus *
+ 	}
+ 
+ 	/* Put PHYs in RESET to save power */
+-	for (i = 0; i < bus->num_reset_gpios; i++) {
+-		if (bus->reset_gpiod[i])
+-			gpiod_set_value_cansleep(bus->reset_gpiod[i], 1);
+-	}
++	if (bus->reset_gpiod)
++		gpiod_set_value_cansleep(bus->reset_gpiod, 1);
+ 
+ 	device_del(&bus->dev);
+ }
+--- a/drivers/of/of_mdio.c
++++ b/drivers/of/of_mdio.c
+@@ -145,7 +145,6 @@ int of_mdiobus_register(struct mii_bus *
+ 	/* Get bus level PHY reset GPIO details */
+ 	mdio->reset_delay_us = DEFAULT_GPIO_RESET_DELAY;
+ 	of_property_read_u32(np, "reset-delay-us", &mdio->reset_delay_us);
+-	mdio->num_reset_gpios = of_gpio_named_count(np, "reset-gpios");
+ 
+ 	/* Register the MDIO bus */
+ 	rc = mdiobus_register(mdio);
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -190,10 +190,8 @@ struct mii_bus {
+ 
+ 	/* GPIO reset pulse width in microseconds */
+ 	int reset_delay_us;
+-	/* Number of reset GPIOs */
+-	int num_reset_gpios;
+-	/* Array of RESET GPIO descriptors */
+-	struct gpio_desc **reset_gpiod;
++	/* RESET GPIO descriptor pointer */
++	struct gpio_desc *reset_gpiod;
+ };
+ #define to_mii_bus(d) container_of(d, struct mii_bus, dev)
+ 

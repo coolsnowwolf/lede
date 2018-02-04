@@ -22,6 +22,8 @@ ifeq ($(ARCH),mips)
 PKG_HASH:=ca6a86ca3e3e9c85b6dbb665b35bcbf338c37829c1b2f1994487d55664886045
 endif
 
+PKG_EXTMOD_SUBDIRS:=driver driver-mini glue
+
 PKG_USE_MIPS16:=0
 PKG_FLAGS:=nonshared
 
@@ -41,7 +43,7 @@ define KernelPackage/brcm-wl/Default
   DEPENDS:=@TARGET_brcm47xx||TARGET_brcm63xx +wireless-tools
   TITLE:=Kernel driver for BCM43xx chipsets
   FILES:=$(PKG_BUILD_DIR)/driver$(1)/wl.ko $(PKG_BUILD_DIR)/glue/wl_glue.ko
-  AUTOLOAD:=$(call AutoLoad,30,wl_glue wl)
+  AUTOLOAD:=$(call AutoProbe,wl)
 endef
 
 define KernelPackage/brcm-wl/Default/description
@@ -98,8 +100,7 @@ define Package/nas/description
 endef
 
 MAKE_KMOD := $(MAKE) -C "$(LINUX_DIR)" \
-		CROSS_COMPILE="$(TARGET_CROSS)" \
-		ARCH="$(LINUX_KARCH)" \
+		$(KERNEL_MAKE_FLAGS) \
 		PATH="$(TARGET_PATH)" \
 		SUBDIRS="$(PKG_BUILD_DIR)/kmod" \
 
@@ -110,22 +111,24 @@ define Build/Prepare
 endef
 
 define Build/Compile
+	# Compile glue driver
+	$(MAKE_KMOD) -C "$(LINUX_DIR)" \
+		SUBDIRS="$(PKG_BUILD_DIR)/glue" \
+		modules
+
 	# Compile the kernel part
 	$(MAKE_KMOD) \
 		SUBDIRS="$(PKG_BUILD_DIR)/driver" \
 		MODFLAGS="-DMODULE -mlong-calls" \
+		KBUILD_EXTRA_SYMBOLS="$(PKG_BUILD_DIR)/glue/Module.symvers" \
 		modules
 
 	$(MAKE_KMOD) \
 		SUBDIRS="$(PKG_BUILD_DIR)/driver-mini" \
 		MODFLAGS="-DMODULE -mlong-calls" \
 		BUILD_TYPE="wl_apsta_mini" \
+		KBUILD_EXTRA_SYMBOLS="$(PKG_BUILD_DIR)/glue/Module.symvers" \
 		modules
-
-	# Compile glue driver
-	$(MAKE_KMOD) -C "$(LINUX_DIR)" \
-		SUBDIRS="$(PKG_BUILD_DIR)/glue" \
-		modules                                        
 
 	# Compile libshared
 	$(MAKE) -C $(PKG_BUILD_DIR)/shared \

@@ -42,17 +42,17 @@
 
 static struct gpio_led gl_ar150_leds_gpio[] __initdata = {
 	{
-		.name = "gl-ar150:wlan",
+		.name = "gl-ar150:orange:wlan",
 		.gpio = GL_AR150_GPIO_LED_WLAN,
 		.active_low = 0,
 	},
 	{
-		.name = "gl-ar150:lan",
+		.name = "gl-ar150:green:lan",
 		.gpio = GL_AR150_GPIO_LED_LAN,
 		.active_low = 0,
 	},
 	{
-		.name = "gl-ar150:wan",
+		.name = "gl-ar150:green:wan",
 		.gpio = GL_AR150_GPIO_LED_WAN,
 		.active_low = 0,
  		.default_state = 1,

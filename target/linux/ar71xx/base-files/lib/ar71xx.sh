@@ -263,12 +263,6 @@ tplink_board_detect() {
 	"120000"*)
 		model="MERCURY MAC1200R"
 		;;
-	"031600"*)
-		model="Mercury MW316R"
-		;;
-	"204100"*)
-		model="TP-Link TL-WR2041N"
-		;;
 	"254300"*)
 		model="TP-Link TL-WR2543N/ND"
 		;;
@@ -322,9 +316,6 @@ tplink_board_detect() {
 		model="TP-Link TL-MR6400"
 		;;
 	"65000002")
-		model="TP-Link TL-WDR6500"
-		;;
-	"65000006")
 		model="TP-Link TL-WDR6500"
 		;;
 	"721000"*)
@@ -454,6 +445,9 @@ ar71xx_board_detect() {
 		;;
 	*"AP90Q")
 		name="ap90q"
+		;;
+	*"AP91-5G")
+		name="ap91-5g"
 		;;
 	*"Archer C25 v1")
 		name="archer-c25-v1"
@@ -612,6 +606,9 @@ ar71xx_board_detect() {
 	*"Domino Pi")
 		name="gl-domino"
 		;;
+	*"DR342")
+		name="dr342"
+		;;
 	*"DR344")
 		name="dr344"
 		;;
@@ -676,6 +673,9 @@ ar71xx_board_detect() {
 	*"GL-AR300M")
 		name="gl-ar300m"
 		;;
+	*"GL-AR750")
+		name="gl-ar750"
+		;;
 	*"GL-CONNECT INET v1")
 		name="gl-inet"
 
@@ -726,15 +726,6 @@ ar71xx_board_detect() {
 	*"MAC1200R")
 		name="mc-mac1200r"
 		;;
-        *"MW316R v1")
-		name="mw316r-v1"
-		;;
-        *"MASELink AP2600-I")
-		name="maselink-ap2600i"
-		;;
-        *"MASELink AP2600-IFM")
-		name="maselink-ap2600ifm"
-		;;
 	*"MiniBox V1.0")
 		name="minibox-v1"
 		;;
@@ -779,6 +770,9 @@ ar71xx_board_detect() {
 		;;
 	*"MZK-W300NH")
 		name="mzk-w300nh"
+		;;
+	*"N5Q")
+		name="n5q"
 		;;
 	*"Nanostation M")
 		name="nanostation-m"
@@ -855,6 +849,9 @@ ar71xx_board_detect() {
 		;;
 	*"Qihoo 360 C301")
 		name="qihoo-c301"
+		;;
+	*"R36A")
+		name="r36a"
 		;;
 	*"R602N")
 		name="r602n"
@@ -959,6 +956,9 @@ ar71xx_board_detect() {
 	*"RouterBOARD 912UAG-5HPnD")
 		name="rb-912uag-5hpnd"
 		;;
+	*"RouterBOARD 921GS-5HPacD r2")
+		name="rb-921gs-5hpacd-r2"
+		;;
 	*"RouterBOARD 941-2nD")
 		name="rb-941-2nd"
 		;;
@@ -980,6 +980,9 @@ ar71xx_board_detect() {
 	*"RouterBOARD LHG 5nD")
 		name="rb-lhg-5nd"
 		;;
+	*"RouterBOARD mAP 2nD")
+		name="rb-map-2nd"
+		;;
 	*"RouterBOARD mAP L-2nD")
 		name="rb-mapl-2nd"
 		;;
@@ -989,11 +992,20 @@ ar71xx_board_detect() {
 	*"RouterBOARD SXT Lite5")
 		name="rb-sxt5n"
 		;;
+	*"RouterBOARD wAP 2nD r2")
+		name="rb-wap-2nd"
+		;;
+	*"RouterBOARD wAP G-5HacT2HnD")
+		name="rb-wapg-5hact2hnd"
+		;;
 	*"RouterStation")
 		name="routerstation"
 		;;
 	*"RouterStation Pro")
 		name="routerstation-pro"
+		;;
+	*"RUT900")
+		name="rut900"
 		;;
 	*"RW2458N")
 		name="rw2458n"
@@ -1006,12 +1018,6 @@ ar71xx_board_detect() {
 		;;
 	*"SC450")
 		name="sc450"
-		;;
-	"GRENTECH SGR-W500-N85b v2.0")
-		name="sgr-w500-n85b-v2"
-		;;
-	"GRENTECH SGR-W500-EBI(FIT) v3.0")
-		name="sgr-w500-ebi-fit-v3"
 		;;
 	*"SMART-300")
 		name="smart-300"
@@ -1073,7 +1079,7 @@ ar71xx_board_detect() {
 	*"TL-MR3420 v2")
 		name="tl-mr3420-v2"
 		;;
-	*TL-MR6400)
+	*"TL-MR6400")
 		name="tl-mr6400"
 		;;
 	*"TL-WA701ND v2")
@@ -1121,6 +1127,9 @@ ar71xx_board_detect() {
 	*"TL-WA901ND v4")
 		name="tl-wa901nd-v4"
 		;;
+	*"TL-WA901ND v5")
+		name="tl-wa901nd-v5"
+		;;
 	*"TL-WDR3320 v2")
 		name="tl-wdr3320-v2"
 		;;
@@ -1136,14 +1145,14 @@ ar71xx_board_detect() {
 	*"TL-WDR6500 v2")
 		name="tl-wdr6500-v2"
 		;;
-	*"TL-WDR6500 v6")
-		name="tl-wdr6500-v6"
-		;;
 	*"TL-WPA8630")
 		name="tl-wpa8630"
 		;;
 	*"TL-WR1041N v2")
 		name="tl-wr1041n-v2"
+		;;
+	*"TL-WR1043N v5")
+		name="tl-wr1043n-v5"
 		;;
 	*"TL-WR1043ND")
 		name="tl-wr1043nd"
@@ -1153,12 +1162,6 @@ ar71xx_board_detect() {
 		;;
 	*"TL-WR1043ND v4")
 		name="tl-wr1043nd-v4"
-		;;
-        *"TL-WR2041N v1")
-		name="tl-wr2041n-v1"
-		;;
-        *"TL-WR2041N v2")
-		name="tl-wr2041n-v2"
 		;;
 	*"TL-WR2543N"*)
 		name="tl-wr2543n"
@@ -1190,6 +1193,9 @@ ar71xx_board_detect() {
 	*"TL-WR810N")
 		name="tl-wr810n"
 		;;
+	*"TL-WR810N v2")
+		name="tl-wr810n-v2"
+		;;
 	*"TL-WR840N v2")
 		name="tl-wr840n-v2"
 		;;
@@ -1217,12 +1223,6 @@ ar71xx_board_detect() {
 	*"TL-WR842N/ND v3")
 		name="tl-wr842n-v3"
 		;;
-	*"TL-WR842N/ND v9")
-		name="tl-wr842n-v9"
-		;;
-	*"TL-WR882N v1")
-		name="tl-wr882n-v1"
-		;;
 	*"TL-WR902AC v1")
 		name="tl-wr902ac-v1"
 		;;
@@ -1234,9 +1234,6 @@ ar71xx_board_detect() {
 		;;
 	*"TL-WR941N/ND v6")
 		name="tl-wr941nd-v6"
-		;;
-	*"TL-WR941N v7")
-		name="tl-wr941n-v7"
 		;;
 	*"TL-WR941ND")
 		name="tl-wr941nd"

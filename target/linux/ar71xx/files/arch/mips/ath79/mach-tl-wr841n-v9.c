@@ -73,17 +73,6 @@
 #define TL_WR842NV3_GPIO_BTN_RESET	1
 #define TL_WR842NV3_GPIO_BTN_WIFI	0
 
-#define TL_WR842NV9_GPIO_LED_WLAN	12
-#define TL_WR842NV9_GPIO_LED_QSS	3
-#define TL_WR842NV9_GPIO_LED_WAN	11
-#define TL_WR842NV9_GPIO_LED_LAN1	16
-#define TL_WR842NV9_GPIO_LED_LAN2	15
-#define TL_WR842NV9_GPIO_LED_LAN3	14
-#define TL_WR842NV9_GPIO_LED_LAN4	4
-#define TL_WR842NV9_GPIO_LED_SYSTEM	13
-#define TL_WR842NV9_GPIO_BTN_RESET	17
-#define TL_WR842NV9_GPIO_BTN_WIFI	0
-
 #define TL_WR740NV6_GPIO_LED_SYSTEM	1
 #define TL_WR740NV6_GPIO_LED_QSS	3
 #define TL_WR740NV6_GPIO_LED_WAN_ORANGE	2
@@ -354,59 +343,15 @@ static struct gpio_keys_button tl_wr740n_v6_gpio_keys[] __initdata = {
 	}
 };
 
-static struct gpio_led tl_wr842n_v9_leds_gpio[] __initdata = {
-	{
-		.name		= "tp-link:green:lan1",
-		.gpio		= TL_WR842NV9_GPIO_LED_LAN1,
-		.active_low	= 1,
-	}, {
-		.name		= "tp-link:green:lan2",
-		.gpio		= TL_WR842NV9_GPIO_LED_LAN2,
-		.active_low	= 1,
-	}, {
-		.name		= "tp-link:green:lan3",
-		.gpio		= TL_WR842NV9_GPIO_LED_LAN3,
-		.active_low	= 1,
-	}, {
-		.name		= "tp-link:green:lan4",
-		.gpio		= TL_WR842NV9_GPIO_LED_LAN4,
-		.active_low	= 1,
-	}, {
-		.name		= "tp-link:green:system",
-		.gpio		= TL_WR842NV9_GPIO_LED_SYSTEM,
-		.active_low	= 1,
-	}, {
-		.name		= "tp-link:green:wan",
-		.gpio		= TL_WR842NV9_GPIO_LED_WAN,
-		.active_low	= 1,
-	}, {
-		.name		= "tp-link:green:wlan",
-		.gpio		= TL_WR842NV9_GPIO_LED_WLAN,
-		.active_low	= 1,
-	},
-};
-
-static struct gpio_keys_button tl_wr842n_v9_gpio_keys[] __initdata = {
-	{
-		.desc		= "Reset button",
-		.type		= EV_KEY,
-		.code		= KEY_RESTART,
-		.debounce_interval = TL_WR841NV9_KEYS_DEBOUNCE_INTERVAL,
-		.gpio		= TL_WR842NV9_GPIO_BTN_RESET,
-		.active_low	= 1,
-	}
-};
-
 static void __init tl_ap143_setup(void)
 {
 	u8 *mac = (u8 *) KSEG1ADDR(0x1f01fc00);
 	u8 *ee = (u8 *) KSEG1ADDR(0x1fff1000);
 	u8 tmpmac[ETH_ALEN];
 
-        ath79_register_usb();
 	ath79_register_m25p80(&tl_wr841n_v9_flash_data);
 
-	/*ath79_setup_ar933x_phy4_switch(false, false);*/
+	ath79_setup_ar933x_phy4_switch(false, false);
 
 	ath79_register_mdio(0, 0x0);
 
@@ -490,6 +435,7 @@ static void __init tl_wr842n_v3_setup(void)
 					ARRAY_SIZE(tl_wr842n_v3_gpio_keys),
 					tl_wr842n_v3_gpio_keys);
 
+	ath79_register_usb();
 }
 
 MIPS_MACHINE(ATH79_MACH_TL_WR842N_V3, "TL-WR842N-v3", "TP-LINK TL-WR842N/ND v3",
@@ -509,49 +455,3 @@ static void __init tl_wr740n_v6_setup(void)
 
 MIPS_MACHINE(ATH79_MACH_TL_WR740N_V6, "TL-WR740N-v6", "TP-LINK TL-WR740N/ND v6",
 	     tl_wr740n_v6_setup);
-
-static void __init tl_wr842n_v9_setup(void)
-{
-	u8 *mac = (u8 *) KSEG1ADDR(0x1f01fc00);
-	u8 *ee = (u8 *) KSEG1ADDR(0x1fff1000);
-	u8 tmpmac[ETH_ALEN];
-	ath79_register_usb();
-	ath79_register_m25p80(&tl_wr841n_v9_flash_data);
-
-	/*ath79_setup_ar933x_phy4_switch(false, false);*/
-
-	ath79_register_mdio(0, 0x0);
-	ath79_register_mdio(1, 0x0);
-	/* add by zcc */
-	ath79_setup_ar934x_eth_cfg(AR934X_ETH_CFG_SW_PHY_SWAP);
-	/* LAN */
-	ath79_eth1_data.phy_if_mode = PHY_INTERFACE_MODE_GMII;
-	ath79_eth1_data.duplex = DUPLEX_FULL;
-	ath79_eth1_data.speed = SPEED_1000;
-	ath79_switch_data.phy_poll_mask |= BIT(0);
-	ath79_init_mac(ath79_eth1_data.mac_addr, mac, 0);
-	ath79_register_eth(1);
-
-	/* WAN */
-	ath79_switch_data.phy4_mii_en = 1;
-	ath79_eth0_data.phy_if_mode = PHY_INTERFACE_MODE_MII;
-	ath79_eth0_data.phy_mask = BIT(0);
-	ath79_eth0_data.duplex = DUPLEX_FULL;
-	ath79_eth0_data.speed = SPEED_100;
-	ath79_init_mac(ath79_eth0_data.mac_addr, mac, 1);
-	ath79_register_eth(0);
-
-	ath79_init_mac(tmpmac, mac, 0);
-	ath79_register_wmac(ee, tmpmac);
-
-	ath79_register_leds_gpio(-1, ARRAY_SIZE(tl_wr842n_v9_leds_gpio),
-				 tl_wr842n_v9_leds_gpio);
-
-	ath79_register_gpio_keys_polled(1, TL_WR841NV9_KEYS_POLL_INTERVAL,
-					ARRAY_SIZE(tl_wr842n_v9_gpio_keys),
-					tl_wr842n_v9_gpio_keys);
-
-}
-
-MIPS_MACHINE(ATH79_MACH_TL_WR842N_V9, "TL-WR842N-v9", "TP-LINK TL-WR842N/ND v9",
-	     tl_wr842n_v9_setup);

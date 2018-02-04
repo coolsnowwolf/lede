@@ -1,7 +1,7 @@
 ARCH:=mips
 SUBTARGET:=xrx200
 BOARDNAME:=XRX200
-FEATURES:=squashfs atm nand ubifs
+FEATURES:=squashfs atm nand
 CPU_TYPE:=24kc
 
 DEFAULT_PACKAGES+=kmod-leds-gpio \

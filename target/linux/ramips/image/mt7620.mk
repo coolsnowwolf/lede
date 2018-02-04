@@ -27,6 +27,15 @@ define Device/ai-br100
 endef
 TARGET_DEVICES += ai-br100
 
+define Device/alfa-network_ac1200rm
+  DTS := AC1200RM
+  IMAGE_SIZE := 16064k
+  DEVICE_TITLE := ALFA Network AC1200RM
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
+  SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
+endef
+TARGET_DEVICES += alfa-network_ac1200rm
+
 define Device/Archer
   TPLINK_HWREVADD := 0
   TPLINK_HVERSION := 3
@@ -252,6 +261,7 @@ define Device/kng_rc
   IMAGES += factory.bin
   IMAGE/factory.bin := $$(sysupgrade_bin) | pad-to 64k | check-size $$$$(IMAGE_SIZE) | \
 	zyimage -d 8997 -v "ZyXEL Keenetic Viva"
+  SUPPORTED_DEVICES := kng_rc
 endef
 TARGET_DEVICES += kng_rc
 
@@ -262,6 +272,7 @@ define Device/kn_rc
   IMAGES += factory.bin
   IMAGE/factory.bin := $$(IMAGE/sysupgrade.bin) | pad-to 64k | check-size $$$$(IMAGE_SIZE) | \
 	zyimage -d 4882 -v "ZyXEL Keenetic Omni"
+  SUPPORTED_DEVICES := kn_rc
 endef
 TARGET_DEVICES += kn_rc
 
@@ -272,6 +283,7 @@ define Device/kn_rf
   IMAGES += factory.bin
   IMAGE/factory.bin := $$(IMAGE/sysupgrade.bin) | pad-to 64k | check-size $$$$(IMAGE_SIZE) | \
 	zyimage -d 2102034 -v "ZyXEL Keenetic Omni II"
+  SUPPORTED_DEVICES := kn_rf
 endef
 TARGET_DEVICES += kn_rf
 
@@ -313,18 +325,21 @@ TARGET_DEVICES += mt7620a
 define Device/mt7620a_mt7530
   DTS := MT7620a_MT7530
   DEVICE_TITLE := MediaTek MT7620a + MT7530 EVB
+  SUPPORTED_DEVICES := mt7620a_mt7530
 endef
 TARGET_DEVICES += mt7620a_mt7530
 
 define Device/mt7620a_mt7610e
   DTS := MT7620a_MT7610e
   DEVICE_TITLE := MediaTek MT7620a + MT7610e EVB
+  SUPPORTED_DEVICES := mt7620a_mt7610e
 endef
 TARGET_DEVICES += mt7620a_mt7610e
 
 define Device/mt7620a_v22sg
   DTS := MT7620a_V22SG
   DEVICE_TITLE := MediaTek MT7620a V22SG
+  SUPPORTED_DEVICES := mt7620a_v22sg
 endef
 TARGET_DEVICES += mt7620a_v22sg
 
@@ -391,6 +406,12 @@ define Device/rp-n53
 endef
 TARGET_DEVICES += rp-n53
 
+define Device/rt-n12p
+  DTS := RT-N12-PLUS
+  DEVICE_TITLE := Asus RT-N11P/RT-N12+/RT-N12Eb1
+endef
+TARGET_DEVICES += rt-n12p
+
 define Device/rt-n14u
   DTS := RT-N14U
   DEVICE_TITLE := Asus RT-N14u
@@ -411,6 +432,14 @@ define Device/tiny-ac
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
 endef
 TARGET_DEVICES += tiny-ac
+
+define Device/vonets_var11n-300
+  DTS := VAR11N-300
+  IMAGE_SIZE := $(ralink_default_fw_size_4M)
+  BLOCKSIZE := 4k
+  DEVICE_TITLE := Vonets VAR11N-300
+endef
+TARGET_DEVICES += vonets_var11n-300
 
 define Device/whr-1166d
   DTS := WHR-1166D

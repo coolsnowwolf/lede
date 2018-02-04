@@ -180,7 +180,11 @@ static const struct mtd_ooblayout_ops c60_nand_ecclayout_ops = {
 
 static int c60_nand_scan_fixup(struct mtd_info *mtd)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 	struct nand_chip *chip = mtd->priv;
+#else
+	struct nand_chip *chip = mtd_to_nand(mtd);
+#endif
 
 	chip->ecc.size = 512;
 	chip->ecc.strength = 4;

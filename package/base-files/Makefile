@@ -9,9 +9,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/version.mk
+include $(INCLUDE_DIR)/feeds.mk
 
 PKG_NAME:=base-files
-PKG_RELEASE:=174
+PKG_RELEASE:=183
 PKG_FLAGS:=nonshared
 
 PKG_FILE_DEPENDS:=$(PLATFORM_DIR)/ $(GENERIC_PLATFORM_DIR)/base-files/
@@ -21,7 +22,12 @@ PKG_LICENSE:=GPL-2.0
 # Extend depends from version.mk
 PKG_CONFIG_DEPENDS += \
 	CONFIG_SIGNED_PACKAGES CONFIG_TARGET_INIT_PATH CONFIG_TARGET_PREINIT_DISABLE_FAILSAFE \
-	CONFIG_NAND_SUPPORT
+	CONFIG_NAND_SUPPORT \
+	CONFIG_CLEAN_IPKG \
+	CONFIG_PER_FEED_REPO \
+	CONFIG_PER_FEED_REPO_ADD_DISABLED \
+	CONFIG_PER_FEED_REPO_ADD_COMMENTED \
+	$(foreach feed,$(FEEDS_INSTALLED),CONFIG_FEED_$(feed))
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -148,6 +154,7 @@ define Package/base-files/install
 
 	mkdir -p $(1)/CONTROL
 	mkdir -p $(1)/dev
+	mkdir -p $(1)/etc/config
 	mkdir -p $(1)/etc/crontabs
 	mkdir -p $(1)/etc/rc.d
 	mkdir -p $(1)/overlay
@@ -183,6 +190,11 @@ define Package/base-files/install
 	$(if $(CONFIG_INCLUDE_CONFIG), \
 		echo -e "# Build configuration for board $(BOARD)/$(SUBTARGET)/$(PROFILE)\n" >$(1)/etc/build.config; \
 		cat $(BIN_DIR)/config.seed >>$(1)/etc/build.config)
+
+	$(if $(CONFIG_CLEAN_IPKG),, \
+		mkdir -p $(1)/etc/opkg; \
+		$(call FeedSourcesAppend,$(1)/etc/opkg/distfeeds.conf); \
+		$(VERSION_SED) $(1)/etc/opkg/distfeeds.conf)
 endef
 
 ifneq ($(DUMP),1)

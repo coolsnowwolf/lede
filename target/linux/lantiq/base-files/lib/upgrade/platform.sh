@@ -9,7 +9,7 @@ platform_pre_upgrade() {
 	local board=$(board_name)
 
 	case "$board" in
-	BTHOMEHUBV2B|BTHOMEHUBV3A|BTHOMEHUBV5A|P2812HNUF* )
+	bt,homehub-v2b|bt,homehub-v3a|bt,homehub-v5a|zyxel,p-2812hnu-f1|zyxel,p-2812hnu-f3)
 		nand_do_upgrade $1
 		;;
 	esac

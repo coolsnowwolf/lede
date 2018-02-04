@@ -57,6 +57,8 @@ define Package/Default
   DEFAULT_VARIANT:=
   USERID:=
   ALTERNATIVES:=
+  LICENSE:=$(PKG_LICENSE)
+  LICENSE_FILES:=$(PKG_LICENSE_FILES)
 endef
 
 Build/Patch:=$(Build/Patch/Default)

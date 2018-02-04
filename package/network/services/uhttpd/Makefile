@@ -8,17 +8,18 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uhttpd
-PKG_RELEASE:=2
+PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL=$(LEDE_GIT)/project/uhttpd.git
-PKG_SOURCE_DATE:=2016-10-25
-PKG_SOURCE_VERSION:=1628fa4b34aa143187353f81e8001b9a15286bda
-PKG_MIRROR_HASH:=2ac4ba8dc0b349d72174aac9ff693a73a214295a9890fe3d2a8eedcad54d06e3
+PKG_SOURCE_URL=$(PROJECT_GIT)/project/uhttpd.git
+PKG_SOURCE_DATE:=2017-11-04
+PKG_SOURCE_VERSION:=a235636a2687fafb9c474e4b134a59ff66425c92
+PKG_MIRROR_HASH:=626392a485e8ab8085bb55d9424b176be9143529db59a820a7de71061a93a007
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=ISC
 
 PKG_BUILD_DEPENDS = ustream-ssl
+PKG_CONFIG_DEPENDS:= CONFIG_uhttpd_lua
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
@@ -43,9 +44,6 @@ define Package/uhttpd/description
 endef
 
 define Package/uhttpd/config
-  config PACKAGE_uhttpd_debug
-    bool "Build with debug messages"
-    default n
   config uhttpd_lua
     depends on PACKAGE_uhttpd-mod-lua
     bool "Enable Integrated Lua interpreter"

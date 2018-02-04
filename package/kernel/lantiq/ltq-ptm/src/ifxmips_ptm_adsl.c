@@ -254,7 +254,7 @@ static struct net_device_ops g_ptm_netdev_ops = {
 #endif
 
 static struct net_device *g_net_dev[2] = {0};
-static char *g_net_dev_name[2] = {"ptm0", "ptmfast0"};
+static char *g_net_dev_name[2] = {"dsl0", "dslfast0"};
 
 #ifdef CONFIG_IFX_PTM_RX_TASKLET
   static struct tasklet_struct g_ptm_tasklet[] = {
@@ -927,8 +927,8 @@ static int proc_read_wanmib(char *page, char **start, off_t off, int count, int 
     int len = 0;
     int i;
     char *title[] = {
-        "ptm0\n",
-        "ptmfast0\n"
+        "dsl0\n",
+        "dslfast0\n"
     };
 
     for ( i = 0; i < ARRAY_SIZE(title); i++ ) {

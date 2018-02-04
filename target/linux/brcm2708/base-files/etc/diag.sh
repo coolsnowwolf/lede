@@ -7,14 +7,13 @@
 
 set_state() {
 	case "$(board_name)" in
-	rpi-2-b |\
-	rpi-b-plus)
+	raspberrypi,2-model-b |\
+	raspberrypi,model-b-plus)
 		status_led="led1"
 		;;
-	rpi-b |\
-	rpi-cm |\
-	rpi-zero |\
-	rpi-zero-w)
+	raspberrypi,model-b |\
+	raspberrypi,model-zero |\
+	raspberrypi,model-zero-w)
 		status_led="led0"
 		;;
 	esac
