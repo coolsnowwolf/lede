@@ -1,51 +1,86 @@
 #!/bin/sh /etc/rc.common
 
 START=88
+STOP=15
 USE_PROCD=1
 
-UDP2RAW=udp2raw
+NAME=udp2raw
 
 _log() {
-	local level="$1"
-	local msg="$2"
-
-	logger -p "daemon.${level}" -t "$UDP2RAW" "$msg"
+	logger -p "daemon.$1" -t "$NAME" "$2"
 }
 
-gen_client_config_file() {
+has_valid_server() {
+	local server
+	for server in $@; do
+		[ "$(uci_get $NAME $server)" = "servers" ] && return 0
+	done
+	return 1
+}
+
+add_ipt_rule() {
+	if [ -z "$ipt_cmd" ]; then
+		command -v iptables >/dev/null 2>&1 || return 1
+		ipt_cmd='iptables'
+		[ -n "$(iptables -h 2> /dev/null | grep -e '--wait')" ] && ipt_cmd="$ipt_cmd --wait"
+		echo "# firewall include file" > "/var/etc/$NAME.include"
+	else
+		echo "$ipt_cmd" | grep -q -e '--wait'
+		[ $? -ne 0 ] && sleep 2
+	fi
+
+	$ipt_cmd -I INPUT -s "$server_addr"/32 -p tcp -m tcp --sport "$server_port" -m comment --comment "${NAME}DwrW" -j DROP
+}
+
+flush_ipt_rules() {
+	iptables-save -c | grep -v "${NAME}DwrW" | iptables-restore -c
+	[ -f "/var/etc/$NAME.include" ] && rm -f "/var/etc/$NAME.include"
+}
+
+export_ipt_rules() {
+	[ -f "/var/etc/$NAME.include" ] || return
+	cat <<-CAT >> "/var/etc/$NAME.include"
+	iptables-save -c | grep -v "${NAME}DwrW" | iptables-restore -c
+	iptables-restore -n <<-EOF
+	$(iptables-save -t filter | grep -E "${NAME}DwrW|^\*|^COMMIT" | sed 's/^-A /-I /')
+	EOF
+CAT
+}
+
+create_config() {
 	local config_file="$1"
 	echo "# auto-generated config file from /etc/config/udp2raw" > $config_file
 
 	echo "-c" >> $config_file
 	echo "-l ${listen_addr}:${listen_port}" >> $config_file && _log "info" "listening on: ${listen_addr}:${listen_port}"
-	echo "-r ${server_addr}:${server_port}" >> $config_file && _log "info" "remote address: ${server_addr}:${server_port}"
+	echo "-r ${server_addr}:${server_port}" >> $config_file
 
 	[ -n "$raw_mode" ] && echo "--raw-mode ${raw_mode}" >> $config_file && _log "info" "raw-mode: ${raw_mode}"
 	[ -n "$key" ] && echo "--key ${key}" >> $config_file
-	[ -n "$cipher_mode" ] && echo "--cipher-mode ${cipher_mode}" >> $config_file && _log "info" "cipher-mode: ${cipher_mode}"
-	[ -n "$auth_mode" ] && echo "--auth-mode ${auth_mode}" >> $config_file && _log "info" "auth-mode: ${auth_mode}"
+	[ -n "$cipher_mode" ] && echo "--cipher-mode ${cipher_mode}" >> $config_file
+	[ -n "$auth_mode" ] && echo "--auth-mode ${auth_mode}" >> $config_file
 
-	[ "$auto_rule" -ne 0 ] && echo "--auto-rule" >> $config_file && _log "info" "auto-rule: true"
-	[ "$auto_rule" -ne 0 -a "$keep_rule" -ne 0 ] && echo "--keep-rule" >> $config_file && _log "info" "keep-rule: true"
+	[ $auto_rule -eq 1 -a $keep_rule -eq 1 ] && echo "--auto-rule" >> $config_file
+	[ $auto_rule -eq 1 -a $keep_rule -eq 1 ] && echo "--keep-rule" >> $config_file
 
-	[ -n "$seq_mode" ] && echo "--seq-mode ${seq_mode}" >> $config_file && _log "info" "seq-mode: ${seq_mode}"
-	[ -n "$lower_level" ] && echo "--lower-level ${lower_level}" >> $config_file && _log "info" "lower-level: ${lower_level}"
+	[ -n "$seq_mode" ] && echo "--seq-mode ${seq_mode}" >> $config_file
+	[ -n "$lower_level" ] && echo "--lower-level ${lower_level}" >> $config_file
 	[ -n "$source_ip" ] && echo "--source-ip ${source_ip}" >> $config_file
 	[ -n "$source_port" ] && echo "--source-port ${source_port}" >> $config_file
+	echo "--retry-on-error" >> $config_file
 
 	[ -n "$log_level" ] && echo "--log-level ${log_level}" >> $config_file
 	echo "--disable-color" >> $config_file
-	_log "info" "running from ${daemon_user} user"
 }
 
 validate_config_section() {
-	uci_validate_section "$UDP2RAW" general "$1" \
+	uci_validate_section "$NAME" general "$1" \
 		'server:uciname' \
 		'daemon_user:string:root'
 }
 
 validate_server_section() {
-	uci_validate_section "$UDP2RAW" servers "$1" \
+	uci_validate_section "$NAME" servers "$1" \
 		'server_addr:host' \
 		'server_port:port:8080' \
 		'listen_addr:ipaddr:127.0.0.1' \
@@ -63,38 +98,30 @@ validate_server_section() {
 		'log_level:range(0,6)'
 }
 
-start_udp2raw_instance() {
-	local section="$1"
+start_instance() {
+	local server="$1"
 
-	if ! validate_config_section "$section" ; then
-		_log "err" "Config validate failed."
-		return 1
-	fi
-
-	if [ -z "$server" ] || [ "$server" = "nil" ]; then
+	if [ -z "$server" -o "$server" == "nil" ]; then
 		return 0
 	elif ! validate_server_section "$server"; then
 		_log "err" "Server config validation failed."
 		return 1
-	elif [ -z "$server_addr" ]; then
+	fi
+
+	/sbin/validate_data "ipaddr" "$server_addr" >/dev/null 2>&1
+	[ $? -ne 0 ] && server_addr=$(nslookup "$server_addr" | \
+		sed -n 's/^Address[[:space:]]*[0-9]*:[[:space:]]*\(\([0-9]\{1,3\}\.\)\{3\}[0-9]\{1,3\}\)$/\1/p')
+	if [ -z "$server_addr" ]; then
 		_log "err" "Server address validation failed."
 		return 1
 	fi
 
-	is_ipv6_address() {
-		echo "$1" | grep -q ":"
-	}
-
-	is_ipv6_address "$server_addr" && server_addr="[${server_addr}]"
-	is_ipv6_address "$listen_addr" && listen_addr="[${listen_addr}]"
-
-	_log "notice" "udp2raw-tunnel start."
 	[ -d /var/etc ] || mkdir -p /var/etc
-	local config_file=/var/etc/${UDP2RAW}.${server}.conf
+	local config_file="/var/etc/${NAME}.${server}.conf"
+	create_config "$config_file" || return 1
 
-	if ! ( gen_client_config_file "$config_file" ); then
-		_log "err" "Can't create config file".
-		return 1
+	if [ $auto_rule -eq 1 -a $keep_rule -ne 1 ]; then
+		add_ipt_rule || { _log "err" "added iptables rule failed."; return 1; }
 	fi
 
 	procd_open_instance
@@ -102,20 +129,28 @@ start_udp2raw_instance() {
 	procd_append_param command --conf-file "$config_file"
 	procd_set_param respawn
 	procd_set_param file "$config_file"
-	procd_set_param user "$daemon_user"
-	procd_set_param pidfile /var/run/${UDP2RAW}.${server}.pid
+	[ -n "$daemon_user" ] && procd_set_param user "$daemon_user" && _log "info" "running from ${daemon_user} user"
+	procd_set_param pidfile "/var/run/${NAME}.${server}.pid"
 	procd_close_instance
 }
 
 service_triggers() {
-	procd_add_reload_trigger "$UDP2RAW"
+	procd_add_reload_trigger "$NAME"
 }
 
 start_service() {
-	config_load "$UDP2RAW"
-	config_foreach start_udp2raw_instance "general"
+	if ! validate_config_section "general" ; then
+		_log "err" "Config validate failed."
+		return 1
+	fi
+	has_valid_server $server || return 1
+	flush_ipt_rules
+	for srv in $server; do
+		start_instance $srv
+	done
+	export_ipt_rules
 }
 
 stop_service() {
-	_log "notice" "udp2raw-tunnel stop."
+	flush_ipt_rules
 }

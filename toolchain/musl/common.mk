@@ -9,7 +9,7 @@ include $(INCLUDE_DIR)/target.mk
 
 PKG_NAME:=musl
 PKG_VERSION:=1.1.18
-PKG_RELEASE=1
+PKG_RELEASE=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
@@ -21,9 +21,11 @@ PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-$(PKG_SOURCE_VERSION).tar.xz
 LIBC_SO_VERSION:=$(PKG_VERSION)
 PATCH_DIR:=$(PATH_PREFIX)/patches
 
+BUILD_DIR_HOST:=$(BUILD_DIR_TOOLCHAIN)
+HOST_BUILD_PREFIX:=$(TOOLCHAIN_DIR)
 HOST_BUILD_DIR:=$(BUILD_DIR_TOOLCHAIN)/$(PKG_NAME)-$(PKG_VERSION)
 
-include $(INCLUDE_DIR)/toolchain-build.mk
+include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/hardening.mk
 
 MUSL_CONFIGURE:= \
@@ -37,18 +39,8 @@ MUSL_CONFIGURE:= \
 		--disable-gcc-wrapper \
 		--enable-debug
 
-define Host/Prepare
-	$(call Host/Prepare/Default)
-	$(if $(strip $(QUILT)), \
-		cd $(HOST_BUILD_DIR); \
-		if $(QUILT_CMD) next >/dev/null 2>&1; then \
-			$(QUILT_CMD) push -a; \
-		fi
-	)
-	ln -snf $(PKG_NAME)-$(PKG_VERSION) $(BUILD_DIR_TOOLCHAIN)/$(PKG_NAME)
-endef
-
 define Host/Configure
+	ln -snf $(PKG_NAME)-$(PKG_VERSION) $(BUILD_DIR_TOOLCHAIN)/$(PKG_NAME)
 	( cd $(HOST_BUILD_DIR); rm -f config.cache; \
 		$(MUSL_CONFIGURE) \
 	);
