@@ -1,0 +1,180 @@
+
+local fs = require "nixio.fs"
+local NXFS = require "nixio.fs"
+local WLFS = require "nixio.fs"
+local SYS  = require "luci.sys"
+local ND = SYS.exec("cat /etc/gfwlist/china-banned | wc -l")
+local conf = "/etc/brook/base-gfwlist.txt"
+local watch = "/tmp/brook_watchdog.log"
+local dog = "/tmp/brookpro.log"
+
+local Status
+
+if SYS.call("pidof brook > /dev/null") == 0 then
+	Status = translate("<strong><font color=\"green\">Brook is Running</font></strong>")
+else
+	Status = translate("<strong><font color=\"red\">Brook is Not Running</font></strong>")
+end
+
+m = Map("brook")
+m.title	= translate("Brook Transparent Proxy")
+m.description = translate("A fast secure tunnel proxy that help you get through firewalls on your router")
+
+s = m:section(TypedSection, "brook")
+s.anonymous = true
+s.description = translate(string.format("%s<br /><br />", Status))
+
+-- ---------------------------------------------------
+
+s:tab("basic",  translate("Base Setting"))
+
+
+switch = s:taboption("basic",Flag, "enabled", translate("Enable"))
+switch.rmempty = false
+
+proxy_mode = s:taboption("basic",ListValue, "proxy_mode", translate("Proxy Mode"))
+proxy_mode:value("M", translate("Base on GFW-List Auto Proxy Mode(Recommend)"))
+proxy_mode:value("S", translate("Bypassing China Manland IP Mode(Be caution when using P2P download！)"))
+proxy_mode:value("G", translate("Global Mode"))
+proxy_mode:value("V", translate("Overseas users watch China video website Mode"))
+
+cronup = s:taboption("basic", Flag, "cron_mode", translate("Auto Update GFW-List"),
+	translate(string.format("GFW-List Lines： <strong><font color=\"blue\">%s</font></strong> Lines", ND)))
+cronup.default = 0
+cronup.rmempty = false
+
+updatead = s:taboption("basic", Button, "updatead", translate("Manually force update GFW-List"), translate("Note: It needs to download and convert the rules. The background process may takes 60-120 seconds to run. <br / > After completed it would automatically refresh, please do not duplicate click!"))
+updatead.inputtitle = translate("Manually force update GFW-List")
+updatead.inputstyle = "apply"
+updatead.write = function()
+	SYS.call("nohup sh /etc/brook/up-gfwlist.sh > /tmp/gfwupdate.log 2>&1 &")
+end
+
+safe_dns_tcp = s:taboption("basic",Flag, "safe_dns_tcp", translate("DNS uses TCP"),
+	translate("Through the server transfer mode inquires DNS pollution prevention (Safer and recommended)"))
+safe_dns_tcp.rmempty = false
+-- safe_dns_tcp:depends("more", "1")
+
+-- more_opt = s:taboption("basic",Flag, "more", translate("More Options"),
+-- 	translate("Options for advanced users"))
+
+-- timeout = s:taboption("basic",Value, "timeout", translate("Timeout"))
+-- timeout.datatype = "range(0,10000)"
+-- timeout.placeholder = "60"
+-- timeout.optional = false
+-- timeout:depends("more", "1")
+
+-- safe_dns = s:taboption("basic",Value, "safe_dns", translate("Safe DNS"),
+-- 	translate("8.8.8.8 or 8.8.4.4 is recommended"))
+-- safe_dns.datatype = "ip4addr"
+-- safe_dns.optional = false
+-- safe_dns:depends("more", "1")
+
+-- safe_dns_port = s:taboption("basic",Value, "safe_dns_port", translate("Safe DNS Port"),
+-- 	translate("Foreign DNS on UDP port 53 might be polluted"))
+-- safe_dns_port.datatype = "range(1,65535)"
+-- safe_dns_port.placeholder = "53"
+-- safe_dns_port.optional = false
+-- safe_dns_port:depends("more", "1")
+
+--fast_open =s:taboption("basic",Flag, "fast_open", translate("TCP Fast Open"),
+--	translate("Enable TCP fast open, only available on kernel > 3.7.0"))
+
+
+
+s:tab("main",  translate("Server Setting"))
+
+server = s:taboption("main",Value, "server", translate("Server Address"))
+server.optional = false
+server.datatype = "host"
+server.rmempty = false
+
+server_port = s:taboption("main",Value, "server_port", translate("Server Port"))
+server_port.datatype = "range(1,65535)"
+server_port.optional = false
+server_port.rmempty = false
+
+password = s:taboption("main",Value, "password", translate("Password"))
+password.password = true
+
+s:tab("list",  translate("User-defined GFW-List"))
+gfwlist = s:taboption("list", TextValue, "conf")
+gfwlist.description = translate("<br />（!）Note: When the domain name is entered and will automatically merge with the online GFW-List. Please manually update the GFW-List list after applying.")
+gfwlist.rows = 13
+gfwlist.wrap = "off"
+gfwlist.cfgvalue = function(self, section)
+	return NXFS.readfile(conf) or ""
+end
+gfwlist.write = function(self, section, value)
+	NXFS.writefile(conf, value:gsub("\r\n", "\n"))
+end
+
+local addipconf = "/etc/brook/addinip.txt"
+
+s:tab("addip",  translate("GFW-List Add-in IP"))
+gfwaddin = s:taboption("addip", TextValue, "addipconf")
+gfwaddin.description = translate("<br />（!）Note: IP add-in to GFW-List. Such as Telegram Messenger")
+gfwaddin.rows = 13
+gfwaddin.wrap = "off"
+gfwaddin.cfgvalue = function(self, section)
+	return NXFS.readfile(addipconf) or ""
+end
+gfwaddin.write = function(self, section, value)
+	NXFS.writefile(addipconf, value:gsub("\r\n", "\n"))
+end
+
+s:tab("status",  translate("Status and Tools"))
+s:taboption("status", DummyValue,"opennewwindow" , 
+	translate("<input type=\"button\" class=\"cbi-button cbi-button-apply\" value=\"IP111.CN\" onclick=\"window.open('http://www.ip111.cn/')\" />"))
+
+
+s:tab("watchdog",  translate("Watchdog Log"))
+log = s:taboption("watchdog", TextValue, "sylogtext")
+log.template = "cbi/tvalue"
+log.rows = 13
+log.wrap = "off"
+log.readonly="readonly"
+
+function log.cfgvalue(self, section)
+  SYS.exec("[ -f /tmp/brook_watchdog.log ] && sed '1!G;h;$!d' /tmp/brook_watchdog.log > /tmp/brookpro.log")
+	return nixio.fs.readfile(dog)
+end
+
+function log.write(self, section, value)
+	value = value:gsub("\r\n?", "\n")
+	nixio.fs.writefile(dog, value)
+end
+
+
+
+t=m:section(TypedSection,"acl_rule",translate("<strong>Client Proxy Mode Settings</strong>"),
+translate("Proxy mode settings can be set to specific LAN clients ( <font color=blue> No Proxy, Global Proxy, Game Mode</font>) . Does not need to be set by default."))
+t.template="cbi/tblsection"
+t.sortable=true
+t.anonymous=true
+t.addremove=true
+e=t:option(Value,"ipaddr",translate("IP Address"))
+e.width="40%"
+e.datatype="ip4addr"
+e.placeholder="0.0.0.0/0"
+luci.ip.neighbors({ family = 4 }, function(entry)
+	if entry.reachable then
+		e:value(entry.dest:string())
+	end
+end)
+
+e=t:option(ListValue,"filter_mode",translate("Proxy Mode"))
+e.width="40%"
+e.default="disable"
+e.rmempty=false
+e:value("disable",translate("No Proxy"))
+e:value("global",translate("Global Proxy"))
+e:value("game",translate("Game Mode"))
+
+-- ---------------------------------------------------
+local apply = luci.http.formvalue("cbi.apply")
+if apply then
+	os.execute("/etc/init.d/brookpro restart >/dev/null 2>&1 &")
+end
+
+return m
