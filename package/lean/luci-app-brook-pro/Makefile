@@ -9,7 +9,7 @@ LUCI_TITLE:=LuCI support for Brook
 LUCI_DEPENDS:=+iptables-mod-tproxy +kmod-ipt-tproxy +ip +ipset-lists +brook +pdnsd-alt +coreutils +coreutils-base64 +coreutils-nohup +dnsmasq-full
 LUCI_PKGARCH:=all
 PKG_VERSION:=1.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
