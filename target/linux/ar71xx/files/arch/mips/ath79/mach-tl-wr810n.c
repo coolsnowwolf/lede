@@ -88,27 +88,20 @@ static struct gpio_keys_button tl_wr810n_gpio_keys[] __initdata = {
 	},
 };
 
-static void __init tl_wr810n_setup(void)
+static void __init tl_ap143_setup(int lan_mac_offset)
 {
 	u8 *mac = (u8 *) KSEG1ADDR(0x1f01fc00);
 	u8 *art = (u8 *) KSEG1ADDR(0x1fff0000);
 
-	ath79_setup_ar933x_phy4_switch(false, false);
-
 	ath79_register_m25p80(&tl_wr810n_flash_data);
-	ath79_register_leds_gpio(-1,
-				 ARRAY_SIZE(tl_wr810n_leds_gpio),
-				 tl_wr810n_leds_gpio);
-	ath79_register_gpio_keys_polled(-1,
-				        TL_WR810N_KEYS_POLL_INTERVAL,
-				        ARRAY_SIZE(tl_wr810n_gpio_keys),
-				        tl_wr810n_gpio_keys);
+
+	ath79_setup_ar933x_phy4_switch(false, false);
 
 	ath79_register_mdio(0, 0x0);
 
 	/* WAN */
-	ath79_eth0_data.duplex = DUPLEX_FULL;
 	ath79_eth0_data.phy_if_mode = PHY_INTERFACE_MODE_MII;
+	ath79_eth0_data.duplex = DUPLEX_FULL;
 	ath79_eth0_data.speed = SPEED_100;
 	ath79_eth0_data.phy_mask = BIT(4);
 	ath79_init_mac(ath79_eth0_data.mac_addr, mac, 1);
@@ -116,14 +109,27 @@ static void __init tl_wr810n_setup(void)
 
 	/* LAN */
 	ath79_switch_data.phy4_mii_en = 1;
-	ath79_eth1_data.duplex = DUPLEX_FULL;
 	ath79_eth1_data.phy_if_mode = PHY_INTERFACE_MODE_GMII;
+	ath79_eth1_data.duplex = DUPLEX_FULL;
 	ath79_eth1_data.speed = SPEED_1000;
 	ath79_switch_data.phy_poll_mask |= BIT(4);
-	ath79_init_mac(ath79_eth1_data.mac_addr, mac, -1);
+	ath79_init_mac(ath79_eth1_data.mac_addr, mac, lan_mac_offset);
 	ath79_register_eth(1);
 
 	ath79_register_wmac(art + TL_WR810N_WMAC_CALDATA_OFFSET, mac);
+
+	ath79_register_leds_gpio(-1,
+				 ARRAY_SIZE(tl_wr810n_leds_gpio),
+				 tl_wr810n_leds_gpio);
+	ath79_register_gpio_keys_polled(-1,
+					TL_WR810N_KEYS_POLL_INTERVAL,
+					ARRAY_SIZE(tl_wr810n_gpio_keys),
+					tl_wr810n_gpio_keys);
+}
+
+static void __init tl_wr810n_setup(void)
+{
+	tl_ap143_setup(-1);
 
 	gpio_request_one(TL_WR810N_GPIO_USB_POWER,
 			 GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT_DIR_FIXED,
@@ -131,5 +137,13 @@ static void __init tl_wr810n_setup(void)
 	ath79_register_usb();
 }
 
+static void __init tl_wr810n_v2_setup(void)
+{
+	tl_ap143_setup(0);
+}
+
 MIPS_MACHINE(ATH79_MACH_TL_WR810N, "TL-WR810N", "TP-LINK TL-WR810N",
 	     tl_wr810n_setup);
+
+MIPS_MACHINE(ATH79_MACH_TL_WR810N_V2, "TL-WR810N-v2", "TP-LINK TL-WR810N v2",
+	     tl_wr810n_v2_setup);

@@ -7,7 +7,7 @@ define Build/uImage
 	mkimage -A $(LINUX_KARCH) \
 		-O linux -T kernel \
 		-C $(1) -a $(KERNEL_LOADADDR) -e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
-		-n '$(if $(UIMAGE_NAME),$(UIMAGE_NAME),$(call toupper,$(LINUX_KARCH)) LEDE Linux-$(LINUX_VERSION))' -d $@ $@.new
+		-n '$(if $(UIMAGE_NAME),$(UIMAGE_NAME),$(call toupper,$(LINUX_KARCH)) OpenWrt Linux-$(LINUX_VERSION))' -d $@ $@.new
 	mv $@.new $@
 endef
 
@@ -60,7 +60,7 @@ endef
 
 define Build/netgear-dni
 	$(STAGING_DIR_HOST)/bin/mkdniimg \
-		-B $(NETGEAR_BOARD_ID) -v LEDE.$(REVISION) \
+		-B $(NETGEAR_BOARD_ID) -v OpenWrt.$(REVISION) \
 		$(if $(NETGEAR_HW_ID),-H $(NETGEAR_HW_ID)) \
 		-r "$(1)" \
 		-i $@ -o $@.new
@@ -83,7 +83,7 @@ define Build/append-uImage-fakeroot-hdr
 	rm -f $@.fakeroot
 	$(STAGING_DIR_HOST)/bin/mkimage \
 		-A $(LINUX_KARCH) -O linux -T filesystem -C none \
-		-n '$(call toupper,$(LINUX_KARCH)) LEDE fakeroot' \
+		-n '$(call toupper,$(LINUX_KARCH)) OpenWrt fakeroot' \
 		-s \
 		$@.fakeroot
 	cat $@.fakeroot >> $@
@@ -102,8 +102,7 @@ define Build/tplink-safeloader
 endef
 
 define Build/append-dtb
-	$(call Image/BuildDTB,$(if $(DEVICE_DTS_DIR),$(DEVICE_DTS_DIR),$(DTS_DIR))/$(DEVICE_DTS).dts,$@.dtb)
-	cat $@.dtb >> $@
+	cat $(KDIR)/image-$(firstword $(DEVICE_DTS)).dtb >> $@
 endef
 
 define Build/install-dtb
@@ -112,6 +111,11 @@ define Build/install-dtb
 			$(DTS_DIR)/$(dts).dtb \
 			$(BIN_DIR)/$(IMG_PREFIX)-$(dts).dtb; \
 	)
+endef
+
+define Build/install-zImage
+    $(CP) $(KDIR)/zImage \
+      $(BIN_DIR)/$(IMG_PREFIX)-$(PROFILE_SANITIZED)-zImage
 endef
 
 define Build/fit
@@ -225,6 +229,19 @@ define Build/combined-image
 	@mv $@.new $@
 endef
 
+define Build/openmesh-image
+	$(TOPDIR)/scripts/om-fwupgradecfg-gen.sh \
+		"$(call param_get_default,ce_type,$(1),$(DEVICE_NAME))" \
+		"$@-fwupgrade.cfg" \
+		"$(call param_get_default,kernel,$(1),$(IMAGE_KERNEL))" \
+		"$(call param_get_default,rootfs,$(1),$@)"
+	$(TOPDIR)/scripts/combined-ext-image.sh \
+		"$(call param_get_default,ce_type,$(1),$(DEVICE_NAME))" "$@" \
+		"$@-fwupgrade.cfg" "fwupgrade.cfg" \
+		"$(call param_get_default,kernel,$(1),$(IMAGE_KERNEL))" "kernel" \
+		"$(call param_get_default,rootfs,$(1),$@)" "rootfs"
+endef
+
 define Build/sysupgrade-tar
 	sh $(TOPDIR)/scripts/sysupgrade-tar.sh \
 		--board $(if $(BOARD_NAME),$(BOARD_NAME),$(DEVICE_NAME)) \
@@ -244,14 +261,20 @@ endef
 
 define Build/tplink-v2-header
 	$(STAGING_DIR_HOST)/bin/mktplinkfw2 \
-		-c -V "ver. 2.0" -B $(TPLINK_BOARD_ID) $(1) -k $@ -o $@.new
+		-c -H $(TPLINK_HWID) -W $(TPLINK_HWREV) -L $(KERNEL_LOADADDR) \
+		-E $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR))  \
+		-w $(TPLINK_HWREVADD) -F "$(TPLINK_FLASHLAYOUT)" \
+		-T $(TPLINK_HVERSION) -V "ver. 2.0" \
+		-k $@ -o $@.new $(1)
 	@mv $@.new $@
 endef
 
 define Build/tplink-v2-image
 	$(STAGING_DIR_HOST)/bin/mktplinkfw2 \
-		-a 0x4 -j -V "ver. 2.0" -B $(TPLINK_BOARD_ID) $(1) \
-		-k $(IMAGE_KERNEL) -r $(IMAGE_ROOTFS) -o $@.new
+		-H $(TPLINK_HWID) -W $(TPLINK_HWREV) \
+		-w $(TPLINK_HWREVADD) -F "$(TPLINK_FLASHLAYOUT)" \
+		-T $(TPLINK_HVERSION) -V "ver. 2.0" -a 0x4 -j \
+		-k $(IMAGE_KERNEL) -r $(IMAGE_ROOTFS) -o $@.new $(1)
 	cat $@.new >> $@
 	rm -rf $@.new
 endef
@@ -271,7 +294,7 @@ metadata_json = \
 	}'
 
 define Build/append-metadata
-	$(if $(SUPPORTED_DEVICES),echo $(call metadata_json,$(SUPPORTED_DEVICES)) | fwtool -I - $@)
+	$(if $(SUPPORTED_DEVICES),-echo $(call metadata_json,$(SUPPORTED_DEVICES)) | fwtool -I - $@)
 endef
 
 define Build/kernel2minor

@@ -379,7 +379,7 @@ static int rb4xx_spi_probe(struct platform_device *pdev)
 err_iounmap:
 	iounmap(rbspi->base);
 err_clk_disable:
-	clk_disable(rbspi->ahb_clk);
+	clk_disable_unprepare(rbspi->ahb_clk);
 err_clk_put:
 	clk_put(rbspi->ahb_clk);
 err_put_master:
@@ -394,7 +394,7 @@ static int rb4xx_spi_remove(struct platform_device *pdev)
 	struct rb4xx_spi *rbspi = platform_get_drvdata(pdev);
 
 	iounmap(rbspi->base);
-	clk_disable(rbspi->ahb_clk);
+	clk_disable_unprepare(rbspi->ahb_clk);
 	clk_put(rbspi->ahb_clk);
 	platform_set_drvdata(pdev, NULL);
 	spi_master_put(rbspi->master);

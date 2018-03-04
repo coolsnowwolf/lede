@@ -42,8 +42,8 @@
 
 #define DIR869A1_GPIO_ENABLE_SWITCH	11
 
-#define DIR869A1_GPIO_LED_POWER		15
-#define DIR869A1_GPIO_LED_ORANGE	16
+#define DIR869A1_GPIO_LED_ORANGE	15
+#define DIR869A1_GPIO_LED_WHITE		16
 
 #define DIR869A1_KEYS_POLL_INTERVAL	20 /* msecs */
 #define DIR869A1_KEYS_DEBOUNCE_INTERVAL	(3 * DIR869A1_KEYS_POLL_INTERVAL)
@@ -59,17 +59,14 @@
 
 static struct gpio_led dir869a1_leds_gpio[] __initdata = {
 	{
-		/* Actually, this GPIO controls the LED power,
-		 * while d-link:orange:status switches it between
-		 * orange and white */
 		.name		= "d-link:white:status",
-		.gpio		= DIR869A1_GPIO_LED_POWER,
+		.gpio		= DIR869A1_GPIO_LED_WHITE,
 		.active_low	= 1,
 	},
 	{
 		.name		= "d-link:orange:status",
 		.gpio		= DIR869A1_GPIO_LED_ORANGE,
-		.active_low	= 0,
+		.active_low	= 1,
 	},
 };
 

@@ -41,13 +41,30 @@
 
 struct rb750_nand_info {
 	struct nand_chip	chip;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 	struct mtd_info		mtd;
+#endif
 	struct rb7xx_nand_platform_data *pdata;
 };
 
 static inline struct rb750_nand_info *mtd_to_rbinfo(struct mtd_info *mtd)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 	return container_of(mtd, struct rb750_nand_info, mtd);
+#else
+	struct nand_chip *chip = mtd_to_nand(mtd);
+
+	return container_of(chip, struct rb750_nand_info, chip);
+#endif
+}
+
+static struct mtd_info *rbinfo_to_mtd(struct rb750_nand_info *nfc)
+{
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
+	return &nfc->mtd;
+#else
+	return nand_to_mtd(&nfc->chip);
+#endif
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
@@ -304,6 +321,7 @@ static int rb750_nand_probe(struct platform_device *pdev)
 {
 	struct rb750_nand_info	*info;
 	struct rb7xx_nand_platform_data *pdata;
+	struct mtd_info *mtd;
 	int ret;
 
 	printk(KERN_INFO DRV_DESC " version " DRV_VERSION "\n");
@@ -317,8 +335,12 @@ static int rb750_nand_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	info->chip.priv	= &info;
-	info->mtd.priv	= &info->chip;
-	info->mtd.owner	= THIS_MODULE;
+
+	mtd = rbinfo_to_mtd(info);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
+	mtd->priv	= &info->chip;
+#endif
+	mtd->owner	= THIS_MODULE;
 
 	info->chip.select_chip	= rb750_nand_select_chip;
 	info->chip.cmd_ctrl	= rb750_nand_cmd_ctrl;
@@ -329,6 +351,9 @@ static int rb750_nand_probe(struct platform_device *pdev)
 
 	info->chip.chip_delay	= 25;
 	info->chip.ecc.mode	= NAND_ECC_SOFT;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
+	info->chip.ecc.algo = NAND_ECC_HAMMING;
+#endif
 	info->chip.options = NAND_NO_SUBPAGE_WRITE;
 
 	info->pdata = pdata;
@@ -337,26 +362,26 @@ static int rb750_nand_probe(struct platform_device *pdev)
 
 	rb750_nand_gpio_init(info);
 
-	ret = nand_scan_ident(&info->mtd, 1, NULL);
+	ret = nand_scan_ident(mtd, 1, NULL);
 	if (ret) {
 		ret = -ENXIO;
 		goto err_free_info;
 	}
 
-	if (info->mtd.writesize == 512)
+	if (mtd->writesize == 512)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 		info->chip.ecc.layout = &rb750_nand_ecclayout;
 #else
-		mtd_set_ooblayout(&info->mtd, &rb750_nand_ecclayout_ops);
+		mtd_set_ooblayout(mtd, &rb750_nand_ecclayout_ops);
 #endif
 
-	ret = nand_scan_tail(&info->mtd);
+	ret = nand_scan_tail(mtd);
 	if (ret) {
 		return -ENXIO;
 		goto err_set_drvdata;
 	}
 
-	ret = mtd_device_register(&info->mtd, rb750_nand_partitions,
+	ret = mtd_device_register(mtd, rb750_nand_partitions,
 				 ARRAY_SIZE(rb750_nand_partitions));
 	if (ret)
 		goto err_release_nand;
@@ -364,7 +389,7 @@ static int rb750_nand_probe(struct platform_device *pdev)
 	return 0;
 
 err_release_nand:
-	nand_release(&info->mtd);
+	nand_release(mtd);
 err_set_drvdata:
 	platform_set_drvdata(pdev, NULL);
 err_free_info:
@@ -376,7 +401,7 @@ static int rb750_nand_remove(struct platform_device *pdev)
 {
 	struct rb750_nand_info *info = platform_get_drvdata(pdev);
 
-	nand_release(&info->mtd);
+	nand_release(rbinfo_to_mtd(info));
 	platform_set_drvdata(pdev, NULL);
 	kfree(info);
 

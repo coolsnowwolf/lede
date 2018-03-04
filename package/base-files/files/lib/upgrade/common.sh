@@ -160,6 +160,14 @@ export_partdevice() {
 	return 1
 }
 
+hex_le32_to_cpu() {
+	[ "$(echo 01 | hexdump -v -n 2 -e '/2 "%x"')" == "3031" ] && {
+		echo "${1:0:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}"
+		return
+	}
+	echo "$@"
+}
+
 get_partitions() { # <device> <filename>
 	local disk="$1"
 	local filename="$2"
@@ -167,8 +175,8 @@ get_partitions() { # <device> <filename>
 	if [ -b "$disk" -o -f "$disk" ]; then
 		v "Reading partition table from $filename..."
 
-		local magic="$(hexdump -v -n 2 -s 0x1FE -e '1/2 "0x%04X"' "$disk")"
-		if [ "$magic" != 0xAA55 ]; then
+		local magic=$(dd if="$disk" bs=2 count=1 skip=255 2>/dev/null)
+		if [ "$magic" != $'\x55\xAA' ]; then
 			v "Invalid partition table on $disk"
 			exit
 		fi
@@ -179,9 +187,9 @@ get_partitions() { # <device> <filename>
 		for part in 1 2 3 4; do
 			set -- $(hexdump -v -n 12 -s "$((0x1B2 + $part * 16))" -e '3/4 "0x%08X "' "$disk")
 
-			local type="$(($1 % 256))"
-			local lba="$(($2))"
-			local num="$(($3))"
+			local type="$(( $(hex_le32_to_cpu $1) % 256))"
+			local lba="$(( $(hex_le32_to_cpu $2) ))"
+			local num="$(( $(hex_le32_to_cpu $3) ))"
 
 			[ $type -gt 0 ] || continue
 

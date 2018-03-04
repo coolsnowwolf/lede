@@ -5,7 +5,7 @@
 # See /LICENSE for more information.
 #
 
-PKG_DEFAULT_DEPENDS = +libc +SSP_SUPPORT:libssp +USE_GLIBC:librt +USE_GLIBC:libpthread
+PKG_DEFAULT_DEPENDS = +libc +GCC_LIBSSP:libssp +USE_GLIBC:librt +USE_GLIBC:libpthread
 
 ifneq ($(PKG_NAME),toolchain)
   PKG_FIXUP_DEPENDS = $(if $(filter kmod-%,$(1)),$(2),$(PKG_DEFAULT_DEPENDS) $(filter-out $(PKG_DEFAULT_DEPENDS),$(2)))
@@ -57,6 +57,8 @@ define Package/Default
   DEFAULT_VARIANT:=
   USERID:=
   ALTERNATIVES:=
+  LICENSE:=$(PKG_LICENSE)
+  LICENSE_FILES:=$(PKG_LICENSE_FILES)
 endef
 
 Build/Patch:=$(Build/Patch/Default)

@@ -42,10 +42,6 @@ CONFIGURE_ARGS += \
 TARGET_CFLAGS += $(FPIC)
 MAKE_FLAGS += CFLAGS_O="$(TARGET_CFLAGS)"
 
-ifeq ($(CONFIG_i386)$(CONFIG_x86_64),)
-  TARGET_CFLAGS += -DLZO_CFG_NO_UNALIGNED=1
-endif
-
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include $(1)/usr/lib
 	$(CP) $(PKG_INSTALL_DIR)/usr/include/lzo $(1)/usr/include/

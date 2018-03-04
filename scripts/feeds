@@ -32,12 +32,14 @@ $valid_mk or die "Unsupported version of make found: $mk\n";
 my @feeds;
 my %build_packages;
 my %installed;
+my %installed_pkg;
 my %installed_targets;
 my %feed_cache;
 
 my $feed_package = {};
 my $feed_src = {};
 my $feed_target = {};
+my $feed_vpackage = {};
 
 sub parse_config() {
 	my $line = 0;
@@ -223,20 +225,21 @@ sub get_feed($) {
 		parse_package_metadata($file) or return;
 		my %target = get_targets("./feeds/$feed.targetindex");
 
-		$feed_cache{$feed} = [ { %package }, { %srcpackage }, { %target } ];
+		$feed_cache{$feed} = [ { %package }, { %srcpackage }, { %target }, { %vpackage } ];
 	}
 
 	$feed_package = $feed_cache{$feed}->[0];
 	$feed_src = $feed_cache{$feed}->[1];
 	$feed_target = $feed_cache{$feed}->[2];
-	return $feed_cache{$feed}->[0];
+	$feed_vpackage = $feed_cache{$feed}->[3];
 }
 
 sub get_installed() {
 	system("$mk -s prepare-tmpinfo OPENWRT_BUILD=");
 	clear_packages();
 	parse_package_metadata("./tmp/.packageinfo");
-	%installed = %package;
+	%installed_pkg = %vpackage;
+	%installed = %srcpackage;
 	%installed_targets = get_targets("./tmp/.targetinfo");
 }
 
@@ -252,7 +255,6 @@ sub search_feed {
 		my $substr;
 		my $pkgmatch = 1;
 
-		next if $pkg->{vdepends};
 		foreach my $substr (@substr) {
 			my $match;
 			foreach my $key (qw(name title description src)) {
@@ -306,7 +308,6 @@ sub list_feed {
 	get_feed($feed);
 	foreach my $name (sort { lc($a) cmp lc($b) } keys %$feed_package) {
 		my $pkg = $feed_package->{$name};
-		next if $pkg->{vdepends};
 		if($pkg->{name}) {
 			printf "\%-32s\t\%s\n", $pkg->{name}, $pkg->{title};
 		}
@@ -373,12 +374,12 @@ sub list {
 	return 0;
 }
 
-sub do_install_package($$) {
+sub do_install_src($$) {
 	my $feed = shift;
-	my $pkg = shift;
-	my $path = $pkg->{makefile};
+	my $src = shift;
 
-	if($path) {
+	my $path = $src->{makefile};
+	if ($path) {
 		$path =~ s/\/Makefile$//;
 
 		-d "./package/feeds" or mkdir "./package/feeds";
@@ -416,6 +417,18 @@ sub do_install_target($) {
 	return 0;
 }
 
+sub lookup_src($$) {
+	my $feed = shift;
+	my $src = shift;
+
+	foreach my $feed ($feed, @feeds) {
+		next unless $feed->[1];
+		next unless $feed_cache{$feed->[1]};
+		$feed_cache{$feed->[1]}->[1]->{$src} and return $feed;
+	}
+	return;
+}
+
 sub lookup_package($$) {
 	my $feed = shift;
 	my $package = shift;
@@ -423,7 +436,7 @@ sub lookup_package($$) {
 	foreach my $feed ($feed, @feeds) {
 		next unless $feed->[1];
 		next unless $feed_cache{$feed->[1]};
-		$feed_cache{$feed->[1]}->[0]->{$package} and return $feed;
+		$feed_cache{$feed->[1]}->[3]->{$package} and return $feed;
 	}
 	return;
 }
@@ -440,9 +453,9 @@ sub lookup_target($$) {
 	return;
 }
 
-sub is_core_package($) {
-	my $package = shift;
-	foreach my $file ("tmp/info/.packageinfo-$package", glob("tmp/info/.packageinfo-*_$package")) {
+sub is_core_src($) {
+	my $src = shift;
+	foreach my $file ("tmp/info/.packageinfo-$src", glob("tmp/info/.packageinfo-*_$src")) {
 		next unless index($file, "tmp/info/.packageinfo-feeds_");
 		return 1 if -s $file;
 	}
@@ -452,6 +465,8 @@ sub is_core_package($) {
 sub install_target {
 	my $feed = shift;
 	my $name = shift;
+
+	$installed_targets{$name} and return 0;
 
 	$feed = $feed_cache{$feed->[1]}->[2];
 	$feed or return 0;
@@ -463,80 +478,113 @@ sub install_target {
 	return do_install_target($target);
 }
 
-sub install_package {
+sub install_src {
 	my $feed = shift;
 	my $name = shift;
 	my $force = shift;
 	my $ret = 0;
 
-	my $this_feed_target = lookup_target($feed, $name);
-	$this_feed_target and do {
-		$installed_targets{$name} and return 0;
-		install_target($this_feed_target, $name);
-		return 0;
-	};
-
-	$feed = lookup_package($feed, $name);
-	$feed or do {
+	$feed = lookup_src($feed, $name);
+	unless ($feed) {
 		$installed{$name} and return 0;
-		# TODO: check if it's already installed within ./package directory
-		$feed_src->{$name} or is_core_package($name) or warn "WARNING: No feed for package '$name' found, maybe it's already part of the standard packages?\n";
+		$feed_src->{$name} or warn "WARNING: No feed for source package '$name' found\n";
 		return 0;
-	};
+	}
 
 	# switch to the metadata for the selected feed
-	my $cur = get_feed($feed->[1]);
-
-	my $pkg = $cur->{$name} or return 1;
-	$pkg->{name} or do {
-		$installed{$name} and return 0;
-		# TODO: check if this is an alias package, maybe it's known by another name
-		warn "WARNING: Package '$name' is not available in feed $feed->[1].\n";
-		return 0;
-	};
-	my $src = $pkg->{src};
-	my $type = $feed->[0];
-	$src or $src = $name;
+	get_feed($feed->[1]);
+	my $src = $feed_src->{$name} or return 1;
 
 	# If it's a core package and we don't want to override, just return
-	!$force and is_core_package($src) and return 0;
+	my $override = 0;
+	if (is_core_src($name)) {
+		return 0 unless $force;
+		$override = 1;
+	}
 
-	# previously installed packages set the runtime package
-	# newly installed packages set the source package to 1
-	$installed{$src} and $installed{$src} == 1 and return 0;
+	if ($installed{$name}) {
+		# newly installed packages set the source package to 1
+		return 0 if ($installed{$name} == 1);
+		return 0 unless ($override);
+	}
 
-	# we'll trigger the override only with the 3 conditions below:
-	# - override is allowed by command line (-f)
-	# - a package with the same src exists in the core packages list
-	# - the package previously installed is not from a feed
-	my $override = 1 if ($force and is_core_package($src) and !$installed{$name}->{feed});
+	$installed{$name} = 1;
+	foreach my $pkg (@{$src->{packages}}) {
+		foreach my $vpkg (@{$pkg->{provides}}) {
+			$installed_pkg{$vpkg} = 1;
+		}
+	}
 
-	# check previously installed packages
-	$installed{$name} and !$override and return 0;
-	$installed{$src} = 1;
+	if ($override) {
+		warn "Overriding core package '$name' with version from $feed->[1]\n";
+	} else {
+		warn "Installing package '$name' from $feed->[1]\n";
+	}
 
-	defined($override) and $override == 1
-		and warn "Overriding core package '$src' with version from $feed->[1]\n"
-		or warn "Installing package '$src' from $feed->[1]\n";
-
-	do_install_package($feed, $pkg) == 0 or do {
+	do_install_src($feed, $src) == 0 or do {
 		warn "failed.\n";
 		return 1;
 	};
 
 	# install all dependencies referenced from the source package
-	foreach my $vpkg (@{$feed_src->{$src}}) {
-		foreach my $dep (@{$vpkg->{depends}}, @{$vpkg->{builddepends}}, @{$vpkg->{"builddepends/host"}}) {
+	foreach my $dep (
+		@{$src->{builddepends}},
+		@{$src->{'builddepends/host'}},
+	) {
+		next if $dep =~ /@/;
+		$dep =~ s/^.+://;
+		$dep =~ s/\/.+$//;
+		next unless $dep;
+		install_src($feed, $dep, 0) == 0 or $ret = 1;
+	}
+
+	foreach my $pkg (@{$src->{packages}}) {
+		foreach my $dep (@{$pkg->{depends}}) {
 			next if $dep =~ /@/;
 			$dep =~ s/^\+//;
 			$dep =~ s/^.+://;
-			$dep =~ s/\/.+$//;
 			next unless $dep;
 			install_package($feed, $dep, 0) == 0 or $ret = 1;
 		}
 	}
 
 	return $ret;
+}
+
+sub install_package {
+	my $feed = shift;
+	my $name = shift;
+	my $force = shift;
+
+	$feed = lookup_package($feed, $name);
+	unless ($feed) {
+		$installed_pkg{$name} and return 0;
+		$feed_vpackage->{$name} or warn "WARNING: No feed for package '$name' found\n";
+		return 0;
+	}
+
+	# switch to the metadata for the selected feed
+	get_feed($feed->[1]);
+	my $pkg = $feed_vpackage->{$name} or return 1;
+	return install_src($feed, $pkg->[0]{src}{name}, $force);
+}
+
+sub install_target_or_package {
+	my $feed = shift;
+	my $name = shift;
+	my $force = shift;
+
+	my $this_feed_target = lookup_target($feed, $name);
+	$this_feed_target and do {
+		return install_target($this_feed_target, $name);
+	};
+
+	my $this_feed_src = lookup_src($feed, $name);
+	$this_feed_src and do {
+		return install_src($this_feed_src, $name, $force);
+	};
+
+	return install_package($feed, $name, $force);
 }
 
 sub refresh_config {
@@ -586,19 +634,15 @@ sub install {
 			if (!defined($opts{p}) or $opts{p} eq $f->[1]) {
 				printf "Installing all packages from feed %s.\n", $f->[1];
 				get_feed($f->[1]);
-				foreach my $name (sort { lc($a) cmp lc($b) } keys %$feed_package) {
-					my $p = $feed_package->{$name};
-					next if $p->{vdepends};
-					if( $p->{name} ) {
-						install_package($feed, $p->{name}, exists($opts{f})) == 0 or $ret = 1;
-						get_feed($f->[1]);
-					}
+				foreach my $name (sort { lc($a) cmp lc($b) } keys %$feed_src) {
+					install_src($feed, $name, exists($opts{f})) == 0 or $ret = 1;
+					get_feed($f->[1]);
 				}
 			}
 		}
 	} else {
 		while ($name = shift @ARGV) {
-			install_package($feed, $name, exists($opts{f})) == 0 or $ret = 1;
+			install_target_or_package($feed, $name, exists($opts{f})) == 0 or $ret = 1;
 		}
 	}
 
@@ -661,7 +705,7 @@ sub uninstall {
 				warn "WARNING: $name not installed\n";
 				next;
 			};
-			$pkg->{src} and $name = $pkg->{src};
+			$pkg->{src} and $name = $pkg->{src}{name};
 			warn "Uninstalling package '$name'\n";
 			system("rm -f ./package/feeds/*/$name");
 			$uninstall = 1;

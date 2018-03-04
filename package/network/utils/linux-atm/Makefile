@@ -19,6 +19,7 @@ PKG_HASH:=9645481a2b16476b59220aa2d6bc5bc41043f291326c9b37581018fbd16dd53a
 PKG_INSTALL:=1
 PKG_BUILD_PARALLEL:=1
 PKG_LICENSE:=GPL-2.0+
+PKG_CPE_ID:=cpe:/a:linux-atm:linux-atm
 PKG_FIXUP:=autoreconf
 
 include $(INCLUDE_DIR)/package.mk

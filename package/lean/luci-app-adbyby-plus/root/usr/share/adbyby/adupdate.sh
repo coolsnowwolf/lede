@@ -5,9 +5,12 @@ update_source=$(uci get adbyby.@adbyby[0].update_source 2>/dev/null)
 rm -f /usr/share/adbyby/data/*.bak
 
 if [ $update_source -eq 1 ]; then
-  wget-ssl -t 1 -T 10 -O /tmp/lazy.txt http://update.adbyby.com/rule3/lazy.jpg
-  wget-ssl -t 1 -T 10 -O /tmp/video.txt http://update.adbyby.com/rule3/video.jpg
-  wget-ssl -t 1 -T 10 -O /tmp/user.action http://update.adbyby.com/rule3/user.action
+  #wget-ssl -t 1 -T 10 -O /tmp/lazy.txt http://update.adbyby.com/rule3/lazy.jpg
+  #wget-ssl -t 1 -T 10 -O /tmp/video.txt http://update.adbyby.com/rule3/video.jpg
+  #wget-ssl -t 1 -T 10 -O /tmp/user.action http://update.adbyby.com/rule3/user.action
+  wget-ssl -t 1 -T 10 -O /tmp/lazy.txt http://opt.cn2qq.com/opt-file/lazy.txt
+  wget-ssl -t 1 -T 10 -O /tmp/video.txt http://opt.cn2qq.com/opt-file/video.txt
+  
 fi
 
 [ ! -s "/tmp/lazy.txt" ] && wget-ssl --no-check-certificate -O /tmp/lazy.txt https://raw.githubusercontent.com/adbyby/xwhyc-rules/master/lazy.txt

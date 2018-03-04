@@ -24,7 +24,7 @@ include $(INCLUDE_DIR)/depends.mk
 include $(INCLUDE_DIR)/quilt.mk
 
 BUILD_TYPES += host
-HOST_STAMP_PREPARED:=$(HOST_BUILD_DIR)/.prepared$(if $(HOST_QUILT)$(DUMP),,$(shell $(call find_md5,${CURDIR} $(PKG_FILE_DEPENDS),))_$(call confvar,CONFIG_AUTOREMOVE $(HOST_PREPARED_DEPENDS)))
+HOST_STAMP_PREPARED=$(HOST_BUILD_DIR)/.prepared$(if $(HOST_QUILT)$(DUMP),,$(shell $(call find_md5,${CURDIR} $(PKG_FILE_DEPENDS),))_$(call confvar,CONFIG_AUTOREMOVE $(HOST_PREPARED_DEPENDS)))
 HOST_STAMP_CONFIGURED:=$(HOST_BUILD_DIR)/.configured
 HOST_STAMP_BUILT:=$(HOST_BUILD_DIR)/.built
 HOST_BUILD_PREFIX?=$(if $(IS_PACKAGE_BUILD),$(STAGING_DIR_HOSTPKG),$(STAGING_DIR_HOST))
@@ -78,6 +78,10 @@ HOST_MAKE_FLAGS =
 
 HOST_CONFIGURE_CMD = $(BASH) ./configure
 
+ifeq ($(HOST_OS),Darwin)
+  HOST_CONFIG_SITE:=$(INCLUDE_DIR)/site/darwin
+endif
+
 define Host/Configure/Default
 	$(if $(HOST_CONFIGURE_PARALLEL),+)(cd $(HOST_BUILD_DIR)/$(3); \
 		if [ -x configure ]; then \
@@ -128,6 +132,7 @@ define Host/Exports/Default
   $(1) : export PKG_CONFIG_PATH=$$(STAGING_DIR_HOST)/lib/pkgconfig:$$(HOST_BUILD_PREFIX)/lib/pkgconfig
   $(1) : export PKG_CONFIG_LIBDIR=$$(HOST_BUILD_PREFIX)/lib/pkgconfig
   $(1) : export CCACHE_DIR:=$(STAGING_DIR_HOST)/ccache
+  $(if $(HOST_CONFIG_SITE),$(1) : export CONFIG_SITE:=$(HOST_CONFIG_SITE))
   $(if $(IS_PACKAGE_BUILD),$(1) : export PATH=$$(TARGET_PATH_PKG))
 endef
 Host/Exports=$(Host/Exports/Default)

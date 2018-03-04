@@ -1,0 +1,2038 @@
+From 9e6e0a53b29190dbd86a39304b59c3028f5b36c2 Mon Sep 17 00:00:00 2001
+From: Yangbo Lu <yangbo.lu@nxp.com>
+Date: Mon, 25 Sep 2017 11:04:10 +0800
+Subject: [PATCH] pci: support layerscape
+
+This is a integrated patch for layerscape pcie support.
+
+Signed-off-by: Po Liu <po.liu@nxp.com>
+Signed-off-by: Liu Gang <Gang.Liu@nxp.com>
+Signed-off-by: Minghuan Lian <Minghuan.Lian@freescale.com>
+Signed-off-by: hongbo.wang <hongbo.wang@nxp.com>
+Signed-off-by: Bjorn Helgaas <bhelgaas@google.com>
+Signed-off-by: Hou Zhiqiang <Zhiqiang.Hou@nxp.com>
+Signed-off-by: Mingkai Hu <mingkai.hu@nxp.com>
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
+---
+ drivers/irqchip/irq-ls-scfg-msi.c            | 257 +++++++--
+ drivers/pci/host/Makefile                    |   2 +-
+ drivers/pci/host/pci-layerscape-ep-debugfs.c | 758 +++++++++++++++++++++++++++
+ drivers/pci/host/pci-layerscape-ep.c         | 309 +++++++++++
+ drivers/pci/host/pci-layerscape-ep.h         | 115 ++++
+ drivers/pci/host/pci-layerscape.c            |  38 +-
+ drivers/pci/host/pcie-designware.c           |   6 +
+ drivers/pci/host/pcie-designware.h           |   1 +
+ drivers/pci/pcie/portdrv_core.c              | 181 +++----
+ include/linux/pci.h                          |   1 +
+ 10 files changed, 1520 insertions(+), 148 deletions(-)
+ create mode 100644 drivers/pci/host/pci-layerscape-ep-debugfs.c
+ create mode 100644 drivers/pci/host/pci-layerscape-ep.c
+ create mode 100644 drivers/pci/host/pci-layerscape-ep.h
+
+--- a/drivers/irqchip/irq-ls-scfg-msi.c
++++ b/drivers/irqchip/irq-ls-scfg-msi.c
+@@ -17,13 +17,32 @@
+ #include <linux/irq.h>
+ #include <linux/irqchip/chained_irq.h>
+ #include <linux/irqdomain.h>
++#include <linux/of_irq.h>
+ #include <linux/of_pci.h>
+ #include <linux/of_platform.h>
+ #include <linux/spinlock.h>
+ 
+-#define MSI_MAX_IRQS	32
+-#define MSI_IBS_SHIFT	3
+-#define MSIR		4
++#define MSI_IRQS_PER_MSIR	32
++#define MSI_MSIR_OFFSET		4
++
++#define MSI_LS1043V1_1_IRQS_PER_MSIR	8
++#define MSI_LS1043V1_1_MSIR_OFFSET	0x10
++
++struct ls_scfg_msi_cfg {
++	u32 ibs_shift; /* Shift of interrupt bit select */
++	u32 msir_irqs; /* The irq number per MSIR */
++	u32 msir_base; /* The base address of MSIR */
++};
++
++struct ls_scfg_msir {
++	struct ls_scfg_msi *msi_data;
++	unsigned int index;
++	unsigned int gic_irq;
++	unsigned int bit_start;
++	unsigned int bit_end;
++	unsigned int srs; /* Shared interrupt register select */
++	void __iomem *reg;
++};
+ 
+ struct ls_scfg_msi {
+ 	spinlock_t		lock;
+@@ -32,8 +51,11 @@ struct ls_scfg_msi {
+ 	struct irq_domain	*msi_domain;
+ 	void __iomem		*regs;
+ 	phys_addr_t		msiir_addr;
+-	int			irq;
+-	DECLARE_BITMAP(used, MSI_MAX_IRQS);
++	struct ls_scfg_msi_cfg	*cfg;
++	u32			msir_num;
++	struct ls_scfg_msir	*msir;
++	u32			irqs_num;
++	unsigned long		*used;
+ };
+ 
+ static struct irq_chip ls_scfg_msi_irq_chip = {
+@@ -49,19 +71,56 @@ static struct msi_domain_info ls_scfg_ms
+ 	.chip	= &ls_scfg_msi_irq_chip,
+ };
+ 
++static int msi_affinity_flag = 1;
++
++static int __init early_parse_ls_scfg_msi(char *p)
++{
++	if (p && strncmp(p, "no-affinity", 11) == 0)
++		msi_affinity_flag = 0;
++	else
++		msi_affinity_flag = 1;
++
++	return 0;
++}
++early_param("lsmsi", early_parse_ls_scfg_msi);
++
+ static void ls_scfg_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
+ {
+ 	struct ls_scfg_msi *msi_data = irq_data_get_irq_chip_data(data);
+ 
+ 	msg->address_hi = upper_32_bits(msi_data->msiir_addr);
+ 	msg->address_lo = lower_32_bits(msi_data->msiir_addr);
+-	msg->data = data->hwirq << MSI_IBS_SHIFT;
++	msg->data = data->hwirq;
++
++	if (msi_affinity_flag)
++		msg->data |= cpumask_first(data->common->affinity);
+ }
+ 
+ static int ls_scfg_msi_set_affinity(struct irq_data *irq_data,
+ 				    const struct cpumask *mask, bool force)
+ {
+-	return -EINVAL;
++	struct ls_scfg_msi *msi_data = irq_data_get_irq_chip_data(irq_data);
++	u32 cpu;
++
++	if (!msi_affinity_flag)
++		return -EINVAL;
++
++	if (!force)
++		cpu = cpumask_any_and(mask, cpu_online_mask);
++	else
++		cpu = cpumask_first(mask);
++
++	if (cpu >= msi_data->msir_num)
++		return -EINVAL;
++
++	if (msi_data->msir[cpu].gic_irq <= 0) {
++		pr_warn("cannot bind the irq to cpu%d\n", cpu);
++		return -EINVAL;
++	}
++
++	cpumask_copy(irq_data->common->affinity, mask);
++
++	return IRQ_SET_MASK_OK;
+ }
+ 
+ static struct irq_chip ls_scfg_msi_parent_chip = {
+@@ -81,8 +140,8 @@ static int ls_scfg_msi_domain_irq_alloc(
+ 	WARN_ON(nr_irqs != 1);
+ 
+ 	spin_lock(&msi_data->lock);
+-	pos = find_first_zero_bit(msi_data->used, MSI_MAX_IRQS);
+-	if (pos < MSI_MAX_IRQS)
++	pos = find_first_zero_bit(msi_data->used, msi_data->irqs_num);
++	if (pos < msi_data->irqs_num)
+ 		__set_bit(pos, msi_data->used);
+ 	else
+ 		err = -ENOSPC;
+@@ -106,7 +165,7 @@ static void ls_scfg_msi_domain_irq_free(
+ 	int pos;
+ 
+ 	pos = d->hwirq;
+-	if (pos < 0 || pos >= MSI_MAX_IRQS) {
++	if (pos < 0 || pos >= msi_data->irqs_num) {
+ 		pr_err("failed to teardown msi. Invalid hwirq %d\n", pos);
+ 		return;
+ 	}
+@@ -123,15 +182,22 @@ static const struct irq_domain_ops ls_sc
+ 
+ static void ls_scfg_msi_irq_handler(struct irq_desc *desc)
+ {
+-	struct ls_scfg_msi *msi_data = irq_desc_get_handler_data(desc);
++	struct ls_scfg_msir *msir = irq_desc_get_handler_data(desc);
++	struct ls_scfg_msi *msi_data = msir->msi_data;
+ 	unsigned long val;
+-	int pos, virq;
++	int pos, size, virq, hwirq;
+ 
+ 	chained_irq_enter(irq_desc_get_chip(desc), desc);
+ 
+-	val = ioread32be(msi_data->regs + MSIR);
+-	for_each_set_bit(pos, &val, MSI_MAX_IRQS) {
+-		virq = irq_find_mapping(msi_data->parent, (31 - pos));
++	val = ioread32be(msir->reg);
++
++	pos = msir->bit_start;
++	size = msir->bit_end + 1;
++
++	for_each_set_bit_from(pos, &val, size) {
++		hwirq = ((msir->bit_end - pos) << msi_data->cfg->ibs_shift) |
++			msir->srs;
++		virq = irq_find_mapping(msi_data->parent, hwirq);
+ 		if (virq)
+ 			generic_handle_irq(virq);
+ 	}
+@@ -143,7 +209,7 @@ static int ls_scfg_msi_domains_init(stru
+ {
+ 	/* Initialize MSI domain parent */
+ 	msi_data->parent = irq_domain_add_linear(NULL,
+-						 MSI_MAX_IRQS,
++						 msi_data->irqs_num,
+ 						 &ls_scfg_msi_domain_ops,
+ 						 msi_data);
+ 	if (!msi_data->parent) {
+@@ -164,16 +230,118 @@ static int ls_scfg_msi_domains_init(stru
+ 	return 0;
+ }
+ 
++static int ls_scfg_msi_setup_hwirq(struct ls_scfg_msi *msi_data, int index)
++{
++	struct ls_scfg_msir *msir;
++	int virq, i, hwirq;
++
++	virq = platform_get_irq(msi_data->pdev, index);
++	if (virq <= 0)
++		return -ENODEV;
++
++	msir = &msi_data->msir[index];
++	msir->index = index;
++	msir->msi_data = msi_data;
++	msir->gic_irq = virq;
++	msir->reg = msi_data->regs + msi_data->cfg->msir_base + 4 * index;
++
++	if (msi_data->cfg->msir_irqs == MSI_LS1043V1_1_IRQS_PER_MSIR) {
++		msir->bit_start = 32 - ((msir->index + 1) *
++				  MSI_LS1043V1_1_IRQS_PER_MSIR);
++		msir->bit_end = msir->bit_start +
++				MSI_LS1043V1_1_IRQS_PER_MSIR - 1;
++	} else {
++		msir->bit_start = 0;
++		msir->bit_end = msi_data->cfg->msir_irqs - 1;
++	}
++
++	irq_set_chained_handler_and_data(msir->gic_irq,
++					 ls_scfg_msi_irq_handler,
++					 msir);
++
++	if (msi_affinity_flag) {
++		/* Associate MSIR interrupt to the cpu */
++		irq_set_affinity(msir->gic_irq, get_cpu_mask(index));
++		msir->srs = 0; /* This value is determined by the CPU */
++	} else
++		msir->srs = index;
++
++	/* Release the hwirqs corresponding to this MSIR */
++	if (!msi_affinity_flag || msir->index == 0) {
++		for (i = 0; i < msi_data->cfg->msir_irqs; i++) {
++			hwirq = i << msi_data->cfg->ibs_shift | msir->index;
++			bitmap_clear(msi_data->used, hwirq, 1);
++		}
++	}
++
++	return 0;
++}
++
++static int ls_scfg_msi_teardown_hwirq(struct ls_scfg_msir *msir)
++{
++	struct ls_scfg_msi *msi_data = msir->msi_data;
++	int i, hwirq;
++
++	if (msir->gic_irq > 0)
++		irq_set_chained_handler_and_data(msir->gic_irq, NULL, NULL);
++
++	for (i = 0; i < msi_data->cfg->msir_irqs; i++) {
++		hwirq = i << msi_data->cfg->ibs_shift | msir->index;
++		bitmap_set(msi_data->used, hwirq, 1);
++	}
++
++	return 0;
++}
++
++static struct ls_scfg_msi_cfg ls1021_msi_cfg = {
++	.ibs_shift = 3,
++	.msir_irqs = MSI_IRQS_PER_MSIR,
++	.msir_base = MSI_MSIR_OFFSET,
++};
++
++static struct ls_scfg_msi_cfg ls1046_msi_cfg = {
++	.ibs_shift = 2,
++	.msir_irqs = MSI_IRQS_PER_MSIR,
++	.msir_base = MSI_MSIR_OFFSET,
++};
++
++static struct ls_scfg_msi_cfg ls1043_v1_1_msi_cfg = {
++	.ibs_shift = 2,
++	.msir_irqs = MSI_LS1043V1_1_IRQS_PER_MSIR,
++	.msir_base = MSI_LS1043V1_1_MSIR_OFFSET,
++};
++
++static const struct of_device_id ls_scfg_msi_id[] = {
++	/* The following two misspelled compatibles are obsolete */
++	{ .compatible = "fsl,1s1021a-msi", .data = &ls1021_msi_cfg},
++	{ .compatible = "fsl,1s1043a-msi", .data = &ls1021_msi_cfg},
++
++	{ .compatible = "fsl,ls1012a-msi", .data = &ls1021_msi_cfg },
++	{ .compatible = "fsl,ls1021a-msi", .data = &ls1021_msi_cfg },
++	{ .compatible = "fsl,ls1043a-msi", .data = &ls1021_msi_cfg },
++	{ .compatible = "fsl,ls1043a-v1.1-msi", .data = &ls1043_v1_1_msi_cfg },
++	{ .compatible = "fsl,ls1046a-msi", .data = &ls1046_msi_cfg },
++	{},
++};
++MODULE_DEVICE_TABLE(of, ls_scfg_msi_id);
++
+ static int ls_scfg_msi_probe(struct platform_device *pdev)
+ {
++	const struct of_device_id *match;
+ 	struct ls_scfg_msi *msi_data;
+ 	struct resource *res;
+-	int ret;
++	int i, ret;
++
++	match = of_match_device(ls_scfg_msi_id, &pdev->dev);
++	if (!match)
++		return -ENODEV;
+ 
+ 	msi_data = devm_kzalloc(&pdev->dev, sizeof(*msi_data), GFP_KERNEL);
+ 	if (!msi_data)
+ 		return -ENOMEM;
+ 
++	msi_data->cfg = (struct ls_scfg_msi_cfg *) match->data;
++
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	msi_data->regs = devm_ioremap_resource(&pdev->dev, res);
+ 	if (IS_ERR(msi_data->regs)) {
+@@ -182,23 +350,48 @@ static int ls_scfg_msi_probe(struct plat
+ 	}
+ 	msi_data->msiir_addr = res->start;
+ 
+-	msi_data->irq = platform_get_irq(pdev, 0);
+-	if (msi_data->irq <= 0) {
+-		dev_err(&pdev->dev, "failed to get MSI irq\n");
+-		return -ENODEV;
+-	}
+-
+ 	msi_data->pdev = pdev;
+ 	spin_lock_init(&msi_data->lock);
+ 
++	msi_data->irqs_num = MSI_IRQS_PER_MSIR *
++			     (1 << msi_data->cfg->ibs_shift);
++	msi_data->used = devm_kcalloc(&pdev->dev,
++				    BITS_TO_LONGS(msi_data->irqs_num),
++				    sizeof(*msi_data->used),
++				    GFP_KERNEL);
++	if (!msi_data->used)
++		return -ENOMEM;
++	/*
++	 * Reserve all the hwirqs
++	 * The available hwirqs will be released in ls1_msi_setup_hwirq()
++	 */
++	bitmap_set(msi_data->used, 0, msi_data->irqs_num);
++
++	msi_data->msir_num = of_irq_count(pdev->dev.of_node);
++
++	if (msi_affinity_flag) {
++		u32 cpu_num;
++
++		cpu_num = num_possible_cpus();
++		if (msi_data->msir_num >= cpu_num)
++			msi_data->msir_num = cpu_num;
++		else
++			msi_affinity_flag = 0;
++	}
++
++	msi_data->msir = devm_kcalloc(&pdev->dev, msi_data->msir_num,
++				      sizeof(*msi_data->msir),
++				      GFP_KERNEL);
++	if (!msi_data->msir)
++		return -ENOMEM;
++
++	for (i = 0; i < msi_data->msir_num; i++)
++		ls_scfg_msi_setup_hwirq(msi_data, i);
++
+ 	ret = ls_scfg_msi_domains_init(msi_data);
+ 	if (ret)
+ 		return ret;
+ 
+-	irq_set_chained_handler_and_data(msi_data->irq,
+-					 ls_scfg_msi_irq_handler,
+-					 msi_data);
+-
+ 	platform_set_drvdata(pdev, msi_data);
+ 
+ 	return 0;
+@@ -207,8 +400,10 @@ static int ls_scfg_msi_probe(struct plat
+ static int ls_scfg_msi_remove(struct platform_device *pdev)
+ {
+ 	struct ls_scfg_msi *msi_data = platform_get_drvdata(pdev);
++	int i;
+ 
+-	irq_set_chained_handler_and_data(msi_data->irq, NULL, NULL);
++	for (i = 0; i < msi_data->msir_num; i++)
++		ls_scfg_msi_teardown_hwirq(&msi_data->msir[i]);
+ 
+ 	irq_domain_remove(msi_data->msi_domain);
+ 	irq_domain_remove(msi_data->parent);
+@@ -218,12 +413,6 @@ static int ls_scfg_msi_remove(struct pla
+ 	return 0;
+ }
+ 
+-static const struct of_device_id ls_scfg_msi_id[] = {
+-	{ .compatible = "fsl,1s1021a-msi", },
+-	{ .compatible = "fsl,1s1043a-msi", },
+-	{},
+-};
+-
+ static struct platform_driver ls_scfg_msi_driver = {
+ 	.driver = {
+ 		.name = "ls-scfg-msi",
+--- a/drivers/pci/host/Makefile
++++ b/drivers/pci/host/Makefile
+@@ -17,7 +17,7 @@ obj-$(CONFIG_PCIE_XILINX) += pcie-xilinx
+ obj-$(CONFIG_PCIE_XILINX_NWL) += pcie-xilinx-nwl.o
+ obj-$(CONFIG_PCI_XGENE) += pci-xgene.o
+ obj-$(CONFIG_PCI_XGENE_MSI) += pci-xgene-msi.o
+-obj-$(CONFIG_PCI_LAYERSCAPE) += pci-layerscape.o
++obj-$(CONFIG_PCI_LAYERSCAPE) += pci-layerscape.o pci-layerscape-ep.o pci-layerscape-ep-debugfs.o
+ obj-$(CONFIG_PCI_VERSATILE) += pci-versatile.o
+ obj-$(CONFIG_PCIE_IPROC) += pcie-iproc.o
+ obj-$(CONFIG_PCIE_IPROC_MSI) += pcie-iproc-msi.o
+--- /dev/null
++++ b/drivers/pci/host/pci-layerscape-ep-debugfs.c
+@@ -0,0 +1,758 @@
++/*
++ * PCIe Endpoint driver for Freescale Layerscape SoCs
++ *
++ * Copyright (C) 2015 Freescale Semiconductor.
++ *
++  * Author: Minghuan Lian <Minghuan.Lian@freescale.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/debugfs.h>
++#include <linux/time.h>
++#include <linux/uaccess.h>
++#include <linux/kthread.h>
++#include <linux/slab.h>
++#include <linux/dmaengine.h>
++#include <linux/dma-mapping.h>
++#include <linux/freezer.h>
++
++#include <linux/completion.h>
++
++#include "pci-layerscape-ep.h"
++
++#define PCIE_ATU_INDEX3		(0x3 << 0)
++#define PCIE_ATU_INDEX2		(0x2 << 0)
++#define PCIE_ATU_INDEX1		(0x1 << 0)
++#define PCIE_ATU_INDEX0		(0x0 << 0)
++
++#define PCIE_BAR0_SIZE		(4 * 1024) /* 4K */
++#define PCIE_BAR1_SIZE		(8 * 1024) /* 8K for MSIX */
++#define PCIE_BAR2_SIZE		(4 * 1024) /* 4K */
++#define PCIE_BAR4_SIZE		(1 * 1024 * 1024) /* 1M */
++#define PCIE_MSI_OB_SIZE	(4 * 1024) /* 4K */
++
++#define PCIE_MSI_MSG_ADDR_OFF	0x54
++#define PCIE_MSI_MSG_DATA_OFF	0x5c
++
++enum test_type {
++	TEST_TYPE_DMA,
++	TEST_TYPE_MEMCPY
++};
++
++enum test_dirt {
++	TEST_DIRT_READ,
++	TEST_DIRT_WRITE
++};
++
++enum test_status {
++	TEST_IDLE,
++	TEST_BUSY
++};
++
++struct ls_ep_test {
++	struct ls_ep_dev	*ep;
++	void __iomem		*cfg;
++	void __iomem		*buf;
++	void __iomem		*out;
++	void __iomem		*msi;
++	dma_addr_t		cfg_addr;
++	dma_addr_t		buf_addr;
++	dma_addr_t		out_addr;
++	dma_addr_t		bus_addr;
++	dma_addr_t		msi_addr;
++	u64			msi_msg_addr;
++	u16			msi_msg_data;
++	struct task_struct	*thread;
++	spinlock_t		lock;
++	struct completion	done;
++	u32			len;
++	int			loop;
++	char			data;
++	enum test_dirt		dirt;
++	enum test_type		type;
++	enum test_status	status;
++	u64			result; /* Mbps */
++	char			cmd[256];
++};
++
++static int ls_pcie_ep_trigger_msi(struct ls_ep_test *test)
++{
++	if (!test->msi)
++		return -EINVAL;
++
++	iowrite32(test->msi_msg_data, test->msi);
++
++	return 0;
++}
++
++static int ls_pcie_ep_test_try_run(struct ls_ep_test *test)
++{
++	int ret;
++
++	spin_lock(&test->lock);
++	if (test->status == TEST_IDLE) {
++		test->status = TEST_BUSY;
++		ret = 0;
++	} else
++		ret = -EBUSY;
++	spin_unlock(&test->lock);
++
++	return ret;
++}
++
++static void ls_pcie_ep_test_done(struct ls_ep_test *test)
++{
++	spin_lock(&test->lock);
++	test->status = TEST_IDLE;
++	spin_unlock(&test->lock);
++}
++
++static void ls_pcie_ep_test_dma_cb(void *arg)
++{
++	struct ls_ep_test *test = arg;
++
++	complete(&test->done);
++}
++
++static int ls_pcie_ep_test_dma(struct ls_ep_test *test)
++{
++	dma_cap_mask_t mask;
++	struct dma_chan *chan;
++	struct dma_device *dma_dev;
++	dma_addr_t src, dst;
++	enum dma_data_direction direction;
++	enum dma_ctrl_flags dma_flags = DMA_CTRL_ACK | DMA_PREP_INTERRUPT;
++	struct timespec start, end, period;
++	int i = 0;
++
++	dma_cap_zero(mask);
++	dma_cap_set(DMA_MEMCPY, mask);
++
++	chan = dma_request_channel(mask, NULL, test);
++	if (!chan) {
++		pr_err("failed to request dma channel\n");
++		return -EINVAL;
++	}
++
++	memset(test->buf, test->data, test->len);
++
++	if (test->dirt == TEST_DIRT_WRITE) {
++		src = test->buf_addr;
++		dst = test->out_addr;
++		direction = DMA_TO_DEVICE;
++	} else {
++		src = test->out_addr;
++		dst = test->buf_addr;
++		direction = DMA_FROM_DEVICE;
++	}
++
++	dma_dev = chan->device;
++	dma_flags = DMA_CTRL_ACK | DMA_PREP_INTERRUPT;
++
++	dma_sync_single_for_device(&test->ep->dev, test->buf_addr,
++				   test->len, direction);
++
++	set_freezable();
++
++	getrawmonotonic(&start);
++	while (!kthread_should_stop() && (i < test->loop)) {
++		struct dma_async_tx_descriptor *dma_desc;
++		dma_cookie_t	dma_cookie = {0};
++		unsigned long tmo;
++		int status;
++
++		init_completion(&test->done);
++
++		dma_desc = dma_dev->device_prep_dma_memcpy(chan,
++							   dst, src,
++							   test->len,
++							   dma_flags);
++		if (!dma_desc) {
++			pr_err("DMA desc constr failed...\n");
++			goto _err;
++		}
++
++		dma_desc->callback = ls_pcie_ep_test_dma_cb;
++		dma_desc->callback_param = test;
++		dma_cookie = dmaengine_submit(dma_desc);
++
++		if (dma_submit_error(dma_cookie)) {
++			pr_err("DMA submit error....\n");
++			goto _err;
++		}
++
++		/* Trigger the transaction */
++		dma_async_issue_pending(chan);
++
++		tmo = wait_for_completion_timeout(&test->done,
++					  msecs_to_jiffies(5 * test->len));
++		if (tmo == 0) {
++			pr_err("Self-test copy timed out, disabling\n");
++			goto _err;
++		}
++
++		status = dma_async_is_tx_complete(chan, dma_cookie,
++						  NULL, NULL);
++		if (status != DMA_COMPLETE) {
++			pr_err("got completion callback, but status is %s\n",
++			       status == DMA_ERROR ? "error" : "in progress");
++			goto _err;
++		}
++
++		i++;
++	}
++
++	getrawmonotonic(&end);
++	period = timespec_sub(end, start);
++	test->result = test->len * 8ULL * i * 1000;
++	do_div(test->result, period.tv_sec * 1000 * 1000 * 1000 + period.tv_nsec);
++	dma_release_channel(chan);
++
++	return 0;
++
++_err:
++	dma_release_channel(chan);
++	test->result = 0;
++	return -EINVAL;
++}
++
++static int ls_pcie_ep_test_cpy(struct ls_ep_test *test)
++{
++	void *dst, *src;
++	struct timespec start, end, period;
++	int i = 0;
++
++	memset(test->buf, test->data, test->len);
++
++	if (test->dirt == TEST_DIRT_WRITE) {
++		dst = test->out;
++		src = test->buf;
++	} else {
++		dst = test->buf;
++		src = test->out;
++	}
++
++	getrawmonotonic(&start);
++	while (!kthread_should_stop() && i < test->loop) {
++		memcpy(dst, src, test->len);
++		i++;
++	}
++	getrawmonotonic(&end);
++
++	period = timespec_sub(end, start);
++	test->result = test->len * 8ULL * i * 1000;
++	do_div(test->result, period.tv_sec * 1000 * 1000 * 1000 + period.tv_nsec);
++
++	return 0;
++}
++
++int ls_pcie_ep_test_thread(void *arg)
++{
++	int ret;
++
++	struct ls_ep_test *test = arg;
++
++	if (test->type == TEST_TYPE_DMA)
++		ret = ls_pcie_ep_test_dma(test);
++	else
++		ret = ls_pcie_ep_test_cpy(test);
++
++	if (ret) {
++		pr_err("\n%s \ttest failed\n",
++		       test->cmd);
++		test->result = 0;
++	} else
++		pr_err("\n%s \tthroughput:%lluMbps\n",
++		       test->cmd, test->result);
++
++	ls_pcie_ep_test_done(test);
++
++	ls_pcie_ep_trigger_msi(test);
++
++	do_exit(0);
++}
++
++static int ls_pcie_ep_free_test(struct ls_ep_dev *ep)
++{
++	struct ls_ep_test *test = ep->driver_data;
++
++	if (!test)
++		return 0;
++
++	if (test->status == TEST_BUSY) {
++		kthread_stop(test->thread);
++		dev_info(&ep->dev,
++			 "test is running please wait and run again\n");
++		return -EBUSY;
++	}
++
++	if (test->buf)
++		free_pages((unsigned long)test->buf,
++			   get_order(PCIE_BAR4_SIZE));
++
++	if (test->cfg)
++		free_pages((unsigned long)test->cfg,
++			   get_order(PCIE_BAR2_SIZE));
++
++	if (test->out)
++		iounmap(test->out);
++
++	kfree(test);
++	ep->driver_data = NULL;
++
++	return 0;
++}
++
++static int ls_pcie_ep_init_test(struct ls_ep_dev *ep, u64 bus_addr)
++{
++	struct ls_pcie *pcie = ep->pcie;
++	struct ls_ep_test *test = ep->driver_data;
++	int err;
++
++	if (test) {
++		dev_info(&ep->dev,
++			 "Please use 'free' to remove the exiting test\n");
++		return -EBUSY;
++	}
++
++	test = kzalloc(sizeof(*test), GFP_KERNEL);
++	if (!test)
++		return -ENOMEM;
++	ep->driver_data = test;
++	test->ep = ep;
++	spin_lock_init(&test->lock);
++	test->status = TEST_IDLE;
++
++	test->buf = dma_alloc_coherent(pcie->dev, get_order(PCIE_BAR4_SIZE),
++					&test->buf_addr,
++					GFP_KERNEL);
++	if (!test->buf) {
++		dev_info(&ep->dev, "failed to get mem for bar4\n");
++		err = -ENOMEM;
++		goto _err;
++	}
++
++	test->cfg = (void *)__get_free_pages(GFP_KERNEL | __GFP_ZERO,
++					     get_order(PCIE_BAR2_SIZE));
++	if (!test->cfg) {
++		dev_info(&ep->dev, "failed to get mem for bar4\n");
++		err = -ENOMEM;
++		goto _err;
++	}
++	test->cfg_addr = virt_to_phys(test->cfg);
++
++	test->out_addr = pcie->out_base;
++	test->out = ioremap(test->out_addr, PCIE_BAR4_SIZE);
++	if (!test->out) {
++		dev_info(&ep->dev, "failed to map out\n");
++		err = -ENOMEM;
++		goto _err;
++	}
++
++	test->bus_addr = bus_addr;
++
++	test->msi_addr = test->out_addr + PCIE_BAR4_SIZE;
++	test->msi = ioremap(test->msi_addr, PCIE_MSI_OB_SIZE);
++	if (!test->msi)
++		dev_info(&ep->dev, "failed to map MSI outbound region\n");
++
++	test->msi_msg_addr = ioread32(pcie->dbi + PCIE_MSI_MSG_ADDR_OFF) |
++		(((u64)ioread32(pcie->dbi + PCIE_MSI_MSG_ADDR_OFF + 4)) << 32);
++	test->msi_msg_data = ioread16(pcie->dbi + PCIE_MSI_MSG_DATA_OFF);
++
++	ls_pcie_ep_dev_cfg_enable(ep);
++
++	/* outbound iATU for memory */
++	ls_pcie_iatu_outbound_set(pcie, 0, PCIE_ATU_TYPE_MEM,
++				  test->out_addr, bus_addr, PCIE_BAR4_SIZE);
++	/* outbound iATU for MSI */
++	ls_pcie_iatu_outbound_set(pcie, 1, PCIE_ATU_TYPE_MEM,
++				  test->msi_addr, test->msi_msg_addr,
++				  PCIE_MSI_OB_SIZE);
++
++	/* ATU 0 : INBOUND : map BAR0 */
++	ls_pcie_iatu_inbound_set(pcie, 0, 0, test->cfg_addr);
++	/* ATU 2 : INBOUND : map BAR2 */
++	ls_pcie_iatu_inbound_set(pcie, 2, 2, test->cfg_addr);
++	/* ATU 3 : INBOUND : map BAR4 */
++	ls_pcie_iatu_inbound_set(pcie, 3, 4, test->buf_addr);
++
++	return 0;
++
++_err:
++	ls_pcie_ep_free_test(ep);
++	return err;
++}
++
++static int ls_pcie_ep_start_test(struct ls_ep_dev *ep, char *cmd)
++{
++	struct ls_ep_test *test = ep->driver_data;
++	enum test_type type;
++	enum test_dirt dirt;
++	u32 cnt, len, loop;
++	unsigned int data;
++	char dirt_str[2];
++	int ret;
++
++	if (strncmp(cmd, "dma", 3) == 0)
++		type = TEST_TYPE_DMA;
++	else
++		type = TEST_TYPE_MEMCPY;
++
++	cnt = sscanf(&cmd[4], "%1s %u %u %x", dirt_str, &len, &loop, &data);
++	if (cnt != 4) {
++		dev_info(&ep->dev, "format error %s", cmd);
++		dev_info(&ep->dev, "dma/cpy <r/w> <packet_size> <loop> <data>\n");
++		return -EINVAL;
++	}
++
++	if (strncmp(dirt_str, "r", 1) == 0)
++		dirt = TEST_DIRT_READ;
++	else
++		dirt = TEST_DIRT_WRITE;
++
++	if (len > PCIE_BAR4_SIZE) {
++		dev_err(&ep->dev, "max len is %d", PCIE_BAR4_SIZE);
++		return -EINVAL;
++	}
++
++	if (!test) {
++		dev_err(&ep->dev, "Please first run init command\n");
++		return -EINVAL;
++	}
++
++	if (ls_pcie_ep_test_try_run(test)) {
++		dev_err(&ep->dev, "There is already a test running\n");
++		return -EINVAL;
++	}
++
++	test->len = len;
++	test->loop = loop;
++	test->type = type;
++	test->data = (char)data;
++	test->dirt = dirt;
++	strcpy(test->cmd, cmd);
++	test->thread = kthread_run(ls_pcie_ep_test_thread, test,
++				   "pcie ep test");
++	if (IS_ERR(test->thread)) {
++		dev_err(&ep->dev, "fork failed for pcie ep test\n");
++		ls_pcie_ep_test_done(test);
++		ret = PTR_ERR(test->thread);
++	}
++
++	return ret;
++}
++
++
++/**
++ * ls_pcie_reg_ops_read - read for regs data
++ * @filp: the opened file
++ * @buffer: where to write the data for the user to read
++ * @count: the size of the user's buffer
++ * @ppos: file position offset
++ **/
++static ssize_t ls_pcie_ep_dbg_regs_read(struct file *filp, char __user *buffer,
++				    size_t count, loff_t *ppos)
++{
++	struct ls_ep_dev *ep = filp->private_data;
++	struct ls_pcie *pcie = ep->pcie;
++	char *buf;
++	int desc = 0, i, len;
++
++	buf = kmalloc(4 * 1024, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++
++	ls_pcie_ep_dev_cfg_enable(ep);
++
++	desc += sprintf(buf + desc, "%s", "reg info:");
++	for (i = 0; i < 0x200; i += 4) {
++		if (i % 16 == 0)
++			desc += sprintf(buf + desc, "\n%08x:", i);
++		desc += sprintf(buf + desc, " %08x", readl(pcie->dbi + i));
++	}
++
++	desc += sprintf(buf + desc, "\n%s", "outbound iATU info:\n");
++	for (i = 0; i < 6; i++) {
++		writel(PCIE_ATU_REGION_OUTBOUND | i,
++		       pcie->dbi + PCIE_ATU_VIEWPORT);
++		desc += sprintf(buf + desc, "iATU%d", i);
++		desc += sprintf(buf + desc, "\tLOWER PHYS 0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_LOWER_BASE));
++		desc += sprintf(buf + desc, "\tUPPER PHYS 0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_UPPER_BASE));
++		desc += sprintf(buf + desc, "\tLOWER BUS  0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_LOWER_TARGET));
++		desc += sprintf(buf + desc, "\tUPPER BUS  0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_UPPER_TARGET));
++		desc += sprintf(buf + desc, "\tLIMIT      0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_LIMIT));
++		desc += sprintf(buf + desc, "\tCR1        0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_CR1));
++		desc += sprintf(buf + desc, "\tCR2        0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_CR2));
++	}
++
++	desc += sprintf(buf + desc, "\n%s", "inbound iATU info:\n");
++	for (i = 0; i < 6; i++) {
++		writel(PCIE_ATU_REGION_INBOUND | i,
++		       pcie->dbi + PCIE_ATU_VIEWPORT);
++		desc += sprintf(buf + desc, "iATU%d", i);
++		desc += sprintf(buf + desc, "\tLOWER BUS  0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_LOWER_BASE));
++		desc += sprintf(buf + desc, "\tUPPER BUSs 0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_UPPER_BASE));
++		desc += sprintf(buf + desc, "\tLOWER PHYS 0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_LOWER_TARGET));
++		desc += sprintf(buf + desc, "\tUPPER PHYS 0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_UPPER_TARGET));
++		desc += sprintf(buf + desc, "\tLIMIT      0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_LIMIT));
++		desc += sprintf(buf + desc, "\tCR1        0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_CR1));
++		desc += sprintf(buf + desc, "\tCR2        0x%08x\n",
++		      readl(pcie->dbi + PCIE_ATU_CR2));
++	}
++
++	len = simple_read_from_buffer(buffer, count, ppos, buf, desc);
++	kfree(buf);
++
++	return len;
++}
++
++/**
++ * ls_pcie_ep_dbg_regs_write - write into regs datum
++ * @filp: the opened file
++ * @buffer: where to find the user's data
++ * @count: the length of the user's data
++ * @ppos: file position offset
++ **/
++static ssize_t ls_pcie_ep_dbg_regs_write(struct file *filp,
++					 const char __user *buffer,
++					 size_t count, loff_t *ppos)
++{
++	struct ls_ep_dev *ep = filp->private_data;
++	struct ls_pcie *pcie = ep->pcie;
++	char buf[256];
++
++	if (count >= sizeof(buf))
++		return -ENOSPC;
++
++	memset(buf, 0, sizeof(buf));
++
++	if (copy_from_user(buf, buffer, count))
++		return -EFAULT;
++
++	ls_pcie_ep_dev_cfg_enable(ep);
++
++	if (strncmp(buf, "reg", 3) == 0) {
++		u32 reg, value;
++		int cnt;
++
++		cnt = sscanf(&buf[3], "%x %x", &reg, &value);
++		if (cnt == 2) {
++			writel(value, pcie->dbi + reg);
++			value = readl(pcie->dbi + reg);
++			dev_info(&ep->dev, "reg 0x%08x: 0x%08x\n",
++				 reg, value);
++		} else {
++			dev_info(&ep->dev, "reg <reg> <value>\n");
++		}
++	} else if (strncmp(buf, "atu", 3) == 0) {
++		/* to do */
++		dev_info(&ep->dev, " Not support atu command\n");
++	} else {
++		dev_info(&ep->dev, "Unknown command %s\n", buf);
++		dev_info(&ep->dev, "Available commands:\n");
++		dev_info(&ep->dev, "   reg <reg> <value>\n");
++	}
++
++	return count;
++}
++
++static const struct file_operations ls_pcie_ep_dbg_regs_fops = {
++	.owner = THIS_MODULE,
++	.open = simple_open,
++	.read =  ls_pcie_ep_dbg_regs_read,
++	.write = ls_pcie_ep_dbg_regs_write,
++};
++
++static ssize_t ls_pcie_ep_dbg_test_read(struct file *filp,
++				   char __user *buffer,
++				   size_t count, loff_t *ppos)
++{
++	struct ls_ep_dev *ep = filp->private_data;
++	struct ls_ep_test *test = ep->driver_data;
++	char buf[512];
++	int desc = 0, len;
++
++	if (!test) {
++		dev_info(&ep->dev, " there is NO test\n");
++		return 0;
++	}
++
++	if (test->status != TEST_IDLE) {
++		dev_info(&ep->dev, "test %s is running\n", test->cmd);
++		return 0;
++	}
++
++	desc = sprintf(buf, "MSI ADDR:0x%llx MSI DATA:0x%x\n",
++		test->msi_msg_addr, test->msi_msg_data);
++
++	desc += sprintf(buf + desc, "%s throughput:%lluMbps\n",
++			test->cmd, test->result);
++
++	len = simple_read_from_buffer(buffer, count, ppos,
++				      buf, desc);
++
++	return len;
++}
++
++static ssize_t ls_pcie_ep_dbg_test_write(struct file *filp,
++					const char __user *buffer,
++					size_t count, loff_t *ppos)
++{
++	struct ls_ep_dev *ep = filp->private_data;
++	char buf[256];
++
++	if (count >= sizeof(buf))
++		return -ENOSPC;
++
++	memset(buf, 0, sizeof(buf));
++
++	if (copy_from_user(buf, buffer, count))
++		return -EFAULT;
++
++	if (strncmp(buf, "init", 4) == 0) {
++		int i = 4;
++		u64 bus_addr;
++
++		while (buf[i] == ' ')
++			i++;
++
++		if (kstrtou64(&buf[i], 0, &bus_addr))
++			dev_info(&ep->dev, "command: init <bus_addr>\n");
++		else {
++			if (ls_pcie_ep_init_test(ep, bus_addr))
++				dev_info(&ep->dev, "failed to init test\n");
++		}
++	} else if (strncmp(buf, "free", 4) == 0)
++		ls_pcie_ep_free_test(ep);
++	else if (strncmp(buf, "dma", 3) == 0 ||
++		 strncmp(buf, "cpy", 3) == 0)
++		ls_pcie_ep_start_test(ep, buf);
++	else {
++		dev_info(&ep->dev, "Unknown command: %s\n", buf);
++		dev_info(&ep->dev, "Available commands:\n");
++		dev_info(&ep->dev, "\tinit <bus_addr>\n");
++		dev_info(&ep->dev, "\t<dma/cpy> <r/w> <packet_size> <loop>\n");
++		dev_info(&ep->dev, "\tfree\n");
++	}
++
++	return count;
++}
++
++static const struct file_operations ls_pcie_ep_dbg_test_fops = {
++	.owner = THIS_MODULE,
++	.open = simple_open,
++	.read = ls_pcie_ep_dbg_test_read,
++	.write = ls_pcie_ep_dbg_test_write,
++};
++
++static ssize_t ls_pcie_ep_dbg_dump_read(struct file *filp,
++				   char __user *buffer,
++				   size_t count, loff_t *ppos)
++{
++	struct ls_ep_dev *ep = filp->private_data;
++	struct ls_ep_test *test = ep->driver_data;
++	char *buf;
++	int desc = 0, i, len;
++
++	buf = kmalloc(4 * 1024, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++
++	if (!test) {
++		dev_info(&ep->dev, " there is NO test\n");
++		kfree(buf);
++		return 0;
++	}
++
++	desc += sprintf(buf + desc, "%s", "dump info:");
++	for (i = 0; i < 256; i += 4) {
++		if (i % 16 == 0)
++			desc += sprintf(buf + desc, "\n%08x:", i);
++		desc += sprintf(buf + desc, " %08x", readl(test->buf + i));
++	}
++
++	desc += sprintf(buf + desc, "\n");
++	len = simple_read_from_buffer(buffer, count, ppos, buf, desc);
++
++	kfree(buf);
++
++	return len;
++}
++
++static const struct file_operations ls_pcie_ep_dbg_dump_fops = {
++	.owner = THIS_MODULE,
++	.open = simple_open,
++	.read = ls_pcie_ep_dbg_dump_read,
++};
++
++static int ls_pcie_ep_dev_dbgfs_init(struct ls_ep_dev *ep)
++{
++	struct ls_pcie *pcie = ep->pcie;
++	struct dentry *pfile;
++
++	ls_pcie_ep_dev_cfg_enable(ep);
++
++	ep->dir = debugfs_create_dir(dev_name(&ep->dev), pcie->dir);
++	if (!ep->dir)
++		return -ENOMEM;
++
++	pfile = debugfs_create_file("regs", 0600, ep->dir, ep,
++				    &ls_pcie_ep_dbg_regs_fops);
++	if (!pfile)
++		dev_info(&ep->dev, "debugfs regs for failed\n");
++
++	pfile = debugfs_create_file("test", 0600, ep->dir, ep,
++				    &ls_pcie_ep_dbg_test_fops);
++	if (!pfile)
++		dev_info(&ep->dev, "debugfs test for failed\n");
++
++	pfile = debugfs_create_file("dump", 0600, ep->dir, ep,
++				    &ls_pcie_ep_dbg_dump_fops);
++	if (!pfile)
++		dev_info(&ep->dev, "debugfs dump for failed\n");
++
++	return 0;
++}
++
++int ls_pcie_ep_dbgfs_init(struct ls_pcie *pcie)
++{
++	struct ls_ep_dev *ep;
++
++	pcie->dir = debugfs_create_dir(dev_name(pcie->dev), NULL);
++	if (!pcie->dir)
++		return -ENOMEM;
++
++	list_for_each_entry(ep, &pcie->ep_list, node)
++		ls_pcie_ep_dev_dbgfs_init(ep);
++
++	return 0;
++}
++
++int ls_pcie_ep_dbgfs_remove(struct ls_pcie *pcie)
++{
++	debugfs_remove_recursive(pcie->dir);
++	return 0;
++}
++
++MODULE_AUTHOR("Minghuan Lian <Minghuan.Lian@freescale.com>");
++MODULE_DESCRIPTION("Freescale Layerscape PCIe EP controller driver");
++MODULE_LICENSE("GPL v2");
+--- /dev/null
++++ b/drivers/pci/host/pci-layerscape-ep.c
+@@ -0,0 +1,309 @@
++/*
++ * PCIe Endpoint driver for Freescale Layerscape SoCs
++ *
++ * Copyright (C) 2015 Freescale Semiconductor.
++ *
++  * Author: Minghuan Lian <Minghuan.Lian@freescale.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include <linux/kernel.h>
++#include <linux/delay.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/of_pci.h>
++#include <linux/of_platform.h>
++#include <linux/of_irq.h>
++#include <linux/of_address.h>
++#include <linux/pci.h>
++#include <linux/platform_device.h>
++#include <linux/resource.h>
++#include <linux/debugfs.h>
++#include <linux/time.h>
++#include <linux/uaccess.h>
++
++#include "pci-layerscape-ep.h"
++
++struct ls_ep_dev *
++ls_pci_ep_find(struct ls_pcie *pcie, int dev_id)
++{
++	struct ls_ep_dev *ep;
++
++	list_for_each_entry(ep, &pcie->ep_list, node) {
++		if (ep->dev_id == dev_id)
++			return ep;
++	}
++
++	return NULL;
++}
++
++static void ls_pcie_try_cfg2(struct ls_pcie *pcie, int pf, int vf)
++{
++	if (pcie->sriov)
++		writel(PCIE_LCTRL0_VAL(pf, vf),
++		       pcie->dbi + PCIE_LUT_BASE + PCIE_LUT_LCTRL0);
++}
++
++static bool ls_pcie_is_bridge(struct ls_pcie *pcie)
++{
++	u32 header_type = 0;
++
++	header_type = readl(pcie->dbi + (PCI_HEADER_TYPE & ~0x3));
++	header_type = (header_type >> 16) & 0x7f;
++
++	return header_type == PCI_HEADER_TYPE_BRIDGE;
++}
++
++void ls_pcie_iatu_outbound_set(struct ls_pcie *pcie, int idx, int type,
++			       u64 cpu_addr, u64 pci_addr, u32 size)
++{
++	writel(PCIE_ATU_REGION_OUTBOUND | idx,
++	       pcie->dbi + PCIE_ATU_VIEWPORT);
++	writel(lower_32_bits(cpu_addr),
++	       pcie->dbi +  PCIE_ATU_LOWER_BASE);
++	writel(upper_32_bits(cpu_addr),
++	       pcie->dbi + PCIE_ATU_UPPER_BASE);
++	writel(lower_32_bits(cpu_addr + size - 1),
++	       pcie->dbi + PCIE_ATU_LIMIT);
++	writel(lower_32_bits(pci_addr),
++	       pcie->dbi + PCIE_ATU_LOWER_TARGET);
++	writel(upper_32_bits(pci_addr),
++	       pcie->dbi + PCIE_ATU_UPPER_TARGET);
++	writel(type, pcie->dbi + PCIE_ATU_CR1);
++	writel(PCIE_ATU_ENABLE, pcie->dbi + PCIE_ATU_CR2);
++}
++
++/* Use bar match mode and MEM type as default */
++void ls_pcie_iatu_inbound_set(struct ls_pcie *pcie, int idx,
++				     int bar, u64 phys)
++{
++	writel(PCIE_ATU_REGION_INBOUND | idx, pcie->dbi + PCIE_ATU_VIEWPORT);
++	writel((u32)phys, pcie->dbi + PCIE_ATU_LOWER_TARGET);
++	writel(phys >> 32, pcie->dbi + PCIE_ATU_UPPER_TARGET);
++	writel(PCIE_ATU_TYPE_MEM, pcie->dbi + PCIE_ATU_CR1);
++	writel(PCIE_ATU_ENABLE | PCIE_ATU_BAR_MODE_ENABLE |
++	       PCIE_ATU_BAR_NUM(bar), pcie->dbi + PCIE_ATU_CR2);
++}
++
++void ls_pcie_ep_dev_cfg_enable(struct ls_ep_dev *ep)
++{
++	ls_pcie_try_cfg2(ep->pcie, ep->pf_idx, ep->vf_idx);
++}
++
++void ls_pcie_ep_setup_bar(void *bar_base, int bar, u32 size)
++{
++	if (size < 4 * 1024)
++		return;
++
++	switch (bar) {
++	case 0:
++		writel(size - 1, bar_base + PCI_BASE_ADDRESS_0);
++		break;
++	case 1:
++		writel(size - 1, bar_base + PCI_BASE_ADDRESS_1);
++		break;
++	case 2:
++		writel(size - 1, bar_base + PCI_BASE_ADDRESS_2);
++		writel(0, bar_base + PCI_BASE_ADDRESS_3);
++		break;
++	case 4:
++		writel(size - 1, bar_base + PCI_BASE_ADDRESS_4);
++		writel(0, bar_base + PCI_BASE_ADDRESS_5);
++		break;
++	default:
++		break;
++	}
++}
++
++void ls_pcie_ep_dev_setup_bar(struct ls_ep_dev *ep, int bar, u32 size)
++{
++	struct ls_pcie *pcie = ep->pcie;
++	void *bar_base;
++
++	if (size < 4 * 1024)
++		return;
++
++	if (pcie->sriov)
++		bar_base = pcie->dbi;
++	else
++		bar_base = pcie->dbi + PCIE_NO_SRIOV_BAR_BASE;
++
++	ls_pcie_ep_dev_cfg_enable(ep);
++	ls_pcie_ep_setup_bar(bar_base, bar, size);
++}
++
++static int ls_pcie_ep_dev_init(struct ls_pcie *pcie, int pf_idx, int vf_idx)
++{
++	struct ls_ep_dev *ep;
++
++	ep = devm_kzalloc(pcie->dev, sizeof(*ep), GFP_KERNEL);
++	if (!ep)
++		return -ENOMEM;
++
++	ep->pcie = pcie;
++	ep->pf_idx = pf_idx;
++	ep->vf_idx = vf_idx;
++	if (vf_idx)
++		ep->dev_id = pf_idx + 4 + 4 * (vf_idx - 1);
++	else
++		ep->dev_id = pf_idx;
++
++	if (ep->vf_idx)
++		dev_set_name(&ep->dev, "pf%d-vf%d",
++			     ep->pf_idx,
++			     ep->vf_idx);
++	else
++		dev_set_name(&ep->dev, "pf%d",
++			     ep->pf_idx);
++
++	list_add_tail(&ep->node, &pcie->ep_list);
++
++	return 0;
++}
++
++static int ls_pcie_ep_init(struct ls_pcie *pcie)
++{
++	u32 sriov_header;
++	int pf, vf, i, j;
++
++	sriov_header = readl(pcie->dbi + PCIE_SRIOV_POS);
++
++	if (PCI_EXT_CAP_ID(sriov_header) == PCI_EXT_CAP_ID_SRIOV) {
++		pcie->sriov = PCIE_SRIOV_POS;
++		pf = PCIE_PF_NUM;
++		vf = PCIE_VF_NUM;
++	} else {
++		pcie->sriov = 0;
++		pf = 1;
++		vf = 0;
++	}
++
++	for (i = 0; i < pf; i++) {
++		for (j = 0; j <= vf; j++)
++			ls_pcie_ep_dev_init(pcie, i, j);
++	}
++
++	return 0;
++}
++
++static struct ls_pcie_ep_drvdata ls1043_drvdata = {
++	.lut_offset = 0x10000,
++	.ltssm_shift = 24,
++	.lut_dbg = 0x7fc,
++};
++
++static struct ls_pcie_ep_drvdata ls1046_drvdata = {
++	.lut_offset = 0x80000,
++	.ltssm_shift = 24,
++	.lut_dbg = 0x407fc,
++};
++
++static struct ls_pcie_ep_drvdata ls2080_drvdata = {
++	.lut_offset = 0x80000,
++	.ltssm_shift = 0,
++	.lut_dbg = 0x7fc,
++};
++
++static const struct of_device_id ls_pcie_ep_of_match[] = {
++	{ .compatible = "fsl,ls1021a-pcie", },
++	{ .compatible = "fsl,ls1043a-pcie", .data = &ls1043_drvdata },
++	{ .compatible = "fsl,ls1046a-pcie", .data = &ls1046_drvdata },
++	{ .compatible = "fsl,ls2080a-pcie", .data = &ls2080_drvdata },
++	{ .compatible = "fsl,ls2085a-pcie", .data = &ls2080_drvdata },
++	{ },
++};
++MODULE_DEVICE_TABLE(of, ls_pcie_ep_of_match);
++
++static int ls_pcie_ep_probe(struct platform_device *pdev)
++{
++	struct ls_pcie *pcie;
++	struct resource *dbi_base, *cfg_res;
++	const struct of_device_id *match;
++	int ret;
++
++	match = of_match_device(ls_pcie_ep_of_match, &pdev->dev);
++	if (!match)
++		return -ENODEV;
++
++	pcie = devm_kzalloc(&pdev->dev, sizeof(*pcie), GFP_KERNEL);
++	if (!pcie)
++		return -ENOMEM;
++
++	pcie->dev = &pdev->dev;
++	INIT_LIST_HEAD(&pcie->ep_list);
++
++	dbi_base = platform_get_resource_byname(pdev, IORESOURCE_MEM, "regs");
++	pcie->dbi = devm_ioremap_resource(&pdev->dev, dbi_base);
++	if (IS_ERR(pcie->dbi)) {
++		dev_err(&pdev->dev, "missing *regs* space\n");
++		return PTR_ERR(pcie->dbi);
++	}
++
++	pcie->drvdata = match->data;
++	pcie->lut = pcie->dbi + pcie->drvdata->lut_offset;
++
++	if (ls_pcie_is_bridge(pcie))
++		return -ENODEV;
++
++	dev_info(pcie->dev, "in EP mode\n");
++
++	cfg_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "config");
++	if (cfg_res)
++		pcie->out_base = cfg_res->start;
++	else {
++		dev_err(&pdev->dev, "missing *config* space\n");
++		return -ENODEV;
++	}
++
++	ret = ls_pcie_ep_init(pcie);
++	if (ret)
++		return ret;
++
++	ls_pcie_ep_dbgfs_init(pcie);
++
++	platform_set_drvdata(pdev, pcie);
++
++	return 0;
++}
++
++static int ls_pcie_ep_dev_remove(struct ls_ep_dev *ep)
++{
++	list_del(&ep->node);
++
++	return 0;
++}
++
++static int ls_pcie_ep_remove(struct platform_device *pdev)
++{
++	struct ls_pcie *pcie = platform_get_drvdata(pdev);
++	struct ls_ep_dev *ep, *tmp;
++
++	if (!pcie)
++		return 0;
++
++	ls_pcie_ep_dbgfs_remove(pcie);
++
++	list_for_each_entry_safe(ep, tmp, &pcie->ep_list, node)
++		ls_pcie_ep_dev_remove(ep);
++
++	return 0;
++}
++
++static struct platform_driver ls_pcie_ep_driver = {
++	.driver = {
++		.name = "ls-pcie-ep",
++		.owner = THIS_MODULE,
++		.of_match_table = ls_pcie_ep_of_match,
++	},
++	.probe = ls_pcie_ep_probe,
++	.remove = ls_pcie_ep_remove,
++};
++
++module_platform_driver(ls_pcie_ep_driver);
++
++MODULE_AUTHOR("Minghuan Lian <Minghuan.Lian@freescale.com>");
++MODULE_DESCRIPTION("Freescale Layerscape PCIe EP driver");
++MODULE_LICENSE("GPL v2");
+--- /dev/null
++++ b/drivers/pci/host/pci-layerscape-ep.h
+@@ -0,0 +1,115 @@
++/*
++ * PCIe Endpoint driver for Freescale Layerscape SoCs
++ *
++ * Copyright (C) 2015 Freescale Semiconductor.
++ *
++  * Author: Minghuan Lian <Minghuan.Lian@freescale.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++
++#ifndef _PCIE_LAYERSCAPE_EP_H
++#define _PCIE_LAYERSCAPE_EP_H
++
++#include <linux/device.h>
++
++/* Synopsis specific PCIE configuration registers */
++#define PCIE_ATU_VIEWPORT		0x900
++#define PCIE_ATU_REGION_INBOUND		(0x1 << 31)
++#define PCIE_ATU_REGION_OUTBOUND	(0x0 << 31)
++#define PCIE_ATU_REGION_INDEX3		(0x3 << 0)
++#define PCIE_ATU_REGION_INDEX2		(0x2 << 0)
++#define PCIE_ATU_REGION_INDEX1		(0x1 << 0)
++#define PCIE_ATU_REGION_INDEX0		(0x0 << 0)
++#define PCIE_ATU_CR1			0x904
++#define PCIE_ATU_TYPE_MEM		(0x0 << 0)
++#define PCIE_ATU_TYPE_IO		(0x2 << 0)
++#define PCIE_ATU_TYPE_CFG0		(0x4 << 0)
++#define PCIE_ATU_TYPE_CFG1		(0x5 << 0)
++#define PCIE_ATU_CR2			0x908
++#define PCIE_ATU_ENABLE			(0x1 << 31)
++#define PCIE_ATU_BAR_MODE_ENABLE	(0x1 << 30)
++#define PCIE_ATU_LOWER_BASE		0x90C
++#define PCIE_ATU_UPPER_BASE		0x910
++#define PCIE_ATU_LIMIT			0x914
++#define PCIE_ATU_LOWER_TARGET		0x918
++#define PCIE_ATU_BUS(x)			(((x) & 0xff) << 24)
++#define PCIE_ATU_DEV(x)			(((x) & 0x1f) << 19)
++#define PCIE_ATU_FUNC(x)		(((x) & 0x7) << 16)
++#define PCIE_ATU_UPPER_TARGET		0x91C
++
++/* PEX internal configuration registers */
++#define PCIE_DBI_RO_WR_EN	0x8bc /* DBI Read-Only Write Enable Register */
++
++/* PEX LUT registers */
++#define PCIE_LUT_BASE		0x80000
++#define PCIE_LUT_DBG		0x7FC /* PEX LUT Debug register */
++
++#define PCIE_LUT_LCTRL0		0x7F8
++
++#define PCIE_ATU_BAR_NUM(bar)	((bar) << 8)
++#define PCIE_LCTRL0_CFG2_ENABLE	(1 << 31)
++#define PCIE_LCTRL0_VF(vf)	((vf) << 22)
++#define PCIE_LCTRL0_PF(pf)	((pf) << 16)
++#define PCIE_LCTRL0_VF_ACTIVE	(1 << 21)
++#define PCIE_LCTRL0_VAL(pf, vf)	(PCIE_LCTRL0_PF(pf) |			   \
++				 PCIE_LCTRL0_VF(vf) |			   \
++				 ((vf) == 0 ? 0 : PCIE_LCTRL0_VF_ACTIVE) | \
++				 PCIE_LCTRL0_CFG2_ENABLE)
++
++#define PCIE_NO_SRIOV_BAR_BASE	0x1000
++
++#define PCIE_SRIOV_POS		0x178
++#define PCIE_PF_NUM		2
++#define PCIE_VF_NUM		64
++
++struct ls_pcie_ep_drvdata {
++	u32 lut_offset;
++	u32 ltssm_shift;
++	u32 lut_dbg;
++};
++
++struct ls_pcie {
++	struct list_head	ep_list;
++	struct device		*dev;
++	struct dentry		*dir;
++	const struct ls_pcie_ep_drvdata *drvdata;
++	void __iomem		*dbi;
++	void __iomem		*lut;
++	phys_addr_t		out_base;
++	int			sriov;
++	int			index;
++};
++
++struct ls_ep_dev {
++	struct list_head	node;
++	struct ls_pcie		*pcie;
++	struct device		dev;
++	struct dentry		*dir;
++	int			pf_idx;
++	int			vf_idx;
++	int			dev_id;
++	void			*driver_data;
++};
++
++struct ls_ep_dev *ls_pci_ep_find(struct ls_pcie *pcie, int dev_id);
++
++void ls_pcie_iatu_outbound_set(struct ls_pcie *pcie, int idx, int type,
++			      u64 cpu_addr, u64 pci_addr, u32 size);
++
++/* Use bar match mode and MEM type as default */
++void ls_pcie_iatu_inbound_set(struct ls_pcie *pcie, int idx,
++				     int bar, u64 phys);
++
++void ls_pcie_ep_dev_setup_bar(struct ls_ep_dev *ep, int bar, u32 size);
++
++
++void ls_pcie_ep_dev_cfg_enable(struct ls_ep_dev *ep);
++
++int ls_pcie_ep_dbgfs_init(struct ls_pcie *pcie);
++int ls_pcie_ep_dbgfs_remove(struct ls_pcie *pcie);
++
++#endif /* _PCIE_LAYERSCAPE_EP_H */
+--- a/drivers/pci/host/pci-layerscape.c
++++ b/drivers/pci/host/pci-layerscape.c
+@@ -35,12 +35,14 @@
+ #define PCIE_STRFMR1		0x71c /* Symbol Timer & Filter Mask Register1 */
+ #define PCIE_DBI_RO_WR_EN	0x8bc /* DBI Read-Only Write Enable Register */
+ 
+-/* PEX LUT registers */
+-#define PCIE_LUT_DBG		0x7FC /* PEX LUT Debug Register */
++#define PCIE_IATU_NUM		6
++
++static void ls_pcie_host_init(struct pcie_port *pp);
+ 
+ struct ls_pcie_drvdata {
+ 	u32 lut_offset;
+ 	u32 ltssm_shift;
++	u32 lut_dbg;
+ 	struct pcie_host_ops *ops;
+ };
+ 
+@@ -86,6 +88,14 @@ static void ls_pcie_drop_msg_tlp(struct
+ 	iowrite32(val, pcie->pp.dbi_base + PCIE_STRFMR1);
+ }
+ 
++static void ls_pcie_disable_outbound_atus(struct ls_pcie *pcie)
++{
++	int i;
++
++	for (i = 0; i < PCIE_IATU_NUM; i++)
++		dw_pcie_disable_outbound_atu(&pcie->pp, i);
++}
++
+ static int ls1021_pcie_link_up(struct pcie_port *pp)
+ {
+ 	u32 state;
+@@ -134,7 +144,7 @@ static int ls_pcie_link_up(struct pcie_p
+ 	struct ls_pcie *pcie = to_ls_pcie(pp);
+ 	u32 state;
+ 
+-	state = (ioread32(pcie->lut + PCIE_LUT_DBG) >>
++	state = (ioread32(pcie->lut + pcie->drvdata->lut_dbg) >>
+ 		 pcie->drvdata->ltssm_shift) &
+ 		 LTSSM_STATE_MASK;
+ 
+@@ -153,6 +163,9 @@ static void ls_pcie_host_init(struct pci
+ 	ls_pcie_clear_multifunction(pcie);
+ 	ls_pcie_drop_msg_tlp(pcie);
+ 	iowrite32(0, pcie->pp.dbi_base + PCIE_DBI_RO_WR_EN);
++
++	ls_pcie_disable_outbound_atus(pcie);
++	dw_pcie_setup_rc(pp);
+ }
+ 
+ static int ls_pcie_msi_host_init(struct pcie_port *pp,
+@@ -196,20 +209,39 @@ static struct ls_pcie_drvdata ls1021_drv
+ static struct ls_pcie_drvdata ls1043_drvdata = {
+ 	.lut_offset = 0x10000,
+ 	.ltssm_shift = 24,
++	.lut_dbg = 0x7fc,
++	.ops = &ls_pcie_host_ops,
++};
++
++static struct ls_pcie_drvdata ls1046_drvdata = {
++	.lut_offset = 0x80000,
++	.ltssm_shift = 24,
++	.lut_dbg = 0x407fc,
+ 	.ops = &ls_pcie_host_ops,
+ };
+ 
+ static struct ls_pcie_drvdata ls2080_drvdata = {
+ 	.lut_offset = 0x80000,
+ 	.ltssm_shift = 0,
++	.lut_dbg = 0x7fc,
++	.ops = &ls_pcie_host_ops,
++};
++
++static struct ls_pcie_drvdata ls2088_drvdata = {
++	.lut_offset = 0x80000,
++	.ltssm_shift = 0,
++	.lut_dbg = 0x407fc,
+ 	.ops = &ls_pcie_host_ops,
+ };
+ 
+ static const struct of_device_id ls_pcie_of_match[] = {
++	{ .compatible = "fsl,ls1012a-pcie", .data = &ls1046_drvdata },
+ 	{ .compatible = "fsl,ls1021a-pcie", .data = &ls1021_drvdata },
+ 	{ .compatible = "fsl,ls1043a-pcie", .data = &ls1043_drvdata },
++	{ .compatible = "fsl,ls1046a-pcie", .data = &ls1046_drvdata },
+ 	{ .compatible = "fsl,ls2080a-pcie", .data = &ls2080_drvdata },
+ 	{ .compatible = "fsl,ls2085a-pcie", .data = &ls2080_drvdata },
++	{ .compatible = "fsl,ls2088a-pcie", .data = &ls2088_drvdata },
+ 	{ },
+ };
+ 
+--- a/drivers/pci/host/pcie-designware.c
++++ b/drivers/pci/host/pcie-designware.c
+@@ -478,6 +478,12 @@ int dw_pcie_wait_for_link(struct pcie_po
+ 	return -ETIMEDOUT;
+ }
+ 
++void dw_pcie_disable_outbound_atu(struct pcie_port *pp, int index)
++{
++	dw_pcie_writel_rc(pp, PCIE_ATU_VIEWPORT, PCIE_ATU_REGION_OUTBOUND | index);
++	dw_pcie_writel_rc(pp, PCIE_ATU_CR2, 0);
++}
++
+ int dw_pcie_link_up(struct pcie_port *pp)
+ {
+ 	u32 val;
+--- a/drivers/pci/host/pcie-designware.h
++++ b/drivers/pci/host/pcie-designware.h
+@@ -82,5 +82,6 @@ int dw_pcie_wait_for_link(struct pcie_po
+ int dw_pcie_link_up(struct pcie_port *pp);
+ void dw_pcie_setup_rc(struct pcie_port *pp);
+ int dw_pcie_host_init(struct pcie_port *pp);
++void dw_pcie_disable_outbound_atu(struct pcie_port *pp, int index);
+ 
+ #endif /* _PCIE_DESIGNWARE_H */
+--- a/drivers/pci/pcie/portdrv_core.c
++++ b/drivers/pci/pcie/portdrv_core.c
+@@ -44,52 +44,30 @@ static void release_pcie_device(struct d
+ }
+ 
+ /**
+- * pcie_port_msix_add_entry - add entry to given array of MSI-X entries
+- * @entries: Array of MSI-X entries
+- * @new_entry: Index of the entry to add to the array
+- * @nr_entries: Number of entries already in the array
++ * pcibios_check_service_irqs - check irqs in the device tree
++ * @dev: PCI Express port to handle
++ * @irqs: Array of irqs to populate
++ * @mask: Bitmask of port capabilities returned by get_port_device_capability()
++ *
++ * Return value: 0 means no service irqs in the device tree
+  *
+- * Return value: Position of the added entry in the array
+  */
+-static int pcie_port_msix_add_entry(
+-	struct msix_entry *entries, int new_entry, int nr_entries)
++int __weak pcibios_check_service_irqs(struct pci_dev *dev, int *irqs, int mask)
+ {
+-	int j;
+-
+-	for (j = 0; j < nr_entries; j++)
+-		if (entries[j].entry == new_entry)
+-			return j;
+-
+-	entries[j].entry = new_entry;
+-	return j;
++	return 0;
+ }
+ 
+ /**
+  * pcie_port_enable_msix - try to set up MSI-X as interrupt mode for given port
+  * @dev: PCI Express port to handle
+- * @vectors: Array of interrupt vectors to populate
++ * @irqs: Array of interrupt vectors to populate
+  * @mask: Bitmask of port capabilities returned by get_port_device_capability()
+  *
+  * Return value: 0 on success, error code on failure
+  */
+-static int pcie_port_enable_msix(struct pci_dev *dev, int *vectors, int mask)
++static int pcie_port_enable_msix(struct pci_dev *dev, int *irqs, int mask)
+ {
+-	struct msix_entry *msix_entries;
+-	int idx[PCIE_PORT_DEVICE_MAXSERVICES];
+-	int nr_entries, status, pos, i, nvec;
+-	u16 reg16;
+-	u32 reg32;
+-
+-	nr_entries = pci_msix_vec_count(dev);
+-	if (nr_entries < 0)
+-		return nr_entries;
+-	BUG_ON(!nr_entries);
+-	if (nr_entries > PCIE_PORT_MAX_MSIX_ENTRIES)
+-		nr_entries = PCIE_PORT_MAX_MSIX_ENTRIES;
+-
+-	msix_entries = kzalloc(sizeof(*msix_entries) * nr_entries, GFP_KERNEL);
+-	if (!msix_entries)
+-		return -ENOMEM;
++	int nr_entries, entry, nvec = 0;
+ 
+ 	/*
+ 	 * Allocate as many entries as the port wants, so that we can check
+@@ -97,20 +75,13 @@ static int pcie_port_enable_msix(struct
+ 	 * equal to the number of entries this port actually uses, we'll happily
+ 	 * go through without any tricks.
+ 	 */
+-	for (i = 0; i < nr_entries; i++)
+-		msix_entries[i].entry = i;
+-
+-	status = pci_enable_msix_exact(dev, msix_entries, nr_entries);
+-	if (status)
+-		goto Exit;
+-
+-	for (i = 0; i < PCIE_PORT_DEVICE_MAXSERVICES; i++)
+-		idx[i] = -1;
+-	status = -EIO;
+-	nvec = 0;
++	nr_entries = pci_alloc_irq_vectors(dev, 1, PCIE_PORT_MAX_MSIX_ENTRIES,
++			PCI_IRQ_MSIX);
++	if (nr_entries < 0)
++		return nr_entries;
+ 
+ 	if (mask & (PCIE_PORT_SERVICE_PME | PCIE_PORT_SERVICE_HP)) {
+-		int entry;
++		u16 reg16;
+ 
+ 		/*
+ 		 * The code below follows the PCI Express Base Specification 2.0
+@@ -125,18 +96,16 @@ static int pcie_port_enable_msix(struct
+ 		pcie_capability_read_word(dev, PCI_EXP_FLAGS, &reg16);
+ 		entry = (reg16 & PCI_EXP_FLAGS_IRQ) >> 9;
+ 		if (entry >= nr_entries)
+-			goto Error;
++			goto out_free_irqs;
+ 
+-		i = pcie_port_msix_add_entry(msix_entries, entry, nvec);
+-		if (i == nvec)
+-			nvec++;
++		irqs[PCIE_PORT_SERVICE_PME_SHIFT] = pci_irq_vector(dev, entry);
++		irqs[PCIE_PORT_SERVICE_HP_SHIFT] = pci_irq_vector(dev, entry);
+ 
+-		idx[PCIE_PORT_SERVICE_PME_SHIFT] = i;
+-		idx[PCIE_PORT_SERVICE_HP_SHIFT] = i;
++		nvec = max(nvec, entry + 1);
+ 	}
+ 
+ 	if (mask & PCIE_PORT_SERVICE_AER) {
+-		int entry;
++		u32 reg32, pos;
+ 
+ 		/*
+ 		 * The code below follows Section 7.10.10 of the PCI Express
+@@ -151,13 +120,11 @@ static int pcie_port_enable_msix(struct
+ 		pci_read_config_dword(dev, pos + PCI_ERR_ROOT_STATUS, &reg32);
+ 		entry = reg32 >> 27;
+ 		if (entry >= nr_entries)
+-			goto Error;
++			goto out_free_irqs;
+ 
+-		i = pcie_port_msix_add_entry(msix_entries, entry, nvec);
+-		if (i == nvec)
+-			nvec++;
++		irqs[PCIE_PORT_SERVICE_AER_SHIFT] = pci_irq_vector(dev, entry);
+ 
+-		idx[PCIE_PORT_SERVICE_AER_SHIFT] = i;
++		nvec = max(nvec, entry + 1);
+ 	}
+ 
+ 	/*
+@@ -165,41 +132,54 @@ static int pcie_port_enable_msix(struct
+ 	 * what we have.  Otherwise, the port has some extra entries not for the
+ 	 * services we know and we need to work around that.
+ 	 */
+-	if (nvec == nr_entries) {
+-		status = 0;
+-	} else {
++	if (nvec != nr_entries) {
+ 		/* Drop the temporary MSI-X setup */
+-		pci_disable_msix(dev);
++		pci_free_irq_vectors(dev);
+ 
+ 		/* Now allocate the MSI-X vectors for real */
+-		status = pci_enable_msix_exact(dev, msix_entries, nvec);
+-		if (status)
+-			goto Exit;
++		nr_entries = pci_alloc_irq_vectors(dev, nvec, nvec,
++				PCI_IRQ_MSIX);
++		if (nr_entries < 0)
++			return nr_entries;
+ 	}
+ 
+-	for (i = 0; i < PCIE_PORT_DEVICE_MAXSERVICES; i++)
+-		vectors[i] = idx[i] >= 0 ? msix_entries[idx[i]].vector : -1;
+-
+- Exit:
+-	kfree(msix_entries);
+-	return status;
++	return 0;
+ 
+- Error:
+-	pci_disable_msix(dev);
+-	goto Exit;
++out_free_irqs:
++	pci_free_irq_vectors(dev);
++	return -EIO;
+ }
+ 
+ /**
+- * init_service_irqs - initialize irqs for PCI Express port services
++ * pcie_init_service_irqs - initialize irqs for PCI Express port services
+  * @dev: PCI Express port to handle
+  * @irqs: Array of irqs to populate
+  * @mask: Bitmask of port capabilities returned by get_port_device_capability()
+  *
+  * Return value: Interrupt mode associated with the port
+  */
+-static int init_service_irqs(struct pci_dev *dev, int *irqs, int mask)
++static int pcie_init_service_irqs(struct pci_dev *dev, int *irqs, int mask)
+ {
+-	int i, irq = -1;
++	unsigned flags = PCI_IRQ_LEGACY | PCI_IRQ_MSI;
++	int ret, i;
++	int irq = -1;
++
++	for (i = 0; i < PCIE_PORT_DEVICE_MAXSERVICES; i++)
++		irqs[i] = -1;
++
++	/* Check if some platforms owns independent irq pins for AER/PME etc.
++	 * Some platforms may own independent AER/PME interrupts and set
++	 * them in the device tree file.
++	 */
++	ret = pcibios_check_service_irqs(dev, irqs, mask);
++	if (ret) {
++		if (dev->irq)
++			irq = dev->irq;
++		for (i = 0; i < PCIE_PORT_DEVICE_MAXSERVICES; i++)
++			if (irqs[i] == -1 && i != PCIE_PORT_SERVICE_VC_SHIFT)
++				irqs[i] = irq;
++		return 0;
++	}
+ 
+ 	/*
+ 	 * If MSI cannot be used for PCIe PME or hotplug, we have to use
+@@ -207,41 +187,25 @@ static int init_service_irqs(struct pci_
+ 	 */
+ 	if (((mask & PCIE_PORT_SERVICE_PME) && pcie_pme_no_msi()) ||
+ 	    ((mask & PCIE_PORT_SERVICE_HP) && pciehp_no_msi())) {
+-		if (dev->irq)
+-			irq = dev->irq;
+-		goto no_msi;
++		flags &= ~PCI_IRQ_MSI;
++	} else {
++		/* Try to use MSI-X if supported */
++		if (!pcie_port_enable_msix(dev, irqs, mask))
++			return 0;
+ 	}
+ 
+-	/* Try to use MSI-X if supported */
+-	if (!pcie_port_enable_msix(dev, irqs, mask))
+-		return 0;
+-
+-	/*
+-	 * We're not going to use MSI-X, so try MSI and fall back to INTx.
+-	 * If neither MSI/MSI-X nor INTx available, try other interrupt.  On
+-	 * some platforms, root port doesn't support MSI/MSI-X/INTx in RC mode.
+-	 */
+-	if (!pci_enable_msi(dev) || dev->irq)
+-		irq = dev->irq;
++	ret = pci_alloc_irq_vectors(dev, 1, 1, flags);
++	if (ret < 0)
++		return -ENODEV;
+ 
+- no_msi:
+-	for (i = 0; i < PCIE_PORT_DEVICE_MAXSERVICES; i++)
+-		irqs[i] = irq;
+-	irqs[PCIE_PORT_SERVICE_VC_SHIFT] = -1;
++	for (i = 0; i < PCIE_PORT_DEVICE_MAXSERVICES; i++) {
++		if (i != PCIE_PORT_SERVICE_VC_SHIFT)
++			irqs[i] = pci_irq_vector(dev, 0);
++	}
+ 
+-	if (irq < 0)
+-		return -ENODEV;
+ 	return 0;
+ }
+ 
+-static void cleanup_service_irqs(struct pci_dev *dev)
+-{
+-	if (dev->msix_enabled)
+-		pci_disable_msix(dev);
+-	else if (dev->msi_enabled)
+-		pci_disable_msi(dev);
+-}
+-
+ /**
+  * get_port_device_capability - discover capabilities of a PCI Express port
+  * @dev: PCI Express port to examine
+@@ -378,7 +342,7 @@ int pcie_port_device_register(struct pci
+ 	 * that can be used in the absence of irqs.  Allow them to determine
+ 	 * if that is to be used.
+ 	 */
+-	status = init_service_irqs(dev, irqs, capabilities);
++	status = pcie_init_service_irqs(dev, irqs, capabilities);
+ 	if (status) {
+ 		capabilities &= PCIE_PORT_SERVICE_VC | PCIE_PORT_SERVICE_HP;
+ 		if (!capabilities)
+@@ -401,7 +365,7 @@ int pcie_port_device_register(struct pci
+ 	return 0;
+ 
+ error_cleanup_irqs:
+-	cleanup_service_irqs(dev);
++	pci_free_irq_vectors(dev);
+ error_disable:
+ 	pci_disable_device(dev);
+ 	return status;
+@@ -469,7 +433,7 @@ static int remove_iter(struct device *de
+ void pcie_port_device_remove(struct pci_dev *dev)
+ {
+ 	device_for_each_child(&dev->dev, NULL, remove_iter);
+-	cleanup_service_irqs(dev);
++	pci_free_irq_vectors(dev);
+ 	pci_disable_device(dev);
+ }
+ 
+@@ -499,7 +463,6 @@ static int pcie_port_probe_service(struc
+ 	if (status)
+ 		return status;
+ 
+-	dev_printk(KERN_DEBUG, dev, "service driver %s loaded\n", driver->name);
+ 	get_device(dev);
+ 	return 0;
+ }
+@@ -524,8 +487,6 @@ static int pcie_port_remove_service(stru
+ 	pciedev = to_pcie_device(dev);
+ 	driver = to_service_driver(dev->driver);
+ 	if (driver && driver->remove) {
+-		dev_printk(KERN_DEBUG, dev, "unloading service driver %s\n",
+-			driver->name);
+ 		driver->remove(pciedev);
+ 		put_device(dev);
+ 	}
+--- a/include/linux/pci.h
++++ b/include/linux/pci.h
+@@ -1823,6 +1823,7 @@ void pcibios_release_device(struct pci_d
+ void pcibios_penalize_isa_irq(int irq, int active);
+ int pcibios_alloc_irq(struct pci_dev *dev);
+ void pcibios_free_irq(struct pci_dev *dev);
++int pcibios_check_service_irqs(struct pci_dev *dev, int *irqs, int mask);
+ 
+ #ifdef CONFIG_HIBERNATE_CALLBACKS
+ extern struct dev_pm_ops pcibios_pm_ops;

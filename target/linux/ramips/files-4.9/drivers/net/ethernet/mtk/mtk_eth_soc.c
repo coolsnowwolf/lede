@@ -1003,7 +1003,7 @@ static int fe_poll(struct napi_struct *napi, int budget)
 			goto poll_again;
 		}
 
-		napi_complete(napi);
+		napi_complete_done(napi, rx_done);
 		fe_int_enable(tx_intr | rx_intr);
 	} else {
 		rx_done = budget;
@@ -1536,7 +1536,7 @@ static int fe_probe(struct platform_device *pdev)
 	priv->rx_ring.rx_ring_size = NUM_DMA_DESC;
 	INIT_WORK(&priv->pending_work, fe_pending_work);
 
-	napi_weight = 32;
+	napi_weight = 16;
 	if (priv->flags & FE_FLAG_NAPI_WEIGHT) {
 		napi_weight *= 4;
 		priv->tx_ring.tx_ring_size *= 4;

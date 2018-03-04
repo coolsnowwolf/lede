@@ -21,6 +21,7 @@ DUMP:=1
 endif
 
 export TMP_DIR:=$(TOPDIR)/tmp
+export TMPDIR:=$(TMP_DIR)
 
 qstrip=$(strip $(subst ",,$(1)))
 #"))

@@ -1,6 +1,6 @@
---- a/include/linux/pkt_sched.h
-+++ b/include/linux/pkt_sched.h
-@@ -863,4 +863,60 @@ struct tc_pie_xstats {
+--- a/include/uapi/linux/pkt_sched.h
++++ b/include/uapi/linux/pkt_sched.h
+@@ -872,4 +872,63 @@ struct tc_pie_xstats {
  	__u32 maxq;             /* maximum queue size */
  	__u32 ecn_mark;         /* packets marked with ecn*/
  };
@@ -21,6 +21,8 @@
 +	TCA_CAKE_ETHERNET,
 +	TCA_CAKE_WASH,
 +	TCA_CAKE_MPU,
++	TCA_CAKE_INGRESS,
++	TCA_CAKE_ACK_FILTER,
 +	__TCA_CAKE_MAX
 +};
 +#define TCA_CAKE_MAX	(__TCA_CAKE_MAX - 1)
@@ -33,12 +35,12 @@
 +
 +#define TC_CAKE_MAX_TINS (8)
 +struct tc_cake_xstats {
-+	__u16 version;  /* == 4, increments when struct extended */
++	__u16 version;  /* == 5, increments when struct extended */
 +	__u8  max_tins; /* == TC_CAKE_MAX_TINS */
 +	__u8  tin_cnt;  /* <= TC_CAKE_MAX_TINS */
 +
 +	__u32 threshold_rate   [TC_CAKE_MAX_TINS];
-+	__u32 target_us        [TC_CAKE_MAX_TINS];
++	__u32 target_us	       [TC_CAKE_MAX_TINS];
 +	struct tc_cake_traffic_stats sent      [TC_CAKE_MAX_TINS];
 +	struct tc_cake_traffic_stats dropped   [TC_CAKE_MAX_TINS];
 +	struct tc_cake_traffic_stats ecn_marked[TC_CAKE_MAX_TINS];
@@ -47,23 +49,24 @@
 +	__u32 way_indirect_hits[TC_CAKE_MAX_TINS];
 +	__u32 way_misses       [TC_CAKE_MAX_TINS];
 +	__u32 way_collisions   [TC_CAKE_MAX_TINS];
-+	__u32 peak_delay_us    [TC_CAKE_MAX_TINS]; /* ~= delay to bulk flows */
++	__u32 peak_delay_us    [TC_CAKE_MAX_TINS]; /* ~= bulk flow delay */
 +	__u32 avge_delay_us    [TC_CAKE_MAX_TINS];
-+	__u32 base_delay_us    [TC_CAKE_MAX_TINS]; /* ~= delay to sparse flows */
++	__u32 base_delay_us    [TC_CAKE_MAX_TINS]; /* ~= sparse flows delay */
 +	__u16 sparse_flows     [TC_CAKE_MAX_TINS];
 +	__u16 bulk_flows       [TC_CAKE_MAX_TINS];
-+	__u16 unresponse_flows [TC_CAKE_MAX_TINS]; /* v4 - was u32 last_len  */
-+	__u16 spare            [TC_CAKE_MAX_TINS]; /* v4 - split last_len */
++	__u16 unresponse_flows [TC_CAKE_MAX_TINS]; /* v4 - was u32 last_len */
++	__u16 spare	       [TC_CAKE_MAX_TINS]; /* v4 - split last_len */
 +	__u32 max_skblen       [TC_CAKE_MAX_TINS];
 +	__u32 capacity_estimate;  /* version 2 */
 +	__u32 memory_limit;       /* version 3 */
-+	__u32 memory_used;        /* version 3 */
++	__u32 memory_used;	  /* version 3 */
++	struct tc_cake_traffic_stats ack_drops [TC_CAKE_MAX_TINS]; /* v5 */
 +};
 +
  #endif
 --- a/tc/Makefile
 +++ b/tc/Makefile
-@@ -67,6 +67,7 @@ TCMODULES += q_codel.o
+@@ -65,6 +65,7 @@ TCMODULES += q_codel.o
  TCMODULES += q_fq_codel.o
  TCMODULES += q_fq.o
  TCMODULES += q_pie.o
@@ -73,7 +76,7 @@
  TCMODULES += e_bpf.o
 --- /dev/null
 +++ b/tc/q_cake.c
-@@ -0,0 +1,692 @@
+@@ -0,0 +1,771 @@
 +/*
 + * Common Applications Kept Enhanced  --  CAKE
 + *
@@ -137,9 +140,10 @@
 +"                  dual-srchost | dual-dsthost | triple-isolate* ]\n"
 +"                [ nat | nonat* ]\n"
 +"                [ wash | nowash * ]\n"
++"                [ ack-filter | ack-filter-aggressive | no-ack-filter * ]\n"
 +"                [ memlimit LIMIT ]\n"
 +"                [ ptm | atm | noatm* ] [ overhead N | conservative | raw* ]\n"
-+"                [ mpu N ]\n"
++"                [ mpu N ] [ ingress | egress* ]\n"
 +"                (* marks defaults)\n");
 +}
 +
@@ -155,12 +159,14 @@
 +	int  overhead = 0;
 +	bool overhead_set = false;
 +	bool overhead_override = false;
-+	int wash = -1;
 +	int mpu = 0;
 +	int flowmode = -1;
 +	int nat = -1;
 +	int atm = -1;
 +	int autorate = -1;
++	int wash = -1;
++	int ingress = -1;
++	int ack_filter = -1;
 +	struct rtattr *tail;
 +
 +	while (argc > 0) {
@@ -314,12 +320,22 @@
 +		/* Typical VDSL2 framing schemes, both over PTM */
 +		/* PTM has 64b/65b coding which absorbs some bandwidth */
 +		} else if (strcmp(*argv, "pppoe-ptm") == 0) {
++			/* 2B PPP + 6B PPPoE + 6B dest MAC + 6B src MAC
++			 * + 2B ethertype + 4B Frame Check Sequence
++			 * + 1B Start of Frame (S) + 1B End of Frame (Ck)
++			 * + 2B TC-CRC (PTM-FCS) = 30B
++			 */
 +			atm = 2;
-+			overhead += 27;
++			overhead += 30;
 +			overhead_set = true;
 +		} else if (strcmp(*argv, "bridged-ptm") == 0) {
++			/* 6B dest MAC + 6B src MAC + 2B ethertype
++			 * + 4B Frame Check Sequence
++			 * + 1B Start of Frame (S) + 1B End of Frame (Ck)
++			 * + 2B TC-CRC (PTM-FCS) = 22B
++			 */
 +			atm = 2;
-+			overhead += 19;
++			overhead += 22;
 +			overhead_set = true;
 +
 +		} else if (strcmp(*argv, "via-ethernet") == 0) {
@@ -332,8 +348,26 @@
 +			 * that automatically, and is thus ignored.
 +			 *
 +			 * It would be deleted entirely, but it appears in the
-+			 * stats output when the automatic compensation is active.
++			 * stats output when the automatic compensation is
++			 * active.
 +			 */
++
++		} else if (strcmp(*argv, "total_overhead") == 0) {
++			/*
++			 * This is the overhead cake accounts for; added here so
++			 * that cake's "tc -s qdisc" output can be directly
++			 * pasted into the tc command to instantate a new cake..
++			 */
++			NEXT_ARG();
++
++		} else if (strcmp(*argv, "hard_header_len") == 0) {
++			/*
++			 * This is the overhead the kernel automatically
++			 * accounted for; added here so that cake's "tc -s
++			 * qdisc" output can be directly pasted into the tc
++			 * command to instantiate a new cake..
++			 */
++			NEXT_ARG();
 +
 +		} else if (strcmp(*argv, "ethernet") == 0) {
 +			/* ethernet pre-amble & interframe gap & FCS
@@ -350,7 +384,7 @@
 +
 +		/*
 +		 * DOCSIS cable shapers account for Ethernet frame with FCS,
-+		 * but not interframe gap nor preamble.
++		 * but not interframe gap or preamble.
 +		 */
 +		} else if (strcmp(*argv, "docsis") == 0) {
 +			atm = 0;
@@ -376,6 +410,18 @@
 +				fprintf(stderr, "Illegal \"mpu\", valid range is 0 to 256\\n");
 +				return -1;
 +			}
++
++		} else if (strcmp(*argv, "ingress") == 0) {
++			ingress = 1;
++		} else if (strcmp(*argv, "egress") == 0) {
++			ingress = 0;
++
++		} else if (strcmp(*argv, "no-ack-filter") == 0) {
++			ack_filter = 0;
++		} else if (strcmp(*argv, "ack-filter") == 0) {
++			ack_filter = 0x0200;
++		} else if (strcmp(*argv, "ack-filter-aggressive") == 0) {
++			ack_filter = 0x0600;
 +
 +		} else if (strcmp(*argv, "memlimit") == 0) {
 +			NEXT_ARG();
@@ -425,6 +471,10 @@
 +		addattr_l(n, 1024, TCA_CAKE_NAT, &nat, sizeof(nat));
 +	if (wash != -1)
 +		addattr_l(n, 1024, TCA_CAKE_WASH, &wash, sizeof(wash));
++	if (ingress != -1)
++		addattr_l(n, 1024, TCA_CAKE_INGRESS, &ingress, sizeof(ingress));
++	if (ack_filter != -1)
++		addattr_l(n, 1024, TCA_CAKE_ACK_FILTER, &ack_filter, sizeof(ack_filter));
 +
 +	tail->rta_len = (void *) NLMSG_TAIL(n) - (void *) tail;
 +	return 0;
@@ -446,6 +496,8 @@
 +	int nat = 0;
 +	int autorate = 0;
 +	int wash = 0;
++	int ingress = 0;
++	int ack_filter = 0;
 +	SPRINT_BUF(b1);
 +	SPRINT_BUF(b2);
 +
@@ -551,6 +603,14 @@
 +	    RTA_PAYLOAD(tb[TCA_CAKE_MPU]) >= sizeof(__u32)) {
 +		mpu = rta_getattr_u32(tb[TCA_CAKE_MPU]);
 +	}
++	if (tb[TCA_CAKE_INGRESS] &&
++	    RTA_PAYLOAD(tb[TCA_CAKE_INGRESS]) >= sizeof(__u32)) {
++		ingress = rta_getattr_u32(tb[TCA_CAKE_INGRESS]);
++	}
++	if (tb[TCA_CAKE_ACK_FILTER] &&
++	    RTA_PAYLOAD(tb[TCA_CAKE_ACK_FILTER]) >= sizeof(__u32)) {
++		ack_filter = rta_getattr_u32(tb[TCA_CAKE_ACK_FILTER]);
++	}
 +	if (tb[TCA_CAKE_ETHERNET] &&
 +	    RTA_PAYLOAD(tb[TCA_CAKE_ETHERNET]) >= sizeof(__u32)) {
 +		ethernet = rta_getattr_u32(tb[TCA_CAKE_ETHERNET]);
@@ -562,6 +622,14 @@
 +
 +	if (wash)
 +		fprintf(f,"wash ");
++
++	if (ingress)
++		fprintf(f,"ingress ");
++
++	if (ack_filter == 0x0600)
++		fprintf(f,"ack-filter-aggressive ");
++	else if (ack_filter)
++		fprintf(f,"ack-filter ");
 +
 +	if (interval)
 +		fprintf(f, "rtt %s ", sprint_time(interval, b2));
@@ -578,11 +646,18 @@
 +
 +		fprintf(f, "overhead %d ", overhead);
 +
-+		// This is actually the *amount* of automatic compensation, but we only report
-+		// its presence as a boolean for now.
++		/* This is actually the *amount* of automatic compensation, but
++		 * we only report its presence as a boolean for now.
++		 */
 +		if (ethernet)
 +			fprintf(f, "via-ethernet ");
 +	}
++
++	/* unconditionally report the overhead and hard_header_len overhead the
++	 * kernel added automatically
++	 */
++	fprintf(f, "total_overhead %d ", overhead);
++	fprintf(f, "hard_header_len %d ", ethernet);
 +
 +	if (mpu) {
 +		fprintf(f, "mpu %d ", mpu);
@@ -595,7 +670,7 @@
 +}
 +
 +static int cake_print_xstats(struct qdisc_util *qu, FILE *f,
-+				 struct rtattr *xstats)
++			     struct rtattr *xstats)
 +{
 +	/* fq_codel stats format borrowed */
 +	struct tc_fq_codel_xstats *st;
@@ -650,109 +725,116 @@
 +
 +		switch(stnc->tin_cnt) {
 +		case 3:
-+			fprintf(f, "                 Bulk   Best Effort      Voice\n");
++			fprintf(f, "                   Bulk  Best Effort        Voice\n");
 +			break;
 +
 +		case 4:
-+			fprintf(f, "                 Bulk   Best Effort      Video       Voice\n");
++			fprintf(f, "                   Bulk  Best Effort        Video        Voice\n");
 +			break;
 +
 +		case 5:
-+			fprintf(f, "              Low Loss  Best Effort   Low Delay       Bulk  Net Control\n");
++			fprintf(f, "               Low Loss  Best Effort    Low Delay         Bulk  Net Control\n");
 +			break;
 +
 +		default:
 +			fprintf(f, "          ");
 +			for(i=0; i < stnc->tin_cnt; i++)
-+				fprintf(f, "       Tin %u", i);
++				fprintf(f, "        Tin %u", i);
 +			fprintf(f, "\n");
 +		};
 +
 +		fprintf(f, "  thresh  ");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12s", sprint_rate(stnc->threshold_rate[i], b1));
++			fprintf(f, " %12s", sprint_rate(stnc->threshold_rate[i], b1));
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  target  ");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12s", sprint_time(stnc->target_us[i], b1));
++			fprintf(f, " %12s", sprint_time(stnc->target_us[i], b1));
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  interval");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12s", sprint_time(stnc->interval_us[i], b1));
++			fprintf(f, " %12s", sprint_time(stnc->interval_us[i], b1));
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  pk_delay");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12s", sprint_time(stnc->peak_delay_us[i], b1));
++			fprintf(f, " %12s", sprint_time(stnc->peak_delay_us[i], b1));
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  av_delay");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12s", sprint_time(stnc->avge_delay_us[i], b1));
++			fprintf(f, " %12s", sprint_time(stnc->avge_delay_us[i], b1));
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  sp_delay");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12s", sprint_time(stnc->base_delay_us[i], b1));
++			fprintf(f, " %12s", sprint_time(stnc->base_delay_us[i], b1));
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  pkts    ");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12u", stnc->sent[i].packets);
++			fprintf(f, " %12u", stnc->sent[i].packets);
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  bytes   ");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12llu", stnc->sent[i].bytes);
++			fprintf(f, " %12llu", stnc->sent[i].bytes);
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  way_inds");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12u", stnc->way_indirect_hits[i]);
++			fprintf(f, " %12u", stnc->way_indirect_hits[i]);
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  way_miss");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12u", stnc->way_misses[i]);
++			fprintf(f, " %12u", stnc->way_misses[i]);
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  way_cols");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12u", stnc->way_collisions[i]);
++			fprintf(f, " %12u", stnc->way_collisions[i]);
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  drops   ");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12u", stnc->dropped[i].packets);
++			fprintf(f, " %12u", stnc->dropped[i].packets);
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  marks   ");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12u", stnc->ecn_marked[i].packets);
++			fprintf(f, " %12u", stnc->ecn_marked[i].packets);
 +		fprintf(f, "\n");
++
++		if(stnc->version >= 5) {
++			fprintf(f, "  ack_drop");
++			for(i=0; i < stnc->tin_cnt; i++)
++				fprintf(f, " %12u", stnc->ack_drops[i].packets);
++			fprintf(f, "\n");
++		}
 +
 +		fprintf(f, "  sp_flows");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12u", stnc->sparse_flows[i]);
++			fprintf(f, " %12u", stnc->sparse_flows[i]);
 +		fprintf(f, "\n");
 +
 +		fprintf(f, "  bk_flows");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12u", stnc->bulk_flows[i]);
++			fprintf(f, " %12u", stnc->bulk_flows[i]);
 +		fprintf(f, "\n");
 +
 +		if(stnc->version >= 4) {
 +			fprintf(f, "  un_flows");
 +			for(i=0; i < stnc->tin_cnt; i++)
-+				fprintf(f, "%12u", stnc->unresponse_flows[i]);
++				fprintf(f, " %12u", stnc->unresponse_flows[i]);
 +			fprintf(f, "\n");
 +		}
 +
 +		fprintf(f, "  max_len ");
 +		for(i=0; i < stnc->tin_cnt; i++)
-+			fprintf(f, "%12u", stnc->max_skblen[i]);
++			fprintf(f, " %12u", stnc->max_skblen[i]);
 +		fprintf(f, "\n");
 +	} else {
 +		return -1;

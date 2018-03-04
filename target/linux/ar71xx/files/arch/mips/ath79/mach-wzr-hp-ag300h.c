@@ -192,9 +192,6 @@ static void __init wzrhpag300h_setup(void)
 
 	ap94_pci_init(eeprom1, mac1, eeprom2, mac2);
 
-	ap9x_pci_setup_wmac_led_pin(0, 1);
-	ap9x_pci_setup_wmac_led_pin(1, 5);
-
 	ap9x_pci_setup_wmac_leds(0, wzrhpag300h_wmac0_leds_gpio,
 				ARRAY_SIZE(wzrhpag300h_wmac0_leds_gpio));
 	ap9x_pci_setup_wmac_leds(1, wzrhpag300h_wmac1_leds_gpio,

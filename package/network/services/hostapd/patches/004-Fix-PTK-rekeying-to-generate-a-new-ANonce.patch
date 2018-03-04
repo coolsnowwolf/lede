@@ -1,0 +1,56 @@
+From: Jouni Malinen <j@w1.fi>
+Date: Sun, 1 Oct 2017 12:32:57 +0300
+Subject: [PATCH] Fix PTK rekeying to generate a new ANonce
+
+The Authenticator state machine path for PTK rekeying ended up bypassing
+the AUTHENTICATION2 state where a new ANonce is generated when going
+directly to the PTKSTART state since there is no need to try to
+determine the PMK again in such a case. This is far from ideal since the
+new PTK would depend on a new nonce only from the supplicant.
+
+Fix this by generating a new ANonce when moving to the PTKSTART state
+for the purpose of starting new 4-way handshake to rekey PTK.
+
+Signed-off-by: Jouni Malinen <j@w1.fi>
+---
+
+--- a/src/ap/wpa_auth.c
++++ b/src/ap/wpa_auth.c
+@@ -1951,6 +1951,21 @@ SM_STATE(WPA_PTK, AUTHENTICATION2)
+ }
+ 
+ 
++static int wpa_auth_sm_ptk_update(struct wpa_state_machine *sm)
++{
++	if (random_get_bytes(sm->ANonce, WPA_NONCE_LEN)) {
++		wpa_printf(MSG_ERROR,
++			   "WPA: Failed to get random data for ANonce");
++		sm->Disconnect = TRUE;
++		return -1;
++	}
++	wpa_hexdump(MSG_DEBUG, "WPA: Assign new ANonce", sm->ANonce,
++		    WPA_NONCE_LEN);
++	sm->TimeoutCtr = 0;
++	return 0;
++}
++
++
+ SM_STATE(WPA_PTK, INITPMK)
+ {
+ 	u8 msk[2 * PMK_LEN];
+@@ -3116,9 +3131,12 @@ SM_STEP(WPA_PTK)
+ 		SM_ENTER(WPA_PTK, AUTHENTICATION);
+ 	else if (sm->ReAuthenticationRequest)
+ 		SM_ENTER(WPA_PTK, AUTHENTICATION2);
+-	else if (sm->PTKRequest)
+-		SM_ENTER(WPA_PTK, PTKSTART);
+-	else switch (sm->wpa_ptk_state) {
++	else if (sm->PTKRequest) {
++		if (wpa_auth_sm_ptk_update(sm) < 0)
++			SM_ENTER(WPA_PTK, DISCONNECTED);
++		else
++			SM_ENTER(WPA_PTK, PTKSTART);
++	} else switch (sm->wpa_ptk_state) {
+ 	case WPA_PTK_INITIALIZE:
+ 		break;
+ 	case WPA_PTK_DISCONNECT:

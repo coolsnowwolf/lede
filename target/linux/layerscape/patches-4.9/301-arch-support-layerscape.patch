@@ -1,0 +1,428 @@
+From 739029f49bd9181b821298f9d27b29ce2d292967 Mon Sep 17 00:00:00 2001
+From: Yangbo Lu <yangbo.lu@nxp.com>
+Date: Mon, 25 Sep 2017 10:03:52 +0800
+Subject: [PATCH] arch: support layerscape
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This is a integrated patch for layerscape arch support.
+
+Signed-off-by: Madalin Bucur <madalin.bucur@nxp.com>
+Signed-off-by: Nipun Gupta <nipun.gupta@nxp.com>
+Signed-off-by: Zhao Qiang <B45475@freescale.com>
+Signed-off-by: Camelia Groza <camelia.groza@nxp.com>
+Signed-off-by: Haiying Wang <Haiying.wang@freescale.com>
+Signed-off-by: Pan Jiafei <Jiafei.Pan@nxp.com>
+Signed-off-by: Po Liu <po.liu@nxp.com>
+Signed-off-by: Bharat Bhushan <Bharat.Bhushan@nxp.com>
+Signed-off-by: Jianhua Xie <jianhua.xie@nxp.com>
+Signed-off-by: Horia Geantă <horia.geanta@nxp.com>
+Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
+---
+ arch/arm/include/asm/delay.h          | 16 +++++++++
+ arch/arm/include/asm/io.h             | 31 ++++++++++++++++++
+ arch/arm/include/asm/mach/map.h       |  4 +--
+ arch/arm/include/asm/pgtable.h        |  7 ++++
+ arch/arm/kernel/bios32.c              | 43 ++++++++++++++++++++++++
+ arch/arm/mm/dma-mapping.c             |  1 +
+ arch/arm/mm/ioremap.c                 |  7 ++++
+ arch/arm/mm/mmu.c                     |  9 +++++
+ arch/arm64/include/asm/cache.h        |  2 +-
+ arch/arm64/include/asm/io.h           |  2 ++
+ arch/arm64/include/asm/pci.h          |  4 +++
+ arch/arm64/include/asm/pgtable-prot.h |  1 +
+ arch/arm64/include/asm/pgtable.h      |  5 +++
+ arch/arm64/kernel/pci.c               | 62 +++++++++++++++++++++++++++++++++++
+ arch/arm64/mm/dma-mapping.c           | 23 ++++++++++---
+ 15 files changed, 209 insertions(+), 8 deletions(-)
+
+--- a/arch/arm/include/asm/delay.h
++++ b/arch/arm/include/asm/delay.h
+@@ -57,6 +57,22 @@ extern void __bad_udelay(void);
+ 			__const_udelay((n) * UDELAY_MULT)) :		\
+ 	  __udelay(n))
+ 
++#define spin_event_timeout(condition, timeout, delay)                          \
++({                                                                             \
++	typeof(condition) __ret;                                               \
++	int i = 0;							       \
++	while (!(__ret = (condition)) && (i++ < timeout)) {		       \
++		if (delay)                                                     \
++			udelay(delay);                                         \
++		else                                                           \
++			cpu_relax();					       \
++		udelay(1);						       \
++	}								       \
++	if (!__ret)                                                            \
++		__ret = (condition);                                           \
++	__ret;		                                                       \
++})
++
+ /* Loop-based definitions for assembly code. */
+ extern void __loop_delay(unsigned long loops);
+ extern void __loop_udelay(unsigned long usecs);
+--- a/arch/arm/include/asm/io.h
++++ b/arch/arm/include/asm/io.h
+@@ -129,6 +129,7 @@ static inline u32 __raw_readl(const vola
+ #define MT_DEVICE_NONSHARED	1
+ #define MT_DEVICE_CACHED	2
+ #define MT_DEVICE_WC		3
++#define MT_MEMORY_RW_NS		4
+ /*
+  * types 4 onwards can be found in asm/mach/map.h and are undefined
+  * for ioremap
+@@ -220,6 +221,34 @@ extern int pci_ioremap_io(unsigned int o
+ #endif
+ #endif
+ 
++/* access ports */
++#define setbits32(_addr, _v) iowrite32be(ioread32be(_addr) |  (_v), (_addr))
++#define clrbits32(_addr, _v) iowrite32be(ioread32be(_addr) & ~(_v), (_addr))
++
++#define setbits16(_addr, _v) iowrite16be(ioread16be(_addr) |  (_v), (_addr))
++#define clrbits16(_addr, _v) iowrite16be(ioread16be(_addr) & ~(_v), (_addr))
++
++#define setbits8(_addr, _v) iowrite8(ioread8(_addr) |  (_v), (_addr))
++#define clrbits8(_addr, _v) iowrite8(ioread8(_addr) & ~(_v), (_addr))
++
++/* Clear and set bits in one shot.  These macros can be used to clear and
++ * set multiple bits in a register using a single read-modify-write.  These
++ * macros can also be used to set a multiple-bit bit pattern using a mask,
++ * by specifying the mask in the 'clear' parameter and the new bit pattern
++ * in the 'set' parameter.
++ */
++
++#define clrsetbits_be32(addr, clear, set) \
++	iowrite32be((ioread32be(addr) & ~(clear)) | (set), (addr))
++#define clrsetbits_le32(addr, clear, set) \
++	iowrite32le((ioread32le(addr) & ~(clear)) | (set), (addr))
++#define clrsetbits_be16(addr, clear, set) \
++	iowrite16be((ioread16be(addr) & ~(clear)) | (set), (addr))
++#define clrsetbits_le16(addr, clear, set) \
++	iowrite16le((ioread16le(addr) & ~(clear)) | (set), (addr))
++#define clrsetbits_8(addr, clear, set) \
++	iowrite8((ioread8(addr) & ~(clear)) | (set), (addr))
++
+ /*
+  *  IO port access primitives
+  *  -------------------------
+@@ -408,6 +437,8 @@ void __iomem *ioremap_wc(resource_size_t
+ #define ioremap_wc ioremap_wc
+ #define ioremap_wt ioremap_wc
+ 
++void __iomem *ioremap_cache_ns(resource_size_t res_cookie, size_t size);
++
+ void iounmap(volatile void __iomem *iomem_cookie);
+ #define iounmap iounmap
+ 
+--- a/arch/arm/include/asm/mach/map.h
++++ b/arch/arm/include/asm/mach/map.h
+@@ -21,9 +21,9 @@ struct map_desc {
+ 	unsigned int type;
+ };
+ 
+-/* types 0-3 are defined in asm/io.h */
++/* types 0-4 are defined in asm/io.h */
+ enum {
+-	MT_UNCACHED = 4,
++	MT_UNCACHED = 5,
+ 	MT_CACHECLEAN,
+ 	MT_MINICLEAN,
+ 	MT_LOW_VECTORS,
+--- a/arch/arm/include/asm/pgtable.h
++++ b/arch/arm/include/asm/pgtable.h
+@@ -118,6 +118,13 @@ extern pgprot_t		pgprot_s2_device;
+ #define pgprot_noncached(prot) \
+ 	__pgprot_modify(prot, L_PTE_MT_MASK, L_PTE_MT_UNCACHED)
+ 
++#define pgprot_cached(prot) \
++	__pgprot_modify(prot, L_PTE_MT_MASK, L_PTE_MT_DEV_CACHED)
++
++#define pgprot_cached_ns(prot) \
++	__pgprot_modify(prot, L_PTE_MT_MASK, L_PTE_MT_DEV_CACHED | \
++			L_PTE_MT_DEV_NONSHARED)
++
+ #define pgprot_writecombine(prot) \
+ 	__pgprot_modify(prot, L_PTE_MT_MASK, L_PTE_MT_BUFFERABLE)
+ 
+--- a/arch/arm/kernel/bios32.c
++++ b/arch/arm/kernel/bios32.c
+@@ -11,6 +11,8 @@
+ #include <linux/slab.h>
+ #include <linux/init.h>
+ #include <linux/io.h>
++#include <linux/of_irq.h>
++#include <linux/pcieport_if.h>
+ 
+ #include <asm/mach-types.h>
+ #include <asm/mach/map.h>
+@@ -64,6 +66,47 @@ void pcibios_report_status(u_int status_
+ }
+ 
+ /*
++ * Check device tree if the service interrupts are there
++ */
++int pcibios_check_service_irqs(struct pci_dev *dev, int *irqs, int mask)
++{
++	int ret, count = 0;
++	struct device_node *np = NULL;
++
++	if (dev->bus->dev.of_node)
++		np = dev->bus->dev.of_node;
++
++	if (np == NULL)
++		return 0;
++
++	if (!IS_ENABLED(CONFIG_OF_IRQ))
++		return 0;
++
++	/* If root port doesn't support MSI/MSI-X/INTx in RC mode,
++	 * request irq for aer
++	 */
++	if (mask & PCIE_PORT_SERVICE_AER) {
++		ret = of_irq_get_byname(np, "aer");
++		if (ret > 0) {
++			irqs[PCIE_PORT_SERVICE_AER_SHIFT] = ret;
++			count++;
++		}
++	}
++
++	if (mask & PCIE_PORT_SERVICE_PME) {
++		ret = of_irq_get_byname(np, "pme");
++		if (ret > 0) {
++			irqs[PCIE_PORT_SERVICE_PME_SHIFT] = ret;
++			count++;
++		}
++	}
++
++	/* TODO: add more service interrupts if there it is in the device tree*/
++
++	return count;
++}
++
++/*
+  * We don't use this to fix the device, but initialisation of it.
+  * It's not the correct use for this, but it works.
+  * Note that the arbiter/ISA bridge appears to be buggy, specifically in
+--- a/arch/arm/mm/dma-mapping.c
++++ b/arch/arm/mm/dma-mapping.c
+@@ -2410,6 +2410,7 @@ void arch_setup_dma_ops(struct device *d
+ 
+ 	set_dma_ops(dev, dma_ops);
+ }
++EXPORT_SYMBOL(arch_setup_dma_ops);
+ 
+ void arch_teardown_dma_ops(struct device *dev)
+ {
+--- a/arch/arm/mm/ioremap.c
++++ b/arch/arm/mm/ioremap.c
+@@ -398,6 +398,13 @@ void __iomem *ioremap_wc(resource_size_t
+ }
+ EXPORT_SYMBOL(ioremap_wc);
+ 
++void __iomem *ioremap_cache_ns(resource_size_t res_cookie, size_t size)
++{
++	return arch_ioremap_caller(res_cookie, size, MT_MEMORY_RW_NS,
++				   __builtin_return_address(0));
++}
++EXPORT_SYMBOL(ioremap_cache_ns);
++
+ /*
+  * Remap an arbitrary physical address space into the kernel virtual
+  * address space as memory. Needed when the kernel wants to execute
+--- a/arch/arm/mm/mmu.c
++++ b/arch/arm/mm/mmu.c
+@@ -313,6 +313,13 @@ static struct mem_type mem_types[] __ro_
+ 		.prot_sect = PMD_TYPE_SECT | PMD_SECT_AP_WRITE,
+ 		.domain    = DOMAIN_KERNEL,
+ 	},
++	[MT_MEMORY_RW_NS] = {
++		.prot_pte  = L_PTE_PRESENT | L_PTE_YOUNG | L_PTE_DIRTY |
++			     L_PTE_XN,
++		.prot_l1   = PMD_TYPE_TABLE,
++		.prot_sect = PMD_TYPE_SECT | PMD_SECT_AP_WRITE | PMD_SECT_XN,
++		.domain    = DOMAIN_KERNEL,
++	},
+ 	[MT_ROM] = {
+ 		.prot_sect = PMD_TYPE_SECT,
+ 		.domain    = DOMAIN_KERNEL,
+@@ -644,6 +651,7 @@ static void __init build_mem_type_table(
+ 	}
+ 	kern_pgprot |= PTE_EXT_AF;
+ 	vecs_pgprot |= PTE_EXT_AF;
++	mem_types[MT_MEMORY_RW_NS].prot_pte |= PTE_EXT_AF | cp->pte;
+ 
+ 	/*
+ 	 * Set PXN for user mappings
+@@ -672,6 +680,7 @@ static void __init build_mem_type_table(
+ 	mem_types[MT_MEMORY_RWX].prot_pte |= kern_pgprot;
+ 	mem_types[MT_MEMORY_RW].prot_sect |= ecc_mask | cp->pmd;
+ 	mem_types[MT_MEMORY_RW].prot_pte |= kern_pgprot;
++	mem_types[MT_MEMORY_RW_NS].prot_sect |= ecc_mask | cp->pmd;
+ 	mem_types[MT_MEMORY_DMA_READY].prot_pte |= kern_pgprot;
+ 	mem_types[MT_MEMORY_RWX_NONCACHED].prot_sect |= ecc_mask;
+ 	mem_types[MT_ROM].prot_sect |= cp->pmd;
+--- a/arch/arm64/include/asm/cache.h
++++ b/arch/arm64/include/asm/cache.h
+@@ -18,7 +18,7 @@
+ 
+ #include <asm/cachetype.h>
+ 
+-#define L1_CACHE_SHIFT		7
++#define L1_CACHE_SHIFT		6
+ #define L1_CACHE_BYTES		(1 << L1_CACHE_SHIFT)
+ 
+ /*
+--- a/arch/arm64/include/asm/io.h
++++ b/arch/arm64/include/asm/io.h
+@@ -171,6 +171,8 @@ extern void __iomem *ioremap_cache(phys_
+ #define ioremap_nocache(addr, size)	__ioremap((addr), (size), __pgprot(PROT_DEVICE_nGnRE))
+ #define ioremap_wc(addr, size)		__ioremap((addr), (size), __pgprot(PROT_NORMAL_NC))
+ #define ioremap_wt(addr, size)		__ioremap((addr), (size), __pgprot(PROT_DEVICE_nGnRE))
++#define ioremap_cache_ns(addr, size)   __ioremap((addr), (size), \
++                                                __pgprot(PROT_NORMAL_NS))
+ #define iounmap				__iounmap
+ 
+ /*
+--- a/arch/arm64/include/asm/pci.h
++++ b/arch/arm64/include/asm/pci.h
+@@ -31,6 +31,10 @@ static inline int pci_get_legacy_ide_irq
+ 	return -ENODEV;
+ }
+ 
++#define HAVE_PCI_MMAP
++extern int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
++			       enum pci_mmap_state mmap_state,
++			       int write_combine);
+ static inline int pci_proc_domain(struct pci_bus *bus)
+ {
+ 	return 1;
+--- a/arch/arm64/include/asm/pgtable-prot.h
++++ b/arch/arm64/include/asm/pgtable-prot.h
+@@ -42,6 +42,7 @@
+ #define PROT_NORMAL_NC		(PROT_DEFAULT | PTE_PXN | PTE_UXN | PTE_DIRTY | PTE_WRITE | PTE_ATTRINDX(MT_NORMAL_NC))
+ #define PROT_NORMAL_WT		(PROT_DEFAULT | PTE_PXN | PTE_UXN | PTE_DIRTY | PTE_WRITE | PTE_ATTRINDX(MT_NORMAL_WT))
+ #define PROT_NORMAL		(PROT_DEFAULT | PTE_PXN | PTE_UXN | PTE_DIRTY | PTE_WRITE | PTE_ATTRINDX(MT_NORMAL))
++#define PROT_NORMAL_NS         (PTE_TYPE_PAGE | PTE_AF | PTE_PXN | PTE_UXN | PTE_DIRTY | PTE_WRITE | PTE_ATTRINDX(MT_NORMAL))
+ 
+ #define PROT_SECT_DEVICE_nGnRE	(PROT_SECT_DEFAULT | PMD_SECT_PXN | PMD_SECT_UXN | PMD_ATTRINDX(MT_DEVICE_nGnRE))
+ #define PROT_SECT_NORMAL	(PROT_SECT_DEFAULT | PMD_SECT_PXN | PMD_SECT_UXN | PMD_ATTRINDX(MT_NORMAL))
+--- a/arch/arm64/include/asm/pgtable.h
++++ b/arch/arm64/include/asm/pgtable.h
+@@ -370,6 +370,11 @@ static inline int pmd_protnone(pmd_t pmd
+ 	__pgprot_modify(prot, PTE_ATTRINDX_MASK, PTE_ATTRINDX(MT_DEVICE_nGnRnE) | PTE_PXN | PTE_UXN)
+ #define pgprot_writecombine(prot) \
+ 	__pgprot_modify(prot, PTE_ATTRINDX_MASK, PTE_ATTRINDX(MT_NORMAL_NC) | PTE_PXN | PTE_UXN)
++#define pgprot_cached(prot) \
++	__pgprot_modify(prot, PTE_ATTRINDX_MASK, PTE_ATTRINDX(MT_NORMAL) | \
++			PTE_PXN | PTE_UXN)
++#define pgprot_cached_ns(prot) \
++	__pgprot(pgprot_val(pgprot_cached(prot)) ^ PTE_SHARED)
+ #define pgprot_device(prot) \
+ 	__pgprot_modify(prot, PTE_ATTRINDX_MASK, PTE_ATTRINDX(MT_DEVICE_nGnRE) | PTE_PXN | PTE_UXN)
+ #define __HAVE_PHYS_MEM_ACCESS_PROT
+--- a/arch/arm64/kernel/pci.c
++++ b/arch/arm64/kernel/pci.c
+@@ -17,6 +17,8 @@
+ #include <linux/mm.h>
+ #include <linux/of_pci.h>
+ #include <linux/of_platform.h>
++#include <linux/of_irq.h>
++#include <linux/pcieport_if.h>
+ #include <linux/pci.h>
+ #include <linux/pci-acpi.h>
+ #include <linux/pci-ecam.h>
+@@ -53,6 +55,66 @@ int pcibios_alloc_irq(struct pci_dev *de
+ 
+ 	return 0;
+ }
++
++/*
++ * Check device tree if the service interrupts are there
++ */
++int pcibios_check_service_irqs(struct pci_dev *dev, int *irqs, int mask)
++{
++	int ret, count = 0;
++	struct device_node *np = NULL;
++
++	if (dev->bus->dev.of_node)
++		np = dev->bus->dev.of_node;
++
++	if (np == NULL)
++		return 0;
++
++	if (!IS_ENABLED(CONFIG_OF_IRQ))
++		return 0;
++
++	/* If root port doesn't support MSI/MSI-X/INTx in RC mode,
++	 * request irq for aer
++	 */
++	if (mask & PCIE_PORT_SERVICE_AER) {
++		ret = of_irq_get_byname(np, "aer");
++		if (ret > 0) {
++			irqs[PCIE_PORT_SERVICE_AER_SHIFT] = ret;
++			count++;
++		}
++	}
++
++	if (mask & PCIE_PORT_SERVICE_PME) {
++		ret = of_irq_get_byname(np, "pme");
++		if (ret > 0) {
++			irqs[PCIE_PORT_SERVICE_PME_SHIFT] = ret;
++			count++;
++		}
++	}
++
++	/* TODO: add more service interrupts if there it is in the device tree*/
++
++	return count;
++}
++
++int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
++			enum pci_mmap_state mmap_state, int write_combine)
++{
++	if (mmap_state == pci_mmap_io)
++		return -EINVAL;
++
++	/*
++	 * Mark this as IO
++	 */
++	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
++
++	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
++			     vma->vm_end - vma->vm_start,
++			     vma->vm_page_prot))
++		return -EAGAIN;
++
++	return 0;
++}
+ 
+ /*
+  * raw_pci_read/write - Platform-specific PCI config space access.
+--- a/arch/arm64/mm/dma-mapping.c
++++ b/arch/arm64/mm/dma-mapping.c
+@@ -30,6 +30,7 @@
+ #include <linux/swiotlb.h>
+ 
+ #include <asm/cacheflush.h>
++#include <../../../drivers/staging/fsl-mc/include/mc-bus.h>
+ 
+ static int swiotlb __ro_after_init;
+ 
+@@ -925,6 +926,10 @@ static int __init __iommu_dma_init(void)
+ 	if (!ret)
+ 		ret = register_iommu_dma_ops_notifier(&pci_bus_type);
+ #endif
++#ifdef CONFIG_FSL_MC_BUS
++	if (!ret)
++		ret = register_iommu_dma_ops_notifier(&fsl_mc_bus_type);
++#endif
+ 	return ret;
+ }
+ arch_initcall(__iommu_dma_init);
+@@ -978,3 +983,4 @@ void arch_setup_dma_ops(struct device *d
+ 	dev->archdata.dma_coherent = coherent;
+ 	__iommu_setup_dma_ops(dev, dma_base, size, iommu);
+ }
++EXPORT_SYMBOL(arch_setup_dma_ops);

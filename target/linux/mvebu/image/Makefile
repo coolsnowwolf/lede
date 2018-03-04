@@ -119,7 +119,7 @@ define Device/linksys-wrt3200acm
   $(call Device/linksys,WRT3200ACM (Rango))
   $(Device/armada-385-linksys)
   DEVICE_DTS := armada-385-linksys-rango
-  DEVICE_PACKAGES += kmod-mwifiex-sdio
+  DEVICE_PACKAGES += kmod-btmrvl kmod-mwifiex-sdio
 endef
 TARGET_DEVICES += linksys-wrt3200acm
 
@@ -163,11 +163,25 @@ define Device/marvell-nand
   DEVICE_TITLE := Marvell Armada $(1)
 endef
 
-Device/armada-370-db = $(call Device/marvell-nand,370 DB (DB-88F6710-BP-DDR3))
-Device/armada-370-rd = $(call Device/marvell-nand,370 RD (RD-88F6710-A1))
-Device/armada-xp-db = $(call Device/marvell-nand,XP DB (DB-78460-BP))
-Device/armada-xp-gp = $(call Device/marvell-nand,XP GP (DB-MV784MP-GP))
-TARGET_DEVICES += armada-370-db armada-370-rd armada-xp-db armada-xp-gp
+define Device/armada-370-db
+	$(call Device/marvell-nand,370 DB (DB-88F6710-BP-DDR3))
+endef
+TARGET_DEVICES += armada-370-db
+
+define Device/armada-370-rd
+	$(call Device/marvell-nand,370 RD (RD-88F6710-A1))
+endef
+TARGET_DEVICES += armada-370-rd
+
+define Device/armada-xp-db
+	$(call Device/marvell-nand,XP DB (DB-78460-BP))
+endef
+TARGET_DEVICES += armada-xp-db
+
+define Device/armada-xp-gp
+	$(call Device/marvell-nand,XP GP (DB-MV784MP-GP))
+endef
+TARGET_DEVICES += armada-xp-gp
 
 define Device/armada-388-rd
   DEVICE_TITLE := Marvell Armada 388 RD (RD-88F6820-AP)
@@ -192,13 +206,9 @@ define Device/armada-388-clearfog-base
   KERNEL_INSTALL := 1
   KERNEL := kernel-bin
   DEVICE_TITLE := SolidRun ClearFog Base
-  DEVICE_PACKAGES := \
-	  kmod-nls-cp437 kmod-nls-iso8859-1 \
-	  mkf2fs e2fsprogs kmod-fs-vfat kmod-fuse kmod-fs-f2fs \
-	  kmod-ata-core kmod-ata-ahci kmod-ata-marvell-sata kmod-scsi-core kmod-scsi-generic \
-	  kmod-button-hotplug kmod-gpio-button-hotplug
+  DEVICE_PACKAGES := mkf2fs e2fsprogs kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1
   IMAGES := sdcard.img.gz
-  IMAGE/sdcard.img.gz := boot-scr-cfbase | boot-img | sdcard-img | gzip
+  IMAGE/sdcard.img.gz := boot-scr-cfbase | boot-img | sdcard-img | gzip | append-metadata
   IMAGE_NAME = $$(IMAGE_PREFIX)-$$(2)
   DEVICE_DTS := armada-388-clearfog-pro armada-388-clearfog-base
 endef

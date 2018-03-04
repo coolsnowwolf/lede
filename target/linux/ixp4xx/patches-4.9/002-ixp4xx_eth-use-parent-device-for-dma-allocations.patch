@@ -1,0 +1,95 @@
+From 1d67040af0144c549f4db8144d2ccc253ff8639c Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jogo@openwrt.org>
+Date: Mon, 1 Jul 2013 16:39:28 +0200
+Subject: [PATCH 2/2] net: ixp4xx_eth: use parent device for dma allocations
+
+Now that the platfomr device provides a dma_cohorent_mask, use it for
+dma operations.
+
+This fixes ethernet on ixp4xx which was broken since 3.7.
+
+Signed-off-by: Jonas Gorski <jogo@openwrt.org>
+---
+ drivers/net/ethernet/xscale/ixp4xx_eth.c |   23 ++++++++++++-----------
+ 1 file changed, 12 insertions(+), 11 deletions(-)
+
+--- a/drivers/net/ethernet/xscale/ixp4xx_eth.c
++++ b/drivers/net/ethernet/xscale/ixp4xx_eth.c
+@@ -656,10 +656,10 @@ static inline void queue_put_desc(unsign
+ static inline void dma_unmap_tx(struct port *port, struct desc *desc)
+ {
+ #ifdef __ARMEB__
+-	dma_unmap_single(&port->netdev->dev, desc->data,
++	dma_unmap_single(port->netdev->dev.parent, desc->data,
+ 			 desc->buf_len, DMA_TO_DEVICE);
+ #else
+-	dma_unmap_single(&port->netdev->dev, desc->data & ~3,
++	dma_unmap_single(port->netdev->dev.parent, desc->data & ~3,
+ 			 ALIGN((desc->data & 3) + desc->buf_len, 4),
+ 			 DMA_TO_DEVICE);
+ #endif
+@@ -725,9 +725,9 @@ static int eth_poll(struct napi_struct *
+ 
+ #ifdef __ARMEB__
+ 		if ((skb = netdev_alloc_skb(dev, RX_BUFF_SIZE))) {
+-			phys = dma_map_single(&dev->dev, skb->data,
++			phys = dma_map_single(dev->dev.parent, skb->data,
+ 					      RX_BUFF_SIZE, DMA_FROM_DEVICE);
+-			if (dma_mapping_error(&dev->dev, phys)) {
++			if (dma_mapping_error(dev->dev.parent, phys)) {
+ 				dev_kfree_skb(skb);
+ 				skb = NULL;
+ 			}
+@@ -750,10 +750,11 @@ static int eth_poll(struct napi_struct *
+ #ifdef __ARMEB__
+ 		temp = skb;
+ 		skb = port->rx_buff_tab[n];
+-		dma_unmap_single(&dev->dev, desc->data - NET_IP_ALIGN,
++		dma_unmap_single(dev->dev.parent, desc->data - NET_IP_ALIGN,
+ 				 RX_BUFF_SIZE, DMA_FROM_DEVICE);
+ #else
+-		dma_sync_single_for_cpu(&dev->dev, desc->data - NET_IP_ALIGN,
++		dma_sync_single_for_cpu(dev->dev.parent,
++					desc->data - NET_IP_ALIGN,
+ 					RX_BUFF_SIZE, DMA_FROM_DEVICE);
+ 		memcpy_swab32((u32 *)skb->data, (u32 *)port->rx_buff_tab[n],
+ 			      ALIGN(NET_IP_ALIGN + desc->pkt_len, 4) / 4);
+@@ -872,7 +873,7 @@ static int eth_xmit(struct sk_buff *skb,
+ 	memcpy_swab32(mem, (u32 *)((int)skb->data & ~3), bytes / 4);
+ #endif
+ 
+-	phys = dma_map_single(&dev->dev, mem, bytes, DMA_TO_DEVICE);
++	phys = dma_map_single(dev->dev.parent, mem, bytes, DMA_TO_DEVICE);
+ 	if (dma_mapping_error(&dev->dev, phys)) {
+ 		dev_kfree_skb(skb);
+ #ifndef __ARMEB__
+@@ -1107,7 +1108,7 @@ static int init_queues(struct port *port
+ 	int i;
+ 
+ 	if (!ports_open) {
+-		dma_pool = dma_pool_create(DRV_NAME, &port->netdev->dev,
++		dma_pool = dma_pool_create(DRV_NAME, port->netdev->dev.parent,
+ 					   POOL_ALLOC_SIZE, 32, 0);
+ 		if (!dma_pool)
+ 			return -ENOMEM;
+@@ -1135,9 +1136,9 @@ static int init_queues(struct port *port
+ 		data = buff;
+ #endif
+ 		desc->buf_len = MAX_MRU;
+-		desc->data = dma_map_single(&port->netdev->dev, data,
++		desc->data = dma_map_single(port->netdev->dev.parent, data,
+ 					    RX_BUFF_SIZE, DMA_FROM_DEVICE);
+-		if (dma_mapping_error(&port->netdev->dev, desc->data)) {
++		if (dma_mapping_error(port->netdev->dev.parent, desc->data)) {
+ 			free_buffer(buff);
+ 			return -EIO;
+ 		}
+@@ -1157,7 +1158,7 @@ static void destroy_queues(struct port *
+ 			struct desc *desc = rx_desc_ptr(port, i);
+ 			buffer_t *buff = port->rx_buff_tab[i];
+ 			if (buff) {
+-				dma_unmap_single(&port->netdev->dev,
++				dma_unmap_single(port->netdev->dev.parent,
+ 						 desc->data - NET_IP_ALIGN,
+ 						 RX_BUFF_SIZE, DMA_FROM_DEVICE);
+ 				free_buffer(buff);

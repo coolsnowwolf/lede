@@ -136,7 +136,7 @@ endef
 
 define Image/BuildKernel/MkuImage
 	mkimage -A $(ARCH) -O linux -T kernel -C $(1) -a $(2) -e $(3) \
-		-n '$(call toupper,$(ARCH)) LEDE Linux-$(LINUX_VERSION)' -d $(4) $(5)
+		-n '$(call toupper,$(ARCH)) OpenWrt Linux-$(LINUX_VERSION)' -d $(4) $(5)
 endef
 
 define Image/BuildKernel/MkFIT
@@ -161,6 +161,7 @@ define Image/BuildDTB
 	$(TARGET_CROSS)cpp -nostdinc -x assembler-with-cpp \
 		-I$(DTS_DIR) \
 		-I$(DTS_DIR)/include \
+		-I$(LINUX_DIR)/include/ \
 		-undef -D__DTS__ $(3) \
 		-o $(2).tmp $(1)
 	$(LINUX_DIR)/scripts/dtc/dtc -O dtb \
@@ -302,9 +303,9 @@ target-dir-%: FORCE
 		$(opkg_target) update && \
 		$(opkg_target) install \
 			$(call opkg_package_files,$(mkfs_packages_add)))
+	-$(CP) -T $(mkfs_cur_target_dir).opkg/ $(mkfs_cur_target_dir)/etc/opkg/
+	rm -rf $(mkfs_cur_target_dir).opkg $(mkfs_cur_target_dir).conf
 	$(call prepare_rootfs,$(mkfs_cur_target_dir))
-	-mv $(mkfs_cur_target_dir).opkg $(mkfs_cur_target_dir)/etc/opkg
-	rm -f $(mkfs_cur_target_dir).conf
 
 $(KDIR)/root.%: kernel_prepare
 	$(call Image/mkfs/$(word 1,$(target_params)),$(target_params))
@@ -434,7 +435,27 @@ define Device/Build/compile
 
 endef
 
+ifndef IB
+define Device/Build/dtb
+  ifndef BUILD_DTS_$(1)
+  BUILD_DTS_$(1) := 1
+  $(KDIR)/image-$(1).dtb: FORCE
+	$(call Image/BuildDTB,$(strip $(2))/$(strip $(3)).dts,$$@)
+
+  image_prepare: $(KDIR)/image-$(1).dtb
+  endif
+
+endef
+endif
+
 define Device/Build/kernel
+  $$(eval $$(foreach dts,$$(DEVICE_DTS), \
+	$$(call Device/Build/dtb,$$(notdir $$(dts)), \
+		$$(if $$(DEVICE_DTS_DIR),$$(DEVICE_DTS_DIR),$$(DTS_DIR)), \
+		$$(dts) \
+	) \
+  ))
+
   $(KDIR)/$$(KERNEL_NAME):: image_prepare
   $$(_TARGET): $$(if $$(KERNEL_INSTALL),$(BIN_DIR)/$$(KERNEL_IMAGE))
   $(call Device/Export,$$(KDIR_KERNEL_IMAGE),$(1))

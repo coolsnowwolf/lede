@@ -16,7 +16,6 @@ PKG_SOURCE_PROTO:=git
 PKG_SOURCE_DATE:=2014-02-16
 PKG_SOURCE_VERSION:=b6fc31491020cb01d2cd1acc170cfa03ced7e726
 PKG_MIRROR_HASH:=58590245715f0e5fb4b57aab6d91071dfb6a97d3273f5aee0b97b1edee030ed0
-PKG_BUILD_DEPENDS:=mac80211
 
 PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_MAC80211_DEBUGFS \
@@ -27,9 +26,9 @@ include $(INCLUDE_DIR)/package.mk
 define KernelPackage/acx-mac80211
   SUBMENU:=Wireless Drivers
   TITLE:=ACX1xx mac80211 driver
-  DEPENDS:=@(PCI_SUPPORT||TARGET_ar7) @mipsel @LINUX_3_18||LINUX_4_4 +kmod-mac80211
+  DEPENDS:=@(PCI_SUPPORT||TARGET_ar7) @mipsel +kmod-mac80211
   FILES:=$(PKG_BUILD_DIR)/acx-mac80211.ko
-  AUTOLOAD:=$(call AutoLoad,50,mac80211 acx-mac80211)
+  AUTOLOAD:=$(call AutoProbe,acx-mac80211)
   MAINTAINER:=Florian Fainelli <florian@openwrt.org>
   MENU:=1
 endef
@@ -183,8 +182,7 @@ PKG_EXTRA_CFLAGS:= \
 
 define Build/Compile
 	$(MAKE) -C "$(LINUX_DIR)" \
-		ARCH="$(LINUX_KARCH)" \
-		CROSS_COMPILE="$(TARGET_CROSS)" \
+		$(KERNEL_MAKE_FLAGS) \
 		SUBDIRS="$(PKG_BUILD_DIR)" \
 		$(PKG_EXTRA_KCONFIG) \
 		EXTRA_CFLAGS="$(PKG_EXTRA_CFLAGS) -DCONFIG_ACX_MAC80211_VERSION=\"KERNEL_VERSION(4,2,0)\"" \

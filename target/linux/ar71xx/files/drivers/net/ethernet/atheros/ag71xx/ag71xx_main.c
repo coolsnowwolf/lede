@@ -13,13 +13,6 @@
 
 #include "ag71xx.h"
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,2,0)
-static inline void skb_free_frag(void *data)
-{
-	put_page(virt_to_head_page(data));
-}
-#endif
-
 #define AG71XX_DEFAULT_MSG_ENABLE	\
 	(NETIF_MSG_DRV			\
 	| NETIF_MSG_PROBE		\
@@ -629,6 +622,22 @@ __ag71xx_link_adjust(struct ag71xx *ag, bool update)
 	ag71xx_wr(ag, AG71XX_REG_MAC_CFG2, cfg2);
 	ag71xx_wr(ag, AG71XX_REG_FIFO_CFG5, fifo5);
 	ag71xx_wr(ag, AG71XX_REG_MAC_IFCTL, ifctl);
+
+	if (pdata->disable_inline_checksum_engine) {
+		/*
+		 * The rx ring buffer can stall on small packets on QCA953x and
+		 * QCA956x. Disabling the inline checksum engine fixes the stall.
+		 * The wr, rr functions cannot be used since this hidden register
+		 * is outside of the normal ag71xx register block.
+		 */
+		void __iomem *dam = ioremap_nocache(0xb90001bc, 0x4);
+		if (dam) {
+			__raw_writel(__raw_readl(dam) & ~BIT(27), dam);
+			(void)__raw_readl(dam);
+			iounmap(dam);
+		}
+	}
+
 	ag71xx_hw_start(ag);
 
 	netif_carrier_on(ag->dev);
@@ -1089,7 +1098,7 @@ next:
 
 	while ((skb = __skb_dequeue(&queue)) != NULL) {
 		skb->protocol = eth_type_trans(skb, dev);
-		napi_gro_receive(&ag->napi, skb);
+		netif_receive_skb(skb);
 	}
 
 	DBG("%s: rx finish, curr=%u, dirty=%u, done=%d\n",
@@ -1141,7 +1150,7 @@ static int ag71xx_poll(struct napi_struct *napi, int limit)
 		DBG("%s: disable polling mode, rx=%d, tx=%d,limit=%d\n",
 			dev->name, rx_done, tx_done, limit);
 
-		napi_complete_done(napi, rx_done);
+		napi_complete(napi);
 
 		/* enable interrupts */
 		spin_lock_irqsave(&ag->lock, flags);
@@ -1160,7 +1169,7 @@ oom:
 		pr_info("%s: out of memory\n", dev->name);
 
 	mod_timer(&ag->oom_timer, jiffies + AG71XX_OOM_REFILL);
-	napi_complete_done(napi, rx_done);
+	napi_complete(napi);
 	return 0;
 }
 

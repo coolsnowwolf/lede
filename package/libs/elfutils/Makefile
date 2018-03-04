@@ -17,6 +17,7 @@ PKG_HASH:=9412fac7b30872b738bc1ed1ebcaed54493c26ef9a67887913498c17b10f3bc2
 PKG_MAINTAINER:=Luiz Angelo Daros de Luca <luizluca@gmail.com>
 PKG_LICENSE:=GPL-3.0+
 PKG_LICENSE_FILES:=COPYING COPYING-GPLV2 COPYING-LGPLV3
+PKG_CPE_ID:=cpe:/a:elfutils_project:elfutils
 
 PKG_INSTALL:=1
 PKG_USE_MIPS16:=0
@@ -68,7 +69,7 @@ endif
 CONFIGURE_ARGS += \
 	--without-lzma
 
-TARGET_CFLAGS += -D_GNU_SOURCE -Wno-unused-result
+TARGET_CFLAGS += -D_GNU_SOURCE -Wno-unused-result -Wno-format-nonliteral
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include

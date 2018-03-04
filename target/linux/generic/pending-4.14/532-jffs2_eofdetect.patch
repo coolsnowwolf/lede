@@ -1,0 +1,65 @@
+From: Felix Fietkau <nbd@nbd.name>
+Subject: fs: jffs2: EOF marker
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ fs/jffs2/build.c | 10 ++++++++++
+ fs/jffs2/scan.c  | 21 +++++++++++++++++++--
+ 2 files changed, 29 insertions(+), 2 deletions(-)
+
+--- a/fs/jffs2/build.c
++++ b/fs/jffs2/build.c
+@@ -117,6 +117,16 @@ static int jffs2_build_filesystem(struct
+ 	dbg_fsbuild("scanned flash completely\n");
+ 	jffs2_dbg_dump_block_lists_nolock(c);
+ 
++	if (c->flags & (1 << 7)) {
++		printk("%s(): unlocking the mtd device... ", __func__);
++		mtd_unlock(c->mtd, 0, c->mtd->size);
++		printk("done.\n");
++
++		printk("%s(): erasing all blocks after the end marker... ", __func__);
++		jffs2_erase_pending_blocks(c, -1);
++		printk("done.\n");
++	}
++
+ 	dbg_fsbuild("pass 1 starting\n");
+ 	c->flags |= JFFS2_SB_FLAG_BUILDING;
+ 	/* Now scan the directory tree, increasing nlink according to every dirent found. */
+--- a/fs/jffs2/scan.c
++++ b/fs/jffs2/scan.c
+@@ -148,8 +148,14 @@ int jffs2_scan_medium(struct jffs2_sb_in
+ 		/* reset summary info for next eraseblock scan */
+ 		jffs2_sum_reset_collected(s);
+ 
+-		ret = jffs2_scan_eraseblock(c, jeb, buf_size?flashbuf:(flashbuf+jeb->offset),
+-						buf_size, s);
++		if (c->flags & (1 << 7)) {
++			if (mtd_block_isbad(c->mtd, jeb->offset))
++				ret = BLK_STATE_BADBLOCK;
++			else
++				ret = BLK_STATE_ALLFF;
++		} else
++			ret = jffs2_scan_eraseblock(c, jeb, buf_size?flashbuf:(flashbuf+jeb->offset),
++							buf_size, s);
+ 
+ 		if (ret < 0)
+ 			goto out;
+@@ -561,6 +567,17 @@ full_scan:
+ 			return err;
+ 	}
+ 
++	if ((buf[0] == 0xde) &&
++		(buf[1] == 0xad) &&
++		(buf[2] == 0xc0) &&
++		(buf[3] == 0xde)) {
++		/* end of filesystem. erase everything after this point */
++		printk("%s(): End of filesystem marker found at 0x%x\n", __func__, jeb->offset);
++		c->flags |= (1 << 7);
++
++		return BLK_STATE_ALLFF;
++	}
++
+ 	/* We temporarily use 'ofs' as a pointer into the buffer/jeb */
+ 	ofs = 0;
+ 	max_ofs = EMPTY_SCAN_SIZE(c->sector_size);

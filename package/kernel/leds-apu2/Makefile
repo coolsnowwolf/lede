@@ -37,8 +37,7 @@ EXTRA_CFLAGS:= \
 	$(patsubst CONFIG_%, -DCONFIG_%=1, $(patsubst %=y,%,$(filter %=y,$(EXTRA_KCONFIG)))) \
 
 MAKE_OPTS:= \
-	ARCH="$(LINUX_KARCH)" \
-	CROSS_COMPILE="$(TARGET_CROSS)" \
+	$(KERNEL_MAKE_FLAGS) \
 	SUBDIRS="$(PKG_BUILD_DIR)" \
 	EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
 	$(EXTRA_KCONFIG)

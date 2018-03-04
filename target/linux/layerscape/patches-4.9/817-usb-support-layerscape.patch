@@ -1,0 +1,1448 @@
+From b14460ee524a34d3b94b44032b52155c4cd708e5 Mon Sep 17 00:00:00 2001
+From: Yangbo Lu <yangbo.lu@nxp.com>
+Date: Wed, 27 Sep 2017 10:34:07 +0800
+Subject: [PATCH] usb: support layerscape
+
+This is a integrated patch for layerscape usb support.
+
+Signed-off-by: yinbo.zhu <yinbo.zhu@nxp.com>
+Signed-off-by: Ramneek Mehresh <ramneek.mehresh@freescale.com>
+Signed-off-by: Nikhil Badola <nikhil.badola@freescale.com>
+Signed-off-by: Changming Huang <jerry.huang@nxp.com>
+Signed-off-by: Catalin Marinas <catalin.marinas@arm.com>
+Signed-off-by: Rajesh Bhagat <rajesh.bhagat@freescale.com>
+Signed-off-by: Suresh Gupta <suresh.gupta@freescale.com>
+Signed-off-by: Zhao Chenhui <chenhui.zhao@freescale.com>
+Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
+---
+ drivers/net/usb/r8152.c               |   4 +
+ drivers/usb/common/common.c           |  50 ++++++
+ drivers/usb/core/hub.c                |   8 +
+ drivers/usb/dwc3/core.c               | 235 ++++++++++++++++++++++++++-
+ drivers/usb/dwc3/core.h               |  46 +++++-
+ drivers/usb/dwc3/host.c               |  15 +-
+ drivers/usb/gadget/udc/fsl_udc_core.c |  46 +++---
+ drivers/usb/gadget/udc/fsl_usb2_udc.h |  16 +-
+ drivers/usb/host/Kconfig              |   2 +-
+ drivers/usb/host/ehci-fsl.c           | 289 +++++++++++++++++++++++++++++++---
+ drivers/usb/host/ehci-fsl.h           |   3 +
+ drivers/usb/host/ehci-hub.c           |   2 +
+ drivers/usb/host/ehci.h               |   5 +
+ drivers/usb/host/fsl-mph-dr-of.c      |  12 ++
+ drivers/usb/phy/phy-fsl-usb.c         |  59 +++++--
+ drivers/usb/phy/phy-fsl-usb.h         |   8 +
+ include/linux/usb.h                   |   1 +
+ include/linux/usb/of.h                |   2 +
+ 18 files changed, 730 insertions(+), 73 deletions(-)
+
+--- a/drivers/net/usb/r8152.c
++++ b/drivers/net/usb/r8152.c
+@@ -1816,6 +1816,10 @@ static int rx_bottom(struct r8152 *tp, i
+ 			unsigned int pkt_len;
+ 			struct sk_buff *skb;
+ 
++			/* limite the skb numbers for rx_queue */
++			if (unlikely(skb_queue_len(&tp->rx_queue) >= 1000))
++				break;
++
+ 			pkt_len = le32_to_cpu(rx_desc->opts1) & RX_LEN_MASK;
+ 			if (pkt_len < ETH_ZLEN)
+ 				break;
+--- a/drivers/usb/common/common.c
++++ b/drivers/usb/common/common.c
+@@ -105,6 +105,56 @@ static const char *const usb_dr_modes[]
+ 	[USB_DR_MODE_OTG]		= "otg",
+ };
+ 
++/**
++ * of_usb_get_dr_mode - Get dual role mode for given device_node
++ * @np:        Pointer to the given device_node
++ *
++ * The function gets phy interface string from property 'dr_mode',
++ * and returns the correspondig enum usb_dr_mode
++ */
++enum usb_dr_mode of_usb_get_dr_mode(struct device_node *np)
++{
++	const char *dr_mode;
++	int err, i;
++
++	err = of_property_read_string(np, "dr_mode", &dr_mode);
++	if (err < 0)
++		return USB_DR_MODE_UNKNOWN;
++
++	for (i = 0; i < ARRAY_SIZE(usb_dr_modes); i++)
++		if (!strcmp(dr_mode, usb_dr_modes[i]))
++			return i;
++
++	return USB_DR_MODE_UNKNOWN;
++}
++EXPORT_SYMBOL_GPL(of_usb_get_dr_mode);
++
++/**
++ * of_usb_get_maximum_speed - Get maximum requested speed for a given USB
++ * controller.
++ * @np: Pointer to the given device_node
++ *
++ * The function gets the maximum speed string from property "maximum-speed",
++ * and returns the corresponding enum usb_device_speed.
++ */
++enum usb_device_speed of_usb_get_maximum_speed(struct device_node *np)
++{
++	const char *maximum_speed;
++	int err;
++	int i;
++
++	err = of_property_read_string(np, "maximum-speed", &maximum_speed);
++	if (err < 0)
++		return USB_SPEED_UNKNOWN;
++
++	for (i = 0; i < ARRAY_SIZE(speed_names); i++)
++		if (strcmp(maximum_speed, speed_names[i]) == 0)
++			return i;
++
++		return USB_SPEED_UNKNOWN;
++}
++EXPORT_SYMBOL_GPL(of_usb_get_maximum_speed);
++
+ static enum usb_dr_mode usb_get_dr_mode_from_string(const char *str)
+ {
+ 	int ret;
+--- a/drivers/usb/core/hub.c
++++ b/drivers/usb/core/hub.c
+@@ -4415,6 +4415,14 @@ hub_port_init(struct usb_hub *hub, struc
+ 	else
+ 		speed = usb_speed_string(udev->speed);
+ 
++#if !defined(CONFIG_FSL_USB2_OTG) && !defined(CONFIG_FSL_USB2_OTG_MODULE)
++if (udev->speed != USB_SPEED_SUPER)
++	dev_info(&udev->dev,
++	"%s %s USB device number %d using %s\n",
++	 (udev->config) ? "reset" : "new", speed,
++	devnum, udev->bus->controller->driver->name);
++#endif
++
+ 	if (udev->speed < USB_SPEED_SUPER)
+ 		dev_info(&udev->dev,
+ 				"%s %s USB device number %d using %s\n",
+--- a/drivers/usb/dwc3/core.c
++++ b/drivers/usb/dwc3/core.c
+@@ -58,6 +58,7 @@ static int dwc3_get_dr_mode(struct dwc3
+ 	enum usb_dr_mode mode;
+ 	struct device *dev = dwc->dev;
+ 	unsigned int hw_mode;
++	struct device_node      *node = dev->of_node;
+ 
+ 	if (dwc->dr_mode == USB_DR_MODE_UNKNOWN)
+ 		dwc->dr_mode = USB_DR_MODE_OTG;
+@@ -83,6 +84,24 @@ static int dwc3_get_dr_mode(struct dwc3
+ 		mode = USB_DR_MODE_HOST;
+ 		break;
+ 	default:
++		/* Adjust Frame Length */
++		if (dwc->configure_gfladj)
++		dwc3_writel(dwc->regs, DWC3_GFLADJ, GFLADJ_30MHZ_REG_SEL |
++				GFLADJ_30MHZ(GFLADJ_30MHZ_DEFAULT));
++
++	/* Change burst beat and outstanding pipelined transfers requests */
++	dwc3_writel(dwc->regs, DWC3_GSBUSCFG0,
++		(dwc3_readl(dwc->regs, DWC3_GSBUSCFG0) & ~0xff) | 0xf);
++	dwc3_writel(dwc->regs, DWC3_GSBUSCFG1,
++		dwc3_readl(dwc->regs, DWC3_GSBUSCFG1) | 0xf00);
++
++	/* Enable Snooping */
++	if (node && of_dma_is_coherent(node)) {
++		dwc3_writel(dwc->regs, DWC3_GSBUSCFG0,
++		dwc3_readl(dwc->regs, DWC3_GSBUSCFG0) | 0x22220000);
++		dev_dbg(dev, "enabled snooping for usb\n");
++	}
++
+ 		if (IS_ENABLED(CONFIG_USB_DWC3_HOST))
+ 			mode = USB_DR_MODE_HOST;
+ 		else if (IS_ENABLED(CONFIG_USB_DWC3_GADGET))
+@@ -213,8 +232,9 @@ static void dwc3_frame_length_adjustment
+ 
+ 	reg = dwc3_readl(dwc->regs, DWC3_GFLADJ);
+ 	dft = reg & DWC3_GFLADJ_30MHZ_MASK;
+-	if (!dev_WARN_ONCE(dwc->dev, dft == dwc->fladj,
+-	    "request value same as default, ignoring\n")) {
++	if (dft == dwc->fladj) {
++		dev_warn(dwc->dev, "request value same as default, ignoring\n");
++	} else {
+ 		reg &= ~DWC3_GFLADJ_30MHZ_MASK;
+ 		reg |= DWC3_GFLADJ_30MHZ_SDBND_SEL | dwc->fladj;
+ 		dwc3_writel(dwc->regs, DWC3_GFLADJ, reg);
+@@ -579,6 +599,99 @@ static int dwc3_phy_setup(struct dwc3 *d
+ 	return 0;
+ }
+ 
++/* set global soc bus configuration registers */
++static void dwc3_set_soc_bus_cfg(struct dwc3 *dwc)
++{
++	struct device *dev = dwc->dev;
++	u32 *vals;
++	u32 cfg;
++	int ntype;
++	int ret;
++	int i;
++
++	cfg = dwc3_readl(dwc->regs, DWC3_GSBUSCFG0);
++
++	/*
++	 * Handle property "snps,incr-burst-type-adjustment".
++	 * Get the number of value from this property:
++	 * result <= 0, means this property is not supported.
++	 * result = 1, means INCRx burst mode supported.
++	 * result > 1, means undefined length burst mode supported.
++	 */
++	ntype = device_property_read_u32_array(dev,
++			"snps,incr-burst-type-adjustment", NULL, 0);
++	if (ntype > 0) {
++		vals = kcalloc(ntype, sizeof(u32), GFP_KERNEL);
++		if (!vals) {
++			dev_err(dev, "Error to get memory\n");
++			return;
++		}
++		/* Get INCR burst type, and parse it */
++		ret = device_property_read_u32_array(dev,
++			"snps,incr-burst-type-adjustment", vals, ntype);
++		if (ret) {
++			dev_err(dev, "Error to get property\n");
++			return;
++		}
++		*(dwc->incrx_type + 1) = vals[0];
++		if (ntype > 1) {
++			*dwc->incrx_type = 1;
++			for (i = 1; i < ntype; i++) {
++				if (vals[i] > *(dwc->incrx_type + 1))
++					*(dwc->incrx_type + 1) = vals[i];
++			}
++		} else
++			*dwc->incrx_type = 0;
++
++		/* Enable Undefined Length INCR Burst and Enable INCRx Burst */
++		cfg &= ~DWC3_GSBUSCFG0_INCRBRST_MASK;
++		if (*dwc->incrx_type)
++			cfg |= DWC3_GSBUSCFG0_INCRBRSTENA;
++		switch (*(dwc->incrx_type + 1)) {
++		case 256:
++			cfg |= DWC3_GSBUSCFG0_INCR256BRSTENA;
++			break;
++		case 128:
++			cfg |= DWC3_GSBUSCFG0_INCR128BRSTENA;
++			break;
++		case 64:
++			cfg |= DWC3_GSBUSCFG0_INCR64BRSTENA;
++			break;
++		case 32:
++			cfg |= DWC3_GSBUSCFG0_INCR32BRSTENA;
++			break;
++		case 16:
++			cfg |= DWC3_GSBUSCFG0_INCR16BRSTENA;
++			break;
++		case 8:
++			cfg |= DWC3_GSBUSCFG0_INCR8BRSTENA;
++			break;
++		case 4:
++			cfg |= DWC3_GSBUSCFG0_INCR4BRSTENA;
++			break;
++		case 1:
++			break;
++		default:
++			dev_err(dev, "Invalid property\n");
++			break;
++		}
++	}
++
++	/* Handle usb snooping */
++	if (dwc->dma_snooping_quirk) {
++		cfg &= ~DWC3_GSBUSCFG0_SNP_MASK;
++		cfg |= (AXI3_CACHE_TYPE_SNP << DWC3_GSBUSCFG0_DATARD_SHIFT) |
++			(AXI3_CACHE_TYPE_SNP << DWC3_GSBUSCFG0_DESCRD_SHIFT) |
++			(AXI3_CACHE_TYPE_SNP << DWC3_GSBUSCFG0_DATAWR_SHIFT) |
++			(AXI3_CACHE_TYPE_SNP << DWC3_GSBUSCFG0_DESCWR_SHIFT);
++	}
++
++	dwc3_writel(dwc->regs, DWC3_GSBUSCFG0, cfg);
++
++}
++
++
++
+ static void dwc3_core_exit(struct dwc3 *dwc)
+ {
+ 	dwc3_event_buffers_cleanup(dwc);
+@@ -721,6 +834,8 @@ static int dwc3_core_init(struct dwc3 *d
+ 	if (ret)
+ 		goto err1;
+ 
++	dwc3_set_soc_bus_cfg(dwc);
++
+ 	/* Adjust Frame Length */
+ 	dwc3_frame_length_adjustment(dwc);
+ 
+@@ -919,11 +1034,109 @@ static void dwc3_core_exit_mode(struct d
+ 	}
+ }
+ 
++static void dwc3_get_properties(struct dwc3 *dwc)
++{
++	struct device           *dev = dwc->dev;
++	struct device_node      *node = dev->of_node;
++	u8                      lpm_nyet_threshold;
++	u8                      tx_de_emphasis;
++	u8                      hird_threshold;
++
++	/* default to highest possible threshold */
++	lpm_nyet_threshold = 0xff;
++
++	/* default to -3.5dB de-emphasis */
++	tx_de_emphasis = 1;
++
++	/*
++	 * default to assert utmi_sleep_n and use maximum allowed HIRD
++	 * threshold value of 0b1100
++	 */
++	hird_threshold = 12;
++
++	dwc->maximum_speed = usb_get_maximum_speed(dev);
++	dwc->dr_mode = usb_get_dr_mode(dev);
++	dwc->hsphy_mode = of_usb_get_phy_mode(dev->of_node);
++
++	dwc->sysdev_is_parent = device_property_read_bool(dev,
++				"linux,sysdev_is_parent");
++	if (dwc->sysdev_is_parent)
++		dwc->sysdev = dwc->dev->parent;
++	else
++		dwc->sysdev = dwc->dev;
++
++	dwc->has_lpm_erratum = device_property_read_bool(dev,
++				"snps,has-lpm-erratum");
++	device_property_read_u8(dev, "snps,lpm-nyet-threshold",
++				&lpm_nyet_threshold);
++	dwc->is_utmi_l1_suspend = device_property_read_bool(dev,
++				"snps,is-utmi-l1-suspend");
++	device_property_read_u8(dev, "snps,hird-threshold",
++				&hird_threshold);
++	dwc->usb3_lpm_capable = device_property_read_bool(dev,
++				"snps,usb3_lpm_capable");
++
++	dwc->needs_fifo_resize = of_property_read_bool(node, "tx-fifo-resize");
++
++	dwc->configure_gfladj =
++				of_property_read_bool(node, "configure-gfladj");
++	dwc->dr_mode = usb_get_dr_mode(dev);
++
++	dwc->disable_scramble_quirk = device_property_read_bool(dev,
++				"snps,disable_scramble_quirk");
++	dwc->u2exit_lfps_quirk = device_property_read_bool(dev,
++				"snps,u2exit_lfps_quirk");
++	dwc->u2ss_inp3_quirk = device_property_read_bool(dev,
++				"snps,u2ss_inp3_quirk");
++	dwc->req_p1p2p3_quirk = device_property_read_bool(dev,
++				"snps,req_p1p2p3_quirk");
++	dwc->del_p1p2p3_quirk = device_property_read_bool(dev,
++				"snps,del_p1p2p3_quirk");
++	dwc->del_phy_power_chg_quirk = device_property_read_bool(dev,
++				"snps,del_phy_power_chg_quirk");
++	dwc->lfps_filter_quirk = device_property_read_bool(dev,
++				"snps,lfps_filter_quirk");
++	dwc->rx_detect_poll_quirk = device_property_read_bool(dev,
++				"snps,rx_detect_poll_quirk");
++	dwc->dis_u3_susphy_quirk = device_property_read_bool(dev,
++				"snps,dis_u3_susphy_quirk");
++	dwc->dis_u2_susphy_quirk = device_property_read_bool(dev,
++				"snps,dis_u2_susphy_quirk");
++	dwc->dis_enblslpm_quirk = device_property_read_bool(dev,
++				"snps,dis_enblslpm_quirk");
++	dwc->dis_rxdet_inp3_quirk = device_property_read_bool(dev,
++				"snps,dis_rxdet_inp3_quirk");
++	dwc->dis_u2_freeclk_exists_quirk = device_property_read_bool(dev,
++				"snps,dis-u2-freeclk-exists-quirk");
++	dwc->dis_del_phy_power_chg_quirk = device_property_read_bool(dev,
++				"snps,dis-del-phy-power-chg-quirk");
++	dwc->dma_snooping_quirk = device_property_read_bool(dev,
++				"snps,dma-snooping");
++
++	dwc->tx_de_emphasis_quirk = device_property_read_bool(dev,
++				"snps,tx_de_emphasis_quirk");
++	device_property_read_u8(dev, "snps,tx_de_emphasis",
++				&tx_de_emphasis);
++	device_property_read_string(dev, "snps,hsphy_interface",
++				&dwc->hsphy_interface);
++	device_property_read_u32(dev, "snps,quirk-frame-length-adjustment",
++				&dwc->fladj);
++
++	dwc->lpm_nyet_threshold = lpm_nyet_threshold;
++	dwc->tx_de_emphasis = tx_de_emphasis;
++
++	dwc->hird_threshold = hird_threshold
++		| (dwc->is_utmi_l1_suspend << 4);
++
++	dwc->imod_interval = 0;
++}
++
+ #define DWC3_ALIGN_MASK		(16 - 1)
+ 
+ static int dwc3_probe(struct platform_device *pdev)
+ {
+ 	struct device		*dev = &pdev->dev;
++	struct device_node      *node = dev->of_node;
+ 	struct resource		*res;
+ 	struct dwc3		*dwc;
+ 	u8			lpm_nyet_threshold;
+@@ -955,6 +1168,11 @@ static int dwc3_probe(struct platform_de
+ 	dwc->xhci_resources[0].flags = res->flags;
+ 	dwc->xhci_resources[0].name = res->name;
+ 
++	if (node) {
++		dwc->configure_gfladj =
++			of_property_read_bool(node, "configure-gfladj");
++	}
++
+ 	res->start += DWC3_GLOBALS_REGS_START;
+ 
+ 	/*
+@@ -997,6 +1215,12 @@ static int dwc3_probe(struct platform_de
+ 	dwc->usb3_lpm_capable = device_property_read_bool(dev,
+ 				"snps,usb3_lpm_capable");
+ 
++	dwc->needs_fifo_resize = of_property_read_bool(node, "tx-fifo-resize");
++
++	dwc->configure_gfladj =
++			of_property_read_bool(node, "configure-gfladj");
++	dwc->dr_mode = of_usb_get_dr_mode(node);
++
+ 	dwc->disable_scramble_quirk = device_property_read_bool(dev,
+ 				"snps,disable_scramble_quirk");
+ 	dwc->u2exit_lfps_quirk = device_property_read_bool(dev,
+@@ -1041,6 +1265,8 @@ static int dwc3_probe(struct platform_de
+ 	dwc->hird_threshold = hird_threshold
+ 		| (dwc->is_utmi_l1_suspend << 4);
+ 
++	dwc3_get_properties(dwc);
++
+ 	platform_set_drvdata(pdev, dwc);
+ 	dwc3_cache_hwparams(dwc);
+ 
+@@ -1064,6 +1290,11 @@ static int dwc3_probe(struct platform_de
+ 	if (ret < 0)
+ 		goto err1;
+ 
++	/* Adjust Frame Length */
++	if (dwc->configure_gfladj)
++	dwc3_writel(dwc->regs, DWC3_GFLADJ, GFLADJ_30MHZ_REG_SEL |
++		    GFLADJ_30MHZ(GFLADJ_30MHZ_DEFAULT));
++
+ 	pm_runtime_forbid(dev);
+ 
+ 	ret = dwc3_alloc_event_buffers(dwc, DWC3_EVENT_BUFFERS_SIZE);
+--- a/drivers/usb/dwc3/core.h
++++ b/drivers/usb/dwc3/core.h
+@@ -26,6 +26,7 @@
+ #include <linux/dma-mapping.h>
+ #include <linux/mm.h>
+ #include <linux/debugfs.h>
++#include <linux/of_address.h>
+ 
+ #include <linux/usb/ch9.h>
+ #include <linux/usb/gadget.h>
+@@ -154,6 +155,32 @@
+ 
+ /* Bit fields */
+ 
++/* Global SoC Bus Configuration Register 0 */
++#define AXI3_CACHE_TYPE_AW		0x8 /* write allocate */
++#define AXI3_CACHE_TYPE_AR		0x4 /* read allocate */
++#define AXI3_CACHE_TYPE_SNP		0x2 /* cacheable */
++#define AXI3_CACHE_TYPE_BUF		0x1 /* bufferable */
++#define DWC3_GSBUSCFG0_DATARD_SHIFT	28
++#define DWC3_GSBUSCFG0_DESCRD_SHIFT	24
++#define DWC3_GSBUSCFG0_DATAWR_SHIFT	20
++#define DWC3_GSBUSCFG0_DESCWR_SHIFT	16
++#define DWC3_GSBUSCFG0_SNP_MASK		0xffff0000
++#define DWC3_GSBUSCFG0_DATABIGEND	(1 << 11)
++#define DWC3_GSBUSCFG0_DESCBIGEND	(1 << 10)
++#define DWC3_GSBUSCFG0_INCR256BRSTENA	(1 << 7) /* INCR256 burst */
++#define DWC3_GSBUSCFG0_INCR128BRSTENA	(1 << 6) /* INCR128 burst */
++#define DWC3_GSBUSCFG0_INCR64BRSTENA	(1 << 5) /* INCR64 burst */
++#define DWC3_GSBUSCFG0_INCR32BRSTENA	(1 << 4) /* INCR32 burst */
++#define DWC3_GSBUSCFG0_INCR16BRSTENA	(1 << 3) /* INCR16 burst */
++#define DWC3_GSBUSCFG0_INCR8BRSTENA	(1 << 2) /* INCR8 burst */
++#define DWC3_GSBUSCFG0_INCR4BRSTENA	(1 << 1) /* INCR4 burst */
++#define DWC3_GSBUSCFG0_INCRBRSTENA	(1 << 0) /* undefined length enable */
++#define DWC3_GSBUSCFG0_INCRBRST_MASK	0xff
++
++/* Global SoC Bus Configuration Register 1 */
++#define DWC3_GSBUSCFG1_1KPAGEENA	(1 << 12) /* 1K page boundary enable */
++#define DWC3_GSBUSCFG1_PTRANSLIMIT_MASK	0xf00
++
+ /* Global Debug Queue/FIFO Space Available Register */
+ #define DWC3_GDBGFIFOSPACE_NUM(n)	((n) & 0x1f)
+ #define DWC3_GDBGFIFOSPACE_TYPE(n)	(((n) << 5) & 0x1e0)
+@@ -180,7 +207,6 @@
+ #define DWC3_GCTL_CLK_PIPE	(1)
+ #define DWC3_GCTL_CLK_PIPEHALF	(2)
+ #define DWC3_GCTL_CLK_MASK	(3)
+-
+ #define DWC3_GCTL_PRTCAP(n)	(((n) & (3 << 12)) >> 12)
+ #define DWC3_GCTL_PRTCAPDIR(n)	((n) << 12)
+ #define DWC3_GCTL_PRTCAP_HOST	1
+@@ -289,6 +315,10 @@
+ /* Global Frame Length Adjustment Register */
+ #define DWC3_GFLADJ_30MHZ_SDBND_SEL		(1 << 7)
+ #define DWC3_GFLADJ_30MHZ_MASK			0x3f
++#define GFLADJ_30MHZ_REG_SEL           (1 << 7)
++#define GFLADJ_30MHZ(n)                        ((n) & 0x3f)
++#define GFLADJ_30MHZ_DEFAULT           0x20
++
+ 
+ /* Global User Control Register 2 */
+ #define DWC3_GUCTL2_RST_ACTBITLATER		(1 << 14)
+@@ -753,6 +783,7 @@ struct dwc3_scratchpad_array {
+  * @regs: base address for our registers
+  * @regs_size: address space size
+  * @fladj: frame length adjustment
++ * @incrx_type: INCR burst type adjustment
+  * @irq_gadget: peripheral controller's IRQ number
+  * @nr_scratch: number of scratch buffers
+  * @u1u2: only used on revisions <1.83a for workaround
+@@ -847,6 +878,7 @@ struct dwc3 {
+ 	spinlock_t		lock;
+ 
+ 	struct device		*dev;
++	struct device           *sysdev;
+ 
+ 	struct platform_device	*xhci;
+ 	struct resource		xhci_resources[DWC3_XHCI_RESOURCES_NUM];
+@@ -872,6 +904,12 @@ struct dwc3 {
+ 	enum usb_phy_interface	hsphy_mode;
+ 
+ 	u32			fladj;
++	/*
++	 * For INCR burst type.
++	 * First field: for undefined length INCR burst type enable.
++	 * Second field: for INCRx burst type enable
++	 */
++	u32			incrx_type[2];
+ 	u32			irq_gadget;
+ 	u32			nr_scratch;
+ 	u32			u1u2;
+@@ -948,9 +986,12 @@ struct dwc3 {
+ 	unsigned		ep0_bounced:1;
+ 	unsigned		ep0_expect_in:1;
+ 	unsigned		has_hibernation:1;
++	unsigned		sysdev_is_parent:1;
+ 	unsigned		has_lpm_erratum:1;
+ 	unsigned		is_utmi_l1_suspend:1;
+ 	unsigned		is_fpga:1;
++	unsigned		needs_fifo_resize:1;
++	unsigned		configure_gfladj:1;
+ 	unsigned		pending_events:1;
+ 	unsigned		pullups_connected:1;
+ 	unsigned		setup_packet_pending:1;
+@@ -971,9 +1012,12 @@ struct dwc3 {
+ 	unsigned		dis_rxdet_inp3_quirk:1;
+ 	unsigned		dis_u2_freeclk_exists_quirk:1;
+ 	unsigned		dis_del_phy_power_chg_quirk:1;
++	unsigned		dma_snooping_quirk:1;
+ 
+ 	unsigned		tx_de_emphasis_quirk:1;
+ 	unsigned		tx_de_emphasis:2;
++
++	u16                     imod_interval;
+ };
+ 
+ /* -------------------------------------------------------------------------- */
+--- a/drivers/usb/dwc3/host.c
++++ b/drivers/usb/dwc3/host.c
+@@ -17,6 +17,8 @@
+ 
+ #include <linux/platform_device.h>
+ 
++#include <linux/of_device.h>
++
+ #include "core.h"
+ 
+ int dwc3_host_init(struct dwc3 *dwc)
+@@ -73,12 +75,21 @@ int dwc3_host_init(struct dwc3 *dwc)
+ 		return -ENOMEM;
+ 	}
+ 
+-	dma_set_coherent_mask(&xhci->dev, dwc->dev->coherent_dma_mask);
++	if (IS_ENABLED(CONFIG_OF) && dwc->dev->of_node)
++		of_dma_configure(&xhci->dev, dwc->dev->of_node);
++	else
++		dma_set_coherent_mask(&xhci->dev, dwc->dev->coherent_dma_mask);
+ 
+-	xhci->dev.parent	= dwc->dev;
++	xhci->dev.parent        = dwc->dev;
+ 	xhci->dev.dma_mask	= dwc->dev->dma_mask;
+ 	xhci->dev.dma_parms	= dwc->dev->dma_parms;
+ 
++	/* set DMA operations */
++	if (dwc->dev->of_node && of_dma_is_coherent(dwc->dev->of_node)) {
++		xhci->dev.archdata.dma_ops = dwc->dev->archdata.dma_ops;
++		dev_dbg(dwc->dev, "set dma_ops for usb\n");
++	}
++
+ 	dwc->xhci = xhci;
+ 
+ 	ret = platform_device_add_resources(xhci, dwc->xhci_resources,
+--- a/drivers/usb/gadget/udc/fsl_udc_core.c
++++ b/drivers/usb/gadget/udc/fsl_udc_core.c
+@@ -198,7 +198,11 @@ __acquires(ep->udc->lock)
+ 
+ 	spin_unlock(&ep->udc->lock);
+ 
+-	usb_gadget_giveback_request(&ep->ep, &req->req);
++	/* this complete() should a func implemented by gadget layer,
++	 * eg fsg->bulk_in_complete()
++	 */
++	if (req->req.complete)
++		usb_gadget_giveback_request(&ep->ep, &req->req);
+ 
+ 	spin_lock(&ep->udc->lock);
+ 	ep->stopped = stopped;
+@@ -245,10 +249,10 @@ static int dr_controller_setup(struct fs
+ 		if (udc->pdata->have_sysif_regs) {
+ 			if (udc->pdata->controller_ver) {
+ 				/* controller version 1.6 or above */
+-				ctrl = __raw_readl(&usb_sys_regs->control);
++				ctrl = ioread32be(&usb_sys_regs->control);
+ 				ctrl &= ~USB_CTRL_UTMI_PHY_EN;
+ 				ctrl |= USB_CTRL_USB_EN;
+-				__raw_writel(ctrl, &usb_sys_regs->control);
++				iowrite32be(ctrl, &usb_sys_regs->control);
+ 			}
+ 		}
+ 		portctrl |= PORTSCX_PTS_ULPI;
+@@ -257,13 +261,14 @@ static int dr_controller_setup(struct fs
+ 		portctrl |= PORTSCX_PTW_16BIT;
+ 		/* fall through */
+ 	case FSL_USB2_PHY_UTMI:
++	case FSL_USB2_PHY_UTMI_DUAL:
+ 		if (udc->pdata->have_sysif_regs) {
+ 			if (udc->pdata->controller_ver) {
+ 				/* controller version 1.6 or above */
+-				ctrl = __raw_readl(&usb_sys_regs->control);
++				ctrl = ioread32be(&usb_sys_regs->control);
+ 				ctrl |= (USB_CTRL_UTMI_PHY_EN |
+ 					USB_CTRL_USB_EN);
+-				__raw_writel(ctrl, &usb_sys_regs->control);
++				iowrite32be(ctrl, &usb_sys_regs->control);
+ 				mdelay(FSL_UTMI_PHY_DLY); /* Delay for UTMI
+ 					PHY CLK to become stable - 10ms*/
+ 			}
+@@ -329,22 +334,22 @@ static int dr_controller_setup(struct fs
+ 	/* Config control enable i/o output, cpu endian register */
+ #ifndef CONFIG_ARCH_MXC
+ 	if (udc->pdata->have_sysif_regs) {
+-		ctrl = __raw_readl(&usb_sys_regs->control);
++		ctrl = ioread32be(&usb_sys_regs->control);
+ 		ctrl |= USB_CTRL_IOENB;
+-		__raw_writel(ctrl, &usb_sys_regs->control);
++		iowrite32be(ctrl, &usb_sys_regs->control);
+ 	}
+ #endif
+ 
+-#if defined(CONFIG_PPC32) && !defined(CONFIG_NOT_COHERENT_CACHE)
++#if !defined(CONFIG_NOT_COHERENT_CACHE)
+ 	/* Turn on cache snooping hardware, since some PowerPC platforms
+ 	 * wholly rely on hardware to deal with cache coherent. */
+ 
+ 	if (udc->pdata->have_sysif_regs) {
+ 		/* Setup Snooping for all the 4GB space */
+ 		tmp = SNOOP_SIZE_2GB;	/* starts from 0x0, size 2G */
+-		__raw_writel(tmp, &usb_sys_regs->snoop1);
++		iowrite32be(tmp, &usb_sys_regs->snoop1);
+ 		tmp |= 0x80000000;	/* starts from 0x8000000, size 2G */
+-		__raw_writel(tmp, &usb_sys_regs->snoop2);
++		iowrite32be(tmp, &usb_sys_regs->snoop2);
+ 	}
+ #endif
+ 
+@@ -1057,7 +1062,7 @@ static int fsl_ep_fifo_status(struct usb
+ 	struct ep_queue_head *qh;
+ 
+ 	ep = container_of(_ep, struct fsl_ep, ep);
+-	if (!_ep || (!ep->ep.desc && ep_index(ep) != 0))
++	if (!_ep || !ep->ep.desc || (ep_index(ep) == 0))
+ 		return -ENODEV;
+ 
+ 	udc = (struct fsl_udc *)ep->udc;
+@@ -1599,14 +1604,13 @@ static int process_ep_req(struct fsl_udc
+ 		struct fsl_req *curr_req)
+ {
+ 	struct ep_td_struct *curr_td;
+-	int	td_complete, actual, remaining_length, j, tmp;
++	int	actual, remaining_length, j, tmp;
+ 	int	status = 0;
+ 	int	errors = 0;
+ 	struct  ep_queue_head *curr_qh = &udc->ep_qh[pipe];
+ 	int direction = pipe % 2;
+ 
+ 	curr_td = curr_req->head;
+-	td_complete = 0;
+ 	actual = curr_req->req.length;
+ 
+ 	for (j = 0; j < curr_req->dtd_count; j++) {
+@@ -1651,11 +1655,9 @@ static int process_ep_req(struct fsl_udc
+ 				status = -EPROTO;
+ 				break;
+ 			} else {
+-				td_complete++;
+ 				break;
+ 			}
+ 		} else {
+-			td_complete++;
+ 			VDBG("dTD transmitted successful");
+ 		}
+ 
+@@ -1698,7 +1700,7 @@ static void dtd_complete_irq(struct fsl_
+ 		curr_ep = get_ep_by_pipe(udc, i);
+ 
+ 		/* If the ep is configured */
+-		if (curr_ep->name == NULL) {
++		if (strncmp(curr_ep->name, "ep", 2)) {
+ 			WARNING("Invalid EP?");
+ 			continue;
+ 		}
+@@ -2420,10 +2422,12 @@ static int fsl_udc_probe(struct platform
+ 		usb_sys_regs = (void *)dr_regs + USB_DR_SYS_OFFSET;
+ #endif
+ 
++#ifdef CONFIG_ARCH_MXC
+ 	/* Initialize USB clocks */
+ 	ret = fsl_udc_clk_init(pdev);
+ 	if (ret < 0)
+ 		goto err_iounmap_noclk;
++#endif
+ 
+ 	/* Read Device Controller Capability Parameters register */
+ 	dccparams = fsl_readl(&dr_regs->dccparams);
+@@ -2463,9 +2467,11 @@ static int fsl_udc_probe(struct platform
+ 		dr_controller_setup(udc_controller);
+ 	}
+ 
++#ifdef CONFIG_ARCH_MXC
+ 	ret = fsl_udc_clk_finalize(pdev);
+ 	if (ret)
+ 		goto err_free_irq;
++#endif
+ 
+ 	/* Setup gadget structure */
+ 	udc_controller->gadget.ops = &fsl_gadget_ops;
+@@ -2478,6 +2484,7 @@ static int fsl_udc_probe(struct platform
+ 	/* Setup gadget.dev and register with kernel */
+ 	dev_set_name(&udc_controller->gadget.dev, "gadget");
+ 	udc_controller->gadget.dev.of_node = pdev->dev.of_node;
++	set_dma_ops(&udc_controller->gadget.dev, pdev->dev.archdata.dma_ops);
+ 
+ 	if (!IS_ERR_OR_NULL(udc_controller->transceiver))
+ 		udc_controller->gadget.is_otg = 1;
+@@ -2529,7 +2536,9 @@ err_free_irq:
+ err_iounmap:
+ 	if (pdata->exit)
+ 		pdata->exit(pdev);
++#ifdef CONFIG_ARCH_MXC
+ 	fsl_udc_clk_release();
++#endif
+ err_iounmap_noclk:
+ 	iounmap(dr_regs);
+ err_release_mem_region:
+@@ -2557,8 +2566,9 @@ static int fsl_udc_remove(struct platfor
+ 	udc_controller->done = &done;
+ 	usb_del_gadget_udc(&udc_controller->gadget);
+ 
++#ifdef CONFIG_ARCH_MXC
+ 	fsl_udc_clk_release();
+-
++#endif
+ 	/* DR has been stopped in usb_gadget_unregister_driver() */
+ 	remove_proc_file();
+ 
+@@ -2570,7 +2580,7 @@ static int fsl_udc_remove(struct platfor
+ 	dma_pool_destroy(udc_controller->td_pool);
+ 	free_irq(udc_controller->irq, udc_controller);
+ 	iounmap(dr_regs);
+-	if (pdata->operating_mode == FSL_USB2_DR_DEVICE)
++	if (res && (pdata->operating_mode == FSL_USB2_DR_DEVICE))
+ 		release_mem_region(res->start, resource_size(res));
+ 
+ 	/* free udc --wait for the release() finished */
+--- a/drivers/usb/gadget/udc/fsl_usb2_udc.h
++++ b/drivers/usb/gadget/udc/fsl_usb2_udc.h
+@@ -20,6 +20,10 @@
+ #define USB_MAX_CTRL_PAYLOAD		64
+ #define USB_DR_SYS_OFFSET		0x400
+ 
++#ifdef CONFIG_SOC_LS1021A
++#undef CONFIG_ARCH_MXC
++#endif
++
+  /* USB DR device mode registers (Little Endian) */
+ struct usb_dr_device {
+ 	/* Capability register */
+@@ -597,18 +601,6 @@ struct platform_device;
+ int fsl_udc_clk_init(struct platform_device *pdev);
+ int fsl_udc_clk_finalize(struct platform_device *pdev);
+ void fsl_udc_clk_release(void);
+-#else
+-static inline int fsl_udc_clk_init(struct platform_device *pdev)
+-{
+-	return 0;
+-}
+-static inline int fsl_udc_clk_finalize(struct platform_device *pdev)
+-{
+-	return 0;
+-}
+-static inline void fsl_udc_clk_release(void)
+-{
+-}
+ #endif
+ 
+ #endif
+--- a/drivers/usb/host/Kconfig
++++ b/drivers/usb/host/Kconfig
+@@ -165,7 +165,7 @@ config XPS_USB_HCD_XILINX
+ 
+ config USB_EHCI_FSL
+ 	tristate "Support for Freescale PPC on-chip EHCI USB controller"
+-	depends on FSL_SOC
++	depends on USB_EHCI_HCD
+ 	select USB_EHCI_ROOT_HUB_TT
+ 	---help---
+ 	  Variation of ARC USB block used in some Freescale chips.
+--- a/drivers/usb/host/ehci-fsl.c
++++ b/drivers/usb/host/ehci-fsl.c
+@@ -37,13 +37,141 @@
+ #include <linux/fsl_devices.h>
+ #include <linux/of_platform.h>
+ 
++#ifdef CONFIG_PPC
++#include <asm/fsl_pm.h>
++#include <linux/suspend.h>
++#endif
++
+ #include "ehci.h"
+ #include "ehci-fsl.h"
+ 
++#define FSL_USB_PHY_ADDR       0xffe214000
++
++struct ccsr_usb_port_ctrl {
++	u32     ctrl;
++	u32     drvvbuscfg;
++	u32     pwrfltcfg;
++	u32     sts;
++	u8      res_14[0xc];
++	u32     bistcfg;
++	u32     biststs;
++	u32     abistcfg;
++	u32     abiststs;
++	u8      res_30[0x10];
++	u32     xcvrprg;
++	u32     anaprg;
++	u32     anadrv;
++	u32     anasts;
++};
++
++struct ccsr_usb_phy {
++	u32     id;
++	struct ccsr_usb_port_ctrl port1;
++	u8      res_50[0xc];
++	u32     tvr;
++	u32     pllprg[4];
++	u8      res_70[0x4];
++	u32     anaccfg;
++	u32     dbg;
++	u8      res_7c[0x4];
++	struct ccsr_usb_port_ctrl port2;
++	u8      res_dc[0x334];
++};
++
+ #define DRIVER_DESC "Freescale EHCI Host controller driver"
+ #define DRV_NAME "ehci-fsl"
+ 
+ static struct hc_driver __read_mostly fsl_ehci_hc_driver;
++struct ehci_fsl {
++       /* store current hcd state for otg;
++	* have_hcd is true when host drv al already part of otg framework,
++	* otherwise false;
++	* hcd_add is true when otg framework wants to add host
++	* drv as part of otg;flase when it wants to remove it
++	*/
++unsigned have_hcd:1;
++unsigned hcd_add:1;
++};
++
++static struct ehci_fsl *hcd_to_ehci_fsl(struct usb_hcd *hcd)
++{
++struct ehci_hcd *ehci = hcd_to_ehci(hcd);
++
++return container_of(ehci, struct ehci_fsl, ehci);
++}
++
++#if defined(CONFIG_FSL_USB2_OTG) || defined(CONFIG_FSL_USB2_OTG_MODULE)
++static void do_change_hcd(struct work_struct *work)
++{
++struct ehci_hcd *ehci = container_of(work, struct ehci_hcd,
++				     change_hcd_work);
++struct usb_hcd *hcd = ehci_to_hcd(ehci);
++struct ehci_fsl *ehci_fsl = hcd_to_ehci_fsl(hcd);
++void __iomem *non_ehci = hcd->regs;
++int retval;
++
++	if (ehci_fsl->hcd_add && !ehci_fsl->have_hcd) {
++	writel(USBMODE_CM_HOST, non_ehci + FSL_SOC_USB_USBMODE);
++	/* host, gadget and otg share same int line */
++	retval = usb_add_hcd(hcd, hcd->irq, IRQF_SHARED);
++	if (retval == 0)
++	ehci_fsl->have_hcd = 1;
++	} else if (!ehci_fsl->hcd_add && ehci_fsl->have_hcd) {
++		usb_remove_hcd(hcd);
++		ehci_fsl->have_hcd = 0;
++	}
++}
++#endif
++
++struct ehci_fsl {
++	struct ehci_hcd ehci;
++
++#ifdef CONFIG_PM
++struct ehci_regs saved_regs;
++struct ccsr_usb_phy saved_phy_regs;
++/* Saved USB PHY settings, need to restore after deep sleep. */
++u32 usb_ctrl;
++#endif
++	/*
++	 * store current hcd state for otg;
++	 * have_hcd is true when host drv al already part of otg framework,
++	 * otherwise false;
++	 * hcd_add is true when otg framework wants to add host
++	 * drv as part of otg;flase when it wants to remove it
++	 */
++unsigned have_hcd:1;
++unsigned hcd_add:1;
++};
++
++static strut ehci_fsl *hcd_to_ehci_fsl(struct usb_hcd *hcd)
++{
++struct ehci_hcd *ehci = hcd_to_ehci(hcd);
++
++return container_of(ehci, struct ehci_fsl, ehci);
++}
++
++#if defined(CONFIG_FSL_USB2_OTG) || defined(CONFIG_FSL_USB2_OTG_MODULE)
++static void do_change_hcd(struct work_struct *work)
++{
++struct ehci_hcd *ehci = container_of(work, struct ehci_hcd,
++change_hcd_work);
++struct usb_hcd *hcd = ehci_to_hcd(ehci);
++struct ehci_fsl *ehci_fsl = hcd_to_ehci_fsl(hcd);
++void __iomem *non_ehci = hcd->regs;
++int retval;
++
++if (ehci_fsl->hcd_add && !ehci_fsl->have_hcd) {
++writel(USBMODE_CM_HOST, non_ehci + FSL_SOC_USB_USBMODE);
++/* host, gadget and otg share same int line */
++retval = usb_add_hcd(hcd, hcd->irq, IRQF_SHARED);
++if (retval == 0)
++ehci_fsl->have_hcd = 1;
++} else if (!ehci_fsl->hcd_add && ehci_fsl->have_hcd) {
++	usb_remove_hcd(hcd);
++ehci_fsl->have_hcd = 0;
++}
++}
++#endif
+ 
+ /* configure so an HC device and id are always provided */
+ /* always called with process context; sleeping is OK */
+@@ -131,6 +259,12 @@ static int fsl_ehci_drv_probe(struct pla
+ 		clrsetbits_be32(hcd->regs + FSL_SOC_USB_CTRL,
+ 				CONTROL_REGISTER_W1C_MASK, 0x4);
+ 
++	/* Set USB_EN bit to select ULPI phy for USB controller version 2.5 */
++	if (pdata->controller_ver == FSL_USB_VER_2_5 &&
++		pdata->phy_mode == FSL_USB2_PHY_ULPI)
++		iowrite32be(USB_CTRL_USB_EN, hcd->regs + FSL_SOC_USB_CTRL);
++
++
+ 	/*
+ 	 * Enable UTMI phy and program PTS field in UTMI mode before asserting
+ 	 * controller reset for USB Controller version 2.5
+@@ -143,16 +277,20 @@ static int fsl_ehci_drv_probe(struct pla
+ 
+ 	/* Don't need to set host mode here. It will be done by tdi_reset() */
+ 
+-	retval = usb_add_hcd(hcd, irq, IRQF_SHARED);
++	retval = usb_add_hcd(hcd, irq, IRQF_SHARED | IRQF_NO_SUSPEND);
+ 	if (retval != 0)
+ 		goto err2;
+ 	device_wakeup_enable(hcd->self.controller);
+ 
+-#ifdef CONFIG_USB_OTG
++#if defined(CONFIG_FSL_USB2_OTG) || defined(CONFIG_FSL_USB2_OTG_MODULE)
+ 	if (pdata->operating_mode == FSL_USB2_DR_OTG) {
+ 		struct ehci_hcd *ehci = hcd_to_ehci(hcd);
++		struct ehci_fsl *ehci_fsl = hcd_to_ehci_fsl(hcd);
+ 
+ 		hcd->usb_phy = usb_get_phy(USB_PHY_TYPE_USB2);
++
++		INIT_WORK(&ehci->change_hcd_work, do_change_hcd);
++
+ 		dev_dbg(&pdev->dev, "hcd=0x%p  ehci=0x%p, phy=0x%p\n",
+ 			hcd, ehci, hcd->usb_phy);
+ 
+@@ -168,6 +306,11 @@ static int fsl_ehci_drv_probe(struct pla
+ 			retval = -ENODEV;
+ 			goto err2;
+ 		}
++
++		ehci_fsl->have_hcd = 1;
++	} else {
++		dev_err(&pdev->dev, "wrong operating mode\n");
++		return -ENODEV;
+ 	}
+ #endif
+ 	return retval;
+@@ -181,6 +324,18 @@ static int fsl_ehci_drv_probe(struct pla
+ 	return retval;
+ }
+ 
++static bool usb_phy_clk_valid(struct usb_hcd *hcd,
++			enum fsl_usb2_phy_modes phy_mode)
++{
++	void __iomem *non_ehci = hcd->regs;
++	bool ret = true;
++
++	if (!(in_be32(non_ehci + FSL_SOC_USB_CTRL) & PHY_CLK_VALID))
++		ret = false;
++
++	return ret;
++}
++
+ static int ehci_fsl_setup_phy(struct usb_hcd *hcd,
+ 			       enum fsl_usb2_phy_modes phy_mode,
+ 			       unsigned int port_offset)
+@@ -219,6 +374,21 @@ static int ehci_fsl_setup_phy(struct usb
+ 		/* fall through */
+ 	case FSL_USB2_PHY_UTMI:
+ 	case FSL_USB2_PHY_UTMI_DUAL:
++		if (pdata->has_fsl_erratum_a006918) {
++			pr_warn("fsl-ehci: USB PHY clock invalid\n");
++			return -EINVAL;
++		}
++
++		/* PHY_CLK_VALID bit is de-featured from all controller
++		 * versions below 2.4 and is to be checked only for
++		 * internal UTMI phy
++		 */
++		if (pdata->controller_ver > FSL_USB_VER_2_4 &&
++			pdata->have_sysif_regs && !usb_phy_clk_valid(hcd)) {
++			pr_err("fsl-ehci: USB PHY clock invalid\n");
++			return -EINVAL;
++		}
++
+ 		if (pdata->have_sysif_regs && pdata->controller_ver) {
+ 			/* controller version 1.6 or above */
+ 			clrsetbits_be32(non_ehci + FSL_SOC_USB_CTRL,
+@@ -292,14 +462,9 @@ static int ehci_fsl_usb_setup(struct ehc
+ 			return -EINVAL;
+ 
+ 	if (pdata->operating_mode == FSL_USB2_MPH_HOST) {
+-		unsigned int chip, rev, svr;
+-
+-		svr = mfspr(SPRN_SVR);
+-		chip = svr >> 16;
+-		rev = (svr >> 4) & 0xf;
+ 
+ 		/* Deal with USB Erratum #14 on MPC834x Rev 1.0 & 1.1 chips */
+-		if ((rev == 1) && (chip >= 0x8050) && (chip <= 0x8055))
++		if (pdata->has_fsl_erratum_14 == 1)
+ 			ehci->has_fsl_port_bug = 1;
+ 
+ 		if (pdata->port_enables & FSL_USB2_PORT0_ENABLED)
+@@ -379,16 +544,57 @@ static int ehci_fsl_setup(struct usb_hcd
+ 	return retval;
+ }
+ 
+-struct ehci_fsl {
+-	struct ehci_hcd	ehci;
+ 
+ #ifdef CONFIG_PM
+-	/* Saved USB PHY settings, need to restore after deep sleep. */
+-	u32 usb_ctrl;
+-#endif
+-};
++void __iomem *phy_reg;
+ 
+-#ifdef CONFIG_PM
++#ifdef CONFIG_PPC
++/* save usb registers */
++static int ehci_fsl_save_context(struct usb_hcd *hcd)
++{
++	struct ehci_fsl *ehci_fsl = hcd_to_ehci_fsl(hcd);
++	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
++	void __iomem *non_ehci = hcd->regs;
++	struct device *dev = hcd->self.controller;
++	struct fsl_usb2_platform_data *pdata = dev_get_platdata(dev);
++
++	if (pdata->phy_mode == FSL_USB2_PHY_UTMI_DUAL) {
++	phy_reg = ioremap(FSL_USB_PHY_ADDR,
++			sizeof(struct ccsr_usb_phy));
++	_memcpy_fromio((void *)&ehci_fsl->saved_phy_regs, phy_reg,
++	sizeof(struct ccsr_usb_phy));
++	}
++
++	_memcpy_fromio((void *)&ehci_fsl->saved_regs, ehci->regs,
++					sizeof(struct ehci_regs));
++	ehci_fsl->usb_ctrl = ioread32be(non_ehci + FSL_SOC_USB_CTRL);
++
++	return 0;
++}
++
++/*Restore usb registers */
++static int ehci_fsl_restore_context(struct usb_hcd *hcd)
++{
++	struct ehci_fsl *ehci_fsl = hcd_to_ehci_fsl(hcd);
++	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
++	void __iomem *non_ehci = hcd->regs;
++	struct device *dev = hcd->self.controller;
++	struct fsl_usb2_platform_data *pdata = dev_get_platdata(dev);
++
++	if (pdata->phy_mode == FSL_USB2_PHY_UTMI_DUAL) {
++		if (phy_reg)
++			_memcpy_toio(phy_reg,
++				(void *)&ehci_fsl->saved_phy_regs,
++				sizeof(struct ccsr_usb_phy));
++	}
++
++	_memcpy_toio(ehci->regs, (void *)&ehci_fsl->saved_regs,
++				sizeof(struct ehci_regs));
++	iowrite32be(ehci_fsl->usb_ctrl, non_ehci + FSL_SOC_USB_CTRL);
++
++	return 0;
++}
++#endif
+ 
+ #ifdef CONFIG_PPC_MPC512x
+ static int ehci_fsl_mpc512x_drv_suspend(struct device *dev)
+@@ -535,26 +741,43 @@ static inline int ehci_fsl_mpc512x_drv_r
+ }
+ #endif /* CONFIG_PPC_MPC512x */
+ 
+-static struct ehci_fsl *hcd_to_ehci_fsl(struct usb_hcd *hcd)
+-{
+-	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
+-
+-	return container_of(ehci, struct ehci_fsl, ehci);
+-}
+-
+ static int ehci_fsl_drv_suspend(struct device *dev)
+ {
+ 	struct usb_hcd *hcd = dev_get_drvdata(dev);
+ 	struct ehci_fsl *ehci_fsl = hcd_to_ehci_fsl(hcd);
+ 	void __iomem *non_ehci = hcd->regs;
++#if defined(CONFIG_FSL_USB2_OTG) || defined(CONFIG_FSL_USB2_OTG_MODULE)
++	struct usb_bus host = hcd->self;
++#endif
++
++#ifdef CONFIG_PPC
++suspend_state_t pm_state;
++pm_state = pm_suspend_state();
++
++if (pm_state == PM_SUSPEND_MEM)
++	ehci_fsl_save_context(hcd);
++#endif
+ 
+ 	if (of_device_is_compatible(dev->parent->of_node,
+ 				    "fsl,mpc5121-usb2-dr")) {
+ 		return ehci_fsl_mpc512x_drv_suspend(dev);
+ 	}
+ 
++#if defined(CONFIG_FSL_USB2_OTG) || defined(CONFIG_FSL_USB2_OTG_MODULE)
++	if (host.is_otg) {
++		struct ehci_hcd *ehci = hcd_to_ehci(hcd);
++
++		/* remove hcd */
++		ehci_fsl->hcd_add = 0;
++		schedule_work(&ehci->change_hcd_work);
++		host.is_otg = 0;
++		return 0;
++	}
++#endif
++
+ 	ehci_prepare_ports_for_controller_suspend(hcd_to_ehci(hcd),
+ 			device_may_wakeup(dev));
++
+ 	if (!fsl_deep_sleep())
+ 		return 0;
+ 
+@@ -568,12 +791,34 @@ static int ehci_fsl_drv_resume(struct de
+ 	struct ehci_fsl *ehci_fsl = hcd_to_ehci_fsl(hcd);
+ 	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
+ 	void __iomem *non_ehci = hcd->regs;
++#if defined(CONFIG_FSL_USB2_OTG) || defined(CONFIG_FSL_USB2_OTG_MODULE)
++	struct usb_bus host = hcd->self;
++#endif
++
++#ifdef CONFIG_PPC
++suspend_state_t pm_state;
++pm_state = pm_suspend_state();
++
++if (pm_state == PM_SUSPEND_MEM)
++	ehci_fsl_restore_context(hcd);
++#endif
+ 
+ 	if (of_device_is_compatible(dev->parent->of_node,
+ 				    "fsl,mpc5121-usb2-dr")) {
+ 		return ehci_fsl_mpc512x_drv_resume(dev);
+ 	}
+ 
++#if defined(CONFIG_FSL_USB2_OTG) || defined(CONFIG_FSL_USB2_OTG_MODULE)
++	if (host.is_otg) {
++		/* add hcd */
++		ehci_fsl->hcd_add = 1;
++		schedule_work(&ehci->change_hcd_work);
++		usb_hcd_resume_root_hub(hcd);
++		host.is_otg = 0;
++		return 0;
++	}
++#endif
++
+ 	ehci_prepare_ports_for_controller_resume(ehci);
+ 	if (!fsl_deep_sleep())
+ 		return 0;
+--- a/drivers/usb/host/ehci-fsl.h
++++ b/drivers/usb/host/ehci-fsl.h
+@@ -63,4 +63,7 @@
+ #define UTMI_PHY_EN             (1<<9)
+ #define ULPI_PHY_CLK_SEL        (1<<10)
+ #define PHY_CLK_VALID		(1<<17)
++
++/* Retry count for checking UTMI PHY CLK validity */
++#define UTMI_PHY_CLK_VALID_CHK_RETRY 5
+ #endif				/* _EHCI_FSL_H */
+--- a/drivers/usb/host/ehci-hub.c
++++ b/drivers/usb/host/ehci-hub.c
+@@ -305,6 +305,8 @@ static int ehci_bus_suspend (struct usb_
+ 						USB_PORT_STAT_HIGH_SPEED)
+ 				fs_idle_delay = true;
+ 			ehci_writel(ehci, t2, reg);
++			if (ehci_has_fsl_susp_errata(ehci))
++				usleep_range(10000, 20000);
+ 			changed = 1;
+ 		}
+ 	}
+--- a/drivers/usb/host/ehci.h
++++ b/drivers/usb/host/ehci.h
+@@ -180,6 +180,9 @@ struct ehci_hcd {			/* one per controlle
+ 	unsigned		periodic_count;	/* periodic activity count */
+ 	unsigned		uframe_periodic_max; /* max periodic time per uframe */
+ 
++#if defined(CONFIG_FSL_USB2_OTG) || defined(CONFIG_FSL_USB2_OTG_MODULE)
++	struct work_struct change_hcd_work;
++#endif
+ 
+ 	/* list of itds & sitds completed while now_frame was still active */
+ 	struct list_head	cached_itd_list;
+@@ -706,8 +709,10 @@ ehci_port_speed(struct ehci_hcd *ehci, u
+  * incoming packets get corrupted in HS mode
+  */
+ #define ehci_has_fsl_hs_errata(e)	((e)->has_fsl_hs_errata)
++#define ehci_has_fsl_susp_errata(e)     ((e)->has_fsl_susp_errata)
+ #else
+ #define ehci_has_fsl_hs_errata(e)	(0)
++#define ehci_has_fsl_susp_errata(e)     (0)
+ #endif
+ 
+ /*
+--- a/drivers/usb/host/fsl-mph-dr-of.c
++++ b/drivers/usb/host/fsl-mph-dr-of.c
+@@ -226,6 +226,18 @@ static int fsl_usb2_mph_dr_of_probe(stru
+ 		of_property_read_bool(np, "fsl,usb-erratum-a007792");
+ 	pdata->has_fsl_erratum_a005275 =
+ 		of_property_read_bool(np, "fsl,usb-erratum-a005275");
++	pdata->has_fsl_erratum_a005697 =
++		of_property_read_bool(np, "fsl,usb_erratum-a005697");
++	if (of_get_property(np, "fsl,erratum_a006918", NULL))
++		pdata->has_fsl_erratum_a006918 = 1;
++	else
++		pdata->has_fsl_erratum_a006918 = 0;
++
++	if (of_get_property(np, "fsl,usb_erratum_14", NULL))
++		pdata->has_fsl_erratum_14 = 1;
++	else
++		pdata->has_fsl_erratum_14 = 0;
++
+ 
+ 	/*
+ 	 * Determine whether phy_clk_valid needs to be checked
+--- a/drivers/usb/phy/phy-fsl-usb.c
++++ b/drivers/usb/phy/phy-fsl-usb.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (C) 2007,2008 Freescale semiconductor, Inc.
++ * Copyright 2007,2008 Freescale Semiconductor, Inc.
+  *
+  * Author: Li Yang <LeoLi@freescale.com>
+  *         Jerry Huang <Chang-Ming.Huang@freescale.com>
+@@ -463,6 +463,7 @@ void otg_reset_controller(void)
+ int fsl_otg_start_host(struct otg_fsm *fsm, int on)
+ {
+ 	struct usb_otg *otg = fsm->otg;
++	struct usb_bus *host = otg->host;
+ 	struct device *dev;
+ 	struct fsl_otg *otg_dev =
+ 		container_of(otg->usb_phy, struct fsl_otg, phy);
+@@ -486,6 +487,7 @@ int fsl_otg_start_host(struct otg_fsm *f
+ 			otg_reset_controller();
+ 			VDBG("host on......\n");
+ 			if (dev->driver->pm && dev->driver->pm->resume) {
++				host->is_otg = 1;
+ 				retval = dev->driver->pm->resume(dev);
+ 				if (fsm->id) {
+ 					/* default-b */
+@@ -510,8 +512,11 @@ int fsl_otg_start_host(struct otg_fsm *f
+ 		else {
+ 			VDBG("host off......\n");
+ 			if (dev && dev->driver) {
+-				if (dev->driver->pm && dev->driver->pm->suspend)
++				if (dev->driver->pm &&
++						dev->driver->pm->suspend) {
++					host->is_otg = 1;
+ 					retval = dev->driver->pm->suspend(dev);
++				}
+ 				if (fsm->id)
+ 					/* default-b */
+ 					fsl_otg_drv_vbus(fsm, 0);
+@@ -539,8 +544,17 @@ int fsl_otg_start_gadget(struct otg_fsm
+ 	dev = otg->gadget->dev.parent;
+ 
+ 	if (on) {
+-		if (dev->driver->resume)
++		/* Delay gadget resume to synchronize between host and gadget
++		 * drivers. Upon role-reversal host drv is shutdown by kernel
++		 * worker thread. By the time host drv shuts down, controller
++		 * gets programmed for gadget role. Shutting host drv after
++		 * this results in controller getting reset, and it stops
++		 * responding to otg events
++		 */
++		if (dev->driver->resume) {
++			msleep(1000);
+ 			dev->driver->resume(dev);
++		}
+ 	} else {
+ 		if (dev->driver->suspend)
+ 			dev->driver->suspend(dev, otg_suspend_state);
+@@ -672,6 +686,10 @@ static void fsl_otg_event(struct work_st
+ 		fsl_otg_start_host(fsm, 0);
+ 		otg_drv_vbus(fsm, 0);
+ 		fsl_otg_start_gadget(fsm, 1);
++	} else {
++		fsl_otg_start_gadget(fsm, 0);
++		otg_drv_vbus(fsm, 1);
++		fsl_otg_start_host(fsm, 1);
+ 	}
+ }
+ 
+@@ -724,6 +742,7 @@ irqreturn_t fsl_otg_isr(int irq, void *d
+ {
+ 	struct otg_fsm *fsm = &((struct fsl_otg *)dev_id)->fsm;
+ 	struct usb_otg *otg = ((struct fsl_otg *)dev_id)->phy.otg;
++	struct fsl_otg *otg_dev = dev_id;
+ 	u32 otg_int_src, otg_sc;
+ 
+ 	otg_sc = fsl_readl(&usb_dr_regs->otgsc);
+@@ -753,18 +772,8 @@ irqreturn_t fsl_otg_isr(int irq, void *d
+ 				otg->gadget->is_a_peripheral = !fsm->id;
+ 			VDBG("ID int (ID is %d)\n", fsm->id);
+ 
+-			if (fsm->id) {	/* switch to gadget */
+-				schedule_delayed_work(
+-					&((struct fsl_otg *)dev_id)->otg_event,
+-					100);
+-			} else {	/* switch to host */
+-				cancel_delayed_work(&
+-						    ((struct fsl_otg *)dev_id)->
+-						    otg_event);
+-				fsl_otg_start_gadget(fsm, 0);
+-				otg_drv_vbus(fsm, 1);
+-				fsl_otg_start_host(fsm, 1);
+-			}
++			schedule_delayed_work(&otg_dev->otg_event, 100);
++
+ 			return IRQ_HANDLED;
+ 		}
+ 	}
+@@ -923,12 +932,32 @@ int usb_otg_start(struct platform_device
+ 	temp &= ~(PORTSC_PHY_TYPE_SEL | PORTSC_PTW);
+ 	switch (pdata->phy_mode) {
+ 	case FSL_USB2_PHY_ULPI:
++		if (pdata->controller_ver) {
++			/* controller version 1.6 or above */
++			setbits32(&p_otg->dr_mem_map->control,
++				USB_CTRL_ULPI_PHY_CLK_SEL);
++			/*
++			 * Due to controller issue of PHY_CLK_VALID in ULPI
++			 * mode, we set USB_CTRL_USB_EN before checking
++			 * PHY_CLK_VALID, otherwise PHY_CLK_VALID doesn't work.
++			 */
++			clrsetbits_be32(&p_otg->dr_mem_map->control,
++				USB_CTRL_UTMI_PHY_EN, USB_CTRL_IOENB);
++		}
+ 		temp |= PORTSC_PTS_ULPI;
+ 		break;
+ 	case FSL_USB2_PHY_UTMI_WIDE:
+ 		temp |= PORTSC_PTW_16BIT;
+ 		/* fall through */
+ 	case FSL_USB2_PHY_UTMI:
++		if (pdata->controller_ver) {
++			/* controller version 1.6 or above */
++			setbits32(&p_otg->dr_mem_map->control,
++				USB_CTRL_UTMI_PHY_EN);
++			/* Delay for UTMI PHY CLK to become stable - 10ms */
++			mdelay(FSL_UTMI_PHY_DLY);
++		}
++		setbits32(&p_otg->dr_mem_map->control, USB_CTRL_UTMI_PHY_EN);
+ 		temp |= PORTSC_PTS_UTMI;
+ 		/* fall through */
+ 	default:
+--- a/drivers/usb/phy/phy-fsl-usb.h
++++ b/drivers/usb/phy/phy-fsl-usb.h
+@@ -199,6 +199,14 @@
+ /* control Register Bit Masks */
+ #define  USB_CTRL_IOENB			(0x1<<2)
+ #define  USB_CTRL_ULPI_INT0EN		(0x1<<0)
++#define	USB_CTRL_WU_INT_EN		(0x1<<1)
++#define	USB_CTRL_LINE_STATE_FILTER__EN	(0x1<<3)
++#define	USB_CTRL_KEEP_OTG_ON		(0x1<<4)
++#define	USB_CTRL_OTG_PORT		(0x1<<5)
++#define	USB_CTRL_PLL_RESET		(0x1<<8)
++#define	USB_CTRL_UTMI_PHY_EN		(0x1<<9)
++#define	USB_CTRL_ULPI_PHY_CLK_SEL	(0x1<<10)
++#define	USB_CTRL_PHY_CLK_VALID		(0x1<<17)
+ 
+ /* BCSR5 */
+ #define BCSR5_INT_USB			(0x02)
+--- a/include/linux/usb.h
++++ b/include/linux/usb.h
+@@ -362,6 +362,7 @@ struct usb_bus {
+ 					 * for control transfers?
+ 					 */
+ 	u8 otg_port;			/* 0, or number of OTG/HNP port */
++	unsigned is_otg:1;		/* true when host is also otg */
+ 	unsigned is_b_host:1;		/* true during some HNP roleswitches */
+ 	unsigned b_hnp_enable:1;	/* OTG: did A-Host enable HNP? */
+ 	unsigned no_stop_on_short:1;    /*
+--- a/include/linux/usb/of.h
++++ b/include/linux/usb/of.h
+@@ -11,6 +11,8 @@
+ #include <linux/usb/otg.h>
+ #include <linux/usb/phy.h>
+ 
++enum usb_dr_mode of_usb_get_dr_mode(struct device_node *np);
++
+ #if IS_ENABLED(CONFIG_OF)
+ enum usb_dr_mode of_usb_get_dr_mode_by_phy(struct device_node *np, int arg0);
+ bool of_usb_host_tpl_support(struct device_node *np);

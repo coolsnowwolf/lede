@@ -7,16 +7,17 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=hostapd
-PKG_RELEASE:=4
+PKG_RELEASE:=6
 
 PKG_SOURCE_URL:=http://w1.fi/hostap.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2016-12-19
-PKG_SOURCE_VERSION:=ad02e79d12fd70ed6bd5fbaf64001a2851e5bb7b
-PKG_MIRROR_HASH:=7a0983f004b156d46911765c113754a4c00f56fb889430620bbd061b3b1fcf33
+PKG_SOURCE_DATE:=2017-08-24
+PKG_SOURCE_VERSION:=c2d4f2eb5dba0b5c5a8c5805823084da958a9b52
+PKG_MIRROR_HASH:=c6ad9a73fc1ae0ba8bc48f71cf14394b274bc9c2c1d1b53c2775f08312597e74
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=BSD-3-Clause
+PKG_CPE_ID:=cpe:/a:w1.fi:hostapd
 
 PKG_BUILD_PARALLEL:=1
 
@@ -299,6 +300,7 @@ define Build/Compile/wpad
 		$(call Build/RunMake,wpa_supplicant,-s MULTICALL=1 dump_cflags) | \
 		sed -e 's,-n ,,g' -e 's^$(TARGET_CFLAGS)^^' \
 	` > $(PKG_BUILD_DIR)/.cflags
+	sed -i 's/"/\\"/g' $(PKG_BUILD_DIR)/.cflags
 	+$(call Build/RunMake,hostapd, \
 		CFLAGS="$$$$(cat $(PKG_BUILD_DIR)/.cflags)" \
 		MULTICALL=1 \
