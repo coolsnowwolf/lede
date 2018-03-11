@@ -9,19 +9,21 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=autocore
 PKG_VERSION:=1
-PKG_RELEASE:=6
+PKG_RELEASE:=7
 
+PKG_MAINTAINER:=Lean
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/autocore
-  TITLE:=x86/x64 auto core loadbalance script.
-  MAINTAINER:=Lean
-  DEPENDS:=@TARGET_x86 +bc +lm-sensors
+	SECTION:=utils
+	CATEGORY:=Utilities
+	TITLE:=Multicore load-balancing script
+	PKGARCH:=all
 endef
 
 define Package/autocore/description
-A usb autoconfig hotplug script.
+ An autoconfig hotplug script that improves network performance by using Receive Packet Steering (RPS) and Receive Flow Steering (RFS).
 endef
 
 define Build/Compile
