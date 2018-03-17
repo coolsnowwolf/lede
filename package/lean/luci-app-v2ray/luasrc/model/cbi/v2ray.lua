@@ -6,6 +6,8 @@ local ND = SYS.exec("cat /etc/gfwlist/china-banned | wc -l")
 local conf = "/etc/v2ray/base-gfwlist.txt"
 local watch = "/tmp/v2ray_watchdog.log"
 local dog = "/tmp/v2raypro.log"
+local http = luci.http
+local ucursor = require "luci.model.uci".cursor()
 
 local Status
 
@@ -33,12 +35,12 @@ switch.rmempty = false
 
 proxy_mode = s:taboption("basic",ListValue, "proxy_mode", translate("Proxy Mode"))
 proxy_mode:value("M", translate("Base on GFW-List Auto Proxy Mode(Recommend)"))
-proxy_mode:value("S", translate("Bypassing China Manland IP Mode(Be caution when using P2P download£°)"))
+proxy_mode:value("S", translate("Bypassing China Manland IP Mode(Be caution when using P2P downloadÔºÅ)"))
 proxy_mode:value("G", translate("Global Mode"))
 proxy_mode:value("V", translate("Overseas users watch China video website Mode"))
 
 cronup = s:taboption("basic", Flag, "cron_mode", translate("Auto Update GFW-List"),
-	translate(string.format("GFW-List Lines£∫ <strong><font color=\"blue\">%s</font></strong> Lines", ND)))
+	translate(string.format("GFW-List LinesÔºö <strong><font color=\"blue\">%s</font></strong> Lines", ND)))
 cronup.default = 0
 cronup.rmempty = false
 
@@ -83,23 +85,85 @@ safe_dns_tcp.rmempty = false
 
 s:tab("main",  translate("Server Setting"))
 
+use_conf_file = s:taboption("main",Flag, "use_conf_file", translate("Use Config File"))
+use_conf_file.rmempty = false
+
+if nixio.fs.access("/usr/bin/v2ray/v2ctl") then
+	conf_file_type = s:taboption("main",ListValue, "conf_file_type", translate("Config File Type"))
+	conf_file_type:value("pb","Protobuf")
+else 
+	conf_file_type = s:taboption("main",ListValue, "conf_file_type", translate("Config File Type"), translate("Warning: Can't find v2ctl. You can only choose Protobuf."))
+end
+conf_file_type:value("json","JSON")
+conf_file_type:depends("use_conf_file", 1)
+
+conf_file_path = s:taboption("main",Value, "conf_file_path", translate("Config File Path"),
+	translate("If you choose to upload a new file, please do not modify and this configuration will be overwritten automatically."))
+conf_file_path:depends("use_conf_file", 1)
+
+upload_conf = s:taboption("main",FileUpload, "")
+upload_conf.template = "cbi/other_upload2"
+upload_conf:depends("use_conf_file", 1)
+
+um = s:taboption("main",DummyValue, "", nil)
+um.template = "cbi/other_dvalue"
+um:depends("use_conf_file", 1)
+
+
+
+local conf_dir, fd
+conf_dir = "/etc/v2ray/"
+nixio.fs.mkdir(conf_dir)
+http.setfilehandler(
+	function(meta, chunk, eof)
+		if not fd then
+			if not meta then return end
+
+			if	meta and chunk then fd = nixio.open(conf_dir .. meta.file, "w") end
+
+			if not fd then
+				um.value = translate("Create upload file error.")
+				return
+			end
+		end
+		if chunk and fd then
+			fd:write(chunk)
+		end
+		if eof and fd then
+			fd:close()
+			fd = nil
+			um.value = translate("File saved to") .. ' "/etc/v2ray/' .. meta.file .. '"'
+			ucursor:set("v2ray","v2ray","conf_file_path","/etc/v2ray/" .. meta.file)
+			ucursor:commit("v2ray")
+		end
+	end
+)
+
+if luci.http.formvalue("upload") then
+	local f = luci.http.formvalue("ulfile")
+	if #f <= 0 then
+		um.value = translate("No specify upload file.")
+	end
+end
+
+
+
+
 server = s:taboption("main",Value, "address", translate("Server Address"))
-server.optional = false
 server.datatype = "host"
-server.rmempty = false
+server:depends("use_conf_file", 0)
 
 server_port = s:taboption("main",Value, "port", translate("Server Port"))
 server_port.datatype = "range(0,65535)"
-server_port.optional = false
-server_port.rmempty = false
+server_port:depends("use_conf_file", 0)
 
 id = s:taboption("main",Value, "id", translate("ID"))
 id.password = true
+id:depends("use_conf_file", 0)
 
 alterId = s:taboption("main",Value, "alterId", translate("Alter ID"))
 alterId.datatype = "range(1,65535)"
-alterId.optional = false
-alterId.rmempty = false
+alterId:depends("use_conf_file", 0)
 
 security = s:taboption("main",ListValue, "security", translate("Security"))
 security:value("none")
@@ -107,11 +171,13 @@ security:value("auto")
 security:value("aes-128-cfb")
 security:value("aes-128-gcm")
 security:value("chacha20-poly1305")
+security:depends("use_conf_file", 0)
 
 network_type = s:taboption("main",ListValue, "network_type", translate("Network Type"))
 network_type:value("tcp")
 network_type:value("kcp")
 network_type:value("ws")
+network_type:depends("use_conf_file", 0)
 
 -- tcp settings
 tcp_obfs = s:taboption("main",ListValue, "tcp_obfs", translate("TCP Obfs"))
@@ -172,15 +238,17 @@ ws_headers.datatype = "host"
 -- others
 tls = s:taboption("main",Flag, "tls", translate("TLS"))
 tls.rmempty = false
+tls:depends("use_conf_file", 0)
 
 mux = s:taboption("main",Flag, "mux", translate("Mux"))
 mux.rmempty = false
+mux:depends("use_conf_file", 0)
 
 
 
 s:tab("list",  translate("User-defined GFW-List"))
 gfwlist = s:taboption("list", TextValue, "conf")
-gfwlist.description = translate("<br />£®!£©Note: When the domain name is entered and will automatically merge with the online GFW-List. Please manually update the GFW-List list after applying.")
+gfwlist.description = translate("<br />Ôºà!ÔºâNote: When the domain name is entered and will automatically merge with the online GFW-List. Please manually update the GFW-List list after applying.")
 gfwlist.rows = 13
 gfwlist.wrap = "off"
 gfwlist.cfgvalue = function(self, section)
@@ -194,7 +262,7 @@ local addipconf = "/etc/v2ray/addinip.txt"
 
 s:tab("addip",  translate("GFW-List Add-in IP"))
 gfwaddin = s:taboption("addip", TextValue, "addipconf")
-gfwaddin.description = translate("<br />£®!£©Note: IP add-in to GFW-List. Such as Telegram Messenger")
+gfwaddin.description = translate("<br />Ôºà!ÔºâNote: IP add-in to GFW-List. Such as Telegram Messenger")
 gfwaddin.rows = 13
 gfwaddin.wrap = "off"
 gfwaddin.cfgvalue = function(self, section)
