@@ -45,11 +45,38 @@ define Package/$(PKG_NAME)
 	URL:=https://github.com/v2ray/v2ray-core
 endef
 
+define Package/$(PKG_NAME)/config
+menu "V2Ray Configuration"
+	depends on PACKAGE_v2ray
+
+config PACKAGE_V2RAY_INCLUDE_V2RAY
+	bool "Include v2ray"
+	default y
+
+config PACKAGE_V2RAY_INCLUDE_V2CTL
+	bool "Include v2ctl"
+	depends on PACKAGE_V2RAY_INCLUDE_V2RAY
+	default y
+
+config PACKAGE_V2RAY_INCLUDE_GEOIP
+	bool "Include geoip.dat"
+	depends on PACKAGE_V2RAY_INCLUDE_V2CTL
+	default n
+
+config PACKAGE_V2RAY_INCLUDE_GEOSITE
+	bool "Include geosite.dat"
+	depends on PACKAGE_V2RAY_INCLUDE_V2CTL
+	default n
+
+endmenu
+endef
+
 define Package/$(PKG_NAME)/description
 V2Ray is a cross-platform proxy software
 endef
 
 define Build/Prepare
+	
 	wget https://github.com/v2ray/v2ray-core/releases/download/$(PKG_VERSION)/v2ray-$(PKG_ARCH_V2RAY).zip -O $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY).zip
 	unzip -o $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY).zip -d $(PKG_BUILD_DIR)
 endef
@@ -62,8 +89,18 @@ endef
 
 define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/bin/v2ray
+ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_V2RAY
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/v2ray $(1)/usr/bin/v2ray/
+endif
+ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_V2CTL
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/v2ctl $(1)/usr/bin/v2ray/
+endif
+ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_GEOIP
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/geoip.dat $(1)/usr/bin/v2ray/
+endif
+ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_GEOSITE
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/geosite.dat $(1)/usr/bin/v2ray/
+endif
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
