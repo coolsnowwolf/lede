@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray
-PKG_VERSION:=v3.12
+PKG_VERSION:=v3.14
 #PKG_VERSION:=$(shell wget https://api.github.com/repos/v2ray/v2ray-core/releases/latest -q -O -|grep tag_name|awk {'print $2'}|cut -d '"' -f 2)
 #PKG_RELEASE:=$(shell wget https://api.github.com/repos/v2ray/v2ray-core/releases/latest -q -O -|grep published_at|awk {'print $2'}|cut -d '"' -f 2|cut -d 'T' -f 1)
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
