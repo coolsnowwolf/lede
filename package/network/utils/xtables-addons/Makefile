@@ -9,9 +9,9 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=xtables-addons
-PKG_VERSION:=2.13
+PKG_VERSION:=2.14
 PKG_RELEASE:=1
-PKG_HASH:=d141879d438424764e953b97fbb16edafdf8ef6baa57f6e36e07b894a7775dfc
+PKG_HASH:=d215a9a8b8e66aae04b982fa2e1228e8a71e7dfe42320df99e34e5000cbdf152
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@SF/xtables-addons
@@ -43,8 +43,7 @@ CONFIGURE_ARGS+= \
 
 define Build/Compile
 	+$(MAKE) $(PKG_JOBS) -C $(PKG_BUILD_DIR) \
-		ARCH="$(LINUX_KARCH)" \
-		CROSS_COMPILE="$(TARGET_CROSS)" \
+		$(KERNEL_MAKE_FLAGS) \
 		DESTDIR="$(PKG_INSTALL_DIR)" \
 		DEPMOD="/bin/true" \
 		all
@@ -52,8 +51,7 @@ endef
 
 define Build/Install
 	$(MAKE) -C $(PKG_BUILD_DIR) \
-		ARCH="$(LINUX_KARCH)" \
-		CROSS_COMPILE="$(TARGET_CROSS)" \
+		$(KERNEL_MAKE_FLAGS) \
 		DESTDIR="$(PKG_INSTALL_DIR)" \
 		DEPMOD="/bin/true" \
 		install

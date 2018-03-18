@@ -26,26 +26,27 @@ PKG_VERSION:=$(firstword $(subst +, ,$(GCC_VERSION)))
 GCC_DIR:=$(PKG_NAME)-$(PKG_VERSION)
 
 PKG_SOURCE_URL:=@GNU/gcc/gcc-$(PKG_VERSION)
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 
-ifeq ($(PKG_VERSION),5.4.0)
-  PKG_HASH:=608df76dec2d34de6558249d8af4cbee21eceddbcb580d666f7a5a583ca3303a
+ifeq ($(PKG_VERSION),5.5.0)
+  PKG_HASH:=530cea139d82fe542b358961130c69cfde8b3d14556370b65823d2f91f0ced87
 endif
 
 ifeq ($(PKG_VERSION),6.3.0)
   PKG_HASH:=f06ae7f3f790fbf0f018f6d40e844451e6bc3b7bc96e128e63b09825c1f8b29f
+  PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 endif
 
-ifeq ($(PKG_VERSION),7.1.0)
-  PKG_HASH:=8a8136c235f64c6fef69cac0d73a46a1a09bb250776a050aec8f9fc880bebc17
+ifeq ($(PKG_VERSION),7.3.0)
+  PKG_HASH:=832ca6ae04636adbb430e865a1451adf6979ab44ca1c8374f61fba65645ce15c
 endif
 
-ifneq ($(CONFIG_GCC_VERSION_6_3_ARC),)
-    PKG_VERSION:=6.3.0
+ifneq ($(CONFIG_GCC_VERSION_7_1_ARC),)
+    PKG_VERSION:=7.1.1
     PKG_SOURCE_URL:=https://github.com/foss-for-synopsys-dwc-arc-processors/gcc/archive/$(GCC_VERSION)
     PKG_SOURCE:=$(PKG_NAME)-$(GCC_VERSION).tar.gz
-    PKG_HASH:=b7223e134199b1a6f71de629da6aa845790e55d28e9892143dde09b1bc878110
-    PKG_REV:=2017.03-release
+    PKG_HASH:=90596af8b9c26a434cec0a3b3d37d0c7c755ab6a65496af6ca32529fab5a6cfe
+    PKG_REV:=2017.09-release
     GCC_DIR:=gcc-arc-$(PKG_REV)
     HOST_BUILD_DIR = $(BUILD_DIR_HOST)/$(PKG_NAME)-$(GCC_VERSION)
 endif
@@ -53,7 +54,7 @@ endif
 PATCH_DIR=../patches/$(GCC_VERSION)
 
 BUGURL=http://www.lede-project.org/bugs/
-PKGVERSION=LEDE GCC $(PKG_VERSION) $(REVISION)
+PKGVERSION=OpenWrt GCC $(PKG_VERSION) $(REVISION)
 
 HOST_BUILD_PARALLEL:=1
 
@@ -73,14 +74,11 @@ HOST_STAMP_CONFIGURED:=$(GCC_BUILD_DIR)/.configured
 HOST_STAMP_INSTALLED:=$(HOST_BUILD_PREFIX)/stamp/.gcc_$(GCC_VARIANT)_installed
 
 SEP:=,
-TARGET_LANGUAGES:="c,c++$(if $(CONFIG_INSTALL_LIBGCJ),$(SEP)java)$(if $(CONFIG_INSTALL_GFORTRAN),$(SEP)fortran)$(if $(CONFIG_INSTALL_GCCGO),$(SEP)go)"
+TARGET_LANGUAGES:="c,c++$(if $(CONFIG_INSTALL_GFORTRAN),$(SEP)fortran)$(if $(CONFIG_INSTALL_GCCGO),$(SEP)go)"
 
 TAR_OPTIONS += \
 	--exclude-from='$(CURDIR)/../exclude-testsuite' --exclude=gcc/ada/*.ad* \
-
-ifndef CONFIG_INSTALL_LIBGCJ
-  TAR_OPTIONS += --exclude=libjava
-endif
+	--exclude=libjava
 
 export libgcc_cv_fixed_point=no
 ifdef CONFIG_USE_UCLIBC
@@ -135,7 +133,17 @@ ifndef GCC_VERSION_4_8
   GCC_CONFIGURE += --with-diagnostics-color=auto-if-env
 endif
 
-ifneq ($(CONFIG_SSP_SUPPORT),)
+ifneq ($(CONFIG_GCC_DEFAULT_PIE),)
+  GCC_CONFIGURE+= \
+		--enable-default-pie
+endif
+
+ifneq ($(CONFIG_GCC_DEFAULT_SSP),)
+  GCC_CONFIGURE+= \
+		--enable-default-ssp
+endif
+
+ifneq ($(CONFIG_GCC_LIBSSP),)
   GCC_CONFIGURE+= \
 		--enable-libssp
 else

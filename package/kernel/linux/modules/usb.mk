@@ -64,6 +64,19 @@ define KernelPackage/usb-phy-nop
   $(call AddDepends/usb)
 endef
 
+define KernelPackage/usb-musb-tusb6010
+  TITLE:=Support for TUSB 6010
+  KCONFIG:=CONFIG_USB_MUSB_TUSB6010
+  DEPENDS:=@TARGET_omap24xx
+  $(call AddDepends/usb)
+endef
+
+define KernelPackage/usb-musb-tusb6010/description
+  TUSB6010 support
+endef
+
+$(eval $(call KernelPackage,usb-musb-tusb6010))
+
 define KernelPackage/usb-phy-nop/description
   Support for USB NOP transceiver
 endef
@@ -509,6 +522,7 @@ define KernelPackage/usb-serial-edgeport
   FILES:=$(LINUX_DIR)/drivers/usb/serial/io_edgeport.ko
   AUTOLOAD:=$(call AutoProbe,io_edgeport)
   $(call AddDepends/usb-serial)
+  DEPENDS+=+edgeport-firmware
 endef
 
 define KernelPackage/usb-serial-edgeport/description
@@ -529,14 +543,6 @@ define KernelPackage/usb-serial-edgeport/description
 	Edgeport/2 DIN
 	Edgeport/4 DIN
 	Edgeport/16 Dual
-endef
-
-define KernelPackage/usb-serial-edgeport/install
-	$(INSTALL_DIR) $(1)/lib/firmware/edgeport
-	$(INSTALL_DATA) $(LINUX_DIR)/firmware/edgeport/boot.fw $(1)/lib/firmware/edgeport/
-	$(INSTALL_DATA) $(LINUX_DIR)/firmware/edgeport/boot2.fw $(1)/lib/firmware/edgeport/
-	$(INSTALL_DATA) $(LINUX_DIR)/firmware/edgeport/down.fw $(1)/lib/firmware/edgeport/
-	$(INSTALL_DATA) $(LINUX_DIR)/firmware/edgeport/down2.fw $(1)/lib/firmware/edgeport/
 endef
 
 $(eval $(call KernelPackage,usb-serial-edgeport))
@@ -893,6 +899,25 @@ define KernelPackage/usb-storage-extras/description
 endef
 
 $(eval $(call KernelPackage,usb-storage-extras))
+
+
+define KernelPackage/usb-storage-uas
+  SUBMENU:=$(USB_MENU)
+  TITLE:=USB Attached SCSI (UASP) support
+  DEPENDS:=+kmod-usb-storage
+  KCONFIG:=CONFIG_USB_UAS
+  FILES:=$(LINUX_DIR)/drivers/usb/storage/uas.ko
+  AUTOLOAD:=$(call AutoProbe,uas,1)
+endef
+
+define KernelPackage/usb-storage-uas/description
+ Say Y here if you want to include support for
+ USB Attached SCSI (UAS/UASP), a higher
+ performance protocol available on many
+ newer USB 3.0 storage devices
+endef
+
+$(eval $(call KernelPackage,usb-storage-uas))
 
 
 define KernelPackage/usb-atm

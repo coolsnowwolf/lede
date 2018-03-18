@@ -1,0 +1,234 @@
+From 249c8d98ea339325dca481d5dae93686cd494059 Mon Sep 17 00:00:00 2001
+From: Christian Lamparter <chunkeey@googlemail.com>
+Date: Fri, 25 Aug 2017 15:47:20 +0200
+Subject: [PATCH 07/25] crypto: crypto4xx - move and refactor dynamic_contents
+ helpers
+
+This patch refactors and moves the dynamic_contents helper
+functions into the crypto4xx_sa.h header file.
+
+ * get_dynamic_sa_iv_size is no longer needed, as the cryptoapi
+   provides the required IV size information as well.
+
+ * refactor the function declarations to use the a pointer to the
+   dynamic_sa_contents union, instead of the crypto4xx_ctx.
+
+ * rename get_dynamic_sa_offset_key_field to get_dynamic_sa_key_field.
+   It returns the pointer to the key directly.
+
+Signed-off-by: Christian Lamparter <chunkeey@googlemail.com>
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+---
+ drivers/crypto/amcc/Makefile         |  2 +-
+ drivers/crypto/amcc/crypto4xx_alg.c  | 20 ++++-----
+ drivers/crypto/amcc/crypto4xx_core.h |  3 --
+ drivers/crypto/amcc/crypto4xx_sa.c   | 85 ------------------------------------
+ drivers/crypto/amcc/crypto4xx_sa.h   | 28 ++++++++++++
+ 5 files changed, 39 insertions(+), 99 deletions(-)
+ delete mode 100644 drivers/crypto/amcc/crypto4xx_sa.c
+
+--- a/drivers/crypto/amcc/Makefile
++++ b/drivers/crypto/amcc/Makefile
+@@ -1,3 +1,3 @@
+ obj-$(CONFIG_CRYPTO_DEV_PPC4XX) += crypto4xx.o
+-crypto4xx-y :=  crypto4xx_core.o crypto4xx_alg.o crypto4xx_sa.o
++crypto4xx-y :=  crypto4xx_core.o crypto4xx_alg.o
+ crypto4xx-$(CONFIG_HW_RANDOM_PPC4XX) += crypto4xx_trng.o
+--- a/drivers/crypto/amcc/crypto4xx_alg.c
++++ b/drivers/crypto/amcc/crypto4xx_alg.c
+@@ -29,8 +29,8 @@
+ #include <crypto/aes.h>
+ #include <crypto/sha.h>
+ #include "crypto4xx_reg_def.h"
+-#include "crypto4xx_sa.h"
+ #include "crypto4xx_core.h"
++#include "crypto4xx_sa.h"
+ 
+ static void set_dynamic_sa_command_0(struct dynamic_sa_ctl *sa, u32 save_h,
+ 				     u32 save_iv, u32 ld_h, u32 ld_iv,
+@@ -79,8 +79,8 @@ int crypto4xx_encrypt(struct ablkcipher_
+ 	ctx->pd_ctl = 0x1;
+ 
+ 	return crypto4xx_build_pd(&req->base, ctx, req->src, req->dst,
+-				  req->nbytes, req->info,
+-				  get_dynamic_sa_iv_size(ctx));
++		req->nbytes, req->info,
++		crypto_ablkcipher_ivsize(crypto_ablkcipher_reqtfm(req)));
+ }
+ 
+ int crypto4xx_decrypt(struct ablkcipher_request *req)
+@@ -92,8 +92,8 @@ int crypto4xx_decrypt(struct ablkcipher_
+ 	ctx->pd_ctl = 1;
+ 
+ 	return crypto4xx_build_pd(&req->base, ctx, req->src, req->dst,
+-				  req->nbytes, req->info,
+-				  get_dynamic_sa_iv_size(ctx));
++		req->nbytes, req->info,
++		crypto_ablkcipher_ivsize(crypto_ablkcipher_reqtfm(req)));
+ }
+ 
+ /**
+@@ -147,15 +147,15 @@ static int crypto4xx_setkey_aes(struct c
+ 				 SA_SEQ_MASK_OFF, SA_MC_ENABLE,
+ 				 SA_NOT_COPY_PAD, SA_NOT_COPY_PAYLOAD,
+ 				 SA_NOT_COPY_HDR);
+-	crypto4xx_memcpy_le(ctx->sa_in + get_dynamic_sa_offset_key_field(ctx),
++	crypto4xx_memcpy_le(get_dynamic_sa_key_field(sa),
+ 			    key, keylen);
+ 	sa->sa_contents.w = SA_AES_CONTENTS | (keylen << 2);
+ 	sa->sa_command_1.bf.key_len = keylen >> 3;
+ 	ctx->is_hash = 0;
+ 	ctx->direction = DIR_INBOUND;
+-	memcpy(ctx->sa_in + get_dynamic_sa_offset_state_ptr_field(ctx),
+-			(void *)&ctx->state_record_dma_addr, 4);
+-	ctx->offset_to_sr_ptr = get_dynamic_sa_offset_state_ptr_field(ctx);
++	memcpy(sa + get_dynamic_sa_offset_state_ptr_field(sa),
++	       (void *)&ctx->state_record_dma_addr, 4);
++	ctx->offset_to_sr_ptr = get_dynamic_sa_offset_state_ptr_field(sa);
+ 
+ 	memcpy(ctx->sa_out, ctx->sa_in, ctx->sa_len * 4);
+ 	sa = (struct dynamic_sa_ctl *) ctx->sa_out;
+@@ -225,7 +225,7 @@ static int crypto4xx_hash_alg_init(struc
+ 	memset(sa_in->inner_digest, 0, sizeof(sa_in->inner_digest));
+ 	memset(sa_in->outer_digest, 0, sizeof(sa_in->outer_digest));
+ 	sa_in->state_ptr = ctx->state_record_dma_addr;
+-	ctx->offset_to_sr_ptr = get_dynamic_sa_offset_state_ptr_field(ctx);
++	ctx->offset_to_sr_ptr = get_dynamic_sa_offset_state_ptr_field(sa);
+ 
+ 	return 0;
+ }
+--- a/drivers/crypto/amcc/crypto4xx_core.h
++++ b/drivers/crypto/amcc/crypto4xx_core.h
+@@ -161,9 +161,6 @@ int crypto4xx_alloc_sa(struct crypto4xx_
+ void crypto4xx_free_sa(struct crypto4xx_ctx *ctx);
+ void crypto4xx_free_ctx(struct crypto4xx_ctx *ctx);
+ u32 crypto4xx_alloc_state_record(struct crypto4xx_ctx *ctx);
+-u32 get_dynamic_sa_offset_state_ptr_field(struct crypto4xx_ctx *ctx);
+-u32 get_dynamic_sa_offset_key_field(struct crypto4xx_ctx *ctx);
+-u32 get_dynamic_sa_iv_size(struct crypto4xx_ctx *ctx);
+ void crypto4xx_memcpy_le(unsigned int *dst,
+ 			 const unsigned char *buf, int len);
+ u32 crypto4xx_build_pd(struct crypto_async_request *req,
+--- a/drivers/crypto/amcc/crypto4xx_sa.c
++++ /dev/null
+@@ -1,85 +0,0 @@
+-/**
+- * AMCC SoC PPC4xx Crypto Driver
+- *
+- * Copyright (c) 2008 Applied Micro Circuits Corporation.
+- * All rights reserved. James Hsiao <jhsiao@amcc.com>
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 2 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * @file crypto4xx_sa.c
+- *
+- * This file implements the security context
+- * associate format.
+- */
+-#include <linux/kernel.h>
+-#include <linux/module.h>
+-#include <linux/moduleparam.h>
+-#include <linux/mod_devicetable.h>
+-#include <linux/interrupt.h>
+-#include <linux/spinlock_types.h>
+-#include <linux/highmem.h>
+-#include <linux/scatterlist.h>
+-#include <linux/crypto.h>
+-#include <crypto/algapi.h>
+-#include <crypto/des.h>
+-#include "crypto4xx_reg_def.h"
+-#include "crypto4xx_sa.h"
+-#include "crypto4xx_core.h"
+-
+-u32 get_dynamic_sa_offset_state_ptr_field(struct crypto4xx_ctx *ctx)
+-{
+-	u32 offset;
+-	union dynamic_sa_contents cts;
+-
+-	if (ctx->direction == DIR_INBOUND)
+-		cts.w = ((struct dynamic_sa_ctl *) ctx->sa_in)->sa_contents.w;
+-	else
+-		cts.w = ((struct dynamic_sa_ctl *) ctx->sa_out)->sa_contents.w;
+-	offset = cts.bf.key_size
+-		+ cts.bf.inner_size
+-		+ cts.bf.outer_size
+-		+ cts.bf.spi
+-		+ cts.bf.seq_num0
+-		+ cts.bf.seq_num1
+-		+ cts.bf.seq_num_mask0
+-		+ cts.bf.seq_num_mask1
+-		+ cts.bf.seq_num_mask2
+-		+ cts.bf.seq_num_mask3
+-		+ cts.bf.iv0
+-		+ cts.bf.iv1
+-		+ cts.bf.iv2
+-		+ cts.bf.iv3;
+-
+-	return sizeof(struct dynamic_sa_ctl) + offset * 4;
+-}
+-
+-u32 get_dynamic_sa_iv_size(struct crypto4xx_ctx *ctx)
+-{
+-	union dynamic_sa_contents cts;
+-
+-	if (ctx->direction == DIR_INBOUND)
+-		cts.w = ((struct dynamic_sa_ctl *) ctx->sa_in)->sa_contents.w;
+-	else
+-		cts.w = ((struct dynamic_sa_ctl *) ctx->sa_out)->sa_contents.w;
+-	return (cts.bf.iv0 + cts.bf.iv1 + cts.bf.iv2 + cts.bf.iv3) * 4;
+-}
+-
+-u32 get_dynamic_sa_offset_key_field(struct crypto4xx_ctx *ctx)
+-{
+-	union dynamic_sa_contents cts;
+-
+-	if (ctx->direction == DIR_INBOUND)
+-		cts.w = ((struct dynamic_sa_ctl *) ctx->sa_in)->sa_contents.w;
+-	else
+-		cts.w = ((struct dynamic_sa_ctl *) ctx->sa_out)->sa_contents.w;
+-
+-	return sizeof(struct dynamic_sa_ctl);
+-}
+--- a/drivers/crypto/amcc/crypto4xx_sa.h
++++ b/drivers/crypto/amcc/crypto4xx_sa.h
+@@ -240,4 +240,32 @@ struct dynamic_sa_hash160 {
+ #define SA_HASH160_LEN		(sizeof(struct dynamic_sa_hash160)/4)
+ #define SA_HASH160_CONTENTS     0x2000a502
+ 
++static inline u32
++get_dynamic_sa_offset_state_ptr_field(struct dynamic_sa_ctl *cts)
++{
++	u32 offset;
++
++	offset = cts->sa_contents.bf.key_size
++		+ cts->sa_contents.bf.inner_size
++		+ cts->sa_contents.bf.outer_size
++		+ cts->sa_contents.bf.spi
++		+ cts->sa_contents.bf.seq_num0
++		+ cts->sa_contents.bf.seq_num1
++		+ cts->sa_contents.bf.seq_num_mask0
++		+ cts->sa_contents.bf.seq_num_mask1
++		+ cts->sa_contents.bf.seq_num_mask2
++		+ cts->sa_contents.bf.seq_num_mask3
++		+ cts->sa_contents.bf.iv0
++		+ cts->sa_contents.bf.iv1
++		+ cts->sa_contents.bf.iv2
++		+ cts->sa_contents.bf.iv3;
++
++	return sizeof(struct dynamic_sa_ctl) + offset * 4;
++}
++
++static inline u8 *get_dynamic_sa_key_field(struct dynamic_sa_ctl *cts)
++{
++	return (u8 *) ((unsigned long)cts + sizeof(struct dynamic_sa_ctl));
++}
++
+ #endif

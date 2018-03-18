@@ -7,6 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=squashfs
+PKG_CPE_ID:=cpe:/a:phillip_lougher:squashfs
 PKG_VERSION:=3.0
 
 PKG_SOURCE:=$(PKG_NAME)$(PKG_VERSION).tar.gz

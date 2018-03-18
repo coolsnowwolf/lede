@@ -10,10 +10,11 @@ ARCH:=armeb
 BOARD:=ixp4xx
 BOARDNAME:=Intel IXP4xx
 FEATURES:=squashfs
-MAINTAINER:=Imre Kaloz <kaloz@openwrt.org>
+MAINTAINER:=Ted Hess <thess@kitschensync.net>, \
+	    Imre Kaloz <kaloz@openwrt.org>
 SUBTARGETS:=generic harddisk
 
-KERNEL_PATCHVER:=4.4
+KERNEL_PATCHVER:=4.9
 
 include $(INCLUDE_DIR)/target.mk
 

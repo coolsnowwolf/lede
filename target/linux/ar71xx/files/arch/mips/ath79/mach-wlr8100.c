@@ -49,11 +49,6 @@
 #define WLR8100_KEYS_POLL_INTERVAL	20	/* msecs */
 #define WLR8100_KEYS_DEBOUNCE_INTERVAL	(3 * WLR8100_KEYS_POLL_INTERVAL)
 
-#define WLR8100_MAC0_OFFSET		0
-#define WLR8100_MAC1_OFFSET		6
-#define WLR8100_WMAC_CALDATA_OFFSET	0x1000
-#define WLR8100_PCIE_CALDATA_OFFSET	0x5000
-
 static struct gpio_led wlr8100_leds_gpio[] __initdata = {
 	{
 		.name		= "wlr8100:amber:status",
@@ -138,7 +133,6 @@ static struct mdio_board_info wlr8100_mdio0_info[] = {
 
 static void __init wlr8100_common_setup(void)
 {
-	u8 *art = (u8 *) KSEG1ADDR(0x1fff0000);
 
 	ath79_register_m25p80(NULL);
 
@@ -150,13 +144,11 @@ static void __init wlr8100_common_setup(void)
 
 	ath79_register_usb();
 
-	ath79_register_wmac(art + WLR8100_WMAC_CALDATA_OFFSET, NULL);
+	ath79_register_wmac_simple();
 
 	ath79_setup_qca955x_eth_cfg(QCA955X_ETH_CFG_RGMII_EN);
 
 	ath79_register_mdio(0, 0x0);
-
-	ath79_init_mac(ath79_eth0_data.mac_addr, art + WLR8100_MAC0_OFFSET, 0);
 
 	mdiobus_register_board_info(wlr8100_mdio0_info,
 				    ARRAY_SIZE(wlr8100_mdio0_info));
@@ -178,8 +170,6 @@ static void __init wlr8100_common_setup(void)
 
 static void __init wlr8100_010_setup(void)
 {
-	u8 *art = (u8 *) KSEG1ADDR(0x1fff0000);
-
 	/* GMAC0 of the AR8337 switch is connected to GMAC0 via RGMII */
 	wlr8100_ar8327_pad0_cfg.mode = AR8327_PAD_MAC_RGMII;
 	wlr8100_ar8327_pad0_cfg.txclk_delay_en = true;
@@ -196,7 +186,7 @@ static void __init wlr8100_010_setup(void)
 	ath79_eth1_pll_data.pll_1000 = 0x03000101;
 
 	wlr8100_common_setup();
-	ap91_pci_init(art + WLR8100_PCIE_CALDATA_OFFSET, NULL);
+	ap91_pci_init_simple();
 }
 
 MIPS_MACHINE(ATH79_MACH_WLR8100, "WLR8100",

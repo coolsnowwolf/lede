@@ -13,7 +13,7 @@ FEATURES+=cpiogz ext4 ramdisk squashfs targz
 MAINTAINER:=Florian Fainelli <f.fainelli@gmail.com>, \
 	Yousong Zhou <yszhou4tech@gmail.com>
 
-KERNEL_PATCHVER:=4.9
+KERNEL_PATCHVER:=4.14
 
 include $(INCLUDE_DIR)/target.mk
 

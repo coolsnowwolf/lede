@@ -11,7 +11,7 @@ FOUND_BUG=0
 
 bugcheck_generic()
 {
-    echo "LEDE crashlog report" > $CRASHDIR/info.txt
+    echo "OpenWrt crashlog report" > $CRASHDIR/info.txt
     date >> $CRASHDIR/info.txt
     echo >> $CRASHDIR/info.txt
     echo "uname" >> $CRASHDIR/info.txt

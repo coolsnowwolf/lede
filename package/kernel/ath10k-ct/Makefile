@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ath10k-ct
-PKG_RELEASE=1
+PKG_RELEASE=2
 
 PKG_LICENSE:=GPLv2
 PKG_LICENSE_FILES:=
@@ -14,6 +14,7 @@ PKG_MIRROR_HASH:=616174650e12a82edb6b6bd18ac186e2c6a48fdad0082df9d2011ab20940814
 
 PKG_MAINTAINER:=Ben Greear <greearb@candelatech.com>
 PKG_BUILD_PARALLEL:=1
+PKG_EXTMOD_SUBDIRS:=ath10k
 
 # Build the 4.13 ath10k-ct driver version.  Other options are "-4.9", or
 # leave un-defined for 4.7 kernel.  Probably this should match as closely as
@@ -28,11 +29,11 @@ include $(INCLUDE_DIR)/package.mk
 define KernelPackage/ath10k-ct
   SUBMENU:=Wireless Drivers
   TITLE:=ath10k-ct driver optimized for CT ath10k firmware
-  DEPENDS:=+kmod-mac80211 +kmod-ath +@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT @PCI_SUPPORT +@KERNEL_RELAY +kmod-hwmon-core
+  DEPENDS:=+kmod-mac80211 +kmod-ath +@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT @PCI_SUPPORT +kmod-hwmon-core
   FILES:=\
 	$(PKG_BUILD_DIR)/ath10k$(CT_KVER)/ath10k_pci.ko \
 	$(PKG_BUILD_DIR)/ath10k$(CT_KVER)/ath10k_core.ko
-  AUTOLOAD:=$(call AutoLoad,50,mac80211 ath ath10k_core ath10k_pci)
+  AUTOLOAD:=$(call AutoProbe,ath10k_pci)
 endef
 
 NOSTDINC_FLAGS = \
@@ -68,6 +69,11 @@ ifdef CONFIG_PACKAGE_ATH_DFS
   NOSTDINC_FLAGS += -DCONFIG_ATH10K_DFS_CERTIFIED
 endif
 
+ifdef CONFIG_PACKAGE_ATH_SPECTRAL
+  CT_MAKEDEFS += CONFIG_ATH10K_SPECTRAL=y
+  NOSTDINC_FLAGS += -DCONFIG_ATH10K_SPECTRAL
+endif
+
 define Build/Configure
 	cp $(STAGING_DIR)/usr/include/mac80211/ath/*.h $(PKG_BUILD_DIR)
 endef
@@ -78,8 +84,7 @@ endif
 
 define Build/Compile
 	+$(MAKE) $(CT_MAKEDEFS) $(PKG_JOBS) -C "$(LINUX_DIR)" \
-		ARCH="$(LINUX_KARCH)" \
-		CROSS_COMPILE="$(TARGET_CROSS)" \
+		$(KERNEL_MAKE_FLAGS) \
 		SUBDIRS="$(PKG_BUILD_DIR)/ath10k$(CT_KVER)" \
 		NOSTDINC_FLAGS="$(NOSTDINC_FLAGS)" \
 		modules

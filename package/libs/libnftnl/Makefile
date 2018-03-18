@@ -11,7 +11,7 @@ PKG_NAME:=libnftnl
 PKG_VERSION:=1.0.7
 PKG_RELEASE:=1
 
-PKG_SOURCE_URL:=git://git.netfilter.org/libnftnl
+PKG_SOURCE_URL:=https://git.netfilter.org/libnftnl
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_VERSION:=libnftnl-1.0.7
 PKG_MIRROR_HASH:=d38a409d52074a5b20f5b7477b385506692a9a05ec6f4ac3d14a8a80aa4f81d9

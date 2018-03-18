@@ -56,4 +56,14 @@ endef
 
 TARGET_DEVICES += sun4i-a10-pcduino
 
+
+define Device/sun4i-a10-marsboard
+  DEVICE_TITLE:=HAOYU Electronics Marsboard A10
+  DEVICE_PACKAGES:=mod-ata-core kmod-ata-sunxi kmod-sun4i-emac kmod-rtc-sunxi sound-soc-sunxi
+  SUPPORTED_DEVICES:=marsboard,a10-marsboard
+  SUNXI_DTS:=sun4i-a10-marsboard
+endef
+
+TARGET_DEVICES += sun4i-a10-marsboard
+
 endif

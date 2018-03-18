@@ -10,10 +10,10 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mac80211
 
-PKG_VERSION:=2017-10-06
-PKG_RELEASE:=1
+PKG_VERSION:=2017-11-01
+PKG_RELEASE:=2
 PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources
-PKG_HASH:=194786b7635f36b9ce280fd2319f6a4feeff209175e330ddbcbe789a3b4540a5
+PKG_HASH:=8437ab7886b988c8152e7a4db30b7f41009e49a3b2cb863edd05da1ecd7eb05a
 
 PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/backports-$(PKG_VERSION)
@@ -55,6 +55,7 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_MAC80211_TRACING \
 	CONFIG_PACKAGE_ATH_DEBUG \
 	CONFIG_PACKAGE_ATH_DFS \
+	CONFIG_PACKAGE_ATH_SPECTRAL \
 	CONFIG_PACKAGE_B43_DEBUG \
 	CONFIG_PACKAGE_B43_PIO \
 	CONFIG_PACKAGE_B43_PHY_G \
@@ -87,7 +88,7 @@ endef
 define KernelPackage/cfg80211
   $(call KernelPackage/mac80211/Default)
   TITLE:=cfg80211 - wireless configuration API
-  DEPENDS+= +iw
+  DEPENDS+= +iw +wireless-regdb
   FILES:= \
 	$(PKG_BUILD_DIR)/compat/compat.ko \
 	$(PKG_BUILD_DIR)/net/wireless/cfg80211.ko
@@ -188,6 +189,13 @@ define KernelPackage/ath/config
 
 		  Select this option if you want to use such channels.
 
+	config PACKAGE_ATH_SPECTRAL
+		bool "Atheros spectral scan support"
+		depends on PACKAGE_ATH_DEBUG
+		select KERNEL_RELAY
+		help
+		  Say Y to enable access to the FFT/spectral data via debugfs.
+
   endif
 endef
 
@@ -222,7 +230,7 @@ define KernelPackage/ath6kl
   TITLE:=Atheros FullMAC wireless devices (common code for ath6kl_sdio and ath6kl_usb)
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath6kl
   HIDDEN:=1
-  DEPENDS+= +kmod-ath +@DRIVER_11N_SUPPORT +@KERNEL_RELAY
+  DEPENDS+= +kmod-ath +@DRIVER_11N_SUPPORT
   FILES:= $(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath6kl/ath6kl_core.ko
 endef
 
@@ -259,7 +267,7 @@ define KernelPackage/ath9k-common
   TITLE:=Atheros 802.11n wireless devices (common code for ath9k and ath9k_htc)
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath9k
   HIDDEN:=1
-  DEPENDS+= @PCI_SUPPORT||USB_SUPPORT||TARGET_ar71xx +kmod-ath +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT +@KERNEL_RELAY
+  DEPENDS+= @PCI_SUPPORT||USB_SUPPORT||TARGET_ar71xx +kmod-ath +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT
   FILES:= \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath9k/ath9k_common.ko \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath9k/ath9k_hw.ko
@@ -316,11 +324,11 @@ define KernelPackage/ath10k
   $(call KernelPackage/mac80211/Default)
   TITLE:=Atheros 802.11ac wireless cards support
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath10k
-  DEPENDS+= @PCI_SUPPORT +kmod-ath +@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT +@DRIVER_11W_SUPPORT +@KERNEL_RELAY
+  DEPENDS+= @PCI_SUPPORT +kmod-ath +@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT +@DRIVER_11W_SUPPORT
   FILES:= \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath10k/ath10k_core.ko \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath10k/ath10k_pci.ko
-  AUTOLOAD:=$(call AutoLoad,55,ath10k_core ath10k_pci)
+  AUTOLOAD:=$(call AutoProbe,ath10k_pci)
 endef
 
 define KernelPackage/ath10k/description
@@ -742,6 +750,7 @@ define KernelPackage/brcmfmac/config
 	config BRCMFMAC_SDIO
 		bool "Enable SDIO bus interface support"
 		default y if TARGET_brcm2708
+		default y if TARGET_sunxi
 		default n
 		help
 		  Enable support for cards attached to an SDIO bus.
@@ -1516,7 +1525,6 @@ config-y:= \
 	WLAN \
 	NL80211_TESTMODE \
 	CFG80211_WEXT \
-	CFG80211_INTERNAL_REGDB \
 	CFG80211_CERTIFICATION_ONUS \
 	MAC80211_RC_MINSTREL \
 	MAC80211_RC_MINSTREL_HT \
@@ -1568,9 +1576,10 @@ config-$(call config_package,lib80211) += LIB80211 LIB80211_CRYPT_WEP LIB80211_C
 
 config-$(call config_package,airo) += AIRO
 
-config-$(call config_package,ath) += ATH_CARDS ATH_COMMON
+config-$(call config_package,ath) += ATH_CARDS ATH_COMMON ATH_REG_DYNAMIC_USER_REG_HINTS
 config-$(CONFIG_PACKAGE_ATH_DEBUG) += ATH_DEBUG ATH10K_DEBUG ATH9K_STATION_STATISTICS
 config-$(CONFIG_PACKAGE_ATH_DFS) += ATH9K_DFS_CERTIFIED ATH10K_DFS_CERTIFIED
+config-$(CONFIG_PACKAGE_ATH_SPECTRAL) += ATH9K_COMMON_SPECTRAL ATH10K_SPECTRAL
 
 config-$(call config_package,ath9k) += ATH9K
 config-$(call config_package,ath9k-common) += ATH9K_COMMON
@@ -1742,7 +1751,6 @@ define Build/Prepare
 		$(PKG_BUILD_DIR)/backport-include/linux/bcm47xx_nvram.h
 
 	echo 'compat-wireless-$(PKG_VERSION)-$(PKG_RELEASE)-$(REVISION)' > $(PKG_BUILD_DIR)/compat_version
-	$(CP) ./files/regdb.txt $(PKG_BUILD_DIR)/net/wireless/db.txt
 endef
 
 ifneq ($(CONFIG_PACKAGE_kmod-cfg80211)$(CONFIG_PACKAGE_kmod-lib80211),)

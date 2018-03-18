@@ -68,6 +68,7 @@ define KernelPackage/nf-conntrack
   KCONFIG:= \
         CONFIG_NETFILTER=y \
         CONFIG_NETFILTER_ADVANCED=y \
+        CONFIG_NF_CONNTRACK_MARK=y \
         CONFIG_NF_CONNTRACK_ZONES=y \
 	$(KCONFIG_NF_CONNTRACK)
   FILES:=$(foreach mod,$(NF_CONNTRACK-m),$(LINUX_DIR)/net/$(mod).ko)
@@ -528,6 +529,23 @@ define KernelPackage/ipt-u32/description
 endef
 
 $(eval $(call KernelPackage,ipt-u32))
+
+define KernelPackage/ipt-checksum
+  TITLE:=CHECKSUM support
+  KCONFIG:= \
+  	CONFIG_NETFILTER_XT_TARGET_CHECKSUM
+  FILES:= \
+  	$(LINUX_DIR)/net/netfilter/xt_CHECKSUM.ko \
+  	$(foreach mod,$(IPT_CHECKSUM-m),$(LINUX_DIR)/net/$(mod).ko)
+  AUTOLOAD:=$(call AutoProbe,$(notdir $(IPT_CHECKSUM-m)))
+  $(call AddDepends/ipt)
+endef
+
+define KernelPackage/ipt-checksum/description
+  Kernel modules for CHECKSUM fillin target
+endef
+
+$(eval $(call KernelPackage,ipt-checksum))
 
 
 define KernelPackage/ipt-iprange
