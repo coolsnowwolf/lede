@@ -323,6 +323,7 @@ e:value("game",translate("Game Mode"))
 -- ---------------------------------------------------
 local apply = luci.http.formvalue("cbi.apply")
 if apply then
+	os.execute("chmod +x /etc/init.d/v2raypro &")
 	os.execute("/etc/init.d/v2raypro restart >/dev/null 2>&1 &")
 end
 
