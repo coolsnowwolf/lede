@@ -5,13 +5,12 @@
 
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=LuCI support for SFE
-LUCI_DEPENDS:=+kmod-fast-classifier @!LINUX_4_14
+LUCI_TITLE:=LuCI support for V2Ray
+LUCI_DEPENDS:=+iptables-mod-tproxy +kmod-ipt-tproxy +ip +ipset-lists +pdnsd-alt +coreutils +coreutils-base64 +coreutils-nohup +dnsmasq-full +ca-certificates +v2ray
 LUCI_PKGARCH:=all
 PKG_VERSION:=1.0
-PKG_RELEASE:=3
+PKG_RELEASE:=2
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
-
