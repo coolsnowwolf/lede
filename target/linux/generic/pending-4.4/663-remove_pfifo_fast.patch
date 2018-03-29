@@ -1,0 +1,142 @@
+--- a/net/sched/sch_generic.c
++++ b/net/sched/sch_generic.c
+@@ -438,139 +438,6 @@ struct Qdisc_ops noqueue_qdisc_ops __rea
+ 	.owner		=	THIS_MODULE,
+ };
+ 
+-static const u8 prio2band[TC_PRIO_MAX + 1] = {
+-	1, 2, 2, 2, 1, 2, 0, 0 , 1, 1, 1, 1, 1, 1, 1, 1
+-};
+-
+-/* 3-band FIFO queue: old style, but should be a bit faster than
+-   generic prio+fifo combination.
+- */
+-
+-#define PFIFO_FAST_BANDS 3
+-
+-/*
+- * Private data for a pfifo_fast scheduler containing:
+- * 	- queues for the three band
+- * 	- bitmap indicating which of the bands contain skbs
+- */
+-struct pfifo_fast_priv {
+-	u32 bitmap;
+-	struct sk_buff_head q[PFIFO_FAST_BANDS];
+-};
+-
+-/*
+- * Convert a bitmap to the first band number where an skb is queued, where:
+- * 	bitmap=0 means there are no skbs on any band.
+- * 	bitmap=1 means there is an skb on band 0.
+- *	bitmap=7 means there are skbs on all 3 bands, etc.
+- */
+-static const int bitmap2band[] = {-1, 0, 1, 0, 2, 0, 1, 0};
+-
+-static inline struct sk_buff_head *band2list(struct pfifo_fast_priv *priv,
+-					     int band)
+-{
+-	return priv->q + band;
+-}
+-
+-static int pfifo_fast_enqueue(struct sk_buff *skb, struct Qdisc *qdisc)
+-{
+-	if (skb_queue_len(&qdisc->q) < qdisc_dev(qdisc)->tx_queue_len) {
+-		int band = prio2band[skb->priority & TC_PRIO_MAX];
+-		struct pfifo_fast_priv *priv = qdisc_priv(qdisc);
+-		struct sk_buff_head *list = band2list(priv, band);
+-
+-		priv->bitmap |= (1 << band);
+-		qdisc->q.qlen++;
+-		return __qdisc_enqueue_tail(skb, qdisc, list);
+-	}
+-
+-	return qdisc_drop(skb, qdisc);
+-}
+-
+-static struct sk_buff *pfifo_fast_dequeue(struct Qdisc *qdisc)
+-{
+-	struct pfifo_fast_priv *priv = qdisc_priv(qdisc);
+-	int band = bitmap2band[priv->bitmap];
+-
+-	if (likely(band >= 0)) {
+-		struct sk_buff_head *list = band2list(priv, band);
+-		struct sk_buff *skb = __qdisc_dequeue_head(qdisc, list);
+-
+-		qdisc->q.qlen--;
+-		if (skb_queue_empty(list))
+-			priv->bitmap &= ~(1 << band);
+-
+-		return skb;
+-	}
+-
+-	return NULL;
+-}
+-
+-static struct sk_buff *pfifo_fast_peek(struct Qdisc *qdisc)
+-{
+-	struct pfifo_fast_priv *priv = qdisc_priv(qdisc);
+-	int band = bitmap2band[priv->bitmap];
+-
+-	if (band >= 0) {
+-		struct sk_buff_head *list = band2list(priv, band);
+-
+-		return skb_peek(list);
+-	}
+-
+-	return NULL;
+-}
+-
+-static void pfifo_fast_reset(struct Qdisc *qdisc)
+-{
+-	int prio;
+-	struct pfifo_fast_priv *priv = qdisc_priv(qdisc);
+-
+-	for (prio = 0; prio < PFIFO_FAST_BANDS; prio++)
+-		__qdisc_reset_queue(qdisc, band2list(priv, prio));
+-
+-	priv->bitmap = 0;
+-	qdisc->qstats.backlog = 0;
+-	qdisc->q.qlen = 0;
+-}
+-
+-static int pfifo_fast_dump(struct Qdisc *qdisc, struct sk_buff *skb)
+-{
+-	struct tc_prio_qopt opt = { .bands = PFIFO_FAST_BANDS };
+-
+-	memcpy(&opt.priomap, prio2band, TC_PRIO_MAX + 1);
+-	if (nla_put(skb, TCA_OPTIONS, sizeof(opt), &opt))
+-		goto nla_put_failure;
+-	return skb->len;
+-
+-nla_put_failure:
+-	return -1;
+-}
+-
+-static int pfifo_fast_init(struct Qdisc *qdisc, struct nlattr *opt)
+-{
+-	int prio;
+-	struct pfifo_fast_priv *priv = qdisc_priv(qdisc);
+-
+-	for (prio = 0; prio < PFIFO_FAST_BANDS; prio++)
+-		__skb_queue_head_init(band2list(priv, prio));
+-
+-	/* Can by-pass the queue discipline */
+-	qdisc->flags |= TCQ_F_CAN_BYPASS;
+-	return 0;
+-}
+-
+-struct Qdisc_ops pfifo_fast_ops __read_mostly = {
+-	.id		=	"pfifo_fast",
+-	.priv_size	=	sizeof(struct pfifo_fast_priv),
+-	.enqueue	=	pfifo_fast_enqueue,
+-	.dequeue	=	pfifo_fast_dequeue,
+-	.peek		=	pfifo_fast_peek,
+-	.init		=	pfifo_fast_init,
+-	.reset		=	pfifo_fast_reset,
+-	.dump		=	pfifo_fast_dump,
+-	.owner		=	THIS_MODULE,
+-};
+-
+ static struct lock_class_key qdisc_tx_busylock;
+ 
+ struct Qdisc *qdisc_alloc(struct netdev_queue *dev_queue,

@@ -1,0 +1,142 @@
+--- a/drivers/mtd/mtdpart.c
++++ b/drivers/mtd/mtdpart.c
+@@ -37,6 +37,8 @@
+ #include "mtdcore.h"
+ #include "mtdsplit/mtdsplit.h"
+ 
++#define MTD_ERASE_PARTIAL	0x8000 /* partition only covers parts of an erase block */
++
+ /* Our partition linked list */
+ static LIST_HEAD(mtd_partitions);
+ static DEFINE_MUTEX(mtd_partitions_mutex);
+@@ -236,13 +238,61 @@ static int part_erase(struct mtd_info *m
+ 	struct mtd_part *part = PART(mtd);
+ 	int ret;
+ 
++
++	instr->partial_start = false;
++	if (mtd->flags & MTD_ERASE_PARTIAL) {
++		size_t readlen = 0;
++		u64 mtd_ofs;
++
++		instr->erase_buf = kmalloc(part->master->erasesize, GFP_ATOMIC);
++		if (!instr->erase_buf)
++			return -ENOMEM;
++
++		mtd_ofs = part->offset + instr->addr;
++		instr->erase_buf_ofs = do_div(mtd_ofs, part->master->erasesize);
++
++		if (instr->erase_buf_ofs > 0) {
++			instr->addr -= instr->erase_buf_ofs;
++			ret = mtd_read(part->master,
++				instr->addr + part->offset,
++				part->master->erasesize,
++				&readlen, instr->erase_buf);
++
++			instr->len += instr->erase_buf_ofs;
++			instr->partial_start = true;
++		} else {
++			mtd_ofs = part->offset + part->mtd.size;
++			instr->erase_buf_ofs = part->master->erasesize -
++				do_div(mtd_ofs, part->master->erasesize);
++
++			if (instr->erase_buf_ofs > 0) {
++				instr->len += instr->erase_buf_ofs;
++				ret = mtd_read(part->master,
++					part->offset + instr->addr +
++					instr->len - part->master->erasesize,
++					part->master->erasesize, &readlen,
++					instr->erase_buf);
++			} else {
++				ret = 0;
++			}
++		}
++		if (ret < 0) {
++			kfree(instr->erase_buf);
++			return ret;
++		}
++
++	}
++
+ 	instr->addr += part->offset;
+ 	ret = part->master->_erase(part->master, instr);
+ 	if (ret) {
+ 		if (instr->fail_addr != MTD_FAIL_ADDR_UNKNOWN)
+ 			instr->fail_addr -= part->offset;
+ 		instr->addr -= part->offset;
++		if (mtd->flags & MTD_ERASE_PARTIAL)
++			kfree(instr->erase_buf);
+ 	}
++
+ 	return ret;
+ }
+ 
+@@ -250,7 +300,25 @@ void mtd_erase_callback(struct erase_inf
+ {
+ 	if (instr->mtd->_erase == part_erase) {
+ 		struct mtd_part *part = PART(instr->mtd);
++		size_t wrlen = 0;
+ 
++		if (instr->mtd->flags & MTD_ERASE_PARTIAL) {
++			if (instr->partial_start) {
++				part->master->_write(part->master,
++					instr->addr, instr->erase_buf_ofs,
++					&wrlen, instr->erase_buf);
++				instr->addr += instr->erase_buf_ofs;
++			} else {
++				instr->len -= instr->erase_buf_ofs;
++				part->master->_write(part->master,
++					instr->addr + instr->len,
++					instr->erase_buf_ofs, &wrlen,
++					instr->erase_buf +
++					part->master->erasesize -
++					instr->erase_buf_ofs);
++			}
++			kfree(instr->erase_buf);
++		}
+ 		if (instr->fail_addr != MTD_FAIL_ADDR_UNKNOWN)
+ 			instr->fail_addr -= part->offset;
+ 		instr->addr -= part->offset;
+@@ -523,17 +591,20 @@ static struct mtd_part *allocate_partiti
+ 	if ((slave->mtd.flags & MTD_WRITEABLE) &&
+ 	    mtd_mod_by_eb(slave->offset, &slave->mtd)) {
+ 		/* Doesn't start on a boundary of major erase size */
+-		/* FIXME: Let it be writable if it is on a boundary of
+-		 * _minor_ erase size though */
+-		slave->mtd.flags &= ~MTD_WRITEABLE;
+-		printk(KERN_WARNING"mtd: partition \"%s\" doesn't start on an erase block boundary -- force read-only\n",
+-			part->name);
++		slave->mtd.flags |= MTD_ERASE_PARTIAL;
++		if (((u32) slave->mtd.size) > master->erasesize)
++			slave->mtd.flags &= ~MTD_WRITEABLE;
++		else
++			slave->mtd.erasesize = slave->mtd.size;
+ 	}
+ 	if ((slave->mtd.flags & MTD_WRITEABLE) &&
+-	    mtd_mod_by_eb(slave->mtd.size, &slave->mtd)) {
+-		slave->mtd.flags &= ~MTD_WRITEABLE;
+-		printk(KERN_WARNING"mtd: partition \"%s\" doesn't end on an erase block -- force read-only\n",
+-			part->name);
++	    mtd_mod_by_eb(slave->offset + slave->mtd.size, &slave->mtd)) {
++		slave->mtd.flags |= MTD_ERASE_PARTIAL;
++
++		if ((u32) slave->mtd.size > master->erasesize)
++			slave->mtd.flags &= ~MTD_WRITEABLE;
++		else
++			slave->mtd.erasesize = slave->mtd.size;
+ 	}
+ 
+ 	slave->mtd.ecclayout = master->ecclayout;
+--- a/include/linux/mtd/mtd.h
++++ b/include/linux/mtd/mtd.h
+@@ -55,6 +55,10 @@ struct erase_info {
+ 	u_long priv;
+ 	u_char state;
+ 	struct erase_info *next;
++
++	u8 *erase_buf;
++	u32 erase_buf_ofs;
++	bool partial_start;
+ };
+ 
+ struct mtd_erase_region_info {

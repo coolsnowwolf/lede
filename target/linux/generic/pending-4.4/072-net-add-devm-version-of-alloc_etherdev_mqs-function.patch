@@ -1,0 +1,70 @@
+From 40be0dda0725886b623d67868db3219a2e74683b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Sat, 28 Jan 2017 15:15:42 +0100
+Subject: [PATCH] net: add devm version of alloc_etherdev_mqs function
+
+This patch adds devm_alloc_etherdev_mqs function and devm_alloc_etherdev
+macro. These can be used for simpler netdev allocation without having to
+care about calling free_netdev.
+
+Thanks to this change drivers, their error paths and removal paths may
+get simpler by a bit.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ include/linux/etherdevice.h |  5 +++++
+ net/ethernet/eth.c          | 28 ++++++++++++++++++++++++++++
+ 2 files changed, 33 insertions(+)
+
+--- a/include/linux/etherdevice.h
++++ b/include/linux/etherdevice.h
+@@ -51,6 +51,11 @@ struct net_device *alloc_etherdev_mqs(in
+ #define alloc_etherdev(sizeof_priv) alloc_etherdev_mq(sizeof_priv, 1)
+ #define alloc_etherdev_mq(sizeof_priv, count) alloc_etherdev_mqs(sizeof_priv, count, count)
+ 
++struct net_device *devm_alloc_etherdev_mqs(struct device *dev, int sizeof_priv,
++					   unsigned int txqs,
++					   unsigned int rxqs);
++#define devm_alloc_etherdev(dev, sizeof_priv) devm_alloc_etherdev_mqs(dev, sizeof_priv, 1, 1)
++
+ struct sk_buff **eth_gro_receive(struct sk_buff **head,
+ 				 struct sk_buff *skb);
+ int eth_gro_complete(struct sk_buff *skb, int nhoff);
+--- a/net/ethernet/eth.c
++++ b/net/ethernet/eth.c
+@@ -388,6 +388,34 @@ struct net_device *alloc_etherdev_mqs(in
+ }
+ EXPORT_SYMBOL(alloc_etherdev_mqs);
+ 
++static void devm_free_netdev(struct device *dev, void *res)
++{
++	free_netdev(*(struct net_device **)res);
++}
++
++struct net_device *devm_alloc_etherdev_mqs(struct device *dev, int sizeof_priv,
++					   unsigned int txqs, unsigned int rxqs)
++{
++	struct net_device **dr;
++	struct net_device *netdev;
++
++	dr = devres_alloc(devm_free_netdev, sizeof(*dr), GFP_KERNEL);
++	if (!dr)
++		return NULL;
++
++	netdev = alloc_etherdev_mqs(sizeof_priv, txqs, rxqs);
++	if (!netdev) {
++		devres_free(dr);
++		return NULL;
++	}
++
++	*dr = netdev;
++	devres_add(dev, dr);
++
++	return netdev;
++}
++EXPORT_SYMBOL(devm_alloc_etherdev_mqs);
++
+ ssize_t sysfs_format_mac(char *buf, const unsigned char *addr, int len)
+ {
+ 	return scnprintf(buf, PAGE_SIZE, "%*phC\n", len, addr);

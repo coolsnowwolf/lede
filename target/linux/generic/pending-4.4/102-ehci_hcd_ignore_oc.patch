@@ -1,0 +1,82 @@
+From 1e311820ec3055e3f08e687de6564692a7cec675 Mon Sep 17 00:00:00 2001
+From: Florian Fainelli <florian@openwrt.org>
+Date: Mon, 28 Jan 2013 20:06:29 +0100
+Subject: [PATCH 11/12] USB: EHCI: add ignore_oc flag to disable overcurrent
+ checking
+
+This patch adds an ignore_oc flag which can be set by EHCI controller
+not supporting or wanting to disable overcurrent checking. The EHCI
+platform data in include/linux/usb/ehci_pdriver.h is also augmented to
+take advantage of this new flag.
+
+Signed-off-by: Florian Fainelli <florian@openwrt.org>
+---
+ drivers/usb/host/ehci-hcd.c      |    2 +-
+ drivers/usb/host/ehci-hub.c      |    4 ++--
+ drivers/usb/host/ehci-platform.c |    1 +
+ drivers/usb/host/ehci.h          |    1 +
+ include/linux/usb/ehci_pdriver.h |    1 +
+ 5 files changed, 6 insertions(+), 3 deletions(-)
+
+--- a/drivers/usb/host/ehci-hcd.c
++++ b/drivers/usb/host/ehci-hcd.c
+@@ -639,7 +639,7 @@ static int ehci_run (struct usb_hcd *hcd
+ 		"USB %x.%x started, EHCI %x.%02x%s\n",
+ 		((ehci->sbrn & 0xf0)>>4), (ehci->sbrn & 0x0f),
+ 		temp >> 8, temp & 0xff,
+-		ignore_oc ? ", overcurrent ignored" : "");
++		(ignore_oc || ehci->ignore_oc) ? ", overcurrent ignored" : "");
+ 
+ 	ehci_writel(ehci, INTR_MASK,
+ 		    &ehci->regs->intr_enable); /* Turn On Interrupts */
+--- a/drivers/usb/host/ehci-hub.c
++++ b/drivers/usb/host/ehci-hub.c
+@@ -634,7 +634,7 @@ ehci_hub_status_data (struct usb_hcd *hc
+ 	 * always set, seem to clear PORT_OCC and PORT_CSC when writing to
+ 	 * PORT_POWER; that's surprising, but maybe within-spec.
+ 	 */
+-	if (!ignore_oc)
++	if (!ignore_oc && !ehci->ignore_oc)
+ 		mask = PORT_CSC | PORT_PEC | PORT_OCC;
+ 	else
+ 		mask = PORT_CSC | PORT_PEC;
+@@ -996,7 +996,7 @@ int ehci_hub_control(
+ 		if (temp & PORT_PEC)
+ 			status |= USB_PORT_STAT_C_ENABLE << 16;
+ 
+-		if ((temp & PORT_OCC) && !ignore_oc){
++		if ((temp & PORT_OCC) && (!ignore_oc && !ehci->ignore_oc)){
+ 			status |= USB_PORT_STAT_C_OVERCURRENT << 16;
+ 
+ 			/*
+--- a/drivers/usb/host/ehci-platform.c
++++ b/drivers/usb/host/ehci-platform.c
+@@ -254,6 +254,8 @@ static int ehci_platform_probe(struct pl
+ 		hcd->has_tt = 1;
+ 	if (pdata->reset_on_resume)
+ 		priv->reset_on_resume = true;
++	if (pdata->ignore_oc)
++		ehci->ignore_oc = 1;
+ 
+ #ifndef CONFIG_USB_EHCI_BIG_ENDIAN_MMIO
+ 	if (ehci->big_endian_mmio) {
+--- a/drivers/usb/host/ehci.h
++++ b/drivers/usb/host/ehci.h
+@@ -227,6 +227,7 @@ struct ehci_hcd {			/* one per controlle
+ 	unsigned		frame_index_bug:1; /* MosChip (AKA NetMos) */
+ 	unsigned		need_oc_pp_cycle:1; /* MPC834X port power */
+ 	unsigned		imx28_write_fix:1; /* For Freescale i.MX28 */
++	unsigned		ignore_oc:1;
+ 
+ 	/* required for usb32 quirk */
+ 	#define OHCI_CTRL_HCFS          (3 << 6)
+--- a/include/linux/usb/ehci_pdriver.h
++++ b/include/linux/usb/ehci_pdriver.h
+@@ -49,6 +49,7 @@ struct usb_ehci_pdata {
+ 	unsigned	no_io_watchdog:1;
+ 	unsigned	reset_on_resume:1;
+ 	unsigned	dma_mask_64:1;
++	unsigned	ignore_oc:1;
+ 
+ 	/* Turn on all power and clocks */
+ 	int (*power_on)(struct platform_device *pdev);

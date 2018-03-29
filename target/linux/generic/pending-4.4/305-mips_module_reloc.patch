@@ -1,0 +1,355 @@
+--- a/arch/mips/Makefile
++++ b/arch/mips/Makefile
+@@ -90,8 +90,13 @@ all-$(CONFIG_SYS_SUPPORTS_ZBOOT)+= vmlin
+ cflags-y			+= -G 0 -mno-abicalls -fno-pic -pipe -mno-branch-likely
+ cflags-y			+= -msoft-float
+ LDFLAGS_vmlinux			+= -G 0 -static -n -nostdlib --gc-sections
++ifdef CONFIG_64BIT
+ KBUILD_AFLAGS_MODULE		+= -mlong-calls
+ KBUILD_CFLAGS_MODULE		+= -mlong-calls
++else
++KBUILD_AFLAGS_MODULE		+= -mno-long-calls
++KBUILD_CFLAGS_MODULE		+= -mno-long-calls
++endif
+ 
+ ifndef CONFIG_FUNCTION_TRACER
+ KBUILD_CFLAGS_KERNEL		+= -ffunction-sections -fdata-sections
+--- a/arch/mips/include/asm/module.h
++++ b/arch/mips/include/asm/module.h
+@@ -11,6 +11,11 @@ struct mod_arch_specific {
+ 	const struct exception_table_entry *dbe_start;
+ 	const struct exception_table_entry *dbe_end;
+ 	struct mips_hi16 *r_mips_hi16_list;
++
++	void *phys_plt_tbl;
++	void *virt_plt_tbl;
++	unsigned int phys_plt_offset;
++	unsigned int virt_plt_offset;
+ };
+ 
+ typedef uint8_t Elf64_Byte;		/* Type for a 8-bit quantity.  */
+--- a/arch/mips/kernel/module.c
++++ b/arch/mips/kernel/module.c
+@@ -43,14 +43,221 @@ struct mips_hi16 {
+ static LIST_HEAD(dbe_list);
+ static DEFINE_SPINLOCK(dbe_lock);
+ 
+-#ifdef MODULE_START
++/*
++ * Get the potential max trampolines size required of the init and
++ * non-init sections. Only used if we cannot find enough contiguous
++ * physically mapped memory to put the module into.
++ */
++static unsigned int
++get_plt_size(const Elf_Ehdr *hdr, const Elf_Shdr *sechdrs,
++             const char *secstrings, unsigned int symindex, bool is_init)
++{
++	unsigned long ret = 0;
++	unsigned int i, j;
++	Elf_Sym *syms;
++
++	/* Everything marked ALLOC (this includes the exported symbols) */
++	for (i = 1; i < hdr->e_shnum; ++i) {
++		unsigned int info = sechdrs[i].sh_info;
++
++		if (sechdrs[i].sh_type != SHT_REL
++		    && sechdrs[i].sh_type != SHT_RELA)
++			continue;
++
++		/* Not a valid relocation section? */
++		if (info >= hdr->e_shnum)
++			continue;
++
++		/* Don't bother with non-allocated sections */
++		if (!(sechdrs[info].sh_flags & SHF_ALLOC))
++			continue;
++
++		/* If it's called *.init*, and we're not init, we're
++                   not interested */
++		if ((strstr(secstrings + sechdrs[i].sh_name, ".init") != 0)
++		    != is_init)
++			continue;
++
++		syms = (Elf_Sym *) sechdrs[symindex].sh_addr;
++		if (sechdrs[i].sh_type == SHT_REL) {
++			Elf_Mips_Rel *rel = (void *) sechdrs[i].sh_addr;
++			unsigned int size = sechdrs[i].sh_size / sizeof(*rel);
++
++			for (j = 0; j < size; ++j) {
++				Elf_Sym *sym;
++
++				if (ELF_MIPS_R_TYPE(rel[j]) != R_MIPS_26)
++					continue;
++
++				sym = syms + ELF_MIPS_R_SYM(rel[j]);
++				if (!is_init && sym->st_shndx != SHN_UNDEF)
++					continue;
++
++				ret += 4 * sizeof(int);
++			}
++		} else {
++			Elf_Mips_Rela *rela = (void *) sechdrs[i].sh_addr;
++			unsigned int size = sechdrs[i].sh_size / sizeof(*rela);
++
++			for (j = 0; j < size; ++j) {
++				Elf_Sym *sym;
++
++				if (ELF_MIPS_R_TYPE(rela[j]) != R_MIPS_26)
++					continue;
++
++				sym = syms + ELF_MIPS_R_SYM(rela[j]);
++				if (!is_init && sym->st_shndx != SHN_UNDEF)
++					continue;
++
++				ret += 4 * sizeof(int);
++			}
++		}
++	}
++
++	return ret;
++}
++
++#ifndef MODULE_START
++static void *alloc_phys(unsigned long size)
++{
++	unsigned order;
++	struct page *page;
++	struct page *p;
++
++	size = PAGE_ALIGN(size);
++	order = get_order(size);
++
++	page = alloc_pages(GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN |
++			__GFP_THISNODE, order);
++	if (!page)
++		return NULL;
++
++	split_page(page, order);
++
++	/* mark all pages except for the last one */
++	for (p = page; p + 1 < page + (size >> PAGE_SHIFT); ++p)
++		set_bit(PG_owner_priv_1, &p->flags);
++
++	for (p = page + (size >> PAGE_SHIFT); p < page + (1 << order); ++p)
++		__free_page(p);
++
++	return page_address(page);
++}
++#endif
++
++static void free_phys(void *ptr)
++{
++	struct page *page;
++	bool free;
++
++	page = virt_to_page(ptr);
++	do {
++		free = test_and_clear_bit(PG_owner_priv_1, &page->flags);
++		__free_page(page);
++		page++;
++	} while (free);
++}
++
++
+ void *module_alloc(unsigned long size)
+ {
++#ifdef MODULE_START
+ 	return __vmalloc_node_range(size, 1, MODULE_START, MODULE_END,
+ 				GFP_KERNEL, PAGE_KERNEL, 0, NUMA_NO_NODE,
+ 				__builtin_return_address(0));
++#else
++	void *ptr;
++
++	if (size == 0)
++		return NULL;
++
++	ptr = alloc_phys(size);
++
++	/* If we failed to allocate physically contiguous memory,
++	 * fall back to regular vmalloc. The module loader code will
++	 * create jump tables to handle long jumps */
++	if (!ptr)
++		return vmalloc(size);
++
++	return ptr;
++#endif
+ }
++
++static inline bool is_phys_addr(void *ptr)
++{
++#ifdef CONFIG_64BIT
++	return (KSEGX((unsigned long)ptr) == CKSEG0);
++#else
++	return (KSEGX(ptr) == KSEG0);
+ #endif
++}
++
++/* Free memory returned from module_alloc */
++void module_memfree(void *module_region)
++{
++	if (is_phys_addr(module_region))
++		free_phys(module_region);
++	else
++		vfree(module_region);
++}
++
++static void *__module_alloc(int size, bool phys)
++{
++	void *ptr;
++
++	if (phys)
++		ptr = kmalloc(size, GFP_KERNEL);
++	else
++		ptr = vmalloc(size);
++	return ptr;
++}
++
++static void __module_free(void *ptr)
++{
++	if (is_phys_addr(ptr))
++		kfree(ptr);
++	else
++		vfree(ptr);
++}
++
++int module_frob_arch_sections(Elf_Ehdr *hdr, Elf_Shdr *sechdrs,
++			      char *secstrings, struct module *mod)
++{
++	unsigned int symindex = 0;
++	unsigned int core_size, init_size;
++	int i;
++
++	mod->arch.phys_plt_offset = 0;
++	mod->arch.virt_plt_offset = 0;
++	mod->arch.phys_plt_tbl = NULL;
++	mod->arch.virt_plt_tbl = NULL;
++
++	if (IS_ENABLED(CONFIG_64BIT))
++		return 0;
++
++	for (i = 1; i < hdr->e_shnum; i++)
++		if (sechdrs[i].sh_type == SHT_SYMTAB)
++			symindex = i;
++
++	core_size = get_plt_size(hdr, sechdrs, secstrings, symindex, false);
++	init_size = get_plt_size(hdr, sechdrs, secstrings, symindex, true);
++
++	if ((core_size + init_size) == 0)
++		return 0;
++
++	mod->arch.phys_plt_tbl = __module_alloc(core_size + init_size, 1);
++	if (!mod->arch.phys_plt_tbl)
++		return -ENOMEM;
++
++	mod->arch.virt_plt_tbl = __module_alloc(core_size + init_size, 0);
++	if (!mod->arch.virt_plt_tbl) {
++		__module_free(mod->arch.phys_plt_tbl);
++		mod->arch.phys_plt_tbl = NULL;
++		return -ENOMEM;
++	}
++
++	return 0;
++}
+ 
+ int apply_r_mips_none(struct module *me, u32 *location, Elf_Addr v)
+ {
+@@ -64,8 +271,39 @@ static int apply_r_mips_32_rel(struct mo
+ 	return 0;
+ }
+ 
++static Elf_Addr add_plt_entry_to(unsigned *plt_offset,
++				 void *start, Elf_Addr v)
++{
++	unsigned *tramp = start + *plt_offset;
++	*plt_offset += 4 * sizeof(int);
++
++	/* adjust carry for addiu */
++	if (v & 0x00008000)
++		v += 0x10000;
++
++	tramp[0] = 0x3c190000 | (v >> 16);      /* lui t9, hi16 */
++	tramp[1] = 0x27390000 | (v & 0xffff);   /* addiu t9, t9, lo16 */
++	tramp[2] = 0x03200008;                  /* jr t9 */
++	tramp[3] = 0x00000000;                  /* nop */
++
++	return (Elf_Addr) tramp;
++}
++
++static Elf_Addr add_plt_entry(struct module *me, void *location, Elf_Addr v)
++{
++	if (is_phys_addr(location))
++		return add_plt_entry_to(&me->arch.phys_plt_offset,
++				me->arch.phys_plt_tbl, v);
++	else
++		return add_plt_entry_to(&me->arch.virt_plt_offset,
++				me->arch.virt_plt_tbl, v);
++
++}
++
+ static int apply_r_mips_26_rel(struct module *me, u32 *location, Elf_Addr v)
+ {
++	u32 ofs = *location & 0x03ffffff;
++
+ 	if (v % 4) {
+ 		pr_err("module %s: dangerous R_MIPS_26 REL relocation\n",
+ 		       me->name);
+@@ -73,14 +311,17 @@ static int apply_r_mips_26_rel(struct mo
+ 	}
+ 
+ 	if ((v & 0xf0000000) != (((unsigned long)location + 4) & 0xf0000000)) {
+-		printk(KERN_ERR
+-		       "module %s: relocation overflow\n",
+-		       me->name);
+-		return -ENOEXEC;
++		v = add_plt_entry(me, location, v + (ofs << 2));
++		if (!v) {
++			printk(KERN_ERR
++				"module %s: relocation overflow\n", me->name);
++			return -ENOEXEC;
++		}
++		ofs = 0;
+ 	}
+ 
+ 	*location = (*location & ~0x03ffffff) |
+-		    ((*location + (v >> 2)) & 0x03ffffff);
++		    ((ofs + (v >> 2)) & 0x03ffffff);
+ 
+ 	return 0;
+ }
+@@ -287,9 +528,36 @@ int module_finalize(const Elf_Ehdr *hdr,
+ 		list_add(&me->arch.dbe_list, &dbe_list);
+ 		spin_unlock_irq(&dbe_lock);
+ 	}
++
++	/* Get rid of the fixup trampoline if we're running the module
++	 * from physically mapped address space */
++	if (me->arch.phys_plt_offset == 0) {
++		__module_free(me->arch.phys_plt_tbl);
++		me->arch.phys_plt_tbl = NULL;
++	}
++	if (me->arch.virt_plt_offset == 0) {
++		__module_free(me->arch.virt_plt_tbl);
++		me->arch.virt_plt_tbl = NULL;
++	}
++
+ 	return 0;
+ }
+ 
++void module_arch_freeing_init(struct module *mod)
++{
++	if (mod->state == MODULE_STATE_LIVE)
++		return;
++
++	if (mod->arch.phys_plt_tbl) {
++		__module_free(mod->arch.phys_plt_tbl);
++		mod->arch.phys_plt_tbl = NULL;
++	}
++	if (mod->arch.virt_plt_tbl) {
++		__module_free(mod->arch.virt_plt_tbl);
++		mod->arch.virt_plt_tbl = NULL;
++	}
++}
++
+ void module_arch_cleanup(struct module *mod)
+ {
+ 	spin_lock_irq(&dbe_lock);

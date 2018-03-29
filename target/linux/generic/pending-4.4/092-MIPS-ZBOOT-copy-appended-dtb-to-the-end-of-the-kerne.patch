@@ -1,0 +1,132 @@
+From b8f54f2cde788623f41d11327688c75aed34092f Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jogo@openwrt.org>
+Date: Mon, 20 Jun 2016 11:27:36 +0200
+Subject: [PATCH 1/2] MIPS: ZBOOT: copy appended dtb to the end of the kernel
+
+Instead of rewriting the arguments, just move the appended dtb to where
+the decompressed kernel expects it. This eliminates the need for special
+casing vmlinuz.bin appended dtb files.
+
+Signed-off-by: Jonas Gorski <jogo@openwrt.org>
+Cc: Kevin Cernekee <cernekee@gmail.com>
+Cc: Florian Fainelli <f.fainelli@gmail.com>
+Cc: John Crispin <john@phrozen.org>
+Cc: Paul Burton <paul.burton@imgtec.com>
+Cc: James Hogan <james.hogan@imgtec.com>
+Cc: Alban Bedel <albeu@free.fr>
+Cc: Daniel Gimpelevich <daniel@gimpelevich.san-francisco.ca.us>
+Cc: Antony Pavlov <antonynpavlov@gmail.com>
+Cc: linux-mips@linux-mips.org
+Patchwork: https://patchwork.linux-mips.org/patch/13698/
+Signed-off-by: Ralf Baechle <ralf@linux-mips.org>
+---
+ arch/mips/Kconfig                      | 22 ++--------------------
+ arch/mips/boot/compressed/decompress.c | 17 +++++++++++++++++
+ arch/mips/boot/compressed/head.S       | 16 ----------------
+ 3 files changed, 19 insertions(+), 36 deletions(-)
+
+--- a/arch/mips/Kconfig
++++ b/arch/mips/Kconfig
+@@ -2753,10 +2753,10 @@ choice
+ 		  the documented boot protocol using a device tree.
+ 
+ 	config MIPS_RAW_APPENDED_DTB
+-		bool "vmlinux.bin"
++		bool "vmlinux.bin or vmlinuz.bin"
+ 		help
+ 		  With this option, the boot code will look for a device tree binary
+-		  DTB) appended to raw vmlinux.bin (without decompressor).
++		  DTB) appended to raw vmlinux.bin or vmlinuz.bin.
+ 		  (e.g. cat vmlinux.bin <filename>.dtb > vmlinux_w_dtb).
+ 
+ 		  This is meant as a backward compatibility convenience for those
+@@ -2768,24 +2768,6 @@ choice
+ 		  look like a DTB header after a reboot if no actual DTB is appended
+ 		  to vmlinux.bin.  Do not leave this option active in a production kernel
+ 		  if you don't intend to always append a DTB.
+-
+-	config MIPS_ZBOOT_APPENDED_DTB
+-		bool "vmlinuz.bin"
+-		depends on SYS_SUPPORTS_ZBOOT
+-		help
+-		  With this option, the boot code will look for a device tree binary
+-		  DTB) appended to raw vmlinuz.bin (with decompressor).
+-		  (e.g. cat vmlinuz.bin <filename>.dtb > vmlinuz_w_dtb).
+-
+-		  This is meant as a backward compatibility convenience for those
+-		  systems with a bootloader that can't be upgraded to accommodate
+-		  the documented boot protocol using a device tree.
+-
+-		  Beware that there is very little in terms of protection against
+-		  this option being confused by leftover garbage in memory that might
+-		  look like a DTB header after a reboot if no actual DTB is appended
+-		  to vmlinuz.bin.  Do not leave this option active in a production kernel
+-		  if you don't intend to always append a DTB.
+ endchoice
+ 
+ choice
+--- a/arch/mips/boot/compressed/decompress.c
++++ b/arch/mips/boot/compressed/decompress.c
+@@ -14,6 +14,7 @@
+ #include <linux/types.h>
+ #include <linux/kernel.h>
+ #include <linux/string.h>
++#include <linux/libfdt.h>
+ 
+ #include <asm/addrspace.h>
+ 
+@@ -36,6 +37,8 @@ extern void puthex(unsigned long long va
+ #define puthex(val) do {} while (0)
+ #endif
+ 
++extern char __appended_dtb[];
++
+ void error(char *x)
+ {
+ 	puts("\n\n");
+@@ -114,6 +117,20 @@ void decompress_kernel(unsigned long boo
+ 	__decompress((char *)zimage_start, zimage_size, 0, 0,
+ 		   (void *)VMLINUX_LOAD_ADDRESS_ULL, 0, 0, error);
+ 
++	if (IS_ENABLED(CONFIG_MIPS_RAW_APPENDED_DTB) &&
++	    fdt_magic((void *)&__appended_dtb) == FDT_MAGIC) {
++		unsigned int image_size, dtb_size;
++
++		dtb_size = fdt_totalsize((void *)&__appended_dtb);
++
++		/* last four bytes is always image size in little endian */
++		image_size = le32_to_cpup((void *)&__image_end - 4);
++
++		/* copy dtb to where the booted kernel will expect it */
++		memcpy((void *)VMLINUX_LOAD_ADDRESS_ULL + image_size,
++		       __appended_dtb, dtb_size);
++	}
++
+ 	/* FIXME: should we flush cache here? */
+ 	puts("Now, booting the kernel...\n");
+ }
+--- a/arch/mips/boot/compressed/head.S
++++ b/arch/mips/boot/compressed/head.S
+@@ -25,22 +25,6 @@ start:
+ 	move	s2, a2
+ 	move	s3, a3
+ 
+-#ifdef CONFIG_MIPS_ZBOOT_APPENDED_DTB
+-	PTR_LA	t0, __appended_dtb
+-#ifdef CONFIG_CPU_BIG_ENDIAN
+-	li	t1, 0xd00dfeed
+-#else
+-	li	t1, 0xedfe0dd0
+-#endif
+-	lw	t2, (t0)
+-	bne	t1, t2, not_found
+-	 nop
+-
+-	move	s1, t0
+-	PTR_LI	s0, -2
+-not_found:
+-#endif
+-
+ 	/* Clear BSS */
+ 	PTR_LA	a0, _edata
+ 	PTR_LA	a2, _end

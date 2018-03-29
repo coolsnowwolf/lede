@@ -1,0 +1,133 @@
+ARM: implement "uncompressed zImage"
+
+Based on RFC patch by Uwe Kleine-König
+http://www.spinics.net/lists/arm-kernel/msg230153.html
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+--- a/arch/arm/boot/compressed/Makefile
++++ b/arch/arm/boot/compressed/Makefile
+@@ -71,6 +71,7 @@ suffix_$(CONFIG_KERNEL_LZO)  = lzo
+ suffix_$(CONFIG_KERNEL_LZMA) = lzma
+ suffix_$(CONFIG_KERNEL_XZ)   = xzkern
+ suffix_$(CONFIG_KERNEL_LZ4)  = lz4
++suffix_$(CONFIG_KERNEL_CAT)  = cat
+ 
+ # Borrowed libfdt files for the ATAG compatibility mode
+ 
+@@ -95,7 +96,7 @@ targets       := vmlinux vmlinux.lds \
+ 		 bswapsdi2.S font.o font.c head.o misc.o $(OBJS)
+ 
+ # Make sure files are removed during clean
+-extra-y       += piggy.gzip piggy.lzo piggy.lzma piggy.xzkern piggy.lz4 \
++extra-y       += piggy.gzip piggy.lzo piggy.lzma piggy.xzkern piggy.lz4 piggy.cat \
+ 		 lib1funcs.S ashldi3.S bswapsdi2.S $(libfdt) $(libfdt_hdrs) \
+ 		 hyp-stub.S
+ 
+--- a/arch/arm/boot/compressed/decompress.c
++++ b/arch/arm/boot/compressed/decompress.c
+@@ -55,6 +55,10 @@ extern char * strstr(const char * s1, co
+ #include "../../../../lib/decompress_unlz4.c"
+ #endif
+ 
++#ifdef CONFIG_KERNEL_CAT
++#include "../../../../lib/decompress_uncat.c"
++#endif
++
+ int do_decompress(u8 *input, int len, u8 *output, void (*error)(char *x))
+ {
+ 	return __decompress(input, len, NULL, NULL, output, 0, NULL, error);
+--- /dev/null
++++ b/arch/arm/boot/compressed/piggy.cat.S
+@@ -0,0 +1,6 @@
++	.section .piggydata,#alloc
++	.globl	input_data
++input_data:
++	.incbin	"arch/arm/boot/compressed/piggy.cat"
++	.globl	input_data_end
++input_data_end:
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -115,6 +115,9 @@ config HAVE_KERNEL_LZO
+ config HAVE_KERNEL_LZ4
+ 	bool
+ 
++config HAVE_KERNEL_CAT
++	bool
++
+ choice
+ 	prompt "Kernel compression mode"
+ 	default KERNEL_GZIP
+@@ -181,9 +184,10 @@ config KERNEL_LZO
+ 	bool "LZO"
+ 	depends on HAVE_KERNEL_LZO
+ 	help
+-	  Its compression ratio is the poorest among the choices. The kernel
+-	  size is about 10% bigger than gzip; however its speed
+-	  (both compression and decompression) is the fastest.
++	  Its compression ratio is the poorest among the choices (apart from
++	  uncompressed below). The kernel size is about 10% bigger than gzip;
++	  however its speed (both compression and decompression) is the
++	  fastest.
+ 
+ config KERNEL_LZ4
+ 	bool "LZ4"
+@@ -197,6 +201,12 @@ config KERNEL_LZ4
+ 	  is about 8% bigger than LZO. But the decompression speed is
+ 	  faster than LZO.
+ 
++config KERNEL_CAT
++	bool "uncompressed"
++	depends on HAVE_KERNEL_CAT
++	help
++	  Don't use compression at all.
++
+ endchoice
+ 
+ config DEFAULT_HOSTNAME
+--- /dev/null
++++ b/lib/decompress_uncat.c
+@@ -0,0 +1,17 @@
++#include <linux/types.h>
++#include <linux/compiler.h>
++
++#ifdef STATIC
++
++STATIC int __decompress(unsigned char *buf, long in_len,
++			long (*fill)(void*, unsigned long),
++			long (*flush)(void*, unsigned long),
++			unsigned char *output, long out_len,
++			long *posp,
++			void (*error)(char *x))
++{
++	memmove(output, buf, in_len);
++	return 0;
++}
++
++#endif
+--- a/scripts/Makefile.lib
++++ b/scripts/Makefile.lib
+@@ -337,6 +337,13 @@ cmd_lz4 = (cat $(filter-out FORCE,$^) |
+ 	lz4c -l -c1 stdin stdout && $(call size_append, $(filter-out FORCE,$^))) > $@ || \
+ 	(rm -f $@ ; false)
+ 
++# uncompressed
++# ---------------------------------------------------------------------------
++quiet_cmd_cat = CAT     $@
++cmd_cat = (cat $(filter-out FORCE,$^) \
++	&& $(call size_append, $(filter-out FORCE,$^))) > $@ || \
++	(rm -f $@ ; false)
++
+ # U-Boot mkimage
+ # ---------------------------------------------------------------------------
+ 
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -59,6 +59,7 @@ config ARM
+ 	select HAVE_KERNEL_LZMA
+ 	select HAVE_KERNEL_LZO
+ 	select HAVE_KERNEL_XZ
++	select HAVE_KERNEL_CAT
+ 	select HAVE_KPROBES if !XIP_KERNEL && !CPU_ENDIAN_BE32 && !CPU_V7M
+ 	select HAVE_KRETPROBES if (HAVE_KPROBES)
+ 	select HAVE_MEMBLOCK

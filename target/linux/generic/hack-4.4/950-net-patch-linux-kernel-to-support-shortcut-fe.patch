@@ -1,0 +1,145 @@
+From ee0b636607a8685dcac16b217ee49432de171cb0 Mon Sep 17 00:00:00 2001
+From: Xiaoping Fan <xfan@codeaurora.org>
+Date: Fri, 26 Feb 2016 15:01:53 -0800
+Subject: [PATCH 1/3] net: patch linux kernel to support shortcut-fe
+
+1, add a new flag 'fast_forwarded' in skb structure.
+2, put a hook in '__netif_receive_skb_core' to
+   deliver packet to shortcut-fe.
+
+Change-Id: Icaa7c172a06df1c3bc89ff89814d1136772fe217
+Signed-off-by: Xiaoping Fan <xfan@codeaurora.org>
+
+msm: ipq806x: exporting TCP sequence check parameters
+
+This is for use in NSS connection manager.
+
+Change-Id: I01d30c0ab552308c439353c0d51d3d0ab3aa7699
+Signed-off-by: Pamidipati, Vijay <vpamidip@codeaurora.org>
+Signed-off-by: Murat Sezgin <msezgin@codeaurora.org>
+---
+ include/linux/skbuff.h                 |  5 +++++
+ net/Kconfig                            |  3 +++
+ net/core/dev.c                         | 27 +++++++++++++++++++++++++++
+ net/netfilter/nf_conntrack_proto_tcp.c | 10 ++++++++++
+ 4 files changed, 45 insertions(+)
+
+diff --git a/include/linux/skbuff.h b/include/linux/skbuff.h
+index a4b1aaa..f72eea2 100644
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -643,7 +643,12 @@ struct sk_buff {
+ 	__u8			inner_protocol_type:1;
+ 	__u8			remcsum_offload:1;
+ 	__u8			gro_skip:1;
++#ifdef CONFIG_SHORTCUT_FE
++	__u8			fast_forwarded:1;
++	/* 1 or 3 bit hole */
++#else
+ 	/* 2 or 4 bit hole */
++#endif
+ 
+ #ifdef CONFIG_NET_SCHED
+ 	__u16			tc_index;	/* traffic control index */
+diff --git a/net/Kconfig b/net/Kconfig
+index 6dedbb5..e8c6e6c 100644
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -397,3 +397,6 @@ endif   # if NET
+ # Used by archs to tell that they support BPF_JIT
+ config HAVE_BPF_JIT
+ 	bool
++
++config SHORTCUT_FE
++	bool "Enables kernel network stack path for Shortcut  Forwarding Engine"
+diff --git a/net/core/dev.c b/net/core/dev.c
+index 11b9cda..3761691 100644
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -2732,8 +2732,17 @@ static int xmit_one(struct sk_buff *skb, struct net_device *dev,
+ 	unsigned int len;
+ 	int rc;
+ 
++#ifdef CONFIG_SHORTCUT_FE
++	/* If this skb has been fast forwarded then we don't want it to
++	 * go to any taps (by definition we're trying to bypass them).
++	 */
++	if (!skb->fast_forwarded) {
++#endif
+ 	if (!list_empty(&ptype_all) || !list_empty(&dev->ptype_all))
+ 		dev_queue_xmit_nit(skb, dev);
++#ifdef CONFIG_SHORTCUT_FE
++	}
++#endif
+ 
+ #ifdef CONFIG_ETHERNET_PACKET_MANGLE
+ 	if (!dev->eth_mangle_tx ||
+@@ -3825,6 +3834,11 @@ void netdev_rx_handler_unregister(struct net_device *dev)
+ }
+ EXPORT_SYMBOL_GPL(netdev_rx_handler_unregister);
+ 
++#ifdef CONFIG_SHORTCUT_FE
++int (*fast_nat_recv)(struct sk_buff *skb) __rcu __read_mostly;
++EXPORT_SYMBOL_GPL(fast_nat_recv);
++#endif
++
+ /*
+  * Limit the use of PFMEMALLOC reserves to those protocols that implement
+  * the special handling of PFMEMALLOC skbs.
+@@ -3867,6 +3881,9 @@ static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
+ 	bool deliver_exact = false;
+ 	int ret = NET_RX_DROP;
+ 	__be16 type;
++#ifdef CONFIG_SHORTCUT_FE
++	int (*fast_recv)(struct sk_buff *skb);
++#endif
+ 
+ 	net_timestamp_check(!netdev_tstamp_prequeue, skb);
+ 
+@@ -3893,6 +3910,16 @@ another_round:
+ 			goto out;
+ 	}
+ 
++#ifdef CONFIG_SHORTCUT_FE
++	fast_recv = rcu_dereference(fast_nat_recv);
++	if (fast_recv) {
++		if (fast_recv(skb)) {
++			ret = NET_RX_SUCCESS;
++			goto out;
++		}
++	}
++#endif
++
+ #ifdef CONFIG_NET_CLS_ACT
+ 	if (skb->tc_verd & TC_NCLS) {
+ 		skb->tc_verd = CLR_TC_NCLS(skb->tc_verd);
+diff --git a/net/netfilter/nf_conntrack_proto_tcp.c b/net/netfilter/nf_conntrack_proto_tcp.c
+index d41fdab..6f3cdfd 100644
+--- a/net/netfilter/nf_conntrack_proto_tcp.c
++++ b/net/netfilter/nf_conntrack_proto_tcp.c
+@@ -34,12 +34,22 @@
+ #include <net/netfilter/ipv6/nf_conntrack_ipv6.h>
+ 
+ /* Do not check the TCP window for incoming packets  */
++#ifdef CONFIG_SHORTCUT_FE
++int nf_ct_tcp_no_window_check __read_mostly = 0;
++EXPORT_SYMBOL_GPL(nf_ct_tcp_no_window_check);
++#else
+ static int nf_ct_tcp_no_window_check __read_mostly = 1;
++#endif
+ 
+ /* "Be conservative in what you do,
+     be liberal in what you accept from others."
+     If it's non-zero, we mark only out of window RST segments as INVALID. */
++#ifdef CONFIG_SHORTCUT_FE
++int nf_ct_tcp_be_liberal __read_mostly;
++EXPORT_SYMBOL_GPL(nf_ct_tcp_be_liberal);
++#else
+ static int nf_ct_tcp_be_liberal __read_mostly = 0;
++#endif
+ 
+ /* If it is set to zero, we disable picking up already established
+    connections. */
+-- 
+2.7.4
+
