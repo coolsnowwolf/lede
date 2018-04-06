@@ -249,6 +249,21 @@ ifneq ($(CONFIG_VMDK_IMAGES),)
   endef
 endif
 
+ifneq ($(CONFIG_VHD_IMAGES),)
+  define Image/Build/vhd
+	rm $(BIN_DIR)/$(IMG_PREFIX)-combined-$(1).vhd || true
+	qemu-img convert -f raw -O vpc \
+		$(BIN_DIR)/$(IMG_PREFIX)-combined-$(1).img \
+		$(BIN_DIR)/$(IMG_PREFIX)-combined-$(1).vhd
+  endef
+  define Image/Build/vhd_efi
+	rm $(BIN_DIR)/$(IMG_PREFIX)-uefi-gpt-$(1).vmdk || true
+	qemu-img convert -f raw -O vpc \
+		$(BIN_DIR)/$(IMG_PREFIX)-uefi-gpt-$(1).img \
+		$(BIN_DIR)/$(IMG_PREFIX)-uefi-gpt-$(1).vhd
+  endef
+endif
+
 define Image/Build/gzip
 	gzip -f9n $(BIN_DIR)/$(IMG_PREFIX)-rootfs-$(1).img
 ifneq ($(CONFIG_GRUB_IMAGES),)
@@ -288,10 +303,12 @@ define Image/Build
 ifneq ($(CONFIG_GRUB_IMAGES),)
 	$(call Image/Build/vdi,$(1))
 	$(call Image/Build/vmdk,$(1))
+	$(call Image/Build/vhd,$(1))
 endif
 ifneq ($(CONFIG_EFI_IMAGES),)
 	$(call Image/Build/vdi_efi,$(1))
 	$(call Image/Build/vmdk_efi,$(1))
+	$(call Image/Build/vhd_efi,$(1))
 endif
 	$(CP) $(KDIR)/root.$(1) $(BIN_DIR)/$(IMG_PREFIX)-rootfs-$(1).img
   else
