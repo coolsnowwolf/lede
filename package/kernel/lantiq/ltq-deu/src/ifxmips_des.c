@@ -682,11 +682,11 @@ struct crypto_alg ifxdeu_cbc_des3_ede_alg = {
         }
 };
 
-/*! \fn int __init ifxdeu_init_des (void)
+/*! \fn int ifxdeu_init_des (void)
  *  \ingroup IFX_DES_FUNCTIONS
  *  \brief initialize des driver      
 */                                 
-int __init ifxdeu_init_des (void)
+int ifxdeu_init_des (void)
 {
     int ret = -ENOSYS;
 
@@ -761,11 +761,11 @@ cbc_des3_ede_err:
 
 }
 
-/*! \fn void __exit ifxdeu_fini_des (void)
+/*! \fn void ifxdeu_fini_des (void)
  *  \ingroup IFX_DES_FUNCTIONS
  *  \brief unregister des driver    
 */                                 
-void __exit ifxdeu_fini_des (void)
+void ifxdeu_fini_des (void)
 {
         crypto_unregister_alg (&ifxdeu_des_alg);
         crypto_unregister_alg (&ifxdeu_ecb_des_alg);

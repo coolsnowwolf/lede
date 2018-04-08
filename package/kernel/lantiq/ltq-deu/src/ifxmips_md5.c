@@ -276,11 +276,11 @@ static struct shash_alg ifxdeu_md5_alg = {
     }
 };
 
-/*! \fn int __init ifxdeu_init_md5 (void)
+/*! \fn int ifxdeu_init_md5 (void)
  *  \ingroup IFX_MD5_FUNCTIONS
  *  \brief initialize md5 driver   
 */                                 
-int __init ifxdeu_init_md5 (void)
+int ifxdeu_init_md5 (void)
 {
     int ret = -ENOSYS;
 
@@ -298,12 +298,12 @@ md5_err:
     return ret;
 }
 
-/*! \fn void __exit ifxdeu_fini_md5 (void)
+/*! \fn void ifxdeu_fini_md5 (void)
   * \ingroup IFX_MD5_FUNCTIONS
   * \brief unregister md5 driver   
 */                  
                
-void __exit ifxdeu_fini_md5 (void)
+void ifxdeu_fini_md5 (void)
 {
     crypto_unregister_shash(&ifxdeu_md5_alg);
 

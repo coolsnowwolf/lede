@@ -266,11 +266,11 @@ static struct shash_alg ifxdeu_sha1_alg = {
 };
 
 
-/*! \fn int __init ifxdeu_init_sha1 (void)
+/*! \fn int ifxdeu_init_sha1 (void)
  *  \ingroup IFX_SHA1_FUNCTIONS
  *  \brief initialize sha1 driver    
 */                                 
-int __init ifxdeu_init_sha1 (void)
+int ifxdeu_init_sha1 (void)
 {
     int ret = -ENOSYS;
 
@@ -288,11 +288,11 @@ sha1_err:
     return ret;
 }
 
-/*! \fn void __exit ifxdeu_fini_sha1 (void)
+/*! \fn void ifxdeu_fini_sha1 (void)
  *  \ingroup IFX_SHA1_FUNCTIONS
  *  \brief unregister sha1 driver   
 */                                 
-void __exit ifxdeu_fini_sha1 (void)
+void ifxdeu_fini_sha1 (void)
 {
     crypto_unregister_shash(&ifxdeu_sha1_alg);
 
