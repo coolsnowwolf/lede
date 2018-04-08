@@ -127,6 +127,27 @@ endef
 
 $(eval $(call KernelPackage,vxlan))
 
+define KernelPackage/geneve
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=Generic Network Virtualization Encapsulation (Geneve) support
+  DEPENDS:= \
+	kmod-iptunnel \
+	kmod-udptunnel4 \
+	IPV6:kmod-udptunnel6
+  KCONFIG:=CONFIG_GENEVE
+  FILES:= \
+	$(LINUX_DIR)/net/ipv4/geneve.ko@le4.1 \
+	$(LINUX_DIR)/drivers/net/geneve.ko@ge4.2
+  AUTOLOAD:=$(call AutoLoad,13,geneve)
+endef
+
+define KernelPackage/geneve/description
+ Kernel module for supporting Geneve in the Kernel.
+ Requires Kernel 3.18 or newer.
+endef
+
+$(eval $(call KernelPackage,geneve))
+
 define KernelPackage/capi
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=CAPI (ISDN) Support
