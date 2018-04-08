@@ -1,0 +1,80 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Fri, 16 Feb 2018 10:54:24 +0100
+Subject: [PATCH] ipv6: make ip6_dst_mtu_forward inline
+
+Removes a direct dependency on ipv6.ko
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/include/net/ip6_route.h
++++ b/include/net/ip6_route.h
+@@ -252,4 +252,26 @@ static inline bool rt6_duplicate_nexthop
+ 	       ipv6_addr_equal(&a->rt6i_gateway, &b->rt6i_gateway) &&
+ 	       !lwtunnel_cmp_encap(a->dst.lwtstate, b->dst.lwtstate);
+ }
++
++static inline unsigned int ip6_dst_mtu_forward(const struct dst_entry *dst)
++{
++	unsigned int mtu;
++	struct inet6_dev *idev;
++
++	if (dst_metric_locked(dst, RTAX_MTU)) {
++		mtu = dst_metric_raw(dst, RTAX_MTU);
++		if (mtu)
++			return mtu;
++	}
++
++	mtu = IPV6_MIN_MTU;
++	rcu_read_lock();
++	idev = __in6_dev_get(dst->dev);
++	if (idev)
++		mtu = idev->cnf.mtu6;
++	rcu_read_unlock();
++
++	return mtu;
++}
++
+ #endif
+--- a/include/net/ipv6.h
++++ b/include/net/ipv6.h
+@@ -913,8 +913,6 @@ static inline struct sk_buff *ip6_finish
+ 			      &inet6_sk(sk)->cork);
+ }
+ 
+-unsigned int ip6_dst_mtu_forward(const struct dst_entry *dst);
+-
+ int ip6_dst_lookup(struct net *net, struct sock *sk, struct dst_entry **dst,
+ 		   struct flowi6 *fl6);
+ struct dst_entry *ip6_dst_lookup_flow(const struct sock *sk, struct flowi6 *fl6,
+--- a/net/ipv6/ip6_output.c
++++ b/net/ipv6/ip6_output.c
+@@ -370,28 +370,6 @@ static inline int ip6_forward_finish(str
+ 	return dst_output(net, sk, skb);
+ }
+ 
+-unsigned int ip6_dst_mtu_forward(const struct dst_entry *dst)
+-{
+-	unsigned int mtu;
+-	struct inet6_dev *idev;
+-
+-	if (dst_metric_locked(dst, RTAX_MTU)) {
+-		mtu = dst_metric_raw(dst, RTAX_MTU);
+-		if (mtu)
+-			return mtu;
+-	}
+-
+-	mtu = IPV6_MIN_MTU;
+-	rcu_read_lock();
+-	idev = __in6_dev_get(dst->dev);
+-	if (idev)
+-		mtu = idev->cnf.mtu6;
+-	rcu_read_unlock();
+-
+-	return mtu;
+-}
+-EXPORT_SYMBOL_GPL(ip6_dst_mtu_forward);
+-
+ static bool ip6_pkt_too_big(const struct sk_buff *skb, unsigned int mtu)
+ {
+ 	if (skb->len <= mtu)
