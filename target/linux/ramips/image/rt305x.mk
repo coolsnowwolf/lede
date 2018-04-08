@@ -1,6 +1,16 @@
 #
 # RT305X Profiles
 #
+define Build/buffalo-tftp-header
+  ( \
+    echo -n -e "# Airstation FirmWare\nrun u_fw\nreset\n\n" | \
+      dd bs=512 count=1 conv=sync; \
+    dd if=$@; \
+  ) > $@.tmp && \
+  $(STAGING_DIR_HOST)/bin/buffalo-tftp -i $@.tmp -o $@.new
+  mv $@.new $@
+endef
+
 define Build/dap-header
 	$(STAGING_DIR_HOST)/bin/mkdapimg $(1) -i $@ -o $@.new
 	mv $@.new $@
@@ -744,6 +754,17 @@ define Device/wcr-150gn
   DEVICE_TITLE := Sparklan WCR-150GN
 endef
 TARGET_DEVICES += wcr-150gn
+
+define Device/whr-g300n
+  DTS := WHR-G300N
+  BLOCKSIZE := 64k
+  IMAGE_SIZE := 3801088
+  DEVICE_TITLE := Buffalo WHR-G300N
+  IMAGES += tftp.bin
+  IMAGE/tftp.bin := $$(sysupgrade_bin) | \
+    check-size $$$$(IMAGE_SIZE) | buffalo-tftp-header
+endef
+TARGET_DEVICES += whr-g300n
 
 define Device/wizard8800
   DTS := WIZARD8800
