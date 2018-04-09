@@ -274,11 +274,11 @@ platform_pre_upgrade() {
 platform_trx_from_chk_cmd() {
 	local header_len=$((0x$(get_magic_long_at "$1" 4)))
 
-	echo -n dd bs=$header_len skip=1
+	echo -n dd skip=$header_len iflag=skip_bytes
 }
 
 platform_trx_from_cybertan_cmd() {
-	echo -n dd bs=32 skip=1
+	echo -n dd skip=32 iflag=skip_bytes
 }
 
 platform_img_from_safeloader() {
