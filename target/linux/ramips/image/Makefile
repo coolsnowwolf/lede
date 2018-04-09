@@ -228,6 +228,10 @@ ifeq ($(SUBTARGET),mt7620)
 include mt7620.mk
 endif
 
+ifeq ($(SUBTARGET),mt7620nand)
+include mt7620nand.mk
+endif
+
 ifeq ($(SUBTARGET),mt7621)
 include mt7621.mk
 endif
