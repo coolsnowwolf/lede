@@ -52,6 +52,21 @@ endef
 
 $(eval $(call KernelPackage,iio-ad799x))
 
+define KernelPackage/iio-mxs-lradc
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=@TARGET_mxs +kmod-iio-core
+  TITLE:=Freescale i.MX23/i.MX28 LRADC ADC driver
+  KCONFIG:= \
+	CONFIG_MXS_LRADC_ADC
+  FILES:=$(LINUX_DIR)/drivers/iio/adc/mxs-lradc-adc.ko
+  AUTOLOAD:=$(call AutoLoad,56,mxs-lradc-adc)
+endef
+
+define KernelPackage/iio-mxs-lradc/description
+ Support for Freescale's i.MX23/i.MX28 SoC internal Low-Resolution ADC
+endef
+
+$(eval $(call KernelPackage,iio-mxs-lradc))
 
 define KernelPackage/iio-dht11
   SUBMENU:=$(IIO_MENU)

@@ -29,4 +29,3 @@ define Package/wireless-regdb/install
 endef
 
 $(eval $(call BuildPackage,wireless-regdb))
-

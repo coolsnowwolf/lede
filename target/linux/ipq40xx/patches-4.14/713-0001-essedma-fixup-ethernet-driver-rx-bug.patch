@@ -1,0 +1,144 @@
+From 0bcfbe3c613d6ed8044404bc1cc3c29ff961d89c Mon Sep 17 00:00:00 2001
+From: Chen Minqiang <ptpt52@gmail.com>
+Date: Thu, 15 Mar 2018 04:59:57 +0800
+Subject: [PATCH 1/2] essedma: fixup ethernet driver rx bug
+
+ - modify the error rx ring full conditions
+ - in rare cases, out of memory allocation failure causes the receive queues stop
+   we use the timer to re-alloc rx rings under these circumstances
+
+Signed-off-by: Chen Minqiang <ptpt52@gmail.com>
+---
+ drivers/net/ethernet/qualcomm/essedma/edma.c     | 51 ++++++++++++++++++++++--
+ drivers/net/ethernet/qualcomm/essedma/edma.h     |  3 ++
+ drivers/net/ethernet/qualcomm/essedma/edma_axi.c |  8 ++++
+ 3 files changed, 58 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/net/ethernet/qualcomm/essedma/edma.c b/drivers/net/ethernet/qualcomm/essedma/edma.c
+index fecc0ba..3f1da93 100644
+--- a/drivers/net/ethernet/qualcomm/essedma/edma.c
++++ b/drivers/net/ethernet/qualcomm/essedma/edma.c
+@@ -530,6 +530,47 @@ static int edma_rx_complete_paged(struct sk_buff *skb, u16 num_rfds, u16 length,
+ 	return sw_next_to_clean;
+ }
+ 
++static int edma_rfd_desc_unused(struct edma_rfd_desc_ring *erdr)
++{
++	if (erdr->sw_next_to_clean > erdr->sw_next_to_fill)
++		return erdr->sw_next_to_clean - erdr->sw_next_to_fill - 1;
++	return erdr->count + erdr->sw_next_to_clean - erdr->sw_next_to_fill - 1;
++}
++
++void edma_rx_realloc(unsigned long data)
++{
++	struct edma_per_cpu_queues_info *edma_percpu_info = (struct edma_per_cpu_queues_info *)data;
++	struct edma_common_info *edma_cinfo = edma_percpu_info->edma_cinfo;
++	s32 status = edma_percpu_info->rx_realloc_status;
++
++	while (status) {
++		int queue_id;
++		int ret_count;
++		struct edma_rfd_desc_ring *erdr;
++
++		queue_id = ffs(status) - 1;
++		erdr = edma_cinfo->rfd_ring[queue_id];
++		ret_count = edma_alloc_rx_buf(edma_cinfo, erdr, edma_rfd_desc_unused(erdr), queue_id);
++		if (ret_count == 0) {
++			edma_percpu_info->rx_realloc_status &= ~(1 << queue_id);
++		}
++		status &= ~(1 << queue_id);
++	}
++
++	if (edma_percpu_info->rx_realloc_status) {
++		mod_timer(&edma_percpu_info->rx_realloc_timer, jiffies + HZ);
++	}
++}
++
++static inline void edma_realloc_timer_start(struct napi_struct *napi, int queue_id)
++{
++	struct edma_per_cpu_queues_info *edma_percpu_info = container_of(napi,
++			struct edma_per_cpu_queues_info, napi);
++
++	edma_percpu_info->rx_realloc_status |= (1 << queue_id);
++	mod_timer(&edma_percpu_info->rx_realloc_timer, jiffies + 5 * HZ); /* restart alloc in 5 secs */
++}
++
+ /*
+  * edma_rx_complete()
+  *	Main api called from the poll function to process rx packets.
+@@ -754,10 +795,12 @@ static void edma_rx_complete(struct edma_common_info *edma_cinfo,
+ 	erdr->sw_next_to_clean = sw_next_to_clean;
+ 
+ 	/* Refill here in case refill threshold wasn't reached */
+-	if (likely(cleaned_count)) {
+-		ret_count = edma_alloc_rx_buf(edma_cinfo, erdr, cleaned_count, queue_id);
+-		if (ret_count)
++	if (edma_rfd_desc_unused(erdr)) {
++		ret_count = edma_alloc_rx_buf(edma_cinfo, erdr, edma_rfd_desc_unused(erdr), queue_id);
++		if (ret_count) {
+ 			dev_dbg(&pdev->dev, "Not all buffers was reallocated");
++			edma_realloc_timer_start(napi, queue_id);
++		}
+ 		edma_write_reg(EDMA_REG_RX_SW_CONS_IDX_Q(queue_id),
+ 			      erdr->sw_next_to_clean);
+ 	}
+@@ -1801,7 +1844,7 @@ int edma_configure(struct edma_common_info *edma_cinfo)
+ 	/* Allocate the RX buffer */
+ 	for (i = 0, j = 0; i < edma_cinfo->num_rx_queues; i++) {
+ 		struct edma_rfd_desc_ring *ring = edma_cinfo->rfd_ring[j];
+-		ret_count = edma_alloc_rx_buf(edma_cinfo, ring, ring->count, j);
++		ret_count = edma_alloc_rx_buf(edma_cinfo, ring, edma_rfd_desc_unused(ring), j);
+ 		if (ret_count) {
+ 			dev_dbg(&edma_cinfo->pdev->dev, "not all rx buffers allocated\n");
+ 		}
+diff --git a/drivers/net/ethernet/qualcomm/essedma/edma.h b/drivers/net/ethernet/qualcomm/essedma/edma.h
+index 5d6dc73..29c8379 100644
+--- a/drivers/net/ethernet/qualcomm/essedma/edma.h
++++ b/drivers/net/ethernet/qualcomm/essedma/edma.h
+@@ -304,6 +304,8 @@ struct edma_per_cpu_queues_info {
+ 	u32 tx_start; /* tx queue start */
+ 	u32 rx_start; /* rx queue start */
+ 	struct edma_common_info *edma_cinfo; /* edma common info */
++	u32 rx_realloc_status;
++	struct timer_list rx_realloc_timer;
+ };
+ 
+ /* edma specific common info */
+@@ -448,6 +450,7 @@ void edma_change_tx_coalesce(int usecs);
+ void edma_change_rx_coalesce(int usecs);
+ void edma_get_tx_rx_coalesce(u32 *reg_val);
+ void edma_clear_irq_status(void);
++void edma_rx_realloc(unsigned long data);
+ void ess_set_port_status_speed(struct edma_common_info *edma_cinfo,
+                                struct phy_device *phydev, uint8_t port_id);
+ #endif /* _EDMA_H_ */
+diff --git a/drivers/net/ethernet/qualcomm/essedma/edma_axi.c b/drivers/net/ethernet/qualcomm/essedma/edma_axi.c
+index 81fc1e1..d9f8b52 100644
+--- a/drivers/net/ethernet/qualcomm/essedma/edma_axi.c
++++ b/drivers/net/ethernet/qualcomm/essedma/edma_axi.c
+@@ -1131,6 +1131,11 @@ static int edma_axi_probe(struct platform_device *pdev)
+ 		edma_cinfo->edma_percpu_info[i].rx_status = 0;
+ 		edma_cinfo->edma_percpu_info[i].edma_cinfo = edma_cinfo;
+ 
++		edma_cinfo->edma_percpu_info[i].rx_realloc_status = 0;
++		init_timer(&edma_cinfo->edma_percpu_info[i].rx_realloc_timer);
++		edma_cinfo->edma_percpu_info[i].rx_realloc_timer.function = edma_rx_realloc;
++		edma_cinfo->edma_percpu_info[i].rx_realloc_timer.data = (unsigned long)&edma_cinfo->edma_percpu_info[i];
++
+ 		/* Request irq per core */
+ 		for (j = edma_cinfo->edma_percpu_info[i].tx_start;
+ 		     j < tx_start[i] + 4; j++) {
+@@ -1259,7 +1264,10 @@ err_configure:
+ err_rmap_add_fail:
+ 	edma_free_irqs(adapter[0]);
+ 	for (i = 0; i < CONFIG_NR_CPUS; i++)
++	{
+ 		napi_disable(&edma_cinfo->edma_percpu_info[i].napi);
++		del_timer_sync(&edma_cinfo->edma_percpu_info[i].rx_realloc_timer);
++	}
+ err_reset:
+ err_unregister_sysctl_tbl:
+ err_rmap_alloc_fail:
+-- 
+2.7.4
+

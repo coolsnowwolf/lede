@@ -1,0 +1,131 @@
+From 4a4aca08b11501cb1b2c509113bbb65eb66a1f45 Mon Sep 17 00:00:00 2001
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Fri, 14 Apr 2017 14:21:25 +0100
+Subject: sfp: hack: allow marvell 10G phy support to use SFP
+
+Allow the Marvell 10G PHY to register with the SFP bus, so that SFP+
+cages can work.  This bypasses phylink, meaning that socket status
+is not taken into account for the link state.  Also, the tx-disable
+signal must be commented out in DT for this to work...
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+ drivers/net/phy/marvell10g.c | 54 +++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 53 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/phy/marvell10g.c
++++ b/drivers/net/phy/marvell10g.c
+@@ -15,8 +15,10 @@
+  * If both the fiber and copper ports are connected, the first to gain
+  * link takes priority and the other port is completely locked out.
+  */
++#include <linux/of.h>
+ #include <linux/phy.h>
+ #include <linux/marvell_phy.h>
++#include <linux/sfp.h>
+ 
+ enum {
+ 	MV_PCS_BASE_T		= 0x0000,
+@@ -38,6 +40,11 @@ enum {
+ 	MV_AN_RESULT_SPD_10000	= BIT(15),
+ };
+ 
++struct mv3310_priv {
++	struct device_node *sfp_node;
++	struct sfp_bus *sfp_bus;
++};
++
+ static int mv3310_modify(struct phy_device *phydev, int devad, u16 reg,
+ 			 u16 mask, u16 bits)
+ {
+@@ -56,17 +63,52 @@ static int mv3310_modify(struct phy_devi
+ 	return ret < 0 ? ret : 1;
+ }
+ 
++static int mv3310_sfp_insert(void *upstream, const struct sfp_eeprom_id *id)
++{
++	struct phy_device *phydev = upstream;
++	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
++
++	if (sfp_parse_interface(priv->sfp_bus, id) != PHY_INTERFACE_MODE_10GKR) {
++		dev_err(&phydev->mdio.dev, "incompatible SFP module inserted\n");
++		return -EINVAL;
++	}
++	return 0;
++}
++
++static const struct sfp_upstream_ops mv3310_sfp_ops = {
++	.module_insert = mv3310_sfp_insert,
++};
++
+ static int mv3310_probe(struct phy_device *phydev)
+ {
++	struct mv3310_priv *priv;
+ 	u32 mmd_mask = MDIO_DEVS_PMAPMD | MDIO_DEVS_AN;
+ 
+ 	if (!phydev->is_c45 ||
+ 	    (phydev->c45_ids.devices_in_package & mmd_mask) != mmd_mask)
+ 		return -ENODEV;
+ 
++	priv = devm_kzalloc(&phydev->mdio.dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	dev_set_drvdata(&phydev->mdio.dev, priv);
++
++	if (phydev->mdio.dev.of_node)
++		priv->sfp_node = of_parse_phandle(phydev->mdio.dev.of_node,
++						  "sfp", 0);
++
+ 	return 0;
+ }
+ 
++static void mv3310_remove(struct phy_device *phydev)
++{
++	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
++
++	if (priv->sfp_bus)
++		sfp_unregister_upstream(priv->sfp_bus);
++}
++
+ /*
+  * Resetting the MV88X3310 causes it to become non-responsive.  Avoid
+  * setting the reset bit(s).
+@@ -78,6 +120,7 @@ static int mv3310_soft_reset(struct phy_
+ 
+ static int mv3310_config_init(struct phy_device *phydev)
+ {
++	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
+ 	__ETHTOOL_DECLARE_LINK_MODE_MASK(supported) = { 0, };
+ 	u32 mask;
+ 	int val;
+@@ -166,6 +209,14 @@ static int mv3310_config_init(struct phy
+ 	phydev->supported &= mask;
+ 	phydev->advertising &= phydev->supported;
+ 
++	/* Would be nice to do this in the probe function, but unfortunately,
++	 * phylib doesn't have phydev->attached_dev set there.
++	 */
++	if (priv->sfp_node && !priv->sfp_bus)
++		priv->sfp_bus = sfp_register_upstream(priv->sfp_node,
++						      phydev->attached_dev,
++						      phydev, &mv3310_sfp_ops);
++
+ 	return 0;
+ }
+ 
+@@ -349,12 +400,13 @@ static struct phy_driver mv3310_drivers[
+ 				  SUPPORTED_FIBRE |
+ 				  SUPPORTED_10000baseT_Full |
+ 				  SUPPORTED_Backplane,
+-		.probe		= mv3310_probe,
+ 		.soft_reset	= mv3310_soft_reset,
+ 		.config_init	= mv3310_config_init,
++		.probe		= mv3310_probe,
+ 		.config_aneg	= mv3310_config_aneg,
+ 		.aneg_done	= mv3310_aneg_done,
+ 		.read_status	= mv3310_read_status,
++		.remove		= mv3310_remove,
+ 	},
+ };
+ 
