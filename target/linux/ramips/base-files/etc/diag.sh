@@ -37,6 +37,8 @@ get_status_led() {
 	nbg-419n|\
 	nbg-419n2|\
 	pwh2004|\
+	r6220b|\
+	r6220a|\
 	r6220|\
 	tplink,c20-v4|\
 	tplink,c50-v3|\
@@ -132,7 +134,8 @@ get_status_led() {
 		status_led="$boardname:yellow:status"
 		;;
 	cy-swr1100|\
-	w502u)
+	w502u|\
+	youhua,wr1200js)
 		status_led="$boardname:blue:wps"
 		;;
 	d240|\
@@ -152,13 +155,16 @@ get_status_led() {
 	wli-tx4-ag300n|\
 	y1|\
 	y1s|\
-	youku-yk1)
+	youku-yk1|\
+	zorlik,zl5900v2)
 		status_led="$boardname:blue:power"
 		;;
 	dlink,dap-1522-a1|\
 	k2p|\
 	m3|\
 	mir3g|\
+	xiaomi,miwifi-r3|\
+	miwifi-mini|\
 	miwifi-nano)
 		status_led="$boardname:blue:status"
 		;;
@@ -202,7 +208,6 @@ get_status_led() {
 	m4-8M)
 		status_led="m4:blue:status"
 		;;
-	miwifi-mini|\
 	zte-q7)
 		status_led="$boardname:red:status"
 		;;

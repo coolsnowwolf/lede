@@ -403,14 +403,14 @@ TARGET_DEVICES += oy-0001
 
 define Device/psg1208
   DTS := PSG1208
-  DEVICE_TITLE := Phicomm PSG1208
+  DEVICE_TITLE := Phicomm PSG1208 (K1)
   DEVICE_PACKAGES := kmod-mt76
 endef
 TARGET_DEVICES += psg1208
 
 define Device/psg1218a
   DTS := PSG1218A
-  DEVICE_TITLE := Phicomm PSG1218 rev.Ax
+  DEVICE_TITLE := Phicomm PSG1218 rev.Ax (K2)
   DEVICE_PACKAGES := kmod-mt76x2
   SUPPORTED_DEVICES += psg1218
 endef
@@ -418,7 +418,7 @@ TARGET_DEVICES += psg1218a
 
 define Device/psg1218b
   DTS := PSG1218B
-  DEVICE_TITLE := Phicomm PSG1218 rev.Bx
+  DEVICE_TITLE := Phicomm PSG1218 rev.Bx (K2C)
   DEVICE_PACKAGES := kmod-mt76x2
   SUPPORTED_DEVICES += psg1218
 endef
