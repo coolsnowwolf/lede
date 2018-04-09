@@ -885,12 +885,12 @@ struct crypto_alg ifxdeu_ctr_rfc3686_aes_alg = {
 };
 
 
-/*! \fn int __init ifxdeu_init_aes (void)
+/*! \fn int ifxdeu_init_aes (void)
  *  \ingroup IFX_AES_FUNCTIONS
  *  \brief function to initialize AES driver   
  *  \return ret 
 */                                 
-int __init ifxdeu_init_aes (void)
+int ifxdeu_init_aes (void)
 {
     int ret = -ENOSYS;
 
@@ -952,11 +952,11 @@ aes_err:
     return ret;
 }
 
-/*! \fn void __exit ifxdeu_fini_aes (void)
+/*! \fn void ifxdeu_fini_aes (void)
  *  \ingroup IFX_AES_FUNCTIONS
  *  \brief unregister aes driver   
 */                                 
-void __exit ifxdeu_fini_aes (void)
+void ifxdeu_fini_aes (void)
 {
     crypto_unregister_alg (&ifxdeu_aes_alg);
     crypto_unregister_alg (&ifxdeu_ecb_aes_alg);

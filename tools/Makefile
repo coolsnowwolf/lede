@@ -29,6 +29,7 @@ tools-y += mm-macros missing-macros cmake scons bc findutils gengetopt patchelf
 tools-y += mtools dosfstools libressl
 tools-$(CONFIG_TARGET_orion_generic) += wrt350nv2-builder upslug2
 tools-$(CONFIG_TARGET_x86) += qemu
+tools-$(CONFIG_EFI_IMAGES) += popt gptfdisk
 tools-$(CONFIG_TARGET_mxs) += elftosb sdimage
 tools-$(CONFIG_TARGET_ar71xx) += lzma-old squashfs
 tools-$(CONFIG_USES_MINOR) += kernel2minor
@@ -71,6 +72,7 @@ $(curdir)/libressl/compile := $(curdir)/pkg-config/compile
 $(curdir)/mkimage/compile += $(curdir)/libressl/compile
 $(curdir)/firmware-utils/compile += $(curdir)/libressl/compile
 $(curdir)/cmake/compile += $(curdir)/libressl/compile
+$(curdir)/gptfdisk/compile += $(curdir)/popt/compile $(curdir)/e2fsprogs/compile
 
 ifneq ($(HOST_OS),Linux)
   tools-y += coreutils

@@ -9,7 +9,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=ltq-vdsl-vr9
 PKG_VERSION:=4.17.18.6
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_BASE_NAME:=drv_dsl_cpe_api
 PKG_SOURCE:=$(PKG_BASE_NAME)_vrx-$(PKG_VERSION).tar.gz
@@ -19,8 +19,8 @@ PKG_HASH:=b4966a60653acc49254b168c6cc9c49eb36c54548e763617788aa4f252a29f21
 PKG_LICENSE:=GPL-2.0 BSD-2-Clause
 PKG_LICENSE_FILES:=LICENSE
 
-
-PKG_USE_MIPS16:=0
+PKG_ASLR_PIE:=0
+PKG_FIXUP:=autoreconf
 
 PKG_MAINTAINER:=John Crispin <john@phrozen.org>
 
@@ -41,8 +41,6 @@ define Package/ltq-vdsl-vr9/description
 	Supported Devices:
 		- VRX200 Family
 endef
-
-EXTRA_CFLAGS = -fno-pic -mno-abicalls -mlong-calls -G 0
 
 MAKE_FLAGS += \
 	SHELL="$(BASH)"

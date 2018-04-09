@@ -11,7 +11,7 @@ include $(INCLUDE_DIR)/kernel.mk
 PKG_NAME:=mac80211
 
 PKG_VERSION:=2017-11-01
-PKG_RELEASE:=2
+PKG_RELEASE:=4
 PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources
 PKG_HASH:=8437ab7886b988c8152e7a4db30b7f41009e49a3b2cb863edd05da1ecd7eb05a
 
@@ -1584,7 +1584,7 @@ config-$(CONFIG_PACKAGE_ATH_SPECTRAL) += ATH9K_COMMON_SPECTRAL ATH10K_SPECTRAL
 config-$(call config_package,ath9k) += ATH9K
 config-$(call config_package,ath9k-common) += ATH9K_COMMON
 config-$(CONFIG_TARGET_ar71xx) += ATH9K_AHB
-config-$(CONFIG_TARGET_ipq806x) += ATH10K_AHB
+config-$(CONFIG_TARGET_ipq40xx) += ATH10K_AHB
 config-$(CONFIG_PCI) += ATH9K_PCI
 config-$(CONFIG_ATH_USER_REGD) += ATH_USER_REGD
 config-$(CONFIG_ATH9K_SUPPORT_PCOEM) += ATH9K_PCOEM
@@ -1821,7 +1821,7 @@ define KernelPackage/cfg80211/install
 	$(INSTALL_DATA) ./files/lib/wifi/mac80211.sh $(1)/lib/wifi
 	$(INSTALL_BIN) ./files/lib/netifd/wireless/mac80211.sh $(1)/lib/netifd/wireless
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/ieee80211
-	$(INSTALL_DATA) ./files/mac80211.hotplug $(1)/etc/hotplug.d/ieee80211/00-wifi-detect
+	$(INSTALL_DATA) ./files/mac80211.hotplug $(1)/etc/hotplug.d/ieee80211/10-wifi-detect
 endef
 
 define KernelPackage/ipw2100/install

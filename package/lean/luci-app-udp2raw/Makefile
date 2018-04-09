@@ -9,26 +9,24 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-udp2raw
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=4
 
 PKG_LICENSE:=GPLv3
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=Jian Chang <aa65535@live.com>
 
-PKG_BUILD_PARALLEL:=1
-
 include $(INCLUDE_DIR)/package.mk
 
-define Package/luci-app-udp2raw
+define Package/$(PKG_NAME)
 	SECTION:=luci
 	CATEGORY:=LuCI
 	SUBMENU:=3. Applications
 	TITLE:=LuCI Support for udp2raw-tunnel
 	PKGARCH:=all
-	DEPENDS:=+udp2raw-tunnel
+#	DEPENDS:=+udp2raw-tunnel
 endef
 
-define Package/luci-app-udp2raw/description
+define Package/$(PKG_NAME)/description
 	LuCI Support for udp2raw-tunnel.
 endef
 
@@ -43,28 +41,27 @@ endef
 define Build/Compile
 endef
 
-define Package/luci-app-udp2raw/postinst
+define Package/$(PKG_NAME)/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
 	( . /etc/uci-defaults/luci-udp2raw ) && rm -f /etc/uci-defaults/luci-udp2raw
-	rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
 fi
 exit 0
 endef
 
-define Package/luci-app-udp2raw/conffiles
-/etc/config/udp2raw
+define Package/$(PKG_NAME)/conffiles
+	/etc/config/udp2raw
 endef
 
-define Package/luci-app-udp2raw/install
+define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/udp2raw.*.lmo $(1)/usr/lib/lua/luci/i18n/
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
 	$(INSTALL_DATA) ./files/luci/controller/*.lua $(1)/usr/lib/lua/luci/controller/
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi/udp2raw
 	$(INSTALL_DATA) ./files/luci/model/cbi/udp2raw/*.lua $(1)/usr/lib/lua/luci/model/cbi/udp2raw/
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view
-	$(INSTALL_DATA) ./files/luci/view/*.htm $(1)/usr/lib/lua/luci/view/
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/udp2raw
+	$(INSTALL_DATA) ./files/luci/view/udp2raw/*.htm $(1)/usr/lib/lua/luci/view/udp2raw/
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/root/etc/config/udp2raw $(1)/etc/config/udp2raw
 	$(INSTALL_DIR) $(1)/etc/init.d
@@ -73,4 +70,4 @@ define Package/luci-app-udp2raw/install
 	$(INSTALL_BIN) ./files/root/etc/uci-defaults/luci-udp2raw $(1)/etc/uci-defaults/luci-udp2raw
 endef
 
-$(eval $(call BuildPackage,luci-app-udp2raw))
+$(eval $(call BuildPackage,$(PKG_NAME)))

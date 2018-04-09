@@ -22,6 +22,22 @@ endef
 $(eval $(call KernelPackage,firewire))
 
 
+define KernelPackage/firewire-net
+  SUBMENU:=$(FIREWIRE_MENU)
+  TITLE:=Support for IP networking over FireWire
+  DEPENDS:=kmod-firewire
+  KCONFIG:=CONFIG_FIREWIRE_NET
+  FILES:=$(LINUX_DIR)/drivers/firewire/firewire-net.ko
+  AUTOLOAD:=$(call AutoProbe,firewire-net)
+endef
+
+define KernelPackage/firewire-net/description
+ Kernel support for IPv4 over FireWire
+endef
+
+$(eval $(call KernelPackage,firewire-net))
+
+
 define KernelPackage/firewire-ohci
   SUBMENU:=$(FIREWIRE_MENU)
   TITLE:=Support for OHCI-1394 controllers
@@ -58,17 +74,3 @@ endef
 $(eval $(call KernelPackage,firewire-sbp2))
 
 
-define KernelPackage/firewire-net
-  SUBMENU:=$(FIREWIRE_MENU)
-  TITLE:=Support for IP networking over FireWire
-  DEPENDS:=kmod-firewire
-  KCONFIG:=CONFIG_FIREWIRE_NET
-  FILES:=$(LINUX_DIR)/drivers/firewire/firewire-net.ko
-  AUTOLOAD:=$(call AutoProbe,firewire-net)
-endef
-
-define KernelPackage/firewire-net/description
- Kernel support for IPv4 over FireWire
-endef
-
-$(eval $(call KernelPackage,firewire-net))
