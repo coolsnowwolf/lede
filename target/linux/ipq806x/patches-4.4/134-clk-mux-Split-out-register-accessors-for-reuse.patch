@@ -1,0 +1,177 @@
+From 4c28a15ea536281c8d619e5c6716ade914c79a6e Mon Sep 17 00:00:00 2001
+From: Stephen Boyd <sboyd@codeaurora.org>
+Date: Fri, 20 Mar 2015 23:45:21 -0700
+Subject: [PATCH 1/2] clk: mux: Split out register accessors for reuse
+
+We want to reuse the logic in clk-mux.c for other clock drivers
+that don't use readl as register accessors. Fortunately, there
+really isn't much to the mux code besides the table indirection
+and quirk flags if you assume any bit shifting and masking has
+been done already. Pull that logic out into reusable functions
+that operate on an optional table and some flags so that other
+drivers can use the same logic.
+
+Signed-off-by: Stephen Boyd <sboyd@codeaurora.org>
+Signed-off-by: Ram Chandra Jangir <rjangi@codeaurora.org>
+---
+ drivers/clk/clk-mux.c        | 74 +++++++++++++++++++++++++++-----------------
+ include/linux/clk-provider.h |  9 ++++--
+ 2 files changed, 53 insertions(+), 30 deletions(-)
+
+--- a/drivers/clk/clk-mux.c
++++ b/drivers/clk/clk-mux.c
+@@ -28,35 +28,24 @@
+ 
+ #define to_clk_mux(_hw) container_of(_hw, struct clk_mux, hw)
+ 
+-static u8 clk_mux_get_parent(struct clk_hw *hw)
++unsigned int clk_mux_get_parent(struct clk_hw *hw, unsigned int val,
++				unsigned int *table, unsigned long flags)
+ {
+-	struct clk_mux *mux = to_clk_mux(hw);
+ 	int num_parents = clk_hw_get_num_parents(hw);
+-	u32 val;
+ 
+-	/*
+-	 * FIXME need a mux-specific flag to determine if val is bitwise or numeric
+-	 * e.g. sys_clkin_ck's clksel field is 3 bits wide, but ranges from 0x1
+-	 * to 0x7 (index starts at one)
+-	 * OTOH, pmd_trace_clk_mux_ck uses a separate bit for each clock, so
+-	 * val = 0x4 really means "bit 2, index starts at bit 0"
+-	 */
+-	val = clk_readl(mux->reg) >> mux->shift;
+-	val &= mux->mask;
+-
+-	if (mux->table) {
++	if (table) {
+ 		int i;
+ 
+ 		for (i = 0; i < num_parents; i++)
+-			if (mux->table[i] == val)
++			if (table[i] == val)
+ 				return i;
+ 		return -EINVAL;
+ 	}
+ 
+-	if (val && (mux->flags & CLK_MUX_INDEX_BIT))
++	if (val && (flags & CLK_MUX_INDEX_BIT))
+ 		val = ffs(val) - 1;
+ 
+-	if (val && (mux->flags & CLK_MUX_INDEX_ONE))
++	if (val && (flags & CLK_MUX_INDEX_ONE))
+ 		val--;
+ 
+ 	if (val >= num_parents)
+@@ -64,24 +53,53 @@ static u8 clk_mux_get_parent(struct clk_
+ 
+ 	return val;
+ }
++EXPORT_SYMBOL_GPL(clk_mux_get_parent);
+ 
+-static int clk_mux_set_parent(struct clk_hw *hw, u8 index)
++static u8 _clk_mux_get_parent(struct clk_hw *hw)
+ {
+ 	struct clk_mux *mux = to_clk_mux(hw);
+ 	u32 val;
+-	unsigned long flags = 0;
+ 
+-	if (mux->table)
+-		index = mux->table[index];
++	/*
++	* FIXME need a mux-specific flag to determine if val is bitwise or numeric
++	* e.g. sys_clkin_ck's clksel field is 3 bits wide, but ranges from 0x1
++	* to 0x7 (index starts at one)
++	* OTOH, pmd_trace_clk_mux_ck uses a separate bit for each clock, so
++	* val = 0x4 really means "bit 2, index starts at bit 0"
++	*/
++	val = clk_readl(mux->reg) >> mux->shift;
++	val &= mux->mask;
+ 
+-	else {
+-		if (mux->flags & CLK_MUX_INDEX_BIT)
+-			index = 1 << index;
++	return clk_mux_get_parent(hw, val, mux->table, mux->flags);
++}
++
++unsigned int clk_mux_reindex(u8 index, unsigned int *table,
++			    unsigned long flags)
++{
++	unsigned int val = index;
+ 
+-		if (mux->flags & CLK_MUX_INDEX_ONE)
+-			index++;
++	if (table) {
++		val = table[val];
++	} else {
++		if (flags & CLK_MUX_INDEX_BIT)
++			val = 1 << index;
++
++	if (flags & CLK_MUX_INDEX_ONE)
++		val++;
+ 	}
+ 
++	return val;
++}
++EXPORT_SYMBOL_GPL(clk_mux_reindex);
++
++static int clk_mux_set_parent(struct clk_hw *hw, u8 index)
++{
++	struct clk_mux *mux = to_clk_mux(hw);
++	u32 val;
++	unsigned long flags = 0;
++
++	index = clk_mux_reindex(index, mux->table, mux->flags);
++
+ 	if (mux->lock)
+ 		spin_lock_irqsave(mux->lock, flags);
+ 	else
+@@ -105,7 +123,7 @@ static int clk_mux_set_parent(struct clk
+ }
+ 
+ const struct clk_ops clk_mux_ops = {
+-	.get_parent = clk_mux_get_parent,
++	.get_parent = _clk_mux_get_parent,
+ 	.set_parent = clk_mux_set_parent,
+ 	.determine_rate = __clk_mux_determine_rate,
+ };
+@@ -120,7 +138,7 @@ struct clk *clk_register_mux_table(struc
+ 		const char * const *parent_names, u8 num_parents,
+ 		unsigned long flags,
+ 		void __iomem *reg, u8 shift, u32 mask,
+-		u8 clk_mux_flags, u32 *table, spinlock_t *lock)
++		u8 clk_mux_flags, unsigned int *table, spinlock_t *lock)
+ {
+ 	struct clk_mux *mux;
+ 	struct clk *clk;
+--- a/include/linux/clk-provider.h
++++ b/include/linux/clk-provider.h
+@@ -433,7 +433,7 @@ void clk_unregister_divider(struct clk *
+ struct clk_mux {
+ 	struct clk_hw	hw;
+ 	void __iomem	*reg;
+-	u32		*table;
++	unsigned int    *table;
+ 	u32		mask;
+ 	u8		shift;
+ 	u8		flags;
+@@ -449,6 +449,11 @@ struct clk_mux {
+ extern const struct clk_ops clk_mux_ops;
+ extern const struct clk_ops clk_mux_ro_ops;
+ 
++unsigned int clk_mux_get_parent(struct clk_hw *hw, unsigned int val,
++				unsigned int *table, unsigned long flags);
++unsigned int clk_mux_reindex(u8 index, unsigned int *table,
++			    unsigned long flags);
++
+ struct clk *clk_register_mux(struct device *dev, const char *name,
+ 		const char * const *parent_names, u8 num_parents,
+ 		unsigned long flags,
+@@ -459,7 +464,7 @@ struct clk *clk_register_mux_table(struc
+ 		const char * const *parent_names, u8 num_parents,
+ 		unsigned long flags,
+ 		void __iomem *reg, u8 shift, u32 mask,
+-		u8 clk_mux_flags, u32 *table, spinlock_t *lock);
++		u8 clk_mux_flags, unsigned int *table, spinlock_t *lock);
+ 
+ void clk_unregister_mux(struct clk *clk);
+ 

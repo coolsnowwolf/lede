@@ -1,0 +1,111 @@
+From 906d7a5cfeda508e7361f021605579a00cd82815 Mon Sep 17 00:00:00 2001
+From: Pratyush Anand <panand@redhat.com>
+Date: Thu, 17 Dec 2015 17:53:58 +0530
+Subject: watchdog: Use static struct class watchdog_class in stead of pointer
+
+We need few sysfs attributes to know different status of a watchdog device.
+To do that, we need to associate .dev_groups with watchdog_class. So
+convert it from pointer to static.
+Putting this static struct in watchdog_dev.c, so that static device
+attributes defined in that file can be attached to it.
+
+Signed-off-by: Pratyush Anand <panand@redhat.com>
+Suggested-by: Guenter Roeck <linux@roeck-us.net>
+Reviewed-by: Guenter Roeck <linux@roeck-us.net>
+Signed-off-by: Guenter Roeck <linux@roeck-us.net>
+Signed-off-by: Wim Van Sebroeck <wim@iguana.be>
+---
+ drivers/watchdog/watchdog_core.c | 15 ++-------------
+ drivers/watchdog/watchdog_core.h |  2 +-
+ drivers/watchdog/watchdog_dev.c  | 26 ++++++++++++++++++++++----
+ 3 files changed, 25 insertions(+), 18 deletions(-)
+
+--- a/drivers/watchdog/watchdog_core.c
++++ b/drivers/watchdog/watchdog_core.c
+@@ -370,19 +370,9 @@ static int __init watchdog_deferred_regi
+ 
+ static int __init watchdog_init(void)
+ {
+-	int err;
+-
+-	watchdog_class = class_create(THIS_MODULE, "watchdog");
+-	if (IS_ERR(watchdog_class)) {
+-		pr_err("couldn't create class\n");
++	watchdog_class = watchdog_dev_init();
++	if (IS_ERR(watchdog_class))
+ 		return PTR_ERR(watchdog_class);
+-	}
+-
+-	err = watchdog_dev_init();
+-	if (err < 0) {
+-		class_destroy(watchdog_class);
+-		return err;
+-	}
+ 
+ 	watchdog_deferred_registration();
+ 	return 0;
+@@ -391,7 +381,6 @@ static int __init watchdog_init(void)
+ static void __exit watchdog_exit(void)
+ {
+ 	watchdog_dev_exit();
+-	class_destroy(watchdog_class);
+ 	ida_destroy(&watchdog_ida);
+ }
+ 
+--- a/drivers/watchdog/watchdog_core.h
++++ b/drivers/watchdog/watchdog_core.h
+@@ -33,5 +33,5 @@
+  */
+ extern int watchdog_dev_register(struct watchdog_device *);
+ extern int watchdog_dev_unregister(struct watchdog_device *);
+-extern int __init watchdog_dev_init(void);
++extern struct class * __init watchdog_dev_init(void);
+ extern void __exit watchdog_dev_exit(void);
+--- a/drivers/watchdog/watchdog_dev.c
++++ b/drivers/watchdog/watchdog_dev.c
+@@ -581,18 +581,35 @@ int watchdog_dev_unregister(struct watch
+ 	return 0;
+ }
+ 
++static struct class watchdog_class = {
++	.name =		"watchdog",
++	.owner =	THIS_MODULE,
++};
++
+ /*
+  *	watchdog_dev_init: init dev part of watchdog core
+  *
+  *	Allocate a range of chardev nodes to use for watchdog devices
+  */
+ 
+-int __init watchdog_dev_init(void)
++struct class * __init watchdog_dev_init(void)
+ {
+-	int err = alloc_chrdev_region(&watchdog_devt, 0, MAX_DOGS, "watchdog");
+-	if (err < 0)
++	int err;
++
++	err = class_register(&watchdog_class);
++	if (err < 0) {
++		pr_err("couldn't register class\n");
++		return ERR_PTR(err);
++	}
++
++	err = alloc_chrdev_region(&watchdog_devt, 0, MAX_DOGS, "watchdog");
++	if (err < 0) {
+ 		pr_err("watchdog: unable to allocate char dev region\n");
+-	return err;
++		class_unregister(&watchdog_class);
++		return ERR_PTR(err);
++	}
++
++	return &watchdog_class;
+ }
+ 
+ /*
+@@ -604,4 +621,5 @@ int __init watchdog_dev_init(void)
+ void __exit watchdog_dev_exit(void)
+ {
+ 	unregister_chrdev_region(watchdog_devt, MAX_DOGS);
++	class_unregister(&watchdog_class);
+ }
