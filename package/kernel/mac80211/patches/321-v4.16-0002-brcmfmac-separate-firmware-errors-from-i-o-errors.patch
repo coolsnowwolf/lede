@@ -1,0 +1,186 @@
+From b69c1df47281ad47bd2037a42b98f5c7115b7fd5 Mon Sep 17 00:00:00 2001
+From: Arend Van Spriel <arend.vanspriel@broadcom.com>
+Date: Mon, 22 Jan 2018 21:46:40 +0100
+Subject: [PATCH] brcmfmac: separate firmware errors from i/o errors
+
+When using the firmware api it can fail simply because firmware does
+not like the request or it fails due to issues in the host interface.
+Currently, there is only a single error code which is confusing. So
+adding a parameter to pass the firmware error separately and in case
+of a firmware error always return -EBADE to user-space.
+
+Reviewed-by: Hante Meuleman <hante.meuleman@broadcom.com>
+Reviewed-by: Pieter-Paul Giesberts <pieter-paul.giesberts@broadcom.com>
+Reviewed-by: Franky Lin <franky.lin@broadcom.com>
+Signed-off-by: Arend van Spriel <arend.vanspriel@broadcom.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcdc.c  | 11 ++++++-----
+ drivers/net/wireless/broadcom/brcm80211/brcmfmac/fwil.c  | 16 +++++++++++-----
+ .../net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c    | 10 ++++++----
+ drivers/net/wireless/broadcom/brcm80211/brcmfmac/proto.h | 14 ++++++++------
+ 4 files changed, 31 insertions(+), 20 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcdc.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcdc.c
+@@ -165,7 +165,7 @@ static int brcmf_proto_bcdc_cmplt(struct
+ 
+ static int
+ brcmf_proto_bcdc_query_dcmd(struct brcmf_pub *drvr, int ifidx, uint cmd,
+-			    void *buf, uint len)
++			    void *buf, uint len, int *fwerr)
+ {
+ 	struct brcmf_bcdc *bcdc = (struct brcmf_bcdc *)drvr->proto->pd;
+ 	struct brcmf_proto_bcdc_dcmd *msg = &bcdc->msg;
+@@ -175,6 +175,7 @@ brcmf_proto_bcdc_query_dcmd(struct brcmf
+ 
+ 	brcmf_dbg(BCDC, "Enter, cmd %d len %d\n", cmd, len);
+ 
++	*fwerr = 0;
+ 	ret = brcmf_proto_bcdc_msg(drvr, ifidx, cmd, buf, len, false);
+ 	if (ret < 0) {
+ 		brcmf_err("brcmf_proto_bcdc_msg failed w/status %d\n",
+@@ -215,15 +216,14 @@ retry:
+ 
+ 	/* Check the ERROR flag */
+ 	if (flags & BCDC_DCMD_ERROR)
+-		ret = le32_to_cpu(msg->status);
+-
++		*fwerr = le32_to_cpu(msg->status);
+ done:
+ 	return ret;
+ }
+ 
+ static int
+ brcmf_proto_bcdc_set_dcmd(struct brcmf_pub *drvr, int ifidx, uint cmd,
+-			  void *buf, uint len)
++			  void *buf, uint len, int *fwerr)
+ {
+ 	struct brcmf_bcdc *bcdc = (struct brcmf_bcdc *)drvr->proto->pd;
+ 	struct brcmf_proto_bcdc_dcmd *msg = &bcdc->msg;
+@@ -232,6 +232,7 @@ brcmf_proto_bcdc_set_dcmd(struct brcmf_p
+ 
+ 	brcmf_dbg(BCDC, "Enter, cmd %d len %d\n", cmd, len);
+ 
++	*fwerr = 0;
+ 	ret = brcmf_proto_bcdc_msg(drvr, ifidx, cmd, buf, len, true);
+ 	if (ret < 0)
+ 		goto done;
+@@ -255,7 +256,7 @@ brcmf_proto_bcdc_set_dcmd(struct brcmf_p
+ 
+ 	/* Check the ERROR flag */
+ 	if (flags & BCDC_DCMD_ERROR)
+-		ret = le32_to_cpu(msg->status);
++		*fwerr = le32_to_cpu(msg->status);
+ 
+ done:
+ 	return ret;
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/fwil.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/fwil.c
+@@ -107,7 +107,7 @@ static s32
+ brcmf_fil_cmd_data(struct brcmf_if *ifp, u32 cmd, void *data, u32 len, bool set)
+ {
+ 	struct brcmf_pub *drvr = ifp->drvr;
+-	s32 err;
++	s32 err, fwerr;
+ 
+ 	if (drvr->bus_if->state != BRCMF_BUS_UP) {
+ 		brcmf_err("bus is down. we have nothing to do.\n");
+@@ -117,14 +117,20 @@ brcmf_fil_cmd_data(struct brcmf_if *ifp,
+ 	if (data != NULL)
+ 		len = min_t(uint, len, BRCMF_DCMD_MAXLEN);
+ 	if (set)
+-		err = brcmf_proto_set_dcmd(drvr, ifp->ifidx, cmd, data, len);
++		err = brcmf_proto_set_dcmd(drvr, ifp->ifidx, cmd,
++					   data, len, &fwerr);
+ 	else
+-		err = brcmf_proto_query_dcmd(drvr, ifp->ifidx, cmd, data, len);
++		err = brcmf_proto_query_dcmd(drvr, ifp->ifidx, cmd,
++					     data, len, &fwerr);
+ 
+-	if (err)
++	if (err) {
+ 		brcmf_dbg(FIL, "Failed: %s (%d)\n",
+ 			  brcmf_fil_get_errstr((u32)(-err)), err);
+-
++	} else if (fwerr < 0) {
++		brcmf_dbg(FIL, "Firmware error: %s (%d)\n",
++			  brcmf_fil_get_errstr((u32)(-fwerr)), fwerr);
++		err = -EBADE;
++	}
+ 	return err;
+ }
+ 
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c
+@@ -477,7 +477,7 @@ static void brcmf_msgbuf_ioctl_resp_wake
+ 
+ 
+ static int brcmf_msgbuf_query_dcmd(struct brcmf_pub *drvr, int ifidx,
+-				   uint cmd, void *buf, uint len)
++				   uint cmd, void *buf, uint len, int *fwerr)
+ {
+ 	struct brcmf_msgbuf *msgbuf = (struct brcmf_msgbuf *)drvr->proto->pd;
+ 	struct sk_buff *skb = NULL;
+@@ -485,6 +485,7 @@ static int brcmf_msgbuf_query_dcmd(struc
+ 	int err;
+ 
+ 	brcmf_dbg(MSGBUF, "ifidx=%d, cmd=%d, len=%d\n", ifidx, cmd, len);
++	*fwerr = 0;
+ 	msgbuf->ctl_completed = false;
+ 	err = brcmf_msgbuf_tx_ioctl(drvr, ifidx, cmd, buf, len);
+ 	if (err)
+@@ -508,14 +509,15 @@ static int brcmf_msgbuf_query_dcmd(struc
+ 	}
+ 	brcmu_pkt_buf_free_skb(skb);
+ 
+-	return msgbuf->ioctl_resp_status;
++	*fwerr = msgbuf->ioctl_resp_status;
++	return 0;
+ }
+ 
+ 
+ static int brcmf_msgbuf_set_dcmd(struct brcmf_pub *drvr, int ifidx,
+-				 uint cmd, void *buf, uint len)
++				 uint cmd, void *buf, uint len, int *fwerr)
+ {
+-	return brcmf_msgbuf_query_dcmd(drvr, ifidx, cmd, buf, len);
++	return brcmf_msgbuf_query_dcmd(drvr, ifidx, cmd, buf, len, fwerr);
+ }
+ 
+ 
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/proto.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/proto.h
+@@ -30,9 +30,9 @@ struct brcmf_proto {
+ 	int (*hdrpull)(struct brcmf_pub *drvr, bool do_fws,
+ 		       struct sk_buff *skb, struct brcmf_if **ifp);
+ 	int (*query_dcmd)(struct brcmf_pub *drvr, int ifidx, uint cmd,
+-			  void *buf, uint len);
++			  void *buf, uint len, int *fwerr);
+ 	int (*set_dcmd)(struct brcmf_pub *drvr, int ifidx, uint cmd, void *buf,
+-			uint len);
++			uint len, int *fwerr);
+ 	int (*tx_queue_data)(struct brcmf_pub *drvr, int ifidx,
+ 			     struct sk_buff *skb);
+ 	int (*txdata)(struct brcmf_pub *drvr, int ifidx, u8 offset,
+@@ -71,14 +71,16 @@ static inline int brcmf_proto_hdrpull(st
+ 	return drvr->proto->hdrpull(drvr, do_fws, skb, ifp);
+ }
+ static inline int brcmf_proto_query_dcmd(struct brcmf_pub *drvr, int ifidx,
+-					 uint cmd, void *buf, uint len)
++					 uint cmd, void *buf, uint len,
++					 int *fwerr)
+ {
+-	return drvr->proto->query_dcmd(drvr, ifidx, cmd, buf, len);
++	return drvr->proto->query_dcmd(drvr, ifidx, cmd, buf, len,fwerr);
+ }
+ static inline int brcmf_proto_set_dcmd(struct brcmf_pub *drvr, int ifidx,
+-				       uint cmd, void *buf, uint len)
++				       uint cmd, void *buf, uint len,
++				       int *fwerr)
+ {
+-	return drvr->proto->set_dcmd(drvr, ifidx, cmd, buf, len);
++	return drvr->proto->set_dcmd(drvr, ifidx, cmd, buf, len, fwerr);
+ }
+ 
+ static inline int brcmf_proto_tx_queue_data(struct brcmf_pub *drvr, int ifidx,

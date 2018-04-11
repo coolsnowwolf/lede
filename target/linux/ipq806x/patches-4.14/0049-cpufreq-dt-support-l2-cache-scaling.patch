@@ -1,0 +1,203 @@
+From 6d18b351ee5b91e5310c730882e52a01309ac55a Mon Sep 17 00:00:00 2001
+From: Pavel Kubelun <be.dissent@gmail.com>
+Date: Sun, 7 Jan 2018 01:23:30 +0300
+Subject: [PATCH] cpufreq-dt: support l2 cache scaling
+
+Allows to scale L2 cache frequency and voltage  depending on cpu
+frequency.
+
+L2 frequency, voltage and target cpu frequencies are taken from DT.
+
+Signed-off-by: Pavel Kubelun <be.dissent@gmail.com>
+---
+ drivers/cpufreq/cpufreq-dt.c | 121 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++-----
+ include/linux/cpufreq.h      |  10 ++++++++++
+ 2 files changed, 126 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/cpufreq/cpufreq-dt.c b/drivers/cpufreq/cpufreq-dt.c
+index dbcfe39..37e8abe 100644
+--- a/drivers/cpufreq/cpufreq-dt.c
++++ b/drivers/cpufreq/cpufreq-dt.c
+@@ -27,6 +27,8 @@
+ 
+ #include "cpufreq-dt.h"
+ 
++static DEFINE_PER_CPU(struct clk *, cpu_cores_clks);
++
+ struct private_data {
+ 	struct opp_table *opp_table;
+ 	struct device *cpu_dev;
+@@ -43,9 +45,60 @@ static struct freq_attr *cpufreq_dt_attr[] = {
+ static int set_target(struct cpufreq_policy *policy, unsigned int index)
+ {
+ 	struct private_data *priv = policy->driver_data;
++	struct clk *l2_clk = policy->l2_clk;
++	struct regulator *l2_regulator = policy->l2_regulator;
++	unsigned long target_freq = policy->freq_table[index].frequency * 1000;
++	int ret;
++	
++	ret = dev_pm_opp_set_rate(priv->cpu_dev, target_freq);
++
++	if (!ret && policy->l2_rate_set) {
++		int cpu, i, tol = 0;
++		unsigned long freq, max_cpu_freq = 0;
++		unsigned long new_l2_freq = 0, new_l2_volt = 0;
++
++		/* L2 cache supply has a single regulator shared by cores and each core
++		 * registers itself as a regulator consumer. N of consumers = N of cores.
++		 * Regulator driver sets the regulator output to highest voltage requested
++		 * among all consumers. We set the regulator voltage per core and let the
++		 * driver set the highest voltage requested - either core can be running
++		 * at max and l2 cache should get the needed voltage.
++		 */
++		if (policy->l2_volt_set) {
++			for (i = 2; i >= 0; i--) {
++				if (target_freq >= policy->l2_cpufreq[i]) {
++					tol = policy->l2_volt[i] * policy->l2_volt_tol / 100;
++					new_l2_volt = policy->l2_volt[i];
++
++					regulator_set_voltage_tol(l2_regulator,new_l2_volt,tol);
++
++					break;
++				}
++			}
++		}
++
++		/* Unlike regulators, clock rate is adjusted on any request. Let's pick
++		 * the highest core frequency and set the L2 cache frequency, so we 
++		 * don't pull the L2 cache frequency down prematurely if either cores is 
++		 * running at max.
++		 */
++		for_each_possible_cpu(cpu) {
++			freq = clk_get_rate(per_cpu(cpu_cores_clks, cpu));
++			max_cpu_freq = max(max_cpu_freq, freq);
++		}
++
++		for (i = 2; i >= 0; i--) {
++			if (max_cpu_freq >= policy->l2_cpufreq[i]) {
++				new_l2_freq = policy->l2_rate[i];
++
++				clk_set_rate(l2_clk, new_l2_freq);
++
++				break;
++			}
++		}
++	}
+ 
+-	return dev_pm_opp_set_rate(priv->cpu_dev,
+-				   policy->freq_table[index].frequency * 1000);
++	return ret;
+ }
+ 
+ /*
+@@ -148,18 +201,24 @@ static int cpufreq_init(struct cpufreq_policy *policy)
+ 	struct private_data *priv;
+ 	struct device *cpu_dev;
+ 	struct clk *cpu_clk;
++	struct clk *l2_clk = NULL;
++	struct regulator *l2_regulator = NULL;
++	struct device_node *np, *cache;
+ 	unsigned int transition_latency;
+ 	bool fallback = false;
+ 	const char *name;
+-	int ret;
+-
++	int ret, cpu;
++	
+ 	cpu_dev = get_cpu_device(policy->cpu);
+ 	if (!cpu_dev) {
+ 		pr_err("failed to get cpu%d device\n", policy->cpu);
+ 		return -ENODEV;
+ 	}
+ 
+-	cpu_clk = clk_get(cpu_dev, NULL);
++	for_each_possible_cpu(cpu)
++		per_cpu(cpu_cores_clks, cpu) = clk_get(get_cpu_device(cpu), NULL);
++
++	cpu_clk = per_cpu(cpu_cores_clks, policy->cpu);
+ 	if (IS_ERR(cpu_clk)) {
+ 		ret = PTR_ERR(cpu_clk);
+ 		dev_err(cpu_dev, "%s: failed to get clk: %d\n", __func__, ret);
+@@ -279,6 +338,58 @@ static int cpufreq_init(struct cpufreq_policy *policy)
+ 	policy->cpuinfo.transition_latency = transition_latency;
+ 	policy->dvfs_possible_from_any_cpu = true;
+ 
++	l2_clk = devm_clk_get(cpu_dev, "l2");
++	if (!IS_ERR(l2_clk)) {
++		policy->l2_clk = l2_clk;
++
++		np = of_node_get(priv->cpu_dev->of_node);
++		if (np) {
++			of_property_read_u32(np, "voltage-tolerance", &policy->l2_volt_tol);
++			cache = of_find_next_cache_node(np);
++		}
++	}
++
++	policy->l2_rate_set = false;
++	policy->l2_volt_set = false;
++
++	if (cache) {
++		struct device_node *vdd;
++	
++		of_property_read_u32_array(cache, "l2-rates", policy->l2_rate, 3);
++		if (policy->l2_rate[0] && policy->l2_rate[1] && policy->l2_rate[2]) {
++			policy->l2_rate_set = true;
++			of_property_read_u32_array(cache, "l2-cpufreq", policy->l2_cpufreq, 3);
++			of_property_read_u32_array(cache, "l2-volt", policy->l2_volt, 3);
++		} else
++			pr_warn("L2: failed to parse L2 rates\n");
++			
++		if (!policy->l2_cpufreq[0] && !policy->l2_cpufreq[1] && 
++			!policy->l2_cpufreq[2] && policy->l2_rate_set) {
++			int i;
++			
++			pr_warn("L2: failed to parse target cpu freq, using defaults\n");
++			for (i = 0; i < 3; i++)
++				policy->l2_cpufreq[i] = policy->l2_rate[i];
++		}
++
++		if (policy->l2_volt[0] && policy->l2_volt[1] && policy->l2_volt[2] &&
++			policy->l2_volt_tol && policy->l2_rate_set)
++			vdd = of_parse_phandle(cache, "l2-supply", 0);
++			
++		if (vdd) {
++			l2_regulator = devm_regulator_get(cpu_dev, vdd->name);
++			if (!IS_ERR(l2_regulator)) {
++				policy->l2_regulator = l2_regulator;
++				policy->l2_volt_set = true;
++			} else {
++				pr_warn("failed to get l2 supply\n");
++				l2_regulator = NULL;
++			}
++
++			of_node_put(vdd);
++		}
++	}
++
+ 	return 0;
+ 
+ out_free_cpufreq_table:
+diff --git a/include/linux/cpufreq.h b/include/linux/cpufreq.h
+index 537ff84..638169f 100644
+--- a/include/linux/cpufreq.h
++++ b/include/linux/cpufreq.h
+@@ -73,6 +73,16 @@ struct cpufreq_policy {
+ 	unsigned int		cpu;    /* cpu managing this policy, must be online */
+ 
+ 	struct clk		*clk;
++
++	struct clk			*l2_clk; /* L2 clock */
++	struct regulator	*l2_regulator; /* L2 supply */
++	unsigned int		l2_rate[3]; /* L2 bus clock rate */
++	bool				l2_rate_set;
++	unsigned int		l2_cpufreq[3]; /* L2 target CPU frequency */
++	unsigned int		l2_volt[3]; /* L2 voltage array */
++	bool				l2_volt_set;
++	unsigned int		l2_volt_tol; /* L2 voltage tolerance */
++
+ 	struct cpufreq_cpuinfo	cpuinfo;/* see above */
+ 
+ 	unsigned int		min;    /* in kHz */
+--
+Working Copy 3.0.6
+

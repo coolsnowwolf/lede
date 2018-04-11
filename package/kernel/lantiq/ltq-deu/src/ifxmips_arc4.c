@@ -343,11 +343,11 @@ static struct crypto_alg ifxdeu_ecb_arc4_alg = {
         }
 };
 
-/*! \fn int __init ifxdeu_init_arc4(void)
+/*! \fn int ifxdeu_init_arc4(void)
     \ingroup IFX_ARC4_FUNCTIONS
     \brief initialize arc4 driver    
 */                                 
-int __init ifxdeu_init_arc4(void)
+int ifxdeu_init_arc4(void)
 {
     int ret = -ENOSYS;
 
@@ -376,11 +376,11 @@ ecb_arc4_err:
 
 }
 
-/*! \fn void __exit ifxdeu_fini_arc4(void)
+/*! \fn void ifxdeu_fini_arc4(void)
     \ingroup IFX_ARC4_FUNCTIONS
     \brief unregister arc4 driver   
 */                                 
-void __exit ifxdeu_fini_arc4(void)
+void ifxdeu_fini_arc4(void)
 {
         crypto_unregister_alg (&ifxdeu_arc4_alg);
         crypto_unregister_alg (&ifxdeu_ecb_arc4_alg);

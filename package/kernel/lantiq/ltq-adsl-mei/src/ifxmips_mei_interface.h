@@ -111,7 +111,11 @@ static inline long
 ugly_hack_sleep_on_timeout(wait_queue_head_t *q, long timeout)
 {
 	unsigned long flags;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,13,0))
+	wait_queue_entry_t wait;
+#else
 	wait_queue_t wait;
+#endif
 
 	init_waitqueue_entry(&wait, current);
 

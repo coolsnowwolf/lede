@@ -11,8 +11,9 @@ define Profile/Generic
 endef
 
 define Profile/Generic/Description
-	Package set compatible with hardware any Broadcom BCM47xx or BCM535x 
-	SoC with a ARM CPU like the BCM4707, BCM4708, BCM4709, BCM53010
+	Package set compatible with any hardware using Broadcom BCM47xx or
+	BCM535x SoCs with an ARM CPU like the BCM4707, BCM4708, BCM4709,
+	BCM53010
 endef
 
 $(eval $(call Profile,Generic))

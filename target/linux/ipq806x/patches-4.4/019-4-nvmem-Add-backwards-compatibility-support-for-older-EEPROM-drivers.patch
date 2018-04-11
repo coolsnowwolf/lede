@@ -1,0 +1,181 @@
+From b6c217ab9be6895384cf0b284ace84ad79e5c53b Mon Sep 17 00:00:00 2001
+From: Andrew Lunn <andrew@lunn.ch>
+Date: Fri, 26 Feb 2016 20:59:19 +0100
+Subject: nvmem: Add backwards compatibility support for older EEPROM drivers.
+
+Older drivers made an 'eeprom' file available in the /sys device
+directory. Have the NVMEM core provide this to retain backwards
+compatibility.
+
+Signed-off-by: Andrew Lunn <andrew@lunn.ch>
+Acked-by: Srinivas Kandagatla <srinivas.kandagatla@linaro.org>
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/nvmem/core.c           | 84 ++++++++++++++++++++++++++++++++++++++----
+ include/linux/nvmem-provider.h |  4 +-
+ 2 files changed, 79 insertions(+), 9 deletions(-)
+
+--- a/drivers/nvmem/core.c
++++ b/drivers/nvmem/core.c
+@@ -38,8 +38,13 @@ struct nvmem_device {
+ 	int			users;
+ 	size_t			size;
+ 	bool			read_only;
++	int			flags;
++	struct bin_attribute	eeprom;
++	struct device		*base_dev;
+ };
+ 
++#define FLAG_COMPAT		BIT(0)
++
+ struct nvmem_cell {
+ 	const char		*name;
+ 	int			offset;
+@@ -56,16 +61,26 @@ static DEFINE_IDA(nvmem_ida);
+ static LIST_HEAD(nvmem_cells);
+ static DEFINE_MUTEX(nvmem_cells_mutex);
+ 
++#ifdef CONFIG_DEBUG_LOCK_ALLOC
++static struct lock_class_key eeprom_lock_key;
++#endif
++
+ #define to_nvmem_device(d) container_of(d, struct nvmem_device, dev)
+ 
+ static ssize_t bin_attr_nvmem_read(struct file *filp, struct kobject *kobj,
+ 				    struct bin_attribute *attr,
+ 				    char *buf, loff_t pos, size_t count)
+ {
+-	struct device *dev = container_of(kobj, struct device, kobj);
+-	struct nvmem_device *nvmem = to_nvmem_device(dev);
++	struct device *dev;
++	struct nvmem_device *nvmem;
+ 	int rc;
+ 
++	if (attr->private)
++		dev = attr->private;
++	else
++		dev = container_of(kobj, struct device, kobj);
++	nvmem = to_nvmem_device(dev);
++
+ 	/* Stop the user from reading */
+ 	if (pos >= nvmem->size)
+ 		return 0;
+@@ -90,10 +105,16 @@ static ssize_t bin_attr_nvmem_write(stru
+ 				     struct bin_attribute *attr,
+ 				     char *buf, loff_t pos, size_t count)
+ {
+-	struct device *dev = container_of(kobj, struct device, kobj);
+-	struct nvmem_device *nvmem = to_nvmem_device(dev);
++	struct device *dev;
++	struct nvmem_device *nvmem;
+ 	int rc;
+ 
++	if (attr->private)
++		dev = attr->private;
++	else
++		dev = container_of(kobj, struct device, kobj);
++	nvmem = to_nvmem_device(dev);
++
+ 	/* Stop the user from writing */
+ 	if (pos >= nvmem->size)
+ 		return 0;
+@@ -349,6 +370,43 @@ err:
+ 	return rval;
+ }
+ 
++/*
++ * nvmem_setup_compat() - Create an additional binary entry in
++ * drivers sys directory, to be backwards compatible with the older
++ * drivers/misc/eeprom drivers.
++ */
++static int nvmem_setup_compat(struct nvmem_device *nvmem,
++			      const struct nvmem_config *config)
++{
++	int rval;
++
++	if (!config->base_dev)
++		return -EINVAL;
++
++	if (nvmem->read_only)
++		nvmem->eeprom = bin_attr_ro_root_nvmem;
++	else
++		nvmem->eeprom = bin_attr_rw_root_nvmem;
++	nvmem->eeprom.attr.name = "eeprom";
++	nvmem->eeprom.size = nvmem->size;
++#ifdef CONFIG_DEBUG_LOCK_ALLOC
++	nvmem->eeprom.attr.key = &eeprom_lock_key;
++#endif
++	nvmem->eeprom.private = &nvmem->dev;
++	nvmem->base_dev = config->base_dev;
++
++	rval = device_create_bin_file(nvmem->base_dev, &nvmem->eeprom);
++	if (rval) {
++		dev_err(&nvmem->dev,
++			"Failed to create eeprom binary file %d\n", rval);
++		return rval;
++	}
++
++	nvmem->flags |= FLAG_COMPAT;
++
++	return 0;
++}
++
+ /**
+  * nvmem_register() - Register a nvmem device for given nvmem_config.
+  * Also creates an binary entry in /sys/bus/nvmem/devices/dev-name/nvmem
+@@ -416,16 +474,23 @@ struct nvmem_device *nvmem_register(cons
+ 	dev_dbg(&nvmem->dev, "Registering nvmem device %s\n", config->name);
+ 
+ 	rval = device_add(&nvmem->dev);
+-	if (rval) {
+-		ida_simple_remove(&nvmem_ida, nvmem->id);
+-		kfree(nvmem);
+-		return ERR_PTR(rval);
++	if (rval)
++		goto out;
++
++	if (config->compat) {
++		rval = nvmem_setup_compat(nvmem, config);
++		if (rval)
++			goto out;
+ 	}
+ 
+ 	if (config->cells)
+ 		nvmem_add_cells(nvmem, config);
+ 
+ 	return nvmem;
++out:
++	ida_simple_remove(&nvmem_ida, nvmem->id);
++	kfree(nvmem);
++	return ERR_PTR(rval);
+ }
+ EXPORT_SYMBOL_GPL(nvmem_register);
+ 
+@@ -445,6 +510,9 @@ int nvmem_unregister(struct nvmem_device
+ 	}
+ 	mutex_unlock(&nvmem_mutex);
+ 
++	if (nvmem->flags & FLAG_COMPAT)
++		device_remove_bin_file(nvmem->base_dev, &nvmem->eeprom);
++
+ 	nvmem_device_remove_all_cells(nvmem);
+ 	device_del(&nvmem->dev);
+ 
+--- a/include/linux/nvmem-provider.h
++++ b/include/linux/nvmem-provider.h
+@@ -24,6 +24,9 @@ struct nvmem_config {
+ 	int			ncells;
+ 	bool			read_only;
+ 	bool			root_only;
++	/* To be only used by old driver/misc/eeprom drivers */
++	bool			compat;
++	struct device		*base_dev;
+ };
+ 
+ #if IS_ENABLED(CONFIG_NVMEM)
+@@ -44,5 +47,4 @@ static inline int nvmem_unregister(struc
+ }
+ 
+ #endif /* CONFIG_NVMEM */
+-
+ #endif  /* ifndef _LINUX_NVMEM_PROVIDER_H */

@@ -30,6 +30,22 @@ define Device/ar725w
 endef
 TARGET_DEVICES += ar725w
 
+define Device/dlink_dap-1522-a1
+  DTS := DAP-1522-A1
+  BLOCKSIZE := 64k
+  IMAGE_SIZE := 3801088
+  DEVICE_TITLE := D-Link DAP-1522 A1
+  DEVICE_PACKAGES := kmod-switch-rtl8366s
+  KERNEL := $(KERNEL_DTB)
+  IMAGES += factory.bin
+  IMAGE/factory.bin := \
+	append-kernel | pad-offset $$$$(BLOCKSIZE) 96 | \
+	append-rootfs | pad-rootfs -x 96 | \
+	wrg-header wapnd01_dlink_dap1522 | \
+	check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += dlink_dap-1522-a1
+
 define Device/f5d8235-v1
   IMAGE_SIZE := 7744k
   DEVICE_TITLE := Belkin F5D8235 V1

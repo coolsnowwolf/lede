@@ -1,0 +1,90 @@
+From 3526403353c2a1b94c3181f900582626d23c339b Mon Sep 17 00:00:00 2001
+From: Linus Walleij <linus.walleij@linaro.org>
+Date: Thu, 18 Aug 2016 20:40:45 +0200
+Subject: mfd: qcom_rpm: Handle message RAM clock
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The MSM8660, APQ8060, IPQ806x and MSM8960 have a GCC clock
+to the message RAM used by the RPM. This needs to be enabled
+for messages to pass through. This is a crude solution that
+simply prepare/enable at probe() and disable/unprepare
+at remove(). More elaborate PM is probably possible to
+add later.
+
+The construction uses IS_ERR() to gracefully handle the
+platforms that do not provide a message RAM clock. It will
+bail out of probe only if the clock is hitting a probe
+deferral situation.
+
+Of course this requires the proper device tree set-up:
+
+rpm: rpm@104000 {
+    compatible = "qcom,rpm-msm8660";
+    clocks = <&gcc RPM_MSG_RAM_H_CLK>;
+    clock-names = "ram";
+    ...
+};
+
+I have provided this in the MSM8660 device tree, and will
+provide patches for the other targets.
+
+Cc: Björn Andersson <bjorn.andersson@linaro.org>
+Signed-off-by: Linus Walleij <linus.walleij@linaro.org>
+Signed-off-by: Lee Jones <lee.jones@linaro.org>
+---
+ drivers/mfd/qcom_rpm.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+--- a/drivers/mfd/qcom_rpm.c
++++ b/drivers/mfd/qcom_rpm.c
+@@ -21,6 +21,7 @@
+ #include <linux/mfd/qcom_rpm.h>
+ #include <linux/mfd/syscon.h>
+ #include <linux/regmap.h>
++#include <linux/clk.h>
+ 
+ #include <dt-bindings/mfd/qcom-rpm.h>
+ 
+@@ -48,6 +49,7 @@ struct qcom_rpm {
+ 	struct regmap *ipc_regmap;
+ 	unsigned ipc_offset;
+ 	unsigned ipc_bit;
++	struct clk *ramclk;
+ 
+ 	struct completion ack;
+ 	struct mutex lock;
+@@ -503,6 +505,20 @@ static int qcom_rpm_probe(struct platfor
+ 	mutex_init(&rpm->lock);
+ 	init_completion(&rpm->ack);
+ 
++	/* Enable message RAM clock */
++	rpm->ramclk = devm_clk_get(&pdev->dev, "ram");
++	if (IS_ERR(rpm->ramclk)) {
++		ret = PTR_ERR(rpm->ramclk);
++		if (ret == -EPROBE_DEFER)
++			return ret;
++		/*
++		 * Fall through in all other cases, as the clock is
++		 * optional. (Does not exist on all platforms.)
++		 */
++		rpm->ramclk = NULL;
++	}
++	clk_prepare_enable(rpm->ramclk); /* Accepts NULL */
++
+ 	irq_ack = platform_get_irq_byname(pdev, "ack");
+ 	if (irq_ack < 0) {
+ 		dev_err(&pdev->dev, "required ack interrupt missing\n");
+@@ -621,7 +637,11 @@ static int qcom_rpm_probe(struct platfor
+ 
+ static int qcom_rpm_remove(struct platform_device *pdev)
+ {
++	struct qcom_rpm *rpm = dev_get_drvdata(&pdev->dev);
++
+ 	of_platform_depopulate(&pdev->dev);
++	clk_disable_unprepare(rpm->ramclk);
++
+ 	return 0;
+ }
+ 

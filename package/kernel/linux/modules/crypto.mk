@@ -20,6 +20,19 @@ define AddDepends/crypto
   DEPENDS+= $(1)
 endef
 
+
+define KernelPackage/crypto-acompress
+  TITLE:=Asynchronous Compression operations
+  HIDDEN:=1
+  KCONFIG:=CONFIG_CRYPTO_ACOMP2
+  FILES:=$(LINUX_DIR)/crypto/crypto_acompress.ko
+  AUTOLOAD:=$(call AutoLoad,09,crypto_acompress)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-acompress))
+
+
 define KernelPackage/crypto-aead
   TITLE:=CryptoAPI AEAD support
   KCONFIG:= \
@@ -33,108 +46,136 @@ endef
 $(eval $(call KernelPackage,crypto-aead))
 
 
-define KernelPackage/crypto-hash
-  TITLE:=CryptoAPI hash support
-  KCONFIG:=CONFIG_CRYPTO_HASH
-  FILES:=$(LINUX_DIR)/crypto/crypto_hash.ko
-  AUTOLOAD:=$(call AutoLoad,02,crypto_hash,1)
+define KernelPackage/crypto-authenc
+  TITLE:=Combined mode wrapper for IPsec
+  DEPENDS:=+kmod-crypto-manager +!LINUX_3_18:kmod-crypto-null
+  KCONFIG:=CONFIG_CRYPTO_AUTHENC
+  FILES:=$(LINUX_DIR)/crypto/authenc.ko
+  AUTOLOAD:=$(call AutoLoad,09,authenc)
   $(call AddDepends/crypto)
 endef
 
-$(eval $(call KernelPackage,crypto-hash))
+$(eval $(call KernelPackage,crypto-authenc))
 
 
-define KernelPackage/crypto-manager
-  TITLE:=CryptoAPI algorithm manager
-  DEPENDS:=+kmod-crypto-aead +kmod-crypto-hash +kmod-crypto-pcompress
-  KCONFIG:= \
-	CONFIG_CRYPTO_MANAGER \
-	CONFIG_CRYPTO_MANAGER2
-  FILES:=$(LINUX_DIR)/crypto/cryptomgr.ko
-  AUTOLOAD:=$(call AutoLoad,09,cryptomgr,1)
+define KernelPackage/crypto-cbc
+  TITLE:=Cipher Block Chaining CryptoAPI module
+  DEPENDS:=+kmod-crypto-manager
+  KCONFIG:=CONFIG_CRYPTO_CBC
+  FILES:=$(LINUX_DIR)/crypto/cbc.ko
+  AUTOLOAD:=$(call AutoLoad,09,cbc)
   $(call AddDepends/crypto)
 endef
 
-$(eval $(call KernelPackage,crypto-manager))
+$(eval $(call KernelPackage,crypto-cbc))
 
 
-define KernelPackage/crypto-pcompress
-  TITLE:=CryptoAPI Partial (de)compression operations
-  KCONFIG:= \
-	CONFIG_CRYPTO_PCOMP=y \
-	CONFIG_CRYPTO_PCOMP2
-  FILES:=$(LINUX_DIR)/crypto/pcompress.ko
-  AUTOLOAD:=$(call AutoLoad,09,pcompress)
+define KernelPackage/crypto-ccm
+ TITLE:=Support for Counter with CBC MAC (CCM)
+ DEPENDS:=+kmod-crypto-ctr +kmod-crypto-aead
+ KCONFIG:=CONFIG_CRYPTO_CCM
+ FILES:=$(LINUX_DIR)/crypto/ccm.ko
+ AUTOLOAD:=$(call AutoLoad,09,ccm)
+ $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-ccm))
+
+
+define KernelPackage/crypto-cmac
+  TITLE:=Support for Cipher-based Message Authentication Code (CMAC)
+  DEPENDS:=+kmod-crypto-hash
+  KCONFIG:=CONFIG_CRYPTO_CMAC
+  FILES:=$(LINUX_DIR)/crypto/cmac.ko
+  AUTOLOAD:=$(call AutoLoad,09,cmac)
   $(call AddDepends/crypto)
 endef
 
-$(eval $(call KernelPackage,crypto-pcompress))
+$(eval $(call KernelPackage,crypto-cmac))
 
 
-define KernelPackage/crypto-user
-  TITLE:=CryptoAPI userspace interface
-  DEPENDS:=+kmod-crypto-hash +kmod-crypto-manager
-  KCONFIG:= \
-	CONFIG_CRYPTO_USER_API \
-	CONFIG_CRYPTO_USER_API_HASH \
-	CONFIG_CRYPTO_USER_API_SKCIPHER
-  FILES:= \
-	$(LINUX_DIR)/crypto/af_alg.ko \
-	$(LINUX_DIR)/crypto/algif_hash.ko \
-	$(LINUX_DIR)/crypto/algif_skcipher.ko
-  AUTOLOAD:=$(call AutoLoad,09,af_alg algif_hash algif_skcipher)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-user))
-
-
-define KernelPackage/crypto-wq
-  TITLE:=CryptoAPI work queue handling
-  KCONFIG:=CONFIG_CRYPTO_WORKQUEUE
-  FILES:=$(LINUX_DIR)/crypto/crypto_wq.ko
-  AUTOLOAD:=$(call AutoLoad,09,crypto_wq)
-  $(call AddDepends/crypto)
-endef
-$(eval $(call KernelPackage,crypto-wq))
-
-define KernelPackage/crypto-rng
-  TITLE:=CryptoAPI random number generation
-  DEPENDS:=+kmod-crypto-hash +kmod-crypto-hmac +kmod-crypto-sha256
-  KCONFIG:= \
-	CONFIG_CRYPTO_DRBG \
-	CONFIG_CRYPTO_DRBG_HMAC=y \
-	CONFIG_CRYPTO_DRBG_HASH=n \
-	CONFIG_CRYPTO_DRBG_MENU \
-	CONFIG_CRYPTO_JITTERENTROPY \
-	CONFIG_CRYPTO_RNG2
-  FILES:= \
-	$(LINUX_DIR)/crypto/drbg.ko@ge4.2 \
-	$(LINUX_DIR)/crypto/jitterentropy_rng.ko@ge4.2 \
-	$(LINUX_DIR)/crypto/krng.ko@lt4.2 \
-	$(LINUX_DIR)/crypto/rng.ko
-  AUTOLOAD:=$(call AutoLoad,09,drbg@ge4.2 jitterentropy_rng@ge4.2 krng@lt4.2 rng)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-rng))
-
-
-define KernelPackage/crypto-rsa
-  TITLE:=RSA algorithm
-  DEPENDS:=@!LINUX_3_18 +kmod-crypto-manager
-  KCONFIG:= CONFIG_CRYPTO_RSA
+define KernelPackage/crypto-crc32
+  TITLE:=CRC32 CRC module
+  DEPENDS:=+kmod-crypto-hash
+  KCONFIG:=CONFIG_CRYPTO_CRC32
   HIDDEN:=1
-  FILES:= \
-	$(LINUX_DIR)/lib/asn1_decoder.ko \
-	$(LINUX_DIR)/lib/mpi/mpi.ko \
-	$(LINUX_DIR)/crypto/akcipher.ko \
-	$(LINUX_DIR)/crypto/rsa_generic.ko
-  AUTOLOAD:=$(call AutoLoad,10,rsa_generic)
+  FILES:=$(LINUX_DIR)/crypto/crc32_generic.ko@ge4.9
+  AUTOLOAD:=$(call AutoLoad,04,crc32_generic@ge4.9,1)
   $(call AddDepends/crypto)
 endef
 
-$(eval $(call KernelPackage,crypto-rsa))
+$(eval $(call KernelPackage,crypto-crc32))
+
+
+define KernelPackage/crypto-crc32c
+  TITLE:=CRC32c CRC module
+  DEPENDS:=+kmod-crypto-hash
+  KCONFIG:=CONFIG_CRYPTO_CRC32C
+  FILES:=$(LINUX_DIR)/crypto/crc32c_generic.ko
+  AUTOLOAD:=$(call AutoLoad,04,crc32c_generic,1)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-crc32c))
+
+
+define KernelPackage/crypto-ctr
+  TITLE:=Counter Mode CryptoAPI module
+  DEPENDS:=+kmod-crypto-manager +kmod-crypto-seqiv +kmod-crypto-iv
+  KCONFIG:=CONFIG_CRYPTO_CTR
+  FILES:=$(LINUX_DIR)/crypto/ctr.ko
+  AUTOLOAD:=$(call AutoLoad,09,ctr)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-ctr))
+
+
+define KernelPackage/crypto-cts
+  TITLE:=Cipher Text Stealing CryptoAPI module
+  DEPENDS:=+kmod-crypto-manager
+  KCONFIG:=CONFIG_CRYPTO_CTS
+  FILES:=$(LINUX_DIR)/crypto/cts.ko
+  AUTOLOAD:=$(call AutoLoad,09,cts)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-cts))
+
+
+define KernelPackage/crypto-deflate
+  TITLE:=Deflate compression CryptoAPI module
+  DEPENDS:=+kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +LINUX_4_14:kmod-crypto-acompress
+  KCONFIG:=CONFIG_CRYPTO_DEFLATE
+  FILES:=$(LINUX_DIR)/crypto/deflate.ko
+  AUTOLOAD:=$(call AutoLoad,09,deflate)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-deflate))
+
+
+define KernelPackage/crypto-des
+  TITLE:=DES/3DES cipher CryptoAPI module
+  KCONFIG:=CONFIG_CRYPTO_DES
+  FILES:=$(LINUX_DIR)/crypto/des_generic.ko
+  AUTOLOAD:=$(call AutoLoad,09,des_generic)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-des))
+
+
+define KernelPackage/crypto-ecb
+  TITLE:=Electronic CodeBook CryptoAPI module
+  DEPENDS:=+kmod-crypto-manager
+  KCONFIG:=CONFIG_CRYPTO_ECB
+  FILES:=$(LINUX_DIR)/crypto/ecb.ko
+  AUTOLOAD:=$(call AutoLoad,09,ecb)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-ecb))
 
 
 define KernelPackage/crypto-ecdh
@@ -150,21 +191,6 @@ endef
 $(eval $(call KernelPackage,crypto-ecdh))
 
 
-define KernelPackage/crypto-iv
-  TITLE:=CryptoAPI initialization vectors
-  DEPENDS:=+kmod-crypto-manager +kmod-crypto-rng +kmod-crypto-wq
-  KCONFIG:= CONFIG_CRYPTO_BLKCIPHER2
-  HIDDEN:=1
-  FILES:= \
-	$(LINUX_DIR)/crypto/eseqiv.ko@lt4.9 \
-	$(LINUX_DIR)/crypto/chainiv.ko@lt4.9
-  AUTOLOAD:=$(call AutoLoad,10,eseqiv chainiv)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-iv))
-
-
 define KernelPackage/crypto-echainiv
   TITLE:=Encrypted Chain IV Generator
   DEPENDS:=+kmod-crypto-aead
@@ -177,51 +203,73 @@ endef
 $(eval $(call KernelPackage,crypto-echainiv))
 
 
-define KernelPackage/crypto-seqiv
-  TITLE:=CryptoAPI Sequence Number IV Generator
-  DEPENDS:=+kmod-crypto-aead +kmod-crypto-rng
-  KCONFIG:=CONFIG_CRYPTO_SEQIV
-  FILES:=$(LINUX_DIR)/crypto/seqiv.ko
-  AUTOLOAD:=$(call AutoLoad,09,seqiv)
+define KernelPackage/crypto-fcrypt
+  TITLE:=FCRYPT cipher CryptoAPI module
+  KCONFIG:=CONFIG_CRYPTO_FCRYPT
+  FILES:=$(LINUX_DIR)/crypto/fcrypt.ko
+  AUTOLOAD:=$(call AutoLoad,09,fcrypt)
   $(call AddDepends/crypto)
 endef
 
-$(eval $(call KernelPackage,crypto-seqiv))
+$(eval $(call KernelPackage,crypto-fcrypt))
 
 
-define KernelPackage/crypto-hw-talitos
-  TITLE:=Freescale integrated security engine (SEC) driver
-  DEPENDS:=+kmod-crypto-manager +kmod-crypto-hash +kmod-random-core +kmod-crypto-authenc +kmod-crypto-des
-  KCONFIG:= \
-	CONFIG_CRYPTO_HW=y \
-	CONFIG_CRYPTO_DEV_TALITOS \
-	CONFIG_CRYPTO_DEV_TALITOS1=y \
-	CONFIG_CRYPTO_DEV_TALITOS2=y
-  FILES:= \
-	$(LINUX_DIR)/drivers/crypto/talitos.ko
-  AUTOLOAD:=$(call AutoLoad,09,talitos)
+define KernelPackage/crypto-gcm
+  TITLE:=GCM/GMAC CryptoAPI module
+  DEPENDS:=+kmod-crypto-ctr +kmod-crypto-ghash +kmod-crypto-null
+  KCONFIG:=CONFIG_CRYPTO_GCM
+  FILES:=$(LINUX_DIR)/crypto/gcm.ko
+  AUTOLOAD:=$(call AutoLoad,09,gcm)
   $(call AddDepends/crypto)
 endef
 
-$(eval $(call KernelPackage,crypto-hw-talitos))
+$(eval $(call KernelPackage,crypto-gcm))
 
 
-define KernelPackage/crypto-hw-padlock
-  TITLE:=VIA PadLock ACE with AES/SHA hw crypto module
-  DEPENDS:=+kmod-crypto-manager
-  KCONFIG:= \
-	CONFIG_CRYPTO_HW=y \
-	CONFIG_CRYPTO_DEV_PADLOCK \
-	CONFIG_CRYPTO_DEV_PADLOCK_AES \
-	CONFIG_CRYPTO_DEV_PADLOCK_SHA
-  FILES:= \
-	$(LINUX_DIR)/drivers/crypto/padlock-aes.ko \
-	$(LINUX_DIR)/drivers/crypto/padlock-sha.ko
-  AUTOLOAD:=$(call AutoLoad,09,padlock-aes padlock-sha)
+define KernelPackage/crypto-gf128
+  TITLE:=GF(2^128) multiplication functions CryptoAPI module
+  KCONFIG:=CONFIG_CRYPTO_GF128MUL
+  FILES:=$(LINUX_DIR)/crypto/gf128mul.ko
+  AUTOLOAD:=$(call AutoLoad,09,gf128mul)
   $(call AddDepends/crypto)
 endef
 
-$(eval $(call KernelPackage,crypto-hw-padlock))
+$(eval $(call KernelPackage,crypto-gf128))
+
+
+define KernelPackage/crypto-ghash
+  TITLE:=GHASH digest CryptoAPI module
+  DEPENDS:=+kmod-crypto-gf128 +kmod-crypto-hash
+  KCONFIG:=CONFIG_CRYPTO_GHASH
+  FILES:=$(LINUX_DIR)/crypto/ghash-generic.ko
+  AUTOLOAD:=$(call AutoLoad,09,ghash-generic)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-ghash))
+
+
+define KernelPackage/crypto-hash
+  TITLE:=CryptoAPI hash support
+  KCONFIG:=CONFIG_CRYPTO_HASH
+  FILES:=$(LINUX_DIR)/crypto/crypto_hash.ko
+  AUTOLOAD:=$(call AutoLoad,02,crypto_hash,1)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-hash))
+
+
+define KernelPackage/crypto-hmac
+  TITLE:=HMAC digest CryptoAPI module
+  DEPENDS:=+kmod-crypto-hash +kmod-crypto-manager
+  KCONFIG:=CONFIG_CRYPTO_HMAC
+  FILES:=$(LINUX_DIR)/crypto/hmac.ko
+  AUTOLOAD:=$(call AutoLoad,09,hmac)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-hmac))
 
 
 define KernelPackage/crypto-hw-ccp
@@ -272,93 +320,54 @@ endef
 $(eval $(call KernelPackage,crypto-hw-hifn-795x))
 
 
-define KernelPackage/crypto-authenc
-  TITLE:=Combined mode wrapper for IPsec
-  DEPENDS:=+kmod-crypto-manager +!LINUX_3_18:kmod-crypto-null
-  KCONFIG:=CONFIG_CRYPTO_AUTHENC
-  FILES:=$(LINUX_DIR)/crypto/authenc.ko
-  AUTOLOAD:=$(call AutoLoad,09,authenc)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-authenc))
-
-define KernelPackage/crypto-cbc
-  TITLE:=Cipher Block Chaining CryptoAPI module
+define KernelPackage/crypto-hw-padlock
+  TITLE:=VIA PadLock ACE with AES/SHA hw crypto module
   DEPENDS:=+kmod-crypto-manager
-  KCONFIG:=CONFIG_CRYPTO_CBC
-  FILES:=$(LINUX_DIR)/crypto/cbc.ko
-  AUTOLOAD:=$(call AutoLoad,09,cbc)
+  KCONFIG:= \
+	CONFIG_CRYPTO_HW=y \
+	CONFIG_CRYPTO_DEV_PADLOCK \
+	CONFIG_CRYPTO_DEV_PADLOCK_AES \
+	CONFIG_CRYPTO_DEV_PADLOCK_SHA
+  FILES:= \
+	$(LINUX_DIR)/drivers/crypto/padlock-aes.ko \
+	$(LINUX_DIR)/drivers/crypto/padlock-sha.ko
+  AUTOLOAD:=$(call AutoLoad,09,padlock-aes padlock-sha)
   $(call AddDepends/crypto)
 endef
 
-$(eval $(call KernelPackage,crypto-cbc))
+$(eval $(call KernelPackage,crypto-hw-padlock))
 
-define KernelPackage/crypto-ctr
-  TITLE:=Counter Mode CryptoAPI module
-  DEPENDS:=+kmod-crypto-manager +kmod-crypto-seqiv +kmod-crypto-iv
-  KCONFIG:=CONFIG_CRYPTO_CTR
-  FILES:=$(LINUX_DIR)/crypto/ctr.ko
-  AUTOLOAD:=$(call AutoLoad,09,ctr)
+
+define KernelPackage/crypto-hw-talitos
+  TITLE:=Freescale integrated security engine (SEC) driver
+  DEPENDS:=+kmod-crypto-manager +kmod-crypto-hash +kmod-random-core +kmod-crypto-authenc +kmod-crypto-des
+  KCONFIG:= \
+	CONFIG_CRYPTO_HW=y \
+	CONFIG_CRYPTO_DEV_TALITOS \
+	CONFIG_CRYPTO_DEV_TALITOS1=y \
+	CONFIG_CRYPTO_DEV_TALITOS2=y
+  FILES:= \
+	$(LINUX_DIR)/drivers/crypto/talitos.ko
+  AUTOLOAD:=$(call AutoLoad,09,talitos)
   $(call AddDepends/crypto)
 endef
 
-$(eval $(call KernelPackage,crypto-ctr))
+$(eval $(call KernelPackage,crypto-hw-talitos))
 
-define KernelPackage/crypto-ccm
- TITLE:=Support for Counter with CBC MAC (CCM)
- DEPENDS:=+kmod-crypto-ctr +kmod-crypto-aead
- KCONFIG:=CONFIG_CRYPTO_CCM
- FILES:=$(LINUX_DIR)/crypto/ccm.ko
- AUTOLOAD:=$(call AutoLoad,09,ccm)
- $(call AddDepends/crypto)
-endef
 
-$(eval $(call KernelPackage,crypto-ccm))
-
-define KernelPackage/crypto-pcbc
-  TITLE:=Propagating Cipher Block Chaining CryptoAPI module
-  DEPENDS:=+kmod-crypto-manager
-  KCONFIG:=CONFIG_CRYPTO_PCBC
-  FILES:=$(LINUX_DIR)/crypto/pcbc.ko
-  AUTOLOAD:=$(call AutoLoad,09,pcbc)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-pcbc))
-
-define KernelPackage/crypto-crc32c
-  TITLE:=CRC32c CRC module
-  DEPENDS:=+kmod-crypto-hash
-  KCONFIG:=CONFIG_CRYPTO_CRC32C
-  FILES:=$(LINUX_DIR)/crypto/crc32c_generic.ko
-  AUTOLOAD:=$(call AutoLoad,04,crc32c_generic,1)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-crc32c))
-
-define KernelPackage/crypto-crc32
-  TITLE:=CRC32 CRC module
-  DEPENDS:=+kmod-crypto-hash
-  KCONFIG:=CONFIG_CRYPTO_CRC32
+define KernelPackage/crypto-iv
+  TITLE:=CryptoAPI initialization vectors
+  DEPENDS:=+kmod-crypto-manager +kmod-crypto-rng +kmod-crypto-wq
+  KCONFIG:= CONFIG_CRYPTO_BLKCIPHER2
   HIDDEN:=1
-  FILES:=$(LINUX_DIR)/crypto/crc32_generic.ko@ge4.9
-  AUTOLOAD:=$(call AutoLoad,04,crc32_generic@ge4.9,1)
+  FILES:= \
+	$(LINUX_DIR)/crypto/eseqiv.ko@lt4.9 \
+	$(LINUX_DIR)/crypto/chainiv.ko@lt4.9
+  AUTOLOAD:=$(call AutoLoad,10,eseqiv chainiv)
   $(call AddDepends/crypto)
 endef
 
-$(eval $(call KernelPackage,crypto-crc32))
-
-define KernelPackage/crypto-des
-  TITLE:=DES/3DES cipher CryptoAPI module
-  KCONFIG:=CONFIG_CRYPTO_DES
-  FILES:=$(LINUX_DIR)/crypto/des_generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,des_generic)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-des))
+$(eval $(call KernelPackage,crypto-iv))
 
 
 define KernelPackage/crypto-kpp
@@ -373,120 +382,18 @@ endef
 $(eval $(call KernelPackage,crypto-kpp))
 
 
-define KernelPackage/crypto-acompress
-  TITLE:=Asynchronous Compression operations
-  HIDDEN:=1
-  KCONFIG:=CONFIG_CRYPTO_ACOMP2
-  FILES:=$(LINUX_DIR)/crypto/crypto_acompress.ko
-  AUTOLOAD:=$(call AutoLoad,09,crypto_acompress)
+define KernelPackage/crypto-manager
+  TITLE:=CryptoAPI algorithm manager
+  DEPENDS:=+kmod-crypto-aead +kmod-crypto-hash +kmod-crypto-pcompress
+  KCONFIG:= \
+	CONFIG_CRYPTO_MANAGER \
+	CONFIG_CRYPTO_MANAGER2
+  FILES:=$(LINUX_DIR)/crypto/cryptomgr.ko
+  AUTOLOAD:=$(call AutoLoad,09,cryptomgr,1)
   $(call AddDepends/crypto)
 endef
 
-$(eval $(call KernelPackage,crypto-acompress))
-
-
-define KernelPackage/crypto-deflate
-  TITLE:=Deflate compression CryptoAPI module
-  DEPENDS:=+kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +LINUX_4_14:kmod-crypto-acompress
-  KCONFIG:=CONFIG_CRYPTO_DEFLATE
-  FILES:=$(LINUX_DIR)/crypto/deflate.ko
-  AUTOLOAD:=$(call AutoLoad,09,deflate)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-deflate))
-
-
-define KernelPackage/crypto-fcrypt
-  TITLE:=FCRYPT cipher CryptoAPI module
-  KCONFIG:=CONFIG_CRYPTO_FCRYPT
-  FILES:=$(LINUX_DIR)/crypto/fcrypt.ko
-  AUTOLOAD:=$(call AutoLoad,09,fcrypt)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-fcrypt))
-
-define KernelPackage/crypto-ecb
-  TITLE:=Electronic CodeBook CryptoAPI module
-  DEPENDS:=+kmod-crypto-manager
-  KCONFIG:=CONFIG_CRYPTO_ECB
-  FILES:=$(LINUX_DIR)/crypto/ecb.ko
-  AUTOLOAD:=$(call AutoLoad,09,ecb)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-ecb))
-
-define KernelPackage/crypto-cts
-  TITLE:=Cipher Text Stealing CryptoAPI module
-  DEPENDS:=+kmod-crypto-manager
-  KCONFIG:=CONFIG_CRYPTO_CTS
-  FILES:=$(LINUX_DIR)/crypto/cts.ko
-  AUTOLOAD:=$(call AutoLoad,09,cts)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-cts))
-
-
-define KernelPackage/crypto-hmac
-  TITLE:=HMAC digest CryptoAPI module
-  DEPENDS:=+kmod-crypto-hash +kmod-crypto-manager
-  KCONFIG:=CONFIG_CRYPTO_HMAC
-  FILES:=$(LINUX_DIR)/crypto/hmac.ko
-  AUTOLOAD:=$(call AutoLoad,09,hmac)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-hmac))
-
-
-define KernelPackage/crypto-cmac
-  TITLE:=Support for Cipher-based Message Authentication Code (CMAC)
-  DEPENDS:=+kmod-crypto-hash
-  KCONFIG:=CONFIG_CRYPTO_CMAC
-  FILES:=$(LINUX_DIR)/crypto/cmac.ko
-  AUTOLOAD:=$(call AutoLoad,09,cmac)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-cmac))
-
-
-define KernelPackage/crypto-gcm
-  TITLE:=GCM/GMAC CryptoAPI module
-  DEPENDS:=+kmod-crypto-ctr +kmod-crypto-ghash +kmod-crypto-null
-  KCONFIG:=CONFIG_CRYPTO_GCM
-  FILES:=$(LINUX_DIR)/crypto/gcm.ko
-  AUTOLOAD:=$(call AutoLoad,09,gcm)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-gcm))
-
-
-define KernelPackage/crypto-gf128
-  TITLE:=GF(2^128) multiplication functions CryptoAPI module
-  KCONFIG:=CONFIG_CRYPTO_GF128MUL
-  FILES:=$(LINUX_DIR)/crypto/gf128mul.ko
-  AUTOLOAD:=$(call AutoLoad,09,gf128mul)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-gf128))
-
-
-define KernelPackage/crypto-ghash
-  TITLE:=GHASH digest CryptoAPI module
-  DEPENDS:=+kmod-crypto-gf128 +kmod-crypto-hash
-  KCONFIG:=CONFIG_CRYPTO_GHASH
-  FILES:=$(LINUX_DIR)/crypto/ghash-generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,ghash-generic)
-  $(call AddDepends/crypto)
-endef
-
-$(eval $(call KernelPackage,crypto-ghash))
+$(eval $(call KernelPackage,crypto-manager))
 
 
 define KernelPackage/crypto-md4
@@ -530,6 +437,138 @@ define KernelPackage/crypto-michael-mic
 endef
 
 $(eval $(call KernelPackage,crypto-michael-mic))
+
+
+define KernelPackage/crypto-misc
+  TITLE:=Other CryptoAPI modules
+  DEPENDS:=+kmod-crypto-manager
+  KCONFIG:= \
+	CONFIG_CRYPTO_ANUBIS \
+	CONFIG_CRYPTO_BLOWFISH \
+	CONFIG_CRYPTO_CAMELLIA \
+	CONFIG_CRYPTO_CAST5 \
+	CONFIG_CRYPTO_CAST6 \
+	CONFIG_CRYPTO_FCRYPT \
+	CONFIG_CRYPTO_KHAZAD \
+	CONFIG_CRYPTO_SERPENT \
+	CONFIG_CRYPTO_TEA \
+	CONFIG_CRYPTO_TGR192 \
+	CONFIG_CRYPTO_TWOFISH \
+	CONFIG_CRYPTO_TWOFISH_COMMON \
+	CONFIG_CRYPTO_TWOFISH_586 \
+	CONFIG_CRYPTO_WP512
+  FILES:= \
+	$(LINUX_DIR)/crypto/anubis.ko \
+	$(LINUX_DIR)/crypto/camellia_generic.ko \
+	$(LINUX_DIR)/crypto/cast_common.ko \
+	$(LINUX_DIR)/crypto/cast5_generic.ko \
+	$(LINUX_DIR)/crypto/cast6_generic.ko \
+	$(LINUX_DIR)/crypto/khazad.ko \
+	$(LINUX_DIR)/crypto/tea.ko \
+	$(LINUX_DIR)/crypto/tgr192.ko \
+	$(LINUX_DIR)/crypto/twofish_common.ko \
+	$(LINUX_DIR)/crypto/wp512.ko \
+	$(LINUX_DIR)/crypto/twofish_generic.ko \
+	$(LINUX_DIR)/crypto/blowfish_common.ko \
+	$(LINUX_DIR)/crypto/blowfish_generic.ko \
+	$(LINUX_DIR)/crypto/serpent_generic.ko
+  $(call AddDepends/crypto)
+endef
+
+ifndef CONFIG_TARGET_x86_64
+  define KernelPackage/crypto-misc/x86
+    FILES+=$(LINUX_DIR)/arch/x86/crypto/twofish-i586.ko
+  endef
+endif
+
+$(eval $(call KernelPackage,crypto-misc))
+
+
+define KernelPackage/crypto-null
+  TITLE:=Null CryptoAPI module
+  KCONFIG:=CONFIG_CRYPTO_NULL
+  FILES:=$(LINUX_DIR)/crypto/crypto_null.ko
+  AUTOLOAD:=$(call AutoLoad,09,crypto_null)
+  $(call AddDepends/crypto, +kmod-crypto-hash)
+endef
+
+$(eval $(call KernelPackage,crypto-null))
+
+
+define KernelPackage/crypto-pcbc
+  TITLE:=Propagating Cipher Block Chaining CryptoAPI module
+  DEPENDS:=+kmod-crypto-manager
+  KCONFIG:=CONFIG_CRYPTO_PCBC
+  FILES:=$(LINUX_DIR)/crypto/pcbc.ko
+  AUTOLOAD:=$(call AutoLoad,09,pcbc)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-pcbc))
+
+
+define KernelPackage/crypto-pcompress
+  TITLE:=CryptoAPI Partial (de)compression operations
+  KCONFIG:= \
+	CONFIG_CRYPTO_PCOMP=y \
+	CONFIG_CRYPTO_PCOMP2
+  FILES:=$(LINUX_DIR)/crypto/pcompress.ko
+  AUTOLOAD:=$(call AutoLoad,09,pcompress)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-pcompress))
+
+
+define KernelPackage/crypto-rsa
+  TITLE:=RSA algorithm
+  DEPENDS:=@!LINUX_3_18 +kmod-crypto-manager
+  KCONFIG:= CONFIG_CRYPTO_RSA
+  HIDDEN:=1
+  FILES:= \
+	$(LINUX_DIR)/lib/asn1_decoder.ko \
+	$(LINUX_DIR)/lib/mpi/mpi.ko \
+	$(LINUX_DIR)/crypto/akcipher.ko \
+	$(LINUX_DIR)/crypto/rsa_generic.ko
+  AUTOLOAD:=$(call AutoLoad,10,rsa_generic)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-rsa))
+
+
+define KernelPackage/crypto-rng
+  TITLE:=CryptoAPI random number generation
+  DEPENDS:=+kmod-crypto-hash +kmod-crypto-hmac +kmod-crypto-sha256
+  KCONFIG:= \
+	CONFIG_CRYPTO_DRBG \
+	CONFIG_CRYPTO_DRBG_HMAC=y \
+	CONFIG_CRYPTO_DRBG_HASH=n \
+	CONFIG_CRYPTO_DRBG_MENU \
+	CONFIG_CRYPTO_JITTERENTROPY \
+	CONFIG_CRYPTO_RNG2
+  FILES:= \
+	$(LINUX_DIR)/crypto/drbg.ko@ge4.2 \
+	$(LINUX_DIR)/crypto/jitterentropy_rng.ko@ge4.2 \
+	$(LINUX_DIR)/crypto/krng.ko@lt4.2 \
+	$(LINUX_DIR)/crypto/rng.ko
+  AUTOLOAD:=$(call AutoLoad,09,drbg@ge4.2 jitterentropy_rng@ge4.2 krng@lt4.2 rng)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-rng))
+
+
+define KernelPackage/crypto-seqiv
+  TITLE:=CryptoAPI Sequence Number IV Generator
+  DEPENDS:=+kmod-crypto-aead +kmod-crypto-rng
+  KCONFIG:=CONFIG_CRYPTO_SEQIV
+  FILES:=$(LINUX_DIR)/crypto/seqiv.ko
+  AUTOLOAD:=$(call AutoLoad,09,seqiv)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-seqiv))
 
 
 define KernelPackage/crypto-sha1
@@ -607,62 +646,6 @@ endef
 $(eval $(call KernelPackage,crypto-sha512))
 
 
-define KernelPackage/crypto-misc
-  TITLE:=Other CryptoAPI modules
-  DEPENDS:=+kmod-crypto-manager
-  KCONFIG:= \
-	CONFIG_CRYPTO_ANUBIS \
-	CONFIG_CRYPTO_BLOWFISH \
-	CONFIG_CRYPTO_CAMELLIA \
-	CONFIG_CRYPTO_CAST5 \
-	CONFIG_CRYPTO_CAST6 \
-	CONFIG_CRYPTO_FCRYPT \
-	CONFIG_CRYPTO_KHAZAD \
-	CONFIG_CRYPTO_SERPENT \
-	CONFIG_CRYPTO_TEA \
-	CONFIG_CRYPTO_TGR192 \
-	CONFIG_CRYPTO_TWOFISH \
-	CONFIG_CRYPTO_TWOFISH_COMMON \
-	CONFIG_CRYPTO_TWOFISH_586 \
-	CONFIG_CRYPTO_WP512
-  FILES:= \
-	$(LINUX_DIR)/crypto/anubis.ko \
-	$(LINUX_DIR)/crypto/camellia_generic.ko \
-	$(LINUX_DIR)/crypto/cast_common.ko \
-	$(LINUX_DIR)/crypto/cast5_generic.ko \
-	$(LINUX_DIR)/crypto/cast6_generic.ko \
-	$(LINUX_DIR)/crypto/khazad.ko \
-	$(LINUX_DIR)/crypto/tea.ko \
-	$(LINUX_DIR)/crypto/tgr192.ko \
-	$(LINUX_DIR)/crypto/twofish_common.ko \
-	$(LINUX_DIR)/crypto/wp512.ko \
-	$(LINUX_DIR)/crypto/twofish_generic.ko \
-	$(LINUX_DIR)/crypto/blowfish_common.ko \
-	$(LINUX_DIR)/crypto/blowfish_generic.ko \
-	$(LINUX_DIR)/crypto/serpent_generic.ko
-  $(call AddDepends/crypto)
-endef
-
-ifndef CONFIG_TARGET_x86_64
-  define KernelPackage/crypto-misc/x86
-    FILES+=$(LINUX_DIR)/arch/x86/crypto/twofish-i586.ko
-  endef
-endif
-
-$(eval $(call KernelPackage,crypto-misc))
-
-
-define KernelPackage/crypto-null
-  TITLE:=Null CryptoAPI module
-  KCONFIG:=CONFIG_CRYPTO_NULL
-  FILES:=$(LINUX_DIR)/crypto/crypto_null.ko
-  AUTOLOAD:=$(call AutoLoad,09,crypto_null)
-  $(call AddDepends/crypto, +kmod-crypto-hash)
-endef
-
-$(eval $(call KernelPackage,crypto-null))
-
-
 define KernelPackage/crypto-test
   TITLE:=Test CryptoAPI module
   KCONFIG:=CONFIG_CRYPTO_TEST
@@ -671,6 +654,34 @@ define KernelPackage/crypto-test
 endef
 
 $(eval $(call KernelPackage,crypto-test))
+
+
+define KernelPackage/crypto-user
+  TITLE:=CryptoAPI userspace interface
+  DEPENDS:=+kmod-crypto-hash +kmod-crypto-manager
+  KCONFIG:= \
+	CONFIG_CRYPTO_USER_API \
+	CONFIG_CRYPTO_USER_API_HASH \
+	CONFIG_CRYPTO_USER_API_SKCIPHER
+  FILES:= \
+	$(LINUX_DIR)/crypto/af_alg.ko \
+	$(LINUX_DIR)/crypto/algif_hash.ko \
+	$(LINUX_DIR)/crypto/algif_skcipher.ko
+  AUTOLOAD:=$(call AutoLoad,09,af_alg algif_hash algif_skcipher)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-user))
+
+
+define KernelPackage/crypto-wq
+  TITLE:=CryptoAPI work queue handling
+  KCONFIG:=CONFIG_CRYPTO_WORKQUEUE
+  FILES:=$(LINUX_DIR)/crypto/crypto_wq.ko
+  AUTOLOAD:=$(call AutoLoad,09,crypto_wq)
+  $(call AddDepends/crypto)
+endef
+$(eval $(call KernelPackage,crypto-wq))
 
 
 define KernelPackage/crypto-xts
@@ -683,3 +694,4 @@ define KernelPackage/crypto-xts
 endef
 
 $(eval $(call KernelPackage,crypto-xts))
+

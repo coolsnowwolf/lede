@@ -128,7 +128,9 @@ static int ptm_stop(struct net_device *);
   static unsigned int ptm_poll(int, unsigned int);
   static int ptm_napi_poll(struct napi_struct *, int);
 static int ptm_hard_start_xmit(struct sk_buff *, struct net_device *);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0))
 static int ptm_change_mtu(struct net_device *, int);
+#endif
 static int ptm_ioctl(struct net_device *, struct ifreq *, int);
 static void ptm_tx_timeout(struct net_device *);
 
@@ -247,7 +249,9 @@ static struct net_device_ops g_ptm_netdev_ops = {
     .ndo_start_xmit      = ptm_hard_start_xmit,
     .ndo_validate_addr   = eth_validate_addr,
     .ndo_set_mac_address = eth_mac_addr,
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0))
     .ndo_change_mtu      = ptm_change_mtu,
+#endif
     .ndo_do_ioctl        = ptm_ioctl,
     .ndo_tx_timeout      = ptm_tx_timeout,
 };
@@ -285,6 +289,10 @@ static void ptm_setup(struct net_device *dev, int ndev)
 
     /*  hook network operations */
     dev->netdev_ops      = &g_ptm_netdev_ops;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0))
+    /* Allow up to 1508 bytes, for RFC4638 */
+    dev->max_mtu         = ETH_DATA_LEN + 8;
+#endif
     netif_napi_add(dev, &g_ptm_priv_data.itf[ndev].napi, ptm_napi_poll, 25);
     dev->watchdog_timeo  = ETH_WATCHDOG_TIMEOUT;
 
@@ -459,7 +467,7 @@ PTM_HARD_START_XMIT_FAIL:
     g_ptm_priv_data.itf[ndev].stats.tx_dropped++;
     return NETDEV_TX_OK;
 }
-
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0))
 static int ptm_change_mtu(struct net_device *dev, int mtu)
 {
 	/* Allow up to 1508 bytes, for RFC4638 */
@@ -468,6 +476,7 @@ static int ptm_change_mtu(struct net_device *dev, int mtu)
         dev->mtu = mtu;
         return 0;
 }
+#endif
 
 static int ptm_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
@@ -654,7 +663,9 @@ static INLINE int mailbox_rx_irq_handler(unsigned int ch)   //  return: < 0 - de
             skb->dev = g_net_dev[ndev];
             skb->protocol = eth_type_trans(skb, skb->dev);
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0))
             g_net_dev[ndev]->last_rx = jiffies;
+#endif
 
             netif_rx_ret = netif_receive_skb(skb);
 
