@@ -213,6 +213,16 @@ define Device/tl-mr6400-v1
 endef
 TARGET_DEVICES += tl-mr6400-v1
 
+define Device/tl-wdr3227-v2
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WDR3227 v2
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
+  BOARDNAME := TL-WDR3227-V2
+  DEVICE_PROFILE := TLWDR3227V2
+  TPLINK_HWID := 0x32270002
+endef
+TARGET_DEVICES += tl-wdr3227-v2
+
 define Device/tl-wdr3500-v1
   $(Device/tplink-8mlzma)
   DEVICE_TITLE := TP-LINK TL-WDR3500 v1
