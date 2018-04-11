@@ -629,17 +629,11 @@ mac80211_setup_vif() {
 
 	case "$mode" in
 		mesh)
-			# authsae or wpa_supplicant
 			json_get_vars key
 			if [ -n "$key" ]; then
-				if [ -e "/lib/wifi/authsae.sh" ]; then
-					. /lib/wifi/authsae.sh
-					authsae_start_interface || failed=1
-				else
-					wireless_vif_parse_encryption
-					freq="$(get_freq "$phy" "$channel")"
-					mac80211_setup_supplicant_noctl || failed=1
-				fi
+				wireless_vif_parse_encryption
+				freq="$(get_freq "$phy" "$channel")"
+				mac80211_setup_supplicant_noctl || failed=1
 			else
 				json_get_vars mesh_id mcast_rate
 

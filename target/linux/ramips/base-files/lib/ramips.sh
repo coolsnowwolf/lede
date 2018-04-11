@@ -85,9 +85,6 @@ ramips_board_detect() {
 	*"C108")
 		name="c108"
 		;;
-	*"C20")
-		name="c20"
-		;;
 	*"C20i")
 		name="c20i"
 		;;
@@ -198,6 +195,9 @@ ramips_board_detect() {
 		;;
 	*"FireWRT")
 		name="firewrt"
+		;;
+	*"Openwrt Puppies")
+		name="puppies"
 		;;
 	*"Fonera 2.0N")
 		name="fonera20n"
@@ -418,6 +418,12 @@ ramips_board_detect() {
 	*"Q7")
 		name="zte-q7"
 		;;
+	*"R6220B")
+		name="r6220b"
+		;;
+	*"R6220A")
+		name="r6220a"
+		;;
 	*"R6220")
 		name="r6220"
 		;;
@@ -579,9 +585,6 @@ ramips_board_detect() {
 		;;
 	*"WHR-G300N")
 		name="whr-g300n"
-		;;
-	*"Widora-NEO")
-		name="widora-neo"
 		;;
 	*"WiTi")
                 name="witi"

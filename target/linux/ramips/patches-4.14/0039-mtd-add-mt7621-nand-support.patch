@@ -1,0 +1,4480 @@
+From 0e1c4e3c97b83b4e7da65b1c56f0a7d40736ac53 Mon Sep 17 00:00:00 2001
+From: John Crispin <blogic@openwrt.org>
+Date: Sun, 27 Jul 2014 11:05:17 +0100
+Subject: [PATCH 39/53] mtd: add mt7621 nand support
+
+Signed-off-by: John Crispin <blogic@openwrt.org>
+---
+ drivers/mtd/nand/Kconfig            |    6 +
+ drivers/mtd/nand/Makefile           |    1 +
+ drivers/mtd/nand/bmt.c              |  750 ++++++++++++
+ drivers/mtd/nand/bmt.h              |   80 ++
+ drivers/mtd/nand/dev-nand.c         |   63 +
+ drivers/mtd/nand/mt6575_typedefs.h  |  340 ++++++
+ drivers/mtd/nand/mtk_nand2.c         | 2304 +++++++++++++++++++++++++++++++++++
+ drivers/mtd/nand/mtk_nand2.h         |  452 +++++++
+ drivers/mtd/nand/nand_base.c        |    6 +-
+ drivers/mtd/nand/nand_bbt.c         |   19 +
+ drivers/mtd/nand/nand_def.h         |  123 ++
+ drivers/mtd/nand/nand_device_list.h |   55 +
+ drivers/mtd/nand/partition.h        |  115 ++
+ 13 files changed, 4311 insertions(+), 3 deletions(-)
+ create mode 100644 drivers/mtd/nand/bmt.c
+ create mode 100644 drivers/mtd/nand/bmt.h
+ create mode 100644 drivers/mtd/nand/dev-nand.c
+ create mode 100644 drivers/mtd/nand/mt6575_typedefs.h
+ create mode 100644 drivers/mtd/nand/mtk_nand2.c
+ create mode 100644 drivers/mtd/nand/mtk_nand2.h
+ create mode 100644 drivers/mtd/nand/nand_def.h
+ create mode 100644 drivers/mtd/nand/nand_device_list.h
+ create mode 100644 drivers/mtd/nand/partition.h
+
+--- a/drivers/mtd/nand/Kconfig
++++ b/drivers/mtd/nand/Kconfig
+@@ -563,4 +563,10 @@ config MTD_NAND_MTK
+ 	  Enables support for NAND controller on MTK SoCs.
+ 	  This controller is found on mt27xx, mt81xx, mt65xx SoCs.
+ 
++config MTK_MTD_NAND
++	tristate "Support for MTK SoC NAND controller"
++	depends on SOC_MT7621
++	select MTD_NAND_IDS
++	select MTD_NAND_ECC
++
+ endif # MTD_NAND
+--- a/drivers/mtd/nand/Makefile
++++ b/drivers/mtd/nand/Makefile
+@@ -60,6 +60,7 @@ obj-$(CONFIG_MTD_NAND_HISI504)	        +
+ obj-$(CONFIG_MTD_NAND_BRCMNAND)		+= brcmnand/
+ obj-$(CONFIG_MTD_NAND_QCOM)		+= qcom_nandc.o
+ obj-$(CONFIG_MTD_NAND_MTK)		+= mtk_nand.o mtk_ecc.o
++obj-$(CONFIG_MTK_MTD_NAND)		+= mtk_nand2.o bmt.o
+ 
+ nand-objs := nand_base.o nand_bbt.o nand_timings.o nand_ids.o
+ nand-objs += nand_amd.o
+--- /dev/null
++++ b/drivers/mtd/nand/bmt.c
+@@ -0,0 +1,750 @@
++#include "bmt.h"
++
++typedef struct
++{
++    char signature[3];
++    u8 version;
++    u8 bad_count;               // bad block count in pool
++    u8 mapped_count;            // mapped block count in pool
++    u8 checksum;
++    u8 reseverd[13];
++} phys_bmt_header;
++
++typedef struct
++{
++    phys_bmt_header header;
++    bmt_entry table[MAX_BMT_SIZE];
++} phys_bmt_struct;
++
++typedef struct
++{
++    char signature[3];
++} bmt_oob_data;
++
++static char MAIN_SIGNATURE[] = "BMT";
++static char OOB_SIGNATURE[] = "bmt";
++#define SIGNATURE_SIZE      (3)
++
++#define MAX_DAT_SIZE        0x1000
++#define MAX_OOB_SIZE        0x80
++
++static struct mtd_info *mtd_bmt;
++static struct nand_chip *nand_chip_bmt;
++#define BLOCK_SIZE_BMT          (1 << nand_chip_bmt->phys_erase_shift)
++#define PAGE_SIZE_BMT           (1 << nand_chip_bmt->page_shift)
++
++#define OFFSET(block)       ((block) * BLOCK_SIZE_BMT)  
++#define PAGE_ADDR(block)    ((block) * BLOCK_SIZE_BMT / PAGE_SIZE_BMT)
++
++/*********************************************************************
++* Flash is splited into 2 parts, system part is for normal system    *
++* system usage, size is system_block_count, another is replace pool  *
++*    +-------------------------------------------------+             *
++*    |     system_block_count     |   bmt_block_count  |             *
++*    +-------------------------------------------------+             *
++*********************************************************************/
++static u32 total_block_count;   // block number in flash
++static u32 system_block_count;
++static int bmt_block_count;     // bmt table size
++// static int bmt_count;               // block used in bmt
++static int page_per_block;      // page per count
++
++static u32 bmt_block_index;     // bmt block index
++static bmt_struct bmt;          // dynamic created global bmt table
++
++static u8 dat_buf[MAX_DAT_SIZE];
++static u8 oob_buf[MAX_OOB_SIZE];
++static bool pool_erased;
++
++/***************************************************************
++*                                                              
++* Interface adaptor for preloader/uboot/kernel                 
++*    These interfaces operate on physical address, read/write
++*       physical data.
++*                                                              
++***************************************************************/
++int nand_read_page_bmt(u32 page, u8 * dat, u8 * oob)
++{
++    return mtk_nand_exec_read_page(mtd_bmt, page, PAGE_SIZE_BMT, dat, oob);
++}
++
++bool nand_block_bad_bmt(u32 offset)
++{
++    return mtk_nand_block_bad_hw(mtd_bmt, offset);
++}
++
++bool nand_erase_bmt(u32 offset)
++{
++    int status;
++    if (offset < 0x20000)
++    {
++        MSG(INIT, "erase offset: 0x%x\n", offset);
++    }
++
++    status = mtk_nand_erase_hw(mtd_bmt, offset / PAGE_SIZE_BMT); // as nand_chip structure doesn't have a erase function defined
++    if (status & NAND_STATUS_FAIL)
++        return false;
++    else
++        return true;
++}
++
++int mark_block_bad_bmt(u32 offset)
++{
++    return mtk_nand_block_markbad_hw(mtd_bmt, offset);   //mark_block_bad_hw(offset);
++}
++
++bool nand_write_page_bmt(u32 page, u8 * dat, u8 * oob)
++{
++    if (mtk_nand_exec_write_page(mtd_bmt, page, PAGE_SIZE_BMT, dat, oob))
++        return false;
++    else
++        return true;
++}
++
++/***************************************************************
++*                                                              *
++* static internal function                                     *
++*                                                              *
++***************************************************************/
++static void dump_bmt_info(bmt_struct * bmt)
++{
++    int i;
++
++    MSG(INIT, "BMT v%d. total %d mapping:\n", bmt->version, bmt->mapped_count);
++    for (i = 0; i < bmt->mapped_count; i++)
++    {
++        MSG(INIT, "\t0x%x -> 0x%x\n", bmt->table[i].bad_index, bmt->table[i].mapped_index);
++    }
++}
++
++static bool match_bmt_signature(u8 * dat, u8 * oob)
++{
++
++    if (memcmp(dat + MAIN_SIGNATURE_OFFSET, MAIN_SIGNATURE, SIGNATURE_SIZE))
++    {
++        return false;
++    }
++
++    if (memcmp(oob + OOB_SIGNATURE_OFFSET, OOB_SIGNATURE, SIGNATURE_SIZE))
++    {
++        MSG(INIT, "main signature match, oob signature doesn't match, but ignore\n");
++    }
++    return true;
++}
++
++static u8 cal_bmt_checksum(phys_bmt_struct * phys_table, int bmt_size)
++{
++    int i;
++    u8 checksum = 0;
++    u8 *dat = (u8 *) phys_table;
++
++    checksum += phys_table->header.version;
++    checksum += phys_table->header.mapped_count;
++
++    dat += sizeof(phys_bmt_header);
++    for (i = 0; i < bmt_size * sizeof(bmt_entry); i++)
++    {
++        checksum += dat[i];
++    }
++
++    return checksum;
++}
++
++
++static int is_block_mapped(int index)
++{
++    int i;
++    for (i = 0; i < bmt.mapped_count; i++)
++    {
++        if (index == bmt.table[i].mapped_index)
++            return i;
++    }
++    return -1;
++}
++
++static bool is_page_used(u8 * dat, u8 * oob)
++{
++    return ((oob[OOB_INDEX_OFFSET] != 0xFF) || (oob[OOB_INDEX_OFFSET + 1] != 0xFF));
++}
++
++static bool valid_bmt_data(phys_bmt_struct * phys_table)
++{
++    int i;
++    u8 checksum = cal_bmt_checksum(phys_table, bmt_block_count);
++
++    // checksum correct?
++    if (phys_table->header.checksum != checksum)
++    {
++        MSG(INIT, "BMT Data checksum error: %x %x\n", phys_table->header.checksum, checksum);
++        return false;
++    }
++
++    MSG(INIT, "BMT Checksum is: 0x%x\n", phys_table->header.checksum);
++
++    // block index correct?
++    for (i = 0; i < phys_table->header.mapped_count; i++)
++    {
++        if (phys_table->table[i].bad_index >= total_block_count || phys_table->table[i].mapped_index >= total_block_count || phys_table->table[i].mapped_index < system_block_count)
++        {
++            MSG(INIT, "index error: bad_index: %d, mapped_index: %d\n", phys_table->table[i].bad_index, phys_table->table[i].mapped_index);
++            return false;
++        }
++    }
++
++    // pass check, valid bmt.
++    MSG(INIT, "Valid BMT, version v%d\n", phys_table->header.version);
++    return true;
++}
++
++static void fill_nand_bmt_buffer(bmt_struct * bmt, u8 * dat, u8 * oob)
++{
++    phys_bmt_struct phys_bmt;
++
++    dump_bmt_info(bmt);
++
++    // fill phys_bmt_struct structure with bmt_struct
++    memset(&phys_bmt, 0xFF, sizeof(phys_bmt));
++
++    memcpy(phys_bmt.header.signature, MAIN_SIGNATURE, SIGNATURE_SIZE);
++    phys_bmt.header.version = BMT_VERSION;
++    // phys_bmt.header.bad_count = bmt->bad_count;
++    phys_bmt.header.mapped_count = bmt->mapped_count;
++    memcpy(phys_bmt.table, bmt->table, sizeof(bmt_entry) * bmt_block_count);
++
++    phys_bmt.header.checksum = cal_bmt_checksum(&phys_bmt, bmt_block_count);
++
++    memcpy(dat + MAIN_SIGNATURE_OFFSET, &phys_bmt, sizeof(phys_bmt));
++    memcpy(oob + OOB_SIGNATURE_OFFSET, OOB_SIGNATURE, SIGNATURE_SIZE);
++}
++
++// return valid index if found BMT, else return 0
++static int load_bmt_data(int start, int pool_size)
++{
++    int bmt_index = start + pool_size - 1;  // find from the end
++    phys_bmt_struct phys_table;
++    int i;
++
++    MSG(INIT, "[%s]: begin to search BMT from block 0x%x\n", __FUNCTION__, bmt_index);
++
++    for (bmt_index = start + pool_size - 1; bmt_index >= start; bmt_index--)
++    {
++        if (nand_block_bad_bmt(OFFSET(bmt_index)))
++        {
++            MSG(INIT, "Skip bad block: %d\n", bmt_index);
++            continue;
++        }
++
++        if (!nand_read_page_bmt(PAGE_ADDR(bmt_index), dat_buf, oob_buf))
++        {
++            MSG(INIT, "Error found when read block %d\n", bmt_index);
++            continue;
++        }
++
++        if (!match_bmt_signature(dat_buf, oob_buf))
++        {
++            continue;
++        }
++
++        MSG(INIT, "Match bmt signature @ block: 0x%x\n", bmt_index);
++
++        memcpy(&phys_table, dat_buf + MAIN_SIGNATURE_OFFSET, sizeof(phys_table));
++
++        if (!valid_bmt_data(&phys_table))
++        {
++            MSG(INIT, "BMT data is not correct %d\n", bmt_index);
++            continue;
++        } else
++        {
++            bmt.mapped_count = phys_table.header.mapped_count;
++            bmt.version = phys_table.header.version;
++            // bmt.bad_count = phys_table.header.bad_count;
++            memcpy(bmt.table, phys_table.table, bmt.mapped_count * sizeof(bmt_entry));
++
++            MSG(INIT, "bmt found at block: %d, mapped block: %d\n", bmt_index, bmt.mapped_count);
++
++            for (i = 0; i < bmt.mapped_count; i++)
++            {
++                if (!nand_block_bad_bmt(OFFSET(bmt.table[i].bad_index)))
++                {
++                    MSG(INIT, "block 0x%x is not mark bad, should be power lost last time\n", bmt.table[i].bad_index);
++                    mark_block_bad_bmt(OFFSET(bmt.table[i].bad_index));
++                }
++            }
++
++            return bmt_index;
++        }
++    }
++
++    MSG(INIT, "bmt block not found!\n");
++    return 0;
++}
++
++/*************************************************************************
++* Find an available block and erase.                                     *
++* start_from_end: if true, find available block from end of flash.       *
++*                 else, find from the beginning of the pool              *
++* need_erase: if true, all unmapped blocks in the pool will be erased    *
++*************************************************************************/
++static int find_available_block(bool start_from_end)
++{
++    int i;                      // , j;
++    int block = system_block_count;
++    int direction;
++    // int avail_index = 0;
++    MSG(INIT, "Try to find_available_block, pool_erase: %d\n", pool_erased);
++
++    // erase all un-mapped blocks in pool when finding avaliable block
++    if (!pool_erased)
++    {
++        MSG(INIT, "Erase all un-mapped blocks in pool\n");
++        for (i = 0; i < bmt_block_count; i++)
++        {
++            if (block == bmt_block_index)
++            {
++                MSG(INIT, "Skip bmt block 0x%x\n", block);
++                continue;
++            }
++
++            if (nand_block_bad_bmt(OFFSET(block + i)))
++            {
++                MSG(INIT, "Skip bad block 0x%x\n", block + i);
++                continue;
++            }
++//if(block==4095)
++//{
++//  continue;
++//}
++
++            if (is_block_mapped(block + i) >= 0)
++            {
++                MSG(INIT, "Skip mapped block 0x%x\n", block + i);
++                continue;
++            }
++
++            if (!nand_erase_bmt(OFFSET(block + i)))
++            {
++                MSG(INIT, "Erase block 0x%x failed\n", block + i);
++                mark_block_bad_bmt(OFFSET(block + i));
++            }
++        }
++
++        pool_erased = 1;
++    }
++
++    if (start_from_end)
++    {
++        block = total_block_count - 1;
++        direction = -1;
++    } else
++    {
++        block = system_block_count;
++        direction = 1;
++    }
++
++    for (i = 0; i < bmt_block_count; i++, block += direction)
++    {
++        if (block == bmt_block_index)
++        {
++            MSG(INIT, "Skip bmt block 0x%x\n", block);
++            continue;
++        }
++
++        if (nand_block_bad_bmt(OFFSET(block)))
++        {
++            MSG(INIT, "Skip bad block 0x%x\n", block);
++            continue;
++        }
++
++        if (is_block_mapped(block) >= 0)
++        {
++            MSG(INIT, "Skip mapped block 0x%x\n", block);
++            continue;
++        }
++
++        MSG(INIT, "Find block 0x%x available\n", block);
++        return block;
++    }
++
++    return 0;
++}
++
++static unsigned short get_bad_index_from_oob(u8 * oob_buf)
++{
++    unsigned short index;
++    memcpy(&index, oob_buf + OOB_INDEX_OFFSET, OOB_INDEX_SIZE);
++
++    return index;
++}
++
++void set_bad_index_to_oob(u8 * oob, u16 index)
++{
++    memcpy(oob + OOB_INDEX_OFFSET, &index, sizeof(index));
++}
++
++static int migrate_from_bad(int offset, u8 * write_dat, u8 * write_oob)
++{
++    int page;
++    int error_block = offset / BLOCK_SIZE_BMT;
++    int error_page = (offset / PAGE_SIZE_BMT) % page_per_block;
++    int to_index;
++
++    memcpy(oob_buf, write_oob, MAX_OOB_SIZE);
++
++    to_index = find_available_block(false);
++
++    if (!to_index)
++    {
++        MSG(INIT, "Cannot find an available block for BMT\n");
++        return 0;
++    }
++
++    {                           // migrate error page first
++        MSG(INIT, "Write error page: 0x%x\n", error_page);
++        if (!write_dat)
++        {
++            nand_read_page_bmt(PAGE_ADDR(error_block) + error_page, dat_buf, NULL);
++            write_dat = dat_buf;
++        }
++        // memcpy(oob_buf, write_oob, MAX_OOB_SIZE);
++
++        if (error_block < system_block_count)
++            set_bad_index_to_oob(oob_buf, error_block); // if error_block is already a mapped block, original mapping index is in OOB.
++
++        if (!nand_write_page_bmt(PAGE_ADDR(to_index) + error_page, write_dat, oob_buf))
++        {
++            MSG(INIT, "Write to page 0x%x fail\n", PAGE_ADDR(to_index) + error_page);
++            mark_block_bad_bmt(to_index);
++            return migrate_from_bad(offset, write_dat, write_oob);
++        }
++    }
++
++    for (page = 0; page < page_per_block; page++)
++    {
++        if (page != error_page)
++        {
++            nand_read_page_bmt(PAGE_ADDR(error_block) + page, dat_buf, oob_buf);
++            if (is_page_used(dat_buf, oob_buf))
++            {
++                if (error_block < system_block_count)
++                {
++                    set_bad_index_to_oob(oob_buf, error_block);
++                }
++                MSG(INIT, "\tmigrate page 0x%x to page 0x%x\n", PAGE_ADDR(error_block) + page, PAGE_ADDR(to_index) + page);
++                if (!nand_write_page_bmt(PAGE_ADDR(to_index) + page, dat_buf, oob_buf))
++                {
++                    MSG(INIT, "Write to page 0x%x fail\n", PAGE_ADDR(to_index) + page);
++                    mark_block_bad_bmt(to_index);
++                    return migrate_from_bad(offset, write_dat, write_oob);
++                }
++            }
++        }
++    }
++
++    MSG(INIT, "Migrate from 0x%x to 0x%x done!\n", error_block, to_index);
++
++    return to_index;
++}
++
++static bool write_bmt_to_flash(u8 * dat, u8 * oob)
++{
++    bool need_erase = true;
++    MSG(INIT, "Try to write BMT\n");
++
++    if (bmt_block_index == 0)
++    {
++        // if we don't have index, we don't need to erase found block as it has been erased in find_available_block()
++        need_erase = false;
++        if (!(bmt_block_index = find_available_block(true)))
++        {
++            MSG(INIT, "Cannot find an available block for BMT\n");
++            return false;
++        }
++    }
++
++    MSG(INIT, "Find BMT block: 0x%x\n", bmt_block_index);
++
++    // write bmt to flash
++    if (need_erase)
++    {
++        if (!nand_erase_bmt(OFFSET(bmt_block_index)))
++        {
++            MSG(INIT, "BMT block erase fail, mark bad: 0x%x\n", bmt_block_index);
++            mark_block_bad_bmt(OFFSET(bmt_block_index));
++            // bmt.bad_count++;
++
++            bmt_block_index = 0;
++            return write_bmt_to_flash(dat, oob);    // recursive call 
++        }
++    }
++
++    if (!nand_write_page_bmt(PAGE_ADDR(bmt_block_index), dat, oob))
++    {
++        MSG(INIT, "Write BMT data fail, need to write again\n");
++        mark_block_bad_bmt(OFFSET(bmt_block_index));
++        // bmt.bad_count++;
++
++        bmt_block_index = 0;
++        return write_bmt_to_flash(dat, oob);    // recursive call 
++    }
++
++    MSG(INIT, "Write BMT data to block 0x%x success\n", bmt_block_index);
++    return true;
++}
++
++/*******************************************************************
++* Reconstruct bmt, called when found bmt info doesn't match bad 
++* block info in flash.
++* 
++* Return NULL for failure
++*******************************************************************/
++bmt_struct *reconstruct_bmt(bmt_struct * bmt)
++{
++    int i;
++    int index = system_block_count;
++    unsigned short bad_index;
++    int mapped;
++
++    // init everything in BMT struct 
++    bmt->version = BMT_VERSION;
++    bmt->bad_count = 0;
++    bmt->mapped_count = 0;
++
++    memset(bmt->table, 0, bmt_block_count * sizeof(bmt_entry));
++
++    for (i = 0; i < bmt_block_count; i++, index++)
++    {
++        if (nand_block_bad_bmt(OFFSET(index)))
++        {
++            MSG(INIT, "Skip bad block: 0x%x\n", index);
++            // bmt->bad_count++;
++            continue;
++        }
++
++        MSG(INIT, "read page: 0x%x\n", PAGE_ADDR(index));
++        nand_read_page_bmt(PAGE_ADDR(index), dat_buf, oob_buf);
++        /* if (mtk_nand_read_page_hw(PAGE_ADDR(index), dat_buf))
++           {
++           MSG(INIT,  "Error when read block %d\n", bmt_block_index);
++           continue;
++           } */
++
++        if ((bad_index = get_bad_index_from_oob(oob_buf)) >= system_block_count)
++        {
++            MSG(INIT, "get bad index: 0x%x\n", bad_index);
++            if (bad_index != 0xFFFF)
++                MSG(INIT, "Invalid bad index found in block 0x%x, bad index 0x%x\n", index, bad_index);
++            continue;
++        }
++
++        MSG(INIT, "Block 0x%x is mapped to bad block: 0x%x\n", index, bad_index);
++
++        if (!nand_block_bad_bmt(OFFSET(bad_index)))
++        {
++            MSG(INIT, "\tbut block 0x%x is not marked as bad, invalid mapping\n", bad_index);
++            continue;           // no need to erase here, it will be erased later when trying to write BMT
++        }
++
++        if ((mapped = is_block_mapped(bad_index)) >= 0)
++        {
++            MSG(INIT, "bad block 0x%x is mapped to 0x%x, should be caused by power lost, replace with one\n", bmt->table[mapped].bad_index, bmt->table[mapped].mapped_index);
++            bmt->table[mapped].mapped_index = index;    // use new one instead.
++        } else
++        {
++            // add mapping to BMT
++            bmt->table[bmt->mapped_count].bad_index = bad_index;
++            bmt->table[bmt->mapped_count].mapped_index = index;
++            bmt->mapped_count++;
++        }
++
++        MSG(INIT, "Add mapping: 0x%x -> 0x%x to BMT\n", bad_index, index);
++
++    }
++
++    MSG(INIT, "Scan replace pool done, mapped block: %d\n", bmt->mapped_count);
++    // dump_bmt_info(bmt);
++
++    // fill NAND BMT buffer
++    memset(oob_buf, 0xFF, sizeof(oob_buf));
++    fill_nand_bmt_buffer(bmt, dat_buf, oob_buf);
++
++    // write BMT back
++    if (!write_bmt_to_flash(dat_buf, oob_buf))
++    {
++        MSG(INIT, "TRAGEDY: cannot find a place to write BMT!!!!\n");
++    }
++
++    return bmt;
++}
++
++/*******************************************************************
++* [BMT Interface]
++*
++* Description:
++*   Init bmt from nand. Reconstruct if not found or data error
++*
++* Parameter:
++*   size: size of bmt and replace pool
++* 
++* Return: 
++*   NULL for failure, and a bmt struct for success
++*******************************************************************/
++bmt_struct *init_bmt(struct nand_chip * chip, int size)
++{
++    struct mtk_nand_host *host;
++
++    if (size > 0 && size < MAX_BMT_SIZE)
++    {
++        MSG(INIT, "Init bmt table, size: %d\n", size);
++        bmt_block_count = size;
++    } else
++    {
++        MSG(INIT, "Invalid bmt table size: %d\n", size);
++        return NULL;
++    }
++    nand_chip_bmt = chip;
++    system_block_count = chip->chipsize >> chip->phys_erase_shift;
++    total_block_count = bmt_block_count + system_block_count;
++    page_per_block = BLOCK_SIZE_BMT / PAGE_SIZE_BMT;
++    host = (struct mtk_nand_host *)chip->priv;
++    mtd_bmt = host->mtd;
++
++    MSG(INIT, "mtd_bmt: %p, nand_chip_bmt: %p\n", mtd_bmt, nand_chip_bmt);
++    MSG(INIT, "bmt count: %d, system count: %d\n", bmt_block_count, system_block_count);
++
++    // set this flag, and unmapped block in pool will be erased.
++    pool_erased = 0;
++    memset(bmt.table, 0, size * sizeof(bmt_entry));
++    if ((bmt_block_index = load_bmt_data(system_block_count, size)))
++    {
++        MSG(INIT, "Load bmt data success @ block 0x%x\n", bmt_block_index);
++        dump_bmt_info(&bmt);
++        return &bmt;
++    } else
++    {
++        MSG(INIT, "Load bmt data fail, need re-construct!\n");
++#ifndef __UBOOT_NAND__            // BMT is not re-constructed in UBOOT.
++        if (reconstruct_bmt(&bmt))
++            return &bmt;
++        else
++#endif
++            return NULL;
++    }
++}
++
++/*******************************************************************
++* [BMT Interface]
++*
++* Description:
++*   Update BMT.
++*
++* Parameter:
++*   offset: update block/page offset.
++*   reason: update reason, see update_reason_t for reason.
++*   dat/oob: data and oob buffer for write fail.
++* 
++* Return: 
++*   Return true for success, and false for failure.
++*******************************************************************/
++bool update_bmt(u32 offset, update_reason_t reason, u8 * dat, u8 * oob)
++{
++    int map_index;
++    int orig_bad_block = -1;
++    // int bmt_update_index;
++    int i;
++    int bad_index = offset / BLOCK_SIZE_BMT;
++
++#ifndef MTK_NAND_BMT
++	return false;
++#endif
++    if (reason == UPDATE_WRITE_FAIL)
++    {
++        MSG(INIT, "Write fail, need to migrate\n");
++        if (!(map_index = migrate_from_bad(offset, dat, oob)))
++        {
++            MSG(INIT, "migrate fail\n");
++            return false;
++        }
++    } else
++    {
++        if (!(map_index = find_available_block(false)))
++        {
++            MSG(INIT, "Cannot find block in pool\n");
++            return false;
++        }
++    }
++
++    // now let's update BMT
++    if (bad_index >= system_block_count)    // mapped block become bad, find original bad block
++    {
++        for (i = 0; i < bmt_block_count; i++)
++        {
++            if (bmt.table[i].mapped_index == bad_index)
++            {
++                orig_bad_block = bmt.table[i].bad_index;
++                break;
++            }
++        }
++        // bmt.bad_count++;
++        MSG(INIT, "Mapped block becomes bad, orig bad block is 0x%x\n", orig_bad_block);
++
++        bmt.table[i].mapped_index = map_index;
++    } else
++    {
++        bmt.table[bmt.mapped_count].mapped_index = map_index;
++        bmt.table[bmt.mapped_count].bad_index = bad_index;
++        bmt.mapped_count++;
++    }
++
++    memset(oob_buf, 0xFF, sizeof(oob_buf));
++    fill_nand_bmt_buffer(&bmt, dat_buf, oob_buf);
++    if (!write_bmt_to_flash(dat_buf, oob_buf))
++        return false;
++
++    mark_block_bad_bmt(offset);
++
++    return true;
++}
++
++/*******************************************************************
++* [BMT Interface]
++*
++* Description:
++*   Given an block index, return mapped index if it's mapped, else 
++*   return given index.
++*
++* Parameter:
++*   index: given an block index. This value cannot exceed 
++*   system_block_count.
++*
++* Return NULL for failure
++*******************************************************************/
++u16 get_mapping_block_index(int index)
++{
++    int i;
++#ifndef MTK_NAND_BMT
++	return index;
++#endif
++    if (index > system_block_count)
++    {
++        return index;
++    }
++
++    for (i = 0; i < bmt.mapped_count; i++)
++    {
++        if (bmt.table[i].bad_index == index)
++        {
++            return bmt.table[i].mapped_index;
++        }
++    }
++
++    return index;
++}
++#ifdef __KERNEL_NAND__
++EXPORT_SYMBOL_GPL(init_bmt);
++EXPORT_SYMBOL_GPL(update_bmt);
++EXPORT_SYMBOL_GPL(get_mapping_block_index);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("MediaTek");
++MODULE_DESCRIPTION("Bad Block mapping management for MediaTek NAND Flash Driver");
++#endif
+--- /dev/null
++++ b/drivers/mtd/nand/bmt.h
+@@ -0,0 +1,80 @@
++#ifndef __BMT_H__
++#define __BMT_H__
++
++#include "nand_def.h"
++
++#if defined(__PRELOADER_NAND__)
++
++#include "nand.h"
++
++#elif defined(__UBOOT_NAND__)
++
++#include <linux/mtd/nand.h>
++#include "mtk_nand2.h"
++
++#elif defined(__KERNEL_NAND__)
++
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/rawnand.h>
++#include <linux/module.h>
++#include "mtk_nand2.h"
++
++#endif
++
++
++#define MAX_BMT_SIZE        (0x80)
++#define BMT_VERSION         (1) // initial version
++
++#define MAIN_SIGNATURE_OFFSET   (0)
++#define OOB_SIGNATURE_OFFSET    (1)
++#define OOB_INDEX_OFFSET        (29)
++#define OOB_INDEX_SIZE          (2)
++#define FAKE_INDEX              (0xAAAA)
++
++typedef struct _bmt_entry_
++{
++    u16 bad_index;              // bad block index
++    u16 mapped_index;           // mapping block index in the replace pool
++} bmt_entry;
++
++typedef enum
++{
++    UPDATE_ERASE_FAIL,
++    UPDATE_WRITE_FAIL,
++    UPDATE_UNMAPPED_BLOCK,
++    UPDATE_REASON_COUNT,
++} update_reason_t;
++
++typedef struct
++{
++    bmt_entry table[MAX_BMT_SIZE];
++    u8 version;
++    u8 mapped_count;            // mapped block count in pool
++    u8 bad_count;               // bad block count in pool. Not used in V1
++} bmt_struct;
++
++/***************************************************************
++*                                                              *
++* Interface BMT need to use                                    *
++*                                                              *
++***************************************************************/
++extern bool mtk_nand_exec_read_page(struct mtd_info *mtd, u32 row, u32 page_size, u8 * dat, u8 * oob);
++extern int mtk_nand_block_bad_hw(struct mtd_info *mtd, loff_t ofs);
++extern int mtk_nand_erase_hw(struct mtd_info *mtd, int page);
++extern int mtk_nand_block_markbad_hw(struct mtd_info *mtd, loff_t ofs);
++extern int mtk_nand_exec_write_page(struct mtd_info *mtd, u32 row, u32 page_size, u8 * dat, u8 * oob);
++
++
++/***************************************************************
++*                                                              *
++* Different function interface for preloader/uboot/kernel      *
++*                                                              *
++***************************************************************/
++void set_bad_index_to_oob(u8 * oob, u16 index);
++
++
++bmt_struct *init_bmt(struct nand_chip *nand, int size);
++bool update_bmt(u32 offset, update_reason_t reason, u8 * dat, u8 * oob);
++unsigned short get_mapping_block_index(int index);
++
++#endif                          // #ifndef __BMT_H__
+--- /dev/null
++++ b/drivers/mtd/nand/dev-nand.c
+@@ -0,0 +1,63 @@
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/platform_device.h>
++
++#include "mt6575_typedefs.h"
++
++#define RALINK_NAND_CTRL_BASE               0xBE003000
++#define NFI_base    RALINK_NAND_CTRL_BASE
++#define RALINK_NANDECC_CTRL_BASE    0xBE003800
++#define NFIECC_base RALINK_NANDECC_CTRL_BASE
++#define MT7621_NFI_IRQ_ID		SURFBOARDINT_NAND
++#define MT7621_NFIECC_IRQ_ID	SURFBOARDINT_NAND_ECC
++
++#define SURFBOARDINT_NAND 22
++#define SURFBOARDINT_NAND_ECC 23
++
++static struct resource MT7621_resource_nand[] = {
++        {
++                .start          = NFI_base,
++                .end            = NFI_base + 0x1A0,
++                .flags          = IORESOURCE_MEM,
++        },
++        {
++                .start          = NFIECC_base,
++                .end            = NFIECC_base + 0x150,
++                .flags          = IORESOURCE_MEM,
++        },
++        {
++                .start          = MT7621_NFI_IRQ_ID,
++                .flags          = IORESOURCE_IRQ,
++        },
++        {
++                .start          = MT7621_NFIECC_IRQ_ID,
++                .flags          = IORESOURCE_IRQ,
++        },
++};
++
++static struct platform_device MT7621_nand_dev = {
++    .name = "MT7621-NAND",
++    .id   = 0,
++        .num_resources  = ARRAY_SIZE(MT7621_resource_nand),
++        .resource               = MT7621_resource_nand,
++    .dev            = {
++        .platform_data = &mt7621_nand_hw,
++    },
++};
++
++
++int __init mtk_nand_register(void)
++{
++
++	int retval = 0;
++
++	retval = platform_device_register(&MT7621_nand_dev);
++	if (retval != 0) {
++		printk(KERN_ERR "register nand device fail\n");
++		return retval;
++	}
++
++
++	return retval;
++}
++arch_initcall(mtk_nand_register);
+--- /dev/null
++++ b/drivers/mtd/nand/mt6575_typedefs.h
+@@ -0,0 +1,340 @@
++/* Copyright Statement:
++ *
++ * This software/firmware and related documentation ("MediaTek Software") are
++ * protected under relevant copyright laws. The information contained herein
++ * is confidential and proprietary to MediaTek Inc. and/or its licensors.
++ * Without the prior written permission of MediaTek inc. and/or its licensors,
++ * any reproduction, modification, use or disclosure of MediaTek Software,
++ * and information contained herein, in whole or in part, shall be strictly prohibited.
++ */
++/* MediaTek Inc. (C) 2010. All rights reserved.
++ *
++ * BY OPENING THIS FILE, RECEIVER HEREBY UNEQUIVOCALLY ACKNOWLEDGES AND AGREES
++ * THAT THE SOFTWARE/FIRMWARE AND ITS DOCUMENTATIONS ("MEDIATEK SOFTWARE")
++ * RECEIVED FROM MEDIATEK AND/OR ITS REPRESENTATIVES ARE PROVIDED TO RECEIVER ON
++ * AN "AS-IS" BASIS ONLY. MEDIATEK EXPRESSLY DISCLAIMS ANY AND ALL WARRANTIES,
++ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF
++ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE OR NONINFRINGEMENT.
++ * NEITHER DOES MEDIATEK PROVIDE ANY WARRANTY WHATSOEVER WITH RESPECT TO THE
++ * SOFTWARE OF ANY THIRD PARTY WHICH MAY BE USED BY, INCORPORATED IN, OR
++ * SUPPLIED WITH THE MEDIATEK SOFTWARE, AND RECEIVER AGREES TO LOOK ONLY TO SUCH
++ * THIRD PARTY FOR ANY WARRANTY CLAIM RELATING THERETO. RECEIVER EXPRESSLY ACKNOWLEDGES
++ * THAT IT IS RECEIVER'S SOLE RESPONSIBILITY TO OBTAIN FROM ANY THIRD PARTY ALL PROPER LICENSES
++ * CONTAINED IN MEDIATEK SOFTWARE. MEDIATEK SHALL ALSO NOT BE RESPONSIBLE FOR ANY MEDIATEK
++ * SOFTWARE RELEASES MADE TO RECEIVER'S SPECIFICATION OR TO CONFORM TO A PARTICULAR
++ * STANDARD OR OPEN FORUM. RECEIVER'S SOLE AND EXCLUSIVE REMEDY AND MEDIATEK'S ENTIRE AND
++ * CUMULATIVE LIABILITY WITH RESPECT TO THE MEDIATEK SOFTWARE RELEASED HEREUNDER WILL BE,
++ * AT MEDIATEK'S OPTION, TO REVISE OR REPLACE THE MEDIATEK SOFTWARE AT ISSUE,
++ * OR REFUND ANY SOFTWARE LICENSE FEES OR SERVICE CHARGE PAID BY RECEIVER TO
++ * MEDIATEK FOR SUCH MEDIATEK SOFTWARE AT ISSUE.
++ *
++ * The following software/firmware and/or related documentation ("MediaTek Software")
++ * have been modified by MediaTek Inc. All revisions are subject to any receiver's
++ * applicable license agreements with MediaTek Inc.
++ */
++
++/*****************************************************************************
++*  Copyright Statement:
++*  --------------------
++*  This software is protected by Copyright and the information contained
++*  herein is confidential. The software may not be copied and the information
++*  contained herein may not be used or disclosed except with the written
++*  permission of MediaTek Inc. (C) 2008
++*
++*  BY OPENING THIS FILE, BUYER HEREBY UNEQUIVOCALLY ACKNOWLEDGES AND AGREES
++*  THAT THE SOFTWARE/FIRMWARE AND ITS DOCUMENTATIONS ("MEDIATEK SOFTWARE")
++*  RECEIVED FROM MEDIATEK AND/OR ITS REPRESENTATIVES ARE PROVIDED TO BUYER ON
++*  AN "AS-IS" BASIS ONLY. MEDIATEK EXPRESSLY DISCLAIMS ANY AND ALL WARRANTIES,
++*  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF
++*  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE OR NONINFRINGEMENT.
++*  NEITHER DOES MEDIATEK PROVIDE ANY WARRANTY WHATSOEVER WITH RESPECT TO THE
++*  SOFTWARE OF ANY THIRD PARTY WHICH MAY BE USED BY, INCORPORATED IN, OR
++*  SUPPLIED WITH THE MEDIATEK SOFTWARE, AND BUYER AGREES TO LOOK ONLY TO SUCH
++*  THIRD PARTY FOR ANY WARRANTY CLAIM RELATING THERETO. MEDIATEK SHALL ALSO
++*  NOT BE RESPONSIBLE FOR ANY MEDIATEK SOFTWARE RELEASES MADE TO BUYER'S
++*  SPECIFICATION OR TO CONFORM TO A PARTICULAR STANDARD OR OPEN FORUM.
++*
++*  BUYER'S SOLE AND EXCLUSIVE REMEDY AND MEDIATEK'S ENTIRE AND CUMULATIVE
++*  LIABILITY WITH RESPECT TO THE MEDIATEK SOFTWARE RELEASED HEREUNDER WILL BE,
++*  AT MEDIATEK'S OPTION, TO REVISE OR REPLACE THE MEDIATEK SOFTWARE AT ISSUE,
++*  OR REFUND ANY SOFTWARE LICENSE FEES OR SERVICE CHARGE PAID BY BUYER TO
++*  MEDIATEK FOR SUCH MEDIATEK SOFTWARE AT ISSUE.
++*
++*  THE TRANSACTION CONTEMPLATED HEREUNDER SHALL BE CONSTRUED IN ACCORDANCE
++*  WITH THE LAWS OF THE STATE OF CALIFORNIA, USA, EXCLUDING ITS CONFLICT OF
++*  LAWS PRINCIPLES.  ANY DISPUTES, CONTROVERSIES OR CLAIMS ARISING THEREOF AND
++*  RELATED THERETO SHALL BE SETTLED BY ARBITRATION IN SAN FRANCISCO, CA, UNDER
++*  THE RULES OF THE INTERNATIONAL CHAMBER OF COMMERCE (ICC).
++*
++*****************************************************************************/
++
++#ifndef _MT6575_TYPEDEFS_H
++#define _MT6575_TYPEDEFS_H
++
++#if defined (__KERNEL_NAND__)
++#include <linux/bug.h>
++#else
++#define true 		1 
++#define false 		0  
++#define bool		u8
++#endif
++
++// ---------------------------------------------------------------------------
++//  Basic Type Definitions
++// ---------------------------------------------------------------------------
++
++typedef volatile unsigned char  *P_kal_uint8;
++typedef volatile unsigned short *P_kal_uint16;
++typedef volatile unsigned int   *P_kal_uint32;
++
++typedef long            LONG;
++typedef unsigned char   UBYTE;
++typedef short           SHORT;
++
++typedef signed char     kal_int8;
++typedef signed short    kal_int16;
++typedef signed int      kal_int32;
++typedef long long       kal_int64;
++typedef unsigned char   kal_uint8;
++typedef unsigned short  kal_uint16;
++typedef unsigned int    kal_uint32;
++typedef unsigned long long  kal_uint64;
++typedef char            kal_char;
++
++typedef unsigned int            *UINT32P;
++typedef volatile unsigned short *UINT16P;
++typedef volatile unsigned char  *UINT8P;
++typedef unsigned char           *U8P;
++
++typedef volatile unsigned char  *P_U8;
++typedef volatile signed char    *P_S8;
++typedef volatile unsigned short *P_U16;
++typedef volatile signed short   *P_S16;
++typedef volatile unsigned int   *P_U32;
++typedef volatile signed int     *P_S32;
++typedef unsigned long long      *P_U64;
++typedef signed long long        *P_S64;
++
++typedef unsigned char       U8;
++typedef signed char         S8;
++typedef unsigned short      U16;
++typedef signed short        S16;
++typedef unsigned int        U32;
++typedef signed int          S32;
++typedef unsigned long long  U64;
++typedef signed long long    S64;
++//typedef unsigned char       bool;
++
++typedef unsigned char   UINT8;
++typedef unsigned short  UINT16;
++typedef unsigned int    UINT32;
++typedef unsigned short  USHORT;
++typedef signed char     INT8;
++typedef signed short    INT16;
++typedef signed int      INT32;
++typedef unsigned int    DWORD;
++typedef void            VOID;
++typedef unsigned char   BYTE;
++typedef float           FLOAT;
++
++typedef char           *LPCSTR;
++typedef short          *LPWSTR;
++
++
++// ---------------------------------------------------------------------------
++//  Constants
++// ---------------------------------------------------------------------------
++
++#define IMPORT  EXTERN
++#ifndef __cplusplus
++  #define EXTERN  extern
++#else
++  #define EXTERN  extern "C"
++#endif
++#define LOCAL     static
++#define GLOBAL
++#define EXPORT    GLOBAL
++
++#define EQ        ==
++#define NEQ       !=
++#define AND       &&
++#define OR        ||
++#define XOR(A,B)  ((!(A) AND (B)) OR ((A) AND !(B)))
++
++#ifndef FALSE
++  #define FALSE (0)
++#endif
++
++#ifndef TRUE
++  #define TRUE  (1)
++#endif
++
++#ifndef NULL
++  #define NULL  (0)
++#endif
++
++//enum boolean {false, true};
++enum {RX, TX, NONE};
++
++#ifndef BOOL
++typedef unsigned char  BOOL;
++#endif
++
++typedef enum {
++   KAL_FALSE = 0,
++   KAL_TRUE  = 1,
++} kal_bool;
++
++
++// ---------------------------------------------------------------------------
++//  Type Casting
++// ---------------------------------------------------------------------------
++
++#define AS_INT32(x)     (*(INT32 *)((void*)x))
++#define AS_INT16(x)     (*(INT16 *)((void*)x))
++#define AS_INT8(x)      (*(INT8  *)((void*)x))
++
++#define AS_UINT32(x)    (*(UINT32 *)((void*)x))
++#define AS_UINT16(x)    (*(UINT16 *)((void*)x))
++#define AS_UINT8(x)     (*(UINT8  *)((void*)x))
++
++
++// ---------------------------------------------------------------------------
++//  Register Manipulations
++// ---------------------------------------------------------------------------
++
++#define READ_REGISTER_UINT32(reg) \
++    (*(volatile UINT32 * const)(reg))
++
++#define WRITE_REGISTER_UINT32(reg, val) \
++    (*(volatile UINT32 * const)(reg)) = (val)
++
++#define READ_REGISTER_UINT16(reg) \
++    (*(volatile UINT16 * const)(reg))
++
++#define WRITE_REGISTER_UINT16(reg, val) \
++    (*(volatile UINT16 * const)(reg)) = (val)
++
++#define READ_REGISTER_UINT8(reg) \
++    (*(volatile UINT8 * const)(reg))
++
++#define WRITE_REGISTER_UINT8(reg, val) \
++    (*(volatile UINT8 * const)(reg)) = (val)
++
++#define INREG8(x)           READ_REGISTER_UINT8((UINT8*)((void*)(x)))
++#define OUTREG8(x, y)       WRITE_REGISTER_UINT8((UINT8*)((void*)(x)), (UINT8)(y))
++#define SETREG8(x, y)       OUTREG8(x, INREG8(x)|(y))
++#define CLRREG8(x, y)       OUTREG8(x, INREG8(x)&~(y))
++#define MASKREG8(x, y, z)   OUTREG8(x, (INREG8(x)&~(y))|(z))
++
++#define INREG16(x)          READ_REGISTER_UINT16((UINT16*)((void*)(x)))
++#define OUTREG16(x, y)      WRITE_REGISTER_UINT16((UINT16*)((void*)(x)),(UINT16)(y))
++#define SETREG16(x, y)      OUTREG16(x, INREG16(x)|(y))
++#define CLRREG16(x, y)      OUTREG16(x, INREG16(x)&~(y))
++#define MASKREG16(x, y, z)  OUTREG16(x, (INREG16(x)&~(y))|(z))
++
++#define INREG32(x)          READ_REGISTER_UINT32((UINT32*)((void*)(x)))
++#define OUTREG32(x, y)      WRITE_REGISTER_UINT32((UINT32*)((void*)(x)), (UINT32)(y))
++#define SETREG32(x, y)      OUTREG32(x, INREG32(x)|(y))
++#define CLRREG32(x, y)      OUTREG32(x, INREG32(x)&~(y))
++#define MASKREG32(x, y, z)  OUTREG32(x, (INREG32(x)&~(y))|(z))
++
++
++#define DRV_Reg8(addr)              INREG8(addr)
++#define DRV_WriteReg8(addr, data)   OUTREG8(addr, data)
++#define DRV_SetReg8(addr, data)     SETREG8(addr, data)
++#define DRV_ClrReg8(addr, data)     CLRREG8(addr, data)
++
++#define DRV_Reg16(addr)             INREG16(addr)
++#define DRV_WriteReg16(addr, data)  OUTREG16(addr, data)
++#define DRV_SetReg16(addr, data)    SETREG16(addr, data)
++#define DRV_ClrReg16(addr, data)    CLRREG16(addr, data)
++
++#define DRV_Reg32(addr)             INREG32(addr)
++#define DRV_WriteReg32(addr, data)  OUTREG32(addr, data)
++#define DRV_SetReg32(addr, data)    SETREG32(addr, data)
++#define DRV_ClrReg32(addr, data)    CLRREG32(addr, data)
++
++// !!! DEPRECATED, WILL BE REMOVED LATER !!!
++#define DRV_Reg(addr)               DRV_Reg16(addr)
++#define DRV_WriteReg(addr, data)    DRV_WriteReg16(addr, data)
++#define DRV_SetReg(addr, data)      DRV_SetReg16(addr, data)
++#define DRV_ClrReg(addr, data)      DRV_ClrReg16(addr, data)
++
++
++// ---------------------------------------------------------------------------
++//  Compiler Time Deduction Macros
++// ---------------------------------------------------------------------------
++
++#define _MASK_OFFSET_1(x, n)  ((x) & 0x1) ? (n) :
++#define _MASK_OFFSET_2(x, n)  _MASK_OFFSET_1((x), (n)) _MASK_OFFSET_1((x) >> 1, (n) + 1)
++#define _MASK_OFFSET_4(x, n)  _MASK_OFFSET_2((x), (n)) _MASK_OFFSET_2((x) >> 2, (n) + 2)
++#define _MASK_OFFSET_8(x, n)  _MASK_OFFSET_4((x), (n)) _MASK_OFFSET_4((x) >> 4, (n) + 4)
++#define _MASK_OFFSET_16(x, n) _MASK_OFFSET_8((x), (n)) _MASK_OFFSET_8((x) >> 8, (n) + 8)
++#define _MASK_OFFSET_32(x, n) _MASK_OFFSET_16((x), (n)) _MASK_OFFSET_16((x) >> 16, (n) + 16)
++
++#define MASK_OFFSET_ERROR (0xFFFFFFFF)
++
++#define MASK_OFFSET(x) (_MASK_OFFSET_32(x, 0) MASK_OFFSET_ERROR)
++
++
++// ---------------------------------------------------------------------------
++//  Assertions
++// ---------------------------------------------------------------------------
++
++#ifndef ASSERT
++    #define ASSERT(expr)        BUG_ON(!(expr))
++#endif
++
++#ifndef NOT_IMPLEMENTED
++    #define NOT_IMPLEMENTED()   BUG_ON(1)
++#endif    
++
++#define STATIC_ASSERT(pred)         STATIC_ASSERT_X(pred, __LINE__)
++#define STATIC_ASSERT_X(pred, line) STATIC_ASSERT_XX(pred, line)
++#define STATIC_ASSERT_XX(pred, line) \
++    extern char assertion_failed_at_##line[(pred) ? 1 : -1]
++
++// ---------------------------------------------------------------------------
++//  Resolve Compiler Warnings
++// ---------------------------------------------------------------------------
++
++#define NOT_REFERENCED(x)   { (x) = (x); }
++
++
++// ---------------------------------------------------------------------------
++//  Utilities
++// ---------------------------------------------------------------------------
++
++#define MAXIMUM(A,B)       (((A)>(B))?(A):(B))
++#define MINIMUM(A,B)       (((A)<(B))?(A):(B))
++
++#define ARY_SIZE(x) (sizeof((x)) / sizeof((x[0])))
++#define DVT_DELAYMACRO(u4Num)                                            \
++{                                                                        \
++    UINT32 u4Count = 0 ;                                                 \
++    for (u4Count = 0; u4Count < u4Num; u4Count++ );                      \
++}                                                                        \
++
++#define    A68351B      0
++#define    B68351B      1
++#define    B68351D      2
++#define    B68351E      3
++#define    UNKNOWN_IC_VERSION   0xFF
++
++/* NAND driver */
++struct mtk_nand_host_hw {
++    unsigned int nfi_bus_width;		    /* NFI_BUS_WIDTH */ 
++	unsigned int nfi_access_timing;		/* NFI_ACCESS_TIMING */  
++	unsigned int nfi_cs_num;			/* NFI_CS_NUM */
++	unsigned int nand_sec_size;			/* NAND_SECTOR_SIZE */
++	unsigned int nand_sec_shift;		/* NAND_SECTOR_SHIFT */
++	unsigned int nand_ecc_size;
++	unsigned int nand_ecc_bytes;
++	unsigned int nand_ecc_mode;
++};
++extern struct mtk_nand_host_hw mt7621_nand_hw;
++extern unsigned int	CFG_BLOCKSIZE;
++
++#endif  // _MT6575_TYPEDEFS_H
++
+--- /dev/null
++++ b/drivers/mtd/nand/mtk_nand2.c
+@@ -0,0 +1,2363 @@
++/******************************************************************************
++* mtk_nand2.c - MTK NAND Flash Device Driver
++ *
++* Copyright 2009-2012 MediaTek Co.,Ltd.
++ *
++* DESCRIPTION:
++* 	This file provid the other drivers nand relative functions
++ *
++* modification history
++* ----------------------------------------
++* v3.0, 11 Feb 2010, mtk
++* ----------------------------------------
++******************************************************************************/
++#include "nand_def.h"
++#include <linux/slab.h>
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/delay.h>
++#include <linux/errno.h>
++#include <linux/sched.h>
++#include <linux/types.h>
++#include <linux/wait.h>
++#include <linux/spinlock.h>
++#include <linux/interrupt.h>
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/rawnand.h>
++#include <linux/mtd/partitions.h>
++#include <linux/mtd/nand_ecc.h>
++#include <linux/dma-mapping.h>
++#include <linux/jiffies.h>
++#include <linux/platform_device.h>
++#include <linux/proc_fs.h>
++#include <linux/time.h>
++#include <linux/mm.h>
++#include <asm/io.h>
++#include <asm/cacheflush.h>
++#include <asm/uaccess.h>
++#include <linux/miscdevice.h>
++#include "mtk_nand2.h"
++#include "nand_device_list.h"
++
++#include "bmt.h"
++#include "partition.h"
++
++unsigned int CFG_BLOCKSIZE;
++
++static int shift_on_bbt = 0;
++extern void nand_bbt_set(struct mtd_info *mtd, int page, int flag);
++extern int nand_bbt_get(struct mtd_info *mtd, int page);
++int mtk_nand_read_oob_hw(struct mtd_info *mtd, struct nand_chip *chip, int page);
++
++static const char * const probe_types[] = { "cmdlinepart", "ofpart", NULL };
++
++#define NAND_CMD_STATUS_MULTI  0x71
++
++void show_stack(struct task_struct *tsk, unsigned long *sp);
++extern void mt_irq_set_sens(unsigned int irq, unsigned int sens);
++extern void mt_irq_set_polarity(unsigned int irq,unsigned int polarity);
++
++struct mtk_nand_host	mtk_nand_host;	/* include mtd_info and nand_chip structs */
++struct mtk_nand_host_hw mt7621_nand_hw = {
++    .nfi_bus_width          = 8,
++    .nfi_access_timing      = NFI_DEFAULT_ACCESS_TIMING,
++    .nfi_cs_num             = NFI_CS_NUM,
++    .nand_sec_size          = 512,
++    .nand_sec_shift         = 9,
++    .nand_ecc_size          = 2048,
++    .nand_ecc_bytes         = 32,
++    .nand_ecc_mode          = NAND_ECC_HW,
++};
++
++
++/*******************************************************************************
++ * Gloable Varible Definition
++ *******************************************************************************/
++
++#define NFI_ISSUE_COMMAND(cmd, col_addr, row_addr, col_num, row_num) \
++   do { \
++      DRV_WriteReg(NFI_CMD_REG16,cmd);\
++      while (DRV_Reg32(NFI_STA_REG32) & STA_CMD_STATE);\
++      DRV_WriteReg32(NFI_COLADDR_REG32, col_addr);\
++      DRV_WriteReg32(NFI_ROWADDR_REG32, row_addr);\
++      DRV_WriteReg(NFI_ADDRNOB_REG16, col_num | (row_num<<ADDR_ROW_NOB_SHIFT));\
++      while (DRV_Reg32(NFI_STA_REG32) & STA_ADDR_STATE);\
++   }while(0);
++
++//-------------------------------------------------------------------------------
++static struct NAND_CMD g_kCMD;
++static u32 g_u4ChipVer;
++bool g_bInitDone;
++static bool g_bcmdstatus;
++static u32 g_value = 0;
++static int g_page_size;
++
++BOOL g_bHwEcc = true;
++
++
++static u8 *local_buffer_16_align;   // 16 byte aligned buffer, for HW issue
++static u8 local_buffer[4096 + 512];
++
++extern void nand_release_device(struct mtd_info *mtd);
++extern int nand_get_device(struct nand_chip *chip, struct mtd_info *mtd, int new_state);
++
++#if defined(MTK_NAND_BMT)
++static bmt_struct *g_bmt;
++#endif
++struct mtk_nand_host *host;
++extern struct mtd_partition g_pasStatic_Partition[];
++int part_num = NUM_PARTITIONS;
++int manu_id;
++int dev_id;
++
++/* this constant was taken from linux/nand/nand.h v 3.14
++ * in later versions it seems it was removed in order to save a bit of space
++ */
++#define NAND_MAX_OOBSIZE 774
++static u8 local_oob_buf[NAND_MAX_OOBSIZE];
++
++static u8 nand_badblock_offset = 0;
++
++void nand_enable_clock(void)
++{
++    //enable_clock(MT65XX_PDN_PERI_NFI, "NAND");
++}
++
++void nand_disable_clock(void)
++{
++    //disable_clock(MT65XX_PDN_PERI_NFI, "NAND");
++}
++
++struct nand_ecclayout {
++	__u32 eccbytes;
++	__u32 eccpos[MTD_MAX_ECCPOS_ENTRIES_LARGE];
++	__u32 oobavail;
++	struct nand_oobfree oobfree[MTD_MAX_OOBFREE_ENTRIES_LARGE];
++};
++
++static struct nand_ecclayout *layout;
++
++static struct nand_ecclayout nand_oob_16 = {
++	.eccbytes = 8,
++	.eccpos = {8, 9, 10, 11, 12, 13, 14, 15},
++	.oobfree = {{1, 6}, {0, 0}}
++};
++
++struct nand_ecclayout nand_oob_64 = {
++	.eccbytes = 32,
++	.eccpos = {32, 33, 34, 35, 36, 37, 38, 39,
++		40, 41, 42, 43, 44, 45, 46, 47,
++		48, 49, 50, 51, 52, 53, 54, 55,
++		56, 57, 58, 59, 60, 61, 62, 63},
++	.oobfree = {{1, 7}, {9, 7}, {17, 7}, {25, 6}, {0, 0}}
++};
++
++struct nand_ecclayout nand_oob_128 = {
++	.eccbytes = 64,
++	.eccpos = {
++		64, 65, 66, 67, 68, 69, 70, 71,
++		72, 73, 74, 75, 76, 77, 78, 79,
++		80, 81, 82, 83, 84, 85, 86, 86,
++		88, 89, 90, 91, 92, 93, 94, 95,
++		96, 97, 98, 99, 100, 101, 102, 103,
++		104, 105, 106, 107, 108, 109, 110, 111,
++		112, 113, 114, 115, 116, 117, 118, 119,
++		120, 121, 122, 123, 124, 125, 126, 127},
++	.oobfree = {{1, 7}, {9, 7}, {17, 7}, {25, 7}, {33, 7}, {41, 7}, {49, 7}, {57, 6}}
++};
++
++flashdev_info devinfo;
++
++void dump_nfi(void)
++{
++}
++
++void dump_ecc(void)
++{
++}
++
++u32
++nand_virt_to_phys_add(u32 va)
++{
++	u32 pageOffset = (va & (PAGE_SIZE - 1));
++	pgd_t *pgd;
++	pmd_t *pmd;
++	pte_t *pte;
++	u32 pa;
++
++	if (virt_addr_valid(va))
++		return __virt_to_phys(va);
++
++	if (NULL == current) {
++		printk(KERN_ERR "[nand_virt_to_phys_add] ERROR ,current is NULL! \n");
++		return 0;
++	}
++
++	if (NULL == current->mm) {
++		printk(KERN_ERR "[nand_virt_to_phys_add] ERROR current->mm is NULL! tgid=0x%x, name=%s \n", current->tgid, current->comm);
++		return 0;
++	}
++
++	pgd = pgd_offset(current->mm, va);  /* what is tsk->mm */
++	if (pgd_none(*pgd) || pgd_bad(*pgd)) {
++		printk(KERN_ERR "[nand_virt_to_phys_add] ERROR, va=0x%x, pgd invalid! \n", va);
++		return 0;
++	}
++
++	pmd = pmd_offset((pud_t *)pgd, va);
++	if (pmd_none(*pmd) || pmd_bad(*pmd)) {
++		printk(KERN_ERR "[nand_virt_to_phys_add] ERROR, va=0x%x, pmd invalid! \n", va);
++		return 0;
++	}
++
++	pte = pte_offset_map(pmd, va);
++	if (pte_present(*pte)) {
++		pa = (pte_val(*pte) & (PAGE_MASK)) | pageOffset;
++		return pa;
++	}
++
++	printk(KERN_ERR "[nand_virt_to_phys_add] ERROR va=0x%x, pte invalid! \n", va);
++	return 0;
++}
++EXPORT_SYMBOL(nand_virt_to_phys_add);
++
++bool
++get_device_info(u16 id, u32 ext_id, flashdev_info * pdevinfo)
++{
++	u32 index;
++	for (index = 0; gen_FlashTable[index].id != 0; index++) {
++		if (id == gen_FlashTable[index].id && ext_id == gen_FlashTable[index].ext_id) {
++			pdevinfo->id = gen_FlashTable[index].id;
++			pdevinfo->ext_id = gen_FlashTable[index].ext_id;
++			pdevinfo->blocksize = gen_FlashTable[index].blocksize;
++			pdevinfo->addr_cycle = gen_FlashTable[index].addr_cycle;
++			pdevinfo->iowidth = gen_FlashTable[index].iowidth;
++			pdevinfo->timmingsetting = gen_FlashTable[index].timmingsetting;
++			pdevinfo->advancedmode = gen_FlashTable[index].advancedmode;
++			pdevinfo->pagesize = gen_FlashTable[index].pagesize;
++			pdevinfo->sparesize = gen_FlashTable[index].sparesize;
++			pdevinfo->totalsize = gen_FlashTable[index].totalsize;
++			memcpy(pdevinfo->devciename, gen_FlashTable[index].devciename, sizeof(pdevinfo->devciename));
++			printk(KERN_INFO "Device found in MTK table, ID: %x, EXT_ID: %x\n", id, ext_id);
++
++			goto find;
++		}
++	}
++
++find:
++	if (0 == pdevinfo->id) {
++		printk(KERN_INFO "Device not found, ID: %x\n", id);
++		return false;
++	} else {
++		return true;
++	}
++}
++
++static void
++ECC_Config(struct mtk_nand_host_hw *hw,u32 ecc_bit)
++{
++	u32 u4ENCODESize;
++	u32 u4DECODESize;
++	u32 ecc_bit_cfg = ECC_CNFG_ECC4;
++
++	switch(ecc_bit){
++	case 4:
++		ecc_bit_cfg = ECC_CNFG_ECC4;
++		break;
++	case 8:
++		ecc_bit_cfg = ECC_CNFG_ECC8;
++		break;
++	case 10:
++		ecc_bit_cfg = ECC_CNFG_ECC10;
++		break;
++	case 12:
++		ecc_bit_cfg = ECC_CNFG_ECC12;
++		break;
++	default:
++		break;
++	}
++	DRV_WriteReg16(ECC_DECCON_REG16, DEC_DE);
++	do {
++	} while (!DRV_Reg16(ECC_DECIDLE_REG16));
++
++	DRV_WriteReg16(ECC_ENCCON_REG16, ENC_DE);
++	do {
++	} while (!DRV_Reg32(ECC_ENCIDLE_REG32));
++
++	/* setup FDM register base */
++	DRV_WriteReg32(ECC_FDMADDR_REG32, NFI_FDM0L_REG32);
++
++	/* Sector + FDM */
++	u4ENCODESize = (hw->nand_sec_size + 8) << 3;
++	/* Sector + FDM + YAFFS2 meta data bits */
++	u4DECODESize = ((hw->nand_sec_size + 8) << 3) + ecc_bit * 13;
++
++	/* configure ECC decoder && encoder */
++	DRV_WriteReg32(ECC_DECCNFG_REG32, ecc_bit_cfg | DEC_CNFG_NFI | DEC_CNFG_EMPTY_EN | (u4DECODESize << DEC_CNFG_CODE_SHIFT));
++
++	DRV_WriteReg32(ECC_ENCCNFG_REG32, ecc_bit_cfg | ENC_CNFG_NFI | (u4ENCODESize << ENC_CNFG_MSG_SHIFT));
++	NFI_SET_REG32(ECC_DECCNFG_REG32, DEC_CNFG_EL);
++}
++
++static void
++ECC_Decode_Start(void)
++{
++	while (!(DRV_Reg16(ECC_DECIDLE_REG16) & DEC_IDLE))
++		;
++	DRV_WriteReg16(ECC_DECCON_REG16, DEC_EN);
++}
++
++static void
++ECC_Decode_End(void)
++{
++	while (!(DRV_Reg16(ECC_DECIDLE_REG16) & DEC_IDLE))
++		;
++	DRV_WriteReg16(ECC_DECCON_REG16, DEC_DE);
++}
++
++static void
++ECC_Encode_Start(void)
++{
++	while (!(DRV_Reg32(ECC_ENCIDLE_REG32) & ENC_IDLE))
++		;
++	mb();
++	DRV_WriteReg16(ECC_ENCCON_REG16, ENC_EN);
++}
++
++static void
++ECC_Encode_End(void)
++{
++	/* wait for device returning idle */
++	while (!(DRV_Reg32(ECC_ENCIDLE_REG32) & ENC_IDLE)) ;
++	mb();
++	DRV_WriteReg16(ECC_ENCCON_REG16, ENC_DE);
++}
++
++static bool
++mtk_nand_check_bch_error(struct mtd_info *mtd, u8 * pDataBuf, u32 u4SecIndex, u32 u4PageAddr)
++{
++	bool bRet = true;
++	u16 u2SectorDoneMask = 1 << u4SecIndex;
++	u32 u4ErrorNumDebug, i, u4ErrNum;
++	u32 timeout = 0xFFFF;
++	// int el;
++	u32 au4ErrBitLoc[6];
++	u32 u4ErrByteLoc, u4BitOffset;
++	u32 u4ErrBitLoc1th, u4ErrBitLoc2nd;
++
++	//4 // Wait for Decode Done
++	while (0 == (u2SectorDoneMask & DRV_Reg16(ECC_DECDONE_REG16))) {
++		timeout--;
++		if (0 == timeout)
++			return false;
++	}
++	/* We will manually correct the error bits in the last sector, not all the sectors of the page! */
++	memset(au4ErrBitLoc, 0x0, sizeof(au4ErrBitLoc));
++	u4ErrorNumDebug = DRV_Reg32(ECC_DECENUM_REG32);
++	u4ErrNum = DRV_Reg32(ECC_DECENUM_REG32) >> (u4SecIndex << 2);
++	u4ErrNum &= 0xF;
++
++	if (u4ErrNum) {
++		if (0xF == u4ErrNum) {
++			mtd->ecc_stats.failed++;
++			bRet = false;
++			printk(KERN_ERR"mtk_nand: UnCorrectable at PageAddr=%d\n", u4PageAddr);
++		} else {
++			for (i = 0; i < ((u4ErrNum + 1) >> 1); ++i) {
++				au4ErrBitLoc[i] = DRV_Reg32(ECC_DECEL0_REG32 + i);
++				u4ErrBitLoc1th = au4ErrBitLoc[i] & 0x1FFF;
++				if (u4ErrBitLoc1th < 0x1000) {
++					u4ErrByteLoc = u4ErrBitLoc1th / 8;
++					u4BitOffset = u4ErrBitLoc1th % 8;
++					pDataBuf[u4ErrByteLoc] = pDataBuf[u4ErrByteLoc] ^ (1 << u4BitOffset);
++					mtd->ecc_stats.corrected++;
++				} else {
++					mtd->ecc_stats.failed++;
++				}
++				u4ErrBitLoc2nd = (au4ErrBitLoc[i] >> 16) & 0x1FFF;
++				if (0 != u4ErrBitLoc2nd) {
++					if (u4ErrBitLoc2nd < 0x1000) {
++						u4ErrByteLoc = u4ErrBitLoc2nd / 8;
++						u4BitOffset = u4ErrBitLoc2nd % 8;
++						pDataBuf[u4ErrByteLoc] = pDataBuf[u4ErrByteLoc] ^ (1 << u4BitOffset);
++						mtd->ecc_stats.corrected++;
++					} else {
++						mtd->ecc_stats.failed++;
++						//printk(KERN_ERR"UnCorrectable High ErrLoc=%d\n", au4ErrBitLoc[i]);
++					}
++				}
++			}
++		}
++		if (0 == (DRV_Reg16(ECC_DECFER_REG16) & (1 << u4SecIndex)))
++			bRet = false;
++	}
++	return bRet;
++}
++
++static bool
++mtk_nand_RFIFOValidSize(u16 u2Size)
++{
++	u32 timeout = 0xFFFF;
++	while (FIFO_RD_REMAIN(DRV_Reg16(NFI_FIFOSTA_REG16)) < u2Size) {
++		timeout--;
++		if (0 == timeout)
++			return false;
++	}
++	return true;
++}
++
++static bool
++mtk_nand_WFIFOValidSize(u16 u2Size)
++{
++	u32 timeout = 0xFFFF;
++
++	while (FIFO_WR_REMAIN(DRV_Reg16(NFI_FIFOSTA_REG16)) > u2Size) {
++		timeout--;
++		if (0 == timeout)
++			return false;
++	}
++	return true;
++}
++
++static bool
++mtk_nand_status_ready(u32 u4Status)
++{
++	u32 timeout = 0xFFFF;
++
++	while ((DRV_Reg32(NFI_STA_REG32) & u4Status) != 0) {
++		timeout--;
++		if (0 == timeout)
++			return false;
++	}
++	return true;
++}
++
++static bool
++mtk_nand_reset(void)
++{
++	int timeout = 0xFFFF;
++	if (DRV_Reg16(NFI_MASTERSTA_REG16)) {
++		mb();
++		DRV_WriteReg16(NFI_CON_REG16, CON_FIFO_FLUSH | CON_NFI_RST);
++		while (DRV_Reg16(NFI_MASTERSTA_REG16)) {
++			timeout--;
++			if (!timeout)
++				MSG(INIT, "Wait for NFI_MASTERSTA timeout\n");
++		}
++	}
++	/* issue reset operation */
++	mb();
++	DRV_WriteReg16(NFI_CON_REG16, CON_FIFO_FLUSH | CON_NFI_RST);
++
++	return mtk_nand_status_ready(STA_NFI_FSM_MASK | STA_NAND_BUSY) && mtk_nand_RFIFOValidSize(0) && mtk_nand_WFIFOValidSize(0);
++}
++
++static void
++mtk_nand_set_mode(u16 u2OpMode)
++{
++	u16 u2Mode = DRV_Reg16(NFI_CNFG_REG16);
++	u2Mode &= ~CNFG_OP_MODE_MASK;
++	u2Mode |= u2OpMode;
++	DRV_WriteReg16(NFI_CNFG_REG16, u2Mode);
++}
++
++static void
++mtk_nand_set_autoformat(bool bEnable)
++{
++	if (bEnable)
++		NFI_SET_REG16(NFI_CNFG_REG16, CNFG_AUTO_FMT_EN);
++	else
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_AUTO_FMT_EN);
++}
++
++static void
++mtk_nand_configure_fdm(u16 u2FDMSize)
++{
++	NFI_CLN_REG16(NFI_PAGEFMT_REG16, PAGEFMT_FDM_MASK | PAGEFMT_FDM_ECC_MASK);
++	NFI_SET_REG16(NFI_PAGEFMT_REG16, u2FDMSize << PAGEFMT_FDM_SHIFT);
++	NFI_SET_REG16(NFI_PAGEFMT_REG16, u2FDMSize << PAGEFMT_FDM_ECC_SHIFT);
++}
++
++static void
++mtk_nand_configure_lock(void)
++{
++	u32 u4WriteColNOB = 2;
++	u32 u4WriteRowNOB = 3;
++	u32 u4EraseColNOB = 0;
++	u32 u4EraseRowNOB = 3;
++	DRV_WriteReg16(NFI_LOCKANOB_REG16,
++		(u4WriteColNOB << PROG_CADD_NOB_SHIFT) | (u4WriteRowNOB << PROG_RADD_NOB_SHIFT) | (u4EraseColNOB << ERASE_CADD_NOB_SHIFT) | (u4EraseRowNOB << ERASE_RADD_NOB_SHIFT));
++
++	if (CHIPVER_ECO_1 == g_u4ChipVer) {
++		int i;
++		for (i = 0; i < 16; ++i) {
++			DRV_WriteReg32(NFI_LOCK00ADD_REG32 + (i << 1), 0xFFFFFFFF);
++			DRV_WriteReg32(NFI_LOCK00FMT_REG32 + (i << 1), 0xFFFFFFFF);
++		}
++		//DRV_WriteReg16(NFI_LOCKANOB_REG16, 0x0);
++		DRV_WriteReg32(NFI_LOCKCON_REG32, 0xFFFFFFFF);
++		DRV_WriteReg16(NFI_LOCK_REG16, NFI_LOCK_ON);
++	}
++}
++
++static bool
++mtk_nand_pio_ready(void)
++{
++	int count = 0;
++	while (!(DRV_Reg16(NFI_PIO_DIRDY_REG16) & 1)) {
++		count++;
++		if (count > 0xffff) {
++			printk("PIO_DIRDY timeout\n");
++			return false;
++		}
++	}
++
++	return true;
++}
++
++static bool
++mtk_nand_set_command(u16 command)
++{
++	mb();
++	DRV_WriteReg16(NFI_CMD_REG16, command);
++	return mtk_nand_status_ready(STA_CMD_STATE);
++}
++
++static bool
++mtk_nand_set_address(u32 u4ColAddr, u32 u4RowAddr, u16 u2ColNOB, u16 u2RowNOB)
++{
++	mb();
++	DRV_WriteReg32(NFI_COLADDR_REG32, u4ColAddr);
++	DRV_WriteReg32(NFI_ROWADDR_REG32, u4RowAddr);
++	DRV_WriteReg16(NFI_ADDRNOB_REG16, u2ColNOB | (u2RowNOB << ADDR_ROW_NOB_SHIFT));
++	return mtk_nand_status_ready(STA_ADDR_STATE);
++}
++
++static void mtk_nfc_cmd_ctrl(struct mtd_info *mtd, int dat, unsigned int ctrl)
++{
++	if (ctrl & NAND_ALE) {
++		mtk_nand_set_address(dat, 0, 1, 0);
++	} else if (ctrl & NAND_CLE) {
++		mtk_nand_reset();
++                mtk_nand_set_mode(0x6000);
++		mtk_nand_set_command(dat);
++	}
++}
++
++static bool
++mtk_nand_check_RW_count(u16 u2WriteSize)
++{
++	u32 timeout = 0xFFFF;
++	u16 u2SecNum = u2WriteSize >> 9;
++
++	while (ADDRCNTR_CNTR(DRV_Reg16(NFI_ADDRCNTR_REG16)) < u2SecNum) {
++		timeout--;
++		if (0 == timeout) {
++			printk(KERN_INFO "[%s] timeout\n", __FUNCTION__);
++			return false;
++		}
++	}
++	return true;
++}
++
++static bool
++mtk_nand_ready_for_read(struct nand_chip *nand, u32 u4RowAddr, u32 u4ColAddr, bool full, u8 * buf)
++{
++	/* Reset NFI HW internal state machine and flush NFI in/out FIFO */
++	bool bRet = false;
++	u16 sec_num = 1 << (nand->page_shift - 9);
++	u32 col_addr = u4ColAddr;
++	u32 colnob = 2, rownob = devinfo.addr_cycle - 2;
++	if (nand->options & NAND_BUSWIDTH_16)
++		col_addr /= 2;
++
++	if (!mtk_nand_reset())
++		goto cleanup;
++	if (g_bHwEcc)	{
++		NFI_SET_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++	} else	{
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++	}
++
++	mtk_nand_set_mode(CNFG_OP_READ);
++	NFI_SET_REG16(NFI_CNFG_REG16, CNFG_READ_EN);
++	DRV_WriteReg16(NFI_CON_REG16, sec_num << CON_NFI_SEC_SHIFT);
++
++	if (full) {
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_AHB);
++
++		if (g_bHwEcc)
++			NFI_SET_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++		else
++			NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++	} else {
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_AHB);
++	}
++
++	mtk_nand_set_autoformat(full);
++	if (full)
++		if (g_bHwEcc)
++			ECC_Decode_Start();
++	if (!mtk_nand_set_command(NAND_CMD_READ0))
++		goto cleanup;
++	if (!mtk_nand_set_address(col_addr, u4RowAddr, colnob, rownob))
++		goto cleanup;
++	if (!mtk_nand_set_command(NAND_CMD_READSTART))
++		goto cleanup;
++	if (!mtk_nand_status_ready(STA_NAND_BUSY))
++		goto cleanup;
++
++	bRet = true;
++
++cleanup:
++	return bRet;
++}
++
++static bool
++mtk_nand_ready_for_write(struct nand_chip *nand, u32 u4RowAddr, u32 col_addr, bool full, u8 * buf)
++{
++	bool bRet = false;
++	u32 sec_num = 1 << (nand->page_shift - 9);
++	u32 colnob = 2, rownob = devinfo.addr_cycle - 2;
++	if (nand->options & NAND_BUSWIDTH_16)
++		col_addr /= 2;
++
++	/* Reset NFI HW internal state machine and flush NFI in/out FIFO */
++	if (!mtk_nand_reset())
++		return false;
++
++	mtk_nand_set_mode(CNFG_OP_PRGM);
++
++	NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_READ_EN);
++
++	DRV_WriteReg16(NFI_CON_REG16, sec_num << CON_NFI_SEC_SHIFT);
++
++	if (full) {
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_AHB);
++		if (g_bHwEcc)
++			NFI_SET_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++		else
++			NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++	} else {
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_AHB);
++	}
++
++	mtk_nand_set_autoformat(full);
++
++	if (full)
++		if (g_bHwEcc)
++			ECC_Encode_Start();
++
++	if (!mtk_nand_set_command(NAND_CMD_SEQIN))
++		goto cleanup;
++	//1 FIXED ME: For Any Kind of AddrCycle
++	if (!mtk_nand_set_address(col_addr, u4RowAddr, colnob, rownob))
++		goto cleanup;
++
++	if (!mtk_nand_status_ready(STA_NAND_BUSY))
++		goto cleanup;
++
++	bRet = true;
++
++cleanup:
++	return bRet;
++}
++
++static bool
++mtk_nand_check_dececc_done(u32 u4SecNum)
++{
++	u32 timeout, dec_mask;
++
++	timeout = 0xffff;
++	dec_mask = (1 << u4SecNum) - 1;
++	while ((dec_mask != DRV_Reg(ECC_DECDONE_REG16)) && timeout > 0)
++		timeout--;
++	if (timeout == 0) {
++		MSG(VERIFY, "ECC_DECDONE: timeout\n");
++		return false;
++	}
++	return true;
++}
++
++static bool
++mtk_nand_mcu_read_data(u8 * buf, u32 length)
++{
++	int timeout = 0xffff;
++	u32 i;
++	u32 *buf32 = (u32 *) buf;
++	if ((u32) buf % 4 || length % 4)
++		NFI_SET_REG16(NFI_CNFG_REG16, CNFG_BYTE_RW);
++	else
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_BYTE_RW);
++
++	//DRV_WriteReg32(NFI_STRADDR_REG32, 0);
++	mb();
++	NFI_SET_REG16(NFI_CON_REG16, CON_NFI_BRD);
++
++	if ((u32) buf % 4 || length % 4) {
++		for (i = 0; (i < (length)) && (timeout > 0);) {
++			if (DRV_Reg16(NFI_PIO_DIRDY_REG16) & 1) {
++				*buf++ = (u8) DRV_Reg32(NFI_DATAR_REG32);
++				i++;
++			} else {
++				timeout--;
++			}
++			if (0 == timeout) {
++				printk(KERN_ERR "[%s] timeout\n", __FUNCTION__);
++				dump_nfi();
++				return false;
++			}
++		}
++	} else {
++		for (i = 0; (i < (length >> 2)) && (timeout > 0);) {
++			if (DRV_Reg16(NFI_PIO_DIRDY_REG16) & 1) {
++				*buf32++ = DRV_Reg32(NFI_DATAR_REG32);
++				i++;
++			} else {
++				timeout--;
++			}
++			if (0 == timeout) {
++				printk(KERN_ERR "[%s] timeout\n", __FUNCTION__);
++				dump_nfi();
++				return false;
++			}
++		}
++	}
++	return true;
++}
++
++static bool
++mtk_nand_read_page_data(struct mtd_info *mtd, u8 * pDataBuf, u32 u4Size)
++{
++	return mtk_nand_mcu_read_data(pDataBuf, u4Size);
++}
++
++static bool
++mtk_nand_mcu_write_data(struct mtd_info *mtd, const u8 * buf, u32 length)
++{
++	u32 timeout = 0xFFFF;
++	u32 i;
++	u32 *pBuf32;
++	NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_BYTE_RW);
++	mb();
++	NFI_SET_REG16(NFI_CON_REG16, CON_NFI_BWR);
++	pBuf32 = (u32 *) buf;
++
++	if ((u32) buf % 4 || length % 4)
++		NFI_SET_REG16(NFI_CNFG_REG16, CNFG_BYTE_RW);
++	else
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_BYTE_RW);
++
++	if ((u32) buf % 4 || length % 4) {
++		for (i = 0; (i < (length)) && (timeout > 0);) {
++			if (DRV_Reg16(NFI_PIO_DIRDY_REG16) & 1) {
++				DRV_WriteReg32(NFI_DATAW_REG32, *buf++);
++				i++;
++			} else {
++				timeout--;
++			}
++			if (0 == timeout) {
++				printk(KERN_ERR "[%s] timeout\n", __FUNCTION__);
++				dump_nfi();
++				return false;
++			}
++		}
++	} else {
++		for (i = 0; (i < (length >> 2)) && (timeout > 0);) {
++			if (DRV_Reg16(NFI_PIO_DIRDY_REG16) & 1) {
++				DRV_WriteReg32(NFI_DATAW_REG32, *pBuf32++);
++				i++;
++			} else {
++				timeout--;
++			}
++			if (0 == timeout) {
++				printk(KERN_ERR "[%s] timeout\n", __FUNCTION__);
++				dump_nfi();
++				return false;
++			}
++		}
++	}
++
++	return true;
++}
++
++static bool
++mtk_nand_write_page_data(struct mtd_info *mtd, u8 * buf, u32 size)
++{
++	return mtk_nand_mcu_write_data(mtd, buf, size);
++}
++
++static void
++mtk_nand_read_fdm_data(u8 * pDataBuf, u32 u4SecNum)
++{
++	u32 i;
++	u32 *pBuf32 = (u32 *) pDataBuf;
++
++	if (pBuf32) {
++		for (i = 0; i < u4SecNum; ++i) {
++			*pBuf32++ = DRV_Reg32(NFI_FDM0L_REG32 + (i << 1));
++			*pBuf32++ = DRV_Reg32(NFI_FDM0M_REG32 + (i << 1));
++		}
++	}
++}
++
++static u8 fdm_buf[64];
++static void
++mtk_nand_write_fdm_data(struct nand_chip *chip, u8 * pDataBuf, u32 u4SecNum)
++{
++	u32 i, j;
++	u8 checksum = 0;
++	bool empty = true;
++	struct nand_oobfree *free_entry;
++	u32 *pBuf32;
++
++	memcpy(fdm_buf, pDataBuf, u4SecNum * 8);
++
++	free_entry = layout->oobfree;
++	for (i = 0; i < MTD_MAX_OOBFREE_ENTRIES && free_entry[i].length; i++) {
++		for (j = 0; j < free_entry[i].length; j++) {
++			if (pDataBuf[free_entry[i].offset + j] != 0xFF)
++				empty = false;
++			checksum ^= pDataBuf[free_entry[i].offset + j];
++		}
++	}
++
++	if (!empty) {
++		fdm_buf[free_entry[i - 1].offset + free_entry[i - 1].length] = checksum;
++	}
++
++	pBuf32 = (u32 *) fdm_buf;
++	for (i = 0; i < u4SecNum; ++i) {
++		DRV_WriteReg32(NFI_FDM0L_REG32 + (i << 1), *pBuf32++);
++		DRV_WriteReg32(NFI_FDM0M_REG32 + (i << 1), *pBuf32++);
++	}
++}
++
++static void
++mtk_nand_stop_read(void)
++{
++	NFI_CLN_REG16(NFI_CON_REG16, CON_NFI_BRD);
++	mtk_nand_reset();
++	if (g_bHwEcc)
++		ECC_Decode_End();
++	DRV_WriteReg16(NFI_INTR_EN_REG16, 0);
++}
++
++static void
++mtk_nand_stop_write(void)
++{
++	NFI_CLN_REG16(NFI_CON_REG16, CON_NFI_BWR);
++	if (g_bHwEcc)
++		ECC_Encode_End();
++	DRV_WriteReg16(NFI_INTR_EN_REG16, 0);
++}
++
++bool
++mtk_nand_exec_read_page(struct mtd_info *mtd, u32 u4RowAddr, u32 u4PageSize, u8 * pPageBuf, u8 * pFDMBuf)
++{
++	u8 *buf;
++	bool bRet = true;
++	struct nand_chip *nand = mtd->priv;
++	u32 u4SecNum = u4PageSize >> 9;
++
++	if (((u32) pPageBuf % 16) && local_buffer_16_align)
++		buf = local_buffer_16_align;
++	else
++		buf = pPageBuf;
++	if (mtk_nand_ready_for_read(nand, u4RowAddr, 0, true, buf)) {
++		int j;
++		for (j = 0 ; j < u4SecNum; j++) {
++			if (!mtk_nand_read_page_data(mtd, buf+j*512, 512))
++				bRet = false;
++			if(g_bHwEcc && !mtk_nand_check_dececc_done(j+1))
++				bRet = false;
++			if(g_bHwEcc && !mtk_nand_check_bch_error(mtd, buf+j*512, j, u4RowAddr))
++				bRet = false;
++		}
++		if (!mtk_nand_status_ready(STA_NAND_BUSY))
++			bRet = false;
++
++		mtk_nand_read_fdm_data(pFDMBuf, u4SecNum);
++		mtk_nand_stop_read();
++	}
++
++	if (buf == local_buffer_16_align)
++		memcpy(pPageBuf, buf, u4PageSize);
++
++	return bRet;
++}
++
++int
++mtk_nand_exec_write_page(struct mtd_info *mtd, u32 u4RowAddr, u32 u4PageSize, u8 * pPageBuf, u8 * pFDMBuf)
++{
++	struct nand_chip *chip = mtd->priv;
++	u32 u4SecNum = u4PageSize >> 9;
++	u8 *buf;
++	u8 status;
++
++	MSG(WRITE, "mtk_nand_exec_write_page, page: 0x%x\n", u4RowAddr);
++
++	if (((u32) pPageBuf % 16) && local_buffer_16_align) {
++		printk(KERN_INFO "Data buffer not 16 bytes aligned: %p\n", pPageBuf);
++		memcpy(local_buffer_16_align, pPageBuf, mtd->writesize);
++		buf = local_buffer_16_align;
++	} else
++		buf = pPageBuf;
++
++	if (mtk_nand_ready_for_write(chip, u4RowAddr, 0, true, buf)) {
++		mtk_nand_write_fdm_data(chip, pFDMBuf, u4SecNum);
++		(void)mtk_nand_write_page_data(mtd, buf, u4PageSize);
++		(void)mtk_nand_check_RW_count(u4PageSize);
++		mtk_nand_stop_write();
++		(void)mtk_nand_set_command(NAND_CMD_PAGEPROG);
++		while (DRV_Reg32(NFI_STA_REG32) & STA_NAND_BUSY) ;
++	}
++
++	status = chip->waitfunc(mtd, chip);
++	if (status & NAND_STATUS_FAIL)
++		return -EIO;
++	return 0;
++}
++
++static int
++get_start_end_block(struct mtd_info *mtd, int block, int *start_blk, int *end_blk)
++{
++	struct nand_chip *chip = mtd->priv;
++	int i;
++
++	*start_blk = 0;
++        for (i = 0; i <= part_num; i++)
++        {
++		if (i == part_num)
++		{
++			// try the last reset partition
++			*end_blk = (chip->chipsize >> chip->phys_erase_shift) - 1;
++			if (*start_blk <= *end_blk)
++			{
++				if ((block >= *start_blk) && (block <= *end_blk))
++					break;
++			}
++		}
++		// skip All partition entry
++		else if (g_pasStatic_Partition[i].size == MTDPART_SIZ_FULL)
++		{
++			continue;
++		}
++                *end_blk = *start_blk + (g_pasStatic_Partition[i].size >> chip->phys_erase_shift) - 1;
++                if ((block >= *start_blk) && (block <= *end_blk))
++                        break;
++                *start_blk = *end_blk + 1;
++        }
++        if (*start_blk > *end_blk)
++	{
++                return -1;
++	}
++	return 0;
++}
++
++static int
++block_remap(struct mtd_info *mtd, int block)
++{
++	struct nand_chip *chip = mtd->priv;
++	int start_blk, end_blk;
++	int j, block_offset;
++	int bad_block = 0;
++
++	if (chip->bbt == NULL) {
++		printk("ERROR!! no bbt table for block_remap\n");
++		return -1;
++	}
++
++	if (get_start_end_block(mtd, block, &start_blk, &end_blk) < 0) {
++		printk("ERROR!! can not find start_blk and end_blk\n");
++		return -1;
++	}
++
++	block_offset = block - start_blk;
++	for (j = start_blk; j <= end_blk;j++) {
++		if (((chip->bbt[j >> 2] >> ((j<<1) & 0x6)) & 0x3) == 0x0) {
++			if (!block_offset)
++				break;
++			block_offset--;
++		} else {
++			bad_block++;
++		}
++	}
++	if (j <= end_blk) {
++		return j;
++	} else {
++		// remap to the bad block
++		for (j = end_blk; bad_block > 0; j--)
++		{
++			if (((chip->bbt[j >> 2] >> ((j<<1) & 0x6)) & 0x3) != 0x0)
++			{
++				bad_block--;
++				if (bad_block <= block_offset)
++					return j;
++			}
++		}
++	}
++
++	printk("Error!! block_remap error\n");
++	return -1;
++}
++
++int
++check_block_remap(struct mtd_info *mtd, int block)
++{
++	if (shift_on_bbt)
++		return  block_remap(mtd, block);
++	else
++		return block;
++}
++EXPORT_SYMBOL(check_block_remap);
++
++
++static int
++write_next_on_fail(struct mtd_info *mtd, char *write_buf, int page, int * to_blk)
++{
++	struct nand_chip *chip = mtd->priv;
++	int i, j, to_page = 0, first_page;
++	char *buf, *oob;
++	int start_blk = 0, end_blk;
++	int mapped_block;
++	int page_per_block_bit = chip->phys_erase_shift - chip->page_shift;
++	int block = page >> page_per_block_bit;
++
++	// find next available block in the same MTD partition 
++	mapped_block = block_remap(mtd, block);
++	if (mapped_block == -1)
++		return NAND_STATUS_FAIL;
++
++	get_start_end_block(mtd, block, &start_blk, &end_blk);
++
++	buf = kzalloc(mtd->writesize + mtd->oobsize, GFP_KERNEL | GFP_DMA);
++	if (buf == NULL)
++		return -1;
++
++	oob = buf + mtd->writesize;
++	for ((*to_blk) = block + 1; (*to_blk) <= end_blk ; (*to_blk)++)	{
++		if (nand_bbt_get(mtd, (*to_blk) << page_per_block_bit) == 0) {
++			int status;
++			status = mtk_nand_erase_hw(mtd, (*to_blk) << page_per_block_bit);
++			if (status & NAND_STATUS_FAIL)	{
++				mtk_nand_block_markbad_hw(mtd, (*to_blk) << chip->phys_erase_shift);
++				nand_bbt_set(mtd, (*to_blk) << page_per_block_bit, 0x3);
++			} else {
++				/* good block */
++				to_page = (*to_blk) << page_per_block_bit;
++				break;
++			}
++		}
++	}
++
++	if (!to_page) {
++		kfree(buf);
++		return -1;
++	}
++
++	first_page = (page >> page_per_block_bit) << page_per_block_bit;
++	for (i = 0; i < (1 << page_per_block_bit); i++) {
++		if ((first_page + i) != page) {
++			mtk_nand_read_oob_hw(mtd, chip, (first_page+i));
++			for (j = 0; j < mtd->oobsize; j++)
++				if (chip->oob_poi[j] != (unsigned char)0xff)
++					break;
++			if (j < mtd->oobsize)	{
++				mtk_nand_exec_read_page(mtd, (first_page+i), mtd->writesize, buf, oob);
++				memset(oob, 0xff, mtd->oobsize);
++				if (mtk_nand_exec_write_page(mtd, to_page + i, mtd->writesize, (u8 *)buf, oob) != 0) {
++					int ret, new_blk = 0;
++					nand_bbt_set(mtd, to_page, 0x3);
++					ret =  write_next_on_fail(mtd, buf, to_page + i, &new_blk);
++					if (ret) {
++						kfree(buf);
++						mtk_nand_block_markbad_hw(mtd, to_page << chip->page_shift);
++						return ret;
++					}
++					mtk_nand_block_markbad_hw(mtd, to_page << chip->page_shift);
++					*to_blk = new_blk;
++					to_page = ((*to_blk) <<  page_per_block_bit);
++				}
++			}
++		} else {
++			memset(chip->oob_poi, 0xff, mtd->oobsize);
++			if (mtk_nand_exec_write_page(mtd, to_page + i, mtd->writesize, (u8 *)write_buf, chip->oob_poi) != 0) {
++				int ret, new_blk = 0;
++				nand_bbt_set(mtd, to_page, 0x3);
++				ret =  write_next_on_fail(mtd, write_buf, to_page + i, &new_blk);
++				if (ret) {
++					kfree(buf);
++					mtk_nand_block_markbad_hw(mtd, to_page << chip->page_shift);
++					return ret;
++				}
++				mtk_nand_block_markbad_hw(mtd, to_page << chip->page_shift);
++				*to_blk = new_blk;
++				to_page = ((*to_blk) <<  page_per_block_bit);
++			}
++		}
++	}
++
++	kfree(buf);
++
++	return 0;
++}
++
++static int
++mtk_nand_write_page(struct mtd_info *mtd, struct nand_chip *chip, uint32_t offset,
++		int data_len, const u8 * buf, int oob_required, int page, int raw)
++{
++	int page_per_block = 1 << (chip->phys_erase_shift - chip->page_shift);
++	int block = page / page_per_block;
++	u16 page_in_block = page % page_per_block;
++	int mapped_block = block;
++
++#if defined(MTK_NAND_BMT)
++	mapped_block = get_mapping_block_index(block);
++	// write bad index into oob
++	if (mapped_block != block)
++		set_bad_index_to_oob(chip->oob_poi, block);
++	else
++		set_bad_index_to_oob(chip->oob_poi, FAKE_INDEX);
++#else
++	if (shift_on_bbt) {
++		mapped_block = block_remap(mtd, block);
++		if (mapped_block == -1)
++			return NAND_STATUS_FAIL;
++		if (nand_bbt_get(mtd, mapped_block << (chip->phys_erase_shift - chip->page_shift)) != 0x0)
++			return NAND_STATUS_FAIL;
++	}
++#endif
++	do {
++		if (mtk_nand_exec_write_page(mtd, page_in_block + mapped_block * page_per_block, mtd->writesize, (u8 *)buf, chip->oob_poi)) {
++			MSG(INIT, "write fail at block: 0x%x, page: 0x%x\n", mapped_block, page_in_block);
++#if defined(MTK_NAND_BMT)
++			if (update_bmt((page_in_block + mapped_block * page_per_block) << chip->page_shift, UPDATE_WRITE_FAIL, (u8 *) buf, chip->oob_poi)) {
++				MSG(INIT, "Update BMT success\n");
++				return 0;
++			} else {
++				MSG(INIT, "Update BMT fail\n");
++				return -EIO;
++			}
++#else
++			{
++				int new_blk;
++				nand_bbt_set(mtd, page_in_block + mapped_block * page_per_block, 0x3);
++				if (write_next_on_fail(mtd, (char *)buf, page_in_block + mapped_block * page_per_block, &new_blk) != 0)
++				{
++				mtk_nand_block_markbad_hw(mtd, (page_in_block + mapped_block * page_per_block) << chip->page_shift);
++				return NAND_STATUS_FAIL;
++				}
++				mtk_nand_block_markbad_hw(mtd, (page_in_block + mapped_block * page_per_block) << chip->page_shift);
++				break;
++			}
++#endif
++		} else
++			break;
++	} while(1);
++
++	return 0;
++}
++
++static void
++mtk_nand_command_bp(struct mtd_info *mtd, unsigned int command, int column, int page_addr)
++{
++	struct nand_chip *nand = mtd->priv;
++
++	switch (command) {
++	case NAND_CMD_SEQIN:
++		memset(g_kCMD.au1OOB, 0xFF, sizeof(g_kCMD.au1OOB));
++		g_kCMD.pDataBuf = NULL;
++		g_kCMD.u4RowAddr = page_addr;
++		g_kCMD.u4ColAddr = column;
++		break;
++
++	case NAND_CMD_PAGEPROG:
++		if (g_kCMD.pDataBuf || (0xFF != g_kCMD.au1OOB[nand_badblock_offset])) {
++			u8 *pDataBuf = g_kCMD.pDataBuf ? g_kCMD.pDataBuf : nand->buffers->databuf;
++			mtk_nand_exec_write_page(mtd, g_kCMD.u4RowAddr, mtd->writesize, pDataBuf, g_kCMD.au1OOB);
++			g_kCMD.u4RowAddr = (u32) - 1;
++			g_kCMD.u4OOBRowAddr = (u32) - 1;
++		}
++		break;
++
++	case NAND_CMD_READOOB:
++		g_kCMD.u4RowAddr = page_addr;
++		g_kCMD.u4ColAddr = column + mtd->writesize;
++		break;
++
++	case NAND_CMD_READ0:
++		g_kCMD.u4RowAddr = page_addr;
++		g_kCMD.u4ColAddr = column;
++		break;
++
++	case NAND_CMD_ERASE1:
++		nand->state=FL_ERASING;
++		(void)mtk_nand_reset();
++		mtk_nand_set_mode(CNFG_OP_ERASE);
++		(void)mtk_nand_set_command(NAND_CMD_ERASE1);
++		(void)mtk_nand_set_address(0, page_addr, 0, devinfo.addr_cycle - 2);
++		break;
++
++	case NAND_CMD_ERASE2:
++		(void)mtk_nand_set_command(NAND_CMD_ERASE2);
++		while (DRV_Reg32(NFI_STA_REG32) & STA_NAND_BUSY)
++			;
++		break;
++
++	case NAND_CMD_STATUS:
++		(void)mtk_nand_reset();
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_BYTE_RW);
++		mtk_nand_set_mode(CNFG_OP_SRD);
++		mtk_nand_set_mode(CNFG_READ_EN);
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_AHB);
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++		(void)mtk_nand_set_command(NAND_CMD_STATUS);
++		NFI_CLN_REG16(NFI_CON_REG16, CON_NFI_NOB_MASK);
++		mb();
++		DRV_WriteReg16(NFI_CON_REG16, CON_NFI_SRD | (1 << CON_NFI_NOB_SHIFT));
++		g_bcmdstatus = true;
++		break;
++
++	case NAND_CMD_RESET:
++		(void)mtk_nand_reset();
++		DRV_WriteReg16(NFI_INTR_EN_REG16, INTR_RST_DONE_EN);
++		(void)mtk_nand_set_command(NAND_CMD_RESET);
++		DRV_WriteReg16(NFI_BASE+0x44, 0xF1);
++		while(!(DRV_Reg16(NFI_INTR_REG16)&INTR_RST_DONE_EN))
++			;
++		break;
++
++	case NAND_CMD_READID:
++		mtk_nand_reset();
++		/* Disable HW ECC */
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_AHB);
++		NFI_SET_REG16(NFI_CNFG_REG16, CNFG_READ_EN | CNFG_BYTE_RW);
++		(void)mtk_nand_reset();
++		mb();
++		mtk_nand_set_mode(CNFG_OP_SRD);
++		(void)mtk_nand_set_command(NAND_CMD_READID);
++		(void)mtk_nand_set_address(0, 0, 1, 0);
++		DRV_WriteReg16(NFI_CON_REG16, CON_NFI_SRD);
++		while (DRV_Reg32(NFI_STA_REG32) & STA_DATAR_STATE)
++			;
++		break;
++
++	default:
++		BUG();
++		break;
++	}
++}
++
++static void
++mtk_nand_select_chip(struct mtd_info *mtd, int chip)
++{
++	if ((chip == -1) && (false == g_bInitDone)) {
++		struct nand_chip *nand = mtd->priv;
++		struct mtk_nand_host *host = nand->priv;
++		struct mtk_nand_host_hw *hw = host->hw;
++		u32 spare_per_sector = mtd->oobsize / (mtd->writesize / 512);
++		u32 ecc_bit = 4;
++		u32 spare_bit = PAGEFMT_SPARE_16;
++
++		if (spare_per_sector >= 28) {
++			spare_bit = PAGEFMT_SPARE_28;
++			ecc_bit = 12;
++			spare_per_sector = 28;
++		} else if (spare_per_sector >= 27) {
++			spare_bit = PAGEFMT_SPARE_27;
++			ecc_bit = 8;
++			spare_per_sector = 27;
++		} else if (spare_per_sector >= 26) {
++			spare_bit = PAGEFMT_SPARE_26;
++			ecc_bit = 8;
++			spare_per_sector = 26;
++		} else if (spare_per_sector >= 16) {
++			spare_bit = PAGEFMT_SPARE_16;
++			ecc_bit = 4;
++			spare_per_sector = 16;
++		} else {
++			MSG(INIT, "[NAND]: NFI not support oobsize: %x\n", spare_per_sector);
++			ASSERT(0);
++		}
++		mtd->oobsize = spare_per_sector*(mtd->writesize/512);
++		MSG(INIT, "[NAND]select ecc bit:%d, sparesize :%d spare_per_sector=%d\n",ecc_bit,mtd->oobsize,spare_per_sector);
++		/* Setup PageFormat */
++		if (4096 == mtd->writesize) {
++			NFI_SET_REG16(NFI_PAGEFMT_REG16, (spare_bit << PAGEFMT_SPARE_SHIFT) | PAGEFMT_4K);
++			nand->cmdfunc = mtk_nand_command_bp;
++		} else if (2048 == mtd->writesize) {
++			NFI_SET_REG16(NFI_PAGEFMT_REG16, (spare_bit << PAGEFMT_SPARE_SHIFT) | PAGEFMT_2K);
++			nand->cmdfunc = mtk_nand_command_bp;
++		}
++		ECC_Config(hw,ecc_bit);
++		g_bInitDone = true;
++	}
++	switch (chip) {
++	case -1:
++		break;
++	case 0:
++	case 1:
++		/*  Jun Shen, 2011.04.13  */
++		/* Note: MT6577 EVB NAND  is mounted on CS0, but FPGA is CS1  */
++		DRV_WriteReg16(NFI_CSEL_REG16, chip);
++		/*  Jun Shen, 2011.04.13 */
++		break;
++	}
++}
++
++static uint8_t
++mtk_nand_read_byte(struct mtd_info *mtd)
++{
++	uint8_t retval = 0;
++
++	if (!mtk_nand_pio_ready()) {
++		printk("pio ready timeout\n");
++		retval = false;
++	}
++
++	if (g_bcmdstatus) {
++		retval = DRV_Reg8(NFI_DATAR_REG32);
++		NFI_CLN_REG16(NFI_CON_REG16, CON_NFI_NOB_MASK);
++		mtk_nand_reset();
++		if (g_bHwEcc) {
++			NFI_SET_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++		} else {
++			NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++		}
++		g_bcmdstatus = false;
++	} else
++		retval = DRV_Reg8(NFI_DATAR_REG32);
++
++	return retval;
++}
++
++static void
++mtk_nand_read_buf(struct mtd_info *mtd, uint8_t * buf, int len)
++{
++	struct nand_chip *nand = (struct nand_chip *)mtd->priv;
++	struct NAND_CMD *pkCMD = &g_kCMD;
++	u32 u4ColAddr = pkCMD->u4ColAddr;
++	u32 u4PageSize = mtd->writesize;
++
++	if (u4ColAddr < u4PageSize) {
++		if ((u4ColAddr == 0) && (len >= u4PageSize)) {
++			mtk_nand_exec_read_page(mtd, pkCMD->u4RowAddr, u4PageSize, buf, pkCMD->au1OOB);
++			if (len > u4PageSize) {
++				u32 u4Size = min(len - u4PageSize, sizeof(pkCMD->au1OOB));
++				memcpy(buf + u4PageSize, pkCMD->au1OOB, u4Size);
++			}
++		} else {
++			mtk_nand_exec_read_page(mtd, pkCMD->u4RowAddr, u4PageSize, nand->buffers->databuf, pkCMD->au1OOB);
++			memcpy(buf, nand->buffers->databuf + u4ColAddr, len);
++		}
++		pkCMD->u4OOBRowAddr = pkCMD->u4RowAddr;
++	} else {
++		u32 u4Offset = u4ColAddr - u4PageSize;
++		u32 u4Size = min(len - u4Offset, sizeof(pkCMD->au1OOB));
++		if (pkCMD->u4OOBRowAddr != pkCMD->u4RowAddr) {
++			mtk_nand_exec_read_page(mtd, pkCMD->u4RowAddr, u4PageSize, nand->buffers->databuf, pkCMD->au1OOB);
++			pkCMD->u4OOBRowAddr = pkCMD->u4RowAddr;
++		}
++		memcpy(buf, pkCMD->au1OOB + u4Offset, u4Size);
++	}
++	pkCMD->u4ColAddr += len;
++}
++
++static void
++mtk_nand_write_buf(struct mtd_info *mtd, const uint8_t * buf, int len)
++{
++	struct NAND_CMD *pkCMD = &g_kCMD;
++	u32 u4ColAddr = pkCMD->u4ColAddr;
++	u32 u4PageSize = mtd->writesize;
++	int i4Size, i;
++
++	if (u4ColAddr >= u4PageSize) {
++		u32 u4Offset = u4ColAddr - u4PageSize;
++		u8 *pOOB = pkCMD->au1OOB + u4Offset;
++		i4Size = min(len, (int)(sizeof(pkCMD->au1OOB) - u4Offset));
++		for (i = 0; i < i4Size; i++) {
++			pOOB[i] &= buf[i];
++		}
++	} else {
++		pkCMD->pDataBuf = (u8 *) buf;
++	}
++
++	pkCMD->u4ColAddr += len;
++}
++
++static int
++mtk_nand_write_page_hwecc(struct mtd_info *mtd, struct nand_chip *chip, const uint8_t * buf, int oob_required, int page)
++{
++	mtk_nand_write_buf(mtd, buf, mtd->writesize);
++	mtk_nand_write_buf(mtd, chip->oob_poi, mtd->oobsize);
++	return 0;
++}
++
++static int
++mtk_nand_read_page_hwecc(struct mtd_info *mtd, struct nand_chip *chip, uint8_t * buf, int oob_required, int page)
++{
++	struct NAND_CMD *pkCMD = &g_kCMD;
++	u32 u4ColAddr = pkCMD->u4ColAddr;
++	u32 u4PageSize = mtd->writesize;
++
++	if (u4ColAddr == 0) {
++		mtk_nand_exec_read_page(mtd, pkCMD->u4RowAddr, u4PageSize, buf, chip->oob_poi);
++		pkCMD->u4ColAddr += u4PageSize + mtd->oobsize;
++	}
++
++	return 0;
++}
++
++static int
++mtk_nand_read_page(struct mtd_info *mtd, struct nand_chip *chip, u8 * buf, int page)
++{
++	int page_per_block = 1 << (chip->phys_erase_shift - chip->page_shift);
++	int block = page / page_per_block;
++	u16 page_in_block = page % page_per_block;
++	int mapped_block = block;
++
++#if defined (MTK_NAND_BMT)
++	mapped_block = get_mapping_block_index(block);
++	if (mtk_nand_exec_read_page(mtd, page_in_block + mapped_block * page_per_block,
++			mtd->writesize, buf, chip->oob_poi))
++		return 0;
++#else
++	if (shift_on_bbt) {
++		mapped_block = block_remap(mtd, block);
++		if (mapped_block == -1)
++			return NAND_STATUS_FAIL;
++		if (nand_bbt_get(mtd, mapped_block << (chip->phys_erase_shift - chip->page_shift)) != 0x0)
++			return NAND_STATUS_FAIL;
++	}
++
++	if (mtk_nand_exec_read_page(mtd, page_in_block + mapped_block * page_per_block, mtd->writesize, buf, chip->oob_poi))
++		return 0;
++	else
++		return -EIO;
++#endif
++}
++
++int
++mtk_nand_erase_hw(struct mtd_info *mtd, int page)
++{
++	struct nand_chip *chip = (struct nand_chip *)mtd->priv;
++
++	chip->erase(mtd, page);
++
++	return chip->waitfunc(mtd, chip);
++}
++
++static int
++mtk_nand_erase(struct mtd_info *mtd, int page)
++{
++	// get mapping 
++	struct nand_chip *chip = mtd->priv;
++	int page_per_block = 1 << (chip->phys_erase_shift - chip->page_shift);
++	int page_in_block = page % page_per_block;
++	int block = page / page_per_block;
++	int mapped_block = block;
++
++#if defined(MTK_NAND_BMT)    
++	mapped_block = get_mapping_block_index(block);
++#else
++	if (shift_on_bbt) {
++		mapped_block = block_remap(mtd, block);
++		if (mapped_block == -1)
++			return NAND_STATUS_FAIL;
++		if (nand_bbt_get(mtd, mapped_block << (chip->phys_erase_shift - chip->page_shift)) != 0x0)
++			return NAND_STATUS_FAIL;
++	}
++#endif
++
++	do {
++		int status = mtk_nand_erase_hw(mtd, page_in_block + page_per_block * mapped_block);
++
++		if (status & NAND_STATUS_FAIL) {
++#if defined (MTK_NAND_BMT)    	
++			if (update_bmt( (page_in_block + mapped_block * page_per_block) << chip->page_shift,
++					UPDATE_ERASE_FAIL, NULL, NULL))
++			{
++				MSG(INIT, "Erase fail at block: 0x%x, update BMT success\n", mapped_block);
++				return 0;
++			} else {
++				MSG(INIT, "Erase fail at block: 0x%x, update BMT fail\n", mapped_block);
++				return NAND_STATUS_FAIL;
++			}
++#else
++			mtk_nand_block_markbad_hw(mtd, (page_in_block + mapped_block * page_per_block) << chip->page_shift);
++			nand_bbt_set(mtd, page_in_block + mapped_block * page_per_block, 0x3);
++			if (shift_on_bbt) {
++				mapped_block = block_remap(mtd, block);
++				if (mapped_block == -1)
++					return NAND_STATUS_FAIL;
++				if (nand_bbt_get(mtd, mapped_block << (chip->phys_erase_shift - chip->page_shift)) != 0x0)
++					return NAND_STATUS_FAIL;
++			} else
++				return NAND_STATUS_FAIL;
++#endif
++		} else
++			break;
++	} while(1);
++
++	return 0;
++}
++
++static int
++mtk_nand_read_oob_raw(struct mtd_info *mtd, uint8_t * buf, int page_addr, int len)
++{
++	struct nand_chip *chip = (struct nand_chip *)mtd->priv;
++	u32 col_addr = 0;
++	u32 sector = 0;
++	int res = 0;
++	u32 colnob = 2, rawnob = devinfo.addr_cycle - 2;
++	int randomread = 0;
++	int read_len = 0;
++	int sec_num = 1<<(chip->page_shift-9);
++	int spare_per_sector = mtd->oobsize/sec_num;
++
++	if (len >  NAND_MAX_OOBSIZE || len % OOB_AVAI_PER_SECTOR || !buf) {
++		printk(KERN_WARNING "[%s] invalid parameter, len: %d, buf: %p\n", __FUNCTION__, len, buf);
++		return -EINVAL;
++	}
++	if (len > spare_per_sector)
++		randomread = 1;
++	if (!randomread || !(devinfo.advancedmode & RAMDOM_READ)) {
++		while (len > 0) {
++			read_len = min(len, spare_per_sector);
++			col_addr = NAND_SECTOR_SIZE + sector * (NAND_SECTOR_SIZE + spare_per_sector); // TODO: Fix this hard-code 16
++			if (!mtk_nand_ready_for_read(chip, page_addr, col_addr, false, NULL)) {
++				printk(KERN_WARNING "mtk_nand_ready_for_read return failed\n");
++				res = -EIO;
++				goto error;
++			}
++			if (!mtk_nand_mcu_read_data(buf + spare_per_sector * sector, read_len)) {
++				printk(KERN_WARNING "mtk_nand_mcu_read_data return failed\n");
++				res = -EIO;
++				goto error;
++			}
++			mtk_nand_check_RW_count(read_len);
++			mtk_nand_stop_read();
++			sector++;
++			len -= read_len;
++		}
++	} else {
++		col_addr = NAND_SECTOR_SIZE;
++		if (chip->options & NAND_BUSWIDTH_16)
++			col_addr /= 2;
++		if (!mtk_nand_reset())
++			goto error;
++		mtk_nand_set_mode(0x6000);
++		NFI_SET_REG16(NFI_CNFG_REG16, CNFG_READ_EN);
++		DRV_WriteReg16(NFI_CON_REG16, 4 << CON_NFI_SEC_SHIFT);
++
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_AHB);
++		NFI_CLN_REG16(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++
++		mtk_nand_set_autoformat(false);
++
++		if (!mtk_nand_set_command(NAND_CMD_READ0))
++			goto error;
++		//1 FIXED ME: For Any Kind of AddrCycle
++		if (!mtk_nand_set_address(col_addr, page_addr, colnob, rawnob))
++			goto error;
++		if (!mtk_nand_set_command(NAND_CMD_READSTART))
++			goto error;
++		if (!mtk_nand_status_ready(STA_NAND_BUSY))
++			goto error;
++		read_len = min(len, spare_per_sector);
++		if (!mtk_nand_mcu_read_data(buf + spare_per_sector * sector, read_len)) {
++			printk(KERN_WARNING "mtk_nand_mcu_read_data return failed first 16\n");
++			res = -EIO;
++			goto error;
++		}
++		sector++;
++		len -= read_len;
++		mtk_nand_stop_read();
++		while (len > 0) {
++			read_len = min(len,  spare_per_sector);
++			if (!mtk_nand_set_command(0x05))
++				goto error;
++			col_addr = NAND_SECTOR_SIZE + sector * (NAND_SECTOR_SIZE + spare_per_sector);
++			if (chip->options & NAND_BUSWIDTH_16)
++				col_addr /= 2;
++			DRV_WriteReg32(NFI_COLADDR_REG32, col_addr);
++			DRV_WriteReg16(NFI_ADDRNOB_REG16, 2);
++			DRV_WriteReg16(NFI_CON_REG16, 4 << CON_NFI_SEC_SHIFT);
++			if (!mtk_nand_status_ready(STA_ADDR_STATE))
++				goto error;
++			if (!mtk_nand_set_command(0xE0))
++				goto error;
++			if (!mtk_nand_status_ready(STA_NAND_BUSY))
++				goto error;
++			if (!mtk_nand_mcu_read_data(buf + spare_per_sector * sector, read_len)) {
++				printk(KERN_WARNING "mtk_nand_mcu_read_data return failed first 16\n");
++				res = -EIO;
++				goto error;
++			}
++			mtk_nand_stop_read();
++			sector++;
++			len -= read_len;
++		}
++	}
++error:
++	NFI_CLN_REG16(NFI_CON_REG16, CON_NFI_BRD);
++	return res;
++}
++
++static int
++mtk_nand_write_oob_raw(struct mtd_info *mtd, const uint8_t * buf, int page_addr, int len)
++{
++	struct nand_chip *chip = mtd->priv;
++	u32 col_addr = 0;
++	u32 sector = 0;
++	int write_len = 0;
++	int status;
++	int sec_num = 1<<(chip->page_shift-9);
++	int spare_per_sector = mtd->oobsize/sec_num;
++
++	if (len >  NAND_MAX_OOBSIZE || len % OOB_AVAI_PER_SECTOR || !buf) {
++		printk(KERN_WARNING "[%s] invalid parameter, len: %d, buf: %p\n", __FUNCTION__, len, buf);
++		return -EINVAL;
++	}
++
++	while (len > 0) {
++		write_len = min(len,  spare_per_sector);
++		col_addr = sector * (NAND_SECTOR_SIZE +  spare_per_sector) + NAND_SECTOR_SIZE;
++		if (!mtk_nand_ready_for_write(chip, page_addr, col_addr, false, NULL))
++			return -EIO;
++		if (!mtk_nand_mcu_write_data(mtd, buf + sector * spare_per_sector, write_len))
++			return -EIO;
++		(void)mtk_nand_check_RW_count(write_len);
++		NFI_CLN_REG16(NFI_CON_REG16, CON_NFI_BWR);
++		(void)mtk_nand_set_command(NAND_CMD_PAGEPROG);
++		while (DRV_Reg32(NFI_STA_REG32) & STA_NAND_BUSY)
++			;
++		status = chip->waitfunc(mtd, chip);
++		if (status & NAND_STATUS_FAIL) {
++			printk(KERN_INFO "status: %d\n", status);
++			return -EIO;
++		}
++		len -= write_len;
++		sector++;
++	}
++
++	return 0;
++}
++
++static int
++mtk_nand_write_oob_hw(struct mtd_info *mtd, struct nand_chip *chip, int page)
++{
++	int i, iter;
++	int sec_num = 1<<(chip->page_shift-9);
++	int spare_per_sector = mtd->oobsize/sec_num;
++
++	memcpy(local_oob_buf, chip->oob_poi, mtd->oobsize);
++
++	// copy ecc data
++	for (i = 0; i < layout->eccbytes; i++) {
++		iter = (i / (spare_per_sector-OOB_AVAI_PER_SECTOR)) *  spare_per_sector + OOB_AVAI_PER_SECTOR + i % (spare_per_sector-OOB_AVAI_PER_SECTOR);
++		local_oob_buf[iter] = chip->oob_poi[layout->eccpos[i]];
++	}
++
++	// copy FDM data
++	for (i = 0; i < sec_num; i++)
++		memcpy(&local_oob_buf[i * spare_per_sector], &chip->oob_poi[i * OOB_AVAI_PER_SECTOR], OOB_AVAI_PER_SECTOR);
++
++	return mtk_nand_write_oob_raw(mtd, local_oob_buf, page, mtd->oobsize);
++}
++
++static int mtk_nand_write_oob(struct mtd_info *mtd, struct nand_chip *chip, int page)
++{
++	int page_per_block = 1 << (chip->phys_erase_shift - chip->page_shift);
++	int block = page / page_per_block;
++	u16 page_in_block = page % page_per_block;
++	int mapped_block = block;
++
++#if defined(MTK_NAND_BMT)
++	mapped_block = get_mapping_block_index(block);
++	// write bad index into oob
++	if (mapped_block != block)
++		set_bad_index_to_oob(chip->oob_poi, block);
++	else
++		set_bad_index_to_oob(chip->oob_poi, FAKE_INDEX);
++#else
++	if (shift_on_bbt)
++	{
++		mapped_block = block_remap(mtd, block);
++		if (mapped_block == -1)
++			return NAND_STATUS_FAIL;
++		if (nand_bbt_get(mtd, mapped_block << (chip->phys_erase_shift - chip->page_shift)) != 0x0)
++			return NAND_STATUS_FAIL;
++	}
++#endif
++	do {
++		if (mtk_nand_write_oob_hw(mtd, chip, page_in_block + mapped_block * page_per_block /* page */)) {
++			MSG(INIT, "write oob fail at block: 0x%x, page: 0x%x\n", mapped_block, page_in_block);
++#if defined(MTK_NAND_BMT)      
++			if (update_bmt((page_in_block + mapped_block * page_per_block) << chip->page_shift,
++					UPDATE_WRITE_FAIL, NULL, chip->oob_poi))
++			{
++				MSG(INIT, "Update BMT success\n");
++				return 0;
++			} else {
++				MSG(INIT, "Update BMT fail\n");
++				return -EIO;
++			}
++#else
++			mtk_nand_block_markbad_hw(mtd, (page_in_block + mapped_block * page_per_block) << chip->page_shift);
++			nand_bbt_set(mtd, page_in_block + mapped_block * page_per_block, 0x3);
++			if (shift_on_bbt) {
++				mapped_block = block_remap(mtd, mapped_block);
++				if (mapped_block == -1)
++					return NAND_STATUS_FAIL;
++				if (nand_bbt_get(mtd, mapped_block << (chip->phys_erase_shift - chip->page_shift)) != 0x0)
++					return NAND_STATUS_FAIL;
++			} else {
++				return NAND_STATUS_FAIL;
++			}
++#endif
++		} else
++			break;
++	} while (1);
++
++	return 0;
++}
++
++int
++mtk_nand_block_markbad_hw(struct mtd_info *mtd, loff_t offset)
++{
++	struct nand_chip *chip = mtd->priv;
++	int block = (int)offset >> chip->phys_erase_shift;
++	int page = block * (1 << (chip->phys_erase_shift - chip->page_shift));
++	u8 buf[8];
++
++	memset(buf, 0xFF, 8);
++	buf[0] = 0;
++	return  mtk_nand_write_oob_raw(mtd, buf, page, 8);
++}
++
++static int
++mtk_nand_block_markbad(struct mtd_info *mtd, loff_t offset)
++{
++	struct nand_chip *chip = mtd->priv;
++	int block = (int)offset >> chip->phys_erase_shift;
++	int ret;
++	int mapped_block = block;
++
++	nand_get_device(chip, mtd, FL_WRITING);
++
++#if defined(MTK_NAND_BMT)    
++	mapped_block = get_mapping_block_index(block);
++	ret = mtk_nand_block_markbad_hw(mtd, mapped_block << chip->phys_erase_shift);
++#else
++	if (shift_on_bbt) {
++		mapped_block = block_remap(mtd, block);
++		if (mapped_block == -1) {
++			printk("NAND mark bad failed\n");
++			nand_release_device(mtd);
++			return NAND_STATUS_FAIL;
++		}
++	}
++	ret = mtk_nand_block_markbad_hw(mtd, mapped_block << chip->phys_erase_shift);
++#endif
++	nand_release_device(mtd);
++
++	return ret;
++}
++
++int
++mtk_nand_read_oob_hw(struct mtd_info *mtd, struct nand_chip *chip, int page)
++{
++	int i;
++	u8 iter = 0;
++
++	int sec_num = 1<<(chip->page_shift-9);
++	int spare_per_sector = mtd->oobsize/sec_num;
++
++	if (mtk_nand_read_oob_raw(mtd, chip->oob_poi, page, mtd->oobsize)) {
++		printk(KERN_ERR "[%s]mtk_nand_read_oob_raw return failed\n", __FUNCTION__);
++		return -EIO;
++	}
++
++	// adjust to ecc physical layout to memory layout
++	/*********************************************************/
++	/* FDM0 | ECC0 | FDM1 | ECC1 | FDM2 | ECC2 | FDM3 | ECC3 */
++	/*  8B  |  8B  |  8B  |  8B  |  8B  |  8B  |  8B  |  8B  */
++	/*********************************************************/
++
++	memcpy(local_oob_buf, chip->oob_poi, mtd->oobsize);
++	// copy ecc data
++	for (i = 0; i < layout->eccbytes; i++) {
++		iter = (i / (spare_per_sector-OOB_AVAI_PER_SECTOR)) *  spare_per_sector + OOB_AVAI_PER_SECTOR + i % (spare_per_sector-OOB_AVAI_PER_SECTOR);
++		chip->oob_poi[layout->eccpos[i]] = local_oob_buf[iter];
++	}
++
++	// copy FDM data
++	for (i = 0; i < sec_num; i++) {
++		memcpy(&chip->oob_poi[i * OOB_AVAI_PER_SECTOR], &local_oob_buf[i *  spare_per_sector], OOB_AVAI_PER_SECTOR);
++	}
++
++	return 0;
++}
++
++static int
++mtk_nand_read_oob(struct mtd_info *mtd, struct nand_chip *chip, int page)
++{
++	int page_per_block = 1 << (chip->phys_erase_shift - chip->page_shift);
++	int block = page / page_per_block;
++	u16 page_in_block = page % page_per_block;
++	int mapped_block = block;
++
++#if defined (MTK_NAND_BMT)
++	mapped_block = get_mapping_block_index(block);
++	mtk_nand_read_oob_hw(mtd, chip, page_in_block + mapped_block * page_per_block);
++#else
++	if (shift_on_bbt) {
++		mapped_block = block_remap(mtd, block);
++		if (mapped_block == -1)
++			return NAND_STATUS_FAIL;
++		// allow to read oob even if the block is bad
++	}
++	if (mtk_nand_read_oob_hw(mtd, chip, page_in_block + mapped_block * page_per_block)!=0)
++		return -1;
++#endif
++	return 0;
++}
++
++int
++mtk_nand_block_bad_hw(struct mtd_info *mtd, loff_t ofs)
++{
++	struct nand_chip *chip = (struct nand_chip *)mtd->priv;
++	int page_addr = (int)(ofs >> chip->page_shift);
++	unsigned int page_per_block = 1 << (chip->phys_erase_shift - chip->page_shift);
++	unsigned char oob_buf[8];
++
++	page_addr &= ~(page_per_block - 1);
++	if (mtk_nand_read_oob_raw(mtd, oob_buf, page_addr, sizeof(oob_buf))) {
++		printk(KERN_WARNING "mtk_nand_read_oob_raw return error\n");
++		return 1;
++	}
++
++	if (oob_buf[0] != 0xff) {
++		printk(KERN_WARNING "Bad block detected at 0x%x, oob_buf[0] is 0x%x\n", page_addr, oob_buf[0]);
++		// dump_nfi();
++		return 1;
++	}
++
++	return 0;
++}
++
++static int
++mtk_nand_block_bad(struct mtd_info *mtd, loff_t ofs)
++{
++	struct nand_chip *chip = (struct nand_chip *)mtd->priv;
++	int block = (int)ofs >> chip->phys_erase_shift;
++	int mapped_block = block;
++	int ret;
++
++#if defined(MTK_NAND_BMT)    
++	mapped_block = get_mapping_block_index(block);
++#else
++	if (shift_on_bbt) {
++		mapped_block = block_remap(mtd, block);
++	}
++#endif
++
++	ret = mtk_nand_block_bad_hw(mtd, mapped_block << chip->phys_erase_shift);
++#if defined (MTK_NAND_BMT)	
++	if (ret) {
++		MSG(INIT, "Unmapped bad block: 0x%x\n", mapped_block);
++		if (update_bmt(mapped_block << chip->phys_erase_shift, UPDATE_UNMAPPED_BLOCK, NULL, NULL)) {
++			MSG(INIT, "Update BMT success\n");
++			ret = 0;
++		} else {
++			MSG(INIT, "Update BMT fail\n");
++			ret = 1;
++		}
++	}
++#endif
++
++	return ret;
++}
++
++#ifdef CONFIG_MTD_NAND_VERIFY_WRITE
++char gacBuf[4096 + 288];
++
++static int
++mtk_nand_verify_buf(struct mtd_info *mtd, const uint8_t * buf, int len)
++{
++	struct nand_chip *chip = (struct nand_chip *)mtd->priv;
++	struct NAND_CMD *pkCMD = &g_kCMD;
++	u32 u4PageSize = mtd->writesize;
++	u32 *pSrc, *pDst;
++	int i;
++
++	mtk_nand_exec_read_page(mtd, pkCMD->u4RowAddr, u4PageSize, gacBuf, gacBuf + u4PageSize);
++
++	pSrc = (u32 *) buf;
++	pDst = (u32 *) gacBuf;
++	len = len / sizeof(u32);
++	for (i = 0; i < len; ++i) {
++		if (*pSrc != *pDst) {
++			MSG(VERIFY, "mtk_nand_verify_buf page fail at page %d\n", pkCMD->u4RowAddr);
++			return -1;
++		}
++		pSrc++;
++		pDst++;
++	}
++
++	pSrc = (u32 *) chip->oob_poi;
++	pDst = (u32 *) (gacBuf + u4PageSize);
++
++	if ((pSrc[0] != pDst[0]) || (pSrc[1] != pDst[1]) || (pSrc[2] != pDst[2]) || (pSrc[3] != pDst[3]) || (pSrc[4] != pDst[4]) || (pSrc[5] != pDst[5])) {
++	// TODO: Ask Designer Why?
++	//(pSrc[6] != pDst[6]) || (pSrc[7] != pDst[7])) 
++		MSG(VERIFY, "mtk_nand_verify_buf oob fail at page %d\n", pkCMD->u4RowAddr);
++		MSG(VERIFY, "0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x\n", pSrc[0], pSrc[1], pSrc[2], pSrc[3], pSrc[4], pSrc[5], pSrc[6], pSrc[7]);
++		MSG(VERIFY, "0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x\n", pDst[0], pDst[1], pDst[2], pDst[3], pDst[4], pDst[5], pDst[6], pDst[7]);
++		return -1;
++	}
++	return 0;
++}
++#endif
++
++static void
++mtk_nand_init_hw(struct mtk_nand_host *host) {
++	struct mtk_nand_host_hw *hw = host->hw;
++	u32 data;
++
++	data = DRV_Reg32(RALINK_SYSCTL_BASE+0x60);
++	data &= ~((0x3<<18)|(0x3<<16));
++	data |= ((0x2<<18) |(0x2<<16));
++	DRV_WriteReg32(RALINK_SYSCTL_BASE+0x60, data);
++
++	MSG(INIT, "Enable NFI Clock\n");
++	nand_enable_clock();
++
++	g_bInitDone = false;
++	g_kCMD.u4OOBRowAddr = (u32) - 1;
++
++	/* Set default NFI access timing control */
++	DRV_WriteReg32(NFI_ACCCON_REG32, hw->nfi_access_timing);
++	DRV_WriteReg16(NFI_CNFG_REG16, 0);
++	DRV_WriteReg16(NFI_PAGEFMT_REG16, 0);
++
++	/* Reset the state machine and data FIFO, because flushing FIFO */
++	(void)mtk_nand_reset();
++
++	/* Set the ECC engine */
++	if (hw->nand_ecc_mode == NAND_ECC_HW) {
++		MSG(INIT, "%s : Use HW ECC\n", MODULE_NAME);
++		if (g_bHwEcc)
++			NFI_SET_REG32(NFI_CNFG_REG16, CNFG_HW_ECC_EN);
++		ECC_Config(host->hw,4);
++		mtk_nand_configure_fdm(8);
++		mtk_nand_configure_lock();
++	}
++
++	NFI_SET_REG16(NFI_IOCON_REG16, 0x47);
++}
++
++static int mtk_nand_dev_ready(struct mtd_info *mtd)
++{
++	return !(DRV_Reg32(NFI_STA_REG32) & STA_NAND_BUSY);
++}
++
++#define FACT_BBT_BLOCK_NUM  32 // use the latest 32 BLOCK for factory bbt table
++#define FACT_BBT_OOB_SIGNATURE  1
++#define FACT_BBT_SIGNATURE_LEN  7
++const u8 oob_signature[] = "mtknand";
++static u8 *fact_bbt = 0;
++static u32 bbt_size = 0;
++
++static int
++read_fact_bbt(struct mtd_info *mtd, unsigned int page)
++{
++	struct nand_chip *chip = mtd->priv;
++
++	// read oob
++	if (mtk_nand_read_oob_hw(mtd, chip, page)==0)
++	{
++		if (chip->oob_poi[nand_badblock_offset] != 0xFF)
++		{
++			printk("Bad Block on Page %x\n", page);
++			return -1;
++		}
++		if (memcmp(&chip->oob_poi[FACT_BBT_OOB_SIGNATURE], oob_signature, FACT_BBT_SIGNATURE_LEN) != 0)
++		{
++			printk("compare signature failed %x\n", page);
++			return -1;
++		}
++		if (mtk_nand_exec_read_page(mtd, page, mtd->writesize, chip->buffers->databuf, chip->oob_poi))
++		{
++			printk("Signature matched and data read!\n");
++			memcpy(fact_bbt, chip->buffers->databuf, (bbt_size <= mtd->writesize)? bbt_size:mtd->writesize);
++			return 0;
++		}
++
++	}
++	printk("failed at page %x\n", page);
++	return -1;
++}
++
++static int
++load_fact_bbt(struct mtd_info *mtd)
++{
++	struct nand_chip *chip = mtd->priv;
++	int i;
++	u32 total_block;
++
++	total_block = 1 << (chip->chip_shift - chip->phys_erase_shift);
++	bbt_size = total_block >> 2;
++
++	if ((!fact_bbt) && (bbt_size))
++		fact_bbt = (u8 *)kmalloc(bbt_size, GFP_KERNEL);
++	if (!fact_bbt)
++		return -1;
++
++	for (i = total_block - 1; i >= (total_block - FACT_BBT_BLOCK_NUM); i--)
++	{
++		if (read_fact_bbt(mtd, i << (chip->phys_erase_shift - chip->page_shift)) == 0)
++		{
++			printk("load_fact_bbt success %d\n", i);
++			return 0;
++		}
++
++	}
++	printk("load_fact_bbt failed\n");
++	return -1;
++}
++
++static int oob_mtk_ooblayout_ecc(struct mtd_info *mtd, int section,
++				struct mtd_oob_region *oobregion)
++{
++	oobregion->length = 8;
++	oobregion->offset = layout->eccpos[section * 8];
++
++	return 0;
++}
++
++static int oob_mtk_ooblayout_free(struct mtd_info *mtd, int section,
++				 struct mtd_oob_region *oobregion)
++{
++	if (section >= (layout->eccbytes / 8)) {
++		return -ERANGE;
++	}
++	oobregion->offset = layout->oobfree[section].offset;
++	oobregion->length = layout->oobfree[section].length;
++
++	return 0;
++}
++
++
++static const struct mtd_ooblayout_ops oob_mtk_ops = {
++	.ecc = oob_mtk_ooblayout_ecc,
++	.free = oob_mtk_ooblayout_free,
++};
++
++static int
++mtk_nand_probe(struct platform_device *pdev)
++{
++	struct mtd_part_parser_data ppdata;
++	struct mtk_nand_host_hw *hw;
++	struct nand_chip *nand_chip;
++	struct mtd_info *mtd;
++	u8 ext_id1, ext_id2, ext_id3;
++	int err = 0;
++	int id;
++	u32 ext_id;
++	int i;
++	u32 data;
++
++	data = DRV_Reg32(RALINK_SYSCTL_BASE+0x60);
++	data &= ~((0x3<<18)|(0x3<<16));
++	data |= ((0x2<<18) |(0x2<<16));
++	DRV_WriteReg32(RALINK_SYSCTL_BASE+0x60, data);
++
++	hw = &mt7621_nand_hw;
++	BUG_ON(!hw);
++	/* Allocate memory for the device structure (and zero it) */
++	host = kzalloc(sizeof(struct mtk_nand_host), GFP_KERNEL);
++	if (!host) {
++		MSG(INIT, "mtk_nand: failed to allocate device structure.\n");
++		return -ENOMEM;
++	}
++
++	/* Allocate memory for 16 byte aligned buffer */
++	local_buffer_16_align = local_buffer + 16 - ((u32) local_buffer % 16);
++	printk(KERN_INFO "Allocate 16 byte aligned buffer: %p\n", local_buffer_16_align);
++	host->hw = hw;
++
++	/* init mtd data structure */
++	nand_chip = &host->nand_chip;
++	nand_chip->priv = host;     /* link the private data structures */
++
++	mtd = host->mtd = &nand_chip->mtd;
++	mtd->priv = nand_chip;
++	mtd->owner = THIS_MODULE;
++	mtd->name  = "MT7621-NAND";
++
++	hw->nand_ecc_mode = NAND_ECC_HW;
++
++	/* Set address of NAND IO lines */
++	nand_chip->IO_ADDR_R = (void __iomem *)NFI_DATAR_REG32;
++	nand_chip->IO_ADDR_W = (void __iomem *)NFI_DATAW_REG32;
++	nand_chip->chip_delay = 20; /* 20us command delay time */
++	nand_chip->ecc.mode = hw->nand_ecc_mode;    /* enable ECC */
++	nand_chip->ecc.strength = 1;
++	nand_chip->read_byte = mtk_nand_read_byte;
++	nand_chip->read_buf = mtk_nand_read_buf;
++	nand_chip->write_buf = mtk_nand_write_buf;
++#ifdef CONFIG_MTD_NAND_VERIFY_WRITE
++	nand_chip->verify_buf = mtk_nand_verify_buf;
++#endif
++	nand_chip->select_chip = mtk_nand_select_chip;
++	nand_chip->dev_ready = mtk_nand_dev_ready;
++	nand_chip->cmdfunc = mtk_nand_command_bp;
++	nand_chip->ecc.read_page = mtk_nand_read_page_hwecc;
++	nand_chip->ecc.write_page = mtk_nand_write_page_hwecc;
++
++	mtd_set_ooblayout(mtd, &oob_mtk_ops);
++	nand_chip->ecc.size = hw->nand_ecc_size;    //2048
++	nand_chip->ecc.bytes = hw->nand_ecc_bytes;  //32
++
++	// For BMT, we need to revise driver architecture
++	nand_chip->write_page = mtk_nand_write_page;
++	nand_chip->ecc.write_oob = mtk_nand_write_oob;
++	nand_chip->block_markbad = mtk_nand_block_markbad;   // need to add nand_get_device()/nand_release_device().
++	nand_chip->erase_mtk = mtk_nand_erase;
++	nand_chip->read_page = mtk_nand_read_page;
++	nand_chip->ecc.read_oob = mtk_nand_read_oob;
++	nand_chip->block_bad = mtk_nand_block_bad;
++        nand_chip->cmd_ctrl = mtk_nfc_cmd_ctrl;
++
++	//Qwert:Add for Uboot
++	mtk_nand_init_hw(host);
++	/* Select the device */
++	nand_chip->select_chip(mtd, NFI_DEFAULT_CS);
++
++	/*
++	* Reset the chip, required by some chips (e.g. Micron MT29FxGxxxxx)
++	* after power-up
++	*/
++	nand_chip->cmdfunc(mtd, NAND_CMD_RESET, -1, -1);
++
++	memset(&devinfo, 0 , sizeof(flashdev_info));
++
++	/* Send the command for reading device ID */
++
++	nand_chip->cmdfunc(mtd, NAND_CMD_READID, 0x00, -1);
++
++	/* Read manufacturer and device IDs */
++	manu_id = nand_chip->read_byte(mtd);
++	dev_id = nand_chip->read_byte(mtd);
++	id = dev_id | (manu_id << 8);
++	        ext_id1 = nand_chip->read_byte(mtd);
++		    ext_id2 = nand_chip->read_byte(mtd);
++		        ext_id3 = nand_chip->read_byte(mtd);
++			    ext_id = ext_id1 << 16 | ext_id2 << 8 | ext_id3;
++	if (!get_device_info(id, ext_id, &devinfo)) {
++		u32 chip_mode = RALINK_REG(RALINK_SYSCTL_BASE+0x010)&0x0F;
++		MSG(INIT, "Not Support this Device! \r\n");
++		memset(&devinfo, 0 , sizeof(flashdev_info));
++		MSG(INIT, "chip_mode=%08X\n",chip_mode);
++
++		/* apply bootstrap first */
++		devinfo.addr_cycle = 5;
++		devinfo.iowidth = 8;
++
++		switch (chip_mode) {
++		case 10:
++			devinfo.pagesize = 2048;
++			devinfo.sparesize = 128;
++			devinfo.totalsize = 128;
++			devinfo.blocksize = 128;
++			break;
++		case 11:
++			devinfo.pagesize = 4096;
++			devinfo.sparesize = 128;
++			devinfo.totalsize = 1024;
++			devinfo.blocksize = 256;
++			break;
++		case 12:
++			devinfo.pagesize = 4096;
++			devinfo.sparesize = 224;
++			devinfo.totalsize = 2048;
++			devinfo.blocksize = 512;
++			break;
++		default:
++		case 1:
++			devinfo.pagesize = 2048;
++			devinfo.sparesize = 64;
++			devinfo.totalsize = 128;
++			devinfo.blocksize = 128;
++			break;
++		}
++
++		devinfo.timmingsetting = NFI_DEFAULT_ACCESS_TIMING;
++		devinfo.devciename[0] = 'U';
++		devinfo.advancedmode = 0;
++	}
++	mtd->writesize = devinfo.pagesize;
++	mtd->erasesize = (devinfo.blocksize<<10);
++	mtd->oobsize = devinfo.sparesize;
++
++	nand_chip->chipsize = (devinfo.totalsize<<20);
++	nand_chip->page_shift = ffs(mtd->writesize) - 1;
++	nand_chip->pagemask = (nand_chip->chipsize >> nand_chip->page_shift) - 1;
++	nand_chip->phys_erase_shift = ffs(mtd->erasesize) - 1;
++	nand_chip->chip_shift = ffs(nand_chip->chipsize) - 1;//0x1C;//ffs(nand_chip->chipsize) - 1;
++        nand_chip->cmd_ctrl = mtk_nfc_cmd_ctrl;
++
++	/* allocate buffers or call select_chip here or a bit earlier*/
++	{
++		struct nand_buffers *nbuf = kzalloc(sizeof(*nbuf) + mtd->writesize + mtd->oobsize * 3, GFP_KERNEL);
++		if (!nbuf) {
++			return -ENOMEM;
++		}
++		nbuf->ecccalc = (uint8_t *)(nbuf + 1);
++		nbuf->ecccode = nbuf->ecccalc + mtd->oobsize;
++		nbuf->databuf = nbuf->ecccode + mtd->oobsize;
++
++		nand_chip->buffers = nbuf;
++		nand_chip->options |= NAND_OWN_BUFFERS;
++	}
++
++	nand_chip->oob_poi = nand_chip->buffers->databuf + mtd->writesize;
++	nand_chip->badblockpos = 0;
++
++	if (devinfo.pagesize == 4096)
++		layout = &nand_oob_128;
++	else if (devinfo.pagesize == 2048)
++		layout = &nand_oob_64;
++	else if (devinfo.pagesize == 512)
++		layout = &nand_oob_16;
++
++	layout->eccbytes = devinfo.sparesize-OOB_AVAI_PER_SECTOR*(devinfo.pagesize/NAND_SECTOR_SIZE);
++	for (i = 0; i < layout->eccbytes; i++)
++		layout->eccpos[i]=OOB_AVAI_PER_SECTOR*(devinfo.pagesize/NAND_SECTOR_SIZE)+i;
++
++	MSG(INIT, "Support this Device in MTK table! %x \r\n", id);
++	hw->nfi_bus_width = devinfo.iowidth;
++	DRV_WriteReg32(NFI_ACCCON_REG32, devinfo.timmingsetting);
++
++	/* 16-bit bus width */
++	if (hw->nfi_bus_width == 16) {
++		MSG(INIT, "%s : Set the 16-bit I/O settings!\n", MODULE_NAME);
++		nand_chip->options |= NAND_BUSWIDTH_16;
++	}
++	mtd->oobsize = devinfo.sparesize;
++	hw->nfi_cs_num = 1;
++
++	/* Scan to find existance of the device */
++	if (nand_scan(mtd, hw->nfi_cs_num)) {
++		MSG(INIT, "%s : nand_scan fail.\n", MODULE_NAME);
++		err = -ENXIO;
++		goto out;
++	}
++
++	g_page_size = mtd->writesize;
++	platform_set_drvdata(pdev, host);
++	if (hw->nfi_bus_width == 16) {
++		NFI_SET_REG16(NFI_PAGEFMT_REG16, PAGEFMT_DBYTE_EN);
++	}
++
++	nand_chip->select_chip(mtd, 0);
++#if defined(MTK_NAND_BMT)  
++	nand_chip->chipsize -= (BMT_POOL_SIZE) << nand_chip->phys_erase_shift;
++#endif
++	mtd->size = nand_chip->chipsize;
++
++	CFG_BLOCKSIZE = mtd->erasesize;
++
++#if defined(MTK_NAND_BMT)
++	if (!g_bmt) {
++		if (!(g_bmt = init_bmt(nand_chip, BMT_POOL_SIZE))) {
++			MSG(INIT, "Error: init bmt failed\n");
++			return 0;
++		}
++	}
++#endif
++
++	nand_set_flash_node(nand_chip, pdev->dev.of_node);
++	err = mtd_device_parse_register(mtd, probe_types, &ppdata,
++					NULL, 0);
++	if (!err) {
++		MSG(INIT, "[mtk_nand] probe successfully!\n");
++		nand_disable_clock();
++		shift_on_bbt = 1;
++		if (load_fact_bbt(mtd) == 0) {
++			int i;
++			for (i = 0; i < 0x100; i++)
++				nand_chip->bbt[i] |= fact_bbt[i];
++		}
++
++		return err;
++	}
++
++out:
++	MSG(INIT, "[NFI] mtk_nand_probe fail, err = %d!\n", err);
++	nand_release(mtd);
++	platform_set_drvdata(pdev, NULL);
++	if ( NULL != nand_chip->buffers) {
++		kfree(nand_chip->buffers);
++	}
++	kfree(host);
++	nand_disable_clock();
++	return err;
++}
++
++static int
++mtk_nand_remove(struct platform_device *pdev)
++{
++	struct mtk_nand_host *host = platform_get_drvdata(pdev);
++	struct mtd_info *mtd = host->mtd;
++	struct nand_chip *nand_chip = &host->nand_chip;
++
++	nand_release(mtd);
++	if ( NULL != nand_chip->buffers) {
++		kfree(nand_chip->buffers);
++	}
++	kfree(host);
++	nand_disable_clock();
++
++	return 0;
++}
++
++static const struct of_device_id mt7621_nand_match[] = {
++	{ .compatible = "mtk,mt7621-nand" },
++	{},
++};
++MODULE_DEVICE_TABLE(of, mt7621_nand_match);
++
++static struct platform_driver mtk_nand_driver = {
++	.probe = mtk_nand_probe,
++	.remove = mtk_nand_remove,
++	.driver = {
++		.name = "MT7621-NAND",
++		.owner = THIS_MODULE,
++		.of_match_table = mt7621_nand_match,
++	},
++};
++
++static int __init
++mtk_nand_init(void)
++{
++	printk("MediaTek Nand driver init, version %s\n", VERSION);
++
++	return platform_driver_register(&mtk_nand_driver);
++}
++
++static void __exit
++mtk_nand_exit(void)
++{
++	platform_driver_unregister(&mtk_nand_driver);
++}
++
++module_init(mtk_nand_init);
++module_exit(mtk_nand_exit);
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/mtd/nand/mtk_nand2.h
+@@ -0,0 +1,452 @@
++#ifndef __MTK_NAND_H
++#define __MTK_NAND_H
++
++#define RALINK_NAND_CTRL_BASE         0xBE003000
++#define RALINK_SYSCTL_BASE            0xBE000000
++#define RALINK_NANDECC_CTRL_BASE      0xBE003800
++/*******************************************************************************
++ * NFI Register Definition 
++ *******************************************************************************/
++
++#define NFI_CNFG_REG16  	((volatile P_U16)(NFI_BASE+0x0000))
++#define NFI_PAGEFMT_REG16   ((volatile P_U16)(NFI_BASE+0x0004))
++#define NFI_CON_REG16      	((volatile P_U16)(NFI_BASE+0x0008))
++#define NFI_ACCCON_REG32   	((volatile P_U32)(NFI_BASE+0x000C))
++#define NFI_INTR_EN_REG16   ((volatile P_U16)(NFI_BASE+0x0010))
++#define NFI_INTR_REG16      ((volatile P_U16)(NFI_BASE+0x0014))
++
++#define NFI_CMD_REG16   	((volatile P_U16)(NFI_BASE+0x0020))
++
++#define NFI_ADDRNOB_REG16   ((volatile P_U16)(NFI_BASE+0x0030))
++#define NFI_COLADDR_REG32  	((volatile P_U32)(NFI_BASE+0x0034))
++#define NFI_ROWADDR_REG32  	((volatile P_U32)(NFI_BASE+0x0038))
++
++#define NFI_STRDATA_REG16   ((volatile P_U16)(NFI_BASE+0x0040))
++
++#define NFI_DATAW_REG32    	((volatile P_U32)(NFI_BASE+0x0050))
++#define NFI_DATAR_REG32    	((volatile P_U32)(NFI_BASE+0x0054))
++#define NFI_PIO_DIRDY_REG16 ((volatile P_U16)(NFI_BASE+0x0058))
++
++#define NFI_STA_REG32      	((volatile P_U32)(NFI_BASE+0x0060))
++#define NFI_FIFOSTA_REG16   ((volatile P_U16)(NFI_BASE+0x0064))
++#define NFI_LOCKSTA_REG16   ((volatile P_U16)(NFI_BASE+0x0068))
++
++#define NFI_ADDRCNTR_REG16  ((volatile P_U16)(NFI_BASE+0x0070))
++
++#define NFI_STRADDR_REG32  	((volatile P_U32)(NFI_BASE+0x0080))
++#define NFI_BYTELEN_REG16   ((volatile P_U16)(NFI_BASE+0x0084))
++
++#define NFI_CSEL_REG16      ((volatile P_U16)(NFI_BASE+0x0090))
++#define NFI_IOCON_REG16     ((volatile P_U16)(NFI_BASE+0x0094))
++
++#define NFI_FDM0L_REG32    	((volatile P_U32)(NFI_BASE+0x00A0))
++#define NFI_FDM0M_REG32    	((volatile P_U32)(NFI_BASE+0x00A4))
++
++#define NFI_LOCK_REG16	  	((volatile P_U16)(NFI_BASE+0x0100))
++#define NFI_LOCKCON_REG32  	((volatile P_U32)(NFI_BASE+0x0104))
++#define NFI_LOCKANOB_REG16  ((volatile P_U16)(NFI_BASE+0x0108))
++#define NFI_LOCK00ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0110))
++#define NFI_LOCK00FMT_REG32 ((volatile P_U32)(NFI_BASE+0x0114))
++#define NFI_LOCK01ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0118))
++#define NFI_LOCK01FMT_REG32 ((volatile P_U32)(NFI_BASE+0x011C))
++#define NFI_LOCK02ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0120))
++#define NFI_LOCK02FMT_REG32 ((volatile P_U32)(NFI_BASE+0x0124))
++#define NFI_LOCK03ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0128))
++#define NFI_LOCK03FMT_REG32 ((volatile P_U32)(NFI_BASE+0x012C))
++#define NFI_LOCK04ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0130))
++#define NFI_LOCK04FMT_REG32 ((volatile P_U32)(NFI_BASE+0x0134))
++#define NFI_LOCK05ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0138))
++#define NFI_LOCK05FMT_REG32 ((volatile P_U32)(NFI_BASE+0x013C))
++#define NFI_LOCK06ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0140))
++#define NFI_LOCK06FMT_REG32 ((volatile P_U32)(NFI_BASE+0x0144))
++#define NFI_LOCK07ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0148))
++#define NFI_LOCK07FMT_REG32 ((volatile P_U32)(NFI_BASE+0x014C))
++#define NFI_LOCK08ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0150))
++#define NFI_LOCK08FMT_REG32 ((volatile P_U32)(NFI_BASE+0x0154))
++#define NFI_LOCK09ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0158))
++#define NFI_LOCK09FMT_REG32 ((volatile P_U32)(NFI_BASE+0x015C))
++#define NFI_LOCK10ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0160))
++#define NFI_LOCK10FMT_REG32 ((volatile P_U32)(NFI_BASE+0x0164))
++#define NFI_LOCK11ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0168))
++#define NFI_LOCK11FMT_REG32 ((volatile P_U32)(NFI_BASE+0x016C))
++#define NFI_LOCK12ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0170))
++#define NFI_LOCK12FMT_REG32 ((volatile P_U32)(NFI_BASE+0x0174))
++#define NFI_LOCK13ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0178))
++#define NFI_LOCK13FMT_REG32 ((volatile P_U32)(NFI_BASE+0x017C))
++#define NFI_LOCK14ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0180))
++#define NFI_LOCK14FMT_REG32 ((volatile P_U32)(NFI_BASE+0x0184))
++#define NFI_LOCK15ADD_REG32 ((volatile P_U32)(NFI_BASE+0x0188))
++#define NFI_LOCK15FMT_REG32 ((volatile P_U32)(NFI_BASE+0x018C))
++
++#define NFI_FIFODATA0_REG32 ((volatile P_U32)(NFI_BASE+0x0190))
++#define NFI_FIFODATA1_REG32 ((volatile P_U32)(NFI_BASE+0x0194))
++#define NFI_FIFODATA2_REG32 ((volatile P_U32)(NFI_BASE+0x0198))
++#define NFI_FIFODATA3_REG32 ((volatile P_U32)(NFI_BASE+0x019C))
++#define NFI_MASTERSTA_REG16 ((volatile P_U16)(NFI_BASE+0x0210))
++
++
++/*******************************************************************************
++ * NFI Register Field Definition 
++ *******************************************************************************/
++
++/* NFI_CNFG */
++#define CNFG_AHB             (0x0001)
++#define CNFG_READ_EN         (0x0002)
++#define CNFG_DMA_BURST_EN    (0x0004)
++#define CNFG_BYTE_RW         (0x0040)
++#define CNFG_HW_ECC_EN       (0x0100)
++#define CNFG_AUTO_FMT_EN     (0x0200)
++#define CNFG_OP_IDLE         (0x0000)
++#define CNFG_OP_READ         (0x1000)
++#define CNFG_OP_SRD          (0x2000)
++#define CNFG_OP_PRGM         (0x3000)
++#define CNFG_OP_ERASE        (0x4000)
++#define CNFG_OP_RESET        (0x5000)
++#define CNFG_OP_CUST         (0x6000)
++#define CNFG_OP_MODE_MASK    (0x7000)
++#define CNFG_OP_MODE_SHIFT   (12)
++
++/* NFI_PAGEFMT */
++#define PAGEFMT_512          (0x0000)
++#define PAGEFMT_2K           (0x0001)
++#define PAGEFMT_4K           (0x0002)
++
++#define PAGEFMT_PAGE_MASK    (0x0003)
++
++#define PAGEFMT_DBYTE_EN     (0x0008)
++
++#define PAGEFMT_SPARE_16     (0x0000)
++#define PAGEFMT_SPARE_26     (0x0001)
++#define PAGEFMT_SPARE_27     (0x0002)
++#define PAGEFMT_SPARE_28     (0x0003)
++#define PAGEFMT_SPARE_MASK   (0x0030)
++#define PAGEFMT_SPARE_SHIFT  (4)
++
++#define PAGEFMT_FDM_MASK     (0x0F00)
++#define PAGEFMT_FDM_SHIFT    (8)
++
++#define PAGEFMT_FDM_ECC_MASK  (0xF000)
++#define PAGEFMT_FDM_ECC_SHIFT (12)
++
++/* NFI_CON */
++#define CON_FIFO_FLUSH       (0x0001)
++#define CON_NFI_RST          (0x0002)
++#define CON_NFI_SRD          (0x0010)
++
++#define CON_NFI_NOB_MASK     (0x0060)
++#define CON_NFI_NOB_SHIFT    (5)
++
++#define CON_NFI_BRD          (0x0100)
++#define CON_NFI_BWR          (0x0200)
++
++#define CON_NFI_SEC_MASK     (0xF000)
++#define CON_NFI_SEC_SHIFT    (12)
++
++/* NFI_ACCCON */
++#define ACCCON_SETTING       ()
++
++/* NFI_INTR_EN */
++#define INTR_RD_DONE_EN      (0x0001)
++#define INTR_WR_DONE_EN      (0x0002)
++#define INTR_RST_DONE_EN     (0x0004)
++#define INTR_ERASE_DONE_EN   (0x0008)
++#define INTR_BSY_RTN_EN      (0x0010)
++#define INTR_ACC_LOCK_EN     (0x0020)
++#define INTR_AHB_DONE_EN     (0x0040)
++#define INTR_ALL_INTR_DE     (0x0000)
++#define INTR_ALL_INTR_EN     (0x007F)
++
++/* NFI_INTR */
++#define INTR_RD_DONE         (0x0001)
++#define INTR_WR_DONE         (0x0002)
++#define INTR_RST_DONE        (0x0004)
++#define INTR_ERASE_DONE      (0x0008)
++#define INTR_BSY_RTN         (0x0010)
++#define INTR_ACC_LOCK        (0x0020)
++#define INTR_AHB_DONE        (0x0040)
++
++/* NFI_ADDRNOB */
++#define ADDR_COL_NOB_MASK    (0x0003)
++#define ADDR_COL_NOB_SHIFT   (0)
++#define ADDR_ROW_NOB_MASK    (0x0030)
++#define ADDR_ROW_NOB_SHIFT   (4)
++
++/* NFI_STA */
++#define STA_READ_EMPTY       (0x00001000)
++#define STA_ACC_LOCK         (0x00000010)
++#define STA_CMD_STATE        (0x00000001)
++#define STA_ADDR_STATE       (0x00000002)
++#define STA_DATAR_STATE      (0x00000004)
++#define STA_DATAW_STATE      (0x00000008)
++
++#define STA_NAND_FSM_MASK    (0x1F000000)
++#define STA_NAND_BUSY        (0x00000100)
++#define STA_NAND_BUSY_RETURN (0x00000200)
++#define STA_NFI_FSM_MASK     (0x000F0000)
++#define STA_NFI_OP_MASK      (0x0000000F)
++
++/* NFI_FIFOSTA */
++#define FIFO_RD_EMPTY        (0x0040)
++#define FIFO_RD_FULL         (0x0080)
++#define FIFO_WR_FULL         (0x8000)
++#define FIFO_WR_EMPTY        (0x4000)
++#define FIFO_RD_REMAIN(x)    (0x1F&(x))
++#define FIFO_WR_REMAIN(x)    ((0x1F00&(x))>>8)
++
++/* NFI_ADDRCNTR */
++#define ADDRCNTR_CNTR(x)     ((0xF000&(x))>>12)
++#define ADDRCNTR_OFFSET(x)   (0x03FF&(x))
++
++/* NFI_LOCK */
++#define NFI_LOCK_ON          (0x0001)
++
++/* NFI_LOCKANOB */
++#define PROG_RADD_NOB_MASK   (0x7000)
++#define PROG_RADD_NOB_SHIFT  (12)
++#define PROG_CADD_NOB_MASK   (0x0300)
++#define PROG_CADD_NOB_SHIFT  (8)
++#define ERASE_RADD_NOB_MASK   (0x0070)
++#define ERASE_RADD_NOB_SHIFT  (4)
++#define ERASE_CADD_NOB_MASK   (0x0007)
++#define ERASE_CADD_NOB_SHIFT  (0)
++
++/*******************************************************************************
++ * ECC Register Definition 
++ *******************************************************************************/
++
++#define ECC_ENCCON_REG16	((volatile P_U16)(NFIECC_BASE+0x0000))
++#define ECC_ENCCNFG_REG32  	((volatile P_U32)(NFIECC_BASE+0x0004))
++#define ECC_ENCDIADDR_REG32	((volatile P_U32)(NFIECC_BASE+0x0008))
++#define ECC_ENCIDLE_REG32  	((volatile P_U32)(NFIECC_BASE+0x000C))
++#define ECC_ENCPAR0_REG32   ((volatile P_U32)(NFIECC_BASE+0x0010))
++#define ECC_ENCPAR1_REG32   ((volatile P_U32)(NFIECC_BASE+0x0014))
++#define ECC_ENCPAR2_REG32   ((volatile P_U32)(NFIECC_BASE+0x0018))
++#define ECC_ENCPAR3_REG32   ((volatile P_U32)(NFIECC_BASE+0x001C))
++#define ECC_ENCPAR4_REG32   ((volatile P_U32)(NFIECC_BASE+0x0020))
++#define ECC_ENCSTA_REG32    ((volatile P_U32)(NFIECC_BASE+0x0024))
++#define ECC_ENCIRQEN_REG16  ((volatile P_U16)(NFIECC_BASE+0x0028))
++#define ECC_ENCIRQSTA_REG16 ((volatile P_U16)(NFIECC_BASE+0x002C))
++
++#define ECC_DECCON_REG16    ((volatile P_U16)(NFIECC_BASE+0x0100))
++#define ECC_DECCNFG_REG32   ((volatile P_U32)(NFIECC_BASE+0x0104))
++#define ECC_DECDIADDR_REG32 ((volatile P_U32)(NFIECC_BASE+0x0108))
++#define ECC_DECIDLE_REG16   ((volatile P_U16)(NFIECC_BASE+0x010C))
++#define ECC_DECFER_REG16    ((volatile P_U16)(NFIECC_BASE+0x0110))
++#define ECC_DECENUM_REG32   ((volatile P_U32)(NFIECC_BASE+0x0114))
++#define ECC_DECDONE_REG16   ((volatile P_U16)(NFIECC_BASE+0x0118))
++#define ECC_DECEL0_REG32    ((volatile P_U32)(NFIECC_BASE+0x011C))
++#define ECC_DECEL1_REG32    ((volatile P_U32)(NFIECC_BASE+0x0120))
++#define ECC_DECEL2_REG32    ((volatile P_U32)(NFIECC_BASE+0x0124))
++#define ECC_DECEL3_REG32    ((volatile P_U32)(NFIECC_BASE+0x0128))
++#define ECC_DECEL4_REG32    ((volatile P_U32)(NFIECC_BASE+0x012C))
++#define ECC_DECEL5_REG32    ((volatile P_U32)(NFIECC_BASE+0x0130))
++#define ECC_DECIRQEN_REG16  ((volatile P_U16)(NFIECC_BASE+0x0134))
++#define ECC_DECIRQSTA_REG16 ((volatile P_U16)(NFIECC_BASE+0x0138))
++#define ECC_FDMADDR_REG32   ((volatile P_U32)(NFIECC_BASE+0x013C))
++#define ECC_DECFSM_REG32    ((volatile P_U32)(NFIECC_BASE+0x0140))
++#define ECC_SYNSTA_REG32    ((volatile P_U32)(NFIECC_BASE+0x0144))
++#define ECC_DECNFIDI_REG32  ((volatile P_U32)(NFIECC_BASE+0x0148))
++#define ECC_SYN0_REG32      ((volatile P_U32)(NFIECC_BASE+0x014C))
++
++/*******************************************************************************
++ * ECC register definition
++ *******************************************************************************/
++/* ECC_ENCON */
++#define ENC_EN             		(0x0001)
++#define ENC_DE                 	(0x0000)
++
++/* ECC_ENCCNFG */
++#define ECC_CNFG_ECC4          	(0x0000)
++#define ECC_CNFG_ECC6          	(0x0001)
++#define ECC_CNFG_ECC8          	(0x0002)
++#define ECC_CNFG_ECC10         	(0x0003)
++#define ECC_CNFG_ECC12         	(0x0004)
++#define ECC_CNFG_ECC_MASK      	(0x00000007)
++
++#define ENC_CNFG_NFI           	(0x0010)
++#define ENC_CNFG_MODE_MASK     	(0x0010)
++
++#define ENC_CNFG_META6         	(0x10300000)
++#define ENC_CNFG_META8         	(0x10400000)
++
++#define ENC_CNFG_MSG_MASK  		(0x1FFF0000)
++#define ENC_CNFG_MSG_SHIFT 		(0x10)
++
++/* ECC_ENCIDLE */
++#define ENC_IDLE           		(0x0001)
++
++/* ECC_ENCSTA */
++#define STA_FSM            		(0x001F)
++#define STA_COUNT_PS       		(0xFF10)
++#define STA_COUNT_MS       		(0x3FFF0000)
++
++/* ECC_ENCIRQEN */
++#define ENC_IRQEN          		(0x0001)
++
++/* ECC_ENCIRQSTA */
++#define ENC_IRQSTA         		(0x0001)
++
++/* ECC_DECCON */
++#define DEC_EN             		(0x0001)
++#define DEC_DE             		(0x0000)
++
++/* ECC_ENCCNFG */
++#define DEC_CNFG_ECC4          (0x0000)
++//#define DEC_CNFG_ECC6          (0x0001)
++//#define DEC_CNFG_ECC12         (0x0002)
++#define DEC_CNFG_NFI           (0x0010)
++//#define DEC_CNFG_META6         (0x10300000)
++//#define DEC_CNFG_META8         (0x10400000)
++
++#define DEC_CNFG_FER           (0x01000)
++#define DEC_CNFG_EL            (0x02000)
++#define DEC_CNFG_CORRECT       (0x03000)
++#define DEC_CNFG_TYPE_MASK     (0x03000)
++
++#define DEC_CNFG_EMPTY_EN      (0x80000000)
++
++#define DEC_CNFG_CODE_MASK     (0x1FFF0000)
++#define DEC_CNFG_CODE_SHIFT    (0x10)
++
++/* ECC_DECIDLE */
++#define DEC_IDLE           		(0x0001)
++
++/* ECC_DECFER */
++#define DEC_FER0               (0x0001)
++#define DEC_FER1               (0x0002)
++#define DEC_FER2               (0x0004)
++#define DEC_FER3               (0x0008)
++#define DEC_FER4               (0x0010)
++#define DEC_FER5               (0x0020)
++#define DEC_FER6               (0x0040)
++#define DEC_FER7               (0x0080)
++
++/* ECC_DECENUM */
++#define ERR_NUM0               (0x0000000F)
++#define ERR_NUM1               (0x000000F0)
++#define ERR_NUM2               (0x00000F00)
++#define ERR_NUM3               (0x0000F000)
++#define ERR_NUM4               (0x000F0000)
++#define ERR_NUM5               (0x00F00000)
++#define ERR_NUM6               (0x0F000000)
++#define ERR_NUM7               (0xF0000000)
++
++/* ECC_DECDONE */
++#define DEC_DONE0               (0x0001)
++#define DEC_DONE1               (0x0002)
++#define DEC_DONE2               (0x0004)
++#define DEC_DONE3               (0x0008)
++#define DEC_DONE4               (0x0010)
++#define DEC_DONE5               (0x0020)
++#define DEC_DONE6               (0x0040)
++#define DEC_DONE7               (0x0080)
++
++/* ECC_DECIRQEN */
++#define DEC_IRQEN         		(0x0001)
++
++/* ECC_DECIRQSTA */
++#define DEC_IRQSTA      		(0x0001)
++
++#define CHIPVER_ECO_1           (0x8a00)
++#define CHIPVER_ECO_2           (0x8a01)
++
++//#define NAND_PFM
++
++/*******************************************************************************
++ * Data Structure Definition
++ *******************************************************************************/
++struct mtk_nand_host 
++{
++	struct nand_chip		nand_chip;
++	struct mtd_info			*mtd;
++	struct mtk_nand_host_hw	*hw;
++};
++
++struct NAND_CMD
++{
++	u32	u4ColAddr;
++	u32 u4RowAddr;
++	u32 u4OOBRowAddr;
++	u8	au1OOB[288];
++	u8*	pDataBuf;
++#ifdef NAND_PFM	
++	u32 pureReadOOB;
++	u32 pureReadOOBNum;
++#endif
++};
++
++/*
++ *	ECC layout control structure. Exported to userspace for
++ *  diagnosis and to allow creation of raw images
++struct nand_ecclayout {
++	uint32_t eccbytes;
++	uint32_t eccpos[64];
++	uint32_t oobavail;
++	struct nand_oobfree oobfree[MTD_MAX_OOBFREE_ENTRIES];
++};
++*/
++#define __DEBUG_NAND		1			/* Debug information on/off */
++
++/* Debug message event */
++#define DBG_EVT_NONE		0x00000000	/* No event */
++#define DBG_EVT_INIT		0x00000001	/* Initial related event */
++#define DBG_EVT_VERIFY		0x00000002	/* Verify buffer related event */
++#define DBG_EVT_PERFORMANCE	0x00000004	/* Performance related event */
++#define DBG_EVT_READ		0x00000008	/* Read related event */
++#define DBG_EVT_WRITE		0x00000010	/* Write related event */
++#define DBG_EVT_ERASE		0x00000020	/* Erase related event */
++#define DBG_EVT_BADBLOCK	0x00000040	/* Badblock related event */
++#define DBG_EVT_POWERCTL	0x00000080	/* Suspend/Resume related event */
++
++#define DBG_EVT_ALL			0xffffffff
++
++#define DBG_EVT_MASK      	(DBG_EVT_INIT)
++
++#if __DEBUG_NAND
++#define MSG(evt, fmt, args...) \
++do {	\
++	if ((DBG_EVT_##evt) & DBG_EVT_MASK) { \
++		printk(fmt, ##args); \
++	} \
++} while(0)
++
++#define MSG_FUNC_ENTRY(f)	MSG(FUC, "<FUN_ENT>: %s\n", __FUNCTION__)
++#else
++#define MSG(evt, fmt, args...) do{}while(0)
++#define MSG_FUNC_ENTRY(f)	   do{}while(0)
++#endif
++
++#define RAMDOM_READ 1<<0
++#define CACHE_READ  1<<1
++
++typedef struct
++{
++   u16 id;          //deviceid+menuid
++   u32 ext_id; 
++   u8  addr_cycle;
++   u8  iowidth;
++   u16 totalsize;   
++   u16 blocksize;
++   u16 pagesize;
++   u16 sparesize;
++   u32 timmingsetting;
++   char devciename[14];
++   u32 advancedmode;   //
++}flashdev_info,*pflashdev_info;
++
++/* NAND driver */
++#if 0
++struct mtk_nand_host_hw {
++    unsigned int nfi_bus_width;		    /* NFI_BUS_WIDTH */ 
++	unsigned int nfi_access_timing;		/* NFI_ACCESS_TIMING */  
++	unsigned int nfi_cs_num;			/* NFI_CS_NUM */
++	unsigned int nand_sec_size;			/* NAND_SECTOR_SIZE */
++	unsigned int nand_sec_shift;		/* NAND_SECTOR_SHIFT */
++	unsigned int nand_ecc_size;
++	unsigned int nand_ecc_bytes;
++	unsigned int nand_ecc_mode;
++};
++extern struct mtk_nand_host_hw mt7621_nand_hw;
++extern u32	CFG_BLOCKSIZE;
++#endif
++#endif
+--- a/drivers/mtd/nand/nand_base.c
++++ b/drivers/mtd/nand/nand_base.c
+@@ -48,7 +48,7 @@
+ #include <linux/mtd/partitions.h>
+ #include <linux/of.h>
+ 
+-static int nand_get_device(struct mtd_info *mtd, int new_state);
++int nand_get_device(struct mtd_info *mtd, int new_state);
+ 
+ static int nand_do_write_oob(struct mtd_info *mtd, loff_t to,
+ 			     struct mtd_oob_ops *ops);
+@@ -240,7 +240,7 @@ static int check_offs_len(struct mtd_inf
+  *
+  * Release chip lock and wake up anyone waiting on the device.
+  */
+-static void nand_release_device(struct mtd_info *mtd)
++void nand_release_device(struct mtd_info *mtd)
+ {
+ 	struct nand_chip *chip = mtd_to_nand(mtd);
+ 
+@@ -968,7 +968,7 @@ static void panic_nand_get_device(struct
+  *
+  * Get the device and lock it for exclusive access
+  */
+-static int
++int
+ nand_get_device(struct mtd_info *mtd, int new_state)
+ {
+ 	struct nand_chip *chip = mtd_to_nand(mtd);
+--- a/drivers/mtd/nand/nand_bbt.c
++++ b/drivers/mtd/nand/nand_bbt.c
+@@ -1215,6 +1215,25 @@ err:
+ 	return res;
+ }
+ 
++void nand_bbt_set(struct mtd_info *mtd, int page, int flag)
++{
++	struct nand_chip *this = mtd->priv;
++	int block;
++
++	block = (int)(page >> (this->bbt_erase_shift - this->page_shift - 1));
++	this->bbt[block >> 3] &= ~(0x03 << (block & 0x6));
++	this->bbt[block >> 3] |= (flag & 0x3) << (block & 0x6);
++}
++
++int nand_bbt_get(struct mtd_info *mtd, int page)
++{
++	struct nand_chip *this = mtd->priv;
++	int block;
++
++	block = (int)(page >> (this->bbt_erase_shift - this->page_shift - 1));
++	return (this->bbt[block >> 3] >> (block & 0x06)) & 0x03;
++}
++
+ /**
+  * nand_update_bbt - update bad block table(s)
+  * @mtd: MTD device structure
+--- /dev/null
++++ b/drivers/mtd/nand/nand_def.h
+@@ -0,0 +1,123 @@
++#ifndef __NAND_DEF_H__
++#define __NAND_DEF_H__
++
++#define VERSION  	"v2.1 Fix AHB virt2phys error"
++#define MODULE_NAME	"# MTK NAND #"
++#define PROCNAME    "driver/nand"
++
++#undef TESTTIME
++//#define __UBOOT_NAND__			1
++#define __KERNEL_NAND__		1
++//#define __PRELOADER_NAND__	1
++//#define PMT 1
++//#define _MTK_NAND_DUMMY_DRIVER
++//#define CONFIG_BADBLOCK_CHECK	1
++//#ifdef CONFIG_BADBLOCK_CHECK
++//#define MTK_NAND_BMT	1
++//#endif
++#define ECC_ENABLE		1
++#define MANUAL_CORRECT	1
++//#define __INTERNAL_USE_AHB_MODE__ 	(0)
++#define SKIP_BAD_BLOCK
++#define FACT_BBT
++
++#ifndef NAND_OTP_SUPPORT
++#define NAND_OTP_SUPPORT 0
++#endif
++
++/*******************************************************************************
++ * Macro definition 
++ *******************************************************************************/
++//#define NFI_SET_REG32(reg, value)   (DRV_WriteReg32(reg, DRV_Reg32(reg) | (value))) 
++//#define NFI_SET_REG16(reg, value)   (DRV_WriteReg16(reg, DRV_Reg16(reg) | (value)))
++//#define NFI_CLN_REG32(reg, value)   (DRV_WriteReg32(reg, DRV_Reg32(reg) & (~(value))))
++//#define NFI_CLN_REG16(reg, value)   (DRV_WriteReg16(reg, DRV_Reg16(reg) & (~(value))))
++
++#if defined (__KERNEL_NAND__)
++#define NFI_SET_REG32(reg, value) \
++do {	\
++	g_value = (DRV_Reg32(reg) | (value));\
++	DRV_WriteReg32(reg, g_value); \
++} while(0)
++
++#define NFI_SET_REG16(reg, value) \
++do {	\
++	g_value = (DRV_Reg16(reg) | (value));\
++	DRV_WriteReg16(reg, g_value); \
++} while(0)
++
++#define NFI_CLN_REG32(reg, value) \
++do {	\
++	g_value = (DRV_Reg32(reg) & (~(value)));\
++	DRV_WriteReg32(reg, g_value); \
++} while(0)
++
++#define NFI_CLN_REG16(reg, value) \
++do {	\
++	g_value = (DRV_Reg16(reg) & (~(value)));\
++	DRV_WriteReg16(reg, g_value); \
++} while(0)
++#endif
++
++#define NFI_WAIT_STATE_DONE(state) do{;}while (__raw_readl(NFI_STA_REG32) & state)
++#define NFI_WAIT_TO_READY()  do{;}while (!(__raw_readl(NFI_STA_REG32) & STA_BUSY2READY))
++
++
++#define NAND_SECTOR_SIZE (512)
++#define OOB_PER_SECTOR      (16)
++#define OOB_AVAI_PER_SECTOR (8)
++
++#ifndef PART_SIZE_BMTPOOL
++#define BMT_POOL_SIZE       (80)
++#else
++#define BMT_POOL_SIZE (PART_SIZE_BMTPOOL)
++#endif
++
++#define PMT_POOL_SIZE	(2)
++
++#define TIMEOUT_1   0x1fff
++#define TIMEOUT_2   0x8ff
++#define TIMEOUT_3   0xffff
++#define TIMEOUT_4   0xffff//5000   //PIO
++
++
++/* temporarity definiation */
++#if !defined (__KERNEL_NAND__) 
++#define KERN_INFO
++#define KERN_WARNING
++#define KERN_ERR
++#define PAGE_SIZE	(4096)
++#endif
++#define AddStorageTrace				//AddStorageTrace
++#define STORAGE_LOGGER_MSG_NAND		0
++#define NFI_BASE 					RALINK_NAND_CTRL_BASE
++#define NFIECC_BASE 				RALINK_NANDECC_CTRL_BASE
++
++#ifdef __INTERNAL_USE_AHB_MODE__
++#define MT65xx_POLARITY_LOW   0
++#define MT65XX_PDN_PERI_NFI   0
++#define MT65xx_EDGE_SENSITIVE 0
++#define MT6575_NFI_IRQ_ID                    (58)
++#endif
++
++#if defined (__KERNEL_NAND__)
++#define RALINK_REG(x)		(*((volatile u32 *)(x)))	
++#define __virt_to_phys(x)	virt_to_phys((volatile void*)x)
++#else
++#define CONFIG_MTD_NAND_VERIFY_WRITE	(1)
++#define printk	printf
++#define ra_dbg printf
++#define BUG()							//BUG()
++#define BUG_ON(x)						//BUG_ON()
++#define NUM_PARTITIONS 				1
++#endif
++
++#define NFI_DEFAULT_ACCESS_TIMING        (0x30C77fff)	//(0x44333)
++
++//uboot only support 1 cs
++#define NFI_CS_NUM                  (1)
++#define NFI_DEFAULT_CS              (0)
++
++#include "mt6575_typedefs.h"
++
++#endif /* __NAND_DEF_H__ */
+--- /dev/null
++++ b/drivers/mtd/nand/nand_device_list.h
+@@ -0,0 +1,56 @@
++/* Copyright Statement:
++ *
++ * This software/firmware and related documentation ("MediaTek Software") are
++ * protected under relevant copyright laws. The information contained herein
++ * is confidential and proprietary to MediaTek Inc. and/or its licensors.
++ * Without the prior written permission of MediaTek inc. and/or its licensors,
++ * any reproduction, modification, use or disclosure of MediaTek Software,
++ * and information contained herein, in whole or in part, shall be strictly prohibited.
++ */
++/* MediaTek Inc. (C) 2010. All rights reserved.
++ *
++ * BY OPENING THIS FILE, RECEIVER HEREBY UNEQUIVOCALLY ACKNOWLEDGES AND AGREES
++ * THAT THE SOFTWARE/FIRMWARE AND ITS DOCUMENTATIONS ("MEDIATEK SOFTWARE")
++ * RECEIVED FROM MEDIATEK AND/OR ITS REPRESENTATIVES ARE PROVIDED TO RECEIVER ON
++ * AN "AS-IS" BASIS ONLY. MEDIATEK EXPRESSLY DISCLAIMS ANY AND ALL WARRANTIES,
++ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF
++ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE OR NONINFRINGEMENT.
++ * NEITHER DOES MEDIATEK PROVIDE ANY WARRANTY WHATSOEVER WITH RESPECT TO THE
++ * SOFTWARE OF ANY THIRD PARTY WHICH MAY BE USED BY, INCORPORATED IN, OR
++ * SUPPLIED WITH THE MEDIATEK SOFTWARE, AND RECEIVER AGREES TO LOOK ONLY TO SUCH
++ * THIRD PARTY FOR ANY WARRANTY CLAIM RELATING THERETO. RECEIVER EXPRESSLY ACKNOWLEDGES
++ * THAT IT IS RECEIVER'S SOLE RESPONSIBILITY TO OBTAIN FROM ANY THIRD PARTY ALL PROPER LICENSES
++ * CONTAINED IN MEDIATEK SOFTWARE. MEDIATEK SHALL ALSO NOT BE RESPONSIBLE FOR ANY MEDIATEK
++ * SOFTWARE RELEASES MADE TO RECEIVER'S SPECIFICATION OR TO CONFORM TO A PARTICULAR
++ * STANDARD OR OPEN FORUM. RECEIVER'S SOLE AND EXCLUSIVE REMEDY AND MEDIATEK'S ENTIRE AND
++ * CUMULATIVE LIABILITY WITH RESPECT TO THE MEDIATEK SOFTWARE RELEASED HEREUNDER WILL BE,
++ * AT MEDIATEK'S OPTION, TO REVISE OR REPLACE THE MEDIATEK SOFTWARE AT ISSUE,
++ * OR REFUND ANY SOFTWARE LICENSE FEES OR SERVICE CHARGE PAID BY RECEIVER TO
++ * MEDIATEK FOR SUCH MEDIATEK SOFTWARE AT ISSUE.
++ *
++ * The following software/firmware and/or related documentation ("MediaTek Software")
++ * have been modified by MediaTek Inc. All revisions are subject to any receiver's
++ * applicable license agreements with MediaTek Inc.
++ */
++
++#ifndef __NAND_DEVICE_LIST_H__
++#define __NAND_DEVICE_LIST_H__
++
++static const flashdev_info gen_FlashTable[]={
++	{0x20BC, 0x105554, 5, 16, 512, 128, 2048, 64, 0x1123, "EHD013151MA_5", 0},
++	{0xECBC, 0x005554, 5, 16, 512, 128, 2048, 64, 0x1123, "K524G2GACB_A0", 0},
++	{0x2CBC, 0x905556, 5, 16, 512, 128, 2048, 64, 0x21044333, "MT29C4G96MAZA", 0},
++	{0x2CDA, 0x909506, 5, 8,  256, 128, 2048, 64, 0x30C77fff, "MT29F2G08ABAE", 0},
++	{0xADBC, 0x905554, 5, 16, 512, 128, 2048, 64, 0x10801011, "H9DA4GH4JJAMC", 0},
++    {0x01F1, 0x801D01, 4, 8, 128, 128, 2048, 64, 0x30C77fff, "S34ML01G100TF", 0},
++    {0x92F1, 0x8095FF, 4, 8, 128, 128, 2048, 64, 0x30C77fff, "F59L1G81A", 0},
++	{0xECD3, 0x519558, 5, 8, 1024, 128, 2048, 64, 0x44333, "K9K8G8000", 0},
++    {0xC2F1, 0x801DC2, 4, 8, 128, 128, 2048, 64, 0x30C77fff, "MX30LF1G08AA", 0},
++    {0x98D3, 0x902676, 5, 8, 1024, 256, 4096, 224, 0x00C25332, "TC58NVG3S0F", 0},
++    {0x01DA, 0x909546, 5, 8, 256, 128, 2048, 128, 0x30C77fff, "S34ML02G200TF", 0},
++    {0x01DC, 0x909556, 5, 8, 512, 128, 2048, 128, 0x30C77fff, "S34ML04G200TF", 0},
++	{0x0000, 0x000000, 0, 0, 0, 0, 0, 0, 0, "xxxxxxxxxx", 0},
++};
++
++
++#endif
+--- /dev/null
++++ b/drivers/mtd/nand/partition.h
+@@ -0,0 +1,115 @@
++/* Copyright Statement:
++ *
++ * This software/firmware and related documentation ("MediaTek Software") are
++ * protected under relevant copyright laws. The information contained herein
++ * is confidential and proprietary to MediaTek Inc. and/or its licensors.
++ * Without the prior written permission of MediaTek inc. and/or its licensors,
++ * any reproduction, modification, use or disclosure of MediaTek Software,
++ * and information contained herein, in whole or in part, shall be strictly prohibited.
++ */
++/* MediaTek Inc. (C) 2010. All rights reserved.
++ *
++ * BY OPENING THIS FILE, RECEIVER HEREBY UNEQUIVOCALLY ACKNOWLEDGES AND AGREES
++ * THAT THE SOFTWARE/FIRMWARE AND ITS DOCUMENTATIONS ("MEDIATEK SOFTWARE")
++ * RECEIVED FROM MEDIATEK AND/OR ITS REPRESENTATIVES ARE PROVIDED TO RECEIVER ON
++ * AN "AS-IS" BASIS ONLY. MEDIATEK EXPRESSLY DISCLAIMS ANY AND ALL WARRANTIES,
++ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF
++ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE OR NONINFRINGEMENT.
++ * NEITHER DOES MEDIATEK PROVIDE ANY WARRANTY WHATSOEVER WITH RESPECT TO THE
++ * SOFTWARE OF ANY THIRD PARTY WHICH MAY BE USED BY, INCORPORATED IN, OR
++ * SUPPLIED WITH THE MEDIATEK SOFTWARE, AND RECEIVER AGREES TO LOOK ONLY TO SUCH
++ * THIRD PARTY FOR ANY WARRANTY CLAIM RELATING THERETO. RECEIVER EXPRESSLY ACKNOWLEDGES
++ * THAT IT IS RECEIVER'S SOLE RESPONSIBILITY TO OBTAIN FROM ANY THIRD PARTY ALL PROPER LICENSES
++ * CONTAINED IN MEDIATEK SOFTWARE. MEDIATEK SHALL ALSO NOT BE RESPONSIBLE FOR ANY MEDIATEK
++ * SOFTWARE RELEASES MADE TO RECEIVER'S SPECIFICATION OR TO CONFORM TO A PARTICULAR
++ * STANDARD OR OPEN FORUM. RECEIVER'S SOLE AND EXCLUSIVE REMEDY AND MEDIATEK'S ENTIRE AND
++ * CUMULATIVE LIABILITY WITH RESPECT TO THE MEDIATEK SOFTWARE RELEASED HEREUNDER WILL BE,
++ * AT MEDIATEK'S OPTION, TO REVISE OR REPLACE THE MEDIATEK SOFTWARE AT ISSUE,
++ * OR REFUND ANY SOFTWARE LICENSE FEES OR SERVICE CHARGE PAID BY RECEIVER TO
++ * MEDIATEK FOR SUCH MEDIATEK SOFTWARE AT ISSUE.
++ *
++ * The following software/firmware and/or related documentation ("MediaTek Software")
++ * have been modified by MediaTek Inc. All revisions are subject to any receiver's
++ * applicable license agreements with MediaTek Inc.
++ */
++
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/rawnand.h>
++#include <linux/mtd/partitions.h>
++
++#define RECONFIG_PARTITION_SIZE 1
++
++#define MTD_BOOT_PART_SIZE  0x80000
++#define MTD_CONFIG_PART_SIZE    0x20000
++#define MTD_FACTORY_PART_SIZE   0x20000
++
++extern unsigned int  CFG_BLOCKSIZE;
++#define LARGE_MTD_BOOT_PART_SIZE       (CFG_BLOCKSIZE<<2)
++#define LARGE_MTD_CONFIG_PART_SIZE     (CFG_BLOCKSIZE<<2)
++#define LARGE_MTD_FACTORY_PART_SIZE    (CFG_BLOCKSIZE<<1)
++
++/*=======================================================================*/
++/* NAND PARTITION Mapping                                                  */
++/*=======================================================================*/
++//#ifdef CONFIG_MTD_PARTITIONS
++static struct mtd_partition g_pasStatic_Partition[] = {
++	{
++                name:           "ALL",
++                size:           MTDPART_SIZ_FULL,
++                offset:         0,
++        },
++        /* Put your own partition definitions here */
++        {
++                name:           "Bootloader",
++                size:           MTD_BOOT_PART_SIZE,
++                offset:         0,
++        }, {
++                name:           "Config",
++                size:           MTD_CONFIG_PART_SIZE,
++                offset:         MTDPART_OFS_APPEND
++        }, {
++                name:           "Factory",
++                size:           MTD_FACTORY_PART_SIZE,
++                offset:         MTDPART_OFS_APPEND
++#ifdef CONFIG_RT2880_ROOTFS_IN_FLASH
++        }, {
++                name:           "Kernel",
++                size:           MTD_KERN_PART_SIZE,
++                offset:         MTDPART_OFS_APPEND,
++        }, {
++                name:           "RootFS",
++                size:           MTD_ROOTFS_PART_SIZE,
++                offset:         MTDPART_OFS_APPEND,
++#ifdef CONFIG_ROOTFS_IN_FLASH_NO_PADDING
++        }, {
++                name:           "Kernel_RootFS",
++                size:           MTD_KERN_PART_SIZE + MTD_ROOTFS_PART_SIZE,
++                offset:         MTD_BOOT_PART_SIZE + MTD_CONFIG_PART_SIZE + MTD_FACTORY_PART_SIZE,
++#endif
++#else //CONFIG_RT2880_ROOTFS_IN_RAM
++        }, {
++                name:           "Kernel",
++                size:           0x10000,
++                offset:         MTDPART_OFS_APPEND,
++#endif
++#ifdef CONFIG_DUAL_IMAGE
++        }, {
++                name:           "Kernel2",
++                size:           MTD_KERN2_PART_SIZE,
++                offset:         MTD_KERN2_PART_OFFSET,
++#ifdef CONFIG_RT2880_ROOTFS_IN_FLASH
++        }, {
++                name:           "RootFS2",
++                size:           MTD_ROOTFS2_PART_SIZE,
++                offset:         MTD_ROOTFS2_PART_OFFSET,
++#endif
++#endif
++        }
++
++};
++
++#define NUM_PARTITIONS ARRAY_SIZE(g_pasStatic_Partition)
++extern int part_num;	// = NUM_PARTITIONS;
++//#endif
++#undef RECONFIG_PARTITION_SIZE
++

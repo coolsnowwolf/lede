@@ -108,23 +108,23 @@
  */
 
 
-int __init ifxdeu_init_des (void);
-int __init ifxdeu_init_aes (void);
-int __init ifxdeu_init_arc4 (void);
-int __init ifxdeu_init_sha1 (void);
-int __init ifxdeu_init_md5 (void);
-int __init ifxdeu_init_sha1_hmac (void);
-int __init ifxdeu_init_md5_hmac (void);
+int ifxdeu_init_des (void);
+int ifxdeu_init_aes (void);
+int ifxdeu_init_arc4 (void);
+int ifxdeu_init_sha1 (void);
+int ifxdeu_init_md5 (void);
+int ifxdeu_init_sha1_hmac (void);
+int ifxdeu_init_md5_hmac (void);
 int __init lqdeu_async_aes_init(void);
 int __init lqdeu_async_des_init(void);
 
-void __exit ifxdeu_fini_des (void);
-void __exit ifxdeu_fini_aes (void);
-void __exit ifxdeu_fini_arc4 (void);
-void __exit ifxdeu_fini_sha1 (void);
-void __exit ifxdeu_fini_md5 (void);
-void __exit ifxdeu_fini_sha1_hmac (void);
-void __exit ifxdeu_fini_md5_hmac (void);
+void ifxdeu_fini_des (void);
+void ifxdeu_fini_aes (void);
+void ifxdeu_fini_arc4 (void);
+void ifxdeu_fini_sha1 (void);
+void ifxdeu_fini_md5 (void);
+void ifxdeu_fini_sha1_hmac (void);
+void ifxdeu_fini_md5_hmac (void);
 void __exit ifxdeu_fini_dma(void);
 void __exit lqdeu_fini_async_aes(void);
 void __exit lqdeu_fini_async_des(void);

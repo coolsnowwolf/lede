@@ -1,0 +1,83 @@
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+Subject: [v3,
+	1/5] mtd: nand: Create a BBT flag to access bad block markers in raw
+	mode
+From: Archit Taneja <architt@codeaurora.org>
+X-Patchwork-Id: 6927081
+Message-Id: <1438578498-32254-2-git-send-email-architt@codeaurora.org>
+To: linux-mtd@lists.infradead.org, dehrenberg@google.com,
+	cernekee@gmail.com, computersforpeace@gmail.com
+Cc: linux-arm-msm@vger.kernel.org, agross@codeaurora.org,
+	sboyd@codeaurora.org, linux-kernel@vger.kernel.org,
+	Archit Taneja <architt@codeaurora.org>
+Date: Mon,  3 Aug 2015 10:38:14 +0530
+
+Some controllers can access the factory bad block marker from OOB only
+when they read it in raw mode. When ECC is enabled, these controllers
+discard reading/writing bad block markers, preventing access to them
+altogether.
+
+The bbt driver assumes MTD_OPS_PLACE_OOB when scanning for bad blocks.
+This results in the nand driver's ecc->read_oob() op to be called, which
+works with ECC enabled.
+
+Create a new BBT option flag that tells nand_bbt to force the mode to
+MTD_OPS_RAW. This would result in the correct op being called for the
+underlying nand controller driver.
+
+Reviewed-by: Andy Gross <agross@codeaurora.org>
+Signed-off-by: Archit Taneja <architt@codeaurora.org>
+
+---
+drivers/mtd/nand/nand_base.c | 6 +++++-
+ drivers/mtd/nand/nand_bbt.c  | 6 +++++-
+ include/linux/mtd/bbm.h      | 7 +++++++
+ 3 files changed, 17 insertions(+), 2 deletions(-)
+
+--- a/drivers/mtd/nand/nand_base.c
++++ b/drivers/mtd/nand/nand_base.c
+@@ -394,7 +394,11 @@ static int nand_default_block_markbad(st
+ 	} else {
+ 		ops.len = ops.ooblen = 1;
+ 	}
+-	ops.mode = MTD_OPS_PLACE_OOB;
++
++	if (unlikely(chip->bbt_options & NAND_BBT_ACCESS_BBM_RAW))
++		ops.mode = MTD_OPS_RAW;
++	else
++		ops.mode = MTD_OPS_PLACE_OOB;
+ 
+ 	/* Write to first/last page(s) if necessary */
+ 	if (chip->bbt_options & NAND_BBT_SCANLASTPAGE)
+--- a/drivers/mtd/nand/nand_bbt.c
++++ b/drivers/mtd/nand/nand_bbt.c
+@@ -420,7 +420,11 @@ static int scan_block_fast(struct mtd_in
+ 	ops.oobbuf = buf;
+ 	ops.ooboffs = 0;
+ 	ops.datbuf = NULL;
+-	ops.mode = MTD_OPS_PLACE_OOB;
++
++	if (unlikely(bd->options & NAND_BBT_ACCESS_BBM_RAW))
++		ops.mode = MTD_OPS_RAW;
++	else
++		ops.mode = MTD_OPS_PLACE_OOB;
+ 
+ 	for (j = 0; j < numpages; j++) {
+ 		/*
+--- a/include/linux/mtd/bbm.h
++++ b/include/linux/mtd/bbm.h
+@@ -116,6 +116,12 @@ struct nand_bbt_descr {
+ #define NAND_BBT_NO_OOB_BBM	0x00080000
+ 
+ /*
++ * Force MTD_OPS_RAW mode when trying to access bad block markes from OOB. To
++ * be used by controllers which can access BBM only when ECC is disabled, i.e,
++ * when in RAW access mode
++ */
++#define NAND_BBT_ACCESS_BBM_RAW        0x00100000
++/*
+  * Flag set by nand_create_default_bbt_descr(), marking that the nand_bbt_descr
+  * was allocated dynamicaly and must be freed in nand_release(). Has no meaning
+  * in nand_chip.bbt_options.

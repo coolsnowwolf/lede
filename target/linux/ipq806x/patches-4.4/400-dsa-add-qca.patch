@@ -1,0 +1,1068 @@
+From patchwork Fri May 29 01:42:16 2015
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+Subject: [1/7] net: dsa: add new driver for ar8xxx family
+From: Mathieu Olivari <mathieu@codeaurora.org>
+X-Patchwork-Id: 477523
+X-Patchwork-Delegate: davem@davemloft.net
+Message-Id: <1432863742-18427-2-git-send-email-mathieu@codeaurora.org>
+To: robh+dt@kernel.org, pawel.moll@arm.com, mark.rutland@arm.com,
+ ijc+devicetree@hellion.org.uk, galak@codeaurora.org,
+ davem@davemloft.net, mathieu@codeaurora.org, andrew@lunn.ch,
+ f.fainelli@gmail.com, linux@roeck-us.net, gang.chen.5i5j@gmail.com,
+ jiri@resnulli.us, leitec@staticky.com, fabf@skynet.be,
+ alexander.h.duyck@intel.com, pavel.nakonechny@skitlab.ru,
+ joe@perches.com, sfeldma@gmail.com, nbd@nbd.name, juhosg@openwrt.org
+Cc: devicetree@vger.kernel.org, linux-kernel@vger.kernel.org,
+ netdev@vger.kernel.org
+Date: Thu, 28 May 2015 18:42:16 -0700
+
+This patch contains initial init & registration code for QCA8337. It
+will detect a QCA8337 switch, if present and declared in DT/platform.
+
+Each port will be represented through a standalone net_device interface,
+as for other DSA switches. CPU can communicate with any of the ports by
+setting an IP@ on ethN interface. Ports cannot communicate with each
+other just yet.
+
+Link status will be reported through polling, and we don't use any
+encapsulation.
+
+Signed-off-by: Mathieu Olivari <mathieu@codeaurora.org>
+---
+ drivers/net/dsa/Kconfig  |   7 ++
+ drivers/net/dsa/Makefile |   1 +
+ drivers/net/dsa/ar8xxx.c | 303 +++++++++++++++++++++++++++++++++++++++++++++++
+ drivers/net/dsa/ar8xxx.h |  82 +++++++++++++
+ net/dsa/dsa.c            |   1 +
+ 5 files changed, 394 insertions(+)
+ create mode 100644 drivers/net/dsa/ar8xxx.c
+ create mode 100644 drivers/net/dsa/ar8xxx.h
+
+--- a/drivers/net/dsa/Kconfig
++++ b/drivers/net/dsa/Kconfig
+@@ -65,4 +65,13 @@ config NET_DSA_BCM_SF2
+ 	  This enables support for the Broadcom Starfighter 2 Ethernet
+ 	  switch chips.
+ 
++config NET_DSA_AR8XXX
++	tristate "Qualcomm Atheros AR8XXX Ethernet switch family support"
++	depends on NET_DSA
++	select NET_DSA_TAG_QCA
++	select REGMAP
++	---help---
++	  This enables support for the Qualcomm Atheros AR8XXX Ethernet
++	  switch chips.
++
+ endmenu
+--- a/drivers/net/dsa/Makefile
++++ b/drivers/net/dsa/Makefile
+@@ -14,3 +14,4 @@ ifdef CONFIG_NET_DSA_MV88E6171
+ mv88e6xxx_drv-y += mv88e6171.o
+ endif
+ obj-$(CONFIG_NET_DSA_BCM_SF2)	+= bcm_sf2.o
++obj-$(CONFIG_NET_DSA_AR8XXX)	+= ar8xxx.o
+--- /dev/null
++++ b/drivers/net/dsa/ar8xxx.c
+@@ -0,0 +1,529 @@
++/*
++ * Copyright (C) 2009 Felix Fietkau <nbd@nbd.name>
++ * Copyright (C) 2011-2012 Gabor Juhos <juhosg@openwrt.org>
++ * Copyright (c) 2015, The Linux Foundation. All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 and
++ * only version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/module.h>
++#include <linux/phy.h>
++#include <linux/netdevice.h>
++#include <net/dsa.h>
++#include <linux/phy.h>
++#include <linux/of_net.h>
++#include <linux/of_platform.h>
++
++#include "ar8xxx.h"
++
++#define MIB_DESC(_s, _o, _n)	\
++	{			\
++		.size = (_s),	\
++		.offset = (_o),	\
++		.name = (_n),	\
++	}
++
++static const struct ar8xxx_mib_desc ar8327_mib[] = {
++	MIB_DESC(1, 0x00, "RxBroad"),
++	MIB_DESC(1, 0x04, "RxPause"),
++	MIB_DESC(1, 0x08, "RxMulti"),
++	MIB_DESC(1, 0x0c, "RxFcsErr"),
++	MIB_DESC(1, 0x10, "RxAlignErr"),
++	MIB_DESC(1, 0x14, "RxRunt"),
++	MIB_DESC(1, 0x18, "RxFragment"),
++	MIB_DESC(1, 0x1c, "Rx64Byte"),
++	MIB_DESC(1, 0x20, "Rx128Byte"),
++	MIB_DESC(1, 0x24, "Rx256Byte"),
++	MIB_DESC(1, 0x28, "Rx512Byte"),
++	MIB_DESC(1, 0x2c, "Rx1024Byte"),
++	MIB_DESC(1, 0x30, "Rx1518Byte"),
++	MIB_DESC(1, 0x34, "RxMaxByte"),
++	MIB_DESC(1, 0x38, "RxTooLong"),
++	MIB_DESC(2, 0x3c, "RxGoodByte"),
++	MIB_DESC(2, 0x44, "RxBadByte"),
++	MIB_DESC(1, 0x4c, "RxOverFlow"),
++	MIB_DESC(1, 0x50, "Filtered"),
++	MIB_DESC(1, 0x54, "TxBroad"),
++	MIB_DESC(1, 0x58, "TxPause"),
++	MIB_DESC(1, 0x5c, "TxMulti"),
++	MIB_DESC(1, 0x60, "TxUnderRun"),
++	MIB_DESC(1, 0x64, "Tx64Byte"),
++	MIB_DESC(1, 0x68, "Tx128Byte"),
++	MIB_DESC(1, 0x6c, "Tx256Byte"),
++	MIB_DESC(1, 0x70, "Tx512Byte"),
++	MIB_DESC(1, 0x74, "Tx1024Byte"),
++	MIB_DESC(1, 0x78, "Tx1518Byte"),
++	MIB_DESC(1, 0x7c, "TxMaxByte"),
++	MIB_DESC(1, 0x80, "TxOverSize"),
++	MIB_DESC(2, 0x84, "TxByte"),
++	MIB_DESC(1, 0x8c, "TxCollision"),
++	MIB_DESC(1, 0x90, "TxAbortCol"),
++	MIB_DESC(1, 0x94, "TxMultiCol"),
++	MIB_DESC(1, 0x98, "TxSingleCol"),
++	MIB_DESC(1, 0x9c, "TxExcDefer"),
++	MIB_DESC(1, 0xa0, "TxDefer"),
++	MIB_DESC(1, 0xa4, "TxLateCol"),
++};
++
++u32
++ar8xxx_mii_read32(struct mii_bus *bus, int phy_id, int regnum)
++{
++	u16 lo, hi;
++
++	lo = bus->read(bus, phy_id, regnum);
++	hi = bus->read(bus, phy_id, regnum + 1);
++
++	return (hi << 16) | lo;
++}
++
++void
++ar8xxx_mii_write32(struct mii_bus *bus, int phy_id, int regnum, u32 val)
++{
++	u16 lo, hi;
++
++	lo = val & 0xffff;
++	hi = (u16)(val >> 16);
++
++	bus->write(bus, phy_id, regnum, lo);
++	bus->write(bus, phy_id, regnum + 1, hi);
++}
++
++u32 ar8xxx_read(struct dsa_switch *ds, int reg)
++{
++	struct mii_bus *bus = dsa_host_dev_to_mii_bus(ds->master_dev);
++	u16 r1, r2, page;
++	u32 val;
++
++	split_addr((u32)reg, &r1, &r2, &page);
++
++	mutex_lock(&bus->mdio_lock);
++
++	bus->write(bus, 0x18, 0, page);
++	wait_for_page_switch();
++	val = ar8xxx_mii_read32(bus, 0x10 | r2, r1);
++
++	mutex_unlock(&bus->mdio_lock);
++
++	return val;
++}
++
++void ar8xxx_write(struct dsa_switch *ds, int reg, u32 val)
++{
++	struct mii_bus *bus = dsa_host_dev_to_mii_bus(ds->master_dev);
++	u16 r1, r2, page;
++
++	split_addr((u32)reg, &r1, &r2, &page);
++
++	mutex_lock(&bus->mdio_lock);
++
++	bus->write(bus, 0x18, 0, page);
++	wait_for_page_switch();
++	ar8xxx_mii_write32(bus, 0x10 | r2, r1, val);
++
++	mutex_unlock(&bus->mdio_lock);
++}
++
++u32
++ar8xxx_rmw(struct dsa_switch *ds, int reg, u32 mask, u32 val)
++{
++	struct mii_bus *bus = dsa_host_dev_to_mii_bus(ds->master_dev);
++	u16 r1, r2, page;
++	u32 ret;
++
++	split_addr((u32)reg, &r1, &r2, &page);
++
++	mutex_lock(&bus->mdio_lock);
++
++	bus->write(bus, 0x18, 0, page);
++	wait_for_page_switch();
++
++	ret = ar8xxx_mii_read32(bus, 0x10 | r2, r1);
++	ret &= ~mask;
++	ret |= val;
++	ar8xxx_mii_write32(bus, 0x10 | r2, r1, ret);
++
++	mutex_unlock(&bus->mdio_lock);
++
++	return ret;
++}
++
++static char *ar8xxx_probe(struct device *host_dev, int sw_addr)
++{
++	struct mii_bus *bus = dsa_host_dev_to_mii_bus(host_dev);
++	u32 phy_id;
++
++	if (!bus)
++		return NULL;
++
++	/* sw_addr is irrelevant as the switch occupies the MDIO bus from
++	 * addresses 0 to 4 (PHYs) and 16-23 (for MDIO 32bits protocol). So
++	 * we'll probe address 0 to see if we see the right switch family.
++	 */
++	phy_id = mdiobus_read(bus, 0, MII_PHYSID1) << 16;
++	phy_id |= mdiobus_read(bus, 0, MII_PHYSID2);
++
++	switch (phy_id) {
++	case PHY_ID_QCA8337:
++		return "QCA8337";
++	default:
++		return NULL;
++	}
++}
++
++static int ar8xxx_regmap_read(void *ctx, uint32_t reg, uint32_t *val)
++{
++	struct dsa_switch *ds = (struct dsa_switch *)ctx;
++
++	*val = ar8xxx_read(ds, reg);
++
++	return 0;
++}
++
++static int ar8xxx_regmap_write(void *ctx, uint32_t reg, uint32_t val)
++{
++	struct dsa_switch *ds = (struct dsa_switch *)ctx;
++
++	ar8xxx_write(ds, reg, val);
++
++	return 0;
++}
++
++static const struct regmap_range ar8xxx_readable_ranges[] = {
++	regmap_reg_range(0x0000, 0x00e4), /* Global control */
++	regmap_reg_range(0x0100, 0x0168), /* EEE control */
++	regmap_reg_range(0x0200, 0x0270), /* Parser control */
++	regmap_reg_range(0x0400, 0x0454), /* ACL */
++	regmap_reg_range(0x0600, 0x0718), /* Lookup */
++	regmap_reg_range(0x0800, 0x0b70), /* QM */
++	regmap_reg_range(0x0C00, 0x0c80), /* PKT */
++	regmap_reg_range(0x1000, 0x10ac), /* MIB - Port0 */
++	regmap_reg_range(0x1100, 0x11ac), /* MIB - Port1 */
++	regmap_reg_range(0x1200, 0x12ac), /* MIB - Port2 */
++	regmap_reg_range(0x1300, 0x13ac), /* MIB - Port3 */
++	regmap_reg_range(0x1400, 0x14ac), /* MIB - Port4 */
++	regmap_reg_range(0x1500, 0x15ac), /* MIB - Port5 */
++	regmap_reg_range(0x1600, 0x16ac), /* MIB - Port6 */
++
++};
++
++static struct regmap_access_table ar8xxx_readable_table = {
++	.yes_ranges = ar8xxx_readable_ranges,
++	.n_yes_ranges = ARRAY_SIZE(ar8xxx_readable_ranges),
++};
++
++struct regmap_config ar8xxx_regmap_config = {
++	.reg_bits = 16,
++	.val_bits = 32,
++	.reg_stride = 4,
++	.max_register = 0x16ac, /* end MIB - Port6 range */
++	.reg_read = ar8xxx_regmap_read,
++	.reg_write = ar8xxx_regmap_write,
++	.rd_table = &ar8xxx_readable_table,
++};
++
++static int ar8xxx_set_pad_ctrl(struct dsa_switch *ds, int port, int mode)
++{
++	int reg;
++
++	switch (port) {
++	case 0:
++		reg = AR8327_REG_PORT0_PAD_CTRL;
++		break;
++	case 6:
++		reg = AR8327_REG_PORT6_PAD_CTRL;
++		break;
++	default:
++		pr_err("Can't set PAD_CTRL on port %d\n", port);
++		return -EINVAL;
++	}
++
++	/* DSA only supports 1 CPU port for now, so we'll take the assumption
++	 * that P0 is connected to the CPU master_dev.
++	 */
++	switch (mode) {
++	case PHY_INTERFACE_MODE_RGMII:
++		ar8xxx_write(ds, reg,
++			     AR8327_PORT_PAD_RGMII_EN |
++			     AR8327_PORT_PAD_RGMII_TX_DELAY(3) |
++			     AR8327_PORT_PAD_RGMII_RX_DELAY(3));
++
++		/* According to the datasheet, RGMII delay is enabled through
++		 * PORT5_PAD_CTRL for all ports, rather than individual port
++		 * registers
++		 */
++		ar8xxx_write(ds, AR8327_REG_PORT5_PAD_CTRL,
++			     AR8327_PORT_PAD_RGMII_RX_DELAY_EN);
++		break;
++	case PHY_INTERFACE_MODE_SGMII:
++		ar8xxx_write(ds, reg, AR8327_PORT_PAD_SGMII_EN);
++		break;
++	default:
++		pr_err("xMII mode %d not supported\n", mode);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int ar8xxx_of_setup(struct dsa_switch *ds)
++{
++	struct device_node *dn = ds->pd->of_node;
++	const char *s_phymode;
++	int ret, mode;
++	u32 phy_id, ctrl;
++
++	/* If port6-phy-mode property exists, configure it accordingly */
++	if (!of_property_read_string(dn, "qca,port6-phy-mode", &s_phymode)) {
++		for (mode = 0; mode < PHY_INTERFACE_MODE_MAX; mode++)
++			if (!strcasecmp(s_phymode, phy_modes(mode)))
++				break;
++
++		if (mode == PHY_INTERFACE_MODE_MAX)
++			pr_err("Unknown phy-mode: \"%s\"\n", s_phymode);
++
++		ret = ar8xxx_set_pad_ctrl(ds, 6, mode);
++		if (ret < 0)
++			return ret;
++	}
++
++	/* If a phy ID is specified for PORT6 mac, connect them together */
++	if (!of_property_read_u32(dn, "qca,port6-phy-id", &phy_id)) {
++		ar8xxx_rmw(ds, AR8327_PORT_LOOKUP_CTRL(6),
++			   AR8327_PORT_LOOKUP_MEMBER, BIT(phy_to_port(phy_id)));
++		ar8xxx_rmw(ds, AR8327_PORT_LOOKUP_CTRL(phy_to_port(phy_id)),
++			   AR8327_PORT_LOOKUP_MEMBER, BIT(6));
++
++		/* We want the switch to be pass-through and act like a PHY on
++		 * these ports. So BC/MC/UC & IGMP frames need to be accepted
++		 */
++		ctrl = BIT(phy_to_port(phy_id)) | BIT(6);
++		ar8xxx_reg_set(ds, AR8327_REG_GLOBAL_FW_CTRL1,
++			       ctrl << AR8327_GLOBAL_FW_CTRL1_IGMP_DP_S |
++			       ctrl << AR8327_GLOBAL_FW_CTRL1_BC_DP_S |
++			       ctrl << AR8327_GLOBAL_FW_CTRL1_MC_DP_S |
++			       ctrl << AR8327_GLOBAL_FW_CTRL1_UC_DP_S);
++	}
++
++	return 0;
++}
++
++static int ar8xxx_setup(struct dsa_switch *ds)
++{
++	struct ar8xxx_priv *priv = ds_to_priv(ds);
++	struct net_device *netdev = ds->dst->pd->of_netdev;
++	int ret, i, phy_mode;
++
++	/* Start by setting up the register mapping */
++	priv->regmap = devm_regmap_init(ds->master_dev, NULL, ds,
++					&ar8xxx_regmap_config);
++
++	if (IS_ERR(priv->regmap))
++		pr_warn("regmap initialization failed");
++
++	/* Initialize CPU port pad mode (xMII type, delays...) */
++	phy_mode = of_get_phy_mode(netdev->dev.parent->of_node);
++	if (phy_mode < 0) {
++		pr_err("Can't find phy-mode for master device\n");
++		return phy_mode;
++	}
++
++	ret = ar8xxx_set_pad_ctrl(ds, 0, phy_mode);
++	if (ret < 0)
++		return ret;
++
++	/* Enable CPU Port */
++	ar8xxx_reg_set(ds, AR8327_REG_GLOBAL_FW_CTRL0,
++		       AR8327_GLOBAL_FW_CTRL0_CPU_PORT_EN);
++
++	/* Enable MIB counters */
++	ar8xxx_reg_set(ds, AR8327_REG_MIB, AR8327_MIB_CPU_KEEP);
++	ar8xxx_write(ds, AR8327_REG_MODULE_EN, AR8327_MODULE_EN_MIB);
++
++	/* Enable QCA header mode on Port 0 */
++	ar8xxx_write(ds, AR8327_REG_PORT_HDR_CTRL(0),
++		     AR8327_PORT_HDR_CTRL_ALL << AR8327_PORT_HDR_CTRL_TX_S |
++		     AR8327_PORT_HDR_CTRL_ALL << AR8327_PORT_HDR_CTRL_RX_S);
++
++	/* Disable forwarding by default on all ports */
++	for (i = 0; i < AR8327_NUM_PORTS; i++)
++		ar8xxx_rmw(ds, AR8327_PORT_LOOKUP_CTRL(i),
++			   AR8327_PORT_LOOKUP_MEMBER, 0);
++
++	/* Forward all unknown frames to CPU port for Linux processing */
++	ar8xxx_write(ds, AR8327_REG_GLOBAL_FW_CTRL1,
++		     BIT(0) << AR8327_GLOBAL_FW_CTRL1_IGMP_DP_S |
++		     BIT(0) << AR8327_GLOBAL_FW_CTRL1_BC_DP_S |
++		     BIT(0) << AR8327_GLOBAL_FW_CTRL1_MC_DP_S |
++		     BIT(0) << AR8327_GLOBAL_FW_CTRL1_UC_DP_S);
++
++	/* Setup connection between CPU ports & PHYs */
++	for (i = 0; i < DSA_MAX_PORTS; i++) {
++		/* CPU port gets connected to all PHYs in the switch */
++		if (dsa_is_cpu_port(ds, i)) {
++			ar8xxx_rmw(ds, AR8327_PORT_LOOKUP_CTRL(0),
++				   AR8327_PORT_LOOKUP_MEMBER,
++				   ds->phys_port_mask << 1);
++		}
++
++		/* Invividual PHYs gets connected to CPU port only */
++		if (ds->phys_port_mask & BIT(i)) {
++			int phy = phy_to_port(i);
++
++			ar8xxx_rmw(ds, AR8327_PORT_LOOKUP_CTRL(phy),
++				   AR8327_PORT_LOOKUP_MEMBER, BIT(0));
++
++			/* Disable Auto-learning by default so the switch
++			 * doesn't try to forward the frame to another port
++			 */
++			ar8xxx_reg_clear(ds, AR8327_PORT_LOOKUP_CTRL(phy),
++					 AR8327_PORT_LOOKUP_LEARN);
++		}
++	}
++
++	ret = ar8xxx_of_setup(ds);
++	if (ret < 0)
++		return ret;
++
++	return 0;
++}
++
++static int ar8xxx_set_addr(struct dsa_switch *ds, u8 *addr)
++{
++	return 0;
++}
++
++static int ar8xxx_phy_read(struct dsa_switch *ds, int phy, int regnum)
++{
++	struct mii_bus *bus = dsa_host_dev_to_mii_bus(ds->master_dev);
++
++	return mdiobus_read(bus, phy, regnum);
++}
++
++static int
++ar8xxx_phy_write(struct dsa_switch *ds, int phy, int regnum, u16 val)
++{
++	struct mii_bus *bus = dsa_host_dev_to_mii_bus(ds->master_dev);
++
++	return mdiobus_write(bus, phy, regnum, val);
++}
++
++static void ar8xxx_get_strings(struct dsa_switch *ds, int phy, uint8_t *data)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(ar8327_mib); i++) {
++		strncpy(data + i * ETH_GSTRING_LEN, ar8327_mib[i].name,
++			ETH_GSTRING_LEN);
++	}
++}
++
++static void ar8xxx_get_ethtool_stats(struct dsa_switch *ds, int phy,
++				     uint64_t *data)
++{
++	const struct ar8xxx_mib_desc *mib;
++	uint32_t reg, i, port;
++	u64 hi;
++
++	port = phy_to_port(phy);
++
++	for (i = 0; i < ARRAY_SIZE(ar8327_mib); i++) {
++		mib = &ar8327_mib[i];
++		reg = AR8327_PORT_MIB_COUNTER(port) + mib->offset;
++
++		data[i] = ar8xxx_read(ds, reg);
++		if (mib->size == 2) {
++			hi = ar8xxx_read(ds, reg + 4);
++			data[i] |= hi << 32;
++		}
++	}
++}
++
++static int ar8xxx_get_sset_count(struct dsa_switch *ds)
++{
++	return ARRAY_SIZE(ar8327_mib);
++}
++
++static void ar8xxx_poll_link(struct dsa_switch *ds)
++{
++	int i = 0;
++	struct net_device *dev;
++
++	while ((dev = ds->ports[i++]) != NULL) {
++		u32 status;
++		int link;
++		int speed;
++		int duplex;
++
++		status = ar8xxx_read(ds, AR8327_REG_PORT_STATUS(i));
++		link = !!(status & AR8XXX_PORT_STATUS_LINK_UP);
++		duplex = !!(status & AR8XXX_PORT_STATUS_DUPLEX);
++
++		switch (status & AR8XXX_PORT_STATUS_SPEED) {
++		case AR8XXX_PORT_SPEED_10M:
++			speed = 10;
++			break;
++		case AR8XXX_PORT_SPEED_100M:
++			speed = 100;
++			break;
++		case AR8XXX_PORT_SPEED_1000M:
++			speed = 1000;
++			break;
++		default:
++			speed = 0;
++		}
++
++		if (!link) {
++			/* This poll happens every ~1s, so we don't want to
++			 * print the status every time. Only when the device
++			 * transitions from Link UP to Link DOWN
++			 */
++			if (netif_carrier_ok(dev))
++				netif_carrier_off(dev);
++			continue;
++		} else {
++			/* Same thing here. But we detect a Link UP event */
++			if (!netif_carrier_ok(dev))
++				netif_carrier_on(dev);
++			continue;
++		}
++	}
++}
++
++static struct dsa_switch_driver ar8xxx_switch_driver = {
++	.tag_protocol		= DSA_TAG_PROTO_QCA,
++	.priv_size		= sizeof(struct ar8xxx_priv),
++	.probe			= ar8xxx_probe,
++	.setup			= ar8xxx_setup,
++	.set_addr		= ar8xxx_set_addr,
++	.poll_link		= ar8xxx_poll_link,
++	.phy_read		= ar8xxx_phy_read,
++	.phy_write		= ar8xxx_phy_write,
++	.get_strings		= ar8xxx_get_strings,
++	.get_ethtool_stats	= ar8xxx_get_ethtool_stats,
++	.get_sset_count		= ar8xxx_get_sset_count,
++};
++
++static int __init ar8xxx_init(void)
++{
++	register_switch_driver(&ar8xxx_switch_driver);
++	return 0;
++}
++module_init(ar8xxx_init);
++
++static void __exit ar8xxx_cleanup(void)
++{
++	unregister_switch_driver(&ar8xxx_switch_driver);
++}
++module_exit(ar8xxx_cleanup);
++
++MODULE_AUTHOR("Mathieu Olivari <mathieu@codeaurora.org>");
++MODULE_DESCRIPTION("Driver for AR8XXX ethernet switch family");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:ar8xxx");
+--- /dev/null
++++ b/drivers/net/dsa/ar8xxx.h
+@@ -0,0 +1,156 @@
++/*
++ * Copyright (C) 2009 Felix Fietkau <nbd@nbd.name>
++ * Copyright (C) 2011-2012 Gabor Juhos <juhosg@openwrt.org>
++ * Copyright (c) 2015, The Linux Foundation. All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 and
++ * only version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#ifndef __AR8XXX_H
++#define __AR8XXX_H
++
++#include <linux/delay.h>
++#include <linux/regmap.h>
++
++struct ar8xxx_priv {
++	struct regmap *regmap;
++};
++
++struct ar8xxx_mib_desc {
++	unsigned int size;
++	unsigned int offset;
++	const char *name;
++};
++
++#define AR8327_NUM_PORTS		7
++
++#define PHY_ID_QCA8337			0x004dd036
++
++#define AR8327_REG_PORT0_PAD_CTRL		0x004
++#define AR8327_REG_PORT5_PAD_CTRL		0x008
++#define AR8327_REG_PORT6_PAD_CTRL		0x00c
++#define   AR8327_PORT_PAD_RGMII_EN		BIT(26)
++#define   AR8327_PORT_PAD_RGMII_TX_DELAY(x)	((0x8 + (x & 0x3)) << 22)
++#define   AR8327_PORT_PAD_RGMII_RX_DELAY(x)	((0x10 + (x & 0x3)) << 20)
++#define   AR8327_PORT_PAD_RGMII_RX_DELAY_EN	BIT(24)
++#define   AR8327_PORT_PAD_SGMII_EN		BIT(7)
++
++#define AR8327_REG_MODULE_EN			0x030
++#define   AR8327_MODULE_EN_MIB			BIT(0)
++#define	  AR8327_MODULE_EN_ACL			BIT(1)
++#define	  AR8327_MODULE_EN_L3			BIT(2)
++
++#define AR8327_REG_MIB				0x034
++#define   AR8327_MIB_CPU_KEEP			BIT(20)
++
++#define AR8327_REG_PORT_STATUS(_i)		(0x07c + (_i) * 4)
++#define   AR8XXX_PORT_STATUS_SPEED	GENMASK(2, 0)
++#define   AR8XXX_PORT_STATUS_SPEED_S	0
++#define   AR8XXX_PORT_STATUS_TXMAC	BIT(2)
++#define   AR8XXX_PORT_STATUS_RXMAC	BIT(3)
++#define   AR8XXX_PORT_STATUS_TXFLOW	BIT(4)
++#define   AR8XXX_PORT_STATUS_RXFLOW	BIT(5)
++#define   AR8XXX_PORT_STATUS_DUPLEX	BIT(6)
++#define   AR8XXX_PORT_STATUS_LINK_UP	BIT(8)
++#define   AR8XXX_PORT_STATUS_LINK_AUTO	BIT(9)
++#define   AR8XXX_PORT_STATUS_LINK_PAUSE	BIT(10)
++
++#define AR8327_REG_PORT_HDR_CTRL(_i)		(0x9c + (_i * 4))
++#define   AR8327_PORT_HDR_CTRL_RX_MASK		GENMASK(3, 2)
++#define   AR8327_PORT_HDR_CTRL_RX_S		2
++#define   AR8327_PORT_HDR_CTRL_TX_MASK		GENMASK(1, 0)
++#define   AR8327_PORT_HDR_CTRL_TX_S		0
++#define   AR8327_PORT_HDR_CTRL_ALL		2
++#define   AR8327_PORT_HDR_CTRL_MGMT		1
++#define   AR8327_PORT_HDR_CTRL_NONE		0
++
++#define AR8327_REG_GLOBAL_FW_CTRL0		0x620
++#define   AR8327_GLOBAL_FW_CTRL0_CPU_PORT_EN	BIT(10)
++
++#define AR8327_REG_GLOBAL_FW_CTRL1		0x624
++#define   AR8327_GLOBAL_FW_CTRL1_IGMP_DP_MASK	GENMASK(30, 24)
++#define   AR8327_GLOBAL_FW_CTRL1_IGMP_DP_S	24
++#define   AR8327_GLOBAL_FW_CTRL1_BC_DP_MASK	GENMASK(22, 16)
++#define   AR8327_GLOBAL_FW_CTRL1_BC_DP_S	16
++#define   AR8327_GLOBAL_FW_CTRL1_MC_DP_MASK	GENMASK(14, 8)
++#define   AR8327_GLOBAL_FW_CTRL1_MC_DP_S	8
++#define   AR8327_GLOBAL_FW_CTRL1_UC_DP_MASK	GENMASK(6, 0)
++#define   AR8327_GLOBAL_FW_CTRL1_UC_DP_S	0
++
++#define AR8327_PORT_LOOKUP_CTRL(_i)		(0x660 + (_i) * 0xc)
++#define   AR8327_PORT_LOOKUP_MEMBER		GENMASK(6, 0)
++#define   AR8327_PORT_LOOKUP_IN_MODE		GENMASK(9, 8)
++#define   AR8327_PORT_LOOKUP_IN_MODE_S		8
++#define   AR8327_PORT_LOOKUP_STATE		GENMASK(18, 16)
++#define   AR8327_PORT_LOOKUP_STATE_S		16
++#define   AR8327_PORT_LOOKUP_LEARN		BIT(20)
++#define   AR8327_PORT_LOOKUP_ING_MIRROR_EN	BIT(25)
++
++#define AR8327_PORT_MIB_COUNTER(_i)		(0x1000 + (_i) * 0x100)
++
++/* port speed */
++enum {
++	AR8XXX_PORT_SPEED_10M = 0,
++	AR8XXX_PORT_SPEED_100M = 1,
++	AR8XXX_PORT_SPEED_1000M = 2,
++	AR8XXX_PORT_SPEED_ERR = 3,
++};
++
++static inline int port_to_phy(int port)
++{
++	if (port >= 1 && port <= 6)
++		return port - 1;
++
++	return -1;
++}
++
++static inline int phy_to_port(int phy)
++{
++	if (phy < 5)
++		return phy + 1;
++
++	return -1;
++}
++
++u32
++ar8xxx_rmw(struct dsa_switch *ds, int reg, u32 mask, u32 val);
++
++static inline void
++split_addr(u32 regaddr, u16 *r1, u16 *r2, u16 *page)
++{
++	regaddr >>= 1;
++	*r1 = regaddr & 0x1e;
++
++	regaddr >>= 5;
++	*r2 = regaddr & 0x7;
++
++	regaddr >>= 3;
++	*page = regaddr & 0x1ff;
++}
++
++static inline void
++wait_for_page_switch(void)
++{
++	udelay(5);
++}
++
++static inline void
++ar8xxx_reg_set(struct dsa_switch *ds, int reg, u32 val)
++{
++	ar8xxx_rmw(ds, reg, 0, val);
++}
++
++static inline void
++ar8xxx_reg_clear(struct dsa_switch *ds, int reg, u32 val)
++{
++	ar8xxx_rmw(ds, reg, val, 0);
++}
++
++#endif /* __AR8XXX_H */
+--- a/net/dsa/dsa.c
++++ b/net/dsa/dsa.c
+@@ -285,6 +285,11 @@ static int dsa_switch_setup_one(struct d
+ 			dst->rcv = brcm_netdev_ops.rcv;
+ 			break;
+ #endif
++#ifdef CONFIG_NET_DSA_TAG_QCA
++		case DSA_TAG_PROTO_QCA:
++			dst->rcv = qca_netdev_ops.rcv;
++			break;
++#endif
+ 		case DSA_TAG_PROTO_NONE:
+ 			break;
+ 		default:
+@@ -1041,6 +1046,7 @@ static SIMPLE_DEV_PM_OPS(dsa_pm_ops, dsa
+ 
+ static const struct of_device_id dsa_of_match_table[] = {
+ 	{ .compatible = "brcm,bcm7445-switch-v4.0" },
++	{ .compatible = "qca,ar8xxx", },
+ 	{ .compatible = "marvell,dsa", },
+ 	{}
+ };
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -26,6 +26,7 @@ enum dsa_tag_protocol {
+ 	DSA_TAG_PROTO_TRAILER,
+ 	DSA_TAG_PROTO_EDSA,
+ 	DSA_TAG_PROTO_BRCM,
++	DSA_TAG_PROTO_QCA,
+ };
+ 
+ #define DSA_MAX_SWITCHES	4
+--- a/net/dsa/Kconfig
++++ b/net/dsa/Kconfig
+@@ -26,6 +26,9 @@ config NET_DSA_HWMON
+ 	  via the hwmon sysfs interface and exposes the onboard sensors.
+ 
+ # tagging formats
++config NET_DSA_TAG_QCA
++	bool
++
+ config NET_DSA_TAG_BRCM
+ 	bool
+ 
+--- a/net/dsa/Makefile
++++ b/net/dsa/Makefile
+@@ -3,6 +3,7 @@ obj-$(CONFIG_NET_DSA) += dsa_core.o
+ dsa_core-y += dsa.o slave.o
+ 
+ # tagging formats
++dsa_core-$(CONFIG_NET_DSA_TAG_QCA) += tag_qca.o
+ dsa_core-$(CONFIG_NET_DSA_TAG_BRCM) += tag_brcm.o
+ dsa_core-$(CONFIG_NET_DSA_TAG_DSA) += tag_dsa.o
+ dsa_core-$(CONFIG_NET_DSA_TAG_EDSA) += tag_edsa.o
+--- a/net/dsa/dsa_priv.h
++++ b/net/dsa/dsa_priv.h
+@@ -78,5 +78,7 @@ extern const struct dsa_device_ops trail
+ /* tag_brcm.c */
+ extern const struct dsa_device_ops brcm_netdev_ops;
+ 
++/* tag_qca.c */
++extern const struct dsa_device_ops qca_netdev_ops;
+ 
+ #endif
+--- a/net/dsa/slave.c
++++ b/net/dsa/slave.c
+@@ -1180,6 +1180,11 @@ int dsa_slave_create(struct dsa_switch *
+ 		p->xmit = brcm_netdev_ops.xmit;
+ 		break;
+ #endif
++#ifdef CONFIG_NET_DSA_TAG_QCA
++	case DSA_TAG_PROTO_QCA:
++		p->xmit = qca_netdev_ops.xmit;
++		break;
++#endif
+ 	default:
+ 		p->xmit	= dsa_slave_notag_xmit;
+ 		break;
+--- /dev/null
++++ b/net/dsa/tag_qca.c
+@@ -0,0 +1,158 @@
++/*
++ * Copyright (c) 2015, The Linux Foundation. All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 and
++ * only version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/etherdevice.h>
++#include "dsa_priv.h"
++
++#define QCA_HDR_LEN	2
++#define QCA_HDR_VERSION	0x2
++
++#define QCA_HDR_RECV_VERSION_MASK	GENMASK(15, 14)
++#define QCA_HDR_RECV_VERSION_S		14
++#define QCA_HDR_RECV_PRIORITY_MASK	GENMASK(13, 11)
++#define QCA_HDR_RECV_PRIORITY_S		11
++#define QCA_HDR_RECV_TYPE_MASK		GENMASK(10, 6)
++#define QCA_HDR_RECV_TYPE_S		6
++#define QCA_HDR_RECV_FRAME_IS_TAGGED	BIT(3)
++#define QCA_HDR_RECV_SOURCE_PORT_MASK	GENMASK(2, 0)
++
++#define QCA_HDR_XMIT_VERSION_MASK	GENMASK(15, 14)
++#define QCA_HDR_XMIT_VERSION_S		14
++#define QCA_HDR_XMIT_PRIORITY_MASK	GENMASK(13, 11)
++#define QCA_HDR_XMIT_PRIORITY_S		11
++#define QCA_HDR_XMIT_CONTROL_MASK	GENMASK(10, 8)
++#define QCA_HDR_XMIT_CONTROL_S		8
++#define QCA_HDR_XMIT_FROM_CPU		BIT(7)
++#define QCA_HDR_XMIT_DP_BIT_MASK	GENMASK(6, 0)
++
++static inline int reg_to_port(int reg)
++{
++	if (reg < 5)
++		return reg + 1;
++
++	return -1;
++}
++
++static inline int port_to_reg(int port)
++{
++	if (port >= 1 && port <= 6)
++		return port - 1;
++
++	return -1;
++}
++
++static netdev_tx_t qca_tag_xmit(struct sk_buff *skb, struct net_device *dev)
++{
++	struct dsa_slave_priv *p = netdev_priv(dev);
++	u16 *phdr, hdr;
++
++	dev->stats.tx_packets++;
++	dev->stats.tx_bytes += skb->len;
++
++	if (skb_cow_head(skb, 0) < 0)
++		goto out_free;
++
++	skb_push(skb, QCA_HDR_LEN);
++
++	memmove(skb->data, skb->data + QCA_HDR_LEN, 2 * ETH_ALEN);
++	phdr = (u16 *)(skb->data + 2 * ETH_ALEN);
++
++	/* Set the version field, and set destination port information */
++	hdr = QCA_HDR_VERSION << QCA_HDR_XMIT_VERSION_S |
++		QCA_HDR_XMIT_FROM_CPU |
++		1 << reg_to_port(p->port);
++
++	*phdr = htons(hdr);
++
++	skb->dev = p->parent->dst->master_netdev;
++	dev_queue_xmit(skb);
++
++	return NETDEV_TX_OK;
++
++out_free:
++	kfree_skb(skb);
++	return NETDEV_TX_OK;
++}
++
++static int qca_tag_rcv(struct sk_buff *skb, struct net_device *dev,
++		       struct packet_type *pt, struct net_device *orig_dev)
++{
++	struct dsa_switch_tree *dst = dev->dsa_ptr;
++	struct dsa_switch *ds;
++	u8 ver;
++	int port, phy;
++	__be16 *phdr, hdr;
++
++	if (unlikely(!dst))
++		goto out_drop;
++
++	skb = skb_unshare(skb, GFP_ATOMIC);
++	if (!skb)
++		goto out;
++
++	if (unlikely(!pskb_may_pull(skb, QCA_HDR_LEN)))
++		goto out_drop;
++
++	/* Ethernet is added by the switch between src addr and Ethertype
++	 * At this point, skb->data points to ethertype so header should be
++	 * right before
++	 */
++	phdr = (__be16 *)(skb->data - 2);
++	hdr = ntohs(*phdr);
++
++	/* Make sure the version is correct */
++	ver = (hdr & QCA_HDR_RECV_VERSION_MASK) >> QCA_HDR_RECV_VERSION_S;
++	if (unlikely(ver != QCA_HDR_VERSION))
++		goto out_drop;
++
++	/* Remove QCA tag and recalculate checksum */
++	skb_pull_rcsum(skb, QCA_HDR_LEN);
++	memmove(skb->data - ETH_HLEN, skb->data - ETH_HLEN - QCA_HDR_LEN,
++		ETH_HLEN - QCA_HDR_LEN);
++
++	/* This protocol doesn't support cascading multiple switches so it's
++	 * safe to assume the switch is first in the tree
++	 */
++	ds = dst->ds[0];
++	if (!ds)
++		goto out_drop;
++
++	/* Get source port information */
++	port = (hdr & QCA_HDR_RECV_SOURCE_PORT_MASK);
++	phy = port_to_reg(port);
++	if (unlikely(phy < 0) || !ds->ports[phy])
++		goto out_drop;
++
++	/* Update skb & forward the frame accordingly */
++	skb_push(skb, ETH_HLEN);
++	skb->pkt_type = PACKET_HOST;
++	skb->dev = ds->ports[phy];
++	skb->protocol = eth_type_trans(skb, skb->dev);
++
++	skb->dev->stats.rx_packets++;
++	skb->dev->stats.rx_bytes += skb->len;
++
++	netif_receive_skb(skb);
++
++	return 0;
++
++out_drop:
++	kfree_skb(skb);
++out:
++	return 0;
++}
++
++const struct dsa_device_ops qca_netdev_ops = {
++	.xmit	= qca_tag_xmit,
++	.rcv	= qca_tag_rcv,
++};
+--- /dev/null
++++ b/Documentation/devicetree/bindings/net/dsa/qca-ar8xxx.txt
+@@ -0,0 +1,70 @@
++* Qualcomm Atheros AR8xxx switch family
++
++Required properties:
++
++- compatible: should be "qca,ar8xxx"
++- dsa,mii-bus: phandle to the MDIO bus controller, see dsa/dsa.txt
++- dsa,ethernet: phandle to the CPU network interface controller, see dsa/dsa.txt
++- #size-cells: must be 0
++- #address-cells: must be 2, see dsa/dsa.txt
++
++Subnodes:
++
++The integrated switch subnode should be specified according to the binding
++described in dsa/dsa.txt.
++
++Optional properties:
++
++- qca,port6-phy-mode: if specified, the driver will configure Port 6 in the
++  given phy-mode. See Documentation/devicetree/bindings/net/ethernet.txt for
++  the list of valid phy-mode.
++
++- qca,port6-phy-id: if specified, the driver will connect Port 6 to the PHY
++  given as a parameter. In this case, Port6 and the corresponding PHY will be
++  isolated from the rest of the switch. From a system perspective, they will
++  act as a regular PHY.
++
++Example:
++
++	dsa@0 {
++		compatible = "qca,ar8xxx";
++		#address-cells = <2>;
++		#size-cells = <0>;
++
++		dsa,ethernet = <&ethernet0>;
++		dsa,mii-bus = <&mii_bus0>;
++
++		switch@0 {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			reg = <0 0>;	/* MDIO address 0, switch 0 in tree */
++
++			qca,port6-phy-mode = "sgmii";
++			qca,port6-phy-id = <4>;
++
++			port@0 {
++				reg = <11>;
++				label = "cpu";
++			};
++
++			port@1 {
++				reg = <0>;
++				label = "lan1";
++			};
++
++			port@2 {
++				reg = <1>;
++				label = "lan2";
++			};
++
++			port@3 {
++				reg = <2>;
++				label = "lan3";
++			};
++
++			port@4 {
++				reg = <3>;
++				label = "lan4";
++			};
++		};
++	};

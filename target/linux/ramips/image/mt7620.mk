@@ -2,7 +2,8 @@
 # MT7620A Profiles
 #
 
-DEVICE_VARS += TPLINK_FLASHLAYOUT TPLINK_HWID TPLINK_HWREV TPLINK_HWREVADD TPLINK_HVERSION
+DEVICE_VARS += TPLINK_FLASHLAYOUT TPLINK_HWID TPLINK_HWREV TPLINK_HWREVADD TPLINK_HVERSION \
+	DLINK_ROM_ID DLINK_FAMILY_MEMBER DLINK_FIRMWARE_SIZE
 
 define Build/elecom-header
 	cp $@ $(KDIR)/v_0.0.0.bin
@@ -31,8 +32,7 @@ define Device/alfa-network_ac1200rm
   DTS := AC1200RM
   IMAGE_SIZE := 16064k
   DEVICE_TITLE := ALFA Network AC1200RM
-  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
-  SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci uboot-envtools
 endef
 TARGET_DEVICES += alfa-network_ac1200rm
 
@@ -44,20 +44,6 @@ define Device/Archer
   IMAGE/factory.bin := tplink-v2-image -e
   IMAGE/sysupgrade.bin := tplink-v2-image -s -e | append-metadata
 endef
-
-define Device/ArcherC20
-  $(Device/Archer)
-  DTS := ArcherC20
-  SUPPORTED_DEVICES := c20
-  TPLINK_FLASHLAYOUT := 8Mmtk
-  TPLINK_HWID := 0xc2000001
-  TPLINK_HWREV := 0x44
-  TPLINK_HWREVADD := 0x1
-  IMAGES += factory.bin
-  DEVICE_TITLE := TP-Link ArcherC20
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
-endef
-TARGET_DEVICES += ArcherC20
 
 define Device/ArcherC20i
   $(Device/Archer)
@@ -160,6 +146,44 @@ define Device/dir-810l
   DEVICE_TITLE := D-Link DIR-810L
 endef
 TARGET_DEVICES += dir-810l
+
+define Device/dlink_dwr-116-a1
+  DTS := DWR-116-A1
+  DEVICE_TITLE := D-Link DWR-116 A1/A2
+  DEVICE_PACKAGES := kmod-usb2 jboot-tools
+  DLINK_ROM_ID := DLK6E3803001
+  DLINK_FAMILY_MEMBER := 0x6E38
+  DLINK_FIRMWARE_SIZE := 0x7E0000
+  KERNEL := $(KERNEL_DTB)
+  IMAGES += factory.bin
+  IMAGE/sysupgrade.bin := mkdlinkfw | pad-rootfs | append-metadata
+  IMAGE/factory.bin := mkdlinkfw | pad-rootfs | mkdlinkfw-factory
+endef
+TARGET_DEVICES += dlink_dwr-116-a1
+
+define Device/dlink_dwr-921-c1
+  DTS := DWR-921-C1
+  IMAGE_SIZE := $(ralink_default_fw_size_16M)
+  DEVICE_TITLE := D-Link DWR-921 C1
+  DLINK_ROM_ID := DLK6E2414001
+  DLINK_FAMILY_MEMBER := 0x6E24
+  DLINK_FIRMWARE_SIZE := 0xFE0000
+  KERNEL := $(KERNEL_DTB)
+  IMAGES += factory.bin
+  IMAGE/sysupgrade.bin := mkdlinkfw | pad-rootfs | append-metadata
+  IMAGE/factory.bin := mkdlinkfw | pad-rootfs | mkdlinkfw-factory
+  DEVICE_PACKAGES := jboot-tools \
+	kmod-usb2 kmod-usb-net-qmi-wwan kmod-usb-serial-option uqmi
+endef
+TARGET_DEVICES += dlink_dwr-921-c1
+
+define Device/dlink_dwr-921-c3
+  $(Device/dlink_dwr-921-c1)
+  DEVICE_TITLE := D-Link DWR-921 C3
+  DLINK_ROM_ID := DLK6E2414009
+  SUPPORTED_DEVICES := dlink,dwr-921-c1
+endef
+TARGET_DEVICES += dlink_dwr-921-c3
 
 define Device/e1700
   DTS := E1700
@@ -379,14 +403,14 @@ TARGET_DEVICES += oy-0001
 
 define Device/psg1208
   DTS := PSG1208
-  DEVICE_TITLE := Phicomm PSG1208
+  DEVICE_TITLE := Phicomm PSG1208 (K1)
   DEVICE_PACKAGES := kmod-mt76
 endef
 TARGET_DEVICES += psg1208
 
 define Device/psg1218a
   DTS := PSG1218A
-  DEVICE_TITLE := Phicomm PSG1218 rev.Ax
+  DEVICE_TITLE := Phicomm PSG1218 rev.Ax (K2)
   DEVICE_PACKAGES := kmod-mt76x2
   SUPPORTED_DEVICES += psg1218
 endef
@@ -394,7 +418,7 @@ TARGET_DEVICES += psg1218a
 
 define Device/psg1218b
   DTS := PSG1218B
-  DEVICE_TITLE := Phicomm PSG1218 rev.Bx
+  DEVICE_TITLE := Phicomm PSG1218 rev.Bx (K2C)
   DEVICE_PACKAGES := kmod-mt76x2
   SUPPORTED_DEVICES += psg1218
 endef
@@ -432,6 +456,20 @@ define Device/tiny-ac
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
 endef
 TARGET_DEVICES += tiny-ac
+
+define Device/tplink_c20-v1
+  $(Device/Archer)
+  DTS := ArcherC20v1
+  SUPPORTED_DEVICES := c20v1
+  TPLINK_FLASHLAYOUT := 8Mmtk
+  TPLINK_HWID := 0xc2000001
+  TPLINK_HWREV := 0x44
+  TPLINK_HWREVADD := 0x1
+  IMAGES += factory.bin
+  DEVICE_TITLE := TP-Link ArcherC20 v1
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += tplink_c20-v1
 
 define Device/vonets_var11n-300
   DTS := VAR11N-300
