@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ppfe
-PKG_SOURCE_DATE:=2017-10-13
+PKG_SOURCE_DATE:=2017-12-05
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/qoriq-open-source/engine-pfe-bin.git
-PKG_SOURCE_VERSION:=97cd13d3070d7199e62881bc495b332194b67edd
-PKG_MIRROR_HASH:=3457bfe7201a8410443f34d4bb5fa67d4ff19e2d0f3957e84e3f20e2ae3fa34a
+PKG_SOURCE_URL:=https://github.com/NXP/qoriq-engine-pfe-bin.git
+PKG_SOURCE_VERSION:=848002fe4e0e3efb8d13a813e5c123bbc87aa95b
+PKG_MIRROR_HASH:=b6867be2f5826e807db15256996e11303ca7bbe06ac18448cbf68827d9a59ae2
 
 PKG_FLAGS:=nonshared
 
@@ -31,7 +31,7 @@ define Package/layerscape-ppfe
   CONFIG_FW:=ls1012a/u-boot/pfe_fw_sbl.itb
   CONFIG_BIN1:=ls1012a/slow_path/ppfe_class_ls1012a.elf
   CONFIG_BIN2:=ls1012a/slow_path/ppfe_tmu_ls1012a.elf
-  CONFIG_LIC:=Freescale-Binary-EULA
+  CONFIG_LIC:=NXP-Binary-EULA.txt
 endef
 
 define Build/Compile

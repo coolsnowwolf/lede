@@ -1,0 +1,117 @@
+--- a/drivers/net/ethernet/stmicro/stmmac/dwmac-ipq806x.c
++++ b/drivers/net/ethernet/stmicro/stmmac/dwmac-ipq806x.c
+@@ -259,6 +259,7 @@ static int ipq806x_gmac_probe(struct pla
+ {
+ 	struct plat_stmmacenet_data *plat_dat;
+ 	struct stmmac_resources stmmac_res;
++	struct stmmac_dma_cfg *dma_cfg;
+ 	struct device *dev = &pdev->dev;
+ 	struct ipq806x_gmac *gmac;
+ 	int val;
+@@ -348,6 +349,17 @@ static int ipq806x_gmac_probe(struct pla
+ 	plat_dat->bsp_priv = gmac;
+ 	plat_dat->fix_mac_speed = ipq806x_gmac_fix_mac_speed;
+ 
++	dma_cfg = devm_kzalloc(&pdev->dev, sizeof(*dma_cfg),
++			       GFP_KERNEL);
++
++	dma_cfg->pbl = 32;
++	dma_cfg->aal = 1;
++	dma_cfg->burst_len = DMA_AXI_BLEN_16 |
++		(7 << DMA_AXI_RD_OSR_LMT_SHIFT) |
++		(7 << DMA_AXI_WR_OSR_LMT_SHIFT);
++
++	plat_dat->dma_cfg = dma_cfg;
++
+ 	return stmmac_dvr_probe(&pdev->dev, plat_dat, &stmmac_res);
+ }
+ 
+--- a/include/linux/stmmac.h
++++ b/include/linux/stmmac.h
+@@ -73,6 +73,9 @@
+ 			| DMA_AXI_BLEN_32 | DMA_AXI_BLEN_64 \
+ 			| DMA_AXI_BLEN_128 | DMA_AXI_BLEN_256)
+ 
++#define DMA_AXI_RD_OSR_LMT_SHIFT	16
++#define DMA_AXI_WR_OSR_LMT_SHIFT	20
++
+ /* Platfrom data for platform device structure's platform_data field */
+ 
+ struct stmmac_mdio_bus_data {
+@@ -88,6 +91,7 @@ struct stmmac_mdio_bus_data {
+ 
+ struct stmmac_dma_cfg {
+ 	int pbl;
++	int aal;
+ 	int fixed_burst;
+ 	int mixed_burst;
+ 	int burst_len;
+--- a/drivers/net/ethernet/stmicro/stmmac/dwmac1000_dma.c
++++ b/drivers/net/ethernet/stmicro/stmmac/dwmac1000_dma.c
+@@ -31,7 +31,8 @@
+ #include "dwmac_dma.h"
+ 
+ static int dwmac1000_dma_init(void __iomem *ioaddr, int pbl, int fb, int mb,
+-			      int burst_len, u32 dma_tx, u32 dma_rx, int atds)
++			      int burst_len, u32 dma_tx, u32 dma_rx, int atds,
++			      int aal)
+ {
+ 	u32 value = readl(ioaddr + DMA_BUS_MODE);
+ 	int limit;
+@@ -62,6 +63,10 @@ static int dwmac1000_dma_init(void __iom
+ 	value = DMA_BUS_MODE_PBL | ((pbl << DMA_BUS_MODE_PBL_SHIFT) |
+ 				    (pbl << DMA_BUS_MODE_RPBL_SHIFT));
+ 
++	/* Address Aligned Beats */
++	if (aal)
++		value |= DMA_BUS_MODE_AAL;
++
+ 	/* Set the Fixed burst mode */
+ 	if (fb)
+ 		value |= DMA_BUS_MODE_FB;
+--- a/drivers/net/ethernet/stmicro/stmmac/common.h
++++ b/drivers/net/ethernet/stmicro/stmmac/common.h
+@@ -352,7 +352,7 @@ extern const struct stmmac_desc_ops ndes
+ struct stmmac_dma_ops {
+ 	/* DMA core initialization */
+ 	int (*init) (void __iomem *ioaddr, int pbl, int fb, int mb,
+-		     int burst_len, u32 dma_tx, u32 dma_rx, int atds);
++		     int burst_len, u32 dma_tx, u32 dma_rx, int atds, int aal);
+ 	/* Dump DMA registers */
+ 	void (*dump_regs) (void __iomem *ioaddr);
+ 	/* Set tx/rx threshold in the csr6 register
+--- a/drivers/net/ethernet/stmicro/stmmac/dwmac100_dma.c
++++ b/drivers/net/ethernet/stmicro/stmmac/dwmac100_dma.c
+@@ -33,7 +33,8 @@
+ #include "dwmac_dma.h"
+ 
+ static int dwmac100_dma_init(void __iomem *ioaddr, int pbl, int fb, int mb,
+-			     int burst_len, u32 dma_tx, u32 dma_rx, int atds)
++			     int burst_len, u32 dma_tx, u32 dma_rx, int atds,
++			     int aal)
+ {
+ 	u32 value = readl(ioaddr + DMA_BUS_MODE);
+ 	int limit;
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
+@@ -1641,9 +1641,11 @@ static int stmmac_init_dma_engine(struct
+ 	int pbl = DEFAULT_DMA_PBL, fixed_burst = 0, burst_len = 0;
+ 	int mixed_burst = 0;
+ 	int atds = 0;
++	int aal = 0;
+ 
+ 	if (priv->plat->dma_cfg) {
+ 		pbl = priv->plat->dma_cfg->pbl;
++		aal = priv->plat->dma_cfg->aal;
+ 		fixed_burst = priv->plat->dma_cfg->fixed_burst;
+ 		mixed_burst = priv->plat->dma_cfg->mixed_burst;
+ 		burst_len = priv->plat->dma_cfg->burst_len;
+@@ -1654,7 +1656,7 @@ static int stmmac_init_dma_engine(struct
+ 
+ 	return priv->hw->dma->init(priv->ioaddr, pbl, fixed_burst, mixed_burst,
+ 				   burst_len, priv->dma_tx_phy,
+-				   priv->dma_rx_phy, atds);
++				   priv->dma_rx_phy, atds, aal);
+ }
+ 
+ /**

@@ -1,0 +1,265 @@
+From 660e9bde74d6915227d7ee3485b11e5f52637b26 Mon Sep 17 00:00:00 2001
+From: Felipe Balbi <felipe.balbi@linux.intel.com>
+Date: Wed, 30 Mar 2016 09:26:24 +0300
+Subject: usb: dwc3: remove num_event_buffers
+
+We never, ever route any of the other event buffers
+so we might as well drop support for them.
+
+Until someone has a real, proper benefit for
+multiple event buffers, we will rely on a single
+one. This also helps reduce memory footprint of
+dwc3.ko which won't allocate memory for the extra
+event buffers.
+
+Signed-off-by: Felipe Balbi <felipe.balbi@linux.intel.com>
+---
+ drivers/usb/dwc3/core.c   | 81 +++++++++++++++++++----------------------------
+ drivers/usb/dwc3/core.h   |  2 --
+ drivers/usb/dwc3/gadget.c | 38 +++++++---------------
+ 3 files changed, 44 insertions(+), 77 deletions(-)
+
+--- a/drivers/usb/dwc3/core.c
++++ b/drivers/usb/dwc3/core.c
+@@ -203,13 +203,10 @@ static struct dwc3_event_buffer *dwc3_al
+ static void dwc3_free_event_buffers(struct dwc3 *dwc)
+ {
+ 	struct dwc3_event_buffer	*evt;
+-	int i;
+ 
+-	for (i = 0; i < dwc->num_event_buffers; i++) {
+-		evt = dwc->ev_buffs[i];
+-		if (evt)
+-			dwc3_free_one_event_buffer(dwc, evt);
+-	}
++	evt = dwc->ev_buffs[0];
++	if (evt)
++		dwc3_free_one_event_buffer(dwc, evt);
+ }
+ 
+ /**
+@@ -222,27 +219,19 @@ static void dwc3_free_event_buffers(stru
+  */
+ static int dwc3_alloc_event_buffers(struct dwc3 *dwc, unsigned length)
+ {
+-	int			num;
+-	int			i;
+-
+-	num = DWC3_NUM_INT(dwc->hwparams.hwparams1);
+-	dwc->num_event_buffers = num;
++	struct dwc3_event_buffer *evt;
+ 
+-	dwc->ev_buffs = devm_kzalloc(dwc->dev, sizeof(*dwc->ev_buffs) * num,
++	dwc->ev_buffs = devm_kzalloc(dwc->dev, sizeof(*dwc->ev_buffs),
+ 			GFP_KERNEL);
+ 	if (!dwc->ev_buffs)
+ 		return -ENOMEM;
+ 
+-	for (i = 0; i < num; i++) {
+-		struct dwc3_event_buffer	*evt;
+-
+-		evt = dwc3_alloc_one_event_buffer(dwc, length);
+-		if (IS_ERR(evt)) {
+-			dev_err(dwc->dev, "can't allocate event buffer\n");
+-			return PTR_ERR(evt);
+-		}
+-		dwc->ev_buffs[i] = evt;
++	evt = dwc3_alloc_one_event_buffer(dwc, length);
++	if (IS_ERR(evt)) {
++		dev_err(dwc->dev, "can't allocate event buffer\n");
++		return PTR_ERR(evt);
+ 	}
++	dwc->ev_buffs[0] = evt;
+ 
+ 	return 0;
+ }
+@@ -256,25 +245,22 @@ static int dwc3_alloc_event_buffers(stru
+ static int dwc3_event_buffers_setup(struct dwc3 *dwc)
+ {
+ 	struct dwc3_event_buffer	*evt;
+-	int				n;
+ 
+-	for (n = 0; n < dwc->num_event_buffers; n++) {
+-		evt = dwc->ev_buffs[n];
+-		dwc3_trace(trace_dwc3_core,
+-				"Event buf %p dma %08llx length %d\n",
+-				evt->buf, (unsigned long long) evt->dma,
+-				evt->length);
+-
+-		evt->lpos = 0;
+-
+-		dwc3_writel(dwc->regs, DWC3_GEVNTADRLO(n),
+-				lower_32_bits(evt->dma));
+-		dwc3_writel(dwc->regs, DWC3_GEVNTADRHI(n),
+-				upper_32_bits(evt->dma));
+-		dwc3_writel(dwc->regs, DWC3_GEVNTSIZ(n),
+-				DWC3_GEVNTSIZ_SIZE(evt->length));
+-		dwc3_writel(dwc->regs, DWC3_GEVNTCOUNT(n), 0);
+-	}
++	evt = dwc->ev_buffs[0];
++	dwc3_trace(trace_dwc3_core,
++			"Event buf %p dma %08llx length %d\n",
++			evt->buf, (unsigned long long) evt->dma,
++			evt->length);
++
++	evt->lpos = 0;
++
++	dwc3_writel(dwc->regs, DWC3_GEVNTADRLO(0),
++			lower_32_bits(evt->dma));
++	dwc3_writel(dwc->regs, DWC3_GEVNTADRHI(0),
++			upper_32_bits(evt->dma));
++	dwc3_writel(dwc->regs, DWC3_GEVNTSIZ(0),
++			DWC3_GEVNTSIZ_SIZE(evt->length));
++	dwc3_writel(dwc->regs, DWC3_GEVNTCOUNT(0), 0);
+ 
+ 	return 0;
+ }
+@@ -282,19 +268,16 @@ static int dwc3_event_buffers_setup(stru
+ static void dwc3_event_buffers_cleanup(struct dwc3 *dwc)
+ {
+ 	struct dwc3_event_buffer	*evt;
+-	int				n;
+ 
+-	for (n = 0; n < dwc->num_event_buffers; n++) {
+-		evt = dwc->ev_buffs[n];
++	evt = dwc->ev_buffs[0];
+ 
+-		evt->lpos = 0;
++	evt->lpos = 0;
+ 
+-		dwc3_writel(dwc->regs, DWC3_GEVNTADRLO(n), 0);
+-		dwc3_writel(dwc->regs, DWC3_GEVNTADRHI(n), 0);
+-		dwc3_writel(dwc->regs, DWC3_GEVNTSIZ(n), DWC3_GEVNTSIZ_INTMASK
+-				| DWC3_GEVNTSIZ_SIZE(0));
+-		dwc3_writel(dwc->regs, DWC3_GEVNTCOUNT(n), 0);
+-	}
++	dwc3_writel(dwc->regs, DWC3_GEVNTADRLO(0), 0);
++	dwc3_writel(dwc->regs, DWC3_GEVNTADRHI(0), 0);
++	dwc3_writel(dwc->regs, DWC3_GEVNTSIZ(0), DWC3_GEVNTSIZ_INTMASK
++			| DWC3_GEVNTSIZ_SIZE(0));
++	dwc3_writel(dwc->regs, DWC3_GEVNTCOUNT(0), 0);
+ }
+ 
+ static int dwc3_alloc_scratch_buffers(struct dwc3 *dwc)
+--- a/drivers/usb/dwc3/core.h
++++ b/drivers/usb/dwc3/core.h
+@@ -663,7 +663,6 @@ struct dwc3_scratchpad_array {
+  * @regs: base address for our registers
+  * @regs_size: address space size
+  * @nr_scratch: number of scratch buffers
+- * @num_event_buffers: calculated number of event buffers
+  * @u1u2: only used on revisions <1.83a for workaround
+  * @maximum_speed: maximum speed requested (mainly for testing purposes)
+  * @revision: revision register contents
+@@ -773,7 +772,6 @@ struct dwc3 {
+ 	u32			gctl;
+ 
+ 	u32			nr_scratch;
+-	u32			num_event_buffers;
+ 	u32			u1u2;
+ 	u32			maximum_speed;
+ 
+--- a/drivers/usb/dwc3/gadget.c
++++ b/drivers/usb/dwc3/gadget.c
+@@ -2569,14 +2569,14 @@ static void dwc3_process_event_entry(str
+ 	}
+ }
+ 
+-static irqreturn_t dwc3_process_event_buf(struct dwc3 *dwc, u32 buf)
++static irqreturn_t dwc3_process_event_buf(struct dwc3 *dwc)
+ {
+ 	struct dwc3_event_buffer *evt;
+ 	irqreturn_t ret = IRQ_NONE;
+ 	int left;
+ 	u32 reg;
+ 
+-	evt = dwc->ev_buffs[buf];
++	evt = dwc->ev_buffs[0];
+ 	left = evt->count;
+ 
+ 	if (!(evt->flags & DWC3_EVENT_PENDING))
+@@ -2601,7 +2601,7 @@ static irqreturn_t dwc3_process_event_bu
+ 		evt->lpos = (evt->lpos + 4) % DWC3_EVENT_BUFFERS_SIZE;
+ 		left -= 4;
+ 
+-		dwc3_writel(dwc->regs, DWC3_GEVNTCOUNT(buf), 4);
++		dwc3_writel(dwc->regs, DWC3_GEVNTCOUNT(0), 4);
+ 	}
+ 
+ 	evt->count = 0;
+@@ -2609,9 +2609,9 @@ static irqreturn_t dwc3_process_event_bu
+ 	ret = IRQ_HANDLED;
+ 
+ 	/* Unmask interrupt */
+-	reg = dwc3_readl(dwc->regs, DWC3_GEVNTSIZ(buf));
++	reg = dwc3_readl(dwc->regs, DWC3_GEVNTSIZ(0));
+ 	reg &= ~DWC3_GEVNTSIZ_INTMASK;
+-	dwc3_writel(dwc->regs, DWC3_GEVNTSIZ(buf), reg);
++	dwc3_writel(dwc->regs, DWC3_GEVNTSIZ(0), reg);
+ 
+ 	return ret;
+ }
+@@ -2621,27 +2621,23 @@ static irqreturn_t dwc3_thread_interrupt
+ 	struct dwc3 *dwc = _dwc;
+ 	unsigned long flags;
+ 	irqreturn_t ret = IRQ_NONE;
+-	int i;
+ 
+ 	spin_lock_irqsave(&dwc->lock, flags);
+-
+-	for (i = 0; i < dwc->num_event_buffers; i++)
+-		ret |= dwc3_process_event_buf(dwc, i);
+-
++	ret = dwc3_process_event_buf(dwc);
+ 	spin_unlock_irqrestore(&dwc->lock, flags);
+ 
+ 	return ret;
+ }
+ 
+-static irqreturn_t dwc3_check_event_buf(struct dwc3 *dwc, u32 buf)
++static irqreturn_t dwc3_check_event_buf(struct dwc3 *dwc)
+ {
+ 	struct dwc3_event_buffer *evt;
+ 	u32 count;
+ 	u32 reg;
+ 
+-	evt = dwc->ev_buffs[buf];
++	evt = dwc->ev_buffs[0];
+ 
+-	count = dwc3_readl(dwc->regs, DWC3_GEVNTCOUNT(buf));
++	count = dwc3_readl(dwc->regs, DWC3_GEVNTCOUNT(0));
+ 	count &= DWC3_GEVNTCOUNT_MASK;
+ 	if (!count)
+ 		return IRQ_NONE;
+@@ -2650,9 +2646,9 @@ static irqreturn_t dwc3_check_event_buf(
+ 	evt->flags |= DWC3_EVENT_PENDING;
+ 
+ 	/* Mask interrupt */
+-	reg = dwc3_readl(dwc->regs, DWC3_GEVNTSIZ(buf));
++	reg = dwc3_readl(dwc->regs, DWC3_GEVNTSIZ(0));
+ 	reg |= DWC3_GEVNTSIZ_INTMASK;
+-	dwc3_writel(dwc->regs, DWC3_GEVNTSIZ(buf), reg);
++	dwc3_writel(dwc->regs, DWC3_GEVNTSIZ(0), reg);
+ 
+ 	return IRQ_WAKE_THREAD;
+ }
+@@ -2660,18 +2656,8 @@ static irqreturn_t dwc3_check_event_buf(
+ static irqreturn_t dwc3_interrupt(int irq, void *_dwc)
+ {
+ 	struct dwc3			*dwc = _dwc;
+-	int				i;
+-	irqreturn_t			ret = IRQ_NONE;
+-
+-	for (i = 0; i < dwc->num_event_buffers; i++) {
+-		irqreturn_t status;
+ 
+-		status = dwc3_check_event_buf(dwc, i);
+-		if (status == IRQ_WAKE_THREAD)
+-			ret = status;
+-	}
+-
+-	return ret;
++	return dwc3_check_event_buf(dwc);
+ }
+ 
+ /**

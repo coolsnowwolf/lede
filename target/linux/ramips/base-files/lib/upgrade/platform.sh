@@ -17,11 +17,13 @@ platform_check_image() {
 	ai-br100|\
 	air3gii|\
 	alfa-network,ac1200rm|\
+	alfa-network,awusfree1|\
 	all0239-3g|\
 	all0256n-4M|\
 	all0256n-8M|\
 	all5002|\
 	all5003|\
+	mediatek,ap-mt7621a-v60|\
 	ar725w|\
 	asl26555-8M|\
 	asl26555-16M|\
@@ -50,7 +52,6 @@ platform_check_image() {
 	dir-620-d1|\
 	dir-810l|\
 	duzun-dm06|\
-	dwr-512-b|\
 	e1700|\
 	esr-9753|\
 	ew1200|\
@@ -58,9 +59,11 @@ platform_check_image() {
 	ex3700|\
 	f7c027|\
 	firewrt|\
+	puppies|\
 	fonera20n|\
 	freestation5|\
 	gb-pc1|\
+	gnubee,gb-pc2|\
 	gl-mt300a|\
 	gl-mt300n|\
 	gl-mt750|\
@@ -140,6 +143,7 @@ platform_check_image() {
 	sap-g3200u3|\
 	sk-wb8|\
 	sl-r7205|\
+	tama,w06|\
 	tew-638apb-v2|\
 	tew-691gr|\
 	tew-692gr|\
@@ -167,7 +171,8 @@ platform_check_image() {
 	whr-300hp2|\
 	whr-600d|\
 	whr-g300n|\
-	widora-neo|\
+	widora,neo-16m|\
+	widora,neo-32m|\
 	witi|\
 	wizfi630a|\
 	wl-330n|\
@@ -199,10 +204,12 @@ platform_check_image() {
 	x8|\
 	y1|\
 	y1s|\
+	youhua,wr1200js|\
 	we1026-5g-16m|\
 	zbt-ape522ii|\
 	zbt-cpe102|\
 	zbt-wa05|\
+	zbtlink,zbt-we1226|\
 	zbt-we1326|\
 	zbt-we2026|\
 	zbtlink,zbt-we3526|\
@@ -212,6 +219,7 @@ platform_check_image() {
 	zbt-wg3526-16M|\
 	zbt-wg3526-32M|\
 	zbt-wr8305rt|\
+	zorlik,zl5900v2|\
 	zte-q7|\
 	youku-yk1)
 		[ "$magic" != "27051956" ] && {
@@ -237,11 +245,14 @@ platform_check_image() {
 		}
 		return 0
 		;;
-	c20|\
 	c20i|\
 	c50|\
 	mr200|\
+	tplink,c20-v1|\
+	tplink,c20-v4|\
+	tplink,c50-v3|\
 	tplink,tl-mr3420-v5|\
+	tplink,tl-wr902ac-v3|\
 	tl-wr840n-v4|\
 	tl-wr840n-v5|\
 	tl-wr841n-v13)
@@ -262,11 +273,25 @@ platform_check_image() {
 		}
 		return 0
 		;;
-	hc5962|\
-	mir3g|\
-	r6220)
-		# these boards use metadata images
+	dlink,dwr-116-a1|\
+	dlink,dwr-921-c1|\
+	dwr-512-b)
+		[ "$magic" != "0404242b" ] && {
+			echo "Invalid image type."
+			return 1
+		}
 		return 0
+		;;
+	hc5962|\
+	xiaomi,miwifi-r3|\
+	mir3g|\
+	r6220b|\
+	r6220a|\
+	r6220|\
+	ubnt-erx|\
+	ubnt-erx-sfp)
+		nand_do_platform_check "${board//,/_}" "$1"
+		return $?;
 		;;
 	re350-v1)
 		[ "$magic" != "01000000" ] && {
@@ -274,11 +299,6 @@ platform_check_image() {
 			return 1
 		}
 		return 0
-		;;
-	ubnt-erx|\
-	ubnt-erx-sfp)
-		nand_do_platform_check "$board" "$1"
-		return $?;
 		;;
 	wcr-1166ds|\
 	wsr-1166)
@@ -310,7 +330,10 @@ platform_do_upgrade() {
 
 	case "$board" in
 	hc5962|\
+	xiaomi,miwifi-r3|\
 	mir3g|\
+	r6220b|\
+	r6220a|\
 	r6220|\
 	ubnt-erx|\
 	ubnt-erx-sfp)
@@ -322,17 +345,8 @@ platform_do_upgrade() {
 	esac
 }
 
-disable_watchdog() {
-	killall watchdog
-	( ps | grep -v 'grep' | grep '/dev/watchdog' ) && {
-		echo 'Could not disable watchdog'
-		return 1
-	}
-}
-
 blink_led() {
 	. /etc/diag.sh; set_state upgrade
 }
 
-append sysupgrade_pre_upgrade disable_watchdog
 append sysupgrade_pre_upgrade blink_led
