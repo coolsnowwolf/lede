@@ -22,7 +22,7 @@ define Build/boot-overlay
 
 	$(foreach dts,$(DEVICE_DTS), \
 		$(CP) \
-			$(LINUX_DIR)/arch/$(ARCH)/boot/dts/$(dts).dtb \
+			$(DTS_DIR)/$(dts).dtb \
 			$@.boot/$(IMG_PREFIX)-$(dts).dtb; \
 		ln -sf \
 			$(IMG_PREFIX)-$(dts).dtb \

@@ -168,17 +168,6 @@ static int mr18_extract_sgmii_res_cal(void)
 	return reversed_sgmii_value;
 }
 
-#define QCA955X_PLL_ETH_SGMII_SERDES_REG		0x004c
-#define QCA955X_PLL_ETH_SGMII_SERDES_LOCK_DETECT	BIT(2)
-#define QCA955X_PLL_ETH_SGMII_SERDES_PLL_REFCLK		BIT(1)
-#define QCA955X_PLL_ETH_SGMII_SERDES_EN_PLL		BIT(0)
-
-#define QCA955X_GMAC_REG_SGMII_SERDES			0x0018
-#define QCA955X_SGMII_SERDES_RES_CALIBRATION		BIT(23)
-#define QCA955X_SGMII_SERDES_RES_CALIBRATION_MASK	0xf
-#define QCA955X_SGMII_SERDES_RES_CALIBRATION_SHIFT	23
-#define QCA955X_SGMII_SERDES_LOCK_DETECT_STATUS		BIT(15)
-
 static void mr18_setup_qca955x_eth_serdes_cal(unsigned int sgmii_value)
 {
 	void __iomem *ethbase, *pllbase;

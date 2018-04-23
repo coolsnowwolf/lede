@@ -57,6 +57,7 @@ static void fe_phy_link_adjust(struct net_device *dev)
 			}
 		}
 	}
+	spin_unlock_irqrestore(&priv->phy->lock, flags);
 }
 
 int fe_connect_phy_node(struct fe_priv *priv, struct device_node *phy_node)

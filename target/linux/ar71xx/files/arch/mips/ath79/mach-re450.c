@@ -1,9 +1,10 @@
 /*
- * TP-LINK Archer RE450 board support
+ * TP-LINK RE355/RE450 board support
  *
  * Copyright (c) 2013 Gabor Juhos <juhosg@openwrt.org>
  * Copyright (c) 2016 Tal Keren <kooolk@gmail.com>
- *
+ * Copyright (c) 2018 Henryk Heisig <hyniu@o2.pl>
+ * 
  * Based on the Qualcomm Atheros AP135/AP136 reference board support code
  *   Copyright (c) 2012 Qualcomm Atheros
  *
@@ -70,6 +71,42 @@ static const char *tl_re450_part_probes[] = {
 
 static struct flash_platform_data tl_re450_flash_data = {
 	.part_probes	= tl_re450_part_probes,
+};
+
+static struct gpio_led re355_leds_gpio[] __initdata = {
+	{
+		.name		= "re355:blue:power",
+		.gpio		= RE450_GPIO_LED_SYSTEM,
+		.active_low	= 1,
+	},
+	{
+		.name		= "re355:blue:wlan2g",
+		.gpio		= RE450_GPIO_LED_WLAN2G,
+		.active_low	= 1,
+	},
+	{
+		.name		= "re355:blue:wlan5g",
+		.gpio		= RE450_GPIO_LED_WLAN5G,
+		.active_low	= 1,
+	},
+	{
+		.name		= "re355:blue:wps",
+		.gpio		= RE450_GPIO_LED_JUMPSTART,
+	},
+	{
+		.name		= "re355:red:wps",
+		.gpio		= RE450_GPIO_LED_JUMPSTART_RED,
+	},
+	{
+		.name		= "re355:green:lan_data",
+		.gpio		= RE450_GPIO_LED_LAN_DATA,
+		.active_low	= 1,
+	},
+	{
+		.name		= "re355:green:lan_link",
+		.gpio		= RE450_GPIO_LED_LAN_LINK,
+		.active_low	= 1,
+	},
 };
 
 static struct gpio_led re450_leds_gpio[] __initdata = {
@@ -149,15 +186,13 @@ static struct platform_device re450_phy_device = {
 	},
 };
 
-static void __init re450_setup(void)
+static void __init rex5x_setup(void)
 {
 	u8 *mac = (u8 *) KSEG1ADDR(0x1f610008);
 	u8 *art = (u8 *) KSEG1ADDR(0x1fff0000);
 	u8 tmpmac[ETH_ALEN];
 
 	ath79_register_m25p80(&tl_re450_flash_data);
-	ath79_register_leds_gpio(-1, ARRAY_SIZE(re450_leds_gpio),
-				 re450_leds_gpio);
 	ath79_register_gpio_keys_polled(-1, RE450_KEYS_POLL_INTERVAL,
 					ARRAY_SIZE(re450_gpio_keys),
 					re450_gpio_keys);
@@ -181,6 +216,23 @@ static void __init re450_setup(void)
 	ath79_eth0_pll_data.pll_100 = 0xa0000101;
 	ath79_eth0_pll_data.pll_10 = 0x80001313;
 	ath79_register_eth(0);
+}
+
+static void __init re355_setup(void)
+{
+	rex5x_setup();
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(re355_leds_gpio),
+				 re355_leds_gpio);
+}
+
+MIPS_MACHINE(ATH79_MACH_RE355, "RE355", "TP-LINK RE355",
+	     re355_setup)
+
+static void __init re450_setup(void)
+{
+	rex5x_setup();
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(re450_leds_gpio),
+				 re450_leds_gpio);
 }
 
 MIPS_MACHINE(ATH79_MACH_RE450, "RE450", "TP-LINK RE450",

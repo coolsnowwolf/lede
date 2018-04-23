@@ -103,75 +103,76 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 -	indev = dev_get_by_index(net, ifindex);
 -	if (WARN_ON(!indev))
 -		return 0;
-+	if (dev->type != ARPHRD_ETHER)
-+		return;
- 
+-
 -	mutex_lock(&nf_flow_offload_hw_mutex);
 -	ret = indev->netdev_ops->ndo_flow_offload(type, flow);
 -	mutex_unlock(&nf_flow_offload_hw_mutex);
++	if (dev->type != ARPHRD_ETHER)
++		return;
+ 
+-	dev_put(indev);
 +	memcpy(path->eth_src, path->dev->dev_addr, ETH_ALEN);
 +	n = dst_neigh_lookup(tuple->dst_cache, &tuple->src_v4);
 +	if (!n)
 +		return;
  
--	dev_put(indev);
+-	return ret;
 +	memcpy(path->eth_dest, n->ha, ETH_ALEN);
 +	path->flags |= FLOW_OFFLOAD_PATH_ETHERNET;
 +	neigh_release(n);
-+}
+ }
  
--	return ret;
+-static void flow_offload_hw_work_add(struct flow_offload_hw *offload)
 +static int flow_offload_check_path(struct net *net,
 +				   struct flow_offload_tuple *tuple,
 +				   struct flow_offload_hw_path *path)
-+{
+ {
+-	struct net *net;
+-	int ret;
 +	struct net_device *dev;
-+
+ 
+-	if (nf_ct_is_dying(offload->ct))
+-		return;
 +	dev = dev_get_by_index_rcu(net, tuple->iifidx);
 +	if (!dev)
 +		return -ENOENT;
 +
 +	path->dev = dev;
 +	flow_offload_check_ethernet(tuple, path);
-+
+ 
+-	net = read_pnet(&offload->flow_hw_net);
+-	ret = do_flow_offload_hw(net, offload->flow, FLOW_OFFLOAD_ADD);
+-	if (ret >= 0)
+-		offload->flow->flags |= FLOW_OFFLOAD_HW;
 +	if (dev->netdev_ops->ndo_flow_offload_check)
 +		return dev->netdev_ops->ndo_flow_offload_check(path);
 +
 +	return 0;
  }
  
--static void flow_offload_hw_work_add(struct flow_offload_hw *offload)
+-static void flow_offload_hw_work_del(struct flow_offload_hw *offload)
 +static int do_flow_offload_hw(struct flow_offload_hw *offload)
  {
--	struct net *net;
+-	struct net *net = read_pnet(&offload->flow_hw_net);
 +	struct net_device *src_dev = offload->src.dev;
 +	struct net_device *dest_dev = offload->dest.dev;
- 	int ret;
- 
--	if (nf_ct_is_dying(offload->ct))
--		return;
++	int ret;
++
 +	ret = src_dev->netdev_ops->ndo_flow_offload(offload->type,
 +						    offload->flow,
 +						    &offload->src,
 +						    &offload->dest);
- 
--	net = read_pnet(&offload->flow_hw_net);
--	ret = do_flow_offload_hw(net, offload->flow, FLOW_OFFLOAD_ADD);
--	if (ret >= 0)
--		offload->flow->flags |= FLOW_OFFLOAD_HW;
++
 +	/* restore devices in case the driver mangled them */
 +	offload->src.dev = src_dev;
 +	offload->dest.dev = dest_dev;
 +
 +	return ret;
- }
++}
  
--static void flow_offload_hw_work_del(struct flow_offload_hw *offload)
-+static void flow_offload_hw_free(struct flow_offload_hw *offload)
- {
--	struct net *net = read_pnet(&offload->flow_hw_net);
--
 -	do_flow_offload_hw(net, offload->flow, FLOW_OFFLOAD_DEL);
++static void flow_offload_hw_free(struct flow_offload_hw *offload)
++{
 +	dev_put(offload->src.dev);
 +	dev_put(offload->dest.dev);
 +	if (offload->ct)

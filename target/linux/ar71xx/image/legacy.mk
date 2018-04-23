@@ -87,7 +87,7 @@ ifneq ($(SUBTARGET),mikrotik)
 # $(4): output file.
 define MkuImage
 	mkimage -A mips -O linux -T kernel -a 0x80060000 -C $(1) $(2) \
-		-e 0x80060000 -n 'MIPS OpenWrt Linux-$(LINUX_VERSION)' \
+		-e 0x80060000 -n 'MIPS $(VERSION_DIST) Linux-$(LINUX_VERSION)' \
 		-d $(3) $(4)
 endef
 
@@ -484,11 +484,11 @@ define Image/Build/Belkin
 	$(eval rootsize=$(call mtdpartsize,rootfs,$(4)))
 	$(call Sysupgrade/RKuImage,$(1),$(2),$(kernsize),$(rootsize))
 	if [ -e "$(call sysupname,$(1),$(2))" ]; then \
-		edimax_fw_header -m $(5) -v "$(shell echo -n OpenWrt$(REVISION) | cut -c -13)" \
+		edimax_fw_header -m $(5) -v "$(shell echo -n $(VERSION_DIST)$(REVISION) | cut -c -13)" \
 			-n "uImage" \
 			-i $(KDIR_TMP)/vmlinux-$(2).uImage \
 			-o $(KDIR_TMP)/$(2)-uImage; \
-		edimax_fw_header -m $(5) -v "$(shell echo -n OpenWrt$(REVISION) | cut -c -13)" \
+		edimax_fw_header -m $(5) -v "$(shell echo -n $(VERSION_DIST)$(REVISION) | cut -c -13)" \
 			-n "rootfs" \
 			-i $(KDIR)/root.$(1) \
 			-o $(KDIR_TMP)/$(2)-rootfs; \
@@ -661,7 +661,7 @@ define Image/Build/Netgear/buildkernel
 	) > $(KDIR_TMP)/vmlinux-$(2).uImage.squashfs.tmp2
 	mkimage -A mips -O linux -T filesystem -C none -M $(5) \
 		-a 0xbf070000 -e 0xbf070000 \
-		-n 'MIPS OpenWrt Linux-$(LINUX_VERSION)' \
+		-n 'MIPS $(VERSION_DIST) Linux-$(LINUX_VERSION)' \
 		-d $(KDIR_TMP)/vmlinux-$(2).uImage.squashfs.tmp2 \
 		$(KDIR_TMP)/vmlinux-$(2).uImage.squashfs
 endef
@@ -673,7 +673,7 @@ define Image/Build/Netgear
 		for r in $(7) ; do \
 			[ -n "$$r" ] && dashr="-$$r" || dashr= ; \
 			$(STAGING_DIR_HOST)/bin/mkdniimg \
-				-B $(6) -v OpenWrt.$(REVISION) -r "$$r" $(8) \
+				-B $(6) -v $(VERSION_DIST).$(REVISION) -r "$$r" $(8) \
 				-i $(call sysupname,$(1),$(2)) \
 				-o $(call imgname,$(1),$(2))-factory$$dashr.img; \
 		done; \
@@ -714,7 +714,7 @@ define Image/Build/NetgearNAND/buildkernel
 	dd if=/dev/zero of=$(KDIR_TMP)/fakeroot-$(2) bs=131072 count=1
 	mkimage -A mips -O linux -T filesystem -C none \
 		-a 0xbf070000 -e 0xbf070000 \
-		-n 'MIPS OpenWrt fakeroot' \
+		-n 'MIPS $(VERSION_DIST) fakeroot' \
 		-d $(KDIR_TMP)/fakeroot-$(2) \
 		-M $(5) \
 		$(KDIR_TMP)/fakeroot-$(2).uImage
@@ -745,7 +745,7 @@ define Image/Build/NetgearNAND
 		dd if=$(KDIR_TMP)/$(2)-root.ubi \
 	) > $(imageraw)
 	$(STAGING_DIR_HOST)/bin/mkdniimg \
-		-B $(6) -v OpenWrt.$(REVISION) -r "$$r" $(8) \
+		-B $(6) -v $(VERSION_DIST).$(REVISION) -r "$$r" $(8) \
 		-i $(imageraw) \
 		-o $(call imgname,ubi,$(2))-factory.img
 

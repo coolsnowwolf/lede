@@ -6,13 +6,21 @@ platform_do_upgrade() {
 	local tar_file="$1"
 	local board="$(board_name)"
 
-	echo "flashing kernel"
-	tar xf $tar_file sysupgrade-$board/kernel -O | mtd write - kernel
+	case "$(board_name)" in
+	mediatek,mt7623-rfb-nand-ephy |\
+	mediatek,mt7623-rfb-nand)
+		nand_do_upgrade $1
+		;;
+	*)
+		echo "flashing kernel"
+		tar xf $tar_file sysupgrade-$board/kernel -O | mtd write - kernel
 
-	echo "flashing rootfs"
-	tar xf $tar_file sysupgrade-$board/root -O | mtd write - rootfs
+		echo "flashing rootfs"
+		tar xf $tar_file sysupgrade-$board/root -O | mtd write - rootfs
 
-	return 0
+		return 0
+		;;
+	esac
 }
 
 platform_check_image() {
@@ -20,13 +28,8 @@ platform_check_image() {
 	local board=$(board_name)
 
 	case "$board" in
-	mediatek,mt7623-rfb-nand-ephy |\
-	mediatek,mt7623-rfb-nand)
-		nand_do_platform_check $board $1
-		return $?
-		;;
 	bananapi,bpi-r2 |\
-	mediatek,mt7623-rfb-emmc)
+	mediatek,mt7623a-rfb-emmc)
 		local kernel_length=`(tar xf $tar_file sysupgrade-$board/kernel -O | wc -c) 2> /dev/null`
 		local rootfs_length=`(tar xf $tar_file sysupgrade-$board/root -O | wc -c) 2> /dev/null`
 		;;
@@ -43,13 +46,4 @@ platform_check_image() {
 	}
 
 	return 0
-}
-
-platform_pre_upgrade() {
-	case "$(board_name)" in
-	mediatek,mt7623-rfb-nand-ephy |\
-	mediatek,mt7623-rfb-nand)
-		nand_do_upgrade $1
-		;;
-	esac
 }

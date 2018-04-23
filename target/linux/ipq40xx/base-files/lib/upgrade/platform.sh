@@ -144,6 +144,9 @@ platform_check_image() {
 
 platform_do_upgrade() {
 	case "$(board_name)" in
+	8dev,jalapeno)
+		nand_do_upgrade "$ARGV"
+		;;
 	asus,rt-acrh17|\
 	asus,rt-ac58u)
 		local magic=$(get_magic_long "$1")

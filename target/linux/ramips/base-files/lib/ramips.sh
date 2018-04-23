@@ -196,9 +196,6 @@ ramips_board_detect() {
 	*"FireWRT")
 		name="firewrt"
 		;;
-	*"Openwrt Puppies")
-		name="puppies"
-		;;
 	*"Fonera 2.0N")
 		name="fonera20n"
 		;;
@@ -417,12 +414,6 @@ ramips_board_detect() {
 		;;
 	*"Q7")
 		name="zte-q7"
-		;;
-	*"R6220B")
-		name="r6220b"
-		;;
-	*"R6220A")
-		name="r6220a"
 		;;
 	*"R6220")
 		name="r6220"

@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kexec-tools
-PKG_VERSION:=2.0.14
+PKG_VERSION:=2.0.16
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/utils/kernel/kexec
-PKG_HASH:=ffb2e7e99d9d08754c6bc1922aed3c000094f318665d82a72ecc76c4ff1c0dc6
+PKG_HASH:=5b103351ad752c9badd1d65b00eb6de4bce579f944f4df4e3ef3a755ba567010
 
 PKG_FIXUP:=autoreconf
 

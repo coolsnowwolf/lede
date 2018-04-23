@@ -7,6 +7,7 @@
 
 curdir:=package
 
+include $(INCLUDE_DIR)/feeds.mk
 include $(INCLUDE_DIR)/rootfs.mk
 
 -include $(TMP_DIR)/.packagedeps
@@ -75,7 +76,7 @@ $(curdir)/install: $(TMP_DIR)/.build $(curdir)/merge $(if $(CONFIG_TARGET_PER_DE
 
 	$(CP) $(TARGET_DIR) $(TARGET_DIR_ORIG)
 
-	$(call prepare_rootfs,$(TARGET_DIR))
+	$(call prepare_rootfs,$(TARGET_DIR),$(TOPDIR)/files)
 
 $(curdir)/index: FORCE
 	@echo Generating package index...

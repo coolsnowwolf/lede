@@ -13,7 +13,7 @@ FEATURES:=squashfs ramdisk pci usb
 CPU_TYPE:=octeon
 MAINTAINER:=John Crispin <john@phrozen.org>
 
-KERNEL_PATCHVER:=4.9
+KERNEL_PATCHVER:=4.14
 
 define Target/Description
 	Build firmware images for Cavium Networks Octeon-based boards.

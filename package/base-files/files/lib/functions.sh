@@ -153,16 +153,6 @@ config_list_foreach() {
 	done
 }
 
-insert_modules() {
-	for m in $*; do
-		if [ -f /etc/modules.d/$m ]; then
-			sed 's/^[^#]/insmod &/' /etc/modules.d/$m | ash 2>&- || :
-		else
-			modprobe $m
-		fi
-	done
-}
-
 default_prerm() {
 	local root="${IPKG_INSTROOT}"
 	local name

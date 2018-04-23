@@ -16,7 +16,7 @@ platform_check_image() {
 	return 1
 }
 
-platform_pre_upgrade() {
+platform_do_upgrade() {
 	local board=$(board_name)
 
 	case "$board" in
