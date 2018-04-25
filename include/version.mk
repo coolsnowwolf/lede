@@ -22,40 +22,37 @@ PKG_CONFIG_DEPENDS += \
 	CONFIG_VERSION_SUPPORT_URL \
 	CONFIG_VERSION_HWREV \
 
-qstrip_escape=$(subst ','\'',$(call qstrip,$(1)))
-#'
-
 sanitize = $(call tolower,$(subst _,-,$(subst $(space),-,$(1))))
 
-VERSION_NUMBER:=$(call qstrip_escape,$(CONFIG_VERSION_NUMBER))
+VERSION_NUMBER:=$(call qstrip,$(CONFIG_VERSION_NUMBER))
 VERSION_NUMBER:=$(if $(VERSION_NUMBER),$(VERSION_NUMBER),SNAPSHOT)
 
-VERSION_CODE:=$(call qstrip_escape,$(CONFIG_VERSION_CODE))
+VERSION_CODE:=$(call qstrip,$(CONFIG_VERSION_CODE))
 VERSION_CODE:=$(if $(VERSION_CODE),$(VERSION_CODE),$(REVISION))
 
-VERSION_REPO:=$(call qstrip_escape,$(CONFIG_VERSION_REPO))
+VERSION_REPO:=$(call qstrip,$(CONFIG_VERSION_REPO))
 VERSION_REPO:=$(if $(VERSION_REPO),$(VERSION_REPO),http://downloads.lede-project.org/snapshots)
 
-VERSION_DIST:=$(call qstrip_escape,$(CONFIG_VERSION_DIST))
+VERSION_DIST:=$(call qstrip,$(CONFIG_VERSION_DIST))
 VERSION_DIST:=$(if $(VERSION_DIST),$(VERSION_DIST),OpenWrt)
 VERSION_DIST_SANITIZED:=$(call sanitize,$(VERSION_DIST))
 
-VERSION_MANUFACTURER:=$(call qstrip_escape,$(CONFIG_VERSION_MANUFACTURER))
+VERSION_MANUFACTURER:=$(call qstrip,$(CONFIG_VERSION_MANUFACTURER))
 VERSION_MANUFACTURER:=$(if $(VERSION_MANUFACTURER),$(VERSION_MANUFACTURER),OpenWrt)
 
-VERSION_MANUFACTURER_URL:=$(call qstrip_escape,$(CONFIG_VERSION_MANUFACTURER_URL))
+VERSION_MANUFACTURER_URL:=$(call qstrip,$(CONFIG_VERSION_MANUFACTURER_URL))
 VERSION_MANUFACTURER_URL:=$(if $(VERSION_MANUFACTURER_URL),$(VERSION_MANUFACTURER_URL),http://lede-project.org/)
 
-VERSION_BUG_URL:=$(call qstrip_escape,$(CONFIG_VERSION_BUG_URL))
+VERSION_BUG_URL:=$(call qstrip,$(CONFIG_VERSION_BUG_URL))
 VERSION_BUG_URL:=$(if $(VERSION_BUG_URL),$(VERSION_BUG_URL),http://bugs.lede-project.org/)
 
-VERSION_SUPPORT_URL:=$(call qstrip_escape,$(CONFIG_VERSION_SUPPORT_URL))
+VERSION_SUPPORT_URL:=$(call qstrip,$(CONFIG_VERSION_SUPPORT_URL))
 VERSION_SUPPORT_URL:=$(if $(VERSION_SUPPORT_URL),$(VERSION_SUPPORT_URL),http://forum.lede-project.org/)
 
-VERSION_PRODUCT:=$(call qstrip_escape,$(CONFIG_VERSION_PRODUCT))
+VERSION_PRODUCT:=$(call qstrip,$(CONFIG_VERSION_PRODUCT))
 VERSION_PRODUCT:=$(if $(VERSION_PRODUCT),$(VERSION_PRODUCT),Generic)
 
-VERSION_HWREV:=$(call qstrip_escape,$(CONFIG_VERSION_HWREV))
+VERSION_HWREV:=$(call qstrip,$(CONFIG_VERSION_HWREV))
 VERSION_HWREV:=$(if $(VERSION_HWREV),$(VERSION_HWREV),v0)
 
 define taint2sym
@@ -82,23 +79,28 @@ VERSION_TAINTS := $(strip $(foreach taint,$(VERSION_TAINT_SPECS), \
 
 PKG_CONFIG_DEPENDS += $(foreach taint,$(VERSION_TAINT_SPECS),$(call taint2sym,$(taint)))
 
-VERSION_SED:=$(SED) 's,%U,$(VERSION_REPO),g' \
-	-e 's,%V,$(VERSION_NUMBER),g' \
-	-e 's,%v,\L$(subst $(space),_,$(VERSION_NUMBER)),g' \
-	-e 's,%C,$(VERSION_CODE),g' \
-	-e 's,%c,\L$(subst $(space),_,$(VERSION_CODE)),g' \
-	-e 's,%D,$(VERSION_DIST),g' \
-	-e 's,%d,\L$(subst $(space),_,$(VERSION_DIST)),g' \
-	-e 's,%R,$(REVISION),g' \
-	-e 's,%T,$(BOARD),g' \
-	-e 's,%S,$(BOARD)/$(if $(SUBTARGET),$(SUBTARGET),generic),g' \
-	-e 's,%A,$(ARCH_PACKAGES),g' \
-	-e 's,%t,$(VERSION_TAINTS),g' \
-	-e 's,%M,$(VERSION_MANUFACTURER),g' \
-	-e 's,%m,$(VERSION_MANUFACTURER_URL),g' \
-	-e 's,%b,$(VERSION_BUG_URL),g' \
-	-e 's,%s,$(VERSION_SUPPORT_URL),g' \
-	-e 's,%P,$(VERSION_PRODUCT),g' \
-	-e 's,%h,$(VERSION_HWREV),g'
+# escape commas, backslashes, squotes, and ampersands for sed
+define sed_escape
+$(subst &,\&,$(subst $(comma),\$(comma),$(subst ','\'',$(subst \,\\,$(1)))))
+endef
+#'
 
-VERSION_SED_SCRIPT:=$(subst '\'','\'\\\\\'\'',$(VERSION_SED))
+VERSION_SED_SCRIPT:=$(SED) 's,%U,$(call sed_escape,$(VERSION_REPO)),g' \
+	-e 's,%V,$(call sed_escape,$(VERSION_NUMBER)),g' \
+	-e 's,%v,\L$(call sed_escape,$(subst $(space),_,$(VERSION_NUMBER))),g' \
+	-e 's,%C,$(call sed_escape,$(VERSION_CODE)),g' \
+	-e 's,%c,\L$(call sed_escape,$(subst $(space),_,$(VERSION_CODE))),g' \
+	-e 's,%D,$(call sed_escape,$(VERSION_DIST)),g' \
+	-e 's,%d,\L$(call sed_escape,$(subst $(space),_,$(VERSION_DIST))),g' \
+	-e 's,%R,$(call sed_escape,$(REVISION)),g' \
+	-e 's,%T,$(call sed_escape,$(BOARD)),g' \
+	-e 's,%S,$(call sed_escape,$(BOARD)/$(if $(SUBTARGET),$(SUBTARGET),generic)),g' \
+	-e 's,%A,$(call sed_escape,$(ARCH_PACKAGES)),g' \
+	-e 's,%t,$(call sed_escape,$(VERSION_TAINTS)),g' \
+	-e 's,%M,$(call sed_escape,$(VERSION_MANUFACTURER)),g' \
+	-e 's,%m,$(call sed_escape,$(VERSION_MANUFACTURER_URL)),g' \
+	-e 's,%b,$(call sed_escape,$(VERSION_BUG_URL)),g' \
+	-e 's,%s,$(call sed_escape,$(VERSION_SUPPORT_URL)),g' \
+	-e 's,%P,$(call sed_escape,$(VERSION_PRODUCT)),g' \
+	-e 's,%h,$(call sed_escape,$(VERSION_HWREV)),g'
+

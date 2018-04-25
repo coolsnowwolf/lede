@@ -41,7 +41,7 @@
 
 static struct gpio_led gl_mifi_leds_gpio[] __initdata = {
 	{
-		.name = "gl-mifi:greeen:wan",
+		.name = "gl-mifi:green:wan",
 		.gpio = GL_MIFI_GPIO_LED_WAN,
 		.active_low = 0,
 	},
@@ -111,4 +111,4 @@ static void __init gl_mifi_setup(void)
 	ath79_register_wmac(art + GL_MIFI_CALDATA_OFFSET, art + GL_MIFI_WMAC_MAC_OFFSET);
 }
 
-MIPS_MACHINE(ATH79_MACH_GL_MIFI, "GL-MIFI", "GL-MIFI",gl_mifi_setup);
+MIPS_MACHINE(ATH79_MACH_GL_MIFI, "GL-MIFI", "GL.iNet GL-MIFI", gl_mifi_setup);

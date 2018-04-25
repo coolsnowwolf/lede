@@ -90,7 +90,8 @@ define SetupHostCommand
 	for cmd in $(call QuoteHostCommand,$(3)) $(call QuoteHostCommand,$(4)) \
 	           $(call QuoteHostCommand,$(5)) $(call QuoteHostCommand,$(6)) \
 	           $(call QuoteHostCommand,$(7)) $(call QuoteHostCommand,$(8)) \
-			   $(call QuoteHostCommand,$(9)); do \
+	           $(call QuoteHostCommand,$(9)) $(call QuoteHostCommand,$(10)) \
+	           $(call QuoteHostCommand,$(11)) $(call QuoteHostCommand,$(12)); do \
 		if [ -n "$$$$$$$$cmd" ]; then \
 			bin="$$$$$$$$(PATH="$(subst $(space),:,$(filter-out $(STAGING_DIR_HOST)/%,$(subst :,$(space),$(PATH))))" \
 				which "$$$$$$$${cmd%% *}")"; \

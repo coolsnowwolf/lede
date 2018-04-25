@@ -100,4 +100,4 @@ static void __init gl_ar300_setup(void)
 	ath79_register_wmac(art + GL_AR300_CALDATA_OFFSET, art + GL_AR300_WMAC_MAC_OFFSET);
 }
 
-MIPS_MACHINE(ATH79_MACH_GL_AR300, "GL-AR300", "GL AR300",gl_ar300_setup);
+MIPS_MACHINE(ATH79_MACH_GL_AR300, "GL-AR300", "GL.iNet GL-AR300", gl_ar300_setup);

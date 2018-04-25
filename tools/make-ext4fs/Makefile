@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=make-ext4fs
 
-PKG_SOURCE_URL=$(LEDE_GIT)/project/make_ext4fs.git
+PKG_SOURCE_URL=$(PROJECT_GIT)/project/make_ext4fs.git
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_DATE:=2016-08-14
 PKG_SOURCE_VERSION:=484903e4332be6c317f531b008cb2a841a18c506

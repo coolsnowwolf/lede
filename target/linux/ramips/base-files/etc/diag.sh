@@ -37,8 +37,6 @@ get_status_led() {
 	nbg-419n|\
 	nbg-419n2|\
 	pwh2004|\
-	r6220b|\
-	r6220a|\
 	r6220|\
 	tplink,c20-v4|\
 	tplink,c50-v3|\
@@ -163,8 +161,6 @@ get_status_led() {
 	k2p|\
 	m3|\
 	mir3g|\
-	xiaomi,miwifi-r3|\
-	miwifi-mini|\
 	miwifi-nano)
 		status_led="$boardname:blue:status"
 		;;
@@ -208,6 +204,7 @@ get_status_led() {
 	m4-8M)
 		status_led="m4:blue:status"
 		;;
+	miwifi-mini|\
 	zte-q7)
 		status_led="$boardname:red:status"
 		;;

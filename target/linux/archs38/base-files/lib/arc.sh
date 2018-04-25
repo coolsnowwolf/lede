@@ -21,6 +21,9 @@ arc_board_detect() {
 	"snps,axs103""snps,arc-sdp")
 		board="arc-sdp";
 		;;
+        "snps,hsdk")
+                board="arc-hsdk";
+                ;;
 	"snps,nsim_hs")
 		board="arc-nsim";
 		;;

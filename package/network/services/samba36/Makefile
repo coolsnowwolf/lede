@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=samba
 PKG_VERSION:=3.6.25
-PKG_RELEASE:=9
+PKG_RELEASE:=10
 
 PKG_SOURCE_URL:=https://download.samba.org/pub/samba \
 		https://download.samba.org/pub/samba/stable
@@ -101,6 +101,7 @@ CONFIGURE_ARGS += \
 	--prefix=/ \
 	--disable-avahi \
 	--disable-cups \
+	--disable-external-libtalloc \
 	--disable-pie \
 	--disable-relro \
 	--disable-static \

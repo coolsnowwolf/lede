@@ -1,25 +1,25 @@
-From 854c1f0e9574e9b25a55b439608c71e013b34a56 Mon Sep 17 00:00:00 2001
+From 515d590e3d5313110faa4f2c86f7784d9b070fa9 Mon Sep 17 00:00:00 2001
 From: Yangbo Lu <yangbo.lu@nxp.com>
-Date: Mon, 25 Sep 2017 12:12:20 +0800
-Subject: [PATCH] dma: support layerscape
+Date: Wed, 17 Jan 2018 15:30:59 +0800
+Subject: [PATCH 17/30] dma: support layerscape
 
-This is a integrated patch for layerscape dma support.
+This is an integrated patch for layerscape dma support.
 
 Signed-off-by: jiaheng.fan <jiaheng.fan@nxp.com>
 Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 ---
  drivers/dma/Kconfig                     |   31 +
  drivers/dma/Makefile                    |    3 +
- drivers/dma/caam_dma.c                  |  563 +++++++++++++++
+ drivers/dma/caam_dma.c                  |  563 ++++++++++++++
  drivers/dma/dpaa2-qdma/Kconfig          |    8 +
  drivers/dma/dpaa2-qdma/Makefile         |    8 +
- drivers/dma/dpaa2-qdma/dpaa2-qdma.c     |  986 +++++++++++++++++++++++++
+ drivers/dma/dpaa2-qdma/dpaa2-qdma.c     |  986 ++++++++++++++++++++++++
  drivers/dma/dpaa2-qdma/dpaa2-qdma.h     |  262 +++++++
- drivers/dma/dpaa2-qdma/dpdmai.c         |  454 ++++++++++++
- drivers/dma/dpaa2-qdma/fsl_dpdmai.h     |  521 ++++++++++++++
+ drivers/dma/dpaa2-qdma/dpdmai.c         |  454 +++++++++++
+ drivers/dma/dpaa2-qdma/fsl_dpdmai.h     |  521 +++++++++++++
  drivers/dma/dpaa2-qdma/fsl_dpdmai_cmd.h |  222 ++++++
- drivers/dma/fsl-qdma.c                  | 1201 +++++++++++++++++++++++++++++++
- 11 files changed, 4259 insertions(+)
+ drivers/dma/fsl-qdma.c                  | 1243 +++++++++++++++++++++++++++++++
+ 11 files changed, 4301 insertions(+)
  create mode 100644 drivers/dma/caam_dma.c
  create mode 100644 drivers/dma/dpaa2-qdma/Kconfig
  create mode 100644 drivers/dma/dpaa2-qdma/Makefile
@@ -3146,7 +3146,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +#endif /* _FSL_DPDMAI_CMD_H */
 --- /dev/null
 +++ b/drivers/dma/fsl-qdma.c
-@@ -0,0 +1,1201 @@
+@@ -0,0 +1,1243 @@
 +/*
 + * drivers/dma/fsl-qdma.c
 + *
@@ -3268,67 +3268,111 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +
 +u64 pre_addr, pre_queue;
 +
++/* qDMA Command Descriptor Fotmats */
++
++/* Compound Command Descriptor Fotmat */
 +struct fsl_qdma_ccdf {
-+	u8 status;
-+	u32 rev1:22;
-+	u32 ser:1;
-+	u32 rev2:1;
-+	u32 rev3:20;
-+	u32 offset:9;
-+	u32 format:3;
++	__le32 status; /* ser, status */
++	__le32 cfg;	/* format, offset */
 +	union {
 +		struct {
-+			u32 addr_lo;	/* low 32-bits of 40-bit address */
-+			u32 addr_hi:8;	/* high 8-bits of 40-bit address */
-+			u32 rev4:16;
-+			u32 queue:3;
-+			u32 rev5:3;
-+			u32 dd:2;	/* dynamic debug */
-+		};
-+		struct {
-+			u64 addr:40;
-+			/* More efficient address accessor */
-+			u64 __notaddress:24;
-+		};
++			__le32 addr_lo;	/* low 32-bits of 40-bit address */
++			u8 addr_hi;	/* high 8-bits of 40-bit address */
++			u8 __reserved1[2];
++			u8 cfg8b_w1; /* dd, queue*/
++		} __packed;
++		__le64 data;
 +	};
 +} __packed;
 +
++#define QDMA_CCDF_STATUS		20
++#define QDMA_CCDF_OFFSET		20
++#define QDMA_CCDF_MASK		GENMASK(28, 20)
++#define QDMA_CCDF_FOTMAT		BIT(29)
++#define QDMA_CCDF_SER			BIT(30)
++
++static inline u64 qdma_ccdf_addr_get64(const struct fsl_qdma_ccdf *ccdf)
++{
++	return le64_to_cpu(ccdf->data) & 0xffffffffffLLU;
++}
++static inline u64 qdma_ccdf_get_queue(const struct fsl_qdma_ccdf *ccdf)
++{
++	return ccdf->cfg8b_w1 & 0xff;
++}
++static inline void qdma_ccdf_addr_set64(struct fsl_qdma_ccdf *ccdf, u64 addr)
++{
++	ccdf->addr_hi = upper_32_bits(addr);
++	ccdf->addr_lo = cpu_to_le32(lower_32_bits(addr));
++}
++static inline int qdma_ccdf_get_offset(const struct fsl_qdma_ccdf *ccdf)
++{
++	return (le32_to_cpu(ccdf->cfg) & QDMA_CCDF_MASK) >> QDMA_CCDF_OFFSET;
++}
++static inline void qdma_ccdf_set_format(struct fsl_qdma_ccdf *ccdf, int offset)
++{
++	ccdf->cfg = cpu_to_le32(QDMA_CCDF_FOTMAT | offset);
++}
++static inline int qdma_ccdf_get_status(const struct fsl_qdma_ccdf *ccdf)
++{
++	return (le32_to_cpu(ccdf->status) & QDMA_CCDF_MASK) >> QDMA_CCDF_STATUS;
++}
++static inline void qdma_ccdf_set_ser(struct fsl_qdma_ccdf *ccdf, int status)
++{
++	ccdf->status = cpu_to_le32(QDMA_CCDF_SER | status);
++}
++/* qDMA Compound S/G Format */
 +struct fsl_qdma_csgf {
-+	u32 offset:13;
-+	u32 rev1:19;
-+	u32 length:30;
-+	u32 f:1;
-+	u32 e:1;
++	__le32 offset; /* offset */
++	__le32 cfg;	/* E bit, F bit, length */
 +	union {
 +		struct {
-+			u32 addr_lo;	/* low 32-bits of 40-bit address */
-+			u32 addr_hi:8;	/* high 8-bits of 40-bit address */
-+			u32 rev2:24;
++			__le32 addr_lo;	/* low 32-bits of 40-bit address */
++			u8 addr_hi;	/* high 8-bits of 40-bit address */
++			u8 __reserved1[3];
 +		};
-+		struct {
-+			u64 addr:40;
-+			/* More efficient address accessor */
-+			u64 __notaddress:24;
-+		};
++		__le64 data;
 +	};
 +} __packed;
 +
++#define QDMA_SG_FIN	BIT(30)
++#define QDMA_SG_EXT	BIT(31)
++#define QDMA_SG_LEN_MASK	GENMASK(29, 0)
++static inline u64 qdma_csgf_addr_get64(const struct fsl_qdma_csgf *sg)
++{
++	return be64_to_cpu(sg->data) & 0xffffffffffLLU;
++}
++static inline void qdma_csgf_addr_set64(struct fsl_qdma_csgf *sg, u64 addr)
++{
++	sg->addr_hi = upper_32_bits(addr);
++	sg->addr_lo = cpu_to_le32(lower_32_bits(addr));
++}
++static inline void qdma_csgf_set_len(struct fsl_qdma_csgf *csgf, int len)
++{
++	csgf->cfg = cpu_to_le32(len & QDMA_SG_LEN_MASK);
++}
++static inline void qdma_csgf_set_f(struct fsl_qdma_csgf *csgf, int len)
++{
++	csgf->cfg = cpu_to_le32(QDMA_SG_FIN | (len & QDMA_SG_LEN_MASK));
++}
++static inline void qdma_csgf_set_e(struct fsl_qdma_csgf *csgf, int len)
++{
++	csgf->cfg = cpu_to_le32(QDMA_SG_EXT | (len & QDMA_SG_LEN_MASK));
++}
++
++/* qDMA Source Descriptor Format */
 +struct fsl_qdma_sdf {
-+	u32 rev3:32;
-+	u32 ssd:12;	/* souce stride distance */
-+	u32 sss:12;	/* souce stride size */
-+	u32 rev4:8;
-+	u32 rev5:32;
-+	u32 cmd;
++	__le32 rev3;
++	__le32 cfg; /* rev4, bit[0-11] - ssd, bit[12-23] sss */
++	__le32 rev5;
++	__le32 cmd;
 +} __packed;
 +
++/*qDMA Destination Descriptor Format*/
 +struct fsl_qdma_ddf {
-+	u32 rev1:32;
-+	u32 dsd:12;	/* Destination stride distance */
-+	u32 dss:12;	/* Destination stride size */
-+	u32 rev2:8;
-+	u32 rev3:32;
-+	u32 cmd;
++	__le32 rev1;
++	__le32 cfg; /* rev2, bit[0-11] - dsd, bit[12-23] - dss */
++	__le32 rev3;
++	__le32 cmd;
 +} __packed;
 +
 +struct fsl_qdma_chan {
@@ -3453,24 +3497,27 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +
 +	memset(fsl_comp->virt_addr, 0, FSL_QDMA_BASE_BUFFER_SIZE);
 +	/* Head Command Descriptor(Frame Descriptor) */
-+	ccdf->addr = fsl_comp->bus_addr + 16;
-+	ccdf->format = 1; /* Compound S/G format */
++	qdma_ccdf_addr_set64(ccdf, fsl_comp->bus_addr + 16);
++	qdma_ccdf_set_format(ccdf, qdma_ccdf_get_offset(ccdf));
++	qdma_ccdf_set_ser(ccdf, qdma_ccdf_get_status(ccdf));
 +	/* Status notification is enqueued to status queue. */
-+	ccdf->ser = 1;
 +	/* Compound Command Descriptor(Frame List Table) */
-+	csgf_desc->addr = fsl_comp->bus_addr + 64;
++	qdma_csgf_addr_set64(csgf_desc, fsl_comp->bus_addr + 64);
 +	/* It must be 32 as Compound S/G Descriptor */
-+	csgf_desc->length = 32;
-+	csgf_src->addr = src;
-+	csgf_src->length = len;
-+	csgf_dest->addr = dst;
-+	csgf_dest->length = len;
++	qdma_csgf_set_len(csgf_desc, 32);
++	qdma_csgf_addr_set64(csgf_src, src);
++	qdma_csgf_set_len(csgf_src, len);
++	qdma_csgf_addr_set64(csgf_dest, dst);
++	qdma_csgf_set_len(csgf_dest, len);
 +	/* This entry is the last entry. */
-+	csgf_dest->f = FSL_QDMA_F_LAST_ENTRY;
++	qdma_csgf_set_f(csgf_dest, len);
 +	/* Descriptor Buffer */
-+	sdf->cmd = FSL_QDMA_CMD_RWTTYPE << FSL_QDMA_CMD_RWTTYPE_OFFSET;
-+	ddf->cmd = FSL_QDMA_CMD_RWTTYPE << FSL_QDMA_CMD_RWTTYPE_OFFSET;
-+	ddf->cmd |= FSL_QDMA_CMD_LWC << FSL_QDMA_CMD_LWC_OFFSET;
++	sdf->cmd = cpu_to_le32(
++			FSL_QDMA_CMD_RWTTYPE << FSL_QDMA_CMD_RWTTYPE_OFFSET);
++	ddf->cmd = cpu_to_le32(
++			FSL_QDMA_CMD_RWTTYPE << FSL_QDMA_CMD_RWTTYPE_OFFSET);
++	ddf->cmd |= cpu_to_le32(
++			FSL_QDMA_CMD_LWC << FSL_QDMA_CMD_LWC_OFFSET);
 +}
 +
 +static void fsl_qdma_comp_fill_sg(
@@ -3494,49 +3541,48 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	csgf_dest = (struct fsl_qdma_csgf *)fsl_comp->virt_addr + 3;
 +	sdf = (struct fsl_qdma_sdf *)fsl_comp->virt_addr + 4;
 +	ddf = (struct fsl_qdma_ddf *)fsl_comp->virt_addr + 5;
-+
 +	memset(fsl_comp->virt_addr, 0, FSL_QDMA_BASE_BUFFER_SIZE);
 +	/* Head Command Descriptor(Frame Descriptor) */
-+	ccdf->addr = fsl_comp->bus_addr + 16;
-+	ccdf->format = 1; /* Compound S/G format */
++	qdma_ccdf_addr_set64(ccdf, fsl_comp->bus_addr + 16);
++	qdma_ccdf_set_format(ccdf, qdma_ccdf_get_offset(ccdf));
 +	/* Status notification is enqueued to status queue. */
-+	ccdf->ser = 1;
++	qdma_ccdf_set_ser(ccdf, qdma_ccdf_get_status(ccdf));
 +
 +	/* Compound Command Descriptor(Frame List Table) */
-+	csgf_desc->addr = fsl_comp->bus_addr + 64;
++	qdma_csgf_addr_set64(csgf_desc, fsl_comp->bus_addr + 64);
 +	/* It must be 32 as Compound S/G Descriptor */
-+	csgf_desc->length = 32;
++	qdma_csgf_set_len(csgf_desc, 32);
 +
 +	sg_block = fsl_comp->sg_block;
-+	csgf_src->addr = sg_block->bus_addr;
++	qdma_csgf_addr_set64(csgf_src, sg_block->bus_addr);
 +	/* This entry link to the s/g entry. */
-+	csgf_src->e = FSL_QDMA_E_SG_TABLE;
++	qdma_csgf_set_e(csgf_src, 32);
 +
 +	temp = sg_block + fsl_comp->sg_block_src;
-+	csgf_dest->addr = temp->bus_addr;
++	qdma_csgf_addr_set64(csgf_dest, temp->bus_addr);
 +	/* This entry is the last entry. */
-+	csgf_dest->f = FSL_QDMA_F_LAST_ENTRY;
++	qdma_csgf_set_f(csgf_dest, 32);
 +	/* This entry link to the s/g entry. */
-+	csgf_dest->e = FSL_QDMA_E_SG_TABLE;
++	qdma_csgf_set_e(csgf_dest, 32);
 +
 +	for_each_sg(src_sg, sg, src_nents, i) {
 +		temp = sg_block + i / (FSL_QDMA_EXPECT_SG_ENTRY_NUM - 1);
 +		csgf_sg = (struct fsl_qdma_csgf *)temp->virt_addr +
 +			  i % (FSL_QDMA_EXPECT_SG_ENTRY_NUM - 1);
-+		csgf_sg->addr = sg_dma_address(sg);
-+		csgf_sg->length = sg_dma_len(sg);
++		qdma_csgf_addr_set64(csgf_sg, sg_dma_address(sg));
++		qdma_csgf_set_len(csgf_sg, sg_dma_len(sg));
 +		total_src_len += sg_dma_len(sg);
 +
 +		if (i == src_nents - 1)
-+			csgf_sg->f = FSL_QDMA_F_LAST_ENTRY;
++			qdma_csgf_set_f(csgf_sg, sg_dma_len(sg));
 +		if (i % (FSL_QDMA_EXPECT_SG_ENTRY_NUM - 1) ==
 +		    FSL_QDMA_EXPECT_SG_ENTRY_NUM - 2) {
 +			csgf_sg = (struct fsl_qdma_csgf *)temp->virt_addr +
 +				  FSL_QDMA_EXPECT_SG_ENTRY_NUM - 1;
 +			temp = sg_block +
 +				i / (FSL_QDMA_EXPECT_SG_ENTRY_NUM - 1) + 1;
-+			csgf_sg->addr = temp->bus_addr;
-+			csgf_sg->e = FSL_QDMA_E_SG_TABLE;
++			qdma_csgf_addr_set64(csgf_sg, temp->bus_addr);
++			qdma_csgf_set_e(csgf_sg, sg_dma_len(sg));
 +		}
 +	}
 +
@@ -3545,20 +3591,20 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		temp = sg_block + i / (FSL_QDMA_EXPECT_SG_ENTRY_NUM - 1);
 +		csgf_sg = (struct fsl_qdma_csgf *)temp->virt_addr +
 +			  i % (FSL_QDMA_EXPECT_SG_ENTRY_NUM - 1);
-+		csgf_sg->addr = sg_dma_address(sg);
-+		csgf_sg->length = sg_dma_len(sg);
++		qdma_csgf_addr_set64(csgf_sg, sg_dma_address(sg));
++		qdma_csgf_set_len(csgf_sg, sg_dma_len(sg));
 +		total_dst_len += sg_dma_len(sg);
 +
 +		if (i == dst_nents - 1)
-+			csgf_sg->f = FSL_QDMA_F_LAST_ENTRY;
++			qdma_csgf_set_f(csgf_sg, sg_dma_len(sg));
 +		if (i % (FSL_QDMA_EXPECT_SG_ENTRY_NUM - 1) ==
 +		    FSL_QDMA_EXPECT_SG_ENTRY_NUM - 2) {
 +			csgf_sg = (struct fsl_qdma_csgf *)temp->virt_addr +
 +				  FSL_QDMA_EXPECT_SG_ENTRY_NUM - 1;
 +			temp = sg_block +
 +				i / (FSL_QDMA_EXPECT_SG_ENTRY_NUM - 1) + 1;
-+			csgf_sg->addr = temp->bus_addr;
-+			csgf_sg->e = FSL_QDMA_E_SG_TABLE;
++			qdma_csgf_addr_set64(csgf_sg, temp->bus_addr);
++			qdma_csgf_set_e(csgf_sg, sg_dma_len(sg));
 +		}
 +	}
 +
@@ -3566,12 +3612,10 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		dev_err(&fsl_comp->qchan->vchan.chan.dev->device,
 +			"The data length for src and dst isn't match.\n");
 +
-+	csgf_src->length = total_src_len;
-+	csgf_dest->length = total_dst_len;
++	qdma_csgf_set_len(csgf_src, total_src_len);
++	qdma_csgf_set_len(csgf_dest, total_dst_len);
 +
 +	/* Descriptor Buffer */
-+	sdf->cmd = FSL_QDMA_CMD_RWTTYPE << FSL_QDMA_CMD_RWTTYPE_OFFSET;
-+	ddf->cmd = FSL_QDMA_CMD_RWTTYPE << FSL_QDMA_CMD_RWTTYPE_OFFSET;
 +}
 +
 +/*
@@ -3843,13 +3887,12 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		if (reg & FSL_QDMA_BSQSR_QE)
 +			return 0;
 +		status_addr = fsl_status->virt_head;
-+		if (status_addr->queue == pre_queue &&
-+			status_addr->addr == pre_addr)
++		if (qdma_ccdf_get_queue(status_addr) == pre_queue &&
++			qdma_ccdf_addr_get64(status_addr) == pre_addr)
 +			duplicate = 1;
-+
-+		i = status_addr->queue;
-+		pre_queue = status_addr->queue;
-+		pre_addr = status_addr->addr;
++		i = qdma_ccdf_get_queue(status_addr);
++		pre_queue = qdma_ccdf_get_queue(status_addr);
++		pre_addr = qdma_ccdf_addr_get64(status_addr);
 +		temp_queue = fsl_queue + i;
 +		spin_lock(&temp_queue->queue_lock);
 +		if (list_empty(&temp_queue->comp_used)) {
@@ -3865,8 +3908,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +							list);
 +			csgf_src = (struct fsl_qdma_csgf *)fsl_comp->virt_addr
 +							   + 2;
-+			if (fsl_comp->bus_addr + 16 !=
-+					(dma_addr_t)status_addr->addr) {
++			if (fsl_comp->bus_addr + 16 != pre_addr) {
 +				if (duplicate)
 +					duplicate_handle = 1;
 +				else {
@@ -3879,7 +3921,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			if (duplicate_handle) {
 +			reg = qdma_readl(fsl_qdma, block + FSL_QDMA_BSQMR);
 +			reg |= FSL_QDMA_BSQMR_DI;
-+			status_addr->addr = 0x0;
++			qdma_ccdf_addr_set64(status_addr, 0x0);
 +			fsl_status->virt_head++;
 +			if (fsl_status->virt_head == fsl_status->cq
 +						   + fsl_status->n_cq)
@@ -3892,7 +3934,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +
 +		reg = qdma_readl(fsl_qdma, block + FSL_QDMA_BSQMR);
 +		reg |= FSL_QDMA_BSQMR_DI;
-+		status_addr->addr = 0x0;
++		qdma_ccdf_addr_set64(status_addr, 0x0);
 +		fsl_status->virt_head++;
 +		if (fsl_status->virt_head == fsl_status->cq + fsl_status->n_cq)
 +			fsl_status->virt_head = fsl_status->cq;

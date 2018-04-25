@@ -11,12 +11,6 @@
  */
 
 #include <linux/gpio.h>
-#include <linux/version.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,4,0)
-#include <linux/mdio-gpio.h>
-#else
-#include <linux/platform_data/mdio-gpio.h> 
-#endif
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/platform_device.h>

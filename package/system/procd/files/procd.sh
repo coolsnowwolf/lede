@@ -33,7 +33,7 @@
 #   Send a signal to a service instance (or all instances)
 #
 
-. $IPKG_INSTROOT/usr/share/libubox/jshn.sh
+. "$IPKG_INSTROOT/usr/share/libubox/jshn.sh"
 
 PROCD_RELOAD_DELAY=1000
 _PROCD_SERVICE=
@@ -53,7 +53,7 @@ _procd_call() {
 }
 
 _procd_wrapper() {
-	procd_lock
+  procd_lock
 	while [ -n "$1" ]; do
 		eval "$1() { _procd_call _$1 \"\$@\"; }"
 		shift

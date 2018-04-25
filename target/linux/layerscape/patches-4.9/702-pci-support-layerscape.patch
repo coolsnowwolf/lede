@@ -1,9 +1,9 @@
-From 9e6e0a53b29190dbd86a39304b59c3028f5b36c2 Mon Sep 17 00:00:00 2001
+From 5fcb42fbd224e1103bacbae4785745842cfd6304 Mon Sep 17 00:00:00 2001
 From: Yangbo Lu <yangbo.lu@nxp.com>
-Date: Mon, 25 Sep 2017 11:04:10 +0800
-Subject: [PATCH] pci: support layerscape
+Date: Wed, 17 Jan 2018 15:00:43 +0800
+Subject: [PATCH 08/30] pci: support layerscape
 
-This is a integrated patch for layerscape pcie support.
+This is an integrated patch for layerscape pcie support.
 
 Signed-off-by: Po Liu <po.liu@nxp.com>
 Signed-off-by: Liu Gang <Gang.Liu@nxp.com>
@@ -20,12 +20,14 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  drivers/pci/host/pci-layerscape-ep-debugfs.c | 758 +++++++++++++++++++++++++++
  drivers/pci/host/pci-layerscape-ep.c         | 309 +++++++++++
  drivers/pci/host/pci-layerscape-ep.h         | 115 ++++
- drivers/pci/host/pci-layerscape.c            |  38 +-
+ drivers/pci/host/pci-layerscape.c            |  48 +-
  drivers/pci/host/pcie-designware.c           |   6 +
  drivers/pci/host/pcie-designware.h           |   1 +
+ drivers/pci/pci.c                            |   2 +-
  drivers/pci/pcie/portdrv_core.c              | 181 +++----
+ drivers/pci/quirks.c                         |   8 +
  include/linux/pci.h                          |   1 +
- 10 files changed, 1520 insertions(+), 148 deletions(-)
+ 12 files changed, 1539 insertions(+), 149 deletions(-)
  create mode 100644 drivers/pci/host/pci-layerscape-ep-debugfs.c
  create mode 100644 drivers/pci/host/pci-layerscape-ep.c
  create mode 100644 drivers/pci/host/pci-layerscape-ep.h
@@ -1606,8 +1608,12 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +#endif /* _PCIE_LAYERSCAPE_EP_H */
 --- a/drivers/pci/host/pci-layerscape.c
 +++ b/drivers/pci/host/pci-layerscape.c
-@@ -35,12 +35,14 @@
+@@ -33,14 +33,18 @@
+ 
+ /* PEX Internal Configuration Registers */
  #define PCIE_STRFMR1		0x71c /* Symbol Timer & Filter Mask Register1 */
++#define PCIE_ABSERR		0x8d0 /* Bridge Slave Error Response Register */
++#define PCIE_ABSERR_SETTING	0x9401 /* Forward error of non-posted request */
  #define PCIE_DBI_RO_WR_EN	0x8bc /* DBI Read-Only Write Enable Register */
  
 -/* PEX LUT registers */
@@ -1623,7 +1629,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	struct pcie_host_ops *ops;
  };
  
-@@ -86,6 +88,14 @@ static void ls_pcie_drop_msg_tlp(struct
+@@ -86,6 +90,14 @@ static void ls_pcie_drop_msg_tlp(struct
  	iowrite32(val, pcie->pp.dbi_base + PCIE_STRFMR1);
  }
  
@@ -1638,7 +1644,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  static int ls1021_pcie_link_up(struct pcie_port *pp)
  {
  	u32 state;
-@@ -134,7 +144,7 @@ static int ls_pcie_link_up(struct pcie_p
+@@ -134,7 +146,7 @@ static int ls_pcie_link_up(struct pcie_p
  	struct ls_pcie *pcie = to_ls_pcie(pp);
  	u32 state;
  
@@ -1647,17 +1653,31 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  		 pcie->drvdata->ltssm_shift) &
  		 LTSSM_STATE_MASK;
  
-@@ -153,6 +163,9 @@ static void ls_pcie_host_init(struct pci
+@@ -144,6 +156,12 @@ static int ls_pcie_link_up(struct pcie_p
+ 	return 1;
+ }
+ 
++/* Forward error response of outbound non-posted requests */
++static void ls_pcie_fix_error_response(struct ls_pcie *pcie)
++{
++	iowrite32(PCIE_ABSERR_SETTING, pcie->pp.dbi_base + PCIE_ABSERR);
++}
++
+ static void ls_pcie_host_init(struct pcie_port *pp)
+ {
+ 	struct ls_pcie *pcie = to_ls_pcie(pp);
+@@ -153,6 +171,10 @@ static void ls_pcie_host_init(struct pci
  	ls_pcie_clear_multifunction(pcie);
  	ls_pcie_drop_msg_tlp(pcie);
  	iowrite32(0, pcie->pp.dbi_base + PCIE_DBI_RO_WR_EN);
 +
 +	ls_pcie_disable_outbound_atus(pcie);
++	ls_pcie_fix_error_response(pcie);
 +	dw_pcie_setup_rc(pp);
  }
  
  static int ls_pcie_msi_host_init(struct pcie_port *pp,
-@@ -196,20 +209,39 @@ static struct ls_pcie_drvdata ls1021_drv
+@@ -196,20 +218,40 @@ static struct ls_pcie_drvdata ls1021_drv
  static struct ls_pcie_drvdata ls1043_drvdata = {
  	.lut_offset = 0x10000,
  	.ltssm_shift = 24,
@@ -1694,6 +1714,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	{ .compatible = "fsl,ls2080a-pcie", .data = &ls2080_drvdata },
  	{ .compatible = "fsl,ls2085a-pcie", .data = &ls2080_drvdata },
 +	{ .compatible = "fsl,ls2088a-pcie", .data = &ls2088_drvdata },
++	{ .compatible = "fsl,ls1088a-pcie", .data = &ls2088_drvdata },
  	{ },
  };
  
@@ -1721,6 +1742,17 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +void dw_pcie_disable_outbound_atu(struct pcie_port *pp, int index);
  
  #endif /* _PCIE_DESIGNWARE_H */
+--- a/drivers/pci/pci.c
++++ b/drivers/pci/pci.c
+@@ -454,7 +454,7 @@ struct resource *pci_find_parent_resourc
+ 	pci_bus_for_each_resource(bus, r, i) {
+ 		if (!r)
+ 			continue;
+-		if (res->start && resource_contains(r, res)) {
++		if (resource_contains(r, res)) {
+ 
+ 			/*
+ 			 * If the window is prefetchable but the BAR is
 --- a/drivers/pci/pcie/portdrv_core.c
 +++ b/drivers/pci/pcie/portdrv_core.c
 @@ -44,52 +44,30 @@ static void release_pcie_device(struct d
@@ -2026,6 +2058,20 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  		driver->remove(pciedev);
  		put_device(dev);
  	}
+--- a/drivers/pci/quirks.c
++++ b/drivers/pci/quirks.c
+@@ -4654,3 +4654,11 @@ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_IN
+ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, 0x2031, quirk_no_aersid);
+ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, 0x2032, quirk_no_aersid);
+ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, 0x2033, quirk_no_aersid);
++
++/* Freescale PCIe doesn't support MSI in RC mode */
++static void quirk_fsl_no_msi(struct pci_dev *pdev)
++{
++	if (pci_pcie_type(pdev) == PCI_EXP_TYPE_ROOT_PORT)
++		pdev->no_msi = 1;
++}
++DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_FREESCALE, PCI_ANY_ID, quirk_fsl_no_msi);
 --- a/include/linux/pci.h
 +++ b/include/linux/pci.h
 @@ -1823,6 +1823,7 @@ void pcibios_release_device(struct pci_d

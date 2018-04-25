@@ -59,7 +59,6 @@ platform_check_image() {
 	ex3700|\
 	f7c027|\
 	firewrt|\
-	puppies|\
 	fonera20n|\
 	freestation5|\
 	gb-pc1|\
@@ -283,14 +282,11 @@ platform_check_image() {
 		return 0
 		;;
 	hc5962|\
-	xiaomi,miwifi-r3|\
 	mir3g|\
-	r6220b|\
-	r6220a|\
 	r6220|\
 	ubnt-erx|\
 	ubnt-erx-sfp)
-		nand_do_platform_check "${board//,/_}" "$1"
+		nand_do_platform_check "$board" "$1"
 		return $?;
 		;;
 	re350-v1)
@@ -330,10 +326,7 @@ platform_do_upgrade() {
 
 	case "$board" in
 	hc5962|\
-	xiaomi,miwifi-r3|\
 	mir3g|\
-	r6220b|\
-	r6220a|\
 	r6220|\
 	ubnt-erx|\
 	ubnt-erx-sfp)

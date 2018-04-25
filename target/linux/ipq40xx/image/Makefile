@@ -31,6 +31,29 @@ define Device/UbiFit
 	IMAGE/nand-sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 
+define Device/DniImage
+	KERNEL_SUFFIX := -fit-uImage.itb
+	KERNEL = kernel-bin | gzip | fit gzip $$(DTS_DIR)/$$(DEVICE_DTS).dtb
+	KERNEL_NAME := Image
+	NETGEAR_BOARD_ID :=
+	NETGEAR_HW_ID :=
+	IMAGES := factory.img sysupgrade.bin
+	IMAGE/factory.img := append-kernel | pad-offset 64k 64 | append-uImage-fakehdr filesystem | pad-to $$$$(KERNEL_SIZE) | append-rootfs | pad-rootfs | netgear-dni
+	IMAGE/sysupgrade.bin := append-kernel | pad-offset 64k 64 | append-uImage-fakehdr filesystem | pad-to $$$$(KERNEL_SIZE) | append-rootfs | pad-rootfs | append-metadata
+endef
+DEVICE_VARS += NETGEAR_BOARD_ID NETGEAR_HW_ID
+
+
+define Device/8dev_jalapeno
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_DTS := qcom-ipq4018-jalapeno
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_TITLE := 8devices Jalapeno
+	DEVICE_PACKAGES := ipq-wifi-8dev_jalapeno
+endef
+TARGET_DEVICES += 8dev_jalapeno
 
 define Device/asus_rt-ac58u
 	$(call Device/FitImageLzma)
@@ -93,7 +116,7 @@ define Device/compex_wpj428
 	KERNEL_SIZE := 4096k
 	IMAGES = sysupgrade.bin
 	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
-	DEVICE_PACKAGES := ath10k-firmware-qca4019 kmod-gpio-beeper
+	DEVICE_PACKAGES := kmod-gpio-beeper
 endef
 TARGET_DEVICES += compex_wpj428
 
@@ -121,6 +144,29 @@ define Device/meraki_mr33
 endef
 TARGET_DEVICES += meraki_mr33
 
+define Device/netgear_ex61x0v2
+	$(call Device/DniImage)
+	KERNEL_SIZE := 3080192
+	DEVICE_DTS_CONFIG := config@4
+	DEVICE_PACKAGES := ipq-wifi-netgear_ex61x0v2
+	NETGEAR_BOARD_ID := EX6150v2series
+	NETGEAR_HW_ID := 29765285+16+0+128+2x2
+endef
+
+define Device/netgear_ex6100v2
+	$(call Device/netgear_ex61x0v2)
+	DEVICE_DTS := qcom-ipq4018-ex6100v2
+	DEVICE_TITLE := Netgear EX6100v2
+endef
+TARGET_DEVICES += netgear_ex6100v2
+
+define Device/netgear_ex6150v2
+	$(call Device/netgear_ex61x0v2)
+	DEVICE_DTS := qcom-ipq4018-ex6150v2
+	DEVICE_TITLE := Netgear EX6150v2
+endef
+TARGET_DEVICES += netgear_ex6150v2
+
 define Device/openmesh_a42
 	$(call Device/FitImageLzma)
 	DEVICE_DTS := qcom-ipq4018-a42
@@ -132,7 +178,7 @@ define Device/openmesh_a42
 	IMAGES = factory.bin sysupgrade.bin
 	IMAGE/factory.bin := append-rootfs | pad-rootfs | openmesh-image ce_type=A42
 	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-rootfs | sysupgrade-tar rootfs=$$$$@ | append-metadata
-	DEVICE_PACKAGES := ath10k-firmware-qca4019 uboot-envtools
+	DEVICE_PACKAGES := uboot-envtools
 endef
 TARGET_DEVICES += openmesh_a42
 
@@ -146,7 +192,6 @@ define Device/qcom_ap-dk01.1-c1
 	$(call Device/FitImage)
 	IMAGES := sysupgrade.bin
 	IMAGE/sysupgrade.bin := append-kernel | pad-to $$$${KERNEL_SIZE} | append-rootfs | pad-rootfs | append-metadata
-	DEVICE_PACKAGES := ath10k-firmware-qca4019
 endef
 TARGET_DEVICES += qcom_ap-dk01.1-c1
 

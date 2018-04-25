@@ -1,0 +1,139 @@
+From 69a99101748bb1bdb2730393ef48bc152c4d244a Mon Sep 17 00:00:00 2001
+From: Tim Harvey <tharvey@gateworks.com>
+Date: Tue, 12 Dec 2017 12:49:55 -0800
+Subject: [PATCH] net: thunderx: add support for rgmii internal delay modes
+
+The XCV_DLL_CTL is being configured with the assumption that
+phy-mode is rgmii-txid (PHY_INTERFACE_MODE_RGMII_TXID) which is not always
+the case.
+
+This patch parses the phy-mode property and uses it to configure CXV_DLL_CTL
+properly.
+
+Signed-off-by: Tim Harvey <tharvey@gateworks.com>
+---
+ drivers/net/ethernet/cavium/thunder/thunder_bgx.c | 13 +++++++---
+ drivers/net/ethernet/cavium/thunder/thunder_bgx.h |  2 +-
+ drivers/net/ethernet/cavium/thunder/thunder_xcv.c | 31 ++++++++++++++++++-----
+ 3 files changed, 35 insertions(+), 11 deletions(-)
+
+--- a/drivers/net/ethernet/cavium/thunder/thunder_bgx.c
++++ b/drivers/net/ethernet/cavium/thunder/thunder_bgx.c
+@@ -55,6 +55,7 @@ struct bgx {
+ 	struct pci_dev		*pdev;
+ 	bool                    is_dlm;
+ 	bool                    is_rgx;
++	int			phy_mode;
+ };
+ 
+ static struct bgx *bgx_vnic[MAX_BGX_THUNDER];
+@@ -841,12 +842,12 @@ static void bgx_poll_for_link(struct wor
+ 	queue_delayed_work(lmac->check_link, &lmac->dwork, HZ * 2);
+ }
+ 
+-static int phy_interface_mode(u8 lmac_type)
++static int phy_interface_mode(struct bgx *bgx, u8 lmac_type)
+ {
+ 	if (lmac_type == BGX_MODE_QSGMII)
+ 		return PHY_INTERFACE_MODE_QSGMII;
+ 	if (lmac_type == BGX_MODE_RGMII)
+-		return PHY_INTERFACE_MODE_RGMII;
++		return bgx->phy_mode;
+ 
+ 	return PHY_INTERFACE_MODE_SGMII;
+ }
+@@ -912,7 +913,8 @@ static int bgx_lmac_enable(struct bgx *b
+ 
+ 		if (phy_connect_direct(&lmac->netdev, lmac->phydev,
+ 				       bgx_lmac_handler,
+-				       phy_interface_mode(lmac->lmac_type)))
++				       phy_interface_mode(bgx,
++							  lmac->lmac_type)))
+ 			return -ENODEV;
+ 
+ 		phy_start_aneg(lmac->phydev);
+@@ -1287,6 +1289,8 @@ static int bgx_init_of_phy(struct bgx *b
+ 		bgx->lmac[lmac].lmacid = lmac;
+ 
+ 		phy_np = of_parse_phandle(node, "phy-handle", 0);
++		if (phy_np)
++			bgx->phy_mode = of_get_phy_mode(phy_np);
+ 		/* If there is no phy or defective firmware presents
+ 		 * this cortina phy, for which there is no driver
+ 		 * support, ignore it.
+@@ -1390,7 +1394,6 @@ static int bgx_probe(struct pci_dev *pde
+ 		bgx->max_lmac = 1;
+ 		bgx->bgx_id = MAX_BGX_PER_CN81XX - 1;
+ 		bgx_vnic[bgx->bgx_id] = bgx;
+-		xcv_init_hw();
+ 	}
+ 
+ 	/* On 81xx all are DLMs and on 83xx there are 3 BGX QLMs and one
+@@ -1407,6 +1410,8 @@ static int bgx_probe(struct pci_dev *pde
+ 	if (err)
+ 		goto err_enable;
+ 
++	if (bgx->is_rgx)
++		xcv_init_hw(bgx->phy_mode);
+ 	bgx_init_hw(bgx);
+ 
+ 	/* Enable all LMACs */
+--- a/drivers/net/ethernet/cavium/thunder/thunder_bgx.h
++++ b/drivers/net/ethernet/cavium/thunder/thunder_bgx.h
+@@ -226,7 +226,7 @@ void bgx_lmac_internal_loopback(int node
+ void bgx_lmac_get_pfc(int node, int bgx_idx, int lmacid, void *pause);
+ void bgx_lmac_set_pfc(int node, int bgx_idx, int lmacid, void *pause);
+ 
+-void xcv_init_hw(void);
++void xcv_init_hw(int phy_mode);
+ void xcv_setup_link(bool link_up, int link_speed);
+ 
+ u64 bgx_get_rx_stats(int node, int bgx_idx, int lmac, int idx);
+--- a/drivers/net/ethernet/cavium/thunder/thunder_xcv.c
++++ b/drivers/net/ethernet/cavium/thunder/thunder_xcv.c
+@@ -65,7 +65,7 @@ MODULE_LICENSE("GPL v2");
+ MODULE_VERSION(DRV_VERSION);
+ MODULE_DEVICE_TABLE(pci, xcv_id_table);
+ 
+-void xcv_init_hw(void)
++void xcv_init_hw(int phy_mode)
+ {
+ 	u64  cfg;
+ 
+@@ -81,12 +81,31 @@ void xcv_init_hw(void)
+ 	/* Wait for DLL to lock */
+ 	msleep(1);
+ 
+-	/* Configure DLL - enable or bypass
+-	 * TX no bypass, RX bypass
+-	 */
++	/* enable/bypass DLL providing MAC based internal TX/RX delays */
+ 	cfg = readq_relaxed(xcv->reg_base + XCV_DLL_CTL);
+-	cfg &= ~0xFF03;
+-	cfg |= CLKRX_BYP;
++	cfg &= ~0xffff00;
++	switch (phy_mode) {
++	/* RX and TX delays are added by the MAC */
++	case PHY_INTERFACE_MODE_RGMII:
++		break;
++	/* internal RX and TX delays provided by the PHY */
++	case PHY_INTERFACE_MODE_RGMII_ID:
++		cfg |= CLKRX_BYP;
++		cfg |= CLKTX_BYP;
++		break;
++	/* internal RX delay provided by the PHY, the MAC
++	 * should not add an RX delay in this case
++	 */
++	case PHY_INTERFACE_MODE_RGMII_RXID:
++		cfg |= CLKRX_BYP;
++		break;
++	/* internal TX delay provided by the PHY, the MAC
++	 * should not add an TX delay in this case
++	 */
++	case PHY_INTERFACE_MODE_RGMII_TXID:
++		cfg |= CLKRX_BYP;
++		break;
++	}
+ 	writeq_relaxed(cfg, xcv->reg_base + XCV_DLL_CTL);
+ 
+ 	/* Enable compensation controller and force the

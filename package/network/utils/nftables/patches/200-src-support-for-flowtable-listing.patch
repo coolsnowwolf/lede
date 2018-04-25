@@ -1,0 +1,515 @@
+From: Pablo Neira Ayuso <pablo@netfilter.org>
+Date: Mon, 4 Dec 2017 13:28:25 +0100
+Subject: [PATCH] src: support for flowtable listing
+
+This patch allows you to dump existing flowtable.
+
+ # nft list ruleset
+ table ip x {
+        flowtable x {
+                hook ingress priority 10
+                devices = { eth0, tap0 }
+        }
+ }
+
+You can also list existing flowtables via:
+
+ # nft list flowtables
+ table ip x {
+        flowtable x {
+                hook ingress priority 10
+                devices = { eth0, tap0 }
+        }
+ }
+
+ You need a Linux kernel >= 4.16-rc to test this new feature.
+
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/include/linux/netfilter/nf_tables.h
++++ b/include/linux/netfilter/nf_tables.h
+@@ -92,6 +92,9 @@ enum nft_verdicts {
+  * @NFT_MSG_GETOBJ: get a stateful object (enum nft_obj_attributes)
+  * @NFT_MSG_DELOBJ: delete a stateful object (enum nft_obj_attributes)
+  * @NFT_MSG_GETOBJ_RESET: get and reset a stateful object (enum nft_obj_attributes)
++ * @NFT_MSG_NEWFLOWTABLE: add new flow table (enum nft_flowtable_attributes)
++ * @NFT_MSG_GETFLOWTABLE: get flow table (enum nft_flowtable_attributes)
++ * @NFT_MSG_DELFLOWTABLE: delete flow table (enum nft_flowtable_attributes)
+  */
+ enum nf_tables_msg_types {
+ 	NFT_MSG_NEWTABLE,
+@@ -116,6 +119,9 @@ enum nf_tables_msg_types {
+ 	NFT_MSG_GETOBJ,
+ 	NFT_MSG_DELOBJ,
+ 	NFT_MSG_GETOBJ_RESET,
++	NFT_MSG_NEWFLOWTABLE,
++	NFT_MSG_GETFLOWTABLE,
++	NFT_MSG_DELFLOWTABLE,
+ 	NFT_MSG_MAX,
+ };
+ 
+--- a/include/mnl.h
++++ b/include/mnl.h
+@@ -89,6 +89,9 @@ int mnl_nft_obj_batch_add(struct nftnl_o
+ int mnl_nft_obj_batch_del(struct nftnl_obj *nln, struct nftnl_batch *batch,
+ 			  unsigned int flags, uint32_t seqnum);
+ 
++struct nftnl_flowtable_list *
++mnl_nft_flowtable_dump(struct netlink_ctx *ctx, int family, const char *table);
++
+ struct nftnl_ruleset *mnl_nft_ruleset_dump(struct netlink_ctx *ctx,
+ 					   uint32_t family);
+ int mnl_nft_event_listener(struct mnl_socket *nf_sock, unsigned int debug_mask,
+--- a/include/netlink.h
++++ b/include/netlink.h
+@@ -179,6 +179,10 @@ extern int netlink_add_obj(struct netlin
+ extern int netlink_delete_obj(struct netlink_ctx *ctx, const struct handle *h,
+ 			      struct location *loc, uint32_t type);
+ 
++extern int netlink_list_flowtables(struct netlink_ctx *ctx,
++				   const struct handle *h,
++				   const struct location *loc);
++
+ extern void netlink_dump_chain(const struct nftnl_chain *nlc,
+ 			       struct netlink_ctx *ctx);
+ extern void netlink_dump_rule(const struct nftnl_rule *nlr,
+--- a/include/rule.h
++++ b/include/rule.h
+@@ -35,6 +35,7 @@ struct position_spec {
+  * @chain:	chain name (chains and rules only)
+  * @set:	set name (sets only)
+  * @obj:	stateful object name (stateful object only)
++ * @flowtable:	flow table name (flow table only)
+  * @handle:	rule handle (rules only)
+  * @position:	rule position (rules only)
+  * @set_id:	set ID (sets only)
+@@ -45,6 +46,7 @@ struct handle {
+ 	const char		*chain;
+ 	const char		*set;
+ 	const char		*obj;
++	const char		*flowtable;
+ 	struct handle_spec	handle;
+ 	struct position_spec	position;
+ 	uint32_t		set_id;
+@@ -98,6 +100,7 @@ enum table_flags {
+  * @chains:	chains contained in the table
+  * @sets:	sets contained in the table
+  * @objs:	stateful objects contained in the table
++ * @flowtables:	flow tables contained in the table
+  * @flags:	table flags
+  * @refcnt:	table reference counter
+  */
+@@ -109,6 +112,7 @@ struct table {
+ 	struct list_head	chains;
+ 	struct list_head	sets;
+ 	struct list_head	objs;
++	struct list_head	flowtables;
+ 	enum table_flags 	flags;
+ 	unsigned int		refcnt;
+ };
+@@ -315,6 +319,24 @@ void obj_print_plain(const struct obj *o
+ const char *obj_type_name(uint32_t type);
+ uint32_t obj_type_to_cmd(uint32_t type);
+ 
++struct flowtable {
++	struct list_head	list;
++	struct handle		handle;
++	struct location		location;
++	unsigned int		hooknum;
++	int			priority;
++	const char		**dev_array;
++	int			dev_array_len;
++	unsigned int		refcnt;
++};
++
++extern struct flowtable *flowtable_alloc(const struct location *loc);
++extern struct flowtable *flowtable_get(struct flowtable *flowtable);
++extern void flowtable_free(struct flowtable *flowtable);
++extern void flowtable_add_hash(struct flowtable *flowtable, struct table *table);
++
++void flowtable_print(const struct flowtable *n, struct output_ctx *octx);
++
+ /**
+  * enum cmd_ops - command operations
+  *
+@@ -373,6 +395,7 @@ enum cmd_ops {
+  * @CMD_OBJ_QUOTAS:	multiple quotas
+  * @CMD_OBJ_LIMIT:	limit
+  * @CMD_OBJ_LIMITS:	multiple limits
++ * @CMD_OBJ_FLOWTABLES:	flow tables
+  */
+ enum cmd_obj {
+ 	CMD_OBJ_INVALID,
+@@ -399,6 +422,7 @@ enum cmd_obj {
+ 	CMD_OBJ_CT_HELPERS,
+ 	CMD_OBJ_LIMIT,
+ 	CMD_OBJ_LIMITS,
++	CMD_OBJ_FLOWTABLES,
+ };
+ 
+ struct markup {
+--- a/src/evaluate.c
++++ b/src/evaluate.c
+@@ -3196,6 +3196,7 @@ static int cmd_evaluate_list(struct eval
+ 	case CMD_OBJ_CT_HELPERS:
+ 	case CMD_OBJ_LIMITS:
+ 	case CMD_OBJ_SETS:
++	case CMD_OBJ_FLOWTABLES:
+ 		if (cmd->handle.table == NULL)
+ 			return 0;
+ 		if (table_lookup(&cmd->handle, ctx->cache) == NULL)
+--- a/src/mnl.c
++++ b/src/mnl.c
+@@ -17,6 +17,7 @@
+ #include <libnftnl/expr.h>
+ #include <libnftnl/set.h>
+ #include <libnftnl/object.h>
++#include <libnftnl/flowtable.h>
+ #include <libnftnl/batch.h>
+ 
+ #include <linux/netfilter/nfnetlink.h>
+@@ -953,6 +954,63 @@ int mnl_nft_setelem_get(struct netlink_c
+ 	return nft_mnl_talk(ctx, nlh, nlh->nlmsg_len, set_elem_cb, nls);
+ }
+ 
++static int flowtable_cb(const struct nlmsghdr *nlh, void *data)
++{
++	struct nftnl_flowtable_list *nln_list = data;
++	struct nftnl_flowtable *n;
++
++	if (check_genid(nlh) < 0)
++		return MNL_CB_ERROR;
++
++	n = nftnl_flowtable_alloc();
++	if (n == NULL)
++		memory_allocation_error();
++
++	if (nftnl_flowtable_nlmsg_parse(nlh, n) < 0)
++		goto err_free;
++
++	nftnl_flowtable_list_add_tail(n, nln_list);
++	return MNL_CB_OK;
++
++err_free:
++	nftnl_flowtable_free(n);
++	return MNL_CB_OK;
++}
++
++struct nftnl_flowtable_list *
++mnl_nft_flowtable_dump(struct netlink_ctx *ctx, int family, const char *table)
++{
++	struct nftnl_flowtable_list *nln_list;
++	char buf[MNL_SOCKET_BUFFER_SIZE];
++	struct nftnl_flowtable *n;
++	struct nlmsghdr *nlh;
++	int ret;
++
++	n = nftnl_flowtable_alloc();
++	if (n == NULL)
++		memory_allocation_error();
++
++	nlh = nftnl_nlmsg_build_hdr(buf, NFT_MSG_GETFLOWTABLE, family,
++				    NLM_F_DUMP | NLM_F_ACK, ctx->seqnum);
++	if (table != NULL)
++		nftnl_flowtable_set_str(n, NFTNL_FLOWTABLE_TABLE, table);
++	nftnl_flowtable_nlmsg_build_payload(nlh, n);
++	nftnl_flowtable_free(n);
++
++	nln_list = nftnl_flowtable_list_alloc();
++	if (nln_list == NULL)
++		memory_allocation_error();
++
++	ret = nft_mnl_talk(ctx, nlh, nlh->nlmsg_len, flowtable_cb, nln_list);
++	if (ret < 0)
++		goto err;
++
++	return nln_list;
++err:
++	nftnl_flowtable_list_free(nln_list);
++	return NULL;
++}
++
+ /*
+  * ruleset
+  */
+--- a/src/netlink.c
++++ b/src/netlink.c
+@@ -23,6 +23,7 @@
+ #include <libnftnl/expr.h>
+ #include <libnftnl/object.h>
+ #include <libnftnl/set.h>
++#include <libnftnl/flowtable.h>
+ #include <libnftnl/udata.h>
+ #include <libnftnl/ruleset.h>
+ #include <libnftnl/common.h>
+@@ -1826,6 +1827,70 @@ int netlink_reset_objs(struct netlink_ct
+ 	return err;
+ }
+ 
++static struct flowtable *
++netlink_delinearize_flowtable(struct netlink_ctx *ctx,
++			      struct nftnl_flowtable *nlo)
++{
++	struct flowtable *flowtable;
++	const char **dev_array;
++	int len = 0, i;
++
++	flowtable = flowtable_alloc(&netlink_location);
++	flowtable->handle.family =
++		nftnl_flowtable_get_u32(nlo, NFTNL_FLOWTABLE_FAMILY);
++	flowtable->handle.table =
++		xstrdup(nftnl_flowtable_get_str(nlo, NFTNL_FLOWTABLE_TABLE));
++	flowtable->handle.flowtable =
++		xstrdup(nftnl_flowtable_get_str(nlo, NFTNL_FLOWTABLE_NAME));
++	dev_array = nftnl_flowtable_get_array(nlo, NFTNL_FLOWTABLE_DEVICES);
++	while (dev_array[len] != '\0')
++		len++;
++
++	flowtable->dev_array = calloc(1, len * sizeof(char *));
++	for (i = 0; i < len; i++)
++		flowtable->dev_array[i] = xstrdup(dev_array[i]);
++
++	flowtable->dev_array_len = len;
++
++	flowtable->priority =
++		nftnl_flowtable_get_u32(nlo, NFTNL_FLOWTABLE_PRIO);
++	flowtable->hooknum =
++		nftnl_flowtable_get_u32(nlo, NFTNL_FLOWTABLE_HOOKNUM);
++
++	return flowtable;
++}
++
++static int list_flowtable_cb(struct nftnl_flowtable *nls, void *arg)
++{
++	struct netlink_ctx *ctx = arg;
++	struct flowtable *flowtable;
++
++	flowtable = netlink_delinearize_flowtable(ctx, nls);
++	if (flowtable == NULL)
++		return -1;
++	list_add_tail(&flowtable->list, &ctx->list);
++	return 0;
++}
++
++int netlink_list_flowtables(struct netlink_ctx *ctx, const struct handle *h,
++		      const struct location *loc)
++{
++	struct nftnl_flowtable_list *flowtable_cache;
++	int err;
++
++	flowtable_cache = mnl_nft_flowtable_dump(ctx, h->family, h->table);
++	if (flowtable_cache == NULL) {
++		if (errno == EINTR)
++			return -1;
++
++		return 0;
++	}
++
++	err = nftnl_flowtable_list_foreach(flowtable_cache, list_flowtable_cb, ctx);
++	nftnl_flowtable_list_free(flowtable_cache);
++	return err;
++}
++
+ int netlink_batch_send(struct netlink_ctx *ctx, struct list_head *err_list)
+ {
+ 	return mnl_batch_talk(ctx, err_list);
+--- a/src/parser_bison.y
++++ b/src/parser_bison.y
+@@ -248,6 +248,8 @@ int nft_lex(void *, void *, void *);
+ %token METER			"meter"
+ %token METERS			"meters"
+ 
++%token FLOWTABLES		"flowtables"
++
+ %token <val> NUM		"number"
+ %token <string> STRING		"string"
+ %token <string> QUOTED_STRING	"quoted string"
+@@ -1104,6 +1106,10 @@ list_cmd		:	TABLE		table_spec
+ 			{
+ 				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_METER, &$2, &@$, NULL);
+ 			}
++			|       FLOWTABLES      ruleset_spec
++			{
++				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_FLOWTABLES, &$2, &@$, NULL);
++			}
+ 			|	MAPS		ruleset_spec
+ 			{
+ 				$$ = cmd_alloc(CMD_LIST, CMD_OBJ_MAPS, &$2, &@$, NULL);
+--- a/src/rule.c
++++ b/src/rule.c
+@@ -95,6 +95,11 @@ static int cache_init_objects(struct net
+ 			return -1;
+ 		list_splice_tail_init(&ctx->list, &table->chains);
+ 
++		ret = netlink_list_flowtables(ctx, &table->handle, &internal_location);
++		if (ret < 0)
++			return -1;
++		list_splice_tail_init(&ctx->list, &table->flowtables);
++
+ 		if (cmd != CMD_RESET) {
+ 			ret = netlink_list_objs(ctx, &table->handle, &internal_location);
+ 			if (ret < 0)
+@@ -722,6 +727,7 @@ struct table *table_alloc(void)
+ 	init_list_head(&table->chains);
+ 	init_list_head(&table->sets);
+ 	init_list_head(&table->objs);
++	init_list_head(&table->flowtables);
+ 	init_list_head(&table->scope.symbols);
+ 	table->refcnt = 1;
+ 
+@@ -797,6 +803,7 @@ static void table_print_options(const st
+ 
+ static void table_print(const struct table *table, struct output_ctx *octx)
+ {
++	struct flowtable *flowtable;
+ 	struct chain *chain;
+ 	struct obj *obj;
+ 	struct set *set;
+@@ -818,6 +825,11 @@ static void table_print(const struct tab
+ 		set_print(set, octx);
+ 		delim = "\n";
+ 	}
++	list_for_each_entry(flowtable, &table->flowtables, list) {
++		nft_print(octx, "%s", delim);
++		flowtable_print(flowtable, octx);
++		delim = "\n";
++	}
+ 	list_for_each_entry(chain, &table->chains, list) {
+ 		nft_print(octx, "%s", delim);
+ 		chain_print(chain, octx);
+@@ -1481,6 +1493,114 @@ static int do_list_obj(struct netlink_ct
+ 	return 0;
+ }
+ 
++struct flowtable *flowtable_alloc(const struct location *loc)
++{
++	struct flowtable *flowtable;
++
++	flowtable = xzalloc(sizeof(*flowtable));
++	if (loc != NULL)
++		flowtable->location = *loc;
++
++	flowtable->refcnt = 1;
++	return flowtable;
++}
++
++struct flowtable *flowtable_get(struct flowtable *flowtable)
++{
++	flowtable->refcnt++;
++	return flowtable;
++}
++
++void flowtable_free(struct flowtable *flowtable)
++{
++	if (--flowtable->refcnt > 0)
++		return;
++	handle_free(&flowtable->handle);
++	xfree(flowtable);
++}
++
++void flowtable_add_hash(struct flowtable *flowtable, struct table *table)
++{
++	list_add_tail(&flowtable->list, &table->flowtables);
++}
++
++static void flowtable_print_declaration(const struct flowtable *flowtable,
++					struct print_fmt_options *opts,
++					struct output_ctx *octx)
++{
++	int i;
++
++	nft_print(octx, "%sflowtable", opts->tab);
++
++	if (opts->family != NULL)
++		nft_print(octx, " %s", opts->family);
++
++	if (opts->table != NULL)
++		nft_print(octx, " %s", opts->table);
++
++	nft_print(octx, " %s {%s", flowtable->handle.flowtable, opts->nl);
++
++	nft_print(octx, "%s%shook %s priority %d%s",
++		  opts->tab, opts->tab, "ingress",
++		  flowtable->priority, opts->stmt_separator);
++
++	nft_print(octx, "%s%sdevices = { ", opts->tab, opts->tab);
++	for (i = 0; i < flowtable->dev_array_len; i++) {
++		nft_print(octx, "%s", flowtable->dev_array[i]);
++		if (i + 1 != flowtable->dev_array_len)
++			nft_print(octx, ", ");
++	}
++	nft_print(octx, " }%s", opts->stmt_separator);
++}
++
++static void do_flowtable_print(const struct flowtable *flowtable,
++			       struct print_fmt_options *opts,
++			       struct output_ctx *octx)
++{
++	flowtable_print_declaration(flowtable, opts, octx);
++	nft_print(octx, "%s}%s", opts->tab, opts->nl);
++}
++
++void flowtable_print(const struct flowtable *s, struct output_ctx *octx)
++{
++	struct print_fmt_options opts = {
++		.tab		= "\t",
++		.nl		= "\n",
++		.stmt_separator	= "\n",
++	};
++
++	do_flowtable_print(s, &opts, octx);
++}
++
++static int do_list_flowtables(struct netlink_ctx *ctx, struct cmd *cmd)
++{
++	struct print_fmt_options opts = {
++		.tab		= "\t",
++		.nl		= "\n",
++		.stmt_separator	= "\n",
++	};
++	struct flowtable *flowtable;
++	struct table *table;
++
++	list_for_each_entry(table, &ctx->cache->list, list) {
++		if (cmd->handle.family != NFPROTO_UNSPEC &&
++		    cmd->handle.family != table->handle.family)
++			continue;
++
++		nft_print(ctx->octx, "table %s %s {\n",
++			  family2str(table->handle.family),
++			  table->handle.table);
++
++		list_for_each_entry(flowtable, &table->flowtables, list) {
++			flowtable_print_declaration(flowtable, &opts, ctx->octx);
++			nft_print(ctx->octx, "%s}%s", opts.tab, opts.nl);
++		}
++
++		nft_print(ctx->octx, "}\n");
++	}
++	return 0;
++}
++
+ static int do_list_ruleset(struct netlink_ctx *ctx, struct cmd *cmd)
+ {
+ 	unsigned int family = cmd->handle.family;
+@@ -1628,6 +1748,8 @@ static int do_command_list(struct netlin
+ 	case CMD_OBJ_LIMIT:
+ 	case CMD_OBJ_LIMITS:
+ 		return do_list_obj(ctx, cmd, NFT_OBJECT_LIMIT);
++	case CMD_OBJ_FLOWTABLES:
++		return do_list_flowtables(ctx, cmd);
+ 	default:
+ 		BUG("invalid command object type %u\n", cmd->obj);
+ 	}
+--- a/src/scanner.l
++++ b/src/scanner.l
+@@ -297,6 +297,8 @@ addrstring	({macaddr}|{ip4addr}|{ip6addr
+ "meter"			{ return METER; }
+ "meters"		{ return METERS; }
+ 
++"flowtables"		{ return FLOWTABLES; }
++
+ "counter"		{ return COUNTER; }
+ "name"			{ return NAME; }
+ "packets"		{ return PACKETS; }
