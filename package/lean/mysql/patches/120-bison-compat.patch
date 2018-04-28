@@ -1,0 +1,3290 @@
+--- a/sql/sql_lex.cc
++++ b/sql/sql_lex.cc
+@@ -775,14 +775,13 @@ bool consume_comment(Lex_input_stream *l
+ 				(which can't be followed by a signed number)
+ */
+ 
+-int MYSQLlex(void *arg, void *yythd)
++int MYSQLlex(void *arg, THD *thd)
+ {
+   reg1	uchar c= 0;
+   bool comment_closed;
+   int	tokval, result_state;
+   uint length;
+   enum my_lex_states state;
+-  THD *thd= (THD *)yythd;
+   Lex_input_stream *lip= & thd->m_parser_state->m_lip;
+   LEX *lex= thd->lex;
+   YYSTYPE *yylval=(YYSTYPE*) arg;
+--- a/sql/sql_lex.h
++++ b/sql/sql_lex.h
+@@ -2072,7 +2072,7 @@ extern void lex_init(void);
+ extern void lex_free(void);
+ extern void lex_start(THD *thd);
+ extern void lex_end(LEX *lex);
+-extern int MYSQLlex(void *arg, void *yythd);
++extern int MYSQLlex(void *arg, THD *thd);
+ 
+ extern void trim_whitespace(CHARSET_INFO *cs, LEX_STRING *str);
+ 
+--- a/sql/sql_parse.cc
++++ b/sql/sql_parse.cc
+@@ -8012,7 +8012,7 @@ bool check_host_name(LEX_STRING *str)
+ }
+ 
+ 
+-extern int MYSQLparse(void *thd); // from sql_yacc.cc
++extern int MYSQLparse(THD *thd); // from sql_yacc.cc
+ 
+ 
+ /**
+--- a/sql/sql_yacc.yy
++++ b/sql/sql_yacc.yy
+@@ -25,17 +25,15 @@
+ %{
+ /* thd is passed as an argument to yyparse(), and subsequently to yylex().
+ ** The type will be void*, so it must be  cast to (THD*) when used.
+-** Use the YYTHD macro for this.
++** Use the thd macro for this.
+ */
+-#define YYPARSE_PARAM yythd
+-#define YYLEX_PARAM yythd
+-#define YYTHD ((THD *)yythd)
+-#define YYLIP (& YYTHD->m_parser_state->m_lip)
++#define YYLIP (& thd->m_parser_state->m_lip)
++#define YYPS (& thd->m_parser_state->m_yacc)
+ 
+ #define MYSQL_YACC
+ #define YYINITDEPTH 100
+ #define YYMAXDEPTH 3200                        /* Because of 64K stack */
+-#define Lex (YYTHD->lex)
++#define Lex (thd->lex)
+ #define Select Lex->current_select
+ #include "mysql_priv.h"
+ #include "slave.h"
+@@ -64,7 +62,7 @@ const LEX_STRING null_lex_str= {0,0};
+     ulong val= *(F);                          \
+     if (my_yyoverflow((B), (D), &val))        \
+     {                                         \
+-      yyerror((char*) (A));                   \
++      yyerror(current_thd, (char*) (A));      \
+       return 2;                               \
+     }                                         \
+     else                                      \
+@@ -76,7 +74,7 @@ const LEX_STRING null_lex_str= {0,0};
+ #define MYSQL_YYABORT                         \
+   do                                          \
+   {                                           \
+-    LEX::cleanup_lex_after_parse_error(YYTHD);\
++    LEX::cleanup_lex_after_parse_error(thd);  \
+     YYABORT;                                  \
+   } while (0)
+ 
+@@ -159,10 +157,8 @@ void my_parse_error(const char *s)
+   to abort from the parser.
+ */
+ 
+-void MYSQLerror(const char *s)
++void MYSQLerror(THD *thd, const char *s)
+ {
+-  THD *thd= current_thd;
+-
+   /*
+     Restore the original LEX if it was replaced when parsing
+     a stored procedure. We must ensure that a parsing error
+@@ -675,7 +671,10 @@ static bool add_create_index (LEX *lex,
+ bool my_yyoverflow(short **a, YYSTYPE **b, ulong *yystacksize);
+ %}
+ 
+-%pure_parser                                    /* We have threads */
++/* We have threads */
++%define api.pure
++%parse-param { THD *thd }
++%lex-param { THD *thd }
+ /*
+   Currently there are 169 shift/reduce conflicts.
+   We should not introduce new conflicts any more.
+@@ -1516,7 +1515,6 @@ rule: <-- starts at col 1
+ query:
+           END_OF_INPUT
+           {
+-            THD *thd= YYTHD;
+             if (!thd->bootstrap &&
+               (!(thd->lex->select_lex.options & OPTION_FOUND_COMMENT)))
+             {
+@@ -1530,7 +1528,7 @@ query:
+           {
+             Lex_input_stream *lip = YYLIP;
+ 
+-            if ((YYTHD->client_capabilities & CLIENT_MULTI_QUERIES) &&
++            if ((thd->client_capabilities & CLIENT_MULTI_QUERIES) &&
+                 ! lip->stmt_prepare_mode &&
+                 ! lip->eof())
+             {
+@@ -1626,7 +1624,6 @@ statement:
+ deallocate:
+           deallocate_or_drop PREPARE_SYM ident
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             lex->sql_command= SQLCOM_DEALLOCATE_PREPARE;
+             lex->prepared_stmt_name= $3;
+@@ -1641,7 +1638,6 @@ deallocate_or_drop:
+ prepare:
+           PREPARE_SYM ident FROM prepare_src
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             lex->sql_command= SQLCOM_PREPARE;
+             lex->prepared_stmt_name= $2;
+@@ -1651,14 +1647,12 @@ prepare:
+ prepare_src:
+           TEXT_STRING_sys
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             lex->prepared_stmt_code= $1;
+             lex->prepared_stmt_code_is_varref= FALSE;
+           }
+         | '@' ident_or_text
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             lex->prepared_stmt_code= $2;
+             lex->prepared_stmt_code_is_varref= TRUE;
+@@ -1668,7 +1662,6 @@ prepare_src:
+ execute:
+           EXECUTE_SYM ident
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             lex->sql_command= SQLCOM_EXECUTE;
+             lex->prepared_stmt_name= $2;
+@@ -1826,7 +1819,6 @@ master_file_def:
+ create:
+           CREATE opt_table_options TABLE_SYM opt_if_not_exists table_ident
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             lex->sql_command= SQLCOM_CREATE_TABLE;
+             if (!lex->select_lex.add_table_to_list(thd, $5, NULL,
+@@ -1844,13 +1836,13 @@ create:
+           }
+           create2
+           {
+-            LEX *lex= YYTHD->lex;
++            LEX *lex= thd->lex;
+             lex->current_select= &lex->select_lex; 
+             if ((lex->create_info.used_fields & HA_CREATE_USED_ENGINE) &&
+                 !lex->create_info.db_type)
+             {
+-              lex->create_info.db_type= ha_default_handlerton(YYTHD);
+-              push_warning_printf(YYTHD, MYSQL_ERROR::WARN_LEVEL_WARN,
++              lex->create_info.db_type= ha_default_handlerton(thd);
++              push_warning_printf(thd, MYSQL_ERROR::WARN_LEVEL_WARN,
+                                   ER_WARN_USING_OTHER_HANDLER,
+                                   ER(ER_WARN_USING_OTHER_HANDLER),
+                                   ha_resolve_storage_engine_name(lex->create_info.db_type),
+@@ -1979,7 +1971,6 @@ server_option:
+ event_tail:
+           remember_name EVENT_SYM opt_if_not_exists sp_name
+           {
+-            THD *thd= YYTHD;
+             LEX *lex=Lex;
+ 
+             lex->stmt_definition_begin= $1;
+@@ -2046,7 +2037,7 @@ opt_ev_status:
+ ev_starts:
+           /* empty */
+           {
+-            Item *item= new (YYTHD->mem_root) Item_func_now_local();
++            Item *item= new (thd->mem_root) Item_func_now_local();
+             if (item == NULL)
+               MYSQL_YYABORT;
+             Lex->event_parse_data->item_starts= item;
+@@ -2096,7 +2087,6 @@ opt_ev_comment:
+ 
+ ev_sql_stmt:
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             Lex_input_stream *lip= YYLIP;
+ 
+@@ -2139,7 +2129,6 @@ ev_sql_stmt:
+           }
+           ev_sql_stmt_inner
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+ 
+             /* return back to the original memory root ASAP */
+@@ -2198,11 +2187,10 @@ sp_name:
+             $$= new sp_name($1, $3, true);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+-            $$->init_qname(YYTHD);
++            $$->init_qname(thd);
+           }
+         | ident
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             LEX_STRING db;
+             if (check_routine_name(&$1))
+@@ -2272,7 +2260,7 @@ call:
+             lex->sql_command= SQLCOM_CALL;
+             lex->spname= $2;
+             lex->value_list.empty();
+-            sp_add_used_routine(lex, YYTHD, $2, TYPE_ENUM_PROCEDURE);
++            sp_add_used_routine(lex, thd, $2, TYPE_ENUM_PROCEDURE);
+           }
+           opt_sp_cparam_list {}
+         ;
+@@ -2345,7 +2333,7 @@ sp_fdparam:
+                                                      (enum enum_field_types)$3,
+                                                      sp_param_in);
+ 
+-            if (lex->sphead->fill_field_definition(YYTHD, lex,
++            if (lex->sphead->fill_field_definition(thd, lex,
+                                                    (enum enum_field_types) $3,
+                                                    &spvar->field_def))
+             {
+@@ -2382,7 +2370,7 @@ sp_pdparam:
+                                                      (enum enum_field_types)$4,
+                                                      (sp_param_mode_t)$1);
+ 
+-            if (lex->sphead->fill_field_definition(YYTHD, lex,
++            if (lex->sphead->fill_field_definition(thd, lex,
+                                                    (enum enum_field_types) $4,
+                                                    &spvar->field_def))
+             {
+@@ -2445,13 +2433,12 @@ sp_decl:
+           {
+             LEX *lex= Lex;
+ 
+-            lex->sphead->reset_lex(YYTHD);
++            lex->sphead->reset_lex(thd);
+             lex->spcont->declare_var_boundary($2);
+           }
+           type
+           sp_opt_default
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= Lex;
+             sp_pcontext *pctx= lex->spcont;
+             uint num_vars= pctx->context_var_count();
+@@ -2477,7 +2464,7 @@ sp_decl:
+               spvar->type= var_type;
+               spvar->dflt= dflt_value_item;
+             
+-              if (lex->sphead->fill_field_definition(YYTHD, lex, var_type,
++              if (lex->sphead->fill_field_definition(thd, lex, var_type,
+                                                      &spvar->field_def))
+               {
+                 MYSQL_YYABORT;
+@@ -2501,7 +2488,7 @@ sp_decl:
+             }
+ 
+             pctx->declare_var_boundary(0);
+-            if (lex->sphead->restore_lex(YYTHD))
++            if (lex->sphead->restore_lex(thd))
+               MYSQL_YYABORT;
+             $$.vars= $2;
+             $$.conds= $$.hndlrs= $$.curs= 0;
+@@ -2516,7 +2503,7 @@ sp_decl:
+ 	      my_error(ER_SP_DUP_COND, MYF(0), $2.str);
+ 	      MYSQL_YYABORT;
+ 	    }
+-	    if(YYTHD->lex->spcont->push_cond(&$2, $5))
++	    if(thd->lex->spcont->push_cond(&$2, $5))
+               MYSQL_YYABORT;
+             $$.vars= $$.hndlrs= $$.curs= 0;
+             $$.conds= 1;
+@@ -2602,7 +2589,7 @@ sp_decl:
+ 
+ sp_cursor_stmt:
+           {
+-            Lex->sphead->reset_lex(YYTHD);
++            Lex->sphead->reset_lex(thd);
+           }
+           select
+           {
+@@ -2618,7 +2605,7 @@ sp_cursor_stmt:
+             }
+             lex->sp_lex_in_use= TRUE;
+             $$= lex;
+-            if (lex->sphead->restore_lex(YYTHD))
++            if (lex->sphead->restore_lex(thd))
+               MYSQL_YYABORT;
+           }
+         ;
+@@ -2662,7 +2649,7 @@ sp_hcond_element:
+ sp_cond:
+           ulong_num
+           { /* mysql errno */
+-            $$= (sp_cond_type_t *)YYTHD->alloc(sizeof(sp_cond_type_t));
++            $$= (sp_cond_type_t *)thd->alloc(sizeof(sp_cond_type_t));
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             $$->type= sp_cond_type_t::number;
+@@ -2675,7 +2662,7 @@ sp_cond:
+               my_error(ER_SP_BAD_SQLSTATE, MYF(0), $3.str);
+               MYSQL_YYABORT;
+             }
+-            $$= (sp_cond_type_t *)YYTHD->alloc(sizeof(sp_cond_type_t));
++            $$= (sp_cond_type_t *) thd->alloc(sizeof(sp_cond_type_t));
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             $$->type= sp_cond_type_t::state;
+@@ -2705,21 +2692,21 @@ sp_hcond:
+           }
+         | SQLWARNING_SYM /* SQLSTATEs 01??? */
+           {
+-            $$= (sp_cond_type_t *)YYTHD->alloc(sizeof(sp_cond_type_t));
++            $$= (sp_cond_type_t *) thd->alloc(sizeof(sp_cond_type_t));
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             $$->type= sp_cond_type_t::warning;
+           }
+         | not FOUND_SYM /* SQLSTATEs 02??? */
+           {
+-            $$= (sp_cond_type_t *)YYTHD->alloc(sizeof(sp_cond_type_t));
++            $$= (sp_cond_type_t *) thd->alloc(sizeof(sp_cond_type_t));
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             $$->type= sp_cond_type_t::notfound;
+           }
+         | SQLEXCEPTION_SYM /* All other SQLSTATEs */
+           {
+-            $$= (sp_cond_type_t *)YYTHD->alloc(sizeof(sp_cond_type_t));
++            $$= (sp_cond_type_t *) thd->alloc(sizeof(sp_cond_type_t));
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             $$->type= sp_cond_type_t::exception;
+@@ -2789,7 +2776,6 @@ sp_proc_stmt_if:
+         
+ sp_proc_stmt_statement:
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             Lex_input_stream *lip= YYLIP;
+ 
+@@ -2798,7 +2784,6 @@ sp_proc_stmt_statement:
+           }
+           statement
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             Lex_input_stream *lip= YYLIP;
+             sp_head *sp= lex->sphead;
+@@ -2845,7 +2830,7 @@ sp_proc_stmt_statement:
+ 
+ sp_proc_stmt_return:
+           RETURN_SYM 
+-          { Lex->sphead->reset_lex(YYTHD); }
++          { Lex->sphead->reset_lex(thd); }
+           expr
+           {
+             LEX *lex= Lex;
+@@ -2867,7 +2852,7 @@ sp_proc_stmt_return:
+                 MYSQL_YYABORT;
+               sp->m_flags|= sp_head::HAS_RETURN;
+             }
+-            if (sp->restore_lex(YYTHD))
++            if (sp->restore_lex(thd))
+               MYSQL_YYABORT;
+           }
+         ;
+@@ -3094,7 +3079,7 @@ sp_fetch_list:
+         ;
+ 
+ sp_if:
+-          { Lex->sphead->reset_lex(YYTHD); }
++          { Lex->sphead->reset_lex(thd); }
+           expr THEN_SYM
+           {
+             LEX *lex= Lex;
+@@ -3108,7 +3093,7 @@ sp_if:
+                 sp->add_cont_backpatch(i) ||
+                 sp->add_instr(i))
+               MYSQL_YYABORT;
+-            if (sp->restore_lex(YYTHD))
++            if (sp->restore_lex(thd))
+               MYSQL_YYABORT;
+           }
+           sp_proc_stmts1
+@@ -3147,7 +3132,7 @@ simple_case_stmt:
+           {
+             LEX *lex= Lex;
+             case_stmt_action_case(lex);
+-            lex->sphead->reset_lex(YYTHD); /* For expr $3 */
++            lex->sphead->reset_lex(thd); /* For expr $3 */
+           }
+           expr
+           {
+@@ -3156,7 +3141,7 @@ simple_case_stmt:
+               MYSQL_YYABORT;
+ 
+             /* For expr $3 */
+-            if (lex->sphead->restore_lex(YYTHD))
++            if (lex->sphead->restore_lex(thd))
+               MYSQL_YYABORT;
+           }
+           simple_when_clause_list
+@@ -3198,7 +3183,7 @@ searched_when_clause_list:
+ simple_when_clause:
+           WHEN_SYM
+           {
+-            Lex->sphead->reset_lex(YYTHD); /* For expr $3 */
++            Lex->sphead->reset_lex(thd); /* For expr $3 */
+           }
+           expr
+           {
+@@ -3208,7 +3193,7 @@ simple_when_clause:
+             if (case_stmt_action_when(lex, $3, true))
+               MYSQL_YYABORT;
+             /* For expr $3 */
+-            if (lex->sphead->restore_lex(YYTHD))
++            if (lex->sphead->restore_lex(thd))
+               MYSQL_YYABORT;
+           }
+           THEN_SYM
+@@ -3223,7 +3208,7 @@ simple_when_clause:
+ searched_when_clause:
+           WHEN_SYM
+           {
+-            Lex->sphead->reset_lex(YYTHD); /* For expr $3 */
++            Lex->sphead->reset_lex(thd); /* For expr $3 */
+           }
+           expr
+           {
+@@ -3231,7 +3216,7 @@ searched_when_clause:
+             if (case_stmt_action_when(lex, $3, false))
+               MYSQL_YYABORT;
+             /* For expr $3 */
+-            if (lex->sphead->restore_lex(YYTHD))
++            if (lex->sphead->restore_lex(thd))
+               MYSQL_YYABORT;
+           }
+           THEN_SYM
+@@ -3395,7 +3380,7 @@ sp_unlabeled_control:
+               MYSQL_YYABORT;
+ 	  }
+         | WHILE_SYM 
+-          { Lex->sphead->reset_lex(YYTHD); }
++          { Lex->sphead->reset_lex(thd); }
+           expr DO_SYM
+           {
+             LEX *lex= Lex;
+@@ -3409,7 +3394,7 @@ sp_unlabeled_control:
+                 sp->new_cont_backpatch(i) ||
+                 sp->add_instr(i))
+               MYSQL_YYABORT;
+-            if (sp->restore_lex(YYTHD))
++            if (sp->restore_lex(thd))
+               MYSQL_YYABORT;
+           }
+           sp_proc_stmts1 END WHILE_SYM
+@@ -3424,7 +3409,7 @@ sp_unlabeled_control:
+             lex->sphead->do_cont_backpatch();
+           }
+         | REPEAT_SYM sp_proc_stmts1 UNTIL_SYM 
+-          { Lex->sphead->reset_lex(YYTHD); }
++          { Lex->sphead->reset_lex(thd); }
+           expr END REPEAT_SYM
+           {
+             LEX *lex= Lex;
+@@ -3436,7 +3421,7 @@ sp_unlabeled_control:
+             if (i == NULL ||
+                 lex->sphead->add_instr(i))
+               MYSQL_YYABORT;
+-            if (lex->sphead->restore_lex(YYTHD))
++            if (lex->sphead->restore_lex(thd))
+               MYSQL_YYABORT;
+             /* We can shortcut the cont_backpatch here */
+             i->m_cont_dest= ip+1;
+@@ -3859,7 +3844,6 @@ create2:
+           create3 {}
+         | LIKE table_ident
+           {
+-            THD *thd= YYTHD;
+             TABLE_LIST *src_table;
+             LEX *lex= thd->lex;
+ 
+@@ -3873,7 +3857,6 @@ create2:
+           }
+         | '(' LIKE table_ident ')'
+           {
+-            THD *thd= YYTHD;
+             TABLE_LIST *src_table;
+             LEX *lex= thd->lex;
+ 
+@@ -4342,7 +4325,6 @@ part_bit_expr:
+           bit_expr
+           {
+             Item *part_expr= $1;
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             Name_resolution_context *context= &lex->current_select->context;
+             TABLE_LIST *save_list= context->table_list;
+@@ -4364,7 +4346,7 @@ part_bit_expr:
+               my_error(ER_PARTITION_FUNCTION_IS_NOT_ALLOWED, MYF(0));
+               MYSQL_YYABORT;
+             }
+-            if (part_expr->fix_fields(YYTHD, (Item**)0) ||
++            if (part_expr->fix_fields(thd, (Item**)0) ||
+                 ((context->table_list= save_list), FALSE) ||
+                 (!part_expr->const_item()) ||
+                 (!lex->safe_to_cache_query))
+@@ -4629,7 +4611,7 @@ create_table_option:
+         | TYPE_SYM opt_equal storage_engines
+           {
+             Lex->create_info.db_type= $3;
+-            WARN_DEPRECATED(yythd, "6.0", "TYPE=storage_engine",
++            WARN_DEPRECATED(thd, "6.0", "TYPE=storage_engine",
+                             "'ENGINE=storage_engine'");
+             Lex->create_info.used_fields|= HA_CREATE_USED_ENGINE;
+           }
+@@ -4791,19 +4773,19 @@ default_collation:
+ storage_engines:
+           ident_or_text
+           {
+-            plugin_ref plugin= ha_resolve_by_name(YYTHD, &$1);
++            plugin_ref plugin= ha_resolve_by_name(thd, &$1);
+ 
+             if (plugin)
+               $$= plugin_data(plugin, handlerton*);
+             else
+             {
+-              if (YYTHD->variables.sql_mode & MODE_NO_ENGINE_SUBSTITUTION)
++              if (thd->variables.sql_mode & MODE_NO_ENGINE_SUBSTITUTION)
+               {
+                 my_error(ER_UNKNOWN_STORAGE_ENGINE, MYF(0), $1.str);
+                 MYSQL_YYABORT;
+               }
+               $$= 0;
+-              push_warning_printf(YYTHD, MYSQL_ERROR::WARN_LEVEL_WARN,
++              push_warning_printf(thd, MYSQL_ERROR::WARN_LEVEL_WARN,
+                                   ER_UNKNOWN_STORAGE_ENGINE,
+                                   ER(ER_UNKNOWN_STORAGE_ENGINE),
+                                   $1.str);
+@@ -4815,7 +4797,7 @@ known_storage_engines:
+           ident_or_text
+           {
+             plugin_ref plugin;
+-            if ((plugin= ha_resolve_by_name(YYTHD, &$1)))
++            if ((plugin= ha_resolve_by_name(thd, &$1)))
+               $$= plugin_data(plugin, handlerton*);
+             else
+             {
+@@ -5043,7 +5025,7 @@ type:
+               {
+                 char buff[sizeof("YEAR()") + MY_INT64_NUM_DECIMAL_DIGITS + 1];
+                 my_snprintf(buff, sizeof(buff), "YEAR(%lu)", length);
+-                push_warning_printf(YYTHD, MYSQL_ERROR::WARN_LEVEL_NOTE,
++                push_warning_printf(thd, MYSQL_ERROR::WARN_LEVEL_NOTE,
+                                     ER_WARN_DEPRECATED_SYNTAX,
+                                     ER(ER_WARN_DEPRECATED_SYNTAX),
+                                     buff, "YEAR(4)");
+@@ -5057,7 +5039,7 @@ type:
+           { $$=MYSQL_TYPE_TIME; }
+         | TIMESTAMP opt_field_length
+           {
+-            if (YYTHD->variables.sql_mode & MODE_MAXDB)
++            if (thd->variables.sql_mode & MODE_MAXDB)
+               $$=MYSQL_TYPE_DATETIME;
+             else
+             {
+@@ -5189,7 +5171,7 @@ int_type:
+ real_type:
+           REAL
+           {
+-            $$= YYTHD->variables.sql_mode & MODE_REAL_AS_FLOAT ?
++            $$= thd->variables.sql_mode & MODE_REAL_AS_FLOAT ?
+               MYSQL_TYPE_FLOAT : MYSQL_TYPE_DOUBLE;
+           }
+         | DOUBLE_SYM
+@@ -5263,7 +5245,7 @@ attribute:
+         | DEFAULT now_or_signed_literal { Lex->default_value=$2; }
+         | ON UPDATE_SYM NOW_SYM optional_braces
+           {
+-            Item *item= new (YYTHD->mem_root) Item_func_now_local();
++            Item *item= new (thd->mem_root) Item_func_now_local();
+             if (item == NULL)
+               MYSQL_YYABORT;
+             Lex->on_update_value= item;
+@@ -5312,7 +5294,7 @@ attribute:
+ now_or_signed_literal:
+           NOW_SYM optional_braces
+           {
+-            $$= new (YYTHD->mem_root) Item_func_now_local();
++            $$= new (thd->mem_root) Item_func_now_local();
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -5673,7 +5655,6 @@ string_list:
+ alter:
+           ALTER opt_ignore TABLE_SYM table_ident
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             lex->name.str= 0;
+             lex->name.length= 0;
+@@ -5799,7 +5780,7 @@ alter:
+               Event_parse_data.
+             */
+ 
+-            if (!(Lex->event_parse_data= Event_parse_data::new_instance(YYTHD)))
++            if (!(Lex->event_parse_data= Event_parse_data::new_instance(thd)))
+               MYSQL_YYABORT;
+             Lex->event_parse_data->identifier= $4;
+ 
+@@ -6192,7 +6173,6 @@ alter_list_item:
+           {
+             if (!$4)
+             {
+-              THD *thd= YYTHD;
+               $4= thd->variables.collation_database;
+             }
+             $5= $5 ? $5 : $4;
+@@ -6556,7 +6536,7 @@ keycache_list:
+ assign_to_keycache:
+           table_ident cache_keys_spec
+           {
+-            if (!Select->add_table_to_list(YYTHD, $1, NULL, 0, TL_READ, 
++            if (!Select->add_table_to_list(thd, $1, NULL, 0, TL_READ, 
+                                            Select->pop_index_hints()))
+               MYSQL_YYABORT;
+           }
+@@ -6585,7 +6565,7 @@ preload_list:
+ preload_keys:
+           table_ident cache_keys_spec opt_ignore_leaves
+           {
+-            if (!Select->add_table_to_list(YYTHD, $1, NULL, $3, TL_READ,
++            if (!Select->add_table_to_list(thd, $1, NULL, $3, TL_READ,
+                                            Select->pop_index_hints()))
+               MYSQL_YYABORT;
+           }
+@@ -6593,7 +6573,7 @@ preload_keys:
+ 
+ cache_keys_spec:
+           {
+-            Lex->select_lex.alloc_index_hints(YYTHD);
++            Lex->select_lex.alloc_index_hints(thd);
+             Select->set_index_hint_type(INDEX_HINT_USE, 
+                                         global_system_variables.old_mode ? 
+                                         INDEX_HINT_MASK_JOIN : 
+@@ -6813,7 +6793,6 @@ select_item_list:
+         | select_item
+         | '*'
+           {
+-            THD *thd= YYTHD;
+             Item *item= new (thd->mem_root)
+                           Item_field(&thd->lex->current_select->context,
+                                      NULL, NULL, "*");
+@@ -6828,7 +6807,6 @@ select_item_list:
+ select_item:
+           remember_name select_item2 remember_end select_alias
+           {
+-            THD *thd= YYTHD;
+             DBUG_ASSERT($1 < $3);
+ 
+             if (add_item_to_list(thd, $2))
+@@ -6929,7 +6907,7 @@ expr:
+             else
+             {
+               /* X OR Y */
+-              $$ = new (YYTHD->mem_root) Item_cond_or($1, $3);
++              $$ = new (thd->mem_root) Item_cond_or($1, $3);
+               if ($$ == NULL)
+                 MYSQL_YYABORT;
+             }
+@@ -6937,7 +6915,7 @@ expr:
+         | expr XOR expr %prec XOR
+           {
+             /* XOR is a proprietary extension */
+-            $$ = new (YYTHD->mem_root) Item_cond_xor($1, $3);
++            $$ = new (thd->mem_root) Item_cond_xor($1, $3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -6979,50 +6957,50 @@ expr:
+             else
+             {
+               /* X AND Y */
+-              $$ = new (YYTHD->mem_root) Item_cond_and($1, $3);
++              $$ = new (thd->mem_root) Item_cond_and($1, $3);
+               if ($$ == NULL)
+                 MYSQL_YYABORT;
+             }
+           }
+         | NOT_SYM expr %prec NOT_SYM
+           {
+-            $$= negate_expression(YYTHD, $2);
++            $$= negate_expression(thd, $2);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bool_pri IS TRUE_SYM %prec IS
+           {
+-            $$= new (YYTHD->mem_root) Item_func_istrue($1);
++            $$= new (thd->mem_root) Item_func_istrue($1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bool_pri IS not TRUE_SYM %prec IS
+           {
+-            $$= new (YYTHD->mem_root) Item_func_isnottrue($1);
++            $$= new (thd->mem_root) Item_func_isnottrue($1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bool_pri IS FALSE_SYM %prec IS
+           {
+-            $$= new (YYTHD->mem_root) Item_func_isfalse($1);
++            $$= new (thd->mem_root) Item_func_isfalse($1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bool_pri IS not FALSE_SYM %prec IS
+           {
+-            $$= new (YYTHD->mem_root) Item_func_isnotfalse($1);
++            $$= new (thd->mem_root) Item_func_isnotfalse($1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bool_pri IS UNKNOWN_SYM %prec IS
+           {
+-            $$= new (YYTHD->mem_root) Item_func_isnull($1);
++            $$= new (thd->mem_root) Item_func_isnull($1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bool_pri IS not UNKNOWN_SYM %prec IS
+           {
+-            $$= new (YYTHD->mem_root) Item_func_isnotnull($1);
++            $$= new (thd->mem_root) Item_func_isnotnull($1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7032,19 +7010,19 @@ expr:
+ bool_pri:
+           bool_pri IS NULL_SYM %prec IS
+           {
+-            $$= new (YYTHD->mem_root) Item_func_isnull($1);
++            $$= new (thd->mem_root) Item_func_isnull($1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bool_pri IS not NULL_SYM %prec IS
+           {
+-            $$= new (YYTHD->mem_root) Item_func_isnotnull($1);
++            $$= new (thd->mem_root) Item_func_isnotnull($1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bool_pri EQUAL_SYM predicate %prec EQUAL_SYM
+           {
+-            $$= new (YYTHD->mem_root) Item_func_equal($1,$3);
++            $$= new (thd->mem_root) Item_func_equal($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7066,13 +7044,12 @@ bool_pri:
+ predicate:
+           bit_expr IN_SYM '(' subselect ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_in_subselect($1, $4);
++            $$= new (thd->mem_root) Item_in_subselect($1, $4);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr not IN_SYM '(' subselect ')'
+           {
+-            THD *thd= YYTHD;
+             Item *item= new (thd->mem_root) Item_in_subselect($1, $5);
+             if (item == NULL)
+               MYSQL_YYABORT;
+@@ -7082,7 +7059,7 @@ predicate:
+           }
+         | bit_expr IN_SYM '(' expr ')'
+           {
+-            $$= handle_sql2003_note184_exception(YYTHD, $1, true, $4);
++            $$= handle_sql2003_note184_exception(thd, $1, true, $4);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7090,13 +7067,13 @@ predicate:
+           { 
+             $6->push_front($4);
+             $6->push_front($1);
+-            $$= new (YYTHD->mem_root) Item_func_in(*$6);
++            $$= new (thd->mem_root) Item_func_in(*$6);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr not IN_SYM '(' expr ')'
+           {
+-            $$= handle_sql2003_note184_exception(YYTHD, $1, false, $5);
++            $$= handle_sql2003_note184_exception(thd, $1, false, $5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7104,7 +7081,7 @@ predicate:
+           {
+             $7->push_front($5);
+             $7->push_front($1);
+-            Item_func_in *item = new (YYTHD->mem_root) Item_func_in(*$7);
++            Item_func_in *item = new (thd->mem_root) Item_func_in(*$7);
+             if (item == NULL)
+               MYSQL_YYABORT;
+             item->negate();
+@@ -7112,14 +7089,14 @@ predicate:
+           }
+         | bit_expr BETWEEN_SYM bit_expr AND_SYM predicate
+           {
+-            $$= new (YYTHD->mem_root) Item_func_between($1,$3,$5);
++            $$= new (thd->mem_root) Item_func_between($1,$3,$5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr not BETWEEN_SYM bit_expr AND_SYM predicate
+           {
+             Item_func_between *item;
+-            item= new (YYTHD->mem_root) Item_func_between($1,$4,$6);
++            item= new (thd->mem_root) Item_func_between($1,$4,$6);
+             if (item == NULL)
+               MYSQL_YYABORT;
+             item->negate();
+@@ -7127,42 +7104,42 @@ predicate:
+           }
+         | bit_expr SOUNDS_SYM LIKE bit_expr
+           {
+-            Item *item1= new (YYTHD->mem_root) Item_func_soundex($1);
+-            Item *item4= new (YYTHD->mem_root) Item_func_soundex($4);
++            Item *item1= new (thd->mem_root) Item_func_soundex($1);
++            Item *item4= new (thd->mem_root) Item_func_soundex($4);
+             if ((item1 == NULL) || (item4 == NULL))
+               MYSQL_YYABORT;
+-            $$= new (YYTHD->mem_root) Item_func_eq(item1, item4);
++            $$= new (thd->mem_root) Item_func_eq(item1, item4);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr LIKE simple_expr opt_escape
+           {
+-            $$= new (YYTHD->mem_root) Item_func_like($1,$3,$4,Lex->escape_used);
++            $$= new (thd->mem_root) Item_func_like($1,$3,$4,Lex->escape_used);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr not LIKE simple_expr opt_escape
+           {
+-            Item *item= new (YYTHD->mem_root) Item_func_like($1,$4,$5,
++            Item *item= new (thd->mem_root) Item_func_like($1,$4,$5,
+                                                              Lex->escape_used);
+             if (item == NULL)
+               MYSQL_YYABORT;
+-            $$= new (YYTHD->mem_root) Item_func_not(item);
++            $$= new (thd->mem_root) Item_func_not(item);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr REGEXP bit_expr
+           {
+-            $$= new (YYTHD->mem_root) Item_func_regex($1,$3);
++            $$= new (thd->mem_root) Item_func_regex($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr not REGEXP bit_expr
+           {
+-            Item *item= new (YYTHD->mem_root) Item_func_regex($1,$4);
++            Item *item= new (thd->mem_root) Item_func_regex($1,$4);
+             if (item == NULL)
+               MYSQL_YYABORT;
+-            $$= negate_expression(YYTHD, item);
++            $$= negate_expression(thd, item);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7172,85 +7149,85 @@ predicate:
+ bit_expr:
+           bit_expr '|' bit_expr %prec '|'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_bit_or($1,$3);
++            $$= new (thd->mem_root) Item_func_bit_or($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr '&' bit_expr %prec '&'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_bit_and($1,$3);
++            $$= new (thd->mem_root) Item_func_bit_and($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr SHIFT_LEFT bit_expr %prec SHIFT_LEFT
+           {
+-            $$= new (YYTHD->mem_root) Item_func_shift_left($1,$3);
++            $$= new (thd->mem_root) Item_func_shift_left($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr SHIFT_RIGHT bit_expr %prec SHIFT_RIGHT
+           {
+-            $$= new (YYTHD->mem_root) Item_func_shift_right($1,$3);
++            $$= new (thd->mem_root) Item_func_shift_right($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr '+' bit_expr %prec '+'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_plus($1,$3);
++            $$= new (thd->mem_root) Item_func_plus($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr '-' bit_expr %prec '-'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_minus($1,$3);
++            $$= new (thd->mem_root) Item_func_minus($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr '+' INTERVAL_SYM expr interval %prec '+'
+           {
+-            $$= new (YYTHD->mem_root) Item_date_add_interval($1,$4,$5,0);
++            $$= new (thd->mem_root) Item_date_add_interval($1,$4,$5,0);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr '-' INTERVAL_SYM expr interval %prec '-'
+           {
+-            $$= new (YYTHD->mem_root) Item_date_add_interval($1,$4,$5,1);
++            $$= new (thd->mem_root) Item_date_add_interval($1,$4,$5,1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr '*' bit_expr %prec '*'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_mul($1,$3);
++            $$= new (thd->mem_root) Item_func_mul($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr '/' bit_expr %prec '/'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_div($1,$3);
++            $$= new (thd->mem_root) Item_func_div($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr '%' bit_expr %prec '%'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_mod($1,$3);
++            $$= new (thd->mem_root) Item_func_mod($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr DIV_SYM bit_expr %prec DIV_SYM
+           {
+-            $$= new (YYTHD->mem_root) Item_func_int_div($1,$3);
++            $$= new (thd->mem_root) Item_func_int_div($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr MOD_SYM bit_expr %prec MOD_SYM
+           {
+-            $$= new (YYTHD->mem_root) Item_func_mod($1,$3);
++            $$= new (thd->mem_root) Item_func_mod($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | bit_expr '^' bit_expr
+           {
+-            $$= new (YYTHD->mem_root) Item_func_bit_xor($1,$3);
++            $$= new (thd->mem_root) Item_func_bit_xor($1,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7299,7 +7276,6 @@ simple_expr:
+         | function_call_conflict
+         | simple_expr COLLATE_SYM ident_or_text %prec NEG
+           {
+-            THD *thd= YYTHD;
+             Item *i1= new (thd->mem_root) Item_string($3.str,
+                                                       $3.length,
+                                                       thd->charset());
+@@ -7315,7 +7291,7 @@ simple_expr:
+         | sum_expr
+         | simple_expr OR_OR_SYM simple_expr
+           {
+-            $$= new (YYTHD->mem_root) Item_func_concat($1, $3);
++            $$= new (thd->mem_root) Item_func_concat($1, $3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7325,25 +7301,25 @@ simple_expr:
+           }
+         | '-' simple_expr %prec NEG
+           {
+-            $$= new (YYTHD->mem_root) Item_func_neg($2);
++            $$= new (thd->mem_root) Item_func_neg($2);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | '~' simple_expr %prec NEG
+           {
+-            $$= new (YYTHD->mem_root) Item_func_bit_neg($2);
++            $$= new (thd->mem_root) Item_func_bit_neg($2);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | not2 simple_expr %prec NEG
+           {
+-            $$= negate_expression(YYTHD, $2);
++            $$= negate_expression(thd, $2);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | '(' subselect ')'
+           { 
+-            $$= new (YYTHD->mem_root) Item_singlerow_subselect($2);
++            $$= new (thd->mem_root) Item_singlerow_subselect($2);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7352,20 +7328,20 @@ simple_expr:
+         | '(' expr ',' expr_list ')'
+           {
+             $4->push_front($2);
+-            $$= new (YYTHD->mem_root) Item_row(*$4);
++            $$= new (thd->mem_root) Item_row(*$4);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | ROW_SYM '(' expr ',' expr_list ')'
+           {
+             $5->push_front($3);
+-            $$= new (YYTHD->mem_root) Item_row(*$5);
++            $$= new (thd->mem_root) Item_row(*$5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | EXISTS '(' subselect ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_exists_subselect($3);
++            $$= new (thd->mem_root) Item_exists_subselect($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7374,7 +7350,7 @@ simple_expr:
+         | MATCH ident_list_arg AGAINST '(' bit_expr fulltext_options ')'
+           {
+             $2->push_front($5);
+-            Item_func_match *i1= new (YYTHD->mem_root) Item_func_match(*$2, $6);
++            Item_func_match *i1= new (thd->mem_root) Item_func_match(*$2, $6);
+             if (i1 == NULL)
+               MYSQL_YYABORT;
+             Select->add_ftfunc_to_list(i1);
+@@ -7382,7 +7358,7 @@ simple_expr:
+           }
+         | BINARY simple_expr %prec NEG
+           {
+-            $$= create_func_cast(YYTHD, $2, ITEM_CAST_CHAR, NULL, NULL,
++            $$= create_func_cast(thd, $2, ITEM_CAST_CHAR, NULL, NULL,
+                                  &my_charset_bin);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+@@ -7390,27 +7366,27 @@ simple_expr:
+         | CAST_SYM '(' expr AS cast_type ')'
+           {
+             LEX *lex= Lex;
+-            $$= create_func_cast(YYTHD, $3, $5, lex->length, lex->dec,
++            $$= create_func_cast(thd, $3, $5, lex->length, lex->dec,
+                                  lex->charset);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | CASE_SYM opt_expr when_list opt_else END
+           {
+-            $$= new (YYTHD->mem_root) Item_func_case(* $3, $2, $4 );
++            $$= new (thd->mem_root) Item_func_case(* $3, $2, $4 );
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | CONVERT_SYM '(' expr ',' cast_type ')'
+           {
+-            $$= create_func_cast(YYTHD, $3, $5, Lex->length, Lex->dec,
++            $$= create_func_cast(thd, $3, $5, Lex->length, Lex->dec,
+                                  Lex->charset);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | CONVERT_SYM '(' expr USING charset_name ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_conv_charset($3,$5);
++            $$= new (thd->mem_root) Item_func_conv_charset($3,$5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7423,14 +7399,14 @@ simple_expr:
+               my_error(ER_WRONG_COLUMN_NAME, MYF(0), il->my_name()->str);
+               MYSQL_YYABORT;
+             }
+-            $$= new (YYTHD->mem_root) Item_default_value(Lex->current_context(),
++            $$= new (thd->mem_root) Item_default_value(Lex->current_context(),
+                                                          $3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | VALUES '(' simple_ident_nospvar ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_insert_value(Lex->current_context(),
++            $$= new (thd->mem_root) Item_insert_value(Lex->current_context(),
+                                                         $3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+@@ -7438,7 +7414,7 @@ simple_expr:
+         | INTERVAL_SYM expr interval '+' expr %prec INTERVAL_SYM
+           /* we cannot put interval before - */
+           {
+-            $$= new (YYTHD->mem_root) Item_date_add_interval($5,$2,$3,0);
++            $$= new (thd->mem_root) Item_date_add_interval($5,$2,$3,0);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7453,19 +7429,19 @@ simple_expr:
+ function_call_keyword:
+           CHAR_SYM '(' expr_list ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_char(*$3);
++            $$= new (thd->mem_root) Item_func_char(*$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | CHAR_SYM '(' expr_list USING charset_name ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_char(*$3, $5);
++            $$= new (thd->mem_root) Item_func_char(*$3, $5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | CURRENT_USER optional_braces
+           {
+-            $$= new (YYTHD->mem_root) Item_func_current_user(Lex->current_context());
++            $$= new (thd->mem_root) Item_func_current_user(Lex->current_context());
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->set_stmt_unsafe();
+@@ -7473,31 +7449,30 @@ function_call_keyword:
+           }
+         | DATE_SYM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_date_typecast($3);
++            $$= new (thd->mem_root) Item_date_typecast($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | DAY_SYM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_dayofmonth($3);
++            $$= new (thd->mem_root) Item_func_dayofmonth($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | HOUR_SYM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_hour($3);
++            $$= new (thd->mem_root) Item_func_hour($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | INSERT '(' expr ',' expr ',' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_insert($3,$5,$7,$9);
++            $$= new (thd->mem_root) Item_func_insert($3,$5,$7,$9);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | INTERVAL_SYM '(' expr ',' expr ')' %prec INTERVAL_SYM
+           {
+-            THD *thd= YYTHD;
+             List<Item> *list= new (thd->mem_root) List<Item>;
+             if (list == NULL)
+               MYSQL_YYABORT;
+@@ -7512,7 +7487,6 @@ function_call_keyword:
+           }
+         | INTERVAL_SYM '(' expr ',' expr ',' expr_list ')' %prec INTERVAL_SYM
+           {
+-            THD *thd= YYTHD;
+             $7->push_front($5);
+             $7->push_front($3);
+             Item_row *item= new (thd->mem_root) Item_row(*$7);
+@@ -7524,103 +7498,103 @@ function_call_keyword:
+           }
+         | LEFT '(' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_left($3,$5);
++            $$= new (thd->mem_root) Item_func_left($3,$5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | MINUTE_SYM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_minute($3);
++            $$= new (thd->mem_root) Item_func_minute($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | MONTH_SYM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_month($3);
++            $$= new (thd->mem_root) Item_func_month($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | RIGHT '(' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_right($3,$5);
++            $$= new (thd->mem_root) Item_func_right($3,$5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | SECOND_SYM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_second($3);
++            $$= new (thd->mem_root) Item_func_second($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TIME_SYM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_time_typecast($3);
++            $$= new (thd->mem_root) Item_time_typecast($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TIMESTAMP '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_datetime_typecast($3);
++            $$= new (thd->mem_root) Item_datetime_typecast($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TIMESTAMP '(' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_add_time($3, $5, 1, 0);
++            $$= new (thd->mem_root) Item_func_add_time($3, $5, 1, 0);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TRIM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_trim($3);
++            $$= new (thd->mem_root) Item_func_trim($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TRIM '(' LEADING expr FROM expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_ltrim($6,$4);
++            $$= new (thd->mem_root) Item_func_ltrim($6,$4);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TRIM '(' TRAILING expr FROM expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_rtrim($6,$4);
++            $$= new (thd->mem_root) Item_func_rtrim($6,$4);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TRIM '(' BOTH expr FROM expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_trim($6,$4);
++            $$= new (thd->mem_root) Item_func_trim($6,$4);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TRIM '(' LEADING FROM expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_ltrim($5);
++            $$= new (thd->mem_root) Item_func_ltrim($5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TRIM '(' TRAILING FROM expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_rtrim($5);
++            $$= new (thd->mem_root) Item_func_rtrim($5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TRIM '(' BOTH FROM expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_trim($5);
++            $$= new (thd->mem_root) Item_func_trim($5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TRIM '(' expr FROM expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_trim($5,$3);
++            $$= new (thd->mem_root) Item_func_trim($5,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | USER '(' ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_user();
++            $$= new (thd->mem_root) Item_func_user();
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->set_stmt_unsafe();
+@@ -7628,7 +7602,7 @@ function_call_keyword:
+           }
+         | YEAR_SYM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_year($3);
++            $$= new (thd->mem_root) Item_func_year($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7649,34 +7623,34 @@ function_call_keyword:
+ function_call_nonkeyword:
+           ADDDATE_SYM '(' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_date_add_interval($3, $5,
++            $$= new (thd->mem_root) Item_date_add_interval($3, $5,
+                                                              INTERVAL_DAY, 0);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | ADDDATE_SYM '(' expr ',' INTERVAL_SYM expr interval ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_date_add_interval($3, $6, $7, 0);
++            $$= new (thd->mem_root) Item_date_add_interval($3, $6, $7, 0);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | CURDATE optional_braces
+           {
+-            $$= new (YYTHD->mem_root) Item_func_curdate_local();
++            $$= new (thd->mem_root) Item_func_curdate_local();
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->safe_to_cache_query=0;
+           }
+         | CURTIME optional_braces
+           {
+-            $$= new (YYTHD->mem_root) Item_func_curtime_local();
++            $$= new (thd->mem_root) Item_func_curtime_local();
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->safe_to_cache_query=0;
+           }
+         | CURTIME '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_curtime_local($3);
++            $$= new (thd->mem_root) Item_func_curtime_local($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->safe_to_cache_query=0;
+@@ -7684,83 +7658,83 @@ function_call_nonkeyword:
+         | DATE_ADD_INTERVAL '(' expr ',' INTERVAL_SYM expr interval ')'
+           %prec INTERVAL_SYM
+           {
+-            $$= new (YYTHD->mem_root) Item_date_add_interval($3,$6,$7,0);
++            $$= new (thd->mem_root) Item_date_add_interval($3,$6,$7,0);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | DATE_SUB_INTERVAL '(' expr ',' INTERVAL_SYM expr interval ')'
+           %prec INTERVAL_SYM
+           {
+-            $$= new (YYTHD->mem_root) Item_date_add_interval($3,$6,$7,1);
++            $$= new (thd->mem_root) Item_date_add_interval($3,$6,$7,1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | EXTRACT_SYM '(' interval FROM expr ')'
+           {
+-            $$=new (YYTHD->mem_root) Item_extract( $3, $5);
++            $$=new (thd->mem_root) Item_extract( $3, $5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | GET_FORMAT '(' date_time_type  ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_get_format($3, $5);
++            $$= new (thd->mem_root) Item_func_get_format($3, $5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | NOW_SYM optional_braces
+           {
+-            $$= new (YYTHD->mem_root) Item_func_now_local();
++            $$= new (thd->mem_root) Item_func_now_local();
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->safe_to_cache_query=0;
+           }
+         | NOW_SYM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_now_local($3);
++            $$= new (thd->mem_root) Item_func_now_local($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->safe_to_cache_query=0;
+           }
+         | POSITION_SYM '(' bit_expr IN_SYM expr ')'
+           {
+-            $$ = new (YYTHD->mem_root) Item_func_locate($5,$3);
++            $$ = new (thd->mem_root) Item_func_locate($5,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | SUBDATE_SYM '(' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_date_add_interval($3, $5,
++            $$= new (thd->mem_root) Item_date_add_interval($3, $5,
+                                                              INTERVAL_DAY, 1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | SUBDATE_SYM '(' expr ',' INTERVAL_SYM expr interval ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_date_add_interval($3, $6, $7, 1);
++            $$= new (thd->mem_root) Item_date_add_interval($3, $6, $7, 1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | SUBSTRING '(' expr ',' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_substr($3,$5,$7);
++            $$= new (thd->mem_root) Item_func_substr($3,$5,$7);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | SUBSTRING '(' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_substr($3,$5);
++            $$= new (thd->mem_root) Item_func_substr($3,$5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | SUBSTRING '(' expr FROM expr FOR_SYM expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_substr($3,$5,$7);
++            $$= new (thd->mem_root) Item_func_substr($3,$5,$7);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | SUBSTRING '(' expr FROM expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_substr($3,$5);
++            $$= new (thd->mem_root) Item_func_substr($3,$5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7775,9 +7749,9 @@ function_call_nonkeyword:
+             */
+             Lex->set_stmt_unsafe();
+             if (global_system_variables.sysdate_is_now == 0)
+-              $$= new (YYTHD->mem_root) Item_func_sysdate_local();
++              $$= new (thd->mem_root) Item_func_sysdate_local();
+             else
+-              $$= new (YYTHD->mem_root) Item_func_now_local();
++              $$= new (thd->mem_root) Item_func_now_local();
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->safe_to_cache_query=0;
+@@ -7785,42 +7759,42 @@ function_call_nonkeyword:
+         | SYSDATE '(' expr ')'
+           {
+             if (global_system_variables.sysdate_is_now == 0)
+-              $$= new (YYTHD->mem_root) Item_func_sysdate_local($3);
++              $$= new (thd->mem_root) Item_func_sysdate_local($3);
+             else
+-              $$= new (YYTHD->mem_root) Item_func_now_local($3);
++              $$= new (thd->mem_root) Item_func_now_local($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->safe_to_cache_query=0;
+           }
+         | TIMESTAMP_ADD '(' interval_time_stamp ',' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_date_add_interval($7,$5,$3,0);
++            $$= new (thd->mem_root) Item_date_add_interval($7,$5,$3,0);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TIMESTAMP_DIFF '(' interval_time_stamp ',' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_timestamp_diff($5,$7,$3);
++            $$= new (thd->mem_root) Item_func_timestamp_diff($5,$7,$3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | UTC_DATE_SYM optional_braces
+           {
+-            $$= new (YYTHD->mem_root) Item_func_curdate_utc();
++            $$= new (thd->mem_root) Item_func_curdate_utc();
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->safe_to_cache_query=0;
+           }
+         | UTC_TIME_SYM optional_braces
+           {
+-            $$= new (YYTHD->mem_root) Item_func_curtime_utc();
++            $$= new (thd->mem_root) Item_func_curtime_utc();
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->safe_to_cache_query=0;
+           }
+         | UTC_TIMESTAMP_SYM optional_braces
+           {
+-            $$= new (YYTHD->mem_root) Item_func_now_utc();
++            $$= new (thd->mem_root) Item_func_now_utc();
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->safe_to_cache_query=0;
+@@ -7835,62 +7809,61 @@ function_call_nonkeyword:
+ function_call_conflict:
+           ASCII_SYM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_ascii($3);
++            $$= new (thd->mem_root) Item_func_ascii($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | CHARSET '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_charset($3);
++            $$= new (thd->mem_root) Item_func_charset($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | COALESCE '(' expr_list ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_coalesce(* $3);
++            $$= new (thd->mem_root) Item_func_coalesce(* $3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | COLLATION_SYM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_collation($3);
++            $$= new (thd->mem_root) Item_func_collation($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | DATABASE '(' ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_database();
++            $$= new (thd->mem_root) Item_func_database();
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             Lex->safe_to_cache_query=0;
+           }
+         | IF '(' expr ',' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_if($3,$5,$7);
++            $$= new (thd->mem_root) Item_func_if($3,$5,$7);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | MICROSECOND_SYM '(' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_microsecond($3);
++            $$= new (thd->mem_root) Item_func_microsecond($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | MOD_SYM '(' expr ',' expr ')'
+           {
+-            $$ = new (YYTHD->mem_root) Item_func_mod($3, $5);
++            $$ = new (thd->mem_root) Item_func_mod($3, $5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | OLD_PASSWORD '(' expr ')'
+           {
+-            $$=  new (YYTHD->mem_root) Item_func_old_password($3);
++            $$=  new (thd->mem_root) Item_func_old_password($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | PASSWORD '(' expr ')'
+           {
+-            THD *thd= YYTHD;
+             Item* i1;
+             if (thd->variables.old_passwords)
+               i1= new (thd->mem_root) Item_func_old_password($3);
+@@ -7902,31 +7875,30 @@ function_call_conflict:
+           }
+         | QUARTER_SYM '(' expr ')'
+           {
+-            $$ = new (YYTHD->mem_root) Item_func_quarter($3);
++            $$ = new (thd->mem_root) Item_func_quarter($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | REPEAT_SYM '(' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_repeat($3,$5);
++            $$= new (thd->mem_root) Item_func_repeat($3,$5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | REPLACE '(' expr ',' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_replace($3,$5,$7);
++            $$= new (thd->mem_root) Item_func_replace($3,$5,$7);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TRUNCATE_SYM '(' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_round($3,$5,1);
++            $$= new (thd->mem_root) Item_func_round($3,$5,1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | WEEK_SYM '(' expr ')'
+           {
+-            THD *thd= YYTHD;
+             Item *i1= new (thd->mem_root) Item_int((char*) "0",
+                                            thd->variables.default_week_format,
+                                                    1);
+@@ -7938,7 +7910,7 @@ function_call_conflict:
+           }
+         | WEEK_SYM '(' expr ',' expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_func_week($3,$5);
++            $$= new (thd->mem_root) Item_func_week($3,$5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -7960,52 +7932,52 @@ function_call_conflict:
+ geometry_function:
+           CONTAINS_SYM '(' expr ',' expr ')'
+           {
+-            $$= GEOM_NEW(YYTHD,
++            $$= GEOM_NEW(thd,
+                          Item_func_spatial_rel($3, $5,
+                                                Item_func::SP_CONTAINS_FUNC));
+           }
+         | GEOMETRYCOLLECTION '(' expr_list ')'
+           {
+-            $$= GEOM_NEW(YYTHD,
++            $$= GEOM_NEW(thd,
+                          Item_func_spatial_collection(* $3,
+                            Geometry::wkb_geometrycollection,
+                            Geometry::wkb_point));
+           }
+         | LINESTRING '(' expr_list ')'
+           {
+-            $$= GEOM_NEW(YYTHD,
++            $$= GEOM_NEW(thd,
+                          Item_func_spatial_collection(* $3,
+                            Geometry::wkb_linestring,
+                            Geometry::wkb_point));
+           }
+         | MULTILINESTRING '(' expr_list ')'
+           {
+-            $$= GEOM_NEW(YYTHD,
++            $$= GEOM_NEW(thd,
+                          Item_func_spatial_collection(* $3,
+                            Geometry::wkb_multilinestring,
+                            Geometry::wkb_linestring));
+           }
+         | MULTIPOINT '(' expr_list ')'
+           {
+-            $$= GEOM_NEW(YYTHD,
++            $$= GEOM_NEW(thd,
+                          Item_func_spatial_collection(* $3,
+                            Geometry::wkb_multipoint,
+                            Geometry::wkb_point));
+           }
+         | MULTIPOLYGON '(' expr_list ')'
+           {
+-            $$= GEOM_NEW(YYTHD,
++            $$= GEOM_NEW(thd,
+                          Item_func_spatial_collection(* $3,
+                            Geometry::wkb_multipolygon,
+                            Geometry::wkb_polygon));
+           }
+         | POINT_SYM '(' expr ',' expr ')'
+           {
+-            $$= GEOM_NEW(YYTHD, Item_func_point($3,$5));
++            $$= GEOM_NEW(thd, Item_func_point($3,$5));
+           }
+         | POLYGON '(' expr_list ')'
+           {
+-            $$= GEOM_NEW(YYTHD,
++            $$= GEOM_NEW(thd,
+                          Item_func_spatial_collection(* $3,
+                            Geometry::wkb_polygon,
+                            Geometry::wkb_linestring));
+@@ -8043,7 +8015,6 @@ function_call_generic:
+           }
+           opt_udf_expr_list ')'
+           {
+-            THD *thd= YYTHD;
+             Create_func *builder;
+             Item *item= NULL;
+ 
+@@ -8097,7 +8068,6 @@ function_call_generic:
+           }
+         | ident '.' ident '(' opt_expr_list ')'
+           {
+-            THD *thd= YYTHD;
+             Create_qfunc *builder;
+             Item *item= NULL;
+ 
+@@ -8161,7 +8131,7 @@ opt_udf_expr_list:
+ udf_expr_list:
+           udf_expr
+           {
+-            $$= new (YYTHD->mem_root) List<Item>;
++            $$= new (thd->mem_root) List<Item>;
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             $$->push_back($1);
+@@ -8194,7 +8164,7 @@ udf_expr:
+                remember_name we may get quoted or escaped names.
+             */
+             else if ($2->type() != Item::FIELD_ITEM)
+-              $2->set_name($1, (uint) ($3 - $1), YYTHD->charset());
++              $2->set_name($1, (uint) ($3 - $1), thd->charset());
+             $$= $2;
+           }
+         ;
+@@ -8202,46 +8172,46 @@ udf_expr:
+ sum_expr:
+           AVG_SYM '(' in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_avg($3);
++            $$= new (thd->mem_root) Item_sum_avg($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | AVG_SYM '(' DISTINCT in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_avg_distinct($4);
++            $$= new (thd->mem_root) Item_sum_avg_distinct($4);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | BIT_AND  '(' in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_and($3);
++            $$= new (thd->mem_root) Item_sum_and($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | BIT_OR  '(' in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_or($3);
++            $$= new (thd->mem_root) Item_sum_or($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | BIT_XOR  '(' in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_xor($3);
++            $$= new (thd->mem_root) Item_sum_xor($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | COUNT_SYM '(' opt_all '*' ')'
+           {
+-            Item *item= new (YYTHD->mem_root) Item_int((int32) 0L,1);
++            Item *item= new (thd->mem_root) Item_int((int32) 0L,1);
+             if (item == NULL)
+               MYSQL_YYABORT;
+-            $$= new (YYTHD->mem_root) Item_sum_count(item);
++            $$= new (thd->mem_root) Item_sum_count(item);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | COUNT_SYM '(' in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_count($3);
++            $$= new (thd->mem_root) Item_sum_count($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -8251,13 +8221,13 @@ sum_expr:
+           { Select->in_sum_expr--; }
+           ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_count_distinct(* $5);
++            $$= new (thd->mem_root) Item_sum_count_distinct(* $5);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | MIN_SYM '(' in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_min($3);
++            $$= new (thd->mem_root) Item_sum_min($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -8268,55 +8238,55 @@ sum_expr:
+         */
+         | MIN_SYM '(' DISTINCT in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_min($4);
++            $$= new (thd->mem_root) Item_sum_min($4);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | MAX_SYM '(' in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_max($3);
++            $$= new (thd->mem_root) Item_sum_max($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | MAX_SYM '(' DISTINCT in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_max($4);
++            $$= new (thd->mem_root) Item_sum_max($4);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | STD_SYM '(' in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_std($3, 0);
++            $$= new (thd->mem_root) Item_sum_std($3, 0);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | VARIANCE_SYM '(' in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_variance($3, 0);
++            $$= new (thd->mem_root) Item_sum_variance($3, 0);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | STDDEV_SAMP_SYM '(' in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_std($3, 1);
++            $$= new (thd->mem_root) Item_sum_std($3, 1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | VAR_SAMP_SYM '(' in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_variance($3, 1);
++            $$= new (thd->mem_root) Item_sum_variance($3, 1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | SUM_SYM '(' in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_sum($3);
++            $$= new (thd->mem_root) Item_sum_sum($3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | SUM_SYM '(' DISTINCT in_sum_expr ')'
+           {
+-            $$= new (YYTHD->mem_root) Item_sum_sum_distinct($4);
++            $$= new (thd->mem_root) Item_sum_sum_distinct($4);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -8328,7 +8298,7 @@ sum_expr:
+           {
+             SELECT_LEX *sel= Select;
+             sel->in_sum_expr--;
+-            $$= new (YYTHD->mem_root)
++            $$= new (thd->mem_root)
+                   Item_func_group_concat(Lex->current_context(), $3, $5,
+                                          sel->gorder_list, $7);
+             if ($$ == NULL)
+@@ -8357,7 +8327,7 @@ variable_aux:
+           ident_or_text SET_VAR expr
+           {
+             Item_func_set_user_var *item;
+-            $$= item= new (YYTHD->mem_root) Item_func_set_user_var($1, $3);
++            $$= item= new (thd->mem_root) Item_func_set_user_var($1, $3);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             LEX *lex= Lex;
+@@ -8366,7 +8336,7 @@ variable_aux:
+           }
+         | ident_or_text
+           {
+-            $$= new (YYTHD->mem_root) Item_func_get_user_var($1);
++            $$= new (thd->mem_root) Item_func_get_user_var($1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             LEX *lex= Lex;
+@@ -8380,7 +8350,7 @@ variable_aux:
+               my_parse_error(ER(ER_SYNTAX_ERROR));
+               MYSQL_YYABORT;
+             }
+-            if (!($$= get_system_var(YYTHD, $2, $3, $4)))
++            if (!($$= get_system_var(thd, $2, $3, $4)))
+               MYSQL_YYABORT;
+             if (!((Item_func_get_system_var*) $$)->is_written_to_binlog())
+               Lex->set_stmt_unsafe();
+@@ -8395,7 +8365,7 @@ opt_distinct:
+ opt_gconcat_separator:
+           /* empty */
+           {
+-            $$= new (YYTHD->mem_root) String(",", 1, &my_charset_latin1);
++            $$= new (thd->mem_root) String(",", 1, &my_charset_latin1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -8422,9 +8392,9 @@ opt_gorder_clause:
+ 
+ gorder_list:
+           gorder_list ',' order_ident order_dir
+-          { if (add_gorder_to_list(YYTHD, $3,(bool) $4)) MYSQL_YYABORT; }
++          { if (add_gorder_to_list(thd, $3,(bool) $4)) MYSQL_YYABORT; }
+         | order_ident order_dir
+-          { if (add_gorder_to_list(YYTHD, $1,(bool) $2)) MYSQL_YYABORT; }
++          { if (add_gorder_to_list(thd, $1,(bool) $2)) MYSQL_YYABORT; }
+         ;
+ 
+ in_sum_expr:
+@@ -8477,7 +8447,7 @@ opt_expr_list:
+ expr_list:
+           expr
+           {
+-            $$= new (YYTHD->mem_root) List<Item>;
++            $$= new (thd->mem_root) List<Item>;
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             $$->push_back($1);
+@@ -8497,7 +8467,7 @@ ident_list_arg:
+ ident_list:
+           simple_ident
+           {
+-            $$= new (YYTHD->mem_root) List<Item>;
++            $$= new (thd->mem_root) List<Item>;
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             $$->push_back($1);
+@@ -8595,7 +8565,7 @@ join_table:
+           {
+             MYSQL_YYABORT_UNLESS($1 && $3);
+             /* Change the current name resolution context to a local context. */
+-            if (push_new_name_resolution_context(YYTHD, $1, $3))
++            if (push_new_name_resolution_context(thd, $1, $3))
+               MYSQL_YYABORT;
+             Select->parsing_place= IN_ON;
+           }
+@@ -8610,7 +8580,7 @@ join_table:
+           {
+             MYSQL_YYABORT_UNLESS($1 && $3);
+             /* Change the current name resolution context to a local context. */
+-            if (push_new_name_resolution_context(YYTHD, $1, $3))
++            if (push_new_name_resolution_context(thd, $1, $3))
+               MYSQL_YYABORT;
+             Select->parsing_place= IN_ON;
+           }
+@@ -8640,7 +8610,7 @@ join_table:
+           {
+             MYSQL_YYABORT_UNLESS($1 && $5);
+             /* Change the current name resolution context to a local context. */
+-            if (push_new_name_resolution_context(YYTHD, $1, $5))
++            if (push_new_name_resolution_context(thd, $1, $5))
+               MYSQL_YYABORT;
+             Select->parsing_place= IN_ON;
+           }
+@@ -8676,7 +8646,7 @@ join_table:
+           {
+             MYSQL_YYABORT_UNLESS($1 && $5);
+             /* Change the current name resolution context to a local context. */
+-            if (push_new_name_resolution_context(YYTHD, $1, $5))
++            if (push_new_name_resolution_context(thd, $1, $5))
+               MYSQL_YYABORT;
+             Select->parsing_place= IN_ON;
+           }
+@@ -8724,7 +8694,7 @@ table_factor:
+           }
+           table_ident opt_table_alias opt_key_definition
+           {
+-            if (!($$= Select->add_table_to_list(YYTHD, $2, $3,
++            if (!($$= Select->add_table_to_list(thd, $2, $3,
+                                                 Select->get_table_join_options(),
+                                                 Lex->lock_option,
+                                                 Select->pop_index_hints())))
+@@ -8922,7 +8892,7 @@ index_hints_list:
+ 
+ opt_index_hints_list:
+           /* empty */
+-        | { Select->alloc_index_hints(YYTHD); } index_hints_list
++        | { Select->alloc_index_hints(thd); } index_hints_list
+         ;
+ 
+ opt_key_definition:
+@@ -8931,15 +8901,15 @@ opt_key_definition:
+         ;
+ 
+ opt_key_usage_list:
+-          /* empty */ { Select->add_index_hint(YYTHD, NULL, 0); }
++          /* empty */ { Select->add_index_hint(thd, NULL, 0); }
+         | key_usage_list {}
+         ;
+ 
+ key_usage_element:
+           ident
+-          { Select->add_index_hint(YYTHD, $1.str, $1.length); }
++          { Select->add_index_hint(thd, $1.str, $1.length); }
+         | PRIMARY_SYM
+-          { Select->add_index_hint(YYTHD, (char *)"PRIMARY", 7); }
++          { Select->add_index_hint(thd, (char *)"PRIMARY", 7); }
+         ;
+ 
+ key_usage_list:
+@@ -8952,7 +8922,7 @@ using_list:
+           {
+             if (!($$= new List<String>))
+               MYSQL_YYABORT;
+-            String *s= new (YYTHD->mem_root) String((const char *) $1.str,
++            String *s= new (thd->mem_root) String((const char *) $1.str,
+                                                     $1.length,
+                                                     system_charset_info);
+             if (s == NULL)
+@@ -8961,7 +8931,7 @@ using_list:
+           }
+         | using_list ',' ident
+           {
+-            String *s= new (YYTHD->mem_root) String((const char *) $3.str,
++            String *s= new (thd->mem_root) String((const char *) $3.str,
+                                                     $3.length,
+                                                     system_charset_info);
+             if (s == NULL)
+@@ -9002,7 +8972,7 @@ interval_time_stamp:
+                                     implementation without changing its
+                                     resolution.
+                                   */
+-                                  WARN_DEPRECATED(yythd, VER_CELOSIA, "FRAC_SECOND", "MICROSECOND");
++                                  WARN_DEPRECATED(thd, VER_CELOSIA, "FRAC_SECOND", "MICROSECOND");
+                                 }
+ 	;
+ 
+@@ -9086,7 +9056,6 @@ opt_escape:
+           }
+         | /* empty */
+           {
+-            THD *thd= YYTHD;
+             Lex->escape_used= FALSE;
+             $$= ((thd->variables.sql_mode & MODE_NO_BACKSLASH_ESCAPES) ?
+                  new (thd->mem_root) Item_string("", 0, &my_charset_latin1) :
+@@ -9107,9 +9076,9 @@ group_clause:
+ 
+ group_list:
+           group_list ',' order_ident order_dir
+-          { if (add_group_to_list(YYTHD, $3,(bool) $4)) MYSQL_YYABORT; }
++          { if (add_group_to_list(thd, $3,(bool) $4)) MYSQL_YYABORT; }
+         | order_ident order_dir
+-          { if (add_group_to_list(YYTHD, $1,(bool) $2)) MYSQL_YYABORT; }
++          { if (add_group_to_list(thd, $1,(bool) $2)) MYSQL_YYABORT; }
+         ;
+ 
+ olap_opt:
+@@ -9156,7 +9125,6 @@ alter_order_list:
+ alter_order_item:
+           simple_ident_nospvar order_dir
+           {
+-            THD *thd= YYTHD;
+             bool ascending= ($2 == 1) ? true : false;
+             if (add_order_to_list(thd, $1, ascending))
+               MYSQL_YYABORT;
+@@ -9209,9 +9177,9 @@ order_clause:
+ 
+ order_list:
+           order_list ',' order_ident order_dir
+-          { if (add_order_to_list(YYTHD, $3,(bool) $4)) MYSQL_YYABORT; }
++          { if (add_order_to_list(thd, $3,(bool) $4)) MYSQL_YYABORT; }
+         | order_ident order_dir
+-          { if (add_order_to_list(YYTHD, $1,(bool) $2)) MYSQL_YYABORT; }
++          { if (add_order_to_list(thd, $1,(bool) $2)) MYSQL_YYABORT; }
+         ;
+ 
+ order_dir:
+@@ -9271,19 +9239,19 @@ limit_option:
+         }
+         | ULONGLONG_NUM
+           {
+-            $$= new (YYTHD->mem_root) Item_uint($1.str, $1.length);
++            $$= new (thd->mem_root) Item_uint($1.str, $1.length);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | LONG_NUM
+           {
+-            $$= new (YYTHD->mem_root) Item_uint($1.str, $1.length);
++            $$= new (thd->mem_root) Item_uint($1.str, $1.length);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | NUM
+           {
+-            $$= new (YYTHD->mem_root) Item_uint($1.str, $1.length);
++            $$= new (thd->mem_root) Item_uint($1.str, $1.length);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -9365,7 +9333,7 @@ procedure_clause:
+             lex->proc_list.elements=0;
+             lex->proc_list.first=0;
+             lex->proc_list.next= &lex->proc_list.first;
+-            Item_field *item= new (YYTHD->mem_root)
++            Item_field *item= new (thd->mem_root)
+                                 Item_field(&lex->current_select->context,
+                                            NULL, NULL, $2.str);
+             if (item == NULL)
+@@ -9390,8 +9358,6 @@ procedure_list2:
+ procedure_item:
+           remember_name expr remember_end
+           {
+-            THD *thd= YYTHD;
+-
+             if (add_proc_to_list(thd, $2))
+               MYSQL_YYABORT;
+             if (!$2->name)
+@@ -9560,7 +9526,6 @@ drop:
+           }
+         | DROP FUNCTION_SYM if_exists ident '.' ident
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             sp_name *spname;
+             if ($4.str && check_db_name(&$4))
+@@ -9583,7 +9548,6 @@ drop:
+           }
+         | DROP FUNCTION_SYM if_exists ident
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             LEX_STRING db= {0, 0};
+             sp_name *spname;
+@@ -9664,7 +9628,7 @@ table_list:
+ table_name:
+           table_ident
+           {
+-            if (!Select->add_table_to_list(YYTHD, $1, NULL, TL_OPTION_UPDATING))
++            if (!Select->add_table_to_list(thd, $1, NULL, TL_OPTION_UPDATING))
+               MYSQL_YYABORT;
+           }
+         ;
+@@ -9677,7 +9641,7 @@ table_alias_ref_list:
+ table_alias_ref:
+           table_ident_opt_wild
+           {
+-            if (!Select->add_table_to_list(YYTHD, $1, NULL,
++            if (!Select->add_table_to_list(thd, $1, NULL,
+                                            TL_OPTION_UPDATING | TL_OPTION_ALIAS,
+                                            Lex->lock_option ))
+               MYSQL_YYABORT;
+@@ -9868,7 +9832,7 @@ expr_or_default:
+           expr { $$= $1;}
+         | DEFAULT
+           {
+-            $$= new (YYTHD->mem_root) Item_default_value(Lex->current_context());
++            $$= new (thd->mem_root) Item_default_value(Lex->current_context());
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -9922,7 +9886,7 @@ update_list:
+ update_elem:
+           simple_ident_nospvar equal expr_or_default
+           {
+-            if (add_item_to_list(YYTHD, $1) || add_value_to_list(YYTHD, $3))
++            if (add_item_to_list(thd, $1) || add_value_to_list(thd, $3))
+               MYSQL_YYABORT;
+           }
+         ;
+@@ -9965,7 +9929,7 @@ delete:
+ single_multi:
+           FROM table_ident
+           {
+-            if (!Select->add_table_to_list(YYTHD, $2, NULL, TL_OPTION_UPDATING,
++            if (!Select->add_table_to_list(thd, $2, NULL, TL_OPTION_UPDATING,
+                                            Lex->lock_option))
+               MYSQL_YYABORT;
+           }
+@@ -9998,7 +9962,7 @@ table_wild_one:
+             Table_ident *ti= new Table_ident($1);
+             if (ti == NULL)
+               MYSQL_YYABORT;
+-            if (!Select->add_table_to_list(YYTHD,
++            if (!Select->add_table_to_list(thd,
+                                            ti,
+                                            $3,
+                                            TL_OPTION_UPDATING | TL_OPTION_ALIAS,
+@@ -10007,10 +9971,10 @@ table_wild_one:
+           }
+         | ident '.' ident opt_wild opt_table_alias
+           {
+-            Table_ident *ti= new Table_ident(YYTHD, $1, $3, 0);
++            Table_ident *ti= new Table_ident(thd, $1, $3, 0);
+             if (ti == NULL)
+               MYSQL_YYABORT;
+-            if (!Select->add_table_to_list(YYTHD,
++            if (!Select->add_table_to_list(thd,
+                                            ti,
+                                            $5, 
+                                            TL_OPTION_UPDATING | TL_OPTION_ALIAS,
+@@ -10130,7 +10094,7 @@ show_param:
+            {
+              LEX *lex= Lex;
+              lex->sql_command= SQLCOM_SHOW_DATABASES;
+-             if (prepare_schema_table(YYTHD, lex, 0, SCH_SCHEMATA))
++             if (prepare_schema_table(thd, lex, 0, SCH_SCHEMATA))
+                MYSQL_YYABORT;
+            }
+          | opt_full TABLES opt_db wild_and_where
+@@ -10138,7 +10102,7 @@ show_param:
+              LEX *lex= Lex;
+              lex->sql_command= SQLCOM_SHOW_TABLES;
+              lex->select_lex.db= $3;
+-             if (prepare_schema_table(YYTHD, lex, 0, SCH_TABLE_NAMES))
++             if (prepare_schema_table(thd, lex, 0, SCH_TABLE_NAMES))
+                MYSQL_YYABORT;
+            }
+          | opt_full TRIGGERS_SYM opt_db wild_and_where
+@@ -10146,7 +10110,7 @@ show_param:
+              LEX *lex= Lex;
+              lex->sql_command= SQLCOM_SHOW_TRIGGERS;
+              lex->select_lex.db= $3;
+-             if (prepare_schema_table(YYTHD, lex, 0, SCH_TRIGGERS))
++             if (prepare_schema_table(thd, lex, 0, SCH_TRIGGERS))
+                MYSQL_YYABORT;
+            }
+          | EVENTS_SYM opt_db wild_and_where
+@@ -10154,7 +10118,7 @@ show_param:
+              LEX *lex= Lex;
+              lex->sql_command= SQLCOM_SHOW_EVENTS;
+              lex->select_lex.db= $2;
+-             if (prepare_schema_table(YYTHD, lex, 0, SCH_EVENTS))
++             if (prepare_schema_table(thd, lex, 0, SCH_EVENTS))
+                MYSQL_YYABORT;
+            }
+          | TABLE_SYM STATUS_SYM opt_db wild_and_where
+@@ -10162,7 +10126,7 @@ show_param:
+              LEX *lex= Lex;
+              lex->sql_command= SQLCOM_SHOW_TABLE_STATUS;
+              lex->select_lex.db= $3;
+-             if (prepare_schema_table(YYTHD, lex, 0, SCH_TABLES))
++             if (prepare_schema_table(thd, lex, 0, SCH_TABLES))
+                MYSQL_YYABORT;
+            }
+         | OPEN_SYM TABLES opt_db wild_and_where
+@@ -10170,22 +10134,22 @@ show_param:
+             LEX *lex= Lex;
+             lex->sql_command= SQLCOM_SHOW_OPEN_TABLES;
+             lex->select_lex.db= $3;
+-            if (prepare_schema_table(YYTHD, lex, 0, SCH_OPEN_TABLES))
++            if (prepare_schema_table(thd, lex, 0, SCH_OPEN_TABLES))
+               MYSQL_YYABORT;
+           }
+         | opt_full PLUGIN_SYM
+           {
+             LEX *lex= Lex;
+-            WARN_DEPRECATED(yythd, "6.0", "SHOW PLUGIN", "'SHOW PLUGINS'");
++            WARN_DEPRECATED(thd, "6.0", "SHOW PLUGIN", "'SHOW PLUGINS'");
+             lex->sql_command= SQLCOM_SHOW_PLUGINS;
+-            if (prepare_schema_table(YYTHD, lex, 0, SCH_PLUGINS))
++            if (prepare_schema_table(thd, lex, 0, SCH_PLUGINS))
+               MYSQL_YYABORT;
+           }
+         | PLUGINS_SYM
+           {
+             LEX *lex= Lex;
+             lex->sql_command= SQLCOM_SHOW_PLUGINS;
+-            if (prepare_schema_table(YYTHD, lex, 0, SCH_PLUGINS))
++            if (prepare_schema_table(thd, lex, 0, SCH_PLUGINS))
+               MYSQL_YYABORT;
+           }
+         | ENGINE_SYM known_storage_engines show_engine_param
+@@ -10198,7 +10162,7 @@ show_param:
+             lex->sql_command= SQLCOM_SHOW_FIELDS;
+             if ($5)
+               $4->change_db($5);
+-            if (prepare_schema_table(YYTHD, lex, $4, SCH_COLUMNS))
++            if (prepare_schema_table(thd, lex, $4, SCH_COLUMNS))
+               MYSQL_YYABORT;
+           }
+         | NEW_SYM MASTER_SYM FOR_SYM SLAVE
+@@ -10233,7 +10197,7 @@ show_param:
+             lex->sql_command= SQLCOM_SHOW_KEYS;
+             if ($4)
+               $3->change_db($4);
+-            if (prepare_schema_table(YYTHD, lex, $3, SCH_STATISTICS))
++            if (prepare_schema_table(thd, lex, $3, SCH_STATISTICS))
+               MYSQL_YYABORT;
+           }
+         | COLUMN_SYM TYPES_SYM
+@@ -10245,15 +10209,15 @@ show_param:
+           {
+             LEX *lex=Lex;
+             lex->sql_command= SQLCOM_SHOW_STORAGE_ENGINES;
+-            WARN_DEPRECATED(yythd, "6.0", "SHOW TABLE TYPES", "'SHOW [STORAGE] ENGINES'");
+-            if (prepare_schema_table(YYTHD, lex, 0, SCH_ENGINES))
++            WARN_DEPRECATED(thd, "6.0", "SHOW TABLE TYPES", "'SHOW [STORAGE] ENGINES'");
++            if (prepare_schema_table(thd, lex, 0, SCH_ENGINES))
+               MYSQL_YYABORT;
+           }
+         | opt_storage ENGINES_SYM
+           {
+             LEX *lex=Lex;
+             lex->sql_command= SQLCOM_SHOW_STORAGE_ENGINES;
+-            if (prepare_schema_table(YYTHD, lex, 0, SCH_ENGINES))
++            if (prepare_schema_table(thd, lex, 0, SCH_ENGINES))
+               MYSQL_YYABORT;
+           }
+         | AUTHORS_SYM
+@@ -10285,7 +10249,7 @@ show_param:
+           { 
+             LEX *lex= Lex;
+             lex->sql_command= SQLCOM_SHOW_PROFILE;
+-            if (prepare_schema_table(YYTHD, lex, NULL, SCH_PROFILES) != 0)
++            if (prepare_schema_table(thd, lex, NULL, SCH_PROFILES) != 0)
+               YYABORT;
+           }
+         | opt_var_type STATUS_SYM wild_and_where
+@@ -10293,7 +10257,7 @@ show_param:
+             LEX *lex= Lex;
+             lex->sql_command= SQLCOM_SHOW_STATUS;
+             lex->option_type= $1;
+-            if (prepare_schema_table(YYTHD, lex, 0, SCH_STATUS))
++            if (prepare_schema_table(thd, lex, 0, SCH_STATUS))
+               MYSQL_YYABORT;
+           }
+         | INNOBASE_SYM STATUS_SYM
+@@ -10301,24 +10265,24 @@ show_param:
+             LEX *lex= Lex;
+             lex->sql_command = SQLCOM_SHOW_ENGINE_STATUS;
+             if (!(lex->create_info.db_type=
+-                  ha_resolve_by_legacy_type(YYTHD, DB_TYPE_INNODB)))
++                  ha_resolve_by_legacy_type(thd, DB_TYPE_INNODB)))
+             {
+               my_error(ER_UNKNOWN_STORAGE_ENGINE, MYF(0), "InnoDB");
+               MYSQL_YYABORT;
+             }
+-            WARN_DEPRECATED(yythd, "6.0", "SHOW INNODB STATUS", "'SHOW ENGINE INNODB STATUS'");
++            WARN_DEPRECATED(thd, "6.0", "SHOW INNODB STATUS", "'SHOW ENGINE INNODB STATUS'");
+           }
+         | MUTEX_SYM STATUS_SYM
+           {
+             LEX *lex= Lex;
+             lex->sql_command = SQLCOM_SHOW_ENGINE_MUTEX;
+             if (!(lex->create_info.db_type=
+-                  ha_resolve_by_legacy_type(YYTHD, DB_TYPE_INNODB)))
++                  ha_resolve_by_legacy_type(thd, DB_TYPE_INNODB)))
+             {
+               my_error(ER_UNKNOWN_STORAGE_ENGINE, MYF(0), "InnoDB");
+               MYSQL_YYABORT;
+             }
+-            WARN_DEPRECATED(yythd, "6.0", "SHOW MUTEX STATUS", "'SHOW ENGINE INNODB MUTEX'");
++            WARN_DEPRECATED(thd, "6.0", "SHOW MUTEX STATUS", "'SHOW ENGINE INNODB MUTEX'");
+           }
+         | opt_full PROCESSLIST_SYM
+           { Lex->sql_command= SQLCOM_SHOW_PROCESSLIST;}
+@@ -10327,21 +10291,21 @@ show_param:
+             LEX *lex= Lex;
+             lex->sql_command= SQLCOM_SHOW_VARIABLES;
+             lex->option_type= $1;
+-            if (prepare_schema_table(YYTHD, lex, 0, SCH_VARIABLES))
++            if (prepare_schema_table(thd, lex, 0, SCH_VARIABLES))
+               MYSQL_YYABORT;
+           }
+         | charset wild_and_where
+           {
+             LEX *lex= Lex;
+             lex->sql_command= SQLCOM_SHOW_CHARSETS;
+-            if (prepare_schema_table(YYTHD, lex, 0, SCH_CHARSETS))
++            if (prepare_schema_table(thd, lex, 0, SCH_CHARSETS))
+               MYSQL_YYABORT;
+           }
+         | COLLATION_SYM wild_and_where
+           {
+             LEX *lex= Lex;
+             lex->sql_command= SQLCOM_SHOW_COLLATIONS;
+-            if (prepare_schema_table(YYTHD, lex, 0, SCH_COLLATIONS))
++            if (prepare_schema_table(thd, lex, 0, SCH_COLLATIONS))
+               MYSQL_YYABORT;
+           }
+         | GRANTS
+@@ -10371,7 +10335,7 @@ show_param:
+           {
+             LEX *lex= Lex;
+             lex->sql_command = SQLCOM_SHOW_CREATE;
+-            if (!lex->select_lex.add_table_to_list(YYTHD, $3, NULL,0))
++            if (!lex->select_lex.add_table_to_list(thd, $3, NULL,0))
+               MYSQL_YYABORT;
+             lex->only_view= 0;
+             lex->create_info.storage_media= HA_SM_DEFAULT;
+@@ -10380,7 +10344,7 @@ show_param:
+           {
+             LEX *lex= Lex;
+             lex->sql_command = SQLCOM_SHOW_CREATE;
+-            if (!lex->select_lex.add_table_to_list(YYTHD, $3, NULL, 0))
++            if (!lex->select_lex.add_table_to_list(thd, $3, NULL, 0))
+               MYSQL_YYABORT;
+             lex->only_view= 1;
+           }
+@@ -10416,14 +10380,14 @@ show_param:
+           {
+             LEX *lex= Lex;
+             lex->sql_command= SQLCOM_SHOW_STATUS_PROC;
+-            if (prepare_schema_table(YYTHD, lex, 0, SCH_PROCEDURES))
++            if (prepare_schema_table(thd, lex, 0, SCH_PROCEDURES))
+               MYSQL_YYABORT;
+           }
+         | FUNCTION_SYM STATUS_SYM wild_and_where
+           {
+             LEX *lex= Lex;
+             lex->sql_command= SQLCOM_SHOW_STATUS_FUNC;
+-            if (prepare_schema_table(YYTHD, lex, 0, SCH_PROCEDURES))
++            if (prepare_schema_table(thd, lex, 0, SCH_PROCEDURES))
+               MYSQL_YYABORT;
+           }
+         | PROCEDURE CODE_SYM sp_name
+@@ -10501,7 +10465,7 @@ wild_and_where:
+           /* empty */
+         | LIKE TEXT_STRING_sys
+           {
+-            Lex->wild= new (YYTHD->mem_root) String($2.str, $2.length,
++            Lex->wild= new (thd->mem_root) String($2.str, $2.length,
+                                                     system_charset_info);
+             if (Lex->wild == NULL)
+               MYSQL_YYABORT;
+@@ -10525,7 +10489,7 @@ describe:
+             lex->sql_command= SQLCOM_SHOW_FIELDS;
+             lex->select_lex.db= 0;
+             lex->verbose= 0;
+-            if (prepare_schema_table(YYTHD, lex, $2, SCH_COLUMNS))
++            if (prepare_schema_table(thd, lex, $2, SCH_COLUMNS))
+               MYSQL_YYABORT;
+           }
+           opt_describe_column {}
+@@ -10554,7 +10518,7 @@ opt_describe_column:
+         | text_string { Lex->wild= $1; }
+         | ident
+           {
+-            Lex->wild= new (YYTHD->mem_root) String((const char*) $1.str,
++            Lex->wild= new (thd->mem_root) String((const char*) $1.str,
+                                                     $1.length,
+                                                     system_charset_info);
+             if (Lex->wild == NULL)
+@@ -10697,7 +10661,6 @@ use:
+ load:
+           LOAD DATA_SYM
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+ 
+             if (lex->sphead)
+@@ -10711,7 +10674,7 @@ load:
+         | LOAD TABLE_SYM table_ident FROM MASTER_SYM
+           {
+             LEX *lex=Lex;
+-            WARN_DEPRECATED(yythd, "6.0", "LOAD TABLE FROM MASTER",
++            WARN_DEPRECATED(thd, "6.0", "LOAD TABLE FROM MASTER",
+                             "MySQL Administrator (mysqldump, mysql)");
+             if (lex->sphead)
+             {
+@@ -10719,7 +10682,7 @@ load:
+               MYSQL_YYABORT;
+             }
+             lex->sql_command = SQLCOM_LOAD_MASTER_TABLE;
+-            if (!Select->add_table_to_list(YYTHD, $3, NULL, TL_OPTION_UPDATING))
++            if (!Select->add_table_to_list(thd, $3, NULL, TL_OPTION_UPDATING))
+               MYSQL_YYABORT;
+           }
+         ;
+@@ -10739,7 +10702,7 @@ load_data:
+           opt_duplicate INTO TABLE_SYM table_ident
+           {
+             LEX *lex=Lex;
+-            if (!Select->add_table_to_list(YYTHD, $9, NULL, TL_OPTION_UPDATING,
++            if (!Select->add_table_to_list(thd, $9, NULL, TL_OPTION_UPDATING,
+                                            lex->lock_option))
+               MYSQL_YYABORT;
+             lex->field_list.empty();
+@@ -10754,7 +10717,7 @@ load_data:
+         | FROM MASTER_SYM
+           {
+             Lex->sql_command = SQLCOM_LOAD_MASTER_DATA;
+-            WARN_DEPRECATED(yythd, "6.0", "LOAD DATA FROM MASTER",
++            WARN_DEPRECATED(thd, "6.0", "LOAD DATA FROM MASTER",
+                             "mysqldump or future "
+                             "BACKUP/RESTORE DATABASE facility");
+           }
+@@ -10872,7 +10835,7 @@ field_or_var:
+           simple_ident_nospvar {$$= $1;}
+         | '@' ident_or_text
+           {
+-            $$= new (YYTHD->mem_root) Item_user_var_as_out_param($2);
++            $$= new (thd->mem_root) Item_user_var_as_out_param($2);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -10889,7 +10852,6 @@ text_literal:
+           TEXT_STRING
+           {
+             LEX_STRING tmp;
+-            THD *thd= YYTHD;
+             CHARSET_INFO *cs_con= thd->variables.collation_connection;
+             CHARSET_INFO *cs_cli= thd->variables.character_set_client;
+             uint repertoire= thd->lex->text_string_is_7bit &&
+@@ -10915,7 +10877,7 @@ text_literal:
+             uint repertoire= Lex->text_string_is_7bit ?
+                              MY_REPERTOIRE_ASCII : MY_REPERTOIRE_UNICODE30;
+             DBUG_ASSERT(my_charset_is_ascii_based(national_charset_info));
+-            $$= new (YYTHD->mem_root) Item_string($1.str, $1.length,
++            $$= new (thd->mem_root) Item_string($1.str, $1.length,
+                                                   national_charset_info,
+                                                   DERIVATION_COERCIBLE,
+                                                   repertoire);
+@@ -10924,7 +10886,7 @@ text_literal:
+           }
+         | UNDERSCORE_CHARSET TEXT_STRING
+           {
+-            Item_string *str= new (YYTHD->mem_root) Item_string($2.str,
++            Item_string *str= new (thd->mem_root) Item_string($2.str,
+                                                                 $2.length, $1);
+             if (str == NULL)
+               MYSQL_YYABORT;
+@@ -10943,7 +10905,7 @@ text_literal:
+                  If the string has been pure ASCII so far,
+                  check the new part.
+               */
+-              CHARSET_INFO *cs= YYTHD->variables.collation_connection;
++              CHARSET_INFO *cs= thd->variables.collation_connection;
+               item->collation.repertoire|= my_string_repertoire(cs,
+                                                                 $2.str,
+                                                                 $2.length);
+@@ -10954,15 +10916,15 @@ text_literal:
+ text_string:
+           TEXT_STRING_literal
+           {
+-            $$= new (YYTHD->mem_root) String($1.str,
++            $$= new (thd->mem_root) String($1.str,
+                                              $1.length,
+-                                             YYTHD->variables.collation_connection);
++                                             thd->variables.collation_connection);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | HEX_NUM
+           {
+-            Item *tmp= new (YYTHD->mem_root) Item_hex_string($1.str, $1.length);
++            Item *tmp= new (thd->mem_root) Item_hex_string($1.str, $1.length);
+             if (tmp == NULL)
+               MYSQL_YYABORT;
+             /*
+@@ -10974,7 +10936,7 @@ text_string:
+           }
+         | BIN_NUM
+           {
+-            Item *tmp= new (YYTHD->mem_root) Item_bin_string($1.str, $1.length);
++            Item *tmp= new (thd->mem_root) Item_bin_string($1.str, $1.length);
+             if (tmp == NULL)
+               MYSQL_YYABORT;
+             /*
+@@ -10989,7 +10951,6 @@ text_string:
+ param_marker:
+           PARAM_MARKER
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             Lex_input_stream *lip= YYLIP;
+             Item_param *item;
+@@ -11022,38 +10983,38 @@ literal:
+         | NUM_literal { $$ = $1; }
+         | NULL_SYM
+           {
+-            $$ = new (YYTHD->mem_root) Item_null();
++            $$ = new (thd->mem_root) Item_null();
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+             YYLIP->next_state= MY_LEX_OPERATOR_OR_IDENT;
+           }
+         | FALSE_SYM
+           {
+-            $$= new (YYTHD->mem_root) Item_int((char*) "FALSE",0,1);
++            $$= new (thd->mem_root) Item_int((char*) "FALSE",0,1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | TRUE_SYM
+           {
+-            $$= new (YYTHD->mem_root) Item_int((char*) "TRUE",1,1);
++            $$= new (thd->mem_root) Item_int((char*) "TRUE",1,1);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | HEX_NUM
+           {
+-            $$ = new (YYTHD->mem_root) Item_hex_string($1.str, $1.length);
++            $$ = new (thd->mem_root) Item_hex_string($1.str, $1.length);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | BIN_NUM
+           {
+-            $$= new (YYTHD->mem_root) Item_bin_string($1.str, $1.length);
++            $$= new (thd->mem_root) Item_bin_string($1.str, $1.length);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | UNDERSCORE_CHARSET HEX_NUM
+           {
+-            Item *tmp= new (YYTHD->mem_root) Item_hex_string($2.str, $2.length);
++            Item *tmp= new (thd->mem_root) Item_hex_string($2.str, $2.length);
+             if (tmp == NULL)
+               MYSQL_YYABORT;
+             /*
+@@ -11064,7 +11025,7 @@ literal:
+             String *str= tmp->val_str((String*) 0);
+ 
+             Item_string *item_str;
+-            item_str= new (YYTHD->mem_root)
++            item_str= new (thd->mem_root)
+                         Item_string(NULL, /* name will be set in select_item */
+                                     str ? str->ptr() : "",
+                                     str ? str->length() : 0,
+@@ -11082,7 +11043,7 @@ literal:
+           }
+         | UNDERSCORE_CHARSET BIN_NUM
+           {
+-            Item *tmp= new (YYTHD->mem_root) Item_bin_string($2.str, $2.length);
++            Item *tmp= new (thd->mem_root) Item_bin_string($2.str, $2.length);
+             if (tmp == NULL)
+               MYSQL_YYABORT;
+             /*
+@@ -11093,7 +11054,7 @@ literal:
+             String *str= tmp->val_str((String*) 0);
+ 
+             Item_string *item_str;
+-            item_str= new (YYTHD->mem_root)
++            item_str= new (thd->mem_root)
+                         Item_string(NULL, /* name will be set in select_item */
+                                     str ? str->ptr() : "",
+                                     str ? str->length() : 0,
+@@ -11117,7 +11078,7 @@ NUM_literal:
+           NUM
+           {
+             int error;
+-            $$= new (YYTHD->mem_root)
++            $$= new (thd->mem_root)
+                   Item_int($1.str,
+                            (longlong) my_strtoll10($1.str, NULL, &error),
+                            $1.length);
+@@ -11127,7 +11088,7 @@ NUM_literal:
+         | LONG_NUM
+           {
+             int error;
+-            $$= new (YYTHD->mem_root)
++            $$= new (thd->mem_root)
+                   Item_int($1.str,
+                            (longlong) my_strtoll10($1.str, NULL, &error),
+                            $1.length);
+@@ -11136,23 +11097,23 @@ NUM_literal:
+           }
+         | ULONGLONG_NUM
+           {
+-            $$= new (YYTHD->mem_root) Item_uint($1.str, $1.length);
++            $$= new (thd->mem_root) Item_uint($1.str, $1.length);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | DECIMAL_NUM
+           {
+-            $$= new (YYTHD->mem_root) Item_decimal($1.str, $1.length,
+-                                                   YYTHD->charset());
+-            if (($$ == NULL) || (YYTHD->is_error()))
++            $$= new (thd->mem_root) Item_decimal($1.str, $1.length,
++                                                   thd->charset());
++            if (($$ == NULL) || (thd->is_error()))
+             {
+               MYSQL_YYABORT;
+             }
+           }
+         | FLOAT_NUM
+           {
+-            $$= new (YYTHD->mem_root) Item_float($1.str, $1.length);
+-            if (($$ == NULL) || (YYTHD->is_error()))
++            $$= new (thd->mem_root) Item_float($1.str, $1.length);
++            if (($$ == NULL) || (thd->is_error()))
+             {
+               MYSQL_YYABORT;
+             }
+@@ -11172,7 +11133,7 @@ table_wild:
+           ident '.' '*'
+           {
+             SELECT_LEX *sel= Select;
+-            $$= new (YYTHD->mem_root) Item_field(Lex->current_context(),
++            $$= new (thd->mem_root) Item_field(Lex->current_context(),
+                                                  NullS, $1.str, "*");
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+@@ -11180,7 +11141,6 @@ table_wild:
+           }
+         | ident '.' ident '.' '*'
+           {
+-            THD *thd= YYTHD;
+             SELECT_LEX *sel= Select;
+             const char* schema= thd->client_capabilities & CLIENT_NO_SCHEMA ?
+                                   NullS : $1.str;
+@@ -11200,7 +11160,6 @@ order_ident:
+ simple_ident:
+           ident
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             Lex_input_stream *lip= YYLIP;
+             sp_variable_t *spv;
+@@ -11251,7 +11210,6 @@ simple_ident:
+ simple_ident_nospvar:
+           ident
+           {
+-            THD *thd= YYTHD;
+             SELECT_LEX *sel=Select;
+             if ((sel->parsing_place != IN_HAVING) ||
+                 (sel->get_in_sum_expr() > 0))
+@@ -11273,7 +11231,6 @@ simple_ident_nospvar:
+ simple_ident_q:
+           ident '.' ident
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+ 
+             /*
+@@ -11352,7 +11309,6 @@ simple_ident_q:
+           }
+         | '.' ident '.' ident
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             SELECT_LEX *sel= lex->current_select;
+             if (sel->no_table_names_allowed)
+@@ -11377,7 +11333,6 @@ simple_ident_q:
+           }
+         | ident '.' ident '.' ident
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             SELECT_LEX *sel= lex->current_select;
+             const char* schema= (thd->client_capabilities & CLIENT_NO_SCHEMA ?
+@@ -11445,7 +11400,7 @@ table_ident:
+           }
+         | ident '.' ident
+           {
+-            $$= new Table_ident(YYTHD, $1,$3,0);
++            $$= new Table_ident(thd, $1,$3,0);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -11467,7 +11422,7 @@ table_ident_opt_wild:
+           }
+         | ident '.' ident opt_wild
+           {
+-            $$= new Table_ident(YYTHD, $1,$3,0);
++            $$= new Table_ident(thd, $1,$3,0);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -11477,7 +11432,7 @@ table_ident_nodb:
+           ident
+           {
+             LEX_STRING db={(char*) any_db,3};
+-            $$= new Table_ident(YYTHD, db,$1,0);
++            $$= new Table_ident(thd, db,$1,0);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -11487,8 +11442,6 @@ IDENT_sys:
+           IDENT { $$= $1; }
+         | IDENT_QUOTED
+           {
+-            THD *thd= YYTHD;
+-
+             if (thd->charset_is_system_charset)
+             {
+               CHARSET_INFO *cs= system_charset_info;
+@@ -11516,8 +11469,6 @@ IDENT_sys:
+ TEXT_STRING_sys:
+           TEXT_STRING
+           {
+-            THD *thd= YYTHD;
+-
+             if (thd->charset_is_system_charset)
+               $$= $1;
+             else
+@@ -11532,8 +11483,6 @@ TEXT_STRING_sys:
+ TEXT_STRING_literal:
+           TEXT_STRING
+           {
+-            THD *thd= YYTHD;
+-
+             if (thd->charset_is_collation_connection)
+               $$= $1;
+             else
+@@ -11548,8 +11497,6 @@ TEXT_STRING_literal:
+ TEXT_STRING_filesystem:
+           TEXT_STRING
+           {
+-            THD *thd= YYTHD;
+-
+             if (thd->charset_is_character_set_filesystem)
+               $$= $1;
+             else
+@@ -11566,7 +11513,6 @@ ident:
+           IDENT_sys    { $$=$1; }
+         | keyword
+           {
+-            THD *thd= YYTHD;
+             $$.str= thd->strmake($1.str, $1.length);
+             if ($$.str == NULL)
+               MYSQL_YYABORT;
+@@ -11578,7 +11524,6 @@ label_ident:
+           IDENT_sys    { $$=$1; }
+         | keyword_sp
+           {
+-            THD *thd= YYTHD;
+             $$.str= thd->strmake($1.str, $1.length);
+             if ($$.str == NULL)
+               MYSQL_YYABORT;
+@@ -11595,7 +11540,6 @@ ident_or_text:
+ user:
+           ident_or_text
+           {
+-            THD *thd= YYTHD;
+             if (!($$=(LEX_USER*) thd->alloc(sizeof(st_lex_user))))
+               MYSQL_YYABORT;
+             $$->user = $1;
+@@ -11609,7 +11553,6 @@ user:
+           }
+         | ident_or_text '@' ident_or_text
+           {
+-            THD *thd= YYTHD;
+             if (!($$=(LEX_USER*) thd->alloc(sizeof(st_lex_user))))
+               MYSQL_YYABORT;
+             $$->user = $1; $$->host=$3;
+@@ -11628,7 +11571,7 @@ user:
+           }
+         | CURRENT_USER optional_braces
+           {
+-            if (!($$=(LEX_USER*) YYTHD->alloc(sizeof(st_lex_user))))
++            if (!($$=(LEX_USER*) thd->alloc(sizeof(st_lex_user))))
+               MYSQL_YYABORT;
+             /* 
+               empty LEX_USER means current_user and 
+@@ -11991,7 +11934,6 @@ option_value_list:
+ 
+ option_type_value:
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             Lex_input_stream *lip= YYLIP;
+ 
+@@ -12022,7 +11964,6 @@ option_type_value:
+           }
+           ext_option_value
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             Lex_input_stream *lip= YYLIP;
+ 
+@@ -12105,7 +12046,6 @@ ext_option_value:
+ sys_option_value:
+           option_type internal_variable_name equal set_expr_or_default
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= Lex;
+             LEX_STRING *name= &$2.base_name;
+ 
+@@ -12117,7 +12057,7 @@ sys_option_value:
+                 my_parse_error(ER(ER_SYNTAX_ERROR));
+                 MYSQL_YYABORT;
+               }
+-              if (set_trigger_new_row(YYTHD, name, $4))
++              if (set_trigger_new_row(thd, name, $4))
+                 MYSQL_YYABORT;
+             }
+             else if ($2.var)
+@@ -12147,7 +12087,6 @@ sys_option_value:
+           }
+         | option_type TRANSACTION_SYM ISOLATION LEVEL_SYM isolation_types
+           {
+-            THD *thd= YYTHD;
+             LEX *lex=Lex;
+             lex->option_type= $1;
+             Item *item= new (thd->mem_root) Item_int((int32) $5);
+@@ -12167,7 +12106,7 @@ option_value:
+           '@' ident_or_text equal expr
+           {
+             Item_func_set_user_var *item;
+-            item= new (YYTHD->mem_root) Item_func_set_user_var($2, $4);
++            item= new (thd->mem_root) Item_func_set_user_var($2, $4);
+             if (item == NULL)
+               MYSQL_YYABORT;
+             set_var_user *var= new set_var_user(item);
+@@ -12177,7 +12116,6 @@ option_value:
+           }
+         | '@' '@' opt_var_ident_type internal_variable_name equal set_expr_or_default
+           {
+-            THD *thd= YYTHD;
+             struct sys_var_with_base tmp= $4;
+             /* Lookup if necessary: must be a system variable. */
+             if (tmp.var == NULL)
+@@ -12190,7 +12128,6 @@ option_value:
+           }
+         | charset old_or_new_charset_name_or_default
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             CHARSET_INFO *cs2;
+             cs2= $2 ? $2: global_system_variables.character_set_client;
+@@ -12238,7 +12175,6 @@ option_value:
+           }
+         | PASSWORD equal text_or_password
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             LEX_USER *user;
+             sp_pcontext *spc= lex->spcont;
+@@ -12278,7 +12214,6 @@ option_value:
+ internal_variable_name:
+           ident
+           {
+-            THD *thd= YYTHD;
+             sp_pcontext *spc= thd->lex->spcont;
+             sp_variable_t *spv;
+ 
+@@ -12337,7 +12272,7 @@ internal_variable_name:
+             }
+             else
+             {
+-              sys_var *tmp=find_sys_var(YYTHD, $3.str, $3.length);
++              sys_var *tmp=find_sys_var(thd, $3.str, $3.length);
+               if (!tmp)
+                 MYSQL_YYABORT;
+               if (!tmp->is_struct())
+@@ -12348,7 +12283,7 @@ internal_variable_name:
+           }
+         | DEFAULT '.' ident
+           {
+-            sys_var *tmp=find_sys_var(YYTHD, $3.str, $3.length);
++            sys_var *tmp=find_sys_var(thd, $3.str, $3.length);
+             if (!tmp)
+               MYSQL_YYABORT;
+             if (!tmp->is_struct())
+@@ -12370,16 +12305,16 @@ text_or_password:
+           TEXT_STRING { $$=$1.str;}
+         | PASSWORD '(' TEXT_STRING ')'
+           {
+-            $$= $3.length ? YYTHD->variables.old_passwords ?
+-              Item_func_old_password::alloc(YYTHD, $3.str, $3.length) :
+-              Item_func_password::alloc(YYTHD, $3.str, $3.length) :
++            $$= $3.length ? thd->variables.old_passwords ?
++              Item_func_old_password::alloc(thd, $3.str, $3.length) :
++              Item_func_password::alloc(thd, $3.str, $3.length) :
+               $3.str;
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | OLD_PASSWORD '(' TEXT_STRING ')'
+           {
+-            $$= $3.length ? Item_func_old_password::alloc(YYTHD, $3.str,
++            $$= $3.length ? Item_func_old_password::alloc(thd, $3.str,
+                                                           $3.length) :
+               $3.str;
+             if ($$ == NULL)
+@@ -12393,19 +12328,19 @@ set_expr_or_default:
+         | DEFAULT { $$=0; }
+         | ON
+           {
+-            $$=new (YYTHD->mem_root) Item_string("ON",  2, system_charset_info);
++            $$=new (thd->mem_root) Item_string("ON",  2, system_charset_info);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | ALL
+           {
+-            $$=new (YYTHD->mem_root) Item_string("ALL", 3, system_charset_info);
++            $$=new (thd->mem_root) Item_string("ALL", 3, system_charset_info);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+         | BINARY
+           {
+-            $$=new (YYTHD->mem_root) Item_string("binary", 6, system_charset_info);
++            $$=new (thd->mem_root) Item_string("binary", 6, system_charset_info);
+             if ($$ == NULL)
+               MYSQL_YYABORT;
+           }
+@@ -12443,7 +12378,7 @@ table_lock:
+           table_ident opt_table_alias lock_option
+           {
+             thr_lock_type lock_type= (thr_lock_type) $3;
+-            if (!Select->add_table_to_list(YYTHD, $1, $2, 0, lock_type))
++            if (!Select->add_table_to_list(thd, $1, $2, 0, lock_type))
+               MYSQL_YYABORT;
+             /* If table is to be write locked, protect from a impending GRL. */
+             if (lock_type >= TL_WRITE_ALLOW_WRITE)
+@@ -12514,7 +12449,7 @@ handler:
+             lex->expr_allows_subselect= FALSE;
+             lex->sql_command = SQLCOM_HA_READ;
+             lex->ha_rkey_mode= HA_READ_KEY_EXACT; /* Avoid purify warnings */
+-            Item *one= new (YYTHD->mem_root) Item_int((int32) 1);
++            Item *one= new (thd->mem_root) Item_int((int32) 1);
+             if (one == NULL)
+               MYSQL_YYABORT;
+             lex->current_select->select_limit= one;
+@@ -12836,10 +12771,10 @@ grant_user:
+             $$=$1; $1->password=$4;
+             if ($4.length)
+             {
+-              if (YYTHD->variables.old_passwords)
++              if (thd->variables.old_passwords)
+               {
+                 char *buff= 
+-                  (char *) YYTHD->alloc(SCRAMBLED_PASSWORD_CHAR_LENGTH_323+1);
++                  (char *) thd->alloc(SCRAMBLED_PASSWORD_CHAR_LENGTH_323+1);
+                 if (buff == NULL)
+                   MYSQL_YYABORT;
+                 my_make_scrambled_password_323(buff, $4.str, $4.length);
+@@ -12849,7 +12784,7 @@ grant_user:
+               else
+               {
+                 char *buff= 
+-                  (char *) YYTHD->alloc(SCRAMBLED_PASSWORD_CHAR_LENGTH+1);
++                  (char *) thd->alloc(SCRAMBLED_PASSWORD_CHAR_LENGTH+1);
+                 if (buff == NULL)
+                   MYSQL_YYABORT;
+                 my_make_scrambled_password(buff, $4.str, $4.length);
+@@ -12881,7 +12816,7 @@ column_list:
+ column_list_id:
+           ident
+           {
+-            String *new_str = new (YYTHD->mem_root) String((const char*) $1.str,$1.length,system_charset_info);
++            String *new_str = new (thd->mem_root) String((const char*) $1.str,$1.length,system_charset_info);
+             if (new_str == NULL)
+               MYSQL_YYABORT;
+             List_iterator <LEX_COLUMN> iter(Lex->columns);
+@@ -12981,14 +12916,14 @@ opt_work:
+ 
+ opt_chain:
+           /* empty */
+-          { $$= (YYTHD->variables.completion_type == 1); }
++          { $$= (thd->variables.completion_type == 1); }
+         | AND_SYM NO_SYM CHAIN_SYM { $$=0; }
+         | AND_SYM CHAIN_SYM        { $$=1; }
+         ;
+ 
+ opt_release:
+           /* empty */
+-          { $$= (YYTHD->variables.completion_type == 2); }
++          { $$= (thd->variables.completion_type == 2); }
+         | RELEASE_SYM        { $$=1; }
+         | NO_SYM RELEASE_SYM { $$=0; }
+ ;
+@@ -13102,7 +13037,6 @@ union_opt:
+ 
+ union_order_or_limit:
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             DBUG_ASSERT(lex->current_select->linkage != GLOBAL_OPTIONS_TYPE);
+             SELECT_LEX *sel= lex->current_select;
+@@ -13118,7 +13052,6 @@ union_order_or_limit:
+           }
+           order_or_limit
+           {
+-            THD *thd= YYTHD;
+             thd->lex->current_select->no_table_names_allowed= 0;
+             thd->where= "";
+           }
+@@ -13255,14 +13188,14 @@ no_definer:
+               from older master servers (i.e. to create non-suid trigger in this
+               case).
+             */
+-            YYTHD->lex->definer= 0;
++            thd->lex->definer= 0;
+           }
+         ;
+ 
+ definer:
+           DEFINER_SYM EQ user
+           {
+-            YYTHD->lex->definer= get_current_user(YYTHD, $3);
++            thd->lex->definer= get_current_user(thd, $3);
+           }
+         ;
+ 
+@@ -13307,7 +13240,6 @@ view_suid:
+ view_tail:
+           view_suid VIEW_SYM table_ident
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             lex->sql_command= SQLCOM_CREATE_VIEW;
+             /* first table in list is target VIEW name */
+@@ -13347,7 +13279,6 @@ view_select:
+           }
+           view_select_aux view_check_option
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= Lex;
+             uint len= YYLIP->get_cpp_ptr() - lex->create_view_select.str;
+             void *create_view_select= thd->memdup(lex->create_view_select.str, len);
+@@ -13403,7 +13334,6 @@ trigger_tail:
+           EACH_SYM
+           ROW_SYM
+           { /* $15 */
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             Lex_input_stream *lip= YYLIP;
+             sp_head *sp;
+@@ -13437,8 +13367,8 @@ trigger_tail:
+             sp_head *sp= lex->sphead;
+ 
+             lex->sql_command= SQLCOM_CREATE_TRIGGER;
+-            sp->set_stmt_end(YYTHD);
+-            sp->restore_thd_mem_root(YYTHD);
++            sp->set_stmt_end(thd);
++            sp->restore_thd_mem_root(thd);
+ 
+             if (sp->is_not_allowed_in_function("trigger"))
+               MYSQL_YYABORT;
+@@ -13448,7 +13378,7 @@ trigger_tail:
+               sp_proc_stmt alternatives are not saving/restoring LEX, so
+               lex->query_tables can be wiped out.
+             */
+-            if (!lex->select_lex.add_table_to_list(YYTHD, $9,
++            if (!lex->select_lex.add_table_to_list(thd, $9,
+                                                    (LEX_STRING*) 0,
+                                                    TL_OPTION_UPDATING,
+                                                    TL_IGNORE))
+@@ -13466,7 +13396,6 @@ udf_tail:
+           AGGREGATE_SYM remember_name FUNCTION_SYM ident
+           RETURNS_SYM udf_type SONAME_SYM TEXT_STRING_sys
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             if (is_native_function(thd, & $4))
+             {
+@@ -13484,7 +13413,6 @@ udf_tail:
+         | remember_name FUNCTION_SYM ident
+           RETURNS_SYM udf_type SONAME_SYM TEXT_STRING_sys
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             if (is_native_function(thd, & $3))
+             {
+@@ -13507,7 +13435,6 @@ sf_tail:
+           sp_name /* $3 */
+           '(' /* $4 */
+           { /* $5 */
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             Lex_input_stream *lip= YYLIP;
+             sp_head *sp;
+@@ -13565,7 +13492,7 @@ sf_tail:
+               MYSQL_YYABORT;
+             }
+ 
+-            if (sp->fill_field_definition(YYTHD, lex,
++            if (sp->fill_field_definition(thd, lex,
+                                           (enum enum_field_types) $11,
+                                           &sp->m_return_field_def))
+               MYSQL_YYABORT;
+@@ -13574,7 +13501,6 @@ sf_tail:
+           }
+           sp_c_chistics /* $13 */
+           { /* $14 */
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             Lex_input_stream *lip= YYLIP;
+ 
+@@ -13583,7 +13509,6 @@ sf_tail:
+           }
+           sp_proc_stmt /* $15 */
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+             sp_head *sp= lex->sphead;
+ 
+@@ -13654,10 +13579,10 @@ sp_tail:
+             sp= new sp_head();
+             if (sp == NULL)
+               MYSQL_YYABORT;
+-            sp->reset_thd_mem_root(YYTHD);
++            sp->reset_thd_mem_root(thd);
+             sp->init(lex);
+             sp->m_type= TYPE_ENUM_PROCEDURE;
+-            sp->init_sp_name(YYTHD, $3);
++            sp->init_sp_name(thd, $3);
+ 
+             lex->sphead= sp;
+           }
+@@ -13672,7 +13597,6 @@ sp_tail:
+           sp_pdparam_list
+           ')'
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+ 
+             lex->sphead->m_param_end= YYLIP->get_cpp_tok_start();
+@@ -13680,7 +13604,6 @@ sp_tail:
+           }
+           sp_c_chistics
+           {
+-            THD *thd= YYTHD;
+             LEX *lex= thd->lex;
+ 
+             lex->sphead->m_chistics= &lex->sp_chistics;
+@@ -13691,9 +13614,9 @@ sp_tail:
+             LEX *lex= Lex;
+             sp_head *sp= lex->sphead;
+ 
+-            sp->set_stmt_end(YYTHD);
++            sp->set_stmt_end(thd);
+             lex->sql_command= SQLCOM_CREATE_PROCEDURE;
+-            sp->restore_thd_mem_root(YYTHD);
++            sp->restore_thd_mem_root(thd);
+           }
+         ;
+ 
+@@ -13730,21 +13653,21 @@ xid:
+           text_string
+           {
+             MYSQL_YYABORT_UNLESS($1->length() <= MAXGTRIDSIZE);
+-            if (!(Lex->xid=(XID *)YYTHD->alloc(sizeof(XID))))
++            if (!(Lex->xid=(XID *)thd->alloc(sizeof(XID))))
+               MYSQL_YYABORT;
+             Lex->xid->set(1L, $1->ptr(), $1->length(), 0, 0);
+           }
+           | text_string ',' text_string
+           {
+             MYSQL_YYABORT_UNLESS($1->length() <= MAXGTRIDSIZE && $3->length() <= MAXBQUALSIZE);
+-            if (!(Lex->xid=(XID *)YYTHD->alloc(sizeof(XID))))
++            if (!(Lex->xid=(XID *)thd->alloc(sizeof(XID))))
+               MYSQL_YYABORT;
+             Lex->xid->set(1L, $1->ptr(), $1->length(), $3->ptr(), $3->length());
+           }
+           | text_string ',' text_string ',' ulong_num
+           {
+             MYSQL_YYABORT_UNLESS($1->length() <= MAXGTRIDSIZE && $3->length() <= MAXBQUALSIZE);
+-            if (!(Lex->xid=(XID *)YYTHD->alloc(sizeof(XID))))
++            if (!(Lex->xid=(XID *)thd->alloc(sizeof(XID))))
+               MYSQL_YYABORT;
+             Lex->xid->set($5, $1->ptr(), $1->length(), $3->ptr(), $3->length());
+           }
