@@ -9,6 +9,10 @@ include $(INCLUDE_DIR)/image.mk
 
 KERNEL_LOADADDR := 0x20008000
 
+define Build/at91-install-zImage
+    $(CP) $(KDIR)/zImage $@
+endef
+
 ifeq ($(SUBTARGET),legacy)
 include ./legacy.mk
 endif
@@ -40,7 +44,7 @@ endef
 
 define Device/evaluation-zImage
   IMAGES += zImage
-  IMAGE/zImage := install-zImage
+  IMAGE/zImage := at91-install-zImage
 endef
 
 define Device/evaluation-dtb

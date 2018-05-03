@@ -1,0 +1,181 @@
+From c47beb7e3f8575dfd7d58240a72c4e4e66ce5449 Mon Sep 17 00:00:00 2001
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Fri, 14 Apr 2017 15:26:32 +0100
+Subject: sfp: move module eeprom ethtool access into netdev core ethtool
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+ drivers/net/ethernet/marvell/mvneta.c | 18 ------------------
+ drivers/net/phy/phylink.c             | 28 ----------------------------
+ drivers/net/phy/sfp-bus.c             |  6 ++----
+ include/linux/netdevice.h             |  2 ++
+ include/linux/phylink.h               |  3 ---
+ net/core/ethtool.c                    |  7 +++++++
+ 6 files changed, 11 insertions(+), 53 deletions(-)
+
+--- a/drivers/net/ethernet/marvell/mvneta.c
++++ b/drivers/net/ethernet/marvell/mvneta.c
+@@ -4045,22 +4045,6 @@ static int mvneta_ethtool_set_wol(struct
+ 	return ret;
+ }
+ 
+-static int mvneta_ethtool_get_module_info(struct net_device *dev,
+-					  struct ethtool_modinfo *modinfo)
+-{
+-	struct mvneta_port *pp = netdev_priv(dev);
+-
+-	return phylink_ethtool_get_module_info(pp->phylink, modinfo);
+-}
+-
+-static int mvneta_ethtool_get_module_eeprom(struct net_device *dev,
+-					    struct ethtool_eeprom *ee, u8 *buf)
+-{
+-	struct mvneta_port *pp = netdev_priv(dev);
+-
+-	return phylink_ethtool_get_module_eeprom(pp->phylink, ee, buf);
+-}
+-
+ static int mvneta_ethtool_get_eee(struct net_device *dev,
+ 				  struct ethtool_eee *eee)
+ {
+@@ -4145,8 +4129,6 @@ static const struct ethtool_ops mvneta_e
+ 	.set_link_ksettings = mvneta_ethtool_set_link_ksettings,
+ 	.get_wol        = mvneta_ethtool_get_wol,
+ 	.set_wol        = mvneta_ethtool_set_wol,
+-	.get_module_info = mvneta_ethtool_get_module_info,
+-	.get_module_eeprom = mvneta_ethtool_get_module_eeprom,
+ 	.get_eee	= mvneta_ethtool_get_eee,
+ 	.set_eee	= mvneta_ethtool_set_eee,
+ };
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -1040,34 +1040,6 @@ int phylink_ethtool_set_pauseparam(struc
+ }
+ EXPORT_SYMBOL_GPL(phylink_ethtool_set_pauseparam);
+ 
+-int phylink_ethtool_get_module_info(struct phylink *pl,
+-				    struct ethtool_modinfo *modinfo)
+-{
+-	int ret = -EOPNOTSUPP;
+-
+-	WARN_ON(!lockdep_rtnl_is_held());
+-
+-	if (pl->sfp_bus)
+-		ret = sfp_get_module_info(pl->sfp_bus, modinfo);
+-
+-	return ret;
+-}
+-EXPORT_SYMBOL_GPL(phylink_ethtool_get_module_info);
+-
+-int phylink_ethtool_get_module_eeprom(struct phylink *pl,
+-				      struct ethtool_eeprom *ee, u8 *buf)
+-{
+-	int ret = -EOPNOTSUPP;
+-
+-	WARN_ON(!lockdep_rtnl_is_held());
+-
+-	if (pl->sfp_bus)
+-		ret = sfp_get_module_eeprom(pl->sfp_bus, ee, buf);
+-
+-	return ret;
+-}
+-EXPORT_SYMBOL_GPL(phylink_ethtool_get_module_eeprom);
+-
+ int phylink_init_eee(struct phylink *pl, bool clk_stop_enable)
+ {
+ 	int ret = -EPROTONOSUPPORT;
+--- a/drivers/net/phy/sfp-bus.c
++++ b/drivers/net/phy/sfp-bus.c
+@@ -278,6 +278,7 @@ static int sfp_register_bus(struct sfp_b
+ 	}
+ 	if (bus->started)
+ 		bus->socket_ops->start(bus->sfp);
++	bus->netdev->sfp_bus = bus;
+ 	bus->registered = true;
+ 	return 0;
+ }
+@@ -292,14 +293,13 @@ static void sfp_unregister_bus(struct sf
+ 		if (bus->phydev && ops && ops->disconnect_phy)
+ 			ops->disconnect_phy(bus->upstream);
+ 	}
++	bus->netdev->sfp_bus = NULL;
+ 	bus->registered = false;
+ }
+ 
+ 
+ int sfp_get_module_info(struct sfp_bus *bus, struct ethtool_modinfo *modinfo)
+ {
+-	if (!bus->registered)
+-		return -ENOIOCTLCMD;
+ 	return bus->socket_ops->module_info(bus->sfp, modinfo);
+ }
+ EXPORT_SYMBOL_GPL(sfp_get_module_info);
+@@ -307,8 +307,6 @@ EXPORT_SYMBOL_GPL(sfp_get_module_info);
+ int sfp_get_module_eeprom(struct sfp_bus *bus, struct ethtool_eeprom *ee,
+ 	u8 *data)
+ {
+-	if (!bus->registered)
+-		return -ENOIOCTLCMD;
+ 	return bus->socket_ops->module_eeprom(bus->sfp, ee, data);
+ }
+ EXPORT_SYMBOL_GPL(sfp_get_module_eeprom);
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -57,6 +57,7 @@ struct device;
+ struct phy_device;
+ struct dsa_switch_tree;
+ 
++struct sfp_bus;
+ /* 802.11 specific */
+ struct wireless_dev;
+ /* 802.15.4 specific */
+@@ -1932,6 +1933,7 @@ struct net_device {
+ 	struct netprio_map __rcu *priomap;
+ #endif
+ 	struct phy_device	*phydev;
++	struct sfp_bus		*sfp_bus;
+ 	struct lock_class_key	*qdisc_tx_busylock;
+ 	struct lock_class_key	*qdisc_running_key;
+ 	bool			proto_down;
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -125,9 +125,6 @@ void phylink_ethtool_get_pauseparam(stru
+ 				    struct ethtool_pauseparam *);
+ int phylink_ethtool_set_pauseparam(struct phylink *,
+ 				   struct ethtool_pauseparam *);
+-int phylink_ethtool_get_module_info(struct phylink *, struct ethtool_modinfo *);
+-int phylink_ethtool_get_module_eeprom(struct phylink *,
+-				      struct ethtool_eeprom *, u8 *);
+ int phylink_init_eee(struct phylink *, bool);
+ int phylink_get_eee_err(struct phylink *);
+ int phylink_ethtool_get_eee(struct phylink *, struct ethtool_eee *);
+--- a/net/core/ethtool.c
++++ b/net/core/ethtool.c
+@@ -22,6 +22,7 @@
+ #include <linux/bitops.h>
+ #include <linux/uaccess.h>
+ #include <linux/vmalloc.h>
++#include <linux/sfp.h>
+ #include <linux/slab.h>
+ #include <linux/rtnetlink.h>
+ #include <linux/sched/signal.h>
+@@ -2190,6 +2191,9 @@ static int __ethtool_get_module_info(str
+ 	const struct ethtool_ops *ops = dev->ethtool_ops;
+ 	struct phy_device *phydev = dev->phydev;
+ 
++	if (dev->sfp_bus)
++		return sfp_get_module_info(dev->sfp_bus, modinfo);
++
+ 	if (phydev && phydev->drv && phydev->drv->module_info)
+ 		return phydev->drv->module_info(phydev, modinfo);
+ 
+@@ -2224,6 +2228,9 @@ static int __ethtool_get_module_eeprom(s
+ 	const struct ethtool_ops *ops = dev->ethtool_ops;
+ 	struct phy_device *phydev = dev->phydev;
+ 
++	if (dev->sfp_bus)
++		return sfp_get_module_eeprom(dev->sfp_bus, ee, data);
++
+ 	if (phydev && phydev->drv && phydev->drv->module_eeprom)
+ 		return phydev->drv->module_eeprom(phydev, ee, data);
+ 

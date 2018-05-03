@@ -16,24 +16,19 @@ define Build/at91-sdcard
         $(BIN_DIR)/u-boot-$(dts:at91-%=%)_mmc/u-boot.bin \
             ::u-boot.bin; \
      $(CP) $(BIN_DIR)/at91bootstrap-$(dts:at91-%=%)sd_uboot*/*.bin \
-         $(BIN_DIR)/BOOT.bin; \
-     mcopy -i $@.boot $(BIN_DIR)/BOOT.bin ::BOOT.bin;)
+         $@.BOOT.bin; \
+     mcopy -i $@.boot $@.BOOT.bin ::BOOT.bin;)
 
   ./gen_at91_sdcard_img.sh \
-      $(dir $@)$(IMG_PREFIX)-$(DEVICE_NAME)-sdcard.img \
+      $@.img \
       $@.boot \
       $(KDIR)/root.ext4 \
       $(AT91_SD_BOOT_PARTSIZE) \
       $(CONFIG_TARGET_ROOTFS_PARTSIZE)
 
-  gzip -nc9 $(dir $@)$(IMG_PREFIX)-$(DEVICE_NAME)-sdcard.img \
-         > $(dir $@)$(IMG_PREFIX)-$(DEVICE_NAME)-sdcard.img.gz
+  gzip -nc9 $@.img > $@
 
-  $(CP) $(dir $@)$(IMG_PREFIX)-$(DEVICE_NAME)-sdcard.img.gz \
-        $(BIN_DIR)/
-
-  rm -f $(BIN_DIR)/BOOT.bin
-  rm -f $@.boot
+  rm -f $@.img $@.boot $@.BOOT.bin
 endef
 
 define Device/evaluation-sdimage

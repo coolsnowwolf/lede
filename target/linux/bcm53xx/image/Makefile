@@ -59,9 +59,7 @@ define Build/trx
 endef
 
 define Build/trx-serial
-	$(STAGING_DIR_HOST)/bin/trx \
-		-o $@.new \
-		-m 33554432 \
+	$(STAGING_DIR_HOST)/bin/otrx create $@.new \
 		-f $(IMAGE_KERNEL) -a 1024 \
 		-f $@ -a 0x10000 -A $(KDIR)/fs_mark
 	mv $@.new $@
@@ -72,9 +70,7 @@ define Build/trx-nand
 	#	  if it grows up between releases
 	# root: UBI with one extra block containing UBI mark to trigger erasing
 	#	rest of partition
-	$(STAGING_DIR_HOST)/bin/trx \
-		-o $@.new \
-		-m 33554432 \
+	$(STAGING_DIR_HOST)/bin/otrx create $@.new \
 		-f $(IMAGE_KERNEL) -a 0x20000 -b 0x400000 \
 		-f $@ \
 		-A $(KDIR)/ubi_mark -a 0x20000
@@ -248,13 +244,6 @@ define Device/linksys-ea9500
 endef
 # TARGET_DEVICES += linksys-ea9500
 
-define Device/phicomm-k3
-  DEVICE_TITLE := PHICOMM K3
-  DEVICE_PACKAGES := $(BRCMFMAC_4366C0) $(USB3_PACKAGES) + k3wifi + k3screenctrl
-  IMAGES := trx
-endef
-TARGET_DEVICES += phicomm-k3
-
 define Device/netgear
   IMAGES := chk
   IMAGE/chk := append-ubi | trx-nand | netgear-chk
@@ -314,8 +303,17 @@ define Device/smartrg-sr400ac
   DEVICE_PACKAGES := $(BRCMFMAC_43602A1) $(USB3_PACKAGES)
   IMAGES := trx
   IMAGE/trx := append-rootfs | trx-serial
+  KERNEL_INITRAMFS_SUFFIX := .bin
+  KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma-d16
 endef
-# TARGET_DEVICES += smartrg-sr400ac
+TARGET_DEVICES += smartrg-sr400ac
+
+define Device/phicomm-k3
+  DEVICE_TITLE := PHICOMM K3
+  DEVICE_PACKAGES := $(BRCMFMAC_4366C0) $(USB3_PACKAGES) k3wifi k3screenctrl
+  IMAGES := trx
+endef
+TARGET_DEVICES += phicomm-k3
 
 define Device/tenda-ac9
   DEVICE_TITLE := Tenda AC9
@@ -323,7 +321,7 @@ define Device/tenda-ac9
   IMAGES := trx
   IMAGE/trx := append-rootfs | trx-serial
 endef
-# TARGET_DEVICES += tenda-ac9
+TARGET_DEVICES += tenda-ac9
 
 define Device/tplink-archer-c5-v2
   DEVICE_TITLE := TP-LINK Archer C5 V2
@@ -332,7 +330,7 @@ define Device/tplink-archer-c5-v2
   IMAGE/bin := append-rootfs | bcm53xx-tplink-safeloader
   TPLINK_BOARD := ARCHER-C5-V2
 endef
-# TARGET_DEVICES += tplink-archer-c5-v2
+#TARGET_DEVICES += tplink-archer-c5-v2
 
 define Device/tplink-archer-c9-v1
   DEVICE_TITLE := TP-LINK Archer C9 V1
@@ -341,6 +339,8 @@ define Device/tplink-archer-c9-v1
   IMAGE/bin := append-rootfs | bcm53xx-tplink-safeloader
   TPLINK_BOARD := ARCHERC9
 endef
-# TARGET_DEVICES += tplink-archer-c9-v1
+#TARGET_DEVICES += tplink-archer-c9-v1
+
+
 
 $(eval $(call BuildImage))

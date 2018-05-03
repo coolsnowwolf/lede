@@ -111,6 +111,26 @@ define Build/wrg-header
 	mv $@.new $@
 endef
 
+# combine kernel and rootfs into one image
+# mkdlinkfw <type> <optional extra arguments to mkdlinkfw binary>
+
+define Build/mkdlinkfw
+	-$(STAGING_DIR_HOST)/bin/mkdlinkfw \
+		-k $(IMAGE_KERNEL) \
+		-r $(IMAGE_ROOTFS) \
+		-o $@ \
+		-s $(DLINK_FIRMWARE_SIZE)
+endef
+
+define Build/mkdlinkfw-factory
+	-$(STAGING_DIR_HOST)/bin/mkdlinkfw \
+		-m $(DLINK_ROM_ID) -f $(DLINK_FAMILY_MEMBER) \
+		-F $@ \
+		-o $@.new \
+		-s $(DLINK_FIRMWARE_SIZE)
+	mv $@.new $@
+endef
+
 #
 # The real magic happens inside these templates
 #
@@ -118,7 +138,7 @@ endef
 # $(2), filename of image data
 # $(3), output filename
 define MkImage
-	$(eval imagename=$(if $(4),$(4),MIPS OpenWrt Linux-$(LINUX_VERSION)))
+	$(eval imagename=$(if $(4),$(4),MIPS $(VERSION_DIST) Linux-$(LINUX_VERSION)))
 	-mkimage -A mips -O linux -T kernel -C $(1) -a $(loadaddr-y) -e $(loadaddr-y) \
 		-n "$(imagename)" \
 		-d $(2) $(3)

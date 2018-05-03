@@ -60,7 +60,8 @@ CONFIGURE_ARGS += \
 	--disable-nls \
 	--disable-device-mapper \
 	--disable-libzfs \
-	--disable-grub-mkfont
+	--disable-grub-mkfont \
+	--with-platform=none
 
 HOST_CONFIGURE_VARS += \
 	grub_build_mkfont_excuse="don't want fonts"

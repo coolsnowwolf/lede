@@ -162,5 +162,4 @@ static void __init gl_ar300m_setup(void)
 	ath79_register_pci();
 }
 
-MIPS_MACHINE(ATH79_MACH_GL_AR300M, "GL-AR300M", "GL-AR300M",
-		 gl_ar300m_setup);
+MIPS_MACHINE(ATH79_MACH_GL_AR300M, "GL-AR300M", "GL.iNet GL-AR300M", gl_ar300m_setup);

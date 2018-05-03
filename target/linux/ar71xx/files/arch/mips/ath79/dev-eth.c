@@ -900,13 +900,6 @@ void __init ath79_register_eth(unsigned int id)
 		}
 		pdata->has_gbit = 1;
 		pdata->is_ar724x = 1;
-
-		if (!pdata->fifo_cfg1)
-			pdata->fifo_cfg1 = 0x0010ffff;
-		if (!pdata->fifo_cfg2)
-			pdata->fifo_cfg2 = 0x015500aa;
-		if (!pdata->fifo_cfg3)
-			pdata->fifo_cfg3 = 0x01f00140;
 		break;
 
 	case ATH79_SOC_AR7241:
@@ -936,13 +929,6 @@ void __init ath79_register_eth(unsigned int id)
 		pdata->is_ar724x = 1;
 		if (ath79_soc == ATH79_SOC_AR7240)
 			pdata->is_ar7240 = 1;
-
-		if (!pdata->fifo_cfg1)
-			pdata->fifo_cfg1 = 0x0010ffff;
-		if (!pdata->fifo_cfg2)
-			pdata->fifo_cfg2 = 0x015500aa;
-		if (!pdata->fifo_cfg3)
-			pdata->fifo_cfg3 = 0x01f00140;
 		break;
 
 	case ATH79_SOC_AR9132:
@@ -979,13 +965,6 @@ void __init ath79_register_eth(unsigned int id)
 		}
 
 		pdata->is_ar724x = 1;
-
-		if (!pdata->fifo_cfg1)
-			pdata->fifo_cfg1 = 0x0010ffff;
-		if (!pdata->fifo_cfg2)
-			pdata->fifo_cfg2 = 0x015500aa;
-		if (!pdata->fifo_cfg3)
-			pdata->fifo_cfg3 = 0x01f00140;
 		break;
 
 	case ATH79_SOC_AR9341:
@@ -1016,13 +995,6 @@ void __init ath79_register_eth(unsigned int id)
 
 		pdata->max_frame_len = SZ_16K - 1;
 		pdata->desc_pktlen_mask = SZ_16K - 1;
-
-		if (!pdata->fifo_cfg1)
-			pdata->fifo_cfg1 = 0x0010ffff;
-		if (!pdata->fifo_cfg2)
-			pdata->fifo_cfg2 = 0x015500aa;
-		if (!pdata->fifo_cfg3)
-			pdata->fifo_cfg3 = 0x01f00140;
 		break;
 
 	case ATH79_SOC_TP9343:
@@ -1048,13 +1020,6 @@ void __init ath79_register_eth(unsigned int id)
 
 		pdata->has_gbit = 1;
 		pdata->is_ar724x = 1;
-
-		if (!pdata->fifo_cfg1)
-			pdata->fifo_cfg1 = 0x0010ffff;
-		if (!pdata->fifo_cfg2)
-			pdata->fifo_cfg2 = 0x015500aa;
-		if (!pdata->fifo_cfg3)
-			pdata->fifo_cfg3 = 0x01f00140;
 		break;
 
 	case ATH79_SOC_QCA9556:
@@ -1082,13 +1047,6 @@ void __init ath79_register_eth(unsigned int id)
 		 */
 		pdata->max_frame_len = SZ_4K - 1;
 		pdata->desc_pktlen_mask = SZ_16K - 1;
-
-		if (!pdata->fifo_cfg1)
-			pdata->fifo_cfg1 = 0x0010ffff;
-		if (!pdata->fifo_cfg2)
-			pdata->fifo_cfg2 = 0x015500aa;
-		if (!pdata->fifo_cfg3)
-			pdata->fifo_cfg3 = 0x01f00140;
 		break;
 
 	case ATH79_SOC_QCA956X:
@@ -1121,13 +1079,6 @@ void __init ath79_register_eth(unsigned int id)
 
 		pdata->has_gbit = 1;
 		pdata->is_ar724x = 1;
-
-		if (!pdata->fifo_cfg1)
-			pdata->fifo_cfg1 = 0x0010ffff;
-		if (!pdata->fifo_cfg2)
-			pdata->fifo_cfg2 = 0x015500aa;
-		if (!pdata->fifo_cfg3)
-			pdata->fifo_cfg3 = 0x01f00140;
 		break;
 
 	default:

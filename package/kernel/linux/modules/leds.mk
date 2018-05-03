@@ -32,7 +32,7 @@ define KernelPackage/ledtrig-heartbeat
   AUTOLOAD:=$(call AutoLoad,50,ledtrig-heartbeat)
 endef
 
-define KernelPackage/ledtrig-gpio/description
+define KernelPackage/ledtrig-heartbeat/description
  Kernel module that allows LEDs to blink like heart beat
 endef
 

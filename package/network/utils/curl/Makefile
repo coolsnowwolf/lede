@@ -8,15 +8,15 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=curl
-PKG_VERSION:=7.57.0
-PKG_RELEASE:=1
+PKG_VERSION:=7.59.0
+PKG_RELEASE:=2
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://dl.uxnr.de/mirror/curl/ \
 	http://curl.mirror.anstey.ca/ \
 	http://curl.askapache.com/download/ \
 	https://curl.haxx.se/download/
-PKG_HASH:=c92fe31a348eae079121b73884065e600c533493eb50f1f6cee9c48a3f454826
+PKG_HASH:=e44eaabdf916407585bf5c7939ff1161e6242b6b015d3f2f5b758b2a330461fc
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=COPYING
@@ -34,7 +34,7 @@ PKG_CONFIG_DEPENDS:= \
   CONFIG_LIBCURL_MBEDTLS \
   CONFIG_LIBCURL_NOSSL \
   \
-  CONFIG_LIBCURL_LIBIDN \
+  CONFIG_LIBCURL_LIBIDN2 \
   CONFIG_LIBCURL_SSH2 \
   CONFIG_LIBCURL_ZLIB \
   \
@@ -87,7 +87,7 @@ define Package/libcurl
   SECTION:=libs
   CATEGORY:=Libraries
   DEPENDS:= +LIBCURL_WOLFSSL:libwolfssl +LIBCURL_OPENSSL:libopenssl +LIBCURL_GNUTLS:libgnutls +LIBCURL_MBEDTLS:libmbedtls
-  DEPENDS += +LIBCURL_ZLIB:zlib +LIBCURL_THREADED_RESOLVER:libpthread +LIBCURL_LDAP:libopenldap +LIBCURL_LIBIDN:libidn
+  DEPENDS += +LIBCURL_ZLIB:zlib +LIBCURL_THREADED_RESOLVER:libpthread +LIBCURL_LDAP:libopenldap +LIBCURL_LIBIDN2:libidn2
   DEPENDS += +LIBCURL_SSH2:libssh2 +LIBCURL_NGHTTP2:libnghttp2
   TITLE:=A client-side URL transfer library
   MENU:=1
@@ -111,6 +111,7 @@ CONFIGURE_ARGS += \
 	--without-nss \
 	--without-libmetalink \
 	--without-librtmp \
+	--without-libidn \
 	\
 	$(call autoconf_bool,CONFIG_IPV6,ipv6) \
 	\
@@ -119,7 +120,7 @@ CONFIGURE_ARGS += \
 	$(if $(CONFIG_LIBCURL_OPENSSL),--with-ssl="$(STAGING_DIR)/usr" --without-ca-bundle --with-ca-path=/etc/ssl/certs,--without-ssl) \
 	$(if $(CONFIG_LIBCURL_MBEDTLS),--with-mbedtls="$(STAGING_DIR)/usr" --without-ca-path --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt,--without-mbedtls) \
 	\
-	$(if $(CONFIG_LIBCURL_LIBIDN),--with-libidn="$(STAGING_DIR)/usr",--without-libidn) \
+	$(if $(CONFIG_LIBCURL_LIBIDN2),--with-libidn2="$(STAGING_DIR)/usr",--without-libidn2) \
 	$(if $(CONFIG_LIBCURL_SSH2),--with-libssh2="$(STAGING_DIR)/usr",--without-libssh2) \
 	$(if $(CONFIG_LIBCURL_ZLIB),--with-zlib="$(STAGING_DIR)/usr",--without-zlib) \
 	$(if $(CONFIG_LIBCURL_NGHTTP2),--with-nghttp2="$(STAGING_DIR)/usr",--without-nghttp2) \

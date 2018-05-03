@@ -23,18 +23,14 @@ o:depends("logging", "1")
 
 o = s:option(ListValue, "network", translate("Upgrade interface"))
 uci:foreach("network", "interface", function(section)
-	if section[".name"] ~= "loopback" and section[".name"] ~= "lan" then
+	if section[".name"] ~= "loopback" then
 		o:value(section[".name"])
 	end
 end)
 
 o = s:option(Value, "account", translate("XLNetAcc account"))
 
-o = s:option(Value, "password", translate("XLNetAcc password"), translate("Does not store the plaintext password, automatically emptied after start."))
+o = s:option(Value, "password", translate("XLNetAcc password"))
 o.password = true
-o.template = "xlnetacc/rsa"
-
-o = s:option(Value, "encrypt", translate("Encrypted password"), translate("Auto-generate in accordance with the plaintext password, do not modify it!"))
---o.readonly = true
 
 return m

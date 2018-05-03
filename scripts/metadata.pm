@@ -283,8 +283,10 @@ sub parse_package_metadata($) {
 
 			for my $ugspec (@ugspecs) {
 				my @ugspec = split /:/, $ugspec, 2;
-				parse_package_metadata_usergroup($src->{makefile}, "user", \%usernames, \%userids, $ugspec[0]) or return 0;
-				if (@ugspec > 1) {
+				if ($ugspec[0]) {
+					parse_package_metadata_usergroup($src->{makefile}, "user", \%usernames, \%userids, $ugspec[0]) or return 0;
+				}
+				if ($ugspec[1]) {
 					parse_package_metadata_usergroup($src->{makefile}, "group", \%groupnames, \%groupids, $ugspec[1]) or return 0;
 				}
 			}

@@ -175,8 +175,8 @@ static ssize_t read_file_ring(struct file *file, char __user *user_buf,
 		return -ENOMEM;
 
 	len += snprintf(buf + len, buflen - len,
-			"Idx ... %-8s %-8s %-8s %-8s . %-10s\n",
-			"desc", "next", "data", "ctrl", "timestamp");
+			"Idx ... %-8s %-8s %-8s %-8s .\n",
+			"desc", "next", "data", "ctrl");
 
 	spin_lock_irqsave(&ag->lock, flags);
 
@@ -184,12 +184,11 @@ static ssize_t read_file_ring(struct file *file, char __user *user_buf,
 	dirty = (ring->dirty & ring_mask);
 	desc_hw = ag71xx_rr(ag, desc_reg);
 	for (i = 0; i < ring_size; i++) {
-		struct ag71xx_buf *ab = &ring->buf[i];
 		struct ag71xx_desc *desc = ag71xx_ring_desc(ring, i);
 		u32 desc_dma = ((u32) ring->descs_dma) + i * AG71XX_DESC_SIZE;
 
 		len += snprintf(buf + len, buflen - len,
-			"%3d %c%c%c %08x %08x %08x %08x %c %10lu\n",
+			"%3d %c%c%c %08x %08x %08x %08x %c\n",
 			i,
 			(i == curr) ? 'C' : ' ',
 			(i == dirty) ? 'D' : ' ',
@@ -198,8 +197,7 @@ static ssize_t read_file_ring(struct file *file, char __user *user_buf,
 			desc->next,
 			desc->data,
 			desc->ctrl,
-			(desc->ctrl & DESC_EMPTY) ? 'E' : '*',
-			ab->timestamp);
+			(desc->ctrl & DESC_EMPTY) ? 'E' : '*');
 	}
 
 	spin_unlock_irqrestore(&ag->lock, flags);

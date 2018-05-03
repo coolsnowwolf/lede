@@ -57,6 +57,14 @@ define Device/dir-860l-b1
 endef
 TARGET_DEVICES += dir-860l-b1
 
+define Device/mediatek_ap-mt7621a-v60
+  DTS := AP-MT7621A-V60
+  IMAGE_SIZE := $(ralink_default_fw_size_8M)
+  DEVICE_TITLE := Mediatek AP-MT7621A-V60 EVB
+  DEVICE_PACKAGES := kmod-usb3 kmod-sdhci-mt7620 kmod-sound-mt7620
+endef
+TARGET_DEVICES += mediatek_ap-mt7621a-v60
+
 define Device/ew1200
   DTS := EW1200
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
@@ -82,6 +90,14 @@ define Device/gb-pc1
   IMAGE_SIZE := $(ralink_default_fw_size_32M)
 endef
 TARGET_DEVICES += gb-pc1
+
+define Device/gnubee_gb-pc2
+  DTS := GB-PC2
+  DEVICE_TITLE := GnuBee Personal Cloud Two
+  DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-usb3 kmod-sdhci-mt7620
+  IMAGE_SIZE := $(ralink_default_fw_size_32M)
+endef
+TARGET_DEVICES += gnubee_gb-pc2
 
 define Device/hc5962
   DTS := HC5962
@@ -311,6 +327,15 @@ define Device/wndr3700v5
   DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 wpad-mini
 endef
 TARGET_DEVICES += wndr3700v5
+
+define Device/youhua_wr1200js
+  DTS := WR1200JS
+  IMAGE_SIZE := 16064k
+  DEVICE_TITLE := YouHua WR1200JS
+  DEVICE_PACKAGES := \
+	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += youhua_wr1200js
 
 define Device/wsr-1166
   DTS := WSR-1166

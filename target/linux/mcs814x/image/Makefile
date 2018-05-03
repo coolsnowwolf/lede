@@ -20,7 +20,7 @@ UIMAGE:=$(BIN_DIR)/$(IMG_PREFIX)-uImage
 
 define Image/Build/MkuImage
 	mkimage -A arm -O linux -T kernel -a $(LOADADDR) -C none -e $(LOADADDR) \
-	-n 'ARM OpenWrt Linux-$(LINUX_VERSION)' -d $(1) $(2);
+	-n 'ARM $(VERSION_DIST) Linux-$(LINUX_VERSION)' -d $(1) $(2);
 endef
 
 define Image/Build/DTB

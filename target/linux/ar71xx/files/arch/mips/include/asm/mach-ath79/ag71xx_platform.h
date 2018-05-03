@@ -45,10 +45,6 @@ struct ag71xx_platform_data {
 	void		(*set_speed)(int speed);
 	void		(*update_pll)(u32 pll_10, u32 pll_100, u32 pll_1000);
 
-	u32		fifo_cfg1;
-	u32		fifo_cfg2;
-	u32		fifo_cfg3;
-
 	unsigned int	max_frame_len;
 	unsigned int	desc_pktlen_mask;
 };

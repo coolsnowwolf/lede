@@ -10,7 +10,7 @@ BOARD:=layerscape
 BOARDNAME:=NXP Layerscape
 DEVICE_TYPE:=developerboard
 KERNEL_PATCHVER:=4.9
-FEATURES:=squashfs nand usb pcie gpio fpu
+FEATURES:=squashfs nand usb pcie gpio fpu ubifs
 SUBTARGETS:=armv8_64b armv8_32b
 MAINTAINER:=Yangbo Lu <yangbo.lu@nxp.com>
 
