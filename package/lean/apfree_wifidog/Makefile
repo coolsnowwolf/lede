@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=apfree_wifidog
-PKG_VERSION:=2.06.1395
+PKG_VERSION:=v2.10.1437
 PKG_RELEASE=1
 
 
@@ -10,8 +10,7 @@ PKG_MAINTAINER:=Dengfeng Liu<liudengfeng@kunteng.org>
 PKG_LICENSE_FILES:=COPYING
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/liudf0716/apfree_wifidog.git
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE_URL:=https://gitee.com/apfree/apfree_wifidog.git
 PKG_SOURCE_VERSION:=$(PKG_VERSION)
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-$(PKG_SOURCE_VERSION).tar.gz
 PKG_MIRROR_HASH:=dc1a052bd61c1224dda9548475c1feda9332c40fc2190ca6e4901d432379b51c
