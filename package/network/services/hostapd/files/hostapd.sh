@@ -229,7 +229,8 @@ hostapd_set_bss_options() {
 		wps_independent wps_device_type wps_device_name wps_manufacturer wps_pin \
 		macfilter ssid wmm uapsd hidden short_preamble rsn_preauth \
 		iapp_interface eapol_version dynamic_vlan ieee80211w nasid \
-		acct_server acct_secret acct_port acct_interval
+		acct_server acct_secret acct_port acct_interval \
+		bss_load_update_period chan_util_avg_period
 
 	set_default isolate 0
 	set_default maxassoc 0
@@ -243,7 +244,9 @@ hostapd_set_bss_options() {
 	set_default tdls_prohibit 0
 	set_default eapol_version 0
 	set_default acct_port 1813
-
+	set_default bss_load_update_period 60
+	set_default chan_util_avg_period 600
+	
 	append bss_conf "ctrl_interface=/var/run/hostapd"
 	if [ "$isolate" -gt 0 ]; then
 		append bss_conf "ap_isolate=$isolate" "$N"
@@ -255,6 +258,8 @@ hostapd_set_bss_options() {
 		append bss_conf "ap_max_inactivity=$max_inactivity" "$N"
 	fi
 
+	append bss_conf "bss_load_update_period=$bss_load_update_period" "$N"
+	append bss_conf "chan_util_avg_period=$chan_util_avg_period" "$N"
 	append bss_conf "disassoc_low_ack=$disassoc_low_ack" "$N"
 	append bss_conf "preamble=$short_preamble" "$N"
 	append bss_conf "wmm_enabled=$wmm" "$N"
@@ -669,7 +674,7 @@ wpa_supplicant_add_network() {
 
 	[[ "$_w_mode" = "adhoc" ]] && {
 		append network_data "mode=1" "$N$T"
-		[ -n "$channel" ] && wpa_supplicant_set_fixed_freq "$freq" "$htmode"
+		[ -n "$freq" ] && wpa_supplicant_set_fixed_freq "$freq" "$htmode"
 
 		scan_ssid="scan_ssid=0"
 
@@ -678,11 +683,11 @@ wpa_supplicant_add_network() {
 
 	[[ "$_w_mode" = "mesh" ]] && {
 		json_get_vars mesh_id mesh_fwding
-		ssid="${mesh_id}"
+		[ -n "$mesh_id" ] && ssid="${mesh_id}"
 
 		append network_data "mode=5" "$N$T"
 		[ -n "$mesh_fwding" ] && append network_data "mesh_fwding=${mesh_fwding}" "$N$T"
-		[ -n "$channel" ] && wpa_supplicant_set_fixed_freq "$freq" "$htmode"
+		[ -n "$freq" ] && wpa_supplicant_set_fixed_freq "$freq" "$htmode"
 		[ "$noscan" = "1" ] && append network_data "noscan=1" "$N$T"
 		append wpa_key_mgmt "SAE"
 		scan_ssid=""
