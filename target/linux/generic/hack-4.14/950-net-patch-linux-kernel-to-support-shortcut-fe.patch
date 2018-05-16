@@ -1,0 +1,112 @@
+Index: linux-4.14.18/include/linux/skbuff.h
+===================================================================
+--- linux-4.14.18.orig/include/linux/skbuff.h
++++ linux-4.14.18/include/linux/skbuff.h
+@@ -770,6 +770,9 @@ struct sk_buff {
+ #endif
+ 	__u8			ipvs_property:1;
+ 	__u8			inner_protocol_type:1;
++#ifdef CONFIG_SHORTCUT_FE
++	__u8			fast_forwarded:1;
++#endif
+ 	__u8			remcsum_offload:1;
+ #ifdef CONFIG_NET_SWITCHDEV
+ 	__u8			offload_fwd_mark:1;
+Index: linux-4.14.18/net/Kconfig
+===================================================================
+--- linux-4.14.18.orig/net/Kconfig
++++ linux-4.14.18/net/Kconfig
+@@ -453,3 +453,5 @@ config HAVE_CBPF_JIT
+ # Extended BPF JIT (eBPF)
+ config HAVE_EBPF_JIT
+ 	bool
++config SHORTCUT_FE
++	bool "Enables kernel network stack path for Shortcut Forwarding Engine"
+Index: linux-4.14.18/net/core/dev.c
+===================================================================
+--- linux-4.14.18.orig/net/core/dev.c
++++ linux-4.14.18/net/core/dev.c
+@@ -2972,8 +2972,17 @@ static int xmit_one(struct sk_buff *skb,
+ 	unsigned int len;
+ 	int rc;
+ 
++#ifdef CONFIG_SHORTCUT_FE
++	/* If this skb has been fast forwarded then we don't want it to
++	 * go to any taps (by definition we're trying to bypass them).
++	 */
++	if (!skb->fast_forwarded) {
++#endif
+ 	if (!list_empty(&ptype_all) || !list_empty(&dev->ptype_all))
+ 		dev_queue_xmit_nit(skb, dev);
++#ifdef CONFIG_SHORTCUT_FE
++	}
++#endif
+ 
+ 	len = skb->len;
+ 	trace_net_dev_start_xmit(skb, dev);
+@@ -4267,6 +4276,11 @@ void netdev_rx_handler_unregister(struct
+ }
+ EXPORT_SYMBOL_GPL(netdev_rx_handler_unregister);
+ 
++#ifdef CONFIG_SHORTCUT_FE
++int (*fast_nat_recv)(struct sk_buff *skb) __rcu __read_mostly;
++EXPORT_SYMBOL_GPL(fast_nat_recv);
++#endif
++
+ /*
+  * Limit the use of PFMEMALLOC reserves to those protocols that implement
+  * the special handling of PFMEMALLOC skbs.
+@@ -4314,6 +4328,9 @@ static int __netif_receive_skb_core(stru
+ 	bool deliver_exact = false;
+ 	int ret = NET_RX_DROP;
+ 	__be16 type;
++#ifdef CONFIG_SHORTCUT_FE
++	int (*fast_recv)(struct sk_buff *skb);
++#endif
+ 
+ 	net_timestamp_check(!netdev_tstamp_prequeue, skb);
+ 
+@@ -4340,6 +4357,14 @@ another_round:
+ 			goto out;
+ 	}
+ 
++#ifdef CONFIG_SHORTCUT_FE
++	fast_recv = rcu_dereference(fast_nat_recv);
++	if (fast_recv && fast_recv(skb)) {
++		ret = NET_RX_SUCCESS;
++		goto out;
++	}
++#endif
++
+ 	if (skb_skip_tc_classify(skb))
+ 		goto skip_classify;
+ 
+Index: linux-4.14.18/net/netfilter/nf_conntrack_proto_tcp.c
+===================================================================
+--- linux-4.14.18.orig/net/netfilter/nf_conntrack_proto_tcp.c
++++ linux-4.14.18/net/netfilter/nf_conntrack_proto_tcp.c
+@@ -33,10 +33,24 @@
+ #include <net/netfilter/ipv4/nf_conntrack_ipv4.h>
+ #include <net/netfilter/ipv6/nf_conntrack_ipv6.h>
+ 
++ /* Do not check the TCP window for incoming packets  */
++#ifdef CONFIG_SHORTCUT_FE
++int nf_ct_tcp_no_window_check __read_mostly = 0;
++EXPORT_SYMBOL_GPL(nf_ct_tcp_no_window_check);
++#else
++static int nf_ct_tcp_no_window_check __read_mostly = 1;
++#endif
++
+ /* "Be conservative in what you do,
+     be liberal in what you accept from others."
+     If it's non-zero, we mark only out of window RST segments as INVALID. */
++
++#ifdef CONFIG_SHORTCUT_FE
++int nf_ct_tcp_be_liberal __read_mostly = 0;
++EXPORT_SYMBOL_GPL(nf_ct_tcp_be_liberal);
++#else
+ static int nf_ct_tcp_be_liberal __read_mostly = 0;
++#endif
+ 
+ /* If it is set to zero, we disable picking up already established
+    connections. */
