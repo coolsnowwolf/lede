@@ -53,6 +53,9 @@ mvebu_board_detect() {
 	*"Linksys WRT3200ACM")
 		name="armada-385-linksys-rango"
 		;;
+	*"Linksys WRT32X")
+		name="armada-385-linksys-venom"
+		;;
 	*"Marvell Armada 385 Access Point Development Board")
 		name="armada-385-db-ap"
 		;;
