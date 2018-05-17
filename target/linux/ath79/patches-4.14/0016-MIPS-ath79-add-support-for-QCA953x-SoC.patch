@@ -1,0 +1,350 @@
+From cff23ba486e3c5d17c4d7e446f5eddead855c101 Mon Sep 17 00:00:00 2001
+From: John Crispin <john@phrozen.org>
+Date: Tue, 6 Mar 2018 08:45:55 +0100
+Subject: [PATCH 16/27] MIPS: ath79: add support for QCA953x SoC
+
+Note that the clock calculation looks very similar to the QCA955x, but the
+meaning of the bits CPUCLK_FROM_CPUPLL and DDRCLK_FROM_DDRPLL is reversed.
+
+Signed-off-by: Matthias Schiffer <mschiffer@universe-factory.net>
+---
+ arch/mips/ath79/Kconfig                  |  6 ++-
+ arch/mips/ath79/clock.c                  | 87 ++++++++++++++++++++++++++++++++
+ arch/mips/ath79/common.c                 |  4 ++
+ arch/mips/ath79/dev-common.c             |  4 ++
+ arch/mips/ath79/early_printk.c           |  2 +
+ arch/mips/ath79/irq.c                    | 33 +++++++++++-
+ arch/mips/ath79/setup.c                  | 21 ++++++--
+ arch/mips/include/asm/mach-ath79/ath79.h | 11 ++++
+ 8 files changed, 162 insertions(+), 6 deletions(-)
+
+diff --git a/arch/mips/ath79/Kconfig b/arch/mips/ath79/Kconfig
+index 9547cf1ea38d..b03f5c8b9d1e 100644
+--- a/arch/mips/ath79/Kconfig
++++ b/arch/mips/ath79/Kconfig
+@@ -94,6 +94,10 @@ config SOC_AR934X
+ 	select PCI_AR724X if PCI
+ 	def_bool n
+ 
++config SOC_QCA953X
++	select USB_ARCH_HAS_EHCI
++	def_bool n
++
+ config SOC_QCA955X
+ 	select HW_HAS_PCI
+ 	select PCI_AR724X if PCI
+@@ -115,7 +119,7 @@ config ATH79_DEV_USB
+ 	def_bool n
+ 
+ config ATH79_DEV_WMAC
+-	depends on (SOC_AR913X || SOC_AR933X || SOC_AR934X || SOC_QCA955X)
++	depends on (SOC_AR913X || SOC_AR933X || SOC_AR934X || SOC_QCA953X || SOC_QCA955X)
+ 	def_bool n
+ 
+ endif
+diff --git a/arch/mips/ath79/clock.c b/arch/mips/ath79/clock.c
+index 6b1000b6a6a6..b9595b2d1b65 100644
+--- a/arch/mips/ath79/clock.c
++++ b/arch/mips/ath79/clock.c
+@@ -355,6 +355,91 @@ static void __init ar934x_clocks_init(void)
+ 	iounmap(dpll_base);
+ }
+ 
++static void __init qca953x_clocks_init(void)
++{
++	unsigned long ref_rate;
++	unsigned long cpu_rate;
++	unsigned long ddr_rate;
++	unsigned long ahb_rate;
++	u32 pll, out_div, ref_div, nint, frac, clk_ctrl, postdiv;
++	u32 cpu_pll, ddr_pll;
++	u32 bootstrap;
++
++	bootstrap = ath79_reset_rr(QCA953X_RESET_REG_BOOTSTRAP);
++	if (bootstrap &	QCA953X_BOOTSTRAP_REF_CLK_40)
++		ref_rate = 40 * 1000 * 1000;
++	else
++		ref_rate = 25 * 1000 * 1000;
++
++	pll = ath79_pll_rr(QCA953X_PLL_CPU_CONFIG_REG);
++	out_div = (pll >> QCA953X_PLL_CPU_CONFIG_OUTDIV_SHIFT) &
++		  QCA953X_PLL_CPU_CONFIG_OUTDIV_MASK;
++	ref_div = (pll >> QCA953X_PLL_CPU_CONFIG_REFDIV_SHIFT) &
++		  QCA953X_PLL_CPU_CONFIG_REFDIV_MASK;
++	nint = (pll >> QCA953X_PLL_CPU_CONFIG_NINT_SHIFT) &
++	       QCA953X_PLL_CPU_CONFIG_NINT_MASK;
++	frac = (pll >> QCA953X_PLL_CPU_CONFIG_NFRAC_SHIFT) &
++	       QCA953X_PLL_CPU_CONFIG_NFRAC_MASK;
++
++	cpu_pll = nint * ref_rate / ref_div;
++	cpu_pll += frac * (ref_rate >> 6) / ref_div;
++	cpu_pll /= (1 << out_div);
++
++	pll = ath79_pll_rr(QCA953X_PLL_DDR_CONFIG_REG);
++	out_div = (pll >> QCA953X_PLL_DDR_CONFIG_OUTDIV_SHIFT) &
++		  QCA953X_PLL_DDR_CONFIG_OUTDIV_MASK;
++	ref_div = (pll >> QCA953X_PLL_DDR_CONFIG_REFDIV_SHIFT) &
++		  QCA953X_PLL_DDR_CONFIG_REFDIV_MASK;
++	nint = (pll >> QCA953X_PLL_DDR_CONFIG_NINT_SHIFT) &
++	       QCA953X_PLL_DDR_CONFIG_NINT_MASK;
++	frac = (pll >> QCA953X_PLL_DDR_CONFIG_NFRAC_SHIFT) &
++	       QCA953X_PLL_DDR_CONFIG_NFRAC_MASK;
++
++	ddr_pll = nint * ref_rate / ref_div;
++	ddr_pll += frac * (ref_rate >> 6) / (ref_div << 4);
++	ddr_pll /= (1 << out_div);
++
++	clk_ctrl = ath79_pll_rr(QCA953X_PLL_CLK_CTRL_REG);
++
++	postdiv = (clk_ctrl >> QCA953X_PLL_CLK_CTRL_CPU_POST_DIV_SHIFT) &
++		  QCA953X_PLL_CLK_CTRL_CPU_POST_DIV_MASK;
++
++	if (clk_ctrl & QCA953X_PLL_CLK_CTRL_CPU_PLL_BYPASS)
++		cpu_rate = ref_rate;
++	else if (clk_ctrl & QCA953X_PLL_CLK_CTRL_CPUCLK_FROM_CPUPLL)
++		cpu_rate = cpu_pll / (postdiv + 1);
++	else
++		cpu_rate = ddr_pll / (postdiv + 1);
++
++	postdiv = (clk_ctrl >> QCA953X_PLL_CLK_CTRL_DDR_POST_DIV_SHIFT) &
++		  QCA953X_PLL_CLK_CTRL_DDR_POST_DIV_MASK;
++
++	if (clk_ctrl & QCA953X_PLL_CLK_CTRL_DDR_PLL_BYPASS)
++		ddr_rate = ref_rate;
++	else if (clk_ctrl & QCA953X_PLL_CLK_CTRL_DDRCLK_FROM_DDRPLL)
++		ddr_rate = ddr_pll / (postdiv + 1);
++	else
++		ddr_rate = cpu_pll / (postdiv + 1);
++
++	postdiv = (clk_ctrl >> QCA953X_PLL_CLK_CTRL_AHB_POST_DIV_SHIFT) &
++		  QCA953X_PLL_CLK_CTRL_AHB_POST_DIV_MASK;
++
++	if (clk_ctrl & QCA953X_PLL_CLK_CTRL_AHB_PLL_BYPASS)
++		ahb_rate = ref_rate;
++	else if (clk_ctrl & QCA953X_PLL_CLK_CTRL_AHBCLK_FROM_DDRPLL)
++		ahb_rate = ddr_pll / (postdiv + 1);
++	else
++		ahb_rate = cpu_pll / (postdiv + 1);
++
++	ath79_add_sys_clkdev("ref", ref_rate);
++	ath79_add_sys_clkdev("cpu", cpu_rate);
++	ath79_add_sys_clkdev("ddr", ddr_rate);
++	ath79_add_sys_clkdev("ahb", ahb_rate);
++
++	clk_add_alias("wdt", NULL, "ref", NULL);
++	clk_add_alias("uart", NULL, "ref", NULL);
++}
++
+ static void __init qca955x_clocks_init(void)
+ {
+ 	unsigned long ref_rate;
+@@ -450,6 +535,8 @@ void __init ath79_clocks_init(void)
+ 		ar933x_clocks_init();
+ 	else if (soc_is_ar934x())
+ 		ar934x_clocks_init();
++	else if (soc_is_qca953x())
++		qca953x_clocks_init();
+ 	else if (soc_is_qca955x())
+ 		qca955x_clocks_init();
+ 	else
+diff --git a/arch/mips/ath79/common.c b/arch/mips/ath79/common.c
+index a32a9181a296..a485a7c35b9b 100644
+--- a/arch/mips/ath79/common.c
++++ b/arch/mips/ath79/common.c
+@@ -103,6 +103,8 @@ void ath79_device_reset_set(u32 mask)
+ 		reg = AR933X_RESET_REG_RESET_MODULE;
+ 	else if (soc_is_ar934x())
+ 		reg = AR934X_RESET_REG_RESET_MODULE;
++	else if (soc_is_qca953x())
++		reg = QCA953X_RESET_REG_RESET_MODULE;
+ 	else if (soc_is_qca955x())
+ 		reg = QCA955X_RESET_REG_RESET_MODULE;
+ 	else
+@@ -131,6 +133,8 @@ void ath79_device_reset_clear(u32 mask)
+ 		reg = AR933X_RESET_REG_RESET_MODULE;
+ 	else if (soc_is_ar934x())
+ 		reg = AR934X_RESET_REG_RESET_MODULE;
++	else if (soc_is_qca953x())
++		reg = QCA953X_RESET_REG_RESET_MODULE;
+ 	else if (soc_is_qca955x())
+ 		reg = QCA955X_RESET_REG_RESET_MODULE;
+ 	else
+diff --git a/arch/mips/ath79/dev-common.c b/arch/mips/ath79/dev-common.c
+index 9d0172a4dc69..99d8b88f1e6d 100644
+--- a/arch/mips/ath79/dev-common.c
++++ b/arch/mips/ath79/dev-common.c
+@@ -85,6 +85,7 @@ void __init ath79_register_uart(void)
+ 	    soc_is_ar724x() ||
+ 	    soc_is_ar913x() ||
+ 	    soc_is_ar934x() ||
++	    soc_is_qca953x() ||
+ 	    soc_is_qca955x()) {
+ 		ath79_uart_data[0].uartclk = uart_clk_rate;
+ 		platform_device_register(&ath79_uart_device);
+@@ -148,6 +149,9 @@ void __init ath79_gpio_init(void)
+ 	} else if (soc_is_ar934x()) {
+ 		ath79_gpio_pdata.ngpios = AR934X_GPIO_COUNT;
+ 		ath79_gpio_pdata.oe_inverted = 1;
++	} else if (soc_is_qca953x()) {
++		ath79_gpio_pdata.ngpios = QCA953X_GPIO_COUNT;
++		ath79_gpio_pdata.oe_inverted = 1;
+ 	} else if (soc_is_qca955x()) {
+ 		ath79_gpio_pdata.ngpios = QCA955X_GPIO_COUNT;
+ 		ath79_gpio_pdata.oe_inverted = 1;
+diff --git a/arch/mips/ath79/early_printk.c b/arch/mips/ath79/early_printk.c
+index ec3978678653..cc00839b7181 100644
+--- a/arch/mips/ath79/early_printk.c
++++ b/arch/mips/ath79/early_printk.c
+@@ -116,6 +116,8 @@ static void prom_putchar_init(void)
+ 	case REV_ID_MAJOR_AR9341:
+ 	case REV_ID_MAJOR_AR9342:
+ 	case REV_ID_MAJOR_AR9344:
++	case REV_ID_MAJOR_QCA9533:
++	case REV_ID_MAJOR_QCA9533_V2:
+ 	case REV_ID_MAJOR_QCA9556:
+ 	case REV_ID_MAJOR_QCA9558:
+ 		_prom_putchar = prom_putchar_ar71xx;
+diff --git a/arch/mips/ath79/irq.c b/arch/mips/ath79/irq.c
+index 2dfff1f19004..756b5aee3500 100644
+--- a/arch/mips/ath79/irq.c
++++ b/arch/mips/ath79/irq.c
+@@ -56,6 +56,34 @@ static void ar934x_ip2_irq_init(void)
+ 	irq_set_chained_handler(ATH79_CPU_IRQ(2), ar934x_ip2_irq_dispatch);
+ }
+ 
++static void qca953x_ip2_irq_dispatch(struct irq_desc *desc)
++{
++	u32 status;
++
++	status = ath79_reset_rr(QCA953X_RESET_REG_PCIE_WMAC_INT_STATUS);
++
++	if (status & QCA953X_PCIE_WMAC_INT_PCIE_ALL) {
++		ath79_ddr_wb_flush(3);
++		generic_handle_irq(ATH79_IP2_IRQ(0));
++	} else if (status & QCA953X_PCIE_WMAC_INT_WMAC_ALL) {
++		ath79_ddr_wb_flush(4);
++		generic_handle_irq(ATH79_IP2_IRQ(1));
++	} else {
++		spurious_interrupt();
++	}
++}
++
++static void qca953x_irq_init(void)
++{
++	int i;
++
++	for (i = ATH79_IP2_IRQ_BASE;
++	     i < ATH79_IP2_IRQ_BASE + ATH79_IP2_IRQ_COUNT; i++)
++		irq_set_chip_and_handler(i, &dummy_irq_chip, handle_level_irq);
++
++	irq_set_chained_handler(ATH79_CPU_IRQ(2), qca953x_ip2_irq_dispatch);
++}
++
+ static void qca955x_ip2_irq_dispatch(struct irq_desc *desc)
+ {
+ 	u32 status;
+@@ -143,7 +171,7 @@ void __init arch_init_irq(void)
+ 	    soc_is_ar913x() || soc_is_ar933x()) {
+ 		irq_wb_chan2 = 3;
+ 		irq_wb_chan3 = 2;
+-	} else if (soc_is_ar934x()) {
++	} else if (soc_is_ar934x() || soc_is_qca953x()) {
+ 		irq_wb_chan3 = 2;
+ 	}
+ 
+@@ -154,6 +182,7 @@ void __init arch_init_irq(void)
+ 	else if (soc_is_ar724x() ||
+ 		 soc_is_ar933x() ||
+ 		 soc_is_ar934x() ||
++		 soc_is_qca953x() ||
+ 		 soc_is_qca955x())
+ 		misc_is_ar71xx = false;
+ 	else
+@@ -164,6 +193,8 @@ void __init arch_init_irq(void)
+ 
+ 	if (soc_is_ar934x())
+ 		ar934x_ip2_irq_init();
++	else if (soc_is_qca953x())
++		qca953x_irq_init();
+ 	else if (soc_is_qca955x())
+ 		qca955x_irq_init();
+ }
+diff --git a/arch/mips/ath79/setup.c b/arch/mips/ath79/setup.c
+index 26a058d58d37..f782ae6c77d6 100644
+--- a/arch/mips/ath79/setup.c
++++ b/arch/mips/ath79/setup.c
+@@ -60,6 +60,7 @@ static void __init ath79_detect_sys_type(void)
+ 	u32 major;
+ 	u32 minor;
+ 	u32 rev = 0;
++	u32 ver = 1;
+ 
+ 	id = ath79_reset_rr(AR71XX_RESET_REG_REV_ID);
+ 	major = id & REV_ID_MAJOR_MASK;
+@@ -152,6 +153,17 @@ static void __init ath79_detect_sys_type(void)
+ 		rev = id & AR934X_REV_ID_REVISION_MASK;
+ 		break;
+ 
++	case REV_ID_MAJOR_QCA9533_V2:
++		ver = 2;
++		ath79_soc_rev = 2;
++		/* drop through */
++
++	case REV_ID_MAJOR_QCA9533:
++		ath79_soc = ATH79_SOC_QCA9533;
++		chip = "9533";
++		rev = id & QCA953X_REV_ID_REVISION_MASK;
++		break;
++
+ 	case REV_ID_MAJOR_QCA9556:
+ 		ath79_soc = ATH79_SOC_QCA9556;
+ 		chip = "9556";
+@@ -168,11 +180,12 @@ static void __init ath79_detect_sys_type(void)
+ 		panic("ath79: unknown SoC, id:0x%08x", id);
+ 	}
+ 
+-	ath79_soc_rev = rev;
++	if (ver == 1)
++		ath79_soc_rev = rev;
+ 
+-	if (soc_is_qca955x())
+-		sprintf(ath79_sys_type, "Qualcomm Atheros QCA%s rev %u",
+-			chip, rev);
++	if (soc_is_qca953x() || soc_is_qca955x())
++		sprintf(ath79_sys_type, "Qualcomm Atheros QCA%s ver %u rev %u",
++			chip, ver, rev);
+ 	else
+ 		sprintf(ath79_sys_type, "Atheros AR%s rev %u", chip, rev);
+ 	pr_info("SoC: %s\n", ath79_sys_type);
+diff --git a/arch/mips/include/asm/mach-ath79/ath79.h b/arch/mips/include/asm/mach-ath79/ath79.h
+index 6e6c0fead776..98a7ccf3d358 100644
+--- a/arch/mips/include/asm/mach-ath79/ath79.h
++++ b/arch/mips/include/asm/mach-ath79/ath79.h
+@@ -32,6 +32,7 @@ enum ath79_soc_type {
+ 	ATH79_SOC_AR9341,
+ 	ATH79_SOC_AR9342,
+ 	ATH79_SOC_AR9344,
++	ATH79_SOC_QCA9533,
+ 	ATH79_SOC_QCA9556,
+ 	ATH79_SOC_QCA9558,
+ };
+@@ -100,6 +101,16 @@ static inline int soc_is_ar934x(void)
+ 	return soc_is_ar9341() || soc_is_ar9342() || soc_is_ar9344();
+ }
+ 
++static inline int soc_is_qca9533(void)
++{
++	return ath79_soc == ATH79_SOC_QCA9533;
++}
++
++static inline int soc_is_qca953x(void)
++{
++	return soc_is_qca9533();
++}
++
+ static inline int soc_is_qca9556(void)
+ {
+ 	return ath79_soc == ATH79_SOC_QCA9556;
+-- 
+2.11.0
+
