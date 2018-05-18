@@ -1,0 +1,189 @@
+From ecbd9c87f073f097d9fe56390353e64e963e866a Mon Sep 17 00:00:00 2001
+From: John Crispin <john@phrozen.org>
+Date: Tue, 6 Mar 2018 10:03:03 +0100
+Subject: [PATCH 03/27] leds: add reset-controller based driver
+
+Signed-off-by: John Crispin <john@phrozen.org>
+---
+ drivers/leds/Kconfig      |  11 ++++
+ drivers/leds/Makefile     |   1 +
+ drivers/leds/leds-reset.c | 137 ++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 149 insertions(+)
+ create mode 100644 drivers/leds/leds-reset.c
+
+Index: linux-4.14.32/drivers/leds/Kconfig
+===================================================================
+--- linux-4.14.32.orig/drivers/leds/Kconfig
++++ linux-4.14.32/drivers/leds/Kconfig
+@@ -696,6 +696,17 @@ config LEDS_NIC78BX
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called leds-nic78bx.
+ 
++config LEDS_RESET
++	tristate "LED support for reset-controller API"
++	depends on LEDS_CLASS
++	depends on RESET_CONTROLLER
++	help
++	  This option enables support for LEDs connected to pins driven by reset
++	  controllers. Yes, DNI actual built HW like that.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called leds-reset.
++
+ comment "LED Triggers"
+ source "drivers/leds/trigger/Kconfig"
+ 
+Index: linux-4.14.32/drivers/leds/leds-reset.c
+===================================================================
+--- /dev/null
++++ linux-4.14.32/drivers/leds/leds-reset.c
+@@ -0,0 +1,137 @@
++/*
++ * Copyright (C) 2018 John Crispin <john@phrozen.org>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++#include <linux/err.h>
++#include <linux/reset.h>
++#include <linux/kernel.h>
++#include <linux/leds.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/reset.h>
++
++struct reset_led_data {
++	struct led_classdev cdev;
++	struct reset_control *rst;
++};
++
++static inline struct reset_led_data *
++			cdev_to_reset_led_data(struct led_classdev *led_cdev)
++{
++	return container_of(led_cdev, struct reset_led_data, cdev);
++}
++
++static void reset_led_set(struct led_classdev *led_cdev,
++	enum led_brightness value)
++{
++	struct reset_led_data *led_dat = cdev_to_reset_led_data(led_cdev);
++
++	if (value == LED_OFF)
++		reset_control_assert(led_dat->rst);
++	else
++		reset_control_deassert(led_dat->rst);
++}
++
++struct reset_leds_priv {
++	int num_leds;
++	struct reset_led_data leds[];
++};
++
++static inline int sizeof_reset_leds_priv(int num_leds)
++{
++	return sizeof(struct reset_leds_priv) +
++		(sizeof(struct reset_led_data) * num_leds);
++}
++
++static struct reset_leds_priv *reset_leds_create(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct fwnode_handle *child;
++	struct reset_leds_priv *priv;
++	int count, ret;
++
++	count = device_get_child_node_count(dev);
++	if (!count)
++		return ERR_PTR(-ENODEV);
++
++	priv = devm_kzalloc(dev, sizeof_reset_leds_priv(count), GFP_KERNEL);
++	if (!priv)
++		return ERR_PTR(-ENOMEM);
++
++	device_for_each_child_node(dev, child) {
++		struct reset_led_data *led = &priv->leds[priv->num_leds];
++		struct device_node *np = to_of_node(child);
++
++		ret = fwnode_property_read_string(child, "label", &led->cdev.name);
++		if (!led->cdev.name) {
++			fwnode_handle_put(child);
++			return ERR_PTR(-EINVAL);
++		}
++		led->rst = __of_reset_control_get(np, NULL, 0, 0, 0);
++		if (IS_ERR(led->rst))
++			return ERR_PTR(-EINVAL);
++
++		led->cdev.brightness_set = reset_led_set;
++		ret = devm_of_led_classdev_register(&pdev->dev, np, &led->cdev);
++		if (ret < 0)
++			return ERR_PTR(ret);
++		led->cdev.dev->of_node = np;
++		priv->num_leds++;
++	}
++
++	return priv;
++}
++
++static const struct of_device_id of_reset_leds_match[] = {
++	{ .compatible = "reset-leds", },
++	{},
++};
++
++MODULE_DEVICE_TABLE(of, of_reset_leds_match);
++
++static int reset_led_probe(struct platform_device *pdev)
++{
++	struct reset_leds_priv *priv;
++
++	priv = reset_leds_create(pdev);
++	if (IS_ERR(priv))
++		return PTR_ERR(priv);
++
++	platform_set_drvdata(pdev, priv);
++
++	return 0;
++}
++
++static void reset_led_shutdown(struct platform_device *pdev)
++{
++	struct reset_leds_priv *priv = platform_get_drvdata(pdev);
++	int i;
++
++	for (i = 0; i < priv->num_leds; i++) {
++		struct reset_led_data *led = &priv->leds[i];
++
++		if (!(led->cdev.flags & LED_RETAIN_AT_SHUTDOWN))
++			reset_led_set(&led->cdev, LED_OFF);
++	}
++}
++
++static struct platform_driver reset_led_driver = {
++	.probe		= reset_led_probe,
++	.shutdown	= reset_led_shutdown,
++	.driver		= {
++		.name	= "leds-reset",
++		.of_match_table = of_reset_leds_match,
++	},
++};
++
++module_platform_driver(reset_led_driver);
++
++MODULE_AUTHOR("John Crispin <john@phrozen.org>");
++MODULE_DESCRIPTION("reset controller LED driver");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:leds-reset");
+Index: linux-4.14.32/drivers/leds/Makefile
+===================================================================
+--- linux-4.14.32.orig/drivers/leds/Makefile
++++ linux-4.14.32/drivers/leds/Makefile
+@@ -73,6 +73,7 @@ obj-$(CONFIG_LEDS_PM8058)		+= leds-pm805
+ obj-$(CONFIG_LEDS_MLXCPLD)		+= leds-mlxcpld.o
+ obj-$(CONFIG_LEDS_NIC78BX)		+= leds-nic78bx.o
+ obj-$(CONFIG_LEDS_MT6323)		+= leds-mt6323.o
++obj-$(CONFIG_LEDS_RESET)		+= leds-reset.o
+ 
+ # LED SPI Drivers
+ obj-$(CONFIG_LEDS_DAC124S085)		+= leds-dac124s085.o

@@ -51,6 +51,16 @@ define Device/linksys-wrt1900acs
 endef
 TARGET_DEVICES += linksys-wrt1900acs
 
+define Device/linksys-wrt32x
+$(call Device/linksys,WRT32X (Venom))
+  DEVICE_DTS := armada-385-linksys-venom
+  DEVICE_PACKAGES += kmod-btmrvl kmod-mwifiex-sdio mwlwifi-firmware-88w8964
+  $(Device/armada-385-linksys)
+  KERNEL_SIZE := 3072k
+  KERNEL := kernel-bin | append-dtb
+endef
+TARGET_DEVICES += linksys-wrt32x
+
 define Device/linksys-wrt1900ac
   $(call Device/linksys,WRT1900AC (Mamba))
   DEVICE_DTS := armada-xp-linksys-mamba
