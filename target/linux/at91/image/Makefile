@@ -16,14 +16,25 @@ endef
 ifeq ($(SUBTARGET),legacy)
 include ./legacy.mk
 endif
-ifeq ($(SUBTARGET),sama5)
-include ./sama5.mk
+ifeq ($(SUBTARGET),sama5d2)
+include ./sama5d2.mk
 endif
+ifeq ($(SUBTARGET),sama5d3)
+include ./sama5d3.mk
+endif
+ifeq ($(SUBTARGET),sama5d4)
+include ./sama5d4.mk
+endif
+
+AT91_SD_BOOT_PARTSIZE:=64
+FAT32_BLOCK_SIZE:=1024
+FAT32_BLOCKS:=$(shell echo \
+  $$(($(AT91_SD_BOOT_PARTSIZE)*1024*1024/$(FAT32_BLOCK_SIZE))))
 
 define Device/Default
   $(Device/default-nand)
   PROFILES := Default
-  FILESYSTEMS := squashfs ubifs
+  FILESYSTEMS := squashfs ubifs ext4
   DEVICE_DTS := $(1)
   KERNEL_NAME := zImage
   KERNEL_SIZE := 4096k
@@ -33,6 +44,42 @@ endef
 
 define Device/dtb
   KERNEL := kernel-bin | lzma | uImage lzma
+endef
+
+define Build/at91-sdcard
+  $(if $(findstring ext4,$@), \
+  rm -f $@.boot
+  mkfs.fat -C $@.boot $(FAT32_BLOCKS)
+
+  mcopy -i $@.boot $(KDIR)/zImage ::zImage
+
+  $(foreach dts,$(DEVICE_DTS), \
+     mcopy -i $@.boot $(DTS_DIR)/$(dts).dtb \
+        ::$(dts).dtb)
+
+  mcopy -i $@.boot \
+    $(BIN_DIR)/u-boot-$(DEVICE_NAME:at91-%=%)_mmc/u-boot.bin \
+    ::u-boot.bin
+
+  mcopy -i $@.boot \
+    $(BIN_DIR)/at91bootstrap-$(DEVICE_NAME:at91-%=%)sd*/at91bootstrap.bin \
+    ::BOOT.bin
+
+  ./gen_at91_sdcard_img.sh \
+      $@.img \
+      $@.boot \
+      $(KDIR)/root.ext4 \
+      $(AT91_SD_BOOT_PARTSIZE) \
+      $(CONFIG_TARGET_ROOTFS_PARTSIZE)
+
+  gzip -nc9 $@.img > $@
+
+  rm -f $@.img $@.boot )
+endef
+
+define Device/evaluation-sdimage
+  IMAGES += sdcard.img.gz
+  IMAGE/sdcard.img.gz := at91-sdcard
 endef
 
 define Device/evaluation
