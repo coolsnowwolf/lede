@@ -240,6 +240,7 @@ obj-$(CONFIG_ATH79_MACH_TL_WR841N_V9)		+= mach-tl-wr841n-v9.o
 obj-$(CONFIG_ATH79_MACH_TL_WR902AC_V1)		+= mach-tl-wr902ac-v1.o
 obj-$(CONFIG_ATH79_MACH_TL_WR941ND)		+= mach-tl-wr941nd.o
 obj-$(CONFIG_ATH79_MACH_TL_WR941ND_V6)		+= mach-tl-wr941nd-v6.o
+obj-$(CONFIG_ATH79_MACH_TL_WR941N_V7)		+= mach-tl-wr941n-v7.o
 obj-$(CONFIG_ATH79_MACH_TL_WR940N_V4)		+= mach-tl-wr940n-v4.o
 obj-$(CONFIG_ATH79_MACH_TL_WR942N_V1)		+= mach-tl-wr942n-v1.o
 obj-$(CONFIG_ATH79_MACH_TUBE2H)			+= mach-tube2h.o

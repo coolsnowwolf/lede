@@ -88,6 +88,7 @@ define Device/mt7628
   DEVICE_TITLE := MediaTek MT7628 EVB
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport
 endef
+TARGET_DEVICES += mt7628
 
 define Device/omega2
   DTS := OMEGA2

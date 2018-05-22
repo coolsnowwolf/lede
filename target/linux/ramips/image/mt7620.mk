@@ -83,6 +83,13 @@ define Device/ArcherMR200
 endef
 TARGET_DEVICES += ArcherMR200
 
+define Device/bocco
+  DTS := BOCCO
+  DEVICE_TITLE := YUKAI Engineering BOCCO
+  DEVICE_PACKAGES := kmod-sound-core kmod-sound-mt7620 kmod-i2c-ralink
+endef
+TARGET_DEVICES += bocco
+
 define Device/c108
   DTS := C108
   IMAGE_SIZE := 16777216
@@ -478,6 +485,14 @@ define Device/vonets_var11n-300
   DEVICE_TITLE := Vonets VAR11N-300
 endef
 TARGET_DEVICES += vonets_var11n-300
+
+define Device/ravpower_wd03
+  DTS := WD03
+  IMAGE_SIZE := $(ralink_default_fw_size_8M)
+  DEVICE_TITLE := Ravpower WD03
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-mt76 kmod-usb-ehci
+endef
+TARGET_DEVICES += ravpower_wd03
 
 define Device/whr-1166d
   DTS := WHR-1166D

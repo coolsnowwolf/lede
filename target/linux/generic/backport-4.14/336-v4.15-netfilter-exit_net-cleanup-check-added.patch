@@ -1,0 +1,100 @@
+From: Vasily Averin <vvs@virtuozzo.com>
+Date: Sun, 12 Nov 2017 14:32:37 +0300
+Subject: [PATCH] netfilter: exit_net cleanup check added
+
+Be sure that lists initialized in net_init hook was return to initial
+state.
+
+Signed-off-by: Vasily Averin <vvs@virtuozzo.com>
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/net/ipv4/netfilter/ipt_CLUSTERIP.c
++++ b/net/ipv4/netfilter/ipt_CLUSTERIP.c
+@@ -829,6 +829,7 @@ static void clusterip_net_exit(struct ne
+ 	cn->procdir = NULL;
+ #endif
+ 	nf_unregister_net_hook(net, &cip_arp_ops);
++	WARN_ON_ONCE(!list_empty(&cn->configs));
+ }
+ 
+ static struct pernet_operations clusterip_net_ops = {
+--- a/net/netfilter/nf_tables_api.c
++++ b/net/netfilter/nf_tables_api.c
+@@ -6470,6 +6470,12 @@ static int __net_init nf_tables_init_net
+ 	return 0;
+ }
+ 
++static void __net_exit nf_tables_exit_net(struct net *net)
++{
++	WARN_ON_ONCE(!list_empty(&net->nft.af_info));
++	WARN_ON_ONCE(!list_empty(&net->nft.commit_list));
++}
++
+ int __nft_release_basechain(struct nft_ctx *ctx)
+ {
+ 	struct nft_rule *rule, *nr;
+@@ -6547,6 +6553,7 @@ static void __nft_release_afinfo(struct
+ 
+ static struct pernet_operations nf_tables_net_ops = {
+ 	.init	= nf_tables_init_net,
++	.exit	= nf_tables_exit_net,
+ };
+ 
+ static int __init nf_tables_module_init(void)
+--- a/net/netfilter/nfnetlink_log.c
++++ b/net/netfilter/nfnetlink_log.c
+@@ -1093,10 +1093,15 @@ static int __net_init nfnl_log_net_init(
+ 
+ static void __net_exit nfnl_log_net_exit(struct net *net)
+ {
++	struct nfnl_log_net *log = nfnl_log_pernet(net);
++	unsigned int i;
++
+ #ifdef CONFIG_PROC_FS
+ 	remove_proc_entry("nfnetlink_log", net->nf.proc_netfilter);
+ #endif
+ 	nf_log_unset(net, &nfulnl_logger);
++	for (i = 0; i < INSTANCE_BUCKETS; i++)
++		WARN_ON_ONCE(!hlist_empty(&log->instance_table[i]));
+ }
+ 
+ static struct pernet_operations nfnl_log_net_ops = {
+--- a/net/netfilter/nfnetlink_queue.c
++++ b/net/netfilter/nfnetlink_queue.c
+@@ -1512,10 +1512,15 @@ static int __net_init nfnl_queue_net_ini
+ 
+ static void __net_exit nfnl_queue_net_exit(struct net *net)
+ {
++	struct nfnl_queue_net *q = nfnl_queue_pernet(net);
++	unsigned int i;
++
+ 	nf_unregister_queue_handler(net);
+ #ifdef CONFIG_PROC_FS
+ 	remove_proc_entry("nfnetlink_queue", net->nf.proc_netfilter);
+ #endif
++	for (i = 0; i < INSTANCE_BUCKETS; i++)
++		WARN_ON_ONCE(!hlist_empty(&q->instance_table[i]));
+ }
+ 
+ static void nfnl_queue_net_exit_batch(struct list_head *net_exit_list)
+--- a/net/netfilter/x_tables.c
++++ b/net/netfilter/x_tables.c
+@@ -1785,8 +1785,17 @@ static int __net_init xt_net_init(struct
+ 	return 0;
+ }
+ 
++static void __net_exit xt_net_exit(struct net *net)
++{
++	int i;
++
++	for (i = 0; i < NFPROTO_NUMPROTO; i++)
++		WARN_ON_ONCE(!list_empty(&net->xt.tables[i]));
++}
++
+ static struct pernet_operations xt_net_ops = {
+ 	.init = xt_net_init,
++	.exit = xt_net_exit,
+ };
+ 
+ static int __init xt_init(void)

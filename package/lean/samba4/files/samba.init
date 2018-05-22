@@ -1,0 +1,193 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2008-2018 OpenWrt.org
+
+START=60
+USE_PROCD=1
+
+smb_header() {
+	config_get samba_iface $1 interface "loopback lan"
+
+	# resolve interfaces
+	local interfaces=$(
+		. /lib/functions/network.sh
+
+		local net
+		for net in $samba_iface; do
+			local device
+			network_is_up $net || continue
+			network_get_device device "$net"
+			echo -n "${device:-$net} "
+		done
+	)
+
+	local name workgroup description charset
+	local hostname="$(uci_get system.@system[0].hostname)"
+
+	config_get name        		$1 name        	"${hostname:-OpenWrt}"
+	config_get workgroup   		$1 workgroup   	"${hostname:-WORKGROUP}"
+	config_get description 		$1 description 	"Samba on ${hostname:-OpenWrt}"
+	config_get charset  		$1 charset     	"UTF-8"
+	
+	config_get_bool DISABLE_NETBIOS	$1 disable_netbios	0
+	config_get_bool DISABLE_AD_DC	$1 disable_ad_dc	0
+	config_get_bool DISABLE_WINBIND	$1 disable_winbind	0
+	
+	mkdir -p /var/etc
+	sed -e "s#|NAME|#$name#g" \
+	    -e "s#|WORKGROUP|#$workgroup#g" \
+	    -e "s#|DESCRIPTION|#$description#g" \
+	    -e "s#|INTERFACES|#$interfaces#g" \
+	    -e "s#|CHARSET|#$charset#g" \
+	    /etc/samba/smb.conf.template > /var/etc/smb.conf
+
+	echo -e "\n######### Dynamic written config options #########\n" >> /var/etc/smb.conf
+	if [ "$DISABLE_NETBIOS" -eq 1 ] || [ ! -x /usr/sbin/nmbd ]; then
+		echo -e "\tdisable netbios = yes" >> /var/etc/smb.conf
+	fi
+		
+	local homes
+	config_get_bool homes $1 homes 0
+	[ $homes -gt 0 ] && {
+		cat <<EOT >> /var/etc/smb.conf
+
+[homes]
+	comment     = Home Directories
+	browsable   = no
+	writable = yes
+	read only   = no
+	create mask = 0750
+EOT
+	}
+
+	[ -L /etc/samba/smb.conf ] || ln -nsf /var/etc/smb.conf /etc/samba/smb.conf
+}
+
+smb_add_share() {
+	local name
+	local path
+	local users
+	local public
+	local writable
+	local printable
+	local create_mask
+	
+	local browseable
+	local read_only
+	local guest_ok
+	local guest_only
+	local inherit_owner
+	local vfs_objects
+
+	config_get name $1 name
+	config_get path $1 path
+	config_get users $1 users
+	config_get public $1 public
+	config_get writable $1 writable
+	config_get printable $1 printable
+	config_get create_mask $1 create_mask
+	config_get dir_mask $1 dir_mask
+
+
+	config_get browseable $1 browseable
+	config_get read_only $1 read_only
+	config_get guest_ok $1 guest_ok
+	config_get guest_only $1 guest_only
+	config_get inherit_owner $1 inherit_owner
+	config_get vfs_objects $1 vfs_objects
+
+
+	[ -z "$name" -o -z "$path" ] && return
+
+	echo -e "\n[$name]\n\tpath = $path" >> /var/etc/smb.conf
+	[ -n "$users" ] && echo -e "\tvalid users = $users" >> /var/etc/smb.conf
+	[ -n "$public" ] && echo -e "\tpublic = $public" >> /var/etc/smb.conf
+	[ -n "$writable" ] && echo -e "\twritable = $writable" >> /var/etc/smb.conf
+	[ -n "$printable" ] && echo -e "\tprintable = $printable" >> /var/etc/smb.conf
+	[ -n "$create_mask" ] && echo -e "\tcreate mask = $create_mask" >> /var/etc/smb.conf
+	[ -n "$dir_mask" ] && echo -e "\tdirectory mask = $dir_mask" >> /var/etc/smb.conf
+	
+	[ -n "$browseable" ] && echo -e "\tbrowseable = $browseable" >> /var/etc/smb.conf
+	[ -n "$read_only" ] && echo -e "\tread only = $read_only" >> /var/etc/smb.conf
+	[ -n "$guest_ok" ] && echo -e "\tguest ok = $guest_ok" >> /var/etc/smb.conf
+	[ -n "$guest_only" ] && echo -e "\tguest only = $guest_only" >> /var/etc/smb.conf
+	[ -n "$inherit_owner" ] && echo -e "\tinherit owner = $inherit_owner" >> /var/etc/smb.conf
+	[ -n "$vfs_objects" ] && echo -e "\tvfs objects = $vfs_objects" >> /var/etc/smb.conf
+}
+
+init_config() {
+	# Create samba dirs
+	[ -d /var/lib/samba ] || mkdir -p /var/lib/samba
+	[ -d /var/cache/samba ] || mkdir -p /var/cache/samba
+	[ -d /var/run/samba ] || mkdir -p /var/run/samba
+	[ -d /var/log/samba ] || mkdir -p /var/log/samba
+	[ -d /var/lock ] && chmod 0755 /var/lock || {
+		mkdir -p /var/lock
+		chmod 0755 /var/lock
+	}
+
+	config_load samba4
+	config_foreach smb_header samba
+	config_foreach smb_add_share sambashare
+}
+
+reload_service() {
+	init_config
+
+	killall -HUP samba
+	killall -HUP smbd
+	killall -HUP nmbd
+	killall -HUP winbindd
+}
+
+service_triggers() {
+	procd_add_reload_trigger samba4
+
+	local i
+	for i in $samba_iface; do
+		procd_add_reload_interface_trigger $i
+	done
+}
+
+start_service() {
+	init_config
+
+	# start main AC-DC daemon, will spawn (smbd,nmbd,winbindd) as needed/configured.
+	if [ "$DISABLE_AD_DC" -ne 1 ] && [ -x /usr/sbin/samba ]; then
+		procd_open_instance
+		procd_set_param command /usr/sbin/samba -F
+		procd_set_param respawn
+		procd_set_param file /var/etc/smb.conf
+		procd_close_instance
+	else
+		# start fileserver daemon
+		procd_open_instance
+		procd_set_param command /usr/sbin/smbd -F
+		procd_set_param respawn
+		procd_set_param file /var/etc/smb.conf
+		procd_close_instance
+
+		# start netbios daemon
+		if [ "$DISABLE_NETBIOS" -ne 1 ] && [ -x /usr/sbin/nmbd ]; then
+			procd_open_instance
+			procd_set_param command /usr/sbin/nmbd -F
+			procd_set_param respawn
+			procd_set_param file /var/etc/smb.conf
+			procd_close_instance
+		fi
+		# start winbind daemon
+		if [ "$DISABLE_WINBIND" -ne 1 ] && [ -x /usr/sbin/winbindd ]; then
+			procd_open_instance
+			procd_set_param command /usr/sbin/winbindd -F
+			procd_set_param respawn
+			procd_set_param file /var/etc/smb.conf
+			procd_close_instance
+		fi
+	fi
+	# lower priority using renice (if found)
+	if [ -x /usr/bin/renice ]; then
+		[ -x /usr/sbin/samba ] && renice -n 2 $(pidof samba)
+		[ -x /usr/sbin/smbd ] && renice -n 2 $(pidof smbd)
+		[ -x /usr/sbin/nmbd ] && renice -n 2 $(pidof nmbd)
+		[ -x /usr/sbin/winbindd ] && renice -n 2 $(pidof winbindd)
+	fi
+}
