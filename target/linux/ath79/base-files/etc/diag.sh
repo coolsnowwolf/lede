@@ -4,8 +4,12 @@
 
 get_status_led() {
 	local board=$(board_name)
+	local boardname="${board##*,}"
 
 	case $board in
+	"avm,fritz300e")
+		status_led="${boardname}:green:power"
+		;;
 	"glinet,ar150")
 		status_led="gl-ar150:orange:wlan"
 		;;

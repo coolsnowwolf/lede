@@ -31,6 +31,7 @@ platform_check_image() {
 	awm002-evb-4M|\
 	awm002-evb-8M|\
 	bc2|\
+	bocco|\
 	broadway|\
 	c108|\
 	carambola|\
@@ -165,6 +166,7 @@ platform_check_image() {
 	w2914nsv2|\
 	w306r-v20|\
 	w502u|\
+	ravpower,wd03|\
 	wf-2881|\
 	whr-1166d|\
 	whr-300hp2|\
@@ -172,7 +174,8 @@ platform_check_image() {
 	whr-g300n|\
 	widora,neo-16m|\
 	widora,neo-32m|\
-	witi|\
+	mqmaker,witi-256m|\
+	mqmaker,witi-512m|\
 	wizfi630a|\
 	wl-330n|\
 	wl-330n3g|\

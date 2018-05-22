@@ -279,7 +279,8 @@ get_status_led() {
 		status_led="$boardname:green:status"
 		;;
 	w306r-v20|\
-	witi|\
+	mqmaker,witi-256m|\
+	mqmaker,witi-512m|\
 	zbt-wr8305rt)
 		status_led="$boardname:green:sys"
 		;;

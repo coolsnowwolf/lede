@@ -76,6 +76,9 @@ ramips_board_detect() {
 	*"BC2")
 		name="bc2"
 		;;
+	*"BOCCO")
+		name="bocco"
+		;;
 	*"BR-6475nD")
 		name="br-6475nd"
 		;;
@@ -576,9 +579,6 @@ ramips_board_detect() {
 		;;
 	*"WHR-G300N")
 		name="whr-g300n"
-		;;
-	*"WiTi")
-                name="witi"
 		;;
 	*"WIZARD 8800")
 		name="wizard8800"

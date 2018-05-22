@@ -215,8 +215,8 @@ static int mt7620_gsw_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	gsw->base = devm_ioremap_resource(&pdev->dev, res);
-	if (!gsw->base)
-		return -EADDRNOTAVAIL;
+	if (IS_ERR(gsw->base))
+		return PTR_ERR(gsw->base);
 
 	gsw->dev = &pdev->dev;
 
