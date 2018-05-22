@@ -1,26 +1,3 @@
---- a/wpa_supplicant/wpa_supplicant_i.h
-+++ b/wpa_supplicant/wpa_supplicant_i.h
-@@ -101,6 +101,11 @@ struct wpa_interface {
- 	const char *ifname;
- 
- 	/**
-+	 * hostapd_ctrl - path to hostapd control socket for notification
-+	 */
-+	const char *hostapd_ctrl;
-+
-+	/**
- 	 * bridge_ifname - Optional bridge interface name
- 	 *
- 	 * If the driver interface (ifname) is included in a Linux bridge
-@@ -513,6 +518,8 @@ struct wpa_supplicant {
- #endif /* CONFIG_CTRL_IFACE_BINDER */
- 	char bridge_ifname[16];
- 
-+	struct wpa_ctrl *hostapd;
-+
- 	char *confname;
- 	char *confanother;
- 
 --- a/wpa_supplicant/Makefile
 +++ b/wpa_supplicant/Makefile
 @@ -26,6 +26,10 @@ CFLAGS += $(EXTRA_CFLAGS)
@@ -43,6 +20,94 @@
  ifndef CONFIG_OS
  ifdef CONFIG_NATIVE_WINDOWS
  CONFIG_OS=win32
+--- a/wpa_supplicant/bss.c
++++ b/wpa_supplicant/bss.c
+@@ -11,6 +11,7 @@
+ #include "utils/common.h"
+ #include "utils/eloop.h"
+ #include "common/ieee802_11_defs.h"
++#include "common/ieee802_11_common.h"
+ #include "drivers/driver.h"
+ #include "eap_peer/eap.h"
+ #include "wpa_supplicant_i.h"
+@@ -290,6 +291,10 @@ void calculate_update_time(const struct
+ static void wpa_bss_copy_res(struct wpa_bss *dst, struct wpa_scan_res *src,
+ 			     struct os_reltime *fetch_time)
+ {
++	struct ieee80211_ht_capabilities *capab;
++	struct ieee80211_ht_operation *oper;
++	struct ieee802_11_elems elems;
++
+ 	dst->flags = src->flags;
+ 	os_memcpy(dst->bssid, src->bssid, ETH_ALEN);
+ 	dst->freq = src->freq;
+@@ -302,6 +307,15 @@ static void wpa_bss_copy_res(struct wpa_
+ 	dst->est_throughput = src->est_throughput;
+ 	dst->snr = src->snr;
+ 
++	memset(&elems, 0, sizeof(elems));
++	ieee802_11_parse_elems((u8 *) (src + 1), src->ie_len, &elems, 0);
++	capab = (struct ieee80211_ht_capabilities *) elems.ht_capabilities;
++	oper = (struct ieee80211_ht_operation *) elems.ht_operation;
++	if (capab)
++		dst->ht_capab = le_to_host16(capab->ht_capabilities_info);
++	if (oper)
++		dst->ht_param = oper->ht_param;
++
+ 	calculate_update_time(fetch_time, src->age, &dst->last_update);
+ }
+ 
+--- a/wpa_supplicant/bss.h
++++ b/wpa_supplicant/bss.h
+@@ -80,6 +80,10 @@ struct wpa_bss {
+ 	u8 ssid[SSID_MAX_LEN];
+ 	/** Length of SSID */
+ 	size_t ssid_len;
++	/** HT capabilities */
++	u16 ht_capab;
++	/* Five octets of HT Operation Information */
++	u8 ht_param;
+ 	/** Frequency of the channel in MHz (e.g., 2412 = channel 1) */
+ 	int freq;
+ 	/** Beacon interval in TUs (host byte order) */
+--- a/wpa_supplicant/main.c
++++ b/wpa_supplicant/main.c
+@@ -34,7 +34,7 @@ static void usage(void)
+ 	       "vW] [-P<pid file>] "
+ 	       "[-g<global ctrl>] \\\n"
+ 	       "        [-G<group>] \\\n"
+-	       "        -i<ifname> -c<config file> [-C<ctrl>] [-D<driver>] "
++	       "        -i<ifname> -c<config file> [-C<ctrl>] [-D<driver>] [-H<hostapd path>] "
+ 	       "[-p<driver_param>] \\\n"
+ 	       "        [-b<br_ifname>] [-e<entropy file>]"
+ #ifdef CONFIG_DEBUG_FILE
+@@ -74,6 +74,7 @@ static void usage(void)
+ 	       "  -g = global ctrl_interface\n"
+ 	       "  -G = global ctrl_interface group\n"
+ 	       "  -h = show this help text\n"
++	       "  -H = connect to a hostapd instance to manage state changes\n"
+ 	       "  -i = interface name\n"
+ 	       "  -I = additional configuration file\n"
+ 	       "  -K = include keys (passwords, etc.) in debug output\n"
+@@ -201,7 +202,7 @@ int main(int argc, char *argv[])
+ 
+ 	for (;;) {
+ 		c = getopt(argc, argv,
+-			   "b:Bc:C:D:de:f:g:G:hi:I:KLMm:No:O:p:P:qsTtuvW");
++			   "b:Bc:C:D:de:f:g:G:hH:i:I:KLMm:No:O:p:P:qsTtuvW");
+ 		if (c < 0)
+ 			break;
+ 		switch (c) {
+@@ -248,6 +249,9 @@ int main(int argc, char *argv[])
+ 			usage();
+ 			exitcode = 0;
+ 			goto out;
++		case 'H':
++			iface->hostapd_ctrl = optarg;
++			break;
+ 		case 'i':
+ 			iface->ifname = optarg;
+ 			break;
 --- a/wpa_supplicant/wpa_supplicant.c
 +++ b/wpa_supplicant/wpa_supplicant.c
 @@ -125,6 +125,55 @@ static void wpas_update_fils_connect_par
@@ -118,15 +183,20 @@
  		wpa_s->new_connection = 1;
  		wpa_drv_set_operstate(wpa_s, 0);
  #ifndef IEEE8021X_EAPOL
-@@ -5351,6 +5404,20 @@ static int wpa_supplicant_init_iface(str
+@@ -1920,6 +1973,8 @@ void wpa_supplicant_associate(struct wpa
+ 			wpa_ssid_txt(ssid->ssid, ssid->ssid_len),
+ 			ssid->id);
+ 		wpas_notify_mesh_group_started(wpa_s, ssid);
++		if (wpa_s->hostapd)
++			hostapd_reload(wpa_s, wpa_s->current_bss);
+ #else /* CONFIG_MESH */
+ 		wpa_msg(wpa_s, MSG_ERROR,
+ 			"mesh mode support not included in the build");
+@@ -5362,6 +5417,16 @@ static int wpa_supplicant_init_iface(str
  			   sizeof(wpa_s->bridge_ifname));
  	}
  
 +	if (iface->hostapd_ctrl) {
-+		char *cmd = "STOP_AP";
-+		char buf[256];
-+		int len = sizeof(buf);
-+
 +		wpa_s->hostapd = wpa_ctrl_open(iface->hostapd_ctrl);
 +		if (!wpa_s->hostapd) {
 +			wpa_printf(MSG_ERROR, "\nFailed to connect to hostapd\n");
@@ -139,7 +209,7 @@
  	/* RSNA Supplicant Key Management - INITIALIZE */
  	eapol_sm_notify_portEnabled(wpa_s->eapol, FALSE);
  	eapol_sm_notify_portValid(wpa_s->eapol, FALSE);
-@@ -5672,6 +5739,11 @@ static void wpa_supplicant_deinit_iface(
+@@ -5683,6 +5748,11 @@ static void wpa_supplicant_deinit_iface(
  	if (terminate)
  		wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_TERMINATING);
  
@@ -151,91 +221,26 @@
  	if (wpa_s->ctrl_iface) {
  		wpa_supplicant_ctrl_iface_deinit(wpa_s->ctrl_iface);
  		wpa_s->ctrl_iface = NULL;
---- a/wpa_supplicant/bss.c
-+++ b/wpa_supplicant/bss.c
-@@ -11,6 +11,7 @@
- #include "utils/common.h"
- #include "utils/eloop.h"
- #include "common/ieee802_11_defs.h"
-+#include "common/ieee802_11_common.h"
- #include "drivers/driver.h"
- #include "eap_peer/eap.h"
- #include "wpa_supplicant_i.h"
-@@ -290,6 +291,10 @@ void calculate_update_time(const struct
- static void wpa_bss_copy_res(struct wpa_bss *dst, struct wpa_scan_res *src,
- 			     struct os_reltime *fetch_time)
- {
-+	struct ieee80211_ht_capabilities *capab;
-+	struct ieee80211_ht_operation *oper;
-+	struct ieee802_11_elems elems;
+--- a/wpa_supplicant/wpa_supplicant_i.h
++++ b/wpa_supplicant/wpa_supplicant_i.h
+@@ -101,6 +101,11 @@ struct wpa_interface {
+ 	const char *ifname;
+ 
+ 	/**
++	 * hostapd_ctrl - path to hostapd control socket for notification
++	 */
++	const char *hostapd_ctrl;
 +
- 	dst->flags = src->flags;
- 	os_memcpy(dst->bssid, src->bssid, ETH_ALEN);
- 	dst->freq = src->freq;
-@@ -302,6 +307,15 @@ static void wpa_bss_copy_res(struct wpa_
- 	dst->est_throughput = src->est_throughput;
- 	dst->snr = src->snr;
++	/**
+ 	 * bridge_ifname - Optional bridge interface name
+ 	 *
+ 	 * If the driver interface (ifname) is included in a Linux bridge
+@@ -513,6 +518,8 @@ struct wpa_supplicant {
+ #endif /* CONFIG_CTRL_IFACE_BINDER */
+ 	char bridge_ifname[16];
  
-+	memset(&elems, 0, sizeof(elems));
-+	ieee802_11_parse_elems((u8 *) (src + 1), src->ie_len, &elems, 0);
-+	capab = (struct ieee80211_ht_capabilities *) elems.ht_capabilities;
-+	oper = (struct ieee80211_ht_operation *) elems.ht_operation;
-+	if (capab)
-+		dst->ht_capab = le_to_host16(capab->ht_capabilities_info);
-+	if (oper)
-+		dst->ht_param = oper->ht_param;
++	struct wpa_ctrl *hostapd;
 +
- 	calculate_update_time(fetch_time, src->age, &dst->last_update);
- }
+ 	char *confname;
+ 	char *confanother;
  
---- a/wpa_supplicant/main.c
-+++ b/wpa_supplicant/main.c
-@@ -34,7 +34,7 @@ static void usage(void)
- 	       "vW] [-P<pid file>] "
- 	       "[-g<global ctrl>] \\\n"
- 	       "        [-G<group>] \\\n"
--	       "        -i<ifname> -c<config file> [-C<ctrl>] [-D<driver>] "
-+	       "        -i<ifname> -c<config file> [-C<ctrl>] [-D<driver>] [-H<hostapd path>] "
- 	       "[-p<driver_param>] \\\n"
- 	       "        [-b<br_ifname>] [-e<entropy file>]"
- #ifdef CONFIG_DEBUG_FILE
-@@ -74,6 +74,7 @@ static void usage(void)
- 	       "  -g = global ctrl_interface\n"
- 	       "  -G = global ctrl_interface group\n"
- 	       "  -h = show this help text\n"
-+	       "  -H = connect to a hostapd instance to manage state changes\n"
- 	       "  -i = interface name\n"
- 	       "  -I = additional configuration file\n"
- 	       "  -K = include keys (passwords, etc.) in debug output\n"
-@@ -201,7 +202,7 @@ int main(int argc, char *argv[])
- 
- 	for (;;) {
- 		c = getopt(argc, argv,
--			   "b:Bc:C:D:de:f:g:G:hi:I:KLMm:No:O:p:P:qsTtuvW");
-+			   "b:Bc:C:D:de:f:g:G:hH:i:I:KLMm:No:O:p:P:qsTtuvW");
- 		if (c < 0)
- 			break;
- 		switch (c) {
-@@ -248,6 +249,9 @@ int main(int argc, char *argv[])
- 			usage();
- 			exitcode = 0;
- 			goto out;
-+		case 'H':
-+			iface->hostapd_ctrl = optarg;
-+			break;
- 		case 'i':
- 			iface->ifname = optarg;
- 			break;
---- a/wpa_supplicant/bss.h
-+++ b/wpa_supplicant/bss.h
-@@ -80,6 +80,10 @@ struct wpa_bss {
- 	u8 ssid[SSID_MAX_LEN];
- 	/** Length of SSID */
- 	size_t ssid_len;
-+	/** HT capabilities */
-+	u16 ht_capab;
-+	/* Five octets of HT Operation Information */
-+	u8 ht_param;
- 	/** Frequency of the channel in MHz (e.g., 2412 = channel 1) */
- 	int freq;
- 	/** Beacon interval in TUs (host byte order) */

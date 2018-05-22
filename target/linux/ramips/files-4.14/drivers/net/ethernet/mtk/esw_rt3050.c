@@ -1358,8 +1358,8 @@ static int esw_probe(struct platform_device *pdev)
 	esw->dev = &pdev->dev;
 	esw->irq = irq_of_parse_and_map(np, 0);
 	esw->base = devm_ioremap_resource(&pdev->dev, res);
-	if (!esw->base)
-		return -EADDRNOTAVAIL;
+	if (IS_ERR(esw->base))
+		return PTR_ERR(esw->base);
 
 	port_map = of_get_property(np, "mediatek,portmap", NULL);
 	if (port_map)

@@ -1513,7 +1513,7 @@ static int fe_probe(struct platform_device *pdev)
 		soc->reg_table = fe_reg_table;
 
 	fe_base = devm_ioremap_resource(&pdev->dev, res);
-	if (!fe_base) {
+	if (IS_ERR(fe_base)) {
 		err = -EADDRNOTAVAIL;
 		goto err_out;
 	}

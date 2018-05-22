@@ -1,10 +1,16 @@
+#
+# Copyright (C) 2008-2014 The LuCI Team <luci@lists.subsignal.org>
+#
+# This is free software, licensed under the Apache License, Version 2.0 .
+#
+
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=LuCI for Samba4
-LUCI_DEPENDS:=+samba4x-server
+LUCI_TITLE:=Network Shares - Samba 4.x SMB/CIFS module
+LUCI_DEPENDS:=+samba4
 LUCI_PKGARCH:=all
-PKG_VERSION:=1.0
-PKG_RELEASE:=1
+PKG_VERSION:=1
+PKG_RELEASE:=2
 
 include $(TOPDIR)/feeds/luci/luci.mk
 

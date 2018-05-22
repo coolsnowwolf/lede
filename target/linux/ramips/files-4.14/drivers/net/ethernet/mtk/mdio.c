@@ -82,10 +82,10 @@ int fe_connect_phy_node(struct fe_priv *priv, struct device_node *phy_node)
 
 	phydev = of_phy_connect(priv->netdev, phy_node, fe_phy_link_adjust,
 				0, phy_mode);
-	if (IS_ERR(phydev)) {
+	if (!phydev) {
 		dev_err(priv->dev, "could not connect to PHY\n");
 		priv->phy->phy_node[port] = NULL;
-		return PTR_ERR(phydev);
+		return -ENODEV;
 	}
 
 	phydev->supported &= PHY_GBIT_FEATURES;
