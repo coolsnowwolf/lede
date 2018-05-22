@@ -13,7 +13,7 @@ PKG_SOURCE_DATE:=2017-02-13
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/qoriq-open-source/fm-ucode.git
+PKG_SOURCE_URL:=https://github.com/NXP/qoriq-fm-ucode.git
 PKG_SOURCE_VERSION:=c275e91392e2adab1ed22f3867b8269ca3c54014
 PKG_MIRROR_HASH:=1a4611d528f67f3acfa88aefdec9a9a67d96a3139ac5fe1089f599272e6c4a52
 

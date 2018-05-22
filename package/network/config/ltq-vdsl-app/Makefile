@@ -19,6 +19,7 @@ PKG_LICENSE:=BSD-2-Clause
 
 PKG_BUILD_DEPENDS:=ltq-vdsl
 
+PKG_ASLR_PIE:=0
 PKG_FLAGS:=nonshared
 
 include $(INCLUDE_DIR)/package.mk

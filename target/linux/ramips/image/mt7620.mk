@@ -2,7 +2,8 @@
 # MT7620A Profiles
 #
 
-DEVICE_VARS += TPLINK_FLASHLAYOUT TPLINK_HWID TPLINK_HWREV TPLINK_HWREVADD TPLINK_HVERSION
+DEVICE_VARS += TPLINK_FLASHLAYOUT TPLINK_HWID TPLINK_HWREV TPLINK_HWREVADD TPLINK_HVERSION \
+	DLINK_ROM_ID DLINK_FAMILY_MEMBER DLINK_FIRMWARE_SIZE
 
 define Build/elecom-header
 	cp $@ $(KDIR)/v_0.0.0.bin
@@ -31,8 +32,7 @@ define Device/alfa-network_ac1200rm
   DTS := AC1200RM
   IMAGE_SIZE := 16064k
   DEVICE_TITLE := ALFA Network AC1200RM
-  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
-  SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci uboot-envtools
 endef
 TARGET_DEVICES += alfa-network_ac1200rm
 
@@ -44,20 +44,6 @@ define Device/Archer
   IMAGE/factory.bin := tplink-v2-image -e
   IMAGE/sysupgrade.bin := tplink-v2-image -s -e | append-metadata
 endef
-
-define Device/ArcherC20
-  $(Device/Archer)
-  DTS := ArcherC20
-  SUPPORTED_DEVICES := c20
-  TPLINK_FLASHLAYOUT := 8Mmtk
-  TPLINK_HWID := 0xc2000001
-  TPLINK_HWREV := 0x44
-  TPLINK_HWREVADD := 0x1
-  IMAGES += factory.bin
-  DEVICE_TITLE := TP-Link ArcherC20
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
-endef
-TARGET_DEVICES += ArcherC20
 
 define Device/ArcherC20i
   $(Device/Archer)
@@ -96,6 +82,13 @@ define Device/ArcherMR200
   DEVICE_TITLE := TP-Link ArcherMR200
 endef
 TARGET_DEVICES += ArcherMR200
+
+define Device/bocco
+  DTS := BOCCO
+  DEVICE_TITLE := YUKAI Engineering BOCCO
+  DEVICE_PACKAGES := kmod-sound-core kmod-sound-mt7620 kmod-i2c-ralink
+endef
+TARGET_DEVICES += bocco
 
 define Device/c108
   DTS := C108
@@ -161,6 +154,44 @@ define Device/dir-810l
 endef
 TARGET_DEVICES += dir-810l
 
+define Device/dlink_dwr-116-a1
+  DTS := DWR-116-A1
+  DEVICE_TITLE := D-Link DWR-116 A1/A2
+  DEVICE_PACKAGES := kmod-usb2 jboot-tools
+  DLINK_ROM_ID := DLK6E3803001
+  DLINK_FAMILY_MEMBER := 0x6E38
+  DLINK_FIRMWARE_SIZE := 0x7E0000
+  KERNEL := $(KERNEL_DTB)
+  IMAGES += factory.bin
+  IMAGE/sysupgrade.bin := mkdlinkfw | pad-rootfs | append-metadata
+  IMAGE/factory.bin := mkdlinkfw | pad-rootfs | mkdlinkfw-factory
+endef
+TARGET_DEVICES += dlink_dwr-116-a1
+
+define Device/dlink_dwr-921-c1
+  DTS := DWR-921-C1
+  IMAGE_SIZE := $(ralink_default_fw_size_16M)
+  DEVICE_TITLE := D-Link DWR-921 C1
+  DLINK_ROM_ID := DLK6E2414001
+  DLINK_FAMILY_MEMBER := 0x6E24
+  DLINK_FIRMWARE_SIZE := 0xFE0000
+  KERNEL := $(KERNEL_DTB)
+  IMAGES += factory.bin
+  IMAGE/sysupgrade.bin := mkdlinkfw | pad-rootfs | append-metadata
+  IMAGE/factory.bin := mkdlinkfw | pad-rootfs | mkdlinkfw-factory
+  DEVICE_PACKAGES := jboot-tools \
+	kmod-usb2 kmod-usb-net-qmi-wwan kmod-usb-serial-option uqmi
+endef
+TARGET_DEVICES += dlink_dwr-921-c1
+
+define Device/dlink_dwr-921-c3
+  $(Device/dlink_dwr-921-c1)
+  DEVICE_TITLE := D-Link DWR-921 C3
+  DLINK_ROM_ID := DLK6E2414009
+  SUPPORTED_DEVICES := dlink,dwr-921-c1
+endef
+TARGET_DEVICES += dlink_dwr-921-c3
+
 define Device/e1700
   DTS := E1700
   IMAGES += factory.bin
@@ -177,7 +208,7 @@ define Device/ex2700
   BLOCKSIZE := 4k
   IMAGE_SIZE := $(ralink_default_fw_size_4M)
   IMAGES += factory.bin
-  KERNEL := $(KERNEL_DTB) | uImage lzma | pad-offset 64k 64 | append-uImage-fakeroot-hdr
+  KERNEL := $(KERNEL_DTB) | uImage lzma | pad-offset 64k 64 | append-uImage-fakehdr filesystem
   IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
 	netgear-dni
   DEVICE_PACKAGES := -kmod-mt76
@@ -433,6 +464,20 @@ define Device/tiny-ac
 endef
 TARGET_DEVICES += tiny-ac
 
+define Device/tplink_c20-v1
+  $(Device/Archer)
+  DTS := ArcherC20v1
+  SUPPORTED_DEVICES := c20v1
+  TPLINK_FLASHLAYOUT := 8Mmtk
+  TPLINK_HWID := 0xc2000001
+  TPLINK_HWREV := 0x44
+  TPLINK_HWREVADD := 0x1
+  IMAGES += factory.bin
+  DEVICE_TITLE := TP-Link ArcherC20 v1
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += tplink_c20-v1
+
 define Device/vonets_var11n-300
   DTS := VAR11N-300
   IMAGE_SIZE := $(ralink_default_fw_size_4M)
@@ -440,6 +485,14 @@ define Device/vonets_var11n-300
   DEVICE_TITLE := Vonets VAR11N-300
 endef
 TARGET_DEVICES += vonets_var11n-300
+
+define Device/ravpower_wd03
+  DTS := WD03
+  IMAGE_SIZE := $(ralink_default_fw_size_8M)
+  DEVICE_TITLE := Ravpower WD03
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-mt76 kmod-usb-ehci
+endef
+TARGET_DEVICES += ravpower_wd03
 
 define Device/whr-1166d
   DTS := WHR-1166D
@@ -474,7 +527,7 @@ define Device/wn3000rpv3
   DTS := WN3000RPV3
   BLOCKSIZE := 4k
   IMAGES += factory.bin
-  KERNEL := $(KERNEL_DTB) | uImage lzma | pad-offset 64k 64 | append-uImage-fakeroot-hdr
+  KERNEL := $(KERNEL_DTB) | uImage lzma | pad-offset 64k 64 | append-uImage-fakehdr filesystem
   IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
 	netgear-dni
   DEVICE_TITLE := Netgear WN3000RPv3

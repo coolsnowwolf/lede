@@ -1,0 +1,140 @@
+From: Pablo Neira Ayuso <pablo@netfilter.org>
+Date: Mon, 5 Feb 2018 21:44:50 +0100
+Subject: [PATCH] netfilter: nf_tables: fix flowtable free
+
+Every flow_offload entry is added into the table twice. Because of this,
+rhashtable_free_and_destroy can't be used, since it would call kfree for
+each flow_offload object twice.
+
+This patch adds a call to nf_flow_table_iterate_cleanup() to schedule
+removal of entries, then there is an explicitly invocation of the
+garbage collector to clean up resources.
+
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/include/net/netfilter/nf_flow_table.h
++++ b/include/net/netfilter/nf_flow_table.h
+@@ -14,6 +14,7 @@ struct nf_flowtable_type {
+ 	struct list_head		list;
+ 	int				family;
+ 	void				(*gc)(struct work_struct *work);
++	void				(*free)(struct nf_flowtable *ft);
+ 	const struct rhashtable_params	*params;
+ 	nf_hookfn			*hook;
+ 	struct module			*owner;
+@@ -98,6 +99,7 @@ int nf_flow_table_iterate(struct nf_flow
+ 
+ void nf_flow_table_cleanup(struct net *net, struct net_device *dev);
+ 
++void nf_flow_table_free(struct nf_flowtable *flow_table);
+ void nf_flow_offload_work_gc(struct work_struct *work);
+ extern const struct rhashtable_params nf_flow_offload_rhash_params;
+ 
+--- a/net/ipv4/netfilter/nf_flow_table_ipv4.c
++++ b/net/ipv4/netfilter/nf_flow_table_ipv4.c
+@@ -260,6 +260,7 @@ static struct nf_flowtable_type flowtabl
+ 	.family		= NFPROTO_IPV4,
+ 	.params		= &nf_flow_offload_rhash_params,
+ 	.gc		= nf_flow_offload_work_gc,
++	.free		= nf_flow_table_free,
+ 	.hook		= nf_flow_offload_ip_hook,
+ 	.owner		= THIS_MODULE,
+ };
+--- a/net/ipv6/netfilter/nf_flow_table_ipv6.c
++++ b/net/ipv6/netfilter/nf_flow_table_ipv6.c
+@@ -254,6 +254,7 @@ static struct nf_flowtable_type flowtabl
+ 	.family		= NFPROTO_IPV6,
+ 	.params		= &nf_flow_offload_rhash_params,
+ 	.gc		= nf_flow_offload_work_gc,
++	.free		= nf_flow_table_free,
+ 	.hook		= nf_flow_offload_ipv6_hook,
+ 	.owner		= THIS_MODULE,
+ };
+--- a/net/netfilter/nf_flow_table.c
++++ b/net/netfilter/nf_flow_table.c
+@@ -232,19 +232,16 @@ static inline bool nf_flow_is_dying(cons
+ 	return flow->flags & FLOW_OFFLOAD_DYING;
+ }
+ 
+-void nf_flow_offload_work_gc(struct work_struct *work)
++static int nf_flow_offload_gc_step(struct nf_flowtable *flow_table)
+ {
+ 	struct flow_offload_tuple_rhash *tuplehash;
+-	struct nf_flowtable *flow_table;
+ 	struct rhashtable_iter hti;
+ 	struct flow_offload *flow;
+ 	int err;
+ 
+-	flow_table = container_of(work, struct nf_flowtable, gc_work.work);
+-
+ 	err = rhashtable_walk_init(&flow_table->rhashtable, &hti, GFP_KERNEL);
+ 	if (err)
+-		goto schedule;
++		return 0;
+ 
+ 	rhashtable_walk_start(&hti);
+ 
+@@ -270,7 +267,16 @@ void nf_flow_offload_work_gc(struct work
+ out:
+ 	rhashtable_walk_stop(&hti);
+ 	rhashtable_walk_exit(&hti);
+-schedule:
++
++	return 1;
++}
++
++void nf_flow_offload_work_gc(struct work_struct *work)
++{
++	struct nf_flowtable *flow_table;
++
++	flow_table = container_of(work, struct nf_flowtable, gc_work.work);
++	nf_flow_offload_gc_step(flow_table);
+ 	queue_delayed_work(system_power_efficient_wq, &flow_table->gc_work, HZ);
+ }
+ EXPORT_SYMBOL_GPL(nf_flow_offload_work_gc);
+@@ -449,5 +455,12 @@ void nf_flow_table_cleanup(struct net *n
+ }
+ EXPORT_SYMBOL_GPL(nf_flow_table_cleanup);
+ 
++void nf_flow_table_free(struct nf_flowtable *flow_table)
++{
++	nf_flow_table_iterate(flow_table, nf_flow_table_do_cleanup, NULL);
++	WARN_ON(!nf_flow_offload_gc_step(flow_table));
++}
++EXPORT_SYMBOL_GPL(nf_flow_table_free);
++
+ MODULE_LICENSE("GPL");
+ MODULE_AUTHOR("Pablo Neira Ayuso <pablo@netfilter.org>");
+--- a/net/netfilter/nf_flow_table_inet.c
++++ b/net/netfilter/nf_flow_table_inet.c
+@@ -24,6 +24,7 @@ static struct nf_flowtable_type flowtabl
+ 	.family		= NFPROTO_INET,
+ 	.params		= &nf_flow_offload_rhash_params,
+ 	.gc		= nf_flow_offload_work_gc,
++	.free		= nf_flow_table_free,
+ 	.hook		= nf_flow_offload_inet_hook,
+ 	.owner		= THIS_MODULE,
+ };
+--- a/net/netfilter/nf_tables_api.c
++++ b/net/netfilter/nf_tables_api.c
+@@ -5203,17 +5203,12 @@ err:
+ 	nfnetlink_set_err(ctx->net, ctx->portid, NFNLGRP_NFTABLES, -ENOBUFS);
+ }
+ 
+-static void nft_flowtable_destroy(void *ptr, void *arg)
+-{
+-	kfree(ptr);
+-}
+-
+ static void nf_tables_flowtable_destroy(struct nft_flowtable *flowtable)
+ {
+ 	cancel_delayed_work_sync(&flowtable->data.gc_work);
+ 	kfree(flowtable->name);
+-	rhashtable_free_and_destroy(&flowtable->data.rhashtable,
+-				    nft_flowtable_destroy, NULL);
++	flowtable->data.type->free(&flowtable->data);
++	rhashtable_destroy(&flowtable->data.rhashtable);
+ 	module_put(flowtable->data.type->owner);
+ }
+ 

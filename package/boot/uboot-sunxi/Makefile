@@ -9,9 +9,9 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2017.07
+PKG_VERSION:=2017.11
 
-PKG_HASH:=5374bfdc8acb9a38c025371b1ff20f45e7533668e84e685d0df5d9e7c0e4feff
+PKG_HASH:=6a018fd3caf58f3dcfa23ee989a82bd35df03af71872b9dca8c6d758a0d26c05
 
 PKG_MAINTAINER:=Zoltan HERPAI <wigyori@uid0.hu>
 
@@ -150,6 +150,12 @@ define U-Boot/orangepi_r1
   BUILD_DEVICES:=sun8i-h2-plus-orangepi-r1
 endef
 
+define U-Boot/orangepi_pc
+  BUILD_SUBTARGET:=cortexa7
+  NAME:=Orange Pi PC (H3)
+  BUILD_DEVICES:=sun8i-h3-orangepi-pc
+endef
+
 define U-Boot/orangepi_plus
   BUILD_SUBTARGET:=cortexa7
   NAME:=Orange Pi Plus (H3)
@@ -168,11 +174,36 @@ define U-Boot/pangolin
   UENV:=pangolin
 endef
 
+define U-Boot/nanopi_neo_plus2
+  BUILD_SUBTARGET:=cortexa53
+  NAME:=NanoPi NEO Plus2 (H5)
+  BUILD_DEVICES:=sun50i-h5-nanopi-neo-plus2
+  DEPENDS:=+PACKAGE_u-boot-nanopi_neo_plus2:arm-trusted-firmware-sunxi
+  UENV:=a64
+endef
+
 define U-Boot/pine64_plus
   BUILD_SUBTARGET:=cortexa53
   NAME:=Pine64 Plus A64
   BUILD_DEVICES:=sun50i-a64-pine64-plus
   DEPENDS:=+PACKAGE_u-boot-pine64_plus:arm-trusted-firmware-sunxi
+  UENV:=a64
+endef
+
+define U-Boot/sopine_baseboard
+  BUILD_SUBTARGET:=cortexa53
+  NAME:=Sopine Baseboard
+  BUILD_DEVICES:=sun50i-a64-sopine-baseboard
+  DEPENDS:=+PACKAGE_u-boot-sopine_baseboard:arm-trusted-firmware-sunxi
+  UENV:=a64
+endef
+
+
+define U-Boot/orangepi_zero_plus
+  BUILD_SUBTARGET:=cortexa53
+  NAME:=Xunlong Orange Pi Zero Plus
+  BUILD_DEVICES:=sun50i-h5-orangepi-zero-plus
+  DEPENDS:=+PACKAGE_u-boot-orangepi_zero_plus:arm-trusted-firmware-sunxi
   UENV:=a64
 endef
 
@@ -197,11 +228,15 @@ UBOOT_TARGETS := \
 	Lamobo_R1 \
 	nanopi_m1_plus \
 	nanopi_neo \
+	nanopi_neo_plus2 \
 	orangepi_r1 \
+	orangepi_pc \
 	orangepi_plus \
 	orangepi_2 \
 	pangolin \
-	pine64_plus
+	pine64_plus \
+	sopine_baseboard \
+	orangepi_zero_plus
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
 

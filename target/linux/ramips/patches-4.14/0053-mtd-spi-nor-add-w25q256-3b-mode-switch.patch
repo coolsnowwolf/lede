@@ -1,0 +1,214 @@
+mtd: spi-nor: add support for switching between 3-byte and 4-byte addressing on w25q256 flash
+
+On some devices the flash chip needs to be in 3-byte addressing mode during
+reboot, otherwise the boot loader will fail to start.
+This mode however does not allow regular reads/writes onto the upper 16M
+half. W25Q256 has separate read commands for reading from >16M, however
+it does not have any separate write commands.
+This patch changes the code to leave the chip in 3-byte mode most of the
+time and only switch during erase/write cycles that go to >16M
+addresses.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+--- a/drivers/mtd/spi-nor/spi-nor.c
++++ b/drivers/mtd/spi-nor/spi-nor.c
+@@ -89,6 +89,10 @@ struct flash_info {
+ #define NO_CHIP_ERASE		BIT(12) /* Chip does not support chip erase */
+ #define SPI_NOR_SKIP_SFDP	BIT(13)	/* Skip parsing of SFDP tables */
+ #define USE_CLSR		BIT(14)	/* use CLSR command */
++#define SPI_NOR_4B_READ_OP	BIT(15)	/*
++					 * Like SPI_NOR_4B_OPCODES, but for read
++					 * op code only.
++					 */
+ };
+ 
+ #define JEDEC_MFR(info)	((info)->id[0])
+@@ -240,6 +244,15 @@ static inline u8 spi_nor_convert_3to4_er
+ 				      ARRAY_SIZE(spi_nor_3to4_erase));
+ }
+ 
++static void spi_nor_set_4byte_read(struct spi_nor *nor,
++				   const struct flash_info *info)
++{
++	nor->addr_width = 3;
++	nor->ext_addr = 0;
++	nor->read_opcode = spi_nor_convert_3to4_read(nor->read_opcode);
++	nor->flags |= SNOR_F_4B_EXT_ADDR;
++}
++
+ static void spi_nor_set_4byte_opcodes(struct spi_nor *nor,
+ 				      const struct flash_info *info)
+ {
+@@ -467,6 +480,36 @@ static int spi_nor_erase_sector(struct s
+ 	return nor->write_reg(nor, nor->erase_opcode, buf, nor->addr_width);
+ }
+ 
++static int spi_nor_check_ext_addr(struct spi_nor *nor, u32 addr)
++{
++	bool ext_addr;
++	int ret;
++	u8 cmd;
++
++	if (!(nor->flags & SNOR_F_4B_EXT_ADDR))
++		return 0;
++
++	ext_addr = !!(addr & 0xff000000);
++	if (nor->ext_addr == ext_addr)
++		return 0;
++
++	cmd = ext_addr ? SPINOR_OP_EN4B : SPINOR_OP_EX4B;
++	write_enable(nor);
++	ret = nor->write_reg(nor, cmd, NULL, 0);
++	if (ret)
++		return ret;
++
++	cmd = 0;
++	ret = nor->write_reg(nor, SPINOR_OP_WREAR, &cmd, 1);
++	if (ret)
++		return ret;
++
++	nor->addr_width = 3 + ext_addr;
++	nor->ext_addr = ext_addr;
++	write_disable(nor);
++	return 0;
++}
++
+ /*
+  * Erase an address range on the nor chip.  The address range may extend
+  * one or more erase sectors.  Return an error is there is a problem erasing.
+@@ -492,6 +535,10 @@ static int spi_nor_erase(struct mtd_info
+ 	if (ret)
+ 		return ret;
+ 
++	ret = spi_nor_check_ext_addr(nor, addr + len);
++	if (ret)
++		return ret;
++
+ 	/* whole-chip erase? */
+ 	if (len == mtd->size && !(nor->flags & SNOR_F_NO_OP_CHIP_ERASE)) {
+ 		unsigned long timeout;
+@@ -542,6 +589,7 @@ static int spi_nor_erase(struct mtd_info
+ 	write_disable(nor);
+ 
+ erase_err:
++	spi_nor_check_ext_addr(nor, 0);
+ 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_ERASE);
+ 
+ 	instr->state = ret ? MTD_ERASE_FAILED : MTD_ERASE_DONE;
+@@ -834,7 +882,9 @@ static int spi_nor_lock(struct mtd_info
+ 	if (ret)
+ 		return ret;
+ 
++	spi_nor_check_ext_addr(nor, ofs + len);
+ 	ret = nor->flash_lock(nor, ofs, len);
++	spi_nor_check_ext_addr(nor, 0);
+ 
+ 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_UNLOCK);
+ 	return ret;
+@@ -849,7 +899,9 @@ static int spi_nor_unlock(struct mtd_inf
+ 	if (ret)
+ 		return ret;
+ 
++	spi_nor_check_ext_addr(nor, ofs + len);
+ 	ret = nor->flash_unlock(nor, ofs, len);
++	spi_nor_check_ext_addr(nor, 0);
+ 
+ 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_LOCK);
+ 	return ret;
+@@ -1164,7 +1216,7 @@ static const struct flash_info spi_nor_i
+ 	{ "w25q80", INFO(0xef5014, 0, 64 * 1024,  16, SECT_4K) },
+ 	{ "w25q80bl", INFO(0xef4014, 0, 64 * 1024,  16, SECT_4K) },
+ 	{ "w25q128", INFO(0xef4018, 0, 64 * 1024, 256, SECT_4K) },
+-	{ "w25q256", INFO(0xef4019, 0, 64 * 1024, 512, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
++	{ "w25q256", INFO(0xef4019, 0, 64 * 1024, 512, SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_4B_READ_OP) },
+ 	{ "w25m512jv", INFO(0xef7119, 0, 64 * 1024, 1024,
+ 			SECT_4K | SPI_NOR_QUAD_READ | SPI_NOR_DUAL_READ) },
+ 
+@@ -1224,6 +1276,9 @@ static int spi_nor_read(struct mtd_info
+ 	if (ret)
+ 		return ret;
+ 
++	if (nor->flags & SNOR_F_4B_EXT_ADDR)
++		nor->addr_width = 4;
++
+ 	while (len) {
+ 		loff_t addr = from;
+ 
+@@ -1248,6 +1303,18 @@ static int spi_nor_read(struct mtd_info
+ 	ret = 0;
+ 
+ read_err:
++	if (nor->flags & SNOR_F_4B_EXT_ADDR) {
++		u8 val = 0;
++
++		if ((from + len) & 0xff000000) {
++			write_enable(nor);
++			nor->write_reg(nor, SPINOR_OP_WREAR, &val, 1);
++			write_disable(nor);
++		}
++
++		nor->addr_width = 3;
++	}
++
+ 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_READ);
+ 	return ret;
+ }
+@@ -1349,6 +1416,10 @@ static int spi_nor_write(struct mtd_info
+ 	if (ret)
+ 		return ret;
+ 
++	ret = spi_nor_check_ext_addr(nor, to + len);
++	if (ret < 0)
++		return ret;
++
+ 	for (i = 0; i < len; ) {
+ 		ssize_t written;
+ 		loff_t addr = to + i;
+@@ -1389,6 +1460,7 @@ static int spi_nor_write(struct mtd_info
+ 	}
+ 
+ write_err:
++	spi_nor_check_ext_addr(nor, 0);
+ 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_WRITE);
+ 	return ret;
+ }
+@@ -2805,8 +2877,10 @@ int spi_nor_scan(struct spi_nor *nor, co
+ 	} else if (mtd->size > 0x1000000) {
+ 		/* enable 4-byte addressing if the device exceeds 16MiB */
+ 		nor->addr_width = 4;
+-		if (JEDEC_MFR(info) == SNOR_MFR_SPANSION ||
+-		    info->flags & SPI_NOR_4B_OPCODES)
++		if (info->flags & SPI_NOR_4B_READ_OP)
++			spi_nor_set_4byte_read(nor, info);
++		else if (JEDEC_MFR(info) == SNOR_MFR_SPANSION ||
++			 info->flags & SPI_NOR_4B_OPCODES)
+ 			spi_nor_set_4byte_opcodes(nor, info);
+ 		else
+ 			set_4byte(nor, info, 1);
+--- a/include/linux/mtd/spi-nor.h
++++ b/include/linux/mtd/spi-nor.h
+@@ -102,6 +102,7 @@
+ /* Used for Macronix and Winbond flashes. */
+ #define SPINOR_OP_EN4B		0xb7	/* Enter 4-byte mode */
+ #define SPINOR_OP_EX4B		0xe9	/* Exit 4-byte mode */
++#define SPINOR_OP_WREAR		0xc5	/* Write extended address register */
+ 
+ /* Used for Spansion flashes only. */
+ #define SPINOR_OP_BRWR		0x17	/* Bank register write */
+@@ -229,6 +230,7 @@ enum spi_nor_option_flags {
+ 	SNOR_F_S3AN_ADDR_DEFAULT = BIT(3),
+ 	SNOR_F_READY_XSR_RDY	= BIT(4),
+ 	SNOR_F_USE_CLSR		= BIT(5),
++	SNOR_F_4B_EXT_ADDR	= BIT(6),
+ };
+ 
+ /**
+@@ -280,6 +282,7 @@ struct spi_nor {
+ 	enum spi_nor_protocol	reg_proto;
+ 	bool			sst_write_second;
+ 	u32			flags;
++	u8			ext_addr;
+ 	u8			cmd_buf[SPI_NOR_MAX_CMD_SIZE];
+ 
+ 	int (*prepare)(struct spi_nor *nor, enum spi_nor_ops ops);

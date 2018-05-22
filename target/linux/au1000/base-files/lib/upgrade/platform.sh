@@ -24,13 +24,3 @@ platform_do_upgrade() {
 	get_image "$1" | tar -Oxvf - $KERNEL_IMG | mtd write - "kernel"
 	get_image "$1" | tar -Oxvf - $ROOTFS_IMG | mtd $conf write - "rootfs"
 }
-
-disable_watchdog() {
-        killall watchdog
-        ( ps | grep -v 'grep' | grep '/dev/watchdog' ) && {
-                echo 'Could not disable watchdog'
-                return 1
-        }
-}
-
-append sysupgrade_pre_upgrade disable_watchdog

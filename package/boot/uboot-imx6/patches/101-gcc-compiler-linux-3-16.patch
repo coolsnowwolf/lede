@@ -1,0 +1,480 @@
+From fb8ffd7cfc68b3dc44e182356a207d784cb30b34 Mon Sep 17 00:00:00 2001
+From: Masahiro Yamada <yamada.m@jp.panasonic.com>
+Date: Thu, 4 Sep 2014 02:40:58 +0900
+Subject: compiler*.h: sync include/linux/compiler*.h with Linux 3.16
+
+Copy them from Linux v3.16 tag.
+My main motivation of this commit is to add compiler-clang.h.
+
+Signed-off-by: Masahiro Yamada <yamada.m@jp.panasonic.com>
+Cc: Jeroen Hofstee <jeroen@myspectrum.nl>
+---
+ include/linux/compiler-clang.h | 12 ++++++
+ include/linux/compiler-gcc.h   | 57 ++++++++++++++++++--------
+ include/linux/compiler-gcc3.h  | 20 ++++-----
+ include/linux/compiler-gcc4.h  | 59 +++++++++++++++++++--------
+ include/linux/compiler-intel.h | 40 ++++++++++++++++++
+ include/linux/compiler.h       | 92 +++++++++++++++++++++++++++++++++++++++++-
+ 6 files changed, 236 insertions(+), 44 deletions(-)
+ create mode 100644 include/linux/compiler-clang.h
+ create mode 100644 include/linux/compiler-intel.h
+
+--- /dev/null
++++ b/include/linux/compiler-clang.h
+@@ -0,0 +1,12 @@
++#ifndef __LINUX_COMPILER_H
++#error "Please don't include <linux/compiler-clang.h> directly, include <linux/compiler.h> instead."
++#endif
++
++/* Some compiler specific definitions are overwritten here
++ * for Clang compiler
++ */
++
++#ifdef uninitialized_var
++#undef uninitialized_var
++#define uninitialized_var(x) x = *(&(x))
++#endif
+--- a/include/linux/compiler-gcc.h
++++ b/include/linux/compiler-gcc.h
+@@ -5,6 +5,9 @@
+ /*
+  * Common definitions for all gcc versions go here.
+  */
++#define GCC_VERSION (__GNUC__ * 10000 \
++		   + __GNUC_MINOR__ * 100 \
++		   + __GNUC_PATCHLEVEL__)
+ 
+ 
+ /* Optimization barrier */
+@@ -34,9 +37,15 @@
+     __asm__ ("" : "=r"(__ptr) : "0"(ptr));		\
+     (typeof(ptr)) (__ptr + (off)); })
+ 
++/* Make the optimizer believe the variable can be manipulated arbitrarily. */
++#define OPTIMIZER_HIDE_VAR(var) __asm__ ("" : "=r" (var) : "0" (var))
++
++#ifdef __CHECKER__
++#define __must_be_array(arr) 0
++#else
+ /* &a[0] degrades to a pointer: a different type from an array */
+-#define __must_be_array(a) \
+-  BUILD_BUG_ON_ZERO(__builtin_types_compatible_p(typeof(a), typeof(&a[0])))
++#define __must_be_array(a) BUILD_BUG_ON_ZERO(__same_type((a), &(a)[0]))
++#endif
+ 
+ /*
+  * Force always-inline if the user requests it so via the .config,
+@@ -44,15 +53,18 @@
+  */
+ #if !defined(CONFIG_ARCH_SUPPORTS_OPTIMIZED_INLINING) || \
+     !defined(CONFIG_OPTIMIZE_INLINING) || (__GNUC__ < 4)
+-# define inline		inline		__attribute__((always_inline))
+-# define __inline__	__inline__	__attribute__((always_inline))
+-# define __inline	__inline	__attribute__((always_inline))
++# define inline		inline		__attribute__((always_inline)) notrace
++# define __inline__	__inline__	__attribute__((always_inline)) notrace
++# define __inline	__inline	__attribute__((always_inline)) notrace
++#else
++/* A lot of inline functions can cause havoc with function tracing */
++# define inline		inline		notrace
++# define __inline__	__inline__	notrace
++# define __inline	__inline	notrace
+ #endif
+ 
+ #define __deprecated			__attribute__((deprecated))
+-#ifndef __packed
+-# define __packed			__attribute__((packed))
+-#endif
++#define __packed			__attribute__((packed))
+ #define __weak				__attribute__((weak))
+ 
+ /*
+@@ -60,8 +72,12 @@
+  * naked functions because then mcount is called without stack and frame pointer
+  * being set up and there is no chance to restore the lr register to the value
+  * before mcount was called.
++ *
++ * The asm() bodies of naked functions often depend on standard calling conventions,
++ * therefore they must be noinline and noclone.  GCC 4.[56] currently fail to enforce
++ * this, so we must do so ourselves.  See GCC PR44290.
+  */
+-#define __naked				__attribute__((naked)) notrace
++#define __naked				__attribute__((naked)) noinline __noclone notrace
+ 
+ #define __noreturn			__attribute__((noreturn))
+ 
+@@ -75,13 +91,10 @@
+  * would be.
+  * [...]
+  */
+-#ifndef __pure
+-# define __pure				__attribute__((pure))
+-#endif
+-#ifndef __aligned
+-# define __aligned(x)			__attribute__((aligned(x)))
+-#endif
+-#define __printf(a,b)			__attribute__((format(printf,a,b)))
++#define __pure				__attribute__((pure))
++#define __aligned(x)			__attribute__((aligned(x)))
++#define __printf(a, b)			__attribute__((format(printf, a, b)))
++#define __scanf(a, b)			__attribute__((format(scanf, a, b)))
+ #define  noinline			__attribute__((noinline))
+ #define __attribute_const__		__attribute__((__const__))
+ #define __maybe_unused			__attribute__((unused))
+@@ -91,3 +104,15 @@
+ #define _gcc_header(x) __gcc_header(linux/compiler-gcc##x.h)
+ #define gcc_header(x) _gcc_header(x)
+ #include gcc_header(__GNUC__)
++
++#if !defined(__noclone)
++#define __noclone	/* not needed */
++#endif
++
++/*
++ * A trick to suppress uninitialized variable warning without generating any
++ * code
++ */
++#define uninitialized_var(x) x = x
++
++#define __always_inline		inline __attribute__((always_inline))
+--- a/include/linux/compiler-gcc3.h
++++ b/include/linux/compiler-gcc3.h
+@@ -2,20 +2,22 @@
+ #error "Please don't include <linux/compiler-gcc3.h> directly, include <linux/compiler.h> instead."
+ #endif
+ 
+-#if __GNUC_MINOR__ >= 3
++#if GCC_VERSION < 30200
++# error Sorry, your compiler is too old - please upgrade it.
++#endif
++
++#if GCC_VERSION >= 30300
+ # define __used			__attribute__((__used__))
+ #else
+ # define __used			__attribute__((__unused__))
+ #endif
+ 
+-#if __GNUC_MINOR__ >= 4
++#if GCC_VERSION >= 30400
+ #define __must_check		__attribute__((warn_unused_result))
+ #endif
+ 
+-/*
+- * A trick to suppress uninitialized variable warning without generating any
+- * code
+- */
+-#define uninitialized_var(x) x = x
+-
+-#define __always_inline		inline __attribute__((always_inline))
++#ifdef CONFIG_GCOV_KERNEL
++# if GCC_VERSION < 30400
++#   error "GCOV profiling support for gcc versions below 3.4 not included"
++# endif /* __GNUC_MINOR__ */
++#endif /* CONFIG_GCOV_KERNEL */
+--- a/include/linux/compiler-gcc4.h
++++ b/include/linux/compiler-gcc4.h
+@@ -4,7 +4,7 @@
+ 
+ /* GCC 4.1.[01] miscompiles __weak */
+ #ifdef __KERNEL__
+-# if __GNUC_MINOR__ == 1 && __GNUC_PATCHLEVEL__ <= 1
++# if GCC_VERSION >= 40100 &&  GCC_VERSION <= 40101
+ #  error Your version of gcc miscompiles the __weak directive
+ # endif
+ #endif
+@@ -12,17 +12,12 @@
+ #define __used			__attribute__((__used__))
+ #define __must_check 		__attribute__((warn_unused_result))
+ #define __compiler_offsetof(a,b) __builtin_offsetof(a,b)
+-#ifndef __always_inline
+-# define __always_inline		inline __attribute__((always_inline))
+-#endif
+ 
+-/*
+- * A trick to suppress uninitialized variable warning without generating any
+- * code
+- */
+-#define uninitialized_var(x) x = x
++#if GCC_VERSION >= 40100 && GCC_VERSION < 40600
++# define __compiletime_object_size(obj) __builtin_object_size(obj, 0)
++#endif
+ 
+-#if __GNUC_MINOR__ >= 3
++#if GCC_VERSION >= 40300
+ /* Mark functions as cold. gcc will assume any path leading to a call
+    to them will be unlikely.  This means a lot of manual unlikely()s
+    are unnecessary now for any paths leading to the usual suspects
+@@ -38,8 +33,15 @@
+    the kernel context */
+ #define __cold			__attribute__((__cold__))
+ 
++#define __UNIQUE_ID(prefix) __PASTE(__PASTE(__UNIQUE_ID_, prefix), __COUNTER__)
+ 
+-#if __GNUC_MINOR__ >= 5
++#ifndef __CHECKER__
++# define __compiletime_warning(message) __attribute__((warning(message)))
++# define __compiletime_error(message) __attribute__((error(message)))
++#endif /* __CHECKER__ */
++#endif /* GCC_VERSION >= 40300 */
++
++#if GCC_VERSION >= 40500
+ /*
+  * Mark a position in code as unreachable.  This can be used to
+  * suppress control flow warnings after asm blocks that transfer
+@@ -50,14 +52,37 @@
+  * unreleased.  Really, we need to have autoconf for the kernel.
+  */
+ #define unreachable() __builtin_unreachable()
+-#endif
+ 
++/* Mark a function definition as prohibited from being cloned. */
++#define __noclone	__attribute__((__noclone__))
++
++#endif /* GCC_VERSION >= 40500 */
++
++#if GCC_VERSION >= 40600
++/*
++ * Tell the optimizer that something else uses this function or variable.
++ */
++#define __visible __attribute__((externally_visible))
+ #endif
+ 
+-#if __GNUC_MINOR__ > 0
+-#define __compiletime_object_size(obj) __builtin_object_size(obj, 0)
++/*
++ * GCC 'asm goto' miscompiles certain code sequences:
++ *
++ *   http://gcc.gnu.org/bugzilla/show_bug.cgi?id=58670
++ *
++ * Work it around via a compiler barrier quirk suggested by Jakub Jelinek.
++ * Fixed in GCC 4.8.2 and later versions.
++ *
++ * (asm goto is automatically volatile - the naming reflects this.)
++ */
++#define asm_volatile_goto(x...)	do { asm goto(x); asm (""); } while (0)
++
++#ifdef CONFIG_ARCH_USE_BUILTIN_BSWAP
++#if GCC_VERSION >= 40400
++#define __HAVE_BUILTIN_BSWAP32__
++#define __HAVE_BUILTIN_BSWAP64__
+ #endif
+-#if __GNUC_MINOR__ >= 4
+-#define __compiletime_warning(message) __attribute__((warning(message)))
+-#define __compiletime_error(message) __attribute__((error(message)))
++#if GCC_VERSION >= 40800 || (defined(__powerpc__) && GCC_VERSION >= 40600)
++#define __HAVE_BUILTIN_BSWAP16__
+ #endif
++#endif /* CONFIG_ARCH_USE_BUILTIN_BSWAP */
+--- /dev/null
++++ b/include/linux/compiler-intel.h
+@@ -0,0 +1,40 @@
++#ifndef __LINUX_COMPILER_H
++#error "Please don't include <linux/compiler-intel.h> directly, include <linux/compiler.h> instead."
++#endif
++
++#ifdef __ECC
++
++/* Some compiler specific definitions are overwritten here
++ * for Intel ECC compiler
++ */
++
++#include <asm/intrinsics.h>
++
++/* Intel ECC compiler doesn't support gcc specific asm stmts.
++ * It uses intrinsics to do the equivalent things.
++ */
++#undef RELOC_HIDE
++#undef OPTIMIZER_HIDE_VAR
++
++#define RELOC_HIDE(ptr, off)					\
++  ({ unsigned long __ptr;					\
++     __ptr = (unsigned long) (ptr);				\
++    (typeof(ptr)) (__ptr + (off)); })
++
++/* This should act as an optimization barrier on var.
++ * Given that this compiler does not have inline assembly, a compiler barrier
++ * is the best we can do.
++ */
++#define OPTIMIZER_HIDE_VAR(var) barrier()
++
++/* Intel ECC compiler doesn't support __builtin_types_compatible_p() */
++#define __must_be_array(a) 0
++
++#endif
++
++#ifndef __HAVE_BUILTIN_BSWAP16__
++/* icc has this, but it's called _bswap16 */
++#define __HAVE_BUILTIN_BSWAP16__
++#define __builtin_bswap16 _bswap16
++#endif
++
+--- a/include/linux/compiler.h
++++ b/include/linux/compiler.h
+@@ -5,16 +5,23 @@
+ 
+ #ifdef __CHECKER__
+ # define __user		__attribute__((noderef, address_space(1)))
+-# define __kernel	/* default address space */
++# define __kernel	__attribute__((address_space(0)))
+ # define __safe		__attribute__((safe))
+ # define __force	__attribute__((force))
+ # define __nocast	__attribute__((nocast))
+ # define __iomem	__attribute__((noderef, address_space(2)))
++# define __must_hold(x)	__attribute__((context(x,1,1)))
+ # define __acquires(x)	__attribute__((context(x,0,1)))
+ # define __releases(x)	__attribute__((context(x,1,0)))
+ # define __acquire(x)	__context__(x,1)
+ # define __release(x)	__context__(x,-1)
+ # define __cond_lock(x,c)	((c) ? ({ __acquire(x); 1; }) : 0)
++# define __percpu	__attribute__((noderef, address_space(3)))
++#ifdef CONFIG_SPARSE_RCU_POINTER
++# define __rcu		__attribute__((noderef, address_space(4)))
++#else
++# define __rcu
++#endif
+ extern void __chk_user_ptr(const volatile void __user *);
+ extern void __chk_io_ptr(const volatile void __iomem *);
+ #else
+@@ -27,13 +34,20 @@ extern void __chk_io_ptr(const volatile
+ # define __chk_user_ptr(x) (void)0
+ # define __chk_io_ptr(x) (void)0
+ # define __builtin_warning(x, y...) (1)
++# define __must_hold(x)
+ # define __acquires(x)
+ # define __releases(x)
+ # define __acquire(x) (void)0
+ # define __release(x) (void)0
+ # define __cond_lock(x,c) (c)
++# define __percpu
++# define __rcu
+ #endif
+ 
++/* Indirect macros required for expanded argument pasting, eg. __LINE__. */
++#define ___PASTE(a,b) a##b
++#define __PASTE(a,b) ___PASTE(a,b)
++
+ #ifdef __KERNEL__
+ 
+ #ifdef __GNUC__
+@@ -49,6 +63,13 @@ extern void __chk_io_ptr(const volatile
+ # include <linux/compiler-intel.h>
+ #endif
+ 
++/* Clang compiler defines __GNUC__. So we will overwrite implementations
++ * coming from above header files here
++ */
++#ifdef __clang__
++#include <linux/compiler-clang.h>
++#endif
++
+ /*
+  * Generic compiler-dependent macros required for kernel
+  * build go below this comment. Actual compiler/compiler version
+@@ -156,6 +177,15 @@ void ftrace_likely_update(struct ftrace_
+     (typeof(ptr)) (__ptr + (off)); })
+ #endif
+ 
++#ifndef OPTIMIZER_HIDE_VAR
++#define OPTIMIZER_HIDE_VAR(var) barrier()
++#endif
++
++/* Not-quite-unique ID. */
++#ifndef __UNIQUE_ID
++# define __UNIQUE_ID(prefix) __PASTE(__PASTE(__UNIQUE_ID_, prefix), __LINE__)
++#endif
++
+ #endif /* __KERNEL__ */
+ 
+ #endif /* __ASSEMBLY__ */
+@@ -228,7 +258,7 @@ void ftrace_likely_update(struct ftrace_
+ 
+ /*
+  * Rather then using noinline to prevent stack consumption, use
+- * noinline_for_stack instead.  For documentaiton reasons.
++ * noinline_for_stack instead.  For documentation reasons.
+  */
+ #define noinline_for_stack noinline
+ 
+@@ -270,11 +300,20 @@ void ftrace_likely_update(struct ftrace_
+ # define __section(S) __attribute__ ((__section__(#S)))
+ #endif
+ 
++#ifndef __visible
++#define __visible
++#endif
++
+ /* Are two types/vars the same type (ignoring qualifiers)? */
+ #ifndef __same_type
+ # define __same_type(a, b) __builtin_types_compatible_p(typeof(a), typeof(b))
+ #endif
+ 
++/* Is this type a native word size -- useful for atomic operations */
++#ifndef __native_word
++# define __native_word(t) (sizeof(t) == sizeof(int) || sizeof(t) == sizeof(long))
++#endif
++
+ /* Compile time object size, -1 for unknown */
+ #ifndef __compiletime_object_size
+ # define __compiletime_object_size(obj) -1
+@@ -284,7 +323,48 @@ void ftrace_likely_update(struct ftrace_
+ #endif
+ #ifndef __compiletime_error
+ # define __compiletime_error(message)
++/*
++ * Sparse complains of variable sized arrays due to the temporary variable in
++ * __compiletime_assert. Unfortunately we can't just expand it out to make
++ * sparse see a constant array size without breaking compiletime_assert on old
++ * versions of GCC (e.g. 4.2.4), so hide the array from sparse altogether.
++ */
++# ifndef __CHECKER__
++#  define __compiletime_error_fallback(condition) \
++	do { ((void)sizeof(char[1 - 2 * condition])); } while (0)
++# endif
+ #endif
++#ifndef __compiletime_error_fallback
++# define __compiletime_error_fallback(condition) do { } while (0)
++#endif
++
++#define __compiletime_assert(condition, msg, prefix, suffix)		\
++	do {								\
++		bool __cond = !(condition);				\
++		extern void prefix ## suffix(void) __compiletime_error(msg); \
++		if (__cond)						\
++			prefix ## suffix();				\
++		__compiletime_error_fallback(__cond);			\
++	} while (0)
++
++#define _compiletime_assert(condition, msg, prefix, suffix) \
++	__compiletime_assert(condition, msg, prefix, suffix)
++
++/**
++ * compiletime_assert - break build and emit msg if condition is false
++ * @condition: a compile-time constant condition to check
++ * @msg:       a message to emit if condition is false
++ *
++ * In tradition of POSIX assert, this macro will break the build if the
++ * supplied condition is *false*, emitting the supplied error message if the
++ * compiler has support to do so.
++ */
++#define compiletime_assert(condition, msg) \
++	_compiletime_assert(condition, msg, __compiletime_assert_, __LINE__)
++
++#define compiletime_assert_atomic_type(t)				\
++	compiletime_assert(__native_word(t),				\
++		"Need native word sized stores/loads for atomicity.")
+ 
+ /*
+  * Prevent the compiler from merging or refetching accesses.  The compiler
+@@ -300,4 +380,12 @@ void ftrace_likely_update(struct ftrace_
+  */
+ #define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
+ 
++/* Ignore/forbid kprobes attach on very low level functions marked by this attribute: */
++#ifdef CONFIG_KPROBES
++# define __kprobes	__attribute__((__section__(".kprobes.text")))
++# define nokprobe_inline	__always_inline
++#else
++# define __kprobes
++# define nokprobe_inline	inline
++#endif
+ #endif /* __LINUX_COMPILER_H */

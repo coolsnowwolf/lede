@@ -15,8 +15,8 @@ vxlan_generic_setup() {
 
 	local link="$cfg"
 
-	local port vid ttl tos mtu macaddr zone
-	json_get_vars port vid ttl tos mtu macaddr zone
+	local port vid ttl tos mtu macaddr zone rxcsum txcsum
+	json_get_vars port vid ttl tos mtu macaddr zone rxcsum txcsum
 
 
 	proto_init_update "$link" 1
@@ -36,6 +36,8 @@ vxlan_generic_setup() {
 	[ -n "$port" ] && json_add_int port "$port"
 	[ -n "$vid" ] && json_add_int id "$vid"
 	[ -n "$macaddr" ] && json_add_string macaddr "$macaddr"
+	[ -n "$rxcsum" ] && json_add_boolean rxcsum "$rxcsum"
+	[ -n "$txcsum" ] && json_add_boolean txcsum "$txcsum"
 	json_close_object
 
 	proto_close_tunnel

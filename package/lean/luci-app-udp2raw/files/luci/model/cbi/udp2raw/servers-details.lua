@@ -68,13 +68,9 @@ for _, v in ipairs(auth_modes) do o:value(v, v:lower()) end
 o.default = "md5"
 
 o = s:option(Flag, "auto_rule", translate("Auto Rule"), translate("Auto add (and delete) iptables rule."))
-o.enabled = "1"
-o.disabled = "0"
 o.default = "1"
 
 o = s:option(Flag, "keep_rule", translate("Keep Rule"), translate("Monitor iptables and auto re-add if necessary."))
-o.enabled = "1"
-o.disabled = "0"
 o:depends("auto_rule", "1")
 
 o = s:option(Value, "seq_mode", translate("seq Mode"), translate("seq increase mode for faketcp."))

@@ -355,6 +355,7 @@ ar8xxx_reg_wait(struct ar8xxx_priv *priv, u32 reg, u32 mask, u32 val,
 			return 0;
 
 		usleep_range(1000, 2000);
+		cond_resched();
 	}
 
 	return -ETIMEDOUT;
@@ -426,6 +427,7 @@ ar8xxx_mib_fetch_port_stat(struct ar8xxx_priv *priv, int port, bool flush)
 			mib_stats[i] = 0;
 		else
 			mib_stats[i] += t;
+		cond_resched();
 	}
 }
 
@@ -565,6 +567,7 @@ ar8216_wait_bit(struct ar8xxx_priv *priv, int reg, u32 mask, u32 val)
 			break;
 
 		udelay(10);
+		cond_resched();
 	}
 
 	pr_err("ar8216: timeout on reg %08x: %08x & %08x != %08x\n",
@@ -730,8 +733,10 @@ ar8216_wait_atu_ready(struct ar8xxx_priv *priv, u16 r2, u16 r1)
 {
 	int timeout = 20;
 
-	while (ar8xxx_mii_read32(priv, r2, r1) & AR8216_ATU_ACTIVE && --timeout)
-                udelay(10);
+	while (ar8xxx_mii_read32(priv, r2, r1) & AR8216_ATU_ACTIVE && --timeout) {
+		udelay(10);
+		cond_resched();
+	}
 
 	if (!timeout)
 		pr_err("ar8216: timeout waiting for atu to become ready\n");

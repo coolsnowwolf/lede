@@ -990,7 +990,7 @@ define Device/NEUFBOX4-SER
   DEVICE_DTS := nb4-ser-r0
   CFE_BOARD_ID := 96358VW
   CFE_CHIP_ID := 6358
-  CFE_EXTRAS += --rsa-signature "OpenWrt-$(firstword $(subst -,$(space),$(REVISION)))"
+  CFE_EXTRAS += --rsa-signature "$(VERSION_DIST)-$(firstword $(subst -,$(space),$(REVISION)))"
   DEVICE_PACKAGES := \
     $(B43_PACKAGES) $(USB2_PACKAGES)
 endef
@@ -1002,7 +1002,7 @@ define Device/NEUFBOX4-FXC
   DEVICE_DTS := nb4-fxc-r1
   CFE_BOARD_ID := 96358VW
   CFE_CHIP_ID := 6358
-  CFE_EXTRAS += --rsa-signature "OpenWrt-$(firstword $(subst -,$(space),$(REVISION)))"
+  CFE_EXTRAS += --rsa-signature "$(VERSION_DIST)-$(firstword $(subst -,$(space),$(REVISION)))"
   DEVICE_PACKAGES := \
     $(B43_PACKAGES) $(USB2_PACKAGES)
 endef
@@ -1014,7 +1014,7 @@ define Device/NEUFBOX6
   DEVICE_DTS := nb6-ser-r0
   CFE_BOARD_ID := NB6-SER-r0
   CFE_CHIP_ID := 6362
-  CFE_EXTRAS += --rsa-signature "OpenWrt-$(firstword $(subst -,$(space),$(REVISION)))"
+  CFE_EXTRAS += --rsa-signature "$(VERSION_DIST)-$(firstword $(subst -,$(space),$(REVISION)))"
   DEVICE_PACKAGES := \
     $(B43_PACKAGES) $(USB2_PACKAGES)
 endef

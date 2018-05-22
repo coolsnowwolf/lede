@@ -1,6 +1,6 @@
 /*
  * Support for YunCore boards:
- * - AP90Q
+ * - AP80Q/AP90Q
  * - CPE830
  *
  * Copyright (C) 2016 Piotr Dymacz <pepe2k@gmail.com>
@@ -172,7 +172,7 @@ static void __init ap90q_setup(void)
 				 ap90q_leds_gpio);
 }
 
-MIPS_MACHINE(ATH79_MACH_AP90Q, "AP90Q", "YunCore AP90Q", ap90q_setup);
+MIPS_MACHINE(ATH79_MACH_AP90Q, "AP90Q", "YunCore AP80Q/AP90Q", ap90q_setup);
 
 static void __init cpe830_setup(void)
 {

@@ -1,9 +1,9 @@
-From 8b7935a883d42187716fe486c83352f24d01ddcd Mon Sep 17 00:00:00 2001
+From 79fb41b6040d00d3bdfca9eb70a7848441eb7447 Mon Sep 17 00:00:00 2001
 From: Yangbo Lu <yangbo.lu@nxp.com>
-Date: Thu, 19 Oct 2017 12:48:19 +0800
+Date: Wed, 17 Jan 2018 15:14:12 +0800
 Subject: [PATCH] fsl_ppfe: support layercape
 
-This is a integrated patch for layerscape pfe support.
+This is an integrated patch for layerscape pfe support.
 
 Calvin Johnson <calvin.johnson@nxp.com>
 Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
@@ -25,24 +25,24 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  drivers/staging/fsl_ppfe/pfe_ctrl.h                |  112 +
  drivers/staging/fsl_ppfe/pfe_debugfs.c             |  111 +
  drivers/staging/fsl_ppfe/pfe_debugfs.h             |   25 +
- drivers/staging/fsl_ppfe/pfe_eth.c                 | 2434 ++++++++++++++++++++
+ drivers/staging/fsl_ppfe/pfe_eth.c                 | 2474 ++++++++++++++++++++
  drivers/staging/fsl_ppfe/pfe_eth.h                 |  184 ++
  drivers/staging/fsl_ppfe/pfe_firmware.c            |  314 +++
  drivers/staging/fsl_ppfe/pfe_firmware.h            |   32 +
  drivers/staging/fsl_ppfe/pfe_hal.c                 | 1516 ++++++++++++
  drivers/staging/fsl_ppfe/pfe_hif.c                 | 1072 +++++++++
  drivers/staging/fsl_ppfe/pfe_hif.h                 |  211 ++
- drivers/staging/fsl_ppfe/pfe_hif_lib.c             |  601 +++++
- drivers/staging/fsl_ppfe/pfe_hif_lib.h             |  239 ++
+ drivers/staging/fsl_ppfe/pfe_hif_lib.c             |  637 +++++
+ drivers/staging/fsl_ppfe/pfe_hif_lib.h             |  240 ++
  drivers/staging/fsl_ppfe/pfe_hw.c                  |  176 ++
  drivers/staging/fsl_ppfe/pfe_hw.h                  |   27 +
- drivers/staging/fsl_ppfe/pfe_ls1012a_platform.c    |  394 ++++
+ drivers/staging/fsl_ppfe/pfe_ls1012a_platform.c    |  385 +++
  drivers/staging/fsl_ppfe/pfe_mod.c                 |  141 ++
  drivers/staging/fsl_ppfe/pfe_mod.h                 |  112 +
  drivers/staging/fsl_ppfe/pfe_perfmon.h             |   38 +
  drivers/staging/fsl_ppfe/pfe_sysfs.c               |  818 +++++++
  drivers/staging/fsl_ppfe/pfe_sysfs.h               |   29 +
- 34 files changed, 10366 insertions(+)
+ 34 files changed, 10434 insertions(+)
  create mode 100644 drivers/staging/fsl_ppfe/Kconfig
  create mode 100644 drivers/staging/fsl_ppfe/Makefile
  create mode 100644 drivers/staging/fsl_ppfe/TODO
@@ -2159,7 +2159,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +#endif /* _PFE_DEBUGFS_H_ */
 --- /dev/null
 +++ b/drivers/staging/fsl_ppfe/pfe_eth.c
-@@ -0,0 +1,2434 @@
+@@ -0,0 +1,2474 @@
 +/*
 + * Copyright 2015-2016 Freescale Semiconductor, Inc.
 + * Copyright 2017 NXP
@@ -2455,10 +2455,10 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	/* Initialize the default values */
 +
 +	/*
-+	 * By default, packets without conntrack will use this default high
++	 * By default, packets without conntrack will use this default low
 +	 * priority queue
 +	 */
-+	priv->default_priority = 15;
++	priv->default_priority = 0;
 +
 +	/* Create our sysfs files */
 +	err = device_create_file(&ndev->dev, &dev_attr_default_priority);
@@ -2739,7 +2739,9 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	if (!phydev)
 +		return -ENODEV;
 +
-+	return phy_ethtool_ksettings_get(phydev, cmd);
++	phy_ethtool_ksettings_get(phydev, cmd);
++
++	return 0;
 +}
 +
 +/*
@@ -3083,7 +3085,8 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			     struct ls1012a_mdio_platform_data *minfo)
 +{
 +	struct mii_bus *bus;
-+	int rc;
++	int rc, ii;
++	struct phy_device *phydev;
 +
 +	netif_info(priv, drv, priv->ndev, "%s\n", __func__);
 +	pr_info("%s\n", __func__);
@@ -3122,6 +3125,31 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	}
 +
 +	priv->mii_bus = bus;
++
++	/* For clause 45 we need to call get_phy_device() with it's
++	 * 3rd argument as true and then register the phy device
++	 * via phy_device_register()
++	 */
++
++	if (priv->einfo->mii_config == PHY_INTERFACE_MODE_2500SGMII) {
++		for (ii = 0; ii < NUM_GEMAC_SUPPORT; ii++) {
++			phydev = get_phy_device(priv->mii_bus,
++					priv->einfo->phy_id + ii, true);
++			if (!phydev || IS_ERR(phydev)) {
++				rc = -EIO;
++				netdev_err(priv->ndev, "fail to get device\n");
++				goto err1;
++			}
++			rc = phy_device_register(phydev);
++			if (rc) {
++				phy_device_free(phydev);
++				netdev_err(priv->ndev,
++					"phy_device_register() failed\n");
++				goto err1;
++			}
++		}
++	}
++
 +	pfe_eth_mdio_reset(bus);
 +
 +	return 0;
@@ -3307,8 +3335,9 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	struct pfe_eth_priv_s *priv = pfe->eth.eth_priv[0];
 +	int sgmii_2500 = 0;
 +	struct mii_bus *bus = priv->mii_bus;
++	u16 value = 0;
 +
-+	if (priv->einfo->mii_config == PHY_INTERFACE_MODE_SGMII_2500)
++	if (priv->einfo->mii_config == PHY_INTERFACE_MODE_2500SGMII)
 +		sgmii_2500 = 1;
 +
 +	netif_info(priv, drv, ndev, "%s\n", __func__);
@@ -3324,14 +3353,16 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		pfe_eth_mdio_write(bus, 0, 0x4, 0x4001);
 +		pfe_eth_mdio_write(bus, 0, 0x12, 0xa120);
 +		pfe_eth_mdio_write(bus, 0, 0x13, 0x7);
++		/* Autonegotiation need to be disabled for 2.5G SGMII mode*/
++		value = 0x0140;
++		pfe_eth_mdio_write(bus, 0, 0x0, value);
 +	} else {
 +		pfe_eth_mdio_write(bus, 0, 0x14, 0xb);
 +		pfe_eth_mdio_write(bus, 0, 0x4, 0x1a1);
 +		pfe_eth_mdio_write(bus, 0, 0x12, 0x400);
 +		pfe_eth_mdio_write(bus, 0, 0x13, 0x0);
++		pfe_eth_mdio_write(bus, 0, 0x0, 0x1140);
 +	}
-+
-+	pfe_eth_mdio_write(bus, 0, 0x0, 0x1140);
 +}
 +
 +/*
@@ -3357,7 +3388,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	netif_info(priv, drv, ndev, "%s: %s\n", __func__, phy_id);
 +	interface = priv->einfo->mii_config;
 +	if ((interface == PHY_INTERFACE_MODE_SGMII) ||
-+	    (interface == PHY_INTERFACE_MODE_SGMII_2500)) {
++	    (interface == PHY_INTERFACE_MODE_2500SGMII)) {
 +		/*Configure SGMII PCS */
 +		if (pfe->scfg) {
 +			/*Config MDIO from serdes */
@@ -3725,10 +3756,17 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +				 unsigned int n_segs)
 +{
 +	ktime_t kt;
++	int tried = 0;
 +
++try_again:
 +	if (unlikely((__hif_tx_avail(&pfe->hif) < n_desc) ||
-+		     (hif_lib_tx_avail(&priv->client, queuenum) < n_desc) ||
++	(hif_lib_tx_avail(&priv->client, queuenum) < n_desc) ||
 +	(hif_lib_tx_credit_avail(pfe, priv->id, queuenum) < n_segs))) {
++		if (!tried) {
++			__hif_lib_update_credit(&priv->client, queuenum);
++			tried = 1;
++			goto try_again;
++		}
 +#ifdef PFE_ETH_TX_STATS
 +		if (__hif_tx_avail(&pfe->hif) < n_desc) {
 +			priv->stop_queue_hif[queuenum]++;
@@ -3851,8 +3889,10 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +
 +	netif_info(priv, tx_done, priv->ndev, "%s\n", __func__);
 +
-+	for (ii = 0; ii < emac_txq_cnt; ii++)
++	for (ii = 0; ii < emac_txq_cnt; ii++) {
 +		pfe_eth_flush_txQ(priv, ii, 0, 0);
++		__hif_lib_update_credit(&priv->client, ii);
++	}
 +}
 +
 +void pfe_tx_get_req_desc(struct sk_buff *skb, unsigned int *n_desc, unsigned int
@@ -7943,7 +7983,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +#endif /* _PFE_HIF_H_ */
 --- /dev/null
 +++ b/drivers/staging/fsl_ppfe/pfe_hif_lib.c
-@@ -0,0 +1,601 @@
+@@ -0,0 +1,637 @@
 +/*
 + * Copyright 2015-2016 Freescale Semiconductor, Inc.
 + * Copyright 2017 NXP
@@ -7980,7 +8020,10 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +
 +unsigned int lro_mode;
 +unsigned int page_mode;
-+unsigned int tx_qos;
++unsigned int tx_qos = 1;
++module_param(tx_qos, uint, 0444);
++MODULE_PARM_DESC(tx_qos, "0: disable ,\n"
++			 "1: enable (default), guarantee no packet drop at TMU level\n");
 +unsigned int pfe_pkt_size;
 +unsigned int pfe_pkt_headroom;
 +unsigned int emac_txq_cnt;
@@ -8511,6 +8554,39 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		}
 +}
 +
++/* __hif_lib_update_credit
++ *
++ * @param[in] client	hif client context
++ * @param[in] queue	queue number in match with TMU
++ */
++void __hif_lib_update_credit(struct hif_client_s *client, unsigned int queue)
++{
++	unsigned int tmu_tx_packets, tmp;
++
++	if (tx_qos) {
++		tmu_tx_packets = be32_to_cpu(pe_dmem_read(TMU0_ID +
++			client->id, (TMU_DM_TX_TRANS + (queue * 4)), 4));
++
++		/* tx_packets counter overflowed */
++		if (tmu_tx_packets >
++		    pfe->tmu_credit.tx_packets[client->id][queue]) {
++			tmp = UINT_MAX - tmu_tx_packets +
++			pfe->tmu_credit.tx_packets[client->id][queue];
++
++			pfe->tmu_credit.tx_credit[client->id][queue] =
++			pfe->tmu_credit.tx_credit_max[client->id][queue] - tmp;
++		} else {
++		/* TMU tx <= pfe_eth tx, normal case or both OF since
++		 * last time
++		 */
++			pfe->tmu_credit.tx_credit[client->id][queue] =
++			pfe->tmu_credit.tx_credit_max[client->id][queue] -
++			(pfe->tmu_credit.tx_packets[client->id][queue] -
++			tmu_tx_packets);
++		}
++	}
++}
++
 +int pfe_hif_lib_init(struct pfe *pfe)
 +{
 +	int rc;
@@ -8547,7 +8623,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +}
 --- /dev/null
 +++ b/drivers/staging/fsl_ppfe/pfe_hif_lib.h
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,240 @@
 +/*
 + * Copyright 2015-2016 Freescale Semiconductor, Inc.
 + * Copyright 2017 NXP
@@ -8735,6 +8811,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +void *hif_lib_receive_pkt(struct hif_client_s *client, int qno, int *len, int
 +				*ofst, unsigned int *rx_ctrl,
 +				unsigned int *desc_ctrl, void **priv_data);
++void __hif_lib_update_credit(struct hif_client_s *client, unsigned int queue);
 +void hif_lib_set_rx_cpu_affinity(struct hif_client_s *client, int cpu_id);
 +void hif_lib_set_tx_queue_nocpy(struct hif_client_s *client, int qno, int
 +					enable);
@@ -8998,7 +9075,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +#endif /* _PFE_HW_H_ */
 --- /dev/null
 +++ b/drivers/staging/fsl_ppfe/pfe_ls1012a_platform.c
-@@ -0,0 +1,394 @@
+@@ -0,0 +1,385 @@
 +/*
 + * Copyright 2015-2016 Freescale Semiconductor, Inc.
 + * Copyright 2017 NXP
@@ -9170,13 +9247,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +
 +	pfe->ddr_phys_baseaddr = res.start;
 +	pfe->ddr_size = resource_size(&res);
-+
 +	pfe->ddr_baseaddr = phys_to_virt(res.start);
-+	if (!pfe->ddr_baseaddr) {
-+		pr_err("ioremap() ddr failed\n");
-+		rc = -ENOMEM;
-+		goto err_ddr;
-+	}
 +
 +	pfe->scfg =
 +		syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
@@ -9258,8 +9329,6 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	iounmap(pfe->cbus_baseaddr);
 +
 +err_axi:
-+	iounmap(pfe->ddr_baseaddr);
-+
 +err_ddr:
 +	platform_set_drvdata(pdev, NULL);
 +
@@ -9282,7 +9351,6 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	rc = pfe_remove(pfe);
 +
 +	iounmap(pfe->cbus_baseaddr);
-+	iounmap(pfe->ddr_baseaddr);
 +
 +	platform_set_drvdata(pdev, NULL);
 +

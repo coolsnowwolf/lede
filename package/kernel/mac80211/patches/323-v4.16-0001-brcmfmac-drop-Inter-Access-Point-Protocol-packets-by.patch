@@ -1,0 +1,157 @@
+From 1259055170287a350cad453e9eac139c81609860 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Thu, 15 Mar 2018 08:29:09 +0100
+Subject: [PATCH] brcmfmac: drop Inter-Access Point Protocol packets by default
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Testing brcmfmac with more recent firmwares resulted in AP interfaces
+not working in some specific setups. Debugging resulted in discovering
+support for IAPP in Broadcom's firmwares.
+
+Older firmwares were only generating 802.11f frames. Newer ones like:
+1) 10.10 (TOB) (r663589)
+2) 10.10.122.20 (r683106)
+for 4366b1 and 4366c0 respectively seem to also /respect/ 802.11f frames
+in the Tx path by performing a STA disassociation.
+
+This obsoleted standard and its implementation is something that:
+1) Most people don't need / want to use
+2) Can allow local DoS attacks
+3) Breaks AP interfaces in some specific bridge setups
+
+To solve issues it can cause this commit modifies brcmfmac to drop IAPP
+packets. If affects:
+1) Rx path: driver won't be sending these unwanted packets up.
+2) Tx path: driver will reject packets that would trigger STA
+   disassociation perfromed by a firmware (possible local DoS attack).
+
+It appears there are some Broadcom's clients/users who care about this
+feature despite the drawbacks. They can switch it on using a new module
+param.
+
+This change results in only two more comparisons (check for module param
+and check for Ethernet packet length) for 99.9% of packets. Its overhead
+should be very minimal.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Acked-by: Arend van Spriel <arend.vanspriel@broadcom.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../wireless/broadcom/brcm80211/brcmfmac/common.c  |  5 ++
+ .../wireless/broadcom/brcm80211/brcmfmac/common.h  |  1 +
+ .../wireless/broadcom/brcm80211/brcmfmac/core.c    | 57 ++++++++++++++++++++++
+ 3 files changed, 63 insertions(+)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/common.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/common.c
+@@ -75,6 +75,10 @@ static int brcmf_roamoff;
+ module_param_named(roamoff, brcmf_roamoff, int, S_IRUSR);
+ MODULE_PARM_DESC(roamoff, "Do not use internal roaming engine");
+ 
++static int brcmf_iapp_enable;
++module_param_named(iapp, brcmf_iapp_enable, int, 0);
++MODULE_PARM_DESC(iapp, "Enable partial support for the obsoleted Inter-Access Point Protocol");
++
+ #ifdef DEBUG
+ /* always succeed brcmf_bus_started() */
+ static int brcmf_ignore_probe_fail;
+@@ -441,6 +445,7 @@ struct brcmf_mp_device *brcmf_get_module
+ 	settings->feature_disable = brcmf_feature_disable;
+ 	settings->fcmode = brcmf_fcmode;
+ 	settings->roamoff = !!brcmf_roamoff;
++	settings->iapp = !!brcmf_iapp_enable;
+ #ifdef DEBUG
+ 	settings->ignore_probe_fail = !!brcmf_ignore_probe_fail;
+ #endif
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/common.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/common.h
+@@ -58,6 +58,7 @@ struct brcmf_mp_device {
+ 	unsigned int	feature_disable;
+ 	int		fcmode;
+ 	bool		roamoff;
++	bool		iapp;
+ 	bool		ignore_probe_fail;
+ 	struct brcmfmac_pd_cc *country_codes;
+ 	union {
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
+@@ -230,6 +230,37 @@ static void brcmf_netdev_set_multicast_l
+ 	schedule_work(&ifp->multicast_work);
+ }
+ 
++/**
++ * brcmf_skb_is_iapp - checks if skb is an IAPP packet
++ *
++ * @skb: skb to check
++ */
++static bool brcmf_skb_is_iapp(struct sk_buff *skb)
++{
++	static const u8 iapp_l2_update_packet[6] __aligned(2) = {
++		0x00, 0x01, 0xaf, 0x81, 0x01, 0x00,
++	};
++	unsigned char *eth_data;
++#if !defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS)
++	const u16 *a, *b;
++#endif
++
++	if (skb->len - skb->mac_len != 6 ||
++	    !is_multicast_ether_addr(eth_hdr(skb)->h_dest))
++		return false;
++
++	eth_data = skb_mac_header(skb) + ETH_HLEN;
++#if defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS)
++	return !(((*(const u32 *)eth_data) ^ (*(const u32 *)iapp_l2_update_packet)) |
++		 ((*(const u16 *)(eth_data + 4)) ^ (*(const u16 *)(iapp_l2_update_packet + 4))));
++#else
++	a = (const u16 *)eth_data;
++	b = (const u16 *)iapp_l2_update_packet;
++
++	return !((a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2]));
++#endif
++}
++
+ static netdev_tx_t brcmf_netdev_start_xmit(struct sk_buff *skb,
+ 					   struct net_device *ndev)
+ {
+@@ -250,6 +281,23 @@ static netdev_tx_t brcmf_netdev_start_xm
+ 		goto done;
+ 	}
+ 
++	/* Some recent Broadcom's firmwares disassociate STA when they receive
++	 * an 802.11f ADD frame. This behavior can lead to a local DoS security
++	 * issue. Attacker may trigger disassociation of any STA by sending a
++	 * proper Ethernet frame to the wireless interface.
++	 *
++	 * Moreover this feature may break AP interfaces in some specific
++	 * setups. This applies e.g. to the bridge with hairpin mode enabled and
++	 * IFLA_BRPORT_MCAST_TO_UCAST set. IAPP packet generated by a firmware
++	 * will get passed back to the wireless interface and cause immediate
++	 * disassociation of a just-connected STA.
++	 */
++	if (!drvr->settings->iapp && brcmf_skb_is_iapp(skb)) {
++		dev_kfree_skb(skb);
++		ret = -EINVAL;
++		goto done;
++	}
++
+ 	/* Make sure there's enough writeable headroom */
+ 	if (skb_headroom(skb) < drvr->hdrlen || skb_header_cloned(skb)) {
+ 		head_delta = max_t(int, drvr->hdrlen - skb_headroom(skb), 0);
+@@ -325,6 +373,15 @@ void brcmf_txflowblock_if(struct brcmf_i
+ 
+ void brcmf_netif_rx(struct brcmf_if *ifp, struct sk_buff *skb)
+ {
++	/* Most of Broadcom's firmwares send 802.11f ADD frame every time a new
++	 * STA connects to the AP interface. This is an obsoleted standard most
++	 * users don't use, so don't pass these frames up unless requested.
++	 */
++	if (!ifp->drvr->settings->iapp && brcmf_skb_is_iapp(skb)) {
++		brcmu_pkt_buf_free_skb(skb);
++		return;
++	}
++
+ 	if (skb->pkt_type == PACKET_MULTICAST)
+ 		ifp->ndev->stats.multicast++;
+ 

@@ -1,0 +1,91 @@
+From b74bab6186131eea09459eedf5d737645a3559c9 Mon Sep 17 00:00:00 2001
+From: Abhishek Sahu <absahu@codeaurora.org>
+Date: Thu, 22 Dec 2016 11:18:45 +0530
+Subject: pcie: qcom: Fixed pcie_phy_clk branch issue
+
+Following backtraces are observed in PCIe deinit operation.
+
+ Hardware name: Qualcomm (Flattened Device Tree)
+ (unwind_backtrace) from [] (show_stack+0x10/0x14)
+ (show_stack) from [] (dump_stack+0x84/0x98)
+ (dump_stack) from [] (warn_slowpath_common+0x9c/0xb8)
+ (warn_slowpath_common) from [] (warn_slowpath_fmt+0x30/0x40)
+ (warn_slowpath_fmt) from [] (clk_branch_wait+0x114/0x120)
+ (clk_branch_wait) from [] (clk_core_disable+0xd0/0x1f4)
+ (clk_core_disable) from [] (clk_disable+0x24/0x30)
+ (clk_disable) from [] (qcom_pcie_deinit_v0+0x6c/0xb8)
+ (qcom_pcie_deinit_v0) from [] (qcom_pcie_host_init+0xe0/0xe8)
+ (qcom_pcie_host_init) from [] (dw_pcie_host_init+0x3b0/0x538)
+ (dw_pcie_host_init) from [] (qcom_pcie_probe+0x20c/0x2e4)
+
+pcie_phy_clk is generated for PCIe controller itself and the
+GCC controls its branch operation. This error is coming since
+the assert operations turn off the parent clock before branch
+clock. Now this patch moves clk_disable_unprepare before assert
+operations.
+
+Similarly, during probe function, the clock branch operation
+should be done after dessert operation. Currently, it does not
+generate any error since bootloader enables the pcie_phy_clk
+but the same error is coming during probe, if bootloader
+disables pcie_phy_clk.
+
+Change-Id: Ib29c154d10eb64363d9cc982ce5fd8107af5627d
+Signed-off-by: Abhishek Sahu <absahu@codeaurora.org>
+---
+ drivers/pci/host/pcie-qcom.c | 16 +++++++---------
+ 1 file changed, 7 insertions(+), 9 deletions(-)
+
+--- a/drivers/pci/host/pcie-qcom.c
++++ b/drivers/pci/host/pcie-qcom.c
+@@ -352,6 +352,7 @@ static void qcom_pcie_deinit_v0(struct q
+ {
+ 	struct qcom_pcie_resources_v0 *res = &pcie->res.v0;
+ 
++	clk_disable_unprepare(res->phy_clk);
+ 	reset_control_assert(res->pci_reset);
+ 	reset_control_assert(res->axi_reset);
+ 	reset_control_assert(res->ahb_reset);
+@@ -360,7 +361,6 @@ static void qcom_pcie_deinit_v0(struct q
+ 	reset_control_assert(res->ext_reset);
+ 	clk_disable_unprepare(res->iface_clk);
+ 	clk_disable_unprepare(res->core_clk);
+-	clk_disable_unprepare(res->phy_clk);
+ 	clk_disable_unprepare(res->aux_clk);
+ 	clk_disable_unprepare(res->ref_clk);
+ 	regulator_disable(res->vdda);
+@@ -416,12 +416,6 @@ static int qcom_pcie_init_v0(struct qcom
+ 		goto err_clk_core;
+ 	}
+ 
+-	ret = clk_prepare_enable(res->phy_clk);
+-	if (ret) {
+-		dev_err(dev, "cannot prepare/enable phy clock\n");
+-		goto err_clk_phy;
+-	}
+-
+ 	ret = clk_prepare_enable(res->aux_clk);
+ 	if (ret) {
+ 		dev_err(dev, "cannot prepare/enable aux clock\n");
+@@ -486,6 +480,12 @@ static int qcom_pcie_init_v0(struct qcom
+ 		return ret;
+ 	}
+ 
++	ret = clk_prepare_enable(res->phy_clk);
++	if (ret) {
++		dev_err(dev, "cannot prepare/enable phy clock\n");
++		goto err_deassert_ahb;
++	}
++
+ 	/* wait for clock acquisition */
+ 	usleep_range(1000, 1500);
+ 	if (pcie->force_gen1) {
+@@ -504,8 +504,6 @@ err_deassert_ahb:
+ err_clk_ref:
+ 	clk_disable_unprepare(res->aux_clk);
+ err_clk_aux:
+-	clk_disable_unprepare(res->phy_clk);
+-err_clk_phy:
+ 	clk_disable_unprepare(res->core_clk);
+ err_clk_core:
+ 	clk_disable_unprepare(res->iface_clk);

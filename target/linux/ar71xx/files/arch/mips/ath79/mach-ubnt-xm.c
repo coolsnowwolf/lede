@@ -12,6 +12,7 @@
 
 #include <linux/init.h>
 #include <linux/pci.h>
+#include <linux/gpio.h>
 #include <linux/platform_device.h>
 #include <linux/ath9k_platform.h>
 #include <linux/etherdevice.h>
@@ -96,7 +97,9 @@ static void __init ubnt_xm_init(void)
 	ap91_pci_init(eeprom, NULL);
 
 	ath79_register_mdio(0, ~UBNT_M_WAN_PHYMASK);
+	ath79_eth0_data.speed = SPEED_100;
 	ath79_init_mac(ath79_eth0_data.mac_addr, mac1, 0);
+	ath79_eth1_data.speed = SPEED_100;
 	ath79_init_mac(ath79_eth1_data.mac_addr, mac2, 0);
 	ath79_register_eth(0);
 }
@@ -503,6 +506,60 @@ static void __init ubnt_loco_m_xw_setup(void)
 	ath79_register_eth(0);
 }
 
+#define UBNT_LBE_M5_GPIO_LED_LAN		13
+#define UBNT_LBE_M5_GPIO_LED_WLAN		14
+#define UBNT_LBE_M5_GPIO_LED_SYS		16
+
+static struct gpio_led ubnt_lbe_m5_leds_gpio[] __initdata = {
+	{
+		.name		= "ubnt:green:lan",
+		.gpio		= UBNT_LBE_M5_GPIO_LED_LAN,
+		.active_low	= 1,
+	}, {
+		.name		= "ubnt:green:wlan",
+		.gpio		= UBNT_LBE_M5_GPIO_LED_WLAN,
+		.active_low	= 1,
+	}, {
+		.name		= "ubnt:green:sys",
+		.gpio		= UBNT_LBE_M5_GPIO_LED_SYS,
+		.active_low	= 1,
+	},
+};
+
+static void __init ubnt_lbe_m5_setup(void)
+{
+	u8 *eeprom = (u8 *) KSEG1ADDR(0x1fff0000);
+
+	ath79_register_m25p80(NULL);
+
+	ath79_register_wmac(eeprom + UAP_PRO_WMAC_CALDATA_OFFSET, NULL);
+	ap91_pci_init(eeprom + UAP_PRO_PCI_CALDATA_OFFSET, NULL);
+
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(ubnt_lbe_m5_leds_gpio),
+				 ubnt_lbe_m5_leds_gpio);
+	ath79_register_gpio_keys_polled(-1, UBNT_XM_KEYS_POLL_INTERVAL,
+					ARRAY_SIZE(ubnt_xm_gpio_keys),
+					ubnt_xm_gpio_keys);
+
+	ath79_setup_ar934x_eth_cfg(AR934X_ETH_CFG_MII_GMAC0 |
+				   AR934X_ETH_CFG_MII_GMAC0_SLAVE);
+	ath79_init_mac(ath79_eth0_data.mac_addr,
+		       eeprom + UAP_PRO_MAC0_OFFSET, 0);
+
+	ath79_eth0_data.phy_if_mode = PHY_INTERFACE_MODE_MII;
+	ath79_eth0_data.mii_bus_dev = &ath79_mdio0_device.dev;
+
+	gpio_request_one(0, GPIOF_OUT_INIT_LOW | GPIOF_ACTIVE_LOW |
+			 GPIOF_EXPORT_DIR_FIXED, "SPI nWP");
+
+	mdiobus_register_board_info(ubnt_loco_m_xw_mdio_info,
+				    ARRAY_SIZE(ubnt_loco_m_xw_mdio_info));
+
+	ath79_register_mdio(0, ~BIT(1));
+	ath79_eth0_data.phy_mask = BIT(1);
+	ath79_register_eth(0);
+}
+
 static void __init ubnt_rocket_m_xw_setup(void)
 {
 	u8 *eeprom = (u8 *) KSEG1ADDR(0x1fff0000);
@@ -589,6 +646,9 @@ static void __init ubnt_rocket_m_ti_setup(void)
 
 MIPS_MACHINE(ATH79_MACH_UBNT_NANO_M_XW, "UBNT-NM-XW", "Ubiquiti Nanostation M XW",
 	     ubnt_nano_m_xw_setup);
+
+MIPS_MACHINE(ATH79_MACH_UBNT_LBE_M5, "UBNT-LBE-M5", "Ubiquiti Litebeam M5",
+		ubnt_lbe_m5_setup);
 
 MIPS_MACHINE(ATH79_MACH_UBNT_LOCO_M_XW, "UBNT-LOCO-XW", "Ubiquiti Loco M XW",
 	     ubnt_loco_m_xw_setup);

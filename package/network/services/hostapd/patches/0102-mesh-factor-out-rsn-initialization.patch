@@ -1,0 +1,115 @@
+From 04ebcadc059a6cfd45cd8ec06e6321b69bdb68b8 Mon Sep 17 00:00:00 2001
+From: Peter Oh <peter.oh@bowerswilkins.com>
+Date: Thu, 12 Apr 2018 02:48:59 -0700
+Subject: [PATCH 02/15] mesh: factor out rsn initialization
+
+RSN initialization can be used in different phases
+if mesh initialization and mesh join don't happen
+in sequence such as DFS CAC is done in between,
+hence factor it out to help convering the case.
+
+Signed-off-by: Peter Oh <peter.oh@bowerswilkins.com>
+---
+ wpa_supplicant/mesh.c | 73 ++++++++++++++++++++++++++-----------------
+ wpa_supplicant/mesh.h |  1 +
+ 2 files changed, 45 insertions(+), 29 deletions(-)
+
+--- a/wpa_supplicant/mesh.c
++++ b/wpa_supplicant/mesh.c
+@@ -147,6 +147,48 @@ static void wpas_mesh_copy_groups(struct
+ 			  groups_size);
+ }
+ 
++int wpas_mesh_init_rsn(struct wpa_supplicant *wpa_s)
++{
++	struct hostapd_iface *ifmsh = wpa_s->ifmsh;
++	struct mesh_conf *mconf = wpa_s->ifmsh->mconf;
++	struct wpa_ssid *ssid = wpa_s->current_ssid;
++	struct hostapd_data *bss = ifmsh->bss[0];
++	static int default_groups[] = { 19, 20, 21, 25, 26, -1 };
++	size_t len;
++
++	if (mconf->security != MESH_CONF_SEC_NONE) {
++		if (ssid->passphrase == NULL) {
++			wpa_printf(MSG_ERROR,
++				   "mesh: Passphrase for SAE not configured");
++			return -1;
++		}
++
++		bss->conf->wpa = ssid->proto;
++		bss->conf->wpa_key_mgmt = ssid->key_mgmt;
++
++		if (wpa_s->conf->sae_groups &&
++		    wpa_s->conf->sae_groups[0] > 0) {
++			wpas_mesh_copy_groups(bss, wpa_s);
++		} else {
++			bss->conf->sae_groups =
++				os_memdup(default_groups,
++					  sizeof(default_groups));
++			if (!bss->conf->sae_groups)
++				return -1;
++		}
++
++		len = os_strlen(ssid->passphrase);
++		bss->conf->ssid.wpa_passphrase =
++			dup_binstr(ssid->passphrase, len);
++
++		wpa_s->mesh_rsn = mesh_rsn_auth_init(wpa_s, mconf);
++		if (!wpa_s->mesh_rsn)
++			return -1;
++	}
++
++	return 0;
++}
++
+ 
+ static int wpa_supplicant_mesh_init(struct wpa_supplicant *wpa_s,
+ 				    struct wpa_ssid *ssid,
+@@ -291,35 +333,8 @@ static int wpa_supplicant_mesh_init(stru
+ 		return -1;
+ 	}
+ 
+-	if (mconf->security != MESH_CONF_SEC_NONE) {
+-		if (ssid->passphrase == NULL) {
+-			wpa_printf(MSG_ERROR,
+-				   "mesh: Passphrase for SAE not configured");
+-			goto out_free;
+-		}
+-
+-		bss->conf->wpa = ssid->proto;
+-		bss->conf->wpa_key_mgmt = ssid->key_mgmt;
+-
+-		if (wpa_s->conf->sae_groups &&
+-		    wpa_s->conf->sae_groups[0] > 0) {
+-			wpas_mesh_copy_groups(bss, wpa_s);
+-		} else {
+-			bss->conf->sae_groups =
+-				os_memdup(default_groups,
+-					  sizeof(default_groups));
+-			if (!bss->conf->sae_groups)
+-				goto out_free;
+-		}
+-
+-		len = os_strlen(ssid->passphrase);
+-		bss->conf->ssid.wpa_passphrase =
+-			dup_binstr(ssid->passphrase, len);
+-
+-		wpa_s->mesh_rsn = mesh_rsn_auth_init(wpa_s, mconf);
+-		if (!wpa_s->mesh_rsn)
+-			goto out_free;
+-	}
++	if (wpas_mesh_init_rsn(wpa_s))
++		goto out_free;
+ 
+ 	wpa_supplicant_conf_ap_ht(wpa_s, ssid, conf);
+ 
+--- a/wpa_supplicant/mesh.h
++++ b/wpa_supplicant/mesh.h
+@@ -22,6 +22,7 @@ int wpas_mesh_peer_remove(struct wpa_sup
+ int wpas_mesh_peer_add(struct wpa_supplicant *wpa_s, const u8 *addr,
+ 		       int duration);
+ void wpas_join_mesh(struct wpa_supplicant *wpa_s);
++int wpas_mesh_init_rsn(struct wpa_supplicant *wpa_s);
+ 
+ #ifdef CONFIG_MESH
+ 

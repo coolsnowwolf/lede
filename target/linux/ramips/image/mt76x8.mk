@@ -19,6 +19,22 @@ endef
 DEVICE_VARS += TPLINK_FLASHLAYOUT TPLINK_HWID TPLINK_HWREV TPLINK_HWREVADD TPLINK_HVERSION
 
 
+define Device/alfa-network_awusfree1
+  DTS := AWUSFREE1
+  IMAGE_SIZE := $(ralink_default_fw_size_8M)
+  DEVICE_TITLE := ALFA Network AWUSFREE1
+  DEVICE_PACKAGES := uboot-envtools
+endef
+TARGET_DEVICES += alfa-network_awusfree1
+
+define Device/tama_w06
+  DTS := W06
+  IMAGE_SIZE := 15040k
+  DEVICE_TITLE := Tama W06
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
+endef
+TARGET_DEVICES += tama_w06
+
 define Device/duzun-dm06
   DTS := DUZUN-DM06
   DEVICE_TITLE := DuZun DM06
@@ -72,6 +88,7 @@ define Device/mt7628
   DEVICE_TITLE := MediaTek MT7628 EVB
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport
 endef
+TARGET_DEVICES += mt7628
 
 define Device/omega2
   DTS := OMEGA2
@@ -112,7 +129,7 @@ TARGET_DEVICES += tl-wr840n-v4
 
 define Device/tl-wr840n-v5
   DTS := TL-WR840NV5
-  IMAGE_SIZE := 3840k
+  IMAGE_SIZE := 3904k
   DEVICE_TITLE := TP-Link TL-WR840N v5
   TPLINK_FLASHLAYOUT := 4Mmtk
   TPLINK_HWID := 0x08400005
@@ -139,6 +156,32 @@ define Device/tl-wr841n-v13
 endef
 TARGET_DEVICES += tl-wr841n-v13
 
+define Device/tplink_c20-v4
+  $(Device/tplink)
+  DTS := ArcherC20v4
+  IMAGE_SIZE := 7808k
+  DEVICE_TITLE := TP-Link ArcherC20 v4
+  TPLINK_FLASHLAYOUT := 8Mmtk
+  TPLINK_HWID := 0xc200004
+  TPLINK_HWREV := 0x1
+  TPLINK_HWREVADD := 0x4
+  TPLINK_HVERSION := 3
+endef
+TARGET_DEVICES += tplink_c20-v4
+
+define Device/tplink_c50-v3
+  $(Device/tplink)
+  DTS := ArcherC50V3
+  IMAGE_SIZE := 7808k
+  DEVICE_TITLE := TP-Link ArcherC50 v3
+  TPLINK_FLASHLAYOUT := 8Mmtk
+  TPLINK_HWID := 0x001D9BA4
+  TPLINK_HWREV := 0x79
+  TPLINK_HWREVADD := 0x1
+  TPLINK_HVERSION := 3
+endef
+TARGET_DEVICES += tplink_c50-v3
+
 define Device/tplink_tl-mr3420-v5
   $(Device/tplink)
   DTS := TL-MR3420V5
@@ -152,6 +195,21 @@ define Device/tplink_tl-mr3420-v5
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += tplink_tl-mr3420-v5
+
+define Device/tplink_tl-wr902ac-v3
+  $(Device/tplink)
+  DTS := TL-WR902ACV3
+  IMAGE_SIZE := 7808k
+  DEVICE_TITLE := TP-Link TL-WR902AC v3
+  TPLINK_FLASHLAYOUT := 8Mmtk
+  TPLINK_HWID := 0x000dc88f
+  TPLINK_HWREV := 0x89
+  TPLINK_HWREVADD := 0x1
+  TPLINK_HVERSION := 3
+  IMAGES += factory.bin
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += tplink_tl-wr902ac-v3
 
 define Device/u7628-01-128M-16M
   DTS := U7628-01-128M-16M
@@ -202,13 +260,22 @@ define Device/wl-wn575a3
 endef
 TARGET_DEVICES += wl-wn575a3
 
-define Device/widora-neo
-  DTS := WIDORA-NEO
+define Device/widora_neo-16m
+  DTS := WIDORA-NEO-16M
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
-  DEVICE_TITLE := Widora-NEO
+  DEVICE_TITLE := Widora-NEO (16M)
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
+  SUPPORTED_DEVICES += widora-neo
+endef
+TARGET_DEVICES += widora_neo-16m
+
+define Device/widora_neo-32m
+  DTS := WIDORA-NEO-32M
+  IMAGE_SIZE := $(ralink_default_fw_size_32M)
+  DEVICE_TITLE := Widora-NEO (32M)
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
 endef
-TARGET_DEVICES += widora-neo
+TARGET_DEVICES += widora_neo-32m
 
 define Device/wrtnode2p
   DTS := WRTNODE2P
@@ -225,3 +292,10 @@ define Device/wrtnode2r
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
 endef
 TARGET_DEVICES += wrtnode2r
+
+define Device/zbtlink_zbt-we1226
+  DTS := ZBT-WE1226
+  IMAGE_SIZE := $(ralink_default_fw_size_8M)
+  DEVICE_TITLE := ZBTlink ZBT-WE1226
+endef
+TARGET_DEVICES += zbtlink_zbt-we1226

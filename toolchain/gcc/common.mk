@@ -37,16 +37,16 @@ ifeq ($(PKG_VERSION),6.3.0)
   PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 endif
 
-ifeq ($(PKG_VERSION),7.2.0)
-  PKG_HASH:=1cf7adf8ff4b5aa49041c8734bbcf1ad18cc4c94d0029aae0f4e48841088479a
+ifeq ($(PKG_VERSION),7.3.0)
+  PKG_HASH:=832ca6ae04636adbb430e865a1451adf6979ab44ca1c8374f61fba65645ce15c
 endif
 
-ifneq ($(CONFIG_GCC_VERSION_6_3_ARC),)
-    PKG_VERSION:=6.3.0
+ifneq ($(CONFIG_GCC_VERSION_7_1_ARC),)
+    PKG_VERSION:=7.1.1
     PKG_SOURCE_URL:=https://github.com/foss-for-synopsys-dwc-arc-processors/gcc/archive/$(GCC_VERSION)
     PKG_SOURCE:=$(PKG_NAME)-$(GCC_VERSION).tar.gz
-    PKG_HASH:=b7223e134199b1a6f71de629da6aa845790e55d28e9892143dde09b1bc878110
-    PKG_REV:=2017.03-release
+    PKG_HASH:=90596af8b9c26a434cec0a3b3d37d0c7c755ab6a65496af6ca32529fab5a6cfe
+    PKG_REV:=2017.09-release
     GCC_DIR:=gcc-arc-$(PKG_REV)
     HOST_BUILD_DIR = $(BUILD_DIR_HOST)/$(PKG_NAME)-$(GCC_VERSION)
 endif
@@ -133,7 +133,17 @@ ifndef GCC_VERSION_4_8
   GCC_CONFIGURE += --with-diagnostics-color=auto-if-env
 endif
 
-ifneq ($(CONFIG_SSP_SUPPORT),)
+ifneq ($(CONFIG_GCC_DEFAULT_PIE),)
+  GCC_CONFIGURE+= \
+		--enable-default-pie
+endif
+
+ifneq ($(CONFIG_GCC_DEFAULT_SSP),)
+  GCC_CONFIGURE+= \
+		--enable-default-ssp
+endif
+
+ifneq ($(CONFIG_GCC_LIBSSP),)
   GCC_CONFIGURE+= \
 		--enable-libssp
 else

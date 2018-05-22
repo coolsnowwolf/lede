@@ -40,8 +40,8 @@ proto_6rd_setup() {
 
 	# Determine the relay prefix.
 	local ip4prefixlen="${ip4prefixlen:-0}"
-	local ip4prefix=$(ipcalc.sh "$ipaddr/$ip4prefixlen" | grep NETWORK)
-	ip4prefix="${ip4prefix#NETWORK=}"
+	local ip4prefix
+	eval "$(ipcalc.sh "$ipaddr/$ip4prefixlen")";ip4prefix=$NETWORK
 
 	# Determine our IPv6 address.
 	local ip6subnet=$(6rdcalc "$ip6prefix/$ip6prefixlen" "$ipaddr/$ip4prefixlen")

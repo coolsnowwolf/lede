@@ -33,7 +33,7 @@ lxdialog-objs := \
 
 clean-files	:= zconf.tab.c lex.zconf.c zconf.hash.c
 # Remove qconf junk files
-clean-files	+= $(qconf-cxxobjs) qconf.moc .tmp_qtcheck
+clean-files	+= $(qconf-cxxobjs) qconf.moc .tmp_qtcheck qconf
 
 all: conf mconf
 

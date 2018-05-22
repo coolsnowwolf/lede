@@ -45,11 +45,6 @@ define Build/append-ls-dtb
 	dd if=$(DTS_DIR)/$(1).dtb >> $@
 endef
 
-define Build/append-ls-rootfs-ext4
-	$(STAGING_DIR_HOST)/bin/make_ext4fs -l $(word 2,$(1)) -b 4096 -i 6000 -m 0 -J $(KDIR)/$(word 1,$(1))-$(word 2,$(1)).root.ext4 $(TARGET_DIR)
-	dd if=$(KDIR)/$(word 1,$(1))-$(word 2,$(1)).root.ext4 >> $@
-endef
-
 define Device/Default
   PROFILES = Default
   FILESYSTEMS := squashfs
@@ -89,13 +84,18 @@ define Device/ls1046ardb
   DEVICE_PACKAGES +=	rcw-layerscape-ls1046ardb uboot-layerscape-$(SUBTARGET)-ls1046ardb \
 			fman-layerscape-ls1046ardb layerscape-ppa-ls1046ardb
   DEVICE_DTS = ../../../arm64/boot/dts/freescale/fsl-ls1046a-rdb-sdk
+  FILESYSTEMS := ubifs
+  UBIFS_OPTS := -m 1 -e 262016 -c 128
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 256KiB
+  PAGESIZE := 1
   IMAGE/firmware.bin =	append-ls-rcw $(1) | pad-to 1M | \
 			append-ls-uboot $(1) | pad-to 4M | \
 			append-ls-ppa $(1) | pad-to 9M | \
 			append-ls-fman $(1) | pad-to 15M | \
 			append-ls-dtb $$(DEVICE_DTS) | pad-to 16M | \
 			append-kernel | pad-to 32M | \
-			append-ls-rootfs-ext4 $(1) 30M | check-size 67108865
+			append-ubi | check-size 67108865
 endef
 TARGET_DEVICES += ls1046ardb
 
@@ -104,13 +104,18 @@ define Device/ls1012ardb
   DEVICE_PACKAGES +=	rcw-layerscape-ls1012ardb uboot-layerscape-$(SUBTARGET)-ls1012ardb \
 			kmod-ppfe layerscape-ppfe layerscape-ppa-ls1012ardb
   DEVICE_DTS = ../../../arm64/boot/dts/freescale/fsl-ls1012a-rdb
+  FILESYSTEMS := ubifs
+  UBIFS_OPTS := -m 1 -e 262016 -c 128
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 256KiB
+  PAGESIZE := 1
   IMAGE/firmware.bin =	append-ls-rcw $(1) | pad-to 1M | \
 			append-ls-uboot $(1) | pad-to 4M | \
 			append-ls-ppa $(1) | pad-to 10M | \
 			append-ls-ppfe | pad-to 15M | \
 			append-ls-dtb $$(DEVICE_DTS) | pad-to 16M | \
 			append-kernel | pad-to 32M | \
-			append-ls-rootfs-ext4 $(1) 30M | check-size 67108865
+			append-ubi | check-size 67108865
 endef
 TARGET_DEVICES += ls1012ardb
 
@@ -119,13 +124,18 @@ define Device/ls1012afrdm
   DEVICE_PACKAGES +=	rcw-layerscape-ls1012afrdm uboot-layerscape-$(SUBTARGET)-ls1012afrdm \
 			kmod-ppfe layerscape-ppfe layerscape-ppa-ls1012afrdm
   DEVICE_DTS = ../../../arm64/boot/dts/freescale/fsl-ls1012a-frdm
+  FILESYSTEMS := ubifs
+  UBIFS_OPTS := -m 1 -e 262016 -c 128
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 256KiB
+  PAGESIZE := 1
   IMAGE/firmware.bin =	append-ls-rcw $(1) | pad-to 1M | \
 			append-ls-uboot $(1) | pad-to 4M | \
 			append-ls-ppa $(1) | pad-to 10M | \
 			append-ls-ppfe | pad-to 15M | \
 			append-ls-dtb $$(DEVICE_DTS) | pad-to 16M | \
 			append-kernel | pad-to 32M | \
-			append-ls-rootfs-ext4 $(1) 30M | check-size 67108865
+			append-ubi | check-size 67108865
 endef
 TARGET_DEVICES += ls1012afrdm
 
@@ -136,6 +146,11 @@ define Device/ls1088ardb
 			layerscape-mc-ls1088ardb layerscape-dpl-ls1088ardb restool \
 			layerscape-ppa-ls1088ardb
   DEVICE_DTS = ../../../arm64/boot/dts/freescale/fsl-ls1088a-rdb
+  FILESYSTEMS := ubifs
+  UBIFS_OPTS := -m 1 -e 262016 -c 128
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 256KiB
+  PAGESIZE := 1
   IMAGE/firmware.bin =	append-ls-rcw $(1) | pad-to 1M | \
 			append-ls-uboot $(1) | pad-to 4M | \
 			append-ls-ppa $(1) | pad-to 10M | \
@@ -144,7 +159,7 @@ define Device/ls1088ardb
 			append-ls-dpc $(1) | pad-to 15M | \
 			append-ls-dtb $$(DEVICE_DTS) | pad-to 16M | \
 			append-kernel | pad-to 32M | \
-			append-ls-rootfs-ext4 $(1) 30M | check-size 67108865
+			append-ubi | check-size 67108865
 endef
 TARGET_DEVICES += ls1088ardb
 

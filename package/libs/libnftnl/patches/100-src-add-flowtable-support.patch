@@ -1,0 +1,1444 @@
+From: Pablo Neira Ayuso <pablo@netfilter.org>
+Date: Wed, 29 Nov 2017 13:07:02 +0100
+Subject: [PATCH] src: add flowtable support
+
+This patch allows you to add, delete and list flowtable through the
+existing netlink interface.
+
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ create mode 100644 examples/nft-flowtable-add.c
+ create mode 100644 examples/nft-flowtable-del.c
+ create mode 100644 examples/nft-flowtable-get.c
+ create mode 100644 include/libnftnl/flowtable.h
+ create mode 100644 src/flowtable.c
+
+--- a/examples/Makefile.am
++++ b/examples/Makefile.am
+@@ -25,6 +25,9 @@ check_PROGRAMS = nft-table-add		\
+ 		 nft-obj-add		\
+ 		 nft-obj-get		\
+ 		 nft-obj-del		\
++		 nft-flowtable-add	\
++		 nft-flowtable-del	\
++		 nft-flowtable-get	\
+ 		 nft-ruleset-get	\
+ 		 nft-ruleset-parse-file	\
+ 		 nft-compat-get
+@@ -104,6 +107,15 @@ nft_obj_del_LDADD = ../src/libnftnl.la $
+ nft_obj_get_SOURCES = nft-obj-get.c
+ nft_obj_get_LDADD = ../src/libnftnl.la ${LIBMNL_LIBS}
+ 
++nft_flowtable_add_SOURCES = nft-flowtable-add.c
++nft_flowtable_add_LDADD = ../src/libnftnl.la ${LIBMNL_LIBS}
++
++nft_flowtable_del_SOURCES = nft-flowtable-del.c
++nft_flowtable_del_LDADD = ../src/libnftnl.la ${LIBMNL_LIBS}
++
++nft_flowtable_get_SOURCES = nft-flowtable-get.c
++nft_flowtable_get_LDADD = ../src/libnftnl.la ${LIBMNL_LIBS}
++
+ nft_ruleset_get_SOURCES = nft-ruleset-get.c
+ nft_ruleset_get_LDADD = ../src/libnftnl.la ${LIBMNL_LIBS}
+ 
+--- /dev/null
++++ b/examples/nft-flowtable-add.c
+@@ -0,0 +1,136 @@
++#include <stdlib.h>
++#include <time.h>
++#include <string.h>
++#include <netinet/in.h>
++
++#include <linux/netfilter.h>
++#include <linux/netfilter/nf_tables.h>
++
++#include <libmnl/libmnl.h>
++#include <libnftnl/flowtable.h>
++
++static struct nftnl_flowtable *flowtable_add_parse(int argc, char *argv[])
++{
++	const char *dev_array[] = { "eth0", "tap0", NULL };
++	struct nftnl_flowtable *t;
++	int hooknum = 0;
++
++	if (strcmp(argv[4], "ingress") == 0)
++		hooknum = NF_NETDEV_INGRESS;
++	else {
++		fprintf(stderr, "Unknown hook: %s\n", argv[4]);
++		return NULL;
++	}
++
++	t = nftnl_flowtable_alloc();
++	if (t == NULL) {
++		perror("OOM");
++		return NULL;
++	}
++	nftnl_flowtable_set(t, NFTNL_FLOWTABLE_TABLE, argv[2]);
++	nftnl_flowtable_set(t, NFTNL_FLOWTABLE_NAME, argv[3]);
++	if (argc == 6) {
++		nftnl_flowtable_set_u32(t, NFTNL_FLOWTABLE_HOOKNUM, hooknum);
++		nftnl_flowtable_set_u32(t, NFTNL_FLOWTABLE_PRIO, atoi(argv[5]));
++	}
++	nftnl_flowtable_set_array(t, NFTNL_FLOWTABLE_DEVICES, dev_array);
++
++	return t;
++}
++
++int main(int argc, char *argv[])
++{
++	struct mnl_socket *nl;
++	char buf[MNL_SOCKET_BUFFER_SIZE];
++	struct nlmsghdr *nlh;
++	uint32_t portid, seq, flowtable_seq;
++	int ret, family;
++	struct nftnl_flowtable *t;
++	struct mnl_nlmsg_batch *batch;
++	int batching;
++
++	if (argc != 6) {
++		fprintf(stderr, "Usage: %s <family> <table> <name> <hook> <prio>\n",
++			argv[0]);
++		exit(EXIT_FAILURE);
++	}
++
++	if (strcmp(argv[1], "ip") == 0)
++		family = NFPROTO_IPV4;
++	else if (strcmp(argv[1], "ip6") == 0)
++		family = NFPROTO_IPV6;
++	else if (strcmp(argv[1], "bridge") == 0)
++		family = NFPROTO_BRIDGE;
++	else if (strcmp(argv[1], "arp") == 0)
++		family = NFPROTO_ARP;
++	else {
++		fprintf(stderr, "Unknown family: ip, ip6, bridge, arp\n");
++		exit(EXIT_FAILURE);
++	}
++
++	t = flowtable_add_parse(argc, argv);
++	if (t == NULL)
++		exit(EXIT_FAILURE);
++
++	batching = nftnl_batch_is_supported();
++	if (batching < 0) {
++		perror("cannot talk to nfnetlink");
++		exit(EXIT_FAILURE);
++	}
++
++	seq = time(NULL);
++	batch = mnl_nlmsg_batch_start(buf, sizeof(buf));
++
++	if (batching) {
++		nftnl_batch_begin(mnl_nlmsg_batch_current(batch), seq++);
++		mnl_nlmsg_batch_next(batch);
++	}
++
++	flowtable_seq = seq;
++	nlh = nftnl_flowtable_nlmsg_build_hdr(mnl_nlmsg_batch_current(batch),
++					NFT_MSG_NEWFLOWTABLE, family,
++					NLM_F_CREATE|NLM_F_ACK, seq++);
++	nftnl_flowtable_nlmsg_build_payload(nlh, t);
++	nftnl_flowtable_free(t);
++	mnl_nlmsg_batch_next(batch);
++
++	if (batching) {
++		nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
++		mnl_nlmsg_batch_next(batch);
++	}
++
++	nl = mnl_socket_open(NETLINK_NETFILTER);
++	if (nl == NULL) {
++		perror("mnl_socket_open");
++		exit(EXIT_FAILURE);
++	}
++
++	if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0) {
++		perror("mnl_socket_bind");
++		exit(EXIT_FAILURE);
++	}
++	portid = mnl_socket_get_portid(nl);
++
++	if (mnl_socket_sendto(nl, mnl_nlmsg_batch_head(batch),
++			      mnl_nlmsg_batch_size(batch)) < 0) {
++		perror("mnl_socket_send");
++		exit(EXIT_FAILURE);
++	}
++
++	mnl_nlmsg_batch_stop(batch);
++
++	ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
++	while (ret > 0) {
++		ret = mnl_cb_run(buf, ret, flowtable_seq, portid, NULL, NULL);
++		if (ret <= 0)
++			break;
++		ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
++	}
++	if (ret == -1) {
++		perror("error");
++		exit(EXIT_FAILURE);
++	}
++	mnl_socket_close(nl);
++
++	return EXIT_SUCCESS;
++}
+--- /dev/null
++++ b/examples/nft-flowtable-del.c
+@@ -0,0 +1,122 @@
++#include <stdlib.h>
++#include <time.h>
++#include <string.h>
++#include <netinet/in.h>
++
++#include <linux/netfilter.h>
++#include <linux/netfilter/nf_tables.h>
++
++#include <libmnl/libmnl.h>
++#include <libnftnl/flowtable.h>
++
++static struct nftnl_flowtable *flowtable_del_parse(int argc, char *argv[])
++{
++	struct nftnl_flowtable *t;
++
++	t = nftnl_flowtable_alloc();
++	if (t == NULL) {
++		perror("OOM");
++		return NULL;
++	}
++
++	nftnl_flowtable_set(t, NFTNL_FLOWTABLE_TABLE, argv[2]);
++	nftnl_flowtable_set(t, NFTNL_FLOWTABLE_NAME, argv[3]);
++
++	return t;
++}
++
++int main(int argc, char *argv[])
++{
++	struct mnl_socket *nl;
++	struct mnl_nlmsg_batch *batch;
++	char buf[MNL_SOCKET_BUFFER_SIZE];
++	struct nlmsghdr *nlh;
++	uint32_t portid, seq, flowtable_seq;
++	struct nftnl_flowtable *t;
++	int ret, family, batching;
++
++	if (argc != 4) {
++		fprintf(stderr, "Usage: %s <family> <table> <flowtable>\n",
++			argv[0]);
++		exit(EXIT_FAILURE);
++	}
++
++	if (strcmp(argv[1], "ip") == 0)
++		family = NFPROTO_IPV4;
++	else if (strcmp(argv[1], "ip6") == 0)
++		family = NFPROTO_IPV6;
++	else if (strcmp(argv[1], "bridge") == 0)
++		family = NFPROTO_BRIDGE;
++	else if (strcmp(argv[1], "arp") == 0)
++		family = NFPROTO_ARP;
++	else {
++		fprintf(stderr, "Unknown family: ip, ip6, bridge, arp\n");
++		exit(EXIT_FAILURE);
++	}
++
++	t = flowtable_del_parse(argc, argv);
++	if (t == NULL)
++		exit(EXIT_FAILURE);
++
++	batching = nftnl_batch_is_supported();
++	if (batching < 0) {
++		perror("cannot talk to nfnetlink");
++		exit(EXIT_FAILURE);
++	}
++
++	seq = time(NULL);
++	batch = mnl_nlmsg_batch_start(buf, sizeof(buf));
++
++	if (batching) {
++		nftnl_batch_begin(mnl_nlmsg_batch_current(batch), seq++);
++		mnl_nlmsg_batch_next(batch);
++	}
++
++	flowtable_seq = seq;
++	nlh = nftnl_flowtable_nlmsg_build_hdr(mnl_nlmsg_batch_current(batch),
++					NFT_MSG_DELFLOWTABLE, family,
++					NLM_F_ACK, seq++);
++	nftnl_flowtable_nlmsg_build_payload(nlh, t);
++	nftnl_flowtable_free(t);
++	mnl_nlmsg_batch_next(batch);
++
++	if (batching) {
++		nftnl_batch_end(mnl_nlmsg_batch_current(batch), seq++);
++		mnl_nlmsg_batch_next(batch);
++	}
++
++	nl = mnl_socket_open(NETLINK_NETFILTER);
++	if (nl == NULL) {
++		perror("mnl_socket_open");
++		exit(EXIT_FAILURE);
++	}
++
++	if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0) {
++		perror("mnl_socket_bind");
++		exit(EXIT_FAILURE);
++	}
++	portid = mnl_socket_get_portid(nl);
++
++	if (mnl_socket_sendto(nl, mnl_nlmsg_batch_head(batch),
++			      mnl_nlmsg_batch_size(batch)) < 0) {
++		perror("mnl_socket_send");
++		exit(EXIT_FAILURE);
++	}
++
++	mnl_nlmsg_batch_stop(batch);
++
++	ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
++	while (ret > 0) {
++		ret = mnl_cb_run(buf, ret, flowtable_seq, portid, NULL, NULL);
++		if (ret <= 0)
++			break;
++		ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
++	}
++	if (ret == -1) {
++		perror("error");
++		exit(EXIT_FAILURE);
++	}
++	mnl_socket_close(nl);
++
++	return EXIT_SUCCESS;
++}
+--- /dev/null
++++ b/examples/nft-flowtable-get.c
+@@ -0,0 +1,121 @@
++#include <stdlib.h>
++#include <time.h>
++#include <string.h>
++#include <netinet/in.h>
++
++#include <linux/netfilter.h>
++#include <linux/netfilter/nf_tables.h>
++
++#include <libmnl/libmnl.h>
++#include <libnftnl/flowtable.h>
++
++static int table_cb(const struct nlmsghdr *nlh, void *data)
++{
++	struct nftnl_flowtable *t;
++	char buf[4096];
++	uint32_t *type = data;
++
++	t = nftnl_flowtable_alloc();
++	if (t == NULL) {
++		perror("OOM");
++		goto err;
++	}
++
++	if (nftnl_flowtable_nlmsg_parse(nlh, t) < 0) {
++		perror("nftnl_flowtable_nlmsg_parse");
++		goto err_free;
++	}
++
++	nftnl_flowtable_snprintf(buf, sizeof(buf), t, *type, 0);
++	printf("%s\n", buf);
++
++err_free:
++	nftnl_flowtable_free(t);
++err:
++	return MNL_CB_OK;
++}
++
++int main(int argc, char *argv[])
++{
++	struct mnl_socket *nl;
++	char buf[MNL_SOCKET_BUFFER_SIZE];
++	struct nlmsghdr *nlh;
++	uint32_t portid, seq, type = NFTNL_OUTPUT_DEFAULT;
++	struct nftnl_flowtable *t = NULL;
++	int ret, family;
++
++	seq = time(NULL);
++
++	if (argc < 2 || argc > 5) {
++		fprintf(stderr, "Usage: %s <family> [<table> <flowtable>] [json]\n",
++			argv[0]);
++		exit(EXIT_FAILURE);
++	}
++
++	if (strcmp(argv[1], "ip") == 0)
++		family = NFPROTO_IPV4;
++	else if (strcmp(argv[1], "ip6") == 0)
++		family = NFPROTO_IPV6;
++	else if (strcmp(argv[1], "bridge") == 0)
++		family = NFPROTO_BRIDGE;
++	else if (strcmp(argv[1], "arp") == 0)
++		family = NFPROTO_ARP;
++	else if (strcmp(argv[1], "unspec") == 0)
++		family = NFPROTO_UNSPEC;
++	else {
++		fprintf(stderr, "Unknown family: ip, ip6, bridge, arp, unspec\n");
++		exit(EXIT_FAILURE);
++	}
++
++	if (argc >= 4) {
++		t = nftnl_flowtable_alloc();
++		if (t == NULL) {
++			perror("OOM");
++			exit(EXIT_FAILURE);
++		}
++		nlh = nftnl_flowtable_nlmsg_build_hdr(buf, NFT_MSG_GETFLOWTABLE, family,
++						NLM_F_ACK, seq);
++		nftnl_flowtable_set(t, NFTNL_FLOWTABLE_TABLE, argv[2]);
++		nftnl_flowtable_set(t, NFTNL_FLOWTABLE_NAME, argv[3]);
++		nftnl_flowtable_nlmsg_build_payload(nlh, t);
++		nftnl_flowtable_free(t);
++	} else if (argc >= 2) {
++		nlh = nftnl_flowtable_nlmsg_build_hdr(buf, NFT_MSG_GETFLOWTABLE, family,
++						NLM_F_DUMP, seq);
++	}
++
++	if (strcmp(argv[argc-1], "json") == 0)
++		type = NFTNL_OUTPUT_JSON;
++
++	nl = mnl_socket_open(NETLINK_NETFILTER);
++	if (nl == NULL) {
++		perror("mnl_socket_open");
++		exit(EXIT_FAILURE);
++	}
++
++	if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0) {
++		perror("mnl_socket_bind");
++		exit(EXIT_FAILURE);
++	}
++	portid = mnl_socket_get_portid(nl);
++
++	if (mnl_socket_sendto(nl, nlh, nlh->nlmsg_len) < 0) {
++		perror("mnl_socket_send");
++		exit(EXIT_FAILURE);
++	}
++
++	ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
++	while (ret > 0) {
++		ret = mnl_cb_run(buf, ret, seq, portid, table_cb, &type);
++		if (ret <= 0)
++			break;
++		ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
++	}
++	if (ret == -1) {
++		perror("error");
++		exit(EXIT_FAILURE);
++	}
++	mnl_socket_close(nl);
++
++	return EXIT_SUCCESS;
++}
+--- a/include/libnftnl/Makefile.am
++++ b/include/libnftnl/Makefile.am
+@@ -6,6 +6,7 @@ pkginclude_HEADERS = batch.h		\
+ 		     rule.h		\
+ 		     expr.h		\
+ 		     set.h		\
++		     flowtable.h	\
+ 		     ruleset.h		\
+ 		     common.h		\
+ 		     udata.h		\
+--- /dev/null
++++ b/include/libnftnl/flowtable.h
+@@ -0,0 +1,81 @@
++#ifndef _LIBNFTNL_FLOWTABLE_H_
++#define _LIBNFTNL_FLOWTABLE_H_
++
++#include <stdio.h>
++#include <stdint.h>
++#include <stdbool.h>
++#include <sys/types.h>
++
++#include <libnftnl/common.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++struct nftnl_flowtable;
++
++struct nftnl_flowtable *nftnl_flowtable_alloc(void);
++void nftnl_flowtable_free(const struct nftnl_flowtable *);
++
++enum nftnl_flowtable_attr {
++	NFTNL_FLOWTABLE_NAME	= 0,
++	NFTNL_FLOWTABLE_FAMILY,
++	NFTNL_FLOWTABLE_TABLE,
++	NFTNL_FLOWTABLE_HOOKNUM,
++	NFTNL_FLOWTABLE_PRIO	= 4,
++	NFTNL_FLOWTABLE_USE,
++	NFTNL_FLOWTABLE_DEVICES,
++	__NFTNL_FLOWTABLE_MAX
++};
++#define NFTNL_FLOWTABLE_MAX (__NFTNL_FLOWTABLE_MAX - 1)
++
++bool nftnl_flowtable_is_set(const struct nftnl_flowtable *c, uint16_t attr);
++void nftnl_flowtable_unset(struct nftnl_flowtable *c, uint16_t attr);
++void nftnl_flowtable_set(struct nftnl_flowtable *t, uint16_t attr, const void *data);
++int nftnl_flowtable_set_data(struct nftnl_flowtable *t, uint16_t attr,
++			     const void *data, uint32_t data_len);
++void nftnl_flowtable_set_u32(struct nftnl_flowtable *t, uint16_t attr, uint32_t data);
++void nftnl_flowtable_set_s32(struct nftnl_flowtable *t, uint16_t attr, int32_t data);
++int nftnl_flowtable_set_str(struct nftnl_flowtable *t, uint16_t attr, const char *str);
++void nftnl_flowtable_set_array(struct nftnl_flowtable *t, uint16_t attr, const char **data);
++
++const void *nftnl_flowtable_get(const struct nftnl_flowtable *c, uint16_t attr);
++const void *nftnl_flowtable_get_data(const struct nftnl_flowtable *c, uint16_t attr,
++				 uint32_t *data_len);
++const char *nftnl_flowtable_get_str(const struct nftnl_flowtable *c, uint16_t attr);
++uint32_t nftnl_flowtable_get_u32(const struct nftnl_flowtable *c, uint16_t attr);
++int32_t nftnl_flowtable_get_s32(const struct nftnl_flowtable *c, uint16_t attr);
++const char **nftnl_flowtable_get_array(const struct nftnl_flowtable *t, uint16_t attr);
++
++struct nlmsghdr;
++
++void nftnl_flowtable_nlmsg_build_payload(struct nlmsghdr *nlh, const struct nftnl_flowtable *t);
++
++int nftnl_flowtable_parse(struct nftnl_flowtable *c, enum nftnl_parse_type type,
++		    const char *data, struct nftnl_parse_err *err);
++int nftnl_flowtable_parse_file(struct nftnl_flowtable *c, enum nftnl_parse_type type,
++			 FILE *fp, struct nftnl_parse_err *err);
++int nftnl_flowtable_snprintf(char *buf, size_t size, const struct nftnl_flowtable *t, uint32_t type, uint32_t flags);
++int nftnl_flowtable_fprintf(FILE *fp, const struct nftnl_flowtable *c, uint32_t type, uint32_t flags);
++
++#define nftnl_flowtable_nlmsg_build_hdr	nftnl_nlmsg_build_hdr
++int nftnl_flowtable_nlmsg_parse(const struct nlmsghdr *nlh, struct nftnl_flowtable *t);
++
++struct nftnl_flowtable_list;
++
++struct nftnl_flowtable_list *nftnl_flowtable_list_alloc(void);
++void nftnl_flowtable_list_free(struct nftnl_flowtable_list *list);
++int nftnl_flowtable_list_is_empty(const struct nftnl_flowtable_list *list);
++void nftnl_flowtable_list_add(struct nftnl_flowtable *s,
++			      struct nftnl_flowtable_list *list);
++void nftnl_flowtable_list_add_tail(struct nftnl_flowtable *s,
++				   struct nftnl_flowtable_list *list);
++void nftnl_flowtable_list_del(struct nftnl_flowtable *s);
++int nftnl_flowtable_list_foreach(struct nftnl_flowtable_list *flowtable_list,
++				 int (*cb)(struct nftnl_flowtable *t, void *data), void *data);
++
++#ifdef __cplusplus
++} /* extern "C" */
++#endif
++
++#endif /* _LIBNFTNL_FLOWTABLE_H_ */
+--- a/include/linux/netfilter/nf_tables.h
++++ b/include/linux/netfilter/nf_tables.h
+@@ -90,6 +90,9 @@ enum nft_verdicts {
+  * @NFT_MSG_GETOBJ: get a stateful object (enum nft_obj_attributes)
+  * @NFT_MSG_DELOBJ: delete a stateful object (enum nft_obj_attributes)
+  * @NFT_MSG_GETOBJ_RESET: get and reset a stateful object (enum nft_obj_attributes)
++ * @NFT_MSG_NEWFLOWTABLE: add new flow table (enum nft_flowtable_attributes)
++ * @NFT_MSG_GETFLOWTABLE: get flow table (enum nft_flowtable_attributes)
++ * @NFT_MSG_DELFLOWTABLE: delete flow table (enum nft_flowtable_attributes)
+  */
+ enum nf_tables_msg_types {
+ 	NFT_MSG_NEWTABLE,
+@@ -114,6 +117,9 @@ enum nf_tables_msg_types {
+ 	NFT_MSG_GETOBJ,
+ 	NFT_MSG_DELOBJ,
+ 	NFT_MSG_GETOBJ_RESET,
++	NFT_MSG_NEWFLOWTABLE,
++	NFT_MSG_GETFLOWTABLE,
++	NFT_MSG_DELFLOWTABLE,
+ 	NFT_MSG_MAX,
+ };
+ 
+@@ -1303,6 +1309,53 @@ enum nft_object_attributes {
+ #define NFTA_OBJ_MAX		(__NFTA_OBJ_MAX - 1)
+ 
+ /**
++ * enum nft_flowtable_attributes - nf_tables flow table netlink attributes
++ *
++ * @NFTA_FLOWTABLE_TABLE: name of the table containing the expression (NLA_STRING)
++ * @NFTA_FLOWTABLE_NAME: name of this flow table (NLA_STRING)
++ * @NFTA_FLOWTABLE_HOOK: netfilter hook configuration(NLA_U32)
++ * @NFTA_FLOWTABLE_USE: number of references to this flow table (NLA_U32)
++ */
++enum nft_flowtable_attributes {
++	NFTA_FLOWTABLE_UNSPEC,
++	NFTA_FLOWTABLE_TABLE,
++	NFTA_FLOWTABLE_NAME,
++	NFTA_FLOWTABLE_HOOK,
++	NFTA_FLOWTABLE_USE,
++	__NFTA_FLOWTABLE_MAX
++};
++#define NFTA_FLOWTABLE_MAX	(__NFTA_FLOWTABLE_MAX - 1)
++
++/**
++ * enum nft_flowtable_hook_attributes - nf_tables flow table hook netlink attributes
++ *
++ * @NFTA_FLOWTABLE_HOOK_NUM: netfilter hook number (NLA_U32)
++ * @NFTA_FLOWTABLE_HOOK_PRIORITY: netfilter hook priority (NLA_U32)
++ * @NFTA_FLOWTABLE_HOOK_DEVS: input devices this flow table is bound to (NLA_NESTED)
++ */
++enum nft_flowtable_hook_attributes {
++	NFTA_FLOWTABLE_HOOK_UNSPEC,
++	NFTA_FLOWTABLE_HOOK_NUM,
++	NFTA_FLOWTABLE_HOOK_PRIORITY,
++	NFTA_FLOWTABLE_HOOK_DEVS,
++	__NFTA_FLOWTABLE_HOOK_MAX
++};
++#define NFTA_FLOWTABLE_HOOK_MAX	(__NFTA_FLOWTABLE_HOOK_MAX - 1)
++
++/**
++ * enum nft_device_attributes - nf_tables device netlink attributes
++ *
++ * @NFTA_DEVICE_NAME: name of this device (NLA_STRING)
++ */
++enum nft_devices_attributes {
++	NFTA_DEVICE_UNSPEC,
++	NFTA_DEVICE_NAME,
++	__NFTA_DEVICE_MAX
++};
++#define NFTA_DEVICE_MAX		(__NFTA_DEVICE_MAX - 1)
++
++
++/**
+  * enum nft_trace_attributes - nf_tables trace netlink attributes
+  *
+  * @NFTA_TRACE_TABLE: name of the table (NLA_STRING)
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -8,6 +8,7 @@ libnftnl_la_LDFLAGS = -Wl,--version-scri
+ libnftnl_la_SOURCES = utils.c		\
+ 		      batch.c		\
+ 		      buffer.c		\
++		      flowtable.c	\
+ 		      common.c		\
+ 		      gen.c		\
+ 		      table.c		\
+--- /dev/null
++++ b/src/flowtable.c
+@@ -0,0 +1,793 @@
++#include "internal.h"
++
++#include <time.h>
++#include <endian.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <limits.h>
++#include <string.h>
++#include <netinet/in.h>
++#include <errno.h>
++#include <inttypes.h>
++
++#include <libmnl/libmnl.h>
++#include <linux/netfilter/nfnetlink.h>
++#include <linux/netfilter/nf_tables.h>
++#include <linux/netfilter.h>
++#include <linux/netfilter_arp.h>
++
++#include <libnftnl/flowtable.h>
++#include <buffer.h>
++
++struct nftnl_flowtable {
++	struct list_head	head;
++	const char		*name;
++	const char		*table;
++	int			family;
++	uint32_t		hooknum;
++	int32_t			prio;
++	const char		**dev_array;
++	uint32_t		dev_array_len;
++	uint32_t		use;
++	uint32_t		flags;
++};
++
++struct nftnl_flowtable *nftnl_flowtable_alloc(void)
++{
++	return calloc(1, sizeof(struct nftnl_flowtable));
++}
++EXPORT_SYMBOL(nftnl_flowtable_alloc);
++
++void nftnl_flowtable_free(const struct nftnl_flowtable *c)
++{
++	int i;
++
++	if (c->flags & (1 << NFTNL_FLOWTABLE_NAME))
++		xfree(c->name);
++	if (c->flags & (1 << NFTNL_FLOWTABLE_TABLE))
++		xfree(c->table);
++	if (c->flags & (1 << NFTNL_FLOWTABLE_DEVICES)) {
++		for (i = 0; i < c->dev_array_len; i++)
++			xfree(c->dev_array[i]);
++
++		xfree(c->dev_array);
++	}
++	xfree(c);
++}
++EXPORT_SYMBOL(nftnl_flowtable_free);
++
++bool nftnl_flowtable_is_set(const struct nftnl_flowtable *c, uint16_t attr)
++{
++	return c->flags & (1 << attr);
++}
++EXPORT_SYMBOL(nftnl_flowtable_is_set);
++
++void nftnl_flowtable_unset(struct nftnl_flowtable *c, uint16_t attr)
++{
++	int i;
++
++	if (!(c->flags & (1 << attr)))
++		return;
++
++	switch (attr) {
++	case NFTNL_FLOWTABLE_NAME:
++		xfree(c->name);
++		break;
++	case NFTNL_FLOWTABLE_TABLE:
++		xfree(c->table);
++		break;
++	case NFTNL_FLOWTABLE_HOOKNUM:
++	case NFTNL_FLOWTABLE_PRIO:
++	case NFTNL_FLOWTABLE_USE:
++	case NFTNL_FLOWTABLE_FAMILY:
++		break;
++	case NFTNL_FLOWTABLE_DEVICES:
++		for (i = 0; i < c->dev_array_len; i++) {
++			xfree(c->dev_array[i]);
++			xfree(c->dev_array);
++		}
++		break;
++	default:
++		return;
++	}
++
++	c->flags &= ~(1 << attr);
++}
++EXPORT_SYMBOL(nftnl_flowtable_unset);
++
++static uint32_t nftnl_flowtable_validate[NFTNL_FLOWTABLE_MAX + 1] = {
++	[NFTNL_FLOWTABLE_HOOKNUM]	= sizeof(uint32_t),
++	[NFTNL_FLOWTABLE_PRIO]		= sizeof(int32_t),
++	[NFTNL_FLOWTABLE_FAMILY]	= sizeof(uint32_t),
++};
++
++int nftnl_flowtable_set_data(struct nftnl_flowtable *c, uint16_t attr,
++			     const void *data, uint32_t data_len)
++{
++	const char **dev_array;
++	int len = 0, i;
++
++	nftnl_assert_attr_exists(attr, NFTNL_FLOWTABLE_MAX);
++	nftnl_assert_validate(data, nftnl_flowtable_validate, attr, data_len);
++
++	switch(attr) {
++	case NFTNL_FLOWTABLE_NAME:
++		if (c->flags & (1 << NFTNL_FLOWTABLE_NAME))
++			xfree(c->name);
++
++		c->name = strdup(data);
++		if (!c->name)
++			return -1;
++		break;
++	case NFTNL_FLOWTABLE_TABLE:
++		if (c->flags & (1 << NFTNL_FLOWTABLE_TABLE))
++			xfree(c->table);
++
++		c->table = strdup(data);
++		if (!c->table)
++			return -1;
++		break;
++	case NFTNL_FLOWTABLE_HOOKNUM:
++		memcpy(&c->hooknum, data, sizeof(c->hooknum));
++		break;
++	case NFTNL_FLOWTABLE_PRIO:
++		memcpy(&c->prio, data, sizeof(c->prio));
++		break;
++	case NFTNL_FLOWTABLE_FAMILY:
++		memcpy(&c->family, data, sizeof(c->family));
++		break;
++	case NFTNL_FLOWTABLE_DEVICES:
++		dev_array = (const char **)data;
++		while (dev_array[len] != NULL)
++			len++;
++
++		if (c->flags & (1 << NFTNL_FLOWTABLE_DEVICES)) {
++			for (i = 0; i < c->dev_array_len; i++) {
++				xfree(c->dev_array[i]);
++				xfree(c->dev_array);
++			}
++		}
++
++		c->dev_array = calloc(len + 1, sizeof(char *));
++		if (!c->dev_array)
++			return -1;
++
++		for (i = 0; i < len; i++)
++			c->dev_array[i] = strdup(dev_array[i]);
++
++		c->dev_array_len = len;
++		break;
++	}
++	c->flags |= (1 << attr);
++	return 0;
++}
++EXPORT_SYMBOL(nftnl_flowtable_set_data);
++
++void nftnl_flowtable_set(struct nftnl_flowtable *c, uint16_t attr, const void *data)
++{
++	nftnl_flowtable_set_data(c, attr, data, nftnl_flowtable_validate[attr]);
++}
++EXPORT_SYMBOL(nftnl_flowtable_set);
++
++void nftnl_flowtable_set_array(struct nftnl_flowtable *c, uint16_t attr, const char **data)
++{
++	nftnl_flowtable_set_data(c, attr, &data[0], nftnl_flowtable_validate[attr]);
++}
++EXPORT_SYMBOL(nftnl_flowtable_set_array);
++
++void nftnl_flowtable_set_u32(struct nftnl_flowtable *c, uint16_t attr, uint32_t data)
++{
++	nftnl_flowtable_set_data(c, attr, &data, sizeof(uint32_t));
++}
++EXPORT_SYMBOL(nftnl_flowtable_set_u32);
++
++void nftnl_flowtable_set_s32(struct nftnl_flowtable *c, uint16_t attr, int32_t data)
++{
++	nftnl_flowtable_set_data(c, attr, &data, sizeof(int32_t));
++}
++EXPORT_SYMBOL(nftnl_flowtable_set_s32);
++
++int nftnl_flowtable_set_str(struct nftnl_flowtable *c, uint16_t attr, const char *str)
++{
++	return nftnl_flowtable_set_data(c, attr, str, strlen(str) + 1);
++}
++EXPORT_SYMBOL(nftnl_flowtable_set_str);
++
++const void *nftnl_flowtable_get_data(const struct nftnl_flowtable *c,
++				     uint16_t attr, uint32_t *data_len)
++{
++	if (!(c->flags & (1 << attr)))
++		return NULL;
++
++	switch(attr) {
++	case NFTNL_FLOWTABLE_NAME:
++		*data_len = strlen(c->name) + 1;
++		return c->name;
++	case NFTNL_FLOWTABLE_TABLE:
++		*data_len = strlen(c->table) + 1;
++		return c->table;
++	case NFTNL_FLOWTABLE_HOOKNUM:
++		*data_len = sizeof(uint32_t);
++		return &c->hooknum;
++	case NFTNL_FLOWTABLE_PRIO:
++		*data_len = sizeof(int32_t);
++		return &c->prio;
++	case NFTNL_FLOWTABLE_FAMILY:
++		*data_len = sizeof(int32_t);
++		return &c->family;
++	case NFTNL_FLOWTABLE_DEVICES:
++		return &c->dev_array[0];
++	}
++	return NULL;
++}
++EXPORT_SYMBOL(nftnl_flowtable_get_data);
++
++const void *nftnl_flowtable_get(const struct nftnl_flowtable *c, uint16_t attr)
++{
++	uint32_t data_len;
++	return nftnl_flowtable_get_data(c, attr, &data_len);
++}
++EXPORT_SYMBOL(nftnl_flowtable_get);
++
++const char *nftnl_flowtable_get_str(const struct nftnl_flowtable *c, uint16_t attr)
++{
++	return nftnl_flowtable_get(c, attr);
++}
++EXPORT_SYMBOL(nftnl_flowtable_get_str);
++
++uint32_t nftnl_flowtable_get_u32(const struct nftnl_flowtable *c, uint16_t attr)
++{
++	uint32_t data_len;
++	const uint32_t *val = nftnl_flowtable_get_data(c, attr, &data_len);
++
++	nftnl_assert(val, attr, data_len == sizeof(uint32_t));
++
++	return val ? *val : 0;
++}
++EXPORT_SYMBOL(nftnl_flowtable_get_u32);
++
++int32_t nftnl_flowtable_get_s32(const struct nftnl_flowtable *c, uint16_t attr)
++{
++	uint32_t data_len;
++	const int32_t *val = nftnl_flowtable_get_data(c, attr, &data_len);
++
++	nftnl_assert(val, attr, data_len == sizeof(int32_t));
++
++	return val ? *val : 0;
++}
++EXPORT_SYMBOL(nftnl_flowtable_get_s32);
++
++const char **nftnl_flowtable_get_array(const struct nftnl_flowtable *c, uint16_t attr)
++{
++	return (const char **)nftnl_flowtable_get(c, attr);
++}
++EXPORT_SYMBOL(nftnl_flowtable_get_array);
++
++void nftnl_flowtable_nlmsg_build_payload(struct nlmsghdr *nlh,
++					 const struct nftnl_flowtable *c)
++{
++	int i;
++
++	if (c->flags & (1 << NFTNL_FLOWTABLE_TABLE))
++		mnl_attr_put_strz(nlh, NFTA_FLOWTABLE_TABLE, c->table);
++	if (c->flags & (1 << NFTNL_FLOWTABLE_NAME))
++		mnl_attr_put_strz(nlh, NFTA_FLOWTABLE_NAME, c->name);
++	if ((c->flags & (1 << NFTNL_FLOWTABLE_HOOKNUM)) &&
++	    (c->flags & (1 << NFTNL_FLOWTABLE_PRIO))) {
++		struct nlattr *nest;
++
++		nest = mnl_attr_nest_start(nlh, NFTA_FLOWTABLE_HOOK);
++		mnl_attr_put_u32(nlh, NFTA_FLOWTABLE_HOOK_NUM, htonl(c->hooknum));
++		mnl_attr_put_u32(nlh, NFTA_FLOWTABLE_HOOK_PRIORITY, htonl(c->prio));
++		if (c->flags & (1 << NFTNL_FLOWTABLE_DEVICES)) {
++			struct nlattr *nest_dev;
++
++			nest_dev = mnl_attr_nest_start(nlh,
++						       NFTA_FLOWTABLE_HOOK_DEVS);
++			for (i = 0; i < c->dev_array_len; i++)
++				mnl_attr_put_strz(nlh, NFTA_DEVICE_NAME,
++						  c->dev_array[i]);
++			mnl_attr_nest_end(nlh, nest_dev);
++		}
++		mnl_attr_nest_end(nlh, nest);
++	}
++	if (c->flags & (1 << NFTNL_FLOWTABLE_USE))
++		mnl_attr_put_u32(nlh, NFTA_FLOWTABLE_USE, htonl(c->use));
++}
++EXPORT_SYMBOL(nftnl_flowtable_nlmsg_build_payload);
++
++static int nftnl_flowtable_parse_attr_cb(const struct nlattr *attr, void *data)
++{
++	const struct nlattr **tb = data;
++	int type = mnl_attr_get_type(attr);
++
++	if (mnl_attr_type_valid(attr, NFTA_FLOWTABLE_MAX) < 0)
++		return MNL_CB_OK;
++
++	switch(type) {
++	case NFTA_FLOWTABLE_NAME:
++	case NFTA_FLOWTABLE_TABLE:
++		if (mnl_attr_validate(attr, MNL_TYPE_STRING) < 0)
++			abi_breakage();
++		break;
++	case NFTA_FLOWTABLE_HOOK:
++		if (mnl_attr_validate(attr, MNL_TYPE_NESTED) < 0)
++			abi_breakage();
++		break;
++	case NFTA_FLOWTABLE_USE:
++		if (mnl_attr_validate(attr, MNL_TYPE_U32) < 0)
++			abi_breakage();
++		break;
++	}
++
++	tb[type] = attr;
++	return MNL_CB_OK;
++}
++
++static int nftnl_flowtable_parse_hook_cb(const struct nlattr *attr, void *data)
++{
++	const struct nlattr **tb = data;
++	int type = mnl_attr_get_type(attr);
++
++	if (mnl_attr_type_valid(attr, NFTA_FLOWTABLE_HOOK_MAX) < 0)
++		return MNL_CB_OK;
++
++	switch(type) {
++	case NFTA_FLOWTABLE_HOOK_NUM:
++	case NFTA_FLOWTABLE_HOOK_PRIORITY:
++		if (mnl_attr_validate(attr, MNL_TYPE_U32) < 0)
++			abi_breakage();
++		break;
++	case NFTA_FLOWTABLE_HOOK_DEVS:
++		if (mnl_attr_validate(attr, MNL_TYPE_NESTED) < 0)
++			abi_breakage();
++		break;
++	}
++
++	tb[type] = attr;
++	return MNL_CB_OK;
++}
++
++static int nftnl_flowtable_parse_devs(struct nlattr *nest,
++				      struct nftnl_flowtable *c)
++{
++	struct nlattr *attr;
++	char *dev_array[8];
++	int len = 0, i;
++
++	mnl_attr_for_each_nested(attr, nest) {
++		if (mnl_attr_get_type(attr) != NFTA_DEVICE_NAME)
++			return -1;
++		dev_array[len++] = strdup(mnl_attr_get_str(attr));
++		if (len >= 8)
++			break;
++	}
++
++	if (!len)
++		return -1;
++
++	c->dev_array = calloc(len + 1, sizeof(char *));
++	if (!c->dev_array)
++		return -1;
++
++	c->dev_array_len = len;
++
++	for (i = 0; i < len; i++)
++		c->dev_array[i] = strdup(dev_array[i]);
++
++	return 0;
++}
++
++static int nftnl_flowtable_parse_hook(struct nlattr *attr, struct nftnl_flowtable *c)
++{
++	struct nlattr *tb[NFTA_FLOWTABLE_HOOK_MAX + 1] = {};
++	int ret;
++
++	if (mnl_attr_parse_nested(attr, nftnl_flowtable_parse_hook_cb, tb) < 0)
++		return -1;
++
++	if (tb[NFTA_FLOWTABLE_HOOK_NUM]) {
++		c->hooknum = ntohl(mnl_attr_get_u32(tb[NFTA_FLOWTABLE_HOOK_NUM]));
++		c->flags |= (1 << NFTNL_FLOWTABLE_HOOKNUM);
++	}
++	if (tb[NFTA_FLOWTABLE_HOOK_PRIORITY]) {
++		c->prio = ntohl(mnl_attr_get_u32(tb[NFTA_FLOWTABLE_HOOK_PRIORITY]));
++		c->flags |= (1 << NFTNL_FLOWTABLE_PRIO);
++	}
++	if (tb[NFTA_FLOWTABLE_HOOK_DEVS]) {
++		ret = nftnl_flowtable_parse_devs(tb[NFTA_FLOWTABLE_HOOK_DEVS], c);
++		if (ret < 0)
++			return -1;
++		c->flags |= (1 << NFTNL_FLOWTABLE_DEVICES);
++	}
++
++	return 0;
++}
++
++int nftnl_flowtable_nlmsg_parse(const struct nlmsghdr *nlh, struct nftnl_flowtable *c)
++{
++	struct nlattr *tb[NFTA_FLOWTABLE_MAX + 1] = {};
++	struct nfgenmsg *nfg = mnl_nlmsg_get_payload(nlh);
++	int ret = 0;
++
++	if (mnl_attr_parse(nlh, sizeof(*nfg), nftnl_flowtable_parse_attr_cb, tb) < 0)
++		return -1;
++
++	if (tb[NFTA_FLOWTABLE_NAME]) {
++		if (c->flags & (1 << NFTNL_FLOWTABLE_NAME))
++			xfree(c->name);
++		c->name = strdup(mnl_attr_get_str(tb[NFTA_FLOWTABLE_NAME]));
++		if (!c->name)
++			return -1;
++		c->flags |= (1 << NFTNL_FLOWTABLE_NAME);
++	}
++	if (tb[NFTA_FLOWTABLE_TABLE]) {
++		if (c->flags & (1 << NFTNL_FLOWTABLE_TABLE))
++			xfree(c->table);
++		c->table = strdup(mnl_attr_get_str(tb[NFTA_FLOWTABLE_TABLE]));
++		if (!c->table)
++			return -1;
++		c->flags |= (1 << NFTNL_FLOWTABLE_TABLE);
++	}
++	if (tb[NFTA_FLOWTABLE_HOOK]) {
++		ret = nftnl_flowtable_parse_hook(tb[NFTA_FLOWTABLE_HOOK], c);
++		if (ret < 0)
++			return ret;
++	}
++	if (tb[NFTA_FLOWTABLE_USE]) {
++		c->use = ntohl(mnl_attr_get_u32(tb[NFTA_FLOWTABLE_USE]));
++		c->flags |= (1 << NFTNL_FLOWTABLE_USE);
++	}
++
++	c->family = nfg->nfgen_family;
++	c->flags |= (1 << NFTNL_FLOWTABLE_FAMILY);
++
++	return ret;
++}
++EXPORT_SYMBOL(nftnl_flowtable_nlmsg_parse);
++
++static const char *nftnl_hooknum2str(int family, int hooknum)
++{
++	switch (family) {
++	case NFPROTO_IPV4:
++	case NFPROTO_IPV6:
++	case NFPROTO_INET:
++	case NFPROTO_BRIDGE:
++		switch (hooknum) {
++		case NF_INET_PRE_ROUTING:
++			return "prerouting";
++		case NF_INET_LOCAL_IN:
++			return "input";
++		case NF_INET_FORWARD:
++			return "forward";
++		case NF_INET_LOCAL_OUT:
++			return "output";
++		case NF_INET_POST_ROUTING:
++			return "postrouting";
++		}
++		break;
++	case NFPROTO_ARP:
++		switch (hooknum) {
++		case NF_ARP_IN:
++			return "input";
++		case NF_ARP_OUT:
++			return "output";
++		case NF_ARP_FORWARD:
++			return "forward";
++		}
++		break;
++	case NFPROTO_NETDEV:
++		switch (hooknum) {
++		case NF_NETDEV_INGRESS:
++			return "ingress";
++		}
++		break;
++	}
++	return "unknown";
++}
++
++static inline int nftnl_str2hooknum(int family, const char *hook)
++{
++	int hooknum;
++
++	for (hooknum = 0; hooknum < NF_INET_NUMHOOKS; hooknum++) {
++		if (strcmp(hook, nftnl_hooknum2str(family, hooknum)) == 0)
++			return hooknum;
++	}
++	return -1;
++}
++
++#ifdef JSON_PARSING
++static int nftnl_jansson_parse_flowtable(struct nftnl_flowtable *c,
++					 json_t *tree,
++					 struct nftnl_parse_err *err)
++{
++	const char *name, *table, *hooknum_str;
++	int32_t family, prio, hooknum;
++	json_t *root;
++
++	root = nftnl_jansson_get_node(tree, "flowtable", err);
++	if (root == NULL)
++		return -1;
++
++	name = nftnl_jansson_parse_str(root, "name", err);
++	if (name != NULL)
++		nftnl_flowtable_set_str(c, NFTNL_FLOWTABLE_NAME, name);
++
++	if (nftnl_jansson_parse_family(root, &family, err) == 0)
++		nftnl_flowtable_set_u32(c, NFTNL_FLOWTABLE_FAMILY, family);
++
++	table = nftnl_jansson_parse_str(root, "table", err);
++
++	if (table != NULL)
++		nftnl_flowtable_set_str(c, NFTNL_FLOWTABLE_TABLE, table);
++
++	if (nftnl_jansson_node_exist(root, "hooknum")) {
++		if (nftnl_jansson_parse_val(root, "prio", NFTNL_TYPE_S32,
++					  &prio, err) == 0)
++			nftnl_flowtable_set_s32(c, NFTNL_FLOWTABLE_PRIO, prio);
++
++		hooknum_str = nftnl_jansson_parse_str(root, "hooknum", err);
++		if (hooknum_str != NULL) {
++			hooknum = nftnl_str2hooknum(c->family, hooknum_str);
++			if (hooknum == -1)
++				return -1;
++			nftnl_flowtable_set_u32(c, NFTNL_FLOWTABLE_HOOKNUM,
++					       hooknum);
++		}
++	}
++
++	return 0;
++}
++#endif
++
++static int nftnl_flowtable_json_parse(struct nftnl_flowtable *c,
++				      const void *json,
++				      struct nftnl_parse_err *err,
++				      enum nftnl_parse_input input)
++{
++#ifdef JSON_PARSING
++	json_t *tree;
++	json_error_t error;
++	int ret;
++
++	tree = nftnl_jansson_create_root(json, &error, err, input);
++	if (tree == NULL)
++		return -1;
++
++	ret = nftnl_jansson_parse_flowtable(c, tree, err);
++
++	nftnl_jansson_free_root(tree);
++
++	return ret;
++#else
++	errno = EOPNOTSUPP;
++	return -1;
++#endif
++}
++
++static int nftnl_flowtable_do_parse(struct nftnl_flowtable *c,
++				    enum nftnl_parse_type type,
++				    const void *data,
++				    struct nftnl_parse_err *err,
++				    enum nftnl_parse_input input)
++{
++	int ret;
++	struct nftnl_parse_err perr = {};
++
++	switch (type) {
++	case NFTNL_PARSE_JSON:
++		ret = nftnl_flowtable_json_parse(c, data, &perr, input);
++		break;
++	case NFTNL_PARSE_XML:
++	default:
++		ret = -1;
++		errno = EOPNOTSUPP;
++		break;
++	}
++
++	if (err != NULL)
++		*err = perr;
++
++	return ret;
++}
++
++int nftnl_flowtable_parse(struct nftnl_flowtable *c, enum nftnl_parse_type type,
++			  const char *data, struct nftnl_parse_err *err)
++{
++	return nftnl_flowtable_do_parse(c, type, data, err, NFTNL_PARSE_BUFFER);
++}
++EXPORT_SYMBOL(nftnl_flowtable_parse);
++
++int nftnl_flowtable_parse_file(struct nftnl_flowtable *c,
++			       enum nftnl_parse_type type,
++			       FILE *fp, struct nftnl_parse_err *err)
++{
++	return nftnl_flowtable_do_parse(c, type, fp, err, NFTNL_PARSE_FILE);
++}
++EXPORT_SYMBOL(nftnl_flowtable_parse_file);
++
++static int nftnl_flowtable_export(char *buf, size_t size,
++				  const struct nftnl_flowtable *c, int type)
++{
++	NFTNL_BUF_INIT(b, buf, size);
++
++	nftnl_buf_open(&b, type, CHAIN);
++	if (c->flags & (1 << NFTNL_FLOWTABLE_NAME))
++		nftnl_buf_str(&b, type, c->name, NAME);
++	if (c->flags & (1 << NFTNL_FLOWTABLE_TABLE))
++		nftnl_buf_str(&b, type, c->table, TABLE);
++	if (c->flags & (1 << NFTNL_FLOWTABLE_FAMILY))
++		nftnl_buf_str(&b, type, nftnl_family2str(c->family), FAMILY);
++	if (c->flags & (1 << NFTNL_FLOWTABLE_USE))
++		nftnl_buf_u32(&b, type, c->use, USE);
++	if (c->flags & (1 << NFTNL_FLOWTABLE_HOOKNUM)) {
++		if (c->flags & (1 << NFTNL_FLOWTABLE_HOOKNUM))
++			nftnl_buf_str(&b, type, nftnl_hooknum2str(c->family,
++					 c->hooknum), HOOKNUM);
++		if (c->flags & (1 << NFTNL_FLOWTABLE_PRIO))
++			nftnl_buf_s32(&b, type, c->prio, PRIO);
++	}
++
++	nftnl_buf_close(&b, type, CHAIN);
++
++	return nftnl_buf_done(&b);
++}
++
++static int nftnl_flowtable_snprintf_default(char *buf, size_t size,
++					    const struct nftnl_flowtable *c)
++{
++	int ret, remain = size, offset = 0, i;
++
++	ret = snprintf(buf, remain, "flow table %s %s use %u",
++		       c->table, c->name, c->use);
++	SNPRINTF_BUFFER_SIZE(ret, remain, offset);
++
++	if (c->flags & (1 << NFTNL_FLOWTABLE_HOOKNUM)) {
++		ret = snprintf(buf + offset, remain, " hook %s prio %d",
++			       nftnl_hooknum2str(c->family, c->hooknum),
++			       c->prio);
++		SNPRINTF_BUFFER_SIZE(ret, remain, offset);
++
++		if (c->flags & (1 << NFTNL_FLOWTABLE_DEVICES)) {
++			ret = snprintf(buf + offset, remain, " dev { ");
++			SNPRINTF_BUFFER_SIZE(ret, remain, offset);
++
++			for (i = 0; i < c->dev_array_len; i++) {
++				ret = snprintf(buf + offset, remain, " %s ",
++					       c->dev_array[i]);
++				SNPRINTF_BUFFER_SIZE(ret, remain, offset);
++			}
++			ret = snprintf(buf + offset, remain, " } ");
++			SNPRINTF_BUFFER_SIZE(ret, remain, offset);
++		}
++	}
++
++	return offset;
++}
++
++static int nftnl_flowtable_cmd_snprintf(char *buf, size_t size,
++					const struct nftnl_flowtable *c,
++					uint32_t cmd, uint32_t type,
++					uint32_t flags)
++{
++	int ret, remain = size, offset = 0;
++
++	ret = nftnl_cmd_header_snprintf(buf + offset, remain, cmd, type, flags);
++	SNPRINTF_BUFFER_SIZE(ret, remain, offset);
++
++	switch (type) {
++	case NFTNL_OUTPUT_DEFAULT:
++		ret = nftnl_flowtable_snprintf_default(buf + offset, remain, c);
++		break;
++	case NFTNL_OUTPUT_XML:
++	case NFTNL_OUTPUT_JSON:
++		ret = nftnl_flowtable_export(buf + offset, remain, c, type);
++		break;
++	default:
++		return -1;
++	}
++
++	SNPRINTF_BUFFER_SIZE(ret, remain, offset);
++
++	ret = nftnl_cmd_footer_snprintf(buf + offset, remain, cmd, type, flags);
++	SNPRINTF_BUFFER_SIZE(ret, remain, offset);
++
++	return offset;
++}
++
++int nftnl_flowtable_snprintf(char *buf, size_t size, const struct nftnl_flowtable *c,
++			 uint32_t type, uint32_t flags)
++{
++	if (size)
++		buf[0] = '\0';
++
++	return nftnl_flowtable_cmd_snprintf(buf, size, c, nftnl_flag2cmd(flags),
++					    type, flags);
++}
++EXPORT_SYMBOL(nftnl_flowtable_snprintf);
++
++static int nftnl_flowtable_do_snprintf(char *buf, size_t size, const void *c,
++				   uint32_t cmd, uint32_t type, uint32_t flags)
++{
++	return nftnl_flowtable_snprintf(buf, size, c, type, flags);
++}
++
++int nftnl_flowtable_fprintf(FILE *fp, const struct nftnl_flowtable *c,
++			    uint32_t type, uint32_t flags)
++{
++	return nftnl_fprintf(fp, c, NFTNL_CMD_UNSPEC, type, flags,
++			   nftnl_flowtable_do_snprintf);
++}
++EXPORT_SYMBOL(nftnl_flowtable_fprintf);
++
++struct nftnl_flowtable_list {
++	struct list_head list;
++};
++
++struct nftnl_flowtable_list *nftnl_flowtable_list_alloc(void)
++{
++	struct nftnl_flowtable_list *list;
++
++	list = calloc(1, sizeof(struct nftnl_flowtable_list));
++	if (list == NULL)
++		return NULL;
++
++	INIT_LIST_HEAD(&list->list);
++
++	return list;
++}
++EXPORT_SYMBOL(nftnl_flowtable_list_alloc);
++
++void nftnl_flowtable_list_free(struct nftnl_flowtable_list *list)
++{
++	struct nftnl_flowtable *s, *tmp;
++
++	list_for_each_entry_safe(s, tmp, &list->list, head) {
++		list_del(&s->head);
++		nftnl_flowtable_free(s);
++	}
++	xfree(list);
++}
++EXPORT_SYMBOL(nftnl_flowtable_list_free);
++
++int nftnl_flowtable_list_is_empty(const struct nftnl_flowtable_list *list)
++{
++	return list_empty(&list->list);
++}
++EXPORT_SYMBOL(nftnl_flowtable_list_is_empty);
++
++void nftnl_flowtable_list_add(struct nftnl_flowtable *s,
++			      struct nftnl_flowtable_list *list)
++{
++	list_add(&s->head, &list->list);
++}
++EXPORT_SYMBOL(nftnl_flowtable_list_add);
++
++void nftnl_flowtable_list_add_tail(struct nftnl_flowtable *s,
++				   struct nftnl_flowtable_list *list)
++{
++	list_add_tail(&s->head, &list->list);
++}
++EXPORT_SYMBOL(nftnl_flowtable_list_add_tail);
++
++void nftnl_flowtable_list_del(struct nftnl_flowtable *s)
++{
++	list_del(&s->head);
++}
++EXPORT_SYMBOL(nftnl_flowtable_list_del);
++
++int nftnl_flowtable_list_foreach(struct nftnl_flowtable_list *flowtable_list,
++				 int (*cb)(struct nftnl_flowtable *t, void *data), void *data)
++{
++	struct nftnl_flowtable *cur, *tmp;
++	int ret;
++
++	list_for_each_entry_safe(cur, tmp, &flowtable_list->list, head) {
++		ret = cb(cur, data);
++		if (ret < 0)
++			return ret;
++	}
++	return 0;
++}
++EXPORT_SYMBOL(nftnl_flowtable_list_foreach);
+--- a/src/libnftnl.map
++++ b/src/libnftnl.map
+@@ -311,3 +311,34 @@ local: *;
+ LIBNFTNL_6 {
+   nftnl_expr_fprintf;
+ } LIBNFTNL_5;
++
++LIBNFTNL_7 {
++  nftnl_flowtable_alloc;
++  nftnl_flowtable_free;
++  nftnl_flowtable_is_set;
++  nftnl_flowtable_unset;
++  nftnl_flowtable_set;
++  nftnl_flowtable_set_u32;
++  nftnl_flowtable_set_s32;
++  nftnl_flowtable_set_array;
++  nftnl_flowtable_set_str;
++  nftnl_flowtable_get;
++  nftnl_flowtable_get_u32;
++  nftnl_flowtable_get_s32;
++  nftnl_flowtable_get_array;
++  nftnl_flowtable_get_str;
++  nftnl_flowtable_parse;
++  nftnl_flowtable_parse_file;
++  nftnl_flowtable_snprintf;
++  nftnl_flowtable_fprintf;
++  nftnl_flowtable_nlmsg_build_payload;
++  nftnl_flowtable_nlmsg_parse;
++  nftnl_flowtable_list_alloc;
++  nftnl_flowtable_list_free;
++  nftnl_flowtable_list_is_empty;
++  nftnl_flowtable_list_add;
++  nftnl_flowtable_list_add_tail;
++  nftnl_flowtable_list_del;
++  nftnl_flowtable_list_foreach;
++
++} LIBNFTNL_6;

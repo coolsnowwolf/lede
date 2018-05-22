@@ -23,8 +23,6 @@ ifneq ($(CONFIG_PER_FEED_REPO),)
   endif
 endif
 
-PACKAGE_DIR_ALL := $(TOPDIR)/staging_dir/packages/$(BOARD)
-
 opkg_package_files = $(wildcard \
 	$(foreach dir,$(PACKAGE_SUBDIRS), \
 	  $(foreach pkg,$(1), $(dir)/$(pkg)_*.ipk)))

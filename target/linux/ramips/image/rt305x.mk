@@ -1,6 +1,16 @@
 #
 # RT305X Profiles
 #
+define Build/buffalo-tftp-header
+  ( \
+    echo -n -e "# Airstation FirmWare\nrun u_fw\nreset\n\n" | \
+      dd bs=512 count=1 conv=sync; \
+    dd if=$@; \
+  ) > $@.tmp && \
+  $(STAGING_DIR_HOST)/bin/buffalo-tftp -i $@.tmp -o $@.new
+  mv $@.new $@
+endef
+
 define Build/dap-header
 	$(STAGING_DIR_HOST)/bin/mkdapimg $(1) -i $@ -o $@.new
 	mv $@.new $@
@@ -292,10 +302,18 @@ TARGET_DEVICES += dir-620-d1
 
 define Device/dwr-512-b
   DTS := DWR-512-B
-  IMAGE_SIZE := 7700k
+  IMAGE_SIZE := 7800k
   DEVICE_TITLE := D-Link DWR-512 B
-  DEVICE_PACKAGES := kmod-usb2 kmod-spi-dev kmod-usb-serial kmod-usb-serial-option \
-			kmod-usb-net kmod-usb-net-cdc-ether comgt-ncm
+  DEVICE_PACKAGES := jboot-tools kmod-usb2 kmod-spi-dev kmod-usb-serial \
+			kmod-usb-serial-option kmod-usb-net kmod-usb-net-cdc-ether \
+			comgt-ncm
+  DLINK_ROM_ID := DLK6E2412001
+  DLINK_FAMILY_MEMBER := 0x6E24
+  DLINK_FIRMWARE_SIZE := 0x7E0000
+  KERNEL := $(KERNEL_DTB)
+  IMAGES += factory.bin
+  IMAGE/sysupgrade.bin := mkdlinkfw | pad-rootfs | append-metadata
+  IMAGE/factory.bin := mkdlinkfw | pad-rootfs | mkdlinkfw-factory
 endef
 TARGET_DEVICES += dwr-512-b
 
@@ -745,6 +763,17 @@ define Device/wcr-150gn
 endef
 TARGET_DEVICES += wcr-150gn
 
+define Device/whr-g300n
+  DTS := WHR-G300N
+  BLOCKSIZE := 64k
+  IMAGE_SIZE := 3801088
+  DEVICE_TITLE := Buffalo WHR-G300N
+  IMAGES += tftp.bin
+  IMAGE/tftp.bin := $$(sysupgrade_bin) | \
+    check-size $$$$(IMAGE_SIZE) | buffalo-tftp-header
+endef
+TARGET_DEVICES += whr-g300n
+
 define Device/wizard8800
   DTS := WIZARD8800
   UIMAGE_NAME:= Linux Kernel Image
@@ -872,3 +901,10 @@ define Device/kn
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ehci kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += kn
+
+define Device/zorlik_zl5900v2
+  DTS := ZL5900V2
+  DEVICE_TITLE := Zorlik ZL5900V2
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb-ohci kmod-usb2 kmod-ledtrig-netdev
+endef
+TARGET_DEVICES += zorlik_zl5900v2

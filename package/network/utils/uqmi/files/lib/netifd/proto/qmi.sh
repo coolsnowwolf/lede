@@ -27,7 +27,7 @@ proto_qmi_init_config() {
 
 proto_qmi_setup() {
 	local interface="$1"
-
+	local dataformat connstat
 	local device apn auth username password pincode delay modes pdptype profile dhcpv6 autoconnect plmn $PROTO_DEFAULT_OPTIONS
 	local cid_4 pdh_4 cid_6 pdh_6
 	local ip_6 ip_prefix_length gateway_6 dns1_6 dns2_6
@@ -70,7 +70,7 @@ proto_qmi_setup() {
 	done
 
 	[ -n "$pincode" ] && {
-		uqmi -s -d "$device" --verify-pin1 "$pincode" || uqmi -s -d "$device" --uim-verify-pin1 "$pincode" || {
+		uqmi -s -d "$device" --verify-pin1 "$pincode" > /dev/null || uqmi -s -d "$device" --uim-verify-pin1 "$pincode" > /dev/null || {
 			echo "Unable to verify PIN"
 			proto_notify_error "$interface" PIN_FAILED
 			proto_block_restart "$interface"
@@ -97,8 +97,25 @@ proto_qmi_setup() {
 		}
 	}
 
+	# Cleanup current state if any
+	uqmi -s -d "$device" --stop-network 0xffffffff --autoconnect
+
+	# Set IP format
 	uqmi -s -d "$device" --set-data-format 802.3
 	uqmi -s -d "$device" --wda-set-data-format 802.3
+	dataformat="$(uqmi -s -d "$device" --wda-get-data-format)"
+
+	if [ "$dataformat" = '"raw-ip"' ]; then
+
+		[ -f /sys/class/net/$ifname/qmi/raw_ip ] || {
+			echo "Device only supports raw-ip mode but is missing this required driver attribute: /sys/class/net/$ifname/qmi/raw_ip"
+			return 1
+		}
+
+		echo "Device does not support 802.3 mode. Informing driver of raw-ip only for $ifname .."
+		echo "Y" > /sys/class/net/$ifname/qmi/raw_ip
+	fi
+
 	uqmi -s -d "$device" --sync
 
 	echo "Waiting for network registration"
@@ -123,18 +140,13 @@ proto_qmi_setup() {
 
 	[ "$pdptype" = "ip" -o "$pdptype" = "ipv4v6" ] && {
 		cid_4=$(uqmi -s -d "$device" --get-client-id wds)
-		[ $? -ne 0 ] && {
+		if ! [ "$cid_4" -eq "$cid_4" ] 2> /dev/null; then
 			echo "Unable to obtain client ID"
 			proto_notify_error "$interface" NO_CID
 			return 1
-		}
+		fi
 
 		uqmi -s -d "$device" --set-client-id wds,"$cid_4" --set-ip-family ipv4 > /dev/null
-
-		# try to clear previous autoconnect state
-		uqmi -s -d "$device" --set-client-id wds,"$cid_4" \
-			--stop-network 0xffffffff \
-			--autoconnect > /dev/null
 
 		pdh_4=$(uqmi -s -d "$device" --set-client-id wds,"$cid_4" \
 			--start-network \
@@ -144,28 +156,34 @@ proto_qmi_setup() {
 			${username:+--username $username} \
 			${password:+--password $password} \
 			${autoconnect:+--autoconnect})
-		[ $? -ne 0 ] && {
+
+        # pdh_4 is a numeric value on success
+		if ! [ "$pdh_4" -eq "$pdh_4" ] 2> /dev/null; then
 			echo "Unable to connect IPv4"
 			uqmi -s -d "$device" --set-client-id wds,"$cid_4" --release-client-id wds
 			proto_notify_error "$interface" CALL_FAILED
 			return 1
-		}
+		fi
+
+        # Check data connection state
+		connstat=$(uqmi -s -d "$device" --get-data-status)
+                [ "$connstat" == '"connected"' ] || {
+                        echo "No data link!"
+                        uqmi -s -d "$device" --set-client-id wds,"$cid_4" --release-client-id wds
+                        proto_notify_error "$interface" CALL_FAILED
+                        return 1
+                }
 	}
 
 	[ "$pdptype" = "ipv6" -o "$pdptype" = "ipv4v6" ] && {
 		cid_6=$(uqmi -s -d "$device" --get-client-id wds)
-		[ $? -ne 0 ] && {
+		if ! [ "$cid_6" -eq "$cid_6" ] 2> /dev/null; then
 			echo "Unable to obtain client ID"
 			proto_notify_error "$interface" NO_CID
 			return 1
-		}
+		fi
 
 		uqmi -s -d "$device" --set-client-id wds,"$cid_6" --set-ip-family ipv6 > /dev/null
-
-		# try to clear previous autoconnect state
-		uqmi -s -d "$device" --set-client-id wds,"$cid_6" \
-			--stop-network 0xffffffff \
-			--autoconnect > /dev/null
 
 		pdh_6=$(uqmi -s -d "$device" --set-client-id wds,"$cid_6" \
 			--start-network \
@@ -175,12 +193,23 @@ proto_qmi_setup() {
 			${username:+--username $username} \
 			${password:+--password $password} \
 			${autoconnect:+--autoconnect})
-		[ $? -ne 0 ] && {
+
+        # pdh_6 is a numeric value on success
+		if ! [ "$pdh_6" -eq "$pdh_6" ] 2> /dev/null; then
 			echo "Unable to connect IPv6"
 			uqmi -s -d "$device" --set-client-id wds,"$cid_6" --release-client-id wds
 			proto_notify_error "$interface" CALL_FAILED
 			return 1
-		}
+		fi
+
+        # Check data connection state
+		connstat=$(uqmi -s -d "$device" --get-data-status)
+                [ "$connstat" == '"connected"' ] || {
+                        echo "No data link!"
+                        uqmi -s -d "$device" --set-client-id wds,"$cid_6" --release-client-id wds
+                        proto_notify_error "$interface" CALL_FAILED
+                        return 1
+                }
 	}
 
 	echo "Setting up $ifname"
@@ -250,10 +279,15 @@ qmi_wds_stop() {
 
 	uqmi -s -d "$device" --set-client-id wds,"$cid" \
 		--stop-network 0xffffffff \
-		--autoconnect > /dev/null
+		--autoconnect > /dev/null 2>&1
 
-	[ -n "$pdh" ] && uqmi -s -d "$device" --set-client-id wds,"$cid" --stop-network "$pdh"
-	uqmi -s -d "$device" --set-client-id wds,"$cid" --release-client-id wds
+	[ -n "$pdh" ] && {
+		uqmi -s -d "$device" --set-client-id wds,"$cid" \
+			--stop-network "$pdh" > /dev/null 2>&1
+	}
+
+	uqmi -s -d "$device" --set-client-id wds,"$cid" \
+		--release-client-id wds > /dev/null 2>&1
 }
 
 proto_qmi_teardown() {

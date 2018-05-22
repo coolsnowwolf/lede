@@ -55,7 +55,7 @@ platform_do_upgrade_linksys() {
 
 		nand_upgrade_tar "$1"
 	}
-	[ "$magic_long" = "27051956" ] && {
+	[ "$magic_long" = "27051956" -o "$magic_long" = "0000a0e1" ] && {
 		# check firmwares' rootfs types
 		local target_mtd=$(find_mtd_part $part_label)
 		local oldroot="$(linksys_get_root_magic $target_mtd)"
