@@ -16,11 +16,11 @@ else
 	Status = translate("<strong><font color=\"red\">ShadowsocksR is Not Running</font></strong>")
 end
 
-m = Map("shadowsocksr")
+m = Map("ssrpro")
 m.title	= translate("Shadowsocksr Transparent Proxy")
 m.description = translate("A fast secure tunnel proxy that help you get through firewalls on your router")
 
-s = m:section(TypedSection, "shadowsocksr")
+s = m:section(TypedSection, "ssrpro")
 s.anonymous = true
 s.description = translate(string.format("%s<br /><br />", Status))
 
@@ -223,9 +223,9 @@ e:value("global",translate("Global Proxy"))
 e:value("game",translate("Game Mode"))
 
 -- ---------------------------------------------------
-local apply = luci.http.formvalue("cbi.apply")
-if apply then
-	os.execute("/etc/init.d/ssrpro restart >/dev/null 2>&1 &")
-end
+-- local apply = luci.http.formvalue("cbi.apply")
+-- if apply then
+-- 	os.execute("/etc/init.d/ssrpro restart >/dev/null 2>&1 &")
+-- end
 
 return m

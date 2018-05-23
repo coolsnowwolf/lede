@@ -5,11 +5,11 @@
 
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=LuCI support for Shadowsocksr
+LUCI_TITLE:=LuCI support for SSR Pro
 LUCI_DEPENDS:=+iptables-mod-tproxy +kmod-ipt-tproxy +ip +ipset-lists +shadowsocksr-libev-alt +pdnsd-alt +coreutils +coreutils-base64 +coreutils-nohup +dnsmasq-full
 LUCI_PKGARCH:=all
-PKG_VERSION:=2.0
-PKG_RELEASE:=21
+PKG_VERSION:=2
+PKG_RELEASE:=22
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
