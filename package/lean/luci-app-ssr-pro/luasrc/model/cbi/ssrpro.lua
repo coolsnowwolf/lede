@@ -8,21 +8,14 @@ local conf = "/etc/shadowsocksr/base-gfwlist.txt"
 local watch = "/tmp/shadowsocksr_watchdog.log"
 local dog = "/tmp/ssrpro.log"
 
-local Status
-
-if SYS.call("pidof ssr-redir > /dev/null") == 0 then
-	Status = translate("<strong><font color=\"green\">ShadowsocksR is Running</font></strong>")
-else
-	Status = translate("<strong><font color=\"red\">ShadowsocksR is Not Running</font></strong>")
-end
-
 m = Map("ssrpro")
 m.title	= translate("Shadowsocksr Transparent Proxy")
 m.description = translate("A fast secure tunnel proxy that help you get through firewalls on your router")
 
+m:section(SimpleSection).template  = "ssrpro/ssrpro_status"
+
 s = m:section(TypedSection, "ssrpro")
 s.anonymous = true
-s.description = translate(string.format("%s<br /><br />", Status))
 
 -- ---------------------------------------------------
 
@@ -221,11 +214,5 @@ e.rmempty=false
 e:value("disable",translate("No Proxy"))
 e:value("global",translate("Global Proxy"))
 e:value("game",translate("Game Mode"))
-
--- ---------------------------------------------------
--- local apply = luci.http.formvalue("cbi.apply")
--- if apply then
--- 	os.execute("/etc/init.d/ssrpro restart >/dev/null 2>&1 &")
--- end
 
 return m
