@@ -62,7 +62,7 @@ platform_check_image() {
 	firewrt|\
 	fonera20n|\
 	freestation5|\
-	gb-pc1|\
+	gnubee,gb-pc1|\
 	gnubee,gb-pc2|\
 	gl-mt300a|\
 	gl-mt300n|\
