@@ -31,32 +31,32 @@ Signed-off-by: Sricharan R <sricharan@codeaurora.org>
 --- a/drivers/clk/qcom/clk-krait.c
 +++ b/drivers/clk/qcom/clk-krait.c
 @@ -60,6 +60,8 @@ static int krait_mux_set_parent(struct c
-	if (__clk_is_enabled(hw->clk))
-		__krait_mux_set_sel(mux, sel);
-
+ 	if (__clk_is_enabled(hw->clk))
+ 		__krait_mux_set_sel(mux, sel);
+ 
 +	mux->reparent = true;
 +
-	return 0;
+ 	return 0;
  }
-
+ 
 --- a/drivers/clk/qcom/clk-krait.h
 +++ b/drivers/clk/qcom/clk-krait.h
 @@ -23,6 +23,9 @@ struct krait_mux_clk {
-	u32		shift;
-	u32		en_mask;
-	bool		lpl;
+ 	u32		shift;
+ 	u32		en_mask;
+ 	bool		lpl;
 +	u8		safe_sel;
 +	u8		old_index;
 +	bool		reparent;
-
-	struct clk_hw	hw;
-	struct notifier_block   clk_nb;
+ 
+ 	struct clk_hw	hw;
+ 	struct notifier_block   clk_nb;
 --- a/drivers/clk/qcom/krait-cc.c
 +++ b/drivers/clk/qcom/krait-cc.c
 @@ -35,6 +35,49 @@ static unsigned int pri_mux_map[] = {
-	0,
+ 	0,
  };
-
+ 
 +/*
 + * Notifier function for switching the muxes to safe parent
 + * while the hfpll is getting reprogrammed.
@@ -105,56 +105,56 @@ Signed-off-by: Sricharan R <sricharan@codeaurora.org>
  {
 @@ -79,6 +122,7 @@ static int
  krait_add_sec_mux(struct device *dev, int id, const char *s,
-		  unsigned int offset, bool unique_aux)
+ 		  unsigned int offset, bool unique_aux)
  {
 +	int ret;
-	struct krait_mux_clk *mux;
-	static const char *sec_mux_list[] = {
-		"acpu_aux",
+ 	struct krait_mux_clk *mux;
+ 	static const char *sec_mux_list[] = {
+ 		"acpu_aux",
 @@ -102,6 +146,7 @@ krait_add_sec_mux(struct device *dev, in
-	mux->shift = 2;
-	mux->parent_map = sec_mux_map;
-	mux->hw.init = &init;
+ 	mux->shift = 2;
+ 	mux->parent_map = sec_mux_map;
+ 	mux->hw.init = &init;
 +	mux->safe_sel = 0;
-
-	init.name = kasprintf(GFP_KERNEL, "krait%s_sec_mux", s);
-	if (!init.name)
+ 
+ 	init.name = kasprintf(GFP_KERNEL, "krait%s_sec_mux", s);
+ 	if (!init.name)
 @@ -117,6 +162,11 @@ krait_add_sec_mux(struct device *dev, in
-
-	clk = devm_clk_register(dev, &mux->hw);
-
+ 
+ 	clk = devm_clk_register(dev, &mux->hw);
+ 
 +	ret = krait_notifier_register(dev, clk, mux);
 +	if (ret)
 +		goto unique_aux;
 +
 +unique_aux:
-	if (unique_aux)
-		kfree(sec_mux_list[0]);
+ 	if (unique_aux)
+ 		kfree(sec_mux_list[0]);
  err_aux:
 @@ -128,6 +178,7 @@ static struct clk *
  krait_add_pri_mux(struct device *dev, int id, const char *s,
-		  unsigned int offset)
+ 		  unsigned int offset)
  {
 +	int ret;
-	struct krait_mux_clk *mux;
-	const char *p_names[3];
-	struct clk_init_data init = {
+ 	struct krait_mux_clk *mux;
+ 	const char *p_names[3];
+ 	struct clk_init_data init = {
 @@ -148,6 +199,7 @@ krait_add_pri_mux(struct device *dev, in
-	mux->lpl = id >= 0;
-	mux->parent_map = pri_mux_map;
-	mux->hw.init = &init;
+ 	mux->lpl = id >= 0;
+ 	mux->parent_map = pri_mux_map;
+ 	mux->hw.init = &init;
 +	mux->safe_sel = 2;
-
-	init.name = kasprintf(GFP_KERNEL, "krait%s_pri_mux", s);
-	if (!init.name)
+ 
+ 	init.name = kasprintf(GFP_KERNEL, "krait%s_pri_mux", s);
+ 	if (!init.name)
 @@ -173,6 +225,10 @@ krait_add_pri_mux(struct device *dev, in
-
-	clk = devm_clk_register(dev, &mux->hw);
-
+ 
+ 	clk = devm_clk_register(dev, &mux->hw);
+ 
 +	ret = krait_notifier_register(dev, clk, mux);
 +	if (ret)
 +		goto err_p3;
 +err_p3:
-	kfree(p_names[2]);
+ 	kfree(p_names[2]);
  err_p2:
-	kfree(p_names[1]);
+ 	kfree(p_names[1]);
