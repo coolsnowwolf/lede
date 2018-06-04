@@ -21,6 +21,7 @@ LOADER_DATA	:=
 BOARD		:=
 FLASH_OFFS	:=
 FLASH_MAX	:=
+KERNEL_CMDLINE	:= rootfstype=squashfs
 
 CC		:= $(CROSS_COMPILE)gcc
 LD		:= $(CROSS_COMPILE)ld
