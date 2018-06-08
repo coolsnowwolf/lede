@@ -1298,12 +1298,14 @@ TARGET_DEVICES += fritz300e
 
 define Device/k2t
   DEVICE_TITLE := Phicomm K2T
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage \
-	kmod-ath9k kmod-ath10k ath10k-firmware-qca9888
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-ath9k kmod-ath10k ath10k-firmware-qca9888
   BOARDNAME := K2T
   SUPPORTED_DEVICES := k2t
   DEVICE_PROFILE := K2T
-  IMAGES := sysupgrade.bin
+  IMAGES := factory.bin sysupgrade.bin
+  IMAGE/factory.bin := append-rootfs | pad-rootfs | append-kernel | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs |\
+	pad-to $$$$(ROOTFS_SIZE) | append-kernel | check-size $$$$(IMAGE_SIZE)
   IMAGE_SIZE := 15744k
   CONSOLE := ttyATH0,115200
   MTDPARTS := spi0.0:192k(u-boot)ro,64k(config)ro,320k(permanent),15744k(firmware),64k(art)ro
