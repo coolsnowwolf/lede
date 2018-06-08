@@ -461,6 +461,9 @@ ar71xx_board_detect() {
 	*"AP152 reference board")
 		name="ap152"
 		;;
+	*"Phicomm K2T")
+		name="k2t"
+		;;
 	*"AP531B0")
 		name="ap531b0"
 		;;

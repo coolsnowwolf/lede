@@ -2,6 +2,8 @@
 
 . /lib/functions/leds.sh
 
+status_led="$(get_dt_led status)"
+
 get_status_led() {
 	local board=$(board_name)
 	local boardname="${board##*,}"
@@ -23,7 +25,7 @@ get_status_led() {
 }
 
 set_state() {
-	get_status_led
+	[ -z "$status_led" ] && get_status_led
 
 	case "$1" in
 	preinit)

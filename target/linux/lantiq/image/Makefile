@@ -617,13 +617,29 @@ TARGET_DEVICES += lantiq_easy80920-nor
 define Device/avm_fritz3370
   $(Device/AVM)
   $(Device/NAND)
-  BOARD_NAME := FRITZ3370
   DEVICE_DTS := FRITZ3370
-  DEVICE_TITLE := Fritz!Box WLan - FRITZ3370
-  DEVICE_PACKAGES := kmod-ath9k wpad-mini kmod-usb-dwc2
-  SUPPORTED_DEVICES += FRITZ3370
+  DEVICE_TITLE := AVM Fritz!Box WLan 3370 Rev. 2
+  KERNEL_SIZE := 4096k
+  UBINIZE_OPTS := -E 5
+  IMAGES += eva-kernel.bin eva-filesystem.bin
+  IMAGE/eva-kernel.bin := append-kernel
+  IMAGE/eva-filesystem.bin := append-ubi
+  DEVICE_PACKAGES := kmod-ath9k wpad-mini kmod-usb-dwc2 fritz-tffs
 endef
-TARGET_DEVICES += avm_fritz3370
+
+define Device/avm_fritz3370-rev2-hynix
+  $(Device/avm_fritz3370)
+  DEVICE_DTS := FRITZ3370-REV2-HYNIX
+  DEVICE_TITLE := AVM Fritz!Box WLan 3370 Rev. 2 (Hynix NAND)
+endef
+TARGET_DEVICES += avm_fritz3370-rev2-hynix
+
+define Device/avm_fritz3370-rev2-micron
+  $(Device/avm_fritz3370)
+  DEVICE_DTS := FRITZ3370-REV2-MICRON
+  DEVICE_TITLE := AVM Fritz!Box WLan 3370 Rev. 2 (Micron NAND)
+endef
+TARGET_DEVICES += avm_fritz3370-rev2-micron
 
 define Device/avm_fritz7360sl
   $(Device/AVM)
