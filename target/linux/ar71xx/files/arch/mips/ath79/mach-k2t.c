@@ -87,6 +87,11 @@ static struct gpio_keys_button K2T_GPIO_keys[] __initdata = {
 	}
 };
 
+static struct ar8327_pad_cfg k2t_qca8337_pad6_cfg = {
+	.mode = AR8327_PAD_MAC_SGMII,
+	.sgmii_delay_en = true,
+};
+
 static struct ar8327_pad_cfg k2t_qca8337_pad0_cfg = {
 	.mode = AR8327_PAD_MAC_SGMII,
 	.txclk_delay_en = true,
