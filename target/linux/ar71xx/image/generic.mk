@@ -1302,11 +1302,9 @@ define Device/k2t
   BOARDNAME := K2T
   SUPPORTED_DEVICES := k2t
   DEVICE_PROFILE := K2T
-  IMAGES := factory.bin sysupgrade.bin
-  IMAGE/factory.bin := append-rootfs | pad-rootfs | append-kernel | check-size $$$$(IMAGE_SIZE)
-  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs |\
-	pad-to $$$$(ROOTFS_SIZE) | append-kernel | check-size $$$$(IMAGE_SIZE)
   IMAGE_SIZE := 15744k
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) |\
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
   CONSOLE := ttyATH0,115200
   MTDPARTS := spi0.0:192k(u-boot)ro,64k(config)ro,320k(permanent),15744k(firmware),64k(art)ro
 endef
