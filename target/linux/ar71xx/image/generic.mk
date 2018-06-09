@@ -1298,7 +1298,7 @@ TARGET_DEVICES += fritz300e
 
 define Device/k2t
   DEVICE_TITLE := Phicomm K2T
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-ath9k kmod-ath10k ath10k-firmware-qca9888
+  DEVICE_PACKAGES := kmod-ath9k kmod-ath10k ath10k-firmware-qca9888
   BOARDNAME := K2T
   SUPPORTED_DEVICES := k2t
   DEVICE_PROFILE := K2T
