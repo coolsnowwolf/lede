@@ -47,7 +47,7 @@ asus_nand_upgrade_tar() {
 
 	local root_ubivol="$( nand_find_volume $ubidev rootfs )"
 	# remove ubiblock device of rootfs
-	local root_ubiblk="ubiblock${root_ubivol:-3}"
+	local root_ubiblk="ubiblock${root_ubivol:3}"
 	if [ "$root_ubivol" -a -e "/dev/$root_ubiblk" ]; then
 		echo "removing $root_ubiblk"
 		if ! ubiblock -r /dev/$root_ubivol; then
@@ -56,11 +56,11 @@ asus_nand_upgrade_tar() {
 		fi
 	fi
 
-	ubi_kill_if_exist linux
-	ubi_kill_if_exist linux2
-	ubi_kill_if_exist rootfs
 	ubi_kill_if_exist rootfs_data
+	ubi_kill_if_exist rootfs
 	ubi_kill_if_exist jffs2
+	ubi_kill_if_exist linux2
+	ubi_kill_if_exist linux
 
 	ubimkvol /dev/$ubidev -N linux -s $kpart_size
 	ubimkvol /dev/$ubidev -N linux2 -s $kpart_size
@@ -112,7 +112,7 @@ asus_nand_upgrade_factory() {
 
 	local root_ubivol="$( nand_find_volume $ubidev rootfs )"
 	# remove ubiblock device of rootfs
-	local root_ubiblk="ubiblock${root_ubivol:-3}"
+	local root_ubiblk="ubiblock${root_ubivol:3}"
 	if [ "$root_ubivol" -a -e "/dev/$root_ubiblk" ]; then
 		echo "removing $root_ubiblk"
 		if ! ubiblock -r /dev/$root_ubivol; then
@@ -121,11 +121,11 @@ asus_nand_upgrade_factory() {
 		fi
 	fi
 
-	ubi_kill_if_exist linux
-	ubi_kill_if_exist linux2
-	ubi_kill_if_exist rootfs
 	ubi_kill_if_exist rootfs_data
+	ubi_kill_if_exist rootfs
 	ubi_kill_if_exist jffs2
+	ubi_kill_if_exist linux2
+	ubi_kill_if_exist linux
 
 	ubimkvol /dev/$ubidev -N linux -s $kpart_size
 
@@ -159,7 +159,8 @@ platform_do_upgrade() {
 			asus_nand_upgrade_tar 20951040 "$1"
 		fi
 		;;
-	openmesh,a42)
+	openmesh,a42 |\
+	openmesh,a62)
 		PART_NAME="inactive"
 		platform_do_upgrade_openmesh "$ARGV"
 		;;
