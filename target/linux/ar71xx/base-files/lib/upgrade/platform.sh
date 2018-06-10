@@ -325,14 +325,6 @@ platform_check_image() {
 
 		return 0
 		;;
-	k2t)
-		[ "$magic_long" != "27051956" ] && {
-			echo "Invalid image type."
-			return 1
-		}
-
-		return 0
-		;;
 	alfa-ap96|\
 	alfa-nx|\
 	ap121|\
@@ -637,6 +629,14 @@ platform_check_image() {
 	wrt160nl)
 		cybertan_check_image "$1" && return 0
 		return 1
+		;;
+	k2t)
+		[ "$magic_long" != "27051956" ] && {
+			echo "Invalid image type."
+			return 1
+		}
+
+		return 0
 		;;
 	nbg6616|\
 	uap-pro|\
