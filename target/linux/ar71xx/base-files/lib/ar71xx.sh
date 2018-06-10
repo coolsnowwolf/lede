@@ -461,9 +461,6 @@ ar71xx_board_detect() {
 	*"AP152 reference board")
 		name="ap152"
 		;;
-	*"Phicomm K2T")
-		name="k2t"
-		;;
 	*"AP531B0")
 		name="ap531b0"
 		;;
@@ -767,6 +764,11 @@ ar71xx_board_detect() {
 		;;
 	*"JWAP230")
 		name="jwap230"
+		;;
+	*"K2T A1/A2/A3 board")
+		#fixup: update the machine name
+		machine=$(echo -n "$machine" | sed "s,A1/A2/A3,$(head -c400 /dev/mtd1 | grep -o hw_ver.* | cut -d\" -f3),")
+		name="k2t"
 		;;
 	*"LAN Turtle")
 		name="lan-turtle"

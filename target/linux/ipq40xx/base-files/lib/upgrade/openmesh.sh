@@ -47,6 +47,9 @@ platform_do_upgrade_openmesh() {
 	openmesh,a42)
 		primary_kernel_mtd=8
 		;;
+	openmesh,a62)
+		primary_kernel_mtd=10
+		;;
 	*)
 		echo "failed to detect primary kernel mtd partition for board"
 		return 1

@@ -788,6 +788,21 @@ define Device/jwap230
 endef
 TARGET_DEVICES += jwap230
 
+define Device/k2t
+  DEVICE_TITLE := Phicomm K2T A1/A2/A3 board (16MB flash)
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-ath10k ath10k-firmware-qca9888
+  BOARDNAME := K2T
+  IMAGE_SIZE := 15744k
+  MTDPARTS := spi0.0:192k(u-boot)ro,64k(config)ro,320k(permanent),15744k(firmware),64k(art)ro
+  SUPPORTED_DEVICES := k2t
+  KERNEL_INITRAMFS := kernel-bin | patch-cmdline | lzma | uImage lzma
+  KERNEL_INITRAMFS_SUFFIX := -factory.bin
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += k2t
+
+
 define Device/r36a
   DEVICE_TITLE := ALFA Network R36A
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport -swconfig
@@ -1295,17 +1310,3 @@ define Device/fritz300e
 	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
 endef
 TARGET_DEVICES += fritz300e
-
-define Device/k2t
-  DEVICE_TITLE := Phicomm K2T
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-ath9k kmod-ath10k ath10k-firmware-qca9888
-  BOARDNAME := K2T
-  SUPPORTED_DEVICES := k2t
-  DEVICE_PROFILE := K2T
-  IMAGE_SIZE := 15744k
-  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) |\
-	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
-  CONSOLE := ttyATH0,115200
-  MTDPARTS := spi0.0:192k(u-boot)ro,64k(config)ro,320k(permanent),15744k(firmware),64k(art)ro
-endef
-TARGET_DEVICES += k2t

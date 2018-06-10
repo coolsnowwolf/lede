@@ -51,7 +51,6 @@ define Device/8dev_jalapeno
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
 	DEVICE_TITLE := 8devices Jalapeno
-	DEVICE_PACKAGES := ipq-wifi-8dev_jalapeno
 endef
 TARGET_DEVICES += 8dev_jalapeno
 
@@ -73,7 +72,7 @@ define Device/asus_rt-ac58u
 	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
 	KERNEL_INITRAMFS_SUFFIX := -factory.trx
 	IMAGES := sysupgrade.bin
-	DEVICE_PACKAGES := ipq-wifi-asus_rt-ac58u kmod-usb-ledtrig-usbport
+	DEVICE_PACKAGES := kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += asus_rt-ac58u
 
@@ -90,7 +89,7 @@ define Device/asus_rt-acrh17
 	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
 	KERNEL_INITRAMFS_SUFFIX := -factory.trx
 	IMAGES := sysupgrade.bin
-	DEVICE_PACKAGES := ath10k-firmware-qca4019 ath10k-firmware-qca9984
+	DEVICE_PACKAGES := ipq-wifi-rt-acrh17 ath10k-firmware-qca9984
 endef
 TARGET_DEVICES += asus_rt-acrh17
 
@@ -100,9 +99,12 @@ define Device/avm_fritzbox-4040
 	BOARD_NAME := fritz4040
 	DEVICE_TITLE := AVM Fritz!Box 4040
 	IMAGE_SIZE := 29753344
-	IMAGES = sysupgrade.bin
+	UBOOT_PATH := $$(BIN_DIR)/u-boot-fritz4040/uboot-fritz4040.bin
+	UBOOT_PARTITION_SIZE := 524288
+	IMAGES = eva.bin sysupgrade.bin
+	IMAGE/eva.bin := append-uboot | pad-to $$$$(UBOOT_PARTITION_SIZE) | append-kernel | append-rootfs | pad-rootfs
 	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
-	DEVICE_PACKAGES := ipq-wifi-avm_fritzbox-4040 fritz-tffs fritz-caldata u-boot-fritz4040
+	DEVICE_PACKAGES := fritz-tffs fritz-caldata u-boot-fritz4040
 endef
 TARGET_DEVICES += avm_fritzbox-4040
 
@@ -129,7 +131,6 @@ define Device/glinet_gl-b1300
 	IMAGE_SIZE := 26624k
 	IMAGES := sysupgrade.bin
 	IMAGE/sysupgrade.bin := append-kernel |append-rootfs | pad-rootfs | append-metadata
-	DEVICE_PACKAGES := ipq-wifi-glinet_gl-b1300
 endef
 TARGET_DEVICES += glinet_gl-b1300
 
@@ -140,7 +141,7 @@ define Device/meraki_mr33
 	PAGESIZE := 2048
 	DEVICE_TITLE := Cisco Meraki MR33
 	IMAGES = sysupgrade.bin
-	DEVICE_PACKAGES := -swconfig ipq-wifi-meraki_mr33 ath10k-firmware-qca9887
+	DEVICE_PACKAGES := -swconfig ath10k-firmware-qca9887
 endef
 TARGET_DEVICES += meraki_mr33
 
@@ -148,7 +149,6 @@ define Device/netgear_ex61x0v2
 	$(call Device/DniImage)
 	KERNEL_SIZE := 3080192
 	DEVICE_DTS_CONFIG := config@4
-	DEVICE_PACKAGES := ipq-wifi-netgear_ex61x0v2
 	NETGEAR_BOARD_ID := EX6150v2series
 	NETGEAR_HW_ID := 29765285+16+0+128+2x2
 endef
@@ -181,6 +181,22 @@ define Device/openmesh_a42
 	DEVICE_PACKAGES := uboot-envtools
 endef
 TARGET_DEVICES += openmesh_a42
+
+define Device/openmesh_a62
+	$(call Device/FitImageLzma)
+	DEVICE_DTS := qcom-ipq4019-a62
+	DEVICE_DTS_CONFIG := config@om.a62
+	BLOCKSIZE := 64k
+	DEVICE_TITLE := OpenMesh A62
+	KERNEL = kernel-bin | lzma | fit lzma $$(DTS_DIR)/$$(DEVICE_DTS).dtb | pad-to $$(BLOCKSIZE)
+	IMAGE_SIZE := 15552k
+	IMAGES = factory.bin sysupgrade.bin
+	IMAGE/factory.bin := append-rootfs | pad-rootfs | openmesh-image ce_type=A62
+	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-rootfs | sysupgrade-tar rootfs=$$$$@ | append-metadata
+	DEVICE_PACKAGES := ath10k-firmware-qca9888 uboot-envtools
+endef
+
+TARGET_DEVICES += openmesh_a62
 
 define Device/qcom_ap-dk01.1-c1
 	DEVICE_TITLE := QCA AP-DK01.1-C1
