@@ -13,7 +13,7 @@
 #include <linux/module.h>
 #include <linux/dma-mapping.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>

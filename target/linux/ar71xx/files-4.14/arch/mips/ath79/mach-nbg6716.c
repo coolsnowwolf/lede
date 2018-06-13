@@ -24,7 +24,7 @@
 #include <linux/ar8216_platform.h>
 #include <linux/gpio.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/platform/ar934x_nfc.h>
 
 #include <asm/mach-ath79/ar71xx_regs.h>
