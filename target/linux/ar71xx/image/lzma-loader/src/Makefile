@@ -97,7 +97,7 @@ loader2.o: loader.bin
 	$(LD) -r -b binary --oformat $(O_FORMAT) -o $@ $<
 
 loader.elf: loader2.o
-	$(LD) -e startup -T loader2.lds -Ttext $(LOADADDR) -o $@ $<
+	$(LD) -z max-page-size=0x1000 -e startup -T loader2.lds -Ttext $(LOADADDR) -o $@ $<
 
 mrproper: clean
 

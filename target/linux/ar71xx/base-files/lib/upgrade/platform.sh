@@ -260,6 +260,7 @@ platform_check_image() {
 	gl-ar300m|\
 	gl-ar300|\
 	gl-ar750|\
+	gl-ar750s|\
 	gl-domino|\
 	gl-mifi|\
 	gl-usb150|\
@@ -333,6 +334,9 @@ platform_check_image() {
 	ap136-010|\
 	ap136-020|\
 	ap147-010|\
+	ac9531-010|\
+	ac9531-020|\
+	ap143|\
 	ap152|\
 	ap91-5g|\
 	ap96|\
@@ -451,6 +455,7 @@ platform_check_image() {
 	tl-wdr3500|\
 	tl-wdr4300|\
 	tl-wdr4900-v2|\
+	tl-wdx6501-v7|\
 	tl-wdr6500-v2|\
 	tl-wpa8630|\
 	tl-wr1041n-v2|\
@@ -483,11 +488,12 @@ platform_check_image() {
 	tl-wr941nd|\
 	tl-wr941nd-v5|\
 	tl-wr941nd-v6|\
-	tl-wr941n-v7|\
+	ts-d084|\
 	wifi-pineapple-nano)
 		local magic_ver="0100"
 
 		case "$board" in
+		tl-wdx6501-v7|\
 		tl-wdr6500-v2)
 			magic_ver="0200"
 			;;
@@ -551,6 +557,7 @@ platform_check_image() {
 	rb-951ui-2hnd|\
 	rb-2011l|\
 	rb-2011il|\
+	rb-2011ils|\
 	rb-2011uas|\
 	rb-2011uas-2hnd|\
 	rb-2011uias|\
@@ -694,6 +701,8 @@ platform_check_image() {
 		;;
 	# these boards use metadata images
 	fritz300e|\
+	fritz4020|\
+	koala|\
 	rb-750-r2|\
 	rb-750p-pbr2|\
 	rb-750up-r2|\
@@ -852,6 +861,7 @@ platform_do_upgrade() {
 	rb-951g-2hnd|\
 	rb-951ui-2hnd|\
 	rb-2011il|\
+	rb-2011ils|\
 	rb-2011l|\
 	rb-2011uas|\
 	rb-2011uas-2hnd|\

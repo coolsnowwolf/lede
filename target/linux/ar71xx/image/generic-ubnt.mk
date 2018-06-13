@@ -52,6 +52,7 @@ define Device/ubnt-xm
   DEVICE_PACKAGES += kmod-usb-ohci
   UBNT_TYPE := XM
   UBNT_CHIP := ar7240
+  KERNEL := kernel-bin | patch-cmdline | relocate-kernel | lzma | uImage lzma
 endef
 
 define Device/ubnt-xw

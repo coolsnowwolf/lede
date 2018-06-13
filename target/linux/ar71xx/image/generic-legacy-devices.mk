@@ -105,13 +105,25 @@ LEGACY_DEVICES += AP143_16M
 
 define LegacyDevice/AP147_010
   DEVICE_TITLE := Qualcomm Atheros AP147-010 reference board
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-ath10k ath10k-firmware-qca9887
 endef
 LEGACY_DEVICES += AP147_010
 
+define LegacyDevice/AC9531_010
+  DEVICE_TITLE := Qualcomm Atheros AC9531-010 reference board
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-ath10k ath10k-firmware-qca9887
+endef
+LEGACY_DEVICES += AC9531_010
+
+define LegacyDevice/AC9531_020
+  DEVICE_TITLE := Qualcomm Atheros AC9531-020 reference board
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-ath10k ath10k-firmware-qca9887
+endef
+LEGACY_DEVICES += AC9531_020
+
 define LegacyDevice/AP152_16M
   DEVICE_TITLE := Qualcomm Atheros AP152 reference board (16MB flash)
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-ath10k ath10k-firmware-qca988x
 endef
 LEGACY_DEVICES += AP152_16M
 
