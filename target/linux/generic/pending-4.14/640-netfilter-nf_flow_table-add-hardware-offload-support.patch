@@ -156,7 +156,7 @@ Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
  obj-$(CONFIG_NETFILTER_XTABLES) += x_tables.o xt_tcpudp.o
 --- a/net/netfilter/nf_flow_table_core.c
 +++ b/net/netfilter/nf_flow_table_core.c
-@@ -199,10 +199,16 @@ int flow_offload_add(struct nf_flowtable
+@@ -218,10 +218,16 @@ int flow_offload_add(struct nf_flowtable
  }
  EXPORT_SYMBOL_GPL(flow_offload_add);
  
@@ -173,9 +173,9 @@ Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
  
  	rhashtable_remove_fast(&flow_table->rhashtable,
  			       &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].node,
-@@ -214,6 +220,9 @@ static void flow_offload_del(struct nf_f
- 	e = container_of(flow, struct flow_offload_entry, flow);
- 	clear_bit(IPS_OFFLOAD_BIT, &e->ct->status);
+@@ -236,6 +242,9 @@ static void flow_offload_del(struct nf_f
+ 	if (!(flow->flags & FLOW_OFFLOAD_TEARDOWN))
+ 		flow_offload_fixup_ct_state(e->ct);
  
 +	if (nf_flow_in_hw(flow))
 +		nf_flow_offload_hw_del(net, flow);
@@ -183,32 +183,17 @@ Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
  	flow_offload_free(flow);
  }
  
-@@ -307,6 +316,7 @@ static int nf_flow_offload_gc_step(struc
- 	rhashtable_walk_start(&hti);
+@@ -349,6 +358,9 @@ static int nf_flow_offload_gc_step(struc
+ 		if (!teardown)
+ 			nf_ct_offload_timeout(flow);
  
- 	while ((tuplehash = rhashtable_walk_next(&hti))) {
-+		bool teardown;
- 		if (IS_ERR(tuplehash)) {
- 			err = PTR_ERR(tuplehash);
- 			if (err != -EAGAIN)
-@@ -319,9 +329,13 @@ static int nf_flow_offload_gc_step(struc
- 
- 		flow = container_of(tuplehash, struct flow_offload, tuplehash[0]);
- 
--		if (nf_flow_has_expired(flow) ||
--		    (flow->flags & (FLOW_OFFLOAD_DYING |
--				    FLOW_OFFLOAD_TEARDOWN)))
-+		teardown = flow->flags & (FLOW_OFFLOAD_DYING |
-+					  FLOW_OFFLOAD_TEARDOWN);
-+
 +		if (nf_flow_in_hw(flow) && !teardown)
 +			continue;
 +
-+		if (nf_flow_has_expired(flow) || teardown)
+ 		if (nf_flow_has_expired(flow) || teardown)
  			flow_offload_del(flow_table, flow);
  	}
- out:
-@@ -456,10 +470,43 @@ int nf_flow_dnat_port(const struct flow_
+@@ -484,10 +496,43 @@ int nf_flow_dnat_port(const struct flow_
  }
  EXPORT_SYMBOL_GPL(nf_flow_dnat_port);
  
@@ -252,7 +237,7 @@ Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
  	INIT_DEFERRABLE_WORK(&flowtable->gc_work, nf_flow_offload_work_gc);
  
  	err = rhashtable_init(&flowtable->rhashtable,
-@@ -497,6 +544,8 @@ static void nf_flow_table_iterate_cleanu
+@@ -525,6 +570,8 @@ static void nf_flow_table_iterate_cleanu
  {
  	nf_flow_table_iterate(flowtable, nf_flow_table_do_cleanup, dev);
  	flush_delayed_work(&flowtable->gc_work);
@@ -261,7 +246,7 @@ Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
  }
  
  void nf_flow_table_cleanup(struct net *net, struct net_device *dev)
-@@ -510,6 +559,26 @@ void nf_flow_table_cleanup(struct net *n
+@@ -538,6 +585,26 @@ void nf_flow_table_cleanup(struct net *n
  }
  EXPORT_SYMBOL_GPL(nf_flow_table_cleanup);
  
@@ -288,7 +273,7 @@ Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
  void nf_flow_table_free(struct nf_flowtable *flow_table)
  {
  	mutex_lock(&flowtable_lock);
-@@ -519,9 +588,58 @@ void nf_flow_table_free(struct nf_flowta
+@@ -547,9 +614,58 @@ void nf_flow_table_free(struct nf_flowta
  	nf_flow_table_iterate(flow_table, nf_flow_table_do_cleanup, NULL);
  	WARN_ON(!nf_flow_offload_gc_step(flow_table));
  	rhashtable_destroy(&flow_table->rhashtable);
