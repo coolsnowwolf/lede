@@ -1,11 +1,3 @@
-#
-# Copyright (C) 2006-2014 OpenWrt.org
-# Copyright (C) 2016 LEDE project
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
-
 define KernelPackage/ata-oxnas-sata
   SUBMENU:=$(BLOCK_MENU)
   TITLE:=oxnas Serial ATA support
@@ -17,7 +9,7 @@ define KernelPackage/ata-oxnas-sata
 endef
 
 define KernelPackage/ata-oxnas-sata/description
- SATA support for OX934 core found in the OX82x/PLX782x SoCs
+ SATA support for OX934 core found in the OX8xx/PLX782x SoCs
 endef
 
 $(eval $(call KernelPackage,ata-oxnas-sata))
@@ -25,8 +17,8 @@ $(eval $(call KernelPackage,ata-oxnas-sata))
 
 define KernelPackage/usb2-oxnas
   SUBMENU:=$(BLOCK_MENU)
-  TITLE:=OXNAS USB controller driver
-  DEPENDS:=@TARGET_oxnas +kmod-usb2
+  TITLE:=OX820 EHCI driver
+  DEPENDS:=@TARGET_oxnas_ox820 +kmod-usb2
   KCONFIG:=CONFIG_USB_EHCI_OXNAS
   FILES:=$(LINUX_DIR)/drivers/usb/host/ehci-oxnas.ko
   AUTOLOAD:=$(call AutoLoad,55,ehci-oxnas,1)
@@ -35,7 +27,7 @@ endef
 
 define KernelPackage/usb2-oxnas/description
  This driver provides USB Device Controller support for the
- EHCI USB host built-in to the PLXTECH NAS782x SoC
+ EHCI USB host built-in to the OX820 SoC.
 endef
 
 $(eval $(call KernelPackage,usb2-oxnas))
