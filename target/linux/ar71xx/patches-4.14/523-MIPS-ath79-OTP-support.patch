@@ -1,0 +1,192 @@
+--- a/arch/mips/ath79/dev-wmac.c
++++ b/arch/mips/ath79/dev-wmac.c
+@@ -166,6 +166,149 @@ static void qca955x_wmac_setup(void)
+ 		ath79_wmac_data.is_clk_25mhz = true;
+ }
+ 
++#define AR93XX_WMAC_SIZE \
++	(soc_is_ar934x() ? AR934X_WMAC_SIZE : AR933X_WMAC_SIZE)
++#define AR93XX_WMAC_BASE \
++	(soc_is_ar934x() ? AR934X_WMAC_BASE : AR933X_WMAC_BASE)
++
++#define AR93XX_OTP_BASE \
++	(soc_is_ar934x() ? AR934X_OTP_BASE : AR9300_OTP_BASE)
++#define AR93XX_OTP_STATUS \
++	(soc_is_ar934x() ? AR934X_OTP_STATUS : AR9300_OTP_STATUS)
++#define AR93XX_OTP_READ_DATA \
++	(soc_is_ar934x() ? AR934X_OTP_READ_DATA : AR9300_OTP_READ_DATA)
++
++static bool __init
++ar93xx_wmac_otp_read_word(void __iomem *base, int addr, u32 *data)
++{
++	int timeout = 1000;
++	u32 val;
++
++	__raw_readl(base + AR93XX_OTP_BASE + (4 * addr));
++	while (timeout--) {
++		val = __raw_readl(base + AR93XX_OTP_STATUS);
++		if ((val & AR9300_OTP_STATUS_TYPE) == AR9300_OTP_STATUS_VALID)
++			break;
++
++		udelay(10);
++	}
++
++	if (!timeout)
++		return false;
++
++	*data = __raw_readl(base + AR93XX_OTP_READ_DATA);
++	return true;
++}
++
++static bool __init
++ar93xx_wmac_otp_read(void __iomem *base, int addr, u8 *dest, int len)
++{
++	u32 data;
++	int i;
++
++	for (i = 0; i < len; i++) {
++		int offset = 8 * ((addr - i) % 4);
++
++		if (!ar93xx_wmac_otp_read_word(base, (addr - i) / 4, &data))
++			return false;
++
++		dest[i] = (data >> offset) & 0xff;
++	}
++
++	return true;
++}
++
++static bool __init
++ar93xx_wmac_otp_uncompress(void __iomem *base, int addr, int len, u8 *dest,
++			   int dest_start, int dest_len)
++{
++	int dest_bytes = 0;
++	int offset = 0;
++	int end = addr - len;
++	u8 hdr[2];
++
++	while (addr > end) {
++		if (!ar93xx_wmac_otp_read(base, addr, hdr, 2))
++			return false;
++
++		addr -= 2;
++		offset += hdr[0];
++
++		if (offset <= dest_start + dest_len &&
++		    offset + len >= dest_start) {
++			int data_offset = 0;
++			int dest_offset = 0;
++			int copy_len;
++
++			if (offset < dest_start)
++				data_offset = dest_start - offset;
++			else
++				dest_offset = offset - dest_start;
++
++			copy_len = len - data_offset;
++			if (copy_len > dest_len - dest_offset)
++				copy_len = dest_len - dest_offset;
++
++			ar93xx_wmac_otp_read(base, addr - data_offset,
++					     dest + dest_offset,
++					     copy_len);
++
++			dest_bytes += copy_len;
++		}
++		addr -= hdr[1];
++	}
++	return !!dest_bytes;
++}
++
++bool __init ar93xx_wmac_read_mac_address(u8 *dest)
++{
++	void __iomem *base;
++	bool ret = false;
++	int addr = 0x1ff;
++	unsigned int len;
++	u32 hdr_u32;
++	u8 *hdr = (u8 *) &hdr_u32;
++	u8 mac[6] = { 0x00, 0x02, 0x03, 0x04, 0x05, 0x06 };
++	int mac_start = 2, mac_end = 8;
++
++	BUG_ON(!soc_is_ar933x() && !soc_is_ar934x());
++	base = ioremap_nocache(AR93XX_WMAC_BASE, AR93XX_WMAC_SIZE);
++	while (addr > sizeof(hdr_u32)) {
++		if (!ar93xx_wmac_otp_read(base, addr, hdr, sizeof(hdr_u32)))
++			break;
++
++		if (hdr_u32 == 0 || hdr_u32 == ~0)
++			break;
++
++		len = (hdr[1] << 4) | (hdr[2] >> 4);
++		addr -= 4;
++
++		switch (hdr[0] >> 5) {
++		case 0:
++			if (len < mac_end)
++				break;
++
++			ar93xx_wmac_otp_read(base, addr - mac_start, mac, 6);
++			ret = true;
++			break;
++		case 3:
++			ret |= ar93xx_wmac_otp_uncompress(base, addr, len, mac,
++							  mac_start, 6);
++			break;
++		default:
++			break;
++		}
++
++		addr -= len + 2;
++	}
++
++	iounmap(base);
++	if (ret)
++		memcpy(dest, mac, 6);
++
++	return ret;
++}
++
+ void __init ath79_register_wmac(u8 *cal_data, u8 *mac_addr)
+ {
+ 	if (soc_is_ar913x())
+--- a/arch/mips/ath79/dev-wmac.h
++++ b/arch/mips/ath79/dev-wmac.h
+@@ -14,5 +14,6 @@
+ 
+ void ath79_register_wmac(u8 *cal_data, u8 *mac_addr);
+ void ath79_register_wmac_simple(void);
++bool ar93xx_wmac_read_mac_address(u8 *dest);
+ 
+ #endif /* _ATH79_DEV_WMAC_H */
+--- a/arch/mips/include/asm/mach-ath79/ar71xx_regs.h
++++ b/arch/mips/include/asm/mach-ath79/ar71xx_regs.h
+@@ -112,6 +112,14 @@
+ #define QCA955X_EHCI1_BASE	0x1b400000
+ #define QCA955X_EHCI_SIZE	0x1000
+ 
++#define AR9300_OTP_BASE		0x14000
++#define AR9300_OTP_STATUS	0x15f18
++#define AR9300_OTP_STATUS_TYPE		0x7
++#define AR9300_OTP_STATUS_VALID		0x4
++#define AR9300_OTP_STATUS_ACCESS_BUSY	0x2
++#define AR9300_OTP_STATUS_SM_BUSY	0x1
++#define AR9300_OTP_READ_DATA	0x15f1c
++
+ /*
+  * DDR_CTRL block
+  */
+@@ -149,6 +157,13 @@
+ #define AR934X_DDR_REG_FLUSH_PCIE	0xa8
+ #define AR934X_DDR_REG_FLUSH_WMAC	0xac
+ 
++#define AR934X_OTP_BASE					0x30000
++#define AR934X_OTP_STATUS				0x31018
++#define AR934X_OTP_READ_DATA				0x3101c
++#define AR934X_OTP_INTF2_ADDRESS			0x31008
++#define AR934X_OTP_INTF3_ADDRESS			0x3100c
++#define AR934X_OTP_PGENB_SETUP_HOLD_TIME_ADDRESS	0x31034
++
+ /*
+  * PLL block
+  */

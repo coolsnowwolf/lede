@@ -47,7 +47,11 @@ loader-compile: $(PKG_BUILD_DIR)/.prepared
 		clean all
 
 loader.gz: $(PKG_BUILD_DIR)/loader.bin
-	gzip -nc9 $< > $(LOADER_GZ)
+	# Workaround for buggy bootloaders: Some devices
+	# (TP-Link TL-WR1043ND v1) don't work correctly when
+	# the uncompressed loader is too small (probably a cache
+	# invalidation issue)
+	dd if=$< bs=512K conv=sync | gzip -nc9 > $(LOADER_GZ)
 
 loader.elf: $(PKG_BUILD_DIR)/loader.elf
 	$(CP) $< $(LOADER_ELF)

@@ -57,6 +57,10 @@ get_status_led() {
 	ap147-010)
 		status_led="ap147:green:status"
 		;;
+	ac9531-020|\
+	ac9531-010)
+		status_led="ac9531:green:status"
+		;;
 	ap135-020)
 		status_led="ap135:green:status"
 		;;
@@ -67,6 +71,7 @@ get_status_led() {
 	archer-c60-v2|\
 	archer-c7-v4|\
 	fritz300e|\
+	fritz4020|\
 	gl-usb150|\
 	mr12|\
 	mr16|\
@@ -208,6 +213,7 @@ get_status_led() {
 		;;
 	e600g-v2|\
 	oolite-v5.2-dev|\
+	ts-d084|\
 	wifi-pineapple-nano)
 		status_led="$board:blue:system"
 		;;
@@ -258,6 +264,9 @@ get_status_led() {
 		;;
 	jwap230)
 		status_led="$board:green:led1"
+		;;
+	koala)
+		status_led="$board:blue:sys"
 		;;
 	k2t)
 		status_led="$board:red:lan"
@@ -338,6 +347,7 @@ get_status_led() {
 		status_led="$board:green:wan"
 		;;
 	rb-2011il|\
+	rb-2011ils|\
 	rb-2011l|\
 	rb-2011uas|\
 	rb-2011uas-2hnd)

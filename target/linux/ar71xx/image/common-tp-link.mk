@@ -4,8 +4,9 @@ define Build/copy-file
 	cat "$(1)" > "$@"
 endef
 
+# Arguments: <output name> <kernel offset>
 define Build/loader-okli
-	dd if=$(KDIR)/loader-$(1).gz bs=7680 conv=sync of="$@.new"
+	dd if=$(KDIR)/loader-$(word 1,$(1)).$(LOADER_TYPE) bs=$(word 2,$(1)) conv=sync of="$@.new"
 	cat "$@" >> "$@.new"
 	mv "$@.new" "$@"
 endef
@@ -60,7 +61,7 @@ define Device/tplink-nolzma
   LOADER_FLASH_OFFS := 0x22000
   COMPILE := loader-$(1).gz
   COMPILE/loader-$(1).gz := loader-okli-compile
-  KERNEL := copy-file $(KDIR)/vmlinux.bin.lzma | uImage lzma -M 0x4f4b4c49 | loader-okli $(1)
+  KERNEL := copy-file $(KDIR)/vmlinux.bin.lzma | uImage lzma -M 0x4f4b4c49 | loader-okli $(1) 7680
   KERNEL_INITRAMFS := copy-file $(KDIR)/vmlinux-initramfs.bin.lzma | loader-kernel-cmdline | tplink-v1-header
 endef
 

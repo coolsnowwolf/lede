@@ -20,6 +20,7 @@
 #include <linux/of_gpio.h>
 #include <linux/rtl8366.h>
 #include <linux/version.h>
+#include <linux/of_mdio.h>
 
 #ifdef CONFIG_RTL8366_SMI_DEBUG_FS
 #include <linux/debugfs.h>
@@ -318,9 +319,9 @@ EXPORT_SYMBOL_GPL(rtl8366_smi_rmwr);
 static int rtl8366_reset(struct rtl8366_smi *smi)
 {
 	if (smi->hw_reset) {
-		smi->hw_reset(true);
+		smi->hw_reset(smi, true);
 		msleep(RTL8366_SMI_HW_STOP_DELAY);
-		smi->hw_reset(false);
+		smi->hw_reset(smi, false);
 		msleep(RTL8366_SMI_HW_START_DELAY);
 		return 0;
 	}
@@ -916,6 +917,12 @@ static int rtl8366_smi_mii_init(struct rtl8366_smi *smi)
 {
 	int ret;
 
+#ifdef CONFIG_OF
+	struct device_node *np = NULL;
+
+	np = of_get_child_by_name(smi->parent->of_node, "mdio-bus");
+#endif
+
 	smi->mii_bus = mdiobus_alloc();
 	if (smi->mii_bus == NULL) {
 		ret = -ENOMEM;
@@ -939,7 +946,13 @@ static int rtl8366_smi_mii_init(struct rtl8366_smi *smi)
 	}
 #endif
 
-	ret = mdiobus_register(smi->mii_bus);
+#ifdef CONFIG_OF
+	if (np)
+		ret = of_mdiobus_register(smi->mii_bus, np);
+	else
+#endif
+		ret = mdiobus_register(smi->mii_bus);
+
 	if (ret)
 		goto err_free;
 
@@ -1287,7 +1300,7 @@ static int __rtl8366_smi_init(struct rtl8366_smi *smi, const char *name)
 
 	/* start the switch */
 	if (smi->hw_reset) {
-		smi->hw_reset(false);
+		smi->hw_reset(smi, false);
 		msleep(RTL8366_SMI_HW_START_DELAY);
 	}
 
@@ -1302,7 +1315,7 @@ static int __rtl8366_smi_init(struct rtl8366_smi *smi, const char *name)
 static void __rtl8366_smi_cleanup(struct rtl8366_smi *smi)
 {
 	if (smi->hw_reset)
-		smi->hw_reset(true);
+		smi->hw_reset(smi, true);
 
 	gpio_free(smi->gpio_sck);
 	gpio_free(smi->gpio_sda);
@@ -1412,6 +1425,14 @@ void rtl8366_smi_cleanup(struct rtl8366_smi *smi)
 EXPORT_SYMBOL_GPL(rtl8366_smi_cleanup);
 
 #ifdef CONFIG_OF
+static void rtl8366_smi_reset(struct rtl8366_smi *smi, bool active)
+{
+	if (active)
+		reset_control_assert(smi->reset);
+	else
+		reset_control_deassert(smi->reset);
+}
+
 int rtl8366_smi_probe_of(struct platform_device *pdev, struct rtl8366_smi *smi)
 {
 	int sck = of_get_named_gpio(pdev->dev.of_node, "gpio-sck", 0);
@@ -1424,6 +1445,9 @@ int rtl8366_smi_probe_of(struct platform_device *pdev, struct rtl8366_smi *smi)
 
 	smi->gpio_sda = sda;
 	smi->gpio_sck = sck;
+	smi->reset = devm_reset_control_get(&pdev->dev, "switch");
+	if (!IS_ERR(smi->reset))
+		smi->hw_reset = rtl8366_smi_reset;
 
 	return 0;
 }

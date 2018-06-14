@@ -287,9 +287,6 @@ tplink_board_detect() {
 	"120000"*)
 		model="MERCURY MAC1200R"
 		;;
-	"204100"*)
-		model="TP-Link TL-WR2041N"
-		;;
 	"254300"*)
 		model="TP-Link TL-WR2543N/ND"
 		;;
@@ -335,6 +332,9 @@ tplink_board_detect() {
 		;;
 	"640000"*)
 		model="TP-Link TL-MR6400"
+		;;
+	"65010007")
+		model="TP-Link TL-WDX6501"
 		;;
 	"65000002")
 		model="TP-Link TL-WDR6500"
@@ -457,6 +457,12 @@ ar71xx_board_detect() {
 		;;
 	*"AP147-010 reference board")
 		name="ap147-010"
+		;;
+	*"AC9531-010 reference board")
+		name="ac9531-010"
+		;;
+	*"AC9531-020 reference board")
+		name="ac9531-020"
 		;;
 	*"AP152 reference board")
 		name="ap152"
@@ -712,6 +718,9 @@ ar71xx_board_detect() {
 	*"eTactica EG-200")
 		name="rme-eg200"
 		;;
+	*"FRITZ!Box 4020")
+		name="fritz4020"
+		;;
 	*"FRITZ!WLAN Repeater 300E")
 		name="fritz300e"
 		;;
@@ -726,6 +735,9 @@ ar71xx_board_detect() {
 		;;
 	*"GL-AR750")
 		name="gl-ar750"
+		;;
+	*"GL-AR750S")
+		name="gl-ar750s"
 		;;
 	*"GL-CONNECT INET v1")
 		name="gl-inet"
@@ -765,9 +777,12 @@ ar71xx_board_detect() {
 	*"JWAP230")
 		name="jwap230"
 		;;
+	*"Koala")
+		name="koala"
+		;;
 	*"K2T A1/A2/A3 board")
 		#fixup: update the machine name
-		machine=$(echo -n "$machine" | sed "s,A1/A2/A3,$(head -c400 /dev/mtd1 | grep -o hw_ver.* | cut -d\" -f3),")
+		machine=$(echo -n "$machine" | sed "s,A1/A2/A3,$(head -c400 $(find_mtd_chardev config) | grep -o hw_ver.* | cut -d\" -f3),")
 		name="k2t"
 		;;
 	*"LAN Turtle")
@@ -951,6 +966,9 @@ ar71xx_board_detect() {
 		;;
 	*"RouterBOARD 2011iL")
 		name="rb-2011il"
+		;;
+	*"RouterBOARD 2011iLS")
+		name="rb-2011ils"
 		;;
 	*"RouterBOARD 2011L")
 		name="rb-2011l"
@@ -1225,6 +1243,9 @@ ar71xx_board_detect() {
 	*"TL-WDR4900 v2")
 		name="tl-wdr4900-v2"
 		;;
+	*"TL-WDX6501 v7")
+		name="tl-wdx6501-v7"
+		;;
 	*"TL-WDR6500 v2")
 		name="tl-wdr6500-v2"
 		;;
@@ -1245,12 +1266,6 @@ ar71xx_board_detect() {
 		;;
 	*"TL-WR1043ND v4")
 		name="tl-wr1043nd-v4"
-		;;
-  *"TL-WR2041N v1")
-		name="tl-wr2041n-v1"
-		;;
-  *"TL-WR2041N v2")
-		name="tl-wr2041n-v2"
 		;;
 	*"TL-WR2543N"*)
 		name="tl-wr2543n"
@@ -1327,14 +1342,14 @@ ar71xx_board_detect() {
 	*"TL-WR941N/ND v6")
 		name="tl-wr941nd-v6"
 		;;
-	*"TL-WR941N v7")
-		name="tl-wr941n-v7"
-		;;
 	*"TL-WR941ND")
 		name="tl-wr941nd"
 		;;
 	*"TL-WR942N v1")
 		name="tl-wr942n-v1"
+		;;
+	*"TS-D084")
+		name="ts-d084"
 		;;
 	*"Tube2H")
 		name="tube2h"
