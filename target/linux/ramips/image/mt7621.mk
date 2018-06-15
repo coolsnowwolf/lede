@@ -114,6 +114,14 @@ define Device/hc5962
 endef
 TARGET_DEVICES += hc5962
 
+define Device/iodata_wn-gx300gr
+  DTS := WN-GX300GR
+  IMAGE_SIZE := 7798784
+  DEVICE_TITLE := I-O DATA WN-GX300GR
+  DEVICE_PACKAGES := kmod-mt7603 wpad-mini
+endef
+TARGET_DEVICES += iodata_wn-gx300gr
+
 define Device/k2p
   DTS := K2P
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
