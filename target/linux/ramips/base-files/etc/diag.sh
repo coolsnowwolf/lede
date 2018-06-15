@@ -27,6 +27,7 @@ get_status_led() {
 	fonera20n|\
 	firewrt|\
 	hg255d|\
+	iodata,wn-gx300gr|\
 	kn|\
 	kn_rc|\
 	kn_rf|\

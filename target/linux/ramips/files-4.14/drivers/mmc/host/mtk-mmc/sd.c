@@ -2209,7 +2209,23 @@ static int msdc_drv_probe(struct platform_device *pdev)
 
 	// Set the pins for sdxc to sdxc mode
 	//FIXME: this should be done by pinctl and not by the sd driver
-	reg = sdr_read32((void __iomem *)(RALINK_SYSCTL_BASE + 0x60)) & ~(0x3 << 18);
+	if (ralink_soc == MT762X_SOC_MT7620A ||
+	    ralink_soc == MT762X_SOC_MT7621AT) {
+		reg = sdr_read32((void __iomem *)(RALINK_SYSCTL_BASE +
+						  0x60)) & ~(0x3 << 18);
+		if (ralink_soc == MT762X_SOC_MT7620A)
+			reg |= 0x1 << 18;
+	} else {
+		reg = sdr_read32((void __iomem *)(RALINK_SYSCTL_BASE + 0x3c));
+		reg |= 0x1e << 16;
+		sdr_write32((void __iomem *)(RALINK_SYSCTL_BASE + 0x3c), reg);
+		reg = sdr_read32((void __iomem *)(RALINK_SYSCTL_BASE +
+						  0x60)) & ~(0x3 << 10);
+#if defined(CONFIG_MTK_MMC_EMMC_8BIT)
+		reg |= 0x3 << 26 | 0x3 << 28 | 0x3 << 30;
+#endif
+	}
+
 	sdr_write32((void __iomem *)(RALINK_SYSCTL_BASE + 0x60), reg);
 
 	hw = &msdc0_hw;
