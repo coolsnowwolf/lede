@@ -48,9 +48,6 @@ safe_dns_tcp = s:taboption("basic",Flag, "safe_dns_tcp", translate("DNS uses TCP
 safe_dns_tcp.rmempty = false
 -- safe_dns_tcp:depends("more", "1")
 
--- more_opt = s:taboption("basic",Flag, "more", translate("More Options"),
--- 	translate("Options for advanced users"))
-
 -- timeout = s:taboption("basic",Value, "timeout", translate("Timeout"))
 -- timeout.datatype = "range(0,10000)"
 -- timeout.placeholder = "60"
@@ -77,6 +74,9 @@ safe_dns_tcp.rmempty = false
 
 s:tab("main",  translate("Server Setting"))
 
+moreopt = s:taboption("main",Flag, "more", translate("Using SS instead of SSR"),translate("Using incorrect encryption mothod may causes service fail to start"))
+moreopt.rmempty = false
+
 server = s:taboption("main",Value, "server", translate("Server Address"))
 server.optional = false
 server.datatype = "host"
@@ -98,12 +98,21 @@ method:value("aes-256-ctr")
 method:value("aes-128-cfb")
 method:value("aes-192-cfb")
 method:value("aes-256-cfb")
+method:value("aes-128-gcm")
+method:value("aes-192-gcm")
+method:value("aes-256-gcm")
 method:value("rc4")
 method:value("rc4-md5")
 method:value("rc4-md5-6")
 method:value("salsa20")
 method:value("chacha20")
 method:value("chacha20-ietf")
+method:value("camellia-128-cfb")
+method:value("camellia-192-cfb")
+method:value("camellia-256-cfb")
+method:value("bf-cfb")
+method:value("chacha20-ietf-poly1305")
+method:value("xchacha20-ietf-poly1305")
 
 protocol = s:taboption("main",ListValue, "protocol", translate("Protocol"))
 protocol:value("origin")
