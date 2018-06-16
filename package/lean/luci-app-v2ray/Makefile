@@ -5,11 +5,11 @@
 
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=LuCI support for V2Ray
+LUCI_TITLE:=LuCI support for V2Ray (Please select lua-cjson package manually)
 LUCI_DEPENDS:=+iptables-mod-tproxy +kmod-ipt-tproxy +ip +ipset-lists +pdnsd-alt +coreutils +coreutils-base64 +coreutils-nohup +dnsmasq-full +ca-certificates +v2ray
 LUCI_PKGARCH:=all
 PKG_VERSION:=1.0
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
