@@ -36,7 +36,7 @@ MODULE_LICENSE("GPL");
 
 static int swdev_id;
 static struct list_head swdevs;
-static DEFINE_SPINLOCK(swdevs_lock);
+static DEFINE_MUTEX(swdevs_lock);
 struct swconfig_callback;
 
 struct swconfig_callback {
@@ -269,13 +269,7 @@ static void swconfig_defaults_init(struct switch_dev *dev)
 }
 
 
-static struct genl_family switch_fam = {
-	.id = GENL_ID_GENERATE,
-	.name = "switch",
-	.hdrsize = 0,
-	.version = 1,
-	.maxattr = SWITCH_ATTR_MAX,
-};
+static struct genl_family switch_fam;
 
 static const struct nla_policy switch_policy[SWITCH_ATTR_MAX+1] = {
 	[SWITCH_ATTR_ID] = { .type = NLA_U32 },
@@ -302,13 +296,13 @@ static struct nla_policy link_policy[SWITCH_LINK_ATTR_MAX] = {
 static inline void
 swconfig_lock(void)
 {
-	spin_lock(&swdevs_lock);
+	mutex_lock(&swdevs_lock);
 }
 
 static inline void
 swconfig_unlock(void)
 {
-	spin_unlock(&swdevs_lock);
+	mutex_unlock(&swdevs_lock);
 }
 
 static struct switch_dev *
@@ -597,8 +591,13 @@ swconfig_parse_ports(struct sk_buff *msg, struct nlattr *head,
 
 		port = &val->value.ports[val->len];
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,12,0)
 		if (nla_parse_nested(tb, SWITCH_PORT_ATTR_MAX, nla,
 				port_policy))
+#else
+		if (nla_parse_nested(tb, SWITCH_PORT_ATTR_MAX, nla,
+				port_policy, NULL))
+#endif
 			return -EINVAL;
 
 		if (!tb[SWITCH_PORT_ID])
@@ -619,7 +618,11 @@ swconfig_parse_link(struct sk_buff *msg, struct nlattr *nla,
 {
 	struct nlattr *tb[SWITCH_LINK_ATTR_MAX + 1];
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,12,0)
 	if (nla_parse_nested(tb, SWITCH_LINK_ATTR_MAX, nla, link_policy))
+#else
+	if (nla_parse_nested(tb, SWITCH_LINK_ATTR_MAX, nla, link_policy, NULL))
+#endif
 		return -EINVAL;
 
 	link->duplex = !!tb[SWITCH_LINK_FLAG_DUPLEX];
@@ -1051,6 +1054,19 @@ static struct genl_ops swconfig_ops[] = {
 	}
 };
 
+static struct genl_family switch_fam = {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
+	.id = GENL_ID_GENERATE,
+#endif
+	.name = "switch",
+	.hdrsize = 0,
+	.version = 1,
+	.maxattr = SWITCH_ATTR_MAX,
+	.module = THIS_MODULE,
+	.ops = swconfig_ops,
+	.n_ops = ARRAY_SIZE(swconfig_ops),
+};
+
 #ifdef CONFIG_OF
 void
 of_switch_load_portmap(struct switch_dev *dev)
@@ -1222,8 +1238,12 @@ static int __init
 swconfig_init(void)
 {
 	INIT_LIST_HEAD(&swdevs);
-	
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
 	return genl_register_family_with_ops(&switch_fam, swconfig_ops);
+#else
+	return genl_register_family(&switch_fam);
+#endif
 }
 
 static void __exit

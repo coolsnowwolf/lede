@@ -8,13 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libnftnl
-PKG_VERSION:=1.0.7
-PKG_RELEASE:=1
+PKG_VERSION:=1.0.9
+PKG_RELEASE:=2
 
-PKG_SOURCE_URL:=git://git.netfilter.org/libnftnl
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_VERSION:=libnftnl-1.0.7
-PKG_MIRROR_HASH:=d38a409d52074a5b20f5b7477b385506692a9a05ec6f4ac3d14a8a80aa4f81d9
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
+PKG_SOURCE_URL:=https://netfilter.org/projects/$(PKG_NAME)/files
+PKG_HASH:=fec1d824aee301e59a11aeaae2a2d429cb99ead81e6bafab791a4dd6569b3635
 PKG_MAINTAINER:=Steven Barth <steven@midlink.org>
 PKG_LICENSE:=GPL-2.0+
 
@@ -23,6 +22,8 @@ PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
 
 include $(INCLUDE_DIR)/package.mk
+
+DISABLE_NLS:=
 
 define Package/libnftnl
   SECTION:=libs
@@ -42,8 +43,7 @@ TARGET_CFLAGS += $(FPIC)
 CONFIGURE_ARGS += \
 	--enable-static \
 	--enable-shared \
-	--without-json-parsing \
-	--without-xml-parsing \
+	--without-json-parsing
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include/libnftnl

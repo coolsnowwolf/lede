@@ -1,0 +1,181 @@
+commit 331735a357a73c7b8adc205241ac3cc6543d985e
+Author: Felix Fietkau <nbd@openwrt.org>
+Date:   Tue Nov 17 12:38:22 2015 +0000
+
+    gcc: add a patch to 5.x that supports translation of __FILE__ paths
+    
+    Signed-off-by: Felix Fietkau <nbd@openwrt.org>
+    
+    SVN-Revision: 47490
+
+Forward ported from attachment to https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47047
+
+--- a/gcc/c-family/c-opts.c
++++ b/gcc/c-family/c-opts.c
+@@ -588,6 +588,10 @@ c_common_handle_option (size_t scode, co
+       add_path (xstrdup (arg), SYSTEM, 0, true);
+       break;
+ 
++    case OPT_iremap:
++      add_cpp_remap_path (arg);
++      break;
++
+     case OPT_iwithprefix:
+       add_prefixed_path (arg, SYSTEM);
+       break;
+--- a/gcc/c-family/c.opt
++++ b/gcc/c-family/c.opt
+@@ -1825,6 +1825,10 @@ iquote
+ C ObjC C++ ObjC++ Joined Separate MissingArgError(missing path after %qs)
+ -iquote <dir>	Add <dir> to the end of the quote include path.
+ 
++iremap
++C ObjC C++ ObjC++ Joined Separate
++-iremap <src:dst>  Convert <src> to <dst> if it occurs as prefix in __FILE__.
++
+ iwithprefix
+ C ObjC C++ ObjC++ Joined Separate
+ -iwithprefix <dir>	Add <dir> to the end of the system include path.
+--- a/gcc/doc/cpp.texi
++++ b/gcc/doc/cpp.texi
+@@ -4272,6 +4272,7 @@ Refer to the GCC manual for full documen
+ @c man begin SYNOPSIS
+ cpp [@option{-D}@var{macro}[=@var{defn}]@dots{}] [@option{-U}@var{macro}]
+     [@option{-I}@var{dir}@dots{}] [@option{-iquote}@var{dir}@dots{}]
++    [@option{-iremap}@var{src}:@var{dst}]
+     [@option{-M}|@option{-MM}] [@option{-MG}] [@option{-MF} @var{filename}]
+     [@option{-MP}] [@option{-MQ} @var{target}@dots{}]
+     [@option{-MT} @var{target}@dots{}]
+--- a/gcc/doc/cppopts.texi
++++ b/gcc/doc/cppopts.texi
+@@ -220,6 +220,12 @@ extensions @samp{.i}, @samp{.ii} or @sam
+ extensions that GCC uses for preprocessed files created by
+ @option{-save-temps}.
+ 
++@item -iremap @var{src}:@var{dst}
++@opindex iremap
++Replace the prefix @var{src} in __FILE__ with @var{dst} at expansion time.
++This option can be specified more than once.  Processing stops at the first
++match.
++
+ @item -fdirectives-only
+ @opindex fdirectives-only
+ When preprocessing, handle directives, but do not expand macros.
+--- a/gcc/doc/invoke.texi
++++ b/gcc/doc/invoke.texi
+@@ -11865,6 +11865,12 @@ by @option{-fplugin=@var{name}} instead
+ @option{-fplugin=@var{path}/@var{name}.so}.  This option is not meant
+ to be used by the user, but only passed by the driver.
+ 
++@item -iremap @var{src}:@var{dst}
++@opindex iremap
++Replace the prefix @var{src} in __FILE__ with @var{dst} at expansion time.
++This option can be specified more than once.  Processing stops at the first
++match.
++
+ @item -L@var{dir}
+ @opindex L
+ Add directory @var{dir} to the list of directories to be searched
+--- a/libcpp/include/cpplib.h
++++ b/libcpp/include/cpplib.h
+@@ -820,6 +820,9 @@ extern void cpp_set_lang (cpp_reader *,
+ /* Set the include paths.  */
+ extern void cpp_set_include_chains (cpp_reader *, cpp_dir *, cpp_dir *, int);
+ 
++/* Provide src:dst pair for __FILE__ remapping.  */
++extern void add_cpp_remap_path (const char *);
++
+ /* Call these to get pointers to the options, callback, and deps
+    structures for a given reader.  These pointers are good until you
+    call cpp_finish on that reader.  You can either edit the callbacks
+--- a/libcpp/macro.c
++++ b/libcpp/macro.c
+@@ -227,6 +227,64 @@ static const char * const monthnames[] =
+   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+ };
+ 
++static size_t remap_pairs;
++static char **remap_src;
++static char **remap_dst;
++
++void
++add_cpp_remap_path (const char *arg)
++{
++  const char *arg_dst;
++  size_t len;
++
++  arg_dst = strchr(arg, ':');
++  if (arg_dst == NULL)
++    {
++      fprintf(stderr, "Invalid argument for -iremap\n");
++      exit(1);
++    }
++
++  len = arg_dst - arg;
++  ++arg_dst;
++
++  remap_src = (char **) xrealloc(remap_src, sizeof(char *) * (remap_pairs + 1));
++  remap_dst = (char **) xrealloc(remap_dst, sizeof(char *) * (remap_pairs + 1));
++
++  remap_src[remap_pairs] = (char *) xmalloc(len + 1);
++  memcpy(remap_src[remap_pairs], arg, len);
++  remap_src[remap_pairs][len] = '\0';
++  remap_dst[remap_pairs] = xstrdup(arg_dst);
++  ++remap_pairs;
++}
++
++static const char *
++cpp_remap_file (const char *arg, char **tmp_name)
++{
++  char *result;
++  size_t i, len;
++
++  for (i = 0; i < remap_pairs; ++i)
++    {
++      len = strlen (remap_src[i]);
++      if (strncmp (remap_src[i], arg, len))
++	continue;
++      if (arg[len] == '\0')
++	return xstrdup (remap_dst[i]);
++      if (arg[len] != '/')
++	continue;
++      arg += len;
++      len = strlen (remap_dst[i]);
++      result = (char *) xmalloc (len + strlen (arg) + 1);
++      memcpy(result, remap_dst[i], len);
++      strcpy(result + len, arg);
++      *tmp_name = result;
++
++      return result;
++    }
++
++   return arg;
++}
++
+ /* Helper function for builtin_macro.  Returns the text generated by
+    a builtin macro. */
+ const uchar *
+@@ -290,6 +348,7 @@ _cpp_builtin_macro_text (cpp_reader *pfi
+       {
+ 	unsigned int len;
+ 	const char *name;
++	char *tmp_name = NULL;
+ 	uchar *buf;
+ 	
+ 	if (node->value.builtin == BT_FILE)
+@@ -301,6 +360,7 @@ _cpp_builtin_macro_text (cpp_reader *pfi
+ 	    if (!name)
+ 	      abort ();
+ 	  }
++	name = cpp_remap_file (name, &tmp_name);
+ 	len = strlen (name);
+ 	buf = _cpp_unaligned_alloc (pfile, len * 2 + 3);
+ 	result = buf;
+@@ -308,6 +368,7 @@ _cpp_builtin_macro_text (cpp_reader *pfi
+ 	buf = cpp_quote_string (buf + 1, (const unsigned char *) name, len);
+ 	*buf++ = '"';
+ 	*buf = '\0';
++	free (tmp_name);
+       }
+       break;
+ 

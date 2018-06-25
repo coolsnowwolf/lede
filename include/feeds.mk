@@ -23,8 +23,6 @@ ifneq ($(CONFIG_PER_FEED_REPO),)
   endif
 endif
 
-PACKAGE_DIR_ALL := $(TOPDIR)/staging_dir/packages/$(BOARD)
-
 opkg_package_files = $(wildcard \
 	$(foreach dir,$(PACKAGE_SUBDIRS), \
 	  $(foreach pkg,$(1), $(dir)/$(pkg)_*.ipk)))
@@ -41,10 +39,10 @@ endef
 # 1: destination file
 define FeedSourcesAppend
 ( \
-  echo "src/gz %n_core %U/targets/%S/packages"; \
+  echo "src/gz %d_core %U/targets/%S/packages"; \
   $(strip $(if $(CONFIG_PER_FEED_REPO), \
-	$(foreach feed,base $(FEEDS_ENABLED),echo "src/gz %n_$(feed) %U/packages/%A/$(feed)";) \
+	$(foreach feed,base $(FEEDS_ENABLED),echo "src/gz %d_$(feed) %U/packages/%A/$(feed)";) \
 	$(if $(CONFIG_PER_FEED_REPO_ADD_DISABLED), \
-		$(foreach feed,$(FEEDS_DISABLED),echo "$(if $(CONFIG_PER_FEED_REPO_ADD_COMMENTED),# )src/gz %n_$(feed) %U/packages/%A/$(feed)";)))) \
+		$(foreach feed,$(FEEDS_DISABLED),echo "$(if $(CONFIG_PER_FEED_REPO_ADD_COMMENTED),# )src/gz %d_$(feed) %U/packages/%A/$(feed)";)))) \
 ) >> $(1)
 endef

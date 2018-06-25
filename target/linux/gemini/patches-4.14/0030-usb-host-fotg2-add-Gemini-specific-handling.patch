@@ -1,0 +1,131 @@
+From e8ede0f62b39a3d3b06ae3dc04a74680a1f0a64b Mon Sep 17 00:00:00 2001
+From: Linus Walleij <linus.walleij@linaro.org>
+Date: Fri, 21 Apr 2017 22:19:00 +0200
+Subject: [PATCH 30/31] usb: host: fotg2: add Gemini-specific handling
+
+The Cortina Systems Gemini has bolted on a PHY inside the
+silicon that can be handled by six bits in a MISC register in
+the system controller.
+
+If we are running on Gemini, look up a syscon regmap through
+a phandle and enable VBUS and optionally the Mini-B connector.
+
+If the device is flagged as "wakeup-source" using the standard
+DT bindings, we also enable this in the global controller for
+respective port.
+
+Signed-off-by: Linus Walleij <linus.walleij@linaro.org>
+---
+ drivers/usb/host/Kconfig       |  1 +
+ drivers/usb/host/fotg210-hcd.c | 76 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 77 insertions(+)
+
+--- a/drivers/usb/host/Kconfig
++++ b/drivers/usb/host/Kconfig
+@@ -375,6 +375,7 @@ config USB_ISP1362_HCD
+ config USB_FOTG210_HCD
+ 	tristate "FOTG210 HCD support"
+ 	depends on USB && HAS_DMA && HAS_IOMEM
++	select MFD_SYSCON
+ 	---help---
+ 	  Faraday FOTG210 is an OTG controller which can be configured as
+ 	  an USB2.0 host. It is designed to meet USB2.0 EHCI specification
+--- a/drivers/usb/host/fotg210-hcd.c
++++ b/drivers/usb/host/fotg210-hcd.c
+@@ -46,6 +46,10 @@
+ #include <linux/platform_device.h>
+ #include <linux/io.h>
+ #include <linux/clk.h>
++#include <linux/bitops.h>
++/* For Cortina Gemini */
++#include <linux/mfd/syscon.h>
++#include <linux/regmap.h>
+ 
+ #include <asm/byteorder.h>
+ #include <asm/irq.h>
+@@ -5583,6 +5587,72 @@ static void fotg210_init(struct fotg210_
+ 	iowrite32(value, &fotg210->regs->otgcsr);
+ }
+ 
++/*
++ * Gemini-specific initialization function, only executed on the
++ * Gemini SoC using the global misc control register.
++ */
++#define GEMINI_GLOBAL_MISC_CTRL		0x30
++#define GEMINI_MISC_USB0_WAKEUP		BIT(14)
++#define GEMINI_MISC_USB1_WAKEUP		BIT(15)
++#define GEMINI_MISC_USB0_VBUS_ON	BIT(22)
++#define GEMINI_MISC_USB1_VBUS_ON	BIT(23)
++#define GEMINI_MISC_USB0_MINI_B		BIT(29)
++#define GEMINI_MISC_USB1_MINI_B		BIT(30)
++
++static int fotg210_gemini_init(struct device *dev, struct usb_hcd *hcd)
++{
++	struct device_node *np = dev->of_node;
++	struct regmap *map;
++	bool mini_b;
++	bool wakeup;
++	u32 mask, val;
++	int ret;
++
++	map = syscon_regmap_lookup_by_phandle(np, "syscon");
++	if (IS_ERR(map)) {
++		dev_err(dev, "no syscon\n");
++		return PTR_ERR(map);
++	}
++	mini_b = of_property_read_bool(np, "cortina,gemini-mini-b");
++	wakeup = of_property_read_bool(np, "wakeup-source");
++
++	/*
++	 * Figure out if this is USB0 or USB1 by simply checking the
++	 * physical base address.
++	 */
++	mask = 0;
++	if (hcd->rsrc_start == 0x69000000) {
++		val = GEMINI_MISC_USB1_VBUS_ON;
++		if (mini_b)
++			val |= GEMINI_MISC_USB1_MINI_B;
++		else
++			mask |= GEMINI_MISC_USB1_MINI_B;
++		if (wakeup)
++			val |= GEMINI_MISC_USB1_WAKEUP;
++		else
++			mask |= GEMINI_MISC_USB1_WAKEUP;
++	} else {
++		val = GEMINI_MISC_USB0_VBUS_ON;
++		if (mini_b)
++			val |= GEMINI_MISC_USB0_MINI_B;
++		else
++			mask |= GEMINI_MISC_USB0_MINI_B;
++		if (wakeup)
++			val |= GEMINI_MISC_USB0_WAKEUP;
++		else
++			mask |= GEMINI_MISC_USB0_WAKEUP;
++	}
++
++	ret = regmap_update_bits(map, GEMINI_GLOBAL_MISC_CTRL, mask, val);
++	if (ret) {
++		dev_err(dev, "failed to initialize Gemini PHY\n");
++		return ret;
++	}
++
++	dev_info(dev, "initialized Gemini PHY\n");
++	return 0;
++}
++
+ /**
+  * fotg210_hcd_probe - initialize faraday FOTG210 HCDs
+  *
+@@ -5662,6 +5732,12 @@ static int fotg210_hcd_probe(struct plat
+ 
+ 	fotg210_init(fotg210);
+ 
++	if (of_device_is_compatible(dev->of_node, "cortina,gemini-usb")) {
++		retval = fotg210_gemini_init(dev, hcd);
++		if (retval)
++			goto failed_dis_clk;
++	}
++
+ 	retval = usb_add_hcd(hcd, irq, IRQF_SHARED);
+ 	if (retval) {
+ 		dev_err(dev, "failed to add hcd with err %d\n", retval);

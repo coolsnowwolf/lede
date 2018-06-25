@@ -97,6 +97,18 @@ _runas_so() {
 	}
 }
 
+_patch_ldso() {
+	_cp "$1" "$1.patched"
+	sed -i -e 's,/\(usr\|lib\|etc\)/,/###/,g' "$1.patched"
+
+	if "$1.patched" 2>&1 | grep -q -- --library-path; then
+		_mv "$1.patched" "$1"
+	else
+		echo "binary patched ${1##*/} not executable, using original" >&2
+		rm -f "$1.patched"
+	fi
+}
+
 for LDD in ${PATH//://ldd }/ldd; do
 	"$LDD" --version >/dev/null 2>/dev/null && break
 	LDD=""
@@ -135,6 +147,7 @@ for BIN in "$@"; do
 				[ -f "$token" -a ! -f "$dest" ] && {
 					_md "$ddir"
 					_cp "$token" "$dest"
+					[ -n "$LDSO" ] && _patch_ldso "$dest"
 				}
 			;; esac
 		done

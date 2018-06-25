@@ -1,5 +1,17 @@
 # Copyright (C) 2006-2013 OpenWrt.org
 
+get_mac_binary() {
+	local path="$1"
+	local offset="$2"
+
+	if [ -z "$path" ]; then
+		echo "get_mac_binary: file $path not found!" >&2
+		return
+	fi
+
+	hexdump -v -n 6 -s $offset -e '5/1 "%02x:" 1/1 "%02x"' $path 2>/dev/null
+}
+
 find_mtd_chardev() {
 	local INDEX=$(find_mtd_index "$1")
 	local PREFIX=/dev/mtd
@@ -33,12 +45,7 @@ mtd_get_mac_binary() {
 	local part
 
 	part=$(find_mtd_part "$mtdname")
-	if [ -z "$part" ]; then
-		echo "mtd_get_mac_binary: partition $mtdname not found!" >&2
-		return
-	fi
-
-	hexdump -v -n 6 -s $offset -e '5/1 "%02x:" 1/1 "%02x"' $part 2>/dev/null
+	get_mac_binary "$part" "$offset"
 }
 
 mtd_get_mac_binary_ubi() {

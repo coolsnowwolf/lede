@@ -8,7 +8,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xfsprogs
-PKG_RELEASE:=1
+PKG_CPE_ID:=cpe:/a:sgi:xfsprogs
+PKG_RELEASE:=2
 PKG_VERSION:=4.11.0
 PKG_SOURCE_URL:=@KERNEL/linux/utils/fs/xfs/xfsprogs
 PKG_HASH:=c3a6d87b564d7738243c507df82276bed982265e345363a95f2c764e8a5f5bb2
@@ -25,6 +26,11 @@ define Package/xfsprogs/default
   SUBMENU:=Filesystem
   DEPENDS:=+libuuid +libpthread +librt
   URL:=http://oss.sgi.com/projects/xfs
+endef
+
+define Package/xfs-admin
+$(call Package/xfsprogs/default)
+  TITLE:=Utilities for changing parameters of an XFS filesystems
 endef
 
 define Package/xfs-mkfs
@@ -64,6 +70,12 @@ define Build/Compile
 	$(call Build/Compile/Default)
 endef
 
+define Package/xfs-admin/install
+	mkdir -p $(1)/sbin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/xfs_db $(1)/sbin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/xfs_admin $(1)/sbin
+endef
+
 define Package/xfs-mkfs/install
 	mkdir -p $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/sbin/mkfs.xfs $(1)/usr/sbin
@@ -80,6 +92,7 @@ define Package/xfs-growfs/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/xfs_growfs $(1)/usr/sbin
 endef
 
+$(eval $(call BuildPackage,xfs-admin))
 $(eval $(call BuildPackage,xfs-mkfs))
 $(eval $(call BuildPackage,xfs-fsck))
 $(eval $(call BuildPackage,xfs-growfs))

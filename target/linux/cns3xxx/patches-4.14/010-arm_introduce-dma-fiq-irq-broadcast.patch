@@ -1,0 +1,80 @@
+--- a/arch/arm/include/asm/glue-cache.h
++++ b/arch/arm/include/asm/glue-cache.h
+@@ -152,9 +152,15 @@ static inline void nop_dma_unmap_area(co
+ #define __cpuc_flush_user_range		__glue(_CACHE,_flush_user_cache_range)
+ #define __cpuc_coherent_kern_range	__glue(_CACHE,_coherent_kern_range)
+ #define __cpuc_coherent_user_range	__glue(_CACHE,_coherent_user_range)
+-#define __cpuc_flush_dcache_area	__glue(_CACHE,_flush_kern_dcache_area)
+ 
+-#define dmac_flush_range		__glue(_CACHE,_dma_flush_range)
++#ifndef CONFIG_DMA_CACHE_FIQ_BROADCAST
++# define __cpuc_flush_dcache_area	__glue(_CACHE,_flush_kern_dcache_area)
++# define dmac_flush_range		__glue(_CACHE,_dma_flush_range)
++#else
++# define __cpuc_flush_dcache_area	__glue(fiq,_flush_kern_dcache_area)
++# define dmac_flush_range		__glue(fiq,_dma_flush_range)
++#endif
++
+ #endif
+ 
+ #endif
+--- a/arch/arm/mm/Kconfig
++++ b/arch/arm/mm/Kconfig
+@@ -899,6 +899,17 @@ config DMA_CACHE_RWFO
+ 	  in hardware, other workarounds are needed (e.g. cache
+ 	  maintenance broadcasting in software via FIQ).
+ 
++config DMA_CACHE_FIQ_BROADCAST
++	bool "Enable fiq broadcast DMA cache maintenance"
++	depends on CPU_V6K && SMP
++	select FIQ
++	help
++	  The Snoop Control Unit on ARM11MPCore does not detect the
++	  cache maintenance operations and the dma_{map,unmap}_area()
++	  functions may leave stale cache entries on other CPUs. By
++	  enabling this option, fiq broadcast in the ARMv6
++	  DMA cache maintenance functions is performed.
++
+ config OUTER_CACHE
+ 	bool
+ 
+--- a/arch/arm/mm/flush.c
++++ b/arch/arm/mm/flush.c
+@@ -319,6 +319,7 @@ void __sync_icache_dcache(pte_t pteval)
+ void flush_dcache_page(struct page *page)
+ {
+ 	struct address_space *mapping;
++	bool skip_broadcast = true;
+ 
+ 	/*
+ 	 * The zero page is never written to, so never has any dirty
+@@ -335,7 +336,10 @@ void flush_dcache_page(struct page *page
+ 
+ 	mapping = page_mapping(page);
+ 
+-	if (!cache_ops_need_broadcast() &&
++#ifndef CONFIG_DMA_CACHE_FIQ_BROADCAST
++        skip_broadcast = !cache_ops_need_broadcast();
++#endif
++        if (skip_broadcast &&
+ 	    mapping && !page_mapcount(page))
+ 		clear_bit(PG_dcache_clean, &page->flags);
+ 	else {
+--- a/arch/arm/mm/dma.h
++++ b/arch/arm/mm/dma.h
+@@ -5,8 +5,13 @@
+ #include <asm/glue-cache.h>
+ 
+ #ifndef MULTI_CACHE
+-#define dmac_map_area			__glue(_CACHE,_dma_map_area)
+-#define dmac_unmap_area 		__glue(_CACHE,_dma_unmap_area)
++#ifndef CONFIG_DMA_CACHE_FIQ_BROADCAST
++# define dmac_map_area			__glue(_CACHE,_dma_map_area)
++# define dmac_unmap_area 		__glue(_CACHE,_dma_unmap_area)
++#else
++# define dmac_map_area			__glue(fiq,_dma_map_area)
++# define dmac_unmap_area			__glue(fiq,_dma_unmap_area)
++#endif
+ 
+ /*
+  * These are private to the dma-mapping API.  Do not use directly.

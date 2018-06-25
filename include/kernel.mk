@@ -52,7 +52,7 @@ else
   LINUX_VERMAGIC:=$(strip $(shell cat $(LINUX_DIR)/.vermagic 2>/dev/null))
   LINUX_VERMAGIC:=$(if $(LINUX_VERMAGIC),$(LINUX_VERMAGIC),unknown)
 
-  LINUX_UNAME_VERSION:=$(if $(word 3,$(subst ., ,$(KERNEL_BASE))),$(KERNEL_BASE),$(KERNEL_BASE).0)
+  LINUX_UNAME_VERSION:=$(KERNEL_BASE)
   ifneq ($(findstring -rc,$(LINUX_VERSION)),)
     LINUX_UNAME_VERSION:=$(LINUX_UNAME_VERSION)-$(strip $(lastword $(subst -, ,$(LINUX_VERSION))))
   endif
@@ -64,7 +64,7 @@ else
   ifeq ($(call qstrip,$(CONFIG_EXTERNAL_KERNEL_TREE))$(call qstrip,$(CONFIG_KERNEL_GIT_CLONE_URI)),)
       LINUX_SITE:=@KERNEL/linux/kernel/v$(word 1,$(subst ., ,$(KERNEL_BASE))).x$(TESTING)
   else
-      LINUX_UNAME_VERSION:=$(strip $(shell cat $(LINUX_DIR)/include/config/kernel.release))
+      LINUX_UNAME_VERSION:=$(strip $(shell cat $(LINUX_DIR)/include/config/kernel.release 2>/dev/null))
   endif
 
   MODULES_SUBDIR:=lib/modules/$(LINUX_UNAME_VERSION)
@@ -85,6 +85,8 @@ else ifneq (,$(findstring $(ARCH) , armeb ))
   LINUX_KARCH := arm
 else ifneq (,$(findstring $(ARCH) , mipsel mips64 mips64el ))
   LINUX_KARCH := mips
+else ifneq (,$(findstring $(ARCH) , powerpc64 ))
+  LINUX_KARCH := powerpc
 else ifneq (,$(findstring $(ARCH) , sh2 sh3 sh4 ))
   LINUX_KARCH := sh
 else ifneq (,$(findstring $(ARCH) , i386 x86_64 ))
@@ -121,61 +123,53 @@ ifdef CONFIG_USE_SPARSE
   KERNEL_MAKEOPTS += C=1 CHECK=$(STAGING_DIR_HOST)/bin/sparse
 endif
 
+PKG_EXTMOD_SUBDIRS ?= .
+
+define populate_module_symvers
+	@mkdir -p $(PKG_INFO_DIR)
+	cat /dev/null > $(PKG_INFO_DIR)/$(PKG_NAME).symvers; \
+	for subdir in $(PKG_EXTMOD_SUBDIRS); do \
+		cat $(PKG_INFO_DIR)/*.symvers 2>/dev/null > $(PKG_BUILD_DIR)/$$$$subdir/Module.symvers; \
+	done
+endef
+
+define collect_module_symvers
+	for subdir in $(PKG_EXTMOD_SUBDIRS); do \
+		grep -F $$$$(readlink -f $(PKG_BUILD_DIR)) $(PKG_BUILD_DIR)/$$$$subdir/Module.symvers >> $(PKG_BUILD_DIR)/Module.symvers.tmp; \
+	done; \
+	sort -u $(PKG_BUILD_DIR)/Module.symvers.tmp > $(PKG_BUILD_DIR)/Module.symvers; \
+	mv $(PKG_BUILD_DIR)/Module.symvers $(PKG_INFO_DIR)/$(PKG_NAME).symvers
+endef
+
+define KernelPackage/hooks
+  ifneq ($(PKG_NAME),kernel)
+    Hooks/Compile/Pre += populate_module_symvers
+    Hooks/Compile/Post += collect_module_symvers
+  endif
+  define KernelPackage/hooks
+  endef
+endef
+
 define KernelPackage/Defaults
   FILES:=
   AUTOLOAD:=
+  MODPARAMS:=
   PKGFLAGS+=nonshared
 endef
 
+# 1: name
+# 2: install prefix
+# 3: module priority prefix
+# 4: required for boot
+# 5: module list
 define ModuleAutoLoad
-	$(SH_FUNC) \
-	export modules=; \
-	probe_module() { \
-		local mods="$$$$$$$$1"; \
-		local boot="$$$$$$$$2"; \
-		local mod; \
-		shift 2; \
-		for mod in $$$$$$$$mods; do \
-			mkdir -p $(2)/etc/modules.d; \
-			echo "$$$$$$$$mod" >> $(2)/etc/modules.d/$(1); \
-		done; \
-		if [ -e $(2)/etc/modules.d/$(1) ]; then \
-			if [ "$$$$$$$$boot" = "1" -a ! -e $(2)/etc/modules-boot.d/$(1) ]; then \
-				mkdir -p $(2)/etc/modules-boot.d; \
-				ln -s ../modules.d/$(1) $(2)/etc/modules-boot.d/; \
-			fi; \
-			modules="$$$$$$$${modules:+$$$$$$$$modules }$$$$$$$$mods"; \
-		fi; \
-	}; \
-	add_module() { \
-		local priority="$$$$$$$$1"; \
-		local mods="$$$$$$$$2"; \
-		local boot="$$$$$$$$3"; \
-		local mod; \
-		shift 3; \
-		for mod in $$$$$$$$mods; do \
-			mkdir -p $(2)/etc/modules.d; \
-			echo "$$$$$$$$mod" >> $(2)/etc/modules.d/$$$$$$$$priority-$(1); \
-		done; \
-		if [ -e $(2)/etc/modules.d/$$$$$$$$priority-$(1) ]; then \
-			if [ "$$$$$$$$boot" = "1" -a ! -e $(2)/etc/modules-boot.d/$$$$$$$$priority-$(1) ]; then \
-				mkdir -p $(2)/etc/modules-boot.d; \
-				ln -s ../modules.d/$$$$$$$$priority-$(1) $(2)/etc/modules-boot.d/; \
-			fi; \
-			modules="$$$$$$$${modules:+$$$$$$$$modules }$$$$$$$$priority-$(1)"; \
-		fi; \
-	}; \
-	$(3) \
-	if [ -n "$$$$$$$$modules" ]; then \
-		modules="$$$$$$$$(echo "$$$$$$$$modules" | tr ' ' '\n' | sort | uniq | paste -s -d' ' -)"; \
-		mkdir -p $(2)/etc/modules.d; \
-		mkdir -p $(2)/CONTROL; \
-		echo "#!/bin/sh" > $(2)/CONTROL/postinst-pkg; \
-		echo "[ -z \"\$$$$$$$$IPKG_INSTROOT\" ] || exit 0" >> $(2)/CONTROL/postinst-pkg; \
-		echo ". /lib/functions.sh" >> $(2)/CONTROL/postinst-pkg; \
-		echo "insert_modules $$$$$$$$modules" >> $(2)/CONTROL/postinst-pkg; \
-		chmod 0755 $(2)/CONTROL/postinst-pkg; \
-	fi
+  $(if $(5), \
+    mkdir -p $(2)/etc/modules.d; \
+    ($(foreach mod,$(5), \
+      echo "$(mod)$(if $(MODPARAMS.$(mod)), $(MODPARAMS.$(mod)),$(if $(MODPARAMS), $(MODPARAMS)))"; )) > $(2)/etc/modules.d/$(3)$(1); \
+    $(if $(4), \
+      mkdir -p $(2)/etc/modules-boot.d; \
+      ln -sf ../modules.d/$(3)$(1) $(2)/etc/modules-boot.d/;))
 endef
 
 ifeq ($(DUMP)$(TARGET_BUILD),)
@@ -228,10 +222,10 @@ $(call KernelPackage/$(1)/config)
   endif
 
   $(call KernelPackage/depends)
+  $(call KernelPackage/hooks)
 
   ifneq ($(if $(filter-out %=y %=n %=m,$(KCONFIG)),$(filter m y,$(foreach c,$(filter-out %=y %=n %=m,$(KCONFIG)),$($(c)))),.),)
-    ifneq ($(strip $(FILES)),)
-      define Package/kmod-$(1)/install
+    define Package/kmod-$(1)/install
 		  @for mod in $$(call version_filter,$$(FILES)); do \
 			if grep -q "$$$$$$$${mod##$(LINUX_DIR)/}" "$(LINUX_DIR)/modules.builtin"; then \
 				echo "NOTICE: module '$$$$$$$$mod' is built-in."; \
@@ -243,10 +237,9 @@ $(call KernelPackage/$(1)/config)
 				exit 1; \
 			fi; \
 		  done;
-		  $(call ModuleAutoLoad,$(1),$$(1),$(AUTOLOAD))
+		  $(call ModuleAutoLoad,$(1),$$(1),$(filter-out 0-,$(word 1,$(AUTOLOAD))-),$(filter-out 0,$(word 2,$(AUTOLOAD))),$(wordlist 3,99,$(AUTOLOAD)))
 		  $(call KernelPackage/$(1)/install,$$(1))
-      endef
-    endif
+    endef
   $(if $(CONFIG_PACKAGE_kmod-$(1)),
     else
       compile: $(1)-disabled
@@ -265,12 +258,17 @@ endef
 
 version_filter=$(if $(findstring @,$(1)),$(shell $(SCRIPT_DIR)/package-metadata.pl version_filter $(KERNEL_PATCHVER) $(1)),$(1))
 
+# 1: priority (optional)
+# 2: module list
+# 3: boot flag
 define AutoLoad
-  add_module "$(1)" "$(call version_filter,$(2))" "$(3)";
+  $(if $(1),$(1),0) $(if $(3),1,0) $(call version_filter,$(2))
 endef
 
+# 1: module list
+# 2: boot flag
 define AutoProbe
-  probe_module "$(call version_filter,$(1))" "$(2)";
+  $(call AutoLoad,,$(1),$(2))
 endef
 
 version_field=$(if $(word $(1),$(2)),$(word $(1),$(2)),0)

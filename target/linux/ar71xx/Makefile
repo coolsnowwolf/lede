@@ -11,7 +11,7 @@ BOARD:=ar71xx
 BOARDNAME:=Atheros AR7xxx/AR9xxx
 FEATURES:=usbgadget
 CPU_TYPE:=24kc
-SUBTARGETS:=generic nand mikrotik
+SUBTARGETS:=generic tiny nand mikrotik
 
 KERNEL_PATCHVER:=4.9
 

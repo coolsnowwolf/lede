@@ -1,0 +1,76 @@
+From e988390850731aa1697ed09d47b0932fac1af175 Mon Sep 17 00:00:00 2001
+From: Felix Fietkau <nbd@nbd.name>
+Date: Fri, 7 Jul 2017 17:20:03 +0200
+Subject: bridge: port isolate
+
+Isolating individual bridge ports
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ include/linux/if_bridge.h | 1 +
+ net/bridge/br_forward.c   | 5 +++++
+ net/bridge/br_input.c     | 3 +++
+ net/bridge/br_sysfs_if.c  | 2 ++
+ 4 files changed, 11 insertions(+)
+
+--- a/include/linux/if_bridge.h
++++ b/include/linux/if_bridge.h
+@@ -49,6 +49,7 @@ struct br_ip_list {
+ #define BR_MULTICAST_TO_UNICAST	BIT(12)
+ #define BR_VLAN_TUNNEL		BIT(13)
+ #define BR_BCAST_FLOOD		BIT(14)
++#define BR_ISOLATE_MODE		BIT(15)
+ 
+ #define BR_DEFAULT_AGEING_TIME	(300 * HZ)
+ 
+--- a/net/bridge/br_forward.c
++++ b/net/bridge/br_forward.c
+@@ -141,6 +141,9 @@ static int deliver_clone(const struct ne
+ void br_forward(const struct net_bridge_port *to,
+ 		struct sk_buff *skb, bool local_rcv, bool local_orig)
+ {
++	if (to->flags & BR_ISOLATE_MODE && !local_orig)
++		to = NULL;
++
+ 	if (to && should_deliver(to, skb)) {
+ 		if (local_rcv)
+ 			deliver_clone(to, skb, local_orig);
+@@ -183,6 +186,8 @@ void br_flood(struct net_bridge *br, str
+ 	struct net_bridge_port *p;
+ 
+ 	list_for_each_entry_rcu(p, &br->port_list, list) {
++		if (!local_orig && (p->flags & BR_ISOLATE_MODE))
++			continue;
+ 		/* Do not flood unicast traffic to ports that turn it off, nor
+ 		 * other traffic if flood off, except for traffic we originate
+ 		 */
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -177,6 +177,9 @@ int br_handle_frame_finish(struct net *n
+ 	if (IS_ENABLED(CONFIG_INET) && skb->protocol == htons(ETH_P_ARP))
+ 		br_do_proxy_arp(skb, br, vid, p);
+ 
++	if (p->flags & BR_ISOLATE_MODE)
++		return br_pass_frame_up(skb);
++
+ 	switch (pkt_type) {
+ 	case BR_PKT_MULTICAST:
+ 		mdst = br_mdb_get(br, skb, vid);
+--- a/net/bridge/br_sysfs_if.c
++++ b/net/bridge/br_sysfs_if.c
+@@ -174,6 +174,7 @@ BRPORT_ATTR_FLAG(proxyarp, BR_PROXYARP);
+ BRPORT_ATTR_FLAG(proxyarp_wifi, BR_PROXYARP_WIFI);
+ BRPORT_ATTR_FLAG(multicast_flood, BR_MCAST_FLOOD);
+ BRPORT_ATTR_FLAG(broadcast_flood, BR_BCAST_FLOOD);
++BRPORT_ATTR_FLAG(isolate_mode, BR_ISOLATE_MODE);
+ 
+ #ifdef CONFIG_BRIDGE_IGMP_SNOOPING
+ static ssize_t show_multicast_router(struct net_bridge_port *p, char *buf)
+@@ -223,6 +224,7 @@ static const struct brport_attribute *br
+ 	&brport_attr_proxyarp_wifi,
+ 	&brport_attr_multicast_flood,
+ 	&brport_attr_broadcast_flood,
++	&brport_attr_isolate_mode,
+ 	NULL
+ };
+ 

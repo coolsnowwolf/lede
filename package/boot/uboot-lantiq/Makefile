@@ -26,205 +26,205 @@ endef
 define U-Boot/arv4519pw_ram
   NAME:=Arcadyan arv4519pw (RAM)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV4519PW
+  BUILD_DEVICES:=arcadyan_arv4519pw
   DDR_SETTINGS:=board/arcadyan/arv4519pw/ddr_settings.h
 endef
 
 define U-Boot/arv4519pw_nor
   NAME:=Arcadyan arv4519pw (NOR)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV4519PW
+  BUILD_DEVICES:=arcadyan_arv4519pw
 endef
 
 define U-Boot/arv4519pw_brn
   NAME:=Arcadyan arv4519pw (BRN)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV4519PW
+  BUILD_DEVICES:=arcadyan_arv4519pw
 endef
 
 define U-Boot/arv7506pw11_ram
   NAME:=Arcadyan ARV7506PW11 (RAM)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV7506PW11
+  BUILD_DEVICES:=arcadyan_arv7506pw11
   DDR_SETTINGS:=board/arcadyan/arv7506pw11/ddr_settings.h
 endef
 
 define U-Boot/arv7506pw11_nor
   NAME:=Arcadyan ARV7506PW11 (NOR)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV7506PW11
+  BUILD_DEVICES:=arcadyan_arv7506pw11
 endef
 
 define U-Boot/arv7506pw11_brn
   NAME:=Arcadyan ARV7506PW11 (BRN)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV7506PW11
+  BUILD_DEVICES:=arcadyan_arv7506pw11
 endef
 
 define U-Boot/arv7510pw_ram
   NAME:=Arcadyan arv7510pw (RAM)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV4510PW
+  BUILD_DEVICES:=arcadyan_arv4510pw
   DDR_SETTINGS:=board/arcadyan/arv7510pw/ddr_settings.h
 endef
 
 define U-Boot/arv7510pw_nor
   NAME:=Arcadyan arv7510pw (NOR)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV4510PW
+  BUILD_DEVICES:=arcadyan_arv4510pw
 endef
 
 define U-Boot/arv7510pw_brn
   NAME:=Arcadyan arv7510pw (BRN)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV4510PW
+  BUILD_DEVICES:=arcadyan_arv4510pw
 endef
 
 define U-Boot/arv7510pw22_ram
   NAME:=Arcadyan arv7510pw22 (RAM)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV7510PW22
+  BUILD_DEVICES:=arcadyan_arv7510pw22
   DDR_SETTINGS:=board/arcadyan/arv7510pw22/ddr_settings.h
 endef
 
 define U-Boot/arv7510pw22_nor
   NAME:=Arcadyan arv7510pw22 (NOR)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV7510PW22
+  BUILD_DEVICES:=arcadyan_arv7510pw22
 endef
 
 define U-Boot/arv7510pw22_brn
   NAME:=Arcadyan arv7510pw22 (BRN)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV7510PW22
+  BUILD_DEVICES:=arcadyan_arv7510pw22
 endef
 
 define U-Boot/arv7518pw_ram
   NAME:=Arcadyan arv7518pw (RAM)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV7518PW
+  BUILD_DEVICES:=arcadyan_arv7518pw
   DDR_SETTINGS:=board/arcadyan/arv7518pw/ddr_settings.h
 endef
 
 define U-Boot/arv7518pw_nor
   NAME:=Arcadyan arv7518pw (NOR)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV7518PW
+  BUILD_DEVICES:=arcadyan_arv7518pw
 endef
 
 define U-Boot/arv7518pw_brn
   NAME:=Arcadyan arv7518pw (BRN)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV7518PW
+  BUILD_DEVICES:=arcadyan_arv7518pw
 endef
 
 define U-Boot/arv752dpw_ram
   NAME:=Arcadyan arv752dpw (RAM)
   BUILD_SUBTARGET:=xway
   DDR_SETTINGS:=board/arcadyan/arv752dpw/ddr_settings.h
-  BUILD_DEVICES:=ARV752DPW
+  BUILD_DEVICES:=arcadyan_arv752dpw
 endef
 
 define U-Boot/arv752dpw_nor
   NAME:=Arcadyan arv752dpw (NOR)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV752DPW
+  BUILD_DEVICES:=arcadyan_arv752dpw
 endef
 
 define U-Boot/arv752dpw_brn
   NAME:=Arcadyan arv752dpw (BRN)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV752DPW
+  BUILD_DEVICES:=arcadyan_arv752dpw
 endef
 
 define U-Boot/arv752dpw22_ram
   NAME:=Arcadyan arv752dpw22 (RAM)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV752DPW22
+  BUILD_DEVICES:=arcadyan_arv752dpw22
   DDR_SETTINGS:=board/arcadyan/arv752dpw22/ddr_settings.h
 endef
 
 define U-Boot/arv752dpw22_nor
   NAME:=Arcadyan arv752dpw22 (NOR)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV752DPW22
+  BUILD_DEVICES:=arcadyan_arv752dpw22
 endef
 
 define U-Boot/arv752dpw22_brn
   NAME:=Arcadyan arv752dpw22 (BRN)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV752DPW22
+  BUILD_DEVICES:=arcadyan_arv752dpw22
 endef
 
 define U-Boot/arv8539pw22_ram
   NAME:=Speedport W 504V Typ A (RAM)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV8539PW22
+  BUILD_DEVICES:=arcadyan_arv8539pw22
   DDR_SETTINGS:=board/arcadyan/arv8539pw22/ddr_settings.h
 endef
 
 define U-Boot/arv8539pw22_nor
   NAME:=Speedport W 504V Typ A (NOR)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV8539PW22
+  BUILD_DEVICES:=arcadyan_arv8539pw22
 endef
 
 define U-Boot/arv8539pw22_brn
   NAME:=Speedport W 504V Typ A (BRN)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ARV8539PW22
+  BUILD_DEVICES:=arcadyan_arv8539pw22
 endef
 
 define U-Boot/gigasx76x_ram
   NAME:=Siemens Gigaset sx76x (RAM)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=GIGASX76X
+  BUILD_DEVICES:=siemens_gigaset-sx76x
   DDR_SETTINGS:=board/gigaset/sx76x/ddr_settings.h
 endef
 
 define U-Boot/gigasx76x_nor
   NAME:=Siemens Gigaset sx76x (NOR)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=GIGASX76X
+  BUILD_DEVICES:=siemens_gigaset-sx76x
 endef
 
 define U-Boot/acmp252_ram
   NAME:=AudioCodes MP-252 (RAM)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ACMP252
+  BUILD_DEVICES:=audiocodes_mp-252
   DDR_SETTINGS:=board/audiocodes/acmp252/ddr_settings.h
 endef
 
 define U-Boot/acmp252_nor
   NAME:=AudioCodes MP-252 (NOR)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=ACMP252
+  BUILD_DEVICES:=audiocodes_mp-252
 endef
 
 define U-Boot/bthomehubv5a_ram
   NAME:=BT Home Hub 5A (RAM)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=BTHOMEHUBV5A
+  BUILD_DEVICES:=bt_homehub-v5a
   DDR_SETTINGS:=board/bt/bthomehubv5a/ddr_settings.h
 endef
 
 define U-Boot/easy50712_ram
   NAME:=Lantiq EASY50712 (RAM)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=EASY50712
+  BUILD_DEVICES:=lantiq_easy50712
   DDR_SETTINGS:=board/lantiq/easy50712/ddr_settings.h
 endef
 
 define U-Boot/easy50712_nor
   NAME:=Lantiq EASY50712 (NOR)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=EASY50712
+  BUILD_DEVICES:=lantiq_easy50712
 endef
 
 define U-Boot/easy50712_norspl
   NAME:=Lantiq EASY50712 (NOR SPL)
   BUILD_SUBTARGET:=xway
-  BUILD_DEVICES:=EASY50712
+  BUILD_DEVICES:=lantiq_easy50712
   UBOOT_IMAGE:=u-boot.ltq.lzo.norspl
   DEPENDS+=@BROKEN
 endef
@@ -232,20 +232,20 @@ endef
 define U-Boot/easy80920_ram
   NAME:=Lantiq EASY80920 (RAM)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=EASY80920NOR EASY80920NAND
+  BUILD_DEVICES:=lantiq_easy80920-nor lantiq_easy80920-nand
   DDR_SETTINGS:=board/lantiq/easy80920/ddr_settings.h
 endef
 
 define U-Boot/easy80920_nor
   NAME:=Lantiq EASY80920 (NOR)
-  BUILD_DEVICES:=EASY80920NOR EASY80920NAND
+  BUILD_DEVICES:=lantiq_easy80920-nor lantiq_easy80920-nand
   BUILD_SUBTARGET:=xrx200
 endef
 
 define U-Boot/easy80920_norspl
   NAME:=Lantiq EASY80920 (NOR SPL)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=EASY80920NOR EASY80920NAND
+  BUILD_DEVICES:=lantiq_easy80920-nor lantiq_easy80920-nand
   UBOOT_IMAGE:=u-boot.ltq.lzo.norspl
   DEPENDS+=@BROKEN
 endef
@@ -253,7 +253,7 @@ endef
 define U-Boot/easy80920_sfspl
   NAME:=Lantiq EASY80920 (SPI SPL)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=EASY80920NOR EASY80920NAND
+  BUILD_DEVICES:=lantiq_easy80920-nor lantiq_easy80920-nand
   UBOOT_IMAGE:=u-boot.ltq.lzo.sfspl
   DEPENDS+=@BROKEN
 endef
@@ -261,20 +261,20 @@ endef
 define U-Boot/fb3370_eva
   NAME:=AVM FRITZ3370 (EVA)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=FRITZ3370
+  BUILD_DEVICES:=avm_fritz3370
 endef
 
 define U-Boot/fb3370_ram
   NAME:=AVM FRITZ3370 (RAM)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=FRITZ3370
+  BUILD_DEVICES:=avm_fritz3370
   DDR_SETTINGS:=board/avm/fb3370/ddr_settings.h
 endef
 
 define U-Boot/fb3370_sfspl
   NAME:=AVM FRITZ3370 (SPI SPL)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=FRITZ3370
+  BUILD_DEVICES:=avm_fritz3370
   UBOOT_IMAGE:=u-boot.ltq.lzo.sfspl
   DEPENDS+=@BROKEN
 endef
@@ -282,14 +282,14 @@ endef
 define U-Boot/p2812hnufx_ram
   NAME:=ZyXEL P-2812HNU-Fx (RAM)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=P2812HNUF1
+  BUILD_DEVICES:=zyxel_p-2812hnu-f1
   DDR_SETTINGS:=board/zyxel/p2812hnufx/ddr_settings.h
 endef
 
 define U-Boot/p2812hnufx_nandspl
   NAME:=ZyXEL P-2812HNU-Fx (NAND SPL)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=P2812HNUF1
+  BUILD_DEVICES:=zyxel_p-2812hnu-f1
   UBOOT_IMAGE:=u-boot.ltq.lzo.nandspl
   DEPENDS+=@BROKEN
 endef
@@ -297,38 +297,38 @@ endef
 define U-Boot/vgv7510kw22_brn
   NAME:=Arcadyan VGV7510KW22 (BRN)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=VGV7510KW22NOR
+  BUILD_DEVICES:=arcadyan_vgv7510kw22-nor
 endef
 
 define U-Boot/vgv7510kw22_nor
   NAME:=Arcadyan VGV7510KW22 (NOR)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=VGV7510KW22NOR
+  BUILD_DEVICES:=arcadyan_vgv7510kw22-nor
 endef
 
 define U-Boot/vgv7510kw22_ram
   NAME:=Arcadyan VGV7510KW22 (RAM)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=VGV7510KW22NOR
+  BUILD_DEVICES:=arcadyan_vgv7510kw22-nor
   DDR_SETTINGS:=board/arcadyan/vgv7510kw22/ddr_settings.h
 endef
 
 define U-Boot/vgv7519_brn
   NAME:=Arcadyan VGV7519 (BRN)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=VGV7519NOR VGV7519BRN
+  BUILD_DEVICES:=arcadyan_vgv7519-nor arcadyan_vgv7519-brn
 endef
 
 define U-Boot/vgv7519_nor
   NAME:=Arcadyan VGV7519 (NOR)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=VGV7519NOR VGV7519BRN
+  BUILD_DEVICES:=arcadyan_vgv7519-nor arcadyan_vgv7519-brn
 endef
 
 define U-Boot/vgv7519_ram
   NAME:=Arcadyan VGV7519 (RAM)
   BUILD_SUBTARGET:=xrx200
-  BUILD_DEVICES:=VGV7519NOR VGV7519BRN
+  BUILD_DEVICES:=arcadyan_vgv7519-nor arcadyan_vgv7519-brn
   DDR_SETTINGS:=board/arcadyan/vgv7519/ddr_settings.h
 endef
 
@@ -353,17 +353,17 @@ UBOOT_TARGETS:= \
 
 define CompressVR9Firmware
 	$(STAGING_DIR_HOST)/bin/lzma e \
-		$(FIRMWARE_LANTIQ_SOURCE)/vr9_phy$(1)_a$(2)x.bin \
+		$(FIRMWARE_LANTIQ_SOURCE)/xrx200_phy$(1)_a$(2)$(3).bin \
 		$(PKG_BUILD_DIR)/arch/mips/cpu/mips32/vrx200/fw_phy$(1)_a$(2)x.blob
 endef
 
 define Build/Prepare
 	$(call Build/Prepare/Default)
 	mkdir -p $(PKG_BUILD_DIR)/arch/mips/cpu/mips32/vrx200/
-	$(call CompressVR9Firmware,11g,1)
-	$(call CompressVR9Firmware,11g,2)
-	$(call CompressVR9Firmware,22f,1)
-	$(call CompressVR9Firmware,22f,2)
+	$(call CompressVR9Firmware,11g,1,4)
+	$(call CompressVR9Firmware,11g,2,2)
+	$(call CompressVR9Firmware,22f,1,4)
+	$(call CompressVR9Firmware,22f,2,2)
 endef
 
 UBOOT_MAKE_FLAGS :=

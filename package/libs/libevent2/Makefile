@@ -17,6 +17,7 @@ PKG_SOURCE_URL:=@SF/levent
 PKG_HASH:=71c2c49f0adadacfdbe6332a372c38cf9c8b7895bb73dabeaa53cdcc1d4e1fa3
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
 PKG_LICENSE:=BSD-3-Clause
+PKG_CPE_ID:=cpe:/a:libevent_project:libevent
 
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1

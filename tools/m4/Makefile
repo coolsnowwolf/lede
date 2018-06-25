@@ -7,6 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=m4
+PKG_CPE_ID:=cpe:/a:gnu:m4
 PKG_VERSION:=1.4.18
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz

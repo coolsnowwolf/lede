@@ -81,7 +81,7 @@ $(eval $(call KernelPackage,fb))
 define KernelPackage/fbcon
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Framebuffer Console support
-  DEPENDS:=+kmod-fb
+  DEPENDS:=+kmod-fb @!LINUX_4_14
   KCONFIG:= \
 	CONFIG_FRAMEBUFFER_CONSOLE \
 	CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y \
@@ -204,6 +204,7 @@ define KernelPackage/drm-imx
   DEPENDS:=@TARGET_imx6 +kmod-drm +kmod-fb +kmod-fb-cfb-copyarea +kmod-fb-cfb-imgblt +kmod-fb-cfb-fillrect +kmod-fb-sys-fops
   KCONFIG:=CONFIG_DRM_IMX \
 	CONFIG_DRM_FBDEV_EMULATION=y \
+	CONFIG_DRM_FBDEV_OVERALLOC=100 \
 	CONFIG_IMX_IPUV3_CORE \
 	CONFIG_RESET_CONTROLLER=y \
 	CONFIG_DRM_IMX_IPUV3 \
@@ -223,7 +224,6 @@ define KernelPackage/drm-imx
   FILES:= \
 	$(LINUX_DIR)/drivers/gpu/drm/imx/imxdrm.ko \
 	$(LINUX_DIR)/drivers/gpu/ipu-v3/imx-ipu-v3.ko \
-	$(LINUX_DIR)/drivers/gpu/drm/imx/imx-ipuv3-crtc.ko \
 	$(LINUX_DIR)/drivers/video/fbdev/core/syscopyarea.ko \
 	$(LINUX_DIR)/drivers/video/fbdev/core/sysfillrect.ko \
 	$(LINUX_DIR)/drivers/video/fbdev/core/sysimgblt.ko \
@@ -242,10 +242,11 @@ define KernelPackage/drm-imx-hdmi
   TITLE:=Freescale i.MX HDMI DRM support
   DEPENDS:=+kmod-sound-core kmod-drm-imx
   KCONFIG:=CONFIG_DRM_IMX_HDMI \
-	CONFIG_DRM_DW_HDMI_AHB_AUDIO
+	CONFIG_DRM_DW_HDMI_AHB_AUDIO \
+	CONFIG_DRM_DW_HDMI_I2S_AUDIO
   FILES:= \
-	$(LINUX_DIR)/drivers/gpu/drm/bridge/dw-hdmi.ko \
-	$(LINUX_DIR)/drivers/gpu/drm/bridge/dw-hdmi-ahb-audio.ko \
+	$(LINUX_DIR)/drivers/gpu/drm/bridge/synopsys/dw-hdmi.ko \
+	$(LINUX_DIR)/drivers/gpu/drm/bridge/synopsys/dw-hdmi-ahb-audio.ko \
 	$(LINUX_DIR)/drivers/gpu/drm/imx/dw_hdmi-imx.ko
   AUTOLOAD:=$(call AutoLoad,05,dw-hdmi dw-hdmi-ahb-audio.ko dw_hdmi-imx)
 endef
@@ -267,7 +268,9 @@ define KernelPackage/drm-imx-ldb
 	CONFIG_DRM_PANEL_SAMSUNG_S6E8AA0=n \
 	CONFIG_DRM_PANEL_LG_LG4573=n \
 	CONFIG_DRM_PANEL_LD9040=n \
-	CONFIG_DRM_PANEL_S6E8AA0=n
+	CONFIG_DRM_PANEL_LVDS=n \
+	CONFIG_DRM_PANEL_S6E8AA0=n \
+	CONFIG_DRM_PANEL_SITRONIX_ST7789V=n
   FILES:=$(LINUX_DIR)/drivers/gpu/drm/imx/imx-ldb.ko \
 	$(LINUX_DIR)/drivers/gpu/drm/panel/panel-simple.ko
   AUTOLOAD:=$(call AutoLoad,05,imx-ldb)

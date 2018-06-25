@@ -109,4 +109,4 @@ proto_3g_teardown() {
 	proto_kill_command "$interface"
 }
 
-[ -z "NOT_INCLUDED" ] || add_protocol 3g
+[ -z "$NOT_INCLUDED" ] || add_protocol 3g

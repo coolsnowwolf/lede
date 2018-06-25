@@ -1,9 +1,9 @@
-From b31046c51c72232363711f0c623df08bf28c37e4 Mon Sep 17 00:00:00 2001
+From 4215d5757595e7ec7ca146c2b901beb177f415d8 Mon Sep 17 00:00:00 2001
 From: Yangbo Lu <yangbo.lu@nxp.com>
-Date: Mon, 25 Sep 2017 12:21:30 +0800
-Subject: [PATCH] mmc: layerscape support
+Date: Wed, 17 Jan 2018 15:37:13 +0800
+Subject: [PATCH 24/30] mmc: layerscape support
 
-This is a integrated patch for layerscape mmc support.
+This is an integrated patch for layerscape mmc support.
 
 Adrian Hunter <adrian.hunter@intel.com>
 Jaehoon Chung <jh80.chung@samsung.com>
@@ -12,10 +12,10 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 ---
  drivers/mmc/host/Kconfig          |   1 +
  drivers/mmc/host/sdhci-esdhc.h    |  52 +++++---
- drivers/mmc/host/sdhci-of-esdhc.c | 251 ++++++++++++++++++++++++++++++++++++--
+ drivers/mmc/host/sdhci-of-esdhc.c | 265 ++++++++++++++++++++++++++++++++++++--
  drivers/mmc/host/sdhci.c          |  45 ++++---
  drivers/mmc/host/sdhci.h          |   3 +
- 5 files changed, 306 insertions(+), 46 deletions(-)
+ 5 files changed, 320 insertions(+), 46 deletions(-)
 
 --- a/drivers/mmc/host/Kconfig
 +++ b/drivers/mmc/host/Kconfig
@@ -217,7 +217,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  }
  
  static void esdhc_of_set_clock(struct sdhci_host *host, unsigned int clock)
-@@ -421,17 +466,34 @@ static void esdhc_of_set_clock(struct sd
+@@ -421,12 +466,15 @@ static void esdhc_of_set_clock(struct sd
  	struct sdhci_esdhc *esdhc = sdhci_pltfm_priv(pltfm_host);
  	int pre_div = 1;
  	int div = 1;
@@ -234,28 +234,16 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  	/* Workaround to start pre_div at 2 for VNN < VENDOR_V_23 */
  	if (esdhc->vendor_ver < VENDOR_V_23)
- 		pre_div = 2;
- 
-+	/*
-+	 * Limit SD clock to 167MHz for ls1046a according to its datasheet
-+	 */
-+	if (clock > 167000000 &&
-+	    of_find_compatible_node(NULL, NULL, "fsl,ls1046a-esdhc"))
-+		clock = 167000000;
-+
-+	/*
-+	 * Limit SD clock to 125MHz for ls1012a according to its datasheet
-+	 */
-+	if (clock > 125000000 &&
-+	    of_find_compatible_node(NULL, NULL, "fsl,ls1012a-esdhc"))
-+		clock = 125000000;
-+
- 	/* Workaround to reduce the clock frequency for p1010 esdhc */
- 	if (of_find_compatible_node(NULL, NULL, "fsl,p1010-esdhc")) {
- 		if (clock > 20000000)
-@@ -441,8 +503,8 @@ static void esdhc_of_set_clock(struct sd
+@@ -454,9 +502,15 @@ static void esdhc_of_set_clock(struct sd
+ 			clock -= 5000000;
  	}
  
++	/* Workaround to reduce the clock frequency for ls1021a esdhc */
++	if (of_find_compatible_node(NULL, NULL, "fsl,ls1021a-esdhc")) {
++		if (clock == 50000000)
++			clock = 46500000;
++	}
++
  	temp = sdhci_readl(host, ESDHC_SYSTEM_CONTROL);
 -	temp &= ~(ESDHC_CLOCK_IPGEN | ESDHC_CLOCK_HCKEN | ESDHC_CLOCK_PEREN
 -		| ESDHC_CLOCK_MASK);
@@ -264,7 +252,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	sdhci_writel(host, temp, ESDHC_SYSTEM_CONTROL);
  
  	while (host->max_clk / pre_div / 16 > clock && pre_div < 256)
-@@ -462,7 +524,20 @@ static void esdhc_of_set_clock(struct sd
+@@ -476,7 +530,20 @@ static void esdhc_of_set_clock(struct sd
  		| (div << ESDHC_DIVIDER_SHIFT)
  		| (pre_div << ESDHC_PREDIV_SHIFT));
  	sdhci_writel(host, temp, ESDHC_SYSTEM_CONTROL);
@@ -286,7 +274,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  }
  
  static void esdhc_pltfm_set_bus_width(struct sdhci_host *host, int width)
-@@ -487,6 +562,33 @@ static void esdhc_pltfm_set_bus_width(st
+@@ -501,12 +568,136 @@ static void esdhc_pltfm_set_bus_width(st
  	sdhci_writel(host, ctrl, ESDHC_PROCTL);
  }
  
@@ -319,11 +307,20 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +
  static void esdhc_reset(struct sdhci_host *host, u8 mask)
  {
++	u32 val;
++
  	sdhci_reset(host, mask);
-@@ -495,6 +597,95 @@ static void esdhc_reset(struct sdhci_hos
- 	sdhci_writel(host, host->ier, SDHCI_SIGNAL_ENABLE);
- }
  
+ 	sdhci_writel(host, host->ier, SDHCI_INT_ENABLE);
+ 	sdhci_writel(host, host->ier, SDHCI_SIGNAL_ENABLE);
++
++	if (mask & SDHCI_RESET_ALL) {
++		val = sdhci_readl(host, ESDHC_TBCTL);
++		val &= ~ESDHC_TB_EN;
++		sdhci_writel(host, val, ESDHC_TBCTL);
++	}
++}
++
 +/* The SCFG, Supplemental Configuration Unit, provides SoC specific
 + * configuration and status registers for the device. There is a
 + * SDHC IO VSEL control register on SCFG for some platforms. It's
@@ -411,12 +408,10 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	esdhc_clock_enable(host, true);
 +
 +	return sdhci_execute_tuning(mmc, opcode);
-+}
-+
+ }
+ 
  #ifdef CONFIG_PM_SLEEP
- static u32 esdhc_proctl;
- static int esdhc_of_suspend(struct device *dev)
-@@ -575,10 +766,19 @@ static const struct sdhci_pltfm_data sdh
+@@ -589,10 +780,19 @@ static const struct sdhci_pltfm_data sdh
  	.ops = &sdhci_esdhc_le_ops,
  };
  
@@ -436,7 +431,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	u16 host_ver;
  
  	pltfm_host = sdhci_priv(host);
-@@ -588,6 +788,36 @@ static void esdhc_init(struct platform_d
+@@ -602,6 +802,36 @@ static void esdhc_init(struct platform_d
  	esdhc->vendor_ver = (host_ver & SDHCI_VENDOR_VER_MASK) >>
  			     SDHCI_VENDOR_VER_SHIFT;
  	esdhc->spec_ver = host_ver & SDHCI_SPEC_VER_MASK;
@@ -473,7 +468,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  }
  
  static int sdhci_esdhc_probe(struct platform_device *pdev)
-@@ -610,6 +840,11 @@ static int sdhci_esdhc_probe(struct plat
+@@ -624,6 +854,11 @@ static int sdhci_esdhc_probe(struct plat
  	if (IS_ERR(host))
  		return PTR_ERR(host);
  
@@ -487,7 +482,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	sdhci_get_of_property(pdev);
 --- a/drivers/mmc/host/sdhci.c
 +++ b/drivers/mmc/host/sdhci.c
-@@ -1624,26 +1624,24 @@ static void sdhci_set_ios(struct mmc_hos
+@@ -1631,26 +1631,24 @@ static void sdhci_set_ios(struct mmc_hos
  
  	ctrl = sdhci_readb(host, SDHCI_HOST_CONTROL);
  
@@ -528,7 +523,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  		if (!host->preset_enabled) {
  			sdhci_writeb(host, ctrl, SDHCI_HOST_CONTROL);
  			/*
-@@ -1956,7 +1954,7 @@ static int sdhci_prepare_hs400_tuning(st
+@@ -1963,7 +1961,7 @@ static int sdhci_prepare_hs400_tuning(st
  	return 0;
  }
  
@@ -537,7 +532,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  {
  	struct sdhci_host *host = mmc_priv(mmc);
  	u16 ctrl;
-@@ -2015,6 +2013,9 @@ static int sdhci_execute_tuning(struct m
+@@ -2022,6 +2020,9 @@ static int sdhci_execute_tuning(struct m
  		return err;
  	}
  
@@ -547,7 +542,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	ctrl = sdhci_readw(host, SDHCI_HOST_CONTROL2);
  	ctrl |= SDHCI_CTRL_EXEC_TUNING;
  	if (host->quirks2 & SDHCI_QUIRK2_TUNING_WORK_AROUND)
-@@ -2127,9 +2128,10 @@ static int sdhci_execute_tuning(struct m
+@@ -2134,9 +2135,10 @@ static int sdhci_execute_tuning(struct m
  
  		ctrl = sdhci_readw(host, SDHCI_HOST_CONTROL2);
  
@@ -561,7 +556,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	} while (ctrl & SDHCI_CTRL_EXEC_TUNING);
  
  	/*
-@@ -2165,6 +2167,7 @@ out_unlock:
+@@ -2172,6 +2174,7 @@ out_unlock:
  	spin_unlock_irqrestore(&host->lock, flags);
  	return err;
  }
@@ -569,7 +564,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  static int sdhci_select_drive_strength(struct mmc_card *card,
  				       unsigned int max_dtr, int host_drv,
-@@ -2997,6 +3000,8 @@ struct sdhci_host *sdhci_alloc_host(stru
+@@ -3004,6 +3007,8 @@ struct sdhci_host *sdhci_alloc_host(stru
  
  	host->flags = SDHCI_SIGNALING_330;
  

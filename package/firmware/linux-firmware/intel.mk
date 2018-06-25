@@ -143,7 +143,7 @@ $(eval $(call BuildPackage,iwlwifi-firmware-iwl7265d))
 Package/iwlwifi-firmware-iwl8260c = $(call Package/firmware-default,Intel Wireless 8260 and 4165 firmware)
 define Package/iwlwifi-firmware-iwl8260c/install
 	$(INSTALL_DIR) $(1)/lib/firmware
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-8000C-27.ucode $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-8000C-31.ucode $(1)/lib/firmware
 endef
 $(eval $(call BuildPackage,iwlwifi-firmware-iwl8260c))
 
@@ -153,3 +153,12 @@ define Package/iwlwifi-firmware-iwl8265/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-8265-27.ucode $(1)/lib/firmware
 endef
 $(eval $(call BuildPackage,iwlwifi-firmware-iwl8265))
+
+Package/e100-firmware = $(call Package/firmware-default,Intel e100)
+define Package/e100-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/e100
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/e100/d101m_ucode.bin $(1)/lib/firmware/e100/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/e100/d101s_ucode.bin $(1)/lib/firmware/e100/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/e100/d102e_ucode.bin $(1)/lib/firmware/e100/
+endef
+$(eval $(call BuildPackage,e100-firmware))

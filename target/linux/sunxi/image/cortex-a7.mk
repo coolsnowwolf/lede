@@ -118,6 +118,18 @@ endef
 TARGET_DEVICES += sun8i-h2-plus-orangepi-r1
 
 
+define Device/sun8i-h3-nanopi-m1-plus
+  DEVICE_TITLE:=FriendlyArm NanoPi M1 Plus
+  DEVICE_PACKAGES:=kmod-rtc-sunxi \
+	kmod-leds-gpio kmod-ledtrig-heartbeat \
+	kmod-brcmfmac brcmfmac-firmware-43430-sdio wpad-mini
+  SUPPORTED_DEVICES:=friendlyarm,nanopi-m1-plus
+  SUNXI_DTS:=sun8i-h3-nanopi-m1-plus
+endef
+
+TARGET_DEVICES += sun8i-h3-nanopi-m1-plus
+
+
 define Device/sun8i-h3-nanopi-neo
   DEVICE_TITLE:=FriendlyARM NanoPi NEO
   SUPPORTED_DEVICES:=friendlyarm,nanopi-neo
@@ -125,6 +137,16 @@ define Device/sun8i-h3-nanopi-neo
 endef
 
 TARGET_DEVICES += sun8i-h3-nanopi-neo
+
+
+define Device/sun8i-h3-orangepi-pc
+  DEVICE_TITLE:=Xunlong Orange Pi PC
+  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-gpio-button-hotplug
+  SUPPORTED_DEVICES:=xunlong,orangepi-pc
+  SUNXI_DTS:=sun8i-h3-orangepi-pc
+endef
+
+TARGET_DEVICES += sun8i-h3-orangepi-pc
 
 
 define Device/sun8i-h3-orangepi-plus
@@ -135,6 +157,15 @@ define Device/sun8i-h3-orangepi-plus
 endef
 
 TARGET_DEVICES += sun8i-h3-orangepi-plus
+
+define Device/sun8i-h3-orangepi-2
+  DEVICE_TITLE:=Xunlong Orange Pi 2
+  DEVICE_PACKAGES:=kmod-rtc-sunxi
+  SUPPORTED_DEVICES:=xunlong,orangepi-2
+  SUNXI_DTS:=sun8i-h3-orangepi-2
+endef
+
+TARGET_DEVICES += sun8i-h3-orangepi-2
 
 
 define Device/sun7i-a20-pcduino3

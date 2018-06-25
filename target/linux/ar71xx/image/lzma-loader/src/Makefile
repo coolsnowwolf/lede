@@ -33,7 +33,7 @@ BIN_FLAGS	:= -O binary -R .reginfo -R .note -R .comment -R .mdebug \
 CFLAGS		= -D__KERNEL__ -Wall -Wstrict-prototypes -Wno-trigraphs -Os \
 		  -fno-strict-aliasing -fno-common -fomit-frame-pointer -G 0 \
 		  -mno-abicalls -fno-pic -ffunction-sections -pipe -mlong-calls \
-		  -fno-common -ffreestanding -fhonour-copts \
+		  -fno-common -ffreestanding -fhonour-copts -nostartfiles \
 		  -mabi=32 -march=mips32r2 \
 		  -Wa,-32 -Wa,-march=mips32r2 -Wa,-mips32r2 -Wa,--trap
 CFLAGS		+= -D_LZMA_PROB32
@@ -97,7 +97,7 @@ loader2.o: loader.bin
 	$(LD) -r -b binary --oformat $(O_FORMAT) -o $@ $<
 
 loader.elf: loader2.o
-	$(LD) -e startup -T loader2.lds -Ttext $(LOADADDR) -o $@ $<
+	$(LD) -z max-page-size=0x1000 -e startup -T loader2.lds -Ttext $(LOADADDR) -o $@ $<
 
 mrproper: clean
 

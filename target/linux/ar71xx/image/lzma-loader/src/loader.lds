@@ -13,7 +13,6 @@ SECTIONS {
 	.data : {
 		*(.data)
 		*(.data.*)
-		. = . + 524288;		/* workaround for buggy bootloaders */
 	}
 
 	. = ALIGN(32);

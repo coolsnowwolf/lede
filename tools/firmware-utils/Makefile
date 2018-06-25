@@ -20,6 +20,7 @@ define Host/Compile
 	$(call cc,addpattern)
 	$(call cc,asustrx)
 	$(call cc,trx)
+	$(call cc,otrx)
 	$(call cc,motorola-bin)
 	$(call cc,dgfirmware)
 	$(call cc,mksenaofw md5)
@@ -39,9 +40,9 @@ define Host/Compile
 	$(call cc,encode_crc)
 	$(call cc,nand_ecc)
 	$(call cc,mkplanexfw sha1)
-	$(call cc,mktplinkfw md5, -Wall)
-	$(call cc,mktplinkfw2 md5)
-	$(call cc,tplink-safeloader md5, -Wall)
+	$(call cc,mktplinkfw mktplinkfw-lib md5, -Wall -fgnu89-inline)
+	$(call cc,mktplinkfw2 mktplinkfw-lib md5, -fgnu89-inline)
+	$(call cc,tplink-safeloader md5, -Wall --std=gnu99)
 	$(call cc,pc1crypt)
 	$(call cc,osbridge-crc)
 	$(call cc,wrt400n cyg_crc32)
@@ -62,6 +63,7 @@ define Host/Compile
 	$(call cc,mkbrncmdline)
 	$(call cc,mkbrnimg)
 	$(call cc,mkdapimg)
+	$(call cc,mkdapimg2)
 	$(call cc, mkcameofw, -Wall)
 	$(call cc,seama md5)
 	$(call cc,oseama md5, -Wall)
@@ -80,6 +82,7 @@ define Host/Compile
 	$(call cc,mkbuffaloimg, -Wall)
 	$(call cc,zyimage, -Wall)
 	$(call cc,mkdhpimg buffalo-lib, -Wall)
+	$(call cc,mkdlinkfw mkdlinkfw-lib, -lz -Wall --std=gnu99)
 endef
 
 define Host/Install

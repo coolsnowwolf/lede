@@ -1,0 +1,453 @@
+From 4e87400732c77765afae2ea89ed43837457aa604 Mon Sep 17 00:00:00 2001
+From: Rajith Cherian <rajith@codeaurora.org>
+Date: Wed, 1 Feb 2017 19:00:26 +0530
+Subject: [PATCH] ipq8064: tsens: Support for configurable interrupts
+
+Provide support for adding configurable high and
+configurable low trip temperatures. An interrupts is
+also triggerred when these trip points are hit. The
+interrupts can be activated or deactivated from sysfs.
+This functionality is made available only if
+CONFIG_THERMAL_WRITABLE_TRIPS is defined.
+
+Change-Id: Ib73f3f9459de4fffce7bb985a0312a88291f4934
+Signed-off-by: Rajith Cherian <rajith@codeaurora.org>
+---
+ .../devicetree/bindings/thermal/qcom-tsens.txt     |  4 ++
+ drivers/thermal/of-thermal.c                       | 63 ++++++++++++++++++----
+ drivers/thermal/qcom/tsens.c                       | 43 ++++++++++++---
+ drivers/thermal/qcom/tsens.h                       | 11 ++++
+ drivers/thermal/thermal_core.c                     | 44 ++++++++++++++-
+ include/linux/thermal.h                            | 14 +++++
+ 6 files changed, 162 insertions(+), 17 deletions(-)
+
+--- a/Documentation/devicetree/bindings/thermal/qcom-tsens.txt
++++ b/Documentation/devicetree/bindings/thermal/qcom-tsens.txt
+@@ -12,11 +12,15 @@ Required properties:
+ - Refer to Documentation/devicetree/bindings/nvmem/nvmem.txt to know how to specify
+ nvmem cells
+ 
++Optional properties:
++- interrupts: Interrupt which gets triggered when threshold is hit
++
+ Example:
+ tsens: thermal-sensor@900000 {
+ 		compatible = "qcom,msm8916-tsens";
+ 		reg = <0x4a8000 0x2000>;
+ 		nvmem-cells = <&tsens_caldata>, <&tsens_calsel>;
+ 		nvmem-cell-names = "caldata", "calsel";
++		interrupts = <0 178 0>;
+ 		#thermal-sensor-cells = <1>;
+ 	};
+--- a/drivers/thermal/of-thermal.c
++++ b/drivers/thermal/of-thermal.c
+@@ -95,7 +95,7 @@ static int of_thermal_get_temp(struct th
+ {
+ 	struct __thermal_zone *data = tz->devdata;
+ 
+-	if (!data->ops->get_temp)
++	if (!data->ops->get_temp || (data->mode == THERMAL_DEVICE_DISABLED))
+ 		return -EINVAL;
+ 
+ 	return data->ops->get_temp(data->sensor_data, temp);
+@@ -106,7 +106,8 @@ static int of_thermal_set_trips(struct t
+ {
+ 	struct __thermal_zone *data = tz->devdata;
+ 
+-	if (!data->ops || !data->ops->set_trips)
++	if (!data->ops || !data->ops->set_trips
++			|| (data->mode == THERMAL_DEVICE_DISABLED))
+ 		return -EINVAL;
+ 
+ 	return data->ops->set_trips(data->sensor_data, low, high);
+@@ -192,6 +193,9 @@ static int of_thermal_set_emul_temp(stru
+ {
+ 	struct __thermal_zone *data = tz->devdata;
+ 
++	if (data->mode == THERMAL_DEVICE_DISABLED)
++		return -EINVAL;
++
+ 	return data->ops->set_emul_temp(data->sensor_data, temp);
+ }
+ 
+@@ -200,7 +204,7 @@ static int of_thermal_get_trend(struct t
+ {
+ 	struct __thermal_zone *data = tz->devdata;
+ 
+-	if (!data->ops->get_trend)
++	if (!data->ops->get_trend || (data->mode == THERMAL_DEVICE_DISABLED))
+ 		return -EINVAL;
+ 
+ 	return data->ops->get_trend(data->sensor_data, trip, trend);
+@@ -286,7 +290,9 @@ static int of_thermal_set_mode(struct th
+ 	mutex_unlock(&tz->lock);
+ 
+ 	data->mode = mode;
+-	thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
++
++	if (mode == THERMAL_DEVICE_ENABLED)
++		thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
+ 
+ 	return 0;
+ }
+@@ -296,7 +302,8 @@ static int of_thermal_get_trip_type(stru
+ {
+ 	struct __thermal_zone *data = tz->devdata;
+ 
+-	if (trip >= data->ntrips || trip < 0)
++	if (trip >= data->ntrips || trip < 0
++				|| (data->mode == THERMAL_DEVICE_DISABLED))
+ 		return -EDOM;
+ 
+ 	*type = data->trips[trip].type;
+@@ -304,12 +311,39 @@ static int of_thermal_get_trip_type(stru
+ 	return 0;
+ }
+ 
++static int of_thermal_activate_trip_type(struct thermal_zone_device *tz,
++			int trip, enum thermal_trip_activation_mode mode)
++{
++	struct __thermal_zone *data = tz->devdata;
++
++	if (trip >= data->ntrips || trip < 0
++				|| (data->mode == THERMAL_DEVICE_DISABLED))
++		return -EDOM;
++
++	/*
++	 * The configurable_hi and configurable_lo trip points can be
++	 * activated and deactivated.
++	 */
++
++	if (data->ops->set_trip_activate) {
++		int ret;
++
++		ret = data->ops->set_trip_activate(data->sensor_data,
++								trip, mode);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
+ static int of_thermal_get_trip_temp(struct thermal_zone_device *tz, int trip,
+ 				    int *temp)
+ {
+ 	struct __thermal_zone *data = tz->devdata;
+ 
+-	if (trip >= data->ntrips || trip < 0)
++	if (trip >= data->ntrips || trip < 0
++				|| (data->mode == THERMAL_DEVICE_DISABLED))
+ 		return -EDOM;
+ 
+ 	*temp = data->trips[trip].temperature;
+@@ -322,7 +356,8 @@ static int of_thermal_set_trip_temp(stru
+ {
+ 	struct __thermal_zone *data = tz->devdata;
+ 
+-	if (trip >= data->ntrips || trip < 0)
++	if (trip >= data->ntrips || trip < 0
++				|| (data->mode == THERMAL_DEVICE_DISABLED))
+ 		return -EDOM;
+ 
+ 	if (data->ops->set_trip_temp) {
+@@ -344,7 +379,8 @@ static int of_thermal_get_trip_hyst(stru
+ {
+ 	struct __thermal_zone *data = tz->devdata;
+ 
+-	if (trip >= data->ntrips || trip < 0)
++	if (trip >= data->ntrips || trip < 0
++				|| (data->mode == THERMAL_DEVICE_DISABLED))
+ 		return -EDOM;
+ 
+ 	*hyst = data->trips[trip].hysteresis;
+@@ -357,7 +393,8 @@ static int of_thermal_set_trip_hyst(stru
+ {
+ 	struct __thermal_zone *data = tz->devdata;
+ 
+-	if (trip >= data->ntrips || trip < 0)
++	if (trip >= data->ntrips || trip < 0
++				|| (data->mode == THERMAL_DEVICE_DISABLED))
+ 		return -EDOM;
+ 
+ 	/* thermal framework should take care of data->mask & (1 << trip) */
+@@ -432,6 +469,9 @@ thermal_zone_of_add_sensor(struct device
+ 	if (ops->set_emul_temp)
+ 		tzd->ops->set_emul_temp = of_thermal_set_emul_temp;
+ 
++	if (ops->set_trip_activate)
++		tzd->ops->set_trip_activate = of_thermal_activate_trip_type;
++
+ 	mutex_unlock(&tzd->lock);
+ 
+ 	return tzd;
+@@ -726,7 +766,10 @@ static const char * const trip_types[] =
+ 	[THERMAL_TRIP_ACTIVE]	= "active",
+ 	[THERMAL_TRIP_PASSIVE]	= "passive",
+ 	[THERMAL_TRIP_HOT]	= "hot",
+-	[THERMAL_TRIP_CRITICAL]	= "critical",
++	[THERMAL_TRIP_CRITICAL]	= "critical_high",
++	[THERMAL_TRIP_CONFIGURABLE_HI] = "configurable_hi",
++	[THERMAL_TRIP_CONFIGURABLE_LOW] = "configurable_lo",
++	[THERMAL_TRIP_CRITICAL_LOW] = "critical_low",
+ };
+ 
+ /**
+--- a/drivers/thermal/qcom/tsens.c
++++ b/drivers/thermal/qcom/tsens.c
+@@ -31,7 +31,7 @@ static int tsens_get_temp(void *data, in
+ 
+ static int tsens_get_trend(void *p, int trip, enum thermal_trend *trend)
+ {
+-	const struct tsens_sensor *s = p;
++	struct tsens_sensor *s = p;
+ 	struct tsens_device *tmdev = s->tmdev;
+ 
+ 	if (tmdev->ops->get_trend)
+@@ -40,9 +40,10 @@ static int tsens_get_trend(void *p, int
+ 	return -ENOTSUPP;
+ }
+ 
+-static int  __maybe_unused tsens_suspend(struct device *dev)
++static int  __maybe_unused tsens_suspend(void *data)
+ {
+-	struct tsens_device *tmdev = dev_get_drvdata(dev);
++	struct tsens_sensor *s = data;
++	struct tsens_device *tmdev = s->tmdev;
+ 
+ 	if (tmdev->ops && tmdev->ops->suspend)
+ 		return tmdev->ops->suspend(tmdev);
+@@ -50,9 +51,10 @@ static int  __maybe_unused tsens_suspend
+ 	return 0;
+ }
+ 
+-static int __maybe_unused tsens_resume(struct device *dev)
++static int __maybe_unused tsens_resume(void *data)
+ {
+-	struct tsens_device *tmdev = dev_get_drvdata(dev);
++	struct tsens_sensor *s = data;
++	struct tsens_device *tmdev = s->tmdev;
+ 
+ 	if (tmdev->ops && tmdev->ops->resume)
+ 		return tmdev->ops->resume(tmdev);
+@@ -60,6 +62,30 @@ static int __maybe_unused tsens_resume(s
+ 	return 0;
+ }
+ 
++static int  __maybe_unused tsens_set_trip_temp(void *data, int trip, int temp)
++{
++	struct tsens_sensor *s = data;
++	struct tsens_device *tmdev = s->tmdev;
++
++	if (tmdev->ops && tmdev->ops->set_trip_temp)
++		return tmdev->ops->set_trip_temp(s, trip, temp);
++
++	return 0;
++}
++
++static int __maybe_unused tsens_activate_trip_type(void *data, int trip,
++					enum thermal_trip_activation_mode mode)
++{
++	struct tsens_sensor *s = data;
++	struct tsens_device *tmdev = s->tmdev;
++
++	if (tmdev->ops && tmdev->ops->set_trip_activate)
++		return tmdev->ops->set_trip_activate(s, trip, mode);
++
++	return 0;
++}
++
++
+ static SIMPLE_DEV_PM_OPS(tsens_pm_ops, tsens_suspend, tsens_resume);
+ 
+ static const struct of_device_id tsens_table[] = {
+@@ -83,6 +109,8 @@ MODULE_DEVICE_TABLE(of, tsens_table);
+ static const struct thermal_zone_of_device_ops tsens_of_ops = {
+ 	.get_temp = tsens_get_temp,
+ 	.get_trend = tsens_get_trend,
++	.set_trip_temp = tsens_set_trip_temp,
++	.set_trip_activate = tsens_activate_trip_type,
+ };
+ 
+ static int tsens_register(struct tsens_device *tmdev)
+@@ -131,7 +159,7 @@ static int tsens_probe(struct platform_d
+ 	if (id)
+ 		data = id->data;
+ 	else
+-		data = &data_8960;
++		return -EINVAL;
+ 
+ 	if (data->num_sensors <= 0) {
+ 		dev_err(dev, "invalid number of sensors\n");
+@@ -146,6 +174,9 @@ static int tsens_probe(struct platform_d
+ 	tmdev->dev = dev;
+ 	tmdev->num_sensors = data->num_sensors;
+ 	tmdev->ops = data->ops;
++
++	tmdev->tsens_irq = platform_get_irq(pdev, 0);
++
+ 	for (i = 0;  i < tmdev->num_sensors; i++) {
+ 		if (data->hw_ids)
+ 			tmdev->sensor[i].hw_id = data->hw_ids[i];
+--- a/drivers/thermal/qcom/tsens.h
++++ b/drivers/thermal/qcom/tsens.h
+@@ -24,9 +24,12 @@ struct tsens_device;
+ struct tsens_sensor {
+ 	struct tsens_device		*tmdev;
+ 	struct thermal_zone_device	*tzd;
++	struct work_struct		notify_work;
+ 	int				offset;
+ 	int				id;
+ 	int				hw_id;
++	int				calib_data;
++	int				calib_data_backup;
+ 	int				slope;
+ 	u32				status;
+ };
+@@ -41,6 +44,9 @@ struct tsens_sensor {
+  * @suspend: Function to suspend the tsens device
+  * @resume: Function to resume the tsens device
+  * @get_trend: Function to get the thermal/temp trend
++ * @set_trip_temp: Function to set trip temp
++ * @get_trip_temp: Function to get trip temp
++ * @set_trip_activate: Function to activate trip points
+  */
+ struct tsens_ops {
+ 	/* mandatory callbacks */
+@@ -53,6 +59,9 @@ struct tsens_ops {
+ 	int (*suspend)(struct tsens_device *);
+ 	int (*resume)(struct tsens_device *);
+ 	int (*get_trend)(struct tsens_device *, int, enum thermal_trend *);
++	int (*set_trip_temp)(void *, int, int);
++	int (*set_trip_activate)(void *, int,
++					enum thermal_trip_activation_mode);
+ };
+ 
+ /**
+@@ -76,11 +85,13 @@ struct tsens_context {
+ struct tsens_device {
+ 	struct device			*dev;
+ 	u32				num_sensors;
++	u32				tsens_irq;
+ 	struct regmap			*map;
+ 	struct regmap_field		*status_field;
+ 	struct tsens_context		ctx;
+ 	bool				trdy;
+ 	const struct tsens_ops		*ops;
++	struct work_struct		tsens_work;
+ 	struct tsens_sensor		sensor[0];
+ };
+ 
+--- a/drivers/thermal/thermal_sysfs.c
++++ b/drivers/thermal/thermal_sysfs.c
+@@ -115,12 +115,48 @@ trip_point_type_show(struct device *dev,
+ 		return sprintf(buf, "passive\n");
+ 	case THERMAL_TRIP_ACTIVE:
+ 		return sprintf(buf, "active\n");
++	case THERMAL_TRIP_CONFIGURABLE_HI:
++		return sprintf(buf, "configurable_hi\n");
++	case THERMAL_TRIP_CONFIGURABLE_LOW:
++		return sprintf(buf, "configurable_low\n");
++	case THERMAL_TRIP_CRITICAL_LOW:
++		return sprintf(buf, "critical_low\n");
+ 	default:
+ 		return sprintf(buf, "unknown\n");
+ 	}
+ }
+ 
+ static ssize_t
++trip_point_type_activate(struct device *dev, struct device_attribute *attr,
++						const char *buf, size_t count)
++{
++	struct thermal_zone_device *tz = to_thermal_zone(dev);
++	int trip, ret;
++	char *enabled = "enabled";
++	char *disabled = "disabled";
++
++	if (!tz->ops->set_trip_activate)
++		return -EPERM;
++
++	if (!sscanf(attr->attr.name, "trip_point_%d_type", &trip))
++		return -EINVAL;
++
++	if (!strncmp(buf, enabled, strlen(enabled)))
++		ret = tz->ops->set_trip_activate(tz, trip,
++				THERMAL_TRIP_ACTIVATION_ENABLED);
++	else if (!strncmp(buf, disabled, strlen(disabled)))
++		ret = tz->ops->set_trip_activate(tz, trip,
++				THERMAL_TRIP_ACTIVATION_DISABLED);
++	else
++		ret = -EINVAL;
++
++	if (ret)
++		return ret;
++
++	return count;
++}
++
++static ssize_t
+ trip_point_temp_store(struct device *dev, struct device_attribute *attr,
+ 		      const char *buf, size_t count)
+ {
+@@ -562,6 +598,12 @@ static int create_trip_attrs(struct ther
+ 		tz->trip_type_attrs[indx].attr.show = trip_point_type_show;
+ 		attrs[indx] = &tz->trip_type_attrs[indx].attr.attr;
+ 
++		if (IS_ENABLED(CONFIG_THERMAL_WRITABLE_TRIPS)) {
++			tz->trip_type_attrs[indx].attr.store
++						= trip_point_type_activate;
++			tz->trip_type_attrs[indx].attr.attr.mode |= S_IWUSR;
++		}
++
+ 		/* create trip temp attribute */
+ 		snprintf(tz->trip_temp_attrs[indx].name, THERMAL_NAME_LENGTH,
+ 			 "trip_point_%d_temp", indx);
+--- a/include/linux/thermal.h
++++ b/include/linux/thermal.h
+@@ -78,11 +78,19 @@ enum thermal_device_mode {
+ 	THERMAL_DEVICE_ENABLED,
+ };
+ 
++enum thermal_trip_activation_mode {
++	THERMAL_TRIP_ACTIVATION_DISABLED = 0,
++	THERMAL_TRIP_ACTIVATION_ENABLED,
++};
++
+ enum thermal_trip_type {
+ 	THERMAL_TRIP_ACTIVE = 0,
+ 	THERMAL_TRIP_PASSIVE,
+ 	THERMAL_TRIP_HOT,
+ 	THERMAL_TRIP_CRITICAL,
++	THERMAL_TRIP_CONFIGURABLE_HI,
++	THERMAL_TRIP_CONFIGURABLE_LOW,
++	THERMAL_TRIP_CRITICAL_LOW,
+ };
+ 
+ enum thermal_trend {
+@@ -120,6 +128,8 @@ struct thermal_zone_device_ops {
+ 		enum thermal_trip_type *);
+ 	int (*get_trip_temp) (struct thermal_zone_device *, int, int *);
+ 	int (*set_trip_temp) (struct thermal_zone_device *, int, int);
++	int (*set_trip_activate) (struct thermal_zone_device *, int,
++					enum thermal_trip_activation_mode);
+ 	int (*get_trip_hyst) (struct thermal_zone_device *, int, int *);
+ 	int (*set_trip_hyst) (struct thermal_zone_device *, int, int);
+ 	int (*get_crit_temp) (struct thermal_zone_device *, int *);
+@@ -363,6 +373,8 @@ struct thermal_genl_event {
+  *		   temperature.
+  * @set_trip_temp: a pointer to a function that sets the trip temperature on
+  *		   hardware.
++ * @activate_trip_type: a pointer to a function to enable/disable trip
++ *		temperature interrupts
+  */
+ struct thermal_zone_of_device_ops {
+ 	int (*get_temp)(void *, int *);
+@@ -370,6 +382,8 @@ struct thermal_zone_of_device_ops {
+ 	int (*set_trips)(void *, int, int);
+ 	int (*set_emul_temp)(void *, int);
+ 	int (*set_trip_temp)(void *, int, int);
++	int (*set_trip_activate)(void *, int,
++				enum thermal_trip_activation_mode);
+ };
+ 
+ /**

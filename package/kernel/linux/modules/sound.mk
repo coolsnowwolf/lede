@@ -24,7 +24,8 @@ SOUNDCORE_FILES ?= \
 	$(LINUX_DIR)/sound/soundcore.ko \
 	$(LINUX_DIR)/sound/core/snd.ko \
 	$(LINUX_DIR)/sound/core/snd-hwdep.ko \
-	$(LINUX_DIR)/sound/core/seq/snd-seq-device.ko \
+	$(LINUX_DIR)/sound/core/seq/snd-seq-device.ko@lt4.13 \
+	$(LINUX_DIR)/sound/core/snd-seq-device.ko@ge4.13 \
 	$(LINUX_DIR)/sound/core/snd-rawmidi.ko \
 	$(LINUX_DIR)/sound/core/snd-timer.ko \
 	$(LINUX_DIR)/sound/core/snd-pcm.ko \
@@ -132,6 +133,22 @@ define KernelPackage/sound-seq/description
 endef
 
 $(eval $(call KernelPackage,sound-seq))
+
+
+define KernelPackage/sound-ens1371
+  TITLE:=(Creative) Ensoniq AudioPCI 1371
+  KCONFIG:=CONFIG_SND_ENS1371
+  DEPENDS:=@PCI_SUPPORT +kmod-ac97
+  FILES:=$(LINUX_DIR)/sound/pci/snd-ens1371.ko
+  AUTOLOAD:=$(call AutoLoad,36,snd-ens1371)
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-ens1371/description
+ support for (Creative) Ensoniq AudioPCI 1371 chips
+endef
+
+$(eval $(call KernelPackage,sound-ens1371))
 
 
 define KernelPackage/sound-i8x0

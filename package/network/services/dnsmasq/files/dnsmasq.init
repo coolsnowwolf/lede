@@ -13,7 +13,6 @@ ADD_LOCAL_FQDN=""
 
 BASECONFIGFILE="/var/etc/dnsmasq.conf"
 BASEHOSTFILE="/tmp/hosts/dhcp"
-BASETIMESTAMPFILE="/etc/dnsmasq.time"
 TRUSTANCHORSFILE="/usr/share/dnsmasq/trust-anchors.conf"
 TIMEVALIDFILE="/var/state/dnsmasqsec"
 BASEDHCPSTAMPFILE="/var/run/dnsmasq"
@@ -277,7 +276,7 @@ dhcp_match_add() {
 
 dhcp_host_add() {
 	local cfg="$1"
-	local hosttag nametime addrs duids
+	local hosttag nametime addrs duids macs tags
 
 	config_get_bool force "$cfg" force 0
 
@@ -295,7 +294,7 @@ dhcp_host_add() {
 
 	config_get_bool dns "$cfg" dns 0
 	[ "$dns" = "1" -a -n "$ip" -a -n "$name" ] && {
-		echo "$ip $name${DOMAIN:+.$DOMAIN}" >> $HOSTFILE
+		echo "$ip $name${DOMAIN:+.$DOMAIN}" >> $HOSTFILE_TMP
 	}
 
 	config_get mac "$cfg" mac
@@ -305,7 +304,6 @@ dhcp_host_add() {
 	if [ -n "$mac" ]; then
 		# --dhcp-host=00:20:e0:3b:13:af,192.168.0.199,lap
 		# many MAC are possible to track a laptop ON/OFF dock
-		macs=""
 		for m in $mac; do append macs "$m" ","; done
 	fi
 
@@ -326,7 +324,6 @@ dhcp_host_add() {
 		hex_to_hostid hostid "$hostid"
 	fi
 
-	tags=""
 	if [ -n "$tag" ]; then
 		for t in $tag; do append tags "$t" ",set:"; done
 	fi
@@ -638,7 +635,7 @@ dhcp_domain_add() {
 		record="${record:+$record }$name"
 	done
 
-	echo "$ip $record" >> $HOSTFILE
+	echo "$ip $record" >> $HOSTFILE_TMP
 }
 
 dhcp_srv_add() {
@@ -744,7 +741,7 @@ dnsmasq_start()
 	CONFIGFILE="${BASECONFIGFILE}.${cfg}"
 	CONFIGFILE_TMP="${CONFIGFILE}.$$"
 	HOSTFILE="${BASEHOSTFILE}.${cfg}"
-	TIMESTAMPFILE="${BASETIMESTAMPFILE}.${cfg}"
+	HOSTFILE_TMP="${HOSTFILE}.$$"
 	BASEDHCPSTAMPFILE_CFG="${BASEDHCPSTAMPFILE}.${cfg}"
 
 	# before we can call xappend
@@ -754,14 +751,17 @@ dnsmasq_start()
 	mkdir -p /var/lib/misc
 	chown dnsmasq:dnsmasq /var/run/dnsmasq
 
-	[ -f "$TIMESTAMPFILE" ] && rm -f "$TIMESTAMPFILE"
-
 	echo "# auto-generated config file from /etc/config/dhcp" > $CONFIGFILE_TMP
-	echo "# auto-generated config file from /etc/config/dhcp" > $HOSTFILE
+	echo "# auto-generated config file from /etc/config/dhcp" > $HOSTFILE_TMP
+
+	local dnsmasqconffile="/etc/dnsmasq.${cfg}.conf"
+	if [ ! -r "$dnsmasqconffile" ]; then
+		dnsmasqconffile=/etc/dnsmasq.conf
+	fi
 
 	# if we did this last, we could override auto-generated config
-	[ -f /etc/dnsmasq.conf ] && {
-		xappend "--conf-file=/etc/dnsmasq.conf"
+	[ -f "${dnsmasqconffile}" ] && {
+		xappend "--conf-file=${dnsmasqconffile}"
 	}
 
 	$PROG --version | grep -osqE "^Compile time options:.* DHCPv6( |$)" && DHCPv6CAPABLE=1 || DHCPv6CAPABLE=0
@@ -999,6 +999,7 @@ dnsmasq_start()
 
 	echo >> $CONFIGFILE_TMP
 	mv -f $CONFIGFILE_TMP $CONFIGFILE
+	mv -f $HOSTFILE_TMP $HOSTFILE
 
 	[ "$resolvfile" = "/tmp/resolv.conf.auto" ] && {
 		rm -f /tmp/resolv.conf
@@ -1017,11 +1018,6 @@ dnsmasq_start()
 	[ -n "$user_dhcpscript" ] && procd_set_param env USER_DHCPSCRIPT="$user_dhcpscript"
 	procd_set_param respawn
 
-	local dnsmasqconffile="/etc/dnsmasq.${cfg}.conf"
-	if [ ! -r "$dnsmasqconffile" ]; then
-		dnsmasqconffile=/etc/dnsmasq.conf
-	fi
-
 	procd_add_jail dnsmasq ubus log
 	procd_add_jail_mount $CONFIGFILE $TRUSTANCHORSFILE $HOSTFILE $RFC6761FILE /etc/passwd /etc/group /etc/TZ /dev/null /dev/urandom $dnsmasqconffile $dnsmasqconfdir $resolvfile $user_dhcpscript /etc/hosts /etc/ethers /sbin/hotplug-call $EXTRA_MOUNT $DHCPSCRIPT
 	procd_add_jail_mount_rw /var/run/dnsmasq/ $leasefile
@@ -1031,7 +1027,7 @@ dnsmasq_start()
 
 dnsmasq_stop()
 {
-	local cfg="$1"
+	local cfg="$1" resolvfile
 
 	config_get resolvfile "$cfg" "resolvfile"
 
@@ -1048,7 +1044,7 @@ dnsmasq_stop()
 
 service_triggers()
 {
-	procd_add_reload_trigger "dhcp"
+	procd_add_reload_trigger "dhcp" "system"
 	procd_add_raw_trigger "interface.*" 2000 /etc/init.d/dnsmasq reload
 }
 
@@ -1088,7 +1084,7 @@ start_service() {
 
 reload_service() {
 	rc_procd start_service "$@"
-	return 0
+	procd_send_signal dnsmasq "$@"
 }
 
 stop_service() {

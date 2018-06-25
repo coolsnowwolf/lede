@@ -23,6 +23,7 @@ endif
 include rules.mk
 include $(INCLUDE_DIR)/debug.mk
 include $(INCLUDE_DIR)/depends.mk
+include $(INCLUDE_DIR)/rootfs.mk
 
 include $(INCLUDE_DIR)/version.mk
 export REVISION
@@ -54,20 +55,10 @@ help: FORCE
 # override variables from rules.mk
 PACKAGE_DIR:=$(TOPDIR)/packages
 LISTS_DIR:=$(subst $(space),/,$(patsubst %,..,$(subst /,$(space),$(TARGET_DIR))))$(DL_DIR)
-OPKG:= \
-  IPKG_NO_SCRIPT=1 \
-  IPKG_INSTROOT="$(TARGET_DIR)" \
-  $(STAGING_DIR_HOST)/bin/opkg \
+OPKG:=$(call opkg,$(TARGET_DIR)) \
 	-f $(TOPDIR)/repositories.conf \
-	--force-depends \
-	--force-overwrite \
-	--force-postinstall \
 	--cache $(DL_DIR) \
-	--lists-dir $(LISTS_DIR) \
-	--offline-root $(TARGET_DIR) \
-	--add-dest root:/ \
-	--add-arch all:100 \
-	--add-arch $(ARCH_PACKAGES):200
+	--lists-dir $(LISTS_DIR)
 
 include $(INCLUDE_DIR)/target.mk
 -include .profiles.mk
@@ -109,14 +100,11 @@ _call_image: staging_dir/host/.prereq-build
 	echo 'Building images for $(BOARD)$(if $($(USER_PROFILE)_NAME), - $($(USER_PROFILE)_NAME))'
 	echo 'Packages: $(BUILD_PACKAGES)'
 	echo
-	rm -rf $(TARGET_DIR)
+	rm -rf $(TARGET_DIR) $(TARGET_DIR_ORIG)
 	mkdir -p $(TARGET_DIR) $(BIN_DIR) $(TMP_DIR) $(DL_DIR)
 	$(MAKE) package_reload
 	$(MAKE) package_install
-ifneq ($(USER_FILES),)
-	$(MAKE) copy_files
-endif
-	$(MAKE) -s package_postinst
+	$(MAKE) -s prepare_rootfs
 	$(MAKE) -s build_image
 	$(MAKE) -s checksum
 
@@ -148,28 +136,13 @@ package_install: FORCE
 	$(OPKG) install $(firstword $(wildcard $(PACKAGE_DIR)/libc_*.ipk $(PACKAGE_DIR)/base/libc_*.ipk))
 	$(OPKG) install $(firstword $(wildcard $(PACKAGE_DIR)/kernel_*.ipk $(PACKAGE_DIR)/base/kernel_*.ipk))
 	$(OPKG) install $(BUILD_PACKAGES)
-	rm -f $(TARGET_DIR)/usr/lib/opkg/lists/*
 
-copy_files: FORCE
+prepare_rootfs: FORCE
 	@echo
-	@echo Copying extra files
-	@$(call file_copy,$(USER_FILES)/*,$(TARGET_DIR)/)
+	@echo Finalizing root filesystem...
 
-package_postinst: FORCE
-	@echo
-	@echo Cleaning up
-	@rm -f $(TARGET_DIR)/tmp/opkg.lock
-	@echo
-	@echo Activating init scripts
-	@mkdir -p $(TARGET_DIR)/etc/rc.d
-	@( \
-		cd $(TARGET_DIR); \
-		for script in ./usr/lib/opkg/info/*.postinst; do \
-			IPKG_INSTROOT=$(TARGET_DIR) $$(which bash) $$script; \
-		done || true \
-	)
-	rm -f $(TARGET_DIR)/usr/lib/opkg/info/*.postinst
-	$(if $(CONFIG_CLEAN_IPKG),rm -rf $(TARGET_DIR)/usr/lib/opkg)
+	$(CP) $(TARGET_DIR) $(TARGET_DIR_ORIG)
+	$(call prepare_rootfs,$(TARGET_DIR),$(USER_FILES))
 
 build_image: FORCE
 	@echo
@@ -207,4 +180,3 @@ endif
 		$(if $(BIN_DIR),BIN_DIR="$(BIN_DIR)"))
 
 .SILENT: help info image
-
