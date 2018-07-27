@@ -6,8 +6,10 @@
 # See /LICENSE for more information.
 #
 
-OPENWRT_GIT = http://git.openwrt.org
-LEDE_GIT = https://git.lede-project.org
+PROJECT_GIT = https://git.openwrt.org
+
+OPENWRT_GIT = $(PROJECT_GIT)
+LEDE_GIT = $(PROJECT_GIT)
 
 ifdef PKG_SOURCE_VERSION
 PKG_VERSION ?= $(if $(PKG_SOURCE_DATE),$(PKG_SOURCE_DATE)-)$(call version_abbrev,$(PKG_SOURCE_VERSION))
@@ -103,7 +105,7 @@ hash_var = $(if $(filter-out x,$(1)),MD5SUM,HASH)
 endif
 
 define DownloadMethod/unknown
-	@echo "ERROR: No download method available"; false
+	echo "ERROR: No download method available"; false
 endef
 
 define DownloadMethod/default

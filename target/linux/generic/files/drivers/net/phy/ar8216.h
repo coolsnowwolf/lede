@@ -462,6 +462,7 @@ struct ar8xxx_priv {
 	bool mirror_tx;
 	int source_port;
 	int monitor_port;
+	u8 port_vlan_prio[AR8X16_MAX_PORTS];
 };
 
 u32
@@ -565,9 +566,6 @@ int
 ar8xxx_sw_set_flush_port_arl_table(struct switch_dev *dev,
 				   const struct switch_attr *attr,
 				   struct switch_val *val);
-int
-ar8xxx_sw_get_port_stats(struct switch_dev *dev, int port,
-			struct switch_port_stats *stats);
 int
 ar8216_wait_bit(struct ar8xxx_priv *priv, int reg, u32 mask, u32 val);
 

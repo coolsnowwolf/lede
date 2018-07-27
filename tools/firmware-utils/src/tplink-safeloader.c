@@ -46,6 +46,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <limits.h>
 
 #include "md5.h"
 
@@ -139,10 +140,10 @@ static struct device_info boards[] = {
 			{"default-mac", 0x30000, 0x00020},
 			{"product-info", 0x31100, 0x00100},
 			{"signature", 0x32000, 0x00400},
-			{"os-image", 0x40000, 0x170000},
-			{"soft-version", 0x1b0000, 0x00100},
-			{"support-list", 0x1b1000, 0x00400},
-			{"file-system", 0x1c0000, 0x600000},
+			{"os-image", 0x40000, 0x1c0000},
+			{"file-system", 0x200000, 0x5b0000},
+			{"soft-version", 0x7b0000, 0x00100},
+			{"support-list", 0x7b1000, 0x00400},
 			{"user-config", 0x7c0000, 0x10000},
 			{"default-config", 0x7d0000, 0x10000},
 			{"log", 0x7e0000, 0x10000},
@@ -151,7 +152,7 @@ static struct device_info boards[] = {
 		},
 
 		.first_sysupgrade_partition = "os-image",
-		.last_sysupgrade_partition = "file-system",
+		.last_sysupgrade_partition = "support-list",
 	},
 
 	/** Firmware layout for the CPE510/520 */
@@ -177,10 +178,10 @@ static struct device_info boards[] = {
 			{"default-mac", 0x30000, 0x00020},
 			{"product-info", 0x31100, 0x00100},
 			{"signature", 0x32000, 0x00400},
-			{"os-image", 0x40000, 0x170000},
-			{"soft-version", 0x1b0000, 0x00100},
-			{"support-list", 0x1b1000, 0x00400},
-			{"file-system", 0x1c0000, 0x600000},
+			{"os-image", 0x40000, 0x1c0000},
+			{"file-system", 0x200000, 0x5b0000},
+			{"soft-version", 0x7b0000, 0x00100},
+			{"support-list", 0x7b1000, 0x00400},
 			{"user-config", 0x7c0000, 0x10000},
 			{"default-config", 0x7d0000, 0x10000},
 			{"log", 0x7e0000, 0x10000},
@@ -189,7 +190,7 @@ static struct device_info boards[] = {
 		},
 
 		.first_sysupgrade_partition = "os-image",
-		.last_sysupgrade_partition = "file-system",
+		.last_sysupgrade_partition = "support-list",
 	},
 
 	{
@@ -209,10 +210,10 @@ static struct device_info boards[] = {
 			{"default-mac", 0x30000, 0x00020},
 			{"product-info", 0x31100, 0x00100},
 			{"signature", 0x32000, 0x00400},
-			{"os-image", 0x40000, 0x170000},
-			{"soft-version", 0x1b0000, 0x00100},
-			{"support-list", 0x1b1000, 0x00400},
-			{"file-system", 0x1c0000, 0x600000},
+			{"os-image", 0x40000, 0x1c0000},
+			{"file-system", 0x200000, 0x5b0000},
+			{"soft-version", 0x7b0000, 0x00100},
+			{"support-list", 0x7b1000, 0x00400},
 			{"user-config", 0x7c0000, 0x10000},
 			{"default-config", 0x7d0000, 0x10000},
 			{"log", 0x7e0000, 0x10000},
@@ -221,7 +222,7 @@ static struct device_info boards[] = {
 		},
 
 		.first_sysupgrade_partition = "os-image",
-		.last_sysupgrade_partition = "file-system",
+		.last_sysupgrade_partition = "support-list",
 	},
 
 	{
@@ -241,10 +242,10 @@ static struct device_info boards[] = {
 			{"default-mac", 0x30000, 0x00020},
 			{"product-info", 0x31100, 0x00100},
 			{"signature", 0x32000, 0x00400},
-			{"os-image", 0x40000, 0x170000},
-			{"soft-version", 0x1b0000, 0x00100},
-			{"support-list", 0x1b1000, 0x00400},
-			{"file-system", 0x1c0000, 0x600000},
+			{"os-image", 0x40000, 0x1c0000},
+			{"file-system", 0x200000, 0x5b0000},
+			{"soft-version", 0x7b0000, 0x00100},
+			{"support-list", 0x7b1000, 0x00400},
 			{"user-config", 0x7c0000, 0x10000},
 			{"default-config", 0x7d0000, 0x10000},
 			{"log", 0x7e0000, 0x10000},
@@ -253,7 +254,7 @@ static struct device_info boards[] = {
 		},
 
 		.first_sysupgrade_partition = "os-image",
-		.last_sysupgrade_partition = "file-system",
+		.last_sysupgrade_partition = "support-list",
 	},
 
 	/** Firmware layout for the C2600 */
@@ -365,8 +366,8 @@ static struct device_info boards[] = {
 			{"profile", 0x11700, 0x03900},
 			{"default-config", 0x15000, 0x04000},
 			{"user-config", 0x19000, 0x04000},
-			{"os-image", 0x20000, 0x150000},
-			{"file-system", 0x170000, 0x678000},
+			{"os-image", 0x20000, 0x180000},
+			{"file-system", 0x1a0000, 0x648000},
 			{"certyficate", 0x7e8000, 0x08000},
 			{"radio", 0x7f0000, 0x10000},
 			{NULL, 0, 0}
@@ -439,9 +440,46 @@ static struct device_info boards[] = {
 			{"profile", 0x11700, 0x03900},
 			{"default-config", 0x15000, 0x04000},
 			{"user-config", 0x19000, 0x04000},
-			{"os-image", 0x20000, 0x150000},
-			{"file-system", 0x170000, 0x678000},
+			{"os-image", 0x20000, 0x180000},
+			{"file-system", 0x1a0000, 0x648000},
 			{"certyficate", 0x7e8000, 0x08000},
+			{"radio", 0x7f0000, 0x10000},
+			{NULL, 0, 0}
+		},
+
+		.first_sysupgrade_partition = "os-image",
+		.last_sysupgrade_partition = "file-system",
+	},
+
+	/** Firmware layout for the C60v2 */
+	{
+		.id	= "ARCHER-C60-V2",
+		.vendor	= "",
+		.support_list =
+			"SupportList:\r\n"
+			"{product_name:Archer C60,product_ver:2.0.0,special_id:42520000}\r\n"
+			"{product_name:Archer C60,product_ver:2.0.0,special_id:45550000}\r\n"
+			"{product_name:Archer C60,product_ver:2.0.0,special_id:55530000}\r\n",
+		.support_trail = '\x00',
+		.soft_ver = "soft_ver:2.0.0\n",
+
+		.partitions = {
+			{"factory-boot", 0x00000, 0x1fb00},
+			{"default-mac", 0x1fb00, 0x00200},
+			{"pin", 0x1fd00, 0x00100},
+			{"product-info", 0x1fe00, 0x00100},
+			{"device-id", 0x1ff00, 0x00100},
+			{"fs-uboot", 0x20000, 0x10000},
+			{"os-image", 0x30000, 0x180000},
+			{"file-system", 0x1b0000, 0x620000},
+			{"soft-version", 0x7d9500, 0x00100},
+			{"support-list", 0x7d9600, 0x00100},
+			{"extra-para", 0x7d9700, 0x00100},
+			{"profile", 0x7d9800, 0x03000},
+			{"default-config", 0x7dc800, 0x03000},
+			{"partition-table", 0x7df800, 0x00800},
+			{"user-config", 0x7e0000, 0x0c000},
+			{"certificate", 0x7ec000, 0x04000},
 			{"radio", 0x7f0000, 0x10000},
 			{NULL, 0, 0}
 		},
@@ -483,6 +521,56 @@ static struct device_info boards[] = {
 
 		.first_sysupgrade_partition = "os-image",
 		.last_sysupgrade_partition = "file-system"
+	},
+
+	/** Firmware layout for the C7 */
+	{
+		.id = "ARCHER-C7-V4",
+		.support_list =
+			"SupportList:\n"
+			"{product_name:Archer C7,product_ver:4.0.0,special_id:00000000}\n"
+			"{product_name:Archer C7,product_ver:4.0.0,special_id:41550000}\n"
+			"{product_name:Archer C7,product_ver:4.0.0,special_id:45550000}\n"
+			"{product_name:Archer C7,product_ver:4.0.0,special_id:4B520000}\n"
+			"{product_name:Archer C7,product_ver:4.0.0,special_id:42520000}\n"
+			"{product_name:Archer C7,product_ver:4.0.0,special_id:4A500000}\n"
+			"{product_name:Archer C7,product_ver:4.0.0,special_id:52550000}\n"
+			"{product_name:Archer C7,product_ver:4.0.0,special_id:54570000}\n"
+			"{product_name:Archer C7,product_ver:4.0.0,special_id:55530000}\n"
+			"{product_name:Archer C7,product_ver:4.0.0,special_id:43410000}\n",
+		.support_trail = '\x00',
+		.soft_ver = "soft_ver:1.0.0\n",
+
+		/**
+		    We use a bigger os-image partition than the stock images (and thus
+		    smaller file-system), as our kernel doesn't fit in the stock firmware's
+		    1MB os-image.
+		*/
+		.partitions = {
+			{"factory-boot", 0x00000, 0x20000},
+			{"fs-uboot", 0x20000, 0x20000},
+			{"os-image", 0x40000, 0x180000},	/* Stock: base 0x40000 size 0x120000 */
+			{"file-system", 0x1c0000, 0xd40000},	/* Stock: base 0x160000 size 0xda0000 */
+			{"default-mac", 0xf00000, 0x00200},
+			{"pin", 0xf00200, 0x00200},
+			{"device-id", 0xf00400, 0x00100},
+			{"product-info", 0xf00500, 0x0fb00},
+			{"soft-version", 0xf10000, 0x00100},
+			{"extra-para", 0xf11000, 0x01000},
+			{"support-list", 0xf12000, 0x0a000},
+			{"profile", 0xf1c000, 0x04000},
+			{"default-config", 0xf20000, 0x10000},
+			{"user-config", 0xf30000, 0x40000},
+			{"qos-db", 0xf70000, 0x40000},
+			{"certificate", 0xfb0000, 0x10000},
+			{"partition-table", 0xfc0000, 0x10000},
+			{"log", 0xfd0000, 0x20000},
+			{"radio", 0xff0000, 0x10000},
+			{NULL, 0, 0}
+		},
+
+		.first_sysupgrade_partition = "os-image",
+		.last_sysupgrade_partition = "file-system",
 	},
 
 	/** Firmware layout for the C9 */
@@ -633,6 +721,42 @@ static struct device_info boards[] = {
 		.last_sysupgrade_partition = "file-system"
 	},
 
+	/** Firmware layout for the TL-WR1043 v5 */
+	{
+		.id     = "TLWR1043NV5",
+		.vendor = "",
+		.support_list =
+			"SupportList:\n"
+			"{product_name:TL-WR1043N,product_ver:5.0.0,special_id:45550000}\n"
+			"{product_name:TL-WR1043N,product_ver:5.0.0,special_id:55530000}\n",
+		.support_trail = '\x00',
+		.soft_ver = "soft_ver:1.0.0\n",
+		.partitions = {
+			{"factory-boot", 0x00000, 0x20000},
+			{"fs-uboot", 0x20000, 0x20000},
+			{"os-image", 0x40000, 0x180000},
+			{"file-system", 0x1c0000, 0xd40000},
+			{"default-mac", 0xf00000, 0x00200},
+			{"pin", 0xf00200, 0x00200},
+			{"device-id", 0xf00400, 0x00100},
+			{"product-info", 0xf00500, 0x0fb00},
+			{"soft-version", 0xf10000, 0x01000},
+			{"extra-para", 0xf11000, 0x01000},
+			{"support-list", 0xf12000, 0x0a000},
+			{"profile", 0xf1c000, 0x04000},
+			{"default-config", 0xf20000, 0x10000},
+			{"user-config", 0xf30000, 0x40000},
+			{"qos-db", 0xf70000, 0x40000},
+			{"certificate", 0xfb0000, 0x10000},
+			{"partition-table", 0xfc0000, 0x10000},
+			{"log", 0xfd0000, 0x20000},
+			{"radio", 0xff0000, 0x10000},
+			{NULL, 0, 0}
+		},
+		.first_sysupgrade_partition = "os-image",
+		.last_sysupgrade_partition = "file-system"
+	},
+
 	/** Firmware layout for the TL-WR1043 v4 */
 	{
 		.id     = "TLWR1043NDV4",
@@ -687,8 +811,8 @@ static struct device_info boards[] = {
 		*/
 		.partitions = {
 			{"fs-uboot", 0x00000, 0x20000},
-			{"os-image", 0x20000, 0x160000},
-			{"file-system", 0x180000, 0x5d0000},
+			{"os-image", 0x20000, 0x180000},
+			{"file-system", 0x1a0000, 0x5b0000},
 			{"default-mac", 0x750000, 0x00200},
 			{"pin", 0x750200, 0x00200},
 			{"product-info", 0x750400, 0x0fc00},
@@ -720,8 +844,8 @@ static struct device_info boards[] = {
 
 		.partitions = {
 			{"fs-uboot", 0x00000, 0x20000},
-			{"os-image", 0x20000, 0x150000},
-			{"file-system", 0x170000, 0xcd0000},
+			{"os-image", 0x20000, 0x180000},
+			{"file-system", 0x1a0000, 0xca0000},
 			{"default-mac", 0xe40000, 0x00200},
 			{"pin", 0xe40200, 0x00200},
 			{"product-info", 0xe40400, 0x0fc00},
@@ -785,6 +909,49 @@ static struct device_info boards[] = {
 		.last_sysupgrade_partition = "file-system"
 	},
 
+	/** Firmware layout for the RE355 */
+	{
+		.id = "RE355",
+		.vendor = "",
+		.support_list =
+			"SupportList:\r\n"
+			"{product_name:RE355,product_ver:1.0.0,special_id:00000000}\r\n"
+			"{product_name:RE355,product_ver:1.0.0,special_id:55530000}\r\n"
+			"{product_name:RE355,product_ver:1.0.0,special_id:45550000}\r\n"
+			"{product_name:RE355,product_ver:1.0.0,special_id:4A500000}\r\n"
+			"{product_name:RE355,product_ver:1.0.0,special_id:43410000}\r\n"
+			"{product_name:RE355,product_ver:1.0.0,special_id:41550000}\r\n"
+			"{product_name:RE355,product_ver:1.0.0,special_id:4B520000}\r\n"
+			"{product_name:RE355,product_ver:1.0.0,special_id:55534100}\r\n",
+		.support_trail = '\x00',
+		.soft_ver = NULL,
+
+		/**
+		   The flash partition table for RE355;
+		   it is almost the same as the one used by the stock images,
+		   576KB were moved from file-system to os-image.
+		*/
+		.partitions = {
+			{"fs-uboot", 0x00000, 0x20000},
+			{"os-image", 0x20000, 0x180000},
+			{"file-system", 0x1a0000, 0x460000},
+			{"partition-table", 0x600000, 0x02000},
+			{"default-mac", 0x610000, 0x00020},
+			{"pin", 0x610100, 0x00020},
+			{"product-info", 0x611100, 0x01000},
+			{"soft-version", 0x620000, 0x01000},
+			{"support-list", 0x621000, 0x01000},
+			{"profile", 0x622000, 0x08000},
+			{"user-config", 0x630000, 0x10000},
+			{"default-config", 0x640000, 0x10000},
+			{"radio", 0x7f0000, 0x10000},
+			{NULL, 0, 0}
+		},
+
+		.first_sysupgrade_partition = "os-image",
+		.last_sysupgrade_partition = "file-system"
+	},
+
 	/** Firmware layout for the RE450 */
 	{
 		.id = "RE450",
@@ -809,8 +976,8 @@ static struct device_info boards[] = {
 		*/
 		.partitions = {
 			{"fs-uboot", 0x00000, 0x20000},
-			{"os-image", 0x20000, 0x150000},
-			{"file-system", 0x170000, 0x4a0000},
+			{"os-image", 0x20000, 0x180000},
+			{"file-system", 0x1a0000, 0x460000},
 			{"partition-table", 0x600000, 0x02000},
 			{"default-mac", 0x610000, 0x00020},
 			{"pin", 0x610100, 0x00020},
@@ -1211,8 +1378,14 @@ static void build_image(const char *output,
 	parts[3] = read_file("os-image", kernel_image, false);
 	parts[4] = read_file("file-system", rootfs_image, add_jffs2_eof);
 
-	if (strcasecmp(info->id, "ARCHER-C25-V1") == 0) {
+	/* Some devices need the extra-para partition to accept the firmware */
+	if (strcasecmp(info->id, "ARCHER-C25-V1") == 0 ||
+	    strcasecmp(info->id, "ARCHER-C60-V2") == 0 ||
+	    strcasecmp(info->id, "TLWR1043NV5") == 0) {
 		const char mdat[11] = {0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00};
+		parts[5] = put_data("extra-para", mdat, 11);
+	} else if (strcasecmp(info->id, "ARCHER-C7-V4") == 0) {
+		const char mdat[11] = {0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0xca, 0x00, 0x01, 0x00, 0x00};
 		parts[5] = put_data("extra-para", mdat, 11);
 	}
 
@@ -1245,6 +1418,9 @@ static void usage(const char *argv0) {
 		"Usage: %s [OPTIONS...]\n"
 		"\n"
 		"Options:\n"
+		"  -h              show this help\n"
+		"\n"
+		"Create a new image:\n"
 		"  -B <board>      create image for the board specified with <board>\n"
 		"  -k <file>       read kernel image from the file <file>\n"
 		"  -r <file>       read rootfs image from the file <file>\n"
@@ -1252,7 +1428,10 @@ static void usage(const char *argv0) {
 		"  -V <rev>        sets the revision number to <rev>\n"
 		"  -j              add jffs2 end-of-filesystem markers\n"
 		"  -S              create sysupgrade instead of factory image\n"
-		"  -h              show this help\n",
+		"Extract an old image:\n"
+		"  -x <file>       extract all oem firmware partition\n"
+		"  -d <dir>        destination to extract the firmware partition\n"
+		"  -z <file>       convert an oem firmware into a sysupgade file. Use -o for output file\n",
 		argv0
 	);
 };
@@ -1269,8 +1448,323 @@ static const struct device_info *find_board(const char *id)
 	return NULL;
 }
 
+static int add_flash_partition(
+		struct flash_partition_entry *part_list,
+		size_t max_entries,
+		const char *name,
+		unsigned long base,
+		unsigned long size)
+{
+	int ptr;
+	/* check if the list has a free entry */
+	for (ptr = 0; ptr < max_entries; ptr++, part_list++) {
+		if (part_list->name == NULL &&
+				part_list->base == 0 &&
+				part_list->size == 0)
+			break;
+	}
+
+	if (ptr == max_entries) {
+		error(1, 0, "No free flash part entry available.");
+	}
+
+	part_list->name = calloc(1, strlen(name) + 1);
+	memcpy((char *)part_list->name, name, strlen(name));
+	part_list->base = base;
+	part_list->size = size;
+
+	return 0;
+}
+
+/** read the partition table into struct flash_partition_entry */
+static int read_partition_table(
+		FILE *file, long offset,
+		struct flash_partition_entry *entries, size_t max_entries,
+		int type)
+{
+	char buf[2048];
+	char *ptr, *end;
+	const char *parthdr = NULL;
+	const char *fwuphdr = "fwup-ptn";
+	const char *flashhdr = "partition";
+
+	/* TODO: search for the partition table */
+
+	switch(type) {
+		case 0:
+			parthdr = fwuphdr;
+			break;
+		case 1:
+			parthdr = flashhdr;
+			break;
+		default:
+			error(1, 0, "Invalid partition table");
+	}
+
+	if (fseek(file, offset, SEEK_SET) < 0)
+		error(1, errno, "Can not seek in the firmware");
+
+	if (fread(buf, 1, 2048, file) < 0)
+		error(1, errno, "Can not read fwup-ptn from the firmware");
+
+	buf[2047] = '\0';
+
+	/* look for the partition header */
+	if (memcmp(buf, parthdr, strlen(parthdr)) != 0) {
+		fprintf(stderr, "DEBUG: can not find fwuphdr\n");
+		return 1;
+	}
+
+	ptr = buf;
+	end = buf + sizeof(buf);
+	while ((ptr + strlen(parthdr)) < end &&
+			memcmp(ptr, parthdr, strlen(parthdr)) == 0) {
+		char *end_part;
+		char *end_element;
+
+		char name[32] = { 0 };
+		int name_len = 0;
+		unsigned long base = 0;
+		unsigned long size = 0;
+
+		end_part = memchr(ptr, '\n', (end - ptr));
+		if (end_part == NULL) {
+			/* in theory this should never happen, because a partition always ends with 0x09, 0x0D, 0x0A */
+			break;
+		}
+
+		for (int i = 0; i <= 4; i++) {
+			if (end_part <= ptr)
+				break;
+
+			end_element = memchr(ptr, 0x20, (end_part - ptr));
+			if (end_element == NULL) {
+				error(1, errno, "Ignoring the rest of the partition entries.");
+				break;
+			}
+
+			switch (i) {
+				/* partition header */
+				case 0:
+					ptr = end_element + 1;
+					continue;
+				/* name */
+				case 1:
+					name_len = (end_element - ptr) > 31 ? 31 : (end_element - ptr);
+					strncpy(name, ptr, name_len);
+					name[name_len] = '\0';
+					ptr = end_element + 1;
+					continue;
+
+				/* string "base" */
+				case 2:
+					ptr = end_element + 1;
+					continue;
+
+				/* actual base */
+				case 3:
+					base = strtoul(ptr, NULL, 16);
+					ptr = end_element + 1;
+					continue;
+
+				/* string "size" */
+				case 4:
+					ptr = end_element + 1;
+					/* actual size. The last element doesn't have a sepeartor */
+					size = strtoul(ptr, NULL, 16);
+					/* the part ends with 0x09, 0x0d, 0x0a */
+					ptr = end_part + 1;
+					add_flash_partition(entries, max_entries, name, base, size);
+					continue;
+			}
+		}
+	}
+
+	return 0;
+}
+
+static void write_partition(
+		FILE *input_file,
+		size_t firmware_offset,
+		struct flash_partition_entry *entry,
+		FILE *output_file)
+{
+	char buf[4096];
+	size_t offset;
+
+	fseek(input_file, entry->base + firmware_offset, SEEK_SET);
+
+	for (offset = 0; sizeof(buf) + offset <= entry->size; offset += sizeof(buf)) {
+		if (fread(buf, sizeof(buf), 1, input_file) < 0)
+			error(1, errno, "Can not read partition from input_file");
+
+		if (fwrite(buf, sizeof(buf), 1, output_file) < 0)
+			error(1, errno, "Can not write partition to output_file");
+	}
+	/* write last chunk smaller than buffer */
+	if (offset < entry->size) {
+		offset = entry->size - offset;
+		if (fread(buf, offset, 1, input_file) < 0)
+			error(1, errno, "Can not read partition from input_file");
+		if (fwrite(buf, offset, 1, output_file) < 0)
+			error(1, errno, "Can not write partition to output_file");
+	}
+}
+
+static int extract_firmware_partition(FILE *input_file, size_t firmware_offset, struct flash_partition_entry *entry, const char *output_directory)
+{
+	FILE *output_file;
+	char output[PATH_MAX];
+
+	snprintf(output, PATH_MAX, "%s/%s", output_directory, entry->name);
+	output_file = fopen(output, "wb+");
+	if (output_file == NULL) {
+		error(1, errno, "Can not open output file %s", output);
+	}
+
+	write_partition(input_file, firmware_offset, entry, output_file);
+
+	fclose(output_file);
+
+	return 0;
+}
+
+/** extract all partitions from the firmware file */
+static int extract_firmware(const char *input, const char *output_directory)
+{
+	struct flash_partition_entry entries[16] = { 0 };
+	size_t max_entries = 16;
+	size_t firmware_offset = 0x1014;
+	FILE *input_file;
+
+	struct stat statbuf;
+
+	/* check input file */
+	if (stat(input, &statbuf)) {
+		error(1, errno, "Can not read input firmware %s", input);
+	}
+
+	/* check if output directory exists */
+	if (stat(output_directory, &statbuf)) {
+		error(1, errno, "Failed to stat output directory %s", output_directory);
+	}
+
+	if ((statbuf.st_mode & S_IFMT) != S_IFDIR) {
+		error(1, errno, "Given output directory is not a directory %s", output_directory);
+	}
+
+	input_file = fopen(input, "rb");
+
+	if (read_partition_table(input_file, firmware_offset, entries, 16, 0) != 0) {
+		error(1, 0, "Error can not read the partition table (fwup-ptn)");
+	}
+
+	for (int i = 0; i < max_entries; i++) {
+		if (entries[i].name == NULL &&
+				entries[i].base == 0 &&
+				entries[i].size == 0)
+			continue;
+
+		extract_firmware_partition(input_file, firmware_offset, &entries[i], output_directory);
+	}
+
+	return 0;
+}
+
+static struct flash_partition_entry *find_partition(
+		struct flash_partition_entry *entries, size_t max_entries,
+		const char *name, const char *error_msg)
+{
+	for (int i = 0; i < max_entries; i++, entries++) {
+		if (strcmp(entries->name, name) == 0)
+			return entries;
+	}
+
+	error(1, 0, "%s", error_msg);
+	return NULL;
+}
+
+static void write_ff(FILE *output_file, size_t size)
+{
+	char buf[4096];
+	int offset;
+
+	memset(buf, 0xff, sizeof(buf));
+
+	for (offset = 0; offset + sizeof(buf) < size ; offset += sizeof(buf)) {
+		if (fwrite(buf, sizeof(buf), 1, output_file) < 0)
+			error(1, errno, "Can not write 0xff to output_file");
+	}
+
+	/* write last chunk smaller than buffer */
+	if (offset < size) {
+		offset = size - offset;
+		if (fwrite(buf, offset, 1, output_file) < 0)
+			error(1, errno, "Can not write partition to output_file");
+	}
+}
+
+static void convert_firmware(const char *input, const char *output)
+{
+	struct flash_partition_entry fwup[MAX_PARTITIONS] = { 0 };
+	struct flash_partition_entry flash[MAX_PARTITIONS] = { 0 };
+	struct flash_partition_entry *fwup_os_image = NULL, *fwup_file_system = NULL;
+	struct flash_partition_entry *flash_os_image = NULL, *flash_file_system = NULL;
+	struct flash_partition_entry *fwup_partition_table = NULL;
+	size_t firmware_offset = 0x1014;
+	FILE *input_file, *output_file;
+
+	struct stat statbuf;
+
+	/* check input file */
+	if (stat(input, &statbuf)) {
+		error(1, errno, "Can not read input firmware %s", input);
+	}
+
+	input_file = fopen(input, "rb");
+	if (!input_file)
+		error(1, 0, "Can not open input firmware %s", input);
+
+	output_file = fopen(output, "wb");
+	if (!output_file)
+		error(1, 0, "Can not open output firmware %s", output);
+
+	if (read_partition_table(input_file, firmware_offset, fwup, MAX_PARTITIONS, 0) != 0) {
+		error(1, 0, "Error can not read the partition table (fwup-ptn)");
+	}
+
+	fwup_os_image = find_partition(fwup, MAX_PARTITIONS,
+			"os-image", "Error can not find os-image partition (fwup)");
+	fwup_file_system = find_partition(fwup, MAX_PARTITIONS,
+			"file-system", "Error can not find file-system partition (fwup)");
+	fwup_partition_table = find_partition(fwup, MAX_PARTITIONS,
+			"partition-table", "Error can not find partition-table partition");
+
+	/* the flash partition table has a 0x00000004 magic haeder */
+	if (read_partition_table(input_file, firmware_offset + fwup_partition_table->base + 4, flash, MAX_PARTITIONS, 1) != 0)
+		error(1, 0, "Error can not read the partition table (flash)");
+
+	flash_os_image = find_partition(flash, MAX_PARTITIONS,
+			"os-image", "Error can not find os-image partition (flash)");
+	flash_file_system = find_partition(flash, MAX_PARTITIONS,
+			"file-system", "Error can not find file-system partition (flash)");
+
+	/* write os_image to 0x0 */
+	write_partition(input_file, firmware_offset, fwup_os_image, output_file);
+	write_ff(output_file, flash_os_image->size - fwup_os_image->size);
+
+	/* write file-system behind os_image */
+	fseek(output_file, flash_file_system->base - flash_os_image->base, SEEK_SET);
+	write_partition(input_file, firmware_offset, fwup_file_system, output_file);
+	write_ff(output_file, flash_file_system->size - fwup_file_system->size);
+
+	fclose(output_file);
+	fclose(input_file);
+}
+
 int main(int argc, char *argv[]) {
 	const char *board = NULL, *kernel_image = NULL, *rootfs_image = NULL, *output = NULL;
+	const char *extract_image = NULL, *output_directory = NULL, *convert_image = NULL;
 	bool add_jffs2_eof = false, sysupgrade = false;
 	unsigned rev = 0;
 	const struct device_info *info;
@@ -1279,7 +1773,7 @@ int main(int argc, char *argv[]) {
 	while (true) {
 		int c;
 
-		c = getopt(argc, argv, "B:k:r:o:V:jSh");
+		c = getopt(argc, argv, "B:k:r:o:V:jSh:x:d:z:");
 		if (c == -1)
 			break;
 
@@ -1316,27 +1810,51 @@ int main(int argc, char *argv[]) {
 			usage(argv[0]);
 			return 0;
 
+		case 'd':
+			output_directory = optarg;
+			break;
+
+		case 'x':
+			extract_image = optarg;
+			break;
+
+		case 'z':
+			convert_image = optarg;
+			break;
+
 		default:
 			usage(argv[0]);
 			return 1;
 		}
 	}
 
-	if (!board)
-		error(1, 0, "no board has been specified");
-	if (!kernel_image)
-		error(1, 0, "no kernel image has been specified");
-	if (!rootfs_image)
-		error(1, 0, "no rootfs image has been specified");
-	if (!output)
-		error(1, 0, "no output filename has been specified");
+	if (extract_image || output_directory) {
+		if (!extract_image)
+			error(1, 0, "No factory/oem image given via -x <file>. Output directory is only valid with -x");
+		if (!output_directory)
+			error(1, 0, "Can not extract an image without output directory. Use -d <dir>");
+		extract_firmware(extract_image, output_directory);
+	} else if (convert_image) {
+		if (!output)
+			error(1, 0, "Can not convert a factory/oem image into sysupgrade image without output file. Use -o <file>");
+		convert_firmware(convert_image, output);
+	} else {
+		if (!board)
+			error(1, 0, "no board has been specified");
+		if (!kernel_image)
+			error(1, 0, "no kernel image has been specified");
+		if (!rootfs_image)
+			error(1, 0, "no rootfs image has been specified");
+		if (!output)
+			error(1, 0, "no output filename has been specified");
 
-	info = find_board(board);
+		info = find_board(board);
 
-	if (info == NULL)
-		error(1, 0, "unsupported board %s", board);
+		if (info == NULL)
+			error(1, 0, "unsupported board %s", board);
 
-	build_image(output, kernel_image, rootfs_image, rev, add_jffs2_eof, sysupgrade, info);
+		build_image(output, kernel_image, rootfs_image, rev, add_jffs2_eof, sysupgrade, info);
+	}
 
 	return 0;
 }

@@ -1,0 +1,157 @@
+From 9115e8cd2a0c6eaaa900c462721f12e1d45f326c Mon Sep 17 00:00:00 2001
+From: Eric Dumazet <edumazet@google.com>
+Date: Sat, 3 Dec 2016 11:14:56 -0800
+Subject: [PATCH 07/10] net: reorganize struct sock for better data locality
+
+Group fields used in TX path, and keep some cache lines mostly read
+to permit sharing among cpus.
+
+Gained two 4 bytes holes on 64bit arches.
+
+Added a place holder for tcp tsq_flags, next to sk_wmem_alloc
+to speed up tcp_wfree() in the following patch.
+
+I have not added ____cacheline_aligned_in_smp, this might be done later.
+I prefer doing this once inet and tcp/udp sockets reorg is also done.
+
+Tested with both TCP and UDP.
+
+UDP receiver performance under flood increased by ~20 % :
+Accessing sk_filter/sk_wq/sk_napi_id no longer stalls because sk_drops
+was moved away from a critical cache line, now mostly read and shared.
+
+	/* --- cacheline 4 boundary (256 bytes) --- */
+	unsigned int               sk_napi_id;           /* 0x100   0x4 */
+	int                        sk_rcvbuf;            /* 0x104   0x4 */
+	struct sk_filter *         sk_filter;            /* 0x108   0x8 */
+	union {
+		struct socket_wq * sk_wq;                /*         0x8 */
+		struct socket_wq * sk_wq_raw;            /*         0x8 */
+	};                                               /* 0x110   0x8 */
+	struct xfrm_policy *       sk_policy[2];         /* 0x118  0x10 */
+	struct dst_entry *         sk_rx_dst;            /* 0x128   0x8 */
+	struct dst_entry *         sk_dst_cache;         /* 0x130   0x8 */
+	atomic_t                   sk_omem_alloc;        /* 0x138   0x4 */
+	int                        sk_sndbuf;            /* 0x13c   0x4 */
+	/* --- cacheline 5 boundary (320 bytes) --- */
+	int                        sk_wmem_queued;       /* 0x140   0x4 */
+	atomic_t                   sk_wmem_alloc;        /* 0x144   0x4 */
+	long unsigned int          sk_tsq_flags;         /* 0x148   0x8 */
+	struct sk_buff *           sk_send_head;         /* 0x150   0x8 */
+	struct sk_buff_head        sk_write_queue;       /* 0x158  0x18 */
+	__s32                      sk_peek_off;          /* 0x170   0x4 */
+	int                        sk_write_pending;     /* 0x174   0x4 */
+	long int                   sk_sndtimeo;          /* 0x178   0x8 */
+
+Signed-off-by: Eric Dumazet <edumazet@google.com>
+Tested-by: Paolo Abeni <pabeni@redhat.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ include/net/sock.h | 51 +++++++++++++++++++++++++++------------------------
+ 1 file changed, 27 insertions(+), 24 deletions(-)
+
+--- a/include/net/sock.h
++++ b/include/net/sock.h
+@@ -343,6 +343,9 @@ struct sock {
+ #define sk_rxhash		__sk_common.skc_rxhash
+ 
+ 	socket_lock_t		sk_lock;
++	atomic_t		sk_drops;
++	int			sk_rcvlowat;
++	struct sk_buff_head	sk_error_queue;
+ 	struct sk_buff_head	sk_receive_queue;
+ 	/*
+ 	 * The backlog queue is special, it is always used with
+@@ -359,14 +362,13 @@ struct sock {
+ 		struct sk_buff	*tail;
+ 	} sk_backlog;
+ #define sk_rmem_alloc sk_backlog.rmem_alloc
+-	int			sk_forward_alloc;
+ 
+-	__u32			sk_txhash;
++	int			sk_forward_alloc;
+ #ifdef CONFIG_NET_RX_BUSY_POLL
+-	unsigned int		sk_napi_id;
+ 	unsigned int		sk_ll_usec;
++	/* ===== mostly read cache line ===== */
++	unsigned int		sk_napi_id;
+ #endif
+-	atomic_t		sk_drops;
+ 	int			sk_rcvbuf;
+ 
+ 	struct sk_filter __rcu	*sk_filter;
+@@ -379,11 +381,30 @@ struct sock {
+ #endif
+ 	struct dst_entry	*sk_rx_dst;
+ 	struct dst_entry __rcu	*sk_dst_cache;
+-	/* Note: 32bit hole on 64bit arches */
+-	atomic_t		sk_wmem_alloc;
+ 	atomic_t		sk_omem_alloc;
+ 	int			sk_sndbuf;
++
++	/* ===== cache line for TX ===== */
++	int			sk_wmem_queued;
++	atomic_t		sk_wmem_alloc;
++	unsigned long		sk_tsq_flags;
++	struct sk_buff		*sk_send_head;
+ 	struct sk_buff_head	sk_write_queue;
++	__s32			sk_peek_off;
++	int			sk_write_pending;
++	long			sk_sndtimeo;
++	struct timer_list	sk_timer;
++	__u32			sk_priority;
++	__u32			sk_mark;
++	u32			sk_pacing_rate; /* bytes per second */
++	u32			sk_max_pacing_rate;
++	struct page_frag	sk_frag;
++	netdev_features_t	sk_route_caps;
++	netdev_features_t	sk_route_nocaps;
++	int			sk_gso_type;
++	unsigned int		sk_gso_max_size;
++	gfp_t			sk_allocation;
++	__u32			sk_txhash;
+ 
+ 	/*
+ 	 * Because of non atomicity rules, all
+@@ -399,41 +420,23 @@ struct sock {
+ #define SK_PROTOCOL_MAX U8_MAX
+ 	kmemcheck_bitfield_end(flags);
+ 
+-	int			sk_wmem_queued;
+-	gfp_t			sk_allocation;
+-	u32			sk_pacing_rate; /* bytes per second */
+-	u32			sk_max_pacing_rate;
+-	netdev_features_t	sk_route_caps;
+-	netdev_features_t	sk_route_nocaps;
+-	int			sk_gso_type;
+-	unsigned int		sk_gso_max_size;
+ 	u16			sk_gso_max_segs;
+-	int			sk_rcvlowat;
+ 	unsigned long	        sk_lingertime;
+-	struct sk_buff_head	sk_error_queue;
+ 	struct proto		*sk_prot_creator;
+ 	rwlock_t		sk_callback_lock;
+ 	int			sk_err,
+ 				sk_err_soft;
+ 	u32			sk_ack_backlog;
+ 	u32			sk_max_ack_backlog;
+-	__u32			sk_priority;
+-	__u32			sk_mark;
+ 	struct pid		*sk_peer_pid;
+ 	const struct cred	*sk_peer_cred;
+ 	long			sk_rcvtimeo;
+-	long			sk_sndtimeo;
+-	struct timer_list	sk_timer;
+ 	ktime_t			sk_stamp;
+ 	u16			sk_tsflags;
+ 	u8			sk_shutdown;
+ 	u32			sk_tskey;
+ 	struct socket		*sk_socket;
+ 	void			*sk_user_data;
+-	struct page_frag	sk_frag;
+-	struct sk_buff		*sk_send_head;
+-	__s32			sk_peek_off;
+-	int			sk_write_pending;
+ #ifdef CONFIG_SECURITY
+ 	void			*sk_security;
+ #endif

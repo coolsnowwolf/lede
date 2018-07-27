@@ -57,6 +57,14 @@ define Device/dir-860l-b1
 endef
 TARGET_DEVICES += dir-860l-b1
 
+define Device/mediatek_ap-mt7621a-v60
+  DTS := AP-MT7621A-V60
+  IMAGE_SIZE := $(ralink_default_fw_size_8M)
+  DEVICE_TITLE := Mediatek AP-MT7621A-V60 EVB
+  DEVICE_PACKAGES := kmod-usb3 kmod-sdhci-mt7620 kmod-sound-mt7620
+endef
+TARGET_DEVICES += mediatek_ap-mt7621a-v60
+
 define Device/ew1200
   DTS := EW1200
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
@@ -75,13 +83,21 @@ define Device/firewrt
 endef
 TARGET_DEVICES += firewrt
 
-define Device/gb-pc1
+define Device/gnubee_gb-pc1
   DTS := GB-PC1
   DEVICE_TITLE := GnuBee Personal Cloud One
   DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-usb3 kmod-sdhci-mt7620
   IMAGE_SIZE := $(ralink_default_fw_size_32M)
 endef
-TARGET_DEVICES += gb-pc1
+TARGET_DEVICES += gnubee_gb-pc1
+
+define Device/gnubee_gb-pc2
+  DTS := GB-PC2
+  DEVICE_TITLE := GnuBee Personal Cloud Two
+  DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-usb3 kmod-sdhci-mt7620
+  IMAGE_SIZE := $(ralink_default_fw_size_32M)
+endef
+TARGET_DEVICES += gnubee_gb-pc2
 
 define Device/hc5962
   DTS := HC5962
@@ -97,6 +113,14 @@ define Device/hc5962
   DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 wpad-mini
 endef
 TARGET_DEVICES += hc5962
+
+define Device/iodata_wn-gx300gr
+  DTS := WN-GX300GR
+  IMAGE_SIZE := 7798784
+  DEVICE_TITLE := I-O DATA WN-GX300GR
+  DEVICE_PACKAGES := kmod-mt7603 wpad-mini
+endef
+TARGET_DEVICES += iodata_wn-gx300gr
 
 define Device/k2p
   DTS := K2P
@@ -121,7 +145,7 @@ define Device/mir3g
   SUPPORTED_DEVICES += R3G
   DEVICE_PACKAGES := \
 	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-mini \
-	kmod-softdog
+	uboot-envtools
 endef
 TARGET_DEVICES += mir3g
 
@@ -141,6 +165,15 @@ define Device/newifi-d1
 	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-mini
 endef
 TARGET_DEVICES += newifi-d1
+
+define Device/d-team_newifi-d2
+  DTS := Newifi-D2
+  IMAGE_SIZE := $(ralink_default_fw_size_32M)
+  DEVICE_TITLE := Newifi D2
+  DEVICE_PACKAGES := \
+	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += d-team_newifi-d2
 
 define Device/pbr-m1
   DTS := PBR-M1
@@ -225,6 +258,14 @@ define Device/timecloud
 endef
 TARGET_DEVICES += timecloud
 
+define Device/u7621-06-256M-16M
+  DTS := U7621-06-256M-16M
+  IMAGE_SIZE := 16064k
+  DEVICE_TITLE := UniElec U7621-06 (256M RAM/16M flash)
+  DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-sdhci-mt7620 kmod-usb3
+endef
+TARGET_DEVICES += u7621-06-256M-16M
+
 define Device/ubnt-erx
   DTS := UBNT-ERX
   FILESYSTEMS := squashfs
@@ -277,15 +318,26 @@ define Device/wf-2881
 endef
 TARGET_DEVICES += wf-2881
 
-define Device/witi
-  DTS := WITI
+define Device/mqmaker_witi-256m
+  DTS := WITI-256M
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
-  DEVICE_TITLE := MQmaker WiTi
+  DEVICE_TITLE := MQmaker WiTi (256MB RAM)
+  DEVICE_PACKAGES := \
+	kmod-ata-core kmod-ata-ahci kmod-mt76x2 kmod-sdhci-mt7620 kmod-usb3 \
+	kmod-usb-ledtrig-usbport wpad-mini
+  SUPPORTED_DEVICES += witi
+endef
+TARGET_DEVICES += mqmaker_witi-256m
+
+define Device/mqmaker_witi-512m
+  DTS := WITI-512M
+  IMAGE_SIZE := $(ralink_default_fw_size_16M)
+  DEVICE_TITLE := MQmaker WiTi (512MB RAM)
   DEVICE_PACKAGES := \
 	kmod-ata-core kmod-ata-ahci kmod-mt76x2 kmod-sdhci-mt7620 kmod-usb3 \
 	kmod-usb-ledtrig-usbport wpad-mini
 endef
-TARGET_DEVICES += witi
+TARGET_DEVICES += mqmaker_witi-512m
 
 define Device/wndr3700v5
   DTS := WNDR3700V5
@@ -294,6 +346,15 @@ define Device/wndr3700v5
   DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 wpad-mini
 endef
 TARGET_DEVICES += wndr3700v5
+
+define Device/youhua_wr1200js
+  DTS := WR1200JS
+  IMAGE_SIZE := 16064k
+  DEVICE_TITLE := YouHua WR1200JS
+  DEVICE_PACKAGES := \
+	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += youhua_wr1200js
 
 define Device/wsr-1166
   DTS := WSR-1166
@@ -320,6 +381,16 @@ define Device/zbt-we1326
 	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-sdhci-mt7620 wpad-mini
 endef
 TARGET_DEVICES += zbt-we1326
+
+define Device/zbtlink_zbt-we3526
+  DTS := ZBT-WE3526
+  IMAGE_SIZE := $(ralink_default_fw_size_16M)
+  DEVICE_TITLE := ZBT WE3526
+  DEVICE_PACKAGES := \
+	kmod-sdhci-mt7620 kmod-mt7603 kmod-mt76x2 \
+	kmod-usb3 kmod-usb-ledtrig-usbport wpad-mini
+endef
+TARGET_DEVICES += zbtlink_zbt-we3526
 
 define Device/zbt-wg2626
   DTS := ZBT-WG2626

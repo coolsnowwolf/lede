@@ -14,6 +14,7 @@ define KernelPackage/w1
   TITLE:=Dallas's 1-wire support
   KCONFIG:=CONFIG_W1
   FILES:=$(LINUX_DIR)/drivers/w1/wire.ko
+  DEPENDS:=+LINUX_4_14:kmod-hwmon-core
 endef
 
 define KernelPackage/w1/description

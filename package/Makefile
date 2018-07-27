@@ -7,6 +7,7 @@
 
 curdir:=package
 
+include $(INCLUDE_DIR)/feeds.mk
 include $(INCLUDE_DIR)/rootfs.mk
 
 -include $(TMP_DIR)/.packagedeps
@@ -72,11 +73,10 @@ $(curdir)/install: $(TMP_DIR)/.build $(curdir)/merge $(if $(CONFIG_TARGET_PER_DE
 			$(call opkg,$(TARGET_DIR)) flag $$flag `cat $$file`; \
 		done; \
 	done || true
-	@-$(MAKE) package/preconfig
 
 	$(CP) $(TARGET_DIR) $(TARGET_DIR_ORIG)
 
-	$(call prepare_rootfs,$(TARGET_DIR))
+	$(call prepare_rootfs,$(TARGET_DIR),$(TOPDIR)/files)
 
 $(curdir)/index: FORCE
 	@echo Generating package index...
@@ -95,8 +95,6 @@ ifdef CONFIG_SIGNED_PACKAGES
 		$(STAGING_DIR_HOST)/bin/usign -S -m Packages -s $(BUILD_KEY); \
 	); done
 endif
-
-$(curdir)/preconfig:
 
 $(curdir)/flags-install:= -j1
 

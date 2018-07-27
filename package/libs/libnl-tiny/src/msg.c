@@ -166,12 +166,7 @@
 #include <netlink/msg.h>
 #include <linux/socket.h>
 
-static size_t default_msg_size;
-
-static void __init init_msg_size(void)
-{
-	default_msg_size = getpagesize();
-}
+static size_t default_msg_size = 4096;
 
 /**
  * @name Attribute Access

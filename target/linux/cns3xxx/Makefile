@@ -14,7 +14,7 @@ CPU_TYPE:=mpcore
 CPU_SUBTYPE:=vfp
 MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
-KERNEL_PATCHVER:=4.9
+KERNEL_PATCHVER:=4.14
 
 define Target/Description
 	Build images for Cavium Networks Econa CNS3xxx based boards,

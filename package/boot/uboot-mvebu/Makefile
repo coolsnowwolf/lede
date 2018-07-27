@@ -8,10 +8,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2017.03
+PKG_VERSION:=2018.03
 PKG_RELEASE:=1
 
-PKG_HASH:=f54baf3f9325bf444c7905f3a5b6f83680edb1e6e1a4d5f8a5ad80abe885113f
+PKG_HASH:=7e7477534409d5368eb1371ffde6820f0f79780a1a1f676161c48442cb303dfd
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
@@ -24,11 +24,20 @@ endef
 define U-Boot/clearfog
   NAME:=SolidRun ClearFog A1
   BUILD_DEVICES:=armada-388-clearfog-base armada-388-clearfog-pro
+  BUILD_SUBTARGET:=cortexa9
   UBOOT_IMAGE:=u-boot-spl.kwb
 endef
 
 UBOOT_TARGETS:= \
 	clearfog
+
+define Build/Configure
+	# enable additional options beyond clearfog_defconfig
+	echo CONFIG_NET_RANDOM_ETHADDR=y >> $(PKG_BUILD_DIR)/configs/$(BUILD_VARIANT)_defconfig
+	echo CONFIG_CMD_SETEXPR=y >> $(PKG_BUILD_DIR)/configs/$(BUILD_VARIANT)_defconfig
+
+	+$(MAKE) $(PKG_JOBS) -C $(PKG_BUILD_DIR) $(UBOOT_CONFIGURE_VARS) $(UBOOT_CONFIG)_config
+endef
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)

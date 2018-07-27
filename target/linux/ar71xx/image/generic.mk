@@ -1,5 +1,21 @@
 DEVICE_VARS += DAP_SIGNATURE NETGEAR_BOARD_ID NETGEAR_HW_ID NETGEAR_KERNEL_MAGIC ROOTFS_SIZE SEAMA_SIGNATURE
 
+define Build/alfa-network-rootfs-header
+	mkimage \
+		-A mips -O linux -T filesystem -C lzma -a 0 -e 0 \
+		-n 'RootfsImage' -d $@ $@.new
+	@mv $@.new $@
+endef
+
+define Build/append-md5sum-bin
+	$(STAGING_DIR_HOST)/bin/mkhash md5 $@ | sed 's/../\\\\x&/g' |\
+		xargs echo -ne >> $@
+endef
+
+define Build/append-string
+	echo -n $(1) >> $@
+endef
+
 define Build/mkbuffaloimg
 	$(STAGING_DIR_HOST)/bin/mkbuffaloimg -B $(BOARDNAME) \
 		-R $$(($(subst k, * 1024,$(ROOTFS_SIZE)))) \
@@ -12,8 +28,18 @@ define Build/mkwrggimg
 	$(STAGING_DIR_HOST)/bin/mkwrggimg -b \
 		-i $@ -o $@.imghdr -d /dev/mtdblock/1 \
 		-m $(BOARDNAME) -s $(DAP_SIGNATURE) \
-		-v LEDE -B $(REVISION)
+		-v $(VERSION_DIST) -B $(REVISION)
 	mv $@.imghdr $@
+endef
+
+define Build/mkdapimg2
+	$(STAGING_DIR_HOST)/bin/mkdapimg2 \
+		-i $@ -o $@.new \
+		-s $(DAP_SIGNATURE) \
+		-v $(VERSION_DIST)-$(firstword $(subst +, ,$(firstword $(subst -, ,$(REVISION))))) \
+		-r Default \
+		$(if $(1),-k $(1))
+	mv $@.new $@
 endef
 
 define Build/netgear-squashfs
@@ -30,7 +56,7 @@ define Build/netgear-squashfs
 		-A mips -O linux -T filesystem -C none \
 		-M $(NETGEAR_KERNEL_MAGIC) \
 		-a 0xbf070000 -e 0xbf070000 \
-		-n 'MIPS OpenWrt Linux-$(LINUX_VERSION)' \
+		-n 'MIPS $(VERSION_DIST) Linux-$(LINUX_VERSION)' \
 		-d $@.squashfs $@
 	rm -rf $@.squashfs $@.fs
 endef
@@ -61,12 +87,23 @@ define Build/seama-seal
 	$(call Build/seama,-s $@.seama $(1))
 endef
 
+define Build/teltonika-fw-fake-checksum
+	# Teltonika U-Boot web based firmware upgrade/recovery routine compares
+	# 16 bytes from md5sum1[16] field in TP-Link v1 header (offset: 76 bytes
+	# from begin of the firmware file) with 16 bytes stored just before
+	# 0xdeadc0de marker. Values are only compared, MD5 sum is not verified.
+	let \
+		offs="$$(stat -c%s $@) - 20"; \
+		dd if=$@ bs=1 count=16 skip=76 |\
+		dd of=$@ bs=1 count=16 seek=$$offs conv=notrunc
+endef
+
 define Build/uImageHiWiFi
 	# Field ih_name needs to start with "tw150v1"
 	mkimage -A $(LINUX_KARCH) \
 		-O linux -T kernel \
 		-C $(1) -a $(KERNEL_LOADADDR) -e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
-		-n 'tw150v1 $(call toupper,$(LINUX_KARCH)) LEDE Linux-$(LINUX_VERSION)' -d $@ $@.new
+		-n 'tw150v1 $(call toupper,$(LINUX_KARCH)) $(VERSION_DIST) Linux-$(LINUX_VERSION)' -d $@ $@.new
 	@mv $@.new $@
 endef
 
@@ -83,7 +120,7 @@ define Device/ap121f
   CONSOLE := ttyATH0,115200
   MTDPARTS := spi0.0:192k(u-boot)ro,64k(u-boot-env),64k(art)ro,-(firmware)
   SUPPORTED_DEVICES := ap121f
-  IMAGE/sysupgrade.bin = append-kernel | pad-to $$$$(BLOCKSIZE) | \
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
 	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
 endef
 TARGET_DEVICES += ap121f
@@ -98,19 +135,35 @@ endef
 TARGET_DEVICES += ap531b0
 
 define Device/ap90q
-  DEVICE_TITLE := YunCore AP90Q
+  DEVICE_TITLE := YunCore AP80Q/AP90Q
   BOARDNAME := AP90Q
   IMAGE_SIZE := 16000k
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),16000k(firmware),64k(art)ro
 endef
 TARGET_DEVICES += ap90q
 
+define Device/ap91-5g
+  DEVICE_TITLE := ALFA Network AP91-5G
+  DEVICE_PACKAGES := rssileds -swconfig
+  BOARDNAME := AP91-5G
+  IMAGE_SIZE := 7744k
+  KERNEL_SIZE := 1600k
+  ROOTFS_SIZE := 6144k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),6144k(rootfs),1600k(kernel),64k(config)ro,64k(art)ro,7744k@0x50000(firmware)
+  IMAGES := sysupgrade.bin factory.bin
+  IMAGE/factory.bin := append-rootfs | pad-rootfs |\
+	alfa-network-rootfs-header | append-kernel | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs |\
+	pad-to $$$$(ROOTFS_SIZE) | append-kernel | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += ap91-5g
+
 define Device/arduino-yun
   DEVICE_TITLE := Arduino Yun
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2
   BOARDNAME := Yun
   IMAGE_SIZE := 15936k
-  CONSOLE = ttyATH0,250000
+  CONSOLE := ttyATH0,250000
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),15936k(firmware),64k(nvram),64k(art)ro
 endef
 TARGET_DEVICES += arduino-yun
@@ -137,6 +190,7 @@ TARGET_DEVICES += carambola2
 
 define Device/cf-e316n-v2
   DEVICE_TITLE := COMFAST CF-E316N v2
+  DEVICE_PACKAGES := -swconfig -uboot-envtools
   BOARDNAME := CF-E316N-V2
   IMAGE_SIZE := 16192k
   MTDPARTS := spi0.0:64k(u-boot)ro,64k(art)ro,16192k(firmware),64k(art-backup)ro
@@ -146,23 +200,44 @@ TARGET_DEVICES += cf-e316n-v2
 define Device/cf-e320n-v2
   $(Device/cf-e316n-v2)
   DEVICE_TITLE := COMFAST CF-E320N v2
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
+  DEVICE_PACKAGES += kmod-usb-core kmod-usb2
   BOARDNAME := CF-E320N-V2
 endef
 TARGET_DEVICES += cf-e320n-v2
 
-define Device/cf-e355ac
-  DEVICE_TITLE := COMFAST CF-E355AC
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ath10k ath10k-firmware-qca988x
-  BOARDNAME := CF-E355AC
+define Device/cf-e355ac-v1
+  DEVICE_TITLE := COMFAST CF-E355AC v1
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ath10k ath10k-firmware-qca988x \
+	-swconfig -uboot-envtools
+  BOARDNAME := CF-E355AC-V1
   IMAGE_SIZE := 16192k
   MTDPARTS := spi0.0:64k(u-boot)ro,64k(art)ro,16192k(firmware),64k(art-backup)ro
 endef
-TARGET_DEVICES += cf-e355ac
+TARGET_DEVICES += cf-e355ac-v1
+
+define Device/cf-e355ac-v2
+  $(Device/cf-e355ac-v1)
+  DEVICE_TITLE := COMFAST CF-E355AC v2
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ath10k ath10k-firmware-qca9888 \
+	-swconfig -uboot-envtools
+  BOARDNAME := CF-E355AC-V2
+endef
+TARGET_DEVICES += cf-e355ac-v2
+
+define Device/cf-e375ac
+  DEVICE_TITLE := COMFAST CF-E375AC
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ath10k ath10k-firmware-qca9888 \
+	-uboot-envtools
+  BOARDNAME := CF-E375AC
+  IMAGE_SIZE := 16000k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(art)ro,16000k(firmware),64k(art-backup)ro
+endef
+TARGET_DEVICES += cf-e375ac
 
 define Device/cf-e380ac-v1
   DEVICE_TITLE := COMFAST CF-E380AC v1
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ath10k ath10k-firmware-qca988x
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ath10k ath10k-firmware-qca988x \
+	-swconfig -uboot-envtools
   BOARDNAME := CF-E380AC-V1
   IMAGE_SIZE := 16128k
   MTDPARTS := spi0.0:128k(u-boot)ro,64k(art)ro,16128k(firmware),64k(art-backup)ro
@@ -178,9 +253,19 @@ define Device/cf-e380ac-v2
 endef
 TARGET_DEVICES += cf-e380ac-v2
 
+define Device/cf-e385ac
+  DEVICE_TITLE := COMFAST CF-E385AC
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ath10k ath10k-firmware-qca9984 \
+	-uboot-envtools
+  BOARDNAME := CF-E385AC
+  IMAGE_SIZE := 16000k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(art)ro,16000k(firmware),64k(art-backup)ro
+endef
+TARGET_DEVICES += cf-e385ac
+
 define Device/cf-e520n
   DEVICE_TITLE := COMFAST CF-E520N
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 -swconfig -uboot-envtools
   BOARDNAME := CF-E520N
   IMAGE_SIZE := 8000k
   MTDPARTS := spi0.0:64k(u-boot)ro,64k(art)ro,8000k(firmware),64k(art-backup)ro
@@ -229,6 +314,102 @@ define Device/dragino2
 endef
 TARGET_DEVICES += dragino2
 
+define Device/e1700ac-v2-16M
+  DEVICE_TITLE := Qxwlan E1700AC v2 (16MB flash)
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca988x kmod-usb-core \
+	kmod-usb2 kmod-usb-ledtrig-usbport
+  BOARDNAME := E1700AC-V2
+  SUPPORTED_DEVICES := e1700ac-v2
+  IMAGE_SIZE := 15936k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),64k(pri-data)ro,64k(art)ro,-(firmware)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) |\
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += e1700ac-v2-16M
+
+define Device/e1700ac-v2-8M
+  $(Device/e1700ac-v2-16M)
+  DEVICE_TITLE := Qxwlan E1700AC v2 (8MB flash)
+  IMAGE_SIZE := 7744k
+endef
+TARGET_DEVICES += e1700ac-v2-8M
+
+define Device/e600g-v2-16M
+  DEVICE_TITLE := Qxwlan E600G v2 (16MB flash)
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 -swconfig
+  BOARDNAME := E600G-V2
+  SUPPORTED_DEVICES := e600g-v2
+  IMAGE_SIZE := 15936k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),64k(pri-data)ro,64k(art)ro,-(firmware)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) |\
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += e600g-v2-16M
+
+define Device/e600g-v2-8M
+  $(Device/e600g-v2-16M)
+  DEVICE_TITLE := Qxwlan E600G v2 (8MB flash)
+  IMAGE_SIZE := 7744k
+endef
+TARGET_DEVICES += e600g-v2-8M
+
+define Device/e600gac-v2-16M
+  DEVICE_TITLE := Qxwlan E600GAC v2 (16MB flash)
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca9887 kmod-usb-core \
+	kmod-usb2 -swconfig
+  BOARDNAME := E600GAC-V2
+  SUPPORTED_DEVICES := e600gac-v2
+  IMAGE_SIZE := 15936k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),64k(pri-data)ro,64k(art)ro,-(firmware)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) |\
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += e600gac-v2-16M
+
+define Device/e600gac-v2-8M
+  $(Device/e600gac-v2-16M)
+  DEVICE_TITLE := Qxwlan E600GAC v2 (8MB flash)
+  IMAGE_SIZE := 7744k
+endef
+TARGET_DEVICES += e600gac-v2-8M
+
+define Device/ew-balin
+  DEVICE_TITLE := Embedded Wireless Balin Platform
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb-chipidea
+  BOARDNAME := EW-BALIN
+  IMAGE_SIZE := 16000k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),16000k(firmware),64k(art)ro
+endef
+TARGET_DEVICES += ew-balin
+
+define Device/ew-dorin
+  $(Device/ew-balin)
+  DEVICE_TITLE := Embedded Wireless Dorin Platform
+  BOARDNAME := EW-DORIN
+  CONSOLE := ttyATH0,115200
+endef
+TARGET_DEVICES += ew-dorin
+
+define Device/ew-dorin-router
+  $(Device/ew-dorin)
+  DEVICE_TITLE := Embedded Wireless Dorin Router Platform
+  BOARDNAME := EW-DORIN-ROUTER
+endef
+TARGET_DEVICES += ew-dorin-router
+
+define Device/rme-eg200
+  DEVICE_TITLE := eTactica EG-200
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ledtrig-oneshot \
+	kmod-usb-serial kmod-usb-serial-ftdi \
+	kmod-usb-storage \
+	kmod-fs-ext4
+  BOARDNAME := RME-EG200
+  IMAGE_SIZE := 16000k
+  CONSOLE := ttyATH0,115200
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,16000k(firmware),64k(art)ro
+endef
+TARGET_DEVICES += rme-eg200
+
 define Device/weio
   DEVICE_TITLE := WeIO
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2
@@ -267,6 +448,32 @@ define Device/gl-ar300m
 endef
 TARGET_DEVICES += gl-ar300m
 
+define Device/gl-ar750
+  DEVICE_TITLE := GL.iNet GL-AR750
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca9887 kmod-usb-core \
+	kmod-usb2 kmod-usb-storage
+  BOARDNAME := GL-AR750
+  SUPPORTED_DEVICES := gl-ar750
+  IMAGE_SIZE := 16000k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),64k(art)ro,-(firmware)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += gl-ar750
+
+define Device/gl-ar750s
+  DEVICE_TITLE := GL.iNet GL-AR750S
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca9887 kmod-usb-core \
+	kmod-usb2 kmod-usb-storage
+  BOARDNAME := GL-AR750S
+  SUPPORTED_DEVICES := gl-ar750s
+  IMAGE_SIZE := 16000k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),64k(art)ro,-(firmware)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += gl-ar750s
+
 define Device/gl-domino
   DEVICE_TITLE := GL.iNet Domino Pi
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2
@@ -295,10 +502,23 @@ define Device/gl-usb150
   CONSOLE := ttyATH0,115200
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,16000k(firmware),64k(art)ro
   SUPPORTED_DEVICES := gl-usb150
-  IMAGE/sysupgrade.bin = append-kernel | pad-to $$$$(BLOCKSIZE) | \
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
 	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
 endef
 TARGET_DEVICES += gl-usb150
+
+define Device/lan-turtle
+  $(Device/tplink-16mlzma)
+  DEVICE_TITLE := Hak5 LAN Turtle
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage \
+	-kmod-ath9k -swconfig -uboot-envtools -wpad-mini
+  BOARDNAME := LAN-TURTLE
+  DEVICE_PROFILE := LANTURTLE
+  TPLINK_HWID := 0x5348334c
+  CONSOLE := ttyATH0,115200
+  IMAGES := sysupgrade.bin
+endef
+TARGET_DEVICES += lan-turtle
 
 define Device/lima
   DEVICE_TITLE := 8devices Lima
@@ -321,13 +541,23 @@ define Device/mr12
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to $$$$(ROOTFS_SIZE) | append-kernel | check-size $$$$(IMAGE_SIZE)
   IMAGES := kernel.bin rootfs.bin sysupgrade.bin
 endef
+TARGET_DEVICES += mr12
 
 define Device/mr16
   $(Device/mr12)
   DEVICE_TITLE := Meraki MR16
   BOARDNAME := MR16
 endef
-TARGET_DEVICES += mr12 mr16
+TARGET_DEVICES += mr16
+
+define Device/dr342
+  DEVICE_TITLE := Wallys DR342
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 -swconfig
+  BOARDNAME := DR342
+  IMAGE_SIZE := 16000k
+  MTDPARTS := spi0.0:192k(u-boot)ro,64k(u-boot-env),64k(partition-table)ro,16000k(firmware),64k(art)ro
+endef
+TARGET_DEVICES += dr342
 
 define Device/dr344
   DEVICE_TITLE := Wallys DR344
@@ -338,7 +568,6 @@ define Device/dr344
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,6336k(rootfs),1408k(kernel),64k(nvram),64k(art)ro,7744k@0x50000(firmware)
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to $$$$(ROOTFS_SIZE) | append-kernel | check-size $$$$(IMAGE_SIZE)
 endef
-TARGET_DEVICES += dr344
 
 define Device/dr531
   DEVICE_TITLE := Wallys DR531
@@ -364,6 +593,7 @@ define Device/wndr3700
   IMAGE/factory.img := $$(IMAGE/default) | netgear-dni | check-size $$$$(IMAGE_SIZE)
   IMAGE/factory-NA.img := $$(IMAGE/default) | netgear-dni NA | check-size $$$$(IMAGE_SIZE)
 endef
+TARGET_DEVICES += wndr3700
 
 define Device/wndr3700v2
   $(Device/wndr3700)
@@ -375,6 +605,7 @@ define Device/wndr3700v2
   MTDPARTS := spi0.0:320k(u-boot)ro,128k(u-boot-env)ro,15872k(firmware),64k(art)ro
   IMAGES := sysupgrade.bin factory.img
 endef
+TARGET_DEVICES += wndr3700v2
 
 define Device/wndr3800
   $(Device/wndr3700v2)
@@ -382,25 +613,28 @@ define Device/wndr3800
   NETGEAR_BOARD_ID := WNDR3800
   NETGEAR_HW_ID := 29763654+16+128
 endef
+TARGET_DEVICES += wndr3800
 
 define Device/wndr3800ch
   $(Device/wndr3800)
   DEVICE_TITLE := NETGEAR WNDR3800 (Ch)
   NETGEAR_BOARD_ID := WNDR3800CH
 endef
+TARGET_DEVICES += wndr3800ch
 
 define Device/wndrmac
   $(Device/wndr3700v2)
   DEVICE_TITLE := NETGEAR WNDRMAC
   NETGEAR_BOARD_ID := WNDRMAC
 endef
+TARGET_DEVICES += wndrmac
 
 define Device/wndrmacv2
   $(Device/wndr3800)
   DEVICE_TITLE := NETGEAR WNDRMAC v2
   NETGEAR_BOARD_ID := WNDRMACv2
 endef
-TARGET_DEVICES += wndr3700 wndr3700v2 wndr3800 wndr3800ch wndrmac wndrmacv2
+TARGET_DEVICES += wndrmacv2
 
 define Device/cap324
   DEVICE_TITLE := PowerCloud CAP324 Cloud AP
@@ -458,6 +692,19 @@ define Device/cr5000-nocloud
 endef
 TARGET_DEVICES += cr5000-nocloud
 
+define Device/packet-squirrel
+  $(Device/tplink-16mlzma)
+  DEVICE_TITLE := Hak5 Packet Squirrel
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 \
+	-kmod-ath9k -swconfig -uboot-envtools -wpad-mini
+  BOARDNAME := PACKET-SQUIRREL
+  DEVICE_PROFILE := PACKETSQUIRREL
+  TPLINK_HWID := 0x5351524c
+  CONSOLE := ttyATH0,115200
+  IMAGES := sysupgrade.bin
+endef
+TARGET_DEVICES += packet-squirrel
+
 define Device/pqi-air-pen
   DEVICE_TITLE := PQI Air Pen
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage
@@ -477,6 +724,7 @@ define Device/antminer-s1
   TPLINK_HWID := 0x04440101
   CONSOLE := ttyATH0,115200
 endef
+TARGET_DEVICES += antminer-s1
 
 define Device/antminer-s3
   $(Device/tplink-8mlzma)
@@ -487,6 +735,7 @@ define Device/antminer-s3
   TPLINK_HWID := 0x04440301
   CONSOLE := ttyATH0,115200
 endef
+TARGET_DEVICES += antminer-s3
 
 define Device/antrouter-r1
   $(Device/tplink-8mlzma)
@@ -497,6 +746,7 @@ define Device/antrouter-r1
   TPLINK_HWID := 0x44440101
   CONSOLE := ttyATH0,115200
 endef
+TARGET_DEVICES += antrouter-r1
 
 define Device/el-m150
   $(Device/tplink-8mlzma)
@@ -507,6 +757,7 @@ define Device/el-m150
   TPLINK_HWID := 0x01500101
   CONSOLE := ttyATH0,115200
 endef
+TARGET_DEVICES += el-m150
 
 define Device/el-mini
   $(Device/tplink-8mlzma)
@@ -517,7 +768,7 @@ define Device/el-mini
   TPLINK_HWID := 0x01530001
   CONSOLE := ttyATH0,115200
 endef
-TARGET_DEVICES += antminer-s1 antminer-s3 antrouter-r1 el-m150 el-mini
+TARGET_DEVICES += el-mini
 
 define Device/gl-inet-6408A-v1
   $(Device/tplink-8mlzma)
@@ -528,6 +779,7 @@ define Device/gl-inet-6408A-v1
   TPLINK_HWID := 0x08000001
   CONSOLE := ttyATH0,115200
 endef
+TARGET_DEVICES += gl-inet-6408A-v1
 
 define Device/gl-inet-6416A-v1
   $(Device/tplink-16mlzma)
@@ -538,7 +790,7 @@ define Device/gl-inet-6416A-v1
   TPLINK_HWID := 0x08000001
   CONSOLE := ttyATH0,115200
 endef
-TARGET_DEVICES += gl-inet-6408A-v1 gl-inet-6416A-v1
+TARGET_DEVICES += gl-inet-6416A-v1
 
 define Device/jwap230
   DEVICE_TITLE := jjPlus JWAP230
@@ -549,6 +801,30 @@ define Device/jwap230
 endef
 TARGET_DEVICES += jwap230
 
+define Device/k2t
+  DEVICE_TITLE := Phicomm K2T A1/A2/A3 board (16MB flash)
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-ath10k ath10k-firmware-qca9888
+  BOARDNAME := K2T
+  IMAGE_SIZE := 15744k
+  MTDPARTS := spi0.0:192k(u-boot)ro,64k(config)ro,320k(permanent),15744k(firmware),64k(art)ro
+  SUPPORTED_DEVICES := k2t
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += k2t
+
+define Device/r36a
+  DEVICE_TITLE := ALFA Network R36A
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport -swconfig
+  BOARDNAME := R36A
+  SUPPORTED_DEVICES := r36a
+  IMAGE_SIZE := 15872k
+  MTDPARTS := spi0.0:384k(u-boot)ro,64k(u-boot-env),64k(art)ro,-(firmware)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += r36a
+
 define Device/r602n
   DEVICE_TITLE := P&W R602N
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2
@@ -558,15 +834,27 @@ define Device/r602n
 endef
 TARGET_DEVICES += r602n
 
-define Device/rnx-n360rt
-  $(Device/tplink-4m)
-  DEVICE_TITLE := Rosewill RNX-N360RT
-  BOARDNAME := TL-WR941ND
-  DEVICE_PROFILE := RNXN360RT
-  TPLINK_HWID := 0x09410002
-  TPLINK_HWREV := 0x00420001
+define Device/rut900
+  DEVICE_TITLE := Teltonika RUT900
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 -uboot-envtools
+  BOARDNAME := RUT900
+  SUPPORTED_DEVICES := rut900
+  IMAGE_SIZE := 15552k
+  MTDPARTS := spi0.0:128k(u-boot)ro,64k(config)ro,64k(art)ro,15552k(firmware),576k(event-log)ro
+  TPLINK_HWID := 0x35000001
+  TPLINK_HWREV := 0x1
+  TPLINK_HEADER_VERSION := 1
+  KERNEL := kernel-bin | patch-cmdline | lzma | tplink-v1-header
+  KERNEL_INITRAMFS := kernel-bin | patch-cmdline | lzma | uImage lzma
+  IMAGES := sysupgrade.bin factory.bin
+  IMAGE/factory.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs |\
+	pad-rootfs | teltonika-fw-fake-checksum | append-string master |\
+	append-md5sum-bin | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) |\
+	append-rootfs | pad-rootfs | append-metadata |\
+	check-size $$$$(IMAGE_SIZE)
 endef
-TARGET_DEVICES += rnx-n360rt
+TARGET_DEVICES += rut900
 
 define Device/mc-mac1200r
   $(Device/tplink-8mlzma)
@@ -580,14 +868,43 @@ TARGET_DEVICES += mc-mac1200r
 
 define Device/minibox-v1
   $(Device/tplink-16mlzma)
-  DEVICE_TITLE := Gainstrong MiniBox V1.0
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2  kmod-usb-ledtrig-usbport
+  DEVICE_TITLE := GainStrong MiniBox V1.0
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
   BOARDNAME := MINIBOX-V1
   DEVICE_PROFILE := MINIBOXV1
   TPLINK_HWID := 0x3C000201
   CONSOLE := ttyATH0,115200
+  IMAGES := sysupgrade.bin
 endef
 TARGET_DEVICES += minibox-v1
+
+define Device/oolite-v1
+  $(Device/minibox-v1)
+  DEVICE_TITLE := GainStrong Oolite V1.0
+  BOARDNAME := OOLITE-V1
+  DEVICE_PROFILE := OOLITEV1
+  TPLINK_HWID := 0x3C000101
+endef
+TARGET_DEVICES += oolite-v1
+
+define Device/oolite-v5.2
+  $(Device/tplink-16mlzma)
+  DEVICE_TITLE := GainStrong Oolite V5.2
+  DEVICE_PACKAGES := ath10k-firmware-qca9887 kmod-ath10k kmod-usb-core kmod-usb2
+  BOARDNAME := OOLITE-V5-2
+  DEVICE_PROFILE := OOLITEV52
+  TPLINK_HWID := 0x3C00010B
+  IMAGES := sysupgrade.bin
+endef
+TARGET_DEVICES += oolite-v5.2
+
+define Device/oolite-v5.2-dev
+  $(Device/oolite-v5.2)
+  DEVICE_TITLE := GainStrong Oolite V5.2-Dev (development board)
+  BOARDNAME := OOLITE-V5-2-DEV
+  DEVICE_PROFILE := OOLITEV52DEV
+endef
+TARGET_DEVICES += oolite-v5.2-dev
 
 define Device/omy-g1
   $(Device/tplink-16mlzma)
@@ -597,6 +914,7 @@ define Device/omy-g1
   DEVICE_PROFILE := OMYG1
   TPLINK_HWID := 0x06660101
 endef
+TARGET_DEVICES += omy-g1
 
 define Device/omy-x1
   $(Device/tplink-8mlzma)
@@ -605,7 +923,7 @@ define Device/omy-x1
   DEVICE_PROFILE := OMYX1
   TPLINK_HWID := 0x06660201
 endef
-TARGET_DEVICES += omy-g1 omy-x1
+TARGET_DEVICES += omy-x1
 
 define Device/onion-omega
   $(Device/tplink-16mlzma)
@@ -682,6 +1000,18 @@ define Device/xd3200
 endef
 TARGET_DEVICES += xd3200
 
+define Device/t830
+  DEVICE_TITLE := YunCore T830
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
+  BOARDNAME := T830
+  IMAGE_SIZE := 16000k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),16000k(firmware),64k(art)ro
+  SUPPORTED_DEVICES := t830
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) |\
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += t830
+
 define Device/tellstick-znet-lite
   $(Device/tplink-16mlzma)
   DEVICE_TITLE := TellStick ZNet Lite
@@ -693,16 +1023,28 @@ define Device/tellstick-znet-lite
 endef
 TARGET_DEVICES += tellstick-znet-lite
 
-define Device/oolite
-  $(Device/tplink-16mlzma)
-  DEVICE_TITLE := Gainstrong OOLITE
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
-  BOARDNAME := GS-OOLITE
-  DEVICE_PROFILE := OOLITE
-  TPLINK_HWID := 0x3C000101
+define Device/ts-d084
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := PISEN TS-D084
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
+  BOARDNAME := TS-D084
+  DEVICE_PROFILE := TSD084
+  TPLINK_HWID := 0x07030101
   CONSOLE := ttyATH0,115200
 endef
-TARGET_DEVICES += oolite
+TARGET_DEVICES += ts-d084
+
+define Device/n5q
+  DEVICE_TITLE := ALFA Network N5Q
+  DEVICE_PACKAGES := rssileds -swconfig
+  BOARDNAME := N5Q
+  SUPPORTED_DEVICES := n5q
+  IMAGE_SIZE := 15872k
+  MTDPARTS := spi0.0:384k(u-boot)ro,64k(u-boot-env),64k(art)ro,-(firmware)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += n5q
 
 define Device/NBG6616
   DEVICE_TITLE := ZyXEL NBG6616
@@ -798,6 +1140,7 @@ define Device/dir-869-a1
 	seama | seama-seal -m "signature=$$$$(SEAMA_SIGNATURE)" | \
 	check-size $$$$(IMAGE_SIZE)
 endef
+TARGET_DEVICES += dir-869-a1
 
 define Device/mynet-n600
   $(Device/seama)
@@ -808,6 +1151,7 @@ define Device/mynet-n600
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,64k(devdata)ro,64k(devconf)ro,15872k(firmware),64k(radiocfg)ro
   SEAMA_SIGNATURE := wrgnd16_wd_db600
 endef
+TARGET_DEVICES += mynet-n600
 
 define Device/mynet-n750
   $(Device/seama)
@@ -818,6 +1162,7 @@ define Device/mynet-n750
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,64k(devdata)ro,64k(devconf)ro,15872k(firmware),64k(radiocfg)ro
   SEAMA_SIGNATURE := wrgnd13_wd_av
 endef
+TARGET_DEVICES += mynet-n750
 
 define Device/qihoo-c301
   $(Device/seama)
@@ -828,7 +1173,19 @@ define Device/qihoo-c301
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),64k(devdata),64k(devconf),15744k(firmware),64k(warm_start),64k(action_image_config),64k(radiocfg)ro;spi0.1:15360k(upgrade2),1024k(privatedata)
   SEAMA_SIGNATURE := wrgac26_qihoo360_360rg
 endef
-TARGET_DEVICES += dir-869-a1 mynet-n600 mynet-n750 qihoo-c301
+TARGET_DEVICES += qihoo-c301
+
+define Device/dap-1330-a1
+  DEVICE_TITLE := D-Link DAP-1330 rev. A1
+  DEVICE_PACKAGES := rssileds
+  BOARDNAME := DAP-1330-A1
+  IMAGES := factory.img sysupgrade.bin
+  IMAGE_SIZE := 7936k
+  IMAGE/factory.img := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | check-size $$$$(IMAGE_SIZE) | mkdapimg2 917504
+  MTDPARTS := spi0.0:64k(u-boot)ro,64k(art)ro,64k(mp)ro,64k(config)ro,7936k(firmware)
+  DAP_SIGNATURE := HONEYBEE-FIRMWARE-DAP-1330
+endef
+TARGET_DEVICES += dap-1330-a1
 
 define Device/dap-2695-a1
   DEVICE_TITLE := D-Link DAP-2695 rev. A1
@@ -858,6 +1215,41 @@ define Device/bhr-4grv2
 endef
 TARGET_DEVICES += bhr-4grv2
 
+define Device/wam250
+  DEVICE_TITLE := Samsung WAM250
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 -swconfig
+  BOARDNAME := WAM250
+  IMAGE_SIZE := 15872k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),128k(nvram)ro,15872k(firmware),64k(art)ro
+  SUPPORTED_DEVICES := wam250
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) |\
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += wam250
+
+define Device/wifi-pineapple-nano
+  $(Device/tplink-16mlzma)
+  DEVICE_TITLE := Hak5 WiFi Pineapple NANO
+  DEVICE_PACKAGES := kmod-ath9k-htc kmod-usb-core kmod-usb2 kmod-usb-storage \
+	-swconfig -uboot-envtools
+  BOARDNAME := WIFI-PINEAPPLE-NANO
+  DEVICE_PROFILE := WIFIPINEAPPLENANO
+  TPLINK_HWID := 0x4e414e4f
+  CONSOLE := ttyATH0,115200
+  IMAGES := sysupgrade.bin
+endef
+TARGET_DEVICES += wifi-pineapple-nano
+
+define Device/wlr8100
+  DEVICE_TITLE := Sitecom WLR-8100
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport kmod-usb3 \
+	kmod-ath10k ath10k-firmware-qca988x
+  BOARDNAME := WLR8100
+  IMAGE_SIZE := 15424k
+  MTDPARTS := spi0.0:192k(u-boot)ro,64k(u-boot-env)ro,15424k(firmware),256k(manufacture)ro,64k(backup)ro,320k(storage)ro,64k(art)ro
+endef
+TARGET_DEVICES += wlr8100
+
 define Device/wpj-16m
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
   MTDPARTS := spi0.0:192k(u-boot)ro,16128k(firmware),64k(art)ro
@@ -869,6 +1261,7 @@ define Device/wpj342
   DEVICE_TITLE := Compex WPJ342 (16MB flash)
   BOARDNAME := WPJ342
 endef
+TARGET_DEVICES += wpj342
 
 define Device/wpj344
   $(Device/wpj-16m)
@@ -878,12 +1271,14 @@ define Device/wpj344
   IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
 	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
 endef
+TARGET_DEVICES += wpj344
 
 define Device/wpj531
   $(Device/wpj-16m)
   DEVICE_TITLE := Compex WPJ531 (16MB flash)
   BOARDNAME := WPJ531
 endef
+TARGET_DEVICES += wpj531
 
 define Device/wpj558
   $(Device/wpj-16m)
@@ -893,13 +1288,14 @@ define Device/wpj558
   IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
 	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
 endef
+TARGET_DEVICES += wpj558
 
 define Device/wpj563
   $(Device/wpj-16m)
   DEVICE_TITLE := Compex WPJ563 (16MB flash)
   BOARDNAME := WPJ563
 endef
-TARGET_DEVICES += wpj342 wpj344 wpj531 wpj558 wpj563
+TARGET_DEVICES += wpj563
 
 define Device/wrtnode2q
   DEVICE_TITLE := WRTnode2Q
@@ -922,15 +1318,31 @@ define Device/zbt-we1526
 endef
 TARGET_DEVICES += zbt-we1526
 
-define Device/fritz300e
-  DEVICE_TITLE := AVM FRITZ!WLAN Repeater 300E
-  DEVICE_PACKAGES := fritz-tffs rssileds -swconfig -uboot-envtools
-  BOARDNAME := FRITZ300E
-  SUPPORTED_DEVICES := fritz300e
-  IMAGE_SIZE := 15232k
+define Device/AVM
+  DEVICE_PACKAGES := fritz-tffs -uboot-envtools
   KERNEL := kernel-bin | patch-cmdline | lzma | eva-image
+  KERNEL_INITRAMFS := $$(KERNEL)
   IMAGE/sysupgrade.bin := append-kernel | pad-to 64k | \
 	append-squashfs-fakeroot-be | pad-to 256 | \
 	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
 endef
+
+define Device/fritz300e
+  $(call Device/AVM)
+  DEVICE_TITLE := AVM FRITZ!WLAN Repeater 300E
+  DEVICE_PACKAGES += rssileds -swconfig
+  BOARDNAME := FRITZ300E
+  SUPPORTED_DEVICES := fritz300e
+  IMAGE_SIZE := 15232k
+endef
 TARGET_DEVICES += fritz300e
+
+define Device/fritz4020
+  $(call Device/AVM)
+  DEVICE_TITLE := AVM FRITZ!Box 4020
+  DEVICE_PACKAGES += kmod-usb-core kmod-usb2 kmod-usb-storage
+  BOARDNAME := FRITZ4020
+  SUPPORTED_DEVICES := fritz4020
+  IMAGE_SIZE := 15232k
+endef
+TARGET_DEVICES += fritz4020

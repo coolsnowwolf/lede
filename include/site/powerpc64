@@ -1,0 +1,26 @@
+#!/bin/sh
+. $TOPDIR/include/site/linux
+ac_cv_c_littleendian=${ac_cv_c_littleendian=no}
+ac_cv_c_bigendian=${ac_cv_c_bigendian=yes}
+
+ac_cv_sizeof_char=1
+ac_cv_sizeof_char_p=8
+ac_cv_sizeof_double=8
+ac_cv_sizeof_float=4
+ac_cv_sizeof_int=4
+ac_cv_sizeof_long=8
+ac_cv_sizeof_long_double=16
+ac_cv_sizeof_long_int=8
+ac_cv_sizeof_long_long=8
+ac_cv_sizeof_long_long_int=8
+ac_cv_sizeof_short=2
+ac_cv_sizeof_short_int=2
+ac_cv_sizeof_signed_char=1
+ac_cv_sizeof_unsigned_char=1
+ac_cv_sizeof_unsigned_int=4
+ac_cv_sizeof_unsigned_long=8
+ac_cv_sizeof_unsigned_long_int=8
+ac_cv_sizeof_unsigned_long_long_int=8
+ac_cv_sizeof_unsigned_short=2
+ac_cv_sizeof_unsigned_short_int=2
+ac_cv_sizeof_void_p=8

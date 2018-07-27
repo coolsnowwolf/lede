@@ -18,10 +18,8 @@ ifndef IB
 endif
 
 include $(INCLUDE_DIR)/image-legacy.mk
-
-ifdef TARGET_PER_DEVICE_ROOTFS
-  include $(INCLUDE_DIR)/rootfs.mk
-endif
+include $(INCLUDE_DIR)/feeds.mk
+include $(INCLUDE_DIR)/rootfs.mk
 
 override MAKE:=$(_SINGLE)$(SUBMAKE)
 override NO_TRACE_MAKE:=$(_SINGLE)$(NO_TRACE_MAKE)
@@ -136,12 +134,13 @@ endef
 
 define Image/BuildKernel/MkuImage
 	mkimage -A $(ARCH) -O linux -T kernel -C $(1) -a $(2) -e $(3) \
-		-n '$(call toupper,$(ARCH)) LEDE Linux-$(LINUX_VERSION)' -d $(4) $(5)
+		-n '$(call toupper,$(ARCH)) $(VERSION_DIST) Linux-$(LINUX_VERSION)' -d $(4) $(5)
 endef
 
 define Image/BuildKernel/MkFIT
 	$(TOPDIR)/scripts/mkits.sh \
 		-D $(1) -o $(KDIR)/fit-$(1).its -k $(2) $(if $(3),-d $(3)) -C $(4) -a $(5) -e $(6) \
+		-c $(if $(DEVICE_DTS_CONFIG),$(DEVICE_DTS_CONFIG),"config@1") \
 		-A $(LINUX_KARCH) -v $(LINUX_VERSION)
 	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage -f $(KDIR)/fit-$(1).its $(KDIR)/fit-$(1)$(7).itb
 endef
@@ -161,6 +160,7 @@ define Image/BuildDTB
 	$(TARGET_CROSS)cpp -nostdinc -x assembler-with-cpp \
 		-I$(DTS_DIR) \
 		-I$(DTS_DIR)/include \
+		-I$(LINUX_DIR)/include/ \
 		-undef -D__DTS__ $(3) \
 		-o $(2).tmp $(1)
 	$(LINUX_DIR)/scripts/dtc/dtc -O dtb \
@@ -260,10 +260,7 @@ define Image/mkfs/ext4
 endef
 
 define Image/Manifest
-	$(STAGING_DIR_HOST)/bin/opkg \
-		--offline-root $(TARGET_DIR) \
-		--add-arch all:100 \
-		--add-arch $(if $(ARCH_PACKAGES),$(ARCH_PACKAGES),$(BOARD)):200 list-installed > \
+	$(call opkg,$(TARGET_DIR_ORIG)) list-installed > \
 		$(BIN_DIR)/$(IMG_PREFIX)$(if $(PROFILE_SANITIZED),-$(PROFILE_SANITIZED)).manifest
 endef
 
@@ -302,9 +299,9 @@ target-dir-%: FORCE
 		$(opkg_target) update && \
 		$(opkg_target) install \
 			$(call opkg_package_files,$(mkfs_packages_add)))
-	$(call prepare_rootfs,$(mkfs_cur_target_dir))
-	-mv $(mkfs_cur_target_dir).opkg $(mkfs_cur_target_dir)/etc/opkg
-	rm -f $(mkfs_cur_target_dir).conf
+	-$(CP) -T $(mkfs_cur_target_dir).opkg/ $(mkfs_cur_target_dir)/etc/opkg/
+	rm -rf $(mkfs_cur_target_dir).opkg $(mkfs_cur_target_dir).conf
+	$(call prepare_rootfs,$(mkfs_cur_target_dir),$(TOPDIR)/files)
 
 $(KDIR)/root.%: kernel_prepare
 	$(call Image/mkfs/$(word 1,$(target_params)),$(target_params))
@@ -351,6 +348,7 @@ define Device/Init
   FS_OPTIONS/ubifs = $$(MKUBIFS_OPTS)
 
   DEVICE_DTS :=
+  DEVICE_DTS_CONFIG :=
   DEVICE_DTS_DIR :=
 
   BOARD_NAME :=
@@ -363,8 +361,8 @@ endef
 
 DEFAULT_DEVICE_VARS := \
   DEVICE_NAME KERNEL KERNEL_INITRAMFS KERNEL_SIZE KERNEL_INITRAMFS_IMAGE \
-  KERNEL_LOADADDR DEVICE_DTS DEVICE_DTS_DIR BOARD_NAME CMDLINE \
-  UBOOTENV_IN_UBI KERNEL_IN_UBI \
+  KERNEL_LOADADDR DEVICE_DTS DEVICE_DTS_CONFIG DEVICE_DTS_DIR BOARD_NAME \
+  CMDLINE UBOOTENV_IN_UBI KERNEL_IN_UBI \
   BLOCKSIZE PAGESIZE SUBPAGESIZE VID_HDR_OFFSET \
   UBINIZE_OPTS UIMAGE_NAME UBINIZE_PARTS \
   SUPPORTED_DEVICES IMAGE_METADATA
@@ -434,7 +432,27 @@ define Device/Build/compile
 
 endef
 
+ifndef IB
+define Device/Build/dtb
+  ifndef BUILD_DTS_$(1)
+  BUILD_DTS_$(1) := 1
+  $(KDIR)/image-$(1).dtb: FORCE
+	$(call Image/BuildDTB,$(strip $(2))/$(strip $(3)).dts,$$@)
+
+  image_prepare: $(KDIR)/image-$(1).dtb
+  endif
+
+endef
+endif
+
 define Device/Build/kernel
+  $$(eval $$(foreach dts,$$(DEVICE_DTS), \
+	$$(call Device/Build/dtb,$$(notdir $$(dts)), \
+		$$(if $$(DEVICE_DTS_DIR),$$(DEVICE_DTS_DIR),$$(DTS_DIR)), \
+		$$(dts) \
+	) \
+  ))
+
   $(KDIR)/$$(KERNEL_NAME):: image_prepare
   $$(_TARGET): $$(if $$(KERNEL_INSTALL),$(BIN_DIR)/$$(KERNEL_IMAGE))
   $(call Device/Export,$$(KDIR_KERNEL_IMAGE),$(1))

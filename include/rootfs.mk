@@ -1,5 +1,3 @@
-include $(INCLUDE_DIR)/feeds.mk
-
 ifdef CONFIG_USE_MKLIBS
   define mklibs
 	rm -rf $(TMP_DIR)/mklibs-progs $(TMP_DIR)/mklibs-out
@@ -49,17 +47,25 @@ TARGET_DIR_ORIG := $(TARGET_ROOTFS_DIR)/root.orig-$(BOARD)
 
 ifdef CONFIG_CLEAN_IPKG
   define clean_ipkg
-	-find $(1)/usr/lib/opkg -type f -and -not -name '*.control' | $(XARGS) rm -rf
+	-find $(1)/usr/lib/opkg/info -type f -and -not -name '*.control' | $(XARGS) rm -rf
 	-sed -i -ne '/^Require-User: /p' $(1)/usr/lib/opkg/info/*.control
+	awk ' \
+		BEGIN { conffiles = 0; print "Conffiles:" } \
+		/^Conffiles:/ { conffiles = 1; next } \
+		!/^ / { conffiles = 0; next } \
+		conffiles == 1 { print } \
+	' $(1)/usr/lib/opkg/status >$(1)/usr/lib/opkg/status.new
+	mv $(1)/usr/lib/opkg/status.new $(1)/usr/lib/opkg/status
 	-find $(1)/usr/lib/opkg -empty | $(XARGS) rm -rf
   endef
 endif
 
 define prepare_rootfs
-	@if [ -d $(TOPDIR)/files ]; then \
-		$(call file_copy,$(TOPDIR)/files/.,$(1)); \
-	fi
+	$(if $(2),@if [ -d '$(2)' ]; then \
+		$(call file_copy,$(2)/.,$(1)); \
+	fi)
 	@mkdir -p $(1)/etc/rc.d
+	@mkdir -p $(1)/var/lock
 	@( \
 		cd $(1); \
 		for script in ./usr/lib/opkg/info/*.postinst; do \
@@ -83,7 +89,7 @@ define prepare_rootfs
 	rm -rf $(1)/tmp/*
 	rm -f $(1)/usr/lib/opkg/lists/*
 	rm -f $(1)/usr/lib/opkg/info/*.postinst*
-	rm -f $(1)/usr/lib/opkg/info/*.prerm*
+	rm -f $(1)/var/lock/*.lock
 	$(call clean_ipkg,$(1))
 	$(call mklibs,$(1))
 endef

@@ -5,13 +5,11 @@ include $(TOPDIR)/rules.mk
 ARCH:=arm
 BOARD:=mediatek
 BOARDNAME:=MediaTek Ralink ARM
-SUBTARGETS:=32
-FEATURES:=squashfs nand ubifs
+SUBTARGETS:=mt7622 mt7623
+FEATURES:=squashfs nand ramdisk fpu
 MAINTAINER:=John Crispin <john@phrozen.org>
 
-KERNEL_PATCHVER:=4.9
-
-KERNELNAME:=Image dtbs zImage
+KERNEL_PATCHVER:=4.14
 
 include $(INCLUDE_DIR)/target.mk
 DEFAULT_PACKAGES += \

@@ -98,6 +98,27 @@ ubnt_xm_board_detect() {
 	[ -z "$model" ] || AR71XX_MODEL="${model}${magic:3:1}"
 }
 
+ubnt_ac_lite_get_mtd_part_magic() {
+	ar71xx_get_mtd_offset_size_format EEPROM 12 2 %02x
+}
+
+ubnt_ac_lite_board_detect() {
+	local model
+	local magic
+
+	magic="$(ubnt_ac_lite_get_mtd_part_magic)"
+	case ${magic:0:4} in
+	"e517")
+		model="Ubiquiti UniFi-AC-LITE"
+		;;
+	"e557")
+		model="Ubiquiti UniFi-AC-MESH"
+		;;
+	esac
+
+	[ -z "$model" ] || AR71XX_MODEL="${model}"
+}
+
 cybertan_get_hw_magic() {
 	local part
 
@@ -215,6 +236,9 @@ tplink_board_detect() {
 
 		[ "$hwid" = '08020002' -a "$mid" = '00000002' ] && hwver=' v2'
 		;;
+	"081000"*)
+		model="TP-Link TL-WR810N"
+		;;
 	"083000"*)
 		model="TP-Link TL-WA830RE"
 
@@ -287,12 +311,6 @@ tplink_board_detect() {
 	"360000"*)
 		model="TP-Link TL-WDR3600"
 		;;
-	"3C0001"*)
-		model="OOLITE"
-		;;
-	"3C0002"*)
-		model="MINIBOX_V1"
-		;;
 	"430000"*)
 		model="TP-Link TL-WDR4300"
 		;;
@@ -314,6 +332,9 @@ tplink_board_detect() {
 		;;
 	"640000"*)
 		model="TP-Link TL-MR6400"
+		;;
+	"65010007")
+		model="TP-Link TL-WDX6501"
 		;;
 	"65000002")
 		model="TP-Link TL-WDR6500"
@@ -437,6 +458,12 @@ ar71xx_board_detect() {
 	*"AP147-010 reference board")
 		name="ap147-010"
 		;;
+	*"AC9531-010 reference board")
+		name="ac9531-010"
+		;;
+	*"AC9531-020 reference board")
+		name="ac9531-020"
+		;;
 	*"AP152 reference board")
 		name="ap152"
 		;;
@@ -446,11 +473,17 @@ ar71xx_board_detect() {
 	*"AP90Q")
 		name="ap90q"
 		;;
+	*"AP91-5G")
+		name="ap91-5g"
+		;;
 	*"Archer C25 v1")
 		name="archer-c25-v1"
 		;;
 	*"Archer C5")
 		name="archer-c5"
+		;;
+	*"Archer C7 v4")
+		name="archer-c7-v4"
 		;;
 	*"Archer C58 v1")
 		name="archer-c58-v1"
@@ -460,6 +493,9 @@ ar71xx_board_detect() {
 		;;
 	*"Archer C60 v1")
 		name="archer-c60-v1"
+		;;
+	*"Archer C60 v2")
+		name="archer-c60-v2"
 		;;
 	*"Archer C7")
 		name="archer-c7"
@@ -507,14 +543,23 @@ ar71xx_board_detect() {
 	*"CF-E320N v2")
 		name="cf-e320n-v2"
 		;;
-	*"CF-E355AC")
-		name="cf-e355ac"
+	*"CF-E355AC v1")
+		name="cf-e355ac-v1"
+		;;
+	*"CF-E355AC v2")
+		name="cf-e355ac-v2"
+		;;
+	*"CF-E375AC")
+		name="cf-e375ac"
 		;;
 	*"CF-E380AC v1")
 		name="cf-e380ac-v1"
 		;;
 	*"CF-E380AC v2")
 		name="cf-e380ac-v2"
+		;;
+	*"CF-E385AC")
+		name="cf-e385ac"
 		;;
 	*"CF-E520N")
 		name="cf-e520n"
@@ -544,6 +589,9 @@ ar71xx_board_detect() {
 		;;
 	*"CR5000")
 		name="cr5000"
+		;;
+	*"DAP-1330 Rev. A1")
+		name="dap-1330-a1"
 		;;
 	*"DAP-2695 rev. A1")
 		name="dap-2695-a1"
@@ -600,6 +648,9 @@ ar71xx_board_detect() {
 	*"Domino Pi")
 		name="gl-domino"
 		;;
+	*"DR342")
+		name="dr342"
+		;;
 	*"DR344")
 		name="dr344"
 		;;
@@ -612,8 +663,17 @@ ar71xx_board_detect() {
 	*"DW33D")
 		name="dw33d"
 		;;
+	*"E1700AC v2")
+		name="e1700ac-v2"
+		;;
 	*"E2100L")
 		name="e2100l"
+		;;
+	*"E600G v2")
+		name="e600g-v2"
+		;;
+	*"E600GAC v2")
+		name="e600gac-v2"
 		;;
 	*"EAP120")
 		name="eap120"
@@ -634,6 +694,9 @@ ar71xx_board_detect() {
 	*"EL-MINI")
 		name="el-mini"
 		;;
+	*"EmbWir-Balin")
+		name="ew-balin"
+		;;
 	*"EmbWir-Dorin")
 		name="ew-dorin"
 		;;
@@ -652,17 +715,29 @@ ar71xx_board_detect() {
 	*"ESR900")
 		name="esr900"
 		;;
+	*"eTactica EG-200")
+		name="rme-eg200"
+		;;
+	*"FRITZ!Box 4020")
+		name="fritz4020"
+		;;
 	*"FRITZ!WLAN Repeater 300E")
 		name="fritz300e"
 		;;
-	*"GL AR150")
+	*"GL-AR150")
 		name="gl-ar150"
 		;;
-	*"GL AR300")
+	*"GL-AR300")
 		name="gl-ar300"
 		;;
 	*"GL-AR300M")
 		name="gl-ar300m"
+		;;
+	*"GL-AR750")
+		name="gl-ar750"
+		;;
+	*"GL-AR750S")
+		name="gl-ar750s"
 		;;
 	*"GL-CONNECT INET v1")
 		name="gl-inet"
@@ -702,8 +777,22 @@ ar71xx_board_detect() {
 	*"JWAP230")
 		name="jwap230"
 		;;
+	*"Koala")
+		name="koala"
+		;;
+	*"K2T A1/A2/A3 board")
+		#fixup: update the machine name
+		machine=$(echo -n "$machine" | sed "s,A1/A2/A3,$(head -c400 $(find_mtd_chardev config) | grep -o hw_ver.* | cut -d\" -f3),")
+		name="k2t"
+		;;
+	*"LAN Turtle")
+		name="lan-turtle"
+		;;
 	*"Lima"*)
 		name="lima"
+		;;
+	*"Litebeam M5"*)
+		name="lbe-m5"
 		;;
 	*"Loco M XW")
 		name="loco-m-xw"
@@ -758,6 +847,9 @@ ar71xx_board_detect() {
 		;;
 	*"MZK-W300NH")
 		name="mzk-w300nh"
+		;;
+	*"N5Q")
+		name="n5q"
 		;;
 	*"Nanostation M")
 		name="nanostation-m"
@@ -821,7 +913,16 @@ ar71xx_board_detect() {
 		name="onion-omega"
 		;;
 	*"Oolite V1.0")
-		name="oolite"
+		name="oolite-v1"
+		;;
+	*"Packet Squirrel")
+		name="packet-squirrel"
+		;;
+	*"Oolite V5.2")
+		name="oolite-v5.2"
+		;;
+	*"Oolite V5.2-Dev")
+		name="oolite-v5.2-dev"
 		;;
 	*"PB42")
 		name="pb42"
@@ -835,6 +936,9 @@ ar71xx_board_detect() {
 	*"Qihoo 360 C301")
 		name="qihoo-c301"
 		;;
+	*"R36A")
+		name="r36a"
+		;;
 	*"R602N")
 		name="r602n"
 		;;
@@ -843,6 +947,9 @@ ar71xx_board_detect() {
 		;;
 	*"Rambutan"*)
 		name="rambutan"
+		;;
+	*"RE355")
+		name="re355"
 		;;
 	*"RE450")
 		name="re450"
@@ -859,6 +966,9 @@ ar71xx_board_detect() {
 		;;
 	*"RouterBOARD 2011iL")
 		name="rb-2011il"
+		;;
+	*"RouterBOARD 2011iLS")
+		name="rb-2011ils"
 		;;
 	*"RouterBOARD 2011L")
 		name="rb-2011l"
@@ -911,6 +1021,9 @@ ar71xx_board_detect() {
 	*"RouterBOARD 750GL")
 		name="rb-750gl"
 		;;
+	*"RouterBOARD 750P r2")
+		name="rb-750p-pbr2"
+		;;
 	*"RouterBOARD 750UP r2")
 		name="rb-750up-r2"
 		;;
@@ -919,6 +1032,12 @@ ar71xx_board_detect() {
 		;;
 	*"RouterBOARD 751G")
 		name="rb-751g"
+		;;
+	*"RouterBOARD 911-2Hn")
+		name="rb-911-2hn"
+		;;
+	*"RouterBOARD 911-5Hn")
+		name="rb-911-5hn"
 		;;
 	*"RouterBOARD 911G-2HPnD")
 		name="rb-911g-2hpnd"
@@ -934,6 +1053,9 @@ ar71xx_board_detect() {
 		;;
 	*"RouterBOARD 912UAG-5HPnD")
 		name="rb-912uag-5hpnd"
+		;;
+	*"RouterBOARD 921GS-5HPacD r2")
+		name="rb-921gs-5hpacd-r2"
 		;;
 	*"RouterBOARD 941-2nD")
 		name="rb-941-2nd"
@@ -956,6 +1078,9 @@ ar71xx_board_detect() {
 	*"RouterBOARD LHG 5nD")
 		name="rb-lhg-5nd"
 		;;
+	*"RouterBOARD mAP 2nD")
+		name="rb-map-2nd"
+		;;
 	*"RouterBOARD mAP L-2nD")
 		name="rb-mapl-2nd"
 		;;
@@ -965,11 +1090,20 @@ ar71xx_board_detect() {
 	*"RouterBOARD SXT Lite5")
 		name="rb-sxt5n"
 		;;
+	*"RouterBOARD wAP 2nD r2")
+		name="rb-wap-2nd"
+		;;
+	*"RouterBOARD wAP G-5HacT2HnD")
+		name="rb-wapg-5hact2hnd"
+		;;
 	*"RouterStation")
 		name="routerstation"
 		;;
 	*"RouterStation Pro")
 		name="routerstation-pro"
+		;;
+	*"RUT900")
+		name="rut900"
 		;;
 	*"RW2458N")
 		name="rw2458n"
@@ -991,6 +1125,9 @@ ar71xx_board_detect() {
 		;;
 	*"SR3200")
 		name="sr3200"
+		;;
+	*"T830")
+		name="t830"
 		;;
 	*"TellStick ZNet Lite")
 		name="tellstick-znet-lite"
@@ -1043,7 +1180,7 @@ ar71xx_board_detect() {
 	*"TL-MR3420 v2")
 		name="tl-mr3420-v2"
 		;;
-	*TL-MR6400)
+	*"TL-MR6400")
 		name="tl-mr6400"
 		;;
 	*"TL-WA701ND v2")
@@ -1091,6 +1228,9 @@ ar71xx_board_detect() {
 	*"TL-WA901ND v4")
 		name="tl-wa901nd-v4"
 		;;
+	*"TL-WA901ND v5")
+		name="tl-wa901nd-v5"
+		;;
 	*"TL-WDR3320 v2")
 		name="tl-wdr3320-v2"
 		;;
@@ -1103,6 +1243,9 @@ ar71xx_board_detect() {
 	*"TL-WDR4900 v2")
 		name="tl-wdr4900-v2"
 		;;
+	*"TL-WDX6501 v7")
+		name="tl-wdx6501-v7"
+		;;
 	*"TL-WDR6500 v2")
 		name="tl-wdr6500-v2"
 		;;
@@ -1111,6 +1254,9 @@ ar71xx_board_detect() {
 		;;
 	*"TL-WR1041N v2")
 		name="tl-wr1041n-v2"
+		;;
+	*"TL-WR1043N v5")
+		name="tl-wr1043n-v5"
 		;;
 	*"TL-WR1043ND")
 		name="tl-wr1043nd"
@@ -1151,6 +1297,9 @@ ar71xx_board_detect() {
 	*"TL-WR810N")
 		name="tl-wr810n"
 		;;
+	*"TL-WR810N v2")
+		name="tl-wr810n-v2"
+		;;
 	*"TL-WR840N v2")
 		name="tl-wr840n-v2"
 		;;
@@ -1184,6 +1333,9 @@ ar71xx_board_detect() {
 	*"TL-WR940N v4")
 		name="tl-wr940n-v4"
 		;;
+	*"TL-WR940N v6")
+		name="tl-wr940n-v6"
+		;;
 	*"TL-WR941N/ND v5")
 		name="tl-wr941nd-v5"
 		;;
@@ -1196,6 +1348,9 @@ ar71xx_board_detect() {
 	*"TL-WR942N v1")
 		name="tl-wr942n-v1"
 		;;
+	*"TS-D084")
+		name="ts-d084"
+		;;
 	*"Tube2H")
 		name="tube2h"
 		;;
@@ -1207,6 +1362,7 @@ ar71xx_board_detect() {
 		;;
 	*"UniFi-AC-LITE/MESH")
 		name="unifiac-lite"
+		ubnt_ac_lite_board_detect
 		;;
 	*"UniFi-AC-PRO")
 		name="unifiac-pro"
@@ -1216,6 +1372,9 @@ ar71xx_board_detect() {
 		;;
 	*"UniFiAP Outdoor+")
 		name="unifi-outdoor-plus"
+		;;
+	*"WAM250")
+		name="wam250"
 		;;
 	*"WBS210")
 		name="wbs210"
@@ -1228,6 +1387,9 @@ ar71xx_board_detect() {
 	"WeIO"*)
 		name="weio"
 		;;
+	*"WI2A-AC200i")
+		name="wi2a-ac200i"
+		;;
 	*"WHR-G301N")
 		name="whr-g301n"
 		;;
@@ -1236,6 +1398,9 @@ ar71xx_board_detect() {
 		;;
 	*"WHR-HP-GN")
 		name="whr-hp-gn"
+		;;
+	*"WiFi Pineapple NANO")
+		name="wifi-pineapple-nano"
 		;;
 	*"WLAE-AG300N")
 		name="wlae-ag300n"

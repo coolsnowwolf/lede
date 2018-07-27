@@ -18,7 +18,7 @@ platform_check_image()
 	return $?
 }
 
-platform_pre_upgrade() {
+platform_do_upgrade() {
 	# TODO no need to switch to ramfs with dual partitions in
 	# fact we don't even want to reboot as part of seamless
 	# upgrades. Instead just upgrade opposite partition and mark

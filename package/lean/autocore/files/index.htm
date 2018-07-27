@@ -1,0 +1,738 @@
+<%#
+ Copyright 2008 Steven Barth <steven@midlink.org>
+ Copyright 2008-2011 Jo-Philipp Wich <jow@openwrt.org>
+ Licensed to the public under the Apache License 2.0.
+-%>
+
+<%
+	local fs = require "nixio.fs"
+	local ipc = require "luci.ip"
+	local util = require "luci.util"
+	local stat = require "luci.tools.status"
+	local ver = require "luci.version"
+
+	local has_ipv6 = fs.access("/proc/net/ipv6_route")
+	local has_dhcp = fs.access("/etc/config/dhcp")
+	local has_wifi = ((fs.stat("/etc/config/wireless", "size") or 0) > 0)
+
+	local sysinfo = luci.util.ubus("system", "info") or { }
+	local boardinfo = luci.util.ubus("system", "board") or { }
+	local unameinfo = nixio.uname() or { }
+
+	local meminfo = sysinfo.memory or {
+		total = 0,
+		free = 0,
+		buffered = 0,
+		shared = 0
+	}
+
+	local swapinfo = sysinfo.swap or {
+		total = 0,
+		free = 0
+	}
+
+	local has_dsl = fs.access("/etc/init.d/dsl_control")
+
+	if luci.http.formvalue("status") == "1" then
+		local ntm = require "luci.model.network".init()
+		local wan = ntm:get_wannet()
+		local wan6 = ntm:get_wan6net()
+
+		local conn_count = tonumber(
+			fs.readfile("/proc/sys/net/netfilter/nf_conntrack_count") or "") or 0
+
+		local conn_max = tonumber(luci.sys.exec(
+			"sysctl -n -e net.nf_conntrack_max net.ipv4.netfilter.ip_conntrack_max"
+		):match("%d+")) or 4096
+
+		local rv = {
+			uptime     = sysinfo.uptime or 0,
+			localtime  = os.date(),
+			loadavg    = sysinfo.load or { 0, 0, 0 },
+			memory     = meminfo,
+			swap       = swapinfo,
+			connmax    = conn_max,
+			conncount  = conn_count,
+			leases     = stat.dhcp_leases(),
+			leases6    = stat.dhcp6_leases(),
+			wifinets   = stat.wifi_networks()
+		}
+
+		if wan then
+			local dev = wan:get_interface()
+			local link = dev and ipc.link(dev:name())
+			rv.wan = {
+				ipaddr  = wan:ipaddr(),
+				gwaddr  = wan:gwaddr(),
+				netmask = wan:netmask(),
+				dns     = wan:dnsaddrs(),
+				expires = wan:expires(),
+				uptime  = wan:uptime(),
+				proto   = wan:proto(),
+				i18n    = wan:get_i18n(),
+				ifname  = wan:ifname(),
+				link    = wan:adminlink(),
+				mac     = dev and dev:mac(),
+				type    = dev and dev:type(),
+				name    = dev and dev:get_i18n(),
+				ether   = link and link.type == 1
+			}
+		end
+
+		if wan6 then
+			local dev = wan6:get_interface()
+			local link = dev and ipc.link(dev:name())
+			rv.wan6 = {
+				ip6addr   = wan6:ip6addr(),
+				gw6addr   = wan6:gw6addr(),
+				dns       = wan6:dns6addrs(),
+				ip6prefix = wan6:ip6prefix(),
+				uptime    = wan6:uptime(),
+				proto     = wan6:proto(),
+				i18n      = wan6:get_i18n(),
+				ifname    = wan6:ifname(),
+				link      = wan6:adminlink(),
+				mac       = dev and dev:mac(),
+				type      = dev and dev:type(),
+				name      = dev and dev:get_i18n(),
+				ether     = link and link.type == 1
+			}
+		end
+
+		if has_dsl then
+			local dsl_stat = luci.sys.exec("/etc/init.d/dsl_control lucistat")
+			local dsl_func = loadstring(dsl_stat)
+			if dsl_func then
+				rv.dsl = dsl_func()
+			end
+		end
+
+		luci.http.prepare_content("application/json")
+		luci.http.write_json(rv)
+
+		return
+	elseif luci.http.formvalue("hosts") == "1" then
+		luci.http.prepare_content("application/json")
+		luci.http.write_json(luci.sys.net.host_hints())
+
+		return
+	end
+-%>
+
+<%+header%>
+
+<script type="text/javascript" src="<%=resource%>/cbi.js?v=git-18.163.61042-b5a43cf"></script>
+<script type="text/javascript">//<![CDATA[
+	function progressbar(v, m)
+	{
+		var vn = parseInt(v) || 0;
+		var mn = parseInt(m) || 100;
+		var pc = Math.floor((100 / mn) * vn);
+
+		return String.format(
+			'<div style="width:200px; position:relative; border:1px solid #999999">' +
+				'<div style="background-color:#CCCCCC; width:%d%%; height:15px">' +
+					'<div style="position:absolute; left:0; top:0; text-align:center; width:100%%; color:#000000">' +
+						'<small>%s / %s (%d%%)</small>' +
+					'</div>' +
+				'</div>' +
+			'</div>', pc, v, m, pc
+		);
+	}
+
+	function wifirate(bss, rx) {
+		var p = rx ? 'rx_' : 'tx_',
+		    s = '%.1f <%:Mbit/s%>, %d<%:MHz%>'
+					.format(bss[p+'rate'] / 1000, bss[p+'mhz']),
+		    ht = bss[p+'ht'], vht = bss[p+'vht'],
+			mhz = bss[p+'mhz'], nss = bss[p+'nss'],
+			mcs = bss[p+'mcs'], sgi = bss[p+'short_gi'];
+
+		if (ht || vht) {
+			if (vht) s += ', VHT-MCS %d'.format(mcs);
+			if (nss) s += ', VHT-NSS %d'.format(nss);
+			if (ht)  s += ', MCS %s'.format(mcs);
+			if (sgi) s += ', <%:Short GI%>';
+		}
+
+		return s;
+	}
+
+	function duid2mac(duid) {
+		// DUID-LLT / Ethernet
+		if (duid.length === 28 && duid.substr(0, 8) === '00010001')
+			return duid.substr(16).replace(/(..)(?=..)/g, '$1:').toUpperCase();
+
+		// DUID-LL / Ethernet
+		if (duid.length === 20 && duid.substr(0, 8) === '00030001')
+			return duid.substr(8).replace(/(..)(?=..)/g, '$1:').toUpperCase();
+
+		return null;
+	}
+
+	var npoll = 1;
+	var hosts = <%=luci.http.write_json(luci.sys.net.host_hints())%>;
+
+	function updateHosts() {
+		XHR.get('<%=REQUEST_URI%>', { hosts: 1 }, function(x, data) {
+			hosts = data;
+		});
+	}
+
+	function labelList(items, offset) {
+		var rv = [ ];
+
+		for (var i = offset || 0; i < items.length; i += 2) {
+			var label = items[i],
+			    value = items[i+1];
+
+			if (value === undefined || value === null)
+				continue;
+
+			if (label)
+				rv.push(E('strong', [label, ': ']));
+
+			rv.push(value, E('br'));
+		}
+
+		return rv;
+	}
+
+	function renderBox(title, active, childs) {
+		childs = childs || [];
+		childs.unshift(E('span', labelList(arguments, 3)));
+
+		return E('div', { class: 'ifacebox' }, [
+			E('div', { class: 'ifacebox-head center ' + (active ? 'active' : '') },
+				E('strong', title)),
+			E('div', { class: 'ifacebox-body' }, childs)
+		]);
+	}
+
+	function renderBadge(icon, title) {
+		return E('span', { class: 'ifacebadge' }, [
+			E('img', { src: icon, title: title || '' }),
+			E('span', labelList(arguments, 2))
+		]);
+	}
+
+	XHR.poll(5, '<%=REQUEST_URI%>', { status: 1 },
+		function(x, info)
+		{
+			if (!(npoll++ % 5))
+				updateHosts();
+
+			var us = document.getElementById('upstream_status_table');
+
+			while (us.lastElementChild)
+				us.removeChild(us.lastElementChild);
+
+			var ifc = info.wan || {};
+
+			us.appendChild(renderBox(
+				'<%:IPv4 Upstream%>',
+				(ifc.ifname && ifc.proto != 'none'),
+				[ E('div', {}, renderBadge(
+					'<%=resource%>/icons/%s.png'.format((ifc && ifc.type) ? ifc.type : 'ethernet_disabled'), null,
+					'<%:Device%>', ifc ? (ifc.name || ifc.ifname || '-') : '-',
+					'<%:MAC-Address%>', (ifc && ifc.ether) ? ifc.mac : null)) ],
+				'<%:Protocol%>', ifc.i18n || E('em', '<%:Not connected%>'),
+				'<%:Address%>', (ifc.ipaddr) ? ifc.ipaddr : '0.0.0.0',
+				'<%:Netmask%>', (ifc.netmask && ifc.netmask != ifc.ipaddr) ? ifc.netmask : '255.255.255.255',
+				'<%:Gateway%>', (ifc.gwaddr) ? ifc.gwaddr : '0.0.0.0',
+				'<%:DNS%> 1', (ifc.dns) ? ifc.dns[0] : null,
+				'<%:DNS%> 2', (ifc.dns) ? ifc.dns[1] : null,
+				'<%:DNS%> 3', (ifc.dns) ? ifc.dns[2] : null,
+				'<%:DNS%> 4', (ifc.dns) ? ifc.dns[3] : null,
+				'<%:DNS%> 5', (ifc.dns) ? ifc.dns[4] : null,
+				'<%:Expires%>', (ifc.expires > -1) ? '%t'.format(ifc.expires) : null,
+				'<%:Connected%>', (ifc.uptime > 0) ? '%t'.format(ifc.uptime) : null));
+
+			<% if has_ipv6 then %>
+			var ifc6 = info.wan6 || {};
+
+			us.appendChild(renderBox(
+				'<%:IPv6 Upstream%>',
+				(ifc6.ifname && ifc6.proto != 'none'),
+				[ E('div', {}, renderBadge(
+					'<%=resource%>/icons/%s.png'.format(ifc6.type || 'ethernet_disabled'), null,
+					'<%:Device%>', ifc6 ? (ifc6.name || ifc6.ifname || '-') : '-',
+					'<%:MAC-Address%>', (ifc6 && ifc6.ether) ? ifc6.mac : null)) ],
+				'<%:Protocol%>', ifc6.i18n ? (ifc6.i18n + (ifc6.proto === 'dhcp' && ifc6.ip6prefix ? '-PD' : '')) : E('em', '<%:Not connected%>'),
+				'<%:Prefix Delegated%>', ifc6.ip6prefix,
+				'<%:Address%>', (ifc6.ip6prefix) ? (ifc6.ip6addr || null) : (ifc6.ipaddr || '::'),
+				'<%:Gateway%>', (ifc6.gw6addr) ? ifc6.gw6addr : '::',
+				'<%:DNS%> 1', (ifc6.dns) ? ifc6.dns[0] : null,
+				'<%:DNS%> 2', (ifc6.dns) ? ifc6.dns[1] : null,
+				'<%:DNS%> 3', (ifc6.dns) ? ifc6.dns[2] : null,
+				'<%:DNS%> 4', (ifc6.dns) ? ifc6.dns[3] : null,
+				'<%:DNS%> 5', (ifc6.dns) ? ifc6.dns[4] : null,
+				'<%:Connected%>', (ifc6.uptime > 0) ? '%t'.format(ifc6.uptime) : null));
+			<% end %>
+
+			<% if has_dsl then %>
+				var dsl_i = document.getElementById('dsl_i');
+				var dsl_s = document.getElementById('dsl_s');
+
+				var s = String.format(
+					'<strong><%:Status%>: </strong>%s<br />' +
+					'<strong><%:Line State%>: </strong>%s [0x%x]<br />' +
+					'<strong><%:Line Mode%>: </strong>%s<br />' +
+					'<strong><%:Annex%>: </strong>%s<br />' +
+					'<strong><%:Profile%>: </strong>%s<br />' +
+					'<strong><%:Data Rate%>: </strong>%s/s / %s/s<br />' +
+					'<strong><%:Max. Attainable Data Rate (ATTNDR)%>: </strong>%s/s / %s/s<br />' +
+					'<strong><%:Latency%>: </strong>%s / %s<br />' +
+					'<strong><%:Line Attenuation (LATN)%>: </strong>%s dB / %s dB<br />' +
+					'<strong><%:Signal Attenuation (SATN)%>: </strong>%s dB / %s dB<br />' +
+					'<strong><%:Noise Margin (SNR)%>: </strong>%s dB / %s dB<br />' +
+					'<strong><%:Aggregate Transmit Power(ACTATP)%>: </strong>%s dB / %s dB<br />' +
+					'<strong><%:Forward Error Correction Seconds (FECS)%>: </strong>%s / %s<br />' +
+					'<strong><%:Errored seconds (ES)%>: </strong>%s / %s<br />' +
+					'<strong><%:Severely Errored Seconds (SES)%>: </strong>%s / %s<br />' +
+					'<strong><%:Loss of Signal Seconds (LOSS)%>: </strong>%s / %s<br />' +
+					'<strong><%:Unavailable Seconds (UAS)%>: </strong>%s / %s<br />' +
+					'<strong><%:Header Error Code Errors (HEC)%>: </strong>%s / %s<br />' +
+					'<strong><%:Non Pre-emtive CRC errors (CRC_P)%>: </strong>%s / %s<br />' +
+					'<strong><%:Pre-emtive CRC errors (CRCP_P)%>: </strong>%s / %s<br />' +
+					'<strong><%:Line Uptime%>: </strong>%s<br />' +
+					'<strong><%:ATU-C System Vendor ID%>: </strong>%s<br />' +
+					'<strong><%:Power Management Mode%>: </strong>%s<br />',
+						info.dsl.line_state, info.dsl.line_state_detail,
+						info.dsl.line_state_num,
+						info.dsl.line_mode_s,
+						info.dsl.annex_s,
+						info.dsl.profile_s,
+						info.dsl.data_rate_down_s, info.dsl.data_rate_up_s,
+						info.dsl.max_data_rate_down_s, info.dsl.max_data_rate_up_s,
+						info.dsl.latency_num_down, info.dsl.latency_num_up,
+						info.dsl.line_attenuation_down, info.dsl.line_attenuation_up,
+						info.dsl.signal_attenuation_down, info.dsl.signal_attenuation_up,
+						info.dsl.noise_margin_down, info.dsl.noise_margin_up,
+						info.dsl.actatp_down, info.dsl.actatp_up,
+						info.dsl.errors_fec_near, info.dsl.errors_fec_far,
+						info.dsl.errors_es_near, info.dsl.errors_es_far,
+						info.dsl.errors_ses_near, info.dsl.errors_ses_far,
+						info.dsl.errors_loss_near, info.dsl.errors_loss_far,
+						info.dsl.errors_uas_near, info.dsl.errors_uas_far,
+						info.dsl.errors_hec_near, info.dsl.errors_hec_far,
+						info.dsl.errors_crc_p_near, info.dsl.errors_crc_p_far,
+						info.dsl.errors_crcp_p_near, info.dsl.errors_crcp_p_far,
+						info.dsl.line_uptime_s,
+						info.dsl.atuc_vendor_id,
+						info.dsl.power_mode_s
+				);
+
+				dsl_s.innerHTML = String.format('<small>%s</small>', s);
+				dsl_i.innerHTML = String.format(
+					'<img src="<%=resource%>/icons/ethernet.png" />' +
+					'<br /><small>DSL</small>'
+				);
+			<% end %>
+
+			<% if has_dhcp then %>
+			var ls = document.getElementById('lease_status_table');
+			if (ls)
+			{
+				/* clear all rows */
+				while (ls.firstElementChild !== ls.lastElementChild)
+					ls.removeChild(ls.lastElementChild);
+
+				for (var i = 0; i < info.leases.length; i++)
+				{
+					var timestr;
+
+					if (info.leases[i].expires === false)
+						timestr = '<em><%:unlimited%></em>';
+					else if (info.leases[i].expires <= 0)
+						timestr = '<em><%:expired%></em>';
+					else
+						timestr = String.format('%t', info.leases[i].expires);
+
+					ls.appendChild(E('<div class="tr cbi-section-table-row cbi-rowstyle-%d">'.format((i % 2) + 1), [
+						E('<div class="td">', info.leases[i].hostname ? info.leases[i].hostname : '?'),
+						E('<div class="td">', info.leases[i].ipaddr),
+						E('<div class="td">', info.leases[i].macaddr),
+						E('<div class="td">', timestr)
+					]));
+				}
+
+				if (ls.firstElementChild === ls.lastElementChild)
+					ls.appendChild(E('<div class="tr cbi-section-table-row"><div class="td"><em><br /><%:There are no active leases.%></em></div></div>'));
+			}
+
+			var ls6 = document.getElementById('lease6_status_table');
+			if (ls6 && info.leases6)
+			{
+				ls6.parentNode.style.display = 'block';
+
+				/* clear all rows */
+				while (ls6.firstElementChild !== ls6.lastElementChild)
+					ls6.removeChild(ls6.lastElementChild);
+
+				for (var i = 0; i < info.leases6.length; i++)
+				{
+					var timestr;
+
+					if (info.leases6[i].expires === false)
+						timestr = '<em><%:unlimited%></em>';
+					else if (info.leases6[i].expires <= 0)
+						timestr = '<em><%:expired%></em>';
+					else
+						timestr = String.format('%t', info.leases6[i].expires);
+
+					var host = hosts[duid2mac(info.leases6[i].duid)],
+					    name = info.leases6[i].hostname,
+					    hint = null;
+
+					if (!name) {
+						if (host)
+							hint = host.name || host.ipv4 || host.ipv6;
+					}
+					else {
+						if (host && host.name && info.leases6[i].hostname != host.name)
+							hint = host.name;
+					}
+
+					ls6.appendChild(E('<div class="tr cbi-section-table-row cbi-rowstyle-%d">'.format((i % 2) + 1), [
+						E('<div class="td nowrap">', hint ? '<div>%h (%h)</div>'.format(name || '?', hint) : (name || '?')),
+						E('<div class="td nowrap">', info.leases6[i].ip6addr),
+						E('<div class="td nowrap">', info.leases6[i].duid),
+						E('<div class="td nowrap">', timestr)
+					]));
+				}
+
+				if (ls6.firstElementChild === ls6.lastElementChild)
+					ls6.appendChild(E('<div class="tr cbi-section-table-row"><div class="td"><em><br /><%:There are no active leases.%></em></div></div>'));
+			}
+			<% end %>
+
+			<% if has_wifi then %>
+			var assoclist = [ ];
+
+			var ws = document.getElementById('wifi_status_table');
+			if (ws)
+			{
+				while (ws.lastElementChild)
+					ws.removeChild(ws.lastElementChild);
+
+				for (var didx = 0; didx < info.wifinets.length; didx++)
+				{
+					var dev = info.wifinets[didx];
+					var net0 = (dev.networks && dev.networks[0]) ? dev.networks[0] : {};
+					var vifs = [];
+
+					for (var nidx = 0; nidx < dev.networks.length; nidx++)
+					{
+						var net = dev.networks[nidx];
+						var is_assoc = (net.bssid != '00:00:00:00:00:00' && net.channel && !net.disabled);
+						var num_assoc = 0;
+
+						for (var bssid in net.assoclist)
+						{
+							var bss = net.assoclist[bssid];
+
+							bss.bssid  = bssid;
+							bss.link   = net.link;
+							bss.name   = net.name;
+							bss.ifname = net.ifname;
+							bss.radio  = dev.name;
+
+							assoclist.push(bss);
+							num_assoc++;
+						}
+
+						var icon;
+						if (!is_assoc)
+							icon = "<%=resource%>/icons/signal-none.png";
+						else if (net.quality == 0)
+							icon = "<%=resource%>/icons/signal-0.png";
+						else if (net.quality < 25)
+							icon = "<%=resource%>/icons/signal-0-25.png";
+						else if (net.quality < 50)
+							icon = "<%=resource%>/icons/signal-25-50.png";
+						else if (net.quality < 75)
+							icon = "<%=resource%>/icons/signal-50-75.png";
+						else
+							icon = "<%=resource%>/icons/signal-75-100.png";
+
+						vifs.push(renderBadge(
+							icon,
+							'<%:Signal%>: %d dBm / <%:Quality%>: %d%%'.format(net.signal, net.quality),
+							'<%:SSID%>', E('a', { href: net.link }, [ net.ssid || '?' ]),
+							'<%:Mode%>', net.mode,
+							'<%:BSSID%>', is_assoc ? (net.bssid || '-') : null,
+							'<%:Encryption%>', is_assoc ? net.encryption : null,
+							'<%:Associations%>', is_assoc ? (num_assoc || '-') : null,
+							null, is_assoc ? null : E('em', '<%:Wireless is disabled or not associated%>')));
+					}
+
+					ws.appendChild(renderBox(
+						dev.device, dev.up || net0.up,
+						[ E('div', vifs) ],
+						'<%:Type%>', dev.name.replace(/^Generic | Wireless Controller .+$/g, ''),
+						'<%:Channel%>', net0.channel ? '%d (%.3f <%:GHz%>)'.format(net0.channel, net0.frequency) : '-',
+						'<%:Bitrate%>', net0.bitrate ? '%d <%:Mbit/s%>'.format(net0.bitrate) : '-'));
+				}
+
+				if (!ws.lastElementChild)
+					ws.appendChild(E('<em><%:No information available%></em>'));
+			}
+
+			var ac = document.getElementById('wifi_assoc_table');
+			if (ac)
+			{
+				/* clear all rows */
+				while (ac.firstElementChild !== ac.lastElementChild)
+					ac.removeChild(ac.lastElementChild);
+
+				assoclist.sort(function(a, b) {
+					return (a.name == b.name)
+						? (a.bssid < b.bssid)
+						: (a.name  > b.name )
+					;
+				});
+
+				for (var i = 0; i < assoclist.length; i++)
+				{
+					var icon;
+					var q = (-1 * (assoclist[i].noise - assoclist[i].signal)) / 5;
+					if (q < 1)
+						icon = "<%=resource%>/icons/signal-0.png";
+					else if (q < 2)
+						icon = "<%=resource%>/icons/signal-0-25.png";
+					else if (q < 3)
+						icon = "<%=resource%>/icons/signal-25-50.png";
+					else if (q < 4)
+						icon = "<%=resource%>/icons/signal-50-75.png";
+					else
+						icon = "<%=resource%>/icons/signal-75-100.png";
+
+					var host = hosts[assoclist[i].bssid],
+					    name = host ? (host.name || host.ipv4 || host.ipv6) : null,
+					    hint = (host && host.name && (host.ipv4 || host.ipv6)) ? (host.ipv4 || host.ipv6) : null;
+
+					ac.appendChild(E('<div class="tr cbi-section-table-row cbi-rowstyle-%d">'.format(1 + (i % 2)), [
+						E('<div class="td"><span class="ifacebadge" title="%q"><img src="<%=resource%>/icons/wifi.png" /> %h</span></div>'
+							.format(assoclist[i].radio, assoclist[i].ifname)),
+						E('<div class="td"><a href="%s" style="white-space:nowrap">%h</a></div>'
+							.format(assoclist[i].link, assoclist[i].name)),
+						E('<div class="td">',
+							assoclist[i].bssid),
+						E('<div class="td nowrap">',
+							hint ? '<div>%h (%h)</div>'.format(name || '?', hint) : (name || '?')),
+						E('<div class="td"><span class="ifacebadge" title="<%:Signal%>: %d <%:dBm%> / <%:Noise%>: %d <%:dBm%> / <%:SNR%>: %d"><img src="%s" /> %d / %d <%:dBm%></span></div>'
+							.format(assoclist[i].signal, assoclist[i].noise, assoclist[i].signal - assoclist[i].noise, icon, assoclist[i].signal, assoclist[i].noise)),
+						E('<div class="td nowrap">', [
+							E('<span style="white-space:nowrap">', wifirate(assoclist[i], true)),
+							E('<br />'),
+							E('<span style="white-space:nowrap">', wifirate(assoclist[i], false))
+						])
+					]));
+				}
+
+				if (ac.firstElementChild === ac.lastElementChild)
+					ac.appendChild(E('<div class="tr cbi-section-table-row"><div class="td"><em><br /><%:No information available%></em></div></div>'));
+			}
+			<% end %>
+
+			var e;
+
+			if (e = document.getElementById('localtime'))
+				e.innerHTML = info.localtime;
+
+			if (e = document.getElementById('uptime'))
+				e.innerHTML = String.format('%t', info.uptime);
+
+			if (e = document.getElementById('loadavg'))
+				e.innerHTML = String.format(
+					'%.02f, %.02f, %.02f',
+					info.loadavg[0] / 65535.0,
+					info.loadavg[1] / 65535.0,
+					info.loadavg[2] / 65535.0
+				);
+
+			if (e = document.getElementById('memtotal'))
+				e.innerHTML = progressbar(
+					((info.memory.free + info.memory.buffered) / 1024) + " <%:kB%>",
+					(info.memory.total / 1024) + " <%:kB%>"
+				);
+
+			if (e = document.getElementById('memfree'))
+				e.innerHTML = progressbar(
+					(info.memory.free / 1024) + " <%:kB%>",
+					(info.memory.total / 1024) + " <%:kB%>"
+				);
+
+			if (e = document.getElementById('membuff'))
+				e.innerHTML = progressbar(
+					(info.memory.buffered / 1024) + " <%:kB%>",
+					(info.memory.total / 1024) + " <%:kB%>"
+				);
+
+			if (e = document.getElementById('swaptotal'))
+				e.innerHTML = progressbar(
+					(info.swap.free / 1024) + " <%:kB%>",
+					(info.swap.total / 1024) + " <%:kB%>"
+				);
+
+			if (e = document.getElementById('swapfree'))
+				e.innerHTML = progressbar(
+					(info.swap.free / 1024) + " <%:kB%>",
+					(info.swap.total / 1024) + " <%:kB%>"
+				);
+
+			if (e = document.getElementById('conns'))
+				e.innerHTML = progressbar(info.conncount, info.connmax);
+
+		}
+	);
+//]]></script>
+
+<h2 name="content"><%:Status%></h2>
+
+<fieldset class="cbi-section">
+	<legend><%:System%></legend>
+
+	<div class="table" width="100%">
+		<div class="tr"><div class="td left" width="33%"><%:Hostname%></div><div class="td left"><%=luci.sys.hostname() or "?"%></div></div>
+		<div class="tr"><div class="td left" width="33%"><%:Model%></div><div class="td left"><%=pcdata(boardinfo.model or "?")%></div></div>
+		<div class="tr"><div class="td left" width="33%"><%:CPU Temperature%></div><div class="td left"><%=luci.sys.exec("sensors | grep 'Core 0' | cut -c10-24")%> @ <%=luci.sys.exec("grep 'MHz' /proc/cpuinfo | cut -c11- |sed -n '1p'")%> MHz</div></div>
+		<div class="tr"><div class="td left" width="33%"><%:Firmware Version%></div><div class="td left">
+			<%=pcdata(ver.distname)%> <%=pcdata(ver.distversion)%> /
+			<%=pcdata(ver.luciname)%> (<%=pcdata(ver.luciversion)%>)
+		</div></div>
+		<div class="tr"><div class="td left" width="33%"><%:Kernel Version%></div><div class="td left"><%=unameinfo.release or "?"%></div></div>
+		<div class="tr"><div class="td left" width="33%"><%:Local Time%></div><div class="td left" id="localtime">-</div></div>
+		<div class="tr"><div class="td left" width="33%"><%:Uptime%></div><div class="td left" id="uptime">-</div></div>
+		<div class="tr"><div class="td left" width="33%"><%:Load Average%></div><div class="td left" id="loadavg">-</div></div>
+	</div>
+</fieldset>
+
+<fieldset class="cbi-section">
+	<legend><%:Memory%></legend>
+
+	<div class="table" width="100%">
+		<div class="tr"><div class="td left" width="33%"><%:Total Available%></div><div class="td left" id="memtotal">-</div></div>
+		<div class="tr"><div class="td left" width="33%"><%:Free%></div><div class="td left" id="memfree">-</div></div>
+		<div class="tr"><div class="td left" width="33%"><%:Buffered%></div><div class="td left" id="membuff">-</div></div>
+	</div>
+</fieldset>
+
+<% if swapinfo.total > 0 then %>
+<fieldset class="cbi-section">
+	<legend><%:Swap%></legend>
+
+	<div class="table" width="100%">
+		<div class="tr"><div class="td left" width="33%"><%:Total Available%></div><div class="td left" id="swaptotal">-</div></div>
+		<div class="tr"><div class="td left" width="33%"><%:Free%></div><div class="td left" id="swapfree">-</div></div>
+	</div>
+</fieldset>
+<% end %>
+
+<fieldset class="cbi-section">
+	<legend><%:Network%></legend>
+
+	<div id="upstream_status_table" class="network-status-table">
+		<em><%:Collecting data...%></em>
+	</div>
+
+	<div class="table" width="100%">
+		<div class="tr"><div class="td left" width="33%"><%:Active Connections%></div><div class="td left" id="conns">-</div></div>
+	</div>
+</fieldset>
+
+<% if has_dhcp then %>
+<fieldset class="cbi-section">
+	<legend><%:DHCP Leases%></legend>
+
+	<div class="table cbi-section-table" id="lease_status_table">
+		<div class="tr cbi-section-table-titles">
+			<div class="th"><%:Hostname%></div>
+			<div class="th"><%:IPv4-Address%></div>
+			<div class="th"><%:MAC-Address%></div>
+			<div class="th"><%:Leasetime remaining%></div>
+		</div>
+		<div class="tr cbi-section-table-row">
+			<div class="td" colspan="4"><em><br /><%:Collecting data...%></em></div>
+		</div>
+	</div>
+</fieldset>
+
+<fieldset class="cbi-section" style="display:none">
+	<legend><%:DHCPv6 Leases%></legend>
+
+	<div class="table cbi-section-table" id="lease6_status_table">
+		<div class="tr cbi-section-table-titles">
+			<div class="th"><%:Host%></div>
+			<div class="th"><%:IPv6-Address%></div>
+			<div class="th"><%:DUID%></div>
+			<div class="th"><%:Leasetime remaining%></div>
+		</div>
+		<div class="tr cbi-section-table-row">
+			<div class="td" colspan="4"><em><br /><%:Collecting data...%></em></div>
+		</div>
+	</div>
+</fieldset>
+<% end %>
+
+<% if has_dsl then %>
+<fieldset class="cbi-section">
+	<legend><%:DSL%></legend>
+	<div class="table" width="100%">
+		<div class="tr">
+			<div class="td left" width="33%" style="vertical-align:top"><%:DSL Status%></div>
+			<div class="td">
+				<div class="table">
+					<div class="tr">
+						<div class="td" id="dsl_i" style="width:16px; text-align:center; padding:3px"><img src="<%=resource%>/icons/ethernet_disabled.png" /><br /><small>?</small></div>
+						<div class="td left" id="dsl_s" style="vertical-align:middle; padding: 3px"><em><%:Collecting data...%></em></div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+</fieldset>
+<% end %>
+
+<% if has_wifi then %>
+<fieldset class="cbi-section">
+	<legend><%:Wireless%></legend>
+
+	<div id="wifi_status_table" class="network-status-table">
+		<em><%:Collecting data...%></em>
+	</div>
+</fieldset>
+
+<fieldset class="cbi-section">
+	<legend><%:Associated Stations%></legend>
+
+	<div class="table cbi-section-table valign-middle" id="wifi_assoc_table">
+		<div class="tr cbi-section-table-titles">
+			<div class="th">&#160;</div>
+			<div class="th"><%:Network%></div>
+			<div class="th"><%:MAC-Address%></div>
+			<div class="th"><%:Host%></div>
+			<div class="th"><%:Signal%> / <%:Noise%></div>
+			<div class="th"><%:RX Rate%> / <%:TX Rate%></div>
+		</div>
+		<div class="tr cbi-section-table-row">
+			<div class="td" colspan="6"><em><br /><%:Collecting data...%></em></div>
+		</div>
+	</div>
+</fieldset>
+<% end %>
+
+<%-
+	local incdir = util.libpath() .. "/view/admin_status/index/"
+	if fs.access(incdir) then
+		local inc
+		for inc in fs.dir(incdir) do
+			if inc:match("%.htm$") then
+				include("admin_status/index/" .. inc:gsub("%.htm$", ""))
+			end
+		end
+	end
+-%>
+
+<%+footer%>

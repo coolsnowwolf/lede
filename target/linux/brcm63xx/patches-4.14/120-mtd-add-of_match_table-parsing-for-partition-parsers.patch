@@ -1,0 +1,79 @@
+From 53980645bb12bd8723ac226805ee171780b24196 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Mon, 26 Jun 2017 13:37:11 +0200
+Subject: [PATCH 1/4] mtd: add of_match_table parsing for partition parsers
+
+Allow partition parsers to be matched by attaching compatible strings to
+partitions.
+
+This allows specifying the expected format of flash partitions for
+matching partition parsers.
+
+Example:
+
+flash@foo {
+	...
+	partitions {
+		compatible = "fixed-partitions";
+
+		cfe@0 {
+			reg = <0x0 0x10000>;
+			label = "cfe";
+			read-only;
+		};
+
+		firmware@10000 {
+			reg = <0x10000 0x3e0000>;
+			label = "firmware";
+			compatible = "brcm,bcm63xx-imagetag";
+		};
+
+		nvram@3f0000 {
+			reg = <0x3e0000 0x10000>;
+			label = "nvram";
+		};
+	};
+};
+
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+---
+ drivers/mtd/mtdpart.c | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+--- a/drivers/mtd/mtdpart.c
++++ b/drivers/mtd/mtdpart.c
+@@ -948,8 +948,7 @@ int add_mtd_partitions(struct mtd_info *
+ 		add_mtd_device(&slave->mtd);
+ 		mtd_partition_split(master, slave);
+ 		mtd_add_partition_attrs(slave);
+-		if (parts[i].types)
+-			mtd_parse_part(slave, parts[i].types);
++		mtd_parse_part(slave, parts[i].types);
+ 
+ 		cur_offset = slave->offset + slave->mtd.size;
+ 	}
+@@ -1121,7 +1120,9 @@ static int mtd_part_of_parse(struct mtd_
+ 	const char *fixed = "fixed-partitions";
+ 	int ret, err = 0;
+ 
+-	np = of_get_child_by_name(mtd_get_of_node(master), "partitions");
++	np = mtd_get_of_node(master);
++	if (!mtd_is_partition(master))
++		np = of_get_child_by_name(np, "partitions");
+ 	of_property_for_each_string(np, "compatible", prop, compat) {
+ 		parser = mtd_part_get_compatible_parser(compat);
+ 		if (!parser)
+@@ -1190,8 +1191,12 @@ int parse_mtd_partitions(struct mtd_info
+ 			types = types_of;
+ 	}
+ 
+-	if (!types)
++	if (!types) {
++		if (mtd_is_partition(master))
++			return -ENOENT;
++
+ 		types = default_mtd_part_types;
++	}
+ 
+ 	for ( ; *types; types++) {
+ 		/*

@@ -9,6 +9,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=grub
+PKG_CPE_ID:=cpe:/a:gnu:grub2
 PKG_VERSION:=2.02
 PKG_RELEASE:=1
 
@@ -59,7 +60,8 @@ CONFIGURE_ARGS += \
 	--disable-nls \
 	--disable-device-mapper \
 	--disable-libzfs \
-	--disable-grub-mkfont
+	--disable-grub-mkfont \
+	--with-platform=none
 
 HOST_CONFIGURE_VARS += \
 	grub_build_mkfont_excuse="don't want fonts"

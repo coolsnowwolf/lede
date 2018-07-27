@@ -3,23 +3,42 @@
 
 START=11
 
-set_vm_min_free() {
-	mem="$(grep MemTotal /proc/meminfo  | awk '{print $2}')"
+apply_defaults() {
+	local mem="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+	local min_free frag_low_thresh frag_high_thresh
+
 	if [ "$mem" -gt 65536 ]; then # 128M
-		val=16384
+		min_free=16384
 	elif [ "$mem" -gt 32768 ]; then # 64M
-		val=8192
-	elif [ "$mem" -gt 16384 ]; then # 32M
-		val=1024
+		min_free=8192
 	else
-		return
+		min_free=1024
+		frag_low_thresh=393216
+		frag_high_thresh=524288
 	fi
-	sysctl -qw vm.min_free_kbytes="$val"
+
+	sysctl -qw vm.min_free_kbytes="$min_free"
+
+	[ "$frag_low_thresh" ] && sysctl -qw \
+		net.ipv4.ipfrag_low_thresh="$frag_low_thresh" \
+		net.ipv4.ipfrag_high_thresh="$frag_high_thresh" \
+		net.ipv6.ip6frag_low_thresh="$frag_low_thresh" \
+		net.ipv6.ip6frag_high_thresh="$frag_high_thresh" \
+		net.netfilter.nf_conntrack_frag6_low_thresh="$frag_low_thresh" \
+		net.netfilter.nf_conntrack_frag6_high_thresh="$frag_high_thresh"
+
+	# first set default, then all interfaces to avoid races with appearing interfaces
+	if [ -d /proc/sys/net/ipv6/conf ]; then
+		echo 0 > /proc/sys/net/ipv6/conf/default/accept_ra
+		for iface in /proc/sys/net/ipv6/conf/*/accept_ra; do
+			echo 0 > "$iface"
+		done
+	fi
 }
 
 start() {
-	set_vm_min_free
-	for CONF in /etc/sysctl.conf /etc/sysctl.d/*.conf; do
+	apply_defaults
+	for CONF in /etc/sysctl.d/*.conf /etc/sysctl.conf; do
 		[ -f "$CONF" ] && sysctl -p "$CONF" -e >&-
 	done
 }

@@ -1,0 +1,82 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2014-2017 Jian Chang <aa65535@live.com>
+# Copyright (C) 2017 Ian Li <OpenSource@ianli.xyz>
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
+START=65
+
+NAME=transparent-proxy
+
+uci_get_by_name() {
+	local ret=$(uci get $NAME.$1.$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+uci_get_by_type() {
+	local ret=$(uci get $NAME.@$1[0].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+uci_bool_by_name() {
+	case "$(uci_get_by_name $1 $2)" in
+		1|on|true|yes|enabled) return 0;;
+	esac
+	return 1
+}
+
+get_arg_udp() {
+	local udp=$(uci_get_by_type general udp)
+	[ "$udp" = 1 ] && echo "-u"
+}
+
+get_arg_out() {
+	case "$(uci_get_by_type access_control self_proxy 1)" in
+		1) echo "-o";;
+		2) echo "-O";;
+	esac
+}
+
+get_lan_hosts() {
+	uci_bool_by_name $1 enable && \
+		echo "$(uci_get_by_name $1 type),$(uci_get_by_name $1 macaddr)"
+}
+
+flush_when_disable() {
+	local enable=$(uci_get_by_type general enable)
+	[ "$enable" = 0 ] && /usr/bin/transparent-proxy-rules -f
+}
+
+create_when_enable() {
+	local enable=$(uci_get_by_type general enable)
+	[ "$enable" = 1 ] || return 0
+	config_load $NAME
+	/usr/bin/transparent-proxy-rules \
+		-l "$(uci_get_by_type general redirect_port 12345)" \
+		-B "$(uci_get_by_type access_control wan_bp_list)" \
+		-b "$(uci_get_by_type access_control wan_bp_ips)" \
+		-W "$(uci_get_by_type access_control wan_fw_list)" \
+		-w "$(uci_get_by_type access_control wan_fw_ips)" \
+		-I "$(uci_get_by_type access_control lan_ifaces)" \
+		-d "$(uci_get_by_type access_control lan_target)" \
+		-a "$(config_foreach get_lan_hosts lan_hosts)" \
+		-e "$(uci_get_by_type access_control ipt_ext)" \
+		$(get_arg_out) $(get_arg_udp)
+}
+
+start() {
+	create_when_enable || /usr/bin/transparent-proxy-rules -f
+}
+
+boot() {
+	local delay=$(uci_get_by_type general startup_delay 0)
+	(sleep $delay && start >/dev/null 2>&1) &
+	return 0
+}
+
+stop() {
+	flush_when_disable
+}

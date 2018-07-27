@@ -22,7 +22,7 @@ define Build/boot-overlay
 
 	$(foreach dts,$(DEVICE_DTS), \
 		$(CP) \
-			$(LINUX_DIR)/arch/$(ARCH)/boot/dts/$(dts).dtb \
+			$(DTS_DIR)/$(dts).dtb \
 			$@.boot/$(IMG_PREFIX)-$(dts).dtb; \
 		ln -sf \
 			$(IMG_PREFIX)-$(dts).dtb \
@@ -104,6 +104,7 @@ define Device/ventana
   BLOCKSIZE := 128k
   MKUBIFS_OPTS := -m $$(PAGESIZE) -e 124KiB
 endef
+TARGET_DEVICES += ventana
 
 define Device/ventana-large
   $(Device/ventana)
@@ -114,14 +115,12 @@ define Device/ventana-large
   BLOCKSIZE := 256k
   MKUBIFS_OPTS := -m $$(PAGESIZE) -e 248KiB
 endef
+TARGET_DEVICES += ventana-large
 
 define Device/wandboard
   DEVICE_TITLE := Wandboard Dual
   DEVICE_DTS := imx6dl-wandboard
 endef
-
-TARGET_DEVICES += \
-	ventana ventana-large \
-	wandboard
+TARGET_DEVICES += wandboard
 
 $(eval $(call BuildImage))

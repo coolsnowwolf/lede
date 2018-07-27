@@ -25,7 +25,7 @@
 static const char mconf_readme[] = N_(
 "Overview\n"
 "--------\n"
-"Some LEDE features may be built directly into the image.\n"
+"Some OpenWrt features may be built directly into the image.\n"
 "Some may be made into installable ipkg packages. Some features\n"
 "may be completely removed altogether.\n"
 "\n"

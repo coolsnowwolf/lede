@@ -14,7 +14,7 @@ export TOPDIR LC_ALL LANG TZ
 
 empty:=
 space:= $(empty) $(empty)
-$(if $(findstring $(space),$(TOPDIR)),$(error ERROR: The path to the LEDE directory must not include any spaces))
+$(if $(findstring $(space),$(TOPDIR)),$(error ERROR: The path to the OpenWrt directory must not include any spaces))
 
 world:
 

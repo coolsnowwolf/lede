@@ -24,6 +24,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/switch.h>
+#include <linux/phy.h>
 #include <linux/of.h>
 #include <linux/of_net.h>
 #include <linux/platform_data/b53.h>

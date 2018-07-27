@@ -1,0 +1,208 @@
+From a779a482fb9b9f8fcdf8b2519c789b4b9bb5dd05 Mon Sep 17 00:00:00 2001
+From: Felix Fietkau <nbd@nbd.name>
+Date: Fri, 7 Jul 2017 16:56:48 +0200
+Subject: build: add a hack for removing non-essential module info
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ include/linux/module.h      | 13 ++++++++-----
+ include/linux/moduleparam.h | 15 ++++++++++++---
+ init/Kconfig                |  7 +++++++
+ kernel/module.c             |  5 ++++-
+ scripts/mod/modpost.c       | 12 ++++++++++++
+ 5 files changed, 43 insertions(+), 9 deletions(-)
+
+--- a/include/linux/module.h
++++ b/include/linux/module.h
+@@ -158,6 +158,7 @@ extern void cleanup_module(void);
+ 
+ /* Generic info of form tag = "info" */
+ #define MODULE_INFO(tag, info) __MODULE_INFO(tag, tag, info)
++#define MODULE_INFO_STRIP(tag, info) __MODULE_INFO_STRIP(tag, tag, info)
+ 
+ /* For userspace: you can also call me... */
+ #define MODULE_ALIAS(_alias) MODULE_INFO(alias, _alias)
+@@ -201,12 +202,12 @@ extern void cleanup_module(void);
+  * Author(s), use "Name <email>" or just "Name", for multiple
+  * authors use multiple MODULE_AUTHOR() statements/lines.
+  */
+-#define MODULE_AUTHOR(_author) MODULE_INFO(author, _author)
++#define MODULE_AUTHOR(_author) MODULE_INFO_STRIP(author, _author)
+ 
+ /* What your module does. */
+-#define MODULE_DESCRIPTION(_description) MODULE_INFO(description, _description)
++#define MODULE_DESCRIPTION(_description) MODULE_INFO_STRIP(description, _description)
+ 
+-#ifdef MODULE
++#if defined(MODULE) && !defined(CONFIG_MODULE_STRIPPED)
+ /* Creates an alias so file2alias.c can find device table. */
+ #define MODULE_DEVICE_TABLE(type, name)					\
+ extern typeof(name) __mod_##type##__##name##_device_table		\
+@@ -233,7 +234,9 @@ extern typeof(name) __mod_##type##__##na
+  */
+ 
+ #if defined(MODULE) || !defined(CONFIG_SYSFS)
+-#define MODULE_VERSION(_version) MODULE_INFO(version, _version)
++#define MODULE_VERSION(_version) MODULE_INFO_STRIP(version, _version)
++#elif defined(CONFIG_MODULE_STRIPPED)
++#define MODULE_VERSION(_version) __MODULE_INFO_DISABLED(version)
+ #else
+ #define MODULE_VERSION(_version)					\
+ 	static struct module_version_attribute ___modver_attr = {	\
+@@ -255,7 +258,7 @@ extern typeof(name) __mod_##type##__##na
+ /* Optional firmware file (or files) needed by the module
+  * format is simply firmware file name.  Multiple firmware
+  * files require multiple MODULE_FIRMWARE() specifiers */
+-#define MODULE_FIRMWARE(_firmware) MODULE_INFO(firmware, _firmware)
++#define MODULE_FIRMWARE(_firmware) MODULE_INFO_STRIP(firmware, _firmware)
+ 
+ struct notifier_block;
+ 
+--- a/include/linux/moduleparam.h
++++ b/include/linux/moduleparam.h
+@@ -17,6 +17,16 @@
+ /* Chosen so that structs with an unsigned long line up. */
+ #define MAX_PARAM_PREFIX_LEN (64 - sizeof(unsigned long))
+ 
++/* This struct is here for syntactic coherency, it is not used */
++#define __MODULE_INFO_DISABLED(name)					  \
++  struct __UNIQUE_ID(name) {}
++
++#ifdef CONFIG_MODULE_STRIPPED
++#define __MODULE_INFO_STRIP(tag, name, info) __MODULE_INFO_DISABLED(name)
++#else
++#define __MODULE_INFO_STRIP(tag, name, info) __MODULE_INFO(tag, name, info)
++#endif
++
+ #ifdef MODULE
+ #define __MODULE_INFO(tag, name, info)					  \
+ static const char __UNIQUE_ID(name)[]					  \
+@@ -24,8 +34,7 @@ static const char __UNIQUE_ID(name)[]
+   = __stringify(tag) "=" info
+ #else  /* !MODULE */
+ /* This struct is here for syntactic coherency, it is not used */
+-#define __MODULE_INFO(tag, name, info)					  \
+-  struct __UNIQUE_ID(name) {}
++#define __MODULE_INFO(tag, name, info) __MODULE_INFO_DISABLED(name)
+ #endif
+ #define __MODULE_PARM_TYPE(name, _type)					  \
+   __MODULE_INFO(parmtype, name##type, #name ":" _type)
+@@ -33,7 +42,7 @@ static const char __UNIQUE_ID(name)[]
+ /* One for each parameter, describing how to use it.  Some files do
+    multiple of these per line, so can't just use MODULE_INFO. */
+ #define MODULE_PARM_DESC(_parm, desc) \
+-	__MODULE_INFO(parm, _parm, #_parm ":" desc)
++	__MODULE_INFO_STRIP(parm, _parm, #_parm ":" desc)
+ 
+ struct kernel_param;
+ 
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -1903,6 +1903,13 @@ config TRIM_UNUSED_KSYMS
+ 
+ 	  If unsure, or if you need to build out-of-tree modules, say N.
+ 
++config MODULE_STRIPPED
++	bool "Reduce module size"
++	depends on MODULES
++	help
++	  Remove module parameter descriptions, author info, version, aliases,
++	  device tables, etc.
++
+ endif # MODULES
+ 
+ config MODULES_TREE_LOOKUP
+--- a/kernel/module.c
++++ b/kernel/module.c
+@@ -3006,9 +3006,11 @@ static struct module *setup_load_info(st
+ 
+ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
+ {
+-	const char *modmagic = get_modinfo(info, "vermagic");
+ 	int err;
+ 
++#ifndef CONFIG_MODULE_STRIPPED
++	const char *modmagic = get_modinfo(info, "vermagic");
++
+ 	if (flags & MODULE_INIT_IGNORE_VERMAGIC)
+ 		modmagic = NULL;
+ 
+@@ -3029,6 +3031,7 @@ static int check_modinfo(struct module *
+ 				mod->name);
+ 		add_taint_module(mod, TAINT_OOT_MODULE, LOCKDEP_STILL_OK);
+ 	}
++#endif
+ 
+ 	check_modinfo_retpoline(mod, info);
+ 
+--- a/scripts/mod/modpost.c
++++ b/scripts/mod/modpost.c
+@@ -1982,7 +1982,9 @@ static void read_symbols(char *modname)
+ 		symname = remove_dot(info.strtab + sym->st_name);
+ 
+ 		handle_modversions(mod, &info, sym, symname);
++#ifndef CONFIG_MODULE_STRIPPED
+ 		handle_moddevtable(mod, &info, sym, symname);
++#endif
+ 	}
+ 	if (!is_vmlinux(modname) ||
+ 	     (is_vmlinux(modname) && vmlinux_section_warnings))
+@@ -2143,8 +2145,10 @@ static void add_header(struct buffer *b,
+ 	buf_printf(b, "#include <linux/vermagic.h>\n");
+ 	buf_printf(b, "#include <linux/compiler.h>\n");
+ 	buf_printf(b, "\n");
++#ifndef CONFIG_MODULE_STRIPPED
+ 	buf_printf(b, "MODULE_INFO(vermagic, VERMAGIC_STRING);\n");
+ 	buf_printf(b, "MODULE_INFO(name, KBUILD_MODNAME);\n");
++#endif
+ 	buf_printf(b, "\n");
+ 	buf_printf(b, "__visible struct module __this_module\n");
+ 	buf_printf(b, "__attribute__((section(\".gnu.linkonce.this_module\"))) = {\n");
+@@ -2161,8 +2165,10 @@ static void add_header(struct buffer *b,
+ 
+ static void add_intree_flag(struct buffer *b, int is_intree)
+ {
++#ifndef CONFIG_MODULE_STRIPPED
+ 	if (is_intree)
+ 		buf_printf(b, "\nMODULE_INFO(intree, \"Y\");\n");
++#endif
+ }
+ 
+ /* Cannot check for assembler */
+@@ -2175,10 +2181,12 @@ static void add_retpoline(struct buffer
+ 
+ static void add_staging_flag(struct buffer *b, const char *name)
+ {
++#ifndef CONFIG_MODULE_STRIPPED
+ 	static const char *staging_dir = "drivers/staging";
+ 
+ 	if (strncmp(staging_dir, name, strlen(staging_dir)) == 0)
+ 		buf_printf(b, "\nMODULE_INFO(staging, \"Y\");\n");
++#endif
+ }
+ 
+ /**
+@@ -2277,11 +2285,13 @@ static void add_depends(struct buffer *b
+ 
+ static void add_srcversion(struct buffer *b, struct module *mod)
+ {
++#ifndef CONFIG_MODULE_STRIPPED
+ 	if (mod->srcversion[0]) {
+ 		buf_printf(b, "\n");
+ 		buf_printf(b, "MODULE_INFO(srcversion, \"%s\");\n",
+ 			   mod->srcversion);
+ 	}
++#endif
+ }
+ 
+ static void write_if_changed(struct buffer *b, const char *fname)
+@@ -2518,7 +2528,9 @@ int main(int argc, char **argv)
+ 		add_staging_flag(&buf, mod->name);
+ 		err |= add_versions(&buf, mod);
+ 		add_depends(&buf, mod, modules);
++#ifndef CONFIG_MODULE_STRIPPED
+ 		add_moddevtable(&buf, mod);
++#endif
+ 		add_srcversion(&buf, mod);
+ 
+ 		sprintf(fname, "%s.mod.c", mod->name);

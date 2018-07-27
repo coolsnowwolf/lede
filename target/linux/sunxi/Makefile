@@ -11,11 +11,10 @@ ARCH:=arm
 BOARD:=sunxi
 BOARDNAME:=Allwinner A1x/A20/A3x
 FEATURES:=fpu usb ext4 display rtc squashfs
-CPU_TYPE:=cortex-a8
-CPU_SUBTYPE:=vfpv3
+SUBTARGETS:=cortexa8 cortexa7 cortexa53
 MAINTAINER:=Zoltan HERPAI <wigyori@uid0.hu>
 
-KERNEL_PATCHVER:=4.4
+KERNEL_PATCHVER:=4.14
 KERNELNAME:=zImage dtbs
 
 # A10: Cortex-A8

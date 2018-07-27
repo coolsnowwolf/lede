@@ -118,9 +118,10 @@ uci_add() {
 uci_rename() {
 	local PACKAGE="$1"
 	local CONFIG="$2"
-	local VALUE="$3"
+	local OPTION="$3"
+	local VALUE="$4"
 
-	/sbin/uci ${UCI_CONFIG_DIR:+-c $UCI_CONFIG_DIR} rename "$PACKAGE.$CONFIG=$VALUE"
+	/sbin/uci ${UCI_CONFIG_DIR:+-c $UCI_CONFIG_DIR} rename "$PACKAGE.$CONFIG${VALUE:+.$OPTION}=${VALUE:-$OPTION}"
 }
 
 uci_remove() {

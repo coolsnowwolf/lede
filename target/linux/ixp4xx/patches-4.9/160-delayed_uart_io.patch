@@ -1,0 +1,133 @@
+--- a/drivers/tty/serial/8250/8250_core.c
++++ b/drivers/tty/serial/8250/8250_core.c
+@@ -833,6 +833,7 @@ static int serial8250_probe(struct platf
+ 		uart.port.get_mctrl	= p->get_mctrl;
+ 		uart.port.pm		= p->pm;
+ 		uart.port.dev		= &dev->dev;
++		uart.port.rw_delay	= p->rw_delay;
+ 		uart.port.irqflags	|= irqflag;
+ 		ret = serial8250_register_8250_port(&uart);
+ 		if (ret < 0) {
+@@ -989,6 +990,7 @@ int serial8250_register_8250_port(struct
+ 		uart->bugs		= up->bugs;
+ 		uart->port.mapbase      = up->port.mapbase;
+ 		uart->port.mapsize      = up->port.mapsize;
++		uart->port.rw_delay	= up->port.rw_delay;
+ 		uart->port.private_data = up->port.private_data;
+ 		uart->tx_loadsz		= up->tx_loadsz;
+ 		uart->capabilities	= up->capabilities;
+--- a/drivers/tty/serial/serial_core.c
++++ b/drivers/tty/serial/serial_core.c
+@@ -2233,6 +2233,7 @@ uart_report_port(struct uart_driver *drv
+ 		snprintf(address, sizeof(address),
+ 			 "I/O 0x%lx offset 0x%x", port->iobase, port->hub6);
+ 		break;
++	case UPIO_MEM_DELAY:
+ 	case UPIO_MEM:
+ 	case UPIO_MEM16:
+ 	case UPIO_MEM32:
+@@ -2897,6 +2898,7 @@ int uart_match_port(struct uart_port *po
+ 	case UPIO_HUB6:
+ 		return (port1->iobase == port2->iobase) &&
+ 		       (port1->hub6   == port2->hub6);
++	case UPIO_MEM_DELAY:
+ 	case UPIO_MEM:
+ 	case UPIO_MEM16:
+ 	case UPIO_MEM32:
+--- a/include/linux/serial_8250.h
++++ b/include/linux/serial_8250.h
+@@ -28,6 +28,7 @@ struct plat_serial8250_port {
+ 	void            *private_data;
+ 	unsigned char	regshift;	/* register shift */
+ 	unsigned char	iotype;		/* UPIO_* */
++	unsigned int rw_delay;	/* udelay for slower busses IXP4XX Expansion Bus */
+ 	unsigned char	hub6;
+ 	upf_t		flags;		/* UPF_* flags */
+ 	unsigned int	type;		/* If UPF_FIXED_TYPE */
+--- a/include/linux/serial_core.h
++++ b/include/linux/serial_core.h
+@@ -152,6 +152,7 @@ struct uart_port {
+ #define UPIO_TSI		(SERIAL_IO_TSI)		/* Tsi108/109 type IO */
+ #define UPIO_MEM32BE		(SERIAL_IO_MEM32BE)	/* 32b big endian */
+ #define UPIO_MEM16		(SERIAL_IO_MEM16)	/* 16b little endian */
++#define UPIO_MEM_DELAY		(SERIAL_IO_MEM_DELAY)
+ 
+ 	unsigned int		read_status_mask;	/* driver specific */
+ 	unsigned int		ignore_status_mask;	/* driver specific */
+@@ -233,6 +234,7 @@ struct uart_port {
+ 	int			hw_stopped;		/* sw-assisted CTS flow state */
+ 	unsigned int		mctrl;			/* current modem ctrl settings */
+ 	unsigned int		timeout;		/* character-based timeout */
++	unsigned int		rw_delay;		/* udelay for slow busses, IXP4XX Expansion Bus */
+ 	unsigned int		type;			/* port type */
+ 	const struct uart_ops	*ops;
+ 	unsigned int		custom_divisor;
+--- a/drivers/tty/serial/8250/8250_port.c
++++ b/drivers/tty/serial/8250/8250_port.c
+@@ -384,6 +384,20 @@ static unsigned int mem16_serial_in(stru
+ 	return readw(p->membase + offset);
+ }
+ 
++static unsigned int memdelay_serial_in(struct uart_port *p, int offset)
++{
++	struct uart_8250_port *up = (struct uart_8250_port *)p;
++	udelay(up->port.rw_delay);
++	return mem_serial_in(p, offset);
++}
++
++static void memdelay_serial_out(struct uart_port *p, int offset, int value)
++{
++	struct uart_8250_port *up = (struct uart_8250_port *)p;
++	udelay(up->port.rw_delay);
++	mem_serial_out(p, offset, value);
++}
++
+ static void mem32_serial_out(struct uart_port *p, int offset, int value)
+ {
+ 	offset = offset << p->regshift;
+@@ -456,6 +470,11 @@ static void set_io_from_upio(struct uart
+ 		p->serial_out = mem32be_serial_out;
+ 		break;
+ 
++	case UPIO_MEM_DELAY:
++		p->serial_in = memdelay_serial_in;
++		p->serial_out = memdelay_serial_out;
++		break;
++
+ #ifdef CONFIG_SERIAL_8250_RT288X
+ 	case UPIO_AU:
+ 		p->serial_in = au_serial_in;
+@@ -483,6 +502,7 @@ serial_port_out_sync(struct uart_port *p
+ 	case UPIO_MEM16:
+ 	case UPIO_MEM32:
+ 	case UPIO_MEM32BE:
++	case UPIO_MEM_DELAY:
+ 	case UPIO_AU:
+ 		p->serial_out(p, offset, value);
+ 		p->serial_in(p, UART_LCR);	/* safe, no side-effects */
+@@ -2760,6 +2780,7 @@ static int serial8250_request_std_resour
+ 	case UPIO_MEM32BE:
+ 	case UPIO_MEM16:
+ 	case UPIO_MEM:
++	case UPIO_MEM_DELAY:
+ 		if (!port->mapbase)
+ 			break;
+ 
+@@ -2798,6 +2819,7 @@ static void serial8250_release_std_resou
+ 	case UPIO_MEM32BE:
+ 	case UPIO_MEM16:
+ 	case UPIO_MEM:
++	case UPIO_MEM_DELAY:
+ 		if (!port->mapbase)
+ 			break;
+ 
+--- a/include/uapi/linux/serial.h
++++ b/include/uapi/linux/serial.h
+@@ -70,6 +70,7 @@ struct serial_struct {
+ #define SERIAL_IO_TSI	  5
+ #define SERIAL_IO_MEM32BE 6
+ #define SERIAL_IO_MEM16	7
++#define SERIAL_IO_MEM_DELAY 10
+ 
+ #define UART_CLEAR_FIFO		0x01
+ #define UART_USE_FIFO		0x02

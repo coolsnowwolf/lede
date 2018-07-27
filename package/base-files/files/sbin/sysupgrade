@@ -55,7 +55,6 @@ Usage: $0 [<upgrade-option>...] <image file or URL>
        $0 [-q] [-i] <backup-command> <file>
 
 upgrade-option:
-	-d <delay>   add a delay before rebooting
 	-f <config>  restore configuration from .tar.gz (file or url)
 	-i           interactive mode
 	-c           attempt to preserve all changed files in /etc/
@@ -97,25 +96,38 @@ EOF
 # prevent messages from clobbering the tarball when using stdout
 [ "$CONF_BACKUP" = "-" ] && export VERBOSE=0
 
+
+list_conffiles() {
+	awk '
+		BEGIN { conffiles = 0 }
+		/^Conffiles:/ { conffiles = 1; next }
+		!/^ / { conffiles = 0; next }
+		conffiles == 1 { print }
+	' /usr/lib/opkg/status
+}
+
+list_changed_conffiles() {
+	# Cannot handle spaces in filenames - but opkg cannot either...
+	list_conffiles | while read file csum; do
+		[ -r "$file" ] || continue
+
+		echo "${csum}  ${file}" | sha256sum -sc - || echo "$file"
+	done
+}
+
 add_uci_conffiles() {
 	local file="$1"
 	( find $(sed -ne '/^[[:space:]]*$/d; /^#/d; p' \
 		/etc/sysupgrade.conf /lib/upgrade/keep.d/* 2>/dev/null) \
 		-type f -o -type l 2>/dev/null;
-	  opkg list-changed-conffiles ) | sort -u > "$file"
+	  list_changed_conffiles ) | sort -u > "$file"
 	return 0
 }
 
 add_overlayfiles() {
 	local file="$1"
-	if [ -d /overlay/upper ]; then
-		local overlaydir="/overlay/upper"
-	else
-		local overlaydir="/overlay"
-	fi
-	find $overlaydir/etc/ -type f -o -type l | sed \
+	find /overlay/upper/etc/ -type f -o -type l | sed \
 		-e 's,^/overlay\/upper/,/,' \
-		-e 's,^/overlay/,/,' \
 		-e '\,/META_[a-zA-Z0-9]*$,d' \
 		-e '\,/functions.sh$,d' \
 		-e '\,/[^/]*-opkg$,d' \
@@ -126,9 +138,16 @@ add_overlayfiles() {
 # hooks
 sysupgrade_image_check="fwtool_check_image platform_check_image"
 sysupgrade_pre_upgrade="fwtool_pre_upgrade"
-[ $SAVE_OVERLAY = 0 -o ! -d /overlay/etc ] && \
-	sysupgrade_init_conffiles="add_uci_conffiles" || \
+
+if [ $SAVE_OVERLAY = 1 ]; then
+	[ ! -d /overlay/upper/etc ] && {
+		echo "Cannot find '/overlay/upper/etc', required for '-c'"
+		exit 1
+	}
 	sysupgrade_init_conffiles="add_overlayfiles"
+else
+	sysupgrade_init_conffiles="add_uci_conffiles"
+fi
 
 include /lib/upgrade
 
@@ -152,7 +171,7 @@ do_save_conffiles() {
 }
 
 if [ $CONF_BACKUP_LIST -eq 1 ]; then
-	add_uci_conffiles "$CONFFILES"
+	run_hooks "$CONFFILES" $sysupgrade_init_conffiles
 	cat "$CONFFILES"
 	rm -f "$CONFFILES"
 	exit 0

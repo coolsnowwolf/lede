@@ -30,7 +30,7 @@ $(eval $(call KernelPackage,6lowpan))
 define KernelPackage/bluetooth
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Bluetooth support
-  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-crypto-hash +kmod-crypto-ecb +kmod-lib-crc16 +kmod-hid +!LINUX_3_18:kmod-crypto-cmac +!LINUX_3_18:kmod-regmap
+  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-crypto-hash +kmod-crypto-ecb +kmod-lib-crc16 +kmod-hid +!LINUX_3_18:kmod-crypto-cmac +!LINUX_3_18:kmod-regmap +LINUX_4_14:kmod-crypto-ecdh
   KCONFIG:= \
 	CONFIG_BLUEZ \
 	CONFIG_BLUEZ_L2CAP \
@@ -55,6 +55,7 @@ define KernelPackage/bluetooth
 	CONFIG_BT_HCIUART_BCM=n \
 	CONFIG_BT_HCIUART_INTEL=n \
 	CONFIG_BT_HCIUART_H4 \
+	CONFIG_BT_HCIUART_NOKIA=n \
 	CONFIG_BT_HIDP \
 	CONFIG_HID_SUPPORT=y
   $(call AddDepends/rfkill)
@@ -112,6 +113,27 @@ define KernelPackage/bluetooth_6lowpan/description
 endef
 
 $(eval $(call KernelPackage,bluetooth_6lowpan))
+
+
+define KernelPackage/btmrvl
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Marvell Bluetooth Kernel Module support
+  DEPENDS:=+kmod-mmc +kmod-bluetooth +mwifiex-sdio-firmware
+  KCONFIG:= \
+	CONFIG_BT_MRVL \
+	CONFIG_BT_MRVL_SDIO
+  $(call AddDepends/bluetooth)
+  FILES:= \
+	$(LINUX_DIR)/drivers/bluetooth/btmrvl.ko \
+	$(LINUX_DIR)/drivers/bluetooth/btmrvl_sdio.ko
+  AUTOLOAD:=$(call AutoProbe,btmrvl btmrvl_sdio)
+endef
+
+define KernelPackage/btmrvl/description
+ Kernel support for Marvell SDIO Bluetooth Module
+endef
+
+$(eval $(call KernelPackage,btmrvl))
 
 
 define KernelPackage/dma-buf
@@ -205,7 +227,7 @@ $(eval $(call KernelPackage,gpio-dev))
 define KernelPackage/gpio-mcp23s08
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Microchip MCP23xxx I/O expander
-  DEPENDS:=@GPIO_SUPPORT +PACKAGE_kmod-i2c-core:kmod-i2c-core
+  DEPENDS:=@GPIO_SUPPORT +kmod-i2c-core
   KCONFIG:=CONFIG_GPIO_MCP23S08
   FILES:=$(LINUX_DIR)/drivers/gpio/gpio-mcp23s08.ko
   AUTOLOAD:=$(call AutoLoad,40,gpio-mcp23s08)
@@ -221,9 +243,9 @@ $(eval $(call KernelPackage,gpio-mcp23s08))
 define KernelPackage/gpio-nxp-74hc164
   SUBMENU:=$(OTHER_MENU)
   TITLE:=NXP 74HC164 GPIO expander support
-  KCONFIG:=CONFIG_GPIO_NXP_74HC164
-  FILES:=$(LINUX_DIR)/drivers/gpio/nxp_74hc164.ko
-  AUTOLOAD:=$(call AutoProbe,nxp_74hc164)
+  KCONFIG:=CONFIG_GPIO_74X164
+  FILES:=$(LINUX_DIR)/drivers/gpio/gpio-74x164.ko
+  AUTOLOAD:=$(call AutoProbe,gpio-74x164)
 endef
 
 define KernelPackage/gpio-nxp-74hc164/description
@@ -263,84 +285,54 @@ endef
 
 $(eval $(call KernelPackage,gpio-pcf857x))
 
-define KernelPackage/iio-core
+
+define KernelPackage/ppdev
   SUBMENU:=$(OTHER_MENU)
-  TITLE:=Industrial IO core
+  TITLE:=Parallel port support
   KCONFIG:= \
-	CONFIG_IIO \
-	CONFIG_IIO_BUFFER=y \
-	CONFIG_IIO_KFIFO_BUF \
-	CONFIG_IIO_TRIGGER=y \
-	CONFIG_IIO_TRIGGERED_BUFFER
+	CONFIG_PARPORT \
+	CONFIG_PPDEV
   FILES:= \
-	$(LINUX_DIR)/drivers/iio/industrialio.ko \
-	$(if $(CONFIG_IIO_TRIGGERED_BUFFER),$(LINUX_DIR)/drivers/iio/industrialio-triggered-buffer.ko@lt4.4) \
-	$(if $(CONFIG_IIO_TRIGGERED_BUFFER),$(LINUX_DIR)/drivers/iio/buffer/industrialio-triggered-buffer.ko@ge4.4) \
-	$(LINUX_DIR)/drivers/iio/kfifo_buf.ko@lt4.4 \
-	$(LINUX_DIR)/drivers/iio/buffer/kfifo_buf.ko@ge4.4
-  AUTOLOAD:=$(call AutoLoad,55,industrialio kfifo_buf industrialio-triggered-buffer)
+	$(LINUX_DIR)/drivers/parport/parport.ko \
+	$(LINUX_DIR)/drivers/char/ppdev.ko
+  AUTOLOAD:=$(call AutoLoad,50,parport ppdev)
 endef
 
-define KernelPackage/iio-core/description
- The industrial I/O subsystem provides a unified framework for
- drivers for many different types of embedded sensors using a
- number of different physical interfaces (i2c, spi, etc)
-endef
-
-$(eval $(call KernelPackage,iio-core))
+$(eval $(call KernelPackage,ppdev))
 
 
-define KernelPackage/iio-ad799x
+define KernelPackage/parport-pc
   SUBMENU:=$(OTHER_MENU)
-  DEPENDS:=kmod-i2c-core kmod-iio-core
-  TITLE:=Analog Devices AD799x ADC driver
+  TITLE:=Parallel port interface (PC-style) support
+  DEPENDS:=+kmod-ppdev
   KCONFIG:= \
-	CONFIG_AD799X_RING_BUFFER=y \
-	CONFIG_AD799X
-  FILES:=$(LINUX_DIR)/drivers/iio/adc/ad799x.ko
-  AUTOLOAD:=$(call AutoLoad,56,ad799x)
+	CONFIG_KS0108=n \
+	CONFIG_PARPORT_PC \
+	CONFIG_PARPORT_1284=y \
+	CONFIG_PARPORT_PC_FIFO=y \
+	CONFIG_PARPORT_PC_PCMCIA=n \
+	CONFIG_PARPORT_PC_SUPERIO=y \
+	CONFIG_PARPORT_SERIAL=n \
+	CONFIG_PARIDE=n \
+	CONFIG_SCSI_IMM=n \
+	CONFIG_SCSI_PPA=n
+  FILES:= \
+	$(LINUX_DIR)/drivers/parport/parport_pc.ko
+  AUTOLOAD:=$(call AutoLoad,51,parport_pc)
 endef
 
-define KernelPackage/iio-ad799x/description
- support for Analog Devices:
- ad7991, ad7995, ad7999, ad7992, ad7993, ad7994, ad7997, ad7998
- i2c analog to digital converters (ADC).
-endef
-
-$(eval $(call KernelPackage,iio-ad799x))
-
-
-define KernelPackage/iio-dht11
-  SUBMENU:=$(OTHER_MENU)
-  DEPENDS:=kmod-iio-core @GPIO_SUPPORT @USES_DEVICETREE
-  TITLE:=DHT11 (and compatible) humidity and temperature sensors
-  KCONFIG:= \
-	CONFIG_DHT11
-  FILES:=$(LINUX_DIR)/drivers/iio/humidity/dht11.ko
-  AUTOLOAD:=$(call AutoLoad,56,dht11)
-endef
-
-define KernelPackage/iio-dht11/description
- support for DHT11 and DHT22 digitial humidity and temperature sensors
- attached at GPIO lines. You will need a custom device tree file to
- specify the GPIO line to use.
-endef
-
-$(eval $(call KernelPackage,iio-dht11))
+$(eval $(call KernelPackage,parport-pc))
 
 
 define KernelPackage/lp
   SUBMENU:=$(OTHER_MENU)
-  TITLE:=Parallel port and line printer support
+  TITLE:=Parallel port line printer device support
+  DEPENDS:=+kmod-ppdev
   KCONFIG:= \
-	CONFIG_PARPORT \
-	CONFIG_PRINTER \
-	CONFIG_PPDEV
+	CONFIG_PRINTER
   FILES:= \
-	$(LINUX_DIR)/drivers/parport/parport.ko \
-	$(LINUX_DIR)/drivers/char/lp.ko \
-	$(LINUX_DIR)/drivers/char/ppdev.ko
-  AUTOLOAD:=$(call AutoLoad,50,parport lp ppdev)
+	$(LINUX_DIR)/drivers/char/lp.ko
+  AUTOLOAD:=$(call AutoLoad,52,lp)
 endef
 
 $(eval $(call KernelPackage,lp))
@@ -361,7 +353,8 @@ define KernelPackage/mmc
 	CONFIG_SDIO_UART=n
   FILES:= \
 	$(LINUX_DIR)/drivers/mmc/core/mmc_core.ko \
-	$(LINUX_DIR)/drivers/mmc/card/mmc_block.ko
+	$(LINUX_DIR)/drivers/mmc/card/mmc_block.ko@lt4.10 \
+	$(LINUX_DIR)/drivers/mmc/core/mmc_block.ko@ge4.10
   AUTOLOAD:=$(call AutoProbe,mmc_core mmc_block,1)
 endef
 
@@ -486,7 +479,7 @@ define KernelPackage/rtc-ds1307
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Dallas/Maxim DS1307 (and compatible) RTC support
   DEFAULT:=m if ALL_KMODS && RTC_SUPPORT
-  DEPENDS:=+kmod-i2c-core
+  DEPENDS:=+kmod-i2c-core +LINUX_4_14:kmod-regmap
   KCONFIG:=CONFIG_RTC_DRV_DS1307 \
 	CONFIG_RTC_CLASS=y
   FILES:=$(LINUX_DIR)/drivers/rtc/rtc-ds1307.ko
@@ -648,6 +641,36 @@ endef
 $(eval $(call KernelPackage,mtdtests))
 
 
+define KernelPackage/mtdoops
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Log panic/oops to an MTD buffer
+  KCONFIG:=CONFIG_MTD_OOPS
+  FILES:=$(LINUX_DIR)/drivers/mtd/mtdoops.ko
+endef
+
+define KernelPackage/mtdoops/description
+ Kernel modules for Log panic/oops to an MTD buffer
+endef
+
+$(eval $(call KernelPackage,mtdoops))
+
+
+define KernelPackage/mtdram
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Test MTD driver using RAM
+  KCONFIG:=CONFIG_MTD_MTDRAM \
+    CONFIG_MTDRAM_TOTAL_SIZE=4096 \
+    CONFIG_MTDRAM_ERASE_SIZE=128
+  FILES:=$(LINUX_DIR)/drivers/mtd/devices/mtdram.ko
+endef
+
+define KernelPackage/mtdram/description
+  Test MTD driver using RAM
+endef
+
+$(eval $(call KernelPackage,mtdram))
+
+
 define KernelPackage/serial-8250
   SUBMENU:=$(OTHER_MENU)
   TITLE:=8250 UARTs
@@ -722,6 +745,7 @@ define KernelPackage/zram
 	CONFIG_ZRAM \
 	CONFIG_ZRAM_DEBUG=n \
 	CONFIG_PGTABLE_MAPPING=n \
+	CONFIG_ZRAM_WRITEBACK=n \
 	CONFIG_ZSMALLOC_STAT=n \
 	CONFIG_ZRAM_LZ4_COMPRESS=y
   FILES:= \
@@ -1044,3 +1068,38 @@ define KernelPackage/w83627hf-wdt/description
 endef
 
 $(eval $(call KernelPackage,w83627hf-wdt))
+
+
+define KernelPackage/itco-wdt
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Intel iTCO Watchdog Timer
+  KCONFIG:=CONFIG_ITCO_WDT \
+           CONFIG_ITCO_VENDOR_SUPPORT=y
+  FILES:=$(LINUX_DIR)/drivers/$(WATCHDOG_DIR)/iTCO_wdt.ko \
+         $(LINUX_DIR)/drivers/$(WATCHDOG_DIR)/iTCO_vendor_support.ko
+  AUTOLOAD:=$(call AutoLoad,50,iTCO_vendor_support iTCO_wdt,1)
+endef
+
+define KernelPackage/itco-wdt/description
+  Kernel module for Intel iTCO Watchdog Timer
+endef
+
+$(eval $(call KernelPackage,itco-wdt))
+
+
+define KernelPackage/it87-wdt
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=ITE IT87 Watchdog Timer
+  KCONFIG:=CONFIG_IT87_WDT
+  FILES:=$(LINUX_DIR)/drivers/$(WATCHDOG_DIR)/it87_wdt.ko
+  AUTOLOAD:=$(call AutoLoad,50,it87-wdt,1)
+  MODPARAMS.it87-wdt:= \
+	nogameport=1 \
+	nocir=1
+endef
+
+define KernelPackage/it87-wdt/description
+  Kernel module for ITE IT87 Watchdog Timer
+endef
+
+$(eval $(call KernelPackage,it87-wdt))

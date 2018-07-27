@@ -14,7 +14,7 @@ FEATURES:=usb usbgadget ext4 targz fpu audio display nand ubifs
 CPU_TYPE:=cortex-a8
 CPU_SUBTYPE:=vfpv3
 
-KERNEL_PATCHVER:=4.4
+KERNEL_PATCHVER:=4.14
 
 MAINTAINER:=Alexander Couzens <lynxis@fe80.eu>
 

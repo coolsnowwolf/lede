@@ -11,13 +11,13 @@ PKG_NAME:=procd
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL=$(LEDE_GIT)/project/procd.git
-PKG_SOURCE_DATE:=2017-08-22
-PKG_SOURCE_VERSION:=54b46a351fab736a92221a6f9c750b5f9da499a1
-PKG_MIRROR_HASH:=dcbeea89910bbdf7d6cf20c38892d6c51de375c8b35c372a7106ae17090694f3
+PKG_SOURCE_URL=$(PROJECT_GIT)/project/procd.git
+PKG_SOURCE_DATE:=2018-03-28
+PKG_SOURCE_VERSION:=dfb68f8556df63878add145ad9c656381bc20656
+PKG_MIRROR_HASH:=8d2c70fb0264a6548e39acc5ab1c44cec50fc550c4f931760b0796f8893c9b7f
 CMAKE_INSTALL:=1
 
-PKG_LICENSE:=GPL-2.0
+PKG_LICENSE:=GPL-3.0
 PKG_LICENSE_FILES:=
 
 PKG_MAINTAINER:=John Crispin <john@phrozen.org>
@@ -87,9 +87,8 @@ ifdef CONFIG_PACKAGE_procd-ujail
   CMAKE_OPTIONS += -DJAIL_SUPPORT=1
 endif
 
-ifdef CONFIG_PACKAGE_procd-seccomp
-  CMAKE_OPTIONS += -DSECCOMP_SUPPORT=1 -DUTRACE_SUPPORT=1
-endif
+SECCOMP=$(if $(CONFIG_PACKAGE_procd-seccomp),1,0)
+CMAKE_OPTIONS += -DSECCOMP_SUPPORT=$(SECCOMP) -DUTRACE_SUPPORT=$(SECCOMP)
 
 define Package/procd/install
 	$(INSTALL_DIR) $(1)/sbin $(1)/etc $(1)/lib/functions
@@ -110,6 +109,7 @@ define Package/procd-seccomp/install
 	$(INSTALL_DIR) $(1)/sbin $(1)/lib
 	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/lib/libpreload-seccomp.so $(1)/lib
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/utrace $(1)/sbin/
+	$(LN) utrace $(1)/sbin/seccomp-trace
 	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/lib/libpreload-trace.so $(1)/lib
 endef
 

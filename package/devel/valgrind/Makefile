@@ -17,6 +17,7 @@ PKG_HASH:=d76680ef03f00cd5e970bbdcd4e57fb1f6df7d2e2c071635ef2be74790190c3b
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=GPL-2.0+
+PKG_CPE_ID:=cpe:/a:valgrind:valgrind
 
 PKG_FIXUP = autoreconf
 PKG_INSTALL := 1
@@ -84,7 +85,7 @@ CPU := $(patsubst x86_64,amd64,$(patsubst x86,i386,$(patsubst um,$(ARCH),$(LINUX
 CONFIGURE_VARS += \
 	UNAME_R=$(LINUX_VERSION)
 
-ifeq ($(ARCH),x86_64)
+ifeq ($(CONFIG_ARCH_64BIT),y)
 	CONFIGURE_ARGS += \
 		--enable-only64bit
 	BITS := 64bit
@@ -113,12 +114,17 @@ define Package/valgrind/install
 		./files/default.supp \
 		$(PKG_INSTALL_DIR)/usr/lib/valgrind/none-* \
 		$(PKG_INSTALL_DIR)/usr/lib/valgrind/vgpreload_core*.so \
-		$(PKG_INSTALL_DIR)/usr/lib/valgrind/$(CPU)-*.xml \
 		$(PKG_INSTALL_DIR)/usr/lib/valgrind/$(BITS)-core*.xml \
 		$(PKG_INSTALL_DIR)/usr/lib/valgrind/$(BITS)-linux*.xml \
 		$(PKG_INSTALL_DIR)/usr/lib/valgrind/memcheck-* \
 		$(PKG_INSTALL_DIR)/usr/lib/valgrind/vgpreload_memcheck*.so \
 		$(1)/usr/lib/valgrind/
+
+ifneq ($(ARCH),aarch64)
+	$(CP) \
+		$(PKG_INSTALL_DIR)/usr/lib/valgrind/$(CPU)-*.xml \
+		$(1)/usr/lib/valgrind/
+endif
 endef
 
 define Package/valgrind-cachegrind/install

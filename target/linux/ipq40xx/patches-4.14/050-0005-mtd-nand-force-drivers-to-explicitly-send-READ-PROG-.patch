@@ -1,0 +1,94 @@
+From 25f815f66a141436df8a4c45e5d2765272aea2ac Mon Sep 17 00:00:00 2001
+From: Boris Brezillon <boris.brezillon@free-electrons.com>
+Date: Thu, 30 Nov 2017 18:01:30 +0100
+Subject: [PATCH 5/7] mtd: nand: force drivers to explicitly send READ/PROG
+ commands
+
+The core currently send the READ0 and SEQIN+PAGEPROG commands in
+nand_do_read/write_ops(). This is inconsistent with
+->read/write_oob[_raw]() hooks behavior which are expected to send
+these commands.
+
+There's already a flag (NAND_ECC_CUSTOM_PAGE_ACCESS) to inform the core
+that a specific controller wants to send the READ/SEQIN+PAGEPROG
+commands on its own, but it's an opt-in flag, and existing drivers are
+unlikely to be updated to pass it.
+
+Moreover, some controllers cannot dissociate the READ/PAGEPROG commands
+from the associated data transfer and ECC engine activation, and
+developers have to hack things in their ->cmdfunc() implementation to
+handle such complex cases, or have to accept the perf penalty of sending
+twice the same command.
+To address this problem we are planning on adding a new interface which
+is passed all information about a NAND operation (including the amount
+of data to transfer) and replacing all calls to ->cmdfunc() to calls to
+this new ->exec_op() hook. But, in order to do that, we need to have all
+->cmdfunc() calls placed near their associated ->read/write_buf/byte()
+calls.
+
+Modify the core and relevant drivers to make NAND_ECC_CUSTOM_PAGE_ACCESS
+the default case, and remove this flag.
+
+Signed-off-by: Boris Brezillon <boris.brezillon@free-electrons.com>
+[miquel.raynal@free-electrons.com: tested, fixed and rebased on nand/next]
+Signed-off-by: Miquel Raynal <miquel.raynal@free-electrons.com>
+Acked-by: Masahiro Yamada <yamada.masahiro@socionext.com>
+---
+ drivers/mtd/nand/qcom_nandc.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+--- a/drivers/mtd/nand/qcom_nandc.c
++++ b/drivers/mtd/nand/qcom_nandc.c
+@@ -1725,6 +1725,7 @@ static int qcom_nandc_read_page(struct m
+ 	u8 *data_buf, *oob_buf = NULL;
+ 	int ret;
+ 
++	nand_read_page_op(chip, page, 0, NULL, 0);
+ 	data_buf = buf;
+ 	oob_buf = oob_required ? chip->oob_poi : NULL;
+ 
+@@ -1750,6 +1751,7 @@ static int qcom_nandc_read_page_raw(stru
+ 	int i, ret;
+ 	int read_loc;
+ 
++	nand_read_page_op(chip, page, 0, NULL, 0);
+ 	data_buf = buf;
+ 	oob_buf = chip->oob_poi;
+ 
+@@ -1850,6 +1852,8 @@ static int qcom_nandc_write_page(struct
+ 	u8 *data_buf, *oob_buf;
+ 	int i, ret;
+ 
++	nand_prog_page_begin_op(chip, page, 0, NULL, 0);
++
+ 	clear_read_regs(nandc);
+ 	clear_bam_transaction(nandc);
+ 
+@@ -1902,6 +1906,9 @@ static int qcom_nandc_write_page(struct
+ 
+ 	free_descs(nandc);
+ 
++	if (!ret)
++		ret = nand_prog_page_end_op(chip);
++
+ 	return ret;
+ }
+ 
+@@ -1916,6 +1923,7 @@ static int qcom_nandc_write_page_raw(str
+ 	u8 *data_buf, *oob_buf;
+ 	int i, ret;
+ 
++	nand_prog_page_begin_op(chip, page, 0, NULL, 0);
+ 	clear_read_regs(nandc);
+ 	clear_bam_transaction(nandc);
+ 
+@@ -1970,6 +1978,9 @@ static int qcom_nandc_write_page_raw(str
+ 
+ 	free_descs(nandc);
+ 
++	if (!ret)
++		ret = nand_prog_page_end_op(chip);
++
+ 	return ret;
+ }
+ 

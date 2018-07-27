@@ -105,14 +105,14 @@ ifneq ($(filter patch-libtool,$(PKG_FIXUP)),)
 endif
 
 ifneq ($(filter libtool,$(PKG_FIXUP)),)
-  PKG_BUILD_DEPENDS += libtool libintl libiconv
+  PKG_BUILD_DEPENDS += libtool gettext libiconv
  ifeq ($(filter no-autoreconf,$(PKG_FIXUP)),)
   Hooks/Configure/Pre += autoreconf_target
  endif
 endif
 
 ifneq ($(filter libtool-ucxx,$(PKG_FIXUP)),)
-  PKG_BUILD_DEPENDS += libtool libintl libiconv
+  PKG_BUILD_DEPENDS += libtool gettext libiconv
  ifeq ($(filter no-autoreconf,$(PKG_FIXUP)),)
   Hooks/Configure/Pre += autoreconf_target
  endif

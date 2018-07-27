@@ -21,172 +21,144 @@ define Package/iwl4965-firmware/install
 endef
 $(eval $(call BuildPackage,iwl4965-firmware))
 
-Package/iwlwifi-firmware = $(call Package/firmware-default,Intel wireless firmware)
-define Package/iwlwifi-firmware/config
-  if PACKAGE_iwlwifi-firmware
-	config IWL100_FW
-		bool "Intel 100 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Centrino Wireless-N 100
-
-	config IWL1000_FW
-		bool "Intel 1000 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Centrino Wireless-N 1000
-
-	config IWL105_FW
-		bool "Intel 105 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Centrino Wireless-N 105
-
-	config IWL135_FW
-		bool "Intel 135 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Centrino Wireless-N 135
-
-	config IWL2000_FW
-		bool "Intel 2000 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Centrino Wireless-N 2200
-
-	config IWL2030_FW
-		bool "Intel 2030 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Centrino Wireless-N 2230
-
-	config IWL3160_FW
-		bool "Intel 3160 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Wireless WiFi 3160
-
-	config IWL5000_FW
-		bool "Intel 5000 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Wireless WiFi 5100AGN, 5300AGN, and 5350AGN
-
-	config IWL5150_FW
-		bool "Intel 5150 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Wireless WiFi 5150AGN
-
-	config IWL6000_FW
-		bool "Intel 6000 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Centrino Ultimate-N 6300 and Advanced-N 6200
-
-	config IWL6005_FW
-		bool "Intel 6005 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Centrino Advanced-N 6205
-
-	config IWL6030_FW
-		bool "Intel 6030 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Centrino Advanced-N 6230, Wireless-N 1030, Wireless-N 130 and Advanced-N 6235
-
-	config IWL6050_FW
-		bool "Intel 6050 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Centrino Advanced-N + WiMAX 6250 and Wireless-N + WiMAX 6150
-
-	config IWL7260_FW
-		bool "Intel 7260 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Dual Band Wireless-N 7260 and Intel Dual Band Wireless-AC 7260
-
-	config IWL7265_FW
-		bool "Intel 7265 Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Wireless 7265, 7265D, 3165
-
-	config IWL8000_FW
-		bool "Intel 8000 Series Firmware"
-		default y
-		help
-		  Download and install firmware for:
-		    Intel Wireless Series 8260, 4165
-  endif
-endef
-define Package/iwlwifi-firmware/install
+Package/iwlwifi-firmware-iwl100 = $(call Package/firmware-default,Intel Centrino Wireless-N 100 firmware)
+define Package/iwlwifi-firmware-iwl100/install
 	$(INSTALL_DIR) $(1)/lib/firmware
-ifneq ($(CONFIG_IWL100_FW),)
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-100-5.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL1000_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-1000-5.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL105_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-105-6.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL135_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-135-6.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL2000_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-2000-6.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL2030_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-2030-6.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL3160_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-3160-16.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL5000_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-5000-5.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL5150_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-5150-2.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL6000_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-6000-4.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL6005_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-6000g2a-6.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL6030_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-6000g2b-6.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL6050_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-6050-5.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL7260_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-7260-16.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL7265_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-7265-16.ucode $(1)/lib/firmware
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-7265D-16.ucode $(1)/lib/firmware
-endif
-ifneq ($(CONFIG_IWL8000_FW),)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-8000C-16.ucode $(1)/lib/firmware
-endif
 endef
-$(eval $(call BuildPackage,iwlwifi-firmware))
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl100))
+
+Package/iwlwifi-firmware-iwl1000 = $(call Package/firmware-default,Intel Centrino Wireless-N 1000 firmware)
+define Package/iwlwifi-firmware-iwl1000/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-1000-5.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl1000))
+
+Package/iwlwifi-firmware-iwl105 = $(call Package/firmware-default,Intel Centrino Wireless-N 105 firmware)
+define Package/iwlwifi-firmware-iwl105/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-105-6.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl105))
+
+Package/iwlwifi-firmware-iwl135 = $(call Package/firmware-default,Intel Centrino Wireless-N 135 firmware)
+define Package/iwlwifi-firmware-iwl135/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-135-6.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl135))
+
+Package/iwlwifi-firmware-iwl2000 = $(call Package/firmware-default,Intel Centrino Wireless-N 2200 firmware)
+define Package/iwlwifi-firmware-iwl2000/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-2000-6.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl2000))
+
+Package/iwlwifi-firmware-iwl2030 = $(call Package/firmware-default,Intel Centrino Wireless-N 2230 firmware)
+define Package/iwlwifi-firmware-iwl2030/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-2030-6.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl2030))
+
+Package/iwlwifi-firmware-iwl3160 = $(call Package/firmware-default,Intel Wireless 3160 firmware)
+define Package/iwlwifi-firmware-iwl3160/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-3160-17.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl3160))
+
+Package/iwlwifi-firmware-iwl3168 = $(call Package/firmware-default,Intel Wireless 3168 firmware)
+define Package/iwlwifi-firmware-iwl3168/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-3168-27.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl3168))
+
+Package/iwlwifi-firmware-iwl5000 = $(call Package/firmware-default,Intel Wireless 5100AGN 5300AGN and 5350AGN firmware)
+define Package/iwlwifi-firmware-iwl5000/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-5000-5.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl5000))
+
+Package/iwlwifi-firmware-iwl5150 = $(call Package/firmware-default,Intel Wireless Wi-Fi 5150AGN firmware)
+define Package/iwlwifi-firmware-iwl5150/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-5150-2.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl5150))
+
+Package/iwlwifi-firmware-iwl6000g2 = $(call Package/firmware-default,Intel Centrino 6300 and 6200 firmware)
+define Package/iwlwifi-firmware-iwl6000g2/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-6000-4.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl6000g2))
+
+Package/iwlwifi-firmware-iwl6000g2a = $(call Package/firmware-default,Intel Centrino 6205 firmware)
+define Package/iwlwifi-firmware-iwl6000g2a/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-6000g2a-6.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl6000g2a))
+
+Package/iwlwifi-firmware-iwl6000g2b = $(call Package/firmware-default,Intel Centrino 6230 1030 130 and 6235 firmware)
+define Package/iwlwifi-firmware-iwl6000g2b/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-6000g2b-6.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl6000g2b))
+
+Package/iwlwifi-firmware-iwl6050 = $(call Package/firmware-default,Intel Centrino 6150 and 6250 firmware)
+define Package/iwlwifi-firmware-iwl6050/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-6050-5.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl6050))
+
+Package/iwlwifi-firmware-iwl7260 = $(call Package/firmware-default,Intel Wireless 7260 firmware)
+define Package/iwlwifi-firmware-iwl7260/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-7260-17.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl7260))
+
+Package/iwlwifi-firmware-iwl7265 = $(call Package/firmware-default,Intel Wireless 7265 firmware)
+define Package/iwlwifi-firmware-iwl7265/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-7265-17.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl7265))
+
+Package/iwlwifi-firmware-iwl7265d = $(call Package/firmware-default,Intel Wireless 7265D and 3165 firmware)
+define Package/iwlwifi-firmware-iwl7265d/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-7265D-27.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl7265d))
+
+Package/iwlwifi-firmware-iwl8260c = $(call Package/firmware-default,Intel Wireless 8260 and 4165 firmware)
+define Package/iwlwifi-firmware-iwl8260c/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-8000C-31.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl8260c))
+
+Package/iwlwifi-firmware-iwl8265 = $(call Package/firmware-default,Intel Wireless 8265 firmware)
+define Package/iwlwifi-firmware-iwl8265/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-8265-27.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl8265))
+
+Package/e100-firmware = $(call Package/firmware-default,Intel e100)
+define Package/e100-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/e100
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/e100/d101m_ucode.bin $(1)/lib/firmware/e100/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/e100/d101s_ucode.bin $(1)/lib/firmware/e100/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/e100/d102e_ucode.bin $(1)/lib/firmware/e100/
+endef
+$(eval $(call BuildPackage,e100-firmware))

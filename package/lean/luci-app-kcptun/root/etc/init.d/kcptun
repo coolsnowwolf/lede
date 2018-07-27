@@ -1,0 +1,244 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright 2016-2017 Xingwang Liao <kuoruan@gmail.com>
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+START=99
+USE_PROCD=1
+
+KCPTUN=kcptun
+CONFIG_FOLDER=/var/etc/$KCPTUN
+
+if [ -r /usr/share/libubox/jshn.sh ]; then
+	. /usr/share/libubox/jshn.sh
+elif [ -r /lib/functions/jshn.sh ]; then
+	. /lib/functions/jshn.sh
+else
+	logger -p daemon.err -t "$KCPTUN" \
+		"Package required: jshn."
+	exit 1
+fi
+
+_log() {
+	local level="$1"
+	local msg="$2"
+
+	logger -p "daemon.${level}" -t "$KCPTUN" "$msg"
+}
+
+gen_client_config_file() {
+	local config_file="$1"
+
+	json_init
+	json_add_string "remoteaddr" "${server_addr}:${server_port}"
+	json_add_string "localaddr" "${listen_addr}:${listen_port}"
+
+	add_configs() {
+		local type="$1"; shift
+		local k v
+
+		for k in "$@"; do
+			v="$(eval echo "\$$k")"
+
+			if [ -n "$v" ]; then
+				if [ "$type" = "string" ]; then
+					json_add_string "$k" "$v"
+				elif [ "$type" = "int" ]; then
+					json_add_int "$k" "$v"
+				elif [ "$type" = "boolean" ]; then
+					if [ "$v" = "true" ]; then
+						json_add_boolean "$k" "1"
+					else
+						json_add_boolean "$k" "0"
+					fi
+				fi
+			fi
+		done
+	}
+
+	add_configs "string" key crypt mode
+	add_configs "int" conn autoexpire mtu sndwnd rcvwnd datashard parityshard dscp \
+		nodelay interval resend nc sockbuf keepalive scavengettl snmpperiod
+	add_configs "boolean" nocomp acknodelay
+
+	if [ -n "$log_file" ]; then
+		json_add_string "log" "$log_file"
+	fi
+
+	json_close_object
+
+	json_dump -i >"$config_file"
+}
+
+setup_iptables_chain() {
+	if ! ( iptables -nL "$KCPTUN" >/dev/null 2>&1 ); then
+		iptables -N "$KCPTUN" 2>/dev/null
+	fi
+
+	iptables -C OUTPUT -j "$KCPTUN" 2>/dev/null || \
+		iptables -A OUTPUT -j "$KCPTUN" 2>/dev/null
+	iptables -C INPUT -j "$KCPTUN" 2>/dev/null || \
+		iptables -A INPUT -j "$KCPTUN" 2>/dev/null
+}
+
+clear_iptables_chain() {
+	iptables -F "$KCPTUN" >/dev/null 2>&1
+}
+
+add_iptables_rule() {
+	local port="$1"
+	local type="$2"
+
+	if [ "$type" = "client" ]; then
+		( iptables -C "$KCPTUN" -p tcp --dport "$port" -m comment \
+			--comment "$type" -j ACCEPT 2>/dev/null ) && return 0
+
+		iptables -A "$KCPTUN" -p tcp --dport "$port" -m comment \
+			--comment "$type" -j ACCEPT 2>/dev/null
+	elif [ "$type" = "server" ]; then
+		( iptables -C "$KCPTUN" -p udp --dport "$port" -m comment \
+			--comment "$type" -j ACCEPT 2>/dev/null ) && return 0
+
+		iptables -A "$KCPTUN" -p udp --dport "$port" -m comment \
+			--comment "$type" -j ACCEPT 2>/dev/null
+	fi
+}
+
+validate_config_section() {
+	uci_validate_section "$KCPTUN" general "$1" \
+		'server:uciname' \
+		'client_file:string' \
+		'daemon_user:string:root' \
+		'enable_logging:bool:0' \
+		'log_folder:directory:/var/log/kcptun'
+}
+
+validate_server_section() {
+	uci_validate_section "$KCPTUN" servers "$1" \
+		'server_addr:host' \
+		'server_port:port:29900' \
+		'listen_addr:host:0.0.0.0' \
+		'listen_port:port:12948' \
+		'key:string' \
+		'crypt:string:aes' \
+		'mode:or("normal","fast","fast2","fast3","manual"):fast' \
+		'conn:min(1)' \
+		'autoexpire:uinteger' \
+		'scavengettl:min(-1)' \
+		'mtu:range(64,9200)' \
+		'sndwnd:min(1)' \
+		'rcvwnd:min(1)' \
+		'datashard:uinteger' \
+		'parityshard:uinteger' \
+		'dscp:uinteger' \
+		'nocomp:or("true", "false")' \
+		'nodelay:bool' \
+		'interval:uinteger' \
+		'resend:range(0,2)' \
+		'nc:bool' \
+		'acknodelay:or("true", "false")' \
+		'sockbuf:uinteger' \
+		'keepalive:uinteger' \
+		'snmpperiod:min(1)'
+}
+
+validate_client_file() {
+	local file="$1"
+
+	if [ ! -f "$file" ]; then
+		return 1
+	fi
+
+	[ -x "$file" ] || chmod 755 "$file"
+
+	( $file -v 2>/dev/null | grep -q "$KCPTUN" )
+}
+
+start_kcptun_instance() {
+	local section="$1"
+
+	if ! validate_config_section "$section" ; then
+		_log "err" "Config validate failed."
+		return 1
+	fi
+
+	if [ -z "$server" ] || [ "$server" = "nil" ]; then
+		_log "info" "No server selected, Client will stop."
+		return 0
+	elif ! validate_server_section "$server"; then
+		_log "err" "Server config validation failed."
+		return 1
+	elif [ -z "$server_addr" ] || [ -z "$listen_port" ]; then
+		_log "err" "Server config validation failed."
+		return 1
+	fi
+
+	if [ -z "$client_file" ]; then
+		_log "err" "Please set client file path, or use auto download."
+		return 1;
+	elif ! validate_client_file "$client_file"; then
+		_log "err" "Client file validation failed."
+		return 1
+	fi
+
+	is_ipv6_address() {
+		echo "$1" | grep -q ":"
+	}
+
+	is_ipv6_address "$server_addr" && server_addr="[${server_addr}]"
+	is_ipv6_address "$listen_addr" && listen_addr="[${listen_addr}]"
+
+	[ -d "$CONFIG_FOLDER" ] || mkdir -p "$CONFIG_FOLDER"
+
+	log_file=""
+	if [ "$enable_logging" = "1" ]; then
+		mkdir -p "$log_folder"
+		chown -R "$daemon_user" "$log_folder"
+		log_file="${log_folder}/client.${section}.log"
+	fi
+
+	local config_file=${CONFIG_FOLDER}/client.${section}.json
+
+	if ! ( gen_client_config_file "$config_file" ); then
+		_log "err" "Can't create config file".
+		return 1
+	fi
+
+	add_iptables_rule "$listen_port" "client"
+
+	procd_open_instance
+	procd_set_param command "$client_file"
+	procd_append_param command -c "$config_file"
+	procd_set_param respawn
+	procd_set_param user "$daemon_user"
+	procd_set_param file "$config_file"
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$KCPTUN"
+}
+
+start_service() {
+	clear_iptables_chain
+	setup_iptables_chain
+
+	config_load "$KCPTUN"
+	config_foreach start_kcptun_instance "general"
+}
+
+stop_service() {
+	clear_iptables_chain
+}

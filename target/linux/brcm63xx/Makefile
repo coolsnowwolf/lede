@@ -12,7 +12,7 @@ BOARD:=brcm63xx
 BOARDNAME:=Broadcom BCM63xx
 SUBTARGETS:=generic smp
 FEATURES:=squashfs usb atm pci pcmcia usbgadget
-KERNEL_PATCHVER:=4.4
+KERNEL_PATCHVER:=4.9
 MAINTAINER:=Jonas Gorski <jogo@openwrt.org>
 
 define Target/Description

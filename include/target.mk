@@ -13,13 +13,16 @@ __target_inc=1
 DEVICE_TYPE?=router
 
 # Default packages - the really basic set
-DEFAULT_PACKAGES:=base-files libc libgcc busybox dropbear mtd uci opkg netifd fstools uclient-fetch logd \
-iptables-mod-nat-extra kmod-macvlan block-mount default-settings ipset-lists luci luci-app-ddns luci-app-sqm luci-app-upnp luci-app-adbyby-plus luci-app-autoreboot \
-luci-app-filetransfer luci-app-shadowsocksr-pro luci-app-usb-printer
+DEFAULT_PACKAGES:=base-files libc libgcc busybox dropbear mtd uci opkg netifd fstools uclient-fetch logd  \
+iptables-mod-nat-extra kmod-nf-nathelper kmod-nf-nathelper-extra kmod-ipt-raw kmod-macvlan kmod-nft-offload block-mount automount \
+default-settings ipset-lists luci luci-app-ddns luci-app-sqm luci-app-upnp luci-app-adbyby-plus luci-app-autoreboot \
+luci-app-filetransfer luci-app-ssr-pro luci-app-usb-printer luci-app-vsftpd ddns-scripts_aliyun luci-app-xlnetacc \
+luci-app-pptp-server luci-app-ipsec-vpnd luci-app-vlmcsd luci-app-wifischedule luci-app-wol  \
+luci-app-sfe luci-app-flowoffload luci-app-nlbwmon
 # For nas targets
 DEFAULT_PACKAGES.nas:=block-mount fdisk lsblk mdadm
 # For router targets
-DEFAULT_PACKAGES.router:=dnsmasq-full iptables ip6tables ppp ppp-mod-pppoe firewall odhcpd odhcp6c
+DEFAULT_PACKAGES.router:=dnsmasq-full iptables ip6tables ppp ppp-mod-pppoe firewall kmod-ipt-offload
 DEFAULT_PACKAGES.bootloader:=
 
 ifneq ($(DUMP),)
@@ -53,6 +56,10 @@ else
   endif
 endif
 
+ifneq ($(filter 3.18 4.4 4.9,$(KERNEL_PATCHVER)),)
+  DEFAULT_PACKAGES.router:=$(filter-out kmod-ipt-offload,$(DEFAULT_PACKAGES.router))
+endif
+
 # Add device specific packages (here below to allow device type set from subtarget)
 DEFAULT_PACKAGES += $(DEFAULT_PACKAGES.$(DEVICE_TYPE))
 
@@ -70,6 +77,8 @@ define Profile
   $(eval $(call ProfileDefault))
   $(eval $(call Profile/$(1)))
   dumpinfo : $(call shexport,Profile/$(1)/Description)
+  DEFAULT_PACKAGES := $(filter-out $(patsubst -%,%,$(filter -%,$(PACKAGES))),$(DEFAULT_PACKAGES))
+  PACKAGES := $(filter-out -%,$(PACKAGES))
   DUMPINFO += \
 	echo "Target-Profile: $(1)"; \
 	$(if $(PRIORITY), echo "Target-Profile-Priority: $(PRIORITY)"; ) \
@@ -190,6 +199,7 @@ ifeq ($(DUMP),1)
     CPU_CFLAGS_cortex-a9 = -mcpu=cortex-a9
     CPU_CFLAGS_cortex-a15 = -mcpu=cortex-a15
     CPU_CFLAGS_cortex-a53 = -mcpu=cortex-a53
+    CPU_CFLAGS_cortex-a72 = -mcpu=cortex-a72
     CPU_CFLAGS_fa526 = -mcpu=fa526
     CPU_CFLAGS_mpcore = -mcpu=mpcore
     CPU_CFLAGS_xscale = -mcpu=xscale
@@ -206,6 +216,10 @@ ifeq ($(DUMP),1)
     CPU_CFLAGS_405:=-mcpu=405
     CPU_CFLAGS_440:=-mcpu=440
     CPU_CFLAGS_464fp:=-mcpu=464fp
+  endif
+  ifeq ($(ARCH),powerpc64)
+    CPU_TYPE ?= powerpc64
+    CPU_CFLAGS_powerpc64:=-mcpu=powerpc64
   endif
   ifeq ($(ARCH),sparc)
     CPU_TYPE = sparc
@@ -267,9 +281,7 @@ ifeq ($(DUMP),1)
       FEATURES += virtio
     endif
     ifneq ($(CONFIG_CPU_MIPS32_R2),)
-      ifneq ($(CPU_SUBTYPE),nomips16)
-        FEATURES += mips16
-      endif
+      FEATURES += mips16
     endif
     FEATURES += $(foreach v,6 7,$(if $(CONFIG_CPU_V$(v)),arm_v$(v)))
 

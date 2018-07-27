@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vsftpd-alt
 PKG_VERSION:=3.0.3
-PKG_RELEASE:=3
+PKG_RELEASE:=5
 
 PKG_SOURCE:=vsftpd-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://security.appspot.com/downloads/
@@ -54,6 +54,8 @@ ifneq ($(CONFIG_USE_MUSL),)
 else
   NLSSTRING:=-lcrypt -lnsl
 endif
+
+TARGET_CFLAGS += -D_GNU_SOURCE -include fcntl.h
 
 #ifdef CONFIG_PACKAGE_libpam
 #  EXTRA_LDFLAGS += -lpam
