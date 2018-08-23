@@ -15,6 +15,7 @@ PKG_HASH:=6a018fd3caf58f3dcfa23ee989a82bd35df03af71872b9dca8c6d758a0d26c05
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/host-build.mk
 
 define U-Boot/Default
   BUILD_TARGET:=mxs
@@ -36,6 +37,8 @@ UBOOT_TARGETS := \
 	duckbill
 
 UBOOT_MAKE_FLAGS += $(UBOOT_IMAGE)
+
+Build/Exports:=$(Host/Exports)
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)

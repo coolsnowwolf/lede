@@ -60,7 +60,7 @@ endef
 
 define Build/netgear-dni
 	$(STAGING_DIR_HOST)/bin/mkdniimg \
-		-B $(NETGEAR_BOARD_ID) -v $(VERSION_DIST).$(REVISION) \
+		-B $(NETGEAR_BOARD_ID) -v $(VERSION_DIST).$(firstword $(subst -, ,$(REVISION))) \
 		$(if $(NETGEAR_HW_ID),-H $(NETGEAR_HW_ID)) \
 		-r "$(1)" \
 		-i $@ -o $@.new
@@ -135,7 +135,7 @@ define Build/lzma-no-dict
 endef
 
 define Build/gzip
-	gzip --force -9n -c $@ $(1) > $@.new
+	gzip -f -9n -c $@ $(1) > $@.new
 	@mv $@.new $@
 endef
 
@@ -184,6 +184,10 @@ define Build/append-ubi
 		$(UBINIZE_OPTS)
 	cat $@.tmp >> $@
 	rm $@.tmp
+endef
+
+define Build/append-uboot
+	dd if=$(UBOOT_PATH) >> $@
 endef
 
 define Build/pad-to

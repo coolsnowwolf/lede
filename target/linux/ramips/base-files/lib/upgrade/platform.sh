@@ -54,6 +54,7 @@ platform_check_image() {
 	dir-810l|\
 	duzun-dm06|\
 	e1700|\
+	elecom,wrc-1167ghbk2-s|\
 	esr-9753|\
 	ew1200|\
 	ex2700|\
@@ -121,6 +122,7 @@ platform_check_image() {
 	oy-0001|\
 	pbr-d1|\
 	pbr-m1|\
+	phicomm,k2g|\
 	psg1208|\
 	psg1218a|\
 	psg1218b|\
@@ -255,6 +257,7 @@ platform_check_image() {
 	tplink,c20-v4|\
 	tplink,c50-v3|\
 	tplink,tl-mr3420-v5|\
+	tplink,tl-wr842n-v5|\
 	tplink,tl-wr902ac-v3|\
 	tl-wr840n-v4|\
 	tl-wr840n-v5|\
@@ -293,6 +296,7 @@ platform_check_image() {
 		nand_do_platform_check "$board" "$1"
 		return $?;
 		;;
+	mikrotik,rbm33g|\
 	re350-v1)
 		[ "$magic" != "01000000" ] && {
 			echo "Invalid image type."
@@ -312,6 +316,16 @@ platform_check_image() {
 
 	echo "Sysupgrade is not yet supported on $board."
 	return 1
+}
+
+platform_pre_upgrade() {
+	local board=$(board_name)
+
+	case "$board" in
+	mikrotik,rbm33g)
+		[ -z "$(rootfs_type)" ] && mtd erase firmware
+		;;
+	esac
 }
 
 platform_nand_pre_upgrade() {

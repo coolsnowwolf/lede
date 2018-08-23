@@ -7,44 +7,42 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mtd-utils
-PKG_VERSION:=1.5.2
+PKG_VERSION:=2.0.2
 
-PKG_SOURCE_VERSION:=aea36417067dade75192bafa03af70b6eb2677b1
-PKG_SOURCE_URL:=git://git.infradead.org/mtd-utils.git
-PKG_SOURCE_PROTO:=git
-PKG_MIRROR_HASH:=e11b342b85a36b2e438a8412ec52f87621d3046aec1a93039f8c72de9990b2a7
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
+PKG_SOURCE_URL:=ftp://ftp.infradead.org/pub/mtd-utils/
+PKG_HASH:=fb3de61be8e932abb424e8ea3c30298f553d5f970ad158a737bb303bbf9660b8
+
+PKG_FIXUP:=autoreconf
 
 include $(INCLUDE_DIR)/host-build.mk
 
-HOST_CFLAGS += -I$(STAGING_DIR_HOST)/include/e2fsprogs
-CFLAGS := $(HOST_CFLAGS) -I$(HOST_BUILD_DIR)/include -L$(HOST_BUILD_DIR) -L$(STAGING_DIR_HOST)/lib -DNO_NATIVE_SUPPORT
 ifneq ($(HOST_OS),Linux)
-CFLAGS += -Dloff_t=off_t -D__BYTE_ORDER=BYTE_ORDER -include endian.h -I$(CURDIR)/include -include fls.h
-MTD_STATIC := 0
-else
-MTD_STATIC := 1
+  HOST_CFLAGS += \
+	-I$(CURDIR)/include \
+	-Dloff_t=off_t \
+	-D__BYTE_ORDER=BYTE_ORDER \
+	-include endian.h \
+	-DNO_NATIVE_SUPPORT \
+	-include fls.h
 endif
 
-MTD_MAKEOPTS = \
-	CFLAGS="$(CFLAGS)" \
-	LDFLAGS="$(HOST_LDFLAGS)" \
-	WITHOUT_LZO=1 WITHOUT_XATTR=1 \
-	SUBDIRS="" \
-	BUILDDIR="$(HOST_BUILD_DIR)" \
-	STATIC=$(MTD_STATIC) \
-	V=$(if $(findstring c,$(OPENWRT_VERBOSE)),1)
+HOST_CONFIGURE_VARS+= \
+	UUID_CFLAGS="-I$(STAGING_DIR_HOST)/include/e2fsprogs/uuid"
 
-define Host/Compile
-	$(MAKE) -C $(HOST_BUILD_DIR) \
-		$(MTD_MAKEOPTS) \
-		TARGETS="mkfs.jffs2 ubi-utils/ubinize mkfs.ubifs/mkfs.ubifs"
-endef
+HOST_CONFIGURE_ARGS+= \
+	--disable-tests \
+	--without-xattr \
+	--without-lzo
+
+HOST_MAKE_FLAGS += \
+	PROGRAMS="mkfs.jffs2 ubinize mkfs.ubifs"
 
 define Host/Install
 	$(CP) \
 		$(HOST_BUILD_DIR)/mkfs.jffs2 \
-		$(HOST_BUILD_DIR)/mkfs.ubifs/mkfs.ubifs \
-		$(HOST_BUILD_DIR)/ubi-utils/ubinize \
+		$(HOST_BUILD_DIR)/mkfs.ubifs \
+		$(HOST_BUILD_DIR)/ubinize \
 		$(STAGING_DIR_HOST)/bin/
 endef
 

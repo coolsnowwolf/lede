@@ -57,16 +57,16 @@ config () {
 	export ${NO_EXPORT:+-n} CONFIG_NUM_SECTIONS=$(($CONFIG_NUM_SECTIONS + 1))
 	name="${name:-cfg$CONFIG_NUM_SECTIONS}"
 	append CONFIG_SECTIONS "$name"
-	[ -n "$NO_CALLBACK" ] || config_cb "$cfgtype" "$name"
 	export ${NO_EXPORT:+-n} CONFIG_SECTION="$name"
-	export ${NO_EXPORT:+-n} "CONFIG_${CONFIG_SECTION}_TYPE=$cfgtype"
+	config_set "$CONFIG_SECTION" "TYPE" "${cfgtype}"
+	[ -n "$NO_CALLBACK" ] || config_cb "$cfgtype" "$name"
 }
 
 option () {
 	local varname="$1"; shift
 	local value="$*"
 
-	export ${NO_EXPORT:+-n} "CONFIG_${CONFIG_SECTION}_${varname}=$value"
+	config_set "$CONFIG_SECTION" "${varname}" "${value}"
 	[ -n "$NO_CALLBACK" ] || option_cb "$varname" "$*"
 }
 
@@ -81,7 +81,7 @@ list() {
 	config_set "$CONFIG_SECTION" "${varname}_ITEM$len" "$value"
 	config_set "$CONFIG_SECTION" "${varname}_LENGTH" "$len"
 	append "CONFIG_${CONFIG_SECTION}_${varname}" "$value" "$LIST_SEP"
-	list_cb "$varname" "$*"
+	[ -n "$NO_CALLBACK" ] || list_cb "$varname" "$*"
 }
 
 config_unset() {
@@ -113,11 +113,8 @@ config_set() {
 	local section="$1"
 	local option="$2"
 	local value="$3"
-	local old_section="$CONFIG_SECTION"
 
-	CONFIG_SECTION="$section"
-	option "$option" "$value"
-	CONFIG_SECTION="$old_section"
+	export ${NO_EXPORT:+-n} "CONFIG_${section}_${option}=${value}"
 }
 
 config_foreach() {

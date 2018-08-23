@@ -69,29 +69,10 @@ define Device/asus_rt-ac58u
 #	to add a version... or we are very careful not to add '\0' into that
 #	string and call it a day.... Yeah, we do the latter!
 	UIMAGE_NAME:=$(shell echo -e '\03\01\01\01RT-AC58U')
-	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
-	KERNEL_INITRAMFS_SUFFIX := -factory.trx
 	IMAGES := sysupgrade.bin
 	DEVICE_PACKAGES := kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += asus_rt-ac58u
-
-define Device/asus_rt-acrh17
-	$(call Device/FitImageLzma)
-	DEVICE_DTS := qcom-ipq4019-rt-acrh17
-	BLOCKSIZE := 128k
-	PAGESIZE := 2048
-	DTB_SIZE := 65536
-	DEVICE_TITLE := Asus RT-ACRH17
-	IMAGE_SIZE := 20439364
-	FILESYSTEMS := squashfs
-	UIMAGE_NAME:=$(shell echo -e '\03\01\01\01RT-AC82U')
-	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
-	KERNEL_INITRAMFS_SUFFIX := -factory.trx
-	IMAGES := sysupgrade.bin
-	DEVICE_PACKAGES := ipq-wifi-rt-acrh17 ath10k-firmware-qca9984
-endef
-TARGET_DEVICES += asus_rt-acrh17
 
 define Device/avm_fritzbox-4040
 	$(call Device/FitImageLzma)
@@ -223,5 +204,16 @@ define Device/qcom_ap-dk04.1-c1
 	DEVICE_TITLE := QCA AP-DK04.1-C1
 endef
 TARGET_DEVICES += qcom_ap-dk04.1-c1
+
+define Device/zyxel_wre6606
+	$(call Device/FitImage)
+	DEVICE_TITLE := ZyXEL WRE6606
+	DEVICE_DTS_CONFIG := config@4
+	DEVICE_DTS := qcom-ipq4018-wre6606
+	DEVICE_PACKAGES := ipq-wifi-zyxel_wre6606
+	IMAGES := sysupgrade.bin
+	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
+endef
+TARGET_DEVICES += zyxel_wre6606
 
 $(eval $(call BuildImage))

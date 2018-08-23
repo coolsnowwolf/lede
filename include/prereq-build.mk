@@ -76,11 +76,6 @@ else
   zlib_link_flags := -lz
 endif
 
-$(eval $(call TestHostCommand,zlib, \
-	Please install a static zlib. (Missing libz.a or zlib.h), \
-	echo 'int main(int argc, char **argv) { gzdopen(0, "rb"); return 0; }' | \
-		gcc -include zlib.h -x c -o $(TMP_DIR)/a.out - $(zlib_link_flags)))
-
 $(eval $(call TestHostCommand,perl-thread-queue, \
 	Please install the Perl Thread::Queue module, \
 	perl -MThread::Queue -e 1))
@@ -142,6 +137,11 @@ $(eval $(call SetupHostCommand,bzip2,Please install 'bzip2', \
 
 $(eval $(call SetupHostCommand,wget,Please install GNU 'wget', \
 	wget --version | grep GNU))
+
+$(eval $(call SetupHostCommand,time,Please install GNU 'time' or BusyBox 'time' that supports -f, \
+	gtime --version 2>&1 | grep GNU, \
+	time --version 2>&1 | grep GNU, \
+	busybox time 2>&1 | grep -- '-f FMT'))
 
 $(eval $(call SetupHostCommand,perl,Please install Perl 5.x, \
 	perl --version | grep "perl.*v5"))

@@ -209,7 +209,7 @@ $(eval $(call KernelPackage,switch-ip17xx))
 define KernelPackage/switch-rtl8366-smi
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Realtek RTL8366 SMI switch interface support
-  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig
+  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig +(TARGET_armvirt||TARGET_brcm2708_bcm2708):kmod-of-mdio
   KCONFIG:=CONFIG_RTL8366_SMI
   FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8366_smi.ko
   AUTOLOAD:=$(call AutoLoad,42,rtl8366_smi)
@@ -828,7 +828,7 @@ $(eval $(call KernelPackage,ifb))
 define KernelPackage/dm9000
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Davicom 9000 Ethernet support
-  DEPENDS:=@PCI_SUPPORT +kmod-mii
+  DEPENDS:=+kmod-mii
   KCONFIG:=CONFIG_DM9000 \
     CONFIG_DM9000_DEBUGLEVEL=4 \
     CONFIG_DM9000_FORCE_SIMPLE_PHY_POLL=y

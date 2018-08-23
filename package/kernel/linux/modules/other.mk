@@ -411,7 +411,8 @@ $(eval $(call KernelPackage,rfkill))
 define KernelPackage/softdog
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Software watchdog driver
-  KCONFIG:=CONFIG_SOFT_WATCHDOG
+  KCONFIG:=CONFIG_SOFT_WATCHDOG \
+  	CONFIG_SOFT_WATCHDOG_PRETIMEOUT=n
   FILES:=$(LINUX_DIR)/drivers/$(WATCHDOG_DIR)/softdog.ko
   AUTOLOAD:=$(call AutoLoad,50,softdog,1)
 endef
@@ -707,11 +708,15 @@ define KernelPackage/regmap
 	   CONFIG_REGMAP_I2C \
 	   CONFIG_SPI=y
   FILES:= \
-	$(LINUX_DIR)/drivers/base/regmap/regmap-core.ko \
 	$(LINUX_DIR)/drivers/base/regmap/regmap-i2c.ko \
 	$(LINUX_DIR)/drivers/base/regmap/regmap-mmio.ko \
 	$(if $(CONFIG_SPI),$(LINUX_DIR)/drivers/base/regmap/regmap-spi.ko)
   AUTOLOAD:=$(call AutoLoad,21,regmap-core regmap-i2c regmap-mmio regmap-spi)
+  ifeq ($(strip $(CONFIG_EXTERNAL_KERNEL_TREE)),"")
+   ifeq ($(strip $(CONFIG_KERNEL_GIT_CLONE_URI)),"")
+    FILES += $(LINUX_DIR)/drivers/base/regmap/regmap-core.ko
+   endif
+  endif
 endef
 
 define KernelPackage/regmap/description

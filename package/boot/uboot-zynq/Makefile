@@ -14,6 +14,7 @@ PKG_HASH:=e49337262ecac44dbdeac140f2c6ebd1eba345e0162b0464172e7f05583ed7bb
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/host-build.mk
 
 define U-Boot/Default
   BUILD_TARGET:=zynq
@@ -41,5 +42,7 @@ UBOOT_TARGETS := \
 	zc702 \
 	zed \
 	zybo
+
+Build/Exports:=$(Host/Exports)
 
 $(eval $(call BuildPackage/U-Boot))

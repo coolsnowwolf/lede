@@ -22,34 +22,38 @@ BOARD		:=
 FLASH_OFFS	:=
 FLASH_MAX	:=
 PLATFORM	:=
+CACHE_FLAGS	:=
 
 CC		:= $(CROSS_COMPILE)gcc
 LD		:= $(CROSS_COMPILE)ld
 OBJCOPY		:= $(CROSS_COMPILE)objcopy
 OBJDUMP		:= $(CROSS_COMPILE)objdump
 
-BIN_FLAGS	:= -O binary -R .reginfo -R .note -R .comment -R .mdebug -S
+
+include $(PLATFORM).mk
+
+BIN_FLAGS	:= -O binary -R .reginfo -R .note -R .comment -R .mdebug \
+		   -R .MIPS.abiflags -S
 
 CFLAGS		= -D__KERNEL__ -Wall -Wstrict-prototypes -Wno-trigraphs -Os \
 		  -fno-strict-aliasing -fno-common -fomit-frame-pointer -G 0 \
 		  -mno-abicalls -fno-pic -ffunction-sections -pipe -mlong-calls \
-		  -fno-common -ffreestanding -fhonour-copts \
+		  -fno-common -ffreestanding -fhonour-copts -nostartfiles \
 		  -mabi=32 -march=mips32r2 \
 		  -Wa,-32 -Wa,-march=mips32r2 -Wa,-mips32r2 -Wa,--trap
-CFLAGS		+= -D_LZMA_PROB32 -DARCH=$(PLATFORM)
+CFLAGS		+= -D_LZMA_PROB32
+CFLAGS		+= -flto
+CFLAGS		+= $(CACHE_FLAGS)
 
 ASFLAGS		= $(CFLAGS) -D__ASSEMBLY__
 
-LDFLAGS		= -static --gc-sections -no-warn-mismatch
-LDFLAGS		+= -e startup -T loader.lds -Ttext $(LZMA_TEXT_START)
+LDFLAGS		= -static -Wl,--gc-sections -Wl,-no-warn-mismatch
+LDFLAGS		+= -Wl,-e,startup -T loader.lds -Wl,-Ttext,$(LZMA_TEXT_START)
+LDFLAGS		+= -flto -fwhole-program -Wl,-z,max-page-size=4096
 
 O_FORMAT 	= $(shell $(OBJDUMP) -i | head -2 | grep elf32)
 
 OBJECTS		:= head.o loader.o cache.o board-$(PLATFORM).o printf.o LzmaDecode.o
-
-include $(PLATFORM).mk
-CFLAGS+=$(CACHE_FLAGS)
-ASFLAGS+=$(CACHE_FLAGS)
 
 ifneq ($(strip $(LOADER_DATA)),)
 OBJECTS		+= data.o
@@ -66,11 +70,6 @@ endif
 
 ifneq ($(strip $(FLASH_MAX)),)
 CFLAGS		+= -DCONFIG_FLASH_MAX=$(FLASH_MAX)
-endif
-
-BOARD_DEF := $(shell echo $(strip $(BOARD)) | tr a-z A-Z | tr - _)
-ifneq ($(BOARD_DEF),)
-CFLAGS		+= -DCONFIG_BOARD_$(BOARD_DEF)
 endif
 
 all: loader.elf
@@ -90,7 +89,7 @@ data.o: $(LOADER_DATA)
 	$(LD) -r -b binary --oformat $(O_FORMAT) -T lzma-data.lds -o $@ $<
 
 loader: $(OBJECTS)
-	$(LD) $(LDFLAGS) -o $@ $(OBJECTS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJECTS)
 
 loader.bin: loader
 	$(OBJCOPY) $(BIN_FLAGS) $< $@
@@ -99,7 +98,7 @@ loader2.o: loader.bin
 	$(LD) -r -b binary --oformat $(O_FORMAT) -o $@ $<
 
 loader.elf: loader2.o
-	$(LD) -e startup -T loader2.lds -Ttext $(LOADADDR) -o $@ $<
+	$(LD) -e startup -T loader2.lds -Ttext $(LOADADDR) -z max-page-size=4096 -o $@ $<
 
 mrproper: clean
 

@@ -13,9 +13,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/firewall3.git
-PKG_SOURCE_DATE:=2018-05-19
-PKG_SOURCE_VERSION:=30463d08056db8f03d17c0569581aef96418c38d
-PKG_MIRROR_HASH:=d2abcdef3e543a5dfc72a5f9c42d10c90a95327761d108eedf201bbb45365802
+PKG_SOURCE_DATE:=2018-07-26
+PKG_SOURCE_VERSION:=aa8846bb101054392b81f09bade120c021695892
+PKG_MIRROR_HASH:=cc2ff632744bdefbc64ad11dc18944b44af006c986367a28d6483ade6012effa
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
 PKG_LICENSE:=ISC
 
@@ -40,8 +40,8 @@ define Package/firewall/conffiles
 /etc/firewall.user
 endef
 
-TARGET_CFLAGS += -ffunction-sections -fdata-sections
-TARGET_LDFLAGS += -Wl,--gc-sections
+TARGET_CFLAGS += -ffunction-sections -fdata-sections -flto
+TARGET_LDFLAGS += -Wl,--gc-sections -flto
 CMAKE_OPTIONS += $(if $(CONFIG_IPV6),,-DDISABLE_IPV6=1)
 
 define Package/firewall/install

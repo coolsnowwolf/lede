@@ -56,7 +56,7 @@ else
   endif
 endif
 
-ifneq ($(filter 3.18 4.4 4.9,$(KERNEL_PATCHVER)),)
+ifneq ($(filter 4.9,$(KERNEL_PATCHVER)),)
   DEFAULT_PACKAGES.router:=$(filter-out kmod-ipt-offload,$(DEFAULT_PACKAGES.router))
 endif
 
@@ -77,7 +77,6 @@ define Profile
   $(eval $(call ProfileDefault))
   $(eval $(call Profile/$(1)))
   dumpinfo : $(call shexport,Profile/$(1)/Description)
-  DEFAULT_PACKAGES := $(filter-out $(patsubst -%,%,$(filter -%,$(PACKAGES))),$(DEFAULT_PACKAGES))
   PACKAGES := $(filter-out -%,$(PACKAGES))
   DUMPINFO += \
 	echo "Target-Profile: $(1)"; \

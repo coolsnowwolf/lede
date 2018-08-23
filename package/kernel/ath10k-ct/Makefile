@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ath10k-ct
-PKG_RELEASE=2
+PKG_RELEASE=3
 
 PKG_LICENSE:=GPLv2
 PKG_LICENSE_FILES:=

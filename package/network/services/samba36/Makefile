@@ -43,6 +43,12 @@ define Package/samba36-server
   DEPENDS:=+USE_GLIBC:librt $(ICONV_DEPENDS)
 endef
 
+define Package/samba36-hotplug
+  $(call Package/samba/Default)
+  TITLE+= hotplug
+  DEPENDS:=+block-mount
+endef
+
 define Package/samba36-client
   $(call Package/samba/Default)
   TITLE+= client
@@ -159,6 +165,13 @@ define Package/samba36-server/install
 	$(LN) samba_multicall $(1)/usr/sbin/smbpasswd
 endef
 
+define Package/samba36-hotplug/install
+	$(INSTALL_DIR) $(1)/lib/samba
+	$(INSTALL_DATA) ./files/lib/samba.sh $(1)/lib/samba/samba.sh
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/block
+	$(INSTALL_DATA) ./files/samba.hotplug $(1)/etc/hotplug.d/block/60-samba
+endef
+
 define Package/samba36-client/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_BIN)/smbclient $(1)/usr/sbin
@@ -172,5 +185,6 @@ endef
 
 $(eval $(call BuildPackage,samba36-client))
 $(eval $(call BuildPackage,samba36-server))
+$(eval $(call BuildPackage,samba36-hotplug))
 $(eval $(call BuildPackage,samba36-net))
 

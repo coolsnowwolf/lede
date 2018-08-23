@@ -14,7 +14,6 @@
 #include <linux/phy.h>
 #include <linux/switch.h>
 #include <linux/platform_device.h>
-#include <linux/reset.h>
 
 struct rtl8366_smi_ops;
 struct rtl8366_vlan_ops;
@@ -34,7 +33,7 @@ struct rtl8366_smi {
 	struct device		*parent;
 	unsigned int		gpio_sda;
 	unsigned int		gpio_sck;
-	void			(*hw_reset)(struct rtl8366_smi *smi, bool active);
+	void			(*hw_reset)(bool active);
 	unsigned int		clk_delay;	/* ns */
 	u8			cmd_read;
 	u8			cmd_write;
@@ -55,9 +54,6 @@ struct rtl8366_smi {
 	int			vlan4k_enabled;
 
 	char			buf[4096];
-
-	struct reset_control	*reset;
-
 #ifdef CONFIG_RTL8366_SMI_DEBUG_FS
 	struct dentry           *debugfs_root;
 	u16			dbg_reg;

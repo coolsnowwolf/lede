@@ -7,6 +7,10 @@ failsafe="$(get_dt_led failsafe)"
 running="$(get_dt_led running)"
 upgrade="$(get_dt_led upgrade)"
 
+get_status_led() {
+	status_led="$boot"
+}
+
 set_state() {
 	status_led="$boot"
 

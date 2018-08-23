@@ -24,7 +24,10 @@ get_status_led() {
 	antminer-s3|\
 	antminer-r1|\
 	e1700ac-v2|\
+	e558-v2|\
 	e600gac-v2|\
+	e750a-v4|\
+	e750g-v8|\
 	eap120|\
 	minibox-v1|\
 	packet-squirrel|\
@@ -57,10 +60,6 @@ get_status_led() {
 	ap147-010)
 		status_led="ap147:green:status"
 		;;
-	ac9531-020|\
-	ac9531-010)
-		status_led="ac9531:green:status"
-		;;
 	ap135-020)
 		status_led="ap135:green:status"
 		;;
@@ -70,8 +69,10 @@ get_status_led() {
 	archer-c60-v1|\
 	archer-c60-v2|\
 	archer-c7-v4|\
+	archer-c7-v5|\
 	fritz300e|\
 	fritz4020|\
+	fritz450e|\
 	gl-usb150|\
 	mr12|\
 	mr16|\
@@ -268,9 +269,6 @@ get_status_led() {
 	koala)
 		status_led="$board:blue:sys"
 		;;
-	k2t)
-		status_led="$board:red:lan"
-		;;
 	lan-turtle)
 		status_led="$board:orange:system"
 		;;
@@ -379,7 +377,8 @@ get_status_led() {
 	rb-962uigs-5hact2hnt|\
 	rb-lhg-5nd|\
 	rb-map-2nd|\
-	rb-mapl-2nd)
+	rb-mapl-2nd|\
+	rb-wap-2nd)
 		status_led="rb:green:user"
 		;;
 	rb-951ui-2hnd)
@@ -388,7 +387,8 @@ get_status_led() {
 	rb-912uag-2hpnd|\
 	rb-912uag-5hpnd|\
 	rb-sxt2n|\
-	rb-sxt5n)
+	rb-sxt5n|\
+	rb-wapg-5hact2hnd)
 		status_led="rb:green:power"
 		;;
 	re355|\

@@ -334,6 +334,25 @@ define Device/e1700ac-v2-8M
 endef
 TARGET_DEVICES += e1700ac-v2-8M
 
+define Device/e558-v2-16M
+  DEVICE_TITLE := Qxwlan E558 v2 (16MB flash)
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 -swconfig
+  BOARDNAME := E558-V2
+  SUPPORTED_DEVICES := e558-v2
+  IMAGE_SIZE := 15936k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),64k(pri-data)ro,64k(art),-(firmware)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) |\
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += e558-v2-16M
+
+define Device/e558-v2-8M
+  $(Device/e558-v2-16M)
+  DEVICE_TITLE := Qxwlan E558 v2 (8MB flash)
+  IMAGE_SIZE := 7744k
+endef
+TARGET_DEVICES += e558-v2-8M
+
 define Device/e600g-v2-16M
   DEVICE_TITLE := Qxwlan E600G v2 (16MB flash)
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 -swconfig
@@ -372,6 +391,44 @@ define Device/e600gac-v2-8M
   IMAGE_SIZE := 7744k
 endef
 TARGET_DEVICES += e600gac-v2-8M
+
+define Device/e750a-v4-16M
+  DEVICE_TITLE := Qxwlan E750A v4 (16MB flash)
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 -swconfig
+  BOARDNAME := E750A-V4
+  SUPPORTED_DEVICES := e750a-v4
+  IMAGE_SIZE := 15936k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),64k(pri-data)ro,64k(art),-(firmware)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) |\
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += e750a-v4-16M
+
+define Device/e750a-v4-8M
+  $(Device/e750a-v4-16M)
+  DEVICE_TITLE := Qxwlan E750A v4 (8MB flash)
+  IMAGE_SIZE := 7744k
+endef
+TARGET_DEVICES += e750a-v4-8M
+
+define Device/e750g-v8-16M
+  DEVICE_TITLE := Qxwlan E750G v8 (16MB flash)
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 -swconfig
+  BOARDNAME := E750G-V8
+  SUPPORTED_DEVICES := e750g-v8
+  IMAGE_SIZE := 15936k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),64k(pri-data)ro,64k(art),-(firmware)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) |\
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += e750g-v8-16M
+
+define Device/e750g-v8-8M
+  $(Device/e750g-v8-16M)
+  DEVICE_TITLE := Qxwlan E750G v8 (8MB flash)
+  IMAGE_SIZE := 7744k
+endef
+TARGET_DEVICES += e750g-v8-8M
 
 define Device/ew-balin
   DEVICE_TITLE := Embedded Wireless Balin Platform
@@ -460,19 +517,6 @@ define Device/gl-ar750
 	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
 endef
 TARGET_DEVICES += gl-ar750
-
-define Device/gl-ar750s
-  DEVICE_TITLE := GL.iNet GL-AR750S
-  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca9887 kmod-usb-core \
-	kmod-usb2 kmod-usb-storage
-  BOARDNAME := GL-AR750S
-  SUPPORTED_DEVICES := gl-ar750s
-  IMAGE_SIZE := 16000k
-  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),64k(art)ro,-(firmware)
-  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
-	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
-endef
-TARGET_DEVICES += gl-ar750s
 
 define Device/gl-domino
   DEVICE_TITLE := GL.iNet Domino Pi
@@ -800,18 +844,6 @@ define Device/jwap230
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),16000k(firmware),64k(art)ro
 endef
 TARGET_DEVICES += jwap230
-
-define Device/k2t
-  DEVICE_TITLE := Phicomm K2T A1/A2/A3 board (16MB flash)
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-ath10k ath10k-firmware-qca9888
-  BOARDNAME := K2T
-  IMAGE_SIZE := 15744k
-  MTDPARTS := spi0.0:192k(u-boot)ro,64k(config)ro,320k(permanent),15744k(firmware),64k(art)ro
-  SUPPORTED_DEVICES := k2t
-  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
-	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
-endef
-TARGET_DEVICES += k2t
 
 define Device/r36a
   DEVICE_TITLE := ALFA Network R36A
@@ -1346,3 +1378,13 @@ define Device/fritz4020
   IMAGE_SIZE := 15232k
 endef
 TARGET_DEVICES += fritz4020
+
+define Device/fritz450e
+  $(call Device/AVM)
+  DEVICE_TITLE := AVM FRITZ!WLAN Repeater 450E
+  DEVICE_PACKAGES += -swconfig
+  BOARDNAME := FRITZ450E
+  SUPPORTED_DEVICES := fritz450e
+  IMAGE_SIZE := 15232k
+endef
+TARGET_DEVICES += fritz450e
