@@ -1,6 +1,8 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
+DEVICE_VARS += RAS_BOARD RAS_ROOTFS_SIZE RAS_VERSION
+
 define Device/Default
 	PROFILES := Default
 	KERNEL_DEPENDS = $$(wildcard $(DTS_DIR)/$$(DEVICE_DTS).dts)
@@ -69,10 +71,29 @@ define Device/asus_rt-ac58u
 #	to add a version... or we are very careful not to add '\0' into that
 #	string and call it a day.... Yeah, we do the latter!
 	UIMAGE_NAME:=$(shell echo -e '\03\01\01\01RT-AC58U')
+	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
+	KERNEL_INITRAMFS_SUFFIX := -factory.trx
 	IMAGES := sysupgrade.bin
 	DEVICE_PACKAGES := kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += asus_rt-ac58u
+
+define Device/asus_rt-acrh17
+	$(call Device/FitImageLzma)
+	DEVICE_DTS := qcom-ipq4019-rt-acrh17
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DTB_SIZE := 65536
+	DEVICE_TITLE := Asus RT-ACRH17
+	IMAGE_SIZE := 20439364
+	FILESYSTEMS := squashfs
+	UIMAGE_NAME:=$(shell echo -e '\03\01\01\01RT-AC82U')
+	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
+	KERNEL_INITRAMFS_SUFFIX := -factory.trx
+	IMAGES := sysupgrade.bin
+	DEVICE_PACKAGES := ipq-wifi-rt-acrh17 ath10k-firmware-qca9984
+endef
+TARGET_DEVICES += asus_rt-acrh17
 
 define Device/avm_fritzbox-4040
 	$(call Device/FitImageLzma)
@@ -204,6 +225,26 @@ define Device/qcom_ap-dk04.1-c1
 	DEVICE_TITLE := QCA AP-DK04.1-C1
 endef
 TARGET_DEVICES += qcom_ap-dk04.1-c1
+
+define Device/zyxel_nbg6617
+	$(call Device/FitImageLzma)
+	DEVICE_DTS := qcom-ipq4018-nbg6617
+	DEVICE_TITLE := ZyXEL NBG6617
+	ROOTFS_SIZE := 24960k
+	RAS_BOARD := NBG6617
+	RAS_ROOTFS_SIZE := 19840k
+	RAS_VERSION := "$(VERSION_DIST) $(REVISION)"
+	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
+	IMAGES := sysupgrade.bin factory.bin
+#	The ZyXEL firmware allows flashing thru the web-gui only when the rootfs is
+#	at least as large as the one of the initial firmware image (not the current
+#	one on the device). This only applies to the Web-UI, the bootlaoder ignores
+#	this minimum-size. However, the larger image can be flashed both ways.
+	IMAGE/factory.bin := append-rootfs | pad-rootfs | check-size $$$$(ROOTFS_SIZE) | make-ras
+	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-rootfs | check-size $$$$(ROOTFS_SIZE) | sysupgrade-tar rootfs=$$$$@ | append-metadata
+	DEVICE_PACKAGES := ipq-wifi-zyxel_nbg6617 uboot-envtools
+endef
+TARGET_DEVICES += zyxel_nbg6617
 
 define Device/zyxel_wre6606
 	$(call Device/FitImage)
