@@ -32,6 +32,7 @@ platform_do_upgrade() {
 		MTD_CONFIG_ARGS="-s 0x200000"
 		default_do_upgrade "$ARGV"
 		;;
+	nec,wg2600hp |\
 	*)
 		default_do_upgrade "$ARGV"
 		;;

@@ -80,6 +80,9 @@ endef
 
 TARGET_CFLAGS += -ffunction-sections $(FPIC)
 
+CONFIGURE_ARGS += \
+	--disable-debug
+
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include/libnl3 $(1)/usr/lib/pkgconfig
 	$(CP) $(PKG_INSTALL_DIR)/usr/include/libnl3/* $(1)/usr/include/libnl3/

@@ -78,18 +78,18 @@ rootfs_type() {
 
 get_image() { # <source> [ <command> ]
 	local from="$1"
-	local cat="$2"
+	local cmd="$2"
 
-	if [ -z "$cat" ]; then
+	if [ -z "$cmd" ]; then
 		local magic="$(dd if="$from" bs=2 count=1 2>/dev/null | hexdump -n 2 -e '1/1 "%02x"')"
 		case "$magic" in
-			1f8b) cat="zcat";;
-			425a) cat="bzcat";;
-			*) cat="cat";;
+			1f8b) cmd="zcat";;
+			425a) cmd="bzcat";;
+			*) cmd="cat";;
 		esac
 	fi
 
-	$cat "$from" 2>/dev/null
+	cat "$from" 2>/dev/null | $cmd
 }
 
 get_magic_word() {

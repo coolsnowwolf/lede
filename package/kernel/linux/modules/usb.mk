@@ -90,6 +90,25 @@ endef
 $(eval $(call KernelPackage,usb-phy-qcom-dwc3))
 
 
+define KernelPackage/phy-ath79-usb
+  TITLE:=Support for ATH79 USB PHY
+  KCONFIG:=CONFIG_PHY_AR7100_USB \
+	CONFIG_PHY_AR7200_USB
+  DEPENDS:=@TARGET_ath79
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/drivers/phy/phy-ar7100-usb.ko \
+	$(LINUX_DIR)/drivers/phy/phy-ar7200-usb.ko
+  AUTOLOAD:=$(call AutoLoad,21,phy-ar7100-usb phy-ar7200-usb,1)
+  $(call AddDepends/usb)
+endef
+
+define KernelPackage/phy-ath79-usb/description
+  Support for ATH79 USB transceiver
+endef
+
+$(eval $(call KernelPackage,phy-ath79-usb))
+
+
 define KernelPackage/usb-gadget
   TITLE:=USB Gadget support
   KCONFIG:=CONFIG_USB_GADGET
@@ -131,7 +150,6 @@ define KernelPackage/usb-gadget-ehci-debug
 	CONFIG_USB_G_DBGP_PRINTK=n
   DEPENDS:=+kmod-usb-gadget +kmod-usb-lib-composite +kmod-usb-gadget-serial
   FILES:=$(LINUX_DIR)/drivers/usb/gadget/legacy/g_dbgp.ko
-  AUTOLOAD:=$(call AutoLoad,52,g_dbgp)
   $(call AddDepends/usb)
 endef
 
@@ -154,7 +172,7 @@ define KernelPackage/usb-gadget-eth
 	$(LINUX_DIR)/drivers/usb/gadget/function/usb_f_ecm_subset.ko \
 	$(LINUX_DIR)/drivers/usb/gadget/function/usb_f_rndis.ko \
 	$(LINUX_DIR)/drivers/usb/gadget/legacy/g_ether.ko
-  AUTOLOAD:=$(call AutoLoad,52,usb_f_ecm g_ether)
+  AUTOLOAD:=$(call AutoLoad,52,usb_f_ecm)
   $(call AddDepends/usb)
 endef
 
@@ -175,7 +193,7 @@ define KernelPackage/usb-gadget-serial
 	$(LINUX_DIR)/drivers/usb/gadget/function/usb_f_obex.ko \
 	$(LINUX_DIR)/drivers/usb/gadget/function/usb_f_serial.ko \
 	$(LINUX_DIR)/drivers/usb/gadget/legacy/g_serial.ko
-  AUTOLOAD:=$(call AutoLoad,52,usb_f_acm g_serial)
+  AUTOLOAD:=$(call AutoLoad,52,usb_f_acm)
   $(call AddDepends/usb)
 endef
 
@@ -192,7 +210,7 @@ define KernelPackage/usb-gadget-mass-storage
   FILES:= \
 	$(LINUX_DIR)/drivers/usb/gadget/function/usb_f_mass_storage.ko \
 	$(LINUX_DIR)/drivers/usb/gadget/legacy/g_mass_storage.ko
-  AUTOLOAD:=$(call AutoLoad,52,usb_f_mass_storage g_mass_storage)
+  AUTOLOAD:=$(call AutoLoad,52,usb_f_mass_storage)
   $(call AddDepends/usb)
 endef
 
@@ -314,6 +332,7 @@ define KernelPackage/usb2
 	+TARGET_brcm47xx:kmod-usb-ssb \
 	+TARGET_bcm53xx:kmod-usb-bcma \
 	+TARGET_bcm53xx:kmod-phy-bcm-ns-usb2 \
+	+TARGET_ath79:kmod-phy-ath79-usb \
 	+kmod-usb-ehci
   KCONFIG:=\
 	CONFIG_USB_EHCI_HCD_PLATFORM \
@@ -1493,7 +1512,7 @@ $(eval $(call KernelPackage,usbip-server))
 
 define KernelPackage/usb-chipidea
   TITLE:=Host and device support for Chipidea controllers
-  DEPENDS:=+USB_GADGET_SUPPORT:kmod-usb-gadget @TARGET_ar71xx +kmod-usb-ehci +kmod-usb-phy-nop
+  DEPENDS:=+USB_GADGET_SUPPORT:kmod-usb-gadget @TARGET_ar71xx||TARGET_ath79 +kmod-usb-ehci +kmod-usb-phy-nop
   KCONFIG:= \
 	CONFIG_EXTCON \
 	CONFIG_USB_CHIPIDEA \
@@ -1513,6 +1532,31 @@ define KernelPackage/usb-chipidea/description
 endef
 
 $(eval $(call KernelPackage,usb-chipidea))
+
+
+define KernelPackage/usb-chipidea2
+  TITLE:=Host and device support for Chipidea2 controllers
+  DEPENDS:=+kmod-usb-chipidea
+  KCONFIG:= \
+	CONFIG_EXTCON \
+	CONFIG_USB_CHIPIDEA \
+	CONFIG_USB_CHIPIDEA_HOST=y \
+	CONFIG_USB_CHIPIDEA_UDC=y \
+	CONFIG_USB_CHIPIDEA_DEBUG=y
+  FILES:= \
+	$(LINUX_DIR)/drivers/extcon/extcon.ko@lt4.9 \
+	$(LINUX_DIR)/drivers/extcon/extcon-core.ko@ge4.9 \
+	$(LINUX_DIR)/drivers/usb/chipidea/ci_hdrc_usb2.ko
+  AUTOLOAD:=$(call AutoLoad,39,ci_hdrc_usb2,1)
+  $(call AddDepends/usb)
+endef
+
+define KernelPackage/usb-chipidea2/description
+ Kernel support for USB Chipidea controllers
+endef
+
+$(eval $(call KernelPackage,usb-chipidea2))
+
 
 define KernelPackage/usbmon
   TITLE:=USB traffic monitor

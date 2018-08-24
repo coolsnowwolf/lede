@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wolfssl
 PKG_VERSION:=3.12.2
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).zip
 PKG_SOURCE_URL:=https://www.wolfssl.com/
@@ -51,7 +51,9 @@ CONFIGURE_ARGS += \
 	--enable-opensslextra \
 	--enable-sni \
 	--enable-stunnel \
-	--disable-examples
+	--disable-examples \
+	--disable-leanpsk \
+	--disable-leantls \
 
 ifeq ($(CONFIG_IPV6),y)
 CONFIGURE_ARGS += \
@@ -79,19 +81,25 @@ CONFIGURE_ARGS += \
 	--enable-supportedcurves
 endif
 
-ifneq ($(CONFIG_WOLFSSL_HAS_DH),y)
+ifeq ($(CONFIG_WOLFSSL_HAS_DH),y)
 CONFIGURE_ARGS += \
 	--enable-dh
 endif
 
-ifeq ($(CONFIG_WOLFSSL_HAS_ARC4),n)
+ifneq ($(CONFIG_WOLFSSL_HAS_ARC4),y)
 CONFIGURE_ARGS += \
 	--disable-arc4
+else
+CONFIGURE_ARGS += \
+	--enable-arc4
 endif
 
-ifeq ($(CONFIG_WOLFSSL_HAS_DES3),y)
+ifneq ($(CONFIG_WOLFSSL_HAS_DES3),y)
 CONFIGURE_ARGS += \
 	--disable-des3
+else
+CONFIGURE_ARGS += \
+	--enable-des3
 endif
 
 ifeq ($(CONFIG_WOLFSSL_HAS_PSK),y)
@@ -99,9 +107,24 @@ CONFIGURE_ARGS += \
 	--enable-psk
 endif
 
+ifeq ($(CONFIG_WOLFSSL_HAS_SESSION_TICKET),y)
+CONFIGURE_ARGS += \
+	--enable-session-ticket
+endif
+
 ifeq ($(CONFIG_WOLFSSL_HAS_DTLS),y)
 CONFIGURE_ARGS += \
 	--enable-dtls
+endif
+
+ifeq ($(CONFIG_WOLFSSL_HAS_OCSP),y)
+CONFIGURE_ARGS += \
+	--enable-ocsp --enable-ocspstapling --enable-ocspstapling2
+endif
+
+ifeq ($(CONFIG_WOLFSSL_HAS_WPAS),y)
+CONFIGURE_ARGS += \
+	--enable-wpas --enable-sha512 --enable-fortress --enable-fastmath
 endif
 
 ifeq ($(CONFIG_WOLFSSL_HAS_ECC25519),y)

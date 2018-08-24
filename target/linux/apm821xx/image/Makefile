@@ -74,7 +74,7 @@ endef
 
 define Device/meraki_mr24
   DEVICE_TITLE := Cisco Meraki MR24
-  DEVICE_PACKAGES := kmod-spi-gpio
+  DEVICE_PACKAGES := kmod-spi-gpio -swconfig
   BOARD_NAME := mr24
   DEVICE_DTS := meraki-mr24
   BLOCKSIZE := 63k

@@ -155,6 +155,48 @@ static struct device_info boards[] = {
 		.last_sysupgrade_partition = "support-list",
 	},
 
+	/** Firmware layout for the CPE210 V2 */
+	{
+		.id     = "CPE210V2",
+		.vendor = "CPE210(TP-LINK|UN|N300-2|00000000):2.0\r\n",
+		.support_list =
+			"SupportList:\r\n"
+			"CPE210(TP-LINK|EU|N300-2|00000000):2.0\r\n"
+			"CPE210(TP-LINK|EU|N300-2|45550000):2.0\r\n"
+			"CPE210(TP-LINK|EU|N300-2|55530000):2.0\r\n"
+			"CPE210(TP-LINK|UN|N300-2|00000000):2.0\r\n"
+			"CPE210(TP-LINK|UN|N300-2|45550000):2.0\r\n"
+			"CPE210(TP-LINK|UN|N300-2|55530000):2.0\r\n"
+			"CPE210(TP-LINK|US|N300-2|55530000):2.0\r\n"
+			"CPE210(TP-LINK|UN|N300-2):2.0\r\n"
+			"CPE210(TP-LINK|EU|N300-2):2.0\r\n"
+			"CPE210(TP-LINK|US|N300-2):2.0\r\n",
+		.support_trail = '\xff',
+		.soft_ver = NULL,
+
+		.partitions = {
+			{"fs-uboot", 0x00000, 0x20000},
+			{"partition-table", 0x20000, 0x02000},
+			{"default-mac", 0x30000, 0x00020},
+			{"product-info", 0x31100, 0x00100},
+			{"device-info", 0x31400, 0x00400},
+			{"signature", 0x32000, 0x00400},
+			{"device-id", 0x33000, 0x00100},
+			{"os-image", 0x40000, 0x1c0000},
+			{"file-system", 0x200000, 0x5b0000},
+			{"soft-version", 0x7b0000, 0x00100},
+			{"support-list", 0x7b1000, 0x01000},
+			{"user-config", 0x7c0000, 0x10000},
+			{"default-config", 0x7d0000, 0x10000},
+			{"log", 0x7e0000, 0x10000},
+			{"radio", 0x7f0000, 0x10000},
+			{NULL, 0, 0}
+		},
+
+		.first_sysupgrade_partition = "os-image",
+		.last_sysupgrade_partition = "support-list",
+	},
+
 	/** Firmware layout for the CPE510/520 */
 	{
 		.id	= "CPE510",
@@ -267,6 +309,11 @@ static struct device_info boards[] = {
 		.support_trail = '\x00',
 		.soft_ver = NULL,
 
+		/**
+		    We use a bigger os-image partition than the stock images (and thus
+		    smaller file-system), as our kernel doesn't fit in the stock firmware's
+		    2 MB os-image since kernel 4.14.
+		*/
 		.partitions = {
 			{"SBL1", 0x00000, 0x20000},
 			{"MIBIB", 0x20000, 0x20000},
@@ -279,8 +326,8 @@ static struct device_info boards[] = {
 			{"fs-uboot", 0x100000, 0x70000},
 			{"uboot-env", 0x170000, 0x40000},
 			{"radio", 0x1b0000, 0x40000},
-			{"os-image", 0x1f0000, 0x200000},
-			{"file-system", 0x3f0000, 0x1b00000},
+			{"os-image", 0x1f0000, 0x400000}, /* Stock: base 0x1f0000 size 0x200000 */
+			{"file-system", 0x5f0000, 0x1900000}, /* Stock: base 0x3f0000 size 0x1b00000 */
 			{"default-mac", 0x1ef0000, 0x00200},
 			{"pin", 0x1ef0200, 0x00200},
 			{"product-info", 0x1ef0400, 0x0fc00},
@@ -567,6 +614,52 @@ static struct device_info boards[] = {
 			{"log", 0xfd0000, 0x20000},
 			{"radio", 0xff0000, 0x10000},
 			{NULL, 0, 0}
+		},
+
+		.first_sysupgrade_partition = "os-image",
+		.last_sysupgrade_partition = "file-system",
+	},
+
+	/** Firmware layout for the C7 v5*/
+	{
+		.id = "ARCHER-C7-V5",
+		.support_list =
+			"SupportList:\n"
+			"{product_name:Archer C7,product_ver:5.0.0,special_id:00000000}\n"
+			"{product_name:Archer C7,product_ver:5.0.0,special_id:55530000}\n",
+
+		.support_trail = '\x00',
+		.soft_ver = "soft_ver:1.0.0\n",
+
+		/**
+		  We use a bigger os-image partition than the stock images (and thus
+		  smaller file-system), as our kernel doesn't fit in the stock firmware's
+		  1MB os-image.
+		  */
+		.partitions = {
+			{"factory-boot",    0x00000,  0x20000},
+			{"fs-uboot",        0x20000,  0x20000},
+			{"partition-table", 0x40000,  0x10000},
+			{"radio",           0x50000,  0x10000},
+			{"default-mac",     0x60000,  0x00200},
+			{"pin",             0x60200,  0x00200},
+			{"device-id",       0x60400,  0x00100},
+			{"product-info",    0x60500,  0x0fb00},
+			{"soft-version",    0x70000,  0x01000},
+			{"extra-para",      0x71000,  0x01000},
+			{"support-list",    0x72000,  0x0a000},
+			{"profile",         0x7c000,  0x04000},
+			{"user-config",     0x80000,  0x40000},
+
+
+			{"os-image",        0xc0000,  0x180000}, /* Stock: base 0xc0000  size 0x120000 */
+			{"file-system",     0x240000, 0xd80000}, /* Stock: base 0x1e0000 size 0xde0000 */
+
+			{"log",             0xfc0000, 0x20000},
+			{"certificate",     0xfe0000, 0x10000},
+			{"default-config",  0xff0000, 0x10000},
+			{NULL, 0, 0}
+
 		},
 
 		.first_sysupgrade_partition = "os-image",
@@ -886,12 +979,12 @@ static struct device_info boards[] = {
 
 		/**
 			The original os-image partition is too small,
-			so we enlarge it to 1.6M
+			so we enlarge it to 1.75M
 		*/
 		.partitions = {
 			{"fs-uboot", 0x00000, 0x20000},
-			{"os-image", 0x20000, 0x1a0000},
-			{"file-system", 0x1c0000, 0x440000},
+			{"os-image", 0x20000, 0x1c0000},
+			{"file-system", 0x1e0000, 0x420000},
 			{"partition-table", 0x600000, 0x02000},
 			{"default-mac", 0x610000, 0x00020},
 			{"pin", 0x610100, 0x00020},
@@ -1384,7 +1477,7 @@ static void build_image(const char *output,
 	    strcasecmp(info->id, "TLWR1043NV5") == 0) {
 		const char mdat[11] = {0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00};
 		parts[5] = put_data("extra-para", mdat, 11);
-	} else if (strcasecmp(info->id, "ARCHER-C7-V4") == 0) {
+	} else if (strcasecmp(info->id, "ARCHER-C7-V4") == 0 || strcasecmp(info->id, "ARCHER-C7-V5") == 0) {
 		const char mdat[11] = {0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0xca, 0x00, 0x01, 0x00, 0x00};
 		parts[5] = put_data("extra-para", mdat, 11);
 	}

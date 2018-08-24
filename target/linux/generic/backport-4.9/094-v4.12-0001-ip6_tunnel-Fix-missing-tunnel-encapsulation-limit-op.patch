@@ -1,0 +1,50 @@
+From 89a23c8b528bd2c89f3981573d6cd7d23840c8a6 Mon Sep 17 00:00:00 2001
+From: Craig Gallek <cgallek@google.com>
+Date: Wed, 26 Apr 2017 14:37:45 -0400
+Subject: [PATCH] ip6_tunnel: Fix missing tunnel encapsulation limit option
+
+The IPv6 tunneling code tries to insert IPV6_TLV_TNL_ENCAP_LIMIT and
+IPV6_TLV_PADN options when an encapsulation limit is defined (the
+default is a limit of 4).  An MTU adjustment is done to account for
+these options as well.  However, the options are never present in the
+generated packets.
+
+The issue appears to be a subtlety between IPV6_DSTOPTS and
+IPV6_RTHDRDSTOPTS defined in RFC 3542.  When the IPIP tunnel driver was
+written, the encap limit options were included as IPV6_RTHDRDSTOPTS in
+dst0opt of struct ipv6_txoptions.  Later, ipv6_push_nfrags_opts was
+(correctly) updated to require IPV6_RTHDR options when IPV6_RTHDRDSTOPTS
+are to be used.  This caused the options to no longer be included in v6
+encapsulated packets.
+
+The fix is to use IPV6_DSTOPTS (in dst1opt of struct ipv6_txoptions)
+instead.  IPV6_DSTOPTS do not have the additional IPV6_RTHDR requirement.
+
+Fixes: 1df64a8569c7: ("[IPV6]: Add ip6ip6 tunnel driver.")
+Fixes: 333fad5364d6: ("[IPV6]: Support several new sockopt / ancillary data in Advanced API (RFC3542)")
+Signed-off-by: Craig Gallek <kraig@google.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ net/ipv6/ip6_tunnel.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+--- a/net/ipv6/ip6_tunnel.c
++++ b/net/ipv6/ip6_tunnel.c
+@@ -957,7 +957,7 @@ static void init_tel_txopt(struct ipv6_t
+ 	opt->dst_opt[5] = IPV6_TLV_PADN;
+ 	opt->dst_opt[6] = 1;
+ 
+-	opt->ops.dst0opt = (struct ipv6_opt_hdr *) opt->dst_opt;
++	opt->ops.dst1opt = (struct ipv6_opt_hdr *) opt->dst_opt;
+ 	opt->ops.opt_nflen = 8;
+ }
+ 
+@@ -1187,7 +1187,7 @@ route_lookup:
+ 
+ 	if (encap_limit >= 0) {
+ 		init_tel_txopt(&opt, encap_limit);
+-		ipv6_push_nfrag_opts(skb, &opt.ops, &proto, NULL);
++		ipv6_push_frag_opts(skb, &opt.ops, &proto);
+ 	}
+ 
+ 	/* Calculate max headroom for all the headers and adjust

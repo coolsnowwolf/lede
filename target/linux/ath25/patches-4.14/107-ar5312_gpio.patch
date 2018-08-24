@@ -1,0 +1,212 @@
+--- a/arch/mips/ath25/Kconfig
++++ b/arch/mips/ath25/Kconfig
+@@ -2,6 +2,7 @@
+ config SOC_AR5312
+ 	bool "Atheros AR5312/AR2312+ SoC support"
+ 	depends on ATH25
++	select GPIO_AR5312
+ 	default y
+ 
+ config SOC_AR2315
+--- a/arch/mips/ath25/ar5312.c
++++ b/arch/mips/ath25/ar5312.c
+@@ -22,6 +22,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/mtd/physmap.h>
+ #include <linux/reboot.h>
++#include <linux/gpio.h>
+ #include <asm/bootinfo.h>
+ #include <asm/reboot.h>
+ #include <asm/time.h>
+@@ -180,6 +181,22 @@ static struct platform_device ar5312_phy
+ 	.num_resources = 1,
+ };
+ 
++static struct resource ar5312_gpio_res[] = {
++	{
++		.name = "ar5312-gpio",
++		.flags = IORESOURCE_MEM,
++		.start = AR5312_GPIO_BASE,
++		.end = AR5312_GPIO_BASE + AR5312_GPIO_SIZE - 1,
++	},
++};
++
++static struct platform_device ar5312_gpio = {
++	.name = "ar5312-gpio",
++	.id = -1,
++	.resource = ar5312_gpio_res,
++	.num_resources = ARRAY_SIZE(ar5312_gpio_res),
++};
++
+ static void __init ar5312_flash_init(void)
+ {
+ 	void __iomem *flashctl_base;
+@@ -247,6 +264,8 @@ void __init ar5312_init_devices(void)
+ 
+ 	platform_device_register(&ar5312_physmap_flash);
+ 
++	platform_device_register(&ar5312_gpio);
++
+ 	switch (ath25_soc) {
+ 	case ATH25_SOC_AR5312:
+ 		if (!ath25_board.radio)
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -105,6 +105,13 @@ config GPIO_AMDPT
+ 	  driver for GPIO functionality on Promontory IOHub
+ 	  Require ACPI ASL code to enumerate as a platform device.
+ 
++config GPIO_AR5312
++	bool "AR5312 SoC GPIO support"
++	default y if SOC_AR5312
++	depends on SOC_AR5312
++	help
++	  Say yes here to enable GPIO support for Atheros AR5312/AR2312+ SoCs.
++
+ config GPIO_ASPEED
+ 	tristate "Aspeed GPIO support"
+ 	depends on (ARCH_ASPEED || COMPILE_TEST) && OF_GPIO
+--- a/drivers/gpio/Makefile
++++ b/drivers/gpio/Makefile
+@@ -29,6 +29,7 @@ obj-$(CONFIG_GPIO_ALTERA)  	+= gpio-alte
+ obj-$(CONFIG_GPIO_ALTERA_A10SR)	+= gpio-altera-a10sr.o
+ obj-$(CONFIG_GPIO_AMD8111)	+= gpio-amd8111.o
+ obj-$(CONFIG_GPIO_AMDPT)	+= gpio-amdpt.o
++obj-$(CONFIG_GPIO_AR5312)	+= gpio-ar5312.o
+ obj-$(CONFIG_GPIO_ARIZONA)	+= gpio-arizona.o
+ obj-$(CONFIG_GPIO_ATH79)	+= gpio-ath79.o
+ obj-$(CONFIG_GPIO_ASPEED)	+= gpio-aspeed.o
+--- /dev/null
++++ b/drivers/gpio/gpio-ar5312.c
+@@ -0,0 +1,121 @@
++/*
++ * This file is subject to the terms and conditions of the GNU General Public
++ * License.  See the file "COPYING" in the main directory of this archive
++ * for more details.
++ *
++ * Copyright (C) 2003 Atheros Communications, Inc.,  All Rights Reserved.
++ * Copyright (C) 2006 FON Technology, SL.
++ * Copyright (C) 2006 Imre Kaloz <kaloz@openwrt.org>
++ * Copyright (C) 2006-2009 Felix Fietkau <nbd@nbd.name>
++ * Copyright (C) 2012 Alexandros C. Couloumbis <alex@ozo.com>
++ */
++
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/platform_device.h>
++#include <linux/gpio.h>
++
++#define DRIVER_NAME	"ar5312-gpio"
++
++#define AR5312_GPIO_DO		0x00		/* output register */
++#define AR5312_GPIO_DI		0x04		/* intput register */
++#define AR5312_GPIO_CR		0x08		/* control register */
++
++#define AR5312_GPIO_CR_M(x)	(1 << (x))	/* mask for i/o */
++#define AR5312_GPIO_CR_O(x)	(0 << (x))	/* mask for output */
++#define AR5312_GPIO_CR_I(x)	(1 << (x))	/* mask for input */
++#define AR5312_GPIO_CR_INT(x)	(1 << ((x)+8))	/* mask for interrupt */
++#define AR5312_GPIO_CR_UART(x)	(1 << ((x)+16))	/* uart multiplex */
++
++#define AR5312_GPIO_NUM		8
++
++static void __iomem *ar5312_mem;
++
++static inline u32 ar5312_gpio_reg_read(unsigned reg)
++{
++	return __raw_readl(ar5312_mem + reg);
++}
++
++static inline void ar5312_gpio_reg_write(unsigned reg, u32 val)
++{
++	__raw_writel(val, ar5312_mem + reg);
++}
++
++static inline void ar5312_gpio_reg_mask(unsigned reg, u32 mask, u32 val)
++{
++	ar5312_gpio_reg_write(reg, (ar5312_gpio_reg_read(reg) & ~mask) | val);
++}
++
++static int ar5312_gpio_get_val(struct gpio_chip *chip, unsigned gpio)
++{
++	return (ar5312_gpio_reg_read(AR5312_GPIO_DI) >> gpio) & 1;
++}
++
++static void ar5312_gpio_set_val(struct gpio_chip *chip, unsigned gpio, int val)
++{
++	u32 reg = ar5312_gpio_reg_read(AR5312_GPIO_DO);
++
++	reg = val ? reg | (1 << gpio) : reg & ~(1 << gpio);
++	ar5312_gpio_reg_write(AR5312_GPIO_DO, reg);
++}
++
++static int ar5312_gpio_dir_in(struct gpio_chip *chip, unsigned gpio)
++{
++	ar5312_gpio_reg_mask(AR5312_GPIO_CR, 0, 1 << gpio);
++	return 0;
++}
++
++static int ar5312_gpio_dir_out(struct gpio_chip *chip, unsigned gpio, int val)
++{
++	ar5312_gpio_reg_mask(AR5312_GPIO_CR, 1 << gpio, 0);
++	ar5312_gpio_set_val(chip, gpio, val);
++	return 0;
++}
++
++static struct gpio_chip ar5312_gpio_chip = {
++	.label			= DRIVER_NAME,
++	.direction_input	= ar5312_gpio_dir_in,
++	.direction_output	= ar5312_gpio_dir_out,
++	.set			= ar5312_gpio_set_val,
++	.get			= ar5312_gpio_get_val,
++	.base			= 0,
++	.ngpio			= AR5312_GPIO_NUM,
++};
++
++static int ar5312_gpio_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct resource *res;
++	int ret;
++
++	if (ar5312_mem)
++		return -EBUSY;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	ar5312_mem = devm_ioremap_resource(dev, res);
++	if (IS_ERR(ar5312_mem))
++		return PTR_ERR(ar5312_mem);
++
++	ar5312_gpio_chip.parent = dev;
++	ret = gpiochip_add(&ar5312_gpio_chip);
++	if (ret) {
++		dev_err(dev, "failed to add gpiochip\n");
++		return ret;
++	}
++
++	return 0;
++}
++
++static struct platform_driver ar5312_gpio_driver = {
++	.probe = ar5312_gpio_probe,
++	.driver = {
++		.name = DRIVER_NAME,
++		.owner = THIS_MODULE,
++	}
++};
++
++static int __init ar5312_gpio_init(void)
++{
++	return platform_driver_register(&ar5312_gpio_driver);
++}
++subsys_initcall(ar5312_gpio_init);
+--- a/arch/mips/Kconfig
++++ b/arch/mips/Kconfig
+@@ -174,6 +174,7 @@ config ATH25
+ 	select CEVT_R4K
+ 	select CSRC_R4K
+ 	select DMA_NONCOHERENT
++	select GPIOLIB
+ 	select IRQ_MIPS_CPU
+ 	select IRQ_DOMAIN
+ 	select SYS_HAS_CPU_MIPS32_R1

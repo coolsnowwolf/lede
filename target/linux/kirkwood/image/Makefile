@@ -64,7 +64,7 @@ TARGET_DEVICES += iom_iconnect-1.1
 
 define Device/linksys_audi
   DEVICE_TITLE := Linksys EA3500 (Audi)
-  DEVICE_PACKAGES := kmod-mwl8k swconfig wpad-mini
+  DEVICE_PACKAGES := kmod-mwl8k swconfig wpad-mini kmod-gpio-button-hotplug
   DEVICE_DTS := kirkwood-linksys-audi
   KERNEL_SIZE := 2624k
   KERNEL_IN_UBI := 0
@@ -77,7 +77,7 @@ TARGET_DEVICES += linksys_audi
 
 define Device/linksys_viper
   DEVICE_TITLE := Linksys E4200v2 / EA4500 (Viper)
-  DEVICE_PACKAGES := kmod-mwl8k swconfig wpad-mini
+  DEVICE_PACKAGES := kmod-mwl8k swconfig wpad-mini kmod-gpio-button-hotplug
   DEVICE_DTS := kirkwood-linksys-viper
   KERNEL_SIZE := 2688k
   KERNEL_IN_UBI := 0

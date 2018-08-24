@@ -21,7 +21,9 @@ LIB_DIR=$(HOST_BUILD_DIR)/C/7zip/Compress/LZMA_Lib
 ALONE_DIR=$(HOST_BUILD_DIR)/C/7zip/Compress/LZMA_Alone
 
 define Host/Compile
+	+$(HOST_MAKE_VARS) \
 	$(MAKE) -C $(LIB_DIR)
+	+$(HOST_MAKE_VARS) \
 	$(MAKE) -f makefile.gcc -C $(ALONE_DIR)
 endef
 

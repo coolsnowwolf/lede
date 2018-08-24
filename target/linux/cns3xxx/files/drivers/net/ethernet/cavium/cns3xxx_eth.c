@@ -1112,22 +1112,12 @@ static int eth_set_mac(struct net_device *netdev, void *p)
 	return 0;
 }
 
-static int cns3xxx_change_mtu(struct net_device *dev, int new_mtu)
-{
-	if (new_mtu > MAX_MTU)
-		return -EINVAL;
-
-	dev->mtu = new_mtu;
-	return 0;
-}
-
 static const struct net_device_ops cns3xxx_netdev_ops = {
 	.ndo_open = eth_open,
 	.ndo_stop = eth_close,
 	.ndo_start_xmit = eth_xmit,
 	.ndo_set_rx_mode = eth_rx_mode,
 	.ndo_do_ioctl = eth_ioctl,
-	.ndo_change_mtu = cns3xxx_change_mtu,
 	.ndo_set_mac_address = eth_set_mac,
 	.ndo_validate_addr = eth_validate_addr,
 };
@@ -1224,6 +1214,7 @@ static int eth_init_one(struct platform_device *pdev)
 		dev->netdev_ops = &cns3xxx_netdev_ops;
 		dev->ethtool_ops = &cns3xxx_ethtool_ops;
 		dev->tx_queue_len = 1000;
+		dev->max_mtu = MAX_MTU;
 		dev->features = NETIF_F_IP_CSUM | NETIF_F_SG | NETIF_F_FRAGLIST;
 
 		switch_port_tab[port->id] = port;

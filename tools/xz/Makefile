@@ -7,12 +7,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xz
-PKG_VERSION:=5.2.3
+PKG_VERSION:=5.2.4
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=@SF/lzmautils \
 		http://tukaani.org/xz
-PKG_HASH:=fd9ca16de1052aac899ad3495ad20dfa906c27b4a5070102a2ec35ca3a4740c1
+PKG_HASH:=3313fd2a95f43d88e44264e6b015e7d03053e681860b0d5d3f9baca79c57b7bf
 
 HOST_BUILD_PARALLEL:=1
 
@@ -24,14 +24,7 @@ HOSTCXX := $(HOSTCXX_NOCACHE)
 HOST_CONFIGURE_ARGS += \
 	--enable-static=yes \
 	--enable-shared=no \
-
-define Host/Prepare
-	$(call Host/Prepare/Default)
-
-	# FreeBSD portability fix
-	sed -i -e 's|#if defined(HAVE_BYTESWAP_H)|& \&\& !defined(__FreeBSD__)|' \
-		$(HOST_BUILD_DIR)/src/common/tuklib_integer.h
-endef
+	--disable-doc
 
 define Host/Install
 	+$(MAKE) $(HOST_JOBS) -C $(HOST_BUILD_DIR) install xzlinks="unxz xzcat"

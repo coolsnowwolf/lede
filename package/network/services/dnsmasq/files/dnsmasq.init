@@ -844,8 +844,10 @@ dnsmasq_start()
 	config_list_foreach "$cfg" "rev_server" append_rev_server
 	config_list_foreach "$cfg" "address" append_address
 	config_list_foreach "$cfg" "ipset" append_ipset
-	config_list_foreach "$cfg" "interface" append_interface
-	config_list_foreach "$cfg" "notinterface" append_notinterface
+	[ -n "$BOOT" ] || {
+		config_list_foreach "$cfg" "interface" append_interface
+		config_list_foreach "$cfg" "notinterface" append_notinterface
+	}
 	config_list_foreach "$cfg" "addnhosts" append_addnhosts
 	config_list_foreach "$cfg" "bogusnxdomain" append_bogusnxdomain
 	append_parm "$cfg" "leasefile" "--dhcp-leasefile" "/tmp/dhcp.leases"
@@ -941,8 +943,9 @@ dnsmasq_start()
 	xappend "--addn-hosts=$(dirname $HOSTFILE)"
 
 	config_get dnsmasqconfdir "$cfg" confdir "/tmp/dnsmasq.d"
-	[ ! -d "$dnsmasqconfdir" ] && mkdir -p $dnsmasqconfdir
 	xappend "--conf-dir=$dnsmasqconfdir"
+	dnsmasqconfdir="${dnsmasqconfdir%%,*}"
+	[ ! -d "$dnsmasqconfdir" ] && mkdir -p $dnsmasqconfdir
 	xappend "--user=dnsmasq"
 	xappend "--group=dnsmasq"
 	echo >> $CONFIGFILE_TMP
@@ -966,7 +969,7 @@ dnsmasq_start()
 	config_foreach filter_dnsmasq match dhcp_match_add "$cfg"
 	config_foreach filter_dnsmasq domain dhcp_domain_add "$cfg"
 	config_foreach filter_dnsmasq hostrecord dhcp_hostrecord_add "$cfg"
-	config_foreach filter_dnsmasq relay dhcp_relay_add "$cfg"
+	[ -n "$BOOT" ] || config_foreach filter_dnsmasq relay dhcp_relay_add "$cfg"
 
 	echo >> $CONFIGFILE_TMP
 	config_foreach filter_dnsmasq srvhost dhcp_srv_add "$cfg"
@@ -983,13 +986,13 @@ dnsmasq_start()
 		# Enable RA feature for when/if it is constructed,
 		# and RA is selected per interface pool (RA, DHCP, or both),
 		# but no one (should) want RA broadcast in syslog
-		config_foreach filter_dnsmasq dhcp dhcp_add "$cfg"
+		[ -n "$BOOT" ] || config_foreach filter_dnsmasq dhcp dhcp_add "$cfg"
 		xappend "--enable-ra"
 		xappend "--quiet-ra"
 		append_bool "$cfg" quietdhcp "--quiet-dhcp6"
 
 	elif [ "$DNSMASQ_DHCP_VER" -gt 0 ] ; then
-		config_foreach filter_dnsmasq dhcp dhcp_add "$cfg"
+		[ -n "$BOOT" ] || config_foreach filter_dnsmasq dhcp dhcp_add "$cfg"
 	fi
 
 
@@ -1042,10 +1045,23 @@ dnsmasq_stop()
 	rm -f ${BASEDHCPSTAMPFILE}.${cfg}.*.dhcp
 }
 
+add_interface_trigger()
+{
+	local interface ignore
+
+	config_get interface "$1" interface
+	config_get_bool ignore "$1" ignore 0
+
+	[ -n "$interface" -a $ignore -eq 0 ] && procd_add_interface_trigger "interface.*" "$interface" /etc/init.d/dnsmasq reload
+}
+
 service_triggers()
 {
 	procd_add_reload_trigger "dhcp" "system"
-	procd_add_raw_trigger "interface.*" 2000 /etc/init.d/dnsmasq reload
+
+	config_load dhcp
+	config_foreach add_interface_trigger dhcp
+	config_foreach add_interface_trigger relay
 }
 
 boot()
@@ -1057,8 +1073,6 @@ boot()
 start_service() {
 	local instance="$1"
 	local instance_found=0
-
-	[ -n "$BOOT" ] && return
 
 	. /lib/functions/network.sh
 

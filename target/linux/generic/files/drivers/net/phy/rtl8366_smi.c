@@ -319,9 +319,9 @@ EXPORT_SYMBOL_GPL(rtl8366_smi_rmwr);
 static int rtl8366_reset(struct rtl8366_smi *smi)
 {
 	if (smi->hw_reset) {
-		smi->hw_reset(smi, true);
+		smi->hw_reset(true);
 		msleep(RTL8366_SMI_HW_STOP_DELAY);
-		smi->hw_reset(smi, false);
+		smi->hw_reset(false);
 		msleep(RTL8366_SMI_HW_START_DELAY);
 		return 0;
 	}
@@ -1300,7 +1300,7 @@ static int __rtl8366_smi_init(struct rtl8366_smi *smi, const char *name)
 
 	/* start the switch */
 	if (smi->hw_reset) {
-		smi->hw_reset(smi, false);
+		smi->hw_reset(false);
 		msleep(RTL8366_SMI_HW_START_DELAY);
 	}
 
@@ -1315,7 +1315,7 @@ static int __rtl8366_smi_init(struct rtl8366_smi *smi, const char *name)
 static void __rtl8366_smi_cleanup(struct rtl8366_smi *smi)
 {
 	if (smi->hw_reset)
-		smi->hw_reset(smi, true);
+		smi->hw_reset(true);
 
 	gpio_free(smi->gpio_sck);
 	gpio_free(smi->gpio_sda);
@@ -1425,14 +1425,6 @@ void rtl8366_smi_cleanup(struct rtl8366_smi *smi)
 EXPORT_SYMBOL_GPL(rtl8366_smi_cleanup);
 
 #ifdef CONFIG_OF
-static void rtl8366_smi_reset(struct rtl8366_smi *smi, bool active)
-{
-	if (active)
-		reset_control_assert(smi->reset);
-	else
-		reset_control_deassert(smi->reset);
-}
-
 int rtl8366_smi_probe_of(struct platform_device *pdev, struct rtl8366_smi *smi)
 {
 	int sck = of_get_named_gpio(pdev->dev.of_node, "gpio-sck", 0);
@@ -1445,9 +1437,6 @@ int rtl8366_smi_probe_of(struct platform_device *pdev, struct rtl8366_smi *smi)
 
 	smi->gpio_sda = sda;
 	smi->gpio_sck = sck;
-	smi->reset = devm_reset_control_get(&pdev->dev, "switch");
-	if (!IS_ERR(smi->reset))
-		smi->hw_reset = rtl8366_smi_reset;
 
 	return 0;
 }

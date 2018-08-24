@@ -4,7 +4,7 @@
 
 SUBTARGET:=mt7621
 BOARDNAME:=MT7621 based boards
-FEATURES+=nand ramdisk rtc usb
+FEATURES+=nand ramdisk rtc usb minor
 CPU_TYPE:=24kc
 
 define Target/Description

@@ -1,0 +1,202 @@
+From 14909c4e4e836925668e74fc6e0e85ba0283cbf9 Mon Sep 17 00:00:00 2001
+From: Hauke Mehrtens <hauke@hauke-m.de>
+Date: Fri, 6 Jan 2017 17:40:12 +0100
+Subject: [PATCH 2/2] MIPS: lantiq: improve USB initialization
+
+This adds code to initialize the USB controller and PHY also on Danube,
+Amazon SE and AR10. This code is based on the Vendor driver from
+different UGW versions and compared to the hardware documentation.
+
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ arch/mips/lantiq/xway/reset.c   | 120 ++++++++++++++++++++++++++++++----------
+ arch/mips/lantiq/xway/sysctrl.c |  20 +++++++
+ 2 files changed, 110 insertions(+), 30 deletions(-)
+
+--- a/arch/mips/lantiq/xway/reset.c
++++ b/arch/mips/lantiq/xway/reset.c
+@@ -72,6 +72,8 @@
+ #define RCU_USBCFG_HDSEL_BIT	BIT(11)
+ #define RCU_USBCFG_HOST_END_BIT	BIT(10)
+ #define RCU_USBCFG_SLV_END_BIT	BIT(9)
++#define RCU_USBCFG_SLV_END_BIT_AR9	BIT(17)
++
+ 
+ /* USB reset bits */
+ #define RCU_USBRESET		0x0010
+@@ -85,6 +87,8 @@
+ 
+ #define RCU_CFG1A		0x0038
+ #define RCU_CFG1B		0x003C
++#define  RCU_CFG1_TX_PEE	BIT(0)
++#define  RCU_CFG1_DIS_THR_SHIFT	15 /* Disconnect Threshold */	
+ 
+ /* USB PMU devices */
+ #define PMU_AHBM		BIT(15)
+@@ -306,38 +310,91 @@ static void ltq_usb_init(void)
+ 	/* Power for USB cores 1 & 2 */
+ 	ltq_pmu_enable(PMU_AHBM);
+ 	ltq_pmu_enable(PMU_USB0);
+-	ltq_pmu_enable(PMU_USB1);
+ 
+-	ltq_rcu_w32(ltq_rcu_r32(RCU_CFG1A) | BIT(0), RCU_CFG1A);
+-	ltq_rcu_w32(ltq_rcu_r32(RCU_CFG1B) | BIT(0), RCU_CFG1B);
++	if (of_machine_is_compatible("lantiq,ar10") ||
++	    of_machine_is_compatible("lantiq,grx390") ||
++	    of_machine_is_compatible("lantiq,ar9") ||
++	    of_machine_is_compatible("lantiq,vr9"))
++		ltq_pmu_enable(PMU_USB1);
++
++	if (of_machine_is_compatible("lantiq,vr9") ||
++	    of_machine_is_compatible("lantiq,ar10")) {
++		ltq_rcu_w32(ltq_rcu_r32(RCU_CFG1A) | RCU_CFG1_TX_PEE |
++			    7 << RCU_CFG1_DIS_THR_SHIFT, RCU_CFG1A);
++		ltq_rcu_w32(ltq_rcu_r32(RCU_CFG1B) | RCU_CFG1_TX_PEE |
++			    7 << RCU_CFG1_DIS_THR_SHIFT, RCU_CFG1B);
++	}
+ 
+ 	/* Enable USB PHY power for cores 1 & 2 */
+ 	ltq_pmu_enable(PMU_USB0_P);
+-	ltq_pmu_enable(PMU_USB1_P);
++	if (of_machine_is_compatible("lantiq,ar10") ||
++	    of_machine_is_compatible("lantiq,grx390") ||
++	    of_machine_is_compatible("lantiq,ar9") ||
++	    of_machine_is_compatible("lantiq,vr9"))
++		ltq_pmu_enable(PMU_USB1_P);
++
++	if (of_machine_is_compatible("lantiq,ase") ||
++	    of_machine_is_compatible("lantiq,danube")) {
++		/* Configure cores to host mode */
++		ltq_rcu_w32(ltq_rcu_r32(RCU_USB1CFG) & ~RCU_USBCFG_HDSEL_BIT,
++			RCU_USB1CFG);
++
++		/* Select DMA endianness (Host-endian: big-endian) */
++		ltq_rcu_w32((ltq_rcu_r32(RCU_USB1CFG) & ~RCU_USBCFG_SLV_END_BIT)
++			| RCU_USBCFG_HOST_END_BIT, RCU_USB1CFG);
++	}
++
++	if (of_machine_is_compatible("lantiq,ar9")) {
++		/* Configure cores to host mode */
++		ltq_rcu_w32(ltq_rcu_r32(RCU_USB1CFG) & ~RCU_USBCFG_HDSEL_BIT,
++			RCU_USB1CFG);
++		ltq_rcu_w32(ltq_rcu_r32(RCU_USB2CFG) & ~RCU_USBCFG_HDSEL_BIT,
++			RCU_USB2CFG);
++
++		/* Select DMA endianness (Host-endian: big-endian) */
++		ltq_rcu_w32((ltq_rcu_r32(RCU_USB1CFG) & ~RCU_USBCFG_SLV_END_BIT_AR9)
++			| RCU_USBCFG_HOST_END_BIT, RCU_USB1CFG);
++		ltq_rcu_w32(ltq_rcu_r32((RCU_USB2CFG) & ~RCU_USBCFG_SLV_END_BIT_AR9)
++			| RCU_USBCFG_HOST_END_BIT, RCU_USB2CFG);
++	}
++
++	if (of_machine_is_compatible("lantiq,vr9") ||
++	    of_machine_is_compatible("lantiq,ar10")) {
++		/* Configure cores to host mode */
++		ltq_rcu_w32(ltq_rcu_r32(RCU_USB1CFG) & ~RCU_USBCFG_HDSEL_BIT,
++			RCU_USB1CFG);
++		ltq_rcu_w32(ltq_rcu_r32(RCU_USB2CFG) & ~RCU_USBCFG_HDSEL_BIT,
++			RCU_USB2CFG);
++
++		/* Select DMA endianness (Host-endian: big-endian) */
++		ltq_rcu_w32((ltq_rcu_r32(RCU_USB1CFG) & ~RCU_USBCFG_SLV_END_BIT)
++			| RCU_USBCFG_HOST_END_BIT, RCU_USB1CFG);
++		ltq_rcu_w32(ltq_rcu_r32((RCU_USB2CFG) & ~RCU_USBCFG_SLV_END_BIT)
++			| RCU_USBCFG_HOST_END_BIT, RCU_USB2CFG);
++	}
++
++	if (of_machine_is_compatible("lantiq,ar9")) {
++		/* Hard reset USB state machines */
++		ltq_rcu_w32(ltq_rcu_r32(RCU_USBRESET)
++			   | USBRESET_BIT | BIT(28), RCU_USBRESET);
++		udelay(50 * 1000);
++		ltq_rcu_w32(ltq_rcu_r32(RCU_USBRESET)
++			    & ~(USBRESET_BIT | BIT(28)), RCU_USBRESET);
++	} else {
++		/* Hard reset USB state machines */
++		ltq_rcu_w32(ltq_rcu_r32(RCU_USBRESET) | USBRESET_BIT, RCU_USBRESET);
++		udelay(50 * 1000);
++		ltq_rcu_w32(ltq_rcu_r32(RCU_USBRESET) & ~USBRESET_BIT, RCU_USBRESET);
++	}
+ 
+-	/* Configure cores to host mode */
+-	ltq_rcu_w32(ltq_rcu_r32(RCU_USB1CFG) & ~RCU_USBCFG_HDSEL_BIT,
+-		RCU_USB1CFG);
+-	ltq_rcu_w32(ltq_rcu_r32(RCU_USB2CFG) & ~RCU_USBCFG_HDSEL_BIT,
+-		RCU_USB2CFG);
+-
+-	/* Select DMA endianness (Host-endian: big-endian) */
+-	ltq_rcu_w32((ltq_rcu_r32(RCU_USB1CFG) & ~RCU_USBCFG_SLV_END_BIT)
+-		| RCU_USBCFG_HOST_END_BIT, RCU_USB1CFG);
+-	ltq_rcu_w32(ltq_rcu_r32((RCU_USB2CFG) & ~RCU_USBCFG_SLV_END_BIT)
+-		| RCU_USBCFG_HOST_END_BIT, RCU_USB2CFG);
+-
+-	/* Hard reset USB state machines */
+-	ltq_rcu_w32(ltq_rcu_r32(RCU_USBRESET) | USBRESET_BIT, RCU_USBRESET);
+-	udelay(50 * 1000);
+-	ltq_rcu_w32(ltq_rcu_r32(RCU_USBRESET) & ~USBRESET_BIT, RCU_USBRESET);
+-
+-	/* Soft reset USB state machines */
+-	ltq_rcu_w32(ltq_rcu_r32(RCU_USBRESET2)
+-		| USB1RESET_BIT | USB2RESET_BIT, RCU_USBRESET2);
+-	udelay(50 * 1000);
+-	ltq_rcu_w32(ltq_rcu_r32(RCU_USBRESET2)
+-		& ~(USB1RESET_BIT | USB2RESET_BIT), RCU_USBRESET2);
++	if (of_machine_is_compatible("lantiq,vr9")) {
++		/* Soft reset USB state machines */
++		ltq_rcu_w32(ltq_rcu_r32(RCU_USBRESET2)
++			| USB1RESET_BIT | USB2RESET_BIT, RCU_USBRESET2);
++		udelay(50 * 1000);
++		ltq_rcu_w32(ltq_rcu_r32(RCU_USBRESET2)
++			& ~(USB1RESET_BIT | USB2RESET_BIT), RCU_USBRESET2);
++	}
+ }
+ 
+ static int __init mips_reboot_setup(void)
+@@ -363,8 +420,11 @@ static int __init mips_reboot_setup(void
+ 	if (!ltq_rcu_membase)
+ 		panic("Failed to remap core memory");
+ 
+-	if (of_machine_is_compatible("lantiq,ar9") ||
+-	    of_machine_is_compatible("lantiq,vr9"))
++	if (of_machine_is_compatible("lantiq,danube") ||
++	    of_machine_is_compatible("lantiq,ase") ||
++	    of_machine_is_compatible("lantiq,ar9") ||
++	    of_machine_is_compatible("lantiq,vr9") ||
++	    of_machine_is_compatible("lantiq,ar10"))
+ 		ltq_usb_init();
+ 
+ 	if (of_machine_is_compatible("lantiq,vr9"))
+--- a/arch/mips/lantiq/xway/sysctrl.c
++++ b/arch/mips/lantiq/xway/sysctrl.c
+@@ -254,6 +254,25 @@ static void pmu_disable(struct clk *clk)
+ 		pr_warn("deactivating PMU module failed!");
+ }
+ 
++static void usb_set_clock(void)
++{
++	unsigned int val = ltq_cgu_r32(ifccr);
++
++	if (of_machine_is_compatible("lantiq,ar10") ||
++	    of_machine_is_compatible("lantiq,grx390")) {
++		val &= ~0x03; /* XTAL divided by 3 */
++	} else if (of_machine_is_compatible("lantiq,ar9") ||
++		   of_machine_is_compatible("lantiq,vr9")) {
++		/* TODO: this depends on the XTAL frequency */
++		val |= 0x03; /* XTAL divided by 3 */
++	} else if (of_machine_is_compatible("lantiq,ase")) {
++		val |= 0x20; /* from XTAL */
++	} else if (of_machine_is_compatible("lantiq,danube")) {
++		val |= 0x30; /* 12 MHz, generated from 36 MHz */
++	}
++	ltq_cgu_w32(val, ifccr);
++}
++
+ /* the pci enable helper */
+ static int pci_enable(struct clk *clk)
+ {
+@@ -608,4 +627,5 @@ void __init ltq_soc_init(void)
+ 
+ 	if (of_machine_is_compatible("lantiq,vr9"))
+ 		xbar_fpi_burst_disable();
++	usb_set_clock();
+ }

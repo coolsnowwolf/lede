@@ -1,0 +1,117 @@
+From 148788eb0ee96026105755cf3fd1ad3d94f49cd2 Mon Sep 17 00:00:00 2001
+From: Denys Vlasenko <vda.linux@googlemail.com>
+Date: Thu, 21 Jun 2018 17:36:22 +0200
+Subject: [PATCH] udhcpc: remove code which requires server ID to be on local
+ network
+
+This reverts "udhcpc: paranoia when using kernel UDP mode
+for sending renew: server ID may be bogus".
+
+Users complain that they do have servers behind routers
+(with DHCP relays).
+
+function                                             old     new   delta
+send_packet                                          168     166      -2
+bcast_or_ucast                                        25      23      -2
+udhcp_send_kernel_packet                             301     295      -6
+------------------------------------------------------------------------------
+(add/remove: 0/0 grow/shrink: 0/3 up/down: 0/-10)             Total: -10 bytes
+
+Signed-off-by: Denys Vlasenko <vda.linux@googlemail.com>
+---
+ networking/udhcp/common.h   |  4 +---
+ networking/udhcp/d6_dhcpc.c |  4 +---
+ networking/udhcp/dhcpc.c    | 10 ++--------
+ networking/udhcp/dhcpd.c    |  4 +---
+ networking/udhcp/packet.c   |  7 +++----
+ 5 files changed, 8 insertions(+), 21 deletions(-)
+
+--- a/networking/udhcp/common.h
++++ b/networking/udhcp/common.h
+@@ -308,9 +308,7 @@ int udhcp_send_raw_packet(struct dhcp_pa
+ 
+ int udhcp_send_kernel_packet(struct dhcp_packet *dhcp_pkt,
+ 		uint32_t source_nip, int source_port,
+-		uint32_t dest_nip, int dest_port,
+-		int send_flags
+-) FAST_FUNC;
++		uint32_t dest_nip, int dest_port) FAST_FUNC;
+ 
+ void udhcp_sp_setup(void) FAST_FUNC;
+ void udhcp_sp_fd_set(struct pollfd *pfds, int extra_fd) FAST_FUNC;
+--- a/networking/udhcp/d6_dhcpc.c
++++ b/networking/udhcp/d6_dhcpc.c
+@@ -702,15 +702,13 @@ static NOINLINE int send_d6_renew(uint32
+ 	opt_ptr = add_d6_client_options(opt_ptr);
+ 
+ 	bb_error_msg("sending %s", "renew");
+-	if (server_ipv6) {
++	if (server_ipv6)
+ 		return d6_send_kernel_packet(
+ 			&packet, (opt_ptr - (uint8_t*) &packet),
+ 			our_cur_ipv6, CLIENT_PORT6,
+ 			server_ipv6, SERVER_PORT6,
+ 			client_config.ifindex
+-			/* TODO? send_flags: MSG_DONTROUTE (see IPv4 code for reason why) */
+ 		);
+-	}
+ 	return d6_mcast_from_client_config_ifindex(&packet, opt_ptr);
+ }
+ 
+--- a/networking/udhcp/dhcpc.c
++++ b/networking/udhcp/dhcpc.c
+@@ -693,16 +693,10 @@ static int raw_bcast_from_client_config_
+ 
+ static int bcast_or_ucast(struct dhcp_packet *packet, uint32_t ciaddr, uint32_t server)
+ {
+-	if (server) {
+-		/* Without MSG_DONTROUTE, the packet was seen routed over
+-		 * _other interface_ if server ID is bogus (example: 1.1.1.1).
+-		 */
++	if (server)
+ 		return udhcp_send_kernel_packet(packet,
+ 			ciaddr, CLIENT_PORT,
+-			server, SERVER_PORT,
+-			/*send_flags: "to hosts only on directly connected networks" */ MSG_DONTROUTE
+-		);
+-	}
++			server, SERVER_PORT);
+ 	return raw_bcast_from_client_config_ifindex(packet, ciaddr);
+ }
+ 
+--- a/networking/udhcp/dhcpd.c
++++ b/networking/udhcp/dhcpd.c
+@@ -588,9 +588,7 @@ static void send_packet_to_relay(struct
+ 
+ 	udhcp_send_kernel_packet(dhcp_pkt,
+ 			server_config.server_nip, SERVER_PORT,
+-			dhcp_pkt->gateway_nip, SERVER_PORT,
+-			/*send_flags:*/ 0
+-	);
++			dhcp_pkt->gateway_nip, SERVER_PORT);
+ }
+ 
+ static void send_packet(struct dhcp_packet *dhcp_pkt, int force_broadcast)
+--- a/networking/udhcp/packet.c
++++ b/networking/udhcp/packet.c
+@@ -189,8 +189,7 @@ int FAST_FUNC udhcp_send_raw_packet(stru
+ /* Let the kernel do all the work for packet generation */
+ int FAST_FUNC udhcp_send_kernel_packet(struct dhcp_packet *dhcp_pkt,
+ 		uint32_t source_nip, int source_port,
+-		uint32_t dest_nip, int dest_port,
+-		int send_flags)
++		uint32_t dest_nip, int dest_port)
+ {
+ 	struct sockaddr_in sa;
+ 	unsigned padding;
+@@ -227,8 +226,8 @@ int FAST_FUNC udhcp_send_kernel_packet(s
+ 	padding = DHCP_OPTIONS_BUFSIZE - 1 - udhcp_end_option(dhcp_pkt->options);
+ 	if (padding > DHCP_SIZE - 300)
+ 		padding = DHCP_SIZE - 300;
+-	result = send(fd, dhcp_pkt, DHCP_SIZE - padding, send_flags);
+-	msg = "send";
++	result = safe_write(fd, dhcp_pkt, DHCP_SIZE - padding);
++	msg = "write";
+  ret_close:
+ 	close(fd);
+ 	if (result < 0) {

@@ -196,6 +196,20 @@ define Device/tplink_tl-mr3420-v5
 endef
 TARGET_DEVICES += tplink_tl-mr3420-v5
 
+define Device/tplink_tl-wr842n-v5
+  $(Device/tplink)
+  DTS := TL-WR842NV5
+  IMAGE_SIZE := 7808k
+  DEVICE_TITLE := TP-Link TL-WR842N v5
+  TPLINK_FLASHLAYOUT := 8Mmtk
+  TPLINK_HWID := 0x08420005
+  TPLINK_HWREV := 0x5
+  TPLINK_HWREVADD := 0x5
+  TPLINK_HVERSION := 3
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += tplink_tl-wr842n-v5
+
 define Device/tplink_tl-wr902ac-v3
   $(Device/tplink)
   DTS := TL-WR902ACV3
@@ -206,7 +220,6 @@ define Device/tplink_tl-wr902ac-v3
   TPLINK_HWREV := 0x89
   TPLINK_HWREVADD := 0x1
   TPLINK_HVERSION := 3
-  IMAGES += factory.bin
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += tplink_tl-wr902ac-v3

@@ -7,7 +7,7 @@ preinit_set_mac_address() {
 	asus,rt-acrh17|\
 	asus,rt-ac58u)
 		CI_UBIPART=UBI_DEV
-		mac=$(mtd_get_mac_binary_ubi Factory 4102)
+		mac=$(macaddr_add $(mtd_get_mac_binary_ubi Factory 4102) +1)
 		ifconfig eth0 hw ether $mac 2>/dev/null
 		;;
 	meraki,mr33)
