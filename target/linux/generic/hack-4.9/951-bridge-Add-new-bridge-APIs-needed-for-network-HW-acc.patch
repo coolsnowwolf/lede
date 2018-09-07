@@ -1,0 +1,74 @@
+From cdabe46cd62d22266aed7fdae36f72a36e3558e7 Mon Sep 17 00:00:00 2001
+From: Murat Sezgin <msezgin@codeaurora.org>
+Date: Tue, 25 Nov 2014 17:22:24 -0800
+Subject: [PATCH 2/3] bridge: Add new bridge APIs needed for network HW
+ acceleration
+
+Bridge acceleration hardware needs to perform certain operations,
+ currently unsupported by the existing bridge code:
+
+  ** cut **
+
+ *update bridge interface statistics from outside the bridge code:
+  once acceleration is enabled on a connection, packets will not flow
+  through the host CPU, so we need the hardware accelerator driver to
+  maintain the statistics on the host and update them and add whatever
+  flows through the hardware.
+ These change adds the corresponding functions, and make it available
+ to other through EXPORT_SYMBOLS().
+
+Change-Id: I67afb325796004053897d9916e2df91827b65139
+Signed-off-by: Murat Sezgin <msezgin@codeaurora.org>
+---
+ include/linux/if_bridge.h |  1 +
+ net/bridge/br_if.c        | 25 +++++++++++++++++++++++++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/include/linux/if_bridge.h b/include/linux/if_bridge.h
+index 0911c8c..4473f62 100644
+--- a/include/linux/if_bridge.h
++++ b/include/linux/if_bridge.h
+@@ -52,6 +52,7 @@ struct br_ip_list {
+ #define BR_DEFAULT_AGEING_TIME	(300 * HZ)
+ 
+ extern void brioctl_set(int (*ioctl_hook)(struct net *, unsigned int, void __user *));
++extern void br_dev_update_stats(struct net_device *dev, struct rtnl_link_stats64 *nlstats);
+ 
+ typedef int br_should_route_hook_t(struct sk_buff *skb);
+ extern br_should_route_hook_t __rcu *br_should_route_hook;
+diff --git a/net/bridge/br_if.c b/net/bridge/br_if.c
+index ed0dd33..342b2d9 100644
+--- a/net/bridge/br_if.c
++++ b/net/bridge/br_if.c
+@@ -655,3 +655,28 @@ void br_port_flags_change(struct net_bridge_port *p, unsigned long mask)
+ 	if (mask & BR_AUTO_MASK)
+ 		nbp_update_port_count(br);
+ }
++
++/* Update bridge statistics for bridge packets processed by offload engines */
++void br_dev_update_stats(struct net_device *dev, struct rtnl_link_stats64 *nlstats)
++{
++		struct net_bridge *br;
++		struct pcpu_sw_netstats *stats;
++
++		/*
++		 * Is this a bridge?
++		 */
++		if (!(dev->priv_flags & IFF_EBRIDGE)) {
++			return;
++		}
++
++		br = netdev_priv(dev);
++		stats = this_cpu_ptr(br->stats);
++
++		u64_stats_update_begin(&stats->syncp);
++		stats->rx_packets += nlstats->rx_packets;
++		stats->rx_bytes += nlstats->rx_bytes;
++		stats->tx_packets += nlstats->tx_packets;
++		stats->tx_bytes += nlstats->tx_bytes;
++		u64_stats_update_end(&stats->syncp);
++}
++EXPORT_SYMBOL_GPL(br_dev_update_stats);
+-- 
+2.7.4
+
