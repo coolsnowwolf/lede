@@ -119,8 +119,8 @@ _call_image: staging_dir/host/.prereq-build
 _call_manifest: FORCE
 	rm -rf $(TARGET_DIR)
 	mkdir -p $(TARGET_DIR) $(BIN_DIR) $(TMP_DIR) $(DL_DIR)
-	$(MAKE) package_reload >/dev/null 2>/dev/null
-	$(MAKE) package_install >/dev/null 2>/dev/null
+	$(MAKE) package_reload >/dev/null
+	$(MAKE) package_install >/dev/null
 	$(OPKG) list-installed
 
 package_index: FORCE

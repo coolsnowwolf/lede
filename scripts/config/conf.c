@@ -75,9 +75,9 @@ static void strip(char *str)
 static void check_stdin(void)
 {
 	if (!valid_stdin) {
-		printf(_("aborted!\n\n"));
-		printf(_("Console input/output is redirected. "));
-		printf(_("Run 'make oldconfig' to update configuration.\n\n"));
+	        printf("%s",_("aborted!\n\n"));
+		printf("%s",_("Console input/output is redirected. "));
+		printf("%s",_("Run 'make oldconfig' to update configuration.\n\n"));
 		exit(1);
 	}
 }
@@ -87,7 +87,7 @@ static int conf_askvalue(struct symbol *sym, const char *def)
 	enum symbol_type type = sym_get_type(sym);
 
 	if (!sym_has_value(sym))
-		printf(_("(NEW) "));
+	        printf("%s",_("(NEW) "));
 
 	line[0] = '\n';
 	line[1] = 0;
@@ -288,7 +288,7 @@ static int conf_choice(struct menu *menu)
 			if (child->sym->name)
 				printf(" (%s)", child->sym->name);
 			if (!sym_has_value(child->sym))
-				printf(_(" (NEW)"));
+			        printf("%s",_(" (NEW)"));
 			printf("\n");
 		}
 		printf(_("%*schoice"), indent - 1, "");
@@ -436,7 +436,7 @@ static void check_conf(struct menu *menu)
 				}
 			} else if (input_mode != olddefconfig) {
 				if (!conf_cnt++)
-					printf(_("*\n* Restart config...\n*\n"));
+				        printf("%s",_("*\n* Restart config...\n*\n"));
 				rootEntry = menu_get_parent_menu(menu);
 				conf(rootEntry);
 			}

@@ -1,0 +1,446 @@
+--- /dev/null
++++ b/arch/powerpc/boot/cuboot-magicbox.c
+@@ -0,0 +1,98 @@
++/*
++ * Old U-boot compatibility for Magicbox boards
++ *
++ * Author: Imre Kaloz <kaloz@openwrt.org>
++ *         Gabor Juhos <juhosg@openwrt.org>
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 as published
++ * by the Free Software Foundation.
++ */
++
++#include "ops.h"
++#include "io.h"
++#include "dcr.h"
++#include "stdio.h"
++#include "4xx.h"
++#include "44x.h"
++#include "cuboot.h"
++
++#define TARGET_4xx
++#define TARGET_405EP
++#include "ppcboot.h"
++
++static bd_t bd;
++
++static void fixup_perwe(void)
++{
++
++#define DCRN_CPC0_PCI_BASE	0xf9
++
++	/* Turn on PerWE instead of PCIINT */
++	mtdcr(DCRN_CPC0_PCI_BASE,
++	      mfdcr(DCRN_CPC0_PCI_BASE) | (0x80000000L >> 27));
++
++#undef DCRN_CPC0_PCI_BASE
++}
++
++static void fixup_cf_card(void)
++{
++
++#define CF_CS0_BASE	0xff100000
++#define CF_CS1_BASE	0xff200000
++
++	/* PerCS1 (CF's CS0): base 0xff100000, 16-bit, rw */
++	mtdcr(DCRN_EBC0_CFGADDR, EBC_B1CR);
++	mtdcr(DCRN_EBC0_CFGDATA, CF_CS0_BASE | EBC_BXCR_BS_1M |
++				 EBC_BXCR_BU_RW | EBC_BXCR_BW_16);
++	mtdcr(DCRN_EBC0_CFGADDR, EBC_B1AP);
++	mtdcr(DCRN_EBC0_CFGDATA, 0x080bd800);
++
++	/* PerCS2 (CF's CS1): base 0xff200000, 16-bit, rw */
++	mtdcr(DCRN_EBC0_CFGADDR, EBC_B2CR);
++	mtdcr(DCRN_EBC0_CFGDATA, CF_CS1_BASE | EBC_BXCR_BS_1M |
++				 EBC_BXCR_BU_RW | EBC_BXCR_BW_16);
++	mtdcr(DCRN_EBC0_CFGADDR, EBC_B2AP);
++	mtdcr(DCRN_EBC0_CFGDATA, 0x080bd800);
++
++#undef CF_CS0_BASE
++#undef CF_CS1_BASE
++}
++
++static void magicbox_fixups(void)
++{
++	ibm405ep_fixup_clocks(bd.bi_procfreq / 8);
++	ibm4xx_sdram_fixup_memsize();
++
++	/* Magicbox v1 has only one ethernet, one serial and no
++	 * CF slot -- detect it using it's fake enet1addr
++	 */
++	if ((bd.bi_enet1addr[2] == 0x02) &&
++	    (bd.bi_enet1addr[3] == 0xfa) &&
++	    (bd.bi_enet1addr[4] == 0xf0) &&
++	    (bd.bi_enet1addr[5] == 0x80)) {
++		void *devp;
++		devp = finddevice("/plb/opb/ethernet@ef600900");
++		del_node(devp);
++		devp = finddevice("/plb/opb/serial@ef600400");
++		del_node(devp);
++		devp = finddevice("/plb/ebc/cf_card@ff100000");
++		del_node(devp);
++
++	} else {
++		fixup_perwe();
++		fixup_cf_card();
++	}
++
++	dt_fixup_mac_addresses(&bd.bi_enetaddr, &bd.bi_enet1addr);
++}
++
++void platform_init(unsigned long r3, unsigned long r4, unsigned long r5,
++		unsigned long r6, unsigned long r7)
++{
++	CUBOOT_INIT();
++	platform_ops.fixups = magicbox_fixups;
++	platform_ops.exit = ibm40x_dbcr_reset;
++	fdt_init(_dtb_start);
++	serial_console_init();
++}
+--- /dev/null
++++ b/arch/powerpc/boot/dts/magicbox.dts
+@@ -0,0 +1,285 @@
++/*
++ * Device Tree Source for Magicbox boards
++ *
++ * Copyright 2008-2009 Imre Kaloz <kaloz@openwrt.org>
++ * Copyright 2009 Gabor Juhos <juhosg@openwrt.org>
++ *
++ * Based on walnut.dts
++ *
++ * This file is licensed under the terms of the GNU General Public
++ * License version 2.  This program is licensed "as is" without
++ * any warranty of any kind, whether express or implied.
++ */
++
++/dts-v1/;
++
++/ {
++	#address-cells = <1>;
++	#size-cells = <1>;
++	model = "magicbox";
++	compatible = "magicbox";
++	dcr-parent = <&{/cpus/cpu@0}>;
++
++	aliases {
++		ethernet0 = &EMAC0;
++		ethernet1 = &EMAC1;
++		serial0 = &UART0;
++		serial1 = &UART1;
++	};
++
++	cpus {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		cpu@0 {
++			device_type = "cpu";
++			model = "PowerPC,405EP";
++			reg = <0x00000000>;
++			clock-frequency = <0>; /* Filled in by zImage */
++			timebase-frequency = <0>; /* Filled in by zImage */
++			i-cache-line-size = <0x20>;
++			d-cache-line-size = <0x20>;
++			i-cache-size = <0x4000>;
++			d-cache-size = <0x4000>;
++			dcr-controller;
++			dcr-access-method = "native";
++		};
++	};
++
++	memory {
++		device_type = "memory";
++		reg = <0x00000000 0x00000000>; /* Filled in by zImage */
++	};
++
++	UIC0: interrupt-controller {
++		compatible = "ibm,uic";
++		interrupt-controller;
++		cell-index = <0>;
++		dcr-reg = <0x0c0 0x009>;
++		#address-cells = <0>;
++		#size-cells = <0>;
++		#interrupt-cells = <2>;
++	};
++
++	plb {
++		compatible = "ibm,plb3";
++		#address-cells = <1>;
++		#size-cells = <1>;
++		ranges;
++		clock-frequency = <0>; /* Filled in by zImage */
++
++		SDRAM0: memory-controller {
++			compatible = "ibm,sdram-405ep";
++			dcr-reg = <0x010 0x002>;
++		};
++
++		MAL: mcmal {
++			compatible = "ibm,mcmal-405ep", "ibm,mcmal";
++			dcr-reg = <0x180 0x062>;
++			num-tx-chans = <4>;
++			num-rx-chans = <2>;
++			interrupt-parent = <&UIC0>;
++			interrupts = <
++				0xb 0x4 /* TXEOB */
++				0xc 0x4 /* RXEOB */
++				0xa 0x4 /* SERR */
++				0xd 0x4 /* TXDE */
++				0xe 0x4 /* RXDE */>;
++		};
++
++		POB0: opb {
++			compatible = "ibm,opb-405ep", "ibm,opb";
++			#address-cells = <1>;
++			#size-cells = <1>;
++			ranges = <0xef600000 0xef600000 0x00a00000>;
++			dcr-reg = <0x0a0 0x005>;
++			clock-frequency = <0>; /* Filled in by zImage */
++
++			UART0: serial@ef600300 {
++				device_type = "serial";
++				compatible = "ns16550";
++				reg = <0xef600300 0x00000008>;
++				virtual-reg = <0xef600300>;
++				clock-frequency = <0>; /* Filled in by zImage */
++				current-speed = <115200>;
++				interrupt-parent = <&UIC0>;
++				interrupts = <0x0 0x4>;
++			};
++
++			UART1: serial@ef600400 {
++				device_type = "serial";
++				compatible = "ns16550";
++				reg = <0xef600400 0x00000008>;
++				virtual-reg = <0xef600400>;
++				clock-frequency = <0>; /* Filled in by zImage */
++				current-speed = <115200>;
++				interrupt-parent = <&UIC0>;
++				interrupts = <0x1 0x4>;
++			};
++
++			IIC: i2c@ef600500 {
++				compatible = "ibm,iic-405ep", "ibm,iic";
++				#address-cells = <1>;
++				#size-cells = <0>;
++				reg = <0xef600500 0x00000011>;
++				interrupt-parent = <&UIC0>;
++				interrupts = <0x2 0x4>;
++
++				dtt@48 {
++					compatible = "national,lm75";
++					reg = <0x48>;
++				};
++
++				eeprom@50 {
++					compatible = "at24,24c16";
++					reg = <0x50>;
++				};
++			};
++
++			GPIO0: gpio-controller@ef600700 {
++				compatible = "ibm,ppc4xx-gpio";
++				reg = <0xef600700 0x00000020>;
++				#gpio-cells = <2>;
++				gpio-controller;
++			};
++
++			EMAC0: ethernet@ef600800 {
++				linux,network-index = <0x0>;
++				device_type = "network";
++				compatible = "ibm,emac-405ep", "ibm,emac";
++				interrupt-parent = <&UIC0>;
++				interrupts = <
++					0xf 0x4 /* Ethernet */
++					0x9 0x4 /* Ethernet Wake Up */>;
++				local-mac-address = [000000000000]; /* Filled in by zImage */
++				reg = <0xef600800 0x00000070>;
++				mal-device = <&MAL>;
++				mal-tx-channel = <0>;
++				mal-rx-channel = <0>;
++				cell-index = <0>;
++				max-frame-size = <0x5dc>;
++				rx-fifo-size = <0x1000>;
++				tx-fifo-size = <0x800>;
++				phy-mode = "mii";
++				phy-map = <0x00000000>;
++			};
++
++			EMAC1: ethernet@ef600900 {
++				linux,network-index = <0x1>;
++				device_type = "network";
++				compatible = "ibm,emac-405ep", "ibm,emac";
++				interrupt-parent = <&UIC0>;
++				interrupts = <
++					0x11 0x4 /* Ethernet */
++					0x09 0x4 /* Ethernet Wake Up */>;
++				local-mac-address = [000000000000]; /* Filled in by zImage */
++				reg = <0xef600900 0x00000070>;
++				mal-device = <&MAL>;
++				mal-tx-channel = <2>;
++				mal-rx-channel = <1>;
++				cell-index = <1>;
++				max-frame-size = <0x5dc>;
++				rx-fifo-size = <0x1000>;
++				tx-fifo-size = <0x800>;
++				mdio-device = <&EMAC0>;
++				phy-mode = "mii";
++				phy-map = <0x00000001>;
++			};
++
++			leds {
++				compatible = "gpio-leds";
++				user {
++					label = "magicbox:red:user";
++					gpios = <&GPIO0 2 1>;
++				};
++			};
++		};
++
++		EBC0: ebc {
++			compatible = "ibm,ebc-405ep", "ibm,ebc";
++			dcr-reg = <0x012 0x002>;
++			#address-cells = <2>;
++			#size-cells = <1>;
++			/* The ranges property is supplied by the bootwrapper
++			 * and is based on the firmware's configuration of the
++			 * EBC bridge
++			 */
++			clock-frequency = <0>; /* Filled in by zImage */
++
++			cf_card@ff100000 {
++				compatible = "magicbox-cf", "pata-magicbox-cf";
++				reg = <0x00000000 0xff100000 0x00001000
++				       0x00000000 0xff200000 0x00001000>;
++				interrupt-parent = <&UIC0>;
++				interrupts = <0x19 0x1 /* IRQ_TYPE_EDGE_RISING */ >;
++			};
++
++			nor_flash@ffc00000 {
++				compatible = "cfi-flash";
++				bank-width = <2>;
++				reg = <0x00000000 0xffc00000 0x00400000>;
++				#address-cells = <1>;
++				#size-cells = <1>;
++				partition0@0 {
++					label = "linux";
++					reg = <0x0 0x160000>;
++				};
++				partition1@120000 {
++					label = "rootfs";
++					reg = <0x160000 0x260000>;
++				};
++				partition2@3c0000 {
++					label = "u-boot";
++					reg = <0x3c0000 0x30000>;
++					read-only;
++				};
++				partition3@0 {
++					label = "firmware";
++					reg = <0x0 0x3c0000>;
++				};
++			};
++		};
++
++		PCI0: pci@ec000000 {
++			device_type = "pci";
++			#interrupt-cells = <1>;
++			#size-cells = <2>;
++			#address-cells = <3>;
++			compatible = "ibm,plb405ep-pci", "ibm,plb-pci";
++			primary;
++			reg = <0xeec00000 0x00000008	/* Config space access */
++			       0xeed80000 0x00000004	/* IACK */
++			       0xeed80000 0x00000004	/* Special cycle */
++			       0xef480000 0x00000040>;	/* Internal registers */
++
++			/* Outbound ranges, one memory and one IO,
++			 * later cannot be changed. Chip supports a second
++			 * IO range but we don't use it for now
++			 */
++			ranges = <0x02000000 0x00000000 0x80000000 0x80000000 0x00000000 0x20000000
++				  0x01000000 0x00000000 0x00000000 0xe8000000 0x00000000 0x00010000>;
++
++			/* Inbound 2GB range starting at 0 */
++			dma-ranges = <0x42000000 0x0 0x0 0x0 0x0 0x80000000>;
++
++			interrupt-map-mask = <0xf800 0x0 0x0 0x0>;
++			interrupt-map = <
++				/* IDSEL 1 */
++				0x800 0x0 0x0 0x0 &UIC0 0x1c 0x8
++
++				/* IDSEL 2 */
++				0x1000 0x0 0x0 0x0 &UIC0 0x1d 0x8
++
++				/* IDSEL 3 */
++				0x1800 0x0 0x0 0x0 &UIC0 0x1e 0x8
++
++				/* IDSEL 4 */
++				0x2000 0x0 0x0 0x0 &UIC0 0x1f 0x8
++			>;
++		};
++	};
++
++	chosen {
++		linux,stdout-path = "/plb/opb/serial@ef600300";
++	};
++};
+--- a/arch/powerpc/boot/Makefile
++++ b/arch/powerpc/boot/Makefile
+@@ -50,6 +50,7 @@ $(obj)/cuboot-hotfoot.o: BOOTCFLAGS += -
+ $(obj)/cuboot-taishan.o: BOOTCFLAGS += -mcpu=440
+ $(obj)/cuboot-katmai.o: BOOTCFLAGS += -mcpu=440
+ $(obj)/cuboot-acadia.o: BOOTCFLAGS += -mcpu=405
++$(obj)/cuboot-magicbox.o: BOOTCFLAGS += -mcpu=405
+ $(obj)/treeboot-walnut.o: BOOTCFLAGS += -mcpu=405
+ $(obj)/treeboot-iss4xx.o: BOOTCFLAGS += -mcpu=405
+ $(obj)/treeboot-currituck.o: BOOTCFLAGS += -mcpu=405
+@@ -86,7 +87,8 @@ src-plat-y := of.c epapr.c
+ src-plat-$(CONFIG_40x) += fixed-head.S ep405.c cuboot-hotfoot.c \
+ 				treeboot-walnut.c cuboot-acadia.c \
+ 				cuboot-kilauea.c simpleboot.c \
+-				virtex405-head.S virtex.c
++				virtex405-head.S virtex.c \
++				cuboot-magicbox.c
+ src-plat-$(CONFIG_44x) += treeboot-ebony.c cuboot-ebony.c treeboot-bamboo.c \
+ 				cuboot-bamboo.c cuboot-sam440ep.c \
+ 				cuboot-sequoia.c cuboot-rainier.c \
+@@ -238,6 +240,7 @@ image-$(CONFIG_HOTFOOT)			+= cuImage.hot
+ image-$(CONFIG_WALNUT)			+= treeImage.walnut
+ image-$(CONFIG_ACADIA)			+= cuImage.acadia
+ image-$(CONFIG_OBS600)			+= uImage.obs600
++image-$(CONFIG_MAGICBOX)		+= cuImage.magicbox
+ 
+ # Board ports in arch/powerpc/platform/44x/Kconfig
+ image-$(CONFIG_EBONY)			+= treeImage.ebony cuImage.ebony
+--- a/arch/powerpc/platforms/40x/Kconfig
++++ b/arch/powerpc/platforms/40x/Kconfig
+@@ -37,6 +37,16 @@ config KILAUEA
+ 	help
+ 	  This option enables support for the AMCC PPC405EX evaluation board.
+ 
++config MAGICBOX
++	bool "Magicbox"
++	depends on 40x
++	default n
++	select PPC40x_SIMPLE
++	select 405EP
++	select PCI
++	help
++	  This option enables support for the Magicbox boards.
++
+ config MAKALU
+ 	bool "Makalu"
+ 	depends on 40x
+--- a/arch/powerpc/platforms/40x/ppc40x_simple.c
++++ b/arch/powerpc/platforms/40x/ppc40x_simple.c
+@@ -58,6 +58,7 @@ static const char * const board[] __init
+ 	"apm,klondike",
+ 	"est,hotfoot",
+ 	"plathome,obs600",
++	"magicbox",
+ 	NULL
+ };
+ 

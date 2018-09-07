@@ -31,7 +31,7 @@ loadaddr-$(CONFIG_TARGET_ramips_mt7621) := 0x80001000
 
 KERNEL_LOADADDR := $(loadaddr-y)
 
-KERNEL_DTB = kernel-bin | patch-dtb | lzma -d21
+KERNEL_DTB = kernel-bin | patch-dtb | lzma
 define Device/Default
   PROFILES = Default $$(DTS)
   KERNEL_DEPENDS = $$(wildcard ../dts/$$(DTS).dts)
@@ -108,11 +108,6 @@ define Build/poray-header
 	mv $@.new $@
 endef
 
-define Build/senao-header
-	$(STAGING_DIR_HOST)/bin/mksenaofw $(1) -e $@ -o $@.new
-	mv $@.new $@
-endef
-
 define Build/seama
 	$(STAGING_DIR_HOST)/bin/seama -i $@ $(1)
 	mv $@.seama $@
@@ -145,6 +140,10 @@ define Build/mkdlinkfw-factory
 		-o $@.new \
 		-s $(DLINK_FIRMWARE_SIZE)
 	mv $@.new $@
+endef
+
+define Build/zyimage
+	$(STAGING_DIR_HOST)/bin/zyimage $(1) $@
 endef
 
 #

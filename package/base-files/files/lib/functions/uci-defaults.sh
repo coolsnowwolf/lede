@@ -27,29 +27,32 @@ json_select_object() {
 	json_select "$1"
 }
 
-_ucidef_set_interface() {
-	local name="$1"
-	local iface="$2"
-	local proto="$3"
+ucidef_set_interface() {
+	local network=$1; shift
 
-	json_select_object "$name"
-	json_add_string ifname "$iface"
+	[ -z "$network" ] && return
 
-	if ! json_is_a protocol string || [ -n "$proto" ]; then
-		case "$proto" in
-			static|dhcp|none|pppoe) : ;;
-			*)
-				case "$name" in
-					lan) proto="static" ;;
-					wan) proto="dhcp" ;;
-					*) proto="none" ;;
-				esac
-			;;
+	json_select_object network
+	json_select_object "$network"
+
+	while [ -n "$1" ]; do
+		local opt=$1; shift
+		local val=$1; shift
+
+		[ -n "$opt" -a -n "$val" ] || break
+
+		json_add_string "$opt" "$val"
+	done
+
+	if ! json_is_a protocol string; then
+		case "$network" in
+			lan) json_add_string protocol static ;;
+			wan) json_add_string protocol dhcp ;;
+			*) json_add_string protocol none ;;
 		esac
-
-		json_add_string protocol "$proto"
 	fi
 
+	json_select ..
 	json_select ..
 }
 
@@ -66,31 +69,19 @@ ucidef_set_model_name() {
 }
 
 ucidef_set_interface_lan() {
-	json_select_object network
-	_ucidef_set_interface lan "$@"
-	json_select ..
+	ucidef_set_interface "lan" ifname "$1" protocol "${2:-static}"
 }
 
 ucidef_set_interface_wan() {
-	json_select_object network
-	_ucidef_set_interface wan "$@"
-	json_select ..
+	ucidef_set_interface "wan" ifname "$1" protocol "${2:-dhcp}"
 }
 
 ucidef_set_interfaces_lan_wan() {
 	local lan_if="$1"
 	local wan_if="$2"
 
-	json_select_object network
-	_ucidef_set_interface lan "$lan_if"
-	_ucidef_set_interface wan "$wan_if"
-	json_select ..
-}
-
-ucidef_set_interface_raw() {
-	json_select_object network
-	_ucidef_set_interface "$@"
-	json_select ..
+	ucidef_set_interface_lan "$lan_if"
+	ucidef_set_interface_wan "$wan_if"
 }
 
 _ucidef_add_switch_port() {
@@ -185,9 +176,9 @@ _ucidef_finish_switch_roles() {
 					devices="${devices:+$devices }$device"
 				fi
 			json_select ..
-
-			_ucidef_set_interface "$role" "$devices"
 		json_select ..
+
+		ucidef_set_interface "$role" ifname "$devices"
 	done
 }
 
@@ -300,18 +291,7 @@ ucidef_set_interface_macaddr() {
 	local network="$1"
 	local macaddr="$2"
 
-	json_select_object network
-
-	json_select "$network"
-	[ $? -eq 0 ] || {
-		json_select ..
-		return
-	}
-
-	json_add_string macaddr "$macaddr"
-	json_select ..
-
-	json_select ..
+	ucidef_set_interface "$network" macaddr "$macaddr"
 }
 
 ucidef_add_atm_bridge() {

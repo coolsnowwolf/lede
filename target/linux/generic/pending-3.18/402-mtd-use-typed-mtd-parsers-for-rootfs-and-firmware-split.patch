@@ -1,0 +1,72 @@
+--- a/drivers/mtd/mtdpart.c
++++ b/drivers/mtd/mtdpart.c
+@@ -642,6 +642,37 @@ int mtd_del_partition(struct mtd_info *m
+ }
+ EXPORT_SYMBOL_GPL(mtd_del_partition);
+ 
++static int
++run_parsers_by_type(struct mtd_part *slave, enum mtd_parser_type type)
++{
++	struct mtd_partition *parts;
++	int nr_parts;
++	int i;
++
++	nr_parts = parse_mtd_partitions_by_type(&slave->mtd, type, &parts,
++						NULL);
++	if (nr_parts <= 0)
++		return nr_parts;
++
++	if (WARN_ON(!parts))
++		return 0;
++
++	for (i = 0; i < nr_parts; i++) {
++		/* adjust partition offsets */
++		parts[i].offset += slave->offset;
++
++		__mtd_add_partition(slave->master,
++				    parts[i].name,
++				    parts[i].offset,
++				    parts[i].size,
++				    false);
++	}
++
++	kfree(parts);
++
++	return nr_parts;
++}
++
+ #ifdef CONFIG_MTD_SPLIT_FIRMWARE_NAME
+ #define SPLIT_FIRMWARE_NAME	CONFIG_MTD_SPLIT_FIRMWARE_NAME
+ #else
+@@ -650,6 +681,7 @@ EXPORT_SYMBOL_GPL(mtd_del_partition);
+ 
+ static void split_firmware(struct mtd_info *master, struct mtd_part *part)
+ {
++	run_parsers_by_type(part, MTD_PARSER_TYPE_FIRMWARE);
+ }
+ 
+ void __weak arch_split_mtd_part(struct mtd_info *master, const char *name,
+@@ -664,6 +696,12 @@ static void mtd_partition_split(struct m
+ 	if (rootfs_found)
+ 		return;
+ 
++	if (!strcmp(part->mtd.name, "rootfs")) {
++		run_parsers_by_type(part, MTD_PARSER_TYPE_ROOTFS);
++
++		rootfs_found = 1;
++	}
++
+ 	if (!strcmp(part->mtd.name, SPLIT_FIRMWARE_NAME) &&
+ 	    config_enabled(CONFIG_MTD_SPLIT_FIRMWARE))
+ 		split_firmware(master, part);
+--- a/include/linux/mtd/partitions.h
++++ b/include/linux/mtd/partitions.h
+@@ -70,6 +70,8 @@ struct mtd_part_parser_data {
+ 
+ enum mtd_parser_type {
+ 	MTD_PARSER_TYPE_DEVICE = 0,
++	MTD_PARSER_TYPE_ROOTFS,
++	MTD_PARSER_TYPE_FIRMWARE,
+ };
+ 
+ struct mtd_part_parser {

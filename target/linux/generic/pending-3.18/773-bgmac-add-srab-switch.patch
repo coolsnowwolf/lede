@@ -1,0 +1,72 @@
+Register switch connected to srab
+
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+
+--- a/drivers/net/ethernet/broadcom/bgmac.c
++++ b/drivers/net/ethernet/broadcom/bgmac.c
+@@ -17,6 +17,7 @@
+ #include <linux/phy_fixed.h>
+ #include <linux/interrupt.h>
+ #include <linux/dma-mapping.h>
++#include <linux/platform_data/b53.h>
+ #include <bcm47xx_nvram.h>
+ 
+ static const struct bcma_device_id bgmac_bcma_tbl[] = {
+@@ -1538,6 +1539,17 @@ static void bgmac_mii_unregister(struct
+ 	mdiobus_free(mii_bus);
+ }
+ 
++static struct b53_platform_data bgmac_b53_pdata = {
++};
++
++static struct platform_device bgmac_b53_dev = {
++	.name		= "b53-srab-switch",
++	.id		= -1,
++	.dev		= {
++		.platform_data = &bgmac_b53_pdata,
++	},
++};
++
+ /**************************************************
+  * BCMA bus ops
+  **************************************************/
+@@ -1671,6 +1683,16 @@ static int bgmac_probe(struct bcma_devic
+ 	net_dev->hw_features = net_dev->features;
+ 	net_dev->vlan_features = net_dev->features;
+ 
++	if ((ci->id == BCMA_CHIP_ID_BCM4707 ||
++	     ci->id == BCMA_CHIP_ID_BCM53018) &&
++	    !bgmac_b53_pdata.regs) {
++		bgmac_b53_pdata.regs = ioremap_nocache(0x18007000, 0x1000);
++
++		err = platform_device_register(&bgmac_b53_dev);
++		if (!err)
++			bgmac->b53_device = &bgmac_b53_dev;
++	}
++
+ 	err = register_netdev(bgmac->net_dev);
+ 	if (err) {
+ 		bgmac_err(bgmac, "Cannot register net device\n");
+@@ -1697,6 +1719,10 @@ static void bgmac_remove(struct bcma_dev
+ {
+ 	struct bgmac *bgmac = bcma_get_drvdata(core);
+ 
++	if (bgmac->b53_device)
++		platform_device_unregister(&bgmac_b53_dev);
++	bgmac->b53_device = NULL;
++
+ 	unregister_netdev(bgmac->net_dev);
+ 	bgmac_mii_unregister(bgmac);
+ 	netif_napi_del(&bgmac->napi);
+--- a/drivers/net/ethernet/broadcom/bgmac.h
++++ b/drivers/net/ethernet/broadcom/bgmac.h
+@@ -462,6 +462,9 @@ struct bgmac {
+ 	bool has_robosw;
+ 
+ 	bool loopback;
++
++	/* platform device for associated switch */
++	struct platform_device *b53_device;
+ };
+ 
+ static inline u32 bgmac_read(struct bgmac *bgmac, u16 offset)

@@ -27,7 +27,7 @@ $(eval $(call TestHostCommand,proper-umask, \
 	umask | grep -xE 00[012][012]))
 
 $(eval $(call SetupHostCommand,gcc, \
-	Please install the GNU C Compiler (gcc) 4.8 or later \
+	Please install the GNU C Compiler (gcc) 4.8 or later, \
 	$(CC) -dumpversion | grep -E '^(4\.[8-9]|[5-9]\.?)', \
 	gcc -dumpversion | grep -E '^(4\.[8-9]|[5-9]\.?)', \
 	gcc48 --version | grep gcc, \
@@ -46,7 +46,7 @@ $(eval $(call TestHostCommand,working-gcc, \
 		gcc -x c -o $(TMP_DIR)/a.out -))
 
 $(eval $(call SetupHostCommand,g++, \
-	Please install the GNU C++ Compiler (g++) 4.8 or later \
+	Please install the GNU C++ Compiler (g++) 4.8 or later, \
 	$(CXX) -dumpversion | grep -E '^(4\.[8-9]|[5-9]\.?)', \
 	g++ -dumpversion | grep -E '^(4\.[8-9]|[5-9]\.?)', \
 	g++48 --version | grep g++, \
@@ -137,11 +137,6 @@ $(eval $(call SetupHostCommand,bzip2,Please install 'bzip2', \
 
 $(eval $(call SetupHostCommand,wget,Please install GNU 'wget', \
 	wget --version | grep GNU))
-
-$(eval $(call SetupHostCommand,time,Please install GNU 'time' or BusyBox 'time' that supports -f, \
-	gtime --version 2>&1 | grep GNU, \
-	time --version 2>&1 | grep GNU, \
-	busybox time 2>&1 | grep -- '-f FMT'))
 
 $(eval $(call SetupHostCommand,perl,Please install Perl 5.x, \
 	perl --version | grep "perl.*v5"))

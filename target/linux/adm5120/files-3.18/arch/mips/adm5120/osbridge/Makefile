@@ -1,0 +1,1 @@
+obj-$(CONFIG_ADM5120_MACH_5GXI)	+= 5gxi.o

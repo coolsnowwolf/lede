@@ -113,6 +113,18 @@ _patch_ldso() {
 	fi
 }
 
+_patch_glibc() {
+	_cp "$1" "$1.patched"
+	sed -i -e 's,/usr/\(\(lib\|share\)/locale\),/###/\1,g' "$1.patched"
+
+	if "$1.patched" 2>&1 | grep -q -- GNU; then
+		_mv "$1.patched" "$1"
+	else
+		echo "binary patched ${1##*/} not executable, using original" >&2
+		rm -f "$1.patched"
+	fi
+}
+
 for LDD in ${PATH//://ldd }/ldd; do
 	"$LDD" --version >/dev/null 2>/dev/null && break
 	LDD=""
@@ -141,17 +153,20 @@ for BIN in "$@"; do
 	[ -n "$LDD" ] && [ -x "$BIN" ] && file "$BIN" | grep -sqE "ELF.*(executable|interpreter)" && {
 		for token in $("$LDD" "$BIN" 2>/dev/null); do
 			case "$token" in */*.so*)
-				case "$token" in
-					*ld-*.so*) LDSO="${token##*/}" ;;
-				esac
-
 				dest="$DIR/lib/${token##*/}"
 				ddir="${dest%/*}"
+
+				case "$token" in
+					*/ld-*.so*) LDSO="${token##*/}" ;;
+				esac
 
 				[ -f "$token" -a ! -f "$dest" ] && {
 					_md "$ddir"
 					_cp "$token" "$dest"
-					[ -n "$LDSO" ] && _patch_ldso "$dest"
+					case "$token" in
+						*/ld-*.so*) _patch_ldso "$dest" ;;
+						*/libc.so.6) _patch_glibc "$dest" ;;
+					esac
 				}
 			;; esac
 		done

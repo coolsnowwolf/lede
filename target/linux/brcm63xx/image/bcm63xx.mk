@@ -1016,9 +1016,21 @@ define Device/NEUFBOX6
   CFE_CHIP_ID := 6362
   CFE_EXTRAS += --rsa-signature "$(VERSION_DIST)-$(firstword $(subst -,$(space),$(REVISION)))"
   DEVICE_PACKAGES := \
-    $(B43_PACKAGES) $(USB2_PACKAGES)
+    $(USB2_PACKAGES)
 endef
 TARGET_DEVICES += NEUFBOX6
+
+define Device/SR102
+  $(Device/bcm63xx)
+  DEVICE_TITLE := SKY-SR102
+  DEVICE_DTS := sr102
+  CFE_BOARD_ID := BSKYB_63168
+  CFE_CHIP_ID := 63268
+  CFE_EXTRAS += --rsa-signature "$(VERSION_DIST)-$(firstword $(subst -,$(space),$(REVISION)))"
+  DEVICE_PACKAGES := \
+    $(USB2_PACKAGES)
+endef
+TARGET_DEVICES += SR102
 
 ### T-Com ###
 define Device/SPW303V

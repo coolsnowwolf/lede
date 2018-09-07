@@ -40,7 +40,7 @@ use strict;
 use warnings;
 
 use Getopt::Long qw(:config no_ignore_case);
-use POSIX qw(tmpnam);
+use File::Temp qw(tempfile);
 
 my($debug) = 0;
 my($quiet) = 0;
@@ -993,7 +993,7 @@ if ($pack) {
     # don't touch RedBoot and SysConf anyway.  If no Trailer is specified,
     # put in one.
     if (not defined $redboot and not -e "RedBoot") {
-	$redboot = tmpnam();
+	$redboot = tempfile();
 	open TMP, ">$redboot" or die "Cannot open file $redboot: $!";
 	push @cleanup, $redboot;
 	# The RedBoot partition is 256 * 1024 = 262144; the trailer we add
@@ -1006,7 +1006,7 @@ if ($pack) {
 	close TMP;
     }
     if (not defined $sysconf and not -e "SysConf") {
-	$sysconf = tmpnam();
+	$sysconf = tempfile();
 	open TMP, ">$sysconf" or die "Cannot open file $sysconf: $!";
 	push @cleanup, $sysconf;
 	# The SysConf partition is 128 * 1024 = 131072
@@ -1014,7 +1014,7 @@ if ($pack) {
 	close TMP;
     }
     if (not defined $trailer and not -e "Trailer") {
-	$trailer = tmpnam();
+	$trailer = tempfile();
 	open TMP, ">$trailer" or die "Cannot open file $trailer: $!";
 	push @cleanup, $trailer;
 	for my $i (@sercomm_flash_trailer) {

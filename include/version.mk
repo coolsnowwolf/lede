@@ -11,6 +11,7 @@
 # SOURCE_DATE_EPOCH:=x
 
 PKG_CONFIG_DEPENDS += \
+	CONFIG_VERSION_HOME_URL \
 	CONFIG_VERSION_BUG_URL \
 	CONFIG_VERSION_NUMBER \
 	CONFIG_VERSION_CODE \
@@ -25,13 +26,13 @@ PKG_CONFIG_DEPENDS += \
 sanitize = $(call tolower,$(subst _,-,$(subst $(space),-,$(1))))
 
 VERSION_NUMBER:=$(call qstrip,$(CONFIG_VERSION_NUMBER))
-VERSION_NUMBER:=$(if $(VERSION_NUMBER),$(VERSION_NUMBER),18.06-SNAPSHOT)
+VERSION_NUMBER:=$(if $(VERSION_NUMBER),$(VERSION_NUMBER),SNAPSHOT)
 
 VERSION_CODE:=$(call qstrip,$(CONFIG_VERSION_CODE))
 VERSION_CODE:=$(if $(VERSION_CODE),$(VERSION_CODE),$(REVISION))
 
 VERSION_REPO:=$(call qstrip,$(CONFIG_VERSION_REPO))
-VERSION_REPO:=$(if $(VERSION_REPO),$(VERSION_REPO),http://downloads.openwrt.org/releases/18.06-SNAPSHOT)
+VERSION_REPO:=$(if $(VERSION_REPO),$(VERSION_REPO),http://downloads.openwrt.org/snapshots)
 
 VERSION_DIST:=$(call qstrip,$(CONFIG_VERSION_DIST))
 VERSION_DIST:=$(if $(VERSION_DIST),$(VERSION_DIST),OpenWrt)
@@ -45,6 +46,9 @@ VERSION_MANUFACTURER_URL:=$(if $(VERSION_MANUFACTURER_URL),$(VERSION_MANUFACTURE
 
 VERSION_BUG_URL:=$(call qstrip,$(CONFIG_VERSION_BUG_URL))
 VERSION_BUG_URL:=$(if $(VERSION_BUG_URL),$(VERSION_BUG_URL),http://bugs.openwrt.org/)
+
+VERSION_HOME_URL:=$(call qstrip,$(CONFIG_VERSION_HOME_URL))
+VERSION_HOME_URL:=$(if $(VERSION_HOME_URL),$(VERSION_HOME_URL),http://openwrt.org/)
 
 VERSION_SUPPORT_URL:=$(call qstrip,$(CONFIG_VERSION_SUPPORT_URL))
 VERSION_SUPPORT_URL:=$(if $(VERSION_SUPPORT_URL),$(VERSION_SUPPORT_URL),http://forum.lede-project.org/)
@@ -100,6 +104,7 @@ VERSION_SED_SCRIPT:=$(SED) 's,%U,$(call sed_escape,$(VERSION_REPO)),g' \
 	-e 's,%M,$(call sed_escape,$(VERSION_MANUFACTURER)),g' \
 	-e 's,%m,$(call sed_escape,$(VERSION_MANUFACTURER_URL)),g' \
 	-e 's,%b,$(call sed_escape,$(VERSION_BUG_URL)),g' \
+	-e 's,%u,$(call sed_escape,$(VERSION_HOME_URL)),g' \
 	-e 's,%s,$(call sed_escape,$(VERSION_SUPPORT_URL)),g' \
 	-e 's,%P,$(call sed_escape,$(VERSION_PRODUCT)),g' \
 	-e 's,%h,$(call sed_escape,$(VERSION_HWREV)),g'

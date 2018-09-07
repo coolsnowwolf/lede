@@ -145,9 +145,7 @@ ead_open_pcap(const char *ifname, char *errbuf, bool rx)
 	pcap_set_snaplen(p, PCAP_MRU);
 	pcap_set_promisc(p, rx);
 	pcap_set_timeout(p, PCAP_TIMEOUT);
-#ifdef HAS_PROTO_EXTENSION
-	pcap_set_protocol(p, (rx ? htons(ETH_P_IP) : 0));
-#endif
+	pcap_set_protocol_linux(p, (rx ? htons(ETH_P_IP) : 0));
 	pcap_set_buffer_size(p, (rx ? 10 : 1) * PCAP_MRU);
 	pcap_activate(p);
 	set_recv_type(p, rx);

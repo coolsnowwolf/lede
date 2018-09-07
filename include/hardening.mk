@@ -18,8 +18,8 @@ ifdef CONFIG_PKG_CHECK_FORMAT_SECURITY
 endif
 ifdef CONFIG_PKG_ASLR_PIE
   ifeq ($(strip $(PKG_ASLR_PIE)),1)
-    TARGET_CFLAGS += -fPIC
-    TARGET_LDFLAGS += -specs=$(INCLUDE_DIR)/hardened-ld-pie.specs
+    TARGET_CFLAGS += $(FPIC)
+    TARGET_LDFLAGS += $(FPIC) -specs=$(INCLUDE_DIR)/hardened-ld-pie.specs
   endif
 endif
 ifdef CONFIG_PKG_CC_STACKPROTECTOR_REGULAR

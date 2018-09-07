@@ -67,7 +67,8 @@ define Device/ZyXELImage
 	KERNEL_SUFFIX := -uImage
 	KERNEL = kernel-bin | append-dtb | uImage none | pad-to $${KERNEL_SIZE}
 	KERNEL_NAME := zImage
-	IMAGES := sysupgrade.bin mmcblk0p5-rootfs.bin mmcblk0p4-kernel.bin
+	IMAGES := factory.bin sysupgrade.bin mmcblk0p5-rootfs.bin mmcblk0p4-kernel.bin
+	IMAGE/factory.bin := append-rootfs | pad-rootfs | pad-to $$$$(BLOCKSIZE) | zyxel-ras-image separate-kernel
 	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to $$$${BLOCKSIZE} | sysupgrade-tar rootfs=$$$$@ | append-metadata
 	IMAGE/mmcblk0p5-rootfs.bin := append-rootfs | pad-rootfs | pad-to $$$${BLOCKSIZE}
 	IMAGE/mmcblk0p4-kernel.bin := append-kernel
@@ -245,6 +246,9 @@ define Device/zyxel_nbg6817
 	KERNEL_SIZE := 4096k
 	BLOCKSIZE := 64k
 	BOARD_NAME := nbg6817
+	RAS_BOARD := NBG6817
+	RAS_ROOTFS_SIZE := 20934k
+	RAS_VERSION := "V1.99(OWRT.9999)C0"
 	SUPPORTED_DEVICES += nbg6817
 	DEVICE_TITLE := ZyXEL NBG6817
 	DEVICE_PACKAGES := ath10k-firmware-qca9984 e2fsprogs kmod-fs-ext4 losetup

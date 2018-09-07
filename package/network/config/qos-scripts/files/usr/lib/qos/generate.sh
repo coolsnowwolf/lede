@@ -118,21 +118,21 @@ parse_matching_rule() {
 				append "$var" "-m comment --comment '$value'"
 			;;
 			*:tos)
-                                add_insmod xt_dscp
-                                case "$value" in
-                                        !*) append "$var" "-m tos ! --tos $value";;
-                                        *) append "$var" "-m tos --tos $value"
-                                esac
-                        ;;
-			*:dscp)
-                                add_insmod xt_dscp
-				dscp_option="--dscp"
-                                [ -z "${value%%[EBCA]*}" ] && dscp_option="--dscp-class"
+				add_insmod xt_dscp
 				case "$value" in
-                                       	!*) append "$var" "-m dscp ! $dscp_option $value";;
-                                       	*) append "$var" "-m dscp $dscp_option $value"
-                                esac
-                        ;;
+					!*) append "$var" "-m tos ! --tos $value";;
+					*) append "$var" "-m tos --tos $value"
+				esac
+			;;
+			*:dscp)
+				add_insmod xt_dscp
+				dscp_option="--dscp"
+				[ -z "${value%%[EBCA]*}" ] && dscp_option="--dscp-class"
+				case "$value" in
+					!*) append "$var" "-m dscp ! $dscp_option $value";;
+					*) append "$var" "-m dscp $dscp_option $value"
+				esac
+			;;
 			*:direction)
 				value="$(echo "$value" | sed -e 's,-,:,g')"
 				if [ "$value" = "out" ]; then
@@ -428,7 +428,7 @@ start_cg() {
 	cat <<EOF
 $INSMOD
 EOF
-  
+
 for command in $iptables; do
 	cat <<EOF
 	$command -w -t mangle -N qos_${cg} 
@@ -486,7 +486,7 @@ stop_firewall() {
 				-e 's/^-A/-D/' \
 				-e '${p;g}' |
 			# Make into proper iptables calls
-			# Note:  awkward in previous call due to hold space usage
+			# Note: awkward in previous call due to hold space usage
 			sed -n -e "s/^./${command} -w -t mangle &/p"
 	done
 }

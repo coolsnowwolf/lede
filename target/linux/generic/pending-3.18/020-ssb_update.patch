@@ -1,0 +1,134 @@
+--- a/drivers/ssb/pcihost_wrapper.c
++++ b/drivers/ssb/pcihost_wrapper.c
+@@ -11,15 +11,17 @@
+  * Licensed under the GNU/GPL. See COPYING for details.
+  */
+ 
++#include <linux/pm.h>
+ #include <linux/pci.h>
+ #include <linux/export.h>
+ #include <linux/slab.h>
+ #include <linux/ssb/ssb.h>
+ 
+ 
+-#ifdef CONFIG_PM
+-static int ssb_pcihost_suspend(struct pci_dev *dev, pm_message_t state)
++#ifdef CONFIG_PM_SLEEP
++static int ssb_pcihost_suspend(struct device *d)
+ {
++	struct pci_dev *dev = to_pci_dev(d);
+ 	struct ssb_bus *ssb = pci_get_drvdata(dev);
+ 	int err;
+ 
+@@ -28,17 +30,23 @@ static int ssb_pcihost_suspend(struct pc
+ 		return err;
+ 	pci_save_state(dev);
+ 	pci_disable_device(dev);
+-	pci_set_power_state(dev, pci_choose_state(dev, state));
++
++	/* if there is a wakeup enabled child device on ssb bus,
++	   enable pci wakeup posibility. */
++	device_set_wakeup_enable(d, d->power.wakeup_path);
++
++	pci_prepare_to_sleep(dev);
+ 
+ 	return 0;
+ }
+ 
+-static int ssb_pcihost_resume(struct pci_dev *dev)
++static int ssb_pcihost_resume(struct device *d)
+ {
++	struct pci_dev *dev = to_pci_dev(d);
+ 	struct ssb_bus *ssb = pci_get_drvdata(dev);
+ 	int err;
+ 
+-	pci_set_power_state(dev, PCI_D0);
++	pci_back_from_sleep(dev);
+ 	err = pci_enable_device(dev);
+ 	if (err)
+ 		return err;
+@@ -49,10 +57,12 @@ static int ssb_pcihost_resume(struct pci
+ 
+ 	return 0;
+ }
+-#else /* CONFIG_PM */
+-# define ssb_pcihost_suspend	NULL
+-# define ssb_pcihost_resume	NULL
+-#endif /* CONFIG_PM */
++
++static const struct dev_pm_ops ssb_pcihost_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(ssb_pcihost_suspend, ssb_pcihost_resume)
++};
++
++#endif /* CONFIG_PM_SLEEP */
+ 
+ static int ssb_pcihost_probe(struct pci_dev *dev,
+ 			     const struct pci_device_id *id)
+@@ -115,8 +125,9 @@ int ssb_pcihost_register(struct pci_driv
+ {
+ 	driver->probe = ssb_pcihost_probe;
+ 	driver->remove = ssb_pcihost_remove;
+-	driver->suspend = ssb_pcihost_suspend;
+-	driver->resume = ssb_pcihost_resume;
++#ifdef CONFIG_PM_SLEEP
++	driver->driver.pm = &ssb_pcihost_pm_ops;
++#endif
+ 
+ 	return pci_register_driver(driver);
+ }
+--- a/drivers/ssb/driver_pcicore.c
++++ b/drivers/ssb/driver_pcicore.c
+@@ -357,6 +357,16 @@ static void ssb_pcicore_init_hostmode(st
+ 	pcicore_write32(pc, SSB_PCICORE_SBTOPCI2,
+ 			SSB_PCICORE_SBTOPCI_MEM | SSB_PCI_DMA);
+ 
++	/*
++	 * Accessing PCI config without a proper delay after devices reset (not
++	 * GPIO reset) was causing reboots on WRT300N v1.0 (BCM4704).
++	 * Tested delay 850 us lowered reboot chance to 50-80%, 1000 us fixed it
++	 * completely. Flushing all writes was also tested but with no luck.
++	 * The same problem was reported for WRT350N v1 (BCM4705), so we just
++	 * sleep here unconditionally.
++	 */
++	usleep_range(1000, 2000);
++
+ 	/* Enable PCI bridge BAR0 prefetch and burst */
+ 	val = PCI_COMMAND_MASTER | PCI_COMMAND_MEMORY;
+ 	ssb_extpci_write_config(pc, 0, 0, 0, PCI_COMMAND, &val, 2);
+--- a/drivers/ssb/main.c
++++ b/drivers/ssb/main.c
+@@ -90,25 +90,6 @@ found:
+ }
+ #endif /* CONFIG_SSB_PCMCIAHOST */
+ 
+-#ifdef CONFIG_SSB_SDIOHOST
+-struct ssb_bus *ssb_sdio_func_to_bus(struct sdio_func *func)
+-{
+-	struct ssb_bus *bus;
+-
+-	ssb_buses_lock();
+-	list_for_each_entry(bus, &buses, list) {
+-		if (bus->bustype == SSB_BUSTYPE_SDIO &&
+-		    bus->host_sdio == func)
+-			goto found;
+-	}
+-	bus = NULL;
+-found:
+-	ssb_buses_unlock();
+-
+-	return bus;
+-}
+-#endif /* CONFIG_SSB_SDIOHOST */
+-
+ int ssb_for_each_bus_call(unsigned long data,
+ 			  int (*func)(struct ssb_bus *bus, unsigned long data))
+ {
+@@ -1154,6 +1135,8 @@ static u32 ssb_tmslow_reject_bitmask(str
+ 	case SSB_IDLOW_SSBREV_25:     /* TODO - find the proper REJECT bit */
+ 	case SSB_IDLOW_SSBREV_27:     /* same here */
+ 		return SSB_TMSLOW_REJECT;	/* this is a guess */
++	case SSB_IDLOW_SSBREV:
++		break;
+ 	default:
+ 		WARN(1, KERN_INFO "ssb: Backplane Revision 0x%.8X\n", rev);
+ 	}

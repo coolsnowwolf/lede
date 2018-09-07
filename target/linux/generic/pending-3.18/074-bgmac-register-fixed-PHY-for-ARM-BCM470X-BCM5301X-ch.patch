@@ -1,0 +1,76 @@
+From c25b23b8a387e7d31f7a74af8e37b61e9e6ebb21 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <zajec5@gmail.com>
+Date: Fri, 20 Mar 2015 23:14:31 +0100
+Subject: [PATCH] bgmac: register fixed PHY for ARM BCM470X / BCM5301X chipsets
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On ARM SoCs with bgmac Ethernet hardware we don't have any normal PHY.
+There is always a switch attached but it's not even controlled over MDIO
+like in case of MIPS devices.
+We need a fixed PHY to be able to send/receive packets from the switch.
+
+Signed-off-by: Rafał Miłecki <zajec5@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/ethernet/broadcom/bgmac.c | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+--- a/drivers/net/ethernet/broadcom/bgmac.c
++++ b/drivers/net/ethernet/broadcom/bgmac.c
+@@ -14,6 +14,7 @@
+ #include <linux/etherdevice.h>
+ #include <linux/mii.h>
+ #include <linux/phy.h>
++#include <linux/phy_fixed.h>
+ #include <linux/interrupt.h>
+ #include <linux/dma-mapping.h>
+ #include <bcm47xx_nvram.h>
+@@ -1330,13 +1331,46 @@ static void bgmac_adjust_link(struct net
+ 	}
+ }
+ 
++static int bgmac_fixed_phy_register(struct bgmac *bgmac)
++{
++	struct fixed_phy_status fphy_status = {
++		.link = 1,
++		.speed = SPEED_1000,
++		.duplex = DUPLEX_FULL,
++	};
++	struct phy_device *phy_dev;
++	int err;
++
++	phy_dev = fixed_phy_register(PHY_POLL, &fphy_status, NULL);
++	if (!phy_dev || IS_ERR(phy_dev)) {
++		bgmac_err(bgmac, "Failed to register fixed PHY device\n");
++		return -ENODEV;
++	}
++
++	err = phy_connect_direct(bgmac->net_dev, phy_dev, bgmac_adjust_link,
++				 PHY_INTERFACE_MODE_MII);
++	if (err) {
++		bgmac_err(bgmac, "Connecting PHY failed\n");
++		return err;
++	}
++
++	bgmac->phy_dev = phy_dev;
++
++	return err;
++}
++
+ static int bgmac_mii_register(struct bgmac *bgmac)
+ {
++	struct bcma_chipinfo *ci = &bgmac->core->bus->chipinfo;
+ 	struct mii_bus *mii_bus;
+ 	struct phy_device *phy_dev;
+ 	char bus_id[MII_BUS_ID_SIZE + 3];
+ 	int i, err = 0;
+ 
++	if (ci->id == BCMA_CHIP_ID_BCM4707 ||
++	    ci->id == BCMA_CHIP_ID_BCM53018)
++		return bgmac_fixed_phy_register(bgmac);
++
+ 	mii_bus = mdiobus_alloc();
+ 	if (!mii_bus)
+ 		return -ENOMEM;
