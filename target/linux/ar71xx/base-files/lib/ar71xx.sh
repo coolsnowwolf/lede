@@ -492,6 +492,9 @@ ar71xx_board_detect() {
 		;;
 	*"Archer C59 v1")
 		name="archer-c59-v1"
+        ;;
+	*"Archer C59 v2")
+		name="archer-c59-v2"
 		;;
 	*"Archer C60 v1")
 		name="archer-c60-v1"
@@ -582,7 +585,14 @@ ar71xx_board_detect() {
 		;;
 	*"CPE510/520")
 		name="cpe510"
-		tplink_pharos_board_detect "$(tplink_pharos_get_model_string | tr -d '\r')"
+		tplink_pharos_board_detect "$(tplink_pharos_v2_get_model_string)"
+		case $AR71XX_MODEL in
+		'TP-Link CPE510 v2.0')
+			;;
+		*)
+			tplink_pharos_board_detect "$(tplink_pharos_get_model_string | tr -d '\r')"
+			;;
+		esac
 		;;
 	*"CPE830")
 		name="cpe830"
@@ -753,6 +763,9 @@ ar71xx_board_detect() {
 		;;
 	*"GL-AR750")
 		name="gl-ar750"
+		;;
+	*"GL-AR750S")
+		name="gl-ar750s"
 		;;
 	*"GL-CONNECT INET v1")
 		name="gl-inet"
@@ -1067,6 +1080,9 @@ ar71xx_board_detect() {
 	*"RouterBOARD 921GS-5HPacD r2")
 		name="rb-921gs-5hpacd-r2"
 		;;
+	*"RouterBOARD 931-2nD")
+		name="rb-931-2nd"
+		;;
 	*"RouterBOARD 941-2nD")
 		name="rb-941-2nd"
 		;;
@@ -1102,6 +1118,9 @@ ar71xx_board_detect() {
 		;;
 	*"RouterBOARD wAP 2nD r2")
 		name="rb-wap-2nd"
+		;;
+	*"RouterBOARD wAP R-2nD")
+		name="rb-wapr-2nd"
 		;;
 	*"RouterBOARD wAP G-5HacT2HnD")
 		name="rb-wapg-5hact2hnd"

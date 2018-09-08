@@ -119,7 +119,7 @@ static struct ar8327_platform_data dap2695_ar8327_data = {
 static struct mdio_board_info dap2695_mdio0_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = 0,
+		.mdio_addr = 0,
 		.platform_data = &dap2695_ar8327_data,
 	},
 };

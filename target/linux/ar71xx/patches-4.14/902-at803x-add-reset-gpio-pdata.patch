@@ -1,0 +1,68 @@
+Add support for configuring AT803x GPIO reset via platform data.
+This is necessary, because ath79 is not converted to device tree yet.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+
+--- a/include/linux/platform_data/phy-at803x.h
++++ b/include/linux/platform_data/phy-at803x.h
+@@ -6,6 +6,8 @@ struct at803x_platform_data {
+ 	int enable_rgmii_tx_delay:1;
+ 	int enable_rgmii_rx_delay:1;
+ 	int fixup_rgmii_tx_delay:1;
++	int has_reset_gpio:1;
++	int reset_gpio;
+ };
+ 
+ #endif /* _PHY_AT803X_PDATA_H */
+--- a/drivers/net/phy/at803x.c
++++ b/drivers/net/phy/at803x.c
+@@ -259,6 +259,7 @@ static int at803x_resume(struct phy_devi
+ 
+ static int at803x_probe(struct phy_device *phydev)
+ {
++	struct at803x_platform_data *pdata;
+ 	struct device *dev = &phydev->mdio.dev;
+ 	struct at803x_priv *priv;
+ 	struct gpio_desc *gpiod_reset;
+@@ -271,6 +272,12 @@ static int at803x_probe(struct phy_devic
+ 	    phydev->drv->phy_id != ATH8032_PHY_ID)
+ 		goto does_not_require_reset_workaround;
+ 
++	pdata = dev_get_platdata(dev);
++	if (pdata && pdata->has_reset_gpio) {
++		devm_gpio_request(dev, pdata->reset_gpio, "reset");
++		gpio_direction_output(pdata->reset_gpio, 1);
++	}
++
+ 	gpiod_reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
+ 	if (IS_ERR(gpiod_reset))
+ 		return PTR_ERR(gpiod_reset);
+@@ -411,15 +418,23 @@ static void at803x_link_change_notify(st
+ 	 * cannot recover from by software.
+ 	 */
+ 	if (phydev->state == PHY_NOLINK) {
+-		if (priv->gpiod_reset && !priv->phy_reset) {
++		if ((priv->gpiod_reset || (pdata && pdata->has_reset_gpio)) &&
++		    !priv->phy_reset) {
+ 			struct at803x_context context;
+ 
+ 			at803x_context_save(phydev, &context);
+ 
+-			gpiod_set_value(priv->gpiod_reset, 1);
+-			msleep(1);
+-			gpiod_set_value(priv->gpiod_reset, 0);
+-			msleep(1);
++			if (pdata && pdata->has_reset_gpio) {
++				gpio_set_value_cansleep(pdata->reset_gpio, 0);
++				msleep(1);
++				gpio_set_value_cansleep(pdata->reset_gpio, 1);
++				msleep(1);
++			} else {
++				gpiod_set_value(priv->gpiod_reset, 1);
++				msleep(1);
++				gpiod_set_value(priv->gpiod_reset, 0);
++				msleep(1);
++			}
+ 
+ 			at803x_context_restore(phydev, &context);
+ 
