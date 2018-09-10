@@ -12,9 +12,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/fstools.git
-PKG_SOURCE_DATE:=2018-04-16
-PKG_SOURCE_VERSION:=e24368361db166cf369a19cea773bd54f9d854b1
-PKG_MIRROR_HASH:=8b483e752578683224245a6d77b3d7172b7cf7a8c3b959e21c47ff18aefc2464
+PKG_SOURCE_DATE:=2018-05-23
+PKG_SOURCE_VERSION:=dd02dad332958575cc52e60c78ef10ef2b5aaced
+PKG_MIRROR_HASH:=31051da29a0fff0b60ab3fc7fe27be281ed298346ff0ac65e3a2976671d2deed
 CMAKE_INSTALL:=1
 
 PKG_LICENSE:=GPL-2.0
@@ -33,6 +33,8 @@ include $(INCLUDE_DIR)/cmake.mk
 
 TARGET_LDFLAGS += $(if $(CONFIG_USE_GLIBC),-lrt)
 CMAKE_OPTIONS += $(if $(CONFIG_FSTOOLS_UBIFS_EXTROOT),-DCMAKE_UBIFS_EXTROOT=y)
+CMAKE_OPTIONS += $(if $(CONFIG_FSTOOLS_OVL_MOUNT_FULL_ACCESS_TIME),-DCMAKE_OVL_MOUNT_FULL_ACCESS_TIME=y)
+CMAKE_OPTIONS += $(if $(CONFIG_FSTOOLS_OVL_MOUNT_COMPRESS_ZLIB),-DCMAKE_OVL_MOUNT_COMPRESS_ZLIB=y)
 
 define Package/fstools
   SECTION:=base
@@ -50,6 +52,20 @@ define Package/fstools/config
 		default y
 		help
 			This option makes it possible to use extroot functionality if the root filesystem resides on an UBIFS partition
+
+	config FSTOOLS_OVL_MOUNT_FULL_ACCESS_TIME
+		depends on PACKAGE_fstools
+		bool "Full access time accounting"
+		default n
+		help
+			This option enables the full access time accounting (warning: it will increase the flash writes).
+
+	config FSTOOLS_OVL_MOUNT_COMPRESS_ZLIB
+		depends on PACKAGE_fstools
+		bool "Compress using zlib"
+		default n
+		help
+			This option enables the compression using zlib on the storage device.
 endef
 
 define Package/snapshot-tool

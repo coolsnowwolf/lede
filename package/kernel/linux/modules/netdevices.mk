@@ -110,6 +110,26 @@ endef
 $(eval $(call KernelPackage,mii))
 
 
+define KernelPackage/mdio-gpio
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:= Supports GPIO lib-based MDIO busses
+  DEPENDS:=+kmod-libphy @GPIO_SUPPORT +(TARGET_armvirt||TARGET_brcm2708_bcm2708):kmod-of-mdio
+  KCONFIG:= \
+	CONFIG_MDIO_BITBANG \
+	CONFIG_MDIO_GPIO
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/phy/mdio-gpio.ko \
+	$(LINUX_DIR)/drivers/net/phy/mdio-bitbang.ko
+  AUTOLOAD:=$(call AutoProbe,mdio-gpio)
+endef
+
+define KernelPackage/mdio-gpio/description
+ Supports GPIO lib-based MDIO busses
+endef
+
+$(eval $(call KernelPackage,mdio-gpio))
+
+
 define KernelPackage/et131x
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Agere ET131x Gigabit Ethernet driver
@@ -149,7 +169,7 @@ define KernelPackage/phy-broadcom
    KCONFIG:=CONFIG_BROADCOM_PHY
    DEPENDS:=+kmod-libphy +kmod-phylib-broadcom
    FILES:=$(LINUX_DIR)/drivers/net/phy/broadcom.ko
-   AUTOLOAD:=$(call AutoLoad,18,broadcom)
+   AUTOLOAD:=$(call AutoLoad,18,broadcom,1)
 endef
 
 define KernelPackage/phy-broadcom/description
@@ -204,6 +224,22 @@ define KernelPackage/switch-ip17xx/description
 endef
 
 $(eval $(call KernelPackage,switch-ip17xx))
+
+
+define KernelPackage/switch-rtl8306
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Realtek RTL8306S switch support
+  DEPENDS:=+kmod-swconfig
+  KCONFIG:=CONFIG_RTL8306_PHY
+  FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8306.ko
+  AUTOLOAD:=$(call AutoLoad,43,rtl8306)
+endef
+
+define KernelPackage/switch-rtl8306/description
+ Realtek RTL8306S switch support
+endef
+
+$(eval $(call KernelPackage,switch-rtl8306))
 
 
 define KernelPackage/switch-rtl8366-smi

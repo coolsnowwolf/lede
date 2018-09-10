@@ -114,7 +114,7 @@ static struct ar8327_platform_data z1_ar8327_data = {
 static struct mdio_board_info z1_mdio0_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = Z1_ETH_SWITCH_PHY,
+		.mdio_addr = Z1_ETH_SWITCH_PHY,
 		.platform_data = &z1_ar8327_data,
 	},
 };

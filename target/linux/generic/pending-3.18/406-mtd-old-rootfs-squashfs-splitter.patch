@@ -1,0 +1,76 @@
+--- a/drivers/mtd/Kconfig
++++ b/drivers/mtd/Kconfig
+@@ -18,6 +18,11 @@ config MTD_ROOTFS_ROOT_DEV
+ 	bool "Automatically set 'rootfs' partition to be root filesystem"
+ 	default y
+ 
++config MTD_ROOTFS_SPLIT
++	bool "Automatically split 'rootfs' partition for squashfs"
++	select MTD_SPLIT
++	default y
++
+ config MTD_SPLIT_FIRMWARE
+ 	bool "Automatically split firmware partition for kernel+rootfs"
+ 	default y
+--- a/drivers/mtd/mtdpart.c
++++ b/drivers/mtd/mtdpart.c
+@@ -682,6 +682,47 @@ mtd_pad_erasesize(struct mtd_info *mtd,
+ 	return len;
+ }
+ 
++static int split_squashfs(struct mtd_info *master, int offset, int *split_offset)
++{
++	size_t squashfs_len;
++	int len, ret;
++
++	ret = mtd_get_squashfs_len(master, offset, &squashfs_len);
++	if (ret)
++		return ret;
++
++	len = mtd_pad_erasesize(master, offset, squashfs_len);
++	*split_offset = offset + len;
++
++	return 0;
++}
++
++static void split_rootfs_data(struct mtd_info *master, struct mtd_part *part)
++{
++	unsigned int split_offset = 0;
++	unsigned int split_size;
++	int ret;
++
++	ret = split_squashfs(master, part->offset, &split_offset);
++	if (ret)
++		return;
++
++	if (split_offset <= 0)
++		return;
++
++	if (config_enabled(CONFIG_MTD_SPLIT_SQUASHFS_ROOT))
++		pr_err("Dedicated partitioner didn't create \"rootfs_data\" partition, please fill a bug report!\n");
++	else
++		pr_warn("Support for built-in \"rootfs_data\" splitter will be removed, please use CONFIG_MTD_SPLIT_SQUASHFS_ROOT\n");
++
++	split_size = part->mtd.size - (split_offset - part->offset);
++	printk(KERN_INFO "mtd: partition \"%s\" created automatically, ofs=0x%x, len=0x%x\n",
++		ROOTFS_SPLIT_NAME, split_offset, split_size);
++
++	__mtd_add_partition(master, ROOTFS_SPLIT_NAME, split_offset,
++			    split_size, false);
++}
++
+ #define UBOOT_MAGIC	0x27051956
+ 
+ static void split_uimage(struct mtd_info *master, struct mtd_part *part)
+@@ -744,7 +785,10 @@ static void mtd_partition_split(struct m
+ 		return;
+ 
+ 	if (!strcmp(part->mtd.name, "rootfs")) {
+-		run_parsers_by_type(part, MTD_PARSER_TYPE_ROOTFS);
++		int num = run_parsers_by_type(part, MTD_PARSER_TYPE_ROOTFS);
++
++		if (num <= 0 && config_enabled(CONFIG_MTD_ROOTFS_SPLIT))
++			split_rootfs_data(master, part);
+ 
+ 		rootfs_found = 1;
+ 	}

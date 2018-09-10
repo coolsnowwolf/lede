@@ -8,7 +8,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 
 --- a/drivers/mtd/ubi/build.c
 +++ b/drivers/mtd/ubi/build.c
-@@ -1171,6 +1171,49 @@ static struct mtd_info * __init open_mtd
+@@ -1171,6 +1171,73 @@ static struct mtd_info * __init open_mtd
  	return mtd;
  }
  
@@ -20,45 +20,69 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +{
 +	int err;
 +	struct mtd_info *mtd;
++	loff_t offset = 0;
++	size_t len;
++	char magic[4];
 +
 +	/* try attaching mtd device named "ubi" or "data" */
 +	mtd = open_mtd_device("ubi");
 +	if (IS_ERR(mtd))
 +		mtd = open_mtd_device("data");
 +
-+	if (!IS_ERR(mtd)) {
-+		size_t len;
-+		char magic[4];
++	if (IS_ERR(mtd))
++		return;
 +
-+		/* check for a valid ubi magic */
-+		err = mtd_read(mtd, 0, 4, &len, (void *) magic);
-+		if (!err && len == 4 && strncmp(magic, "UBI#", 4)) {
-+			pr_err("UBI error: no valid UBI magic found inside mtd%d\n", mtd->index);
-+			put_mtd_device(mtd);
-+			return;
-+		}
++	/* get the first not bad block */
++	if (mtd_can_have_bb(mtd))
++		while (mtd_block_isbad(mtd, offset)) {
++			offset += mtd->erasesize;
 +
-+		/* auto-add only media types where UBI makes sense */
-+		if (mtd->type == MTD_NANDFLASH ||
-+		    mtd->type == MTD_NORFLASH ||
-+		    mtd->type == MTD_DATAFLASH ||
-+		    mtd->type == MTD_MLCNANDFLASH) {
-+			mutex_lock(&ubi_devices_mutex);
-+			pr_notice("UBI: auto-attach mtd%d\n", mtd->index);
-+			err = ubi_attach_mtd_dev(mtd, UBI_DEV_NUM_AUTO, 0, 0);
-+			mutex_unlock(&ubi_devices_mutex);
-+			if (err < 0) {
-+				pr_err("UBI error: cannot attach mtd%d\n", mtd->index);
-+				put_mtd_device(mtd);
++			if (offset > mtd->size) {
++				pr_err("UBI error: Failed to find a non-bad "
++				       "block on mtd%d\n", mtd->index);
++				goto cleanup;
 +			}
 +		}
++
++	/* check if the read from flash was successful */
++	err = mtd_read(mtd, offset, 4, &len, (void *) magic);
++	if ((err && !mtd_is_bitflip(err)) || len != 4) {
++		pr_err("UBI error: unable to read from mtd%d\n", mtd->index);
++		goto cleanup;
 +	}
++
++	/* check for a valid ubi magic */
++	if (strncmp(magic, "UBI#", 4)) {
++		pr_err("UBI error: no valid UBI magic found inside mtd%d\n", mtd->index);
++		goto cleanup;
++	}
++
++	/* don't auto-add media types where UBI doesn't makes sense */
++	if (mtd->type != MTD_NANDFLASH &&
++	    mtd->type != MTD_NORFLASH &&
++	    mtd->type != MTD_DATAFLASH &&
++	    mtd->type != MTD_MLCNANDFLASH)
++		goto cleanup;
++
++	mutex_lock(&ubi_devices_mutex);
++	pr_notice("UBI: auto-attach mtd%d\n", mtd->index);
++	err = ubi_attach_mtd_dev(mtd, UBI_DEV_NUM_AUTO, 0, 0);
++	mutex_unlock(&ubi_devices_mutex);
++	if (err < 0) {
++		pr_err("UBI error: cannot attach mtd%d\n", mtd->index);
++		goto cleanup;
++	}
++
++	return;
++
++cleanup:
++	put_mtd_device(mtd);
 +}
 +
  static int __init ubi_init(void)
  {
  	int err, i, k;
-@@ -1254,6 +1297,12 @@ static int __init ubi_init(void)
+@@ -1254,6 +1321,12 @@ static int __init ubi_init(void)
  		}
  	}
  

@@ -1,0 +1,286 @@
+--- a/drivers/bcma/bcma_private.h
++++ b/drivers/bcma/bcma_private.h
+@@ -22,6 +22,7 @@ struct bcma_bus;
+ /* main.c */
+ bool bcma_wait_value(struct bcma_device *core, u16 reg, u32 mask, u32 value,
+ 		     int timeout);
++void bcma_prepare_core(struct bcma_bus *bus, struct bcma_device *core);
+ int bcma_bus_register(struct bcma_bus *bus);
+ void bcma_bus_unregister(struct bcma_bus *bus);
+ int __init bcma_bus_early_register(struct bcma_bus *bus,
+--- a/drivers/bcma/driver_chipcommon.c
++++ b/drivers/bcma/driver_chipcommon.c
+@@ -339,7 +339,7 @@ void bcma_chipco_serial_init(struct bcma
+ 		return;
+ 	}
+ 
+-	irq = bcma_core_irq(cc->core);
++	irq = bcma_core_irq(cc->core, 0);
+ 
+ 	/* Determine the registers of the UARTs */
+ 	cc->nr_serial_ports = (cc->capabilities & BCMA_CC_CAP_NRUART);
+--- a/drivers/bcma/driver_gpio.c
++++ b/drivers/bcma/driver_gpio.c
+@@ -152,7 +152,7 @@ static int bcma_gpio_irq_domain_init(str
+ 					 handle_simple_irq);
+ 	}
+ 
+-	hwirq = bcma_core_irq(cc->core);
++	hwirq = bcma_core_irq(cc->core, 0);
+ 	err = request_irq(hwirq, bcma_gpio_irq_handler, IRQF_SHARED, "gpio",
+ 			  cc);
+ 	if (err)
+@@ -183,7 +183,7 @@ static void bcma_gpio_irq_domain_exit(st
+ 		return;
+ 
+ 	bcma_cc_mask32(cc, BCMA_CC_IRQMASK, ~BCMA_CC_IRQ_GPIO);
+-	free_irq(bcma_core_irq(cc->core), cc);
++	free_irq(bcma_core_irq(cc->core, 0), cc);
+ 	for (gpio = 0; gpio < chip->ngpio; gpio++) {
+ 		int irq = irq_find_mapping(cc->irq_domain, gpio);
+ 
+--- a/drivers/bcma/driver_mips.c
++++ b/drivers/bcma/driver_mips.c
+@@ -115,7 +115,7 @@ static u32 bcma_core_mips_irqflag(struct
+  * If disabled, 5 is returned.
+  * If not supported, 6 is returned.
+  */
+-static unsigned int bcma_core_mips_irq(struct bcma_device *dev)
++unsigned int bcma_core_mips_irq(struct bcma_device *dev)
+ {
+ 	struct bcma_device *mdev = dev->bus->drv_mips.core;
+ 	u32 irqflag;
+@@ -133,13 +133,6 @@ static unsigned int bcma_core_mips_irq(s
+ 	return 5;
+ }
+ 
+-unsigned int bcma_core_irq(struct bcma_device *dev)
+-{
+-	unsigned int mips_irq = bcma_core_mips_irq(dev);
+-	return mips_irq <= 4 ? mips_irq + 2 : 0;
+-}
+-EXPORT_SYMBOL(bcma_core_irq);
+-
+ static void bcma_core_mips_set_irq(struct bcma_device *dev, unsigned int irq)
+ {
+ 	unsigned int oldirq = bcma_core_mips_irq(dev);
+@@ -423,7 +416,7 @@ void bcma_core_mips_init(struct bcma_drv
+ 		break;
+ 	default:
+ 		list_for_each_entry(core, &bus->cores, list) {
+-			core->irq = bcma_core_irq(core);
++			core->irq = bcma_core_irq(core, 0);
+ 		}
+ 		bcma_err(bus,
+ 			 "Unknown device (0x%x) found, can not configure IRQs\n",
+--- a/drivers/bcma/driver_pci_host.c
++++ b/drivers/bcma/driver_pci_host.c
+@@ -593,7 +593,7 @@ int bcma_core_pci_plat_dev_init(struct p
+ 	pr_info("PCI: Fixing up device %s\n", pci_name(dev));
+ 
+ 	/* Fix up interrupt lines */
+-	dev->irq = bcma_core_irq(pc_host->pdev->core);
++	dev->irq = bcma_core_irq(pc_host->pdev->core, 0);
+ 	pci_write_config_byte(dev, PCI_INTERRUPT_LINE, dev->irq);
+ 
+ 	readrq = pcie_get_readrq(dev);
+@@ -617,6 +617,6 @@ int bcma_core_pci_pcibios_map_irq(const
+ 
+ 	pc_host = container_of(dev->bus->ops, struct bcma_drv_pci_host,
+ 			       pci_ops);
+-	return bcma_core_irq(pc_host->pdev->core);
++	return bcma_core_irq(pc_host->pdev->core, 0);
+ }
+ EXPORT_SYMBOL(bcma_core_pci_pcibios_map_irq);
+--- a/drivers/bcma/main.c
++++ b/drivers/bcma/main.c
+@@ -11,6 +11,7 @@
+ #include <linux/bcma/bcma.h>
+ #include <linux/slab.h>
+ #include <linux/of_address.h>
++#include <linux/of_irq.h>
+ 
+ MODULE_DESCRIPTION("Broadcom's specific AMBA driver");
+ MODULE_LICENSE("GPL");
+@@ -153,6 +154,46 @@ static struct device_node *bcma_of_find_
+ 	return NULL;
+ }
+ 
++static int bcma_of_irq_parse(struct platform_device *parent,
++			     struct bcma_device *core,
++			     struct of_phandle_args *out_irq, int num)
++{
++	__be32 laddr[1];
++	int rc;
++
++	if (core->dev.of_node) {
++		rc = of_irq_parse_one(core->dev.of_node, num, out_irq);
++		if (!rc)
++			return rc;
++	}
++
++	out_irq->np = parent->dev.of_node;
++	out_irq->args_count = 1;
++	out_irq->args[0] = num;
++
++	laddr[0] = cpu_to_be32(core->addr);
++	return of_irq_parse_raw(laddr, out_irq);
++}
++
++static unsigned int bcma_of_get_irq(struct platform_device *parent,
++				    struct bcma_device *core, int num)
++{
++	struct of_phandle_args out_irq;
++	int ret;
++
++	if (!parent || !parent->dev.of_node)
++		return 0;
++
++	ret = bcma_of_irq_parse(parent, core, &out_irq, num);
++	if (ret) {
++		bcma_debug(core->bus, "bcma_of_get_irq() failed with rc=%d\n",
++			   ret);
++		return 0;
++	}
++
++	return irq_create_of_mapping(&out_irq);
++}
++
+ static void bcma_of_fill_device(struct platform_device *parent,
+ 				struct bcma_device *core)
+ {
+@@ -161,18 +202,47 @@ static void bcma_of_fill_device(struct p
+ 	node = bcma_of_find_child_device(parent, core);
+ 	if (node)
+ 		core->dev.of_node = node;
++
++	core->irq = bcma_of_get_irq(parent, core, 0);
+ }
+ #else
+ static void bcma_of_fill_device(struct platform_device *parent,
+ 				struct bcma_device *core)
+ {
+ }
++static inline unsigned int bcma_of_get_irq(struct platform_device *parent,
++					   struct bcma_device *core, int num)
++{
++	return 0;
++}
+ #endif /* CONFIG_OF */
+ 
+-static void bcma_register_core(struct bcma_bus *bus, struct bcma_device *core)
++unsigned int bcma_core_irq(struct bcma_device *core, int num)
+ {
+-	int err;
++	struct bcma_bus *bus = core->bus;
++	unsigned int mips_irq;
++
++	switch (bus->hosttype) {
++	case BCMA_HOSTTYPE_PCI:
++		return bus->host_pci->irq;
++	case BCMA_HOSTTYPE_SOC:
++		if (bus->drv_mips.core && num == 0) {
++			mips_irq = bcma_core_mips_irq(core);
++			return mips_irq <= 4 ? mips_irq + 2 : 0;
++		}
++		if (bus->host_pdev)
++			return bcma_of_get_irq(bus->host_pdev, core, num);
++		return 0;
++	case BCMA_HOSTTYPE_SDIO:
++		return 0;
++	}
+ 
++	return 0;
++}
++EXPORT_SYMBOL(bcma_core_irq);
++
++void bcma_prepare_core(struct bcma_bus *bus, struct bcma_device *core)
++{
+ 	core->dev.release = bcma_release_core_dev;
+ 	core->dev.bus = &bcma_bus_type;
+ 	dev_set_name(&core->dev, "bcma%d:%d", bus->num, core->core_index);
+@@ -196,6 +266,11 @@ static void bcma_register_core(struct bc
+ 	case BCMA_HOSTTYPE_SDIO:
+ 		break;
+ 	}
++}
++
++static void bcma_register_core(struct bcma_bus *bus, struct bcma_device *core)
++{
++	int err;
+ 
+ 	err = device_register(&core->dev);
+ 	if (err) {
+--- a/drivers/bcma/scan.c
++++ b/drivers/bcma/scan.c
+@@ -505,6 +505,7 @@ int bcma_bus_scan(struct bcma_bus *bus)
+ 		bus->nr_cores++;
+ 		other_core = bcma_find_core_reverse(bus, core->id.id);
+ 		core->core_unit = (other_core == NULL) ? 0 : other_core->core_unit + 1;
++		bcma_prepare_core(bus, core);
+ 
+ 		bcma_info(bus, "Core %d found: %s (manuf 0x%03X, id 0x%03X, rev 0x%02X, class 0x%X)\n",
+ 			  core->core_index, bcma_device_name(&core->id),
+--- a/include/linux/bcma/bcma.h
++++ b/include/linux/bcma/bcma.h
+@@ -448,4 +448,6 @@ extern u32 bcma_chipco_pll_read(struct b
+ #define  BCMA_DMA_TRANSLATION_DMA64_CMT	0x80000000 /* Client Mode Translation for 64-bit DMA */
+ extern u32 bcma_core_dma_translation(struct bcma_device *core);
+ 
++extern unsigned int bcma_core_irq(struct bcma_device *core, int num);
++
+ #endif /* LINUX_BCMA_H_ */
+--- a/include/linux/bcma/bcma_driver_mips.h
++++ b/include/linux/bcma/bcma_driver_mips.h
+@@ -43,12 +43,12 @@ struct bcma_drv_mips {
+ extern void bcma_core_mips_init(struct bcma_drv_mips *mcore);
+ extern void bcma_core_mips_early_init(struct bcma_drv_mips *mcore);
+ 
+-extern unsigned int bcma_core_irq(struct bcma_device *core);
++extern unsigned int bcma_core_mips_irq(struct bcma_device *dev);
+ #else
+ static inline void bcma_core_mips_init(struct bcma_drv_mips *mcore) { }
+ static inline void bcma_core_mips_early_init(struct bcma_drv_mips *mcore) { }
+ 
+-static inline unsigned int bcma_core_irq(struct bcma_device *core)
++static inline unsigned int bcma_core_mips_irq(struct bcma_device *dev)
+ {
+ 	return 0;
+ }
+--- a/Documentation/devicetree/bindings/bus/bcma.txt
++++ b/Documentation/devicetree/bindings/bus/bcma.txt
+@@ -8,6 +8,11 @@ Required properties:
+ 
+ The cores on the AXI bus are automatically detected by bcma with the
+ memory ranges they are using and they get registered afterwards.
++Automatic detection of the IRQ number is not working on
++BCM47xx/BCM53xx ARM SoCs. To assign IRQ numbers to the cores, provide
++them manually through device tree. Use an interrupt-map to specify the
++IRQ used by the devices on the bus. The first address is just an index,
++because we do not have any special register.
+ 
+ The top-level axi bus may contain children representing attached cores
+ (devices). This is needed since some hardware details can't be auto
+@@ -22,6 +27,22 @@ Example:
+ 		ranges = <0x00000000 0x18000000 0x00100000>;
+ 		#address-cells = <1>;
+ 		#size-cells = <1>;
++		#interrupt-cells = <1>;
++		interrupt-map-mask = <0x000fffff 0xffff>;
++		interrupt-map =
++			/* Ethernet Controller 0 */
++			<0x00024000 0 &gic GIC_SPI 147 IRQ_TYPE_LEVEL_HIGH>,
++
++			/* Ethernet Controller 1 */
++			<0x00025000 0 &gic GIC_SPI 148 IRQ_TYPE_LEVEL_HIGH>;
++
++			/* PCIe Controller 0 */
++			<0x00012000 0 &gic GIC_SPI 126 IRQ_TYPE_LEVEL_HIGH>,
++			<0x00012000 1 &gic GIC_SPI 127 IRQ_TYPE_LEVEL_HIGH>,
++			<0x00012000 2 &gic GIC_SPI 128 IRQ_TYPE_LEVEL_HIGH>,
++			<0x00012000 3 &gic GIC_SPI 129 IRQ_TYPE_LEVEL_HIGH>,
++			<0x00012000 4 &gic GIC_SPI 130 IRQ_TYPE_LEVEL_HIGH>,
++			<0x00012000 5 &gic GIC_SPI 131 IRQ_TYPE_LEVEL_HIGH>;
+ 
+ 		chipcommon {
+ 			reg = <0x00000000 0x1000>;

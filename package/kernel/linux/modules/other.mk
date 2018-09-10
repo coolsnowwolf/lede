@@ -227,10 +227,14 @@ $(eval $(call KernelPackage,gpio-dev))
 define KernelPackage/gpio-mcp23s08
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Microchip MCP23xxx I/O expander
-  DEPENDS:=@GPIO_SUPPORT +kmod-i2c-core
-  KCONFIG:=CONFIG_GPIO_MCP23S08
-  FILES:=$(LINUX_DIR)/drivers/gpio/gpio-mcp23s08.ko
-  AUTOLOAD:=$(call AutoLoad,40,gpio-mcp23s08)
+  DEPENDS:=@GPIO_SUPPORT +kmod-i2c-core +LINUX_4_14:kmod-regmap
+  KCONFIG:= \
+	CONFIG_GPIO_MCP23S08 \
+	CONFIG_PINCTRL_MCP23S08
+  FILES:= \
+	$(LINUX_DIR)/drivers/gpio/gpio-mcp23s08.ko@lt4.13 \
+	$(LINUX_DIR)/drivers/pinctrl/pinctrl-mcp23s08.ko@ge4.13
+  AUTOLOAD:=$(call AutoLoad,40,gpio-mcp23s08@lt4.13 pinctrl-mcp23s08@ge4.13)
 endef
 
 define KernelPackage/gpio-mcp23s08/description
@@ -698,6 +702,22 @@ endef
 $(eval $(call KernelPackage,serial-8250))
 
 
+define KernelPackage/serial-8250-exar
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Exar 8250 UARTs
+  KCONFIG:= CONFIG_SERIAL_8250_EXAR
+  FILES:=$(LINUX_DIR)/drivers/tty/serial/8250/8250_exar.ko
+  AUTOLOAD:=$(call AutoProbe,8250 8250_base 8250_exar)
+  DEPENDS:=+kmod-serial-8250
+endef
+
+define KernelPackage/serial-8250-exar/description
+ Kernel module for Exar serial ports
+endef
+
+$(eval $(call KernelPackage,serial-8250-exar))
+
+
 define KernelPackage/regmap
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Generic register map support
@@ -883,6 +903,22 @@ endef
 
 $(eval $(call KernelPackage,random-omap))
 
+define KernelPackage/random-tpm
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Hardware Random Number Generator TPM support
+  KCONFIG:=CONFIG_HW_RANDOM_TPM
+  FILES:=$(LINUX_DIR)/drivers/char/hw_random/tpm-rng.ko
+  DEPENDS:= +kmod-random-core +kmod-tpm
+  AUTOLOAD:=$(call AutoProbe,tpm-rng)
+endef
+
+define KernelPackage/random-tpm/description
+ Kernel module for the Random Number Generator
+ in the Trusted Platform Module.
+endef
+
+$(eval $(call KernelPackage,random-tpm))
+
 define KernelPackage/thermal
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Generic Thermal sysfs driver
@@ -895,6 +931,7 @@ define KernelPackage/thermal
 	CONFIG_THERMAL_DEFAULT_GOV_STEP_WISE=y \
 	CONFIG_THERMAL_DEFAULT_GOV_FAIR_SHARE=n \
 	CONFIG_THERMAL_DEFAULT_GOV_USER_SPACE=n \
+	CONFIG_THERMAL_EMERGENCY_POWEROFF_DELAY_MS=0 \
 	CONFIG_THERMAL_GOV_FAIR_SHARE=n \
 	CONFIG_THERMAL_GOV_STEP_WISE=y \
 	CONFIG_THERMAL_GOV_USER_SPACE=n \

@@ -2,7 +2,21 @@
 # MT7621 Profiles
 #
 
+KERNEL_DTB += -d21
 DEVICE_VARS += TPLINK_BOARD_ID TPLINK_HEADER_VERSION TPLINK_HWID TPLINK_HWREV
+
+define Build/elecom-gst-factory
+  $(eval product=$(word 1,$(1)))
+  $(eval version=$(word 2,$(1)))
+  ( $(STAGING_DIR_HOST)/bin/mkhash md5 $@ | tr -d '\n' ) >> $@
+  ( \
+    echo -n "ELECOM $(product) v$(version)" | \
+      dd bs=32 count=1 conv=sync; \
+    dd if=$@; \
+  ) > $@.new
+  mv $@.new $@
+  echo -n "MT7621_ELECOM_$(product)" >> $@
+endef
 
 define Build/elecom-wrc-factory
   $(eval product=$(word 1,$(1)))
@@ -14,6 +28,23 @@ define Build/elecom-wrc-factory
     dd if=$@; \
   ) > $@.new
   mv $@.new $@
+endef
+
+define Build/iodata-factory
+  $(eval fw_size=$(word 1,$(1)))
+  $(eval fw_type=$(word 2,$(1)))
+  $(eval product=$(word 3,$(1)))
+  $(eval factory_bin=$(word 4,$(1)))
+  if [ -e $(KDIR)/tmp/$(KERNEL_INITRAMFS_IMAGE) -a "$$(stat -c%s $@)" -lt "$(fw_size)" ]; then \
+    $(CP) $(KDIR)/tmp/$(KERNEL_INITRAMFS_IMAGE) $(factory_bin); \
+    $(STAGING_DIR_HOST)/bin/mksenaofw \
+      -r 0x30a -p $(product) -t $(fw_type) \
+      -e $(factory_bin) -o $(factory_bin).new; \
+    mv $(factory_bin).new $(factory_bin); \
+    $(CP) $(factory_bin) $(BIN_DIR)/; \
+	else \
+		echo "WARNING: initramfs kernel image too big, cannot generate factory image" >&2; \
+	fi
 endef
 
 define Build/ubnt-erx-factory-image
@@ -87,6 +118,26 @@ define Device/elecom_wrc-1167ghbk2-s
 endef
 TARGET_DEVICES += elecom_wrc-1167ghbk2-s
 
+define Device/elecom_wrc-2533gst
+  DTS := WRC-2533GST
+  IMAGE_SIZE := 11264k
+  DEVICE_TITLE := ELECOM WRC-2533GST
+  IMAGES += factory.bin
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) |\
+    elecom-gst-factory WRC-2533GST 0.00
+endef
+TARGET_DEVICES += elecom_wrc-2533gst
+
+define Device/elecom_wrc-1900gst
+  DTS := WRC-1900GST
+  IMAGE_SIZE := 11264k
+  DEVICE_TITLE := ELECOM WRC-1900GST
+  IMAGES += factory.bin
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) |\
+    elecom-gst-factory WRC-1900GST 0.00
+endef
+TARGET_DEVICES += elecom_wrc-1900gst
+
 define Device/ew1200
   DTS := EW1200
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
@@ -135,6 +186,16 @@ define Device/hc5962
   DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 wpad-mini
 endef
 TARGET_DEVICES += hc5962
+
+define Device/iodata_wn-ax1167gr
+  DTS := WN-AX1167GR
+  IMAGE_SIZE := 15552k
+  KERNEL_INITRAMFS := $$(KERNEL) | \
+    iodata-factory 7864320 4 0x1055 $(KDIR)/tmp/$$(KERNEL_INITRAMFS_PREFIX)-factory.bin
+  DEVICE_TITLE := I-O DATA WN-AX1167GR
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 wpad-mini
+endef
+TARGET_DEVICES += iodata_wn-ax1167gr
 
 define Device/iodata_wn-gx300gr
   DTS := WN-GX300GR
@@ -233,11 +294,9 @@ define Device/rb750gr3
 endef
 TARGET_DEVICES += rb750gr3
 
-define Device/mikrotik_rbm33g
-  DTS := RBM33G
+define Device/MikroTik
   BLOCKSIZE := 64k
   IMAGE_SIZE := 16128k
-  DEVICE_TITLE := MikroTik RBM33G
   DEVICE_PACKAGES := kmod-usb3
   LOADER_TYPE := elf
   PLATFORM := mt7621
@@ -245,7 +304,20 @@ define Device/mikrotik_rbm33g
   IMAGE/sysupgrade.bin := append-kernel | kernel2minor -s 1024 | pad-to $$$$(BLOCKSIZE) | \
 	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
 endef
+
+define Device/mikrotik_rbm33g
+  $(Device/MikroTik)
+  DTS := RBM33G
+  DEVICE_TITLE := MikroTik RouterBOARD M33G
+endef
 TARGET_DEVICES += mikrotik_rbm33g
+
+define Device/mikrotik_rbm11g
+  $(Device/MikroTik)
+  DTS := RBM11G
+  DEVICE_TITLE := MikroTik RouterBOARD M11G
+endef
+TARGET_DEVICES += mikrotik_rbm11g
 
 define Device/re350-v1
   DTS := RE350
@@ -256,7 +328,7 @@ define Device/re350-v1
   TPLINK_HWREV := 0
   TPLINK_HEADER_VERSION := 1
   IMAGE_SIZE := 6016k
-  KERNEL := $(KERNEL_DTB) | tplink-v1-header -e
+  KERNEL := $(KERNEL_DTB) | tplink-v1-header -e -O
   IMAGES := sysupgrade.bin factory.bin
   IMAGE/sysupgrade.bin := append-rootfs | tplink-safeloader sysupgrade | append-metadata | check-size $$$$(IMAGE_SIZE)
   IMAGE/factory.bin := append-rootfs | tplink-safeloader factory

@@ -106,7 +106,7 @@ static struct ar8327_platform_data WPJ563_ar8337_data = {
 static struct mdio_board_info WPJ563_mdio0_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = 0,
+		.mdio_addr = 0,
 		.platform_data = &WPJ563_ar8337_data,
 	},
 };

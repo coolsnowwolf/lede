@@ -8,17 +8,21 @@
  * by the Free Software Foundation.
  */
 
+#include <linux/version.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/dma-mapping.h>
 #include <linux/mtd/mtd.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 #include <linux/mtd/nand.h>
+#else
+#include <linux/mtd/rawnand.h>
+#endif
 #include <linux/mtd/partitions.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
-#include <linux/version.h>
 
 #include <linux/platform/ar934x_nfc.h>
 

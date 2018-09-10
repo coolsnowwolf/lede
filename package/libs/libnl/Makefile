@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libnl
-PKG_VERSION:=3.3.0
+PKG_VERSION:=3.4.0
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://github.com/thom311/libnl/releases/download/libnl3_3_0
-PKG_HASH:=705468b5ae4cd1eb099d2d1c476d6a3abe519bc2810becf12fb1e32de1e074e4
+PKG_SOURCE_URL:=https://github.com/thom311/libnl/releases/download/libnl3_4_0
+PKG_HASH:=b7287637ae71c6db6f89e1422c995f0407ff2fe50cecd61a312b6a9b0921f5bf
 PKG_LICENSE:=LGPL-2.1
 
 PKG_INSTALL:=1
@@ -78,7 +78,7 @@ define Package/libnl/description
  message construction and parsing, object caching system, etc.
 endef
 
-TARGET_CFLAGS += -ffunction-sections $(FPIC)
+TARGET_CFLAGS += -ffunction-sections -fdata-sections $(FPIC)
 
 CONFIGURE_ARGS += \
 	--disable-debug

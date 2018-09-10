@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_VERSION:=2017.01
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_HASH:=6c425175f93a4bcf2ec9faf5658ef279633dbd7856a293d95bd1ff516528ecf2
 
@@ -24,17 +24,17 @@ endef
 
 define U-Boot/omap4_panda
   NAME:=Pandaboard
-  BUILD_DEVICES:=omap4-panda
+  BUILD_DEVICES:=ti_omap4-panda
 endef
 
 define U-Boot/am335x_boneblack
   NAME:=TI AM335x BeagleBone Black
-  BUILD_DEVICES:=am335x-boneblack
+  BUILD_DEVICES:=ti_am335x-bone-black
 endef
 
 define U-Boot/am335x_evm
   NAME:=AM335x EVM
-  BUILD_DEVICES:=am335x-evm
+  BUILD_DEVICES:=ti_am335x-evm
 endef
 
 define U-Boot/omap3_overo
@@ -43,7 +43,7 @@ endef
 
 define U-Boot/omap3_beagle
   NAME:=BeagleBoard
-  BUILD_DEVICES:=omap3-beagle
+  BUILD_DEVICES:=ti_omap3-beagle
 endef
 
 UBOOT_TARGETS:=omap4_panda am335x_evm omap3_overo omap3_beagle am335x_boneblack

@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libubox
-PKG_RELEASE=1
+PKG_RELEASE=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/libubox.git
@@ -16,6 +16,8 @@ PKG_LICENSE_FILES:=
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
 PKG_BUILD_DEPENDS:=lua
+HOST_BUILD_DEPENDS:=libjson-c/host
+HOST_BUILD_PREFIX:=$(STAGING_DIR_HOST)
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/host-build.mk
@@ -95,6 +97,9 @@ endef
 CMAKE_HOST_OPTIONS += \
 	-DBUILD_LUA=OFF \
 	-DBUILD_EXAMPLES=OFF \
+	-DCMAKE_SKIP_RPATH=FALSE \
+	-DCMAKE_MACOSX_RPATH=1 \
+	-DCMAKE_INSTALL_RPATH="${STAGING_DIR_HOST}/lib" \
 
 $(eval $(call BuildPackage,libubox))
 $(eval $(call BuildPackage,libblobmsg-json))

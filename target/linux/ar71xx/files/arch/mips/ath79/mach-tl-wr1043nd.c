@@ -83,7 +83,7 @@ static struct gpio_keys_button tl_wr1043nd_gpio_keys[] __initdata = {
 	}
 };
 
-static void tl_wr1043nd_rtl8366rb_hw_reset(bool active)
+static void tl_wr1043nd_rtl8366rb_hw_reset(struct rtl8366_smi *smi, bool active)
 {
 	if (active)
 		ath79_device_reset_set(AR71XX_RESET_GE0_PHY);
@@ -110,7 +110,7 @@ static void __init tl_wr1043nd_setup(void)
 	u8 *mac = (u8 *) KSEG1ADDR(0x1f01fc00);
 	u8 *eeprom = (u8 *) KSEG1ADDR(0x1fff1000);
 
-	tl_wr1043nd_rtl8366rb_hw_reset(true);
+	tl_wr1043nd_rtl8366rb_hw_reset(NULL, true);
 
 	ath79_init_mac(ath79_eth0_data.mac_addr, mac, 0);
 	ath79_eth0_data.mii_bus_dev = &tl_wr1043nd_rtl8366rb_device.dev;

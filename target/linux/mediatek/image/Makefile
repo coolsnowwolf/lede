@@ -16,6 +16,16 @@ ifeq ($(SUBTARGET),mt7622)
 KERNEL_LOADADDR = 0x41080000
 endif
 
+define Build/sysupgrade-emmc
+	rm -f $@.recovery
+	mkfs.fat -C $@.recovery 3070
+
+	./gen_mt7623_emmc_img.sh $@ \
+		$(IMAGE_KERNEL) \
+		$@.recovery \
+		$(IMAGE_ROOTFS)
+endef
+
 # default all platform image(fit) build 
 define Device/Default
   PROFILES = Default $$(DEVICE_NAME)

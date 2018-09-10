@@ -46,9 +46,3 @@ platform_nand_pre_upgrade() {
 		;;
 	esac
 }
-
-blink_led() {
-	. /etc/diag.sh; set_state upgrade
-}
-
-append sysupgrade_pre_upgrade blink_led

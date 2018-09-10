@@ -12,11 +12,11 @@ include $(INCLUDE_DIR)/version.mk
 include $(INCLUDE_DIR)/feeds.mk
 
 PKG_NAME:=base-files
-PKG_RELEASE:=192
+PKG_RELEASE:=195
 PKG_FLAGS:=nonshared
 
 PKG_FILE_DEPENDS:=$(PLATFORM_DIR)/ $(GENERIC_PLATFORM_DIR)/base-files/
-PKG_BUILD_DEPENDS:=usign/host
+PKG_BUILD_DEPENDS:=usign/host ucert/host
 PKG_LICENSE:=GPL-2.0
 
 # Extend depends from version.mk
@@ -49,6 +49,7 @@ define Package/base-files/conffiles
 /etc/config/system
 /etc/crontabs/
 /etc/dropbear/
+/etc/ethers
 /etc/group
 /etc/hosts
 /etc/inittab
@@ -101,6 +102,9 @@ ifdef CONFIG_SIGNED_PACKAGES
   define Build/Configure
 	[ -s $(BUILD_KEY) -a -s $(BUILD_KEY).pub ] || \
 		$(STAGING_DIR_HOST)/bin/usign -G -s $(BUILD_KEY) -p $(BUILD_KEY).pub -c "Local build key"
+
+	[ -s $(BUILD_KEY).ucert ] || \
+		$(STAGING_DIR_HOST)/bin/ucert -I -c $(BUILD_KEY).ucert -p $(BUILD_KEY).pub -s $(BUILD_KEY)
 
   endef
 

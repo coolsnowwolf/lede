@@ -8,9 +8,9 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ath10k-firmware
-PKG_SOURCE_DATE:=2018-04-19
-PKG_SOURCE_VERSION:=71e50312b54cc972657a7b08c470088447cb9676
-PKG_MIRROR_HASH:=726e7bce9917532e3b39ced6a17ca2d4c39fdf4c9bec4a3f8f2ea3e5defa6a54
+PKG_SOURCE_DATE:=2018-05-12
+PKG_SOURCE_VERSION:=952afa4949cb34193040cd4e7441e1aee50ac731
+PKG_MIRROR_HASH:=dd300f3f28b8f8c07c93065fd9dc1c9785ebda8f15398b4d2d33f9418adcaf46
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
@@ -64,17 +64,17 @@ define Download/ct-firmware-htt
   URL_FILE:=$($(1)_FIRMWARE_FILE_CT_HTT)
 endef
 
-QCA988X_FIRMWARE_FILE_CT:=firmware-2-ct-full-community-21.bin.lede.001
+QCA988X_FIRMWARE_FILE_CT:=firmware-2-ct-full-community-21.bin.lede.002
 define Download/ath10k-firmware-qca988x-ct
   $(call Download/ct-firmware,QCA988X,)
-  HASH:=a3d029c46a77be265e33bb57f827a59f01969f157825d66ecf42a9d327127578
+  HASH:=354b8a116a406ba6521a8bf6165ea2dce76996ab36e7905cd71e772ea240017d
 endef
 $(eval $(call Download,ath10k-firmware-qca988x-ct))
 
-QCA988X_FIRMWARE_FILE_CT_HTT:=firmware-2-ct-full-htt-mgt-community-21.bin.lede.001
+QCA988X_FIRMWARE_FILE_CT_HTT:=firmware-2-ct-full-htt-mgt-community-21.bin.lede.002
 define Download/ath10k-firmware-qca988x-ct-htt
   $(call Download/ct-firmware-htt,QCA988X,)
-  HASH:=8666523a6271c4aa6409880d2efd52643258c21464d6bf5948507bcb72d3e350
+  HASH:=7a8369b33f07200bf0bbf8c88617c25c7f3435a51f8ca0e330d220586338f991
 endef
 $(eval $(call Download,ath10k-firmware-qca988x-ct-htt))
 
@@ -403,7 +403,7 @@ define Package/ath10k-firmware-qca4019/install
 		$(PKG_BUILD_DIR)/QCA4019/hw1.0/board-2.bin \
 		$(1)/lib/firmware/ath10k/QCA4019/hw1.0/
 	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/QCA4019/hw1.0/3.4/firmware-5.bin_10.4-3.4-00104 \
+		$(PKG_BUILD_DIR)/QCA4019/hw1.0/3.5.3/firmware-5.bin_10.4-3.5.3-00057 \
 		$(1)/lib/firmware/ath10k/QCA4019/hw1.0/firmware-5.bin
 endef
 
@@ -433,13 +433,25 @@ define Package/ath10k-firmware-qca988x/install
 		$(PKG_BUILD_DIR)/QCA988X/hw2.0/board.bin \
 		$(1)/lib/firmware/ath10k/QCA988X/hw2.0/
 	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/QCA988X/hw2.0/10.2.4-1.0/firmware-5.bin_10.2.4-1.0-00033 \
+		$(PKG_BUILD_DIR)/QCA988X/hw2.0/10.2.4-1.0/firmware-5.bin_10.2.4-1.0-00037 \
 		$(1)/lib/firmware/ath10k/QCA988X/hw2.0/firmware-5.bin
 endef
 
 define Package/ath10k-firmware-qca6174/install
-	$(INSTALL_DIR) $(1)/lib/firmware/ath10k
-	$(CP) $(PKG_BUILD_DIR)/QCA6174 $(1)/lib/firmware/ath10k/
+	$(INSTALL_DIR) $(1)/lib/firmware/ath10k/QCA6174/hw2.1
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/QCA6174/hw2.1/board-2.bin \
+		$(1)/lib/firmware/ath10k/QCA6174/hw2.1/
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/QCA6174/hw2.1/firmware-5.bin_SW_RM.1.1.1-00157-QCARMSWPZ-1 \
+		$(1)/lib/firmware/ath10k/QCA6174/hw2.1/firmware-5.bin
+	$(INSTALL_DIR) $(1)/lib/firmware/ath10k/QCA6174/hw3.0
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/QCA6174/hw3.0/board-2.bin \
+		$(1)/lib/firmware/ath10k/QCA6174/hw3.0/
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/QCA6174/hw3.0/4.4.1.c1/firmware-6.bin_RM.4.4.1.c1-00042-QCARMSWP-1 \
+		$(1)/lib/firmware/ath10k/QCA6174/hw3.0/firmware-6.bin
 endef
 
 define Package/ath10k-firmware-qca99x0/install

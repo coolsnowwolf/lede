@@ -427,3 +427,25 @@ endef
 $(eval $(call KernelPackage,hwmon-w83793))
 
 
+define KernelPackage/hwmon-adcxx
+  TITLE:=ADCxx monitoring support
+  KCONFIG:=CONFIG_SENSORS_ADCXX
+  FILES:=$(LINUX_DIR)/drivers/hwmon/adcxx.ko
+  AUTOLOAD:=$(call AutoLoad,60,adcxx)
+  $(call AddDepends/hwmon,)
+endef
+
+define KernelPackage/hwmon-adcxx/description
+  Kernel module for the National Semiconductor
+  ADC<bb><c>S<sss> chip family, where
+  * bb  is the resolution in number of bits (8, 10, 12)
+  * c   is the number of channels (1, 2, 4, 8)
+  * sss is the maximum conversion speed (021 for 200 kSPS, 051 for 500
+    kSPS and 101 for 1 MSPS)
+
+  Examples : ADC081S101, ADC124S501, ...
+endef
+
+$(eval $(call KernelPackage,hwmon-adcxx))
+
+

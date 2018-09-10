@@ -4,6 +4,10 @@ define Package/ar3k-firmware/install
 	$(CP) \
 		$(PKG_BUILD_DIR)/ar3k/*.dfu \
 		$(1)/lib/firmware/ar3k
+	$(INSTALL_DIR) $(1)/lib/firmware/qca
+	$(CP) \
+		$(PKG_BUILD_DIR)/qca/*.bin \
+		$(1)/lib/firmware/qca
 endef
 $(eval $(call BuildPackage,ar3k-firmware))
 

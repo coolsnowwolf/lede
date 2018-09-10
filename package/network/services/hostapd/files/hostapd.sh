@@ -688,11 +688,12 @@ wpa_supplicant_add_network() {
 	}
 
 	[[ "$_w_mode" = "mesh" ]] && {
-		json_get_vars mesh_id mesh_fwding
+		json_get_vars mesh_id mesh_fwding mesh_rssi_threshold
 		[ -n "$mesh_id" ] && ssid="${mesh_id}"
 
 		append network_data "mode=5" "$N$T"
 		[ -n "$mesh_fwding" ] && append network_data "mesh_fwding=${mesh_fwding}" "$N$T"
+		[ -n "$mesh_rssi_threshold" ] && append network_data "mesh_rssi_threshold=${mesh_rssi_threshold}" "$N$T"
 		[ -n "$freq" ] && wpa_supplicant_set_fixed_freq "$freq" "$htmode"
 		[ "$noscan" = "1" ] && append network_data "noscan=1" "$N$T"
 		append wpa_key_mgmt "SAE"

@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=iproute2
-PKG_VERSION:=4.16.0
-PKG_RELEASE:=4
+PKG_VERSION:=4.18.0
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/utils/net/iproute2
-PKG_HASH:=0c5c24020fd7349fe25728c5edee9fb6a1bc8a38f08e23be5c57a6301e55ee0a
+PKG_HASH:=a9e6c70c95f513871c5e1f4e452c04fcb3c4d8a05be651bd794cd994a52daa45
 PKG_BUILD_PARALLEL:=1
 PKG_BUILD_DEPENDS:=iptables
 PKG_LICENSE:=GPL-2.0
@@ -132,7 +132,7 @@ endef
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include
-	$(CP) $(PKG_BUILD_DIR)/include/{libgenl,libnetlink,ll_map}.h $(1)/usr/include/
+	$(CP) $(PKG_BUILD_DIR)/include/{libgenl,libnetlink}.h $(1)/usr/include/
 	$(INSTALL_DIR) $(1)/usr/lib
 	$(CP) $(PKG_BUILD_DIR)/lib/libnetlink.a $(1)/usr/lib/
 endef

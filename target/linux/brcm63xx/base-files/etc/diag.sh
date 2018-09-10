@@ -132,6 +132,10 @@ set_state() {
 	rta770w)
 		status_led="RTA770W:green:diag"
 		;;
+	sr102)
+		status_led="SR102:white:power"
+		status_led2="SR102:red:power"
+		;;
 	spw500v)
 		status_led="SPW500V:green:power"
 		;;

@@ -43,7 +43,7 @@ log_make = \
 	 $(if $(BUILD_LOG), \
 		set -o pipefail; \
 		mkdir -p $(BUILD_LOG_DIR)/$(1)$(if $(4),/$(4));) \
-	env time -f "time: $(1)$(if $(4),/$(4))/$(if $(3),$(3)-)$(2)\#%U\#%S\#%e" -- \
+	$(SCRIPT_DIR)/time.pl "time: $(1)$(if $(4),/$(4))/$(if $(3),$(3)-)$(2)" \
 	$$(SUBMAKE) $(subdir_make_opts) $(if $(3),$(3)-)$(2) \
 		$(if $(BUILD_LOG),SILENT= 2>&1 | tee $(BUILD_LOG_DIR)/$(1)$(if $(4),/$(4))/$(if $(3),$(3)-)$(2).txt)
 

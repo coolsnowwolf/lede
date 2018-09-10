@@ -1,0 +1,161 @@
+--- /dev/null
++++ b/net/sched/act_connmark.c
+@@ -0,0 +1,126 @@
++/*
++ * Copyright (c) 2011 Felix Fietkau <nbd@nbd.name>
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms and conditions of the GNU General Public License,
++ * version 2, as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along with
++ * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
++ * Place - Suite 330, Boston, MA 02111-1307 USA.
++ */
++
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/skbuff.h>
++#include <linux/rtnetlink.h>
++#include <linux/pkt_cls.h>
++#include <linux/ip.h>
++#include <linux/ipv6.h>
++#include <net/netlink.h>
++#include <net/pkt_sched.h>
++#include <net/act_api.h>
++
++#include <net/netfilter/nf_conntrack.h>
++#include <net/netfilter/nf_conntrack_core.h>
++
++#define TCA_ACT_CONNMARK	20
++
++#define CONNMARK_TAB_MASK     3
++
++static int tcf_connmark(struct sk_buff *skb, const struct tc_action *a,
++		       struct tcf_result *res)
++{
++	struct nf_conn *c;
++	enum ip_conntrack_info ctinfo;
++	int proto;
++	int r;
++
++	if (skb->protocol == htons(ETH_P_IP)) {
++		if (skb->len < sizeof(struct iphdr))
++			goto out;
++		proto = PF_INET;
++	} else if (skb->protocol == htons(ETH_P_IPV6)) {
++		if (skb->len < sizeof(struct ipv6hdr))
++			goto out;
++		proto = PF_INET6;
++	} else
++		goto out;
++
++	r = nf_conntrack_in(dev_net(skb->dev), proto, NF_INET_PRE_ROUTING, skb);
++	if (r != NF_ACCEPT)
++		goto out;
++
++	c = nf_ct_get(skb, &ctinfo);
++	if (!c)
++		goto out;
++
++	skb->mark = c->mark;
++	nf_conntrack_put(skb->nfct);
++	skb->nfct = NULL;
++
++out:
++	return TC_ACT_PIPE;
++}
++
++static int tcf_connmark_init(struct net *net, struct nlattr *nla,
++			     struct nlattr *est, struct tc_action *a,
++			     int ovr, int bind)
++{
++	int ret = 0;
++
++	if (!tcf_hash_check(0, a, bind)) {
++		ret = tcf_hash_create(0, est, a, sizeof(struct tcf_common), bind);
++		if (ret)
++		    return ret;
++
++		tcf_hash_insert(a);
++		ret = ACT_P_CREATED;
++	} else {
++		if (!ovr) {
++			tcf_hash_release(a, bind);
++			return -EEXIST;
++		}
++	}
++
++	return ret;
++}
++
++static inline int tcf_connmark_dump(struct sk_buff *skb, struct tc_action *a,
++				int bind, int ref)
++{
++	return skb->len;
++}
++
++static struct tc_action_ops act_connmark_ops = {
++	.kind		=	"connmark",
++	.type		=	TCA_ACT_CONNMARK,
++	.owner		=	THIS_MODULE,
++	.act		=	tcf_connmark,
++	.dump		=	tcf_connmark_dump,
++	.init		=	tcf_connmark_init,
++};
++
++MODULE_AUTHOR("Felix Fietkau <nbd@nbd.name>");
++MODULE_DESCRIPTION("Connection tracking mark restoring");
++MODULE_LICENSE("GPL");
++
++static int __init connmark_init_module(void)
++{
++
++	return tcf_register_action(&act_connmark_ops, CONNMARK_TAB_MASK);
++}
++
++static void __exit connmark_cleanup_module(void)
++{
++	tcf_unregister_action(&act_connmark_ops);
++}
++
++module_init(connmark_init_module);
++module_exit(connmark_cleanup_module);
+--- a/net/sched/Kconfig
++++ b/net/sched/Kconfig
+@@ -686,6 +686,19 @@ config NET_ACT_CSUM
+ 	  To compile this code as a module, choose M here: the
+ 	  module will be called act_csum.
+ 
++config NET_ACT_CONNMARK
++        tristate "Connection Tracking Marking"
++        depends on NET_CLS_ACT
++        depends on NF_CONNTRACK
++	 depends on NF_CONNTRACK_MARK
++        ---help---
++	  Say Y here to restore the connmark from a scheduler action
++
++	  If unsure, say N.
++
++	  To compile this code as a module, choose M here: the
++	  module will be called act_connmark.
++
+ config NET_CLS_IND
+ 	bool "Incoming device classification"
+ 	depends on NET_CLS_U32 || NET_CLS_FW
+--- a/net/sched/Makefile
++++ b/net/sched/Makefile
+@@ -16,6 +16,7 @@ obj-$(CONFIG_NET_ACT_PEDIT)	+= act_pedit
+ obj-$(CONFIG_NET_ACT_SIMP)	+= act_simple.o
+ obj-$(CONFIG_NET_ACT_SKBEDIT)	+= act_skbedit.o
+ obj-$(CONFIG_NET_ACT_CSUM)	+= act_csum.o
++obj-$(CONFIG_NET_ACT_CONNMARK)	+= act_connmark.o
+ obj-$(CONFIG_NET_SCH_FIFO)	+= sch_fifo.o
+ obj-$(CONFIG_NET_SCH_CBQ)	+= sch_cbq.o
+ obj-$(CONFIG_NET_SCH_HTB)	+= sch_htb.o
