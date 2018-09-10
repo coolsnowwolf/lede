@@ -154,6 +154,8 @@ struct ag71xx {
 	struct ag71xx_ring	rx_ring ____cacheline_aligned;
 	struct ag71xx_ring	tx_ring ____cacheline_aligned;
 
+	int			mac_idx;
+
 	u16			desc_pktlen_mask;
 	u16			rx_buf_size;
 	u8			rx_buf_offset;

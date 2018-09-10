@@ -122,13 +122,14 @@ static struct gpio_keys_button fritz450E_gpio_keys[] __initdata = {
 static struct at803x_platform_data fritz450E_at803x_data = {
 	.disable_smarteee = 1,
 	.has_reset_gpio = 1,
+	.override_sgmii_aneg = 1,
 	.reset_gpio = FRITZ450E_GPIO_PHY_RESET,
 };
 
 static struct mdio_board_info fritz450E_mdio_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.1",
-		.phy_addr = FRITZ450E_PHY_ADDRESS,
+		.mdio_addr = FRITZ450E_PHY_ADDRESS,
 		.platform_data = &fritz450E_at803x_data,
 	},
 };
@@ -155,6 +156,7 @@ static void __init fritz450E_setup(void) {
 	ath79_eth0_data.mii_bus_dev = &ath79_mdio1_device.dev;
 	ath79_eth0_data.phy_if_mode = PHY_INTERFACE_MODE_SGMII;
 	ath79_eth0_data.phy_mask = BIT(FRITZ450E_PHY_ADDRESS);
+	ath79_eth0_data.enable_sgmii_fixup = 1;
 	ath79_eth0_pll_data.pll_1000 = 0x03000000;
 	ath79_eth0_pll_data.pll_100 = 0x00000101;
 	ath79_eth0_pll_data.pll_10 = 0x00001313;

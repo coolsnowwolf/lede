@@ -1,0 +1,290 @@
+--- a/drivers/usb/host/isp116x-hcd.c
++++ b/drivers/usb/host/isp116x-hcd.c
+@@ -1533,6 +1533,7 @@ static struct hc_driver isp116x_hc_drive
+ 
+ /*----------------------------------------------------------------*/
+ 
++#ifdef CONFIG_USB_ISP116X_HCD_PLATFORM
+ static int isp116x_remove(struct platform_device *pdev)
+ {
+ 	struct usb_hcd *hcd = platform_get_drvdata(pdev);
+@@ -1711,4 +1712,251 @@ static struct platform_driver isp116x_dr
+ 	},
+ };
+ 
+-module_platform_driver(isp116x_driver);
++static inline int isp116x_platform_register(void)
++{
++	return platform_driver_register(&isp116x_driver);
++}
++
++static inline void isp116x_platform_unregister(void)
++{
++	platform_driver_unregister(&isp116x_driver);
++}
++#else
++static inline int isp116x_platform_register(void) { return 0; };
++static void isp116x_platform_unregister(void) {};
++#endif /* CONFIG_USB_ISP116X_PLATFORM */
++
++/*-----------------------------------------------------------------*/
++
++#ifdef CONFIG_USB_ISP116X_HCD_OF
++
++/* TODO: rework platform probe instead of using a separate probe */
++
++#include <linux/of_platform.h>
++
++#ifdef USE_PLATFORM_DELAY
++static void isp116x_of_delay(struct device *ddev, int delay)
++{
++	ndelay(delay);
++}
++#else
++#define isp116x_of_delay	NULL
++#endif
++
++static int isp116x_of_probe(struct platform_device *op)
++{
++	struct device_node *dn = op->dev.of_node;
++	struct usb_hcd *hcd;
++	struct isp116x *isp116x;
++	struct resource addr, data;
++	struct isp116x_platform_data *board;
++	void __iomem *addr_reg;
++	void __iomem *data_reg;
++	int irq;
++	int ret = 0;
++	unsigned long irqflags;
++
++	ret = of_address_to_resource(dn, 0, &data);
++	if (ret)
++		return ret;
++
++	ret = of_address_to_resource(dn, 1, &addr);
++	if (ret)
++		return ret;
++
++	board = kzalloc(sizeof(struct isp116x_platform_data), GFP_KERNEL);
++	if (board == NULL)
++		return -ENOMEM;
++
++	if (!request_mem_region(addr.start, resource_size(&addr), hcd_name)) {
++		ret = -EBUSY;
++		goto err_free_board;
++	}
++
++	addr_reg = ioremap_nocache(addr.start, resource_size(&addr));
++	if (addr_reg == NULL) {
++		ret = -ENOMEM;
++		goto err_release_addr;
++	}
++
++	if (!request_mem_region(data.start, resource_size(&data), hcd_name)) {
++		ret = -EBUSY;
++		goto err_unmap_addr;
++	}
++
++	data_reg = ioremap_nocache(data.start, resource_size(&data));
++	if (data_reg == NULL) {
++		ret = -ENOMEM;
++		goto err_release_data;
++	}
++
++	irq = irq_of_parse_and_map(dn, 0);
++	if (irq == NO_IRQ) {
++		ret = -EINVAL;
++		goto err_unmap_data;
++	}
++
++	/* allocate and initialize hcd */
++	hcd = usb_create_hcd(&isp116x_hc_driver, &op->dev, dev_name(&op->dev));
++	if (!hcd) {
++		ret = -ENOMEM;
++		goto err_irq_dispose;
++	}
++
++	/* this rsrc_start is bogus */
++	hcd->rsrc_start = addr.start;
++	isp116x = hcd_to_isp116x(hcd);
++	isp116x->data_reg = data_reg;
++	isp116x->addr_reg = addr_reg;
++	isp116x->board = board;
++	spin_lock_init(&isp116x->lock);
++	INIT_LIST_HEAD(&isp116x->async);
++
++	board->delay = isp116x_of_delay;
++	if (of_get_property(dn, "sel15Kres", NULL))
++		board->sel15Kres = 1;
++	if (of_get_property(dn, "oc_enable", NULL))
++		board->oc_enable = 1;
++	if (of_get_property(dn, "remote_wakeup_enable", NULL))
++		board->remote_wakeup_enable = 1;
++
++	if (of_get_property(dn, "int_act_high", NULL))
++		board->int_act_high = 1;
++	if (of_get_property(dn, "int_edge_triggered", NULL))
++		board->int_edge_triggered = 1;
++
++	if (board->int_edge_triggered)
++		irqflags = board->int_act_high ? IRQF_TRIGGER_RISING :
++						 IRQF_TRIGGER_FALLING;
++	else
++		irqflags = board->int_act_high ? IRQF_TRIGGER_HIGH :
++						 IRQF_TRIGGER_LOW;
++
++	ret = usb_add_hcd(hcd, irq, irqflags | IRQF_DISABLED);
++	if (ret)
++		goto err_put_hcd;
++
++	ret = create_debug_file(isp116x);
++	if (ret) {
++		ERR("Couldn't create debugfs entry\n");
++		goto err_remove_hcd;
++	}
++
++	return 0;
++
++ err_remove_hcd:
++	usb_remove_hcd(hcd);
++ err_put_hcd:
++	usb_put_hcd(hcd);
++ err_irq_dispose:
++	irq_dispose_mapping(irq);
++ err_unmap_data:
++	iounmap(data_reg);
++ err_release_data:
++	release_mem_region(data.start, resource_size(&data));
++ err_unmap_addr:
++	iounmap(addr_reg);
++ err_release_addr:
++	release_mem_region(addr.start, resource_size(&addr));
++ err_free_board:
++	kfree(board);
++	return ret;
++}
++
++static int isp116x_of_remove(struct platform_device *op)
++{
++	struct usb_hcd *hcd = dev_get_drvdata(&op->dev);
++	struct isp116x *isp116x;
++	struct resource res;
++
++	if (!hcd)
++		return 0;
++
++	dev_set_drvdata(&op->dev, NULL);
++
++	isp116x = hcd_to_isp116x(hcd);
++	remove_debug_file(isp116x);
++	usb_remove_hcd(hcd);
++
++	irq_dispose_mapping(hcd->irq);
++
++	iounmap(isp116x->data_reg);
++	(void) of_address_to_resource(op->dev.of_node, 0, &res);
++	release_mem_region(res.start, resource_size(&res));
++
++	iounmap(isp116x->addr_reg);
++	(void) of_address_to_resource(op->dev.of_node, 1, &res);
++	release_mem_region(res.start, resource_size(&res));
++
++	kfree(isp116x->board);
++	usb_put_hcd(hcd);
++
++	return 0;
++}
++
++static struct of_device_id isp116x_of_match[] = {
++	{ .compatible = "isp116x-hcd", },
++	{},
++};
++
++static struct platform_driver isp116x_of_platform_driver = {
++	.probe		= isp116x_of_probe,
++	.remove		= isp116x_of_remove,
++	.driver		= {
++		.name	= "isp116x-hcd-of",
++		.owner	= THIS_MODULE,
++		.of_match_table = isp116x_of_match,
++	},
++};
++
++static int __init isp116x_of_register(void)
++{
++	return platform_driver_register(&isp116x_of_platform_driver);
++}
++
++static void __exit isp116x_of_unregister(void)
++{
++	platform_driver_unregister(&isp116x_of_platform_driver);
++}
++
++MODULE_DEVICE_TABLE(of, isp116x_of_match);
++
++#else
++static inline int isp116x_of_register(void) { return 0; };
++static void isp116x_of_unregister(void) {};
++#endif /* CONFIG_USB_ISP116X_HCD_OF */
++
++/*-----------------------------------------------------------------*/
++
++static int __init isp116x_init(void)
++{
++	int ret;
++
++	if (usb_disabled())
++		return -ENODEV;
++
++	INFO("driver %s, %s\n", hcd_name, DRIVER_VERSION);
++	ret = isp116x_platform_register();
++	if (ret)
++		return ret;
++
++	ret = isp116x_of_register();
++	if (ret)
++		goto err_platform_unregister;
++
++	return 0;
++
++ err_platform_unregister:
++	isp116x_platform_unregister();
++	return ret;
++}
++
++module_init(isp116x_init);
++
++static void __exit isp116x_cleanup(void)
++{
++	isp116x_of_unregister();
++	isp116x_platform_unregister();
++}
++
++module_exit(isp116x_cleanup);
+--- a/drivers/usb/host/Kconfig
++++ b/drivers/usb/host/Kconfig
+@@ -327,6 +327,24 @@ config USB_ISP116X_HCD
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called isp116x-hcd.
+ 
++config USB_ISP116X_HCD_PLATFORM
++	bool "ISP116X support for controllers on platform bus"
++	depends on USB_ISP116X_HCD
++	default n if PPC_OF
++	default y
++	---help---
++	  Enables support for the ISP116x USB controller present on the
++	  platform bus.
++
++config USB_ISP116X_HCD_OF
++	bool "ISP116X support for controllers on OF platform bus"
++	depends on USB_ISP116X_HCD && PPC_OF
++	default y if PPC_OF
++	default n
++	---help---
++	  Enables support for the ISP116x USB controller present on the
++	  OpenFirmware platform bus.
++
+ config USB_ISP1760_HCD
+ 	tristate "ISP 1760 HCD support"
+ 	---help---

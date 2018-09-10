@@ -8,6 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ca-certificates
 PKG_VERSION:=20180409
+PKG_RELEASE:=3
 PKG_MAINTAINER:=
 
 PKG_SOURCE:=$(PKG_NAME)_$(PKG_VERSION).tar.xz
@@ -57,6 +58,7 @@ endef
 define Package/ca-bundle/install
 	$(INSTALL_DIR) $(1)/etc/ssl/certs
 	cat $(PKG_INSTALL_DIR)/usr/share/ca-certificates/*/*.crt >$(1)/etc/ssl/certs/ca-certificates.crt
+	$(LN) /etc/ssl/certs/ca-certificates.crt $(1)/etc/ssl/cert.pem
 endef
 $(eval $(call BuildPackage,ca-certificates))
 $(eval $(call BuildPackage,ca-bundle))

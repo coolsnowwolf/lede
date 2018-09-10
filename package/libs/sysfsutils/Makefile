@@ -65,8 +65,20 @@ define Package/libsysfs/install
 endef
 
 define Package/sysfsutils/install
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/sysfsutils $(1)/etc/init.d/
+
+	$(INSTALL_DATA) ./files/sysfs.conf $(1)/etc/
+	$(INSTALL_DIR) $(1)/etc/sysfs.d
+	$(INSTALL_DATA) ./files/local.conf $(1)/etc/sysfs.d/
+
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(CP) $(PKG_INSTALL_DIR)/usr/bin/systool $(1)/usr/bin/
+endef
+
+define Package/sysfsutils/conffiles
+/etc/sysfs.conf
+/etc/sysfs.d/local.conf
 endef
 
 $(eval $(call BuildPackage,libsysfs))

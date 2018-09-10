@@ -237,6 +237,7 @@ define KernelPackage/ipt-filter/description
  Netfilter (IPv4) kernel modules for packet content inspection
  Includes:
  - string
+ - bpf
 endef
 
 $(eval $(call KernelPackage,ipt-filter))
@@ -1051,3 +1052,23 @@ define KernelPackage/nft-nat6
 endef
 
 $(eval $(call KernelPackage,nft-nat6))
+
+define KernelPackage/nft-netdev
+  SUBMENU:=$(NF_MENU)
+  TITLE:=Netfilter nf_tables netdev support
+  DEPENDS:=+kmod-nft-core
+  KCONFIG:= \
+	CONFIG_NETFILTER_INGRESS=y \
+	CONFIG_NF_TABLES_NETDEV \
+	CONFIG_NF_DUP_NETDEV \
+	CONFIG_NFT_DUP_NETDEV \
+	CONFIG_NFT_FWD_NETDEV
+  FILES:= \
+	$(LINUX_DIR)/net/netfilter/nf_tables_netdev.ko \
+	$(LINUX_DIR)/net/netfilter/nf_dup_netdev.ko \
+	$(LINUX_DIR)/net/netfilter/nft_dup_netdev.ko \
+	$(LINUX_DIR)/net/netfilter/nft_fwd_netdev.ko
+  AUTOLOAD:=$(call AutoProbe,nf_tables_netdev nf_dup_netdev nft_dup_netdev nft_fwd_netdev)
+endef
+
+$(eval $(call KernelPackage,nft-netdev))

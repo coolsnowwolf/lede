@@ -21,7 +21,6 @@
  */
 
 #include <linux/gpio.h>
-#include <linux/pci.h>
 #include <linux/phy.h>
 #include <linux/platform_device.h>
 #include <linux/ath9k_platform.h>
@@ -31,7 +30,6 @@
 #include <asm/mach-ath79/ath79.h>
 
 #include "common.h"
-#include "dev-ap9x-pci.h"
 #include "dev-eth.h"
 #include "dev-gpio-buttons.h"
 #include "dev-leds-gpio.h"
@@ -58,7 +56,6 @@
 #define CR3000_MAC1_OFFSET		6
 #define CR3000_WMAC_CALDATA_OFFSET	0x1000
 #define CR3000_WMAC_MAC_OFFSET	        0x1002
-#define CR3000_PCIE_CALDATA_OFFSET	0x5000
 
 static struct gpio_led cr3000_leds_gpio[] __initdata = {
 	{
@@ -132,30 +129,40 @@ static void __init cr3000_setup(void)
 
 	/* WLAN 2GHz onboard */
 	ath79_register_wmac(art + CR3000_WMAC_CALDATA_OFFSET, art + CR3000_WMAC_MAC_OFFSET);
-	
-	ath79_register_mdio(1, 0x0);
-	ath79_register_mdio(0, 0x0);
 
+	/* FE Lan on first 4-ports of internal switch and attached to GMAC1
+	 * WAN Fast Ethernet interface attached to GMAC0
+	 * Could be configured as a 5-port switch, but we use
+	 * the SoC capabilities to attach port 5 to a separate PHY/MAC
+	 * theoretically this leaves future possibility of using SoC
+	 * acceleration/offloading.
+	 */
 	ath79_setup_ar934x_eth_cfg(AR934X_ETH_CFG_SW_PHY_SWAP);
 
-	/* Lan 4-port switch attached to GMAC1 internal switch */
-	ath79_init_mac(ath79_eth1_data.mac_addr, art + CR3000_MAC0_OFFSET, 0);
+	/* GMAC0 attached to PHY4 (port 5 of the internal switch) */
+	ath79_switch_data.phy4_mii_en = 1;
+	/* For switch carrier ignore port 5 (wan) */
+	ath79_switch_data.phy_poll_mask = 0x1;
 
+	/* Register MII bus */
+	ath79_register_mdio(1, 0x0);
+
+	/* GMAC0 attached to PHY4 (port 5 of the internal switch) */
+	ath79_switch_data.phy4_mii_en = 1;
+	ath79_switch_data.phy_poll_mask = 0x1;
+
+	/* LAN */
+	ath79_init_mac(ath79_eth1_data.mac_addr, art + CR3000_MAC0_OFFSET, 0);
 	ath79_eth1_data.phy_if_mode = PHY_INTERFACE_MODE_GMII;
-	ath79_eth1_data.speed = SPEED_1000;
-	ath79_eth1_data.duplex = DUPLEX_FULL;
 	ath79_register_eth(1);
 
-	ath79_init_mac(ath79_eth0_data.mac_addr, art + CR3000_MAC1_OFFSET, 0);
-
-	/* WAN Fast Ethernet interface attached to GMAC0 */
-	ath79_switch_data.phy4_mii_en = 1;
-	ath79_switch_data.phy_poll_mask = BIT(0);
-	ath79_eth0_data.phy_mask = BIT(0);
+	/* Wan */
+	ath79_init_mac(ath79_eth0_data.mac_addr, art + CR3000_MAC0_OFFSET, 1);
 	ath79_eth0_data.phy_if_mode = PHY_INTERFACE_MODE_MII;
+	ath79_eth0_data.phy_mask = BIT(0);
 	ath79_eth0_data.mii_bus_dev = &ath79_mdio1_device.dev;
 	ath79_register_eth(0);
 }
 
-MIPS_MACHINE(ATH79_MACH_CR3000, "CR3000", "PowerCloud CR3000",
+MIPS_MACHINE(ATH79_MACH_CR3000, "CR3000", "PowerCloud Systems CR3000",
 	     cr3000_setup);

@@ -1,0 +1,546 @@
+From 6f6eb1bcbeff48c875617b800f00f1c5d1b12290 Mon Sep 17 00:00:00 2001
+From: Sriram R <srirrama@codeaurora.org>
+Date: Tue, 15 May 2018 14:39:49 +0530
+Subject: [PATCH] ath10k: DFS Host Confirmation
+
+In the 10.4-3.6 firmware branch there's a new DFS Host confirmation
+feature which is advertised using WMI_SERVICE_HOST_DFS_CHECK_SUPPORT flag.
+
+This new features enables the ath10k host to send information to the
+firmware on the specifications of detected radar type. This allows the
+firmware to validate if the host's radar pattern detector unit is
+operational and check if the radar information shared by host matches
+the radar pulses sent as phy error events from firmware. If the check
+fails the firmware won't allow use of DFS channels on AP mode when using
+FCC regulatory region.
+
+Hence this patch is mandatory when using a firmware from 10.4-3.6 branch.
+Else, DFS channels on FCC regions cannot be used.
+
+Supported Chipsets : QCA9984/QCA9888/QCA4019
+Firmware Version : 10.4-3.6-00104
+
+Signed-off-by: Sriram R <srirrama@codeaurora.org>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath10k/core.h    |  21 ++++
+ drivers/net/wireless/ath/ath10k/mac.c     |  12 ++
+ drivers/net/wireless/ath/ath10k/wmi-ops.h |  32 +++++
+ drivers/net/wireless/ath/ath10k/wmi.c     | 186 ++++++++++++++++++++++++++++--
+ drivers/net/wireless/ath/ath10k/wmi.h     |  32 +++++
+ 5 files changed, 273 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath10k/core.h
++++ b/drivers/net/wireless/ath/ath10k/core.h
+@@ -171,6 +171,7 @@ struct ath10k_wmi {
+ 	struct completion service_ready;
+ 	struct completion unified_ready;
+ 	struct completion barrier;
++	struct completion radar_confirm;
+ 	wait_queue_head_t tx_credits_wq;
+ 	DECLARE_BITMAP(svc_map, WMI_SERVICE_MAX);
+ 	struct wmi_cmd_map *cmd;
+@@ -352,6 +353,21 @@ struct ath10k_dfs_stats {
+ 	u32 radar_detected;
+ };
+ 
++enum ath10k_radar_confirmation_state {
++	ATH10K_RADAR_CONFIRMATION_IDLE = 0,
++	ATH10K_RADAR_CONFIRMATION_INPROGRESS,
++	ATH10K_RADAR_CONFIRMATION_STOPPED,
++};
++
++struct ath10k_radar_found_info {
++	u32 pri_min;
++	u32 pri_max;
++	u32 width_min;
++	u32 width_max;
++	u32 sidx_min;
++	u32 sidx_max;
++};
++
+ #define ATH10K_MAX_NUM_PEER_IDS (1 << 11) /* htt rx_desc limit */
+ 
+ struct ath10k_peer {
+@@ -1026,6 +1042,11 @@ struct ath10k {
+ 
+ 	void *ce_priv;
+ 
++	/* protected by data_lock */
++	enum ath10k_radar_confirmation_state radar_conf_state;
++	struct ath10k_radar_found_info last_radar_info;
++	struct work_struct radar_confirmation_work;
++
+ 	/* must be last */
+ 	u8 drv_priv[0] __aligned(sizeof(void *));
+ };
+--- a/drivers/net/wireless/ath/ath10k/mac.c
++++ b/drivers/net/wireless/ath/ath10k/mac.c
+@@ -3216,6 +3216,15 @@ static void ath10k_reg_notifier(struct w
+ 					       ar->hw->wiphy->bands[NL80211_BAND_5GHZ]);
+ }
+ 
++static void ath10k_stop_radar_confirmation(struct ath10k *ar)
++{
++	spin_lock_bh(&ar->data_lock);
++	ar->radar_conf_state = ATH10K_RADAR_CONFIRMATION_STOPPED;
++	spin_unlock_bh(&ar->data_lock);
++
++	cancel_work_sync(&ar->radar_confirmation_work);
++}
++
+ /***************/
+ /* TX handlers */
+ /***************/
+@@ -4315,6 +4324,7 @@ void ath10k_halt(struct ath10k *ar)
+ 
+ 	ath10k_scan_finish(ar);
+ 	ath10k_peer_cleanup_all(ar);
++	ath10k_stop_radar_confirmation(ar);
+ 	ath10k_core_stop(ar);
+ 	ath10k_hif_power_down(ar);
+ 
+@@ -4733,6 +4743,8 @@ static int ath10k_start(struct ieee80211
+ 	ath10k_spectral_start(ar);
+ 	ath10k_thermal_set_throttling(ar);
+ 
++	ar->radar_conf_state = ATH10K_RADAR_CONFIRMATION_IDLE;
++
+ 	mutex_unlock(&ar->conf_mutex);
+ 	return 0;
+ 
+--- a/drivers/net/wireless/ath/ath10k/wmi-ops.h
++++ b/drivers/net/wireless/ath/ath10k/wmi-ops.h
+@@ -53,6 +53,8 @@ struct wmi_ops {
+ 			      struct wmi_wow_ev_arg *arg);
+ 	int (*pull_echo_ev)(struct ath10k *ar, struct sk_buff *skb,
+ 			    struct wmi_echo_ev_arg *arg);
++	int (*pull_dfs_status_ev)(struct ath10k *ar, struct sk_buff *skb,
++				  struct wmi_dfs_status_ev_arg *arg);
+ 	enum wmi_txbf_conf (*get_txbf_conf_scheme)(struct ath10k *ar);
+ 
+ 	struct sk_buff *(*gen_pdev_suspend)(struct ath10k *ar, u32 suspend_opt);
+@@ -178,6 +180,9 @@ struct wmi_ops {
+ 						const struct wmi_tdls_peer_update_cmd_arg *arg,
+ 						const struct wmi_tdls_peer_capab_arg *cap,
+ 						const struct wmi_channel_arg *chan);
++	struct sk_buff *(*gen_radar_found)
++			(struct ath10k *ar,
++			 const struct ath10k_radar_found_info *arg);
+ 	struct sk_buff *(*gen_adaptive_qcs)(struct ath10k *ar, bool enable);
+ 	struct sk_buff *(*gen_pdev_get_tpc_config)(struct ath10k *ar,
+ 						   u32 param);
+@@ -365,6 +370,16 @@ ath10k_wmi_pull_echo_ev(struct ath10k *a
+ 	return ar->wmi.ops->pull_echo_ev(ar, skb, arg);
+ }
+ 
++static inline int
++ath10k_wmi_pull_dfs_status(struct ath10k *ar, struct sk_buff *skb,
++			   struct wmi_dfs_status_ev_arg *arg)
++{
++	if (!ar->wmi.ops->pull_dfs_status_ev)
++		return -EOPNOTSUPP;
++
++	return ar->wmi.ops->pull_dfs_status_ev(ar, skb, arg);
++}
++
+ static inline enum wmi_txbf_conf
+ ath10k_wmi_get_txbf_conf_scheme(struct ath10k *ar)
+ {
+@@ -1438,4 +1453,21 @@ ath10k_wmi_pdev_get_tpc_table_cmdid(stru
+ 				   ar->wmi.cmd->pdev_get_tpc_table_cmdid);
+ }
+ 
++static inline int
++ath10k_wmi_report_radar_found(struct ath10k *ar,
++			      const struct ath10k_radar_found_info *arg)
++{
++	struct sk_buff *skb;
++
++	if (!ar->wmi.ops->gen_radar_found)
++		return -EOPNOTSUPP;
++
++	skb = ar->wmi.ops->gen_radar_found(ar, arg);
++	if (IS_ERR(skb))
++		return PTR_ERR(skb);
++
++	return ath10k_wmi_cmd_send(ar, skb,
++				   ar->wmi.cmd->radar_found_cmdid);
++}
++
+ #endif
+--- a/drivers/net/wireless/ath/ath10k/wmi.c
++++ b/drivers/net/wireless/ath/ath10k/wmi.c
+@@ -34,6 +34,7 @@
+ 
+ #define ATH10K_WMI_BARRIER_ECHO_ID 0xBA991E9
+ #define ATH10K_WMI_BARRIER_TIMEOUT_HZ (3 * HZ)
++#define ATH10K_WMI_DFS_CONF_TIMEOUT_HZ (HZ / 6)
+ 
+ /* MAIN WMI cmd track */
+ static struct wmi_cmd_map wmi_cmd_map = {
+@@ -198,6 +199,7 @@ static struct wmi_cmd_map wmi_cmd_map =
+ 	.set_cca_params_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.pdev_bss_chan_info_request_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.pdev_get_tpc_table_cmdid = WMI_CMD_UNSUPPORTED,
++	.radar_found_cmdid = WMI_CMD_UNSUPPORTED,
+ };
+ 
+ /* 10.X WMI cmd track */
+@@ -365,6 +367,7 @@ static struct wmi_cmd_map wmi_10x_cmd_ma
+ 	.set_cca_params_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.pdev_bss_chan_info_request_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.pdev_get_tpc_table_cmdid = WMI_CMD_UNSUPPORTED,
++	.radar_found_cmdid = WMI_CMD_UNSUPPORTED,
+ };
+ 
+ /* 10.2.4 WMI cmd track */
+@@ -532,6 +535,7 @@ static struct wmi_cmd_map wmi_10_2_4_cmd
+ 	.pdev_bss_chan_info_request_cmdid =
+ 		WMI_10_2_PDEV_BSS_CHAN_INFO_REQUEST_CMDID,
+ 	.pdev_get_tpc_table_cmdid = WMI_CMD_UNSUPPORTED,
++	.radar_found_cmdid = WMI_CMD_UNSUPPORTED,
+ };
+ 
+ /* 10.4 WMI cmd track */
+@@ -741,6 +745,7 @@ static struct wmi_cmd_map wmi_10_4_cmd_m
+ 	.tdls_set_state_cmdid = WMI_10_4_TDLS_SET_STATE_CMDID,
+ 	.tdls_peer_update_cmdid = WMI_10_4_TDLS_PEER_UPDATE_CMDID,
+ 	.tdls_set_offchan_mode_cmdid = WMI_10_4_TDLS_SET_OFFCHAN_MODE_CMDID,
++	.radar_found_cmdid = WMI_10_4_RADAR_FOUND_CMDID,
+ };
+ 
+ /* MAIN WMI VDEV param map */
+@@ -1485,6 +1490,7 @@ static struct wmi_cmd_map wmi_10_2_cmd_m
+ 	.pdev_get_ani_ofdm_config_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.pdev_reserve_ast_entry_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.pdev_get_tpc_table_cmdid = WMI_CMD_UNSUPPORTED,
++	.radar_found_cmdid = WMI_CMD_UNSUPPORTED,
+ };
+ 
+ static struct wmi_pdev_param_map wmi_10_4_pdev_param_map = {
+@@ -3638,6 +3644,68 @@ void ath10k_wmi_event_tbttoffset_update(
+ 	ath10k_dbg(ar, ATH10K_DBG_WMI, "WMI_TBTTOFFSET_UPDATE_EVENTID\n");
+ }
+ 
++static void ath10k_radar_detected(struct ath10k *ar)
++{
++	ath10k_dbg(ar, ATH10K_DBG_REGULATORY, "dfs radar detected\n");
++	ATH10K_DFS_STAT_INC(ar, radar_detected);
++
++	/* Control radar events reporting in debugfs file
++	 * dfs_block_radar_events
++	 */
++	if (ar->dfs_block_radar_events)
++		ath10k_info(ar, "DFS Radar detected, but ignored as requested\n");
++	else
++		ieee80211_radar_detected(ar->hw);
++}
++
++static void ath10k_radar_confirmation_work(struct work_struct *work)
++{
++	struct ath10k *ar = container_of(work, struct ath10k,
++					 radar_confirmation_work);
++	struct ath10k_radar_found_info radar_info;
++	int ret, time_left;
++
++	reinit_completion(&ar->wmi.radar_confirm);
++
++	spin_lock_bh(&ar->data_lock);
++	memcpy(&radar_info, &ar->last_radar_info, sizeof(radar_info));
++	spin_unlock_bh(&ar->data_lock);
++
++	ret = ath10k_wmi_report_radar_found(ar, &radar_info);
++	if (ret) {
++		ath10k_warn(ar, "failed to send radar found %d\n", ret);
++		goto wait_complete;
++	}
++
++	time_left = wait_for_completion_timeout(&ar->wmi.radar_confirm,
++						ATH10K_WMI_DFS_CONF_TIMEOUT_HZ);
++	if (time_left) {
++		/* DFS Confirmation status event received and
++		 * necessary action completed.
++		 */
++		goto wait_complete;
++	} else {
++		/* DFS Confirmation event not received from FW.Considering this
++		 * as real radar.
++		 */
++		ath10k_dbg(ar, ATH10K_DBG_REGULATORY,
++			   "dfs confirmation not received from fw, considering as radar\n");
++		goto radar_detected;
++	}
++
++radar_detected:
++	ath10k_radar_detected(ar);
++
++	/* Reset state to allow sending confirmation on consecutive radar
++	 * detections, unless radar confirmation is disabled/stopped.
++	 */
++wait_complete:
++	spin_lock_bh(&ar->data_lock);
++	if (ar->radar_conf_state != ATH10K_RADAR_CONFIRMATION_STOPPED)
++		ar->radar_conf_state = ATH10K_RADAR_CONFIRMATION_IDLE;
++	spin_unlock_bh(&ar->data_lock);
++}
++
+ static void ath10k_dfs_radar_report(struct ath10k *ar,
+ 				    struct wmi_phyerr_ev_arg *phyerr,
+ 				    const struct phyerr_radar_report *rr,
+@@ -3646,8 +3714,10 @@ static void ath10k_dfs_radar_report(stru
+ 	u32 reg0, reg1, tsf32l;
+ 	struct ieee80211_channel *ch;
+ 	struct pulse_event pe;
++	struct radar_detector_specs rs;
+ 	u64 tsf64;
+ 	u8 rssi, width;
++	struct ath10k_radar_found_info *radar_info;
+ 
+ 	reg0 = __le32_to_cpu(rr->reg0);
+ 	reg1 = __le32_to_cpu(rr->reg1);
+@@ -3712,25 +3782,46 @@ static void ath10k_dfs_radar_report(stru
+ 
+ 	ATH10K_DFS_STAT_INC(ar, pulses_detected);
+ 
+-	if (!ar->dfs_detector->add_pulse(ar->dfs_detector, &pe, NULL)) {
++	if (!ar->dfs_detector->add_pulse(ar->dfs_detector, &pe, &rs)) {
+ 		ath10k_dbg(ar, ATH10K_DBG_REGULATORY,
+ 			   "dfs no pulse pattern detected, yet\n");
+ 		return;
+ 	}
+ 
+-radar_detected:
+-	ath10k_dbg(ar, ATH10K_DBG_REGULATORY, "dfs radar detected\n");
+-	ATH10K_DFS_STAT_INC(ar, radar_detected);
++	if ((test_bit(WMI_SERVICE_HOST_DFS_CHECK_SUPPORT, ar->wmi.svc_map)) &&
++	    ar->dfs_detector->region == NL80211_DFS_FCC) {
++		/* Consecutive radar indications need not be
++		 * sent to the firmware until we get confirmation
++		 * for the previous detected radar.
++		 */
++		spin_lock_bh(&ar->data_lock);
++		if (ar->radar_conf_state != ATH10K_RADAR_CONFIRMATION_IDLE) {
++			spin_unlock_bh(&ar->data_lock);
++			return;
++		}
++		ar->radar_conf_state = ATH10K_RADAR_CONFIRMATION_INPROGRESS;
++		radar_info = &ar->last_radar_info;
+ 
+-	/* Control radar events reporting in debugfs file
+-	 * dfs_block_radar_events
+-	 */
+-	if (ar->dfs_block_radar_events) {
+-		ath10k_info(ar, "DFS Radar detected, but ignored as requested\n");
++		radar_info->pri_min = rs.pri_min;
++		radar_info->pri_max = rs.pri_max;
++		radar_info->width_min = rs.width_min;
++		radar_info->width_max = rs.width_max;
++		/*TODO Find sidx_min and sidx_max */
++		radar_info->sidx_min = MS(reg0, RADAR_REPORT_REG0_PULSE_SIDX);
++		radar_info->sidx_max = MS(reg0, RADAR_REPORT_REG0_PULSE_SIDX);
++
++		ath10k_dbg(ar, ATH10K_DBG_REGULATORY,
++			   "sending wmi radar found cmd pri_min %d pri_max %d width_min %d width_max %d sidx_min %d sidx_max %d\n",
++			   radar_info->pri_min, radar_info->pri_max,
++			   radar_info->width_min, radar_info->width_max,
++			   radar_info->sidx_min, radar_info->sidx_max);
++		ieee80211_queue_work(ar->hw, &ar->radar_confirmation_work);
++		spin_unlock_bh(&ar->data_lock);
+ 		return;
+ 	}
+ 
+-	ieee80211_radar_detected(ar->hw);
++radar_detected:
++	ath10k_radar_detected(ar);
+ }
+ 
+ static int ath10k_dfs_fft_report(struct ath10k *ar,
+@@ -4080,6 +4171,47 @@ void ath10k_wmi_event_phyerr(struct ath1
+ 	}
+ }
+ 
++static int
++ath10k_wmi_10_4_op_pull_dfs_status_ev(struct ath10k *ar, struct sk_buff *skb,
++				      struct wmi_dfs_status_ev_arg *arg)
++{
++	struct wmi_dfs_status_ev_arg *ev = (void *)skb->data;
++
++	if (skb->len < sizeof(*ev))
++		return -EPROTO;
++
++	arg->status = ev->status;
++
++	return 0;
++}
++
++static void
++ath10k_wmi_event_dfs_status_check(struct ath10k *ar, struct sk_buff *skb)
++{
++	struct wmi_dfs_status_ev_arg status_arg = {};
++	int ret;
++
++	ret = ath10k_wmi_pull_dfs_status(ar, skb, &status_arg);
++
++	if (ret) {
++		ath10k_warn(ar, "failed to parse dfs status event: %d\n", ret);
++		return;
++	}
++
++	ath10k_dbg(ar, ATH10K_DBG_REGULATORY,
++		   "dfs status event received from fw: %d\n",
++		   status_arg.status);
++
++	/* Even in case of radar detection failure we follow the same
++	 * behaviour as if radar is detected i.e to switch to a different
++	 * channel.
++	 */
++	if (status_arg.status == WMI_HW_RADAR_DETECTED ||
++	    status_arg.status == WMI_RADAR_DETECTION_FAIL)
++		ath10k_radar_detected(ar);
++	complete(&ar->wmi.radar_confirm);
++}
++
+ void ath10k_wmi_event_roam(struct ath10k *ar, struct sk_buff *skb)
+ {
+ 	struct wmi_roam_ev_arg arg = {};
+@@ -5814,6 +5946,9 @@ static void ath10k_wmi_10_4_op_rx(struct
+ 	case WMI_10_4_PDEV_TPC_TABLE_EVENTID:
+ 		ath10k_wmi_event_tpc_final_table(ar, skb);
+ 		break;
++	case WMI_10_4_DFS_STATUS_CHECK_EVENTID:
++		ath10k_wmi_event_dfs_status_check(ar, skb);
++		break;
+ 	default:
+ 		ath10k_warn(ar, "Unknown eventid: %d\n", id);
+ 		break;
+@@ -8332,6 +8467,32 @@ ath10k_wmi_10_4_gen_tdls_peer_update(str
+ }
+ 
+ static struct sk_buff *
++ath10k_wmi_10_4_gen_radar_found(struct ath10k *ar,
++				const struct ath10k_radar_found_info *arg)
++{
++	struct wmi_radar_found_info *cmd;
++	struct sk_buff *skb;
++
++	skb = ath10k_wmi_alloc_skb(ar, sizeof(*cmd));
++	if (!skb)
++		return ERR_PTR(-ENOMEM);
++
++	cmd = (struct wmi_radar_found_info *)skb->data;
++	cmd->pri_min   = __cpu_to_le32(arg->pri_min);
++	cmd->pri_max   = __cpu_to_le32(arg->pri_max);
++	cmd->width_min = __cpu_to_le32(arg->width_min);
++	cmd->width_max = __cpu_to_le32(arg->width_max);
++	cmd->sidx_min  = __cpu_to_le32(arg->sidx_min);
++	cmd->sidx_max  = __cpu_to_le32(arg->sidx_max);
++
++	ath10k_dbg(ar, ATH10K_DBG_WMI,
++		   "wmi radar found pri_min %d pri_max %d width_min %d width_max %d sidx_min %d sidx_max %d\n",
++		   arg->pri_min, arg->pri_max, arg->width_min,
++		   arg->width_max, arg->sidx_min, arg->sidx_max);
++	return skb;
++}
++
++static struct sk_buff *
+ ath10k_wmi_op_gen_echo(struct ath10k *ar, u32 value)
+ {
+ 	struct wmi_echo_cmd *cmd;
+@@ -8668,6 +8829,7 @@ static const struct wmi_ops wmi_10_4_ops
+ 	.pull_svc_rdy = ath10k_wmi_main_op_pull_svc_rdy_ev,
+ 	.pull_rdy = ath10k_wmi_op_pull_rdy_ev,
+ 	.pull_roam_ev = ath10k_wmi_op_pull_roam_ev,
++	.pull_dfs_status_ev = ath10k_wmi_10_4_op_pull_dfs_status_ev,
+ 	.get_txbf_conf_scheme = ath10k_wmi_10_4_txbf_conf_scheme,
+ 
+ 	.gen_pdev_suspend = ath10k_wmi_op_gen_pdev_suspend,
+@@ -8714,6 +8876,7 @@ static const struct wmi_ops wmi_10_4_ops
+ 	.gen_tdls_peer_update = ath10k_wmi_10_4_gen_tdls_peer_update,
+ 	.gen_pdev_get_tpc_table_cmdid =
+ 			ath10k_wmi_10_4_op_gen_pdev_get_tpc_table_cmdid,
++	.gen_radar_found = ath10k_wmi_10_4_gen_radar_found,
+ 
+ 	/* shared with 10.2 */
+ 	.pull_echo_ev = ath10k_wmi_op_pull_echo_ev,
+@@ -8776,8 +8939,11 @@ int ath10k_wmi_attach(struct ath10k *ar)
+ 	init_completion(&ar->wmi.service_ready);
+ 	init_completion(&ar->wmi.unified_ready);
+ 	init_completion(&ar->wmi.barrier);
++	init_completion(&ar->wmi.radar_confirm);
+ 
+ 	INIT_WORK(&ar->svc_rdy_work, ath10k_wmi_event_service_ready_work);
++	INIT_WORK(&ar->radar_confirmation_work,
++		  ath10k_radar_confirmation_work);
+ 
+ 	return 0;
+ }
+--- a/drivers/net/wireless/ath/ath10k/wmi.h
++++ b/drivers/net/wireless/ath/ath10k/wmi.h
+@@ -959,6 +959,7 @@ struct wmi_cmd_map {
+ 	u32 vdev_sifs_trigger_time_cmdid;
+ 	u32 pdev_wds_entry_list_cmdid;
+ 	u32 tdls_set_offchan_mode_cmdid;
++	u32 radar_found_cmdid;
+ };
+ 
+ /*
+@@ -1792,6 +1793,11 @@ enum wmi_10_4_cmd_id {
+ 	WMI_10_4_TDLS_SET_STATE_CMDID,
+ 	WMI_10_4_TDLS_PEER_UPDATE_CMDID,
+ 	WMI_10_4_TDLS_SET_OFFCHAN_MODE_CMDID,
++	WMI_10_4_PDEV_SEND_FD_CMDID,
++	WMI_10_4_ENABLE_FILS_CMDID,
++	WMI_10_4_PDEV_SET_BRIDGE_MACADDR_CMDID,
++	WMI_10_4_ATF_GROUP_WMM_AC_CONFIG_REQUEST_CMDID,
++	WMI_10_4_RADAR_FOUND_CMDID,
+ 	WMI_10_4_PDEV_UTF_CMDID = WMI_10_4_END_CMDID - 1,
+ };
+ 
+@@ -1867,6 +1873,9 @@ enum wmi_10_4_event_id {
+ 	WMI_10_4_PDEV_TPC_TABLE_EVENTID,
+ 	WMI_10_4_PDEV_WDS_ENTRY_LIST_EVENTID,
+ 	WMI_10_4_TDLS_PEER_EVENTID,
++	WMI_10_4_HOST_SWFDA_EVENTID,
++	WMI_10_4_ESP_ESTIMATE_EVENTID,
++	WMI_10_4_DFS_STATUS_CHECK_EVENTID,
+ 	WMI_10_4_PDEV_UTF_EVENTID = WMI_10_4_END_EVENTID - 1,
+ };
+ 
+@@ -3379,6 +3388,25 @@ struct wmi_10_4_phyerr_event {
+ 	u8 buf[0];
+ } __packed;
+ 
++struct wmi_radar_found_info {
++	__le32 pri_min;
++	__le32 pri_max;
++	__le32 width_min;
++	__le32 width_max;
++	__le32 sidx_min;
++	__le32 sidx_max;
++} __packed;
++
++enum wmi_radar_confirmation_status {
++	/* Detected radar was due to SW pulses */
++	WMI_SW_RADAR_DETECTED    = 0,
++
++	WMI_RADAR_DETECTION_FAIL = 1,
++
++	/* Real radar detected */
++	WMI_HW_RADAR_DETECTED    = 2,
++};
++
+ #define PHYERR_TLV_SIG				0xBB
+ #define PHYERR_TLV_TAG_SEARCH_FFT_REPORT	0xFB
+ #define PHYERR_TLV_TAG_RADAR_PULSE_SUMMARY	0xF8
+@@ -6586,6 +6614,10 @@ struct wmi_phyerr_hdr_arg {
+ 	const void *phyerrs;
+ };
+ 
++struct wmi_dfs_status_ev_arg {
++	u32 status;
++};
++
+ struct wmi_svc_rdy_ev_arg {
+ 	__le32 min_tx_power;
+ 	__le32 max_tx_power;

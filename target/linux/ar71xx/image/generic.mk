@@ -16,14 +16,6 @@ define Build/append-string
 	echo -n $(1) >> $@
 endef
 
-define Build/mkbuffaloimg
-	$(STAGING_DIR_HOST)/bin/mkbuffaloimg -B $(BOARDNAME) \
-		-R $$(($(subst k, * 1024,$(ROOTFS_SIZE)))) \
-		-K $$(($(subst k, * 1024,$(KERNEL_SIZE)))) \
-		-i $@ -o $@.new
-	mv $@.new $@
-endef
-
 define Build/mkwrggimg
 	$(STAGING_DIR_HOST)/bin/mkwrggimg -b \
 		-i $@ -o $@.imghdr -d /dev/mtdblock/1 \
@@ -518,6 +510,19 @@ define Device/gl-ar750
 endef
 TARGET_DEVICES += gl-ar750
 
+define Device/gl-ar750s
+  DEVICE_TITLE := GL.iNet GL-AR750S
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca9887 kmod-usb-core \
+	kmod-usb2 kmod-usb-storage
+  BOARDNAME := GL-AR750S
+  SUPPORTED_DEVICES := gl-ar750s
+  IMAGE_SIZE := 16000k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),64k(art)ro,-(firmware)
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += gl-ar750s
+
 define Device/gl-domino
   DEVICE_TITLE := GL.iNet Domino Pi
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2
@@ -681,60 +686,32 @@ endef
 TARGET_DEVICES += wndrmacv2
 
 define Device/cap324
-  DEVICE_TITLE := PowerCloud CAP324 Cloud AP
-  BOARDNAME := CAP324
-  DEVICE_PROFILE := CAP324
-  IMAGE_SIZE := 15296k
-  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,15296k(firmware),640k(certs),64k(nvram),64k(art)ro
-endef
-TARGET_DEVICES += cap324
-
-define Device/cap324-nocloud
-  DEVICE_TITLE := PowerCloud CAP324 Cloud AP (No-Cloud)
+  DEVICE_TITLE := PowerCloud Systems CAP324
   BOARDNAME := CAP324
   DEVICE_PROFILE := CAP324
   IMAGE_SIZE := 16000k
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,16000k(firmware),64k(art)ro
 endef
-TARGET_DEVICES += cap324-nocloud
+TARGET_DEVICES += cap324
 
 define Device/cr3000
-  DEVICE_TITLE := PowerCloud CR3000 Cloud Router
+  DEVICE_TITLE := PowerCloud Systems CR3000
   BOARDNAME := CR3000
   DEVICE_PROFILE := CR3000
-  IMAGE_SIZE := 7104k
-  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,7104k(firmware),640k(certs),64k(nvram),64k(art)ro
+  IMAGE_SIZE := 7808k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,7808k(firmware),64k(art)ro
 endef
 TARGET_DEVICES += cr3000
 
-define Device/cr3000-nocloud
-  DEVICE_TITLE := PowerCloud CR3000 (No-Cloud)
-  BOARDNAME := CR3000
-  DEVICE_PROFILE := CR3000
-  IMAGE_SIZE := 7808k
-  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,7808k(firmware),64k(art)ro
-endef
-TARGET_DEVICES += cr3000-nocloud
-
 define Device/cr5000
-  DEVICE_TITLE := PowerCloud CR5000 Cloud Router
+  DEVICE_TITLE := PowerCloud Systems CR5000
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport kmod-usb-core
   BOARDNAME := CR5000
   DEVICE_PROFILE := CR5000
-  IMAGE_SIZE := 7104k
-  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,7104k(firmware),640k(certs),64k(nvram),64k(art)ro
+  IMAGE_SIZE := 7808k
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,7808k(firmware),64k(art)ro
 endef
 TARGET_DEVICES += cr5000
-
-define Device/cr5000-nocloud
-  DEVICE_TITLE := PowerCloud CR5000 (No-Cloud)
-  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport kmod-usb-core
-  BOARDNAME := CR5000
-  DEVICE_PROFILE := CR5000
-  IMAGE_SIZE := 7808k
-  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,7808k(firmware),64k(art)ro
-endef
-TARGET_DEVICES += cr5000-nocloud
 
 define Device/packet-squirrel
   $(Device/tplink-16mlzma)
@@ -1086,8 +1063,12 @@ define Device/NBG6616
   IMAGE_SIZE := 15323k
   MTDPARTS := spi0.0:192k(u-boot)ro,64k(env)ro,64k(RFdata)ro,384k(zyxel_rfsd),384k(romd),64k(header),2048k(kernel),13184k(rootfs),15232k@0x120000(firmware)
   CMDLINE += mem=128M
-  IMAGES := sysupgrade.bin
+  RAS_BOARD := NBG6616
+  RAS_ROOTFS_SIZE := 14464k
+  RAS_VERSION := "$(VERSION_DIST) $(REVISION)"
+  IMAGES := factory.bin sysupgrade.bin
   KERNEL := kernel-bin | patch-cmdline | lzma | uImage lzma | jffs2 boot/vmlinux.lzma.uImage
+  IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-rootfs | pad-rootfs | pad-to 64k | check-size $$$$(IMAGE_SIZE) | zyxel-ras-image
   IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-rootfs | pad-rootfs | check-size $$$$(IMAGE_SIZE)
   # We cannot currently build a factory image. It is the sysupgrade image
   # prefixed with a header (which is actually written into the MTD device).
@@ -1234,19 +1215,6 @@ define Device/dap-2695-a1
 endef
 TARGET_DEVICES += dap-2695-a1
 
-define Device/bhr-4grv2
-  DEVICE_TITLE := Buffalo BHR-4GRV2
-  BOARDNAME := BHR-4GRV2
-  ROOTFS_SIZE := 14528k
-  KERNEL_SIZE := 1472k
-  IMAGE_SIZE := 16000k
-  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,14528k(rootfs),1472k(kernel),64k(art)ro,16000k@0x50000(firmware)
-  IMAGES := sysupgrade.bin factory.bin
-  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to $$$$(ROOTFS_SIZE) | append-kernel | check-size $$$$(IMAGE_SIZE)
-  IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-rootfs | pad-rootfs | mkbuffaloimg
-endef
-TARGET_DEVICES += bhr-4grv2
-
 define Device/wam250
   DEVICE_TITLE := Samsung WAM250
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 -swconfig
@@ -1337,18 +1305,6 @@ define Device/wrtnode2q
   MTDPARTS := spi0.0:192k(u-boot)ro,64k(u-boot-env),64k(art)ro,16064k(firmware),16384k@0x0(fullflash)
 endef
 TARGET_DEVICES += wrtnode2q
-
-define Device/zbt-we1526
-  DEVICE_TITLE := Zbtlink ZBT-WE1526
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
-  BOARDNAME := ZBT-WE1526
-  IMAGE_SIZE := 16000k
-  KERNEL_SIZE := 1472k
-  ROOTFS_SIZE := 14528k
-  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,14528k(rootfs),1472k(kernel),64k(art)ro,16000k@0x50000(firmware)
-  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to $$$$(ROOTFS_SIZE) | append-kernel | check-size $$$$(IMAGE_SIZE)
-endef
-TARGET_DEVICES += zbt-we1526
 
 define Device/AVM
   DEVICE_PACKAGES := fritz-tffs -uboot-envtools

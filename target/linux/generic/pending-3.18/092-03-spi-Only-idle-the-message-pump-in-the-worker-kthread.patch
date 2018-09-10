@@ -1,0 +1,83 @@
+From: Mark Brown <broonie@kernel.org>
+Date: Wed, 10 Dec 2014 13:46:33 +0000
+Subject: [PATCH] spi: Only idle the message pump in the worker kthread
+
+In order to avoid the situation where the kthread is waiting for another
+context to make the hardware idle let the message pump know if it's being
+called from the worker thread context and if it isn't then defer to the
+worker thread instead of idling the hardware immediately. This will ensure
+that if this situation happens we block rather than busy waiting.
+
+Signed-off-by: Mark Brown <broonie@kernel.org>
+---
+
+--- a/drivers/spi/spi.c
++++ b/drivers/spi/spi.c
+@@ -875,8 +875,9 @@ void spi_finalize_current_transfer(struc
+ EXPORT_SYMBOL_GPL(spi_finalize_current_transfer);
+ 
+ /**
+- * spi_pump_messages - kthread work function which processes spi message queue
+- * @work: pointer to kthread work struct contained in the master struct
++ * __spi_pump_messages - function which processes spi message queue
++ * @master: master to process queue for
++ * @in_kthread: true if we are in the context of the message pump thread
+  *
+  * This function checks if there is any spi message in the queue that
+  * needs processing and if so call out to the driver to initialize hardware
+@@ -886,10 +887,8 @@ EXPORT_SYMBOL_GPL(spi_finalize_current_t
+  * inside spi_sync(); the queue extraction handling at the top of the
+  * function should deal with this safely.
+  */
+-static void spi_pump_messages(struct kthread_work *work)
++static void __spi_pump_messages(struct spi_master *master, bool in_kthread)
+ {
+-	struct spi_master *master =
+-		container_of(work, struct spi_master, pump_messages);
+ 	unsigned long flags;
+ 	bool was_busy = false;
+ 	int ret;
+@@ -916,6 +915,15 @@ static void spi_pump_messages(struct kth
+ 			spin_unlock_irqrestore(&master->queue_lock, flags);
+ 			return;
+ 		}
++
++		/* Only do teardown in the thread */
++		if (!in_kthread) {
++			queue_kthread_work(&master->kworker,
++					   &master->pump_messages);
++			spin_unlock_irqrestore(&master->queue_lock, flags);
++			return;
++		}
++
+ 		master->busy = false;
+ 		master->idling = true;
+ 		spin_unlock_irqrestore(&master->queue_lock, flags);
+@@ -1004,6 +1012,18 @@ static void spi_pump_messages(struct kth
+ 	}
+ }
+ 
++/**
++ * spi_pump_messages - kthread work function which processes spi message queue
++ * @work: pointer to kthread work struct contained in the master struct
++ */
++static void spi_pump_messages(struct kthread_work *work)
++{
++	struct spi_master *master =
++		container_of(work, struct spi_master, pump_messages);
++
++	__spi_pump_messages(master, true);
++}
++
+ static int spi_init_queue(struct spi_master *master)
+ {
+ 	struct sched_param param = { .sched_priority = MAX_RT_PRIO - 1 };
+@@ -2165,7 +2185,7 @@ static int __spi_sync(struct spi_device
+ 		 * can.
+ 		 */
+ 		if (master->transfer == spi_queued_transfer)
+-			spi_pump_messages(&master->pump_messages);
++			__spi_pump_messages(master, false);
+ 
+ 		wait_for_completion(&done);
+ 		status = message->status;

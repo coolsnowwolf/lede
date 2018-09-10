@@ -1,0 +1,452 @@
+--- a/drivers/net/ethernet/dec/tulip/tulip_core.c
++++ b/drivers/net/ethernet/dec/tulip/tulip_core.c
+@@ -206,6 +206,7 @@ struct tulip_chip_table tulip_tbl[] = {
+ };
+ 
+ 
++#ifdef CONFIG_TULIP_PCI
+ static const struct pci_device_id tulip_pci_tbl[] = {
+ 	{ 0x1011, 0x0009, PCI_ANY_ID, PCI_ANY_ID, 0, 0, DC21140 },
+ 	{ 0x1011, 0x0019, PCI_ANY_ID, PCI_ANY_ID, 0, 0, DC21143 },
+@@ -249,7 +250,7 @@ static const struct pci_device_id tulip_
+ 	{ } /* terminate list */
+ };
+ MODULE_DEVICE_TABLE(pci, tulip_pci_tbl);
+-
++#endif
+ 
+ /* A full-duplex map for media types. */
+ const char tulip_media_cap[32] =
+@@ -267,11 +268,14 @@ static void tulip_down(struct net_device
+ static struct net_device_stats *tulip_get_stats(struct net_device *dev);
+ static int private_ioctl(struct net_device *dev, struct ifreq *rq, int cmd);
+ static void set_rx_mode(struct net_device *dev);
++#ifdef CONFIG_TULIP_PCI
+ static void tulip_set_wolopts(struct pci_dev *pdev, u32 wolopts);
++#endif
+ #ifdef CONFIG_NET_POLL_CONTROLLER
+ static void poll_tulip(struct net_device *dev);
+ #endif
+ 
++#ifdef CONFIG_TULIP_PCI
+ static void tulip_set_power_state (struct tulip_private *tp,
+ 				   int sleep, int snooze)
+ {
+@@ -288,7 +292,7 @@ static void tulip_set_power_state (struc
+ 	}
+ 
+ }
+-
++#endif
+ 
+ static void tulip_up(struct net_device *dev)
+ {
+@@ -302,6 +306,7 @@ static void tulip_up(struct net_device *
+ 	napi_enable(&tp->napi);
+ #endif
+ 
++#ifdef CONFIG_TULIP_PCI
+ 	/* Wake the chip from sleep/snooze mode. */
+ 	tulip_set_power_state (tp, 0, 0);
+ 
+@@ -309,6 +314,7 @@ static void tulip_up(struct net_device *
+ 	pci_enable_wake(tp->pdev, PCI_D3hot, 0);
+ 	pci_enable_wake(tp->pdev, PCI_D3cold, 0);
+ 	tulip_set_wolopts(tp->pdev, 0);
++#endif
+ 
+ 	/* On some chip revs we must set the MII/SYM port before the reset!? */
+ 	if (tp->mii_cnt  ||  (tp->mtable  &&  tp->mtable->has_mii))
+@@ -316,18 +322,22 @@ static void tulip_up(struct net_device *
+ 
+ 	/* Reset the chip, holding bit 0 set at least 50 PCI cycles. */
+ 	iowrite32(0x00000001, ioaddr + CSR0);
++#ifdef CONFIG_TULIP_PCI
+ 	pci_read_config_dword(tp->pdev, PCI_COMMAND, &reg);  /* flush write */
++#endif
+ 	udelay(100);
+ 
+ 	/* Deassert reset.
+ 	   Wait the specified 50 PCI cycles after a reset by initializing
+ 	   Tx and Rx queues and the address filter list. */
+ 	iowrite32(tp->csr0, ioaddr + CSR0);
++#ifdef CONFIG_TULIP_PCI
+ 	pci_read_config_dword(tp->pdev, PCI_COMMAND, &reg);  /* flush write */
++#endif
+ 	udelay(100);
+ 
+ 	if (tulip_debug > 1)
+-		netdev_dbg(dev, "tulip_up(), irq==%d\n", tp->pdev->irq);
++		netdev_dbg(dev, "tulip_up(), irq==%d\n", tp->irq);
+ 
+ 	iowrite32(tp->rx_ring_dma, ioaddr + CSR3);
+ 	iowrite32(tp->tx_ring_dma, ioaddr + CSR4);
+@@ -361,9 +371,11 @@ static void tulip_up(struct net_device *
+ 		*setup_frm++ = eaddrs[1]; *setup_frm++ = eaddrs[1];
+ 		*setup_frm++ = eaddrs[2]; *setup_frm++ = eaddrs[2];
+ 
++#ifdef CONFIG_TULIP_PCI
+ 		mapping = pci_map_single(tp->pdev, tp->setup_frame,
+ 					 sizeof(tp->setup_frame),
+ 					 PCI_DMA_TODEVICE);
++#endif
+ 		tp->tx_buffers[tp->cur_tx].skb = NULL;
+ 		tp->tx_buffers[tp->cur_tx].mapping = mapping;
+ 
+@@ -519,7 +531,7 @@ tulip_open(struct net_device *dev)
+ 
+ 	tulip_init_ring (dev);
+ 
+-	retval = request_irq(tp->pdev->irq, tulip_interrupt, IRQF_SHARED,
++	retval = request_irq(tp->irq, tulip_interrupt, IRQF_SHARED,
+ 			     dev->name, dev);
+ 	if (retval)
+ 		goto free_ring;
+@@ -643,8 +655,10 @@ static void tulip_init_ring(struct net_d
+ 		tp->rx_buffers[i].skb = skb;
+ 		if (skb == NULL)
+ 			break;
++#ifdef CONFIG_TULIP_PCI
+ 		mapping = pci_map_single(tp->pdev, skb->data,
+ 					 PKT_BUF_SZ, PCI_DMA_FROMDEVICE);
++#endif
+ 		tp->rx_buffers[i].mapping = mapping;
+ 		tp->rx_ring[i].status = cpu_to_le32(DescOwned);	/* Owned by Tulip chip */
+ 		tp->rx_ring[i].buffer1 = cpu_to_le32(mapping);
+@@ -677,8 +691,10 @@ tulip_start_xmit(struct sk_buff *skb, st
+ 	entry = tp->cur_tx % TX_RING_SIZE;
+ 
+ 	tp->tx_buffers[entry].skb = skb;
++#ifdef CONFIG_TULIP_PCI
+ 	mapping = pci_map_single(tp->pdev, skb->data,
+ 				 skb->len, PCI_DMA_TODEVICE);
++#endif
+ 	tp->tx_buffers[entry].mapping = mapping;
+ 	tp->tx_ring[entry].buffer1 = cpu_to_le32(mapping);
+ 
+@@ -729,16 +745,19 @@ static void tulip_clean_tx_ring(struct t
+ 		if (tp->tx_buffers[entry].skb == NULL) {
+ 			/* test because dummy frames not mapped */
+ 			if (tp->tx_buffers[entry].mapping)
++#ifdef CONFIG_TULIP_PCI
+ 				pci_unmap_single(tp->pdev,
+ 					tp->tx_buffers[entry].mapping,
+ 					sizeof(tp->setup_frame),
+ 					PCI_DMA_TODEVICE);
++#endif
+ 			continue;
+ 		}
+-
++#ifdef CONFIG_TULIP_PCI
+ 		pci_unmap_single(tp->pdev, tp->tx_buffers[entry].mapping,
+ 				tp->tx_buffers[entry].skb->len,
+ 				PCI_DMA_TODEVICE);
++#endif
+ 
+ 		/* Free the original skb. */
+ 		dev_kfree_skb_irq(tp->tx_buffers[entry].skb);
+@@ -789,7 +808,9 @@ static void tulip_down (struct net_devic
+ 	dev->if_port = tp->saved_if_port;
+ 
+ 	/* Leave the driver in snooze, not sleep, mode. */
++#ifdef CONFIG_TULIP_PCI
+ 	tulip_set_power_state (tp, 0, 1);
++#endif
+ }
+ 
+ static void tulip_free_ring (struct net_device *dev)
+@@ -810,8 +831,10 @@ static void tulip_free_ring (struct net_
+ 		/* An invalid address. */
+ 		tp->rx_ring[i].buffer1 = cpu_to_le32(0xBADF00D0);
+ 		if (skb) {
++#ifdef CONFIG_TULIP_PCI
+ 			pci_unmap_single(tp->pdev, mapping, PKT_BUF_SZ,
+ 					 PCI_DMA_FROMDEVICE);
++#endif
+ 			dev_kfree_skb (skb);
+ 		}
+ 	}
+@@ -820,8 +843,10 @@ static void tulip_free_ring (struct net_
+ 		struct sk_buff *skb = tp->tx_buffers[i].skb;
+ 
+ 		if (skb != NULL) {
++#ifdef CONFIG_TULIP_PCI
+ 			pci_unmap_single(tp->pdev, tp->tx_buffers[i].mapping,
+ 					 skb->len, PCI_DMA_TODEVICE);
++#endif
+ 			dev_kfree_skb (skb);
+ 		}
+ 		tp->tx_buffers[i].skb = NULL;
+@@ -842,7 +867,7 @@ static int tulip_close (struct net_devic
+ 		netdev_dbg(dev, "Shutting down ethercard, status was %02x\n",
+ 			   ioread32 (ioaddr + CSR5));
+ 
+-	free_irq (tp->pdev->irq, dev);
++	free_irq (tp->irq, dev);
+ 
+ 	tulip_free_ring (dev);
+ 
+@@ -873,7 +898,9 @@ static void tulip_get_drvinfo(struct net
+ 	struct tulip_private *np = netdev_priv(dev);
+ 	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
+ 	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
++#ifdef CONFIG_TULIP_PCI
+ 	strlcpy(info->bus_info, pci_name(np->pdev), sizeof(info->bus_info));
++#endif
+ }
+ 
+ 
+@@ -886,7 +913,9 @@ static int tulip_ethtool_set_wol(struct
+ 		   return -EOPNOTSUPP;
+ 
+ 	tp->wolinfo.wolopts = wolinfo->wolopts;
+-	device_set_wakeup_enable(&tp->pdev->dev, tp->wolinfo.wolopts);
++#ifdef CONFIG_TULIP_PCI
++	device_set_wakeup_enable(tp->kdev, tp->wolinfo.wolopts);
++#endif
+ 	return 0;
+ }
+ 
+@@ -1164,9 +1193,11 @@ static void set_rx_mode(struct net_devic
+ 
+ 			tp->tx_buffers[entry].skb = NULL;
+ 			tp->tx_buffers[entry].mapping =
++#ifdef CONFIG_TULIP_PCI
+ 				pci_map_single(tp->pdev, tp->setup_frame,
+ 					       sizeof(tp->setup_frame),
+ 					       PCI_DMA_TODEVICE);
++#endif
+ 			/* Put the setup frame on the Tx list. */
+ 			if (entry == TX_RING_SIZE-1)
+ 				tx_flags |= DESC_RING_WRAP;		/* Wrap ring. */
+@@ -1263,19 +1294,22 @@ out:
+ 		netdev_dbg(dev, "MWI config cacheline=%d, csr0=%08x\n",
+ 			   cache, csr0);
+ }
+-#endif
+ 
+ /*
+  *	Chips that have the MRM/reserved bit quirk and the burst quirk. That
+  *	is the DM910X and the on chip ULi devices
+  */
++#endif
+ 
++#ifdef CONFIG_TULIP_PCI
+ static int tulip_uli_dm_quirk(struct pci_dev *pdev)
+ {
+ 	if (pdev->vendor == 0x1282 && pdev->device == 0x9102)
+ 		return 1;
+ 	return 0;
+ }
++#endif
++
+ 
+ static const struct net_device_ops tulip_netdev_ops = {
+ 	.ndo_open		= tulip_open,
+@@ -1293,6 +1327,7 @@ static const struct net_device_ops tulip
+ #endif
+ };
+ 
++#ifdef CONFIG_TULIP_PCI
+ const struct pci_device_id early_486_chipsets[] = {
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82424) },
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_SI, PCI_DEVICE_ID_SI_496) },
+@@ -1470,6 +1505,8 @@ static int tulip_init_one(struct pci_dev
+ 		}
+ 	}
+ 	tp->pdev = pdev;
++	tp->kdev = &pdev->dev;
++	tp->irq = irq;
+ 	tp->base_addr = ioaddr;
+ 	tp->revision = pdev->revision;
+ 	tp->csr0 = csr0;
+@@ -1800,6 +1837,7 @@ err_out_free_netdev:
+ }
+ 
+ 
++#ifdef CONFIG_TULIP_PCI
+ /* set the registers according to the given wolopts */
+ static void tulip_set_wolopts (struct pci_dev *pdev, u32 wolopts)
+ {
+@@ -1828,6 +1866,7 @@ static void tulip_set_wolopts (struct pc
+ 		iowrite32(tmp, ioaddr + CSR13);
+ 	}
+ }
++#endif
+ 
+ #ifdef CONFIG_PM
+ 
+@@ -1942,6 +1981,7 @@ static void tulip_remove_one(struct pci_
+ 
+ 	/* pci_power_off (pdev, -1); */
+ }
++#endif /* CONFIG_TULIP_PCI */
+ 
+ #ifdef CONFIG_NET_POLL_CONTROLLER
+ /*
+@@ -1963,7 +2003,8 @@ static void poll_tulip (struct net_devic
+ }
+ #endif
+ 
+-static struct pci_driver tulip_driver = {
++#ifdef CONFIG_TULIP_PCI
++static struct pci_driver tulip_pci_driver = {
+ 	.name		= DRV_NAME,
+ 	.id_table	= tulip_pci_tbl,
+ 	.probe		= tulip_init_one,
+@@ -1973,10 +2014,12 @@ static struct pci_driver tulip_driver =
+ 	.resume		= tulip_resume,
+ #endif /* CONFIG_PM */
+ };
++#endif
+ 
+ 
+ static int __init tulip_init (void)
+ {
++	int ret = 0;
+ #ifdef MODULE
+ 	pr_info("%s", version);
+ #endif
+@@ -1992,13 +2035,18 @@ static int __init tulip_init (void)
+ 	tulip_max_interrupt_work = max_interrupt_work;
+ 
+ 	/* probe for and init boards */
+-	return pci_register_driver(&tulip_driver);
++#ifdef CONFIG_TULIP_PCI
++	ret = pci_register_driver(&tulip_pci_driver);
++#endif
++	return ret;
+ }
+ 
+ 
+ static void __exit tulip_cleanup (void)
+ {
+-	pci_unregister_driver (&tulip_driver);
++#ifdef CONFIG_TULIP_PCI
++	pci_unregister_driver (&tulip_pci_driver);
++#endif
+ }
+ 
+ 
+--- a/drivers/net/ethernet/dec/tulip/interrupt.c
++++ b/drivers/net/ethernet/dec/tulip/interrupt.c
+@@ -73,10 +73,11 @@ int tulip_refill_rx(struct net_device *d
+ 				netdev_alloc_skb(dev, PKT_BUF_SZ);
+ 			if (skb == NULL)
+ 				break;
+-
++#ifdef CONFIG_TULIP_PCI
+ 			mapping = pci_map_single(tp->pdev, skb->data, PKT_BUF_SZ,
+ 						 PCI_DMA_FROMDEVICE);
+-			if (dma_mapping_error(&tp->pdev->dev, mapping)) {
++#endif
++			if (dma_mapping_error(tp->kdev, mapping)) {
+ 				dev_kfree_skb(skb);
+ 				tp->rx_buffers[entry].skb = NULL;
+ 				break;
+@@ -210,9 +211,11 @@ int tulip_poll(struct napi_struct *napi,
+                                if (pkt_len < tulip_rx_copybreak &&
+                                    (skb = netdev_alloc_skb(dev, pkt_len + 2)) != NULL) {
+                                        skb_reserve(skb, 2);    /* 16 byte align the IP header */
++#ifdef CONFIG_TULIP_PCI
+                                        pci_dma_sync_single_for_cpu(tp->pdev,
+ 								   tp->rx_buffers[entry].mapping,
+ 								   pkt_len, PCI_DMA_FROMDEVICE);
++#endif
+ #if ! defined(__alpha__)
+                                        skb_copy_to_linear_data(skb, tp->rx_buffers[entry].skb->data,
+                                                         pkt_len);
+@@ -222,9 +225,11 @@ int tulip_poll(struct napi_struct *napi,
+                                               tp->rx_buffers[entry].skb->data,
+                                               pkt_len);
+ #endif
++#ifdef CONFIG_TULIP_PCI
+                                        pci_dma_sync_single_for_device(tp->pdev,
+ 								      tp->rx_buffers[entry].mapping,
+ 								      pkt_len, PCI_DMA_FROMDEVICE);
++#endif
+                                } else {        /* Pass up the skb already on the Rx ring. */
+                                        char *temp = skb_put(skb = tp->rx_buffers[entry].skb,
+                                                             pkt_len);
+@@ -239,9 +244,10 @@ int tulip_poll(struct napi_struct *napi,
+ 						       skb->head, temp);
+                                        }
+ #endif
+-
++#ifdef CONFIG_TULIP_PCI
+                                        pci_unmap_single(tp->pdev, tp->rx_buffers[entry].mapping,
+                                                         PKT_BUF_SZ, PCI_DMA_FROMDEVICE);
++#endif
+ 
+                                        tp->rx_buffers[entry].skb = NULL;
+                                        tp->rx_buffers[entry].mapping = 0;
+@@ -597,10 +603,12 @@ irqreturn_t tulip_interrupt(int irq, voi
+ 				if (tp->tx_buffers[entry].skb == NULL) {
+ 					/* test because dummy frames not mapped */
+ 					if (tp->tx_buffers[entry].mapping)
++#ifdef CONFIG_TULIP_PCI
+ 						pci_unmap_single(tp->pdev,
+ 							 tp->tx_buffers[entry].mapping,
+ 							 sizeof(tp->setup_frame),
+ 							 PCI_DMA_TODEVICE);
++#endif
+ 					continue;
+ 				}
+ 
+@@ -628,10 +636,11 @@ irqreturn_t tulip_interrupt(int irq, voi
+ 					dev->stats.collisions += (status >> 3) & 15;
+ 					dev->stats.tx_packets++;
+ 				}
+-
++#ifdef CONFIG_TULIP_PCI
+ 				pci_unmap_single(tp->pdev, tp->tx_buffers[entry].mapping,
+ 						 tp->tx_buffers[entry].skb->len,
+ 						 PCI_DMA_TODEVICE);
++#endif
+ 
+ 				/* Free the original skb. */
+ 				dev_kfree_skb_irq(tp->tx_buffers[entry].skb);
+--- a/drivers/net/ethernet/dec/tulip/Kconfig
++++ b/drivers/net/ethernet/dec/tulip/Kconfig
+@@ -40,8 +40,12 @@ config DE2104X_DSL
+ 	  Default is 0, and range is 0 to 31.
+ 
+ config TULIP
++	tristate
++
++config TULIP_PCI
+ 	tristate "DECchip Tulip (dc2114x) PCI support"
+ 	depends on PCI
++	select TULIP
+ 	select CRC32
+ 	---help---
+ 	  This driver is developed for the SMC EtherPower series Ethernet
+@@ -58,7 +62,7 @@ config TULIP
+ 
+ config TULIP_MWI
+ 	bool "New bus configuration"
+-	depends on TULIP
++	depends on TULIP_PCI
+ 	---help---
+ 	  This configures your Tulip card specifically for the card and
+ 	  system cache line size type you are using.
+@@ -69,7 +73,7 @@ config TULIP_MWI
+ 
+ config TULIP_MMIO
+ 	bool "Use PCI shared mem for NIC registers"
+-	depends on TULIP
++	depends on TULIP_PCI
+ 	---help---
+ 	  Use PCI shared memory for the NIC registers, rather than going through
+ 	  the Tulip's PIO (programmed I/O ports).  Faster, but could produce
+--- a/drivers/net/ethernet/dec/tulip/tulip.h
++++ b/drivers/net/ethernet/dec/tulip/tulip.h
+@@ -447,6 +447,8 @@ struct tulip_private {
+ 	int cur_index;		/* Current media index. */
+ 	int saved_if_port;
+ 	struct pci_dev *pdev;
++	struct device *kdev;
++	int irq;
+ 	int ttimer;
+ 	int susp_rx;
+ 	unsigned long nir;

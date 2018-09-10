@@ -31,6 +31,7 @@ MODULE_PARM_DESC(msg_level, "Message level (-1=defaults,0=none,...,16=all)");
 #define ETH_SWITCH_HEADER_LEN	2
 
 static int ag71xx_tx_packets(struct ag71xx *ag, bool flush);
+static void ag71xx_qca955x_sgmii_init(void);
 
 static inline unsigned int ag71xx_max_frame_len(unsigned int mtu)
 {
@@ -610,6 +611,9 @@ __ag71xx_link_adjust(struct ag71xx *ag, bool update)
 	if (update && pdata->set_speed)
 		pdata->set_speed(ag->speed);
 
+	if (update && pdata->enable_sgmii_fixup)
+		ag71xx_qca955x_sgmii_init();
+
 	ag71xx_wr(ag, AG71XX_REG_MAC_CFG2, cfg2);
 	ag71xx_wr(ag, AG71XX_REG_FIFO_CFG5, fifo5);
 	ag71xx_wr(ag, AG71XX_REG_MAC_IFCTL, ifctl);
@@ -911,6 +915,81 @@ static void ag71xx_tx_timeout(struct net_device *dev)
 		pr_info("%s: tx timeout\n", ag->dev->name);
 
 	schedule_delayed_work(&ag->restart_work, 1);
+}
+
+static void ag71xx_bit_set(void __iomem *reg, u32 bit)
+{
+	u32 val = __raw_readl(reg) | bit;
+	__raw_writel(val, reg);
+	__raw_readl(reg);
+}
+
+static void ag71xx_bit_clear(void __iomem *reg, u32 bit)
+{
+	u32 val = __raw_readl(reg) & ~bit;
+	__raw_writel(val, reg);
+	__raw_readl(reg);
+}
+
+static void ag71xx_qca955x_sgmii_init()
+{
+	void __iomem *gmac_base;
+	u32 mr_an_status, sgmii_status;
+	u8 tries = 0;
+
+	gmac_base = ioremap_nocache(QCA955X_GMAC_BASE, QCA955X_GMAC_SIZE);
+
+	if (!gmac_base)
+		goto sgmii_out;
+
+	mr_an_status = __raw_readl(gmac_base + QCA955X_GMAC_REG_MR_AN_STATUS);
+	if (!(mr_an_status & QCA955X_MR_AN_STATUS_AN_ABILITY))
+		goto sgmii_out;
+
+	__raw_writel(QCA955X_SGMII_RESET_RX_CLK_N_RESET ,
+		     gmac_base + QCA955X_GMAC_REG_SGMII_RESET);
+	__raw_readl(gmac_base + QCA955X_GMAC_REG_SGMII_RESET);
+	udelay(10);
+
+	/* Init sequence */
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_HW_RX_125M_N);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_RX_125M_N);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_TX_125M_N);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_RX_CLK_N);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_TX_CLK_N);
+	udelay(10);
+
+	do {
+		ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_MR_AN_CONTROL,
+			       QCA955X_MR_AN_CONTROL_PHY_RESET |
+			       QCA955X_MR_AN_CONTROL_AN_ENABLE);
+		udelay(100);
+		ag71xx_bit_clear(gmac_base + QCA955X_GMAC_REG_MR_AN_CONTROL,
+				 QCA955X_MR_AN_CONTROL_PHY_RESET);
+		mdelay(10);
+		sgmii_status = __raw_readl(gmac_base + QCA955X_GMAC_REG_SGMII_DEBUG) & 0xF;
+
+		if (tries++ >= QCA955X_SGMII_LINK_WAR_MAX_TRY) {
+			pr_warn("ag71xx: max retries for SGMII fixup exceeded!\n");
+			break;
+		}
+	} while (!(sgmii_status == 0xf || sgmii_status == 0x10));
+
+sgmii_out:
+	iounmap(gmac_base);
 }
 
 static void ag71xx_restart_work_func(struct work_struct *work)

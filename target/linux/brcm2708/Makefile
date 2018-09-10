@@ -27,7 +27,6 @@ DEFAULT_PACKAGES += \
 	kmod-usb-hid \
 	kmod-sound-core kmod-sound-arm-bcm2835 \
 	kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1 \
-	brcmfmac-firmware-43430-sdio kmod-brcmfmac wpad-mini \
 	partx-utils mkf2fs e2fsprogs
 
 KERNELNAME:=Image dtbs

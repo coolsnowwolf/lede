@@ -1,0 +1,88 @@
+From: Arnd Bergmann <arnd@arndb.de>
+Date: Tue, 19 Jun 2018 13:14:57 -0700
+Subject: [PATCH] disable -Wattribute-alias warning for SYSCALL_DEFINEx()
+
+gcc-8 warns for every single definition of a system call entry
+point, e.g.:
+
+include/linux/compat.h:56:18: error: 'compat_sys_rt_sigprocmask' alias between functions of incompatible types 'long int(int,  compat_sigset_t *, compat_sigset_t *, compat_size_t)' {aka 'long int(int,  struct <anonymous> *, struct <anonymous> *, unsigned int)'} and 'long int(long int,  long int,  long int,  long int)' [-Werror=attribute-alias]
+  asmlinkage long compat_sys##name(__MAP(x,__SC_DECL,__VA_ARGS__))\
+                  ^~~~~~~~~~
+include/linux/compat.h:45:2: note: in expansion of macro 'COMPAT_SYSCALL_DEFINEx'
+  COMPAT_SYSCALL_DEFINEx(4, _##name, __VA_ARGS__)
+  ^~~~~~~~~~~~~~~~~~~~~~
+kernel/signal.c:2601:1: note: in expansion of macro 'COMPAT_SYSCALL_DEFINE4'
+ COMPAT_SYSCALL_DEFINE4(rt_sigprocmask, int, how, compat_sigset_t __user *, nset,
+ ^~~~~~~~~~~~~~~~~~~~~~
+include/linux/compat.h:60:18: note: aliased declaration here
+  asmlinkage long compat_SyS##name(__MAP(x,__SC_LONG,__VA_ARGS__))\
+                  ^~~~~~~~~~
+
+The new warning seems reasonable in principle, but it doesn't
+help us here, since we rely on the type mismatch to sanitize the
+system call arguments. After I reported this as GCC PR82435, a new
+-Wno-attribute-alias option was added that could be used to turn the
+warning off globally on the command line, but I'd prefer to do it a
+little more fine-grained.
+
+Interestingly, turning a warning off and on again inside of
+a single macro doesn't always work, in this case I had to add
+an extra statement inbetween and decided to copy the __SC_TEST
+one from the native syscall to the compat syscall macro.  See
+https://gcc.gnu.org/bugzilla/show_bug.cgi?id=83256 for more details
+about this.
+
+[paul.burton@mips.com:
+  - Rebase atop current master.
+  - Split GCC & version arguments to __diag_ignore() in order to match
+    changes to the preceding patch.
+  - Add the comment argument to match the preceding patch.]
+
+Link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=82435
+Signed-off-by: Arnd Bergmann <arnd@arndb.de>
+Signed-off-by: Paul Burton <paul.burton@mips.com>
+Tested-by: Christophe Leroy <christophe.leroy@c-s.fr>
+Tested-by: Stafford Horne <shorne@gmail.com>
+Signed-off-by: Masahiro Yamada <yamada.masahiro@socionext.com>
+---
+
+--- a/include/linux/compat.h
++++ b/include/linux/compat.h
+@@ -48,6 +48,9 @@
+ 	COMPAT_SYSCALL_DEFINEx(6, _##name, __VA_ARGS__)
+ 
+ #define COMPAT_SYSCALL_DEFINEx(x, name, ...)				\
++	__diag_push();							\
++	__diag_ignore(GCC, 8, "-Wattribute-alias",			\
++		      "Type aliasing is used to sanitize syscall arguments");\
+ 	asmlinkage long compat_sys##name(__MAP(x,__SC_DECL,__VA_ARGS__))\
+ 		__attribute__((alias(__stringify(compat_SyS##name))));  \
+ 	static inline long C_SYSC##name(__MAP(x,__SC_DECL,__VA_ARGS__));\
+@@ -56,6 +59,7 @@
+ 	{								\
+ 		return C_SYSC##name(__MAP(x,__SC_DELOUSE,__VA_ARGS__));	\
+ 	}								\
++	__diag_pop();							\
+ 	static inline long C_SYSC##name(__MAP(x,__SC_DECL,__VA_ARGS__))
+ 
+ #ifndef compat_user_stack_pointer
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -208,6 +208,9 @@ static inline int is_syscall_trace_event
+ 
+ #define __PROTECT(...) asmlinkage_protect(__VA_ARGS__)
+ #define __SYSCALL_DEFINEx(x, name, ...)					\
++	__diag_push();							\
++	__diag_ignore(GCC, 8, "-Wattribute-alias",			\
++		      "Type aliasing is used to sanitize syscall arguments");\
+ 	asmlinkage long sys##name(__MAP(x,__SC_DECL,__VA_ARGS__))	\
+ 		__attribute__((alias(__stringify(SyS##name))));		\
+ 	static inline long SYSC##name(__MAP(x,__SC_DECL,__VA_ARGS__));	\
+@@ -219,6 +222,7 @@ static inline int is_syscall_trace_event
+ 		__PROTECT(x, ret,__MAP(x,__SC_ARGS,__VA_ARGS__));	\
+ 		return ret;						\
+ 	}								\
++	__diag_pop();							\
+ 	static inline long SYSC##name(__MAP(x,__SC_DECL,__VA_ARGS__))
+ 
+ /*

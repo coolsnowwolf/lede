@@ -1,0 +1,54 @@
+From: Stephen Hemminger <stephen@networkplumber.org>
+Subject: bridge: allow receiption on disabled port
+
+When an ethernet device is enslaved to a bridge, and the bridge STP
+detects loss of carrier (or operational state down), then normally
+packet receiption is blocked.
+
+This breaks control applications like WPA which maybe expecting to
+receive packets to negotiate to bring link up. The bridge needs to
+block forwarding packets from these disabled ports, but there is no
+hard requirement to not allow local packet delivery.
+
+Signed-off-by: Stephen Hemminger <stephen@networkplumber.org>
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -146,11 +146,13 @@ EXPORT_SYMBOL_GPL(br_handle_frame_finish
+ static int br_handle_local_finish(struct sk_buff *skb)
+ {
+ 	struct net_bridge_port *p = br_port_get_rcu(skb->dev);
+-	u16 vid = 0;
++	if (p->state != BR_STATE_DISABLED) {
++		u16 vid = 0;
+ 
+-	/* check if vlan is allowed, to avoid spoofing */
+-	if (p->flags & BR_LEARNING && br_should_learn(p, skb, &vid))
+-		br_fdb_update(p->br, p, eth_hdr(skb)->h_source, vid, false);
++		/* check if vlan is allowed, to avoid spoofing */
++		if (p->flags & BR_LEARNING && br_should_learn(p, skb, &vid))
++			br_fdb_update(p->br, p, eth_hdr(skb)->h_source, vid, false);
++	}
+ 	return 0;	 /* process further */
+ }
+ 
+@@ -224,6 +226,18 @@ rx_handler_result_t br_handle_frame(stru
+ 
+ forward:
+ 	switch (p->state) {
++	case BR_STATE_DISABLED:
++		if (ether_addr_equal(p->br->dev->dev_addr, dest))
++			skb->pkt_type = PACKET_HOST;
++
++		if (NF_HOOK(NFPROTO_BRIDGE, NF_BR_PRE_ROUTING, skb, skb->dev, NULL,
++			br_handle_local_finish))
++			break;
++
++		BR_INPUT_SKB_CB(skb)->brdev = p->br->dev;
++		br_pass_frame_up(skb);
++		break;
++
+ 	case BR_STATE_FORWARDING:
+ 		rhook = rcu_dereference(br_should_route_hook);
+ 		if (rhook) {
