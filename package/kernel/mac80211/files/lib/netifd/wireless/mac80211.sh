@@ -14,6 +14,10 @@ MP_CONFIG_INT="mesh_retry_timeout mesh_confirm_timeout mesh_holding_timeout mesh
 MP_CONFIG_BOOL="mesh_auto_open_plinks mesh_fwding"
 MP_CONFIG_STRING="mesh_power_mode"
 
+iw() {
+	command iw $@ || logger -t mac80211 "Failed command: iw $@"
+}
+
 drv_mac80211_init_device_config() {
 	hostapd_common_add_device_config
 
