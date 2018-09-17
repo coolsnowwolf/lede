@@ -97,10 +97,11 @@ tplink_pharos_check_support_list() {
 	local image="$1"
 	local offset="$2"
 	local model="$3"
+	local trargs="$4"
 
 	# Here $image is given to dd directly instead of using get_image;
 	# otherwise the skip will take almost a second (as dd can't seek)
-	dd if="$image" bs=1 skip=$offset count=1024 2>/dev/null | (
+	dd if="$image" bs=1 skip=$offset count=1024 2>/dev/null | tr -d "$trargs" | (
 		while IFS= read -r line; do
 			[ "$line" = "$model" ] && exit 0
 		done
@@ -110,17 +111,19 @@ tplink_pharos_check_support_list() {
 }
 
 tplink_pharos_check_image() {
-	local magic_long="$(get_magic_long "$1")"
-	[ "$magic_long" != "7f454c46" ] && {
-		echo "Invalid image magic '$magic_long'"
+	local image_magic="$(get_magic_long "$1")"
+	local board_magic="$2"
+	[ "$image_magic" != "$board_magic" ] && {
+		echo "Invalid image magic '$image_magic'. Expected '$board_magic'."
 		return 1
 	}
 
-	local model_string="$(tplink_pharos_get_model_string)"
+	local model_string="$3"
+	local trargs="$4"
 
 	# New images have the support list at 7802888, old ones at 1511432
-	tplink_pharos_check_support_list "$1" 7802888 "$model_string" || \
-	tplink_pharos_check_support_list "$1" 1511432 "$model_string" || {
+	tplink_pharos_check_support_list "$1" 7802888 "$model_string" "$trargs" || \
+	tplink_pharos_check_support_list "$1" 1511432 "$model_string" "$trargs" || {
 		echo "Unsupported image (model not in support-list)"
 		return 1
 	}
@@ -209,9 +212,11 @@ platform_check_image() {
 	archer-c25-v1|\
 	archer-c58-v1|\
 	archer-c59-v1|\
+	archer-c59-v2|\
 	archer-c60-v1|\
 	archer-c60-v2|\
 	archer-c7-v4|\
+	archer-c7-v5|\
 	bullet-m|\
 	c-55|\
 	carambola2|\
@@ -246,8 +251,11 @@ platform_check_image() {
 	dr531|\
 	dragino2|\
 	e1700ac-v2|\
+	e558-v2|\
 	e600g-v2|\
 	e600gac-v2|\
+	e750a-v4|\
+	e750g-v8|\
 	ebr-2310-c1|\
 	ens202ext|\
 	epg5000|\
@@ -334,9 +342,6 @@ platform_check_image() {
 	ap136-010|\
 	ap136-020|\
 	ap147-010|\
-	ac9531-010|\
-	ac9531-020|\
-	ap143|\
 	ap152|\
 	ap91-5g|\
 	ap96|\
@@ -455,7 +460,6 @@ platform_check_image() {
 	tl-wdr3500|\
 	tl-wdr4300|\
 	tl-wdr4900-v2|\
-	tl-wdx6501-v7|\
 	tl-wdr6500-v2|\
 	tl-wpa8630|\
 	tl-wr1041n-v2|\
@@ -493,7 +497,6 @@ platform_check_image() {
 		local magic_ver="0100"
 
 		case "$board" in
-		tl-wdx6501-v7|\
 		tl-wdr6500-v2)
 			magic_ver="0200"
 			;;
@@ -579,12 +582,29 @@ platform_check_image() {
 		return $?
 		;;
 	cpe210|\
-	cpe510|\
 	eap120|\
 	wbs210|\
 	wbs510)
-		tplink_pharos_check_image "$1" && return 0
+		tplink_pharos_check_image "$1" "7f454c46" "$(tplink_pharos_get_model_string)" '' && return 0
 		return 1
+		;;
+	cpe210-v2)
+		tplink_pharos_check_image "$1" "01000000" "$(tplink_pharos_v2_get_model_string)" '\0\xff\r' && return 0
+		return 1
+		;;
+	cpe510)
+		local modelstr="$(tplink_pharos_v2_get_model_string)"
+		tplink_pharos_board_detect $modelstr
+		case $AR71XX_MODEL in
+		'TP-Link CPE510 v2.0')
+			tplink_pharos_check_image "$1" "7f454c46" "$modelstr" '\0\xff\r' && return 0
+			return 1
+			;;
+		*)
+			tplink_pharos_check_image "$1" "7f454c46" "$(tplink_pharos_get_model_string)" '' && return 0
+			return 1
+			;;
+		esac
 		;;
 	a40|\
 	a60|\
@@ -636,14 +656,6 @@ platform_check_image() {
 	wrt160nl)
 		cybertan_check_image "$1" && return 0
 		return 1
-		;;
-	k2t)
-		[ "$magic_long" != "27051956" ] && {
-			echo "Invalid image type."
-			return 1
-		}
-
-		return 0
 		;;
 	nbg6616|\
 	uap-pro|\
@@ -702,12 +714,14 @@ platform_check_image() {
 	# these boards use metadata images
 	fritz300e|\
 	fritz4020|\
+	fritz450e|\
 	koala|\
 	rb-750-r2|\
 	rb-750p-pbr2|\
 	rb-750up-r2|\
 	rb-911-2hn|\
 	rb-911-5hn|\
+	rb-931-2nd|\
 	rb-941-2nd|\
 	rb-951ui-2nd|\
 	rb-952ui-5ac2nd|\
@@ -716,7 +730,8 @@ platform_check_image() {
 	rb-map-2nd|\
 	rb-mapl-2nd|\
 	rb-wap-2nd|\
-	rb-wapg-5hact2hnd)
+	rb-wapg-5hact2hnd|\
+	rb-wapr-2nd)
 		return 0
 		;;
 	esac
@@ -734,6 +749,7 @@ platform_pre_upgrade() {
 	rb-750up-r2|\
 	rb-911-2hn|\
 	rb-911-5hn|\
+	rb-931-2nd|\
 	rb-941-2nd|\
 	rb-951ui-2nd|\
 	rb-952ui-5ac2nd|\
@@ -742,7 +758,8 @@ platform_pre_upgrade() {
 	rb-map-2nd|\
 	rb-mapl-2nd|\
 	rb-wap-2nd|\
-	rb-wapg-5hact2hnd)
+	rb-wapg-5hact2hnd|\
+	rb-wapr-2nd)
 		# erase firmware if booted from initramfs
 		[ -z "$(rootfs_type)" ] && mtd erase firmware
 		;;

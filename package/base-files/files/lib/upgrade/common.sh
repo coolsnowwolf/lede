@@ -78,18 +78,18 @@ rootfs_type() {
 
 get_image() { # <source> [ <command> ]
 	local from="$1"
-	local cat="$2"
+	local cmd="$2"
 
-	if [ -z "$cat" ]; then
+	if [ -z "$cmd" ]; then
 		local magic="$(dd if="$from" bs=2 count=1 2>/dev/null | hexdump -n 2 -e '1/1 "%02x"')"
 		case "$magic" in
-			1f8b) cat="zcat";;
-			425a) cat="bzcat";;
-			*) cat="cat";;
+			1f8b) cmd="zcat";;
+			425a) cmd="bzcat";;
+			*) cmd="cat";;
 		esac
 	fi
 
-	$cat "$from" 2>/dev/null
+	cat "$from" 2>/dev/null | $cmd
 }
 
 get_magic_word() {
@@ -211,6 +211,11 @@ jffs2_copy_config() {
 	fi
 }
 
+indicate_upgrade() {
+	. /etc/diag.sh
+	set_state upgrade
+}
+
 # Flash firmware to MTD partition
 #
 # $(1): path to image
@@ -222,6 +227,7 @@ default_do_upgrade() {
 	else
 		get_image "$1" "$2" | mtd write - "${PART_NAME:-image}"
 	fi
+	[ $? -ne 0 ] && exit 1
 }
 
 do_upgrade_stage2() {

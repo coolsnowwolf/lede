@@ -13,7 +13,7 @@ PKG_RELEASE:=1
 PKG_LICENSE:=GPL-3.0
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=http://freeworld.thc.org/releases/
+PKG_SOURCE_URL:=@GITHUB/vanhauser-thc/THC-Archive/master/Tools
 PKG_HASH:=440a3ae98b57100c397ec4f8634468dbbb0c3b48788c6b74af2a597a90544a96
 
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
@@ -42,7 +42,7 @@ define BuildTool
     SECTION:=net
     CATEGORY:=Network
     DEPENDS:=+libpcap $(THC_DEPENDS_$(1))
-    URL:=http://freeworld.thc.org/
+    URL:=https://github.com/vanhauser-thc/thc-ipv6
     SUBMENU:=THC-IPv6 attack and analyzing toolkit
   endef
 

@@ -8,15 +8,15 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=curl
-PKG_VERSION:=7.59.0
-PKG_RELEASE:=2
+PKG_VERSION:=7.61.0
+PKG_RELEASE:=3
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://dl.uxnr.de/mirror/curl/ \
-	http://curl.mirror.anstey.ca/ \
-	http://curl.askapache.com/download/ \
+	https://curl.mirror.anstey.ca/ \
+	https://curl.askapache.com/download/ \
 	https://curl.haxx.se/download/
-PKG_HASH:=e44eaabdf916407585bf5c7939ff1161e6242b6b015d3f2f5b758b2a330461fc
+PKG_HASH:=ef6e55192d04713673b4409ccbcb4cb6cd723137d6e10ca45b0c593a454e1720
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=COPYING
@@ -88,7 +88,7 @@ define Package/libcurl
   CATEGORY:=Libraries
   DEPENDS:= +LIBCURL_WOLFSSL:libwolfssl +LIBCURL_OPENSSL:libopenssl +LIBCURL_GNUTLS:libgnutls +LIBCURL_MBEDTLS:libmbedtls
   DEPENDS += +LIBCURL_ZLIB:zlib +LIBCURL_THREADED_RESOLVER:libpthread +LIBCURL_LDAP:libopenldap +LIBCURL_LIBIDN2:libidn2
-  DEPENDS += +LIBCURL_SSH2:libssh2 +LIBCURL_NGHTTP2:libnghttp2
+  DEPENDS += +LIBCURL_SSH2:libssh2 +LIBCURL_NGHTTP2:libnghttp2 +ca-bundle
   TITLE:=A client-side URL transfer library
   MENU:=1
 endef
@@ -112,13 +112,16 @@ CONFIGURE_ARGS += \
 	--without-libmetalink \
 	--without-librtmp \
 	--without-libidn \
+	--without-ca-path \
+	--without-libpsl \
+	--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt \
 	\
 	$(call autoconf_bool,CONFIG_IPV6,ipv6) \
 	\
-	$(if $(CONFIG_LIBCURL_WOLFSSL),--with-cyassl="$(STAGING_DIR)/usr" --without-ca-path --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt,--without-cyassl) \
-	$(if $(CONFIG_LIBCURL_GNUTLS),--with-gnutls="$(STAGING_DIR)/usr" --without-ca-bundle --with-ca-path=/etc/ssl/certs,--without-gnutls) \
-	$(if $(CONFIG_LIBCURL_OPENSSL),--with-ssl="$(STAGING_DIR)/usr" --without-ca-bundle --with-ca-path=/etc/ssl/certs,--without-ssl) \
-	$(if $(CONFIG_LIBCURL_MBEDTLS),--with-mbedtls="$(STAGING_DIR)/usr" --without-ca-path --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt,--without-mbedtls) \
+	$(if $(CONFIG_LIBCURL_WOLFSSL),--with-cyassl="$(STAGING_DIR)/usr",--without-cyassl) \
+	$(if $(CONFIG_LIBCURL_GNUTLS),--with-gnutls="$(STAGING_DIR)/usr",--without-gnutls) \
+	$(if $(CONFIG_LIBCURL_OPENSSL),--with-ssl="$(STAGING_DIR)/usr",--without-ssl) \
+	$(if $(CONFIG_LIBCURL_MBEDTLS),--with-mbedtls="$(STAGING_DIR)/usr",--without-mbedtls) \
 	\
 	$(if $(CONFIG_LIBCURL_LIBIDN2),--with-libidn2="$(STAGING_DIR)/usr",--without-libidn2) \
 	$(if $(CONFIG_LIBCURL_SSH2),--with-libssh2="$(STAGING_DIR)/usr",--without-libssh2) \

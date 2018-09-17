@@ -64,17 +64,17 @@ define Download/ct-firmware-htt
   URL_FILE:=$($(1)_FIRMWARE_FILE_CT_HTT)
 endef
 
-QCA988X_FIRMWARE_FILE_CT:=firmware-2-ct-full-community-21.bin.lede.001
+QCA988X_FIRMWARE_FILE_CT:=firmware-2-ct-full-community-21.bin.lede.002
 define Download/ath10k-firmware-qca988x-ct
   $(call Download/ct-firmware,QCA988X,)
-  HASH:=a3d029c46a77be265e33bb57f827a59f01969f157825d66ecf42a9d327127578
+  HASH:=354b8a116a406ba6521a8bf6165ea2dce76996ab36e7905cd71e772ea240017d
 endef
 $(eval $(call Download,ath10k-firmware-qca988x-ct))
 
-QCA988X_FIRMWARE_FILE_CT_HTT:=firmware-2-ct-full-htt-mgt-community-21.bin.lede.001
+QCA988X_FIRMWARE_FILE_CT_HTT:=firmware-2-ct-full-htt-mgt-community-21.bin.lede.002
 define Download/ath10k-firmware-qca988x-ct-htt
   $(call Download/ct-firmware-htt,QCA988X,)
-  HASH:=8666523a6271c4aa6409880d2efd52643258c21464d6bf5948507bcb72d3e350
+  HASH:=7a8369b33f07200bf0bbf8c88617c25c7f3435a51f8ca0e330d220586338f991
 endef
 $(eval $(call Download,ath10k-firmware-qca988x-ct-htt))
 
@@ -403,7 +403,7 @@ define Package/ath10k-firmware-qca4019/install
 		$(PKG_BUILD_DIR)/QCA4019/hw1.0/board-2.bin \
 		$(1)/lib/firmware/ath10k/QCA4019/hw1.0/
 	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/QCA4019/hw1.0/3.4/firmware-5.bin_10.4-3.4-00104 \
+		$(PKG_BUILD_DIR)/QCA4019/hw1.0/3.5.3/firmware-5.bin_10.4-3.5.3-00057 \
 		$(1)/lib/firmware/ath10k/QCA4019/hw1.0/firmware-5.bin
 endef
 

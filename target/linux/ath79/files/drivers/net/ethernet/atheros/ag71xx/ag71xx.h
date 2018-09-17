@@ -154,6 +154,8 @@ struct ag71xx {
 	struct ag71xx_ring	rx_ring ____cacheline_aligned;
 	struct ag71xx_ring	tx_ring ____cacheline_aligned;
 
+	int			mac_idx;
+
 	u16			desc_pktlen_mask;
 	u16			rx_buf_size;
 	u8			rx_buf_offset;
@@ -170,12 +172,10 @@ struct ag71xx {
 	 */
 	void __iomem		*mac_base;
 	void __iomem		*mii_base;
-	struct regmap		*mii_regmap;
 
 	struct ag71xx_desc	*stop_desc;
 	dma_addr_t		stop_desc_dma;
 
-	struct mii_bus		*mii_bus;
 	struct phy_device	*phy_dev;
 	void			*phy_priv;
 	int			phy_if_mode;
@@ -188,8 +188,6 @@ struct ag71xx {
 	struct timer_list	oom_timer;
 
 	struct reset_control *mac_reset;
-	struct reset_control *phy_reset;
-	struct reset_control *mdio_reset;
 
 	u32			fifodata[3];
 	u32			plldata[3];
@@ -199,6 +197,12 @@ struct ag71xx {
 #ifdef CONFIG_AG71XX_DEBUG_FS
 	struct ag71xx_debug	debug;
 #endif
+};
+
+struct ag71xx_mdio {
+	struct reset_control *mdio_reset;
+	struct mii_bus		*mii_bus;
+	struct regmap		*mii_regmap;
 };
 
 extern struct ethtool_ops ag71xx_ethtool_ops;
@@ -440,12 +444,8 @@ static inline void ag71xx_debugfs_update_napi_stats(struct ag71xx *ag,
 
 int ag71xx_ar7240_init(struct ag71xx *ag, struct device_node *np);
 void ag71xx_ar7240_cleanup(struct ag71xx *ag);
-void ag71xx_ar7240_start(struct ag71xx *ag);
 
-int ag71xx_mdio_init(struct ag71xx *ag);
-void ag71xx_mdio_cleanup(struct ag71xx *ag);
-int ag71xx_mdio_mii_read(struct mii_bus *bus, int addr, int reg);
-int ag71xx_mdio_mii_write(struct mii_bus *bus, int addr, int reg, u16 val);
+int ag71xx_setup_gmac(struct device_node *np);
 
 int ar7240sw_phy_read(struct mii_bus *mii, int addr, int reg);
 int ar7240sw_phy_write(struct mii_bus *mii, int addr, int reg, u16 val);

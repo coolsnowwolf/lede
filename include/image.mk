@@ -393,6 +393,7 @@ endef
 
 define Device/Check/Common
   _PROFILE_SET = $$(strip $$(foreach profile,$$(PROFILES) DEVICE_$(1),$$(call DEVICE_CHECK_PROFILE,$$(profile))))
+  DEVICE_PACKAGES += $$(call extra_packages,$$(DEVICE_PACKAGES))
   ifdef TARGET_PER_DEVICE_ROOTFS
     $$(eval $$(call merge_packages,_PACKAGES,$$(DEVICE_PACKAGES) $$(call DEVICE_EXTRA_PACKAGES,$(1))))
     ROOTFS_ID/$(1) := $$(if $$(_PROFILE_SET),$$(call mkfs_packages_id,$$(_PACKAGES)))

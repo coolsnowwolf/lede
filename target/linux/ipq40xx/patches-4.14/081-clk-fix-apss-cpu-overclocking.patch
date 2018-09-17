@@ -1,0 +1,115 @@
+From f2b87dc1028b710ec8ce25808b9d21f92b376184 Mon Sep 17 00:00:00 2001
+From: Christian Lamparter <chunkeey@googlemail.com>
+Date: Sun, 11 Mar 2018 14:41:31 +0100
+Subject: [PATCH 2/2] clk: fix apss cpu overclocking
+
+There's an interaction issue between the clk changes:"
+clk: qcom: ipq4019: Add the apss cpu pll divider clock node
+clk: qcom: ipq4019: remove fixed clocks and add pll clocks
+" and the cpufreq-dt.
+
+cpufreq-dt is now spamming the kernel-log with the following:
+
+[ 1099.190658] cpu cpu0: dev_pm_opp_set_rate: failed to find current OPP
+for freq 761142857 (-34)
+
+This only happens on certain devices like the Compex WPJ428
+and AVM FritzBox!4040. However, other devices like the Asus
+RT-AC58U and Meraki MR33 work just fine.
+
+The issue stem from the fact that all higher CPU-Clocks
+are achieved by switching the clock-parent to the P_DDRPLLAPSS
+(ddrpllapss). Which is set by Qualcomm's proprietary bootcode
+as part of the DDR calibration.
+
+For example, the FB4040 uses 256 MiB Nanya NT5CC128M16IP clocked
+at round 533 MHz (ddrpllsdcc = 190285714 Hz).
+
+whereas the 128 MiB Nanya NT5CC64M16GP-DI in the ASUS RT-AC58U is
+clocked at a slightly higher 537 MHz ( ddrpllsdcc = 192000000 Hz).
+
+This patch attempts to fix the issue by modifying
+clk_cpu_div_round_rate(), clk_cpu_div_set_rate(), clk_cpu_div_recalc_rate()
+to use a new qcom_find_freq_close() function, which returns the closest
+matching frequency, instead of the next higher. This way, the SoC in
+the FB4040 (with its max clock speed of 710.4 MHz) will no longer
+try to overclock to 761 MHz.
+
+Fixes: d83dcacea18 ("clk: qcom: ipq4019: Add the apss cpu pll divider clock node")
+Signed-off-by: Christian Lamparter <chunkeey@gmail.com>
+Signed-off-by: John Crispin <john@phrozen.org>
+---
+ drivers/clk/qcom/gcc-ipq4019.c | 34 +++++++++++++++++++++++++++++++---
+ 1 file changed, 31 insertions(+), 3 deletions(-)
+
+--- a/drivers/clk/qcom/gcc-ipq4019.c
++++ b/drivers/clk/qcom/gcc-ipq4019.c
+@@ -1253,6 +1253,29 @@ static const struct clk_fepll_vco gcc_fe
+ 	.reg = 0x2f020,
+ };
+ 
++
++const struct freq_tbl *qcom_find_freq_close(const struct freq_tbl *f,
++					     unsigned long rate)
++{
++	const struct freq_tbl *last = NULL;
++
++	for ( ; f->freq; f++) {
++		if (rate == f->freq)
++			return f;
++
++		if (f->freq > rate) {
++			if (!last ||
++			   (f->freq - rate) < (rate - last->freq))
++				return f;
++			else
++				return last;
++		}
++		last = f;
++	}
++
++	return last;
++}
++
+ /*
+  * Round rate function for APSS CPU PLL Clock divider.
+  * It looks up the frequency table and returns the next higher frequency
+@@ -1265,7 +1288,7 @@ static long clk_cpu_div_round_rate(struc
+ 	struct clk_hw *p_hw;
+ 	const struct freq_tbl *f;
+ 
+-	f = qcom_find_freq(pll->freq_tbl, rate);
++	f = qcom_find_freq_close(pll->freq_tbl, rate);
+ 	if (!f)
+ 		return -EINVAL;
+ 
+@@ -1288,7 +1311,7 @@ static int clk_cpu_div_set_rate(struct c
+ 	u32 mask;
+ 	int ret;
+ 
+-	f = qcom_find_freq(pll->freq_tbl, rate);
++	f = qcom_find_freq_close(pll->freq_tbl, rate);
+ 	if (!f)
+ 		return -EINVAL;
+ 
+@@ -1315,6 +1338,7 @@ static unsigned long
+ clk_cpu_div_recalc_rate(struct clk_hw *hw,
+ 			unsigned long parent_rate)
+ {
++	const struct freq_tbl *f;
+ 	struct clk_fepll *pll = to_clk_fepll(hw);
+ 	u32 cdiv, pre_div;
+ 	u64 rate;
+@@ -1335,7 +1359,11 @@ clk_cpu_div_recalc_rate(struct clk_hw *h
+ 	rate = clk_fepll_vco_calc_rate(pll, parent_rate) * 2;
+ 	do_div(rate, pre_div);
+ 
+-	return rate;
++	f = qcom_find_freq_close(pll->freq_tbl, rate);
++	if (!f)
++		return rate;
++
++	return f->freq;
+ };
+ 
+ static const struct clk_ops clk_regmap_cpu_div_ops = {

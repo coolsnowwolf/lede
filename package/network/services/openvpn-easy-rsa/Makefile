@@ -9,13 +9,14 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=openvpn-easy-rsa
 
-PKG_VERSION:=3.0.1
+PKG_VERSION:=3.0.4
 PKG_RELEASE:=1
-PKG_SOURCE_URL:=https://github.com/OpenVPN/easy-rsa/releases/download/$(PKG_VERSION)/
+PKG_SOURCE_URL:=https://github.com/OpenVPN/easy-rsa/releases/download/v$(PKG_VERSION)/
 PKG_SOURCE:=EasyRSA-$(PKG_VERSION).tgz
-PKG_HASH:=dbdaf5b9444b99e0c5221fd4bcf15384c62380c1b63cea23d42239414d7b2d4e
+PKG_HASH:=472167f976c6cb7c860cec6150a5616e163ae20365c81f179811d6ee0779ec5a
 PKG_LICENSE:=GPL-2.0
 PKG_BUILD_DIR:=$(BUILD_DIR)/EasyRSA-$(PKG_VERSION)
+PKGARCH:=all
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -31,6 +32,7 @@ endef
 define Package/openvpn-easy-rsa/conffiles
 /etc/easy-rsa/vars
 /etc/easy-rsa/openssl-1.0.cnf
+/etc/easy-rsa/openssl-easyrsa.cnf
 endef
 
 define Build/Configure
@@ -42,11 +44,12 @@ define Build/Compile
 endef
 
 define Package/openvpn-easy-rsa/install
-	$(INSTALL_DIR) $(1)/usr/sbin
+	$(INSTALL_DIR) $(1)/usr/bin
 
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/easyrsa $(1)/usr/sbin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/easyrsa $(1)/usr/bin/
 	$(INSTALL_DIR) $(1)/etc/easy-rsa
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/openssl-1.0.cnf $(1)/etc/easy-rsa/openssl-1.0.cnf
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/openssl-easyrsa.cnf $(1)/etc/easy-rsa/openssl-1.0.cnf
+	$(LN) /etc/easy-rsa/openssl-1.0.cnf $(1)/etc/easy-rsa/openssl-easyrsa.cnf
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/vars.example $(1)/etc/easy-rsa/vars
 
 	$(INSTALL_DIR) $(1)/etc/easy-rsa/pki

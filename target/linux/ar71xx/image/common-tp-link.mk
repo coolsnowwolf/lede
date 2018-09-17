@@ -1,9 +1,5 @@
 DEVICE_VARS += LOADER_FLASH_OFFS TPLINK_BOARD_ID TPLINK_FLASHLAYOUT TPLINK_HEADER_VERSION TPLINK_HWID TPLINK_HWREV
 
-define Build/copy-file
-	cat "$(1)" > "$@"
-endef
-
 # Arguments: <output name> <kernel offset>
 define Build/loader-okli
 	dd if=$(KDIR)/loader-$(word 1,$(1)).$(LOADER_TYPE) bs=$(word 2,$(1)) conv=sync of="$@.new"
@@ -48,21 +44,37 @@ endef
 define Device/tplink
   TPLINK_HWREV := 0x1
   TPLINK_HEADER_VERSION := 1
-  LOADER_TYPE := gz
+  IMAGES := sysupgrade.bin factory.bin
+endef
+
+define Device/tplink-lzma
+  $(Device/tplink)
   KERNEL := kernel-bin | patch-cmdline | lzma
   KERNEL_INITRAMFS := kernel-bin | patch-cmdline | lzma | tplink-v1-header
-  IMAGES := sysupgrade.bin factory.bin
   IMAGE/sysupgrade.bin := append-rootfs | mktplinkfw sysupgrade
   IMAGE/factory.bin := append-rootfs | mktplinkfw factory
 endef
 
 define Device/tplink-nolzma
   $(Device/tplink)
+  LOADER_TYPE := gz
   LOADER_FLASH_OFFS := 0x22000
   COMPILE := loader-$(1).gz
   COMPILE/loader-$(1).gz := loader-okli-compile
-  KERNEL := copy-file $(KDIR)/vmlinux.bin.lzma | uImage lzma -M 0x4f4b4c49 | loader-okli $(1) 7680
-  KERNEL_INITRAMFS := copy-file $(KDIR)/vmlinux-initramfs.bin.lzma | loader-kernel-cmdline | tplink-v1-header
+  KERNEL_NAME := vmlinux.bin.lzma
+  KERNEL := kernel-bin | uImage lzma -M 0x4f4b4c49 | loader-okli $(1) 7680
+  KERNEL_INITRAMFS_NAME := vmlinux-initramfs.bin.lzma
+  KERNEL_INITRAMFS := kernel-bin | loader-kernel-cmdline | tplink-v1-header
+  IMAGE/sysupgrade.bin := append-rootfs | mktplinkfw sysupgrade
+  IMAGE/factory.bin := append-rootfs | mktplinkfw factory
+endef
+
+define Device/tplink-safeloader
+  $(Device/tplink)
+  KERNEL := kernel-bin | patch-cmdline | lzma | tplink-v1-header
+  IMAGE/sysupgrade.bin := append-rootfs | tplink-safeloader sysupgrade | \
+	append-metadata | check-size $$$$(IMAGE_SIZE)
+  IMAGE/factory.bin := append-rootfs | tplink-safeloader factory
 endef
 
 define Device/tplink-4m
@@ -78,19 +90,19 @@ define Device/tplink-8m
 endef
 
 define Device/tplink-4mlzma
-  $(Device/tplink)
+  $(Device/tplink-lzma)
   TPLINK_FLASHLAYOUT := 4Mlzma
   IMAGE_SIZE := 3904k
 endef
 
 define Device/tplink-8mlzma
-  $(Device/tplink)
+  $(Device/tplink-lzma)
   TPLINK_FLASHLAYOUT := 8Mlzma
   IMAGE_SIZE := 7936k
 endef
 
 define Device/tplink-16mlzma
-  $(Device/tplink)
+  $(Device/tplink-lzma)
   TPLINK_FLASHLAYOUT := 16Mlzma
   IMAGE_SIZE := 15872k
 endef

@@ -14,7 +14,10 @@ define Build/Compile
 endef
 
 #ALLWIFIBOARDS:=<devicename>
-ALLWIFIBOARDS:=rt-acrh17
+# Please send a mail with your device-specific board files upstream.
+# You can find instructions and examples on the linux-wireless wiki:
+# <https://wireless.wiki.kernel.org/en/users/drivers/ath10k/boardfiles>
+ALLWIFIBOARDS:=rt-acrh17 zyxel_nbg6617 zyxel_wre6606
 ALLWIFIPACKAGES:=$(foreach BOARD,$(ALLWIFIBOARDS),ipq-wifi-$(BOARD))
 
 define Package/ipq-wifi-default
@@ -48,7 +51,9 @@ Don't install it for any other device!
   PREV_BOARD+=ipq-wifi-$(1)
 endef
 
-#$(eval $(call generate-ipq-wifi-package,<devicename>,<filename>,<displayname>))
 $(eval $(call generate-ipq-wifi-package,rt-acrh17,board-rt-acrh17.bin,ASUS RT-ACRH17/RT-AC82U/RT-AC42U))
+$(eval $(call generate-ipq-wifi-package,zyxel_wre6606,board-zyxel_wre6606.bin,ZyXEL WRE6606))
+#$(eval $(call generate-ipq-wifi-package,<devicename>,<filename>,<displayname>))
+$(eval $(call generate-ipq-wifi-package,zyxel_nbg6617,board-zyxel_nbg6617.bin,ZyXEL NBG6617))
 
 $(foreach PACKAGE,$(ALLWIFIPACKAGES),$(eval $(call BuildPackage,$(PACKAGE))))

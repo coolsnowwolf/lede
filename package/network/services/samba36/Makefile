@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=samba
 PKG_VERSION:=3.6.25
-PKG_RELEASE:=10
+PKG_RELEASE:=12
 
 PKG_SOURCE_URL:=https://download.samba.org/pub/samba \
 		https://download.samba.org/pub/samba/stable
@@ -41,6 +41,12 @@ define Package/samba36-server
   $(call Package/samba/Default)
   TITLE+= server
   DEPENDS:=+USE_GLIBC:librt $(ICONV_DEPENDS)
+endef
+
+define Package/samba36-hotplug
+  $(call Package/samba/Default)
+  TITLE+= hotplug
+  DEPENDS:=+block-mount
 endef
 
 define Package/samba36-client
@@ -102,6 +108,8 @@ CONFIGURE_ARGS += \
 	--disable-avahi \
 	--disable-cups \
 	--disable-external-libtalloc \
+	--disable-external-libtdb \
+	--disable-external-libtevent \
 	--disable-pie \
 	--disable-relro \
 	--disable-static \
@@ -159,6 +167,13 @@ define Package/samba36-server/install
 	$(LN) samba_multicall $(1)/usr/sbin/smbpasswd
 endef
 
+define Package/samba36-hotplug/install
+	$(INSTALL_DIR) $(1)/lib/samba
+	$(INSTALL_DATA) ./files/lib/samba.sh $(1)/lib/samba/samba.sh
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/block
+	$(INSTALL_DATA) ./files/samba.hotplug $(1)/etc/hotplug.d/block/60-samba
+endef
+
 define Package/samba36-client/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_BIN)/smbclient $(1)/usr/sbin
@@ -172,5 +187,6 @@ endef
 
 $(eval $(call BuildPackage,samba36-client))
 $(eval $(call BuildPackage,samba36-server))
+$(eval $(call BuildPackage,samba36-hotplug))
 $(eval $(call BuildPackage,samba36-net))
 

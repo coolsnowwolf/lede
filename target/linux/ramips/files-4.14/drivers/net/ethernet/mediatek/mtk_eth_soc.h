@@ -435,19 +435,12 @@ struct fe_hw_stats {
 #undef _FE
 };
 
-enum fe_tx_flags {
-	FE_TX_FLAGS_SINGLE0	= 0x01,
-	FE_TX_FLAGS_PAGE0	= 0x02,
-	FE_TX_FLAGS_PAGE1	= 0x04,
-};
-
 struct fe_tx_buf {
 	struct sk_buff *skb;
-	u32 flags;
 	DEFINE_DMA_UNMAP_ADDR(dma_addr0);
-	DEFINE_DMA_UNMAP_LEN(dma_len0);
 	DEFINE_DMA_UNMAP_ADDR(dma_addr1);
-	DEFINE_DMA_UNMAP_LEN(dma_len1);
+	u16 dma_len0;
+	u16 dma_len1;
 };
 
 struct fe_tx_ring {
@@ -461,6 +454,7 @@ struct fe_tx_ring {
 };
 
 struct fe_rx_ring {
+	struct page_frag_cache frag_cache;
 	struct fe_rx_dma *rx_dma;
 	u8 **rx_data;
 	dma_addr_t rx_phys;

@@ -8,19 +8,18 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=busybox
-PKG_VERSION:=1.28.3
+PKG_VERSION:=1.29.2
 PKG_RELEASE:=1
 PKG_FLAGS:=essential
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=https://www.busybox.net/downloads \
 		http://sources.buildroot.net
-PKG_HASH:=ad0d22033f23e696f9a71a4c2f9210194dda39b024a79151f4ac278995332a6e
+PKG_HASH:=67d2fa6e147a45875fe972de62d907ef866fe784c495c363bf34756c444a5d61
 
 PKG_BUILD_DEPENDS:=BUSYBOX_USE_LIBRPC:librpc BUSYBOX_CONFIG_PAM:libpam
 PKG_BUILD_PARALLEL:=1
 PKG_CHECK_FORMAT_SECURITY:=0
-PKG_INSTALL:=1
 
 #Busybox use it's own PIE config flag and LDFLAGS are used with ld, not gcc.
 PKG_ASLR_PIE:=0
@@ -47,17 +46,18 @@ define Package/busybox
   DEPENDS:=+BUSYBOX_USE_LIBRPC:librpc +BUSYBOX_CONFIG_PAM:libpam +BUSYBOX_CONFIG_NTPD:jsonfilter
   MENU:=1
   ALTERNATIVES:=\
-    $(call BUSYBOX_IF_ENABLED,KILL,	100:/bin/kill:/bin/busybox) \
-    $(call BUSYBOX_IF_ENABLED,PS,	100:/bin/ps:/bin/busybox) \
-    $(call BUSYBOX_IF_ENABLED,WATCH,	100:/bin/watch:/bin/busybox) \
-    $(call BUSYBOX_IF_ENABLED,IP,	100:/sbin/ip:/bin/busybox) \
+    $(call BUSYBOX_IF_ENABLED,FLOCK,	100:/usr/bin/flock:/bin/busybox) \
     $(call BUSYBOX_IF_ENABLED,FREE,	100:/usr/bin/free:/bin/busybox) \
+    $(call BUSYBOX_IF_ENABLED,IP,	100:/sbin/ip:/bin/busybox) \
+    $(call BUSYBOX_IF_ENABLED,KILL,	100:/bin/kill:/bin/busybox) \
     $(call BUSYBOX_IF_ENABLED,PGREP,	100:/usr/bin/pgrep:/bin/busybox) \
     $(call BUSYBOX_IF_ENABLED,PKILL,	100:/usr/bin/pkill:/bin/busybox) \
     $(call BUSYBOX_IF_ENABLED,PMAP,	100:/usr/bin/pmap:/bin/busybox) \
+    $(call BUSYBOX_IF_ENABLED,PS,	100:/bin/ps:/bin/busybox) \
     $(call BUSYBOX_IF_ENABLED,PWDX,	100:/usr/bin/pwdx:/bin/busybox) \
     $(call BUSYBOX_IF_ENABLED,TOP,	100:/usr/bin/top:/bin/busybox) \
     $(call BUSYBOX_IF_ENABLED,UPTIME,	100:/usr/bin/uptime:/bin/busybox) \
+    $(call BUSYBOX_IF_ENABLED,WATCH,	100:/bin/watch:/bin/busybox) \
 
 endef
 
@@ -74,7 +74,10 @@ endef
 export KCONFIG_NOTIMESTAMP=1
 
 
+ifndef CONFIG_USE_MUSL
 LDLIBS:=m crypt
+endif
+
 LDLIBS += $(call BUSYBOX_IF_ENABLED,PAM,pam pam_misc pthread)
 ifdef CONFIG_BUSYBOX_USE_LIBRPC
   LDLIBS += rpc
@@ -83,22 +86,30 @@ ifeq ($(CONFIG_USE_GLIBC),y)
   LDLIBS += $(call BUSYBOX_IF_ENABLED,NSLOOKUP_OPENWRT,resolv)
 endif
 
+TARGET_CFLAGS += -flto
+TARGET_LDFLAGS += -flto=jobserver -fuse-linker-plugin
+
 MAKE_VARS :=
 MAKE_FLAGS += \
 	EXTRA_CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS)" \
 	EXTRA_LDFLAGS="$(TARGET_LDFLAGS)" \
 	LDLIBS="$(LDLIBS)" \
+	LD="$(TARGET_CC)" \
 	SKIP_STRIP=y
 ifneq ($(findstring c,$(OPENWRT_VERBOSE)),)
   MAKE_FLAGS += V=1
 endif
 
-MAKE_INSTALL_FLAGS += CONFIG_PREFIX="$(PKG_INSTALL_DIR)"
-
-
 define Build/Configure
 	grep 'CONFIG_BUSYBOX_$(BUSYBOX_SYM)' $(TOPDIR)/.config | sed -e "s,\\(# \)\\?CONFIG_BUSYBOX_$(BUSYBOX_SYM)_\\(.*\\),\\1CONFIG_\\2,g" > $(PKG_BUILD_DIR)/.config
 	yes 'n' | $(MAKE) -C $(PKG_BUILD_DIR) $(MAKE_FLAGS) oldconfig
+endef
+
+define Build/Compile
+	$(call Build/Compile/Default, \
+		CONFIG_PREFIX="$(PKG_INSTALL_DIR)" \
+		all install \
+	)
 endef
 
 define Package/busybox/install

@@ -1,0 +1,824 @@
+From bc64d05220f3e34cf432a166b83c8fff14cd7a3d Mon Sep 17 00:00:00 2001
+From: Maharaja Kennadyrajan <mkenna@codeaurora.org>
+Date: Wed, 14 Mar 2018 12:14:08 +0200
+Subject: [PATCH] ath10k: debugfs support to get final TPC stats for 10.4
+ variants
+
+Export the final Transmit Power Control (TPC) value, which is the
+minimum of control power and existing TPC value to user space via
+a new debugfs file "tpc_stats_final" to help with debugging.
+It works with the new wmi cmd and event introduced in 10.4 firmware
+branch.
+
+WMI command ID: WMI_PDEV_GET_TPC_TABLE_CMDID
+WMI event ID: WMI_PDEV_TPC_TABLE_EVENTID
+
+cat /sys/kernel/debug/ieee80211/phyX/ath10k/tpc_stats_final
+
+$ cat /sys/kernel/debug/ieee80211/phyX/ath10k/tpc_stats_final
+
+TPC config for channel 5180 mode 10
+
+CTL             =  0x 0 Reg. Domain             = 58
+Antenna Gain    =  0 Reg. Max Antenna Gain      =   0
+Power Limit     = 60 Reg. Max Power             = 60
+Num tx chains   =  2 Num supported rates        = 109
+
+******************* CDD POWER TABLE ****************
+
+No.  Preamble Rate_code tpc_value1 tpc_value2 tpc_value3
+0    CCK      0x40        0          0
+1    CCK      0x41        0          0
+[...]
+107  HTCUP    0x 0       46          46
+108  HTCUP    0x 0       46          46
+
+******************* STBC POWER TABLE ****************
+
+No.  Preamble Rate_code tpc_value1 tpc_value2 tpc_value3
+0    CCK      0x40        0          0
+1    CCK      0x41        0          0
+[...]
+107  HTCUP    0x 0        46         46
+108  HTCUP    0x 0        46         46
+
+***********************************
+TXBF not supported
+**********************************
+
+The existing tpc_stats debugfs file provides the dump
+which is minimum of target power and regulatory domain.
+
+cat /sys/kernel/debug/ieee80211/phyX/ath10k/tpc_stats
+
+Hardware_used: QCA4019
+Firmware version: firmware-5.bin_10.4-3.0-00209
+
+Signed-off-by: Maharaja Kennadyrajan <mkenna@codeaurora.org>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath10k/core.h    |  22 +++
+ drivers/net/wireless/ath/ath10k/debug.c   | 107 +++++++++++
+ drivers/net/wireless/ath/ath10k/debug.h   |  10 +
+ drivers/net/wireless/ath/ath10k/wmi-ops.h |  20 ++
+ drivers/net/wireless/ath/ath10k/wmi.c     | 308 ++++++++++++++++++++++++++++--
+ drivers/net/wireless/ath/ath10k/wmi.h     |  66 +++++++
+ 6 files changed, 518 insertions(+), 15 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath10k/core.h
++++ b/drivers/net/wireless/ath/ath10k/core.h
+@@ -322,6 +322,27 @@ struct ath10k_tpc_stats {
+ 	struct ath10k_tpc_table tpc_table[WMI_TPC_FLAG];
+ };
+ 
++struct ath10k_tpc_table_final {
++	u32 pream_idx[WMI_TPC_FINAL_RATE_MAX];
++	u8 rate_code[WMI_TPC_FINAL_RATE_MAX];
++	char tpc_value[WMI_TPC_FINAL_RATE_MAX][WMI_TPC_TX_N_CHAIN * WMI_TPC_BUF_SIZE];
++};
++
++struct ath10k_tpc_stats_final {
++	u32 reg_domain;
++	u32 chan_freq;
++	u32 phy_mode;
++	u32 twice_antenna_reduction;
++	u32 twice_max_rd_power;
++	s32 twice_antenna_gain;
++	u32 power_limit;
++	u32 num_tx_chain;
++	u32 ctl;
++	u32 rate_max;
++	u8 flag[WMI_TPC_FLAG];
++	struct ath10k_tpc_table_final tpc_table_final[WMI_TPC_FLAG];
++};
++
+ struct ath10k_dfs_stats {
+ 	u32 phy_errors;
+ 	u32 pulses_total;
+@@ -482,6 +503,7 @@ struct ath10k_debug {
+ 
+ 	/* used for tpc-dump storage, protected by data-lock */
+ 	struct ath10k_tpc_stats *tpc_stats;
++	struct ath10k_tpc_stats_final *tpc_stats_final;
+ 
+ 	struct completion tpc_complete;
+ 
+--- a/drivers/net/wireless/ath/ath10k/debug.c
++++ b/drivers/net/wireless/ath/ath10k/debug.c
+@@ -1737,6 +1737,19 @@ void ath10k_debug_tpc_stats_process(stru
+ 	spin_unlock_bh(&ar->data_lock);
+ }
+ 
++void
++ath10k_debug_tpc_stats_final_process(struct ath10k *ar,
++				     struct ath10k_tpc_stats_final *tpc_stats)
++{
++	spin_lock_bh(&ar->data_lock);
++
++	kfree(ar->debug.tpc_stats_final);
++	ar->debug.tpc_stats_final = tpc_stats;
++	complete(&ar->debug.tpc_complete);
++
++	spin_unlock_bh(&ar->data_lock);
++}
++
+ static void ath10k_tpc_stats_print(struct ath10k_tpc_stats *tpc_stats,
+ 				   unsigned int j, char *buf, size_t *len)
+ {
+@@ -2400,6 +2413,95 @@ static const struct file_operations fops
+ 	.llseek = default_llseek,
+ };
+ 
++static int ath10k_debug_tpc_stats_final_request(struct ath10k *ar)
++{
++	int ret;
++	unsigned long time_left;
++
++	lockdep_assert_held(&ar->conf_mutex);
++
++	reinit_completion(&ar->debug.tpc_complete);
++
++	ret = ath10k_wmi_pdev_get_tpc_table_cmdid(ar, WMI_TPC_CONFIG_PARAM);
++	if (ret) {
++		ath10k_warn(ar, "failed to request tpc table cmdid: %d\n", ret);
++		return ret;
++	}
++
++	time_left = wait_for_completion_timeout(&ar->debug.tpc_complete,
++						1 * HZ);
++	if (time_left == 0)
++		return -ETIMEDOUT;
++
++	return 0;
++}
++
++static int ath10k_tpc_stats_final_open(struct inode *inode, struct file *file)
++{
++	struct ath10k *ar = inode->i_private;
++	void *buf;
++	int ret;
++
++	mutex_lock(&ar->conf_mutex);
++
++	if (ar->state != ATH10K_STATE_ON) {
++		ret = -ENETDOWN;
++		goto err_unlock;
++	}
++
++	buf = vmalloc(ATH10K_TPC_CONFIG_BUF_SIZE);
++	if (!buf) {
++		ret = -ENOMEM;
++		goto err_unlock;
++	}
++
++	ret = ath10k_debug_tpc_stats_final_request(ar);
++	if (ret) {
++		ath10k_warn(ar, "failed to request tpc stats final: %d\n",
++			    ret);
++		goto err_free;
++	}
++
++	ath10k_tpc_stats_fill(ar, ar->debug.tpc_stats, buf);
++	file->private_data = buf;
++
++	mutex_unlock(&ar->conf_mutex);
++	return 0;
++
++err_free:
++	vfree(buf);
++
++err_unlock:
++	mutex_unlock(&ar->conf_mutex);
++	return ret;
++}
++
++static int ath10k_tpc_stats_final_release(struct inode *inode,
++					  struct file *file)
++{
++	vfree(file->private_data);
++
++	return 0;
++}
++
++static ssize_t ath10k_tpc_stats_final_read(struct file *file,
++					   char __user *user_buf,
++					   size_t count, loff_t *ppos)
++{
++	const char *buf = file->private_data;
++	unsigned int len = strlen(buf);
++
++	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
++}
++
++static const struct file_operations fops_tpc_stats_final = {
++	.open = ath10k_tpc_stats_final_open,
++	.release = ath10k_tpc_stats_final_release,
++	.read = ath10k_tpc_stats_final_read,
++	.owner = THIS_MODULE,
++	.llseek = default_llseek,
++};
++
+ int ath10k_debug_create(struct ath10k *ar)
+ {
+ 	ar->debug.fw_crash_data = vzalloc(sizeof(*ar->debug.fw_crash_data));
+@@ -2525,6 +2627,11 @@ int ath10k_debug_register(struct ath10k
+ 	debugfs_create_file("fw_checksums", 0400, ar->debug.debugfs_phy, ar,
+ 			    &fops_fw_checksums);
+ 
++	if (test_bit(WMI_SERVICE_TPC_STATS_FINAL, ar->wmi.svc_map))
++		debugfs_create_file("tpc_stats_final", 0400,
++				    ar->debug.debugfs_phy, ar,
++				    &fops_tpc_stats_final);
++
+ 	return 0;
+ }
+ 
+--- a/drivers/net/wireless/ath/ath10k/debug.h
++++ b/drivers/net/wireless/ath/ath10k/debug.h
+@@ -84,6 +84,9 @@ void ath10k_debug_unregister(struct ath1
+ void ath10k_debug_fw_stats_process(struct ath10k *ar, struct sk_buff *skb);
+ void ath10k_debug_tpc_stats_process(struct ath10k *ar,
+ 				    struct ath10k_tpc_stats *tpc_stats);
++void
++ath10k_debug_tpc_stats_final_process(struct ath10k *ar,
++				     struct ath10k_tpc_stats_final *tpc_stats);
+ struct ath10k_fw_crash_data *
+ ath10k_debug_get_new_fw_crash_data(struct ath10k *ar);
+ 
+@@ -151,6 +154,13 @@ static inline void ath10k_debug_tpc_stat
+ {
+ 	kfree(tpc_stats);
+ }
++
++static inline void
++ath10k_debug_tpc_stats_final_process(struct ath10k *ar,
++				     struct ath10k_tpc_stats_final *tpc_stats)
++{
++	kfree(tpc_stats);
++}
+ 
+ static inline void ath10k_debug_dbglog_add(struct ath10k *ar, u8 *buffer,
+ 					   int len)
+--- a/drivers/net/wireless/ath/ath10k/wmi-ops.h
++++ b/drivers/net/wireless/ath/ath10k/wmi-ops.h
+@@ -197,6 +197,9 @@ struct wmi_ops {
+ 					(struct ath10k *ar,
+ 					 enum wmi_bss_survey_req_type type);
+ 	struct sk_buff *(*gen_echo)(struct ath10k *ar, u32 value);
++	struct sk_buff *(*gen_pdev_get_tpc_table_cmdid)(struct ath10k *ar,
++							u32 param);
++
+ };
+ 
+ int ath10k_wmi_cmd_send(struct ath10k *ar, struct sk_buff *skb, u32 cmd_id);
+@@ -1418,4 +1421,21 @@ ath10k_wmi_echo(struct ath10k *ar, u32 v
+ 	return ath10k_wmi_cmd_send(ar, skb, wmi->cmd->echo_cmdid);
+ }
+ 
++static inline int
++ath10k_wmi_pdev_get_tpc_table_cmdid(struct ath10k *ar, u32 param)
++{
++	struct sk_buff *skb;
++
++	if (!ar->wmi.ops->gen_pdev_get_tpc_table_cmdid)
++		return -EOPNOTSUPP;
++
++	skb = ar->wmi.ops->gen_pdev_get_tpc_table_cmdid(ar, param);
++
++	if (IS_ERR(skb))
++		return PTR_ERR(skb);
++
++	return ath10k_wmi_cmd_send(ar, skb,
++				   ar->wmi.cmd->pdev_get_tpc_table_cmdid);
++}
++
+ #endif
+--- a/drivers/net/wireless/ath/ath10k/wmi.c
++++ b/drivers/net/wireless/ath/ath10k/wmi.c
+@@ -1,6 +1,7 @@
+ /*
+  * Copyright (c) 2005-2011 Atheros Communications Inc.
+  * Copyright (c) 2011-2013 Qualcomm Atheros, Inc.
++ * Copyright (c) 2018, The Linux Foundation. All rights reserved.
+  *
+  * Permission to use, copy, modify, and/or distribute this software for any
+  * purpose with or without fee is hereby granted, provided that the above
+@@ -196,6 +197,7 @@ static struct wmi_cmd_map wmi_cmd_map =
+ 	.mu_cal_start_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.set_cca_params_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.pdev_bss_chan_info_request_cmdid = WMI_CMD_UNSUPPORTED,
++	.pdev_get_tpc_table_cmdid = WMI_CMD_UNSUPPORTED,
+ };
+ 
+ /* 10.X WMI cmd track */
+@@ -362,6 +364,7 @@ static struct wmi_cmd_map wmi_10x_cmd_ma
+ 	.mu_cal_start_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.set_cca_params_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.pdev_bss_chan_info_request_cmdid = WMI_CMD_UNSUPPORTED,
++	.pdev_get_tpc_table_cmdid = WMI_CMD_UNSUPPORTED,
+ };
+ 
+ /* 10.2.4 WMI cmd track */
+@@ -528,6 +531,7 @@ static struct wmi_cmd_map wmi_10_2_4_cmd
+ 	.set_cca_params_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.pdev_bss_chan_info_request_cmdid =
+ 		WMI_10_2_PDEV_BSS_CHAN_INFO_REQUEST_CMDID,
++	.pdev_get_tpc_table_cmdid = WMI_CMD_UNSUPPORTED,
+ };
+ 
+ /* 10.4 WMI cmd track */
+@@ -1480,6 +1484,7 @@ static struct wmi_cmd_map wmi_10_2_cmd_m
+ 	.pdev_get_ani_cck_config_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.pdev_get_ani_ofdm_config_cmdid = WMI_CMD_UNSUPPORTED,
+ 	.pdev_reserve_ast_entry_cmdid = WMI_CMD_UNSUPPORTED,
++	.pdev_get_tpc_table_cmdid = WMI_CMD_UNSUPPORTED,
+ };
+ 
+ static struct wmi_pdev_param_map wmi_10_4_pdev_param_map = {
+@@ -4313,19 +4318,11 @@ static void ath10k_tpc_config_disp_table
+ 	}
+ }
+ 
+-void ath10k_wmi_event_pdev_tpc_config(struct ath10k *ar, struct sk_buff *skb)
++void ath10k_wmi_tpc_config_get_rate_code(u8 *rate_code, u16 *pream_table,
++					 u32 num_tx_chain)
+ {
+-	u32 i, j, pream_idx, num_tx_chain;
+-	u8 rate_code[WMI_TPC_RATE_MAX], rate_idx;
+-	u16 pream_table[WMI_TPC_PREAM_TABLE_MAX];
+-	struct wmi_pdev_tpc_config_event *ev;
+-	struct ath10k_tpc_stats *tpc_stats;
+-
+-	ev = (struct wmi_pdev_tpc_config_event *)skb->data;
+-
+-	tpc_stats = kzalloc(sizeof(*tpc_stats), GFP_ATOMIC);
+-	if (!tpc_stats)
+-		return;
++	u32 i, j, pream_idx;
++	u8 rate_idx;
+ 
+ 	/* Create the rate code table based on the chains supported */
+ 	rate_idx = 0;
+@@ -4349,8 +4346,6 @@ void ath10k_wmi_event_pdev_tpc_config(st
+ 	pream_table[pream_idx] = rate_idx;
+ 	pream_idx++;
+ 
+-	num_tx_chain = __le32_to_cpu(ev->num_tx_chain);
+-
+ 	/* Fill HT20 rate code */
+ 	for (i = 0; i < num_tx_chain; i++) {
+ 		for (j = 0; j < 8; j++) {
+@@ -4374,7 +4369,7 @@ void ath10k_wmi_event_pdev_tpc_config(st
+ 	pream_idx++;
+ 
+ 	/* Fill VHT20 rate code */
+-	for (i = 0; i < __le32_to_cpu(ev->num_tx_chain); i++) {
++	for (i = 0; i < num_tx_chain; i++) {
+ 		for (j = 0; j < 10; j++) {
+ 			rate_code[rate_idx] =
+ 			ATH10K_HW_RATECODE(j, i, WMI_RATE_PREAMBLE_VHT);
+@@ -4418,6 +4413,26 @@ void ath10k_wmi_event_pdev_tpc_config(st
+ 		ATH10K_HW_RATECODE(0, 0, WMI_RATE_PREAMBLE_OFDM);
+ 
+ 	pream_table[pream_idx] = ATH10K_TPC_PREAM_TABLE_END;
++}
++
++void ath10k_wmi_event_pdev_tpc_config(struct ath10k *ar, struct sk_buff *skb)
++{
++	u32 num_tx_chain;
++	u8 rate_code[WMI_TPC_RATE_MAX];
++	u16 pream_table[WMI_TPC_PREAM_TABLE_MAX];
++	struct wmi_pdev_tpc_config_event *ev;
++	struct ath10k_tpc_stats *tpc_stats;
++
++	ev = (struct wmi_pdev_tpc_config_event *)skb->data;
++
++	tpc_stats = kzalloc(sizeof(*tpc_stats), GFP_ATOMIC);
++	if (!tpc_stats)
++		return;
++
++	num_tx_chain = __le32_to_cpu(ev->num_tx_chain);
++
++	ath10k_wmi_tpc_config_get_rate_code(rate_code, pream_table,
++					    num_tx_chain);
+ 
+ 	tpc_stats->chan_freq = __le32_to_cpu(ev->chan_freq);
+ 	tpc_stats->phy_mode = __le32_to_cpu(ev->phy_mode);
+@@ -4457,6 +4472,246 @@ void ath10k_wmi_event_pdev_tpc_config(st
+ 		   __le32_to_cpu(ev->rate_max));
+ }
+ 
++static u8
++ath10k_wmi_tpc_final_get_rate(struct ath10k *ar,
++			      struct wmi_pdev_tpc_final_table_event *ev,
++			      u32 rate_idx, u32 num_chains,
++			      u32 rate_code, u8 type, u32 pream_idx)
++{
++	u8 tpc, num_streams, preamble, ch, stm_idx;
++	s8 pow_agcdd, pow_agstbc, pow_agtxbf;
++	int pream;
++
++	num_streams = ATH10K_HW_NSS(rate_code);
++	preamble = ATH10K_HW_PREAMBLE(rate_code);
++	ch = num_chains - 1;
++	stm_idx = num_streams - 1;
++	pream = -1;
++
++	if (__le32_to_cpu(ev->chan_freq) <= 2483) {
++		switch (pream_idx) {
++		case WMI_TPC_PREAM_2GHZ_CCK:
++			pream = 0;
++			break;
++		case WMI_TPC_PREAM_2GHZ_OFDM:
++			pream = 1;
++			break;
++		case WMI_TPC_PREAM_2GHZ_HT20:
++		case WMI_TPC_PREAM_2GHZ_VHT20:
++			pream = 2;
++			break;
++		case WMI_TPC_PREAM_2GHZ_HT40:
++		case WMI_TPC_PREAM_2GHZ_VHT40:
++			pream = 3;
++			break;
++		case WMI_TPC_PREAM_2GHZ_VHT80:
++			pream = 4;
++			break;
++		default:
++			pream = -1;
++			break;
++		}
++	}
++
++	if (__le32_to_cpu(ev->chan_freq) >= 5180) {
++		switch (pream_idx) {
++		case WMI_TPC_PREAM_5GHZ_OFDM:
++			pream = 0;
++			break;
++		case WMI_TPC_PREAM_5GHZ_HT20:
++		case WMI_TPC_PREAM_5GHZ_VHT20:
++			pream = 1;
++			break;
++		case WMI_TPC_PREAM_5GHZ_HT40:
++		case WMI_TPC_PREAM_5GHZ_VHT40:
++			pream = 2;
++			break;
++		case WMI_TPC_PREAM_5GHZ_VHT80:
++			pream = 3;
++			break;
++		case WMI_TPC_PREAM_5GHZ_HTCUP:
++			pream = 4;
++			break;
++		default:
++			pream = -1;
++			break;
++		}
++	}
++
++	if (pream == 4)
++		tpc = min_t(u8, ev->rates_array[rate_idx],
++			    ev->max_reg_allow_pow[ch]);
++	else
++		tpc = min_t(u8, min_t(u8, ev->rates_array[rate_idx],
++				      ev->max_reg_allow_pow[ch]),
++			    ev->ctl_power_table[0][pream][stm_idx]);
++
++	if (__le32_to_cpu(ev->num_tx_chain) <= 1)
++		goto out;
++
++	if (preamble == WMI_RATE_PREAMBLE_CCK)
++		goto out;
++
++	if (num_chains <= num_streams)
++		goto out;
++
++	switch (type) {
++	case WMI_TPC_TABLE_TYPE_STBC:
++		pow_agstbc = ev->max_reg_allow_pow_agstbc[ch - 1][stm_idx];
++		if (pream == 4)
++			tpc = min_t(u8, tpc, pow_agstbc);
++		else
++			tpc = min_t(u8, min_t(u8, tpc, pow_agstbc),
++				    ev->ctl_power_table[0][pream][stm_idx]);
++		break;
++	case WMI_TPC_TABLE_TYPE_TXBF:
++		pow_agtxbf = ev->max_reg_allow_pow_agtxbf[ch - 1][stm_idx];
++		if (pream == 4)
++			tpc = min_t(u8, tpc, pow_agtxbf);
++		else
++			tpc = min_t(u8, min_t(u8, tpc, pow_agtxbf),
++				    ev->ctl_power_table[1][pream][stm_idx]);
++		break;
++	case WMI_TPC_TABLE_TYPE_CDD:
++		pow_agcdd = ev->max_reg_allow_pow_agcdd[ch - 1][stm_idx];
++		if (pream == 4)
++			tpc = min_t(u8, tpc, pow_agcdd);
++		else
++			tpc = min_t(u8, min_t(u8, tpc, pow_agcdd),
++				    ev->ctl_power_table[0][pream][stm_idx]);
++		break;
++	default:
++		ath10k_warn(ar, "unknown wmi tpc final table type: %d\n", type);
++		tpc = 0;
++		break;
++	}
++
++out:
++	return tpc;
++}
++
++static void
++ath10k_wmi_tpc_stats_final_disp_tables(struct ath10k *ar,
++				       struct wmi_pdev_tpc_final_table_event *ev,
++				       struct ath10k_tpc_stats_final *tpc_stats,
++				       u8 *rate_code, u16 *pream_table, u8 type)
++{
++	u32 i, j, pream_idx, flags;
++	u8 tpc[WMI_TPC_TX_N_CHAIN];
++	char tpc_value[WMI_TPC_TX_N_CHAIN * WMI_TPC_BUF_SIZE];
++	char buff[WMI_TPC_BUF_SIZE];
++
++	flags = __le32_to_cpu(ev->flags);
++
++	switch (type) {
++	case WMI_TPC_TABLE_TYPE_CDD:
++		if (!(flags & WMI_TPC_CONFIG_EVENT_FLAG_TABLE_CDD)) {
++			ath10k_dbg(ar, ATH10K_DBG_WMI, "CDD not supported\n");
++			tpc_stats->flag[type] = ATH10K_TPC_TABLE_TYPE_FLAG;
++			return;
++		}
++		break;
++	case WMI_TPC_TABLE_TYPE_STBC:
++		if (!(flags & WMI_TPC_CONFIG_EVENT_FLAG_TABLE_STBC)) {
++			ath10k_dbg(ar, ATH10K_DBG_WMI, "STBC not supported\n");
++			tpc_stats->flag[type] = ATH10K_TPC_TABLE_TYPE_FLAG;
++			return;
++		}
++		break;
++	case WMI_TPC_TABLE_TYPE_TXBF:
++		if (!(flags & WMI_TPC_CONFIG_EVENT_FLAG_TABLE_TXBF)) {
++			ath10k_dbg(ar, ATH10K_DBG_WMI, "TXBF not supported\n");
++			tpc_stats->flag[type] = ATH10K_TPC_TABLE_TYPE_FLAG;
++			return;
++		}
++		break;
++	default:
++		ath10k_dbg(ar, ATH10K_DBG_WMI,
++			   "invalid table type in wmi tpc event: %d\n", type);
++		return;
++	}
++
++	pream_idx = 0;
++	for (i = 0; i < __le32_to_cpu(ev->rate_max); i++) {
++		memset(tpc_value, 0, sizeof(tpc_value));
++		memset(buff, 0, sizeof(buff));
++		if (i == pream_table[pream_idx])
++			pream_idx++;
++
++		for (j = 0; j < WMI_TPC_TX_N_CHAIN; j++) {
++			if (j >= __le32_to_cpu(ev->num_tx_chain))
++				break;
++
++			tpc[j] = ath10k_wmi_tpc_final_get_rate(ar, ev, i, j + 1,
++							       rate_code[i],
++							       type, pream_idx);
++			snprintf(buff, sizeof(buff), "%8d ", tpc[j]);
++			strncat(tpc_value, buff, strlen(buff));
++		}
++		tpc_stats->tpc_table_final[type].pream_idx[i] = pream_idx;
++		tpc_stats->tpc_table_final[type].rate_code[i] = rate_code[i];
++		memcpy(tpc_stats->tpc_table_final[type].tpc_value[i],
++		       tpc_value, sizeof(tpc_value));
++	}
++}
++
++void ath10k_wmi_event_tpc_final_table(struct ath10k *ar, struct sk_buff *skb)
++{
++	u32 num_tx_chain;
++	u8 rate_code[WMI_TPC_FINAL_RATE_MAX];
++	u16 pream_table[WMI_TPC_PREAM_TABLE_MAX];
++	struct wmi_pdev_tpc_final_table_event *ev;
++	struct ath10k_tpc_stats_final *tpc_stats;
++
++	ev = (struct wmi_pdev_tpc_final_table_event *)skb->data;
++
++	tpc_stats = kzalloc(sizeof(*tpc_stats), GFP_ATOMIC);
++	if (!tpc_stats)
++		return;
++
++	num_tx_chain = __le32_to_cpu(ev->num_tx_chain);
++
++	ath10k_wmi_tpc_config_get_rate_code(rate_code, pream_table,
++					    num_tx_chain);
++
++	tpc_stats->chan_freq = __le32_to_cpu(ev->chan_freq);
++	tpc_stats->phy_mode = __le32_to_cpu(ev->phy_mode);
++	tpc_stats->ctl = __le32_to_cpu(ev->ctl);
++	tpc_stats->reg_domain = __le32_to_cpu(ev->reg_domain);
++	tpc_stats->twice_antenna_gain = a_sle32_to_cpu(ev->twice_antenna_gain);
++	tpc_stats->twice_antenna_reduction =
++		__le32_to_cpu(ev->twice_antenna_reduction);
++	tpc_stats->power_limit = __le32_to_cpu(ev->power_limit);
++	tpc_stats->twice_max_rd_power = __le32_to_cpu(ev->twice_max_rd_power);
++	tpc_stats->num_tx_chain = __le32_to_cpu(ev->num_tx_chain);
++	tpc_stats->rate_max = __le32_to_cpu(ev->rate_max);
++
++	ath10k_wmi_tpc_stats_final_disp_tables(ar, ev, tpc_stats,
++					       rate_code, pream_table,
++					       WMI_TPC_TABLE_TYPE_CDD);
++	ath10k_wmi_tpc_stats_final_disp_tables(ar, ev,  tpc_stats,
++					       rate_code, pream_table,
++					       WMI_TPC_TABLE_TYPE_STBC);
++	ath10k_wmi_tpc_stats_final_disp_tables(ar, ev, tpc_stats,
++					       rate_code, pream_table,
++					       WMI_TPC_TABLE_TYPE_TXBF);
++
++	ath10k_debug_tpc_stats_final_process(ar, tpc_stats);
++
++	ath10k_dbg(ar, ATH10K_DBG_WMI,
++		   "wmi event tpc final table channel %d mode %d ctl %d regd %d gain %d %d limit %d max_power %d tx_chanins %d rates %d\n",
++		   __le32_to_cpu(ev->chan_freq),
++		   __le32_to_cpu(ev->phy_mode),
++		   __le32_to_cpu(ev->ctl),
++		   __le32_to_cpu(ev->reg_domain),
++		   a_sle32_to_cpu(ev->twice_antenna_gain),
++		   __le32_to_cpu(ev->twice_antenna_reduction),
++		   __le32_to_cpu(ev->power_limit),
++		   __le32_to_cpu(ev->twice_max_rd_power) / 2,
++		   __le32_to_cpu(ev->num_tx_chain),
++		   __le32_to_cpu(ev->rate_max));
++}
++
+ static void
+ ath10k_wmi_handle_tdls_peer_event(struct ath10k *ar, struct sk_buff *skb)
+ {
+@@ -5550,6 +5805,9 @@ static void ath10k_wmi_10_4_op_rx(struct
+ 	case WMI_10_4_TDLS_PEER_EVENTID:
+ 		ath10k_wmi_handle_tdls_peer_event(ar, skb);
+ 		break;
++	case WMI_10_4_PDEV_TPC_TABLE_EVENTID:
++		ath10k_wmi_event_tpc_final_table(ar, skb);
++		break;
+ 	default:
+ 		ath10k_warn(ar, "Unknown eventid: %d\n", id);
+ 		break;
+@@ -7990,6 +8248,24 @@ static u32 ath10k_wmi_prepare_peer_qos(u
+ }
+ 
+ static struct sk_buff *
++ath10k_wmi_10_4_op_gen_pdev_get_tpc_table_cmdid(struct ath10k *ar, u32 param)
++{
++	struct wmi_pdev_get_tpc_table_cmd *cmd;
++	struct sk_buff *skb;
++
++	skb = ath10k_wmi_alloc_skb(ar, sizeof(*cmd));
++	if (!skb)
++		return ERR_PTR(-ENOMEM);
++
++	cmd = (struct wmi_pdev_get_tpc_table_cmd *)skb->data;
++	cmd->param = __cpu_to_le32(param);
++
++	ath10k_dbg(ar, ATH10K_DBG_WMI,
++		   "wmi pdev get tpc table param:%d\n", param);
++	return skb;
++}
++
++static struct sk_buff *
+ ath10k_wmi_10_4_gen_tdls_peer_update(struct ath10k *ar,
+ 				     const struct wmi_tdls_peer_update_cmd_arg *arg,
+ 				     const struct wmi_tdls_peer_capab_arg *cap,
+@@ -8430,6 +8706,8 @@ static const struct wmi_ops wmi_10_4_ops
+ 	.ext_resource_config = ath10k_wmi_10_4_ext_resource_config,
+ 	.gen_update_fw_tdls_state = ath10k_wmi_10_4_gen_update_fw_tdls_state,
+ 	.gen_tdls_peer_update = ath10k_wmi_10_4_gen_tdls_peer_update,
++	.gen_pdev_get_tpc_table_cmdid =
++			ath10k_wmi_10_4_op_gen_pdev_get_tpc_table_cmdid,
+ 
+ 	/* shared with 10.2 */
+ 	.pull_echo_ev = ath10k_wmi_op_pull_echo_ev,
+--- a/drivers/net/wireless/ath/ath10k/wmi.h
++++ b/drivers/net/wireless/ath/ath10k/wmi.h
+@@ -1,6 +1,7 @@
+ /*
+  * Copyright (c) 2005-2011 Atheros Communications Inc.
+  * Copyright (c) 2011-2013 Qualcomm Atheros, Inc.
++ * Copyright (c) 2018, The Linux Foundation. All rights reserved.
+  *
+  * Permission to use, copy, modify, and/or distribute this software for any
+  * purpose with or without fee is hereby granted, provided that the above
+@@ -197,6 +198,9 @@ enum wmi_service {
+ 	WMI_SERVICE_TDLS_EXPLICIT_MODE_ONLY,
+ 	WMI_SERVICE_MGMT_TX_WMI,
+ 	WMI_SERVICE_TDLS_WIDER_BANDWIDTH,
++	WMI_SERVICE_HTT_MGMT_TX_COMP_VALID_FLAGS,
++	WMI_SERVICE_HOST_DFS_CHECK_SUPPORT,
++	WMI_SERVICE_TPC_STATS_FINAL,
+ 
+ 	/* keep last */
+ 	WMI_SERVICE_MAX,
+@@ -339,6 +343,9 @@ enum wmi_10_4_service {
+ 	WMI_10_4_SERVICE_TDLS_CONN_TRACKER_IN_HOST_MODE,
+ 	WMI_10_4_SERVICE_TDLS_EXPLICIT_MODE_ONLY,
+ 	WMI_10_4_SERVICE_TDLS_WIDER_BANDWIDTH,
++	WMI_10_4_SERVICE_HTT_MGMT_TX_COMP_VALID_FLAGS,
++	WMI_10_4_SERVICE_HOST_DFS_CHECK_SUPPORT,
++	WMI_10_4_SERVICE_TPC_STATS_FINAL,
+ };
+ 
+ static inline char *wmi_service_name(int service_id)
+@@ -448,6 +455,9 @@ static inline char *wmi_service_name(int
+ 	SVCSTR(WMI_SERVICE_TDLS_CONN_TRACKER_IN_HOST_MODE);
+ 	SVCSTR(WMI_SERVICE_TDLS_EXPLICIT_MODE_ONLY);
+ 	SVCSTR(WMI_SERVICE_TDLS_WIDER_BANDWIDTH);
++	SVCSTR(WMI_SERVICE_HTT_MGMT_TX_COMP_VALID_FLAGS);
++	SVCSTR(WMI_SERVICE_HOST_DFS_CHECK_SUPPORT);
++	SVCSTR(WMI_SERVICE_TPC_STATS_FINAL);
+ 	default:
+ 		return NULL;
+ 	}
+@@ -746,6 +756,12 @@ static inline void wmi_10_4_svc_map(cons
+ 	       WMI_SERVICE_TDLS_EXPLICIT_MODE_ONLY, len);
+ 	SVCMAP(WMI_10_4_SERVICE_TDLS_WIDER_BANDWIDTH,
+ 	       WMI_SERVICE_TDLS_WIDER_BANDWIDTH, len);
++	SVCMAP(WMI_10_4_SERVICE_HTT_MGMT_TX_COMP_VALID_FLAGS,
++	       WMI_SERVICE_HTT_MGMT_TX_COMP_VALID_FLAGS, len);
++	SVCMAP(WMI_10_4_SERVICE_HOST_DFS_CHECK_SUPPORT,
++	       WMI_SERVICE_HOST_DFS_CHECK_SUPPORT, len);
++	SVCMAP(WMI_10_4_SERVICE_TPC_STATS_FINAL,
++	       WMI_SERVICE_TPC_STATS_FINAL, len);
+ }
+ 
+ #undef SVCMAP
+@@ -3992,10 +4008,12 @@ struct wmi_pdev_get_tpc_config_cmd {
+ 
+ #define WMI_TPC_CONFIG_PARAM		1
+ #define WMI_TPC_RATE_MAX		160
++#define WMI_TPC_FINAL_RATE_MAX		240
+ #define WMI_TPC_TX_N_CHAIN		4
+ #define WMI_TPC_PREAM_TABLE_MAX		10
+ #define WMI_TPC_FLAG			3
+ #define WMI_TPC_BUF_SIZE		10
++#define WMI_TPC_BEAMFORMING		2
+ 
+ enum wmi_tpc_table_type {
+ 	WMI_TPC_TABLE_TYPE_CDD = 0,
+@@ -4038,6 +4056,51 @@ enum wmi_tp_scale {
+ 	WMI_TP_SCALE_SIZE   = 5,	/* max num of enum     */
+ };
+ 
++struct wmi_pdev_tpc_final_table_event {
++	__le32 reg_domain;
++	__le32 chan_freq;
++	__le32 phy_mode;
++	__le32 twice_antenna_reduction;
++	__le32 twice_max_rd_power;
++	a_sle32 twice_antenna_gain;
++	__le32 power_limit;
++	__le32 rate_max;
++	__le32 num_tx_chain;
++	__le32 ctl;
++	__le32 flags;
++	s8 max_reg_allow_pow[WMI_TPC_TX_N_CHAIN];
++	s8 max_reg_allow_pow_agcdd[WMI_TPC_TX_N_CHAIN][WMI_TPC_TX_N_CHAIN];
++	s8 max_reg_allow_pow_agstbc[WMI_TPC_TX_N_CHAIN][WMI_TPC_TX_N_CHAIN];
++	s8 max_reg_allow_pow_agtxbf[WMI_TPC_TX_N_CHAIN][WMI_TPC_TX_N_CHAIN];
++	u8 rates_array[WMI_TPC_FINAL_RATE_MAX];
++	u8 ctl_power_table[WMI_TPC_BEAMFORMING][WMI_TPC_TX_N_CHAIN]
++	   [WMI_TPC_TX_N_CHAIN];
++} __packed;
++
++struct wmi_pdev_get_tpc_table_cmd {
++	__le32 param;
++} __packed;
++
++enum wmi_tpc_pream_2ghz {
++	WMI_TPC_PREAM_2GHZ_CCK = 0,
++	WMI_TPC_PREAM_2GHZ_OFDM,
++	WMI_TPC_PREAM_2GHZ_HT20,
++	WMI_TPC_PREAM_2GHZ_HT40,
++	WMI_TPC_PREAM_2GHZ_VHT20,
++	WMI_TPC_PREAM_2GHZ_VHT40,
++	WMI_TPC_PREAM_2GHZ_VHT80,
++};
++
++enum wmi_tpc_pream_5ghz {
++	WMI_TPC_PREAM_5GHZ_OFDM = 1,
++	WMI_TPC_PREAM_5GHZ_HT20,
++	WMI_TPC_PREAM_5GHZ_HT40,
++	WMI_TPC_PREAM_5GHZ_VHT20,
++	WMI_TPC_PREAM_5GHZ_VHT40,
++	WMI_TPC_PREAM_5GHZ_VHT80,
++	WMI_TPC_PREAM_5GHZ_HTCUP,
++};
++
+ struct wmi_pdev_chanlist_update_event {
+ 	/* number of channels */
+ 	__le32 num_chan;
+@@ -6977,5 +7040,8 @@ void ath10k_wmi_10_4_op_fw_stats_fill(st
+ int ath10k_wmi_op_get_vdev_subtype(struct ath10k *ar,
+ 				   enum wmi_vdev_subtype subtype);
+ int ath10k_wmi_barrier(struct ath10k *ar);
++void ath10k_wmi_tpc_config_get_rate_code(u8 *rate_code, u16 *pream_table,
++					 u32 num_tx_chain);
++void ath10k_wmi_event_tpc_final_table(struct ath10k *ar, struct sk_buff *skb);
+ 
+ #endif /* _WMI_H_ */

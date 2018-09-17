@@ -1,0 +1,71 @@
+From fc340115ffb8235c1bbd200c28855e6373d0dd1a Mon Sep 17 00:00:00 2001
+From: Christian Lamparter <chunkeey@gmail.com>
+Date: Thu, 19 Apr 2018 18:41:55 +0200
+Subject: [PATCH 6/8] crypto: crypto4xx - properly set IV after de- and encrypt
+
+This patch fixes cts(cbc(aes)) test when cbc-aes-ppc4xx is used.
+alg: skcipher: Test 1 failed (invalid result) on encryption for cts(cbc-aes-ppc4xx)
+00000000: 4b 10 75 fc 2f 14 1b 6a 27 35 37 33 d1 b7 70 05
+00000010: 97
+alg: skcipher: Failed to load transform for cts(cbc(aes)): -2
+
+The CTS cipher mode expect the IV (req->iv) of skcipher_request
+to contain the last ciphertext block after the {en,de}crypt
+operation is complete.
+
+Fix this issue for the AMCC Crypto4xx hardware engine.
+The tcrypt test case for cts(cbc(aes)) is now correctly passed.
+
+name         : cts(cbc(aes))
+driver       : cts(cbc-aes-ppc4xx)
+module       : cts
+priority     : 300
+refcnt       : 1
+selftest     : passed
+internal     : no
+type         : skcipher
+async        : yes
+blocksize    : 16
+min keysize  : 16
+max keysize  : 32
+ivsize       : 16
+chunksize    : 16
+walksize     : 16
+
+Signed-off-by: Christian Lamparter <chunkeey@gmail.com>
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+---
+ drivers/crypto/amcc/crypto4xx_alg.c  | 3 ++-
+ drivers/crypto/amcc/crypto4xx_core.c | 9 +++++++++
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+--- a/drivers/crypto/amcc/crypto4xx_alg.c
++++ b/drivers/crypto/amcc/crypto4xx_alg.c
+@@ -141,7 +141,8 @@ static int crypto4xx_setkey_aes(struct c
+ 	/* Setup SA */
+ 	sa = ctx->sa_in;
+ 
+-	set_dynamic_sa_command_0(sa, SA_NOT_SAVE_HASH, SA_NOT_SAVE_IV,
++	set_dynamic_sa_command_0(sa, SA_NOT_SAVE_HASH, (cm == CRYPTO_MODE_CBC ?
++				 SA_SAVE_IV : SA_NOT_SAVE_IV),
+ 				 SA_LOAD_HASH_FROM_SA, SA_LOAD_IV_FROM_STATE,
+ 				 SA_NO_HEADER_PROC, SA_HASH_ALG_NULL,
+ 				 SA_CIPHER_ALG_AES, SA_PAD_TYPE_ZERO,
+--- a/drivers/crypto/amcc/crypto4xx_core.c
++++ b/drivers/crypto/amcc/crypto4xx_core.c
+@@ -545,6 +545,15 @@ static void crypto4xx_cipher_done(struct
+ 		addr = dma_map_page(dev->core_dev->device, sg_page(dst),
+ 				    dst->offset, dst->length, DMA_FROM_DEVICE);
+ 	}
++
++	if (pd_uinfo->sa_va->sa_command_0.bf.save_iv == SA_SAVE_IV) {
++		struct crypto_skcipher *skcipher = crypto_skcipher_reqtfm(req);
++
++		crypto4xx_memcpy_from_le32((u32 *)req->iv,
++			pd_uinfo->sr_va->save_iv,
++			crypto_skcipher_ivsize(skcipher));
++	}
++
+ 	crypto4xx_ret_sg_desc(dev, pd_uinfo);
+ 
+ 	if (pd_uinfo->state & PD_ENTRY_BUSY)

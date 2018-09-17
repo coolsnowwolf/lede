@@ -2,43 +2,44 @@
 
 . /lib/functions/leds.sh
 
-status_led="$(get_dt_led status)"
-
-get_status_led() {
-	local board=$(board_name)
-	local boardname="${board##*,}"
-
-	case $board in
-	"avm,fritz300e")
-		status_led="${boardname}:green:power"
-		;;
-	"glinet,ar150")
-		status_led="gl-ar150:orange:wlan"
-		;;
-	"tplink,tl-wr1043nd-v1")
-		status_led="tp-link:green:system"
-		;;
-	"ubnt,unifi")
-		status_led="ubnt:green:dome"
-		;;
-	esac
-}
+boot="$(get_dt_led boot)"
+failsafe="$(get_dt_led failsafe)"
+running="$(get_dt_led running)"
+upgrade="$(get_dt_led upgrade)"
 
 set_state() {
-	[ -z "$status_led" ] && get_status_led
+	status_led="$boot"
 
 	case "$1" in
 	preinit)
 		status_led_blink_preinit
 		;;
 	failsafe)
+		status_led_off
+		[ -n "$running" ] && {
+			status_led="$running"
+			status_led_off
+		}
+		status_led="$failsafe"
 		status_led_blink_failsafe
 		;;
 	preinit_regular)
 		status_led_blink_preinit_regular
 		;;
+	upgrade)
+		[ -n "$running" ] && {
+			status_led="$running"
+			status_led_off
+		}
+		status_led="$upgrade"
+		status_led_blink_preinit_regular
+		;;
 	done)
-		status_led_on
+		status_led_off
+		[ -n "$running" ] && {
+			status_led="$running"
+			status_led_on
+		}
 		;;
 	esac
 }

@@ -327,7 +327,7 @@ platform_do_upgrade() {
 	case "$file_type" in
 		"chk")		cmd=$(platform_trx_from_chk_cmd "$trx");;
 		"cybertan")	cmd=$(platform_trx_from_cybertan_cmd "$trx");;
-		"safeloader")	trx=$(platform_img_from_safeloader "$trx");;
+		"safeloader")	trx=$(platform_img_from_safeloader "$trx"); PART_NAME=os-image;;
 		"seama")	trx=$(platform_img_from_seama "$trx");;
 	esac
 

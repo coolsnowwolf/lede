@@ -107,6 +107,7 @@ static uint32_t reserved_space;
 static struct file_info inspect_info;
 static int extract = 0;
 static bool endian_swap = false;
+static bool rootfs_ofs_calc = false;
 
 static const char md5salt_normal[MD5SUM_LEN] = {
 	0xdc, 0xd7, 0x3a, 0xa5, 0xc3, 0x95, 0x98, 0xfb,
@@ -202,6 +203,7 @@ static void usage(int status)
 "  -r <file>       read rootfs image from the file <file>\n"
 "  -a <align>      align the rootfs start on an <align> bytes boundary\n"
 "  -R <offset>     overwrite rootfs offset with <offset> (hexval prefixed with 0x)\n"
+"  -O              calculate rootfs offset for combined images\n"
 "  -o <file>       write output to the file <file>\n"
 "  -s              strip padding from the end of the image\n"
 "  -j              add jffs2 end-of-filesystem markers\n"
@@ -384,6 +386,10 @@ void fill_header(char *buf, int len)
 		hdr->rootfs_len = htonl(rootfs_info.file_size);
 	}
 
+	if (combined && rootfs_ofs_calc) {
+		hdr->rootfs_ofs = htonl(sizeof(struct fw_header) + kernel_len);
+	}
+
 	hdr->ver_hi = htons(fw_ver_hi);
 	hdr->ver_mid = htons(fw_ver_mid);
 	hdr->ver_lo = htons(fw_ver_lo);
@@ -539,7 +545,7 @@ int main(int argc, char *argv[])
 	while ( 1 ) {
 		int c;
 
-		c = getopt(argc, argv, "a:H:E:F:L:m:V:N:W:C:ci:k:r:R:o:xX:ehsjv:");
+		c = getopt(argc, argv, "a:H:E:F:L:m:V:N:W:C:ci:k:r:R:o:OxX:ehsjv:");
 		if (c == -1)
 			break;
 
@@ -591,6 +597,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'o':
 			ofname = optarg;
+			break;
+		case 'O':
+			rootfs_ofs_calc = 1;
 			break;
 		case 's':
 			strip_padding = 1;

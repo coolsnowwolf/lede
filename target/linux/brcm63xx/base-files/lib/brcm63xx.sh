@@ -237,6 +237,9 @@ brcm63xx_dt_detect() {
 	"SFR neufbox 6 (Sercomm)")
 		board_name="neufbox6"
 		;;
+	"SKY SR102")
+		board_name="sr102"
+		;;
 	"T-Com Speedport W303 V")
 		board_name="spw303v"
 		;;

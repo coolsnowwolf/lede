@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 ARCH:=powerpc
 BOARD:=ppc44x
 BOARDNAME:=AMCC/IBM PPC44x
-FEATURES:=squashfs broken
+FEATURES:=squashfs small_flash broken
 CPU_TYPE:=440
 MAINTAINER:=Imre Kaloz <kaloz@openwrt.org>
 

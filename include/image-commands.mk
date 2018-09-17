@@ -49,6 +49,27 @@ define Build/eva-image
 	mv $@.new $@
 endef
 
+define Build/zyxel-ras-image
+	let \
+		newsize="$(subst k,* 1024,$(RAS_ROOTFS_SIZE))"; \
+		$(STAGING_DIR_HOST)/bin/mkrasimage \
+			-b $(RAS_BOARD) \
+			-v $(RAS_VERSION) \
+			-r $@ \
+			-s $$newsize \
+			-o $@.new \
+			$(if $(findstring separate-kernel,$(word 1,$(1))),-k $(IMAGE_KERNEL)) \
+		&& mv $@.new $@
+endef
+
+define Build/mkbuffaloimg
+	$(STAGING_DIR_HOST)/bin/mkbuffaloimg -B $(BOARDNAME) \
+		-R $$(($(subst k, * 1024,$(ROOTFS_SIZE)))) \
+		-K $$(($(subst k, * 1024,$(KERNEL_SIZE)))) \
+		-i $@ -o $@.new
+	mv $@.new $@
+endef
+
 define Build/netgear-chk
 	$(STAGING_DIR_HOST)/bin/mkchkimg \
 		-o $@.new \
@@ -60,7 +81,7 @@ endef
 
 define Build/netgear-dni
 	$(STAGING_DIR_HOST)/bin/mkdniimg \
-		-B $(NETGEAR_BOARD_ID) -v $(VERSION_DIST).$(REVISION) \
+		-B $(NETGEAR_BOARD_ID) -v $(VERSION_DIST).$(firstword $(subst -, ,$(REVISION))) \
 		$(if $(NETGEAR_HW_ID),-H $(NETGEAR_HW_ID)) \
 		-r "$(1)" \
 		-i $@ -o $@.new
@@ -102,6 +123,16 @@ define Build/tplink-safeloader
 		$(if $(findstring sysupgrade,$(word 1,$(1))),-S) && mv $@.new $@ || rm -f $@
 endef
 
+define Build/mksercommfw
+	-$(STAGING_DIR_HOST)/bin/mksercommfw \
+		$@ \
+		$(KERNEL_OFFSET) \
+		$(HWID) \
+		$(HWVER) \
+		$(SWVER)
+endef
+
+
 define Build/append-dtb
 	cat $(KDIR)/image-$(firstword $(DEVICE_DTS)).dtb >> $@
 endef
@@ -135,7 +166,7 @@ define Build/lzma-no-dict
 endef
 
 define Build/gzip
-	gzip --force -9n -c $@ $(1) > $@.new
+	gzip -f -9n -c $@ $(1) > $@.new
 	@mv $@.new $@
 endef
 
@@ -184,6 +215,10 @@ define Build/append-ubi
 		$(UBINIZE_OPTS)
 	cat $@.tmp >> $@
 	rm $@.tmp
+endef
+
+define Build/append-uboot
+	dd if=$(UBOOT_PATH) >> $@
 endef
 
 define Build/pad-to
@@ -239,6 +274,11 @@ define Build/openmesh-image
 		"$(call param_get_default,rootfs,$(1),$@)" "rootfs"
 endef
 
+define Build/senao-header
+	$(STAGING_DIR_HOST)/bin/mksenaofw $(1) -e $@ -o $@.new
+	mv $@.new $@
+endef
+
 define Build/sysupgrade-tar
 	sh $(TOPDIR)/scripts/sysupgrade-tar.sh \
 		--board $(if $(BOARD_NAME),$(BOARD_NAME),$(DEVICE_NAME)) \
@@ -292,6 +332,12 @@ metadata_json = \
 
 define Build/append-metadata
 	$(if $(SUPPORTED_DEVICES),-echo $(call metadata_json,$(SUPPORTED_DEVICES)) | fwtool -I - $@)
+	[ ! -s "$(BUILD_KEY)" -o ! -s "$(BUILD_KEY).ucert" ] || { \
+		cp "$(BUILD_KEY).ucert" "$@.ucert" ;\
+		usign -S -m "$@" -s "$(BUILD_KEY)" -x "$@.sig" ;\
+		ucert -A -c "$@.ucert" -x "$@.sig" ;\
+		fwtool -S "$@.ucert" "$@" ;\
+	}
 endef
 
 define Build/kernel2minor

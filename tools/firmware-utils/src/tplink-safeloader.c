@@ -65,7 +65,7 @@ struct image_partition_entry {
 
 /** A flash partition table entry */
 struct flash_partition_entry {
-	const char *name;
+	char *name;
 	uint32_t base;
 	uint32_t size;
 };
@@ -77,7 +77,7 @@ struct device_info {
 	const char *support_list;
 	char support_trail;
 	const char *soft_ver;
-	const struct flash_partition_entry partitions[MAX_PARTITIONS+1];
+	struct flash_partition_entry partitions[MAX_PARTITIONS+1];
 	const char *first_sysupgrade_partition;
 	const char *last_sysupgrade_partition;
 };
@@ -155,6 +155,48 @@ static struct device_info boards[] = {
 		.last_sysupgrade_partition = "support-list",
 	},
 
+	/** Firmware layout for the CPE210 V2 */
+	{
+		.id     = "CPE210V2",
+		.vendor = "CPE210(TP-LINK|UN|N300-2|00000000):2.0\r\n",
+		.support_list =
+			"SupportList:\r\n"
+			"CPE210(TP-LINK|EU|N300-2|00000000):2.0\r\n"
+			"CPE210(TP-LINK|EU|N300-2|45550000):2.0\r\n"
+			"CPE210(TP-LINK|EU|N300-2|55530000):2.0\r\n"
+			"CPE210(TP-LINK|UN|N300-2|00000000):2.0\r\n"
+			"CPE210(TP-LINK|UN|N300-2|45550000):2.0\r\n"
+			"CPE210(TP-LINK|UN|N300-2|55530000):2.0\r\n"
+			"CPE210(TP-LINK|US|N300-2|55530000):2.0\r\n"
+			"CPE210(TP-LINK|UN|N300-2):2.0\r\n"
+			"CPE210(TP-LINK|EU|N300-2):2.0\r\n"
+			"CPE210(TP-LINK|US|N300-2):2.0\r\n",
+		.support_trail = '\xff',
+		.soft_ver = NULL,
+
+		.partitions = {
+			{"fs-uboot", 0x00000, 0x20000},
+			{"partition-table", 0x20000, 0x02000},
+			{"default-mac", 0x30000, 0x00020},
+			{"product-info", 0x31100, 0x00100},
+			{"device-info", 0x31400, 0x00400},
+			{"signature", 0x32000, 0x00400},
+			{"device-id", 0x33000, 0x00100},
+			{"os-image", 0x40000, 0x1c0000},
+			{"file-system", 0x200000, 0x5b0000},
+			{"soft-version", 0x7b0000, 0x00100},
+			{"support-list", 0x7b1000, 0x01000},
+			{"user-config", 0x7c0000, 0x10000},
+			{"default-config", 0x7d0000, 0x10000},
+			{"log", 0x7e0000, 0x10000},
+			{"radio", 0x7f0000, 0x10000},
+			{NULL, 0, 0}
+		},
+
+		.first_sysupgrade_partition = "os-image",
+		.last_sysupgrade_partition = "support-list",
+	},
+
 	/** Firmware layout for the CPE510/520 */
 	{
 		.id	= "CPE510",
@@ -168,7 +210,17 @@ static struct device_info boards[] = {
 			"CPE510(TP-LINK|EU|N300-5):1.1\r\n"
 			"CPE520(TP-LINK|UN|N300-5):1.1\r\n"
 			"CPE520(TP-LINK|US|N300-5):1.1\r\n"
-			"CPE520(TP-LINK|EU|N300-5):1.1\r\n",
+			"CPE520(TP-LINK|EU|N300-5):1.1\r\n"
+			"CPE510(TP-LINK|EU|N300-5|00000000):2.0\r\n"
+			"CPE510(TP-LINK|EU|N300-5|45550000):2.0\r\n"
+			"CPE510(TP-LINK|EU|N300-5|55530000):2.0\r\n"
+			"CPE510(TP-LINK|UN|N300-5|00000000):2.0\r\n"
+			"CPE510(TP-LINK|UN|N300-5|45550000):2.0\r\n"
+			"CPE510(TP-LINK|UN|N300-5|55530000):2.0\r\n"
+			"CPE510(TP-LINK|US|N300-5|55530000):2.0\r\n"
+			"CPE510(TP-LINK|UN|N300-5):2.0\r\n"
+			"CPE510(TP-LINK|EU|N300-5):2.0\r\n"
+			"CPE510(TP-LINK|US|N300-5):2.0\r\n",
 		.support_trail = '\xff',
 		.soft_ver = NULL,
 
@@ -267,6 +319,11 @@ static struct device_info boards[] = {
 		.support_trail = '\x00',
 		.soft_ver = NULL,
 
+		/**
+		    We use a bigger os-image partition than the stock images (and thus
+		    smaller file-system), as our kernel doesn't fit in the stock firmware's
+		    2 MB os-image since kernel 4.14.
+		*/
 		.partitions = {
 			{"SBL1", 0x00000, 0x20000},
 			{"MIBIB", 0x20000, 0x20000},
@@ -279,8 +336,8 @@ static struct device_info boards[] = {
 			{"fs-uboot", 0x100000, 0x70000},
 			{"uboot-env", 0x170000, 0x40000},
 			{"radio", 0x1b0000, 0x40000},
-			{"os-image", 0x1f0000, 0x200000},
-			{"file-system", 0x3f0000, 0x1b00000},
+			{"os-image", 0x1f0000, 0x400000}, /* Stock: base 0x1f0000 size 0x200000 */
+			{"file-system", 0x5f0000, 0x1900000}, /* Stock: base 0x3f0000 size 0x1b00000 */
 			{"default-mac", 0x1ef0000, 0x00200},
 			{"pin", 0x1ef0200, 0x00200},
 			{"product-info", 0x1ef0400, 0x0fc00},
@@ -407,6 +464,46 @@ static struct device_info boards[] = {
 			{"usb-config", 0xee0000, 0x10000},
 			{"certificate", 0xef0000, 0x10000},
 			{"qos-db", 0xf00000, 0x40000},
+			{"log", 0xfe0000, 0x10000},
+			{"radio", 0xff0000, 0x10000},
+			{NULL, 0, 0}
+		},
+
+		.first_sysupgrade_partition = "os-image",
+		.last_sysupgrade_partition = "file-system",
+	},
+
+	/** Firmware layout for the C59v2 */
+	{
+		.id	= "ARCHER-C59-V2",
+		.vendor	= "",
+		.support_list =
+			"SupportList:\r\n"
+			"{product_name:Archer C59,product_ver:2.0.0,special_id:00000000}\r\n"
+			"{product_name:Archer C59,product_ver:2.0.0,special_id:45550000}\r\n"
+			"{product_name:Archer C59,product_ver:2.0.0,special_id:55530000}\r\n",
+		.support_trail = '\x00',
+		.soft_ver = "soft_ver:2.0.0 Build 20161206 rel.7303\n",
+
+		/** We're using a dynamic kernel/rootfs split here */
+		.partitions = {
+			{"factory-boot", 0x00000, 0x20000},
+			{"fs-uboot", 0x20000, 0x10000},
+			{"default-mac", 0x30000, 0x00200},
+			{"pin", 0x30200, 0x00200},
+			{"device-id", 0x30400, 0x00100},
+			{"product-info", 0x30500, 0x0fb00},
+			{"firmware", 0x40000, 0xe10000},
+			{"partition-table", 0xe50000, 0x10000},
+			{"soft-version", 0xe60000, 0x10000},
+			{"support-list", 0xe70000, 0x10000},
+			{"profile", 0xe80000, 0x10000},
+			{"default-config", 0xe90000, 0x10000},
+			{"user-config", 0xea0000, 0x40000},
+			{"usb-config", 0xee0000, 0x10000},
+			{"certificate", 0xef0000, 0x10000},
+			{"extra-para", 0xf00000, 0x10000},
+			{"qos-db", 0xf10000, 0x30000},
 			{"log", 0xfe0000, 0x10000},
 			{"radio", 0xff0000, 0x10000},
 			{NULL, 0, 0}
@@ -567,6 +664,52 @@ static struct device_info boards[] = {
 			{"log", 0xfd0000, 0x20000},
 			{"radio", 0xff0000, 0x10000},
 			{NULL, 0, 0}
+		},
+
+		.first_sysupgrade_partition = "os-image",
+		.last_sysupgrade_partition = "file-system",
+	},
+
+	/** Firmware layout for the C7 v5*/
+	{
+		.id = "ARCHER-C7-V5",
+		.support_list =
+			"SupportList:\n"
+			"{product_name:Archer C7,product_ver:5.0.0,special_id:00000000}\n"
+			"{product_name:Archer C7,product_ver:5.0.0,special_id:55530000}\n",
+
+		.support_trail = '\x00',
+		.soft_ver = "soft_ver:1.0.0\n",
+
+		/**
+		  We use a bigger os-image partition than the stock images (and thus
+		  smaller file-system), as our kernel doesn't fit in the stock firmware's
+		  1MB os-image.
+		  */
+		.partitions = {
+			{"factory-boot",    0x00000,  0x20000},
+			{"fs-uboot",        0x20000,  0x20000},
+			{"partition-table", 0x40000,  0x10000},
+			{"radio",           0x50000,  0x10000},
+			{"default-mac",     0x60000,  0x00200},
+			{"pin",             0x60200,  0x00200},
+			{"device-id",       0x60400,  0x00100},
+			{"product-info",    0x60500,  0x0fb00},
+			{"soft-version",    0x70000,  0x01000},
+			{"extra-para",      0x71000,  0x01000},
+			{"support-list",    0x72000,  0x0a000},
+			{"profile",         0x7c000,  0x04000},
+			{"user-config",     0x80000,  0x40000},
+
+
+			{"os-image",        0xc0000,  0x180000}, /* Stock: base 0xc0000  size 0x120000 */
+			{"file-system",     0x240000, 0xd80000}, /* Stock: base 0x1e0000 size 0xde0000 */
+
+			{"log",             0xfc0000, 0x20000},
+			{"certificate",     0xfe0000, 0x10000},
+			{"default-config",  0xff0000, 0x10000},
+			{NULL, 0, 0}
+
 		},
 
 		.first_sysupgrade_partition = "os-image",
@@ -767,15 +910,10 @@ static struct device_info boards[] = {
 		.support_trail = '\x00',
 		.soft_ver = NULL,
 
-		/**
-		    We use a bigger os-image partition than the stock images (and thus
-		    smaller file-system), as our kernel doesn't fit in the stock firmware's
-		    1MB os-image.
-		*/
+		/* We're using a dynamic kernel/rootfs split here */
 		.partitions = {
 			{"fs-uboot", 0x00000, 0x20000},
-			{"os-image", 0x20000, 0x180000},
-			{"file-system", 0x1a0000, 0xdb0000},
+			{"firmware", 0x20000, 0xf30000},
 			{"default-mac", 0xf50000, 0x00200},
 			{"pin", 0xf50200, 0x00200},
 			{"product-info", 0xf50400, 0x0fc00},
@@ -884,14 +1022,10 @@ static struct device_info boards[] = {
 		.support_trail = '\x00',
 		.soft_ver = NULL,
 
-		/**
-			The original os-image partition is too small,
-			so we enlarge it to 1.6M
-		*/
+		/** We're using a dynamic kernel/rootfs split here */
 		.partitions = {
 			{"fs-uboot", 0x00000, 0x20000},
-			{"os-image", 0x20000, 0x1a0000},
-			{"file-system", 0x1c0000, 0x440000},
+			{"firmware", 0x20000, 0x5e0000},
 			{"partition-table", 0x600000, 0x02000},
 			{"default-mac", 0x610000, 0x00020},
 			{"pin", 0x610100, 0x00020},
@@ -988,6 +1122,46 @@ static struct device_info boards[] = {
 			{"user-config", 0x630000, 0x10000},
 			{"default-config", 0x640000, 0x10000},
 			{"radio", 0x7f0000, 0x10000},
+			{NULL, 0, 0}
+		},
+
+		.first_sysupgrade_partition = "os-image",
+		.last_sysupgrade_partition = "file-system"
+	},
+
+	/** Firmware layout for the RE450 v2 */
+	{
+		.id = "RE450-V2",
+		.vendor = "",
+		.support_list =
+			"SupportList:\r\n"
+			"{product_name:RE450,product_ver:2.0.0,special_id:00000000}\r\n"
+			"{product_name:RE450,product_ver:2.0.0,special_id:55530000}\r\n"
+			"{product_name:RE450,product_ver:2.0.0,special_id:45550000}\r\n"
+			"{product_name:RE450,product_ver:2.0.0,special_id:4A500000}\r\n"
+			"{product_name:RE450,product_ver:2.0.0,special_id:43410000}\r\n"
+			"{product_name:RE450,product_ver:2.0.0,special_id:41550000}\r\n"
+			"{product_name:RE450,product_ver:2.0.0,special_id:41530000}\r\n"
+			"{product_name:RE450,product_ver:2.0.0,special_id:4B520000}\r\n"
+			"{product_name:RE450,product_ver:2.0.0,special_id:42520000}\r\n",
+		.support_trail = '\x00',
+		.soft_ver = NULL,
+
+		/* We're using a dynamic kernel/rootfs split here */
+		.partitions = {
+			{"fs-uboot", 0x00000, 0x20000},
+			{"firmware", 0x20000, 0x5e0000},
+			{"partition-table", 0x600000, 0x02000},
+			{"default-mac", 0x610000, 0x00020},
+			{"pin", 0x610100, 0x00020},
+			{"product-info", 0x611100, 0x01000},
+			{"soft-version", 0x620000, 0x01000},
+			{"support-list", 0x621000, 0x01000},
+			{"profile", 0x622000, 0x08000},
+			{"user-config", 0x630000, 0x10000},
+			{"default-config", 0x640000, 0x10000},
+			{"radio", 0x7f0000, 0x10000},
+
 			{NULL, 0, 0}
 		},
 
@@ -1130,7 +1304,7 @@ static struct image_partition_entry make_soft_version_from_string(const char *so
 }
 
 /** Generates the support-list partition */
-static struct image_partition_entry make_support_list(const struct device_info *info) {
+static struct image_partition_entry make_support_list(struct device_info *info) {
 	size_t len = strlen(info->support_list);
 	struct image_partition_entry entry = alloc_image_partition("support-list", len + 9);
 
@@ -1143,7 +1317,7 @@ static struct image_partition_entry make_support_list(const struct device_info *
 }
 
 /** Creates a new image partition with an arbitrary name from a file */
-static struct image_partition_entry read_file(const char *part_name, const char *filename, bool add_jffs2_eof) {
+static struct image_partition_entry read_file(const char *part_name, const char *filename, bool add_jffs2_eof, struct flash_partition_entry *file_system_partition) {
 	struct stat statbuf;
 
 	if (stat(filename, &statbuf) < 0)
@@ -1152,7 +1326,10 @@ static struct image_partition_entry read_file(const char *part_name, const char 
 	size_t len = statbuf.st_size;
 
 	if (add_jffs2_eof)
-		len = ALIGN(len, 0x10000) + sizeof(jffs2_eof_mark);
+		if (file_system_partition)
+			len = ALIGN(len + file_system_partition->base, 0x10000) + sizeof(jffs2_eof_mark) - file_system_partition->base;
+		else
+			len = ALIGN(len, 0x10000) + sizeof(jffs2_eof_mark);
 
 	struct image_partition_entry entry = alloc_image_partition(part_name, len);
 
@@ -1268,7 +1445,7 @@ static void put_md5(uint8_t *md5, uint8_t *buffer, unsigned int len) {
      1014-1813    Image partition table (2048 bytes, padded with 0xff)
      1814-xxxx    Firmware partitions
 */
-static void * generate_factory_image(const struct device_info *info, const struct image_partition_entry *parts, size_t *len) {
+static void * generate_factory_image(struct device_info *info, const struct image_partition_entry *parts, size_t *len) {
 	*len = 0x1814;
 
 	size_t i;
@@ -1301,7 +1478,7 @@ static void * generate_factory_image(const struct device_info *info, const struc
    should be generalized when TP-LINK starts building its safeloader into hardware with
    different flash layouts.
 */
-static void * generate_sysupgrade_image(const struct device_info *info, const struct image_partition_entry *image_parts, size_t *len) {
+static void * generate_sysupgrade_image(struct device_info *info, const struct image_partition_entry *image_parts, size_t *len) {
 	size_t i, j;
 	size_t flash_first_partition_index = 0;
 	size_t flash_last_partition_index = 0;
@@ -1364,9 +1541,52 @@ static void build_image(const char *output,
 		uint32_t rev,
 		bool add_jffs2_eof,
 		bool sysupgrade,
-		const struct device_info *info) {
+		struct device_info *info) {
+
+	size_t i;
 
 	struct image_partition_entry parts[7] = {};
+
+	struct flash_partition_entry *firmware_partition = NULL;
+	struct flash_partition_entry *os_image_partition = NULL;
+	struct flash_partition_entry *file_system_partition = NULL;
+	size_t firmware_partition_index = 0;
+
+	for (i = 0; info->partitions[i].name; i++) {
+		if (!strcmp(info->partitions[i].name, "firmware"))
+		{
+			firmware_partition = &info->partitions[i];
+			firmware_partition_index = i;
+		}
+	}
+
+	if (firmware_partition)
+	{
+		os_image_partition = &info->partitions[firmware_partition_index];
+		file_system_partition = &info->partitions[firmware_partition_index + 1];
+
+		struct stat kernel;
+		if (stat(kernel_image, &kernel) < 0)
+			error(1, errno, "unable to stat file `%s'", kernel_image);
+
+		if (kernel.st_size > firmware_partition->size)
+			error(1, 0, "kernel overflowed firmware partition\n");
+
+		for (i = MAX_PARTITIONS-1; i >= firmware_partition_index + 1; i--)
+			info->partitions[i+1] = info->partitions[i];
+
+		file_system_partition->name = "file-system";
+		file_system_partition->base = firmware_partition->base + kernel.st_size;
+
+		/* Align partition start to erase blocks for factory images only */
+		if (!sysupgrade)
+			file_system_partition->base = ALIGN(firmware_partition->base + kernel.st_size, 0x10000);
+
+		file_system_partition->size = firmware_partition->size - file_system_partition->base;
+
+		os_image_partition->name = "os-image";
+		os_image_partition->size = kernel.st_size;
+	}
 
 	parts[0] = make_partition_table(info->partitions);
 	if (info->soft_ver)
@@ -1375,16 +1595,17 @@ static void build_image(const char *output,
 		parts[1] = make_soft_version(rev);
 
 	parts[2] = make_support_list(info);
-	parts[3] = read_file("os-image", kernel_image, false);
-	parts[4] = read_file("file-system", rootfs_image, add_jffs2_eof);
+	parts[3] = read_file("os-image", kernel_image, false, NULL);
+	parts[4] = read_file("file-system", rootfs_image, add_jffs2_eof, file_system_partition);
 
 	/* Some devices need the extra-para partition to accept the firmware */
 	if (strcasecmp(info->id, "ARCHER-C25-V1") == 0 ||
+	    strcasecmp(info->id, "ARCHER-C59-V2") == 0 ||
 	    strcasecmp(info->id, "ARCHER-C60-V2") == 0 ||
 	    strcasecmp(info->id, "TLWR1043NV5") == 0) {
 		const char mdat[11] = {0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00};
 		parts[5] = put_data("extra-para", mdat, 11);
-	} else if (strcasecmp(info->id, "ARCHER-C7-V4") == 0) {
+	} else if (strcasecmp(info->id, "ARCHER-C7-V4") == 0 || strcasecmp(info->id, "ARCHER-C7-V5") == 0) {
 		const char mdat[11] = {0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0xca, 0x00, 0x01, 0x00, 0x00};
 		parts[5] = put_data("extra-para", mdat, 11);
 	}
@@ -1407,7 +1628,6 @@ static void build_image(const char *output,
 
 	free(image);
 
-	size_t i;
 	for (i = 0; parts[i].name; i++)
 		free_image_partition(parts[i]);
 }
@@ -1437,7 +1657,7 @@ static void usage(const char *argv0) {
 };
 
 
-static const struct device_info *find_board(const char *id)
+static struct device_info *find_board(const char *id)
 {
 	struct device_info *board = NULL;
 
@@ -1469,6 +1689,10 @@ static int add_flash_partition(
 	}
 
 	part_list->name = calloc(1, strlen(name) + 1);
+	if (!part_list->name) {
+		error(1, 0, "Unable to allocate memory");
+	}
+
 	memcpy((char *)part_list->name, name, strlen(name));
 	part_list->base = base;
 	part_list->size = size;
@@ -1767,7 +1991,7 @@ int main(int argc, char *argv[]) {
 	const char *extract_image = NULL, *output_directory = NULL, *convert_image = NULL;
 	bool add_jffs2_eof = false, sysupgrade = false;
 	unsigned rev = 0;
-	const struct device_info *info;
+	struct device_info *info;
 	set_source_date_epoch();
 
 	while (true) {

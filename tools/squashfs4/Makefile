@@ -20,8 +20,8 @@ HOST_BUILD_DIR:=$(BUILD_DIR_HOST)/squashfs$(PKG_VERSION)
 include $(INCLUDE_DIR)/host-build.mk
 
 define Host/Compile
+	+$(HOST_MAKE_VARS) \
 	$(MAKE) -C $(HOST_BUILD_DIR)/squashfs-tools \
-		CC="$(HOSTCC)" \
 		XZ_SUPPORT=1 \
 		LZMA_XZ_SUPPORT=1 \
 		XATTR_SUPPORT= \

@@ -13,7 +13,7 @@ Signed-off-by: Rafał Miłecki <zajec5@gmail.com>
 
 --- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
 +++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
-@@ -1295,6 +1295,7 @@ int __init brcmf_core_init(void)
+@@ -1347,6 +1347,7 @@ int __init brcmf_core_init(void)
  {
  	if (!schedule_work(&brcmf_driver_work))
  		return -EBUSY;
@@ -23,66 +23,44 @@ Signed-off-by: Rafał Miłecki <zajec5@gmail.com>
  }
 --- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/firmware.c
 +++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/firmware.c
-@@ -444,6 +444,7 @@ struct brcmf_fw {
- 	u16 bus_nr;
- 	void (*done)(struct device *dev, int err, const struct firmware *fw,
- 		     void *nvram_image, u32 nvram_len);
+@@ -441,6 +441,7 @@ struct brcmf_fw {
+ 	struct brcmf_fw_request *req;
+ 	u32 curpos;
+ 	void (*done)(struct device *dev, int err, struct brcmf_fw_request *req);
 +	struct completion *completion;
  };
  
- static void brcmf_fw_request_nvram_done(const struct firmware *fw, void *ctx)
-@@ -478,6 +479,8 @@ static void brcmf_fw_request_nvram_done(
- 		goto fail;
- 
- 	fwctx->done(fwctx->dev, 0, fwctx->code, nvram, nvram_length);
-+	if (fwctx->completion)
-+		complete(fwctx->completion);
- 	kfree(fwctx);
- 	return;
- 
-@@ -485,6 +488,8 @@ fail:
- 	brcmf_dbg(TRACE, "failed: dev=%s\n", dev_name(fwctx->dev));
- 	release_firmware(fwctx->code);
- 	fwctx->done(fwctx->dev, -ENOENT, NULL, NULL, 0);
-+	if (fwctx->completion)
-+		complete(fwctx->completion);
- 	kfree(fwctx);
- }
- 
-@@ -516,6 +521,8 @@ fail:
- 	brcmf_dbg(TRACE, "failed: dev=%s\n", dev_name(fwctx->dev));
+ static void brcmf_fw_request_done(const struct firmware *fw, void *ctx);
+@@ -589,6 +590,8 @@ fail:
+ 	fwctx->req = NULL;
  done:
- 	fwctx->done(fwctx->dev, ret, fw, NULL, 0);
+ 	fwctx->done(fwctx->dev, ret, fwctx->req);
 +	if (fwctx->completion)
 +		complete(fwctx->completion);
  	kfree(fwctx);
  }
  
-@@ -527,6 +534,8 @@ int brcmf_fw_get_firmwares_pcie(struct d
- 				u16 domain_nr, u16 bus_nr)
+@@ -612,6 +615,8 @@ int brcmf_fw_get_firmwares(struct device
+ 					 struct brcmf_fw_request *req))
  {
  	struct brcmf_fw *fwctx;
 +	struct completion completion;
 +	int err;
  
  	brcmf_dbg(TRACE, "enter: dev=%s\n", dev_name(dev));
- 	if (!fw_cb || !code)
-@@ -547,9 +556,17 @@ int brcmf_fw_get_firmwares_pcie(struct d
- 	fwctx->domain_nr = domain_nr;
- 	fwctx->bus_nr = bus_nr;
+ 	if (!fw_cb)
+@@ -628,7 +633,14 @@ int brcmf_fw_get_firmwares(struct device
+ 	fwctx->req = req;
+ 	fwctx->done = fw_cb;
  
--	return request_firmware_nowait(THIS_MODULE, true, code, dev,
 +	init_completion(&completion);
 +	fwctx->completion = &completion;
 +
-+	err = request_firmware_nowait(THIS_MODULE, true, code, dev,
- 				       GFP_KERNEL, fwctx,
- 				       brcmf_fw_request_code_done);
-+	if (!err)
-+		wait_for_completion_timeout(fwctx->completion,
-+					    msecs_to_jiffies(5000));
+ 	brcmf_fw_request_next_item(fwctx, true);
++
++	wait_for_completion_timeout(fwctx->completion, msecs_to_jiffies(5000));
 +	fwctx->completion = NULL;
-+	return err;
++
+ 	return 0;
  }
  
- int brcmf_fw_get_firmwares(struct device *dev, u16 flags,

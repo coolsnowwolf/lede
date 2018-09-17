@@ -1,0 +1,141 @@
+From: Arnd Bergmann <arnd@arndb.de>
+Date: Tue, 19 Jun 2018 13:14:56 -0700
+Subject: [PATCH] kbuild: add macro for controlling warnings to
+ linux/compiler.h
+
+I have occasionally run into a situation where it would make sense to
+control a compiler warning from a source file rather than doing so from
+a Makefile using the $(cc-disable-warning, ...) or $(cc-option, ...)
+helpers.
+
+The approach here is similar to what glibc uses, using __diag() and
+related macros to encapsulate a _Pragma("GCC diagnostic ...") statement
+that gets turned into the respective "#pragma GCC diagnostic ..." by
+the preprocessor when the macro gets expanded.
+
+Like glibc, I also have an argument to pass the affected compiler
+version, but decided to actually evaluate that one. For now, this
+supports GCC_4_6, GCC_4_7, GCC_4_8, GCC_4_9, GCC_5, GCC_6, GCC_7,
+GCC_8 and GCC_9. Adding support for CLANG_5 and other interesting
+versions is straightforward here. GNU compilers starting with gcc-4.2
+could support it in principle, but "#pragma GCC diagnostic push"
+was only added in gcc-4.6, so it seems simpler to not deal with those
+at all. The same versions show a large number of warnings already,
+so it seems easier to just leave it at that and not do a more
+fine-grained control for them.
+
+The use cases I found so far include:
+
+- turning off the gcc-8 -Wattribute-alias warning inside of the
+  SYSCALL_DEFINEx() macro without having to do it globally.
+
+- Reducing the build time for a simple re-make after a change,
+  once we move the warnings from ./Makefile and
+  ./scripts/Makefile.extrawarn into linux/compiler.h
+
+- More control over the warnings based on other configurations,
+  using preprocessor syntax instead of Makefile syntax. This should make
+  it easier for the average developer to understand and change things.
+
+- Adding an easy way to turn the W=1 option on unconditionally
+  for a subdirectory or a specific file. This has been requested
+  by several developers in the past that want to have their subsystems
+  W=1 clean.
+
+- Integrating clang better into the build systems. Clang supports
+  more warnings than GCC, and we probably want to classify them
+  as default, W=1, W=2 etc, but there are cases in which the
+  warnings should be classified differently due to excessive false
+  positives from one or the other compiler.
+
+- Adding a way to turn the default warnings into errors (e.g. using
+  a new "make E=0" tag) while not also turning the W=1 warnings into
+  errors.
+
+This patch for now just adds the minimal infrastructure in order to
+do the first of the list above. As the #pragma GCC diagnostic
+takes precedence over command line options, the next step would be
+to convert a lot of the individual Makefiles that set nonstandard
+options to use __diag() instead.
+
+[paul.burton@mips.com:
+  - Rebase atop current master.
+  - Add __diag_GCC, or more generally __diag_<compiler>, abstraction to
+    avoid code outside of linux/compiler-gcc.h needing to duplicate
+    knowledge about different GCC versions.
+  - Add a comment argument to __diag_{ignore,warn,error} which isn't
+    used in the expansion of the macros but serves to push people to
+    document the reason for using them - per feedback from Kees Cook.
+  - Translate severity to GCC-specific pragmas in linux/compiler-gcc.h
+    rather than using GCC-specific in linux/compiler_types.h.
+  - Drop all but GCC 8 macros, since we only need to define macros for
+    versions that we need to introduce pragmas for, and as of this
+    series that's just GCC 8.
+  - Capitalize comments in linux/compiler-gcc.h to match the style of
+    the rest of the file.
+  - Line up macro definitions with tabs in linux/compiler-gcc.h.]
+
+Signed-off-by: Arnd Bergmann <arnd@arndb.de>
+Signed-off-by: Paul Burton <paul.burton@mips.com>
+Tested-by: Christophe Leroy <christophe.leroy@c-s.fr>
+Tested-by: Stafford Horne <shorne@gmail.com>
+Signed-off-by: Masahiro Yamada <yamada.masahiro@socionext.com>
+---
+
+--- a/include/linux/compiler-gcc.h
++++ b/include/linux/compiler-gcc.h
+@@ -334,3 +334,28 @@
+  * code
+  */
+ #define uninitialized_var(x) x = x
++
++/*
++ * Turn individual warnings and errors on and off locally, depending
++ * on version.
++ */
++#define __diag_GCC(version, severity, s) \
++	__diag_GCC_ ## version(__diag_GCC_ ## severity s)
++
++/* Severity used in pragma directives */
++#define __diag_GCC_ignore	ignored
++#define __diag_GCC_warn		warning
++#define __diag_GCC_error	error
++
++/* Compilers before gcc-4.6 do not understand "#pragma GCC diagnostic push" */
++#if GCC_VERSION >= 40600
++#define __diag_str1(s)		#s
++#define __diag_str(s)		__diag_str1(s)
++#define __diag(s)		_Pragma(__diag_str(GCC diagnostic s))
++#endif
++
++#if GCC_VERSION >= 80000
++#define __diag_GCC_8(s)		__diag(s)
++#else
++#define __diag_GCC_8(s)
++#endif
+--- a/include/linux/compiler.h
++++ b/include/linux/compiler.h
+@@ -578,4 +578,23 @@ static __always_inline void __write_once
+ # define __kprobes
+ # define nokprobe_inline	inline
+ #endif
++
++#ifndef __diag
++#define __diag(string)
++#endif
++
++#ifndef __diag_GCC
++#define __diag_GCC(version, severity, string)
++#endif
++
++#define __diag_push()	__diag(push)
++#define __diag_pop()	__diag(pop)
++
++#define __diag_ignore(compiler, version, option, comment) \
++	__diag_ ## compiler(version, ignore, option)
++#define __diag_warn(compiler, version, option, comment) \
++	__diag_ ## compiler(version, warn, option)
++#define __diag_error(compiler, version, option, comment) \
++	__diag_ ## compiler(version, error, option)
++
+ #endif /* __LINUX_COMPILER_H */

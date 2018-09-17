@@ -15,6 +15,7 @@ PKG_HASH:=7e7477534409d5368eb1371ffde6820f0f79780a1a1f676161c48442cb303dfd
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/host-build.mk
 
 define U-Boot/Default
   BUILD_TARGET:=mvebu
@@ -30,6 +31,8 @@ endef
 
 UBOOT_TARGETS:= \
 	clearfog
+
+Build/Exports:=$(Host/Exports)
 
 define Build/Configure
 	# enable additional options beyond clearfog_defconfig

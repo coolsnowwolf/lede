@@ -14,6 +14,7 @@
 #include <linux/sizes.h>
 #include <linux/of_net.h>
 #include <linux/of_address.h>
+#include <linux/of_platform.h>
 #include "ag71xx.h"
 
 #define AG71XX_DEFAULT_MSG_ENABLE	\
@@ -422,13 +423,6 @@ static void ag71xx_hw_init(struct ag71xx *ag)
 {
 	ag71xx_hw_stop(ag);
 
-	if (ag->phy_reset) {
-		reset_control_assert(ag->phy_reset);
-		msleep(50);
-		reset_control_deassert(ag->phy_reset);
-		msleep(200);
-	}
-
 	ag71xx_sb(ag, AG71XX_REG_MAC_CFG1, MAC_CFG1_SR);
 	udelay(20);
 
@@ -535,6 +529,60 @@ static void ath79_set_pll(struct ag71xx *ag)
 	udelay(100);
 }
 
+static void ath79_mii_ctrl_set_if(struct ag71xx *ag, unsigned int mii_if)
+{
+	u32 t;
+
+	t = __raw_readl(ag->mii_base);
+	t &= ~(AR71XX_MII_CTRL_IF_MASK);
+	t |= (mii_if & AR71XX_MII_CTRL_IF_MASK);
+	__raw_writel(t, ag->mii_base);
+}
+
+static void ath79_mii0_ctrl_set_if(struct ag71xx *ag)
+{
+	unsigned int mii_if;
+
+	switch (ag->phy_if_mode) {
+	case PHY_INTERFACE_MODE_MII:
+		mii_if = AR71XX_MII0_CTRL_IF_MII;
+		break;
+	case PHY_INTERFACE_MODE_GMII:
+		mii_if = AR71XX_MII0_CTRL_IF_GMII;
+		break;
+	case PHY_INTERFACE_MODE_RGMII:
+		mii_if = AR71XX_MII0_CTRL_IF_RGMII;
+		break;
+	case PHY_INTERFACE_MODE_RMII:
+		mii_if = AR71XX_MII0_CTRL_IF_RMII;
+		break;
+	default:
+		WARN(1, "Impossible PHY mode defined.\n");
+		return;
+	}
+
+	ath79_mii_ctrl_set_if(ag, mii_if);
+}
+
+static void ath79_mii1_ctrl_set_if(struct ag71xx *ag)
+{
+	unsigned int mii_if;
+
+	switch (ag->phy_if_mode) {
+	case PHY_INTERFACE_MODE_RMII:
+		mii_if = AR71XX_MII1_CTRL_IF_RMII;
+		break;
+	case PHY_INTERFACE_MODE_RGMII:
+		mii_if = AR71XX_MII1_CTRL_IF_RGMII;
+		break;
+	default:
+		WARN(1, "Impossible PHY mode defined.\n");
+		return;
+	}
+
+	ath79_mii_ctrl_set_if(ag, mii_if);
+}
+
 static void ath79_mii_ctrl_set_speed(struct ag71xx *ag)
 {
 	unsigned int mii_speed;
@@ -558,8 +606,8 @@ static void ath79_mii_ctrl_set_speed(struct ag71xx *ag)
 	}
 
 	t = __raw_readl(ag->mii_base);
-	t &= ~(AR71XX_MII_CTRL_IF_MASK);
-	t |= (mii_speed & AR71XX_MII_CTRL_IF_MASK);
+	t &= ~(AR71XX_MII_CTRL_SPEED_MASK << AR71XX_MII_CTRL_SPEED_SHIFT);
+	t |= mii_speed << AR71XX_MII_CTRL_SPEED_SHIFT;
 	__raw_writel(t, ag->mii_base);
 }
 
@@ -618,18 +666,15 @@ __ag71xx_link_adjust(struct ag71xx *ag, bool update)
 	ag71xx_wr(ag, AG71XX_REG_FIFO_CFG3, ag->fifodata[2]);
 
 	if (update) {
-		if (of_device_is_compatible(np, "qca,ar7100-eth")) {
+		if (of_device_is_compatible(np, "qca,ar7100-eth") ||
+		    of_device_is_compatible(np, "qca,ar9130-eth")) {
 			ath79_set_pll(ag);
 			ath79_mii_ctrl_set_speed(ag);
-		} else if (of_device_is_compatible(np, "qca,ar7242-eth")) {
-			ath79_set_pll(ag);
-		} else if (of_device_is_compatible(np, "qca,ar9130-eth")) {
-			ath79_set_pll(ag);
-			ath79_mii_ctrl_set_speed(ag);
-		} else if (of_device_is_compatible(np, "qca,ar9340-eth")) {
-			ath79_set_pll(ag);
-		} else if (of_device_is_compatible(np, "qca,qca9550-eth")) {
-		} else if (of_device_is_compatible(np, "qca,qca9560-eth")) {
+		} else if (of_device_is_compatible(np, "qca,ar7242-eth") ||
+			   of_device_is_compatible(np, "qca,ar9340-eth") ||
+			   of_device_is_compatible(np, "qca,qca9550-eth") ||
+			   of_device_is_compatible(np, "qca,qca9560-eth")) {
+			ath79_set_pllval(ag);
 		}
 	}
 
@@ -637,7 +682,8 @@ __ag71xx_link_adjust(struct ag71xx *ag, bool update)
 	ag71xx_wr(ag, AG71XX_REG_FIFO_CFG5, fifo5);
 	ag71xx_wr(ag, AG71XX_REG_MAC_IFCTL, ifctl);
 
-	if (of_device_is_compatible(np, "qca,qca9530-eth")) {
+	if (of_device_is_compatible(np, "qca,qca9530-eth") ||
+	    of_device_is_compatible(np, "qca,qca9560-eth")) {
 		/*
 		 * The rx ring buffer can stall on small packets on QCA953x and
 		 * QCA956x. Disabling the inline checksum engine fixes the stall.
@@ -737,7 +783,6 @@ static int ag71xx_open(struct net_device *dev)
 	if (ret)
 		goto err;
 
-	ag71xx_ar7240_start(ag);
 	phy_start(ag->phy_dev);
 
 	return 0;
@@ -1273,67 +1318,10 @@ static const char *ag71xx_get_phy_if_mode_name(phy_interface_t mode)
 	return "unknown";
 }
 
-static void ag71xx_of_bit(struct device_node *np, const char *prop,
-			  u32 *reg, u32 mask)
-{
-	u32 val;
-
-	if (of_property_read_u32(np, prop, &val))
-		return;
-
-	if (val)
-		*reg |= mask;
-	else
-		*reg &= ~mask;
-}
-
-static void ag71xx_setup_gmac_933x(struct device_node *np, void __iomem *base)
-{
-	u32 val = __raw_readl(base + AR933X_GMAC_REG_ETH_CFG);
-
-	ag71xx_of_bit(np, "switch-phy-swap", &val, AR933X_ETH_CFG_SW_PHY_SWAP);
-	ag71xx_of_bit(np, "switch-phy-addr-swap", &val,
-		      AR933X_ETH_CFG_SW_PHY_ADDR_SWAP);
-
-	__raw_writel(val, base + AR933X_GMAC_REG_ETH_CFG);
-}
-
-static int ag71xx_setup_gmac(struct device_node *np)
-{
-	struct device_node *np_dev;
-	void __iomem *base;
-	int err = 0;
-
-	np = of_get_child_by_name(np, "gmac-config");
-	if (!np)
-		return 0;
-
-	np_dev = of_parse_phandle(np, "device", 0);
-	if (!np_dev)
-		goto out;
-
-	base = of_iomap(np_dev, 0);
-	if (!base) {
-		pr_err("%pOF: can't map GMAC registers\n", np_dev);
-		err = -ENOMEM;
-		goto err_iomap;
-	}
-
-	if (of_device_is_compatible(np_dev, "qca,ar9330-gmac"))
-		ag71xx_setup_gmac_933x(np, base);
-
-	iounmap(base);
-
-err_iomap:
-	of_node_put(np_dev);
-out:
-	of_node_put(np);
-	return err;
-}
-
 static int ag71xx_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
+	struct device_node *mdio_node;
 	struct net_device *dev;
 	struct resource *res;
 	struct ag71xx *ag;
@@ -1371,8 +1359,6 @@ static int ag71xx_probe(struct platform_device *pdev)
 		err = PTR_ERR(ag->mac_reset);
 		goto err_free;
 	}
-
-	ag->phy_reset = devm_reset_control_get_optional(&pdev->dev, "phy");
 
 	if (of_property_read_u32_array(np, "fifo-data", ag->fifodata, 3)) {
 		if (of_device_is_compatible(np, "qca,ar9130-eth") ||
@@ -1495,15 +1481,34 @@ static int ag71xx_probe(struct platform_device *pdev)
 		goto err_free;
 	}
 
+	if (of_property_read_u32(np, "qca,mac-idx", &ag->mac_idx))
+		ag->mac_idx = -1;
+	if (ag->mii_base)
+		switch (ag->mac_idx) {
+		case 0:
+			ath79_mii0_ctrl_set_if(ag);
+			break;
+		case 1:
+			ath79_mii1_ctrl_set_if(ag);
+			break;
+		default:
+			break;
+		}
+
 	netif_napi_add(dev, &ag->napi, ag71xx_poll, AG71XX_NAPI_WEIGHT);
 
 	ag71xx_wr(ag, AG71XX_REG_MAC_CFG1, 0);
 	ag71xx_hw_init(ag);
-	ag71xx_mdio_init(ag);
+
+	if(!of_device_is_compatible(np, "simple-mfd")) {
+		mdio_node = of_get_child_by_name(np, "mdio-bus");
+		if(!IS_ERR(mdio_node))
+			of_platform_device_create(mdio_node, NULL, NULL);
+	}
 
 	err = ag71xx_phy_connect(ag);
 	if (err)
-		goto err_mdio_free;
+		goto err_free;
 
 	err = ag71xx_debugfs_init(ag);
 	if (err)
@@ -1527,8 +1532,6 @@ static int ag71xx_probe(struct platform_device *pdev)
 
 err_phy_disconnect:
 	ag71xx_phy_disconnect(ag);
-err_mdio_free:
-	ag71xx_mdio_cleanup(ag);
 err_free:
 	free_netdev(dev);
 	return err;
@@ -1545,7 +1548,6 @@ static int ag71xx_remove(struct platform_device *pdev)
 	ag = netdev_priv(dev);
 	ag71xx_debugfs_exit(ag);
 	ag71xx_phy_disconnect(ag);
-	ag71xx_mdio_cleanup(ag);
 	unregister_netdev(dev);
 	free_irq(dev->irq, dev);
 	iounmap(ag->mac_base);

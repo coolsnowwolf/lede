@@ -13,7 +13,7 @@ PKG_VERSION:=1.6.9
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=http://downloads.openwrt.org/sources/
+PKG_SOURCE_URL:=https://downloads.openwrt.org/sources/
 PKG_HASH:=1d2bc04c2c6bb3d2d6c1916b6dc559cda2b1ecb045d7801fd49af6af4234abeb
 PKG_TARGETS:=bin
 
@@ -27,7 +27,6 @@ define Package/apex
   DEPENDS:=@TARGET_ixp4xx
   DEFAULT:=y
   TITLE:=Boot loader for NSLU2, FSG3, NAS100D and others
-  URL:=http://wiki.buici.com/wiki/Apex_Bootloader
 endef
 
 define build_apex

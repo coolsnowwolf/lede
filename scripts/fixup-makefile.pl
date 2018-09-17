@@ -26,7 +26,7 @@ sub set_var($) {
 		$state{related_var} = "URL";
 	} else {
 		$state{context} = 1;
-		$state{related_var} = "PKG_SOURCE";
+		$state{related_var} = "PKG_SOURCE_URL";
 	}
 }
 

@@ -11,7 +11,7 @@ include $(INCLUDE_DIR)/kernel.mk
 PKG_NAME:=mac80211
 
 PKG_VERSION:=2017-11-01
-PKG_RELEASE:=8
+PKG_RELEASE:=9
 PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources
 PKG_HASH:=8437ab7886b988c8152e7a4db30b7f41009e49a3b2cb863edd05da1ecd7eb05a
 
@@ -57,6 +57,7 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_ATH_DEBUG \
 	CONFIG_PACKAGE_ATH_DFS \
 	CONFIG_PACKAGE_ATH_SPECTRAL \
+	CONFIG_PACKAGE_ATH_DYNACK \
 	CONFIG_PACKAGE_B43_DEBUG \
 	CONFIG_PACKAGE_B43_PIO \
 	CONFIG_PACKAGE_B43_PHY_G \
@@ -74,6 +75,8 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_RTLWIFI_DEBUG \
 	CONFIG_ATH9K_SUPPORT_PCOEM \
 	CONFIG_ATH9K_TX99 \
+	CONFIG_ATH10K_LEDS \
+	CONFIG_ATH10K_THERMAL \
 	CONFIG_ATH_USER_REGD \
 
 include $(INCLUDE_DIR)/package.mk
@@ -197,13 +200,24 @@ define KernelPackage/ath/config
 		help
 		  Say Y to enable access to the FFT/spectral data via debugfs.
 
+	config PACKAGE_ATH_DYNACK
+		bool "Enable Dynack support"
+		depends on PACKAGE_kmod-ath9k-common
+		help
+		  Enables support for Dynamic ACK estimation, which allows the fastest possible speed
+		  at any distance automatically by increasing/decreasing the max frame ACK time for
+		  the most remote station detected.  It can be enabled by using iw (iw phy0 set distance auto),
+		  or by sending the NL80211_ATTR_WIPHY_DYN_ACK flag to mac80211 driver using netlink.
+
+		  Select this option if you want to enable this feature
+
   endif
 endef
 
 define KernelPackage/ath
   $(call KernelPackage/mac80211/Default)
   TITLE:=Atheros common driver part
-  DEPENDS+= @PCI_SUPPORT||USB_SUPPORT||TARGET_ar71xx||TARGET_ath25 +kmod-mac80211
+  DEPENDS+= @PCI_SUPPORT||USB_SUPPORT||TARGET_ar71xx||TARGET_ath79||TARGET_ath25 +kmod-mac80211
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath.ko
   MENU:=1
 endef
@@ -268,7 +282,7 @@ define KernelPackage/ath9k-common
   TITLE:=Atheros 802.11n wireless devices (common code for ath9k and ath9k_htc)
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath9k
   HIDDEN:=1
-  DEPENDS+= @PCI_SUPPORT||USB_SUPPORT||TARGET_ar71xx +kmod-ath +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT
+  DEPENDS+= @PCI_SUPPORT||USB_SUPPORT||TARGET_ar71xx||TARGET_ath79 +kmod-ath +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT
   FILES:= \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath9k/ath9k_common.ko \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath9k/ath9k_hw.ko
@@ -278,7 +292,7 @@ define KernelPackage/ath9k
   $(call KernelPackage/mac80211/Default)
   TITLE:=Atheros 802.11n PCI wireless cards support
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath9k
-  DEPENDS+= @PCI_SUPPORT||TARGET_ar71xx +kmod-ath9k-common
+  DEPENDS+= @PCI_SUPPORT||TARGET_ar71xx||TARGET_ath79 +kmod-ath9k-common
   FILES:= \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath9k/ath9k.ko
   AUTOLOAD:=$(call AutoProbe,ath9k)
@@ -301,7 +315,7 @@ define KernelPackage/ath9k/config
 
 	config ATH9K_UBNTHSR
 		bool "Support for Ubiquiti UniFi Outdoor+ access point"
-		depends on PACKAGE_kmod-ath9k && TARGET_ar71xx_generic
+		depends on PACKAGE_kmod-ath9k && (TARGET_ar71xx_generic||TARGET_ath79)
 		default y
 
 endef
@@ -325,7 +339,8 @@ define KernelPackage/ath10k
   $(call KernelPackage/mac80211/Default)
   TITLE:=Atheros 802.11ac wireless cards support
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath10k
-  DEPENDS+= @PCI_SUPPORT +kmod-ath +@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT +@DRIVER_11W_SUPPORT
+  DEPENDS+= @PCI_SUPPORT +kmod-ath +@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT +@DRIVER_11W_SUPPORT \
+	+ATH10K_THERMAL:kmod-hwmon-core +ATH10K_THERMAL:kmod-thermal
   FILES:= \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath10k/ath10k_core.ko \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath10k/ath10k_pci.ko
@@ -336,6 +351,19 @@ define KernelPackage/ath10k/description
 This module adds support for wireless adapters based on
 Atheros IEEE 802.11ac family of chipsets. For now only
 PCI is supported.
+endef
+
+define KernelPackage/ath10k/config
+
+       config ATH10K_LEDS
+               bool "Enable LED support"
+               default y
+               depends on PACKAGE_kmod-ath10k
+
+       config ATH10K_THERMAL
+               bool "Enable thermal sensors and throttling support"
+               depends on PACKAGE_kmod-ath10k
+
 endef
 
 #Broadcom firmware
@@ -1614,16 +1642,19 @@ config-$(call config_package,ath) += ATH_CARDS ATH_COMMON ATH_REG_DYNAMIC_USER_R
 config-$(CONFIG_PACKAGE_ATH_DEBUG) += ATH_DEBUG ATH10K_DEBUG ATH9K_STATION_STATISTICS
 config-$(CONFIG_PACKAGE_ATH_DFS) += ATH9K_DFS_CERTIFIED ATH10K_DFS_CERTIFIED
 config-$(CONFIG_PACKAGE_ATH_SPECTRAL) += ATH9K_COMMON_SPECTRAL ATH10K_SPECTRAL
-
+config-$(CONFIG_PACKAGE_ATH_DYNACK) += ATH9K_DYNACK
 config-$(call config_package,ath9k) += ATH9K
 config-$(call config_package,ath9k-common) += ATH9K_COMMON
 config-$(CONFIG_TARGET_ar71xx) += ATH9K_AHB
+config-$(CONFIG_TARGET_ath79) += ATH9K_AHB
 config-$(CONFIG_TARGET_ipq40xx) += ATH10K_AHB
 config-$(CONFIG_PCI) += ATH9K_PCI
 config-$(CONFIG_ATH_USER_REGD) += ATH_USER_REGD
 config-$(CONFIG_ATH9K_SUPPORT_PCOEM) += ATH9K_PCOEM
 config-$(CONFIG_ATH9K_TX99) += ATH9K_TX99
 config-$(CONFIG_ATH9K_UBNTHSR) += ATH9K_UBNTHSR
+config-$(CONFIG_ATH10K_LEDS) += ATH10K_LEDS
+config-$(CONFIG_ATH10K_THERMAL) += ATH10K_THERMAL
 
 config-$(call config_package,ath9k-htc) += ATH9K_HTC
 config-$(call config_package,ath10k) += ATH10K ATH10K_PCI

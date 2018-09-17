@@ -12,6 +12,8 @@
 #include <linux/etherdevice.h>
 #include <linux/list.h>
 #include <linux/netdevice.h>
+#include <linux/of_mdio.h>
+#include <linux/of_net.h>
 #include <linux/phy.h>
 #include <linux/mii.h>
 #include <linux/bitops.h>
@@ -291,7 +293,9 @@ struct ar7240sw_port_stat {
 
 struct ar7240sw {
 	struct mii_bus	*mii_bus;
-	struct ag71xx_switch_platform_data *swdata;
+	struct mii_bus	*switch_mii_bus;
+	struct device_node *of_node;
+	struct device_node *mdio_node;
 	struct switch_dev swdev;
 	int num_ports;
 	u8 ver;
@@ -366,9 +370,11 @@ static u32 __ar7240sw_reg_read(struct mii_bus *mii, u32 reg)
 	phy_reg = mk_phy_reg(reg);
 
 	local_irq_save(flags);
-	ag71xx_mdio_mii_write(mii, 0x1f, 0x10, mk_high_addr(reg));
-	lo = (u32) ag71xx_mdio_mii_read(mii, phy_addr, phy_reg);
-	hi = (u32) ag71xx_mdio_mii_read(mii, phy_addr, phy_reg + 1);
+	mutex_lock(&mii->mdio_lock);
+	mii->write(mii, 0x1f, 0x10, mk_high_addr(reg));
+	lo = (u32) mii->read(mii, phy_addr, phy_reg);
+	hi = (u32) mii->read(mii, phy_addr, phy_reg + 1);
+	mutex_unlock(&mii->mdio_lock);
 	local_irq_restore(flags);
 
 	return (hi << 16) | lo;
@@ -385,9 +391,11 @@ static void __ar7240sw_reg_write(struct mii_bus *mii, u32 reg, u32 val)
 	phy_reg = mk_phy_reg(reg);
 
 	local_irq_save(flags);
-	ag71xx_mdio_mii_write(mii, 0x1f, 0x10, mk_high_addr(reg));
-	ag71xx_mdio_mii_write(mii, phy_addr, phy_reg + 1, (val >> 16));
-	ag71xx_mdio_mii_write(mii, phy_addr, phy_reg, (val & 0xffff));
+	mutex_lock(&mii->mdio_lock);
+	mii->write(mii, 0x1f, 0x10, mk_high_addr(reg));
+	mii->write(mii, phy_addr, phy_reg + 1, (val >> 16));
+	mii->write(mii, phy_addr, phy_reg, (val & 0xffff));
+	mutex_unlock(&mii->mdio_lock);
 	local_irq_restore(flags);
 }
 
@@ -463,10 +471,12 @@ static int ar7240sw_reg_wait(struct mii_bus *mii, u32 reg, u32 mask, u32 val,
 	return ret;
 }
 
-int ar7240sw_phy_read(struct mii_bus *mii, int phy_addr, int reg_addr)
+int ar7240sw_phy_read(struct mii_bus *bus, int phy_addr, int reg_addr)
 {
 	u32 t, val = 0xffff;
 	int err;
+	struct ar7240sw *as = bus->priv;
+	struct mii_bus *mii = as->mii_bus;
 
 	if (phy_addr >= AR7240_NUM_PHYS)
 		return 0xffff;
@@ -488,11 +498,13 @@ int ar7240sw_phy_read(struct mii_bus *mii, int phy_addr, int reg_addr)
 	return val & AR7240_MDIO_CTRL_DATA_M;
 }
 
-int ar7240sw_phy_write(struct mii_bus *mii, int phy_addr, int reg_addr,
+int ar7240sw_phy_write(struct mii_bus *bus, int phy_addr, int reg_addr,
 		       u16 reg_val)
 {
 	u32 t;
 	int ret;
+	struct ar7240sw *as = bus->priv;
+	struct mii_bus *mii = as->mii_bus;
 
 	if (phy_addr >= AR7240_NUM_PHYS)
 		return -EINVAL;
@@ -646,6 +658,7 @@ ar7240sw_phy_poll_reset(struct mii_bus *bus)
 static int ar7240sw_reset(struct ar7240sw *as)
 {
 	struct mii_bus *mii = as->mii_bus;
+	struct mii_bus *swmii = as->switch_mii_bus;
 	int ret;
 	int i;
 
@@ -665,13 +678,13 @@ static int ar7240sw_reset(struct ar7240sw *as)
 
 	/* setup PHYs */
 	for (i = 0; i < AR7240_NUM_PHYS; i++) {
-		ar7240sw_phy_write(mii, i, MII_ADVERTISE,
+		ar7240sw_phy_write(swmii, i, MII_ADVERTISE,
 				   ADVERTISE_ALL | ADVERTISE_PAUSE_CAP |
 				   ADVERTISE_PAUSE_ASYM);
-		ar7240sw_phy_write(mii, i, MII_BMCR,
+		ar7240sw_phy_write(swmii, i, MII_BMCR,
 				   BMCR_RESET | BMCR_ANENABLE);
 	}
-	ret = ar7240sw_phy_poll_reset(mii);
+	ret = ar7240sw_phy_poll_reset(swmii);
 	if (ret)
 		return ret;
 
@@ -751,20 +764,6 @@ static void ar7240sw_setup_port(struct ar7240sw *as, unsigned port, u8 portmask)
 
 		ar7240sw_reg_write(mii, AR7240_REG_PORT_VLAN(port), vlan);
 	}
-}
-
-static int ar7240_set_addr(struct ar7240sw *as, u8 *addr)
-{
-	struct mii_bus *mii = as->mii_bus;
-	u32 t;
-
-	t = (addr[4] << 8) | addr[5];
-	ar7240sw_reg_write(mii, AR7240_REG_MAC_ADDR0, t);
-
-	t = (addr[0] << 24) | (addr[1] << 16) | (addr[2] << 8) | addr[3];
-	ar7240sw_reg_write(mii, AR7240_REG_MAC_ADDR1, t);
-
-	return 0;
 }
 
 static int
@@ -1213,33 +1212,33 @@ static const struct switch_dev_ops ar7240_ops = {
 	.get_port_stats = ar7240_get_port_stats,
 };
 
-static struct ar7240sw *
-ar7240_probe(struct ag71xx *ag, struct device_node *np)
+static int
+ag71xx_ar7240_probe(struct mdio_device *mdiodev)
 {
-	struct mii_bus *mii = ag->mii_bus;
+	struct mii_bus *mii = mdiodev->bus;
 	struct ar7240sw *as;
 	struct switch_dev *swdev;
+	struct reset_control *switch_reset;
 	u32 ctrl;
-	u16 phy_id1;
-	u16 phy_id2;
-	int i;
+	int phy_if_mode, err, i;
 
-	phy_id1 = ar7240sw_phy_read(mii, 0, MII_PHYSID1);
-	phy_id2 = ar7240sw_phy_read(mii, 0, MII_PHYSID2);
-	if ((phy_id1 != AR7240_PHY_ID1 || phy_id2 != AR7240_PHY_ID2) &&
-	    (phy_id1 != AR934X_PHY_ID1 || phy_id2 != AR934X_PHY_ID2)) {
-		pr_err("%s: unknown phy id '%04x:%04x'\n",
-		       dev_name(&mii->dev), phy_id1, phy_id2);
-		return NULL;
-	}
-
-	as = kzalloc(sizeof(*as), GFP_KERNEL);
+	as = devm_kzalloc(&mdiodev->dev, sizeof(*as), GFP_KERNEL);
 	if (!as)
-		return NULL;
+		return -ENOMEM;
 
 	as->mii_bus = mii;
+	as->of_node = mdiodev->dev.of_node;
+	as->mdio_node = of_get_child_by_name(as->of_node, "mdio-bus");
 
 	swdev = &as->swdev;
+
+	switch_reset = devm_reset_control_get_optional(&mdiodev->dev, "switch");
+	if (switch_reset) {
+		reset_control_assert(switch_reset);
+		msleep(50);
+		reset_control_deassert(switch_reset);
+		msleep(200);
+	}
 
 	ctrl = ar7240sw_reg_read(mii, AR7240_REG_MASK_CTRL);
 	as->ver = (ctrl >> AR7240_MASK_CTRL_VERSION_S) &
@@ -1250,20 +1249,21 @@ ar7240_probe(struct ag71xx *ag, struct device_node *np)
 		swdev->ports = AR7240_NUM_PORTS - 1;
 	} else if (sw_is_ar934x(as)) {
 		swdev->name = "AR934X built-in switch";
+		phy_if_mode = of_get_phy_mode(as->of_node);
 
-		if (ag->phy_if_mode == PHY_INTERFACE_MODE_GMII) {
+		if (phy_if_mode == PHY_INTERFACE_MODE_GMII) {
 			ar7240sw_reg_set(mii, AR934X_REG_OPER_MODE0,
 					 AR934X_OPER_MODE0_MAC_GMII_EN);
-		} else if (ag->phy_if_mode == PHY_INTERFACE_MODE_MII) {
+		} else if (phy_if_mode == PHY_INTERFACE_MODE_MII) {
 			ar7240sw_reg_set(mii, AR934X_REG_OPER_MODE0,
 					 AR934X_OPER_MODE0_PHY_MII_EN);
 		} else {
 			pr_err("%s: invalid PHY interface mode\n",
-			       dev_name(&mii->dev));
-			goto err_free;
+			       dev_name(&mdiodev->dev));
+			return -EINVAL;
 		}
 
-		if (of_property_read_bool(np, "phy4-mii-enable")) {
+		if (of_property_read_bool(as->of_node, "phy4-mii-enable")) {
 			ar7240sw_reg_set(mii, AR934X_REG_OPER_MODE1,
 					 AR934X_REG_OPER_MODE1_PHY4_MII_EN);
 			swdev->ports = AR7240_NUM_PORTS - 1;
@@ -1272,69 +1272,69 @@ ar7240_probe(struct ag71xx *ag, struct device_node *np)
 		}
 	} else {
 		pr_err("%s: unsupported chip, ctrl=%08x\n",
-			dev_name(&mii->dev), ctrl);
-		goto err_free;
+			dev_name(&mdiodev->dev), ctrl);
+		return -EINVAL;
 	}
 
 	swdev->cpu_port = AR7240_PORT_CPU;
 	swdev->vlans = AR7240_MAX_VLANS;
 	swdev->ops = &ar7240_ops;
+	swdev->alias = dev_name(&mdiodev->dev);
 
-	if (register_switch(&as->swdev, ag->dev) < 0)
-		goto err_free;
+	if ((err = register_switch(&as->swdev, NULL)) < 0)
+		return err;
 
-	pr_info("%s: Found an %s\n", dev_name(&mii->dev), swdev->name);
+	pr_info("%s: Found an %s\n", dev_name(&mdiodev->dev), swdev->name);
+
+	as->switch_mii_bus = devm_mdiobus_alloc(&mdiodev->dev);
+	as->switch_mii_bus->name = "ar7240sw_mdio";
+	as->switch_mii_bus->read = ar7240sw_phy_read;
+	as->switch_mii_bus->write = ar7240sw_phy_write;
+	as->switch_mii_bus->priv = as;
+	as->switch_mii_bus->parent = &mdiodev->dev;
+	snprintf(as->switch_mii_bus->id, MII_BUS_ID_SIZE, "%s", dev_name(&mdiodev->dev));
+
+	if(as->mdio_node) {
+		err = of_mdiobus_register(as->switch_mii_bus, as->mdio_node);
+		if (err)
+			return err;
+	}
 
 	/* initialize defaults */
 	for (i = 0; i < AR7240_MAX_VLANS; i++)
 		as->vlan_id[i] = i;
 
 	as->vlan_table[0] = ar7240sw_port_mask_all(as);
-
-	return as;
-
-err_free:
-	kfree(as);
-	return NULL;
-}
-
-void ag71xx_ar7240_start(struct ag71xx *ag)
-{
-	struct ar7240sw *as = ag->phy_priv;
-
-	if (!as)
-		return;
-
 	ar7240sw_reset(as);
-
-	ar7240_set_addr(as, ag->dev->dev_addr);
 	ar7240_hw_apply(&as->swdev);
-}
-
-int ag71xx_ar7240_init(struct ag71xx *ag, struct device_node *np)
-{
-	struct ar7240sw *as;
-
-	as = ar7240_probe(ag, np);
-	if (!as)
-		return -ENODEV;
-
-	ag->phy_priv = as;
-	ar7240sw_reset(as);
-
 	rwlock_init(&as->stats_lock);
-
+	dev_set_drvdata(&mdiodev->dev, as);
 	return 0;
 }
 
-void ag71xx_ar7240_cleanup(struct ag71xx *ag)
+static void
+ag71xx_ar7240_remove(struct mdio_device *mdiodev)
 {
-	struct ar7240sw *as = ag->phy_priv;
-
-	if (!as)
-		return;
-
+	struct ar7240sw *as = dev_get_drvdata(&mdiodev->dev);
+	if(as->mdio_node)
+		mdiobus_unregister(as->switch_mii_bus);
 	unregister_switch(&as->swdev);
-	kfree(as);
-	ag->phy_priv = NULL;
 }
+
+static const struct of_device_id ag71xx_sw_of_match[] = {
+	{ .compatible = "qca,ar8216-builtin" },
+	{ .compatible = "qca,ar8229-builtin" },
+	{ /* sentinel */ },
+};
+
+static struct mdio_driver ag71xx_sw_driver = {
+	.probe  = ag71xx_ar7240_probe,
+	.remove = ag71xx_ar7240_remove,
+	.mdiodrv.driver = {
+		.name = "ag71xx-switch",
+		.of_match_table = ag71xx_sw_of_match,
+	},
+};
+
+mdio_module_driver(ag71xx_sw_driver);
+MODULE_LICENSE("GPL");
