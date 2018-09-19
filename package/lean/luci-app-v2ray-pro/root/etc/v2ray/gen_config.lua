@@ -4,8 +4,8 @@
 ]]--
 
 local conf_path, json_path = ...
-conf_path = conf_path or "v2ray"
-json_path = json_path or "/etc/v2ray/config.json"
+conf_path = conf_path or "v2raypro"
+json_path = json_path or "/tmp/config.json"
 
 local local_listen_port = 7070
 
@@ -13,7 +13,7 @@ local cjson = require "cjson.safe"
 local ucursor = require "luci.model.uci".cursor()
 local lip = require "luci.ip"
 
-local v2ray_stream_mode = ucursor:get(conf_path, "v2ray", "network_type")	-- tcp/kcp/ws
+local v2ray_stream_mode = ucursor:get(conf_path, "v2raypro", "network_type")	-- tcp/kcp/ws
 
 function v2ray_get_conf_list(op)
 	local t = {}
@@ -69,25 +69,25 @@ local v2ray	= {
 		settings = {
 			vnext = {
 			  [1] = {
-				address = ucursor:get(conf_path, "v2ray", "address"),
-				port = tonumber(ucursor:get(conf_path, "v2ray", "port")),
+				address = ucursor:get(conf_path, "v2raypro", "address"),
+				port = tonumber(ucursor:get(conf_path, "v2raypro", "port")),
 				users = {
 				  [1] = {
-				    id = ucursor:get(conf_path, "v2ray", "id"),
-					alterId = tonumber(ucursor:get(conf_path, "v2ray", "alterId")),
-					security = ucursor:get(conf_path, "v2ray", "security")
+				    id = ucursor:get(conf_path, "v2raypro", "id"),
+					alterId = tonumber(ucursor:get(conf_path, "v2raypro", "alterId")),
+					security = ucursor:get(conf_path, "v2raypro", "security")
 				  },
 				},
 			  },
 			},
 		},
 		streamSettings = {
-			network = ucursor:get(conf_path, "v2ray", "network_type"),
-			security = (ucursor:get(conf_path, "v2ray", "tls") == '1') and "tls" or "none",
-			tcpSettings = (v2ray_stream_mode == "tcp" and ucursor:get(conf_path, "v2ray", "tcp_obfs") == "http") and {
+			network = ucursor:get(conf_path, "v2raypro", "network_type"),
+			security = (ucursor:get(conf_path, "v2raypro", "tls") == '1') and "tls" or "none",
+			tcpSettings = (v2ray_stream_mode == "tcp" and ucursor:get(conf_path, "v2raypro", "tcp_obfs") == "http") and {
 				connectionReuse = true,
 				header = {
-					type = ucursor:get(conf_path, "v2ray", "tcp_obfs"),
+					type = ucursor:get(conf_path, "v2raypro", "tcp_obfs"),
 					request = {
 						version = "1.1",
 						method = "GET",
@@ -118,28 +118,28 @@ local v2ray	= {
 			} or nil,
 
 			kcpSettings = (v2ray_stream_mode == "kcp") and {
-				mtu = tonumber(ucursor:get(conf_path, "v2ray", "kcp_mtu")),
-				tti = tonumber(ucursor:get(conf_path, "v2ray", "kcp_tti")),
-				uplinkCapacity = tonumber(ucursor:get(conf_path, "v2ray", "kcp_uplink")),
-				downlinkCapacity = tonumber(ucursor:get(conf_path, "v2ray", "kcp_downlink")),
-				congestion = (ucursor:get(conf_path, "v2ray", "kcp_congestion") == "1") and true or false,
-				readBufferSize = tonumber(ucursor:get(conf_path, "v2ray", "kcp_readbuf")),
-				writeBufferSize = tonumber(ucursor:get(conf_path, "v2ray", "kcp_writebuf")),
+				mtu = tonumber(ucursor:get(conf_path, "v2raypro", "kcp_mtu")),
+				tti = tonumber(ucursor:get(conf_path, "v2raypro", "kcp_tti")),
+				uplinkCapacity = tonumber(ucursor:get(conf_path, "v2raypro", "kcp_uplink")),
+				downlinkCapacity = tonumber(ucursor:get(conf_path, "v2raypro", "kcp_downlink")),
+				congestion = (ucursor:get(conf_path, "v2raypro", "kcp_congestion") == "1") and true or false,
+				readBufferSize = tonumber(ucursor:get(conf_path, "v2raypro", "kcp_readbuf")),
+				writeBufferSize = tonumber(ucursor:get(conf_path, "v2raypro", "kcp_writebuf")),
 				header = {
-					type = ucursor:get(conf_path, "v2ray", "kcp_obfs")
+					type = ucursor:get(conf_path, "v2raypro", "kcp_obfs")
 				}
 			} or nil,
 
 			wsSettings = (v2ray_stream_mode == "ws") and {
 				connectionReuse = true,
-				path = ucursor:get(conf_path, "v2ray", "ws_path"),
-				headers = (ucursor:get(conf_path, "v2ray", "ws_headers") ~= nil) and {
-					Host = ucursor:get(conf_path, "v2ray", "ws_headers")
+				path = ucursor:get(conf_path, "v2raypro", "ws_path"),
+				headers = (ucursor:get(conf_path, "v2raypro", "ws_headers") ~= nil) and {
+					Host = ucursor:get(conf_path, "v2raypro", "ws_headers")
 				} or nil,
 			} or nil,
 		},
 		mux = {
-			enabled = (ucursor:get(conf_path, "v2ray", "mux") == "1") and true or false
+			enabled = (ucursor:get(conf_path, "v2raypro", "mux") == "1") and true or false
 		},
 	},
 	dns = {

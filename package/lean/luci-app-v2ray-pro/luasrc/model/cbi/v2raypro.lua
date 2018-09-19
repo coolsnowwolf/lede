@@ -1,3 +1,4 @@
+
 local fs = require "nixio.fs"
 local NXFS = require "nixio.fs"
 local WLFS = require "nixio.fs"
@@ -9,21 +10,14 @@ local dog = "/tmp/v2raypro.log"
 local http = luci.http
 local ucursor = require "luci.model.uci".cursor()
 
-local Status
-
-if SYS.call("pidof v2ray > /dev/null") == 0 then
-	Status = translate("<strong><font color=\"green\">V2Ray is Running</font></strong>")
-else
-	Status = translate("<strong><font color=\"red\">V2Ray is Not Running</font></strong>")
-end
-
-m = Map("v2ray")
+m = Map("v2raypro")
 m.title	= translate("V2Ray Transparent Proxy")
 m.description = translate("A fast secure tunnel proxy that help you get through firewalls on your router")
 
-s = m:section(TypedSection, "v2ray")
+m:section(SimpleSection).template  = "v2raypro/v2raypro_status"
+
+s = m:section(TypedSection, "v2raypro")
 s.anonymous = true
-s.description = translate(string.format("%s<br /><br />", Status))
 
 -- ---------------------------------------------------
 
@@ -56,9 +50,6 @@ safe_dns_tcp = s:taboption("basic",Flag, "safe_dns_tcp", translate("DNS uses TCP
 safe_dns_tcp.rmempty = false
 -- safe_dns_tcp:depends("more", "1")
 
--- more_opt = s:taboption("basic",Flag, "more", translate("More Options"),
--- 	translate("Options for advanced users"))
-
 -- timeout = s:taboption("basic",Value, "timeout", translate("Timeout"))
 -- timeout.datatype = "range(0,10000)"
 -- timeout.placeholder = "60"
@@ -81,89 +72,22 @@ safe_dns_tcp.rmempty = false
 --fast_open =s:taboption("basic",Flag, "fast_open", translate("TCP Fast Open"),
 --	translate("Enable TCP fast open, only available on kernel > 3.7.0"))
 
-
-
 s:tab("main",  translate("Server Setting"))
-
-use_conf_file = s:taboption("main",Flag, "use_conf_file", translate("Use Config File"))
-use_conf_file.rmempty = false
-
-if nixio.fs.access("/usr/bin/v2ray/v2ctl") then
-	conf_file_type = s:taboption("main",ListValue, "conf_file_type", translate("Config File Type"))
-	conf_file_type:value("pb","Protobuf")
-else 
-	conf_file_type = s:taboption("main",ListValue, "conf_file_type", translate("Config File Type"), translate("Warning: Can't find v2ctl. You can only choose Protobuf."))
-end
-conf_file_type:value("json","JSON")
-conf_file_type:depends("use_conf_file", 1)
-
-conf_file_path = s:taboption("main",Value, "conf_file_path", translate("Config File Path"),
-	translate("If you choose to upload a new file, please do not modify and this configuration will be overwritten automatically."))
-conf_file_path:depends("use_conf_file", 1)
-
-upload_conf = s:taboption("main",FileUpload, "")
-upload_conf.template = "cbi/other_upload2"
-upload_conf:depends("use_conf_file", 1)
-
-um = s:taboption("main",DummyValue, "", nil)
-um.template = "cbi/other_dvalue"
-um:depends("use_conf_file", 1)
-
-
-
-local conf_dir, fd
-conf_dir = "/etc/v2ray/"
-nixio.fs.mkdir(conf_dir)
-http.setfilehandler(
-	function(meta, chunk, eof)
-		if not fd then
-			if not meta then return end
-
-			if	meta and chunk then fd = nixio.open(conf_dir .. meta.file, "w") end
-
-			if not fd then
-				um.value = translate("Create upload file error.")
-				return
-			end
-		end
-		if chunk and fd then
-			fd:write(chunk)
-		end
-		if eof and fd then
-			fd:close()
-			fd = nil
-			um.value = translate("File saved to") .. ' "/etc/v2ray/' .. meta.file .. '"'
-			ucursor:set("v2ray","v2ray","conf_file_path","/etc/v2ray/" .. meta.file)
-			ucursor:commit("v2ray")
-		end
-	end
-)
-
-if luci.http.formvalue("upload") then
-	local f = luci.http.formvalue("ulfile")
-	if #f <= 0 then
-		um.value = translate("No specify upload file.")
-	end
-end
-
-
-
 
 server = s:taboption("main",Value, "address", translate("Server Address"))
 server.datatype = "host"
-server:depends("use_conf_file", 0)
+server.rmempty = false
 
 server_port = s:taboption("main",Value, "port", translate("Server Port"))
 server_port.datatype = "range(0,65535)"
-server_port:depends("use_conf_file", 0)
+server_port.rmempty = false
 
 id = s:taboption("main",Value, "id", translate("ID"))
 id.password = true
-id:depends("use_conf_file", 0)
 
 alterId = s:taboption("main",Value, "alterId", translate("Alter ID"))
 alterId.datatype = "range(1,65535)"
-alterId:depends("use_conf_file", 0)
+alterId.rmempty = false
 
 security = s:taboption("main",ListValue, "security", translate("Security"))
 security:value("none")
@@ -171,13 +95,11 @@ security:value("auto")
 security:value("aes-128-cfb")
 security:value("aes-128-gcm")
 security:value("chacha20-poly1305")
-security:depends("use_conf_file", 0)
 
 network_type = s:taboption("main",ListValue, "network_type", translate("Network Type"))
 network_type:value("tcp")
 network_type:value("kcp")
 network_type:value("ws")
-network_type:depends("use_conf_file", 0)
 
 -- tcp settings
 tcp_obfs = s:taboption("main",ListValue, "tcp_obfs", translate("TCP Obfs"))
@@ -238,13 +160,9 @@ ws_headers.datatype = "host"
 -- others
 tls = s:taboption("main",Flag, "tls", translate("TLS"))
 tls.rmempty = false
-tls:depends("use_conf_file", 0)
 
 mux = s:taboption("main",Flag, "mux", translate("Mux"))
 mux.rmempty = false
-mux:depends("use_conf_file", 0)
-
-
 
 s:tab("list",  translate("User-defined GFW-List"))
 gfwlist = s:taboption("list", TextValue, "conf")
@@ -319,12 +237,5 @@ e.rmempty=false
 e:value("disable",translate("No Proxy"))
 e:value("global",translate("Global Proxy"))
 e:value("game",translate("Game Mode"))
-
--- ---------------------------------------------------
-local apply = luci.http.formvalue("cbi.apply")
-if apply then
-	os.execute("chmod +x /etc/init.d/v2raypro &")
-	os.execute("/etc/init.d/v2raypro restart >/dev/null 2>&1 &")
-end
 
 return m
