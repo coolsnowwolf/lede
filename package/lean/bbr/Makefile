@@ -1,21 +1,21 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_NAME:=bbr_mod
+PKG_NAME:=bbr
 PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
 
-define KernelPackage/bbr_mod
+define KernelPackage/bbr
 	SUBMENU:=Network Support
-	TITLE:=Modified bbr tcp congestion control
+	TITLE:=bbr tcp congestion control
 	DEPENDS:=@LINUX_4_14
-	FILES:=$(PKG_BUILD_DIR)/tcp_bbr_mod.ko
+	FILES:=$(PKG_BUILD_DIR)/tcp_bbr.ko
 	KCONFIG:=
 endef
 
-define KernelPackage/bbr_mod/description
-	Kernel module of modified BBR tcp congestion control
+define KernelPackage/bbr/description
+	Kernel module of BBR tcp congestion control
 endef
 
 EXTRA_KCONFIG:= \
@@ -43,4 +43,4 @@ define Build/Compile
 	modules
 endef
 
-$(eval $(call KernelPackage,bbr_mod))
+$(eval $(call KernelPackage,bbr))
