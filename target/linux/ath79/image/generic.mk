@@ -1,4 +1,47 @@
+include ./common-buffalo.mk
 include ./common-netgear.mk
+
+DEVICE_VARS += ADDPATTERN_ID ADDPATTERN_VERSION
+
+define Build/cybertan-trx
+	@echo -n '' > $@-empty.bin
+	-$(STAGING_DIR_HOST)/bin/trx -o $@.new \
+		-f $(IMAGE_KERNEL) -F $@-empty.bin \
+		-x 32 -a 0x10000 -x -32 -f $@
+	-mv "$@.new" "$@"
+	-rm $@-empty.bin
+endef
+
+define Build/addpattern
+	-$(STAGING_DIR_HOST)/bin/addpattern -B $(ADDPATTERN_ID) \
+		-v v$(ADDPATTERN_VERSION) -i $@ -o $@.new
+	-mv "$@.new" "$@"
+endef
+
+define Build/elecom-header
+  $(eval fw_size=$(word 1,$(1)))
+  $(eval edimax_model=$(word 2,$(1)))
+  $(eval product=$(word 3,$(1)))
+  $(eval factory_bin=$(word 4,$(1)))
+  if [ -e $(KDIR)/tmp/$(KERNEL_INITRAMFS_IMAGE) -a "$$(stat -c%s $@)" -lt "$(fw_size)" ]; then \
+    $(CP) $(KDIR)/tmp/$(KERNEL_INITRAMFS_IMAGE) $(factory_bin); \
+    $(STAGING_DIR_HOST)/bin/mkedimaximg \
+      -b -s CSYS -m $(edimax_model) \
+      -f 0x70000 -S 0x01100000 \
+      -i $(factory_bin) -o $(factory_bin).new; \
+    mv $(factory_bin).new $(factory_bin); \
+    ( \
+      echo -n -e "ELECOM\x00\x00$(product)" | dd bs=40 count=1 conv=sync; \
+      echo -n "0.00" | dd bs=16 count=1 conv=sync; \
+      dd if=$(factory_bin); \
+    ) > $(factory_bin).new; \
+    mv $(factory_bin).new $(factory_bin); \
+    $(CP) $(factory_bin) $(BIN_DIR)/; \
+	else \
+		echo "WARNING: initramfs kernel image too big, cannot generate factory image" >&2; \
+	fi
+
+endef
 
 define Device/avm_fritz300e
   ATH_SOC := ar7242
@@ -26,6 +69,19 @@ define Device/avm_fritz4020
 endef
 TARGET_DEVICES += avm_fritz4020
 
+define Device/buffalo_wzr-hp-ag300h
+  ATH_SOC := ar7161
+  DEVICE_TITLE := Buffalo WZR-HP-AG300H
+  IMAGE_SIZE := 32256k
+  IMAGES += factory.bin tftp.bin
+  IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | check-size $$$$(IMAGE_SIZE)
+  IMAGE/factory.bin := $$(IMAGE/default) | buffalo-enc WZR-HP-AG300H 1.99 | buffalo-tag WZR-HP-AG300H
+  IMAGE/tftp.bin := $$(IMAGE/default) | buffalo-tftp-header
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb-ohci kmod-usb2 kmod-usb-ledtrig-usbport kmod-leds-reset kmod-owl-loader
+  SUPPORTED_DEVICES += wzr-hp-ag300h
+endef
+TARGET_DEVICES += buffalo_wzr-hp-ag300h
+
 define Device/buffalo_wzr-hp-g450h
   ATH_SOC := ar7242
   DEVICE_TITLE := Buffalo WZR-HP-G450H
@@ -44,6 +100,16 @@ define Device/dlink_dir-825-b1
   SUPPORTED_DEVICES += dir-825-b1
 endef
 TARGET_DEVICES += dlink_dir-825-b1
+
+define Device/elecom_wrc-300ghbk2-i
+  ATH_SOC := qca9563
+  DEVICE_TITLE := ELECOM WRC-300GHBK2-I
+  IMAGE_SIZE := 7616k
+  KERNEL_INITRAMFS := $$(KERNEL) | pad-to 2 | \
+    elecom-header 7798706 RN51 WRC-300GHBK2-I \
+      $(KDIR)/tmp/$$(KERNEL_INITRAMFS_PREFIX)-factory.bin
+endef
+TARGET_DEVICES += elecom_wrc-300ghbk2-i
 
 define Device/embeddedwireless_dorin
   ATH_SOC := ar9331
@@ -232,3 +298,16 @@ define Device/phicomm_k2t
   DEVICE_PACKAGES := kmod-leds-reset kmod-ath10k ath10k-firmware-qca9888
 endef
 TARGET_DEVICES += phicomm_k2t
+
+define Device/wd_mynet-wifi-rangeextender
+  ATH_SOC := ar9344
+  DEVICE_TITLE := Western Digital My Net Wi-Fi Range Extender
+  DEVICE_PACKAGES := rssileds nvram -swconfig
+  IMAGE_SIZE := 7808k
+  ADDPATTERN_ID := mynet-rext
+  ADDPATTERN_VERSION := 1.00.01
+  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | cybertan-trx | \
+	addpattern | append-metadata
+  SUPPORTED_DEVICES += mynet-rext
+endef
+TARGET_DEVICES += wd_mynet-wifi-rangeextender
