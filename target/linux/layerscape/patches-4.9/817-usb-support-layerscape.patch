@@ -1,7 +1,7 @@
-From a2a97f0d2c07a772899ca09967547bea6c9124c5 Mon Sep 17 00:00:00 2001
+From 1d35e363dd6e8bb1733bca0dfc186e3f70e692fe Mon Sep 17 00:00:00 2001
 From: Yangbo Lu <yangbo.lu@nxp.com>
-Date: Wed, 17 Jan 2018 15:46:03 +0800
-Subject: [PATCH 29/30] usb: support layerscape
+Date: Thu, 5 Jul 2018 17:38:52 +0800
+Subject: [PATCH 29/32] usb: support layerscape
 
 This is an integrated patch for layerscape usb support.
 
@@ -17,30 +17,31 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 ---
  drivers/net/usb/cdc_ether.c           |   8 +
  drivers/net/usb/r8152.c               |   6 +
- drivers/usb/common/common.c           |  50 ++++++
+ drivers/usb/common/common.c           |  50 +++++
  drivers/usb/core/hub.c                |   8 +
- drivers/usb/dwc3/core.c               | 243 ++++++++++++++++++++++++++++-
- drivers/usb/dwc3/core.h               |  51 ++++++-
+ drivers/usb/dwc3/core.c               | 243 +++++++++++++++++++++-
+ drivers/usb/dwc3/core.h               |  51 ++++-
  drivers/usb/dwc3/ep0.c                |   4 +-
  drivers/usb/dwc3/gadget.c             |   7 +
  drivers/usb/dwc3/host.c               |  24 ++-
- drivers/usb/gadget/udc/fsl_udc_core.c |  46 +++---
+ drivers/usb/gadget/udc/fsl_udc_core.c |  46 +++--
  drivers/usb/gadget/udc/fsl_usb2_udc.h |  16 +-
- drivers/usb/host/Kconfig              |   2 +-
- drivers/usb/host/ehci-fsl.c           | 279 +++++++++++++++++++++++++++++++---
+ drivers/usb/host/Kconfig              |   4 +-
+ drivers/usb/host/ehci-fsl.c           | 279 ++++++++++++++++++++++++--
  drivers/usb/host/ehci-fsl.h           |   3 +
  drivers/usb/host/ehci-hub.c           |   4 +
- drivers/usb/host/ehci.h               |   9 ++
- drivers/usb/host/fsl-mph-dr-of.c      |  12 ++
- drivers/usb/host/xhci-plat.c          |  10 ++
- drivers/usb/host/xhci-ring.c          |  29 +++-
- drivers/usb/host/xhci.c               |  38 ++++-
- drivers/usb/host/xhci.h               |   5 +-
- drivers/usb/phy/phy-fsl-usb.c         |  59 +++++--
+ drivers/usb/host/ehci.h               |   9 +
+ drivers/usb/host/fsl-mph-dr-of.c      |  16 +-
+ drivers/usb/host/xhci-hub.c           |  22 ++
+ drivers/usb/host/xhci-plat.c          |  16 +-
+ drivers/usb/host/xhci-ring.c          |  29 ++-
+ drivers/usb/host/xhci.c               |  38 +++-
+ drivers/usb/host/xhci.h               |   6 +-
+ drivers/usb/phy/phy-fsl-usb.c         |  59 ++++--
  drivers/usb/phy/phy-fsl-usb.h         |   8 +
  include/linux/usb.h                   |   1 +
  include/linux/usb/of.h                |   2 +
- 25 files changed, 836 insertions(+), 88 deletions(-)
+ 26 files changed, 867 insertions(+), 92 deletions(-)
 
 --- a/drivers/net/usb/cdc_ether.c
 +++ b/drivers/net/usb/cdc_ether.c
@@ -924,11 +925,13 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  #endif
 --- a/drivers/usb/host/Kconfig
 +++ b/drivers/usb/host/Kconfig
-@@ -165,7 +165,7 @@ config XPS_USB_HCD_XILINX
+@@ -164,8 +164,8 @@ config XPS_USB_HCD_XILINX
+ 		devices only.
  
  config USB_EHCI_FSL
- 	tristate "Support for Freescale PPC on-chip EHCI USB controller"
+-	tristate "Support for Freescale PPC on-chip EHCI USB controller"
 -	depends on FSL_SOC
++	tristate "Support for Freescale QorIQ(ARM/PPC) on-chip EHCI USB controller"
 +	depends on USB_EHCI_HCD
  	select USB_EHCI_ROOT_HUB_TT
  	---help---
@@ -1399,6 +1402,17 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  /*
 --- a/drivers/usb/host/fsl-mph-dr-of.c
 +++ b/drivers/usb/host/fsl-mph-dr-of.c
+@@ -98,8 +98,8 @@ static struct platform_device *fsl_usb2_
+ 
+ 	pdev->dev.coherent_dma_mask = ofdev->dev.coherent_dma_mask;
+ 
+-	if (!pdev->dev.dma_mask)
+-		pdev->dev.dma_mask = &ofdev->dev.coherent_dma_mask;
++	if (!pdev->dev.dma_mask && ofdev->dev.of_node)
++		of_dma_configure(&pdev->dev, ofdev->dev.of_node);
+ 	else
+ 		dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
+ 
 @@ -226,6 +226,18 @@ static int fsl_usb2_mph_dr_of_probe(stru
  		of_property_read_bool(np, "fsl,usb-erratum-a007792");
  	pdata->has_fsl_erratum_a005275 =
@@ -1418,12 +1432,57 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  	/*
  	 * Determine whether phy_clk_valid needs to be checked
+--- a/drivers/usb/host/xhci-hub.c
++++ b/drivers/usb/host/xhci-hub.c
+@@ -562,12 +562,34 @@ void xhci_set_link_state(struct xhci_hcd
+ 				int port_id, u32 link_state)
+ {
+ 	u32 temp;
++	u32 portpmsc_u2_backup = 0;
++
++	/* Backup U2 timeout info before initiating U3 entry erratum A-010131 */
++	if (xhci->shared_hcd->speed >= HCD_USB3 &&
++			link_state == USB_SS_PORT_LS_U3 &&
++			(xhci->quirks & XHCI_DIS_U1U2_WHEN_U3)) {
++		portpmsc_u2_backup = readl(port_array[port_id] + PORTPMSC);
++		portpmsc_u2_backup &= PORT_U2_TIMEOUT_MASK;
++		temp = readl(port_array[port_id] + PORTPMSC);
++		temp |= PORT_U2_TIMEOUT_MASK;
++		writel(temp, port_array[port_id] + PORTPMSC);
++	}
+ 
+ 	temp = readl(port_array[port_id]);
+ 	temp = xhci_port_state_to_neutral(temp);
+ 	temp &= ~PORT_PLS_MASK;
+ 	temp |= PORT_LINK_STROBE | link_state;
+ 	writel(temp, port_array[port_id]);
++
++	/* Restore U2 timeout info after U3 entry complete */
++	if (xhci->shared_hcd->speed >= HCD_USB3 &&
++			link_state == USB_SS_PORT_LS_U3 &&
++			(xhci->quirks & XHCI_DIS_U1U2_WHEN_U3)) {
++		temp = readl(port_array[port_id] + PORTPMSC);
++		temp &= ~PORT_U2_TIMEOUT_MASK;
++		temp |= portpmsc_u2_backup;
++		writel(temp, port_array[port_id] + PORTPMSC);
++	}
+ }
+ 
+ static void xhci_set_remote_wake_mask(struct xhci_hcd *xhci,
 --- a/drivers/usb/host/xhci-plat.c
 +++ b/drivers/usb/host/xhci-plat.c
-@@ -223,6 +223,16 @@ static int xhci_plat_probe(struct platfo
- 	if (device_property_read_bool(&pdev->dev, "usb3-lpm-capable"))
- 		xhci->quirks |= XHCI_LPM_SUPPORT;
+@@ -220,8 +220,22 @@ static int xhci_plat_probe(struct platfo
+ 		goto disable_clk;
+ 	}
  
+-	if (device_property_read_bool(&pdev->dev, "usb3-lpm-capable"))
++	if (device_property_read_bool(&pdev->dev, "usb3-lpm-capable")) {
+ 		xhci->quirks |= XHCI_LPM_SUPPORT;
++		if (device_property_read_bool(&pdev->dev,
++					"snps,dis-u1u2-when-u3-quirk"))
++			xhci->quirks |= XHCI_DIS_U1U2_WHEN_U3;
++	}
++
 +	if (device_property_read_bool(&pdev->dev, "quirk-reverse-in-out"))
 +		xhci->quirks |= XHCI_REVERSE_IN_OUT;
 +
@@ -1433,10 +1492,9 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +
 +	if (device_property_read_bool(&pdev->dev, "quirk-stop-ep-in-u1"))
 +		xhci->quirks |= XHCI_STOP_EP_IN_U1;
-+
+ 
  	if (device_property_read_bool(&pdev->dev, "quirk-broken-port-ped"))
  		xhci->quirks |= XHCI_BROKEN_PORT_PED;
- 
 --- a/drivers/usb/host/xhci-ring.c
 +++ b/drivers/usb/host/xhci-ring.c
 @@ -1852,14 +1852,17 @@ static int finish_td(struct xhci_hcd *xh
@@ -1551,13 +1609,14 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  #define	XHCI_LINK_TRB_QUIRK	(1 << 0)
  #define XHCI_RESET_EP_QUIRK	(1 << 1)
  #define XHCI_NEC_HOST		(1 << 2)
-@@ -1661,6 +1661,9 @@ struct xhci_hcd {
+@@ -1661,6 +1661,10 @@ struct xhci_hcd {
  #define XHCI_SSIC_PORT_UNUSED	(1 << 22)
  #define XHCI_NO_64BIT_SUPPORT	(1 << 23)
  #define XHCI_MISSING_CAS	(1 << 24)
 +#define XHCI_REVERSE_IN_OUT    (1 << 29)
 +#define XHCI_STOP_TRANSFER_IN_BLOCK    (1 << 30)
 +#define XHCI_STOP_EP_IN_U1    (1 << 31)
++#define XHCI_DIS_U1U2_WHEN_U3 (1 << 32)
  /* For controller with a broken Port Disable implementation */
  #define XHCI_BROKEN_PORT_PED	(1 << 25)
  #define XHCI_LIMIT_ENDPOINT_INTERVAL_7	(1 << 26)

@@ -1,7 +1,7 @@
-From 45e934873f9147f692dddbb61abc088f4c8059d7 Mon Sep 17 00:00:00 2001
+From 2f2a0ab9e4b3186be981f7151a4f4f794d4b6caa Mon Sep 17 00:00:00 2001
 From: Yangbo Lu <yangbo.lu@nxp.com>
-Date: Wed, 17 Jan 2018 14:51:29 +0800
-Subject: [PATCH 03/30] arch: support layerscape
+Date: Thu, 5 Jul 2018 16:18:37 +0800
+Subject: [PATCH 03/32] arch: support layerscape
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -20,22 +20,25 @@ Signed-off-by: Jianhua Xie <jianhua.xie@nxp.com>
 Signed-off-by: Horia Geantă <horia.geanta@nxp.com>
 Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 ---
- arch/arm/include/asm/delay.h          | 16 +++++++++
- arch/arm/include/asm/io.h             | 31 ++++++++++++++++++
- arch/arm/include/asm/mach/map.h       |  4 +--
- arch/arm/include/asm/pgtable.h        |  7 ++++
- arch/arm/kernel/bios32.c              | 43 ++++++++++++++++++++++++
- arch/arm/mm/dma-mapping.c             |  1 +
- arch/arm/mm/ioremap.c                 |  7 ++++
- arch/arm/mm/mmu.c                     |  9 +++++
- arch/arm64/include/asm/cache.h        |  2 +-
- arch/arm64/include/asm/io.h           | 30 +++++++++++++++++
- arch/arm64/include/asm/pci.h          |  4 +++
- arch/arm64/include/asm/pgtable-prot.h |  1 +
- arch/arm64/include/asm/pgtable.h      |  5 +++
- arch/arm64/kernel/pci.c               | 62 +++++++++++++++++++++++++++++++++++
- arch/arm64/mm/dma-mapping.c           |  6 ++++
- 15 files changed, 225 insertions(+), 3 deletions(-)
+ arch/arm/include/asm/delay.h           | 16 +++++++
+ arch/arm/include/asm/dma-mapping.h     |  6 ---
+ arch/arm/include/asm/io.h              | 31 +++++++++++++
+ arch/arm/include/asm/mach/map.h        |  4 +-
+ arch/arm/include/asm/pgtable.h         |  7 +++
+ arch/arm/kernel/bios32.c               | 43 ++++++++++++++++++
+ arch/arm/mm/dma-mapping.c              |  1 +
+ arch/arm/mm/ioremap.c                  |  7 +++
+ arch/arm/mm/mmu.c                      |  9 ++++
+ arch/arm64/include/asm/cache.h         |  2 +-
+ arch/arm64/include/asm/io.h            | 30 +++++++++++++
+ arch/arm64/include/asm/pci.h           |  4 ++
+ arch/arm64/include/asm/pgtable-prot.h  |  2 +
+ arch/arm64/include/asm/pgtable.h       |  5 +++
+ arch/arm64/kernel/pci.c                | 62 ++++++++++++++++++++++++++
+ arch/arm64/mm/dma-mapping.c            |  6 +++
+ arch/powerpc/include/asm/dma-mapping.h |  5 ---
+ arch/tile/include/asm/dma-mapping.h    |  5 ---
+ 18 files changed, 226 insertions(+), 19 deletions(-)
 
 --- a/arch/arm/include/asm/delay.h
 +++ b/arch/arm/include/asm/delay.h
@@ -62,6 +65,21 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  /* Loop-based definitions for assembly code. */
  extern void __loop_delay(unsigned long loops);
  extern void __loop_udelay(unsigned long usecs);
+--- a/arch/arm/include/asm/dma-mapping.h
++++ b/arch/arm/include/asm/dma-mapping.h
+@@ -31,12 +31,6 @@ static inline struct dma_map_ops *get_dm
+ 		return __generic_dma_ops(dev);
+ }
+ 
+-static inline void set_dma_ops(struct device *dev, struct dma_map_ops *ops)
+-{
+-	BUG_ON(!dev);
+-	dev->archdata.dma_ops = ops;
+-}
+-
+ #define HAVE_ARCH_DMA_SUPPORTED 1
+ extern int dma_supported(struct device *dev, u64 mask);
+ 
 --- a/arch/arm/include/asm/io.h
 +++ b/arch/arm/include/asm/io.h
 @@ -129,6 +129,7 @@ static inline u32 __raw_readl(const vola
@@ -343,6 +361,14 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  #define PROT_SECT_DEVICE_nGnRE	(PROT_SECT_DEFAULT | PMD_SECT_PXN | PMD_SECT_UXN | PMD_ATTRINDX(MT_DEVICE_nGnRE))
  #define PROT_SECT_NORMAL	(PROT_SECT_DEFAULT | PMD_SECT_PXN | PMD_SECT_UXN | PMD_ATTRINDX(MT_NORMAL))
+@@ -68,6 +69,7 @@
+ #define PAGE_HYP_DEVICE		__pgprot(PROT_DEVICE_nGnRE | PTE_HYP)
+ 
+ #define PAGE_S2			__pgprot(_PROT_DEFAULT | PTE_S2_MEMATTR(MT_S2_NORMAL) | PTE_S2_RDONLY)
++#define PAGE_S2_NS		__pgprot(PTE_S2_MEMATTR(MT_S2_NORMAL) | PTE_S2_RDWR | PTE_TYPE_PAGE | PTE_AF)
+ #define PAGE_S2_DEVICE		__pgprot(_PROT_DEFAULT | PTE_S2_MEMATTR(MT_S2_DEVICE_nGnRE) | PTE_S2_RDONLY | PTE_UXN)
+ 
+ #define PAGE_NONE		__pgprot(((_PAGE_DEFAULT) & ~PTE_VALID) | PTE_PROT_NONE | PTE_NG | PTE_PXN | PTE_UXN)
 --- a/arch/arm64/include/asm/pgtable.h
 +++ b/arch/arm64/include/asm/pgtable.h
 @@ -370,6 +370,11 @@ static inline int pmd_protnone(pmd_t pmd
@@ -441,7 +467,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  #include <linux/swiotlb.h>
  
  #include <asm/cacheflush.h>
-+#include <../../../drivers/staging/fsl-mc/include/mc-bus.h>
++#include <linux/fsl/mc.h>
  
  static int swiotlb __ro_after_init;
  
@@ -461,3 +487,31 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	__iommu_setup_dma_ops(dev, dma_base, size, iommu);
  }
 +EXPORT_SYMBOL(arch_setup_dma_ops);
+--- a/arch/powerpc/include/asm/dma-mapping.h
++++ b/arch/powerpc/include/asm/dma-mapping.h
+@@ -91,11 +91,6 @@ static inline struct dma_map_ops *get_dm
+ 	return dev->archdata.dma_ops;
+ }
+ 
+-static inline void set_dma_ops(struct device *dev, struct dma_map_ops *ops)
+-{
+-	dev->archdata.dma_ops = ops;
+-}
+-
+ /*
+  * get_dma_offset()
+  *
+--- a/arch/tile/include/asm/dma-mapping.h
++++ b/arch/tile/include/asm/dma-mapping.h
+@@ -59,11 +59,6 @@ static inline phys_addr_t dma_to_phys(st
+ 
+ static inline void dma_mark_clean(void *addr, size_t size) {}
+ 
+-static inline void set_dma_ops(struct device *dev, struct dma_map_ops *ops)
+-{
+-	dev->archdata.dma_ops = ops;
+-}
+-
+ static inline bool dma_capable(struct device *dev, dma_addr_t addr, size_t size)
+ {
+ 	if (!dev->dma_mask)
