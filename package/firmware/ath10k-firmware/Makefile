@@ -606,13 +606,13 @@ define Package/ath10k-firmware-qca9888-ct-htt/install
 		$(1)/lib/firmware/ath10k/QCA9888/hw2.0/ct-firmware-5.bin
 endef
 
-$(eval $(call BuildPackage,ath10k-firmware-qca9887))
-$(eval $(call BuildPackage,ath10k-firmware-qca9888))
-$(eval $(call BuildPackage,ath10k-firmware-qca988x))
-$(eval $(call BuildPackage,ath10k-firmware-qca99x0))
-$(eval $(call BuildPackage,ath10k-firmware-qca6174))
-$(eval $(call BuildPackage,ath10k-firmware-qca9984))
-$(eval $(call BuildPackage,ath10k-firmware-qca4019))
+#$(eval $(call BuildPackage,ath10k-firmware-qca9887))
+#$(eval $(call BuildPackage,ath10k-firmware-qca9888))
+#$(eval $(call BuildPackage,ath10k-firmware-qca988x))
+#$(eval $(call BuildPackage,ath10k-firmware-qca99x0))
+#$(eval $(call BuildPackage,ath10k-firmware-qca6174))
+#$(eval $(call BuildPackage,ath10k-firmware-qca9984))
+#$(eval $(call BuildPackage,ath10k-firmware-qca4019))
 
 $(eval $(call BuildPackage,ath10k-firmware-qca9887-ct))
 $(eval $(call BuildPackage,ath10k-firmware-qca9887-ct-htt))

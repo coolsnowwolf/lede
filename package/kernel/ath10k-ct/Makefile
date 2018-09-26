@@ -15,7 +15,7 @@ PKG_MIRROR_HASH:=aa77f388727ff2201de615c3211ab5c0b2dc5e3c041bd1cde4d6eebde0ca437
 # Build the 4.13 ath10k-ct driver version.  Other options are "-4.9", or
 # leave un-defined for 4.7 kernel.  Probably this should match as closely as
 # possible to whatever mac80211 backports version is being used.
-CT_KVER="-4.13"
+CT_KVER="-4.16"
 
 PKG_MAINTAINER:=Ben Greear <greearb@candelatech.com>
 PKG_BUILD_PARALLEL:=1
