@@ -589,7 +589,7 @@ define Device/bt_homehub-v5a
   DEVICE_DTS := BTHOMEHUBV5A
   DEVICE_TITLE := BT Home Hub 5A
   DEVICE_PACKAGES := kmod-ath9k kmod-owl-loader \
-	kmod-ath10k ath10k-firmware-qca988x wpad-mini kmod-usb-dwc2
+	kmod-ath10k-ct ath10k-firmware-qca988x-ct wpad-mini kmod-usb-dwc2
   SUPPORTED_DEVICES += BTHOMEHUBV5A
 endef
 TARGET_DEVICES += bt_homehub-v5a

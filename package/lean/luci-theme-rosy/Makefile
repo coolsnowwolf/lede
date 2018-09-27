@@ -6,7 +6,7 @@
 
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=rosy Theme
+LUCI_TITLE:=Rosy Theme
 LUCI_DEPENDS:=
 
 include $(TOPDIR)/feeds/luci/luci.mk

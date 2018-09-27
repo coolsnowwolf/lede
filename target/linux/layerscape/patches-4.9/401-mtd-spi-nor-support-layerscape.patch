@@ -1,7 +1,7 @@
-From 825d57369b196b64387348922b47adc5b651622c Mon Sep 17 00:00:00 2001
+From c03c545e064a81515fe109ddcc4ecb3895528e58 Mon Sep 17 00:00:00 2001
 From: Yangbo Lu <yangbo.lu@nxp.com>
-Date: Wed, 17 Jan 2018 14:55:47 +0800
-Subject: [PATCH 05/30] mtd: spi-nor: support layerscape
+Date: Fri, 6 Jul 2018 15:32:05 +0800
+Subject: [PATCH] mtd: spi-nor: support layerscape
 
 This is an integrated patch for layerscape qspi support.
 
@@ -17,15 +17,16 @@ Signed-off-by: L. D. Pinney <ldpinney@gmail.com>
 Signed-off-by: Ash Benz <ash.benz@bk.ru>
 Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 ---
+ drivers/mtd/devices/m25p80.c      |   3 +-
  drivers/mtd/mtdchar.c             |   2 +-
- drivers/mtd/spi-nor/fsl-quadspi.c | 327 +++++++++++++++++++++++++++++++-------
- drivers/mtd/spi-nor/spi-nor.c     | 136 ++++++++++++++--
+ drivers/mtd/spi-nor/fsl-quadspi.c | 327 ++++++++++++++++++++++++------
+ drivers/mtd/spi-nor/spi-nor.c     | 141 ++++++++++++-
  include/linux/mtd/spi-nor.h       |  14 +-
- 4 files changed, 409 insertions(+), 70 deletions(-)
+ 5 files changed, 416 insertions(+), 71 deletions(-)
 
 --- a/drivers/mtd/mtdchar.c
 +++ b/drivers/mtd/mtdchar.c
-@@ -451,7 +451,7 @@ static int mtdchar_readoob(struct file *
+@@ -455,7 +455,7 @@ static int mtdchar_readoob(struct file *
  	 * data. For our userspace tools it is important to dump areas
  	 * with ECC errors!
  	 * For kernel internal usage it also might return -EUCLEAN
@@ -758,9 +759,15 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	{ "s25fl129p1", INFO(0x012018, 0x4d01,  64 * 1024, 256, SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ) },
  	{ "s25sl004a",  INFO(0x010212,      0,  64 * 1024,   8, 0) },
  	{ "s25sl008a",  INFO(0x010213,      0,  64 * 1024,  16, 0) },
-@@ -1131,6 +1152,9 @@ static const struct flash_info spi_nor_i
+@@ -1130,7 +1151,15 @@ static const struct flash_info spi_nor_i
+ 	{ "w25x40", INFO(0xef3013, 0, 64 * 1024,  8,  SECT_4K) },
  	{ "w25x80", INFO(0xef3014, 0, 64 * 1024,  16, SECT_4K) },
  	{ "w25x16", INFO(0xef3015, 0, 64 * 1024,  32, SECT_4K) },
++	{
++		"w25q16dw", INFO(0xef6015, 0, 64 * 1024,  32,
++			SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
++			SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
++	},
  	{ "w25x32", INFO(0xef3016, 0, 64 * 1024,  64, SECT_4K) },
 +	{ "w25q20cl", INFO(0xef4012, 0, 64 * 1024,  4, SECT_4K) },
 +	{ "w25q20bw", INFO(0xef5012, 0, 64 * 1024,  4, SECT_4K) },
@@ -768,7 +775,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	{ "w25q32", INFO(0xef4016, 0, 64 * 1024,  64, SECT_4K) },
  	{
  		"w25q32dw", INFO(0xef6016, 0, 64 * 1024,  64,
-@@ -1197,6 +1221,53 @@ static const struct flash_info *spi_nor_
+@@ -1197,6 +1226,53 @@ static const struct flash_info *spi_nor_
  		id[0], id[1], id[2]);
  	return ERR_PTR(-ENODEV);
  }
@@ -822,7 +829,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  static int spi_nor_read(struct mtd_info *mtd, loff_t from, size_t len,
  			size_t *retlen, u_char *buf)
-@@ -1416,7 +1487,7 @@ static int macronix_quad_enable(struct s
+@@ -1416,7 +1492,7 @@ static int macronix_quad_enable(struct s
   * Write status Register and configuration register with 2 bytes
   * The first byte will be written to the status register, while the
   * second byte will be written to the configuration register.
@@ -831,7 +838,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
   */
  static int write_sr_cr(struct spi_nor *nor, u16 val)
  {
-@@ -1464,6 +1535,24 @@ static int spansion_quad_enable(struct s
+@@ -1464,6 +1540,24 @@ static int spansion_quad_enable(struct s
  	return 0;
  }
  
@@ -856,7 +863,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  static int set_quad_mode(struct spi_nor *nor, const struct flash_info *info)
  {
  	int status;
-@@ -1610,9 +1699,25 @@ int spi_nor_scan(struct spi_nor *nor, co
+@@ -1610,9 +1704,25 @@ int spi_nor_scan(struct spi_nor *nor, co
  		write_sr(nor, 0);
  		spi_nor_wait_till_ready(nor);
  	}
@@ -882,7 +889,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	mtd->priv = nor;
  	mtd->type = MTD_NORFLASH;
  	mtd->writesize = 1;
-@@ -1646,6 +1751,8 @@ int spi_nor_scan(struct spi_nor *nor, co
+@@ -1646,6 +1756,8 @@ int spi_nor_scan(struct spi_nor *nor, co
  		nor->flags |= SNOR_F_USE_FSR;
  	if (info->flags & SPI_NOR_HAS_TB)
  		nor->flags |= SNOR_F_HAS_SR_TB;
@@ -891,7 +898,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
  #ifdef CONFIG_MTD_SPI_NOR_USE_4K_SECTORS
  	/* prefer "small sector" erase if possible */
-@@ -1685,9 +1792,15 @@ int spi_nor_scan(struct spi_nor *nor, co
+@@ -1685,9 +1797,15 @@ int spi_nor_scan(struct spi_nor *nor, co
  	/* Some devices cannot do fast-read, no matter what DT tells us */
  	if (info->flags & SPI_NOR_NO_FR)
  		nor->flash_read = SPI_NOR_NORMAL;
@@ -910,7 +917,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  		ret = set_quad_mode(nor, info);
  		if (ret) {
  			dev_err(dev, "quad mode not supported\n");
-@@ -1700,6 +1813,9 @@ int spi_nor_scan(struct spi_nor *nor, co
+@@ -1700,6 +1818,9 @@ int spi_nor_scan(struct spi_nor *nor, co
  
  	/* Default commands */
  	switch (nor->flash_read) {

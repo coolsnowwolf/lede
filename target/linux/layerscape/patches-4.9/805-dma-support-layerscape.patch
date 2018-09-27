@@ -1,7 +1,7 @@
-From 515d590e3d5313110faa4f2c86f7784d9b070fa9 Mon Sep 17 00:00:00 2001
+From d3d537ebe9884e7d945ab74bb02312d0c2c9b08d Mon Sep 17 00:00:00 2001
 From: Yangbo Lu <yangbo.lu@nxp.com>
-Date: Wed, 17 Jan 2018 15:30:59 +0800
-Subject: [PATCH 17/30] dma: support layerscape
+Date: Thu, 5 Jul 2018 17:32:53 +0800
+Subject: [PATCH 17/32] dma: support layerscape
 
 This is an integrated patch for layerscape dma support.
 
@@ -10,16 +10,16 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 ---
  drivers/dma/Kconfig                     |   31 +
  drivers/dma/Makefile                    |    3 +
- drivers/dma/caam_dma.c                  |  563 ++++++++++++++
+ drivers/dma/caam_dma.c                  |  563 ++++++++++
  drivers/dma/dpaa2-qdma/Kconfig          |    8 +
  drivers/dma/dpaa2-qdma/Makefile         |    8 +
- drivers/dma/dpaa2-qdma/dpaa2-qdma.c     |  986 ++++++++++++++++++++++++
- drivers/dma/dpaa2-qdma/dpaa2-qdma.h     |  262 +++++++
- drivers/dma/dpaa2-qdma/dpdmai.c         |  454 +++++++++++
- drivers/dma/dpaa2-qdma/fsl_dpdmai.h     |  521 +++++++++++++
- drivers/dma/dpaa2-qdma/fsl_dpdmai_cmd.h |  222 ++++++
- drivers/dma/fsl-qdma.c                  | 1243 +++++++++++++++++++++++++++++++
- 11 files changed, 4301 insertions(+)
+ drivers/dma/dpaa2-qdma/dpaa2-qdma.c     |  940 +++++++++++++++++
+ drivers/dma/dpaa2-qdma/dpaa2-qdma.h     |  227 +++++
+ drivers/dma/dpaa2-qdma/dpdmai.c         |  515 ++++++++++
+ drivers/dma/dpaa2-qdma/fsl_dpdmai.h     |  521 ++++++++++
+ drivers/dma/dpaa2-qdma/fsl_dpdmai_cmd.h |  222 ++++
+ drivers/dma/fsl-qdma.c                  | 1243 +++++++++++++++++++++++
+ 11 files changed, 4281 insertions(+)
  create mode 100644 drivers/dma/caam_dma.c
  create mode 100644 drivers/dma/dpaa2-qdma/Kconfig
  create mode 100644 drivers/dma/dpaa2-qdma/Makefile
@@ -686,7 +686,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +fsl-dpaa2-qdma-objs    := dpaa2-qdma.o dpdmai.o
 --- /dev/null
 +++ b/drivers/dma/dpaa2-qdma/dpaa2-qdma.c
-@@ -0,0 +1,986 @@
+@@ -0,0 +1,940 @@
 +/*
 + * drivers/dma/dpaa2-qdma/dpaa2-qdma.c
 + *
@@ -723,7 +723,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +
 +#include "../virt-dma.h"
 +
-+#include "../../../drivers/staging/fsl-mc/include/mc.h"
++#include <linux/fsl/mc.h>
 +#include "../../../drivers/staging/fsl-mc/include/dpaa2-io.h"
 +#include "../../../drivers/staging/fsl-mc/include/dpaa2-fd.h"
 +#include "fsl_dpdmai_cmd.h"
@@ -786,10 +786,10 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		comp_temp->fl_bus_addr = comp_temp->fd_bus_addr +
 +					sizeof(struct dpaa2_fd);
 +		comp_temp->desc_virt_addr =
-+			(void *)((struct dpaa2_frame_list *)
++			(void *)((struct dpaa2_fl_entry *)
 +				comp_temp->fl_virt_addr + 3);
 +		comp_temp->desc_bus_addr = comp_temp->fl_bus_addr +
-+				sizeof(struct dpaa2_frame_list) * 3;
++				sizeof(struct dpaa2_fl_entry) * 3;
 +
 +		comp_temp->qchan = dpaa2_chan;
 +		comp_temp->sg_blk_num = 0;
@@ -816,19 +816,19 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	memset(fd, 0, sizeof(struct dpaa2_fd));
 +
 +	/* fd populated */
-+	fd->simple.addr = dpaa2_comp->fl_bus_addr;
++	dpaa2_fd_set_addr(fd, dpaa2_comp->fl_bus_addr);
 +	/* Bypass memory translation, Frame list format, short length disable */
 +	/* we need to disable BMT if fsl-mc use iova addr */
 +	if (smmu_disable)
-+		fd->simple.bpid = QMAN_FD_BMT_ENABLE;
-+	fd->simple.format_offset = QMAN_FD_FMT_ENABLE | QMAN_FD_SL_DISABLE;
++		dpaa2_fd_set_bpid(fd, QMAN_FD_BMT_ENABLE);
++	dpaa2_fd_set_format(fd, QMAN_FD_FMT_ENABLE | QMAN_FD_SL_DISABLE);
 +
-+	fd->simple.frc = format | QDMA_SER_CTX;
++	dpaa2_fd_set_frc(fd, format | QDMA_SER_CTX);
 +}
 +
 +/* first frame list for descriptor buffer */
 +static void dpaa2_qdma_populate_first_framel(
-+		struct dpaa2_frame_list *f_list,
++		struct dpaa2_fl_entry *f_list,
 +		struct dpaa2_qdma_comp *dpaa2_comp)
 +{
 +	struct dpaa2_qdma_sd_d *sdd;
@@ -836,48 +836,45 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	sdd = (struct dpaa2_qdma_sd_d *)dpaa2_comp->desc_virt_addr;
 +	memset(sdd, 0, 2 * (sizeof(*sdd)));
 +	/* source and destination descriptor */
-+	sdd->cmd = QDMA_SD_CMD_RDTTYPE_COHERENT; /* source descriptor CMD */
++	sdd->cmd = cpu_to_le32(QDMA_SD_CMD_RDTTYPE_COHERENT); /* source descriptor CMD */
 +	sdd++;
-+	sdd->cmd = QDMA_DD_CMD_WRTTYPE_COHERENT; /* dest descriptor CMD */
++	sdd->cmd = cpu_to_le32(QDMA_DD_CMD_WRTTYPE_COHERENT); /* dest descriptor CMD */
 +
-+	memset(f_list, 0, sizeof(struct dpaa2_frame_list));
++	memset(f_list, 0, sizeof(struct dpaa2_fl_entry));
 +	/* first frame list to source descriptor */
-+	f_list->addr_lo = dpaa2_comp->desc_bus_addr;
-+	f_list->addr_hi = (dpaa2_comp->desc_bus_addr >> 32);
-+	f_list->data_len.data_len_sl0 = 0x20; /* source/destination desc len */
-+	f_list->fmt = QDMA_FL_FMT_SBF; /* single buffer frame */
++
++	dpaa2_fl_set_addr(f_list, dpaa2_comp->desc_bus_addr);
++	dpaa2_fl_set_len(f_list, 0x20);
++	dpaa2_fl_set_format(f_list, QDMA_FL_FMT_SBF | QDMA_FL_SL_LONG);
++
 +	if (smmu_disable)
-+		f_list->bmt = QDMA_FL_BMT_ENABLE; /* bypass memory translation */
-+	f_list->sl = QDMA_FL_SL_LONG; /* long length */
-+	f_list->f = 0; /* not the last frame list */
++		f_list->bpid = cpu_to_le16(QDMA_FL_BMT_ENABLE); /* bypass memory translation */
 +}
 +
 +/* source and destination frame list */
-+static void dpaa2_qdma_populate_frames(struct dpaa2_frame_list *f_list,
++static void dpaa2_qdma_populate_frames(struct dpaa2_fl_entry *f_list,
 +		dma_addr_t dst, dma_addr_t src, size_t len, uint8_t fmt)
 +{
 +	/* source frame list to source buffer */
-+	memset(f_list, 0, sizeof(struct dpaa2_frame_list));
-+	f_list->addr_lo = src;
-+	f_list->addr_hi = (src >> 32);
-+	f_list->data_len.data_len_sl0 = len;
-+	f_list->fmt = fmt; /* single buffer frame or scatter gather frame */
++	memset(f_list, 0, sizeof(struct dpaa2_fl_entry));
++
++
++	dpaa2_fl_set_addr(f_list, src);
++	dpaa2_fl_set_len(f_list, len);
++	dpaa2_fl_set_format(f_list, (fmt | QDMA_FL_SL_LONG)); /* single buffer frame or scatter gather frame */
 +	if (smmu_disable)
-+		f_list->bmt = QDMA_FL_BMT_ENABLE; /* bypass memory translation */
-+	f_list->sl = QDMA_FL_SL_LONG; /* long length */
-+	f_list->f = 0; /* not the last frame list */
++		f_list->bpid = cpu_to_le16(QDMA_FL_BMT_ENABLE); /* bypass memory translation */
 +
 +	f_list++;
 +	/* destination frame list to destination buffer */
-+	memset(f_list, 0, sizeof(struct dpaa2_frame_list));
-+	f_list->addr_lo = dst;
-+	f_list->addr_hi = (dst >> 32);
-+	f_list->data_len.data_len_sl0 = len;
-+	f_list->fmt = fmt; /* single buffer frame or scatter gather frame */
++	memset(f_list, 0, sizeof(struct dpaa2_fl_entry));
++
++	dpaa2_fl_set_addr(f_list, dst);
++	dpaa2_fl_set_len(f_list, len);
++	dpaa2_fl_set_format(f_list, (fmt | QDMA_FL_SL_LONG));
++	dpaa2_fl_set_final(f_list, QDMA_FL_F); /* single buffer frame or scatter gather frame */
 +	if (smmu_disable)
-+		f_list->bmt = QDMA_FL_BMT_ENABLE; /* bypass memory translation */
-+	f_list->sl = QDMA_FL_SL_LONG; /* long length */
-+	f_list->f = QDMA_FL_F; /* Final bit: 1, for last frame list */
++		f_list->bpid = cpu_to_le16(QDMA_FL_BMT_ENABLE); /* bypass memory translation */
 +}
 +
 +static struct dma_async_tx_descriptor *dpaa2_qdma_prep_memcpy(
@@ -886,7 +883,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +{
 +	struct dpaa2_qdma_chan *dpaa2_chan = to_dpaa2_qdma_chan(chan);
 +	struct dpaa2_qdma_comp *dpaa2_comp;
-+	struct dpaa2_frame_list *f_list;
++	struct dpaa2_fl_entry *f_list;
 +	uint32_t format;
 +
 +	dpaa2_comp = dpaa2_qdma_request_desc(dpaa2_chan);
@@ -899,7 +896,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	/* populate Frame descriptor */
 +	dpaa2_qdma_populate_fd(format, dpaa2_comp);
 +
-+	f_list = (struct dpaa2_frame_list *)dpaa2_comp->fl_virt_addr;
++	f_list = (struct dpaa2_fl_entry *)dpaa2_comp->fl_virt_addr;
 +
 +#ifdef LONG_FORMAT
 +	/* first frame list for descriptor buffer (logn format) */
@@ -1062,48 +1059,6 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	return total_len;
 +}
 +
-+static struct dma_async_tx_descriptor *dpaa2_qdma_prep_sg(
-+		struct dma_chan *chan,
-+		struct scatterlist *dst_sg, u32 dst_nents,
-+		struct scatterlist *src_sg, u32 src_nents,
-+		unsigned long flags)
-+{
-+	struct dpaa2_qdma_chan *dpaa2_chan = to_dpaa2_qdma_chan(chan);
-+	struct dpaa2_qdma_comp *dpaa2_comp;
-+	struct dpaa2_frame_list *f_list;
-+	struct device *dev = dpaa2_chan->qdma->priv->dev;
-+	uint32_t total_len = 0;
-+
-+	/* basic sanity checks */
-+	if (dst_nents == 0 || src_nents == 0)
-+		return NULL;
-+
-+	if (dst_sg == NULL || src_sg == NULL)
-+		return NULL;
-+
-+	/* get the descriptors required */
-+	dpaa2_comp = dpaa2_qdma_request_desc(dpaa2_chan);
-+
-+	/* populate Frame descriptor */
-+	dpaa2_qdma_populate_fd(QDMA_FD_LONG_FORMAT, dpaa2_comp);
-+
-+	/* prepare Scatter gather entry for source and destination */
-+	total_len = dpaa2_qdma_populate_sg(dev, dpaa2_chan,
-+			dpaa2_comp, dst_sg, dst_nents, src_sg, src_nents);
-+
-+	f_list = (struct dpaa2_frame_list *)dpaa2_comp->fl_virt_addr;
-+	/* first frame list for descriptor buffer */
-+	dpaa2_qdma_populate_first_framel(f_list, dpaa2_comp);
-+	f_list++;
-+	/* prepare Scatter gather entry for source and destination */
-+	/* populate source and destination frame list table */
-+	dpaa2_qdma_populate_frames(f_list, dpaa2_comp->sge_dst_bus_addr,
-+			dpaa2_comp->sge_src_bus_addr,
-+			total_len, QDMA_FL_FMT_SGE);
-+
-+	return vchan_tx_prep(&dpaa2_chan->vchan, &dpaa2_comp->vdesc, flags);
-+}
-+
 +static enum dma_status dpaa2_qdma_tx_status(struct dma_chan *chan,
 +		dma_cookie_t cookie, struct dma_tx_state *txstate)
 +{
@@ -1263,7 +1218,8 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +
 +		/* obtain FD and process the error */
 +		fd = dpaa2_dq_fd(dq);
-+		status = fd->simple.ctrl & 0xff;
++
++		status = dpaa2_fd_get_ctrl(fd) & 0xff;
 +		if (status)
 +			dev_err(priv->dev, "FD error occurred\n");
 +		found = 0;
@@ -1279,8 +1235,8 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +				fd_eq = (struct dpaa2_fd *)
 +					dpaa2_comp->fd_virt_addr;
 +
-+				if (fd_eq->simple.addr ==
-+					fd->simple.addr) {
++				if (le64_to_cpu(fd_eq->simple.addr) ==
++						le64_to_cpu(fd->simple.addr)) {
 +
 +					list_del(&dpaa2_comp->list);
 +					list_add_tail(&dpaa2_comp->list,
@@ -1574,7 +1530,6 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	dma_cap_set(DMA_PRIVATE, dpaa2_qdma->dma_dev.cap_mask);
 +	dma_cap_set(DMA_SLAVE, dpaa2_qdma->dma_dev.cap_mask);
 +	dma_cap_set(DMA_MEMCPY, dpaa2_qdma->dma_dev.cap_mask);
-+	dma_cap_set(DMA_SG, dpaa2_qdma->dma_dev.cap_mask);
 +
 +	dpaa2_qdma->dma_dev.dev = dev;
 +	dpaa2_qdma->dma_dev.device_alloc_chan_resources
@@ -1583,7 +1538,6 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		= dpaa2_qdma_free_chan_resources;
 +	dpaa2_qdma->dma_dev.device_tx_status = dpaa2_qdma_tx_status;
 +	dpaa2_qdma->dma_dev.device_prep_dma_memcpy = dpaa2_qdma_prep_memcpy;
-+	dpaa2_qdma->dma_dev.device_prep_dma_sg = dpaa2_qdma_prep_sg;
 +	dpaa2_qdma->dma_dev.device_issue_pending = dpaa2_qdma_issue_pending;
 +
 +	err = dma_async_device_register(&dpaa2_qdma->dma_dev);
@@ -1675,7 +1629,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +MODULE_LICENSE("Dual BSD/GPL");
 --- /dev/null
 +++ b/drivers/dma/dpaa2-qdma/dpaa2-qdma.h
-@@ -0,0 +1,262 @@
+@@ -0,0 +1,227 @@
 +/* Copyright 2015 NXP Semiconductor Inc.
 + *
 + * Redistribution and use in source and binary forms, with or without
@@ -1777,7 +1731,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	} ctrl;
 +} __attribute__((__packed__));
 +
-+#define QMAN_FD_FMT_ENABLE (1 << 12) /* frame list table enable */
++#define QMAN_FD_FMT_ENABLE (1) /* frame list table enable */
 +#define QMAN_FD_BMT_ENABLE (1 << 15) /* bypass memory translation */
 +#define QMAN_FD_BMT_DISABLE (0 << 15) /* bypass memory translation */
 +#define QMAN_FD_SL_DISABLE (0 << 14) /* short lengthe disabled */
@@ -1802,49 +1756,14 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +#define QMAN_FD_CBMT_DISABLE (0 << 15) /* Flow Context: 64bit virtual address */
 +#define QMAN_FD_SC_DISABLE (0 << 27) /* stashing control */
 +
-+#define QDMA_FL_FMT_SBF 0x0	/* Single buffer frame */
++#define QDMA_FL_FMT_SBF (0x0) /* Single buffer frame */
 +#define QDMA_FL_FMT_SGE 0x2 /* Scatter gather frame */
-+#define QDMA_FL_BMT_ENABLE 0x1 /* enable bypass memory translation */
++#define QDMA_FL_BMT_ENABLE (0x1 << 15)/* enable bypass memory translation */
 +#define QDMA_FL_BMT_DISABLE 0x0 /* enable bypass memory translation */
-+#define QDMA_FL_SL_LONG 0x0 /* long length */
++#define QDMA_FL_SL_LONG (0x0 << 2)/* long length */
 +#define QDMA_FL_SL_SHORT 0x1 /* short length */
-+#define QDMA_FL_F 0x1 /* last frame list bit */
++#define QDMA_FL_F (0x1)/* last frame list bit */
 +/*Description of Frame list table structure*/
-+struct dpaa2_frame_list  {
-+	uint32_t addr_lo;	/* lower 32 bits of address */
-+	uint32_t addr_hi:17; /* upper 17 bits of address */
-+	uint32_t resrvd:15;
-+	union {
-+		uint32_t data_len_sl0; /* If SL=0, then data length is 32 */
-+		struct {
-+			uint32_t data_len:18; /* IF SL=1; length is 18bit */
-+			uint32_t resrvd:2;
-+			uint32_t mem:12; /* Valid only when SL=1 */
-+		} data_len_sl1;
-+	} data_len;
-+	/* word 4 */
-+	uint32_t bpid:14; /* Frame buffer pool ID */
-+	uint32_t ivp:1; /* Invalid Pool ID. */
-+	uint32_t bmt:1; /* Bypass Memory Translation */
-+	uint32_t offset:12; /* Frame offset */
-+	uint32_t fmt:2; /* Frame Format */
-+	uint32_t sl:1; /* Short Length */
-+	uint32_t f:1; /* Final bit */
-+
-+	uint32_t frc; /* Frame Context */
-+	/* word 6 */
-+	uint32_t err:8; /* Frame errors */
-+	uint32_t resrvd0:8;
-+	uint32_t asal:4; /* accelerator-specific annotation length */
-+	uint32_t resrvd1:1;
-+	uint32_t ptv2:1;
-+	uint32_t ptv1:1;
-+	uint32_t pta:1; /* pass-through annotation */
-+	uint32_t resrvd2:8;
-+
-+	uint32_t flc_lo; /* lower 32 bits fo flow context */
-+	uint32_t flc_hi; /* higher 32 bits fo flow context */
-+} __attribute__((__packed__));
 +
 +struct dpaa2_qdma_chan {
 +	struct virt_dma_chan		vchan;
@@ -1931,7 +1850,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +
 +/* FD pool size: one FD + 3 Frame list + 2 source/destination descriptor */
 +#define FD_POOL_SIZE (sizeof(struct dpaa2_fd) + \
-+		sizeof(struct dpaa2_frame_list) * 3 + \
++		sizeof(struct dpaa2_fl_entry) * 3 + \
 +		sizeof(struct dpaa2_qdma_sd_d) * 2)
 +
 +/* qdma_sg_blk + 16 SGs */
@@ -1940,7 +1859,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +#endif /* __DPAA2_QDMA_H */
 --- /dev/null
 +++ b/drivers/dma/dpaa2-qdma/dpdmai.c
-@@ -0,0 +1,454 @@
+@@ -0,0 +1,515 @@
 +/* Copyright 2013-2015 Freescale Semiconductor Inc.
 + *
 + * Redistribution and use in source and binary forms, with or without
@@ -1976,22 +1895,56 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +#include <linux/io.h>
 +#include "fsl_dpdmai.h"
 +#include "fsl_dpdmai_cmd.h"
-+#include "../../../drivers/staging/fsl-mc/include/mc-sys.h"
-+#include "../../../drivers/staging/fsl-mc/include/mc-cmd.h"
++#include <linux/fsl/mc.h>
++
++struct dpdmai_cmd_open {
++	__le32 dpdmai_id;
++};
++
++struct dpdmai_rsp_get_attributes {
++	__le32 id;
++	u8 num_of_priorities;
++	u8 pad0[3];
++	__le16 major;
++	__le16 minor;
++};
++
++
++struct dpdmai_cmd_queue {
++	__le32 dest_id;
++	u8 priority;
++	u8 queue;
++	u8 dest_type;
++	u8 pad;
++	__le64 user_ctx;
++	union {
++		__le32 options;
++		__le32 fqid;
++	};
++};
++
++struct dpdmai_rsp_get_tx_queue {
++	__le64 pad;
++	__le32 fqid;
++};
++
 +
 +int dpdmai_open(struct fsl_mc_io *mc_io,
 +		uint32_t cmd_flags,
 +		int dpdmai_id,
 +		uint16_t *token)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
++	struct dpdmai_cmd_open *cmd_params;
 +	int err;
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_OPEN,
 +					  cmd_flags,
 +					  0);
-+	DPDMAI_CMD_OPEN(cmd, dpdmai_id);
++
++	cmd_params = (struct dpdmai_cmd_open *)cmd.params;
++	cmd_params->dpdmai_id = cpu_to_le32(dpdmai_id);
 +
 +	/* send command to mc*/
 +	err = mc_send_command(mc_io, &cmd);
@@ -1999,8 +1952,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		return err;
 +
 +	/* retrieve response parameters */
-+	*token = MC_CMD_HDR_READ_TOKEN(cmd.header);
-+
++	*token = mc_cmd_hdr_read_token(&cmd);
 +	return 0;
 +}
 +
@@ -2008,7 +1960,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		 uint32_t cmd_flags,
 +		 uint16_t token)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_CLOSE,
@@ -2023,7 +1975,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		  const struct dpdmai_cfg *cfg,
 +		  uint16_t *token)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +	int err;
 +
 +	/* prepare command */
@@ -2047,7 +1999,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		   uint32_t cmd_flags,
 +		   uint16_t token)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_DESTROY,
@@ -2062,7 +2014,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		  uint32_t cmd_flags,
 +		  uint16_t token)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_ENABLE,
@@ -2077,7 +2029,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		   uint32_t cmd_flags,
 +		   uint16_t token)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_DISABLE,
@@ -2093,7 +2045,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		      uint16_t token,
 +		      int *en)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +	int err;
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_IS_ENABLED,
@@ -2115,7 +2067,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		 uint32_t cmd_flags,
 +		 uint16_t token)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_RESET,
@@ -2133,7 +2085,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		   int *type,
 +		   struct dpdmai_irq_cfg	*irq_cfg)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +	int err;
 +
 +	/* prepare command */
@@ -2159,7 +2111,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		   uint8_t irq_index,
 +		   struct dpdmai_irq_cfg *irq_cfg)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_SET_IRQ,
@@ -2177,7 +2129,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			  uint8_t irq_index,
 +			  uint8_t *en)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +	int err;
 +
 +	/* prepare command */
@@ -2203,7 +2155,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			  uint8_t irq_index,
 +			  uint8_t en)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_SET_IRQ_ENABLE,
@@ -2221,7 +2173,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			uint8_t irq_index,
 +			uint32_t *mask)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +	int err;
 +
 +	/* prepare command */
@@ -2247,7 +2199,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			uint8_t irq_index,
 +			uint32_t mask)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_SET_IRQ_MASK,
@@ -2265,7 +2217,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			  uint8_t irq_index,
 +			  uint32_t *status)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +	int err;
 +
 +	/* prepare command */
@@ -2291,7 +2243,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			    uint8_t irq_index,
 +			    uint32_t status)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_CLEAR_IRQ_STATUS,
@@ -2308,8 +2260,9 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			  uint16_t token,
 +			  struct dpdmai_attr *attr)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
 +	int err;
++	struct dpdmai_rsp_get_attributes *rsp_params;
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_GET_ATTR,
@@ -2322,7 +2275,12 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		return err;
 +
 +	/* retrieve response parameters */
-+	DPDMAI_RSP_GET_ATTR(cmd, attr);
++	rsp_params = (struct dpdmai_rsp_get_attributes *)cmd.params;
++	attr->id = le32_to_cpu(rsp_params->id);
++	attr->version.major = le16_to_cpu(rsp_params->major);
++	attr->version.minor = le16_to_cpu(rsp_params->minor);
++	attr->num_of_priorities = rsp_params->num_of_priorities;
++
 +
 +	return 0;
 +}
@@ -2333,13 +2291,22 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			uint8_t priority,
 +			const struct dpdmai_rx_queue_cfg *cfg)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
++	struct dpdmai_cmd_queue *cmd_params;
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_SET_RX_QUEUE,
 +					  cmd_flags,
 +					  token);
-+	DPDMAI_CMD_SET_RX_QUEUE(cmd, priority, cfg);
++
++	cmd_params = (struct dpdmai_cmd_queue *)cmd.params;
++	cmd_params->dest_id = cpu_to_le32(cfg->dest_cfg.dest_id);
++	cmd_params->priority = cfg->dest_cfg.priority;
++	cmd_params->queue = priority;
++	cmd_params->dest_type = cfg->dest_cfg.dest_type;
++	cmd_params->user_ctx = cpu_to_le64(cfg->user_ctx);
++	cmd_params->options = cpu_to_le32(cfg->options);
++
 +
 +	/* send command to mc*/
 +	return mc_send_command(mc_io, &cmd);
@@ -2350,14 +2317,17 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			uint16_t token,
 +			uint8_t priority, struct dpdmai_rx_queue_attr *attr)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
++	struct dpdmai_cmd_queue *cmd_params;
 +	int err;
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_GET_RX_QUEUE,
 +					  cmd_flags,
 +					  token);
-+	DPDMAI_CMD_GET_RX_QUEUE(cmd, priority);
++
++	cmd_params = (struct dpdmai_cmd_queue *)cmd.params;
++	cmd_params->queue = priority;
 +
 +	/* send command to mc*/
 +	err = mc_send_command(mc_io, &cmd);
@@ -2365,7 +2335,11 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		return err;
 +
 +	/* retrieve response parameters */
-+	DPDMAI_RSP_GET_RX_QUEUE(cmd, attr);
++	attr->dest_cfg.dest_id = le32_to_cpu(cmd_params->dest_id);
++	attr->dest_cfg.priority = cmd_params->priority;
++	attr->dest_cfg.dest_type = cmd_params->dest_type;
++	attr->user_ctx = le64_to_cpu(cmd_params->user_ctx);
++	attr->fqid = le32_to_cpu(cmd_params->fqid);
 +
 +	return 0;
 +}
@@ -2376,14 +2350,18 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +			uint8_t priority,
 +			struct dpdmai_tx_queue_attr *attr)
 +{
-+	struct mc_command cmd = { 0 };
++	struct fsl_mc_command cmd = { 0 };
++	struct dpdmai_cmd_queue *cmd_params;
++	struct dpdmai_rsp_get_tx_queue *rsp_params;
 +	int err;
 +
 +	/* prepare command */
 +	cmd.header = mc_encode_cmd_header(DPDMAI_CMDID_GET_TX_QUEUE,
 +					  cmd_flags,
 +					  token);
-+	DPDMAI_CMD_GET_TX_QUEUE(cmd, priority);
++
++	cmd_params = (struct dpdmai_cmd_queue *)cmd.params;
++	cmd_params->queue = priority;
 +
 +	/* send command to mc*/
 +	err = mc_send_command(mc_io, &cmd);
@@ -2391,7 +2369,9 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +		return err;
 +
 +	/* retrieve response parameters */
-+	DPDMAI_RSP_GET_TX_QUEUE(cmd, attr);
++
++	rsp_params = (struct dpdmai_rsp_get_tx_queue *)cmd.params;
++	attr->fqid = le32_to_cpu(rsp_params->fqid);
 +
 +	return 0;
 +}
