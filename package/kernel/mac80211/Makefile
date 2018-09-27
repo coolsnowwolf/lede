@@ -10,12 +10,12 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mac80211
 
-PKG_VERSION:=4.19-rc4-1
+PKG_VERSION:=4.19-rc5-1
 PKG_RELEASE:=1
-PKG_SOURCE_URL:=https://hauke-m.de/files/
-PKG_HASH:=5502add3ecfae4c75177f069450297d3e0d980f190206a7a71f3887c67cefee4
+PKG_SOURCE_URL:=https://mirrors.edge.kernel.org/pub/linux/kernel/projects/backports/stable/v4.19-rc5/
+PKG_HASH:=5b61e64ea79d22bbac9e8612d5d5485974f223de00d4ec250b0faf4b7baf9957
 
-PKG_SOURCE:=backports-$(PKG_VERSION).tar.gz
+PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/backports-$(PKG_VERSION)
 PKG_BUILD_PARALLEL:=1
 
