@@ -6,10 +6,10 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI support for IPSec VPN Server (IKEv1 with PSK and Xauth)
-LUCI_DEPENDS:=+strongswan-minimal +strongswan-mod-xauth-generic +kmod-br-netfilter
+LUCI_DEPENDS:=+strongswan-minimal +strongswan-mod-xauth-generic
 LUCI_PKGARCH:=all
 PKG_VERSION:=2.0
-PKG_RELEASE:=9
+PKG_RELEASE:=10
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
