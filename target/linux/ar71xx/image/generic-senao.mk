@@ -30,7 +30,7 @@ TARGET_DEVICES += ens202ext
 define Device/koala
   DEVICE_TITLE := OCEDO Koala
   BOARDNAME := KOALA
-  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca988x
   KERNEL_SIZE := 1536k
   IMAGE_SIZE := 7424k
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),1536k(kernel),5888k(rootfs),1536k(kernel2),5888k(rootfs2),1088k(data)ro,64k(id)ro,64k(art)ro,7424k@0x50000(firmware)
