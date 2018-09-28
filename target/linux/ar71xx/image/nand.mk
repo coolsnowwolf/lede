@@ -31,7 +31,7 @@ TARGET_DEVICES += c-60
 
 define Device/domywifi-dw33d
   DEVICE_TITLE := DomyWifi DW33D
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-usb-ledtrig-usbport kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-usb-ledtrig-usbport kmod-ath10k ath10k-firmware-qca988x
   BOARDNAME := DW33D
   IMAGE_SIZE := 16000k
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,14528k(rootfs),1472k(kernel),64k(art)ro,16000k@0x50000(firmware);ar934x-nfc:96m(rootfs_data),32m(backup)ro
@@ -87,7 +87,7 @@ TARGET_DEVICES += rambutan
 define Device/wi2a-ac200i
   SUPPORTED_DEVICES = $(1)
   DEVICE_TITLE := Nokia WI2A-AC200i
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ath9k kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ath9k kmod-ath10k ath10k-firmware-qca988x
   BOARDNAME := WI2A-AC200i
   BLOCKSIZE := 64k
   KERNEL_SIZE := 3648k
@@ -114,7 +114,7 @@ TARGET_DEVICES += z1
 
 define LegacyDevice/R6100
   DEVICE_TITLE := NETGEAR R6100
-  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca988x kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
 endef
 LEGACY_DEVICES += R6100
 
@@ -132,6 +132,6 @@ LEGACY_DEVICES += WNDR4300V1
 
 define LegacyDevice/NBG6716
   DEVICE_TITLE := Zyxel NBG 6716
-  DEVICE_PACKAGES := kmod-rtc-pcf8563 kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  DEVICE_PACKAGES := kmod-rtc-pcf8563 kmod-ath10k ath10k-firmware-qca988x
 endef
 LEGACY_DEVICES += NBG6716

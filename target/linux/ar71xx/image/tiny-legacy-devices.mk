@@ -1,7 +1,7 @@
 define LegacyDevice/F9K1115V2
   DEVICE_TITLE := Belkin AC1750DB (F9K1115V2)
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb3 kmod-usb-ledtrig-usbport \
-        kmod-ath10k-ct ath10k-firmware-qca988x-ct
+        kmod-ath10k ath10k-firmware-qca988x
 endef
 LEGACY_DEVICES += F9K1115V2
 

@@ -122,7 +122,7 @@ endef
 define Device/ubnt-unifiac-lite
   $(Device/ubnt-unifiac)
   DEVICE_TITLE := Ubiquiti UniFi AC-Lite
-  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca988x
   DEVICE_PROFILE += UBNTUNIFIACLITE
   BOARDNAME := UBNT-UF-AC-LITE
 endef
@@ -137,7 +137,7 @@ TARGET_DEVICES += ubnt-unifiac-mesh
 define Device/ubnt-unifiac-pro
   $(Device/ubnt-unifiac)
   DEVICE_TITLE := Ubiquiti UniFi AC-Pro
-  DEVICE_PACKAGES += kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  DEVICE_PACKAGES += kmod-ath10k ath10k-firmware-qca988x
   DEVICE_PROFILE += UBNTUNIFIACPRO
   BOARDNAME := UBNT-UF-AC-PRO
 endef
