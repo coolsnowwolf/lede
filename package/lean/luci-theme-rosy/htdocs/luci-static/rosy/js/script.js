@@ -59,7 +59,7 @@
             return true;
         }
 
-        $(".main > .main-left > .nav > .slide > .menu").each(function () {
+        $(".main > .main-left .nav > .slide > .menu").each(function () {
             var ulNode = $(this);
             ulNode.next().find("a").each(function () {
                 var that = $(this);
@@ -81,30 +81,28 @@
     /**
      * menu click
      */
-    if($(window).width() > 1024 || $(window).width() <= 880){
-        $(".main > .main-left .nav > .slide > .menu").click(function () {
-                var ul = $(this).next(".slide-menu");
-                var menu = $(this);
-                if (!ul.is(":visible")) {
-                    $(".main > .main-left .nav > .slide > .menu").next(".slide-menu").slideUp("fast");
-                    menu.addClass("active");
-                    ul.addClass("active");
-                    ul.stop(true).slideDown("fast");
-                } else {
-                    ul.stop(true).slideUp("fast", function () {
-                        menu.removeClass("active");
-                        ul.removeClass("active");
-                    });
-                }
-                return false;
-        });
-    }
+    $(".main > .main-left .nav > .slide > .menu").click(function () {
+            var ul = $(this).next(".slide-menu");
+            var menu = $(this);
+            if (!ul.is(":visible")) {
+                $(".main > .main-left .nav > .slide > .menu").next(".slide-menu").slideUp("fast");
+                menu.addClass("active");
+                ul.addClass("active");
+                ul.stop(true).slideDown("fast");
+            } else {
+                ul.stop(true).slideUp("fast", function () {
+                    menu.removeClass("active");
+                    ul.removeClass("active");
+                });
+            }
+            return false;
+    });
 
 
     /**
      * hook menu click and add the hash
      */
-    $(".main > .main-left > .nav > .slide > .slide-menu > li > a").click(function () {
+    $(".main > .main-left .nav > .slide > .slide-menu > li > a").click(function () {
         if (lastNode != undefined) lastNode.removeClass("active");
         $(this).parent().addClass("active");
         $(".main > .loading").fadeIn("fast");
@@ -114,7 +112,7 @@
     /**
      * fix menu click
      */
-    $(".main > .main-left > .nav > .slide > .slide-menu > li").click(function () {
+    $(".main > .main-left .nav > .slide > .slide-menu > li").click(function () {
         if (lastNode != undefined) lastNode.removeClass("active");
         $(this).addClass("active");
         $(".main > .loading").fadeIn("fast");
@@ -158,16 +156,18 @@
     $(".showSide").click(function () {
         if($(window).width() <= 1024){
             if (showSide) {
-                $(".nav").stop(true).animate({
+                $(".nav-container").stop(true).animate({
                     height: "0",
                     padding: "0"
                 }, "fast");
+                $(".logged-in .main-left").css('overflow', "hidden");
                 showSide = false;
             } else {
-                $(".nav").stop(true).animate({
-                    height: $(window).height() - 64 + 'px',
-                    padding: "2rem 1rem"
+                $(".nav-container").stop(true).animate({
+                    height: $(window).height() - $('.logged-in .main-left > header').height() + 'px',
+                    padding: "3rem 1rem"
                 }, "fast");
+                $(".logged-in .main-left").css('overflow', "visible");
                 showSide = true;
             }
         }
@@ -223,12 +223,25 @@
         }
     }
 
-    if($(window).width() <= 1024 && $(window).width() >= 768){
-        $('.main > .main-left .nav > .slide').each(function(index, elem){
-            elem.style.width = $($('.main > .main-left .nav > .slide')[1]).width() + 'px';
-            elem.style.left = 20 * (index+1) + '%';
-        });
+    function disnone() {
+        var mes = $('.node-main-login .alert-message.warning');
+        var lineDraft = $('.node-main-login .line-draft');
+
+        if(mes.is(":visible")){
+            lineDraft.css('display', 'none');
+            mes.css('display', 'block');
+        }else {
+            lineDraft.css('display', 'block');
+            mes.css('display', 'none');
+        }
     }
+
+    if($(window).width() > 1024){
+        disnone();
+        $('.node-main-login .cbi-button-apply').click(function(){disnone();});
+    }
+    
+
     
 
 })(jQuery);

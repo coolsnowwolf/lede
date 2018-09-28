@@ -1,0 +1,125 @@
+--- a/drivers/net/wireless/ath/ath9k/debug.c
++++ b/drivers/net/wireless/ath/ath9k/debug.c
+@@ -1421,6 +1421,52 @@ static const struct file_operations fops
+ 	.owner = THIS_MODULE
+ };
+ 
++
++static ssize_t read_file_chan_bw(struct file *file, char __user *user_buf,
++			     size_t count, loff_t *ppos)
++{
++	struct ath_softc *sc = file->private_data;
++	struct ath_common *common = ath9k_hw_common(sc->sc_ah);
++	char buf[32];
++	unsigned int len;
++
++	len = sprintf(buf, "0x%08x\n", common->chan_bw);
++	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
++}
++
++static ssize_t write_file_chan_bw(struct file *file, const char __user *user_buf,
++			     size_t count, loff_t *ppos)
++{
++	struct ath_softc *sc = file->private_data;
++	struct ath_common *common = ath9k_hw_common(sc->sc_ah);
++	unsigned long chan_bw;
++	char buf[32];
++	ssize_t len;
++
++	len = min(count, sizeof(buf) - 1);
++	if (copy_from_user(buf, user_buf, len))
++		return -EFAULT;
++
++	buf[len] = '\0';
++	if (kstrtoul(buf, 0, &chan_bw))
++		return -EINVAL;
++
++	common->chan_bw = chan_bw;
++	if (!test_bit(ATH_OP_INVALID, &common->op_flags))
++		ath9k_ops.config(sc->hw, IEEE80211_CONF_CHANGE_CHANNEL);
++
++	return count;
++}
++
++static const struct file_operations fops_chanbw = {
++	.read = read_file_chan_bw,
++	.write = write_file_chan_bw,
++	.open = simple_open,
++	.owner = THIS_MODULE,
++	.llseek = default_llseek,
++};
++
++
+ int ath9k_init_debug(struct ath_hw *ah)
+ {
+ 	struct ath_common *common = ath9k_hw_common(ah);
+@@ -1442,6 +1488,8 @@ int ath9k_init_debug(struct ath_hw *ah)
+ 
+ 	debugfs_create_file("eeprom", S_IRUSR, sc->debug.debugfs_phy, sc,
+ 			    &fops_eeprom);
++	debugfs_create_file("chanbw", S_IRUSR | S_IWUSR, sc->debug.debugfs_phy,
++			    sc, &fops_chanbw);
+ 	debugfs_create_devm_seqfile(sc->dev, "dma", sc->debug.debugfs_phy,
+ 				    read_file_dma);
+ 	debugfs_create_devm_seqfile(sc->dev, "interrupt", sc->debug.debugfs_phy,
+--- a/drivers/net/wireless/ath/ath.h
++++ b/drivers/net/wireless/ath/ath.h
+@@ -149,6 +149,7 @@ struct ath_common {
+ 	int debug_mask;
+ 	enum ath_device_state state;
+ 	unsigned long op_flags;
++	u32 chan_bw;
+ 
+ 	struct ath_ani ani;
+ 
+--- a/drivers/net/wireless/ath/ath9k/common.c
++++ b/drivers/net/wireless/ath/ath9k/common.c
+@@ -297,11 +297,13 @@ EXPORT_SYMBOL(ath9k_cmn_get_hw_crypto_ke
+ /*
+  * Update internal channel flags.
+  */
+-static void ath9k_cmn_update_ichannel(struct ath9k_channel *ichan,
++static void ath9k_cmn_update_ichannel(struct ath_common *common,
++				      struct ath9k_channel *ichan,
+ 				      struct cfg80211_chan_def *chandef)
+ {
+ 	struct ieee80211_channel *chan = chandef->chan;
+ 	u16 flags = 0;
++	int width;
+ 
+ 	ichan->channel = chan->center_freq;
+ 	ichan->chan = chan;
+@@ -309,7 +311,19 @@ static void ath9k_cmn_update_ichannel(st
+ 	if (chan->band == NL80211_BAND_5GHZ)
+ 		flags |= CHANNEL_5GHZ;
+ 
+-	switch (chandef->width) {
++	switch (common->chan_bw) {
++	case 5:
++		width = NL80211_CHAN_WIDTH_5;
++		break;
++	case 10:
++		width = NL80211_CHAN_WIDTH_10;
++		break;
++	default:
++		width = chandef->width;
++		break;
++	}
++
++	switch (width) {
+ 	case NL80211_CHAN_WIDTH_5:
+ 		flags |= CHANNEL_QUARTER;
+ 		break;
+@@ -342,10 +356,11 @@ struct ath9k_channel *ath9k_cmn_get_chan
+ 					    struct cfg80211_chan_def *chandef)
+ {
+ 	struct ieee80211_channel *curchan = chandef->chan;
++	struct ath_common *common = ath9k_hw_common(ah);
+ 	struct ath9k_channel *channel;
+ 
+ 	channel = &ah->channels[curchan->hw_value];
+-	ath9k_cmn_update_ichannel(channel, chandef);
++	ath9k_cmn_update_ichannel(common, channel, chandef);
+ 
+ 	return channel;
+ }

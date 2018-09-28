@@ -169,7 +169,7 @@ static struct gpio_keys_button fritz4020_gpio_keys[] __initdata = {
 		.code			= KEY_RFKILL,
 		.debounce_interval	= FRITZ4020_KEYS_DEBOUNCE_INTERVAL,
 		.gpio			= FRITZ4020_GPIO_BTN_WLAN,
-		.active_low		= 0,
+		.active_low		= 1,
 	},
 	{
 		.desc			= "WPS button",
@@ -177,7 +177,7 @@ static struct gpio_keys_button fritz4020_gpio_keys[] __initdata = {
 		.code			= KEY_WPS_BUTTON,
 		.debounce_interval	= FRITZ4020_KEYS_DEBOUNCE_INTERVAL,
 		.gpio			= FRITZ4020_GPIO_BTN_WPS,
-		.active_low		= 0,
+		.active_low		= 1,
 	},
 };
 

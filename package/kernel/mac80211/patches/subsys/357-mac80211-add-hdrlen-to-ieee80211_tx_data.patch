@@ -1,0 +1,219 @@
+From: Janusz Dziedzic <janusz.dziedzic@tieto.com>
+Date: Fri, 19 Feb 2016 11:01:49 +0100
+Subject: [PATCH] mac80211: add hdrlen to ieee80211_tx_data
+
+Add hdrlen to ieee80211_tx_data and use this
+when wep/ccmd/tkip. This is preparation for
+aligned4 code.
+
+Signed-off-by: Janusz Dziedzic <janusz.dziedzic@tieto.com>
+---
+
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -179,6 +179,7 @@ struct ieee80211_tx_data {
+ 	struct ieee80211_tx_rate rate;
+ 
+ 	unsigned int flags;
++	unsigned int hdrlen;
+ };
+ 
+ 
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -921,7 +921,7 @@ ieee80211_tx_h_fragment(struct ieee80211
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	struct ieee80211_hdr *hdr = (void *)skb->data;
+ 	int frag_threshold = tx->local->hw.wiphy->frag_threshold;
+-	int hdrlen;
++	int hdrlen = tx->hdrlen;
+ 	int fragnum;
+ 
+ 	/* no matter what happens, tx->skb moves to tx->skbs */
+@@ -942,8 +942,6 @@ ieee80211_tx_h_fragment(struct ieee80211
+ 	if (WARN_ON(info->flags & IEEE80211_TX_CTL_AMPDU))
+ 		return TX_DROP;
+ 
+-	hdrlen = ieee80211_hdrlen(hdr->frame_control);
+-
+ 	/* internal error, why isn't DONTFRAG set? */
+ 	if (WARN_ON(skb->len + FCS_LEN <= frag_threshold))
+ 		return TX_DROP;
+@@ -1174,6 +1172,8 @@ ieee80211_tx_prepare(struct ieee80211_su
+ 
+ 	hdr = (struct ieee80211_hdr *) skb->data;
+ 
++	tx->hdrlen = ieee80211_hdrlen(hdr->frame_control);
++
+ 	if (likely(sta)) {
+ 		if (!IS_ERR(sta))
+ 			tx->sta = sta;
+@@ -3497,6 +3497,7 @@ begin:
+ 	tx.local = local;
+ 	tx.skb = skb;
+ 	tx.sdata = vif_to_sdata(info->control.vif);
++	tx.hdrlen = ieee80211_padded_hdrlen(hw, hdr->frame_control);
+ 
+ 	if (txq->sta)
+ 		tx.sta = container_of(txq->sta, struct sta_info, sta);
+@@ -3833,6 +3834,7 @@ ieee80211_build_data_template(struct iee
+ 	hdr = (void *)skb->data;
+ 	tx.sta = sta_info_get(sdata, hdr->addr1);
+ 	tx.skb = skb;
++	tx.hdrlen = ieee80211_padded_hdrlen(&tx.local->hw, hdr->frame_control);
+ 
+ 	if (ieee80211_tx_h_select_key(&tx) != TX_CONTINUE) {
+ 		rcu_read_unlock();
+--- a/net/mac80211/util.c
++++ b/net/mac80211/util.c
+@@ -1290,6 +1290,7 @@ void ieee80211_send_auth(struct ieee8021
+ 	struct ieee80211_local *local = sdata->local;
+ 	struct sk_buff *skb;
+ 	struct ieee80211_mgmt *mgmt;
++	unsigned int hdrlen;
+ 	int err;
+ 
+ 	/* 24 + 6 = header + auth_algo + auth_transaction + status_code */
+@@ -1313,8 +1314,10 @@ void ieee80211_send_auth(struct ieee8021
+ 		skb_put_data(skb, extra, extra_len);
+ 
+ 	if (auth_alg == WLAN_AUTH_SHARED_KEY && transaction == 3) {
++		hdrlen = ieee80211_hdrlen(mgmt->frame_control);
+ 		mgmt->frame_control |= cpu_to_le16(IEEE80211_FCTL_PROTECTED);
+-		err = ieee80211_wep_encrypt(local, skb, key, key_len, key_idx);
++		err = ieee80211_wep_encrypt(local, skb, hdrlen, key,
++					    key_len, key_idx);
+ 		WARN_ON(err);
+ 	}
+ 
+--- a/net/mac80211/wep.c
++++ b/net/mac80211/wep.c
+@@ -89,11 +89,11 @@ static void ieee80211_wep_get_iv(struct
+ 
+ static u8 *ieee80211_wep_add_iv(struct ieee80211_local *local,
+ 				struct sk_buff *skb,
++				unsigned int hdrlen,
+ 				int keylen, int keyidx)
+ {
+ 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+-	unsigned int hdrlen;
+ 	u8 *newhdr;
+ 
+ 	hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_PROTECTED);
+@@ -101,7 +101,6 @@ static u8 *ieee80211_wep_add_iv(struct i
+ 	if (WARN_ON(skb_headroom(skb) < IEEE80211_WEP_IV_LEN))
+ 		return NULL;
+ 
+-	hdrlen = ieee80211_hdrlen(hdr->frame_control);
+ 	newhdr = skb_push(skb, IEEE80211_WEP_IV_LEN);
+ 	memmove(newhdr, newhdr + IEEE80211_WEP_IV_LEN, hdrlen);
+ 
+@@ -160,6 +159,7 @@ int ieee80211_wep_encrypt_data(struct cr
+  */
+ int ieee80211_wep_encrypt(struct ieee80211_local *local,
+ 			  struct sk_buff *skb,
++			  unsigned int hdrlen,
+ 			  const u8 *key, int keylen, int keyidx)
+ {
+ 	u8 *iv;
+@@ -169,7 +169,7 @@ int ieee80211_wep_encrypt(struct ieee802
+ 	if (WARN_ON(skb_tailroom(skb) < IEEE80211_WEP_ICV_LEN))
+ 		return -1;
+ 
+-	iv = ieee80211_wep_add_iv(local, skb, keylen, keyidx);
++	iv = ieee80211_wep_add_iv(local, skb, hdrlen, keylen, keyidx);
+ 	if (!iv)
+ 		return -1;
+ 
+@@ -307,13 +307,14 @@ static int wep_encrypt_skb(struct ieee80
+ 	struct ieee80211_key_conf *hw_key = info->control.hw_key;
+ 
+ 	if (!hw_key) {
+-		if (ieee80211_wep_encrypt(tx->local, skb, tx->key->conf.key,
++		if (ieee80211_wep_encrypt(tx->local, skb, tx->hdrlen,
++					  tx->key->conf.key,
+ 					  tx->key->conf.keylen,
+ 					  tx->key->conf.keyidx))
+ 			return -1;
+ 	} else if ((hw_key->flags & IEEE80211_KEY_FLAG_GENERATE_IV) ||
+ 		   (hw_key->flags & IEEE80211_KEY_FLAG_PUT_IV_SPACE)) {
+-		if (!ieee80211_wep_add_iv(tx->local, skb,
++		if (!ieee80211_wep_add_iv(tx->local, skb, tx->hdrlen,
+ 					  tx->key->conf.keylen,
+ 					  tx->key->conf.keyidx))
+ 			return -1;
+--- a/net/mac80211/wep.h
++++ b/net/mac80211/wep.h
+@@ -22,6 +22,7 @@ int ieee80211_wep_encrypt_data(struct cr
+ 				size_t klen, u8 *data, size_t data_len);
+ int ieee80211_wep_encrypt(struct ieee80211_local *local,
+ 			  struct sk_buff *skb,
++			  unsigned int hdrlen,
+ 			  const u8 *key, int keylen, int keyidx);
+ int ieee80211_wep_decrypt_data(struct crypto_cipher *tfm, u8 *rc4key,
+ 			       size_t klen, u8 *data, size_t data_len);
+--- a/net/mac80211/wpa.c
++++ b/net/mac80211/wpa.c
+@@ -44,7 +44,7 @@ ieee80211_tx_h_michael_mic_add(struct ie
+ 	    skb->len < 24 || !ieee80211_is_data_present(hdr->frame_control))
+ 		return TX_CONTINUE;
+ 
+-	hdrlen = ieee80211_hdrlen(hdr->frame_control);
++	hdrlen = tx->hdrlen;
+ 	if (skb->len < hdrlen)
+ 		return TX_DROP;
+ 
+@@ -195,7 +195,6 @@ mic_fail_no_key:
+ 
+ static int tkip_encrypt_skb(struct ieee80211_tx_data *tx, struct sk_buff *skb)
+ {
+-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
+ 	struct ieee80211_key *key = tx->key;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	unsigned int hdrlen;
+@@ -210,7 +209,7 @@ static int tkip_encrypt_skb(struct ieee8
+ 		return 0;
+ 	}
+ 
+-	hdrlen = ieee80211_hdrlen(hdr->frame_control);
++	hdrlen = tx->hdrlen;
+ 	len = skb->len - hdrlen;
+ 
+ 	if (info->control.hw_key)
+@@ -428,7 +427,7 @@ static int ccmp_encrypt_skb(struct ieee8
+ 		return 0;
+ 	}
+ 
+-	hdrlen = ieee80211_hdrlen(hdr->frame_control);
++	hdrlen = tx->hdrlen;
+ 	len = skb->len - hdrlen;
+ 
+ 	if (info->control.hw_key)
+@@ -660,7 +659,7 @@ static int gcmp_encrypt_skb(struct ieee8
+ 		return 0;
+ 	}
+ 
+-	hdrlen = ieee80211_hdrlen(hdr->frame_control);
++	hdrlen = tx->hdrlen;
+ 	len = skb->len - hdrlen;
+ 
+ 	if (info->control.hw_key)
+@@ -800,7 +799,6 @@ static ieee80211_tx_result
+ ieee80211_crypto_cs_encrypt(struct ieee80211_tx_data *tx,
+ 			    struct sk_buff *skb)
+ {
+-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+ 	struct ieee80211_key *key = tx->key;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	int hdrlen;
+@@ -816,8 +814,7 @@ ieee80211_crypto_cs_encrypt(struct ieee8
+ 		     pskb_expand_head(skb, iv_len, 0, GFP_ATOMIC)))
+ 		return TX_DROP;
+ 
+-	hdrlen = ieee80211_hdrlen(hdr->frame_control);
+-
++	hdrlen = tx->hdrlen;
+ 	pos = skb_push(skb, iv_len);
+ 	memmove(pos, pos + iv_len, hdrlen);
+ 

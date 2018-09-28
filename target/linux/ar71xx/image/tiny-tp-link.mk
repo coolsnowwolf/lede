@@ -686,3 +686,12 @@ define Device/tl-wr941nd-v6-cn
   TPLINK_HWID := 0x09410006
 endef
 TARGET_DEVICES += tl-wr941nd-v6-cn
+
+define Device/tl-wr941n-v7
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR941N/ND v7
+  BOARDNAME := TL-WR941N-v7
+  DEVICE_PROFILE := TLWR941
+  TPLINK_HWID := 0x09410007
+endef
+TARGET_DEVICES += tl-wr941n-v7
