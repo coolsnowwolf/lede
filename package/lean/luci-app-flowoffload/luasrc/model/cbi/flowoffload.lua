@@ -19,6 +19,7 @@ hw = s:option(Flag, "flow_offloading_hw", translate("HWNAT"))
 hw.default = 0
 hw.rmempty = false
 hw.description = translate("Enable Hardware NAT (depends on hw capability like MTK 762x)")
+hw:depends( "flow_offloading", 1)
 
 
 

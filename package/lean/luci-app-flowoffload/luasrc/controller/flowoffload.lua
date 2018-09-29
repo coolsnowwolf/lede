@@ -1,7 +1,7 @@
 module("luci.controller.flowoffload", package.seeall)
 
 function index()
-	if not nixio.fs.access("/etc/config/firewall") then
+	if not nixio.fs.access("/sys/module/xt_FLOWOFFLOAD/refcnt") then
 		return
 	end
 	local page
