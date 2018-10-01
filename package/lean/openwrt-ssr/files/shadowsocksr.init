@@ -2,6 +2,7 @@
 #
 # Copyright (C) 2017 openwrt-ssr
 # Copyright (C) 2017 yushi studio <ywb94@qq.com>
+# Copyright (C) 2018 dz <dingzhong110@gmail.com>
 #
 # This is free software, licensed under the GNU General Public License v3.
 # See /LICENSE for more information.
@@ -16,6 +17,8 @@ EXTRA_COMMANDS=rules
 CONFIG_FILE=/var/etc/${NAME}.json
 CONFIG_UDP_FILE=/var/etc/${NAME}_u.json
 CONFIG_SOCK5_FILE=/var/etc/${NAME}_s.json
+dnsforwarder_pid=/var/run/dnsforwarder/dns.pid
+CRON_FILE=/etc/crontabs/root
 server_count=0
 redir_tcp=0
 redir_udp=0
@@ -24,6 +27,7 @@ local_enable=0
 kcp_enable_flag=0
 kcp_flag=0
 pdnsd_enable_flag=0
+dnsforwarder_enable_flag=0
 switch_enable=0
 switch_server=$1
 MAXFD=32768
@@ -85,6 +89,16 @@ gen_config_file() {
 		    "fast_open": $fastopen
 		}
 EOF
+
+	if [ $(uci_get_by_name $1 tool) = "ShadowsocksR" ] ;then
+	    ln -sf /usr/bin/ssr-redir /usr/sbin/ssr-redir
+		ln -sf /usr/bin/ssr-local /usr/sbin/ssr-local
+		ln -sf /usr/bin/ssr-tunnel /usr/sbin/ssr-tunnel
+	else
+		ln -sf /usr/bin/ss-redir /usr/sbin/ssr-redir
+		ln -sf /usr/bin/ss-local /usr/sbin/ssr-local
+		ln -sf /usr/bin/ss-tunnel /usr/sbin/ssr-tunnel
+	fi
 }
 
 get_arg_out() {
@@ -158,56 +172,191 @@ start_rules() {
 
 start_pdnsd() {
 	local usr_dns="$1"
-  local usr_port="$2"
-  
-	local tcp_dns_list="208.67.222.222, 208.67.220.220"
-	[ -z "$usr_dns" ] && usr_dns="8.8.8.8"
-	[ -z "$usr_port" ] && usr_port="53"
+	local usr_port="$2"
+
+	local tcp_dns_list="208.67.220.220,208.67.222.222"
+	[ -z "$usr_dns" ] && usr_dns="208.67.220.220"
+	[ -z "$usr_port" ] && usr_port="443"
 	mkdir -p /var/etc /var/pdnsd
 	
-  if ! test -f "/var/pdnsd/pdnsd.cache"; then
+	if ! test -f "/var/pdnsd/pdnsd.cache"; then
 	dd if=/dev/zero of="/var/pdnsd/pdnsd.cache" bs=1 count=4 2> /dev/null
 	chown -R nobody.nogroup /var/pdnsd
 	fi
 	
 	cat > /var/etc/pdnsd.conf <<EOF
 global {
-	perm_cache=10240;
-	cache_dir="/var/pdnsd";
-	pid_file = /var/run/pdnsd.pid;
-	run_as="nobody";
-	server_ip = 127.0.0.1;
-	server_port = 5353;
+	perm_cache=4096;        # dns缓存大小，单位KB，建议不要写的太大
+	cache_dir="/var/pdnsd";     # 缓存文件的位置
+	server_ip = 0.0.0.0;        # pdnsd监听的网卡，0.0.0.0是全部网卡
+	server_port=5353;           # pdnsd监听的端口，不要和别的服务冲突即可
 	status_ctl = on;
-	query_method = tcp_only;
-	min_ttl=1h;
-	max_ttl=1w;
-	timeout=10;
-	neg_domain_pol=on;
-	proc_limit=2;
-	procq_limit=8;
+        paranoid=on;                  # 二次请求模式，如果请求主DNS服务器返回的是垃圾地址，就向备用服务器请求
+   	query_method=tcp_only;      # 请求模式，推荐使用仅TCP模式，UDP模式一般需要二次请求
+    	neg_domain_pol = off;  
+    	par_queries = 400;          # 最多同时请求数
+    	min_ttl = 1d;               # DNS结果最短缓存时间
+    	max_ttl = 1w;               # DNS结果最长缓存时间
+    	timeout = 10;               # DNS请求超时时间，单位秒
 }
-server {
-	label= "ssr-usrdns";
-	ip = $usr_dns;
-	port = $usr_port;
-	timeout=6;
-	uptest=none;
-	interval=10m;
-	purge_cache=off;
+server {  
+   label = "routine";         # 这个随便写  
+    ip = $usr_dns;     # 这里为主要上级 dns 的 ip 地址，建议填写一个当地最快的DNS地址  
+	port = $usr_port; 
+    timeout = 5;              # DNS请求超时时间
+    reject = 74.125.127.102,  # 以下是脏IP，也就是DNS污染一般会返回的结果，如果收到如下DNS结果会触发二次请求（TCP协议一般不会碰到脏IP）
+        74.125.155.102,  
+        74.125.39.102,  
+        74.125.39.113,  
+        209.85.229.138,  
+        128.121.126.139,  
+        159.106.121.75,  
+        169.132.13.103,  
+        192.67.198.6,  
+        202.106.1.2,  
+        202.181.7.85,  
+        203.161.230.171,  
+        203.98.7.65,  
+        207.12.88.98,  
+        208.56.31.43,  
+        209.145.54.50,  
+        209.220.30.174,  
+        209.36.73.33,  
+        211.94.66.147,  
+        213.169.251.35,  
+        216.221.188.182,  
+        216.234.179.13,  
+        243.185.187.39,  
+        37.61.54.158,  
+        4.36.66.178,  
+        46.82.174.68,  
+        59.24.3.173,  
+        64.33.88.161,  
+        64.33.99.47,  
+        64.66.163.251,  
+        65.104.202.252,  
+        65.160.219.113,  
+        66.45.252.237,  
+        69.55.52.253,  
+        72.14.205.104,  
+        72.14.205.99,  
+        78.16.49.15,  
+        8.7.198.45,  
+        93.46.8.89,  
+        37.61.54.158,  
+        243.185.187.39,  
+        190.93.247.4,  
+        190.93.246.4,  
+        190.93.245.4,  
+        190.93.244.4,  
+        65.49.2.178,  
+        189.163.17.5,  
+        23.89.5.60,  
+        49.2.123.56,  
+        54.76.135.1,  
+        77.4.7.92,  
+        118.5.49.6,  
+        159.24.3.173,  
+        188.5.4.96,  
+        197.4.4.12,  
+        220.250.64.24,  
+        243.185.187.30,  
+        249.129.46.48,  
+        253.157.14.165;  
+    reject_policy = fail;  
+    exclude = ".google.com",  
+        ".cn",              #排除国内DNS解析，如果正常翻，则可以在前面加#注释  
+        ".baidu.com",       #排除国内DNS解析，如果正常翻，则可以在前面加#注释  
+        ".qq.com",          #排除国内DNS解析，如果正常翻，则可以在前面加#注释  
+        ".gstatic.com",  
+        ".googleusercontent.com",  
+        ".googlepages.com",  
+        ".googlevideo.com",  
+        ".googlecode.com",  
+        ".googleapis.com",  
+        ".googlesource.com",  
+        ".googledrive.com",  
+        ".ggpht.com",  
+        ".youtube.com",  
+        ".youtu.be",  
+        ".ytimg.com",  
+        ".twitter.com",  
+        ".facebook.com",  
+        ".fastly.net",  
+        ".akamai.net",  
+        ".akamaiedge.net",  
+        ".akamaihd.net",  
+        ".edgesuite.net",  
+        ".edgekey.net";  
 }
-server {
-	label= "ssr-pdnsd";
-	ip = $tcp_dns_list;
-	port = 5353;
-	timeout=6;
-	uptest=none;
-	interval=10m;
-	purge_cache=off;
-}
+server {  
+    # 以下为备用DNS服务器的配置，也是二次请求服务器的配置
+    label = "special";                  # 这个随便写  
+    ip = $tcp_dns_list; # 这里为备用DNS服务器的 ip 地址  
+    port = 5353;                        # 推荐使用53以外的端口（DNS服务器必须支持） 
+    proxy_only = on;
+    timeout = 5;  
+}  
 EOF
 
 	/usr/sbin/pdnsd -c /var/etc/pdnsd.conf -d
+}
+
+# $1: upstream DNS server
+start_dnsforwarder()
+{
+	echo reday to start dnsforwarder by ssr
+	local usr_dns="$1"
+	local usr_port="$2"
+	
+	uci set dnsforwarder.@arguments[0].enabled=1
+	uci set dnsforwarder.@arguments[0].redir=0
+	
+	uci commit dnsforwarder
+
+	local tcp_dns_list="1.0.0.1,1.1.1.1,4.2.2.1,4.2.2.2,8.8.4.4,8.8.8.8,9.9.9.9,208.67.222.222,208.67.220.220,1.0.0.1:443,1.1.1.1:443,1.0.0.1:853,1.1.1.1:853,208.67.222.222:443,208.67.220.220:443,208.67.222.222:5353,208.67.220.220:5353,2001:4860:4860::8844,2001:4860:4860::8888,2606:4700:4700::1111,2606:4700:4700::1001"
+	[ -z "$usr_dns" ] && usr_dns="208.67.220.220"
+	[ -z "$usr_port" ] && usr_port="443"
+	
+	
+		[ ! -f "/etc/dnsforwarder/dnsforwarder.conf.bak" ] && {
+		cp /etc/dnsforwarder/dnsforwarder.conf /etc/dnsforwarder/dnsforwarder.conf.bak
+	}
+	cat > /etc/dnsforwarder/dnsforwarder.conf <<EOF
+LogOn true
+LogFileThresholdLength 102400
+LogFileFolder /var/log
+UDPLocal 0.0.0.0:5353
+TCPGroup $usr_dns:$usr_port,$tcp_dns_list * no
+GroupFile
+BlockIP 243.185.187.39,46.82.174.68,37.61.54.158,93.46.8.89,59.24.3.173,203.98.7.65,8.7.198.45,78.16.49.15,159.106.121.75,69.63.187.12,31.13.76.8,31.13.64.49
+IPSubstituting
+BlockNegativeResponse false
+Hosts
+HostsUpdateInterval 18000
+HostsDownloadPath
+HostsScript
+HostsRetryInterval 30
+AppendHosts
+BlockIpv6WhenIpv4Exists false
+UseCache true
+CacheSize 1048576
+MemoryCache true
+CacheFile
+IgnoreTTL false
+OverrideTTL -1
+MultipleTTL 1
+ReloadCache false
+OverwriteCache false
+DisabledType
+DisabledDomain
+DisabledList
+DomainStatistic false
+DomainStatisticTempletFile
+StatisticUpdateInterval 29
+EOF
+
+/etc/init.d/dnsforwarder restart
 }
 
 start_tunnel() {
@@ -221,11 +370,11 @@ start_tunnel() {
 		local_dns_port=5353
 	fi
 
-	/usr/bin/ssr-tunnel \
+	/usr/sbin/ssr-tunnel \
 		-c $tunnel_config_file $ARG_OTA -u \
 		-l $local_dns_port \
 		-b $(uci_get_by_type global tunnel_address 0.0.0.0) \
-		-L $(uci_get_by_type global tunnel_forward 8.8.4.4:53) \
+		-L $(uci_get_by_type global tunnel_forward 208.67.220.220:443) \
 		-f /var/run/ssr-tunnel.pid
 	tunnel_enable=1
 	return $?
@@ -262,7 +411,7 @@ start_redir() {
 	local pid_file="/var/run/ssr-retcp.pid"
 	
 	if [ "$ARG_UDP" = "-U" ]; then
-		/usr/bin/ssr-redir \
+		/usr/sbin/ssr-redir \
 			-c $CONFIG_FILE $ARG_OTA \
 			-f /var/run/ssr-retcp.pid
 		
@@ -276,7 +425,7 @@ start_redir() {
 		redir_udp=1
 	fi
 	
-	/usr/bin/ssr-redir \
+	/usr/sbin/ssr-redir \
 		-c $last_config_file $ARG_OTA $ARG_UDP \
 		-f $pid_file
 		
@@ -284,15 +433,27 @@ start_redir() {
 	if [ "$run_mode" = "gfw" ] ;then
 		if [ "$(uci_get_by_type global pdnsd_enable)" = "0" ] ;then
 			start_tunnel
+			start_cron
 		fi
 
 		if [ "$(uci_get_by_type global pdnsd_enable)" = "1" ] ;then
-			local dnsstr="$(uci_get_by_type global tunnel_forward 8.8.4.4:53)"
+			local dnsstr="$(uci_get_by_type global tunnel_forward 208.67.220.220:443)"
 			local dnsserver=`echo "$dnsstr"|awk -F ':'  '{print $1}'`
 			local dnsport=`echo "$dnsstr"|awk -F ':'  '{print $2}'`
 			ipset add gfwlist $dnsserver 2>/dev/null
 			start_pdnsd $dnsserver $dnsport
 			pdnsd_enable_flag=1
+			start_cron
+		fi
+		
+		if [ "$(uci_get_by_type global pdnsd_enable)" = "2" ] ;then
+			local dnsstr="$(uci_get_by_type global tunnel_forward 208.67.220.220:443)"
+			local dnsserver=`echo "$dnsstr"|awk -F ':'  '{print $1}'`
+			local dnsport=`echo "$dnsstr"|awk -F ':'  '{print $2}'`
+			ipset add gfwlist $dnsserver 2>/dev/null
+			start_dnsforwarder $dnsserver $dnsport
+			dnsforwarder_enable_flag=1
+			start_cron
 		fi
 	fi
 	
@@ -361,29 +522,29 @@ EOF
 }
 
 start_service() {
-[ $(uci_get_by_name $1 enable) = "0"  ]  && return 1
-let server_count=server_count+1
-if [ $server_count = 1 ] ;then
-iptables -N SSR-SERVER-RULE && \
-iptables -t filter -I INPUT  -j SSR-SERVER-RULE
-fi
+	[ $(uci_get_by_name $1 enable) = "0"  ]  && return 1
+	let server_count=server_count+1
+	if [ $server_count = 1 ] ;then
+	iptables -N SSR-SERVER-RULE && \
+	iptables -t filter -I INPUT  -j SSR-SERVER-RULE
+	fi
 
-gen_service_file $1 /var/etc/${NAME}_${server_count}.json
-/usr/bin/ssr-server -c /var/etc/${NAME}_${server_count}.json -u -f /var/run/ssr-server${server_count}.pid 
-iptables -t filter -A SSR-SERVER-RULE -p tcp --dport $(uci_get_by_name $1 server_port) -j ACCEPT
-iptables -t filter -A SSR-SERVER-RULE -p udp --dport $(uci_get_by_name $1 server_port) -j ACCEPT
-return 0
+	gen_service_file $1 /var/etc/${NAME}_${server_count}.json
+	/usr/bin/ssr-server -c /var/etc/${NAME}_${server_count}.json -u -f /var/run/ssr-server${server_count}.pid 
+	iptables -t filter -A SSR-SERVER-RULE -p tcp --dport $(uci_get_by_name $1 server_port) -j ACCEPT
+	iptables -t filter -A SSR-SERVER-RULE -p udp --dport $(uci_get_by_name $1 server_port) -j ACCEPT
+	return 0
 }
 gen_serv_include() {
-FWI=$(uci get firewall.shadowsocksr.path 2>/dev/null) 
-[ -n "$FWI" ] || return 0
-if [ ! -f $FWI ] ;then
-echo '#!/bin/sh' >$FWI
-fi
-extract_rules() {
-echo "*filter"
-iptables-save -t filter | grep SSR-SERVER-RULE|sed -e "s/^-A INPUT/-I INPUT/" 
-echo 'COMMIT'
+	FWI=$(uci get firewall.shadowsocksr.path 2>/dev/null) 
+	[ -n "$FWI" ] || return 0
+	if [ ! -f $FWI ] ;then
+	echo '#!/bin/sh' >$FWI
+	fi
+	extract_rules() {
+	echo "*filter"
+	iptables-save -t filter | grep SSR-SERVER-RULE|sed -e "s/^-A INPUT/-I INPUT/" 
+	echo 'COMMIT'
 }
 	cat <<-EOF >>$FWI
 	iptables-save -c | grep -v "SSR-SERVER" | iptables-restore -c
@@ -394,8 +555,8 @@ EOF
 
 }
 start_server() {
-  SERVER_ENABLE=$(uci_get_by_type server_global enable_server)
-  [ "$SERVER_ENABLE" = 0 ] && return 0
+	SERVER_ENABLE=$(uci_get_by_type server_global enable_server)
+	[ "$SERVER_ENABLE" = 0 ] && return 0
 	mkdir -p /var/run /var/etc
 
 	config_load $NAME
@@ -409,7 +570,7 @@ start_local() {
 	[ "$local_server" = "nil" ] && return 1
 	mkdir -p /var/run /var/etc
 	gen_config_file $local_server 2
-	/usr/bin/ssr-local -c $CONFIG_SOCK5_FILE -u  \
+	/usr/sbin/ssr-local -c $CONFIG_SOCK5_FILE -u  \
 		-l $(uci_get_by_type socks5_proxy local_port 1080) \
 		-b $(uci_get_by_type socks5_proxy local_address 0.0.0.0) \
 		-f /var/run/ssr-local.pid
@@ -455,6 +616,12 @@ start() {
 			start_tunnel
 			;;
 	esac
+	else
+		mkdir -p /tmp/dnsmasq.d
+		cat > /tmp/dnsmasq.d/dnsmasq-ssr.conf <<EOF
+conf-dir=/etc/dnsmasq.ssr
+EOF
+		/etc/init.d/dnsmasq restart
 	fi
 	
 	fi
@@ -499,5 +666,31 @@ stop() {
 	killall -q -9 ssr-server
 	killall -q -9 ssr-kcptun
 	killall -q -9 ssr-local
-	killall -q pdnsd
+	killall -q -9 dnsforwarder
+	killall -q pdnsd	
+	if [ -f "/tmp/dnsmasq.d/dnsmasq-ssr.conf" ]; then
+		rm -f /tmp/dnsmasq.d/dnsmasq-ssr.conf
+		/etc/init.d/dnsmasq restart
+	fi
+	
+	uci set dnsforwarder.@arguments[0].enabled=0
+	uci set dnsforwarder.@arguments[0].redir=0
+	uci commit dnsforwarder
+
+	[ -f  "/etc/dnsforwarder/dnsforwarder.conf.bak" ] && cp /etc/dnsforwarder/dnsforwarder.conf.bak /etc/dnsforwarder/dnsforwarder.conf
+	rm -f /etc/dnsforwarder/dnsforwarder.conf.bak
+	/etc/init.d/dnsforwarder restart
+	stop_cron
+}
+
+start_cron(){
+	sed -i '/shadowsocksr_watchdog.log/d' $CRON_FILE
+	echo '0 */1 * * * /etc/shadowsocksr/shadowsocksr.watchdog >> /tmp/shadowsocksr_watchdog.log 2>&1' >> $CRON_FILE
+	echo '0 1 * * 0 echo "" > /tmp/shadowsocksr_watchdog.log' >> $CRON_FILE
+	crontab $CRON_FILE
+}
+
+stop_cron(){
+	sed -i '/shadowsocksr_watchdog.log/d' $CRON_FILE
+	/etc/init.d/cron restart
 }

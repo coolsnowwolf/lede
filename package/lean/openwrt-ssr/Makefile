@@ -1,6 +1,7 @@
 #
 # Copyright (C) 2017 OpenWrt-ssr
 # Copyright (C) 2017 yushi studio <ywb94@qq.com>
+# Copyright (C) 2018 dz <dingzhong110@gmail.com>
 #
 # This is free software, licensed under the GNU General Public License v3.
 # See /LICENSE for more information.
@@ -9,12 +10,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=openwrt-ssr
-PKG_VERSION:=3.1.1
+PKG_VERSION:=3.20.00
 # PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/shadowsocksrr/shadowsocksr-libev
-PKG_SOURCE_VERSION:=d4904568c0bd7e0861c0cbfeaa43740f404db214
+PKG_SOURCE_VERSION:=7c736937660c58d607625e023ccea29712bab492
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
@@ -38,7 +39,7 @@ define Package/openwrt-ssr/Default
 	CATEGORY:=LuCI
 	SUBMENU:=3. Applications
 	TITLE:=shadowsocksR-libev LuCI interface
-	URL:=https://github.com/MrTheUniverse/openwrt-ssr
+	URL:=https://github.com/505575853/openwrt-ssr
 	VARIANT:=$(1)
 	DEPENDS:=$(3)	
 	PKGARCH:=all
@@ -48,7 +49,7 @@ endef
 Package/luci-app-shadowsocksR = $(call Package/openwrt-ssr/Default,openssl,(OpenSSL),+libopenssl +libpthread +ipset +ip-full +iptables-mod-tproxy +libpcre +zlib)
 Package/luci-app-shadowsocksR-Client = $(call Package/openwrt-ssr/Default,openssl,(OpenSSL),+libopenssl +libpthread +ipset +ip-full +iptables-mod-tproxy +libpcre +zlib)
 Package/luci-app-shadowsocksR-Server = $(call Package/openwrt-ssr/Default,openssl,(OpenSSL),+libopenssl +libpthread +ipset +ip-full +iptables-mod-tproxy +libpcre +zlib)
-Package/luci-app-shadowsocksR-GFW = $(call Package/openwrt-ssr/Default,openssl,(OpenSSL),+libopenssl +libpthread +ipset +ip-full +iptables-mod-tproxy +libpcre +zlib +dnsmasq-full +coreutils +coreutils-base64 +curl +bash +bind-dig +pdnsd-alt)
+Package/luci-app-shadowsocksR-GFW = $(call Package/openwrt-ssr/Default,openssl,(OpenSSL),+shadowsocks-libev +libopenssl +libpthread +ipset +ip-full +iptables-mod-tproxy +libpcre +zlib +dnsmasq-full +pdnsd-alt +coreutils +coreutils-base64 +curl +bash +bind-dig)
 
 define Package/openwrt-ssr/description
 	LuCI Support for $(1).
@@ -182,7 +183,7 @@ define Package/openwrt-ssr/install
 	$(INSTALL_DIR) $(1)/etc
 	$(INSTALL_DATA) ./files/china_ssr.txt $(1)/etc/china_ssr.txt
 	$(INSTALL_DIR) $(1)/usr/share/shadowsocksr
-	$(INSTALL_BIN) ./files/root/usr/share/shadowsocksr/*.sh $(1)/usr/share/shadowsocksr/
+	$(INSTALL_DATA) ./files/root/usr/share/shadowsocksr/*.sh $(1)/usr/share/shadowsocksr/
 endef
 
 Package/luci-app-shadowsocksR/install = $(call Package/openwrt-ssr/install,$(1),shadowsocksr)
@@ -224,15 +225,18 @@ define Package/luci-app-shadowsocksR-GFW/install
 	$(INSTALL_BIN) ./files/shadowsocksr.switch $(1)/usr/bin/ssr-switch
 	$(INSTALL_DIR) $(1)/etc/dnsmasq.ssr
 	$(INSTALL_DATA) ./files/gfw_list.conf $(1)/etc/dnsmasq.ssr/gfw_list.conf
-	$(INSTALL_DATA) ./files/custom_forward.conf $(1)/etc/dnsmasq.ssr/custom_forward.conf
+	$(INSTALL_DATA) ./files/custom_list.conf $(1)/etc/dnsmasq.ssr/custom_list.conf
 	$(INSTALL_DATA) ./files/ad.conf $(1)/etc/dnsmasq.ssr/ad.conf
+	$(INSTALL_DATA) ./files/ad_list.conf $(1)/etc/dnsmasq.ssr/ad_list.conf
 	$(INSTALL_DIR) $(1)/etc
-	$(INSTALL_DATA) ./files/china_ssr.txt $(1)/etc/china_ssr.txt	
+	$(INSTALL_DATA) ./files/china_ssr.txt $(1)/etc/china_ssr.txt
+	$(INSTALL_DIR) $(1)/etc/shadowsocksr
+	$(INSTALL_BIN) ./files/shadowsocksr.watchdog $(1)/etc/shadowsocksr/shadowsocksr.watchdog
 	$(INSTALL_DIR) $(1)/usr/share/shadowsocksr
-	$(INSTALL_DATA) ./files/root/usr/share/shadowsocksr/*.sh $(1)/usr/share/shadowsocksr/
+	$(INSTALL_BIN) ./files/root/usr/share/shadowsocksr/*.sh $(1)/usr/share/shadowsocksr/
 endef
 
-#$(eval $(call BuildPackage,luci-app-shadowsocksR))
+$(eval $(call BuildPackage,luci-app-shadowsocksR))
 #$(eval $(call BuildPackage,luci-app-shadowsocksR-Client))
 #$(eval $(call BuildPackage,luci-app-shadowsocksR-Server))
 $(eval $(call BuildPackage,luci-app-shadowsocksR-GFW))

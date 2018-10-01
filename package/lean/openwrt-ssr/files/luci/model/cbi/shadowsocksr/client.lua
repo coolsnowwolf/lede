@@ -22,7 +22,10 @@ local encrypt_methods = {
 	"aes-256-cfb",
 	"aes-128-ctr",
 	"aes-192-ctr",
-	"aes-256-ctr",	
+	"aes-256-ctr",
+	"aes-128-gcm",
+	"aes-192-gcm",
+	"aes-256-gcm",
 	"bf-cfb",
 	"camellia-128-cfb",
 	"camellia-192-cfb",
@@ -35,6 +38,8 @@ local encrypt_methods = {
 	"salsa20",
 	"chacha20",
 	"chacha20-ietf",
+	"chacha20-ietf-poly1305",
+	"xchacha20-ietf-poly1305",
 }
 
 local protocol = {
@@ -43,12 +48,14 @@ local protocol = {
 	"auth_sha1_v4",
 	"auth_aes128_sha1",
 	"auth_aes128_md5",
+	"auth_akarin",
 	"auth_chain_a",
 	"auth_chain_b",
 	"auth_chain_c",
 	"auth_chain_d",
 	"auth_chain_e",
 	"auth_chain_f",
+	
 }
 
 obfs = {
@@ -57,6 +64,7 @@ obfs = {
 	"http_post",
 	"random_head",	
 	"tls1.2_ticket_auth",
+	"tls1.2_ticket_fastauth",
 }
 
 local raw_mode = {
@@ -193,8 +201,8 @@ o:value("gfw", translate("GFW List Mode"))
 o = s:option(ListValue, "pdnsd_enable", translate("Resolve Dns Mode"))
 o:depends("run_mode", "gfw")
 o:value("0", translate("Use SSR DNS Tunnel"))
-o:value("1", translate("Use Pdnsd(Need to install)"))
-o:value("2", translate("Use Other DNS Tunnel(Need to install)"))
+o:value("1", translate("Use Pdnsd"))
+o:value("2", translate("Use dnsforwarder"))
 
 o = s:option(Flag, "tunnel_enable", translate("Enable Tunnel(DNS)"))
 o:depends("run_mode", "router")
@@ -340,9 +348,10 @@ s.anonymous = true
 s:tab("wan_ac", translate("Interfaces - WAN"))
 
 o = s:taboption("wan_ac", Value, "wan_bp_list", translate("Bypassed IP List"))
+o:value("/etc/china_ssr.txt", translate("China CHNRoute"))
 o:value("/dev/null", translate("NULL - As Global Proxy"))
 
-o.default = "/dev/null"
+o.default = "/etc/china_ssr.txt"
 o.rmempty = false
 
 o = s:taboption("wan_ac", DynamicList, "wan_bp_ips", translate("Bypassed IP"))
