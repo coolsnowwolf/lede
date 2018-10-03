@@ -80,6 +80,10 @@ s = m:section(NamedSection, sid, "servers")
 s.anonymous = true
 s.addremove   = false
 
+o = s:option(ListValue, "tool", translate("Proxy Tool"))
+o:value("0", translate("ShadowsocksR"))
+o:value("1", translate("Shadowsocks"))
+
 o = s:option(Value, "alias", translate("Alias(optional)"))
 
 o = s:option(Flag, "auth_enable", translate("Onetime Authentication"))
