@@ -32,6 +32,9 @@ local encrypt_methods = {
 	"aes-128-ctr",
 	"aes-192-ctr",
 	"aes-256-ctr",	
+	"aes-128-gcm",
+	"aes-192-gcm",
+	"aes-256-gcm",
 	"bf-cfb",
 	"camellia-128-cfb",
 	"camellia-192-cfb",
@@ -44,6 +47,8 @@ local encrypt_methods = {
 	"salsa20",
 	"chacha20",
 	"chacha20-ietf",
+	"chacha20-ietf-poly1305",
+	"xchacha20-ietf-poly1305",
 }
 
 local protocol = {
@@ -121,14 +126,18 @@ o.rmempty = false
 o = s:option(ListValue, "protocol", translate("Protocol"))
 for _, v in ipairs(protocol) do o:value(v) end
 o.rmempty = false
+o:depends("tool","0")
 
 o = s:option(Value, "protocol_param", translate("Protocol param(optional)"))
+o:depends("tool","0")
 
 o = s:option(ListValue, "obfs", translate("Obfs"))
 for _, v in ipairs(obfs) do o:value(v) end
 o.rmempty = false
+o:depends("tool","0")
 
 o = s:option(Value, "obfs_param", translate("Obfs param(optional)"))
+o:depends("tool","0")
 
 o = s:option(Flag, "fast_open", translate("TCP Fast Open"))
 o.rmempty = false
