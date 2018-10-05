@@ -30,7 +30,7 @@ end
 
 function usage_data()
     local db = usage_database_path()
-    local publish_cmd = "wrtbwmon publish " .. db .. " /tmp/usage.htm /etc/wrtbwmon.user"
+    local publish_cmd = "wrtbwmon publish " .. db .. " /tmp/usage.htm /etc/config/wrtbwmon.user"
     local cmd = "wrtbwmon update " .. db .. " && " .. publish_cmd .. " && cat /tmp/usage.htm"
     luci.http.prepare_content("text/html")
     luci.http.write(luci.sys.exec(cmd))
