@@ -82,6 +82,10 @@ if luci.sys.call("ps -w | grep ssr-tunnel |grep -v grep >/dev/null") == 0 then
 tunnel_run=1
 end	
 
+if luci.sys.call("pidof pdnsd >/dev/null") == 0 then                 
+pdnsd_run=1     
+end	
+
 m = SimpleForm("Version")
 m.reset = false
 m.submit = false
@@ -101,6 +105,14 @@ s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
 else
 s.value = translate("Not Running")
 end
+
+s=m:field(DummyValue,"pdnsd_run",translate("Pdnsd"))
+s.rawhtml  = true                                              
+if pdnsd_run == 1 then                             
+s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
+else             
+s.value = translate("Not Running")
+end  
 
 s=m:field(DummyValue,"tunnel_run",translate("DNS Tunnel")) 
 s.rawhtml  = true
