@@ -10,7 +10,7 @@ s.addremove = false
 s.anonymous = true
 
 
-enable = s:option(Flag, "enabled", translate("Enable"))
+enable = s:option(Flag, "enabled", translate("Enable SFE Fast Path"))
 enable.default = 0
 enable.rmempty = false
 enable.description = translate("Enable Fast Path offloading for connections. (decrease cpu load / increase routing throughput)")
@@ -26,5 +26,15 @@ ipv6.default = 0
 ipv6.rmempty = false
 ipv6.description = translate("Enable IPv6 Acceleration")
 ipv6:depends("enabled", 1)
+
+dns = s:option(Flag, "dns", translate("DNS Acceleration"))
+dns.default = 0
+dns.rmempty = false
+dns.description = translate("Enable DNS Cache Acceleration and anti ISP DNS pollution")
+
+o = s:option(Value, "dns_server", translate("Upsteam DNS Server"))
+o.default = "114.114.114.114 ,114.114.115.115"
+o.description = translate("Muitiple DNS server can saperate with ','")
+o:depends("dns", 1)
 
 return m

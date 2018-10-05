@@ -65,9 +65,16 @@ o.datatype = "port"
 o.default = 5300
 end
 
-o = s:option(Value, "tunnel_forward", translate("Anti-pollution DNS Server"))
-o.default = "8.8.4.4:53"
-o.rmempty = false
-o.description = translate("DNS Server IP:Port")
+o = s:option(ListValue, "tunnel_forward", translate("Anti-pollution DNS Server"))
+o:value("8.8.4.4:53", translate("Google Public DNS (8.8.4.4)"))
+o:value("8.8.8.8:53", translate("Google Public DNS (8.8.8.8)"))
+o:value("208.67.222.222:53", translate("OpenDNS (208.67.222.222)"))
+o:value("208.67.220.220:53", translate("OpenDNS (208.67.220.220)"))
+o:value("209.244.0.3:53", translate("Level 3 Public DNS (209.244.0.3)"))
+o:value("209.244.0.4:53", translate("Level 3 Public DNS (209.244.0.4)"))
+o:value("4.2.2.1:53", translate("Level 3 Public DNS (4.2.2.1)"))
+o:value("4.2.2.2:53", translate("Level 3 Public DNS (4.2.2.2)"))
+o:value("4.2.2.3:53", translate("Level 3 Public DNS (4.2.2.3)"))
+o:value("4.2.2.4:53", translate("Level 3 Public DNS (4.2.2.4)"))
 
 return m
