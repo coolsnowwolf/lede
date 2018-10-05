@@ -5,7 +5,7 @@ function index()
 return
 end
 
-entry({"admin","services","zerotier"},cbi("zerotier"),_("ZeroTier"),10).dependent=true
+entry({"admin","services","zerotier"},cbi("zerotier"),_("ZeroTier"),90).dependent=true
 entry({"admin","services","zerotier","status"},call("act_status")).leaf=true
 end
 

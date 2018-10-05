@@ -6,7 +6,7 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI support for Flow Offload
-LUCI_DEPENDS:=@LINUX_4_14
+LUCI_DEPENDS:=+kmod-ipt-offload +pdnsd-alt @LINUX_4_14
 LUCI_PKGARCH:=all
 PKG_VERSION:=1.0
 PKG_RELEASE:=7

@@ -37,6 +37,14 @@ define KernelPackage/ath10k-ct
   PROVIDES:=kmod-ath10k
 endef
 
+define KernelPackage/ath10k-ct/config
+
+       config ATH10K-CT_LEDS
+               bool "Enable LED support"
+               default y
+               depends on PACKAGE_kmod-ath10k-ct
+endef
+
 NOSTDINC_FLAGS = \
 	-I$(PKG_BUILD_DIR) \
 	-I$(STAGING_DIR)/usr/include/mac80211-backport/uapi \
@@ -75,6 +83,11 @@ endif
 ifdef CONFIG_PACKAGE_ATH_SPECTRAL
   CT_MAKEDEFS += CONFIG_ATH10K_SPECTRAL=y
   NOSTDINC_FLAGS += -DCONFIG_ATH10K_SPECTRAL
+endif
+
+ifeq ($(CONFIG_ATH10K-CT_LEDS),y)
+  CT_MAKEDEFS += CONFIG_ATH10K_LEDS=y
+  NOSTDINC_FLAGS += -DCONFIG_ATH10K_LEDS
 endif
 
 define Build/Configure
