@@ -4,7 +4,7 @@ function index()
     entry({"admin", "nlbw", "usage"}, alias("admin", "nlbw", "usage", "details"), _("Usage"), 60)
     entry({"admin", "nlbw", "usage", "details"}, template("wrtbwmon"), _("Details"), 10).leaf=true
     entry({"admin", "nlbw", "usage", "config"}, cbi("wrtbwmon/config"), _("Configuration"), 20).leaf=true
-    entry({"admin", "nlbw", "usage", "custom"}, cbi("wrtbwmon/custom"), _("User file"), 30).leaf=true
+    entry({"admin", "nlbw", "usage", "custom"}, form("wrtbwmon/custom"), _("User file"), 30).leaf=true
     entry({"admin", "nlbw", "usage", "check_dependency"}, call("check_dependency")).dependent=true
     entry({"admin", "nlbw", "usage", "usage_data"}, call("usage_data")).dependent=true
     entry({"admin", "nlbw", "usage", "usage_reset"}, call("usage_reset")).dependent=true
