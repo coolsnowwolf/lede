@@ -21,13 +21,7 @@ CheckIPAddr() {
 }
 
 Server_Update() {
-    tool=($(uci get $name.@server_subscribe[0].tool))
     local uci_set="uci -q set $name.$1."
-    if [ $tool = "0" ] ;then
-    ${uci_set}tool="0"
-    elif [ $tool = "1" ] ;then
-    ${uci_set}tool="1"
-    fi
     ${uci_set}alias="[$ssr_group] $ssr_remarks"
     ${uci_set}auth_enable="0"
     ${uci_set}switch_enable="1"
