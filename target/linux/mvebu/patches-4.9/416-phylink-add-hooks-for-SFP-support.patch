@@ -1,0 +1,177 @@
+From: Russell King <rmk+kernel@arm.linux.org.uk>
+Date: Thu, 24 Sep 2015 11:01:13 +0100
+Subject: [PATCH] phylink: add hooks for SFP support
+
+Add support to phylink for SFP, which needs to control and configure
+the ethernet MAC link state.  Specifically, SFP needs to:
+
+1. set the negotiation mode between SGMII and 1000base-X
+2. attach and detach the module PHY
+3. prevent the link coming up when errors are reported
+
+In the absence of a PHY, we also need to set the ethtool port type
+according to the module plugged in.
+
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: Russell King <rmk+kernel@arm.linux.org.uk>
+
+- rework phylink_set_link_*(), combining into a single function.
+---
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -11,6 +11,7 @@
+ #include <linux/ethtool.h>
+ #include <linux/export.h>
+ #include <linux/gpio/consumer.h>
++#include <linux/list.h>
+ #include <linux/netdevice.h>
+ #include <linux/of.h>
+ #include <linux/of_mdio.h>
+@@ -29,11 +30,16 @@
+ 	(ADVERTISED_TP | ADVERTISED_MII | ADVERTISED_FIBRE | \
+ 	 ADVERTISED_BNC | ADVERTISED_AUI | ADVERTISED_Backplane)
+ 
++static LIST_HEAD(phylinks);
++static DEFINE_MUTEX(phylink_mutex);
++
+ enum {
+ 	PHYLINK_DISABLE_STOPPED,
++	PHYLINK_DISABLE_LINK,
+ };
+ 
+ struct phylink {
++	struct list_head node;
+ 	struct net_device *netdev;
+ 	const struct phylink_mac_ops *ops;
+ 	struct mutex config_mutex;
+@@ -375,12 +381,20 @@ struct phylink *phylink_create(struct ne
+ 	phylink_init_advert(pl, pl->link_an_mode, pl->supported,
+ 			    pl->link_config.advertising);
+ 
++	mutex_lock(&phylink_mutex);
++	list_add_tail(&pl->node, &phylinks);
++	mutex_unlock(&phylink_mutex);
++
+ 	return pl;
+ }
+ EXPORT_SYMBOL_GPL(phylink_create);
+ 
+ void phylink_destroy(struct phylink *pl)
+ {
++	mutex_lock(&phylink_mutex);
++	list_del(&pl->node);
++	mutex_unlock(&phylink_mutex);
++
+ 	cancel_work_sync(&pl->resolve);
+ 	kfree(pl);
+ }
+@@ -900,4 +914,93 @@ int phylink_mii_ioctl(struct phylink *pl
+ }
+ EXPORT_SYMBOL_GPL(phylink_mii_ioctl);
+ 
++
++
++void phylink_disable(struct phylink *pl)
++{
++	set_bit(PHYLINK_DISABLE_LINK, &pl->phylink_disable_state);
++	flush_work(&pl->resolve);
++
++	netif_carrier_off(pl->netdev);
++}
++EXPORT_SYMBOL_GPL(phylink_disable);
++
++void phylink_enable(struct phylink *pl)
++{
++	clear_bit(PHYLINK_DISABLE_LINK, &pl->phylink_disable_state);
++	phylink_run_resolve(pl);
++}
++EXPORT_SYMBOL_GPL(phylink_enable);
++
++int phylink_set_link(struct phylink *pl, unsigned int mode, u8 port,
++		     const unsigned long *support)
++{
++	__ETHTOOL_DECLARE_LINK_MODE_MASK(mask);
++	int ret = 0;
++
++	netdev_dbg(pl->netdev, "requesting link mode %s with support %*pb\n",
++		   phylink_an_mode_str(mode),
++		   __ETHTOOL_LINK_MODE_MASK_NBITS, support);
++
++	if (mode == MLO_AN_FIXED)
++		return -EINVAL;
++
++	linkmode_copy(mask, support);
++
++	/* Ignore errors if we're expecting a PHY to attach later */
++	ret = phylink_validate_support(pl, mode, mask);
++	if (ret && mode != MLO_AN_PHY)
++		return ret;
++
++	mutex_lock(&pl->config_mutex);
++	if (mode == MLO_AN_8023Z && pl->phydev) {
++		ret = -EINVAL;
++	} else {
++		bool changed = !bitmap_equal(pl->supported, mask,
++					     __ETHTOOL_LINK_MODE_MASK_NBITS);
++		if (changed) {
++			linkmode_copy(pl->supported, mask);
++
++			phylink_init_advert(pl, mode, mask,
++					    pl->link_config.advertising);
++		}
++
++		if (pl->link_an_mode != mode) {
++			pl->link_an_mode = mode;
++
++			changed = true;
++
++			netdev_info(pl->netdev, "switched to %s link mode\n",
++				    phylink_an_mode_str(mode));
++		}
++
++		pl->link_port = port;
++
++		if (changed && !test_bit(PHYLINK_DISABLE_STOPPED,
++					 &pl->phylink_disable_state))
++			phylink_mac_config(pl, &pl->link_config);
++	}
++	mutex_unlock(&pl->config_mutex);
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(phylink_set_link);
++
++struct phylink *phylink_lookup_by_netdev(struct net_device *ndev)
++{
++	struct phylink *pl, *found = NULL;
++
++	mutex_lock(&phylink_mutex);
++	list_for_each_entry(pl, &phylinks, node)
++		if (pl->netdev == ndev) {
++			found = pl;
++			break;
++		}
++
++	mutex_unlock(&phylink_mutex);
++
++	return found;
++}
++EXPORT_SYMBOL_GPL(phylink_lookup_by_netdev);
++
+ MODULE_LICENSE("GPL");
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -88,6 +88,12 @@ int phylink_ethtool_ksettings_set(struct
+ 				  const struct ethtool_link_ksettings *);
+ int phylink_mii_ioctl(struct phylink *, struct ifreq *, int);
+ 
++int phylink_set_link(struct phylink *pl, unsigned int mode, u8 port,
++		     const unsigned long *support);
++void phylink_disable(struct phylink *pl);
++void phylink_enable(struct phylink *pl);
++struct phylink *phylink_lookup_by_netdev(struct net_device *ndev);
++
+ #define phylink_zero(bm) \
+ 	bitmap_zero(bm, __ETHTOOL_LINK_MODE_MASK_NBITS)
+ #define __phylink_do_bit(op, bm, mode) \
