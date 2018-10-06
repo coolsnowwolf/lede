@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 ARCH:=mipsel
 BOARD:=au1000
 BOARDNAME:=RMI/AMD AU1x00
-FEATURES:=squashfs usb pci
+FEATURES:=squashfs usb pci small_flash source-only
 SUBTARGETS:=au1500 au1550
 MAINTAINER:=Florian Fainelli <florian@openwrt.org>
 

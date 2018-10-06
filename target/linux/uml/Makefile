@@ -22,7 +22,7 @@ BOARDNAME:=User Mode Linux
 FEATURES:=squashfs ext4 audio source-only
 MAINTAINER:=Florian Fainelli <florian@openwrt.org>
 
-KERNEL_PATCHVER:=4.4
+KERNEL_PATCHVER:=4.9
 
 include $(INCLUDE_DIR)/target.mk
 

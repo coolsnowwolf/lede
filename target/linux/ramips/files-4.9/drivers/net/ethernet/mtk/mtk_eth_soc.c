@@ -216,7 +216,7 @@ static void fe_clean_rx(struct fe_priv *priv)
 							 ring->rx_dma[i].rxd1,
 							 ring->rx_buf_size,
 							 DMA_FROM_DEVICE);
-				put_page(virt_to_head_page(ring->rx_data[i]));
+				skb_free_frag(ring->rx_data[i]);
 			}
 
 		kfree(ring->rx_data);
@@ -834,7 +834,7 @@ static int fe_poll_rx(struct napi_struct *napi, int budget,
 			break;
 
 		/* alloc new buffer */
-		new_data = netdev_alloc_frag(ring->frag_size);
+		new_data = napi_alloc_frag(ring->frag_size);
 		if (unlikely(!new_data)) {
 			stats->rx_dropped++;
 			goto release_desc;
@@ -844,14 +844,14 @@ static int fe_poll_rx(struct napi_struct *napi, int budget,
 					  ring->rx_buf_size,
 					  DMA_FROM_DEVICE);
 		if (unlikely(dma_mapping_error(&netdev->dev, dma_addr))) {
-			put_page(virt_to_head_page(new_data));
+			skb_free_frag(new_data);
 			goto release_desc;
 		}
 
 		/* receive data */
 		skb = build_skb(data, ring->frag_size);
 		if (unlikely(!skb)) {
-			put_page(virt_to_head_page(new_data));
+			skb_free_frag(new_data);
 			goto release_desc;
 		}
 		skb_reserve(skb, NET_SKB_PAD + NET_IP_ALIGN);
@@ -1003,7 +1003,7 @@ static int fe_poll(struct napi_struct *napi, int budget)
 			goto poll_again;
 		}
 
-		napi_complete(napi);
+		napi_complete_done(napi, rx_done);
 		fe_int_enable(tx_intr | rx_intr);
 	} else {
 		rx_done = budget;
@@ -1536,7 +1536,7 @@ static int fe_probe(struct platform_device *pdev)
 	priv->rx_ring.rx_ring_size = NUM_DMA_DESC;
 	INIT_WORK(&priv->pending_work, fe_pending_work);
 
-	napi_weight = 32;
+	napi_weight = 16;
 	if (priv->flags & FE_FLAG_NAPI_WEIGHT) {
 		napi_weight *= 4;
 		priv->tx_ring.tx_ring_size *= 4;

@@ -2,7 +2,7 @@
  *  EW Dorin board support
  *  (based on Atheros Ref. Design AP121)
  *  Copyright (C) 2011-2012 Gabor Juhos <juhosg@openwrt.org>
- *  Copyright (C) 2012-2015 Embedded Wireless GmbH    www.80211.de
+ *  Copyright (C) 2012-2017 Embedded Wireless GmbH    www.80211.de
  *
  *  This program is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License version 2 as published
@@ -27,24 +27,12 @@
 #define DORIN_CALDATA_OFFSET		0x1000
 #define DORIN_WMAC_MAC_OFFSET		0x1002
 
-#define DORIN_GPIO_LED_21		21
-#define DORIN_GPIO_LED_22		22
-#define DORIN_GPIO_LED_STATUS	23
+#define DORIN_GPIO_LED_STATUS		21
 
 #define DORIN_GPIO_BTN_JUMPSTART	11
 #define DORIN_GPIO_BTN_RESET		6
 
 static struct gpio_led dorin_leds_gpio[] __initdata = {
-	{
-		.name		= "dorin:green:led21",
-		.gpio		= DORIN_GPIO_LED_21,
-		.active_low	= 1,
-	},
-	{
-		.name		= "dorin:green:led22",
-		.gpio		= DORIN_GPIO_LED_22,
-		.active_low	= 1,
-	},
 	{
 		.name		= "dorin:green:status",
 		.gpio		= DORIN_GPIO_LED_STATUS,

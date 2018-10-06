@@ -42,28 +42,6 @@ endef
 $(eval $(call KernelPackage,atmtcp))
 
 
-define KernelPackage/appletalk
-  SUBMENU:=$(NETWORK_SUPPORT_MENU)
-  TITLE:=Appletalk protocol support
-  KCONFIG:= \
-	CONFIG_ATALK \
-	CONFIG_DEV_APPLETALK \
-	CONFIG_IPDDP \
-	CONFIG_IPDDP_ENCAP=y \
-	CONFIG_IPDDP_DECAP=y
-  FILES:= \
-	$(LINUX_DIR)/net/appletalk/appletalk.ko \
-	$(LINUX_DIR)/drivers/net/appletalk/ipddp.ko
-  AUTOLOAD:=$(call AutoLoad,40,appletalk ipddp)
-endef
-
-define KernelPackage/appletalk/description
- Kernel module for AppleTalk protocol.
-endef
-
-$(eval $(call KernelPackage,appletalk))
-
-
 define KernelPackage/bonding
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=Ethernet bonding driver
@@ -126,6 +104,29 @@ define KernelPackage/vxlan/description
 endef
 
 $(eval $(call KernelPackage,vxlan))
+
+
+define KernelPackage/geneve
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=Generic Network Virtualization Encapsulation (Geneve) support
+  DEPENDS:= \
+	+kmod-iptunnel \
+	+kmod-udptunnel4 \
+	+IPV6:kmod-udptunnel6
+  KCONFIG:=CONFIG_GENEVE
+  FILES:= \
+	$(LINUX_DIR)/net/ipv4/geneve.ko@le4.1 \
+	$(LINUX_DIR)/drivers/net/geneve.ko@ge4.2
+  AUTOLOAD:=$(call AutoLoad,13,geneve)
+endef
+
+define KernelPackage/geneve/description
+ Kernel module for supporting Geneve in the Kernel.
+ Requires Kernel 3.18 or newer.
+endef
+
+$(eval $(call KernelPackage,geneve))
+
 
 define KernelPackage/capi
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
@@ -271,7 +272,8 @@ define KernelPackage/ipsec4
 	CONFIG_INET_XFRM_MODE_BEET \
 	CONFIG_INET_XFRM_MODE_TRANSPORT \
 	CONFIG_INET_XFRM_MODE_TUNNEL \
-	CONFIG_INET_XFRM_TUNNEL
+	CONFIG_INET_XFRM_TUNNEL \
+	CONFIG_INET_ESP_OFFLOAD=n
   FILES:=$(foreach mod,$(IPSEC4-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoLoad,32,$(notdir $(IPSEC4-m)))
 endef
@@ -311,7 +313,8 @@ define KernelPackage/ipsec6
 	CONFIG_INET6_XFRM_MODE_BEET \
 	CONFIG_INET6_XFRM_MODE_TRANSPORT \
 	CONFIG_INET6_XFRM_MODE_TUNNEL \
-	CONFIG_INET6_XFRM_TUNNEL
+	CONFIG_INET6_XFRM_TUNNEL \
+	CONFIG_INET6_ESP_OFFLOAD=n
   FILES:=$(foreach mod,$(IPSEC6-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoLoad,32,$(notdir $(IPSEC6-m)))
 endef
@@ -430,6 +433,28 @@ define KernelPackage/sit/description
 endef
 
 $(eval $(call KernelPackage,sit))
+
+
+define KernelPackage/fou
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=FOU and GUE decapsulation
+  DEPENDS:= \
+	+kmod-iptunnel \
+	+kmod-udptunnel4 \
+	+IPV6:kmod-udptunnel6
+  KCONFIG:= \
+	CONFIG_NET_FOU \
+	CONFIG_NET_FOU_IP_TUNNELS=y
+  FILES:=$(LINUX_DIR)/net/ipv4/fou.ko
+  AUTOLOAD:=$(call AutoProbe,fou)
+endef
+
+define KernelPackage/fou/description
+ Kernel module for FOU (Foo over UDP) and GUE (Generic UDP Encapsulation) tunnelling.
+ Requires Kernel 3.18 or newer.
+endef
+
+$(eval $(call KernelPackage,fou))
 
 
 define KernelPackage/ip6-tunnel
@@ -727,6 +752,7 @@ define KernelPackage/sched
 	CONFIG_NET_SCH_DSMARK \
 	CONFIG_NET_SCH_FIFO \
 	CONFIG_NET_SCH_GRED \
+	CONFIG_NET_SCH_MULTIQ \
 	CONFIG_NET_SCH_PRIO \
 	CONFIG_NET_SCH_RED \
 	CONFIG_NET_SCH_SFQ \
@@ -749,6 +775,37 @@ define KernelPackage/sched/description
 endef
 
 $(eval $(call KernelPackage,sched))
+
+
+define KernelPackage/tcp-bbr
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=BBR TCP congestion control
+  DEPENDS:=@!LINUX_3_18 @!LINUX_4_1 @!LINUX_4_4 +LINUX_4_9:kmod-sched
+  KCONFIG:= \
+	CONFIG_TCP_CONG_ADVANCED=y \
+	CONFIG_TCP_CONG_BBR=m
+  FILES:=$(LINUX_DIR)/net/ipv4/tcp_bbr.ko
+  AUTOLOAD:=$(call AutoLoad,74,tcp_bbr)
+endef
+
+define KernelPackage/tcp-bbr/description
+ Kernel module for BBR (Bottleneck Bandwidth and RTT) TCP congestion
+ control. It requires the fq ("Fair Queue") pacing packet scheduler.
+ For kernel 4.13+, TCP internal pacing is implemented as fallback.
+endef
+
+ifdef CONFIG_LINUX_4_9
+  TCP_BBR_SYSCTL_CONF:=sysctl-tcp-bbr-k4_9.conf
+else
+  TCP_BBR_SYSCTL_CONF:=sysctl-tcp-bbr.conf
+endif
+
+define KernelPackage/tcp-bbr/install
+	$(INSTALL_DIR) $(1)/etc/sysctl.d
+	$(INSTALL_DATA) ./files/$(TCP_BBR_SYSCTL_CONF) $(1)/etc/sysctl.d/12-tcp-bbr.conf
+endef
+
+$(eval $(call KernelPackage,tcp-bbr))
 
 
 define KernelPackage/ax25
@@ -923,9 +980,10 @@ define KernelPackage/rxrpc
 	CONFIG_RXKAD=m \
 	CONFIG_AF_RXRPC_DEBUG=n
   FILES:= \
-	$(LINUX_DIR)/net/rxrpc/af-rxrpc.ko \
+	$(LINUX_DIR)/net/rxrpc/af-rxrpc.ko@lt4.11 \
+	$(LINUX_DIR)/net/rxrpc/rxrpc.ko@ge4.11 \
 	$(LINUX_DIR)/net/rxrpc/rxkad.ko@lt4.7
-  AUTOLOAD:=$(call AutoLoad,30,rxkad@lt4.7 af-rxrpc)
+  AUTOLOAD:=$(call AutoLoad,30,rxkad@lt4.7 af-rxrpc.ko@lt4.11 rxrpc.ko@ge4.11)
   DEPENDS:= +kmod-crypto-manager +kmod-crypto-pcbc +kmod-crypto-fcrypt
 endef
 
@@ -942,6 +1000,7 @@ define KernelPackage/mpls
   KCONFIG:= \
 	CONFIG_MPLS=y \
 	CONFIG_LWTUNNEL=y \
+	CONFIG_LWTUNNEL_BPF=n \
 	CONFIG_NET_MPLS_GSO=m \
 	CONFIG_MPLS_ROUTING=m \
 	CONFIG_MPLS_IPTUNNEL=m
@@ -965,6 +1024,7 @@ define KernelPackage/9pnet
   KCONFIG:= \
 	CONFIG_NET_9P \
 	CONFIG_NET_9P_DEBUG=n \
+	CONFIG_NET_9P_XEN=n \
 	CONFIG_NET_9P_VIRTIO
   FILES:= \
 	$(LINUX_DIR)/net/9p/9pnet.ko \
@@ -1009,3 +1069,18 @@ define KernelPackage/mdio/description
 endef
 
 $(eval $(call KernelPackage,mdio))
+
+define KernelPackage/macsec
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=IEEE 802.1AE MAC-level encryption (MAC)
+  DEPENDS:=+kmod-crypto-gcm @!LINUX_3_18 @!LINUX_4_1 @!LINUX_4_4
+  KCONFIG:=CONFIG_MACSEC
+  FILES:=$(LINUX_DIR)/drivers/net/macsec.ko
+  AUTOLOAD:=$(call AutoLoad,13,macsec)
+endef
+
+define KernelPackage/macsec/description
+ MACsec is an encryption standard for Ethernet.
+endef
+
+$(eval $(call KernelPackage,macsec))

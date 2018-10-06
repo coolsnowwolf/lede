@@ -1,0 +1,124 @@
+From: Felix Fietkau <nbd@nbd.name>
+Subject: make rootfs split/detection more generic - patch can be moved to generic-2.6 after testing on other platforms
+
+lede-commit: 328e660b31f0937d52c5ae3d6e7029409918a9df
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ drivers/mtd/Kconfig            | 17 +++++++++++++++++
+ drivers/mtd/mtdpart.c          | 35 +++++++++++++++++++++++++++++++++++
+ include/linux/mtd/partitions.h |  2 ++
+ 3 files changed, 54 insertions(+)
+
+--- a/drivers/mtd/Kconfig
++++ b/drivers/mtd/Kconfig
+@@ -12,6 +12,23 @@ menuconfig MTD
+ 
+ if MTD
+ 
++menu "OpenWrt specific MTD options"
++
++config MTD_ROOTFS_ROOT_DEV
++	bool "Automatically set 'rootfs' partition to be root filesystem"
++	default y
++
++config MTD_SPLIT_FIRMWARE
++	bool "Automatically split firmware partition for kernel+rootfs"
++	default y
++
++config MTD_SPLIT_FIRMWARE_NAME
++	string "Firmware partition name"
++	depends on MTD_SPLIT_FIRMWARE
++	default "firmware"
++
++endmenu
++
+ config MTD_TESTS
+ 	tristate "MTD tests support (DANGEROUS)"
+ 	depends on m
+--- a/drivers/mtd/mtdpart.c
++++ b/drivers/mtd/mtdpart.c
+@@ -29,11 +29,13 @@
+ #include <linux/kmod.h>
+ #include <linux/mtd/mtd.h>
+ #include <linux/mtd/partitions.h>
++#include <linux/magic.h>
+ #include <linux/of.h>
+ #include <linux/err.h>
+ #include <linux/of.h>
+ 
+ #include "mtdcore.h"
++#include "mtdsplit/mtdsplit.h"
+ 
+ /* Our partition linked list */
+ static LIST_HEAD(mtd_partitions);
+@@ -53,6 +55,8 @@ struct mtd_part {
+ 	struct list_head list;
+ };
+ 
++static void mtd_partition_split(struct mtd_info *master, struct mtd_part *part);
++
+ /*
+  * Given a pointer to the MTD object in the mtd_part structure, we can retrieve
+  * the pointer to that structure.
+@@ -658,6 +662,7 @@ int mtd_add_partition(struct mtd_info *p
+ 	mutex_unlock(&mtd_partitions_mutex);
+ 
+ 	add_mtd_device(&new->mtd);
++	mtd_partition_split(parent, new);
+ 
+ 	mtd_add_partition_attrs(new);
+ 
+@@ -736,6 +741,35 @@ int mtd_del_partition(struct mtd_info *m
+ }
+ EXPORT_SYMBOL_GPL(mtd_del_partition);
+ 
++#ifdef CONFIG_MTD_SPLIT_FIRMWARE_NAME
++#define SPLIT_FIRMWARE_NAME	CONFIG_MTD_SPLIT_FIRMWARE_NAME
++#else
++#define SPLIT_FIRMWARE_NAME	"unused"
++#endif
++
++static void split_firmware(struct mtd_info *master, struct mtd_part *part)
++{
++}
++
++void __weak arch_split_mtd_part(struct mtd_info *master, const char *name,
++                                int offset, int size)
++{
++}
++
++static void mtd_partition_split(struct mtd_info *master, struct mtd_part *part)
++{
++	static int rootfs_found = 0;
++
++	if (rootfs_found)
++		return;
++
++	if (!strcmp(part->mtd.name, SPLIT_FIRMWARE_NAME) &&
++	    IS_ENABLED(CONFIG_MTD_SPLIT_FIRMWARE))
++		split_firmware(master, part);
++
++	arch_split_mtd_part(master, part->mtd.name, part->offset,
++			    part->mtd.size);
++}
+ /*
+  * This function, given a master MTD object and a partition table, creates
+  * and registers slave MTD objects which are bound to the master according to
+@@ -767,6 +801,7 @@ int add_mtd_partitions(struct mtd_info *
+ 		mutex_unlock(&mtd_partitions_mutex);
+ 
+ 		add_mtd_device(&slave->mtd);
++		mtd_partition_split(master, slave);
+ 		mtd_add_partition_attrs(slave);
+ 		/* Look for subpartitions */
+ 		parse_mtd_partitions(&slave->mtd, parts[i].types, NULL);
+--- a/include/linux/mtd/partitions.h
++++ b/include/linux/mtd/partitions.h
+@@ -110,5 +110,7 @@ int mtd_add_partition(struct mtd_info *m
+ 		      long long offset, long long length);
+ int mtd_del_partition(struct mtd_info *master, int partno);
+ uint64_t mtd_get_device_size(const struct mtd_info *mtd);
++extern void __weak arch_split_mtd_part(struct mtd_info *master,
++				       const char *name, int offset, int size);
+ 
+ #endif

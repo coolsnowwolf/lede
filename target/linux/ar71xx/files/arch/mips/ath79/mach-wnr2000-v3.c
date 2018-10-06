@@ -197,7 +197,7 @@ static struct gpio_led wnr612v2_leds_gpio[] __initdata = {
 	}
 };
 
-static struct gpio_led wnr612v2_wmac_leds_gpio[] __initdata = {
+static struct gpio_led wnr612v2_wmac_leds_gpio[] = {
 	{
 		.name		= "netgear:green:wlan",
 		.gpio		= WNR612V2_GPIO_WMAC_LED_WLAN_GREEN,
@@ -561,7 +561,7 @@ static void __init wnr612v2_setup(void)
 				 wnr612v2_leds_gpio);
 
 	ap9x_pci_setup_wmac_leds(0, wnr612v2_wmac_leds_gpio,
-				 ARRAY_SIZE(wnr612v2_leds_gpio));
+				 ARRAY_SIZE(wnr612v2_wmac_leds_gpio));
 
 	ap9x_pci_setup_wmac_btns(0, wnr612v2_wmac_keys_gpio,
 				 ARRAY_SIZE(wnr612v2_wmac_keys_gpio),

@@ -18,7 +18,8 @@
 #
 
 TEXT_START	:= 0x80001000
-BZ_TEXT_START	:= 0x80400000
+BZ_TEXT_START	:= 0x80600000
+BZ_STACK_START	:= 0x80700000
 
 OBJCOPY		:= $(CROSS_COMPILE)objcopy -O binary -R .reginfo -R .note -R .comment -R .mdebug -S
 
@@ -28,9 +29,9 @@ CFLAGS		= -D__KERNEL__ -Wall -Wstrict-prototypes -Wno-trigraphs -Os \
 		  -mabi=32 -march=mips32 -Wa,-32 -Wa,-march=mips32 -Wa,-mips32 -Wa,--trap
 CFLAGS		+= -DLOADADDR=$(TEXT_START) -D_LZMA_IN_CB
 
-ASFLAGS		= $(CFLAGS) -D__ASSEMBLY__ -DBZ_TEXT_START=$(BZ_TEXT_START)
+ASFLAGS		= $(CFLAGS) -D__ASSEMBLY__ -DBZ_TEXT_START=$(BZ_TEXT_START) -DBZ_STACK_START=$(BZ_STACK_START)
 
-SEDFLAGS	:= s/BZ_TEXT_START/$(BZ_TEXT_START)/;s/TEXT_START/$(TEXT_START)/
+SEDFLAGS	:= s/BZ_TEXT_START/$(BZ_TEXT_START)/;s/BZ_STACK_START/$(BZ_STACK_START)/;s/TEXT_START/$(TEXT_START)/
 
 OBJECTS		:= head.o data.o
 

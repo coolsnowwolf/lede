@@ -228,21 +228,21 @@ static struct platform_driver gpio_apu2_driver = {
 };
 
 static struct gpio_led apu2_leds_gpio[] = {
-        {
-                .name           = "apu2:green:power",
-                .gpio           = 509,
-                .active_low     = 1,
-        },
-        {
-                .name           = "apu2:green:led2",
-                .gpio           = 510,
-                .active_low     = 1,
-        },
-        {
-                .name           = "apu2:green:led3",
-                .gpio           = 511,
-                .active_low     = 1,
-        },
+	{
+		.name           = "apu2:green:power",
+		.gpio           = 509,
+		.active_low     = 1,
+	},
+	{
+		.name           = "apu2:green:led2",
+		.gpio           = 510,
+		.active_low     = 1,
+	},
+	{
+		.name           = "apu2:green:led3",
+		.gpio           = 511,
+		.active_low     = 1,
+	},
 };
 
 static struct gpio_keys_button apu2_gpio_keys[] = {
@@ -330,12 +330,6 @@ static int __init gpio_apu2_init (void)
 	int err;
 	const char *board_vendor = dmi_get_system_info(DMI_BOARD_VENDOR);
 	const char *board_name = dmi_get_system_info(DMI_BOARD_NAME);
-
-	/* Match the device name/model */
-	if (!board_name || !board_vendor || strcasecmp(board_vendor, "PC Engines") || strcasecmp(board_name, "apu2")) {
-		err = -ENODEV;
-		goto exit;
-	}
 
 	pr_info ("%s: load APU2/LED GPIO driver module\n", DEVNAME);
 

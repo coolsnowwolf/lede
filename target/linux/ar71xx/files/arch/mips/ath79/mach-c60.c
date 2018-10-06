@@ -12,16 +12,22 @@
  *  by the Free Software Foundation.
  */
 
+#include <linux/version.h>
 #include <linux/pci.h>
 #include <linux/phy.h>
 #include <linux/mtd/mtd.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 #include <linux/mtd/nand.h>
+#else
+#include <linux/mtd/rawnand.h>
+#endif
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/physmap.h>
 #include <linux/platform_device.h>
 #include <linux/platform/ar934x_nfc.h>
 #include <linux/ar8216_platform.h>
 #include <linux/ath9k_platform.h>
+#include <linux/version.h>
 
 #include <asm/mach-ath79/ar71xx_regs.h>
 
@@ -114,11 +120,12 @@ static struct ar8327_platform_data c60_ar8327_data = {
 static struct mdio_board_info c60_mdio0_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = 0,
+		.mdio_addr = 0,
 		.platform_data = &c60_ar8327_data,
 	},
 };
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 static struct nand_ecclayout c60_nand_ecclayout = {
 	.eccbytes       = 7,
 	.eccpos         = { 4, 8, 9, 10, 13, 14, 15 },
@@ -126,13 +133,71 @@ static struct nand_ecclayout c60_nand_ecclayout = {
 	.oobfree        = { { 0, 3 }, { 6, 2 }, { 11, 2 }, }
 };
 
+#else
+
+static int c60_ooblayout_ecc(struct mtd_info *mtd, int section,
+			     struct mtd_oob_region *oobregion)
+{
+	switch (section) {
+	case 0:
+		oobregion->offset = 4;
+		oobregion->length = 1;
+		return 0;
+	case 1:
+		oobregion->offset = 8;
+		oobregion->length = 3;
+		return 0;
+	case 2:
+		oobregion->offset = 13;
+		oobregion->length = 3;
+		return 0;
+	default:
+		return -ERANGE;
+	}
+}
+
+static int c60_ooblayout_free(struct mtd_info *mtd, int section,
+			      struct mtd_oob_region *oobregion)
+{
+	switch (section) {
+	case 0:
+		oobregion->offset = 0;
+		oobregion->length = 3;
+		return 0;
+	case 1:
+		oobregion->offset = 6;
+		oobregion->length = 2;
+		return 0;
+	case 2:
+		oobregion->offset = 11;
+		oobregion->length = 2;
+		return 0;
+	default:
+		return -ERANGE;
+	}
+}
+
+static const struct mtd_ooblayout_ops c60_nand_ecclayout_ops = {
+	.ecc = c60_ooblayout_ecc,
+	.free = c60_ooblayout_free,
+};
+#endif /* < 4.6 */
+
 static int c60_nand_scan_fixup(struct mtd_info *mtd)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 	struct nand_chip *chip = mtd->priv;
+#else
+	struct nand_chip *chip = mtd_to_nand(mtd);
+#endif
 
 	chip->ecc.size = 512;
 	chip->ecc.strength = 4;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
 	chip->ecc.layout = &c60_nand_ecclayout;
+#else
+	mtd_set_ooblayout(mtd, &c60_nand_ecclayout_ops);
+#endif
 	return 0;
 }
 

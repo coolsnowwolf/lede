@@ -78,18 +78,18 @@ rootfs_type() {
 
 get_image() { # <source> [ <command> ]
 	local from="$1"
-	local cat="$2"
+	local cmd="$2"
 
-	if [ -z "$cat" ]; then
+	if [ -z "$cmd" ]; then
 		local magic="$(dd if="$from" bs=2 count=1 2>/dev/null | hexdump -n 2 -e '1/1 "%02x"')"
 		case "$magic" in
-			1f8b) cat="zcat";;
-			425a) cat="bzcat";;
-			*) cat="cat";;
+			1f8b) cmd="zcat";;
+			425a) cmd="bzcat";;
+			*) cmd="cat";;
 		esac
 	fi
 
-	$cat "$from" 2>/dev/null
+	cat "$from" 2>/dev/null | $cmd
 }
 
 get_magic_word() {
@@ -101,7 +101,7 @@ get_magic_long() {
 }
 
 export_bootdevice() {
-	local cmdline uuid disk uevent
+	local cmdline uuid disk uevent line
 	local MAJOR MINOR DEVNAME DEVTYPE
 
 	if read cmdline < /proc/cmdline; then
@@ -134,8 +134,9 @@ export_bootdevice() {
 		esac
 
 		if [ -e "$uevent" ]; then
-			. "$uevent"
-
+			while read line; do
+				export -n "$line"
+			done < "$uevent"
 			export BOOTDEV_MAJOR=$MAJOR
 			export BOOTDEV_MINOR=$MINOR
 			return 0
@@ -147,10 +148,12 @@ export_bootdevice() {
 
 export_partdevice() {
 	local var="$1" offset="$2"
-	local uevent MAJOR MINOR DEVNAME DEVTYPE
+	local uevent line MAJOR MINOR DEVNAME DEVTYPE
 
 	for uevent in /sys/class/block/*/uevent; do
-		. "$uevent"
+		while read line; do
+			export -n "$line"
+		done < "$uevent"
 		if [ $BOOTDEV_MAJOR = $MAJOR -a $(($BOOTDEV_MINOR + $offset)) = $MINOR -a -b "/dev/$DEVNAME" ]; then
 			export "$var=$DEVNAME"
 			return 0
@@ -160,6 +163,14 @@ export_partdevice() {
 	return 1
 }
 
+hex_le32_to_cpu() {
+	[ "$(echo 01 | hexdump -v -n 2 -e '/2 "%x"')" == "3031" ] && {
+		echo "${1:0:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}"
+		return
+	}
+	echo "$@"
+}
+
 get_partitions() { # <device> <filename>
 	local disk="$1"
 	local filename="$2"
@@ -167,8 +178,8 @@ get_partitions() { # <device> <filename>
 	if [ -b "$disk" -o -f "$disk" ]; then
 		v "Reading partition table from $filename..."
 
-		local magic="$(hexdump -v -n 2 -s 0x1FE -e '1/2 "0x%04X"' "$disk")"
-		if [ "$magic" != 0xAA55 ]; then
+		local magic=$(dd if="$disk" bs=2 count=1 skip=255 2>/dev/null)
+		if [ "$magic" != $'\x55\xAA' ]; then
 			v "Invalid partition table on $disk"
 			exit
 		fi
@@ -179,9 +190,9 @@ get_partitions() { # <device> <filename>
 		for part in 1 2 3 4; do
 			set -- $(hexdump -v -n 12 -s "$((0x1B2 + $part * 16))" -e '3/4 "0x%08X "' "$disk")
 
-			local type="$(($1 % 256))"
-			local lba="$(($2))"
-			local num="$(($3))"
+			local type="$(( $(hex_le32_to_cpu $1) % 256))"
+			local lba="$(( $(hex_le32_to_cpu $2) ))"
+			local num="$(( $(hex_le32_to_cpu $3) ))"
 
 			[ $type -gt 0 ] || continue
 
@@ -200,6 +211,11 @@ jffs2_copy_config() {
 	fi
 }
 
+indicate_upgrade() {
+	. /etc/diag.sh
+	set_state upgrade
+}
+
 # Flash firmware to MTD partition
 #
 # $(1): path to image
@@ -211,6 +227,7 @@ default_do_upgrade() {
 	else
 		get_image "$1" "$2" | mtd write - "${PART_NAME:-image}"
 	fi
+	[ $? -ne 0 ] && exit 1
 }
 
 do_upgrade_stage2() {

@@ -12,6 +12,9 @@ set_state() {
 	a4001n)
 		status_led="A4001N:green:power"
 		;;
+	ad1018-nor)
+		status_led="AD1018:green:power"
+		;;
 	ar-5315u)
 		status_led="AR-5315u:green:power"
 		;;
@@ -128,6 +131,10 @@ set_state() {
 		;;
 	rta770w)
 		status_led="RTA770W:green:diag"
+		;;
+	sr102)
+		status_led="SR102:white:power"
+		status_led2="SR102:red:power"
 		;;
 	spw500v)
 		status_led="SPW500V:green:power"

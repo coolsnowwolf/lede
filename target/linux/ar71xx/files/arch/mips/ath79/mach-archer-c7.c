@@ -141,7 +141,7 @@ static struct gpio_keys_button archer_c7_v2_gpio_keys[] __initdata = {
 	},
 };
 
-static const struct ar8327_led_info archer_c7_leds_ar8327[] __initconst = {
+static const struct ar8327_led_info archer_c7_leds_ar8327[] = {
 	AR8327_LED_INFO(PHY0_0, HW, "tp-link:blue:wan"),
 	AR8327_LED_INFO(PHY1_0, HW, "tp-link:blue:lan1"),
 	AR8327_LED_INFO(PHY2_0, HW, "tp-link:blue:lan2"),
@@ -197,7 +197,7 @@ static struct ar8327_platform_data archer_c7_ar8327_data = {
 static struct mdio_board_info archer_c7_mdio0_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = 0,
+		.mdio_addr = 0,
 		.platform_data = &archer_c7_ar8327_data,
 	},
 };

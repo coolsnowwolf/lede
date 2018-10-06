@@ -1,6 +1,7 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/version.mk
 
+PKG_NAME:=ipq-wifi
 PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
@@ -12,14 +13,18 @@ endef
 define Build/Compile
 endef
 
-ALLWIFIBOARDS:=rt-ac58u fritz4040 nbg6617
+#ALLWIFIBOARDS:=<devicename>
+# Please send a mail with your device-specific board files upstream.
+# You can find instructions and examples on the linux-wireless wiki:
+# <https://wireless.wiki.kernel.org/en/users/drivers/ath10k/boardfiles>
+ALLWIFIBOARDS:=rt-acrh17 zyxel_nbg6617 zyxel_wre6606
 ALLWIFIPACKAGES:=$(foreach BOARD,$(ALLWIFIBOARDS),ipq-wifi-$(BOARD))
 
 define Package/ipq-wifi-default
   SUBMENU:=ath10k IPQ4019 Boarddata
   SECTION:=firmware
   CATEGORY:=Firmware
-  DEPENDS:=@TARGET_ipq806x +ath10k-firmware-qca4019
+  DEPENDS:=@TARGET_ipq40xx
   TITLE:=Custom Board
 endef
 
@@ -46,8 +51,9 @@ Don't install it for any other device!
   PREV_BOARD+=ipq-wifi-$(1)
 endef
 
-$(eval $(call generate-ipq-wifi-package,rt-ac58u,board-rt-ac58u.bin,ASUS RT-AC58U/RT-ACRH13))
-$(eval $(call generate-ipq-wifi-package,fritz4040,board-fritz4040.bin,AVM FRITZBox 4040))
-$(eval $(call generate-ipq-wifi-package,nbg6617,board-nbg6617.bin,ZyXEL NBG6617))
+$(eval $(call generate-ipq-wifi-package,rt-acrh17,board-rt-acrh17.bin,ASUS RT-ACRH17/RT-AC82U/RT-AC42U))
+$(eval $(call generate-ipq-wifi-package,zyxel_wre6606,board-zyxel_wre6606.bin,ZyXEL WRE6606))
+#$(eval $(call generate-ipq-wifi-package,<devicename>,<filename>,<displayname>))
+$(eval $(call generate-ipq-wifi-package,zyxel_nbg6617,board-zyxel_nbg6617.bin,ZyXEL NBG6617))
 
 $(foreach PACKAGE,$(ALLWIFIPACKAGES),$(eval $(call BuildPackage,$(PACKAGE))))

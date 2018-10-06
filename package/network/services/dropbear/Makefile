@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=dropbear
 PKG_VERSION:=2017.75
-PKG_RELEASE:=3
+PKG_RELEASE:=7
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:= \
@@ -19,11 +19,15 @@ PKG_HASH:=6cbc1dcb1c9709d226dff669e5604172a18cf5dbf9a201474d5618ae4465098c
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE libtomcrypt/LICENSE libtommath/LICENSE
+PKG_CPE_ID:=cpe:/a:matt_johnston:dropbear_ssh_server
 
 PKG_BUILD_PARALLEL:=1
 PKG_USE_MIPS16:=0
 
-PKG_CONFIG_DEPENDS:=CONFIG_TARGET_INIT_PATH CONFIG_DROPBEAR_ECC CONFIG_DROPBEAR_CURVE25519
+PKG_CONFIG_DEPENDS:= \
+	CONFIG_TARGET_INIT_PATH CONFIG_DROPBEAR_ECC \
+	CONFIG_DROPBEAR_CURVE25519 CONFIG_DROPBEAR_ZLIB \
+	CONFIG_DROPBEAR_UTMP CONFIG_DROPBEAR_PUTUTLINE
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -44,6 +48,11 @@ define Package/dropbear
   SECTION:=net
   CATEGORY:=Base system
   TITLE:=Small SSH2 client/server
+  DEPENDS:= +DROPBEAR_ZLIB:zlib
+  ALTERNATIVES:=\
+	  100:/usr/bin/ssh:/usr/sbin/dropbear \
+	  100:/usr/bin/scp:/usr/sbin/dropbear \
+
 endef
 
 define Package/dropbear/description
@@ -74,11 +83,11 @@ CONFIGURE_ARGS += \
 	--disable-loginfunc \
 	$(if $(CONFIG_DROPBEAR_PUTUTLINE),,--disable-pututline) \
 	--disable-pututxline \
-	--disable-zlib \
+	$(if $(CONFIG_DROPBEAR_ZLIB),,--disable-zlib) \
 	--enable-bundled-libtom
 
-TARGET_CFLAGS += -DARGTYPE=3 -ffunction-sections -fdata-sections
-TARGET_LDFLAGS += -Wl,--gc-sections
+TARGET_CFLAGS += -DARGTYPE=3 -ffunction-sections -fdata-sections -flto
+TARGET_LDFLAGS += -Wl,--gc-sections -flto=jobserver
 
 define Build/Configure
 	$(Build/Configure/Default)
@@ -126,8 +135,6 @@ define Package/dropbear/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/dropbearmulti $(1)/usr/sbin/dropbear
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(LN) ../sbin/dropbear $(1)/usr/bin/scp
-	$(LN) ../sbin/dropbear $(1)/usr/bin/ssh
 	$(LN) ../sbin/dropbear $(1)/usr/bin/dbclient
 	$(LN) ../sbin/dropbear $(1)/usr/bin/dropbearkey
 	$(INSTALL_DIR) $(1)/etc/config

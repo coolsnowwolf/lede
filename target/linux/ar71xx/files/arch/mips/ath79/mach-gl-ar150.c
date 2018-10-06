@@ -42,17 +42,17 @@
 
 static struct gpio_led gl_ar150_leds_gpio[] __initdata = {
 	{
-		.name = "gl-ar150:wlan",
+		.name = "gl-ar150:orange:wlan",
 		.gpio = GL_AR150_GPIO_LED_WLAN,
 		.active_low = 0,
 	},
 	{
-		.name = "gl-ar150:lan",
+		.name = "gl-ar150:green:lan",
 		.gpio = GL_AR150_GPIO_LED_LAN,
 		.active_low = 0,
 	},
 	{
-		.name = "gl-ar150:wan",
+		.name = "gl-ar150:green:wan",
 		.gpio = GL_AR150_GPIO_LED_WAN,
 		.active_low = 0,
  		.default_state = 1,
@@ -122,4 +122,4 @@ static void __init gl_ar150_setup(void)
 	ath79_register_wmac(art + GL_AR150_CALDATA_OFFSET, art + GL_AR150_WMAC_MAC_OFFSET);
 }
 
-MIPS_MACHINE(ATH79_MACH_GL_AR150, "GL-AR150", "GL AR150",gl_ar150_setup);
+MIPS_MACHINE(ATH79_MACH_GL_AR150, "GL-AR150", "GL.iNet GL-AR150", gl_ar150_setup);

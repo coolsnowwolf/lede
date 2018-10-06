@@ -1,0 +1,173 @@
+From: Pablo Neira Ayuso <pablo@netfilter.org>
+Date: Sat, 9 Dec 2017 17:05:53 +0100
+Subject: [PATCH] netfilter: remove struct nf_afinfo and its helper functions
+
+This abstraction has no clients anymore, remove it.
+
+This is what remains from previous authors, so correct copyright
+statement after recent modifications and code removal.
+
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/include/linux/netfilter.h
++++ b/include/linux/netfilter.h
+@@ -309,16 +309,6 @@ int skb_make_writable(struct sk_buff *sk
+ struct flowi;
+ struct nf_queue_entry;
+ 
+-struct nf_afinfo {
+-	unsigned short	family;
+-};
+-
+-extern const struct nf_afinfo __rcu *nf_afinfo[NFPROTO_NUMPROTO];
+-static inline const struct nf_afinfo *nf_get_afinfo(unsigned short family)
+-{
+-	return rcu_dereference(nf_afinfo[family]);
+-}
+-
+ __sum16 nf_checksum(struct sk_buff *skb, unsigned int hook,
+ 		    unsigned int dataoff, u_int8_t protocol,
+ 		    unsigned short family);
+@@ -330,9 +320,6 @@ int nf_route(struct net *net, struct dst
+ 	     bool strict, unsigned short family);
+ int nf_reroute(struct sk_buff *skb, struct nf_queue_entry *entry);
+ 
+-int nf_register_afinfo(const struct nf_afinfo *afinfo);
+-void nf_unregister_afinfo(const struct nf_afinfo *afinfo);
+-
+ #include <net/flow.h>
+ extern void (*nf_nat_decode_session_hook)(struct sk_buff *, struct flowi *);
+ 
+--- a/net/bridge/netfilter/nf_tables_bridge.c
++++ b/net/bridge/netfilter/nf_tables_bridge.c
+@@ -95,30 +95,23 @@ static const struct nf_chain_type filter
+ 			  (1 << NF_BR_POST_ROUTING),
+ };
+ 
+-static const struct nf_afinfo nf_br_afinfo = {
+-	.family                 = AF_BRIDGE,
+-	.route_key_size         = 0,
+-};
+-
+ static int __init nf_tables_bridge_init(void)
+ {
+ 	int ret;
+ 
+-	nf_register_afinfo(&nf_br_afinfo);
+ 	ret = nft_register_chain_type(&filter_bridge);
+ 	if (ret < 0)
+-		goto err1;
++		return ret;
+ 
+ 	ret = register_pernet_subsys(&nf_tables_bridge_net_ops);
+ 	if (ret < 0)
+-		goto err2;
++		goto err_register_subsys;
+ 
+ 	return ret;
+ 
+-err2:
++err_register_subsys:
+ 	nft_unregister_chain_type(&filter_bridge);
+-err1:
+-	nf_unregister_afinfo(&nf_br_afinfo);
++
+ 	return ret;
+ }
+ 
+@@ -126,7 +119,6 @@ static void __exit nf_tables_bridge_exit
+ {
+ 	unregister_pernet_subsys(&nf_tables_bridge_net_ops);
+ 	nft_unregister_chain_type(&filter_bridge);
+-	nf_unregister_afinfo(&nf_br_afinfo);
+ }
+ 
+ module_init(nf_tables_bridge_init);
+--- a/net/ipv4/netfilter.c
++++ b/net/ipv4/netfilter.c
+@@ -161,13 +161,3 @@ int nf_ip_route(struct net *net, struct
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(nf_ip_route);
+-
+-static const struct nf_afinfo nf_ip_afinfo = {
+-	.family			= AF_INET,
+-};
+-
+-static int __init ipv4_netfilter_init(void)
+-{
+-	return nf_register_afinfo(&nf_ip_afinfo);
+-}
+-subsys_initcall(ipv4_netfilter_init);
+--- a/net/ipv6/netfilter.c
++++ b/net/ipv6/netfilter.c
+@@ -175,14 +175,10 @@ static const struct nf_ipv6_ops ipv6ops
+ 	.reroute		= nf_ip6_reroute,
+ };
+ 
+-static const struct nf_afinfo nf_ip6_afinfo = {
+-	.family			= AF_INET6,
+-};
+-
+ int __init ipv6_netfilter_init(void)
+ {
+ 	RCU_INIT_POINTER(nf_ipv6_ops, &ipv6ops);
+-	return nf_register_afinfo(&nf_ip6_afinfo);
++	return 0;
+ }
+ 
+ /* This can be called from inet6_init() on errors, so it cannot
+@@ -191,5 +187,4 @@ int __init ipv6_netfilter_init(void)
+ void ipv6_netfilter_fini(void)
+ {
+ 	RCU_INIT_POINTER(nf_ipv6_ops, NULL);
+-	nf_unregister_afinfo(&nf_ip6_afinfo);
+ }
+--- a/net/netfilter/core.c
++++ b/net/netfilter/core.c
+@@ -4,8 +4,7 @@
+  * Thanks to Rob `CmdrTaco' Malda for not influencing this code in any
+  * way.
+  *
+- * Rusty Russell (C)2000 -- This code is GPL.
+- * Patrick McHardy (c) 2006-2012
++ * This code is GPL.
+  */
+ #include <linux/kernel.h>
+ #include <linux/netfilter.h>
+@@ -28,34 +27,12 @@
+ 
+ #include "nf_internals.h"
+ 
+-static DEFINE_MUTEX(afinfo_mutex);
+-
+-const struct nf_afinfo __rcu *nf_afinfo[NFPROTO_NUMPROTO] __read_mostly;
+-EXPORT_SYMBOL(nf_afinfo);
+ const struct nf_ipv6_ops __rcu *nf_ipv6_ops __read_mostly;
+ EXPORT_SYMBOL_GPL(nf_ipv6_ops);
+ 
+ DEFINE_PER_CPU(bool, nf_skb_duplicated);
+ EXPORT_SYMBOL_GPL(nf_skb_duplicated);
+ 
+-int nf_register_afinfo(const struct nf_afinfo *afinfo)
+-{
+-	mutex_lock(&afinfo_mutex);
+-	RCU_INIT_POINTER(nf_afinfo[afinfo->family], afinfo);
+-	mutex_unlock(&afinfo_mutex);
+-	return 0;
+-}
+-EXPORT_SYMBOL_GPL(nf_register_afinfo);
+-
+-void nf_unregister_afinfo(const struct nf_afinfo *afinfo)
+-{
+-	mutex_lock(&afinfo_mutex);
+-	RCU_INIT_POINTER(nf_afinfo[afinfo->family], NULL);
+-	mutex_unlock(&afinfo_mutex);
+-	synchronize_rcu();
+-}
+-EXPORT_SYMBOL_GPL(nf_unregister_afinfo);
+-
+ #ifdef HAVE_JUMP_LABEL
+ struct static_key nf_hooks_needed[NFPROTO_NUMPROTO][NF_MAX_HOOKS];
+ EXPORT_SYMBOL(nf_hooks_needed);

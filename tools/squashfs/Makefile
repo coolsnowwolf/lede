@@ -7,6 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=squashfs
+PKG_CPE_ID:=cpe:/a:phillip_lougher:squashfs
 PKG_VERSION:=3.0
 
 PKG_SOURCE:=$(PKG_NAME)$(PKG_VERSION).tar.gz
@@ -21,6 +22,7 @@ include $(INCLUDE_DIR)/host-build.mk
 define Host/Compile
 	$(MAKE) -C $(HOST_BUILD_DIR)/squashfs-tools \
 		CC="$(HOSTCC)" \
+		CFLAGS="$(HOST_CFLAGS) -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -I." \
 		CXX="$(CXX)" \
 		LZMAPATH=$(STAGING_DIR_HOST)/lib \
 		mksquashfs-lzma unsquashfs-lzma 

@@ -17,6 +17,21 @@ mvebu_board_detect() {
 	*"Marvell Armada 370 Evaluation Board")
 		name="armada-370-db"
 		;;
+	*"Globalscale Marvell ESPRESSOBin Board")
+		name="globalscale,espressobin"
+		;;
+	*"Marvell Armada 3720 Development Board DB-88F3720-DDR3")
+		name="marvell,armada-3720-db"
+		;;
+	*"Marvell 8040 MACHIATOBin")
+		name="marvell,armada8040-mcbin"
+		;;
+	*"Marvell Armada 8040 DB board")
+		name="marvell,armada8040-db"
+		;;
+	*"Marvell Armada 7040 DB board")
+		name="marvell,armada7040-db"
+		;;
 	*"Globalscale Mirabox")
 		name="mirabox"
 		;;
@@ -47,6 +62,9 @@ mvebu_board_detect() {
 	*"Linksys WRT3200ACM")
 		name="armada-385-linksys-rango"
 		;;
+	*"Linksys WRT32X")
+		name="armada-385-linksys-venom"
+		;;
 	*"Marvell Armada 385 Access Point Development Board")
 		name="armada-385-db-ap"
 		;;
@@ -58,6 +76,9 @@ mvebu_board_detect() {
 		;;
 	*"SolidRun Clearfog Base A1")
 		name="armada-388-clearfog-base"
+		;;
+	*"Turris Omnia")
+		name="armada-385-turris-omnia"
 		;;
 	esac
 

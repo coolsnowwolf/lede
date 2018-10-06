@@ -14,7 +14,7 @@ INITRAMFS_EXTRA_FILES:=
 MAINTAINER:=Florian Fainelli <florian@openwrt.org>
 FEATURES:=ramdisk
 
-KERNEL_PATCHVER:=4.4
+KERNEL_PATCHVER:=4.14
 
 include $(INCLUDE_DIR)/target.mk
 

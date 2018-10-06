@@ -40,6 +40,8 @@ sub target_config_features(@) {
 		/^small_flash$/ and $ret .= "\tselect SMALL_FLASH\n";
 		/^nand$/ and $ret .= "\tselect NAND_SUPPORT\n";
 		/^virtio$/ and $ret .= "\tselect VIRTIO_SUPPORT\n";
+		/^rootfs-part$/ and $ret .= "\tselect USES_ROOTFS_PART\n";
+		/^boot-part$/ and $ret .= "\tselect USES_BOOT_PART\n";
 	}
 	return $ret;
 }

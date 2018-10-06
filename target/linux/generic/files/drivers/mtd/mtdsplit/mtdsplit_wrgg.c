@@ -22,6 +22,7 @@
 #define WRGG_NR_PARTS		2
 #define WRGG_MIN_ROOTFS_OFFS	0x80000	/* 512KiB */
 #define WRGG03_MAGIC		0x20080321
+#define WRG_MAGIC		0x20040220
 
 struct wrgg03_header {
 	char		signature[32];
@@ -32,6 +33,16 @@ struct wrgg03_header {
 	uint32_t	flag[2];
 	uint32_t	reserve[2];
 	char		buildno[16];
+	uint32_t	size;
+	uint32_t	offset;
+	char		devname[32];
+	char		digest[16];
+} __attribute__ ((packed));
+
+struct wrg_header {
+	char		signature[32];
+	uint32_t	magic1;
+	uint32_t	magic2;
 	uint32_t	size;
 	uint32_t	offset;
 	char		devname[32];
@@ -59,10 +70,14 @@ static int mtdsplit_parse_wrgg(struct mtd_info *master,
 		return -EIO;
 
 	/* sanity checks */
-	if (le32_to_cpu(hdr.magic1) != WRGG03_MAGIC)
+	if (le32_to_cpu(hdr.magic1) == WRGG03_MAGIC) {
+		kernel_ent_size = hdr_len + be32_to_cpu(hdr.size);
+	} else if (le32_to_cpu(hdr.magic1) == WRG_MAGIC) {
+		kernel_ent_size = sizeof(struct wrg_header) + le32_to_cpu(
+		                  ((struct wrg_header*)&hdr)->size);
+	} else {
 		return -EINVAL;
-
-	kernel_ent_size = hdr_len + be32_to_cpu(hdr.size);
+	}
 
 	if (kernel_ent_size > master->size)
 		return -EINVAL;

@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=adb
 PKG_VERSION:=android.5.0.2_r1
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://android.googlesource.com/platform/system/core
@@ -28,7 +28,7 @@ define Package/adb
   DEPENDS:=+zlib +libopenssl +libpthread
 endef
 
-define Package/bridge/description
+define Package/adb/description
  Android Debug Bridge (adb) is a versatile command line tool that lets you communicate with an emulator instance or connected Android-powered device.
 endef
 

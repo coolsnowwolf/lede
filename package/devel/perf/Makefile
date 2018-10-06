@@ -26,7 +26,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/perf
   SECTION:=devel
   CATEGORY:=Development
-  DEPENDS:= +libelf1 +libdw +libpthread +librt +objdump @!LINUX_3_18 @!IN_SDK @!TARGET_arc770 @KERNEL_PERF_EVENTS
+  DEPENDS:= +libelf1 +libdw +(mips||mipsel||powerpc||i386||x86_64||arm||aarch64):libunwind +libpthread +librt +objdump @!LINUX_3_18 @!IN_SDK @!TARGET_arc770 @KERNEL_PERF_EVENTS
   TITLE:=Linux performance monitoring tool
   VERSION:=$(LINUX_VERSION)-$(PKG_RELEASE)
   URL:=http://www.kernel.org
@@ -60,12 +60,6 @@ MAKE_FLAGS = \
 	$(if $(findstring c,$(OPENWRT_VERBOSE)),V=1,V='') \
 	WERROR=0 \
 	prefix=/usr
-
-ifdef CONFIG_LINUX_4_4
-ifdef CONFIG_USE_MUSL
- MAKE_FLAGS += EXTRA_CFLAGS="-I$(CURDIR)/musl-include -include $(CURDIR)/musl-compat.h -D__UCLIBC__"
-endif
-endif
 
 define Build/Compile
 	+$(MAKE_FLAGS) $(MAKE) $(PKG_JOBS) \

@@ -161,8 +161,8 @@ $$(call addfield,Depends,$$(Package/$(1)/DEPENDS)
 )$$(call addfield,Provides,$$(call mergelist,$(PROVIDES))
 )$$(call addfield,Alternatives,$$(call mergelist,$(ALTERNATIVES))
 )$$(call addfield,Source,$(SOURCE)
-)$$(call addfield,License,$$(PKG_LICENSE)
-)$$(call addfield,LicenseFiles,$$(PKG_LICENSE_FILES)
+)$$(call addfield,License,$(LICENSE)
+)$$(call addfield,LicenseFiles,$(LICENSE_FILES)
 )$$(call addfield,Section,$(SECTION)
 )$$(call addfield,Require-User,$(USERID)
 )$(if $(filter hold,$(PKG_FLAGS)),Status: unknown hold not-installed
@@ -190,7 +190,7 @@ $(_endef)
 			fi; \
 		done; $(Package/$(1)/extra_provides) \
 	) | sort -u > $(PKG_INFO_DIR)/$(1).provides
-	$(if $(PROVIDES),@for pkg in $(PROVIDES); do cp $(PKG_INFO_DIR)/$(1).provides $(PKG_INFO_DIR)/$$$$pkg.provides; done)
+	$(if $(PROVIDES),@for pkg in $(filter-out $(1),$(PROVIDES)); do cp $(PKG_INFO_DIR)/$(1).provides $(PKG_INFO_DIR)/$$$$pkg.provides; done)
 	$(CheckDependencies)
 
 	$(RSTRIP) $$(IDIR_$(1))

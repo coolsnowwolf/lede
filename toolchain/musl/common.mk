@@ -8,22 +8,24 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/target.mk
 
 PKG_NAME:=musl
-PKG_VERSION:=1.1.16
+PKG_VERSION:=1.1.19
 PKG_RELEASE=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE_VERSION:=5f7efb87a28a311ad377dd26adf53715dedb096d
-PKG_MIRROR_HASH:=da18ef24f270e5cae6bc4c440479da17bec1949ae5a1bc990352ca04f24c4378
+PKG_SOURCE_VERSION:=55df09bfccbfe21fc9dd7d8f94550c0ff25ace04
+PKG_MIRROR_HASH:=eb94e4e7e94221dd8890afd9b29e2562c36cf5585649035349ca1c6c1c354f2b
 PKG_SOURCE_URL:=git://git.musl-libc.org/musl
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-$(PKG_SOURCE_VERSION).tar.xz
 
 LIBC_SO_VERSION:=$(PKG_VERSION)
 PATCH_DIR:=$(PATH_PREFIX)/patches
 
+BUILD_DIR_HOST:=$(BUILD_DIR_TOOLCHAIN)
+HOST_BUILD_PREFIX:=$(TOOLCHAIN_DIR)
 HOST_BUILD_DIR:=$(BUILD_DIR_TOOLCHAIN)/$(PKG_NAME)-$(PKG_VERSION)
 
-include $(INCLUDE_DIR)/toolchain-build.mk
+include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/hardening.mk
 
 MUSL_CONFIGURE:= \
@@ -37,18 +39,8 @@ MUSL_CONFIGURE:= \
 		--disable-gcc-wrapper \
 		--enable-debug
 
-define Host/Prepare
-	$(call Host/Prepare/Default)
-	$(if $(strip $(QUILT)), \
-		cd $(HOST_BUILD_DIR); \
-		if $(QUILT_CMD) next >/dev/null 2>&1; then \
-			$(QUILT_CMD) push -a; \
-		fi
-	)
-	ln -snf $(PKG_NAME)-$(PKG_VERSION) $(BUILD_DIR_TOOLCHAIN)/$(PKG_NAME)
-endef
-
 define Host/Configure
+	ln -snf $(PKG_NAME)-$(PKG_VERSION) $(BUILD_DIR_TOOLCHAIN)/$(PKG_NAME)
 	( cd $(HOST_BUILD_DIR); rm -f config.cache; \
 		$(MUSL_CONFIGURE) \
 	);

@@ -14,7 +14,7 @@ export TOPDIR LC_ALL LANG TZ
 
 empty:=
 space:= $(empty) $(empty)
-$(if $(findstring $(space),$(TOPDIR)),$(error ERROR: The path to the LEDE directory must not include any spaces))
+$(if $(findstring $(space),$(TOPDIR)),$(error ERROR: The path to the OpenWrt directory must not include any spaces))
 
 world:
 
@@ -27,6 +27,8 @@ ifneq ($(OPENWRT_BUILD),1)
   export OPENWRT_BUILD
   GREP_OPTIONS=
   export GREP_OPTIONS
+  CDPATH=
+  export CDPATH
   include $(TOPDIR)/include/debug.mk
   include $(TOPDIR)/include/depends.mk
   include $(TOPDIR)/include/toplevel.mk
@@ -85,7 +87,7 @@ prereq: $(target/stamp-prereq) tmp/.prereq_packages
 	fi
 
 checksum: FORCE
-	$(call sha256sums,$(BIN_DIR))
+	$(call sha256sums,$(BIN_DIR),$(CONFIG_BUILDBOT))
 
 diffconfig: FORCE
 	mkdir -p $(BIN_DIR)

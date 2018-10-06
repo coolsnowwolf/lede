@@ -74,7 +74,9 @@ static int ptm_stop(struct net_device *);
   static unsigned int ptm_poll(int, unsigned int);
   static int ptm_napi_poll(struct napi_struct *, int);
 static int ptm_hard_start_xmit(struct sk_buff *, struct net_device *);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0))
 static int ptm_change_mtu(struct net_device *, int);
+#endif
 static int ptm_ioctl(struct net_device *, struct ifreq *, int);
 static void ptm_tx_timeout(struct net_device *);
 
@@ -115,13 +117,15 @@ static struct net_device_ops g_ptm_netdev_ops = {
     .ndo_start_xmit      = ptm_hard_start_xmit,
     .ndo_validate_addr   = eth_validate_addr,
     .ndo_set_mac_address = eth_mac_addr,
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0))
     .ndo_change_mtu      = ptm_change_mtu,
+#endif
     .ndo_do_ioctl        = ptm_ioctl,
     .ndo_tx_timeout      = ptm_tx_timeout,
 };
 
 static struct net_device *g_net_dev[1] = {0};
-static char *g_net_dev_name[1] = {"ptm0"};
+static char *g_net_dev_name[1] = {"dsl0"};
 
 static int g_ptm_prio_queue_map[8];
 
@@ -141,6 +145,10 @@ static void ptm_setup(struct net_device *dev, int ndev)
     netif_carrier_off(dev);
 
     dev->netdev_ops      = &g_ptm_netdev_ops;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0))
+    /* Allow up to 1508 bytes, for RFC4638 */
+    dev->max_mtu         = ETH_DATA_LEN + 8;
+#endif
     netif_napi_add(dev, &g_ptm_priv_data.itf[ndev].napi, ptm_napi_poll, 16);
     dev->watchdog_timeo  = ETH_WATCHDOG_TIMEOUT;
 
@@ -218,7 +226,9 @@ static unsigned int ptm_poll(int ndev, unsigned int work_to_do)
             skb->dev = g_net_dev[0];
             skb->protocol = eth_type_trans(skb, skb->dev);
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0))
             g_net_dev[0]->last_rx = jiffies;
+#endif
 
             netif_receive_skb(skb);
 
@@ -367,6 +377,7 @@ PTM_HARD_START_XMIT_FAIL:
     return 0;
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0))
 static int ptm_change_mtu(struct net_device *dev, int mtu)
 {
 	/* Allow up to 1508 bytes, for RFC4638 */
@@ -375,6 +386,7 @@ static int ptm_change_mtu(struct net_device *dev, int mtu)
         dev->mtu = mtu;
         return 0;
 }
+#endif
 
 static int ptm_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {

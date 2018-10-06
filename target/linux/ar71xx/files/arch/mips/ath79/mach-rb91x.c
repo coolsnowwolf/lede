@@ -10,12 +10,17 @@
 
 #define pr_fmt(fmt) "rb91x: " fmt
 
+#include <linux/version.h>
 #include <linux/phy.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/ath9k_platform.h>
 #include <linux/mtd/mtd.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 #include <linux/mtd/nand.h>
+#else
+#include <linux/mtd/rawnand.h>
+#endif
 #include <linux/mtd/partitions.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/74x164.h>
@@ -53,7 +58,7 @@
 #define RB91X_FLAG_USB		BIT(0)
 #define RB91X_FLAG_PCIE		BIT(1)
 
-#define RB91X_LATCH_GPIO_BASE	AR934X_GPIO_COUNT
+#define RB91X_LATCH_GPIO_BASE	32
 #define RB91X_LATCH_GPIO(_x)	(RB91X_LATCH_GPIO_BASE + (_x))
 
 #define RB91X_SSR_GPIO_BASE	(RB91X_LATCH_GPIO_BASE + AR934X_GPIO_COUNT)
@@ -140,7 +145,7 @@ static struct rb91x_nand_platform_data rb711gr100_nand_data __initdata = {
 	.gpio_nle = RB91X_GPIO_NLE,
 };
 
-static u8 rb711gr100_ssr_initdata[] __initdata = {
+static u8 rb711gr100_ssr_initdata[] = {
 	BIT(RB91X_SSR_BIT_PCIE_POWER) |
 	BIT(RB91X_SSR_BIT_USB_POWER) |
 	BIT(RB91X_SSR_BIT_5)
@@ -227,7 +232,7 @@ static struct at803x_platform_data rb91x_at803x_data = {
 static struct mdio_board_info rb91x_mdio0_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = 0,
+		.mdio_addr = 0,
 		.platform_data = &rb91x_at803x_data,
 	},
 };

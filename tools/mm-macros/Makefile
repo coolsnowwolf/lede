@@ -8,11 +8,11 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mm-macros
-PKG_VERSION:=0.9.10
+PKG_VERSION:=0.9.12
 
 PKG_SOURCE_URL:=@GNOME/mm-common/0.9
 PKG_SOURCE:=mm-common-$(PKG_VERSION).tar.xz
-PKG_HASH:=16c0e2bc196b67fbc145edaecb5dbe5818386504fe5703de27002d77140fa217
+PKG_HASH:=ceffdcce1e5b52742884c233ec604bf6fded12eea9da077ce7a62c02c87e7c0b
 
 HOST_BUILD_DIR:=$(BUILD_DIR_HOST)/mm-common-$(PKG_VERSION)
 

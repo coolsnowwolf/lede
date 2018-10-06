@@ -22,7 +22,7 @@ ifneq ($(CONFIG_SDK)$(CONFIG_PACKAGE_kmod-b43)$(CONFIG_PACKAGE_b43legacy-firmwar
 endif
 
 tools-$(BUILD_TOOLCHAIN) += gmp mpfr mpc libelf expat
-tools-y += m4 libtool autoconf automake flex bison pkg-config mklibs
+tools-y += m4 libtool autoconf automake flex bison pkg-config mklibs zlib
 tools-y += sstrip make-ext4fs e2fsprogs mtd-utils mkimage
 tools-y += firmware-utils patch-image quilt padjffs2
 tools-y += mm-macros missing-macros cmake scons bc findutils gengetopt patchelf
@@ -30,7 +30,8 @@ tools-y += mtools dosfstools libressl
 tools-$(CONFIG_TARGET_orion_generic) += wrt350nv2-builder upslug2
 tools-$(CONFIG_TARGET_x86) += qemu
 tools-$(CONFIG_TARGET_mxs) += elftosb sdimage
-tools-$(CONFIG_TARGET_ar71xx) += lzma-old squashfs
+tools-$(CONFIG_TARGET_ar71xx) += lzma-old
+tools-$(CONFIG_TARGET_ar71xx)$(CONFIG_TARGET_ath79) += squashfs
 tools-$(CONFIG_USES_MINOR) += kernel2minor
 tools-y += lzma squashfs4
 tools-$(BUILD_B43_TOOLS) += b43-tools
@@ -43,16 +44,16 @@ $(curdir)/bison/compile := $(curdir)/flex/compile
 $(curdir)/flex/compile := $(curdir)/libtool/compile
 $(curdir)/libtool/compile := $(curdir)/m4/compile $(curdir)/autoconf/compile $(curdir)/automake/compile $(curdir)/missing-macros/compile
 $(curdir)/squashfs/compile := $(curdir)/lzma-old/compile
-$(curdir)/squashfs4/compile := $(curdir)/xz/compile
+$(curdir)/squashfs4/compile := $(curdir)/xz/compile $(curdir)/zlib/compile
 $(curdir)/quilt/compile := $(curdir)/autoconf/compile $(curdir)/findutils/compile
 $(curdir)/autoconf/compile := $(curdir)/m4/compile
 $(curdir)/automake/compile := $(curdir)/m4/compile $(curdir)/autoconf/compile $(curdir)/pkg-config/compile $(curdir)/xz/compile
 $(curdir)/gmp/compile := $(curdir)/libtool/compile
 $(curdir)/mpc/compile := $(curdir)/mpfr/compile $(curdir)/gmp/compile
 $(curdir)/mpfr/compile := $(curdir)/gmp/compile
-$(curdir)/mtd-utils/compile := $(curdir)/e2fsprogs/compile
+$(curdir)/mtd-utils/compile := $(curdir)/libtool/compile $(curdir)/e2fsprogs/compile $(curdir)/zlib/compile
 $(curdir)/mklibs/compile := $(curdir)/libtool/compile
-$(curdir)/qemu/compile := $(curdir)/e2fsprogs/compile
+$(curdir)/qemu/compile := $(curdir)/e2fsprogs/compile $(curdir)/zlib/compile
 $(curdir)/upslug2/compile := $(curdir)/libtool/compile
 $(curdir)/mm-macros/compile := $(curdir)/libtool/compile
 $(curdir)/missing-macros/compile := $(curdir)/autoconf/compile
@@ -69,8 +70,12 @@ $(curdir)/patchelf/compile := $(curdir)/libtool/compile
 $(curdir)/dosfstools/compile := $(curdir)/autoconf/compile $(curdir)/automake/compile
 $(curdir)/libressl/compile := $(curdir)/pkg-config/compile
 $(curdir)/mkimage/compile += $(curdir)/libressl/compile
-$(curdir)/firmware-utils/compile += $(curdir)/libressl/compile
+$(curdir)/firmware-utils/compile += $(curdir)/libressl/compile $(curdir)/zlib/compile
 $(curdir)/cmake/compile += $(curdir)/libressl/compile
+$(curdir)/zlib/compile := $(curdir)/cmake/compile
+$(curdir)/wrt350nv2-builder/compile := $(curdir)/zlib/compile
+$(curdir)/lzma-old/compile := $(curdir)/zlib/compile
+$(curdir)/make-ext4fs/compile := $(curdir)/zlib/compile
 
 ifneq ($(HOST_OS),Linux)
   tools-y += coreutils

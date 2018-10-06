@@ -1,0 +1,64 @@
+From fa9d565fe8841b288f29137c23a7ab2584dd9510 Mon Sep 17 00:00:00 2001
+From: Peter Oh <peter.oh@bowerswilkins.com>
+Date: Tue, 29 May 2018 14:39:20 -0700
+Subject: [PATCH 16/18] mesh: fix channel switch error during CAC
+
+Mesh interface has used its channel parameters that configured
+during its initialization even after channel switched due to
+DFS radar detection during CAC which caused channel switch error.
+This change fixes the error by updating its channel parameters
+when channel's been changed from initial one.
+
+Signed-off-by: Peter Oh <peter.oh@bowerswilkins.com>
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+[daniel@makrotopia.org: added hw_features_common.h include]
+---
+ wpa_supplicant/mesh.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+--- a/wpa_supplicant/mesh.c
++++ b/wpa_supplicant/mesh.c
+@@ -11,6 +11,7 @@
+ #include "utils/common.h"
+ #include "utils/eloop.h"
+ #include "utils/uuid.h"
++#include "common/hw_features_common.h"
+ #include "common/ieee802_11_defs.h"
+ #include "common/wpa_ctrl.h"
+ #include "ap/sta_info.h"
+@@ -394,10 +395,35 @@ void wpa_supplicant_mesh_add_scan_ie(str
+ void wpas_mesh_complete_cb(void *ctx)
+ {
+ 	struct wpa_supplicant *wpa_s = (struct wpa_supplicant *)ctx;
++	struct hostapd_iface *ifmsh = wpa_s->ifmsh;
+ 	struct wpa_driver_mesh_join_params *params = wpa_s->mesh_params;
+ 	struct wpa_ssid *ssid = wpa_s->current_ssid;
+ 	int ret = 0;
+ 
++	/*
++	 * inspect if channel's been changed since initialized.
++	 * i.e. DFS radar detection
++	 */
++	if (ifmsh->freq != params->freq.freq) {
++		wpa_s->assoc_freq = ifmsh->freq;
++		ssid->frequency = ifmsh->freq;
++		if (hostapd_set_freq_params(&params->freq,
++				ifmsh->conf->hw_mode,
++				ifmsh->freq,
++				ifmsh->conf->channel,
++				ifmsh->conf->ieee80211n,
++				ifmsh->conf->ieee80211ac,
++				ifmsh->conf->secondary_channel,
++				ifmsh->conf->vht_oper_chwidth,
++				ifmsh->conf->vht_oper_centr_freq_seg0_idx,
++				ifmsh->conf->vht_oper_centr_freq_seg1_idx,
++				ifmsh->conf->vht_capab)) {
++			wpa_printf(MSG_ERROR, "Error updating mesh frequency params.");
++			wpa_supplicant_mesh_deinit(wpa_s);
++			return;
++		}
++	}
++
+ 	if (wpas_mesh_init_rsn(wpa_s)) {
+ 		wpa_printf(MSG_ERROR, "Init RSN failed. Deinit mesh...");
+ 		wpa_supplicant_mesh_deinit(wpa_s);

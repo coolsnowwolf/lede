@@ -10,7 +10,6 @@
  */
 
 #include <linux/init.h>
-#include <linux/version.h>
 #include <linux/platform_device.h>
 
 #include <asm/mach-ath79/ath79.h>
@@ -30,11 +29,7 @@ void __init ath79_register_dsa(struct device *netdev,
 
 	d->netdev = netdev;
 	for (i = 0; i < d->nr_chips; i++)
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,15,0)
-		d->chip[i].mii_bus = miidev;
-#else
 		d->chip[i].host_dev = miidev;
-#endif
 
 	ar71xx_dsa_switch_device.dev.platform_data = d;
 	platform_device_register(&ar71xx_dsa_switch_device);

@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=usbutils
 PKG_VERSION:=007
-PKG_RELEASE:=6
+PKG_RELEASE:=8
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/utils/usb/usbutils
@@ -20,7 +20,7 @@ PKG_LICENSE_FILES:=COPYING
 PKG_BUILD_PARALLEL:=1
 PKG_INSTALL:=1
 
-PKG_MAINTAINER := Felix Fietkau <nbd@nbd.name>
+PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -32,13 +32,13 @@ define Package/usbutils
   URL:=http://www.linux-usb.org/
 endef
 
-USB_IDS_REV:=ae25707c751fff79148328229a76fc44232abeae
+USB_IDS_REV:=016be785fd4f5f895c6482ec484507d5a08839fa
 USB_IDS_FILE:=usb.ids.$(USB_IDS_REV)
 define Download/usb_ids
   FILE:=$(USB_IDS_FILE)
   URL_FILE:=usb.ids
-  URL:=@GITHUB/gentoo/hwids/ae25707c751fff79148328229a76fc44232abeae
-  HASH:=eca5d4b4b2c72e61d5d6d67b5dc6f75e92b4ac9cf9cdf1344f06622e0f57d82f
+  URL:=@GITHUB/vcrhonek/hwdata/$(USB_IDS_REV)
+  HASH:=b1877a9fd30c2f9dedec1657963775e7f261c892eb7d6f4281c453bd73492489
 endef
 $(eval $(call Download,usb_ids))
 

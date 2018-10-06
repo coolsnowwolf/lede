@@ -5,6 +5,7 @@
  *  Copyright (C) 2016 Matthias Schiffer <mschiffer@universe-factory.net>
  *  Copyright (C) 2016 Andreas Ziegler <github@andreas-ziegler.de>
  *  Copyright (C) 2016 Ludwig Thomeczek <ledesrc@wxorx.net>
+ *  Copyright (C) 2017 Tim Thorpe <tim@tfthorpe.net>
  *
  *  Derived from: mach-dir-869-a1.c
  *
@@ -48,7 +49,8 @@
 
 #define TL_WR1043_V4_GPIO_USB_POWER		8
 
-#define TL_WR1043_V4_GPIO_LED_WAN		15
+#define TL_WR1043_V4_GPIO_LED_INET		15
+#define TL_WR1043_V4_GPIO_LED_WAN		16
 #define TL_WR1043_V4_GPIO_LED_LAN1		9
 #define TL_WR1043_V4_GPIO_LED_LAN2		14
 #define TL_WR1043_V4_GPIO_LED_LAN3		21
@@ -57,10 +59,12 @@
 #define TL_WR1043_V4_KEYS_POLL_INTERVAL		20 /* msecs */
 #define TL_WR1043_V4_KEYS_DEBOUNCE_INTERVAL	(3 * TL_WR1043_V4_KEYS_POLL_INTERVAL)
 
-#define TL_WR1043_V4_MAC_LOCATION		0x1ff80174
+#define TL_WR1043_V4_MAC_LOCATION		0x1ff50008
 
 #define TL_WR1043_V4_EEPROM_ADDR		0x1fff0000
 #define TL_WR1043_V4_WMAC_CALDATA_OFFSET	0x1000
+
+#define TL_WR1043_V5_MAC_LOCATION		0x1ff00008
 
 static struct gpio_led tl_wr1043nd_v4_leds_gpio[] __initdata = {
 	{
@@ -85,6 +89,11 @@ static struct gpio_led tl_wr1043nd_v4_leds_gpio[] __initdata = {
 	},
 	{
 		.name		= "tp-link:green:wan",
+		.gpio		= TL_WR1043_V4_GPIO_LED_INET,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:orange:wan",
 		.gpio		= TL_WR1043_V4_GPIO_LED_WAN,
 		.active_low	= 1,
 	},
@@ -148,7 +157,7 @@ static struct ar8327_platform_data tl_wr1043nd_v4_ar8327_data = {
 static struct mdio_board_info tl_wr1043nd_v4_mdio0_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = 0,
+		.mdio_addr = 0,
 		.platform_data = &tl_wr1043nd_v4_ar8327_data,
 	},
 };
@@ -188,3 +197,87 @@ static void __init tl_wr1043nd_v4_setup(void)
 
 MIPS_MACHINE(ATH79_MACH_TL_WR1043ND_V4, "TL-WR1043ND-v4",
 	     "TP-LINK TL-WR1043ND v4", tl_wr1043nd_v4_setup);
+
+static struct gpio_led tl_wr1043n_v5_leds_gpio[] __initdata = {
+	{
+		.name		= "tp-link:green:wps",
+		.gpio		= TL_WR1043_V4_GPIO_LED_WPS,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:green:system",
+		.gpio		= TL_WR1043_V4_GPIO_LED_SYSTEM,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:green:wlan",
+		.gpio		= TL_WR1043_V4_GPIO_LED_WLAN,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:green:wan",
+		.gpio		= TL_WR1043_V4_GPIO_LED_INET,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:orange:wan",
+		.gpio		= TL_WR1043_V4_GPIO_LED_WAN,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:green:lan1",
+		.gpio		= TL_WR1043_V4_GPIO_LED_LAN1,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:green:lan2",
+		.gpio		= TL_WR1043_V4_GPIO_LED_LAN2,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:green:lan3",
+		.gpio		= TL_WR1043_V4_GPIO_LED_LAN3,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:green:lan4",
+		.gpio		= TL_WR1043_V4_GPIO_LED_LAN4,
+		.active_low	= 1,
+	},
+};
+
+/* The 1043Nv5 is identical to the 1043NDv4,
+ *  only missing the usb and small firmware layout changes  */
+static void __init tl_wr1043nv5_setup(void)
+{
+	u8 *art = (u8 *) KSEG1ADDR(TL_WR1043_V4_EEPROM_ADDR);
+	u8 *mac = (u8 *) KSEG1ADDR(TL_WR1043_V5_MAC_LOCATION);
+
+	ath79_register_m25p80(NULL);
+
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(tl_wr1043n_v5_leds_gpio),
+				 tl_wr1043n_v5_leds_gpio);
+	ath79_register_gpio_keys_polled(-1, TL_WR1043_V4_KEYS_POLL_INTERVAL,
+					ARRAY_SIZE(tl_wr1043nd_v4_gpio_keys),
+					tl_wr1043nd_v4_gpio_keys);
+
+	platform_device_register(&ath79_mdio0_device);
+
+	mdiobus_register_board_info(tl_wr1043nd_v4_mdio0_info,
+				    ARRAY_SIZE(tl_wr1043nd_v4_mdio0_info));
+
+	ath79_register_wmac(art + TL_WR1043_V4_WMAC_CALDATA_OFFSET, mac);
+
+	ath79_init_mac(ath79_eth0_data.mac_addr, mac, 0);
+
+	/* GMAC0 is connected to an AR8337 switch */
+	ath79_eth0_data.phy_if_mode = PHY_INTERFACE_MODE_SGMII;
+	ath79_eth0_data.speed = SPEED_1000;
+	ath79_eth0_data.duplex = DUPLEX_FULL;
+	ath79_eth0_data.phy_mask = BIT(0);
+	ath79_eth0_data.mii_bus_dev = &ath79_mdio0_device.dev;
+	ath79_register_eth(0);
+}
+
+MIPS_MACHINE(ATH79_MACH_TL_WR1043N_V5, "TL-WR1043N-v5", "TP-LINK TL-WR1043N v5",
+	     tl_wr1043nv5_setup);

@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=json-c
 PKG_VERSION:=0.12.1
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-nodoc.tar.gz
 PKG_SOURCE_URL:=https://s3.amazonaws.com/json-c_releases/releases/
@@ -19,6 +19,7 @@ PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=COPYING
+PKG_CPE_ID:=cpe:/a:json-c_project:json-c
 
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
@@ -26,14 +27,17 @@ PKG_INSTALL:=1
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
 include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/host-build.mk
 
 TARGET_CFLAGS += $(FPIC) -Wno-implicit-fallthrough
+HOST_CFLAGS += -Wno-implicit-fallthrough
+HOST_BUILD_PREFIX:=$(STAGING_DIR_HOST)
 
 define Package/libjson-c
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=javascript object notation
-  URL:=http://oss.metaparadigm.com/json-c/
+  URL:=https://json-c.github.io/json-c/
 endef
 
 define Package/libjson-c/description
@@ -55,3 +59,4 @@ define Package/libjson-c/install
 endef
 
 $(eval $(call BuildPackage,libjson-c))
+$(eval $(call HostBuild))

@@ -1,0 +1,73 @@
+--- a/drivers/mtd/spi-nor/spi-nor.c
++++ b/drivers/mtd/spi-nor/spi-nor.c
+@@ -142,20 +142,29 @@ static int read_fsr(struct spi_nor *nor)
+  * location. Return the configuration register value.
+  * Returns negative if error occurred.
+  */
+-static int read_cr(struct spi_nor *nor)
++static int _read_cr(struct spi_nor *nor, u8 reg)
+ {
+ 	int ret;
+ 	u8 val;
+ 
+-	ret = nor->read_reg(nor, SPINOR_OP_RDCR, &val, 1);
++	ret = nor->read_reg(nor, reg, &val, 1);
+ 	if (ret < 0) {
+-		dev_err(nor->dev, "error %d reading CR\n", ret);
++		dev_err(nor->dev, "error %d reading %s\n", ret,
++			(reg==SPINOR_OP_RDCR)?"CR":"XCR");
+ 		return ret;
+ 	}
+ 
+ 	return val;
+ }
+ 
++static inline int read_cr(struct spi_nor *nor) {
++	return _read_cr(nor, SPINOR_OP_RDCR);
++}
++
++static inline int read_xcr(struct spi_nor *nor) {
++	return _read_cr(nor, SPINOR_OP_RDXCR);
++}
++
+ /*
+  * Write status register 1 byte
+  * Returns negative if error occurred.
+@@ -2878,9 +2887,16 @@ int spi_nor_scan(struct spi_nor *nor, co
+ 	} else if (mtd->size > 0x1000000) {
+ 		/* enable 4-byte addressing if the device exceeds 16MiB */
+ 		nor->addr_width = 4;
+-		if (info->flags & SPI_NOR_4B_READ_OP)
+-			spi_nor_set_4byte_read(nor, info);
+-		else if (JEDEC_MFR(info) == SNOR_MFR_SPANSION ||
++		if (info->flags & SPI_NOR_4B_READ_OP) {
++			if (JEDEC_MFR(info) == SNOR_MFR_WINBOND) {
++				ret = read_xcr(nor);
++				if (!(ret > 0 && (ret & XCR_DEF_4B_ADDR_MODE)))
++					spi_nor_set_4byte_read(nor, info);
++				else
++					set_4byte(nor, info, 1);
++			} else
++				spi_nor_set_4byte_read(nor, info);
++		} else if (JEDEC_MFR(info) == SNOR_MFR_SPANSION ||
+ 			 info->flags & SPI_NOR_4B_OPCODES)
+ 			spi_nor_set_4byte_opcodes(nor, info);
+ 		else
+--- a/include/linux/mtd/spi-nor.h
++++ b/include/linux/mtd/spi-nor.h
+@@ -103,6 +103,7 @@
+ #define SPINOR_OP_EN4B		0xb7	/* Enter 4-byte mode */
+ #define SPINOR_OP_EX4B		0xe9	/* Exit 4-byte mode */
+ #define SPINOR_OP_WREAR		0xc5	/* Write extended address register */
++#define SPINOR_OP_RDXCR		0x15	/* Read extended configuration register */
+ 
+ /* Used for Spansion flashes only. */
+ #define SPINOR_OP_BRWR		0x17	/* Bank register write */
+@@ -135,6 +136,7 @@
+ 
+ /* Configuration Register bits. */
+ #define CR_QUAD_EN_SPAN		BIT(1)	/* Spansion Quad I/O */
++#define XCR_DEF_4B_ADDR_MODE	BIT(1)	/* Winbond 4B mode default */
+ 
+ /* Status Register 2 bits. */
+ #define SR2_QUAD_EN_BIT7	BIT(7)

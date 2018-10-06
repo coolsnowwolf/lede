@@ -59,7 +59,7 @@ proto_wwan_setup() {
 		json_set_namespace $old_cb
 
 		[ -n "$control" -a -n "$data" ] && {
-			ttys=$(ls -d /sys/bus/usb/devices/$devicename/${devicename}*/tty* | sed "s/.*\///g" | tr "\n" " ")
+			ttys=$(ls -d /sys/bus/usb/devices/$devicename/${devicename}*/tty?* /sys/bus/usb/devices/$devicename/${devicename}*/tty/tty?* | sed "s/.*\///g" | tr "\n" " ")
 			ctl_device=/dev/$(echo $ttys | cut -d" " -f $((control + 1)))
 			dat_device=/dev/$(echo $ttys | cut -d" " -f $((data + 1)))
 			driver=comgt
@@ -110,7 +110,7 @@ proto_wwan_teardown() {
 	case $driver in
 	qmi_wwan)		proto_qmi_teardown $@ ;;
 	cdc_mbim)		proto_mbim_teardown $@ ;;
-	sierra_net)		proto_mbim_teardown $@ ;;
+	sierra_net)		proto_directip_teardown $@ ;;
 	comgt)			proto_3g_teardown $@ ;;
 	cdc_ether|*cdc_ncm)	proto_ncm_teardown $@ ;;
 	esac

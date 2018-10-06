@@ -7,65 +7,76 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_VERSION:=2017.03
+PKG_VERSION:=2018.03
 PKG_RELEASE:=1
 
-PKG_HASH:=f54baf3f9325bf444c7905f3a5b6f83680edb1e6e1a4d5f8a5ad80abe885113f
+PKG_HASH:=7e7477534409d5368eb1371ffde6820f0f79780a1a1f676161c48442cb303dfd
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
 
 define U-Boot/Default
   BUILD_TARGET:=kirkwood
-  BUILD_DEVICES:=$(patsubst %_second_stage,%,$(1))
 endef
 
 define U-Boot/dockstar
   NAME:=Seagate DockStar
+  BUILD_DEVICES:=seagate_dockstar
 endef
 
 define U-Boot/dockstar_second_stage
   NAME:=Seagate DockStar (second stage)
+  BUILD_DEVICES:=seagate_dockstar
 endef
 
 define U-Boot/goflexhome
   NAME:=the Seagate GoFlexHome/GoFlexNet
+  BUILD_DEVICES:=seagate_goflexhome seagate_goflexnet
 endef
 
 define U-Boot/ib62x0
   NAME:=RaidSonic ICY BOX NAS6210 and NAS6220
+  BUILD_DEVICES:=raidsonic_ib-nas62x0
 endef
 
 define U-Boot/ib62x0_second_stage
   NAME:=RaidSonic ICY BOX NAS6210 and NAS6220 (second stage)
+  BUILD_DEVICES:=raidsonic_ib-nas62x0
 endef
 
 define U-Boot/iconnect
   NAME:=Iomega iConnect Wireless
+  BUILD_DEVICES:=iom_iconnect-1.1
 endef
 
 define U-Boot/iconnect_second_stage
   NAME:=Iomega iConnect Wireless (second stage)
+  BUILD_DEVICES:=iom_iconnect-1.1
 endef
 
 define U-Boot/nsa310
   NAME:=Zyxel NSA310
+  BUILD_DEVICES:=zyxel_nsa310b
 endef
 
 define U-Boot/nsa325
   NAME:=Zyxel NSA325v1 and v2
+  BUILD_DEVICES:=zyxel_nsa325
 endef
 
 define U-Boot/pogo_e02
   NAME:=Cloud Engines Pogoplug E02
+  BUILD_DEVICES:=cloudengines_pogoe02
 endef
 
 define U-Boot/pogo_e02_second_stage
   NAME:=Cloud Engines Pogoplug E02 (second stage)
+  BUILD_DEVICES:=cloudengines_pogoe02
 endef
 
-define U-Boot/sheevaplug
-  NAME:=SheevaPlug
+define U-Boot/pogoplugv4
+  NAME:=Cloud Engines Pogoplug V4
+  BUILD_DEVICES:=cloudengines_pogoplugv4
 endef
 
 UBOOT_TARGETS := \
@@ -76,7 +87,7 @@ UBOOT_TARGETS := \
 	nsa310 \
 	nsa325 \
 	pogo_e02 pogo_e02_second_stage \
-	sheevaplug
+	pogoplugv4
 
 define Build/Configure
 	$(if $(findstring _second_stage,$(BUILD_VARIANT)),

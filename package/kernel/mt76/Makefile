@@ -8,12 +8,22 @@ PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/openwrt/mt76
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2017-09-10
-PKG_SOURCE_VERSION:=d5e945e9b2ee8f52581c1a6978097cf30c39cfd9
-PKG_MIRROR_HASH:=276eb2eea7b5ae64424292c5d955a8543fd3e39a2125b8046a30a519be76f3c9
+PKG_SOURCE_DATE:=2018-10-01
+PKG_SOURCE_VERSION:=94d44458f1f1863eddcc9e7dad817e48552753f6
+PKG_MIRROR_HASH:=c9db04557fff817cd4aedc9e4f946e3102cf169ec7871122055e758227fc6376
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_BUILD_PARALLEL:=1
+
+PKG_CONFIG_DEPENDS += \
+	CONFIG_PACKAGE_kmod-mt76-usb \
+	CONFIG_PACKAGE_kmod-mt76x02-common \
+	CONFIG_PACKAGE_kmod-mt76x0-common \
+	CONFIG_PACKAGE_kmod-mt76x0u \
+	CONFIG_PACKAGE_kmod-mt76x2-common \
+	CONFIG_PACKAGE_kmod-mt76x2 \
+	CONFIG_PACKAGE_kmod-mt76x2u \
+	CONFIG_PACKAGE_kmod-mt7603
 
 STAMP_CONFIGURED_DEPENDS := $(STAGING_DIR)/usr/include/mac80211-backport/backport/autoconf.h
 
@@ -39,16 +49,74 @@ define KernelPackage/mt76-core
   TITLE:=MediaTek MT76xx wireless driver
   FILES:=\
 	$(PKG_BUILD_DIR)/mt76.ko
-  AUTOLOAD:=$(call AutoLoad,50,mac80211 mt76)
+endef
+
+define KernelPackage/mt76-usb
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT76xx wireless driver USB support
+  DEPENDS += kmod-usb-core kmod-mt76-core
+  HIDDEN:=1
+  FILES:=\
+	$(PKG_BUILD_DIR)/mt76-usb.ko
+endef
+
+define KernelPackage/mt76x02-usb
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT76x0/MT76x2 USB wireless driver common code
+  DEPENDS+=+kmod-mt76-usb
+  HIDDEN:=1
+  FILES:=$(PKG_BUILD_DIR)/mt76x02-usb.ko
+endef
+
+define KernelPackage/mt76x02-common
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT76x0/MT76x2 wireless driver common code
+  DEPENDS+=+kmod-mt76-core
+  HIDDEN:=1
+  FILES:=$(PKG_BUILD_DIR)/mt76x02-lib.ko
+endef
+
+define KernelPackage/mt76x0-common
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT76x0 wireless driver common code
+  DEPENDS+=+kmod-mt76x02-common +kmod-mt76x02-usb
+  HIDDEN:=1
+  FILES:=$(PKG_BUILD_DIR)/mt76x0/mt76x0-common.ko
+endef
+
+define KernelPackage/mt76x0u
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT76x2U wireless driver
+  DEPENDS+=+kmod-mt76x0-common +kmod-mt76x02-usb
+  FILES:=\
+	$(PKG_BUILD_DIR)/mt76x0/mt76x0u.ko
+  AUTOLOAD:=$(call AutoProbe,mt76x0u)
+endef
+
+define KernelPackage/mt76x2-common
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT76x2 wireless driver common code
+  DEPENDS+=+kmod-mt76-core +kmod-mt76x02-common
+  HIDDEN:=1
+  FILES:=$(PKG_BUILD_DIR)/mt76x2-common.ko
+endef
+
+define KernelPackage/mt76x2u
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT76x2U wireless driver
+  DEPENDS+=+kmod-mt76x2-common +kmod-mt76x02-usb
+  FILES:=\
+	$(PKG_BUILD_DIR)/mt76x2u.ko
+  AUTOLOAD:=$(call AutoProbe,mt76x2u)
 endef
 
 define KernelPackage/mt76x2
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT76x2 wireless driver
-  DEPENDS+=+kmod-mt76-core
+  DEPENDS+=+kmod-mt76x2-common
   FILES:=\
 	$(PKG_BUILD_DIR)/mt76x2e.ko
-  AUTOLOAD:=$(call AutoLoad,51,mt76x2e)
+  AUTOLOAD:=$(call AutoProbe,mt76x2e)
 endef
 
 define KernelPackage/mt7603
@@ -56,8 +124,8 @@ define KernelPackage/mt7603
   TITLE:=MediaTek MT7603 wireless driver
   DEPENDS+=+kmod-mt76-core
   FILES:=\
-	$(PKG_BUILD_DIR)/mt7603e.ko
-  AUTOLOAD:=$(call AutoLoad,51,mt7603e)
+	$(PKG_BUILD_DIR)/mt7603/mt7603e.ko
+  AUTOLOAD:=$(call AutoProbe,mt7603e)
 endef
 
 NOSTDINC_FLAGS = \
@@ -73,10 +141,38 @@ ifdef CONFIG_PACKAGE_MAC80211_MESH
   NOSTDINC_FLAGS += -DCONFIG_MAC80211_MESH
 endif
 
+ifdef CONFIG_PACKAGE_kmod-mt76-usb
+  PKG_MAKE_FLAGS += CONFIG_MT76_USB=m
+endif
+ifdef CONFIG_PACKAGE_kmod-mt76x02-common
+  PKG_MAKE_FLAGS += CONFIG_MT76x02_LIB=m
+endif
+ifdef CONFIG_PACKAGE_kmod-mt76x02-usb
+  PKG_MAKE_FLAGS += CONFIG_MT76x02_USB=m
+endif
+ifdef CONFIG_PACKAGE_kmod-mt76x0-common
+  PKG_MAKE_FLAGS += CONFIG_MT76x0_COMMON=m
+endif
+ifdef CONFIG_PACKAGE_kmod-mt76x0u
+  PKG_MAKE_FLAGS += CONFIG_MT76x0U=m
+endif
+ifdef CONFIG_PACKAGE_kmod-mt76x2-common
+  PKG_MAKE_FLAGS += CONFIG_MT76x2_COMMON=m
+endif
+ifdef CONFIG_PACKAGE_kmod-mt76x2
+  PKG_MAKE_FLAGS += CONFIG_MT76X2E=m
+endif
+ifdef CONFIG_PACKAGE_kmod-mt76x2u
+  PKG_MAKE_FLAGS += CONFIG_MT76X2U=m
+endif
+ifdef CONFIG_PACKAGE_kmod-mt7603
+  PKG_MAKE_FLAGS += CONFIG_MT7603E=m
+endif
+
 define Build/Compile
 	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
-		ARCH="$(LINUX_KARCH)" \
-		CROSS_COMPILE="$(TARGET_CROSS)" \
+		$(KERNEL_MAKE_FLAGS) \
+		$(PKG_MAKE_FLAGS) \
 		SUBDIRS="$(PKG_BUILD_DIR)" \
 		NOSTDINC_FLAGS="$(NOSTDINC_FLAGS)" \
 		modules
@@ -107,6 +203,13 @@ define KernelPackage/mt7603/install
 endef
 
 $(eval $(call KernelPackage,mt76-core))
+$(eval $(call KernelPackage,mt76-usb))
+$(eval $(call KernelPackage,mt76x02-usb))
+$(eval $(call KernelPackage,mt76x02-common))
+$(eval $(call KernelPackage,mt76x0-common))
+$(eval $(call KernelPackage,mt76x0u))
+$(eval $(call KernelPackage,mt76x2-common))
+$(eval $(call KernelPackage,mt76x2u))
 $(eval $(call KernelPackage,mt76x2))
 $(eval $(call KernelPackage,mt7603))
 $(eval $(call KernelPackage,mt76))

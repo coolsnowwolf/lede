@@ -254,14 +254,16 @@ static int ag71xx_mdio_probe(struct platform_device *pdev)
 	am->mii_bus->read = ag71xx_mdio_read;
 	am->mii_bus->write = ag71xx_mdio_write;
 	am->mii_bus->reset = ag71xx_mdio_reset;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,5,0)
 	am->mii_bus->irq = am->mii_irq;
+#endif
 	am->mii_bus->priv = am;
 	am->mii_bus->parent = &pdev->dev;
 	snprintf(am->mii_bus->id, MII_BUS_ID_SIZE, "%s", dev_name(&pdev->dev));
 	am->mii_bus->phy_mask = pdata->phy_mask;
 
 	for (i = 0; i < PHY_MAX_ADDR; i++)
-		am->mii_irq[i] = PHY_POLL;
+		am->mii_bus->irq[i] = PHY_POLL;
 
 	ag71xx_mdio_wr(am, AG71XX_REG_MAC_CFG1, 0);
 

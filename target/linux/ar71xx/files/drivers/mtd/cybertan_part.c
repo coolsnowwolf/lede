@@ -28,6 +28,7 @@
 
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
+#include <linux/version.h>
 
 struct cybertan_header {
 	char	magic[4];
@@ -82,7 +83,11 @@ struct firmware_header {
 #define NVRAM_LEN	0x10000
 
 static int cybertan_parse_partitions(struct mtd_info *master,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,5,0)
 				     struct mtd_partition **pparts,
+#else
+				     const struct mtd_partition **pparts,
+#endif
 				     struct mtd_part_parser_data *data)
 {
 	struct firmware_header *header;

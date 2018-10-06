@@ -33,7 +33,7 @@
 
 #define WNDR3700_GPIO_BTN_WPS		3
 #define WNDR3700_GPIO_BTN_RESET		8
-#define WNDR3700_GPIO_BTN_WIFI		11
+#define WNDR3700_GPIO_BTN_RFKILL	11
 
 #define WNDR3700_GPIO_RTL8366_SDA	5
 #define WNDR3700_GPIO_RTL8366_SCK	7
@@ -89,11 +89,11 @@ static struct gpio_keys_button wndr3700_gpio_keys[] __initdata = {
 		.gpio		= WNDR3700_GPIO_BTN_WPS,
 		.active_low	= 1,
 	}, {
-		.desc		= "wifi",
+		.desc		= "rfkill",
 		.type		= EV_KEY,
-		.code		= BTN_2,
+		.code		= KEY_RFKILL,
 		.debounce_interval = WNDR3700_KEYS_DEBOUNCE_INTERVAL,
-		.gpio		= WNDR3700_GPIO_BTN_WIFI,
+		.gpio		= WNDR3700_GPIO_BTN_RFKILL,
 		.active_low	= 1,
 	}
 };

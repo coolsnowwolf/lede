@@ -58,7 +58,7 @@ static struct gpio_led gl_ar300m_leds_gpio[] __initdata = {
 		.active_low = 1,
 	},
 	{
-		.name = "gl-ar300m::green:lan",
+		.name = "gl-ar300m:green:lan",
 		.gpio = GL_AR300M_GPIO_LED_LAN,
 		.active_low = 1,
 	},
@@ -162,5 +162,4 @@ static void __init gl_ar300m_setup(void)
 	ath79_register_pci();
 }
 
-MIPS_MACHINE(ATH79_MACH_GL_AR300M, "GL-AR300M", "GL-AR300M",
-		 gl_ar300m_setup);
+MIPS_MACHINE(ATH79_MACH_GL_AR300M, "GL-AR300M", "GL.iNet GL-AR300M", gl_ar300m_setup);

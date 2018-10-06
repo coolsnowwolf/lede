@@ -8,17 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=iperf
-PKG_VERSION:=2.0.9
-PKG_VERSION_SUFFIX:=a
+PKG_VERSION:=2.0.12
 PKG_RELEASE:=1
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)$(PKG_VERSION_SUFFIX).tar.gz
-# Temporary URL change - iperf upstream altered the already released target
-# without bumping the version number. The new tarball is renamed to avoid
-# conflicts with existing mirrored files.
-# PKG_SOURCE_URL:=@SF/iperf2
-PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources
-PKG_HASH:=db02911f35686e808ed247160dfa766e08ae3f59d1e7dcedef0ffb2a6643f0bf
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_HASH:=367f651fb1264b13f6518e41b8a7e08ce3e41b2a1c80e99ff0347561eed32646
+PKG_SOURCE_URL:=@SF/iperf2
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=BSD-3-Clause

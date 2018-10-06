@@ -43,15 +43,15 @@
 #define ARCHER_C59_GPIO_SHIFT_SRCLR		19
 #define ARCHER_C59_GPIO_SHIFT_RCLK		20
 
-#define ARCHER_C59_74HC_GPIO_BASE		QCA956X_GPIO_COUNT
-#define ARCHER_C59_74HC_GPIO_LED_POWER		23
-#define ARCHER_C59_74HC_GPIO_LED_WLAN2		24
-#define ARCHER_C59_74HC_GPIO_LED_WLAN5		25
-#define ARCHER_C59_74HC_GPIO_LED_LAN		26
-#define ARCHER_C59_74HC_GPIO_LED_WAN_GREEN	27
-#define ARCHER_C59_74HC_GPIO_LED_WAN_AMBER	28
-#define ARCHER_C59_74HC_GPIO_LED_WPS		29
-#define ARCHER_C59_74HC_GPIO_LED_USB		30
+#define ARCHER_C59_74HC_GPIO_BASE		32
+#define ARCHER_C59_74HC_GPIO_LED_POWER		(ARCHER_C59_74HC_GPIO_BASE + 0)
+#define ARCHER_C59_74HC_GPIO_LED_WLAN2		(ARCHER_C59_74HC_GPIO_BASE + 1)
+#define ARCHER_C59_74HC_GPIO_LED_WLAN5		(ARCHER_C59_74HC_GPIO_BASE + 2)
+#define ARCHER_C59_74HC_GPIO_LED_LAN		(ARCHER_C59_74HC_GPIO_BASE + 3)
+#define ARCHER_C59_74HC_GPIO_LED_WAN_GREEN	(ARCHER_C59_74HC_GPIO_BASE + 4)
+#define ARCHER_C59_74HC_GPIO_LED_WAN_AMBER	(ARCHER_C59_74HC_GPIO_BASE + 5)
+#define ARCHER_C59_74HC_GPIO_LED_WPS		(ARCHER_C59_74HC_GPIO_BASE + 6)
+#define ARCHER_C59_74HC_GPIO_LED_USB		(ARCHER_C59_74HC_GPIO_BASE + 7)
 
 #define ARCHER_C59_V1_SSR_BIT_0			0
 #define ARCHER_C59_V1_SSR_BIT_1			1
@@ -146,6 +146,49 @@ static struct gpio_led archer_c59_v1_leds_gpio[] __initdata = {
 	},
 };
 
+static struct gpio_led archer_c59_v2_leds_gpio[] __initdata = {
+	{
+		.name		= "archer-c59-v2:green:power",
+		.gpio		= ARCHER_C59_74HC_GPIO_LED_POWER,
+		.active_low	= 1,
+	},
+	{
+		.name		= "archer-c59-v2:green:wlan2g",
+		.gpio		= ARCHER_C59_74HC_GPIO_LED_WLAN2,
+		.active_low	= 1,
+	},
+	{
+		.name		= "archer-c59-v2:green:wlan5g",
+		.gpio		= ARCHER_C59_74HC_GPIO_LED_WLAN5,
+		.active_low	= 1,
+	},
+	{
+		.name		= "archer-c59-v2:green:lan",
+		.gpio		= ARCHER_C59_74HC_GPIO_LED_LAN,
+		.active_low	= 1,
+	},
+	{
+		.name		= "archer-c59-v2:green:wan",
+		.gpio		= ARCHER_C59_74HC_GPIO_LED_WAN_GREEN,
+		.active_low	= 1,
+	},
+	{
+		.name		= "archer-c59-v2:amber:wan",
+		.gpio		= ARCHER_C59_74HC_GPIO_LED_WAN_AMBER,
+		.active_low	= 1,
+	},
+	{
+		.name		= "archer-c59-v2:green:wps",
+		.gpio		= ARCHER_C59_74HC_GPIO_LED_WPS,
+		.active_low	= 1,
+	},
+	{
+		.name		= "archer-c59-v2:green:usb",
+		.gpio		= ARCHER_C59_74HC_GPIO_LED_USB,
+		.active_low	= 1,
+	},
+};
+
 static struct gpio_keys_button archer_c59_v1_gpio_keys[] __initdata = {
 	{
 		.desc			= "Reset button",
@@ -180,7 +223,7 @@ static struct spi_gpio_platform_data archer_c59_v1_spi_data = {
 	.num_chipselect = 1,
 };
 
-static u8 archer_c59_v1_ssr_initdata[] __initdata = {
+static u8 archer_c59_v1_ssr_initdata[] = {
 	BIT(ARCHER_C59_V1_SSR_BIT_7) |
 	BIT(ARCHER_C59_V1_SSR_BIT_6) |
 	BIT(ARCHER_C59_V1_SSR_BIT_5) |
@@ -215,9 +258,9 @@ static struct spi_board_info archer_c59_v1_spi_info[] = {
 	},
 };
 
-static void __init archer_c5x_v1_setup(void)
+static void __init archer_c5x_v1_setup(u32 macLocation)
 {
-	u8 *mac = (u8 *) KSEG1ADDR(0x1f010008);
+	u8 *mac = (u8 *) KSEG1ADDR(macLocation);
 	u8 *art = (u8 *) KSEG1ADDR(0x1fff0000);
 
 	ath79_register_m25p80(NULL);
@@ -249,7 +292,7 @@ static void __init archer_c5x_v1_setup(void)
 	ath79_eth1_data.phy_if_mode = PHY_INTERFACE_MODE_GMII;
 	ath79_eth1_data.speed = SPEED_1000;
 	ath79_eth1_data.duplex = DUPLEX_FULL;
-	ath79_switch_data.phy_poll_mask |= BIT(4);
+	ath79_switch_data.phy_poll_mask |= BIT(0);
 	ath79_switch_data.phy4_mii_en = 1;
 	ath79_register_eth(1);
 
@@ -270,7 +313,7 @@ static void __init archer_c5x_v1_setup(void)
 
 static void __init archer_c58_v1_setup(void)
 {
-	archer_c5x_v1_setup();
+	archer_c5x_v1_setup(0x1f010008);
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(archer_c58_v1_leds_gpio),
 				archer_c58_v1_leds_gpio);
 }
@@ -280,10 +323,20 @@ MIPS_MACHINE(ATH79_MACH_ARCHER_C58_V1, "ARCHER-C58-V1",
 
 static void __init archer_c59_v1_setup(void)
 {
-	archer_c5x_v1_setup();
+	archer_c5x_v1_setup(0x1f010008);
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(archer_c59_v1_leds_gpio),
 				archer_c59_v1_leds_gpio);
 }
 
 MIPS_MACHINE(ATH79_MACH_ARCHER_C59_V1, "ARCHER-C59-V1",
 	"TP-LINK Archer C59 v1", archer_c59_v1_setup);
+
+static void __init archer_c59_v2_setup(void)
+{
+	archer_c5x_v1_setup(0x1f030008);
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(archer_c59_v2_leds_gpio),
+				archer_c59_v2_leds_gpio);
+}
+
+MIPS_MACHINE(ATH79_MACH_ARCHER_C59_V2, "ARCHER-C59-V2",
+	"TP-LINK Archer C59 v2", archer_c59_v2_setup);

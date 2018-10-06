@@ -5,10 +5,10 @@ Subject: [PATCH 32/69] phy: add qcom dwc3 phy
 
 Signed-off-by: Andy Gross <agross@codeaurora.org>
 ---
- drivers/phy/Kconfig         |  12 ++
+ drivers/phy/Kconfig         |  12 +
  drivers/phy/Makefile        |   1 +
- drivers/phy/phy-qcom-dwc3.c | 484 ++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 497 insertions(+)
+ drivers/phy/phy-qcom-dwc3.c | 575 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 588 insertions(+)
  create mode 100644 drivers/phy/phy-qcom-dwc3.c
 
 --- a/drivers/phy/Kconfig
@@ -39,7 +39,7 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +obj-$(CONFIG_PHY_QCOM_DWC3)		+= phy-qcom-dwc3.o
 --- /dev/null
 +++ b/drivers/phy/phy-qcom-dwc3.c
-@@ -0,0 +1,492 @@
+@@ -0,0 +1,575 @@
 +/* Copyright (c) 2014-2015, Code Aurora Forum. All rights reserved.
 + *
 + * This program is free software; you can redistribute it and/or modify
@@ -99,7 +99,7 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +
 +/* PHY_CTRL_REG */
 +#define SSUSB_CTRL_REF_USE_PAD		BIT(28)
-+#define SSUSB_CTRL_TEST_POWERDOWN	BIT(26)
++#define SSUSB_CTRL_TEST_POWERDOWN	BIT(27)
 +#define SSUSB_CTRL_LANE0_PWR_PRESENT	BIT(24)
 +#define SSUSB_CTRL_SS_PHY_EN		BIT(8)
 +#define SSUSB_CTRL_SS_PHY_RESET		BIT(7)
@@ -107,6 +107,33 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +/* SSPHY control registers */
 +#define SSPHY_CTRL_RX_OVRD_IN_HI(lane)	(0x1006 + 0x100 * lane)
 +#define SSPHY_CTRL_TX_OVRD_DRV_LO(lane)	(0x1002 + 0x100 * lane)
++
++/* SSPHY SoC version specific values */
++#define SSPHY_RX_EQ_VALUE		4	/* Override value for rx_eq */
++#define SSPHY_TX_DEEMPH_3_5DB		23	/* Override value for transmit
++						   preemphasis */
++#define SSPHY_MPLL_VALUE		0	/* Override value for mpll */
++
++/* QSCRATCH PHY_PARAM_CTRL1 fields */
++#define PHY_PARAM_CTRL1_TX_FULL_SWING_MASK	0x07f00000u
++#define PHY_PARAM_CTRL1_TX_DEEMPH_6DB_MASK	0x000fc000u
++#define PHY_PARAM_CTRL1_TX_DEEMPH_3_5DB_MASK	0x00003f00u
++#define PHY_PARAM_CTRL1_LOS_BIAS_MASK		0x000000f8u
++
++#define PHY_PARAM_CTRL1_MASK				\
++		(PHY_PARAM_CTRL1_TX_FULL_SWING_MASK |	\
++		 PHY_PARAM_CTRL1_TX_DEEMPH_6DB_MASK |	\
++		 PHY_PARAM_CTRL1_TX_DEEMPH_3_5DB_MASK |	\
++		 PHY_PARAM_CTRL1_LOS_BIAS_MASK)
++
++#define PHY_PARAM_CTRL1_TX_FULL_SWING(x)	\
++		(((x) << 20) & PHY_PARAM_CTRL1_TX_FULL_SWING_MASK)
++#define PHY_PARAM_CTRL1_TX_DEEMPH_6DB(x)	\
++		(((x) << 14) & PHY_PARAM_CTRL1_TX_DEEMPH_6DB_MASK)
++#define PHY_PARAM_CTRL1_TX_DEEMPH_3_5DB(x)	\
++		(((x) <<  8) & PHY_PARAM_CTRL1_TX_DEEMPH_3_5DB_MASK)
++#define PHY_PARAM_CTRL1_LOS_BIAS(x)	\
++		(((x) <<  3) & PHY_PARAM_CTRL1_LOS_BIAS_MASK)
 +
 +/* RX OVRD IN HI bits */
 +#define RX_OVRD_IN_HI_RX_RESET_OVRD		BIT(13)
@@ -138,6 +165,9 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +	struct device		*dev;
 +	struct clk		*xo_clk;
 +	struct clk		*ref_clk;
++	u32			rx_eq;
++	u32			tx_deamp_3_5db;
++	u32			mpll;
 +};
 +
 +struct qcom_dwc3_phy_drvdata {
@@ -269,36 +299,21 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +	return ret;
 +}
 +
-+static int qcom_dwc3_phy_power_on(struct phy *phy)
++static int qcom_dwc3_hs_phy_init(struct phy *phy)
 +{
-+	int ret;
 +	struct qcom_dwc3_usb_phy *phy_dwc3 = phy_get_drvdata(phy);
++	int ret;
++	u32 val;
 +
 +	ret = clk_prepare_enable(phy_dwc3->xo_clk);
 +	if (ret)
 +		return ret;
 +
 +	ret = clk_prepare_enable(phy_dwc3->ref_clk);
-+	if (ret)
++	if (ret) {
 +		clk_disable_unprepare(phy_dwc3->xo_clk);
-+
-+	return ret;
-+}
-+
-+static int qcom_dwc3_phy_power_off(struct phy *phy)
-+{
-+	struct qcom_dwc3_usb_phy *phy_dwc3 = phy_get_drvdata(phy);
-+
-+	clk_disable_unprepare(phy_dwc3->ref_clk);
-+	clk_disable_unprepare(phy_dwc3->xo_clk);
-+
-+	return 0;
-+}
-+
-+static int qcom_dwc3_hs_phy_init(struct phy *phy)
-+{
-+	struct qcom_dwc3_usb_phy *phy_dwc3 = phy_get_drvdata(phy);
-+	u32 val;
++		return ret;
++	}
 +
 +	/*
 +	 * HSPHY Initialization: Enable UTMI clock, select 19.2MHz fsel
@@ -323,22 +338,34 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +	return 0;
 +}
 +
++static int qcom_dwc3_hs_phy_exit(struct phy *phy)
++{
++	struct qcom_dwc3_usb_phy *phy_dwc3 = phy_get_drvdata(phy);
++
++	clk_disable_unprepare(phy_dwc3->ref_clk);
++	clk_disable_unprepare(phy_dwc3->xo_clk);
++
++	return 0;
++}
++
 +static int qcom_dwc3_ss_phy_init(struct phy *phy)
 +{
 +	struct qcom_dwc3_usb_phy *phy_dwc3 = phy_get_drvdata(phy);
 +	int ret;
 +	u32 data = 0;
 +
++	ret = clk_prepare_enable(phy_dwc3->xo_clk);
++	if (ret)
++		return ret;
++
++	ret = clk_prepare_enable(phy_dwc3->ref_clk);
++	if (ret) {
++		clk_disable_unprepare(phy_dwc3->xo_clk);
++		return ret;
++	}
++
 +	/* reset phy */
 +	data = readl(phy_dwc3->base + SSUSB_PHY_CTRL_REG);
-+
-+       /* Test and clear SSUSB_CTRL_TEST_POWERDOWN */
-+       if (data & SSUSB_CTRL_TEST_POWERDOWN) {
-+               qcom_dwc3_phy_write_readback(phy_dwc3, SSUSB_PHY_CTRL_REG,
-+                               SSUSB_CTRL_TEST_POWERDOWN, 0x0);
-+               data = readl(phy_dwc3->base + SSUSB_PHY_CTRL_REG);
-+       }
-+
 +	writel(data | SSUSB_CTRL_SS_PHY_RESET,
 +		phy_dwc3->base + SSUSB_PHY_CTRL_REG);
 +	usleep_range(2000, 2200);
@@ -359,10 +386,34 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +	writel(data, phy_dwc3->base + SSUSB_PHY_CTRL_REG);
 +
 +	/*
++	 * WORKAROUND: There is SSPHY suspend bug due to which USB enumerates
++	 * in HS mode instead of SS mode. Workaround it by asserting
++	 * LANE0.TX_ALT_BLOCK.EN_ALT_BUS to enable TX to use alt bus mode
++	 */
++	ret = qcom_dwc3_ss_read_phycreg(phy_dwc3->base, 0x102D, &data);
++	if (ret)
++		goto err_phy_trans;
++
++	data |= (1 << 7);
++	ret = qcom_dwc3_ss_write_phycreg(phy_dwc3, 0x102D, data);
++	if (ret)
++		goto err_phy_trans;
++
++	ret = qcom_dwc3_ss_read_phycreg(phy_dwc3->base, 0x1010, &data);
++	if (ret)
++		goto err_phy_trans;
++
++	data &= ~0xff0;
++	data |= 0x20;
++	ret = qcom_dwc3_ss_write_phycreg(phy_dwc3, 0x1010, data);
++	if (ret)
++		goto err_phy_trans;
++
++	/*
 +	 * Fix RX Equalization setting as follows
 +	 * LANE0.RX_OVRD_IN_HI. RX_EQ_EN set to 0
 +	 * LANE0.RX_OVRD_IN_HI.RX_EQ_EN_OVRD set to 1
-+	 * LANE0.RX_OVRD_IN_HI.RX_EQ set to 3
++	 * LANE0.RX_OVRD_IN_HI.RX_EQ set based on SoC version
 +	 * LANE0.RX_OVRD_IN_HI.RX_EQ_OVRD set to 1
 +	 */
 +	ret = qcom_dwc3_ss_read_phycreg(phy_dwc3->base,
@@ -373,7 +424,7 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +	data &= ~RX_OVRD_IN_HI_RX_EQ_EN;
 +	data |= RX_OVRD_IN_HI_RX_EQ_EN_OVRD;
 +	data &= ~RX_OVRD_IN_HI_RX_EQ_MASK;
-+	data |= 0x3 << RX_OVRD_IN_HI_RX_EQ_SHIFT;
++	data |= phy_dwc3->rx_eq << RX_OVRD_IN_HI_RX_EQ_SHIFT;
 +	data |= RX_OVRD_IN_HI_RX_EQ_OVRD;
 +	ret = qcom_dwc3_ss_write_phycreg(phy_dwc3,
 +		SSPHY_CTRL_RX_OVRD_IN_HI(0), data);
@@ -382,8 +433,8 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +
 +	/*
 +	 * Set EQ and TX launch amplitudes as follows
-+	 * LANE0.TX_OVRD_DRV_LO.PREEMPH set to 22
-+	 * LANE0.TX_OVRD_DRV_LO.AMPLITUDE set to 127
++	 * LANE0.TX_OVRD_DRV_LO.PREEMPH set based on SoC version
++	 * LANE0.TX_OVRD_DRV_LO.AMPLITUDE set to 110
 +	 * LANE0.TX_OVRD_DRV_LO.EN set to 1.
 +	 */
 +	ret = qcom_dwc3_ss_read_phycreg(phy_dwc3->base,
@@ -392,23 +443,35 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +		goto err_phy_trans;
 +
 +	data &= ~TX_OVRD_DRV_LO_PREEMPH_MASK;
-+	data |= 0x16 << TX_OVRD_DRV_LO_PREEMPH_SHIFT;
++	data |= phy_dwc3->tx_deamp_3_5db << TX_OVRD_DRV_LO_PREEMPH_SHIFT;
 +	data &= ~TX_OVRD_DRV_LO_AMPLITUDE_MASK;
-+	data |= 0x7f;
++	data |= 0x6E;
 +	data |= TX_OVRD_DRV_LO_EN;
 +	ret = qcom_dwc3_ss_write_phycreg(phy_dwc3,
 +		SSPHY_CTRL_TX_OVRD_DRV_LO(0), data);
 +	if (ret)
 +		goto err_phy_trans;
 +
++	qcom_dwc3_ss_write_phycreg(phy_dwc3, 0x30, phy_dwc3->mpll);
++
 +	/*
 +	 * Set the QSCRATCH PHY_PARAM_CTRL1 parameters as follows
-+	 * TX_FULL_SWING [26:20] amplitude to 127
-+	 * TX_DEEMPH_3_5DB [13:8] to 22
-+	 * LOS_BIAS [2:0] to 0x5
++	 * TX_FULL_SWING [26:20] amplitude to 110
++	 * TX_DEEMPH_6DB [19:14] to 32
++	 * TX_DEEMPH_3_5DB [13:8] set based on SoC version
++	 * LOS_BIAS [7:3] to 9
 +	 */
++	data = readl(phy_dwc3->base + SSUSB_PHY_PARAM_CTRL_1);
++
++	data &= ~PHY_PARAM_CTRL1_MASK;
++
++	data |= PHY_PARAM_CTRL1_TX_FULL_SWING(0x6e) |
++		PHY_PARAM_CTRL1_TX_DEEMPH_6DB(0x20) |
++		PHY_PARAM_CTRL1_TX_DEEMPH_3_5DB(phy_dwc3->tx_deamp_3_5db) |
++		PHY_PARAM_CTRL1_LOS_BIAS(0x9);
++
 +	qcom_dwc3_phy_write_readback(phy_dwc3, SSUSB_PHY_PARAM_CTRL_1,
-+				   0x07f03f07, 0x07f01605);
++				     PHY_PARAM_CTRL1_MASK, data);
 +
 +err_phy_trans:
 +	return ret;
@@ -428,7 +491,10 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +	qcom_dwc3_phy_write_readback(phy_dwc3, SSUSB_PHY_CTRL_REG,
 +		SSUSB_CTRL_REF_USE_PAD, 0x0);
 +	qcom_dwc3_phy_write_readback(phy_dwc3, SSUSB_PHY_CTRL_REG,
-+		SSUSB_CTRL_TEST_POWERDOWN, SSUSB_CTRL_TEST_POWERDOWN);
++		SSUSB_CTRL_TEST_POWERDOWN, 0x0);
++
++	clk_disable_unprepare(phy_dwc3->ref_clk);
++	clk_disable_unprepare(phy_dwc3->xo_clk);
 +
 +	return 0;
 +}
@@ -436,8 +502,7 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +static const struct qcom_dwc3_phy_drvdata qcom_dwc3_hs_drvdata = {
 +	.ops = {
 +		.init		= qcom_dwc3_hs_phy_init,
-+		.power_on	= qcom_dwc3_phy_power_on,
-+		.power_off	= qcom_dwc3_phy_power_off,
++		.exit		= qcom_dwc3_hs_phy_exit,
 +		.owner		= THIS_MODULE,
 +	},
 +	.clk_rate = 60000000,
@@ -447,8 +512,6 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +	.ops = {
 +		.init		= qcom_dwc3_ss_phy_init,
 +		.exit		= qcom_dwc3_ss_phy_exit,
-+		.power_on	= qcom_dwc3_phy_power_on,
-+		.power_off	= qcom_dwc3_phy_power_off,
 +		.owner		= THIS_MODULE,
 +	},
 +	.clk_rate = 125000000,
@@ -469,6 +532,7 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +	struct resource			*res;
 +	const struct of_device_id *match;
 +	const struct qcom_dwc3_phy_drvdata *data;
++	struct device_node *np;
 +
 +	phy_dwc3 = devm_kzalloc(&pdev->dev, sizeof(*phy_dwc3), GFP_KERNEL);
 +	if (!phy_dwc3)
@@ -496,6 +560,25 @@ Signed-off-by: Andy Gross <agross@codeaurora.org>
 +	if (IS_ERR(phy_dwc3->xo_clk)) {
 +		dev_dbg(phy_dwc3->dev, "cannot get TCXO clock\n");
 +		phy_dwc3->xo_clk = NULL;
++	}
++
++	/* Parse device node to probe HSIO settings */
++	np = of_node_get(pdev->dev.of_node);
++	if (!of_compat_cmp(match->compatible, "qcom,dwc3-ss-usb-phy",
++			   strlen(match->compatible))) {
++
++		if (of_property_read_u32(np, "rx_eq", &phy_dwc3->rx_eq) ||
++		    of_property_read_u32(np, "tx_deamp_3_5db",
++					 &phy_dwc3->tx_deamp_3_5db) ||
++		    of_property_read_u32(np, "mpll", &phy_dwc3->mpll)) {
++
++			dev_err(phy_dwc3->dev, "cannot get HSIO settings from device node, using default values\n");
++
++			/* Default HSIO settings */
++			phy_dwc3->rx_eq = SSPHY_RX_EQ_VALUE;
++			phy_dwc3->tx_deamp_3_5db = SSPHY_TX_DEEMPH_3_5DB;
++			phy_dwc3->mpll = SSPHY_MPLL_VALUE;
++		}
 +	}
 +
 +	generic_phy = devm_phy_create(phy_dwc3->dev, pdev->dev.of_node,
