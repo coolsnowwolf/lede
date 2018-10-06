@@ -1,0 +1,53 @@
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Thu, 5 Jan 2017 12:21:09 +0000
+Subject: [PATCH] net: phy: restart phy autonegotiation after EEE
+ advertisment change
+
+When the EEE advertisment is changed, we should restart autonegotiation
+to update the link partner with the new EEE settings.  Add this trigger
+but only if the advertisment has changed.
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+
+--- a/drivers/net/phy/phy.c
++++ b/drivers/net/phy/phy.c
+@@ -1352,19 +1352,36 @@ EXPORT_SYMBOL(phy_ethtool_get_eee);
+  */
+ int phy_ethtool_set_eee(struct phy_device *phydev, struct ethtool_eee *data)
+ {
+-	int cap, adv;
++	int cap, old_adv, adv, ret;
+ 
+ 	/* Get Supported EEE */
+ 	cap = phy_read_mmd(phydev, MDIO_MMD_PCS, MDIO_PCS_EEE_ABLE);
+ 	if (cap < 0)
+ 		return cap;
+ 
++	old_adv = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_AN_EEE_ADV);
++	if (old_adv < 0)
++		return old_adv;
++
+ 	adv = ethtool_adv_to_mmd_eee_adv_t(data->advertised) & cap;
+ 
+ 	/* Mask prohibited EEE modes */
+ 	adv &= ~phydev->eee_broken_modes;
+ 
+-	return phy_write_mmd(phydev, MDIO_MMD_AN, MDIO_AN_EEE_ADV, adv);
++	if (old_adv != adv) {
++		ret = phy_write_mmd(phydev, MDIO_MMD_AN, MDIO_AN_EEE_ADV, adv);
++		if (ret < 0)
++			return ret;
++
++		/* Restart autonegotiation so the new modes get sent to the
++		 * link partner.
++		 */
++		ret = phy_restart_aneg(phydev);
++		if (ret < 0)
++			return ret;
++	}
++
++	return 0;
+ }
+ EXPORT_SYMBOL(phy_ethtool_set_eee);
+ 

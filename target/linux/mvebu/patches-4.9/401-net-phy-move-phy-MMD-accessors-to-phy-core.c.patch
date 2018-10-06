@@ -1,0 +1,292 @@
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Wed, 4 Jan 2017 10:46:43 +0000
+Subject: [PATCH] net: phy: move phy MMD accessors to phy-core.c
+
+Move the phy_(read|write)__mmd() helpers out of line, they will become
+our main MMD accessor functions, and so will be a little more complex.
+This complexity doesn't belong in an inline function.  Also move the
+_indirect variants as well to keep like functionality together.
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+ create mode 100644 drivers/net/phy/phy-core.c
+
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -1,6 +1,7 @@
+ # Makefile for Linux PHY drivers and MDIO bus drivers
+ 
+-libphy-y			:= phy.o phy_device.o mdio_bus.o mdio_device.o
++libphy-y			:= phy.o phy_device.o mdio_bus.o mdio_device.o \
++				   phy-core.o
+ libphy-$(CONFIG_SWPHY)		+= swphy.o
+ 
+ obj-$(CONFIG_MDIO_BOARDINFO)	+= mdio-boardinfo.o
+--- a/drivers/net/phy/phy.c
++++ b/drivers/net/phy/phy.c
+@@ -1216,91 +1216,6 @@ void phy_mac_interrupt(struct phy_device
+ }
+ EXPORT_SYMBOL(phy_mac_interrupt);
+ 
+-static inline void mmd_phy_indirect(struct mii_bus *bus, int prtad, int devad,
+-				    int addr)
+-{
+-	/* Write the desired MMD Devad */
+-	bus->write(bus, addr, MII_MMD_CTRL, devad);
+-
+-	/* Write the desired MMD register address */
+-	bus->write(bus, addr, MII_MMD_DATA, prtad);
+-
+-	/* Select the Function : DATA with no post increment */
+-	bus->write(bus, addr, MII_MMD_CTRL, (devad | MII_MMD_CTRL_NOINCR));
+-}
+-
+-/**
+- * phy_read_mmd_indirect - reads data from the MMD registers
+- * @phydev: The PHY device bus
+- * @prtad: MMD Address
+- * @devad: MMD DEVAD
+- *
+- * Description: it reads data from the MMD registers (clause 22 to access to
+- * clause 45) of the specified phy address.
+- * To read these register we have:
+- * 1) Write reg 13 // DEVAD
+- * 2) Write reg 14 // MMD Address
+- * 3) Write reg 13 // MMD Data Command for MMD DEVAD
+- * 3) Read  reg 14 // Read MMD data
+- */
+-int phy_read_mmd_indirect(struct phy_device *phydev, int prtad, int devad)
+-{
+-	struct phy_driver *phydrv = phydev->drv;
+-	int addr = phydev->mdio.addr;
+-	int value = -1;
+-
+-	if (!phydrv->read_mmd_indirect) {
+-		struct mii_bus *bus = phydev->mdio.bus;
+-
+-		mutex_lock(&bus->mdio_lock);
+-		mmd_phy_indirect(bus, prtad, devad, addr);
+-
+-		/* Read the content of the MMD's selected register */
+-		value = bus->read(bus, addr, MII_MMD_DATA);
+-		mutex_unlock(&bus->mdio_lock);
+-	} else {
+-		value = phydrv->read_mmd_indirect(phydev, prtad, devad, addr);
+-	}
+-	return value;
+-}
+-EXPORT_SYMBOL(phy_read_mmd_indirect);
+-
+-/**
+- * phy_write_mmd_indirect - writes data to the MMD registers
+- * @phydev: The PHY device
+- * @prtad: MMD Address
+- * @devad: MMD DEVAD
+- * @data: data to write in the MMD register
+- *
+- * Description: Write data from the MMD registers of the specified
+- * phy address.
+- * To write these register we have:
+- * 1) Write reg 13 // DEVAD
+- * 2) Write reg 14 // MMD Address
+- * 3) Write reg 13 // MMD Data Command for MMD DEVAD
+- * 3) Write reg 14 // Write MMD data
+- */
+-void phy_write_mmd_indirect(struct phy_device *phydev, int prtad,
+-				   int devad, u32 data)
+-{
+-	struct phy_driver *phydrv = phydev->drv;
+-	int addr = phydev->mdio.addr;
+-
+-	if (!phydrv->write_mmd_indirect) {
+-		struct mii_bus *bus = phydev->mdio.bus;
+-
+-		mutex_lock(&bus->mdio_lock);
+-		mmd_phy_indirect(bus, prtad, devad, addr);
+-
+-		/* Write the data into MMD's selected register */
+-		bus->write(bus, addr, MII_MMD_DATA, data);
+-		mutex_unlock(&bus->mdio_lock);
+-	} else {
+-		phydrv->write_mmd_indirect(phydev, prtad, devad, addr, data);
+-	}
+-}
+-EXPORT_SYMBOL(phy_write_mmd_indirect);
+-
+ /**
+  * phy_init_eee - init and check the EEE feature
+  * @phydev: target phy_device struct
+--- /dev/null
++++ b/drivers/net/phy/phy-core.c
+@@ -0,0 +1,135 @@
++/*
++ * Core PHY library, taken from phy.c
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of  the GNU General  Public License as published by the
++ * Free Software Foundation;  either version 2 of the  License, or (at your
++ * option) any later version.
++ */
++#include <linux/export.h>
++#include <linux/phy.h>
++
++static inline void mmd_phy_indirect(struct mii_bus *bus, int prtad, int devad,
++				    int addr)
++{
++	/* Write the desired MMD Devad */
++	bus->write(bus, addr, MII_MMD_CTRL, devad);
++
++	/* Write the desired MMD register address */
++	bus->write(bus, addr, MII_MMD_DATA, prtad);
++
++	/* Select the Function : DATA with no post increment */
++	bus->write(bus, addr, MII_MMD_CTRL, (devad | MII_MMD_CTRL_NOINCR));
++}
++
++/**
++ * phy_read_mmd_indirect - reads data from the MMD registers
++ * @phydev: The PHY device bus
++ * @prtad: MMD Address
++ * @devad: MMD DEVAD
++ *
++ * Description: it reads data from the MMD registers (clause 22 to access to
++ * clause 45) of the specified phy address.
++ * To read these register we have:
++ * 1) Write reg 13 // DEVAD
++ * 2) Write reg 14 // MMD Address
++ * 3) Write reg 13 // MMD Data Command for MMD DEVAD
++ * 3) Read  reg 14 // Read MMD data
++ */
++int phy_read_mmd_indirect(struct phy_device *phydev, int prtad, int devad)
++{
++	struct phy_driver *phydrv = phydev->drv;
++	int addr = phydev->mdio.addr;
++	int value = -1;
++
++	if (!phydrv->read_mmd_indirect) {
++		struct mii_bus *bus = phydev->mdio.bus;
++
++		mutex_lock(&bus->mdio_lock);
++		mmd_phy_indirect(bus, prtad, devad, addr);
++
++		/* Read the content of the MMD's selected register */
++		value = bus->read(bus, addr, MII_MMD_DATA);
++		mutex_unlock(&bus->mdio_lock);
++	} else {
++		value = phydrv->read_mmd_indirect(phydev, prtad, devad, addr);
++	}
++	return value;
++}
++EXPORT_SYMBOL(phy_read_mmd_indirect);
++
++/**
++ * phy_read_mmd - Convenience function for reading a register
++ * from an MMD on a given PHY.
++ * @phydev: The phy_device struct
++ * @devad: The MMD to read from
++ * @regnum: The register on the MMD to read
++ *
++ * Same rules as for phy_read();
++ */
++int phy_read_mmd(struct phy_device *phydev, int devad, u32 regnum)
++{
++	if (!phydev->is_c45)
++		return -EOPNOTSUPP;
++
++	return mdiobus_read(phydev->mdio.bus, phydev->mdio.addr,
++			    MII_ADDR_C45 | (devad << 16) | (regnum & 0xffff));
++}
++EXPORT_SYMBOL(phy_read_mmd);
++
++/**
++ * phy_write_mmd_indirect - writes data to the MMD registers
++ * @phydev: The PHY device
++ * @prtad: MMD Address
++ * @devad: MMD DEVAD
++ * @data: data to write in the MMD register
++ *
++ * Description: Write data from the MMD registers of the specified
++ * phy address.
++ * To write these register we have:
++ * 1) Write reg 13 // DEVAD
++ * 2) Write reg 14 // MMD Address
++ * 3) Write reg 13 // MMD Data Command for MMD DEVAD
++ * 3) Write reg 14 // Write MMD data
++ */
++void phy_write_mmd_indirect(struct phy_device *phydev, int prtad,
++				   int devad, u32 data)
++{
++	struct phy_driver *phydrv = phydev->drv;
++	int addr = phydev->mdio.addr;
++
++	if (!phydrv->write_mmd_indirect) {
++		struct mii_bus *bus = phydev->mdio.bus;
++
++		mutex_lock(&bus->mdio_lock);
++		mmd_phy_indirect(bus, prtad, devad, addr);
++
++		/* Write the data into MMD's selected register */
++		bus->write(bus, addr, MII_MMD_DATA, data);
++		mutex_unlock(&bus->mdio_lock);
++	} else {
++		phydrv->write_mmd_indirect(phydev, prtad, devad, addr, data);
++	}
++}
++EXPORT_SYMBOL(phy_write_mmd_indirect);
++
++/**
++ * phy_write_mmd - Convenience function for writing a register
++ * on an MMD on a given PHY.
++ * @phydev: The phy_device struct
++ * @devad: The MMD to read from
++ * @regnum: The register on the MMD to read
++ * @val: value to write to @regnum
++ *
++ * Same rules as for phy_write();
++ */
++int phy_write_mmd(struct phy_device *phydev, int devad, u32 regnum, u16 val)
++{
++	if (!phydev->is_c45)
++		return -EOPNOTSUPP;
++
++	regnum = MII_ADDR_C45 | ((devad & 0x1f) << 16) | (regnum & 0xffff);
++
++	return mdiobus_write(phydev->mdio.bus, phydev->mdio.addr, regnum, val);
++}
++EXPORT_SYMBOL(phy_write_mmd);
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -626,14 +626,7 @@ struct phy_fixup {
+  *
+  * Same rules as for phy_read();
+  */
+-static inline int phy_read_mmd(struct phy_device *phydev, int devad, u32 regnum)
+-{
+-	if (!phydev->is_c45)
+-		return -EOPNOTSUPP;
+-
+-	return mdiobus_read(phydev->mdio.bus, phydev->mdio.addr,
+-			    MII_ADDR_C45 | (devad << 16) | (regnum & 0xffff));
+-}
++int phy_read_mmd(struct phy_device *phydev, int devad, u32 regnum);
+ 
+ /**
+  * phy_read_mmd_indirect - reads data from the MMD registers
+@@ -738,16 +731,7 @@ static inline bool phy_is_pseudo_fixed_l
+  *
+  * Same rules as for phy_write();
+  */
+-static inline int phy_write_mmd(struct phy_device *phydev, int devad,
+-				u32 regnum, u16 val)
+-{
+-	if (!phydev->is_c45)
+-		return -EOPNOTSUPP;
+-
+-	regnum = MII_ADDR_C45 | ((devad & 0x1f) << 16) | (regnum & 0xffff);
+-
+-	return mdiobus_write(phydev->mdio.bus, phydev->mdio.addr, regnum, val);
+-}
++int phy_write_mmd(struct phy_device *phydev, int devad, u32 regnum, u16 val);
+ 
+ /**
+  * phy_write_mmd_indirect - writes data to the MMD registers

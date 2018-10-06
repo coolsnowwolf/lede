@@ -1,0 +1,116 @@
+From: Russell King <rmk+kernel@arm.linux.org.uk>
+Date: Thu, 1 Oct 2015 21:19:53 +0100
+Subject: [PATCH] phylink: add EEE support
+
+Add EEE hooks to phylink to allow the phylib EEE functions for the
+connected phy to be safely accessed.
+
+Signed-off-by: Russell King <rmk+kernel@arm.linux.org.uk>
+---
+
+--- a/drivers/net/ethernet/marvell/mvneta.c
++++ b/drivers/net/ethernet/marvell/mvneta.c
+@@ -3305,7 +3305,8 @@ static void mvneta_mac_link_down(struct
+ 	}
+ }
+ 
+-static void mvneta_mac_link_up(struct net_device *ndev, unsigned int mode)
++static void mvneta_mac_link_up(struct net_device *ndev, unsigned int mode,
++			       struct phy_device *phy)
+ {
+ 	struct mvneta_port *pp = netdev_priv(ndev);
+ 	u32 val;
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -379,7 +379,8 @@ static void phylink_resolve(struct work_
+ 			if (pl->phydev)
+ 				phylink_mac_config(pl, &link_state);
+ 
+-			pl->ops->mac_link_up(ndev, pl->link_an_mode);
++			pl->ops->mac_link_up(ndev, pl->link_an_mode,
++					     pl->phydev);
+ 
+ 			netif_carrier_on(ndev);
+ 
+@@ -929,6 +930,58 @@ int phylink_ethtool_set_pauseparam(struc
+ }
+ EXPORT_SYMBOL_GPL(phylink_ethtool_set_pauseparam);
+ 
++int phylink_init_eee(struct phylink *pl, bool clk_stop_enable)
++{
++	int ret = -EPROTONOSUPPORT;
++
++	mutex_lock(&pl->config_mutex);
++	if (pl->phydev)
++		ret = phy_init_eee(pl->phydev, clk_stop_enable);
++	mutex_unlock(&pl->config_mutex);
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(phylink_init_eee);
++
++int phylink_get_eee_err(struct phylink *pl)
++{
++	int ret = 0;
++
++	mutex_lock(&pl->config_mutex);
++	if (pl->phydev)
++		ret = phy_get_eee_err(pl->phydev);
++	mutex_unlock(&pl->config_mutex);
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(phylink_get_eee_err);
++
++int phylink_ethtool_get_eee(struct phylink *pl, struct ethtool_eee *eee)
++{
++	int ret = -EOPNOTSUPP;
++
++	mutex_lock(&pl->config_mutex);
++	if (pl->phydev)
++		ret = phy_ethtool_get_eee(pl->phydev, eee);
++	mutex_unlock(&pl->config_mutex);
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(phylink_ethtool_get_eee);
++
++int phylink_ethtool_set_eee(struct phylink *pl, struct ethtool_eee *eee)
++{
++	int ret = -EOPNOTSUPP;
++
++	mutex_lock(&pl->config_mutex);
++	if (pl->phydev)
++		ret = phy_ethtool_set_eee(pl->phydev, eee);
++	mutex_unlock(&pl->config_mutex);
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(phylink_ethtool_set_eee);
++
+ /* This emulates MII registers for a fixed-mode phy operating as per the
+  * passed in state. "aneg" defines if we report negotiation is possible.
+  *
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -70,7 +70,8 @@ struct phylink_mac_ops {
+ 	void (*mac_an_restart)(struct net_device *, unsigned int mode);
+ 
+ 	void (*mac_link_down)(struct net_device *, unsigned int mode);
+-	void (*mac_link_up)(struct net_device *, unsigned int mode);
++	void (*mac_link_up)(struct net_device *, unsigned int mode,
++			    struct phy_device *);
+ };
+ 
+ struct phylink *phylink_create(struct net_device *, struct device_node *,
+@@ -95,6 +96,10 @@ void phylink_ethtool_get_pauseparam(stru
+ 				    struct ethtool_pauseparam *);
+ int phylink_ethtool_set_pauseparam(struct phylink *,
+ 				   struct ethtool_pauseparam *);
++int phylink_init_eee(struct phylink *, bool);
++int phylink_get_eee_err(struct phylink *);
++int phylink_ethtool_get_eee(struct phylink *, struct ethtool_eee *);
++int phylink_ethtool_set_eee(struct phylink *, struct ethtool_eee *);
+ int phylink_mii_ioctl(struct phylink *, struct ifreq *, int);
+ 
+ int phylink_set_link(struct phylink *pl, unsigned int mode, u8 port,

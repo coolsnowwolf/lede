@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray
-PKG_VERSION:=v3.45
+PKG_VERSION:=v3.46.2
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
 ifeq ($(ARCH),x86_64)
@@ -93,16 +93,16 @@ endef
 define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/bin/v2ray
 ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_V2RAY
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/v2ray $(1)/usr/bin/v2ray/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ray $(1)/usr/bin/v2ray/
 endif
 ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_V2CTL
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/v2ctl $(1)/usr/bin/v2ray/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ctl $(1)/usr/bin/v2ray/
 endif
 ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_GEOIP
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/geoip.dat $(1)/usr/bin/v2ray/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/geoip.dat $(1)/usr/bin/v2ray/
 endif
 ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_GEOSITE
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/geosite.dat $(1)/usr/bin/v2ray/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/geosite.dat $(1)/usr/bin/v2ray/
 endif
 endef
 

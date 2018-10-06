@@ -1,0 +1,1046 @@
+From 7f29222b1731e8182ba94a331531dec18865a1e4 Mon Sep 17 00:00:00 2001
+From: John Crispin <blogic@openwrt.org>
+Date: Sun, 27 Jul 2014 09:31:47 +0100
+Subject: [PATCH 48/53] asoc: add mt7620 support
+
+Signed-off-by: John Crispin <blogic@openwrt.org>
+---
+ arch/mips/ralink/of.c            |    2 +
+ sound/soc/Kconfig                |    1 +
+ sound/soc/Makefile               |    1 +
+ sound/soc/ralink/Kconfig         |   15 ++
+ sound/soc/ralink/Makefile        |   11 +
+ sound/soc/ralink/mt7620-i2s.c    |  436 ++++++++++++++++++++++++++++++++++++++
+ sound/soc/ralink/mt7620-wm8960.c |  233 ++++++++++++++++++++
+ 7 files changed, 699 insertions(+)
+ create mode 100644 sound/soc/ralink/Kconfig
+ create mode 100644 sound/soc/ralink/Makefile
+ create mode 100644 sound/soc/ralink/mt7620-i2s.c
+ create mode 100644 sound/soc/ralink/mt7620-wm8960.c
+
+--- a/arch/mips/ralink/of.c
++++ b/arch/mips/ralink/of.c
+@@ -15,6 +15,7 @@
+ #include <linux/of_fdt.h>
+ #include <linux/kernel.h>
+ #include <linux/bootmem.h>
++#include <linux/module.h>
+ #include <linux/of_platform.h>
+ #include <linux/of_address.h>
+ 
+@@ -26,6 +27,7 @@
+ #include "common.h"
+ 
+ __iomem void *rt_sysc_membase;
++EXPORT_SYMBOL(rt_sysc_membase);
+ __iomem void *rt_memc_membase;
+ 
+ __iomem void *plat_of_remap_node(const char *node)
+--- a/sound/soc/Kconfig
++++ b/sound/soc/Kconfig
+@@ -58,6 +58,7 @@ source "sound/soc/mxs/Kconfig"
+ source "sound/soc/pxa/Kconfig"
+ source "sound/soc/qcom/Kconfig"
+ source "sound/soc/rockchip/Kconfig"
++source "sound/soc/ralink/Kconfig"
+ source "sound/soc/samsung/Kconfig"
+ source "sound/soc/sh/Kconfig"
+ source "sound/soc/sirf/Kconfig"
+--- a/sound/soc/Makefile
++++ b/sound/soc/Makefile
+@@ -38,6 +38,7 @@ obj-$(CONFIG_SND_SOC)	+= kirkwood/
+ obj-$(CONFIG_SND_SOC)	+= pxa/
+ obj-$(CONFIG_SND_SOC)	+= qcom/
+ obj-$(CONFIG_SND_SOC)	+= rockchip/
++obj-$(CONFIG_SND_SOC)	+= ralink/
+ obj-$(CONFIG_SND_SOC)	+= samsung/
+ obj-$(CONFIG_SND_SOC)	+= sh/
+ obj-$(CONFIG_SND_SOC)	+= sirf/
+--- /dev/null
++++ b/sound/soc/ralink/Kconfig
+@@ -0,0 +1,8 @@
++config SND_RALINK_SOC_I2S
++	depends on RALINK && SND_SOC && !SOC_RT288X
++	select SND_SOC_GENERIC_DMAENGINE_PCM
++	select REGMAP_MMIO
++	tristate "SoC Audio (I2S protocol) for Ralink SoC"
++	help
++	  Say Y if you want to use I2S protocol and I2S codec on Ralink/MediaTek
++	  based boards.
+--- /dev/null
++++ b/sound/soc/ralink/Makefile
+@@ -0,0 +1,6 @@
++#
++# Ralink/MediaTek Platform Support
++#
++snd-soc-ralink-i2s-objs := ralink-i2s.o
++
++obj-$(CONFIG_SND_RALINK_SOC_I2S) += snd-soc-ralink-i2s.o
+--- /dev/null
++++ b/sound/soc/ralink/ralink-i2s.c
+@@ -0,0 +1,965 @@
++/*
++ *  Copyright (C) 2010, Lars-Peter Clausen <lars@metafoo.de>
++ *  Copyright (C) 2016 Michael Lee <igvtee@gmail.com>
++ *
++ *  This program is free software; you can redistribute it and/or modify it
++ *  under  the terms of the GNU General  Public License as published by the
++ *  Free Software Foundation;  either version 2 of the License, or (at your
++ *  option) any later version.
++ *
++ *  You should have received a copy of the GNU General Public License along
++ *  with this program; if not, write to the Free Software Foundation, Inc.,
++ *  675 Mass Ave, Cambridge, MA 02139, USA.
++ *
++ */
++
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/clk.h>
++#include <linux/regmap.h>
++#include <linux/reset.h>
++#include <linux/debugfs.h>
++#include <linux/of_device.h>
++#include <sound/pcm_params.h>
++#include <sound/dmaengine_pcm.h>
++
++#include <asm/mach-ralink/ralink_regs.h>
++
++#define DRV_NAME "ralink-i2s"
++
++#define I2S_REG_CFG0		0x00
++#define I2S_REG_INT_STATUS	0x04
++#define I2S_REG_INT_EN		0x08
++#define I2S_REG_FF_STATUS	0x0c
++#define I2S_REG_WREG		0x10
++#define I2S_REG_RREG		0x14
++#define I2S_REG_CFG1		0x18
++#define I2S_REG_DIVCMP		0x20
++#define I2S_REG_DIVINT		0x24
++
++/* I2S_REG_CFG0 */
++#define I2S_REG_CFG0_EN		BIT(31)
++#define I2S_REG_CFG0_DMA_EN	BIT(30)
++#define I2S_REG_CFG0_BYTE_SWAP	BIT(28)
++#define I2S_REG_CFG0_TX_EN	BIT(24)
++#define I2S_REG_CFG0_RX_EN	BIT(20)
++#define I2S_REG_CFG0_SLAVE	BIT(16)
++#define I2S_REG_CFG0_RX_THRES	12
++#define I2S_REG_CFG0_TX_THRES	4
++#define I2S_REG_CFG0_THRES_MASK	(0xf << I2S_REG_CFG0_RX_THRES) | \
++	(4 << I2S_REG_CFG0_TX_THRES)
++#define I2S_REG_CFG0_DFT_THRES	(4 << I2S_REG_CFG0_RX_THRES) | \
++	(4 << I2S_REG_CFG0_TX_THRES)
++/* RT305x */
++#define I2S_REG_CFG0_CLK_DIS	BIT(8)
++#define I2S_REG_CFG0_TXCH_SWAP	BIT(3)
++#define I2S_REG_CFG0_TXCH1_OFF	BIT(2)
++#define I2S_REG_CFG0_TXCH0_OFF	BIT(1)
++#define I2S_REG_CFG0_SLAVE_EN	BIT(0)
++/* RT3883 */
++#define I2S_REG_CFG0_RXCH_SWAP	BIT(11)
++#define I2S_REG_CFG0_RXCH1_OFF	BIT(10)
++#define I2S_REG_CFG0_RXCH0_OFF	BIT(9)
++#define I2S_REG_CFG0_WS_INV	BIT(0)
++/* MT7628 */
++#define I2S_REG_CFG0_FMT_LE	BIT(29)
++#define I2S_REG_CFG0_SYS_BE	BIT(28)
++#define I2S_REG_CFG0_NORM_24	BIT(18)
++#define I2S_REG_CFG0_DATA_24	BIT(17)
++
++/* I2S_REG_INT_STATUS */
++#define I2S_REG_INT_RX_FAULT	BIT(7)
++#define I2S_REG_INT_RX_OVRUN	BIT(6)
++#define I2S_REG_INT_RX_UNRUN	BIT(5)
++#define I2S_REG_INT_RX_THRES	BIT(4)
++#define I2S_REG_INT_TX_FAULT	BIT(3)
++#define I2S_REG_INT_TX_OVRUN	BIT(2)
++#define I2S_REG_INT_TX_UNRUN	BIT(1)
++#define I2S_REG_INT_TX_THRES	BIT(0)
++#define I2S_REG_INT_TX_MASK	0xf
++#define I2S_REG_INT_RX_MASK	0xf0
++
++/* I2S_REG_INT_STATUS */
++#define I2S_RX_AVCNT(x)		((x >> 4) & 0xf)
++#define I2S_TX_AVCNT(x)		(x & 0xf)
++/* MT7628 */
++#define MT7628_I2S_RX_AVCNT(x)	((x >> 8) & 0x1f)
++#define MT7628_I2S_TX_AVCNT(x)	(x & 0x1f)
++
++/* I2S_REG_CFG1 */
++#define I2S_REG_CFG1_LBK	BIT(31)
++#define I2S_REG_CFG1_EXTLBK	BIT(30)
++/* RT3883 */
++#define I2S_REG_CFG1_LEFT_J	BIT(0)
++#define I2S_REG_CFG1_RIGHT_J	BIT(1)
++#define I2S_REG_CFG1_FMT_MASK	0x3
++
++/* I2S_REG_DIVCMP */
++#define I2S_REG_DIVCMP_CLKEN	BIT(31)
++#define I2S_REG_DIVCMP_DIVCOMP_MASK	0x1ff
++
++/* I2S_REG_DIVINT */
++#define I2S_REG_DIVINT_MASK	0x3ff
++
++/* BCLK dividers */
++#define RALINK_I2S_DIVCMP	0
++#define RALINK_I2S_DIVINT	1
++
++/* FIFO */
++#define RALINK_I2S_FIFO_SIZE	32
++
++/* feature flags */
++#define RALINK_FLAGS_TXONLY	BIT(0)
++#define RALINK_FLAGS_LEFT_J	BIT(1)
++#define RALINK_FLAGS_RIGHT_J	BIT(2)
++#define RALINK_FLAGS_ENDIAN	BIT(3)
++#define RALINK_FLAGS_24BIT	BIT(4)
++
++#define RALINK_I2S_INT_EN	0
++
++struct ralink_i2s_stats {
++	u32 dmafault;
++	u32 overrun;
++	u32 underrun;
++	u32 belowthres;
++};
++
++struct ralink_i2s {
++	struct device *dev;
++	void __iomem *regs;
++	struct clk *clk;
++	struct regmap *regmap;
++	u32 flags;
++	unsigned int fmt;
++	u16 txdma_req;
++	u16 rxdma_req;
++
++	struct snd_dmaengine_dai_dma_data playback_dma_data;
++	struct snd_dmaengine_dai_dma_data capture_dma_data;
++
++	struct dentry *dbg_dir;
++        struct dentry *dbg_stats;
++	struct ralink_i2s_stats txstats;
++	struct ralink_i2s_stats rxstats;
++};
++
++static void ralink_i2s_dump_regs(struct ralink_i2s *i2s)
++{
++	u32 buf[10];
++	int ret;
++
++	ret = regmap_bulk_read(i2s->regmap, I2S_REG_CFG0,
++			buf, ARRAY_SIZE(buf));
++
++	dev_dbg(i2s->dev, "CFG0: %08x, INTSTAT: %08x, INTEN: %08x, " \
++			"FFSTAT: %08x, WREG: %08x, RREG: %08x, " \
++			"CFG1: %08x, DIVCMP: %08x, DIVINT: %08x\n",
++			buf[0], buf[1], buf[2], buf[3], buf[4],
++			buf[5], buf[6], buf[8], buf[9]);
++}
++
++static int ralink_i2s_set_sysclk(struct snd_soc_dai *dai,
++                              int clk_id, unsigned int freq, int dir)
++{
++	return 0;
++}
++
++static int ralink_i2s_set_sys_bclk(struct snd_soc_dai *dai, int width, int rate)
++{
++	struct ralink_i2s *i2s = snd_soc_dai_get_drvdata(dai);
++	unsigned long clk = clk_get_rate(i2s->clk);
++	int div;
++	uint32_t data;
++
++	/* disable clock at slave mode */
++	if ((i2s->fmt & SND_SOC_DAIFMT_MASTER_MASK) ==
++			SND_SOC_DAIFMT_CBM_CFM) {
++		regmap_update_bits(i2s->regmap, I2S_REG_CFG0,
++				I2S_REG_CFG0_CLK_DIS,
++				I2S_REG_CFG0_CLK_DIS);
++		return 0;
++	}
++
++	/* FREQOUT = FREQIN / (I2S_CLK_DIV + 1) */
++	div = (clk / rate ) - 1;
++
++	data = rt_sysc_r32(0x30);
++	data &= (0xff << 8);
++	data |= (0x1 << 15) | (div << 8);
++	rt_sysc_w32(data, 0x30);
++
++	/* enable clock */
++	regmap_update_bits(i2s->regmap, I2S_REG_CFG0, I2S_REG_CFG0_CLK_DIS, 0);
++
++	dev_dbg(i2s->dev, "clk: %lu, rate: %u, div: %d\n",
++			clk, rate, div);
++
++	return 0;
++}
++
++static int ralink_i2s_set_bclk(struct snd_soc_dai *dai, int width, int rate)
++{
++	struct ralink_i2s *i2s = snd_soc_dai_get_drvdata(dai);
++	unsigned long clk = clk_get_rate(i2s->clk);
++	int divint, divcomp;
++
++	/* disable clock at slave mode */
++	if ((i2s->fmt & SND_SOC_DAIFMT_MASTER_MASK) ==
++			SND_SOC_DAIFMT_CBM_CFM) {
++		regmap_update_bits(i2s->regmap, I2S_REG_DIVCMP,
++				I2S_REG_DIVCMP_CLKEN, 0);
++		return 0;
++	}
++
++	/* FREQOUT = FREQIN * (1/2) * (1/(DIVINT + DIVCOMP/512)) */
++	clk = clk / (2 * 2 * width);
++	divint = clk / rate;
++	divcomp = ((clk % rate) * 512) / rate;
++
++	if ((divint > I2S_REG_DIVINT_MASK) ||
++			(divcomp > I2S_REG_DIVCMP_DIVCOMP_MASK))
++		return -EINVAL;
++
++	regmap_update_bits(i2s->regmap, I2S_REG_DIVINT,
++			I2S_REG_DIVINT_MASK, divint);
++	regmap_update_bits(i2s->regmap, I2S_REG_DIVCMP,
++			I2S_REG_DIVCMP_DIVCOMP_MASK, divcomp);
++
++	/* enable clock */
++	regmap_update_bits(i2s->regmap, I2S_REG_DIVCMP, I2S_REG_DIVCMP_CLKEN,
++			I2S_REG_DIVCMP_CLKEN);
++
++	dev_dbg(i2s->dev, "clk: %lu, rate: %u, int: %d, comp: %d\n",
++			clk_get_rate(i2s->clk), rate, divint, divcomp);
++
++	return 0;
++}
++
++static int ralink_i2s_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
++{
++	struct ralink_i2s *i2s = snd_soc_dai_get_drvdata(dai);
++	unsigned int cfg0 = 0, cfg1 = 0;
++
++	/* set master/slave audio interface */
++	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
++	case SND_SOC_DAIFMT_CBM_CFM:
++		if (i2s->flags & RALINK_FLAGS_TXONLY)
++			cfg0 |= I2S_REG_CFG0_SLAVE_EN;
++		else
++			cfg0 |= I2S_REG_CFG0_SLAVE;
++		break;
++	case SND_SOC_DAIFMT_CBS_CFS:
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	/* interface format */
++	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
++	case SND_SOC_DAIFMT_I2S:
++		break;
++	case SND_SOC_DAIFMT_RIGHT_J:
++		if (i2s->flags & RALINK_FLAGS_RIGHT_J) {
++			cfg1 |= I2S_REG_CFG1_RIGHT_J;
++			break;
++		}
++		return -EINVAL;
++	case SND_SOC_DAIFMT_LEFT_J:
++		if (i2s->flags & RALINK_FLAGS_LEFT_J) {
++			cfg1 |= I2S_REG_CFG1_LEFT_J;
++			break;
++		}
++		return -EINVAL;
++	default:
++		return -EINVAL;
++	}
++
++	/* clock inversion */
++	switch (fmt & SND_SOC_DAIFMT_INV_MASK) {
++	case SND_SOC_DAIFMT_NB_NF:
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (i2s->flags & RALINK_FLAGS_TXONLY) {
++		regmap_update_bits(i2s->regmap, I2S_REG_CFG0,
++				I2S_REG_CFG0_SLAVE_EN, cfg0);
++	} else {
++		regmap_update_bits(i2s->regmap, I2S_REG_CFG0,
++				I2S_REG_CFG0_SLAVE, cfg0);
++	}
++	regmap_update_bits(i2s->regmap, I2S_REG_CFG1,
++			I2S_REG_CFG1_FMT_MASK, cfg1);
++	i2s->fmt = fmt;
++
++	return 0;
++}
++
++static int ralink_i2s_startup(struct snd_pcm_substream *substream,
++		struct snd_soc_dai *dai)
++{
++	struct ralink_i2s *i2s = snd_soc_dai_get_drvdata(dai);
++
++	if (dai->active)
++		return 0;
++
++	/* setup status interrupt */
++#if (RALINK_I2S_INT_EN)
++	regmap_write(i2s->regmap, I2S_REG_INT_EN, 0xff);
++#else
++	regmap_write(i2s->regmap, I2S_REG_INT_EN, 0x0);
++#endif
++
++	/* enable */
++	regmap_update_bits(i2s->regmap, I2S_REG_CFG0,
++			I2S_REG_CFG0_EN | I2S_REG_CFG0_DMA_EN |
++			I2S_REG_CFG0_THRES_MASK,
++			I2S_REG_CFG0_EN | I2S_REG_CFG0_DMA_EN |
++			I2S_REG_CFG0_DFT_THRES);
++
++	return 0;
++}
++
++static void ralink_i2s_shutdown(struct snd_pcm_substream *substream,
++		struct snd_soc_dai *dai)
++{
++	struct ralink_i2s *i2s = snd_soc_dai_get_drvdata(dai);
++
++	/* If both streams are stopped, disable module and clock */
++	if (dai->active)
++		return;
++
++	/*
++	 * datasheet mention when disable all control regs are cleared
++	 * to initial values. need reinit at startup.
++	 */
++	regmap_update_bits(i2s->regmap, I2S_REG_CFG0, I2S_REG_CFG0_EN, 0);
++}
++
++static int ralink_i2s_hw_params(struct snd_pcm_substream *substream,
++		struct snd_pcm_hw_params *params, struct snd_soc_dai *dai)
++{
++	struct ralink_i2s *i2s = snd_soc_dai_get_drvdata(dai);
++	int width;
++	int ret;
++
++	width = params_width(params);
++	switch (width) {
++	case 16:
++		if (i2s->flags & RALINK_FLAGS_24BIT)
++			regmap_update_bits(i2s->regmap, I2S_REG_CFG0,
++					I2S_REG_CFG0_DATA_24, 0);
++		break;
++	case 24:
++		if (i2s->flags & RALINK_FLAGS_24BIT) {
++			regmap_update_bits(i2s->regmap, I2S_REG_CFG0,
++					I2S_REG_CFG0_DATA_24,
++					I2S_REG_CFG0_DATA_24);
++			break;
++		}
++		return -EINVAL;
++	default:
++		return -EINVAL;
++	}
++
++	switch (params_channels(params)) {
++	case 2:
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (i2s->flags & RALINK_FLAGS_ENDIAN) {
++		/* system endian */
++#ifdef SNDRV_LITTLE_ENDIAN
++		regmap_update_bits(i2s->regmap, I2S_REG_CFG0,
++				I2S_REG_CFG0_SYS_BE, 0);
++#else
++		regmap_update_bits(i2s->regmap, I2S_REG_CFG0,
++				I2S_REG_CFG0_SYS_BE,
++				I2S_REG_CFG0_SYS_BE);
++#endif
++
++		/* data endian */
++		switch (params_format(params)) {
++		case SNDRV_PCM_FORMAT_S16_LE:
++		case SNDRV_PCM_FORMAT_S24_LE:
++			regmap_update_bits(i2s->regmap, I2S_REG_CFG0,
++					I2S_REG_CFG0_FMT_LE,
++					I2S_REG_CFG0_FMT_LE);
++			break;
++		case SNDRV_PCM_FORMAT_S16_BE:
++		case SNDRV_PCM_FORMAT_S24_BE:
++			regmap_update_bits(i2s->regmap, I2S_REG_CFG0,
++					I2S_REG_CFG0_FMT_LE, 0);
++			break;
++		default:
++			return -EINVAL;
++		}
++	}
++
++	/* setup bclk rate */
++	if (i2s->flags & RALINK_FLAGS_TXONLY)
++		ret = ralink_i2s_set_sys_bclk(dai, width, params_rate(params));
++	else
++		ret = ralink_i2s_set_bclk(dai, width, params_rate(params));
++
++	return ret;
++}
++
++static int ralink_i2s_trigger(struct snd_pcm_substream *substream, int cmd,
++		struct snd_soc_dai *dai)
++{
++	struct ralink_i2s *i2s = snd_soc_dai_get_drvdata(dai);
++	unsigned int mask, val;
++
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		mask = I2S_REG_CFG0_TX_EN;
++	else
++		mask = I2S_REG_CFG0_RX_EN;
++
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_RESUME:
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++		val = mask;
++		break;
++	case SNDRV_PCM_TRIGGER_STOP:
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		val = 0;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	regmap_update_bits(i2s->regmap, I2S_REG_CFG0, mask, val);
++
++	return 0;
++}
++
++static void ralink_i2s_init_dma_data(struct ralink_i2s *i2s,
++		struct resource *res)
++{
++	struct snd_dmaengine_dai_dma_data *dma_data;
++
++	/* Playback */
++	dma_data = &i2s->playback_dma_data;
++	dma_data->addr = res->start + I2S_REG_WREG;
++	dma_data->addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
++	dma_data->maxburst = 1;
++	dma_data->slave_id = i2s->txdma_req;
++
++	if (i2s->flags & RALINK_FLAGS_TXONLY)
++		return;
++
++	/* Capture */
++	dma_data = &i2s->capture_dma_data;
++	dma_data->addr = res->start + I2S_REG_RREG;
++	dma_data->addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
++	dma_data->maxburst = 1;
++	dma_data->slave_id = i2s->rxdma_req;
++}
++
++static int ralink_i2s_dai_probe(struct snd_soc_dai *dai)
++{
++	struct ralink_i2s *i2s = snd_soc_dai_get_drvdata(dai);
++
++	snd_soc_dai_init_dma_data(dai, &i2s->playback_dma_data,
++			&i2s->capture_dma_data);
++
++	return 0;
++}
++
++static int ralink_i2s_dai_remove(struct snd_soc_dai *dai)
++{
++	return 0;
++}
++
++static const struct snd_soc_dai_ops ralink_i2s_dai_ops = {
++	.set_sysclk = ralink_i2s_set_sysclk,
++	.set_fmt = ralink_i2s_set_fmt,
++	.startup = ralink_i2s_startup,
++	.shutdown = ralink_i2s_shutdown,
++	.hw_params = ralink_i2s_hw_params,
++	.trigger = ralink_i2s_trigger,
++};
++
++static struct snd_soc_dai_driver ralink_i2s_dai = {
++	.name = DRV_NAME,
++	.probe = ralink_i2s_dai_probe,
++	.remove = ralink_i2s_dai_remove,
++	.ops = &ralink_i2s_dai_ops,
++	.capture = {
++		.stream_name = "I2S Capture",
++		.channels_min = 2,
++		.channels_max = 2,
++		.rate_min = 5512,
++		.rate_max = 192000,
++		.rates = SNDRV_PCM_RATE_CONTINUOUS,
++		.formats = SNDRV_PCM_FMTBIT_S16_LE,
++	},
++	.playback = {
++		.stream_name = "I2S Playback",
++		.channels_min = 2,
++		.channels_max = 2,
++		.rate_min = 5512,
++		.rate_max = 192000,
++		.rates = SNDRV_PCM_RATE_CONTINUOUS,
++		.formats = SNDRV_PCM_FMTBIT_S16_LE,
++	},
++	.symmetric_rates = 1,
++};
++
++static struct snd_pcm_hardware ralink_pcm_hardware = {
++	.info = SNDRV_PCM_INFO_MMAP |
++		SNDRV_PCM_INFO_MMAP_VALID |
++		SNDRV_PCM_INFO_INTERLEAVED |
++		SNDRV_PCM_INFO_BLOCK_TRANSFER,
++	.formats = SNDRV_PCM_FMTBIT_S16_LE,
++	.channels_min		= 2,
++	.channels_max		= 2,
++	.period_bytes_min	= PAGE_SIZE,
++	.period_bytes_max	= PAGE_SIZE * 2,
++	.periods_min		= 2,
++	.periods_max		= 128,
++	.buffer_bytes_max	= 128 * 1024,
++	.fifo_size		= RALINK_I2S_FIFO_SIZE,
++};
++
++static const struct snd_dmaengine_pcm_config ralink_dmaengine_pcm_config = {
++	.prepare_slave_config = snd_dmaengine_pcm_prepare_slave_config,
++	.pcm_hardware = &ralink_pcm_hardware,
++	.prealloc_buffer_size = 256 * PAGE_SIZE,
++};
++
++static const struct snd_soc_component_driver ralink_i2s_component = {
++	.name = DRV_NAME,
++};
++
++static bool ralink_i2s_readable_reg(struct device *dev, unsigned int reg)
++{
++	return true;
++}
++
++static bool ralink_i2s_volatile_reg(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case I2S_REG_INT_STATUS:
++	case I2S_REG_FF_STATUS:
++		return true;
++	}
++	return false;
++}
++
++static bool ralink_i2s_writeable_reg(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case I2S_REG_FF_STATUS:
++	case I2S_REG_RREG:
++		return false;
++	}
++	return true;
++}
++
++static const struct regmap_config ralink_i2s_regmap_config = {
++	.reg_bits = 32,
++	.reg_stride = 4,
++	.val_bits = 32,
++	.writeable_reg = ralink_i2s_writeable_reg,
++	.readable_reg = ralink_i2s_readable_reg,
++	.volatile_reg = ralink_i2s_volatile_reg,
++	.max_register = I2S_REG_DIVINT,
++};
++
++#if (RALINK_I2S_INT_EN)
++static irqreturn_t ralink_i2s_irq(int irq, void *devid)
++{
++	struct ralink_i2s *i2s = devid;
++	u32 status;
++
++	regmap_read(i2s->regmap, I2S_REG_INT_STATUS, &status);
++	if (unlikely(!status))
++		return IRQ_NONE;
++
++	/* tx stats */
++	if (status & I2S_REG_INT_TX_MASK) {
++		if (status & I2S_REG_INT_TX_THRES)
++			i2s->txstats.belowthres++;
++		if (status & I2S_REG_INT_TX_UNRUN)
++			i2s->txstats.underrun++;
++		if (status & I2S_REG_INT_TX_OVRUN)
++			i2s->txstats.overrun++;
++		if (status & I2S_REG_INT_TX_FAULT)
++			i2s->txstats.dmafault++;
++	}
++
++	/* rx stats */
++	if (status & I2S_REG_INT_RX_MASK) {
++		if (status & I2S_REG_INT_RX_THRES)
++			i2s->rxstats.belowthres++;
++		if (status & I2S_REG_INT_RX_UNRUN)
++			i2s->rxstats.underrun++;
++		if (status & I2S_REG_INT_RX_OVRUN)
++			i2s->rxstats.overrun++;
++		if (status & I2S_REG_INT_RX_FAULT)
++			i2s->rxstats.dmafault++;
++	}
++
++	/* clean status bits */
++	regmap_write(i2s->regmap, I2S_REG_INT_STATUS, status);
++
++	return IRQ_HANDLED;
++}
++#endif
++
++#if IS_ENABLED(CONFIG_DEBUG_FS)
++static int ralink_i2s_stats_show(struct seq_file *s, void *unused)
++{
++        struct ralink_i2s *i2s = s->private;
++
++	seq_printf(s, "tx stats\n");
++	seq_printf(s, "\tbelow threshold\t%u\n", i2s->txstats.belowthres);
++	seq_printf(s, "\tunder run\t%u\n", i2s->txstats.underrun);
++	seq_printf(s, "\tover run\t%u\n", i2s->txstats.overrun);
++	seq_printf(s, "\tdma fault\t%u\n", i2s->txstats.dmafault);
++
++	seq_printf(s, "rx stats\n");
++	seq_printf(s, "\tbelow threshold\t%u\n", i2s->rxstats.belowthres);
++	seq_printf(s, "\tunder run\t%u\n", i2s->rxstats.underrun);
++	seq_printf(s, "\tover run\t%u\n", i2s->rxstats.overrun);
++	seq_printf(s, "\tdma fault\t%u\n", i2s->rxstats.dmafault);
++
++	ralink_i2s_dump_regs(i2s);
++
++	return 0;
++}
++
++static int ralink_i2s_stats_open(struct inode *inode, struct file *file)
++{
++        return single_open(file, ralink_i2s_stats_show, inode->i_private);
++}
++
++static const struct file_operations ralink_i2s_stats_ops = {
++        .open = ralink_i2s_stats_open,
++        .read = seq_read,
++        .llseek = seq_lseek,
++        .release = single_release,
++};
++
++static inline int ralink_i2s_debugfs_create(struct ralink_i2s *i2s)
++{
++        i2s->dbg_dir = debugfs_create_dir(dev_name(i2s->dev), NULL);
++        if (!i2s->dbg_dir)
++                return -ENOMEM;
++
++        i2s->dbg_stats = debugfs_create_file("stats", S_IRUGO,
++                        i2s->dbg_dir, i2s, &ralink_i2s_stats_ops);
++        if (!i2s->dbg_stats) {
++                debugfs_remove(i2s->dbg_dir);
++                return -ENOMEM;
++        }
++
++        return 0;
++}
++
++static inline void ralink_i2s_debugfs_remove(struct ralink_i2s *i2s)
++{
++	debugfs_remove(i2s->dbg_stats);
++	debugfs_remove(i2s->dbg_dir);
++}
++#else
++static inline int ralink_i2s_debugfs_create(struct ralink_i2s *i2s)
++{
++	return 0;
++}
++
++static inline void ralink_i2s_debugfs_remove(struct fsl_ssi_dbg *ssi_dbg)
++{
++}
++#endif
++
++/*
++ * TODO: these refclk setup functions should use
++ * clock framework instead. hardcode it now.
++ */
++static void rt3350_refclk_setup(void)
++{
++	uint32_t data;
++
++	/* set refclk output 12Mhz clock */
++	data = rt_sysc_r32(0x2c);
++	data |= (0x1 << 8);
++	rt_sysc_w32(data, 0x2c);
++}
++
++static void rt3883_refclk_setup(void)
++{
++	uint32_t data;
++
++	/* set refclk output 12Mhz clock */
++	data = rt_sysc_r32(0x2c);
++	data &= ~(0x3 << 13);
++	data |= (0x1 << 13);
++	rt_sysc_w32(data, 0x2c);
++}
++
++static void rt3552_refclk_setup(void)
++{
++	uint32_t data;
++
++	/* set refclk output 12Mhz clock */
++	data = rt_sysc_r32(0x2c);
++	data &= ~(0xf << 8);
++	data |= (0x3 << 8);
++	rt_sysc_w32(data, 0x2c);
++}
++
++static void mt7620_refclk_setup(void)
++{
++	uint32_t data;
++
++	/* set refclk output 12Mhz clock */
++	data = rt_sysc_r32(0x2c);
++	data &= ~(0x7 << 9);
++	data |= 0x1 << 9;
++	rt_sysc_w32(data, 0x2c);
++}
++
++static void mt7621_refclk_setup(void)
++{
++	uint32_t data;
++
++	/* set refclk output 12Mhz clock */
++	data = rt_sysc_r32(0x2c);
++	data &= ~(0x1f << 18);
++	data |= (0x19 << 18);
++	data &= ~(0x1f << 12);
++	data |= (0x1 << 12);
++	data &= ~(0x7 << 9);
++	data |= (0x5 << 9);
++	rt_sysc_w32(data, 0x2c);
++}
++
++static void mt7628_refclk_setup(void)
++{
++	uint32_t data;
++
++	/* set i2s and refclk digital pad */
++	data = rt_sysc_r32(0x3c);
++	data |= 0x1f;
++	rt_sysc_w32(data, 0x3c);
++
++	/* Adjust REFCLK0's driving strength */
++	data = rt_sysc_r32(0x1354);
++	data &= ~(0x1 << 5);
++	rt_sysc_w32(data, 0x1354);
++	data = rt_sysc_r32(0x1364);
++	data |= ~(0x1 << 5);
++	rt_sysc_w32(data, 0x1364);
++
++	/* set refclk output 12Mhz clock */
++	data = rt_sysc_r32(0x2c);
++	data &= ~(0x7 << 9);
++	data |= 0x1 << 9;
++	rt_sysc_w32(data, 0x2c);
++}
++
++struct rt_i2s_data {
++	u32 flags;
++	void (*refclk_setup)(void);
++};
++
++struct rt_i2s_data rt3050_i2s_data = { .flags = RALINK_FLAGS_TXONLY };
++struct rt_i2s_data rt3350_i2s_data = { .flags = RALINK_FLAGS_TXONLY,
++	.refclk_setup = rt3350_refclk_setup };
++struct rt_i2s_data rt3883_i2s_data = {
++	.flags = (RALINK_FLAGS_LEFT_J | RALINK_FLAGS_RIGHT_J),
++	.refclk_setup = rt3883_refclk_setup };
++struct rt_i2s_data rt3352_i2s_data = { .refclk_setup = rt3552_refclk_setup};
++struct rt_i2s_data mt7620_i2s_data = { .refclk_setup = mt7620_refclk_setup};
++struct rt_i2s_data mt7621_i2s_data = { .refclk_setup = mt7621_refclk_setup};
++struct rt_i2s_data mt7628_i2s_data = {
++	.flags = (RALINK_FLAGS_ENDIAN | RALINK_FLAGS_24BIT |
++			RALINK_FLAGS_LEFT_J),
++	.refclk_setup = mt7628_refclk_setup};
++
++static const struct of_device_id ralink_i2s_match_table[] = {
++	{ .compatible = "ralink,rt3050-i2s",
++		.data = (void *)&rt3050_i2s_data },
++	{ .compatible = "ralink,rt3350-i2s",
++		.data = (void *)&rt3350_i2s_data },
++	{ .compatible = "ralink,rt3883-i2s",
++		.data = (void *)&rt3883_i2s_data },
++	{ .compatible = "ralink,rt3352-i2s",
++		.data = (void *)&rt3352_i2s_data },
++	{ .compatible = "mediatek,mt7620-i2s",
++		.data = (void *)&mt7620_i2s_data },
++	{ .compatible = "mediatek,mt7621-i2s",
++		.data = (void *)&mt7621_i2s_data },
++	{ .compatible = "mediatek,mt7628-i2s",
++		.data = (void *)&mt7628_i2s_data },
++};
++MODULE_DEVICE_TABLE(of, ralink_i2s_match_table);
++
++static int ralink_i2s_probe(struct platform_device *pdev)
++{
++	const struct of_device_id *match;
++	struct device_node *np = pdev->dev.of_node;
++	struct ralink_i2s *i2s;
++	struct resource *res;
++	int irq, ret;
++	u32 dma_req;
++	struct rt_i2s_data *data;
++
++	i2s = devm_kzalloc(&pdev->dev, sizeof(*i2s), GFP_KERNEL);
++	if (!i2s)
++		return -ENOMEM;
++
++	platform_set_drvdata(pdev, i2s);
++	i2s->dev = &pdev->dev;
++
++	match = of_match_device(ralink_i2s_match_table, &pdev->dev);
++	if (!match)
++		return -EINVAL;
++	data = (struct rt_i2s_data *)match->data;
++	i2s->flags = data->flags;
++	/* setup out 12Mhz refclk to codec as mclk */
++	if (data->refclk_setup)
++		data->refclk_setup();
++
++	if (of_property_read_u32(np, "txdma-req", &dma_req)) {
++		dev_err(&pdev->dev, "no txdma-req define\n");
++		return -EINVAL;
++	}
++	i2s->txdma_req = (u16)dma_req;
++	if (!(i2s->flags & RALINK_FLAGS_TXONLY)) {
++		if (of_property_read_u32(np, "rxdma-req", &dma_req)) {
++			dev_err(&pdev->dev, "no rxdma-req define\n");
++			return -EINVAL;
++		}
++		i2s->rxdma_req = (u16)dma_req;
++	}
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	i2s->regs = devm_ioremap_resource(&pdev->dev, res);
++	if (IS_ERR(i2s->regs))
++		return PTR_ERR(i2s->regs);
++
++	i2s->regmap = devm_regmap_init_mmio(&pdev->dev, i2s->regs,
++			&ralink_i2s_regmap_config);
++	if (IS_ERR(i2s->regmap)) {
++		dev_err(&pdev->dev, "regmap init failed\n");
++		return PTR_ERR(i2s->regmap);
++	}
++
++        irq = platform_get_irq(pdev, 0);
++        if (irq < 0) {
++                dev_err(&pdev->dev, "failed to get irq\n");
++                return -EINVAL;
++        }
++
++#if (RALINK_I2S_INT_EN)
++	ret = devm_request_irq(&pdev->dev, irq, ralink_i2s_irq,
++			0, dev_name(&pdev->dev), i2s);
++	if (ret) {
++		dev_err(&pdev->dev, "failed to request irq\n");
++		return ret;
++	}
++#endif
++
++	i2s->clk = devm_clk_get(&pdev->dev, NULL);
++	if (IS_ERR(i2s->clk)) {
++		dev_err(&pdev->dev, "no clock defined\n");
++		return PTR_ERR(i2s->clk);
++	}
++
++	ret = clk_prepare_enable(i2s->clk);
++	if (ret)
++		return ret;
++
++	ralink_i2s_init_dma_data(i2s, res);
++
++	device_reset(&pdev->dev);
++
++	ret = ralink_i2s_debugfs_create(i2s);
++	if (ret) {
++		dev_err(&pdev->dev, "create debugfs failed\n");
++		goto err_clk_disable;
++	}
++
++	/* enable 24bits support */
++	if (i2s->flags & RALINK_FLAGS_24BIT) {
++		ralink_i2s_dai.capture.formats |= SNDRV_PCM_FMTBIT_S24_LE;
++		ralink_i2s_dai.playback.formats |= SNDRV_PCM_FMTBIT_S24_LE;
++	}
++
++	/* enable big endian support */
++	if (i2s->flags & RALINK_FLAGS_ENDIAN) {
++		ralink_i2s_dai.capture.formats |= SNDRV_PCM_FMTBIT_S16_BE;
++		ralink_i2s_dai.playback.formats |= SNDRV_PCM_FMTBIT_S16_BE;
++		ralink_pcm_hardware.formats |= SNDRV_PCM_FMTBIT_S16_BE;
++		if (i2s->flags & RALINK_FLAGS_24BIT) {
++			ralink_i2s_dai.capture.formats |=
++				SNDRV_PCM_FMTBIT_S24_BE;
++			ralink_i2s_dai.playback.formats |=
++				SNDRV_PCM_FMTBIT_S24_BE;
++			ralink_pcm_hardware.formats |=
++				SNDRV_PCM_FMTBIT_S24_BE;
++		}
++	}
++
++	/* disable capture support */
++	if (i2s->flags & RALINK_FLAGS_TXONLY)
++		memset(&ralink_i2s_dai.capture, sizeof(ralink_i2s_dai.capture),
++				0);
++
++	ret = devm_snd_soc_register_component(&pdev->dev, &ralink_i2s_component,
++			&ralink_i2s_dai, 1);
++	if (ret)
++		goto err_debugfs;
++
++	ret = devm_snd_dmaengine_pcm_register(&pdev->dev,
++			&ralink_dmaengine_pcm_config,
++			SND_DMAENGINE_PCM_FLAG_COMPAT);
++	if (ret)
++		goto err_debugfs;
++
++	dev_info(i2s->dev, "mclk %luKHz\n", clk_get_rate(i2s->clk) / 1000000);
++
++	return 0;
++
++err_debugfs:
++	ralink_i2s_debugfs_remove(i2s);
++
++err_clk_disable:
++	clk_disable_unprepare(i2s->clk);
++
++	return ret;
++}
++
++static int ralink_i2s_remove(struct platform_device *pdev)
++{
++	struct ralink_i2s *i2s = platform_get_drvdata(pdev);
++
++	ralink_i2s_debugfs_remove(i2s);
++	clk_disable_unprepare(i2s->clk);
++
++	return 0;
++}
++
++static struct platform_driver ralink_i2s_driver = {
++	.probe = ralink_i2s_probe,
++	.remove = ralink_i2s_remove,
++	.driver = {
++		.name = DRV_NAME,
++		.of_match_table = ralink_i2s_match_table,
++	},
++};
++module_platform_driver(ralink_i2s_driver);
++
++MODULE_AUTHOR("Lars-Peter Clausen, <lars@metafoo.de>");
++MODULE_DESCRIPTION("Ralink/MediaTek I2S driver");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:" DRV_NAME);

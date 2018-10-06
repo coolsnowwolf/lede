@@ -5,11 +5,11 @@
 
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=LuCI support for SFE
-LUCI_DEPENDS:=+kmod-fast-classifier @!LINUX_4_14
+LUCI_TITLE:=LuCI support for Turbo ACC (SFE)
+LUCI_DEPENDS:=+kmod-fast-classifier +pdnsd-alt @LINUX_4_9
 LUCI_PKGARCH:=all
 PKG_VERSION:=1.0
-PKG_RELEASE:=3
+PKG_RELEASE:=10
 
 include $(TOPDIR)/feeds/luci/luci.mk
 

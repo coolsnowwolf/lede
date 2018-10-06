@@ -221,7 +221,7 @@ define Device/ex2700
   KERNEL := $(KERNEL_DTB) | uImage lzma | pad-offset 64k 64 | append-uImage-fakehdr filesystem
   IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
 	netgear-dni
-  DEVICE_PACKAGES := -kmod-mt76
+  DEVICE_PACKAGES := -kmod-mt76 -kmod-mt7603 -kmod-mt76x2 -kmod-mt76-core
   DEVICE_TITLE := Netgear EX2700
 endef
 TARGET_DEVICES += ex2700
@@ -516,7 +516,6 @@ TARGET_DEVICES += tplink_c2-v1
 define Device/tplink_c20-v1
   $(Device/Archer)
   DTS := ArcherC20v1
-  SUPPORTED_DEVICES := c20v1
   TPLINK_FLASHLAYOUT := 8Mmtk
   TPLINK_HWID := 0xc2000001
   TPLINK_HWREV := 0x44

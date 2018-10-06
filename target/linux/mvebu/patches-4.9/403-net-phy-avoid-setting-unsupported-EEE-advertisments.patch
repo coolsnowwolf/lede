@@ -1,0 +1,57 @@
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Wed, 4 Jan 2017 21:00:51 +0000
+Subject: [PATCH] net: phy: avoid setting unsupported EEE advertisments
+
+We currently allow userspace to set any EEE advertisments it desires,
+whether or not the PHY supports them.  For example:
+
+ # ethtool --set-eee eth1 advertise 0xffffffff
+ # ethtool --show-eee eth1
+ EEE Settings for eth1:
+        EEE status: disabled
+        Tx LPI: disabled
+        Supported EEE link modes:  100baseT/Full
+                                   1000baseT/Full
+                                   10000baseT/Full
+        Advertised EEE link modes:  100baseT/Full
+                                    1000baseT/Full
+                                    1000baseKX/Full
+                                    10000baseT/Full
+                                    10000baseKX4/Full
+                                    10000baseKR/Full
+
+Clearly, this is not sane, we should only allow link modes that are
+supported to be advertised (as we do elsewhere.)  Ensure that we mask
+the MDIO_AN_EEE_ADV value with the capabilities retrieved from the
+MDIO_PCS_EEE_ABLE register.
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+
+--- a/drivers/net/phy/phy.c
++++ b/drivers/net/phy/phy.c
+@@ -1352,14 +1352,19 @@ EXPORT_SYMBOL(phy_ethtool_get_eee);
+  */
+ int phy_ethtool_set_eee(struct phy_device *phydev, struct ethtool_eee *data)
+ {
+-	int val = ethtool_adv_to_mmd_eee_adv_t(data->advertised);
++	int cap, adv;
+ 
+-	/* Mask prohibited EEE modes */
+-	val &= ~phydev->eee_broken_modes;
++	/* Get Supported EEE */
++	cap = phy_read_mmd(phydev, MDIO_MMD_PCS, MDIO_PCS_EEE_ABLE);
++	if (cap < 0)
++		return cap;
++
++	adv = ethtool_adv_to_mmd_eee_adv_t(data->advertised) & cap;
+ 
+-	phy_write_mmd_indirect(phydev, MDIO_AN_EEE_ADV, MDIO_MMD_AN, val);
++	/* Mask prohibited EEE modes */
++	adv &= ~phydev->eee_broken_modes;
+ 
+-	return 0;
++	return phy_write_mmd(phydev, MDIO_MMD_AN, MDIO_AN_EEE_ADV, adv);
+ }
+ EXPORT_SYMBOL(phy_ethtool_set_eee);
+ 

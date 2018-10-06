@@ -1,0 +1,52 @@
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Mon, 19 Dec 2016 12:17:57 +0000
+Subject: [PATCH] phylink: ensure link drops are reported
+
+When the MAC reports a link failure, it can be momentary.  Ensure
+that the event is reported by latching the loss of link, so that the
+worker reports link down.
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -60,6 +60,8 @@ struct phylink {
+ 	struct phylink_link_state phy_state;
+ 	struct work_struct resolve;
+ 
++	bool mac_link_dropped;
++
+ 	const struct phylink_module_ops *module_ops;
+ 	void *module_data;
+ };
+@@ -340,6 +342,9 @@ static void phylink_resolve(struct work_
+ 
+ 	mutex_lock(&pl->state_mutex);
+ 	if (pl->phylink_disable_state) {
++		pl->mac_link_dropped = false;
++		link_state.link = false;
++	} else if (pl->mac_link_dropped) {
+ 		link_state.link = false;
+ 	} else {
+ 		switch (pl->link_an_mode) {
+@@ -405,6 +410,10 @@ static void phylink_resolve(struct work_
+ 				    phylink_pause_to_str(link_state.pause));
+ 		}
+ 	}
++	if (!link_state.link && pl->mac_link_dropped) {
++		pl->mac_link_dropped = false;
++		queue_work(system_power_efficient_wq, &pl->resolve);
++	}
+ 	mutex_unlock(&pl->state_mutex);
+ }
+ 
+@@ -641,6 +650,8 @@ EXPORT_SYMBOL_GPL(phylink_disconnect_phy
+ 
+ void phylink_mac_change(struct phylink *pl, bool up)
+ {
++	if (!up)
++		pl->mac_link_dropped = true;
+ 	phylink_run_resolve(pl);
+ 	netdev_dbg(pl->netdev, "mac link %s\n", up ? "up" : "down");
+ }

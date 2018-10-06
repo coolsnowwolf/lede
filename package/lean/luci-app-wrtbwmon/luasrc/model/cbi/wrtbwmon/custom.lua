@@ -1,4 +1,4 @@
-local USER_FILE_PATH = "/etc/wrtbwmon.user"
+local USER_FILE_PATH = "/etc/config/wrtbwmon.user"
 
 local fs = require "nixio.fs"
 
