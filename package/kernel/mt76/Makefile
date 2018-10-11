@@ -87,7 +87,7 @@ endef
 
 define KernelPackage/mt76x0u
   $(KernelPackage/mt76-default)
-  TITLE:=MediaTek MT76x2U wireless driver
+  TITLE:=MediaTek MT76x0U wireless driver
   DEPENDS+=+kmod-mt76x0-common +kmod-mt76x02-usb
   FILES:=\
 	$(PKG_BUILD_DIR)/mt76x0/mt76x0u.ko
