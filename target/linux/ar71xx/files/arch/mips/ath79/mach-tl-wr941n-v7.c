@@ -93,7 +93,7 @@ static struct gpio_keys_button wr941nv7_gpio_keys[] __initdata = {
 static struct mdio_board_info wr941nv7_mdio0_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = 0,
+		.mdio_addr = 0,
 		.platform_data = NULL,
 	},
 };
