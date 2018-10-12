@@ -67,5 +67,6 @@ o:value("4.2.2.1:53", translate("Level 3 Public DNS (4.2.2.1)"))
 o:value("4.2.2.2:53", translate("Level 3 Public DNS (4.2.2.2)"))
 o:value("4.2.2.3:53", translate("Level 3 Public DNS (4.2.2.3)"))
 o:value("4.2.2.4:53", translate("Level 3 Public DNS (4.2.2.4)"))
+o:value("1.1.1.1:53", translate("Cloudflare DNS (1.1.1.1)"))
 
 return m
