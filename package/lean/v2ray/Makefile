@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray
-PKG_VERSION:=v3.46.2
+PKG_VERSION:=v3.47
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
 ifeq ($(ARCH),x86_64)
@@ -79,8 +79,8 @@ define Build/Prepare
 	wget https://github.com/v2ray/v2ray-core/releases/download/$(PKG_VERSION)/v2ray-$(PKG_ARCH_V2RAY).zip -O $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY).zip
 	unzip -o $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY).zip -d $(PKG_BUILD_DIR)
 ifdef CONFIG_PACKAGE_V2RAY_SOFTFLOAT
-	[ -f $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/v2ray_softfloat ] && mv $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/v2ray_softfloat $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/v2ray || echo "Can't find soft-float binary."
-	[ -f $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/v2ctl_softfloat ] && mv $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/v2ctl_softfloat $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY)/v2ctl || echo "Can't find soft-float binary."
+	[ -f $(PKG_BUILD_DIR)/v2ray_softfloat ] && mv $(PKG_BUILD_DIR)/v2ray_softfloat $(PKG_BUILD_DIR)/v2ray || echo "Can't find soft-float binary."
+	[ -f $(PKG_BUILD_DIR)/v2ctl_softfloat ] && mv $(PKG_BUILD_DIR)/v2ctl_softfloat $(PKG_BUILD_DIR)/v2ctl || echo "Can't find soft-float binary."
 endif
 endef
 

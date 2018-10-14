@@ -1293,6 +1293,12 @@ ar71xx_board_detect() {
 	*"TL-WR1043ND v4")
 		name="tl-wr1043nd-v4"
 		;;
+	*"TL-WR2041N v1")
+		name="tl-wr2041n-v1"
+		;;
+	*"TL-WR2041N v2")
+		name="tl-wr2041n-v2"
+		;;
 	*"TL-WR2543N"*)
 		name="tl-wr2543n"
 		;;
@@ -1352,6 +1358,12 @@ ar71xx_board_detect() {
 		;;
 	*"TL-WR842N/ND v3")
 		name="tl-wr842n-v3"
+		;;
+	*"TL-WR880N v1")
+		name="tl-wr880n-v1"
+		;;
+	*"TL-WR881N v1")
+		name="tl-wr881n-v1"
 		;;
 	*"TL-WR902AC v1")
 		name="tl-wr902ac-v1"

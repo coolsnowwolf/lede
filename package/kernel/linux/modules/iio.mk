@@ -155,3 +155,39 @@ define KernelPackage/iio-htu21/description
 endef
 
 $(eval $(call KernelPackage,iio-htu21))
+
+
+define KernelPackage/iio-si7020
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core
+  TITLE:=Silicon Labs Si7020 sensor
+  KCONFIG:= CONFIG_SI7020
+  FILES:=$(LINUX_DIR)/drivers/iio/humidity/si7020.ko
+  AUTOLOAD:=$(call AutoLoad,56,si7020)
+endef
+
+define KernelPackage/iio-si7020/description
+ Support for Silicon Labs Si7020 family of relative humidity and
+ temperature sensors connected via I2C. Following models are usable:
+ Si7013, Si7020, Si7021, Hoperf TH06.
+endef
+
+$(eval $(call KernelPackage,iio-si7020))
+
+
+define KernelPackage/iio-tsl4531
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core
+  TITLE:=TAOS TSL4531 ambient light sensor
+  KCONFIG:= CONFIG_TSL4531
+  FILES:=$(LINUX_DIR)/drivers/iio/light/tsl4531.ko
+  AUTOLOAD:=$(call AutoLoad,56,tsl4531)
+endef
+
+define KernelPackage/iio-tsl4531/description
+ Support for TAOS TSL4531x family of ambient light sensors
+ connected via I2C. Following models are usable:
+ TSL45311, TSL45313, TSL45315, TSL45317.
+endef
+
+$(eval $(call KernelPackage,iio-tsl4531))
