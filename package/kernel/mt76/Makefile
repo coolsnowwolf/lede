@@ -87,7 +87,7 @@ endef
 
 define KernelPackage/mt76x0u
   $(KernelPackage/mt76-default)
-  TITLE:=MediaTek MT76x2U wireless driver
+  TITLE:=MediaTek MT76x0U wireless driver
   DEPENDS+=+kmod-mt76x0-common +kmod-mt76x02-usb
   FILES:=\
 	$(PKG_BUILD_DIR)/mt76x0/mt76x0u.ko
@@ -183,12 +183,18 @@ define Package/kmod-mt76/install
 	true
 endef
 
-define KernelPackage/mt76x2/install
+define KernelPackage/mt76x2-common/install
 	$(INSTALL_DIR) $(1)/lib/firmware
 	cp \
 		$(PKG_BUILD_DIR)/firmware/mt7662_rom_patch.bin \
 		$(PKG_BUILD_DIR)/firmware/mt7662.bin \
 		$(1)/lib/firmware
+endef
+
+define KernelPackage/mt76x2u/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	ln -sf ../mt7662.bin $(1)/lib/firmware/mediatek/mt7662u.bin
+	ln -sf ../mt7662_rom_patch.bin $(1)/lib/firmware/mediatek/mt7662u_rom_patch.bin
 endef
 
 define KernelPackage/mt7603/install
