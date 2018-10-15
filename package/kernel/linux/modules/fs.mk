@@ -439,9 +439,14 @@ $(eval $(call KernelPackage,fs-nfs-v4))
 define KernelPackage/fs-nfsd
   SUBMENU:=$(FS_MENU)
   TITLE:=NFS kernel server support
-  DEPENDS:=+kmod-fs-nfs-common +kmod-fs-exportfs
+  DEPENDS:=+kmod-fs-nfs-common +kmod-fs-exportfs +kmod-fs-nfs-common-rpcsec
   KCONFIG:= \
 	CONFIG_NFSD \
+	CONFIG_NFSD_V4=y \
+	CONFIG_NFSD_V4_SECURITY_LABEL=n \
+	CONFIG_NFSD_BLOCKLAYOUT=n \
+	CONFIG_NFSD_SCSILAYOUT=n \
+	CONFIG_NFSD_FLEXFILELAYOUT=n \
 	CONFIG_NFSD_FAULT_INJECTION=n
   FILES:=$(LINUX_DIR)/fs/nfsd/nfsd.ko
   AUTOLOAD:=$(call AutoLoad,40,nfsd)

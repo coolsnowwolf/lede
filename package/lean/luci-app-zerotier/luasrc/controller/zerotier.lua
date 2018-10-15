@@ -5,8 +5,9 @@ function index()
 return
 end
 
-entry({"admin","services","zerotier"},cbi("zerotier"),_("ZeroTier"),90).dependent=true
-entry({"admin","services","zerotier","status"},call("act_status")).leaf=true
+entry({"admin","vpn"}, firstchild(), "VPN", 45).dependent = false
+entry({"admin","vpn","zerotier"},cbi("zerotier"),_("ZeroTier"),90).dependent=true
+entry({"admin","vpn","zerotier","status"},call("act_status")).leaf=true
 end
 
 function act_status()

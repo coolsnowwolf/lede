@@ -1,0 +1,99 @@
+#!/bin/sh /etc/rc.common
+
+START=90
+
+USE_PROCD=1
+
+PROG=/usr/bin/zerotier-one
+CONFIG_PATH=/var/lib/zerotier-one
+
+section_enabled() {
+	config_get_bool enabled "$1" 'enabled' 0
+	[ $enabled -gt 0 ]
+}
+
+start_instance() {
+	local cfg="$1"
+	local port secret config_path
+	local ARGS=""
+
+	if ! section_enabled "$cfg"; then
+		echo "disabled in config"
+		return 1
+	fi
+
+	config_get config_path $cfg 'config_path'
+	config_get_bool port $cfg 'port'
+	config_get secret $cfg 'secret'
+
+	# Remove existing link or folder
+	rm -rf $CONFIG_PATH
+
+	# Create link from CONFIG_PATH to config_path
+	if [ -n "$config_path" -a "$config_path" != $CONFIG_PATH ]; then
+		if [ ! -d "$config_path" ]; then
+			echo "ZeroTier config_path does not exist: $config_path"
+			return
+		fi
+
+		ln -s $config_path $CONFIG_PATH
+	fi
+
+	mkdir -p $CONFIG_PATH/networks.d
+
+	if [ -n "$port" ]; then
+		ARGS="$ARGS -p$port"
+	fi
+
+	if [ "$secret" = "generate" ]; then
+		echo "Generate secret - please wait..."
+		local sf="/tmp/zt.$cfg.secret"
+
+		zerotier-idtool generate "$sf" > /dev/null
+		[ $? -ne 0 ] && return 1
+
+		secret="$(cat $sf)"
+		rm "$sf"
+
+		uci set zerotier.$cfg.secret="$secret"
+		uci commit zerotier
+	fi
+
+	if [ -n "$secret" ]; then
+		echo "$secret" > $CONFIG_PATH/identity.secret
+		# make sure there is not previous identity.public
+		rm -f $CONFIG_PATH/identity.public
+	fi
+
+	add_join() {
+		# an (empty) config file will cause ZT to join a network
+		touch $CONFIG_PATH/networks.d/$1.conf
+	}
+
+	config_list_foreach $cfg 'join' add_join
+
+	procd_open_instance
+	procd_set_param command $PROG $ARGS $CONFIG_PATH
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+start_service() {
+	config_load 'zerotier'
+	config_foreach start_instance 'zerotier'
+	touch /tmp/zero.log && nohup /etc/zerotier.start > /tmp/zero.log 2>&1 &
+}
+
+stop_instance() {
+  rm -f /tmp/zero.log
+	local cfg="$1"
+
+	# Remove existing link or folder
+	rm -rf $CONFIG_PATH
+}
+
+stop_service() {
+	config_load 'zerotier'
+	config_foreach stop_instance 'zerotier'
+}
+

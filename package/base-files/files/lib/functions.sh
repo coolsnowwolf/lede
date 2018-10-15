@@ -229,10 +229,9 @@ default_postinst() {
 	if [ -z "$root" ] && grep -q -s "^/etc/uci-defaults/" "/usr/lib/opkg/info/${pkgname}.list"; then
 		. /lib/functions/system.sh
 		[ -d /tmp/.uci ] || mkdir -p /tmp/.uci
-		for i in $(sed -ne 's!^/etc/uci-defaults/!!p' "/usr/lib/opkg/info/${pkgname}.list"); do (
-			cd /etc/uci-defaults
-			[ -f "$i" ] && . ./"$i" && rm -f "$i"
-		) done
+		for i in $(grep -s "^/etc/uci-defaults/" "/usr/lib/opkg/info/${pkgname}.list"); do
+			( [ -f "$i" ] && cd "$(dirname $i)" && . "$i" ) && rm -f "$i"
+		done
 		uci commit
 	fi
 
