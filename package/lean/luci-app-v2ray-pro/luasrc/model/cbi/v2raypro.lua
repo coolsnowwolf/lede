@@ -122,7 +122,7 @@ kcp_obfs:value("utp")
 kcp_obfs:value("wechat-video")
 kcp_obfs:value("dtls")
 kcp_obfs:value("wireguard")
-kcp_obfs:depends("network_type", "kcp")
+
 
 kcp_mtu = s:taboption("main",Value, "kcp_mtu", translate("KCP MTU"))
 kcp_mtu.datatype = "range(576,1460)"
