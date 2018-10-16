@@ -8,9 +8,8 @@ PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/openwrt/mt76
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2018-10-05
-PKG_SOURCE_VERSION:=d533f1351834ba2899897b090aa56a5f5b922bd7
-PKG_MIRROR_HASH:=27e9c4cf876ad26a6f854d2b00d7e3b100980e820444f13986bf66f3f539eed3
+PKG_SOURCE_DATE:=2018-10-09
+PKG_SOURCE_VERSION:=8a0acfd09abb4a47b993938065b80bd4c4087aa0
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_BUILD_PARALLEL:=1
@@ -87,7 +86,7 @@ endef
 
 define KernelPackage/mt76x0u
   $(KernelPackage/mt76-default)
-  TITLE:=MediaTek MT76x2U wireless driver
+  TITLE:=MediaTek MT76x0U wireless driver
   DEPENDS+=+kmod-mt76x0-common +kmod-mt76x02-usb
   FILES:=\
 	$(PKG_BUILD_DIR)/mt76x0/mt76x0u.ko
@@ -183,12 +182,18 @@ define Package/kmod-mt76/install
 	true
 endef
 
-define KernelPackage/mt76x2/install
+define KernelPackage/mt76x2-common/install
 	$(INSTALL_DIR) $(1)/lib/firmware
 	cp \
 		$(PKG_BUILD_DIR)/firmware/mt7662_rom_patch.bin \
 		$(PKG_BUILD_DIR)/firmware/mt7662.bin \
 		$(1)/lib/firmware
+endef
+
+define KernelPackage/mt76x2u/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	ln -sf ../mt7662.bin $(1)/lib/firmware/mediatek/mt7662u.bin
+	ln -sf ../mt7662_rom_patch.bin $(1)/lib/firmware/mediatek/mt7662u_rom_patch.bin
 endef
 
 define KernelPackage/mt7603/install
