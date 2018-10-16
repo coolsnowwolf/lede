@@ -81,7 +81,7 @@ detect_mac80211() {
 		htmode=""
 		ht_capab=""
 
-		iw phy "$dev" info | grep -q 'Capabilities:' && htmode=HT20
+		iw phy "$dev" info | grep -q 'Capabilities:' && htmode=HT40
 
 		iw phy "$dev" info | grep -q '5180 MHz' && {
 			mode_band="a"
@@ -114,13 +114,13 @@ detect_mac80211() {
 			${dev_id}
 			${ht_capab}
 			set wireless.radio${devidx}.disabled=0
-			set wireless.radio${devidx}.noscan=1
+			set wireless.radio${devidx}.noscan=0
 
 			set wireless.default_radio${devidx}=wifi-iface
 			set wireless.default_radio${devidx}.device=radio${devidx}
 			set wireless.default_radio${devidx}.network=lan
 			set wireless.default_radio${devidx}.mode=ap
-			set wireless.default_radio${devidx}.ssid=OpenWrt
+			set wireless.default_radio${devidx}.ssid=OpenWrt${ssidz}$(awk -F ":" '{print "_"toupper($4$5$6)}' /sys/class/ieee80211/${dev}/macaddress 2>/dev/null)
 			set wireless.default_radio${devidx}.encryption=none
 EOF
 		uci -q commit wireless
