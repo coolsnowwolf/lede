@@ -27,6 +27,11 @@ ipv6.rmempty = false
 ipv6.description = translate("Enable IPv6 Acceleration")
 ipv6:depends("enabled", 1)
 
+bbr = s:option(Flag, "bbr", translate("Enable BBR"))
+bbr.default = 0
+bbr.rmempty = false
+bbr.description = translate("Bottleneck Bandwidth and Round-trip propagation time (BBR)")
+
 dns = s:option(Flag, "dns", translate("DNS Acceleration"))
 dns.default = 0
 dns.rmempty = false
