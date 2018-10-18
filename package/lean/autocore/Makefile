@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=autocore
 PKG_VERSION:=1
-PKG_RELEASE:=12
+PKG_RELEASE:=15
 
 
 include $(INCLUDE_DIR)/package.mk
@@ -17,7 +17,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/autocore
   TITLE:=x86/x64 auto core loadbalance script.
   MAINTAINER:=Lean
-  DEPENDS:=@TARGET_x86 +bc +lm-sensors
+  DEPENDS:=@TARGET_x86 +bc +lm-sensors +ethtool
 endef
 
 define Package/autocore/description
