@@ -48,7 +48,7 @@ subscribe_url=($(uci get $name.@server_subscribe[0].subscribe_url))
 log_name=${name}_subscribe
 for ((o=0;o<${#subscribe_url[@]};o++))
 do
-    subscribe_data=$(wget-ssl --no-check-certificate -T 3 -O- ${subscribe_url[o]})
+    subscribe_data=$(wget-ssl --user-agent="User-Agent: Mozilla" --no-check-certificate -T 3 -O- ${subscribe_url[o]})
     curl_code=$?
     if [ $curl_code -eq 0 ];then
         ssr_url=($(echo $subscribe_data | base64 -d | sed 's/\r//g')) # 解码数据并删除 \r 换行符

@@ -33,7 +33,7 @@ o = s:option(Button,"update",translate("Update"))
 o.inputstyle = "reload"
 o.write = function()
   luci.sys.call("nohup bash /usr/share/shadowsocksr/subscribe.sh > /tmp/subupdate.log 2>&1 &")
-  luci.sys.call("sleep 5")
+  luci.sys.call("sleep 8")
   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
 end
 
