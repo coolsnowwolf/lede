@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=hostapd
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 
 PKG_SOURCE_URL:=http://w1.fi/hostap.git
 PKG_SOURCE_PROTO:=git
@@ -26,6 +26,7 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_kmod-ath9k \
 	CONFIG_PACKAGE_kmod-cfg80211 \
 	CONFIG_PACKAGE_hostapd \
+	CONFIG_PACKAGE_hostapd-basic \
 	CONFIG_PACKAGE_hostapd-mini \
 	CONFIG_WPA_RFKILL_SUPPORT \
 	CONFIG_DRIVER_WEXT_SUPPORT \
@@ -95,13 +96,17 @@ ifeq ($(LOCAL_VARIANT),full)
   DRIVER_MAKEOPTS += CONFIG_IEEE80211W=$(CONFIG_DRIVER_11W_SUPPORT)
 endif
 
+ifeq ($(LOCAL_VARIANT),basic)
+  DRIVER_MAKEOPTS += CONFIG_IEEE80211W=$(CONFIG_DRIVER_11W_SUPPORT)
+endif
+
 ifeq ($(LOCAL_VARIANT),full)
   ifeq ($(SSL_VARIANT),openssl)
-    DRIVER_MAKEOPTS += CONFIG_TLS=openssl
+    DRIVER_MAKEOPTS += CONFIG_TLS=openssl CONFIG_SAE=y CONFIG_OWE=y CONFIG_SUITEB192=y
     TARGET_LDFLAGS += -lcrypto -lssl
   endif
   ifeq ($(SSL_VARIANT),wolfssl)
-    DRIVER_MAKEOPTS += CONFIG_TLS=wolfssl CONFIG_WPS_NFC=1
+    DRIVER_MAKEOPTS += CONFIG_TLS=wolfssl CONFIG_WPS_NFC=1 CONFIG_SAE=y CONFIG_OWE=y CONFIG_SUITEB192=y
     TARGET_LDFLAGS += -lwolfssl
   endif
 endif
@@ -176,6 +181,16 @@ endef
 
 Package/hostapd-wolfssl/description = $(Package/hostapd/description)
 
+define Package/hostapd-basic
+$(call Package/hostapd/Default,$(1))
+  TITLE+= (WPA-PSK, 11r and 11w)
+  VARIANT:=basic
+endef
+
+define Package/hostapd-basic/description
+ This package contains a basic IEEE 802.1x/WPA Authenticator with WPA-PSK, 802.11r and 802.11w support.
+endef
+
 define Package/hostapd-mini
 $(call Package/hostapd/Default,$(1))
   TITLE+= (WPA-PSK only)
@@ -227,6 +242,16 @@ $(call Package/wpad/Default,$(1))
 endef
 
 Package/wpad-wolfssl/description = $(Package/wpad/description)
+
+define Package/wpad-basic
+$(call Package/wpad/Default,$(1))
+  TITLE+= (WPA-PSK, 11r and 11w)
+  VARIANT:=wpad-basic
+endef
+
+define Package/wpad-basic/description
+ This package contains a basic IEEE 802.1x/WPA Authenticator and Supplicant with WPA-PSK, 802.11r and 802.11w support.
+endef
 
 define Package/wpad-mini
 $(call Package/wpad/Default,$(1))
@@ -322,6 +347,12 @@ define Package/wpa-supplicant-mesh-wolfssl
 $(call Package/wpa-supplicant-mesh/Default,$(1))
   VARIANT:=supplicant-mesh-wolfssl
   DEPENDS+=+libwolfssl
+endef
+
+define Package/wpa-supplicant-basic
+$(call Package/wpa-supplicant/Default,$(1))
+  TITLE+= (with 11r and 11w)
+  VARIANT:=supplicant-basic
 endef
 
 define Package/wpa-supplicant-mini
@@ -511,6 +542,7 @@ define Package/hostapd/install
 	$(call Install/hostapd,$(1))
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/hostapd/hostapd $(1)/usr/sbin/
 endef
+Package/hostapd-basic/install = $(Package/hostapd/install)
 Package/hostapd-mini/install = $(Package/hostapd/install)
 Package/hostapd-openssl/install = $(Package/hostapd/install)
 Package/hostapd-wolfssl/install = $(Package/hostapd/install)
@@ -530,6 +562,7 @@ define Package/wpad/install
 	$(LN) wpad $(1)/usr/sbin/hostapd
 	$(LN) wpad $(1)/usr/sbin/wpa_supplicant
 endef
+Package/wpad-basic/install = $(Package/wpad/install)
 Package/wpad-mini/install = $(Package/wpad/install)
 Package/wpad-openssl/install = $(Package/wpad/install)
 Package/wpad-wolfssl/install = $(Package/wpad/install)
@@ -540,6 +573,7 @@ define Package/wpa-supplicant/install
 	$(call Install/supplicant,$(1))
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/wpa_supplicant/wpa_supplicant $(1)/usr/sbin/
 endef
+Package/wpa-supplicant-basic/install = $(Package/wpa-supplicant/install)
 Package/wpa-supplicant-mini/install = $(Package/wpa-supplicant/install)
 Package/wpa-supplicant-p2p/install = $(Package/wpa-supplicant/install)
 Package/wpa-supplicant-openssl/install = $(Package/wpa-supplicant/install)
@@ -576,18 +610,21 @@ ifeq ($(BUILD_VARIANT),supplicant-full-wolfssl)
 endif
 
 $(eval $(call BuildPackage,hostapd))
+$(eval $(call BuildPackage,hostapd-basic))
 $(eval $(call BuildPackage,hostapd-mini))
 $(eval $(call BuildPackage,hostapd-openssl))
 $(eval $(call BuildPackage,hostapd-wolfssl))
 $(eval $(call BuildPackage,wpad))
 $(eval $(call BuildPackage,wpad-mesh-openssl))
 $(eval $(call BuildPackage,wpad-mesh-wolfssl))
+$(eval $(call BuildPackage,wpad-basic))
 $(eval $(call BuildPackage,wpad-mini))
 $(eval $(call BuildPackage,wpad-openssl))
 $(eval $(call BuildPackage,wpad-wolfssl))
 $(eval $(call BuildPackage,wpa-supplicant))
 $(eval $(call BuildPackage,wpa-supplicant-mesh-openssl))
 $(eval $(call BuildPackage,wpa-supplicant-mesh-wolfssl))
+$(eval $(call BuildPackage,wpa-supplicant-basic))
 $(eval $(call BuildPackage,wpa-supplicant-mini))
 $(eval $(call BuildPackage,wpa-supplicant-p2p))
 $(eval $(call BuildPackage,wpa-supplicant-openssl))
