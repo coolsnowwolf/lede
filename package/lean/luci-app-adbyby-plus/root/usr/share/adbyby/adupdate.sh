@@ -21,4 +21,4 @@ fi
 
 rm -f /tmp/lazy.txt /tmp/video.txt /tmp/user.action
 
-/etc/init.d/adbyby restart
+[ ! -f "/tmp/adbyby.mem" ] && /etc/init.d/adbyby restart
