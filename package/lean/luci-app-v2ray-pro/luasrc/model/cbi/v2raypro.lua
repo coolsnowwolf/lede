@@ -100,6 +100,7 @@ network_type = s:taboption("main",ListValue, "network_type", translate("Network 
 network_type:value("tcp")
 network_type:value("kcp")
 network_type:value("ws")
+network_type:value("h2")
 
 -- tcp settings
 tcp_obfs = s:taboption("main",ListValue, "tcp_obfs", translate("TCP Obfs"))
@@ -158,6 +159,14 @@ ws_path:depends("network_type", "ws")
 ws_headers = s:taboption("main",Value, "ws_headers", translate("WebSocket Header"))
 ws_headers:depends("network_type", "ws")
 ws_headers.datatype = "host"
+
+-- http/2 settings
+h2_path = s:taboption("main",Value, "h2_path", translate("HTTP Path"))
+h2_path:depends("network_type", "h2")
+
+h2_domain = s:taboption("main",Value, "h2_domain", translate("HTTP Domain"))
+h2_domain:depends("network_type", "h2")
+h2_domain.datatype = "host"
 
 -- others
 tls = s:taboption("main",Flag, "tls", translate("TLS"))
