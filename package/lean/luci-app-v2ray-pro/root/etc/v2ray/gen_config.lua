@@ -137,6 +137,13 @@ local v2ray	= {
 					Host = ucursor:get(conf_path, "v2raypro", "ws_headers")
 				} or nil,
 			} or nil,
+
+			httpSettings = (v2ray_stream_mode == "h2") and {
+				path = ucursor:get(conf_path, "v2raypro", "h2_path"),
+				host = (ucursor:get(conf_path, "v2raypro", "h2_domain") ~= nil) and {
+					ucursor:get(conf_path, "v2raypro", "h2_domain")
+				} or nil,
+			} or nil,
 		},
 		mux = {
 			enabled = (ucursor:get(conf_path, "v2raypro", "mux") == "1") and true or false
