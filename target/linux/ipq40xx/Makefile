@@ -18,6 +18,6 @@ DEFAULT_PACKAGES += \
 	kmod-ath10k wpad-basic \
 	kmod-usb3 kmod-usb-dwc3-of-simple kmod-usb-phy-qcom-dwc3 \
 	ath10k-firmware-qca4019 \
-	automount autosamba
+	automount autosamba luci-app-ipsec-vpnd luci-app-zerotier htop
 
 $(eval $(call BuildTarget))
