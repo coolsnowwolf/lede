@@ -338,7 +338,7 @@ TARGET_DEVICES += re350-v1
 define Device/re6500
   DTS := RE6500
   DEVICE_TITLE := Linksys RE6500
-  DEVICE_PACKAGES := -luci-app-ipsec-vpnd kmod-mt76x2 wpad-basic
+  DEVICE_PACKAGES := kmod-mt76x2 wpad-basic
 endef
 TARGET_DEVICES += re6500
 
