@@ -43,7 +43,7 @@ local ND = SYS.exec("cat /usr/share/adbyby/dnsmasq.adblock | wc -l")
 
 o = s:taboption("basic", Button, "restart")
 o.title = translate("Adbyby and Rule state")
-o.inputtitle = translate("Restart Adbyby")
+o.inputtitle = translate("Manually force update")
 o.description = translate(string.format("<strong>Lazy Rule：</strong>%s <strong>&nbsp;&nbsp;Video Rule：</strong>%s<br /><strong>Third Party Subscription Rule：</strong>%d lines&nbsp;&nbsp;<strong>User-defined Rule：</strong>%d lines", DL, DV, math.abs(NR-NU), NR))
 o.inputstyle = "reload"
 o.write = function()
@@ -66,11 +66,6 @@ updatead.inputstyle = "apply"
 updatead.write = function()
 	SYS.call("nohup sh /usr/share/adbyby/adblock.sh > /tmp/adupdate.log 2>&1 &")
 end
-
-o = s:taboption("advanced", Flag, "update_source")
-o.title = translate("Update adbyby rules form official website first")
-o.default = 1
-o.rmempty = false
 
 o = s:taboption("advanced", Flag, "block_ios")
 o.title = translate("Block Apple iOS OTA update")
