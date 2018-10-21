@@ -6,10 +6,10 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI support for SSR Plus
-LUCI_DEPENDS:=+shadowsocksr-libev +ipset +ip-full +iptables-mod-tproxy +dnsmasq-full +coreutils +coreutils-base64 +bash +pdnsd-alt +wget
+LUCI_DEPENDS:=+shadowsocksr-libev-alt +ipset +ip-full +iptables-mod-tproxy +dnsmasq-full +coreutils +coreutils-base64 +bash +pdnsd-alt +wget
 LUCI_PKGARCH:=all
 PKG_VERSION:=1
-PKG_RELEASE:=22
+PKG_RELEASE:=23
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
