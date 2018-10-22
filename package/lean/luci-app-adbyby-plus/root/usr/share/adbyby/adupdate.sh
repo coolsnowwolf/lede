@@ -28,5 +28,3 @@ else
 fi
 
 rm -f /tmp/lazy.txt /tmp/video.txt /tmp/local-md5.json /tmp/md5.json
-sleep 10 && /etc/init.d/adbyby restart
-
