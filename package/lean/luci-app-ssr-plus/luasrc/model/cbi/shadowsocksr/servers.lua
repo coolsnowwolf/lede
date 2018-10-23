@@ -41,7 +41,7 @@ o = s:option(Button,"delete",translate("Delete all severs"))
 o.inputstyle = "reset"
 o.write = function()
   luci.sys.call("nohup bash /usr/share/shadowsocksr/delservers.sh > /tmp/subupdate.log 2>&1 &")
-  luci.sys.call("sleep 3")
+  luci.sys.call("sleep 5")
   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
 end
 
