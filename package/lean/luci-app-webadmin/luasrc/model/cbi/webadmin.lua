@@ -8,7 +8,7 @@ local m = Map("uhttpd", translate("Web Admin Settings"),
 
 local ucs = m:section(TypedSection, "uhttpd")
 ucs.addremove = false
-ucs.anonymous = false
+ucs.anonymous = true
 
 lhttp = ucs:option(DynamicList, "listen_http", translate("HTTP listeners (address:port)"), translate("Bind to specific interface:port (by specifying interface address"))
 lhttp.datatype = "list(ipaddrport(1))"

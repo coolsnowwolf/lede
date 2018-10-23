@@ -1,4 +1,4 @@
--- Copyright 2015 Daniel Dickinson <openwrt@daniel.thecshore.com>
+-- Copyright 2018 lean <coolsnowwolf@gmail.com>
 -- Licensed to the public under the Apache License 2.0.
 
 module("luci.controller.webadmin", package.seeall)
