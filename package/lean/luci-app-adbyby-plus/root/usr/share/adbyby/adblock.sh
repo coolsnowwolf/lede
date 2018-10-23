@@ -11,7 +11,4 @@ if [ -s "/tmp/dnsmasq.adblock" ];then
 fi
 
 sh /usr/share/adbyby/adupdate.sh
-
-
-
-
+sleep 10 && /etc/init.d/adbyby restart
