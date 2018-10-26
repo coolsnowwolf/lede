@@ -185,7 +185,10 @@ endef
 
 define Package/shadowsocksr-libev-alt/install
 	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/ss-local $(1)/usr/bin/ssr-local
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/ss-redir $(1)/usr/bin/ssr-redir
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/ss-check $(1)/usr/bin/ssr-check
+	$(LN) ssr-local $(1)/usr/bin/ssr-tunnel
 endef
 
 Package/shadowsocksr-libev-polarssl/install=$(Package/shadowsocksr-libev/install)

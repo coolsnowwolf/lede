@@ -661,6 +661,7 @@ define Device/wndr3800
   DEVICE_TITLE := NETGEAR WNDR3800
   NETGEAR_BOARD_ID := WNDR3800
   NETGEAR_HW_ID := 29763654+16+128
+  DEVICE_PACKAGES := luci-app-ipsec-vpnd automount autosamba
 endef
 TARGET_DEVICES += wndr3800
 

@@ -67,11 +67,6 @@ updatead.write = function()
 	SYS.call("nohup sh /usr/share/adbyby/adblock.sh > /tmp/adupdate.log 2>&1 &")
 end
 
-o = s:taboption("advanced", Flag, "update_source")
-o.title = translate("Update adbyby rules form official website first")
-o.default = 1
-o.rmempty = false
-
 o = s:taboption("advanced", Flag, "block_ios")
 o.title = translate("Block Apple iOS OTA update")
 o.default = 0
