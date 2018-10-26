@@ -5,6 +5,12 @@ define LegacyDevice/A60
 endef
 LEGACY_DEVICES += A60
 
+define LegacyDevice/SGRW500N85BV2
+  DEVICE_TITLE := sgr-w500-n85b-v2
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ath10k ath10k-firmware-qca988x
+endef
+LEGACY_DEVICES += SGRW500N85BV2
+
 define LegacyDevice/ALFANX
   DEVICE_TITLE := ALFA Network N2/N5 board
 endef
