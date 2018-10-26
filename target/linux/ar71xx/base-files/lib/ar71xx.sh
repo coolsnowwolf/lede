@@ -781,6 +781,9 @@ ar71xx_board_detect() {
 	*"GL-USB150")
 		name="gl-usb150"
 		;;
+	"GRENTECH SGR-W500-N85b v2.0")
+		name="sgr-w500-n85b-v2"
+		;;
 	*"HiveAP-121")
 		name="hiveap-121"
 		;;
