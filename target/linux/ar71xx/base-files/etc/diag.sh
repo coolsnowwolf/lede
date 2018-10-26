@@ -412,6 +412,9 @@ get_status_led() {
 	smart-300)
 		status_led="nc-link:green:system"
 		;;
+	sgr-w500-n85b-v2)
+		status_led="grentech:green:status"
+		;;
 	qihoo-c301)
 		status_led="qihoo:green:status"
 		;;
