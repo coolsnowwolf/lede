@@ -7,7 +7,7 @@ BOARDNAME:=MT76x8 based boards
 FEATURES+=usb
 CPU_TYPE:=24kc
 
-DEFAULT_PACKAGES += kmod-mt76 wpad-mini
+DEFAULT_PACKAGES += kmod-mt76 wpad-basic
 
 define Target/Description
 	Build firmware images for Ralink MT76x8 based boards.

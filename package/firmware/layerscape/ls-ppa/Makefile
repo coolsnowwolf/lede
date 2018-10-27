@@ -6,106 +6,79 @@
 #
 
 include $(TOPDIR)/rules.mk
-include $(INCLUDE_DIR)/image.mk
 
 PKG_NAME:=ls-ppa
-PKG_SOURCE_DATE:=2018-01-18
+PKG_VERSION:=lsdk-1806
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/yangbolu1991/ppa-binary.git
-PKG_SOURCE_VERSION:=cd295be24cadae51741154f3b1c935c7b9064230
-PKG_MIRROR_HASH:=743ca493f640d5fb2e99ad7b1da030f9088546f1ad70b5d1e61eb98a969c00c5
-
-PKG_BUILD_DIR=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)-$(BUILD_VARIANT)/$(PKG_NAME)-$(PKG_VERSION)
-
-PKG_FLAGS:=nonshared
+PKG_SOURCE_VERSION:=73ce533bed868717b891e5dbf881428f56f11b4e
+PKG_MIRROR_HASH:=d917a692197e8c3c3db6de1f8a4bc0e52dca5fc6fa84a02d68d79072cd6cbc3f
 
 include $(INCLUDE_DIR)/package.mk
 
-define ppa/Default
-	TITLE:=
-	CONFIG:=
+define Package/layerscape-ppa/Config
+  define Package/layerscape-ppa-$(1)
+    SECTION:=firmware
+    CATEGORY:=Firmware
+    TITLE:=$(2)
+    DEPENDS:=@TARGET_layerscape
+    CONFIG:=$(3)
+  endef
 endef
 
-define ppa/ls1043ardb
-	TITLE=PPA firmware $(PKG_VERSION) for NXP ls1043ardb 64b/32b Dev Board
-	CONFIG=ppa-ls1043a.itb
+define Package/layerscape-ppa/ls1012ardb
+  TITLE:=NXP LS1012ARDB PPA binary
+  CONFIG:=ppa-ls1012a.itb
 endef
 
-define ppa/ls1046ardb
-	TITLE=PPA firmware $(PKG_VERSION) for NXP ls1046ardb 64b/32b Dev Board
-	CONFIG=ppa-ls1046a.itb
+define Package/layerscape-ppa/ls1012afrwy
+  TITLE:=NXP LS1012AFRWY PPA binary
+  CONFIG:=ppa-ls1012a.itb
 endef
 
-define ppa/ls1012ardb
-	TITLE=PPA firmware $(PKG_VERSION) for NXP ls1012ardb 64b/32b Dev Board
-	CONFIG=ppa-ls1012a.itb
+define Package/layerscape-ppa/ls1043ardb
+  TITLE:=NXP LS1043ARDB PPA binary
+  CONFIG:=ppa-ls1043a.itb
 endef
 
-define ppa/ls1088ardb
-	TITLE=PPA firmware $(PKG_VERSION) for NXP ls1088ardb 64b/32b Dev Board
-	CONFIG=ppa-ls1088a.itb
+define Package/layerscape-ppa/ls1046ardb
+  TITLE:=NXP LS1046ARDB PPA binary
+  CONFIG:=ppa-ls1046a.itb
 endef
 
-define ppa/ls2088ardb
-	TITLE=PPA firmware $(PKG_VERSION) for NXP ls2088ardb 64b/32b Dev Board
-	CONFIG=ppa-ls2088a.itb
+define Package/layerscape-ppa/ls1088ardb
+  TITLE:=NXP LS1088ARDB PPA binary
+  CONFIG:=ppa-ls1088a.itb
 endef
 
-define ppa/ls1012afrdm
-	TITLE=PPA firmware $(PKG_VERSION) for NXP ls1012afrdm 64b/32b Dev Board
-	CONFIG=ppa-ls1012a.itb
+define Package/layerscape-ppa/ls2088ardb
+  TITLE:=NXP LS2088ARDB PPA binary
+  CONFIG:=ppa-ls2088a.itb
 endef
-
-PPAS := \
-	ls1043ardb \
-	ls1046ardb \
-	ls1012ardb \
-	ls1088ardb \
-	ls2088ardb \
-	ls1012afrdm
-
-define Package/ppa/template
-define Package/layerscape-ppa-$(1)
-	SECTION:=firmware
-	CATEGORY:=Firmware
-	DEPENDS:= @TARGET_layerscape
-	TITLE:=$(2)
-	VARIANT:=$(1)
-endef
-endef
-
-define BuildPPAPackage
-	$(eval $(ppa/Default))
-	$(eval $(ppa/$(1)))
-	$(call Package/ppa/template,$(1),$(TITLE))
-endef
-
-ifdef BUILD_VARIANT
-$(eval $(call ppa/$(BUILD_VARIANT)))
-PPA_CONFIG:=$(if $(CONFIG),$(CONFIG),$(BUILD_VARIANT))
-endif
 
 define Build/Compile
 endef
 
-define Package/ppa/install/default
+define Package/layerscape-ppa/Install
+  define Package/layerscape-ppa-$(1)/install
 	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)
-	$(CP) $(PKG_BUILD_DIR)/$(PPA_CONFIG) $(STAGING_DIR_IMAGE)/$(1)-ppa.itb
+	$(CP) $(PKG_BUILD_DIR)/$(CONFIG) $(STAGING_DIR_IMAGE)/$(1)-ppa.itb
+  endef
 endef
 
-define Package/ppa/install/template
-define Package/layerscape-ppa-$(1)/install
-	$(call Package/ppa/install/default,$(2))
-endef
-endef
+PPAS := \
+  ls1012ardb \
+  ls1012afrwy \
+  ls1043ardb \
+  ls1046ardb \
+  ls1088ardb \
+  ls2088ardb
 
-$(foreach r,$(PPAS), \
-	$(eval $(call Package/ppa/install/template,$(r),$(r))) \
-)
-
-$(foreach r,$(PPAS), \
-	$(eval $(call BuildPPAPackage,$(r))) \
-	$(eval $(call BuildPackage,layerscape-ppa-$(r))) \
+$(foreach ppa,$(PPAS), \
+	$(eval $(Package/layerscape-ppa/$(ppa))) \
+	$(eval $(call Package/layerscape-ppa/Config,$(ppa),$(TITLE),$(CONFIG))) \
+	$(eval $(call Package/layerscape-ppa/Install,$(ppa))) \
+	$(eval $(call BuildPackage,layerscape-ppa-$(ppa))) \
 )
