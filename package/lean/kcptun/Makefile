@@ -46,7 +46,7 @@ endef
 
 define Build/Prepare
 	tar -xzvf $(DL_DIR)/$(PKG_SOURCE) -C $(PKG_BUILD_DIR)
-	[ -f $(PKG_BUILD_DIR)/client_linux_arm6 ] mv $(PKG_BUILD_DIR)/client_linux_arm6 $(PKG_BUILD_DIR)/client_linux_arm
+	if [ -f $(PKG_BUILD_DIR)/client_linux_arm6 ]; then mv -f $(PKG_BUILD_DIR)/client_linux_arm6 $(PKG_BUILD_DIR)/client_linux_arm; fi
 endef
 
 define Build/Configure
