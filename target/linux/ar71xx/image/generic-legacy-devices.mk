@@ -6,7 +6,7 @@ endef
 LEGACY_DEVICES += A60
 
 define LegacyDevice/SGRW500N85BV2
-  DEVICE_TITLE := sgr-w500-n85b-v2
+  DEVICE_TITLE := GRENTECH SGR-W500-N85b v2.0
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-ath10k ath10k-firmware-qca988x
 endef
 LEGACY_DEVICES += SGRW500N85BV2
