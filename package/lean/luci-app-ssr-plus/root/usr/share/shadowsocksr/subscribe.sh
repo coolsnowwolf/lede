@@ -8,18 +8,6 @@ urlsafe_b64decode() {
     echo $data | base64 -d
 }
 
-CheckIPAddr() {
-    echo $1 | grep "^[0-9]\{1,3\}\.\([0-9]\{1,3\}\.\)\{2\}[0-9]\{1,3\}$" >/dev/null 2>&1
-    [ $? -ne 0 ] && return 1
-    local ipaddr=($(echo $1 | sed 's/\./ /g'))
-    [ ${#ipaddr[@]} -ne 4 ] && return 1
-    for ((i=0;i<${#ipaddr[@]};i++))
-    do
-        [ ${ipaddr[i]} -gt 255 -a ${ipaddr[i]} -lt 0 ] && return 1
-    done
-    return 0
-}
-
 Server_Update() {
     local uci_set="uci -q set $name.$1."
     ${uci_set}alias="[$ssr_group] $ssr_remarks"
