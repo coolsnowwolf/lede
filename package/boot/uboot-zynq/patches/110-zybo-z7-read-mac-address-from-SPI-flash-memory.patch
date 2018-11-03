@@ -1,0 +1,107 @@
+From ac8fcc92d87436715ce85f39a4fe4f07c3bfa15e Mon Sep 17 00:00:00 2001
+From: Luis Araneda <luaraneda@gmail.com>
+Date: Sun, 22 Jul 2018 02:52:41 -0400
+Subject: [U-Boot] [RFC PATCH] arm: zynq: read mac address from SPI flash memory
+
+Implement a method for reading the MAC address from an
+SPI flash memory.
+In particular, this method is used by the Zybo Z7 board
+to read the MAC address from the OTP region in the SPI NOR
+memory
+
+Signed-off-by: Luis Araneda <luaraneda@gmail.com>
+---
+As of 2018-08-23, this patch has been sent to U-Boot's mailing list
+and is being reviewed. Some changes on the implementation are expected,
+but the functionality should not change
+---
+ board/xilinx/zynq/board.c      | 28 ++++++++++++++++++++++++++++
+ configs/zynq_zybo_z7_defconfig |  3 +++
+ drivers/misc/Kconfig           | 17 +++++++++++++++++
+ 3 files changed, 48 insertions(+)
+
+--- a/board/xilinx/zynq/board.c
++++ b/board/xilinx/zynq/board.c
+@@ -6,9 +6,12 @@
+ 
+ #include <common.h>
+ #include <dm/uclass.h>
++#include <dm/device.h>
++#include <dm/device-internal.h>
+ #include <fdtdec.h>
+ #include <fpga.h>
+ #include <mmc.h>
++#include <spi_flash.h>
+ #include <watchdog.h>
+ #include <wdt.h>
+ #include <zynqpl.h>
+@@ -83,6 +86,31 @@ int zynq_board_read_rom_ethaddr(unsigned
+ 		printf("I2C EEPROM MAC address read failed\n");
+ #endif
+ 
++#if defined(CONFIG_MAC_ADDR_IN_SPI_FLASH)
++	struct spi_flash *flash;
++	struct udevice *dev;
++	int ret;
++
++	ret = spi_flash_probe_bus_cs(CONFIG_SF_DEFAULT_BUS,
++				     CONFIG_SF_DEFAULT_CS,
++				     0, 0, &dev);
++	if (ret) {
++		printf("SPI(bus:%u cs:%u) probe failed\n",
++		       CONFIG_SF_DEFAULT_BUS,
++		       CONFIG_SF_DEFAULT_CS);
++		return 0;
++	}
++
++	flash = dev_get_uclass_priv(dev);
++	flash->read_cmd = CONFIG_MAC_ADDR_SPI_FLASH_READ_CMD;
++
++	if (spi_flash_read_dm(dev,
++			      CONFIG_MAC_ADDR_SPI_FLASH_DATA_OFFSET,
++			      6, ethaddr))
++		printf("SPI MAC address read failed\n");
++
++	device_remove(dev, DM_REMOVE_NORMAL);
++#endif
+ 	return 0;
+ }
+ 
+--- a/configs/zynq_zybo_z7_defconfig
++++ b/configs/zynq_zybo_z7_defconfig
+@@ -44,6 +44,9 @@ CONFIG_DM_GPIO=y
+ CONFIG_SYS_I2C_ZYNQ=y
+ CONFIG_ZYNQ_I2C0=y
+ CONFIG_ZYNQ_I2C1=y
++CONFIG_MAC_ADDR_IN_SPI_FLASH=y
++CONFIG_MAC_ADDR_SPI_FLASH_READ_CMD=0x4b
++CONFIG_MAC_ADDR_SPI_FLASH_DATA_OFFSET=0x20
+ CONFIG_MMC_SDHCI=y
+ CONFIG_MMC_SDHCI_ZYNQ=y
+ CONFIG_SPI_FLASH=y
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -272,6 +272,23 @@ config SYS_I2C_EEPROM_ADDR_OVERFLOW
+ 
+ endif
+ 
++config MAC_ADDR_IN_SPI_FLASH
++	bool "MAC address in SPI flash"
++	help
++	  Read MAC address from an SPI flash memory
++
++if MAC_ADDR_IN_SPI_FLASH
++
++config MAC_ADDR_SPI_FLASH_READ_CMD
++	hex "Read command for the SPI flash memory"
++	default 0
++
++config MAC_ADDR_SPI_FLASH_DATA_OFFSET
++	hex "Offset of MAC data in SPI flash memory"
++	default 0
++
++endif
++
+ config GDSYS_RXAUI_CTRL
+ 	bool "Enable gdsys RXAUI control driver"
+ 	depends on MISC

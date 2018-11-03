@@ -8,15 +8,15 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mtd-utils
-PKG_VERSION:=1.5.2
+PKG_VERSION:=2.0.2
 PKG_RELEASE:=1
 
-PKG_SOURCE_URL:=git://git.infradead.org/mtd-utils.git
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_VERSION:=aea36417067dade75192bafa03af70b6eb2677b1
-PKG_MIRROR_HASH:=e11b342b85a36b2e438a8412ec52f87621d3046aec1a93039f8c72de9990b2a7
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
+PKG_SOURCE_URL:=ftp://ftp.infradead.org/pub/mtd-utils/
+PKG_HASH:=fb3de61be8e932abb424e8ea3c30298f553d5f970ad158a737bb303bbf9660b8
 
 PKG_INSTALL:=1
+PKG_FIXUP:=autoreconf
 
 PKG_FLAGS:=nonshared
 
@@ -47,19 +47,22 @@ endef
 
 define Package/nand-utils
  $(call Package/mtd-utils/Default)
-  TITLE:=Utilities for nand flash read/write/test
+  TITLE:=Utilities for nand flash erase/read/write/test
 endef
 
 define Package/nand-utils/description
   Utilities for NAND devices.
 endef
 
-MAKE_FLAGS += \
-	DESTDIR="$(PKG_INSTALL_DIR)" \
-	BUILDDIR="$(PKG_BUILD_DIR)" \
-	LDLIBS+="$(LIBGCC_S)" \
-	WITHOUT_XATTR=1 \
-	WITHOUT_LZO=1
+MAKE_FLAGS += LDLIBS+="$(LIBGCC_S)"
+
+CONFIGURE_ARGS += \
+	--disable-tests \
+	--without-xattr \
+	--without-lzo
+
+TARGET_CFLAGS += -ffunction-sections -fdata-sections
+TARGET_LDFLAGS += -Wl,--gc-sections
 
 define Package/ubi-utils/install
 	$(INSTALL_DIR) $(1)/usr/sbin
@@ -72,7 +75,7 @@ endef
 define Package/nand-utils/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) \
-	$(PKG_INSTALL_DIR)/usr/sbin/{nanddump,nandwrite,nandtest,mtdinfo} $(1)/usr/sbin/
+	$(PKG_INSTALL_DIR)/usr/sbin/{flash_erase,nanddump,nandwrite,nandtest,mtdinfo} $(1)/usr/sbin/
 endef
 
 $(eval $(call BuildPackage,ubi-utils))

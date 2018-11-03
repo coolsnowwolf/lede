@@ -353,17 +353,17 @@ UBOOT_TARGETS:= \
 
 define CompressVR9Firmware
 	$(STAGING_DIR_HOST)/bin/lzma e \
-		$(FIRMWARE_LANTIQ_SOURCE)/vr9_phy$(1)_a$(2)x.bin \
+		$(FIRMWARE_LANTIQ_SOURCE)/xrx200_phy$(1)_a$(2)$(3).bin \
 		$(PKG_BUILD_DIR)/arch/mips/cpu/mips32/vrx200/fw_phy$(1)_a$(2)x.blob
 endef
 
 define Build/Prepare
 	$(call Build/Prepare/Default)
 	mkdir -p $(PKG_BUILD_DIR)/arch/mips/cpu/mips32/vrx200/
-	$(call CompressVR9Firmware,11g,1)
-	$(call CompressVR9Firmware,11g,2)
-	$(call CompressVR9Firmware,22f,1)
-	$(call CompressVR9Firmware,22f,2)
+	$(call CompressVR9Firmware,11g,1,4)
+	$(call CompressVR9Firmware,11g,2,2)
+	$(call CompressVR9Firmware,22f,1,4)
+	$(call CompressVR9Firmware,22f,2,2)
 endef
 
 UBOOT_MAKE_FLAGS :=

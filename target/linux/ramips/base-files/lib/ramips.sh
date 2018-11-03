@@ -76,6 +76,9 @@ ramips_board_detect() {
 	*"BC2")
 		name="bc2"
 		;;
+	*"BOCCO")
+		name="bocco"
+		;;
 	*"BR-6475nD")
 		name="br-6475nd"
 		;;
@@ -196,17 +199,11 @@ ramips_board_detect() {
 	*"FireWRT")
 		name="firewrt"
 		;;
-	*"Openwrt Puppies")
-		name="puppies"
-		;;
 	*"Fonera 2.0N")
 		name="fonera20n"
 		;;
 	*"FreeStation5")
 		name="freestation5"
-		;;
-	*"GB-PC1")
-		name="gb-pc1"
 		;;
 	*"GL-MT300A")
 		name="gl-mt300a"
@@ -418,12 +415,6 @@ ramips_board_detect() {
 	*"Q7")
 		name="zte-q7"
 		;;
-	*"R6220B")
-		name="r6220b"
-		;;
-	*"R6220A")
-		name="r6220a"
-		;;
 	*"R6220")
 		name="r6220"
 		;;
@@ -585,9 +576,6 @@ ramips_board_detect() {
 		;;
 	*"WHR-G300N")
 		name="whr-g300n"
-		;;
-	*"WiTi")
-                name="witi"
 		;;
 	*"WIZARD 8800")
 		name="wizard8800"

@@ -124,7 +124,7 @@ char md5salt_boot[MD5SUM_LEN] = {
 static struct flash_layout layouts[] = {
 	{
 		.id		= "4Mmtk",
-		.fw_max_len	= 0x3c0000,
+		.fw_max_len	= 0x3d0000,
 		.kernel_la	= 0x80000000,
 		.kernel_ep	= 0x80000000,
 		.rootfs_ofs	= 0x140000,

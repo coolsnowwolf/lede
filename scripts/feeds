@@ -59,7 +59,8 @@ sub parse_config() {
 		my $valid = 1;
 		$line[0] =~ /^src-[\w-]+$/ or $valid = 0;
 		$line[1] =~ /^\w+$/ or $valid = 0;
-		@src = split /\s+/, $line[2];
+		@src = split /\s+/, ($line[2] or '');
+		@src = ('') if @src == 0;
 		$valid or die "Syntax error in feeds.conf, line: $line\n";
 
 		$name{$line[1]} and die "Duplicate feed name '$line[1]', line: $line\n";
@@ -105,8 +106,8 @@ sub update_index($)
 	-d "./feeds/$name.tmp/info" or mkdir "./feeds/$name.tmp/info" or return 1;
 
 	system("$mk -s prepare-mk OPENWRT_BUILD= TMP_DIR=\"$ENV{TOPDIR}/feeds/$name.tmp\"");
-	system("$mk -s -f include/scan.mk IS_TTY=1 SCAN_TARGET=\"packageinfo\" SCAN_DIR=\"feeds/$name\" SCAN_NAME=\"package\" SCAN_DEPS=\"$ENV{TOPDIR}/include/package*.mk\" SCAN_DEPTH=5 SCAN_EXTRA=\"\" TMP_DIR=\"$ENV{TOPDIR}/feeds/$name.tmp\"");
-	system("$mk -s -f include/scan.mk IS_TTY=1 SCAN_TARGET=\"targetinfo\" SCAN_DIR=\"feeds/$name\" SCAN_NAME=\"target\" SCAN_DEPS=\"profiles/*.mk $ENV{TOPDIR}/include/target.mk\" SCAN_DEPTH=5 SCAN_EXTRA=\"\" SCAN_MAKEOPTS=\"TARGET_BUILD=1\" TMP_DIR=\"$ENV{TOPDIR}/feeds/$name.tmp\"");
+	system("$mk -s -f include/scan.mk IS_TTY=1 SCAN_TARGET=\"packageinfo\" SCAN_DIR=\"feeds/$name\" SCAN_NAME=\"package\" SCAN_DEPTH=5 SCAN_EXTRA=\"\" TMP_DIR=\"$ENV{TOPDIR}/feeds/$name.tmp\"");
+	system("$mk -s -f include/scan.mk IS_TTY=1 SCAN_TARGET=\"targetinfo\" SCAN_DIR=\"feeds/$name\" SCAN_NAME=\"target\" SCAN_DEPTH=5 SCAN_EXTRA=\"\" SCAN_MAKEOPTS=\"TARGET_BUILD=1\" TMP_DIR=\"$ENV{TOPDIR}/feeds/$name.tmp\"");
 	system("ln -sf $name.tmp/.packageinfo ./feeds/$name.index");
 	system("ln -sf $name.tmp/.targetinfo ./feeds/$name.targetindex");
 
@@ -127,12 +128,17 @@ my %update_method = (
 		'init'		=> "ln -s '%s' '%s'",
 		'update'	=> "",
 		'revision'	=> "echo -n 'local'"},
+	'src-dummy' => {
+		'init'		=> "true '%s' && mkdir '%s'",
+		'update'	=> "",
+		'revision'	=> "echo -n 'dummy'"},
 	'src-git' => {
 		'init'          => "git clone --depth 1 '%s' '%s'",
 		'init_branch'   => "git clone --depth 1 --branch '%s' '%s' '%s'",
 		'init_commit'   => "git clone '%s' '%s' && cd '%s' && git checkout -b '%s' '%s' && cd -",
 		'update'	=> "git pull --ff",
 		'update_force'	=> "git pull --ff || (git reset --hard HEAD; git pull --ff; exit 1)",
+		'post_update'	=> "git submodule update --init --recursive",
 		'controldir'	=> ".git",
 		'revision'	=> "git rev-parse --short HEAD | tr -d '\n'"},
 	'src-git-full' => {
@@ -141,6 +147,7 @@ my %update_method = (
 		'init_commit'   => "git clone '%s' '%s' && cd '%s' && git checkout -b '%s' '%s' && cd -",
 		'update'	=> "git pull --ff",
 		'update_force'	=> "git pull --ff || (git reset --hard HEAD; git pull --ff; exit 1)",
+		'post_update'	=> "git submodule update --init --recursive",
 		'controldir'	=> ".git",
 		'revision'	=> "git rev-parse --short HEAD | tr -d '\n'"},
 	'src-gitsvn' => {
@@ -196,6 +203,10 @@ sub update_feed_via($$$$$) {
 			$update_cmd = $m->{'update_force'};
 		}
 		system("cd '$safepath'; $update_cmd") == 0 or return 1;
+	}
+	if ($m->{'post_update'}) {
+		my $cmd = $m->{'post_update'};
+		system("cd '$safepath'; $cmd") == 0 or return 1;
 	}
 
 	return 0;
@@ -813,11 +824,12 @@ sub feed_config() {
 		my $installed = (-f "feeds/$feed->[1].index");
 
 		printf "\tconfig FEED_%s\n", $feed->[1];
-		printf "\t\tbool \"Enable feed %s\"\n", $feed->[1];
+		printf "\t\ttristate \"Enable feed %s\"\n", $feed->[1];
 		printf "\t\tdepends on PER_FEED_REPO\n";
 		printf "\t\tdefault y\n" if $installed;
 		printf "\t\thelp\n";
-		printf "\t\t Enable the \\\"%s\\\" feed at %s.\n", $feed->[1], $feed->[2][0];
+		printf "\t\t Enable the \\\"%s\\\" feed in opkg distfeeds.conf.\n", $feed->[1];
+		printf "\t\t Say M to add the feed commented out.\n";
 		printf "\n";
 	}
 

@@ -13,14 +13,18 @@ endef
 define Build/Compile
 endef
 
-ALLWIFIBOARDS:=asus_rt-ac58u avm_fritzbox-4040 glinet_gl-b1300 meraki_mr33
+#ALLWIFIBOARDS:=<devicename>
+# Please send a mail with your device-specific board files upstream.
+# You can find instructions and examples on the linux-wireless wiki:
+# <https://wireless.wiki.kernel.org/en/users/drivers/ath10k/boardfiles>
+ALLWIFIBOARDS:=rt-acrh17 zyxel_nbg6617 zyxel_wre6606
 ALLWIFIPACKAGES:=$(foreach BOARD,$(ALLWIFIBOARDS),ipq-wifi-$(BOARD))
 
 define Package/ipq-wifi-default
   SUBMENU:=ath10k IPQ4019 Boarddata
   SECTION:=firmware
   CATEGORY:=Firmware
-  DEPENDS:=@TARGET_ipq40xx +ath10k-firmware-qca4019
+  DEPENDS:=@TARGET_ipq40xx
   TITLE:=Custom Board
 endef
 
@@ -47,9 +51,9 @@ Don't install it for any other device!
   PREV_BOARD+=ipq-wifi-$(1)
 endef
 
-$(eval $(call generate-ipq-wifi-package,asus_rt-ac58u,board-asus_rt-ac58u.bin,ASUS RT-AC58U))
-$(eval $(call generate-ipq-wifi-package,avm_fritzbox-4040,board-avm_fritzbox-4040.bin,AVM FRITZ!Box 4040))
-$(eval $(call generate-ipq-wifi-package,glinet_gl-b1300,board-glinet_gl-b1300.bin,GL.iNet GL-B1300))
-$(eval $(call generate-ipq-wifi-package,meraki_mr33,board-meraki_mr33.bin,Cisco Meraki MR33))
+$(eval $(call generate-ipq-wifi-package,rt-acrh17,board-rt-acrh17.bin,ASUS RT-ACRH17/RT-AC82U/RT-AC42U))
+$(eval $(call generate-ipq-wifi-package,zyxel_wre6606,board-zyxel_wre6606.bin,ZyXEL WRE6606))
+#$(eval $(call generate-ipq-wifi-package,<devicename>,<filename>,<displayname>))
+$(eval $(call generate-ipq-wifi-package,zyxel_nbg6617,board-zyxel_nbg6617.bin,ZyXEL NBG6617))
 
 $(foreach PACKAGE,$(ALLWIFIPACKAGES),$(eval $(call BuildPackage,$(PACKAGE))))

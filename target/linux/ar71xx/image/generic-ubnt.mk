@@ -52,6 +52,7 @@ define Device/ubnt-xm
   DEVICE_PACKAGES += kmod-usb-ohci
   UBNT_TYPE := XM
   UBNT_CHIP := ar7240
+  KERNEL := kernel-bin | patch-cmdline | relocate-kernel | lzma | uImage lzma
 endef
 
 define Device/ubnt-xw
@@ -113,7 +114,7 @@ define Device/ubnt-unifiac
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2
   DEVICE_PROFILE := UBNT
   IMAGE_SIZE := 7744k
-  MTDPARTS := spi0.0:384k(u-boot)ro,64k(u-boot-env)ro,7744k(firmware),7744k(ubnt-airos)ro,128k(bs)ro,256k(cfg)ro,64k(EEPROM)ro
+  MTDPARTS := spi0.0:384k(u-boot)ro,64k(u-boot-env)ro,7744k(firmware),7744k(ubnt-airos)ro,128k(bs),256k(cfg)ro,64k(EEPROM)ro
   IMAGES := sysupgrade.bin
   IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | check-size $$$$(IMAGE_SIZE)
 endef
@@ -156,6 +157,13 @@ define Device/ubnt-nano-m-xw
   BOARDNAME := UBNT-NM-XW
 endef
 TARGET_DEVICES += ubnt-nano-m-xw
+
+define Device/ubnt-lbe-m5
+  $(Device/ubnt-xw)
+  DEVICE_TITLE := Ubiquiti Litebeam M5
+  BOARDNAME := UBNT-LBE-M5
+endef
+TARGET_DEVICES += ubnt-lbe-m5
 
 define Device/ubnt-loco-m-xw
   $(Device/ubnt-xw)
@@ -251,9 +259,9 @@ TARGET_DEVICES += ubnt-ls-sr71
 
 define Device/ubnt-uap-pro
   DEVICE_TITLE := Ubiquiti UAP Pro
-  KERNEL_SIZE := 1536k
+  KERNEL_SIZE := 1792k
   IMAGE_SIZE := 15744k
-  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,1536k(kernel),14208k(rootfs),256k(cfg)ro,64k(EEPROM)ro,15744k@0x50000(firmware)
+  MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env)ro,1792k(kernel),13952k(rootfs),256k(cfg)ro,64k(EEPROM)ro,15744k@0x50000(firmware)
   UBNT_TYPE := BZ
   UBNT_CHIP := ar934x
   BOARDNAME := UAP-PRO
@@ -263,6 +271,7 @@ define Device/ubnt-uap-pro
   IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-rootfs | pad-rootfs | check-size $$$$(IMAGE_SIZE)
   IMAGE/factory.bin := $$(IMAGE/sysupgrade.bin) | mkubntimage2
 endef
+TARGET_DEVICES += ubnt-uap-pro
 
 define Device/ubnt-unifi-outdoor-plus
   $(Device/ubnt-uap-pro)
@@ -271,3 +280,4 @@ define Device/ubnt-unifi-outdoor-plus
   BOARDNAME := UBNT-UOP
   DEVICE_PROFILE := UBNT
 endef
+TARGET_DEVICES += ubnt-unifi-outdoor-plus

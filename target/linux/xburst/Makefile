@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 ARCH:=mipsel
 BOARD:=xburst
 BOARDNAME:=Ingenic XBurst
-FEATURES:=targz nand ubifs audio
+FEATURES:=targz nand ubifs audio source-only
 SUBTARGETS:=qi_lb60
 
 KERNEL_PATCHVER:=3.18

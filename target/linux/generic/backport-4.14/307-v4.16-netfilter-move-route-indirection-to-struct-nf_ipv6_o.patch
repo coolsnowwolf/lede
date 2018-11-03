@@ -1,0 +1,349 @@
+From: Pablo Neira Ayuso <pablo@netfilter.org>
+Date: Mon, 27 Nov 2017 22:29:52 +0100
+Subject: [PATCH] netfilter: move route indirection to struct nf_ipv6_ops
+
+We cannot make a direct call to nf_ip6_route() because that would result
+in autoloading the 'ipv6' module because of symbol dependencies.
+Therefore, define route indirection in nf_ipv6_ops where this really
+belongs to.
+
+For IPv4, we can indeed make a direct function call, which is faster,
+given IPv4 is built-in in the networking code by default. Still,
+CONFIG_INET=n and CONFIG_NETFILTER=y is possible, so define empty inline
+stub for IPv4 in such case.
+
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/include/linux/netfilter.h
++++ b/include/linux/netfilter.h
+@@ -311,8 +311,6 @@ struct nf_queue_entry;
+ 
+ struct nf_afinfo {
+ 	unsigned short	family;
+-	int		(*route)(struct net *net, struct dst_entry **dst,
+-				 struct flowi *fl, bool strict);
+ 	int		(*reroute)(struct net *net, struct sk_buff *skb,
+ 				   const struct nf_queue_entry *entry);
+ 	int		route_key_size;
+@@ -331,6 +329,8 @@ __sum16 nf_checksum(struct sk_buff *skb,
+ __sum16 nf_checksum_partial(struct sk_buff *skb, unsigned int hook,
+ 			    unsigned int dataoff, unsigned int len,
+ 			    u_int8_t protocol, unsigned short family);
++int nf_route(struct net *net, struct dst_entry **dst, struct flowi *fl,
++	     bool strict, unsigned short family);
+ 
+ int nf_register_afinfo(const struct nf_afinfo *afinfo);
+ void nf_unregister_afinfo(const struct nf_afinfo *afinfo);
+--- a/include/linux/netfilter_ipv4.h
++++ b/include/linux/netfilter_ipv4.h
+@@ -24,6 +24,8 @@ __sum16 nf_ip_checksum(struct sk_buff *s
+ __sum16 nf_ip_checksum_partial(struct sk_buff *skb, unsigned int hook,
+ 			       unsigned int dataoff, unsigned int len,
+ 			       u_int8_t protocol);
++int nf_ip_route(struct net *net, struct dst_entry **dst, struct flowi *fl,
++		bool strict);
+ #else
+ static inline __sum16 nf_ip_checksum(struct sk_buff *skb, unsigned int hook,
+ 				     unsigned int dataoff, u_int8_t protocol)
+@@ -38,6 +40,11 @@ static inline __sum16 nf_ip_checksum_par
+ {
+ 	return 0;
+ }
++static inline int nf_ip_route(struct net *net, struct dst_entry **dst,
++			      struct flowi *fl, bool strict)
++{
++	return -EOPNOTSUPP;
++}
+ #endif /* CONFIG_INET */
+ 
+ #endif /*__LINUX_IP_NETFILTER_H*/
+--- a/include/linux/netfilter_ipv6.h
++++ b/include/linux/netfilter_ipv6.h
+@@ -33,6 +33,8 @@ struct nf_ipv6_ops {
+ 	__sum16 (*checksum_partial)(struct sk_buff *skb, unsigned int hook,
+ 				    unsigned int dataoff, unsigned int len,
+ 				    u_int8_t protocol);
++	int (*route)(struct net *net, struct dst_entry **dst, struct flowi *fl,
++		     bool strict);
+ };
+ 
+ #ifdef CONFIG_NETFILTER
+--- a/net/bridge/netfilter/nf_tables_bridge.c
++++ b/net/bridge/netfilter/nf_tables_bridge.c
+@@ -101,15 +101,8 @@ static int nf_br_reroute(struct net *net
+ 	return 0;
+ }
+ 
+-static int nf_br_route(struct net *net, struct dst_entry **dst,
+-		       struct flowi *fl, bool strict __always_unused)
+-{
+-	return 0;
+-}
+-
+ static const struct nf_afinfo nf_br_afinfo = {
+ 	.family                 = AF_BRIDGE,
+-	.route                  = nf_br_route,
+ 	.reroute                = nf_br_reroute,
+ 	.route_key_size         = 0,
+ };
+--- a/net/ipv4/netfilter.c
++++ b/net/ipv4/netfilter.c
+@@ -150,8 +150,8 @@ __sum16 nf_ip_checksum_partial(struct sk
+ }
+ EXPORT_SYMBOL_GPL(nf_ip_checksum_partial);
+ 
+-static int nf_ip_route(struct net *net, struct dst_entry **dst,
+-		       struct flowi *fl, bool strict __always_unused)
++int nf_ip_route(struct net *net, struct dst_entry **dst, struct flowi *fl,
++		bool strict __always_unused)
+ {
+ 	struct rtable *rt = ip_route_output_key(net, &fl->u.ip4);
+ 	if (IS_ERR(rt))
+@@ -159,10 +159,10 @@ static int nf_ip_route(struct net *net,
+ 	*dst = &rt->dst;
+ 	return 0;
+ }
++EXPORT_SYMBOL_GPL(nf_ip_route);
+ 
+ static const struct nf_afinfo nf_ip_afinfo = {
+ 	.family			= AF_INET,
+-	.route			= nf_ip_route,
+ 	.reroute		= nf_ip_reroute,
+ 	.route_key_size		= sizeof(struct ip_rt_info),
+ };
+--- a/net/ipv6/netfilter.c
++++ b/net/ipv6/netfilter.c
+@@ -171,11 +171,11 @@ static const struct nf_ipv6_ops ipv6ops
+ 	.fragment		= ip6_fragment,
+ 	.checksum		= nf_ip6_checksum,
+ 	.checksum_partial	= nf_ip6_checksum_partial,
++	.route			= nf_ip6_route,
+ };
+ 
+ static const struct nf_afinfo nf_ip6_afinfo = {
+ 	.family			= AF_INET6,
+-	.route			= nf_ip6_route,
+ 	.reroute		= nf_ip6_reroute,
+ 	.route_key_size		= sizeof(struct ip6_rt_info),
+ };
+--- a/net/ipv6/netfilter/nft_fib_ipv6.c
++++ b/net/ipv6/netfilter/nft_fib_ipv6.c
+@@ -60,7 +60,6 @@ static u32 __nft_fib6_eval_type(const st
+ {
+ 	const struct net_device *dev = NULL;
+ 	const struct nf_ipv6_ops *v6ops;
+-	const struct nf_afinfo *afinfo;
+ 	int route_err, addrtype;
+ 	struct rt6_info *rt;
+ 	struct flowi6 fl6 = {
+@@ -69,8 +68,8 @@ static u32 __nft_fib6_eval_type(const st
+ 	};
+ 	u32 ret = 0;
+ 
+-	afinfo = nf_get_afinfo(NFPROTO_IPV6);
+-	if (!afinfo)
++	v6ops = nf_get_ipv6_ops();
++	if (!v6ops)
+ 		return RTN_UNREACHABLE;
+ 
+ 	if (priv->flags & NFTA_FIB_F_IIF)
+@@ -80,12 +79,11 @@ static u32 __nft_fib6_eval_type(const st
+ 
+ 	nft_fib6_flowi_init(&fl6, priv, pkt, dev, iph);
+ 
+-	v6ops = nf_get_ipv6_ops();
+-	if (dev && v6ops && v6ops->chk_addr(nft_net(pkt), &fl6.daddr, dev, true))
++	if (dev && v6ops->chk_addr(nft_net(pkt), &fl6.daddr, dev, true))
+ 		ret = RTN_LOCAL;
+ 
+-	route_err = afinfo->route(nft_net(pkt), (struct dst_entry **)&rt,
+-				  flowi6_to_flowi(&fl6), false);
++	route_err = v6ops->route(nft_net(pkt), (struct dst_entry **)&rt,
++				 flowi6_to_flowi(&fl6), false);
+ 	if (route_err)
+ 		goto err;
+ 
+--- a/net/netfilter/nf_conntrack_h323_main.c
++++ b/net/netfilter/nf_conntrack_h323_main.c
+@@ -24,6 +24,7 @@
+ #include <linux/skbuff.h>
+ #include <net/route.h>
+ #include <net/ip6_route.h>
++#include <linux/netfilter_ipv6.h>
+ 
+ #include <net/netfilter/nf_conntrack.h>
+ #include <net/netfilter/nf_conntrack_core.h>
+@@ -732,14 +733,8 @@ static int callforward_do_filter(struct
+ 				 const union nf_inet_addr *dst,
+ 				 u_int8_t family)
+ {
+-	const struct nf_afinfo *afinfo;
+ 	int ret = 0;
+ 
+-	/* rcu_read_lock()ed by nf_hook_thresh */
+-	afinfo = nf_get_afinfo(family);
+-	if (!afinfo)
+-		return 0;
+-
+ 	switch (family) {
+ 	case AF_INET: {
+ 		struct flowi4 fl1, fl2;
+@@ -750,10 +745,10 @@ static int callforward_do_filter(struct
+ 
+ 		memset(&fl2, 0, sizeof(fl2));
+ 		fl2.daddr = dst->ip;
+-		if (!afinfo->route(net, (struct dst_entry **)&rt1,
+-				   flowi4_to_flowi(&fl1), false)) {
+-			if (!afinfo->route(net, (struct dst_entry **)&rt2,
+-					   flowi4_to_flowi(&fl2), false)) {
++		if (!nf_ip_route(net, (struct dst_entry **)&rt1,
++				 flowi4_to_flowi(&fl1), false)) {
++			if (!nf_ip_route(net, (struct dst_entry **)&rt2,
++					 flowi4_to_flowi(&fl2), false)) {
+ 				if (rt_nexthop(rt1, fl1.daddr) ==
+ 				    rt_nexthop(rt2, fl2.daddr) &&
+ 				    rt1->dst.dev  == rt2->dst.dev)
+@@ -766,18 +761,23 @@ static int callforward_do_filter(struct
+ 	}
+ #if IS_ENABLED(CONFIG_NF_CONNTRACK_IPV6)
+ 	case AF_INET6: {
+-		struct flowi6 fl1, fl2;
++		const struct nf_ipv6_ops *v6ops;
+ 		struct rt6_info *rt1, *rt2;
++		struct flowi6 fl1, fl2;
++
++		v6ops = nf_get_ipv6_ops();
++		if (!v6ops)
++			return 0;
+ 
+ 		memset(&fl1, 0, sizeof(fl1));
+ 		fl1.daddr = src->in6;
+ 
+ 		memset(&fl2, 0, sizeof(fl2));
+ 		fl2.daddr = dst->in6;
+-		if (!afinfo->route(net, (struct dst_entry **)&rt1,
+-				   flowi6_to_flowi(&fl1), false)) {
+-			if (!afinfo->route(net, (struct dst_entry **)&rt2,
+-					   flowi6_to_flowi(&fl2), false)) {
++		if (!v6ops->route(net, (struct dst_entry **)&rt1,
++				  flowi6_to_flowi(&fl1), false)) {
++			if (!v6ops->route(net, (struct dst_entry **)&rt2,
++					  flowi6_to_flowi(&fl2), false)) {
+ 				if (ipv6_addr_equal(rt6_nexthop(rt1, &fl1.daddr),
+ 						    rt6_nexthop(rt2, &fl2.daddr)) &&
+ 				    rt1->dst.dev == rt2->dst.dev)
+--- a/net/netfilter/nft_rt.c
++++ b/net/netfilter/nft_rt.c
+@@ -27,7 +27,7 @@ static u16 get_tcpmss(const struct nft_p
+ {
+ 	u32 minlen = sizeof(struct ipv6hdr), mtu = dst_mtu(skbdst);
+ 	const struct sk_buff *skb = pkt->skb;
+-	const struct nf_afinfo *ai;
++	struct dst_entry *dst = NULL;
+ 	struct flowi fl;
+ 
+ 	memset(&fl, 0, sizeof(fl));
+@@ -43,15 +43,10 @@ static u16 get_tcpmss(const struct nft_p
+ 		break;
+ 	}
+ 
+-	ai = nf_get_afinfo(nft_pf(pkt));
+-	if (ai) {
+-		struct dst_entry *dst = NULL;
+-
+-		ai->route(nft_net(pkt), &dst, &fl, false);
+-		if (dst) {
+-			mtu = min(mtu, dst_mtu(dst));
+-			dst_release(dst);
+-		}
++	nf_route(nft_net(pkt), &dst, &fl, false, nft_pf(pkt));
++	if (dst) {
++		mtu = min(mtu, dst_mtu(dst));
++		dst_release(dst);
+ 	}
+ 
+ 	if (mtu <= minlen || mtu > 0xffff)
+--- a/net/netfilter/utils.c
++++ b/net/netfilter/utils.c
+@@ -48,3 +48,24 @@ __sum16 nf_checksum_partial(struct sk_bu
+ 	return csum;
+ }
+ EXPORT_SYMBOL_GPL(nf_checksum_partial);
++
++int nf_route(struct net *net, struct dst_entry **dst, struct flowi *fl,
++	     bool strict, unsigned short family)
++{
++	const struct nf_ipv6_ops *v6ops;
++	int ret = 0;
++
++	switch (family) {
++	case AF_INET:
++		ret = nf_ip_route(net, dst, fl, strict);
++		break;
++	case AF_INET6:
++		v6ops = rcu_dereference(nf_ipv6_ops);
++		if (v6ops)
++			ret = v6ops->route(net, dst, fl, strict);
++		break;
++	}
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(nf_route);
+--- a/net/netfilter/xt_TCPMSS.c
++++ b/net/netfilter/xt_TCPMSS.c
+@@ -48,7 +48,6 @@ static u_int32_t tcpmss_reverse_mtu(stru
+ 				    unsigned int family)
+ {
+ 	struct flowi fl;
+-	const struct nf_afinfo *ai;
+ 	struct rtable *rt = NULL;
+ 	u_int32_t mtu     = ~0U;
+ 
+@@ -62,10 +61,8 @@ static u_int32_t tcpmss_reverse_mtu(stru
+ 		memset(fl6, 0, sizeof(*fl6));
+ 		fl6->daddr = ipv6_hdr(skb)->saddr;
+ 	}
+-	ai = nf_get_afinfo(family);
+-	if (ai != NULL)
+-		ai->route(net, (struct dst_entry **)&rt, &fl, false);
+ 
++	nf_route(net, (struct dst_entry **)&rt, &fl, false, family);
+ 	if (rt != NULL) {
+ 		mtu = dst_mtu(&rt->dst);
+ 		dst_release(&rt->dst);
+--- a/net/netfilter/xt_addrtype.c
++++ b/net/netfilter/xt_addrtype.c
+@@ -36,7 +36,7 @@ MODULE_ALIAS("ip6t_addrtype");
+ static u32 match_lookup_rt6(struct net *net, const struct net_device *dev,
+ 			    const struct in6_addr *addr, u16 mask)
+ {
+-	const struct nf_afinfo *afinfo;
++	const struct nf_ipv6_ops *v6ops;
+ 	struct flowi6 flow;
+ 	struct rt6_info *rt;
+ 	u32 ret = 0;
+@@ -47,17 +47,14 @@ static u32 match_lookup_rt6(struct net *
+ 	if (dev)
+ 		flow.flowi6_oif = dev->ifindex;
+ 
+-	afinfo = nf_get_afinfo(NFPROTO_IPV6);
+-	if (afinfo != NULL) {
+-		const struct nf_ipv6_ops *v6ops;
+-
++	v6ops = nf_get_ipv6_ops();
++	if (v6ops) {
+ 		if (dev && (mask & XT_ADDRTYPE_LOCAL)) {
+-			v6ops = nf_get_ipv6_ops();
+-			if (v6ops && v6ops->chk_addr(net, addr, dev, true))
++			if (v6ops->chk_addr(net, addr, dev, true))
+ 				ret = XT_ADDRTYPE_LOCAL;
+ 		}
+-		route_err = afinfo->route(net, (struct dst_entry **)&rt,
+-					  flowi6_to_flowi(&flow), false);
++		route_err = v6ops->route(net, (struct dst_entry **)&rt,
++					 flowi6_to_flowi(&flow), false);
+ 	} else {
+ 		route_err = 1;
+ 	}

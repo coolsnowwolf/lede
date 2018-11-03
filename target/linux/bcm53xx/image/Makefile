@@ -321,7 +321,7 @@ define Device/tenda-ac9
   IMAGES := trx
   IMAGE/trx := append-rootfs | trx-serial
 endef
-TARGET_DEVICES += tenda-ac9
+#TARGET_DEVICES += tenda-ac9
 
 define Device/tplink-archer-c5-v2
   DEVICE_TITLE := TP-LINK Archer C5 V2
@@ -340,7 +340,5 @@ define Device/tplink-archer-c9-v1
   TPLINK_BOARD := ARCHERC9
 endef
 #TARGET_DEVICES += tplink-archer-c9-v1
-
-
 
 $(eval $(call BuildImage))

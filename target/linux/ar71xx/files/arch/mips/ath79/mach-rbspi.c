@@ -3,6 +3,9 @@
  *
  *  - MikroTik RouterBOARD mAP 2nD
  *  - MikroTik RouterBOARD mAP L-2nD
+ *  - MikroTik RouterBOARD 911-2Hn (911 Lite2)
+ *  - MikroTik RouterBOARD 911-5Hn (911 Lite5)
+ *  - MikroTik RouterBOARD 931-2nD (hAP mini)
  *  - MikroTik RouterBOARD 941L-2nD
  *  - MikroTik RouterBOARD 951Ui-2nD
  *  - MikroTik RouterBOARD 952Ui-5ac2nD
@@ -13,6 +16,7 @@
  *  - MikroTik RouterBOARD LHG 5nD
  *  - MikroTik RouterBOARD wAP2nD
  *  - MikroTik RouterBOARD wAP G-5HacT2HnDwAP (wAP AC)
+ *  - MikroTik RouterBOARD wAP R-2nD
  *
  *  Preliminary support for the following hardware
  *  - MikroTik RouterBOARD cAP2nD
@@ -20,7 +24,7 @@
  *  hardware as the mAP L-2nD. It is unknown if they share the same board
  *  identifier.
  *
- *  Copyright (C) 2017 Thibaut VARENE <varenet@parisc-linux.org>
+ *  Copyright (C) 2017-2018 Thibaut VARENE <varenet@parisc-linux.org>
  *  Copyright (C) 2016 David Hutchison <dhutchison@bluemesh.net>
  *  Copyright (C) 2017 Ryan Mounce <ryan@mounce.com.au>
  *
@@ -137,40 +141,17 @@ static struct flash_platform_data rbspi_spi_flash_data = {
 	.nr_parts = ARRAY_SIZE(rbspi_spi_partitions),
 };
 
-/* Several boards only have a single reset button, wired to GPIO 1, 16 or 20 */
-#define RBSPI_GPIO_BTN_RESET01	1
-#define RBSPI_GPIO_BTN_RESET16	16
-#define RBSPI_GPIO_BTN_RESET20	20
-
-static struct gpio_keys_button rbspi_gpio_keys_reset01[] __initdata = {
+/*
+ * Several boards only have a single reset button, use a common
+ * structure for that.
+ */
+static struct gpio_keys_button rbspi_gpio_keys_reset[] __initdata = {
 	{
 		.desc = "Reset button",
 		.type = EV_KEY,
 		.code = KEY_RESTART,
 		.debounce_interval = RBSPI_KEYS_DEBOUNCE_INTERVAL,
-		.gpio = RBSPI_GPIO_BTN_RESET01,
-		.active_low = 1,
-	},
-};
-
-static struct gpio_keys_button rbspi_gpio_keys_reset16[] __initdata = {
-	{
-		.desc = "Reset button",
-		.type = EV_KEY,
-		.code = KEY_RESTART,
-		.debounce_interval = RBSPI_KEYS_DEBOUNCE_INTERVAL,
-		.gpio = RBSPI_GPIO_BTN_RESET16,
-		.active_low = 1,
-	},
-};
-
-static struct gpio_keys_button rbspi_gpio_keys_reset20[] __initdata = {
-	{
-		.desc = "Reset button",
-		.type = EV_KEY,
-		.code = KEY_RESTART,
-		.debounce_interval = RBSPI_KEYS_DEBOUNCE_INTERVAL,
-		.gpio = RBSPI_GPIO_BTN_RESET20,
+		.gpio = -ENOENT, /* filled dynamically */
 		.active_low = 1,
 	},
 };
@@ -180,6 +161,7 @@ static struct gpio_keys_button rbspi_gpio_keys_reset20[] __initdata = {
 #define RBMAPL_GPIO_LED_USER	14
 #define RBMAPL_GPIO_LED_ETH	4
 #define RBMAPL_GPIO_LED_WLAN	11
+#define RBMAPL_GPIO_BTN_RESET	16
 
 static struct gpio_led rbmapl_leds[] __initdata = {
 	{
@@ -204,6 +186,8 @@ static struct gpio_led rbmapl_leds[] __initdata = {
 
 /* RB 941L-2nD gpios */
 #define RBHAPL_GPIO_LED_USER   14
+#define RBHAPL_GPIO_BTN_RESET	16
+
 static struct gpio_led rbhapl_leds[] __initdata = {
 	{
 		.name = "rb:green:user",
@@ -228,7 +212,8 @@ static struct gpio_led rbhapl_leds[] __initdata = {
 #define RB952_GPIO_LED_USER	4
 #define RB952_GPIO_POE_POWER	14
 #define RB952_GPIO_POE_STATUS	12
-#define RB952_GPIO_USB_POWER	RBSPI_SSR_GPIO(RB952_SSR_BIT_USB_POWER)
+#define RB952_GPIO_BTN_RESET	16
+#define RB952_GPIO_USB_PWROFF	RBSPI_SSR_GPIO(RB952_SSR_BIT_USB_POWER)
 #define RB952_GPIO_LED_LAN1	RBSPI_SSR_GPIO(RB952_SSR_BIT_LED_LAN1)
 #define RB952_GPIO_LED_LAN2	RBSPI_SSR_GPIO(RB952_SSR_BIT_LED_LAN2)
 #define RB952_GPIO_LED_LAN3	RBSPI_SSR_GPIO(RB952_SSR_BIT_LED_LAN3)
@@ -270,10 +255,13 @@ static struct gpio_led rb952_leds[] __initdata = {
 
 
 /* RB 962UiGS-5HacT2HnT gpios */
+#define RB962_WIFI_LED_1	1
+#define RB962_WIFI_LED_2	2
 #define RB962_GPIO_POE_STATUS	2
 #define RB962_GPIO_POE_POWER	3
 #define RB962_GPIO_LED_USER	12
-#define RB962_GPIO_USB_POWER	13
+#define RB962_GPIO_USB_PWROFF	13
+#define RB962_GPIO_BTN_RESET	20
 
 static struct gpio_led rb962_leds_gpio[] __initdata = {
 	{
@@ -340,7 +328,7 @@ static struct ar8327_platform_data rb962_ar8327_data = {
 static struct mdio_board_info rb962_mdio0_info[] = {
 		{
 				.bus_id = "ag71xx-mdio.0",
-				.phy_addr = 0,
+				.mdio_addr = 0,
 				.platform_data = &rb962_ar8327_data,
 		},
 };
@@ -348,6 +336,7 @@ static struct mdio_board_info rb962_mdio0_info[] = {
 /* RB wAP-2nD gpios */
 #define RBWAP_GPIO_LED_USER	14
 #define RBWAP_GPIO_LED_WLAN	11
+#define RBWAP_GPIO_BTN_RESET	16
 
 static struct gpio_led rbwap_leds[] __initdata = {
 	{
@@ -396,11 +385,12 @@ static struct gpio_led rbcap_leds[] __initdata = {
 #define RBMAP_SSR_BIT_LED_WLAN	4
 #define RBMAP_SSR_BIT_USB_POWER	5
 #define RBMAP_SSR_BIT_LED_APCAP	6
+#define RBMAP_GPIO_BTN_RESET	16
 #define RBMAP_GPIO_SSR_CS	11
 #define RBMAP_GPIO_LED_POWER	4
 #define RBMAP_GPIO_POE_POWER	14
 #define RBMAP_GPIO_POE_STATUS	12
-#define RBMAP_GPIO_USB_POWER	RBSPI_SSR_GPIO(RBMAP_SSR_BIT_USB_POWER)
+#define RBMAP_GPIO_USB_PWROFF	RBSPI_SSR_GPIO(RBMAP_SSR_BIT_USB_POWER)
 #define RBMAP_GPIO_LED_LAN1	RBSPI_SSR_GPIO(RBMAP_SSR_BIT_LED_LAN1)
 #define RBMAP_GPIO_LED_LAN2	RBSPI_SSR_GPIO(RBMAP_SSR_BIT_LED_LAN2)
 #define RBMAP_GPIO_LED_POEO	RBSPI_SSR_GPIO(RBMAP_SSR_BIT_LED_POEO)
@@ -489,35 +479,22 @@ static struct gpio_led rblhg_leds[] __initdata = {
 	},
 };
 
-static struct gpio_keys_button rblhg_gpio_keys[] __initdata = {
-	{
-		.desc = "Reset button",
-		.type = EV_KEY,
-		.code = KEY_RESTART,
-		.debounce_interval = RBSPI_KEYS_DEBOUNCE_INTERVAL,
-		.gpio = RBLHG_GPIO_BTN_RESET,
-		.active_low = 1,
-	},
-};
-
 /* RB w APG-5HacT2HnD (wAP AC) gpios*/
-#define RBWAPGSC_LED1		1
-#define RBWAPGSC_LED2		8
-#define RBWAPGSC_LED3		9
-#define RBWAPGSC_POWERLED		16
+#define RBWAPGSC_WIFI_LED_1		1
+#define RBWAPGSC_WIFI_LED_2		8
+#define RBWAPGSC_WIFI_LED_3		9
+#define RBWAPGSC_GPIO_LED_POWER		16
+#define RBWAPGSC_GPIO_BTN_RESET		1
 #define RBWAPGSC_GPIO_MDIO_MDC		12
 #define RBWAPGSC_GPIO_MDIO_DATA		11
 #define RBWAPGSC_MDIO_PHYADDR		0
 
 static struct gpio_led rbwapgsc_leds[] __initdata = {
 	{
-		.name = "rb:green:led1",
-		.gpio = RBWAPGSC_LED1,
+		.name = "rb:green:power",
+		.gpio = RBWAPGSC_GPIO_LED_POWER,
 		.active_low = 1,
-	},{
-		.name = "rb:blue:power",
-		.gpio = RBWAPGSC_POWERLED,
-		.active_low = 1,
+		.default_state = LEDS_GPIO_DEFSTATE_ON,
 	},
 };
 
@@ -534,6 +511,118 @@ static struct platform_device rbwapgsc_phy_device = {
 		.platform_data = &rbwapgsc_mdio_data
 	},
 };
+
+/* RB911L GPIOs */
+#define RB911L_GPIO_BTN_RESET	15
+#define RB911L_GPIO_LED_1	13
+#define RB911L_GPIO_LED_2	12
+#define RB911L_GPIO_LED_3	4
+#define RB911L_GPIO_LED_4	21
+#define RB911L_GPIO_LED_5	18
+#define RB911L_GPIO_LED_ETH	20
+#define RB911L_GPIO_LED_POWER	11
+#define RB911L_GPIO_LED_USER	3
+#define RB911L_GPIO_PIN_HOLE	14 /* for reference, active low */
+
+static struct gpio_led rb911l_leds[] __initdata = {
+	{
+		.name = "rb:green:eth",
+		.gpio = RB911L_GPIO_LED_ETH,
+		.active_low = 1,
+	}, {
+		.name = "rb:green:led1",
+		.gpio = RB911L_GPIO_LED_1,
+		.active_low = 1,
+	}, {
+		.name = "rb:green:led2",
+		.gpio = RB911L_GPIO_LED_2,
+		.active_low = 1,
+	}, {
+		.name = "rb:green:led3",
+		.gpio = RB911L_GPIO_LED_3,
+		.active_low = 1,
+	}, {
+		.name = "rb:green:led4",
+		.gpio = RB911L_GPIO_LED_4,
+		.active_low = 1,
+	}, {
+		.name = "rb:green:led5",
+		.gpio = RB911L_GPIO_LED_5,
+		.active_low = 1,
+	}, {
+		.name = "rb:green:power",
+		.gpio = RB911L_GPIO_LED_POWER,
+		.default_state = LEDS_GPIO_DEFSTATE_ON,
+		.active_low = 1,
+		.open_drain = 1,
+	}, {
+		.name = "rb:green:user",
+		.gpio = RB911L_GPIO_LED_USER,
+		.active_low = 1,
+		.open_drain = 1,
+	},
+};
+
+/* RB 931-2nD gpios */
+#define RB931_GPIO_BTN_RESET	0
+#define RB931_GPIO_BTN_MODE	9
+#define RB931_GPIO_LED_USER	1
+
+static struct gpio_keys_button rb931_gpio_keys[] __initdata = {
+	{
+		.desc = "Reset button",
+		.type = EV_KEY,
+		.code = KEY_RESTART,
+		.debounce_interval = RBSPI_KEYS_DEBOUNCE_INTERVAL,
+		.gpio = RB931_GPIO_BTN_RESET,
+		.active_low = 1,
+	}, {
+		.desc = "Mode button",
+		.type = EV_KEY,
+		.code = BTN_0,
+		.debounce_interval = RBSPI_KEYS_DEBOUNCE_INTERVAL,
+		.gpio = RB931_GPIO_BTN_MODE,
+		.active_low = 1,
+	}
+};
+
+static struct gpio_led rb931_leds[] __initdata = {
+	{
+		.name = "rb:green:user",
+		.gpio = RB931_GPIO_LED_USER,
+		.active_low = 1,
+	},
+};
+
+/* RB wAP R-2nD (wAP R) gpios*/
+#define RBWAPR_GPIO_LED_USER	14
+#define RBWAPR_GPIO_LED1	12
+#define RBWAPR_GPIO_LED2	13
+#define RBWAPR_GPIO_LED3	3
+#define RBWAPR_GPIO_PCIE_PWROFF	15
+#define RBWAPR_GPIO_CONTROL	10
+#define RBWAPR_GPIO_BTN_RESET	16
+
+static struct gpio_led rbwapr_leds[] __initdata = {
+	{
+		.name = "rb:green:user",
+		.gpio = RBWAPR_GPIO_LED_USER,
+		.active_low = 0,
+	},{
+		.name = "rb:green:led1",
+		.gpio = RBWAPR_GPIO_LED1,
+		.active_low = 1,
+	},{
+		.name = "rb:green:led2",
+		.gpio = RBWAPR_GPIO_LED2,
+		.active_low = 1,
+	},{
+		.name = "rb:green:led3",
+		.gpio = RBWAPR_GPIO_LED3,
+		.active_low = 0,
+	},
+};
+
 
 static struct gen_74x164_chip_platform_data rbspi_ssr_data = {
 	.base = RBSPI_SSR_GPIO_BASE,
@@ -590,7 +679,7 @@ void __init rbspi_wlan_init(u16 id, int wmac_offset)
 /*
  * Common platform init routine for all SPI NOR devices.
  */
-static int __init rbspi_platform_setup(void)
+static __init const struct rb_info *rbspi_platform_setup(void)
 {
 	const struct rb_info *info;
 	char buf[RBSPI_MACH_BUFLEN] = "MikroTik ";
@@ -599,7 +688,7 @@ static int __init rbspi_platform_setup(void)
 
 	info = rb_init_info((void *)(KSEG1ADDR(AR71XX_SPI_BASE)), 0x20000);
 	if (!info)
-		return -ENODEV;
+		return NULL;
 
 	if (info->board_name) {
 		str = "RouterBOARD ";
@@ -617,7 +706,7 @@ static int __init rbspi_platform_setup(void)
 	/* fix partitions based on flash parsing */
 	rbspi_init_partitions(info);
 
-	return 0;
+	return info;
 }
 
 /*
@@ -690,6 +779,14 @@ static void __init rbspi_network_setup(u32 flags, int gmac1_offset,
 		rbspi_wlan_init(1, wmac1_offset);
 }
 
+static __init void rbspi_register_reset_button(int gpio)
+{
+	rbspi_gpio_keys_reset[0].gpio = gpio;
+	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
+					ARRAY_SIZE(rbspi_gpio_keys_reset),
+					rbspi_gpio_keys_reset);
+}
+
 /*
  * Init the mAP lite hardware (QCA953x).
  * The mAP L-2nD (mAP lite) has a single ethernet port, connected to PHY0.
@@ -701,7 +798,7 @@ static void __init rbmapl_setup(void)
 {
 	u32 flags = RBSPI_HAS_WLAN0;
 
-	if (rbspi_platform_setup())
+	if (!rbspi_platform_setup())
 		return;
 
 	rbspi_peripherals_setup(flags);
@@ -712,9 +809,7 @@ static void __init rbmapl_setup(void)
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(rbmapl_leds), rbmapl_leds);
 
 	/* mAP lite has a single reset button as gpio 16 */
-	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
-					ARRAY_SIZE(rbspi_gpio_keys_reset16),
-					rbspi_gpio_keys_reset16);
+	rbspi_register_reset_button(RBMAPL_GPIO_BTN_RESET);
 
 	/* clear internal multiplexing */
 	ath79_gpio_output_select(RBMAPL_GPIO_LED_ETH, AR934X_GPIO_OUT_GPIO);
@@ -732,7 +827,7 @@ static void __init rbhapl_setup(void)
 {
 	u32 flags = RBSPI_HAS_WLAN0;
 
-	if (rbspi_platform_setup())
+	if (!rbspi_platform_setup())
 		return;
 
 	rbspi_peripherals_setup(flags);
@@ -743,9 +838,7 @@ static void __init rbhapl_setup(void)
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(rbhapl_leds), rbhapl_leds);
 
 	/* hAP lite has a single reset button as gpio 16 */
-	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
-					ARRAY_SIZE(rbspi_gpio_keys_reset16),
-					rbspi_gpio_keys_reset16);
+	rbspi_register_reset_button(RBHAPL_GPIO_BTN_RESET);
 }
 
 /*
@@ -765,9 +858,9 @@ static void __init rbspi_952_750r2_setup(u32 flags)
 	rbspi_network_setup(flags, 1, 5, 6);
 
 	if (flags & RBSPI_HAS_USB)
-		gpio_request_one(RB952_GPIO_USB_POWER,
+		gpio_request_one(RB952_GPIO_USB_PWROFF, GPIOF_ACTIVE_LOW |
 				GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT_DIR_FIXED,
-				"USB power");
+				"USB power off");
 
 	if (flags & RBSPI_HAS_POE)
 		gpio_request_one(RB952_GPIO_POE_POWER,
@@ -777,9 +870,7 @@ static void __init rbspi_952_750r2_setup(u32 flags)
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(rb952_leds), rb952_leds);
 
 	/* These devices have a single reset button as gpio 16 */
-	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
-					ARRAY_SIZE(rbspi_gpio_keys_reset16),
-					rbspi_gpio_keys_reset16);
+	rbspi_register_reset_button(RB952_GPIO_BTN_RESET);
 }
 
 /*
@@ -798,7 +889,7 @@ static void __init rb952_setup(void)
 	u32 flags = RBSPI_HAS_WAN4 | RBSPI_HAS_USB |
 			RBSPI_HAS_SSR | RBSPI_HAS_POE;
 
-	if (rbspi_platform_setup())
+	if (!rbspi_platform_setup())
 		return;
 
 	/* differentiate the hAP from the hAP ac lite */
@@ -821,7 +912,7 @@ static void __init rb750upr2_setup(void)
 {
 	u32 flags = RBSPI_HAS_WAN4 | RBSPI_HAS_SSR;
 
-	if (rbspi_platform_setup())
+	if (!rbspi_platform_setup())
 		return;
 
 	/* differentiate the hEX lite from the hEX PoE lite */
@@ -851,7 +942,7 @@ static void __init rb962_setup(void)
 {
 	u32 flags = RBSPI_HAS_USB | RBSPI_HAS_POE | RBSPI_HAS_PCI;
 
-	if (rbspi_platform_setup())
+	if (!rbspi_platform_setup())
 		return;
 
 	rbspi_peripherals_setup(flags);
@@ -877,9 +968,9 @@ static void __init rb962_setup(void)
 	rbspi_wlan_init(1, 7);
 
 	if (flags & RBSPI_HAS_USB)
-		gpio_request_one(RB962_GPIO_USB_POWER,
+		gpio_request_one(RB962_GPIO_USB_PWROFF, GPIOF_ACTIVE_LOW |
 				GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT_DIR_FIXED,
-				"USB power");
+				"USB power off");
 
 	/* PoE output GPIO is inverted, set GPIOF_ACTIVE_LOW for consistency */
 	if (flags & RBSPI_HAS_POE)
@@ -892,9 +983,7 @@ static void __init rb962_setup(void)
 				rb962_leds_gpio);
 
 	/* This device has a single reset button as gpio 20 */
-	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
-					ARRAY_SIZE(rbspi_gpio_keys_reset20),
-					rbspi_gpio_keys_reset20);
+	rbspi_register_reset_button(RB962_GPIO_BTN_RESET);
 }
 
 /*
@@ -906,7 +995,7 @@ static void __init rblhg_setup(void)
 {
 	u32 flags = RBSPI_HAS_WLAN1 | RBSPI_HAS_MDIO1;
 
-	if (rbspi_platform_setup())
+	if (!rbspi_platform_setup())
 		return;
 
 	rbspi_peripherals_setup(flags);
@@ -916,9 +1005,7 @@ static void __init rblhg_setup(void)
 
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(rblhg_leds), rblhg_leds);
 
-	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
-					ARRAY_SIZE(rblhg_gpio_keys),
-					rblhg_gpio_keys);
+	rbspi_register_reset_button(RBLHG_GPIO_BTN_RESET);
 }
 
 /*
@@ -929,7 +1016,7 @@ static void __init rbwap_setup(void)
 {
 	u32 flags = RBSPI_HAS_WLAN0;
 
-	if (rbspi_platform_setup())
+	if (!rbspi_platform_setup())
 		return;
 
 	rbspi_peripherals_setup(flags);
@@ -940,9 +1027,7 @@ static void __init rbwap_setup(void)
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(rbwap_leds), rbwap_leds);
 
 	/* wAP has a single reset button as GPIO 16 */
-	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
-					ARRAY_SIZE(rbspi_gpio_keys_reset16),
-					rbspi_gpio_keys_reset16);
+	rbspi_register_reset_button(RBWAP_GPIO_BTN_RESET);
 }
 
 /*
@@ -953,7 +1038,7 @@ static void __init rbcap_setup(void)
 {
 	u32 flags = RBSPI_HAS_WLAN0;
 
-	if (rbspi_platform_setup())
+	if (!rbspi_platform_setup())
 		return;
 
 	rbspi_peripherals_setup(flags);
@@ -978,7 +1063,7 @@ static void __init rbmap_setup(void)
 	u32 flags = RBSPI_HAS_USB | RBSPI_HAS_WLAN0 |
 			RBSPI_HAS_SSR | RBSPI_HAS_POE;
 
-	if (rbspi_platform_setup())
+	if (!rbspi_platform_setup())
 		return;
 
 	rbspi_spi_cs_gpios[1] = RBMAP_GPIO_SSR_CS;
@@ -992,19 +1077,16 @@ static void __init rbmap_setup(void)
 				GPIOF_OUT_INIT_LOW | GPIOF_EXPORT_DIR_FIXED,
 				"POE power");
 
-	/* USB power GPIO is inverted, set GPIOF_ACTIVE_LOW for consistency */
 	if (flags & RBSPI_HAS_USB)
-		gpio_request_one(RBMAP_GPIO_USB_POWER,
+		gpio_request_one(RBMAP_GPIO_USB_PWROFF,
 				GPIOF_OUT_INIT_HIGH | GPIOF_ACTIVE_LOW |
 					GPIOF_EXPORT_DIR_FIXED,
-				"USB power");
+				"USB power off");
 
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(rbmap_leds), rbmap_leds);
 
 	/* mAP 2nD has a single reset button as gpio 16 */
-	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
-					ARRAY_SIZE(rbspi_gpio_keys_reset16),
-					rbspi_gpio_keys_reset16);
+	rbspi_register_reset_button(RBMAP_GPIO_BTN_RESET);
 }
 
 /*
@@ -1017,7 +1099,7 @@ static void __init rbwapgsc_setup(void)
 {
 	u32 flags = RBSPI_HAS_PCI;
 
-	if (rbspi_platform_setup())
+	if (!rbspi_platform_setup())
 		return;
 
 	rbspi_peripherals_setup(flags);
@@ -1037,9 +1119,7 @@ static void __init rbwapgsc_setup(void)
 
 	rbspi_wlan_init(1, 2);
 
-	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
-		ARRAY_SIZE(rbspi_gpio_keys_reset01),
-		rbspi_gpio_keys_reset01);
+	rbspi_register_reset_button(RBWAPGSC_GPIO_BTN_RESET);
 
 	ath79_gpio_function_enable(QCA955X_GPIO_FUNC_JTAG_DISABLE|
 				QCA955X_GPIO_REG_OUT_FUNC4|
@@ -1049,13 +1129,118 @@ static void __init rbwapgsc_setup(void)
 			rbwapgsc_leds);
 }
 
+/*
+ * Setup the 911L hardware (AR9344).
+ */
+static void __init rb911l_setup(void)
+{
+	const struct rb_info *info;
+
+	info = rbspi_platform_setup();
+	if (!info)
+		return;
+
+	if (!rb_has_hw_option(info, RB_HW_OPT_NO_NAND)) {
+		/*
+		 * Old hardware revisions might be equipped with a NAND flash
+		 * chip instead of the 16MiB SPI NOR device. Those boards are
+		 * not supported at the moment, so throw a warning and skip
+		 * the peripheral setup to avoid messing up the data in the
+		 * flash chip.
+		 */
+		WARN(1, "The NAND flash on this board is not supported.\n");
+	} else {
+		rbspi_peripherals_setup(0);
+	}
+
+	ath79_register_mdio(1, 0x0);
+
+	ath79_init_mac(ath79_eth1_data.mac_addr, ath79_mac_base, 0);
+
+	ath79_eth1_data.phy_if_mode = PHY_INTERFACE_MODE_GMII;
+	ath79_eth1_data.speed = SPEED_1000;
+	ath79_eth1_data.duplex = DUPLEX_FULL;
+
+	ath79_register_eth(1);
+
+	rbspi_wlan_init(0, 1);
+
+	rbspi_register_reset_button(RB911L_GPIO_BTN_RESET);
+
+	/* Make the eth LED controllable by software. */
+	ath79_gpio_output_select(RB911L_GPIO_LED_ETH, AR934X_GPIO_OUT_GPIO);
+
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(rb911l_leds), rb911l_leds);
+}
+
+/*
+ * Init the hAP mini hardware (QCA953x).
+ * The 931-2nD (hAP mini) has 3 ethernet ports, with port 2-3
+ * being assigned to LAN on the casing, and port 1 being assigned
+ * to "internet" (WAN) on the casing. Port 1 is connected to PHY2.
+ * Since WAN is neither PHY0 nor PHY4, we cannot use GMAC0 with this device.
+ */
+static void __init rb931_setup(void)
+{
+	u32 flags = RBSPI_HAS_WLAN0;
+
+	if (!rbspi_platform_setup())
+		return;
+
+	rbspi_peripherals_setup(flags);
+
+	/* GMAC1 is HW MAC, WLAN0 MAC is HW MAC + 3 */
+	rbspi_network_setup(flags, 0, 3, 0);
+
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(rb931_leds), rb931_leds);
+
+	/* hAP mini has two buttons */
+	ath79_register_gpio_keys_polled(-1, RBSPI_KEYS_POLL_INTERVAL,
+					ARRAY_SIZE(rb931_gpio_keys),
+					rb931_gpio_keys);
+}
+
+/*
+ * Init the wAP R hardware.
+ * The wAP R-2nD has a single ethernet port and a mini PCIe slot.
+ * The OEM source shows it has usb (used over PCIe for LTE devices),
+ * and the 'control' GPIO is assumed to be an output pin not tied to an LED.
+ */
+static void __init rbwapr_setup(void)
+{
+	u32 flags = RBSPI_HAS_WLAN0 | RBSPI_HAS_USB | RBSPI_HAS_PCI;
+
+	if (!rbspi_platform_setup())
+		return;
+
+	rbspi_peripherals_setup(flags);
+
+	/* GMAC1 is HW MAC, WLAN0 MAC is HW MAC + 1 */
+	rbspi_network_setup(flags, 0, 1, 0);
+
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(rbwapr_leds), rbwapr_leds);
+
+	gpio_request_one(RBWAPR_GPIO_PCIE_PWROFF, GPIOF_OUT_INIT_HIGH |
+			GPIOF_ACTIVE_LOW | GPIOF_EXPORT_DIR_FIXED,
+			"PCIE power off");
+
+	gpio_request_one(RBWAPR_GPIO_CONTROL, GPIOF_OUT_INIT_LOW |
+			GPIOF_ACTIVE_LOW | GPIOF_EXPORT_DIR_FIXED,
+			"control");
+
+	rbspi_register_reset_button(RBWAPR_GPIO_BTN_RESET);
+}
+
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_MAPL, "map-hb", rbmapl_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_941, "H951L", rbhapl_setup);
+MIPS_MACHINE_NONAME(ATH79_MACH_RB_911L, "911L", rb911l_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_952, "952-hb", rb952_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_962, "962", rb962_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_750UPR2, "750-hb", rb750upr2_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_LHG5, "lhg", rblhg_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_WAP, "wap-hb", rbwap_setup);
+MIPS_MACHINE_NONAME(ATH79_MACH_RB_WAPR, "wap-lte", rbwapr_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_CAP, "cap-hb", rbcap_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_MAP, "map2-hb", rbmap_setup);
 MIPS_MACHINE_NONAME(ATH79_MACH_RB_WAPAC, "wapg-sc", rbwapgsc_setup);
+MIPS_MACHINE_NONAME(ATH79_MACH_RB_931, "931", rb931_setup);

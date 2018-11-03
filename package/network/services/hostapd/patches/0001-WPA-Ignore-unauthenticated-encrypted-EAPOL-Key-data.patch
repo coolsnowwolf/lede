@@ -1,0 +1,43 @@
+From 3e34cfdff6b192fe337c6fb3f487f73e96582961 Mon Sep 17 00:00:00 2001
+From: Mathy Vanhoef <Mathy.Vanhoef@cs.kuleuven.be>
+Date: Sun, 15 Jul 2018 01:25:53 +0200
+Subject: [PATCH] WPA: Ignore unauthenticated encrypted EAPOL-Key data
+
+Ignore unauthenticated encrypted EAPOL-Key data in supplicant
+processing. When using WPA2, these are frames that have the Encrypted
+flag set, but not the MIC flag.
+
+When using WPA2, EAPOL-Key frames that had the Encrypted flag set but
+not the MIC flag, had their data field decrypted without first verifying
+the MIC. In case the data field was encrypted using RC4 (i.e., when
+negotiating TKIP as the pairwise cipher), this meant that
+unauthenticated but decrypted data would then be processed. An adversary
+could abuse this as a decryption oracle to recover sensitive information
+in the data field of EAPOL-Key messages (e.g., the group key).
+(CVE-2018-14526)
+
+Signed-off-by: Mathy Vanhoef <Mathy.Vanhoef@cs.kuleuven.be>
+---
+ src/rsn_supp/wpa.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+--- a/src/rsn_supp/wpa.c
++++ b/src/rsn_supp/wpa.c
+@@ -2208,6 +2208,17 @@ int wpa_sm_rx_eapol(struct wpa_sm *sm, c
+ 
+ 	if ((sm->proto == WPA_PROTO_RSN || sm->proto == WPA_PROTO_OSEN) &&
+ 	    (key_info & WPA_KEY_INFO_ENCR_KEY_DATA) && mic_len) {
++		/*
++		 * Only decrypt the Key Data field if the frame's authenticity
++		 * was verified. When using AES-SIV (FILS), the MIC flag is not
++		 * set, so this check should only be performed if mic_len != 0
++		 * which is the case in this code branch.
++		 */
++		if (!(key_info & WPA_KEY_INFO_MIC)) {
++			wpa_msg(sm->ctx->msg_ctx, MSG_WARNING,
++				"WPA: Ignore EAPOL-Key with encrypted but unauthenticated data");
++			goto out;
++		}
+ 		if (wpa_supplicant_decrypt_key_data(sm, key, mic_len,
+ 						    ver, key_data,
+ 						    &key_data_len))

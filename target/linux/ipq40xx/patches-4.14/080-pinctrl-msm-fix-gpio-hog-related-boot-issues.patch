@@ -1,0 +1,103 @@
+From: Christian Lamparter <chunkeey@gmail.com>
+Date: Thu, 12 Apr 2018 21:01:38 +0200
+Subject: [PATCH] pinctrl: msm: fix gpio-hog related boot issues
+
+Sven Eckelmann reported an issue with the current IPQ4019 pinctrl.
+Setting up any gpio-hog in the device-tree for his device would
+"kill the bootup completely":
+
+| [    0.477838] msm_serial 78af000.serial: could not find pctldev for node /soc/pinctrl@1000000/serial_pinmux, deferring probe
+| [    0.499828] spi_qup 78b5000.spi: could not find pctldev for node /soc/pinctrl@1000000/spi_0_pinmux, deferring probe
+| [    1.298883] requesting hog GPIO enable USB2 power (chip 1000000.pinctrl, offset 58) failed, -517
+| [    1.299609] gpiochip_add_data: GPIOs 0..99 (1000000.pinctrl) failed to register
+| [    1.308589] ipq4019-pinctrl 1000000.pinctrl: Failed register gpiochip
+| [    1.316586] msm_serial 78af000.serial: could not find pctldev for node /soc/pinctrl@1000000/serial_pinmux, deferring probe
+| [    1.322415] spi_qup 78b5000.spi: could not find pctldev for node /soc/pinctrl@1000000/spi_0_pinmux, deferri
+
+This was also verified on a RT-AC58U (IPQ4018) which would
+no longer boot, if a gpio-hog was specified. (Tried forcing
+the USB LED PIN (GPIO0) to high.).
+
+The problem is that Pinctrl+GPIO registration is currently
+peformed in the following order in pinctrl-msm.c:
+	1. pinctrl_register()
+	2. gpiochip_add()
+	3. gpiochip_add_pin_range()
+
+The actual error code -517 == -EPROBE_DEFER is coming from
+pinctrl_get_device_gpio_range(), which is called through:
+        gpiochip_add
+            of_gpiochip_add
+                of_gpiochip_scan_gpios
+                    gpiod_hog
+                        gpiochip_request_own_desc
+                            __gpiod_request
+                                chip->request
+                                    gpiochip_generic_request
+                                       pinctrl_gpio_request
+                                          pinctrl_get_device_gpio_range
+
+pinctrl_get_device_gpio_range() is unable to find any valid
+pin ranges, since nothing has been added to the pinctrldev_list yet.
+so the range can't be found, and the operation fails with -EPROBE_DEFER.
+
+This patch fixes the issue by adding the "gpio-ranges" property to
+the pinctrl device node of all upstream Qcom SoC. The pin ranges are
+then added by the gpio core.
+
+In order to remain compatible with older, existing DTs (and ACPI)
+a check for the "gpio-ranges" property has been added to
+msm_gpio_init(). This prevents the driver of adding the same entry
+to the pinctrldev_list twice.
+
+Reported-by: Sven Eckelmann <sven.eckelmann@openmesh.com>
+Signed-off-by: Christian Lamparter <chunkeey@gmail.com>
+
+Origin: other, https://patchwork.kernel.org/patch/10339127/
+---
+ arch/arm/boot/dts/qcom-ipq4019.dtsi   |  1 +
+ drivers/pinctrl/qcom/pinctrl-msm.c    | 23 ++++++++++++++++++-----
+ 14 files changed, 32 insertions(+), 6 deletions(-)
+
+--- a/arch/arm/boot/dts/qcom-ipq4019.dtsi
++++ b/arch/arm/boot/dts/qcom-ipq4019.dtsi
+@@ -182,6 +182,7 @@
+ 			compatible = "qcom,ipq4019-pinctrl";
+ 			reg = <0x01000000 0x300000>;
+ 			gpio-controller;
++			gpio-ranges = <&tlmm 0 0 100>;
+ 			#gpio-cells = <2>;
+ 			interrupt-controller;
+ 			#interrupt-cells = <2>;
+--- a/drivers/pinctrl/qcom/pinctrl-msm.c
++++ b/drivers/pinctrl/qcom/pinctrl-msm.c
+@@ -839,11 +839,24 @@ static int msm_gpio_init(struct msm_pinc
+ 		return ret;
+ 	}
+ 
+-	ret = gpiochip_add_pin_range(&pctrl->chip, dev_name(pctrl->dev), 0, 0, chip->ngpio);
+-	if (ret) {
+-		dev_err(pctrl->dev, "Failed to add pin range\n");
+-		gpiochip_remove(&pctrl->chip);
+-		return ret;
++	/*
++	 * For DeviceTree-supported systems, the gpio core checks the
++	 * pinctrl's device node for the "gpio-ranges" property.
++	 * If it is present, it takes care of adding the pin ranges
++	 * for the driver. In this case the driver can skip ahead.
++	 *
++	 * In order to remain compatible with older, existing DeviceTree
++	 * files which don't set the "gpio-ranges" property or systems that
++	 * utilize ACPI the driver has to call gpiochip_add_pin_range().
++	 */
++	if (!of_property_read_bool(pctrl->dev->of_node, "gpio-ranges")) {
++		ret = gpiochip_add_pin_range(&pctrl->chip,
++			dev_name(pctrl->dev), 0, 0, chip->ngpio);
++		if (ret) {
++			dev_err(pctrl->dev, "Failed to add pin range\n");
++			gpiochip_remove(&pctrl->chip);
++			return ret;
++		}
+ 	}
+ 
+ 	ret = gpiochip_irqchip_add(chip,

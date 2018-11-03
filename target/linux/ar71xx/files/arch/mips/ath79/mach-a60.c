@@ -86,12 +86,12 @@ static struct at803x_platform_data a60_at803x_data = {
 static struct mdio_board_info a60_mdio0_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = 1,
+		.mdio_addr = 1,
 		.platform_data = &a60_at803x_data,
 	},
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = 2,
+		.mdio_addr = 2,
 		.platform_data = &a60_at803x_data,
 	},
 };

@@ -132,7 +132,7 @@ define Device/asl26555-16M
   IMAGE_SIZE := 15872k
   SUPPORTED_DEVICES += asl26555
   DEVICE_TITLE := Alpha ASL26555 16M
-  DEVICE_PACKAGES :=
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb-dwc2 kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += asl26555-16M
 

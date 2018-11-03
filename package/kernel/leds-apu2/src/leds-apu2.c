@@ -331,18 +331,6 @@ static int __init gpio_apu2_init (void)
 	const char *board_vendor = dmi_get_system_info(DMI_BOARD_VENDOR);
 	const char *board_name = dmi_get_system_info(DMI_BOARD_NAME);
 
-	/* Match the device name/model */
-	if (!board_name \
-			|| !board_vendor \
-			|| strcasecmp(board_vendor, "PC Engines") \
-			|| (strcasecmp(board_name, "apu2") \
-				&& strcasecmp(board_name, "apu3") \
-				&& strcasecmp(board_name, "PC Engines apu2") \
-				&& strcasecmp(board_name, "PC Engines apu3"))) {
-		err = -ENODEV;
-		goto exit;
-	}
-
 	pr_info ("%s: load APU2/LED GPIO driver module\n", DEVNAME);
 
 	err = platform_driver_register (&gpio_apu2_driver);

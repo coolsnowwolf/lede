@@ -1,0 +1,268 @@
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -670,6 +670,9 @@ static int
+ mt7530_cpu_port_enable(struct mt7530_priv *priv,
+ 		       int port)
+ {
++	u8 port_mask = 0;
++	int i;
++
+ 	/* Enable Mediatek header mode on the cpu port */
+ 	mt7530_write(priv, MT7530_PVC_P(port),
+ 		     PORT_SPEC_TAG);
+@@ -686,8 +689,12 @@ mt7530_cpu_port_enable(struct mt7530_pri
+ 	/* CPU port gets connected to all user ports of
+ 	 * the switch
+ 	 */
++	for (i = 0; i < MT7530_NUM_PORTS; i++)
++		if ((priv->ds->enabled_port_mask & BIT(i)) &&
++		    (dsa_port_upstream_port(priv->ds, i) == port))
++			port_mask |= BIT(i);
+ 	mt7530_write(priv, MT7530_PCR_P(port),
+-		     PCR_MATRIX(priv->ds->enabled_port_mask));
++		     PCR_MATRIX(port_mask));
+ 
+ 	return 0;
+ }
+@@ -697,6 +704,7 @@ mt7530_port_enable(struct dsa_switch *ds
+ 		   struct phy_device *phy)
+ {
+ 	struct mt7530_priv *priv = ds->priv;
++	u8 upstream = dsa_port_upstream_port(ds, port);
+ 
+ 	mutex_lock(&priv->reg_mutex);
+ 
+@@ -707,7 +715,7 @@ mt7530_port_enable(struct dsa_switch *ds
+ 	 * restore the port matrix if the port is the member of a certain
+ 	 * bridge.
+ 	 */
+-	priv->ports[port].pm |= PCR_MATRIX(BIT(MT7530_CPU_PORT));
++	priv->ports[port].pm |= PCR_MATRIX(BIT(upstream));
+ 	priv->ports[port].enable = true;
+ 	mt7530_rmw(priv, MT7530_PCR_P(port), PCR_MATRIX_MASK,
+ 		   priv->ports[port].pm);
+@@ -770,7 +778,8 @@ mt7530_port_bridge_join(struct dsa_switc
+ 			struct net_device *bridge)
+ {
+ 	struct mt7530_priv *priv = ds->priv;
+-	u32 port_bitmap = BIT(MT7530_CPU_PORT);
++	u8 upstream = dsa_port_upstream_port(ds, port);
++	u32 port_bitmap = BIT(upstream);
+ 	int i;
+ 
+ 	mutex_lock(&priv->reg_mutex);
+@@ -808,6 +817,7 @@ mt7530_port_bridge_leave(struct dsa_swit
+ 			 struct net_device *bridge)
+ {
+ 	struct mt7530_priv *priv = ds->priv;
++	u8 upstream = dsa_port_upstream_port(ds, port);
+ 	int i;
+ 
+ 	mutex_lock(&priv->reg_mutex);
+@@ -832,8 +842,8 @@ mt7530_port_bridge_leave(struct dsa_swit
+ 	 */
+ 	if (priv->ports[port].enable)
+ 		mt7530_rmw(priv, MT7530_PCR_P(port), PCR_MATRIX_MASK,
+-			   PCR_MATRIX(BIT(MT7530_CPU_PORT)));
+-	priv->ports[port].pm = PCR_MATRIX(BIT(MT7530_CPU_PORT));
++			   PCR_MATRIX(BIT(upstream)));
++	priv->ports[port].pm = PCR_MATRIX(BIT(upstream));
+ 
+ 	mutex_unlock(&priv->reg_mutex);
+ }
+@@ -908,15 +918,7 @@ err:
+ static enum dsa_tag_protocol
+ mtk_get_tag_protocol(struct dsa_switch *ds)
+ {
+-	struct mt7530_priv *priv = ds->priv;
+-
+-	if (!dsa_is_cpu_port(ds, MT7530_CPU_PORT)) {
+-		dev_warn(priv->dev,
+-			 "port not matched with tagging CPU port\n");
+-		return DSA_TAG_PROTO_NONE;
+-	} else {
+-		return DSA_TAG_PROTO_MTK;
+-	}
++	return DSA_TAG_PROTO_MTK;
+ }
+ 
+ static int
+@@ -989,7 +991,7 @@ mt7530_setup(struct dsa_switch *ds)
+ 
+ 	/* Enable Port 6 only; P5 as GMAC5 which currently is not supported */
+ 	val = mt7530_read(priv, MT7530_MHWTRAP);
+-	val &= ~MHWTRAP_P6_DIS & ~MHWTRAP_PHY_ACCESS;
++	val &= ~MHWTRAP_P5_DIS & ~MHWTRAP_P6_DIS & ~MHWTRAP_PHY_ACCESS;
+ 	val |= MHWTRAP_MANUAL;
+ 	if (!dsa_is_cpu_port(ds, 5)) {
+ 		val |= MHWTRAP_P5_DIS;
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -185,6 +185,10 @@ struct dsa_port {
+ 	u8			stp_state;
+ 	struct net_device	*bridge_dev;
+ 	struct devlink_port	devlink_port;
++
++	struct net_device	*ethernet;
++	int			upstream;
++
+ 	/*
+ 	 * Original copy of the master netdev ethtool_ops
+ 	 */
+@@ -266,6 +270,11 @@ static inline bool dsa_is_normal_port(st
+ 	return !dsa_is_cpu_port(ds, p) && !dsa_is_dsa_port(ds, p);
+ }
+ 
++static inline bool dsa_is_upstream_port(struct dsa_switch *ds, int p)
++{
++	return dsa_is_cpu_port(ds, p) || dsa_is_dsa_port(ds, p);
++}
++
+ static inline u8 dsa_upstream_port(struct dsa_switch *ds)
+ {
+ 	struct dsa_switch_tree *dst = ds->dst;
+@@ -282,6 +291,18 @@ static inline u8 dsa_upstream_port(struc
+ 		return ds->rtable[dst->cpu_dp->ds->index];
+ }
+ 
++static inline u8 dsa_port_upstream_port(struct dsa_switch *ds, int port)
++{
++	/*
++	 * If this port has a specific upstream cpu port, use it,
++	 * otherwise use the switch default.
++	 */
++	if (ds->ports[port].upstream)
++		return ds->ports[port].upstream;
++	else
++		return dsa_upstream_port(ds);
++}
++
+ typedef int dsa_fdb_dump_cb_t(const unsigned char *addr, u16 vid,
+ 			      bool is_static, void *data);
+ struct dsa_switch_ops {
+--- a/net/dsa/dsa2.c
++++ b/net/dsa/dsa2.c
+@@ -253,6 +253,8 @@ static int dsa_cpu_port_apply(struct dsa
+ 	memset(&port->devlink_port, 0, sizeof(port->devlink_port));
+ 	err = devlink_port_register(ds->devlink, &port->devlink_port,
+ 				    port->index);
++	if (port->netdev)
++		port->netdev->dsa_ptr = ds->dst;
+ 	return err;
+ }
+ 
+@@ -262,6 +264,12 @@ static void dsa_cpu_port_unapply(struct
+ 	dsa_cpu_dsa_destroy(port);
+ 	port->ds->cpu_port_mask &= ~BIT(port->index);
+ 
++	if (port->netdev)
++		port->netdev->dsa_ptr = NULL;
++	if (port->ethernet) {
++		dev_put(port->ethernet);
++		port->ethernet = NULL;
++	}
+ }
+ 
+ static int dsa_user_port_apply(struct dsa_port *port)
+@@ -505,10 +513,9 @@ static int dsa_cpu_parse(struct dsa_port
+ 		dev_put(ethernet_dev);
+ 	}
+ 
+-	if (!dst->cpu_dp) {
++	if (!dst->cpu_dp)
+ 		dst->cpu_dp = port;
+-		dst->cpu_dp->netdev = ethernet_dev;
+-	}
++	port->netdev = ethernet_dev;
+ 
+ 	/* Initialize cpu_port_mask now for drv->setup()
+ 	 * to have access to a correct value, just like what
+@@ -526,6 +533,29 @@ static int dsa_cpu_parse(struct dsa_port
+ 
+ 	dst->rcv = dst->tag_ops->rcv;
+ 
++	dev_hold(ethernet_dev);
++	ds->ports[index].ethernet = ethernet_dev;
++	ds->cpu_port_mask |= BIT(index);
++
++	return 0;
++}
++
++static int dsa_user_parse(struct dsa_port *port, u32 index,
++			  struct dsa_switch *ds)
++{
++	struct device_node *cpu_port;
++	const unsigned int *cpu_port_reg;
++	int cpu_port_index;
++
++	cpu_port = of_parse_phandle(port->dn, "cpu", 0);
++	if (cpu_port) {
++		cpu_port_reg = of_get_property(cpu_port, "reg", NULL);
++		if (!cpu_port_reg)
++			return -EINVAL;
++		cpu_port_index = be32_to_cpup(cpu_port_reg);
++		ds->ports[index].upstream = cpu_port_index;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -533,7 +563,7 @@ static int dsa_ds_parse(struct dsa_switc
+ {
+ 	struct dsa_port *port;
+ 	u32 index;
+-	int err;
++	int err = 0;
+ 
+ 	for (index = 0; index < ds->num_ports; index++) {
+ 		port = &ds->ports[index];
+@@ -546,6 +576,9 @@ static int dsa_ds_parse(struct dsa_switc
+ 			if (err)
+ 				return err;
+ 		} else {
++			err = dsa_user_parse(port, index, ds);
++			if (err)
++				return err;
+ 			/* Initialize enabled_port_mask now for drv->setup()
+ 			 * to have access to a correct value, just like what
+ 			 * net/dsa/dsa.c::dsa_switch_setup_one does.
+--- a/net/dsa/dsa_priv.h
++++ b/net/dsa/dsa_priv.h
+@@ -91,6 +91,8 @@ struct dsa_slave_priv {
+ 
+ 	/* TC context */
+ 	struct list_head	mall_tc_list;
++
++	struct net_device       *master;
+ };
+ 
+ /* dsa.c */
+@@ -177,6 +179,9 @@ extern const struct dsa_device_ops trail
+ 
+ static inline struct net_device *dsa_master_netdev(struct dsa_slave_priv *p)
+ {
++	if (p->master)
++		return p->master;
++
+ 	return p->dp->cpu_dp->netdev;
+ }
+ 
+--- a/net/dsa/slave.c
++++ b/net/dsa/slave.c
+@@ -1263,7 +1263,7 @@ int dsa_slave_create(struct dsa_port *po
+ 	int ret;
+ 
+ 	cpu_dp = ds->dst->cpu_dp;
+-	master = cpu_dp->netdev;
++	master = ds->ports[port->upstream].ethernet;
+ 
+ 	if (!ds->num_tx_queues)
+ 		ds->num_tx_queues = 1;
+@@ -1301,6 +1301,7 @@ int dsa_slave_create(struct dsa_port *po
+ 	p->dp = port;
+ 	INIT_LIST_HEAD(&p->mall_tc_list);
+ 	p->xmit = dst->tag_ops->xmit;
++	p->master = master;
+ 
+ 	p->old_pause = -1;
+ 	p->old_link = -1;

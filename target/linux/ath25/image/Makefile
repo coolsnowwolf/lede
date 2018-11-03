@@ -9,7 +9,7 @@ include $(INCLUDE_DIR)/image.mk
 
 define Build/mkfwimage
 	$(STAGING_DIR_HOST)/bin/mkfwimage \
-		-B $(1).OpenWrt.$(REVISION) \
+		-B $(1).$(VERSION_DIST).$(REVISION) \
 		-k $(IMAGE_KERNEL) \
 		-r $(IMAGE_ROOTFS) \
 		-o $@.new && \

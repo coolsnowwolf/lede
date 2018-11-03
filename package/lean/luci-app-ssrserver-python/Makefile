@@ -10,7 +10,7 @@ LUCI_TITLE:=LuCI for SSR Server Python
 LUCI_DEPENDS:=+python
 LUCI_PKGARCH:=all
 PKG_VERSION:=3.2.0
-PKG_RELEASE:=3
+PKG_RELEASE:=6
 
 include $(TOPDIR)/feeds/luci/luci.mk
 

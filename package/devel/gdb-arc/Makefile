@@ -8,14 +8,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gdb-arc
-PKG_VERSION:=arc-2017.03-gdb
+PKG_VERSION:=arc-2017.09-gdb
 PKG_RELEASE:=1
 
-PKG_SOURCE:=gdb-arc-2017.03-gdb.tar.gz
+PKG_SOURCE:=gdb-arc-2017.09-gdb.tar.gz
 PKG_SOURCE_URL:=https://github.com/foss-for-synopsys-dwc-arc-processors/binutils-gdb/archive/$(PKG_VERSION)
 PKG_HASH:=6a91f86cc487c1548d3f5d4f29f7226d2019c0db8a63633aeabd5914a340f3f9
 
-PKG_BUILD_DIR:=$(BUILD_DIR)/binutils-gdb-arc-2017.03-gdb
+PKG_BUILD_DIR:=$(BUILD_DIR)/binutils-gdb-arc-2017.09-gdb
 
 PKG_BUILD_PARALLEL:=1
 PKG_INSTALL:=1

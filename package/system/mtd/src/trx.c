@@ -46,6 +46,12 @@ struct trx_header {
 	uint32_t offsets[3];    /* Offsets of partitions from start of header */
 };
 
+#define min(x,y) ({		\
+	typeof(x) _x = (x);	\
+	typeof(y) _y = (y);	\
+	(void) (&_x == &_y);	\
+	_x < _y ? _x : _y; })
+
 #if __BYTE_ORDER == __BIG_ENDIAN
 #define STORE32_LE(X)           ((((X) & 0x000000FF) << 24) | (((X) & 0x0000FF00) << 8) | (((X) & 0x00FF0000) >> 8) | (((X) & 0xFF000000) >> 24))
 #elif __BYTE_ORDER == __LITTLE_ENDIAN
@@ -156,7 +162,7 @@ mtd_fixtrx(const char *mtd, size_t offset, size_t data_size)
 	int fd;
 	struct trx_header *trx;
 	char *first_block;
-	char *buf;
+	char *buf, *to;
 	ssize_t res;
 	size_t block_offset;
 
@@ -201,23 +207,41 @@ mtd_fixtrx(const char *mtd, size_t offset, size_t data_size)
 		exit(1);
 	}
 
-	if (trx->len == STORE32_LE(data_size + TRX_CRC32_DATA_OFFSET)) {
-		if (quiet < 2)
-			fprintf(stderr, "Header already fixed, exiting\n");
-		close(fd);
-		return 0;
-	}
-
 	buf = malloc(data_size);
 	if (!buf) {
 		perror("malloc");
 		exit(1);
 	}
 
-	res = pread(fd, buf, data_size, data_offset);
-	if (res != data_size) {
-		perror("pread");
-		exit(1);
+	to = buf;
+	while (data_size) {
+		size_t read_block_offset = data_offset & ~(erasesize - 1);
+		size_t read_chunk;
+
+		read_chunk = erasesize - (data_offset & (erasesize - 1));
+		read_chunk = min(read_chunk, data_size);
+
+		/* Read from good blocks only to match CFE behavior */
+		if (!mtd_block_is_bad(fd, read_block_offset)) {
+			res = pread(fd, to, read_chunk, data_offset);
+			if (res != read_chunk) {
+				perror("pread");
+				exit(1);
+			}
+			to += read_chunk;
+		}
+
+		data_offset += read_chunk;
+		data_size -= read_chunk;
+	}
+	data_size = to - buf;
+
+	if (trx->len == STORE32_LE(data_size + TRX_CRC32_DATA_OFFSET) &&
+	    trx->crc32 == STORE32_LE(crc32buf(buf, data_size))) {
+		if (quiet < 2)
+			fprintf(stderr, "Header already fixed, exiting\n");
+		close(fd);
+		return 0;
 	}
 
 	trx->len = STORE32_LE(data_size + offsetof(struct trx_header, flag_version));
@@ -244,4 +268,3 @@ mtd_fixtrx(const char *mtd, size_t offset, size_t data_size)
 	return 0;
 
 }
-

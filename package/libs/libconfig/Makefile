@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libconfig
-PKG_VERSION:=1.5
+PKG_VERSION:=1.7.2
 PKG_RELEASE:=1
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=http://www.hyperrealm.com/libconfig
-PKG_HASH:=e31daa390d8e4461c8830512fe2e13ba1a3d6a02a2305a02429eec61e68703f6
+PKG_SOURCE:=v$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://github.com/hyperrealm/libconfig/archive/
+PKG_HASH:=f67ac44099916ae260a6c9e290a90809e7d782d96cdd462cac656ebc5b685726
 
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1

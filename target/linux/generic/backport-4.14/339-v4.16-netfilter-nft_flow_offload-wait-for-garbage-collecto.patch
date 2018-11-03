@@ -1,0 +1,47 @@
+From: Pablo Neira Ayuso <pablo@netfilter.org>
+Date: Thu, 1 Feb 2018 18:49:00 +0100
+Subject: [PATCH] netfilter: nft_flow_offload: wait for garbage collector
+ to run after cleanup
+
+If netdevice goes down, then flowtable entries are scheduled to be
+removed. Wait for garbage collector to have a chance to run so it can
+delete them from the hashtable.
+
+The flush call might sleep, so hold the nfnl mutex from
+nft_flow_table_iterate() instead of rcu read side lock. The use of the
+nfnl mutex is also implicitly fixing races between updates via nfnetlink
+and netdevice event.
+
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/net/netfilter/nf_tables_api.c
++++ b/net/netfilter/nf_tables_api.c
+@@ -4886,13 +4886,13 @@ void nft_flow_table_iterate(struct net *
+ 	struct nft_flowtable *flowtable;
+ 	const struct nft_table *table;
+ 
+-	rcu_read_lock();
+-	list_for_each_entry_rcu(table, &net->nft.tables, list) {
+-		list_for_each_entry_rcu(flowtable, &table->flowtables, list) {
++	nfnl_lock(NFNL_SUBSYS_NFTABLES);
++	list_for_each_entry(table, &net->nft.tables, list) {
++		list_for_each_entry(flowtable, &table->flowtables, list) {
+ 			iter(&flowtable->data, data);
+ 		}
+ 	}
+-	rcu_read_unlock();
++	nfnl_unlock(NFNL_SUBSYS_NFTABLES);
+ }
+ EXPORT_SYMBOL_GPL(nft_flow_table_iterate);
+ 
+--- a/net/netfilter/nft_flow_offload.c
++++ b/net/netfilter/nft_flow_offload.c
+@@ -208,6 +208,7 @@ static void nft_flow_offload_iterate_cle
+ 					     void *data)
+ {
+ 	nf_flow_table_iterate(flowtable, flow_offload_iterate_cleanup, data);
++	flush_delayed_work(&flowtable->gc_work);
+ }
+ 
+ static int flow_offload_netdev_event(struct notifier_block *this,

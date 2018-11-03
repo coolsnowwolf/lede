@@ -120,7 +120,12 @@ ifdef USE_GIT_TREE
   define Build/Prepare/Default
 	mkdir -p $(PKG_BUILD_DIR)
 	ln -s $(CURDIR)/git-src $(PKG_BUILD_DIR)/.git
-	( cd $(PKG_BUILD_DIR); git checkout .)
+	( cd $(PKG_BUILD_DIR); \
+		git checkout .; \
+		git submodule update --recursive; \
+		git submodule foreach git config --unset core.worktree; \
+		git submodule foreach git checkout .; \
+	)
   endef
 endif
 ifdef USE_SOURCE_DIR
@@ -139,7 +144,7 @@ define Build/Exports/Default
   $(1) : export CONFIG_SITE:=$$(CONFIG_SITE)
   $(1) : export PKG_CONFIG_PATH:=$$(PKG_CONFIG_PATH)
   $(1) : export PKG_CONFIG_LIBDIR:=$$(PKG_CONFIG_PATH)
-  $(1) : export CCACHE_DIR:=$(STAGING_DIR)/ccache
+  $(if $(CONFIG_CCACHE),$(1) : export CCACHE_DIR:=$(STAGING_DIR)/ccache)
 endef
 Build/Exports=$(Build/Exports/Default)
 
@@ -223,7 +228,7 @@ define Build/CoreTargets
 
   ifneq ($(CONFIG_AUTOREMOVE),)
     compile:
-		-touch $(PKG_BUILD_DIR)/.autoremove 2>/dev/null >/dev/null
+		-touch -r $(PKG_BUILD_DIR)/.built $(PKG_BUILD_DIR)/.autoremove 2>/dev/null >/dev/null
 		$(FIND) $(PKG_BUILD_DIR) -mindepth 1 -maxdepth 1 -not '(' -type f -and -name '.*' -and -size 0 ')' -and -not -name '.pkgdir' | \
 			$(XARGS) rm -rf
   endif

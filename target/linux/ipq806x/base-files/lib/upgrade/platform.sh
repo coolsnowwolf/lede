@@ -32,6 +32,7 @@ platform_do_upgrade() {
 		MTD_CONFIG_ARGS="-s 0x200000"
 		default_do_upgrade "$ARGV"
 		;;
+	nec,wg2600hp |\
 	*)
 		default_do_upgrade "$ARGV"
 		;;
@@ -45,9 +46,3 @@ platform_nand_pre_upgrade() {
 		;;
 	esac
 }
-
-blink_led() {
-	. /etc/diag.sh; set_state upgrade
-}
-
-append sysupgrade_pre_upgrade blink_led

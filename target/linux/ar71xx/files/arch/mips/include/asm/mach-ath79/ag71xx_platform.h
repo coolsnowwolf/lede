@@ -37,6 +37,7 @@ struct ag71xx_platform_data {
 	u8		is_ar724x:1;
 	u8		has_ar8216:1;
 	u8		use_flow_control:1;
+	u8		enable_sgmii_fixup:1;
 	u8		disable_inline_checksum_engine:1;
 
 	struct ag71xx_switch_platform_data *switch_data;
@@ -44,10 +45,6 @@ struct ag71xx_platform_data {
 	void		(*ddr_flush)(void);
 	void		(*set_speed)(int speed);
 	void		(*update_pll)(u32 pll_10, u32 pll_100, u32 pll_1000);
-
-	u32		fifo_cfg1;
-	u32		fifo_cfg2;
-	u32		fifo_cfg3;
 
 	unsigned int	max_frame_len;
 	unsigned int	desc_pktlen_mask;

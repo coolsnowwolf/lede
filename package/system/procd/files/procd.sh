@@ -33,7 +33,7 @@
 #   Send a signal to a service instance (or all instances)
 #
 
-. $IPKG_INSTROOT/usr/share/libubox/jshn.sh
+. "$IPKG_INSTROOT/usr/share/libubox/jshn.sh"
 
 PROCD_RELOAD_DELAY=1000
 _PROCD_SERVICE=

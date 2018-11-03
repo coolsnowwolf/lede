@@ -1,0 +1,192 @@
+From 69226896ad636b94f6d2e55d75ff21a29c4de83b Mon Sep 17 00:00:00 2001
+From: Roger Quadros <rogerq@ti.com>
+Date: Fri, 21 Apr 2017 16:15:38 +0300
+Subject: [PATCH] mdio_bus: Issue GPIO RESET to PHYs.
+
+Some boards [1] leave the PHYs at an invalid state
+during system power-up or reset thus causing unreliability
+issues with the PHY which manifests as PHY not being detected
+or link not functional. To fix this, these PHYs need to be RESET
+via a GPIO connected to the PHY's RESET pin.
+
+Some boards have a single GPIO controlling the PHY RESET pin of all
+PHYs on the bus whereas some others have separate GPIOs controlling
+individual PHY RESETs.
+
+In both cases, the RESET de-assertion cannot be done in the PHY driver
+as the PHY will not probe till its reset is de-asserted.
+So do the RESET de-assertion in the MDIO bus driver.
+
+[1] - am572x-idk, am571x-idk, a437x-idk
+
+Signed-off-by: Roger Quadros <rogerq@ti.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ Documentation/devicetree/bindings/net/mdio.txt | 33 ++++++++++++++++++
+ drivers/net/phy/mdio_bus.c                     | 47 ++++++++++++++++++++++++++
+ drivers/of/of_mdio.c                           |  7 ++++
+ include/linux/phy.h                            |  7 ++++
+ 4 files changed, 94 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/net/mdio.txt
+
+--- /dev/null
++++ b/Documentation/devicetree/bindings/net/mdio.txt
+@@ -0,0 +1,33 @@
++Common MDIO bus properties.
++
++These are generic properties that can apply to any MDIO bus.
++
++Optional properties:
++- reset-gpios: List of one or more GPIOs that control the RESET lines
++  of the PHYs on that MDIO bus.
++- reset-delay-us: RESET pulse width in microseconds as per PHY datasheet.
++
++A list of child nodes, one per device on the bus is expected. These
++should follow the generic phy.txt, or a device specific binding document.
++
++Example :
++This example shows these optional properties, plus other properties
++required for the TI Davinci MDIO driver.
++
++	davinci_mdio: ethernet@0x5c030000 {
++		compatible = "ti,davinci_mdio";
++		reg = <0x5c030000 0x1000>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		reset-gpios = <&gpio2 5 GPIO_ACTIVE_LOW>;
++		reset-delay-us = <2>;   /* PHY datasheet states 1us min */
++
++		ethphy0: ethernet-phy@1 {
++			reg = <1>;
++		};
++
++		ethphy1: ethernet-phy@3 {
++			reg = <3>;
++		};
++	};
+--- a/drivers/net/phy/mdio_bus.c
++++ b/drivers/net/phy/mdio_bus.c
+@@ -22,8 +22,11 @@
+ #include <linux/init.h>
+ #include <linux/delay.h>
+ #include <linux/device.h>
++#include <linux/gpio.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/of_device.h>
+ #include <linux/of_mdio.h>
++#include <linux/of_gpio.h>
+ #include <linux/netdevice.h>
+ #include <linux/etherdevice.h>
+ #include <linux/skbuff.h>
+@@ -304,6 +307,7 @@ int __mdiobus_register(struct mii_bus *b
+ {
+ 	struct mdio_device *mdiodev;
+ 	int i, err;
++	struct gpio_desc *gpiod;
+ 
+ 	if (NULL == bus || NULL == bus->name ||
+ 	    NULL == bus->read || NULL == bus->write)
+@@ -330,6 +334,35 @@ int __mdiobus_register(struct mii_bus *b
+ 	if (bus->reset)
+ 		bus->reset(bus);
+ 
++	/* de-assert bus level PHY GPIO resets */
++	if (bus->num_reset_gpios > 0) {
++		bus->reset_gpiod = devm_kcalloc(&bus->dev,
++						 bus->num_reset_gpios,
++						 sizeof(struct gpio_desc *),
++						 GFP_KERNEL);
++		if (!bus->reset_gpiod)
++			return -ENOMEM;
++	}
++
++	for (i = 0; i < bus->num_reset_gpios; i++) {
++		gpiod = devm_gpiod_get_index(&bus->dev, "reset", i,
++					     GPIOD_OUT_LOW);
++		if (IS_ERR(gpiod)) {
++			err = PTR_ERR(gpiod);
++			if (err != -ENOENT) {
++				dev_err(&bus->dev,
++					"mii_bus %s couldn't get reset GPIO\n",
++					bus->id);
++				return err;
++			}
++		} else {
++			bus->reset_gpiod[i] = gpiod;
++			gpiod_set_value_cansleep(gpiod, 1);
++			udelay(bus->reset_delay_us);
++			gpiod_set_value_cansleep(gpiod, 0);
++		}
++	}
++
+ 	for (i = 0; i < PHY_MAX_ADDR; i++) {
+ 		if ((bus->phy_mask & (1 << i)) == 0) {
+ 			struct phy_device *phydev;
+@@ -355,6 +388,13 @@ error:
+ 		mdiodev->device_remove(mdiodev);
+ 		mdiodev->device_free(mdiodev);
+ 	}
++
++	/* Put PHYs in RESET to save power */
++	for (i = 0; i < bus->num_reset_gpios; i++) {
++		if (bus->reset_gpiod[i])
++			gpiod_set_value_cansleep(bus->reset_gpiod[i], 1);
++	}
++
+ 	device_del(&bus->dev);
+ 	return err;
+ }
+@@ -376,6 +416,13 @@ void mdiobus_unregister(struct mii_bus *
+ 		mdiodev->device_remove(mdiodev);
+ 		mdiodev->device_free(mdiodev);
+ 	}
++
++	/* Put PHYs in RESET to save power */
++	for (i = 0; i < bus->num_reset_gpios; i++) {
++		if (bus->reset_gpiod[i])
++			gpiod_set_value_cansleep(bus->reset_gpiod[i], 1);
++	}
++
+ 	device_del(&bus->dev);
+ }
+ EXPORT_SYMBOL(mdiobus_unregister);
+--- a/drivers/of/of_mdio.c
++++ b/drivers/of/of_mdio.c
+@@ -22,6 +22,8 @@
+ #include <linux/of_net.h>
+ #include <linux/module.h>
+ 
++#define DEFAULT_GPIO_RESET_DELAY	10	/* in microseconds */
++
+ MODULE_AUTHOR("Grant Likely <grant.likely@secretlab.ca>");
+ MODULE_LICENSE("GPL");
+ 
+@@ -220,6 +222,11 @@ int of_mdiobus_register(struct mii_bus *
+ 
+ 	mdio->dev.of_node = np;
+ 
++	/* Get bus level PHY reset GPIO details */
++	mdio->reset_delay_us = DEFAULT_GPIO_RESET_DELAY;
++	of_property_read_u32(np, "reset-delay-us", &mdio->reset_delay_us);
++	mdio->num_reset_gpios = of_gpio_named_count(np, "reset-gpios");
++
+ 	/* Register the MDIO bus */
+ 	rc = mdiobus_register(mdio);
+ 	if (rc)
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -193,6 +193,13 @@ struct mii_bus {
+ 	 * matching its address
+ 	 */
+ 	int irq[PHY_MAX_ADDR];
++
++	/* GPIO reset pulse width in microseconds */
++	int reset_delay_us;
++	/* Number of reset GPIOs */
++	int num_reset_gpios;
++	/* Array of RESET GPIO descriptors */
++	struct gpio_desc **reset_gpiod;
+ };
+ #define to_mii_bus(d) container_of(d, struct mii_bus, dev)
+ 

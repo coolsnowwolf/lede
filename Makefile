@@ -27,6 +27,8 @@ ifneq ($(OPENWRT_BUILD),1)
   export OPENWRT_BUILD
   GREP_OPTIONS=
   export GREP_OPTIONS
+  CDPATH=
+  export CDPATH
   include $(TOPDIR)/include/debug.mk
   include $(TOPDIR)/include/depends.mk
   include $(TOPDIR)/include/toplevel.mk
@@ -85,7 +87,7 @@ prereq: $(target/stamp-prereq) tmp/.prereq_packages
 	fi
 
 checksum: FORCE
-	$(call sha256sums,$(BIN_DIR))
+	$(call sha256sums,$(BIN_DIR),$(CONFIG_BUILDBOT))
 
 diffconfig: FORCE
 	mkdir -p $(BIN_DIR)
@@ -95,8 +97,8 @@ prepare: .config $(tools/stamp-compile) $(toolchain/stamp-compile)
 	$(_SINGLE)$(SUBMAKE) -r diffconfig
 
 world: prepare $(target/stamp-compile) $(package/stamp-compile) $(package/stamp-install) $(target/stamp-install) FORCE
-	$(_SINGLE)$(SUBMAKE) -r package/index
-	$(_SINGLE)$(SUBMAKE) -r checksum
+# $(_SINGLE)$(SUBMAKE) -r package/index
+# $(_SINGLE)$(SUBMAKE) -r checksum
 
 .PHONY: clean dirclean prereq prepare world package/symlinks package/symlinks-install package/symlinks-clean
 

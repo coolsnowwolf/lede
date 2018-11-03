@@ -65,7 +65,7 @@ Build/Patch:=$(Build/Patch/Default)
 ifneq ($(strip $(PKG_UNPACK)),)
   define Build/Prepare/Default
 	$(PKG_UNPACK)
-	[ ! -d ./src/ ] || $(CP) ./src/* $(PKG_BUILD_DIR)
+	[ ! -d ./src/ ] || $(CP) ./src/. $(PKG_BUILD_DIR)
 	$(Build/Patch)
   endef
 endif

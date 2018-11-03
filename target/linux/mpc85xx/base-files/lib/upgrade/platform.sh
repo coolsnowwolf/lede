@@ -10,13 +10,3 @@ platform_check_image() {
 }
 
 # use default for platform_do_upgrade()
-
-disable_watchdog() {
-	killall watchdog
-	( ps | grep -v 'grep' | grep '/dev/watchdog' ) && {
-		echo 'Could not disable watchdog'
-		return 1
-	}
-}
-
-append sysupgrade_pre_upgrade disable_watchdog

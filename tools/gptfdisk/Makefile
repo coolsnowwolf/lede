@@ -11,16 +11,11 @@ HOST_BUILD_PARALLEL := 1
 
 include $(INCLUDE_DIR)/host-build.mk
 
-HOST_CONFIGURE_VARS += \
-        MAKEFLAGS="$(HOST_JOBS)" \
-        CXXFLAGS="$(HOST_CFLAGS)"
-
-HOST_CONFIGURE_ARGS := \
-        $(if $(MAKE_JOBSERVER),--parallel="$(MAKE_JOBSERVER)") \
-        --prefix=$(STAGING_DIR_HOST)
+HOST_CPPFLAGS += \
+	-I$(STAGING_DIR_HOST)/include/e2fsprogs
 
 define Host/Compile
-        $(MAKE) LDFLAGS="$(HOST_LDFLAGS)" CXXFLAGS="$(HOST_CFLAGS) -I$(STAGING_DIR_HOST)/include/e2fsprogs" -C $(HOST_BUILD_DIR) sgdisk
+	$(call Host/Compile/Default,sgdisk)
 endef
 
 define Host/Install
@@ -30,8 +25,5 @@ endef
 define Host/Clean
         rm -f $(STAGING_DIR_HOST)/bin/sgdisk
 endef
-
-HOSTCC := $(HOSTCC_NOCACHE)
-HOSTCXX := $(HOSTCXX_NOCACHE)
 
 $(eval $(call HostBuild))
