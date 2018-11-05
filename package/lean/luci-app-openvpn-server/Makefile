@@ -10,7 +10,7 @@ LUCI_DEPENDS:=+openvpn-openssl +openvpn-easy-rsa +kmod-tun
 LUCI_PKGARCH:=all
 PKG_NAME:=luci-app-openvpn-server
 PKG_VERSION:=2.0
-PKG_RELEASE:=17
+PKG_RELEASE:=18
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
