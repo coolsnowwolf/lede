@@ -87,7 +87,7 @@ ifneq ($(SUBTARGET),mikrotik)
 # $(4): output file.
 define MkuImage
 	mkimage -A mips -O linux -T kernel -a 0x80060000 -C $(1) $(2) \
-		-e 0x80060000 -n 'MIPS OpenWrt Linux-$(LINUX_VERSION)' \
+		-e 0x80060000 -n 'MIPS $(VERSION_DIST) Linux-$(LINUX_VERSION)' \
 		-d $(3) $(4)
 endef
 
@@ -484,11 +484,11 @@ define Image/Build/Belkin
 	$(eval rootsize=$(call mtdpartsize,rootfs,$(4)))
 	$(call Sysupgrade/RKuImage,$(1),$(2),$(kernsize),$(rootsize))
 	if [ -e "$(call sysupname,$(1),$(2))" ]; then \
-		edimax_fw_header -m $(5) -v "$(shell echo -n OpenWrt$(REVISION) | cut -c -13)" \
+		edimax_fw_header -m $(5) -v "$(shell echo -n $(VERSION_DIST)$(REVISION) | cut -c -13)" \
 			-n "uImage" \
 			-i $(KDIR_TMP)/vmlinux-$(2).uImage \
 			-o $(KDIR_TMP)/$(2)-uImage; \
-		edimax_fw_header -m $(5) -v "$(shell echo -n OpenWrt$(REVISION) | cut -c -13)" \
+		edimax_fw_header -m $(5) -v "$(shell echo -n $(VERSION_DIST)$(REVISION) | cut -c -13)" \
 			-n "rootfs" \
 			-i $(KDIR)/root.$(1) \
 			-o $(KDIR_TMP)/$(2)-rootfs; \
@@ -661,7 +661,7 @@ define Image/Build/Netgear/buildkernel
 	) > $(KDIR_TMP)/vmlinux-$(2).uImage.squashfs.tmp2
 	mkimage -A mips -O linux -T filesystem -C none -M $(5) \
 		-a 0xbf070000 -e 0xbf070000 \
-		-n 'MIPS OpenWrt Linux-$(LINUX_VERSION)' \
+		-n 'MIPS $(VERSION_DIST) Linux-$(LINUX_VERSION)' \
 		-d $(KDIR_TMP)/vmlinux-$(2).uImage.squashfs.tmp2 \
 		$(KDIR_TMP)/vmlinux-$(2).uImage.squashfs
 endef
@@ -673,7 +673,7 @@ define Image/Build/Netgear
 		for r in $(7) ; do \
 			[ -n "$$r" ] && dashr="-$$r" || dashr= ; \
 			$(STAGING_DIR_HOST)/bin/mkdniimg \
-				-B $(6) -v OpenWrt.$(REVISION) -r "$$r" $(8) \
+				-B $(6) -v $(VERSION_DIST).$(REVISION) -r "$$r" $(8) \
 				-i $(call sysupname,$(1),$(2)) \
 				-o $(call imgname,$(1),$(2))-factory$$dashr.img; \
 		done; \
@@ -714,7 +714,7 @@ define Image/Build/NetgearNAND/buildkernel
 	dd if=/dev/zero of=$(KDIR_TMP)/fakeroot-$(2) bs=131072 count=1
 	mkimage -A mips -O linux -T filesystem -C none \
 		-a 0xbf070000 -e 0xbf070000 \
-		-n 'MIPS OpenWrt fakeroot' \
+		-n 'MIPS $(VERSION_DIST) fakeroot' \
 		-d $(KDIR_TMP)/fakeroot-$(2) \
 		-M $(5) \
 		$(KDIR_TMP)/fakeroot-$(2).uImage
@@ -745,7 +745,7 @@ define Image/Build/NetgearNAND
 		dd if=$(KDIR_TMP)/$(2)-root.ubi \
 	) > $(imageraw)
 	$(STAGING_DIR_HOST)/bin/mkdniimg \
-		-B $(6) -v OpenWrt.$(REVISION) -r "$$r" $(8) \
+		-B $(6) -v $(VERSION_DIST).$(REVISION) -r "$$r" $(8) \
 		-i $(imageraw) \
 		-o $(call imgname,ubi,$(2))-factory.img
 
@@ -897,8 +897,6 @@ $(eval $(call SingleProfile,AthLzma,64k,DB120,db120,DB120,ttyS0,115200,$$(db120_
 $(eval $(call SingleProfile,AthLzma,64k,HORNETUBx2,hornet-ub-x2,HORNET-UB,ttyATH0,115200,$$(alfa_mtdlayout_16M),KRuImage,65536))
 $(eval $(call SingleProfile,AthLzma,64k,TUBE2H16M,tube2h-16M,TUBE2H,ttyATH0,115200,$$(alfa_mtdlayout_16M),KRuImage,65536))
 
-$(eval $(call SingleProfile,Belkin,64k,F9K1115V2,f9k1115v2,F9K1115V2,ttyS0,115200,$$(f9k1115v2_mtdlayout),BR-6679BAC))
-
 $(eval $(call SingleProfile,CameoAP121_8M,64kraw-nojffs,DIR505A1,dir-505-a1,DIR-505-A1,ttyATH0,115200,"HORNET-PACKET-DIR505A1-3",1.99.99,""))
 
 $(eval $(call SingleProfile,CameoAP135,64kraw,DGL5500A1,dgl-5500-a1,DGL-5500-A1,ttyS0,115200,$$(dgl_5500_mtdlayout),"00AP135AR9558-RT-130508-00"))
@@ -971,6 +969,8 @@ endif # ifeq ($(SUBTARGET),generic)
 
 
 ifeq ($(SUBTARGET),tiny)
+
+$(eval $(call SingleProfile,Belkin,64k,F9K1115V2,f9k1115v2,F9K1115V2,ttyS0,115200,$$(f9k1115v2_mtdlayout),BR-6679BAC))
 
 $(eval $(call SingleProfile,CameoAP91,64kraw,DIR600A1,dir-600-a1,DIR-600-A1,ttyS0,115200,"AP91-AR7240-RT-090223-00"))
 $(eval $(call SingleProfile,CameoAP91,64kraw,DIR601A1,dir-601-a1,DIR-600-A1,ttyS0,115200,"AP91-AR7240-RT-090223-02"))

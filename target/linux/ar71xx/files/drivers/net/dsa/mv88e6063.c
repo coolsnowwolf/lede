@@ -182,7 +182,11 @@ static int mv88e6063_setup_port(struct dsa_switch *ds, int p)
 #else
 				ds->enabled_port_mask :
 #endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 				(1 << ds->dst->cpu_port)));
+#else
+				(1 << ds->dst->cpu_dp->index)));
+#endif
 
 	/*
 	 * Port Association Vector: when learning source addresses
@@ -275,15 +279,29 @@ static struct dsa_switch_ops mv88e6063_switch_ops = {
 	.phy_write	= mv88e6063_phy_write,
 };
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4,13,0)
+static struct dsa_switch_driver mv88e6063_switch_drv = {
+	.ops = &mv88e6063_switch_ops,
+};
+#endif
+
 static int __init mv88e6063_init(void)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 	register_switch_driver(&mv88e6063_switch_ops);
+#else
+	register_switch_driver(&mv88e6063_switch_drv);
+#endif
 	return 0;
 }
 module_init(mv88e6063_init);
 
 static void __exit mv88e6063_cleanup(void)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 	unregister_switch_driver(&mv88e6063_switch_ops);
+#else
+	unregister_switch_driver(&mv88e6063_switch_drv);
+#endif
 }
 module_exit(mv88e6063_cleanup);

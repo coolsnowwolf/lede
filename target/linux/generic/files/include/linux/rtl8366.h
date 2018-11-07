@@ -15,6 +15,8 @@
 #define RTL8366S_DRIVER_NAME	"rtl8366s"
 #define RTL8366RB_DRIVER_NAME	"rtl8366rb"
 
+struct rtl8366_smi;
+
 enum rtl8366_type {
 	RTL8366_TYPE_UNKNOWN,
 	RTL8366_TYPE_S,
@@ -29,7 +31,7 @@ struct rtl8366_initval {
 struct rtl8366_platform_data {
 	unsigned	gpio_sda;
 	unsigned	gpio_sck;
-	void		(*hw_reset)(bool active);
+	void		(*hw_reset)(struct rtl8366_smi *smi, bool active);
 
 	unsigned	num_initvals;
 	struct rtl8366_initval *initvals;

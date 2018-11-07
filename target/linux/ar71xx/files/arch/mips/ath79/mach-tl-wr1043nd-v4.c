@@ -49,7 +49,8 @@
 
 #define TL_WR1043_V4_GPIO_USB_POWER		8
 
-#define TL_WR1043_V4_GPIO_LED_WAN		15
+#define TL_WR1043_V4_GPIO_LED_INET		15
+#define TL_WR1043_V4_GPIO_LED_WAN		16
 #define TL_WR1043_V4_GPIO_LED_LAN1		9
 #define TL_WR1043_V4_GPIO_LED_LAN2		14
 #define TL_WR1043_V4_GPIO_LED_LAN3		21
@@ -63,7 +64,7 @@
 #define TL_WR1043_V4_EEPROM_ADDR		0x1fff0000
 #define TL_WR1043_V4_WMAC_CALDATA_OFFSET	0x1000
 
-#define TL_WR1043N_V5_MAC_LOCATION		0x1ff00008
+#define TL_WR1043_V5_MAC_LOCATION		0x1ff00008
 
 static struct gpio_led tl_wr1043nd_v4_leds_gpio[] __initdata = {
 	{
@@ -88,6 +89,11 @@ static struct gpio_led tl_wr1043nd_v4_leds_gpio[] __initdata = {
 	},
 	{
 		.name		= "tp-link:green:wan",
+		.gpio		= TL_WR1043_V4_GPIO_LED_INET,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:orange:wan",
 		.gpio		= TL_WR1043_V4_GPIO_LED_WAN,
 		.active_low	= 1,
 	},
@@ -151,7 +157,7 @@ static struct ar8327_platform_data tl_wr1043nd_v4_ar8327_data = {
 static struct mdio_board_info tl_wr1043nd_v4_mdio0_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = 0,
+		.mdio_addr = 0,
 		.platform_data = &tl_wr1043nd_v4_ar8327_data,
 	},
 };
@@ -210,6 +216,11 @@ static struct gpio_led tl_wr1043n_v5_leds_gpio[] __initdata = {
 	},
 	{
 		.name		= "tp-link:green:wan",
+		.gpio		= TL_WR1043_V4_GPIO_LED_INET,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:orange:wan",
 		.gpio		= TL_WR1043_V4_GPIO_LED_WAN,
 		.active_low	= 1,
 	},
@@ -240,7 +251,7 @@ static struct gpio_led tl_wr1043n_v5_leds_gpio[] __initdata = {
 static void __init tl_wr1043nv5_setup(void)
 {
 	u8 *art = (u8 *) KSEG1ADDR(TL_WR1043_V4_EEPROM_ADDR);
-	u8 *mac = (u8 *) KSEG1ADDR(TL_WR1043N_V5_MAC_LOCATION);
+	u8 *mac = (u8 *) KSEG1ADDR(TL_WR1043_V5_MAC_LOCATION);
 
 	ath79_register_m25p80(NULL);
 

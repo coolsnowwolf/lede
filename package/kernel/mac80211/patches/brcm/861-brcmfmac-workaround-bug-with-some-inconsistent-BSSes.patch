@@ -1,0 +1,50 @@
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <zajec5@gmail.com>
+Date: Thu, 9 Jul 2015 00:07:59 +0200
+Subject: [PATCH] brcmfmac: workaround bug with some inconsistent BSSes state
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Rafał Miłecki <zajec5@gmail.com>
+---
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
+@@ -614,9 +614,37 @@ static struct wireless_dev *brcmf_cfg802
+ 						     enum nl80211_iftype type,
+ 						     struct vif_params *params)
+ {
++	struct net_device *dev;
+ 	struct wireless_dev *wdev;
+ 	int err;
+ 
++	/*
++	 * There is a bug with in-firmware BSS management. When adding virtual
++	 * interface brcmfmac first tells firmware to create new BSS and then
++	 * it creates new struct net_device.
++	 *
++	 * If creating/registering netdev(ice) fails, BSS remains in some bugged
++	 * state. It conflicts with existing BSSes by overtaking their auth
++	 * requests.
++	 *
++	 * It results in one BSS (addresss X) sending beacons and another BSS
++	 * (address Y) replying to authentication requests. This makes interface
++	 * unusable as AP.
++	 *
++	 * To workaround this bug we may try to guess if register_netdev(ice)
++	 * will fail. The most obvious case is using interface name that already
++	 * exists. This is actually quite likely with brcmfmac & some user space
++	 * scripts as brcmfmac doesn't allow deleting virtual interfaces.
++	 * So this bug can be triggered even by something trivial like:
++	 * iw dev wlan0 delete
++	 * iw phy phy0 interface add wlan0 type __ap
++	 */
++	dev = dev_get_by_name(&init_net, name);
++	if (dev) {
++		dev_put(dev);
++		return ERR_PTR(-ENFILE);
++	}
++
+ 	brcmf_dbg(TRACE, "enter: %s type %d\n", name, type);
+ 	err = brcmf_vif_add_validate(wiphy_to_cfg(wiphy), type);
+ 	if (err) {

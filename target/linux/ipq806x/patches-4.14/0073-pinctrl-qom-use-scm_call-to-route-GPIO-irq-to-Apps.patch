@@ -1,0 +1,183 @@
+From 2034addc7e193dc81d7ca60d8884832751b76758 Mon Sep 17 00:00:00 2001
+From: Ajay Kishore <akisho@codeaurora.org>
+Date: Tue, 24 Jan 2017 14:14:16 +0530
+Subject: pinctrl: qcom: use scm_call to route GPIO irq to Apps
+
+For IPQ806x targets, TZ protects the registers that are used to
+configure the routing of interrupts to a target processor.
+To resolve this, this patch uses scm call to route GPIO interrupts
+to application processor. Also the scm call interface is changed.
+
+Change-Id: Ib6c06829d04bc8c20483c36e63da92e26cdef9ce
+Signed-off-by: Ajay Kishore <akisho@codeaurora.org>
+---
+ drivers/firmware/qcom_scm-32.c     | 17 +++++++++++++++++
+ drivers/firmware/qcom_scm-64.c     |  9 +++++++++
+ drivers/firmware/qcom_scm.c        | 13 +++++++++++++
+ drivers/firmware/qcom_scm.h        |  8 ++++++++
+ drivers/pinctrl/qcom/pinctrl-msm.c | 34 ++++++++++++++++++++++++++++------
+ include/linux/qcom_scm.h           |  3 ++-
+ 6 files changed, 77 insertions(+), 7 deletions(-)
+
+--- a/drivers/firmware/qcom_scm-32.c
++++ b/drivers/firmware/qcom_scm-32.c
+@@ -561,6 +561,24 @@ int __qcom_scm_pas_mss_reset(struct devi
+ 	return ret ? : le32_to_cpu(out);
+ }
+ 
++int __qcom_scm_pinmux_read(u32 svc_id, u32 cmd_id, u32 arg1)
++{
++	s32 ret;
++
++	ret = qcom_scm_call_atomic1(svc_id, cmd_id, arg1);
++
++	return ret;
++}
++
++int __qcom_scm_pinmux_write(u32 svc_id, u32 cmd_id, u32 arg1, u32 arg2)
++{
++	s32 ret;
++
++	ret = qcom_scm_call_atomic2(svc_id, cmd_id, arg1, arg2);
++
++ return ret;
++}
++
+ int __qcom_scm_set_remote_state(struct device *dev, u32 state, u32 id)
+ {
+ 	struct {
+--- a/drivers/firmware/qcom_scm-64.c
++++ b/drivers/firmware/qcom_scm-64.c
+@@ -366,6 +366,16 @@ int __qcom_scm_pas_mss_reset(struct devi
+ 	return ret ? : res.a1;
+ }
+ 
++int __qcom_scm_pinmux_read(u32 svc_id, u32 cmd_id, u32 arg1)
++{
++	return -ENOTSUPP;
++}
++
++int __qcom_scm_pinmux_write(u32 svc_id, u32 cmd_id, u32 arg1, u32 arg2)
++{
++	return -ENOTSUPP;
++}
++
+ int __qcom_scm_set_remote_state(struct device *dev, u32 state, u32 id)
+ {
+ 	struct qcom_scm_desc desc = {0};
+--- a/drivers/firmware/qcom_scm.c
++++ b/drivers/firmware/qcom_scm.c
+@@ -470,3 +470,16 @@ static int __init qcom_scm_init(void)
+ 	return platform_driver_register(&qcom_scm_driver);
+ }
+ subsys_initcall(qcom_scm_init);
++
++int qcom_scm_pinmux_read(u32 arg1)
++{
++	return __qcom_scm_pinmux_read(SCM_SVC_IO_ACCESS, SCM_IO_READ, arg1);
++}
++EXPORT_SYMBOL(qcom_scm_pinmux_read);
++
++int qcom_scm_pinmux_write(u32 arg1, u32 arg2)
++{
++	return __qcom_scm_pinmux_write(SCM_SVC_IO_ACCESS, SCM_IO_WRITE,
++					arg1, arg2);
++}
++EXPORT_SYMBOL(qcom_scm_pinmux_write);
+--- a/drivers/firmware/qcom_scm.h
++++ b/drivers/firmware/qcom_scm.h
+@@ -58,6 +58,13 @@ extern int  __qcom_scm_pas_auth_and_rese
+ extern int  __qcom_scm_pas_shutdown(struct device *dev, u32 peripheral);
+ extern int  __qcom_scm_pas_mss_reset(struct device *dev, bool reset);
+ 
++#define SCM_IO_READ	1
++#define SCM_IO_WRITE	2
++#define SCM_SVC_IO_ACCESS	0x5
++
++s32 __qcom_scm_pinmux_read(u32 svc_id, u32 cmd_id, u32 arg1);
++s32 __qcom_scm_pinmux_write(u32 svc_id, u32 cmd_id, u32 arg1, u32 arg2);
++
+ /* common error codes */
+ #define QCOM_SCM_V2_EBUSY	-12
+ #define QCOM_SCM_ENOMEM		-5
+--- a/drivers/pinctrl/qcom/pinctrl-msm.c
++++ b/drivers/pinctrl/qcom/pinctrl-msm.c
+@@ -30,7 +30,8 @@
+ #include <linux/reboot.h>
+ #include <linux/pm.h>
+ #include <linux/log2.h>
+-
++#include <linux/qcom_scm.h>
++#include <linux/io.h>
+ #include "../core.h"
+ #include "../pinconf.h"
+ #include "pinctrl-msm.h"
+@@ -646,6 +647,9 @@ static void msm_gpio_irq_ack(struct irq_
+ 	const struct msm_pingroup *g;
+ 	unsigned long flags;
+ 	u32 val;
++	u32 addr;
++	int ret;
++	const __be32 *reg;
+ 
+ 	g = &pctrl->soc->groups[d->hwirq];
+ 
+@@ -684,11 +688,30 @@ static int msm_gpio_irq_set_type(struct
+ 	else
+ 		clear_bit(d->hwirq, pctrl->dual_edge_irqs);
+ 
++	int ret = of_device_is_compatible(pctrl->dev->of_node,
++					"qcom,ipq8064-pinctrl");
+ 	/* Route interrupts to application cpu */
+-	val = readl(pctrl->regs + g->intr_target_reg);
+-	val &= ~(7 << g->intr_target_bit);
+-	val |= g->intr_target_kpss_val << g->intr_target_bit;
+-	writel(val, pctrl->regs + g->intr_target_reg);
++	if (!ret) {
++		val = readl(pctrl->regs + g->intr_target_reg);
++		val &= ~(7 << g->intr_target_bit);
++		val |= g->intr_target_kpss_val << g->intr_target_bit;
++		writel(val, pctrl->regs + g->intr_target_reg);
++	} else {
++		const __be32 *reg = of_get_property(pctrl->dev->of_node, "reg", NULL);
++		if (reg) {
++			u32 addr = be32_to_cpup(reg) + g->intr_target_reg;
++			val = qcom_scm_pinmux_read(addr);
++			__iormb();
++
++			val &= ~(7 << g->intr_target_bit);
++			val |= g->intr_target_kpss_val << g->intr_target_bit;
++
++			__iowmb();
++			ret = qcom_scm_pinmux_write(addr, val);
++			if (ret)
++				pr_err("\n Routing interrupts to Apps proc failed");
++		}
++	}
+ 
+ 	/* Update configuration for gpio.
+ 	 * RAW_STATUS_EN is left on for all gpio irqs. Due to the
+@@ -962,4 +985,3 @@ int msm_pinctrl_remove(struct platform_d
+ 	return 0;
+ }
+ EXPORT_SYMBOL(msm_pinctrl_remove);
+-
+--- a/include/linux/qcom_scm.h
++++ b/include/linux/qcom_scm.h
+@@ -43,6 +43,8 @@ extern int qcom_scm_set_remote_state(u32
+ extern int qcom_scm_restore_sec_cfg(u32 device_id, u32 spare);
+ extern int qcom_scm_iommu_secure_ptbl_size(u32 spare, size_t *size);
+ extern int qcom_scm_iommu_secure_ptbl_init(u64 addr, u32 size, u32 spare);
++extern s32 qcom_scm_pinmux_read(u32 arg1);
++extern s32 qcom_scm_pinmux_write(u32 arg1, u32 arg2);
+ #else
+ static inline
+ int qcom_scm_set_cold_boot_addr(void *entry, const cpumask_t *cpus)
+@@ -73,5 +75,7 @@ qcom_scm_set_remote_state(u32 state,u32
+ static inline int qcom_scm_restore_sec_cfg(u32 device_id, u32 spare) { return -ENODEV; }
+ static inline int qcom_scm_iommu_secure_ptbl_size(u32 spare, size_t *size) { return -ENODEV; }
+ static inline int qcom_scm_iommu_secure_ptbl_init(u64 addr, u32 size, u32 spare) { return -ENODEV; }
++extern s32 qcom_scm_pinmux_read(u32 arg1) { return -ENODEV; }
++extern s32 qcom_scm_pinmux_write(u32 arg1, u32 arg2) { return -ENODEV; }
+ #endif
+ #endif

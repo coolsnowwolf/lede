@@ -1,0 +1,340 @@
+--- a/drivers/net/ethernet/qualcomm/essedma/edma_axi.c
++++ b/drivers/net/ethernet/qualcomm/essedma/edma_axi.c
+@@ -17,6 +17,11 @@
+ #include <linux/of.h>
+ #include <linux/of_net.h>
+ #include <linux/timer.h>
++#include <linux/of_platform.h>
++#include <linux/of_address.h>
++#include <linux/clk.h>
++#include <linux/string.h>
++#include <linux/reset.h>
+ #include "edma.h"
+ #include "ess_edma.h"
+ 
+@@ -83,7 +88,103 @@ void edma_read_reg(u16 reg_addr, volatil
+ 	*reg_value = readl((void __iomem *)(edma_hw_addr + reg_addr));
+ }
+ 
+-/* edma_change_tx_coalesce()
++static void ess_write_reg(struct edma_common_info *edma, u16 reg_addr, u32 reg_value)
++{
++	writel(reg_value, ((void __iomem *)
++		((unsigned long)edma->ess_hw_addr + reg_addr)));
++}
++
++static void ess_read_reg(struct edma_common_info *edma, u16 reg_addr,
++		  volatile u32 *reg_value)
++{
++	*reg_value = readl((void __iomem *)
++		((unsigned long)edma->ess_hw_addr + reg_addr));
++}
++
++static int ess_reset(struct edma_common_info *edma)
++{
++	struct device_node *switch_node = NULL;
++	struct reset_control *ess_rst;
++	u32 regval;
++
++	switch_node = of_find_node_by_name(NULL, "ess-switch");
++	if (!switch_node) {
++		pr_err("switch-node not found\n");
++		return -EINVAL;
++	}
++
++	ess_rst = of_reset_control_get(switch_node, "ess_rst");
++	of_node_put(switch_node);
++
++	if (IS_ERR(ess_rst)) {
++		pr_err("failed to find ess_rst!\n");
++		return -ENOENT;
++	}
++
++	reset_control_assert(ess_rst);
++	msleep(10);
++	reset_control_deassert(ess_rst);
++	msleep(100);
++	reset_control_put(ess_rst);
++
++	/* Enable only port 5 <--> port 0
++	 * bits 0:6 bitmap of ports it can fwd to */
++#define SET_PORT_BMP(r,v) \
++		ess_read_reg(edma, r, &regval); \
++		ess_write_reg(edma, r, ((regval & ~0x3F) | v));
++
++	SET_PORT_BMP(ESS_PORT0_LOOKUP_CTRL,0x20);
++	SET_PORT_BMP(ESS_PORT1_LOOKUP_CTRL,0x00);
++	SET_PORT_BMP(ESS_PORT2_LOOKUP_CTRL,0x00);
++	SET_PORT_BMP(ESS_PORT3_LOOKUP_CTRL,0x00);
++	SET_PORT_BMP(ESS_PORT4_LOOKUP_CTRL,0x00);
++	SET_PORT_BMP(ESS_PORT5_LOOKUP_CTRL,0x01);
++	ess_write_reg(edma, ESS_RGMII_CTRL, 0x400);
++	ess_write_reg(edma, ESS_PORT0_STATUS, ESS_PORT_1G_FDX);
++	ess_write_reg(edma, ESS_PORT5_STATUS, ESS_PORT_1G_FDX);
++	ess_write_reg(edma, ESS_PORT0_HEADER_CTRL, 0);
++#undef SET_PORT_BMP
++
++	/* forward multicast and broadcast frames to CPU */
++	ess_write_reg(edma, ESS_FWD_CTRL1,
++		(ESS_PORTS_ALL << ESS_FWD_CTRL1_UC_FLOOD_S) |
++		(ESS_PORTS_ALL << ESS_FWD_CTRL1_MC_FLOOD_S) |
++		(ESS_PORTS_ALL << ESS_FWD_CTRL1_BC_FLOOD_S));
++
++	return 0;
++}
++
++void ess_set_port_status_speed(struct edma_common_info *edma,
++			       struct phy_device *phydev, uint8_t port_id)
++{
++	uint16_t reg_off = ESS_PORT0_STATUS + (4 * port_id);
++	uint32_t reg_val = 0;
++
++	ess_read_reg(edma, reg_off, &reg_val);
++
++	/* reset the speed bits [0:1] */
++	reg_val &= ~ESS_PORT_STATUS_SPEED_INV;
++
++	/* set the new speed */
++	switch(phydev->speed) {
++		case SPEED_1000:  reg_val |= ESS_PORT_STATUS_SPEED_1000; break;
++		case SPEED_100:   reg_val |= ESS_PORT_STATUS_SPEED_100;  break;
++		case SPEED_10:    reg_val |= ESS_PORT_STATUS_SPEED_10;   break;
++		default:          reg_val |= ESS_PORT_STATUS_SPEED_INV;  break;
++	}
++
++	/* check full/half duplex */
++	if (phydev->duplex) {
++		reg_val |= ESS_PORT_STATUS_DUPLEX_MODE;
++	} else {
++		reg_val &= ~ESS_PORT_STATUS_DUPLEX_MODE;
++	}
++
++	ess_write_reg(edma, reg_off, reg_val);
++}
++
++/*
++ * edma_change_tx_coalesce()
+  *	change tx interrupt moderation timer
+  */
+ void edma_change_tx_coalesce(int usecs)
+@@ -551,6 +652,31 @@ static struct ctl_table edma_table[] = {
+ 	{}
+ };
+ 
++static int ess_parse(struct edma_common_info *edma)
++{
++	struct device_node *switch_node;
++	int ret = -EINVAL;
++
++	switch_node = of_find_node_by_name(NULL, "ess-switch");
++	if (!switch_node) {
++		pr_err("cannot find ess-switch node\n");
++		goto out;
++	}
++
++	edma->ess_hw_addr = of_io_request_and_map(switch_node,
++						  0, KBUILD_MODNAME);
++	if (!edma->ess_hw_addr) {
++		pr_err("%s ioremap fail.", __func__);
++		goto out;
++	}
++
++	edma->ess_clk = of_clk_get_by_name(switch_node, "ess_clk");
++	ret = clk_prepare_enable(edma->ess_clk);
++out:
++	of_node_put(switch_node);
++	return ret;
++}
++
+ /* edma_axi_netdev_ops
+  *	Describe the operations supported by registered netdevices
+  *
+@@ -786,6 +912,17 @@ static int edma_axi_probe(struct platfor
+ 		miibus = mdio_data->mii_bus;
+ 	}
+ 
++	if (of_property_read_bool(np, "qcom,single-phy") &&
++	    edma_cinfo->num_gmac == 1) {
++		err = ess_parse(edma_cinfo);
++		if (!err)
++			err = ess_reset(edma_cinfo);
++		if (err)
++			goto err_single_phy_init;
++		else
++			edma_cinfo->is_single_phy = true;
++	}
++
+ 	for_each_available_child_of_node(np, pnp) {
+ 		const char *mac_addr;
+ 
+@@ -1074,11 +1211,15 @@ static int edma_axi_probe(struct platfor
+ 
+ 	for (i = 0; i < edma_cinfo->num_gmac; i++) {
+ 		if (adapter[i]->poll_required) {
++			int phy_mode = of_get_phy_mode(np);
++
++			if (phy_mode < 0)
++				phy_mode = PHY_INTERFACE_MODE_SGMII;
+ 			adapter[i]->phydev =
+ 				phy_connect(edma_netdev[i],
+ 					    (const char *)adapter[i]->phy_id,
+ 					    &edma_adjust_link,
+-					    PHY_INTERFACE_MODE_SGMII);
++					    phy_mode);
+ 			if (IS_ERR(adapter[i]->phydev)) {
+ 				dev_dbg(&pdev->dev, "PHY attach FAIL");
+ 				err = -EIO;
+@@ -1125,6 +1266,9 @@ err_rmap_alloc_fail:
+ 	for (i = 0; i < edma_cinfo->num_gmac; i++)
+ 		unregister_netdev(edma_netdev[i]);
+ err_register:
++err_single_phy_init:
++	iounmap(edma_cinfo->ess_hw_addr);
++	clk_disable_unprepare(edma_cinfo->ess_clk);
+ err_mdiobus_init_fail:
+ 	edma_free_rx_rings(edma_cinfo);
+ err_rx_rinit:
+@@ -1185,6 +1329,8 @@ static int edma_axi_remove(struct platfo
+ 	del_timer_sync(&edma_stats_timer);
+ 	edma_free_irqs(adapter);
+ 	unregister_net_sysctl_table(edma_cinfo->edma_ctl_table_hdr);
++	iounmap(edma_cinfo->ess_hw_addr);
++	clk_disable_unprepare(edma_cinfo->ess_clk);
+ 	edma_free_tx_resources(edma_cinfo);
+ 	edma_free_rx_resources(edma_cinfo);
+ 	edma_free_tx_rings(edma_cinfo);
+--- a/drivers/net/ethernet/qualcomm/essedma/edma.c
++++ b/drivers/net/ethernet/qualcomm/essedma/edma.c
+@@ -161,8 +161,10 @@ static void edma_configure_rx(struct edm
+ 	/* Set Rx FIFO threshold to start to DMA data to host */
+ 	rxq_ctrl_data = EDMA_FIFO_THRESH_128_BYTE;
+ 
+-	/* Set RX remove vlan bit */
+-	rxq_ctrl_data |= EDMA_RXQ_CTRL_RMV_VLAN;
++	if (!edma_cinfo->is_single_phy) {
++		/* Set RX remove vlan bit */
++		rxq_ctrl_data |= EDMA_RXQ_CTRL_RMV_VLAN;
++	}
+ 
+ 	edma_write_reg(EDMA_REG_RXQ_CTRL, rxq_ctrl_data);
+ }
+@@ -1295,6 +1297,10 @@ void edma_adjust_link(struct net_device
+ 	if (status == __EDMA_LINKUP && adapter->link_state == __EDMA_LINKDOWN) {
+ 		dev_info(&adapter->pdev->dev, "%s: GMAC Link is up with phy_speed=%d\n", netdev->name, phydev->speed);
+ 		adapter->link_state = __EDMA_LINKUP;
++		if (adapter->edma_cinfo->is_single_phy) {
++			ess_set_port_status_speed(adapter->edma_cinfo, phydev,
++						  ffs(adapter->dp_bitmap) - 1);
++		}
+ 		netif_carrier_on(netdev);
+ 		if (netif_running(netdev))
+ 			netif_tx_wake_all_queues(netdev);
+@@ -1388,10 +1394,12 @@ netdev_tx_t edma_xmit(struct sk_buff *sk
+ 	}
+ 
+ 	/* Check and mark VLAN tag offload */
+-	if (skb_vlan_tag_present(skb))
+-		flags_transmit |= EDMA_VLAN_TX_TAG_INSERT_FLAG;
+-	else if (adapter->default_vlan_tag)
+-		flags_transmit |= EDMA_VLAN_TX_TAG_INSERT_DEFAULT_FLAG;
++	if (!adapter->edma_cinfo->is_single_phy) {
++		if (unlikely(skb_vlan_tag_present(skb)))
++			flags_transmit |= EDMA_VLAN_TX_TAG_INSERT_FLAG;
++		else if (adapter->default_vlan_tag)
++			flags_transmit |= EDMA_VLAN_TX_TAG_INSERT_DEFAULT_FLAG;
++	}
+ 
+ 	/* Check and mark checksum offload */
+ 	if (likely(skb->ip_summed == CHECKSUM_PARTIAL))
+--- a/drivers/net/ethernet/qualcomm/essedma/edma.h
++++ b/drivers/net/ethernet/qualcomm/essedma/edma.h
+@@ -31,6 +31,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/of.h>
+ #include <linux/of_device.h>
++#include <linux/clk.h>
+ #include <linux/kernel.h>
+ #include <linux/device.h>
+ #include <linux/sysctl.h>
+@@ -331,6 +332,10 @@ struct edma_common_info {
+ 	struct edma_hw hw; /* edma hw specific structure */
+ 	struct edma_per_cpu_queues_info edma_percpu_info[CONFIG_NR_CPUS]; /* per cpu information */
+ 	spinlock_t stats_lock; /* protect edma stats area for updation */
++
++	bool is_single_phy;
++	void __iomem *ess_hw_addr;
++	struct clk *ess_clk;
+ };
+ 
+ /* transimit packet descriptor (tpd) ring */
+@@ -443,4 +448,6 @@ void edma_change_tx_coalesce(int usecs);
+ void edma_change_rx_coalesce(int usecs);
+ void edma_get_tx_rx_coalesce(u32 *reg_val);
+ void edma_clear_irq_status(void);
++void ess_set_port_status_speed(struct edma_common_info *edma_cinfo,
++                               struct phy_device *phydev, uint8_t port_id);
+ #endif /* _EDMA_H_ */
+--- a/drivers/net/ethernet/qualcomm/essedma/ess_edma.h
++++ b/drivers/net/ethernet/qualcomm/essedma/ess_edma.h
+@@ -329,4 +329,61 @@ struct edma_hw;
+ #define EDMA_RRD_PRIORITY_MASK 0x7
+ #define EDMA_RRD_PORT_TYPE_SHIFT 7
+ #define EDMA_RRD_PORT_TYPE_MASK 0x1F
++
++#define ESS_RGMII_CTRL		0x0004
++
++/* Port status registers */
++#define ESS_PORT0_STATUS	0x007C
++#define ESS_PORT1_STATUS	0x0080
++#define ESS_PORT2_STATUS	0x0084
++#define ESS_PORT3_STATUS	0x0088
++#define ESS_PORT4_STATUS	0x008C
++#define ESS_PORT5_STATUS	0x0090
++
++#define ESS_PORT_STATUS_HDX_FLOW_CTL	0x80
++#define ESS_PORT_STATUS_DUPLEX_MODE	0x40
++#define ESS_PORT_STATUS_RX_FLOW_EN	0x20
++#define ESS_PORT_STATUS_TX_FLOW_EN	0x10
++#define ESS_PORT_STATUS_RX_MAC_EN	0x08
++#define ESS_PORT_STATUS_TX_MAC_EN	0x04
++#define ESS_PORT_STATUS_SPEED_INV	0x03
++#define ESS_PORT_STATUS_SPEED_1000	0x02
++#define ESS_PORT_STATUS_SPEED_100	0x01
++#define ESS_PORT_STATUS_SPEED_10	0x00
++
++#define ESS_PORT_1G_FDX      (ESS_PORT_STATUS_DUPLEX_MODE | ESS_PORT_STATUS_RX_FLOW_EN | \
++			       ESS_PORT_STATUS_TX_FLOW_EN  | ESS_PORT_STATUS_RX_MAC_EN  | \
++			       ESS_PORT_STATUS_TX_MAC_EN   | ESS_PORT_STATUS_SPEED_1000)
++
++#define PHY_STATUS_REG			0x11
++#define PHY_STATUS_SPEED		0xC000
++#define PHY_STATUS_SPEED_SHIFT		14
++#define PHY_STATUS_DUPLEX		0x2000
++#define PHY_STATUS_DUPLEX_SHIFT	13
++#define PHY_STATUS_SPEED_DUPLEX_RESOLVED 0x0800
++#define PHY_STATUS_CARRIER		0x0400
++#define PHY_STATUS_CARRIER_SHIFT	10
++
++/* Port lookup control registers */
++#define ESS_PORT0_LOOKUP_CTRL	0x0660
++#define ESS_PORT1_LOOKUP_CTRL	0x066C
++#define ESS_PORT2_LOOKUP_CTRL	0x0678
++#define ESS_PORT3_LOOKUP_CTRL	0x0684
++#define ESS_PORT4_LOOKUP_CTRL	0x0690
++#define ESS_PORT5_LOOKUP_CTRL	0x069C
++
++#define ESS_PORT0_HEADER_CTRL	0x009C
++
++#define ESS_PORTS_ALL		0x3f
++
++#define ESS_FWD_CTRL1		0x0624
++#define   ESS_FWD_CTRL1_UC_FLOOD		BITS(0, 7)
++#define   ESS_FWD_CTRL1_UC_FLOOD_S		0
++#define   ESS_FWD_CTRL1_MC_FLOOD		BITS(8, 7)
++#define   ESS_FWD_CTRL1_MC_FLOOD_S		8
++#define   ESS_FWD_CTRL1_BC_FLOOD		BITS(16, 7)
++#define   ESS_FWD_CTRL1_BC_FLOOD_S		16
++#define   ESS_FWD_CTRL1_IGMP			BITS(24, 7)
++#define   ESS_FWD_CTRL1_IGMP_S			24
++
+ #endif /* _ESS_EDMA_H_ */

@@ -59,7 +59,7 @@ static bool swlib_match_name(struct switch_dev *dev, const char *name)
 		strcmp(name, dev->alias) == 0);
 }
 
-static int
+static void
 swlib_map_settings(struct switch_dev *dev, int type, int port_vlan, struct uci_section *s)
 {
 	struct swlib_setting *setting;

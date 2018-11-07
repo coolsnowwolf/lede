@@ -135,7 +135,7 @@ static struct at803x_platform_data mynet_rext_at803x_data = {
 static struct mdio_board_info mynet_rext_mdio0_info[] = {
         {
                 .bus_id = "ag71xx-mdio.0",
-                .phy_addr = 4,
+                .mdio_addr = 4,
                 .platform_data = &mynet_rext_at803x_data,
         },
 };

@@ -28,12 +28,15 @@
 #define TUBE2H_GPIO_LED_SIGNAL1		27
 #define TUBE2H_GPIO_EXT_LNA		28
 
+#define TUBE2H_GPIO_WDT_EN		22
+#define TUBE2H_GPIO_WDT_IN		18
+
 #define TUBE2H_GPIO_BTN_RESET		12
 
 #define TUBE2H_KEYS_POLL_INTERVAL	20	/* msecs */
 #define TUBE2H_KEYS_DEBOUNCE_INTERVAL	(3 * TUBE2H_KEYS_POLL_INTERVAL)
 
-#define TUBE2H_ART_ADDRESS		0x1f7f0000
+#define TUBE2H_ART_ADDRESS		0x1fff0000
 #define TUBE2H_LAN_MAC_OFFSET		0x06
 #define TUBE2H_CALDATA_OFFSET		0x1000
 
@@ -96,6 +99,14 @@ static void __init tube2h_setup(void)
 	gpio_request_one(TUBE2H_GPIO_EXT_LNA,
 			GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT_DIR_FIXED,
 			"external LNA0");
+
+	gpio_request_one(TUBE2H_GPIO_WDT_IN,
+			 GPIOF_OUT_INIT_LOW | GPIOF_EXPORT_DIR_FIXED,
+			 "WDT input");
+
+	gpio_request_one(TUBE2H_GPIO_WDT_EN,
+			 GPIOF_OUT_INIT_LOW | GPIOF_EXPORT_DIR_FIXED,
+			 "WDT enable");
 
 	ath79_register_wmac(art + TUBE2H_CALDATA_OFFSET, NULL);
 

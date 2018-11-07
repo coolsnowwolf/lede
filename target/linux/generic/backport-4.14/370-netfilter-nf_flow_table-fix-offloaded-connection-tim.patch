@@ -1,0 +1,110 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Wed, 13 Jun 2018 12:33:39 +0200
+Subject: [PATCH] netfilter: nf_flow_table: fix offloaded connection timeout
+ corner case
+
+The full teardown of offloaded flows is deferred to a gc work item,
+however processing of packets by netfilter needs to happen immediately
+after a teardown is requested, because the conntrack state needs to be
+fixed up.
+
+Since the IPS_OFFLOAD_BIT is still kept until the teardown is complete,
+the netfilter conntrack gc can accidentally bump the timeout of a
+connection where offload was just stopped, causing a conntrack entry
+leak.
+
+Fix this by moving the conntrack timeout bumping from conntrack core to
+the nf_flow_offload and add a check to prevent bogus timeout bumps.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/netfilter/nf_conntrack_core.c
++++ b/net/netfilter/nf_conntrack_core.c
+@@ -978,18 +978,6 @@ static bool gc_worker_can_early_drop(con
+ 	return false;
+ }
+ 
+-#define	DAY	(86400 * HZ)
+-
+-/* Set an arbitrary timeout large enough not to ever expire, this save
+- * us a check for the IPS_OFFLOAD_BIT from the packet path via
+- * nf_ct_is_expired().
+- */
+-static void nf_ct_offload_timeout(struct nf_conn *ct)
+-{
+-	if (nf_ct_expires(ct) < DAY / 2)
+-		ct->timeout = nfct_time_stamp + DAY;
+-}
+-
+ static void gc_worker(struct work_struct *work)
+ {
+ 	unsigned int min_interval = max(HZ / GC_MAX_BUCKETS_DIV, 1u);
+@@ -1026,10 +1014,8 @@ static void gc_worker(struct work_struct
+ 			tmp = nf_ct_tuplehash_to_ctrack(h);
+ 
+ 			scanned++;
+-			if (test_bit(IPS_OFFLOAD_BIT, &tmp->status)) {
+-				nf_ct_offload_timeout(tmp);
++			if (test_bit(IPS_OFFLOAD_BIT, &tmp->status))
+ 				continue;
+-			}
+ 
+ 			if (nf_ct_is_expired(tmp)) {
+ 				nf_ct_gc_expired(tmp);
+--- a/net/netfilter/nf_flow_table_core.c
++++ b/net/netfilter/nf_flow_table_core.c
+@@ -185,8 +185,27 @@ static const struct rhashtable_params nf
+ 	.automatic_shrinking	= true,
+ };
+ 
++#define	DAY	(86400 * HZ)
++
++/* Set an arbitrary timeout large enough not to ever expire, this save
++ * us a check for the IPS_OFFLOAD_BIT from the packet path via
++ * nf_ct_is_expired().
++ */
++static void nf_ct_offload_timeout(struct flow_offload *flow)
++{
++	struct flow_offload_entry *entry;
++	struct nf_conn *ct;
++
++	entry = container_of(flow, struct flow_offload_entry, flow);
++	ct = entry->ct;
++
++	if (nf_ct_expires(ct) < DAY / 2)
++		ct->timeout = nfct_time_stamp + DAY;
++}
++
+ int flow_offload_add(struct nf_flowtable *flow_table, struct flow_offload *flow)
+ {
++	nf_ct_offload_timeout(flow);
+ 	flow->timeout = (u32)jiffies;
+ 
+ 	rhashtable_insert_fast(&flow_table->rhashtable,
+@@ -307,6 +326,8 @@ static int nf_flow_offload_gc_step(struc
+ 	rhashtable_walk_start(&hti);
+ 
+ 	while ((tuplehash = rhashtable_walk_next(&hti))) {
++		bool teardown;
++
+ 		if (IS_ERR(tuplehash)) {
+ 			err = PTR_ERR(tuplehash);
+ 			if (err != -EAGAIN)
+@@ -319,9 +340,13 @@ static int nf_flow_offload_gc_step(struc
+ 
+ 		flow = container_of(tuplehash, struct flow_offload, tuplehash[0]);
+ 
+-		if (nf_flow_has_expired(flow) ||
+-		    (flow->flags & (FLOW_OFFLOAD_DYING |
+-				    FLOW_OFFLOAD_TEARDOWN)))
++		teardown = flow->flags & (FLOW_OFFLOAD_DYING |
++					  FLOW_OFFLOAD_TEARDOWN);
++
++		if (!teardown)
++			nf_ct_offload_timeout(flow);
++
++		if (nf_flow_has_expired(flow) || teardown)
+ 			flow_offload_del(flow_table, flow);
+ 	}
+ out:

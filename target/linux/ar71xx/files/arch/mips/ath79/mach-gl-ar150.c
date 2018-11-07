@@ -122,4 +122,4 @@ static void __init gl_ar150_setup(void)
 	ath79_register_wmac(art + GL_AR150_CALDATA_OFFSET, art + GL_AR150_WMAC_MAC_OFFSET);
 }
 
-MIPS_MACHINE(ATH79_MACH_GL_AR150, "GL-AR150", "GL AR150",gl_ar150_setup);
+MIPS_MACHINE(ATH79_MACH_GL_AR150, "GL-AR150", "GL.iNet GL-AR150", gl_ar150_setup);

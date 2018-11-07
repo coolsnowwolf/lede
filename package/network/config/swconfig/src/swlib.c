@@ -92,7 +92,7 @@ swlib_call(int cmd, int (*call)(struct nl_msg *, void *),
 	struct nl_cb *cb = NULL;
 	int finished;
 	int flags = 0;
-	int err;
+	int err = 0;
 
 	msg = nlmsg_alloc();
 	if (!msg) {
@@ -105,7 +105,8 @@ swlib_call(int cmd, int (*call)(struct nl_msg *, void *),
 
 	genlmsg_put(msg, NL_AUTO_PID, NL_AUTO_SEQ, genl_family_get_id(family), 0, flags, cmd, 0);
 	if (data) {
-		if (data(msg, arg) < 0)
+		err = data(msg, arg);
+		if (err < 0)
 			goto nla_put_failure;
 	}
 

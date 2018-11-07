@@ -1,0 +1,90 @@
+From 0759cdff49f1cf361bf503c13f7bcb33da43ab95 Mon Sep 17 00:00:00 2001
+From: Georgi Djakov <georgi.djakov@linaro.org>
+Date: Tue, 8 Sep 2015 11:24:41 +0300
+Subject: [PATCH 55/69] cpufreq-dt: Add L2 frequency scaling support
+
+Signed-off-by: Georgi Djakov <georgi.djakov@linaro.org>
+---
+ drivers/cpufreq/cpufreq-dt.c | 41 ++++++++++++++++++++++++++++++++++++++++-
+ include/linux/cpufreq.h      |  2 ++
+ 2 files changed, 42 insertions(+), 1 deletion(-)
+
+--- a/drivers/cpufreq/cpufreq-dt.c
++++ b/drivers/cpufreq/cpufreq-dt.c
+@@ -48,11 +48,41 @@ static int set_target(struct cpufreq_pol
+ 	struct private_data *priv = policy->driver_data;
+ 	int ret;
+ 	unsigned long target_freq = policy->freq_table[index].frequency * 1000;
++	struct clk *l2_clk = policy->l2_clk;
++	unsigned int l2_freq;
++	unsigned long new_l2_freq = 0;
+ 
+ 	mutex_lock(&priv->lock);
+ 	ret = dev_pm_opp_set_rate(priv->cpu_dev, target_freq);
+-	if (!ret)
++
++	if (!ret) {
++		if (!IS_ERR(l2_clk) && policy->l2_rate[0] && policy->l2_rate[1] &&
++				policy->l2_rate[2]) {
++			static unsigned long krait_l2[CONFIG_NR_CPUS] = { };
++			int cpu, ret = 0;
++
++			if (target_freq >= policy->l2_rate[2])
++				new_l2_freq = policy->l2_rate[2];
++			else if (target_freq >= policy->l2_rate[1])
++				new_l2_freq = policy->l2_rate[1];
++			else
++				new_l2_freq = policy->l2_rate[0];
++
++			krait_l2[policy->cpu] = new_l2_freq;
++			for_each_present_cpu(cpu)
++				new_l2_freq = max(new_l2_freq, krait_l2[cpu]);
++
++			l2_freq = clk_get_rate(l2_clk);
++
++			if (l2_freq != new_l2_freq) {
++				/* scale l2 with the core */
++				ret = clk_set_rate(l2_clk, new_l2_freq);
++			}
++		}
++
+ 		priv->opp_freq = target_freq;
++	}
++
+ 	mutex_unlock(&priv->lock);
+ 
+ 	return ret;
+@@ -196,6 +226,8 @@ static int cpufreq_init(struct cpufreq_p
+ 	const char *name;
+ 	int ret;
+ 	struct srcu_notifier_head *opp_srcu_head;
++	struct device_node *l2_np;
++	struct clk *l2_clk = NULL;
+ 
+ 	cpu_dev = get_cpu_device(policy->cpu);
+ 	if (!cpu_dev) {
+@@ -303,6 +335,13 @@ static int cpufreq_init(struct cpufreq_p
+ 
+ 	policy->suspend_freq = dev_pm_opp_get_suspend_opp_freq(cpu_dev) / 1000;
+ 
++	l2_clk = clk_get(cpu_dev, "l2");
++	if (!IS_ERR(l2_clk))
++		policy->l2_clk = l2_clk;
++	l2_np = of_find_node_by_name(NULL, "qcom,l2");
++	if (l2_np)
++		of_property_read_u32_array(l2_np, "qcom,l2-rates", policy->l2_rate, 3);
++
+ 	ret = cpufreq_table_validate_and_show(policy, freq_table);
+ 	if (ret) {
+ 		dev_err(cpu_dev, "%s: invalid frequency table: %d\n", __func__,
+--- a/include/linux/cpufreq.h
++++ b/include/linux/cpufreq.h
+@@ -73,6 +73,8 @@ struct cpufreq_policy {
+ 	unsigned int		cpu;    /* cpu managing this policy, must be online */
+ 
+ 	struct clk		*clk;
++	struct clk		*l2_clk; /* L2 clock */
++	unsigned int		l2_rate[3]; /* L2 bus clock rate thresholds */
+ 	struct cpufreq_cpuinfo	cpuinfo;/* see above */
+ 
+ 	unsigned int		min;    /* in kHz */

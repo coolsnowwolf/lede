@@ -16,16 +16,6 @@ define Device/Default
   KERNEL := kernel-bin
 endef
 
-define Build/append-uImage-fakeramdisk-hdr
-	rm -f $@.fakeramdisk
-	$(STAGING_DIR_HOST)/bin/mkimage \
-		-A $(LINUX_KARCH) -O linux -T ramdisk -C none \
-		-n 'fakeramdisk' \
-		-s \
-		$@.fakeramdisk
-	cat $@.fakeramdisk >> $@
-endef
-
 define Build/tplink-v1-image
 	$(STAGING_DIR_HOST)/bin/mktplinkfw \
 		-H $(TPLINK_HWID) -W $(TPLINK_HWREV) -F $(TPLINK_FLASHLAYOUT) \
@@ -68,7 +58,7 @@ define Device/hiveap-330
   IMAGES := fdt.bin sysupgrade.bin
   IMAGE/fdt.bin := append-dtb
   IMAGE/sysupgrade.bin := append-dtb | pad-to 256k | check-size 256k | \
-	append-uImage-fakeramdisk-hdr | pad-to 256k | check-size 512k | \
+	append-uImage-fakehdr ramdisk | pad-to 256k | check-size 512k | \
 	append-rootfs | pad-rootfs $$(BLOCKSIZE) | pad-to 41216k | check-size 41216k | \
 	append-kernel | append-metadata
 endef

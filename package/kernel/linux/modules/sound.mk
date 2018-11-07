@@ -135,6 +135,22 @@ endef
 $(eval $(call KernelPackage,sound-seq))
 
 
+define KernelPackage/sound-ens1371
+  TITLE:=(Creative) Ensoniq AudioPCI 1371
+  KCONFIG:=CONFIG_SND_ENS1371
+  DEPENDS:=@PCI_SUPPORT +kmod-ac97
+  FILES:=$(LINUX_DIR)/sound/pci/snd-ens1371.ko
+  AUTOLOAD:=$(call AutoLoad,36,snd-ens1371)
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-ens1371/description
+ support for (Creative) Ensoniq AudioPCI 1371 chips
+endef
+
+$(eval $(call KernelPackage,sound-ens1371))
+
+
 define KernelPackage/sound-i8x0
   TITLE:=Intel/SiS/nVidia/AMD/ALi AC97 Controller
   DEPENDS:=+kmod-ac97

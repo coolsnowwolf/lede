@@ -10,6 +10,7 @@ m = Map("n2n_v2", translate("N2N v2 VPN"),
 
 s = m:section(TypedSection, "edge", translate("N2N Edge Settings"))
 s.anonymous = true
+s.addremove = true 
 
 switch = s:option(Flag, "enabled", translate("Enable"))
 switch.rmempty = false
@@ -44,6 +45,7 @@ route.rmempty = false
 
 s2 = m:section(TypedSection, "supernode", translate("N2N Supernode Settings"))
 s2.anonymous = true
+s2.addremove = true 
 
 switch = s2:option(Flag, "enabled", translate("Enable"))
 switch.rmempty = false

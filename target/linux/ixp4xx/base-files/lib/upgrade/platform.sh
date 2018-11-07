@@ -135,15 +135,3 @@ platform_do_upgrade() {
 		;;
 	esac
 }
-
-disable_watchdog() {
-	v "killing watchdog"
-	killall watchdog
-	( ps | grep -v 'grep' | grep '/dev/watchdog' ) && {
-		echo 'Could not disable watchdog'
-		return 1
-	}
-}
-
-# CONFIG_WATCHDOG_NOWAYOUT=y - can't kill watchdog unless kernel cmdline has a mpcore_wdt.nowayout=0
-#append sysupgrade_pre_upgrade disable_watchdog

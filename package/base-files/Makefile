@@ -12,11 +12,11 @@ include $(INCLUDE_DIR)/version.mk
 include $(INCLUDE_DIR)/feeds.mk
 
 PKG_NAME:=base-files
-PKG_RELEASE:=183
+PKG_RELEASE:=196
 PKG_FLAGS:=nonshared
 
 PKG_FILE_DEPENDS:=$(PLATFORM_DIR)/ $(GENERIC_PLATFORM_DIR)/base-files/
-PKG_BUILD_DEPENDS:=usign/host
+PKG_BUILD_DEPENDS:=usign/host ucert/host
 PKG_LICENSE:=GPL-2.0
 
 # Extend depends from version.mk
@@ -25,9 +25,7 @@ PKG_CONFIG_DEPENDS += \
 	CONFIG_NAND_SUPPORT \
 	CONFIG_CLEAN_IPKG \
 	CONFIG_PER_FEED_REPO \
-	CONFIG_PER_FEED_REPO_ADD_DISABLED \
-	CONFIG_PER_FEED_REPO_ADD_COMMENTED \
-	$(foreach feed,$(FEEDS_INSTALLED),CONFIG_FEED_$(feed))
+	$(foreach feed,$(FEEDS_AVAILABLE),CONFIG_FEED_$(feed))
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -39,7 +37,7 @@ endif
 define Package/base-files
   SECTION:=base
   CATEGORY:=Base system
-  DEPENDS:=+netifd +libc +procd +jsonfilter +SIGNED_PACKAGES:usign +SIGNED_PACKAGES:lede-keyring +NAND_SUPPORT:ubi-utils +fstools +fwtool
+  DEPENDS:=+netifd +libc +procd +jsonfilter +SIGNED_PACKAGES:usign +SIGNED_PACKAGES:openwrt-keyring +NAND_SUPPORT:ubi-utils +fstools +fwtool
   TITLE:=Base filesystem for OpenWrt
   URL:=http://openwrt.org/
   VERSION:=$(PKG_RELEASE)-$(REVISION)
@@ -51,6 +49,7 @@ define Package/base-files/conffiles
 /etc/config/system
 /etc/crontabs/
 /etc/dropbear/
+/etc/ethers
 /etc/group
 /etc/hosts
 /etc/inittab
@@ -65,8 +64,6 @@ define Package/base-files/conffiles
 /etc/shadow
 /etc/shells
 /etc/sysctl.conf
-/etc/sysctl.d/
-/etc/sysctl.d/local.conf
 /etc/sysupgrade.conf
 $(call $(TARGET)/conffiles)
 endef
@@ -106,6 +103,9 @@ ifdef CONFIG_SIGNED_PACKAGES
 	[ -s $(BUILD_KEY) -a -s $(BUILD_KEY).pub ] || \
 		$(STAGING_DIR_HOST)/bin/usign -G -s $(BUILD_KEY) -p $(BUILD_KEY).pub -c "Local build key"
 
+	[ -s $(BUILD_KEY).ucert ] || \
+		$(STAGING_DIR_HOST)/bin/ucert -I -c $(BUILD_KEY).ucert -p $(BUILD_KEY).pub -s $(BUILD_KEY)
+
   endef
 
   define Package/base-files/install-key
@@ -137,7 +137,7 @@ define Package/base-files/install
 		fi; \
 	)
 
-	$(VERSION_SED) \
+	$(VERSION_SED_SCRIPT) \
 		$(1)/etc/banner \
 		$(1)/etc/openwrt_version \
 		$(1)/usr/lib/os-release
@@ -171,7 +171,7 @@ define Package/base-files/install
 	mkdir -p $(1)/root
 	$(LN) /proc/mounts $(1)/etc/mtab
 	rm -f $(1)/var
-	$(LN) /tmp $(1)/var
+	$(LN) tmp $(1)/var
 	mkdir -p $(1)/etc
 	$(LN) /tmp/resolv.conf /tmp/TZ /tmp/localtime $(1)/etc/
 
@@ -194,7 +194,7 @@ define Package/base-files/install
 	$(if $(CONFIG_CLEAN_IPKG),, \
 		mkdir -p $(1)/etc/opkg; \
 		$(call FeedSourcesAppend,$(1)/etc/opkg/distfeeds.conf); \
-		$(VERSION_SED) $(1)/etc/opkg/distfeeds.conf)
+		$(VERSION_SED_SCRIPT) $(1)/etc/opkg/distfeeds.conf)
 endef
 
 ifneq ($(DUMP),1)

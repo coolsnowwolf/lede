@@ -106,11 +106,11 @@ static void __init cap324_setup(void)
 					ARRAY_SIZE(cap324_gpio_keys),
 					cap324_gpio_keys);
 
-	ath79_init_mac(mac, art + CAP324_MAC_OFFSET, -1);
+	ath79_init_mac(mac, art + CAP324_MAC_OFFSET, -2);
 	ath79_wmac_disable_2ghz();
 	ath79_register_wmac(art + CAP324_WMAC_CALDATA_OFFSET, mac);
 
-	ath79_init_mac(mac, art + CAP324_MAC_OFFSET, -2);
+	ath79_init_mac(mac, art + CAP324_MAC_OFFSET, -1);
 	ap91_pci_init(art + CAP324_PCIE_CALDATA_OFFSET, mac);
 
 	ath79_setup_ar934x_eth_cfg(AR934X_ETH_CFG_RGMII_GMAC0 |
@@ -119,7 +119,7 @@ static void __init cap324_setup(void)
 	ath79_register_mdio(0, 0x0);
 
 	ath79_init_mac(ath79_eth0_data.mac_addr,
-		       art + CAP324_MAC_OFFSET, -2);
+		       art + CAP324_MAC_OFFSET, 0);
 
 	/* GMAC0 is connected to an external PHY */
 	ath79_eth0_data.phy_if_mode = PHY_INTERFACE_MODE_RGMII;
@@ -129,5 +129,5 @@ static void __init cap324_setup(void)
 	ath79_register_eth(0);
 }
 
-MIPS_MACHINE(ATH79_MACH_CAP324, "CAP324", "PowerCloud CAP324",
+MIPS_MACHINE(ATH79_MACH_CAP324, "CAP324", "PowerCloud Systems CAP324",
 	     cap324_setup);

@@ -1,0 +1,66 @@
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <zajec5@gmail.com>
+Date: Mon, 8 Jun 2015 16:11:40 +0200
+Subject: [PATCH] brcmfmac: register wiphy(s) during module_init
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This is needed by OpenWrt which expects all PHYs to be created after
+module loads successfully.
+
+Signed-off-by: Rafał Miłecki <zajec5@gmail.com>
+---
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
+@@ -1347,6 +1347,7 @@ int __init brcmf_core_init(void)
+ {
+ 	if (!schedule_work(&brcmf_driver_work))
+ 		return -EBUSY;
++	flush_work(&brcmf_driver_work);
+ 
+ 	return 0;
+ }
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/firmware.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/firmware.c
+@@ -441,6 +441,7 @@ struct brcmf_fw {
+ 	struct brcmf_fw_request *req;
+ 	u32 curpos;
+ 	void (*done)(struct device *dev, int err, struct brcmf_fw_request *req);
++	struct completion *completion;
+ };
+ 
+ static void brcmf_fw_request_done(const struct firmware *fw, void *ctx);
+@@ -589,6 +590,8 @@ fail:
+ 	fwctx->req = NULL;
+ done:
+ 	fwctx->done(fwctx->dev, ret, fwctx->req);
++	if (fwctx->completion)
++		complete(fwctx->completion);
+ 	kfree(fwctx);
+ }
+ 
+@@ -612,6 +615,8 @@ int brcmf_fw_get_firmwares(struct device
+ 					 struct brcmf_fw_request *req))
+ {
+ 	struct brcmf_fw *fwctx;
++	struct completion completion;
++	int err;
+ 
+ 	brcmf_dbg(TRACE, "enter: dev=%s\n", dev_name(dev));
+ 	if (!fw_cb)
+@@ -628,7 +633,14 @@ int brcmf_fw_get_firmwares(struct device
+ 	fwctx->req = req;
+ 	fwctx->done = fw_cb;
+ 
++	init_completion(&completion);
++	fwctx->completion = &completion;
++
+ 	brcmf_fw_request_next_item(fwctx, true);
++
++	wait_for_completion_timeout(fwctx->completion, msecs_to_jiffies(5000));
++	fwctx->completion = NULL;
++
+ 	return 0;
+ }
+ 

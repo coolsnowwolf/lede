@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2007-2015 OpenWrt.org
+# Copyright (C) 2007-2018 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -8,17 +8,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=util-linux
-PKG_VERSION:=2.30.2
+PKG_VERSION:=2.32.1
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
-PKG_SOURCE_URL:=@KERNEL/linux/utils/$(PKG_NAME)/v2.30
-PKG_HASH:=7b5be5489e9b5b7177832836467aba1c87bf0e9bcbcb5a6f35d76cd4782589dc
+PKG_SOURCE_URL:=@KERNEL/linux/utils/$(PKG_NAME)/v2.32
+PKG_HASH:=86e6707a379c7ff5489c218cfaf1e3464b0b95acf7817db0bc5f179e356a67b2
 PKG_CPE_ID:=cpe:/a:kernel:util-linux
 
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=	COPYING					\
-			getopt/COPYING				\
 			libblkid/COPYING			\
 			libmount/COPYING			\
 			Documentation/licenses/COPYING.GPLv2	\
@@ -142,6 +141,16 @@ define Package/blkid/description
  library.
 endef
 
+define Package/blockdev
+$(call Package/util-linux/Default)
+  TITLE:=call block device ioctls from the command line
+  SUBMENU=Disc
+endef
+
+define Package/blockdev/description
+ The blockdev program is the command-line interface to call block device ioctls.
+endef
+
 define Package/cal
 $(call Package/util-linux/Default)
   TITLE:=display a calendar
@@ -199,10 +208,24 @@ endef
 define Package/flock
 $(call Package/util-linux/Default)
   TITLE:=manage locks from shell scripts
+  ALTERNATIVES:=200:/usr/bin/flock:/usr/bin/util-linux-flock
 endef
 
 define Package/flock/description
   manages flock locks from within shell scripts or the command line
+endef
+
+define Package/fstrim
+$(call Package/util-linux/Default)
+  TITLE:=discard unused blocks on a mounted filesystem
+  DEPENDS:= +libblkid +libuuid +libsmartcols +libmount
+  SUBMENU=Filesystem
+endef
+
+define Package/fstrim/description
+  fstrim is used on a mounted filesystem to discard (or "trim") blocks
+  which are not in use by the filesystem.  This is useful for solid-
+  state drives (SSDs) and thinly-provisioned storage.
 endef
 
 define Package/getopt
@@ -265,6 +288,16 @@ define Package/lsblk/description
  lsblk lists information about all or the specified block devices
 endef
 
+define Package/lscpu
+$(call Package/util-linux/Default)
+  TITLE:=display information about the CPU architecture
+  DEPENDS:= +libsmartcols
+endef
+
+define Package/lscpu/description
+ lscpu displays information about the CPU architecture
+endef
+
 define Package/mcookie
 $(call Package/util-linux/Default)
   TITLE:=generate magic cookies for xauth
@@ -293,6 +326,15 @@ endef
 define Package/namei/description
  namei uses its arguments as pathnames to any type of Unix file (symlinks,
  files, directories, and so forth)
+endef
+
+define Package/nsenter
+$(call Package/util-linux/Default)
+  TITLE:=enter a namespace
+endef
+
+define Package/nsenter/description
+  run program with namespaces of other processes
 endef
 
 define Package/prlimit
@@ -372,6 +414,15 @@ define Package/swap-utils/description
  contains: mkswap, swaplabel
 endef
 
+define Package/unshare
+$(call Package/util-linux/Default)
+  TITLE:=unshare userspace tool
+endef
+
+define Package/unshare/description
+  run programs with some namespaces unshared from parent
+endef
+
 define Package/uuidd
 $(call Package/util-linux/Default)
   TITLE:=UUID generation daemon
@@ -421,7 +472,7 @@ endef
 define Package/wipefs
 $(call Package/util-linux/Default)
   TITLE:=wipe a signature from a device
-  DEPENDS:= +libblkid
+  DEPENDS:= +libblkid +libsmartcols
   SUBMENU:=Disc
 endef
 
@@ -432,14 +483,15 @@ define Package/wipefs/description
 endef
 
 CONFIGURE_ARGS += \
-	--disable-use-tty-group \
-	--disable-rpath \
-	--disable-tls		\
-	--disable-sulogin	\
-	--without-python	\
-	--without-udev		\
-	--without-readline	\
-	--disable-more		\
+	--disable-use-tty-group		\
+	--disable-rpath			\
+	--disable-tls			\
+	--disable-sulogin		\
+	--disable-makeinstall-chown	\
+	--without-python		\
+	--without-udev			\
+	--without-readline		\
+	--disable-more			\
 	--with-ncursesw
 
 TARGET_CFLAGS += $(FPIC) -std=gnu99
@@ -523,6 +575,11 @@ define Package/blkid/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/blkid $(1)/usr/sbin/
 endef
 
+define Package/blockdev/install
+	$(INSTALL_DIR) $(1)/usr/sbin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/blockdev $(1)/usr/sbin/
+endef
+
 define Package/cal/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/cal $(1)/usr/bin/
@@ -550,7 +607,12 @@ endef
 
 define Package/flock/install
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/flock $(1)/usr/bin/
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/flock $(1)/usr/bin/util-linux-flock
+endef
+
+define Package/fstrim/install
+	$(INSTALL_DIR) $(1)/usr/sbin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/fstrim $(1)/usr/sbin/
 endef
 
 define Package/getopt/install
@@ -583,6 +645,11 @@ define Package/lsblk/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/lsblk $(1)/usr/bin/
 endef
 
+define Package/lscpu/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/lscpu $(1)/usr/bin/
+endef
+
 define Package/mcookie/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/mcookie $(1)/usr/bin/
@@ -598,6 +665,11 @@ endef
 define Package/namei/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/namei $(1)/usr/bin/
+endef
+
+define Package/nsenter/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/nsenter $(1)/usr/bin/
 endef
 
 define Package/prlimit/install
@@ -639,6 +711,11 @@ define Package/swap-utils/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/swaplabel $(1)/usr/sbin/
 endef
 
+define Package/unshare/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/unshare $(1)/usr/bin/
+endef
+
 define Package/uuidd/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin//uuidd $(1)/usr/sbin/
@@ -672,21 +749,25 @@ $(eval $(call BuildPackage,libuuid))
 $(eval $(call BuildPackage,agetty))
 $(eval $(call BuildPackage,blkdiscard))
 $(eval $(call BuildPackage,blkid))
+$(eval $(call BuildPackage,blockdev))
 $(eval $(call BuildPackage,cal))
 $(eval $(call BuildPackage,cfdisk))
 $(eval $(call BuildPackage,dmesg))
 $(eval $(call BuildPackage,fdisk))
 $(eval $(call BuildPackage,findfs))
 $(eval $(call BuildPackage,flock))
+$(eval $(call BuildPackage,fstrim))
 $(eval $(call BuildPackage,getopt))
 $(eval $(call BuildPackage,hwclock))
 $(eval $(call BuildPackage,logger))
 $(eval $(call BuildPackage,look))
 $(eval $(call BuildPackage,losetup))
 $(eval $(call BuildPackage,lsblk))
+$(eval $(call BuildPackage,lscpu))
 $(eval $(call BuildPackage,mcookie))
 $(eval $(call BuildPackage,mount-utils))
 $(eval $(call BuildPackage,namei))
+$(eval $(call BuildPackage,nsenter))
 $(eval $(call BuildPackage,prlimit))
 $(eval $(call BuildPackage,rename))
 $(eval $(call BuildPackage,partx-utils))
@@ -694,6 +775,7 @@ $(eval $(call BuildPackage,script-utils))
 $(eval $(call BuildPackage,setterm))
 $(eval $(call BuildPackage,sfdisk))
 $(eval $(call BuildPackage,swap-utils))
+$(eval $(call BuildPackage,unshare))
 $(eval $(call BuildPackage,uuidd))
 $(eval $(call BuildPackage,uuidgen))
 $(eval $(call BuildPackage,wall))

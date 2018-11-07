@@ -93,26 +93,37 @@ tplink_get_image_boot_size() {
 	get_image "$@" | dd bs=4 count=1 skip=37 2>/dev/null | hexdump -v -n 4 -e '1/1 "%02x"'
 }
 
+tplink_pharos_check_support_list() {
+	local image="$1"
+	local offset="$2"
+	local model="$3"
+	local trargs="$4"
+
+	# Here $image is given to dd directly instead of using get_image;
+	# otherwise the skip will take almost a second (as dd can't seek)
+	dd if="$image" bs=1 skip=$offset count=1024 2>/dev/null | tr -d "$trargs" | (
+		while IFS= read -r line; do
+			[ "$line" = "$model" ] && exit 0
+		done
+
+		exit 1
+	)
+}
+
 tplink_pharos_check_image() {
-	local magic_long="$(get_magic_long "$1")"
-	[ "$magic_long" != "7f454c46" ] && {
-		echo "Invalid image magic '$magic_long'"
+	local image_magic="$(get_magic_long "$1")"
+	local board_magic="$2"
+	[ "$image_magic" != "$board_magic" ] && {
+		echo "Invalid image magic '$image_magic'. Expected '$board_magic'."
 		return 1
 	}
 
-	local model_string="$(tplink_pharos_get_model_string)"
-	local line
+	local model_string="$3"
+	local trargs="$4"
 
-	# Here $1 is given to dd directly instead of get_image as otherwise the skip
-	# will take almost a second (as dd can't seek then)
-	#
-	# This will fail if the image isn't local, but that's fine: as the
-	# read loop won't be executed at all, it will return true, so the image
-	# is accepted (loading the first 1.5M of a remote image for this check seems
-	# a bit extreme)
-	dd if="$1" bs=1 skip=1511432 count=1024 2>/dev/null | while read line; do
-		[ "$line" = "$model_string" ] && break
-	done || {
+	# New images have the support list at 7802888, old ones at 1511432
+	tplink_pharos_check_support_list "$1" 7802888 "$model_string" "$trargs" || \
+	tplink_pharos_check_support_list "$1" 1511432 "$model_string" "$trargs" || {
 		echo "Unsupported image (model not in support-list)"
 		return 1
 	}
@@ -201,21 +212,28 @@ platform_check_image() {
 	archer-c25-v1|\
 	archer-c58-v1|\
 	archer-c59-v1|\
+	archer-c59-v2|\
 	archer-c60-v1|\
+	archer-c60-v2|\
 	archer-c7-v4|\
+	archer-c7-v5|\
 	bullet-m|\
 	c-55|\
 	carambola2|\
 	cf-e316n-v2|\
 	cf-e320n-v2|\
-	cf-e355ac|\
+	cf-e355ac-v1|\
+	cf-e355ac-v2|\
+	cf-e375ac|\
 	cf-e380ac-v1|\
 	cf-e380ac-v2|\
+	cf-e385ac|\
 	cf-e520n|\
 	cf-e530n|\
 	cpe505n|\
 	cpe830|\
 	cpe870|\
+	dap-1330-a1|\
 	dgl-5500-a1|\
 	dhp-1565-a1|\
 	dir-505-a1|\
@@ -232,23 +250,32 @@ platform_check_image() {
 	dr342|\
 	dr531|\
 	dragino2|\
+	e1700ac-v2|\
+	e558-v2|\
+	e600g-v2|\
+	e600gac-v2|\
+	e750a-v4|\
+	e750g-v8|\
 	ebr-2310-c1|\
 	ens202ext|\
 	epg5000|\
 	esr1750|\
 	esr900|\
+	ew-balin|\
 	ew-dorin|\
 	ew-dorin-router|\
 	gl-ar150|\
 	gl-ar300m|\
 	gl-ar300|\
 	gl-ar750|\
+	gl-ar750s|\
 	gl-domino|\
 	gl-mifi|\
 	gl-usb150|\
 	hiwifi-hc6361|\
 	hornet-ub-x2|\
 	jwap230|\
+	lbe-m5|\
 	lima|\
 	loco-m-xw|\
 	mzk-w04nu|\
@@ -260,6 +287,7 @@ platform_check_image() {
 	pqi-air-pen|\
 	r36a|\
 	r602n|\
+	rme-eg200|\
 	rocket-m|\
 	rocket-m-ti|\
 	rocket-m-xw|\
@@ -268,6 +296,7 @@ platform_check_image() {
 	sc300m|\
 	sc450|\
 	sr3200|\
+	t830|\
 	tew-632brp|\
 	tew-712br|\
 	tew-732br|\
@@ -278,6 +307,7 @@ platform_check_image() {
 	unifi-outdoor|\
 	unifiac-lite|\
 	unifiac-pro|\
+	wam250|\
 	weio|\
 	whr-g301n|\
 	whr-hp-g300n|\
@@ -382,12 +412,17 @@ platform_check_image() {
 	el-m150|\
 	el-mini|\
 	gl-inet|\
+	lan-turtle|\
 	mc-mac1200r|\
 	minibox-v1|\
 	omy-g1|\
 	omy-x1|\
 	onion-omega|\
-	oolite|\
+	oolite-v1|\
+	oolite-v5.2|\
+	oolite-v5.2-dev|\
+	packet-squirrel|\
+	re355|\
 	re450|\
 	rut900|\
 	smart-300|\
@@ -431,6 +466,8 @@ platform_check_image() {
 	tl-wr1043nd|\
 	tl-wr1043nd-v2|\
 	tl-wr1043nd-v4|\
+	tl-wr2041n-v1|\
+	tl-wr2041n-v2|\
 	tl-wr2543n|\
 	tl-wr703n|\
 	tl-wr710n|\
@@ -451,11 +488,17 @@ platform_check_image() {
 	tl-wr841n-v11|\
 	tl-wr842n-v2|\
 	tl-wr842n-v3|\
+	tl-wr880n-v1|\
+	tl-wr881n-v1|\
 	tl-wr902ac-v1|\
 	tl-wr940n-v4|\
+	tl-wr940n-v6|\
 	tl-wr941nd|\
 	tl-wr941nd-v5|\
-	tl-wr941nd-v6)
+	tl-wr941nd-v6|\
+	tl-wr941n-v7|\
+	ts-d084|\
+	wifi-pineapple-nano)
 		local magic_ver="0100"
 
 		case "$board" in
@@ -522,6 +565,7 @@ platform_check_image() {
 	rb-951ui-2hnd|\
 	rb-2011l|\
 	rb-2011il|\
+	rb-2011ils|\
 	rb-2011uas|\
 	rb-2011uas-2hnd|\
 	rb-2011uias|\
@@ -543,12 +587,29 @@ platform_check_image() {
 		return $?
 		;;
 	cpe210|\
-	cpe510|\
 	eap120|\
 	wbs210|\
 	wbs510)
-		tplink_pharos_check_image "$1" && return 0
+		tplink_pharos_check_image "$1" "7f454c46" "$(tplink_pharos_get_model_string)" '' && return 0
 		return 1
+		;;
+	cpe210-v2)
+		tplink_pharos_check_image "$1" "01000000" "$(tplink_pharos_v2_get_model_string)" '\0\xff\r' && return 0
+		return 1
+		;;
+	cpe510)
+		local modelstr="$(tplink_pharos_v2_get_model_string)"
+		tplink_pharos_board_detect $modelstr
+		case $AR71XX_MODEL in
+		'TP-Link CPE510 v2.0')
+			tplink_pharos_check_image "$1" "7f454c46" "$modelstr" '\0\xff\r' && return 0
+			return 1
+			;;
+		*)
+			tplink_pharos_check_image "$1" "7f454c46" "$(tplink_pharos_get_model_string)" '' && return 0
+			return 1
+			;;
+		esac
 		;;
 	a40|\
 	a60|\
@@ -657,9 +718,15 @@ platform_check_image() {
 		;;
 	# these boards use metadata images
 	fritz300e|\
+	fritz4020|\
+	fritz450e|\
+	koala|\
 	rb-750-r2|\
 	rb-750p-pbr2|\
 	rb-750up-r2|\
+	rb-911-2hn|\
+	rb-911-5hn|\
+	rb-931-2nd|\
 	rb-941-2nd|\
 	rb-951ui-2nd|\
 	rb-952ui-5ac2nd|\
@@ -668,7 +735,8 @@ platform_check_image() {
 	rb-map-2nd|\
 	rb-mapl-2nd|\
 	rb-wap-2nd|\
-	rb-wapg-5hact2hnd)
+	rb-wapg-5hact2hnd|\
+	rb-wapr-2nd)
 		return 0
 		;;
 	esac
@@ -681,48 +749,12 @@ platform_pre_upgrade() {
 	local board=$(board_name)
 
 	case "$board" in
-	c-60|\
-	hiveap-121|\
-	nbg6716|\
-	r6100|\
-	rambutan|\
-	rb-411|\
-	rb-411u|\
-	rb-433|\
-	rb-433u|\
-	rb-435g|\
-	rb-450|\
-	rb-450g|\
-	rb-493|\
-	rb-493g|\
-	rb-750|\
-	rb-750gl|\
-	rb-751|\
-	rb-751g|\
-	rb-911g-2hpnd|\
-	rb-911g-5hpacd|\
-	rb-911g-5hpnd|\
-	rb-912uag-2hpnd|\
-	rb-912uag-5hpnd|\
-	rb-921gs-5hpacd-r2|\
-	rb-951g-2hnd|\
-	rb-951ui-2hnd|\
-	rb-2011il|\
-	rb-2011l|\
-	rb-2011uas|\
-	rb-2011uas-2hnd|\
-	rb-2011uias|\
-	rb-2011uias-2hnd|\
-	rb-sxt2n|\
-	rb-sxt5n|\
-	wi2a-ac200i|\
-	wndr3700v4|\
-	wndr4300)
-		nand_do_upgrade "$1"
-		;;
 	rb-750-r2|\
 	rb-750p-pbr2|\
 	rb-750up-r2|\
+	rb-911-2hn|\
+	rb-911-5hn|\
+	rb-931-2nd|\
 	rb-941-2nd|\
 	rb-951ui-2nd|\
 	rb-952ui-5ac2nd|\
@@ -731,13 +763,10 @@ platform_pre_upgrade() {
 	rb-map-2nd|\
 	rb-mapl-2nd|\
 	rb-wap-2nd|\
-	rb-wapg-5hact2hnd)
+	rb-wapg-5hact2hnd|\
+	rb-wapr-2nd)
 		# erase firmware if booted from initramfs
 		[ -z "$(rootfs_type)" ] && mtd erase firmware
-		;;
-	mr18|\
-	z1)
-		merakinand_do_upgrade "$1"
 		;;
 	esac
 }
@@ -827,6 +856,50 @@ platform_do_upgrade() {
 	om5p-an)
 		platform_do_upgrade_openmesh "$ARGV"
 		;;
+	c-60|\
+	hiveap-121|\
+	nbg6716|\
+	r6100|\
+	rambutan|\
+	rb-411|\
+	rb-411u|\
+	rb-433|\
+	rb-433u|\
+	rb-435g|\
+	rb-450|\
+	rb-450g|\
+	rb-493|\
+	rb-493g|\
+	rb-750|\
+	rb-750gl|\
+	rb-751|\
+	rb-751g|\
+	rb-911g-2hpnd|\
+	rb-911g-5hpacd|\
+	rb-911g-5hpnd|\
+	rb-912uag-2hpnd|\
+	rb-912uag-5hpnd|\
+	rb-921gs-5hpacd-r2|\
+	rb-951g-2hnd|\
+	rb-951ui-2hnd|\
+	rb-2011il|\
+	rb-2011ils|\
+	rb-2011l|\
+	rb-2011uas|\
+	rb-2011uas-2hnd|\
+	rb-2011uias|\
+	rb-2011uias-2hnd|\
+	rb-sxt2n|\
+	rb-sxt5n|\
+	wi2a-ac200i|\
+	wndr3700v4|\
+	wndr4300)
+		nand_do_upgrade "$1"
+		;;
+	mr18|\
+	z1)
+		merakinand_do_upgrade "$1"
+		;;
 	uap-pro|\
 	unifi-outdoor-plus)
 		MTD_CONFIG_ARGS="-s 0x180000"
@@ -841,13 +914,3 @@ platform_do_upgrade() {
 		;;
 	esac
 }
-
-disable_watchdog() {
-	killall watchdog
-	( ps | grep -v 'grep' | grep '/dev/watchdog' ) && {
-		echo 'Could not disable watchdog'
-		return 1
-	}
-}
-
-append sysupgrade_pre_upgrade disable_watchdog

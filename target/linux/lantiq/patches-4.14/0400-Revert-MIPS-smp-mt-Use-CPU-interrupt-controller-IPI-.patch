@@ -1,0 +1,271 @@
+From 8fe9821b478e5c61fef4786b7ec96b6766af196d Mon Sep 17 00:00:00 2001
+From: Mathias Kresin <dev@kresin.me>
+Date: Mon, 8 Jan 2018 23:04:57 +0100
+Subject: [PATCH] Revert "MIPS: smp-mt: Use CPU interrupt controller IPI IRQ
+ domain support"
+
+The problem is that the Lantiq IRQ controller gets registered first and
+it directly handles the MIPS native SW1/2 and HW0 - HW5 IRQs. It looks
+like this controller already registers IRQ 0 - 7 and the generic driver
+only gets the following IRQs starting later.
+
+The upstream discussion can be found at https://www.linux-mips.org/archives/linux-mips/2017-05/msg00059.html
+
+This reverts kernel commit 1eed40043579 ("MIPS: smp-mt: Use CPU interrupt
+controller IPI IRQ domain support").
+
+Signed-off-by: Mathias Kresin <dev@kresin.me>
+
+---
+ arch/mips/kernel/smp-mt.c       | 49 ++++++++++++++++++++++--
+ arch/mips/lantiq/irq.c          | 52 ++++++++++++++++++++++++++
+ arch/mips/mti-malta/malta-int.c | 83 +++++++++++++++++++++++++++++++++++++++--
+ 3 files changed, 176 insertions(+), 8 deletions(-)
+
+--- a/arch/mips/kernel/smp-mt.c
++++ b/arch/mips/kernel/smp-mt.c
+@@ -83,8 +83,6 @@ static unsigned int __init smvp_vpe_init
+ 	if (tc != 0)
+ 		smvp_copy_vpe_config();
+ 
+-	cpu_set_vpe_id(&cpu_data[ncpu], tc);
+-
+ 	return ncpu;
+ }
+ 
+@@ -116,6 +114,49 @@ static void __init smvp_tc_init(unsigned
+ 	write_tc_c0_tchalt(TCHALT_H);
+ }
+ 
++static void vsmp_send_ipi_single(int cpu, unsigned int action)
++{
++	int i;
++	unsigned long flags;
++	int vpflags;
++
++#ifdef CONFIG_MIPS_GIC
++	if (gic_present) {
++		mips_smp_send_ipi_single(cpu, action);
++		return;
++	}
++#endif
++	local_irq_save(flags);
++
++	vpflags = dvpe();	/* can't access the other CPU's registers whilst MVPE enabled */
++
++	switch (action) {
++	case SMP_CALL_FUNCTION:
++		i = C_SW1;
++		break;
++
++	case SMP_RESCHEDULE_YOURSELF:
++	default:
++		i = C_SW0;
++		break;
++	}
++
++	/* 1:1 mapping of vpe and tc... */
++	settc(cpu);
++	write_vpe_c0_cause(read_vpe_c0_cause() | i);
++	evpe(vpflags);
++
++	local_irq_restore(flags);
++}
++
++static void vsmp_send_ipi_mask(const struct cpumask *mask, unsigned int action)
++{
++	unsigned int i;
++
++	for_each_cpu(i, mask)
++		vsmp_send_ipi_single(i, action);
++}
++
+ static void vsmp_init_secondary(void)
+ {
+ 	/* This is Malta specific: IPI,performance and timer interrupts */
+@@ -240,8 +281,8 @@ static void __init vsmp_prepare_cpus(uns
+ }
+ 
+ const struct plat_smp_ops vsmp_smp_ops = {
+-	.send_ipi_single	= mips_smp_send_ipi_single,
+-	.send_ipi_mask		= mips_smp_send_ipi_mask,
++	.send_ipi_single	= vsmp_send_ipi_single,
++	.send_ipi_mask		= vsmp_send_ipi_mask,
+ 	.init_secondary		= vsmp_init_secondary,
+ 	.smp_finish		= vsmp_smp_finish,
+ 	.boot_secondary		= vsmp_boot_secondary,
+--- a/arch/mips/lantiq/irq.c
++++ b/arch/mips/lantiq/irq.c
+@@ -272,6 +272,47 @@ static void ltq_hw_irq_handler(struct ir
+ 	ltq_hw_irqdispatch(irq_desc_get_irq(desc) - 2);
+ }
+ 
++#ifdef CONFIG_MIPS_MT_SMP
++void __init arch_init_ipiirq(int irq, struct irqaction *action)
++{
++	setup_irq(irq, action);
++	irq_set_handler(irq, handle_percpu_irq);
++}
++
++static void ltq_sw0_irqdispatch(void)
++{
++	do_IRQ(MIPS_CPU_IRQ_BASE + MIPS_CPU_IPI_RESCHED_IRQ);
++}
++
++static void ltq_sw1_irqdispatch(void)
++{
++	do_IRQ(MIPS_CPU_IRQ_BASE + MIPS_CPU_IPI_CALL_IRQ);
++}
++static irqreturn_t ipi_resched_interrupt(int irq, void *dev_id)
++{
++	scheduler_ipi();
++	return IRQ_HANDLED;
++}
++
++static irqreturn_t ipi_call_interrupt(int irq, void *dev_id)
++{
++	generic_smp_call_function_interrupt();
++	return IRQ_HANDLED;
++}
++
++static struct irqaction irq_resched = {
++	.handler	= ipi_resched_interrupt,
++	.flags		= IRQF_PERCPU,
++	.name		= "IPI_resched"
++};
++
++static struct irqaction irq_call = {
++	.handler	= ipi_call_interrupt,
++	.flags		= IRQF_PERCPU,
++	.name		= "IPI_call"
++};
++#endif
++
+ asmlinkage void plat_irq_dispatch(void)
+ {
+ 	unsigned int pending = read_c0_status() & read_c0_cause() & ST0_IM;
+@@ -359,6 +400,17 @@ int __init icu_of_init(struct device_nod
+ 		(MAX_IM * INT_NUM_IM_OFFSET) + MIPS_CPU_IRQ_CASCADE,
+ 		&irq_domain_ops, 0);
+ 
++#if defined(CONFIG_MIPS_MT_SMP)
++	if (cpu_has_vint) {
++		pr_info("Setting up IPI vectored interrupts\n");
++		set_vi_handler(MIPS_CPU_IPI_RESCHED_IRQ, ltq_sw0_irqdispatch);
++		set_vi_handler(MIPS_CPU_IPI_CALL_IRQ, ltq_sw1_irqdispatch);
++	}
++	arch_init_ipiirq(MIPS_CPU_IRQ_BASE + MIPS_CPU_IPI_RESCHED_IRQ,
++		&irq_resched);
++	arch_init_ipiirq(MIPS_CPU_IRQ_BASE + MIPS_CPU_IPI_CALL_IRQ, &irq_call);
++#endif
++
+ #ifndef CONFIG_MIPS_MT_SMP
+ 	set_c0_status(IE_IRQ0 | IE_IRQ1 | IE_IRQ2 |
+ 		IE_IRQ3 | IE_IRQ4 | IE_IRQ5);
+--- a/arch/mips/mti-malta/malta-int.c
++++ b/arch/mips/mti-malta/malta-int.c
+@@ -144,6 +144,56 @@ static irqreturn_t corehi_handler(int ir
+ 	return IRQ_HANDLED;
+ }
+ 
++#ifdef CONFIG_MIPS_MT_SMP
++
++#define MIPS_CPU_IPI_RESCHED_IRQ 0	/* SW int 0 for resched */
++#define C_RESCHED C_SW0
++#define MIPS_CPU_IPI_CALL_IRQ 1		/* SW int 1 for resched */
++#define C_CALL C_SW1
++static int cpu_ipi_resched_irq, cpu_ipi_call_irq;
++
++static void ipi_resched_dispatch(void)
++{
++	do_IRQ(MIPS_CPU_IRQ_BASE + MIPS_CPU_IPI_RESCHED_IRQ);
++}
++
++static void ipi_call_dispatch(void)
++{
++	do_IRQ(MIPS_CPU_IRQ_BASE + MIPS_CPU_IPI_CALL_IRQ);
++}
++
++static irqreturn_t ipi_resched_interrupt(int irq, void *dev_id)
++{
++#ifdef CONFIG_MIPS_VPE_APSP_API_CMP
++	if (aprp_hook)
++		aprp_hook();
++#endif
++
++	scheduler_ipi();
++
++	return IRQ_HANDLED;
++}
++
++static irqreturn_t ipi_call_interrupt(int irq, void *dev_id)
++{
++	generic_smp_call_function_interrupt();
++
++	return IRQ_HANDLED;
++}
++
++static struct irqaction irq_resched = {
++	.handler	= ipi_resched_interrupt,
++	.flags		= IRQF_PERCPU,
++	.name		= "IPI_resched"
++};
++
++static struct irqaction irq_call = {
++	.handler	= ipi_call_interrupt,
++	.flags		= IRQF_PERCPU,
++	.name		= "IPI_call"
++};
++#endif /* CONFIG_MIPS_MT_SMP */
++
+ static struct irqaction corehi_irqaction = {
+ 	.handler = corehi_handler,
+ 	.name = "CoreHi",
+@@ -171,6 +221,12 @@ static msc_irqmap_t msc_eicirqmap[] __in
+ 
+ static int msc_nr_eicirqs __initdata = ARRAY_SIZE(msc_eicirqmap);
+ 
++void __init arch_init_ipiirq(int irq, struct irqaction *action)
++{
++	setup_irq(irq, action);
++	irq_set_handler(irq, handle_percpu_irq);
++}
++
+ void __init arch_init_irq(void)
+ {
+ 	int corehi_irq;
+@@ -216,11 +272,30 @@ void __init arch_init_irq(void)
+ 
+ 	if (mips_gic_present()) {
+ 		corehi_irq = MIPS_CPU_IRQ_BASE + MIPSCPU_INT_COREHI;
+-	} else if (cpu_has_veic) {
+-		set_vi_handler(MSC01E_INT_COREHI, corehi_irqdispatch);
+-		corehi_irq = MSC01E_INT_BASE + MSC01E_INT_COREHI;
+ 	} else {
+-		corehi_irq = MIPS_CPU_IRQ_BASE + MIPSCPU_INT_COREHI;
++#if defined(CONFIG_MIPS_MT_SMP)
++		/* set up ipi interrupts */
++		if (cpu_has_veic) {
++			set_vi_handler (MSC01E_INT_SW0, ipi_resched_dispatch);
++			set_vi_handler (MSC01E_INT_SW1, ipi_call_dispatch);
++			cpu_ipi_resched_irq = MSC01E_INT_SW0;
++			cpu_ipi_call_irq = MSC01E_INT_SW1;
++		} else {
++			cpu_ipi_resched_irq = MIPS_CPU_IRQ_BASE +
++				MIPS_CPU_IPI_RESCHED_IRQ;
++			cpu_ipi_call_irq = MIPS_CPU_IRQ_BASE +
++				MIPS_CPU_IPI_CALL_IRQ;
++		}
++		arch_init_ipiirq(cpu_ipi_resched_irq, &irq_resched);
++		arch_init_ipiirq(cpu_ipi_call_irq, &irq_call);
++#endif
++		if (cpu_has_veic) {
++			set_vi_handler(MSC01E_INT_COREHI,
++				       corehi_irqdispatch);
++			corehi_irq = MSC01E_INT_BASE + MSC01E_INT_COREHI;
++		} else {
++			corehi_irq = MIPS_CPU_IRQ_BASE + MIPSCPU_INT_COREHI;
++		}
+ 	}
+ 
+ 	setup_irq(corehi_irq, &corehi_irqaction);

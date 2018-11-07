@@ -23,6 +23,7 @@ endif
 include rules.mk
 include $(INCLUDE_DIR)/debug.mk
 include $(INCLUDE_DIR)/depends.mk
+include $(INCLUDE_DIR)/rootfs.mk
 
 include $(INCLUDE_DIR)/version.mk
 export REVISION
@@ -44,6 +45,14 @@ Building images:
 	make image FILES="<path>" # include extra files from <path>
 	make image BIN_DIR="<path>" # alternative output directory for the images
 	make image EXTRA_IMAGE_NAME="<string>" # Add this to the output image filename (sanitized)
+
+Print manifest:
+	List "all" packages which get installed into the image.
+	You can use the following parameters:
+
+	make manifest PROFILE="<profilename>" # override the default target profile
+	make manifest PACKAGES="<pkg1> [<pkg2> [<pkg3> ...]]" # include extra packages
+
 endef
 $(eval $(call shexport,Helptext))
 
@@ -54,20 +63,10 @@ help: FORCE
 # override variables from rules.mk
 PACKAGE_DIR:=$(TOPDIR)/packages
 LISTS_DIR:=$(subst $(space),/,$(patsubst %,..,$(subst /,$(space),$(TARGET_DIR))))$(DL_DIR)
-OPKG:= \
-  IPKG_NO_SCRIPT=1 \
-  IPKG_INSTROOT="$(TARGET_DIR)" \
-  $(STAGING_DIR_HOST)/bin/opkg \
+OPKG:=$(call opkg,$(TARGET_DIR)) \
 	-f $(TOPDIR)/repositories.conf \
-	--force-depends \
-	--force-overwrite \
-	--force-postinstall \
 	--cache $(DL_DIR) \
-	--lists-dir $(LISTS_DIR) \
-	--offline-root $(TARGET_DIR) \
-	--add-dest root:/ \
-	--add-arch all:100 \
-	--add-arch $(ARCH_PACKAGES):200
+	--lists-dir $(LISTS_DIR)
 
 include $(INCLUDE_DIR)/target.mk
 -include .profiles.mk
@@ -109,16 +108,20 @@ _call_image: staging_dir/host/.prereq-build
 	echo 'Building images for $(BOARD)$(if $($(USER_PROFILE)_NAME), - $($(USER_PROFILE)_NAME))'
 	echo 'Packages: $(BUILD_PACKAGES)'
 	echo
-	rm -rf $(TARGET_DIR)
+	rm -rf $(TARGET_DIR) $(TARGET_DIR_ORIG)
 	mkdir -p $(TARGET_DIR) $(BIN_DIR) $(TMP_DIR) $(DL_DIR)
 	$(MAKE) package_reload
 	$(MAKE) package_install
-ifneq ($(USER_FILES),)
-	$(MAKE) copy_files
-endif
-	$(MAKE) -s package_postinst
+	$(MAKE) -s prepare_rootfs
 	$(MAKE) -s build_image
 	$(MAKE) -s checksum
+
+_call_manifest: FORCE
+	rm -rf $(TARGET_DIR)
+	mkdir -p $(TARGET_DIR) $(BIN_DIR) $(TMP_DIR) $(DL_DIR)
+	$(MAKE) package_reload >/dev/null
+	$(MAKE) package_install >/dev/null
+	$(OPKG) list-installed
 
 package_index: FORCE
 	@echo >&2
@@ -148,28 +151,13 @@ package_install: FORCE
 	$(OPKG) install $(firstword $(wildcard $(PACKAGE_DIR)/libc_*.ipk $(PACKAGE_DIR)/base/libc_*.ipk))
 	$(OPKG) install $(firstword $(wildcard $(PACKAGE_DIR)/kernel_*.ipk $(PACKAGE_DIR)/base/kernel_*.ipk))
 	$(OPKG) install $(BUILD_PACKAGES)
-	rm -f $(TARGET_DIR)/usr/lib/opkg/lists/*
 
-copy_files: FORCE
+prepare_rootfs: FORCE
 	@echo
-	@echo Copying extra files
-	@$(call file_copy,$(USER_FILES)/*,$(TARGET_DIR)/)
+	@echo Finalizing root filesystem...
 
-package_postinst: FORCE
-	@echo
-	@echo Cleaning up
-	@rm -f $(TARGET_DIR)/tmp/opkg.lock
-	@echo
-	@echo Activating init scripts
-	@mkdir -p $(TARGET_DIR)/etc/rc.d
-	@( \
-		cd $(TARGET_DIR); \
-		for script in ./usr/lib/opkg/info/*.postinst; do \
-			IPKG_INSTROOT=$(TARGET_DIR) $$(which bash) $$script; \
-		done || true \
-	)
-	rm -f $(TARGET_DIR)/usr/lib/opkg/info/*.postinst
-	$(if $(CONFIG_CLEAN_IPKG),rm -rf $(TARGET_DIR)/usr/lib/opkg)
+	$(CP) $(TARGET_DIR) $(TARGET_DIR_ORIG)
+	$(call prepare_rootfs,$(TARGET_DIR),$(USER_FILES))
 
 build_image: FORCE
 	@echo
@@ -191,7 +179,7 @@ info:
 
 PROFILE_FILTER = $(filter DEVICE_$(PROFILE) $(PROFILE),$(PROFILE_NAMES))
 
-image:
+_check_profile: FORCE
 ifneq ($(PROFILE),)
   ifeq ($(PROFILE_FILTER),)
 	@echo 'Profile "$(PROFILE)" does not exist!'
@@ -199,6 +187,9 @@ ifneq ($(PROFILE),)
 	@exit 1
   endif
 endif
+
+image:
+	$(MAKE) -s _check_profile
 	(unset PROFILE FILES PACKAGES MAKEFLAGS; \
 	$(MAKE) -s _call_image \
 		$(if $(PROFILE),USER_PROFILE="$(PROFILE_FILTER)") \
@@ -206,5 +197,11 @@ endif
 		$(if $(PACKAGES),USER_PACKAGES="$(PACKAGES)") \
 		$(if $(BIN_DIR),BIN_DIR="$(BIN_DIR)"))
 
-.SILENT: help info image
+manifest: FORCE
+	$(MAKE) -s _check_profile
+	(unset PROFILE FILES PACKAGES MAKEFLAGS; \
+	$(MAKE) -s _call_manifest \
+		$(if $(PROFILE),USER_PROFILE="$(PROFILE_FILTER)") \
+		$(if $(PACKAGES),USER_PACKAGES="$(PACKAGES)"))
 
+.SILENT: help info image manifest

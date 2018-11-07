@@ -1,34 +1,36 @@
 #!/bin/sh
 
 # 声明常量
-readonly appName='com.xunlei.vip.swjsq'
-readonly protocolVersion=108
-readonly sdkVersion=17550
-readonly agentVersion='1.6.1.177600'
+readonly packageName='com.xunlei.vip.swjsq'
+readonly protocolVersion=200
+readonly businessType=68
+readonly sdkVersion='2.1.1.177662'
+readonly clientVersion='2.4.1.3'
+readonly agent_xl="android-async-http/xl-acc-sdk/version-$sdkVersion"
+readonly agent_down='okhttp/3.4.1'
+readonly agent_up='android-async-http/xl-acc-sdk/version-1.0.0.1'
 readonly client_type_down='android-swjsq'
-readonly client_version_down='2.0.3.4'
 readonly client_type_up='android-uplink'
-readonly client_version_up='2.3.3.9'
-readonly client_os='android-7.0.24DUK-AL20'
 
 # 声明全局变量
+_bind_ip=
 _http_cmd=
-_http_args=
-_devicesign=
 _peerid=
+_devicesign=
 _userid=
+_loginkey=
 _sessionid=
-_api_url_down=
-_api_url_up=
-_dial_account_down=
-_dial_account_up=
-_cur_down=
-_max_down=
-_cur_up=
-_max_up=
+_portal_down=
+_portal_up=
+_dial_account=
 access_url=
-msg_to_en=
-msg_to_cn=
+http_args=
+user_agent=
+link_cn=
+lasterr=
+sequence_xl=1000000
+sequence_down=$(( $(date +%s) / 6 ))
+sequence_up=$sequence_down
 
 # 包含用于解析 JSON 格式返回值的函数
 . /usr/share/libubox/jshn.sh
@@ -82,38 +84,34 @@ _log() {
 # 清理日志
 clean_log() {
 	[ $logging -eq 1 -a -f "$LOGFILE" ] || return
-	if [ $(wc -l "$LOGFILE" | awk '{print $1}') -gt 500 ]; then
-		_log "清理日志文件"
-		local logdata=$(tail -n 300 "$LOGFILE")
-		echo "$logdata" > $LOGFILE 2> /dev/null
-		unset logdata
-	fi
+	[ $(wc -l "$LOGFILE" | awk '{print $1}') -le 800 ] && return
+	_log "清理日志文件"
+	local logdata=$(tail -n 500 "$LOGFILE")
+	echo "$logdata" > $LOGFILE 2> /dev/null
+	unset logdata
 }
 
 # 获取接口IP地址
-get_acc_ip() {
-	local acc_ipaddr
+get_bind_ip() {
 	json_cleanup; json_load "$(ubus call network.interface.$network status 2> /dev/null)" >/dev/null 2>&1
 	json_select "ipv4-address" >/dev/null 2>&1; json_select 1 >/dev/null 2>&1
-	json_get_var acc_ipaddr "address"
-	[ -z "$acc_ipaddr" ] && { _log "获取网络 $network IP地址出错"; return; }
-	_log "acc_ipaddr is $acc_ipaddr" $(( 1 | 4 ))
-
-	if [ "$acc_ipaddr" != "0.0.0.0" ]; then
-		_log "绑定IP地址: $acc_ipaddr"
-		echo -n "$acc_ipaddr"
+	json_get_var _bind_ip "address"
+	if [ -z "$_bind_ip" -o "$_bind_ip"x == "0.0.0.0"x ]; then
+		_log "获取网络 $network IP地址失败"
+		return 1
+	else
+		_log "绑定IP地址: $_bind_ip"
+		return 0
 	fi
 }
 
 # 定义基本 HTTP 命令和参数
 gen_http_cmd() {
-	_http_cmd="wget-ssl -nv -t 1 -O - --no-check-certificate"
-	_http_cmd="$_http_cmd --bind-address=$1"
-	_http_cmd="$_http_cmd --user-agent=android-async-http/xl-acc-sdk/version-$agentVersion"
-	_log "_http_cmd is $_http_cmd" $(( 1 | 4 ))
+	_http_cmd="wget-ssl -nv -t 1 -T 5 -O - --no-check-certificate"
+	_http_cmd="$_http_cmd --bind-address=$_bind_ip"
 }
 
-# 生成设备签名
+# 生成设备标识
 gen_device_sign() {
 	local ifname macaddr
 	while : ; do
@@ -126,275 +124,439 @@ gen_device_sign() {
 	[ -z "$macaddr" ] && { _log "获取网络 $network MAC地址出错"; return; }
 	macaddr=$(echo -n "$macaddr" | awk '{print toupper($0)}')
 
-	# 根据MAC地址生成peerid
-	readonly _peerid="${macaddr//:/}004V"
+	# 计算peerID
+	local fake_peerid=$(awk -F- '{print toupper($5)}' '/proc/sys/kernel/random/uuid')
+	readonly _peerid="${fake_peerid}004V"
 	_log "_peerid is $_peerid" $(( 1 | 4 ))
 
-	# 根据MAC地址生成devicesign
-	local xlnetacc_vip="${appName}68700d1872b772946a6940e4b51827e8af"
-	local fake_device_id_md5=$(echo -n "$macaddr" | md5sum | awk '{print $1}')
-	local fake_device_id_sha1=$(echo -n "$fake_device_id_md5$xlnetacc_vip" | openssl sha1 -hmac | awk '{print $2}')
-	readonly _devicesign="div100.$fake_device_id_md5"$(echo -n "$fake_device_id_sha1" | md5sum | awk '{print $1}')
+	# 计算devicesign
+	# sign = div.10?.device_id + md5(sha1(packageName + businessType + md5(a protocolVersion specific GUID)))
+	local fake_device_id=$(echo -n "${macaddr//:/}" | openssl dgst -md5 | awk '{print $2}')
+	local fake_device_sign=$(echo -n "${fake_device_id}${packageName}${businessType}c7f21687eed3cdb400ca11fc2263c998" \
+		| openssl dgst -sha1 | awk '{print $2}')
+	readonly _devicesign="div101.${fake_device_id}"$(echo -n "$fake_device_sign" | openssl dgst -md5 | awk '{print $2}')
 	_log "_devicesign is $_devicesign" $(( 1 | 4 ))
 }
 
-# 帐号登录
-xlnetacc_login() {
+# 快鸟帐号通用参数
+swjsq_json() {
+	let sequence_xl++
 	# 生成POST数据
 	json_init
-	json_add_string userName "$account"
-	json_add_int businessType 68
-	json_add_string clientVersion "$client_version_down"
-	json_add_string appName "ANDROID-$appName"
-	json_add_int isCompressed 0
-	json_add_int sequenceNo 1000001
-	json_add_string sessionID
-	json_add_int loginType 0
-	json_add_object rsaKey
-	json_add_string e '010001'
-	json_add_string n 'AC69F5CCC8BDE47CD3D371603748378C9CFAD2938A6B021E0E191013975AD683F5CBF9ADE8BD7D46B4D2EC2D78AF146F1DD2D50DC51446BB8880B8CE88D476694DFC60594393BEEFAA16F5DBCEBE22F89D640F5336E42F587DC4AFEDEFEAC36CF007009CCCE5C1ACB4FF06FBA69802A8085C2C54BADD0597FC83E6870F1E36FD'
-	json_close_object
-	json_add_int cmdID 1
-	json_add_string verifyCode
+	json_add_string protocolVersion "$protocolVersion"
+	json_add_string sequenceNo "$sequence_xl"
+	json_add_string platformVersion '2'
+	json_add_string isCompressed '0'
+	json_add_string businessType "$businessType"
+	json_add_string clientVersion "$clientVersion"
 	json_add_string peerID "$_peerid"
-	json_add_int protocolVersion $protocolVersion
-	json_add_int platformVersion 1
-	json_add_string passWord "$encrypt"
-	json_add_string extensionList
-	json_add_string verifyKey
-	json_add_int sdkVersion $sdkVersion
+	json_add_string appName "ANDROID-$packageName"
+	json_add_string sdkVersion "${sdkVersion##*.}"
 	json_add_string devicesign "$_devicesign"
-	json_close_object
-
-	local ret=$($_http_cmd 'https://login.mobile.reg2t.sandai.net:443/' --post-data="$(json_dump)")
-	_log "ret is $ret" $(( 1 | 4 ))
-	json_cleanup; json_load "$ret" >/dev/null 2>&1
-	local errno
-	json_get_var errno "errorCode"
-	json_get_var _userid "userID"
-	_log "_userid is $_userid" $(( 1 | 4 ))
-	json_get_var _sessionid "sessionID"
-	_log "_sessionid is $_sessionid" $(( 1 | 4 ))
-
-	if [ ${errno:=-1} -ne 0 ] || [ -z "$_userid" -o -z "$_sessionid" ]; then
-		local errorDesc
-		json_get_var errorDesc "errorDesc"
-		local outmsg="帐号登录失败。错误代码: ${errno}"; \
-			[ -n "$errorDesc" ] && outmsg="${outmsg}，原因: $errorDesc"; _log "$outmsg" $(( 1 | 8 | 16 | 32 ))
-	else
-		local outmsg="帐号登录成功"; _log "$outmsg" $(( 1 | 8 | 16 ))
-	fi
-
-	return $errno
+	json_add_string deviceModel 'MI'
+	json_add_string deviceName 'Xiaomi Mi'
+	json_add_string OSVersion "7.1.1"
 }
 
-# 获取提速API
-xlnetacc_portal() {
+# 帐号登录
+swjsq_login() {
+	swjsq_json
+	if [ -z "$_userid" -o -z "$_loginkey" ]; then
+		access_url='https://mobile-login.xunlei.com/login'
+		json_add_string userName "$username"
+		json_add_string passWord "$password"
+		json_add_string verifyKey
+		json_add_string verifyCode
+	else
+		access_url='https://mobile-login.xunlei.com/loginkey'
+		json_add_string userName "$_userid"
+		json_add_string loginKey "$_loginkey"
+	fi
+	json_close_object
+
+	local ret=$($_http_cmd --user-agent="$agent_xl" "$access_url" --post-data="$(json_dump)")
+	case $? in
+		0)
+			_log "login is $ret" $(( 1 | 4 ))
+			json_cleanup; json_load "$ret" >/dev/null 2>&1
+			json_get_var lasterr "errorCode"
+			;;
+		2) lasterr=-2;;
+		4) lasterr=-3;;
+		*) lasterr=-1;;
+	esac
+
+	case ${lasterr:=-1} in
+		0)
+			json_get_var _userid "userID"
+			json_get_var _loginkey "loginKey"
+			json_get_var _sessionid "sessionID"
+			_log "_sessionid is $_sessionid" $(( 1 | 4 ))
+			local outmsg="帐号登录成功"; _log "$outmsg" $(( 1 | 8 ))
+			;;
+		15) # 身份信息已失效
+			_userid=; _loginkey=;;
+		-1)
+			local outmsg="帐号登录失败。迅雷服务器未响应，请稍候"; _log "$outmsg";;
+		-2)
+			local outmsg="Wget 参数解析错误，请更新 GNU Wget"; _log "$outmsg" $(( 1 | 8 | 32 ));;
+		-3)
+			local outmsg="Wget 网络通信失败，请稍候"; _log "$outmsg";;
+		*)
+			local errorDesc; json_get_var errorDesc "errorDesc"
+			local outmsg="帐号登录失败。错误代码: ${lasterr}"; \
+				[ -n "$errorDesc" ] && outmsg="${outmsg}，原因: $errorDesc"; _log "$outmsg" $(( 1 | 8 | 32 ));;
+	esac
+
+	[ $lasterr -eq 0 ] && return 0 || return 1
+}
+
+# 帐号注销
+swjsq_logout() {
+	swjsq_json
+	json_add_string userID "$_userid"
+	json_add_string sessionID "$_sessionid"
+	json_close_object
+
+	local ret=$($_http_cmd --user-agent="$agent_xl" 'https://mobile-login.xunlei.com/logout' --post-data="$(json_dump)")
+	_log "logout is $ret" $(( 1 | 4 ))
+	json_cleanup; json_load "$ret" >/dev/null 2>&1
+	json_get_var lasterr "errorCode"
+
+	case ${lasterr:=-1} in
+		0)
+			_sessionid=
+			local outmsg="帐号注销成功"; _log "$outmsg" $(( 1 | 8 ));;
+		-1)
+			local outmsg="帐号注销失败。迅雷服务器未响应，请稍候"; _log "$outmsg";;
+		*)
+			local errorDesc; json_get_var errorDesc "errorDesc"
+			local outmsg="帐号注销失败。错误代码: ${lasterr}"; \
+				[ -n "$errorDesc" ] && outmsg="${outmsg}，原因: $errorDesc"; _log "$outmsg" $(( 1 | 8 | 32 ));;
+	esac
+
+	[ $lasterr -eq 0 ] && return 0 || return 1
+}
+
+# 获取用户信息
+swjsq_getuserinfo() {
+	[ $1 -eq 1 ] && local _vasid=14 || local _vasid=33
+	swjsq_json
+	json_add_string userID "$_userid"
+	json_add_string sessionID "$_sessionid"
+	json_add_string vasid "$_vasid"
+	json_close_object
+
+	local ret=$($_http_cmd --user-agent="$agent_xl" 'https://mobile-login.xunlei.com/getuserinfo' --post-data="$(json_dump)")
+	_log "getuserinfo $1 is $ret" $(( 1 | 4 ))
+	json_cleanup; json_load "$ret" >/dev/null 2>&1
+	json_get_var lasterr "errorCode"
+
+	[ $1 -eq 1 ] && local outmsg="下行提速会员" || local outmsg="上行提速会员"
+	case ${lasterr:=-1} in
+		0)
+			local index vasid isVip isYear expireDate can_upgrade
+			json_select "vipList" >/dev/null 2>&1
+			while : ; do
+				json_select ${index:=1} >/dev/null 2>&1
+				[ $? -ne 0 ] && break
+				json_get_var vasid "vasid"
+				json_get_var isVip "isVip"
+				json_get_var isYear "isYear"
+				json_get_var expireDate "expireDate"
+				json_select ".." >/dev/null 2>&1
+				let index++
+				([ $1 -eq 1 -a ${vasid:-0} -eq 2 ] || [ ${vasid:-0} -eq $_vasid ]) && \
+					[ ${isVip:-0} -eq 1 -o ${isYear:-0} -eq 1 ] && { can_upgrade=1; break; }
+			done
+			if [ ${can_upgrade:-0} -eq 1 ]; then
+				outmsg="获取${outmsg}信息成功。会员到期时间：${expireDate:0:4}-${expireDate:4:2}-${expireDate:6:2}"; \
+					_log "$outmsg" $(( 1 | $1 * 8 ))
+			else
+				if [ ${#expireDate} -ge 8 ]; then
+					outmsg="${outmsg}已到期。会员到期时间：${expireDate:0:4}-${expireDate:4:2}-${expireDate:6:2}"
+				else
+					outmsg="${outmsg}无效"
+				fi
+				_log "$outmsg" $(( 1 | $1 * 8 | 32 ))
+				[ $1 -eq 1 ] && down_acc=0 || up_acc=0
+			fi
+			;;
+		-1)
+			outmsg="获取${outmsg}信息失败。迅雷服务器未响应，请稍候"; _log "$outmsg";;
+		*)
+			local errorDesc; json_get_var errorDesc "errorDesc"
+			outmsg="获取${outmsg}信息失败。错误代码: ${lasterr}"; \
+				[ -n "$errorDesc" ] && outmsg="${outmsg}，原因: $errorDesc"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ));;
+	esac
+
+	[ $lasterr -eq 0 ] && return 0 || return 1
+}
+
+# 获取提速入口
+swjsq_portal() {
 	xlnetacc_var $1
 
 	[ $1 -eq 1 ] && access_url='http://api.portal.swjsq.vip.xunlei.com:81/v2/queryportal' || \
 		access_url='http://api.upportal.swjsq.vip.xunlei.com/v2/queryportal'
-	local ret=$($_http_cmd "$access_url")
-	_log "$msg_to_en portal is $ret" $(( 1 | 4 ))
+	local ret=$($_http_cmd --user-agent="$user_agent" "$access_url")
+	_log "portal $1 is $ret" $(( 1 | 4 ))
 	json_cleanup; json_load "$ret" >/dev/null 2>&1
-	local errno portal_ip portal_port
-	json_get_var errno "errno"
-	json_get_var portal_ip "interface_ip"
-	json_get_var portal_port "interface_port"
+	json_get_var lasterr "errno"
 
-	if [ ${errno:=-1} -ne 0 ] || [ -z "$portal_ip" -o -z "$portal_port" ]; then
-		local message
-		json_get_var message "message"
-		local outmsg="获取${msg_to_cn}API失败。错误代码: ${errno}"; \
-			[ -n "$message" ] && outmsg="${outmsg}，原因: $message"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ))
-	else
-		local outmsg="获取${msg_to_cn}API成功"; _log "$outmsg" $(( 1 | $1 * 8 ))
-		if [ $1 -eq 1 ]; then
-			_api_url_down="http://$portal_ip:$portal_port/v2"
-			_log "_api_url_down is $_api_url_down" $(( 1 | 4 ))
-		else
-			_api_url_up="http://$portal_ip:$portal_port/v2"
-			_log "_api_url_up is $_api_url_up" $(( 1 | 4 ))
-		fi
-	fi
+	case ${lasterr:=-1} in
+		0)
+			local interface_ip interface_port province sp
+			json_get_var interface_ip "interface_ip"
+			json_get_var interface_port "interface_port"
+			json_get_var province "province_name"
+			json_get_var sp "sp_name"
+			if [ $1 -eq 1 ]; then
+				_portal_down="http://$interface_ip:$interface_port/v2"
+				_log "_portal_down is $_portal_down" $(( 1 | 4 ))
+			else
+				_portal_up="http://$interface_ip:$interface_port/v2"
+				_log "_portal_up is $_portal_up" $(( 1 | 4 ))
+			fi
+			local outmsg="获取${link_cn}提速入口成功"; \
+				[ -n "$province" -a -n "$sp" ] && outmsg="${outmsg}。运营商：${province}${sp}"; _log "$outmsg" $(( 1 | $1 * 8 ))
+			;;
+		-1)
+			local outmsg="获取${link_cn}提速入口失败。迅雷服务器未响应，请稍候"; _log "$outmsg";;
+		*)
+			local message; json_get_var message "message"
+			local outmsg="获取${link_cn}提速入口失败。错误代码: ${lasterr}"; \
+				[ -n "$message" ] && outmsg="${outmsg}，原因: $message"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ));;
+	esac
 
-	return $errno
+	[ $lasterr -eq 0 ] && return 0 || return 1
 }
 
 # 获取网络带宽信息
-xlnetacc_bandwidth() {
+isp_bandwidth() {
 	xlnetacc_var $1
 
-	local ret=$($_http_cmd "$access_url/bandwidth?${_http_args}&time_and=$(date +%s)000")
-	_log "$msg_to_en bandwidth is $ret" $(( 1 | 4 ))
+	local ret=$($_http_cmd --user-agent="$user_agent" "$access_url/bandwidth?${http_args%&dial_account=*}")
+	_log "bandwidth $1 is $ret" $(( 1 | 4 ))
 	json_cleanup; json_load "$ret" >/dev/null 2>&1
-	local errno can_upgrade dial_account richmessage
-	json_get_var errno "errno"
-	json_get_var can_upgrade "can_upgrade"
-	json_get_var dial_account "dial_account"
-	json_get_var richmessage "richmessage"
+	json_get_var lasterr "errno"
 
-	# 获取带宽数据
-	local cur_bandwidth max_bandwidth flag
-	[ $1 -eq 1 ] && flag="downstream" || flag="upstream"
-	json_select "bandwidth" >/dev/null 2>&1
-	json_get_var cur_bandwidth "$flag"
-	json_select; json_select "max_bandwidth" >/dev/null 2>&1
-	json_get_var max_bandwidth "$flag"
-	cur_bandwidth=$(expr $cur_bandwidth / 1024 2> /dev/null)
-	max_bandwidth=$(expr $max_bandwidth / 1024 2> /dev/null)
+	case ${lasterr:=-1} in
+		0)
+			# 获取带宽数据
+			local can_upgrade bind_dial_account dial_account stream cur_bandwidth max_bandwidth
+			[ $1 -eq 1 ] && stream="downstream" || stream="upstream"
+			json_get_var can_upgrade "can_upgrade"
+			json_get_var bind_dial_account "bind_dial_account"
+			json_get_var dial_account "dial_account"
+			json_select; json_select "bandwidth" >/dev/null 2>&1
+			json_get_var cur_bandwidth "$stream"
+			json_select; json_select "max_bandwidth" >/dev/null 2>&1
+			json_get_var max_bandwidth "$stream"
+			json_select
+			cur_bandwidth=$(expr ${cur_bandwidth:-0} / 1024)
+			max_bandwidth=$(expr ${max_bandwidth:-0} / 1024)
 
-	if [ ${errno:=-1} -ne 0 ]; then
-		local outmsg="获取${msg_to_cn}带宽信息失败。错误代码: ${errno}"; \
-			[ -n "$richmessage" ] && outmsg="${outmsg}，原因: $richmessage"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ))
-	elif [ "$can_upgrade" -eq 0 ]; then
-		local outmsg="${msg_to_cn}无法提速"; \
-			[ -n "$richmessage" ] && outmsg="${outmsg}，原因: $richmessage"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ))
-		[ $1 -eq 1 ] && down_acc=0 || up_acc=0
-		errno=-2
-	elif [ "$cur_bandwidth" -ge "$max_bandwidth" ]; then
-		local outmsg="${msg_to_cn}无需提速。当前带宽 ${cur_bandwidth}M，超过最大可提升带宽 ${max_bandwidth}M"; \
-			_log "$outmsg" $(( 1 | $1 * 8 ))
-		[ $1 -eq 1 ] && down_acc=0 || up_acc=0
-		errno=-3
-	else
-		local outmsg="${msg_to_cn}可以提速。当前带宽 ${cur_bandwidth}M，可提升至 ${max_bandwidth}M"; _log "$outmsg" $(( 1 | $1 * 8 ))
-		if [ $1 -eq 1 ]; then
-			_dial_account_down=$dial_account
-			_log "_dial_account_down is $_dial_account_down" $(( 1 | 4 ))
-			_cur_down=$cur_bandwidth
-			_log "_cur_down is $_cur_down" $(( 1 | 4 ))
-			_max_down=$max_bandwidth
-			_log "_max_down is $_max_down" $(( 1 | 4 ))
-		else
-			_dial_account_up=$dial_account
-			_log "_dial_account_up is $_dial_account_up" $(( 1 | 4 ))
-			_cur_up=$cur_bandwidth
-			_log "_cur_up is $_cur_up" $(( 1 | 4 ))
-			_max_up=$max_bandwidth
-			_log "_max_up is $_max_up" $(( 1 | 4 ))
-		fi
-	fi
+			if [ -n "$bind_dial_account" -a "$bind_dial_account" != "$dial_account" ]; then
+				local outmsg="绑定宽带账号 $bind_dial_account 与当前宽带账号 $dial_account 不一致，请联系迅雷客服解绑（每月仅一次）"; \
+					_log "$outmsg" $(( 1 | 8 | 32 ))
+				down_acc=0; up_acc=0
+			elif [ $can_upgrade -eq 0 ]; then
+				local message; json_get_var message "richmessage"; [ -z "$message" ] && json_get_var message "message"
+				local outmsg="${link_cn}无法提速"; \
+					[ -n "$message" ] && outmsg="${outmsg}，原因: $message"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ))
+				[ $1 -eq 1 ] && down_acc=0 || up_acc=0
+			elif [ $cur_bandwidth -ge $max_bandwidth ]; then
+				local outmsg="${link_cn}无需提速。当前带宽 ${cur_bandwidth}M，超过最大可提升带宽 ${max_bandwidth}M"; \
+					_log "$outmsg" $(( 1 | $1 * 8 ))
+				[ $1 -eq 1 ] && down_acc=0 || up_acc=0
+			else
+				if [ -z "$_dial_account" -a -n "$dial_account" ]; then
+					_dial_account=$dial_account
+					_log "_dial_account is $_dial_account" $(( 1 | 4 ))
+				fi
+				local outmsg="${link_cn}可以提速。当前带宽 ${cur_bandwidth}M，可提升至 ${max_bandwidth}M"; _log "$outmsg" $(( 1 | $1 * 8 ))
+			fi
+			;;
+		724) # 724 账号存在异常
+			lasterr=-2
+			local outmsg="获取${link_cn}网络带宽信息失败。原因: 您的账号存在异常，请联系迅雷客服反馈"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ));;
+		3103) # 3103 线路暂不支持
+			lasterr=0
+			local province sp
+			json_get_var province "province_name"; json_get_var sp "sp_name"
+			local outmsg="${link_cn}无法提速。原因: ${province}${sp}线路暂不支持"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ))
+			[ $1 -eq 1 ] && down_acc=0 || up_acc=0
+			;;
+		-1)
+			local outmsg="获取${link_cn}网络带宽信息失败。运营商服务器未响应，请稍候"; _log "$outmsg";;
+		*)
+			local message; json_get_var message "richmessage"; [ -z "$message" ] && json_get_var message "message"
+			local outmsg="获取${link_cn}网络带宽信息失败。错误代码: ${lasterr}"; \
+				[ -n "$message" ] && outmsg="${outmsg}，原因: $message"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ));;
+	esac
 
-	return $errno
+	[ $lasterr -eq 0 ] && return 0 || return 1
 }
 
 # 发送带宽提速信号
-xlnetacc_upgrade() {
+isp_upgrade() {
 	xlnetacc_var $1
 
-	local ret=$($_http_cmd "$access_url/upgrade?${_http_args}&time_and=$(date +%s)000")
-	_log "$msg_to_en upgrade is $ret" $(( 1 | 4 ))
+	local ret=$($_http_cmd --user-agent="$user_agent" "$access_url/upgrade?$http_args")
+	_log "upgrade $1 is $ret" $(( 1 | 4 ))
 	json_cleanup; json_load "$ret" >/dev/null 2>&1
-	local errno
-	json_get_var errno "errno"
+	json_get_var lasterr "errno"
 
-	if [ ${errno:=-1} -ne 0 ]; then
-		local richmessage
-		json_get_var richmessage "richmessage"
-		local outmsg="${msg_to_cn}提速失败。错误代码: ${errno}"; \
-			[ -n "$richmessage" ] && outmsg="${outmsg}，原因: $richmessage"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ))
-		[ $errno -ne -1 ] && { [ $1 -eq 1 ] && down_acc=0 || up_acc=0; }
-	else
-		[ $1 -eq 1 ] && local cur_bandwidth=$_cur_down || local cur_bandwidth=$_cur_up
-		[ $1 -eq 1 ] && local max_bandwidth=$_max_down || local max_bandwidth=$_max_up
-		local outmsg="${msg_to_cn}提速成功，带宽已从 ${cur_bandwidth}M 提升到 ${max_bandwidth}M"; _log "$outmsg" $(( 1 | $1 * 8 ))
-		[ $1 -eq 1 ] && down_acc=2 || up_acc=2
-	fi
+	case ${lasterr:=-1} in
+		0)
+			local bandwidth
+			json_select "bandwidth" >/dev/null 2>&1
+			json_get_var bandwidth "downstream"
+			[ ${bandwidth:=0} -ge 1024 ] && bandwidth=$(( $bandwidth / 1024 ))
+			local outmsg="${link_cn}提速成功，带宽已提升到 ${bandwidth}M"; _log "$outmsg" $(( 1 | $1 * 8 ))
+			[ $1 -eq 1 ] && down_acc=2 || up_acc=2
+			;;
+		812) # 812 已处于提速状态
+			lasterr=0
+			local outmsg="${link_cn}提速成功，当前宽带已处于提速状态"; _log "$outmsg" $(( 1 | $1 * 8 ))
+			[ $1 -eq 1 ] && down_acc=2 || up_acc=2
+			;;
+		724) # 724 账号存在异常
+			lasterr=-2
+			local outmsg="${link_cn}提速失败。原因: 您的账号存在异常，请联系迅雷客服反馈"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ));;
+		-1)
+			local outmsg="${link_cn}提速失败。运营商服务器未响应，请稍候"; _log "$outmsg";;
+		*)
+			local message; json_get_var message "richmessage"; [ -z "$message" ] && json_get_var message "message"
+			local outmsg="${link_cn}提速失败。错误代码: ${lasterr}"; \
+				[ -n "$message" ] && outmsg="${outmsg}，原因: $message"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ));;
+	esac
 
-	return $errno
+	[ $lasterr -eq 0 ] && return 0 || return 1
 }
 
 # 发送提速心跳信号
-xlnetacc_keepalive() {
+isp_keepalive() {
 	xlnetacc_var $1
 
-	local ret=$($_http_cmd "$access_url/keepalive?${_http_args}&time_and=$(date +%s)000")
-	_log "$msg_to_en keepalive is $ret" $(( 1 | 4 ))
+	local ret=$($_http_cmd --user-agent="$user_agent" "$access_url/keepalive?$http_args")
+	_log "keepalive $1 is $ret" $(( 1 | 4 ))
 	json_cleanup; json_load "$ret" >/dev/null 2>&1
-	local errno
-	json_get_var errno "errno"
+	json_get_var lasterr "errno"
 
-	if [ ${errno:=-1} -ne 0 ]; then
-		local richmessage
-		json_get_var richmessage "richmessage"
-		local outmsg="${msg_to_cn}提速失效。错误代码: ${errno}"; \
-			[ -n "$richmessage" ] && outmsg="${outmsg}，原因: $richmessage"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ))
-		[ $1 -eq 1 ] && down_acc=1 || up_acc=1
-	else
-		_log "${msg_to_cn}心跳信号返回正常"
-	fi
+	case ${lasterr:=-1} in
+		0)
+			local outmsg="${link_cn}心跳信号返回正常"; _log "$outmsg";;
+		513) # 513 提速通道不存在
+			lasterr=-2
+			local outmsg="${link_cn}提速超时，提速通道不存在"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ));;
+		-1)
+			local outmsg="${link_cn}心跳信号发送失败。运营商服务器未响应，请稍候"; _log "$outmsg";;
+		*)
+			local message; json_get_var message "richmessage"; [ -z "$message" ] && json_get_var message "message"
+			local outmsg="${link_cn}提速失效。错误代码: ${lasterr}"; \
+				[ -n "$message" ] && outmsg="${outmsg}，原因: $message"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ));;
+	esac
 
-	return $errno
+	[ $lasterr -eq 0 ] && return 0 || return 1
 }
 
 # 发送带宽恢复信号
-xlnetacc_recover() {
+isp_recover() {
 	xlnetacc_var $1
 
-	local ret=$($_http_cmd "$access_url/recover?${_http_args}&time_and=$(date +%s)000")
-	_log "$msg_to_en recover is $ret" $(( 1 | 4 ))
+	local ret=$($_http_cmd --user-agent="$user_agent" "$access_url/recover?$http_args")
+	_log "recover $1 is $ret" $(( 1 | 4 ))
 	json_cleanup; json_load "$ret" >/dev/null 2>&1
-	local errno
-	json_get_var errno "errno"
+	json_get_var lasterr "errno"
 
-	if [ ${errno:=-1} -ne 0 ]; then
-		local richmessage
-		json_get_var richmessage "richmessage"
-		local outmsg="${msg_to_cn}带宽恢复失败。错误代码: ${errno}"; \
-			[ -n "$richmessage" ] && outmsg="${outmsg}，原因: $richmessage"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ))
-	else
-		_log "${msg_to_cn}带宽已恢复"
-		[ $1 -eq 1 ] && down_acc=1 || up_acc=1
-	fi
+	case ${lasterr:=-1} in
+		0)
+			local outmsg="${link_cn}带宽已恢复"; _log "$outmsg" $(( 1 | $1 * 8 ))
+			[ $1 -eq 1 ] && down_acc=1 || up_acc=1;;
+		-1)
+			local outmsg="${link_cn}带宽恢复失败。运营商服务器未响应，请稍候"; _log "$outmsg";;
+		*)
+			local message; json_get_var message "richmessage"; [ -z "$message" ] && json_get_var message "message"
+			local outmsg="${link_cn}带宽恢复失败。错误代码: ${lasterr}"; \
+				[ -n "$message" ] && outmsg="${outmsg}，原因: $message"; _log "$outmsg" $(( 1 | $1 * 8 | 32 ));;
+	esac
 
-	return $errno
+	[ $lasterr -eq 0 ] && return 0 || return 1
 }
 
 # 查询提速信息，未使用
-xlnetacc_query() {
+isp_query() {
 	xlnetacc_var $1
 
-	local ret=$($_http_cmd "$access_url/query_try_info?${_http_args}&time_and=$(date +%s)000")
-	_log "$msg_to_en query_try_info is $ret" $(( 1 | 4 ))
+	local ret=$($_http_cmd --user-agent="$user_agent" "$access_url/query_try_info?$http_args")
+	_log "query_try_info $1 is $ret" $(( 1 | 4 ))
 	json_cleanup; json_load "$ret" >/dev/null 2>&1
-	local errno
-	json_get_var errno "errno"
+	json_get_var lasterr "errno"
 
-	return $errno
-}
-
-# 带宽提速处理
-xlnetacc_acc() {
-	_api_url_down=; _api_url_up=
-	_dial_account_down=; _dial_account_up=
-	_cur_down=0; _max_down=0; _cur_up=0; _max_up=0
-
-	xlnetacc_portal $1 || return
-	xlnetacc_bandwidth $1 || return
-	xlnetacc_upgrade $1
+	[ $lasterr -eq 0 ] && return 0 || return 1
 }
 
 # 设置参数变量
 xlnetacc_var() {
 	if [ $1 -eq 1 ]; then
-		access_url=$_api_url_down
-		_http_args="peerid=${_peerid}&userid=${_userid}&user_type=1&sessionid=${_sessionid}&dial_account=${_dial_account_down}&client_type=${client_type_down}-${client_version_down}&client_version=${client_type_down//-/}-${client_version_down}&os=${client_os}"
-		msg_to_en="DownLink"
-		msg_to_cn="下行"
+		let sequence_down++
+		access_url=$_portal_down
+		http_args="sequence=${sequence_down}&client_type=${client_type_down}-${clientVersion}&client_version=${client_type_down//-/}-${clientVersion}&chanel=umeng-10900011&time_and=$(date +%s)000"
+		user_agent=$agent_down
+		link_cn="下行"
 	else
-		access_url=$_api_url_up
-		_http_args="peerid=${_peerid}&userid=${_userid}&user_type=1&sessionid=${_sessionid}&dial_account=${_dial_account_up}&client_type=${client_type_up}-${client_version_up}&client_version=${client_type_up//-/}-${client_version_up}&os=${client_os}"
-		msg_to_en="UpLink"
-		msg_to_cn="上行"
+		let sequence_up++
+		access_url=$_portal_up
+		http_args="sequence=${sequence_up}&client_type=${client_type_up}-${clientVersion}&client_version=${client_type_up//-/}-${clientVersion}"
+		user_agent=$agent_up
+		link_cn="上行"
 	fi
+	http_args="${http_args}&peerid=${_peerid}&userid=${_userid}&sessionid=${_sessionid}&user_type=1&os=android-7.1.1"
+	[ -n "$_dial_account" ] && http_args="${http_args}&dial_account=${_dial_account}"
+}
+
+# 重试循环
+xlnetacc_retry() {
+	if [ $# -ge 3 -a $3 -ne 0 ]; then
+		[ $2 -eq 1 -a $down_acc -ne $3 ] && return 0
+		[ $2 -eq 2 -a $up_acc -ne $3 ] && return 0
+	fi
+
+	local retry=1
+	while : ; do
+		lasterr=
+		eval $1 $2 && break # 成功
+		[ $# -ge 4 -a $retry -ge $4 ] && break || let retry++ # 重试超时
+		case $lasterr in
+			-1) sleep 5s;; # 服务器未响应
+			-2) break;; # 严重错误
+			*) sleep 3s;; # 其它错误
+		esac
+	done
+
+	[ ${lasterr:-0} -eq 0 ] && return 0 || return 1
+}
+
+# 注销已登录帐号
+xlnetacc_logout() {
+	[ -z "$_sessionid" ] && return 2
+	[ $# -ge 1 ] && local retry=$1 || local retry=1
+
+	xlnetacc_retry 'isp_recover' 1 2 $retry
+	xlnetacc_retry 'isp_recover' 2 2 $retry
+	xlnetacc_retry 'swjsq_logout' 0 0 $retry
+	[ $down_acc -ne 0 ] && down_acc=1; [ $up_acc -ne 0 ] && up_acc=1
+	_sessionid=; _dial_account=
+
+	[ $lasterr -eq 0 ] && return 0 || return 1
 }
 
 # 中止信号处理
 sigterm() {
 	_log "trap sigterm, exit" $(( 1 | 4 ))
-	[ $down_acc -eq 2 ] && xlnetacc_recover 1
-	[ $up_acc -eq 2 ] && xlnetacc_recover 2
+	xlnetacc_logout
 	rm -f "$down_state_file" "$up_state_file"
 	exit 0
 }
@@ -418,41 +580,29 @@ xlnetacc_init() {
 	up_acc=$(uci_get_by_bool "general" "up_acc" 0)
 	readonly logging=$(uci_get_by_bool "general" "logging" 1)
 	readonly verbose=$(uci_get_by_bool "general" "verbose" 0)
-	readonly network=$(uci_get_by_name "general" "network" "wan")
-	readonly account=$(uci_get_by_name "general" "account")
-	readonly encrypt=$(uci_get_by_name "general" "encrypt")
+	network=$(uci_get_by_name "general" "network" "wan")
+	readonly username=$(uci_get_by_name "general" "account")
+	readonly password=$(uci_get_by_name "general" "password")
 	local enabled=$(uci_get_by_bool "general" "enabled" 0)
-	local password=$(uci_get_by_name "general" "password")
-	( [ $enabled -eq 0 ] || [ $down_acc -eq 0 -a $up_acc -eq 0 ] || [ -z "$account" -o -z "$encrypt" -o -z "$network" ] ) && return 2
+	([ $enabled -eq 0 ] || [ $down_acc -eq 0 -a $up_acc -eq 0 ] || [ -z "$username" -o -z "$password" -o -z "$network" ]) && return 2
 
 	[ $logging -eq 1 ] && [ ! -d /var/log ] && mkdir -p /var/log
-	_log "------------------------------"
+	[ -f "$LOGFILE" ] && _log "------------------------------"
 	_log "迅雷快鸟正在启动..."
-	_log "down_acc is $down_acc" $(( 1 | 4 ))
-	_log "up_acc is $up_acc" $(( 1 | 4 ))
-	_log "network is $network" $(( 1 | 4 ))
-	_log "account is $account" $(( 1 | 4 ))
-	_log "encrypt is $encrypt" $(( 1 | 4 ))
 
 	# 检查外部调用工具
-	command -v wget-ssl >/dev/null || { _log "GNU Wget 工具不存在"; return 3; }
-	command -v md5sum >/dev/null || { _log "md5sum 工具不存在"; return 3; }
-	command -v openssl >/dev/null || { _log "openssl 工具不存在"; return 3; }
-
-	# 检查明文密码
-	if [ -n "$password" ]; then
-		_log "移除已保存的明文密码"
-		uci delete "${NAME}.general.password"
-		uci commit "$NAME"
-	fi
+	command -v wget-ssl >/dev/null || { _log "GNU Wget 未安装"; return 3; }
+	local opensslchk=$(echo -n 'openssl' | openssl dgst -sha1 | awk '{print $2}')
+	[ "$opensslchk" != 'c898fa1e7226427010e329971e82c669f8d8abb4' ] && { _log "openssl-util 未安装或计算错误"; return 3; }
 
 	# 捕获中止信号
-	trap "sigterm" INT
-	trap "sigterm" TERM
+	trap 'sigterm' INT # Ctrl-C
+	trap 'sigterm' QUIT # Ctrl-\
+	trap 'sigterm' TERM # kill
 
-	# 生成设备签名
+	# 生成设备标识
 	gen_device_sign
-	[ -z "$_peerid" -o -z "$_devicesign" ] && return 4
+	[ ${#_peerid} -ne 16 -o ${#_devicesign} -ne 71 ] && return 4
 
 	clean_log
 	[ -d /var/state ] || mkdir -p /var/state
@@ -463,50 +613,58 @@ xlnetacc_init() {
 xlnetacc_main() {
 	while : ; do
 		# 获取外网IP地址
-		while : ; do
-			local bind_ip=$(get_acc_ip)
-			if [ -z "$bind_ip" ]; then
-				sleep 5s # 获取失败
-			else
-				gen_http_cmd "$bind_ip"
-				break
-			fi
-		done
+		xlnetacc_retry 'get_bind_ip'
+		gen_http_cmd
 
-		# 帐号登录
+		# 注销快鸟帐号
+		xlnetacc_logout 3 && sleep 3s
+
+		# 登录快鸟帐号
 		while : ; do
-			xlnetacc_login
-			case $? in
+			lasterr=
+			swjsq_login
+			case $lasterr in
 				0) break;; # 登录成功
-				6) sleep 30m;; # 需要输入验证码，等待30分钟后重试
-				-1) sleep 3m;; # 未返回有效数据，等待3分钟后重试
+				-1) sleep 5s;; # 服务器未响应
+				-2) return 7;; # Wget 参数解析错误
+				-3) sleep 3s;; # Wget 网络通信失败
+				6) sleep 130m;; # 需要输入验证码
+				8) sleep 3m;; # 服务器系统维护
+				15) sleep 1s;; # 身份信息已失效
 				*) return 5;; # 登录失败
 			esac
 		done
 
-		# 10秒检查提速状态，300秒发送心跳包
-		local timer_begin=$(date +%s); local timer_count=
+		# 获取用户信息
+		xlnetacc_retry 'swjsq_getuserinfo' 1 1
+		xlnetacc_retry 'swjsq_getuserinfo' 2 1
+		[ $down_acc -eq 0 -a $up_acc -eq 0 ] && break
+		# 获取提速入口
+		xlnetacc_retry 'swjsq_portal' 1 1
+		xlnetacc_retry 'swjsq_portal' 2 1
+		# 获取带宽信息
+		xlnetacc_retry 'isp_bandwidth' 1 1 10 || { sleep 3m; continue; }
+		xlnetacc_retry 'isp_bandwidth' 2 1 10 || { sleep 3m; continue; }
+		[ $down_acc -eq 0 -a $up_acc -eq 0 ] && break
+		# 带宽提速
+		xlnetacc_retry 'isp_upgrade' 1 1 10 || { sleep 3m; continue; }
+		xlnetacc_retry 'isp_upgrade' 2 1 10 || { sleep 3m; continue; }
+
+		# 心跳保持
+#		local retry=1
 		while : ; do
-			[ $down_acc -eq 0 -a $up_acc -eq 0 ] && break 2
-			[ $down_acc -eq 1 ] && xlnetacc_acc 1
-			[ $up_acc -eq 1 ] && xlnetacc_acc 2
-
-			sleep 10s
-			timer_count=$(( $(date +%s) - $timer_begin ))
-			[ $timer_count -lt 300 ] && continue
-			timer_begin=$(date +%s)
 			clean_log # 清理日志
-
-			[ $down_acc -eq 2 ] && { xlnetacc_keepalive 1; [ $? -eq -1 ] && break; }
-			[ $up_acc -eq 2 ] && { xlnetacc_keepalive 2; [ $? -eq -1 ] && break; }
+			sleep 10m
+#			[ $retry -ge 144 ] && break || let retry++ # 心跳最多保持24小时，144=24*60/10
+			xlnetacc_retry 'isp_keepalive' 1 2 5 || break
+			xlnetacc_retry 'isp_keepalive' 2 2 5 || break
 		done
-		[ $down_acc -eq 2 ] && { xlnetacc_recover 1; down_acc=1; }
-		[ $up_acc -eq 2 ] && { xlnetacc_recover 2; up_acc=1; }
 	done
-	_log "程序异常，迅雷快鸟已停止。"
+	xlnetacc_logout
+	_log "无法提速，迅雷快鸟已停止。"
+	return 6
 }
 
 # 程序入口
-xlnetacc_init $*
-[ $? -eq 0 ] && xlnetacc_main
+xlnetacc_init "$@" && xlnetacc_main
 exit $?

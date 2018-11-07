@@ -4,7 +4,7 @@ RAMFS_COPY_DATA='/etc/fw_env.config /var/lock/fw_printenv.lock'
 REQUIRE_IMAGE_METADATA=1
 
 platform_check_image() {
-	return 1
+	return 0
 }
 
 platform_do_upgrade() {

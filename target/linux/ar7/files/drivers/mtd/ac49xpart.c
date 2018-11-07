@@ -123,7 +123,7 @@ void gen_partname(unsigned int type,
 }
 
 static int create_mtd_partitions(struct mtd_info *master,
-				 struct mtd_partition **pparts,
+				 const struct mtd_partition **pparts,
 				 struct mtd_part_parser_data *data)
 {
 	unsigned int envpartnum = 0, linuxpartnum = 0;

@@ -35,7 +35,6 @@
 #define LIMA_MAC1_OFFSET	0x0006
 
 #define LIMA_CALDATA_OFFSET	0x1000
-#define LIMA_WMAC_MAC_OFFSET	0x0800
 
 static struct gpio_keys_button lima_gpio_keys[] __initdata = {
 	{
@@ -79,8 +78,7 @@ static void __init lima_setup(void)
 	ath79_eth0_data.phy_mask = BIT(0);
 	ath79_register_eth(0);
 
-	ath79_register_wmac(art + LIMA_CALDATA_OFFSET,
-			art + LIMA_WMAC_MAC_OFFSET);
+	ath79_register_wmac(art + LIMA_CALDATA_OFFSET, NULL);
 	ath79_register_usb();
 	ath79_register_pci();
 }

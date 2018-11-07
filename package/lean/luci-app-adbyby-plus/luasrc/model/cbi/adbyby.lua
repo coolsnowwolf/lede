@@ -4,23 +4,21 @@ local SYS  = require "luci.sys"
 local HTTP = require "luci.http"
 local DISP = require "luci.dispatcher"
 
-local m,s,o
-local Status
-
-if SYS.call("pidof adbyby >/dev/null") == 0 then
-	Status = translate("<strong><font color=\"green\">Adbyby Plus + is Running</font></strong>")
-else
-	Status = translate("<strong><font color=\"red\">Adbyby Plus + is Not Running</font></strong>")
-end
+local DL = SYS.exec("head -1 /usr/share/adbyby/data/lazy.txt | awk -F' ' '{print $3,$4}'")
+local DV = SYS.exec("head -1 /usr/share/adbyby/data/video.txt | awk -F' ' '{print $3,$4}'")
+local NR = SYS.exec("grep -v '^!' /usr/share/adbyby/data/rules.txt | wc -l")
+local NU = SYS.exec("cat /usr/share/adbyby/data/user.txt | wc -l")
+local UD = SYS.exec("cat /tmp/adbyby.updated 2>/dev/null")
+local ND = SYS.exec("cat /usr/share/adbyby/dnsmasq.adblock | wc -l")
 
 m = Map("adbyby")
 m.title	= translate("Adbyby Plus +")
 m.description = translate("Adbyby Plus + can filter all kinds of banners, popups, video ads, and prevent tracking, privacy theft and a variety of malicious websites<br /><font color=\"red\">Plus + version combination mode can operation with Adblock Plus Host，filtering ads without losing bandwidth</font>")
 
+m:section(SimpleSection).template  = "adbyby/adbyby_status"
+
 s = m:section(TypedSection, "adbyby")
 s.anonymous = true
-s.description = translate(string.format("%s<br /><br />", Status))
-
 
 s:tab("basic",  translate("Base Setting"))
 
@@ -37,37 +35,17 @@ o:value("2", translate("No filter Mode (Must set in Client Filter Mode Settings 
 o.default = 1
 o.rmempty = false
 
-o = s:taboption("basic", Button, "proxy")
-o.title = translate("Transparent proxy")
-if SYS.call("iptables-save | grep ADBYBY >/dev/null") == 0 then
-	o.inputtitle = translate("Click to disable")
-	o.inputstyle = "reset"
-	o.write = function()
-		SYS.call("/etc/init.d/adbyby del_rule")
-		HTTP.redirect(DISP.build_url("admin", "services", "adbyby"))
-	end
-else
-	o.inputtitle = translate("Click to enable")
-	o.inputstyle = "apply"
-	o.write = function()
-		SYS.call('[ -n "$(pgrep adbyby)" ] && /etc/init.d/adbyby add_rule')
-		HTTP.redirect(DISP.build_url("admin", "services", "adbyby"))
-	end
-end
+mem = s:taboption("basic", Flag, "mem_mode")
+mem.title = translate("RAM Running Mode")
+mem.default = 1
+mem.rmempty = false
+mem.description = translate("Running Adbyby in RAM.More speed,less disk consumption")
 
-
-local DL = SYS.exec("head -1 /usr/share/adbyby/data/lazy.txt | awk -F' ' '{print $3,$4}'")
-local DV = SYS.exec("head -1 /usr/share/adbyby/data/video.txt | awk -F' ' '{print $3,$4}'")
-local NR = SYS.exec("grep -v '^!' /usr/share/adbyby/data/rules.txt | wc -l")
-local NU = SYS.exec("cat /usr/share/adbyby/data/user.txt | wc -l")
---local NW = SYS.exec("uci get adbyby.@adbyby[-1].domain 2>/dev/null | wc -l")
-local ND = SYS.exec("cat /usr/share/adbyby/dnsmasq.adblock | wc -l")
 
 o = s:taboption("basic", Button, "restart")
 o.title = translate("Adbyby and Rule state")
 o.inputtitle = translate("Restart Adbyby")
-o.description = translate(string.format("%s<br /><br />", Status))
-o.description = translate(string.format("<strong>Lazy Rule：</strong>%s <strong>&nbsp;&nbsp;Video Rule：</strong>%s<br /><strong>Third Party Subscription Rule：</strong>%d lines&nbsp;&nbsp;<strong>User-defined Rule：</strong>%d lines", DL, DV, math.abs(NR-NU), NR))
+o.description = string.format("<strong>Last Update Checked：</strong> %s<br /><strong>Lazy Rule：</strong>%s <br /><strong>Video Rule：</strong>%s", UD, DL, DV) 
 o.inputstyle = "reload"
 o.write = function()
 	SYS.call("nohup sh /usr/share/adbyby/adupdate.sh > /tmp/adupdate.log 2>&1 &")
@@ -90,22 +68,10 @@ updatead.write = function()
 	SYS.call("nohup sh /usr/share/adbyby/adblock.sh > /tmp/adupdate.log 2>&1 &")
 end
 
-o = s:taboption("advanced", Flag, "update_source")
-o.title = translate("Update adbyby rules form official website first")
-o.default = 1
-o.rmempty = false
-
 o = s:taboption("advanced", Flag, "block_ios")
 o.title = translate("Block Apple iOS OTA update")
 o.default = 0
 o.rmempty = false
-
-mem = s:taboption("advanced", Flag, "mem_mode")
-mem.title = translate("RAM Running Mode")
-mem.default = 1
-mem.rmempty = false
-mem.description = translate("Running Adbyby in RAM.More speed,less disk consumption")
-
 
 s:tab("help",  translate("Plus+ Domain List"))
 

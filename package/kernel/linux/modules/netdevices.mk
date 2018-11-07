@@ -110,6 +110,26 @@ endef
 $(eval $(call KernelPackage,mii))
 
 
+define KernelPackage/mdio-gpio
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:= Supports GPIO lib-based MDIO busses
+  DEPENDS:=+kmod-libphy @GPIO_SUPPORT +(TARGET_armvirt||TARGET_brcm2708_bcm2708||TARGET_samsung):kmod-of-mdio
+  KCONFIG:= \
+	CONFIG_MDIO_BITBANG \
+	CONFIG_MDIO_GPIO
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/phy/mdio-gpio.ko \
+	$(LINUX_DIR)/drivers/net/phy/mdio-bitbang.ko
+  AUTOLOAD:=$(call AutoProbe,mdio-gpio)
+endef
+
+define KernelPackage/mdio-gpio/description
+ Supports GPIO lib-based MDIO busses
+endef
+
+$(eval $(call KernelPackage,mdio-gpio))
+
+
 define KernelPackage/et131x
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Agere ET131x Gigabit Ethernet driver
@@ -149,7 +169,7 @@ define KernelPackage/phy-broadcom
    KCONFIG:=CONFIG_BROADCOM_PHY
    DEPENDS:=+kmod-libphy +kmod-phylib-broadcom
    FILES:=$(LINUX_DIR)/drivers/net/phy/broadcom.ko
-   AUTOLOAD:=$(call AutoLoad,18,broadcom)
+   AUTOLOAD:=$(call AutoLoad,18,broadcom,1)
 endef
 
 define KernelPackage/phy-broadcom/description
@@ -206,10 +226,26 @@ endef
 $(eval $(call KernelPackage,switch-ip17xx))
 
 
+define KernelPackage/switch-rtl8306
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Realtek RTL8306S switch support
+  DEPENDS:=+kmod-swconfig
+  KCONFIG:=CONFIG_RTL8306_PHY
+  FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8306.ko
+  AUTOLOAD:=$(call AutoLoad,43,rtl8306)
+endef
+
+define KernelPackage/switch-rtl8306/description
+ Realtek RTL8306S switch support
+endef
+
+$(eval $(call KernelPackage,switch-rtl8306))
+
+
 define KernelPackage/switch-rtl8366-smi
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Realtek RTL8366 SMI switch interface support
-  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig
+  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig +(TARGET_armvirt||TARGET_brcm2708_bcm2708||TARGET_samsung):kmod-of-mdio
   KCONFIG:=CONFIG_RTL8366_SMI
   FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8366_smi.ko
   AUTOLOAD:=$(call AutoLoad,42,rtl8366_smi)
@@ -519,9 +555,9 @@ $(eval $(call KernelPackage,e1000e))
 define KernelPackage/igb
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) 82575/82576 PCI-Express Gigabit Ethernet support
-  DEPENDS:=@PCI_SUPPORT +kmod-i2c-core +kmod-i2c-algo-bit +kmod-ptp
+  DEPENDS:=@PCI_SUPPORT +kmod-i2c-core +kmod-i2c-algo-bit +kmod-ptp +kmod-hwmon-core
   KCONFIG:=CONFIG_IGB \
-    CONFIG_IGB_HWMON=n \
+    CONFIG_IGB_HWMON=y \
     CONFIG_IGB_DCA=n
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/igb/igb.ko
   AUTOLOAD:=$(call AutoLoad,35,igb)
@@ -539,7 +575,7 @@ define KernelPackage/igbvf
   TITLE:=Intel(R) 82576 Virtual Function Ethernet support
   DEPENDS:=@PCI_SUPPORT @TARGET_x86 +kmod-i2c-core +kmod-i2c-algo-bit +kmod-ptp
   KCONFIG:=CONFIG_IGBVF \
-    CONFIG_IGB_HWMON=n \
+    CONFIG_IGB_HWMON=y \
     CONFIG_IGB_DCA=n
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/igbvf/igbvf.ko
   AUTOLOAD:=$(call AutoLoad,35,igbvf)
@@ -555,10 +591,10 @@ $(eval $(call KernelPackage,igbvf))
 define KernelPackage/ixgbe
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) 82598/82599 PCI-Express 10 Gigabit Ethernet support
-  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp
+  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core
   KCONFIG:=CONFIG_IXGBE \
     CONFIG_IXGBE_VXLAN=n \
-    CONFIG_IXGBE_HWMON=n \
+    CONFIG_IXGBE_HWMON=y \
     CONFIG_IXGBE_DCA=n
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/ixgbe/ixgbe.ko
   AUTOLOAD:=$(call AutoLoad,35,ixgbe)
@@ -577,7 +613,7 @@ define KernelPackage/ixgbevf
   DEPENDS:=@PCI_SUPPORT +kmod-ixgbe
   KCONFIG:=CONFIG_IXGBEVF \
     CONFIG_IXGBE_VXLAN=n \
-    CONFIG_IXGBE_HWMON=n \
+    CONFIG_IXGBE_HWMON=y \
     CONFIG_IXGBE_DCA=n
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/ixgbevf/ixgbevf.ko
   AUTOLOAD:=$(call AutoLoad,35,ixgbevf)
@@ -828,7 +864,7 @@ $(eval $(call KernelPackage,ifb))
 define KernelPackage/dm9000
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Davicom 9000 Ethernet support
-  DEPENDS:=@PCI_SUPPORT +kmod-mii
+  DEPENDS:=+kmod-mii
   KCONFIG:=CONFIG_DM9000 \
     CONFIG_DM9000_DEBUGLEVEL=4 \
     CONFIG_DM9000_FORCE_SIMPLE_PHY_POLL=y

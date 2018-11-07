@@ -7,7 +7,7 @@ define Build/uImage
 	mkimage -A $(LINUX_KARCH) \
 		-O linux -T kernel \
 		-C $(1) -a $(KERNEL_LOADADDR) -e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
-		-n '$(if $(UIMAGE_NAME),$(UIMAGE_NAME),$(call toupper,$(LINUX_KARCH)) OpenWrt Linux-$(LINUX_VERSION))' -d $@ $@.new
+		-n '$(if $(UIMAGE_NAME),$(UIMAGE_NAME),$(call toupper,$(LINUX_KARCH)) $(VERSION_DIST) Linux-$(LINUX_VERSION))' -d $@ $@.new
 	mv $@.new $@
 endef
 
@@ -49,6 +49,27 @@ define Build/eva-image
 	mv $@.new $@
 endef
 
+define Build/zyxel-ras-image
+	let \
+		newsize="$(subst k,* 1024,$(RAS_ROOTFS_SIZE))"; \
+		$(STAGING_DIR_HOST)/bin/mkrasimage \
+			-b $(RAS_BOARD) \
+			-v $(RAS_VERSION) \
+			-r $@ \
+			-s $$newsize \
+			-o $@.new \
+			$(if $(findstring separate-kernel,$(word 1,$(1))),-k $(IMAGE_KERNEL)) \
+		&& mv $@.new $@
+endef
+
+define Build/mkbuffaloimg
+	$(STAGING_DIR_HOST)/bin/mkbuffaloimg -B $(BOARDNAME) \
+		-R $$(($(subst k, * 1024,$(ROOTFS_SIZE)))) \
+		-K $$(($(subst k, * 1024,$(KERNEL_SIZE)))) \
+		-i $@ -o $@.new
+	mv $@.new $@
+endef
+
 define Build/netgear-chk
 	$(STAGING_DIR_HOST)/bin/mkchkimg \
 		-o $@.new \
@@ -60,7 +81,7 @@ endef
 
 define Build/netgear-dni
 	$(STAGING_DIR_HOST)/bin/mkdniimg \
-		-B $(NETGEAR_BOARD_ID) -v OpenWrt.$(REVISION) \
+		-B $(NETGEAR_BOARD_ID) -v $(VERSION_DIST).$(firstword $(subst -, ,$(REVISION))) \
 		$(if $(NETGEAR_HW_ID),-H $(NETGEAR_HW_ID)) \
 		-r "$(1)" \
 		-i $@ -o $@.new
@@ -77,16 +98,17 @@ define Build/append-squashfs-fakeroot-be
 	cat $@.fakesquashfs >> $@
 endef
 
-# append a fake/empty rootfs uImage header, to fool the bootloaders
-# rootfs integrity check
-define Build/append-uImage-fakeroot-hdr
-	rm -f $@.fakeroot
+# append a fake/empty uImage header, to fool bootloaders rootfs integrity check
+# for example
+define Build/append-uImage-fakehdr
+	touch $@.fakehdr
 	$(STAGING_DIR_HOST)/bin/mkimage \
-		-A $(LINUX_KARCH) -O linux -T filesystem -C none \
-		-n '$(call toupper,$(LINUX_KARCH)) OpenWrt fakeroot' \
+		-A $(LINUX_KARCH) -O linux -T $(1) -C none \
+		-n '$(VERSION_DIST) fake $(1)' \
+		-d $@.fakehdr \
 		-s \
-		$@.fakeroot
-	cat $@.fakeroot >> $@
+		$@.fakehdr
+	cat $@.fakehdr >> $@
 endef
 
 define Build/tplink-safeloader
@@ -101,6 +123,16 @@ define Build/tplink-safeloader
 		$(if $(findstring sysupgrade,$(word 1,$(1))),-S) && mv $@.new $@ || rm -f $@
 endef
 
+define Build/mksercommfw
+	-$(STAGING_DIR_HOST)/bin/mksercommfw \
+		$@ \
+		$(KERNEL_OFFSET) \
+		$(HWID) \
+		$(HWVER) \
+		$(SWVER)
+endef
+
+
 define Build/append-dtb
 	cat $(KDIR)/image-$(firstword $(DEVICE_DTS)).dtb >> $@
 endef
@@ -113,16 +145,12 @@ define Build/install-dtb
 	)
 endef
 
-define Build/install-zImage
-    $(CP) $(KDIR)/zImage \
-      $(BIN_DIR)/$(IMG_PREFIX)-$(PROFILE_SANITIZED)-zImage
-endef
-
 define Build/fit
 	$(TOPDIR)/scripts/mkits.sh \
 		-D $(DEVICE_NAME) -o $@.its -k $@ \
 		$(if $(word 2,$(1)),-d $(word 2,$(1))) -C $(word 1,$(1)) \
 		-a $(KERNEL_LOADADDR) -e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
+		-c $(if $(DEVICE_DTS_CONFIG),$(DEVICE_DTS_CONFIG),"config@1") \
 		-A $(LINUX_KARCH) -v $(LINUX_VERSION)
 	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage -f $@.its $@.new
 	@mv $@.new $@
@@ -138,7 +166,7 @@ define Build/lzma-no-dict
 endef
 
 define Build/gzip
-	gzip -9n -c $@ $(1) > $@.new
+	gzip -f -9n -c $@ $(1) > $@.new
 	@mv $@.new $@
 endef
 
@@ -187,6 +215,10 @@ define Build/append-ubi
 		$(UBINIZE_OPTS)
 	cat $@.tmp >> $@
 	rm $@.tmp
+endef
+
+define Build/append-uboot
+	dd if=$(UBOOT_PATH) >> $@
 endef
 
 define Build/pad-to
@@ -242,6 +274,11 @@ define Build/openmesh-image
 		"$(call param_get_default,rootfs,$(1),$@)" "rootfs"
 endef
 
+define Build/senao-header
+	$(STAGING_DIR_HOST)/bin/mksenaofw $(1) -e $@ -o $@.new
+	mv $@.new $@
+endef
+
 define Build/sysupgrade-tar
 	sh $(TOPDIR)/scripts/sysupgrade-tar.sh \
 		--board $(if $(BOARD_NAME),$(BOARD_NAME),$(DEVICE_NAME)) \
@@ -295,6 +332,12 @@ metadata_json = \
 
 define Build/append-metadata
 	$(if $(SUPPORTED_DEVICES),-echo $(call metadata_json,$(SUPPORTED_DEVICES)) | fwtool -I - $@)
+	[ ! -s "$(BUILD_KEY)" -o ! -s "$(BUILD_KEY).ucert" ] || { \
+		cp "$(BUILD_KEY).ucert" "$@.ucert" ;\
+		usign -S -m "$@" -s "$(BUILD_KEY)" -x "$@.sig" ;\
+		ucert -A -c "$@.ucert" -x "$@.sig" ;\
+		fwtool -S "$@.ucert" "$@" ;\
+	}
 endef
 
 define Build/kernel2minor

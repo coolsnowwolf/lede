@@ -8,64 +8,53 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
 #################################################
-# Images
+# Default and templates
 #################################################
 
-# $(1): rootfs contents directory
-define Image/mkfs/cpio
-	( cd $(call mkfs_target_dir,$(1))/; find . | cpio -o -H newc | gzip -9n > $@ )
+define Device/Default
+	PROFILES := Default
+	KERNEL_DEPENDS = $$(wildcard $(DTS_DIR)/$$(DEVICE_DTS).dts)
+	KERNEL_INITRAMFS_PREFIX := $$(IMG_PREFIX)-$(1)-initramfs
+	KERNEL_PREFIX := $$(IMAGE_PREFIX)
+	KERNEL_LOADADDR := 0x8000
 endef
 
-# $(1): zynq board id
-define Build/dtb
-	$(call Image/BuildDTB,$(DTS_DIR)/zynq-$(1).dts,$@.dtb)
-endef
-
-define Build/uRamdisk
-	# Create uboot cpio.gz
-	mkimage -A arm -T ramdisk -C gzip -n "$(PROFILE) OpenWRT rootfs" \
-		-d $(IMAGE_ROOTFS) $@.new
-	mv $@.new $@
-endef
-
-# $(1): FIT name/description
-define Build/fit
-	# create FIT image with rootfs
-	./mkits.sh \
-		-D $(1) -o $@.its -k $(IMAGE_KERNEL) -d $(IMAGE_KERNEL).dtb \
-		-C none -a $(KERNEL_LOADADDR) -e $(KERNEL_ENTRY) \
-		-A $(ARCH) -v $(LINUX_VERSION) -r $(IMAGE_ROOTFS) -z gzip
-
-	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage -f $@.its $@
+define Device/FitImageGzip
+	KERNEL_SUFFIX := -fit-uImage.itb
+	KERNEL = kernel-bin | gzip | fit gzip $$(DTS_DIR)/$$(DEVICE_DTS).dtb
+	KERNEL_NAME := Image
 endef
 
 #################################################
 # Devices
 #################################################
 
-# default kernel load address
-KERNEL_LOADADDR=0x8000
-KERNEL_ENTRY=0x8000
-
-TARGET_FILESYSTEMS += cpio
-
-# $(1): canonical device name
-# $(2): lowercase device id
-define ZynqDevice
-  define Device/$(1)
-	DEVICE_TITLE := $(1) development board
-	KERNEL := dtb $(2) | kernel-bin | uImage none
-	KERNEL_NAME = zImage
-	IMAGES := uramdisk.image.gz fit.itb
-	IMAGE/uramdisk.image.gz := uRamdisk
-	IMAGE/fit.itb := fit $(2)
-	IMAGE_NAME = $$$$(IMG_PREFIX)-$(2)-$$$$(2)
-  endef
-  TARGET_DEVICES += $(1)
+define Device/digilent_zynq-zybo
+	$(call Device/FitImageGzip)
+	DEVICE_TITLE := ZYBO Development Board
+	DEVICE_DTS := zynq-zybo
 endef
+TARGET_DEVICES += digilent_zynq-zybo
 
-$(eval $(call ZynqDevice,ZC702,zc702))
-$(eval $(call ZynqDevice,ZedBoard,zed))
-$(eval $(call ZynqDevice,ZYBO,zybo))
+define Device/digilent_zynq-zybo-z7
+	$(call Device/FitImageGzip)
+	DEVICE_TITLE := Digilent Zybo Z7 board
+	DEVICE_DTS := zynq-zybo-z7
+endef
+TARGET_DEVICES += digilent_zynq-zybo-z7
+
+define Device/xlnx_zynq-zc702
+	$(call Device/FitImageGzip)
+	DEVICE_TITLE := ZC702 Development Board
+	DEVICE_DTS := zynq-zc702
+endef
+TARGET_DEVICES += xlnx_zynq-zc702
+
+define Device/xlnx_zynq-zed
+	$(call Device/FitImageGzip)
+	DEVICE_TITLE := Zed Development Board
+	DEVICE_DTS := zynq-zed
+endef
+TARGET_DEVICES += xlnx_zynq-zed
 
 $(eval $(call BuildImage))

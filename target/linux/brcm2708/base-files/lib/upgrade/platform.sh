@@ -97,7 +97,7 @@ platform_copy_config() {
 		mkdir -p /boot
 		[ -f /boot/kernel.img ] || mount -t vfat -o rw,noatime "/dev/$partdev" /boot
 		cp -af "$CONF_TAR" /boot/
-		tar --directory / -xvf "$CONF_TAR" boot/config.txt
+		tar -C / -xvf "$CONF_TAR" boot/config.txt
 		sync
 		unmount /boot
 	fi
