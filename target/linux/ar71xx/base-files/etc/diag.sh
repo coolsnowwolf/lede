@@ -467,6 +467,8 @@ get_status_led() {
 	tl-wr1043nd|\
 	tl-wr1043nd-v2|\
 	tl-wr1043nd-v4|\
+	tl-wr2041n-v1|\
+	tl-wr2041n-v2|\
 	tl-wr740n-v6|\
 	tl-wr741nd|\
 	tl-wr741nd-v4|\
@@ -478,6 +480,8 @@ get_status_led() {
 	tl-wr841n-v11|\
 	tl-wr842n-v2|\
 	tl-wr842n-v3|\
+	tl-wr880n-v1|\
+	tl-wr881n-v1|\
 	tl-wr941nd|\
 	tl-wr941n-v7|\
 	tl-wr941nd-v5)

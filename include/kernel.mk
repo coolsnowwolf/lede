@@ -254,6 +254,7 @@ $(call KernelPackage/$(1)/config)
   $$(eval $$(call BuildPackage,kmod-$(1)))
 
   $$(IPKG_kmod-$(1)): $$(wildcard $$(FILES))
+  
 endef
 
 version_filter=$(if $(findstring @,$(1)),$(shell $(SCRIPT_DIR)/package-metadata.pl version_filter $(KERNEL_PATCHVER) $(1)),$(1))

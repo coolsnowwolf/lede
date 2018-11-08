@@ -271,6 +271,11 @@ network_is_up()
 # 2: interface
 network_get_protocol() { __network_ifstatus "$1" "$2" ".proto"; }
 
+# determine the metric of the given logical interface
+# 1: destination variable
+# 2: interface
+network_get_metric() { __network_ifstatus "$1" "$2" ".metric"; }
+
 # determine the layer 3 linux network device of the given logical interface
 # 1: destination variable
 # 2: interface

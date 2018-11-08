@@ -98,16 +98,9 @@ platform_do_upgrade_openmesh() {
 	printf "rootfs_checksum %s\n" ${rootfs_md5} >> $setenv_script
 
 	# store u-boot env changes
+	mkdir -p /var/lock
 	fw_setenv -s $setenv_script || {
 		echo "failed to update U-Boot environment"
 		return 1
 	}
 }
-
-# create /var/lock for the lock "fw_setenv.lock" of fw_setenv
-# the rest is copied using ipq806x's RAMFS_COPY_BIN and RAMFS_COPY_DATA
-platform_add_ramfs_ubootenv()
-{
-	mkdir -p $RAM_ROOT/var/lock
-}
-append sysupgrade_pre_upgrade platform_add_ramfs_ubootenv
