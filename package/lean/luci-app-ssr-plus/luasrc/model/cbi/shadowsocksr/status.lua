@@ -66,7 +66,7 @@ end
 end
 
 
-if luci.sys.call("pidof ssr-redir >/dev/null") == 0 then
+if luci.sys.call("ps -w | grep ssr-retcp | grep -v grep >/dev/null") == 0 then
 redir_run=1
 end	
 
