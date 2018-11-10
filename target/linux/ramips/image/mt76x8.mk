@@ -115,10 +115,10 @@ define Device/netgear_r6120
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
   DEVICE_TITLE := Netgear AC1200 R6120
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
-  SERCOMM_KERNEL_OFFSET := 90000
+  SERCOMM_KERNEL_OFFSET := 0x90000
   SERCOMM_HWID := CGQ
   SERCOMM_HWVER := A001
-  SERCOMM_SWVER := 0040
+  SERCOMM_SWVER := 0x0040
   IMAGES += factory.img
   IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE)| append-rootfs | pad-rootfs
   IMAGE/sysupgrade.bin := $$(IMAGE/default) | append-metadata | check-size $$$$(IMAGE_SIZE)
