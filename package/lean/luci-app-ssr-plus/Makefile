@@ -9,7 +9,7 @@ LUCI_TITLE:=LuCI support for SSR Plus
 LUCI_DEPENDS:=+shadowsocksr-libev-alt +shadowsocks-libev-ss-redir +ipset +ip-full +iptables-mod-tproxy +dnsmasq-full +coreutils +coreutils-base64 +bash +pdnsd-alt +wget
 LUCI_PKGARCH:=all
 PKG_VERSION:=1
-PKG_RELEASE:=36
+PKG_RELEASE:=38
 
 include $(TOPDIR)/feeds/luci/luci.mk
 

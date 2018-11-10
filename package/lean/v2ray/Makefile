@@ -39,7 +39,7 @@ define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=V2Ray is a cross-platform proxy software
-	DEPENDS:=
+	DEPENDS:=+ca-certificates
 	URL:=https://github.com/v2ray/v2ray-core
 endef
 

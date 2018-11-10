@@ -8,6 +8,7 @@ local ipkg = require("luci.model.ipkg")
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local sid = arg[1]
+local uuid = luci.sys.exec("cat /proc/sys/kernel/random/uuid")
 
 local function isKcptun(file)
     if not fs.access(file, "rwx", "rx", "rx") then
@@ -151,6 +152,8 @@ o.rmempty = false
 o = s:option(Value, "password", translate("Password"))
 o.password = true
 o.rmempty = false
+o:depends("type", "ssr")
+o:depends("type", "ss")
 
 o = s:option(ListValue, "encrypt_method", translate("Encrypt Method"))
 for _, v in ipairs(encrypt_methods) do o:value(v) end
@@ -188,6 +191,7 @@ o:depends("type", "v2ray")
 -- VmessId
 o = s:option(Value, "vmess_id", translate("VmessId"))
 o.rmempty = false
+o.default = uuid
 o:depends("type", "v2ray")
 
 -- 加密方式
@@ -308,6 +312,8 @@ o:depends("type", "v2ray")
 o = s:option(Flag, "fast_open", translate("TCP Fast Open"))
 o.rmempty = false
 o.default = "0"
+o:depends("type", "ssr")
+o:depends("type", "ss")
 
 o = s:option(Flag, "switch_enable", translate("Enable Auto Switch"))
 o.rmempty = false
@@ -322,6 +328,8 @@ if nixio.fs.access("/usr/bin/ssr-kcptun") then
 
 kcp_enable = s:option(Flag, "kcp_enable", translate("KcpTun Enable"), translate("bin:/usr/bin/ssr-kcptun"))
 kcp_enable.rmempty = false
+kcp_enable:depends("type", "ssr")
+kcp_enable:depends("type", "ss")
 
 o = s:option(Value, "kcp_port", translate("KcpTun Port"))
 o.datatype = "port"
@@ -339,12 +347,18 @@ function o.validate(self, value, section)
 
     return value
 end
+kcp_enable:depends("type", "ssr")
+kcp_enable:depends("type", "ss")
 
 o = s:option(Value, "kcp_password", translate("KcpTun Password"))
 o.password = true
+kcp_enable:depends("type", "ssr")
+kcp_enable:depends("type", "ss")
 
 o = s:option(Value, "kcp_param", translate("KcpTun Param"))
 o.default = "--nocomp"
+kcp_enable:depends("type", "ssr")
+kcp_enable:depends("type", "ss")
 
 end
 
