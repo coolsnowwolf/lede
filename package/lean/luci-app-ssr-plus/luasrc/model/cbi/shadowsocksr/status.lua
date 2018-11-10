@@ -114,16 +114,17 @@ else
 s.value = translate("Not Running")
 end 
 
-s=m:field(DummyValue,"tunnel_run",translate("DNS Tunnel")) 
+if nixio.fs.access("/usr/bin/ssr-server") then
+s=m:field(DummyValue,"server_run",translate("Global SSR Server")) 
 s.rawhtml  = true
-if tunnel_run == 1 then
+if server_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
 else
 s.value = translate("Not Running")
 end
+end
 
 if nixio.fs.access("/usr/bin/ssr-kcptun") then
-
 s=m:field(DummyValue,"kcp_version",translate("KcpTun Version")) 
 s.rawhtml  = true
 s.value =kcptun_version
@@ -135,7 +136,6 @@ s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
 else
 s.value = translate("Not Running")
 end
-
 end
 
 s=m:field(DummyValue,"google",translate("Google Connectivity"))

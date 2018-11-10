@@ -13,6 +13,7 @@ Server_Update() {
     ${uci_set}alias="[$ssr_group] $ssr_remarks"
     ${uci_set}auth_enable="0"
     ${uci_set}switch_enable="1"
+    ${uci_set}type="ssr"
     ${uci_set}server="$ssr_host"
     ${uci_set}server_port="$ssr_port"
     ${uci_set}local_port="1234"

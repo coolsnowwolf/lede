@@ -87,6 +87,21 @@ gen_config_file() {
          else
          fastopen="false";
          fi
+local stype=$(uci_get_by_name $1 type)
+if [ "$stype" == "ss" ] ;then
+	cat <<-EOF >$config_file
+		{
+		    "server": "$hostip",
+		    "server_port": $(uci_get_by_name $1 server_port),
+		    "local_address": "0.0.0.0",
+		    "local_port": $(uci_get_by_name $1 local_port),
+		    "password": "$(uci_get_by_name $1 password)",
+		    "timeout": $(uci_get_by_name $1 timeout 60),
+		    "method": "$(uci_get_by_name $1 encrypt_method_ss)",
+		    "fast_open": $fastopen
+		}
+EOF
+       elif [ "$stype" == "ssr" ] ;then
 	cat <<-EOF >$config_file
 		{
 		    
@@ -104,6 +119,7 @@ gen_config_file() {
 		    "fast_open": $fastopen
 		}
 EOF
+fi
 }
 
 get_arg_out() {
@@ -232,26 +248,6 @@ EOF
 	/usr/sbin/pdnsd -c /var/etc/pdnsd.conf -d
 }
 
-start_tunnel() {
-	local tunnel_config_file=$CONFIG_FILE
-	if [ "$ARG_UDP" = "-U" ]; then
-		tunnel_config_file=$CONFIG_UDP_FILE
-	fi
-
-	local local_dns_port=$(uci_get_by_type global tunnel_port)
-	if [ "$run_mode" = "gfw" ] ;then
-		local_dns_port=5335
-	fi
-
-	/usr/bin/ssr-tunnel \
-		-c $tunnel_config_file $ARG_OTA -u \
-		-l $local_dns_port \
-		-b $(uci_get_by_type global tunnel_address 0.0.0.0) \
-		-L $(uci_get_by_type global tunnel_forward 8.8.4.4:53) \
-		-f /var/run/ssr-tunnel.pid
-	tunnel_enable=1
-	return $?
-}
 
 start_redir() {
 	case "$(uci_get_by_name $GLOBAL_SERVER auth_enable)" in
@@ -278,16 +274,32 @@ start_redir() {
 	fi
 	
 	gen_config_file $GLOBAL_SERVER 0
+  local stype=$(uci_get_by_name $GLOBAL_SERVER type)
+       if [ "$stype" == "ss" ] ;then
+        sscmd="/usr/bin/ss-redir"
+       elif [ "$stype" == "ssr" ] ;then
+        sscmd="/usr/bin/ssr-redir"
+       elif [ "$stype" == "v2ray" ] ;then
+        sscmd="/usr/bin/v2ray"
+	fi
+		
+	local utype=$(uci_get_by_name $UDP_RELAY_SERVER type)
+       if [ "$utype" == "ss" ] ;then
+        ucmd="/usr/bin/ss-redir"
+       elif [ "$utype" == "ssr" ] ;then
+        ucmd="/usr/bin/ssr-redir"
+       elif [ "$utype" == "v2ray" ] ;then
+        ucmd="/usr/bin/v2ray"
+	fi
 	
 	redir_tcp=1
 	local last_config_file=$CONFIG_FILE
 	local pid_file="/var/run/ssr-retcp.pid"
-	
-	if [ "$ARG_UDP" = "-U" ]; then
-		/usr/bin/ssr-redir \
+	$sscmd \
 			-c $CONFIG_FILE $ARG_OTA \
 			-f /var/run/ssr-retcp.pid
-		
+	
+	if [ "$ARG_UDP" = "-U" ]; then
 		case "$(uci_get_by_name $UDP_RELAY_SERVER auth_enable)" in
 			1|on|true|yes|enabled) ARG_OTA="-A";;
 			*) ARG_OTA="";;
@@ -296,27 +308,21 @@ start_redir() {
 		last_config_file=$CONFIG_UDP_FILE
 		pid_file="/var/run/ssr-reudp.pid"
 		redir_udp=1
-	fi
-	
-	/usr/bin/ssr-redir \
+		$ucmd \
 		-c $last_config_file $ARG_OTA $ARG_UDP \
 		-f $pid_file
+	fi
 		
 	#deal with dns
-	if [ "$run_mode" = "gfw" ] ;then
-		if [ "$(uci_get_by_type global pdnsd_enable)" = "0" ] ;then
-			start_tunnel
-		fi
-
-		if [ "$(uci_get_by_type global pdnsd_enable)" = "1" ] ;then
-			local dnsstr="$(uci_get_by_type global tunnel_forward 8.8.4.4:53)"
-			local dnsserver=`echo "$dnsstr"|awk -F ':'  '{print $1}'`
-			local dnsport=`echo "$dnsstr"|awk -F ':'  '{print $2}'`
-			ipset add gfwlist $dnsserver 2>/dev/null
-			start_pdnsd $dnsserver $dnsport
-			pdnsd_enable_flag=1
-		fi
-	fi
+  
+  if [ "$(uci_get_by_type global pdnsd_enable)" = "1" ] ;then
+    local dnsstr="$(uci_get_by_type global tunnel_forward 8.8.4.4:53)"
+    local dnsserver=`echo "$dnsstr"|awk -F ':'  '{print $1}'`
+    local dnsport=`echo "$dnsstr"|awk -F ':'  '{print $2}'`
+    ipset add gfwlist $dnsserver 2>/dev/null
+    start_pdnsd $dnsserver $dnsport
+    pdnsd_enable_flag=1
+  fi
 	
 	if [ "$(uci_get_by_type global enable_switch)" = "1" ] ;then
 		if [ "$(uci_get_by_name $GLOBAL_SERVER switch_enable)" = "1" ] ;then
@@ -432,13 +438,7 @@ start() {
 	if rules ;then
 	start_redir
 
-	if ! [ "$run_mode" = "gfw" ] ;then
-	    case "$(uci_get_by_type global tunnel_enable)" in
-		1|on|true|yes|enabled)
-			start_tunnel
-			;;
-	esac
-	else
+	if ! [ "$run_mode" = "oversea" ] ;then
 		mkdir -p /tmp/dnsmasq.d
 		cat > /tmp/dnsmasq.d/dnsmasq-ssr.conf <<EOF
 conf-dir=/etc/dnsmasq.ssr
@@ -469,8 +469,8 @@ stop() {
 	if [ -z "$switch_server" ] ;then
     kill -9 $(ps | grep ssr-switch | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	fi
+	killall -q -9 ss-redir
 	killall -q -9 ssr-redir
-	killall -q -9 ssr-tunnel
 	killall -q -9 ssr-server
 	killall -q -9 ssr-kcptun
 	killall -q -9 ssr-local
