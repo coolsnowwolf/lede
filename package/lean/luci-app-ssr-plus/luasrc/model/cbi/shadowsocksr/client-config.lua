@@ -125,13 +125,13 @@ o = s:option(Value, "alias", translate("Alias(optional)"))
 if nixio.fs.access("/usr/bin/v2ray") then
 o = s:option(ListValue, "type", translate("Server Node Type"))
 o:value("ssr", translate("ShadowsocksR"))
-o:value("ss", translate("Shadowsocks New Vesion"))
+o:value("ss", translate("Shadowsocks New Version"))
 o:value("v2ray", translate("V2Ray"))
 o.description = translate("Using incorrect encryption mothod may causes service fail to start")
 else
 o = s:option(ListValue, "type", translate("Server Node Type"))
 o:value("ssr", translate("ShadowsocksR"))
-o:value("ss", translate("Shadowsocks New Vesion"))
+o:value("ss", translate("Shadowsocks New Version"))
 o.description = translate("Using incorrect encryption mothod may causes service fail to start")
 end
 
