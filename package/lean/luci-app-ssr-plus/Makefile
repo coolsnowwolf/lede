@@ -2,9 +2,9 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
 PKG_VERSION:=1
-PKG_RELEASE:=43
+PKG_RELEASE:=44
 
-PO2LMO:=$(BUILD_DIR)/luci-base/po2lmo
+PO2LMO:=$(STAGING_DIR_HOSTPKG)/bin/po2lmo
 
 include $(INCLUDE_DIR)/package.mk
 
