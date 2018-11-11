@@ -2,7 +2,8 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
 PKG_VERSION:=1
-PKG_RELEASE:=38
+PKG_RELEASE:=39
+
 PO2LMO:=$(BUILD_DIR)/luci-base/po2lmo
 
 include $(INCLUDE_DIR)/package.mk
@@ -12,7 +13,7 @@ menu "Optional Packages"
 	depends on PACKAGE_$(PKG_NAME)
 	
 config PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks
-	bool "Include Shadowsocks"
+	bool "Include Shadowsocks New Version"
 	default n
 	
 config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray
@@ -20,7 +21,7 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray
 	default n
 	
 config PACKAGE_$(PKG_NAME)_INCLUDE_kcptun
-	bool "Include kcptun"
+	bool "Include Kcptun"
 	default n
 	
 config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server
