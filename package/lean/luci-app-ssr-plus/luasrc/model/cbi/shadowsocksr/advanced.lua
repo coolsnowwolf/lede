@@ -31,19 +31,4 @@ o.default = 5
 -- o = s:option(Flag, "monitor_enable", translate("Enable Process Deamon"))
 -- o.rmempty = false
 
--- [[ SOCKS5 Proxy ]]--
-s = m:section(TypedSection, "socks5_proxy", translate("SOCKS5 Proxy"))
-s.anonymous = true
-
-o = s:option(ListValue, "server", translate("Server"))
-o:value("nil", translate("Disable"))
-for k, v in pairs(server_table) do o:value(k, v) end
-o.default = "nil"
-o.rmempty = false
-
-o = s:option(Value, "local_port", translate("Local Port"))
-o.datatype = "port"
-o.default = 1080
-o.rmempty = false
-
 return m

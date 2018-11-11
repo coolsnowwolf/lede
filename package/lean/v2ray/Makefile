@@ -26,7 +26,7 @@ ifeq ($(ARCH),aarch64)
 endif
 
 PKG_NAME:=v2ray
-PKG_VERSION:=4.0.2
+PKG_VERSION:=4.3
 PKG_RELEASE:=1
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_ARCH_V2RAY).zip
@@ -39,7 +39,7 @@ define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=V2Ray is a cross-platform proxy software
-	DEPENDS:=
+	DEPENDS:=+ca-certificates
 	URL:=https://github.com/v2ray/v2ray-core
 endef
 

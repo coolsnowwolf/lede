@@ -42,19 +42,9 @@ o:value("router", translate("IP Route Mode"))
 o.default = gfw
 
 o = s:option(ListValue, "pdnsd_enable", translate("Resolve Dns Mode"))
-o:depends("run_mode", "gfw")
 o:value("1", translate("Use Pdnsd tcp query and cache"))
-o:value("0", translate("Use SSR DNS Tunnel"))
+o:value("0", translate("Use Local DNS Service listen port 5335"))
 o.default = 1
-
-o = s:option(Flag, "tunnel_enable", translate("Enable Tunnel(DNS)"))
-o:depends("run_mode", "router")
-o.default = 1
-
-o = s:option(Value, "tunnel_port", translate("Tunnel Port"))
-o:depends("run_mode", "router")
-o.datatype = "port"
-o.default = 5300
 
 o = s:option(ListValue, "tunnel_forward", translate("Anti-pollution DNS Server"))
 o:value("8.8.4.4:53", translate("Google Public DNS (8.8.4.4)"))
@@ -68,5 +58,6 @@ o:value("4.2.2.2:53", translate("Level 3 Public DNS (4.2.2.2)"))
 o:value("4.2.2.3:53", translate("Level 3 Public DNS (4.2.2.3)"))
 o:value("4.2.2.4:53", translate("Level 3 Public DNS (4.2.2.4)"))
 o:value("1.1.1.1:53", translate("Cloudflare DNS (1.1.1.1)"))
+o:depends("pdnsd_enable", "1")
 
 return m
