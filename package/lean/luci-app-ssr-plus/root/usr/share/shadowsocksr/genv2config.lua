@@ -63,7 +63,10 @@ local v2ray = {
                 path = server.h2_path,
                 host = server.h2_host,
             } or nil
-        }
+        },
+        mux = {
+            enabled = (server.mux == "1") and true or false
+      }
     },
 
     -- 额外传出连接

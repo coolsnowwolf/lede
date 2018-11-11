@@ -309,6 +309,11 @@ o = s:option(Flag, "tls", translate("TLS"))
 o.rmempty = false
 o:depends("type", "v2ray")
 
+-- [[ Mux ]]--
+o = s:option(Flag, "mux", translate("Mux"))
+o.rmempty = false
+o:depends("type", "v2ray")
+
 o = s:option(Flag, "fast_open", translate("TCP Fast Open"))
 o.rmempty = false
 o.default = "0"
