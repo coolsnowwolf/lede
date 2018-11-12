@@ -27,6 +27,7 @@ usage() {
 		    -b <wan_ips>            wan ip of will be bypassed
 		    -w <wan_ips>            wan ip of will be forwarded
 		    -p <fp_lan_ips>         lan ip of will be global proxy
+		    -G <gm_lan_ips>         lan ip of will be game mode proxy
 		    -e <extra_options>      extra options for iptables
 		    -o                      apply the rules to the OUTPUT chain
 		    -O                      apply the global rules to the OUTPUT chain
@@ -62,6 +63,7 @@ flush_r() {
 	ipset -X ss_spec_wan_ac 2>/dev/null
 	ipset -X ssr_gen_router 2>/dev/null
 	ipset -X fplan 2>/dev/null
+	ipset -X gmlan 2>/dev/null
 	[ -n "$FWI" ] && echo '#!/bin/sh' >$FWI
 	return 0
 }
@@ -84,8 +86,12 @@ EOF
 	$IPT -A SS_SPEC_WAN_AC -m set --match-set gfwlist dst -j SS_SPEC_WAN_FW
 	$IPT -I SS_SPEC_WAN_AC -m set --match-set china dst -j RETURN
 	
+	ipset -N gmlan hash:net 2>/dev/null
+	for ip in $LAN_GM_IP; do ipset -! add gmlan $ip ; done
+	$IPT -A SS_SPEC_WAN_AC -m set --match-set gmlan src -m set ! --match-set china dst -j SS_SPEC_WAN_FW
+	
 	ipset -N fplan hash:net 2>/dev/null
-	for ip in $LAN_FP_IP; do ipset add fplan $ip ; done
+	for ip in $LAN_FP_IP; do ipset -! add fplan $ip ; done
 	$IPT -I SS_SPEC_WAN_AC -m set --match-set fplan src -j SS_SPEC_WAN_FW
 	
 	$IPT -I SS_SPEC_WAN_AC -d $server -j RETURN
@@ -96,12 +102,14 @@ EOF
 
 fw_rule() {
 	$IPT -N SS_SPEC_WAN_FW
-	$IPT -A SS_SPEC_WAN_FW -d 10.0.0.0/8 -j RETURN
-	$IPT -A SS_SPEC_WAN_FW -d 127.0.0.0/8 -j RETURN
-	$IPT -A SS_SPEC_WAN_FW -d 172.16.0.0/12 -j RETURN
-	$IPT -A SS_SPEC_WAN_FW -d 192.168.0.0/16 -j RETURN
-	$IPT -A SS_SPEC_WAN_FW -d 224.0.0.0/4 -j RETURN
-	$IPT -A SS_SPEC_WAN_FW -d 240.0.0.0/4	-j RETURN
+  $IPT -A SS_SPEC_WAN_FW -d 0.0.0.0/8 -j RETURN
+  $IPT -A SS_SPEC_WAN_FW -d 10.0.0.0/8 -j RETURN
+  $IPT -A SS_SPEC_WAN_FW -d 127.0.0.0/8 -j RETURN
+  $IPT -A SS_SPEC_WAN_FW -d 169.254.0.0/16 -j RETURN
+  $IPT -A SS_SPEC_WAN_FW -d 172.16.0.0/12 -j RETURN
+  $IPT -A SS_SPEC_WAN_FW -d 192.168.0.0/16 -j RETURN
+  $IPT -A SS_SPEC_WAN_FW -d 224.0.0.0/4 -j RETURN
+  $IPT -A SS_SPEC_WAN_FW -d 240.0.0.0/4 -j RETURN
 	$IPT -A SS_SPEC_WAN_FW -p tcp \
 		-j REDIRECT --to-ports $local_port 2>/dev/null || {
 		loger 3 "Can't redirect, please check the iptables."
@@ -154,18 +162,28 @@ tp_rule() {
 	ip route add local 0.0.0.0/0 dev lo table 100
 	local ipt="iptables -t mangle"
 	$ipt -N SS_SPEC_TPROXY
+	$ipt -A SS_SPEC_TPROXY -p udp --dport 53 -j RETURN
+  $ipt -A SS_SPEC_TPROXY -p udp -d 0.0.0.0/8 -j RETURN
+  $ipt -A SS_SPEC_TPROXY -p udp -d 10.0.0.0/8 -j RETURN
+  $ipt -A SS_SPEC_TPROXY -p udp -d 127.0.0.0/8 -j RETURN
+  $ipt -A SS_SPEC_TPROXY -p udp -d 169.254.0.0/16 -j RETURN
+  $ipt -A SS_SPEC_TPROXY -p udp -d 172.16.0.0/12 -j RETURN
+  $ipt -A SS_SPEC_TPROXY -p udp -d 192.168.0.0/16 -j RETURN
+  $ipt -A SS_SPEC_TPROXY -p udp -d 224.0.0.0/4 -j RETURN
+  $ipt -A SS_SPEC_TPROXY -p udp -d 240.0.0.0/4 -j RETURN
+  $ipt -A SS_SPEC_TPROXY -p udp -d $SERVER -j RETURN
+  $ipt -A SS_SPEC_TPROXY -p udp -m set --match-set china dst -j RETURN
+  
 	if [ -z "$GFWMODE" ] ;then
 	$ipt -A SS_SPEC_TPROXY -p udp -m set ! --match-set ss_spec_wan_ac dst \
 		-j TPROXY --on-port "$LOCAL_PORT" --tproxy-mark 0x01/0x01
 	else
+	$ipt -A SS_SPEC_TPROXY -p udp -m set --match-set gmlan src -m set ! --match-set china dst \
+		-j TPROXY --on-port "$LOCAL_PORT" --tproxy-mark 0x01/0x01
 	$ipt -A SS_SPEC_TPROXY -p udp -m set  --match-set gfwlist dst \
 		-j TPROXY --on-port "$LOCAL_PORT" --tproxy-mark 0x01/0x01
 	fi	
-	
-	$ipt -I SS_SPEC_TPROXY -p udp -m set --match-set china dst -j RETURN
-	$ipt -I SS_SPEC_TPROXY -p udp --dport 53 -j RETURN
-	$ipt -I SS_SPEC_TPROXY -p udp -d $SERVER -j RETURN
-	
+		
 	$ipt -I PREROUTING 1 ${IFNAME:+-i $IFNAME} -p udp $EXT_ARGS $MATCH_SET \
 		-m comment --comment "$TAG" -j SS_SPEC_TPROXY
 	return $?
@@ -242,7 +260,7 @@ EOF
 	return 0
 }
 
-while getopts ":s:l:S:L:i:e:a:b:w:p:oOuUfgh" arg; do
+while getopts ":s:l:S:L:i:e:a:b:w:p:G:oOuUfgh" arg; do
 	case "$arg" in
 		s)
 			server=$OPTARG
@@ -273,7 +291,10 @@ while getopts ":s:l:S:L:i:e:a:b:w:p:oOuUfgh" arg; do
 			;;
 		p)
 			LAN_FP_IP=$OPTARG
-			;;		
+			;;	
+		G)
+			LAN_GM_IP=$OPTARG
+			;;	
 		o)
 			OUTPUT=1
 			;;

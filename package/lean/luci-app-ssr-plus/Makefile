@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
 PKG_VERSION:=1
-PKG_RELEASE:=52
+PKG_RELEASE:=53
 
 PO2LMO:=$(BUILD_DIR)/luci-base/po2lmo
 
