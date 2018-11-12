@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=shadowsocksr-libev
 PKG_VERSION:=2.5.6
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-$(PKG_SOURCE_VERSION).tar.xz
@@ -32,6 +32,7 @@ endef
 
 Package/shadowsocksr-libev-server = $(Package/shadowsocksr-libev)
 Package/shadowsocksr-libev-alt = $(Package/shadowsocksr-libev)
+Package/shadowsocksr-libev-ssr-local = $(Package/shadowsocksr-libev)
 
 CONFIGURE_ARGS += --disable-documentation --disable-ssp --disable-assert
 
@@ -54,6 +55,13 @@ define Package/shadowsocksr-libev-server/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/server/ss-server $(1)/usr/bin/ssr-server
 endef
 
+define Package/shadowsocksr-libev-ssr-local/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/ss-local $(1)/usr/bin/ssr-local
+	$(LN) ssr-local $(1)/usr/bin/ssr-tunnel
+endef
+
 $(eval $(call BuildPackage,shadowsocksr-libev))
 $(eval $(call BuildPackage,shadowsocksr-libev-alt))
 $(eval $(call BuildPackage,shadowsocksr-libev-server))
+$(eval $(call BuildPackage,shadowsocksr-libev-ssr-local))

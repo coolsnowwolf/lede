@@ -2,13 +2,18 @@ local ucursor = require "luci.model.uci"
 local json = require "luci.jsonc"
 local server_section = arg[1]
 local proto = arg[2] 
+local local_port = arg[3]
 
 local server = ucursor:get_all("shadowsocksr", server_section)
 
 local v2ray = {
+  log = {
+    error = "/var/log/v2ray.log",
+    loglevel = "warning"
+  },
     -- 传入连接
     inbound = {
-        port = 1234,
+        port = local_port,
         protocol = "dokodemo-door",
         settings = {
             network = proto,
@@ -41,6 +46,7 @@ local v2ray = {
         streamSettings = {
             network = server.transport,
             security = (server.tls == '1') and "tls" or "none",
+            allowInsecure = (server.insecure == "1") and true or false,
             kcpSettings = (server.transport == "kcp") and {
               mtu = tonumber(server.mtu),
               tti = tonumber(server.tti),

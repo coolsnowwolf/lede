@@ -121,7 +121,7 @@ EOF
 		}
 EOF
       elif [ "$stype" == "v2ray" ] ;then
-        lua /usr/share/shadowsocksr/genv2config.lua $GLOBAL_SERVER tcp > /var/etc/v2-ssr-retcp.json
+        lua /usr/share/shadowsocksr/genv2config.lua $GLOBAL_SERVER tcp $(uci_get_by_name $1 local_port) > /var/etc/v2-ssr-retcp.json
 fi
 }
 
@@ -190,6 +190,7 @@ start_rules() {
 		-b "$(uci_get_by_type access_control wan_bp_ips)" \
 		-w "$(uci_get_by_type access_control wan_fw_ips)" \
 		-p "$(uci_get_by_type access_control lan_fp_ips)" \
+		-G "$(uci_get_by_type access_control lan_gm_ips)" \
 		$(get_arg_out) $gfwmode $ARG_UDP
 			
 	return $?
@@ -276,53 +277,55 @@ start_redir() {
 		kcp_enable_flag=1
 	fi
 	
-	gen_config_file $GLOBAL_SERVER 0
+  gen_config_file $GLOBAL_SERVER 0
   local stype=$(uci_get_by_name $GLOBAL_SERVER type)
-       if [ "$stype" == "ss" ] ;then
+    if [ "$stype" == "ss" ] ;then
         sscmd="/usr/bin/ss-redir"
        elif [ "$stype" == "ssr" ] ;then
         sscmd="/usr/bin/ssr-redir"
        elif [ "$stype" == "v2ray" ] ;then
         sscmd="/usr/bin/v2ray/v2ray"
-	fi
+    fi
 		
 	local utype=$(uci_get_by_name $UDP_RELAY_SERVER type)
-       if [ "$utype" == "ss" ] ;then
+    if [ "$utype" == "ss" ] ;then
         ucmd="/usr/bin/ss-redir"
        elif [ "$utype" == "ssr" ] ;then
         ucmd="/usr/bin/ssr-redir"
        elif [ "$utype" == "v2ray" ] ;then
         ucmd="/usr/bin/v2ray/v2ray"
-	fi
+     fi
 	
 	redir_tcp=1
-	
 	if [ "$stype" == "ss" -o "$stype" == "ssr" ] ;then
     local last_config_file=$CONFIG_FILE
     local pid_file="/var/run/ssr-retcp.pid"
     $sscmd \
         -c $CONFIG_FILE $ARG_OTA \
-        -f /var/run/ssr-retcp.pid
+        -f /var/run/ssr-retcp.pid >/dev/null 2>&1
   elif [ "$stype" == "v2ray" ] ;then
     $sscmd -config /var/etc/v2-ssr-retcp.json >/dev/null 2>&1 &
 	fi
 	
-  if [ "$utype" == "ss" -o "$utype" == "ssr" ] ;then
-		case "$(uci_get_by_name $UDP_RELAY_SERVER auth_enable)" in
-			1|on|true|yes|enabled) ARG_OTA="-A";;
-			*) ARG_OTA="";;
-		esac		
-		gen_config_file $UDP_RELAY_SERVER 1
-		last_config_file=$CONFIG_UDP_FILE
-		pid_file="/var/run/ssr-reudp.pid"
-		redir_udp=1
-		$ucmd \
-		-c $last_config_file $ARG_OTA $ARG_UDP \
-		-f $pid_file
-		elif [ "$utype" == "v2ray" ] ; then
-      lua /usr/share/shadowsocksr/genv2config.lua $UDP_RELAY_SERVER udp > /var/etc/v2-ssr-reudp.json
-      $ucmd -config /var/etc/v2-ssr-reudp.json >/dev/null 2>&1 &   
-  fi
+	if [ -n $UDP_RELAY_SERVER ] ;then
+    redir_udp=1
+    if [ "$utype" == "ss" -o "$utype" == "ssr" ] ;then
+      case "$(uci_get_by_name $UDP_RELAY_SERVER auth_enable)" in
+        1|on|true|yes|enabled) ARG_OTA="-A";;
+        *) ARG_OTA="";;
+      esac		
+      gen_config_file $UDP_RELAY_SERVER 1
+      last_config_file=$CONFIG_UDP_FILE
+      pid_file="/var/run/ssr-reudp.pid"
+      $ucmd \
+      -c $last_config_file $ARG_OTA -U \
+      -f $pid_file >/dev/null 2>&1
+    elif [ "$utype" == "v2ray" ] ; then
+        lua /usr/share/shadowsocksr/genv2config.lua $UDP_RELAY_SERVER udp $(uci_get_by_name $UDP_RELAY_SERVER local_port) > /var/etc/v2-ssr-reudp.json
+        $ucmd -config /var/etc/v2-ssr-reudp.json >/dev/null 2>&1 &   
+    fi
+   fi
+
 
 
 	#deal with dns
@@ -385,7 +388,7 @@ iptables -t filter -I INPUT  -j SSR-SERVER-RULE
 fi
 
 gen_service_file $1 /var/etc/${NAME}_${server_count}.json
-/usr/bin/ssr-server -c /var/etc/${NAME}_${server_count}.json -u -f /var/run/ssr-server${server_count}.pid 
+/usr/bin/ssr-server -c /var/etc/${NAME}_${server_count}.json -u -f /var/run/ssr-server${server_count}.pid >/dev/null 2>&1
 iptables -t filter -A SSR-SERVER-RULE -p tcp --dport $(uci_get_by_name $1 server_port) -j ACCEPT
 iptables -t filter -A SSR-SERVER-RULE -p udp --dport $(uci_get_by_name $1 server_port) -j ACCEPT
 return 0
@@ -428,7 +431,7 @@ start_local() {
 	/usr/bin/ssr-local -c $CONFIG_SOCK5_FILE -u  \
 		-l $(uci_get_by_type socks5_proxy local_port 1080) \
 		-b $(uci_get_by_type socks5_proxy local_address 0.0.0.0) \
-		-f /var/run/ssr-local.pid
+		-f /var/run/ssr-local.pid >/dev/null 2>&1
 	local_enable=1	
 }
 
@@ -459,7 +462,7 @@ start() {
 		cat > /tmp/dnsmasq.d/dnsmasq-ssr.conf <<EOF
 conf-dir=/etc/dnsmasq.ssr
 EOF
-		/etc/init.d/dnsmasq restart
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	fi
 	
 	fi
@@ -491,11 +494,15 @@ stop() {
 	killall -q -9 ssr-server
 	killall -q -9 ssr-kcptun
 	killall -q -9 ssr-local
-	kill $(cat /var/run/pdnsd.pid) >/dev/null 2>&1 || kill -9 $(ps | grep pdnsd | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
+	if [ -f /var/run/pdnsd.pid ] ;then
+    kill $(cat /var/run/pdnsd.pid) >/dev/null 2>&1
+  else 
+    kill -9 $(ps | grep pdnsd | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
+	fi
 	
 	if [ -f "/tmp/dnsmasq.d/dnsmasq-ssr.conf" ]; then
 		rm -f /tmp/dnsmasq.d/dnsmasq-ssr.conf
-		/etc/init.d/dnsmasq restart
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1
   fi
   del_cron
 }

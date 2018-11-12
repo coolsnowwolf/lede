@@ -189,18 +189,18 @@ o.rmempty = false
 o:depends("type", "v2ray")
 
 -- VmessId
-o = s:option(Value, "vmess_id", translate("VmessId"))
+o = s:option(Value, "vmess_id", translate("VmessId (UUID)"))
 o.rmempty = false
 o.default = uuid
 o:depends("type", "v2ray")
 
--- 鍔犲瘑鏂瑰紡
+-- 加密方式
 o = s:option(ListValue, "security", translate("Encrypt Method"))
 for _, v in ipairs(securitys) do o:value(v, v:upper()) end
 o.rmempty = false
 o:depends("type", "v2ray")
 
--- 浼犺緭鍗忚
+-- 传输协议
 o = s:option(ListValue, "transport", translate("Transport"))
 o:value("tcp", "TCP")
 o:value("kcp", "mKCP")
@@ -209,50 +209,50 @@ o:value("h2", "HTTP/2")
 o.rmempty = false
 o:depends("type", "v2ray")
 
--- [[ TCP閮ㄥ垎 ]]--
+-- [[ TCP部分 ]]--
 
--- TCP浼
+-- TCP伪装
 o = s:option(ListValue, "tcp_guise", translate("Camouflage Type"))
 o:depends("transport", "tcp")
 o:value("none", translate("None"))
 o:value("http", "HTTP")
 o.rmempty = true
 
--- HTTP鍩熷悕
+-- HTTP域名
 o = s:option(DynamicList, "http_host", translate("HTTP Host"))
 o:depends("tcp_guise", "http")
 o.rmempty = true
 
--- HTTP璺緞
+-- HTTP路径
 o = s:option(DynamicList, "http_path", translate("HTTP Path"))
 o:depends("tcp_guise", "http")
 o.rmempty = true
 
--- [[ WS閮ㄥ垎 ]]--
+-- [[ WS部分 ]]--
 
--- WS鍩熷悕
+-- WS域名
 o = s:option(Value, "ws_host", translate("WebSocket Host"))
 o:depends("transport", "ws")
 o.rmempty = true
 
--- WS璺緞
+-- WS路径
 o = s:option(Value, "ws_path", translate("WebSocket Path"))
 o:depends("transport", "ws")
 o.rmempty = true
 
--- [[ H2閮ㄥ垎 ]]--
+-- [[ H2部分 ]]--
 
--- H2鍩熷悕
+-- H2域名
 o = s:option(DynamicList, "h2_host", translate("HTTP/2 Host"))
 o:depends("transport", "h2")
 o.rmempty = true
 
--- H2璺緞
+-- H2路径
 o = s:option(Value, "h2_path", translate("HTTP/2 Path"))
 o:depends("transport", "h2")
 o.rmempty = true
 
--- [[ mKCP閮ㄥ垎 ]]--
+-- [[ mKCP部分 ]]--
 
 o = s:option(ListValue, "kcp_guise", translate("Camouflage Type"))
 o:depends("transport", "kcp")
@@ -303,6 +303,11 @@ o.rmempty = true
 o = s:option(Flag, "congestion", translate("Congestion"))
 o:depends("transport", "kcp")
 o.rmempty = true
+
+-- [[ allowInsecure ]]--
+o = s:option(Flag, "insecure", translate("allowInsecure"))
+o.rmempty = false
+o:depends("type", "v2ray")
 
 -- [[ TLS ]]--
 o = s:option(Flag, "tls", translate("TLS"))
