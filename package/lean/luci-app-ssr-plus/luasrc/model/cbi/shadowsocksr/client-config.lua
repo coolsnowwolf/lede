@@ -189,7 +189,7 @@ o.rmempty = false
 o:depends("type", "v2ray")
 
 -- VmessId
-o = s:option(Value, "vmess_id", translate("VmessId"))
+o = s:option(Value, "vmess_id", translate("VmessId (UUID)"))
 o.rmempty = false
 o.default = uuid
 o:depends("type", "v2ray")
@@ -303,6 +303,11 @@ o.rmempty = true
 o = s:option(Flag, "congestion", translate("Congestion"))
 o:depends("transport", "kcp")
 o.rmempty = true
+
+-- [[ allowInsecure ]]--
+o = s:option(Flag, "insecure", translate("allowInsecure"))
+o.rmempty = false
+o:depends("type", "v2ray")
 
 -- [[ TLS ]]--
 o = s:option(Flag, "tls", translate("TLS"))
