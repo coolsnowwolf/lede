@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
 PKG_VERSION:=1
-PKG_RELEASE:=46
+PKG_RELEASE:=48
 
 PO2LMO:=$(BUILD_DIR)/luci-base/po2lmo
 
@@ -20,12 +20,16 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray
 	bool "Include V2ray"
 	default n
 	
-config PACKAGE_$(PKG_NAME)_INCLUDE_kcptun
+config PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun
 	bool "Include Kcptun"
 	default n
 	
 config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server
 	bool "Include ShadowsocksR Server"
+	default n
+	
+config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks
+	bool "Include ShadowsocksR Socks and Tunnel"
 	default n
 	
 endmenu
@@ -40,8 +44,9 @@ define Package/luci-app-ssr-plus
 	DEPENDS:=+shadowsocksr-libev-alt +ipset +ip-full +iptables-mod-tproxy +dnsmasq-full +coreutils +coreutils-base64 +bash +pdnsd-alt +wget \
             +PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks:shadowsocks-libev-ss-redir \
             +PACKAGE_$(PKG_NAME)_INCLUDE_V2ray:v2ray \
-            +PACKAGE_$(PKG_NAME)_INCLUDE_kcptun:kcptun \
-            +PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server:shadowsocksr-libev-server
+            +PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun:kcptun \
+            +PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server:shadowsocksr-libev-server \
+            +PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks:shadowsocksr-libev-ssr-local
 endef
 
 define Build/Prepare
