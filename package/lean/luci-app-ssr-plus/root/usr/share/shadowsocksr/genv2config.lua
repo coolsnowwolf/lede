@@ -2,13 +2,14 @@ local ucursor = require "luci.model.uci"
 local json = require "luci.jsonc"
 local server_section = arg[1]
 local proto = arg[2] 
+local local_port = arg[3]
 
 local server = ucursor:get_all("shadowsocksr", server_section)
 
 local v2ray = {
     -- 传入连接
     inbound = {
-        port = 1234,
+        port = local_port,
         protocol = "dokodemo-door",
         settings = {
             network = proto,
