@@ -7,6 +7,10 @@ local local_port = arg[3]
 local server = ucursor:get_all("shadowsocksr", server_section)
 
 local v2ray = {
+  log = {
+    error = "/var/log/v2ray.log",
+    loglevel = "warning"
+  },
     -- 传入连接
     inbound = {
         port = local_port,
