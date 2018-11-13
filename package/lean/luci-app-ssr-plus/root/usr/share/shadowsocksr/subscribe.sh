@@ -65,6 +65,9 @@ do
             subscribe_max=${#ssr_url[@]}
         fi
         ssr_group=$(urlsafe_b64decode $(urlsafe_b64decode ${ssr_url[$((${#ssr_url[@]} - 1))]//ssr:\/\//} | sed 's/&/\n/g' | grep group= | awk -F = '{print $2}'))
+        if [ -z "$ssr_group" ]; then
+        ssr_group="default"
+        fi
         if [ -n "$ssr_group" ]; then
             subscribe_i=0
             subscribe_n=0
