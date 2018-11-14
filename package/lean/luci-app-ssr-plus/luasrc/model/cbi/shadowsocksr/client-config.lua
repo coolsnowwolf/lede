@@ -121,9 +121,6 @@ o.template = "shadowsocksr/ssrurl"
 o.value =sid
 o:depends("type", "ssr")
 
-o = s:option(Value, "alias", translate("Alias(optional)"))
-
-
 o = s:option(ListValue, "type", translate("Server Node Type"))
 o:value("ssr", translate("ShadowsocksR"))
 if nixio.fs.access("/usr/bin/ss-redir") then
@@ -134,7 +131,7 @@ o:value("v2ray", translate("V2Ray"))
 end
 o.description = translate("Using incorrect encryption mothod may causes service fail to start")
 
-
+o = s:option(Value, "alias", translate("Alias(optional)"))
 
 o = s:option(Value, "server", translate("Server Address"))
 o.datatype = "host"
@@ -194,13 +191,13 @@ o.rmempty = false
 o.default = uuid
 o:depends("type", "v2ray")
 
--- 加密方式
+-- 鍔犲瘑鏂瑰紡
 o = s:option(ListValue, "security", translate("Encrypt Method"))
 for _, v in ipairs(securitys) do o:value(v, v:upper()) end
 o.rmempty = false
 o:depends("type", "v2ray")
 
--- 传输协议
+-- 浼犺緭鍗忚
 o = s:option(ListValue, "transport", translate("Transport"))
 o:value("tcp", "TCP")
 o:value("kcp", "mKCP")
@@ -209,50 +206,50 @@ o:value("h2", "HTTP/2")
 o.rmempty = false
 o:depends("type", "v2ray")
 
--- [[ TCP部分 ]]--
+-- [[ TCP閮ㄥ垎 ]]--
 
--- TCP伪装
+-- TCP浼
 o = s:option(ListValue, "tcp_guise", translate("Camouflage Type"))
 o:depends("transport", "tcp")
 o:value("none", translate("None"))
 o:value("http", "HTTP")
 o.rmempty = true
 
--- HTTP域名
+-- HTTP鍩熷悕
 o = s:option(DynamicList, "http_host", translate("HTTP Host"))
 o:depends("tcp_guise", "http")
 o.rmempty = true
 
--- HTTP路径
+-- HTTP璺緞
 o = s:option(DynamicList, "http_path", translate("HTTP Path"))
 o:depends("tcp_guise", "http")
 o.rmempty = true
 
--- [[ WS部分 ]]--
+-- [[ WS閮ㄥ垎 ]]--
 
--- WS域名
+-- WS鍩熷悕
 o = s:option(Value, "ws_host", translate("WebSocket Host"))
 o:depends("transport", "ws")
 o.rmempty = true
 
--- WS路径
+-- WS璺緞
 o = s:option(Value, "ws_path", translate("WebSocket Path"))
 o:depends("transport", "ws")
 o.rmempty = true
 
--- [[ H2部分 ]]--
+-- [[ H2閮ㄥ垎 ]]--
 
--- H2域名
+-- H2鍩熷悕
 o = s:option(DynamicList, "h2_host", translate("HTTP/2 Host"))
 o:depends("transport", "h2")
 o.rmempty = true
 
--- H2路径
+-- H2璺緞
 o = s:option(Value, "h2_path", translate("HTTP/2 Path"))
 o:depends("transport", "h2")
 o.rmempty = true
 
--- [[ mKCP部分 ]]--
+-- [[ mKCP閮ㄥ垎 ]]--
 
 o = s:option(ListValue, "kcp_guise", translate("Camouflage Type"))
 o:depends("transport", "kcp")
