@@ -9,9 +9,6 @@ PO2LMO:=$(STAGING_DIR_HOSTPKG)/bin/po2lmo
 include $(INCLUDE_DIR)/package.mk
 
 define Package/$(PKG_NAME)/config
-menu "Optional Packages"
-	depends on PACKAGE_$(PKG_NAME)
-	
 config PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks
 	bool "Include Shadowsocks New Version"
 	default n
@@ -31,8 +28,6 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server
 config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks
 	bool "Include ShadowsocksR Socks and Tunnel"
 	default n
-	
-endmenu
 endef
 
 define Package/luci-app-ssr-plus
