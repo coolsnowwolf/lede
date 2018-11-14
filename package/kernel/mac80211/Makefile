@@ -11,7 +11,7 @@ include $(INCLUDE_DIR)/kernel.mk
 PKG_NAME:=mac80211
 
 PKG_VERSION:=4.19-rc5-1
-PKG_RELEASE:=2
+PKG_RELEASE:=1
 PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v4.19-rc5/
 PKG_HASH:=5b61e64ea79d22bbac9e8612d5d5485974f223de00d4ec250b0faf4b7baf9957
 
@@ -208,7 +208,7 @@ endef
 define KernelPackage/hermes-pcmcia
   $(call KernelPackage/mac80211/Default)
   TITLE:=Hermes based PCMCIA adaptors
-  DEPENDS:=@PCMCIA_SUPPORT +kmod-hermes
+  DEPENDS:=@PCMCIA_SUPPORT +kmod-hermes +kmod-pcmcia-core
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/intersil/orinoco/orinoco_cs.ko
   AUTOLOAD:=$(call AutoProbe,orinoco_cs)
 endef
