@@ -8,7 +8,7 @@ local server = ucursor:get_all("shadowsocksr", server_section)
 
 local v2ray = {
   log = {
-    error = "/var/log/v2ray.log",
+    error = "/var/ssrplus.log",
     loglevel = "warning"
   },
     -- 传入连接
