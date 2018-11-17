@@ -646,9 +646,6 @@ wpa_supplicant_prepare_interface() {
 			adhoc)
 				fail=1
 			;;
-			sta)
-				[ "$wds" = 1 ] || fail=1
-			;;
 		esac
 
 		[ -n "$fail" ] && {
