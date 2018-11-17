@@ -6,6 +6,10 @@
 
 include $(TOPDIR)/rules.mk
 
+PKG_NAME:=v2ray
+PKG_VERSION:=4.5.0
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
+
 ifeq ($(ARCH),x86_64)
 	PKG_ARCH_V2RAY:=linux-64
 endif
@@ -25,21 +29,13 @@ ifeq ($(ARCH),aarch64)
 	PKG_ARCH_V2RAY:=linux-arm64
 endif
 
-PKG_NAME:=v2ray
-PKG_VERSION:=4.5
-PKG_RELEASE:=1
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_ARCH_V2RAY).zip
-PKG_SOURCE_URL:=https://github.com/v2ray/v2ray-core/releases/download/v$(PKG_VERSION)
-PKG_HASH:=skip
-
 include $(INCLUDE_DIR)/package.mk
 
 define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=V2Ray is a cross-platform proxy software
-	DEPENDS:=+ca-certificates
+	DEPENDS:=
 	URL:=https://github.com/v2ray/v2ray-core
 endef
 
@@ -79,7 +75,9 @@ V2Ray is a cross-platform proxy software
 endef
 
 define Build/Prepare
-	unzip -q -d $(PKG_BUILD_DIR) $(DL_DIR)/$(PKG_SOURCE)
+	
+	wget https://github.com/v2ray/v2ray-core/releases/download/v$(PKG_VERSION)/v2ray-$(PKG_ARCH_V2RAY).zip -O $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY).zip
+	unzip -o $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY).zip -d $(PKG_BUILD_DIR)
 ifdef CONFIG_PACKAGE_V2RAY_SOFTFLOAT
 	[ -f $(PKG_BUILD_DIR)/v2ray_softfloat ] && mv $(PKG_BUILD_DIR)/v2ray_softfloat $(PKG_BUILD_DIR)/v2ray || echo "Can't find soft-float binary."
 	[ -f $(PKG_BUILD_DIR)/v2ctl_softfloat ] && mv $(PKG_BUILD_DIR)/v2ctl_softfloat $(PKG_BUILD_DIR)/v2ctl || echo "Can't find soft-float binary."
