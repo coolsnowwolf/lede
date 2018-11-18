@@ -1,0 +1,185 @@
+#!/bin/sh /etc/rc.common
+
+START=97
+
+DNSFORWARDER_CONF=/etc/dnsforwarder/dnsforwarder.conf
+PID_PATH=/var/run/dnsforwarder/
+PID_FILE=dns.pid
+
+
+
+fixflowoffload(){
+    dns=$(uci get flowoffload.@flow[0].dns 2>/dev/null)
+    if [ $dns -eq 1 ];  then
+        uci set flowoffload.@flow[0].dns=0 && uci commit flowoffload
+        /etc/init.d/flowoffload restart
+    fi
+}
+
+makelist() {
+    [ -z "$2" ] && return
+    local i
+    local t="$1"; shift
+    for i in "$@"
+    do
+        echo "$t $i"
+    done
+}
+
+makeconfig () {
+    config_load dnsforwarder
+
+    local log=$(uci get dnsforwarder.@config[0].log 2>/dev/null)
+    local log_size=$(uci get dnsforwarder.@config[0].log_size 2>/dev/null)
+
+	local udp_local=$(uci -d ',' get dnsforwarder.@config[0].udp_local 2>/dev/null)
+	local tcp_group=$(uci get dnsforwarder.@config[0].tcp_group 2>/dev/null)
+	local udp_group=$(uci get dnsforwarder.@config[0].udp_group 2>/dev/null)
+	local group_file=$(uci get dnsforwarder.@config[0].group_file 2>/dev/null)
+	local block_ip=$(uci -d ',' get dnsforwarder.@config[0].block_ip 2>/dev/null)
+	local ip_substituting=$(uci -d ',' get dnsforwarder.@config[0].ip_substituting 2>/dev/null)
+	local block_negative_resp=$(uci get dnsforwarder.@config[0].block_negative_resp 2>/dev/null)
+	local append_host=$(uci get dnsforwarder.@config[0].append_host 2>/dev/null)
+	local block_ipv6=$(uci get dnsforwarder.@config[0].block_ipv6 2>/dev/null)
+
+	local cache=$(uci get dnsforwarder.@config[0].cache 2>/dev/null)
+	local cache_size=$(uci get dnsforwarder.@config[0].cache_size 2>/dev/null)
+	local cache_ignore=$(uci get dnsforwarder.@config[0].cache_ignore 2>/dev/null)
+	local cache_control=$(uci get dnsforwarder.@config[0].cache_control 2>/dev/null)	
+	
+	local domain_statistic=$(uci get dnsforwarder.@config[0].domain_statistic 2>/dev/null)
+
+    echo "LogOn ${log}" > $DNSFORWARDER_CONF
+    if [ $log = "true" ]; then
+        echo "LogFileThresholdLength ${log_size}" >> $DNSFORWARDER_CONF
+        echo "LogFileFolder /var/log" >> $DNSFORWARDER_CONF
+    fi
+    [ -n "$udp_local" ] && echo "UDPLocal ${udp_local}" >> $DNSFORWARDER_CONF
+
+    eval "makelist 'TCPGroup' $tcp_group" >> $DNSFORWARDER_CONF
+    eval "makelist 'UDPGroup' $udp_group" >> $DNSFORWARDER_CONF
+    eval "makelist 'GroupFile' $group_file" >> $DNSFORWARDER_CONF
+
+    echo "BlockIP  ${block_ip}" >> $DNSFORWARDER_CONF
+    eval "makelist 'IPSubstituting' $ip_substituting" >> $DNSFORWARDER_CONF
+    echo "BlockNegativeResponse ${block_negative_resp}" >> $DNSFORWARDER_CONF
+    eval "makelist 'AppendHosts' $append_host" >> $DNSFORWARDER_CONF
+    echo "BlockIpv6WhenIpv4Exists ${block_ipv6}" >> $DNSFORWARDER_CONF
+    
+    echo "UseCache ${cache}" >> $DNSFORWARDER_CONF
+    if [ $cache = "true" ]; then
+        echo "CacheSize ${cache_size}" >> $DNSFORWARDER_CONF
+        echo "MemoryCache false" >> $DNSFORWARDER_CONF
+        echo "CacheFile /tmp/dnsforwarder.cache" >> $DNSFORWARDER_CONF
+        echo "IgnoreTTL ${cache_ignore}" >> $DNSFORWARDER_CONF
+        eval "makelist 'CacheControl' $cache_control" >> $DNSFORWARDER_CONF        
+        echo "ReloadCache true" >> $DNSFORWARDER_CONF
+        echo "OverwriteCache true" >> $DNSFORWARDER_CONF
+    fi
+	echo "DomainStatistic ${domain_statistic}" >> $DNSFORWARDER_CONF
+	if [ $domain_statistic = "true" ]; then
+		local domain_statistic_tag='<!-- TS DNSFORWARDER -->'
+		echo "DomainStatisticTempletFile /tmp/dnsforwarder-statistic.html" >> $DNSFORWARDER_CONF
+		echo "StatisticInsertionPosition ${domain_statistic_tag}" >> $DNSFORWARDER_CONF
+		echo "StatisticUpdateInterval 60" >> $DNSFORWARDER_CONF
+		echo "${domain_statistic_tag}"  > /tmp/dnsforwarder-statistic.html
+    fi
+	
+    
+    cat $DNSFORWARDER_CONF
+}
+
+start()
+{
+    echo luci for dnsforwarder
+    local vt_enabled=$(uci get dnsforwarder.@arguments[0].enabled 2>/dev/null)
+    if [ $vt_enabled = 0 ]; then
+        echo dnsforwarder is not enabled
+        exit
+    fi 	
+    makeconfig
+	fixflowoffload
+    dnsforwarder -f $DNSFORWARDER_CONF -d
+    mkdir -p $PID_PATH
+    pid=$(ps | awk '$5 ~ /\[dnsforwarder\]/ {print $1}')
+    echo dnsforwarder running pid is $pid
+    logger -t The pid of dnsforwarder is $PID_PATH/$PID_FILE $pid
+    echo $pid > $PID_PATH/$PID_FILE
+    /etc/init.d/dnsforwarder enable
+    local redir=$(uci get dnsforwarder.@arguments[0].redir 2>/dev/null)
+    local port=$(uci get dnsforwarder.@arguments[0].port 2>/dev/null)
+    local dnsmasq=$(uci get dnsforwarder.@arguments[0].dnsmasq 2>/dev/null)
+    local addr=$(uci get dnsforwarder.@arguments[0].addr 2>/dev/null)
+    [ -n "$addr" ] && addr=${addr/:/#}
+    iptables -t nat -N DNSFORWARDER
+    iptables -t nat -F DNSFORWARDER
+    if [ $redir = 1 ]; then
+        iptables -t nat -A DNSFORWARDER -p udp --dport 53 -j REDIRECT --to-ports $port
+        iptables -t nat -I PREROUTING -j DNSFORWARDER
+    fi
+
+    if [ $dnsmasq = 1 ]; then
+        uci delete dhcp.@dnsmasq[0].server
+        uci add_list dhcp.@dnsmasq[0].server=$addr
+        uci delete dhcp.@dnsmasq[0].resolvfile
+        uci set dhcp.@dnsmasq[0].noresolv=1
+        uci commit dhcp        
+        /etc/init.d/dnsmasq restart
+    fi    
+}
+
+stop()
+{
+    logger -t stopping dnsforwarder
+    local addr=$(uci get dnsforwarder.@arguments[0].addr 2>/dev/null)
+    addr=${addr/:/#}
+    uci del_list dhcp.@dnsmasq[0].server=$addr 2>/dev/null
+    uci set dhcp.@dnsmasq[0].resolvfile=/tmp/resolv.conf.auto 2>/dev/null
+    uci delete dhcp.@dnsmasq[0].noresolv 2>/dev/null
+    uci commit dhcp
+    [ -e $PID_PATH/$PID_FILE ] && {
+        pid=$(cat $PID_PATH/$PID_FILE)
+        logger -t killing dnsforwarder pid $pid
+        echo killing dnsforwarder pid $pid
+        kill $pid
+        rm -f $PID_PATH/$PID_FILE
+    } || {
+        logger -t Cannot find dnsforwarder pid file
+    }
+    iptables -t nat -F DNSFORWARDER 2>/dev/null
+    while iptables -t nat -D PREROUTING -j DNSFORWARDER 2>/dev/null; do :; done
+    iptables -t nat -X DNSFORWARDER 2>/dev/null
+    /etc/init.d/dnsmasq restart
+}
+
+restart()
+{
+    pid=$(cat $PID_PATH/$PID_FILE 2>/dev/null)
+    echo Dnsforwarder pid file is $pid
+    [ -n "$pid" ] && {
+        echo stopping pid $pid
+        logger -t There is dnsforwarder pid $pid
+        stop
+    } || {
+        logger -t Dnsforwarder is not running	
+    }
+    sleep 1s	
+    local vt_enabled=$(uci get dnsforwarder.@arguments[0].enabled 2>/dev/null)
+    echo dnsforwarder status is $vt_enabled 
+    logger -t Dnsforwarder is initializing enabled is $vt_enabled
+    if [ $vt_enabled = 1 ]; then
+        [ -n "$pid" ] && {
+            logger -t There is dnsforwarder pid $pid
+            stop
+        } || {
+            logger -t Dnsforwarder is not running	
+        }
+
+        logger -t Restarting dnsforwarder
+        start
+    else
+        /etc/init.d/dnsforwarder disable
+    fi
+}
+
+EXTRA_COMMANDS="makeconfig"
