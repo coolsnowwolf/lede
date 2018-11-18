@@ -13,6 +13,7 @@ Server_Update() {
     ${uci_set}alias="[$ssr_group] $ssr_remarks"
     ${uci_set}auth_enable="0"
     ${uci_set}switch_enable="1"
+    ${uci_set}type="ssr"
     ${uci_set}server="$ssr_host"
     ${uci_set}server_port="$ssr_port"
     ${uci_set}local_port="1234"
@@ -64,6 +65,9 @@ do
             subscribe_max=${#ssr_url[@]}
         fi
         ssr_group=$(urlsafe_b64decode $(urlsafe_b64decode ${ssr_url[$((${#ssr_url[@]} - 1))]//ssr:\/\//} | sed 's/&/\n/g' | grep group= | awk -F = '{print $2}'))
+        if [ -z "$ssr_group" ]; then
+        ssr_group="default"
+        fi
         if [ -n "$ssr_group" ]; then
             subscribe_i=0
             subscribe_n=0
