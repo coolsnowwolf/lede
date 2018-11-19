@@ -54,7 +54,7 @@ endef
 
 define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/bin/v2ray
-	$(INSTALL_BIN) ./files/$(ARCH)/v2ray $(1)/usr/bin/v2ray/
+	$(INSTALL_BIN) ./files/$(PKG_ARCH_V2RAY)/v2ray $(1)/usr/bin/v2ray/
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
