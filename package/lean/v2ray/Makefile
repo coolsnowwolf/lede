@@ -22,11 +22,11 @@ endif
 ifeq ($(ARCH),i386)
 	PKG_ARCH_V2RAY:=386
 endif
-ifeq ($(ARCH),armv6)
-	PKG_ARCH_V2RAY:=armv6
-endif
 ifeq ($(ARCH),arm)
 	PKG_ARCH_V2RAY:=arm
+	ifeq ($(TARGET_ARCH_PACKAGES),arm_cortex-a9)
+    PKG_ARCH_V2RAY:=armv6
+  endif
 endif
 ifeq ($(ARCH),aarch64)
 	PKG_ARCH_V2RAY:=arm64
