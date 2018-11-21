@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray
 PKG_VERSION:=4.5.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 ifeq ($(ARCH),x86_64)
 	PKG_ARCH_V2RAY:=amd64
@@ -24,6 +24,9 @@ ifeq ($(ARCH),i386)
 endif
 ifeq ($(ARCH),arm)
 	PKG_ARCH_V2RAY:=arm
+	ifeq ($(TARGET_ARCH_PACKAGES),arm_cortex-a9)
+    PKG_ARCH_V2RAY:=armv6
+  endif
 endif
 ifeq ($(ARCH),aarch64)
 	PKG_ARCH_V2RAY:=arm64
