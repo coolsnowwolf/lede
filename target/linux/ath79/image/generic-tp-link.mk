@@ -4,7 +4,7 @@ define Device/tplink_archer-c7-v1
   $(Device/tplink-8mlzma)
   ATH_SOC := qca9558
   DEVICE_TITLE := TP-LINK Archer C7 v1
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k ath10k-firmware-qca988x
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k-ct ath10k-firmware-qca988x-ct
   TPLINK_HWID := 0x75000001
 endef
 TARGET_DEVICES += tplink_archer-c7-v1
@@ -13,7 +13,7 @@ define Device/tplink_archer-c7-v2
   $(Device/tplink-16mlzma)
   ATH_SOC := qca9558
   DEVICE_TITLE := TP-LINK Archer C7 v2
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k ath10k-firmware-qca988x
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k-ct ath10k-firmware-qca988x-ct
   TPLINK_HWID := 0xc7000002
   IMAGES := sysupgrade.bin factory.bin factory-us.bin factory-eu.bin
   IMAGE/factory-us.bin := append-rootfs | mktplinkfw factory -C US
@@ -26,7 +26,7 @@ define Device/tplink_re450-v2
   ATH_SOC := qca9563
   IMAGE_SIZE := 6016k
   DEVICE_TITLE := TP-LINK RE450 v2
-  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca988x
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct
   TPLINK_HWID := 0x0
   TPLINK_HWREV := 0
   TPLINK_BOARD_ID := RE450-V2
@@ -76,6 +76,16 @@ define Device/tplink_tl-wr1043nd-v1
   SUPPORTED_DEVICES += tl-wr1043nd
 endef
 TARGET_DEVICES += tplink_tl-wr1043nd-v1
+
+define Device/tplink_tl-wr842n-v2
+  $(Device/tplink-8mlzma)
+  ATH_SOC := ar9341
+  DEVICE_TITLE := TP-LINK TL-WR842N/ND v2
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
+  TPLINK_HWID := 0x8420002
+  SUPPORTED_DEVICES += tl-wr842n-v2
+endef
+TARGET_DEVICES += tplink_tl-wr842n-v2
 
 define Device/tplink_tl-wr1043nd-v2
   $(Device/tplink-8mlzma)
