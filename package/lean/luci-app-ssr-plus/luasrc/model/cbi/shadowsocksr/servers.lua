@@ -38,7 +38,7 @@ o.description = translate("Through proxy update list, Not Recommended ")
 o = s:option(Button,"update",translate("Update"))
 o.inputstyle = "reload"
 o.write = function()
-  luci.sys.call("bash /usr/share/shadowsocksr/subscribe.sh >/dev/null 2>&1")
+  luci.sys.call("bash /usr/share/shadowsocksr/subscribe.sh >>/tmp/ssrplus.log 2>&1")
   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
 end
 

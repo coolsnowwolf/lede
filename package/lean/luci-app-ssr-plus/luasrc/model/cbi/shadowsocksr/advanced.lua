@@ -15,6 +15,9 @@ m = Map(shadowsocksr)
 s = m:section(TypedSection, "global", translate("Server failsafe auto swith settings"))
 s.anonymous = true
 
+o = s:option(Flag, "monitor_enable", translate("Enable Process Deamon"))
+o.rmempty = false
+
 o = s:option(Flag, "enable_switch", translate("Enable Auto Switch"))
 o.rmempty = false
 
@@ -27,10 +30,6 @@ o = s:option(Value, "switch_timeout", translate("Check timout(second)"))
 o.datatype = "uinteger"
 o:depends("enable_switch", "1")
 o.default = 5
-
--- o = s:option(Flag, "monitor_enable", translate("Enable Process Deamon"))
--- o.rmempty = false
-
 
 -- [[ SOCKS5 Proxy ]]--
 if nixio.fs.access("/usr/bin/ssr-local") then
