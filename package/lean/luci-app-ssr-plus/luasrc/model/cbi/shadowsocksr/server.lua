@@ -69,7 +69,6 @@ o.rmempty = false
 sec = m:section(TypedSection, "server_config", translate("Server Setting"))
 sec.anonymous = true
 sec.addremove = true
-sec.sortable = true
 sec.template = "cbi/tblsection"
 sec.extedit = luci.dispatcher.build_url("admin/services/shadowsocksr/server/%s")
 function sec.create(...)
@@ -85,11 +84,6 @@ function o.cfgvalue(...)
 	return Value.cfgvalue(...) or translate("0")
 end
 o.rmempty = false
-
-o = sec:option(DummyValue, "server", translate("Server Address"))
-function o.cfgvalue(...)
-	return Value.cfgvalue(...) or "?"
-end
 
 o = sec:option(DummyValue, "server_port", translate("Server Port"))
 function o.cfgvalue(...)
@@ -114,8 +108,6 @@ o = sec:option(DummyValue, "obfs", translate("Obfs"))
 function o.cfgvalue(...)
 	return Value.cfgvalue(...) or "?"
 end
-
-
 
 
 
