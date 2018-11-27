@@ -46,7 +46,7 @@ local v2ray = {
         streamSettings = {
             network = server.transport,
             security = (server.tls == '1') and "tls" or "none",
-            allowInsecure = (server.insecure == "1") and true or false,
+            tlsSettings = {allowInsecure = (server.insecure == "1") and true or false,},
             kcpSettings = (server.transport == "kcp") and {
               mtu = tonumber(server.mtu),
               tti = tonumber(server.tti),
