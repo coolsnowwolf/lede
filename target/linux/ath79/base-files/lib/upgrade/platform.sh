@@ -22,10 +22,6 @@ platform_do_upgrade() {
 	local board=$(board_name)
 
 	case "$board" in
-	buffalo,bhr-4grv2)
-		PART_NAME="rootfs:kernel"
-		default_do_upgrade "$ARGV"
-		;;
 	ubnt,routerstation|\
 	ubnt,routerstation-pro)
 		routerstation_do_upgrade "$ARGV"
