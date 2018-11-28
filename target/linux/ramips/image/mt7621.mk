@@ -366,14 +366,6 @@ define Device/timecloud
 endef
 TARGET_DEVICES += timecloud
 
-define Device/u7621-06-256M-16M
-  DTS := U7621-06-256M-16M
-  IMAGE_SIZE := 16064k
-  DEVICE_TITLE := UniElec U7621-06 (256M RAM/16M flash)
-  DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-sdhci-mt7620 kmod-usb3
-endef
-TARGET_DEVICES += u7621-06-256M-16M
-
 define Device/ubnt-erx
   DTS := UBNT-ERX
   FILESYSTEMS := squashfs
@@ -393,6 +385,23 @@ define Device/ubnt-erx-sfp
   DEVICE_PACKAGES += kmod-i2c-algo-pca kmod-gpio-pca953x kmod-i2c-gpio-custom
 endef
 TARGET_DEVICES += ubnt-erx-sfp
+
+define Device/unielec_u7621-06-256m-16m
+  DTS := U7621-06-256M-16M
+  IMAGE_SIZE := 16064k
+  DEVICE_TITLE := UniElec U7621-06 (256M RAM/16M flash)
+  DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-sdhci-mt7620 kmod-usb3
+  SUPPORTED_DEVICES += u7621-06-256M-16M
+endef
+TARGET_DEVICES += unielec_u7621-06-256m-16m
+
+define Device/unielec_u7621-06-512m-64m
+  DTS := U7621-06-512M-64M
+  IMAGE_SIZE := 65216k
+  DEVICE_TITLE := UniElec U7621-06 (512M RAM/64M flash)
+  DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-sdhci-mt7620 kmod-usb3
+endef
+TARGET_DEVICES += unielec_u7621-06-512m-64m
 
 define Device/vr500
   DTS := VR500

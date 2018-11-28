@@ -49,6 +49,7 @@ define Device/ArcherC20i
   TPLINK_HWID := 0xc2000001
   TPLINK_HWREV := 58
   IMAGES += factory.bin
+  DEVICE_PACKAGES := kmod-mt76x0e
   DEVICE_TITLE := TP-Link ArcherC20i
 endef
 TARGET_DEVICES += ArcherC20i
@@ -78,6 +79,14 @@ define Device/ArcherMR200
   DEVICE_TITLE := TP-Link ArcherMR200
 endef
 TARGET_DEVICES += ArcherMR200
+
+define Device/bdcom_wap2100-sk
+  DTS := BDCOM-WAP2100-SK
+  IMAGE_SIZE := 15808k
+  DEVICE_TITLE := BDCOM WAP2100-SK (ZTE ZXECS EBG3130)
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-mt76 kmod-sdhci-mt7620 kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += bdcom_wap2100-sk
 
 define Device/bocco
   DTS := BOCCO
@@ -145,8 +154,9 @@ TARGET_DEVICES += dch-m225
 
 define Device/dir-810l
   DTS := DIR-810L
-  IMAGE_SIZE := 6720k
+  DEVICE_PACKAGES := kmod-mt76x0e
   DEVICE_TITLE := D-Link DIR-810L
+  IMAGE_SIZE := 6720k
 endef
 TARGET_DEVICES += dir-810l
 
@@ -341,6 +351,21 @@ define Device/microwrt
   DEVICE_TITLE := Microduino MicroWRT
 endef
 TARGET_DEVICES += microwrt
+
+define Device/lava_lr-25g001
+  DTS := LR-25G001
+  DEVICE_TITLE := LAVA LR-25G001
+  DLINK_ROM_ID := LVA6E3804001
+  DLINK_FAMILY_MEMBER := 0x6E38
+  DLINK_FIRMWARE_SIZE := 0xFE0000
+  KERNEL := $(KERNEL_DTB)
+  IMAGES += factory.bin
+  IMAGE/sysupgrade.bin := mkdlinkfw | pad-rootfs | append-metadata
+  IMAGE/factory.bin := mkdlinkfw | pad-rootfs | mkdlinkfw-factory
+  DEVICE_PACKAGES := jboot-tools kmod-usb2 kmod-mt76 kmod-mt76x0-common \
+					kmod-mt76x0e
+endef
+TARGET_DEVICES += lava_lr-25g001
 
 define Device/miwifi-mini
   DTS := MIWIFI-MINI

@@ -329,6 +329,7 @@ define Device/f5d8235-v2
   DTS := F5D8235_V2
   IMAGE_SIZE := 7744k
   DEVICE_TITLE := Belkin F5D8235 v2
+  DEVICE_PACKAGES := kmod-switch-rtl8366rb
 endef
 TARGET_DEVICES += f5d8235-v2
 
