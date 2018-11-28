@@ -31,6 +31,7 @@ platform_check_image() {
 	awm002-evb-4M|\
 	awm002-evb-8M|\
 	bc2|\
+	bdcom,wap2100-sk|\
 	bocco|\
 	broadway|\
 	c108|\
@@ -151,6 +152,7 @@ platform_check_image() {
 	rut5xx|\
 	sap-g3200u3|\
 	sk-wb8|\
+	skylab,skw92a|\
 	sl-r7205|\
 	tama,w06|\
 	tew-638apb-v2|\
@@ -160,7 +162,8 @@ platform_check_image() {
 	timecloud|\
 	tiny-ac|\
 	u25awf-h1|\
-	u7621-06-256M-16M|\
+	unielec,u7621-06-256m-16m|\
+	unielec,u7621-06-512m-64m|\
 	u7628-01-128M-16M|\
 	ur-326n4g|\
 	ur-336un|\
@@ -176,6 +179,7 @@ platform_check_image() {
 	w306r-v20|\
 	w502u|\
 	ravpower,wd03|\
+	wavlink,wl-wn570ha1|\
 	wf-2881|\
 	whr-1166d|\
 	whr-300hp2|\
@@ -185,6 +189,7 @@ platform_check_image() {
 	widora,neo-32m|\
 	mqmaker,witi-256m|\
 	mqmaker,witi-512m|\
+	we1026-5g-16m|\
 	wizfi630a|\
 	wl-330n|\
 	wl-330n3g|\
@@ -216,7 +221,6 @@ platform_check_image() {
 	y1|\
 	y1s|\
 	youhua,wr1200js|\
-	we1026-5g-16m|\
 	zbt-ape522ii|\
 	zbt-cpe102|\
 	zbt-wa05|\
@@ -293,7 +297,8 @@ platform_check_image() {
 	dlink,dwr-116-a1|\
 	dlink,dwr-118-a2|\
 	dlink,dwr-921-c1|\
-	dwr-512-b)
+	dwr-512-b|\
+	lava,lr-25g001)
 		[ "$magic" != "0404242b" ] && {
 			echo "Invalid image type."
 			return 1

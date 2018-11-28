@@ -1,5 +1,27 @@
 include ./common-tp-link.mk
 
+define Device/tplink_archer-c58-v1
+  $(Device/tplink-safeloader-uimage)
+  ATH_SOC := qca9561
+  IMAGE_SIZE := 7936k
+  DEVICE_TITLE := TP-LINK Archer C58 v1
+  TPLINK_BOARD_ID := ARCHER-C58-V1
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca9888-ct
+  SUPPORTED_DEVICES += archer-c58-v1
+endef
+TARGET_DEVICES += tplink_archer-c58-v1
+
+define Device/tplink_archer-c59-v1
+  $(Device/tplink-safeloader-uimage)
+  ATH_SOC := qca9561
+  IMAGE_SIZE := 14528k
+  DEVICE_TITLE := TP-LINK Archer C59 v1
+  TPLINK_BOARD_ID := ARCHER-C59-V1
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k-ct ath10k-firmware-qca9888-ct
+  SUPPORTED_DEVICES += archer-c59-v1
+endef
+TARGET_DEVICES += tplink_archer-c59-v1
+
 define Device/tplink_archer-c7-v1
   $(Device/tplink-8mlzma)
   ATH_SOC := qca9558
