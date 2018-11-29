@@ -2,7 +2,6 @@
 #
 # Copyright (C) 2017 openwrt-ssr
 # Copyright (C) 2017 yushi studio <ywb94@qq.com>
-# Copyright (C) 2018 lean <coolsnowwolf@gmail.com>
 #
 # This is free software, licensed under the GNU General Public License v3.
 # See /LICENSE for more information.
@@ -37,6 +36,7 @@ usage() {
 		                            and ports for TCP and UDP
 		    -f                      flush the rules
 		    -g                      gfw list mode
+		    -r                      return china mode
 		    -h                      show this help message and exit
 EOF
 	exit $1
@@ -65,40 +65,48 @@ flush_r() {
 	ipset -X ssr_gen_router 2>/dev/null
 	ipset -X fplan 2>/dev/null
 	ipset -X gmlan 2>/dev/null
+	ipset -X oversea 2>/dev/null
 	[ -n "$FWI" ] && echo '#!/bin/sh' >$FWI
 	return 0
 }
 
 ipset_r() {
-	if [ -z "$GFWMODE" ] ;then
+	if [ "$RUNMODE" = "router" ] ;then
 	ipset -! -R <<-EOF || return 1
 		create ss_spec_wan_ac hash:net
 		$(gen_iplist | sed -e "s/^/add ss_spec_wan_ac /")
 		$(for ip in $WAN_FW_IP; do echo "add ss_spec_wan_ac $ip nomatch"; done)
 EOF
+	ipset -N gfwlist hash:net 2>/dev/null
 	$IPT -N SS_SPEC_WAN_AC 
-	ipset -N fplan hash:net 2>/dev/null
-	for ip in $LAN_FP_IP; do ipset -! add fplan $ip ; done
-	$IPT -I SS_SPEC_WAN_AC -m set --match-set fplan src -j SS_SPEC_WAN_FW
 	$IPT -I SS_SPEC_WAN_AC -d $server -j RETURN
 	$IPT -A SS_SPEC_WAN_AC -m set --match-set ss_spec_wan_ac dst -j RETURN
 	$IPT -A SS_SPEC_WAN_AC -j SS_SPEC_WAN_FW
-	else
+	
+	elif [ "$RUNMODE" = "gfw" ] ;then
 	ipset -N gfwlist hash:net 2>/dev/null
 	for ip in $WAN_FW_IP; do ipset -! add gfwlist $ip ; done
 	$IPT -N SS_SPEC_WAN_AC
-	$IPT -A SS_SPEC_WAN_AC -m set --match-set gfwlist dst -j SS_SPEC_WAN_FW
-	
+	$IPT -A SS_SPEC_WAN_AC -m set --match-set gfwlist dst -j SS_SPEC_WAN_FW	
 	ipset -N gmlan hash:net 2>/dev/null
 	for ip in $LAN_GM_IP; do ipset -! add gmlan $ip ; done
-	$IPT -A SS_SPEC_WAN_AC -m set --match-set gmlan src -m set ! --match-set china dst -j SS_SPEC_WAN_FW
+	$IPT -A SS_SPEC_WAN_AC -m set --match-set gmlan src -m set ! --match-set china dst -j SS_SPEC_WAN_FW	
+	$IPT -I SS_SPEC_WAN_AC -d $server -j RETURN
+	
+	elif [ "$RUNMODE" = "oversea" ] ;then
+	ipset -N oversea hash:net 2>/dev/null
+	$IPT -N SS_SPEC_WAN_AC
+	ipset -N gmlan hash:net 2>/dev/null
+	for ip in $LAN_GM_IP; do ipset -! add gmlan $ip ; done
+	$IPT -A SS_SPEC_WAN_AC -m set --match-set gmlan src -m set --match-set china dst -j SS_SPEC_WAN_FW	
+	$IPT -A SS_SPEC_WAN_AC -m set --match-set oversea dst -j SS_SPEC_WAN_FW
+	$IPT -I SS_SPEC_WAN_AC -d $server -j RETURN
+	
+	fi
 	
 	ipset -N fplan hash:net 2>/dev/null
 	for ip in $LAN_FP_IP; do ipset -! add fplan $ip ; done
 	$IPT -I SS_SPEC_WAN_AC -m set --match-set fplan src -j SS_SPEC_WAN_FW
-	
-	$IPT -I SS_SPEC_WAN_AC -d $server -j RETURN
-	fi
 
 	return $?
 }
@@ -176,18 +184,29 @@ tp_rule() {
   $ipt -A SS_SPEC_TPROXY -p udp -d 240.0.0.0/4 -j RETURN
   $ipt -A SS_SPEC_TPROXY -p udp -d $SERVER -j RETURN
   
-	if [ -z "$GFWMODE" ] ;then
+  $ipt -A SS_SPEC_TPROXY -p udp -m set --match-set fplan src \
+		-j TPROXY --on-port "$LOCAL_PORT" --tproxy-mark 0x01/0x01
+  
+	if [ "$RUNMODE" = "router" ] ;then
 	$ipt -A SS_SPEC_TPROXY -p udp -m set ! --match-set ss_spec_wan_ac dst \
 		-j TPROXY --on-port "$LOCAL_PORT" --tproxy-mark 0x01/0x01
-	else
+	
+	elif [ "$RUNMODE" = "gfw" ] ;then
 	$ipt -A SS_SPEC_TPROXY -p udp -m set --match-set gmlan src -m set ! --match-set china dst \
 		-j TPROXY --on-port "$LOCAL_PORT" --tproxy-mark 0x01/0x01
 	$ipt -A SS_SPEC_TPROXY -p udp -m set  --match-set gfwlist dst \
+		-j TPROXY --on-port "$LOCAL_PORT" --tproxy-mark 0x01/0x01
+		
+	elif [ "$RUNMODE" = "oversea" ] ;then
+	$ipt -A SS_SPEC_TPROXY -p udp -m set --match-set gmlan src -m set --match-set china dst \
+		-j TPROXY --on-port "$LOCAL_PORT" --tproxy-mark 0x01/0x01
+	$ipt -A SS_SPEC_TPROXY -p udp -m set  --match-set oversea dst \
 		-j TPROXY --on-port "$LOCAL_PORT" --tproxy-mark 0x01/0x01
 	fi	
 		
 	$ipt -I PREROUTING 1 ${IFNAME:+-i $IFNAME} -p udp $EXT_ARGS $MATCH_SET \
 		-m comment --comment "$TAG" -j SS_SPEC_TPROXY
+	
 	return $?
 }
 
@@ -262,7 +281,7 @@ EOF
 	return 0
 }
 
-while getopts ":s:l:S:L:i:e:a:b:w:p:G:oOuUfgh" arg; do
+while getopts ":s:l:S:L:i:e:a:b:w:p:G:oOuUfgrch" arg; do
 	case "$arg" in
 		s)
 			server=$OPTARG
@@ -310,7 +329,13 @@ while getopts ":s:l:S:L:i:e:a:b:w:p:G:oOuUfgh" arg; do
 			TPROXY=2
 			;;
 		g)
-			GFWMODE=1
+			RUNMODE=gfw
+			;;
+		r)
+			RUNMODE=router
+			;;	
+		c)
+			RUNMODE=oversea
 			;;			
 		f)
 			flush_r
