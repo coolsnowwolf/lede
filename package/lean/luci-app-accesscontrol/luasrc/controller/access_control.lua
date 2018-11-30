@@ -23,5 +23,5 @@ function index()
 --	end
 	
 
-	entry({"admin", "services", "access_control"}, cbi("access_control"), _("Internet Access Schedule Control"), 10).dependent = true
+	entry({"admin", "services", "access_control"}, cbi("access_control"), _("Internet Access Schedule Control"), 30).dependent = true
 end
