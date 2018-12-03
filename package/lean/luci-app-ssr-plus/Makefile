@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
 PKG_VERSION:=1
-PKG_RELEASE:=64
+PKG_RELEASE:=65
 
 PO2LMO:=$(STAGING_DIR_HOSTPKG)/bin/po2lmo
 
@@ -63,6 +63,8 @@ define Package/luci-app-ssr-plus/install
 	cp -pR ./root/* $(1)/
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
 	$(PO2LMO) ./po/zh-cn/ssr-plus.po $(1)/usr/lib/lua/luci/i18n/ssr-plus.zh-cn.lmo
+	
+	find $(1) -name *.lua -exec luac -s -o {} {} \;
 endef
 
 define Package/luci-app-ssr-plus/postinst
