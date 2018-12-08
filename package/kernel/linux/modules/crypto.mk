@@ -180,7 +180,7 @@ $(eval $(call KernelPackage,crypto-ecb))
 
 define KernelPackage/crypto-ecdh
   TITLE:=ECDH algorithm
-  DEPENDS:=@!(LINUX_3_18||LINUX_4_4) +kmod-crypto-kpp
+  DEPENDS:=@!LINUX_3_18 +kmod-crypto-kpp
   KCONFIG:= CONFIG_CRYPTO_ECDH
   FILES:= \
 	$(LINUX_DIR)/crypto/ecdh_generic.ko

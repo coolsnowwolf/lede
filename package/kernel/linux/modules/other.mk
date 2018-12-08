@@ -32,32 +32,20 @@ define KernelPackage/bluetooth
   TITLE:=Bluetooth support
   DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-crypto-hash +kmod-crypto-ecb +kmod-lib-crc16 +kmod-hid +!LINUX_3_18:kmod-crypto-cmac +!LINUX_3_18:kmod-regmap +LINUX_4_14:kmod-crypto-ecdh
   KCONFIG:= \
-	CONFIG_BLUEZ \
-	CONFIG_BLUEZ_L2CAP \
-	CONFIG_BLUEZ_SCO \
-	CONFIG_BLUEZ_RFCOMM \
-	CONFIG_BLUEZ_BNEP \
-	CONFIG_BLUEZ_HCIUART \
-	CONFIG_BLUEZ_HCIUSB \
-	CONFIG_BLUEZ_HIDP \
 	CONFIG_BT \
 	CONFIG_BT_BREDR=y \
 	CONFIG_BT_DEBUGFS=n \
-	CONFIG_BT_L2CAP=y \
 	CONFIG_BT_LE=y \
-	CONFIG_BT_SCO=y \
 	CONFIG_BT_RFCOMM \
 	CONFIG_BT_BNEP \
 	CONFIG_BT_HCIBTUSB \
 	CONFIG_BT_HCIBTUSB_BCM=n \
-	CONFIG_BT_HCIUSB \
 	CONFIG_BT_HCIUART \
 	CONFIG_BT_HCIUART_BCM=n \
 	CONFIG_BT_HCIUART_INTEL=n \
 	CONFIG_BT_HCIUART_H4 \
 	CONFIG_BT_HCIUART_NOKIA=n \
-	CONFIG_BT_HIDP \
-	CONFIG_HID_SUPPORT=y
+	CONFIG_BT_HIDP
   $(call AddDepends/rfkill)
   FILES:= \
 	$(LINUX_DIR)/net/bluetooth/bluetooth.ko \
@@ -988,7 +976,7 @@ $(eval $(call KernelPackage,echo))
 define KernelPackage/bmp085
   SUBMENU:=$(OTHER_MENU)
   TITLE:=BMP085/BMP18x pressure sensor
-  DEPENDS:= +kmod-regmap @!LINUX_3_18 @!LINUX_4_1
+  DEPENDS:= +kmod-regmap @!LINUX_3_18
   KCONFIG:= CONFIG_BMP085
   FILES:= $(LINUX_DIR)/drivers/misc/bmp085.ko
 endef
