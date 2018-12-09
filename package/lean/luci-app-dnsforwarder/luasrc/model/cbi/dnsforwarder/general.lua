@@ -1,7 +1,7 @@
 --Alex<1886090@gmail.com>
 --Dennis<code@tossp.com>
 local fs = require "nixio.fs"
-local CONFIG_FILE = "/etc/dnsforwarder/dnsforwarder.conf";
+local CONFIG_FILE = "/tmp/dnsforwarder.conf";
 
 function sync_value_to_file(value, file)
 	value = value:gsub("\r\n?", "\n")
@@ -41,15 +41,8 @@ s=m:section(TypedSection,"arguments", translate("通用配置"))
 s.addremove=false
 s.anonymous=true
 	view_enable = s:option(Flag,"enabled",translate("Enable"))
-	view_redir = s:option(Flag,"redir",translate("劫持所有DNS请求"),translate("自动将所有客户端的DNS请求都劫持到dnsforwarder的端口"))
-	view_port = s:option(Value,"port",translate("dnsforwarder监听端口"),translate("请根据下面的配置文件填写端口，默认5053"))
-	view_port:depends({redir=1}) 
-	view_port.default="5053"
-	view_port.datatype="uinteger"
 	view_dnsmasq = s:option(Flag,"dnsmasq",translate("设置成DNSmasq的上游服务器"),translate("让DNSMasq从本软件获得解析结果，支持GFWList模式"))
-	view_dnsmasq:depends({redir=0})
 	view_addr = s:option(Value,"addr",translate("转发地址"),translate("请填写dnsforwarder的监听地址,默认127.0.0.1:5053,如果填写<b><font color=\"red\">208.67.222.222:5353</font></b>那么可不通过该软件获得无污染结果"))
-	view_addr:depends({dnsmasq=1})
 	view_addr.default = "127.0.0.1:5053"
 
 -- ---------------------------------------------------
@@ -70,6 +63,11 @@ s1.anonymous=true
 		log_path.default="/var/log/"
 		log_path.readonly=true
 		log_path:depends ({log="true"})
+	gfw_enable = s1:option(Flag,"gfw",translate("使用GFW列表"))
+		gfw_enable.rmempty=false
+		gfw_enable.default="true"
+		gfw_enable.disabled="false"
+		gfw_enable.enabled="true"
 	udp_local = s1:option(DynamicList,"udp_local",translate("本地监听"),translate("设置在本地开启的接口的IP地址和端口，可以是本地回环地址 (127.0.0.1) ，本地局域网，以及互联网<br/>如果是 IPv6 地址，请在IP两端加上方括号（不包含端口部分），例如 [::1]:53 (本地回环)、[fe80::699c:f79a:9bb6:1]:5353<br/>如果不指定端口，则默认为 53"))
 	tcp_group = s1:option(DynamicList,"tcp_group",translate("解析策略(TCP)"),translate([[格式：&lt;IP1[:PORT],IP2[:PORT],...&gt; &lt;DOMAIN1,DOMAIN2,...&gt; &lt;on|PROXY1[:PORT],PROXY2[:PORT],...&gt;<br/>
 			设置一个 TCP 上游服务器组，并指定通过这些上游服务器查询的域名<br/>
