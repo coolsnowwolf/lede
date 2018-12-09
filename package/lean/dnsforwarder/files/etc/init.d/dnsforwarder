@@ -43,10 +43,11 @@ health(){
 	rm /var/log/dnsforwarder.log.* 2>/dev/null
 	pid=$(cat ${PID_PATH}/${PID_FILE} 2>/dev/null)
 	[ -n "$pid" ] && {
-        echo There is dnsforwarder pid ${pid}
-        logger -t There is dnsforwarder pid ${pid}
+        echo "[health] There is dnsforwarder pid ${pid}"
+        logger -t "[health] There is dnsforwarder pid ${pid}"
     } || {
-        logger -t Dnsforwarder is not running
+		echo '[health] Dnsforwarder is not running'
+        logger -t '[health] Dnsforwarder is not running'
 		start
     }
 }
@@ -54,23 +55,26 @@ health(){
 
 makegfwlist(){	
 	local GFW_FILE='/etc/dnsforwarder/gfw.txt'
-	local GFW_TMP_FILE='/tmp/dnsforwarder-gfw.txt'	
+	local GFW_TMP_FILE='/tmp/dnsforwarder-gfw.old'
 	local TSTIME=`date '+%Y-%m-%d %H:%M:%S'`
 	touch ${GFW_TMP_FILE}
-
-	/root/gfwlist2dnsmasq.sh -i -l -o /tmp/dnsforwarder-gfw.tmp \
-	|| /usr/share/dnsforwarder/gfwlist.sh -i -l -o /tmp/dnsforwarder-gfw.tmp
+	/usr/share/dnsforwarder/gfwlist.sh -i -l -o /tmp/dnsforwarder-gfw.tmp --extra-domain-file /etc/config/gfw.list
+	if [ $? != 0 ]; then
+        echo 'Failed to fetch gfwlist'		
+		logger -t  Failed to fetch gfwlist
+        return 2
+    fi
 	local gfw=$(cat /tmp/dnsforwarder-gfw.tmp)
 	echo "# GenerationAt TS_BUILD_TIME" > ${GFW_TMP_FILE}.new
 	echo "protocol tcp" >> ${GFW_TMP_FILE}.new
-	echo "server 106.186.17.181:2053,128.199.248.105:54,208.67.222.220:443,208.67.222.222:443,208.67.220.123:443,208.67.220.220:443,208.67.222.220:5353,208.67.222.222:5353,208.67.220.123:5353,208.67.220.220:5353,146.185.134.104:54,194.132.32.32:443,95.85.9.86:54" >> ${GFW_TMP_FILE}.new
+	echo "server 8.8.8.8,8.8.4.4,1.1.1.1,1.0.0.1,208.67.222.222,208.67.220.220,209.244.0.3,209.244.0.4,8.26.56.26,8.20.247.20,156.154.70.1,156.154.71.1,199.85.126.10" >> ${GFW_TMP_FILE}.new
 	echo -e 'proxy no\n\n\n' >> ${GFW_TMP_FILE}.new
 	echo "${gfw}" >> ${GFW_TMP_FILE}.new
 	if [ "`cat ${GFW_TMP_FILE}.new | md5sum`" == "`cat ${GFW_TMP_FILE} | md5sum`" ]; then
 		printf "[\e[32m%s\e[0m]\n" "hold"
 	else
 		cp ${GFW_TMP_FILE}.new ${GFW_TMP_FILE}
-		cp ${GFW_TMP_FILE}.new ${GFW_FILE}
+		cp ${GFW_TMP_FILE} ${GFW_FILE}
 		sed -i "s/TS_BUILD_TIME/${TSTIME}/g" ${GFW_FILE}
 		printf "[\e[33m%s\e[0m]" "PID"
 		restart		
@@ -79,6 +83,7 @@ makegfwlist(){
 
 makeconfig () {
     config_load dnsforwarder
+	[ -e /tmp/dnsforwarder-gfw.old ] || makegfwlist
 
     local log=$(uci get dnsforwarder.@config[0].log 2>/dev/null)
     local log_size=$(uci get dnsforwarder.@config[0].log_size 2>/dev/null)
@@ -169,7 +174,7 @@ start()
     makeconfig
 	fixflowoffload	
     dnsforwarder -f $DNSFORWARDER_CONF -d
-	sleep 7
+	sleep 10
     mkdir -p ${PID_PATH}
     pid=$(ps | awk '$5 ~ /\[dnsforwarder\]/ {print $1}')
     echo "dnsforwarder running pid is ${pid}"

@@ -215,7 +215,14 @@ process(){
 
     # Fetch GfwList and decode it into plain text
     printf 'Fetching GfwList... '
-    curl -s -L $CURL_EXTARG -o$BASE64_FILE $BASE_URL
+    local tscurl='curl -L --connect-timeout 5 -m 300 --retry 3 --retry-delay 1'
+    $tscurl $CURL_EXTARG -o$BASE64_FILE $BASE_URL \
+    || $tscurl $CURL_EXTARG -o$BASE64_FILE https://gitlab.com/gfwlist/gfwlist/raw/master/gfwlist.txt \
+    || $tscurl $CURL_EXTARG -o$BASE64_FILE https://git.tuxfamily.org/gfwlist/gfwlist.git/plain/gfwlist.txt \
+    || $tscurl $CURL_EXTARG -o$BASE64_FILE https://pagure.io/gfwlist/raw/master/f/gfwlist.txt \
+    || $tscurl $CURL_EXTARG -o$BASE64_FILE http://repo.or.cz/gfwlist.git/blob_plain/HEAD:/gfwlist.txt \
+    || $tscurl $CURL_EXTARG -o$BASE64_FILE https://bitbucket.org/gfwlist/gfwlist/raw/HEAD/gfwlist.txt \
+    || $tscurl $CURL_EXTARG -o$BASE64_FILE $BASE_URL
     if [ $? != 0 ]; then
         _red '\nFailed to fetch gfwlist.txt. Please check your Internet connection.\n'
         clean_and_exit 2
