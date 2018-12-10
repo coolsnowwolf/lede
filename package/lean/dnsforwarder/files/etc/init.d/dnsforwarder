@@ -2,16 +2,16 @@
 
 START=60
 
-DNSFORWARDER_CONF=/tmp/dnsforwarder.conf
-PID_PATH=/var/run/dnsforwarder
-PID_FILE=dns.pid
 CRON_FILE=/etc/crontabs/root
+PID_PATH=/var/run/dnsforwarder
+PID_FILE=${PID_PATH}/dns.pid
+DNSFORWARDER_CONF=/tmp/dnsforwarder.conf
 
 add_cron()
 {
 	sed -i '/dnsforwarder/d' $CRON_FILE
 	echo '0 */1 * * * /etc/init.d/dnsforwarder health' >> $CRON_FILE
-	echo '0 1 * * 0 /etc/init.d/dnsforwarder makelist' >> $CRON_FILE
+	echo '0 1 * * 0 /etc/init.d/dnsforwarder makegfwlist' >> $CRON_FILE
 	crontab $CRON_FILE
 }
 
@@ -41,15 +41,13 @@ makelist() {
 
 health(){
 	rm /var/log/dnsforwarder.log.* 2>/dev/null
-	pid=$(cat ${PID_PATH}/${PID_FILE} 2>/dev/null)
-	[ -n "$pid" ] && {
-        echo "[health] There is dnsforwarder pid ${pid}"
-        logger -t "[health] There is dnsforwarder pid ${pid}"
-    } || {
-		echo '[health] Dnsforwarder is not running'
-        logger -t '[health] Dnsforwarder is not running'
+	local pid=$(cat ${PID_FILE} 2>/dev/null)
+	if [ -n "${pid}" -a -d /proc/$pid ]; then
+		echo "[health] process exists ${pid}"
+	else
+		echo "[health] Dnsforwarder is not running ${pid}"
 		start
-    }
+	fi
 }
 
 
@@ -58,7 +56,11 @@ makegfwlist(){
 	local GFW_TMP_FILE='/tmp/dnsforwarder-gfw.old'
 	local TSTIME=`date '+%Y-%m-%d %H:%M:%S'`
 	touch ${GFW_TMP_FILE}
-	/usr/share/dnsforwarder/gfwlist.sh -i -l -o /tmp/dnsforwarder-gfw.tmp --extra-domain-file /etc/config/gfw.list
+	cat /etc/config/gfw.list 2>/dev/null > /tmp/edf.ts
+	cat /etc/dnsmasq.ssr/gfw_base.conf 2>/dev/null | awk -F '/' '{print $2}' | sed 's/^.//g' >> /tmp/edf.ts
+	cat /etc/dnsmasq.ssr/gfw_list.conf 2>/dev/null | awk -F '/' '{print $2}' | sed 's/^.//g' >> /tmp/edf.ts
+	sort /tmp/edf.ts  | uniq > /tmp/edf.ts
+	/usr/share/dnsforwarder/gfwlist.sh -i -l -o /tmp/dnsforwarder-gfw.tmp --extra-domain-file /tmp/edf.ts
 	if [ $? != 0 ]; then
         echo 'Failed to fetch gfwlist'		
 		logger -t  Failed to fetch gfwlist
@@ -83,7 +85,6 @@ makegfwlist(){
 
 makeconfig () {
     config_load dnsforwarder
-	[ -e /tmp/dnsforwarder-gfw.old ] || makegfwlist
 
     local log=$(uci get dnsforwarder.@config[0].log 2>/dev/null)
     local log_size=$(uci get dnsforwarder.@config[0].log_size 2>/dev/null)
@@ -158,9 +159,6 @@ makeconfig () {
 		echo "StatisticUpdateInterval 60" >> $DNSFORWARDER_CONF
 		echo "${domain_statistic_tag}"  > /tmp/dnsforwarder-statistic.html
     fi
-	
-    
-    cat $DNSFORWARDER_CONF
 }
 
 start()
@@ -178,8 +176,8 @@ start()
     mkdir -p ${PID_PATH}
     pid=$(ps | awk '$5 ~ /\[dnsforwarder\]/ {print $1}')
     echo "dnsforwarder running pid is ${pid}"
-    logger -t The pid of dnsforwarder is ${PID_PATH}/${PID_FILE} ${pid}
-    echo ${pid} > $PID_PATH/$PID_FILE
+    logger -t The pid of dnsforwarder is ${PID_FILE} ${pid}
+    echo ${pid} > ${PID_FILE}
     /etc/init.d/dnsforwarder enable
     local dnsmasq=$(uci get dnsforwarder.@arguments[0].dnsmasq 2>/dev/null)
     local addr=$(uci get dnsforwarder.@arguments[0].addr 2>/dev/null)
@@ -188,7 +186,7 @@ start()
 	if [ "${dnsmasq}" = "1" ]; then
         uci delete dhcp.@dnsmasq[0].server 2>/dev/null
         # uci add_list dhcp.@dnsmasq[0].server=$addr
-        uci delete dhcp.@dnsmasq[0].resolvfile
+        uci delete dhcp.@dnsmasq[0].resolvfile 2>/dev/null
         uci set dhcp.@dnsmasq[0].noresolv=1
 		uci set dhcp.@dnsmasq[0].serversfile=/tmp/dnsmasq.dnsforwarder.conf
         uci commit dhcp        
@@ -208,12 +206,12 @@ stop()
     uci delete dhcp.@dnsmasq[0].noresolv 2>/dev/null
 	uci delete dhcp.@dnsmasq[0].serversfile 2>/dev/null
     uci commit dhcp
-    [ -e ${PID_PATH}/${PID_FILE} ] && {
-        pid=$(cat $PID_PATH/$PID_FILE)
+    [ -e ${PID_FILE} ] && {
+        pid=$(cat ${PID_FILE})
         logger -t killing dnsforwarder pid ${pid}
         echo killing dnsforwarder pid ${pid}
         kill ${pid}
-        rm -f ${PID_PATH}/${PID_FILE}
+        rm -f ${PID_FILE}
     } || {
         logger -t Cannot find dnsforwarder pid file
     }
@@ -222,7 +220,7 @@ stop()
 
 restart()
 {
-    pid=$(cat ${PID_PATH}/${PID_FILE} 2>/dev/null)
+    pid=$(cat ${PID_FILE} 2>/dev/null)
     echo Dnsforwarder pid file is ${pid}
     [ -n "$pid" ] && {
         echo stopping pid ${pid}
