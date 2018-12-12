@@ -62,7 +62,7 @@ endef
 define Package/samba4-server
   $(call Package/samba4/Default)
   TITLE+= server
-  DEPENDS:= +samba4-libs
+  DEPENDS:= +samba4-libs +libcap
 endef
 
 define Package/samba4-server/description
