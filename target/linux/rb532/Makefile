@@ -12,10 +12,10 @@ BOARDNAME:=Mikrotik RouterBoard 532
 FEATURES:=pci targz squashfs minor nand
 MAINTAINER:=Roman Yeryomin <roman@advem.lv>
 
-KERNEL_PATCHVER:=4.9
+KERNEL_PATCHVER:=4.14
 
 include $(INCLUDE_DIR)/target.mk
 
-DEFAULT_PACKAGES += wpad-mini kmod-ath5k kmod-input-rb532 e2fsprogs mkf2fs nand-utils
+DEFAULT_PACKAGES += wpad-basic kmod-ath5k kmod-input-rb532 e2fsprogs mkf2fs nand-utils
 
 $(eval $(call BuildTarget))
