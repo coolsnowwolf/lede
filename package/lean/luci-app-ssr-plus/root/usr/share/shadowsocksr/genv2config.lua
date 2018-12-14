@@ -84,4 +84,4 @@ local v2ray = {
         }
     }
 }
-print(json.stringify(v2ray))
+print(json.stringify(v2ray, 1))
