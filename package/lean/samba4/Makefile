@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=samba
 PKG_VERSION:=4.9.2
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_MAINTAINER:=Andy Walsh <andy.walsh44+github@gmail.com>
 PKG_LICENSE:=GPL-3.0-only
@@ -62,7 +62,7 @@ endef
 define Package/samba4-server
   $(call Package/samba4/Default)
   TITLE+= server
-  DEPENDS:= +samba4-libs +libcap
+  DEPENDS:= +samba4-libs
 endef
 
 define Package/samba4-server/description
