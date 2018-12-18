@@ -78,6 +78,23 @@ define Device/asus_rt-ac58u
 endef
 TARGET_DEVICES += asus_rt-ac58u
 
+define Device/asus_rt-ac1300uhp
+	$(call Device/FitImageLzma)
+	DEVICE_DTS := qcom-ipq4018-rt-ac1300uhp
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DTB_SIZE := 65536
+	DEVICE_TITLE := Asus RT-AC1300UHP
+	IMAGE_SIZE := 20439364
+	FILESYSTEMS := squashfs
+	UIMAGE_NAME:=$(shell echo -e '\03\01\01\01RT-AC58U')
+	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
+	KERNEL_INITRAMFS_SUFFIX := -factory.trx
+	IMAGES := sysupgrade.bin
+	DEVICE_PACKAGES := kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += asus_rt-ac1300uhp
+
 define Device/asus_rt-acrh17
 	$(call Device/FitImageLzma)
 	DEVICE_DTS := qcom-ipq4019-rt-acrh17
