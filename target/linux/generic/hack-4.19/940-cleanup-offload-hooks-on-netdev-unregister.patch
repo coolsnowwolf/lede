@@ -1,0 +1,91 @@
+From ae56e27e30122f82d244f9eb35fcab8fa60e0d31 Mon Sep 17 00:00:00 2001
+From: Chen Minqiang <ptpt52@gmail.com>
+Date: Sun, 29 Apr 2018 14:08:57 +0800
+Subject: [PATCH] cleanup offload hooks on netdev unregister
+
+This should fix crashdump on reboot when FLOWOFFLOAD enabled
+
+kmsg:
+[   84.188081] Workqueue: events_power_efficient xt_flowoffload_hook_work [xt_FLOWOFFLOAD]
+[   84.209326] task: ffff88000ecd0c80 task.stack: ffffc90000068000
+[   84.224706] RIP: 0010:__nf_unregister_net_hook+0x1/0x90
+[   84.242911] RSP: 0018:ffffc9000006be30 EFLAGS: 00010202
+[   84.257405] RAX: 0000000000000000 RBX: ffff88000c5b3228 RCX: 0000000100170001
+[   84.292175] RDX: ffff88000ecd0c80 RSI: ffff88000c5b3228 RDI: 6b6b6b6b6b6b6b6b
+[   84.305095] RBP: ffffc9000006be58 R08: ffff88000c5b3578 R09: ffff88000c5b3538
+[   84.325980] R10: ffffc9000006be50 R11: ffff88000fc1f310 R12: ffffffff81e6c580
+[   84.396514] R13: ffff88000d1723d0 R14: ffff88000ec0fc00 R15: 0000000000000000
+[   84.459500] FS:  0000000000000000(0000) GS:ffff88000fc00000(0000) knlGS:0000000000000000
+[   84.525121] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[   84.565460] CR2: 0000000000a931d8 CR3: 0000000001e08006 CR4: 00000000000606f0
+[   84.638311] Call Trace:
+[   84.655229]  ? nf_unregister_net_hook+0x88/0xd0
+[   84.706898]  xt_flowoffload_hook_work+0x12a/0x17a [xt_FLOWOFFLOAD]
+[   84.765504]  process_one_work+0x1c4/0x310
+[   84.799558]  worker_thread+0x20b/0x3c0
+[   84.850119]  kthread+0x112/0x120
+[   84.884839]  ? process_one_work+0x310/0x310
+[   84.923571]  ? kthread_create_on_node+0x40/0x40
+[   84.966100]  ret_from_fork+0x35/0x40
+[   84.981738] Code: 41 5c 41 5d 41 5e 41 5f 5d c3 48 8b 05 c1 f1 99 00 55 48 89 e5 48 85 c0 75 02 0f 0b e8 b9 f6 30 00 5d c3 0f 1f 80 00 00 00 00 55 <0f> b7 0f 48 89 e5 48 89 c8 48 c1 e0 04 48 8d 54 07 08 31 c0 eb
+[   85.100453] RIP: __nf_unregister_net_hook+0x1/0x90 RSP: ffffc9000006be30
+[   85.111658] ---[ end trace 5c25a390045cac75 ]---
+[   85.124535] Kernel panic - not syncing: Fatal exception
+
+Signed-off-by: Chen Minqiang <ptpt52@gmail.com>
+---
+ net/netfilter/xt_FLOWOFFLOAD.c | 32 ++++++++++++++++++++++++++++++++
+ 1 file changed, 32 insertions(+)
+
+--- a/net/netfilter/xt_FLOWOFFLOAD.c
++++ b/net/netfilter/xt_FLOWOFFLOAD.c
+@@ -340,10 +340,41 @@ static void xt_flowoffload_table_cleanup
+ 	nf_flow_table_free(table);
+ }
+ 
++static int flow_offload_netdev_event(struct notifier_block *this,
++				     unsigned long event, void *ptr)
++{
++	struct xt_flowoffload_hook *hook = NULL;
++	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
++
++	if (event != NETDEV_UNREGISTER)
++		return NOTIFY_DONE;
++
++	spin_lock_bh(&hooks_lock);
++	hook = flow_offload_lookup_hook(dev);
++	if (hook) {
++		hlist_del(&hook->list);
++	}
++	spin_unlock_bh(&hooks_lock);
++	if (hook) {
++		nf_unregister_net_hook(hook->net, &hook->ops);
++		kfree(hook);
++	}
++
++	nf_flow_table_cleanup(dev_net(dev), dev);
++
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block flow_offload_netdev_notifier = {
++	.notifier_call	= flow_offload_netdev_event,
++};
++
+ static int __init xt_flowoffload_tg_init(void)
+ {
+ 	int ret;
+ 
++	register_netdevice_notifier(&flow_offload_netdev_notifier);
++
+ 	INIT_DELAYED_WORK(&hook_work, xt_flowoffload_hook_work);
+ 
+ 	ret = xt_flowoffload_table_init(&nf_flowtable);
+@@ -361,6 +392,7 @@ static void __exit xt_flowoffload_tg_exi
+ {
+ 	xt_unregister_target(&offload_tg_reg);
+ 	xt_flowoffload_table_cleanup(&nf_flowtable);
++	unregister_netdevice_notifier(&flow_offload_netdev_notifier);
+ }
+ 
+ MODULE_LICENSE("GPL");

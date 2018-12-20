@@ -1,0 +1,176 @@
+From ffe387740bbe88dd88bbe04d6375902708003d6e Mon Sep 17 00:00:00 2001
+From: Felix Fietkau <nbd@nbd.name>
+Date: Fri, 7 Jul 2017 17:25:00 +0200
+Subject: net: add packet mangeling patch
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ include/linux/netdevice.h | 11 +++++++++++
+ include/linux/skbuff.h    | 14 ++++----------
+ net/Kconfig               |  6 ++++++
+ net/core/dev.c            | 18 ++++++++++++++----
+ net/core/skbuff.c         | 17 +++++++++++++++++
+ net/ethernet/eth.c        |  6 ++++++
+ 6 files changed, 58 insertions(+), 14 deletions(-)
+
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -1510,6 +1510,7 @@ enum netdev_priv_flags {
+ 	IFF_NO_RX_HANDLER		= 1<<26,
+ 	IFF_FAILOVER			= 1<<27,
+ 	IFF_FAILOVER_SLAVE		= 1<<28,
++	IFF_NO_IP_ALIGN			= 1<<29,
+ };
+ 
+ #define IFF_802_1Q_VLAN			IFF_802_1Q_VLAN
+@@ -1540,6 +1541,7 @@ enum netdev_priv_flags {
+ #define IFF_NO_RX_HANDLER		IFF_NO_RX_HANDLER
+ #define IFF_FAILOVER			IFF_FAILOVER
+ #define IFF_FAILOVER_SLAVE		IFF_FAILOVER_SLAVE
++#define IFF_NO_IP_ALIGN			IFF_NO_IP_ALIGN
+ 
+ /**
+  *	struct net_device - The DEVICE structure.
+@@ -1838,6 +1840,11 @@ struct net_device {
+ 	const struct tlsdev_ops *tlsdev_ops;
+ #endif
+ 
++#ifdef CONFIG_ETHERNET_PACKET_MANGLE
++	void (*eth_mangle_rx)(struct net_device *dev, struct sk_buff *skb);
++	struct sk_buff *(*eth_mangle_tx)(struct net_device *dev, struct sk_buff *skb);
++#endif
++
+ 	const struct header_ops *header_ops;
+ 
+ 	unsigned int		flags;
+@@ -1913,6 +1920,10 @@ struct net_device {
+ 	struct mpls_dev __rcu	*mpls_ptr;
+ #endif
+ 
++#ifdef CONFIG_ETHERNET_PACKET_MANGLE
++	void			*phy_ptr; /* PHY device specific data */
++#endif
++
+ /*
+  * Cache lines mostly used on receive path (including eth_type_trans())
+  */
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -2516,6 +2516,10 @@ static inline int pskb_trim(struct sk_bu
+ 	return (len < skb->len) ? __pskb_trim(skb, len) : 0;
+ }
+ 
++extern struct sk_buff *__netdev_alloc_skb_ip_align(struct net_device *dev,
++		unsigned int length, gfp_t gfp);
++
++
+ /**
+  *	pskb_trim_unique - remove end from a paged unique (not cloned) buffer
+  *	@skb: buffer to alter
+@@ -2646,16 +2650,6 @@ static inline struct sk_buff *dev_alloc_
+ }
+ 
+ 
+-static inline struct sk_buff *__netdev_alloc_skb_ip_align(struct net_device *dev,
+-		unsigned int length, gfp_t gfp)
+-{
+-	struct sk_buff *skb = __netdev_alloc_skb(dev, length + NET_IP_ALIGN, gfp);
+-
+-	if (NET_IP_ALIGN && skb)
+-		skb_reserve(skb, NET_IP_ALIGN);
+-	return skb;
+-}
+-
+ static inline struct sk_buff *netdev_alloc_skb_ip_align(struct net_device *dev,
+ 		unsigned int length)
+ {
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -25,6 +25,12 @@ menuconfig NET
+ 
+ if NET
+ 
++config ETHERNET_PACKET_MANGLE
++	bool
++	help
++	  This option can be selected by phy drivers that need to mangle
++	  packets going in or out of an ethernet device.
++
+ config WANT_COMPAT_NETLINK_MESSAGES
+ 	bool
+ 	help
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -3233,10 +3233,20 @@ static int xmit_one(struct sk_buff *skb,
+ 	if (!list_empty(&ptype_all) || !list_empty(&dev->ptype_all))
+ 		dev_queue_xmit_nit(skb, dev);
+ 
+-	len = skb->len;
+-	trace_net_dev_start_xmit(skb, dev);
+-	rc = netdev_start_xmit(skb, dev, txq, more);
+-	trace_net_dev_xmit(skb, rc, dev, len);
++#ifdef CONFIG_ETHERNET_PACKET_MANGLE
++	if (!dev->eth_mangle_tx ||
++	    (skb = dev->eth_mangle_tx(dev, skb)) != NULL)
++#else
++	if (1)
++#endif
++	{
++		len = skb->len;
++		trace_net_dev_start_xmit(skb, dev);
++		rc = netdev_start_xmit(skb, dev, txq, more);
++		trace_net_dev_xmit(skb, rc, dev, len);
++	} else {
++		rc = NETDEV_TX_OK;
++	}
+ 
+ 	return rc;
+ }
+--- a/net/core/skbuff.c
++++ b/net/core/skbuff.c
+@@ -63,6 +63,7 @@
+ #include <linux/errqueue.h>
+ #include <linux/prefetch.h>
+ #include <linux/if_vlan.h>
++#include <linux/if.h>
+ 
+ #include <net/protocol.h>
+ #include <net/dst.h>
+@@ -499,6 +500,22 @@ skb_fail:
+ }
+ EXPORT_SYMBOL(__napi_alloc_skb);
+ 
++struct sk_buff *__netdev_alloc_skb_ip_align(struct net_device *dev,
++		unsigned int length, gfp_t gfp)
++{
++	struct sk_buff *skb = __netdev_alloc_skb(dev, length + NET_IP_ALIGN, gfp);
++
++#ifdef CONFIG_ETHERNET_PACKET_MANGLE
++	if (dev && (dev->priv_flags & IFF_NO_IP_ALIGN))
++		return skb;
++#endif
++
++	if (NET_IP_ALIGN && skb)
++		skb_reserve(skb, NET_IP_ALIGN);
++	return skb;
++}
++EXPORT_SYMBOL(__netdev_alloc_skb_ip_align);
++
+ void skb_add_rx_frag(struct sk_buff *skb, int i, struct page *page, int off,
+ 		     int size, unsigned int truesize)
+ {
+--- a/net/ethernet/eth.c
++++ b/net/ethernet/eth.c
+@@ -172,6 +172,12 @@ __be16 eth_type_trans(struct sk_buff *sk
+ 	const struct ethhdr *eth;
+ 
+ 	skb->dev = dev;
++
++#ifdef CONFIG_ETHERNET_PACKET_MANGLE
++	if (dev->eth_mangle_rx)
++		dev->eth_mangle_rx(dev, skb);
++#endif
++
+ 	skb_reset_mac_header(skb);
+ 
+ 	eth = (struct ethhdr *)skb->data;
