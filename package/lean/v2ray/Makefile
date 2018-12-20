@@ -10,25 +10,6 @@ PKG_NAME:=v2ray
 PKG_VERSION:=v4.9.0
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
-ifeq ($(ARCH),x86_64)
-	PKG_ARCH_V2RAY:=linux-64
-endif
-ifeq ($(ARCH),mipsel)
-	PKG_ARCH_V2RAY:=linux-mipsle
-endif
-ifeq ($(ARCH),mips)
-	PKG_ARCH_V2RAY:=linux-mips
-endif
-ifeq ($(ARCH),i386)
-	PKG_ARCH_V2RAY:=linux-32
-endif
-ifeq ($(ARCH),arm)
-	PKG_ARCH_V2RAY:=linux-arm
-endif
-ifeq ($(ARCH),aarch64)
-	PKG_ARCH_V2RAY:=linux-arm64
-endif
-
 include $(INCLUDE_DIR)/package.mk
 
 define Package/$(PKG_NAME)
@@ -74,6 +55,36 @@ define Package/$(PKG_NAME)/description
 V2Ray is a cross-platform proxy software
 endef
 
+ifeq ($(ARCH),x86_64)
+	PKG_ARCH_V2RAY:=linux-64
+endif
+ifeq ($(ARCH),mipsel)
+	PKG_ARCH_V2RAY:=linux-mipsle
+endif
+ifeq ($(ARCH),mips)
+	PKG_ARCH_V2RAY:=linux-mips
+endif
+ifeq ($(ARCH),i386)
+	PKG_ARCH_V2RAY:=linux-32
+endif
+ifeq ($(ARCH),arm)
+	PKG_ARCH_V2RAY:=linux-arm
+endif
+ifeq ($(ARCH),aarch64)
+	PKG_ARCH_V2RAY:=linux-arm64
+endif
+
+ifeq ($(ARCH),arm)
+  ifneq ($(BOARD),bcm53xx)
+		V2RAY_BIN:=v2ray_armv7
+		V2CTL_BIN:=v2ctl_armv7
+  endif
+else
+		V2RAY_BIN:=v2ray
+		V2CTL_BIN:=v2ctl
+endif
+
+
 define Build/Prepare
 	[ ! -f $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY).zip ] && wget https://github.com/v2ray/v2ray-core/releases/download/$(PKG_VERSION)/v2ray-$(PKG_ARCH_V2RAY).zip -O $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY).zip
 	unzip -o $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY).zip -d $(PKG_BUILD_DIR)
@@ -87,15 +98,17 @@ define Build/Configure
 endef
 
 define Build/Compile
+	##chmod +x $(PKG_BUILD_DIR)/$(V2RAY_BIN) && upx --ultra-brute $(PKG_BUILD_DIR)/$(V2RAY_BIN)
+	##chmod +x $(PKG_BUILD_DIR)/$(V2CTL_BIN) && upx --ultra-brute $(PKG_BUILD_DIR)/$(V2CTL_BIN)
 endef
 
 define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/bin/v2ray
 ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_V2RAY
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ray $(1)/usr/bin/v2ray/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/$(V2RAY_BIN) $(1)/usr/bin/v2ray/v2ray
 endif
 ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_V2CTL
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ctl $(1)/usr/bin/v2ray/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/$(V2CTL_BIN) $(1)/usr/bin/v2ray/v2ctl
 endif
 ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_GEOIP
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/geoip.dat $(1)/usr/bin/v2ray/
