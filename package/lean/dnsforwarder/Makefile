@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=dnsforwarder
 PKG_VERSION:=6.1.15
-PKG_RELEASE:=5
+PKG_RELEASE:=10
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/holmium/dnsforwarder.git
@@ -27,11 +27,6 @@ define Package/$(PKG_NAME)/description
 Forwarding queries to customized domains (and their subdomains) to specified servers over a specified protocol (UDP or TCP). non-standard ports are supported.
 endef
 
-
-define Package/$(PKG_NAME)/conffiles
-/etc/dnsforwarder/dnsforwarder.conf
-endef
-
 CONFIGURE_ARGS += --enable-downloader=wget
 
 define Package/$(PKG_NAME)/install
@@ -42,7 +37,9 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) files/etc/config/dnsforwarder $(1)/etc/config/dnsforwarder
 	$(INSTALL_DIR) $(1)/etc/dnsforwarder
-	$(INSTALL_CONF) $(PKG_BUILD_DIR)/default.config $(1)/etc/dnsforwarder/dnsforwarder.conf
+	$(INSTALL_CONF) files/etc/dnsforwarder/gfw.txt $(1)/etc/dnsforwarder/gfw.txt
+	$(INSTALL_DIR) $(1)/usr/share/dnsforwarder
+	$(INSTALL_BIN) files/usr/share/dnsforwarder/gfwlist.sh $(1)/usr/share/dnsforwarder/gfwlist.sh
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))

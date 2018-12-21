@@ -36,6 +36,15 @@ o:value("", translate("Disable"))
 o:value("same", translate("Same as Global Server"))
 for k, v in pairs(server_table) do o:value(k, v) end
 
+o = s:option(ListValue, "threads", translate("Multi Threads Option"))
+o:value("0", translate("Auto Threads"))
+o:value("1", translate("1 Thread"))
+o:value("2", translate("2 Threads"))
+o:value("4", translate("4 Threads"))
+o:value("8", translate("8 Threads"))
+o.default = "0"
+o.rmempty = false
+
 o = s:option(ListValue, "run_mode", translate("Running Mode"))
 o:value("gfw", translate("GFW List Mode"))
 o:value("router", translate("IP Route Mode"))

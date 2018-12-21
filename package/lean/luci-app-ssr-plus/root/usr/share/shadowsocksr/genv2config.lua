@@ -1,4 +1,4 @@
-local ucursor = require "luci.model.uci"
+local ucursor = require "luci.model.uci".cursor()
 local json = require "luci.jsonc"
 local server_section = arg[1]
 local proto = arg[2] 
@@ -84,4 +84,4 @@ local v2ray = {
         }
     }
 }
-print(json.stringify(v2ray))
+print(json.stringify(v2ray, 1))

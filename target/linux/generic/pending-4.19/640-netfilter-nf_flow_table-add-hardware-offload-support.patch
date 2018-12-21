@@ -1,0 +1,564 @@
+From: Pablo Neira Ayuso <pablo@netfilter.org>
+Date: Thu, 11 Jan 2018 16:32:00 +0100
+Subject: [PATCH] netfilter: nf_flow_table: add hardware offload support
+
+This patch adds the infrastructure to offload flows to hardware, in case
+the nic/switch comes with built-in flow tables capabilities.
+
+If the hardware comes with no hardware flow tables or they have
+limitations in terms of features, the existing infrastructure falls back
+to the software flow table implementation.
+
+The software flow table garbage collector skips entries that resides in
+the hardware, so the hardware will be responsible for releasing this
+flow table entry too via flow_offload_dead().
+
+Hardware configuration, either to add or to delete entries, is done from
+the hardware offload workqueue, to ensure this is done from user context
+given that we may sleep when grabbing the mdio mutex.
+
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ create mode 100644 net/netfilter/nf_flow_table_hw.c
+
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -918,6 +918,13 @@ struct dev_ifalias {
+ 	char ifalias[];
+ };
+ 
++struct flow_offload;
++
++enum flow_offload_type {
++	FLOW_OFFLOAD_ADD	= 0,
++	FLOW_OFFLOAD_DEL,
++};
++
+ /*
+  * This structure defines the management hooks for network devices.
+  * The following hooks can be defined; unless noted otherwise, they are
+@@ -1150,6 +1157,10 @@ struct dev_ifalias {
+  * int (*ndo_bridge_dellink)(struct net_device *dev, struct nlmsghdr *nlh,
+  *			     u16 flags);
+  *
++ * int (*ndo_flow_offload)(enum flow_offload_type type,
++ *			   struct flow_offload *flow);
++ *	Adds/deletes flow entry to/from net device flowtable.
++ *
+  * int (*ndo_change_carrier)(struct net_device *dev, bool new_carrier);
+  *	Called to change device carrier. Soft-devices (like dummy, team, etc)
+  *	which do not represent real hardware may define this to allow their
+@@ -1377,6 +1388,8 @@ struct net_device_ops {
+ 	int			(*ndo_bridge_dellink)(struct net_device *dev,
+ 						      struct nlmsghdr *nlh,
+ 						      u16 flags);
++	int			(*ndo_flow_offload)(enum flow_offload_type type,
++						    struct flow_offload *flow);
+ 	int			(*ndo_change_carrier)(struct net_device *dev,
+ 						      bool new_carrier);
+ 	int			(*ndo_get_phys_port_id)(struct net_device *dev,
+--- a/include/net/netfilter/nf_flow_table.h
++++ b/include/net/netfilter/nf_flow_table.h
+@@ -20,11 +20,17 @@ struct nf_flowtable_type {
+ 	struct module			*owner;
+ };
+ 
++enum nf_flowtable_flags {
++	NF_FLOWTABLE_F_HW		= 0x1,
++};
++
+ struct nf_flowtable {
+ 	struct list_head		list;
+ 	struct rhashtable		rhashtable;
+ 	const struct nf_flowtable_type	*type;
++	u32				flags;
+ 	struct delayed_work		gc_work;
++	possible_net_t			ft_net;
+ };
+ 
+ enum flow_offload_tuple_dir {
+@@ -69,6 +75,7 @@ struct flow_offload_tuple_rhash {
+ #define FLOW_OFFLOAD_DNAT	0x2
+ #define FLOW_OFFLOAD_DYING	0x4
+ #define FLOW_OFFLOAD_TEARDOWN	0x8
++#define FLOW_OFFLOAD_HW		0x10
+ 
+ struct flow_offload {
+ 	struct flow_offload_tuple_rhash		tuplehash[FLOW_OFFLOAD_DIR_MAX];
+@@ -126,6 +133,22 @@ unsigned int nf_flow_offload_ip_hook(voi
+ unsigned int nf_flow_offload_ipv6_hook(void *priv, struct sk_buff *skb,
+ 				       const struct nf_hook_state *state);
+ 
++void nf_flow_offload_hw_add(struct net *net, struct flow_offload *flow,
++			    struct nf_conn *ct);
++void nf_flow_offload_hw_del(struct net *net, struct flow_offload *flow);
++
++struct nf_flow_table_hw {
++	struct module	*owner;
++	void		(*add)(struct net *net, struct flow_offload *flow,
++			       struct nf_conn *ct);
++	void		(*del)(struct net *net, struct flow_offload *flow);
++};
++
++int nf_flow_table_hw_register(const struct nf_flow_table_hw *offload);
++void nf_flow_table_hw_unregister(const struct nf_flow_table_hw *offload);
++
++extern struct work_struct nf_flow_offload_hw_work;
++
+ #define MODULE_ALIAS_NF_FLOWTABLE(family)	\
+ 	MODULE_ALIAS("nf-flowtable-" __stringify(family))
+ 
+--- a/include/uapi/linux/netfilter/nf_tables.h
++++ b/include/uapi/linux/netfilter/nf_tables.h
+@@ -1464,6 +1464,7 @@ enum nft_object_attributes {
+  * @NFTA_FLOWTABLE_HOOK: netfilter hook configuration(NLA_U32)
+  * @NFTA_FLOWTABLE_USE: number of references to this flow table (NLA_U32)
+  * @NFTA_FLOWTABLE_HANDLE: object handle (NLA_U64)
++ * @NFTA_FLOWTABLE_FLAGS: flags (NLA_U32)
+  */
+ enum nft_flowtable_attributes {
+ 	NFTA_FLOWTABLE_UNSPEC,
+@@ -1473,6 +1474,7 @@ enum nft_flowtable_attributes {
+ 	NFTA_FLOWTABLE_USE,
+ 	NFTA_FLOWTABLE_HANDLE,
+ 	NFTA_FLOWTABLE_PAD,
++	NFTA_FLOWTABLE_FLAGS,
+ 	__NFTA_FLOWTABLE_MAX
+ };
+ #define NFTA_FLOWTABLE_MAX	(__NFTA_FLOWTABLE_MAX - 1)
+--- a/net/netfilter/Kconfig
++++ b/net/netfilter/Kconfig
+@@ -714,6 +714,15 @@ config NF_FLOW_TABLE
+ 
+ 	  To compile it as a module, choose M here.
+ 
++config NF_FLOW_TABLE_HW
++	tristate "Netfilter flow table hardware offload module"
++	depends on NF_FLOW_TABLE
++	help
++	  This option adds hardware offload support for the flow table core
++	  infrastructure.
++
++	  To compile it as a module, choose M here.
++
+ config NETFILTER_XTABLES
+ 	tristate "Netfilter Xtables support (required for ip_tables)"
+ 	default m if NETFILTER_ADVANCED=n
+--- a/net/netfilter/Makefile
++++ b/net/netfilter/Makefile
+@@ -126,6 +126,7 @@ obj-$(CONFIG_NF_FLOW_TABLE)	+= nf_flow_t
+ nf_flow_table-objs := nf_flow_table_core.o nf_flow_table_ip.o
+ 
+ obj-$(CONFIG_NF_FLOW_TABLE_INET) += nf_flow_table_inet.o
++obj-$(CONFIG_NF_FLOW_TABLE_HW)	+= nf_flow_table_hw.o
+ 
+ # generic X tables 
+ obj-$(CONFIG_NETFILTER_XTABLES) += x_tables.o xt_tcpudp.o
+--- a/net/netfilter/nf_flow_table_core.c
++++ b/net/netfilter/nf_flow_table_core.c
+@@ -215,10 +215,16 @@ int flow_offload_add(struct nf_flowtable
+ }
+ EXPORT_SYMBOL_GPL(flow_offload_add);
+ 
++static inline bool nf_flow_in_hw(const struct flow_offload *flow)
++{
++	return flow->flags & FLOW_OFFLOAD_HW;
++}
++
+ static void flow_offload_del(struct nf_flowtable *flow_table,
+ 			     struct flow_offload *flow)
+ {
+ 	struct flow_offload_entry *e;
++	struct net *net = read_pnet(&flow_table->ft_net);
+ 
+ 	rhashtable_remove_fast(&flow_table->rhashtable,
+ 			       &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].node,
+@@ -233,6 +239,9 @@ static void flow_offload_del(struct nf_f
+ 	if (!(flow->flags & FLOW_OFFLOAD_TEARDOWN))
+ 		flow_offload_fixup_ct_state(e->ct);
+ 
++	if (nf_flow_in_hw(flow))
++		nf_flow_offload_hw_del(net, flow);
++
+ 	flow_offload_free(flow);
+ }
+ 
+@@ -346,6 +355,9 @@ static int nf_flow_offload_gc_step(struc
+ 		if (!teardown)
+ 			nf_ct_offload_timeout(flow);
+ 
++		if (nf_flow_in_hw(flow) && !teardown)
++			continue;
++
+ 		if (nf_flow_has_expired(flow) || teardown)
+ 			flow_offload_del(flow_table, flow);
+ 	}
+@@ -481,10 +493,43 @@ int nf_flow_dnat_port(const struct flow_
+ }
+ EXPORT_SYMBOL_GPL(nf_flow_dnat_port);
+ 
++static const struct nf_flow_table_hw __rcu *nf_flow_table_hw_hook __read_mostly;
++
++static int nf_flow_offload_hw_init(struct nf_flowtable *flow_table)
++{
++	const struct nf_flow_table_hw *offload;
++
++	if (!rcu_access_pointer(nf_flow_table_hw_hook))
++		request_module("nf-flow-table-hw");
++
++	rcu_read_lock();
++	offload = rcu_dereference(nf_flow_table_hw_hook);
++	if (!offload)
++		goto err_no_hw_offload;
++
++	if (!try_module_get(offload->owner))
++		goto err_no_hw_offload;
++
++	rcu_read_unlock();
++
++	return 0;
++
++err_no_hw_offload:
++	rcu_read_unlock();
++
++	return -EOPNOTSUPP;
++}
++
+ int nf_flow_table_init(struct nf_flowtable *flowtable)
+ {
+ 	int err;
+ 
++	if (flowtable->flags & NF_FLOWTABLE_F_HW) {
++		err = nf_flow_offload_hw_init(flowtable);
++		if (err)
++			return err;
++	}
++
+ 	INIT_DEFERRABLE_WORK(&flowtable->gc_work, nf_flow_offload_work_gc);
+ 
+ 	err = rhashtable_init(&flowtable->rhashtable,
+@@ -522,6 +567,8 @@ static void nf_flow_table_iterate_cleanu
+ {
+ 	nf_flow_table_iterate(flowtable, nf_flow_table_do_cleanup, dev);
+ 	flush_delayed_work(&flowtable->gc_work);
++	if (flowtable->flags & NF_FLOWTABLE_F_HW)
++		flush_work(&nf_flow_offload_hw_work);
+ }
+ 
+ void nf_flow_table_cleanup(struct net *net, struct net_device *dev)
+@@ -535,6 +582,26 @@ void nf_flow_table_cleanup(struct net *n
+ }
+ EXPORT_SYMBOL_GPL(nf_flow_table_cleanup);
+ 
++struct work_struct nf_flow_offload_hw_work;
++EXPORT_SYMBOL_GPL(nf_flow_offload_hw_work);
++
++/* Give the hardware workqueue the chance to remove entries from hardware.*/
++static void nf_flow_offload_hw_free(struct nf_flowtable *flowtable)
++{
++	const struct nf_flow_table_hw *offload;
++
++	flush_work(&nf_flow_offload_hw_work);
++
++	rcu_read_lock();
++	offload = rcu_dereference(nf_flow_table_hw_hook);
++	if (!offload) {
++		rcu_read_unlock();
++		return;
++	}
++	module_put(offload->owner);
++	rcu_read_unlock();
++}
++
+ void nf_flow_table_free(struct nf_flowtable *flow_table)
+ {
+ 	mutex_lock(&flowtable_lock);
+@@ -544,9 +611,58 @@ void nf_flow_table_free(struct nf_flowta
+ 	nf_flow_table_iterate(flow_table, nf_flow_table_do_cleanup, NULL);
+ 	WARN_ON(!nf_flow_offload_gc_step(flow_table));
+ 	rhashtable_destroy(&flow_table->rhashtable);
++	if (flow_table->flags & NF_FLOWTABLE_F_HW)
++		nf_flow_offload_hw_free(flow_table);
+ }
+ EXPORT_SYMBOL_GPL(nf_flow_table_free);
+ 
++/* Must be called from user context. */
++void nf_flow_offload_hw_add(struct net *net, struct flow_offload *flow,
++			    struct nf_conn *ct)
++{
++	const struct nf_flow_table_hw *offload;
++
++	rcu_read_lock();
++	offload = rcu_dereference(nf_flow_table_hw_hook);
++	if (offload)
++		offload->add(net, flow, ct);
++	rcu_read_unlock();
++}
++EXPORT_SYMBOL_GPL(nf_flow_offload_hw_add);
++
++/* Must be called from user context. */
++void nf_flow_offload_hw_del(struct net *net, struct flow_offload *flow)
++{
++	const struct nf_flow_table_hw *offload;
++
++	rcu_read_lock();
++	offload = rcu_dereference(nf_flow_table_hw_hook);
++	if (offload)
++		offload->del(net, flow);
++	rcu_read_unlock();
++}
++EXPORT_SYMBOL_GPL(nf_flow_offload_hw_del);
++
++int nf_flow_table_hw_register(const struct nf_flow_table_hw *offload)
++{
++	if (rcu_access_pointer(nf_flow_table_hw_hook))
++		return -EBUSY;
++
++	rcu_assign_pointer(nf_flow_table_hw_hook, offload);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(nf_flow_table_hw_register);
++
++void nf_flow_table_hw_unregister(const struct nf_flow_table_hw *offload)
++{
++	WARN_ON(rcu_access_pointer(nf_flow_table_hw_hook) != offload);
++	rcu_assign_pointer(nf_flow_table_hw_hook, NULL);
++
++	synchronize_rcu();
++}
++EXPORT_SYMBOL_GPL(nf_flow_table_hw_unregister);
++
+ static int nf_flow_table_netdev_event(struct notifier_block *this,
+ 				      unsigned long event, void *ptr)
+ {
+--- /dev/null
++++ b/net/netfilter/nf_flow_table_hw.c
+@@ -0,0 +1,169 @@
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/netfilter.h>
++#include <linux/rhashtable.h>
++#include <linux/netdevice.h>
++#include <net/netfilter/nf_flow_table.h>
++#include <net/netfilter/nf_conntrack.h>
++#include <net/netfilter/nf_conntrack_core.h>
++#include <net/netfilter/nf_conntrack_tuple.h>
++
++static DEFINE_SPINLOCK(flow_offload_hw_pending_list_lock);
++static LIST_HEAD(flow_offload_hw_pending_list);
++
++static DEFINE_MUTEX(nf_flow_offload_hw_mutex);
++
++struct flow_offload_hw {
++	struct list_head	list;
++	enum flow_offload_type	type;
++	struct flow_offload	*flow;
++	struct nf_conn		*ct;
++	possible_net_t		flow_hw_net;
++};
++
++static int do_flow_offload_hw(struct net *net, struct flow_offload *flow,
++			      int type)
++{
++	struct net_device *indev;
++	int ret, ifindex;
++
++	ifindex = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.iifidx;
++	indev = dev_get_by_index(net, ifindex);
++	if (WARN_ON(!indev))
++		return 0;
++
++	mutex_lock(&nf_flow_offload_hw_mutex);
++	ret = indev->netdev_ops->ndo_flow_offload(type, flow);
++	mutex_unlock(&nf_flow_offload_hw_mutex);
++
++	dev_put(indev);
++
++	return ret;
++}
++
++static void flow_offload_hw_work_add(struct flow_offload_hw *offload)
++{
++	struct net *net;
++	int ret;
++
++	if (nf_ct_is_dying(offload->ct))
++		return;
++
++	net = read_pnet(&offload->flow_hw_net);
++	ret = do_flow_offload_hw(net, offload->flow, FLOW_OFFLOAD_ADD);
++	if (ret >= 0)
++		offload->flow->flags |= FLOW_OFFLOAD_HW;
++}
++
++static void flow_offload_hw_work_del(struct flow_offload_hw *offload)
++{
++	struct net *net = read_pnet(&offload->flow_hw_net);
++
++	do_flow_offload_hw(net, offload->flow, FLOW_OFFLOAD_DEL);
++}
++
++static void flow_offload_hw_work(struct work_struct *work)
++{
++	struct flow_offload_hw *offload, *next;
++	LIST_HEAD(hw_offload_pending);
++
++	spin_lock_bh(&flow_offload_hw_pending_list_lock);
++	list_replace_init(&flow_offload_hw_pending_list, &hw_offload_pending);
++	spin_unlock_bh(&flow_offload_hw_pending_list_lock);
++
++	list_for_each_entry_safe(offload, next, &hw_offload_pending, list) {
++		switch (offload->type) {
++		case FLOW_OFFLOAD_ADD:
++			flow_offload_hw_work_add(offload);
++			break;
++		case FLOW_OFFLOAD_DEL:
++			flow_offload_hw_work_del(offload);
++			break;
++		}
++		if (offload->ct)
++			nf_conntrack_put(&offload->ct->ct_general);
++		list_del(&offload->list);
++		kfree(offload);
++	}
++}
++
++static void flow_offload_queue_work(struct flow_offload_hw *offload)
++{
++	spin_lock_bh(&flow_offload_hw_pending_list_lock);
++	list_add_tail(&offload->list, &flow_offload_hw_pending_list);
++	spin_unlock_bh(&flow_offload_hw_pending_list_lock);
++
++	schedule_work(&nf_flow_offload_hw_work);
++}
++
++static void flow_offload_hw_add(struct net *net, struct flow_offload *flow,
++				struct nf_conn *ct)
++{
++	struct flow_offload_hw *offload;
++
++	offload = kmalloc(sizeof(struct flow_offload_hw), GFP_ATOMIC);
++	if (!offload)
++		return;
++
++	nf_conntrack_get(&ct->ct_general);
++	offload->type = FLOW_OFFLOAD_ADD;
++	offload->ct = ct;
++	offload->flow = flow;
++	write_pnet(&offload->flow_hw_net, net);
++
++	flow_offload_queue_work(offload);
++}
++
++static void flow_offload_hw_del(struct net *net, struct flow_offload *flow)
++{
++	struct flow_offload_hw *offload;
++
++	offload = kmalloc(sizeof(struct flow_offload_hw), GFP_ATOMIC);
++	if (!offload)
++		return;
++
++	offload->type = FLOW_OFFLOAD_DEL;
++	offload->ct = NULL;
++	offload->flow = flow;
++	write_pnet(&offload->flow_hw_net, net);
++
++	flow_offload_queue_work(offload);
++}
++
++static const struct nf_flow_table_hw flow_offload_hw = {
++	.add	= flow_offload_hw_add,
++	.del	= flow_offload_hw_del,
++	.owner	= THIS_MODULE,
++};
++
++static int __init nf_flow_table_hw_module_init(void)
++{
++	INIT_WORK(&nf_flow_offload_hw_work, flow_offload_hw_work);
++	nf_flow_table_hw_register(&flow_offload_hw);
++
++	return 0;
++}
++
++static void __exit nf_flow_table_hw_module_exit(void)
++{
++	struct flow_offload_hw *offload, *next;
++	LIST_HEAD(hw_offload_pending);
++
++	nf_flow_table_hw_unregister(&flow_offload_hw);
++	cancel_work_sync(&nf_flow_offload_hw_work);
++
++	list_for_each_entry_safe(offload, next, &hw_offload_pending, list) {
++		if (offload->ct)
++			nf_conntrack_put(&offload->ct->ct_general);
++		list_del(&offload->list);
++		kfree(offload);
++	}
++}
++
++module_init(nf_flow_table_hw_module_init);
++module_exit(nf_flow_table_hw_module_exit);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Pablo Neira Ayuso <pablo@netfilter.org>");
++MODULE_ALIAS("nf-flow-table-hw");
+--- a/net/netfilter/nf_tables_api.c
++++ b/net/netfilter/nf_tables_api.c
+@@ -5396,6 +5396,13 @@ static int nf_tables_flowtable_parse_hoo
+ 	if (err < 0)
+ 		return err;
+ 
++	for (i = 0; i < n; i++) {
++		if (flowtable->data.flags & NF_FLOWTABLE_F_HW &&
++		    !dev_array[i]->netdev_ops->ndo_flow_offload) {
++			return -EOPNOTSUPP;
++		}
++	}
++
+ 	ops = kcalloc(n, sizeof(struct nf_hook_ops), GFP_KERNEL);
+ 	if (!ops)
+ 		return -ENOMEM;
+@@ -5527,10 +5534,19 @@ static int nf_tables_newflowtable(struct
+ 	}
+ 
+ 	flowtable->data.type = type;
++	write_pnet(&flowtable->data.ft_net, net);
++
+ 	err = type->init(&flowtable->data);
+ 	if (err < 0)
+ 		goto err3;
+ 
++	if (nla[NFTA_FLOWTABLE_FLAGS]) {
++		flowtable->data.flags =
++			ntohl(nla_get_be32(nla[NFTA_FLOWTABLE_FLAGS]));
++		if (flowtable->data.flags & ~NF_FLOWTABLE_F_HW)
++			goto err4;
++	}
++
+ 	err = nf_tables_flowtable_parse_hook(&ctx, nla[NFTA_FLOWTABLE_HOOK],
+ 					     flowtable);
+ 	if (err < 0)
+@@ -5656,7 +5672,8 @@ static int nf_tables_fill_flowtable_info
+ 	    nla_put_string(skb, NFTA_FLOWTABLE_NAME, flowtable->name) ||
+ 	    nla_put_be32(skb, NFTA_FLOWTABLE_USE, htonl(flowtable->use)) ||
+ 	    nla_put_be64(skb, NFTA_FLOWTABLE_HANDLE, cpu_to_be64(flowtable->handle),
+-			 NFTA_FLOWTABLE_PAD))
++			 NFTA_FLOWTABLE_PAD) ||
++	    nla_put_be32(skb, NFTA_FLOWTABLE_FLAGS, htonl(flowtable->data.flags)))
+ 		goto nla_put_failure;
+ 
+ 	nest = nla_nest_start(skb, NFTA_FLOWTABLE_HOOK);
+--- a/net/netfilter/nft_flow_offload.c
++++ b/net/netfilter/nft_flow_offload.c
+@@ -121,6 +121,9 @@ static void nft_flow_offload_eval(const
+ 	if (ret < 0)
+ 		goto err_flow_add;
+ 
++	if (flowtable->flags & NF_FLOWTABLE_F_HW)
++		nf_flow_offload_hw_add(nft_net(pkt), flow, ct);
++
+ 	return;
+ 
+ err_flow_add:

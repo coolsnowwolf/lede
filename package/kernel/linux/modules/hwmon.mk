@@ -29,6 +29,20 @@ define AddDepends/hwmon
   DEPENDS:=kmod-hwmon-core $(1)
 endef
 
+define KernelPackage/hwmon-ads1015
+  TITLE:=Texas Instruments ADS1015
+  KCONFIG:= CONFIG_SENSORS_ADS1015
+  FILES:= $(LINUX_DIR)/drivers/hwmon/ads1015.ko
+  AUTOLOAD:=$(call AutoLoad,60,ads1015)
+  $(call AddDepends/hwmon,+kmod-i2c-core)
+endef
+
+define KernelPackage/hwmon-ads1015/description
+ Kernel module for Texas Instruments ADS1015 Analog-to-Digital converter
+endef
+
+$(eval $(call KernelPackage,hwmon-ads1015))
+
 define KernelPackage/hwmon-adt7410
   TITLE:=ADT7410 monitoring support
   KCONFIG:= \

@@ -1,0 +1,43 @@
+From: Stephen Hemminger <stephen@networkplumber.org>
+Subject: bridge: allow receiption on disabled port
+
+When an ethernet device is enslaved to a bridge, and the bridge STP
+detects loss of carrier (or operational state down), then normally
+packet receiption is blocked.
+
+This breaks control applications like WPA which maybe expecting to
+receive packets to negotiate to bring link up. The bridge needs to
+block forwarding packets from these disabled ports, but there is no
+hard requirement to not allow local packet delivery.
+
+Signed-off-by: Stephen Hemminger <stephen@networkplumber.org>
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -197,7 +197,8 @@ static int br_handle_local_finish(struct
+ {
+ 	struct net_bridge_port *p = br_port_get_rcu(skb->dev);
+ 
+-	__br_handle_local_finish(skb);
++	if (p->state != BR_STATE_DISABLED)
++		__br_handle_local_finish(skb);
+ 
+ 	BR_INPUT_SKB_CB(skb)->brdev = p->br->dev;
+ 	br_pass_frame_up(skb);
+@@ -286,6 +287,15 @@ rx_handler_result_t br_handle_frame(stru
+ 
+ forward:
+ 	switch (p->state) {
++	case BR_STATE_DISABLED:
++		if (ether_addr_equal(p->br->dev->dev_addr, dest))
++			skb->pkt_type = PACKET_HOST;
++
++		NF_HOOK(NFPROTO_BRIDGE, NF_BR_PRE_ROUTING,
++			dev_net(skb->dev), NULL, skb, skb->dev, NULL,
++			br_handle_local_finish);
++		break;
++
+ 	case BR_STATE_FORWARDING:
+ 		rhook = rcu_dereference(br_should_route_hook);
+ 		if (rhook) {

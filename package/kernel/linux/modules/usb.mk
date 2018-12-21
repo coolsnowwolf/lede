@@ -318,6 +318,17 @@ define KernelPackage/usb-bcma
 endef
 $(eval $(call KernelPackage,usb-bcma))
 
+define KernelPackage/usb-fotg210
+  TITLE:=Support for FOTG210 USB host controllers
+  DEPENDS:=@USB_SUPPORT @TARGET_gemini
+  KCONFIG:=CONFIG_USB_FOTG210_HCD
+  FILES:= \
+	$(if $(CONFIG_USB_FOTG210_HCD),$(LINUX_DIR)/drivers/usb/host/fotg210-hcd.ko)
+  AUTOLOAD:=$(call AutoLoad,50,fotg210-hcd,1)
+  $(call AddDepends/usb)
+endef
+$(eval $(call KernelPackage,usb-fotg210))
+
 define KernelPackage/usb-ssb
   TITLE:=Support for SSB USB controllers
   DEPENDS:=@USB_SUPPORT @TARGET_brcm47xx
@@ -725,6 +736,21 @@ define KernelPackage/usb-serial-mos7720/description
 endef
 
 $(eval $(call KernelPackage,usb-serial-mos7720))
+
+
+define KernelPackage/usb-serial-mos7840
+  TITLE:=Support for Moschip MOS7840 devices
+  KCONFIG:=CONFIG_USB_SERIAL_MOS7840
+  FILES:=$(LINUX_DIR)/drivers/usb/serial/mos7840.ko
+  AUTOLOAD:=$(call AutoProbe,mos7840)
+  $(call AddDepends/usb-serial)
+endef
+
+define KernelPackage/usb-serial-mos7840/description
+ Kernel support for Moschip MOS7840 USB-to-Serial converters
+endef
+
+$(eval $(call KernelPackage,usb-serial-mos7840))
 
 
 define KernelPackage/usb-serial-pl2303
