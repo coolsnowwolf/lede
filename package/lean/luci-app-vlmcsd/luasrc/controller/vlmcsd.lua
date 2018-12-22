@@ -13,7 +13,7 @@ end
 
 function act_status()
   local e={}
-  e.running=luci.sys.call("pgrep vlmcsd >/dev/null")==0
+  e.running=nixio.fs.access("/var/run/vlmcsd.pid")
   luci.http.prepare_content("application/json")
   luci.http.write_json(e)
 end
