@@ -27,10 +27,10 @@ menu "V2Ray Configuration"
 config PACKAGE_V2RAY_INCLUDE_V2RAY
 	bool "Include v2ray"
 	default y
-
+	
 config PACKAGE_V2RAY_SOFTFLOAT
 	bool "Use soft-float binaries (mips/mipsle only)"
-	depends on PACKAGE_V2RAY_INCLUDE_V2RAY
+	depends on mipsel || mips || mips64el || mips64
 	default n
 
 config PACKAGE_V2RAY_INCLUDE_V2CTL
@@ -74,32 +74,33 @@ ifeq ($(ARCH),aarch64)
 	PKG_ARCH_V2RAY:=linux-arm64
 endif
 
+V2RAY_BIN:=v2ray
+V2CTL_BIN:=v2ctl
+
 ifeq ($(ARCH),arm)
-  ifneq ($(BOARD),bcm53xx)
+	ifneq ($(BOARD),bcm53xx)
 		V2RAY_BIN:=v2ray_armv7
 		V2CTL_BIN:=v2ctl_armv7
-  endif
-else
-		V2RAY_BIN:=v2ray
-		V2CTL_BIN:=v2ctl
+	endif
+endif
+
+ifdef CONFIG_PACKAGE_V2RAY_SOFTFLOAT
+	V2RAY_BIN:=v2ray_softfloat
+	V2CTL_BIN:=v2ctl_softfloat
 endif
 
 
 define Build/Prepare
 	[ ! -f $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY).zip ] && wget https://github.com/v2ray/v2ray-core/releases/download/$(PKG_VERSION)/v2ray-$(PKG_ARCH_V2RAY).zip -O $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY).zip
 	unzip -o $(PKG_BUILD_DIR)/v2ray-$(PKG_VERSION)-$(PKG_ARCH_V2RAY).zip -d $(PKG_BUILD_DIR)
-ifdef CONFIG_PACKAGE_V2RAY_SOFTFLOAT
-	[ -f $(PKG_BUILD_DIR)/v2ray_softfloat ] && mv $(PKG_BUILD_DIR)/v2ray_softfloat $(PKG_BUILD_DIR)/v2ray || echo "Can't find soft-float binary."
-	[ -f $(PKG_BUILD_DIR)/v2ctl_softfloat ] && mv $(PKG_BUILD_DIR)/v2ctl_softfloat $(PKG_BUILD_DIR)/v2ctl || echo "Can't find soft-float binary."
-endif
 endef
 
 define Build/Configure
 endef
 
 define Build/Compile
-	##chmod +x $(PKG_BUILD_DIR)/$(V2RAY_BIN) && upx --ultra-brute $(PKG_BUILD_DIR)/$(V2RAY_BIN)
-	##chmod +x $(PKG_BUILD_DIR)/$(V2CTL_BIN) && upx --ultra-brute $(PKG_BUILD_DIR)/$(V2CTL_BIN)
+		##chmod +x $(PKG_BUILD_DIR)/$(V2RAY_BIN) && upx --ultra-brute $(PKG_BUILD_DIR)/$(V2RAY_BIN)
+		##chmod +x $(PKG_BUILD_DIR)/$(V2CTL_BIN) && upx --ultra-brute $(PKG_BUILD_DIR)/$(V2CTL_BIN)
 endef
 
 define Package/$(PKG_NAME)/install
