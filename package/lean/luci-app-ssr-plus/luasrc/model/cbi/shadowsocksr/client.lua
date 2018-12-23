@@ -21,20 +21,27 @@ uci:foreach(shadowsocksr, "servers", function(s)
 	end
 end)
 
+local key_table = {}   
+for key,_ in pairs(server_table) do  
+    table.insert(key_table,key)  
+end 
+
+table.sort(key_table)  
+
 -- [[ Global Setting ]]--
 s = m:section(TypedSection, "global")
 s.anonymous = true
 
 o = s:option(ListValue, "global_server", translate("Main Server"))
 o:value("nil", translate("Disable"))
-for k, v in pairs(server_table) do o:value(k, v) end
+for _,key in pairs(key_table) do o:value(key,server_table[key]) end
 o.default = "nil"
 o.rmempty = false
 
 o = s:option(ListValue, "udp_relay_server", translate("Game Mode UDP Server"))
 o:value("", translate("Disable"))
 o:value("same", translate("Same as Global Server"))
-for k, v in pairs(server_table) do o:value(k, v) end
+for _,key in pairs(key_table) do o:value(key,server_table[key]) end
 
 o = s:option(ListValue, "threads", translate("Multi Threads Option"))
 o:value("0", translate("Auto Threads"))
