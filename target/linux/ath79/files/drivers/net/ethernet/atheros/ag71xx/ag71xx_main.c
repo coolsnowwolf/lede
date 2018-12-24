@@ -56,6 +56,32 @@ static void ag71xx_dump_dma_regs(struct ag71xx *ag)
 		ag71xx_rr(ag, AG71XX_REG_RX_STATUS));
 }
 
+static void ag71xx_dump_regs(struct ag71xx *ag)
+{
+	DBG("%s: mac_cfg1=%08x, mac_cfg2=%08x, ipg=%08x, hdx=%08x, mfl=%08x\n",
+		ag->dev->name,
+		ag71xx_rr(ag, AG71XX_REG_MAC_CFG1),
+		ag71xx_rr(ag, AG71XX_REG_MAC_CFG2),
+		ag71xx_rr(ag, AG71XX_REG_MAC_IPG),
+		ag71xx_rr(ag, AG71XX_REG_MAC_HDX),
+		ag71xx_rr(ag, AG71XX_REG_MAC_MFL));
+	DBG("%s: mac_ifctl=%08x, mac_addr1=%08x, mac_addr2=%08x\n",
+		ag->dev->name,
+		ag71xx_rr(ag, AG71XX_REG_MAC_IFCTL),
+		ag71xx_rr(ag, AG71XX_REG_MAC_ADDR1),
+		ag71xx_rr(ag, AG71XX_REG_MAC_ADDR2));
+	DBG("%s: fifo_cfg0=%08x, fifo_cfg1=%08x, fifo_cfg2=%08x\n",
+		ag->dev->name,
+		ag71xx_rr(ag, AG71XX_REG_FIFO_CFG0),
+		ag71xx_rr(ag, AG71XX_REG_FIFO_CFG1),
+		ag71xx_rr(ag, AG71XX_REG_FIFO_CFG2));
+	DBG("%s: fifo_cfg3=%08x, fifo_cfg4=%08x, fifo_cfg5=%08x\n",
+		ag->dev->name,
+		ag71xx_rr(ag, AG71XX_REG_FIFO_CFG3),
+		ag71xx_rr(ag, AG71XX_REG_FIFO_CFG4),
+		ag71xx_rr(ag, AG71XX_REG_FIFO_CFG5));
+}
+
 static inline void ag71xx_dump_intr(struct ag71xx *ag, char *label, u32 intr)
 {
 	DBG("%s: %s intr=%08x %s%s%s%s%s%s\n",
@@ -707,22 +733,7 @@ __ag71xx_link_adjust(struct ag71xx *ag, bool update)
 			ag71xx_speed_str(ag),
 			(DUPLEX_FULL == ag->duplex) ? "Full" : "Half");
 
-	DBG("%s: fifo_cfg0=%#x, fifo_cfg1=%#x, fifo_cfg2=%#x\n",
-		ag->dev->name,
-		ag71xx_rr(ag, AG71XX_REG_FIFO_CFG0),
-		ag71xx_rr(ag, AG71XX_REG_FIFO_CFG1),
-		ag71xx_rr(ag, AG71XX_REG_FIFO_CFG2));
-
-	DBG("%s: fifo_cfg3=%#x, fifo_cfg4=%#x, fifo_cfg5=%#x\n",
-		ag->dev->name,
-		ag71xx_rr(ag, AG71XX_REG_FIFO_CFG3),
-		ag71xx_rr(ag, AG71XX_REG_FIFO_CFG4),
-		ag71xx_rr(ag, AG71XX_REG_FIFO_CFG5));
-
-	DBG("%s: mac_cfg2=%#x, mac_ifctl=%#x\n",
-		ag->dev->name,
-		ag71xx_rr(ag, AG71XX_REG_MAC_CFG2),
-		ag71xx_rr(ag, AG71XX_REG_MAC_IFCTL));
+	ag71xx_dump_regs(ag);
 }
 
 void ag71xx_link_adjust(struct ag71xx *ag)
@@ -1497,12 +1508,17 @@ static int ag71xx_probe(struct platform_device *pdev)
 
 	netif_napi_add(dev, &ag->napi, ag71xx_poll, AG71XX_NAPI_WEIGHT);
 
+	ag71xx_dump_regs(ag);
+
 	ag71xx_wr(ag, AG71XX_REG_MAC_CFG1, 0);
+
 	ag71xx_hw_init(ag);
 
-	if(!of_device_is_compatible(np, "simple-mfd")) {
+	ag71xx_dump_regs(ag);
+
+	if (!of_device_is_compatible(np, "simple-mfd")) {
 		mdio_node = of_get_child_by_name(np, "mdio-bus");
-		if(!IS_ERR(mdio_node))
+		if (!IS_ERR(mdio_node))
 			of_platform_device_create(mdio_node, NULL, NULL);
 	}
 

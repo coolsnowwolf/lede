@@ -78,6 +78,13 @@ define Device/ubnt-xw
   ATH_SOC := ar9342
 endef
 
+define Device/ubnt_airrouter
+  $(Device/ubnt-xm)
+  DEVICE_TITLE := Ubiquiti AirRouter
+  SUPPORTED_DEVICES += airrouter
+endef
+TARGET_DEVICES += ubnt_airrouter
+
 define Device/ubnt_bullet-m
   $(Device/ubnt-xm)
   DEVICE_TITLE := Ubiquiti Bullet-M
@@ -109,7 +116,7 @@ TARGET_DEVICES += ubnt_nano-m
 define Device/ubnt_lap-120
   $(Device/ubnt-wa)
   DEVICE_TITLE := Ubiquiti LiteAP ac (LAP-120)
-  DEVICE_PACKAGES += kmod-ath10k ath10k-firmware-qca988x
+  DEVICE_PACKAGES += kmod-ath10k-ct ath10k-firmware-qca988x-ct
   IMAGE_SIZE := 15744k
   IMAGE/factory.bin := $$(IMAGE/sysupgrade.bin) | mkubntimage-split
 endef
@@ -118,7 +125,7 @@ TARGET_DEVICES += ubnt_lap-120
 define Device/ubnt_nanostation-ac
   $(Device/ubnt-wa)
   DEVICE_TITLE := Ubiquiti Nanostation AC
-  DEVICE_PACKAGES += kmod-ath10k ath10k-firmware-qca988x
+  DEVICE_PACKAGES += kmod-ath10k-ct ath10k-firmware-qca988x-ct
   IMAGE_SIZE := 15744k
   IMAGE/factory.bin := $$(IMAGE/sysupgrade.bin) | mkubntimage-split
 endef
@@ -127,7 +134,7 @@ TARGET_DEVICES += ubnt_nanostation-ac
 define Device/ubnt_nanostation-ac-loco
   $(Device/ubnt-wa)
   DEVICE_TITLE := Ubiquiti Nanostation AC loco
-  DEVICE_PACKAGES += kmod-ath10k ath10k-firmware-qca988x
+  DEVICE_PACKAGES += kmod-ath10k-ct ath10k-firmware-qca988x-ct
   IMAGE_SIZE := 15744k
   IMAGE/factory.bin := $$(IMAGE/sysupgrade.bin) | mkubntimage-split
 endef
@@ -143,8 +150,6 @@ TARGET_DEVICES += ubnt_unifi
 define Device/ubnt_unifiac
   ATH_SOC := qca9563
   IMAGE_SIZE := 7744k
-  IMAGES := sysupgrade.bin
-  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
   DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct
 endef
 
@@ -182,7 +187,7 @@ define Device/ubnt_routerstation_common
   DEVICE_PACKAGES := -kmod-ath9k -wpad-mini -uboot-envtools kmod-usb-ohci kmod-usb2 fconfig
   ATH_SOC := ar7161
   IMAGE_SIZE := 16128k
-  IMAGES := sysupgrade.bin factory.bin
+  IMAGES += factory.bin
   IMAGE/factory.bin := append-rootfs | pad-rootfs | mkubntimage | check-size $$$$(IMAGE_SIZE)
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | combined-image | check-size $$$$(IMAGE_SIZE) | append-metadata
   KERNEL := kernel-bin | append-dtb | lzma | pad-to $$(BLOCKSIZE)
