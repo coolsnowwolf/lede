@@ -43,6 +43,16 @@ define Build/elecom-header
 
 endef
 
+define Build/nec-fw
+  ( stat -c%s $@ | tr -d "\n" | dd bs=16 count=1 conv=sync; ) >> $@
+  ( \
+    echo -n -e "$(1)" | dd bs=16 count=1 conv=sync; \
+    echo -n "0.0.00" | dd bs=16 count=1 conv=sync; \
+    dd if=$@; \
+  ) > $@.new
+  mv $@.new $@
+endef
+
 define Device/avm_fritz300e
   ATH_SOC := ar7242
   DEVICE_TITLE := AVM FRITZ!WLAN Repeater 300E
@@ -261,6 +271,19 @@ define Device/iodata_wn-ag300dgr
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2
 endef
 TARGET_DEVICES += iodata_wn-ag300dgr
+
+define Device/nec_wg800hp
+  ATH_SOC := qca9563
+  DEVICE_TITLE := NEC Aterm WG800HP
+  IMAGE_SIZE := 7104k
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
+    append-rootfs | pad-rootfs | check-size $$$$(IMAGE_SIZE) | \
+    xor-image -p 6A57190601121E4C004C1E1201061957 -x | \
+    nec-fw LASER_ATERM
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca9887-ct-htt
+endef
+TARGET_DEVICES += nec_wg800hp
 
 define Device/ocedo_koala
   ATH_SOC := qca9558
