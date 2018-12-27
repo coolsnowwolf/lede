@@ -34,9 +34,6 @@ ramips_board_detect() {
 	*"Air3GII")
 		name="air3gii"
 		;;
-	*"ALL0239-3G")
-		name="all0239-3g"
-		;;
 	*"ALL0256N (4M)")
 		name="all0256n-4M"
 		;;
@@ -585,9 +582,6 @@ ramips_board_detect() {
 		;;
 	*"WL-330N3G")
 		name="wl-330n3g"
-		;;
-	*"WL-341 v3")
-		name="wl-341v3"
 		;;
 	*"WL-351 v1 002")
 		name="wl-351"

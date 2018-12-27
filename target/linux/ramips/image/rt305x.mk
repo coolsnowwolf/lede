@@ -210,6 +210,22 @@ define Device/dap-1350
 endef
 TARGET_DEVICES += dap-1350
 
+define Device/dcs-930
+  DTS := DCS-930
+  IMAGE_SIZE := $(ralink_default_fw_size_4M)
+  DEVICE_TITLE := D-Link DCS-930
+  DEVICE_PACKAGES := kmod-video-core kmod-video-uvc kmod-sound-core kmod-usb-audio kmod-usb-core kmod-usb-dwc2
+endef
+TARGET_DEVICES += dcs-930
+
+define Device/dcs-930l-b1
+  DTS := DCS-930L-B1
+  IMAGE_SIZE := $(ralink_default_fw_size_4M)
+  DEVICE_TITLE := D-Link DCS-930L B1
+  DEVICE_PACKAGES := kmod-video-core kmod-video-uvc kmod-sound-core kmod-usb-audio kmod-usb-core kmod-usb-ohci kmod-usb2
+endef
+TARGET_DEVICES += dcs-930l-b1
+
 define Device/dir-300-b1
   DTS := DIR-300-B1
   IMAGE_SIZE := $(ralink_default_fw_size_4M)
