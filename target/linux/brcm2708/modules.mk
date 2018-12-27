@@ -8,8 +8,13 @@
 define KernelPackage/drm-vc4
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Broadcom VC4 Graphics
-  DEPENDS:=@TARGET_brcm2708 +kmod-drm
-  KCONFIG:=CONFIG_DRM_VC4
+  DEPENDS:= \
+	@TARGET_brcm2708 +kmod-drm \
+	+LINUX_4_14:kmod-sound-core \
+	+LINUX_4_14:kmod-sound-soc-core
+  KCONFIG:= \
+	CONFIG_DRM_VC4 \
+	CONFIG_DRM_VC4_HDMI_CEC=n
   FILES:= \
 	$(LINUX_DIR)/drivers/gpu/drm/vc4/vc4.ko \
 	$(LINUX_DIR)/drivers/gpu/drm/drm_kms_helper.ko
@@ -23,6 +28,23 @@ endef
 
 $(eval $(call KernelPackage,drm-vc4))
 
+
+define KernelPackage/hwmon-rpi-poe-fan
+  SUBMENU:=$(HWMON_MENU)
+  TITLE:=Raspberry Pi PoE HAT fan
+  DEPENDS:=@TARGET_brcm2708 @LINUX_4_14 +kmod-hwmon-core
+  KCONFIG:=CONFIG_SENSORS_RPI_POE_FAN
+  FILES:=$(LINUX_DIR)/drivers/hwmon/rpi-poe-fan.ko
+  AUTOLOAD:=$(call AutoProbe,rpi-poe-fan)
+endef
+
+define KernelPackage/hwmon-rpi-poe-fan/description
+  Raspberry Pi PoE HAT fan driver
+endef
+
+$(eval $(call KernelPackage,hwmon-rpi-poe-fan))
+
+
 define KernelPackage/sound-arm-bcm2835
   TITLE:=BCM2835 ALSA driver
   KCONFIG:= \
@@ -30,7 +52,8 @@ define KernelPackage/sound-arm-bcm2835
 	CONFIG_SND_BCM2835 \
 	CONFIG_SND_ARMAACI=n
   FILES:= \
-	$(LINUX_DIR)/sound/arm/snd-bcm2835.ko
+	$(LINUX_DIR)/drivers/staging/vc04_services/bcm2835-audio/snd-bcm2835.ko@ge4.12 \
+	$(LINUX_DIR)/sound/arm/snd-bcm2835.ko@lt4.12
   AUTOLOAD:=$(call AutoLoad,68,snd-bcm2835)
   DEPENDS:=@TARGET_brcm2708
   $(call AddDepends/sound)
@@ -62,6 +85,24 @@ endef
 
 $(eval $(call KernelPackage,sound-soc-bcm2835-i2s))
 
+
+define KernelPackage/sound-soc-3dlab-nano-player
+  TITLE:=Support for 3Dlab Nano Player
+  KCONFIG:= CONFIG_SND_BCM2708_SOC_3DLAB_NANO_PLAYER
+  FILES:=$(LINUX_DIR)/sound/soc/bcm/snd-soc-3dlab-nano-player.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-3dlab-nano-player)
+  DEPENDS:= \
+	@LINUX_4_14 \
+	kmod-sound-soc-bcm2835-i2s
+endef
+
+define KernelPackage/sound-soc-3dlab-nano-player/description
+  This package contains support for 3Dlab Nano Player
+endef
+
+$(eval $(call KernelPackage,sound-soc-3dlab-nano-player))
+
+
 define KernelPackage/sound-soc-adau1977-adc
   TITLE:=Support for ADAU1977 ADC
   KCONFIG:= \
@@ -86,6 +127,59 @@ endef
 
 $(eval $(call KernelPackage,sound-soc-adau1977-adc))
 
+
+define KernelPackage/sound-soc-allo-boss-dac
+  TITLE:=Support for Allo Boss DAC
+  KCONFIG:= \
+	CONFIG_SND_BCM2708_SOC_ALLO_BOSS_DAC \
+	CONFIG_SND_SOC_PCM512x \
+	CONFIG_SND_SOC_PCM512x_I2C
+  FILES:= \
+	$(LINUX_DIR)/sound/soc/bcm/snd-soc-allo-boss-dac.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x-i2c.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm512x-i2c snd-soc-pcm512x \
+	snd-soc-allo-boss-dac)
+  DEPENDS:= \
+	@LINUX_4_14 \
+	+kmod-i2c-bcm2708 \
+	kmod-sound-soc-bcm2835-i2s
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-allo-boss-dac/description
+  This package contains support for Allo Boss DAC
+endef
+
+$(eval $(call KernelPackage,sound-soc-allo-boss-dac))
+
+
+define KernelPackage/sound-soc-allo-digione
+  TITLE:=Support for Allo Piano DigiOne
+  KCONFIG:= \
+	CONFIG_SND_BCM2708_SOC_ALLO_DIGIONE \
+	CONFIG_SND_SOC_PCM512x \
+	CONFIG_SND_SOC_PCM512x_I2C
+  FILES:= \
+	$(LINUX_DIR)/sound/soc/bcm/snd-soc-allo-digione.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x-i2c.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm512x-i2c snd-soc-pcm512x \
+	snd-soc-allo-digione)
+  DEPENDS:= \
+	@LINUX_4_14 \
+	+kmod-i2c-bcm2708 \
+	kmod-sound-soc-bcm2835-i2s
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-allo-digione/description
+  This package contains support for Allo DigiOne
+endef
+
+$(eval $(call KernelPackage,sound-soc-allo-digione))
+
+
 define KernelPackage/sound-soc-allo-piano-dac
   TITLE:=Support for Allo Piano DAC
   KCONFIG:= \
@@ -109,6 +203,88 @@ define KernelPackage/sound-soc-allo-piano-dac/description
 endef
 
 $(eval $(call KernelPackage,sound-soc-allo-piano-dac))
+
+
+define KernelPackage/sound-soc-allo-piano-dac-plus
+  TITLE:=Support for Allo Piano DAC Plus
+  KCONFIG:= \
+	CONFIG_SND_BCM2708_SOC_ALLO_PIANO_DAC_PLUS \
+	CONFIG_SND_SOC_PCM512x \
+	CONFIG_SND_SOC_PCM512x_I2C
+  FILES:= \
+	$(LINUX_DIR)/sound/soc/bcm/snd-soc-allo-piano-dac-plus.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x-i2c.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm512x-i2c snd-soc-pcm512x \
+	snd-soc-allo-piano-dac-plus)
+  DEPENDS:= \
+	@LINUX_4_14 \
+	+kmod-i2c-bcm2708 \
+	kmod-sound-soc-bcm2835-i2s
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-allo-piano-dac-plus/description
+  This package contains support for Allo Piano DAC Plus
+endef
+
+$(eval $(call KernelPackage,sound-soc-allo-piano-dac-plus))
+
+
+define KernelPackage/sound-soc-allo-katana-codec
+  TITLE:=Support for Allo Katana DAC
+  KCONFIG:= \
+	CONFIG_SND_AUDIO_GRAPH_CARD \
+	CONFIG_SND_BCM2708_SOC_ALLO_KATANA_DAC \
+	CONFIG_SND_SOC_PCM512x \
+	CONFIG_SND_SOC_PCM512x_I2C \
+	CONFIG_SND_SIMPLE_CARD_UTILS
+  FILES:= \
+	$(LINUX_DIR)/sound/soc/bcm/snd-soc-allo-katana-codec.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x-i2c.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm512x-i2c snd-soc-pcm512x \
+	snd-soc-allo-katana-codec)
+  DEPENDS:= \
+	@LINUX_4_14 \
+	+kmod-i2c-bcm2708 \
+	+kmod-regmap \
+	kmod-sound-soc-bcm2835-i2s
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-allo-katana-codec/description
+  This package contains support for Allo Katana DAC
+endef
+
+$(eval $(call KernelPackage,sound-soc-allo-katana-codec))
+
+
+define KernelPackage/sound-soc-audioinjector-octo-soundcard
+  TITLE:=Support for AudioInjector Octo soundcard
+  KCONFIG:= \
+	CONFIG_SND_AUDIOINJECTOR_OCTO_SOUNDCARD \
+	CONFIG_SND_SOC_CS42XX8 \
+	CONFIG_SND_SOC_CS42XX8_I2C
+  FILES:= \
+	$(LINUX_DIR)/sound/soc/bcm/snd-soc-audioinjector-octo-soundcard.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-cs42xx8.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-cs42xx8-i2c.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc- \
+	snd-soc-audioinjector-octo-soundcard)
+  DEPENDS:= \
+	@LINUX_4_14 \
+	+kmod-i2c-bcm2708 \
+	kmod-sound-soc-bcm2835-i2s
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-audioinjector-octo-soundcard/description
+  This package contains support for AudioInjector Octo soundcard
+endef
+
+$(eval $(call KernelPackage,sound-soc-audioinjector-octo-soundcard))
+
 
 define KernelPackage/sound-soc-audioinjector-pi-soundcard
   TITLE:=Support for AudioInjector Pi soundcard
@@ -223,6 +399,30 @@ define KernelPackage/sound-soc-fe-pi/description
 endef
 
 $(eval $(call KernelPackage,sound-soc-fe-pi))
+
+
+define KernelPackage/sound-soc-googlevoicehat
+  TITLE:=Support for Google VoiceHAT Sound Card
+  KCONFIG:= \
+	CONFIG_SND_BCM2708_SOC_GOOGLEVOICEHAT_SOUNDCARD \
+	CONFIG_SND_SOC_VOICEHAT
+  FILES:= \
+	$(LINUX_DIR)/sound/soc/bcm/snd-soc-googlevoicehat-codec.ko \
+	$(LINUX_DIR)/sound/soc/bcm/snd-soc-googlevoicehat-soundcard.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-googlevoicehat-codec \
+	snd-soc-googlevoicehat-soundcard)
+  DEPENDS:= \
+	@LINUX_4_14 \
+	kmod-sound-soc-bcm2835-i2s
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-googlevoicehat/description
+  This package contains support for Google VoiceHAT Sound Card
+endef
+
+$(eval $(call KernelPackage,sound-soc-googlevoicehat))
+
 
 define KernelPackage/sound-soc-hifiberry-dac
   TITLE:=Support for HifiBerry DAC
@@ -435,6 +635,7 @@ define KernelPackage/sound-soc-raspidac3
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm512x snd-soc-pcm512x-i2c \
 	snd-soc-tpa6130a2 snd-soc-raspidac3)
   DEPENDS:= \
+	@LINUX_4_9 \
 	kmod-sound-soc-bcm2835-i2s \
 	+kmod-i2c-bcm2708
   $(call AddDepends/sound)
@@ -445,6 +646,48 @@ define KernelPackage/sound-soc-raspidac3/description
 endef
 
 $(eval $(call KernelPackage,sound-soc-raspidac3))
+
+
+define KernelPackage/sound-soc-rpi-cirrus
+  TITLE:=Support for Cirrus Logic Audio Card
+  KCONFIG:= \
+	CONFIG_GPIO_ARIZONA \
+	CONFIG_INPUT_ARIZONA_HAPTICS=n \
+	CONFIG_MFD_ARIZONA=y \
+	CONFIG_MFD_ARIZONA_I2C \
+	CONFIG_MFD_CS47L24=n \
+	CONFIG_MFD_WM5102=n \
+	CONFIG_MFD_WM5110=n \
+	CONFIG_MFD_WM8997=n \
+	CONFIG_MFD_WM8998=n \
+	CONFIG_REGULATOR_ARIZONA \
+	CONFIG_REGULATOR_ARIZONA_LDO1 \
+	CONFIG_REGULATOR_ARIZONA_MICSUPP \
+	CONFIG_SND_BCM2708_SOC_RPI_CIRRUS \
+	CONFIG_SND_SOC_ARIZONA \
+	CONFIG_SND_SOC_WM5102 \
+	CONFIG_SND_SOC_WM8804 \
+	CONFIG_SND_SOC_WM_ADSP
+  FILES:= \
+	$(LINUX_DIR)/sound/soc/bcm/snd-soc-rpi-cirrus.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-arizona.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-wm-adsp.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-wm5102.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-wm8804.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm1794a snd-soc-rpi-cirrus)
+  DEPENDS:= \
+	@LINUX_4_14 \
+	+kmod-i2c-bcm2708 \
+	kmod-sound-soc-bcm2835-i2s
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-rpi-cirrus/description
+  This package contains support for RPi-Cirrus
+endef
+
+$(eval $(call KernelPackage,sound-soc-rpi-cirrus))
+
 
 define KernelPackage/sound-soc-rpi-dac
   TITLE:=Support for RPi-DAC
@@ -627,9 +870,11 @@ $(eval $(call KernelPackage,i2c-bcm2835))
 define KernelPackage/video-bcm2835
   TITLE:=Broadcom BCM2835 camera interface driver
   KCONFIG:= \
-	CONFIG_VIDEO_BCM2835=y \
+	CONFIG_VIDEO_BCM2835$(if $(CONFIG_LINUX_4_9),=y) \
 	CONFIG_VIDEO_BCM2835_MMAL
-  FILES:= $(LINUX_DIR)/drivers/media/platform/bcm2835/bcm2835-v4l2.ko
+  FILES:= \
+	$(LINUX_DIR)/drivers/media/platform/bcm2835/bcm2835-v4l2.ko@lt4.12 \
+	$(LINUX_DIR)/drivers/staging/vc04_services/bcm2835-camera/bcm2835-v4l2.ko@ge4.12
   AUTOLOAD:=$(call AutoLoad,65,bcm2835-v4l2)
   $(call AddDepends/video,@TARGET_brcm2708 +kmod-video-videobuf2)
 endef

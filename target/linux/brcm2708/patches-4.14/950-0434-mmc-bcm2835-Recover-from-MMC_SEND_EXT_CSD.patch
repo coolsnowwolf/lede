@@ -1,0 +1,50 @@
+From c2eae29f6503cf29ac6a204c51132cfed33d203e Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Fri, 26 Oct 2018 17:40:44 +0100
+Subject: [PATCH 434/454] mmc/bcm2835: Recover from MMC_SEND_EXT_CSD
+
+If the user issues an "mmc extcsd read", the SD controller receives
+what it thinks is a SEND_IF_COND command with an unexpected data block.
+The resulting operations leave the FSM stuck in READWAIT, a state which
+persists until the MMC framework resets the controller, by which point
+the root filesystem is likely to have been unmounted.
+
+A less heavyweight solution is to detect the condition and nudge the
+FSM by asserting the (self-clearing) FORCE_DATA_MODE bit.
+
+N.B. This workaround was essentially discovered by accident and without
+a full understanding the inner workings of the controller, so it is
+fortunate that the "fix" only modifies error paths.
+
+See: https://github.com/raspberrypi/linux/issues/2728
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ drivers/mmc/host/bcm2835.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+--- a/drivers/mmc/host/bcm2835.c
++++ b/drivers/mmc/host/bcm2835.c
+@@ -772,6 +772,8 @@ static void bcm2835_finish_command(struc
+ 
+ 		if (!(sdhsts & SDHSTS_CRC7_ERROR) ||
+ 		    (host->cmd->opcode != MMC_SEND_OP_COND)) {
++			u32 edm, fsm;
++
+ 			if (sdhsts & SDHSTS_CMD_TIME_OUT) {
+ 				host->cmd->error = -ETIMEDOUT;
+ 			} else {
+@@ -780,6 +782,13 @@ static void bcm2835_finish_command(struc
+ 				bcm2835_dumpregs(host);
+ 				host->cmd->error = -EILSEQ;
+ 			}
++			edm = readl(host->ioaddr + SDEDM);
++			fsm = edm & SDEDM_FSM_MASK;
++			if (fsm == SDEDM_FSM_READWAIT ||
++			    fsm == SDEDM_FSM_WRITESTART1)
++				/* Kick the FSM out of its wait */
++				writel(edm | SDEDM_FORCE_DATA_MODE,
++				       host->ioaddr + SDEDM);
+ 			bcm2835_finish_request(host);
+ 			return;
+ 		}

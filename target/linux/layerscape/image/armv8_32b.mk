@@ -9,6 +9,7 @@ define Device/Default
   PROFILES := Default
   IMAGES := firmware.bin
   FILESYSTEMS := ubifs
+  MKUBIFS_OPTS := -m 1 -e 262016 -c 128
   KERNEL := kernel-bin | uImage none
   KERNEL_NAME := zImage
   KERNEL_LOADADDR := 0x80008000
@@ -24,7 +25,6 @@ define Device/ls1012ardb
     u-boot-ls1012ardb-image \
     kmod-ppfe
   DEVICE_DTS := ../../../arm64/boot/dts/freescale/fsl-ls1012a-rdb
-  UBIFS_OPTS := -m 1 -e 262016 -c 128
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 256KiB
   PAGESIZE := 1
@@ -99,7 +99,6 @@ define Device/ls1046ardb
     layerscape-ppa-ls1046ardb \
     u-boot-ls1046ardb-image
   DEVICE_DTS := ../../../arm64/boot/dts/freescale/fsl-ls1046a-rdb-sdk
-  UBIFS_OPTS := -m 1 -e 262016 -c 128
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 256KiB
   PAGESIZE := 1
