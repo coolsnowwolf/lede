@@ -156,6 +156,15 @@ define Device/firewrt
 endef
 TARGET_DEVICES += firewrt
 
+define Device/gehua_ghl-r-001
+  DTS := GHL-R-001
+  IMAGE_SIZE := $(ralink_default_fw_size_32M)
+  DEVICE_TITLE := GeHua GHL-R-001
+  DEVICE_PACKAGES := \
+	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
+endef
+TARGET_DEVICES += gehua_ghl-r-001
+
 define Device/gnubee_gb-pc1
   DTS := GB-PC1
   DEVICE_TITLE := GnuBee Personal Cloud One
