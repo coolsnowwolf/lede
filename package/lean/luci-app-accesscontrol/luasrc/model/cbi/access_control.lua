@@ -74,7 +74,7 @@ s = mr:section(TypedSection, "rule", translate("Client Rules"))
             return Flag.write(self, section, value)
         end
       
-    o = s:option(Value, "name", translate("Description"))
+--o = s:option(Value, "name", translate("Description"))
 --        o.rmempty = false  -- force validate
 --        -- better validate, then: o.datatype = "minlength(1)"
 --        o.validate = function(self, val, sid)
@@ -113,12 +113,12 @@ s = mr:section(TypedSection, "rule", translate("Client Rules"))
         o.size = 5
 
     local Days = {'Mon','Tue','Wed','Thu','Fri','Sat','Sun'}
-    local Days1 = translate("MTWTFSS")
+    local Days1 = {'Mon','Tue','Wed','Thu','Fri','Sat','Sun'}
     
     function make_day (nday)
         local day = Days[nday]
-        local label = Days1:sub (nday,nday)
-        local o = s:option(Flag, day, label)
+        local label = Days1[nday]
+        local o = s:option(Flag, day, translate(label))
         o.default = '1'
         o.rmempty = false  --  always call write
         
