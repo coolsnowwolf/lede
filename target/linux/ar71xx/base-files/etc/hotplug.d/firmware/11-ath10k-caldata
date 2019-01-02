@@ -1,5 +1,21 @@
 #!/bin/sh
 
+# xor multiple hex values of the same length
+xor() {
+	local val
+	local ret="0x$1"
+	local retlen=${#1}
+
+	shift
+	while [ -n "$1" ]; do
+		val="0x$1"
+		ret=$((ret ^ val))
+		shift
+	done
+
+	printf "%0${retlen}x" "$ret"
+}
+
 ath10kcal_die() {
 	echo "ath10cal: " "$*"
 	exit 1
@@ -40,6 +56,29 @@ ath10kcal_patch_mac() {
 	[ -z "$mac" ] && return
 
 	macaddr_2bin $mac | dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=6 count=6
+}
+
+ath10kcal_patch_mac_crc() {
+	local mac=$1
+	local mac_offset=6
+	local chksum_offset=2
+	local xor_mac
+	local xor_fw_mac
+	local xor_fw_chksum
+
+	xor_fw_mac=$(hexdump -v -n 6 -s $mac_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
+	xor_fw_mac="${xor_fw_mac:0:4} ${xor_fw_mac:4:4} ${xor_fw_mac:8:4}"
+
+	ath10kcal_patch_mac "$mac" && {
+		xor_mac=${mac//:/}
+		xor_mac="${xor_mac:0:4} ${xor_mac:4:4} ${xor_mac:8:4}"
+
+		xor_fw_chksum=$(hexdump -v -n 2 -s $chksum_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
+		xor_fw_chksum=$(xor $xor_fw_chksum $xor_fw_mac $xor_mac)
+
+		printf "%b" "\x${xor_fw_chksum:0:2}\x${xor_fw_chksum:2:2}" | \
+			dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=$chksum_offset count=2
+	}
 }
 
 [ -e /lib/firmware/$FIRMWARE ] && exit 0
@@ -179,6 +218,12 @@ case "$FIRMWARE" in
 		;;
 	cf-e385ac)
 		ath10kcal_extract "art" 20480 12064
+		;;
+	k2t)
+		ath10kcal_extract "art" 20480 12064
+		ath10kcal_patch_mac_crc $(macaddr_add $(cat /sys/class/net/eth0/address) +2)
+		ln -sf /lib/firmware/ath10k/pre-cal-pci-0000\:00\:00.0.bin \
+			/lib/firmware/ath10k/QCA9888/hw2.0/board.bin
 		;;
 	esac
 	;;

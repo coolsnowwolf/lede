@@ -148,6 +148,7 @@ obj-$(CONFIG_ATH79_MACH_HORNET_UB)		+= mach-hornet-ub.o
 obj-$(CONFIG_ATH79_MACH_JA76PF)			+= mach-ja76pf.o
 obj-$(CONFIG_ATH79_MACH_JWAP003)		+= mach-jwap003.o
 obj-$(CONFIG_ATH79_MACH_JWAP230)		+= mach-jwap230.o
+obj-$(CONFIG_ATH79_MACH_K2T)			+= mach-k2t.o
 obj-$(CONFIG_ATH79_MACH_KOALA)			+= mach-koala.o
 obj-$(CONFIG_ATH79_MACH_LAN_TURTLE)		+= mach-lan-turtle.o
 obj-$(CONFIG_ATH79_MACH_LIMA)			+= mach-lima.o
