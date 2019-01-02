@@ -539,7 +539,7 @@ define KernelPackage/nf-nathelper-extra
   KCONFIG:=$(KCONFIG_NF_NATHELPER_EXTRA)
   FILES:=$(foreach mod,$(NF_NATHELPER_EXTRA-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoProbe,$(notdir $(NF_NATHELPER_EXTRA-m)))
-  DEPENDS:=+kmod-nf-nat +kmod-lib-textsearch +kmod-ipt-raw
+  DEPENDS:=+kmod-nf-nat +kmod-lib-textsearch +kmod-ipt-raw +LINUX_4_19:kmod-asn1-decoder
 endef
 
 define KernelPackage/nf-nathelper-extra/description
@@ -1156,7 +1156,7 @@ define KernelPackage/nft-netdev
 	CONFIG_NFT_DUP_NETDEV \
 	CONFIG_NFT_FWD_NETDEV
   FILES:= \
-	$(LINUX_DIR)/net/netfilter/nf_tables_netdev.ko \
+	$(LINUX_DIR)/net/netfilter/nf_tables_netdev.ko@lt4.17 \
 	$(LINUX_DIR)/net/netfilter/nf_dup_netdev.ko \
 	$(LINUX_DIR)/net/netfilter/nft_dup_netdev.ko \
 	$(LINUX_DIR)/net/netfilter/nft_fwd_netdev.ko
@@ -1164,3 +1164,15 @@ define KernelPackage/nft-netdev
 endef
 
 $(eval $(call KernelPackage,nft-netdev))
+
+
+define KernelPackage/nft-fib
+  SUBMENU:=$(NF_MENU)
+  TITLE:=Netfilter nf_tables fib support
+  DEPENDS:=+kmod-nft-core
+  FILES:=$(foreach mod,$(NFT_FIB-m),$(LINUX_DIR)/net/$(mod).ko)
+  AUTOLOAD:=$(call AutoProbe,$(notdir $(NFT_FIB-m)))
+  KCONFIG:=$(KCONFIG_NFT_FIB)
+endef
+
+$(eval $(call KernelPackage,nft-fib))

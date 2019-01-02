@@ -52,6 +52,23 @@ endef
 
 $(eval $(call KernelPackage,iio-ad799x))
 
+define KernelPackage/iio-hmc5843
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core +kmod-regmap
+  TITLE:=Honeywell HMC58x3 Magnetometer
+  KCONFIG:= CONFIG_SENSORS_HMC5843_I2C
+  FILES:= \
+      $(LINUX_DIR)/drivers/iio/magnetometer/hmc5843_i2c.ko \
+      $(LINUX_DIR)/drivers/iio/magnetometer/hmc5843_core.ko
+  AUTOLOAD:=$(call AutoLoad,56,hmc5843)
+endef
+
+define KernelPackage/iio-hmc5843/description
+  Honeywell HMC5843/5883/5883L 3-Axis Magnetometer
+endef
+
+$(eval $(call KernelPackage,iio-hmc5843))
+
 define KernelPackage/iio-bh1750
   SUBMENU:=$(IIO_MENU)
   DEPENDS:=+kmod-i2c-core +kmod-iio-core

@@ -30,7 +30,7 @@ $(eval $(call KernelPackage,6lowpan))
 define KernelPackage/bluetooth
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Bluetooth support
-  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-crypto-hash +kmod-crypto-ecb +kmod-lib-crc16 +kmod-hid +!LINUX_3_18:kmod-crypto-cmac +!LINUX_3_18:kmod-regmap +LINUX_4_14:kmod-crypto-ecdh
+  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-crypto-hash +kmod-crypto-ecb +kmod-lib-crc16 +kmod-hid +!LINUX_3_18:kmod-crypto-cmac +!LINUX_3_18:kmod-regmap +!(LINUX_3_18||LINUX_4_9):kmod-crypto-ecdh
   KCONFIG:= \
 	CONFIG_BT \
 	CONFIG_BT_BREDR=y \
@@ -129,7 +129,11 @@ define KernelPackage/dma-buf
   TITLE:=DMA shared buffer support
   HIDDEN:=1
   KCONFIG:=CONFIG_DMA_SHARED_BUFFER
-  FILES:=$(LINUX_DIR)/drivers/dma-buf/dma-shared-buffer.ko
+  ifeq ($(strip $(CONFIG_EXTERNAL_KERNEL_TREE)),"")
+    ifeq ($(strip $(CONFIG_KERNEL_GIT_CLONE_URI)),"")
+      FILES:=$(LINUX_DIR)/drivers/dma-buf/dma-shared-buffer.ko
+    endif
+  endif
   AUTOLOAD:=$(call AutoLoad,20,dma-shared-buffer)
 endef
 $(eval $(call KernelPackage,dma-buf))
@@ -168,7 +172,7 @@ define KernelPackage/eeprom-at24
   SUBMENU:=$(OTHER_MENU)
   TITLE:=EEPROM AT24 support
   KCONFIG:=CONFIG_EEPROM_AT24
-  DEPENDS:=+kmod-i2c-core +kmod-nvmem
+  DEPENDS:=+kmod-i2c-core +kmod-nvmem +LINUX_4_19:kmod-regmap
   FILES:=$(LINUX_DIR)/drivers/misc/eeprom/at24.ko
   AUTOLOAD:=$(call AutoProbe,at24)
 endef
@@ -215,7 +219,7 @@ $(eval $(call KernelPackage,gpio-dev))
 define KernelPackage/gpio-mcp23s08
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Microchip MCP23xxx I/O expander
-  DEPENDS:=@GPIO_SUPPORT +kmod-i2c-core +LINUX_4_14:kmod-regmap
+  DEPENDS:=@GPIO_SUPPORT +kmod-i2c-core +!(LINUX_3_18||LINUX_4_9):kmod-regmap
   KCONFIG:= \
 	CONFIG_GPIO_MCP23S08 \
 	CONFIG_PINCTRL_MCP23S08
@@ -896,7 +900,7 @@ define KernelPackage/random-tpm
   TITLE:=Hardware Random Number Generator TPM support
   KCONFIG:=CONFIG_HW_RANDOM_TPM
   FILES:=$(LINUX_DIR)/drivers/char/hw_random/tpm-rng.ko
-  DEPENDS:= +kmod-random-core +kmod-tpm
+  DEPENDS:= +kmod-random-core +kmod-tpm @!LINUX_4_19
   AUTOLOAD:=$(call AutoProbe,tpm-rng)
 endef
 
