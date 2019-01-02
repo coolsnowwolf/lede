@@ -6,41 +6,65 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=frp
-PKG_VERSION:=0.22.0
+PKG_NAME:=frpc
+PKG_VERSION:=0.21.0
 PKG_RELEASE:=1
+
+ifeq ($(ARCH),mipsel)
+	FRPC_ARCH:=mipsle
+endif
+ifeq ($(ARCH),mips)
+	FRPC_ARCH:=mips
+endif
+ifeq ($(ARCH),i386)
+	FRPC_ARCH:=386
+endif
+ifeq ($(ARCH),x86_64)
+	FRPC_ARCH:=amd64
+endif
+ifeq ($(ARCH),arm)
+	FRPC_ARCH:=arm
+endif
+ifeq ($(ARCH),arm64)
+	FRPC_ARCH:=arm64
+endif
 
 PKG_LICENSE:=Apache-2.0
 
-PKG_SOURCE_URL:=https://codeload.github.com/fatedier/frp/tar.gz/v$(PKG_VERSION)?
-PKG_SOURCE:=frp-$(PKG_VERSION).tar.gz
-PKG_HASH:=f20dde034d3c6a3eaf9a5d1a9c62b47c2ae5d27c59c5549cf3c01d8b7099330d
-
-PKG_BUILD_DEPENDS:=golang/host
-PKG_BUILD_PARALLEL:=1
-
-GO_PKG:=github.com/fatedier/frp
-GO_PKG_BUILD_PKG:=github.com/fatedier/frp/cmd/frpc
+PKG_SOURCE_URL:=https://github.com/fatedier/frp/releases/download/v$(PKG_VERSION)
+PKG_SOURCE:=frp_$(PKG_VERSION)_linux_$(FRPC_ARCH).tar.gz
+PKG_BUILD_DIR:=$(BUILD_DIR)/frp_$(PKG_VERSION)_linux_$(FRPC_ARCH)
+PKG_HASH:=skip
 
 include $(INCLUDE_DIR)/package.mk
-include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-define Package/frpc
+define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=FRPC Client
-	DEPENDS:=$(GO_ARCH_DEPENDS)
-	URL:=https://github.com/fatedier/frp
+	DEPENDS:=
+	URL:=https://github.com/fatedier/frp/releases
 endef
 
-define Package/frpc/description
+
+
+define Package/$(PKG_NAME)/description
 frp is a fast reverse proxy to help you expose a local server behind a NAT or firewall to the internet
 endef
 
-
-define Package/frpc/install
-	$(call GoPackage/Package/Install/Bin,$(1))
+define Build/Prepare
+	$(PKG_UNPACK)
 endef
 
-$(eval $(call GoBinPackage,frpc))
-$(eval $(call BuildPackage,frpc))
+define Build/Configure
+endef
+
+define Build/Compile
+endef
+
+define Package/$(PKG_NAME)/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/frpc $(1)/usr/bin/
+endef
+
+$(eval $(call BuildPackage,$(PKG_NAME)))
