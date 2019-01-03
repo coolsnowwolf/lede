@@ -1445,8 +1445,8 @@ static int rtl8366rb_probe(struct platform_device *pdev)
 		       " version " RTL8366RB_DRIVER_VER"\n");
 
 	smi = rtl8366_smi_probe(pdev);
-	if (IS_ERR(smi))
-		return PTR_ERR(smi);
+	if (!smi)
+		return -ENODEV;
 
 	smi->clk_delay = 10;
 	smi->cmd_read = 0xa9;
