@@ -18,20 +18,11 @@ endef
 TARGET_DEVICES += br-6475nd
 
 define Device/cy-swr1100
+  $(Device/seama)
   DTS := CY-SWR1100
   BLOCKSIZE := 64k
   KERNEL := $(KERNEL_DTB)
-  IMAGES += factory.bin
-  IMAGE/sysupgrade.bin := \
-	append-kernel | pad-offset $$$$(BLOCKSIZE) 64 | append-rootfs | \
-	seama -m "dev=/dev/mtdblock/2" -m "type=firmware" | \
-	pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
-  IMAGE/factory.bin := \
-	append-kernel | pad-offset $$$$(BLOCKSIZE) 64 | \
-	append-rootfs | pad-rootfs -x 64 | \
-	seama -m "dev=/dev/mtdblock/2" -m "type=firmware" | \
-	seama-seal -m "signature=wrgnd10_samsung_ss815" | \
-	check-size $$$$(IMAGE_SIZE)
+  SEAMA_SIGNATURE := wrgnd10_samsung_ss815
   DEVICE_TITLE := Samsung CY-SWR1100
   DEVICE_PACKAGES := kmod-usb-core kmod-usb-ohci kmod-usb2 swconfig
 endef
@@ -39,20 +30,11 @@ TARGET_DEVICES += cy-swr1100
 
 
 define Device/dir-645
+  $(Device/seama)
   DTS := DIR-645
   BLOCKSIZE := 4k
   KERNEL := $(KERNEL_DTB)
-  IMAGES += factory.bin
-  IMAGE/sysupgrade.bin := \
-	append-kernel | pad-offset $$$$(BLOCKSIZE) 64 | append-rootfs | \
-	seama -m "dev=/dev/mtdblock/2" -m "type=firmware" | \
-	pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
-  IMAGE/factory.bin := \
-	append-kernel | pad-offset $$$$(BLOCKSIZE) 64 | \
-	append-rootfs | pad-rootfs -x 64 | \
-	seama -m "dev=/dev/mtdblock/2" -m "type=firmware" | \
-	seama-seal -m "signature=wrgn39_dlob.hans_dir645" | \
-	check-size $$$$(IMAGE_SIZE)
+  SEAMA_SIGNATURE := wrgn39_dlob.hans_dir645
   DEVICE_TITLE := D-Link DIR-645
   DEVICE_PACKAGES := kmod-usb-core kmod-usb-ohci kmod-usb2 swconfig
 endef

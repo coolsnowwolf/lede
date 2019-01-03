@@ -1,0 +1,126 @@
+From e058fa1969019c2f6705c53c4130e364a877d4e6 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Sun, 26 Nov 2017 12:07:31 +0100
+Subject: [PATCH] gpio: fix device tree gpio hogs on dual role gpio/pincontrol
+ controllers
+
+For dual role gpio and pincontrol controller, the device registration
+path is often:
+
+  pinctrl_register(...);
+  gpiochip_add_data(...);
+  gpiochip_add_pin_range(...);
+
+If the device tree node has any gpio-hogs, the code will try to apply them
+in the gpiochip_add_data step, but fail as they cannot be requested, as the
+ranges are missing. But we also cannot first add the pinranges, as the
+appropriate data structures are only initialized in gpiochip_add_data.
+
+To fix this, defer gpio-hogs to the time pin ranges get added instead of
+directly at chip request time, if the gpio-chip has a request method.
+
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+---
+
+ drivers/gpio/gpiolib-of.c | 20 +++++++++++++++-----
+ drivers/gpio/gpiolib.c    |  5 +++--
+ drivers/gpio/gpiolib.h    |  8 ++++++++
+ 3 files changed, 26 insertions(+), 7 deletions(-)
+
+--- a/drivers/gpio/gpiolib-of.c
++++ b/drivers/gpio/gpiolib-of.c
+@@ -274,19 +274,22 @@ static void of_gpiochip_set_names(struct
+ /**
+  * of_gpiochip_scan_gpios - Scan gpio-controller for gpio definitions
+  * @chip:	gpio chip to act on
++ * @start:	first gpio to check
++ * @num:	number of gpios to check
+  *
+- * This is only used by of_gpiochip_add to request/set GPIO initial
+- * configuration.
++ * This is used by of_gpiochip_add, gpiochip_add_pingroup_range and
++ * gpiochip_add_pin_range to request/set GPIO initial configuration.
+  * It retures error if it fails otherwise 0 on success.
+  */
+-static int of_gpiochip_scan_gpios(struct gpio_chip *chip)
++int of_gpiochip_scan_gpios(struct gpio_chip *chip, unsigned int start,
++			   unsigned int num)
+ {
+ 	struct gpio_desc *desc = NULL;
+ 	struct device_node *np;
+ 	const char *name;
+ 	enum gpio_lookup_flags lflags;
+ 	enum gpiod_flags dflags;
+-	int ret;
++	int ret, hwgpio;
+ 
+ 	for_each_available_child_of_node(chip->of_node, np) {
+ 		if (!of_property_read_bool(np, "gpio-hog"))
+@@ -296,6 +299,10 @@ static int of_gpiochip_scan_gpios(struct
+ 		if (IS_ERR(desc))
+ 			continue;
+ 
++		hwgpio = gpio_chip_hwgpio(desc);
++		if (hwgpio < start || hwgpio >= (start + num))
++			continue;
++
+ 		ret = gpiod_hog(desc, name, lflags, dflags);
+ 		if (ret < 0)
+ 			return ret;
+@@ -531,7 +538,10 @@ int of_gpiochip_add(struct gpio_chip *ch
+ 
+ 	of_node_get(chip->of_node);
+ 
+-	return of_gpiochip_scan_gpios(chip);
++	if (!chip->request)
++		status = of_gpiochip_scan_gpios(chip, 0, chip->ngpio);
++
++	return status;
+ }
+ 
+ void of_gpiochip_remove(struct gpio_chip *chip)
+--- a/drivers/gpio/gpiolib.c
++++ b/drivers/gpio/gpiolib.c
+@@ -1884,7 +1884,8 @@ int gpiochip_add_pingroup_range(struct g
+ 
+ 	list_add_tail(&pin_range->node, &gdev->pin_ranges);
+ 
+-	return 0;
++	return of_gpiochip_scan_gpios(chip, gpio_offset,
++				      pin_range->range.npins);
+ }
+ EXPORT_SYMBOL_GPL(gpiochip_add_pingroup_range);
+ 
+@@ -1933,7 +1934,7 @@ int gpiochip_add_pin_range(struct gpio_c
+ 
+ 	list_add_tail(&pin_range->node, &gdev->pin_ranges);
+ 
+-	return 0;
++	return of_gpiochip_scan_gpios(chip, gpio_offset, npins);
+ }
+ EXPORT_SYMBOL_GPL(gpiochip_add_pin_range);
+ 
+--- a/drivers/gpio/gpiolib.h
++++ b/drivers/gpio/gpiolib.h
+@@ -96,6 +96,8 @@ struct gpio_desc *of_get_named_gpiod_fla
+ 		   const char *list_name, int index, enum of_gpio_flags *flags);
+ int of_gpiochip_add(struct gpio_chip *gc);
+ void of_gpiochip_remove(struct gpio_chip *gc);
++int of_gpiochip_scan_gpios(struct gpio_chip *chip, unsigned int start,
++			   unsigned int num);
+ #else
+ static inline struct gpio_desc *of_find_gpio(struct device *dev,
+ 					     const char *con_id,
+@@ -111,6 +113,12 @@ static inline struct gpio_desc *of_get_n
+ }
+ static inline int of_gpiochip_add(struct gpio_chip *gc) { return 0; }
+ static inline void of_gpiochip_remove(struct gpio_chip *gc) { }
++static inline int of_gpiochip_scan_gpios(struct gpio_chip *chip,
++					 unsigned int start,
++					 unsigned int num)
++{
++	return 0;
++}
+ #endif /* CONFIG_OF_GPIO */
+ 
+ #ifdef CONFIG_ACPI

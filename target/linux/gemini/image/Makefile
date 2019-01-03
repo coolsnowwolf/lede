@@ -40,16 +40,20 @@ define Build/dns313-images
 endef
 
 # Create the special NAS4220B image format with the squashfs
-# split across two "partitions" named rd.gz and hddapp.tgz but
-# essentially just being used by OpenWRT as one big partition
+# and overlay inside the "rd.gz" file. We pad it out to 6144K
+# which is the size of the initramfs partition.
+#
+# The "application" partition is just blank. You can put anything
+# there when using OpenWRT. We just use that to create the
+# "sysupgrade" firmware image.
 define Build/nas4220b-images
 	dd if=$(IMAGE_ROOTFS) of=$(BIN_DIR)/rd.gz bs=6144k conv=sync
-	dd if=$(IMAGE_ROOTFS) of=$(BIN_DIR)/hddapp.tgz bs=6144k count=1 seek=1
+	dd if=/dev/zero of=$(BIN_DIR)/hddapp.tgz bs=6144k count=1
 	cp $(IMAGE_KERNEL) $(BIN_DIR)/zImage
 	cp ./ImageInfo-ib4220 $(BIN_DIR)/ImageInfo
 	(cd $(BIN_DIR); tar -czf $(IMG_PREFIX)-sysupgrade-ib4220b.tar.gz ImageInfo zImage rd.gz hddapp.tgz)
 	mv $(BIN_DIR)/rd.gz $(BIN_DIR)/$(IMG_PREFIX)-nas4220b-rd.gz
-	mv $(BIN_DIR)/hddapp.tgz $(BIN_DIR)/$(IMG_PREFIX)-nas4220b-hddapp.tgz
+	rm $(BIN_DIR)/hddapp.tgz
 	mv $(BIN_DIR)/zImage $(BIN_DIR)/$(IMG_PREFIX)-nas4220b-zImage
 	rm -f $(BIN_DIR)/ImageInfo
 endef
@@ -57,13 +61,13 @@ endef
 # The Itian Square One SQ201 uses the same method.
 define Build/sq201-images
 	dd if=$(IMAGE_ROOTFS) of=$(BIN_DIR)/rd.gz bs=6144k conv=sync
-	dd if=$(IMAGE_ROOTFS) of=$(BIN_DIR)/hddapp.tgz bs=6144k count=1 seek=1
+	dd if=/dev/zero of=$(BIN_DIR)/hddapp.tgz bs=6144k count=1
 	cp $(IMAGE_KERNEL) $(BIN_DIR)/zImage
 	cp ./ImageInfo-sq201 $(BIN_DIR)/ImageInfo
 	sed -i -e "s/DATESTR/`date +%Y%m%d`/g" $(BIN_DIR)/ImageInfo
 	(cd $(BIN_DIR); tar -czf $(IMG_PREFIX)-sysupgrade-sq201.tar.gz ImageInfo zImage rd.gz hddapp.tgz)
 	mv $(BIN_DIR)/rd.gz $(BIN_DIR)/$(IMG_PREFIX)-sq201-rd.gz
-	mv $(BIN_DIR)/hddapp.tgz $(BIN_DIR)/$(IMG_PREFIX)-sq201-hddapp.tgz
+	rm $(BIN_DIR)/hddapp.tgz
 	mv $(BIN_DIR)/zImage $(BIN_DIR)/$(IMG_PREFIX)-sq201-zImage
 	rm -f $(BIN_DIR)/ImageInfo
 endef
@@ -137,7 +141,7 @@ define Device/sq201
 	DEVICE_TITLE := ITian Square One SQ201
 	IMAGES += sq201-image
 	IMAGE/sq201-image := sq201-images
-	DEVICE_PACKAGES := $(GEMINI_NAS_PACKAGES) rt61-pci
+	DEVICE_PACKAGES := $(GEMINI_NAS_PACKAGES) rt61-pci usb2-pci
 endef
 TARGET_DEVICES += sq201
 

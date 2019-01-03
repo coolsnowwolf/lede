@@ -1,0 +1,79 @@
+From 03556dab1cb02d85b50d7be3ee3a3bac001f5991 Mon Sep 17 00:00:00 2001
+From: Koen Vandeputte <koen.vandeputte@ncentric.com>
+Date: Tue, 18 Dec 2018 12:14:06 +0100
+Subject: [PATCH] arm: cns3xxx: fix writing to wrong PCI registers after
+ alignment
+
+Originally, cns3xxx used it's own functions for mapping, reading and writing registers.
+
+Commit 802b7c06adc7 ("ARM: cns3xxx: Convert PCI to use generic config accessors")
+removed the internal PCI config write function in favor of the generic one:
+
+cns3xxx_pci_write_config() --> pci_generic_config_write()
+
+cns3xxx_pci_write_config() expected aligned addresses, being produced by cns3xxx_pci_map_bus()
+while the generic one pci_generic_config_write() actually expects the real address
+as both the function and hardware are capable of byte-aligned writes.
+
+This currently leads to pci_generic_config_write() writing
+to the wrong registers on some ocasions.
+
+First issue seen due to this:
+
+- driver ath9k gets loaded
+- The driver wants to write value 0xA8 to register PCI_LATENCY_TIMER, located at 0x0D
+- cns3xxx_pci_map_bus() aligns the address to 0x0C
+- pci_generic_config_write() effectively writes 0xA8 into register 0x0C (CACHE_LINE_SIZE)
+
+This seems to cause some slight instability when certain PCI devices are used.
+
+Another issue example caused by this this is the PCI bus numbering,
+where the primary bus is higher than the secondary, which is impossible.
+
+Before:
+
+00:00.0 PCI bridge: Cavium, Inc. Device 3400 (rev 01) (prog-if 00 [Normal decode])
+    Flags: bus master, fast devsel, latency 0, IRQ 255
+    Bus: primary=02, secondary=01, subordinate=ff, sec-latency=0
+
+After fix:
+
+00:00.0 PCI bridge: Cavium, Inc. Device 3400 (rev 01) (prog-if 00 [Normal decode])
+    Flags: bus master, fast devsel, latency 0, IRQ 255
+    Bus: primary=00, secondary=01, subordinate=02, sec-latency=0
+
+And very likely some more ..
+
+Fix all by omitting the alignment being done in the mapping function.
+
+Fixes: 802b7c06adc7 ("ARM: cns3xxx: Convert PCI to use generic config accessors")
+Signed-off-by: Koen Vandeputte <koen.vandeputte@ncentric.com>
+CC: Arnd Bergmann <arnd@arndb.de>
+CC: Bjorn Helgaas <bhelgaas@google.com>
+CC: Krzysztof Halasa <khalasa@piap.pl>
+CC: Olof Johansson <olof@lixom.net>
+CC: Robin Leblon <robin.leblon@ncentric.com>
+CC: Rob Herring <robh@kernel.org>
+CC: Russell King <linux@armlinux.org.uk>
+CC: Tim Harvey <tharvey@gateworks.com>
+CC: stable@vger.kernel.org # v4.0+
+---
+ arch/arm/mach-cns3xxx/pcie.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm/mach-cns3xxx/pcie.c b/arch/arm/mach-cns3xxx/pcie.c
+index 318394ed5c7a..5e11ad3164e0 100644
+--- a/arch/arm/mach-cns3xxx/pcie.c
++++ b/arch/arm/mach-cns3xxx/pcie.c
+@@ -83,7 +83,7 @@ static void __iomem *cns3xxx_pci_map_bus(struct pci_bus *bus,
+ 	} else /* remote PCI bus */
+ 		base = cnspci->cfg1_regs + ((busno & 0xf) << 20);
+ 
+-	return base + (where & 0xffc) + (devfn << 12);
++	return base + where + (devfn << 12);
+ }
+ 
+ static int cns3xxx_pci_read_config(struct pci_bus *bus, unsigned int devfn,
+-- 
+2.17.1
+

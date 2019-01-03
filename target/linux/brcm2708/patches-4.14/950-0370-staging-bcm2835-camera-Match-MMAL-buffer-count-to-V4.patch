@@ -1,0 +1,115 @@
+From 84ab2b48fc6834e44ef2d6cec5b2d21285090f88 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Thu, 10 May 2018 12:42:10 -0700
+Subject: [PATCH 370/454] staging: bcm2835-camera: Match MMAL buffer count to
+ V4L2.
+
+commit 7cc31d57f399b00f96ce295d5b86426b95d9076f upstream.
+
+For historical reasons, the number of buffers passed to the VPU over
+MMAL did not match that passed from V4L2.  That is a silly situation
+as the driver has to duplicate serialisation and other functions that
+have already been implemented in V4L2/videobuf2.
+
+As we had more V4L2 buffers than MMAL ones, the MMAL buffer headers
+were returned to the VPU immediately on being filled, which is now
+invalid.
+
+Match the number of buffers notified in queue_setup with that used in
+MMAL.  Return buffers only when we get them from V4L2.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Signed-off-by: Eric Anholt <eric@anholt.net>
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ .../bcm2835-camera/bcm2835-camera.c           |  6 ++++--
+ .../vc04_services/bcm2835-camera/mmal-vchiq.c | 21 +------------------
+ .../vc04_services/bcm2835-camera/mmal-vchiq.h |  4 ----
+ 3 files changed, 5 insertions(+), 26 deletions(-)
+
+--- a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+@@ -262,8 +262,10 @@ static int queue_setup(struct vb2_queue
+ 		return -EINVAL;
+ 	}
+ 
+-	if (*nbuffers < (dev->capture.port->current_buffer.num + 2))
+-		*nbuffers = (dev->capture.port->current_buffer.num + 2);
++	if (*nbuffers < dev->capture.port->minimum_buffer.num)
++		*nbuffers = dev->capture.port->minimum_buffer.num;
++
++	dev->capture.port->current_buffer.num = *nbuffers;
+ 
+ 	*nplanes = 1;
+ 
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.c
+@@ -548,7 +548,6 @@ static int port_buffer_from_host(struct
+ 	/* peek buffer from queue */
+ 	spin_lock_irqsave(&port->slock, flags);
+ 	if (list_empty(&port->buffers)) {
+-		port->buffer_underflow++;
+ 		spin_unlock_irqrestore(&port->slock, flags);
+ 		return -ENOSPC;
+ 	}
+@@ -639,9 +638,6 @@ static void buffer_to_host_cb(struct vch
+ 		    msg->u.buffer_from_host.payload_in_message;
+ 	}
+ 
+-	/* replace the buffer header */
+-	port_buffer_from_host(instance, msg_context->u.bulk.port);
+-
+ 	/* schedule the port callback */
+ 	schedule_work(&msg_context->u.bulk.work);
+ }
+@@ -649,10 +645,6 @@ static void buffer_to_host_cb(struct vch
+ static void bulk_receive_cb(struct vchiq_mmal_instance *instance,
+ 			    struct mmal_msg_context *msg_context)
+ {
+-	/* replace the buffer header */
+-	port_buffer_from_host(msg_context->u.bulk.instance,
+-			      msg_context->u.bulk.port);
+-
+ 	msg_context->u.bulk.status = 0;
+ 
+ 	/* schedule the port callback */
+@@ -664,10 +656,6 @@ static void bulk_abort_cb(struct vchiq_m
+ {
+ 	pr_err("%s: bulk ABORTED msg_context:%p\n", __func__, msg_context);
+ 
+-	/* replace the buffer header */
+-	port_buffer_from_host(msg_context->u.bulk.instance,
+-			      msg_context->u.bulk.port);
+-
+ 	msg_context->u.bulk.status = -EINTR;
+ 
+ 	schedule_work(&msg_context->u.bulk.work);
+@@ -1718,14 +1706,7 @@ int vchiq_mmal_submit_buffer(struct vchi
+ 	list_add_tail(&buffer->list, &port->buffers);
+ 	spin_unlock_irqrestore(&port->slock, flags);
+ 
+-	/* the port previously underflowed because it was missing a
+-	 * mmal_buffer which has just been added, submit that buffer
+-	 * to the mmal service.
+-	 */
+-	if (port->buffer_underflow) {
+-		port_buffer_from_host(instance, port);
+-		port->buffer_underflow--;
+-	}
++	port_buffer_from_host(instance, port);
+ 
+ 	return 0;
+ }
+--- a/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/mmal-vchiq.h
+@@ -82,10 +82,6 @@ struct vchiq_mmal_port {
+ 	struct list_head buffers;
+ 	/* lock to serialise adding and removing buffers from list */
+ 	spinlock_t slock;
+-	/* count of how many buffer header refils have failed because
+-	 * there was no buffer to satisfy them
+-	 */
+-	int buffer_underflow;
+ 	/* callback on buffer completion */
+ 	vchiq_mmal_buffer_cb buffer_cb;
+ 	/* callback context */

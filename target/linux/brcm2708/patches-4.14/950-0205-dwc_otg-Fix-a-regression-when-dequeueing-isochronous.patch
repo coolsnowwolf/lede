@@ -1,0 +1,60 @@
+From e071e9b36cb053f06a10986d987bfeb0e362657c Mon Sep 17 00:00:00 2001
+From: P33M <p33m@github.com>
+Date: Tue, 13 Feb 2018 15:41:35 +0000
+Subject: [PATCH 205/454] dwc_otg: Fix a regression when dequeueing isochronous
+ transfers
+
+In 282bed95 (dwc_otg: make nak_holdoff work as intended with empty queues)
+the dequeue mechanism was changed to leave FIQ-enabled transfers to run
+to completion - to avoid leaving hub TT buffers with stale packets lying
+around.
+
+This broke FIQ-accelerated isochronous transfers, as this then meant that
+dozens of transfers were performed after the dequeue function returned.
+
+Restore the state machine fence for isochronous transfers.
+---
+ drivers/usb/host/dwc_otg/dwc_otg_hcd.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+--- a/drivers/usb/host/dwc_otg/dwc_otg_hcd.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_hcd.c
+@@ -189,13 +189,21 @@ static void kill_urbs_in_qh_list(dwc_otg
+ 
+ 		}
+ 		if(qh->channel) {
++			int n = qh->channel->hc_num;
+ 			/* Using hcchar.chen == 1 is not a reliable test.
+ 			 * It is possible that the channel has already halted
+ 			 * but not yet been through the IRQ handler.
+ 			 */
+ 			if (fiq_fsm_enable && (hcd->fiq_state->channel[qh->channel->hc_num].fsm != FIQ_PASSTHROUGH)) {
++				local_fiq_disable();
++				fiq_fsm_spin_lock(&hcd->fiq_state->lock);
+ 				qh->channel->halt_status = DWC_OTG_HC_XFER_URB_DEQUEUE;
+ 				qh->channel->halt_pending = 1;
++				if (hcd->fiq_state->channel[n].fsm == FIQ_HS_ISOC_TURBO ||
++					hcd->fiq_state->channel[n].fsm == FIQ_HS_ISOC_SLEEPING)
++					hcd->fiq_state->channel[n].fsm = FIQ_HS_ISOC_ABORTED;
++				fiq_fsm_spin_unlock(&hcd->fiq_state->lock);
++				local_fiq_enable();
+ 			} else {
+ 				dwc_otg_hc_halt(hcd->core_if, qh->channel,
+ 						DWC_OTG_HC_XFER_URB_DEQUEUE);
+@@ -596,9 +604,15 @@ int dwc_otg_hcd_urb_dequeue(dwc_otg_hcd_
+ 			/* In FIQ FSM mode, we need to shut down carefully.
+ 			 * The FIQ may attempt to restart a disabled channel */
+ 			if (fiq_fsm_enable && (hcd->fiq_state->channel[n].fsm != FIQ_PASSTHROUGH)) {
++				local_fiq_disable();
++				fiq_fsm_spin_lock(&hcd->fiq_state->lock);
+ 				qh->channel->halt_status = DWC_OTG_HC_XFER_URB_DEQUEUE;
+ 				qh->channel->halt_pending = 1;
+-				//hcd->fiq_state->channel[n].fsm = FIQ_DEQUEUE_ISSUED;
++				if (hcd->fiq_state->channel[n].fsm == FIQ_HS_ISOC_TURBO ||
++					hcd->fiq_state->channel[n].fsm == FIQ_HS_ISOC_SLEEPING)
++					hcd->fiq_state->channel[n].fsm = FIQ_HS_ISOC_ABORTED;
++				fiq_fsm_spin_unlock(&hcd->fiq_state->lock);
++				local_fiq_enable();
+ 			} else {
+ 				dwc_otg_hc_halt(hcd->core_if, qh->channel,
+ 						DWC_OTG_HC_XFER_URB_DEQUEUE);

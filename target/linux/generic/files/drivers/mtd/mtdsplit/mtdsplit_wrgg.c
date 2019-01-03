@@ -107,9 +107,16 @@ static int mtdsplit_parse_wrgg(struct mtd_info *master,
 	return WRGG_NR_PARTS;
 }
 
+static const struct of_device_id mtdsplit_wrgg_of_match_table[] = {
+	{ .compatible = "wrg" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, mtdsplit_wrgg_of_match_table);
+
 static struct mtd_part_parser mtdsplit_wrgg_parser = {
 	.owner = THIS_MODULE,
 	.name = "wrgg-fw",
+	.of_match_table = mtdsplit_wrgg_of_match_table,
 	.parse_fn = mtdsplit_parse_wrgg,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };

@@ -16,7 +16,7 @@ include $(INCLUDE_DIR)/package.mk
 define KernelPackage/spi-gpio-custom
   SUBMENU:=SPI Support
   TITLE:=Custom GPIO-based SPI device
-  DEPENDS:=@GPIO_SUPPORT +kmod-spi-bitbang +kmod-spi-gpio +kmod-spi-dev
+  DEPENDS:=@GPIO_SUPPORT +kmod-spi-bitbang +kmod-spi-gpio +kmod-spi-dev @!LINUX_4_19
   FILES:=$(PKG_BUILD_DIR)/spi-gpio-custom.ko
   KCONFIG:=
 endef

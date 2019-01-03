@@ -12,7 +12,8 @@ PKG_VERSION:=1.0.6
 PKG_RELEASE:=4
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=http://www.bzip.org/$(PKG_VERSION)
+PKG_SOURCE_URL:=http://distfiles.gentoo.org/distfiles/ \
+	http://distcache.freebsd.org/ports-distfiles/
 PKG_HASH:=a2848f34fcd5d6cf47def00461fcb528a0484d8edef8208d6d2e2909dc61d9cd
 PKG_MAINTAINER:=Steven Barth <cyrus@openwrt.org>
 

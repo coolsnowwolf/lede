@@ -39,6 +39,7 @@ endef
 define Device/akitio-mycloud
   DEVICE_DTS := ox820-akitio-mycloud
   DEVICE_TITLE := Akition myCloud (mini) / SilverStone DC01
+  SUPPORTED_DEVICES := akitio,mycloud akitio
   DEVICE_PACKAGES := kmod-usb2-oxnas kmod-ata-oxnas-sata kmod-ledtrig-usbdev \
                      kmod-i2c-gpio kmod-rtc-ds1307
 endef
@@ -47,6 +48,7 @@ TARGET_DEVICES += akitio-mycloud
 define Device/cloudengines-pogoplug-pro
   DEVICE_DTS := ox820-cloudengines-pogoplug-pro
   DEVICE_TITLE := Cloud Engines PogoPlug Pro (with mPCIe)
+  SUPPORTED_DEVICES := cloudengines,pogoplugpro pogoplug-pro
   DEVICE_PACKAGES := kmod-usb2-oxnas kmod-ledtrig-usbdev
 endef
 TARGET_DEVICES += cloudengines-pogoplug-pro
@@ -54,6 +56,7 @@ TARGET_DEVICES += cloudengines-pogoplug-pro
 define Device/cloudengines-pogoplug-series-3
   DEVICE_DTS := ox820-cloudengines-pogoplug-series-3
   DEVICE_TITLE := Cloud Engines PogoPlug Series V3 (without mPCIe)
+  SUPPORTED_DEVICES := cloudengines,pogoplugv3 pogoplug-v3
   DEVICE_PACKAGES := kmod-usb2-oxnas kmod-ledtrig-usbdev
 endef
 TARGET_DEVICES += cloudengines-pogoplug-series-3
@@ -61,6 +64,7 @@ TARGET_DEVICES += cloudengines-pogoplug-series-3
 define Device/shuttle-kd20
   DEVICE_DTS := ox820-shuttle-kd20
   DEVICE_TITLE := Shuttle KD20
+  SUPPORTED_DEVICES := shuttle,kd20 kd20
   KERNEL := kernel-bin | append-dtb | uImage none
   KERNEL_INITRAMFS_PREFIX = $$(IMAGE_PREFIX)-factory
   KERNEL_INITRAMFS_SUFFIX := .tar.gz
@@ -75,6 +79,7 @@ TARGET_DEVICES += shuttle-kd20
 define Device/mitrastar-stg212
   DEVICE_DTS := ox820-mitrastar-stg212
   DEVICE_TITLE := MitraStar STG-212
+  SUPPORTED_DEVICES := mitrastar,stg-212 stg212
   KERNEL := kernel-bin | append-dtb | uImage none
   DEVICE_PACKAGES := kmod-usb2-oxnas kmod-ata-oxnas-sata kmod-ledtrig-usbdev
 endef

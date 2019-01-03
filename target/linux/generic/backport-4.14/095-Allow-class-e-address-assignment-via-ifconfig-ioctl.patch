@@ -1,0 +1,79 @@
+From 46bf067870156abd61fe24d14c2486d15b8b502c Mon Sep 17 00:00:00 2001
+From: Dave Taht <dave@taht.net>
+Date: Fri, 14 Dec 2018 18:38:40 +0000
+Subject: [PATCH 1/1] Allow class-e address assignment in ifconfig and early
+ boot
+
+While the linux kernel became mostly "class-e clean" a decade ago,
+and most distributions long ago switched to the iproute2 suite
+of utilities, which allow class-e (240.0.0.0/4) address assignment,
+distributions relying on busybox, toybox and other forms of
+ifconfig cannot assign class-e addresses without this kernel patch.
+
+With this patch, also, a boot command line on these addresses is feasible:
+(ip=248.0.1.2::248.0.1.1:255.255.255.0).
+
+While CIDR has been obsolete for 2 decades, and a survey of all the
+userspace open source code in the world shows most IN_whatever macros
+are also obsolete... rather than obsolete CIDR from this ioctl entirely,
+this patch merely enables class-e assignment, sanely.
+
+H/T to Vince Fuller and his original patch here:
+    https://lkml.org/lkml/2008/1/7/370
+
+Signed-off-by: Dave Taht <dave.taht@gmail.com>
+Reviewed-by: John Gilmore <gnu@toad.com>
+---
+ include/uapi/linux/in.h | 8 ++++++--
+ net/ipv4/devinet.c      | 4 +++-
+ net/ipv4/ipconfig.c     | 2 ++
+ 3 files changed, 11 insertions(+), 3 deletions(-)
+
+--- a/include/uapi/linux/in.h
++++ b/include/uapi/linux/in.h
+@@ -268,8 +268,12 @@ struct sockaddr_in {
+ #define	IN_MULTICAST(a)		IN_CLASSD(a)
+ #define IN_MULTICAST_NET	0xF0000000
+ 
+-#define	IN_EXPERIMENTAL(a)	((((long int) (a)) & 0xf0000000) == 0xf0000000)
+-#define	IN_BADCLASS(a)		IN_EXPERIMENTAL((a))
++#define	IN_BADCLASS(a)		((((long int) (a) ) == 0xffffffff)
++#define	IN_EXPERIMENTAL(a)	IN_BADCLASS((a))
++
++#define	IN_CLASSE(a)		((((long int) (a)) & 0xf0000000) == 0xf0000000)
++#define	IN_CLASSE_NET		0xffffffff
++#define	IN_CLASSE_NSHIFT	0
+ 
+ /* Address to accept any incoming messages. */
+ #define	INADDR_ANY		((unsigned long int) 0x00000000)
+--- a/net/ipv4/devinet.c
++++ b/net/ipv4/devinet.c
+@@ -921,7 +921,7 @@ static int inet_abc_len(__be32 addr)
+ {
+ 	int rc = -1;	/* Something else, probably a multicast. */
+ 
+-	if (ipv4_is_zeronet(addr))
++	if (ipv4_is_zeronet(addr) || ipv4_is_lbcast(addr))
+ 		rc = 0;
+ 	else {
+ 		__u32 haddr = ntohl(addr);
+@@ -932,6 +932,8 @@ static int inet_abc_len(__be32 addr)
+ 			rc = 16;
+ 		else if (IN_CLASSC(haddr))
+ 			rc = 24;
++		else if (IN_CLASSE(haddr))
++			rc = 32;
+ 	}
+ 
+ 	return rc;
+--- a/net/ipv4/ipconfig.c
++++ b/net/ipv4/ipconfig.c
+@@ -457,6 +457,8 @@ static int __init ic_defaults(void)
+ 			ic_netmask = htonl(IN_CLASSB_NET);
+ 		else if (IN_CLASSC(ntohl(ic_myaddr)))
+ 			ic_netmask = htonl(IN_CLASSC_NET);
++		else if (IN_CLASSE(ntohl(ic_myaddr)))
++			ic_netmask = htonl(IN_CLASSE_NET);
+ 		else {
+ 			pr_err("IP-Config: Unable to guess netmask for address %pI4\n",
+ 			       &ic_myaddr);

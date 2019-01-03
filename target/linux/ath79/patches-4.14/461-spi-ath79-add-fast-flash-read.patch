@@ -1,0 +1,60 @@
+--- a/drivers/spi/spi-ath79.c
++++ b/drivers/spi/spi-ath79.c
+@@ -101,9 +101,6 @@ static void ath79_spi_enable(struct ath7
+ 	/* save CTRL register */
+ 	sp->reg_ctrl = ath79_spi_rr(sp, AR71XX_SPI_REG_CTRL);
+ 	sp->ioc_base = ath79_spi_rr(sp, AR71XX_SPI_REG_IOC);
+-
+-	/* TODO: setup speed? */
+-	ath79_spi_wr(sp, AR71XX_SPI_REG_CTRL, 0x43);
+ }
+ 
+ static void ath79_spi_disable(struct ath79_spi *sp)
+@@ -203,6 +200,38 @@ static u32 ath79_spi_txrx_mode0(struct s
+ 	return ath79_spi_rr(sp, AR71XX_SPI_REG_RDS);
+ }
+ 
++static bool ath79_spi_flash_read_supported(struct spi_device *spi)
++{
++	if (spi->chip_select || gpio_is_valid(spi->cs_gpio))
++		return false;
++
++	return true;
++}
++
++static int ath79_spi_read_flash_data(struct spi_device *spi,
++				     struct spi_flash_read_message *msg)
++{
++	struct ath79_spi *sp = ath79_spidev_to_sp(spi);
++
++	if (msg->addr_width > 3)
++		return -EOPNOTSUPP;
++
++	/* disable GPIO mode */
++	ath79_spi_wr(sp, AR71XX_SPI_REG_FS, 0);
++
++	memcpy_fromio(msg->buf, sp->base + msg->from, msg->len);
++
++	/* enable GPIO mode */
++	ath79_spi_wr(sp, AR71XX_SPI_REG_FS, AR71XX_SPI_FS_GPIO);
++
++	/* restore IOC register */
++	ath79_spi_wr(sp, AR71XX_SPI_REG_IOC, sp->ioc_base);
++
++	msg->retlen = msg->len;
++
++	return 0;
++}
++
+ static int ath79_spi_probe(struct platform_device *pdev)
+ {
+ 	struct spi_master *master;
+@@ -237,6 +266,8 @@ static int ath79_spi_probe(struct platfo
+ 		ret = PTR_ERR(sp->base);
+ 		goto err_put_master;
+ 	}
++	master->spi_flash_read = ath79_spi_read_flash_data;
++	master->flash_read_supported = ath79_spi_flash_read_supported;
+ 
+ 	sp->clk = devm_clk_get(&pdev->dev, "ahb");
+ 	if (IS_ERR(sp->clk)) {

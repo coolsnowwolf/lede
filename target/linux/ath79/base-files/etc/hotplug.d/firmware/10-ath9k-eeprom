@@ -1,0 +1,220 @@
+#!/bin/sh
+
+[ -e /lib/firmware/$FIRMWARE ] && exit 0
+
+. /lib/functions.sh
+. /lib/functions/system.sh
+
+ath9k_eeprom_die() {
+	echo "ath9k eeprom: " "$*"
+	exit 1
+}
+
+ath9k_eeprom_extract() {
+	local part=$1
+	local offset=$2
+	local count=$3
+	local mtd
+
+	mtd=$(find_mtd_chardev $part)
+	[ -n "$mtd" ] || \
+		ath9k_eeprom_die "no mtd device found for partition $part"
+
+	dd if=$mtd of=/lib/firmware/$FIRMWARE bs=1 skip=$offset count=$count 2>/dev/null || \
+		ath9k_eeprom_die "failed to extract from $mtd"
+}
+
+ath9k_eeprom_extract_reverse() {
+	local part=$1
+	local offset=$2
+	local count=$3
+	local mtd
+	local reversed
+	local caldata
+
+	mtd=$(find_mtd_chardev "$part")
+	reversed=$(hexdump -v -s $offset -n $count -e '/1 "%02x "' $mtd)
+
+	for byte in $reversed; do
+		caldata="\x${byte}${caldata}"
+	done
+
+	printf "%b" "$caldata" > /lib/firmware/$FIRMWARE
+}
+
+xor() {
+	local val
+	local ret="0x$1"
+	local retlen=${#1}
+
+	shift
+	while [ -n "$1" ]; do
+		val="0x$1"
+		ret=$((ret ^ val))
+		shift
+	done
+
+	printf "%0${retlen}x" "$ret"
+}
+
+ath9k_patch_fw_mac() {
+	local mac=$1
+	local mac_offset=$2
+	local chksum_offset=$3
+	local xor_mac
+	local xor_fw_mac
+	local xor_fw_chksum
+
+	[ -z "$mac" -o -z "$mac_offset" ] && return
+
+	[ -n "$chksum_offset" ] && {
+		xor_mac=${mac//:/}
+		xor_mac="${xor_mac:0:4} ${xor_mac:4:4} ${xor_mac:8:4}"
+
+		xor_fw_mac=$(hexdump -v -n 6 -s $mac_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
+		xor_fw_mac="${xor_fw_mac:0:4} ${xor_fw_mac:4:4} ${xor_fw_mac:8:4}"
+
+		xor_fw_chksum=$(hexdump -v -n 2 -s $chksum_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
+		xor_fw_chksum=$(xor $xor_fw_chksum $xor_fw_mac $xor_mac)
+
+		printf "%b" "\x${xor_fw_chksum:0:2}\x${xor_fw_chksum:2:2}" | \
+			dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=$chksum_offset count=2
+	}
+
+	macaddr_2bin $mac | dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=$mac_offset count=6
+}
+
+ath9k_patch_fw_mac_crc() {
+	local mac=$1
+	local mac_offset=$2
+	local chksum_offset=$((mac_offset - 10))
+
+	ath9k_patch_fw_mac "${mac}" "${mac_offset}" "${chksum_offset}"
+}
+
+board=$(board_name)
+
+case "$FIRMWARE" in
+"ath9k-eeprom-ahb-18100000.wmac.bin")
+	case $board in
+	avm,fritz4020)
+		ath9k_eeprom_extract_reverse "urlader" 5441 1088
+		;;
+	dlink,dir-825-c1|\
+	dlink,dir-835-a1)
+		ath9k_eeprom_extract "art" 4096 1088
+		ath9k_patch_fw_mac_crc $(mtd_get_mac_text "mac" 4) 2
+		;;
+	dlink,dir-859-a1)
+		ath9k_eeprom_extract "art" 4096 1088
+		ath9k_patch_fw_mac $(mtd_get_mac_ascii devdata "wlan24mac") 2
+		;;
+	iodata,wn-ac1167dgr|\
+	iodata,wn-ac1600dgr2|\
+	iodata,wn-ag300dgr)
+		ath9k_eeprom_extract "art" 4096 1088
+		ath9k_patch_fw_mac $(mtd_get_mac_ascii u-boot-env ethaddr) 2
+		;;
+	nec,wg800hp)
+		ath9k_eeprom_extract "art" 4096 1088
+		ath9k_patch_fw_mac $(mtd_get_mac_text board_data 1664) 2
+		;;
+	*)
+		ath9k_eeprom_die "board $board is not supported yet"
+		;;
+	esac
+	;;
+"ath9k-eeprom-pci-0000:00:00.0.bin")
+	case $board in
+	avm,fritz300e)
+		ath9k_eeprom_extract_reverse "urloader" 5441 1088
+		;;
+	buffalo,whr-g301n|\
+	buffalo,wzr-hp-g302h-a1a0|\
+	tplink,tl-wr841-v5|\
+	tplink,tl-wr941-v4)
+		ath9k_eeprom_extract "art" 4096 3768
+		;;
+	buffalo,wzr-hp-g450h)
+		ath9k_eeprom_extract "ART" 4096 1088
+		;;
+	dlink,dir-825-c1|\
+	dlink,dir-835-a1)
+		ath9k_eeprom_extract "art" 20480 1088
+		ath9k_patch_fw_mac_crc $(macaddr_add $(mtd_get_mac_text "mac" 24) 1) 2
+		;;
+	ocedo,raccoon|\
+	tplink,tl-wdr3600|\
+	tplink,tl-wdr4300|\
+	tplink,tl-wdr4900-v2|\
+	winchannel,wb2000)
+		ath9k_eeprom_extract "art" 20480 1088
+		;;
+	netgear,wnr612-v2|\
+	on,n150r|\
+	pcs,cap324|\
+	tplink,tl-mr3220-v1|\
+	tplink,tl-mr3420-v1|\
+	tplink,tl-wr2543-v1|\
+	tplink,tl-wr740n-v1|\
+	tplink,tl-wr740n-v3|\
+	tplink,tl-wr741-v1|\
+	tplink,tl-wr743nd-v1|\
+	tplink,tl-wr841-v7|\
+	tplink,tl-wr842n-v1|\
+	ubnt,airrouter|\
+	ubnt,bullet-m|\
+	ubnt,nano-m|\
+	ubnt,rocket-m)
+		ath9k_eeprom_extract "art" 4096 4096
+		;;
+	pqi,air-pen)
+		ath9k_eeprom_extract "art" 4096 2002
+		;;
+	ubnt,unifi)
+		ath9k_eeprom_extract "art" 4096 2048
+		;;
+	wd,mynet-wifi-rangeextender)
+		ath9k_eeprom_extract "art" 4096 4096
+		ath9k_patch_fw_mac_crc $(nvram get wl0_hwaddr) "$mac" 2
+		;;
+	*)
+		ath9k_eeprom_die "board $board is not supported yet"
+		;;
+	esac
+	;;
+"ath9k-eeprom-pci-0000:00:11.0.bin")
+	case $board in
+	buffalo,wzr-hp-ag300h|\
+	netgear,wndr3700|\
+	netgear,wndr3700v2|\
+	netgear,wndr3800)
+		ath9k_eeprom_extract "art" 4096 3768
+		;;
+	dlink,dir-825-b1)
+		ath9k_eeprom_extract "caldata" 4096 3768
+		ath9k_patch_fw_mac_crc $(mtd_get_mac_text "caldata" 65440) 524
+		;;
+	*)
+		ath9k_eeprom_die "board $board is not supported yet"
+		;;
+	esac
+	;;
+"ath9k-eeprom-pci-0000:00:12.0.bin")
+	case $board in
+	buffalo,wzr-hp-ag300h|\
+	netgear,wndr3700|\
+	netgear,wndr3700v2|\
+	netgear,wndr3800)
+		ath9k_eeprom_extract "art" 20480 3768
+		;;
+	dlink,dir-825-b1)
+		ath9k_eeprom_extract "caldata" 20480 3768
+		ath9k_patch_fw_mac_crc $(macaddr_add $(mtd_get_mac_text "caldata" 65460) 1) 524
+		;;
+	*)
+		ath9k_eeprom_die "board $board is not supported yet"
+		;;
+	esac
+	;;
+esac

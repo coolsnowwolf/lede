@@ -168,7 +168,7 @@ EOF
 
 hostapd_common_add_bss_config() {
 	config_add_string 'bssid:macaddr' 'ssid:string'
-	config_add_boolean wds wmm uapsd hidden
+	config_add_boolean wds wmm uapsd hidden utf8_ssid
 
 	config_add_int maxassoc max_inactivity
 	config_add_boolean disassoc_low_ack isolate short_preamble
@@ -258,7 +258,7 @@ hostapd_set_bss_options() {
 		maxassoc max_inactivity disassoc_low_ack isolate auth_cache \
 		wps_pushbutton wps_label ext_registrar wps_pbc_in_m1 wps_ap_setup_locked \
 		wps_independent wps_device_type wps_device_name wps_manufacturer wps_pin \
-		macfilter ssid wmm uapsd hidden short_preamble rsn_preauth \
+		macfilter ssid utf8_ssid wmm uapsd hidden short_preamble rsn_preauth \
 		iapp_interface eapol_version dynamic_vlan ieee80211w nasid \
 		acct_server acct_secret acct_port acct_interval \
 		bss_load_update_period chan_util_avg_period sae_require_mfp
@@ -277,6 +277,7 @@ hostapd_set_bss_options() {
 	set_default acct_port 1813
 	set_default bss_load_update_period 60
 	set_default chan_util_avg_period 600
+	set_default utf8_ssid 1
 	
 	append bss_conf "ctrl_interface=/var/run/hostapd"
 	if [ "$isolate" -gt 0 ]; then
@@ -296,6 +297,7 @@ hostapd_set_bss_options() {
 	append bss_conf "wmm_enabled=$wmm" "$N"
 	append bss_conf "ignore_broadcast_ssid=$hidden" "$N"
 	append bss_conf "uapsd_advertisement_enabled=$uapsd" "$N"
+	append bss_conf "utf8_ssid=$utf8_ssid" "$N"
 
 	[ "$tdls_prohibit" -gt 0 ] && append bss_conf "tdls_prohibit=$tdls_prohibit" "$N"
 
@@ -646,6 +648,9 @@ wpa_supplicant_prepare_interface() {
 			adhoc)
 				fail=1
 			;;
+			sta)
+				[ "$wds" = 1 ] || fail=1
+			;;
 		esac
 
 		[ -n "$fail" ] && {
@@ -757,6 +762,9 @@ wpa_supplicant_add_network() {
 			hostapd_append_wep_key network_data
 			append network_data "wep_tx_keyidx=$wep_keyidx" "$N$T"
 		;;
+		wps)
+			key_mgmt='WPS'
+		;;
 		psk|sae|psk-sae)
 			local passphrase
 
@@ -864,7 +872,10 @@ wpa_supplicant_add_network() {
 		append network_data "mcast_rate=$mc_rate" "$N$T"
 	}
 
-	cat >> "$_config" <<EOF
+	if [ "$key_mgnt" = "WPS" ]; then
+		echo "wps_cred_processing=1" >> "$_config"
+	else
+		cat >> "$_config" <<EOF
 network={
 	$scan_ssid
 	ssid="$ssid"
@@ -872,6 +883,7 @@ network={
 	$network_data
 }
 EOF
+	fi
 	return 0
 }
 

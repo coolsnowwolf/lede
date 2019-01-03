@@ -6,16 +6,16 @@
 
 get_status_led() {
 	case $(board_name) in
-	akitio)
+	"akitio,mycloud")
 		status_led="akitio:red:status"
 		;;
-	stg212)
+	"mitrastar,stg-212")
 		status_led="zyxel:blue:status"
 		;;
-	kd20)
+	"shuttle,kd20")
 		status_led="kd20:blue:status"
 		;;
-	pogoplug-pro | pogoplug-v3)
+	"cloudengines,pogoplug"*)
 		status_led="pogoplug:blue:internal"
 		;;
 	esac

@@ -16,6 +16,7 @@
 #include <linux/vmalloc.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
+#include <linux/version.h>
 #include <linux/byteorder/generic.h>
 
 #include "mtdsplit.h"
@@ -239,9 +240,19 @@ mtdsplit_uimage_parse_generic(struct mtd_info *master,
 				      uimage_verify_default);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0)
+static const struct of_device_id mtdsplit_uimage_of_match_table[] = {
+	{ .compatible = "denx,uimage" },
+	{},
+};
+#endif
+
 static struct mtd_part_parser uimage_generic_parser = {
 	.owner = THIS_MODULE,
 	.name = "uimage-fw",
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0)
+	.of_match_table = mtdsplit_uimage_of_match_table,
+#endif
 	.parse_fn = mtdsplit_uimage_parse_generic,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };
@@ -296,9 +307,19 @@ mtdsplit_uimage_parse_netgear(struct mtd_info *master,
 				      uimage_verify_wndr3700);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0)
+static const struct of_device_id mtdsplit_uimage_netgear_of_match_table[] = {
+	{ .compatible = "netgear,uimage" },
+	{},
+};
+#endif
+
 static struct mtd_part_parser uimage_netgear_parser = {
 	.owner = THIS_MODULE,
 	.name = "netgear-fw",
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0)
+	.of_match_table = mtdsplit_uimage_netgear_of_match_table,
+#endif
 	.parse_fn = mtdsplit_uimage_parse_netgear,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };

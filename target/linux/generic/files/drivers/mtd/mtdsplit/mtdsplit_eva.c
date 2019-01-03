@@ -79,9 +79,15 @@ static int mtdsplit_parse_eva(struct mtd_info *master,
 	return EVA_NR_PARTS;
 }
 
+static const struct of_device_id mtdsplit_eva_of_match_table[] = {
+	{ .compatible = "avm,eva-firmware" },
+	{},
+};
+
 static struct mtd_part_parser mtdsplit_eva_parser = {
 	.owner = THIS_MODULE,
 	.name = "eva-fw",
+	.of_match_table = mtdsplit_eva_of_match_table,
 	.parse_fn = mtdsplit_parse_eva,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };
