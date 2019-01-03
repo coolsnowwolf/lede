@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 ARCH:=i386
 BOARD:=x86
 BOARDNAME:=x86
-FEATURES:=squashfs ext4 vdi vmdk pcmcia targz fpu
+FEATURES:=squashfs vdi vmdk pcmcia fpu
 SUBTARGETS:=64 generic legacy geode 
 MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
