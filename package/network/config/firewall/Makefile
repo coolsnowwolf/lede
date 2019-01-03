@@ -28,8 +28,18 @@ define Package/firewall
   SECTION:=net
   CATEGORY:=Base system
   TITLE:=OpenWrt C Firewall
-  DEPENDS:=+libubox +libubus +libuci +libip4tc +IPV6:libip6tc +libxtables +kmod-ipt-core +kmod-ipt-conntrack +IPV6:kmod-nf-conntrack6 +kmod-ipt-nat
+  DEPENDS:=+libubox +libubus +libuci +libip4tc +IPV6:libip6tc +libxtables +kmod-ipt-core +kmod-ipt-conntrack +IPV6:kmod-nf-conntrack6 +kmod-ipt-nat +PACKAGE_firewall-FULLCONENAT:iptables-mod-fullconenat
 endef
+
+define Package/firewall/config
+if PACKAGE_firewall
+	config PACKAGE_firewall-FULLCONENAT
+		bool "Use FULLCONENAT"
+		default y
+endif		
+endef
+
+TARGET_CFLAGS += $(if $(CONFIG_PACKAGE_firewall-FULLCONENAT),-DUSE_FULLCONENAT,)
 
 define Package/firewall/description
  This package provides a config-compatible C implementation of the UCI firewall.
