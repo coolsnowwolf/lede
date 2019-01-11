@@ -118,6 +118,14 @@ mtk_foe_set_mac(struct mtk_foe_entry *entry, u8 *smac, u8 *dmac)
 	entry->ipv4_hnapt.smac_lo = swab16(*((u16*) &smac[4]));
 }
 
+static int
+mtk_check_hashcollision(struct mtk_eth *eth, u32 hash)
+{
+	struct mtk_foe_entry entry = ((struct mtk_foe_entry *)eth->foe_table)[hash];
+
+	return (entry.bfib1.state != BIND)? 0:1;
+}
+
 static void
 mtk_foe_write(struct mtk_eth *eth, u32 hash,
 	      struct mtk_foe_entry *entry)
@@ -173,6 +181,11 @@ int mtk_flow_offload(struct mtk_eth *eth,
 		goto write;
 	}
 
+	/* Two-way hash: when hash collision occurs, the hash value will be shifted to the next position. */
+	if(mtk_check_hashcollision(eth, ohash))
+		ohash += 1;
+	if(mtk_check_hashcollision(eth, rhash))
+		rhash += 1;
 	mtk_foe_set_mac(&orig, dest->eth_src, dest->eth_dest);
 	mtk_foe_set_mac(&reply, src->eth_src, src->eth_dest);
 
