@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=automount
 PKG_VERSION:=1
-PKG_RELEASE:=22
+PKG_RELEASE:=23
 PKG_ARCH:=all
 
 PKG_CONFIG_DEPENDS:= CONFIG_PACKAGE_$(PKG_NAME)_NTFS-3G
@@ -25,7 +25,7 @@ endef
 define Package/automount
   TITLE:=Mount autoconfig hotplug script.
   MAINTAINER:=Lean
-  DEPENDS:=+block-mount +kmod-usb-storage +kmod-usb-storage-extras +kmod-fs-vfat +kmod-fs-ext4 +kmod-fs-exfat +PACKAGE_$(PKG_NAME)_NTFS-3G:ntfs-3g
+  DEPENDS:=+block-mount +kmod-usb-storage +kmod-usb-storage-extras +kmod-fs-vfat +kmod-fs-ext4 +PACKAGE_$(PKG_NAME)_NTFS-3G:ntfs-3g
 endef
 
 define Package/automount/description
