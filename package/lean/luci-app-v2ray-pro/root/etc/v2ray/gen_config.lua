@@ -58,7 +58,7 @@ end
 
 local json_file = io.open(json_path, "w+")
 io.output(json_file)
-io.write("{\"log\":{\"loglevel\":\"warning\",\"access\":\"\",\"error\":\"\"},\"dns\": {\"servers\": [\"localhost\"]},\"inbounds\":[{\"port\":7070,\"protocol\":\"dokodemo-door\",\"address\":\"\",\"settings\":{\"followRedirect\":true,\"network\":\"tcp,udp\",\"timeout\":50},\"domainOverride\":[\"tls\",\"http\"]}],")
+io.write("{\"log\":{\"loglevel\":\"warning\",\"access\":\"\",\"error\":\"\"},\"dns\": {\"servers\": [\"localhost\"]},\"inbounds\":[{\"port\":7070,\"tag\": \"listen\",\"protocol\":\"dokodemo-door\",\"address\":\"\",\"settings\":{\"followRedirect\":true,\"network\":\"tcp,udp\",\"timeout\":50},\"domainOverride\":[\"tls\",\"http\"]}],")
 if v2ray_enReverse then  --reverse set
     io.write("\"reverse\": {\"bridges\": [{\"tag\": \"bridge\",\"domain\": \"")
     io.write(ucursor:get(conf_path, "v2raypro", "rserver_domain"))
@@ -148,9 +148,9 @@ v2ray_proxy={
             } or nil,
         } or nil,
     },
-    mux = {
+    mux = (v2ray_enReverse==false) and{
         enabled = (ucursor:get(conf_path, "v2raypro", "mux") == "1") and true or false
-    },
+    } or nil,
 }
 
 
@@ -244,9 +244,9 @@ if v2ray_enReverse then
                 } or nil,
             } or nil,
         },
-        mux = {
+        mux = (v2ray_enReverse==false) and{
             enabled = (ucursor:get(conf_path, "v2raypro", "mux") == "1") and true or false
-        },
+        } or nil,
     }
 
     json_raw_t = cjson.encode(v2ray_tunnel)
@@ -261,16 +261,19 @@ io.write(json_raw.."],")
 --io.write("]")
 
 
-io.write("\"routings\": [{\"strategy\": \"rules\",\"settings\": {\"domainStrategy\": \"IPIfNonMatch\",\"rules\": [{\"type\": \"field\",\"outboundTag\": \"proxy\"}]}}")
-
-if v2ray_enReverse then  --routing set
-    io.write(",{\"strategy\": \"rules\",\"settings\": {\"rules\": [{\"type\": \"field\",\"inboundTag\": [\"bridge\"],\"domain\": [\"full:")
+io.write("\"routing\": {\"strategy\": \"rules\",\"settings\": {\"rules\": [")--routing set
+if v2ray_enReverse then  
+    io.write("{\"type\": \"field\",\"inboundTag\": [\"bridge\"],\"domain\": [\"full:")
     io.write(ucursor:get(conf_path, "v2raypro", "rserver_domain"))
-    io.write("\"],\"outboundTag\": \"tunnel\"},{\"type\": \"field\",\"inboundTag\": [\"bridge\"],\"outboundTag\": \"out\"}]}},{\"strategy\": \"rules\",\"settings\": {\"domainStrategy\": \"IPIfNonMatch\",\"rules\": [{\"type\": \"field\",\"outboundTag\": \"proxy\"}]}}")
+    io.write("\"],\"outboundTag\": \"tunnel\"},{\"type\": \"field\",\"inboundTag\": [\"bridge\"],\"outboundTag\": \"out\"},")
 end
-io.write("]")
 
-    io.write("}")--end
+io.write("{\"domainStrategy\": \"IPIfNonMatch\",\"type\": \"field\",\"outboundTag\": \"proxy\",\"inboundTag\": [\"listen\"]}]}}")
+
+
+
+
+io.write("}")--end
 io.close(json_file)
 
 
