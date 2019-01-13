@@ -236,6 +236,7 @@ enum ath79_mach_type {
 	ATH79_MACH_RME_EG200,			/* eTactica EG200 */
 	ATH79_MACH_RUT9XX,			/* Teltonika RUT900 series */
 	ATH79_MACH_RW2458N,			/* Redwave RW2458N */
+	ATH79_MACH_ARRIS_SBR_AC1750,			/* ARRIS SBR-AC1750/TR3300 Router */
 	ATH79_MACH_SC1750,			/* Abicom SC1750 */
 	ATH79_MACH_SC300M,			/* Abicom SC300M */
 	ATH79_MACH_SC450,			/* Abicom SC450 */

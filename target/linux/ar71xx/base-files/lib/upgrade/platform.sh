@@ -575,6 +575,7 @@ platform_check_image() {
 		nand_do_platform_check routerboard $1
 		return $?
 		;;
+	arris-sbr-ac1750|\
 	c-60|\
 	hiveap-121|\
 	nbg6716|\
@@ -907,6 +908,10 @@ platform_do_upgrade() {
 	mr18|\
 	z1)
 		merakinand_do_upgrade "$1"
+		;;
+	arris-sbr-ac1750)
+		CI_KERNPART_EXT="kernel2"
+		nand_do_upgrade "$1"
 		;;
 	uap-pro|\
 	unifi-outdoor-plus)

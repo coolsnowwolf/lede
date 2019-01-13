@@ -14,6 +14,23 @@ define Build/MerakiNAND-old
 	@mv $@.new $@
 endef
 
+define Device/arris-sbr-ac1750
+  DEVICE_TITLE := ARRIS SBR-AC1750/TR3300 Router
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca988x kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
+  BOARDNAME := ARRIS-SBR-AC1750
+  BLOCKSIZE := 128KiB
+  PAGESIZE := 2048
+  IMAGE_SIZE := 72m
+  KERNEL_SIZE := 4096k
+  UBINIZE_OPTS := -E 5
+  MTDPARTS := ar934x-nfc:1m(u-boot)ro,1m(boot-flag),4m(kernel),32m(ubi),4m(kernel2),32m(ubi_rsvd),27m(config),1m(scfgmgr),4m(openwrt),1m(ft),2m(PKI),1m(caldata)ro
+  IMAGES := sysupgrade.tar kernel1.bin rootfs1.bin
+  KERNEL := kernel-bin | patch-cmdline | lzma | uImage lzma
+  IMAGE/kernel1.bin := append-kernel | check-size $$$$(KERNEL_SIZE)
+  IMAGE/rootfs1.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.tar := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += arris-sbr-ac1750
 
 define Device/c-60
   DEVICE_TITLE := AirTight C-60
