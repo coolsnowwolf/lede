@@ -679,6 +679,9 @@ ar71xx_board_detect() {
 	*"DW33D")
 		name="dw33d"
 		;;
+	*"SBR-AC1750")
+		name="sbr-ac1750"
+		;;
 	*"E1700AC v2")
 		name="e1700ac-v2"
 		;;

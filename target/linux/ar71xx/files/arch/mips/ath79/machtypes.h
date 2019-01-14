@@ -101,6 +101,7 @@ enum ath79_mach_type {
 	ATH79_MACH_DLAN_PRO_1200_AC,		/* devolo dLAN pro 1200+ WiFi ac*/
 	ATH79_MACH_DLAN_PRO_500_WP,		/* devolo dLAN pro 500 Wireless+ */
 	ATH79_MACH_DOMYWIFI_DW33D,		/* DomyWifi DW33D */
+	ATH79_MACH_ARRIS_SBR_AC1750,	/* ARRIS SBR-AC1750 */
 	ATH79_MACH_DR342,			/* Wallys DR342 */
 	ATH79_MACH_DR344,			/* Wallys DR344 */
 	ATH79_MACH_DR531,			/* Wallys DR531 */
