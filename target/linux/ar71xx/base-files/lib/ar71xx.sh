@@ -475,9 +475,6 @@ ar71xx_board_detect() {
 	*"AP91-5G")
 		name="ap91-5g"
 		;;
-	*"ARRIS SBR-AC1750/TR3300 Router")
-		name="arris-sbr-ac1750"
-		;;
 	*"Archer C25 v1")
 		name="archer-c25-v1"
 		;;
