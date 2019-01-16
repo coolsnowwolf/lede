@@ -65,7 +65,6 @@
 
 #define SBR_AC1750_EXT_WDT_TIMEOUT_MS	200
 #define SBR_AC1750_GPIO_EXT_WDT		18
-#define SBR_AC1750_HANG_UP          9
 
 static struct timer_list gpio_wdt_timer;
 
@@ -128,10 +127,10 @@ static struct ar8327_pad_cfg sbr_ac1750_qca8337_pad0_cfg = {
 };
 
 static struct ar8327_led_cfg sbr_ac1750_ar8327_led_cfg = {
-	.led_ctrl0 = 0xcc35cc35,
-	.led_ctrl1 = 0xca35ca35,
-	.led_ctrl2 = 0xc935c935,
-	.led_ctrl3 = 0x3ffff00,
+	.led_ctrl0 = 0x0000cc35,
+	.led_ctrl1 = 0x0000ca35,
+	.led_ctrl2 = 0x0000c935,
+	.led_ctrl3 = 0x03ffff00,
 	.open_drain = true,
 };
 
@@ -179,28 +178,23 @@ static void gpio_wdt_toggle(unsigned long gpio)
 		  jiffies + msecs_to_jiffies(SBR_AC1750_EXT_WDT_TIMEOUT_MS));
 }
 
-static void __init_watchdog(int gpio_wdt){
+static void init_sbr_ac1750_wdt(int gpio_wdt){
 	
 	if (gpio_wdt >= 0) {
 		gpio_request_one(gpio_wdt, GPIOF_OUT_INIT_HIGH, "watchdog");
+		gpio_set_value(gpio_wdt, 0);
+		ndelay(1000);
+		gpio_set_value(gpio_wdt, 1);
 		setup_timer(&gpio_wdt_timer, gpio_wdt_toggle, gpio_wdt);
 		gpio_wdt_toggle(gpio_wdt);
 	}
 }
 
-static void exit_watchdog(void){
-
-	gpio_request_one(SBR_AC1750_GPIO_EXT_WDT, GPIOF_OUT_INIT_HIGH, "WATCHDOG EXIT");
-	gpio_set_value(SBR_AC1750_GPIO_EXT_WDT, 0);
-	ndelay(1000);
-	gpio_set_value(SBR_AC1750_GPIO_EXT_WDT, 1);
-}
-
 static void __init sbr_ac1750_setup(void)
 {
 	u8 *art = (u8 *) KSEG1ADDR(0x1fff0000);
-	exit_watchdog();
-	__init_watchdog(SBR_AC1750_GPIO_EXT_WDT);
+
+	init_sbr_ac1750_wdt(SBR_AC1750_GPIO_EXT_WDT);
 
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(sbr_ac1750_leds_gpio),
 				 sbr_ac1750_leds_gpio);
