@@ -164,6 +164,7 @@ platform_do_upgrade() {
 		;;
 	asus,rt-ac1300uhp |\
 	asus,rt-acrh17|\
+	linksys,ea6350v3 |\
 	asus,rt-ac58u)
 		local magic=$(get_magic_long "$1")
 		CI_UBIPART="UBI_DEV"
@@ -195,6 +196,10 @@ platform_do_upgrade() {
 
 platform_nand_pre_upgrade() {
 	case "$(board_name)" in
+	linksys,ea6350v3)
+		CI_UBIPART="UBI_DEV"
+		CI_KERNPART="linux"
+		;;
 	meraki,mr33)
 		CI_KERNPART="part.safe"
 		;;
