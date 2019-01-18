@@ -45,7 +45,6 @@ define Device/sbr-ac1750
   BOARDNAME := SBR-AC1750
   IMAGE_SIZE := 95m
   KERNEL_SIZE := 4096k
-  ROOTFS1_SIZE := 8192k
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   UBINIZE_OPTS := -E 5
@@ -53,8 +52,8 @@ define Device/sbr-ac1750
   MTDPARTS := ar934x-nfc:1m(u-boot)ro,1m(u-boot-env)ro,4m(kernel),95m(ubi),1m(scfgmgr),4m(openwrt),1m(ft),2m(PKI),1m@0x6d00000(art)ro
   IMAGES := sysupgrade.tar kernel1.bin rootfs1.bin
   KERNEL := kernel-bin | patch-cmdline | lzma | uImage lzma
-  IMAGE/kernel1.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | check-size $$$$(KERNEL_SIZE)
-  IMAGE/rootfs1.bin := append-ubi | pad-to $$$$(ROOTFS1_SIZE) | check-size $$$$(IMAGE_SIZE)
+  IMAGE/kernel1.bin := append-kernel | check-size $$$$(KERNEL_SIZE)
+  IMAGE/rootfs1.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
   IMAGE/sysupgrade.tar := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += sbr-ac1750
