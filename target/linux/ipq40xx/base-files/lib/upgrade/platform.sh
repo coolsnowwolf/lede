@@ -162,6 +162,7 @@ platform_do_upgrade() {
 	8dev,jalapeno)
 		nand_do_upgrade "$ARGV"
 		;;
+	asus,rt-acrh13 |\
 	asus,rt-ac1300uhp |\
 	asus,rt-acrh17|\
 	linksys,ea6350v3 |\
