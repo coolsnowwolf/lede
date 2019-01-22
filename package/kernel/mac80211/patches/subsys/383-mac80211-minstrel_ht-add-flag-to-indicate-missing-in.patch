@@ -1,0 +1,121 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Wed, 16 Jan 2019 21:47:54 +0100
+Subject: [PATCH] mac80211: minstrel_ht: add flag to indicate
+ missing/inaccurate tx A-MPDU length
+
+Some hardware (e.g. MediaTek MT7603) cannot report A-MPDU length in tx status
+information. Add support for a flag to indicate that, to allow minstrel_ht
+to use a fixed value in its internal calculation (which gives better results
+than just defaulting to 1).
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -2132,6 +2132,9 @@ struct ieee80211_txq {
+  * @IEEE80211_HW_NEEDS_ALIGNED4_SKBS: Driver need aligned skbs to four-byte.
+  *	Padding will be added after ieee80211_hdr, before IV/LLC.
+  *
++ * @IEEE80211_HW_TX_STATUS_NO_AMPDU_LEN: Driver does not report accurate A-MPDU
++ *	length in tx status information
++ *
+  * @NUM_IEEE80211_HW_FLAGS: number of hardware flags, used for sizing arrays
+  */
+ enum ieee80211_hw_flags {
+@@ -2178,6 +2181,7 @@ enum ieee80211_hw_flags {
+ 	IEEE80211_HW_DEAUTH_NEED_MGD_TX_PREP,
+ 	IEEE80211_HW_DOESNT_SUPPORT_QOS_NDP,
+ 	IEEE80211_HW_NEEDS_ALIGNED4_SKBS,
++	IEEE80211_HW_TX_STATUS_NO_AMPDU_LEN,
+ 
+ 	/* keep last, obviously */
+ 	NUM_IEEE80211_HW_FLAGS
+--- a/net/mac80211/debugfs.c
++++ b/net/mac80211/debugfs.c
+@@ -215,6 +215,7 @@ static const char *hw_flag_names[] = {
+ 	FLAG(DEAUTH_NEED_MGD_TX_PREP),
+ 	FLAG(DOESNT_SUPPORT_QOS_NDP),
+ 	FLAG(NEEDS_ALIGNED4_SKBS),
++	FLAG(TX_STATUS_NO_AMPDU_LEN),
+ #undef FLAG
+ };
+ 
+--- a/net/mac80211/rc80211_minstrel_ht.c
++++ b/net/mac80211/rc80211_minstrel_ht.c
+@@ -294,6 +294,15 @@ minstrel_get_ratestats(struct minstrel_h
+ 	return &mi->groups[index / MCS_GROUP_RATES].rates[index % MCS_GROUP_RATES];
+ }
+ 
++static unsigned int
++minstrel_ht_avg_ampdu_len(struct minstrel_ht_sta *mi)
++{
++	if (!mi->avg_ampdu_len)
++		return AVG_AMPDU_SIZE;
++
++	return MINSTREL_TRUNC(mi->avg_ampdu_len);
++}
++
+ /*
+  * Return current throughput based on the average A-MPDU length, taking into
+  * account the expected number of retransmissions and their expected length
+@@ -309,7 +318,7 @@ minstrel_ht_get_tp_avg(struct minstrel_h
+ 		return 0;
+ 
+ 	if (group != MINSTREL_CCK_GROUP)
+-		nsecs = 1000 * mi->overhead / MINSTREL_TRUNC(mi->avg_ampdu_len);
++		nsecs = 1000 * mi->overhead / minstrel_ht_avg_ampdu_len(mi);
+ 
+ 	nsecs += minstrel_mcs_groups[group].duration[rate] <<
+ 		 minstrel_mcs_groups[group].shift;
+@@ -503,8 +512,12 @@ minstrel_ht_update_stats(struct minstrel
+ 	u16 tmp_cck_tp_rate[MAX_THR_RATES], index;
+ 
+ 	if (mi->ampdu_packets > 0) {
+-		mi->avg_ampdu_len = minstrel_ewma(mi->avg_ampdu_len,
+-			MINSTREL_FRAC(mi->ampdu_len, mi->ampdu_packets), EWMA_LEVEL);
++		if (!ieee80211_hw_check(mp->hw, TX_STATUS_NO_AMPDU_LEN))
++			mi->avg_ampdu_len = minstrel_ewma(mi->avg_ampdu_len,
++				MINSTREL_FRAC(mi->ampdu_len, mi->ampdu_packets),
++					      EWMA_LEVEL);
++		else
++			mi->avg_ampdu_len = 0;
+ 		mi->ampdu_len = 0;
+ 		mi->ampdu_packets = 0;
+ 	}
+@@ -709,7 +722,9 @@ minstrel_ht_tx_status(void *priv, struct
+ 	mi->ampdu_len += info->status.ampdu_len;
+ 
+ 	if (!mi->sample_wait && !mi->sample_tries && mi->sample_count > 0) {
+-		mi->sample_wait = 16 + 2 * MINSTREL_TRUNC(mi->avg_ampdu_len);
++		int avg_ampdu_len = minstrel_ht_avg_ampdu_len(mi);
++
++		mi->sample_wait = 16 + 2 * avg_ampdu_len;
+ 		mi->sample_tries = 1;
+ 		mi->sample_count--;
+ 	}
+@@ -777,7 +792,7 @@ minstrel_calc_retransmit(struct minstrel
+ 	unsigned int cw = mp->cw_min;
+ 	unsigned int ctime = 0;
+ 	unsigned int t_slot = 9; /* FIXME */
+-	unsigned int ampdu_len = MINSTREL_TRUNC(mi->avg_ampdu_len);
++	unsigned int ampdu_len = minstrel_ht_avg_ampdu_len(mi);
+ 	unsigned int overhead = 0, overhead_rtscts = 0;
+ 
+ 	mrs = minstrel_get_ratestats(mi, index);
+--- a/net/mac80211/rc80211_minstrel_ht_debugfs.c
++++ b/net/mac80211/rc80211_minstrel_ht_debugfs.c
+@@ -163,9 +163,10 @@ minstrel_ht_stats_open(struct inode *ino
+ 			"lookaround %d\n",
+ 			max(0, (int) mi->total_packets - (int) mi->sample_packets),
+ 			mi->sample_packets);
+-	p += sprintf(p, "Average # of aggregated frames per A-MPDU: %d.%d\n",
+-		MINSTREL_TRUNC(mi->avg_ampdu_len),
+-		MINSTREL_TRUNC(mi->avg_ampdu_len * 10) % 10);
++	if (mi->avg_ampdu_len)
++		p += sprintf(p, "Average # of aggregated frames per A-MPDU: %d.%d\n",
++			MINSTREL_TRUNC(mi->avg_ampdu_len),
++			MINSTREL_TRUNC(mi->avg_ampdu_len * 10) % 10);
+ 	ms->len = p - ms->buf;
+ 	WARN_ON(ms->len + sizeof(*ms) > 32768);
+ 
