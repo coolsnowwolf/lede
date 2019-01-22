@@ -1,0 +1,196 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+
+DNSFORWARDER_CONF=/etc/dnsforwarder/dnsforwarder.conf
+PID_PATH=/var/run/dnsforwarder/
+PID_FILE=dns.pid
+
+start()
+{
+	echo luci for dnsforwarder
+	local vt_enabled=`uci get dnsforwarder.@arguments[0].enabled 2>/dev/null`
+	if [ $vt_enabled = 0 ]; then
+		echo dnsforwarder is not enabled
+		exit
+	fi 
+	dnsforwarder -f $DNSFORWARDER_CONF -d
+	mkdir -p $PID_PATH
+	pid=`ps | awk '$5 ~ /\[dnsforwarder\]/ {print $1}'`
+	echo dnsforwarder running pid is $pid
+	logger -t alex the pid of dnsforwarder is $PID_PATH/$PID_FILE $pid
+	echo $pid > $PID_PATH/$PID_FILE
+	/etc/init.d/dnsforwarder enable
+	local redir=`uci get dnsforwarder.@arguments[0].redir 2>/dev/null`
+	local port=`uci get dnsforwarder.@arguments[0].port 2>/dev/null`
+	local dnsmasq=`uci get dnsforwarder.@arguments[0].dnsmasq 2>/dev/null`
+	local mode=`uci get dnsforwarder.@arguments[0].mode 2>/dev/null`
+	local addr=`uci get dnsforwarder.@arguments[0].addr 2>/dev/null`
+	local ipset=`uci get dnsforwarder.@arguments[0].ipset 2>/dev/null`
+	local ipset_name=`uci get dnsforwarder.@arguments[0].ipset_name 2>/dev/null`
+	local white=`uci get dnsforwarder.@arguments[0].white 2>/dev/null`
+	local whiteset=`uci get dnsforwarder.@arguments[0].whiteset 2>/dev/null`
+	local whitedns=`uci get dnsforwarder.@arguments[0].whitedns 2>/dev/null`
+	[ -n "$addr" ] && addr=${addr/:/#}
+	[ -n "$whitedns" ] && whitedns=${whitedns/:/#}
+	iptables -t nat -N DNSFORWARDER
+	iptables -t nat -F DNSFORWARDER
+	if [ $redir = 1 ]; then
+		iptables -t nat -A DNSFORWARDER -p udp --dport 53 -j REDIRECT --to-ports $port
+		iptables -t nat -I PREROUTING -j DNSFORWARDER
+	fi
+
+	mkdir -p /tmp/dnsmasq.d
+	mkdir -p /etc/dnsmasq.d
+	cat > /tmp/dnsmasq.d/dnsmasq-go.conf <<EOF
+conf-dir=/var/etc/dnsmasq-go.d
+EOF
+	cat > /etc/dnsmasq.d/dnsmasq-go.conf <<EOF
+conf-dir=/var/etc/dnsmasq-go.d
+EOF
+
+	if [ $ipset = 1 ]; then
+		ipset destroy $ipset_name 2>/dev/null
+		ipset create $ipset_name hash:net family inet hashsize 1024 maxelem 65536
+	fi 
+	mkdir -p /var/etc/dnsmasq-go.d
+	if [ $dnsmasq = 1 ]; then
+		case $mode in
+			gfwlist)
+				echo gfwlist!!
+				awk -vs=$addr '!/^$/&&!/^#/{printf("server=/%s/%s\n",$0,s)}' \
+				/etc/dnsforwarder/china-banned > /var/etc/dnsmasq-go.d/01-pollution.conf
+				[ $ipset = 1 ] && {
+					awk '!/^$/&&!/^#/{printf("ipset=/%s/'$ipset_name'\n",$0)}' \
+					/etc/dnsforwarder/china-banned > /var/etc/dnsmasq-go.d/01-ipset.conf
+				}
+				;;
+			userlist)
+				echo user!!
+				awk -vs=$addr '!/^$/&&!/^#/{printf("server=/%s/%s\n",$0,s)}' \
+				/etc/dnsforwarder/userlist >> /var/etc/dnsmasq-go.d/02-user.conf
+				[ $ipset = 1 ] && {
+					awk '!/^$/&&!/^#/{printf("ipset=/%s/'$ipset_name'\n",$0)}' \
+					/etc/dnsforwarder/userlist > /var/etc/dnsmasq-go.d/02-ipset.conf
+				}
+				;;
+			gfw_user)
+				awk -vs=$addr '!/^$/&&!/^#/{printf("server=/%s/%s\n",$0,s)}' \
+				/etc/dnsforwarder/china-banned > /var/etc/dnsmasq-go.d/01-pollution.conf
+
+				awk -vs=$addr '!/^$/&&!/^#/{printf("server=/%s/%s\n",$0,s)}' \
+				/etc/dnsforwarder/userlist >> /var/etc/dnsmasq-go.d/02-user.conf
+				
+				[ $ipset = 1 ] && {
+					awk '!/^$/&&!/^#/{printf("ipset=/%s/'$ipset_name'\n",$0)}' \
+					/etc/dnsforwarder/china-banned > /var/etc/dnsmasq-go.d/01-ipset.conf
+
+					awk '!/^$/&&!/^#/{printf("ipset=/%s/'$ipset_name'\n",$0)}' \
+					/etc/dnsforwarder/userlist > /var/etc/dnsmasq-go.d/02-ipset.conf
+				}
+				;;
+			all)
+				uci delete dhcp.@dnsmasq[0].server
+				uci add_list dhcp.@dnsmasq[0].server=$addr
+				uci delete dhcp.@dnsmasq[0].resolvfile
+				uci set dhcp.@dnsmasq[0].noresolv=1
+				uci commit dhcp
+				;;
+
+		esac
+		
+		[ "$mode" = "gfwlist" ] || [ "$mode" = "userlist" ] || [ "$mode" = "gfw_user" ] && {
+			iptables -t nat -A DNSFORWARDER -p udp --dport 53 -j REDIRECT --to-ports 53
+			iptables -t nat -I PREROUTING -j DNSFORWARDER
+		}
+		
+		if [ $white = 1 ]; then
+			logger -t alex enable white list
+			echo enable white list
+			[ -z "$whiteset" ] && whiteset="whiteset"
+			[ -n "$whitedns" ] && [ -f "/etc/dnsforwarder/whitelist" ] && { #强制不走代理到DNSMasq
+					echo whiteset is $whiteset
+					ipset create $whiteset hash:net family inet hashsize 1024 maxelem 65536
+					
+					awk '!/^$/&&!/^#/{printf("ipset=/%s/'$whiteset'\n",$0)}' \
+					/etc/dnsforwarder/whitelist > /var/etc/dnsmasq-go.d/03-ipset.conf
+					
+					awk -vs=$whitedns '!/^$/&&!/^#/{printf("server=/%s/%s\n",$0,s)}' \
+					/etc/dnsforwarder/whitelist >> /var/etc/dnsmasq-go.d/03-white.conf
+			}
+		fi
+		
+		/etc/init.d/dnsmasq restart
+
+	fi
+
+	
+}
+
+stop()
+{
+	logger -t alex stopping dnsforwarder
+	local addr=`uci get dnsforwarder.@arguments[0].addr 2>/dev/null`
+	addr=${addr/:/#}
+	uci del_list dhcp.@dnsmasq[0].server=$addr 2>/dev/null
+	uci set dhcp.@dnsmasq[0].resolvfile=/tmp/resolv.conf.auto 2>/dev/null
+	uci delete dhcp.@dnsmasq[0].noresolv 2>/dev/null
+	uci commit dhcp
+	rm -rf /var/etc/dnsmasq-go.d
+	rm -f /tmp/dnsmasq.d/dnsmasq-go.conf
+	[ -e $PID_PATH/$PID_FILE ] && {
+		pid=`cat $PID_PATH/$PID_FILE`
+		logger -t alex killing dnsforwarder pid $pid
+		echo killing dnsforwarder pid $pid
+		kill $pid
+		rm -f $PID_PATH/$PID_FILE
+	} || {
+		logger -t alex cannot find dnsforwarder pid file
+	}
+	iptables -t nat -F DNSFORWARDER 2>/dev/null
+	while iptables -t nat -D PREROUTING -j DNSFORWARDER 2>/dev/null; do :; done
+	iptables -t nat -X DNSFORWARDER 2>/dev/null
+	local ipset=`uci get dnsforwarder.@arguments[0].ipset 2>/dev/null`
+	local ipset_name=`uci get dnsforwarder.@arguments[0].ipset_name 2>/dev/null`
+	[ $ipset = 1 ] && {
+		echo destroying ipset $ipset_name
+		ipset destroy $ipset_name 2>/dev/null
+	}
+	local white=`uci get dnsforwarder.@arguments[0].white 2>/dev/null`
+	local whiteset=`uci get dnsforwarder.@arguments[0].whiteset 2>/dev/null`
+	[ $white = 1 ] && ipset destroy $whiteset 2>/dev/null
+	/etc/init.d/dnsmasq restart
+}
+
+restart()
+{
+	
+	pid=`cat $PID_PATH/$PID_FILE 2>/dev/null`
+	echo dnsforwarder pid file is $pid
+	[ -n "$pid" ] && {
+		echo stopping pid $pid
+		logger -t alex there is dnsforwarder pid $pid
+		stop
+	} || {
+		logger -t alex dnsforwarder is not running	
+	}
+	sleep 1s	
+	local vt_enabled=`uci get dnsforwarder.@arguments[0].enabled 2>/dev/null`
+	echo dnsforwarder status is $vt_enabled 
+	logger -t alex dnsforwarder is initializing enabled is $vt_enabled
+	if [ $vt_enabled = 1 ]; then
+		[ -n "$pid" ] && {
+			logger -t alex there is dnsforwarder pid $pid
+			stop
+		} || {
+			logger -t alex dnsforwarder is not running	
+		}
+
+		logger -t alex restarting dnsforwarder
+		start
+	else
+		/etc/init.d/dnsforwarder disable
+	fi
+
+
+}

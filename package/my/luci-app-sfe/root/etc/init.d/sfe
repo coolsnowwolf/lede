@@ -1,0 +1,226 @@
+#!/bin/sh /etc/rc.common
+# Copyright (c) 2011-2015 OpenWrt.org
+
+START=30
+
+
+DNSMASQ_RESTART=N
+DNS_SERVER="1.0.0.1,1.1.1.1,1.2.4.8,4.2.2.1,4.2.2.2,8.8.4.4,8.8.8.8,9.9.9.9,114.114.114.114,114.114.115.115,119.28.28.28,119.29.29.29,180.76.76.76,210.2.4.8,208.67.220.220,208.67.222.222,223.5.5.5,223.6.6.6,240c::6644,240c::6666,2400:da00::6666,2001:4860:4860::8844,2001:4860:4860::8888,2606:4700:4700::1001,2606:4700:4700::1111"
+CRON_FILE=/etc/crontabs/root
+
+start_pdnsd() {
+	DNS_SERVER=$(uci get sfe.config.dns_server 2>/dev/null)
+	[ ! -f /usr/sbin/dnscache ] && ln /usr/bin/dnsforwarder /usr/sbin/dnscache
+	DNSCACHE_CONF=/var/run/dnscache/dnscache.conf
+	PID_PATH=/var/run/dnscache/
+	PID_FILE=dns.pid
+	mkdir -p $PID_PATH
+	pid=`ps | awk '$5 ~ /\[dnscache\]/ {print $1}'`
+
+	cat > /var/run/dnscache/dnscache.conf <<EOF
+LogOn true
+LogFileThresholdLength 102400
+LogFileFolder /var/run/dnscache
+UDPLocal 0.0.0.0:5333
+UDPGroup $DNS_SERVER * no
+GroupFile
+BlockIP 243.185.187.39,46.82.174.68,37.61.54.158,93.46.8.89,59.24.3.173,203.98.7.65,8.7.198.45,78.16.49.15,159.106.121.75,69.63.187.12,31.13.76.8,31.13.64.49
+IPSubstituting
+BlockNegativeResponse false
+Hosts
+HostsUpdateInterval 18000
+HostsDownloadPath
+HostsScript
+HostsRetryInterval 30
+AppendHosts
+BlockIpv6WhenIpv4Exists false
+UseCache true
+CacheSize 1048576
+MemoryCache true
+CacheFile
+IgnoreTTL false
+OverrideTTL -1
+MultipleTTL 1
+ReloadCache false
+OverwriteCache false
+DisabledType
+DisabledDomain
+DisabledList
+DomainStatistic false
+DomainStatisticTempletFile
+StatisticUpdateInterval 29
+EOF
+	
+	dnscache -f $DNSCACHE_CONF -d
+	echo dnscache running pid is $pid
+	logger -t alex the pid of dnscache is $PID_PATH/$PID_FILE $pid
+	echo $pid > $PID_PATH/$PID_FILE
+
+}
+
+stop_pdnsd() {
+	kill $(pidof dnscache) >/dev/null 2>&1 || killall -9 dnscache >/dev/null 2>&1 
+	echo "Stop DNS Cache"
+}
+
+start_bbr(){
+	lsmod | grep bbr
+	if [ "$?" == "0" ]; then
+	echo "The BBR module has been loaded."
+	else
+	insmod tcp_bbr
+	sleep 3
+	fi
+	echo "tcp_bbr" > /etc/modules.d/bbr
+	sed -i '/bbr/d' /etc/sysctl.conf
+	echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+	echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+	sysctl -p
+}
+
+stop_bbr(){
+	echo "bbr disable"
+	rmmod tcp_bbr
+	echo "net.ipv4.tcp_congestion_control=cubic" >> /etc/sysctl.conf
+	sed -i '/bbr/d' /etc/sysctl.conf
+	sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
+	sysctl -p
+	sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
+	sysctl -p
+}
+
+start_fullconenat(){
+	nat1_all_enabled=$(uci get sfe.config.nat1_all_enabled 2>/dev/null)
+	fullconenat_ip=$(uci get sfe.config.fullconenat_ip 2>/dev/null)
+	advanced_setting=$(uci get sfe.config.advanced_setting)
+	wan=$(uci get sfe.config.interface)
+	upnpd=$(uci get upnpd.config.enabled 2>/dev/null)
+	lsmod | grep xt_FULLCONENAT
+	if [ "$?" == "0" ]; then
+		echo "The fullconenat module has been loaded."
+	else
+		insmod xt_FULLCONENAT
+		sleep 3
+	fi
+	sed -i '/FULLCONENAT/d' /etc/firewall.user
+	sed -i '/zone_wan_postrouting -j MASQUERADE/d' /etc/firewall.user
+	if [ $nat1_all_enabled -eq 0 ]; then
+		if [ $advanced_setting -eq 0 ]; then			
+			echo "iptables -t nat -A zone_wan_prerouting -j FULLCONENAT" >> /etc/firewall.user
+			echo "iptables -t nat -A zone_wan_postrouting -s $fullconenat_ip -j FULLCONENAT" >> /etc/firewall.user
+			echo "iptables -t nat -A zone_wan_postrouting -j MASQUERADE" >> /etc/firewall.user
+		else
+			echo "iptables -t nat -A zone_wan_prerouting -i $wan -j FULLCONENAT" >> /etc/firewall.user
+			echo "iptables -t nat -A zone_wan_postrouting -o $wan -s $fullconenat_ip -j FULLCONENAT" >> /etc/firewall.user
+			echo "iptables -t nat -A zone_wan_postrouting -o $wan -j MASQUERADE" >> /etc/firewall.user
+		fi
+	elif [ $nat1_all_enabled -eq 1 ]; then
+		if [ $advanced_setting -eq 0 ]; then
+			echo "iptables -t nat -A zone_wan_prerouting -j FULLCONENAT" >> /etc/firewall.user
+			echo "iptables -t nat -A zone_wan_postrouting -j FULLCONENAT" >> /etc/firewall.user
+		else
+			echo "iptables -t nat -A zone_wan_prerouting -i $wan -j FULLCONENAT" >> /etc/firewall.user
+			echo "iptables -t nat -A zone_wan_postrouting -o $wan -j FULLCONENAT" >> /etc/firewall.user
+		fi
+	fi
+	uci set firewall.@zone[1].masq=0
+	uci commit firewall
+
+	/etc/init.d/firewall restart
+	if [ $upnpd -eq 1 ]; then
+	sleep 2
+	/etc/init.d/miniupnpd restart
+	fi
+}
+
+stop_fullconenat(){
+	fullconenat_ip=$(uci get sfe.config.fullconenat_ip)
+		rmmod xt_FULLCONENAT
+		sleep 1
+		sed -i '/zone_wan_postrouting -j MASQUERADE/d' /etc/firewall.user
+		sed -i '/FULLCONENAT/d' /etc/firewall.user
+		uci set firewall.@zone[1].masq=1
+		uci commit firewall
+		/etc/init.d/firewall restart
+}
+
+change_dns() {
+ 	uci delete dhcp.@dnsmasq[0].server >/dev/null 2>&1
+	uci add_list dhcp.@dnsmasq[0].server=127.0.0.1#5333
+	uci delete dhcp.@dnsmasq[0].resolvfile >/dev/null 2>&1
+	uci set dhcp.@dnsmasq[0].noresolv=0
+	uci commit dhcp
+}
+
+revert_dns() {
+	uci del_list dhcp.@dnsmasq[0].server=127.0.0.1#5333 >/dev/null 2>&1
+	uci set dhcp.@dnsmasq[0].resolvfile=/tmp/resolv.conf.auto
+	uci set dhcp.@dnsmasq[0].noresolv=0
+	uci commit dhcp
+}
+
+start(){
+	enable=$(uci get sfe.config.enabled 2>/dev/null)
+	bbr_enable=$(uci get sfe.config.bbr_enabled 2>/dev/null)
+	nat1_enable=$(uci get sfe.config.nat1_enabled 2>/dev/null)
+	wifi=$(uci get sfe.config.wifi)
+	ipv6=$(uci get sfe.config.ipv6)
+	dns=$(uci get sfe.config.dns 2>/dev/null)
+	if [ $enable -eq 1 ]; then
+		echo "enable"
+		! (lsmod | grep fast_classifier >/dev/null) && (modprobe fast_classifier)
+		if [ $wifi -eq 1 ] ;  then
+			echo 1 > /sys/fast_classifier/skip_to_bridge_ingress
+		else
+			echo 0 > /sys/fast_classifier/skip_to_bridge_ingress
+		fi
+		if [ $ipv6 -eq 1 ];  then
+			sfe_ipv6=$(cat /sys/sfe_ipv6/debug_dev)
+			[ ! -f /dev/sfe_ipv6 ] && mknod /dev/sfe_ipv6 c $sfe_ipv6 0
+		else
+			rm -f /dev/sfe_ipv6
+		fi
+	else
+		rmmod fast_classifier >/dev/null 2>&1 
+	fi
+	if [ $bbr_enable -eq 1 ]; then
+		start_bbr
+	fi
+	if [ $nat1_enable -eq 1 ]; then
+		start_fullconenat
+	fi
+	if [ $dns -eq 1 ];  then
+		start_pdnsd
+		change_dns
+	fi
+	if [ "$DNSMASQ_RESTART" = N ]; then
+		/etc/init.d/dnsmasq restart && echo "DNSMASQ change"
+	fi
+}
+
+stop(){
+	enable=$(uci get sfe.config.enabled 2>/dev/null)
+	bbr_enable=$(uci get sfe.config.bbr_enabled 2>/dev/null)
+	nat1_enable=$(uci get sfe.config.nat1_enabled 2>/dev/null)
+	nat1_all_enabled=$(uci get sfe.config.nat1_all_enabled 2>/dev/null)
+	[ $enable -ne 1 ] && rmmod fast_classifier >/dev/null 2>&1 
+	if [ $bbr_enable -ne 1 ]; then
+		stop_bbr
+	fi
+	stop_fullconenat
+	stop_pdnsd
+	revert_dns
+	if [ "$DNSMASQ_RESTART" = N ]; then
+		/etc/init.d/dnsmasq restart && echo "DNSMASQ revert"
+	fi
+}
+
+restart(){
+	DNSMASQ_RESTART=Y
+	stop
+	start
+	/etc/init.d/dnsmasq restart && echo "DNSMASQ restart"
+}
+
+
+

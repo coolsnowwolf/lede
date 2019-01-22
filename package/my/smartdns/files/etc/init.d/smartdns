@@ -1,0 +1,118 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2018 Nick Peng (pymumu@gmail.com)
+
+START=90
+SERVICE_USE_PID=1
+SERVICE_WRITE_PID=1
+SERVICE_DAEMONIZE=1
+BASECONFIGFILE="/etc/smartdns/smartdns.conf"
+SMARTDNS_CONF="/var/etc/smartdns.conf"
+ADDRESS_CONF="/etc/smartdns/address.conf"
+SMARTDNS_CONF_TMP="${SMARTDNS_CONF}.tmp"
+
+set_iptable()
+{
+	IPS="`ifconfig | grep "inet addr" | grep -v ":127" | grep "Bcast" | awk '{print $2}' | awk -F: '{print $2}'`"
+	for IP in $IPS
+	do
+		iptables -t nat -A PREROUTING -p udp -d $IP --dport 53 -j REDIRECT --to-ports $SMARTDNS_PORT >/dev/null 2>&1
+	done
+
+}
+
+clear_iptable()
+{
+	IPS="`ifconfig | grep "inet addr" | grep -v ":127" | grep "Bcast" | awk '{print $2}' | awk -F: '{print $2}'`"
+	for IP in $IPS
+	do
+		iptables -t nat -D PREROUTING -p udp -d $IP --dport 53 -j REDIRECT --to-ports $SMARTDNS_PORT >/dev/null 2>&1
+	done
+	
+}
+
+conf_append()
+{
+	echo "$1 $2" >> $SMARTDNS_CONF_TMP
+}
+
+load_server()
+{
+	local section="$1"
+	config_get "port" "$section" "port" "53"
+	config_get "type" "$section" "type" "udp"
+	config_get "ip" "$section" "ip" ""
+
+	if [ -z "$port" ] || [ -z "$ip" ] || [ -z "$type" ]; then
+		return
+	fi
+
+	SERVER="server"
+	if [ "$type" = "tcp" ]; then
+		SERVER="server-tcp"
+	fi
+
+	if [ ! -z "`echo $ip | grep ":"`" ]; then
+		if [ -z "`echo $ip | grep "\["`" ]; then
+			ip="[$ip]"
+		fi
+	fi
+
+	conf_append "$SERVER" "$ip:$port"
+
+}
+
+start_service() {
+	local section="$1"
+	args=""
+	config_get "port" "$section" "port" "5353"
+	conf_append "bind" "[::]:$port"
+	SMARTDNS_PORT="$port"
+
+	mkdir -p $(dirname $SMARTDNS_CONF)
+
+	config_get "cache_size" "$section" "cache_size" ""
+	if [ ! -z "$cache_size" ]; then
+		conf_append "cache-size" "$cache_size"
+	fi
+
+	config_get "rr_ttl" "$section" "rr_ttl" ""
+	if [ ! -z "$rr_ttl" ]; then
+		conf_append "rr-ttl" "$rr_ttl"
+	fi
+
+	config_get "rr_ttl_min" "$section" "rr_ttl_min" ""
+	if [ ! -z "$rr_ttl_min" ]; then
+		conf_append "rr-ttl-min" "$rr_ttl_min"
+	fi
+
+	config_get "rr_ttl_max" "$section" "rr_ttl_max" ""
+	if [ ! -z "$rr_ttl_max" ]; then
+		conf_append "rr-ttl-max" "$rr_ttl_max"
+	fi
+
+	clear_iptable
+	config_get_bool "redirect" "$section" "redirect" '0'
+	if [ "$redirect" -eq 1 ]; then
+		set_iptable
+	fi
+
+	config_foreach load_server "server"
+
+	echo "# address" >> $SMARTDNS_CONF_TMP
+	grep "^ *address " $ADDRESS_CONF >> $SMARTDNS_CONF_TMP
+
+	config_get_bool "enabled" "$section" "enabled" '0'
+	mv $SMARTDNS_CONF_TMP $SMARTDNS_CONF
+	[ "$enabled" -gt 0 ] || return 1
+	service_start /usr/sbin/smartdns $args -c $SMARTDNS_CONF
+}
+
+start() {
+	config_load "smartdns"
+	config_foreach start_service "smartdns"
+}
+
+stop() {
+	service_stop /usr/sbin/smartdns
+}
+

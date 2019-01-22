@@ -1,0 +1,96 @@
+#!/bin/sh /etc/rc.common
+#-- Copyright (C) 2018 dz <dingzhong110@gmail.com>
+
+START=99
+
+CRON_FILE=/etc/crontabs/root
+LOGTIME=$(date "+%Y-%m-%d %H:%M:%S")
+
+start(){
+	enable=$(uci get fullconenat.config.enabled)
+	all_enable=$(uci get fullconenat.config.all_enabled)
+	fullconenat_ip=$(uci get fullconenat.config.fullconenat_ip)
+	if [ $enable -eq 1 ]; then
+		lsmod | grep xt_FULLCONENAT
+		if [ "$?" == "0" ]; then
+			echo "The fullconenat module has been loaded."
+			iptables -t nat -D zone_wan_prerouting -j FULLCONENAT
+			iptables -t nat -D zone_wan_postrouting -s $fullconenat_ip -j FULLCONENAT
+			iptables -t nat -D zone_wan_postrouting -j MASQUERADE
+			iptables -t nat -D zone_wan_postrouting -j FULLCONENAT
+		else
+			insmod xt_FULLCONENAT
+		fi
+
+		sleep 3
+		sed -i '/FULLCONENAT/d' /etc/firewall.user
+		sed -i '/zone_wan_postrouting -j MASQUERADE/d' /etc/firewall.user
+		echo "['$LOGTIME'] 写入fullconenat防火墙规则" >> /tmp/fullconenat_watchdog.log 2>&1
+		if [ $all_enable -eq 0 ]; then
+			echo "iptables -t nat -A zone_wan_prerouting -j FULLCONENAT" >> /etc/firewall.user
+			echo "iptables -t nat -A zone_wan_postrouting -s $fullconenat_ip -j FULLCONENAT" >> /etc/firewall.user
+			echo "iptables -t nat -A zone_wan_postrouting -j MASQUERADE" >> /etc/firewall.user
+		elif [ $all_enable -eq 1 ]; then
+			echo "iptables -t nat -A zone_wan_prerouting -j FULLCONENAT" >> /etc/firewall.user
+			echo "iptables -t nat -A zone_wan_postrouting -j FULLCONENAT" >> /etc/firewall.user
+		fi
+
+		echo "['$LOGTIME'] fullconenat防火墙规则写入完成" >> /tmp/fullconenat_watchdog.log 2>&1
+		uci set firewall.@zone[1].masq=0
+		uci commit firewall
+
+		sleep 1
+		echo "['$LOGTIME'] 重启防火墙" >> /tmp/fullconenat_watchdog.log 2>&1
+		/etc/init.d/firewall restart
+		echo "['$LOGTIME'] fullconenat启动完成" >> /tmp/fullconenat_watchdog.log 2>&1
+		echo "['$LOGTIME'] 开启定时检测任务" >> /tmp/fullconenat_watchdog.log 2>&1
+		add_cron
+		echo "['$LOGTIME'] 定时检测任务载入完成" >> /tmp/fullconenat_watchdog.log 2>&1
+	fi
+}
+
+stop(){
+	fullconenat_ip=$(uci get fullconenat.config.fullconenat_ip)
+    enable=$(uci get fullconenat.config.enabled)	
+    if [ $enable -eq 0 ]; then
+		echo "['$LOGTIME'] 关闭fullconenat" >> /tmp/fullconenat_watchdog.log 2>&1
+		echo "['$LOGTIME'] 卸载fullconenat模块" >> /tmp/fullconenat_watchdog.log 2>&1
+		rmmod xt_FULLCONENAT
+		sleep 1
+		echo "['$LOGTIME'] 清除fullconenat防火墙规则" >> /tmp/fullconenat_watchdog.log 2>&1
+		iptables -t nat -D zone_wan_prerouting -j FULLCONENAT
+		iptables -t nat -D zone_wan_postrouting -s $fullconenat_ip -j FULLCONENAT
+		iptables -t nat -D zone_wan_postrouting -j MASQUERADE
+		iptables -t nat -D zone_wan_postrouting -j FULLCONENAT
+		sed -i '/zone_wan_postrouting -j MASQUERADE/d' /etc/firewall.user
+		sed -i '/FULLCONENAT/d' /etc/firewall.user
+		uci set firewall.@zone[1].masq=1
+		uci commit firewall
+		echo "['$LOGTIME'] fullconenat防火墙规则清除完成,重启防火墙" >> /tmp/fullconenat_watchdog.log 2>&1
+		/etc/init.d/firewall restart
+		echo "['$LOGTIME'] 关闭定时检测任务" >> /tmp/fullconenat_watchdog.log 2>&1
+		del_cron
+		echo "['$LOGTIME'] fullconenat以关闭" >> /tmp/fullconenat_watchdog.log 2>&1
+	fi
+}
+
+
+restart(){
+	stop
+	start
+	/etc/init.d/firewall restart
+}
+
+add_cron()
+{
+	sed -i '/fullconenat_watchdog.log/d' $CRON_FILE
+	echo '*/10 * * * * /etc/fullconenat/fullconenat-watchdog >> /tmp/fullconenat_watchdog.log 2>&1' >> $CRON_FILE
+	echo '0 1 * * 0 echo "" > /tmp/fullconenat_watchdog.log' >> $CRON_FILE
+	crontab $CRON_FILE
+}
+
+del_cron()
+{
+	sed -i '/fullconenat_watchdog.log/d' $CRON_FILE
+	/etc/init.d/cron restart
+}

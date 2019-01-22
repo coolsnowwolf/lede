@@ -1,0 +1,78 @@
+#!/bin/sh /etc/rc.common
+
+START=90
+STOP=15
+
+SERVICE_USE_PID=1
+SERVICE_WRITE_PID=1
+SERVICE_DAEMONIZE=1
+
+CONFIG=/var/etc/redsocks2.conf
+TPL=/etc/redsocks2/config.template
+
+get_args() {
+	config_get_bool enable $1 enable
+	config_get local_port $1 local_port
+	config_get proxy_type $1 proxy_type
+	config_get proxy_ip $1 proxy_ip
+	config_get proxy_port $1 proxy_port
+	config_get_bool auto_proxy $1 auto_proxy
+	config_get timeout $1 timeout
+}
+
+start_redsocks2() {
+	mkdir -p $(dirname $CONFIG)
+	sed -e "s#|LOCAL_PORT|#$local_port#" \
+		-e "s#|PROXY_TYPE|#$proxy_type#" \
+		-e "s#|PROXY_IP|#$proxy_ip#" \
+		-e "s#|PROXY_PORT|#$proxy_port#" \
+		-e "s#|AUTO_PROXY|#$auto_proxy#" \
+		-e "s#|TIMEOUT|#${timeout:-5}#" \
+		$TPL >$CONFIG
+	service_start /usr/bin/redsocks2 -c $CONFIG || exit 1
+
+	iptables-restore -n <<-EOF
+		*nat
+		:REDSOCKS2 - [0:0]
+		-A REDSOCKS2 -d $proxy_ip -j RETURN
+		-A REDSOCKS2 -d 0.0.0.0/8 -j RETURN
+		-A REDSOCKS2 -d 10.0.0.0/8 -j RETURN
+		-A REDSOCKS2 -d 100.64.0.0/10 -j RETURN
+		-A REDSOCKS2 -d 127.0.0.0/8 -j RETURN
+		-A REDSOCKS2 -d 169.254.0.0/16 -j RETURN
+		-A REDSOCKS2 -d 172.16.0.0/12 -j RETURN
+		-A REDSOCKS2 -d 192.0.0.0/24 -j RETURN
+		-A REDSOCKS2 -d 192.0.2.0/24 -j RETURN
+		-A REDSOCKS2 -d 192.88.99.0/24 -j RETURN
+		-A REDSOCKS2 -d 192.168.0.0/16 -j RETURN
+		-A REDSOCKS2 -d 198.18.0.0/15 -j RETURN
+		-A REDSOCKS2 -d 198.51.100.0/24 -j RETURN
+		-A REDSOCKS2 -d 203.0.113.0/24 -j RETURN
+		-A REDSOCKS2 -d 224.0.0.0/4 -j RETURN
+		-A REDSOCKS2 -d 240.0.0.0/4 -j RETURN
+		-A REDSOCKS2 -d 255.255.255.255 -j RETURN
+		-A REDSOCKS2 -p tcp -j REDIRECT --to-ports $local_port
+		-A zone_lan_prerouting -p tcp -j REDSOCKS2
+		COMMIT
+EOF
+}
+
+boot() {
+	until iptables-save -t nat | grep -q "^:zone_lan_prerouting"; do
+		sleep 1
+	done
+	start
+}
+
+start() {
+	config_load redsocks2
+	config_foreach get_args redsocks2
+	[ "$enable" = 1 ] && start_redsocks2
+}
+
+stop() {
+	service_stop /usr/bin/redsocks2
+	iptables -t nat -D zone_lan_prerouting -p tcp -j REDSOCKS2 2>/dev/null
+	iptables -t nat -F REDSOCKS2 2>/dev/null && \
+	iptables -t nat -X REDSOCKS2
+}

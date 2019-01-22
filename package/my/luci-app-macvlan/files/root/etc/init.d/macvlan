@@ -1,0 +1,59 @@
+#!/bin/sh /etc/rc.common
+
+START=19
+
+MC=/tmp/macvlan_cleanup.sh
+
+stop_macvlan() {
+	local idx=0
+	test -f $MC && {
+		cat $MC | while read line; do
+			echo "$idx#$line"
+			idx=$((idx+1))
+		done | sort -nr | while read line; do
+			cmd=`echo "$line" | cut -d"#" -f2`
+			$cmd
+		done
+		rm -f $MC
+	}
+}
+
+add_macvlan() {
+	local cfg="$1"
+	local ifname macvlan
+	local mvname
+
+	config_get ifname "$cfg" ifname
+	config_get macvlan "$cfg" macvlan
+
+	test -n "$ifname" || return 1
+	test -n "$macvlan" || return 1
+
+	mvname="mvlan${macvlan}${ifname}"
+
+	echo "$ifname" | grep -q "^[a-zA-Z].*\.[0-9]*$" && {
+		ifn=`echo $ifname | cut -d"." -f 1`
+		iid=`echo $ifname | cut -d"." -f 2`
+		test -n "$ifn" && ifconfig $ifn >/dev/null 2>&1 || return 1
+		ifconfig $ifn up 2>/dev/null
+		vconfig set_name_type DEV_PLUS_VID_NO_PAD
+		vconfig add $ifn $iid 2>/dev/null && echo ip link del $ifname >>$MC
+		mvname="mvlan${macvlan}${ifn}t${iid}"
+	}
+
+	ifconfig $ifname >/dev/null 2>&1 || return 1
+
+	ifconfig $ifname up 2>/dev/null
+	ip link add link $ifname $mvname type macvlan 2>/dev/null && echo ip link del $mvname >>$MC
+}
+
+start() {
+	stop_macvlan
+	echo -n >$MC
+	config_load macvlan
+	config_foreach add_macvlan macvlan
+}
+
+stop() {
+	stop_macvlan
+}

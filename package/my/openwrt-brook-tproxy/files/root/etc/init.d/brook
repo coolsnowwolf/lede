@@ -1,0 +1,225 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2017 openwrt-ssr
+# Copyright (C) 2017 yushi studio <ywb94@qq.com>
+# Copyright (C) 2018 openwrt-brook-tproxy
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
+START=90
+STOP=15
+
+SERVICE_DAEMONIZE=1
+NAME=brook
+EXTRA_COMMANDS=rules
+FWI=$(uci get firewall.brook.path 2>/dev/null)
+
+uci_get_by_name() {
+	local ret=$(uci get $NAME.$1.$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+uci_get_by_type() {
+	local ret=$(uci get $NAME.@$1[0].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+run_mode=$(uci_get_by_type global run_mode)
+GLOBAL_SERVER=$(uci_get_by_type global global_server)
+ip_list=$(uci_get_by_type proxy_control wan_bp_list)
+
+gen_include() {
+	[ -n "$FWI" ] || return 0
+	extract_rules() {
+		echo "*$1"
+		iptables-save -t $1 | grep Brook
+		echo 'COMMIT'
+	}
+	cat <<-EOF >>$FWI
+	#!/bin/sh
+	iptables-save -c | grep -v "Brook" | iptables-restore -c
+	iptables-restore -n <<-EOT
+	$(extract_rules mangle)
+	EOT
+EOF
+	return 0
+}
+
+gen_iplist() {
+	cat <<-EOF
+		0.0.0.0/8
+		10.0.0.0/8
+		100.64.0.0/10
+		127.0.0.0/8
+		169.254.0.0/16
+		172.16.0.0/12
+		192.0.0.0/24
+		192.0.2.0/24
+		192.88.99.0/24
+		192.168.0.0/16
+		198.18.0.0/15
+		198.51.100.0/24
+		203.0.113.0/24
+		224.0.0.0/4
+		240.0.0.0/4
+		255.255.255.255
+		$1
+		$(for ip in $2; do echo $ip; done)
+		$(cat ${ip_list:=/dev/null} 2>/dev/null)
+EOF
+}
+
+start_rules() {
+	local host=$(uci_get_by_name $GLOBAL_SERVER server)
+	if echo $host| grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
+		hostip=${host}
+	elif [ "$host" != "${host#*:[0-9a-fA-F]}" ]; then
+		hostip=${host}
+	else
+		hostip=`ping ${host} -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1`
+		if echo $hostip| grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
+			hostip=${hostip}
+		else
+			hostip="127.0.0.1"
+		fi
+	fi
+	local bp_ips=$(uci_get_by_type proxy_control wan_bp_ips)
+	local fw_ips=$(uci_get_by_type proxy_control wan_fw_ips)
+	local lan_pc=$(uci_get_by_type proxy_control lan_pc_mode)
+	local pc_ips=$(uci_get_by_type proxy_control lan_pc_ips)
+
+	ip rule add fwmark 1 lookup 100
+	ip route add local 0.0.0.0/0 dev lo table 100
+
+	if [ "$run_mode" = "router" ]; then
+		MATCH_SET="-m set --match-set iplist dst"
+		ipset -! -R <<-EOF || return 1
+			create iplist hash:net
+			$(gen_iplist $hostip $bp_ips | sed -e "s/^/add iplist /")
+			$(for ip in $fw_ips; do echo "add iplist $ip nomatch"; done)
+EOF
+	else
+		MATCH_SET="-m set ! --match-set gfwlist dst"
+		ipset -N gfwlist iphash 2>/dev/null
+		for ip in $fw_ips; do ipset add gfwlist $ip; done
+	fi
+
+	if [ "$pc_ips" ]; then
+		ipset -! -R <<-EOF || return 1
+			create pclist hash:net
+			$(for ip in $pc_ips; do echo "add pclist $ip"; done)
+EOF
+		case "$lan_pc" in
+			b)
+				iptables -t mangle -A PREROUTING -m set --match-set pclist src \
+					-j RETURN -m comment --comment "Brook_Proxy_Control"
+				;;
+			w)
+				iptables -t mangle -A PREROUTING -m set ! --match-set pclist src \
+					-j RETURN -m comment --comment "Brook_Proxy_Control"
+				;;
+		esac
+	fi
+
+	iptables -t mangle -A PREROUTING $MATCH_SET -j RETURN -m comment --comment "Brook_Tproxy"
+
+	iptables -t mangle -N Brook
+
+	iptables -t mangle -A Brook -j MARK --set-mark 1
+	iptables -t mangle -A Brook -j ACCEPT
+
+	iptables -t mangle -A PREROUTING -p tcp -m socket -j Brook
+	iptables -t mangle -A PREROUTING -p tcp -j TPROXY --tproxy-mark 0x1/0x1 \
+			--on-port $(uci_get_by_name $GLOBAL_SERVER local_port) \
+			-m comment --comment "Brook_Tproxy"
+
+	iptables -t mangle -A PREROUTING -p udp -m socket -j Brook
+	iptables -t mangle -A PREROUTING -p udp -j TPROXY --tproxy-mark 0x1/0x1 \
+			--on-port $(uci_get_by_name $GLOBAL_SERVER local_port) \
+			-m comment --comment "Brook_Tproxy"
+
+	gen_include
+}
+
+start_tunnel() {
+	/usr/bin/brook tunnel -l :5353 \
+		-t $(uci_get_by_type global tunnel_forward 8.8.8.8:53) \
+		-s $(uci_get_by_name $GLOBAL_SERVER server):$(uci_get_by_name $GLOBAL_SERVER server_port) \
+		-p $(uci_get_by_name $GLOBAL_SERVER password) >/dev/null 2>&1 &
+
+	mkdir -p /tmp/dnsmasq.d
+	echo "conf-dir=/etc/dnsmasq.brook" > /tmp/dnsmasq.d/dnsmasq-brook.conf
+	/etc/init.d/dnsmasq restart
+}
+
+start_tproxy() {
+	/usr/bin/brook tproxy -l :$(uci_get_by_name $GLOBAL_SERVER local_port) \
+		-s $(uci_get_by_name $GLOBAL_SERVER server):$(uci_get_by_name $GLOBAL_SERVER server_port) \
+		-p $(uci_get_by_name $GLOBAL_SERVER password) >/dev/null 2>&1 &
+}
+
+del_rules() {
+	local on_port=`iptables -t mangle -L PREROUTING | grep Brook |
+			grep -o -E "[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\:[0-9]+" |
+			awk -F ':' '{print $2}' | awk 'NR==1'`
+
+	iptables -t mangle -L PREROUTING | grep Brook_Proxy_Control && \
+	(iptables -t mangle -D PREROUTING -m set ! --match-set pclist src \
+			-j RETURN -m comment --comment "Brook_Proxy_Control" || \
+	iptables -t mangle -D PREROUTING -m set --match-set pclist src \
+			-j RETURN -m comment --comment "Brook_Proxy_Control")
+
+	iptables -t mangle -L PREROUTING | grep iplist && MATCH_SET="-m set --match-set iplist dst"
+	iptables -t mangle -L PREROUTING | grep gfwlist && MATCH_SET="-m set ! --match-set gfwlist dst"
+
+	iptables -t mangle -D PREROUTING $MATCH_SET -j RETURN -m comment --comment "Brook_Tproxy"
+	iptables -t mangle -D PREROUTING -p tcp -m socket -j Brook
+	iptables -t mangle -D PREROUTING -p tcp -j TPROXY --tproxy-mark 0x1/0x1 \
+			--on-port $on_port -m comment --comment "Brook_Tproxy"
+	iptables -t mangle -D PREROUTING -p udp -m socket -j Brook
+	iptables -t mangle -D PREROUTING -p udp -j TPROXY --tproxy-mark 0x1/0x1 \
+			--on-port $on_port -m comment --comment "Brook_Tproxy"
+	iptables -t mangle -F Brook
+	iptables -t mangle -X Brook
+
+	ip rule del fwmark 1 lookup 100
+	ip route del local 0.0.0.0/0 dev lo table 100
+
+	if [ -f "$FWI" ]; then
+		rm -f $FWI
+	fi
+}
+
+start() {
+	sysctl -w net.ipv4.ip_forward=1 >/dev/null
+	sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
+
+	if ! [ "$GLOBAL_SERVER" = "nil" ]; then
+		start_rules >/dev/null 2>&1 &
+		start_tproxy
+		start_tunnel
+	fi
+}
+
+boot() {
+	(sleep 5 && start >/dev/null 2>&1) &
+}
+
+stop() {
+	local rules_str=`iptables -t mangle -L| grep Brook`
+	if [ "$rules_str" ]; then
+		del_rules >/dev/null 2>&1 &
+	fi
+	if [ -f "/tmp/dnsmasq.d/dnsmasq-brook.conf" ]; then
+		rm -f /tmp/dnsmasq.d/dnsmasq-brook.conf
+		/etc/init.d/dnsmasq restart
+	fi
+	local process=`ps -w | grep "/usr/bin/brook" |grep -v grep`
+	if [ "$process" ]; then
+		for pid in $(ps -w | grep "/usr/bin/brook" | grep -v grep| awk '{print $1}'); do
+			kill -9 $pid
+		done
+	fi
+}
