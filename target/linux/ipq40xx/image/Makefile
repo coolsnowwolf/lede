@@ -26,6 +26,12 @@ define Device/FitImageLzma
 	KERNEL_NAME := Image
 endef
 
+define Device/FitzImage
+	KERNEL_SUFFIX := -fit-zImage.itb
+	KERNEL = kernel-bin | fit none $$(DTS_DIR)/$$(DEVICE_DTS).dtb
+	KERNEL_NAME := zImage
+endef
+
 define Device/UbiFit
 	KERNEL_IN_UBI := 1
 	IMAGES := nand-factory.ubi nand-sysupgrade.bin
@@ -231,16 +237,16 @@ endef
 TARGET_DEVICES += qcom_ap-dk01.1-c1
 
 define Device/linksys_ea6350v3
+	$(call Device/FitzImage)
 	DEVICE_TITLE := Linksys EA6350v3
-	BOARD_NAME := ea6350v3
 	DEVICE_DTS := qcom-ipq4018-ea6350v3
-	DTB_SIZE := 65536
 	BLOCKSIZE := 128k
-	IMAGE_SIZE := 20439364
-	FILESYSTEMS := squashfs
+	PAGESIZE := 2048
+	KERNEL_SIZE := 3145728
+	IMAGE_SIZE := 38797312
+	UBINIZE_OPTS := -E 5
 	IMAGES := sysupgrade.bin
-	$(call Device/FitImage)
-	DEVICE_PACKAGES := ath10k-firmware-qca4019 ipq-wifi-linksys_ea6350v3
+	DEVICE_PACKAGES := ath10k-firmware-qca4019 ipq-wifi-linksys_ea6350v3 uboot-envtools
 endef
 TARGET_DEVICES += linksys_ea6350v3
 

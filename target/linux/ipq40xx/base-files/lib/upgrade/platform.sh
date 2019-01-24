@@ -164,7 +164,6 @@ platform_do_upgrade() {
 		;;
 	asus,rt-ac1300uhp |\
 	asus,rt-acrh17|\
-	linksys,ea6350v3 |\
 	asus,rt-ac58u)
 		local magic=$(get_magic_long "$1")
 		CI_UBIPART="UBI_DEV"
@@ -175,6 +174,9 @@ platform_do_upgrade() {
 		else
 			asus_nand_upgrade_tar 20951040 "$1"
 		fi
+		;;
+	linksys,ea6350v3)
+		platform_do_upgrade_linksys "$ARGV"
 		;;
 	openmesh,a42 |\
 	openmesh,a62)
