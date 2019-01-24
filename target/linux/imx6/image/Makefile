@@ -136,6 +136,7 @@ define Device/ventana
   IMAGES := nand.ubi bootfs.tar.gz
   IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1).$$(2)
   UBINIZE_PARTS = boot=$$(KDIR_KERNEL_IMAGE).boot.ubifs=15
+  BOOT_SCRIPT := bootscript-ventana
   IMAGE/nand.ubi := append-ubi
   IMAGE/bootfs.tar.gz := bootfs.tar.gz | install-dtb
   IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1)-$$(2)

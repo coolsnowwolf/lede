@@ -1,0 +1,57 @@
+From 5d35ff6d904bcbf00bee99ea493db47360e756bc Mon Sep 17 00:00:00 2001
+From: Eric Anholt <eric@anholt.net>
+Date: Thu, 21 Dec 2017 13:32:09 -0800
+Subject: [PATCH 184/454] drm/vc4: Flush the caches before the render jobs, as
+ well.
+
+If the frame samples from a render target that was just written, its
+cache flush during the binning step may have occurred before the
+previous frame's RCL was completed.  Flush the texture caches again
+before starting each RCL job to make sure that the sampling of the
+previous RCL's output is correct.
+
+Fixes flickering in the top left of 3DMMES Taiji.
+
+Signed-off-by: Eric Anholt <eric@anholt.net>
+Fixes: ca26d28bbaa3 ("drm/vc4: improve throughput by pipelining binning and rendering jobs")
+---
+ drivers/gpu/drm/vc4/vc4_gem.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+--- a/drivers/gpu/drm/vc4/vc4_gem.c
++++ b/drivers/gpu/drm/vc4/vc4_gem.c
+@@ -436,6 +436,19 @@ vc4_flush_caches(struct drm_device *dev)
+ 		  VC4_SET_FIELD(0xf, V3D_SLCACTL_ICC));
+ }
+ 
++static void
++vc4_flush_texture_caches(struct drm_device *dev)
++{
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
++
++	V3D_WRITE(V3D_L2CACTL,
++		  V3D_L2CACTL_L2CCLR);
++
++	V3D_WRITE(V3D_SLCACTL,
++		  VC4_SET_FIELD(0xf, V3D_SLCACTL_T1CC) |
++		  VC4_SET_FIELD(0xf, V3D_SLCACTL_T0CC));
++}
++
+ /* Sets the registers for the next job to be actually be executed in
+  * the hardware.
+  *
+@@ -474,6 +487,14 @@ vc4_submit_next_render_job(struct drm_de
+ 	if (!exec)
+ 		return;
+ 
++	/* A previous RCL may have written to one of our textures, and
++	 * our full cache flush at bin time may have occurred before
++	 * that RCL completed.  Flush the texture cache now, but not
++	 * the instructions or uniforms (since we don't write those
++	 * from an RCL).
++	 */
++	vc4_flush_texture_caches(dev);
++
+ 	submit_cl(dev, 1, exec->ct1ca, exec->ct1ea);
+ }
+ 

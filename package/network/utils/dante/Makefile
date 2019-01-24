@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=dante
 PKG_VERSION:=1.4.1
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=http://www.inet.no/dante/files/
@@ -29,7 +29,8 @@ CONFIGURE_ARGS += \
 	--disable-libwrap
 
 CONFIGURE_VARS += \
-	ac_cv_search_pam_start=""
+	ac_cv_search_pam_start="" \
+	ac_cv_func_sched_setscheduler=no
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include
@@ -49,7 +50,7 @@ Dante is a circuit-level firewall/proxy that can be used to provide convenient
 and secure network connectivity, requiring only that the server Dante runs on
 has external network connectivity. Dante is used daily by Fortune 100 companies
 and large international organizations, either as a standard SOCKS server or as
-a "reverse proxy". 
+a "reverse proxy".
 endef
 
 define Package/libsocks

@@ -1,0 +1,741 @@
+From 74243154052af635ee9ce9d07aab273ce219c855 Mon Sep 17 00:00:00 2001
+From: Biwen Li <biwen.li@nxp.com>
+Date: Thu, 13 Dec 2018 13:23:52 +0800
+Subject: [PATCH] core-linux: support layerscape
+
+This is an integrated patch of core-linux for layerscape.
+
+Signed-off-by: Abhijit Ayarekar <abhijit.ayarekar@caviumnetworks.com>
+Signed-off-by: Amrita Kumari <amrita.kumari@nxp.com>
+Signed-off-by: Ashish Kumar <Ashish.Kumar@nxp.com>
+Signed-off-by: Camelia Groza <camelia.groza@nxp.com>
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+Signed-off-by: David Ahern <dsahern@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+Signed-off-by: Guanhua Gao <guanhua.gao@nxp.com>
+Signed-off-by: Jiri Pirko <jiri@mellanox.com>
+Signed-off-by: Joel Fernandes <joelaf@google.com>
+Signed-off-by: Li Yang <leoyang.li@nxp.com>
+Signed-off-by: Madalin Bucur <madalin.bucur@freescale.com>
+Signed-off-by: Madalin Bucur <madalin.bucur@nxp.com>
+Signed-off-by: Nikhil Badola <nikhil.badola@freescale.com>
+Signed-off-by: Nipun Gupta <nipun.gupta@nxp.com>
+Signed-off-by: Ramneek Mehresh <ramneek.mehresh@freescale.com>
+Signed-off-by: Robin Murphy <robin.murphy@arm.com>
+Signed-off-by: Suresh Gupta <suresh.gupta@freescale.com>
+Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
+Signed-off-by: yinbo.zhu <yinbo.zhu@nxp.com>
+Signed-off-by: Biwen Li <biwen.li@nxp.com>
+---
+ drivers/base/dma-mapping.c                |  7 ++
+ drivers/net/bonding/bond_main.c           |  5 +-
+ drivers/net/bonding/bond_options.c        |  2 +-
+ drivers/net/team/team.c                   |  3 +-
+ drivers/net/vrf.c                         |  3 +-
+ drivers/of/device.c                       | 13 +++-
+ drivers/soc/fsl/guts.c                    |  3 +
+ include/linux/fsl_devices.h               |  2 +
+ include/linux/netdevice.h                 | 13 +++-
+ include/linux/skbuff.h                    |  2 +
+ include/net/bonding.h                     |  3 +-
+ net/batman-adv/soft-interface.c           |  3 +-
+ net/bridge/br_device.c                    |  3 +-
+ net/core/dev.c                            | 81 ++++++++++++++---------
+ net/core/rtnetlink.c                      | 10 +--
+ net/core/skbuff.c                         | 29 +++++++-
+ samples/bpf/Makefile                      | 12 +++-
+ samples/bpf/map_perf_test_kern.c          |  2 +-
+ samples/bpf/map_perf_test_user.c          |  2 +-
+ tools/testing/selftests/bpf/bpf_helpers.h | 56 ++++++++++++++--
+ 20 files changed, 193 insertions(+), 61 deletions(-)
+
+--- a/drivers/base/dma-mapping.c
++++ b/drivers/base/dma-mapping.c
+@@ -335,6 +335,7 @@ void dma_common_free_remap(void *cpu_add
+  * Common configuration to enable DMA API use for a device
+  */
+ #include <linux/pci.h>
++#include <linux/fsl/mc.h>
+ 
+ int dma_configure(struct device *dev)
+ {
+@@ -350,6 +351,12 @@ int dma_configure(struct device *dev)
+ 			dma_dev = dma_dev->parent;
+ 	}
+ 
++	if (dev_is_fsl_mc(dev)) {
++		dma_dev = dev;
++		while (dev_is_fsl_mc(dma_dev))
++			dma_dev = dma_dev->parent;
++	}
++
+ 	if (dma_dev->of_node) {
+ 		ret = of_dma_configure(dev, dma_dev->of_node);
+ 	} else if (has_acpi_companion(dma_dev)) {
+--- a/drivers/net/bonding/bond_main.c
++++ b/drivers/net/bonding/bond_main.c
+@@ -1337,7 +1337,8 @@ void bond_lower_state_changed(struct sla
+ }
+ 
+ /* enslave device <slave> to bond device <master> */
+-int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev)
++int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev,
++		 struct netlink_ext_ack *extack)
+ {
+ 	struct bonding *bond = netdev_priv(bond_dev);
+ 	const struct net_device_ops *slave_ops = slave_dev->netdev_ops;
+@@ -3506,7 +3507,7 @@ static int bond_do_ioctl(struct net_devi
+ 	switch (cmd) {
+ 	case BOND_ENSLAVE_OLD:
+ 	case SIOCBONDENSLAVE:
+-		res = bond_enslave(bond_dev, slave_dev);
++		res = bond_enslave(bond_dev, slave_dev, NULL);
+ 		break;
+ 	case BOND_RELEASE_OLD:
+ 	case SIOCBONDRELEASE:
+--- a/drivers/net/bonding/bond_options.c
++++ b/drivers/net/bonding/bond_options.c
+@@ -1389,7 +1389,7 @@ static int bond_option_slaves_set(struct
+ 	switch (command[0]) {
+ 	case '+':
+ 		netdev_dbg(bond->dev, "Adding slave %s\n", dev->name);
+-		ret = bond_enslave(bond->dev, dev);
++		ret = bond_enslave(bond->dev, dev, NULL);
+ 		break;
+ 
+ 	case '-':
+--- a/drivers/net/team/team.c
++++ b/drivers/net/team/team.c
+@@ -1932,7 +1932,8 @@ static int team_netpoll_setup(struct net
+ }
+ #endif
+ 
+-static int team_add_slave(struct net_device *dev, struct net_device *port_dev)
++static int team_add_slave(struct net_device *dev, struct net_device *port_dev,
++			  struct netlink_ext_ack *extack)
+ {
+ 	struct team *team = netdev_priv(dev);
+ 	int err;
+--- a/drivers/net/vrf.c
++++ b/drivers/net/vrf.c
+@@ -791,7 +791,8 @@ err:
+ 	return ret;
+ }
+ 
+-static int vrf_add_slave(struct net_device *dev, struct net_device *port_dev)
++static int vrf_add_slave(struct net_device *dev, struct net_device *port_dev,
++			 struct netlink_ext_ack *extack)
+ {
+ 	if (netif_is_l3_master(port_dev) || netif_is_l3_slave(port_dev))
+ 		return -EINVAL;
+--- a/drivers/of/device.c
++++ b/drivers/of/device.c
+@@ -15,6 +15,9 @@
+ 
+ #include <asm/errno.h>
+ #include "of_private.h"
++#ifdef CONFIG_FSL_MC_BUS
++#include <linux/fsl/mc.h>
++#endif
+ 
+ /**
+  * of_match_device - Tell if a struct device matches an of_device_id list
+@@ -105,6 +108,9 @@ int of_dma_configure(struct device *dev,
+ #ifdef CONFIG_ARM_AMBA
+ 		    dev->bus != &amba_bustype &&
+ #endif
++#ifdef CONFIG_FSL_MC_BUS
++		    dev->bus != &fsl_mc_bus_type &&
++#endif
+ 		    dev->bus != &platform_bus_type)
+ 			return ret == -ENODEV ? 0 : ret;
+ 
+@@ -155,7 +161,12 @@ int of_dma_configure(struct device *dev,
+ 	dev->coherent_dma_mask &= mask;
+ 	*dev->dma_mask &= mask;
+ 
+-	coherent = of_dma_is_coherent(np);
++#ifdef CONFIG_FSL_MC_BUS
++	if (dev_is_fsl_mc(dev))
++		coherent = fsl_mc_is_dev_coherent(dev);
++	else
++#endif
++		coherent = of_dma_is_coherent(np);
+ 	dev_dbg(dev, "device is%sdma coherent\n",
+ 		coherent ? " " : " not ");
+ 
+--- a/drivers/soc/fsl/guts.c
++++ b/drivers/soc/fsl/guts.c
+@@ -213,6 +213,9 @@ static const struct of_device_id fsl_gut
+ 	{ .compatible = "fsl,ls1021a-dcfg", },
+ 	{ .compatible = "fsl,ls1043a-dcfg", },
+ 	{ .compatible = "fsl,ls2080a-dcfg", },
++	{ .compatible = "fsl,ls1088a-dcfg", },
++	{ .compatible = "fsl,ls1012a-dcfg", },
++	{ .compatible = "fsl,ls1046a-dcfg", },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, fsl_guts_of_match);
+--- a/include/linux/fsl_devices.h
++++ b/include/linux/fsl_devices.h
+@@ -99,7 +99,9 @@ struct fsl_usb2_platform_data {
+ 	unsigned	suspended:1;
+ 	unsigned	already_suspended:1;
+ 	unsigned        has_fsl_erratum_a007792:1;
++	unsigned        has_fsl_erratum_14:1;
+ 	unsigned        has_fsl_erratum_a005275:1;
++	unsigned        has_fsl_erratum_a006918:1;
+ 	unsigned	has_fsl_erratum_a005697:1;
+ 	unsigned        check_phy_clk_valid:1;
+ 
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -1260,7 +1260,8 @@ struct net_device_ops {
+ 						     u32 flow_id);
+ #endif
+ 	int			(*ndo_add_slave)(struct net_device *dev,
+-						 struct net_device *slave_dev);
++						 struct net_device *slave_dev,
++						 struct netlink_ext_ack *extack);
+ 	int			(*ndo_del_slave)(struct net_device *dev,
+ 						 struct net_device *slave_dev);
+ 	netdev_features_t	(*ndo_fix_features)(struct net_device *dev,
+@@ -2341,7 +2342,8 @@ int register_netdevice_notifier(struct n
+ int unregister_netdevice_notifier(struct notifier_block *nb);
+ 
+ struct netdev_notifier_info {
+-	struct net_device *dev;
++	struct net_device	*dev;
++	struct netlink_ext_ack	*extack;
+ };
+ 
+ struct netdev_notifier_info_ext {
+@@ -2373,6 +2375,7 @@ static inline void netdev_notifier_info_
+ 					     struct net_device *dev)
+ {
+ 	info->dev = dev;
++	info->extack = NULL;
+ }
+ 
+ static inline struct net_device *
+@@ -2381,6 +2384,12 @@ netdev_notifier_info_to_dev(const struct
+ 	return info->dev;
+ }
+ 
++static inline struct netlink_ext_ack *
++netdev_notifier_info_to_extack(const struct netdev_notifier_info *info)
++{
++	return info->extack;
++}
++
+ int call_netdevice_notifiers(unsigned long val, struct net_device *dev);
+ 
+ 
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -964,6 +964,7 @@ void kfree_skb_list(struct sk_buff *segs
+ void skb_tx_error(struct sk_buff *skb);
+ void consume_skb(struct sk_buff *skb);
+ void __consume_stateless_skb(struct sk_buff *skb);
++void skb_recycle(struct sk_buff *skb);
+ void  __kfree_skb(struct sk_buff *skb);
+ extern struct kmem_cache *skbuff_head_cache;
+ 
+@@ -3293,6 +3294,7 @@ static inline void skb_free_datagram_loc
+ }
+ int skb_kill_datagram(struct sock *sk, struct sk_buff *skb, unsigned int flags);
+ int skb_copy_bits(const struct sk_buff *skb, int offset, void *to, int len);
++void copy_skb_header(struct sk_buff *new, const struct sk_buff *old);
+ int skb_store_bits(struct sk_buff *skb, int offset, const void *from, int len);
+ __wsum skb_copy_and_csum_bits(const struct sk_buff *skb, int offset, u8 *to,
+ 			      int len, __wsum csum);
+--- a/include/net/bonding.h
++++ b/include/net/bonding.h
+@@ -592,7 +592,8 @@ void bond_destroy_sysfs(struct bond_net
+ void bond_prepare_sysfs_group(struct bonding *bond);
+ int bond_sysfs_slave_add(struct slave *slave);
+ void bond_sysfs_slave_del(struct slave *slave);
+-int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev);
++int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev,
++		 struct netlink_ext_ack *extack);
+ int bond_release(struct net_device *bond_dev, struct net_device *slave_dev);
+ u32 bond_xmit_hash(struct bonding *bond, struct sk_buff *skb);
+ int bond_set_carrier(struct bonding *bond);
+--- a/net/batman-adv/soft-interface.c
++++ b/net/batman-adv/soft-interface.c
+@@ -872,7 +872,8 @@ free_bat_counters:
+  * Return: 0 if successful or error otherwise.
+  */
+ static int batadv_softif_slave_add(struct net_device *dev,
+-				   struct net_device *slave_dev)
++				   struct net_device *slave_dev,
++				   struct netlink_ext_ack *extack)
+ {
+ 	struct batadv_hard_iface *hard_iface;
+ 	struct net *net = dev_net(dev);
+--- a/net/bridge/br_device.c
++++ b/net/bridge/br_device.c
+@@ -324,7 +324,8 @@ void br_netpoll_disable(struct net_bridg
+ 
+ #endif
+ 
+-static int br_add_slave(struct net_device *dev, struct net_device *slave_dev)
++static int br_add_slave(struct net_device *dev, struct net_device *slave_dev,
++			struct netlink_ext_ack *extack)
+ 
+ {
+ 	struct net_bridge *br = netdev_priv(dev);
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -162,7 +162,6 @@ static struct list_head offload_base __r
+ 
+ static int netif_rx_internal(struct sk_buff *skb);
+ static int call_netdevice_notifiers_info(unsigned long val,
+-					 struct net_device *dev,
+ 					 struct netdev_notifier_info *info);
+ static struct napi_struct *napi_by_id(unsigned int napi_id);
+ 
+@@ -1312,10 +1311,11 @@ EXPORT_SYMBOL(netdev_features_change);
+ void netdev_state_change(struct net_device *dev)
+ {
+ 	if (dev->flags & IFF_UP) {
+-		struct netdev_notifier_change_info change_info;
++		struct netdev_notifier_change_info change_info = {
++			.info.dev = dev,
++		};
+ 
+-		change_info.flags_changed = 0;
+-		call_netdevice_notifiers_info(NETDEV_CHANGE, dev,
++		call_netdevice_notifiers_info(NETDEV_CHANGE,
+ 					      &change_info.info);
+ 		rtmsg_ifinfo(RTM_NEWLINK, dev, 0, GFP_KERNEL);
+ 	}
+@@ -1536,9 +1536,10 @@ EXPORT_SYMBOL(dev_disable_lro);
+ static int call_netdevice_notifier(struct notifier_block *nb, unsigned long val,
+ 				   struct net_device *dev)
+ {
+-	struct netdev_notifier_info info;
++	struct netdev_notifier_info info = {
++		.dev = dev,
++	};
+ 
+-	netdev_notifier_info_init(&info, dev);
+ 	return nb->notifier_call(nb, val, &info);
+ }
+ 
+@@ -1663,11 +1664,9 @@ EXPORT_SYMBOL(unregister_netdevice_notif
+  */
+ 
+ static int call_netdevice_notifiers_info(unsigned long val,
+-					 struct net_device *dev,
+ 					 struct netdev_notifier_info *info)
+ {
+ 	ASSERT_RTNL();
+-	netdev_notifier_info_init(info, dev);
+ 	return raw_notifier_call_chain(&netdev_chain, val, info);
+ }
+ 
+@@ -1682,9 +1681,11 @@ static int call_netdevice_notifiers_info
+ 
+ int call_netdevice_notifiers(unsigned long val, struct net_device *dev)
+ {
+-	struct netdev_notifier_info info;
++	struct netdev_notifier_info info = {
++		.dev = dev,
++	};
+ 
+-	return call_netdevice_notifiers_info(val, dev, &info);
++	return call_netdevice_notifiers_info(val, &info);
+ }
+ EXPORT_SYMBOL(call_netdevice_notifiers);
+ 
+@@ -1707,7 +1708,7 @@ static int call_netdevice_notifiers_mtu(
+ 
+ 	BUILD_BUG_ON(offsetof(struct netdev_notifier_info_ext, info) != 0);
+ 
+-	return call_netdevice_notifiers_info(val, dev, &info.info);
++	return call_netdevice_notifiers_info(val, &info.info);
+ }
+ 
+ #ifdef CONFIG_NET_INGRESS
+@@ -6338,7 +6339,15 @@ static int __netdev_upper_dev_link(struc
+ 				   struct net_device *upper_dev, bool master,
+ 				   void *upper_priv, void *upper_info)
+ {
+-	struct netdev_notifier_changeupper_info changeupper_info;
++	struct netdev_notifier_changeupper_info changeupper_info = {
++		.info = {
++			.dev = dev,
++		},
++		.upper_dev = upper_dev,
++		.master = master,
++		.linking = true,
++		.upper_info = upper_info,
++	};
+ 	int ret = 0;
+ 
+ 	ASSERT_RTNL();
+@@ -6356,12 +6365,7 @@ static int __netdev_upper_dev_link(struc
+ 	if (master && netdev_master_upper_dev_get(dev))
+ 		return -EBUSY;
+ 
+-	changeupper_info.upper_dev = upper_dev;
+-	changeupper_info.master = master;
+-	changeupper_info.linking = true;
+-	changeupper_info.upper_info = upper_info;
+-
+-	ret = call_netdevice_notifiers_info(NETDEV_PRECHANGEUPPER, dev,
++	ret = call_netdevice_notifiers_info(NETDEV_PRECHANGEUPPER,
+ 					    &changeupper_info.info);
+ 	ret = notifier_to_errno(ret);
+ 	if (ret)
+@@ -6373,7 +6377,7 @@ static int __netdev_upper_dev_link(struc
+ 		return ret;
+ 
+ 	netdev_update_addr_mask(dev);
+-	ret = call_netdevice_notifiers_info(NETDEV_CHANGEUPPER, dev,
++	ret = call_netdevice_notifiers_info(NETDEV_CHANGEUPPER,
+ 					    &changeupper_info.info);
+ 	ret = notifier_to_errno(ret);
+ 	if (ret)
+@@ -6437,21 +6441,25 @@ EXPORT_SYMBOL(netdev_master_upper_dev_li
+ void netdev_upper_dev_unlink(struct net_device *dev,
+ 			     struct net_device *upper_dev)
+ {
+-	struct netdev_notifier_changeupper_info changeupper_info;
++	struct netdev_notifier_changeupper_info changeupper_info = {
++		.info = {
++			.dev = dev,
++		},
++		.upper_dev = upper_dev,
++		.linking = false,
++	};
+ 
+ 	ASSERT_RTNL();
+ 
+-	changeupper_info.upper_dev = upper_dev;
+ 	changeupper_info.master = netdev_master_upper_dev_get(dev) == upper_dev;
+-	changeupper_info.linking = false;
+ 
+-	call_netdevice_notifiers_info(NETDEV_PRECHANGEUPPER, dev,
++	call_netdevice_notifiers_info(NETDEV_PRECHANGEUPPER,
+ 				      &changeupper_info.info);
+ 
+ 	__netdev_adjacent_dev_unlink_neighbour(dev, upper_dev);
+ 
+ 	netdev_update_addr_mask(dev);
+-	call_netdevice_notifiers_info(NETDEV_CHANGEUPPER, dev,
++	call_netdevice_notifiers_info(NETDEV_CHANGEUPPER,
+ 				      &changeupper_info.info);
+ }
+ EXPORT_SYMBOL(netdev_upper_dev_unlink);
+@@ -6467,11 +6475,13 @@ EXPORT_SYMBOL(netdev_upper_dev_unlink);
+ void netdev_bonding_info_change(struct net_device *dev,
+ 				struct netdev_bonding_info *bonding_info)
+ {
+-	struct netdev_notifier_bonding_info	info;
++	struct netdev_notifier_bonding_info info = {
++		.info.dev = dev,
++	};
+ 
+ 	memcpy(&info.bonding_info, bonding_info,
+ 	       sizeof(struct netdev_bonding_info));
+-	call_netdevice_notifiers_info(NETDEV_BONDING_INFO, dev,
++	call_netdevice_notifiers_info(NETDEV_BONDING_INFO,
+ 				      &info.info);
+ }
+ EXPORT_SYMBOL(netdev_bonding_info_change);
+@@ -6597,11 +6607,13 @@ EXPORT_SYMBOL(dev_get_nest_level);
+ void netdev_lower_state_changed(struct net_device *lower_dev,
+ 				void *lower_state_info)
+ {
+-	struct netdev_notifier_changelowerstate_info changelowerstate_info;
++	struct netdev_notifier_changelowerstate_info changelowerstate_info = {
++		.info.dev = lower_dev,
++	};
+ 
+ 	ASSERT_RTNL();
+ 	changelowerstate_info.lower_state_info = lower_state_info;
+-	call_netdevice_notifiers_info(NETDEV_CHANGELOWERSTATE, lower_dev,
++	call_netdevice_notifiers_info(NETDEV_CHANGELOWERSTATE,
+ 				      &changelowerstate_info.info);
+ }
+ EXPORT_SYMBOL(netdev_lower_state_changed);
+@@ -6892,11 +6904,14 @@ void __dev_notify_flags(struct net_devic
+ 
+ 	if (dev->flags & IFF_UP &&
+ 	    (changes & ~(IFF_UP | IFF_PROMISC | IFF_ALLMULTI | IFF_VOLATILE))) {
+-		struct netdev_notifier_change_info change_info;
++		struct netdev_notifier_change_info change_info = {
++			.info = {
++				.dev = dev,
++			},
++			.flags_changed = changes,
++		};
+ 
+-		change_info.flags_changed = changes;
+-		call_netdevice_notifiers_info(NETDEV_CHANGE, dev,
+-					      &change_info.info);
++		call_netdevice_notifiers_info(NETDEV_CHANGE, &change_info.info);
+ 	}
+ }
+ 
+--- a/net/core/rtnetlink.c
++++ b/net/core/rtnetlink.c
+@@ -1912,7 +1912,8 @@ static int do_setvfinfo(struct net_devic
+ 	return err;
+ }
+ 
+-static int do_set_master(struct net_device *dev, int ifindex)
++static int do_set_master(struct net_device *dev, int ifindex,
++			 struct netlink_ext_ack *extack)
+ {
+ 	struct net_device *upper_dev = netdev_master_upper_dev_get(dev);
+ 	const struct net_device_ops *ops;
+@@ -1937,7 +1938,7 @@ static int do_set_master(struct net_devi
+ 			return -EINVAL;
+ 		ops = upper_dev->netdev_ops;
+ 		if (ops->ndo_add_slave) {
+-			err = ops->ndo_add_slave(upper_dev, dev);
++			err = ops->ndo_add_slave(upper_dev, dev, extack);
+ 			if (err)
+ 				return err;
+ 		} else {
+@@ -2074,7 +2075,7 @@ static int do_setlink(const struct sk_bu
+ 	}
+ 
+ 	if (tb[IFLA_MASTER]) {
+-		err = do_set_master(dev, nla_get_u32(tb[IFLA_MASTER]));
++		err = do_set_master(dev, nla_get_u32(tb[IFLA_MASTER]), extack);
+ 		if (err)
+ 			goto errout;
+ 		status |= DO_SETLINK_MODIFIED;
+@@ -2723,7 +2724,8 @@ replay:
+ 				goto out_unregister;
+ 		}
+ 		if (tb[IFLA_MASTER]) {
+-			err = do_set_master(dev, nla_get_u32(tb[IFLA_MASTER]));
++			err = do_set_master(dev, nla_get_u32(tb[IFLA_MASTER]),
++					    extack);
+ 			if (err)
+ 				goto out_unregister;
+ 		}
+--- a/net/core/skbuff.c
++++ b/net/core/skbuff.c
+@@ -799,6 +799,32 @@ void napi_consume_skb(struct sk_buff *sk
+ }
+ EXPORT_SYMBOL(napi_consume_skb);
+ 
++/**
++ * 	skb_recycle - clean up an skb for reuse
++ * 	@skb: buffer
++ *
++ * 	Recycles the skb to be reused as a receive buffer. This
++ * 	function does any necessary reference count dropping, and
++ * 	cleans up the skbuff as if it just came from __alloc_skb().
++ */
++void skb_recycle(struct sk_buff *skb)
++{
++	struct skb_shared_info *shinfo;
++	u8 head_frag = skb->head_frag;
++
++	skb_release_head_state(skb);
++
++	shinfo = skb_shinfo(skb);
++	memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
++	atomic_set(&shinfo->dataref, 1);
++
++	memset(skb, 0, offsetof(struct sk_buff, tail));
++	skb->data = skb->head + NET_SKB_PAD;
++	skb->head_frag = head_frag;
++	skb_reset_tail_pointer(skb);
++}
++EXPORT_SYMBOL(skb_recycle);
++
+ /* Make sure a field is enclosed inside headers_start/headers_end section */
+ #define CHECK_SKB_FIELD(field) \
+ 	BUILD_BUG_ON(offsetof(struct sk_buff, field) <		\
+@@ -1318,7 +1344,7 @@ static void skb_headers_offset_update(st
+ 	skb->inner_mac_header += off;
+ }
+ 
+-static void copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
++void copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
+ {
+ 	__copy_skb_header(new, old);
+ 
+@@ -1326,6 +1352,7 @@ static void copy_skb_header(struct sk_bu
+ 	skb_shinfo(new)->gso_segs = skb_shinfo(old)->gso_segs;
+ 	skb_shinfo(new)->gso_type = skb_shinfo(old)->gso_type;
+ }
++EXPORT_SYMBOL(copy_skb_header);
+ 
+ static inline int skb_alloc_rx_flag(const struct sk_buff *skb)
+ {
+--- a/samples/bpf/Makefile
++++ b/samples/bpf/Makefile
+@@ -178,6 +178,12 @@ HOSTLOADLIBES_syscall_tp += -lelf
+ LLC ?= llc
+ CLANG ?= clang
+ 
++# Detect that we're cross compiling and use the cross compiler
++ifdef CROSS_COMPILE
++HOSTCC = $(CROSS_COMPILE)gcc
++CLANG_ARCH_ARGS = -target $(ARCH)
++endif
++
+ # Trick to allow make to be run from this directory
+ all: $(LIBBPF)
+ 	$(MAKE) -C ../../ $(CURDIR)/
+@@ -228,9 +234,9 @@ $(obj)/tracex5_kern.o: $(obj)/syscall_nr
+ $(obj)/%.o: $(src)/%.c
+ 	$(CLANG) $(NOSTDINC_FLAGS) $(LINUXINCLUDE) $(EXTRA_CFLAGS) -I$(obj) \
+ 		-I$(srctree)/tools/testing/selftests/bpf/ \
+-		-D__KERNEL__ -D__ASM_SYSREG_H -Wno-unused-value -Wno-pointer-sign \
+-		-Wno-compare-distinct-pointer-types \
++		-D__KERNEL__ -Wno-unused-value -Wno-pointer-sign \
++		-D__TARGET_ARCH_$(ARCH) -Wno-compare-distinct-pointer-types \
+ 		-Wno-gnu-variable-sized-type-not-at-end \
+ 		-Wno-address-of-packed-member -Wno-tautological-compare \
+-		-Wno-unknown-warning-option \
++		-Wno-unknown-warning-option $(CLANG_ARCH_ARGS) \
+ 		-O2 -emit-llvm -c $< -o -| $(LLC) -march=bpf -filetype=obj -o $@
+--- a/samples/bpf/map_perf_test_kern.c
++++ b/samples/bpf/map_perf_test_kern.c
+@@ -266,7 +266,7 @@ int stress_hash_map_lookup(struct pt_reg
+ 	return 0;
+ }
+ 
+-SEC("kprobe/sys_getpgrp")
++SEC("kprobe/sys_getppid")
+ int stress_array_map_lookup(struct pt_regs *ctx)
+ {
+ 	u32 key = 1, i;
+--- a/samples/bpf/map_perf_test_user.c
++++ b/samples/bpf/map_perf_test_user.c
+@@ -282,7 +282,7 @@ static void test_array_lookup(int cpu)
+ 
+ 	start_time = time_get_ns();
+ 	for (i = 0; i < max_cnt; i++)
+-		syscall(__NR_getpgrp, 0);
++		syscall(__NR_getppid, 0);
+ 	printf("%d:array_lookup %lld lookups per sec\n",
+ 	       cpu, max_cnt * 1000000000ll * 64 / (time_get_ns() - start_time));
+ }
+--- a/tools/testing/selftests/bpf/bpf_helpers.h
++++ b/tools/testing/selftests/bpf/bpf_helpers.h
+@@ -110,7 +110,47 @@ static int (*bpf_skb_under_cgroup)(void
+ static int (*bpf_skb_change_head)(void *, int len, int flags) =
+ 	(void *) BPF_FUNC_skb_change_head;
+ 
++/* Scan the ARCH passed in from ARCH env variable (see Makefile) */
++#if defined(__TARGET_ARCH_x86)
++	#define bpf_target_x86
++	#define bpf_target_defined
++#elif defined(__TARGET_ARCH_s930x)
++	#define bpf_target_s930x
++	#define bpf_target_defined
++#elif defined(__TARGET_ARCH_arm64)
++	#define bpf_target_arm64
++	#define bpf_target_defined
++#elif defined(__TARGET_ARCH_mips)
++	#define bpf_target_mips
++	#define bpf_target_defined
++#elif defined(__TARGET_ARCH_powerpc)
++	#define bpf_target_powerpc
++	#define bpf_target_defined
++#elif defined(__TARGET_ARCH_sparc)
++	#define bpf_target_sparc
++	#define bpf_target_defined
++#else
++	#undef bpf_target_defined
++#endif
++
++/* Fall back to what the compiler says */
++#ifndef bpf_target_defined
+ #if defined(__x86_64__)
++	#define bpf_target_x86
++#elif defined(__s390x__)
++	#define bpf_target_s930x
++#elif defined(__aarch64__)
++	#define bpf_target_arm64
++#elif defined(__mips__)
++	#define bpf_target_mips
++#elif defined(__powerpc__)
++	#define bpf_target_powerpc
++#elif defined(__sparc__)
++	#define bpf_target_sparc
++#endif
++#endif
++
++#if defined(bpf_target_x86)
+ 
+ #define PT_REGS_PARM1(x) ((x)->di)
+ #define PT_REGS_PARM2(x) ((x)->si)
+@@ -123,7 +163,7 @@ static int (*bpf_skb_change_head)(void *
+ #define PT_REGS_SP(x) ((x)->sp)
+ #define PT_REGS_IP(x) ((x)->ip)
+ 
+-#elif defined(__s390x__)
++#elif defined(bpf_target_s390x)
+ 
+ #define PT_REGS_PARM1(x) ((x)->gprs[2])
+ #define PT_REGS_PARM2(x) ((x)->gprs[3])
+@@ -136,7 +176,7 @@ static int (*bpf_skb_change_head)(void *
+ #define PT_REGS_SP(x) ((x)->gprs[15])
+ #define PT_REGS_IP(x) ((x)->psw.addr)
+ 
+-#elif defined(__aarch64__)
++#elif defined(bpf_target_arm64)
+ 
+ #define PT_REGS_PARM1(x) ((x)->regs[0])
+ #define PT_REGS_PARM2(x) ((x)->regs[1])
+@@ -149,7 +189,7 @@ static int (*bpf_skb_change_head)(void *
+ #define PT_REGS_SP(x) ((x)->sp)
+ #define PT_REGS_IP(x) ((x)->pc)
+ 
+-#elif defined(__mips__)
++#elif defined(bpf_target_mips)
+ 
+ #define PT_REGS_PARM1(x) ((x)->regs[4])
+ #define PT_REGS_PARM2(x) ((x)->regs[5])
+@@ -162,7 +202,7 @@ static int (*bpf_skb_change_head)(void *
+ #define PT_REGS_SP(x) ((x)->regs[29])
+ #define PT_REGS_IP(x) ((x)->cp0_epc)
+ 
+-#elif defined(__powerpc__)
++#elif defined(bpf_target_powerpc)
+ 
+ #define PT_REGS_PARM1(x) ((x)->gpr[3])
+ #define PT_REGS_PARM2(x) ((x)->gpr[4])
+@@ -173,7 +213,7 @@ static int (*bpf_skb_change_head)(void *
+ #define PT_REGS_SP(x) ((x)->sp)
+ #define PT_REGS_IP(x) ((x)->nip)
+ 
+-#elif defined(__sparc__)
++#elif defined(bpf_target_sparc)
+ 
+ #define PT_REGS_PARM1(x) ((x)->u_regs[UREG_I0])
+ #define PT_REGS_PARM2(x) ((x)->u_regs[UREG_I1])
+@@ -183,6 +223,8 @@ static int (*bpf_skb_change_head)(void *
+ #define PT_REGS_RET(x) ((x)->u_regs[UREG_I7])
+ #define PT_REGS_RC(x) ((x)->u_regs[UREG_I0])
+ #define PT_REGS_SP(x) ((x)->u_regs[UREG_FP])
++
++/* Should this also be a bpf_target check for the sparc case? */
+ #if defined(__arch64__)
+ #define PT_REGS_IP(x) ((x)->tpc)
+ #else
+@@ -191,10 +233,10 @@ static int (*bpf_skb_change_head)(void *
+ 
+ #endif
+ 
+-#ifdef __powerpc__
++#ifdef bpf_target_powerpc
+ #define BPF_KPROBE_READ_RET_IP(ip, ctx)		({ (ip) = (ctx)->link; })
+ #define BPF_KRETPROBE_READ_RET_IP		BPF_KPROBE_READ_RET_IP
+-#elif defined(__sparc__)
++#elif bpf_target_sparc
+ #define BPF_KPROBE_READ_RET_IP(ip, ctx)		({ (ip) = PT_REGS_RET(ctx); })
+ #define BPF_KRETPROBE_READ_RET_IP		BPF_KPROBE_READ_RET_IP
+ #else

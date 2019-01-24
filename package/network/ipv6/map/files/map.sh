@@ -85,7 +85,7 @@ proto_map_setup() {
 		json_add_string remote $(eval "echo \$RULE_${k}_BR")
 		json_add_string link $(eval "echo \$RULE_${k}_PD6IFACE")
 		json_add_object "data"
-			json_add_string encaplimit "${encaplimit:-4}"
+			[ -n "$encaplimit" ] && json_add_string encaplimit "$encaplimit"
 			if [ "$type" = "map-e" ]; then
 				json_add_array "fmrs"
 				for i in $(seq $RULE_COUNT); do

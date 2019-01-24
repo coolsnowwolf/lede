@@ -1,0 +1,221 @@
+From dc2d8a486db8a21cd998b0bdb117d30b8034aceb Mon Sep 17 00:00:00 2001
+From: popcornmix <popcornmix@gmail.com>
+Date: Wed, 8 May 2013 11:46:50 +0100
+Subject: [PATCH 058/454] enabling the realtime clock 1-wire chip DS1307 and
+ 1-wire on GPIO4 (as a module)
+
+1-wire: Add support for configuring pin for w1-gpio kernel module
+See: https://github.com/raspberrypi/linux/pull/457
+
+Add bitbanging pullups, use them for w1-gpio
+
+Allows parasite power to work, uses module option pullup=1
+
+bcm2708: Ensure 1-wire pullup is disabled by default, and expose as module parameter
+
+Signed-off-by: Alex J Lennon <ajlennon@dynamicdevices.co.uk>
+
+w1-gpio: Add gpiopin module parameter and correctly free up gpio pull-up pin, if set
+
+Signed-off-by: Alex J Lennon <ajlennon@dynamicdevices.co.uk>
+
+w1-gpio: Sort out the pullup/parasitic power tangle
+---
+ drivers/w1/masters/w1-gpio.c | 69 ++++++++++++++++++++++++++++++++----
+ drivers/w1/w1_int.c          | 14 ++++++++
+ drivers/w1/w1_io.c           | 18 ++++++++--
+ include/linux/w1-gpio.h      |  1 +
+ include/linux/w1.h           |  6 ++++
+ 5 files changed, 99 insertions(+), 9 deletions(-)
+
+--- a/drivers/w1/masters/w1-gpio.c
++++ b/drivers/w1/masters/w1-gpio.c
+@@ -22,6 +22,19 @@
+ 
+ #include <linux/w1.h>
+ 
++static int w1_gpio_pullup = 0;
++static int w1_gpio_pullup_orig = 0;
++module_param_named(pullup, w1_gpio_pullup, int, 0);
++MODULE_PARM_DESC(pullup, "Enable parasitic power (power on data) mode");
++static int w1_gpio_pullup_pin = -1;
++static int w1_gpio_pullup_pin_orig = -1;
++module_param_named(extpullup, w1_gpio_pullup_pin, int, 0);
++MODULE_PARM_DESC(extpullup, "GPIO external pullup pin number");
++static int w1_gpio_pin = -1;
++static int w1_gpio_pin_orig = -1;
++module_param_named(gpiopin, w1_gpio_pin, int, 0);
++MODULE_PARM_DESC(gpiopin, "GPIO pin number");
++
+ static u8 w1_gpio_set_pullup(void *data, int delay)
+ {
+ 	struct w1_gpio_platform_data *pdata = data;
+@@ -66,6 +79,16 @@ static u8 w1_gpio_read_bit(void *data)
+ 	return gpio_get_value(pdata->pin) ? 1 : 0;
+ }
+ 
++static void w1_gpio_bitbang_pullup(void *data, u8 on)
++{
++	struct w1_gpio_platform_data *pdata = data;
++
++	if (on)
++		gpio_direction_output(pdata->pin, 1);
++	else
++		gpio_direction_input(pdata->pin);
++}
++
+ #if defined(CONFIG_OF)
+ static const struct of_device_id w1_gpio_dt_ids[] = {
+ 	{ .compatible = "w1-gpio" },
+@@ -79,6 +102,7 @@ static int w1_gpio_probe_dt(struct platf
+ 	struct w1_gpio_platform_data *pdata = dev_get_platdata(&pdev->dev);
+ 	struct device_node *np = pdev->dev.of_node;
+ 	int gpio;
++	u32 value;
+ 
+ 	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
+ 	if (!pdata)
+@@ -87,6 +111,9 @@ static int w1_gpio_probe_dt(struct platf
+ 	if (of_get_property(np, "linux,open-drain", NULL))
+ 		pdata->is_open_drain = 1;
+ 
++	if (of_property_read_u32(np, "rpi,parasitic-power", &value) == 0)
++	    pdata->parasitic_power = (value != 0);
++
+ 	gpio = of_get_gpio(np, 0);
+ 	if (gpio < 0) {
+ 		if (gpio != -EPROBE_DEFER)
+@@ -102,7 +129,7 @@ static int w1_gpio_probe_dt(struct platf
+ 	if (gpio == -EPROBE_DEFER)
+ 		return gpio;
+ 	/* ignore other errors as the pullup gpio is optional */
+-	pdata->ext_pullup_enable_pin = gpio;
++	pdata->ext_pullup_enable_pin = (gpio >= 0) ? gpio : -1;
+ 
+ 	pdev->dev.platform_data = pdata;
+ 
+@@ -134,6 +161,22 @@ static int w1_gpio_probe(struct platform
+ 		return -ENOMEM;
+ 	}
+ 
++	w1_gpio_pin_orig = pdata->pin;
++	w1_gpio_pullup_pin_orig = pdata->ext_pullup_enable_pin;
++	w1_gpio_pullup_orig = pdata->parasitic_power;
++
++	if(gpio_is_valid(w1_gpio_pin)) {
++		pdata->pin = w1_gpio_pin;
++		pdata->ext_pullup_enable_pin = -1;
++		pdata->parasitic_power = -1;
++	}
++	pdata->parasitic_power |= w1_gpio_pullup;
++	if(gpio_is_valid(w1_gpio_pullup_pin)) {
++		pdata->ext_pullup_enable_pin = w1_gpio_pullup_pin;
++	}
++
++	dev_info(&pdev->dev, "gpio pin %d, external pullup pin %d, parasitic power %d\n", pdata->pin, pdata->ext_pullup_enable_pin, pdata->parasitic_power);
++
+ 	err = devm_gpio_request(&pdev->dev, pdata->pin, "w1");
+ 	if (err) {
+ 		dev_err(&pdev->dev, "gpio_request (pin) failed\n");
+@@ -163,6 +206,14 @@ static int w1_gpio_probe(struct platform
+ 		master->set_pullup = w1_gpio_set_pullup;
+ 	}
+ 
++	if (pdata->parasitic_power) {
++		if (pdata->is_open_drain)
++			printk(KERN_ERR "w1-gpio 'pullup'(parasitic power) "
++			       "option doesn't work with open drain GPIO\n");
++		else
++			master->bitbang_pullup = w1_gpio_bitbang_pullup;
++	}
++
+ 	err = w1_add_master_device(master);
+ 	if (err) {
+ 		dev_err(&pdev->dev, "w1_add_master device failed\n");
+@@ -193,6 +244,10 @@ static int w1_gpio_remove(struct platfor
+ 
+ 	w1_remove_master_device(master);
+ 
++	pdata->pin = w1_gpio_pin_orig;
++	pdata->ext_pullup_enable_pin = w1_gpio_pullup_pin_orig;
++	pdata->parasitic_power = w1_gpio_pullup_orig;
++
+ 	return 0;
+ }
+ 
+--- a/drivers/w1/w1_int.c
++++ b/drivers/w1/w1_int.c
+@@ -114,6 +114,20 @@ int w1_add_master_device(struct w1_bus_m
+ 		return(-EINVAL);
+ 	}
+ 
++	/* bitbanging hardware uses bitbang_pullup, other hardware uses set_pullup
++	 * and takes care of timing itself */
++	if (!master->write_byte && !master->touch_bit && master->set_pullup) {
++		printk(KERN_ERR "w1_add_master_device: set_pullup requires "
++			"write_byte or touch_bit, disabling\n");
++		master->set_pullup = NULL;
++	}
++
++	if (master->set_pullup && master->bitbang_pullup) {
++		printk(KERN_ERR "w1_add_master_device: set_pullup should not "
++		       "be set when bitbang_pullup is used, disabling\n");
++		master->set_pullup = NULL;
++	}
++
+ 	/* Lock until the device is added (or not) to w1_masters. */
+ 	mutex_lock(&w1_mlock);
+ 	/* Search for the first available id (starting at 1). */
+--- a/drivers/w1/w1_io.c
++++ b/drivers/w1/w1_io.c
+@@ -126,10 +126,22 @@ static void w1_pre_write(struct w1_maste
+ static void w1_post_write(struct w1_master *dev)
+ {
+ 	if (dev->pullup_duration) {
+-		if (dev->enable_pullup && dev->bus_master->set_pullup)
+-			dev->bus_master->set_pullup(dev->bus_master->data, 0);
+-		else
++		if (dev->enable_pullup) {
++			if (dev->bus_master->set_pullup) {
++				dev->bus_master->set_pullup(dev->
++							    bus_master->data,
++							    0);
++			} else if (dev->bus_master->bitbang_pullup) {
++				dev->bus_master->
++				    bitbang_pullup(dev->bus_master->data, 1);
+ 			msleep(dev->pullup_duration);
++				dev->bus_master->
++				    bitbang_pullup(dev->bus_master->data, 0);
++			}
++		} else {
++			msleep(dev->pullup_duration);
++		}
++
+ 		dev->pullup_duration = 0;
+ 	}
+ }
+--- a/include/linux/w1-gpio.h
++++ b/include/linux/w1-gpio.h
+@@ -18,6 +18,7 @@
+ struct w1_gpio_platform_data {
+ 	unsigned int pin;
+ 	unsigned int is_open_drain:1;
++	unsigned int parasitic_power:1;
+ 	void (*enable_external_pullup)(int enable);
+ 	unsigned int ext_pullup_enable_pin;
+ 	unsigned int pullup_duration;
+--- a/include/linux/w1.h
++++ b/include/linux/w1.h
+@@ -157,6 +157,12 @@ struct w1_bus_master {
+ 
+ 	u8		(*set_pullup)(void *, int);
+ 
++	/**
++	 * Turns the pullup on/off in bitbanging mode, takes an on/off argument.
++	 * @return -1=Error, 0=completed
++	 */
++	void (*bitbang_pullup) (void *, u8);
++
+ 	void		(*search)(void *, struct w1_master *,
+ 		u8, w1_slave_found_callback);
+ };

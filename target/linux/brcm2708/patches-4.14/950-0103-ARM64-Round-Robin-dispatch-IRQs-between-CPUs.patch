@@ -1,0 +1,72 @@
+From 7f270d81a7a2bda471606d6334672c88354483e5 Mon Sep 17 00:00:00 2001
+From: Michael Zoran <mzoran@crowfest.net>
+Date: Sat, 14 Jan 2017 21:43:57 -0800
+Subject: [PATCH 103/454] ARM64: Round-Robin dispatch IRQs between CPUs.
+
+IRQ-CPU mapping is round robined on ARM64 to increase
+concurrency and allow multiple interrupts to be serviced
+at a time.  This reduces the need for FIQ.
+
+Signed-off-by: Michael Zoran <mzoran@crowfest.net>
+---
+ drivers/irqchip/irq-bcm2835.c | 15 ++++++++++++++-
+ drivers/irqchip/irq-bcm2836.c | 21 +++++++++++++++++++++
+ 2 files changed, 35 insertions(+), 1 deletion(-)
+
+--- a/drivers/irqchip/irq-bcm2835.c
++++ b/drivers/irqchip/irq-bcm2835.c
+@@ -168,10 +168,23 @@ static void armctrl_unmask_irq(struct ir
+ 	}
+ }
+ 
++#ifdef CONFIG_ARM64
++void bcm2836_arm_irqchip_spin_gpu_irq(void);
++
++static void armctrl_ack_irq(struct irq_data *d)
++{
++	bcm2836_arm_irqchip_spin_gpu_irq();
++}
++
++#endif
++
+ static struct irq_chip armctrl_chip = {
+ 	.name = "ARMCTRL-level",
+ 	.irq_mask = armctrl_mask_irq,
+-	.irq_unmask = armctrl_unmask_irq
++	.irq_unmask = armctrl_unmask_irq,
++#ifdef CONFIG_ARM64
++	.irq_ack    = armctrl_ack_irq
++#endif
+ };
+ 
+ static int armctrl_xlate(struct irq_domain *d, struct device_node *ctrlr,
+--- a/drivers/irqchip/irq-bcm2836.c
++++ b/drivers/irqchip/irq-bcm2836.c
+@@ -145,6 +145,27 @@ static void bcm2836_arm_irqchip_unmask_g
+ {
+ }
+ 
++#ifdef CONFIG_ARM64
++
++void bcm2836_arm_irqchip_spin_gpu_irq(void)
++{
++	u32 i;
++	void __iomem *gpurouting = (intc.base + LOCAL_GPU_ROUTING);
++	u32 routing_val = readl(gpurouting);
++
++	for (i = 1; i <= 3; i++) {
++		u32 new_routing_val = (routing_val + i) & 3;
++
++		if (cpu_active(new_routing_val)) {
++			writel(new_routing_val, gpurouting);
++			return;
++		}
++	}
++}
++EXPORT_SYMBOL(bcm2836_arm_irqchip_spin_gpu_irq);
++
++#endif
++
+ static struct irq_chip bcm2836_arm_irqchip_gpu = {
+ 	.name		= "bcm2836-gpu",
+ 	.irq_mask	= bcm2836_arm_irqchip_mask_gpu_irq,

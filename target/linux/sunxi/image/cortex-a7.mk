@@ -90,7 +90,7 @@ TARGET_DEVICES += sun7i-a20-cubietruck
 
 define Device/sun7i-a20-lamobo-r1
   DEVICE_TITLE:=Lamobo R1
-  DEVICE_PACKAGES:=kmod-ata-sunxi kmod-rtl8192cu swconfig wpad-mini
+  DEVICE_PACKAGES:=kmod-ata-sunxi kmod-rtl8192cu swconfig wpad-basic
   SUPPORTED_DEVICES:=lamobo,lamobo-r1
   SUNXI_DTS:=sun7i-a20-lamobo-r1
 endef
@@ -108,6 +108,16 @@ endef
 TARGET_DEVICES += sun6i-a31-m9
 
 
+define Device/sun8i-h2-plus-orangepi-zero
+  DEVICE_TITLE:=Xunlong Orange Pi Zero
+  DEVICE_PACKAGES:=kmod-rtc-sunxi
+  SUPPORTED_DEVICES:=xunlong,orangepi-zero
+  SUNXI_DTS:=sun8i-h2-plus-orangepi-zero
+endef
+
+TARGET_DEVICES += sun8i-h2-plus-orangepi-zero
+
+
 define Device/sun8i-h2-plus-orangepi-r1
   DEVICE_TITLE:=Xunlong Orange Pi R1
   DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-usb-net kmod-usb-net-rtl8152
@@ -122,7 +132,7 @@ define Device/sun8i-h3-nanopi-m1-plus
   DEVICE_TITLE:=FriendlyArm NanoPi M1 Plus
   DEVICE_PACKAGES:=kmod-rtc-sunxi \
 	kmod-leds-gpio kmod-ledtrig-heartbeat \
-	kmod-brcmfmac brcmfmac-firmware-43430-sdio wpad-mini
+	kmod-brcmfmac brcmfmac-firmware-43430-sdio wpad-basic
   SUPPORTED_DEVICES:=friendlyarm,nanopi-m1-plus
   SUNXI_DTS:=sun8i-h3-nanopi-m1-plus
 endef

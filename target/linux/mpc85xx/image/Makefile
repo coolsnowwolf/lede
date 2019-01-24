@@ -31,7 +31,7 @@ ifeq ($(SUBTARGET),generic)
 
 define Device/tl-wdr4900-v1
   DEVICE_TITLE := TP-Link TL-WDR4900
-  DEVICE_PACKAGES := kmod-ath9k wpad-mini
+  DEVICE_PACKAGES := kmod-ath9k wpad-basic
   TPLINK_HWID := 0x49000001
   TPLINK_HWREV := 1
   TPLINK_FLASHLAYOUT := 16Mppc
@@ -50,7 +50,7 @@ ifeq ($(SUBTARGET),p1020)
 
 define Device/hiveap-330
   DEVICE_TITLE := Aerohive HiveAP-330
-  DEVICE_PACKAGES := kmod-ath9k wpad-mini kmod-tpm-i2c-atmel
+  DEVICE_PACKAGES := kmod-ath9k wpad-basic kmod-tpm-i2c-atmel
   BLOCKSIZE := 128k
   KERNEL_NAME := zImage
   KERNEL_SIZE := 8m

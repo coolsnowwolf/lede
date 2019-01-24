@@ -8,9 +8,9 @@ PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/openwrt/mt76
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2018-10-23
-PKG_SOURCE_VERSION:=ba9d4247f2e08be5ccb5cd1b286ed149cd56e757
-PKG_MIRROR_HASH:=4ecdc1dbba5904d282ca2046f3667dd7af51efebec2f8bc1804cc94f6e25b18b
+PKG_SOURCE_DATE:=2019-01-20
+PKG_SOURCE_VERSION:=fc31457cd99cb85c8cea9329eedc5edd80038f29
+PKG_MIRROR_HASH:=7b42c03c93783c394dff317899bf547be3cfb1add17a23bd8b48ac59a1f13922
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_BUILD_PARALLEL:=1
@@ -33,7 +33,7 @@ include $(INCLUDE_DIR)/package.mk
 define KernelPackage/mt76-default
   SUBMENU:=Wireless Drivers
   DEPENDS:= \
-	+kmod-mac80211 @PCI_SUPPORT @!LINUX_3_18 \
+	+kmod-mac80211 @!LINUX_3_18 \
 	+@DRIVER_11AC_SUPPORT +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT
 endef
 
@@ -80,7 +80,7 @@ endef
 define KernelPackage/mt76x0-common
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT76x0 wireless driver common code
-  DEPENDS+=+kmod-mt76x02-common +kmod-mt76x02-usb
+  DEPENDS+=+kmod-mt76x02-common
   HIDDEN:=1
   FILES:=$(PKG_BUILD_DIR)/mt76x0/mt76x0-common.ko
 endef
@@ -88,7 +88,7 @@ endef
 define KernelPackage/mt76x0e
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT76x0E wireless driver
-  DEPENDS+=+kmod-mt76x0-common
+  DEPENDS+=@PCI_SUPPORT +kmod-mt76x0-common
   FILES:=\
 	$(PKG_BUILD_DIR)/mt76x0/mt76x0e.ko
   AUTOLOAD:=$(call AutoProbe,mt76x0e)
@@ -123,7 +123,7 @@ endef
 define KernelPackage/mt76x2
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT76x2 wireless driver
-  DEPENDS+=+kmod-mt76x2-common
+  DEPENDS+=@PCI_SUPPORT +kmod-mt76x2-common
   FILES:=\
 	$(PKG_BUILD_DIR)/mt76x2/mt76x2e.ko
   AUTOLOAD:=$(call AutoProbe,mt76x2e)
@@ -132,7 +132,7 @@ endef
 define KernelPackage/mt7603
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT7603 wireless driver
-  DEPENDS+=+kmod-mt76-core
+  DEPENDS+=@PCI_SUPPORT +kmod-mt76-core
   FILES:=\
 	$(PKG_BUILD_DIR)/mt7603/mt7603e.ko
   AUTOLOAD:=$(call AutoProbe,mt7603e)

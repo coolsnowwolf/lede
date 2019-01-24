@@ -78,6 +78,23 @@ define Device/asus_rt-ac58u
 endef
 TARGET_DEVICES += asus_rt-ac58u
 
+define Device/asus_rt-ac1300uhp
+	$(call Device/FitImageLzma)
+	DEVICE_DTS := qcom-ipq4018-rt-ac1300uhp
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DTB_SIZE := 65536
+	DEVICE_TITLE := Asus RT-AC1300UHP
+	IMAGE_SIZE := 20439364
+	FILESYSTEMS := squashfs
+	UIMAGE_NAME:=$(shell echo -e '\03\01\01\01RT-AC58U')
+	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
+	KERNEL_INITRAMFS_SUFFIX := -factory.trx
+	IMAGES := sysupgrade.bin
+	DEVICE_PACKAGES := kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += asus_rt-ac1300uhp
+
 define Device/asus_rt-acrh17
 	$(call Device/FitImageLzma)
 	DEVICE_DTS := qcom-ipq4019-rt-acrh17
@@ -212,6 +229,20 @@ define Device/qcom_ap-dk01.1-c1
 	IMAGE/sysupgrade.bin := append-kernel | pad-to $$$${KERNEL_SIZE} | append-rootfs | pad-rootfs | append-metadata
 endef
 TARGET_DEVICES += qcom_ap-dk01.1-c1
+
+define Device/linksys_ea6350v3
+	DEVICE_TITLE := Linksys EA6350v3
+	BOARD_NAME := ea6350v3
+	DEVICE_DTS := qcom-ipq4018-ea6350v3
+	DTB_SIZE := 65536
+	BLOCKSIZE := 128k
+	IMAGE_SIZE := 20439364
+	FILESYSTEMS := squashfs
+	IMAGES := sysupgrade.bin
+	$(call Device/FitImage)
+	DEVICE_PACKAGES := ath10k-firmware-qca4019 ipq-wifi-linksys_ea6350v3
+endef
+TARGET_DEVICES += linksys_ea6350v3
 
 define Device/qcom_ap-dk04.1-c1
 	$(call Device/FitImage)

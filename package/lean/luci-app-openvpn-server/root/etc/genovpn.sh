@@ -2,11 +2,12 @@
 
 ddns=`uci get openvpn.myvpn.ddns`
 port=`uci get openvpn.myvpn.port`
+proto=`uci get openvpn.myvpn.proto`
 
 cat > /tmp/my.ovpn  <<EOF
 client
 dev tun
-proto tcp-client
+proto $proto
 remote $ddns $port
 resolv-retry infinite
 nobind

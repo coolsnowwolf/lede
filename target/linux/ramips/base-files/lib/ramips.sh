@@ -34,9 +34,6 @@ ramips_board_detect() {
 	*"Air3GII")
 		name="air3gii"
 		;;
-	*"ALL0239-3G")
-		name="all0239-3g"
-		;;
 	*"ALL0256N (4M)")
 		name="all0256n-4M"
 		;;
@@ -502,9 +499,6 @@ ramips_board_detect() {
 	*"U25AWF-H1")
 		name="u25awf-h1"
 		;;
-	*"U7621-06 (256M RAM/16M flash)")
-		name="u7621-06-256M-16M"
-		;;
 	*"U7628-01 (128M RAM/16M flash)")
 		name="u7628-01-128M-16M"
 		;;
@@ -588,9 +582,6 @@ ramips_board_detect() {
 		;;
 	*"WL-330N3G")
 		name="wl-330n3g"
-		;;
-	*"WL-341 v3")
-		name="wl-341v3"
 		;;
 	*"WL-351 v1 002")
 		name="wl-351"

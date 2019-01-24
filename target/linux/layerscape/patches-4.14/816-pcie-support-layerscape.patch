@@ -1,0 +1,596 @@
+From c503e92983f2e18c1e18e21b15d5bedd6d0be8ac Mon Sep 17 00:00:00 2001
+From: Biwen Li <biwen.li@nxp.com>
+Date: Tue, 30 Oct 2018 18:26:56 +0800
+Subject: [PATCH 33/40] pcie: support layerscape
+This is an integrated patch of pcie for layerscape
+
+Signed-off-by: Bao Xiaowei <xiaowei.bao@nxp.com>
+Signed-off-by: Bjorn Helgaas <bhelgaas@google.com>
+Signed-off-by: Hou Zhiqiang <Zhiqiang.Hou@nxp.com>
+Signed-off-by: Minghuan Lian <Minghuan.Lian@nxp.com>
+Signed-off-by: Po Liu <po.liu@nxp.com>
+Signed-off-by: Zhang Ying-22455 <ying.zhang22455@nxp.com>
+Signed-off-by: Biwen Li <biwen.li@nxp.com>
+---
+ .../bindings/pci/layerscape-pci.txt           |  14 +-
+ arch/arm/kernel/bios32.c                      |  43 ++++++
+ arch/arm64/kernel/pci.c                       |  43 ++++++
+ drivers/misc/pci_endpoint_test.c              |  20 +--
+ drivers/pci/dwc/Kconfig                       |   8 ++
+ drivers/pci/dwc/pci-layerscape.c              | 132 +++++++++++++++++-
+ drivers/pci/endpoint/functions/pci-epf-test.c |   2 +-
+ drivers/pci/endpoint/pci-epf-core.c           |   8 +-
+ drivers/pci/pcie/portdrv_core.c               |  29 ++++
+ drivers/pci/quirks.c                          |  15 ++
+ include/linux/pci.h                           |   1 +
+ 11 files changed, 292 insertions(+), 23 deletions(-)
+
+--- a/Documentation/devicetree/bindings/pci/layerscape-pci.txt
++++ b/Documentation/devicetree/bindings/pci/layerscape-pci.txt
+@@ -18,11 +18,16 @@ Required properties:
+         "fsl,ls2088a-pcie"
+         "fsl,ls1088a-pcie"
+         "fsl,ls1046a-pcie"
++        "fsl,ls1012a-pcie"
+ - reg: base addresses and lengths of the PCIe controller register blocks.
+ - interrupts: A list of interrupt outputs of the controller. Must contain an
+   entry for each entry in the interrupt-names property.
+-- interrupt-names: Must include the following entries:
+-  "intr": The interrupt that is asserted for controller interrupts
++- interrupt-names: It could include the following entries:
++  "aer": Asserted for aer interrupt when chip support the aer interrupt with
++		 none MSI/MSI-X/INTx mode,but there is interrupt line for aer.
++  "pme": Asserted for pme interrupt when chip support the pme interrupt with
++		 none MSI/MSI-X/INTx mode,but there is interrupt line for pme.
++  ......
+ - fsl,pcie-scfg: Must include two entries.
+   The first entry must be a link to the SCFG device node
+   The second entry must be '0' or '1' based on physical PCIe controller index.
+@@ -38,8 +43,9 @@ Example:
+ 		reg = <0x00 0x03400000 0x0 0x00010000   /* controller registers */
+ 		       0x40 0x00000000 0x0 0x00002000>; /* configuration space */
+ 		reg-names = "regs", "config";
+-		interrupts = <GIC_SPI 177 IRQ_TYPE_LEVEL_HIGH>; /* controller interrupt */
+-		interrupt-names = "intr";
++		interrupts = <GIC_SPI 176 IRQ_TYPE_LEVEL_HIGH>, /* aer interrupt */
++			<GIC_SPI 177 IRQ_TYPE_LEVEL_HIGH>; /* pme interrupt */
++		interrupt-names = "aer", "pme";
+ 		fsl,pcie-scfg = <&scfg 0>;
+ 		#address-cells = <3>;
+ 		#size-cells = <2>;
+--- a/arch/arm/kernel/bios32.c
++++ b/arch/arm/kernel/bios32.c
+@@ -12,6 +12,8 @@
+ #include <linux/slab.h>
+ #include <linux/init.h>
+ #include <linux/io.h>
++#include <linux/of_irq.h>
++#include <linux/pcieport_if.h>
+ 
+ #include <asm/mach-types.h>
+ #include <asm/mach/map.h>
+@@ -65,6 +67,47 @@ void pcibios_report_status(u_int status_
+ }
+ 
+ /*
++ * Check device tree if the service interrupts are there
++ */
++int pcibios_check_service_irqs(struct pci_dev *dev, int *irqs, int mask)
++{
++	int ret, count = 0;
++	struct device_node *np = NULL;
++
++	if (dev->bus->dev.of_node)
++		np = dev->bus->dev.of_node;
++
++	if (np == NULL)
++		return 0;
++
++	if (!IS_ENABLED(CONFIG_OF_IRQ))
++		return 0;
++
++	/* If root port doesn't support MSI/MSI-X/INTx in RC mode,
++	 * request irq for aer
++	 */
++	if (mask & PCIE_PORT_SERVICE_AER) {
++		ret = of_irq_get_byname(np, "aer");
++		if (ret > 0) {
++			irqs[PCIE_PORT_SERVICE_AER_SHIFT] = ret;
++			count++;
++		}
++	}
++
++	if (mask & PCIE_PORT_SERVICE_PME) {
++		ret = of_irq_get_byname(np, "pme");
++		if (ret > 0) {
++			irqs[PCIE_PORT_SERVICE_PME_SHIFT] = ret;
++			count++;
++		}
++	}
++
++	/* TODO: add more service interrupts if there it is in the device tree*/
++
++	return count;
++}
++
++/*
+  * We don't use this to fix the device, but initialisation of it.
+  * It's not the correct use for this, but it works.
+  * Note that the arbiter/ISA bridge appears to be buggy, specifically in
+--- a/arch/arm64/kernel/pci.c
++++ b/arch/arm64/kernel/pci.c
+@@ -17,6 +17,8 @@
+ #include <linux/mm.h>
+ #include <linux/of_pci.h>
+ #include <linux/of_platform.h>
++#include <linux/of_irq.h>
++#include <linux/pcieport_if.h>
+ #include <linux/pci.h>
+ #include <linux/pci-acpi.h>
+ #include <linux/pci-ecam.h>
+@@ -36,6 +38,47 @@ int pcibios_alloc_irq(struct pci_dev *de
+ #endif
+ 
+ /*
++ * Check device tree if the service interrupts are there
++ */
++int pcibios_check_service_irqs(struct pci_dev *dev, int *irqs, int mask)
++{
++	int ret, count = 0;
++	struct device_node *np = NULL;
++
++	if (dev->bus->dev.of_node)
++		np = dev->bus->dev.of_node;
++
++	if (np == NULL)
++		return 0;
++
++	if (!IS_ENABLED(CONFIG_OF_IRQ))
++		return 0;
++
++	/* If root port doesn't support MSI/MSI-X/INTx in RC mode,
++	 * request irq for aer
++	 */
++	if (mask & PCIE_PORT_SERVICE_AER) {
++		ret = of_irq_get_byname(np, "aer");
++		if (ret > 0) {
++			irqs[PCIE_PORT_SERVICE_AER_SHIFT] = ret;
++			count++;
++		}
++	}
++
++	if (mask & PCIE_PORT_SERVICE_PME) {
++		ret = of_irq_get_byname(np, "pme");
++		if (ret > 0) {
++			irqs[PCIE_PORT_SERVICE_PME_SHIFT] = ret;
++			count++;
++		}
++	}
++
++	/* TODO: add more service interrupts if there it is in the device tree*/
++
++	return count;
++}
++
++/*
+  * raw_pci_read/write - Platform-specific PCI config space access.
+  */
+ int raw_pci_read(unsigned int domain, unsigned int bus,
+--- a/drivers/misc/pci_endpoint_test.c
++++ b/drivers/misc/pci_endpoint_test.c
+@@ -97,6 +97,8 @@ struct pci_endpoint_test {
+ 	struct miscdevice miscdev;
+ 	enum pci_barno test_reg_bar;
+ 	size_t alignment;
++	char name[20];
++	int irq_num;
+ };
+ 
+ struct pci_endpoint_test_data {
+@@ -454,9 +456,7 @@ static int pci_endpoint_test_probe(struc
+ {
+ 	int i;
+ 	int err;
+-	int irq = 0;
+ 	int id;
+-	char name[20];
+ 	enum pci_barno bar;
+ 	void __iomem *base;
+ 	struct device *dev = &pdev->dev;
+@@ -501,19 +501,19 @@ static int pci_endpoint_test_probe(struc
+ 	pci_set_master(pdev);
+ 
+ 	if (!no_msi) {
+-		irq = pci_alloc_irq_vectors(pdev, 1, 32, PCI_IRQ_MSI);
+-		if (irq < 0)
++		test->irq_num = pci_alloc_irq_vectors(pdev, 1, 32, PCI_IRQ_MSI);
++		if (test->irq_num < 0)
+ 			dev_err(dev, "failed to get MSI interrupts\n");
+ 	}
+ 
+-	err = devm_request_irq(dev, pdev->irq, pci_endpoint_test_irqhandler,
++	err = request_irq(pdev->irq, pci_endpoint_test_irqhandler,
+ 			       IRQF_SHARED, DRV_MODULE_NAME, test);
+ 	if (err) {
+ 		dev_err(dev, "failed to request IRQ %d\n", pdev->irq);
+ 		goto err_disable_msi;
+ 	}
+ 
+-	for (i = 1; i < irq; i++) {
++	for (i = 1; i < test->irq_num; i++) {
+ 		err = devm_request_irq(dev, pdev->irq + i,
+ 				       pci_endpoint_test_irqhandler,
+ 				       IRQF_SHARED, DRV_MODULE_NAME, test);
+@@ -548,10 +548,10 @@ static int pci_endpoint_test_probe(struc
+ 		goto err_iounmap;
+ 	}
+ 
+-	snprintf(name, sizeof(name), DRV_MODULE_NAME ".%d", id);
++	snprintf(test->name, sizeof(test->name), DRV_MODULE_NAME ".%d", id);
+ 	misc_device = &test->miscdev;
+ 	misc_device->minor = MISC_DYNAMIC_MINOR;
+-	misc_device->name = name;
++	misc_device->name = test->name;
+ 	misc_device->fops = &pci_endpoint_test_fops,
+ 
+ 	err = misc_register(misc_device);
+@@ -584,6 +584,7 @@ err_disable_pdev:
+ static void pci_endpoint_test_remove(struct pci_dev *pdev)
+ {
+ 	int id;
++	int i;
+ 	enum pci_barno bar;
+ 	struct pci_endpoint_test *test = pci_get_drvdata(pdev);
+ 	struct miscdevice *misc_device = &test->miscdev;
+@@ -599,6 +600,8 @@ static void pci_endpoint_test_remove(str
+ 		if (test->bar[bar])
+ 			pci_iounmap(pdev, test->bar[bar]);
+ 	}
++	for (i = 0; i < test->irq_num; i++)
++		free_irq(pdev->irq + i, test);
+ 	pci_disable_msi(pdev);
+ 	pci_release_regions(pdev);
+ 	pci_disable_device(pdev);
+@@ -607,6 +610,7 @@ static void pci_endpoint_test_remove(str
+ static const struct pci_device_id pci_endpoint_test_tbl[] = {
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_TI, PCI_DEVICE_ID_TI_DRA74x) },
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_TI, PCI_DEVICE_ID_TI_DRA72x) },
++	{ PCI_DEVICE(PCI_VENDOR_ID_FREESCALE, PCI_ANY_ID) },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(pci, pci_endpoint_test_tbl);
+--- a/drivers/pci/dwc/Kconfig
++++ b/drivers/pci/dwc/Kconfig
+@@ -111,6 +111,14 @@ config PCI_LAYERSCAPE
+ 	help
+ 	  Say Y here if you want PCIe controller support on Layerscape SoCs.
+ 
++config PCI_LAYERSCAPE_EP
++	bool "PCI layerscape Endpoint Mode"
++	depends on PCI_ENDPOINT
++	select PCIE_DW_EP
++	help
++	 Enables support for the PCIe controller in the layerscape SoC to work in
++	 endpoint mode.
++
+ config PCI_HISI
+ 	depends on OF && ARM64
+ 	bool "HiSilicon Hip05 and Hip06 SoCs PCIe controllers"
+--- a/drivers/pci/dwc/pci-layerscape.c
++++ b/drivers/pci/dwc/pci-layerscape.c
+@@ -33,8 +33,15 @@
+ 
+ /* PEX Internal Configuration Registers */
+ #define PCIE_STRFMR1		0x71c /* Symbol Timer & Filter Mask Register1 */
++#define PCIE_ABSERR		0x8d0 /* Bridge Slave Error Response Register */
++#define PCIE_ABSERR_SETTING	0x9401 /* Forward error of non-posted request */
+ 
++#define PCIE_DBI2_BASE		0x1000	/* DBI2 base address*/
++#define PCIE_MSI_MSG_DATA_OFF	0x5c	/* MSI Data register address*/
++#define PCIE_MSI_OB_SIZE	4096
++#define PCIE_MSI_ADDR_OFFSET	(1024 * 1024)
+ #define PCIE_IATU_NUM		6
++#define PCIE_EP_ADDR_SPACE_SIZE 0x100000000
+ 
+ struct ls_pcie_drvdata {
+ 	u32 lut_offset;
+@@ -44,12 +51,20 @@ struct ls_pcie_drvdata {
+ 	const struct dw_pcie_ops *dw_pcie_ops;
+ };
+ 
++struct ls_pcie_ep {
++	dma_addr_t msi_phys_addr;
++	void __iomem *msi_virt_addr;
++	u64 msi_msg_addr;
++	u16 msi_msg_data;
++};
++
+ struct ls_pcie {
+ 	struct dw_pcie *pci;
+ 	void __iomem *lut;
+ 	struct regmap *scfg;
+ 	const struct ls_pcie_drvdata *drvdata;
+ 	int index;
++	struct ls_pcie_ep *pcie_ep;
+ };
+ 
+ #define to_ls_pcie(x)	dev_get_drvdata((x)->dev)
+@@ -124,6 +139,14 @@ static int ls_pcie_link_up(struct dw_pci
+ 	return 1;
+ }
+ 
++/* Forward error response of outbound non-posted requests */
++static void ls_pcie_fix_error_response(struct ls_pcie *pcie)
++{
++	struct dw_pcie *pci = pcie->pci;
++
++	iowrite32(PCIE_ABSERR_SETTING, pci->dbi_base + PCIE_ABSERR);
++}
++
+ static int ls_pcie_host_init(struct pcie_port *pp)
+ {
+ 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+@@ -135,6 +158,7 @@ static int ls_pcie_host_init(struct pcie
+ 	 * dw_pcie_setup_rc() will reconfigure the outbound windows.
+ 	 */
+ 	ls_pcie_disable_outbound_atus(pcie);
++	ls_pcie_fix_error_response(pcie);
+ 
+ 	dw_pcie_dbi_ro_wr_en(pci);
+ 	ls_pcie_clear_multifunction(pcie);
+@@ -253,6 +277,7 @@ static struct ls_pcie_drvdata ls2088_drv
+ };
+ 
+ static const struct of_device_id ls_pcie_of_match[] = {
++	{ .compatible = "fsl,ls1012a-pcie", .data = &ls1046_drvdata },
+ 	{ .compatible = "fsl,ls1021a-pcie", .data = &ls1021_drvdata },
+ 	{ .compatible = "fsl,ls1043a-pcie", .data = &ls1043_drvdata },
+ 	{ .compatible = "fsl,ls1046a-pcie", .data = &ls1046_drvdata },
+@@ -263,6 +288,99 @@ static const struct of_device_id ls_pcie
+ 	{ },
+ };
+ 
++static void ls_pcie_raise_msi_irq(struct ls_pcie_ep *pcie_ep)
++{
++	iowrite32(pcie_ep->msi_msg_data, pcie_ep->msi_virt_addr);
++}
++
++static int ls_pcie_raise_irq(struct dw_pcie_ep *ep,
++		enum pci_epc_irq_type type, u8 interrupt_num)
++{
++	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
++	struct ls_pcie *pcie = to_ls_pcie(pci);
++	struct ls_pcie_ep *pcie_ep = pcie->pcie_ep;
++	u32 free_win;
++
++	/* get the msi message address and msi message data */
++	pcie_ep->msi_msg_addr = ioread32(pci->dbi_base + MSI_MESSAGE_ADDR_L32) |
++		(((u64)ioread32(pci->dbi_base + MSI_MESSAGE_ADDR_U32)) << 32);
++	pcie_ep->msi_msg_data = ioread16(pci->dbi_base + PCIE_MSI_MSG_DATA_OFF);
++
++	/* request and config the outband window for msi */
++	free_win = find_first_zero_bit(&ep->ob_window_map,
++					sizeof(ep->ob_window_map));
++	if (free_win >= ep->num_ob_windows) {
++		dev_err(pci->dev, "no free outbound window\n");
++		return -ENOMEM;
++	}
++
++	dw_pcie_prog_outbound_atu(pci, free_win, PCIE_ATU_TYPE_MEM,
++					pcie_ep->msi_phys_addr,
++					pcie_ep->msi_msg_addr,
++					PCIE_MSI_OB_SIZE);
++
++	set_bit(free_win, &ep->ob_window_map);
++
++	/* generate the msi interrupt */
++	ls_pcie_raise_msi_irq(pcie_ep);
++
++	/* release the outband window of msi */
++	dw_pcie_disable_atu(pci, free_win, DW_PCIE_REGION_OUTBOUND);
++	clear_bit(free_win, &ep->ob_window_map);
++
++	return 0;
++}
++
++static struct dw_pcie_ep_ops pcie_ep_ops = {
++	.raise_irq = ls_pcie_raise_irq,
++};
++
++static int __init ls_add_pcie_ep(struct ls_pcie *pcie,
++					struct platform_device *pdev)
++{
++	struct dw_pcie *pci = pcie->pci;
++	struct device *dev = pci->dev;
++	struct dw_pcie_ep *ep;
++	struct ls_pcie_ep *pcie_ep;
++	struct resource *cfg_res;
++	int ret;
++
++	ep = &pci->ep;
++	ep->ops = &pcie_ep_ops;
++
++	pcie_ep = devm_kzalloc(dev, sizeof(*pcie_ep), GFP_KERNEL);
++	if (!pcie_ep)
++		return -ENOMEM;
++
++	pcie->pcie_ep = pcie_ep;
++
++	cfg_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "config");
++	if (cfg_res) {
++		ep->phys_base = cfg_res->start;
++		ep->addr_size = PCIE_EP_ADDR_SPACE_SIZE;
++	} else {
++		dev_err(dev, "missing *config* space\n");
++		return -ENODEV;
++	}
++
++	pcie_ep->msi_phys_addr = ep->phys_base + PCIE_MSI_ADDR_OFFSET;
++
++	pcie_ep->msi_virt_addr = ioremap(pcie_ep->msi_phys_addr,
++						PCIE_MSI_OB_SIZE);
++	if (!pcie_ep->msi_virt_addr) {
++		dev_err(dev, "failed to map MSI outbound region\n");
++		return -ENOMEM;
++	}
++
++	ret = dw_pcie_ep_init(ep);
++	if (ret) {
++		dev_err(dev, "failed to initialize endpoint\n");
++		return ret;
++	}
++
++	return 0;
++}
++
+ static int __init ls_add_pcie_port(struct ls_pcie *pcie)
+ {
+ 	struct dw_pcie *pci = pcie->pci;
+@@ -309,18 +427,18 @@ static int __init ls_pcie_probe(struct p
+ 	if (IS_ERR(pci->dbi_base))
+ 		return PTR_ERR(pci->dbi_base);
+ 
+-	pcie->lut = pci->dbi_base + pcie->drvdata->lut_offset;
++	pci->dbi_base2 = pci->dbi_base + PCIE_DBI2_BASE;
+ 
+-	if (!ls_pcie_is_bridge(pcie))
+-		return -ENODEV;
++	pcie->lut = pci->dbi_base + pcie->drvdata->lut_offset;
+ 
+ 	platform_set_drvdata(pdev, pcie);
+ 
+-	ret = ls_add_pcie_port(pcie);
+-	if (ret < 0)
+-		return ret;
++	if (!ls_pcie_is_bridge(pcie))
++		ret = ls_add_pcie_ep(pcie, pdev);
++	else
++		ret = ls_add_pcie_port(pcie);
+ 
+-	return 0;
++	return ret;
+ }
+ 
+ static struct platform_driver ls_pcie_driver = {
+--- a/drivers/pci/endpoint/functions/pci-epf-test.c
++++ b/drivers/pci/endpoint/functions/pci-epf-test.c
+@@ -471,7 +471,7 @@ static int pci_epf_test_probe(struct pci
+ 	const struct pci_epf_device_id *match;
+ 	struct pci_epf_test_data *data;
+ 	enum pci_barno test_reg_bar = BAR_0;
+-	bool linkup_notifier = true;
++	bool linkup_notifier = false;
+ 
+ 	match = pci_epf_match_device(pci_epf_test_ids, epf);
+ 	data = (struct pci_epf_test_data *)match->driver_data;
+--- a/drivers/pci/endpoint/pci-epf-core.c
++++ b/drivers/pci/endpoint/pci-epf-core.c
+@@ -104,8 +104,8 @@ void pci_epf_free_space(struct pci_epf *
+ 	if (!addr)
+ 		return;
+ 
+-	dma_free_coherent(dev, epf->bar[bar].size, addr,
+-			  epf->bar[bar].phys_addr);
++	free_pages((unsigned long)addr,
++		get_order(epf->bar[bar].size));
+ 
+ 	epf->bar[bar].phys_addr = 0;
+ 	epf->bar[bar].size = 0;
+@@ -129,7 +129,9 @@ void *pci_epf_alloc_space(struct pci_epf
+ 		size = 128;
+ 	size = roundup_pow_of_two(size);
+ 
+-	space = dma_alloc_coherent(dev, size, &phys_addr, GFP_KERNEL);
++	space = (void *)__get_free_pages(GFP_KERNEL | __GFP_ZERO,
++						get_order(size));
++	phys_addr = virt_to_phys(space);
+ 	if (!space) {
+ 		dev_err(dev, "failed to allocate mem space\n");
+ 		return NULL;
+--- a/drivers/pci/pcie/portdrv_core.c
++++ b/drivers/pci/pcie/portdrv_core.c
+@@ -45,6 +45,20 @@ static void release_pcie_device(struct d
+ }
+ 
+ /**
++ * pcibios_check_service_irqs - check irqs in the device tree
++ * @dev: PCI Express port to handle
++ * @irqs: Array of irqs to populate
++ * @mask: Bitmask of port capabilities returned by get_port_device_capability()
++ *
++ * Return value: 0 means no service irqs in the device tree
++ *
++ */
++int __weak pcibios_check_service_irqs(struct pci_dev *dev, int *irqs, int mask)
++{
++	return 0;
++}
++
++/**
+  * pcie_port_enable_irq_vec - try to set up MSI-X or MSI as interrupt mode
+  * for given port
+  * @dev: PCI Express port to handle
+@@ -185,10 +199,25 @@ out_free_irqs:
+ static int pcie_init_service_irqs(struct pci_dev *dev, int *irqs, int mask)
+ {
+ 	int ret, i;
++	int irq = -1;
+ 
+ 	for (i = 0; i < PCIE_PORT_DEVICE_MAXSERVICES; i++)
+ 		irqs[i] = -1;
+ 
++	/* Check if some platforms owns independent irq pins for AER/PME etc.
++	 * Some platforms may own independent AER/PME interrupts and set
++	 * them in the device tree file.
++	 */
++	ret = pcibios_check_service_irqs(dev, irqs, mask);
++	if (ret) {
++		if (dev->irq)
++			irq = dev->irq;
++		for (i = 0; i < PCIE_PORT_DEVICE_MAXSERVICES; i++)
++			if (irqs[i] == -1 && i != PCIE_PORT_SERVICE_VC_SHIFT)
++				irqs[i] = irq;
++		return 0;
++	}
++
+ 	/*
+ 	 * If we support PME or hotplug, but we can't use MSI/MSI-X for
+ 	 * them, we have to fall back to INTx or other interrupts, e.g., a
+--- a/drivers/pci/quirks.c
++++ b/drivers/pci/quirks.c
+@@ -3376,6 +3376,13 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_A
+ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ATHEROS, 0x003c, quirk_no_bus_reset);
+ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ATHEROS, 0x0033, quirk_no_bus_reset);
+ 
++/*
++ * NXP (Freescale Vendor ID) LS1088 chips do not behave correctly after
++ * bus reset. Link state of device does not comes UP and so config space
++ * never accessible again.
++ */
++DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_FREESCALE, 0x80c0, quirk_no_bus_reset);
++
+ static void quirk_no_pm_reset(struct pci_dev *dev)
+ {
+ 	/*
+@@ -4857,3 +4864,11 @@ static void quirk_no_ats(struct pci_dev
+ /* AMD Stoney platform GPU */
+ DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_ATI, 0x98e4, quirk_no_ats);
+ #endif /* CONFIG_PCI_ATS */
++
++/* Freescale PCIe doesn't support MSI in RC mode */
++static void quirk_fsl_no_msi(struct pci_dev *pdev)
++{
++	if (pci_pcie_type(pdev) == PCI_EXP_TYPE_ROOT_PORT)
++		pdev->no_msi = 1;
++}
++DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_FREESCALE, PCI_ANY_ID, quirk_fsl_no_msi);
+--- a/include/linux/pci.h
++++ b/include/linux/pci.h
+@@ -1944,6 +1944,7 @@ void pcibios_release_device(struct pci_d
+ void pcibios_penalize_isa_irq(int irq, int active);
+ int pcibios_alloc_irq(struct pci_dev *dev);
+ void pcibios_free_irq(struct pci_dev *dev);
++int pcibios_check_service_irqs(struct pci_dev *dev, int *irqs, int mask);
+ 
+ #ifdef CONFIG_HIBERNATE_CALLBACKS
+ extern struct dev_pm_ops pcibios_pm_ops;

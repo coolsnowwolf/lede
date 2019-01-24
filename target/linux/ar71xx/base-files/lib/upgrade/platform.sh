@@ -351,6 +351,7 @@ platform_check_image() {
 	db120|\
 	dr344|\
 	dw33d|\
+	sbr-ac1750|\
 	f9k1115v2|\
 	hornet-ub|\
 	mr12|\
@@ -661,6 +662,14 @@ platform_check_image() {
 	wrt160nl)
 		cybertan_check_image "$1" && return 0
 		return 1
+		;;
+	k2t)
+		[ "$magic_long" != "27051956" ] && {
+			echo "Invalid image type."
+			return 1
+		}
+
+		return 0
 		;;
 	nbg6616|\
 	uap-pro|\

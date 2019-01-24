@@ -39,13 +39,21 @@ define Build/mktplinkfw-combined
 	@mv $@.new $@
 endef
 
+define Build/uImageArcher
+	mkimage -A $(LINUX_KARCH) \
+		-O linux -T kernel \
+		-C $(1) -a $(KERNEL_LOADADDR) -e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
+		-n '$(call toupper,$(LINUX_KARCH)) OpenWrt Linux-$(LINUX_VERSION)' -d $@ $@.new
+	@mv $@.new $@
+endef
+
 define Device/tplink
   TPLINK_HWREV := 0x1
   TPLINK_HEADER_VERSION := 1
   LOADER_TYPE := gz
   KERNEL := kernel-bin | append-dtb | lzma
   KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | tplink-v1-header
-  IMAGES := sysupgrade.bin factory.bin
+  IMAGES += factory.bin
   IMAGE/sysupgrade.bin := append-rootfs | mktplinkfw sysupgrade | append-metadata
   IMAGE/factory.bin := append-rootfs | mktplinkfw factory
 endef
@@ -87,4 +95,16 @@ define Device/tplink-16mlzma
   $(Device/tplink)
   TPLINK_FLASHLAYOUT := 16Mlzma
   IMAGE_SIZE := 15872k
+endef
+
+define Device/tplink-safeloader
+  $(Device/tplink)
+  KERNEL := kernel-bin | append-dtb | lzma | tplink-v1-header
+  IMAGE/sysupgrade.bin := append-rootfs | tplink-safeloader sysupgrade | append-metadata
+  IMAGE/factory.bin := append-rootfs | tplink-safeloader factory
+endef
+
+define Device/tplink-safeloader-uimage
+  $(Device/tplink-safeloader)
+  KERNEL := kernel-bin | append-dtb | lzma | uImageArcher lzma
 endef

@@ -210,6 +210,7 @@ get_status_led() {
 		status_led="$board:red:system"
 		;;
 	dw33d|\
+	sbr-ac1750|\
 	r36a)
 		status_led="$board:blue:status"
 		;;
@@ -266,6 +267,9 @@ get_status_led() {
 		;;
 	jwap230)
 		status_led="$board:green:led1"
+		;;
+	k2t)
+		status_led="$board:red:lan"
 		;;
 	koala)
 		status_led="$board:blue:sys"

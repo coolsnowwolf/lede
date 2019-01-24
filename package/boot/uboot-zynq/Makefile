@@ -20,26 +20,28 @@ define U-Boot/Default
   BUILD_TARGET:=zynq
   UBOOT_IMAGE:=spl/boot.bin u-boot.img
   UBOOT_CONFIG:=zynq_$(1)
+  UENV:=default
+  HIDDEN:=1
 endef
 
 define U-Boot/zc702
   NAME:=Xilinx ZC702 Dev Board
-endef
-
-define U-Boot/zc706
-  NAME:=Xilinx ZC706 Dev Board
+  BUILD_DEVICES:=xlnx_zynq-zc702
 endef
 
 define U-Boot/zed
   NAME:=Avnet Digilent ZedBoard Dev Board
+  BUILD_DEVICES:=avnet_zynq-zed
 endef
 
 define U-Boot/zybo
   NAME:=Digilent Zybo Dev Board
+  BUILD_DEVICES:=digilent_zynq-zybo
 endef
 
 define U-Boot/zybo_z7
   NAME:=Digilent Zybo Z7 board
+  BUILD_DEVICES:=digilent_zynq-zybo-z7
 endef
 
 UBOOT_TARGETS := \
@@ -47,6 +49,16 @@ UBOOT_TARGETS := \
 	zed \
 	zybo \
 	zybo_z7
+
+define Build/InstallDev
+	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)
+	$(CP) $(PKG_BUILD_DIR)/spl/boot.bin $(STAGING_DIR_IMAGE)/$(BUILD_DEVICES)-boot.bin
+	$(CP) $(PKG_BUILD_DIR)/u-boot.img $(STAGING_DIR_IMAGE)/$(BUILD_DEVICES)-u-boot.img
+	$(CP) ./files/uEnv-$(UENV).txt $(STAGING_DIR_IMAGE)/$(BUILD_DEVICES)-uEnv.txt
+endef
+
+define Package/u-boot/install/default
+endef
 
 Build/Exports:=$(Host/Exports)
 

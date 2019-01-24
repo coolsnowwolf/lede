@@ -8,23 +8,12 @@ urlsafe_b64decode() {
     echo $data | base64 -d
 }
 
-CheckIPAddr() {
-    echo $1 | grep "^[0-9]\{1,3\}\.\([0-9]\{1,3\}\.\)\{2\}[0-9]\{1,3\}$" >/dev/null 2>&1
-    [ $? -ne 0 ] && return 1
-    local ipaddr=($(echo $1 | sed 's/\./ /g'))
-    [ ${#ipaddr[@]} -ne 4 ] && return 1
-    for ((i=0;i<${#ipaddr[@]};i++))
-    do
-        [ ${ipaddr[i]} -gt 255 -a ${ipaddr[i]} -lt 0 ] && return 1
-    done
-    return 0
-}
-
 Server_Update() {
     local uci_set="uci -q set $name.$1."
     ${uci_set}alias="[$ssr_group] $ssr_remarks"
     ${uci_set}auth_enable="0"
     ${uci_set}switch_enable="1"
+    ${uci_set}type="ssr"
     ${uci_set}server="$ssr_host"
     ${uci_set}server_port="$ssr_port"
     ${uci_set}local_port="1234"
@@ -76,6 +65,9 @@ do
             subscribe_max=${#ssr_url[@]}
         fi
         ssr_group=$(urlsafe_b64decode $(urlsafe_b64decode ${ssr_url[$((${#ssr_url[@]} - 1))]//ssr:\/\//} | sed 's/&/\n/g' | grep group= | awk -F = '{print $2}'))
+        if [ -z "$ssr_group" ]; then
+        ssr_group="default"
+        fi
         if [ -n "$ssr_group" ]; then
             subscribe_i=0
             subscribe_n=0

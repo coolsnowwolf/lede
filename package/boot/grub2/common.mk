@@ -10,7 +10,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_CPE_ID:=cpe:/a:gnu:grub2
 PKG_VERSION:=2.02
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE:=grub-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/grub
