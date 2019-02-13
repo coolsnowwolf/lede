@@ -170,6 +170,14 @@ define Device/devolo_dvl1200e
 endef
 TARGET_DEVICES += devolo_dvl1200e
 
+define Device/devolo_dvl1200i
+  ATH_SOC := qca9558
+  DEVICE_TITLE := devolo WiFi pro 1200i
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  IMAGE_SIZE := 15936k
+endef
+TARGET_DEVICES += devolo_dvl1200i
+
 define Device/devolo_dvl1750c
   ATH_SOC := qca9558
   DEVICE_TITLE := devolo WiFi pro 1750c
@@ -177,6 +185,22 @@ define Device/devolo_dvl1750c
   IMAGE_SIZE := 15936k
 endef
 TARGET_DEVICES += devolo_dvl1750c
+
+define Device/devolo_dvl1750e
+  ATH_SOC := qca9558
+  DEVICE_TITLE := devolo WiFi pro 1750e
+  DEVICE_PACKAGES := kmod-usb2 kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  IMAGE_SIZE := 15936k
+endef
+TARGET_DEVICES += devolo_dvl1750e
+
+define Device/devolo_dvl1750i
+  ATH_SOC := qca9558
+  DEVICE_TITLE := devolo WiFi pro 1750i
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  IMAGE_SIZE := 15936k
+endef
+TARGET_DEVICES += devolo_dvl1750i
 
 define Device/dlink_dir-825-b1
   ATH_SOC := ar7161
@@ -504,3 +528,10 @@ define Device/winchannel_wb2000
   DEVICE_PACKAGES := kmod-i2c-core kmod-i2c-gpio kmod-rtc-ds1307 kmod-usb2 kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += winchannel_wb2000
+
+define Device/xiaomi_mi-router-4q
+  ATH_SOC := qca9561
+  DEVICE_TITLE := Xiaomi Mi Router 4Q
+  IMAGE_SIZE := 14336k
+endef
+TARGET_DEVICES += xiaomi_mi-router-4q
