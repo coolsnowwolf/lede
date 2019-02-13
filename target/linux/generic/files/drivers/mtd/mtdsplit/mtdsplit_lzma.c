@@ -79,16 +79,22 @@ static int mtdsplit_parse_lzma(struct mtd_info *master,
 	return LZMA_NR_PARTS;
 }
 
+#include <linux/version.h>
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 static const struct of_device_id mtdsplit_lzma_of_match_table[] = {
 	{ .compatible = "lzma" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, mtdsplit_lzma_of_match_table);
+#endif
 
 static struct mtd_part_parser mtdsplit_lzma_parser = {
 	.owner = THIS_MODULE,
 	.name = "lzma-fw",
+	#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 	.of_match_table = mtdsplit_lzma_of_match_table,
+	#endif
 	.parse_fn = mtdsplit_parse_lzma,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };

@@ -79,15 +79,21 @@ static int mtdsplit_parse_eva(struct mtd_info *master,
 	return EVA_NR_PARTS;
 }
 
+#include <linux/version.h>
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 static const struct of_device_id mtdsplit_eva_of_match_table[] = {
 	{ .compatible = "avm,eva-firmware" },
 	{},
 };
+#endif
 
 static struct mtd_part_parser mtdsplit_eva_parser = {
 	.owner = THIS_MODULE,
 	.name = "eva-fw",
+	#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 	.of_match_table = mtdsplit_eva_of_match_table,
+	#endif
 	.parse_fn = mtdsplit_parse_eva,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };

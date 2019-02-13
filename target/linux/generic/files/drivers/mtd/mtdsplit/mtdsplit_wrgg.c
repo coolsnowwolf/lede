@@ -107,16 +107,22 @@ static int mtdsplit_parse_wrgg(struct mtd_info *master,
 	return WRGG_NR_PARTS;
 }
 
+#include <linux/version.h>
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 static const struct of_device_id mtdsplit_wrgg_of_match_table[] = {
 	{ .compatible = "wrg" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, mtdsplit_wrgg_of_match_table);
+#endif
 
 static struct mtd_part_parser mtdsplit_wrgg_parser = {
 	.owner = THIS_MODULE,
 	.name = "wrgg-fw",
+	#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 	.of_match_table = mtdsplit_wrgg_of_match_table,
+	#endif
 	.parse_fn = mtdsplit_parse_wrgg,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };
