@@ -104,7 +104,7 @@ endef
 LEGACY_DEVICES += AP143_16M
 
 define LegacyDevice/AP147_010
-  DEVICE_TITLE := Qualcomm Atheros AP147-010 reference board
+  DEVICE_TITLE := Letv SuperRouter
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage
 endef
 LEGACY_DEVICES += AP147_010
