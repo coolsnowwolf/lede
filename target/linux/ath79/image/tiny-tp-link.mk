@@ -180,3 +180,11 @@ define Device/tplink_tl-wr941-v4
   TPLINK_HWID := 0x09410004
 endef
 TARGET_DEVICES += tplink_tl-wr941-v4
+
+define Device/tplink_tl-wr941n-v7-cn
+  $(Device/tplink-4mlzma)
+  ATH_SOC := qca9558
+  DEVICE_TITLE := TP-Link TL-WR941N v7 (CN)
+  TPLINK_HWID := 0x09410007
+endef
+TARGET_DEVICES += tplink_tl-wr941n-v7-cn
