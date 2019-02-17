@@ -4,7 +4,6 @@
 local m, sec, o
 local shadowsocksr = "shadowsocksr"
 local uci = luci.model.uci.cursor()
-local ipkg = require("luci.model.ipkg")
 
 
 m = Map(shadowsocksr, translate("ShadowSocksR Server"))
