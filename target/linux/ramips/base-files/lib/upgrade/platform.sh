@@ -37,6 +37,7 @@ platform_do_upgrade() {
 	case "$board" in
 	hc5962|\
 	mir3g|\
+	mir4|\
 	r6220|\
 	netgear,r6350|\
 	ubnt-erx|\
