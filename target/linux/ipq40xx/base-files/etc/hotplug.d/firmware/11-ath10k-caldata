@@ -31,7 +31,7 @@ ath10kcal_extract() {
 	[ -n "$mtd" ] || \
 		ath10kcal_die "no mtd device found for partition $part"
 
-	dd if=$mtd of=/lib/firmware/$FIRMWARE bs=1 skip=$offset count=$count 2>/dev/null || \
+	dd if=$mtd of=/lib/firmware/$FIRMWARE iflag=skip_bytes bs=$count skip=$offset count=1 2>/dev/null || \
 		ath10kcal_die "failed to extract calibration data from $mtd"
 }
 
@@ -49,16 +49,8 @@ ath10kcal_ubi_extract() {
 	[ -n "$ubi" ] || \
 		ath10kcal_die "no UBI volume found for $part"
 
-	dd if=/dev/$ubi of=/lib/firmware/$FIRMWARE bs=1 skip=$offset count=$count 2>/dev/null || \
+	dd if=/dev/$ubi of=/lib/firmware/$FIRMWARE iflag=skip_bytes bs=$count skip=$offset count=1 2>/dev/null || \
 		ath10kcal_die "failed to extract from $ubi"
-}
-
-ath10kcal_patch_mac() {
-	local mac=$1
-
-	[ -z "$mac" ] && return
-
-	macaddr_2bin $mac | dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=6 count=6
 }
 
 ath10kcal_patch_mac_crc() {
@@ -69,19 +61,21 @@ ath10kcal_patch_mac_crc() {
 	local xor_fw_mac
 	local xor_fw_chksum
 
+	[ -z "$mac" ] && return
+
 	xor_fw_mac=$(hexdump -v -n 6 -s $mac_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
 	xor_fw_mac="${xor_fw_mac:0:4} ${xor_fw_mac:4:4} ${xor_fw_mac:8:4}"
 
-	ath10kcal_patch_mac "$mac" && {
-		xor_mac=${mac//:/}
-		xor_mac="${xor_mac:0:4} ${xor_mac:4:4} ${xor_mac:8:4}"
+	macaddr_2bin $mac | dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=6 count=6
 
-		xor_fw_chksum=$(hexdump -v -n 2 -s $chksum_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
-		xor_fw_chksum=$(xor $xor_fw_chksum $xor_fw_mac $xor_mac)
+	xor_mac=${mac//:/}
+	xor_mac="${xor_mac:0:4} ${xor_mac:4:4} ${xor_mac:8:4}"
 
-		printf "%b" "\x${xor_fw_chksum:0:2}\x${xor_fw_chksum:2:2}" | \
-			dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=$chksum_offset count=2
-	}
+	xor_fw_chksum=$(hexdump -v -n 2 -s $chksum_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
+	xor_fw_chksum=$(xor $xor_fw_chksum $xor_fw_mac $xor_mac)
+
+	printf "%b" "\x${xor_fw_chksum:0:2}\x${xor_fw_chksum:2:2}" | \
+		dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=$chksum_offset count=2
 }
 
 ath10kcal_is_caldata_valid() {
@@ -106,12 +100,17 @@ case "$FIRMWARE" in
 	meraki,mr33)
 		ath10kcal_ubi_extract "ART" 36864 2116
 		ath10kcal_is_caldata_valid "4408" || ath10kcal_extract "ART" 36864 2116
-		ath10kcal_patch_mac $(macaddr_add $(get_mac_binary "/sys/bus/i2c/devices/0-0050/eeprom" 102) +1)
+		ath10kcal_patch_mac_crc $(macaddr_add $(get_mac_binary "/sys/bus/i2c/devices/0-0050/eeprom" 102) +1)
 		;;
 	esac
 	;;
 "ath10k/pre-cal-pci-0000:01:00.0.bin")
 	case "$board" in
+	asus,map-ac2200)
+		ath10kcal_ubi_extract "Factory" 36864 12064
+		ln -sf /lib/firmware/ath10k/pre-cal-pci-0000\:00\:00.0.bin \
+			/lib/firmware/ath10k/QCA9888/hw2.0/board.bin
+		;;
 	asus,rt-acrh17)
 		CI_UBIPART=UBI_DEV
 		ath10kcal_ubi_extract "Factory" 36864 12064
@@ -124,12 +123,14 @@ case "$FIRMWARE" in
 "ath10k/pre-cal-ahb-a000000.wifi.bin")
 	case "$board" in
 	8dev,jalapeno |\
-	linksys,ea6350v3 |\
 	glinet,gl-b1300 |\
+	linksys,ea6350v3 |\
 	qcom,ap-dk01.1-c1)
 		ath10kcal_extract "ART" 4096 12064
 		;;
-	asus,rt-ac1300uhp |\
+	asus,map-ac2200)
+		ath10kcal_ubi_extract "Factory" 4096 12064
+		;;
 	asus,rt-acrh17|\
 	asus,rt-ac58u)
 		CI_UBIPART=UBI_DEV
@@ -149,6 +150,7 @@ case "$FIRMWARE" in
 		ath10kcal_patch_mac_crc $(mtd_get_mac_binary dnidata 0)
 		;;
 	compex,wpj428 |\
+	engenius,eap1300 |\
 	openmesh,a42 |\
 	openmesh,a62)
 		ath10kcal_extract "0:ART" 4096 12064
@@ -163,12 +165,14 @@ case "$FIRMWARE" in
 "ath10k/pre-cal-ahb-a800000.wifi.bin")
 	case "$board" in
 	8dev,jalapeno |\
-	linksys,ea6350v3 |\
 	glinet,gl-b1300 |\
+	linksys,ea6350v3 |\
 	qcom,ap-dk01.1-c1)
 		ath10kcal_extract "ART" 20480 12064
 		;;
-	asus,rt-ac1300uhp |\
+	asus,map-ac2200)
+		ath10kcal_ubi_extract "Factory" 20480 12064
+		;;
 	asus,rt-ac58u)
 		CI_UBIPART=UBI_DEV
 		ath10kcal_ubi_extract "Factory" 20480 12064
@@ -187,6 +191,7 @@ case "$FIRMWARE" in
 		ath10kcal_patch_mac_crc $(mtd_get_mac_binary dnidata 12)
 		;;
 	compex,wpj428 |\
+	engenius,eap1300 |\
 	openmesh,a42 |\
 	openmesh,a62)
 		ath10kcal_extract "0:ART" 20480 12064

@@ -46,8 +46,8 @@ define Device/DniImage
 	NETGEAR_BOARD_ID :=
 	NETGEAR_HW_ID :=
 	IMAGES := factory.img sysupgrade.bin
-	IMAGE/factory.img := append-kernel | pad-offset 64k 64 | append-uImage-fakehdr filesystem | pad-to $$$$(KERNEL_SIZE) | append-rootfs | pad-rootfs | netgear-dni
-	IMAGE/sysupgrade.bin := append-kernel | pad-offset 64k 64 | append-uImage-fakehdr filesystem | pad-to $$$$(KERNEL_SIZE) | append-rootfs | pad-rootfs | append-metadata
+	IMAGE/factory.img := append-kernel | pad-offset 64k 64 | append-uImage-fakehdr filesystem | append-rootfs | pad-rootfs | netgear-dni
+	IMAGE/sysupgrade.bin := append-kernel | pad-offset 64k 64 | append-uImage-fakehdr filesystem | append-rootfs | pad-rootfs | append-metadata
 endef
 DEVICE_VARS += NETGEAR_BOARD_ID NETGEAR_HW_ID
 
@@ -61,6 +61,15 @@ define Device/8dev_jalapeno
 	DEVICE_TITLE := 8devices Jalapeno
 endef
 TARGET_DEVICES += 8dev_jalapeno
+
+define Device/asus_map-ac2200
+	$(call Device/FitImageLzma)
+	DEVICE_DTS := qcom-ipq4019-map-ac2200
+	DEVICE_TITLE := ASUS Lyra MAP-AC2200
+	IMAGES := sysupgrade.bin
+	DEVICE_PACKAGES := ipq-wifi-asus_map-ac2200 ath10k-firmware-qca9888-ct kmod-ath3k
+endef
+TARGET_DEVICES += asus_map-ac2200
 
 define Device/asus_rt-ac58u
 	$(call Device/FitImageLzma)
@@ -84,23 +93,6 @@ define Device/asus_rt-ac58u
 endef
 TARGET_DEVICES += asus_rt-ac58u
 
-define Device/asus_rt-ac1300uhp
-	$(call Device/FitImageLzma)
-	DEVICE_DTS := qcom-ipq4018-rt-ac1300uhp
-	BLOCKSIZE := 128k
-	PAGESIZE := 2048
-	DTB_SIZE := 65536
-	DEVICE_TITLE := Asus RT-AC1300UHP
-	IMAGE_SIZE := 20439364
-	FILESYSTEMS := squashfs
-	UIMAGE_NAME:=$(shell echo -e '\03\01\01\01RT-AC58U')
-	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
-	KERNEL_INITRAMFS_SUFFIX := -factory.trx
-	IMAGES := sysupgrade.bin
-	DEVICE_PACKAGES := kmod-usb-ledtrig-usbport
-endef
-TARGET_DEVICES += asus_rt-ac1300uhp
-
 define Device/asus_rt-acrh17
 	$(call Device/FitImageLzma)
 	DEVICE_DTS := qcom-ipq4019-rt-acrh17
@@ -114,7 +106,7 @@ define Device/asus_rt-acrh17
 	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
 	KERNEL_INITRAMFS_SUFFIX := -factory.trx
 	IMAGES := sysupgrade.bin
-	DEVICE_PACKAGES := ipq-wifi-rt-acrh17 ath10k-firmware-qca9984
+	DEVICE_PACKAGES := ipq-wifi-rt-acrh17 ath10k-firmware-qca9984 kmod-ath10k ath10k-firmware-qca4019 -kmod-ath10k-ct -ath10k-firmware-qca4019-ct
 endef
 TARGET_DEVICES += asus_rt-acrh17
 
@@ -124,12 +116,12 @@ define Device/avm_fritzbox-4040
 	BOARD_NAME := fritz4040
 	DEVICE_TITLE := AVM Fritz!Box 4040
 	IMAGE_SIZE := 29753344
-	UBOOT_PATH := $$(BIN_DIR)/u-boot-fritz4040/uboot-fritz4040.bin
+	UBOOT_PATH := $(STAGING_DIR_IMAGE)/uboot-fritz4040.bin
 	UBOOT_PARTITION_SIZE := 524288
 	IMAGES = eva.bin sysupgrade.bin
 	IMAGE/eva.bin := append-uboot | pad-to $$$$(UBOOT_PARTITION_SIZE) | append-kernel | append-rootfs | pad-rootfs
 	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
-	DEVICE_PACKAGES := fritz-tffs fritz-caldata u-boot-fritz4040
+	DEVICE_PACKAGES := fritz-tffs fritz-caldata
 endef
 TARGET_DEVICES += avm_fritzbox-4040
 
@@ -147,6 +139,20 @@ define Device/compex_wpj428
 endef
 TARGET_DEVICES += compex_wpj428
 
+define Device/engenius_eap1300
+	$(call Device/FitImage)
+	DEVICE_TITLE := EnGenius EAP1300
+	DEVICE_DTS_CONFIG := config@4
+	BOARD_NAME := eap1300
+	DEVICE_DTS := qcom-ipq4018-eap1300
+	KERNEL_SIZE := 5120k
+	IMAGE_SIZE := 25344k
+	IMAGES := sysupgrade.bin
+	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
+	DEVICE_PACKAGES := ipq-wifi-engenius_eap1300
+endef
+TARGET_DEVICES += engenius_eap1300
+
 define Device/glinet_gl-b1300
 	$(call Device/FitImage)
 	DEVICE_TITLE := GL.iNet GL-B1300
@@ -158,6 +164,41 @@ define Device/glinet_gl-b1300
 	IMAGE/sysupgrade.bin := append-kernel |append-rootfs | pad-rootfs | append-metadata
 endef
 TARGET_DEVICES += glinet_gl-b1300
+
+define Device/linksys_ea6350v3
+	# The Linksys EA6350v3 has a uboot bootloader that does not
+	# support either booting lzma kernel images nor booting UBI
+	# partitions. This uboot, however, supports raw kernel images and
+	# gzipped images.
+	#
+	# As for the time of writing this, the device will boot the kernel
+	# from a fixed address with a fixed length of 3MiB. Also, the
+	# device has a hard-coded kernel command line that requieres the
+	# rootfs and alt_rootfs to be in mtd11 and mtd13 respectively.
+	# Oh... and the kernel partition overlaps with the rootfs
+	# partition (the same for alt_kernel and alt_rootfs).
+	#
+	# If you are planing re-partitioning the device, you may want to
+	# keep those details in mind:
+	# 1. The kernel adresses you should honor are 0x00000000 and
+	#    0x02800000 respectively.
+	# 2. The kernel size (plus the dtb) cannot exceed 3.00MiB in size.
+	# 3. You can use 'zImage', but not a raw 'Image' packed with lzma.
+	# 4. The kernel command line from uboot is harcoded to boot with
+	#    rootfs either in mtd11 or mtd13.
+	$(call Device/FitzImage)
+	DEVICE_TITLE := Linksys EA6350v3
+	DEVICE_DTS := qcom-ipq4018-ea6350v3
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	KERNEL_SIZE := 3145728
+	IMAGE_SIZE := 38797312
+	UBINIZE_OPTS := -E 5
+	IMAGES := factory.bin sysupgrade.bin
+	IMAGE/factory.bin := append-kernel | append-uImage-fakehdr filesystem | pad-to $$$${KERNEL_SIZE} | append-ubi | linksys-image type=EA6350v3
+	DEVICE_PACKAGES := ipq-wifi-linksys_ea6350v3 uboot-envtools
+endef
+TARGET_DEVICES += linksys_ea6350v3
 
 define Device/meraki_mr33
 	$(call Device/FitImage)
@@ -172,7 +213,6 @@ TARGET_DEVICES += meraki_mr33
 
 define Device/netgear_ex61x0v2
 	$(call Device/DniImage)
-	KERNEL_SIZE := 3080192
 	DEVICE_DTS_CONFIG := config@4
 	NETGEAR_BOARD_ID := EX6150v2series
 	NETGEAR_HW_ID := 29765285+16+0+128+2x2
@@ -236,20 +276,6 @@ define Device/qcom_ap-dk01.1-c1
 endef
 TARGET_DEVICES += qcom_ap-dk01.1-c1
 
-define Device/linksys_ea6350v3
-	$(call Device/FitzImage)
-	DEVICE_TITLE := Linksys EA6350v3
-	DEVICE_DTS := qcom-ipq4018-ea6350v3
-	BLOCKSIZE := 128k
-	PAGESIZE := 2048
-	KERNEL_SIZE := 3145728
-	IMAGE_SIZE := 38797312
-	UBINIZE_OPTS := -E 5
-	IMAGES := sysupgrade.bin
-	DEVICE_PACKAGES := ath10k-firmware-qca4019 ipq-wifi-linksys_ea6350v3 uboot-envtools
-endef
-TARGET_DEVICES += linksys_ea6350v3
-
 define Device/qcom_ap-dk04.1-c1
 	$(call Device/FitImage)
 	$(call Device/UbiFit)
@@ -279,7 +305,7 @@ define Device/zyxel_nbg6617
 #	this minimum-size. However, the larger image can be flashed both ways.
 	IMAGE/factory.bin := append-rootfs | pad-rootfs | pad-to 64k | check-size $$$$(ROOTFS_SIZE) | zyxel-ras-image separate-kernel
 	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-rootfs | check-size $$$$(ROOTFS_SIZE) | sysupgrade-tar rootfs=$$$$@ | append-metadata
-	DEVICE_PACKAGES := ipq-wifi-zyxel_nbg6617 uboot-envtools
+	DEVICE_PACKAGES := uboot-envtools kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += zyxel_nbg6617
 
@@ -288,7 +314,6 @@ define Device/zyxel_wre6606
 	DEVICE_TITLE := ZyXEL WRE6606
 	DEVICE_DTS_CONFIG := config@4
 	DEVICE_DTS := qcom-ipq4018-wre6606
-	DEVICE_PACKAGES := ipq-wifi-zyxel_wre6606
 	IMAGES := sysupgrade.bin
 	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
 endef
