@@ -23,7 +23,7 @@ ifeq ($(ARCH),arm)
 endif
 
 PKG_NAME:=kcptun
-PKG_VERSION:=20181002
+PKG_VERSION:=20190109
 PKG_RELEASE:=2
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 PKG_SOURCE:=$(PKG_NAME)-linux-$(PKG_ARCH_KCPTUN)-$(PKG_VERSION).tar.gz
@@ -46,7 +46,7 @@ endef
 
 define Build/Prepare
 	tar -xzvf $(DL_DIR)/$(PKG_SOURCE) -C $(PKG_BUILD_DIR)
-	if [ -f $(PKG_BUILD_DIR)/client_linux_arm6 ]; then mv -f $(PKG_BUILD_DIR)/client_linux_arm6 $(PKG_BUILD_DIR)/client_linux_arm; fi
+	if [ -f $(PKG_BUILD_DIR)/client_linux_arm5 ]; then mv -f $(PKG_BUILD_DIR)/client_linux_arm5 $(PKG_BUILD_DIR)/client_linux_arm; fi
 endef
 
 define Build/Configure
