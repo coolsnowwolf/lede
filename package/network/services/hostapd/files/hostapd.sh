@@ -212,9 +212,12 @@ hostapd_common_add_bss_config() {
 
 	config_add_string wpa_psk_file
 
+	config_add_int multi_ap
+
 	config_add_boolean wps_pushbutton wps_label ext_registrar wps_pbc_in_m1
 	config_add_int wps_ap_setup_locked wps_independent
 	config_add_string wps_device_type wps_device_name wps_manufacturer wps_pin
+	config_add_string multi_ap_backhaul_ssid multi_ap_backhaul_key
 
 	config_add_boolean ieee80211v wnm_sleep_mode bss_transition
 	config_add_int time_advertisement
@@ -261,7 +264,8 @@ hostapd_set_bss_options() {
 		macfilter ssid utf8_ssid wmm uapsd hidden short_preamble rsn_preauth \
 		iapp_interface eapol_version dynamic_vlan ieee80211w nasid \
 		acct_server acct_secret acct_port acct_interval \
-		bss_load_update_period chan_util_avg_period sae_require_mfp
+		bss_load_update_period chan_util_avg_period sae_require_mfp \
+		multi_ap multi_ap_backhaul_ssid multi_ap_backhaul_key
 
 	set_default isolate 0
 	set_default maxassoc 0
@@ -278,7 +282,8 @@ hostapd_set_bss_options() {
 	set_default bss_load_update_period 60
 	set_default chan_util_avg_period 600
 	set_default utf8_ssid 1
-	
+	set_default multi_ap 0
+
 	append bss_conf "ctrl_interface=/var/run/hostapd"
 	if [ "$isolate" -gt 0 ]; then
 		append bss_conf "ap_isolate=$isolate" "$N"
@@ -298,6 +303,7 @@ hostapd_set_bss_options() {
 	append bss_conf "ignore_broadcast_ssid=$hidden" "$N"
 	append bss_conf "uapsd_advertisement_enabled=$uapsd" "$N"
 	append bss_conf "utf8_ssid=$utf8_ssid" "$N"
+	append bss_conf "multi_ap=$multi_ap" "$N"
 
 	[ "$tdls_prohibit" -gt 0 ] && append bss_conf "tdls_prohibit=$tdls_prohibit" "$N"
 
@@ -420,6 +426,9 @@ hostapd_set_bss_options() {
 	[ "$wps_pushbutton" -gt 0 ] && append config_methods push_button
 	[ "$wps_label" -gt 0 ] && append config_methods label
 
+	# WPS not possible on Multi-AP backhaul-only SSID
+	[ "$multi_ap" = 1 ] && wps_possible=
+
 	[ -n "$wps_possible" -a -n "$config_methods" ] && {
 		set_default ext_registrar 0
 		set_default wps_device_type "6-0050F204-1"
@@ -442,6 +451,19 @@ hostapd_set_bss_options() {
 		append bss_conf "wps_independent=$wps_independent" "$N"
 		[ -n "$wps_ap_setup_locked" ] && append bss_conf "ap_setup_locked=$wps_ap_setup_locked" "$N"
 		[ "$wps_pbc_in_m1" -gt 0 ] && append bss_conf "pbc_in_m1=$wps_pbc_in_m1" "$N"
+		[ "$multi_ap" -gt 0 ] && [ -n "$multi_ap_backhaul_ssid" ] && {
+			append bss_conf "multi_ap_backhaul_ssid=\"$multi_ap_backhaul_ssid\"" "$N"
+			if [ -z "$multi_ap_backhaul_key" ]; then
+				:
+			elif [ ${#multi_ap_backhaul_key} -lt 8 ]; then
+				wireless_setup_vif_failed INVALID_WPA_PSK
+				return 1
+			elif [ ${#multi_ap_backhaul_key} -eq 64 ]; then
+				append bss_conf "multi_ap_backhaul_wpa_psk=$multi_ap_backhaul_key" "$N"
+			else
+				append bss_conf "multi_ap_backhaul_wpa_passphrase=$multi_ap_backhaul_key" "$N"
+			fi
+		}
 	}
 
 	append bss_conf "ssid=$ssid" "$N"
@@ -640,7 +662,7 @@ wpa_supplicant_prepare_interface() {
 
 	_wpa_supplicant_common "$1"
 
-	json_get_vars mode wds
+	json_get_vars mode wds multi_ap
 
 	[ -n "$network_bridge" ] && {
 		fail=
@@ -649,7 +671,7 @@ wpa_supplicant_prepare_interface() {
 				fail=1
 			;;
 			sta)
-				[ "$wds" = 1 ] || fail=1
+				[ "$wds" = 1 -o "$multi_ap" = 1 ] || fail=1
 			;;
 		esac
 
@@ -675,6 +697,12 @@ wpa_supplicant_prepare_interface() {
 		country_str="country=$country"
 	}
 
+	multiap_flag_file="${_config}.is_multiap"
+	if [ "$multi_ap" = "1" ]; then
+		touch "$multiap_flag_file"
+	else
+		[ -e "$multiap_flag_file" ] && rm "$multiap_flag_file"
+	fi
 	wpa_supplicant_teardown_interface "$ifname"
 	cat > "$_config" <<EOF
 $ap_scan
@@ -716,9 +744,11 @@ wpa_supplicant_add_network() {
 	json_get_vars \
 		ssid bssid key \
 		basic_rate mcast_rate \
-		ieee80211w ieee80211r
+		ieee80211w ieee80211r \
+		multi_ap
 
 	set_default ieee80211r 0
+	set_default multi_ap 0
 
 	local key_mgmt='NONE'
 	local enc_str=
@@ -751,6 +781,8 @@ wpa_supplicant_add_network() {
 	}
 
 	[ "$_w_mode" = "adhoc" -o "$_w_mode" = "mesh" ] && append network_data "$_w_modestr" "$N$T"
+
+	[ "$multi_ap" = 1 -a "$_w_mode" = "sta" ] && append network_data "multi_ap_backhaul_sta=1" "$N$T"
 
 	case "$auth_type" in
 		none) ;;
@@ -892,7 +924,7 @@ wpa_supplicant_run() {
 
 	_wpa_supplicant_common "$ifname"
 
-	/usr/sbin/wpa_supplicant -B \
+	/usr/sbin/wpa_supplicant -B -s \
 		${network_bridge:+-b $network_bridge} \
 		-P "/var/run/wpa_supplicant-${ifname}.pid" \
 		-D ${_w_driver:-wext} \
