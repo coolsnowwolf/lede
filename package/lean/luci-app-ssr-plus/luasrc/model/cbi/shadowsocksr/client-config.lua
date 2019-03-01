@@ -336,7 +336,7 @@ o.rmempty = false
 if nixio.fs.access("/usr/bin/ssr-kcptun") then
 
 kcp_enable = s:option(Flag, "kcp_enable", translate("KcpTun Enable"), translate("bin:/usr/bin/ssr-kcptun"))
-kcp_enable.rmempty = true
+kcp_enable.rmempty = false
 kcp_enable.default = "0"
 kcp_enable:depends("type", "ssr")
 kcp_enable:depends("type", "ss")
