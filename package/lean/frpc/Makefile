@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=frpc
-PKG_VERSION:=0.21.0
+PKG_VERSION:=0.24.1
 PKG_RELEASE:=1
 
 ifeq ($(ARCH),mipsel)
@@ -25,7 +25,7 @@ endif
 ifeq ($(ARCH),arm)
 	FRPC_ARCH:=arm
 endif
-ifeq ($(ARCH),arm64)
+ifeq ($(ARCH),aarch64)
 	FRPC_ARCH:=arm64
 endif
 
