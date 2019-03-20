@@ -1,0 +1,304 @@
+From: Janusz Dziedzic <janusz.dziedzic@tieto.com>
+Date: Sun, 10 Mar 2019 17:22:08 +0100
+Subject: [PATCH] mac80211: add TX_NEEDS_ALIGNED4_SKBS hw flag
+
+The driver should set this flag if the hardware requires tx skb data
+(starting with the LLC header) to be aligned to 4 bytes.
+
+Padding is added after ieee80211_hdr, before IV/LLC.
+
+Before this patch, we have to do memmove(hdrlen) twice in the driver:
+Once before we pass this to HW and once again in tx completion
+(to fix up the skb for monitor mode).
+
+With this patch we can skip this memmove() and thus reduce CPU cycles in
+the data path.
+
+Signed-off-by: Janusz Dziedzic <janusz.dziedzic@tieto.com>
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -2140,6 +2140,9 @@ struct ieee80211_txq {
+  * @IEEE80211_HW_TX_STATUS_NO_AMPDU_LEN: Driver does not report accurate A-MPDU
+  *	length in tx status information
+  *
++ * @IEEE80211_HW_TX_NEEDS_ALIGNED4_SKBS: Driver need aligned skbs to four-byte.
++ *	Padding will be added after ieee80211_hdr, before IV/LLC.
++ *
+  * @NUM_IEEE80211_HW_FLAGS: number of hardware flags, used for sizing arrays
+  */
+ enum ieee80211_hw_flags {
+@@ -2186,6 +2189,7 @@ enum ieee80211_hw_flags {
+ 	IEEE80211_HW_DEAUTH_NEED_MGD_TX_PREP,
+ 	IEEE80211_HW_DOESNT_SUPPORT_QOS_NDP,
+ 	IEEE80211_HW_TX_STATUS_NO_AMPDU_LEN,
++	IEEE80211_HW_TX_NEEDS_ALIGNED4_SKBS,
+ 
+ 	/* keep last, obviously */
+ 	NUM_IEEE80211_HW_FLAGS
+@@ -2472,6 +2476,40 @@ ieee80211_get_alt_retry_rate(const struc
+ void ieee80211_free_txskb(struct ieee80211_hw *hw, struct sk_buff *skb);
+ 
+ /**
++ * ieee80211_hdr_padsize - get size of padding between 802.11 header and LLC
++ * @hw: the hardware
++ * @hdrlen: 802.11 header length
++ */
++static inline unsigned int
++ieee80211_hdr_padsize(struct ieee80211_hw *hw, unsigned int hdrlen)
++{
++	/*
++	 * While hdrlen is already aligned to two-byte boundaries,
++	 * simple check with & 2 will return correct padsize.
++	 */
++	if (ieee80211_hw_check(hw, TX_NEEDS_ALIGNED4_SKBS))
++		return hdrlen & 2;
++	return 0;
++}
++
++/**
++ * ieee80211_padded_hdrlen - get padded 802.11 header size
++ * @hw: the hardware
++ * @fc: frame control field in little-endian format
++ */
++static inline unsigned int
++ieee80211_padded_hdrlen(struct ieee80211_hw *hw, __le16 fc)
++{
++	unsigned int hdrlen;
++
++	hdrlen = ieee80211_hdrlen(fc);
++	hdrlen += ieee80211_hdr_padsize(hw, hdrlen);
++
++	return hdrlen;
++}
++
++
++/**
+  * DOC: Hardware crypto acceleration
+  *
+  * mac80211 is capable of taking advantage of many hardware
+--- a/net/mac80211/iface.c
++++ b/net/mac80211/iface.c
+@@ -1871,6 +1871,10 @@ int ieee80211_if_add(struct ieee80211_lo
+ 					+ 8 /* rfc1042/bridge tunnel */
+ 					- ETH_HLEN /* ethernet hard_header_len */
+ 					+ IEEE80211_ENCRYPT_HEADROOM;
++
++		if (ieee80211_hw_check(&local->hw, TX_NEEDS_ALIGNED4_SKBS))
++			ndev->needed_headroom += 2; /* padding */
++
+ 		ndev->needed_tailroom = IEEE80211_ENCRYPT_TAILROOM;
+ 
+ 		ret = dev_alloc_name(ndev, ndev->name);
+--- a/net/mac80211/mesh_pathtbl.c
++++ b/net/mac80211/mesh_pathtbl.c
+@@ -103,13 +103,15 @@ void mesh_path_assign_nexthop(struct mes
+ static void prepare_for_gate(struct sk_buff *skb, char *dst_addr,
+ 			     struct mesh_path *gate_mpath)
+ {
++	struct ieee80211_sub_if_data *sdata = gate_mpath->sdata;
++	struct ieee80211_hw *hw = &sdata->local->hw;
+ 	struct ieee80211_hdr *hdr;
+ 	struct ieee80211s_hdr *mshdr;
+ 	int mesh_hdrlen, hdrlen;
+ 	char *next_hop;
+ 
+ 	hdr = (struct ieee80211_hdr *) skb->data;
+-	hdrlen = ieee80211_hdrlen(hdr->frame_control);
++	hdrlen = ieee80211_padded_hdrlen(hw, hdr->frame_control);
+ 	mshdr = (struct ieee80211s_hdr *) (skb->data + hdrlen);
+ 
+ 	if (!(mshdr->flags & MESH_FLAGS_AE)) {
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -2597,7 +2597,7 @@ ieee80211_rx_h_mesh_fwding(struct ieee80
+ 	struct ieee80211_local *local = rx->local;
+ 	struct ieee80211_sub_if_data *sdata = rx->sdata;
+ 	struct ieee80211_if_mesh *ifmsh = &sdata->u.mesh;
+-	u16 ac, q, hdrlen;
++	u16 ac, q, hdrlen, padsize;
+ 	int tailroom = 0;
+ 
+ 	hdr = (struct ieee80211_hdr *) skb->data;
+@@ -2688,7 +2688,9 @@ ieee80211_rx_h_mesh_fwding(struct ieee80
+ 	if (sdata->crypto_tx_tailroom_needed_cnt)
+ 		tailroom = IEEE80211_ENCRYPT_TAILROOM;
+ 
+-	fwd_skb = skb_copy_expand(skb, local->tx_headroom +
++	padsize = ieee80211_hdr_padsize(&local->hw, hdrlen);
++
++	fwd_skb = skb_copy_expand(skb, local->tx_headroom + padsize +
+ 				       sdata->encrypt_headroom,
+ 				  tailroom, GFP_ATOMIC);
+ 	if (!fwd_skb)
+@@ -2720,6 +2722,12 @@ ieee80211_rx_h_mesh_fwding(struct ieee80
+ 		return RX_DROP_MONITOR;
+ 	}
+ 
++	if (padsize) {
++		skb_push(fwd_skb, padsize);
++		memmove(fwd_skb->data, skb->data + padsize, hdrlen);
++		memset(fwd_skb->data + hdrlen, 0, padsize);
++	}
++
+ 	IEEE80211_IFSTA_MESH_CTR_INC(ifmsh, fwded_frames);
+ 	ieee80211_add_pending_skb(local, fwd_skb);
+  out:
+--- a/net/mac80211/sta_info.h
++++ b/net/mac80211/sta_info.h
+@@ -311,7 +311,7 @@ struct ieee80211_fast_tx {
+ 	u8 hdr_len;
+ 	u8 sa_offs, da_offs, pn_offs;
+ 	u8 band;
+-	u8 hdr[30 + 2 + IEEE80211_FAST_XMIT_MAX_IV +
++	u8 hdr[30 + 2 + 2 + IEEE80211_FAST_XMIT_MAX_IV +
+ 	       sizeof(rfc1042_header)] __aligned(2);
+ 
+ 	struct rcu_head rcu_head;
+--- a/net/mac80211/status.c
++++ b/net/mac80211/status.c
+@@ -515,6 +515,7 @@ static void ieee80211_report_used_skb(st
+ {
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	struct ieee80211_hdr *hdr = (void *)skb->data;
++	struct ieee80211_hw *hw = &local->hw;
+ 	bool acked = info->flags & IEEE80211_TX_STAT_ACK;
+ 
+ 	if (dropped)
+@@ -531,7 +532,7 @@ static void ieee80211_report_used_skb(st
+ 			skb->dev = NULL;
+ 		} else {
+ 			unsigned int hdr_size =
+-				ieee80211_hdrlen(hdr->frame_control);
++				ieee80211_padded_hdrlen(hw, hdr->frame_control);
+ 
+ 			/* Check to see if packet is a TDLS teardown packet */
+ 			if (ieee80211_is_data(hdr->frame_control) &&
+@@ -655,9 +656,22 @@ void ieee80211_tx_monitor(struct ieee802
+ 	struct sk_buff *skb2;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	struct ieee80211_sub_if_data *sdata;
++	struct ieee80211_hdr *hdr = (void *)skb->data;
+ 	struct net_device *prev_dev = NULL;
++	unsigned int hdrlen, padsize;
+ 	int rtap_len;
+ 
++	/* Remove padding if was added */
++	if (ieee80211_hw_check(&local->hw, TX_NEEDS_ALIGNED4_SKBS)) {
++		hdrlen = ieee80211_hdrlen(hdr->frame_control);
++		padsize = ieee80211_hdr_padsize(&local->hw, hdrlen);
++
++		if (padsize && skb->len > hdrlen + padsize) {
++			memmove(skb->data + padsize, skb->data, hdrlen);
++			skb_pull(skb, padsize);
++		}
++	}
++
+ 	/* send frame to monitor interfaces now */
+ 	rtap_len = ieee80211_tx_radiotap_len(info);
+ 	if (WARN_ON_ONCE(skb_headroom(skb) < rtap_len)) {
+--- a/net/mac80211/tkip.c
++++ b/net/mac80211/tkip.c
+@@ -201,10 +201,12 @@ void ieee80211_get_tkip_p2k(struct ieee8
+ {
+ 	struct ieee80211_key *key = (struct ieee80211_key *)
+ 			container_of(keyconf, struct ieee80211_key, conf);
++	struct ieee80211_hw *hw = &key->local->hw;
+ 	const u8 *tk = &key->conf.key[NL80211_TKIP_DATA_OFFSET_ENCR_KEY];
+ 	struct tkip_ctx *ctx = &key->u.tkip.tx;
+ 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+-	const u8 *data = (u8 *)hdr + ieee80211_hdrlen(hdr->frame_control);
++	const u8 *data = (u8 *)hdr + ieee80211_padded_hdrlen(hw,
++							hdr->frame_control);
+ 	u32 iv32 = get_unaligned_le32(&data[4]);
+ 	u16 iv16 = data[2] | (data[0] << 8);
+ 
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -1175,8 +1175,7 @@ ieee80211_tx_prepare(struct ieee80211_su
+ 	info->flags &= ~IEEE80211_TX_INTFL_NEED_TXPROCESSING;
+ 
+ 	hdr = (struct ieee80211_hdr *) skb->data;
+-
+-	tx->hdrlen = ieee80211_hdrlen(hdr->frame_control);
++	tx->hdrlen = ieee80211_padded_hdrlen(&local->hw, hdr->frame_control);
+ 
+ 	if (likely(sta)) {
+ 		if (!IS_ERR(sta))
+@@ -2222,7 +2221,7 @@ netdev_tx_t ieee80211_monitor_start_xmit
+ 		goto fail;
+ 
+ 	hdr = (struct ieee80211_hdr *)(skb->data + len_rthdr);
+-	hdrlen = ieee80211_hdrlen(hdr->frame_control);
++	hdrlen = ieee80211_padded_hdrlen(&local->hw, hdr->frame_control);
+ 
+ 	if (skb->len < len_rthdr + hdrlen)
+ 		goto fail;
+@@ -2440,7 +2439,7 @@ static struct sk_buff *ieee80211_build_h
+ 	struct ieee80211_chanctx_conf *chanctx_conf;
+ 	struct ieee80211_sub_if_data *ap_sdata;
+ 	enum nl80211_band band;
+-	int ret;
++	int padsize, ret;
+ 
+ 	if (IS_ERR(sta))
+ 		sta = NULL;
+@@ -2739,7 +2738,9 @@ static struct sk_buff *ieee80211_build_h
+ 	}
+ 
+ 	skb_pull(skb, skip_header_bytes);
++	padsize = ieee80211_hdr_padsize(&local->hw, hdrlen);
+ 	head_need = hdrlen + encaps_len + meshhdrlen - skb_headroom(skb);
++	head_need += padsize;
+ 
+ 	/*
+ 	 * So we need to modify the skb header and hence need a copy of
+@@ -2772,6 +2773,9 @@ static struct sk_buff *ieee80211_build_h
+ 		memcpy(skb_push(skb, meshhdrlen), &mesh_hdr, meshhdrlen);
+ #endif
+ 
++	if (padsize)
++		memset(skb_push(skb, padsize), 0, padsize);
++
+ 	if (ieee80211_is_data_qos(fc)) {
+ 		__le16 *qos_control;
+ 
+@@ -2947,6 +2951,8 @@ void ieee80211_check_fast_xmit(struct st
+ 		fc |= cpu_to_le16(IEEE80211_STYPE_QOS_DATA);
+ 	}
+ 
++	build.hdr_len += ieee80211_hdr_padsize(&local->hw, build.hdr_len);
++
+ 	/* We store the key here so there's no point in using rcu_dereference()
+ 	 * but that's fine because the code that changes the pointers will call
+ 	 * this function after doing so. For a single CPU that would be enough,
+@@ -3525,7 +3531,7 @@ begin:
+ 	tx.local = local;
+ 	tx.skb = skb;
+ 	tx.sdata = vif_to_sdata(info->control.vif);
+-	tx.hdrlen = ieee80211_hdrlen(hdr->frame_control);
++	tx.hdrlen = ieee80211_padded_hdrlen(hw, hdr->frame_control);
+ 
+ 	if (txq->sta)
+ 		tx.sta = container_of(txq->sta, struct sta_info, sta);
+@@ -4009,7 +4015,7 @@ ieee80211_build_data_template(struct iee
+ 	hdr = (void *)skb->data;
+ 	tx.sta = sta_info_get(sdata, hdr->addr1);
+ 	tx.skb = skb;
+-	tx.hdrlen = ieee80211_hdrlen(hdr->frame_control);
++	tx.hdrlen = ieee80211_padded_hdrlen(&tx.local->hw, hdr->frame_control);
+ 
+ 	if (ieee80211_tx_h_select_key(&tx) != TX_CONTINUE) {
+ 		rcu_read_unlock();
+--- a/net/mac80211/debugfs.c
++++ b/net/mac80211/debugfs.c
+@@ -215,6 +215,7 @@ static const char *hw_flag_names[] = {
+ 	FLAG(DEAUTH_NEED_MGD_TX_PREP),
+ 	FLAG(DOESNT_SUPPORT_QOS_NDP),
+ 	FLAG(TX_STATUS_NO_AMPDU_LEN),
++	FLAG(TX_NEEDS_ALIGNED4_SKBS),
+ #undef FLAG
+ };
+ 
