@@ -46,6 +46,8 @@ proto_dhcp_setup() {
 	json_for_each_item proto_dhcp_add_sendopts sendopts dhcpopts
 
 	[ -z "$hostname" ] && hostname="$(cat /proc/sys/kernel/hostname)"
+	[ "$hostname" = "*" ] && hostname=
+
 	[ "$defaultreqopts" = 0 ] && defaultreqopts="-o" || defaultreqopts=
 	[ "$broadcast" = 1 ] && broadcast="-B" || broadcast=
 	[ "$release" = 1 ] && release="-R" || release=
