@@ -77,7 +77,7 @@ define Device/asus_rt-ac58u
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
 	DTB_SIZE := 65536
-	DEVICE_TITLE := Asus RT-AC58U
+	DEVICE_TITLE := Asus RT-AC58U / RT-AC1300UHP
 	IMAGE_SIZE := 20439364
 	FILESYSTEMS := squashfs
 #	Someone - in their infinite wisdom - decided to put the firmware
