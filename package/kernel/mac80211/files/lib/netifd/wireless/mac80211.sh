@@ -99,6 +99,8 @@ mac80211_hostapd_setup_base() {
 	json_get_vars noscan ht_coex
 	json_get_values ht_capab_list ht_capab
 
+	[ -n "$noscan" -a "$noscan" -gt 0 ] && hostapd_noscan=1
+
 	ieee80211n=1
 	ht_capab=
 	case "$htmode" in
@@ -307,7 +309,7 @@ mac80211_hostapd_setup_base() {
 	cat >> "$hostapd_conf_file" <<EOF
 ${channel:+channel=$channel}
 ${channel_list:+chanlist=$channel_list}
-${noscan:+noscan=$noscan}
+${hostapd_noscan:+noscan=1}
 $base_cfg
 
 EOF
@@ -735,6 +737,10 @@ mac80211_interface_cleanup() {
 	done
 }
 
+mac80211_set_noscan() {
+	hostapd_noscan=1
+}
+
 drv_mac80211_cleanup() {
 	hostapd_common_cleanup
 }
@@ -798,9 +804,12 @@ drv_mac80211_setup() {
 
 	has_ap=
 	hostapd_ctrl=
+	hostapd_noscan=
 	for_each_interface "ap" mac80211_check_ap
 
 	rm -f "$hostapd_conf_file"
+
+	for_each_interface "sta adhoc mesh" mac80211_set_noscan
 	[ -n "$has_ap" ] && mac80211_hostapd_setup_base "$phy"
 
 	for_each_interface "sta adhoc mesh monitor" mac80211_prepare_vif
