@@ -8,9 +8,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ath10k-firmware
-PKG_SOURCE_DATE:=2018-10-10
-PKG_SOURCE_VERSION:=d366b80d41309531c0c98b26625f23e318f33e31
-PKG_MIRROR_HASH:=ec06f10e6b1d4f7a28366a893c8a73a000454c2f031fc747381a1fb8aa1e0846
+PKG_SOURCE_DATE:=2019-03-21
+PKG_SOURCE_VERSION:=ba0358e2ecb7a511844ffd2bced4500c86c1c6a1
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
@@ -403,7 +402,7 @@ define Package/ath10k-firmware-qca4019/install
 		$(PKG_BUILD_DIR)/QCA4019/hw1.0/board-2.bin \
 		$(1)/lib/firmware/ath10k/QCA4019/hw1.0/
 	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/QCA4019/hw1.0/3.5.3/firmware-5.bin_10.4-3.5.3-00057 \
+		$(PKG_BUILD_DIR)/QCA4019/hw1.0/3.6/firmware-5.bin_10.4-3.6-00140 \
 		$(1)/lib/firmware/ath10k/QCA4019/hw1.0/firmware-5.bin
 endef
 
@@ -473,7 +472,7 @@ define Package/ath10k-firmware-qca9984/install
 		$(PKG_BUILD_DIR)/QCA9984/hw1.0/board-2.bin \
 		$(1)/lib/firmware/ath10k/QCA9984/hw1.0/board-2.bin
 	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/QCA9984/hw1.0/3.5.3/firmware-5.bin_10.4-3.5.3-00053 \
+		$(PKG_BUILD_DIR)/QCA9984/hw1.0/3.9.0.2/firmware-5.bin_10.4-3.9.0.2-00040 \
 		$(1)/lib/firmware/ath10k/QCA9984/hw1.0/firmware-5.bin
 endef
 
@@ -606,13 +605,13 @@ define Package/ath10k-firmware-qca9888-ct-htt/install
 		$(1)/lib/firmware/ath10k/QCA9888/hw2.0/ct-firmware-5.bin
 endef
 
-#$(eval $(call BuildPackage,ath10k-firmware-qca9887))
-#$(eval $(call BuildPackage,ath10k-firmware-qca9888))
-#$(eval $(call BuildPackage,ath10k-firmware-qca988x))
-#$(eval $(call BuildPackage,ath10k-firmware-qca99x0))
-#$(eval $(call BuildPackage,ath10k-firmware-qca6174))
-#$(eval $(call BuildPackage,ath10k-firmware-qca9984))
-#$(eval $(call BuildPackage,ath10k-firmware-qca4019))
+$(eval $(call BuildPackage,ath10k-firmware-qca9887))
+$(eval $(call BuildPackage,ath10k-firmware-qca9888))
+$(eval $(call BuildPackage,ath10k-firmware-qca988x))
+$(eval $(call BuildPackage,ath10k-firmware-qca99x0))
+$(eval $(call BuildPackage,ath10k-firmware-qca6174))
+$(eval $(call BuildPackage,ath10k-firmware-qca9984))
+$(eval $(call BuildPackage,ath10k-firmware-qca4019))
 
 $(eval $(call BuildPackage,ath10k-firmware-qca9887-ct))
 $(eval $(call BuildPackage,ath10k-firmware-qca9887-ct-htt))
