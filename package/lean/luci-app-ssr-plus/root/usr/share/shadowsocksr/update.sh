@@ -17,6 +17,7 @@ wget-ssl --no-check-certificate https://raw.githubusercontent.com/gfwlist/gfwlis
 /usr/bin/ssr-gfw
 
 if [ -s "/tmp/gfwnew.txt" ];then
+  sed -i '/gov.cn/d' /tmp/gfwnew.txt
   if ( ! cmp -s /tmp/gfwnew.txt /etc/dnsmasq.ssr/gfw_list.conf );then
     mv /tmp/gfwnew.txt /etc/dnsmasq.ssr/gfw_list.conf
     echo "copy"
