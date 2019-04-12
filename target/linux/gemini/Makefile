@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 ARCH:=arm
 BOARD:=gemini
 BOARDNAME:=Cortina Systems CS351x
-FEATURES:=squashfs pci rtc usb dt gpio display
+FEATURES:=squashfs pci rtc usb dt gpio display ext4 rootfs-part boot-part
 CPU_TYPE:=fa526
 MAINTAINER:=Roman Yeryomin <roman@advem.lv>
 
@@ -26,7 +26,7 @@ include $(INCLUDE_DIR)/target.mk
 DEFAULT_PACKAGES += \
 	kmod-usb-core kmod-usb-fotg210 \
 	kmod-usb-ledtrig-usbport \
-	kmod-leds-gpio kmod-led-trig-heartbeat \
+	kmod-leds-gpio kmod-ledtrig-heartbeat \
 	kmod-gpio-button-hotplug
 
 $(eval $(call BuildTarget))
