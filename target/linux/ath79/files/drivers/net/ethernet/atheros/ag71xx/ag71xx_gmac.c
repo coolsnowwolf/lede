@@ -53,6 +53,7 @@ static void ag71xx_setup_gmac_934x(struct device_node *np, void __iomem *base)
 
 	ag71xx_of_bit(np, "rgmii-gmac0", &val, AR934X_ETH_CFG_RGMII_GMAC0);
 	ag71xx_of_bit(np, "mii-gmac0", &val, AR934X_ETH_CFG_MII_GMAC0);
+	ag71xx_of_bit(np, "mii-gmac0-slave", &val, AR934X_ETH_CFG_MII_GMAC0_SLAVE);
 	ag71xx_of_bit(np, "gmii-gmac0", &val, AR934X_ETH_CFG_GMII_GMAC0);
 	ag71xx_of_bit(np, "switch-phy-swap", &val, AR934X_ETH_CFG_SW_PHY_SWAP);
 	ag71xx_of_bit(np, "switch-only-mode", &val,

@@ -88,7 +88,7 @@ platform_check_image() {
 		local kernel_length=`(tar xf $tar_file sysupgrade-$board/kernel -O | wc -c) 2> /dev/null`
 		local rootfs_length=`(tar xf $tar_file sysupgrade-$board/root -O | wc -c) 2> /dev/null`
 		[ "$kernel_length" = 0 -o "$rootfs_length" = 0 ] && {
-			echo "The upgarde image is corrupt."
+			echo "The upgrade image is corrupt."
 			return 1
 		}
 		return 0
