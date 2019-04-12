@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray-core
 PKG_VERSION:=4.18.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/v2ray/v2ray-core/tar.gz/v$(PKG_VERSION)?
@@ -55,6 +55,7 @@ define v2ray-core/templates
   define Package/$(1)
   $$(call v2ray-core/GoBinDefault)
     TITLE+= ($(1))
+    DEPENDS:=+ca-certificates
   endef
 
   define Package/$(1)/description
@@ -98,6 +99,7 @@ define Package/v2ray-core
 $(call v2ray-core/GoBinDefault)
   TITLE+= (full)
   PROVIDES:=$(V2RAY_COMPONENTS) v2ray-assets
+  DEPENDS:=+ca-certificates
 endef
 
 define Package/v2ray-core/description
