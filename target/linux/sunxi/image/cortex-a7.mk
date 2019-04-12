@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2013-2016 OpenWrt.org
+# Copyright (C) 2013-2019 OpenWrt.org
 # Copyright (C) 2016 Yousong Zhou
 #
 # This is free software, licensed under the GNU General Public License v2.
@@ -127,6 +127,16 @@ endef
 
 TARGET_DEVICES += sun8i-h2-plus-orangepi-r1
 
+define Device/sun8i-h3-bananapi-m2-plus
+  DEVICE_TITLE:=Sinovoip Banana Pi M2 Plus
+  DEVICE_PACKAGES:=kmod-rtc-sunxi \
+	kmod-leds-gpio kmod-ledtrig-heartbeat \
+	kmod-brcmfmac brcmfmac-firmware-43430a0-sdio wpad-basic
+  SUPPORTED_DEVICES:=sinovoip,bananapi-m2-plus
+  SUNXI_DTS:=sun8i-h3-bananapi-m2-plus
+endef
+
+TARGET_DEVICES += sun8i-h3-bananapi-m2-plus
 
 define Device/sun8i-h3-nanopi-m1-plus
   DEVICE_TITLE:=FriendlyArm NanoPi M1 Plus
@@ -149,6 +159,16 @@ endef
 TARGET_DEVICES += sun8i-h3-nanopi-neo
 
 
+define Device/sun8i-h3-orangepi-one
+  DEVICE_TITLE:=Xunlong Orange Pi One
+  DEVICE_PACKAGES:=kmod-rtc-sunxi
+  SUPPORTED_DEVICES:=xunlong,orangepi-one
+  SUNXI_DTS:=sun8i-h3-orangepi-one
+endef
+
+TARGET_DEVICES += sun8i-h3-orangepi-one
+
+
 define Device/sun8i-h3-orangepi-pc
   DEVICE_TITLE:=Xunlong Orange Pi PC
   DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-gpio-button-hotplug
@@ -157,6 +177,16 @@ define Device/sun8i-h3-orangepi-pc
 endef
 
 TARGET_DEVICES += sun8i-h3-orangepi-pc
+
+
+define Device/sun8i-h3-orangepi-pc-plus
+  DEVICE_TITLE:=Xunlong Orange Pi PC Plus
+  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-gpio-button-hotplug
+  SUPPORTED_DEVICES:=xunlong,orangepi-pc-plus
+  SUNXI_DTS:=sun8i-h3-orangepi-pc-plus
+endef
+
+TARGET_DEVICES += sun8i-h3-orangepi-pc-plus
 
 
 define Device/sun8i-h3-orangepi-plus
