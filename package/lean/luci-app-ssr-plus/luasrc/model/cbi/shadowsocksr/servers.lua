@@ -86,7 +86,7 @@ function o.cfgvalue(...)
 	return Value.cfgvalue(...) or "?"
 end
 
-if nixio.fs.access("/usr/bin/ssr-kcptun") then
+if nixio.fs.access("/usr/bin/kcptun-client") then
 
 o = s:option(DummyValue, "kcp_enable", translate("KcpTun"))
 function o.cfgvalue(...)
