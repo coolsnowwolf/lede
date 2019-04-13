@@ -10,8 +10,8 @@ include $(INCLUDE_DIR)/image.mk
 # Cook a "WRGG" image, this board is apparently one in the D-Link
 # WRGG family and uses the exact same firmware format as other
 # D-Link devices.
-define Build/dir685-images
-	mkwrggimg -i $(IMAGE_KERNEL) \
+define Build/dir685-image
+	mkwrggimg -i $@ \
 	-o $@.new \
 	-d /dev/mtdblock/1 \
 	-s wrgns01_dlwbr_dir685RBWW \
@@ -22,12 +22,19 @@ define Build/dir685-images
 	mv $@.new $@
 endef
 
+# Padding added after the rootfs to an even 128k boundary
+# as this is 128k eraseblocks flash.
+define Build/dir685-pad-rootfs
+	$(STAGING_DIR_HOST)/bin/padjffs2 $(IMAGE_ROOTFS) -c 128 >>$@
+endef
+
 # Build D-Link DNS-313 images using the special header tool.
 # rootfs.tgz and rd.tgz contains nothing, we only need them
 # to satisfy the boot loader on the device. The zImage is
 # the only real content.
 define Build/dns313-images
 	mkdir -p $@.tmp/.boot
+	chmod 755 $@.tmp/.boot
 
 	echo "dummy" > $@.tmp/dummyfile
 
@@ -38,9 +45,20 @@ define Build/dns313-images
 	dns313-header $(IMAGE_KERNEL) \
 		$@.tmp/.boot/zImage
 
-	tar --sort=name --owner=0 --group=0 --numeric-owner -czf $@ \
-		-C $@.tmp .boot \
-		$(if $(SOURCE_DATE_EPOCH),--mtime="@$(SOURCE_DATE_EPOCH)")
+	rm $@.tmp/dummyfile
+
+	genext2fs --block-size $(BLOCKSIZE:%k=%Ki) \
+		--size-in-blocks $$((1024 * $(CONFIG_TARGET_KERNEL_PARTSIZE))) \
+		--squash-uids \
+		--root $@.tmp $@.tmp-boot
+
+	# The device firmware needs revision 1 of EXT2
+	tune2fs -O filetype $@.tmp-boot
+	e2fsck -pDf $@.tmp-boot > /dev/null
+
+	./dns313_gen_hdd_img.sh $@ $@.tmp-boot $(IMAGE_ROOTFS) \
+		$(CONFIG_TARGET_KERNEL_PARTSIZE) \
+		$(CONFIG_TARGET_ROOTFS_PARTSIZE)
 
 	rm -rf $@.tmp
 endef
@@ -106,8 +124,19 @@ GEMINI_NAS_PACKAGES:=kmod-md-mod kmod-md-linear kmod-md-multipath \
 		kmod-fs-btrfs kmod-fs-cifs kmod-fs-nfs \
 		kmod-fs-nfsd kmod-fs-ntfs kmod-fs-reiserfs kmod-fs-vfat \
 		kmod-nls-utf8 kmod-usb-storage-extras \
-		samba36-server mdadm cfdisk fdisk e2fsprogs badblocks
+		samba36-server mdadm cfdisk fdisk e2fsprogs badblocks \
+		partx-utils
 
+# The DIR-685 flash layout is kernel in WRGG format, padded and followed
+# by the appended rootfs followed by some reasonable JFFS padding, the
+# remainder will be used by JFFS2 through overlayfs.
+#
+# - For the factory image, the WRGG image includes the rootfs so that the
+#   default firmware will flash it properly as all it knows is WRGG format.
+# - For the sysupgrade, we do not include the rootfs in the kernel image
+#   so it is not needelessly tossed into the RAM by the boot loader.
+#   This will be flashed from OpenWrt userland anyways so we only need
+#   the minimum to make the boot loader happy.
 define Device/dlink_dir-685
 	DEVICE_TITLE := D-Link DIR-685 Xtreme N Storage Router
 	DEVICE_DTS := gemini-dlink-dir-685
@@ -115,16 +144,20 @@ define Device/dlink_dir-685
 			kmod-switch-rtl8366rb swconfig \
 			kmod-rt2800-pci
 	IMAGES := factory.bin
-	IMAGE/factory.bin := dir685-images
+	# Pad to 128k erase blocks with 160 bytes WRGG header
+	IMAGE/factory.bin := append-kernel | pad-offset 128k 160 | append-rootfs | dir685-pad-rootfs | dir685-image
 endef
 TARGET_DEVICES += dlink_dir-685
 
 define Device/dlink_dns-313
 	DEVICE_TITLE := D-Link DNS-313 1-Bay Network Storage Enclosure
 	DEVICE_DTS := gemini-dlink-dns-313
+	DEVICE_TYPE := nas
 	DEVICE_PACKAGES := $(GEMINI_NAS_PACKAGES)
-	IMAGES := factory.bin
-	IMAGE/factory.bin := dns313-images
+	BLOCKSIZE := 1k
+	FILESYSTEMS := ext4
+	IMAGES := factory.bin.gz
+	IMAGE/factory.bin.gz := dns313-images | gzip
 endef
 TARGET_DEVICES += dlink_dns-313
 
@@ -147,6 +180,7 @@ define Device/raidsonic_ib-4220-b
 	$(Device/itian-raidsonic)
 	DEVICE_TITLE := Raidsonic NAS IB-4220-B
 	DEVICE_DTS := gemini-nas4220b
+	DEVICE_TYPE := nas
 endef
 TARGET_DEVICES += raidsonic_ib-4220-b
 
