@@ -86,6 +86,7 @@ v2ray_proxy={
     },
     streamSettings = {
         network = ucursor:get(conf_path, "v2raypro", "network_type"),
+	tlsSettings = { allowInsecure=true },
         security = (ucursor:get(conf_path, "v2raypro", "tls") == '1') and "tls" or "none",
         tcpSettings = (v2ray_stream_mode == "tcp" and ucursor:get(conf_path, "v2raypro", "tcp_obfs") == "http") and {
             connectionReuse = true,
@@ -182,6 +183,7 @@ if v2ray_enReverse then
         },
         streamSettings = {
             network = ucursor:get(conf_path, "v2raypro", "rnetwork_type"),
+	    tlsSettings = { allowInsecure=true },
             security = (ucursor:get(conf_path, "v2raypro", "rtls") == '1') and "tls" or "none",
             tcpSettings = (v2ray_stream_tunnel_mode == "tcp" and ucursor:get(conf_path, "v2raypro", "rtcp_obfs") == "http") and {
                 connectionReuse = true,
