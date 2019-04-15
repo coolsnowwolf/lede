@@ -910,6 +910,13 @@ define Device/kn
 endef
 TARGET_DEVICES += kn
 
+define Device/zyxel_keenetic-start
+  DTS := kn_st
+  IMAGE_SIZE := $(ralink_default_fw_size_4M)
+  DEVICE_TITLE := ZyXEL Keenetic Start
+endef
+TARGET_DEVICES += zyxel_keenetic-start
+
 define Device/zorlik_zl5900v2
   DTS := ZL5900V2
   DEVICE_TITLE := Zorlik ZL5900V2

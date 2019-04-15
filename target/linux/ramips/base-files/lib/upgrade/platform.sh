@@ -13,6 +13,7 @@ platform_pre_upgrade() {
 	local board=$(board_name)
 
 	case "$board" in
+	mikrotik,rb750gr3|\
 	mikrotik,rbm11g|\
 	mikrotik,rbm33g)
 		[ -z "$(rootfs_type)" ] && mtd erase firmware
@@ -36,14 +37,17 @@ platform_do_upgrade() {
 
 	case "$board" in
 	hc5962|\
-	mir3g|\
-	mir4|\
 	r6220|\
 	netgear,r6350|\
-	xiaomi,miwifi-r3|\
 	ubnt-erx|\
-	ubnt-erx-sfp)
+	ubnt-erx-sfp|\
+	xiaomi,mir3g|\
+	xiaomi,mir3p)
 		nand_do_upgrade "$ARGV"
+		;;
+	tplink,c50-v4)
+		MTD_ARGS="-t romfile"
+		default_do_upgrade "$ARGV"
 		;;
 	*)
 		default_do_upgrade "$ARGV"
