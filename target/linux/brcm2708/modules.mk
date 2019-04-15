@@ -75,7 +75,7 @@ define KernelPackage/sound-soc-bcm2835-i2s
   FILES:= \
 	$(LINUX_DIR)/sound/soc/bcm/snd-soc-bcm2835-i2s.ko
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-bcm2835-i2s)
-  DEPENDS:=@TARGET_brcm2708 +kmod-regmap +kmod-sound-soc-core
+  DEPENDS:=@TARGET_brcm2708 +kmod-regmap-mmio +kmod-sound-soc-core
   $(call AddDepends/sound)
 endef
 
@@ -93,7 +93,8 @@ define KernelPackage/sound-soc-3dlab-nano-player
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-3dlab-nano-player)
   DEPENDS:= \
 	@LINUX_4_14 \
-	kmod-sound-soc-bcm2835-i2s
+	kmod-sound-soc-bcm2835-i2s \
+	+kmod-regmap-i2c
 endef
 
 define KernelPackage/sound-soc-3dlab-nano-player/description
@@ -248,7 +249,7 @@ define KernelPackage/sound-soc-allo-katana-codec
   DEPENDS:= \
 	@LINUX_4_14 \
 	+kmod-i2c-bcm2708 \
-	+kmod-regmap \
+	+kmod-regmap-core \
 	kmod-sound-soc-bcm2835-i2s
   $(call AddDepends/sound)
 endef

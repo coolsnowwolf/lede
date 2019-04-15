@@ -54,7 +54,7 @@ $(eval $(call KernelPackage,iio-ad799x))
 
 define KernelPackage/iio-hmc5843
   SUBMENU:=$(IIO_MENU)
-  DEPENDS:=+kmod-i2c-core +kmod-iio-core +kmod-regmap
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core +kmod-regmap-i2c
   TITLE:=Honeywell HMC58x3 Magnetometer
   KCONFIG:= CONFIG_SENSORS_HMC5843_I2C
   FILES:= \
@@ -132,7 +132,7 @@ $(eval $(call KernelPackage,iio-dht11))
 define KernelPackage/iio-bmp280
   SUBMENU:=$(IIO_MENU)
   TITLE:=BMP180/BMP280/BME280 pressure/temperatur sensor
-  DEPENDS:=@!LINUX_3_18 +kmod-iio-core +kmod-regmap
+  DEPENDS:=@!LINUX_3_18 +kmod-iio-core +kmod-regmap-core
   KCONFIG:=CONFIG_BMP280
   FILES:=$(LINUX_DIR)/drivers/iio/pressure/bmp280.ko
 endef
@@ -149,7 +149,7 @@ $(eval $(call KernelPackage,iio-bmp280))
 define KernelPackage/iio-bmp280-i2c
   SUBMENU:=$(IIO_MENU)
   TITLE:=BMP180/BMP280/BME280 pressure/temperatur sensor (I2C)
-  DEPENDS:=+kmod-iio-bmp280 +kmod-i2c-core
+  DEPENDS:=+kmod-iio-bmp280 +kmod-i2c-core +kmod-regmap-i2c
   KCONFIG:=CONFIG_BMP280_I2C
   FILES:=$(LINUX_DIR)/drivers/iio/pressure/bmp280-i2c.ko
   AUTOLOAD:=$(call AutoProbe,iio-bmp280-i2c)
