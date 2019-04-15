@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray-core
 PKG_VERSION:=4.18.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/v2ray/v2ray-core/tar.gz/v$(PKG_VERSION)?
@@ -149,6 +149,7 @@ define Build/Compile
 	$(eval GO_PKG_BUILD_PKG:=v2ray.com/core/main)
 	$(call GoPackage/Build/Compile,-ldflags "-s -w")
 	mv -f $(GO_PKG_BUILD_BIN_DIR)/main $(GO_PKG_BUILD_BIN_DIR)/v2ray
+	chmod +x $(GO_PKG_BUILD_BIN_DIR)/v2ray && upx --ultra-brute $(GO_PKG_BUILD_BIN_DIR)/v2ray
 
 	$(eval GO_PKG_BUILD_PKG:=v2ray.com/core/infra/control/main)
 	$(call GoPackage/Build/Compile,-ldflags "-s -w")
