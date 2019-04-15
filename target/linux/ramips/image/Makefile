@@ -114,7 +114,6 @@ define Build/mkdlinkfw
 		-k $(IMAGE_KERNEL) \
 		-r $(IMAGE_ROOTFS) \
 		-o $@ \
-		$(if $(DLINK_IMAGE_OFFSET), -O $(DLINK_IMAGE_OFFSET)) \
 		-s $(DLINK_FIRMWARE_SIZE)
 endef
 
@@ -123,7 +122,6 @@ define Build/mkdlinkfw-factory
 		-m $(DLINK_ROM_ID) -f $(DLINK_FAMILY_MEMBER) \
 		-F $@ \
 		-o $@.new \
-		$(if $(DLINK_IMAGE_OFFSET), -O $(DLINK_IMAGE_OFFSET)) \
 		-s $(DLINK_FIRMWARE_SIZE)
 	mv $@.new $@
 endef
