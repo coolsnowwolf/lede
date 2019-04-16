@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=frp
 PKG_VERSION:=0.25.3
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/fatedier/frp/tar.gz/v$(PKG_VERSION)?
@@ -78,7 +78,6 @@ endef
 
 define Build/Compile
 $(call GoPackage/Build/Compile,-ldflags "-s -w")
-	chmod +x $$(GO_PKG_BUILD_BIN_DIR)/frpc && upx --ultra-brute $$(GO_PKG_BUILD_BIN_DIR)/frpc
 endef
 
 FRP_COMPONENTS:=frpc frps
