@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray-core
 PKG_VERSION:=4.18.0
-PKG_RELEASE:=5
+PKG_RELEASE:=6
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/v2ray/v2ray-core/tar.gz/v$(PKG_VERSION)?
@@ -70,7 +70,7 @@ define v2ray-core/templates
   endef
 endef
 
-V2RAY_COMPONENTS:=v2ray v2ctl
+V2RAY_COMPONENTS:=v2ray
 
 $(foreach component,$(V2RAY_COMPONENTS), \
   $(eval $(call v2ray-core/templates,$(component))) \
@@ -105,7 +105,7 @@ endef
 define Package/v2ray-core/description
 $(call Package/v2ray-core/Default/description)
 
-  This package contains v2ray, v2ctl and v2ray-assets.
+  This package contains v2ray and v2ray-assets.
 endef
 
 define Package/v2ray-core/install
@@ -141,7 +141,6 @@ define Build/Prepare
 		sed -i \
 			"s/\(build[[:space:]]*=[[:space:]]*\"\).*\(\"\)/\1$$$$build\2/" \
 			$(PKG_BUILD_DIR)/core.go ; \
-		$(CP) ./all.go $(PKG_BUILD_DIR)/main/distro/all/all.go ; \
 	)
 endef
 
@@ -149,10 +148,7 @@ define Build/Compile
 	$(eval GO_PKG_BUILD_PKG:=v2ray.com/core/main)
 	$(call GoPackage/Build/Compile,-ldflags "-s -w")
 	mv -f $(GO_PKG_BUILD_BIN_DIR)/main $(GO_PKG_BUILD_BIN_DIR)/v2ray
-
-	$(eval GO_PKG_BUILD_PKG:=v2ray.com/core/infra/control/main)
-	$(call GoPackage/Build/Compile,-ldflags "-s -w")
-	mv -f $(GO_PKG_BUILD_BIN_DIR)/main $(GO_PKG_BUILD_BIN_DIR)/v2ctl
+	chmod +x $(GO_PKG_BUILD_BIN_DIR)/v2ray && upx $(GO_PKG_BUILD_BIN_DIR)/v2ray
 endef
 
 
