@@ -119,11 +119,11 @@ mtk_foe_set_mac(struct mtk_foe_entry *entry, u8 *smac, u8 *dmac)
 }
 
 static int
-mtk_check_hashcollision(struct mtk_eth *eth, u32 hash)
+mtk_check_entry_available(struct mtk_eth *eth, u32 hash)
 {
 	struct mtk_foe_entry entry = ((struct mtk_foe_entry *)eth->foe_table)[hash];
 
-	return (entry.bfib1.state != BIND)? 0:1;
+	return (entry.bfib1.state == BIND)? 0:1;
 }
 
 static void
@@ -156,6 +156,12 @@ int mtk_flow_offload(struct mtk_eth *eth,
 
 	if (otuple->l4proto != IPPROTO_TCP && otuple->l4proto != IPPROTO_UDP)
 		return -EINVAL;
+	
+	if (type == FLOW_OFFLOAD_DEL) {
+		flow = NULL;
+		synchronize_rcu();
+		return 0;
+	}
 
 	switch (otuple->l3proto) {
 	case AF_INET:
@@ -174,29 +180,24 @@ int mtk_flow_offload(struct mtk_eth *eth,
 		return -EINVAL;
 	}
 
-	if (type == FLOW_OFFLOAD_DEL) {
-		orig.bfib1.state = INVALID;
-		reply.bfib1.state = INVALID;
-		flow = NULL;
-		goto write;
+	/* Two-way hash: when hash collision occurs, the hash value will be shifted to the next position. */
+	if (!mtk_check_entry_available(eth, ohash)){       
+		if (!mtk_check_entry_available(eth, ohash + 1))
+			return -EINVAL;
+                ohash += 1;
+        }
+        if (!mtk_check_entry_available(eth, rhash)){
+		if (!mtk_check_entry_available(eth, rhash + 1))
+                        return -EINVAL;
+                rhash += 1;
 	}
 
-	/* Two-way hash: when hash collision occurs, the hash value will be shifted to the next position. */
-	if(mtk_check_hashcollision(eth, ohash))
-		ohash += 1;
-	if(mtk_check_hashcollision(eth, rhash))
-		rhash += 1;
 	mtk_foe_set_mac(&orig, dest->eth_src, dest->eth_dest);
 	mtk_foe_set_mac(&reply, src->eth_src, src->eth_dest);
-
-write:
 	mtk_foe_write(eth, ohash, &orig);
 	mtk_foe_write(eth, rhash, &reply);
 	rcu_assign_pointer(eth->foe_flow_table[ohash], flow);
 	rcu_assign_pointer(eth->foe_flow_table[rhash], flow);
-
-	if (type == FLOW_OFFLOAD_DEL)
-		synchronize_rcu();
 
 	return 0;
 }
@@ -383,8 +384,8 @@ static int mtk_ppe_start(struct mtk_eth *eth)
 	mtk_w32(eth, 0x55555555, MTK_REG_PPE_DFT_CPORT);
 #endif
 
-	/* drop packets with TTL=0 */
-	mtk_m32(eth, 0, MTK_PPE_GLO_CFG_TTL0_DROP, MTK_REG_PPE_GLO_CFG);
+	/* allow packets with TTL=0 */
+	mtk_m32(eth, MTK_PPE_GLO_CFG_TTL0_DROP, 0, MTK_REG_PPE_GLO_CFG);
 
 	/* send all traffic from gmac to the ppe */
 	mtk_m32(eth, 0xffff, 0x4444, MTK_GDMA_FWD_CFG(0));

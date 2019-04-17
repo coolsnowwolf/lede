@@ -52,6 +52,15 @@ define Package/brcmfmac-firmware-43430-sdio/install
 endef
 $(eval $(call BuildPackage,brcmfmac-firmware-43430-sdio))
 
+Package/brcmfmac-firmware-43430a0-sdio = $(call Package/firmware-default,Broadcom BCM43430a0 FullMac SDIO firmware)
+define Package/brcmfmac-firmware-43430a0-sdio/install
+	$(INSTALL_DIR) $(1)/lib/firmware/brcm
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/brcm/brcmfmac43430a0-sdio.bin \
+		$(1)/lib/firmware/brcm/brcmfmac43430a0-sdio.bin
+endef
+$(eval $(call BuildPackage,brcmfmac-firmware-43430a0-sdio))
+
 Package/brcmfmac-firmware-43455-sdio = $(call Package/firmware-default,Broadcom BCM43455 FullMac SDIO firmware)
 define Package/brcmfmac-firmware-43455-sdio/install
 	$(INSTALL_DIR) $(1)/lib/firmware/brcm
