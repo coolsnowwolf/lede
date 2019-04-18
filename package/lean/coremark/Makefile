@@ -15,7 +15,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=coremark
-PKG_RELEASE:=7
+PKG_RELEASE:=8
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/eembc/coremark.git
@@ -29,17 +29,25 @@ define Package/coremark
   CATEGORY:=Utilities
   TITLE:=CoreMark Embedded Microprocessor Benchmark
   URL:=https://github.com/eembc/coremark
-  DEPENDS:=@!TARGET_x86
 endef
 
 define Package/coremark/description
   Embedded Microprocessor Benchmark
 endef
 
+DIR_ARCH:=linux
+
+ifeq ($(ARCH),x86_64)
+	DIR_ARCH:=linux64
+endif
+ifeq ($(ARCH),aarch64)
+	DIR_ARCH:=linux64
+endif
+
 define Build/Compile
-	$(SED) 's|EXE = .exe|EXE =|' $(PKG_BUILD_DIR)/linux/core_portme.mak
+	$(SED) 's|EXE = .exe|EXE =|' $(PKG_BUILD_DIR)/$(DIR_ARCH)/core_portme.mak
 	mkdir $(PKG_BUILD_DIR)/$(ARCH)
-	cp -r $(PKG_BUILD_DIR)/linux/* $(PKG_BUILD_DIR)/$(ARCH)
+	cp -r $(PKG_BUILD_DIR)/$(DIR_ARCH)/* $(PKG_BUILD_DIR)/$(ARCH)
 	$(MAKE) XCFLAGS="-DMULTITHREAD=8 -DUSE_PTHREAD" -C $(PKG_BUILD_DIR) PORT_DIR=$(ARCH) $(MAKE_FLAGS) \
 		compile 
 endef
