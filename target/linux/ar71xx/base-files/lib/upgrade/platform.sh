@@ -355,6 +355,7 @@ platform_check_image() {
 	hornet-ub|\
 	mr12|\
 	mr16|\
+	sgr-w500-n85b-v2|\
 	zbt-we1526|\
 	zcn-1523h-2|\
 	zcn-1523h-5)
@@ -456,6 +457,7 @@ platform_check_image() {
 	tl-wa901nd-v3|\
 	tl-wa901nd-v4|\
 	tl-wa901nd-v5|\
+	tl-wdr3227-v2|\
 	tl-wdr3320-v2|\
 	tl-wdr3500|\
 	tl-wdr4300|\

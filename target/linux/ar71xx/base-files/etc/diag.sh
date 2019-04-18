@@ -416,6 +416,9 @@ get_status_led() {
 	smart-300)
 		status_led="nc-link:green:system"
 		;;
+	sgr-w500-n85b-v2)
+		status_led="grentech:green:status"
+		;;
 	qihoo-c301)
 		status_led="qihoo:green:status"
 		;;
@@ -464,6 +467,7 @@ get_status_led() {
 	tl-wa901nd-v3|\
 	tl-wa901nd-v4|\
 	tl-wa901nd-v5|\
+	tl-wdr3227-v2|\
 	tl-wdr3320-v2|\
 	tl-wdr3500|\
 	tl-wr1041n-v2|\
