@@ -15,7 +15,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=coremark
-PKG_RELEASE:=6
+PKG_RELEASE:=7
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/eembc/coremark.git
@@ -29,6 +29,7 @@ define Package/coremark
   CATEGORY:=Utilities
   TITLE:=CoreMark Embedded Microprocessor Benchmark
   URL:=https://github.com/eembc/coremark
+  DEPENDS:=@!TARGET_x86
 endef
 
 define Package/coremark/description
