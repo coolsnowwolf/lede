@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kcptun
-PKG_VERSION:=20190416
+PKG_VERSION:=20190418
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://codeload.github.com/xtaci/kcptun/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=0c60589872b87433da5d6dc045db1be3fdb9f3addb6458b0e5056c16dc4f86b0
+PKG_SOURCE_URL:=https://github.com/xtaci/kcptun/archive/v$(PKG_VERSION)
+PKG_HASH:=a3f7c35bd179cef26f7deec034330d142f8ba7df4e4f9511356b60ab7ad29c77
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE.md
