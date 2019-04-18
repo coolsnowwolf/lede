@@ -106,12 +106,19 @@ define Device/ubnt_rocket-m
 endef
 TARGET_DEVICES += ubnt_rocket-m
 
-define Device/ubnt_nano-m
+define Device/ubnt_nanostation-m
   $(Device/ubnt-xm)
-  DEVICE_TITLE := Ubiquiti Nano-M
+  DEVICE_TITLE := Ubiquiti Nanostation M
   SUPPORTED_DEVICES += nano-m
 endef
-TARGET_DEVICES += ubnt_nano-m
+TARGET_DEVICES += ubnt_nanostation-m
+
+define Device/ubnt_nanostation-m-xw
+  $(Device/ubnt-xw)
+  DEVICE_TITLE := Ubiquiti Nanostation M (XW)
+  SUPPORTED_DEVICES += nano-m-xw
+endef
+TARGET_DEVICES += ubnt_nanostation-m-xw
 
 define Device/ubnt_lap-120
   $(Device/ubnt-wa)
@@ -121,6 +128,15 @@ define Device/ubnt_lap-120
   IMAGE/factory.bin := $$(IMAGE/sysupgrade.bin) | mkubntimage-split
 endef
 TARGET_DEVICES += ubnt_lap-120
+
+define Device/ubnt_nanobeam-ac
+  $(Device/ubnt-wa)
+  DEVICE_TITLE := Ubiquiti NanoBeam AC
+  DEVICE_PACKAGES += kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  IMAGE_SIZE := 15744k
+  IMAGE/factory.bin := $$(IMAGE/sysupgrade.bin) | mkubntimage-split
+endef
+TARGET_DEVICES += ubnt_nanobeam-ac
 
 define Device/ubnt_nanostation-ac
   $(Device/ubnt-wa)
@@ -189,7 +205,8 @@ define Device/ubnt_routerstation_common
   IMAGE_SIZE := 16128k
   IMAGES += factory.bin
   IMAGE/factory.bin := append-rootfs | pad-rootfs | mkubntimage | check-size $$$$(IMAGE_SIZE)
-  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | combined-image | check-size $$$$(IMAGE_SIZE) | append-metadata
+  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | combined-image | check-size $$$$(IMAGE_SIZE)
+#  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | check-size $$$$(IMAGE_SIZE) | sysupgrade-tar rootfs=$$$$@ | append-metadata
   KERNEL := kernel-bin | append-dtb | lzma | pad-to $$(BLOCKSIZE)
   KERNEL_INITRAMFS := kernel-bin | append-dtb
 endef
@@ -212,3 +229,15 @@ define Device/ubnt_routerstation-pro
   UBNT_CHIP := ar7100pro
 endef
 TARGET_DEVICES += ubnt_routerstation-pro
+
+define Device/ubnt_acb-isp
+  $(Device/ubnt)
+  ATH_SOC := qca9533
+  IMAGE_SIZE := 15744k
+  DEVICE_TITLE := Ubiquiti airCube ISP
+  UBNT_BOARD := ACB-ISP
+  UBNT_TYPE := ACB
+  UBNT_CHIP := qca9533
+  IMAGES := sysupgrade.bin
+endef
+TARGET_DEVICES += ubnt_acb-isp

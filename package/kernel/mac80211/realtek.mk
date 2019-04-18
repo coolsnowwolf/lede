@@ -57,7 +57,7 @@ endef
 define KernelPackage/rtlwifi
   $(call KernelPackage/mac80211/Default)
   TITLE:=Realtek common driver part
-  DEPENDS+= @(PCI_SUPPORT||USB_SUPPORT) +kmod-mac80211 +@DRIVER_11N_SUPPORT
+  DEPENDS+= @(PCI_SUPPORT||USB_SUPPORT) +kmod-mac80211 +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtlwifi/rtlwifi.ko
   HIDDEN:=1
 endef

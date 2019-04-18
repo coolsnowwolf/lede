@@ -40,6 +40,7 @@ platform_do_upgrade() {
 	mir4|\
 	r6220|\
 	netgear,r6350|\
+	xiaomi,miwifi-r3|\
 	ubnt-erx|\
 	ubnt-erx-sfp)
 		nand_do_upgrade "$ARGV"

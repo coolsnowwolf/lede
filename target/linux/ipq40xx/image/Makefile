@@ -77,7 +77,7 @@ define Device/asus_rt-ac58u
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
 	DTB_SIZE := 65536
-	DEVICE_TITLE := Asus RT-AC58U
+	DEVICE_TITLE := Asus RT-AC58U / RT-AC1300UHP
 	IMAGE_SIZE := 20439364
 	FILESYSTEMS := squashfs
 #	Someone - in their infinite wisdom - decided to put the firmware
@@ -106,7 +106,7 @@ define Device/asus_rt-acrh17
 	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
 	KERNEL_INITRAMFS_SUFFIX := -factory.trx
 	IMAGES := sysupgrade.bin
-	DEVICE_PACKAGES := ipq-wifi-rt-acrh17 ath10k-firmware-qca9984 kmod-ath10k ath10k-firmware-qca4019 -kmod-ath10k-ct -ath10k-firmware-qca4019-ct
+	DEVICE_PACKAGES := ipq-wifi-rt-acrh17 ath10k-firmware-qca9984 kmod-ath10k ath10k-firmware-qca4019
 endef
 TARGET_DEVICES += asus_rt-acrh17
 

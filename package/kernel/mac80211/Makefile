@@ -10,10 +10,10 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mac80211
 
-PKG_VERSION:=4.19.23-1
-PKG_RELEASE:=4
-PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v4.19.23/
-PKG_HASH:=703e940b542eb56067fcd847a7c69398dcc9829f34472647eea4211cb2ab3b83
+PKG_VERSION:=4.19.32-1
+PKG_RELEASE:=2
+PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v4.19.32/
+PKG_HASH:=838db1565b54fe4bd1e769c54f30c65c9ea2fb5e99a0cddb7910561794ae317a
 
 PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/backports-$(PKG_VERSION)
@@ -259,7 +259,7 @@ endef
 define KernelPackage/mt7601u
   $(call KernelPackage/mac80211/Default)
   TITLE:=MT7601U-based USB dongles Wireless Driver
-  DEPENDS+= +kmod-mac80211 +@DRIVER_11N_SUPPORT @USB_SUPPORT +kmod-usb-core +mt7601u-firmware
+  DEPENDS+= +kmod-mac80211 +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT @USB_SUPPORT +kmod-usb-core +mt7601u-firmware
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/mediatek/mt7601u/mt7601u.ko
   AUTOLOAD:=$(call AutoProbe,mt7601u)
 endef
@@ -275,7 +275,7 @@ endef
 
 define KernelPackage/p54-common
   $(call KernelPackage/p54/Default)
-  DEPENDS+= @PCI_SUPPORT||@USB_SUPPORT||@TARGET_omap24xx +kmod-mac80211 +kmod-lib-crc-ccitt
+  DEPENDS+= @PCI_SUPPORT||@USB_SUPPORT||@TARGET_omap24xx +kmod-mac80211 +kmod-lib-crc-ccitt +@DRIVER_11W_SUPPORT
   TITLE+= (COMMON)
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/intersil/p54/p54common.ko
 endef
@@ -381,7 +381,7 @@ $(eval $(call Download,zd1211rw))
 define KernelPackage/zd1211rw
   $(call KernelPackage/mac80211/Default)
   TITLE:=Zydas ZD1211 support
-  DEPENDS+= @USB_SUPPORT +kmod-usb-core +kmod-mac80211
+  DEPENDS+= @USB_SUPPORT +kmod-usb-core +kmod-mac80211 +@DRIVER_11W_SUPPORT
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/zydas/zd1211rw/zd1211rw.ko
   AUTOLOAD:=$(call AutoProbe,zd1211rw)
 endef
