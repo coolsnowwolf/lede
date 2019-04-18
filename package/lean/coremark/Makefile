@@ -15,7 +15,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=coremark
-PKG_RELEASE:=8
+PKG_RELEASE:=10
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/eembc/coremark.git
@@ -57,6 +57,8 @@ define Package/coremark/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/coremark $(1)/bin/
 	$(INSTALL_DIR) $(1)/etc
 	$(INSTALL_BIN) ./coremark.sh $(1)/etc/
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./coremark $(1)/etc/uci-defaults/xxx-coremark
 endef
 
 define Package/coremark/postinst
