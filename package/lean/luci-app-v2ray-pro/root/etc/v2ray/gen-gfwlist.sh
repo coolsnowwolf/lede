@@ -6,6 +6,9 @@ generate_china_banned()
 		wget-ssl --no-check-certificate https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt -O /tmp/gfwlist.b64 >&2
 		cat /tmp/gfwlist.b64 | base64 -d > /tmp/gfwlist.txt
 		rm -f /tmp/gfwlist.b64
+		wget-ssl --no-check-certificate https://raw.githubusercontent.com/ab77/netflix-proxy/master/proxy-domains.txt -O /tmp/proxy-domains.txt >&2
+		cat /tmp/proxy-domains.txt >> /tmp/gfwlist.txt
+		rm -f /tmp/proxy-domains.txt
 	fi
 
 	cat /tmp/gfwlist.txt | sort -u |
