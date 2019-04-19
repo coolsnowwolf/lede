@@ -5,10 +5,11 @@ function index()
 		return
 	end
 
-	entry({"admin","services","frp"},cbi("frp/frp"), _("Frp Setting"),5).dependent=true
+	entry({"admin","services","frp"},cbi("frp/frp"), _("Frp Setting"),100).dependent=true
 	entry({"admin","services","frp","config"},cbi("frp/config")).leaf=true
 	entry({"admin","services","frp","status"},call("status")).leaf=true
 end
+
 function status()
 local e={}
 e.running=luci.sys.call("pidof frpc > /dev/null")==0
