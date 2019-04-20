@@ -1,0 +1,182 @@
+From a9fd0953fa4a62887306be28641b4b0809f3b2fd Mon Sep 17 00:00:00 2001
+From: Piotr Figiel <p.figiel@camlintechnologies.com>
+Date: Wed, 13 Mar 2019 09:52:42 +0000
+Subject: [PATCH] brcmfmac: convert dev_init_lock mutex to completion
+
+Leaving dev_init_lock mutex locked in probe causes BUG and a WARNING when
+kernel is compiled with CONFIG_PROVE_LOCKING. Convert mutex to completion
+which silences those warnings and improves code readability.
+
+Fix below errors when connecting the USB WiFi dongle:
+
+brcmfmac: brcmf_fw_alloc_request: using brcm/brcmfmac43143 for chip BCM43143/2
+BUG: workqueue leaked lock or atomic: kworker/0:2/0x00000000/434
+     last function: hub_event
+1 lock held by kworker/0:2/434:
+ #0: 18d5dcdf (&devinfo->dev_init_lock){+.+.}, at: brcmf_usb_probe+0x78/0x550 [brcmfmac]
+CPU: 0 PID: 434 Comm: kworker/0:2 Not tainted 4.19.23-00084-g454a789-dirty #123
+Hardware name: Freescale i.MX6 Quad/DualLite (Device Tree)
+Workqueue: usb_hub_wq hub_event
+[<8011237c>] (unwind_backtrace) from [<8010d74c>] (show_stack+0x10/0x14)
+[<8010d74c>] (show_stack) from [<809c4324>] (dump_stack+0xa8/0xd4)
+[<809c4324>] (dump_stack) from [<8014195c>] (process_one_work+0x710/0x808)
+[<8014195c>] (process_one_work) from [<80141a80>] (worker_thread+0x2c/0x564)
+[<80141a80>] (worker_thread) from [<80147bcc>] (kthread+0x13c/0x16c)
+[<80147bcc>] (kthread) from [<801010b4>] (ret_from_fork+0x14/0x20)
+Exception stack(0xed1d9fb0 to 0xed1d9ff8)
+9fa0:                                     00000000 00000000 00000000 00000000
+9fc0: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+9fe0: 00000000 00000000 00000000 00000000 00000013 00000000
+
+======================================================
+WARNING: possible circular locking dependency detected
+4.19.23-00084-g454a789-dirty #123 Not tainted
+------------------------------------------------------
+kworker/0:2/434 is trying to acquire lock:
+e29cf799 ((wq_completion)"events"){+.+.}, at: process_one_work+0x174/0x808
+
+but task is already holding lock:
+18d5dcdf (&devinfo->dev_init_lock){+.+.}, at: brcmf_usb_probe+0x78/0x550 [brcmfmac]
+
+which lock already depends on the new lock.
+
+the existing dependency chain (in reverse order) is:
+
+-> #2 (&devinfo->dev_init_lock){+.+.}:
+       mutex_lock_nested+0x1c/0x24
+       brcmf_usb_probe+0x78/0x550 [brcmfmac]
+       usb_probe_interface+0xc0/0x1bc
+       really_probe+0x228/0x2c0
+       __driver_attach+0xe4/0xe8
+       bus_for_each_dev+0x68/0xb4
+       bus_add_driver+0x19c/0x214
+       driver_register+0x78/0x110
+       usb_register_driver+0x84/0x148
+       process_one_work+0x228/0x808
+       worker_thread+0x2c/0x564
+       kthread+0x13c/0x16c
+       ret_from_fork+0x14/0x20
+         (null)
+
+-> #1 (brcmf_driver_work){+.+.}:
+       worker_thread+0x2c/0x564
+       kthread+0x13c/0x16c
+       ret_from_fork+0x14/0x20
+         (null)
+
+-> #0 ((wq_completion)"events"){+.+.}:
+       process_one_work+0x1b8/0x808
+       worker_thread+0x2c/0x564
+       kthread+0x13c/0x16c
+       ret_from_fork+0x14/0x20
+         (null)
+
+other info that might help us debug this:
+
+Chain exists of:
+  (wq_completion)"events" --> brcmf_driver_work --> &devinfo->dev_init_lock
+
+ Possible unsafe locking scenario:
+
+       CPU0                    CPU1
+       ----                    ----
+  lock(&devinfo->dev_init_lock);
+                               lock(brcmf_driver_work);
+                               lock(&devinfo->dev_init_lock);
+  lock((wq_completion)"events");
+
+ *** DEADLOCK ***
+
+1 lock held by kworker/0:2/434:
+ #0: 18d5dcdf (&devinfo->dev_init_lock){+.+.}, at: brcmf_usb_probe+0x78/0x550 [brcmfmac]
+
+stack backtrace:
+CPU: 0 PID: 434 Comm: kworker/0:2 Not tainted 4.19.23-00084-g454a789-dirty #123
+Hardware name: Freescale i.MX6 Quad/DualLite (Device Tree)
+Workqueue: events request_firmware_work_func
+[<8011237c>] (unwind_backtrace) from [<8010d74c>] (show_stack+0x10/0x14)
+[<8010d74c>] (show_stack) from [<809c4324>] (dump_stack+0xa8/0xd4)
+[<809c4324>] (dump_stack) from [<80172838>] (print_circular_bug+0x210/0x330)
+[<80172838>] (print_circular_bug) from [<80175940>] (__lock_acquire+0x160c/0x1a30)
+[<80175940>] (__lock_acquire) from [<8017671c>] (lock_acquire+0xe0/0x268)
+[<8017671c>] (lock_acquire) from [<80141404>] (process_one_work+0x1b8/0x808)
+[<80141404>] (process_one_work) from [<80141a80>] (worker_thread+0x2c/0x564)
+[<80141a80>] (worker_thread) from [<80147bcc>] (kthread+0x13c/0x16c)
+[<80147bcc>] (kthread) from [<801010b4>] (ret_from_fork+0x14/0x20)
+Exception stack(0xed1d9fb0 to 0xed1d9ff8)
+9fa0:                                     00000000 00000000 00000000 00000000
+9fc0: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+9fe0: 00000000 00000000 00000000 00000000 00000013 00000000
+
+Signed-off-by: Piotr Figiel <p.figiel@camlintechnologies.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../wireless/broadcom/brcm80211/brcmfmac/usb.c  | 17 ++++++++---------
+ 1 file changed, 8 insertions(+), 9 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
+@@ -160,7 +160,7 @@ struct brcmf_usbdev_info {
+ 
+ 	struct usb_device *usbdev;
+ 	struct device *dev;
+-	struct mutex dev_init_lock;
++	struct completion dev_init_done;
+ 
+ 	int ctl_in_pipe, ctl_out_pipe;
+ 	struct urb *ctl_urb; /* URB for control endpoint */
+@@ -1194,11 +1194,11 @@ static void brcmf_usb_probe_phase2(struc
+ 	if (ret)
+ 		goto error;
+ 
+-	mutex_unlock(&devinfo->dev_init_lock);
++	complete(&devinfo->dev_init_done);
+ 	return;
+ error:
+ 	brcmf_dbg(TRACE, "failed: dev=%s, err=%d\n", dev_name(dev), ret);
+-	mutex_unlock(&devinfo->dev_init_lock);
++	complete(&devinfo->dev_init_done);
+ 	device_release_driver(dev);
+ }
+ 
+@@ -1266,7 +1266,7 @@ static int brcmf_usb_probe_cb(struct brc
+ 		if (ret)
+ 			goto fail;
+ 		/* we are done */
+-		mutex_unlock(&devinfo->dev_init_lock);
++		complete(&devinfo->dev_init_done);
+ 		return 0;
+ 	}
+ 	bus->chip = bus_pub->devid;
+@@ -1326,11 +1326,10 @@ brcmf_usb_probe(struct usb_interface *in
+ 
+ 	devinfo->usbdev = usb;
+ 	devinfo->dev = &usb->dev;
+-	/* Take an init lock, to protect for disconnect while still loading.
++	/* Init completion, to protect for disconnect while still loading.
+ 	 * Necessary because of the asynchronous firmware load construction
+ 	 */
+-	mutex_init(&devinfo->dev_init_lock);
+-	mutex_lock(&devinfo->dev_init_lock);
++	init_completion(&devinfo->dev_init_done);
+ 
+ 	usb_set_intfdata(intf, devinfo);
+ 
+@@ -1408,7 +1407,7 @@ brcmf_usb_probe(struct usb_interface *in
+ 	return 0;
+ 
+ fail:
+-	mutex_unlock(&devinfo->dev_init_lock);
++	complete(&devinfo->dev_init_done);
+ 	kfree(devinfo);
+ 	usb_set_intfdata(intf, NULL);
+ 	return ret;
+@@ -1423,7 +1422,7 @@ brcmf_usb_disconnect(struct usb_interfac
+ 	devinfo = (struct brcmf_usbdev_info *)usb_get_intfdata(intf);
+ 
+ 	if (devinfo) {
+-		mutex_lock(&devinfo->dev_init_lock);
++		wait_for_completion(&devinfo->dev_init_done);
+ 		/* Make sure that devinfo still exists. Firmware probe routines
+ 		 * may have released the device and cleared the intfdata.
+ 		 */
