@@ -25,7 +25,8 @@ platform_nand_pre_upgrade() {
 
 	case "$board" in
 	ubnt-erx|\
-	ubnt-erx-sfp)
+	ubnt-erx-sfp|\
+	xiaomi,mir3p)
 		platform_upgrade_ubnt_erx "$ARGV"
 		;;
 	esac
