@@ -3,12 +3,19 @@ local uci = luci.model.uci.cursor()
 local server_table = {}
 
 uci:foreach(shadowsocksr, "servers", function(s)
-	if s.alias and s.type == "ssr" then
-		server_table[s[".name"]] = s.alias
-	elseif s.server and s.server_port and s.type == "ssr" then
-		server_table[s[".name"]] = "%s:%s" %{s.server, s.server_port}
+	if s.alias then
+		server_table[s[".name"]] = "[%s]:%s" %{string.upper(s.type), s.alias}
+	elseif s.server and s.server_port then
+		server_table[s[".name"]] = "[%s]:%s:%s" %{string.upper(s.type), s.server, s.server_port}
 	end
 end)
+
+local key_table = {}   
+for key,_ in pairs(server_table) do  
+    table.insert(key_table,key)  
+end 
+
+table.sort(key_table)
 
 m = Map(shadowsocksr)
 
@@ -38,7 +45,7 @@ s.anonymous = true
 
 o = s:option(ListValue, "server", translate("Server"))
 o:value("nil", translate("Disable"))
-for k, v in pairs(server_table) do o:value(k, v) end
+for _,key in pairs(key_table) do o:value(key,server_table[key]) end
 o.default = "nil"
 o.rmempty = false
 
