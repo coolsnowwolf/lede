@@ -6,6 +6,33 @@
 IMX6_BOARD_NAME=
 IMX6_MODEL=
 
+rootpartuuid() {
+	local cmdline=$(cat /proc/cmdline)
+	local bootpart=${cmdline##*root=}
+	bootpart=${bootpart%% *}
+	local uuid=${bootpart#PARTUUID=}
+	echo ${uuid%-02}
+}
+
+bootdev_from_uuid() {
+	blkid | grep "PTUUID=\"$(rootpartuuid)\"" | cut -d : -f1
+}
+
+bootpart_from_uuid() {
+	blkid | grep $(rootpartuuid)-01 | cut -d : -f1
+}
+
+rootpart_from_uuid() {
+	blkid | grep $(rootpartuuid)-02 | cut -d : -f1
+}
+
+apalis_mount_boot() {
+	mkdir -p /boot
+	[ -f /boot/uImage ] || {
+		mount -o rw,noatime $(bootpart_from_uuid) /boot > /dev/null
+	}
+}
+
 imx6_board_detect() {
 	local machine
 	local name
@@ -57,6 +84,15 @@ imx6_board_detect() {
 	"SolidRun Cubox-i Solo/DualLite" |\
 	"SolidRun Cubox-i Dual/Quad")
 		name="cubox-i"
+		;;
+
+	"Toradex Apalis iMX6Q/D Module on Ixora Carrier Board" |\
+	"Toradex Apalis iMX6Q/D Module on Ixora Carrier Board V1.1")
+		name="apalis,ixora"
+		;;
+
+	"Toradex Apalis iMX6Q/D Module on Apalis Evaluation Board")
+		name="apalis,eval"
 		;;
 
 	"Wandboard i.MX6 Dual Lite Board")
