@@ -7,7 +7,7 @@
 
 define Profile/Default
 	NAME:=Default Profile (all drivers)
-	PACKAGES:= kmod-mwlwifi wpad-mini swconfig mkf2fs e2fsprogs \
+	PACKAGES:= kmod-mwlwifi wpad-basic swconfig mkf2fs e2fsprogs \
 		   mwlwifi-firmware-88w8864 mwlwifi-firmware-88w8964
 endef
 

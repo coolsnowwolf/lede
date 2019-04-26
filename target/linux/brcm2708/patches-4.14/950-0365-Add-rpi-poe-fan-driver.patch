@@ -1,0 +1,615 @@
+From 1f8ba449fabb0eda1d835138d2324f8bc251e8c5 Mon Sep 17 00:00:00 2001
+From: Serge Schneider <serge@raspberrypi.org>
+Date: Mon, 9 Jul 2018 12:54:25 +0100
+Subject: [PATCH 365/454] Add rpi-poe-fan driver
+
+Signed-off-by: Serge Schneider <serge@raspberrypi.org>
+---
+ arch/arm/boot/dts/overlays/Makefile           |   1 +
+ arch/arm/boot/dts/overlays/README             |   6 +
+ .../arm/boot/dts/overlays/rpi-poe-overlay.dts |  61 +++
+ arch/arm/configs/bcm2709_defconfig            |   1 +
+ arch/arm/configs/bcmrpi_defconfig             |   1 +
+ drivers/hwmon/Kconfig                         |  10 +
+ drivers/hwmon/Makefile                        |   1 +
+ drivers/hwmon/rpi-poe-fan.c                   | 443 ++++++++++++++++++
+ include/soc/bcm2835/raspberrypi-firmware.h    |   2 +
+ 9 files changed, 526 insertions(+)
+ create mode 100644 arch/arm/boot/dts/overlays/rpi-poe-overlay.dts
+ create mode 100644 drivers/hwmon/rpi-poe-fan.c
+
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -103,6 +103,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	rpi-dac.dtbo \
+ 	rpi-display.dtbo \
+ 	rpi-ft5406.dtbo \
++	rpi-poe.dtbo \
+ 	rpi-proto.dtbo \
+ 	rpi-sense.dtbo \
+ 	rpi-tv.dtbo \
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -1576,6 +1576,12 @@ Params: touchscreen-size-x      Touchscr
+         touchscreen-swapped-x-y Swap X and Y cordinates (default 0);
+ 
+ 
++Name:   rpi-poe
++Info:   Raspberry Pi POE HAT
++Load:   dtoverlay=rpi-poe
++Params: <None>
++
++
+ Name:   rpi-proto
+ Info:   Configures the RPi Proto audio card
+ Load:   dtoverlay=rpi-proto
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/rpi-poe-overlay.dts
+@@ -0,0 +1,61 @@
++/*
++ * Overlay for the Raspberry Pi POE HAT.
++ */
++/dts-v1/;
++/plugin/;
++
++/ {
++	compatible = "brcm,bcm2708";
++
++	fragment@0 {
++		target-path = "/";
++		__overlay__ {
++			fan0: rpi-poe-fan@0 {
++				compatible = "rpi-poe-fan";
++				firmware = <&firmware>;
++				cooling-min-state = <0>;
++				cooling-max-state = <3>;
++				#cooling-cells = <2>;
++				cooling-levels = <0 50 150 255>;
++				status = "okay";
++			};
++		};
++	};
++
++	fragment@1 {
++		target = <&cpu_thermal>;
++		__overlay__ {
++			trips {
++				threshold: trip-point@0 {
++					temperature = <45000>;
++					hysteresis = <5000>;
++					type = "active";
++				};
++				target: trip-point@1 {
++					temperature = <50000>;
++					hysteresis = <2000>;
++					type = "active";
++				};
++				cpu_hot: cpu_hot@0 {
++					temperature = <55000>;
++					hysteresis = <2000>;
++					type = "active";
++				};
++			};
++			cooling-maps {
++				map0 {
++					trip = <&threshold>;
++					cooling-device = <&fan0 0 1>;
++				};
++				map1 {
++					trip = <&target>;
++					cooling-device = <&fan0 1 2>;
++				};
++				map2 {
++					trip = <&cpu_hot>;
++					cooling-device = <&fan0 2 3>;
++				};
++			};
++		};
++	};
++};
+--- a/arch/arm/configs/bcm2709_defconfig
++++ b/arch/arm/configs/bcm2709_defconfig
+@@ -658,6 +658,7 @@ CONFIG_HWMON=m
+ CONFIG_SENSORS_DS1621=m
+ CONFIG_SENSORS_JC42=m
+ CONFIG_SENSORS_LM75=m
++CONFIG_SENSORS_RPI_POE_FAN=m
+ CONFIG_SENSORS_SHT21=m
+ CONFIG_SENSORS_SHT3x=m
+ CONFIG_SENSORS_SHTC1=m
+--- a/arch/arm/configs/bcmrpi_defconfig
++++ b/arch/arm/configs/bcmrpi_defconfig
+@@ -651,6 +651,7 @@ CONFIG_HWMON=m
+ CONFIG_SENSORS_DS1621=m
+ CONFIG_SENSORS_JC42=m
+ CONFIG_SENSORS_LM75=m
++CONFIG_SENSORS_RPI_POE_FAN=m
+ CONFIG_SENSORS_SHT21=m
+ CONFIG_SENSORS_SHT3x=m
+ CONFIG_SENSORS_SHTC1=m
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -1286,6 +1286,16 @@ config SENSORS_PWM_FAN
+ 	  This driver can also be built as a module.  If so, the module
+ 	  will be called pwm-fan.
+ 
++config SENSORS_RPI_POE_FAN
++	tristate "Raspberry Pi POE HAT fan"
++	depends on RASPBERRYPI_FIRMWARE
++	depends on THERMAL || THERMAL=n
++	help
++	  If you say yes here you get support for Raspberry Pi POE HAT fan.
++
++	  This driver can also be built as a module.  If so, the module
++	  will be called rpi-poe-fan.
++
+ config SENSORS_SHT15
+ 	tristate "Sensiron humidity and temperature sensors. SHT15 and compat."
+ 	depends on GPIOLIB || COMPILE_TEST
+--- a/drivers/hwmon/Makefile
++++ b/drivers/hwmon/Makefile
+@@ -138,6 +138,7 @@ obj-$(CONFIG_SENSORS_PC87427)	+= pc87427
+ obj-$(CONFIG_SENSORS_PCF8591)	+= pcf8591.o
+ obj-$(CONFIG_SENSORS_POWR1220)  += powr1220.o
+ obj-$(CONFIG_SENSORS_PWM_FAN)	+= pwm-fan.o
++obj-$(CONFIG_SENSORS_RPI_POE_FAN)	+= rpi-poe-fan.o
+ obj-$(CONFIG_SENSORS_S3C)	+= s3c-hwmon.o
+ obj-$(CONFIG_SENSORS_SCH56XX_COMMON)+= sch56xx-common.o
+ obj-$(CONFIG_SENSORS_SCH5627)	+= sch5627.o
+--- /dev/null
++++ b/drivers/hwmon/rpi-poe-fan.c
+@@ -0,0 +1,443 @@
++/*
++ * rpi-poe-fan.c - Hwmon driver for Raspberry Pi POE HAT fan.
++ *
++ * Copyright (C) 2018 Raspberry Pi (Trading) Ltd.
++ * Based on pwm-fan.c by Kamil Debski <k.debski@samsung.com>
++ *
++ * Author: Serge Schneider <serge@raspberrypi.org>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/hwmon.h>
++#include <linux/hwmon-sysfs.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/notifier.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/reboot.h>
++#include <linux/sysfs.h>
++#include <linux/thermal.h>
++#include <soc/bcm2835/raspberrypi-firmware.h>
++
++#define MAX_PWM 255
++
++#define POE_CUR_PWM 0x0
++#define POE_DEF_PWM 0x1
++
++struct rpi_poe_fan_ctx {
++	struct mutex lock;
++	struct rpi_firmware *fw;
++	unsigned int pwm_value;
++	unsigned int def_pwm_value;
++	unsigned int rpi_poe_fan_state;
++	unsigned int rpi_poe_fan_max_state;
++	unsigned int *rpi_poe_fan_cooling_levels;
++	struct thermal_cooling_device *cdev;
++	struct notifier_block nb;
++};
++
++struct m_data_s{
++	u32 reg;
++	u32 val;
++	u32 ret;
++};
++
++static int write_reg(struct rpi_firmware *fw, u32 reg, u32 *val){
++	struct m_data_s m_data = {
++		.reg = reg,
++		.val = *val
++	};
++	int ret;
++	ret = rpi_firmware_property(fw, RPI_FIRMWARE_SET_POE_HAT_VAL,
++				    &m_data, sizeof(m_data));
++	if (ret) {
++		return ret;
++	} else if (m_data.ret) {
++		return -EIO;
++	}
++	return 0;
++}
++
++static int read_reg(struct rpi_firmware *fw, u32 reg, u32 *val){
++	struct m_data_s m_data = {
++		.reg = reg,
++	};
++	int ret;
++	ret = rpi_firmware_property(fw, RPI_FIRMWARE_GET_POE_HAT_VAL,
++				    &m_data, sizeof(m_data));
++	if (ret) {
++		return ret;
++	} else if (m_data.ret) {
++		return -EIO;
++	}
++	*val = m_data.val;
++	return 0;
++}
++
++static int rpi_poe_reboot(struct notifier_block *nb, unsigned long code,
++			  void *unused)
++{
++	struct rpi_poe_fan_ctx *ctx = container_of(nb, struct rpi_poe_fan_ctx,
++						   nb);
++
++	if (ctx->pwm_value != ctx->def_pwm_value)
++		write_reg(ctx->fw, POE_CUR_PWM, &ctx->def_pwm_value);
++
++	return NOTIFY_DONE;
++}
++
++static int  __set_pwm(struct rpi_poe_fan_ctx *ctx, u32 pwm)
++{
++	int ret = 0;
++
++	mutex_lock(&ctx->lock);
++	if (ctx->pwm_value == pwm)
++		goto exit_set_pwm_err;
++
++	ret = write_reg(ctx->fw, POE_CUR_PWM, &pwm);
++	if (!ret)
++		ctx->pwm_value = pwm;
++exit_set_pwm_err:
++	mutex_unlock(&ctx->lock);
++	return ret;
++}
++
++static int  __set_def_pwm(struct rpi_poe_fan_ctx *ctx, u32 def_pwm)
++{
++	int ret = 0;
++	mutex_lock(&ctx->lock);
++	if (ctx->def_pwm_value == def_pwm)
++		goto exit_set_def_pwm_err;
++
++	ret = write_reg(ctx->fw, POE_CUR_PWM, &def_pwm);
++	if (!ret)
++		ctx->def_pwm_value = def_pwm;
++exit_set_def_pwm_err:
++	mutex_unlock(&ctx->lock);
++	return ret;
++}
++
++static void rpi_poe_fan_update_state(struct rpi_poe_fan_ctx *ctx,
++				     unsigned long pwm)
++{
++	int i;
++
++	for (i = 0; i < ctx->rpi_poe_fan_max_state; ++i)
++		if (pwm < ctx->rpi_poe_fan_cooling_levels[i + 1])
++			break;
++
++	ctx->rpi_poe_fan_state = i;
++}
++
++static ssize_t set_pwm(struct device *dev, struct device_attribute *attr,
++		       const char *buf, size_t count)
++{
++	struct rpi_poe_fan_ctx *ctx = dev_get_drvdata(dev);
++	unsigned long pwm;
++	int ret;
++
++	if (kstrtoul(buf, 10, &pwm) || pwm > MAX_PWM)
++		return -EINVAL;
++
++	ret = __set_pwm(ctx, pwm);
++	if (ret)
++		return ret;
++
++	rpi_poe_fan_update_state(ctx, pwm);
++	return count;
++}
++
++static ssize_t set_def_pwm(struct device *dev, struct device_attribute *attr,
++			   const char *buf, size_t count)
++{
++	struct rpi_poe_fan_ctx *ctx = dev_get_drvdata(dev);
++	unsigned long def_pwm;
++	int ret;
++
++	if (kstrtoul(buf, 10, &def_pwm) || def_pwm > MAX_PWM)
++		return -EINVAL;
++
++	ret = __set_def_pwm(ctx, def_pwm);
++	if (ret)
++		return ret;
++	return count;
++}
++
++static ssize_t show_pwm(struct device *dev,
++			struct device_attribute *attr, char *buf)
++{
++	struct rpi_poe_fan_ctx *ctx = dev_get_drvdata(dev);
++
++	return sprintf(buf, "%u\n", ctx->pwm_value);
++}
++
++static ssize_t show_def_pwm(struct device *dev,
++			struct device_attribute *attr, char *buf)
++{
++	struct rpi_poe_fan_ctx *ctx = dev_get_drvdata(dev);
++
++	return sprintf(buf, "%u\n", ctx->def_pwm_value);
++}
++
++
++static SENSOR_DEVICE_ATTR(pwm1, 0644, show_pwm, set_pwm, 0);
++static SENSOR_DEVICE_ATTR(def_pwm1, 0644, show_def_pwm, set_def_pwm, 1);
++
++static struct attribute *rpi_poe_fan_attrs[] = {
++	&sensor_dev_attr_pwm1.dev_attr.attr,
++	&sensor_dev_attr_def_pwm1.dev_attr.attr,
++	NULL,
++};
++
++ATTRIBUTE_GROUPS(rpi_poe_fan);
++
++/* thermal cooling device callbacks */
++static int rpi_poe_fan_get_max_state(struct thermal_cooling_device *cdev,
++				     unsigned long *state)
++{
++	struct rpi_poe_fan_ctx *ctx = cdev->devdata;
++
++	if (!ctx)
++		return -EINVAL;
++
++	*state = ctx->rpi_poe_fan_max_state;
++
++	return 0;
++}
++
++static int rpi_poe_fan_get_cur_state(struct thermal_cooling_device *cdev,
++				     unsigned long *state)
++{
++	struct rpi_poe_fan_ctx *ctx = cdev->devdata;
++
++	if (!ctx)
++		return -EINVAL;
++
++	*state = ctx->rpi_poe_fan_state;
++
++	return 0;
++}
++
++static int rpi_poe_fan_set_cur_state(struct thermal_cooling_device *cdev,
++				     unsigned long state)
++{
++	struct rpi_poe_fan_ctx *ctx = cdev->devdata;
++	int ret;
++
++	if (!ctx || (state > ctx->rpi_poe_fan_max_state))
++		return -EINVAL;
++
++	if (state == ctx->rpi_poe_fan_state)
++		return 0;
++
++	ret = __set_pwm(ctx, ctx->rpi_poe_fan_cooling_levels[state]);
++	if (ret) {
++		dev_err(&cdev->device, "Cannot set pwm!\n");
++		return ret;
++	}
++
++	ctx->rpi_poe_fan_state = state;
++
++	return ret;
++}
++
++static const struct thermal_cooling_device_ops rpi_poe_fan_cooling_ops = {
++	.get_max_state = rpi_poe_fan_get_max_state,
++	.get_cur_state = rpi_poe_fan_get_cur_state,
++	.set_cur_state = rpi_poe_fan_set_cur_state,
++};
++
++static int rpi_poe_fan_of_get_cooling_data(struct device *dev,
++				       struct rpi_poe_fan_ctx *ctx)
++{
++	struct device_node *np = dev->of_node;
++	int num, i, ret;
++
++	if (!of_find_property(np, "cooling-levels", NULL))
++		return 0;
++
++	ret = of_property_count_u32_elems(np, "cooling-levels");
++	if (ret <= 0) {
++		dev_err(dev, "Wrong data!\n");
++		return ret ? : -EINVAL;
++	}
++
++	num = ret;
++	ctx->rpi_poe_fan_cooling_levels = devm_kzalloc(dev, num * sizeof(u32),
++						   GFP_KERNEL);
++	if (!ctx->rpi_poe_fan_cooling_levels)
++		return -ENOMEM;
++
++	ret = of_property_read_u32_array(np, "cooling-levels",
++					 ctx->rpi_poe_fan_cooling_levels, num);
++	if (ret) {
++		dev_err(dev, "Property 'cooling-levels' cannot be read!\n");
++		return ret;
++	}
++
++	for (i = 0; i < num; i++) {
++		if (ctx->rpi_poe_fan_cooling_levels[i] > MAX_PWM) {
++			dev_err(dev, "PWM fan state[%d]:%d > %d\n", i,
++				ctx->rpi_poe_fan_cooling_levels[i], MAX_PWM);
++			return -EINVAL;
++		}
++	}
++
++	ctx->rpi_poe_fan_max_state = num - 1;
++
++	return 0;
++}
++
++static int rpi_poe_fan_probe(struct platform_device *pdev)
++{
++	struct thermal_cooling_device *cdev;
++	struct rpi_poe_fan_ctx *ctx;
++	struct device *hwmon;
++	struct device_node *np = pdev->dev.of_node;
++	struct device_node *fw_node;
++	int ret;
++
++	fw_node = of_parse_phandle(np, "firmware", 0);
++	if (!fw_node) {
++		dev_err(&pdev->dev, "Missing firmware node\n");
++		return -ENOENT;
++	}
++
++	ctx = devm_kzalloc(&pdev->dev, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++
++	mutex_init(&ctx->lock);
++
++	ctx->fw = rpi_firmware_get(fw_node);
++	if (!ctx->fw)
++		return -EPROBE_DEFER;
++
++	platform_set_drvdata(pdev, ctx);
++
++	ctx->nb.notifier_call = rpi_poe_reboot;
++	ret = register_reboot_notifier(&ctx->nb);
++	if (ret) {
++		dev_err(&pdev->dev, "Failed to register reboot notifier: %i\n",
++			ret);
++		return ret;
++	}
++	ret = read_reg(ctx->fw, POE_DEF_PWM, &ctx->def_pwm_value);
++	if (ret) {
++		dev_err(&pdev->dev, "Failed to get default PWM value: %i\n",
++			ret);
++		goto err;
++	}
++	ret = read_reg(ctx->fw, POE_CUR_PWM, &ctx->pwm_value);
++	if (ret) {
++		dev_err(&pdev->dev, "Failed to get current PWM value: %i\n",
++			ret);
++		goto err;
++	}
++
++	hwmon = devm_hwmon_device_register_with_groups(&pdev->dev, "rpipoefan",
++						       ctx, rpi_poe_fan_groups);
++	if (IS_ERR(hwmon)) {
++		dev_err(&pdev->dev, "Failed to register hwmon device\n");
++		ret = PTR_ERR(hwmon);
++		goto err;
++	}
++
++	ret = rpi_poe_fan_of_get_cooling_data(&pdev->dev, ctx);
++	if (ret)
++		return ret;
++
++	rpi_poe_fan_update_state(ctx, ctx->pwm_value);
++	if (!IS_ENABLED(CONFIG_THERMAL))
++		return 0;
++
++	cdev = thermal_of_cooling_device_register(np,
++						  "rpi-poe-fan", ctx,
++						  &rpi_poe_fan_cooling_ops);
++	if (IS_ERR(cdev)) {
++		dev_err(&pdev->dev,
++			"Failed to register rpi-poe-fan as cooling device");
++		ret = PTR_ERR(cdev);
++		goto err;
++	}
++	ctx->cdev = cdev;
++	thermal_cdev_update(cdev);
++
++	return 0;
++err:
++	unregister_reboot_notifier(&ctx->nb);
++	return ret;
++}
++
++static int rpi_poe_fan_remove(struct platform_device *pdev)
++{
++	struct rpi_poe_fan_ctx *ctx = platform_get_drvdata(pdev);
++	u32 value = ctx->def_pwm_value;
++
++	unregister_reboot_notifier(&ctx->nb);
++	thermal_cooling_device_unregister(ctx->cdev);
++	if (ctx->pwm_value != value) {
++		write_reg(ctx->fw, POE_CUR_PWM, &value);
++	}
++	return 0;
++}
++
++#ifdef CONFIG_PM_SLEEP
++static int rpi_poe_fan_suspend(struct device *dev)
++{
++	struct rpi_poe_fan_ctx *ctx = dev_get_drvdata(dev);
++	u32 value = 0;
++
++	if (ctx->pwm_value != value)
++		ret = write_reg(ctx->fw, POE_CUR_PWM, &value);
++	return 0;
++}
++
++static int rpi_poe_fan_resume(struct device *dev)
++{
++	struct rpi_poe_fan_ctx *ctx = dev_get_drvdata(dev);
++	u32 value = ctx->pwm_value;
++	int ret = 0;
++
++	if (value != 0)
++		ret = write_reg(ctx->fw, POE_CUR_PWM, &value);
++
++	return ret;
++}
++#endif
++
++static SIMPLE_DEV_PM_OPS(rpi_poe_fan_pm, rpi_poe_fan_suspend,
++			 rpi_poe_fan_resume);
++
++static const struct of_device_id of_rpi_poe_fan_match[] = {
++	{ .compatible = "rpi-poe-fan", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, of_rpi_poe_fan_match);
++
++static struct platform_driver rpi_poe_fan_driver = {
++	.probe		= rpi_poe_fan_probe,
++	.remove		= rpi_poe_fan_remove,
++	.driver	= {
++		.name		= "rpi-poe-fan",
++		.pm		= &rpi_poe_fan_pm,
++		.of_match_table	= of_rpi_poe_fan_match,
++	},
++};
++
++module_platform_driver(rpi_poe_fan_driver);
++
++MODULE_AUTHOR("Serge Schneider <serge@raspberrypi.org>");
++MODULE_ALIAS("platform:rpi-poe-fan");
++MODULE_DESCRIPTION("Raspberry Pi POE HAT fan driver");
++MODULE_LICENSE("GPL");
+--- a/include/soc/bcm2835/raspberrypi-firmware.h
++++ b/include/soc/bcm2835/raspberrypi-firmware.h
+@@ -93,6 +93,8 @@ enum rpi_firmware_property_tag {
+ 	RPI_FIRMWARE_SET_GPIO_CONFIG =                        0x00038043,
+ 	RPI_FIRMWARE_GET_PERIPH_REG =                         0x00030045,
+ 	RPI_FIRMWARE_SET_PERIPH_REG =                         0x00038045,
++	RPI_FIRMWARE_GET_POE_HAT_VAL =                        0x00030049,
++	RPI_FIRMWARE_SET_POE_HAT_VAL =                        0x00030050,
+ 
+ 
+ 	/* Dispmanx TAGS */

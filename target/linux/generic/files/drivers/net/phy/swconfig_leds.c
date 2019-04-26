@@ -274,19 +274,16 @@ static ssize_t swconfig_trig_mode_store(struct device *dev,
 static DEVICE_ATTR(mode, 0644, swconfig_trig_mode_show,
 		   swconfig_trig_mode_store);
 
-static void
+static int
 swconfig_trig_activate(struct led_classdev *led_cdev)
 {
 	struct switch_led_trigger *sw_trig;
 	struct swconfig_trig_data *trig_data;
 	int err;
 
-	if (led_cdev->trigger->activate != swconfig_trig_activate)
-		return;
-
 	trig_data = kzalloc(sizeof(struct swconfig_trig_data), GFP_KERNEL);
 	if (!trig_data)
-		return;
+		return -ENOMEM;
 
 	sw_trig = (void *) led_cdev->trigger;
 
@@ -309,7 +306,7 @@ swconfig_trig_activate(struct led_classdev *led_cdev)
 	if (err)
 		goto err_mode_free;
 
-	return;
+	return 0;
 
 err_mode_free:
 	device_remove_file(led_cdev->dev, &dev_attr_speed_mask);
@@ -320,7 +317,17 @@ err_dev_free:
 err_free:
 	led_cdev->trigger_data = NULL;
 	kfree(trig_data);
+
+	return err;
 }
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
+static void
+swconfig_trig_activate_void(struct led_classdev *led_cdev)
+{
+	swconfig_trig_activate(led_cdev);
+}
+#endif
 
 static void
 swconfig_trig_deactivate(struct led_classdev *led_cdev)
@@ -516,7 +523,11 @@ swconfig_create_led_trigger(struct switch_dev *swdev)
 
 	sw_trig->swdev = swdev;
 	sw_trig->trig.name = swdev->devname;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
+	sw_trig->trig.activate = swconfig_trig_activate_void;
+#else
 	sw_trig->trig.activate = swconfig_trig_activate;
+#endif
 	sw_trig->trig.deactivate = swconfig_trig_deactivate;
 
 	INIT_DELAYED_WORK(&sw_trig->sw_led_work, swconfig_led_work_func);

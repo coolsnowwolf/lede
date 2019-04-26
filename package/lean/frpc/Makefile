@@ -1,70 +1,92 @@
 #
-# Copyright (C) 2015-2016 OpenWrt.org
+# Copyright (C) 2019 Xingwang Liao
 #
-# This is free software, licensed under the GNU General Public License v3.
+# This is free software, licensed under the GNU General Public License v2.
+# See /LICENSE for more information.
 #
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=frpc
-PKG_VERSION:=0.21.0
+PKG_NAME:=frp
+PKG_VERSION:=0.26.0
 PKG_RELEASE:=1
 
-ifeq ($(ARCH),mipsel)
-	FRPC_ARCH:=mipsle
-endif
-ifeq ($(ARCH),mips)
-	FRPC_ARCH:=mips
-endif
-ifeq ($(ARCH),i386)
-	FRPC_ARCH:=386
-endif
-ifeq ($(ARCH),x86_64)
-	FRPC_ARCH:=amd64
-endif
-ifeq ($(ARCH),arm)
-	FRPC_ARCH:=arm
-endif
-ifeq ($(ARCH),arm64)
-	FRPC_ARCH:=arm64
-endif
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://codeload.github.com/fatedier/frp/tar.gz/v$(PKG_VERSION)?
+PKG_HASH:=b5a52c1f84af57af57d955c130876ad966baa66f48d063b10956e806dde45823
 
 PKG_LICENSE:=Apache-2.0
+PKG_LICENSE_FILES:=LICENSE
+PKG_MAINTAINER:=Xingwang Liao <kuoruan@gmail.com>
 
-PKG_SOURCE_URL:=https://github.com/fatedier/frp/releases/download/v$(PKG_VERSION)
-PKG_SOURCE:=frp_$(PKG_VERSION)_linux_$(FRPC_ARCH).tar.gz
-PKG_BUILD_DIR:=$(BUILD_DIR)/frp_$(PKG_VERSION)_linux_$(FRPC_ARCH)
-PKG_HASH:=skip
+PKG_BUILD_DEPENDS:=golang/host
+PKG_BUILD_PARALLEL:=1
+PKG_USE_MIPS16:=0
+
+GO_PKG:=github.com/fatedier/frp
+GO_PKG_BUILD_PKG:=github.com/fatedier/frp/cmd/...
 
 include $(INCLUDE_DIR)/package.mk
+include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-define Package/$(PKG_NAME)
-	SECTION:=net
-	CATEGORY:=Network
-	TITLE:=FRPC Client
-	DEPENDS:=
-	URL:=https://github.com/fatedier/frp/releases
+define Package/frp/Default
+  TITLE:=A fast reverse proxy
+  URL:=https://github.com/fatedier/frp
 endef
 
-
-
-define Package/$(PKG_NAME)/description
-frp is a fast reverse proxy to help you expose a local server behind a NAT or firewall to the internet
+define Package/frp/Default/description
+frp is a fast reverse proxy to help you expose a local server behind a NAT or firewall
+to the internet. As of now, it supports tcp & udp, as well as httpand https protocols,
+where requests can be forwarded to internal services by domain name.
 endef
 
-define Build/Prepare
-	$(PKG_UNPACK)
+define frp/templates
+  define Package/$(1)
+  $$(call Package/frp/Default)
+    TITLE+= ($(1))
+    USERID:=frp=7000:frp=7000
+    SECTION:=net
+    CATEGORY:=Network
+    SUBMENU:=Web Servers/Proxies
+    DEPENDS:=$$(GO_ARCH_DEPENDS)
+  endef
+
+  define Package/$(1)/description
+  $$(call Package/frp/Default/description)
+
+  This package contains the $(1).
+  endef
+
+  define Package/$(1)/install
+	$$(INSTALL_DIR) $$(1)/usr/bin
+	$$(INSTALL_BIN) $$(GO_PKG_BUILD_BIN_DIR)/$(1) $$(1)/usr/bin/
+  endef
 endef
 
-define Build/Configure
+define Package/golang-github-fatedier-frp-dev
+$(call Package/frp/Default)
+$(call GoPackage/GoSubMenu)
+  TITLE+= (source files)
+  PKGARCH:=all
+endef
+
+define Package/golang-github-fatedier-frp-dev/description
+$(call Package/frp/Default/description)
+
+This package provides the source files for frpc/frps.
 endef
 
 define Build/Compile
+$(call GoPackage/Build/Compile,-ldflags "-s -w")
 endef
 
-define Package/$(PKG_NAME)/install
-	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/frpc $(1)/usr/bin/
-endef
+FRP_COMPONENTS:=frpc frps
 
-$(eval $(call BuildPackage,$(PKG_NAME)))
+$(foreach component,$(FRP_COMPONENTS), \
+  $(eval $(call frp/templates,$(component))) \
+  $(eval $(call GoBinPackage,$(component))) \
+  $(eval $(call BuildPackage,$(component))) \
+)
+
+$(eval $(call GoSrcPackage,golang-github-fatedier-frp-dev))
+$(eval $(call BuildPackage,golang-github-fatedier-frp-dev))

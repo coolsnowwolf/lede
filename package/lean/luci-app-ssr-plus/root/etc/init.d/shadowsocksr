@@ -2,6 +2,7 @@
 #
 # Copyright (C) 2017 openwrt-ssr
 # Copyright (C) 2017 yushi studio <ywb94@qq.com>
+# Copyright (C) 2018 lean <coolsnowwolf@gmail.com>
 #
 # This is free software, licensed under the GNU General Public License v3.
 # See /LICENSE for more information.
@@ -28,6 +29,7 @@ switch_enable=0
 switch_server=$1
 MAXFD=32768
 CRON_FILE=/etc/crontabs/root
+threads=1
 
 uci_get_by_name() {
 	local ret=$(uci get $NAME.$1.$2 2>/dev/null)
@@ -42,7 +44,6 @@ uci_get_by_type() {
 add_cron()
 {
 	sed -i '/ssrplus.log/d' $CRON_FILE
-	echo '0 */1 * * * /usr/share/shadowsocksr/ssr-watchdog >> /tmp/ssrplus.log 2>&1' >> $CRON_FILE
 	echo '0 1 * * 0 echo "" > /tmp/ssrplus.log' >> $CRON_FILE
 	[ -n "$(grep -w "/usr/share/shadowsocksr/subscribe.sh" $CRON_FILE)" ] && sed -i '/\/usr\/share\/shadowsocksr\/subscribe.sh/d' $CRON_FILE
 	[ $(uci_get_by_type server_subscribe auto_update 0) -eq 1 ] && echo "0 $(uci_get_by_type server_subscribe auto_update_time) * * * /usr/share/shadowsocksr/subscribe.sh" >> $CRON_FILE
@@ -82,11 +83,27 @@ gen_config_file() {
          else
          config_file=$CONFIG_SOCK5_FILE
          fi
-         if [ $(uci_get_by_name $1 fast_open) = "1" ] ;then
+         if [ $(uci_get_by_name $1 fast_open 0) = "1" ] ;then
          fastopen="true";
          else
          fastopen="false";
          fi
+local stype=$(uci_get_by_name $1 type)
+if [ "$stype" == "ss" ] ;then
+	cat <<-EOF >$config_file
+		{
+		    "server": "$hostip",
+		    "server_port": $(uci_get_by_name $1 server_port),
+		    "local_address": "0.0.0.0",
+		    "local_port": $(uci_get_by_name $1 local_port),
+		    "password": "$(uci_get_by_name $1 password)",
+		    "timeout": $(uci_get_by_name $1 timeout 60),
+		    "method": "$(uci_get_by_name $1 encrypt_method_ss)",
+		    "reuse_port": true,
+		    "fast_open": $fastopen
+		}
+EOF
+       elif [ "$stype" == "ssr" ] ;then
 	cat <<-EOF >$config_file
 		{
 		    
@@ -101,9 +118,13 @@ gen_config_file() {
 		    "protocol_param": "$(uci_get_by_name $1 protocol_param)",
 		    "obfs": "$(uci_get_by_name $1 obfs)",
 		    "obfs_param": "$(uci_get_by_name $1 obfs_param)",
+		    "reuse_port": true,
 		    "fast_open": $fastopen
 		}
 EOF
+      elif [ "$stype" == "v2ray" ] ;then
+        lua /usr/share/shadowsocksr/genv2config.lua $GLOBAL_SERVER tcp $(uci_get_by_name $1 local_port) > /var/etc/v2-ssr-retcp.json
+fi
 }
 
 get_arg_out() {
@@ -131,7 +152,7 @@ start_rules() {
 	
 	kcp_server=$server
 	
-	local kcp_enable=$(uci_get_by_name $GLOBAL_SERVER kcp_enable)
+	local kcp_enable=$(uci_get_by_name $GLOBAL_SERVER kcp_enable 0)
 	if [ $kcp_enable = "1" ] ;then
     kcp_flag=1
 	fi	
@@ -158,6 +179,12 @@ start_rules() {
 	local gfwmode="" 
 	if [ "$run_mode" = "gfw" ]; then
 	gfwmode="-g"
+	elif [ "$run_mode" = "router" ]; then
+	gfwmode="-r"
+	elif [ "$run_mode" = "oversea" ]; then
+	gfwmode="-c"
+	elif [ "$run_mode" = "all" ]; then
+	gfwmode="-z"
 	fi
 	
 
@@ -171,6 +198,7 @@ start_rules() {
 		-b "$(uci_get_by_type access_control wan_bp_ips)" \
 		-w "$(uci_get_by_type access_control wan_fw_ips)" \
 		-p "$(uci_get_by_type access_control lan_fp_ips)" \
+		-G "$(uci_get_by_type access_control lan_gm_ips)" \
 		$(get_arg_out) $gfwmode $ARG_UDP
 			
 	return $?
@@ -232,26 +260,6 @@ EOF
 	/usr/sbin/pdnsd -c /var/etc/pdnsd.conf -d
 }
 
-start_tunnel() {
-	local tunnel_config_file=$CONFIG_FILE
-	if [ "$ARG_UDP" = "-U" ]; then
-		tunnel_config_file=$CONFIG_UDP_FILE
-	fi
-
-	local local_dns_port=$(uci_get_by_type global tunnel_port)
-	if [ "$run_mode" = "gfw" ] ;then
-		local_dns_port=5335
-	fi
-
-	/usr/bin/ssr-tunnel \
-		-c $tunnel_config_file $ARG_OTA -u \
-		-l $local_dns_port \
-		-b $(uci_get_by_type global tunnel_address 0.0.0.0) \
-		-L $(uci_get_by_type global tunnel_forward 8.8.4.4:53) \
-		-f /var/run/ssr-tunnel.pid
-	tunnel_enable=1
-	return $?
-}
 
 start_redir() {
 	case "$(uci_get_by_name $GLOBAL_SERVER auth_enable)" in
@@ -260,63 +268,97 @@ start_redir() {
 	esac
 	
 	#deal kcp
-	local kcp_enable=$(uci_get_by_name $GLOBAL_SERVER kcp_enable)
+	local kcp_enable=$(uci_get_by_name $GLOBAL_SERVER kcp_enable 0)
 	if [ $kcp_enable = "1" ] ;then
-		[ ! -f "/usr/bin/ssr-kcptun" ]  &&  return 1
+		[ ! -f "/usr/bin/kcptun-client" ]  &&  return 1
 		
-		local kcp_str=`/usr/bin/ssr-kcptun -v |grep kcptun|wc -l`
+		local kcp_str=`/usr/bin/kcptun-client -v |grep kcptun|wc -l`
 		[ "0" = $kcp_str ] && return 1
 		local kcp_port=$(uci_get_by_name $GLOBAL_SERVER kcp_port)
 		local server_port=$(uci_get_by_name $GLOBAL_SERVER server_port)
 		local password=$(uci_get_by_name $GLOBAL_SERVER kcp_password)
 		local kcp_param=$(uci_get_by_name $GLOBAL_SERVER kcp_param)
 		[ "$password" != "" ] && password="--key "${password}
-		service_start /usr/bin/ssr-kcptun \
+		service_start /usr/bin/kcptun-client \
 			-r $kcp_server:$kcp_port \
 			-l :$server_port $password $kcp_param 
 		kcp_enable_flag=1
 	fi
 	
-	gen_config_file $GLOBAL_SERVER 0
-	
-	redir_tcp=1
-	local last_config_file=$CONFIG_FILE
-	local pid_file="/var/run/ssr-retcp.pid"
-	
-	if [ "$ARG_UDP" = "-U" ]; then
-		/usr/bin/ssr-redir \
-			-c $CONFIG_FILE $ARG_OTA \
-			-f /var/run/ssr-retcp.pid
+  gen_config_file $GLOBAL_SERVER 0
+  local stype=$(uci_get_by_name $GLOBAL_SERVER type)
+    if [ "$stype" == "ss" ] ;then
+        sscmd="/usr/bin/ss-redir"
+       elif [ "$stype" == "ssr" ] ;then
+        sscmd="/usr/bin/ssr-redir"
+       elif [ "$stype" == "v2ray" ] ;then
+        sscmd="/usr/bin/v2ray/v2ray"
+    fi
 		
-		case "$(uci_get_by_name $UDP_RELAY_SERVER auth_enable)" in
-			1|on|true|yes|enabled) ARG_OTA="-A";;
-			*) ARG_OTA="";;
-		esac		
-		gen_config_file $UDP_RELAY_SERVER 1
-		last_config_file=$CONFIG_UDP_FILE
-		pid_file="/var/run/ssr-reudp.pid"
-		redir_udp=1
-	fi
-	
-	/usr/bin/ssr-redir \
-		-c $last_config_file $ARG_OTA $ARG_UDP \
-		-f $pid_file
-		
-	#deal with dns
-	if [ "$run_mode" = "gfw" ] ;then
-		if [ "$(uci_get_by_type global pdnsd_enable)" = "0" ] ;then
-			start_tunnel
-		fi
+	local utype=$(uci_get_by_name $UDP_RELAY_SERVER type)
+    if [ "$utype" == "ss" ] ;then
+        ucmd="/usr/bin/ss-redir"
+       elif [ "$utype" == "ssr" ] ;then
+        ucmd="/usr/bin/ssr-redir"
+       elif [ "$utype" == "v2ray" ] ;then
+        ucmd="/usr/bin/v2ray/v2ray"
+     fi
+  
+  if [ "$(uci_get_by_type global threads 0)" = "0" ] ;then
+    threads=$(cat /proc/cpuinfo | grep 'processor' | wc -l)
+  else
+    threads=$(uci_get_by_type global threads)
+  fi
 
-		if [ "$(uci_get_by_type global pdnsd_enable)" = "1" ] ;then
-			local dnsstr="$(uci_get_by_type global tunnel_forward 8.8.4.4:53)"
-			local dnsserver=`echo "$dnsstr"|awk -F ':'  '{print $1}'`
-			local dnsport=`echo "$dnsstr"|awk -F ':'  '{print $2}'`
-			ipset add gfwlist $dnsserver 2>/dev/null
-			start_pdnsd $dnsserver $dnsport
-			pdnsd_enable_flag=1
-		fi
+	redir_tcp=1
+	if [ "$stype" == "ss" -o "$stype" == "ssr" ] ;then
+    local last_config_file=$CONFIG_FILE
+    local pid_file="/var/run/ssr-retcp.pid"
+    for i in $(seq 1 $threads)  
+    do 
+      $sscmd -c $CONFIG_FILE $ARG_OTA -f /var/run/ssr-retcp_$i.pid >/dev/null 2>&1
+    done
+    echo "$(date "+%Y-%m-%d %H:%M:%S") Shadowsocks/ShadowsocksR $threads Threads Started!" >> /tmp/ssrplus.log  
+  elif [ "$stype" == "v2ray" ] ;then
+    $sscmd -config /var/etc/v2-ssr-retcp.json >/dev/null 2>&1 &
+    echo "$(date "+%Y-%m-%d %H:%M:%S") $($sscmd -version | head -1) Started!" >> /tmp/ssrplus.log
 	fi
+	
+	if [ -n "$UDP_RELAY_SERVER" ] ;then
+    redir_udp=1
+    if [ "$utype" == "ss" -o "$utype" == "ssr" ] ;then
+      case "$(uci_get_by_name $UDP_RELAY_SERVER auth_enable)" in
+        1|on|true|yes|enabled) ARG_OTA="-A";;
+        *) ARG_OTA="";;
+      esac		
+      gen_config_file $UDP_RELAY_SERVER 1
+      last_config_file=$CONFIG_UDP_FILE
+      pid_file="/var/run/ssr-reudp.pid"
+      $ucmd -c $last_config_file $ARG_OTA -U -f /var/run/ssr-reudp.pid >/dev/null 2>&1
+    elif [ "$utype" == "v2ray" ] ; then
+        lua /usr/share/shadowsocksr/genv2config.lua $UDP_RELAY_SERVER udp $(uci_get_by_name $UDP_RELAY_SERVER local_port) > /var/etc/v2-ssr-reudp.json
+        $ucmd -config /var/etc/v2-ssr-reudp.json >/dev/null 2>&1 &   
+    fi
+   fi
+
+
+
+	#deal with dns
+  
+  if [ "$(uci_get_by_type global pdnsd_enable)" = "1" ] ;then
+    local dnsstr="$(uci_get_by_type global tunnel_forward 8.8.4.4:53)"
+    local dnsserver=`echo "$dnsstr"|awk -F ':'  '{print $1}'`
+    local dnsport=`echo "$dnsstr"|awk -F ':'  '{print $2}'`
+    if [ "$run_mode" = "gfw" ]; then
+        ipset add gfwlist $dnsserver 2>/dev/null
+    elif [ "$run_mode" = "oversea" ]; then
+        ipset add oversea $dnsserver 2>/dev/null
+    else
+        ipset add ss_spec_wan_ac $dnsserver nomatch 2>/dev/null  
+    fi
+    start_pdnsd $dnsserver $dnsport
+    pdnsd_enable_flag=1
+  fi
 	
 	if [ "$(uci_get_by_type global enable_switch)" = "1" ] ;then
 		if [ "$(uci_get_by_name $GLOBAL_SERVER switch_enable)" = "1" ] ;then
@@ -328,7 +370,8 @@ start_redir() {
 			fi
 		fi
 	fi
-	
+	add_cron
+
 	return $?
 }
 
@@ -340,7 +383,7 @@ gen_service_file() {
 	fi       
 	cat <<-EOF >$2
 		{
-		    "server": "$(uci_get_by_name $1 server)",
+		    "server": "0.0.0.0",
 		    "server_port": $(uci_get_by_name $1 server_port),
 		    "password": "$(uci_get_by_name $1 password)",
 		    "timeout": $(uci_get_by_name $1 timeout 60),
@@ -363,7 +406,7 @@ iptables -t filter -I INPUT  -j SSR-SERVER-RULE
 fi
 
 gen_service_file $1 /var/etc/${NAME}_${server_count}.json
-/usr/bin/ssr-server -c /var/etc/${NAME}_${server_count}.json -u -f /var/run/ssr-server${server_count}.pid 
+/usr/bin/ssr-server -c /var/etc/${NAME}_${server_count}.json -u -f /var/run/ssr-server${server_count}.pid >/dev/null 2>&1
 iptables -t filter -A SSR-SERVER-RULE -p tcp --dport $(uci_get_by_name $1 server_port) -j ACCEPT
 iptables -t filter -A SSR-SERVER-RULE -p udp --dport $(uci_get_by_name $1 server_port) -j ACCEPT
 return 0
@@ -406,7 +449,7 @@ start_local() {
 	/usr/bin/ssr-local -c $CONFIG_SOCK5_FILE -u  \
 		-l $(uci_get_by_type socks5_proxy local_port 1080) \
 		-b $(uci_get_by_type socks5_proxy local_address 0.0.0.0) \
-		-f /var/run/ssr-local.pid
+		-f /var/run/ssr-local.pid >/dev/null 2>&1
 	local_enable=1	
 }
 
@@ -431,27 +474,34 @@ start() {
 	fi
 	if rules ;then
 	start_redir
-
-	if ! [ "$run_mode" = "gfw" ] ;then
-	    case "$(uci_get_by_type global tunnel_enable)" in
-		1|on|true|yes|enabled)
-			start_tunnel
-			;;
-	esac
-	else
-		mkdir -p /tmp/dnsmasq.d
+  
+  mkdir -p /tmp/dnsmasq.d
+	if ! [ "$run_mode" = "oversea" ] ;then
 		cat > /tmp/dnsmasq.d/dnsmasq-ssr.conf <<EOF
 conf-dir=/etc/dnsmasq.ssr
 EOF
-		/etc/init.d/dnsmasq restart
+  else
+		cat > /tmp/dnsmasq.d/dnsmasq-ssr.conf <<EOF
+conf-dir=/etc/dnsmasq.oversea
+EOF
 	fi
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	
 	fi
 	start_server	
 	start_local
+	
+	if [ $(uci_get_by_type global monitor_enable) = 1 ] ;then
+	let total_count=server_count+redir_tcp+redir_udp+tunnel_enable+kcp_enable_flag+local_enable+pdnsd_enable_flag+switch_enable
+    if [ $total_count -gt 0 ]
+    then
+    #param:server(count) redir_tcp(0:no,1:yes)  redir_udp tunnel kcp local gfw
+    service_start /usr/bin/ssr-monitor $server_count $redir_tcp $redir_udp $tunnel_enable $kcp_enable_flag $local_enable $pdnsd_enable_flag $switch_enable
+    fi
+	fi
+	
 	ENABLE_SERVER=$(uci_get_by_type global global_server)
 	[ "$ENABLE_SERVER" = "nil" ] && return 1
-	add_cron
 }
 
 boot() {
@@ -469,16 +519,25 @@ stop() {
 	if [ -z "$switch_server" ] ;then
     kill -9 $(ps | grep ssr-switch | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	fi
+	if [ $(uci_get_by_type global monitor_enable) = 1 ] ;then
+    kill -9 $(ps | grep ssr-monitor | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+	fi
+	killall -q -9 ssr-monitor
+	killall -q -9 ss-redir
 	killall -q -9 ssr-redir
-	killall -q -9 ssr-tunnel
+	killall -q -9 v2ray
 	killall -q -9 ssr-server
-	killall -q -9 ssr-kcptun
+	killall -q -9 kcptun-client
 	killall -q -9 ssr-local
-	kill $(cat /var/run/pdnsd.pid) >/dev/null 2>&1 || kill -9 $(ps | grep pdnsd | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
+	if [ -f /var/run/pdnsd.pid ] ;then
+    kill $(cat /var/run/pdnsd.pid) >/dev/null 2>&1
+  else 
+    kill -9 $(ps | grep pdnsd | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
+	fi
 	
 	if [ -f "/tmp/dnsmasq.d/dnsmasq-ssr.conf" ]; then
 		rm -f /tmp/dnsmasq.d/dnsmasq-ssr.conf
-		/etc/init.d/dnsmasq restart
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1
   fi
   del_cron
 }

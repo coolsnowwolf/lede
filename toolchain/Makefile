@@ -70,6 +70,7 @@ endif
 endif
 
 ifdef CONFIG_BUILDBOT
+ifneq ($(wildcard $(TOPDIR)/.git),)
   $(TOOLCHAIN_DIR)/stamp/.ver_check: $(TMP_DIR)/.build
 	cd "$(TOPDIR)"; git log --format=%h -1 toolchain > $(TMP_DIR)/.ver_check
 	cmp -s $(TMP_DIR)/.ver_check $@ || { \
@@ -79,6 +80,7 @@ ifdef CONFIG_BUILDBOT
 	}
 
 $(TOOLCHAIN_DIR)/info.mk $(STAGING_DIR)/.prepared: $(TOOLCHAIN_DIR)/stamp/.ver_check
+endif
 endif
 
 # prerequisites for the individual targets

@@ -39,6 +39,14 @@ o = sl:option(Value, "dataport", translate("Data Port"))
 o.datatype = "uinteger"
 o.default = "20"
 
+o = sl:option(Value, "pasv_min_port", translate("Pasv Min Port"))
+o.datatype = "uinteger"
+o.default = "50000"
+
+o = sl:option(Value, "pasv_max_port", translate("Pasv Max Port"))
+o.datatype = "uinteger"
+o.default = "51000"
+
 
 sg = m:section(NamedSection, "global", "global", translate("Global Settings"))
 

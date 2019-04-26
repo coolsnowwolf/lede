@@ -1,0 +1,72 @@
+From 6510ecc6c76d040cc5a84f7464b5f327f2c556e9 Mon Sep 17 00:00:00 2001
+From: Stefan Schake <stschake@gmail.com>
+Date: Fri, 9 Mar 2018 01:53:37 +0100
+Subject: [PATCH 347/454] drm/vc4: Enable background color fill when necessary
+
+commit 1d49f2e546a5a3258a88f85a1c04fd6feb6def37 upstream.
+
+Using the hint from the plane state, we turn on the background color
+to avoid display corruption from planes blending with the background.
+
+Changes from v1:
+ - Use needs_bg_fill from plane state
+
+Signed-off-by: Stefan Schake <stschake@gmail.com>
+Signed-off-by: Eric Anholt <eric@anholt.net>
+Reviewed-by: Eric Anholt <eric@anholt.net>
+Link: https://patchwork.freedesktop.org/patch/msgid/1520556817-97297-5-git-send-email-stschake@gmail.com
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -646,9 +646,12 @@ static void vc4_crtc_atomic_flush(struct
+ {
+ 	struct drm_device *dev = crtc->dev;
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
++	struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
+ 	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(crtc->state);
+ 	struct drm_plane *plane;
++	struct vc4_plane_state *vc4_plane_state;
+ 	bool debug_dump_regs = false;
++	bool enable_bg_fill = false;
+ 	u32 __iomem *dlist_start = vc4->hvs->dlist + vc4_state->mm.start;
+ 	u32 __iomem *dlist_next = dlist_start;
+ 
+@@ -659,6 +662,20 @@ static void vc4_crtc_atomic_flush(struct
+ 
+ 	/* Copy all the active planes' dlist contents to the hardware dlist. */
+ 	drm_atomic_crtc_for_each_plane(plane, crtc) {
++		/* Is this the first active plane? */
++		if (dlist_next == dlist_start) {
++			/* We need to enable background fill when a plane
++			 * could be alpha blending from the background, i.e.
++			 * where no other plane is underneath. It suffices to
++			 * consider the first active plane here since we set
++			 * needs_bg_fill such that either the first plane
++			 * already needs it or all planes on top blend from
++			 * the first or a lower plane.
++			 */
++			vc4_plane_state = to_vc4_plane_state(plane->state);
++			enable_bg_fill = vc4_plane_state->needs_bg_fill;
++		}
++
+ 		dlist_next += vc4_plane_write_dlist(plane, dlist_next);
+ 	}
+ 
+@@ -667,6 +684,14 @@ static void vc4_crtc_atomic_flush(struct
+ 
+ 	WARN_ON_ONCE(dlist_next - dlist_start != vc4_state->mm.size);
+ 
++	if (enable_bg_fill)
++		/* This sets a black background color fill, as is the case
++		 * with other DRM drivers.
++		 */
++		HVS_WRITE(SCALER_DISPBKGNDX(vc4_crtc->channel),
++			  HVS_READ(SCALER_DISPBKGNDX(vc4_crtc->channel)) |
++			  SCALER_DISPBKGND_FILL);
++
+ 	/* Only update DISPLIST if the CRTC was already running and is not
+ 	 * being disabled.
+ 	 * vc4_crtc_enable() takes care of updating the dlist just after

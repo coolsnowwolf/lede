@@ -1,0 +1,45 @@
+From efdde709efccc4f95c7641eea8960dbc31fc58b5 Mon Sep 17 00:00:00 2001
+From: P33M <p33m@github.com>
+Date: Thu, 15 Feb 2018 11:22:44 +0000
+Subject: [PATCH 207/454] dwc_otg: add smp_mb() to prevent driver state
+ corruption on boot
+
+Occasional crashes have been seen where the FIQ code dereferences
+invalid/random pointers immediately after being set up, leading to
+panic on boot.
+
+The crash occurs as the FIQ code races against hcd_init_fiq() and
+the hcd_init_fiq() code races against the outstanding memory stores
+from dwc_otg_hcd_init(). Use explicit barriers after touching
+driver state.
+---
+ drivers/usb/host/dwc_otg/dwc_otg_hcd_linux.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+--- a/drivers/usb/host/dwc_otg/dwc_otg_hcd_linux.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_hcd_linux.c
+@@ -519,6 +519,11 @@ static void hcd_init_fiq(void *cookie)
+ 		DWC_ERROR("Can't get FIQ irq");
+ 		return;
+ 	}
++	/*
++	 * We could take an interrupt immediately after enabling the FIQ.
++	 * Ensure coherency of hcd->fiq_state.
++	 */
++	smp_mb();
+ 	enable_fiq(irq);
+ 	local_fiq_enable();
+ #endif
+@@ -598,7 +603,11 @@ int hcd_init(dwc_bus_dev_t *_dev)
+ 
+ 	if (fiq_enable) {
+ 		if (num_online_cpus() > 1) {
+-			/* bcm2709: can run the FIQ on a separate core to IRQs */
++			/*
++			 * bcm2709: can run the FIQ on a separate core to IRQs.
++			 * Ensure driver state is visible to other cores before setting up the FIQ.
++			 */
++			smp_mb();
+ 			smp_call_function_single(1, hcd_init_fiq, otg_dev, 1);
+ 		} else {
+ 			smp_call_function_single(0, hcd_init_fiq, otg_dev, 1);

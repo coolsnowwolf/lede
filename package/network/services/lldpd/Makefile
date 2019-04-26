@@ -9,10 +9,10 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=lldpd
 PKG_VERSION:=1.0.1
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=http://media.luffy.cx/files/lldpd
+PKG_SOURCE_URL:=https://media.luffy.cx/files/lldpd
 PKG_HASH:=450b622aac7ae1758f1ef82f3b7b94ec47f2ff33abfb0e6ac82555b9ee55f151
 
 PKG_MAINTAINER:=Stijn Tintel <stijn@linux-ipv6.be>
@@ -21,8 +21,6 @@ PKG_LICENSE:=ISC
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
 
-TARGET_CFLAGS+=--std=c99
-
 include $(INCLUDE_DIR)/package.mk
 
 define Package/lldpd
@@ -30,7 +28,7 @@ define Package/lldpd
   CATEGORY:=Network
   SUBMENU:=Routing and Redirection
   TITLE:=Link Layer Discovery Protocol daemon
-  URL:=https://github.com/vincentbernat/lldpd/wiki
+  URL:=https://vincentbernat.github.io/lldpd/
   DEPENDS:=+libevent2 +USE_GLIBC:libbsd +LLDPD_WITH_JSON:libjson-c +LLDPD_WITH_SNMP:libnetsnmp
   USERID:=lldp=121:lldp=129
   MENU:=1
@@ -65,7 +63,7 @@ define Package/lldpd/install
 	$(CP) $(PKG_INSTALL_DIR)/usr/sbin/lldp{cli,ctl,d} $(1)/usr/sbin/
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/liblldpctl.so* $(1)/usr/lib/
 	$(INSTALL_BIN) ./files/lldpd.init $(1)/etc/init.d/lldpd
-	$(INSTALL_DATA) ./files/lldpd.config $(1)/etc/config/lldpd
+	$(INSTALL_CONF) ./files/lldpd.config $(1)/etc/config/lldpd
 ifneq ($(CONFIG_LLDPD_WITH_CDP),y)
 	sed -i -e '/cdp/d' $(1)/etc/init.d/lldpd $(1)/etc/config/lldpd
 endif
@@ -109,5 +107,10 @@ CONFIGURE_ARGS += \
 	$(if $(CONFIG_LLDPD_WITH_JSON),--with-json=json-c,--with-json=no) \
 	$(if $(CONFIG_LLDPD_WITH_SNMP),--with-snmp,)
 
+# there is no flag to disable libbsd
+CONFIGURE_VARS += \
+	$(if $(CONFIG_USE_GLIBC),,libbsd_CFLAGS=-ldo-not-link-bsd) \
+	$(if $(CONFIG_USE_GLIBC),,libbsd_LDFLAGS=-ldo-not-link-bsd) \
+	$(if $(CONFIG_USE_GLIBC),,libbsd_LIBS="-lNONexistent")
 
 $(eval $(call BuildPackage,lldpd))

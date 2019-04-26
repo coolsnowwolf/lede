@@ -20,6 +20,6 @@ include $(INCLUDE_DIR)/target.mk
 
 KERNELNAME:=zImage dtbs
 
-DEFAULT_PACKAGES += uboot-envtools mkf2fs e2fsprogs
+DEFAULT_PACKAGES += uboot-envtools mkf2fs e2fsprogs blkid
 
 $(eval $(call BuildTarget))

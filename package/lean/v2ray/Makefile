@@ -1,111 +1,168 @@
 #
-# Copyright (C) 2015-2016 OpenWrt.org
+# Copyright (C) 2019 Xingwang Liao
 #
-# This is free software, licensed under the GNU General Public License v3.
+# This is free software, licensed under the GNU General Public License v2.
+# See /LICENSE for more information.
 #
 
 include $(TOPDIR)/rules.mk
 
-ifeq ($(ARCH),x86_64)
-	PKG_ARCH_V2RAY:=linux-64
-endif
-ifeq ($(ARCH),mipsel)
-	PKG_ARCH_V2RAY:=linux-mipsle
-endif
-ifeq ($(ARCH),mips)
-	PKG_ARCH_V2RAY:=linux-mips
-endif
-ifeq ($(ARCH),i386)
-	PKG_ARCH_V2RAY:=linux-32
-endif
-ifeq ($(ARCH),arm)
-	PKG_ARCH_V2RAY:=linux-arm
-endif
-ifeq ($(ARCH),aarch64)
-	PKG_ARCH_V2RAY:=linux-arm64
-endif
+PKG_NAME:=v2ray-core
+PKG_VERSION:=4.18.1
+PKG_RELEASE:=1
 
-PKG_NAME:=v2ray
-PKG_VERSION:=3.50
-PKG_RELEASE:=2
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_ARCH_V2RAY).zip
-PKG_SOURCE_URL:=https://github.com/v2ray/v2ray-core/releases/download/v$(PKG_VERSION)
-PKG_HASH:=skip
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://codeload.github.com/v2ray/v2ray-core/tar.gz/v$(PKG_VERSION)?
+PKG_HASH:=eb66df1586720e8f375f29075ba905b694caa550ce2a322a2a26660408b37304
+
+PKG_LICENSE:=MIT
+PKG_LICENSE_FILES:=LICENSE
+PKG_MAINTAINER:=Xingwang Liao <kuoruan@gmail.com>
+
+PKG_BUILD_DEPENDS:=golang/host
+PKG_BUILD_PARALLEL:=1
+PKG_USE_MIPS16:=0
+
+GO_PKG:=v2ray.com/core
 
 include $(INCLUDE_DIR)/package.mk
+include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-define Package/$(PKG_NAME)
-	SECTION:=net
-	CATEGORY:=Network
-	TITLE:=V2Ray is a cross-platform proxy software
-	DEPENDS:=
-	URL:=https://github.com/v2ray/v2ray-core
+define Package/v2ray-core/Default
+  TITLE:=A platform for building proxies
+  URL:=https://www.v2ray.com
 endef
 
-define Package/$(PKG_NAME)/config
-menu "V2Ray Configuration"
-	depends on PACKAGE_v2ray
-
-config PACKAGE_V2RAY_INCLUDE_V2RAY
-	bool "Include v2ray"
-	default y
-
-config PACKAGE_V2RAY_SOFTFLOAT
-	bool "Use soft-float binaries (mips/mipsle only)"
-	depends on PACKAGE_V2RAY_INCLUDE_V2RAY
-	default n
-
-config PACKAGE_V2RAY_INCLUDE_V2CTL
-	bool "Include v2ctl"
-	depends on PACKAGE_V2RAY_INCLUDE_V2RAY
-	default y
-
-config PACKAGE_V2RAY_INCLUDE_GEOIP
-	bool "Include geoip.dat"
-	depends on PACKAGE_V2RAY_INCLUDE_V2CTL
-	default n
-
-config PACKAGE_V2RAY_INCLUDE_GEOSITE
-	bool "Include geosite.dat"
-	depends on PACKAGE_V2RAY_INCLUDE_V2CTL
-	default n
-
-endmenu
+define Package/v2ray-core/Default/description
+Project V is a set of network tools that help you to build your own computer network.
+It secures your network connections and thus protects your privacy.
 endef
 
-define Package/$(PKG_NAME)/description
-V2Ray is a cross-platform proxy software
+define project-v/SubMenu
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=Project V
+endef
+
+define v2ray-core/GoBinDefault
+  $(call Package/v2ray-core/Default)
+  $(call project-v/SubMenu)
+  USERID:=v2ray=10800:v2ray=10800
+  DEPENDS:=$(GO_ARCH_DEPENDS)
+endef
+
+define v2ray-core/templates
+  define Package/$(1)
+  $$(call v2ray-core/GoBinDefault)
+    TITLE+= ($(1))
+    DEPENDS:=+ca-certificates
+  endef
+
+  define Package/$(1)/description
+  $$(call Package/v2ray-core/Default/description)
+
+  This package contains the $(1).
+  endef
+
+  define Package/$(1)/install
+	$$(INSTALL_DIR) $$(1)/usr/bin/v2ray
+	$$(INSTALL_BIN) $$(GO_PKG_BUILD_BIN_DIR)/$(1) $$(1)/usr/bin/v2ray
+  endef
+endef
+
+V2RAY_COMPONENTS:=v2ray v2ctl
+
+$(foreach component,$(V2RAY_COMPONENTS), \
+  $(eval $(call v2ray-core/templates,$(component))) \
+)
+
+define Package/v2ray-assets
+  $(call Package/v2ray-core/Default)
+  $(call project-v/SubMenu)
+  TITLE+= (geoip & geosite)
+endef
+
+define Package/v2ray-assets/description
+$(call Package/v2ray-core/Default/description)
+
+  This package contains geoip.dat & geosite.dat.
+endef
+
+define Package/v2ray-assets/install
+	$(INSTALL_DIR) $(1)/usr/bin/v2ray
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/release/config/{geoip,geosite}.dat \
+		$(1)/usr/bin/v2ray
+endef
+
+define Package/v2ray-core
+$(call v2ray-core/GoBinDefault)
+  TITLE+= (full)
+  PROVIDES:=$(V2RAY_COMPONENTS) v2ray-assets
+  DEPENDS:=+ca-certificates
+endef
+
+define Package/v2ray-core/description
+$(call Package/v2ray-core/Default/description)
+
+  This package contains v2ray, v2ctl and v2ray-assets.
+endef
+
+define Package/v2ray-core/install
+$(call Package/v2ray-assets/install,$(1))
+	$(INSTALL_DIR) $(1)/usr/bin/v2ray
+	( \
+		for component in $(V2RAY_COMPONENTS); do \
+			$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/$$$$component $(1)/usr/bin/v2ray ; \
+		done ; \
+	)
+endef
+
+define Package/golang-v2ray-core-dev
+$(call Package/v2ray-core/Default)
+$(call GoPackage/GoSubMenu)
+  TITLE+= (source files)
+  PKGARCH:=all
+endef
+
+define Package/golang-v2ray-core-dev/description
+$(call Package/v2ray-core/Default/description)
+
+This package provides the source files for v2ray-core.
 endef
 
 define Build/Prepare
-	unzip -q -d $(PKG_BUILD_DIR) $(DL_DIR)/$(PKG_SOURCE)
-ifdef CONFIG_PACKAGE_V2RAY_SOFTFLOAT
-	[ -f $(PKG_BUILD_DIR)/v2ray_softfloat ] && mv $(PKG_BUILD_DIR)/v2ray_softfloat $(PKG_BUILD_DIR)/v2ray || echo "Can't find soft-float binary."
-	[ -f $(PKG_BUILD_DIR)/v2ctl_softfloat ] && mv $(PKG_BUILD_DIR)/v2ctl_softfloat $(PKG_BUILD_DIR)/v2ctl || echo "Can't find soft-float binary."
-endif
-endef
-
-define Build/Configure
+	$(Build/Prepare/Default)
+	( \
+		sed -i \
+			's/\(version[[:space:]]*=[[:space:]]*"\).*\("\)/\1$(PKG_VERSION)\2/' \
+			$(PKG_BUILD_DIR)/core.go ; \
+		build="Lean's custom build - Release $(PKG_RELEASE)" ; \
+		sed -i \
+			"s/\(build[[:space:]]*=[[:space:]]*\"\).*\(\"\)/\1$$$$build\2/" \
+			$(PKG_BUILD_DIR)/core.go ; \
+		$(CP) ./all.go $(PKG_BUILD_DIR)/main/distro/all/all.go ; \
+	)
 endef
 
 define Build/Compile
+	$(eval GO_PKG_BUILD_PKG:=v2ray.com/core/main)
+	$(call GoPackage/Build/Compile,-ldflags "-s -w")
+	mv -f $(GO_PKG_BUILD_BIN_DIR)/main $(GO_PKG_BUILD_BIN_DIR)/v2ray
+
+	$(eval GO_PKG_BUILD_PKG:=v2ray.com/core/infra/control/main)
+	$(call GoPackage/Build/Compile,-ldflags "-s -w")
+	mv -f $(GO_PKG_BUILD_BIN_DIR)/main $(GO_PKG_BUILD_BIN_DIR)/v2ctl
 endef
 
-define Package/$(PKG_NAME)/install
-	$(INSTALL_DIR) $(1)/usr/bin/v2ray
-ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_V2RAY
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ray $(1)/usr/bin/v2ray/
-endif
-ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_V2CTL
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ctl $(1)/usr/bin/v2ray/
-endif
-ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_GEOIP
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/geoip.dat $(1)/usr/bin/v2ray/
-endif
-ifdef CONFIG_PACKAGE_V2RAY_INCLUDE_GEOSITE
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/geosite.dat $(1)/usr/bin/v2ray/
-endif
-endef
 
-$(eval $(call BuildPackage,$(PKG_NAME)))
+$(foreach component,$(V2RAY_COMPONENTS), \
+  $(eval $(call GoBinPackage,$(component))) \
+  $(eval $(call BuildPackage,$(component))) \
+)
+$(eval $(call BuildPackage,v2ray-assets))
+
+$(eval $(call GoBinPackage,v2ray-core))
+$(eval $(call BuildPackage,v2ray-core))
+$(eval $(call GoSrcPackage,golang-v2ray-core-dev))
+$(eval $(call BuildPackage,golang-v2ray-core-dev))

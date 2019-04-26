@@ -64,6 +64,12 @@ scale_latency() {
 	printf "%d.%d ms" ${a} ${b}
 }
 
+scale_latency_us() {
+	local val=$1
+
+	expr $val \* 10
+}
+
 #
 # convert vendorid into human readable form
 #
@@ -428,6 +434,8 @@ latency_delay() {
 	sidd=$(scale_latency $idd)
 
 	if [ "$action" = "lucistat" ]; then
+		echo "dsl.latency_down=\"$(scale_latency_us $idd)\""
+		echo "dsl.latency_up=\"$(scale_latency_us $idu)\""
 		echo "dsl.latency_num_down=\"$sidd\""
 		echo "dsl.latency_num_up=\"$sidu\""
 		echo "dsl.latency_s_down=\"$idd_s\""

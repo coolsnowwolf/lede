@@ -49,8 +49,12 @@ $(eval $(call KernelPackage,fs-afs))
 define KernelPackage/fs-autofs4
   SUBMENU:=$(FS_MENU)
   TITLE:=AUTOFS4 filesystem support
-  KCONFIG:=CONFIG_AUTOFS4_FS
-  FILES:=$(LINUX_DIR)/fs/autofs4/autofs4.ko
+  KCONFIG:= \
+	CONFIG_AUTOFS4_FS \
+	CONFIG_AUTOFS_FS
+  FILES:= \
+	$(LINUX_DIR)/fs/autofs4/autofs4.ko@lt4.18 \
+	$(LINUX_DIR)/fs/autofs/autofs4.ko@ge4.18
   AUTOLOAD:=$(call AutoLoad,30,autofs4)
 endef
 
@@ -64,7 +68,7 @@ $(eval $(call KernelPackage,fs-autofs4))
 define KernelPackage/fs-btrfs
   SUBMENU:=$(FS_MENU)
   TITLE:=BTRFS filesystem support
-  DEPENDS:=+kmod-lib-crc32c +kmod-lib-lzo +kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +kmod-lib-raid6 +kmod-lib-xor +LINUX_4_14:kmod-lib-zstd
+  DEPENDS:=+kmod-lib-crc32c +kmod-lib-lzo +kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +kmod-lib-raid6 +kmod-lib-xor +!(LINUX_3_18||LINUX_4_9):kmod-lib-zstd
   KCONFIG:=\
 	CONFIG_BTRFS_FS \
 	CONFIG_BTRFS_FS_POSIX_ACL=n \
