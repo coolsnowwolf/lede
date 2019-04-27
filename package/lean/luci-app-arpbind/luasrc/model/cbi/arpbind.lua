@@ -1,7 +1,4 @@
---[[
- 静态ARP绑定 Luci页面 CBI page
- Copyright (C) 2015 GuoGuo <gch981213@gmail.com>
-]]--
+
 
 local sys = require "luci.sys"
 local ifaces = sys.net:devices()
@@ -15,12 +12,22 @@ s.anonymous = true
 s.addremove = true
 
 a = s:option(Value, "ipaddr", translate("IP Address"))
-a.datatype = "ipaddr"
 a.optional = false
+a.datatype = "ipaddr"
+luci.ip.neighbors({ family = 4 }, function(entry)
+       if entry.reachable then
+               a:value(entry.dest:string())
+       end
+end)
 
 a = s:option(Value, "macaddr", translate("MAC Address"))
 a.datatype = "macaddr"
 a.optional = false
+luci.ip.neighbors({family = 4}, function(neighbor)
+	if neighbor.reachable then
+		a:value(neighbor.mac, "%s (%s)" %{neighbor.mac, neighbor.dest:string()})
+	end
+end)
 
 a = s:option(ListValue, "ifname", translate("Interface"))
 for _, iface in ipairs(ifaces) do
