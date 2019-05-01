@@ -28,7 +28,7 @@ import (
 	_ "v2ray.com/core/proxy/dokodemo"
 	_ "v2ray.com/core/proxy/freedom"
 	_ "v2ray.com/core/proxy/http"
-	_ "v2ray.com/core/proxy/mtproto"
+	// _ "v2ray.com/core/proxy/mtproto"
 	// _ "v2ray.com/core/proxy/shadowsocks"
 	_ "v2ray.com/core/proxy/socks"
 	_ "v2ray.com/core/proxy/vmess/inbound"
@@ -47,7 +47,7 @@ import (
 	// Transport headers
 	_ "v2ray.com/core/transport/internet/headers/http"
 	_ "v2ray.com/core/transport/internet/headers/noop"
-	_ "v2ray.com/core/transport/internet/headers/srtp"
+	// _ "v2ray.com/core/transport/internet/headers/srtp"
 	_ "v2ray.com/core/transport/internet/headers/tls"
 	_ "v2ray.com/core/transport/internet/headers/utp"
 	_ "v2ray.com/core/transport/internet/headers/wechat"
