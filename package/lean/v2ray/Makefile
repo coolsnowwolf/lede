@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray
 PKG_VERSION:=v4.19
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
+PKG_RELEASE:=2
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -25,6 +25,8 @@ define Package/$(PKG_NAME)/description
 V2Ray is a cross-platform proxy software
 endef
 
+V2RAY_BIN:=v2ray
+
 ifeq ($(ARCH),x86_64)
 	PKG_ARCH_V2RAY:=amd64
 endif
@@ -39,17 +41,12 @@ ifeq ($(ARCH),i386)
 endif
 ifeq ($(ARCH),arm)
 	PKG_ARCH_V2RAY:=arm
+	ifneq ($(BOARD),bcm53xx)
+		V2RAY_BIN:=v2ray_armv7
+  endif
 endif
 ifeq ($(ARCH),aarch64)
 	PKG_ARCH_V2RAY:=arm64
-endif
-
-ifeq ($(ARCH),arm)
-  ifneq ($(BOARD),bcm53xx)
-		V2RAY_BIN:=v2ray_armv7
-  endif
-else
-		V2RAY_BIN:=v2ray
 endif
 
 define Build/Prepare
