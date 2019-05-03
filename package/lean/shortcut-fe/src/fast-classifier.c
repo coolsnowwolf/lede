@@ -181,7 +181,7 @@ static atomic_t done_fail_msgs = ATOMIC_INIT(0);
  * 	only implement ingress for now, because for egress we
  * 	want to have the bridge devices qdiscs be used.
  */
-static bool skip_to_bridge_ingress = 1;
+static bool skip_to_bridge_ingress;
 
 /*
  * fast_classifier_incr_exceptions()
@@ -761,7 +761,7 @@ static int fast_classifier_nl_genl_msg_DUMP(struct sk_buff *skb,
 }
 
 /* auto offload connection once we have this many packets*/
-static int offload_at_pkts = 16;
+static int offload_at_pkts = 128;
 
 /*
  * fast_classifier_post_routing()
@@ -1722,7 +1722,7 @@ static int __init fast_classifier_init(void)
 	int result = -1;
 	size_t i, j;
 
-	printk(KERN_ALERT "fast-classifier (PBR safe v2.1b): starting up\n");
+	printk(KERN_ALERT "fast-classifier (PBR safe v2.2): starting up\n");
 	DEBUG_INFO("SFE CM init\n");
 
 	hash_init(fc_conn_ht);
@@ -1813,7 +1813,7 @@ static int __init fast_classifier_init(void)
 	}
 #endif
 
-	printk(KERN_ALERT "fast-classifier (PBR safe v2.1b): registered\n");
+	printk(KERN_ALERT "fast-classifier (PBR safe v2.2): registered\n");
 
 	spin_lock_init(&sc->lock);
 
@@ -1867,7 +1867,7 @@ static void __exit fast_classifier_exit(void)
 	int result = -1;
 
 	DEBUG_INFO("SFE CM exit\n");
-	printk(KERN_ALERT "fast-classifier (PBR safe v2.1b): shutting down\n");
+	printk(KERN_ALERT "fast-classifier (PBR safe v2.2): shutting down\n");
 
 	/*
 	 * Unregister our sync callback.
