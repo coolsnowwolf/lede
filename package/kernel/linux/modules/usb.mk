@@ -73,7 +73,7 @@ $(eval $(call KernelPackage,usb-phy-nop))
 
 define KernelPackage/usb-phy-qcom-dwc3
   TITLE:=DWC3 USB QCOM PHY driver
-  DEPENDS:=@TARGET_ipq40xx||@TARGET_ipq806x +kmod-usb-dwc3-of-simple
+  DEPENDS:=@!LINUX_4_19 @TARGET_ipq806x +kmod-usb-dwc3-of-simple
   KCONFIG:= CONFIG_PHY_QCOM_DWC3
   FILES:= \
     $(LINUX_DIR)/drivers/phy/phy-qcom-dwc3.ko@lt4.13 \
