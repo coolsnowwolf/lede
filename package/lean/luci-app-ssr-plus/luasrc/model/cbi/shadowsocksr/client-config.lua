@@ -203,6 +203,7 @@ o:value("tcp", "TCP")
 o:value("kcp", "mKCP")
 o:value("ws", "WebSocket")
 o:value("h2", "HTTP/2")
+o:value("quic", "QUIC")
 o.rmempty = true
 o:depends("type", "v2ray")
 
@@ -248,6 +249,29 @@ o.rmempty = true
 o = s:option(Value, "h2_path", translate("HTTP/2 Path"))
 o:depends("transport", "h2")
 o.rmempty = true
+
+-- [[ QUIC部分 ]]--
+
+o = s:option(ListValue, "quic_security", translate("QUIC Security"))
+o:depends("transport", "quic")
+o.rmempty = true
+o:value("none", translate("None"))
+o:value("aes-128-gcm", translate("aes-128-gcm"))
+o:value("chacha20-poly1305", translate("chacha20-poly1305"))
+
+o = s:option(Value, "quic_key", translate("QUIC Key"))
+o:depends("transport", "quic")
+o.rmempty = true
+
+o = s:option(ListValue, "quic_guise", translate("Header"))
+o:depends("transport", "quic")
+o.rmempty = true
+o:value("none", translate("None"))
+o:value("srtp", translate("VideoCall (SRTP)"))
+o:value("utp", translate("BitTorrent (uTP)"))
+o:value("wechat-video", translate("WechatVideo"))
+o:value("dtls", "DTLS 1.2")
+o:value("wireguard", "WireGuard")
 
 -- [[ mKCP部分 ]]--
 
