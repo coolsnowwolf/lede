@@ -318,6 +318,12 @@ o.rmempty = true
 o.default = "0"
 o:depends("type", "v2ray")
 
+o = s:option(Value, "concurrency", translate("Concurrency"))
+o.datatype = "uinteger"
+o.rmempty = true
+o.default = "8"
+o:depends("mux", "1")
+
 o = s:option(Flag, "fast_open", translate("TCP Fast Open"))
 o.rmempty = true
 o.default = "0"
