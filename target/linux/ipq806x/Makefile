@@ -10,11 +10,14 @@ CPU_TYPE:=cortex-a15
 CPU_SUBTYPE:=neon-vfpv4
 MAINTAINER:=John Crispin <john@phrozen.org>
 
-KERNEL_PATCHVER:=4.14
+KERNEL_PATCHVER:=4.19
 
 KERNELNAME:=zImage Image dtbs
 
 include $(INCLUDE_DIR)/target.mk
+
+# TODO: 4.19 drops kmod-usb-dwc3-of-simple which is replaced by_kmod-usb-dwc3-qcom
+# 4.19 also integrates kmod-usb-phy-qcom-dwc3
 DEFAULT_PACKAGES += \
 	kmod-leds-gpio kmod-gpio-button-hotplug swconfig \
 	kmod-ata-core kmod-ata-ahci kmod-ata-ahci-platform \
