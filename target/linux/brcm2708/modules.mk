@@ -10,8 +10,8 @@ define KernelPackage/drm-vc4
   TITLE:=Broadcom VC4 Graphics
   DEPENDS:= \
 	@TARGET_brcm2708 +kmod-drm \
-	+LINUX_4_14:kmod-sound-core \
-	+LINUX_4_14:kmod-sound-soc-core
+	+kmod-sound-core \
+	+kmod-sound-soc-core
   KCONFIG:= \
 	CONFIG_DRM_VC4 \
 	CONFIG_DRM_VC4_HDMI_CEC=n
@@ -32,7 +32,7 @@ $(eval $(call KernelPackage,drm-vc4))
 define KernelPackage/hwmon-rpi-poe-fan
   SUBMENU:=$(HWMON_MENU)
   TITLE:=Raspberry Pi PoE HAT fan
-  DEPENDS:=@TARGET_brcm2708 @LINUX_4_14 +kmod-hwmon-core
+  DEPENDS:=@TARGET_brcm2708 +kmod-hwmon-core
   KCONFIG:=CONFIG_SENSORS_RPI_POE_FAN
   FILES:=$(LINUX_DIR)/drivers/hwmon/rpi-poe-fan.ko
   AUTOLOAD:=$(call AutoProbe,rpi-poe-fan)
@@ -52,8 +52,7 @@ define KernelPackage/sound-arm-bcm2835
 	CONFIG_SND_BCM2835 \
 	CONFIG_SND_ARMAACI=n
   FILES:= \
-	$(LINUX_DIR)/drivers/staging/vc04_services/bcm2835-audio/snd-bcm2835.ko@ge4.12 \
-	$(LINUX_DIR)/sound/arm/snd-bcm2835.ko@lt4.12
+	$(LINUX_DIR)/drivers/staging/vc04_services/bcm2835-audio/snd-bcm2835.ko
   AUTOLOAD:=$(call AutoLoad,68,snd-bcm2835)
   DEPENDS:=@TARGET_brcm2708
   $(call AddDepends/sound)
@@ -75,7 +74,7 @@ define KernelPackage/sound-soc-bcm2835-i2s
   FILES:= \
 	$(LINUX_DIR)/sound/soc/bcm/snd-soc-bcm2835-i2s.ko
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-bcm2835-i2s)
-  DEPENDS:=@TARGET_brcm2708 +kmod-regmap-mmio +kmod-sound-soc-core
+  DEPENDS:=@TARGET_brcm2708 +kmod-sound-soc-core
   $(call AddDepends/sound)
 endef
 
@@ -92,9 +91,9 @@ define KernelPackage/sound-soc-3dlab-nano-player
   FILES:=$(LINUX_DIR)/sound/soc/bcm/snd-soc-3dlab-nano-player.ko
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-3dlab-nano-player)
   DEPENDS:= \
-	@LINUX_4_14 \
 	kmod-sound-soc-bcm2835-i2s \
 	+kmod-regmap-i2c
+  $(call AddDepends/sound)
 endef
 
 define KernelPackage/sound-soc-3dlab-nano-player/description
@@ -118,7 +117,8 @@ define KernelPackage/sound-soc-adau1977-adc
 	snd-soc-adau1977-adc)
   DEPENDS:= \
 	kmod-sound-soc-bcm2835-i2s \
-	+kmod-i2c-bcm2708
+	+kmod-i2c-bcm2708 \
+	+kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
@@ -142,9 +142,9 @@ define KernelPackage/sound-soc-allo-boss-dac
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm512x-i2c snd-soc-pcm512x \
 	snd-soc-allo-boss-dac)
   DEPENDS:= \
-	@LINUX_4_14 \
 	+kmod-i2c-bcm2708 \
-	kmod-sound-soc-bcm2835-i2s
+	kmod-sound-soc-bcm2835-i2s \
+	+kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
@@ -168,9 +168,9 @@ define KernelPackage/sound-soc-allo-digione
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm512x-i2c snd-soc-pcm512x \
 	snd-soc-allo-digione)
   DEPENDS:= \
-	@LINUX_4_14 \
 	+kmod-i2c-bcm2708 \
-	kmod-sound-soc-bcm2835-i2s
+	kmod-sound-soc-bcm2835-i2s \
+	+kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
@@ -195,7 +195,8 @@ define KernelPackage/sound-soc-allo-piano-dac
 	snd-soc-allo-piano-dac)
   DEPENDS:= \
 	kmod-sound-soc-bcm2835-i2s \
-	+kmod-i2c-bcm2708
+	+kmod-i2c-bcm2708 \
+	+kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
@@ -219,9 +220,9 @@ define KernelPackage/sound-soc-allo-piano-dac-plus
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm512x-i2c snd-soc-pcm512x \
 	snd-soc-allo-piano-dac-plus)
   DEPENDS:= \
-	@LINUX_4_14 \
 	+kmod-i2c-bcm2708 \
-	kmod-sound-soc-bcm2835-i2s
+	kmod-sound-soc-bcm2835-i2s \
+	+kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
@@ -247,10 +248,9 @@ define KernelPackage/sound-soc-allo-katana-codec
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm512x-i2c snd-soc-pcm512x \
 	snd-soc-allo-katana-codec)
   DEPENDS:= \
-	@LINUX_4_14 \
 	+kmod-i2c-bcm2708 \
-	+kmod-regmap-core \
-	kmod-sound-soc-bcm2835-i2s
+	kmod-sound-soc-bcm2835-i2s \
+	+kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
@@ -274,9 +274,9 @@ define KernelPackage/sound-soc-audioinjector-octo-soundcard
   AUTOLOAD:=$(call AutoLoad,68,snd-soc- \
 	snd-soc-audioinjector-octo-soundcard)
   DEPENDS:= \
-	@LINUX_4_14 \
 	+kmod-i2c-bcm2708 \
-	kmod-sound-soc-bcm2835-i2s
+	kmod-sound-soc-bcm2835-i2s \
+	+kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
@@ -299,7 +299,9 @@ define KernelPackage/sound-soc-audioinjector-pi-soundcard
 	snd-soc-audioinjector-pi-soundcard)
   DEPENDS:= \
         kmod-sound-soc-bcm2835-i2s \
-        +kmod-i2c-bcm2708
+        +kmod-i2c-bcm2708 \
+        +kmod-regmap-i2c \
+        +kmod-regmap-spi
   $(call AddDepends/sound)
 endef
 
@@ -326,7 +328,9 @@ define KernelPackage/sound-soc-digidac1-soundcard
 	snd-soc-digidac1-soundcard)
   DEPENDS:= \
 	kmod-sound-soc-bcm2835-i2s \
-	+kmod-i2c-bcm2708
+	+kmod-i2c-bcm2708 \
+	+kmod-regmap-i2c \
+	+kmod-regmap-spi
   $(call AddDepends/sound)
 endef
 
@@ -370,7 +374,8 @@ define KernelPackage/sound-soc-dionaudio-loco-v2
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm512x snd-soc-pcm512x-i2c \
         snd-soc-dionaudio-loco)
   DEPENDS:= \
-        kmod-sound-soc-bcm2835-i2s
+        kmod-sound-soc-bcm2835-i2s \
+        +kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
@@ -391,7 +396,8 @@ define KernelPackage/sound-soc-fe-pi
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-sgtl5000 \
 	snd-soc-fe-pi-audio)
   DEPENDS:= \
-	kmod-sound-soc-bcm2835-i2s
+	kmod-sound-soc-bcm2835-i2s \
+	+kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
@@ -413,7 +419,6 @@ define KernelPackage/sound-soc-googlevoicehat
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-googlevoicehat-codec \
 	snd-soc-googlevoicehat-soundcard)
   DEPENDS:= \
-	@LINUX_4_14 \
 	kmod-sound-soc-bcm2835-i2s
   $(call AddDepends/sound)
 endef
@@ -501,7 +506,8 @@ define KernelPackage/sound-soc-hifiberry-amp
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-tas5713 snd-soc-hifiberry-amp)
   DEPENDS:= \
 	kmod-sound-soc-bcm2835-i2s \
-	+kmod-i2c-bcm2708
+	+kmod-i2c-bcm2708 \
+	+kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
@@ -525,7 +531,8 @@ define KernelPackage/sound-soc-iqaudio-dac
 	snd-soc-iqaudio-dac)
   DEPENDS:= \
 	kmod-sound-soc-bcm2835-i2s \
-	+kmod-i2c-bcm2708
+	+kmod-i2c-bcm2708 \
+	+kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
@@ -549,7 +556,8 @@ define KernelPackage/sound-soc-iqaudio-digi
 	snd-soc-iqaudio-digi)
   DEPENDS:= \
 	kmod-sound-soc-bcm2835-i2s \
-	+kmod-i2c-bcm2708
+	+kmod-i2c-bcm2708 \
+	+kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
@@ -621,33 +629,6 @@ endef
 
 $(eval $(call KernelPackage,sound-soc-pisound))
 
-define KernelPackage/sound-soc-raspidac3
-  TITLE:=Support for RaspiDAC Rev.3x
-  KCONFIG:= \
-	CONFIG_SND_BCM2708_SOC_RASPIDAC3 \
-	CONFIG_SND_SOC_PCM512x \
-	CONFIG_SND_SOC_PCM512x_I2C \
-	CONFIG_SND_SOC_TPA6130A2
-  FILES:= \
-	$(LINUX_DIR)/sound/soc/bcm/snd-soc-raspidac3.ko \
-	$(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x.ko \
-	$(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x-i2c.ko \
-	$(LINUX_DIR)/sound/soc/codecs/snd-soc-tpa6130a2.ko
-  AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm512x snd-soc-pcm512x-i2c \
-	snd-soc-tpa6130a2 snd-soc-raspidac3)
-  DEPENDS:= \
-	@LINUX_4_9 \
-	kmod-sound-soc-bcm2835-i2s \
-	+kmod-i2c-bcm2708
-  $(call AddDepends/sound)
-endef
-
-define KernelPackage/sound-soc-raspidac3/description
-  This package contains support for RaspiDAC Rev.3x
-endef
-
-$(eval $(call KernelPackage,sound-soc-raspidac3))
-
 
 define KernelPackage/sound-soc-rpi-cirrus
   TITLE:=Support for Cirrus Logic Audio Card
@@ -677,7 +658,6 @@ define KernelPackage/sound-soc-rpi-cirrus
 	$(LINUX_DIR)/sound/soc/codecs/snd-soc-wm8804.ko
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm1794a snd-soc-rpi-cirrus)
   DEPENDS:= \
-	@LINUX_4_14 \
 	+kmod-i2c-bcm2708 \
 	kmod-sound-soc-bcm2835-i2s
   $(call AddDepends/sound)
@@ -722,7 +702,9 @@ define KernelPackage/sound-soc-rpi-proto
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-wm8731 snd-soc-rpi-proto)
   DEPENDS:= \
 	kmod-sound-soc-bcm2835-i2s \
-	+kmod-i2c-bcm2708
+	+kmod-i2c-bcm2708 \
+	+kmod-regmap-i2c \
+	+kmod-regmap-spi
   $(call AddDepends/sound)
 endef
 
@@ -871,11 +853,10 @@ $(eval $(call KernelPackage,i2c-bcm2835))
 define KernelPackage/video-bcm2835
   TITLE:=Broadcom BCM2835 camera interface driver
   KCONFIG:= \
-	CONFIG_VIDEO_BCM2835$(if $(CONFIG_LINUX_4_9),=y) \
+	CONFIG_VIDEO_BCM2835 \
 	CONFIG_VIDEO_BCM2835_MMAL
   FILES:= \
-	$(LINUX_DIR)/drivers/media/platform/bcm2835/bcm2835-v4l2.ko@lt4.12 \
-	$(LINUX_DIR)/drivers/staging/vc04_services/bcm2835-camera/bcm2835-v4l2.ko@ge4.12
+	$(LINUX_DIR)/drivers/staging/vc04_services/bcm2835-camera/bcm2835-v4l2.ko
   AUTOLOAD:=$(call AutoLoad,65,bcm2835-v4l2)
   $(call AddDepends/video,@TARGET_brcm2708 +kmod-video-videobuf2)
 endef
