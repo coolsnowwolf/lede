@@ -10,7 +10,7 @@ CPU_TYPE:=cortex-a15
 CPU_SUBTYPE:=neon-vfpv4
 MAINTAINER:=John Crispin <john@phrozen.org>
 
-KERNEL_PATCHVER:=4.19
+KERNEL_PATCHVER:=4.14
 
 KERNELNAME:=zImage Image dtbs
 
@@ -23,7 +23,8 @@ DEFAULT_PACKAGES += \
 	kmod-ata-core kmod-ata-ahci kmod-ata-ahci-platform \
 	kmod-usb-core kmod-usb-ohci kmod-usb2 kmod-usb-ledtrig-usbport \
 	kmod-usb3 kmod-usb-dwc3-of-simple kmod-usb-phy-qcom-dwc3 \
-	kmod-ath10k-ct wpad-basic \
-	uboot-envtools
+	kmod-ath10k wpad \
+	uboot-envtools \
+	automount autosamba luci-app-ipsec-vpnd luci-app-xlnetacc v2ray shadowsocks-libev-ss-redir shadowsocksr-libev-server
 
 $(eval $(call BuildTarget))
