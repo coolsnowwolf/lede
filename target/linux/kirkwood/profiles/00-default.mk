@@ -7,7 +7,7 @@
 
 define Profile/Default
 	NAME:=Default Profile
-	PACKAGES:=kmod-mwl8k swconfig wpad-mini
+	PACKAGES:=kmod-mwl8k swconfig wpad-basic
 	PRIORITY:=1
 endef
 

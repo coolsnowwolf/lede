@@ -128,6 +128,49 @@ ar8327_get_pad_cfg(struct ar8327_pad_cfg *cfg)
 }
 
 static void
+ar8327_phy_rgmii_set(struct ar8xxx_priv *priv, struct phy_device *phydev)
+{
+	u16 phy_val = 0;
+	int phyaddr = phydev->mdio.addr;
+	struct device_node *np = phydev->mdio.dev.of_node;
+
+	if (!np)
+		return;
+
+	if (!of_property_read_bool(np, "qca,phy-rgmii-en")) {
+		pr_err("ar8327: qca,phy-rgmii-en is not specified\n");
+		return -EINVAL;
+	}
+	ar8xxx_phy_dbg_read(priv, phyaddr,
+				AR8327_PHY_MODE_SEL, &phy_val);
+	phy_val |= AR8327_PHY_MODE_SEL_RGMII;
+	ar8xxx_phy_dbg_write(priv, phyaddr,
+				AR8327_PHY_MODE_SEL, phy_val);
+
+	/* set rgmii tx clock delay if needed */
+	if (!of_property_read_bool(np, "qca,txclk-delay-en")) {
+		pr_err("ar8327: qca,txclk-delay-en is not specified\n");
+		return -EINVAL;
+	}
+	ar8xxx_phy_dbg_read(priv, phyaddr,
+				AR8327_PHY_SYS_CTRL, &phy_val);
+	phy_val |= AR8327_PHY_SYS_CTRL_RGMII_TX_DELAY;
+	ar8xxx_phy_dbg_write(priv, phyaddr,
+				AR8327_PHY_SYS_CTRL, phy_val);
+
+	/* set rgmii rx clock delay if needed */
+	if (!of_property_read_bool(np, "qca,rxclk-delay-en")) {
+		pr_err("ar8327: qca,rxclk-delay-en is not specified\n");
+		return -EINVAL;
+	}
+	ar8xxx_phy_dbg_read(priv, phyaddr,
+				AR8327_PHY_TEST_CTRL, &phy_val);
+	phy_val |= AR8327_PHY_TEST_CTRL_RGMII_RX_DELAY;
+	ar8xxx_phy_dbg_write(priv, phyaddr,
+				AR8327_PHY_TEST_CTRL, phy_val);
+}
+
+static void
 ar8327_phy_fixup(struct ar8xxx_priv *priv, int phy)
 {
 	switch (priv->chip_rev) {
@@ -506,14 +549,6 @@ ar8327_hw_config_pdata(struct ar8xxx_priv *priv,
 	ar8xxx_write(priv, AR8327_REG_PAD0_MODE, t);
 
 	t = ar8327_get_pad_cfg(pdata->pad5_cfg);
-	if (chip_is_ar8337(priv)) {
-		/*
-		 * Workaround: RGMII RX delay setting needs to be
-		 * always specified for AR8337 to avoid port 5
-		 * RX hang on high traffic / flood conditions
-		 */
-		t |= AR8327_PAD_RGMII_RXCLK_DELAY_EN;
-	}
 	ar8xxx_write(priv, AR8327_REG_PAD5_MODE, t);
 	t = ar8327_get_pad_cfg(pdata->pad6_cfg);
 	ar8xxx_write(priv, AR8327_REG_PAD6_MODE, t);
@@ -678,39 +713,6 @@ ar8327_init_globals(struct ar8xxx_priv *priv)
 	/* Disable EEE on all phy's due to stability issues */
 	for (i = 0; i < AR8XXX_NUM_PHYS; i++)
 		data->eee[i] = false;
-
-	if (chip_is_ar8337(priv)) {
-		/* Update HOL registers with values suggested by QCA switch team */
-		for (i = 0; i < AR8327_NUM_PORTS; i++) {
-			if (i == AR8216_PORT_CPU || i == 5 || i == 6) {
-				t = 0x3 << AR8327_PORT_HOL_CTRL0_EG_PRI0_BUF_S;
-				t |= 0x4 << AR8327_PORT_HOL_CTRL0_EG_PRI1_BUF_S;
-				t |= 0x4 << AR8327_PORT_HOL_CTRL0_EG_PRI2_BUF_S;
-				t |= 0x4 << AR8327_PORT_HOL_CTRL0_EG_PRI3_BUF_S;
-				t |= 0x6 << AR8327_PORT_HOL_CTRL0_EG_PRI4_BUF_S;
-				t |= 0x8 << AR8327_PORT_HOL_CTRL0_EG_PRI5_BUF_S;
-				t |= 0x1e << AR8327_PORT_HOL_CTRL0_EG_PORT_BUF_S;
-			} else {
-				t = 0x3 << AR8327_PORT_HOL_CTRL0_EG_PRI0_BUF_S;
-				t |= 0x4 << AR8327_PORT_HOL_CTRL0_EG_PRI1_BUF_S;
-				t |= 0x6 << AR8327_PORT_HOL_CTRL0_EG_PRI2_BUF_S;
-				t |= 0x8 << AR8327_PORT_HOL_CTRL0_EG_PRI3_BUF_S;
-				t |= 0x19 << AR8327_PORT_HOL_CTRL0_EG_PORT_BUF_S;
-			}
-			ar8xxx_write(priv, AR8327_REG_PORT_HOL_CTRL0(i), t);
-
-			t = 0x6 << AR8327_PORT_HOL_CTRL1_ING_BUF_S;
-			t |= AR8327_PORT_HOL_CTRL1_EG_PRI_BUF_EN;
-			t |= AR8327_PORT_HOL_CTRL1_EG_PORT_BUF_EN;
-			t |= AR8327_PORT_HOL_CTRL1_WRED_EN;
-			ar8xxx_rmw(priv, AR8327_REG_PORT_HOL_CTRL1(i),
-				   AR8327_PORT_HOL_CTRL1_ING_BUF |
-				   AR8327_PORT_HOL_CTRL1_EG_PRI_BUF_EN |
-				   AR8327_PORT_HOL_CTRL1_EG_PORT_BUF_EN |
-				   AR8327_PORT_HOL_CTRL1_WRED_EN,
-				   t);
-		}
-	}
 }
 
 static void
@@ -1098,8 +1100,7 @@ static void ar8327_get_arl_entry(struct ar8xxx_priv *priv,
 	struct mii_bus *bus = priv->mii_bus;
 	u16 r2, page;
 	u16 r1_data0, r1_data1, r1_data2, r1_func;
-	u32 t, val0, val1, val2;
-	int i;
+	u32 val0, val1, val2;
 
 	split_addr(AR8327_REG_ATU_DATA0, &r1_data0, &r2, &page);
 	r2 |= 0x10;
@@ -1136,12 +1137,7 @@ static void ar8327_get_arl_entry(struct ar8xxx_priv *priv,
 		if (!*status)
 			break;
 
-		i = 0;
-		t = AR8327_ATU_PORT0;
-		while (!(val1 & t) && ++i < AR8327_NUM_PORTS)
-			t <<= 1;
-
-		a->port = i;
+		a->portmap = (val1 & AR8327_ATU_PORTS) >> AR8327_ATU_PORTS_S;
 		a->mac[0] = (val0 & AR8327_ATU_ADDR0) >> AR8327_ATU_ADDR0_S;
 		a->mac[1] = (val0 & AR8327_ATU_ADDR1) >> AR8327_ATU_ADDR1_S;
 		a->mac[2] = (val0 & AR8327_ATU_ADDR2) >> AR8327_ATU_ADDR2_S;
@@ -1498,6 +1494,7 @@ const struct ar8xxx_chip ar8327_chip = {
 	.atu_flush_port = ar8327_atu_flush_port,
 	.vtu_flush = ar8327_vtu_flush,
 	.vtu_load_vlan = ar8327_vtu_load_vlan,
+	.phy_fixup = ar8327_phy_fixup,
 	.set_mirror_regs = ar8327_set_mirror_regs,
 	.get_arl_entry = ar8327_get_arl_entry,
 	.sw_hw_apply = ar8327_sw_hw_apply,
@@ -1536,6 +1533,7 @@ const struct ar8xxx_chip ar8337_chip = {
 	.set_mirror_regs = ar8327_set_mirror_regs,
 	.get_arl_entry = ar8327_get_arl_entry,
 	.sw_hw_apply = ar8327_sw_hw_apply,
+	.phy_rgmii_set = ar8327_phy_rgmii_set,
 
 	.num_mibs = ARRAY_SIZE(ar8236_mibs),
 	.mib_decs = ar8236_mibs,

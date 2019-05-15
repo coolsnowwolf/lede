@@ -9,9 +9,9 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2017.11
+PKG_VERSION:=2018.05
 
-PKG_HASH:=6a018fd3caf58f3dcfa23ee989a82bd35df03af71872b9dca8c6d758a0d26c05
+PKG_HASH:=4da13c2a6139a78cc08608f21fd4741db27eda336cfad7ab8264fda923b9c048
 
 PKG_MAINTAINER:=Zoltan HERPAI <wigyori@uid0.hu>
 
@@ -150,6 +150,12 @@ define U-Boot/orangepi_r1
   BUILD_DEVICES:=sun8i-h2-plus-orangepi-r1
 endef
 
+define U-Boot/orangepi_zero
+  BUILD_SUBTARGET:=cortexa7
+  NAME:=Orange Pi Zero (H2+)
+  BUILD_DEVICES:=sun8i-h2-plus-orangepi-zero
+endef
+
 define U-Boot/orangepi_pc
   BUILD_SUBTARGET:=cortexa7
   NAME:=Orange Pi PC (H3)
@@ -182,6 +188,14 @@ define U-Boot/nanopi_neo_plus2
   UENV:=a64
 endef
 
+define U-Boot/nanopi_neo2
+  BUILD_SUBTARGET:=cortexa53
+  NAME:=NanoPi NEO2 (H5)
+  BUILD_DEVICES:=sun50i-h5-nanopi-neo2
+  DEPENDS:=+PACKAGE_u-boot-nanopi_neo2:arm-trusted-firmware-sunxi
+  UENV:=a64
+endef
+
 define U-Boot/pine64_plus
   BUILD_SUBTARGET:=cortexa53
   NAME:=Pine64 Plus A64
@@ -207,6 +221,14 @@ define U-Boot/orangepi_zero_plus
   UENV:=a64
 endef
 
+define U-Boot/orangepi_pc2
+  BUILD_SUBTARGET:=cortexa53
+  NAME:=Xunlong Orange Pi PC2
+  BUILD_DEVICES:=sun50i-h5-orangepi-pc2
+  DEPENDS:=+PACKAGE_u-boot-orangepi_pc2:arm-trusted-firmware-sunxi
+  UENV:=a64
+endef
+
 UBOOT_TARGETS := \
 	A10-OLinuXino-Lime \
 	A13-OLinuXino \
@@ -229,10 +251,13 @@ UBOOT_TARGETS := \
 	nanopi_m1_plus \
 	nanopi_neo \
 	nanopi_neo_plus2 \
+	nanopi_neo2 \
+	orangepi_zero \
 	orangepi_r1 \
 	orangepi_pc \
 	orangepi_plus \
 	orangepi_2 \
+	orangepi_pc2 \
 	pangolin \
 	pine64_plus \
 	sopine_baseboard \
@@ -245,11 +270,7 @@ UBOOT_MAKE_FLAGS += \
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)
-ifeq ($(SUBTARGET),cortexa53)
-	cat $(PKG_BUILD_DIR)/spl/sunxi-spl.bin $(PKG_BUILD_DIR)/u-boot.itb > $(STAGING_DIR_IMAGE)/$(BUILD_DEVICES)-u-boot-with-spl.bin
-else
 	$(CP) $(PKG_BUILD_DIR)/$(UBOOT_IMAGE) $(STAGING_DIR_IMAGE)/$(BUILD_DEVICES)-u-boot-with-spl.bin
-endif
 	mkimage -C none -A arm -T script -d uEnv-$(UENV).txt \
 		$(STAGING_DIR_IMAGE)/$(BUILD_DEVICES)-boot.scr
 endef

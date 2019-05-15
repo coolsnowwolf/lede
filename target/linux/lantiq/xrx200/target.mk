@@ -6,6 +6,7 @@ CPU_TYPE:=24kc
 
 DEFAULT_PACKAGES+=kmod-leds-gpio \
 	kmod-gpio-button-hotplug \
+	ltq-vdsl-vr9-vectoring-fw-installer \
 	kmod-ltq-vdsl-vr9-mei \
 	kmod-ltq-vdsl-vr9 \
 	kmod-ltq-atm-vr9 \

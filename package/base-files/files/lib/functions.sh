@@ -57,16 +57,16 @@ config () {
 	export ${NO_EXPORT:+-n} CONFIG_NUM_SECTIONS=$(($CONFIG_NUM_SECTIONS + 1))
 	name="${name:-cfg$CONFIG_NUM_SECTIONS}"
 	append CONFIG_SECTIONS "$name"
-	[ -n "$NO_CALLBACK" ] || config_cb "$cfgtype" "$name"
 	export ${NO_EXPORT:+-n} CONFIG_SECTION="$name"
-	export ${NO_EXPORT:+-n} "CONFIG_${CONFIG_SECTION}_TYPE=$cfgtype"
+	config_set "$CONFIG_SECTION" "TYPE" "${cfgtype}"
+	[ -n "$NO_CALLBACK" ] || config_cb "$cfgtype" "$name"
 }
 
 option () {
 	local varname="$1"; shift
 	local value="$*"
 
-	export ${NO_EXPORT:+-n} "CONFIG_${CONFIG_SECTION}_${varname}=$value"
+	config_set "$CONFIG_SECTION" "${varname}" "${value}"
 	[ -n "$NO_CALLBACK" ] || option_cb "$varname" "$*"
 }
 
@@ -81,7 +81,7 @@ list() {
 	config_set "$CONFIG_SECTION" "${varname}_ITEM$len" "$value"
 	config_set "$CONFIG_SECTION" "${varname}_LENGTH" "$len"
 	append "CONFIG_${CONFIG_SECTION}_${varname}" "$value" "$LIST_SEP"
-	list_cb "$varname" "$*"
+	[ -n "$NO_CALLBACK" ] || list_cb "$varname" "$*"
 }
 
 config_unset() {
@@ -113,11 +113,8 @@ config_set() {
 	local section="$1"
 	local option="$2"
 	local value="$3"
-	local old_section="$CONFIG_SECTION"
 
-	CONFIG_SECTION="$section"
-	option "$option" "$value"
-	CONFIG_SECTION="$old_section"
+	export ${NO_EXPORT:+-n} "CONFIG_${section}_${option}=${value}"
 }
 
 config_foreach() {
@@ -155,22 +152,27 @@ config_list_foreach() {
 
 default_prerm() {
 	local root="${IPKG_INSTROOT}"
-	local name
+	local pkgname="$(basename ${1%.*})"
+	local ret=0
 
-	name=$(basename ${1%.*})
-	[ -f "$root/usr/lib/opkg/info/${name}.prerm-pkg" ] && . "$root/usr/lib/opkg/info/${name}.prerm-pkg"
+	if [ -f "$root/usr/lib/opkg/info/${pkgname}.prerm-pkg" ]; then
+		( . "$root/usr/lib/opkg/info/${pkgname}.prerm-pkg" )
+		ret=$?
+	fi
 
 	local shell="$(which bash)"
-	for i in `cat "$root/usr/lib/opkg/info/${name}.list" | grep "^/etc/init.d/"`; do
+	for i in $(grep -s "^/etc/init.d/" "$root/usr/lib/opkg/info/${pkgname}.list"); do
 		if [ -n "$root" ]; then
 			${shell:-/bin/sh} "$root/etc/rc.common" "$root$i" disable
 		else
 			if [ "$PKG_UPGRADE" != "1" ]; then
 				"$i" disable
 			fi
-			"$i" stop || /bin/true
+			"$i" stop
 		fi
 	done
+
+	return $ret
 }
 
 add_group_and_user() {
@@ -232,10 +234,9 @@ default_postinst() {
 	if [ -z "$root" ] && grep -q -s "^/etc/uci-defaults/" "/usr/lib/opkg/info/${pkgname}.list"; then
 		. /lib/functions/system.sh
 		[ -d /tmp/.uci ] || mkdir -p /tmp/.uci
-		for i in $(sed -ne 's!^/etc/uci-defaults/!!p' "/usr/lib/opkg/info/${pkgname}.list"); do (
-			cd /etc/uci-defaults
-			[ -f "$i" ] && . ./"$i" && rm -f "$i"
-		) done
+		for i in $(grep -s "^/etc/uci-defaults/" "/usr/lib/opkg/info/${pkgname}.list"); do
+			( [ -f "$i" ] && cd "$(dirname $i)" && . "$i" ) && rm -f "$i"
+		done
 		uci commit
 	fi
 

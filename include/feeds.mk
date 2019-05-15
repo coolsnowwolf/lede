@@ -10,17 +10,11 @@
 
 FEEDS_INSTALLED:=$(notdir $(wildcard $(TOPDIR)/package/feeds/*))
 FEEDS_AVAILABLE:=$(sort $(FEEDS_INSTALLED) $(shell $(SCRIPT_DIR)/feeds list -n))
-FEEDS_ENABLED:=$(foreach feed,$(FEEDS_AVAILABLE),$(if $(CONFIG_FEED_$(feed)),$(feed)))
-FEEDS_DISABLED:=$(filter-out $(FEEDS_ENABLED),$(FEEDS_AVAILABLE))
 
 PACKAGE_SUBDIRS=$(PACKAGE_DIR)
 ifneq ($(CONFIG_PER_FEED_REPO),)
   PACKAGE_SUBDIRS += $(OUTPUT_DIR)/packages/$(ARCH_PACKAGES)/base
-  ifneq ($(CONFIG_PER_FEED_REPO_ADD_DISABLED),)
-    PACKAGE_SUBDIRS += $(foreach FEED,$(FEEDS_AVAILABLE),$(OUTPUT_DIR)/packages/$(ARCH_PACKAGES)/$(FEED))
-  else
-    PACKAGE_SUBDIRS += $(foreach FEED,$(FEEDS_ENABLED),$(OUTPUT_DIR)/packages/$(ARCH_PACKAGES)/$(FEED))
-  endif
+  PACKAGE_SUBDIRS += $(foreach FEED,$(FEEDS_AVAILABLE),$(OUTPUT_DIR)/packages/$(ARCH_PACKAGES)/$(FEED))
 endif
 
 opkg_package_files = $(wildcard \
@@ -39,10 +33,11 @@ endef
 # 1: destination file
 define FeedSourcesAppend
 ( \
-  echo "src/gz %d_core %U/targets/%S/packages"; \
+  echo 'src/gz %d_core %U/targets/%S/packages'; \
   $(strip $(if $(CONFIG_PER_FEED_REPO), \
-	$(foreach feed,base $(FEEDS_ENABLED),echo "src/gz %d_$(feed) %U/packages/%A/$(feed)";) \
-	$(if $(CONFIG_PER_FEED_REPO_ADD_DISABLED), \
-		$(foreach feed,$(FEEDS_DISABLED),echo "$(if $(CONFIG_PER_FEED_REPO_ADD_COMMENTED),# )src/gz %d_$(feed) %U/packages/%A/$(feed)";)))) \
+	echo 'src/gz %d_base %U/packages/%A/base'; \
+	$(foreach feed,$(FEEDS_AVAILABLE), \
+		$(if $(CONFIG_FEED_$(feed)), \
+			echo '$(if $(filter m,$(CONFIG_FEED_$(feed))),# )src/gz %d_$(feed) %U/packages/%A/$(feed)';)))) \
 ) >> $(1)
 endef

@@ -110,6 +110,26 @@ endef
 $(eval $(call KernelPackage,mii))
 
 
+define KernelPackage/mdio-gpio
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:= Supports GPIO lib-based MDIO busses
+  DEPENDS:=+kmod-libphy @GPIO_SUPPORT +(TARGET_armvirt||TARGET_brcm2708_bcm2708||TARGET_samsung):kmod-of-mdio
+  KCONFIG:= \
+	CONFIG_MDIO_BITBANG \
+	CONFIG_MDIO_GPIO
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/phy/mdio-gpio.ko \
+	$(LINUX_DIR)/drivers/net/phy/mdio-bitbang.ko
+  AUTOLOAD:=$(call AutoProbe,mdio-gpio)
+endef
+
+define KernelPackage/mdio-gpio/description
+ Supports GPIO lib-based MDIO busses
+endef
+
+$(eval $(call KernelPackage,mdio-gpio))
+
+
 define KernelPackage/et131x
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Agere ET131x Gigabit Ethernet driver
@@ -149,7 +169,7 @@ define KernelPackage/phy-broadcom
    KCONFIG:=CONFIG_BROADCOM_PHY
    DEPENDS:=+kmod-libphy +kmod-phylib-broadcom
    FILES:=$(LINUX_DIR)/drivers/net/phy/broadcom.ko
-   AUTOLOAD:=$(call AutoLoad,18,broadcom)
+   AUTOLOAD:=$(call AutoLoad,18,broadcom,1)
 endef
 
 define KernelPackage/phy-broadcom/description
@@ -158,6 +178,22 @@ define KernelPackage/phy-broadcom/description
 endef
 
 $(eval $(call KernelPackage,phy-broadcom))
+
+
+define KernelPackage/phy-realtek
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Realtek Ethernet PHY driver
+   KCONFIG:=CONFIG_REALTEK_PHY
+   DEPENDS:=+kmod-libphy
+   FILES:=$(LINUX_DIR)/drivers/net/phy/realtek.ko
+   AUTOLOAD:=$(call AutoLoad,18,realtek,1)
+endef
+
+define KernelPackage/phy-realtek/description
+   Supports the Realtek 821x PHY.
+endef
+
+$(eval $(call KernelPackage,phy-realtek))
 
 
 define KernelPackage/swconfig
@@ -206,10 +242,26 @@ endef
 $(eval $(call KernelPackage,switch-ip17xx))
 
 
+define KernelPackage/switch-rtl8306
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Realtek RTL8306S switch support
+  DEPENDS:=+kmod-swconfig
+  KCONFIG:=CONFIG_RTL8306_PHY
+  FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8306.ko
+  AUTOLOAD:=$(call AutoLoad,43,rtl8306)
+endef
+
+define KernelPackage/switch-rtl8306/description
+ Realtek RTL8306S switch support
+endef
+
+$(eval $(call KernelPackage,switch-rtl8306))
+
+
 define KernelPackage/switch-rtl8366-smi
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Realtek RTL8366 SMI switch interface support
-  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig
+  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig +(TARGET_armvirt||TARGET_brcm2708_bcm2708||TARGET_samsung):kmod-of-mdio
   KCONFIG:=CONFIG_RTL8366_SMI
   FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8366_smi.ko
   AUTOLOAD:=$(call AutoLoad,42,rtl8366_smi)
@@ -430,7 +482,7 @@ $(eval $(call KernelPackage,8139cp))
 define KernelPackage/r8169
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=RealTek RTL-8169 PCI Gigabit Ethernet Adapter kernel support
-  DEPENDS:=@PCI_SUPPORT +kmod-mii +r8169-firmware
+  DEPENDS:=@PCI_SUPPORT +kmod-mii +r8169-firmware +LINUX_4_19:kmod-phy-realtek
   KCONFIG:=CONFIG_R8169 \
     CONFIG_R8169_NAPI=y \
     CONFIG_R8169_VLAN=n
@@ -590,6 +642,39 @@ endef
 $(eval $(call KernelPackage,ixgbevf))
 
 
+define KernelPackage/i40e
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Intel(R) Ethernet Controller XL710 Family support
+  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core
+  KCONFIG:=CONFIG_I40E \
+    CONFIG_I40E_DCB=n
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/i40e/i40e.ko
+  AUTOLOAD:=$(call AutoProbe,i40e)
+endef
+
+define KernelPackage/i40e/description
+ Kernel modules for Intel(R) Ethernet Controller XL710 Family 40 Gigabit Ethernet adapters.
+endef
+
+$(eval $(call KernelPackage,i40e))
+
+
+define KernelPackage/i40evf
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Intel(R) Ethernet Adaptive Virtual Function support
+  DEPENDS:=@PCI_SUPPORT +kmod-i40e
+  KCONFIG:=CONFIG_I40EVF
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/i40evf/i40evf.ko
+  AUTOLOAD:=$(call AutoProbe,i40evf)
+endef
+
+define KernelPackage/i40evf/description
+ Kernel modules for Intel(R) Ethernet Controller XL710 Family Virtual Function Ethernet adapters.
+endef
+
+$(eval $(call KernelPackage,i40evf))
+
+
 define KernelPackage/b44
   TITLE:=Broadcom 44xx driver
   KCONFIG:=CONFIG_B44
@@ -648,7 +733,7 @@ define KernelPackage/tg3
   TITLE:=Broadcom Tigon3 Gigabit Ethernet
   KCONFIG:=CONFIG_TIGON3 \
 	CONFIG_TIGON3_HWMON=n
-  DEPENDS:=+!TARGET_brcm47xx:kmod-libphy +!LINUX_4_14:kmod-hwmon-core +kmod-ptp
+  DEPENDS:=+!TARGET_brcm47xx:kmod-libphy +(LINUX_3_18||LINUX_4_9):kmod-hwmon-core +kmod-ptp
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/broadcom/tg3.ko
   AUTOLOAD:=$(call AutoLoad,19,tg3,1)
@@ -828,7 +913,7 @@ $(eval $(call KernelPackage,ifb))
 define KernelPackage/dm9000
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Davicom 9000 Ethernet support
-  DEPENDS:=@PCI_SUPPORT +kmod-mii
+  DEPENDS:=+kmod-mii
   KCONFIG:=CONFIG_DM9000 \
     CONFIG_DM9000_DEBUGLEVEL=4 \
     CONFIG_DM9000_FORCE_SIMPLE_PHY_POLL=y
@@ -878,7 +963,7 @@ $(eval $(call KernelPackage,of-mdio))
 
 define KernelPackage/vmxnet3
   SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=VMware VMXNET3 ethernet driver 
+  TITLE:=VMware VMXNET3 ethernet driver
   DEPENDS:=@PCI_SUPPORT
   KCONFIG:=CONFIG_VMXNET3
   FILES:=$(LINUX_DIR)/drivers/net/vmxnet3/vmxnet3.ko

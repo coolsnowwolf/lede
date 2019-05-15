@@ -250,6 +250,7 @@ sub parse_package_metadata($) {
 			my @vpkg = split /\s+/, $1;
 			@{$pkg->{provides}} = ($pkg->{name}, @vpkg);
 			foreach my $vpkg (@vpkg) {
+				next if ($vpkg eq $pkg->{name});
 				$vpackage{$vpkg} or $vpackage{$vpkg} = [];
 				push @{$vpackage{$vpkg}}, $pkg;
 			}

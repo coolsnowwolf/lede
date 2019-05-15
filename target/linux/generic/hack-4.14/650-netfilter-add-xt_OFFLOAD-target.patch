@@ -8,7 +8,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 
 --- a/net/ipv4/netfilter/Kconfig
 +++ b/net/ipv4/netfilter/Kconfig
-@@ -75,8 +75,6 @@ config NF_TABLES_ARP
+@@ -76,8 +76,6 @@ config NF_TABLES_ARP
  	help
  	  This option enables the ARP support for nf_tables.
  
@@ -17,7 +17,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  config NF_FLOW_TABLE_IPV4
  	tristate "Netfilter flow table IPv4 module"
  	depends on NF_FLOW_TABLE
-@@ -85,6 +83,8 @@ config NF_FLOW_TABLE_IPV4
+@@ -86,6 +84,8 @@ config NF_FLOW_TABLE_IPV4
  
  	  To compile it as a module, choose M here.
  
@@ -28,7 +28,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	depends on !NF_CONNTRACK || NF_CONNTRACK
 --- a/net/ipv6/netfilter/Kconfig
 +++ b/net/ipv6/netfilter/Kconfig
-@@ -69,7 +69,6 @@ config NFT_FIB_IPV6
+@@ -97,7 +97,6 @@ config NFT_FIB_IPV6
  	  multicast or blackhole.
  
  endif # NF_TABLES_IPV6
@@ -36,7 +36,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  
  config NF_FLOW_TABLE_IPV6
  	tristate "Netfilter flow table IPv6 module"
-@@ -79,6 +78,8 @@ config NF_FLOW_TABLE_IPV6
+@@ -107,6 +106,8 @@ config NF_FLOW_TABLE_IPV6
  
  	  To compile it as a module, choose M here.
  
@@ -47,7 +47,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	depends on !NF_CONNTRACK || NF_CONNTRACK
 --- a/net/netfilter/Kconfig
 +++ b/net/netfilter/Kconfig
-@@ -665,8 +665,6 @@ config NFT_FIB_NETDEV
+@@ -671,8 +671,6 @@ config NFT_FIB_NETDEV
  
  endif # NF_TABLES_NETDEV
  
@@ -56,7 +56,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  config NF_FLOW_TABLE_INET
  	tristate "Netfilter flow table mixed IPv4/IPv6 module"
  	depends on NF_FLOW_TABLE
-@@ -675,11 +673,12 @@ config NF_FLOW_TABLE_INET
+@@ -681,11 +679,12 @@ config NF_FLOW_TABLE_INET
  
  	  To compile it as a module, choose M here.
  
@@ -70,7 +70,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	help
  	  This option adds the flow table core infrastructure.
  
-@@ -968,6 +967,15 @@ config NETFILTER_XT_TARGET_NOTRACK
+@@ -974,6 +973,15 @@ config NETFILTER_XT_TARGET_NOTRACK
  	depends on NETFILTER_ADVANCED
  	select NETFILTER_XT_TARGET_CT
  
@@ -98,7 +98,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  obj-$(CONFIG_NETFILTER_XT_TARGET_LED) += xt_LED.o
 --- /dev/null
 +++ b/net/netfilter/xt_FLOWOFFLOAD.c
-@@ -0,0 +1,368 @@
+@@ -0,0 +1,403 @@
 +/*
 + * Copyright (C) 2018 Felix Fietkau <nbd@nbd.name>
 + *
@@ -113,6 +113,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +#include <net/ip.h>
 +#include <net/netfilter/nf_conntrack.h>
 +#include <net/netfilter/nf_flow_table.h>
++#include <net/netfilter/nf_conntrack_helper.h>
 +
 +static struct nf_flowtable nf_flowtable;
 +static HLIST_HEAD(hooks);
@@ -346,6 +347,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +	struct nf_flow_route route;
 +	struct flow_offload *flow;
 +	struct nf_conn *ct;
++	const struct nf_conn_help *help;
 +
 +	if (xt_flowoffload_skip(skb))
 +		return XT_CONTINUE;
@@ -365,7 +367,8 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +		return XT_CONTINUE;
 +	}
 +
-+	if (test_bit(IPS_HELPER_BIT, &ct->status))
++	help = nfct_help(ct);
++	if (help)
 +		return XT_CONTINUE;
 +
 +	if (ctinfo == IP_CT_NEW ||
@@ -441,9 +444,40 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +	nf_flow_table_free(table);
 +}
 +
++static int flow_offload_netdev_event(struct notifier_block *this,
++				     unsigned long event, void *ptr)
++{
++	struct xt_flowoffload_hook *hook = NULL;
++	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
++
++	if (event != NETDEV_UNREGISTER)
++		return NOTIFY_DONE;
++
++	spin_lock_bh(&hooks_lock);
++	hook = flow_offload_lookup_hook(dev);
++	if (hook) {
++		hlist_del(&hook->list);
++	}
++	spin_unlock_bh(&hooks_lock);
++	if (hook) {
++		nf_unregister_net_hook(hook->net, &hook->ops);
++		kfree(hook);
++	}
++
++	nf_flow_table_cleanup(dev_net(dev), dev);
++
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block flow_offload_netdev_notifier = {
++	.notifier_call	= flow_offload_netdev_event,
++};
++
 +static int __init xt_flowoffload_tg_init(void)
 +{
 +	int ret;
++
++	register_netdevice_notifier(&flow_offload_netdev_notifier);
 +
 +	INIT_DELAYED_WORK(&hook_work, xt_flowoffload_hook_work);
 +
@@ -462,6 +496,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +{
 +	xt_unregister_target(&offload_tg_reg);
 +	xt_flowoffload_table_cleanup(&nf_flowtable);
++	unregister_netdevice_notifier(&flow_offload_netdev_notifier);
 +}
 +
 +MODULE_LICENSE("GPL");

@@ -78,18 +78,18 @@ rootfs_type() {
 
 get_image() { # <source> [ <command> ]
 	local from="$1"
-	local cat="$2"
+	local cmd="$2"
 
-	if [ -z "$cat" ]; then
+	if [ -z "$cmd" ]; then
 		local magic="$(dd if="$from" bs=2 count=1 2>/dev/null | hexdump -n 2 -e '1/1 "%02x"')"
 		case "$magic" in
-			1f8b) cat="zcat";;
-			425a) cat="bzcat";;
-			*) cat="cat";;
+			1f8b) cmd="zcat";;
+			425a) cmd="bzcat";;
+			*) cmd="cat";;
 		esac
 	fi
 
-	$cat "$from" 2>/dev/null
+	cat "$from" 2>/dev/null | $cmd
 }
 
 get_magic_word() {
@@ -117,6 +117,24 @@ export_bootdevice() {
 		esac
 
 		case "$disk" in
+			PARTUUID=[A-F0-9][A-F0-9][A-F0-9][A-F0-9][A-F0-9][A-F0-9][A-F0-9][A-F0-9]-[A-F0-9][A-F0-9][A-F0-9][A-F0-9]-[A-F0-9][A-F0-9][A-F0-9][A-F0-9]-[A-F0-9][A-F0-9][A-F0-9][A-F0-9]-[A-F0-9][A-F0-9][A-F0-9][A-F0-9][A-F0-9][A-F0-9][A-F0-9][A-F0-9]0002)
+				uuid="${disk#PARTUUID=}"
+				uuid="${uuid%0002}0002"
+				for disk in $(find /dev -type b); do
+					set -- $(dd if=$disk bs=1 skip=$((2*512+256+128+16)) count=16 2>/dev/null | hexdump -v -e '4/1 "%02x"' | awk '{ \
+							for(i=1;i<9;i=i+2) first=substr($0,i,1) substr($0,i+1,1) first; \
+							for(i=9;i<13;i=i+2) second=substr($0,i,1) substr($0,i+1,1) second; \
+							for(i=13;i<16;i=i+2) third=substr($0,i,1) substr($0,i+1,1) third; \
+							fourth = substr($0,17,4); \
+							five = substr($0,21,12); \
+						} END { print toupper(first"-"second"-"third"-"fourth"-"five) }')
+					if [ "$1" = "$uuid" ]; then
+						uevent="/sys/class/block/${disk##*/}/uevent"
+						export SAVE_PARTITIONS=0
+						break
+					fi
+				done
+			;;
 			PARTUUID=[a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9]-02)
 				uuid="${disk#PARTUUID=}"
 				uuid="${uuid%-02}"
@@ -164,7 +182,7 @@ export_partdevice() {
 }
 
 hex_le32_to_cpu() {
-	[ "$(echo 01 | hexdump -v -n 2 -e '/2 "%x"')" == "3031" ] && {
+	[ "$(echo 01 | hexdump -v -n 2 -e '/2 "%x"')" = "3031" ] && {
 		echo "${1:0:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}"
 		return
 	}
@@ -211,6 +229,11 @@ jffs2_copy_config() {
 	fi
 }
 
+indicate_upgrade() {
+	. /etc/diag.sh
+	set_state upgrade
+}
+
 # Flash firmware to MTD partition
 #
 # $(1): path to image
@@ -222,6 +245,7 @@ default_do_upgrade() {
 	else
 		get_image "$1" "$2" | mtd write - "${PART_NAME:-image}"
 	fi
+	[ $? -ne 0 ] && exit 1
 }
 
 do_upgrade_stage2() {

@@ -76,9 +76,9 @@ platform_do_upgrade_openmesh() {
 	# take care of restoring a saved config
 	[ "$SAVE_CONFIG" -eq 1 ] && restore_backup="${MTD_CONFIG_ARGS} -j ${CONF_TAR}"
 
-	# write concatinated kernel + rootfs to flash
-	tar xf $tar_file ${board_dir}/kernel ${board_dir}/root -O | \
-		mtd $restore_backup write - $PART_NAME
+	mtd -q erase inactive
+	tar xf $tar_file ${board_dir}/root -O | mtd -n -p $kernel_length $restore_backup write - $PART_NAME
+	tar xf $tar_file ${board_dir}/kernel -O | mtd -n write - $PART_NAME
 
 	# prepare new u-boot env
 	if [ "$next_boot_part" = "1" ]; then
@@ -98,16 +98,9 @@ platform_do_upgrade_openmesh() {
 	printf "rootfs_checksum %s\n" ${rootfs_md5} >> $setenv_script
 
 	# store u-boot env changes
+	mkdir -p /var/lock
 	fw_setenv -s $setenv_script || {
 		echo "failed to update U-Boot environment"
 		return 1
 	}
 }
-
-# create /var/lock for the lock "fw_setenv.lock" of fw_setenv
-# the rest is copied using ipq806x's RAMFS_COPY_BIN and RAMFS_COPY_DATA
-platform_add_ramfs_ubootenv()
-{
-	mkdir -p $RAM_ROOT/var/lock
-}
-append sysupgrade_pre_upgrade platform_add_ramfs_ubootenv

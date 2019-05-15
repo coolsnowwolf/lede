@@ -41,7 +41,6 @@ _PROCD_SERVICE=
 procd_lock() {
 	local basescript=$(readlink "$initscript")
 	local service_name="$(basename ${basescript:-$initscript})"
-
 }
 
 _procd_call() {
@@ -53,7 +52,7 @@ _procd_call() {
 }
 
 _procd_wrapper() {
-  procd_lock
+	procd_lock
 	while [ -n "$1" ]; do
 		eval "$1() { _procd_call _$1 \"\$@\"; }"
 		shift

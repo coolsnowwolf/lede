@@ -34,7 +34,7 @@ find $TARGETS -type f -a -exec file {} \; | \
 			old_rpath="$($PATCHELF --print-rpath $F)"; new_rpath=""
 			for path in $old_rpath; do
 				case "$path" in
-					/lib/[^/]*|/usr/lib/[^/]*|\$ORIGIN/*) new_rpath="${new_rpath:+$new_rpath:}$path" ;;
+					/lib/[^/]*|/usr/lib/[^/]*|\$ORIGIN/*|\$ORIGIN) new_rpath="${new_rpath:+$new_rpath:}$path" ;;
 					*) echo "$SELF: $F: removing rpath $path" ;;
 				esac
 			done

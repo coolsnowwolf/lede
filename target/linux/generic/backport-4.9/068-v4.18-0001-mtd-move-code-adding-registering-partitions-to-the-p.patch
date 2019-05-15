@@ -1,0 +1,168 @@
+From 5ac67ce36cfe38b4c104a42ce52c5c8d526f1c95 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Tue, 27 Mar 2018 22:35:41 +0200
+Subject: [PATCH] mtd: move code adding (registering) partitions to the
+ parse_mtd_partitions()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This commit slightly simplifies the code. Every parse_mtd_partitions()
+caller (out of two existing ones) had to add partitions & cleanup parser
+on its own. This moves that responsibility into the function.
+
+That change also allows dropping struct mtd_partitions argument.
+
+There is one minor behavior change caused by this cleanup. If
+parse_mtd_partitions() fails to add partitions (add_mtd_partitions()
+return an error) then mtd_device_parse_register() will still try to
+add (register) fallback partitions. It's a real corner case affecting
+one of uncommon error paths and shouldn't cause any harm.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Signed-off-by: Boris Brezillon <boris.brezillon@bootlin.com>
+---
+ drivers/mtd/mtdcore.c | 14 ++++----------
+ drivers/mtd/mtdcore.h |  1 -
+ drivers/mtd/mtdpart.c | 44 ++++++++++++++++----------------------------
+ 3 files changed, 20 insertions(+), 39 deletions(-)
+
+--- a/drivers/mtd/mtdcore.c
++++ b/drivers/mtd/mtdcore.c
+@@ -676,7 +676,6 @@ int mtd_device_parse_register(struct mtd
+ 			      const struct mtd_partition *parts,
+ 			      int nr_parts)
+ {
+-	struct mtd_partitions parsed = { };
+ 	int ret;
+ 
+ 	mtd_set_dev_defaults(mtd);
+@@ -688,13 +687,10 @@ int mtd_device_parse_register(struct mtd
+ 	}
+ 
+ 	/* Prefer parsed partitions over driver-provided fallback */
+-	ret = parse_mtd_partitions(mtd, types, &parsed, parser_data);
+-	if (!ret && parsed.nr_parts) {
+-		parts = parsed.parts;
+-		nr_parts = parsed.nr_parts;
+-	}
+-
+-	if (nr_parts)
++	ret = parse_mtd_partitions(mtd, types, parser_data);
++	if (ret > 0)
++		ret = 0;
++	else if (nr_parts)
+ 		ret = add_mtd_partitions(mtd, parts, nr_parts);
+ 	else if (!device_is_registered(&mtd->dev))
+ 		ret = add_mtd_device(mtd);
+@@ -720,8 +716,6 @@ int mtd_device_parse_register(struct mtd
+ 	}
+ 
+ out:
+-	/* Cleanup any parsed partitions */
+-	mtd_part_parser_cleanup(&parsed);
+ 	if (ret && device_is_registered(&mtd->dev))
+ 		del_mtd_device(mtd);
+ 
+--- a/drivers/mtd/mtdcore.h
++++ b/drivers/mtd/mtdcore.h
+@@ -14,7 +14,6 @@ int del_mtd_partitions(struct mtd_info *
+ struct mtd_partitions;
+ 
+ int parse_mtd_partitions(struct mtd_info *master, const char * const *types,
+-			 struct mtd_partitions *pparts,
+ 			 struct mtd_part_parser_data *data);
+ 
+ void mtd_part_parser_cleanup(struct mtd_partitions *parts);
+--- a/drivers/mtd/mtdpart.c
++++ b/drivers/mtd/mtdpart.c
+@@ -383,20 +383,7 @@ static inline void free_partition(struct
+  */
+ static int mtd_parse_part(struct mtd_part *slave, const char *const *types)
+ {
+-	struct mtd_partitions parsed;
+-	int err;
+-
+-	err = parse_mtd_partitions(&slave->mtd, types, &parsed, NULL);
+-	if (err)
+-		return err;
+-	else if (!parsed.nr_parts)
+-		return -ENOENT;
+-
+-	err = add_mtd_partitions(&slave->mtd, parsed.parts, parsed.nr_parts);
+-
+-	mtd_part_parser_cleanup(&parsed);
+-
+-	return err;
++	return parse_mtd_partitions(&slave->mtd, types, NULL);
+ }
+ 
+ static struct mtd_part *allocate_partition(struct mtd_info *parent,
+@@ -973,30 +960,27 @@ static int mtd_part_of_parse(struct mtd_
+ }
+ 
+ /**
+- * parse_mtd_partitions - parse MTD partitions
++ * parse_mtd_partitions - parse and register MTD partitions
++ *
+  * @master: the master partition (describes whole MTD device)
+  * @types: names of partition parsers to try or %NULL
+- * @pparts: info about partitions found is returned here
+  * @data: MTD partition parser-specific data
+  *
+- * This function tries to find partition on MTD device @master. It uses MTD
+- * partition parsers, specified in @types. However, if @types is %NULL, then
+- * the default list of parsers is used. The default list contains only the
++ * This function tries to find & register partitions on MTD device @master. It
++ * uses MTD partition parsers, specified in @types. However, if @types is %NULL,
++ * then the default list of parsers is used. The default list contains only the
+  * "cmdlinepart" and "ofpart" parsers ATM.
+  * Note: If there are more then one parser in @types, the kernel only takes the
+  * partitions parsed out by the first parser.
+  *
+  * This function may return:
+  * o a negative error code in case of failure
+- * o zero otherwise, and @pparts will describe the partitions, number of
+- *   partitions, and the parser which parsed them. Caller must release
+- *   resources with mtd_part_parser_cleanup() when finished with the returned
+- *   data.
++ * o number of found partitions otherwise
+  */
+ int parse_mtd_partitions(struct mtd_info *master, const char *const *types,
+-			 struct mtd_partitions *pparts,
+ 			 struct mtd_part_parser_data *data)
+ {
++	struct mtd_partitions pparts = { };
+ 	struct mtd_part_parser *parser;
+ 	int ret, err = 0;
+ 
+@@ -1010,7 +994,7 @@ int parse_mtd_partitions(struct mtd_info
+ 		 * handled in a separated function.
+ 		 */
+ 		if (!strcmp(*types, "ofpart")) {
+-			ret = mtd_part_of_parse(master, pparts);
++			ret = mtd_part_of_parse(master, &pparts);
+ 		} else {
+ 			pr_debug("%s: parsing partitions %s\n", master->name,
+ 				 *types);
+@@ -1021,13 +1005,17 @@ int parse_mtd_partitions(struct mtd_info
+ 				parser ? parser->name : NULL);
+ 			if (!parser)
+ 				continue;
+-			ret = mtd_part_do_parse(parser, master, pparts, data);
++			ret = mtd_part_do_parse(parser, master, &pparts, data);
+ 			if (ret <= 0)
+ 				mtd_part_parser_put(parser);
+ 		}
+ 		/* Found partitions! */
+-		if (ret > 0)
+-			return 0;
++		if (ret > 0) {
++			err = add_mtd_partitions(master, pparts.parts,
++						 pparts.nr_parts);
++			mtd_part_parser_cleanup(&pparts);
++			return err ? err : pparts.nr_parts;
++		}
+ 		/*
+ 		 * Stash the first error we see; only report it if no parser
+ 		 * succeeds

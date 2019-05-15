@@ -8,12 +8,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libusb
-PKG_VERSION:=1.0.21
+PKG_VERSION:=1.0.22
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
-PKG_SOURCE_URL:=@SF/$(PKG_NAME)
-PKG_HASH:=7dce9cce9a81194b7065ee912bcd55eeffebab694ea403ffb91b67db66b1824b
+PKG_SOURCE_URL:=\
+  https://github.com/libusb/libusb/releases/download/v$(PKG_VERSION) \
+  @SF/$(PKG_NAME)
+PKG_HASH:=75aeb9d59a4fdb800d329a545c2e6799f732362193b465ea198f2aa275518157
 
 PKG_INSTALL:=1
 PKG_BUILD_PARALLEL:=0
@@ -28,7 +30,7 @@ define Package/libusb-1.0
   CATEGORY:=Libraries
   TITLE:=A library for accessing Linux USB devices
   DEPENDS:=+libpthread +librt
-  URL:=http://libusb.wiki.sourceforge.net/
+  URL:=http://libusb.info/
 endef
 
 define Package/libusb-1.0/description

@@ -145,7 +145,7 @@ $(eval $(call KernelPackage,crypto-cts))
 
 define KernelPackage/crypto-deflate
   TITLE:=Deflate compression CryptoAPI module
-  DEPENDS:=+kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +LINUX_4_14:kmod-crypto-acompress
+  DEPENDS:=+kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +!(LINUX_3_18||LINUX_4_9):kmod-crypto-acompress
   KCONFIG:=CONFIG_CRYPTO_DEFLATE
   FILES:=$(LINUX_DIR)/crypto/deflate.ko
   AUTOLOAD:=$(call AutoLoad,09,deflate)
@@ -180,7 +180,7 @@ $(eval $(call KernelPackage,crypto-ecb))
 
 define KernelPackage/crypto-ecdh
   TITLE:=ECDH algorithm
-  DEPENDS:=@!(LINUX_3_18||LINUX_4_4) +kmod-crypto-kpp
+  DEPENDS:=@!LINUX_3_18 +kmod-crypto-kpp
   KCONFIG:= CONFIG_CRYPTO_ECDH
   FILES:= \
 	$(LINUX_DIR)/crypto/ecdh_generic.ko
@@ -274,7 +274,7 @@ $(eval $(call KernelPackage,crypto-hmac))
 
 define KernelPackage/crypto-hw-ccp
   TITLE:=AMD Cryptographic Coprocessor
-  DEPENDS:=+kmod-crypto-authenc +kmod-crypto-hash +kmod-crypto-manager +kmod-random-core +kmod-crypto-sha1 +kmod-crypto-sha256 +LINUX_4_14:kmod-crypto-rsa
+  DEPENDS:=+kmod-crypto-authenc +kmod-crypto-hash +kmod-crypto-manager +kmod-random-core +kmod-crypto-sha1 +kmod-crypto-sha256 +!(LINUX_3_18||LINUX_4_9):kmod-crypto-rsa
   KCONFIG:= \
 	CONFIG_CRYPTO_HW=y \
 	CONFIG_CRYPTO_DEV_CCP=y \
@@ -441,8 +441,21 @@ $(eval $(call KernelPackage,crypto-michael-mic))
 
 define KernelPackage/crypto-misc
   TITLE:=Other CryptoAPI modules
-  DEPENDS:=+kmod-crypto-manager
+  DEPENDS:=+kmod-crypto-xts
   KCONFIG:= \
+	CONFIG_CRYPTO_CAMELLIA_X86_64 \
+	CONFIG_CRYPTO_BLOWFISH_X86_64 \
+	CONFIG_CRYPTO_TWOFISH_X86_64 \
+	CONFIG_CRYPTO_TWOFISH_X86_64_3WAY \
+	CONFIG_CRYPTO_SERPENT_SSE2_X86_64 \
+	CONFIG_CRYPTO_CAMELLIA_AESNI_AVX_X86_64 \
+	CONFIG_CRYPTO_CAST5_AVX_X86_64 \
+	CONFIG_CRYPTO_CAST6_AVX_X86_64 \
+	CONFIG_CRYPTO_TWOFISH_AVX_X86_64 \
+	CONFIG_CRYPTO_SERPENT_AVX_X86_64 \
+	CONFIG_CRYPTO_CAMELLIA_AESNI_AVX2_X86_64 \
+	CONFIG_CRYPTO_SERPENT_AVX2_X86_64 \
+	CONFIG_CRYPTO_SERPENT_SSE2_586 \
 	CONFIG_CRYPTO_ANUBIS \
 	CONFIG_CRYPTO_BLOWFISH \
 	CONFIG_CRYPTO_CAMELLIA \
@@ -472,14 +485,50 @@ define KernelPackage/crypto-misc
 	$(LINUX_DIR)/crypto/blowfish_common.ko \
 	$(LINUX_DIR)/crypto/blowfish_generic.ko \
 	$(LINUX_DIR)/crypto/serpent_generic.ko
+  AUTOLOAD:=$(call AutoLoad,10,anubis camellia_generic cast_common \
+	cast5_generic cast6_generic khazad tea tgr192 twofish_common \
+	wp512 blowfish_common serpent_generic)
+  ifndef CONFIG_TARGET_x86
+	AUTOLOAD+= $(call AutoLoad,10,twofish_generic blowfish_generic)
+  endif
   $(call AddDepends/crypto)
 endef
 
 ifndef CONFIG_TARGET_x86_64
   define KernelPackage/crypto-misc/x86
-    FILES+=$(LINUX_DIR)/arch/x86/crypto/twofish-i586.ko
+    FILES+= \
+	$(LINUX_DIR)/arch/x86/crypto/twofish-i586.ko \
+	$(LINUX_DIR)/arch/x86/crypto/serpent-sse2-i586.ko \
+	$(LINUX_DIR)/arch/x86/crypto/glue_helper.ko \
+	$(LINUX_DIR)/crypto/ablk_helper.ko@lt4.17 \
+	$(LINUX_DIR)/crypto/cryptd.ko \
+	$(LINUX_DIR)/crypto/lrw.ko@lt4.17 \
+	$(LINUX_DIR)/crypto/crypto_simd.ko@ge4.17
+    AUTOLOAD+= $(call AutoLoad,10,cryptd glue_helper \
+	serpent-sse2-i586 twofish-i586 blowfish_generic)
   endef
 endif
+
+define KernelPackage/crypto-misc/x86/64
+  FILES+= \
+	$(LINUX_DIR)/arch/x86/crypto/camellia-x86_64.ko \
+	$(LINUX_DIR)/arch/x86/crypto/blowfish-x86_64.ko \
+	$(LINUX_DIR)/arch/x86/crypto/twofish-x86_64.ko \
+	$(LINUX_DIR)/arch/x86/crypto/twofish-x86_64-3way.ko \
+	$(LINUX_DIR)/arch/x86/crypto/serpent-sse2-x86_64.ko \
+	$(LINUX_DIR)/arch/x86/crypto/camellia-aesni-avx-x86_64.ko \
+	$(LINUX_DIR)/arch/x86/crypto/cast5-avx-x86_64.ko \
+	$(LINUX_DIR)/arch/x86/crypto/cast6-avx-x86_64.ko \
+	$(LINUX_DIR)/arch/x86/crypto/twofish-avx-x86_64.ko \
+	$(LINUX_DIR)/arch/x86/crypto/serpent-avx-x86_64.ko \
+	$(LINUX_DIR)/arch/x86/crypto/camellia-aesni-avx2.ko \
+	$(LINUX_DIR)/arch/x86/crypto/serpent-avx2.ko \
+	$(LINUX_DIR)/crypto/ablk_helper.ko@lt4.17
+  AUTOLOAD+= $(call AutoLoad,10,camellia-x86_64 \
+	camellia-aesni-avx-x86_64 camellia-aesni-avx2 cast5-avx-x86_64 \
+	cast6-avx-x86_64 twofish-x86_64 twofish-x86_64-3way \
+	twofish-avx-x86_64 blowfish-x86_64 serpent-avx-x86_64 serpent-avx2)
+endef
 
 $(eval $(call KernelPackage,crypto-misc))
 
@@ -522,11 +571,10 @@ $(eval $(call KernelPackage,crypto-pcompress))
 
 define KernelPackage/crypto-rsa
   TITLE:=RSA algorithm
-  DEPENDS:=@!LINUX_3_18 +kmod-crypto-manager
+  DEPENDS:=@!LINUX_3_18 +kmod-crypto-manager +kmod-asn1-decoder
   KCONFIG:= CONFIG_CRYPTO_RSA
   HIDDEN:=1
   FILES:= \
-	$(LINUX_DIR)/lib/asn1_decoder.ko \
 	$(LINUX_DIR)/lib/mpi/mpi.ko \
 	$(LINUX_DIR)/crypto/akcipher.ko \
 	$(LINUX_DIR)/crypto/rsa_generic.ko

@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uhttpd
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/uhttpd.git
-PKG_SOURCE_DATE:=2017-11-04
-PKG_SOURCE_VERSION:=a235636a2687fafb9c474e4b134a59ff66425c92
-PKG_MIRROR_HASH:=626392a485e8ab8085bb55d9424b176be9143529db59a820a7de71061a93a007
+PKG_SOURCE_DATE:=2018-11-28
+PKG_SOURCE_VERSION:=cdfc902a4cb77bc538a729f9e1c8a8578454a0e5
+PKG_MIRROR_HASH:=6b21111547a4453355bd6c941a47f0116a652a77d87c1e05a035168b8ab2aa6f
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=ISC
 
@@ -105,16 +105,6 @@ define Package/uhttpd-mod-ubus/install
 	$(INSTALL_DIR) $(1)/usr/lib $(1)/etc/uci-defaults
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/uhttpd_ubus.so $(1)/usr/lib/
 	$(INSTALL_DATA) ./files/ubus.default $(1)/etc/uci-defaults/00_uhttpd_ubus
-endef
-
-define Package/uhttpd-mod-lua/postinst
-	$(if $(CONFIG_uhttpd_lua),
-	#!/bin/sh
-	if [ -f $${IPKG_INSTROOT}/www/index.html ]
-	then
-		sed -e 's:/cgi-bin::g' -i $${IPKG_INSTROOT}/www/index.html
-	fi
-	,)
 endef
 
 

@@ -206,7 +206,7 @@ platform_pre_upgrade_trx() {
 	}
 
 	# Flash
-	mtd write /tmp/kernel.trx firmware
+	mtd write /tmp/kernel.trx firmware || exit 1
 	nand_do_upgrade /tmp/root.ubi
 }
 
@@ -252,7 +252,7 @@ platform_pre_upgrade_seama() {
 
 	# Flash
 	local kernel_size=$(sed -n 's/mtd[0-9]*: \([0-9a-f]*\).*"\(kernel\|linux\)".*/\1/p' /proc/mtd)
-	mtd write $dir/kernel.seama firmware
+	mtd write $dir/kernel.seama firmware || exit 1
 	mtd ${kernel_size:+-c 0x$kernel_size} fixseama firmware
 	nand_do_upgrade $dir/root.ubi
 }
@@ -327,7 +327,7 @@ platform_do_upgrade() {
 	case "$file_type" in
 		"chk")		cmd=$(platform_trx_from_chk_cmd "$trx");;
 		"cybertan")	cmd=$(platform_trx_from_cybertan_cmd "$trx");;
-		"safeloader")	trx=$(platform_img_from_safeloader "$trx");;
+		"safeloader")	trx=$(platform_img_from_safeloader "$trx"); PART_NAME=os-image;;
 		"seama")	trx=$(platform_img_from_seama "$trx");;
 	esac
 

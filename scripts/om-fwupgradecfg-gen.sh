@@ -7,7 +7,7 @@
 #
 
 usage() {
-	echo "Usage: $0 <OM2P|OM5P|OM5PAC|MR600|MR900|MR1750|A60|A42> <out file path> <kernel path> <rootfs path>"
+	echo "Usage: $0 <OM2P|OM5P|OM5PAC|MR600|MR900|MR1750|A60|A42|A62> <out file path> <kernel path> <rootfs path>"
 	rm -f $CFG_OUT
 	exit 1
 }
@@ -24,7 +24,7 @@ case $CE_TYPE in
 		MAX_PART_SIZE=7168
 		KERNEL_FLASH_ADDR=0x1c0000
 		FLASH_BS=262144
-		MD5_SKIP_BLOCKS=1
+		MD5_SKIP_BLOCKS=4
 		SIZE_FACTOR=1
 		SIZE_FORMAT="%d"
 		;;
@@ -39,6 +39,14 @@ case $CE_TYPE in
 	A42)
 		MAX_PART_SIZE=15616
 		KERNEL_FLASH_ADDR=0x180000
+		FLASH_BS=65536
+		MD5_SKIP_BLOCKS=4
+		SIZE_FACTOR=1024
+		SIZE_FORMAT="0x%08x"
+		;;
+	A62)
+		MAX_PART_SIZE=15552
+		KERNEL_FLASH_ADDR=0x1a0000
 		FLASH_BS=65536
 		MD5_SKIP_BLOCKS=4
 		SIZE_FACTOR=1024

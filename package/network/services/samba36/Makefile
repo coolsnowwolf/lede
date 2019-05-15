@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=samba
 PKG_VERSION:=3.6.25
-PKG_RELEASE:=10
+PKG_RELEASE:=13
 
 PKG_SOURCE_URL:=https://download.samba.org/pub/samba \
 		https://download.samba.org/pub/samba/stable
@@ -102,6 +102,8 @@ CONFIGURE_ARGS += \
 	--disable-avahi \
 	--disable-cups \
 	--disable-external-libtalloc \
+	--disable-external-libtdb \
+	--disable-external-libtevent \
 	--disable-pie \
 	--disable-relro \
 	--disable-static \
@@ -146,7 +148,7 @@ define Package/samba36-server/install
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/samba.config $(1)/etc/config/samba
 	$(INSTALL_DIR) $(1)/etc/samba
-	$(INSTALL_DATA) ./files/smb.conf.template $(1)/etc/samba
+	$(INSTALL_CONF) ./files/smb.conf.template $(1)/etc/samba
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/codepages/lowcase.dat $(1)/etc/samba
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/codepages/upcase.dat $(1)/etc/samba
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/codepages/valid.dat $(1)/etc/samba

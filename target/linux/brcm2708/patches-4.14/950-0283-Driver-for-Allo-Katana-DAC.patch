@@ -1,0 +1,1071 @@
+From 1db90ec599e116593cc1844ccac021707b45c5cb Mon Sep 17 00:00:00 2001
+From: allocom <sparky-dev@allo.com>
+Date: Tue, 24 Apr 2018 11:19:03 +0530
+Subject: [PATCH 283/454] Driver for Allo Katana DAC
+
+---
+ .../allo-katana-dac-audio-overlay.dts         |  27 +-
+ sound/soc/bcm/Kconfig                         |   4 +-
+ sound/soc/bcm/Makefile                        |   4 +-
+ sound/soc/bcm/allo-katana-codec.c             | 363 ++++++++++++++++++
+ sound/soc/bcm/allo-katana-dac.c               | 102 -----
+ sound/soc/codecs/Kconfig                      |  10 -
+ sound/soc/codecs/Makefile                     |   4 -
+ sound/soc/codecs/sabre-ess-i2c.c              |  69 ----
+ sound/soc/codecs/sabre-ess.c                  | 300 ---------------
+ sound/soc/codecs/sabre-ess.h                  |  62 ---
+ 10 files changed, 387 insertions(+), 558 deletions(-)
+ create mode 100644 sound/soc/bcm/allo-katana-codec.c
+ delete mode 100644 sound/soc/bcm/allo-katana-dac.c
+ delete mode 100644 sound/soc/codecs/sabre-ess-i2c.c
+ delete mode 100644 sound/soc/codecs/sabre-ess.c
+ delete mode 100644 sound/soc/codecs/sabre-ess.h
+
+--- a/arch/arm/boot/dts/overlays/allo-katana-dac-audio-overlay.dts
++++ b/arch/arm/boot/dts/overlays/allo-katana-dac-audio-overlay.dts
+@@ -1,7 +1,5 @@
+ /*
+  * Definitions for Allo Katana DAC boards
+- *
+- * NB. The Katana DAC board contains SABER DAC.
+  */
+ 
+ /dts-v1/;
+@@ -13,7 +11,16 @@
+ 	fragment@0 {
+ 		target = <&i2s>;
+ 		__overlay__ {
++			#sound-dai-cells = <0>;
+ 			status = "okay";
++			cpu_port: port {
++				cpu_endpoint: endpoint {
++					remote-endpoint = <&codec_endpoint>;
++					bitclock-master = <&codec_endpoint>;
++					frame-master = <&codec_endpoint>;
++					dai-format = "i2s";
++				};
++			};
+ 		};
+ 	};
+ 
+@@ -24,11 +31,15 @@
+ 			#size-cells = <0>;
+ 			status = "okay";
+ 
+-			sabre-ess@30 {
++			allo-katana-codec@30 {
+ 				#sound-dai-cells = <0>;
+-				compatible = "saber,sabre-ess";
++				compatible = "allo,allo-katana-codec";
+ 				reg = <0x30>;
+-				status = "okay";
++				port {
++					codec_endpoint: endpoint {
++					remote-endpoint = <&cpu_endpoint>;
++					};
++				};
+ 			};
+ 		};
+ 	};
+@@ -36,11 +47,11 @@
+ 	fragment@2 {
+ 		target = <&sound>;
+ 		katana_dac: __overlay__ {
+-			compatible = "allo,katana-dac";
+-			i2s-controller = <&i2s>;
++			compatible = "audio-graph-card";
++			label = "Allo Katana";
++			dais = <&cpu_port>;
+ 			status = "okay";
+ 		};
+ 	};
+-
+ };
+ 
+--- a/sound/soc/bcm/Kconfig
++++ b/sound/soc/bcm/Kconfig
+@@ -178,7 +178,9 @@ config SND_BCM2708_SOC_ALLO_DIGIONE
+ config SND_BCM2708_SOC_ALLO_KATANA_DAC
+ 	tristate "Support for Allo Katana DAC"
+ 	depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
+-	select SND_SOC_SABRE_ESS_I2C
++	depends on I2C
++	select REGMAP_I2C
++	select SND_AUDIO_GRAPH_CARD
+ 	help
+ 	  Say Y or M if you want to add support for Allo Katana DAC.
+ 
+--- a/sound/soc/bcm/Makefile
++++ b/sound/soc/bcm/Makefile
+@@ -34,7 +34,7 @@ snd-soc-allo-boss-dac-objs := allo-boss-
+ snd-soc-allo-piano-dac-objs := allo-piano-dac.o
+ snd-soc-allo-piano-dac-plus-objs := allo-piano-dac-plus.o
+ snd-soc-allo-digione-objs := allo-digione.o
+-snd-soc-allo-katana-dac-objs := allo-katana-dac.o
++snd-soc-allo-katana-codec-objs := allo-katana-codec.o
+ snd-soc-pisound-objs := pisound.o
+ snd-soc-fe-pi-audio-objs := fe-pi-audio.o
+ 
+@@ -61,6 +61,6 @@ obj-$(CONFIG_SND_BCM2708_SOC_ALLO_BOSS_D
+ obj-$(CONFIG_SND_BCM2708_SOC_ALLO_PIANO_DAC) += snd-soc-allo-piano-dac.o
+ obj-$(CONFIG_SND_BCM2708_SOC_ALLO_PIANO_DAC_PLUS) += snd-soc-allo-piano-dac-plus.o
+ obj-$(CONFIG_SND_BCM2708_SOC_ALLO_DIGIONE) += snd-soc-allo-digione.o
+-obj-$(CONFIG_SND_BCM2708_SOC_ALLO_KATANA_DAC) += snd-soc-allo-katana-dac.o
++obj-$(CONFIG_SND_BCM2708_SOC_ALLO_KATANA_DAC) += snd-soc-allo-katana-codec.o
+ obj-$(CONFIG_SND_PISOUND) += snd-soc-pisound.o
+ obj-$(CONFIG_SND_BCM2708_SOC_FE_PI_AUDIO) += snd-soc-fe-pi-audio.o
+--- /dev/null
++++ b/sound/soc/bcm/allo-katana-codec.c
+@@ -0,0 +1,363 @@
++/*
++ * Driver for the ALLO KATANA CODEC
++ *
++ * Author: Jaikumar <jaikumar@cem-solutions.net>
++ *		Copyright 2018
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ */
++
++
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/clk.h>
++#include <linux/kernel.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++#include <linux/gcd.h>
++#include <sound/soc.h>
++#include <sound/soc-dapm.h>
++#include <sound/pcm_params.h>
++#include <sound/tlv.h>
++#include <linux/i2c.h>
++
++
++#define KATANA_CODEC_CHIP_ID		0x30
++#define KATANA_CODEC_VIRT_BASE		0x100
++#define KATANA_CODEC_PAGE			0
++
++#define KATANA_CODEC_CHIP_ID_REG	(KATANA_CODEC_VIRT_BASE + 0)
++#define KATANA_CODEC_RESET			(KATANA_CODEC_VIRT_BASE + 1)
++#define KATANA_CODEC_VOLUME_1		(KATANA_CODEC_VIRT_BASE + 2)
++#define KATANA_CODEC_VOLUME_2		(KATANA_CODEC_VIRT_BASE + 3)
++#define KATANA_CODEC_MUTE			(KATANA_CODEC_VIRT_BASE + 4)
++#define KATANA_CODEC_DSP_PROGRAM	(KATANA_CODEC_VIRT_BASE + 5)
++#define KATANA_CODEC_DEEMPHASIS		(KATANA_CODEC_VIRT_BASE + 6)
++#define KATANA_CODEC_DOP			(KATANA_CODEC_VIRT_BASE + 7)
++#define KATANA_CODEC_FORMAT			(KATANA_CODEC_VIRT_BASE + 8)
++#define KATANA_CODEC_COMMAND		(KATANA_CODEC_VIRT_BASE + 9)
++#define KATANA_CODEC_MAX_REGISTER	(KATANA_CODEC_VIRT_BASE + 9)
++
++#define KATANA_CODEC_FMT			0xff
++#define KATANA_CODEC_CHAN_MONO		0x00
++#define KATANA_CODEC_CHAN_STEREO	0x80
++#define KATANA_CODEC_ALEN_16		0x10
++#define KATANA_CODEC_ALEN_24		0x20
++#define KATANA_CODEC_ALEN_32		0x30
++#define KATANA_CODEC_RATE_11025		0x01
++#define KATANA_CODEC_RATE_22050		0x02
++#define KATANA_CODEC_RATE_32000		0x03
++#define KATANA_CODEC_RATE_44100		0x04
++#define KATANA_CODEC_RATE_48000		0x05
++#define KATANA_CODEC_RATE_88200		0x06
++#define KATANA_CODEC_RATE_96000		0x07
++#define KATANA_CODEC_RATE_176400	0x08
++#define KATANA_CODEC_RATE_192000	0x09
++#define KATANA_CODEC_RATE_352800	0x0a
++#define KATANA_CODEC_RATE_384000	0x0b
++
++
++struct katana_codec_priv {
++	struct regmap *regmap;
++	int fmt;
++};
++
++static const struct reg_default katana_codec_reg_defaults[] = {
++	{ KATANA_CODEC_RESET,		0x00 },
++	{ KATANA_CODEC_VOLUME_1,	0xF0 },
++	{ KATANA_CODEC_VOLUME_2,	0xF0 },
++	{ KATANA_CODEC_MUTE,		0x00 },
++	{ KATANA_CODEC_DSP_PROGRAM,	0x04 },
++	{ KATANA_CODEC_DEEMPHASIS,	0x00 },
++	{ KATANA_CODEC_DOP,			0x01 },
++	{ KATANA_CODEC_FORMAT,		0xb4 },
++};
++
++static const char * const katana_codec_dsp_program_texts[] = {
++	"Linear Phase Fast Roll-off Filter",
++	"Linear Phase Slow Roll-off Filter",
++	"Minimum Phase Fast Roll-off Filter",
++	"Minimum Phase Slow Roll-off Filter",
++	"Apodizing Fast Roll-off Filter",
++	"Corrected Minimum Phase Fast Roll-off Filter",
++	"Brick Wall Filter",
++};
++
++static const unsigned int katana_codec_dsp_program_values[] = {
++	0,
++	1,
++	2,
++	3,
++	4,
++	6,
++	7,
++};
++
++static SOC_VALUE_ENUM_SINGLE_DECL(katana_codec_dsp_program,
++				  KATANA_CODEC_DSP_PROGRAM, 0, 0x07,
++				  katana_codec_dsp_program_texts,
++				  katana_codec_dsp_program_values);
++
++static const char * const katana_codec_deemphasis_texts[] = {
++	"Bypass",
++	"32kHz",
++	"44.1kHz",
++	"48kHz",
++};
++
++static const unsigned int katana_codec_deemphasis_values[] = {
++	0,
++	1,
++	2,
++	3,
++};
++
++static SOC_VALUE_ENUM_SINGLE_DECL(katana_codec_deemphasis,
++				  KATANA_CODEC_DEEMPHASIS, 0, 0x03,
++				  katana_codec_deemphasis_texts,
++				  katana_codec_deemphasis_values);
++
++static const SNDRV_CTL_TLVD_DECLARE_DB_MINMAX(master_tlv, -12700, 0);
++
++static const struct snd_kcontrol_new katana_codec_controls[] = {
++	SOC_DOUBLE_R_TLV("Master Playback Volume", KATANA_CODEC_VOLUME_1,
++			KATANA_CODEC_VOLUME_2, 0, 255, 1, master_tlv),
++	SOC_DOUBLE("Master Playback Switch", KATANA_CODEC_MUTE, 0, 0, 1, 1),
++	SOC_ENUM("DSP Program Route", katana_codec_dsp_program),
++	SOC_ENUM("Deemphasis Route", katana_codec_deemphasis),
++	SOC_SINGLE("DoP Playback Switch", KATANA_CODEC_DOP, 0, 1, 1)
++};
++
++static bool katana_codec_readable_register(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case KATANA_CODEC_CHIP_ID_REG:
++		return true;
++	default:
++		return reg < 0xff;
++	}
++}
++
++static int katana_codec_hw_params(struct snd_pcm_substream *substream,
++			     struct snd_pcm_hw_params *params,
++			     struct snd_soc_dai *dai)
++{
++	struct snd_soc_codec *codec = dai->codec;
++	struct katana_codec_priv *katana_codec = snd_soc_codec_get_drvdata(codec);
++	int fmt = 0;
++	int ret;
++
++	dev_dbg(codec->dev, "hw_params %u Hz, %u channels\n",
++			params_rate(params),
++			params_channels(params));
++
++	switch (katana_codec->fmt & SND_SOC_DAIFMT_MASTER_MASK) {
++	case SND_SOC_DAIFMT_CBM_CFM: // master
++		if (params_channels(params) == 2)
++			fmt = KATANA_CODEC_CHAN_STEREO;
++		else
++			fmt = KATANA_CODEC_CHAN_MONO;
++
++		switch (params_width(params)) {
++		case 16:
++			fmt |= KATANA_CODEC_ALEN_16;
++			break;
++		case 24:
++			fmt |= KATANA_CODEC_ALEN_24;
++			break;
++		case 32:
++			fmt |= KATANA_CODEC_ALEN_32;
++			break;
++		default:
++			dev_err(codec->dev, "Bad frame size: %d\n",
++					params_width(params));
++			return -EINVAL;
++		}
++
++		switch (params_rate(params)) {
++		case 44100:
++			fmt |= KATANA_CODEC_RATE_44100;
++			break;
++		case 48000:
++			fmt |= KATANA_CODEC_RATE_48000;
++			break;
++		case 88200:
++			fmt |= KATANA_CODEC_RATE_88200;
++			break;
++		case 96000:
++			fmt |= KATANA_CODEC_RATE_96000;
++			break;
++		case 176400:
++			fmt |= KATANA_CODEC_RATE_176400;
++			break;
++		case 192000:
++			fmt |= KATANA_CODEC_RATE_192000;
++			break;
++		case 352800:
++			fmt |= KATANA_CODEC_RATE_352800;
++			break;
++		case 384000:
++			fmt |= KATANA_CODEC_RATE_384000;
++			break;
++		default:
++			dev_err(codec->dev, "Bad sample rate: %d\n",
++					params_rate(params));
++			return -EINVAL;
++		}
++
++		ret = regmap_write(katana_codec->regmap, KATANA_CODEC_FORMAT, fmt);
++		if (ret != 0) {
++			dev_err(codec->dev, "Failed to set format: %d\n", ret);
++			return ret;
++		}
++		break;
++
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int katana_codec_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
++{
++	struct snd_soc_codec *codec = dai->codec;
++	struct katana_codec_priv *katana_codec = snd_soc_codec_get_drvdata(codec);
++
++	katana_codec->fmt = fmt;
++
++	return 0;
++}
++
++static const struct snd_soc_dai_ops katana_codec_dai_ops = {
++	.hw_params = katana_codec_hw_params,
++	.set_fmt = katana_codec_set_fmt,
++};
++
++static struct snd_soc_dai_driver katana_codec_dai = {
++	.name = "allo-katana-codec",
++	.playback = {
++		.stream_name = "Playback",
++		.channels_min = 2,
++		.channels_max = 2,
++		.rates = SNDRV_PCM_RATE_CONTINUOUS,
++		.rate_min = 44100,
++		.rate_max = 384000,
++		.formats = SNDRV_PCM_FMTBIT_S16_LE |
++			SNDRV_PCM_FMTBIT_S32_LE
++	},
++	.ops = &katana_codec_dai_ops,
++};
++
++static struct snd_soc_codec_driver katana_codec_codec_driver = {
++	.idle_bias_off = false,
++
++	.component_driver = {
++		.controls		= katana_codec_controls,
++		.num_controls	= ARRAY_SIZE(katana_codec_controls),
++	},
++};
++
++static const struct regmap_range_cfg katana_codec_range = {
++	.name = "Pages", .range_min = KATANA_CODEC_VIRT_BASE,
++	.range_max = KATANA_CODEC_MAX_REGISTER,
++	.selector_reg = KATANA_CODEC_PAGE,
++	.selector_mask = 0xff,
++	.window_start = 0, .window_len = 0x100,
++};
++
++const struct regmap_config katana_codec_regmap = {
++	.reg_bits = 8,
++	.val_bits = 8,
++
++	.ranges = &katana_codec_range,
++	.num_ranges = 1,
++
++	.max_register = KATANA_CODEC_MAX_REGISTER,
++	.readable_reg = katana_codec_readable_register,
++	.reg_defaults = katana_codec_reg_defaults,
++	.num_reg_defaults = ARRAY_SIZE(katana_codec_reg_defaults),
++	.cache_type = REGCACHE_RBTREE,
++};
++
++static int allo_katana_codec_probe(struct i2c_client *i2c,
++			     const struct i2c_device_id *id)
++{
++	struct regmap *regmap;
++	struct regmap_config config = katana_codec_regmap;
++	struct device *dev = &i2c->dev;
++	struct katana_codec_priv *katana_codec;
++	unsigned int chip_id = 0;
++	int ret;
++
++	regmap = devm_regmap_init_i2c(i2c, &config);
++	if (IS_ERR(regmap))
++		return PTR_ERR(regmap);
++
++	katana_codec = devm_kzalloc(dev, sizeof(struct katana_codec_priv),
++								GFP_KERNEL);
++	if (!katana_codec)
++		return -ENOMEM;
++
++	dev_set_drvdata(dev, katana_codec);
++	katana_codec->regmap = regmap;
++
++	ret = regmap_read(regmap, KATANA_CODEC_CHIP_ID_REG, &chip_id);
++	if ((ret != 0) || (chip_id != KATANA_CODEC_CHIP_ID)) {
++		dev_err(dev, "Failed to read Chip or wrong Chip id: %d\n", ret);
++		return ret;
++	}
++	regmap_update_bits(regmap, KATANA_CODEC_RESET, 0x01, 0x01);
++	msleep(10);
++
++	ret = snd_soc_register_codec(dev, &katana_codec_codec_driver,
++				    &katana_codec_dai, 1);
++	if (ret != 0) {
++		dev_err(dev, "failed to register codec: %d\n", ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static int allo_katana_codec_remove(struct i2c_client *i2c)
++{
++	snd_soc_unregister_codec(&i2c->dev);
++	return 0;
++}
++
++static const struct i2c_device_id allo_katana_codec_id[] = {
++	{ "allo-katana-codec", },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, allo_katana_codec_id);
++
++static const struct of_device_id allo_katana_codec_of_match[] = {
++	{ .compatible = "allo,allo-katana-codec", },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, allo_katana_codec_of_match);
++
++static struct i2c_driver allo_katana_codec_driver = {
++	.probe		= allo_katana_codec_probe,
++	.remove		= allo_katana_codec_remove,
++	.id_table	= allo_katana_codec_id,
++	.driver		= {
++		.name	= "allo-katana-codec",
++		.of_match_table = allo_katana_codec_of_match,
++	},
++};
++
++module_i2c_driver(allo_katana_codec_driver);
++
++MODULE_DESCRIPTION("ASoC Allo Katana Codec Driver");
++MODULE_AUTHOR("Jaikumar <jaikumar@cem-solutions.net>");
++MODULE_LICENSE("GPL v2");
++
+--- a/sound/soc/bcm/allo-katana-dac.c
++++ /dev/null
+@@ -1,102 +0,0 @@
+-/*
+- * ASoC Driver for KATANA DAC
+- *
+- * Author:	Jaikumar <jaikumar@cem-solutions.net>
+- *		Copyright 2018
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * version 2 as published by the Free Software Foundation.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- */
+-
+-#include <linux/module.h>
+-#include <linux/platform_device.h>
+-
+-#include <sound/core.h>
+-#include <sound/pcm.h>
+-#include <sound/pcm_params.h>
+-#include <sound/soc.h>
+-
+-static struct snd_soc_dai_link snd_allo_katana_dac_dai[] = {
+-{
+-	.name		= "KATANA DAC",
+-	.stream_name	= "KATANA DAC",
+-	.cpu_dai_name	= "bcm2708-i2s.0",
+-	.codec_dai_name	= "sabre-ess",
+-	.platform_name	= "bcm2708-i2s.0",
+-	.codec_name	= "sabre-ess.1-0030",
+-	.dai_fmt	= SND_SOC_DAIFMT_I2S |
+-		SND_SOC_DAIFMT_NB_NF |
+-		SND_SOC_DAIFMT_CBM_CFM,
+-},
+-};
+-
+-/* audio machine driver */
+-static struct snd_soc_card snd_allo_katana_dac = {
+-	.name         = "snd_allo_katana_dac",
+-	.owner        = THIS_MODULE,
+-	.dai_link     = snd_allo_katana_dac_dai,
+-	.num_links    = ARRAY_SIZE(snd_allo_katana_dac_dai),
+-};
+-
+-static int snd_allo_katana_dac_probe(struct platform_device *pdev)
+-{
+-	int ret = 0;
+-
+-	snd_allo_katana_dac.dev = &pdev->dev;
+-
+-	if (pdev->dev.of_node) {
+-		struct device_node *i2s_node;
+-		struct snd_soc_dai_link *dai = &snd_allo_katana_dac_dai[0];
+-
+-		i2s_node = of_parse_phandle(pdev->dev.of_node,
+-				"i2s-controller", 0);
+-
+-		if (i2s_node) {
+-			dai->cpu_dai_name = NULL;
+-			dai->cpu_of_node = i2s_node;
+-			dai->platform_name = NULL;
+-			dai->platform_of_node = i2s_node;
+-		}
+-	}
+-
+-	ret = snd_soc_register_card(&snd_allo_katana_dac);
+-	if (ret && ret != -EPROBE_DEFER)
+-		dev_err(&pdev->dev, "snd_soc_register_card() failed: %d\n",
+-					ret);
+-
+-	return ret;
+-}
+-
+-static int snd_allo_katana_dac_remove(struct platform_device *pdev)
+-{
+-	return snd_soc_unregister_card(&snd_allo_katana_dac);
+-}
+-
+-static const struct of_device_id snd_allo_katana_dac_of_match[] = {
+-	{ .compatible = "allo,katana-dac", },
+-	{},
+-};
+-MODULE_DEVICE_TABLE(of, snd_allo_katana_dac_of_match);
+-
+-static struct platform_driver snd_allo_katana_dac_driver = {
+-	.driver = {
+-		.name   = "snd-katana-dac",
+-		.owner  = THIS_MODULE,
+-		.of_match_table = snd_allo_katana_dac_of_match,
+-	},
+-	.probe          = snd_allo_katana_dac_probe,
+-	.remove         = snd_allo_katana_dac_remove,
+-};
+-
+-module_platform_driver(snd_allo_katana_dac_driver);
+-
+-MODULE_AUTHOR("Jaikumar <jaikumar@cem-solutions.net>");
+-MODULE_DESCRIPTION("ALSA ASoC Machine Driver for Allo Katana DAC");
+-MODULE_LICENSE("GPL v2");
+-
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -77,7 +77,6 @@ config SND_SOC_ALL_CODECS
+ 	select SND_SOC_ES8328_SPI if SPI_MASTER
+ 	select SND_SOC_ES8328_I2C if I2C
+ 	select SND_SOC_ES7134
+-	select SND_SOC_SABRE_ESS_I2C if I2C
+ 	select SND_SOC_GTM601
+ 	select SND_SOC_HDAC_HDMI
+ 	select SND_SOC_ICS43432
+@@ -1187,13 +1186,4 @@ config SND_SOC_TPA6130A2
+ 	tristate "Texas Instruments TPA6130A2 headphone amplifier"
+ 	depends on I2C
+ 
+-config SND_SOC_SABRE_ESS
+-	tristate
+-
+-config SND_SOC_SABRE_ESS_I2C
+-	tristate "Sabre SABRE ESS CODEC - I2C"
+-	depends on I2C
+-	select SND_SOC_SABRE_ESS
+-	select REGMAP_I2C
+-
+ endmenu
+--- a/sound/soc/codecs/Makefile
++++ b/sound/soc/codecs/Makefile
+@@ -71,8 +71,6 @@ snd-soc-es8316-objs := es8316.o
+ snd-soc-es8328-objs := es8328.o
+ snd-soc-es8328-i2c-objs := es8328-i2c.o
+ snd-soc-es8328-spi-objs := es8328-spi.o
+-snd-soc-sabre-ess-objs := sabre-ess.o
+-snd-soc-sabre-ess-i2c-objs := sabre-ess-i2c.o
+ snd-soc-gtm601-objs := gtm601.o
+ snd-soc-hdac-hdmi-objs := hdac_hdmi.o
+ snd-soc-ics43432-objs := ics43432.o
+@@ -315,8 +313,6 @@ obj-$(CONFIG_SND_SOC_ES8316)    += snd-s
+ obj-$(CONFIG_SND_SOC_ES8328)	+= snd-soc-es8328.o
+ obj-$(CONFIG_SND_SOC_ES8328_I2C)+= snd-soc-es8328-i2c.o
+ obj-$(CONFIG_SND_SOC_ES8328_SPI)+= snd-soc-es8328-spi.o
+-obj-$(CONFIG_SND_SOC_SABRE_ESS) += snd-soc-sabre-ess.o
+-obj-$(CONFIG_SND_SOC_SABRE_ESS_I2C) += snd-soc-sabre-ess-i2c.o
+ obj-$(CONFIG_SND_SOC_GTM601)    += snd-soc-gtm601.o
+ obj-$(CONFIG_SND_SOC_HDAC_HDMI) += snd-soc-hdac-hdmi.o
+ obj-$(CONFIG_SND_SOC_ICS43432)	+= snd-soc-ics43432.o
+--- a/sound/soc/codecs/sabre-ess-i2c.c
++++ /dev/null
+@@ -1,69 +0,0 @@
+-/*
+- * Driver for the SABRE ESS CODECs
+- *
+- * Author: Jaikumar <jaikumar@cem-solutions.net>	
+- *		Copyright 2018
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * version 2 as published by the Free Software Foundation.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- */
+-
+-#include <linux/init.h>
+-#include <linux/module.h>
+-#include <linux/i2c.h>
+-
+-#include "sabre-ess.h"
+-
+-static int sabre_ess_i2c_probe(struct i2c_client *i2c,
+-			     const struct i2c_device_id *id)
+-{
+-	struct regmap *regmap;
+-	struct regmap_config config = sabre_ess_regmap;
+-
+-	regmap = devm_regmap_init_i2c(i2c, &config);
+-	if (IS_ERR(regmap))
+-		return PTR_ERR(regmap);
+-
+-	return sabre_ess_probe(&i2c->dev, regmap);
+-}
+-
+-static int sabre_ess_i2c_remove(struct i2c_client *i2c)
+-{
+-	sabre_ess_remove(&i2c->dev);
+-	return 0;
+-}
+-
+-static const struct i2c_device_id sabre_ess_i2c_id[] = {
+-	{ "sabre-ess", },
+-	{ }
+-};
+-MODULE_DEVICE_TABLE(i2c, sabre_ess_i2c_id);
+-
+-static const struct of_device_id sabre_ess_of_match[] = {
+-	{ .compatible = "saber,sabre-ess", },
+-	{ }
+-};
+-MODULE_DEVICE_TABLE(of, sabre_ess_of_match);
+-
+-static struct i2c_driver sabre_ess_i2c_driver = {
+-	.probe 		= sabre_ess_i2c_probe,
+-	.remove 	= sabre_ess_i2c_remove,
+-	.id_table	= sabre_ess_i2c_id,
+-	.driver		= {
+-		.name	= "sabre-ess",
+-		.of_match_table = sabre_ess_of_match,
+-	},
+-};
+-
+-module_i2c_driver(sabre_ess_i2c_driver);
+-
+-MODULE_DESCRIPTION("ASoC SABRE ESS codec driver - I2C");
+-MODULE_AUTHOR("Jaikumar <jaikumar@cem-solutions.net>");
+-MODULE_LICENSE("GPL v2");
+-
+--- a/sound/soc/codecs/sabre-ess.c
++++ /dev/null
+@@ -1,300 +0,0 @@
+-/*
+- * Driver for the SABRE ESS CODEC
+- *
+- * Author: Jaikumar <jaikumar@cem-solutions.net>
+- *		Copyright 2018
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * version 2 as published by the Free Software Foundation.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- */
+-
+-
+-#include <linux/init.h>
+-#include <linux/module.h>
+-#include <linux/clk.h>
+-#include <linux/kernel.h>
+-#include <linux/pm_runtime.h>
+-#include <linux/regmap.h>
+-#include <linux/regulator/consumer.h>
+-#include <linux/gcd.h>
+-#include <sound/soc.h>
+-#include <sound/soc-dapm.h>
+-#include <sound/pcm_params.h>
+-#include <sound/tlv.h>
+-
+-#include "sabre-ess.h"
+-
+-struct sabre_ess_priv {
+-	struct regmap *regmap;
+-	int fmt;
+-};
+-
+-static const struct reg_default sabre_ess_reg_defaults[] = {
+-	{ SABRE_ESS_RESET,			0x00 },
+-	{ SABRE_ESS_VOLUME_1,		0xF0 },
+-	{ SABRE_ESS_VOLUME_2,		0xF0 },
+-	{ SABRE_ESS_MUTE,			0x00 },
+-	{ SABRE_ESS_DSP_PROGRAM,	0x04 },
+-	{ SABRE_ESS_DEEMPHASIS,		0x00 },
+-	{ SABRE_ESS_DOP,			0x01 },
+-	{ SABRE_ESS_FORMAT,			0xb4 },
+-};
+-
+-static const char * const sabre_ess_dsp_program_texts[] = {
+-	"Linear Phase Fast Roll-off Filter",
+-	"Linear Phase Slow Roll-off Filter",
+-	"Minimum Phase Fast Roll-off Filter",
+-	"Minimum Phase Slow Roll-off Filter",
+-	"Apodizing Fast Roll-off Filter",
+-	"Corrected Minimum Phase Fast Roll-off Filter",
+-	"Brick Wall Filter",
+-};
+-
+-static const unsigned int sabre_ess_dsp_program_values[] = {
+-	0,
+-	1,
+-	2,
+-	3,
+-	4,
+-	6,
+-	7,
+-};
+-
+-static SOC_VALUE_ENUM_SINGLE_DECL(sabre_ess_dsp_program,
+-				  SABRE_ESS_DSP_PROGRAM, 0, 0x07,
+-				  sabre_ess_dsp_program_texts,
+-				  sabre_ess_dsp_program_values);
+-
+-static const char * const sabre_ess_deemphasis_texts[] = {
+-	"Bypass",
+-	"32kHz",
+-	"44.1kHz",
+-	"48kHz",
+-};
+-
+-static const unsigned int sabre_ess_deemphasis_values[] = {
+-	0,
+-	1,
+-	2,
+-	3,
+-};
+-
+-static SOC_VALUE_ENUM_SINGLE_DECL(sabre_ess_deemphasis,
+-				  SABRE_ESS_DEEMPHASIS, 0, 0x03,
+-				  sabre_ess_deemphasis_texts,
+-				  sabre_ess_deemphasis_values);
+-
+-static const SNDRV_CTL_TLVD_DECLARE_DB_MINMAX(master_tlv, -12700, 0);
+-
+-static const struct snd_kcontrol_new sabre_ess_controls[] = {
+-	SOC_DOUBLE_R_TLV("Master Playback Volume", SABRE_ESS_VOLUME_1,
+-			SABRE_ESS_VOLUME_2, 0, 255, 1, master_tlv),
+-	SOC_DOUBLE("Master Playback Switch", SABRE_ESS_MUTE, 0, 0, 1, 1),
+-	SOC_ENUM("DSP Program Route", sabre_ess_dsp_program),
+-	SOC_ENUM("Deemphasis Route", sabre_ess_deemphasis),
+-	SOC_SINGLE("DoP Playback Switch", SABRE_ESS_DOP, 0, 1, 1)
+-};
+-
+-static bool sabre_ess_readable_register(struct device *dev, unsigned int reg)
+-{
+-	switch (reg) {
+-	case SABRE_ESS_CHIP_ID_REG:
+-		return true;
+-	default:
+-		return reg < 0xff;
+-	}
+-}
+-
+-static int sabre_ess_hw_params(struct snd_pcm_substream *substream,
+-			     struct snd_pcm_hw_params *params,
+-			     struct snd_soc_dai *dai)
+-{
+-	struct snd_soc_codec *codec = dai->codec;
+-	struct sabre_ess_priv *sabre_ess = snd_soc_codec_get_drvdata(codec);
+-	int fmt = 0;
+-	int ret;
+-
+-	dev_dbg(codec->dev, "hw_params %u Hz, %u channels\n",
+-			params_rate(params),
+-			params_channels(params));
+-
+-	switch (sabre_ess->fmt & SND_SOC_DAIFMT_MASTER_MASK) {
+-	case SND_SOC_DAIFMT_CBM_CFM: // master
+-		if (params_channels(params) == 2)
+-			fmt = SABRE_ESS_CHAN_STEREO;
+-		else
+-			fmt = SABRE_ESS_CHAN_MONO;
+-
+-		switch (params_width(params)) {
+-		case 16:
+-			fmt |= SABRE_ESS_ALEN_16;
+-			break;
+-		case 24:
+-			fmt |= SABRE_ESS_ALEN_24;
+-			break;
+-		case 32:
+-			fmt |= SABRE_ESS_ALEN_32;
+-			break;
+-		default:
+-			dev_err(codec->dev, "Bad frame size: %d\n",
+-					params_width(params));
+-			return -EINVAL;
+-		}
+-
+-		switch (params_rate(params)) {
+-		case 44100:
+-			fmt |= SABRE_ESS_RATE_44100;
+-			break;
+-		case 48000:
+-			fmt |= SABRE_ESS_RATE_48000;
+-			break;
+-		case 88200:
+-			fmt |= SABRE_ESS_RATE_88200;
+-			break;
+-		case 96000:
+-			fmt |= SABRE_ESS_RATE_96000;
+-			break;
+-		case 176400:
+-			fmt |= SABRE_ESS_RATE_176400;
+-			break;
+-		case 192000:
+-			fmt |= SABRE_ESS_RATE_192000;
+-			break;
+-		case 352800:
+-			fmt |= SABRE_ESS_RATE_352800;
+-			break;
+-		case 384000:
+-			fmt |= SABRE_ESS_RATE_384000;
+-			break;
+-		default:
+-			dev_err(codec->dev, "Bad sample rate: %d\n",
+-					params_rate(params));
+-			return -EINVAL;
+-		}
+-
+-		ret = regmap_write(sabre_ess->regmap, SABRE_ESS_FORMAT, fmt);
+-		if (ret != 0) {
+-			dev_err(codec->dev, "Failed to set format: %d\n", ret);
+-			return ret;
+-		}
+-		break;
+-
+-	default:
+-		return -EINVAL;
+-	}
+-
+-	return 0;
+-}
+-
+-static int sabre_ess_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
+-{
+-	struct snd_soc_codec *codec = dai->codec;
+-	struct sabre_ess_priv *sabre_ess = snd_soc_codec_get_drvdata(codec);
+-
+-	sabre_ess->fmt = fmt;
+-
+-	return 0;
+-}
+-
+-static const struct snd_soc_dai_ops sabre_ess_dai_ops = {
+-	.hw_params = sabre_ess_hw_params,
+-	.set_fmt = sabre_ess_set_fmt,
+-};
+-
+-static struct snd_soc_dai_driver sabre_ess_dai = {
+-	.name = "sabre-ess",
+-	.playback = {
+-		.stream_name = "Playback",
+-		.channels_min = 2,
+-		.channels_max = 2,
+-		.rates = SNDRV_PCM_RATE_CONTINUOUS,
+-		.rate_min = 44100,
+-		.rate_max = 384000,
+-		.formats = SNDRV_PCM_FMTBIT_S16_LE |
+-			SNDRV_PCM_FMTBIT_S32_LE
+-	},
+-	.ops = &sabre_ess_dai_ops,
+-};
+-
+-static struct snd_soc_codec_driver sabre_ess_codec_driver = {
+-	.idle_bias_off = false,
+-
+-	.component_driver = {
+-		.controls		= sabre_ess_controls,
+-		.num_controls	= ARRAY_SIZE(sabre_ess_controls),
+-	},
+-};
+-
+-static const struct regmap_range_cfg sabre_ess_range = {
+-	.name = "Pages", .range_min = SABRE_ESS_VIRT_BASE,
+-	.range_max = SABRE_ESS_MAX_REGISTER,
+-	.selector_reg = SABRE_ESS_PAGE,
+-	.selector_mask = 0xff,
+-	.window_start = 0, .window_len = 0x100,
+-};
+-
+-const struct regmap_config sabre_ess_regmap = {
+-	.reg_bits = 8,
+-	.val_bits = 8,
+-
+-	.ranges = &sabre_ess_range,
+-	.num_ranges = 1,
+-
+-	.max_register = SABRE_ESS_MAX_REGISTER,
+-	.readable_reg = sabre_ess_readable_register,
+-	.reg_defaults = sabre_ess_reg_defaults,
+-	.num_reg_defaults = ARRAY_SIZE(sabre_ess_reg_defaults),
+-	.cache_type = REGCACHE_RBTREE,
+-};
+-EXPORT_SYMBOL_GPL(sabre_ess_regmap);
+-
+-int sabre_ess_probe(struct device *dev, struct regmap *regmap)
+-{
+-	struct sabre_ess_priv *sabre_ess;
+-	unsigned int chip_id = 0;
+-	int ret;
+-
+-	sabre_ess = devm_kzalloc(dev, sizeof(struct sabre_ess_priv),
+-								GFP_KERNEL);
+-	if (!sabre_ess)
+-		return -ENOMEM;
+-
+-	dev_set_drvdata(dev, sabre_ess);
+-	sabre_ess->regmap = regmap;
+-
+-	ret = regmap_read(regmap, SABRE_ESS_CHIP_ID_REG, &chip_id);
+-	if ((ret != 0) || (chip_id != SABRE_ESS_CHIP_ID)) {
+-		dev_err(dev, "Failed to read Chip or wrong Chip id: %d\n", ret);
+-		return ret;
+-	}
+-	regmap_update_bits(regmap, SABRE_ESS_RESET, 0x01, 0x01);
+-	msleep(10);
+-
+-	ret = snd_soc_register_codec(dev, &sabre_ess_codec_driver,
+-				    &sabre_ess_dai, 1);
+-	if (ret != 0) {
+-		dev_err(dev, "failed to register codec: %d\n", ret);
+-		return ret;
+-	}
+-
+-	return 0;
+-}
+-EXPORT_SYMBOL_GPL(sabre_ess_probe);
+-
+-void sabre_ess_remove(struct device *dev)
+-{
+-	snd_soc_unregister_codec(dev);
+-	pm_runtime_disable(dev);
+-}
+-EXPORT_SYMBOL_GPL(sabre_ess_remove);
+-
+-MODULE_DESCRIPTION("ASoC SABRE ESS codec driver");
+-MODULE_AUTHOR("Jaikumar <jaikumar@cem-solutions.net>");
+-MODULE_LICENSE("GPL v2");
+-
+--- a/sound/soc/codecs/sabre-ess.h
++++ /dev/null
+@@ -1,62 +0,0 @@
+-/*
+- * Driver for the SABRE ESS CODEC
+- *
+- * Author: Jaikumar <jaikumar@cem-solutions.net>
+- *		Copyright 2018
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * version 2 as published by the Free Software Foundation.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- */
+-
+-#ifndef _SND_SOC_SABRE_ESS_
+-#define _SND_SOC_SABRE_ESS_
+-
+-#include <linux/pm.h>
+-#include <linux/regmap.h>
+-
+-#define SABRE_ESS_CHIP_ID		0x30
+-#define SABRE_ESS_VIRT_BASE		0x100
+-#define SABRE_ESS_PAGE			0
+-
+-#define SABRE_ESS_CHIP_ID_REG	(SABRE_ESS_VIRT_BASE + 0)
+-#define SABRE_ESS_RESET			(SABRE_ESS_VIRT_BASE + 1)
+-#define SABRE_ESS_VOLUME_1		(SABRE_ESS_VIRT_BASE + 2)
+-#define SABRE_ESS_VOLUME_2		(SABRE_ESS_VIRT_BASE + 3)
+-#define SABRE_ESS_MUTE			(SABRE_ESS_VIRT_BASE + 4)
+-#define SABRE_ESS_DSP_PROGRAM	(SABRE_ESS_VIRT_BASE + 5)
+-#define SABRE_ESS_DEEMPHASIS	(SABRE_ESS_VIRT_BASE + 6)
+-#define SABRE_ESS_DOP			(SABRE_ESS_VIRT_BASE + 7)
+-#define SABRE_ESS_FORMAT		(SABRE_ESS_VIRT_BASE + 8)
+-#define SABRE_ESS_COMMAND		(SABRE_ESS_VIRT_BASE + 9)
+-#define SABRE_ESS_MAX_REGISTER	(SABRE_ESS_VIRT_BASE + 9)
+-
+-#define SABRE_ESS_FMT			0xff
+-#define SABRE_ESS_CHAN_MONO		0x00
+-#define SABRE_ESS_CHAN_STEREO	0x80
+-#define SABRE_ESS_ALEN_16		0x10
+-#define SABRE_ESS_ALEN_24		0x20
+-#define SABRE_ESS_ALEN_32		0x30
+-#define SABRE_ESS_RATE_11025	0x01
+-#define SABRE_ESS_RATE_22050	0x02
+-#define SABRE_ESS_RATE_32000	0x03
+-#define SABRE_ESS_RATE_44100	0x04
+-#define SABRE_ESS_RATE_48000	0x05
+-#define SABRE_ESS_RATE_88200	0x06
+-#define SABRE_ESS_RATE_96000	0x07
+-#define SABRE_ESS_RATE_176400	0x08
+-#define SABRE_ESS_RATE_192000	0x09
+-#define SABRE_ESS_RATE_352800	0x0a
+-#define SABRE_ESS_RATE_384000	0x0b
+-
+-extern const struct regmap_config sabre_ess_regmap;
+-
+-int sabre_ess_probe(struct device *dev, struct regmap *regmap);
+-void sabre_ess_remove(struct device *dev);
+-
+-#endif /* _SND_SOC_SABRE_ESS_ */

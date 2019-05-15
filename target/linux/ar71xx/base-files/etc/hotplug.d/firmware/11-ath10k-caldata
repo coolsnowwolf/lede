@@ -1,5 +1,21 @@
 #!/bin/sh
 
+# xor multiple hex values of the same length
+xor() {
+	local val
+	local ret="0x$1"
+	local retlen=${#1}
+
+	shift
+	while [ -n "$1" ]; do
+		val="0x$1"
+		ret=$((ret ^ val))
+		shift
+	done
+
+	printf "%0${retlen}x" "$ret"
+}
+
 ath10kcal_die() {
 	echo "ath10cal: " "$*"
 	exit 1
@@ -42,6 +58,29 @@ ath10kcal_patch_mac() {
 	macaddr_2bin $mac | dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=6 count=6
 }
 
+ath10kcal_patch_mac_crc() {
+	local mac=$1
+	local mac_offset=6
+	local chksum_offset=2
+	local xor_mac
+	local xor_fw_mac
+	local xor_fw_chksum
+
+	xor_fw_mac=$(hexdump -v -n 6 -s $mac_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
+	xor_fw_mac="${xor_fw_mac:0:4} ${xor_fw_mac:4:4} ${xor_fw_mac:8:4}"
+
+	ath10kcal_patch_mac "$mac" && {
+		xor_mac=${mac//:/}
+		xor_mac="${xor_mac:0:4} ${xor_mac:4:4} ${xor_mac:8:4}"
+
+		xor_fw_chksum=$(hexdump -v -n 2 -s $chksum_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
+		xor_fw_chksum=$(xor $xor_fw_chksum $xor_fw_mac $xor_mac)
+
+		printf "%b" "\x${xor_fw_chksum:0:2}\x${xor_fw_chksum:2:2}" | \
+			dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=$chksum_offset count=2
+	}
+}
+
 [ -e /lib/firmware/$FIRMWARE ] && exit 0
 
 . /lib/functions.sh
@@ -65,16 +104,10 @@ case "$FIRMWARE" in
 		ath10kcal_extract "art" 20480 2116
 		ath10kcal_patch_mac $(macaddr_add $(cat /sys/class/net/eth1/address) -2)
 		;;
-	archer-c7-v4)
+	archer-c7-v4|\
+	archer-c7-v5)
 		ath10kcal_extract "art" 20480 2116
 		ath10kcal_patch_mac $(macaddr_add $(cat /sys/class/net/eth0/address) -1)
-		;;
-	ap147-010|\
-	ac9531-010|\
-	ac9531-020|\
-	ap152)
-		ath10kcal_extract "art" 20480 2116
-		ath10kcal_patch_mac $(macaddr_add $(cat /sys/class/net/eth0/address) -2)
 		;;
 	cf-e355ac-v1|\
 	cf-e380ac-v1|\
@@ -100,6 +133,10 @@ case "$FIRMWARE" in
 	dw33d)
 		ath10kcal_extract "art" 20480 2116
 		ath10kcal_patch_mac $(mtd_get_mac_binary art 18)
+		;;
+	sbr-ac1750)
+		ath10kcal_extract "art" 20480 2116
+		ath10kcal_patch_mac_crc $(macaddr_add $(cat /sys/class/net/eth1/address) +1)
 		;;
 	epg5000|\
 	esr1750)
@@ -172,20 +209,25 @@ case "$FIRMWARE" in
 	;;
 "ath10k/pre-cal-pci-0000:00:00.0.bin")
 	case $board in
-	tl-wdx6501-v7|\
 	archer-c58-v1|\
 	archer-c59-v1|\
+	archer-c59-v2|\
 	archer-c60-v1|\
 	archer-c60-v2|\
 	cf-e355ac-v2|\
-	cf-e375ac|\
-	k2t)
+	cf-e375ac)
 		ath10kcal_extract "art" 20480 12064
 		ln -sf /lib/firmware/ath10k/pre-cal-pci-0000\:00\:00.0.bin \
 			/lib/firmware/ath10k/QCA9888/hw2.0/board.bin
 		;;
 	cf-e385ac)
 		ath10kcal_extract "art" 20480 12064
+		;;
+	k2t)
+		ath10kcal_extract "art" 20480 12064
+		ath10kcal_patch_mac_crc $(macaddr_add $(cat /sys/class/net/eth0/address) +2)
+		ln -sf /lib/firmware/ath10k/pre-cal-pci-0000\:00\:00.0.bin \
+			/lib/firmware/ath10k/QCA9888/hw2.0/board.bin
 		;;
 	esac
 	;;

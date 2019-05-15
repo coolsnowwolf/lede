@@ -39,6 +39,25 @@ define Device/domywifi-dw33d
 endef
 TARGET_DEVICES += domywifi-dw33d
 
+define Device/sbr-ac1750
+  DEVICE_TITLE := Arris sbr-ac1750
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage kmod-usb-ledtrig-usbport kmod-ath10k ath10k-firmware-qca988x
+  BOARDNAME := SBR-AC1750
+  IMAGE_SIZE := 95m
+  KERNEL_SIZE := 4096k
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBINIZE_OPTS := -E 5
+  CONSOLE := ttyS0,115200
+  MTDPARTS := ar934x-nfc:1m(u-boot)ro,1m(u-boot-env)ro,4m(kernel),95m(ubi),1m(scfgmgr),4m(openwrt),1m(ft),2m(PKI),1m@0x6d00000(art)ro,36864k@0x200000(kfs),36864k@0x2600000(kfs2)
+  IMAGES := sysupgrade.tar kernel1.bin rootfs1.bin
+  KERNEL := kernel-bin | patch-cmdline | lzma | uImage lzma
+  IMAGE/kernel1.bin := append-kernel | check-size $$$$(KERNEL_SIZE)
+  IMAGE/rootfs1.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.tar := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += sbr-ac1750
+
 define Device/hiveap-121
   DEVICE_TITLE := Aerohive HiveAP-121
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-i2c-gpio-custom kmod-spi-gpio kmod-ath9k kmod-tpm-i2c-atmel

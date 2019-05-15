@@ -1,7 +1,6 @@
 #!/bin/sh /etc/rc.common
-# Copyright (C) 2008-2018 OpenWrt.org
 
-START=60
+START=98
 USE_PROCD=1
 
 smb_header() {
@@ -20,20 +19,21 @@ smb_header() {
 		done
 	)
 
-	local name workgroup description charset
-	local hostname="$(uci_get system.@system[0].hostname)"
+	local workgroup description charset
+	# we dont use netbios anymore as default and wsd/avahi is dns based
+	local hostname="$(cat /proc/sys/kernel/hostname)"
 
-	config_get name        		$1 name        	"${hostname:-OpenWrt}"
-	config_get workgroup   		$1 workgroup   	"${hostname:-WORKGROUP}"
-	config_get description 		$1 description 	"Samba on ${hostname:-OpenWrt}"
-	config_get charset  		$1 charset     	"UTF-8"
+	config_get workgroup		$1 workgroup	"WORKGROUP"
+	config_get description		$1 description	"Samba on OpenWrt"
+	config_get charset			$1 charset		"UTF-8"
 	
+	config_get_bool MACOS			$1 macos			0
 	config_get_bool DISABLE_NETBIOS	$1 disable_netbios	0
 	config_get_bool DISABLE_AD_DC	$1 disable_ad_dc	0
 	config_get_bool DISABLE_WINBIND	$1 disable_winbind	0
-	
+
 	mkdir -p /var/etc
-	sed -e "s#|NAME|#$name#g" \
+	sed -e "s#|NAME|#$hostname#g" \
 	    -e "s#|WORKGROUP|#$workgroup#g" \
 	    -e "s#|DESCRIPTION|#$description#g" \
 	    -e "s#|INTERFACES|#$interfaces#g" \
@@ -44,7 +44,7 @@ smb_header() {
 	if [ "$DISABLE_NETBIOS" -eq 1 ] || [ ! -x /usr/sbin/nmbd ]; then
 		echo -e "\tdisable netbios = yes" >> /var/etc/smb.conf
 	fi
-		
+
 	local homes
 	config_get_bool homes $1 homes 0
 	[ $homes -gt 0 ] && {
@@ -66,51 +66,65 @@ smb_add_share() {
 	local name
 	local path
 	local users
-	local public
-	local writable
-	local printable
 	local create_mask
-	
+	local dir_mask
 	local browseable
 	local read_only
 	local guest_ok
 	local guest_only
 	local inherit_owner
 	local vfs_objects
+	local timemachine
+	local timemachine_maxsize
+	local force_root
 
 	config_get name $1 name
 	config_get path $1 path
 	config_get users $1 users
-	config_get public $1 public
-	config_get writable $1 writable
-	config_get printable $1 printable
 	config_get create_mask $1 create_mask
 	config_get dir_mask $1 dir_mask
-
-
 	config_get browseable $1 browseable
 	config_get read_only $1 read_only
 	config_get guest_ok $1 guest_ok
 	config_get guest_only $1 guest_only
 	config_get inherit_owner $1 inherit_owner
 	config_get vfs_objects $1 vfs_objects
-
+	config_get_bool timemachine	$1 timemachine	0
+	config_get timemachine_maxsize $1 timemachine_maxsize
+	config_get_bool force_root	$1 force_root	0
 
 	[ -z "$name" -o -z "$path" ] && return
 
 	echo -e "\n[$name]\n\tpath = $path" >> /var/etc/smb.conf
-	[ -n "$users" ] && echo -e "\tvalid users = $users" >> /var/etc/smb.conf
-	[ -n "$public" ] && echo -e "\tpublic = $public" >> /var/etc/smb.conf
-	[ -n "$writable" ] && echo -e "\twritable = $writable" >> /var/etc/smb.conf
-	[ -n "$printable" ] && echo -e "\tprintable = $printable" >> /var/etc/smb.conf
+	
+	if [ "$force_root" -eq 1 ]; then
+		echo -e "\tforce user = root" >> /var/etc/smb.conf
+		echo -e "\tforce group = root" >> /var/etc/smb.conf
+	else
+		[ -n "$users" ] && echo -e "\tvalid users = $users" >> /var/etc/smb.conf
+	fi
+
 	[ -n "$create_mask" ] && echo -e "\tcreate mask = $create_mask" >> /var/etc/smb.conf
 	[ -n "$dir_mask" ] && echo -e "\tdirectory mask = $dir_mask" >> /var/etc/smb.conf
-	
+
 	[ -n "$browseable" ] && echo -e "\tbrowseable = $browseable" >> /var/etc/smb.conf
 	[ -n "$read_only" ] && echo -e "\tread only = $read_only" >> /var/etc/smb.conf
 	[ -n "$guest_ok" ] && echo -e "\tguest ok = $guest_ok" >> /var/etc/smb.conf
 	[ -n "$guest_only" ] && echo -e "\tguest only = $guest_only" >> /var/etc/smb.conf
 	[ -n "$inherit_owner" ] && echo -e "\tinherit owner = $inherit_owner" >> /var/etc/smb.conf
+	
+	if [ "$MACOS" -eq 1 ]; then
+		vfs_objects="catia fruit streams_xattr $vfs_objects"
+		echo -e "\tfruit:encoding = native" >> /var/etc/smb.conf
+		echo -e "\tfruit:metadata = stream" >> /var/etc/smb.conf
+		echo -e "\tfruit:veto_appledouble = no" >> /var/etc/smb.conf
+		# avoid mixed shares order for aapl
+		if [ "$timemachine" -eq 1 ]; then
+			echo -e "\tfruit:time machine = yes" >> /var/etc/smb.conf
+			[ -n "$timemachine_maxsize" ] && echo -e "\tfruit:time machine max size = ${timemachine_maxsize}G" >> /var/etc/smb.conf
+		fi
+	fi
+	
 	[ -n "$vfs_objects" ] && echo -e "\tvfs objects = $vfs_objects" >> /var/etc/smb.conf
 }
 
@@ -130,18 +144,11 @@ init_config() {
 	config_foreach smb_add_share sambashare
 }
 
-reload_service() {
-	init_config
-
-	killall -HUP samba
-	killall -HUP smbd
-	killall -HUP nmbd
-	killall -HUP winbindd
-}
-
 service_triggers() {
-	procd_add_reload_trigger samba4
-
+	PROCD_RELOAD_DELAY=2000
+	
+	procd_add_reload_trigger "dhcp" "system" "samba4"
+	
 	local i
 	for i in $samba_iface; do
 		procd_add_reload_interface_trigger $i
@@ -151,7 +158,7 @@ service_triggers() {
 start_service() {
 	init_config
 
-	# start main AC-DC daemon, will spawn (smbd,nmbd,winbindd) as needed/configured.
+	# start main AD-DC daemon, will spawn (smbd,nmbd,winbindd) as needed/configured.
 	if [ "$DISABLE_AD_DC" -ne 1 ] && [ -x /usr/sbin/samba ]; then
 		procd_open_instance
 		procd_set_param command /usr/sbin/samba -F

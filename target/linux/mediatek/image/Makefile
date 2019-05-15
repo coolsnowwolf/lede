@@ -16,10 +16,14 @@ ifeq ($(SUBTARGET),mt7622)
 KERNEL_LOADADDR = 0x41080000
 endif
 
-# build dtb
-define Build/dtb
-        $(call Image/BuildDTB,$(DEVICE_DTS_DIR)/$(DEVICE_DTS).dts,$(DEVICE_DTS_DIR)/$(DEVICE_DTS).dtb)
-	$(CP) $(DEVICE_DTS_DIR)/$(DEVICE_DTS).dtb $(BIN_DIR)/
+define Build/sysupgrade-emmc
+	rm -f $@.recovery
+	mkfs.fat -C $@.recovery 3070
+
+	./gen_mt7623_emmc_img.sh $@ \
+		$(IMAGE_KERNEL) \
+		$@.recovery \
+		$(IMAGE_ROOTFS)
 endef
 
 # default all platform image(fit) build 
@@ -32,13 +36,13 @@ define Device/Default
   IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata 
 ifeq ($(SUBTARGET),mt7623)
   KERNEL_NAME := zImage
-  KERNEL := dtb | kernel-bin | append-dtb | uImage none
-  KERNEL_INITRAMFS := dtb | kernel-bin | append-dtb | uImage none
+  KERNEL := kernel-bin | append-dtb | uImage none
+  KERNEL_INITRAMFS := kernel-bin | append-dtb | uImage none
 endif
 ifeq ($(SUBTARGET),mt7622)
   KERNEL_NAME := Image
-  KERNEL = dtb | kernel-bin | lzma | fit lzma $$(DEVICE_DTS_DIR)/$$(DEVICE_DTS).dtb
-  KERNEL_INITRAMFS = dtb | kernel-bin | lzma | fit lzma $$(DEVICE_DTS_DIR)/$$(DEVICE_DTS).dtb
+  KERNEL = kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  KERNEL_INITRAMFS = kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
 endif
 endef
 

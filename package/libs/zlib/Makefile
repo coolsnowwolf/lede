@@ -21,7 +21,6 @@ PKG_CPE_ID:=cpe:/a:gnu:zlib
 
 PKG_CONFIG_DEPENDS:= CONFIG_ZLIB_OPTIMIZE_SPEED
 
-include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
 
@@ -95,6 +94,5 @@ define Package/zlib-dev/install
 	  $(1)/usr/lib/pkgconfig/
 endef
 
-$(eval $(call HostBuild))
 $(eval $(call BuildPackage,zlib))
 $(eval $(call BuildPackage,zlib-dev))

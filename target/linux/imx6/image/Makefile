@@ -11,7 +11,7 @@ include $(INCLUDE_DIR)/image.mk
 # Images
 #################################################
 
-DEVICE_VARS += MKUBIFS_OPTS
+DEVICE_VARS += MKUBIFS_OPTS UBOOT BOOT_SCRIPT
 
 define Build/boot-overlay
 	rm -rf $@.boot
@@ -51,6 +51,68 @@ define Build/bootfs.tar.gz
 		-czvf $@ .
 endef
 
+define Build/boot-scr
+	mkimage -A arm -O linux -T script -C none -a 0 -e 0 \
+	-n '$(DEVICE_ID) OpenWrt bootscript' \
+	-d ./bootscript-$(DEVICE_NAME) \
+	$(BIN_DIR)/boot.scr
+endef
+
+define Build/recovery-scr
+	mkimage -A arm -O linux -T script -C none -a 0 -e 0 \
+	-n '$(DEVICE_ID) OpenWrt recovery bootscript' \
+	-d ./recovery-$(DEVICE_NAME) $@
+endef
+
+define Build/imx6-combined-image-prepare
+	rm -rf $@.boot
+	mkdir -p $@.boot
+endef
+
+define Build/imx6-combined-image-clean
+	rm -rf $@.boot $@.fs
+endef
+
+define Build/imx6-combined-image
+	$(CP) $(IMAGE_KERNEL) $@.boot/uImage
+
+	$(foreach dts,$(DEVICE_DTS), \
+		$(CP) \
+			$(DTS_DIR)/$(dts).dtb \
+			$@.boot/;
+	)
+
+	mkimage -A arm -O linux -T script -C none -a 0 -e 0 \
+		-n '$(DEVICE_ID) OpenWrt bootscript' \
+		-d $(BOOT_SCRIPT) \
+		$@.boot/boot.scr
+
+	cp $@ $@.fs
+
+	$(SCRIPT_DIR)/gen_image_generic.sh $@ \
+		$(CONFIG_TARGET_KERNEL_PARTSIZE) \
+		$@.boot \
+		$(CONFIG_TARGET_ROOTFS_PARTSIZE) \
+		$@.fs \
+		1024
+endef
+
+define Build/imx6-sdcard
+	$(Build/imx6-combined-image-prepare)
+
+	$(CP) $(STAGING_DIR_IMAGE)/$(UBOOT)-u-boot.img $@.boot/u-boot.img
+	$(Build/imx6-combined-image)
+	dd if=$(STAGING_DIR_IMAGE)/$(UBOOT)-SPL of=$@ bs=1024 seek=1 conv=notrunc
+
+	$(Build/imx6-combined-image-clean)
+endef
+
+define Build/apalis-emmc
+	$(Build/imx6-combined-image-prepare)
+	$(Build/imx6-combined-image)
+	$(Build/imx6-combined-image-clean)
+endef
+
 #################################################
 # Devices
 #################################################
@@ -65,7 +127,6 @@ define Device/Default
   KERNEL_NAME := zImage
   KERNEL_PREFIX := $$(IMAGE_PREFIX)
   KERNEL := kernel-bin | uImage none
-  IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1).$$(2)
   IMAGES :=
 endef
 
@@ -96,7 +157,9 @@ define Device/ventana
 	kobs-ng
   KERNEL += | boot-overlay
   IMAGES := nand.ubi bootfs.tar.gz
+  IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1).$$(2)
   UBINIZE_PARTS = boot=$$(KDIR_KERNEL_IMAGE).boot.ubifs=15
+  BOOT_SCRIPT := bootscript-ventana
   IMAGE/nand.ubi := append-ubi
   IMAGE/bootfs.tar.gz := bootfs.tar.gz | install-dtb
   IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1)-$$(2)
@@ -122,5 +185,42 @@ define Device/wandboard
   DEVICE_DTS := imx6dl-wandboard
 endef
 TARGET_DEVICES += wandboard
+
+define Device/cubox-i
+  KERNEL := kernel-bin | install-dtb
+  UBOOT := mx6cuboxi
+  BOOT_SCRIPT = bootscript-cubox
+  DEVICE_NAME := cubox
+  DEVICE_TITLE := SolidRun CuBox-i
+  DEVICE_PACKAGES := kmod-drm-imx kmod-drm-imx-hdmi kmod-usb-hid
+  DEVICE_DTS := imx6q-cubox-i imx6dl-cubox-i imx6q-hummingboard imx6dl-hummingboard
+  IMAGES := combined.bin
+  FILESYSTEMS := squashfs
+  IMAGE/combined.bin := append-rootfs | pad-extra 128k | imx6-sdcard
+endef
+TARGET_DEVICES += cubox-i
+
+define Device/apalis
+  DEVICE_TITLE := Toradex Apalis family
+  SUPPORTED_DEVICES := apalis,ixora apalis,eval
+  DEVICE_DTS := \
+	  imx6q-apalis-eval \
+	  imx6q-apalis-ixora \
+	  imx6q-apalis-ixora-v1.1
+  DEVICE_PACKAGES := \
+	kmod-can kmod-can-flexcan kmod-can-raw \
+	kmod-leds-gpio kmod-gpio-button-hotplug \
+	kmod-pps-gpio kmod-rtc-ds1307
+  BOOT_SCRIPT := bootscript-apalis
+  UBOOT := apalis_imx6
+  FILESYSTEMS := squashfs
+  IMAGES := combined.bin sysupgrade.bin
+  IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1).$$(2)
+  IMAGE/combined.bin := append-rootfs | pad-extra 128k | apalis-emmc
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  ARTIFACTS := recovery.scr
+  ARTIFACT/recovery.scr := recovery-scr
+endef
+TARGET_DEVICES += apalis
 
 $(eval $(call BuildImage))

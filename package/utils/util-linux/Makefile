@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=util-linux
-PKG_VERSION:=2.32
+PKG_VERSION:=2.33
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
-PKG_SOURCE_URL:=@KERNEL/linux/utils/$(PKG_NAME)/v2.32
-PKG_HASH:=6c7397abc764e32e8159c2e96042874a190303e77adceb4ac5bd502a272a4734
+PKG_SOURCE_URL:=@KERNEL/linux/utils/$(PKG_NAME)/v2.33
+PKG_HASH:=f261b9d73c35bfeeea04d26941ac47ee1df937bd3b0583e748217c1ea423658a
 PKG_CPE_ID:=cpe:/a:kernel:util-linux
 
 PKG_LICENSE:=GPL-2.0
@@ -141,6 +141,16 @@ define Package/blkid/description
  library.
 endef
 
+define Package/blockdev
+$(call Package/util-linux/Default)
+  TITLE:=call block device ioctls from the command line
+  SUBMENU=Disc
+endef
+
+define Package/blockdev/description
+ The blockdev program is the command-line interface to call block device ioctls.
+endef
+
 define Package/cal
 $(call Package/util-linux/Default)
   TITLE:=display a calendar
@@ -172,6 +182,18 @@ define Package/dmesg/description
  dmesg  is used to examine or control the kernel ring buffer
 endef
 
+define Package/eject
+$(call Package/util-linux/Default)
+  TITLE:=eject removable media
+  DEPENDS:= +libblkid +libmount +libuuid
+  SUBMENU=Disc
+endef
+
+define Package/eject/description
+  eject allows removable media (typically a CD-ROM, floppy disk, tape, or JAZ
+  or ZIP disk) to be ejected under software control.
+endef
+
 define Package/fdisk
 $(call Package/util-linux/Default)
   TITLE:=manipulate disk partition table
@@ -198,6 +220,7 @@ endef
 define Package/flock
 $(call Package/util-linux/Default)
   TITLE:=manage locks from shell scripts
+  ALTERNATIVES:=200:/usr/bin/flock:/usr/bin/util-linux-flock
 endef
 
 define Package/flock/description
@@ -564,6 +587,11 @@ define Package/blkid/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/blkid $(1)/usr/sbin/
 endef
 
+define Package/blockdev/install
+	$(INSTALL_DIR) $(1)/usr/sbin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/blockdev $(1)/usr/sbin/
+endef
+
 define Package/cal/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/cal $(1)/usr/bin/
@@ -579,6 +607,11 @@ define Package/dmesg/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/dmesg $(1)/usr/bin/
 endef
 
+define Package/eject/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/eject $(1)/usr/bin/
+endef
+
 define Package/fdisk/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/fdisk $(1)/usr/sbin/
@@ -591,7 +624,7 @@ endef
 
 define Package/flock/install
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/flock $(1)/usr/bin/
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/flock $(1)/usr/bin/util-linux-flock
 endef
 
 define Package/fstrim/install
@@ -733,9 +766,11 @@ $(eval $(call BuildPackage,libuuid))
 $(eval $(call BuildPackage,agetty))
 $(eval $(call BuildPackage,blkdiscard))
 $(eval $(call BuildPackage,blkid))
+$(eval $(call BuildPackage,blockdev))
 $(eval $(call BuildPackage,cal))
 $(eval $(call BuildPackage,cfdisk))
 $(eval $(call BuildPackage,dmesg))
+$(eval $(call BuildPackage,eject))
 $(eval $(call BuildPackage,fdisk))
 $(eval $(call BuildPackage,findfs))
 $(eval $(call BuildPackage,flock))

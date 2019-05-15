@@ -8,14 +8,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=f2fs-tools
-PKG_VERSION:=1.10.0
+PKG_VERSION:=1.12.0
 PKG_RELEASE:=1
 
 PKG_LICENSE:=GPLv2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://git.kernel.org/pub/scm/linux/kernel/git/jaegeuk/f2fs-tools.git/snapshot/
-PKG_HASH:=e841b086dbe02e3553b2c2ecb8c11a7990cfa9ca835c3d7aea6d600c6a543316
+PKG_HASH:=e2124e4dffaba865d41495d817bcb924d096adaec67ff777b8c7da99aa13f696
 
 PKG_FIXUP:=autoreconf
 PKG_BUILD_PARALLEL:=1

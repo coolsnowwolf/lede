@@ -24,7 +24,10 @@ get_status_led() {
 	antminer-s3|\
 	antminer-r1|\
 	e1700ac-v2|\
+	e558-v2|\
 	e600gac-v2|\
+	e750a-v4|\
+	e750g-v8|\
 	eap120|\
 	minibox-v1|\
 	packet-squirrel|\
@@ -57,21 +60,20 @@ get_status_led() {
 	ap147-010)
 		status_led="ap147:green:status"
 		;;
-	ac9531-020|\
-	ac9531-010)
-		status_led="ac9531:green:status"
-		;;
 	ap135-020)
 		status_led="ap135:green:status"
 		;;
 	archer-c25-v1|\
 	archer-c58-v1|\
 	archer-c59-v1|\
+	archer-c59-v2|\
 	archer-c60-v1|\
 	archer-c60-v2|\
 	archer-c7-v4|\
+	archer-c7-v5|\
 	fritz300e|\
 	fritz4020|\
+	fritz450e|\
 	gl-usb150|\
 	mr12|\
 	mr16|\
@@ -208,6 +210,7 @@ get_status_led() {
 		status_led="$board:red:system"
 		;;
 	dw33d|\
+	sbr-ac1750|\
 	r36a)
 		status_led="$board:blue:status"
 		;;
@@ -265,11 +268,11 @@ get_status_led() {
 	jwap230)
 		status_led="$board:green:led1"
 		;;
-	koala)
-		status_led="$board:blue:sys"
-		;;
 	k2t)
 		status_led="$board:red:lan"
+		;;
+	koala)
+		status_led="$board:blue:sys"
 		;;
 	lan-turtle)
 		status_led="$board:orange:system"
@@ -373,13 +376,16 @@ get_status_led() {
 	rb-911g-2hpnd|\
 	rb-911g-5hpacd|\
 	rb-911g-5hpnd|\
+	rb-931-2nd|\
 	rb-941-2nd|\
 	rb-951ui-2nd|\
 	rb-952ui-5ac2nd|\
 	rb-962uigs-5hact2hnt|\
 	rb-lhg-5nd|\
 	rb-map-2nd|\
-	rb-mapl-2nd)
+	rb-mapl-2nd|\
+	rb-wap-2nd|\
+	rb-wapr-2nd)
 		status_led="rb:green:user"
 		;;
 	rb-951ui-2hnd)
@@ -388,7 +394,8 @@ get_status_led() {
 	rb-912uag-2hpnd|\
 	rb-912uag-5hpnd|\
 	rb-sxt2n|\
-	rb-sxt5n)
+	rb-sxt5n|\
+	rb-wapg-5hact2hnd)
 		status_led="rb:green:power"
 		;;
 	re355|\
@@ -408,6 +415,9 @@ get_status_led() {
 		;;
 	smart-300)
 		status_led="nc-link:green:system"
+		;;
+	sgr-w500-n85b-v2)
+		status_led="grentech:green:status"
 		;;
 	qihoo-c301)
 		status_led="qihoo:green:status"
@@ -457,6 +467,7 @@ get_status_led() {
 	tl-wa901nd-v3|\
 	tl-wa901nd-v4|\
 	tl-wa901nd-v5|\
+	tl-wdr3227-v2|\
 	tl-wdr3320-v2|\
 	tl-wdr3500|\
 	tl-wr1041n-v2|\
@@ -464,6 +475,8 @@ get_status_led() {
 	tl-wr1043nd|\
 	tl-wr1043nd-v2|\
 	tl-wr1043nd-v4|\
+	tl-wr2041n-v1|\
+	tl-wr2041n-v2|\
 	tl-wr740n-v6|\
 	tl-wr741nd|\
 	tl-wr741nd-v4|\
@@ -475,7 +488,10 @@ get_status_led() {
 	tl-wr841n-v11|\
 	tl-wr842n-v2|\
 	tl-wr842n-v3|\
+	tl-wr880n-v1|\
+	tl-wr881n-v1|\
 	tl-wr941nd|\
+	tl-wr941n-v7|\
 	tl-wr941nd-v5)
 		status_led="tp-link:green:system"
 		;;

@@ -231,36 +231,32 @@ define Device/tl-wa850re-v1
 endef
 TARGET_DEVICES += tl-wa850re-v1
 
-define Device/tl-wa85xre
-  $(Device/tplink)
-  TPLINK_HWREV := 0
-  KERNEL := kernel-bin | patch-cmdline | lzma | tplink-v1-header
-  IMAGE/sysupgrade.bin := append-rootfs | tplink-safeloader sysupgrade
-  IMAGE/factory.bin := append-rootfs | tplink-safeloader factory
-  MTDPARTS := spi0.0:128k(u-boot)ro,1344k(kernel),2304k(rootfs),256k(config)ro,64k(art)ro,3648k@0x20000(firmware)
-endef
-
 define Device/tl-wa850re-v2
-  $(Device/tl-wa85xre)
+  $(Device/tplink-safeloader)
   DEVICE_TITLE := TP-LINK TL-WA850RE v2
   DEVICE_PACKAGES := rssileds
   BOARDNAME := TL-WA850RE-V2
   DEVICE_PROFILE := TLWA850
   TPLINK_BOARD_ID := TLWA850REV2
   TPLINK_HWID := 0x08500002
+  TPLINK_HWREV := 0
+  IMAGE_SIZE := 3648k
+  MTDPARTS := spi0.0:128k(u-boot)ro,1344k(kernel),2304k(rootfs),256k(config)ro,64k(art)ro,3648k@0x20000(firmware)
 endef
 TARGET_DEVICES += tl-wa850re-v2
 
 define Device/tl-wa855re-v1
-  $(Device/tl-wa85xre)
+  $(Device/tplink-safeloader)
   DEVICE_TITLE := TP-LINK TL-WA855RE v1
   BOARDNAME := TL-WA855RE-v1
   DEVICE_PROFILE := TLWA855RE
   TPLINK_HWID := 0x08550001
   TPLINK_BOARD_ID := TLWA855REV1
+  TPLINK_HWREV := 0
+  IMAGE_SIZE := 3648k
+  MTDPARTS := spi0.0:128k(u-boot)ro,1344k(kernel),2304k(rootfs),256k(config)ro,64k(art)ro,3648k@0x20000(firmware)
 endef
 TARGET_DEVICES += tl-wa855re-v1
-
 
 define Device/tl-wa860re-v1
   $(Device/tplink-8mlzma)
@@ -335,6 +331,24 @@ define Device/tl-wr1041n-v2
   TPLINK_HWID := 0x10410002
 endef
 TARGET_DEVICES += tl-wr1041n-v2
+
+define Device/tl-wr2041n-v1
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR2041N v1
+  BOARDNAME := TL-WDR3500
+  DEVICE_PROFILE := TLWR2041
+  TPLINK_HWID := 0x20410001
+endef
+TARGET_DEVICES += tl-wr2041n-v1
+
+define Device/tl-wr2041n-v2
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR2041N v2
+  BOARDNAME := TL-WR941N-v7
+  DEVICE_PROFILE := TLWR2041
+  TPLINK_HWID := 0x20410002
+endef
+TARGET_DEVICES += tl-wr2041n-v2
 
 define Device/tl-wr703n-v1
   $(Device/tplink-8mlzma)
@@ -609,6 +623,24 @@ define Device/tl-wr847n-v8
 endef
 TARGET_DEVICES += tl-wr847n-v8
 
+define Device/tl-wr880n-v1
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR880N/ND v1
+  BOARDNAME := TL-WR941N-v7
+  DEVICE_PROFILE := TLWR880
+  TPLINK_HWID := 0x08800001
+endef
+TARGET_DEVICES += tl-wr880n-v1
+
+define Device/tl-wr881n-v1
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR881N/ND v1
+  BOARDNAME := TL-WR941N-v7
+  DEVICE_PROFILE := TLWR881
+  TPLINK_HWID := 0x08810001
+endef
+TARGET_DEVICES += tl-wr881n-v1
+
 define Device/tl-wr940n-v4
   $(Device/tplink-8mlzma)
   DEVICE_TITLE := TP-LINK TL-WR940N v4
@@ -690,3 +722,12 @@ define Device/tl-wr941nd-v6-cn
   TPLINK_HWID := 0x09410006
 endef
 TARGET_DEVICES += tl-wr941nd-v6-cn
+
+define Device/tl-wr941n-v7
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR941N/ND v7
+  BOARDNAME := TL-WR941N-v7
+  DEVICE_PROFILE := TLWR941
+  TPLINK_HWID := 0x09410007
+endef
+TARGET_DEVICES += tl-wr941n-v7

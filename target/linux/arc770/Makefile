@@ -12,7 +12,7 @@ BOARDNAME:=Synopsys DesignWare ARC 770D
 MAINTAINER:=Alexey Brodkin <abrodkin@synopsys.com>
 SUBTARGETS:=generic
 
-KERNEL_PATCHVER:=4.9
+KERNEL_PATCHVER:=4.14
 
 DEVICE_TYPE:=developerboard
 
