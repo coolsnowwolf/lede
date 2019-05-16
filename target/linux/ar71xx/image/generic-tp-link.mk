@@ -267,6 +267,15 @@ define Device/tl-mr6400-v1
 endef
 TARGET_DEVICES += tl-mr6400-v1
 
+define Device/tl-wdr3227-v2
+   $(Device/tplink-8mlzma)
+   DEVICE_TITLE := TP-LINK TL-WDR3227 v2
+   BOARDNAME := TL-WDR3227-v2
+   DEVICE_PROFILE := TLWDR3227V2
+   TPLINK_HWID := 0x32270002
+endef
+TARGET_DEVICES += tl-wdr3227-v2
+
 define Device/tl-wdr3500-v1
   $(Device/tplink-8mlzma)
   DEVICE_TITLE := TP-LINK TL-WDR3500 v1
@@ -402,6 +411,24 @@ define Device/tl-wr1043nd-v4
 endef
 TARGET_DEVICES += tl-wr1043nd-v4
 
+define Device/tl-wr2041n-v1
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR2041N v1
+  BOARDNAME := TL-WDR3500
+  DEVICE_PROFILE := TLWR2041
+  TPLINK_HWID := 0x20410001
+endef
+TARGET_DEVICES += tl-wr2041n-v1
+
+define Device/tl-wr2041n-v2
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR2041N v2
+  BOARDNAME := TL-WR941N-v7
+  DEVICE_PROFILE := TLWR2041
+  TPLINK_HWID := 0x20410002
+endef
+TARGET_DEVICES += tl-wr2041n-v2
+
 define Device/tl-wr2543-v1
   $(Device/tplink-8mlzma)
   DEVICE_TITLE := TP-LINK TL-WR2543N/ND v1
@@ -482,6 +509,24 @@ define Device/tl-wr842n-v3
   TPLINK_HWID := 0x08420003
 endef
 TARGET_DEVICES += tl-wr842n-v3
+
+define Device/tl-wr880n-v1
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR880N/ND v1
+  BOARDNAME := TL-WR941N-v7
+  DEVICE_PROFILE := TLWR880
+  TPLINK_HWID := 0x08800001
+endef
+TARGET_DEVICES += tl-wr880n-v1
+
+define Device/tl-wr881n-v1
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR881N/ND v1
+  BOARDNAME := TL-WR941N-v7
+  DEVICE_PROFILE := TLWR881
+  TPLINK_HWID := 0x08810001
+endef
+TARGET_DEVICES += tl-wr881n-v1
 
 define Device/tl-wr902ac-v1
   $(Device/tplink-safeloader)

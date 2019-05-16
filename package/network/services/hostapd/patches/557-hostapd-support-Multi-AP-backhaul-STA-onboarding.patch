@@ -1,0 +1,339 @@
+From 8b04a4cddbd6dbadb24279713af7ac677e80d342 Mon Sep 17 00:00:00 2001
+From: Davina Lu <ylu@quantenna.com>
+Date: Tue, 2 Oct 2018 18:34:14 -0700
+Subject: [PATCH] hostapd: support Multi-AP backhaul STA onboarding
+
+The Wi-Fi Alliance Multi-AP Specification v1.0 allows onboarding of a
+backhaul STA through WPS. To enable this, the WPS registrar offers a
+different set of credentials (backhaul credentials instead of fronthaul
+credentials) when the Multi-AP subelement is present in the WFA vendor
+extension element of the WSC M1 message.
+
+Add 3 new configuration options to specify the backhaul credentials for
+the hostapd internal registrar: multi_ap_backhaul_ssid,
+multi_ap_backhaul_wpa_psk, multi_ap_backhaul_wpa_passphrase. These are
+only relevant for a fronthaul SSID, i.e. where multi_ap is set to 2 or
+3. When these options are set, pass the backhaul credentials instead of
+the normal credentials when the Multi-AP subelement is present.
+
+Ignore the Multi-AP subelement if the backhaul config options are not
+set. Note that for an SSID which is fronthaul and backhaul at the same
+time (i.e., multi_ap == 3), this results in the correct credentials
+being sent anyway.
+
+The security to be used for the backaul BSS is fixed to WPA2PSK. The
+Multi-AP Specification only allows Open and WPA2PSK networks to be
+configured. Although not stated explicitly, the backhaul link is
+intended to be always encrypted, hence WPA2PSK.
+
+To build the credentials, the credential-building code is essentially
+copied and simplified. Indeed, the backhaul credentials are always
+WPA2PSK and never use per-device PSK. All the options set for the
+fronthaul BSS WPS are simply ignored.
+
+Signed-off-by: Davina Lu <ylu@quantenna.com>
+Signed-off-by: Igor Mitsyanko <igor.mitsyanko.os@quantenna.com>
+Signed-off-by: Arnout Vandecappelle (Essensium/Mind) <arnout@mind.be>
+---
+v4: no change
+---
+ hostapd/config_file.c    | 47 ++++++++++++++++++++++++++++++++++++++++
+ hostapd/hostapd.conf     |  9 ++++++++
+ src/ap/ap_config.c       |  2 ++
+ src/ap/ap_config.h       |  1 +
+ src/ap/wps_hostapd.c     | 26 ++++++++++++++++++++++
+ src/wps/wps.h            | 32 +++++++++++++++++++++++++++
+ src/wps/wps_attr_parse.c | 11 ++++++++++
+ src/wps/wps_attr_parse.h |  1 +
+ src/wps/wps_dev_attr.c   |  5 +++++
+ src/wps/wps_dev_attr.h   |  1 +
+ src/wps/wps_registrar.c  | 25 ++++++++++++++++++++-
+ 11 files changed, 159 insertions(+), 1 deletion(-)
+
+--- a/hostapd/config_file.c
++++ b/hostapd/config_file.c
+@@ -3479,6 +3479,53 @@ static int hostapd_config_fill(struct ho
+ 				   line, pos);
+ 			return 1;
+ 		}
++	} else if (os_strcmp(buf, "multi_ap_backhaul_ssid") == 0) {
++		size_t slen;
++		char *str = wpa_config_parse_string(pos, &slen);
++
++		if (str == NULL || slen < 1 || slen > SSID_MAX_LEN) {
++			wpa_printf(MSG_ERROR, "Line %d: invalid SSID '%s'",
++				   line, pos);
++			os_free(str);
++			return 1;
++		}
++		os_memcpy(bss->multi_ap_backhaul_ssid.ssid, str, slen);
++		bss->multi_ap_backhaul_ssid.ssid_len = slen;
++		bss->multi_ap_backhaul_ssid.ssid_set = 1;
++		os_free(str);
++	} else if (os_strcmp(buf, "multi_ap_backhaul_wpa_passphrase") == 0) {
++		int len = os_strlen(pos);
++
++		if (len < 8 || len > 63) {
++			wpa_printf(MSG_ERROR,
++				   "Line %d: invalid WPA passphrase length %d (expected 8..63)",
++				   line, len);
++			return 1;
++		}
++		os_free(bss->multi_ap_backhaul_ssid.wpa_passphrase);
++		bss->multi_ap_backhaul_ssid.wpa_passphrase = os_strdup(pos);
++		if (bss->multi_ap_backhaul_ssid.wpa_passphrase) {
++			hostapd_config_clear_wpa_psk(&bss->multi_ap_backhaul_ssid.wpa_psk);
++			bss->multi_ap_backhaul_ssid.wpa_passphrase_set = 1;
++		}
++	} else if (os_strcmp(buf, "multi_ap_backhaul_wpa_psk") == 0) {
++		hostapd_config_clear_wpa_psk(&bss->multi_ap_backhaul_ssid.wpa_psk);
++		bss->multi_ap_backhaul_ssid.wpa_psk =
++			os_zalloc(sizeof(struct hostapd_wpa_psk));
++		if (bss->multi_ap_backhaul_ssid.wpa_psk == NULL)
++			return 1;
++		if (hexstr2bin(pos, bss->multi_ap_backhaul_ssid.wpa_psk->psk,
++			       PMK_LEN) ||
++		    pos[PMK_LEN * 2] != '\0') {
++			wpa_printf(MSG_ERROR, "Line %d: Invalid PSK '%s'.",
++				   line, pos);
++			hostapd_config_clear_wpa_psk(&bss->multi_ap_backhaul_ssid.wpa_psk);
++			return 1;
++		}
++		bss->multi_ap_backhaul_ssid.wpa_psk->group = 1;
++		os_free(bss->multi_ap_backhaul_ssid.wpa_passphrase);
++		bss->multi_ap_backhaul_ssid.wpa_passphrase = NULL;
++		bss->multi_ap_backhaul_ssid.wpa_psk_set = 1;
+ 	} else if (os_strcmp(buf, "upnp_iface") == 0) {
+ 		os_free(bss->upnp_iface);
+ 		bss->upnp_iface = os_strdup(pos);
+--- a/hostapd/hostapd.conf
++++ b/hostapd/hostapd.conf
+@@ -1852,6 +1852,15 @@ own_ip_addr=127.0.0.1
+ # attribute.
+ #ap_settings=hostapd.ap_settings
+ 
++# Multi-AP backhaul BSS config
++# Used in WPS when multi_ap=2 or 3. Defines "backhaul BSS" credentials.
++# These are passed in WPS M8 instead of the normal (fronthaul) credentials
++# if the enrollee has the Multi-AP subelement set. Backhaul SSID is formatted
++# like ssid2. The key is set like wpa_psk or wpa_passphrase.
++#multi_ap_backhaul_ssid="backhaul"
++#multi_ap_backhaul_wpa_psk=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
++#multi_ap_backhaul_wpa_passphrase=secret passphrase
++
+ # WPS UPnP interface
+ # If set, support for external Registrars is enabled.
+ #upnp_iface=br0
+--- a/src/ap/ap_config.c
++++ b/src/ap/ap_config.c
+@@ -582,6 +582,8 @@ void hostapd_config_free_bss(struct host
+ 	os_free(conf->ap_pin);
+ 	os_free(conf->extra_cred);
+ 	os_free(conf->ap_settings);
++	hostapd_config_clear_wpa_psk(&conf->multi_ap_backhaul_ssid.wpa_psk);
++	str_clear_free(conf->multi_ap_backhaul_ssid.wpa_passphrase);
+ 	os_free(conf->upnp_iface);
+ 	os_free(conf->friendly_name);
+ 	os_free(conf->manufacturer_url);
+--- a/src/ap/ap_config.h
++++ b/src/ap/ap_config.h
+@@ -456,6 +456,7 @@ struct hostapd_bss_config {
+ 	int force_per_enrollee_psk;
+ 	u8 *ap_settings;
+ 	size_t ap_settings_len;
++	struct hostapd_ssid multi_ap_backhaul_ssid;
+ 	char *upnp_iface;
+ 	char *friendly_name;
+ 	char *manufacturer_url;
+--- a/src/ap/wps_hostapd.c
++++ b/src/ap/wps_hostapd.c
+@@ -962,6 +962,7 @@ static void hostapd_free_wps(struct wps_
+ 		wpabuf_free(wps->dev.vendor_ext[i]);
+ 	wps_device_data_free(&wps->dev);
+ 	os_free(wps->network_key);
++	os_free(wps->multi_ap_backhaul_network_key);
+ 	hostapd_wps_nfc_clear(wps);
+ 	wpabuf_free(wps->dh_pubkey);
+ 	wpabuf_free(wps->dh_privkey);
+@@ -1131,6 +1132,31 @@ int hostapd_init_wps(struct hostapd_data
+ 		wps->encr_types_wpa = WPS_ENCR_AES | WPS_ENCR_TKIP;
+ 	}
+ 
++	if (hapd->conf->multi_ap & FRONTHAUL_BSS &&
++	    hapd->conf->multi_ap_backhaul_ssid.ssid_len) {
++		wps->multi_ap_backhaul_ssid_len =
++			hapd->conf->multi_ap_backhaul_ssid.ssid_len;
++		os_memcpy(wps->multi_ap_backhaul_ssid,
++			  hapd->conf->multi_ap_backhaul_ssid.ssid,
++			  wps->multi_ap_backhaul_ssid_len);
++		if (conf->multi_ap_backhaul_ssid.wpa_passphrase) {
++			wps->multi_ap_backhaul_network_key =
++				(u8 *) os_strdup(conf->multi_ap_backhaul_ssid.wpa_passphrase);
++			wps->multi_ap_backhaul_network_key_len =
++				os_strlen(conf->multi_ap_backhaul_ssid.wpa_passphrase);
++		} else if (conf->multi_ap_backhaul_ssid.wpa_psk) {
++			wps->multi_ap_backhaul_network_key =
++				os_malloc(2 * PMK_LEN + 1);
++			if (wps->multi_ap_backhaul_network_key == NULL)
++				goto fail;
++			wpa_snprintf_hex((char *) wps->multi_ap_backhaul_network_key,
++					 2 * PMK_LEN + 1,
++					 conf->multi_ap_backhaul_ssid.wpa_psk->psk,
++					 PMK_LEN);
++			wps->multi_ap_backhaul_network_key_len = 2 * PMK_LEN;
++		}
++	}
++
+ 	wps->ap_settings = conf->ap_settings;
+ 	wps->ap_settings_len = conf->ap_settings_len;
+ 
+--- a/src/wps/wps.h
++++ b/src/wps/wps.h
+@@ -100,6 +100,7 @@ struct wps_device_data {
+ 	struct wpabuf *vendor_ext[MAX_WPS_VENDOR_EXTENSIONS];
+ 
+ 	int p2p;
++	u8 multi_ap_ext;
+ };
+ 
+ /**
+@@ -730,6 +731,37 @@ struct wps_context {
+ 	int psk_set;
+ 
+ 	/**
++	 * multi_ap_backhaul_ssid - SSID to supply to a Multi-AP backhaul
++	 * enrollee
++	 *
++	 * This SSID is used by the Registrar to fill in information for
++	 * Credentials when the enrollee advertises it is a Multi-AP backhaul
++	 * STA.
++	 */
++	u8 multi_ap_backhaul_ssid[SSID_MAX_LEN];
++
++	/**
++	 * multi_ap_backhaul_ssid_len - Length of multi_ap_backhaul_ssid in
++	 * octets
++	 */
++	size_t multi_ap_backhaul_ssid_len;
++
++	/**
++	 * multi_ap_backhaul_network_key - The Network Key (PSK) for the
++	 * Multi-AP backhaul enrollee.
++	 *
++	 * This key can be either the ASCII passphrase (8..63 characters) or the
++	 * 32-octet PSK (64 hex characters).
++	 */
++	u8 *multi_ap_backhaul_network_key;
++
++	/**
++	 * multi_ap_backhaul_network_key_len - Length of
++	 * multi_ap_backhaul_network_key in octets
++	 */
++	size_t multi_ap_backhaul_network_key_len;
++
++	/**
+ 	 * ap_settings - AP Settings override for M7 (only used at AP)
+ 	 *
+ 	 * If %NULL, AP Settings attributes will be generated based on the
+--- a/src/wps/wps_attr_parse.c
++++ b/src/wps/wps_attr_parse.c
+@@ -67,6 +67,17 @@ static int wps_set_vendor_ext_wfa_subele
+ 		}
+ 		attr->registrar_configuration_methods = pos;
+ 		break;
++	case WFA_ELEM_MULTI_AP:
++		if (len != 1) {
++			wpa_printf(MSG_DEBUG,
++				   "WPS: Invalid Multi-AP Extension length %u",
++				   len);
++			return -1;
++		}
++		attr->multi_ap_ext = *pos;
++		wpa_printf(MSG_DEBUG, "WPS: Multi-AP Extension 0x%02x",
++			   attr->multi_ap_ext);
++		break;
+ 	default:
+ 		wpa_printf(MSG_MSGDUMP, "WPS: Skipped unknown WFA Vendor "
+ 			   "Extension subelement %u", id);
+--- a/src/wps/wps_attr_parse.h
++++ b/src/wps/wps_attr_parse.h
+@@ -97,6 +97,7 @@ struct wps_parse_attr {
+ 	const u8 *cred[MAX_CRED_COUNT];
+ 	const u8 *req_dev_type[MAX_REQ_DEV_TYPE_COUNT];
+ 	const u8 *vendor_ext[MAX_WPS_PARSE_VENDOR_EXT];
++	u8 multi_ap_ext;
+ };
+ 
+ int wps_parse_msg(const struct wpabuf *msg, struct wps_parse_attr *attr);
+--- a/src/wps/wps_dev_attr.c
++++ b/src/wps/wps_dev_attr.c
+@@ -389,6 +389,11 @@ int wps_process_os_version(struct wps_de
+ 	return 0;
+ }
+ 
++void wps_process_vendor_ext_m1(struct wps_device_data *dev, const u8 ext)
++{
++	dev->multi_ap_ext = ext;
++	wpa_printf(MSG_DEBUG, "WPS: Multi-AP extension value %02x", dev->multi_ap_ext);
++}
+ 
+ int wps_process_rf_bands(struct wps_device_data *dev, const u8 *bands)
+ {
+--- a/src/wps/wps_dev_attr.h
++++ b/src/wps/wps_dev_attr.h
+@@ -29,6 +29,7 @@ int wps_build_dev_name(struct wps_device
+ int wps_process_device_attrs(struct wps_device_data *dev,
+ 			     struct wps_parse_attr *attr);
+ int wps_process_os_version(struct wps_device_data *dev, const u8 *ver);
++void wps_process_vendor_ext_m1(struct wps_device_data *dev, const u8 ext);
+ int wps_process_rf_bands(struct wps_device_data *dev, const u8 *bands);
+ void wps_device_data_free(struct wps_device_data *dev);
+ int wps_build_vendor_ext(struct wps_device_data *dev, struct wpabuf *msg);
+--- a/src/wps/wps_registrar.c
++++ b/src/wps/wps_registrar.c
+@@ -1588,7 +1588,6 @@ int wps_build_credential_wrap(struct wpa
+ 	return 0;
+ }
+ 
+-
+ int wps_build_cred(struct wps_data *wps, struct wpabuf *msg)
+ {
+ 	struct wpabuf *cred;
+@@ -1603,6 +1602,29 @@ int wps_build_cred(struct wps_data *wps,
+ 	}
+ 	os_memset(&wps->cred, 0, sizeof(wps->cred));
+ 
++	if (wps->peer_dev.multi_ap_ext == MULTI_AP_BACKHAUL_STA &&
++	    wps->wps->multi_ap_backhaul_ssid_len) {
++		wpa_printf(MSG_DEBUG, "WPS: Use backhaul STA credentials");
++		os_memcpy(wps->cred.ssid, wps->wps->multi_ap_backhaul_ssid,
++			  wps->wps->multi_ap_backhaul_ssid_len);
++		wps->cred.ssid_len = wps->wps->multi_ap_backhaul_ssid_len;
++		/* Backhaul is always WPA2PSK */
++		wps->cred.auth_type = WPS_AUTH_WPA2PSK;
++		wps->cred.encr_type = WPS_ENCR_AES;
++		/* Set MAC address in the Credential to be the Enrollee's MAC
++		 * address
++		 */
++		os_memcpy(wps->cred.mac_addr, wps->mac_addr_e, ETH_ALEN);
++		if (wps->wps->multi_ap_backhaul_network_key) {
++			os_memcpy(wps->cred.key,
++				  wps->wps->multi_ap_backhaul_network_key,
++				  wps->wps->multi_ap_backhaul_network_key_len);
++			wps->cred.key_len =
++				wps->wps->multi_ap_backhaul_network_key_len;
++		}
++		goto use_provided;
++	}
++
+ 	os_memcpy(wps->cred.ssid, wps->wps->ssid, wps->wps->ssid_len);
+ 	wps->cred.ssid_len = wps->wps->ssid_len;
+ 
+@@ -2705,6 +2727,7 @@ static enum wps_process_res wps_process_
+ 		wps->use_psk_key = 1;
+ 	}
+ #endif /* WPS_WORKAROUNDS */
++	wps_process_vendor_ext_m1(&wps->peer_dev, attr->multi_ap_ext);
+ 
+ 	wps->state = SEND_M2;
+ 	return WPS_CONTINUE;

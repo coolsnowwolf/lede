@@ -122,4 +122,4 @@ static void __init ap147_setup(void)
 	ath79_register_eth(0);
 }
 
-MIPS_MACHINE(ATH79_MACH_AP147_010, "AP147-010", "Atheros AP147-010 reference board", ap147_setup);
+MIPS_MACHINE(ATH79_MACH_AP147_010, "AP147-010", "Letv SuperRouter", ap147_setup);

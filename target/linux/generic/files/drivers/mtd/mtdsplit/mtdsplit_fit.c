@@ -120,9 +120,15 @@ mtdsplit_fit_parse(struct mtd_info *mtd,
 	return 2;
 }
 
+static const struct of_device_id mtdsplit_fit_of_match_table[] = {
+	{ .compatible = "denx,fit" },
+	{},
+};
+
 static struct mtd_part_parser uimage_parser = {
 	.owner = THIS_MODULE,
 	.name = "fit-fw",
+	.of_match_table = mtdsplit_fit_of_match_table,
 	.parse_fn = mtdsplit_fit_parse,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };

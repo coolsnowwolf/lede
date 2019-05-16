@@ -11,6 +11,8 @@ if [ -s "/tmp/china_ssr.txt" ];then
   fi
 fi
 
+/usr/share/shadowsocksr/chinaipset.sh
+
 wget-ssl --no-check-certificate https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt -O /tmp/gfw.b64
 /usr/bin/ssr-gfw
 

@@ -1,0 +1,169 @@
+#!/bin/sh /etc/rc.common
+# Copyright (c) 2011-2015 OpenWrt.org
+
+START=60
+
+DNSMASQ_RESTART=N
+DNS_SERVER="208.67.222.222"
+
+start_pdnsd() {
+#  DNS_SERVER=$(uci get flowoffload.@flow[0].dns_server 2>/dev/null)
+
+	[ -d /var/etc ] || mkdir -p /var/etc
+	
+  if [ ! -f /var/mwan3dns/pdnsd.cache ]; then
+    mkdir -p /var/mwan3dns
+    echo -ne "pd13\000\000\000\000" > /var/mwan3dns/pdnsd.cache
+    chown -R nobody.nogroup /var/mwan3dns
+	fi
+	
+	cat > /var/etc/mwan3dns.conf <<EOF
+global {
+    perm_cache=1024;        # dns缓存大小，单位KB，建议不要写的太大
+    cache_dir="/var/mwan3dns";     # 缓存文件的位置
+    pid_file = /var/run/mwan3dns.pid;
+    server_ip = 0.0.0.0;        # pdnsd监听的网卡，0.0.0.0是全部网卡
+    server_port=53000;           # pdnsd监听的端口，不要和别的服务冲突即可
+    status_ctl = on;
+    paranoid=on;                  # 二次请求模式，如果请求主DNS服务器返回的是垃圾地址，就向备用服务器请求
+    query_method=udp_only;      
+    neg_domain_pol = off;  
+    par_queries = 400;          # 最多同时请求数
+    min_ttl = 1h;               # DNS结果最短缓存时间
+    max_ttl = 1w;               # DNS结果最长缓存时间
+    timeout = 10;               # DNS请求超时时间，单位秒
+}
+
+server {  
+    label = "routine";         
+    ip = $DNS_SERVER; 
+    port = 53;    
+    timeout = 5;              
+    reject = 74.125.127.102,  # 以下是脏IP，也就是DNS污染一般会返回的结果，如果收到如下DNS结果会触发二次请求（TCP协议一般不会碰到脏IP）
+        74.125.155.102,  
+        74.125.39.102,  
+        74.125.39.113,  
+        209.85.229.138,  
+        128.121.126.139,  
+        159.106.121.75,  
+        169.132.13.103,  
+        192.67.198.6,  
+        202.106.1.2,  
+        202.181.7.85,  
+        203.161.230.171,  
+        203.98.7.65,  
+        207.12.88.98,  
+        208.56.31.43,  
+        209.145.54.50,  
+        209.220.30.174,  
+        209.36.73.33,  
+        211.94.66.147,  
+        213.169.251.35,  
+        216.221.188.182,  
+        216.234.179.13,  
+        243.185.187.39,  
+        37.61.54.158,  
+        4.36.66.178,  
+        46.82.174.68,  
+        59.24.3.173,  
+        64.33.88.161,  
+        64.33.99.47,  
+        64.66.163.251,  
+        65.104.202.252,  
+        65.160.219.113,  
+        66.45.252.237,  
+        69.55.52.253,  
+        72.14.205.104,  
+        72.14.205.99,  
+        78.16.49.15,  
+        8.7.198.45,  
+        93.46.8.89,  
+        37.61.54.158,  
+        243.185.187.39,  
+        190.93.247.4,  
+        190.93.246.4,  
+        190.93.245.4,  
+        190.93.244.4,  
+        65.49.2.178,  
+        189.163.17.5,  
+        23.89.5.60,  
+        49.2.123.56,  
+        54.76.135.1,  
+        77.4.7.92,  
+        118.5.49.6,  
+        159.24.3.173,  
+        188.5.4.96,  
+        197.4.4.12,  
+        220.250.64.24,  
+        243.185.187.30,  
+        249.129.46.48,  
+        253.157.14.165;  
+    reject_policy = fail;  
+}
+
+server {  
+    label = "special";                  # 这个随便写  
+    ip = 208.67.222.222,208.67.220.220; # 这里为备用DNS服务器的 ip 地址  
+    port = 443;                        # 推荐使用53以外的端口（DNS服务器必须支持） 
+    proxy_only = on;
+    timeout = 5;  
+}  
+
+source {
+	owner=localhost;
+//	serve_aliases=on;
+	file="/etc/hosts";
+}
+
+rr {
+	name=localhost;
+	reverse=on;
+	a=127.0.0.1;
+	owner=localhost;
+	soa=localhost,root.localhost,42,86400,900,86400,86400;
+}
+EOF
+  
+  [ -d /var/sbin ] || mkdir -p /var/sbin
+  [ -f /var/sbin/mwan3dns ] || cp -a /usr/sbin/pdnsd /var/sbin/mwan3dns
+	/var/sbin/mwan3dns -c /var/etc/mwan3dns.conf -d
+	echo "Start MWAN3 Helper DNS"
+}
+
+stop_pdnsd() {
+  kill $(pidof mwan3dns) >/dev/null 2>&1 || kill -9 $(ps | grep mwan3dns | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+  echo "Stop MWAN3 Helper DNS"
+}
+
+
+start(){
+  /etc/mwan3helper/genipset.sh cn '/etc/mwan3helper/all_cn.txt'
+  /etc/mwan3helper/genipset.sh ct '/etc/mwan3helper/chinatelecom.txt'
+  /etc/mwan3helper/genipset.sh cnc '/etc/mwan3helper/unicom_cnc.txt'
+  /etc/mwan3helper/genipset.sh cmcc '/etc/mwan3helper/cmcc.txt'
+  /etc/mwan3helper/genipset.sh crtc '/etc/mwan3helper/crtc.txt'
+  /etc/mwan3helper/genipset.sh cernet '/etc/mwan3helper/cernet.txt'
+  /etc/mwan3helper/genipset.sh gwbn '/etc/mwan3helper/gwbn.txt'
+  /etc/mwan3helper/genipset.sh othernet '/etc/mwan3helper/othernet.txt'
+  en=$(uci get mwan3helper.config.enabled 2>/dev/null)
+  if [ $en -eq 1 ];  then
+    start_pdnsd
+    mkdir -p /tmp/etc/dnsmasq-mwan3.d
+    ipset -N gfwlist hash:net 2>/dev/null
+    awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"gfwlist"'\n",$0)}' /etc/mwan3helper/gfw.txt > /tmp/etc/dnsmasq-mwan3.d/mwan3_gfwlist.conf
+    awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#53000"'\n",$0)}' /etc/mwan3helper/gfw.txt >> /tmp/etc/dnsmasq-mwan3.d/mwan3_gfwlist.conf
+    cat > /tmp/dnsmasq.d/dnsmasq-mwan3.conf <<EOF
+conf-dir=/var/etc/dnsmasq-mwan3.d
+EOF
+    /etc/init.d/dnsmasq restart
+  fi
+}
+
+stop(){
+	  stop_pdnsd
+	  rm -f /tmp/dnsmasq.d/dnsmasq-mwan3.conf
+    /etc/init.d/dnsmasq restart
+}
+
+
+

@@ -30,7 +30,7 @@
  #include "drivers/driver.h"
  #include "eap_peer/eap.h"
  #include "wpa_supplicant_i.h"
-@@ -292,6 +293,10 @@ void calculate_update_time(const struct
+@@ -294,6 +295,10 @@ void calculate_update_time(const struct
  static void wpa_bss_copy_res(struct wpa_bss *dst, struct wpa_scan_res *src,
  			     struct os_reltime *fetch_time)
  {
@@ -41,7 +41,7 @@
  	dst->flags = src->flags;
  	os_memcpy(dst->bssid, src->bssid, ETH_ALEN);
  	dst->freq = src->freq;
-@@ -304,6 +309,15 @@ static void wpa_bss_copy_res(struct wpa_
+@@ -306,6 +311,15 @@ static void wpa_bss_copy_res(struct wpa_
  	dst->est_throughput = src->est_throughput;
  	dst->snr = src->snr;
  
@@ -59,7 +59,7 @@
  
 --- a/wpa_supplicant/bss.h
 +++ b/wpa_supplicant/bss.h
-@@ -81,6 +81,10 @@ struct wpa_bss {
+@@ -82,6 +82,10 @@ struct wpa_bss {
  	u8 ssid[SSID_MAX_LEN];
  	/** Length of SSID */
  	size_t ssid_len;
@@ -166,7 +166,7 @@
  /* Configure default/group WEP keys for static WEP */
  int wpa_set_wep_keys(struct wpa_supplicant *wpa_s, struct wpa_ssid *ssid)
  {
-@@ -913,12 +962,16 @@ void wpa_supplicant_set_state(struct wpa
+@@ -920,12 +969,16 @@ void wpa_supplicant_set_state(struct wpa
  
  		sme_sched_obss_scan(wpa_s, 1);
  
@@ -183,7 +183,7 @@
  		wpa_s->new_connection = 1;
  		wpa_drv_set_operstate(wpa_s, 0);
  #ifndef IEEE8021X_EAPOL
-@@ -1947,6 +2000,8 @@ void wpa_supplicant_associate(struct wpa
+@@ -1977,6 +2030,8 @@ void wpa_supplicant_associate(struct wpa
  			wpa_ssid_txt(ssid->ssid, ssid->ssid_len),
  			ssid->id);
  		wpas_notify_mesh_group_started(wpa_s, ssid);
@@ -192,7 +192,7 @@
  #else /* CONFIG_MESH */
  		wpa_msg(wpa_s, MSG_ERROR,
  			"mesh mode support not included in the build");
-@@ -5423,6 +5478,16 @@ static int wpa_supplicant_init_iface(str
+@@ -5487,6 +5542,16 @@ static int wpa_supplicant_init_iface(str
  			   sizeof(wpa_s->bridge_ifname));
  	}
  
@@ -209,7 +209,7 @@
  	/* RSNA Supplicant Key Management - INITIALIZE */
  	eapol_sm_notify_portEnabled(wpa_s->eapol, FALSE);
  	eapol_sm_notify_portValid(wpa_s->eapol, FALSE);
-@@ -5744,6 +5809,11 @@ static void wpa_supplicant_deinit_iface(
+@@ -5808,6 +5873,11 @@ static void wpa_supplicant_deinit_iface(
  	if (terminate)
  		wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_TERMINATING);
  
@@ -244,3 +244,184 @@
  	char *confname;
  	char *confanother;
  
+--- a/hostapd/ctrl_iface.c
++++ b/hostapd/ctrl_iface.c
+@@ -2328,6 +2328,11 @@ static int hostapd_ctrl_iface_chan_switc
+ 	if (ret)
+ 		return ret;
+ 
++	if (os_strstr(pos, " auto-ht")) {
++		settings.freq_params.ht_enabled = iface->conf->ieee80211n;
++		settings.freq_params.vht_enabled = iface->conf->ieee80211ac;
++	}
++
+ 	for (i = 0; i < iface->num_bss; i++) {
+ 
+ 		/* Save CHAN_SWITCH VHT config */
+--- a/src/ap/beacon.c
++++ b/src/ap/beacon.c
+@@ -1381,11 +1381,6 @@ int ieee802_11_set_beacon(struct hostapd
+ 	struct wpabuf *beacon, *proberesp, *assocresp;
+ 	int res, ret = -1;
+ 
+-	if (hapd->csa_in_progress) {
+-		wpa_printf(MSG_ERROR, "Cannot set beacons during CSA period");
+-		return -1;
+-	}
+-
+ 	hapd->beacon_set_done = 1;
+ 
+ 	if (ieee802_11_build_ap_params(hapd, &params) < 0)
+--- a/src/drivers/driver.h
++++ b/src/drivers/driver.h
+@@ -4469,6 +4469,13 @@ enum wpa_event_type {
+ 	EVENT_CH_SWITCH,
+ 
+ 	/**
++	 * EVENT_CH_SWITCH - AP or GO will switch channels soon
++	 *
++	 * Described in wpa_event_data.ch_switch
++	 * */
++	EVENT_CH_SWITCH_STARTED,
++
++	/**
+ 	 * EVENT_WNM - Request WNM operation
+ 	 *
+ 	 * This event can be used to request a WNM operation to be performed.
+@@ -5306,6 +5313,7 @@ union wpa_event_data {
+ 
+ 	/**
+ 	 * struct ch_switch
++	 * @count: countdown until channel switch
+ 	 * @freq: Frequency of new channel in MHz
+ 	 * @ht_enabled: Whether this is an HT channel
+ 	 * @ch_offset: Secondary channel offset
+@@ -5314,6 +5322,7 @@ union wpa_event_data {
+ 	 * @cf2: Center frequency 2
+ 	 */
+ 	struct ch_switch {
++		int count;
+ 		int freq;
+ 		int ht_enabled;
+ 		int ch_offset;
+--- a/src/drivers/driver_nl80211_event.c
++++ b/src/drivers/driver_nl80211_event.c
+@@ -526,7 +526,8 @@ static int calculate_chan_offset(int wid
+ static void mlme_event_ch_switch(struct wpa_driver_nl80211_data *drv,
+ 				 struct nlattr *ifindex, struct nlattr *freq,
+ 				 struct nlattr *type, struct nlattr *bw,
+-				 struct nlattr *cf1, struct nlattr *cf2)
++				 struct nlattr *cf1, struct nlattr *cf2,
++				 struct nlattr *count)
+ {
+ 	struct i802_bss *bss;
+ 	union wpa_event_data data;
+@@ -584,11 +585,15 @@ static void mlme_event_ch_switch(struct
+ 		data.ch_switch.cf1 = nla_get_u32(cf1);
+ 	if (cf2)
+ 		data.ch_switch.cf2 = nla_get_u32(cf2);
++	if (count)
++		data.ch_switch.count = nla_get_u32(count);
+ 
+ 	bss->freq = data.ch_switch.freq;
+ 	drv->assoc_freq = data.ch_switch.freq;
+ 
+-	wpa_supplicant_event(bss->ctx, EVENT_CH_SWITCH, &data);
++	wpa_supplicant_event(bss->ctx,
++			     count ? EVENT_CH_SWITCH_STARTED : EVENT_CH_SWITCH,
++			     &data);
+ }
+ 
+ 
+@@ -2446,6 +2451,7 @@ static void do_process_drv_event(struct
+ 				   tb[NL80211_ATTR_PMK],
+ 				   tb[NL80211_ATTR_PMKID]);
+ 		break;
++	case NL80211_CMD_CH_SWITCH_STARTED_NOTIFY:
+ 	case NL80211_CMD_CH_SWITCH_NOTIFY:
+ 		mlme_event_ch_switch(drv,
+ 				     tb[NL80211_ATTR_IFINDEX],
+@@ -2453,7 +2459,8 @@ static void do_process_drv_event(struct
+ 				     tb[NL80211_ATTR_WIPHY_CHANNEL_TYPE],
+ 				     tb[NL80211_ATTR_CHANNEL_WIDTH],
+ 				     tb[NL80211_ATTR_CENTER_FREQ1],
+-				     tb[NL80211_ATTR_CENTER_FREQ2]);
++				     tb[NL80211_ATTR_CENTER_FREQ2],
++				     tb[NL80211_ATTR_CH_SWITCH_COUNT]);
+ 		break;
+ 	case NL80211_CMD_DISCONNECT:
+ 		mlme_event_disconnect(drv, tb[NL80211_ATTR_REASON_CODE],
+--- a/wpa_supplicant/events.c
++++ b/wpa_supplicant/events.c
+@@ -4026,6 +4026,60 @@ static void wpas_event_assoc_reject(stru
+ }
+ 
+ 
++static void
++supplicant_ch_switch_started(struct wpa_supplicant *wpa_s,
++			    union wpa_event_data *data)
++{
++	char buf[256];
++	size_t len = sizeof(buf);
++	char *cmd = NULL;
++	int width = 20;
++	int ret;
++
++	if (!wpa_s->hostapd)
++		return;
++
++	wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_CHANNEL_SWITCH
++		"count=%d freq=%d ht_enabled=%d ch_offset=%d ch_width=%s cf1=%d cf2=%d",
++		data->ch_switch.count,
++		data->ch_switch.freq,
++		data->ch_switch.ht_enabled,
++		data->ch_switch.ch_offset,
++		channel_width_to_string(data->ch_switch.ch_width),
++		data->ch_switch.cf1,
++		data->ch_switch.cf2);
++
++	switch (data->ch_switch.ch_width) {
++	case CHAN_WIDTH_20_NOHT:
++	case CHAN_WIDTH_20:
++		width = 20;
++		break;
++	case CHAN_WIDTH_40:
++		width = 40;
++		break;
++	case CHAN_WIDTH_80:
++		width = 80;
++		break;
++	case CHAN_WIDTH_160:
++	case CHAN_WIDTH_80P80:
++		width = 160;
++		break;
++	}
++
++	asprintf(&cmd, "CHAN_SWITCH %d %d sec_channel_offset=%d center_freq1=%d center_freq2=%d, bandwidth=%d auto-ht\n",
++		data->ch_switch.count - 1,
++		data->ch_switch.freq,
++		data->ch_switch.ch_offset,
++		data->ch_switch.cf1,
++		data->ch_switch.cf2,
++		width);
++	ret = wpa_ctrl_request(wpa_s->hostapd, cmd, os_strlen(cmd), buf, &len, NULL);
++	free(cmd);
++
++	if (ret < 0)
++		wpa_printf(MSG_ERROR, "\nFailed to reload hostapd AP interfaces\n");
++}
++
+ void supplicant_event(void *ctx, enum wpa_event_type event,
+ 		      union wpa_event_data *data)
+ {
+@@ -4309,6 +4363,10 @@ void supplicant_event(void *ctx, enum wp
+ 				       data->rx_from_unknown.wds);
+ 		break;
+ #endif /* CONFIG_AP */
++	case EVENT_CH_SWITCH_STARTED:
++		supplicant_ch_switch_started(wpa_s, data);
++		break;
++
+ 	case EVENT_CH_SWITCH:
+ 		if (!data || !wpa_s->current_ssid)
+ 			break;

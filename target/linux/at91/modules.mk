@@ -53,7 +53,7 @@ $(eval $(call KernelPackage,at91-adc))
 define KernelPackage/at91-udc
   SUBMENU:=$(USB_MENU)
   TITLE:=USB Device Controller on atmel SoC
-  DEPENDS:=@TARGET_at91 +kmod-usb-gadget +kmod-regmap
+  DEPENDS:=@TARGET_at91 +kmod-usb-gadget +kmod-regmap-core
   KCONFIG:=CONFIG_USB_AT91
 ifneq ($(wildcard $(LINUX_DIR)/drivers/usb/gadget/udc/at91_udc.ko),)
   FILES:=$(LINUX_DIR)/drivers/usb/gadget/udc/at91_udc.ko

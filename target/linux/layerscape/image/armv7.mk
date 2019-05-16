@@ -45,3 +45,19 @@ define Device/ls1021atwr-sdboot
     append-rootfs | check-size $(LS_SD_IMAGE_SIZE)
 endef
 TARGET_DEVICES += ls1021atwr-sdboot
+
+define Device/ls1021aiot-sdboot
+  DEVICE_TITLE := LS1021AIOT (SD Card Boot)
+  DEVICE_DTS := ls1021a-iot
+  FILESYSTEMS := ext4
+  IMAGES := sdcard.img
+  IMAGE/sdcard.img := \
+    ls-clean | \
+    ls-append-sdhead $(1) | pad-to 4K | \
+    ls-append $(1)-uboot.bin | pad-to 1M | \
+    ls-append $(1)-uboot-env.bin | pad-to 15M | \
+    ls-append-dtb $$(DEVICE_DTS) | pad-to 16M | \
+    append-kernel | pad-to $(LS_SD_ROOTFSPART_OFFSET)M | \
+    append-rootfs | check-size $(LS_SD_IMAGE_SIZE)
+endef
+TARGET_DEVICES += ls1021aiot-sdboot

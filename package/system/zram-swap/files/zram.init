@@ -16,7 +16,7 @@ zram_size()	# in megabytes
 
 	if [ -z "$zram_size" ]; then
 		# e.g. 6mb for 16mb-routers or 61mb for 128mb-routers
-		echo $(( $ram_size / 2048 ))
+		echo $(( ram_size / 2048 ))
 	else
 		echo "$zram_size"
 	fi
@@ -25,11 +25,6 @@ zram_size()	# in megabytes
 zram_applicable()
 {
 	local zram_dev="$1"
-
-	grep -sq ^"$zram_dev " /proc/swaps && {
-		logger -s -t zram_applicable -p daemon.notice "[OK] '$zram_dev' already active"
-		return 1
-	}
 
 	[ -e "$zram_dev" ] || {
 		logger -s -t zram_applicable -p daemon.crit "[ERROR] device '$zram_dev' not found"
@@ -54,9 +49,8 @@ zram_applicable()
 
 zram_dev()
 {
-	local core="$1"
-
-	echo "/dev/zram${core:-0}"
+	local idx="$1"
+	echo "/dev/zram${idx:-0}"
 }
 
 zram_reset()
@@ -69,64 +63,84 @@ zram_reset()
 	echo "1" >"$proc_entry"
 }
 
-list_cpu_idx()
+zram_getdev()
 {
-	# Offset by 1 if /dev/zram0 is in use by /tmp
-	if [ "$(mount | grep /dev/zram0)" ]; then
-		local line i=1
-		# Hot-add new ZRAM device (if necessary)
-		if [ ! -b /dev/zram1 ]; then 
-			cat /sys/class/zram-control/hot_add
-		fi
-	else
-		local line i=0
+	#get unallocated zram dev
+	local zdev=$( zram_dev )
+
+	if [ "$(mount | grep $zdev)" ]; then
+		local idx=`cat /sys/class/zram-control/hot_add`
+		zdev="$( zram_dev $idx )"
 	fi
-	
-	while read line; do {
-		case "$line" in
-			[Pp]rocessor*)
-				echo $i
-				i=$(( $i + 1 ))
-			;;
-		esac
-	} done <"/proc/cpuinfo"
+
+	echo $zdev
+}
+
+zram_comp_algo()
+{
+	local dev="$1"
+	local zram_comp_algo="$( uci -q get system.@system[0].zram_comp_algo )"
+
+	if [ -z "$zram_comp_algo" ] || [ ! -e /sys/block/$( basename $dev )/comp_algorithm ]; then
+		return 0
+	fi
+
+	if [ `grep -c "$zram_comp_algo" /sys/block/$( basename $dev )/comp_algorithm` -ne 0 ]; then
+		logger -s -t zram_comp_algo -p daemon.debug "Set compression algorithm '$zram_comp_algo' for zram '$dev'"
+		echo $zram_comp_algo > "/sys/block/$( basename $dev )/comp_algorithm"
+	else
+		logger -s -t zram_comp_algo -p daemon.debug "Compression algorithm '$zram_comp_algo' is not supported for '$dev'"
+	fi
+}
+
+zram_comp_streams()
+{
+	local dev="$1"
+	local logical_cpus=$( grep -ci "^processor" /proc/cpuinfo )
+	[ $logical_cpus -gt 1 ] || return 1
+	local zram_comp_streams="$( uci -q get system.@system[0].zram_comp_streams )"
+	[ -n "$zram_comp_streams" ] && [ "$zram_comp_streams" -le "$logical_cpus" ] || zram_comp_streams=$logical_cpus
+	if [ -e /sys/block/$( basename $dev )/max_comp_streams ]; then
+		logger -s -t zram_comp_streams -p daemon.debug "Set max compression streams to '$zram_comp_streams' for zram '$dev'"
+		echo $zram_comp_streams > /sys/block/$( basename $dev )/max_comp_streams
+	fi
 }
 
 start()
 {
-	# http://shmilyxbq-compcache.googlecode.com/hg/README
-	# if >1 cpu_core, reinit kmodule with e.g. num_devices=4
-
 	local zram_size="$( zram_size )"
-	local zram_dev core
+	local zram_dev
 
-	for core in $( list_cpu_idx ); do {
-		zram_dev="$( zram_dev "$core" )"
-		zram_applicable "$zram_dev" || return 1
+	if [ $( grep -cs zram /proc/swaps ) -ne 0 ]; then
+		logger -s -t zram_start -p daemon.notice "[OK] zram swap is already mounted"
+		return 1
+	fi
 
-		logger -s -t zram_start -p daemon.debug "activating '$zram_dev' for swapping ($zram_size MegaBytes)"
+	zram_dev="$( zram_getdev )"
+	zram_applicable "$zram_dev" || return 1
 
-		zram_reset "$zram_dev" "enforcing defaults"
-		echo $(( $zram_size * 1024 * 1024 )) >"/sys/block/$( basename $zram_dev )/disksize"
-		mkswap "$zram_dev"
-		swapon "$zram_dev"
-	} done
+	logger -s -t zram_start -p daemon.debug "activating '$zram_dev' for swapping ($zram_size MegaBytes)"
+
+	zram_reset "$zram_dev" "enforcing defaults"
+	zram_comp_algo "$zram_dev"
+	zram_comp_streams "$zram_dev"
+	echo $(( $zram_size * 1024 * 1024 )) >"/sys/block/$( basename "$zram_dev" )/disksize"
+	mkswap "$zram_dev"
+	swapon "$zram_dev"
 }
 
 stop()
 {
-	local zram_dev proc_entry
+	local zram_dev
 
-	for core in $( list_cpu_idx ); do {
-		zram_dev="$( zram_dev "$core" )"
-		proc_entry="/sys/block/$( basename "$zram_dev" )/reset"
-
-		grep -sq ^"$zram_dev " /proc/swaps && {
-			logger -s -t zram_stop -p daemon.debug "deactivate swap $zram_dev"
-			swapoff "$zram_dev"
-		}
-
-		zram_reset "$zram_dev" "claiming memory back"
+	for zram_dev in $( grep zram /proc/swaps |awk '{print $1}' ); do {
+		logger -s -t zram_stop -p daemon.debug "deactivate swap $zram_dev"
+		swapoff "$zram_dev" && zram_reset "$zram_dev" "claiming memory back"
+		local dev_index="$( echo $zram_dev | grep -o "[0-9]*$" )"
+		if [ $dev_index -ne 0 ]; then
+			logger -s -t zram_stop -p daemon.debug "removing zram $zram_dev"
+			echo $dev_index > /sys/class/zram-control/hot_remove
+		fi
 	} done
 }
 

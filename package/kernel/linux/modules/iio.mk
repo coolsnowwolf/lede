@@ -52,6 +52,49 @@ endef
 
 $(eval $(call KernelPackage,iio-ad799x))
 
+define KernelPackage/iio-hmc5843
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core +kmod-regmap-i2c
+  TITLE:=Honeywell HMC58x3 Magnetometer
+  KCONFIG:= CONFIG_SENSORS_HMC5843_I2C
+  FILES:= \
+      $(LINUX_DIR)/drivers/iio/magnetometer/hmc5843_i2c.ko \
+      $(LINUX_DIR)/drivers/iio/magnetometer/hmc5843_core.ko
+  AUTOLOAD:=$(call AutoLoad,56,hmc5843)
+endef
+
+define KernelPackage/iio-hmc5843/description
+  Honeywell HMC5843/5883/5883L 3-Axis Magnetometer
+endef
+
+$(eval $(call KernelPackage,iio-hmc5843))
+
+define KernelPackage/iio-bh1750
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core
+  TITLE:=ROHM BH1750 ambient light sensor
+  KCONFIG:= CONFIG_BH1750
+  FILES:=$(LINUX_DIR)/drivers/iio/light/bh1750.ko
+  AUTOLOAD:=$(call AutoLoad,56,bh1750)
+endef
+define KernelPackage/iio-bh1750/description
+  ROHM BH1750 ambient light sensor (i2c bus)
+endef
+$(eval $(call KernelPackage,iio-bh1750))
+
+define KernelPackage/iio-am2315
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core
+  TITLE:=Asong AM2315 humidity/temperature sensor
+  KCONFIG:= CONFIG_AM2315
+  FILES:=$(LINUX_DIR)/drivers/iio/humidity/am2315.ko
+  AUTOLOAD:=$(call AutoLoad,56,am2315)
+endef
+define KernelPackage/iio-am2315/description
+  Aosong AM2315 humidity/temperature sensor (I2C bus)
+endef
+$(eval $(call KernelPackage,iio-am2315))
+
 define KernelPackage/iio-mxs-lradc
   SUBMENU:=$(IIO_MENU)
   DEPENDS:=@TARGET_mxs +kmod-iio-core
@@ -89,7 +132,7 @@ $(eval $(call KernelPackage,iio-dht11))
 define KernelPackage/iio-bmp280
   SUBMENU:=$(IIO_MENU)
   TITLE:=BMP180/BMP280/BME280 pressure/temperatur sensor
-  DEPENDS:=@(LINUX_4_9||LINUX_4_14) +kmod-iio-core +kmod-regmap
+  DEPENDS:=@!LINUX_3_18 +kmod-iio-core +kmod-regmap-core
   KCONFIG:=CONFIG_BMP280
   FILES:=$(LINUX_DIR)/drivers/iio/pressure/bmp280.ko
 endef
@@ -106,7 +149,7 @@ $(eval $(call KernelPackage,iio-bmp280))
 define KernelPackage/iio-bmp280-i2c
   SUBMENU:=$(IIO_MENU)
   TITLE:=BMP180/BMP280/BME280 pressure/temperatur sensor (I2C)
-  DEPENDS:=+kmod-iio-bmp280 +kmod-i2c-core
+  DEPENDS:=+kmod-iio-bmp280 +kmod-i2c-core +kmod-regmap-i2c
   KCONFIG:=CONFIG_BMP280_I2C
   FILES:=$(LINUX_DIR)/drivers/iio/pressure/bmp280-i2c.ko
   AUTOLOAD:=$(call AutoProbe,iio-bmp280-i2c)
@@ -155,3 +198,39 @@ define KernelPackage/iio-htu21/description
 endef
 
 $(eval $(call KernelPackage,iio-htu21))
+
+
+define KernelPackage/iio-si7020
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core
+  TITLE:=Silicon Labs Si7020 sensor
+  KCONFIG:= CONFIG_SI7020
+  FILES:=$(LINUX_DIR)/drivers/iio/humidity/si7020.ko
+  AUTOLOAD:=$(call AutoLoad,56,si7020)
+endef
+
+define KernelPackage/iio-si7020/description
+ Support for Silicon Labs Si7020 family of relative humidity and
+ temperature sensors connected via I2C. Following models are usable:
+ Si7013, Si7020, Si7021, Hoperf TH06.
+endef
+
+$(eval $(call KernelPackage,iio-si7020))
+
+
+define KernelPackage/iio-tsl4531
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core
+  TITLE:=TAOS TSL4531 ambient light sensor
+  KCONFIG:= CONFIG_TSL4531
+  FILES:=$(LINUX_DIR)/drivers/iio/light/tsl4531.ko
+  AUTOLOAD:=$(call AutoLoad,56,tsl4531)
+endef
+
+define KernelPackage/iio-tsl4531/description
+ Support for TAOS TSL4531x family of ambient light sensors
+ connected via I2C. Following models are usable:
+ TSL45311, TSL45313, TSL45315, TSL45317.
+endef
+
+$(eval $(call KernelPackage,iio-tsl4531))

@@ -2,8 +2,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=samba
-PKG_VERSION:=4.9.1
-PKG_RELEASE:=1
+PKG_VERSION:=4.9.2
+PKG_RELEASE:=3
 
 PKG_MAINTAINER:=Andy Walsh <andy.walsh44+github@gmail.com>
 PKG_LICENSE:=GPL-3.0-only
@@ -11,13 +11,12 @@ PKG_LICENSE_FILES:=COPYING
 
 PKG_SOURCE_URL:=https://download.samba.org/pub/samba/stable/
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_HASH:=33118cbe83a87be085eba1aae6e597878b02d6ac9b2da67454ed33cf3e9853f2
+PKG_HASH:=349c17b7bf1bf667167843470533da89ff1b2ca4a768b529aaacf5197af1efa2
 
 # Buildroot bug? Can't add target deps via '+SAMBA4_SERVER_AD_DC:python-crypto' (as work-around we select via config.in)
-PKG_BUILD_DEPENDS:=SAMBA4_SERVER_AD_DC:python-crypto nfs-kernel-server/host SAMBA4_WAF_CROSS_EXECUTE:qemu-userspace/host
+PKG_BUILD_DEPENDS:=SAMBA4_SERVER_AD_DC:python-crypto nfs-kernel-server/host
 
 PKG_CONFIG_DEPENDS:= \
-	CONFIG_SAMBA4_WAF_CROSS_EXECUTE \
 	CONFIG_SAMBA4_SERVER_NETBIOS \
 	CONFIG_SAMBA4_SERVER_AVAHI \
 	CONFIG_SAMBA4_SERVER_VFS \
@@ -51,21 +50,13 @@ endef
 define Package/samba4-libs
   $(call Package/samba4/Default)
   TITLE+= libs
-  DEPENDS:= +zlib +libtirpc +krb5-libs +libpopt \
-	+libcap +PACKAGE_libpthread:libpthread +PACKAGE_libnettle:libnettle \
+  DEPENDS:= +zlib +libtirpc +krb5-libs +libpopt +libcap \
+	+PACKAGE_libpthread:libpthread +PACKAGE_libnettle:libnettle \
 	+PACKAGE_libgcrypt:libgcrypt +PACKAGE_libpam:libpam +PACKAGE_dbus:dbus +PACKAGE_libavahi-client:libavahi-client \
 	+SAMBA4_SERVER_VFS:attr \
 	+SAMBA4_SERVER_ACL:acl +SAMBA4_SERVER_ACL:attr \
 	+SAMBA4_SERVER_AVAHI:libavahi-client \
 	+SAMBA4_SERVER_AD_DC:python-base +SAMBA4_SERVER_AD_DC:libopenssl +SAMBA4_SERVER_AD_DC:libgnutls +SAMBA4_SERVER_AD_DC:libopenldap +SAMBA4_SERVER_AD_DC:jansson +SAMBA4_SERVER_AD_DC:libarchive
-endef
-
-define Package/samba4-libs/config
-	config SAMBA4_WAF_CROSS_EXECUTE
-		bool "Use Waf cross-execute, instead of cross-answer files."
-		default n
-		help
-		  Uses qemu (userspace emulation) to probe for waf cross-compile answers, instead of predefined cross-answer files per architecture.
 endef
 
 define Package/samba4-server
@@ -142,6 +133,7 @@ CONFIGURE_ARGS:=$(filter-out	\
 CONFIGURE_ARGS += \
 		--hostcc="$(HOSTCC)" \
 		--cross-compile \
+		--cross-answers=cross-answers.txt \
 		--disable-cups \
 		--disable-iprint \
 		--disable-cephfs \
@@ -164,54 +156,6 @@ CONFIGURE_ARGS += \
 		--without-regedit \
 		--without-gpgme
 
-ifeq ($(CONFIG_SAMBA4_WAF_CROSS_EXECUTE),y)
-	# arch name mapping
-	QEMU_ARCH:=$(subst powerpc,ppc,$(ARCH))
-	# cpu name mapping
-	QEMU_CPU:=$(call qstrip,$(CONFIG_CPU_TYPE))
-	ifneq ($(QEMU_CPU),)
-	  QEMU_CPU:=$(subst +, ,$(QEMU_CPU))
-	  QEMU_CPU:=$(firstword $(QEMU_CPU))
-
-	  QEMU_CPU:=$(subst mpcore,,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst mips32,,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst mips64,,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst generic,,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst octeonplus,,$(QEMU_CPU))
-	  
-	  QEMU_CPU:=$(subst 8540,mpc8540,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst arm926ej-s,arm926,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst xscale,arm926,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst arm1176jzf-s,arm1176,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst arm1136j-s,arm1136,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst cortex-a5,cortex-a7,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst cortex-a72,cortex-a57,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst cortex-a73,cortex-a57,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst 464fp,460ex,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst fa526,sa1100,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst pentium4,Conroe,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst 74kc,74Kf,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst 74kf,74Kf,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst 24kc,24Kc,$(QEMU_CPU))
-	  QEMU_CPU:=$(subst 24kf,24Kf,$(QEMU_CPU))
-	endif
-
-	QEMU_CPU:=$(strip $(QEMU_CPU))
-	ifneq ($(QEMU_CPU),)
-	  QEMU_CPU:=-cpu $(QEMU_CPU)
-	endif
-
-	CROSS-ANSWER-OUT:=$(ARCH)-$(CONFIG_TARGET_BOARD)-$(CONFIG_TARGET_SUBTARGET)-$(CONFIG_CPU_TYPE)
-	CROSS-ANSWER-OUT:=$(call qstrip,$(CROSS-ANSWER-OUT))
-
-	CONFIGURE_ARGS += \
-			--cross-answers="cross-answers-$(CROSS-ANSWER-OUT).txt" \
-			--cross-execute="qemu-$(QEMU_ARCH) $(QEMU_CPU) -L $(STAGING_DIR_ROOT)"
-else
-	CONFIGURE_ARGS += \
-			--cross-answers=cross-answers.txt
-endif
-		
 # Optional AES-NI support - https://lists.samba.org/archive/samba-technical/2017-September/122738.html
 # Support for Nettle wasn't comitted
 ifdef CONFIG_TARGET_x86_64
@@ -352,12 +296,6 @@ ifeq ($(CONFIG_SAMBA4_SERVER_AD_DC),)
 endif
 endef
 
-ifeq ($(CONFIG_SAMBA4_WAF_CROSS_EXECUTE),y)
-define Build/Configure
-	$(RM) -f $(PKG_BUILD_DIR)/cross-answers-$(CROSS-ANSWER-OUT).txt
-	$(call Build/Configure/Default,configure)
-endef
-else
 define Build/Configure
 	$(CP) ./waf-cross-answers/$(ARCH).txt $(PKG_BUILD_DIR)/cross-answers.txt
 	echo 'Checking uname machine type: "$(ARCH)"' >> $(PKG_BUILD_DIR)/cross-answers.txt
@@ -367,7 +305,6 @@ define Build/Configure
 	echo 'Checking whether POSIX capabilities are available: OK' >> $(PKG_BUILD_DIR)/cross-answers.txt
 	$(call Build/Configure/Default,configure)
 endef
-endif
 
 # BUG: We need to use "waf install --targets=" otherwise a "make install" or "waf install" will retrigger a full recompile of all possible targets!
 define Build/Compile

@@ -1,0 +1,182 @@
+From 0729e01f5830ebf4701f0b1b7ff1bd2a2eedae40 Mon Sep 17 00:00:00 2001
+From: "Arnout Vandecappelle (Essensium/Mind)" <arnout@mind.be>
+Date: Tue, 12 Feb 2019 11:02:42 +0100
+Subject: [PATCH] tests: add WPS tests to multi_ap hwsim tests
+
+Signed-off-by: Arnout Vandecappelle (Essensium/Mind) <arnout@mind.be>
+---
+v4: new patch
+---
+ tests/hwsim/test_multi_ap.py | 164 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 164 insertions(+)
+
+--- a/tests/hwsim/test_multi_ap.py
++++ b/tests/hwsim/test_multi_ap.py
+@@ -61,3 +61,167 @@ def test_multi_ap_fronthaul_on_ap(dev, a
+         raise Exception("Connection result not reported")
+     if "CTRL-EVENT-DISCONNECTED" not in ev:
+         raise Exception("Unexpected connection result")
++
++def run_multi_ap_wps(dev, apdev, params, multi_ap_bssid = None):
++    """Helper for running Multi-AP WPS tests
++
++    dev[0] does multi_ap WPS, dev[1] does normal WPS. apdev[0] is the fronthaul
++    BSS. If there is a separate backhaul BSS, it must have been set up by the
++    caller. params are the normal SSID parameters, they will be extended with
++    the WPS parameters. multi_ap_bssid must be given if it is not equal to the
++    fronthaul BSSID."""
++
++    if multi_ap_bssid is None:
++        multi_ap_bssid = apdev[0]['bssid']
++    params.update({"wps_state": "2", "eap_server": "1"})
++
++    # WPS with multi-ap station dev[0]
++    hapd = hostapd.add_ap(apdev[0], params)
++    hapd.request("WPS_PBC")
++    if "PBC Status: Active" not in hapd.request("WPS_GET_STATUS"):
++        raise Exception("PBC status not shown correctly")
++
++    dev[0].request("WPS_PBC multi_ap=1")
++    dev[0].wait_connected(timeout=20)
++    status = dev[0].get_status()
++    if status['wpa_state'] != 'COMPLETED' or status['bssid'] != multi_ap_bssid:
++        raise Exception("Not fully connected")
++    if status['ssid'] != params['multi_ap_backhaul_ssid'].strip('"'):
++        raise Exception("Unexpected SSID %s != %s" % (status['ssid'], params["multi_ap_backhaul_ssid"]))
++    if status['pairwise_cipher'] != 'CCMP':
++        raise Exception("Unexpected encryption configuration %s" % status['pairwise_cipher'])
++    if status['key_mgmt'] != 'WPA2-PSK':
++        raise Exception("Unexpected key_mgmt")
++
++    status = hapd.request("WPS_GET_STATUS")
++    if "PBC Status: Disabled" not in status:
++        raise Exception("PBC status not shown correctly")
++    if "Last WPS result: Success" not in status:
++        raise Exception("Last WPS result not shown correctly")
++    if "Peer Address: " + dev[0].p2p_interface_addr() not in status:
++        raise Exception("Peer address not shown correctly")
++
++    if len(dev[0].list_networks()) != 1:
++        raise Exception("Unexpected number of network blocks")
++
++    # WPS with non-multi-ap station dev[1]
++    hapd.request("WPS_PBC")
++    if "PBC Status: Active" not in hapd.request("WPS_GET_STATUS"):
++        raise Exception("PBC status not shown correctly")
++
++    dev[1].request("WPS_PBC")
++    dev[1].wait_connected(timeout=20)
++    status = dev[1].get_status()
++    if status['wpa_state'] != 'COMPLETED' or status['bssid'] != apdev[0]['bssid']:
++        raise Exception("Not fully connected")
++    if status['ssid'] != params["ssid"]:
++        raise Exception("Unexpected SSID")
++    # Fronthaul may be something else than WPA2-PSK so don't test it.
++
++    status = hapd.request("WPS_GET_STATUS")
++    if "PBC Status: Disabled" not in status:
++        raise Exception("PBC status not shown correctly")
++    if "Last WPS result: Success" not in status:
++        raise Exception("Last WPS result not shown correctly")
++    if "Peer Address: " + dev[1].p2p_interface_addr() not in status:
++        raise Exception("Peer address not shown correctly")
++
++    if len(dev[1].list_networks()) != 1:
++        raise Exception("Unexpected number of network blocks")
++
++
++def test_multi_ap_wps_shared(dev, apdev):
++    """WPS on shared fronthaul/backhaul AP"""
++    ssid = "multi-ap-wps"
++    passphrase = "12345678"
++    params = hostapd.wpa2_params(ssid=ssid, passphrase=passphrase)
++    params.update({"multi_ap": "3",
++                   "multi_ap_backhaul_ssid": '"%s"' % ssid,
++                   "multi_ap_backhaul_wpa_passphrase": passphrase})
++    run_multi_ap_wps(dev, apdev, params)
++
++def test_multi_ap_wps_shared_psk(dev, apdev):
++    """WPS on shared fronthaul/backhaul AP using PSK"""
++    ssid = "multi-ap-wps"
++    psk = "1234567890abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
++    params = hostapd.wpa2_params(ssid=ssid)
++    params.update({"wpa_psk": psk, "multi_ap": "3",
++                   "multi_ap_backhaul_ssid": '"%s"' % ssid,
++                   "multi_ap_backhaul_wpa_psk": psk})
++    run_multi_ap_wps(dev, apdev, params)
++
++def test_multi_ap_wps_split(dev, apdev):
++    """WPS on split fronthaul and backhaul AP"""
++    backhaul_ssid = "multi-ap-backhaul-wps"
++    backhaul_passphrase = "87654321"
++    params = hostapd.wpa2_params(ssid="multi-ap-fronthaul-wps", passphrase="12345678")
++    params.update({"multi_ap": "2",
++                   "multi_ap_backhaul_ssid": '"%s"' % backhaul_ssid,
++                   "multi_ap_backhaul_wpa_passphrase": backhaul_passphrase})
++    params_backhaul = hostapd.wpa2_params(ssid=backhaul_ssid, passphrase=backhaul_passphrase)
++    params_backhaul.update({"multi_ap": "1"})
++    hapd_backhaul = hostapd.add_ap(apdev[1], params_backhaul)
++
++    run_multi_ap_wps(dev, apdev, params, hapd_backhaul.own_addr())
++
++def test_multi_ap_wps_split_psk(dev, apdev):
++    """WPS on split fronthaul and backhaul AP"""
++    backhaul_ssid = "multi-ap-backhaul-wps"
++    backhaul_psk = "1234567890abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
++    params = hostapd.wpa2_params(ssid="multi-ap-fronthaul-wps", passphrase="12345678")
++    params.update({"multi_ap": "2",
++                   "multi_ap_backhaul_ssid": '"%s"' % backhaul_ssid,
++                   "multi_ap_backhaul_wpa_psk": backhaul_psk})
++    params_backhaul = hostapd.wpa2_params(ssid=backhaul_ssid)
++    params_backhaul.update({"multi_ap": "1", "wpa_psk": backhaul_psk})
++    hapd_backhaul = hostapd.add_ap(apdev[1], params_backhaul)
++
++    run_multi_ap_wps(dev, apdev, params, hapd_backhaul.own_addr())
++
++def test_multi_ap_wps_split_mixed(dev, apdev):
++    """WPS on split fronthaul and backhaul AP with mixed-mode fronthaul"""
++    backhaul_ssid = "multi-ap-backhaul-wps"
++    backhaul_passphrase = "87654321"
++    params = hostapd.wpa_mixed_params(ssid="multi-ap-fronthaul-wps", passphrase="12345678")
++    params.update({"multi_ap": "2",
++                   "multi_ap_backhaul_ssid": '"%s"' % backhaul_ssid,
++                   "multi_ap_backhaul_wpa_passphrase": backhaul_passphrase})
++    params_backhaul = hostapd.wpa2_params(ssid=backhaul_ssid, passphrase=backhaul_passphrase)
++    params_backhaul.update({"multi_ap": "1"})
++    hapd_backhaul = hostapd.add_ap(apdev[1], params_backhaul)
++
++    run_multi_ap_wps(dev, apdev, params, hapd_backhaul.own_addr())
++
++def test_multi_ap_wps_split_open(dev, apdev):
++    """WPS on split fronthaul and backhaul AP with open fronthaul"""
++    backhaul_ssid = "multi-ap-backhaul-wps"
++    backhaul_passphrase = "87654321"
++    params = {"ssid": "multi-ap-wps-fronthaul", "multi_ap": "2",
++              "multi_ap_backhaul_ssid": '"%s"' % backhaul_ssid,
++              "multi_ap_backhaul_wpa_passphrase": backhaul_passphrase}
++    params_backhaul = hostapd.wpa2_params(ssid=backhaul_ssid, passphrase=backhaul_passphrase)
++    params_backhaul.update({"multi_ap": "1"})
++    hapd_backhaul = hostapd.add_ap(apdev[1], params_backhaul)
++
++    run_multi_ap_wps(dev, apdev, params, hapd_backhaul.own_addr())
++
++def test_multi_ap_wps_fail_non_multi_ap(dev, apdev):
++    """Multi-AP WPS on non-WPS AP fails"""
++
++    params = hostapd.wpa2_params(ssid="non-multi-ap-wps", passphrase="12345678")
++    params.update({"wps_state": "2", "eap_server": "1"})
++
++    hapd = hostapd.add_ap(apdev[0], params)
++    hapd.request("WPS_PBC")
++    if "PBC Status: Active" not in hapd.request("WPS_GET_STATUS"):
++        raise Exception("PBC status not shown correctly")
++
++    dev[0].request("WPS_PBC multi_ap=1")
++    # Since we will fail to associate and WPS doesn't even get started, there
++    # isn't much we can do except wait for timeout. For PBC, it is not possible
++    # to change the timeout from 2 minutes. Instead of waiting for the timeout,
++    # just check that WPS doesn't finish within reasonable time.
++    ev = dev[0].wait_event(["WPS-SUCCESS", "WPS-FAIL"], timeout=20)
++    if ev:
++        raise Exception("WPS operation completed: " + ev)
++    dev[0].request("WPS_CANCEL")

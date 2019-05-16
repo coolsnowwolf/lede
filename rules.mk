@@ -269,6 +269,7 @@ TARGET_CC:=$(TARGET_CROSS)gcc
 TARGET_CXX:=$(TARGET_CROSS)g++
 KPATCH:=$(SCRIPT_DIR)/patch-kernel.sh
 SED:=$(STAGING_DIR_HOST)/bin/sed -i -e
+ESED:=$(STAGING_DIR_HOST)/bin/sed -E -i -e
 CP:=cp -fpR
 LN:=ln -sf
 XARGS:=xargs -r
@@ -280,6 +281,7 @@ PATCH:=patch
 PYTHON:=python
 
 INSTALL_BIN:=install -m0755
+INSTALL_SUID:=install -m4755
 INSTALL_DIR:=install -d -m0755
 INSTALL_DATA:=install -m0644
 INSTALL_CONF:=install -m0600

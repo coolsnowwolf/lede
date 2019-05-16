@@ -8,36 +8,30 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ls-mc
-PKG_SOURCE_DATE:=2014-07-02
+PKG_VERSION:=lsdk-1806
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/NXP/qoriq-mc-binary.git
-PKG_SOURCE_VERSION:=40b0c8b7edfd2d8f989619b12d6352472455c696
-PKG_MIRROR_HASH:=b3c8db70de8617e5bc033951b5ad3824f98353303870d6035668075daf93382e
-
-PKG_BUILD_DIR=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)-$(BUILD_VARIANT)/$(PKG_NAME)-$(PKG_VERSION)
-
-PKG_FLAGS:=nonshared
+PKG_SOURCE_VERSION:=9c1d73016b47f8654d48f0ccff776e5e4588d822
+PKG_MIRROR_HASH:=b50e98d7de3c1754fc1d5aed2cb5a10c5d3535bc609407fafbab8ecce09661fa
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/layerscape-mc-ls1088ardb
   SECTION:=firmware
   CATEGORY:=Firmware
-  DEPENDS:=@TARGET_layerscape
   TITLE:=NXP LS1088ARDB MC firmware
-  VARIANT:=ls1088ardb
-  CONFIG:=ls1088a/mc_10.4.0_ls1088a_20171101.itb
+  DEPENDS:=@TARGET_layerscape
+  CONFIG:=ls1088a/mc_10.8.0_ls1088a_20180515.itb
 endef
 
 define Package/layerscape-mc-ls2088ardb
   SECTION:=firmware
   CATEGORY:=Firmware
-  DEPENDS:=@TARGET_layerscape
   TITLE:=NXP LS2088ARDB MC firmware
-  VARIANT:=ls2088ardb
-  CONFIG:=ls2088a/mc_10.4.0_ls2088a_20171101.itb
+  DEPENDS:=@TARGET_layerscape
+  CONFIG:=ls2088a/mc_10.8.0_ls2088a_20180515.itb
 endef
 
 define Build/Compile

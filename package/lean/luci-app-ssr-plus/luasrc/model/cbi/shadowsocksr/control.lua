@@ -33,12 +33,20 @@ luci.ip.neighbors({ family = 4 }, function(entry)
        end
 end)
 
+o = s:taboption("lan_ac", DynamicList, "lan_gm_ips", translate("Game Mode Host List"))
+o.datatype = "ipaddr"
+luci.ip.neighbors({ family = 4 }, function(entry)
+       if entry.reachable then
+               o:value(entry.dest:string())
+       end
+end)
+
 -- Part of Self
-s:tab("self_ac", translate("Router Self AC"))
-o = s:taboption("self_ac",ListValue, "router_proxy", translate("Router Self Proxy"))
-o:value("1", translatef("Normal Proxy"))
-o:value("0", translatef("Bypassed Proxy"))
-o:value("2", translatef("Forwarded Proxy"))
-o.rmempty = false
+-- s:tab("self_ac", translate("Router Self AC"))
+-- o = s:taboption("self_ac",ListValue, "router_proxy", translate("Router Self Proxy"))
+-- o:value("1", translatef("Normal Proxy"))
+-- o:value("0", translatef("Bypassed Proxy"))
+-- o:value("2", translatef("Forwarded Proxy"))
+-- o.rmempty = false
 
 return m

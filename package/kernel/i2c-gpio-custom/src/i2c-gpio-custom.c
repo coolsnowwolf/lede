@@ -47,7 +47,12 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 
+#include <linux/version.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 18, 0)
 #include <linux/i2c-gpio.h>
+#else
+#include <linux/platform_data/i2c-gpio.h>
+#endif
 
 #define DRV_NAME	"i2c-gpio-custom"
 #define DRV_DESC	"Custom GPIO-based I2C driver"

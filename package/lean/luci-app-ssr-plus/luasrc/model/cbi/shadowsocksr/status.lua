@@ -30,7 +30,7 @@ bold_off = [[</strong>]]
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local kcptun_version=translate("Unknown")
-local kcp_file="/usr/bin/ssr-kcptun"
+local kcp_file="/usr/bin/kcptun-client"
 if not fs.access(kcp_file)  then
  kcptun_version=translate("Not exist")
 else
@@ -66,11 +66,15 @@ end
 end
 
 
-if luci.sys.call("pidof ssr-redir >/dev/null") == 0 then
+if luci.sys.call("ps -w | grep ssr-retcp | grep -v grep >/dev/null") == 0 then
 redir_run=1
 end	
 
-if luci.sys.call("pidof ssr-kcptun >/dev/null") == 0 then
+if luci.sys.call("pidof ssr-local >/dev/null") == 0 then
+sock5_run=1
+end
+
+if luci.sys.call("pidof kcptun-client >/dev/null") == 0 then
 kcptun_run=1
 end	
 
@@ -80,6 +84,10 @@ end
 
 if luci.sys.call("ps -w | grep ssr-tunnel |grep -v grep >/dev/null") == 0 then
 tunnel_run=1
+end	
+
+if luci.sys.call("pidof pdnsd >/dev/null") == 0 then                 
+pdnsd_run=1     
 end	
 
 m = SimpleForm("Version")
@@ -94,7 +102,7 @@ else
 s.value = translate("Not Running")
 end
 
-s=m:field(DummyValue,"reudp_run",translate("UDP Relay")) 
+s=m:field(DummyValue,"reudp_run",translate("Game Mode UDP Relay")) 
 s.rawhtml  = true
 if reudp_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
@@ -102,14 +110,35 @@ else
 s.value = translate("Not Running")
 end
 
-s=m:field(DummyValue,"tunnel_run",translate("DNS Tunnel")) 
+s=m:field(DummyValue,"pdnsd_run",translate("PDNSD"))
+s.rawhtml  = true                                              
+if pdnsd_run == 1 then                             
+s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
+else             
+s.value = translate("Not Running")
+end 
+
+if nixio.fs.access("/usr/bin/ssr-local") then
+s=m:field(DummyValue,"sock5_run",translate("SOCKS5 Proxy")) 
 s.rawhtml  = true
-if tunnel_run == 1 then
+if sock5_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
 else
 s.value = translate("Not Running")
 end
+end
 
+if nixio.fs.access("/usr/bin/ssr-server") then
+s=m:field(DummyValue,"server_run",translate("Global SSR Server")) 
+s.rawhtml  = true
+if server_run == 1 then
+s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
+else
+s.value = translate("Not Running")
+end
+end
+
+if nixio.fs.access("/usr/bin/kcptun-client") then
 s=m:field(DummyValue,"kcp_version",translate("KcpTun Version")) 
 s.rawhtml  = true
 s.value =kcptun_version
@@ -120,6 +149,7 @@ if kcptun_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
 else
 s.value = translate("Not Running")
+end
 end
 
 s=m:field(DummyValue,"google",translate("Google Connectivity"))

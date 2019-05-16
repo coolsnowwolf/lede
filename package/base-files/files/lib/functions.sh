@@ -152,22 +152,27 @@ config_list_foreach() {
 
 default_prerm() {
 	local root="${IPKG_INSTROOT}"
-	local name
+	local pkgname="$(basename ${1%.*})"
+	local ret=0
 
-	name=$(basename ${1%.*})
-	[ -f "$root/usr/lib/opkg/info/${name}.prerm-pkg" ] && . "$root/usr/lib/opkg/info/${name}.prerm-pkg"
+	if [ -f "$root/usr/lib/opkg/info/${pkgname}.prerm-pkg" ]; then
+		( . "$root/usr/lib/opkg/info/${pkgname}.prerm-pkg" )
+		ret=$?
+	fi
 
 	local shell="$(which bash)"
-	for i in `cat "$root/usr/lib/opkg/info/${name}.list" | grep "^/etc/init.d/"`; do
+	for i in $(grep -s "^/etc/init.d/" "$root/usr/lib/opkg/info/${pkgname}.list"); do
 		if [ -n "$root" ]; then
 			${shell:-/bin/sh} "$root/etc/rc.common" "$root$i" disable
 		else
 			if [ "$PKG_UPGRADE" != "1" ]; then
 				"$i" disable
 			fi
-			"$i" stop || /bin/true
+			"$i" stop
 		fi
 	done
+
+	return $ret
 }
 
 add_group_and_user() {
@@ -229,10 +234,9 @@ default_postinst() {
 	if [ -z "$root" ] && grep -q -s "^/etc/uci-defaults/" "/usr/lib/opkg/info/${pkgname}.list"; then
 		. /lib/functions/system.sh
 		[ -d /tmp/.uci ] || mkdir -p /tmp/.uci
-		for i in $(sed -ne 's!^/etc/uci-defaults/!!p' "/usr/lib/opkg/info/${pkgname}.list"); do (
-			cd /etc/uci-defaults
-			[ -f "$i" ] && . ./"$i" && rm -f "$i"
-		) done
+		for i in $(grep -s "^/etc/uci-defaults/" "/usr/lib/opkg/info/${pkgname}.list"); do
+			( [ -f "$i" ] && cd "$(dirname $i)" && . "$i" ) && rm -f "$i"
+		done
 		uci commit
 	fi
 

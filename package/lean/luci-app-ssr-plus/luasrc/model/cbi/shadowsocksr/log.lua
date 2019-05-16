@@ -1,12 +1,13 @@
 local fs = require "nixio.fs"
-local conffile = "/tmp/ssrplus.log"
+local conffile = "/tmp/ssrpro.log"
 
-f = SimpleForm("custom")
+f = SimpleForm("logview")
 
 t = f:field(TextValue, "conf")
 t.rmempty = true
 t.rows = 20
 function t.cfgvalue()
+  luci.sys.exec("[ -f /tmp/ssrplus.log ] && sed '1!G;h;$!d' /tmp/ssrplus.log > /tmp/ssrpro.log")
 	return fs.readfile(conffile) or ""
 end
 t.readonly="readonly"

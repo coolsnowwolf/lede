@@ -9,6 +9,7 @@ define Device/Default
   PROFILES := Default
   IMAGES := firmware.bin
   FILESYSTEMS := ubifs
+  MKUBIFS_OPTS := -m 1 -e 262016 -c 128
   KERNEL := kernel-bin | gzip | uImage gzip
   KERNEL_LOADADDR := 0x80080000
   KERNEL_ENTRY_POINT := 0x80080000
@@ -22,7 +23,6 @@ define Device/ls1012ardb
     layerscape-ppa-ls1012ardb \
     kmod-ppfe
   DEVICE_DTS := freescale/fsl-ls1012a-rdb
-  UBIFS_OPTS := -m 1 -e 262016 -c 128
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 256KiB
   PAGESIZE := 1
@@ -115,7 +115,6 @@ define Device/ls1046ardb
     layerscape-fman-ls1046ardb \
     layerscape-ppa-ls1046ardb
   DEVICE_DTS := freescale/fsl-ls1046a-rdb-sdk
-  UBIFS_OPTS := -m 1 -e 262016 -c 128
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 256KiB
   PAGESIZE := 1
@@ -162,7 +161,6 @@ define Device/ls1088ardb
     layerscape-ppa-ls1088ardb \
     restool
   DEVICE_DTS := freescale/fsl-ls1088a-rdb
-  UBIFS_OPTS := -m 1 -e 262016 -c 128
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 256KiB
   PAGESIZE := 1
@@ -258,6 +256,6 @@ define Device/traverse-five64
   IMAGES = root sysupgrade.tar
   IMAGE/root = append-rootfs
   IMAGE/sysupgrade.tar = sysupgrade-tar
-  UBIFS_OPTS := -m 2048 -e 124KiB -c 4096
+  MKUBIFS_OPTS := -m 2048 -e 124KiB -c 4096
 endef
 TARGET_DEVICES += traverse-five64

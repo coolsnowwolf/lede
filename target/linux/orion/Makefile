@@ -19,6 +19,6 @@ include $(INCLUDE_DIR)/target.mk
 
 KERNELNAME:=zImage
 
-DEFAULT_PACKAGES += kmod-ath9k wpad-mini kmod-rtc-isl1208 uboot-envtools
+DEFAULT_PACKAGES += kmod-ath9k wpad-basic kmod-rtc-isl1208 uboot-envtools
 
 $(eval $(call BuildTarget))
