@@ -62,11 +62,11 @@ platform_do_upgrade() {
 
 	[ -b "${rootfs}" ] || return 1
 	case "$board" in
-	erlite)
-		kernel=sda1
-		;;
 	er)
 		kernel=mmcblk0p1
+		;;
+	erlite)
+		kernel=sda1
 		;;
 	*)
 		return 1
@@ -82,13 +82,13 @@ platform_check_image() {
 	local board=$(board_name)
 
 	case "$board" in
-	erlite | \
-	er)
+	er | \
+	erlite)
 		local tar_file="$1"
 		local kernel_length=`(tar xf $tar_file sysupgrade-$board/kernel -O | wc -c) 2> /dev/null`
 		local rootfs_length=`(tar xf $tar_file sysupgrade-$board/root -O | wc -c) 2> /dev/null`
 		[ "$kernel_length" = 0 -o "$rootfs_length" = 0 ] && {
-			echo "The upgarde image is corrupt."
+			echo "The upgrade image is corrupt."
 			return 1
 		}
 		return 0

@@ -1,15 +1,21 @@
 
 --require("luci.tools.webadmin")
 
-mp = Map("openvpn", "OpenVPN Server","")
+mp = Map("openvpn", "OpenVPN Server",translate("An easy config OpenVPN Server Web-UI"))
 
-s = mp:section(TypedSection, "openvpn", "", translate("An easy config OpenVPN Server Web-UI"))
+mp:section(SimpleSection).template  = "openvpn/openvpn_status"
+
+s = mp:section(TypedSection, "openvpn")
 s.anonymous = true
 s.addremove = false
 
 s:tab("basic",  translate("Base Setting"))
 
 o = s:taboption("basic", Flag, "enabled", translate("Enable"))
+
+proto = s:taboption("basic",Value,"proto", translate("Proto"))
+proto:value("tcp-server", translate("TCP Server"))
+proto:value("udp", translate("UDP Server"))
 
 port = s:taboption("basic", Value, "port", translate("Port"))
 port.datatype = "range(1,65535)"
@@ -88,44 +94,10 @@ function Download()
 	luci.http.close()
 end
 
-t = mp:section(Table, openvpn_process_status())
-t.anonymous = true
-
-t:option(DummyValue, "status", translate("OpenVPN status"))
-
-if pid == "" then
-  start = t:option(Button, "_start", translate("Start"))
-  start.inputstyle = "apply"
-  function start.write(self, section)
-        luci.util.exec("uci set openvpn.myvpn.enabled=='1' &&  uci commit openvpn")
-        message = luci.util.exec("/etc/init.d/openvpn start 2>&1")
-        luci.util.exec("sleep 2")
-        luci.http.redirect(
-                luci.dispatcher.build_url("admin", "vpn", "openvpn-server") .. "?message=" .. message
-        )
-  end
-else
-  stop = t:option(Button, "_stop", translate("Stop"))
-  stop.inputstyle = "reset"
-  function stop.write(self, section)
-        luci.util.exec("uci set openvpn.myvpn.enabled=='0' &&  uci commit openvpn")
-        luci.util.exec("/etc/init.d/openvpn stop")
-        luci.util.exec("sleep 2")
-        luci.http.redirect(
-                luci.dispatcher.build_url("admin", "vpn", "openvpn-server")
-        )
-  end
-end
-
 function mp.on_after_commit(self)
   os.execute("uci set firewall.openvpn.dest_port=$(uci get openvpn.myvpn.port) && uci commit firewall &&  /etc/init.d/firewall restart")
   os.execute("/etc/init.d/openvpn restart")
 end
 
-
---local apply = luci.http.formvalue("cbi.apply")
---if apply then
---	os.execute("/etc/init.d/openvpn restart")
---end
 
 return mp

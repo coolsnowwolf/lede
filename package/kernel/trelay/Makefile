@@ -10,7 +10,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=trelay
 PKG_VERSION:=0.1
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -41,9 +41,9 @@ endef
 
 define KernelPackage/trelay/install
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/net $(1)/etc/init.d $(1)/etc/config
-	$(INSTALL_DATA) ./files/trelay.hotplug $(1)/etc/hotplug.d/net/50-trelay
+	$(INSTALL_CONF) ./files/trelay.hotplug $(1)/etc/hotplug.d/net/50-trelay
 	$(INSTALL_BIN) ./files/trelay.init $(1)/etc/init.d/trelay
-	$(INSTALL_DATA) ./files/trelay.config $(1)/etc/config/trelay
+	$(INSTALL_CONF) ./files/trelay.config $(1)/etc/config/trelay
 endef
 
 $(eval $(call KernelPackage,trelay))

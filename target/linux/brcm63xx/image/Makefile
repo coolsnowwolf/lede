@@ -132,11 +132,6 @@ define Build/spw303v-bin
 	mv $@.spw303v $@
 endef
 
-define Build/xor-image
-	$(STAGING_DIR_HOST)/bin/xorimage -i $@ -o $@.xor
-	mv $@.xor $@
-endef
-
 define Build/zyxel-bin
 	$(STAGING_DIR_HOST)/bin/zyxbcm -i $@ -o $@.zyxel
 	mv $@.zyxel $@
@@ -168,12 +163,12 @@ define Device/Default
   DEVICE_DTS_DIR := ../dts
 endef
 
-ATH5K_PACKAGES := kmod-ath5k wpad-mini
-ATH9K_PACKAGES := kmod-ath9k wpad-mini
-B43_PACKAGES := kmod-b43 wpad-mini
+ATH5K_PACKAGES := kmod-ath5k wpad-basic
+ATH9K_PACKAGES := kmod-ath9k wpad-basic
+B43_PACKAGES := kmod-b43 wpad-basic
 BRCMWL_PACKAGES := kmod-brcm-wl nas wlc
-RT28_PACKAGES := kmod-rt2800-pci wpad-mini
-RT61_PACKAGES := kmod-rt61-pci wpad-mini
+RT28_PACKAGES := kmod-rt2800-pci wpad-basic
+RT61_PACKAGES := kmod-rt61-pci wpad-basic
 USB1_PACKAGES := kmod-usb-ohci kmod-usb-ledtrig-usbport
 USB2_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport
 

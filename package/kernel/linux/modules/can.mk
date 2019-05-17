@@ -99,7 +99,7 @@ $(eval $(call KernelPackage,can-c-can-pci))
 define KernelPackage/can-c-can-platform
   TITLE:=Platform Bus based BOSCH C_CAN/D_CAN driver
   KCONFIG:=CONFIG_CAN_C_CAN_PLATFORM
-  DEPENDS:=kmod-can-c-can +!LINUX_3_18:kmod-regmap
+  DEPENDS:=kmod-can-c-can +!LINUX_3_18:kmod-regmap-core
   FILES:=$(LINUX_DIR)/drivers/net/can/c_can/c_can_platform.ko
   AUTOLOAD:=$(call AutoProbe,c_can_platform)
   $(call AddDepends/can)
@@ -231,7 +231,9 @@ $(eval $(call KernelPackage,can-usb-esd))
 define KernelPackage/can-usb-kvaser
   TITLE:=Kvaser CAN/USB interface
   KCONFIG:=CONFIG_CAN_KVASER_USB
-  FILES:=$(LINUX_DIR)/drivers/net/can/usb/kvaser_usb.ko
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/can/usb/kvaser_usb.ko@lt4.19 \
+	$(LINUX_DIR)/drivers/net/can/usb/kvaser_usb/kvaser_usb.ko@ge4.19
   AUTOLOAD:=$(call AutoProbe,kvaser_usb)
   $(call AddDepends/can,+kmod-usb-core)
 endef

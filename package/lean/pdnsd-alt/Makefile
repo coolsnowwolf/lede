@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pdnsd
-PKG_VERSION:=1.2.9a-par
+PKG_VERSION:=1.2.9b-par
 PKG_RELEASE=$(PKG_SOURCE_VERSION)
 
 PKG_SOURCE_PROTO:=git
@@ -43,7 +43,6 @@ CONFIGURE_ARGS += \
 define Package/pdnsd-alt/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/pdnsd $(1)/usr/sbin/
-	ln $(1)/usr/sbin/pdnsd $(1)/usr/sbin/dnscache
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/pdnsd-ctl/pdnsd-ctl $(1)/usr/bin/
 	#$(INSTALL_DIR) $(1)/etc/init.d

@@ -7,18 +7,16 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_BRANCH:=trunk
-PKG_SOURCE_URL:=https://shop.ntop.org/svn/ntop/trunk/n2n/n2n_v2
-PKG_REV:=9349
-
 PKG_NAME:=n2n_v2
-PKG_VERSION:=$(PKG_REV)
+PKG_VERSION:=2.4
 PKG_RELEASE:=1
+PKG_REV=25563f31d9aba5f61b3e2fb42941b66dad1f531f
 
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-r$(PKG_REV).tar.bz2
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE:=$(PKG_SOURCE_SUBDIR).tar.gz
-PKG_SOURCE_PROTO:=svn
+PKG_SOURCE_PROTO:=git
 PKG_SOURCE_VERSION:=$(PKG_REV)
+PKG_SOURCE_URL:=https://github.com/ntop/n2n.git
 
 include $(INCLUDE_DIR)/package.mk
 

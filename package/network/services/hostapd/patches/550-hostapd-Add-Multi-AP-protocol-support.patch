@@ -1,0 +1,306 @@
+From 9c06f0f6aed26c1628acaa74df0232dd7b345e9a Mon Sep 17 00:00:00 2001
+From: Venkateswara Naralasetty <vnaralas@codeaurora.org>
+Date: Wed, 5 Dec 2018 11:23:51 +0100
+Subject: [PATCH] hostapd: Add Multi-AP protocol support
+
+The purpose of Multi-AP specification is to enable inter-operability
+across Wi-Fi access points (APs) from different vendors.
+
+This patch introduces one new configuration parameter 'multi_ap' to
+enable Multi-AP functionality and to configure the BSS as a backhaul
+and/or fronthaul BSS.
+
+Advertise vendor specific Multi-AP capabilities in (Re)Association
+Response frame, if Multi-AP functionality is enabled through the
+configuration parameter.
+
+A backhaul AP must support receiving both 3addr and 4addr frames from a
+backhaul STA, so create a VLAN for it just like is done for WDS, i.e.,
+by calling hostapd_set_wds_sta(). Since Multi-AP requires WPA2 (never
+WEP), we can safely call hostapd_set_wds_encryption() as well and we can
+reuse the entire WDS condition.
+
+To parse the Multi-AP Extension subelement, we use get_ie(): even though
+that function is meant for parsing IEs, it works for subelements.
+
+Signed-off-by: Venkateswara Naralasetty <vnaralas@codeaurora.org>
+Signed-off-by: Jouni Malinen <jouni@codeaurora.org>
+Signed-off-by: Arnout Vandecappelle (Essensium/Mind) <arnout@mind.be>
+---
+ hostapd/config_file.c          | 10 +++++
+ hostapd/hostapd.conf           |  7 ++++
+ src/ap/ap_config.h             |  4 ++
+ src/ap/ieee802_11.c            | 77 +++++++++++++++++++++++++++++++++-
+ src/ap/sta_info.c              |  2 +-
+ src/ap/sta_info.h              |  1 +
+ src/common/ieee802_11_common.c | 24 +++++++++++
+ src/common/ieee802_11_common.h |  4 ++
+ src/common/ieee802_11_defs.h   |  7 ++++
+ 9 files changed, 134 insertions(+), 2 deletions(-)
+
+--- a/hostapd/config_file.c
++++ b/hostapd/config_file.c
+@@ -4115,6 +4115,16 @@ static int hostapd_config_fill(struct ho
+ 	} else if (os_strcmp(buf, "coloc_intf_reporting") == 0) {
+ 		bss->coloc_intf_reporting = atoi(pos);
+ #endif /* CONFIG_OWE */
++	} else if (os_strcmp(buf, "multi_ap") == 0) {
++		int val = atoi(pos);
++
++		if (val < 0 || val > 3) {
++			wpa_printf(MSG_ERROR, "Line %d: Invalid multi_ap '%s'",
++				   line, buf);
++			return -1;
++		}
++
++		bss->multi_ap = val;
+ 	} else {
+ 		wpa_printf(MSG_ERROR,
+ 			   "Line %d: unknown configuration item '%s'",
+--- a/hostapd/hostapd.conf
++++ b/hostapd/hostapd.conf
+@@ -438,6 +438,13 @@ wmm_ac_vo_txop_limit=47
+ wmm_ac_vo_acm=0
+ # Note: for IEEE 802.11b mode: cWmin=3 cWmax=4 burst=102
+ 
++# Enable Multi-AP functionality
++# 0 = disabled (default)
++# 1 = AP support backhaul BSS
++# 2 = AP support fronthaul BSS
++# 3 = AP supports both backhaul BSS and fronthaul BSS
++#multi_ap=0
++
+ # Static WEP key configuration
+ #
+ # The key number to use when transmitting.
+--- a/src/ap/ap_config.h
++++ b/src/ap/ap_config.h
+@@ -688,6 +688,10 @@ struct hostapd_bss_config {
+ #endif /* CONFIG_OWE */
+ 
+ 	int coloc_intf_reporting;
++
++#define BACKHAUL_BSS 1
++#define FRONTHAUL_BSS 2
++	int multi_ap; /* bitmap of BACKHAUL_BSS, FRONTHAUL_BSS */
+ };
+ 
+ /**
+--- a/src/ap/ieee802_11.c
++++ b/src/ap/ieee802_11.c
+@@ -62,6 +62,22 @@ prepare_auth_resp_fils(struct hostapd_da
+ 		       int *is_pub);
+ #endif /* CONFIG_FILS */
+ 
++
++u8 * hostapd_eid_multi_ap(struct hostapd_data *hapd, u8 *eid)
++{
++	u8 multi_ap_val = 0;
++
++	if (!hapd->conf->multi_ap)
++		return eid;
++	if (hapd->conf->multi_ap & BACKHAUL_BSS)
++		multi_ap_val |= MULTI_AP_BACKHAUL_BSS;
++	if (hapd->conf->multi_ap & FRONTHAUL_BSS)
++		multi_ap_val |= MULTI_AP_FRONTHAUL_BSS;
++
++	return eid + add_multi_ap_ie(eid, 9, multi_ap_val);
++}
++
++
+ u8 * hostapd_eid_supp_rates(struct hostapd_data *hapd, u8 *eid)
+ {
+ 	u8 *pos = eid;
+@@ -2210,6 +2226,57 @@ static u16 check_wmm(struct hostapd_data
+ 	return WLAN_STATUS_SUCCESS;
+ }
+ 
++static u16 check_multi_ap(struct hostapd_data *hapd, struct sta_info *sta,
++			  const u8 *multi_ap_ie, size_t multi_ap_len)
++{
++	u8 multi_ap_value = 0;
++
++	sta->flags &= ~WLAN_STA_MULTI_AP;
++
++	if (!hapd->conf->multi_ap)
++		return WLAN_STATUS_SUCCESS;
++
++	if (multi_ap_ie) {
++		const u8 *multi_ap_subelem;
++
++		multi_ap_subelem = get_ie(multi_ap_ie + 4,
++					  multi_ap_len - 4,
++					  MULTI_AP_SUB_ELEM_TYPE);
++		if (multi_ap_subelem && multi_ap_subelem[1] == 1) {
++			multi_ap_value = multi_ap_subelem[2];
++		} else {
++			hostapd_logger(hapd, sta->addr,
++				       HOSTAPD_MODULE_IEEE80211,
++				       HOSTAPD_LEVEL_INFO,
++				       "Multi-AP IE has missing or invalid Multi-AP subelement");
++			return WLAN_STATUS_INVALID_IE;
++		}
++	}
++
++	if (multi_ap_value == MULTI_AP_BACKHAUL_STA)
++		sta->flags |= WLAN_STA_MULTI_AP;
++
++	if ((hapd->conf->multi_ap & BACKHAUL_BSS) &&
++	    multi_ap_value == MULTI_AP_BACKHAUL_STA)
++		return WLAN_STATUS_SUCCESS;
++
++	if (hapd->conf->multi_ap & FRONTHAUL_BSS) {
++		if (multi_ap_value == MULTI_AP_BACKHAUL_STA) {
++			hostapd_logger(hapd, sta->addr,
++				       HOSTAPD_MODULE_IEEE80211,
++				       HOSTAPD_LEVEL_INFO,
++				       "Backhaul STA tries to associate with fronthaul-only BSS");
++			return WLAN_STATUS_ASSOC_DENIED_UNSPEC;
++		}
++		return WLAN_STATUS_SUCCESS;
++	}
++
++	hostapd_logger(hapd, sta->addr, HOSTAPD_MODULE_IEEE80211,
++		       HOSTAPD_LEVEL_INFO,
++		       "Non-Multi-AP STA tries to associate with backhaul-only BSS");
++	return WLAN_STATUS_ASSOC_DENIED_UNSPEC;
++}
++
+ 
+ static u16 copy_supp_rates(struct hostapd_data *hapd, struct sta_info *sta,
+ 			   struct ieee802_11_elems *elems)
+@@ -2466,6 +2533,11 @@ static u16 check_assoc_ies(struct hostap
+ 	resp = copy_supp_rates(hapd, sta, &elems);
+ 	if (resp != WLAN_STATUS_SUCCESS)
+ 		return resp;
++
++	resp = check_multi_ap(hapd, sta, elems.multi_ap, elems.multi_ap_len);
++	if (resp != WLAN_STATUS_SUCCESS)
++		return resp;
++
+ #ifdef CONFIG_IEEE80211N
+ 	resp = copy_sta_ht_capab(hapd, sta, elems.ht_capabilities);
+ 	if (resp != WLAN_STATUS_SUCCESS)
+@@ -2996,6 +3068,9 @@ static u16 send_assoc_resp(struct hostap
+ 	}
+ #endif /* CONFIG_WPS */
+ 
++	if (sta && (sta->flags & WLAN_STA_MULTI_AP))
++		p = hostapd_eid_multi_ap(hapd, p);
++
+ #ifdef CONFIG_P2P
+ 	if (sta && sta->p2p_ie && hapd->p2p_group) {
+ 		struct wpabuf *p2p_resp_ie;
+@@ -4236,7 +4311,7 @@ static void handle_assoc_cb(struct hosta
+ 		sta->flags |= WLAN_STA_WDS;
+ 	}
+ 
+-	if (sta->flags & WLAN_STA_WDS) {
++	if (sta->flags & (WLAN_STA_WDS | WLAN_STA_MULTI_AP)) {
+ 		int ret;
+ 		char ifname_wds[IFNAMSIZ + 1];
+ 
+--- a/src/ap/sta_info.c
++++ b/src/ap/sta_info.c
+@@ -166,7 +166,7 @@ void ap_free_sta(struct hostapd_data *ha
+ 	/* just in case */
+ 	ap_sta_set_authorized(hapd, sta, 0);
+ 
+-	if (sta->flags & WLAN_STA_WDS)
++	if (sta->flags & (WLAN_STA_WDS | WLAN_STA_MULTI_AP))
+ 		hostapd_set_wds_sta(hapd, NULL, sta->addr, sta->aid, 0);
+ 
+ 	if (sta->ipaddr)
+--- a/src/ap/sta_info.h
++++ b/src/ap/sta_info.h
+@@ -36,6 +36,7 @@
+ #define WLAN_STA_VHT_OPMODE_ENABLED BIT(20)
+ #define WLAN_STA_VENDOR_VHT BIT(21)
+ #define WLAN_STA_PENDING_FILS_ERP BIT(22)
++#define WLAN_STA_MULTI_AP BIT(23)
+ #define WLAN_STA_PENDING_DISASSOC_CB BIT(29)
+ #define WLAN_STA_PENDING_DEAUTH_CB BIT(30)
+ #define WLAN_STA_NONERP BIT(31)
+--- a/src/common/ieee802_11_common.c
++++ b/src/common/ieee802_11_common.c
+@@ -126,6 +126,10 @@ static int ieee802_11_parse_vendor_speci
+ 			elems->roaming_cons_sel = pos;
+ 			elems->roaming_cons_sel_len = elen;
+ 			break;
++		case MULTI_AP_OUI_TYPE:
++			elems->multi_ap = pos;
++			elems->multi_ap_len = elen;
++			break;
+ 		default:
+ 			wpa_printf(MSG_MSGDUMP, "Unknown WFA "
+ 				   "information element ignored "
+@@ -1519,6 +1523,26 @@ size_t mbo_add_ie(u8 *buf, size_t len, c
+ }
+ 
+ 
++size_t add_multi_ap_ie(u8 *buf, size_t len, u8 value)
++{
++	u8 *pos = buf;
++
++	if (len < 9)
++		return 0;
++
++	*pos++ = WLAN_EID_VENDOR_SPECIFIC;
++	*pos++ = 7; /* len */
++	WPA_PUT_BE24(pos, OUI_WFA);
++	pos += 3;
++	*pos++ = MULTI_AP_OUI_TYPE;
++	*pos++ = MULTI_AP_SUB_ELEM_TYPE;
++	*pos++ = 1; /* len */
++	*pos++ = value;
++
++	return pos - buf;
++}
++
++
+ static const struct country_op_class us_op_class[] = {
+ 	{ 1, 115 },
+ 	{ 2, 118 },
+--- a/src/common/ieee802_11_common.h
++++ b/src/common/ieee802_11_common.h
+@@ -84,6 +84,7 @@ struct ieee802_11_elems {
+ 	const u8 *power_capab;
+ 	const u8 *roaming_cons_sel;
+ 	const u8 *password_id;
++	const u8 *multi_ap;
+ 
+ 	u8 ssid_len;
+ 	u8 supp_rates_len;
+@@ -130,6 +131,7 @@ struct ieee802_11_elems {
+ 	u8 power_capab_len;
+ 	u8 roaming_cons_sel_len;
+ 	u8 password_id_len;
++	u8 multi_ap_len;
+ 
+ 	struct mb_ies_info mb_ies;
+ };
+@@ -189,6 +191,8 @@ const u8 * get_ie_ext(const u8 *ies, siz
+ 
+ size_t mbo_add_ie(u8 *buf, size_t len, const u8 *attr, size_t attr_len);
+ 
++size_t add_multi_ap_ie(u8 *buf, size_t len, u8 value);
++
+ struct country_op_class {
+ 	u8 country_op_class;
+ 	u8 global_op_class;
+--- a/src/common/ieee802_11_defs.h
++++ b/src/common/ieee802_11_defs.h
+@@ -1210,6 +1210,13 @@ struct ieee80211_ampe_ie {
+ #define MBO_OUI_TYPE 22
+ #define OWE_IE_VENDOR_TYPE 0x506f9a1c
+ #define OWE_OUI_TYPE 28
++#define MULTI_AP_OUI_TYPE 0x1B
++
++#define MULTI_AP_SUB_ELEM_TYPE 0x06
++#define MULTI_AP_TEAR_DOWN BIT(4)
++#define MULTI_AP_FRONTHAUL_BSS BIT(5)
++#define MULTI_AP_BACKHAUL_BSS BIT(6)
++#define MULTI_AP_BACKHAUL_STA BIT(7)
+ 
+ #define WMM_OUI_TYPE 2
+ #define WMM_OUI_SUBTYPE_INFORMATION_ELEMENT 0

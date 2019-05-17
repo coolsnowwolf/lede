@@ -1,0 +1,199 @@
+From 48d12f14c9c0fc8cf943b52774c3892517dd72d4 Mon Sep 17 00:00:00 2001
+From: Simon Kelley <simon@thekelleys.org.uk>
+Date: Fri, 2 Nov 2018 21:55:04 +0000
+Subject: [PATCH 10/11] Remove the NO_FORK compile-time option, and support for
+ uclinux.
+
+In an era where everything has an MMU, this looks like
+an anachronism, and it adds to (Ok, multiplies!) the
+combinatorial explosion of compile-time options.
+
+Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
+---
+ CHANGELOG     |  6 ++++++
+ src/config.h  | 21 ++-------------------
+ src/dnsmasq.c | 14 --------------
+ src/option.c  |  4 +---
+ 4 files changed, 9 insertions(+), 36 deletions(-)
+
+--- a/CHANGELOG
++++ b/CHANGELOG
+@@ -11,6 +11,12 @@ version 2.81
+ 	This fix passes cache entries back from the TCP child process to
+ 	the main server process, and fixes the problem.
+ 
++	Remove the NO_FORK compile-time option, and support for uclinux.
++	In an era where everything has an MMU, this looks like
++	an anachronism, and it adds to (Ok, multiplies!) the
++	combinatorial explosion of compile-time options. Thanks to
++	Kevin Darbyshire-Bryant for the patch.
++
+ 
+ version 2.80
+ 	Add support for RFC 4039 DHCP rapid commit. Thanks to Ashram Method
+--- a/src/config.h
++++ b/src/config.h
+@@ -239,27 +239,13 @@ HAVE_SOCKADDR_SA_LEN
+    defined if struct sockaddr has sa_len field (*BSD) 
+ */
+ 
+-/* Must precede __linux__ since uClinux defines __linux__ too. */
+-#if defined(__uClinux__)
+-#define HAVE_LINUX_NETWORK
+-#define HAVE_GETOPT_LONG
+-#undef HAVE_SOCKADDR_SA_LEN
+-/* Never use fork() on uClinux. Note that this is subtly different from the
+-   --keep-in-foreground option, since it also  suppresses forking new 
+-   processes for TCP connections and disables the call-a-script on leasechange
+-   system. It's intended for use on MMU-less kernels. */
+-#define NO_FORK
+-
+-#elif defined(__UCLIBC__)
++#if defined(__UCLIBC__)
+ #define HAVE_LINUX_NETWORK
+ #if defined(__UCLIBC_HAS_GNU_GETOPT__) || \
+    ((__UCLIBC_MAJOR__==0) && (__UCLIBC_MINOR__==9) && (__UCLIBC_SUBLEVEL__<21))
+ #    define HAVE_GETOPT_LONG
+ #endif
+ #undef HAVE_SOCKADDR_SA_LEN
+-#if !defined(__ARCH_HAS_MMU__) && !defined(__UCLIBC_HAS_MMU__)
+-#  define NO_FORK
+-#endif
+ #if defined(__UCLIBC_HAS_IPV6__)
+ #  ifndef IPV6_V6ONLY
+ #    define IPV6_V6ONLY 26
+@@ -328,7 +314,7 @@ HAVE_SOCKADDR_SA_LEN
+ #define HAVE_DHCP
+ #endif
+ 
+-#if defined(NO_SCRIPT) || defined(NO_FORK)
++#if defined(NO_SCRIPT)
+ #undef HAVE_SCRIPT
+ #undef HAVE_LUASCRIPT
+ #endif
+@@ -372,9 +358,6 @@ static char *compile_opts =
+ #ifdef HAVE_BROKEN_RTC
+ "no-RTC "
+ #endif
+-#ifdef NO_FORK
+-"no-MMU "
+-#endif
+ #ifndef HAVE_DBUS
+ "no-"
+ #endif
+--- a/src/dnsmasq.c
++++ b/src/dnsmasq.c
+@@ -485,7 +485,6 @@ int main (int argc, char **argv)
+       if (chdir("/") != 0)
+ 	die(_("cannot chdir to filesystem root: %s"), NULL, EC_MISC); 
+ 
+-#ifndef NO_FORK      
+       if (!option_bool(OPT_NO_FORK))
+ 	{
+ 	  pid_t pid;
+@@ -525,7 +524,6 @@ int main (int argc, char **argv)
+ 	  if (pid != 0)
+ 	    _exit(0);
+ 	}
+-#endif
+             
+       /* write pidfile _after_ forking ! */
+       if (daemon->runfile)
+@@ -1628,12 +1626,10 @@ static int set_dns_listeners(time_t now)
+ 
+     }
+   
+-#ifndef NO_FORK
+   if (!option_bool(OPT_DEBUG))
+     for (i = 0; i < MAX_PROCS; i++)
+       if (daemon->tcp_pipes[i] != -1)
+ 	poll_listen(daemon->tcp_pipes[i], POLLIN);
+-#endif
+   
+   return wait;
+ }
+@@ -1643,9 +1639,7 @@ static void check_dns_listeners(time_t n
+   struct serverfd *serverfdp;
+   struct listener *listener;
+   int i;
+-#ifndef NO_FORK
+   int pipefd[2];
+-#endif
+   
+   for (serverfdp = daemon->sfds; serverfdp; serverfdp = serverfdp->next)
+     if (poll_check(serverfdp->fd, POLLIN))
+@@ -1657,7 +1651,6 @@ static void check_dns_listeners(time_t n
+ 	  poll_check(daemon->randomsocks[i].fd, POLLIN))
+ 	reply_query(daemon->randomsocks[i].fd, daemon->randomsocks[i].family, now);
+ 
+-#ifndef NO_FORK
+   /* Races. The child process can die before we read all of the data from the
+      pipe, or vice versa. Therefore send tcp_pids to zero when we wait() the 
+      process, and tcp_pipes to -1 and close the FD when we read the last
+@@ -1674,7 +1667,6 @@ static void check_dns_listeners(time_t n
+ 	  close(daemon->tcp_pipes[i]);
+ 	  daemon->tcp_pipes[i] = -1;	
+ 	}
+-#endif
+ 	
+   for (listener = daemon->listeners; listener; listener = listener->next)
+     {
+@@ -1768,7 +1760,6 @@ static void check_dns_listeners(time_t n
+ 	      shutdown(confd, SHUT_RDWR);
+ 	      while (retry_send(close(confd)));
+ 	    }
+-#ifndef NO_FORK
+ 	  else if (!option_bool(OPT_DEBUG) && pipe(pipefd) == 0 && (p = fork()) != 0)
+ 	    {
+ 	      close(pipefd[1]); /* parent needs read pipe end. */
+@@ -1791,7 +1782,6 @@ static void check_dns_listeners(time_t n
+ 	      /* The child can use up to TCP_MAX_QUERIES ids, so skip that many. */
+ 	      daemon->log_id += TCP_MAX_QUERIES;
+ 	    }
+-#endif
+ 	  else
+ 	    {
+ 	      unsigned char *buff;
+@@ -1811,7 +1801,6 @@ static void check_dns_listeners(time_t n
+ 		  auth_dns = 0;
+ 		}
+ 
+-#ifndef NO_FORK
+ 	      /* Arrange for SIGALRM after CHILD_LIFETIME seconds to
+ 		 terminate the process. */
+ 	      if (!option_bool(OPT_DEBUG))
+@@ -1820,7 +1809,6 @@ static void check_dns_listeners(time_t n
+ 		  close(pipefd[0]); /* close read end in child. */
+ 		  daemon->pipe_to_parent = pipefd[1];
+ 		}
+-#endif
+ 
+ 	      /* start with no upstream connections. */
+ 	      for (s = daemon->servers; s; s = s->next)
+@@ -1846,13 +1834,11 @@ static void check_dns_listeners(time_t n
+ 		    shutdown(s->tcpfd, SHUT_RDWR);
+ 		    while (retry_send(close(s->tcpfd)));
+ 		  }
+-#ifndef NO_FORK		   
+ 	      if (!option_bool(OPT_DEBUG))
+ 		{
+ 		  flush_log();
+ 		  _exit(0);
+ 		}
+-#endif
+ 	    }
+ 	}
+     }
+--- a/src/option.c
++++ b/src/option.c
+@@ -1828,9 +1828,7 @@ static int one_opt(int option, char *arg
+       /* Sorry about the gross pre-processor abuse */
+     case '6':             /* --dhcp-script */
+     case LOPT_LUASCRIPT:  /* --dhcp-luascript */
+-#  if defined(NO_FORK)
+-      ret_err(_("cannot run scripts under uClinux"));
+-#  elif !defined(HAVE_SCRIPT)
++#  if !defined(HAVE_SCRIPT)
+       ret_err(_("recompile with HAVE_SCRIPT defined to enable lease-change scripts"));
+ #  else
+       if (option == LOPT_LUASCRIPT)

@@ -1,0 +1,41 @@
+From 5537bac0e5c8f3634c5595c21c7d63f0c0263e0e Mon Sep 17 00:00:00 2001
+From: Boris Brezillon <boris.brezillon@free-electrons.com>
+Date: Wed, 22 Nov 2017 21:39:28 +0100
+Subject: [PATCH 175/454] drm/vc4: Fix false positive WARN() backtrace on
+ refcount_inc() usage
+
+With CONFIG_REFCOUNT_FULL enabled, refcount_inc() complains when it's
+passed a refcount object that has its counter set to 0. In this driver,
+this is a valid use case since we want to increment ->usecnt only when
+the BO object starts to be used by real HW components and this is
+definitely not the case when the BO is created.
+
+Fix the problem by using refcount_inc_not_zero() instead of
+refcount_inc() and fallback to refcount_set(1) when
+refcount_inc_not_zero() returns false. Note that this 2-steps operation
+is not racy here because the whole section is protected by a mutex
+which guarantees that the counter does not change between the
+refcount_inc_not_zero() and refcount_set() calls.
+
+Fixes: b9f19259b84d ("drm/vc4: Add the DRM_IOCTL_VC4_GEM_MADVISE ioctl")
+Reported-by: Stefan Wahren <stefan.wahren@i2se.com>
+Signed-off-by: Boris Brezillon <boris.brezillon@free-electrons.com>
+Acked-by: Eric Anholt <eric@anholt.net>
+Link: https://patchwork.freedesktop.org/patch/msgid/20171122203928.28135-1-boris.brezillon@free-electrons.com
+(cherry picked from commit 5bfd40139d55790cbc8e56ad1ce4f974f1fa186d)
+---
+ drivers/gpu/drm/vc4/vc4_bo.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_bo.c
++++ b/drivers/gpu/drm/vc4/vc4_bo.c
+@@ -639,7 +639,8 @@ int vc4_bo_inc_usecnt(struct vc4_bo *bo)
+ 	mutex_lock(&bo->madv_lock);
+ 	switch (bo->madv) {
+ 	case VC4_MADV_WILLNEED:
+-		refcount_inc(&bo->usecnt);
++		if (!refcount_inc_not_zero(&bo->usecnt))
++			refcount_set(&bo->usecnt, 1);
+ 		ret = 0;
+ 		break;
+ 	case VC4_MADV_DONTNEED:

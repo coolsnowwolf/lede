@@ -1,0 +1,235 @@
+From 3e471b58fb766ed5b45ff8b560231da4704c946d Mon Sep 17 00:00:00 2001
+From: Sugizaki Yukimasa <i.can.speak.c.and.basic@gmail.com>
+Date: Wed, 10 Jan 2018 06:25:51 +0900
+Subject: [PATCH 156/454] vcsm: Revert to do page-table-walk-based cache
+ manipulating on some ioctl calls
+
+On FLUSH, INVALID, CLEAN_INVALID ioctl calls, cache operations based on
+page table walk were used in case that the buffer of the cache is not
+pinned.  So reverted to do page-table-based cache manipulating.
+
+Signed-off-by: Sugizaki Yukimasa <i.can.speak.c.and.basic@gmail.com>
+---
+ drivers/char/broadcom/vc_sm/vmcs_sm.c | 141 ++++++++++++++++++++------
+ 1 file changed, 110 insertions(+), 31 deletions(-)
+
+--- a/drivers/char/broadcom/vc_sm/vmcs_sm.c
++++ b/drivers/char/broadcom/vc_sm/vmcs_sm.c
+@@ -1256,7 +1256,33 @@ static const struct vm_operations_struct
+ 	.fault = vcsm_vma_fault,
+ };
+ 
+-static int clean_invalid_mem_2d(const void __user *addr,
++/* Converts VCSM_CACHE_OP_* to an operating function. */
++static void (*cache_op_to_func(const unsigned cache_op))
++		(const void*, const void*)
++{
++	switch (cache_op) {
++	case VCSM_CACHE_OP_NOP:
++		return NULL;
++
++	case VCSM_CACHE_OP_INV:
++		return dmac_inv_range;
++
++	case VCSM_CACHE_OP_CLEAN:
++		return dmac_clean_range;
++
++	case VCSM_CACHE_OP_FLUSH:
++		return dmac_flush_range;
++
++	default:
++		pr_err("[%s]: Invalid cache_op: 0x%08x\n", __func__, cache_op);
++		return NULL;
++	}
++}
++
++/*
++ * Clean/invalid/flush cache of which buffer is already pinned (i.e. accessed).
++ */
++static int clean_invalid_contiguous_mem_2d(const void __user *addr,
+ 		const size_t block_count, const size_t block_size, const size_t stride,
+ 		const unsigned cache_op)
+ {
+@@ -1268,22 +1294,9 @@ static int clean_invalid_mem_2d(const vo
+ 		return -EINVAL;
+ 	}
+ 
+-	switch (cache_op) {
+-	case VCSM_CACHE_OP_NOP:
+-		return 0;
+-	case VCSM_CACHE_OP_INV:
+-		op_fn = dmac_inv_range;
+-		break;
+-	case VCSM_CACHE_OP_CLEAN:
+-		op_fn = dmac_clean_range;
+-		break;
+-	case VCSM_CACHE_OP_FLUSH:
+-		op_fn = dmac_flush_range;
+-		break;
+-	default:
+-		pr_err("[%s]: Invalid cache_op: 0x%08x\n", __func__, cache_op);
++	op_fn = cache_op_to_func(cache_op);
++	if (op_fn == NULL)
+ 		return -EINVAL;
+-	}
+ 
+ 	for (i = 0; i < block_count; i ++, addr += stride)
+ 		op_fn(addr, addr + block_size);
+@@ -1291,14 +1304,73 @@ static int clean_invalid_mem_2d(const vo
+ 	return 0;
+ }
+ 
+-static int clean_invalid_mem(const void __user *addr, const size_t size,
++/* Clean/invalid/flush cache of which buffer may be non-pinned. */
++/* The caller must lock current->mm->mmap_sem for read. */
++static int clean_invalid_mem_walk(unsigned long addr, const size_t size,
+ 		const unsigned cache_op)
+ {
+-	return clean_invalid_mem_2d(addr, 1, size, 0, cache_op);
++	pgd_t *pgd;
++	pud_t *pud;
++	pmd_t *pmd;
++	pte_t *pte;
++	unsigned long pgd_next, pud_next, pmd_next;
++	const unsigned long end = ALIGN(addr + size, PAGE_SIZE);
++	void (*op_fn)(const void*, const void*);
++
++	addr &= PAGE_MASK;
++
++	if (addr >= end)
++		return 0;
++
++	op_fn = cache_op_to_func(cache_op);
++	if (op_fn == NULL)
++		return -EINVAL;
++
++	/* Walk PGD */
++	pgd = pgd_offset(current->mm, addr);
++	do {
++		pgd_next = pgd_addr_end(addr, end);
++
++		if (pgd_none(*pgd) || pgd_bad(*pgd))
++			continue;
++
++		/* Walk PUD */
++		pud = pud_offset(pgd, addr);
++		do {
++			pud_next = pud_addr_end(addr, pgd_next);
++			if (pud_none(*pud) || pud_bad(*pud))
++				continue;
++
++			/* Walk PMD */
++			pmd = pmd_offset(pud, addr);
++			do {
++				pmd_next = pmd_addr_end(addr, pud_next);
++				if (pmd_none(*pmd) || pmd_bad(*pmd))
++					continue;
++
++				/* Walk PTE */
++				pte = pte_offset_map(pmd, addr);
++				do {
++					if (pte_none(*pte) || !pte_present(*pte))
++						continue;
++
++					op_fn((const void __user*) addr,
++							(const void __user*) (addr + PAGE_SIZE));
++				} while (pte++, addr += PAGE_SIZE, addr != pmd_next);
++				pte_unmap(pte);
++
++			} while (pmd++, addr = pmd_next, addr != pud_next);
++
++		} while (pud++, addr = pud_next, addr != pgd_next);
++
++	} while (pgd++, addr = pgd_next, addr != end);
++
++	return 0;
+ }
+ 
+-static int clean_invalid_resource(const void __user *addr, const size_t size,
+-		const unsigned cache_op, const int usr_hdl,
++/* Clean/invalid/flush cache of buffer in resource */
++static int clean_invalid_resource_walk(const void __user *addr,
++		const size_t size, const unsigned cache_op, const int usr_hdl,
+ 		struct sm_resource_t *resource)
+ {
+ 	int err;
+@@ -1355,7 +1427,10 @@ static int clean_invalid_resource(const
+ 		return -EFAULT;
+ 	}
+ 
+-	err = clean_invalid_mem(addr, size, cache_op);
++	down_read(&current->mm->mmap_sem);
++	err = clean_invalid_mem_walk((unsigned long) addr, size, cache_op);
++	up_read(&current->mm->mmap_sem);
++
+ 	if (err)
+ 		resource->res_stats[stat_failure]++;
+ 
+@@ -2004,7 +2079,7 @@ static int vc_sm_ioctl_unlock(struct sm_
+ 					const unsigned long start = map->vma->vm_start;
+ 					const unsigned long end = map->vma->vm_end;
+ 
+-					ret = clean_invalid_mem((void __user*) start, end - start,
++					ret = clean_invalid_mem_walk(start, end - start,
+ 							VCSM_CACHE_OP_FLUSH);
+ 					if (ret)
+ 						goto error;
+@@ -2886,7 +2961,7 @@ static long vc_sm_ioctl(struct file *fil
+ 				goto out;
+ 			}
+ 
+-			ret = clean_invalid_resource((void __user*) ioparam.addr,
++			ret = clean_invalid_resource_walk((void __user*) ioparam.addr,
+ 					ioparam.size, VCSM_CACHE_OP_FLUSH, ioparam.handle,
+ 					resource);
+ 			vmcs_sm_release_resource(resource, 0);
+@@ -2917,7 +2992,7 @@ static long vc_sm_ioctl(struct file *fil
+ 				goto out;
+ 			}
+ 
+-			ret = clean_invalid_resource((void __user*) ioparam.addr,
++			ret = clean_invalid_resource_walk((void __user*) ioparam.addr,
+ 					ioparam.size, VCSM_CACHE_OP_INV, ioparam.handle, resource);
+ 			vmcs_sm_release_resource(resource, 0);
+ 			if (ret)
+@@ -2951,16 +3026,19 @@ static long vc_sm_ioctl(struct file *fil
+ 					goto out;
+ 				}
+ 
+-				ret = clean_invalid_resource((void __user*) ioparam.s[i].addr,
+-						ioparam.s[i].size, ioparam.s[i].cmd,
+-						ioparam.s[i].handle, resource);
++				ret = clean_invalid_resource_walk(
++						(void __user*) ioparam.s[i].addr, ioparam.s[i].size,
++						ioparam.s[i].cmd, ioparam.s[i].handle, resource);
+ 				vmcs_sm_release_resource(resource, 0);
+ 				if (ret)
+ 					goto out;
+ 			}
+ 		}
+ 		break;
+-	/* Flush/Invalidate the cache for a given mapping. */
++	/*
++	 * Flush/Invalidate the cache for a given mapping.
++	 * Blocks must be pinned (i.e. accessed) before this call.
++	 */
+ 	case VMCS_SM_CMD_CLEAN_INVALID2:
+ 		{
+ 				int i;
+@@ -2993,12 +3071,13 @@ static long vc_sm_ioctl(struct file *fil
+ 				for (i = 0; i < ioparam.op_count; i++) {
+ 					const struct vmcs_sm_ioctl_clean_invalid_block * const op = block + i;
+ 
+-					ret = clean_invalid_mem_2d((void __user*) op->start_address,
+-							op->block_count, op->block_size,
+-							op->inter_block_stride, op->invalidate_mode);
+ 					if (op->invalidate_mode == VCSM_CACHE_OP_NOP)
+ 						continue;
+ 
++					ret = clean_invalid_contiguous_mem_2d(
++							(void __user*) op->start_address, op->block_count,
++							op->block_size, op->inter_block_stride,
++							op->invalidate_mode);
+ 					if (ret)
+ 						break;
+ 				}

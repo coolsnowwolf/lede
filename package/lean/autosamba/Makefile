@@ -17,7 +17,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/autosamba
   TITLE:=Samba autoconfig hotplug script.
   MAINTAINER:=Lean
-  DEPENDS:=+luci-app-samba +kmod-fs-vfat +ntfs-3g +kmod-fs-ext4
+  DEPENDS:=+luci-app-samba
 endef
 
 define Package/autosamba/description

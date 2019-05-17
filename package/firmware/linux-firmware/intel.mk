@@ -136,23 +136,37 @@ $(eval $(call BuildPackage,iwlwifi-firmware-iwl7265))
 Package/iwlwifi-firmware-iwl7265d = $(call Package/firmware-default,Intel Wireless 7265D and 3165 firmware)
 define Package/iwlwifi-firmware-iwl7265d/install
 	$(INSTALL_DIR) $(1)/lib/firmware
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-7265D-27.ucode $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-7265D-29.ucode $(1)/lib/firmware
 endef
 $(eval $(call BuildPackage,iwlwifi-firmware-iwl7265d))
 
 Package/iwlwifi-firmware-iwl8260c = $(call Package/firmware-default,Intel Wireless 8260 and 4165 firmware)
 define Package/iwlwifi-firmware-iwl8260c/install
 	$(INSTALL_DIR) $(1)/lib/firmware
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-8000C-31.ucode $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-8000C-36.ucode $(1)/lib/firmware
 endef
 $(eval $(call BuildPackage,iwlwifi-firmware-iwl8260c))
 
 Package/iwlwifi-firmware-iwl8265 = $(call Package/firmware-default,Intel Wireless 8265 firmware)
 define Package/iwlwifi-firmware-iwl8265/install
 	$(INSTALL_DIR) $(1)/lib/firmware
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-8265-27.ucode $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-8265-36.ucode $(1)/lib/firmware
 endef
 $(eval $(call BuildPackage,iwlwifi-firmware-iwl8265))
+
+Package/iwlwifi-firmware-iwl9000 = $(call Package/firmware-default,Intel Wireless 9000 firmware)
+define Package/iwlwifi-firmware-iwl9000/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-9000-pu-b0-jf-b0-38.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl9000))
+
+Package/iwlwifi-firmware-iwl9260 = $(call Package/firmware-default,Intel Wireless 9260 firmware)
+define Package/iwlwifi-firmware-iwl9260/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-9260-th-b0-jf-b0-38.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-iwl9260))
 
 Package/e100-firmware = $(call Package/firmware-default,Intel e100)
 define Package/e100-firmware/install

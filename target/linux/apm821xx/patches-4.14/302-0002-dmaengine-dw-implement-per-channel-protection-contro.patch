@@ -1,0 +1,128 @@
+From 2aad36357bbc73bc88ebab35a59a70a8f4ae6ecb Mon Sep 17 00:00:00 2001
+From: Christian Lamparter <chunkeey@gmail.com>
+Date: Wed, 31 Oct 2018 22:27:27 +0100
+Subject: [PATCH 2/2] dmaengine: dw: implement per-channel protection control
+ setting
+
+This patch adds a new device-tree property that allows to
+specify the protection control bits for each DMA channel
+individually.
+
+Setting the "correct" bits can have a huge impact on the
+PPC460EX and APM82181 that use this DMA engine in combination
+with a DesignWare' SATA-II core (sata_dwc_460ex driver).
+
+In the OpenWrt Forum, the user takimata reported that:
+|It seems your patch unleashed the full power of the SATA port.
+|Where I was previously hitting a really hard limit at around
+|82 MB/s for reading and 27 MB/s for writing, I am now getting this:
+|
+|root@OpenWrt:/mnt# time dd if=/dev/zero of=tempfile bs=1M count=1024
+|1024+0 records in
+|1024+0 records out
+|real    0m 13.65s
+|user    0m 0.01s
+|sys     0m 11.89s
+|
+|root@OpenWrt:/mnt# time dd if=tempfile of=/dev/null bs=1M count=1024
+|1024+0 records in
+|1024+0 records out
+|real    0m 8.41s
+|user    0m 0.01s
+|sys     0m 4.70s
+|
+|This means: 121 MB/s reading and 75 MB/s writing!
+|
+|The drive is a WD Green WD10EARX taken from an older MBL Single.
+|I repeated the test a few times with even larger files to rule out
+|any caching, I'm still seeing the same great performance. OpenWrt is
+|now completely on par with the original MBL firmware's performance.
+
+Another user And.short reported:
+|I can report that your fix worked! Boots up fine with two
+|drives even with more partitions, and no more reboot on
+|concurrent disk access!
+
+A closer look into the sata_dwc_460ex code revealed that
+the driver did initally set the correct protection control
+bits. However, this feature was lost when the sata_dwc_460ex
+driver was converted to the generic DMA driver framework.
+
+BugLink: https://forum.openwrt.org/t/wd-mybook-live-duo-two-disks/16195/55
+BugLink: https://forum.openwrt.org/t/wd-mybook-live-duo-two-disks/16195/50
+Fixes: 8b3444852a2b ("sata_dwc_460ex: move to generic DMA driver")
+Signed-off-by: Christian Lamparter <chunkeey@gmail.com>
+---
+ drivers/dma/dw/core.c                |  2 ++
+ drivers/dma/dw/platform.c            | 12 +++++++++---
+ drivers/dma/dw/regs.h                |  4 ++++
+ include/linux/platform_data/dma-dw.h |  6 ++++++
+ 4 files changed, 21 insertions(+), 3 deletions(-)
+
+--- a/drivers/dma/dw/core.c
++++ b/drivers/dma/dw/core.c
+@@ -160,12 +160,14 @@ static void dwc_initialize_chan_idma32(s
+ 
+ static void dwc_initialize_chan_dw(struct dw_dma_chan *dwc)
+ {
++	struct dw_dma *dw = to_dw_dma(dwc->chan.device);
+ 	u32 cfghi = DWC_CFGH_FIFO_MODE;
+ 	u32 cfglo = DWC_CFGL_CH_PRIOR(dwc->priority);
+ 	bool hs_polarity = dwc->dws.hs_polarity;
+ 
+ 	cfghi |= DWC_CFGH_DST_PER(dwc->dws.dst_id);
+ 	cfghi |= DWC_CFGH_SRC_PER(dwc->dws.src_id);
++	cfghi |= DWC_CFGH_PROTCTL(dw->pdata->protctl);
+ 
+ 	/* Set polarity of handshake interface */
+ 	cfglo |= hs_polarity ? DWC_CFGL_HS_DST_POL | DWC_CFGL_HS_SRC_POL : 0;
+--- a/drivers/dma/dw/platform.c
++++ b/drivers/dma/dw/platform.c
+@@ -162,6 +162,12 @@ dw_dma_parse_dt(struct platform_device *
+ 			pdata->multi_block[tmp] = 1;
+ 	}
+ 
++	if (!of_property_read_u32(np, "snps,dma-protection-control", &tmp)) {
++		if (tmp > CHAN_PROTCTL_MASK)
++			return NULL;
++		pdata->protctl = tmp;
++	}
++
+ 	return pdata;
+ }
+ #else
+--- a/drivers/dma/dw/regs.h
++++ b/drivers/dma/dw/regs.h
+@@ -200,6 +200,10 @@ enum dw_dma_msize {
+ #define DWC_CFGH_FCMODE		(1 << 0)
+ #define DWC_CFGH_FIFO_MODE	(1 << 1)
+ #define DWC_CFGH_PROTCTL(x)	((x) << 2)
++#define DWC_CFGH_PROTCTL_DATA	(0 << 2)	/* data access - always set */
++#define DWC_CFGH_PROTCTL_PRIV	(1 << 2)	/* privileged -> AHB HPROT[1] */
++#define DWC_CFGH_PROTCTL_BUFFER	(2 << 2)	/* bufferable -> AHB HPROT[2] */
++#define DWC_CFGH_PROTCTL_CACHE	(4 << 2)	/* cacheable  -> AHB HPROT[3] */
+ #define DWC_CFGH_DS_UPD_EN	(1 << 5)
+ #define DWC_CFGH_SS_UPD_EN	(1 << 6)
+ #define DWC_CFGH_SRC_PER(x)	((x) << 7)
+--- a/include/linux/platform_data/dma-dw.h
++++ b/include/linux/platform_data/dma-dw.h
+@@ -49,6 +49,7 @@ struct dw_dma_slave {
+  * @data_width: Maximum data width supported by hardware per AHB master
+  *		(in bytes, power of 2)
+  * @multi_block: Multi block transfers supported by hardware per channel.
++ * @protctl:	Protection control signals setting per channel.
+  */
+ struct dw_dma_platform_data {
+ 	unsigned int	nr_channels;
+@@ -65,6 +66,11 @@ struct dw_dma_platform_data {
+ 	unsigned char	nr_masters;
+ 	unsigned char	data_width[DW_DMA_MAX_NR_MASTERS];
+ 	unsigned char	multi_block[DW_DMA_MAX_NR_CHANNELS];
++#define CHAN_PROTCTL_PRIVILEGED		BIT(0)
++#define CHAN_PROTCTL_BUFFERABLE		BIT(1)
++#define CHAN_PROTCTL_CACHEABLE		BIT(2)
++#define	CHAN_PROTCTL_MASK		GENMASK(2, 0)
++	unsigned char	protctl;
+ };
+ 
+ #endif /* _PLATFORM_DATA_DMA_DW_H */

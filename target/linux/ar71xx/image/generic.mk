@@ -661,6 +661,7 @@ define Device/wndr3800
   DEVICE_TITLE := NETGEAR WNDR3800
   NETGEAR_BOARD_ID := WNDR3800
   NETGEAR_HW_ID := 29763654+16+128
+  DEVICE_PACKAGES := luci-app-ipsec-vpnd automount
 endef
 TARGET_DEVICES += wndr3800
 
@@ -821,6 +822,18 @@ define Device/jwap230
   MTDPARTS := spi0.0:256k(u-boot)ro,64k(u-boot-env),16000k(firmware),64k(art)ro
 endef
 TARGET_DEVICES += jwap230
+
+define Device/k2t
+  DEVICE_TITLE := Phicomm K2T 
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca9888
+  BOARDNAME := K2T
+  IMAGE_SIZE := 15744k
+  MTDPARTS := spi0.0:192k(u-boot)ro,64k(config)ro,320k(permanent),15744k(firmware),64k(art)ro
+  SUPPORTED_DEVICES := k2t
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
+	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+endef
+TARGET_DEVICES += k2t
 
 define Device/r36a
   DEVICE_TITLE := ALFA Network R36A
