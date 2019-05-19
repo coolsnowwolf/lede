@@ -1,6 +1,3 @@
--- Copyright 2018 Lienol <lienol@qq.com>
--- Licensed to the public under the Apache License 2.0.
-
 local fs   = require "nixio.fs"
 local sys  = require "luci.sys"
 local uci  = require "luci.model.uci".cursor()
@@ -115,8 +112,8 @@ local function get_api_json(url)
 	return jsonc.parse(json_content) or { }
 end
 
-function get_config_option(option, default)
-	return uci:get("kcptun", "general", option) or default
+function get_project_directory()
+	return uci:get("kodexplorer", "global", "project_directory") or luci.sys.exec("echo -n `uci get kodexplorer.@global[0].project_directory`")
 end
 
 function to_check()
@@ -211,7 +208,7 @@ function to_move(file)
 		}
 	end
 
-	local client_file = get_config_option("storage_directory", "/mnt/sda1/kodexplorer")
+	local client_file = get_project_directory()
 	sys.call("mkdir -p "..client_file)
 	sys.call("cp -R "..file.."/KodExplorer*/* "..client_file)
 	sys.call("/bin/rm -rf /tmp/kodexplorer_extract.*")
