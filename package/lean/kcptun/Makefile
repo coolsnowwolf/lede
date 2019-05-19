@@ -21,11 +21,14 @@ endif
 ifeq ($(ARCH),arm)
 	PKG_ARCH_KCPTUN:=arm7
 endif
+ifeq ($(ARCH),aarch64)
+	PKG_ARCH_KCPTUN:=arm64
+endif
 ifeq ($(BOARD),bcm53xx)
-		PKG_ARCH_KCPTUN:=arm6
+	PKG_ARCH_KCPTUN:=arm6
 endif
 ifeq ($(BOARD),kirkwood)
-		PKG_ARCH_KCPTUN:=arm5
+	PKG_ARCH_KCPTUN:=arm5
 endif
 
 PKG_NAME:=kcptun-client
