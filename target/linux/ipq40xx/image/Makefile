@@ -289,6 +289,18 @@ define Device/qcom_ap-dk04.1-c1
 endef
 TARGET_DEVICES += qcom_ap-dk04.1-c1
 
+define Device/hugo_ac1200
+        $(call Device/FitImage)
+        DEVICE_TITLE :=  Hugo AC1200
+        BOARD_NAME := hugo_ac1200
+        DEVICE_DTS := qcom-ipq4019-hugo-ac1200
+        KERNEL_SIZE := 4096k
+        IMAGE_SIZE := 31232k
+        IMAGES := sysupgrade.bin
+        IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
+endef
+TARGET_DEVICES += hugo_ac1200
+
 define Device/zyxel_nbg6617
 	$(call Device/FitImageLzma)
 	DEVICE_DTS := qcom-ipq4018-nbg6617
