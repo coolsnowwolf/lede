@@ -2,7 +2,7 @@
 module("luci.controller.familycloud", package.seeall)
 
 function index()
-	if not nixio.fs.access("/etc/config/ipsec") then
+	if not nixio.fs.access("/etc/config/familycloud") then
 		return
 	end
 
