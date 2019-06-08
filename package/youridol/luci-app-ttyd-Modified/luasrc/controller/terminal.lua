@@ -5,5 +5,5 @@ function index()
 		return
 	end
 	
-	entry({"admin", "services", "terminal"}, template("terminal"), _("TTYD Terminal"), 10).leaf = true
+	entry({"admin", "services", "terminal"}, template("terminal"), _("TTYD Terminal"), 99).leaf = true
 end
