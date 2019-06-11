@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-qbittorrent
 PKG_VERSION=1.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
 include $(INCLUDE_DIR)/package.mk
@@ -13,7 +13,7 @@ define Package/luci-app-qbittorrent/temple
     SUBMENU:=3. Applications
     TITLE:=qbittorrent-nox for LuCI
     PKGARCH:=all
-    DEPENDS:=+qbittorrent-nox
+    DEPENDS:=+qBittorrent
 endef
 
 define Package/luci-app-qbittorrent
