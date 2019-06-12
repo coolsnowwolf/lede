@@ -19,6 +19,7 @@ PKG_BUILD_DIR=$(BUILD_DIR)/qt-everywhere-opensource-src-$(PKG_VERSION).$(PKG_REL
 PKG_BUILD_PARALLEL:=1
 PKG_USE_MIPS16:=0
 
+
 include $(INCLUDE_DIR)/package.mk
 
 # not using sstrip here as this fucks up the .so's somehow
