@@ -1,11 +1,16 @@
 
 a=Map("mia",translate("Internet Access Schedule Control"),translate("Access Schedule Control Settins"))
+a:section(SimpleSection).template  = "mia/mia_status"
 
 t=a:section(TypedSection,"basic")
 t.anonymous=true
 
 e=t:option(Flag,"enable",translate("Enabled"))
 e.rmempty=false
+
+e=t:option(Flag,"strict",translate("Strict Mode"))
+e.rmempty=false
+e.description = translate("Strict Mode will degrade CPU performance, but it can achieve better results")
 
 t=a:section(TypedSection,"macbind",translate("Client Rules"))
 t.template="cbi/tblsection"
