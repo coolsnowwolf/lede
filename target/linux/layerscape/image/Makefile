@@ -7,8 +7,6 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
-ITB_BOARDS = traverse-five64
-
 LS_SD_ROOTFSPART_OFFSET = 64
 LS_SD_IMAGE_SIZE = $(shell echo $$((($(LS_SD_ROOTFSPART_OFFSET) + \
 	$(CONFIG_TARGET_ROOTFS_PARTSIZE)) * 1024 * 1024)))
@@ -47,10 +45,6 @@ endef
 
 ifeq ($(SUBTARGET),armv8_64b)
 include armv8_64b.mk
-endif
-
-ifeq ($(SUBTARGET),armv8_32b)
-include armv8_32b.mk
 endif
 
 ifeq ($(SUBTARGET),armv7)
