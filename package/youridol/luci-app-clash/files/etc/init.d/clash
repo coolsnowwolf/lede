@@ -1,0 +1,145 @@
+#!/bin/sh /etc/rc.common
+# Author: Anton Chen <contact@antonchen.com>
+# Create Date: 2019-05-07 12:01:40
+# Last Modified: 2019-05-30 21:05:51
+# Description:
+. /lib/functions/network.sh
+
+START=90
+STOP=15
+
+RUNNING_USER="daemon"
+CONF="/etc/clash"
+CLASH="/usr/bin/clash"
+CLASH_LOG="/tmp/log/clash.log"
+CRON_FILE="/etc/crontabs/root"
+
+SetDNS ()
+{
+    local DNSMASQ_DNS DNSMASQ_BACKUP CLASH_DNS_PORT
+    DNSMASQ_DNS=$(uci get dhcp.@dnsmasq[0].server 2>/dev/null)
+    DNSMASQ_BACKUP=$(uci get clash.@general[0].dnsmasq_backup 2>/dev/null)
+    CLASH_DNS_PORT=$(uci get clash.@general[0].dns_port 2>/dev/null)
+    [ -z $CLASH_DNS_PORT ] && return
+    if [ ! -z $DNSMASQ_DNS ] && [ -z $DNSMASQ_BACKUP ]; then
+        uci set clash.@general[0].dnsmasq_backup="$DNSMASQ_DNS"
+        uci commit clash
+    fi
+
+    uci set dhcp.@dnsmasq[0].noresolv=1
+    uci del dhcp.@dnsmasq[-1].server
+    uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#$CLASH_DNS_PORT"
+    uci commit dhcp
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1
+}
+
+UnSetDNS ()
+{
+    local DNSMASQ_DNS
+    DNSMASQ_DNS=$(uci get clash.@general[0].dnsmasq_backup 2>/dev/null)
+    [ -z $DNSMASQ_DNS ] && return
+    uci del dhcp.@dnsmasq[-1].server
+    uci add_list dhcp.@dnsmasq[0].server=$DNSMASQ_DNS
+    uci commit dhcp
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1
+}
+
+AddCron ()
+{
+    [ $(uci get clash.@subscription[0].auto_update 2>/dev/null) -ne 1 ] && return
+    sed -i "#$CLASH_LOG#d" $CRON_FILE
+    echo "0 3 * * * /usr/share/clash/gen-clash-config.sh > $CLASH_LOG 2>&1" >> $CRON_FILE
+    echo "0 2 * * 1 /usr/share/clash/update-mmdb.sh > $CLASH_LOG 2>&1" >> $CRON_FILE
+    /etc/init.d/cron reload
+}
+
+DelCron ()
+{
+    touch $CRON_FILE
+    sed -i "/gen-clash-config.sh/d" $CRON_FILE
+    sed -i "/update-mmdb.sh/d" $CRON_FILE
+    /etc/init.d/cron reload
+}
+
+SetFirewall ()
+{
+    local LAN_SUBNET REDIR_PORT EXCLUDE_HOSTS
+    network_get_subnet LAN_SUBNET lan
+    REDIR_PORT=$(uci get clash.@general[0].redir_port 2>/dev/null)
+    [ -z $REDIR_PORT ] && return
+    EXCLUDE_HOSTS=$(uci get clash.@general[0].exclude_hosts 2>/dev/null)
+
+    uci set firewall.@defaults[0].flow_offloading=1
+    uci commit firewall
+    /etc/init.d/firewall restart >/dev/null 2>&1
+    iptables -t nat -N clash
+    iptables -t nat -A clash -d 0.0.0.0/8 -j RETURN
+    iptables -t nat -A clash -d 10.0.0.0/8 -j RETURN
+    iptables -t nat -A clash -d 127.0.0.0/8 -j RETURN
+    iptables -t nat -A clash -d 169.254.0.0/16 -j RETURN
+    iptables -t nat -A clash -d 172.16.0.0/12 -j RETURN
+    iptables -t nat -A clash -d 192.168.0.0/16 -j RETURN
+    iptables -t nat -A clash -d 224.0.0.0/4 -j RETURN
+    iptables -t nat -A clash -d 240.0.0.0/4 -j RETURN
+    iptables -t nat -A clash -d 240.0.0.0/4 -j RETURN
+
+    for exclude in $EXCLUDE_HOSTS; do
+        iptables -t nat -A clash -s $exclude -j RETURN
+    done
+
+    iptables -t nat -A clash -p tcp -j REDIRECT --to-ports $REDIR_PORT
+    [ -z $LAN_SUBNET ] || iptables -t nat -A PREROUTING -p tcp -s $LAN_SUBNET ! -d $LAN_SUBNET -j clash
+    iptables -t nat -A OUTPUT -p tcp -d 8.8.8.8 -j clash
+    iptables -t nat -A OUTPUT -p tcp -m owner ! --uid-owner 1 -j clash
+}
+
+UnSetFirewall ()
+{
+    local LAN_SUBNET
+    network_get_subnet LAN_SUBNET lan
+    iptables -t nat -F clash
+    [ -z $LAN_SUBNET ] || iptables -t nat -D PREROUTING -p tcp -s $LAN_SUBNET ! -d $LAN_SUBNET -j clash
+    iptables -t nat -D OUTPUT -p tcp -d 8.8.8.8 -j clash
+    iptables -t nat -D OUTPUT -p tcp -m owner ! --uid-owner 1 -j clash
+    iptables -t nat -X clash
+}
+
+start(){
+    /usr/share/clash/gen-clash-config.sh
+    PIDs=$(pidof clash)
+    if [ $(uci get clash.@general[0].enabled 2>/dev/null) -eq 1 ] && [ -z $PIDs ]; then
+        touch $CLASH_LOG && chown $RUNNING_USER:$RUNNING_USER $CLASH_LOG
+        [ -f /etc/clash/Country.mmdb ] || /usr/share/clash/update-mmdb.sh
+        su $RUNNING_USER -s /bin/ash -m -c "nohup $CLASH -d $CONF > $CLASH_LOG 2>&1 &"
+        sleep 1
+        PIDs=$(pidof clash)
+        if [ -z $PIDs ]; then
+            echo "Start clash failure." > $CLASH_LOG
+            UnSetFirewall > /dev/null 2>&1
+            UnSetDNS
+            DelCron
+        else
+            SetFirewall
+            SetDNS
+            AddCron
+        fi
+    fi
+}
+
+stop(){
+    local PIDs
+
+    UnSetFirewall > $CLASH_LOG 2>&1
+    UnSetDNS
+    DelCron
+
+    PIDs=$(pidof clash)
+    [ -z $PIDs ] && return
+    kill -15 $PIDs
+}
+
+restart(){
+    stop
+    sleep 1
+    start
+}
