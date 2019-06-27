@@ -16,7 +16,7 @@ include $(INCLUDE_DIR)/package.mk
 define KernelPackage/i2c-gpio-custom
   SUBMENU:=I2C support
   TITLE:=Custom GPIO-based I2C device
-  DEPENDS:=@GPIO_SUPPORT +kmod-i2c-core +kmod-i2c-gpio
+  DEPENDS:=@GPIO_SUPPORT +kmod-i2c-core +kmod-i2c-gpio @!LINUX_4_19
   FILES:=$(PKG_BUILD_DIR)/i2c-gpio-custom.ko
   KCONFIG:=
 endef

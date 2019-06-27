@@ -7,7 +7,7 @@
 
 define Profile/WRTU54G-TM
   NAME:=Linksys WRTU54G T-Mobile (Default)
-  PACKAGES:=kmod-rt61-pci kmod-usb2 wpad-mini
+  PACKAGES:=kmod-rt61-pci kmod-usb2 wpad-basic
 endef
 
 define Profile/WRTU54G-TM/Description

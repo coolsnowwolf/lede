@@ -188,7 +188,7 @@ $(eval $(call KernelPackage,sound-via82xx))
 
 define KernelPackage/sound-soc-core
   TITLE:=SoC sound support
-  DEPENDS:=+kmod-regmap +kmod-ac97
+  DEPENDS:=+kmod-regmap-core +kmod-ac97
   KCONFIG:= \
 	CONFIG_SND_SOC \
 	CONFIG_SND_SOC_DMAENGINE_PCM=y \
@@ -321,7 +321,7 @@ define KernelPackage/sound-hda-core
 	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec.ko \
 	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-generic.ko
   AUTOLOAD:=$(call AutoProbe,snd-hda-core@ge4.1 snd-hda-codec snd-hda-codec-generic)
-  $(call AddDepends/sound,+kmod-regmap)
+  $(call AddDepends/sound,+kmod-regmap-core)
 endef
 
 define KernelPackage/sound-hda-core/description

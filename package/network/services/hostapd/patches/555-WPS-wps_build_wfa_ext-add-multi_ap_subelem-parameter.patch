@@ -1,0 +1,342 @@
+From ad3c6faca118c23cdafef418dc27b3cee7d0e06e Mon Sep 17 00:00:00 2001
+From: "Arnout Vandecappelle (Essensium/Mind)" <arnout@mind.be>
+Date: Wed, 9 Jan 2019 19:19:26 +0100
+Subject: [PATCH] WPS: wps_build_wfa_ext(): add multi_ap_subelem parameter
+
+The Multi-AP specification adds a new subelement to the WFA extension
+element in the WPS exchange. Add an additional parameter to
+wps_build_wfa_ext() to add this subelement. The subelement is only added
+if the parameter is non-0. Note that we don't reuse the existing
+MULTI_AP_SUB_ELEM_TYPE definition here, but rather define a new
+WFA_ELEM_MULTI_AP, to make sure the enum of WFA subelement types remains
+complete.
+
+For now, all callers set the multi_ap_subelem parameter to 0.
+
+Signed-off-by: Arnout Vandecappelle (Essensium/Mind) <arnout@mind.be>
+---
+v4: Split off from supplicant WPS patch
+
+Since the original patch from Davina Lyu didn't have this extra
+argument, I kept myself as the author of this patch.
+---
+ src/p2p/p2p_build.c      |  2 +-
+ src/wps/wps.c            |  6 +++---
+ src/wps/wps_attr_build.c | 11 ++++++++++-
+ src/wps/wps_common.c     | 16 ++++++++--------
+ src/wps/wps_defs.h       |  3 ++-
+ src/wps/wps_enrollee.c   | 10 +++++-----
+ src/wps/wps_er.c         |  4 ++--
+ src/wps/wps_i.h          |  3 ++-
+ src/wps/wps_registrar.c  | 14 +++++++-------
+ src/wps/wps_upnp.c       |  2 +-
+ 10 files changed, 41 insertions(+), 30 deletions(-)
+
+--- a/src/p2p/p2p_build.c
++++ b/src/p2p/p2p_build.c
+@@ -802,7 +802,7 @@ int p2p_build_wps_ie(struct p2p_data *p2
+ 		wpabuf_put_be16(buf, p2p->cfg->config_methods);
+ 	}
+ 
+-	if (wps_build_wfa_ext(buf, 0, NULL, 0) < 0)
++	if (wps_build_wfa_ext(buf, 0, NULL, 0, 0) < 0)
+ 		return -1;
+ 
+ 	if (all_attr && p2p->cfg->num_sec_dev_types) {
+--- a/src/wps/wps.c
++++ b/src/wps/wps.c
+@@ -430,7 +430,7 @@ struct wpabuf * wps_build_assoc_req_ie(e
+ 
+ 	if (wps_build_version(ie) ||
+ 	    wps_build_req_type(ie, req_type) ||
+-	    wps_build_wfa_ext(ie, 0, NULL, 0)) {
++	    wps_build_wfa_ext(ie, 0, NULL, 0, 0)) {
+ 		wpabuf_free(ie);
+ 		return NULL;
+ 	}
+@@ -464,7 +464,7 @@ struct wpabuf * wps_build_assoc_resp_ie(
+ 
+ 	if (wps_build_version(ie) ||
+ 	    wps_build_resp_type(ie, WPS_RESP_AP) ||
+-	    wps_build_wfa_ext(ie, 0, NULL, 0)) {
++	    wps_build_wfa_ext(ie, 0, NULL, 0, 0)) {
+ 		wpabuf_free(ie);
+ 		return NULL;
+ 	}
+@@ -516,7 +516,7 @@ struct wpabuf * wps_build_probe_req_ie(u
+ 	    wps_build_model_name(dev, ie) ||
+ 	    wps_build_model_number(dev, ie) ||
+ 	    wps_build_dev_name(dev, ie) ||
+-	    wps_build_wfa_ext(ie, req_type == WPS_REQ_ENROLLEE, NULL, 0) ||
++	    wps_build_wfa_ext(ie, req_type == WPS_REQ_ENROLLEE, NULL, 0, 0) ||
+ 	    wps_build_req_dev_type(dev, ie, num_req_dev_types, req_dev_types)
+ 	    ||
+ 	    wps_build_secondary_dev_type(dev, ie)
+--- a/src/wps/wps_attr_build.c
++++ b/src/wps/wps_attr_build.c
+@@ -203,7 +203,8 @@ int wps_build_version(struct wpabuf *msg
+ 
+ 
+ int wps_build_wfa_ext(struct wpabuf *msg, int req_to_enroll,
+-		      const u8 *auth_macs, size_t auth_macs_count)
++		      const u8 *auth_macs, size_t auth_macs_count,
++		      u8 multi_ap_subelem)
+ {
+ 	u8 *len;
+ 
+@@ -244,6 +245,14 @@ int wps_build_wfa_ext(struct wpabuf *msg
+ 				   MAC2STR(&auth_macs[i * ETH_ALEN]));
+ 	}
+ 
++	if (multi_ap_subelem) {
++		wpa_printf(MSG_DEBUG, "WPS:  * Multi-AP (0x%x)",
++			   multi_ap_subelem);
++		wpabuf_put_u8(msg, WFA_ELEM_MULTI_AP);
++		wpabuf_put_u8(msg, 1); /* length */
++		wpabuf_put_u8(msg, multi_ap_subelem);
++	}
++
+ 	WPA_PUT_BE16(len, (u8 *) wpabuf_put(msg, 0) - len - 2);
+ 
+ #ifdef CONFIG_WPS_TESTING
+--- a/src/wps/wps_common.c
++++ b/src/wps/wps_common.c
+@@ -374,7 +374,7 @@ struct wpabuf * wps_get_oob_cred(struct
+ 	    (rf_band && wps_build_rf_bands_attr(plain, rf_band)) ||
+ 	    (channel && wps_build_ap_channel(plain, channel)) ||
+ 	    wps_build_mac_addr(plain, wps->dev.mac_addr) ||
+-	    wps_build_wfa_ext(plain, 0, NULL, 0)) {
++	    wps_build_wfa_ext(plain, 0, NULL, 0, 0)) {
+ 		os_free(data.new_psk);
+ 		wpabuf_clear_free(plain);
+ 		return NULL;
+@@ -421,7 +421,7 @@ struct wpabuf * wps_build_nfc_pw_token(u
+ 
+ 	if (wps_build_oob_dev_pw(data, dev_pw_id, pubkey,
+ 				 wpabuf_head(dev_pw), wpabuf_len(dev_pw)) ||
+-	    wps_build_wfa_ext(data, 0, NULL, 0)) {
++	    wps_build_wfa_ext(data, 0, NULL, 0, 0)) {
+ 		wpa_printf(MSG_ERROR, "WPS: Failed to build NFC password "
+ 			   "token");
+ 		wpabuf_clear_free(data);
+@@ -586,7 +586,7 @@ struct wpabuf * wps_build_wsc_ack(struct
+ 	    wps_build_msg_type(msg, WPS_WSC_ACK) ||
+ 	    wps_build_enrollee_nonce(wps, msg) ||
+ 	    wps_build_registrar_nonce(wps, msg) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0)) {
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0)) {
+ 		wpabuf_free(msg);
+ 		return NULL;
+ 	}
+@@ -610,7 +610,7 @@ struct wpabuf * wps_build_wsc_nack(struc
+ 	    wps_build_enrollee_nonce(wps, msg) ||
+ 	    wps_build_registrar_nonce(wps, msg) ||
+ 	    wps_build_config_error(msg, wps->config_error) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0)) {
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0)) {
+ 		wpabuf_free(msg);
+ 		return NULL;
+ 	}
+@@ -726,7 +726,7 @@ struct wpabuf * wps_build_nfc_handover_r
+ 	if (wps_build_oob_dev_pw(msg, DEV_PW_NFC_CONNECTION_HANDOVER,
+ 				 nfc_dh_pubkey, NULL, 0) ||
+ 	    wps_build_uuid_e(msg, ctx->uuid) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0)) {
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0)) {
+ 		wpabuf_free(msg);
+ 		return NULL;
+ 	}
+@@ -809,7 +809,7 @@ struct wpabuf * wps_build_nfc_handover_s
+ 	    wps_build_ssid(msg, ctx) ||
+ 	    wps_build_ap_freq(msg, freq) ||
+ 	    (bssid && wps_build_mac_addr(msg, bssid)) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0)) {
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0)) {
+ 		wpabuf_free(msg);
+ 		return NULL;
+ 	}
+@@ -848,7 +848,7 @@ struct wpabuf * wps_build_nfc_handover_r
+ 	    wps_build_rf_bands(&ctx->dev, msg, 0) ||
+ 	    wps_build_serial_number(&ctx->dev, msg) ||
+ 	    wps_build_uuid_e(msg, ctx->uuid) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0)) {
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0)) {
+ 		wpabuf_free(msg);
+ 		return NULL;
+ 	}
+@@ -900,7 +900,7 @@ struct wpabuf * wps_build_nfc_handover_s
+ 	    wps_build_rf_bands(&ctx->dev, msg, 0) ||
+ 	    wps_build_serial_number(&ctx->dev, msg) ||
+ 	    wps_build_uuid_e(msg, ctx->uuid) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0)) {
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0)) {
+ 		wpabuf_free(msg);
+ 		return NULL;
+ 	}
+--- a/src/wps/wps_defs.h
++++ b/src/wps/wps_defs.h
+@@ -152,7 +152,8 @@ enum {
+ 	WFA_ELEM_NETWORK_KEY_SHAREABLE = 0x02,
+ 	WFA_ELEM_REQUEST_TO_ENROLL = 0x03,
+ 	WFA_ELEM_SETTINGS_DELAY_TIME = 0x04,
+-	WFA_ELEM_REGISTRAR_CONFIGURATION_METHODS = 0x05
++	WFA_ELEM_REGISTRAR_CONFIGURATION_METHODS = 0x05,
++	WFA_ELEM_MULTI_AP = 0x06
+ };
+ 
+ /* Device Password ID */
+--- a/src/wps/wps_enrollee.c
++++ b/src/wps/wps_enrollee.c
+@@ -152,7 +152,7 @@ static struct wpabuf * wps_build_m1(stru
+ 	    wps_build_dev_password_id(msg, wps->dev_pw_id) ||
+ 	    wps_build_config_error(msg, WPS_CFG_NO_ERROR) ||
+ 	    wps_build_os_version(&wps->wps->dev, msg) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0) ||
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0) ||
+ 	    wps_build_vendor_ext_m1(&wps->wps->dev, msg)) {
+ 		wpabuf_free(msg);
+ 		return NULL;
+@@ -190,7 +190,7 @@ static struct wpabuf * wps_build_m3(stru
+ 	    wps_build_msg_type(msg, WPS_M3) ||
+ 	    wps_build_registrar_nonce(wps, msg) ||
+ 	    wps_build_e_hash(wps, msg) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0) ||
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0) ||
+ 	    wps_build_authenticator(wps, msg)) {
+ 		wpabuf_free(msg);
+ 		return NULL;
+@@ -223,7 +223,7 @@ static struct wpabuf * wps_build_m5(stru
+ 	    wps_build_e_snonce1(wps, plain) ||
+ 	    wps_build_key_wrap_auth(wps, plain) ||
+ 	    wps_build_encr_settings(wps, msg, plain) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0) ||
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0) ||
+ 	    wps_build_authenticator(wps, msg)) {
+ 		wpabuf_clear_free(plain);
+ 		wpabuf_free(msg);
+@@ -393,7 +393,7 @@ static struct wpabuf * wps_build_m7(stru
+ 	    (wps->wps->ap && wps_build_ap_settings(wps, plain)) ||
+ 	    wps_build_key_wrap_auth(wps, plain) ||
+ 	    wps_build_encr_settings(wps, msg, plain) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0) ||
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0) ||
+ 	    wps_build_authenticator(wps, msg)) {
+ 		wpabuf_clear_free(plain);
+ 		wpabuf_free(msg);
+@@ -430,7 +430,7 @@ static struct wpabuf * wps_build_wsc_don
+ 	    wps_build_msg_type(msg, WPS_WSC_DONE) ||
+ 	    wps_build_enrollee_nonce(wps, msg) ||
+ 	    wps_build_registrar_nonce(wps, msg) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0)) {
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0)) {
+ 		wpabuf_free(msg);
+ 		return NULL;
+ 	}
+--- a/src/wps/wps_er.c
++++ b/src/wps/wps_er.c
+@@ -1530,7 +1530,7 @@ void wps_er_set_sel_reg(struct wps_er *e
+ 	    wps_er_build_selected_registrar(msg, sel_reg) ||
+ 	    wps_er_build_dev_password_id(msg, dev_passwd_id) ||
+ 	    wps_er_build_sel_reg_config_methods(msg, sel_reg_config_methods) ||
+-	    wps_build_wfa_ext(msg, 0, auth_macs, count) ||
++	    wps_build_wfa_ext(msg, 0, auth_macs, count, 0) ||
+ 	    wps_er_build_uuid_r(msg, er->wps->uuid)) {
+ 		wpabuf_free(msg);
+ 		return;
+@@ -2048,7 +2048,7 @@ struct wpabuf * wps_er_config_token_from
+ 	data.wps = wps;
+ 	data.use_cred = cred;
+ 	if (wps_build_cred(&data, ret) ||
+-	    wps_build_wfa_ext(ret, 0, NULL, 0)) {
++	    wps_build_wfa_ext(ret, 0, NULL, 0, 0)) {
+ 		wpabuf_free(ret);
+ 		return NULL;
+ 	}
+--- a/src/wps/wps_i.h
++++ b/src/wps/wps_i.h
+@@ -163,7 +163,8 @@ int wps_build_encr_settings(struct wps_d
+ 			    struct wpabuf *plain);
+ int wps_build_version(struct wpabuf *msg);
+ int wps_build_wfa_ext(struct wpabuf *msg, int req_to_enroll,
+-		      const u8 *auth_macs, size_t auth_macs_count);
++		      const u8 *auth_macs, size_t auth_macs_count,
++		      u8 multi_ap_subelem);
+ int wps_build_msg_type(struct wpabuf *msg, enum wps_msg_type msg_type);
+ int wps_build_enrollee_nonce(struct wps_data *wps, struct wpabuf *msg);
+ int wps_build_registrar_nonce(struct wps_data *wps, struct wpabuf *msg);
+--- a/src/wps/wps_registrar.c
++++ b/src/wps/wps_registrar.c
+@@ -1281,7 +1281,7 @@ static int wps_set_ie(struct wps_registr
+ 	    wps_build_sel_reg_config_methods(reg, beacon) ||
+ 	    wps_build_sel_pbc_reg_uuid_e(reg, beacon) ||
+ 	    (reg->dualband && wps_build_rf_bands(&reg->wps->dev, beacon, 0)) ||
+-	    wps_build_wfa_ext(beacon, 0, auth_macs, count) ||
++	    wps_build_wfa_ext(beacon, 0, auth_macs, count, 0) ||
+ 	    wps_build_vendor_ext(&reg->wps->dev, beacon)) {
+ 		wpabuf_free(beacon);
+ 		wpabuf_free(probe);
+@@ -1311,7 +1311,7 @@ static int wps_set_ie(struct wps_registr
+ 	    wps_build_device_attrs(&reg->wps->dev, probe) ||
+ 	    wps_build_probe_config_methods(reg, probe) ||
+ 	    (reg->dualband && wps_build_rf_bands(&reg->wps->dev, probe, 0)) ||
+-	    wps_build_wfa_ext(probe, 0, auth_macs, count) ||
++	    wps_build_wfa_ext(probe, 0, auth_macs, count, 0) ||
+ 	    wps_build_vendor_ext(&reg->wps->dev, probe)) {
+ 		wpabuf_free(beacon);
+ 		wpabuf_free(probe);
+@@ -1845,7 +1845,7 @@ static struct wpabuf * wps_build_m2(stru
+ 	    wps_build_config_error(msg, WPS_CFG_NO_ERROR) ||
+ 	    wps_build_dev_password_id(msg, wps->dev_pw_id) ||
+ 	    wps_build_os_version(&wps->wps->dev, msg) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0)) {
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0)) {
+ 		wpabuf_free(msg);
+ 		return NULL;
+ 	}
+@@ -1913,7 +1913,7 @@ static struct wpabuf * wps_build_m2d(str
+ 	    wps_build_assoc_state(wps, msg) ||
+ 	    wps_build_config_error(msg, err) ||
+ 	    wps_build_os_version(&wps->wps->dev, msg) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0)) {
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0)) {
+ 		wpabuf_free(msg);
+ 		return NULL;
+ 	}
+@@ -1949,7 +1949,7 @@ static struct wpabuf * wps_build_m4(stru
+ 	    wps_build_r_snonce1(wps, plain) ||
+ 	    wps_build_key_wrap_auth(wps, plain) ||
+ 	    wps_build_encr_settings(wps, msg, plain) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0) ||
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0) ||
+ 	    wps_build_authenticator(wps, msg)) {
+ 		wpabuf_clear_free(plain);
+ 		wpabuf_free(msg);
+@@ -1984,7 +1984,7 @@ static struct wpabuf * wps_build_m6(stru
+ 	    wps_build_r_snonce2(wps, plain) ||
+ 	    wps_build_key_wrap_auth(wps, plain) ||
+ 	    wps_build_encr_settings(wps, msg, plain) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0) ||
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0) ||
+ 	    wps_build_authenticator(wps, msg)) {
+ 		wpabuf_clear_free(plain);
+ 		wpabuf_free(msg);
+@@ -2021,7 +2021,7 @@ static struct wpabuf * wps_build_m8(stru
+ 	    (!wps->wps->ap && !wps->er && wps_build_ap_settings(wps, plain)) ||
+ 	    wps_build_key_wrap_auth(wps, plain) ||
+ 	    wps_build_encr_settings(wps, msg, plain) ||
+-	    wps_build_wfa_ext(msg, 0, NULL, 0) ||
++	    wps_build_wfa_ext(msg, 0, NULL, 0, 0) ||
+ 	    wps_build_authenticator(wps, msg)) {
+ 		wpabuf_clear_free(plain);
+ 		wpabuf_clear_free(msg);
+--- a/src/wps/wps_upnp.c
++++ b/src/wps/wps_upnp.c
+@@ -599,7 +599,7 @@ static struct wpabuf * build_fake_wsc_ac
+ 	wpabuf_put_be16(msg, ATTR_REGISTRAR_NONCE);
+ 	wpabuf_put_be16(msg, WPS_NONCE_LEN);
+ 	wpabuf_put(msg, WPS_NONCE_LEN);
+-	if (wps_build_wfa_ext(msg, 0, NULL, 0)) {
++	if (wps_build_wfa_ext(msg, 0, NULL, 0, 0)) {
+ 		wpabuf_free(msg);
+ 		return NULL;
+ 	}

@@ -30,7 +30,7 @@ define Package/intel-microcode
   SECTION:=firmware
   CATEGORY:=Firmware
   URL:=$(PKG_SOURCE_URL)
-  DEPENDS:=@TARGET_x86 +iucode-tool
+  DEPENDS:=@TARGET_x86
   TITLE:=Intel x86 CPU microcode
 endef
 

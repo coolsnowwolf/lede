@@ -349,6 +349,9 @@ tplink_board_detect() {
 	"934100"*)
 		model="NC-LINK SMART-300"
 		;;
+	"322700"*)
+		model="TP-Link TL-WDR3227"
+		;;
 	"c50000"*)
 		model="TP-Link Archer C5"
 		;;
@@ -679,6 +682,9 @@ ar71xx_board_detect() {
 	*"DW33D")
 		name="dw33d"
 		;;
+	*"SBR-AC1750")
+		name="sbr-ac1750"
+		;;
 	*"E1700AC v2")
 		name="e1700ac-v2"
 		;;
@@ -781,6 +787,9 @@ ar71xx_board_detect() {
 	*"GL-USB150")
 		name="gl-usb150"
 		;;
+	"GRENTECH SGR-W500-N85b v2.0")
+		name="sgr-w500-n85b-v2"
+		;;
 	*"HiveAP-121")
 		name="hiveap-121"
 		;;
@@ -804,6 +813,11 @@ ar71xx_board_detect() {
 		;;
 	*"JWAP230")
 		name="jwap230"
+		;;
+	*"K2T A1/A2/A3 board")
+		#fixup: update the machine name
+		machine=$(echo -n "$machine" | sed "s,A1/A2/A3,$(head -c400 $(find_mtd_chardev config) | grep -o hw_ver.* | cut -d\" -f3),")
+		name="k2t"
 		;;
 	*"Koala")
 		name="koala"
@@ -1259,6 +1273,9 @@ ar71xx_board_detect() {
 		;;
 	*"TL-WA901ND v5")
 		name="tl-wa901nd-v5"
+		;;
+	*"TL-WDR3227 v2")
+		name="tl-wdr3227-v2"
 		;;
 	*"TL-WDR3320 v2")
 		name="tl-wdr3320-v2"

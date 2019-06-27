@@ -1,0 +1,97 @@
+From aa6e148bb75f76291e9625316f1f7c73458daf47 Mon Sep 17 00:00:00 2001
+From: David H <davidjhu@gmail.com>
+Date: Wed, 4 Oct 2017 04:43:07 -0700
+Subject: [PATCH 200/454] bcm2835-camera: Fix timestamp calculation problem
+ (#2214)
+
+* bcm2835-camera: Fix timestamp calculation problem
+
+Use div_s64_rem() to convert usec timestamp to timeval
+to avoid integer signedness bug.
+
+* bcm2835-camera: Store kernel start time in NSEC instead of USEC
+
+* bcm2835-camera: Reword debug message for clarity
+---
+ .../bcm2835-camera/bcm2835-camera.c           | 41 +++++--------------
+ .../bcm2835-camera/bcm2835-camera.h           |  2 +-
+ 2 files changed, 11 insertions(+), 32 deletions(-)
+
+--- a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
++++ b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.c
+@@ -348,37 +348,17 @@ static void buffer_cb(struct vchiq_mmal_
+ 				 buf->vb.vb2_buf.timestamp);
+ 
+ 			} else if(pts != 0) {
+-				struct timeval timestamp;
+ 				s64 runtime_us = pts -
+ 				    dev->capture.vc_start_timestamp;
+-				u32 div = 0;
+-				u32 rem = 0;
+-
+-				div =
+-				    div_u64_rem(runtime_us, USEC_PER_SEC, &rem);
+-				timestamp.tv_sec =
+-				    dev->capture.kernel_start_ts.tv_sec + div;
+-				timestamp.tv_usec =
+-				    dev->capture.kernel_start_ts.tv_usec + rem;
+-
+-				if (timestamp.tv_usec >=
+-				    USEC_PER_SEC) {
+-					timestamp.tv_sec++;
+-					timestamp.tv_usec -=
+-					    USEC_PER_SEC;
+-				}
++				buf->vb.vb2_buf.timestamp = (runtime_us * NSEC_PER_USEC) +
++				    dev->capture.kernel_start_timestamp;
+ 				v4l2_dbg(1, bcm2835_v4l2_debug, &dev->v4l2_dev,
+-					 "Convert start time %d.%06d and %llu "
+-					 "with offset %llu to %d.%06d\n",
+-					 (int)dev->capture.kernel_start_ts.
+-					 tv_sec,
+-					 (int)dev->capture.kernel_start_ts.
+-					 tv_usec,
+-					 dev->capture.vc_start_timestamp, pts,
+-					 (int)timestamp.tv_sec,
+-					 (int)timestamp.tv_usec);
+-				buf->vb.vb2_buf.timestamp = timestamp.tv_sec * 1000000000ULL +
+-					timestamp.tv_usec * 1000ULL;
++					 "Buffer time set as converted timestamp - %llu "
++					 "= (pts [%lld usec] - vc start time [%llu usec]) "
++					 "+ kernel start time [%llu nsec]\n",
++					 buf->vb.vb2_buf.timestamp,
++					 pts, dev->capture.vc_start_timestamp,
++					 dev->capture.kernel_start_timestamp);
+ 			} else {
+ 				if (dev->capture.last_timestamp) {
+ 					buf->vb.vb2_buf.timestamp = dev->capture.last_timestamp;
+@@ -388,8 +368,7 @@ static void buffer_cb(struct vchiq_mmal_
+ 				}
+ 				else {
+ 					buf->vb.vb2_buf.timestamp =
+-					dev->capture.kernel_start_ts.tv_sec  * 1000000000ULL +
+-					dev->capture.kernel_start_ts.tv_usec * 1000ULL;
++					dev->capture.kernel_start_timestamp;
+ 					v4l2_dbg(1, bcm2835_v4l2_debug, &dev->v4l2_dev,
+ 					 "Buffer time set as start timestamp - %lld",
+ 					 buf->vb.vb2_buf.timestamp);
+@@ -574,7 +553,7 @@ static int start_streaming(struct vb2_qu
+ 
+ 	dev->capture.last_timestamp = 0;
+ 
+-	v4l2_get_timestamp(&dev->capture.kernel_start_ts);
++	dev->capture.kernel_start_timestamp = ktime_get_ns();
+ 
+ 	/* enable the camera port */
+ 	dev->capture.port->cb_ctx = dev;
+--- a/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.h
++++ b/drivers/staging/vc04_services/bcm2835-camera/bcm2835-camera.h
+@@ -92,7 +92,7 @@ struct bm2835_mmal_dev {
+ 		/* VC start timestamp for streaming */
+ 		s64         vc_start_timestamp;
+ 		/* Kernel start timestamp for streaming */
+-		struct timeval kernel_start_ts;
++		u64         kernel_start_timestamp;
+ 		/* Timestamp of last frame */
+ 		u64 		last_timestamp;
+ 

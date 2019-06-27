@@ -1,0 +1,70 @@
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Subject: [PATCH] brcmfmac: get RAM info right before downloading PCIe firmware
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+It's important as brcmf_chip_get_raminfo() also makes sure that memory
+is properly setup. Without it the firmware could report invalid RAM
+address like 0x04000001.
+
+During a normal brcmfmac lifetime brcmf_chip_get_raminfo() is called on
+probe by the brcmf_chip_recognition(). This change allows implementing
+further improvements like handling errors by resetting a device with
+the brcmf_pcie_reset_device() and redownloading a firmware afterwards.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+---
+ drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c | 6 ++++--
+ drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.h | 1 +
+ drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c | 6 ++++++
+ 3 files changed, 11 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
+@@ -707,8 +707,10 @@ static u32 brcmf_chip_tcm_rambase(struct
+ 	return 0;
+ }
+ 
+-static int brcmf_chip_get_raminfo(struct brcmf_chip_priv *ci)
++int brcmf_chip_get_raminfo(struct brcmf_chip *pub)
+ {
++	struct brcmf_chip_priv *ci = container_of(pub, struct brcmf_chip_priv,
++						  pub);
+ 	struct brcmf_core_priv *mem_core;
+ 	struct brcmf_core *mem;
+ 
+@@ -990,7 +992,7 @@ static int brcmf_chip_recognition(struct
+ 		brcmf_chip_set_passive(&ci->pub);
+ 	}
+ 
+-	return brcmf_chip_get_raminfo(ci);
++	return brcmf_chip_get_raminfo(&ci->pub);
+ }
+ 
+ static void brcmf_chip_disable_arm(struct brcmf_chip_priv *chip, u16 id)
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.h
+@@ -80,6 +80,7 @@ struct brcmf_buscore_ops {
+ 	void (*activate)(void *ctx, struct brcmf_chip *chip, u32 rstvec);
+ };
+ 
++int brcmf_chip_get_raminfo(struct brcmf_chip *pub);
+ struct brcmf_chip *brcmf_chip_attach(void *ctx,
+ 				     const struct brcmf_buscore_ops *ops);
+ void brcmf_chip_detach(struct brcmf_chip *chip);
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -1762,6 +1762,12 @@ static void brcmf_pcie_setup(struct devi
+ 	nvram_len = fwreq->items[BRCMF_PCIE_FW_NVRAM].nv_data.len;
+ 	kfree(fwreq);
+ 
++	ret = brcmf_chip_get_raminfo(devinfo->ci);
++	if (ret) {
++		brcmf_err(bus, "Failed to get RAM info\n");
++		goto fail;
++	}
++
+ 	/* Some of the firmwares have the size of the memory of the device
+ 	 * defined inside the firmware. This is because part of the memory in
+ 	 * the device is shared and the devision is determined by FW. Parse

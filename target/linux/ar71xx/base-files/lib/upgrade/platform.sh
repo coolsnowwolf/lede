@@ -355,6 +355,7 @@ platform_check_image() {
 	hornet-ub|\
 	mr12|\
 	mr16|\
+	sgr-w500-n85b-v2|\
 	zbt-we1526|\
 	zcn-1523h-2|\
 	zcn-1523h-5)
@@ -456,6 +457,7 @@ platform_check_image() {
 	tl-wa901nd-v3|\
 	tl-wa901nd-v4|\
 	tl-wa901nd-v5|\
+	tl-wdr3227-v2|\
 	tl-wdr3320-v2|\
 	tl-wdr3500|\
 	tl-wdr4300|\
@@ -582,6 +584,7 @@ platform_check_image() {
 	rambutan|\
 	wi2a-ac200i|\
 	wndr3700v4|\
+	sbr-ac1750|\
 	wndr4300)
 		nand_do_platform_check $board $1
 		return $?
@@ -661,6 +664,14 @@ platform_check_image() {
 	wrt160nl)
 		cybertan_check_image "$1" && return 0
 		return 1
+		;;
+	k2t)
+		[ "$magic_long" != "27051956" ] && {
+			echo "Invalid image type."
+			return 1
+		}
+
+		return 0
 		;;
 	nbg6616|\
 	uap-pro|\
@@ -893,6 +904,7 @@ platform_do_upgrade() {
 	rb-sxt5n|\
 	wi2a-ac200i|\
 	wndr3700v4|\
+	sbr-ac1750|\
 	wndr4300)
 		nand_do_upgrade "$1"
 		;;

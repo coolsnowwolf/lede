@@ -1,0 +1,82 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Thu, 15 Mar 2018 18:21:43 +0100
+Subject: [PATCH] netfilter: nf_flow_table: clean up and fix dst handling
+
+dst handling in the code is inconsistent and possibly wrong. In my test,
+skb_dst(skb) holds the dst entry after routing but before NAT, so the
+code could possibly return the same dst entry for both directions of a
+connection.
+Additionally, there was some confusion over the dst entry vs the address
+passed as parameter to rt_nexthop/rt6_nexthop.
+
+Do an explicit dst lookup for both ends of the connection and always use
+the source address for it. When running the IP hook, use the dst entry
+for the opposite direction for determining the route.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/netfilter/nf_flow_table_ip.c
++++ b/net/netfilter/nf_flow_table_ip.c
+@@ -244,7 +244,7 @@ nf_flow_offload_ip_hook(void *priv, stru
+ 
+ 	dir = tuplehash->tuple.dir;
+ 	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
+-	rt = (struct rtable *)flow->tuplehash[dir].tuple.dst_cache;
++	rt = (struct rtable *)flow->tuplehash[!dir].tuple.dst_cache;
+ 
+ 	if (unlikely(nf_flow_exceeds_mtu(skb, flow->tuplehash[dir].tuple.mtu)) &&
+ 	    (ip_hdr(skb)->frag_off & htons(IP_DF)) != 0)
+@@ -465,7 +465,7 @@ nf_flow_offload_ipv6_hook(void *priv, st
+ 
+ 	dir = tuplehash->tuple.dir;
+ 	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
+-	rt = (struct rt6_info *)flow->tuplehash[dir].tuple.dst_cache;
++	rt = (struct rt6_info *)flow->tuplehash[!dir].tuple.dst_cache;
+ 
+ 	if (unlikely(nf_flow_exceeds_mtu(skb, flow->tuplehash[dir].tuple.mtu)))
+ 		return NF_ACCEPT;
+--- a/net/netfilter/nft_flow_offload.c
++++ b/net/netfilter/nft_flow_offload.c
+@@ -18,13 +18,11 @@ struct nft_flow_offload {
+ 	struct nft_flowtable	*flowtable;
+ };
+ 
+-static int nft_flow_route(const struct nft_pktinfo *pkt,
+-			  const struct nf_conn *ct,
+-			  struct nf_flow_route *route,
+-			  enum ip_conntrack_dir dir)
++static struct dst_entry *
++nft_flow_dst(const struct nf_conn *ct, enum ip_conntrack_dir dir,
++	     const struct nft_pktinfo *pkt)
+ {
+-	struct dst_entry *this_dst = skb_dst(pkt->skb);
+-	struct dst_entry *other_dst = NULL;
++	struct dst_entry *dst;
+ 	struct flowi fl;
+ 
+ 	memset(&fl, 0, sizeof(fl));
+@@ -39,8 +37,21 @@ static int nft_flow_route(const struct n
+ 		break;
+ 	}
+ 
+-	nf_route(nft_net(pkt), &other_dst, &fl, false, nft_pf(pkt));
+-	if (!other_dst)
++	nf_route(nft_net(pkt), &dst, &fl, false, nft_pf(pkt));
++
++	return dst;
++}
++
++static int nft_flow_route(const struct nft_pktinfo *pkt,
++			  const struct nf_conn *ct,
++			  struct nf_flow_route *route,
++			  enum ip_conntrack_dir dir)
++{
++	struct dst_entry *this_dst, *other_dst;
++
++	this_dst = nft_flow_dst(ct, dir, pkt);
++	other_dst = nft_flow_dst(ct, !dir, pkt);
++	if (!this_dst || !other_dst)
+ 		return -ENOENT;
+ 
+ 	route->tuple[dir].dst		= this_dst;
