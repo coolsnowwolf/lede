@@ -1,8 +1,8 @@
 local m, s, o
 
-m = Map("shadowsocksr", translate("IP black-and-white list"))
+m = Map("shadowsocksr")
 
-s = m:section(TypedSection, "access_control")
+s = m:section(TypedSection, "access_control", translate("IP black-and-white list"))
 s.anonymous = true
 
 -- Part of WAN

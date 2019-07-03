@@ -4,11 +4,33 @@
 
 local m, s, sec, o, kcp_enable
 local shadowsocksr = "shadowsocksr"
+
+
+local gfw_count=0
+local ad_count=0
+local ip_count=0
+local gfwmode=0
+
+if nixio.fs.access("/etc/dnsmasq.ssr/gfw_list.conf") then
+gfwmode=1		
+end
+
 local uci = luci.model.uci.cursor()
 
 local sys = require "luci.sys"
 
-m = Map(shadowsocksr, translate("ShadowSocksR Plus+ Settings"))
+if gfwmode==1 then 
+ gfw_count = tonumber(sys.exec("cat /etc/dnsmasq.ssr/gfw_list.conf | wc -l"))/2
+ if nixio.fs.access("/etc/dnsmasq.ssr/ad.conf") then
+  ad_count=tonumber(sys.exec("cat /etc/dnsmasq.ssr/ad.conf | wc -l"))
+ end
+end
+ 
+if nixio.fs.access("/etc/china_ssr.txt") then 
+ ip_count = sys.exec("cat /etc/china_ssr.txt | wc -l")
+end
+
+m = Map(shadowsocksr)
 
 m:section(SimpleSection).template  = "shadowsocksr/status"
 
@@ -29,7 +51,7 @@ end
 table.sort(key_table)  
 
 -- [[ Global Setting ]]--
-s = m:section(TypedSection, "global")
+s = m:section(TypedSection, "global",translate("ShadowSocksR Plus+ Settings"))
 s.anonymous = true
 
 o = s:option(ListValue, "global_server", translate("Main Server"))
@@ -55,7 +77,6 @@ o.rmempty = false
 o = s:option(ListValue, "run_mode", translate("Running Mode"))
 o:value("gfw", translate("GFW List Mode"))
 o:value("router", translate("IP Route Mode"))
-o:value("all", translate("Global Mode"))
 o:value("oversea", translate("Oversea Mode"))
 o.default = gfw
 
@@ -79,5 +100,19 @@ o:value("1.1.1.1:53", translate("Cloudflare DNS (1.1.1.1)"))
 o:value("114.114.114.114:53", translate("Oversea Mode DNS-1 (114.114.114.114)"))
 o:value("114.114.115.115:53", translate("Oversea Mode DNS-2 (114.114.115.115)"))
 o:depends("pdnsd_enable", "1")
+
+o = s:option(Button,"gfw_data",translate("GFW List Data"))
+o.rawhtml  = true
+o.template = "shadowsocksr/refresh"
+o.value =tostring(math.ceil(gfw_count)) .. " " .. translate("Records")
+
+o = s:option(Button,"ip_data",translate("China IP Data"))
+o.rawhtml  = true
+o.template = "shadowsocksr/refresh"
+o.value =ip_count .. " " .. translate("Records")
+
+o = s:option(Button,"check_port",translate("Check Server Port"))
+o.template = "shadowsocksr/checkport"
+o.value =translate("No Check")
 
 return m
