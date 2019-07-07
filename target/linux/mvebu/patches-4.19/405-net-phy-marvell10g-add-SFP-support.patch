@@ -1,0 +1,155 @@
+From 5f3ac54810055fec0cc667bb04c16f783830abff Mon Sep 17 00:00:00 2001
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Fri, 14 Apr 2017 14:21:25 +0100
+Subject: [PATCH] net: phy: marvell10g: add SFP+ support
+
+Add support for SFP+ cages to the Marvell 10G PHY driver. This is
+slightly complicated by the way phylib works in that we need to use
+a multi-step process to attach the SFP bus, and we also need to track
+the phylink state machine to know when the module's transmit disable
+signal should change state.
+
+With appropriate DT changes, this allows the SFP+ canges on the
+Macchiatobin platform to be functional.
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+ drivers/net/phy/marvell10g.c | 80 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 80 insertions(+)
+
+--- a/drivers/net/phy/marvell10g.c
++++ b/drivers/net/phy/marvell10g.c
+@@ -25,6 +25,8 @@
+ #include <linux/hwmon.h>
+ #include <linux/marvell_phy.h>
+ #include <linux/phy.h>
++#include <linux/property.h>
++#include <linux/sfp.h>
+ 
+ enum {
+ 	MV_PMA_BOOT		= 0xc050,
+@@ -56,6 +58,11 @@ enum {
+ };
+ 
+ struct mv3310_priv {
++	struct fwnode_handle *sfp_fwnode;
++	struct sfp_bus *sfp_bus;
++	enum phy_state state;
++	bool running;
++
+ 	struct device *hwmon_dev;
+ 	char *hwmon_name;
+ };
+@@ -219,6 +226,27 @@ static int mv3310_hwmon_probe(struct phy
+ }
+ #endif
+ 
++static int mv3310_sfp_insert(void *upstream, const struct sfp_eeprom_id *id)
++{
++	struct phy_device *phydev = upstream;
++	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
++	__ETHTOOL_DECLARE_LINK_MODE_MASK(support) = { 0, };
++	phy_interface_t iface;
++
++	sfp_parse_support(priv->sfp_bus, id, support);
++	iface = sfp_select_interface(priv->sfp_bus, id, support);
++
++	if (iface != PHY_INTERFACE_MODE_10GKR) {
++		dev_err(&phydev->mdio.dev, "incompatible SFP module inserted\n");
++		return -EINVAL;
++	}
++	return 0;
++}
++
++static const struct sfp_upstream_ops mv3310_sfp_ops = {
++	.module_insert = mv3310_sfp_insert,
++};
++
+ static int mv3310_probe(struct phy_device *phydev)
+ {
+ 	struct mv3310_priv *priv;
+@@ -249,9 +277,30 @@ static int mv3310_probe(struct phy_devic
+ 	if (ret)
+ 		return ret;
+ 
++	if (phydev->mdio.dev.fwnode) {
++		struct fwnode_reference_args ref;
++		int ret;
++
++		ret = fwnode_property_get_reference_args(phydev->mdio.dev.fwnode,
++							 "sfp", NULL, 0, 0,
++							 &ref);
++		if (ret == 0)
++			priv->sfp_fwnode = ref.fwnode;
++	}
++
+ 	return 0;
+ }
+ 
++static void mv3310_remove(struct phy_device *phydev)
++{
++	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
++
++	if (priv->sfp_bus)
++		sfp_unregister_upstream(priv->sfp_bus);
++
++	fwnode_handle_put(priv->sfp_fwnode);
++}
++
+ static int mv3310_suspend(struct phy_device *phydev)
+ {
+ 	return 0;
+@@ -262,8 +311,29 @@ static int mv3310_resume(struct phy_devi
+ 	return mv3310_hwmon_config(phydev, true);
+ }
+ 
++static void mv3310_link_change_notify(struct phy_device *phydev)
++{
++	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
++	enum phy_state state = phydev->state;
++	bool running;
++
++	if (priv->sfp_bus && priv->state != state) {
++		priv->state = state;
++
++		running = state >= PHY_UP && state < PHY_HALTED;
++		if (priv->running != running) {
++			priv->running = running;
++			if (running)
++				sfp_upstream_start(priv->sfp_bus);
++			else
++				sfp_upstream_stop(priv->sfp_bus);
++		}
++	}
++}
++
+ static int mv3310_config_init(struct phy_device *phydev)
+ {
++	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
+ 	__ETHTOOL_DECLARE_LINK_MODE_MASK(supported) = { 0, };
+ 	u32 mask;
+ 	int val;
+@@ -357,6 +427,14 @@ static int mv3310_config_init(struct phy
+ 	phydev->supported &= mask;
+ 	phydev->advertising &= phydev->supported;
+ 
++	/* Would be nice to do this in the probe function, but unfortunately,
++	 * phylib doesn't have phydev->attached_dev set there.
++	 */
++	if (priv->sfp_fwnode && !priv->sfp_bus)
++		priv->sfp_bus = sfp_register_upstream(priv->sfp_fwnode,
++						      phydev->attached_dev,
++						      phydev, &mv3310_sfp_ops);
++
+ 	return 0;
+ }
+ 
+@@ -566,6 +644,8 @@ static struct phy_driver mv3310_drivers[
+ 		.config_aneg	= mv3310_config_aneg,
+ 		.aneg_done	= mv3310_aneg_done,
+ 		.read_status	= mv3310_read_status,
++		.remove		= mv3310_remove,
++		.link_change_notify = mv3310_link_change_notify,
+ 	},
+ };
+ 
