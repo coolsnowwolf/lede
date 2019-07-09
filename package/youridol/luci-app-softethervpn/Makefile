@@ -9,14 +9,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-softethervpn
-PKG_VERSION:=4.29-9680
-PKG_VERREL:=rtm
-PKG_VERDATE:=2019.02.28
+PKG_VERSION:=4.30-9696
+PKG_VERREL:=beta
+PKG_VERDATE:=2019.07.08
 PKG_RELEASE:=1
 
 PKG_SOURCE:=softether-src-v$(PKG_VERSION)-$(PKG_VERREL).tar.gz
 PKG_SOURCE_URL:=http://www.softether-download.com/files/softether/v$(PKG_VERSION)-$(PKG_VERREL)-$(PKG_VERDATE)-tree/Source_Code/
-PKG_HASH:=e6035fa7d9aaf59bdb342cd7ab5ecfdff89811a875f62a3230208cdc8a4e26e4
+PKG_HASH:=07b6fb3a677ab9eef42fc5a6abee414904552bcdc66baa56ebd3896bf2a8b490
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/v$(PKG_VERSION)
 HOST_BUILD_DIR:=$(BUILD_DIR_HOST)/v$(PKG_VERSION)
