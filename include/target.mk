@@ -18,7 +18,7 @@ kmod-nf-nathelper kmod-nf-nathelper-extra kmod-ipt-raw wget libustream-openssl c
 default-settings luci luci-app-ddns luci-app-sqm luci-app-upnp luci-app-adbyby-plus luci-app-autoreboot \
 luci-app-filetransfer luci-app-vsftpd ddns-scripts_aliyun \
 luci-app-pptp-server luci-app-arpbind luci-app-vlmcsd luci-app-wifischedule luci-app-wol luci-app-ramfree \
-luci-app-softethervpn luci-app-ssr-plus luci-app-syncdial luci-app-mwan3 luci-app-wrtbwmon \
+luci-app-softethervpn luci-app-syncdial luci-app-mwan3 luci-app-wrtbwmon \
 luci-app-ttyd-idol luci-app-unblockmusic \
 luci-app-sfe luci-app-flowoffload luci-app-nlbwmon luci-app-usb-printer luci-app-accesscontrol luci-app-zerotier luci-app-xlnetacc
 # For nas targets
