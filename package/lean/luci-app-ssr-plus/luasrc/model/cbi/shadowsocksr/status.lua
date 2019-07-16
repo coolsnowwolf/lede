@@ -30,7 +30,7 @@ bold_off = [[</strong>]]
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local kcptun_version=translate("Unknown")
-local kcp_file="/usr/bin/ssr-kcptun"
+local kcp_file="/usr/bin/kcptun-client"
 if not fs.access(kcp_file)  then
  kcptun_version=translate("Not exist")
 else
@@ -74,7 +74,7 @@ if luci.sys.call("pidof ssr-local >/dev/null") == 0 then
 sock5_run=1
 end
 
-if luci.sys.call("pidof ssr-kcptun >/dev/null") == 0 then
+if luci.sys.call("pidof kcptun-client >/dev/null") == 0 then
 kcptun_run=1
 end	
 
@@ -138,7 +138,7 @@ s.value = translate("Not Running")
 end
 end
 
-if nixio.fs.access("/usr/bin/ssr-kcptun") then
+if nixio.fs.access("/usr/bin/kcptun-client") then
 s=m:field(DummyValue,"kcp_version",translate("KcpTun Version")) 
 s.rawhtml  = true
 s.value =kcptun_version

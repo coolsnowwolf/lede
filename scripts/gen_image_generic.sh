@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (C) 2006-2012 OpenWrt.org
-set -x
+set -e -x
 [ $# == 5 -o $# == 6 ] || {
     echo "SYNTAX: $0 <file> <kernel size> <kernel directory> <rootfs size> <rootfs image> [<align>]"
     exit 1

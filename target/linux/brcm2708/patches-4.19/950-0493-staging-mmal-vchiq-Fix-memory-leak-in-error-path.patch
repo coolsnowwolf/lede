@@ -1,0 +1,67 @@
+From af1d0b04a35776cf36049b1549fcb33260a4e145 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Thu, 2 May 2019 15:50:01 +0100
+Subject: [PATCH 493/703] staging: mmal-vchiq: Fix memory leak in error path
+
+On error, vchiq_mmal_component_init could leave the
+event context allocated for ports.
+Clean them up in the error path.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../vc04_services/vchiq-mmal/mmal-vchiq.c     | 27 +++++++++++++------
+ 1 file changed, 19 insertions(+), 8 deletions(-)
+
+--- a/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
+@@ -1848,9 +1848,26 @@ static void free_event_context(struct vc
+ {
+ 	struct mmal_msg_context *ctx = port->event_context;
+ 
++	if (!ctx)
++		return;
++
+ 	kfree(ctx->u.bulk.buffer->buffer);
+ 	kfree(ctx->u.bulk.buffer);
+ 	release_msg_context(ctx);
++	port->event_context = NULL;
++}
++
++static void release_all_event_contexts(struct vchiq_mmal_component *component)
++{
++	int idx;
++
++	for (idx = 0; idx < component->inputs; idx++)
++		free_event_context(&component->input[idx]);
++	for (idx = 0; idx < component->outputs; idx++)
++		free_event_context(&component->output[idx]);
++	for (idx = 0; idx < component->clocks; idx++)
++		free_event_context(&component->clock[idx]);
++	free_event_context(&component->control);
+ }
+ 
+ /* Initialise a mmal component and its ports
+@@ -1948,6 +1965,7 @@ int vchiq_mmal_component_init(struct vch
+ 
+ release_component:
+ 	destroy_component(instance, component);
++	release_all_event_contexts(component);
+ unlock:
+ 	if (component)
+ 		component->in_use = 0;
+@@ -1975,14 +1993,7 @@ int vchiq_mmal_component_finalise(struct
+ 
+ 	component->in_use = 0;
+ 
+-	for (idx = 0; idx < component->inputs; idx++)
+-		free_event_context(&component->input[idx]);
+-	for (idx = 0; idx < component->outputs; idx++)
+-		free_event_context(&component->output[idx]);
+-	for (idx = 0; idx < component->clocks; idx++)
+-		free_event_context(&component->clock[idx]);
+-
+-	free_event_context(&component->control);
++	release_all_event_contexts(component);
+ 
+ 	mutex_unlock(&instance->vchiq_mutex);
+ 

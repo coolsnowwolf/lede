@@ -10,7 +10,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=ipset
 PKG_VERSION:=7.1
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=http://ipset.netfilter.org
@@ -39,10 +39,14 @@ endef
 
 define Package/libipset
 $(call Package/ipset/Default)
+  ABI_VERSION:=13
 endef
 
 CONFIGURE_ARGS += \
+	--disable-static \
 	--with-kbuild="$(LINUX_DIR)"
+
+TARGET_LDFLAGS += -Wl,--gc-sections,--as-needed
 
 MAKE_FLAGS += \
 	ARCH="$(LINUX_KARCH)" \
@@ -51,7 +55,7 @@ MAKE_FLAGS += \
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include $(1)/usr/lib $(1)/usr/lib/pkgconfig
 	$(CP) $(PKG_INSTALL_DIR)/usr/include/libipset $(1)/usr/include/
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libipset.{a,so*} $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libipset.so* $(1)/usr/lib/
 	$(CP) $(PKG_BUILD_DIR)/lib/libipset.pc $(1)/usr/lib/pkgconfig/
 endef
 
@@ -62,7 +66,7 @@ endef
 
 define Package/libipset/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libipset*.so* $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libipset*.so.* $(1)/usr/lib/
 endef
 
 $(eval $(call BuildPackage,ipset))

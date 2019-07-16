@@ -78,7 +78,8 @@ local v2ray = {
             } or nil
         },
         mux = {
-            enabled = (server.mux == "1") and true or false
+            enabled = (server.mux == "1") and true or false,
+            concurrency = tonumber(server.concurrency)
       }
     },
 

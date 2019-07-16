@@ -274,6 +274,13 @@ define Build/combined-image
 	@mv $@.new $@
 endef
 
+define Build/linksys-image
+	$(TOPDIR)/scripts/linksys-image.sh \
+		"$(call param_get_default,type,$(1),$(DEVICE_NAME))" \
+		$@ $@.new
+		mv $@.new $@
+endef
+
 define Build/openmesh-image
 	$(TOPDIR)/scripts/om-fwupgradecfg-gen.sh \
 		"$(call param_get_default,ce_type,$(1),$(DEVICE_NAME))" \

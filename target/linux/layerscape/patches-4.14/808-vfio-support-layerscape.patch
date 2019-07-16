@@ -1,21 +1,24 @@
-From 92f0ef51270b2961f63b2e985831f5e9a6251a2f Mon Sep 17 00:00:00 2001
+From 03ce521cd071706f755e3d2304ab1b8c47fd4910 Mon Sep 17 00:00:00 2001
 From: Biwen Li <biwen.li@nxp.com>
-Date: Tue, 30 Oct 2018 18:29:03 +0800
-Subject: [PATCH 25/40] vfio: support layerscape
+Date: Wed, 17 Apr 2019 18:59:09 +0800
+Subject: [PATCH] vfio: support layerscape
+
 This is an integrated patch of vfio for layerscape
 
 Signed-off-by: Bharat Bhushan <Bharat.Bhushan@nxp.com>
 Signed-off-by: Biwen Li <biwen.li@nxp.com>
+Signed-off-by: Roy Pledge <roy.pledge@nxp.com>
+Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 ---
  drivers/vfio/Kconfig                      |   1 +
  drivers/vfio/Makefile                     |   1 +
  drivers/vfio/fsl-mc/Kconfig               |   9 +
  drivers/vfio/fsl-mc/Makefile              |   2 +
- drivers/vfio/fsl-mc/vfio_fsl_mc.c         | 751 ++++++++++++++++++++++
+ drivers/vfio/fsl-mc/vfio_fsl_mc.c         | 759 ++++++++++++++++++++++
  drivers/vfio/fsl-mc/vfio_fsl_mc_intr.c    | 199 ++++++
- drivers/vfio/fsl-mc/vfio_fsl_mc_private.h |  55 ++
+ drivers/vfio/fsl-mc/vfio_fsl_mc_private.h |  57 ++
  include/uapi/linux/vfio.h                 |   1 +
- 8 files changed, 1019 insertions(+)
+ 8 files changed, 1029 insertions(+)
  create mode 100644 drivers/vfio/fsl-mc/Kconfig
  create mode 100644 drivers/vfio/fsl-mc/Makefile
  create mode 100644 drivers/vfio/fsl-mc/vfio_fsl_mc.c
@@ -56,7 +59,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
 +obj-$(CONFIG_VFIO_FSL_MC) += vfio_fsl_mc.o vfio_fsl_mc_intr.o
 --- /dev/null
 +++ b/drivers/vfio/fsl-mc/vfio_fsl_mc.c
-@@ -0,0 +1,751 @@
+@@ -0,0 +1,759 @@
 +/*
 + * Freescale Management Complex (MC) device passthrough using VFIO
 + *
@@ -118,6 +121,10 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
 +		if (mc_dev->regions[i].flags & IORESOURCE_CACHEABLE)
 +			vdev->regions[i].type |=
 +					VFIO_FSL_MC_REGION_TYPE_CACHEABLE;
++		if (mc_dev->regions[i].flags & IORESOURCE_MEM)
++			vdev->regions[i].type |=
++					VFIO_FSL_MC_REGION_TYPE_SHAREABLE;
++
 +		vdev->regions[i].flags = VFIO_REGION_INFO_FLAG_MMAP;
 +		vdev->regions[i].flags |= VFIO_REGION_INFO_FLAG_READ;
 +		if (!(mc_dev->regions[i].flags & IORESOURCE_READONLY))
@@ -390,9 +397,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
 +		u64 header;
 +		struct mc_cmd_header *resp_hdr;
 +
-+		__iormb();
-+		header = readq(ioaddr);
-+		__iormb();
++		header = cpu_to_le64(readq_relaxed(ioaddr));
 +
 +		resp_hdr = (struct mc_cmd_header *)&header;
 +		status = (enum mc_cmd_status)resp_hdr->status;
@@ -412,9 +417,12 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
 +{
 +	int i;
 +
-+	/* Write at command header in the end */
-+	for (i = 7; i >= 0; i--)
-+		writeq(cmd_data[i], ioaddr + i * sizeof(uint64_t));
++	/* Write at command parameter into portal */
++	for (i = 7; i >= 1; i--)
++		writeq_relaxed(cmd_data[i], ioaddr + i * sizeof(uint64_t));
++
++	/* Write command header in the end */
++	writeq(cmd_data[0], ioaddr);
 +
 +	/* Wait for response before returning to user-space
 +	 * This can be optimized in future to even prepare response
@@ -499,9 +507,12 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
 +	 * cache inhibited area of the portal to avoid coherency issues
 +	 * if a user migrates to another core.
 +	 */
-+	if (region.type & VFIO_FSL_MC_REGION_TYPE_CACHEABLE)
-+		vma->vm_page_prot = pgprot_cached_ns(vma->vm_page_prot);
-+	else
++	if (region.type & VFIO_FSL_MC_REGION_TYPE_CACHEABLE) {
++		if (region.type & VFIO_FSL_MC_REGION_TYPE_SHAREABLE)
++			vma->vm_page_prot = pgprot_cached(vma->vm_page_prot);
++		else
++			vma->vm_page_prot = pgprot_cached_ns(vma->vm_page_prot);
++	} else
 +		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 +
 +	vma->vm_pgoff = (region.addr >> PAGE_SHIFT) + pgoff;
@@ -1012,7 +1023,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
 +}
 --- /dev/null
 +++ b/drivers/vfio/fsl-mc/vfio_fsl_mc_private.h
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,57 @@
 +/*
 + * Freescale Management Complex VFIO private declarations
 + *
@@ -1047,6 +1058,8 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
 +	u32			flags;
 +#define VFIO_FSL_MC_REGION_TYPE_MMIO  1
 +#define VFIO_FSL_MC_REGION_TYPE_CACHEABLE  2
++#define VFIO_FSL_MC_REGION_TYPE_SHAREABLE  4
++
 +	u32			type;
 +	u64			addr;
 +	resource_size_t		size;

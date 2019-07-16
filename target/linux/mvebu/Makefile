@@ -8,11 +8,11 @@ include $(TOPDIR)/rules.mk
 
 BOARD:=mvebu
 BOARDNAME:=Marvell EBU Armada
-FEATURES:=fpu usb pci pcie gpio nand squashfs ramdisk
+FEATURES:=fpu usb pci pcie gpio nand squashfs ramdisk boot-part rootfs-part
 SUBTARGETS:=cortexa9 cortexa53 cortexa72
 MAINTAINER:=Imre Kaloz <kaloz@openwrt.org>
 
-KERNEL_PATCHVER:=4.14
+KERNEL_PATCHVER:=4.19
 
 include $(INCLUDE_DIR)/target.mk
 

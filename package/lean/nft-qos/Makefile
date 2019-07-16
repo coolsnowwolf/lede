@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=nft-qos
-PKG_VERSION:=1.0.4
+PKG_VERSION:=1.0.6
 PKG_RELEASE:=1
 PKG_LICENSE:=GPL-2.0
 
@@ -23,6 +23,7 @@ define Package/nft-qos
   CATEGORY:=Base system
   DEPENDS:=+nftables +kmod-nft-netdev +kmod-nft-bridge
   TITLE:=QoS scripts over nftables
+  PKGARCH:=all
 endef
 
 define Package/nft-qos/description

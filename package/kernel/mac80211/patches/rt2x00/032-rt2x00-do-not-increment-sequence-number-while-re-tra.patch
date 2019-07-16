@@ -1,0 +1,94 @@
+From 746ba11f170603bf1eaade817553a6c2e9135bbe Mon Sep 17 00:00:00 2001
+From: Vijayakumar Durai <vijayakumar.durai1@vivint.com>
+Date: Wed, 27 Mar 2019 11:03:17 +0100
+Subject: [PATCH] rt2x00: do not increment sequence number while
+ re-transmitting
+
+Currently rt2x00 devices retransmit the management frames with
+incremented sequence number if hardware is assigning the sequence.
+
+This is HW bug fixed already for non-QOS data frames, but it should
+be fixed for management frames except beacon.
+
+Without fix retransmitted frames have wrong SN:
+
+ AlphaNet_e8:fb:36 Vivotek_52:31:51 Authentication, SN=1648, FN=0, Flags=........C Frame is not being retransmitted 1648 1
+ AlphaNet_e8:fb:36 Vivotek_52:31:51 Authentication, SN=1649, FN=0, Flags=....R...C Frame is being retransmitted 1649 1
+ AlphaNet_e8:fb:36 Vivotek_52:31:51 Authentication, SN=1650, FN=0, Flags=....R...C Frame is being retransmitted 1650 1
+
+With the fix SN stays correctly the same:
+
+ 88:6a:e3:e8:f9:a2 8c:f5:a3:88:76:87 Authentication, SN=1450, FN=0, Flags=........C
+ 88:6a:e3:e8:f9:a2 8c:f5:a3:88:76:87 Authentication, SN=1450, FN=0, Flags=....R...C
+ 88:6a:e3:e8:f9:a2 8c:f5:a3:88:76:87 Authentication, SN=1450, FN=0, Flags=....R...C
+
+Cc: stable@vger.kernel.org
+Signed-off-by: Vijayakumar Durai <vijayakumar.durai1@vivint.com>
+[sgruszka: simplify code, change comments and changelog]
+Signed-off-by: Stanislaw Gruszka <sgruszka@redhat.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ drivers/net/wireless/ralink/rt2x00/rt2x00.h      |  1 -
+ drivers/net/wireless/ralink/rt2x00/rt2x00mac.c   | 10 ----------
+ drivers/net/wireless/ralink/rt2x00/rt2x00queue.c | 15 +++++++++------
+ 3 files changed, 9 insertions(+), 17 deletions(-)
+
+--- a/drivers/net/wireless/ralink/rt2x00/rt2x00.h
++++ b/drivers/net/wireless/ralink/rt2x00/rt2x00.h
+@@ -673,7 +673,6 @@ enum rt2x00_state_flags {
+ 	CONFIG_CHANNEL_HT40,
+ 	CONFIG_POWERSAVING,
+ 	CONFIG_HT_DISABLED,
+-	CONFIG_QOS_DISABLED,
+ 	CONFIG_MONITORING,
+ 
+ 	/*
+--- a/drivers/net/wireless/ralink/rt2x00/rt2x00mac.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2x00mac.c
+@@ -642,19 +642,9 @@ void rt2x00mac_bss_info_changed(struct i
+ 			rt2x00dev->intf_associated--;
+ 
+ 		rt2x00leds_led_assoc(rt2x00dev, !!rt2x00dev->intf_associated);
+-
+-		clear_bit(CONFIG_QOS_DISABLED, &rt2x00dev->flags);
+ 	}
+ 
+ 	/*
+-	 * Check for access point which do not support 802.11e . We have to
+-	 * generate data frames sequence number in S/W for such AP, because
+-	 * of H/W bug.
+-	 */
+-	if (changes & BSS_CHANGED_QOS && !bss_conf->qos)
+-		set_bit(CONFIG_QOS_DISABLED, &rt2x00dev->flags);
+-
+-	/*
+ 	 * When the erp information has changed, we should perform
+ 	 * additional configuration steps. For all other changes we are done.
+ 	 */
+--- a/drivers/net/wireless/ralink/rt2x00/rt2x00queue.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2x00queue.c
+@@ -201,15 +201,18 @@ static void rt2x00queue_create_tx_descri
+ 	if (!rt2x00_has_cap_flag(rt2x00dev, REQUIRE_SW_SEQNO)) {
+ 		/*
+ 		 * rt2800 has a H/W (or F/W) bug, device incorrectly increase
+-		 * seqno on retransmited data (non-QOS) frames. To workaround
+-		 * the problem let's generate seqno in software if QOS is
+-		 * disabled.
++		 * seqno on retransmitted data (non-QOS) and management frames.
++		 * To workaround the problem let's generate seqno in software.
++		 * Except for beacons which are transmitted periodically by H/W
++		 * hence hardware has to assign seqno for them.
+ 		 */
+-		if (test_bit(CONFIG_QOS_DISABLED, &rt2x00dev->flags))
+-			__clear_bit(ENTRY_TXD_GENERATE_SEQ, &txdesc->flags);
+-		else
++	    	if (ieee80211_is_beacon(hdr->frame_control)) {
++			__set_bit(ENTRY_TXD_GENERATE_SEQ, &txdesc->flags);
+ 			/* H/W will generate sequence number */
+ 			return;
++		}
++
++		__clear_bit(ENTRY_TXD_GENERATE_SEQ, &txdesc->flags);
+ 	}
+ 
+ 	/*

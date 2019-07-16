@@ -25,7 +25,8 @@ platform_nand_pre_upgrade() {
 
 	case "$board" in
 	ubnt-erx|\
-	ubnt-erx-sfp)
+	ubnt-erx-sfp|\
+	xiaomi,mir3p)
 		platform_upgrade_ubnt_erx "$ARGV"
 		;;
 	esac
@@ -40,6 +41,7 @@ platform_do_upgrade() {
 	mir4|\
 	r6220|\
 	netgear,r6350|\
+	xiaomi,miwifi-r3|\
 	ubnt-erx|\
 	ubnt-erx-sfp)
 		nand_do_upgrade "$ARGV"
