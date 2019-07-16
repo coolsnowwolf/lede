@@ -1,0 +1,110 @@
+From b10441b7ce4abbdb0f870f705cbb7d3520a57044 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Fri, 25 Jan 2019 16:03:31 +0000
+Subject: [PATCH 342/703] usb: dwc_otg: Clean up build warnings on 64bit
+ kernels
+
+No functional changes. Almost all are changes to logging lines.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/usb/host/dwc_otg/dwc_otg_driver.c    |  3 +--
+ drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.c   |  2 +-
+ drivers/usb/host/dwc_otg/dwc_otg_hcd.c       | 19 ++++++++++++++-----
+ drivers/usb/host/dwc_otg/dwc_otg_hcd_linux.c | 10 ++++------
+ 4 files changed, 20 insertions(+), 14 deletions(-)
+
+--- a/drivers/usb/host/dwc_otg/dwc_otg_driver.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_driver.c
+@@ -837,8 +837,7 @@ static int dwc_otg_driver_probe(
+ 		retval = -ENOMEM;
+ 		goto fail;
+ 	}
+-	dev_info(&_dev->dev, "base=0x%08x\n",
+-                (unsigned)dwc_otg_device->os_dep.base);
++	dev_info(&_dev->dev, "base=%p\n", dwc_otg_device->os_dep.base);
+ #endif
+ 
+ 	/*
+--- a/drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.c
+@@ -301,7 +301,7 @@ static int notrace fiq_iso_out_advance(s
+ 		last = 1;
+ 
+ 	/* New DMA address - address of bounce buffer referred to in index */
+-	hcdma.d32 = (uint32_t) &blob->channel[n].index[i].buf[0];
++	hcdma.d32 = (dma_addr_t) blob->channel[n].index[i].buf;
+ 	//hcdma.d32 = FIQ_READ(st->dwc_regs_base + HC_START + (HC_OFFSET * n) + HC_DMA);
+ 	//hcdma.d32 += st->channel[n].dma_info.slot_len[i];
+ 	fiq_print(FIQDBG_INT, st, "LAST: %01d ", last);
+--- a/drivers/usb/host/dwc_otg/dwc_otg_hcd.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_hcd.c
+@@ -1041,8 +1041,8 @@ int dwc_otg_hcd_init(dwc_otg_hcd_t * hcd
+ 		 * moderately readable array casts.
+ 		 */
+ 		hcd->fiq_dmab = DWC_DMA_ALLOC(dev, (sizeof(struct fiq_dma_channel) * num_channels), &hcd->fiq_state->dma_base);
+-		DWC_WARN("FIQ DMA bounce buffers: virt = 0x%08x dma = 0x%08x len=%d",
+-				(unsigned int)hcd->fiq_dmab, (unsigned int)hcd->fiq_state->dma_base,
++		DWC_WARN("FIQ DMA bounce buffers: virt = %px dma = %pad len=%zu",
++				hcd->fiq_dmab, &hcd->fiq_state->dma_base,
+ 				sizeof(struct fiq_dma_channel) * num_channels);
+ 
+ 		DWC_MEMSET(hcd->fiq_dmab, 0x6b, 9024);
+@@ -1522,9 +1522,12 @@ int fiq_fsm_setup_periodic_dma(dwc_otg_h
+ 		/*
+ 		 * Set dma_regs to bounce buffer. FIQ will update the
+ 		 * state depending on transaction progress.
++		 * Pointer arithmetic on hcd->fiq_state->dma_base (a dma_addr_t)
++		 * to point it to the correct offset in the allocated buffers.
+ 		 */
+ 		blob = (struct fiq_dma_blob *) hcd->fiq_state->dma_base;
+-		st->hcdma_copy.d32 = (uint32_t) &blob->channel[hc->hc_num].index[0].buf[0];
++		st->hcdma_copy.d32 = (dma_addr_t) blob->channel[hc->hc_num].index[0].buf;
++
+ 		/* Calculate the max number of CSPLITS such that the FIQ can time out
+ 		 * a transaction if it fails.
+ 		 */
+@@ -1571,9 +1574,15 @@ int fiq_fsm_setup_periodic_dma(dwc_otg_h
+ 				st->nrpackets = i;
+ 			}
+ 			ptr = qtd->urb->buf + frame_desc->offset;
+-			/* Point the HC at the DMA address of the bounce buffers */
++			/*
++			 * Point the HC at the DMA address of the bounce buffers
++			 *
++			 * Pointer arithmetic on hcd->fiq_state->dma_base (a
++			 * dma_addr_t) to point it to the correct offset in the
++			 * allocated buffers.
++			 */
+ 			blob = (struct fiq_dma_blob *) hcd->fiq_state->dma_base;
+-			st->hcdma_copy.d32 = (uint32_t) &blob->channel[hc->hc_num].index[0].buf[0];
++			st->hcdma_copy.d32 = (dma_addr_t) blob->channel[hc->hc_num].index[0].buf;
+ 
+ 			/* fixup xfersize to the actual packet size */
+ 			st->hctsiz_copy.b.pid = 0;
+--- a/drivers/usb/host/dwc_otg/dwc_otg_hcd_linux.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_hcd_linux.c
+@@ -454,11 +454,9 @@ static void hcd_init_fiq(void *cookie)
+ 		DWC_ERROR("Can't claim FIQ");
+ 		BUG();
+ 	}
+-	DWC_WARN("FIQ on core %d at 0x%08x",
+-				smp_processor_id(),
+-				(fiq_fsm_enable ? (int)&dwc_otg_fiq_fsm : (int)&dwc_otg_fiq_nop));
+-	DWC_WARN("FIQ ASM at 0x%08x length %d", (int)&_dwc_otg_fiq_stub, (int)(&_dwc_otg_fiq_stub_end - &_dwc_otg_fiq_stub));
+-		set_fiq_handler((void *) &_dwc_otg_fiq_stub, &_dwc_otg_fiq_stub_end - &_dwc_otg_fiq_stub);
++	DWC_WARN("FIQ on core %d", smp_processor_id());
++	DWC_WARN("FIQ ASM at %px length %d", &_dwc_otg_fiq_stub, (int)(&_dwc_otg_fiq_stub_end - &_dwc_otg_fiq_stub));
++	set_fiq_handler((void *) &_dwc_otg_fiq_stub, &_dwc_otg_fiq_stub_end - &_dwc_otg_fiq_stub);
+ 	memset(&regs,0,sizeof(regs));
+ 
+ 	regs.ARM_r8 = (long) dwc_otg_hcd->fiq_state;
+@@ -483,7 +481,7 @@ static void hcd_init_fiq(void *cookie)
+ 	dwc_otg_hcd->fiq_state->mphi_regs.outddb  = otg_dev->os_dep.mphi_base + 0x2c;
+ 	dwc_otg_hcd->fiq_state->mphi_regs.intstat = otg_dev->os_dep.mphi_base + 0x50;
+ 	dwc_otg_hcd->fiq_state->dwc_regs_base = otg_dev->os_dep.base;
+-	DWC_WARN("MPHI regs_base at 0x%08x", (int)dwc_otg_hcd->fiq_state->mphi_regs.base);
++	DWC_WARN("MPHI regs_base at %px", dwc_otg_hcd->fiq_state->mphi_regs.base);
+ 	//Enable mphi peripheral
+ 	writel((1<<31),dwc_otg_hcd->fiq_state->mphi_regs.ctrl);
+ #ifdef DEBUG

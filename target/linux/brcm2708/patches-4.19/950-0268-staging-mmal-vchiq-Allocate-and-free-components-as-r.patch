@@ -1,0 +1,107 @@
+From 9daa20076f689c9d3f32446b5a73a0f0e20651ca Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Mon, 24 Sep 2018 16:51:13 +0100
+Subject: [PATCH 268/703] staging: mmal-vchiq: Allocate and free components as
+ required
+
+The existing code assumed that there would only ever be 4 components,
+and never freed the entries once used.
+Allow arbitrary creation and destruction of components.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../vc04_services/vchiq-mmal/mmal-vchiq.c     | 29 ++++++++++++-------
+ .../vc04_services/vchiq-mmal/mmal-vchiq.h     |  1 +
+ 2 files changed, 20 insertions(+), 10 deletions(-)
+
+--- a/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
+@@ -38,8 +38,11 @@ MODULE_AUTHOR("Dave Stevenson, <dave.ste
+ MODULE_LICENSE("GPL");
+ MODULE_VERSION("0.0.1");
+ 
+-/* maximum number of components supported */
+-#define VCHIQ_MMAL_MAX_COMPONENTS 4
++/*
++ * maximum number of components supported.
++ * This matches the maximum permitted by default on the VPU
++ */
++#define VCHIQ_MMAL_MAX_COMPONENTS 64
+ 
+ /*#define FULL_MSG_DUMP 1*/
+ 
+@@ -173,8 +176,6 @@ struct vchiq_mmal_instance {
+ 	struct idr context_map;
+ 	spinlock_t context_map_lock;
+ 
+-	/* component to use next */
+-	int component_idx;
+ 	struct vchiq_mmal_component component[VCHIQ_MMAL_MAX_COMPONENTS];
+ 
+ 	/* ordered workqueue to process all bulk operations */
+@@ -1631,18 +1632,24 @@ int vchiq_mmal_component_init(struct vch
+ {
+ 	int ret;
+ 	int idx;		/* port index */
+-	struct vchiq_mmal_component *component;
++	struct vchiq_mmal_component *component = NULL;
+ 
+ 	if (mutex_lock_interruptible(&instance->vchiq_mutex))
+ 		return -EINTR;
+ 
+-	if (instance->component_idx == VCHIQ_MMAL_MAX_COMPONENTS) {
++	for (idx = 0; idx < VCHIQ_MMAL_MAX_COMPONENTS; idx++) {
++		if (!instance->component[idx].in_use) {
++			component = &instance->component[idx];
++			component->in_use = 1;
++			break;
++		}
++	}
++
++	if (!component) {
+ 		ret = -EINVAL;	/* todo is this correct error? */
+ 		goto unlock;
+ 	}
+ 
+-	component = &instance->component[instance->component_idx];
+-
+ 	ret = create_component(instance, component, name);
+ 	if (ret < 0) {
+ 		pr_err("%s: failed to create component %d (Not enough GPU mem?)\n",
+@@ -1693,8 +1700,6 @@ int vchiq_mmal_component_init(struct vch
+ 			goto release_component;
+ 	}
+ 
+-	instance->component_idx++;
+-
+ 	*component_out = component;
+ 
+ 	mutex_unlock(&instance->vchiq_mutex);
+@@ -1704,6 +1709,8 @@ int vchiq_mmal_component_init(struct vch
+ release_component:
+ 	destroy_component(instance, component);
+ unlock:
++	if (component)
++		component->in_use = 0;
+ 	mutex_unlock(&instance->vchiq_mutex);
+ 
+ 	return ret;
+@@ -1726,6 +1733,8 @@ int vchiq_mmal_component_finalise(struct
+ 
+ 	ret = destroy_component(instance, component);
+ 
++	component->in_use = 0;
++
+ 	mutex_unlock(&instance->vchiq_mutex);
+ 
+ 	return ret;
+--- a/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.h
++++ b/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.h
+@@ -82,6 +82,7 @@ struct vchiq_mmal_port {
+ };
+ 
+ struct vchiq_mmal_component {
++	u32 in_use:1;
+ 	bool enabled;
+ 	u32 handle;  /* VideoCore handle for component */
+ 	u32 inputs;  /* Number of input ports */

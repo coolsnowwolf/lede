@@ -1,0 +1,1930 @@
+From edaa95330a802b1bcc26cfcd90404ebadd82965b Mon Sep 17 00:00:00 2001
+From: Luke Wren <wren6991@gmail.com>
+Date: Sat, 5 Sep 2015 01:14:45 +0100
+Subject: [PATCH 049/703] Add SMI driver
+
+Signed-off-by: Luke Wren <wren6991@gmail.com>
+---
+ .../bindings/misc/brcm,bcm2835-smi-dev.txt    |  17 +
+ .../bindings/misc/brcm,bcm2835-smi.txt        |  48 +
+ drivers/char/broadcom/Kconfig                 |   8 +
+ drivers/char/broadcom/Makefile                |   2 +-
+ drivers/char/broadcom/bcm2835_smi_dev.c       | 402 +++++++
+ drivers/misc/Kconfig                          |   8 +
+ drivers/misc/Makefile                         |   1 +
+ drivers/misc/bcm2835_smi.c                    | 985 ++++++++++++++++++
+ include/linux/broadcom/bcm2835_smi.h          | 391 +++++++
+ 9 files changed, 1861 insertions(+), 1 deletion(-)
+ create mode 100644 Documentation/devicetree/bindings/misc/brcm,bcm2835-smi-dev.txt
+ create mode 100644 Documentation/devicetree/bindings/misc/brcm,bcm2835-smi.txt
+ create mode 100644 drivers/char/broadcom/bcm2835_smi_dev.c
+ create mode 100644 drivers/misc/bcm2835_smi.c
+ create mode 100644 include/linux/broadcom/bcm2835_smi.h
+
+--- /dev/null
++++ b/Documentation/devicetree/bindings/misc/brcm,bcm2835-smi-dev.txt
+@@ -0,0 +1,17 @@
++* Broadcom BCM2835 SMI character device driver.
++
++SMI or secondary memory interface is a peripheral specific to certain Broadcom
++SOCs, and is helpful for talking to things like parallel-interface displays
++and NAND flashes (in fact, most things with a parallel register interface).
++
++This driver adds a character device which provides a user-space interface to
++an instance of the SMI driver.
++
++Required properties:
++- compatible: "brcm,bcm2835-smi-dev"
++- smi_handle: a phandle to the smi node.
++
++Optional properties:
++- None.
++
++
+--- /dev/null
++++ b/Documentation/devicetree/bindings/misc/brcm,bcm2835-smi.txt
+@@ -0,0 +1,48 @@
++* Broadcom BCM2835 SMI driver.
++
++SMI or secondary memory interface is a peripheral specific to certain Broadcom
++SOCs, and is helpful for talking to things like parallel-interface displays
++and NAND flashes (in fact, most things with a parallel register interface).
++
++Required properties:
++- compatible: "brcm,bcm2835-smi"
++- reg: Should contain location and length of SMI registers and SMI clkman regs
++- interrupts: *the* SMI interrupt.
++- pinctrl-names: should be "default".
++- pinctrl-0: the phandle of the gpio pin node.
++- brcm,smi-clock-source: the clock source for clkman
++- brcm,smi-clock-divisor: the integer clock divisor for clkman
++- dmas: the dma controller phandle and the DREQ number (4 on a 2835)
++- dma-names: the name used by the driver to request its channel.
++  Should be "rx-tx".
++
++Optional properties:
++- None.
++
++Examples:
++
++8 data pin configuration:
++
++smi: smi@7e600000 {
++	compatible = "brcm,bcm2835-smi";
++	reg = <0x7e600000 0x44>, <0x7e1010b0 0x8>;
++	interrupts = <2 16>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&smi_pins>;
++	brcm,smi-clock-source = <6>;
++	brcm,smi-clock-divisor = <4>;
++	dmas = <&dma 4>;
++	dma-names = "rx-tx";
++
++	status = "okay";
++};
++
++smi_pins: smi_pins {
++	brcm,pins = <2 3 4 5 6 7 8 9 10 11 12 13 14 15>;
++	/* Alt 1: SMI */
++	brcm,function = <5 5 5 5 5 5 5 5 5 5 5 5 5 5>;
++	/* /CS, /WE and /OE are pulled high, as they are
++	   generally active low signals */
++	brcm,pull = <2 2 2 2 2 2 0 0 0 0 0 0 0 0>;
++};
++
+--- a/drivers/char/broadcom/Kconfig
++++ b/drivers/char/broadcom/Kconfig
+@@ -35,3 +35,11 @@ config BCM2835_DEVGPIOMEM
+ 		on the 2835. Calling mmap(/dev/gpiomem) will map the GPIO
+ 		register page to the user's pointer.
+ 
++config BCM2835_SMI_DEV
++	tristate "Character device driver for BCM2835 Secondary Memory Interface"
++	depends on BCM2835_SMI
++	default m
++	help
++		This driver provides a character device interface (ioctl + read/write) to
++		Broadcom's Secondary Memory interface. The low-level functionality is provided
++		by the SMI driver itself.
+--- a/drivers/char/broadcom/Makefile
++++ b/drivers/char/broadcom/Makefile
+@@ -2,4 +2,4 @@ obj-$(CONFIG_BCM2708_VCMEM)	+= vc_mem.o
+ obj-$(CONFIG_BCM_VC_SM)         += vc_sm/
+ 
+ obj-$(CONFIG_BCM2835_DEVGPIOMEM)+= bcm2835-gpiomem.o
+-
++obj-$(CONFIG_BCM2835_SMI_DEV)	+= bcm2835_smi_dev.o
+--- /dev/null
++++ b/drivers/char/broadcom/bcm2835_smi_dev.c
+@@ -0,0 +1,402 @@
++/**
++ * Character device driver for Broadcom Secondary Memory Interface
++ *
++ * Written by Luke Wren <luke@raspberrypi.org>
++ * Copyright (c) 2015, Raspberry Pi (Trading) Ltd.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions, and the following disclaimer,
++ *    without modification.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The names of the above-listed copyright holders may not be used
++ *    to endorse or promote products derived from this software without
++ *    specific prior written permission.
++ *
++ * ALTERNATIVELY, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") version 2, as published by the Free
++ * Software Foundation.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
++ * IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
++ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
++ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
++ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
++ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
++ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
++ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
++ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <linux/mm.h>
++#include <linux/pagemap.h>
++#include <linux/fs.h>
++#include <linux/cdev.h>
++#include <linux/fs.h>
++
++#include <linux/broadcom/bcm2835_smi.h>
++
++#define DEVICE_NAME "bcm2835-smi-dev"
++#define DRIVER_NAME "smi-dev-bcm2835"
++#define DEVICE_MINOR 0
++
++static struct cdev bcm2835_smi_cdev;
++static dev_t bcm2835_smi_devid;
++static struct class *bcm2835_smi_class;
++static struct device *bcm2835_smi_dev;
++
++struct bcm2835_smi_dev_instance {
++	struct device *dev;
++};
++
++static struct bcm2835_smi_instance *smi_inst;
++static struct bcm2835_smi_dev_instance *inst;
++
++static const char *const ioctl_names[] = {
++	"READ_SETTINGS",
++	"WRITE_SETTINGS",
++	"ADDRESS"
++};
++
++/****************************************************************************
++*
++*   SMI chardev file ops
++*
++***************************************************************************/
++static long
++bcm2835_smi_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	long ret = 0;
++
++	dev_info(inst->dev, "serving ioctl...");
++
++	switch (cmd) {
++	case BCM2835_SMI_IOC_GET_SETTINGS:{
++		struct smi_settings *settings;
++
++		dev_info(inst->dev, "Reading SMI settings to user.");
++		settings = bcm2835_smi_get_settings_from_regs(smi_inst);
++		if (copy_to_user((void *)arg, settings,
++				 sizeof(struct smi_settings)))
++			dev_err(inst->dev, "settings copy failed.");
++		break;
++	}
++	case BCM2835_SMI_IOC_WRITE_SETTINGS:{
++		struct smi_settings *settings;
++
++		dev_info(inst->dev, "Setting user's SMI settings.");
++		settings = bcm2835_smi_get_settings_from_regs(smi_inst);
++		if (copy_from_user(settings, (void *)arg,
++				   sizeof(struct smi_settings)))
++			dev_err(inst->dev, "settings copy failed.");
++		else
++			bcm2835_smi_set_regs_from_settings(smi_inst);
++		break;
++	}
++	case BCM2835_SMI_IOC_ADDRESS:
++		dev_info(inst->dev, "SMI address set: 0x%02x", (int)arg);
++		bcm2835_smi_set_address(smi_inst, arg);
++		break;
++	default:
++		dev_err(inst->dev, "invalid ioctl cmd: %d", cmd);
++		ret = -ENOTTY;
++		break;
++	}
++
++	return ret;
++}
++
++static int bcm2835_smi_open(struct inode *inode, struct file *file)
++{
++	int dev = iminor(inode);
++
++	dev_dbg(inst->dev, "SMI device opened.");
++
++	if (dev != DEVICE_MINOR) {
++		dev_err(inst->dev,
++			"bcm2835_smi_release: Unknown minor device: %d",
++			dev);
++		return -ENXIO;
++	}
++
++	return 0;
++}
++
++static int bcm2835_smi_release(struct inode *inode, struct file *file)
++{
++	int dev = iminor(inode);
++
++	if (dev != DEVICE_MINOR) {
++		dev_err(inst->dev,
++			"bcm2835_smi_release: Unknown minor device %d", dev);
++		return -ENXIO;
++	}
++
++	return 0;
++}
++
++static ssize_t dma_bounce_user(
++	enum dma_transfer_direction dma_dir,
++	char __user *user_ptr,
++	size_t count,
++	struct bcm2835_smi_bounce_info *bounce)
++{
++	int chunk_size;
++	int chunk_no = 0;
++	int count_left = count;
++
++	while (count_left) {
++		int rv;
++		void *buf;
++
++		/* Wait for current chunk to complete: */
++		if (down_timeout(&bounce->callback_sem,
++			msecs_to_jiffies(1000))) {
++			dev_err(inst->dev, "DMA bounce timed out");
++			count -= (count_left);
++			break;
++		}
++
++		if (bounce->callback_sem.count >= DMA_BOUNCE_BUFFER_COUNT - 1)
++			dev_err(inst->dev, "WARNING: Ring buffer overflow");
++		chunk_size = count_left > DMA_BOUNCE_BUFFER_SIZE ?
++			DMA_BOUNCE_BUFFER_SIZE : count_left;
++		buf = bounce->buffer[chunk_no % DMA_BOUNCE_BUFFER_COUNT];
++		if (dma_dir == DMA_DEV_TO_MEM)
++			rv = copy_to_user(user_ptr, buf, chunk_size);
++		else
++			rv = copy_from_user(buf, user_ptr, chunk_size);
++		if (rv)
++			dev_err(inst->dev, "copy_*_user() failed!: %d", rv);
++		user_ptr += chunk_size;
++		count_left -= chunk_size;
++		chunk_no++;
++	}
++	return count;
++}
++
++static ssize_t
++bcm2835_read_file(struct file *f, char __user *user_ptr,
++		  size_t count, loff_t *offs)
++{
++	int odd_bytes;
++
++	dev_dbg(inst->dev, "User reading %d bytes from SMI.", count);
++	/* We don't want to DMA a number of bytes % 4 != 0 (32 bit FIFO) */
++	if (count > DMA_THRESHOLD_BYTES)
++		odd_bytes = count & 0x3;
++	else
++		odd_bytes = count;
++	count -= odd_bytes;
++	if (count) {
++		struct bcm2835_smi_bounce_info *bounce;
++
++		count = bcm2835_smi_user_dma(smi_inst,
++			DMA_DEV_TO_MEM, user_ptr, count,
++			&bounce);
++		if (count)
++			count = dma_bounce_user(DMA_DEV_TO_MEM, user_ptr,
++				count, bounce);
++	}
++	if (odd_bytes) {
++		/* Read from FIFO directly if not using DMA */
++		uint8_t buf[DMA_THRESHOLD_BYTES];
++
++		bcm2835_smi_read_buf(smi_inst, buf, odd_bytes);
++		if (copy_to_user(user_ptr, buf, odd_bytes))
++			dev_err(inst->dev, "copy_to_user() failed.");
++		count += odd_bytes;
++
++	}
++	return count;
++}
++
++static ssize_t
++bcm2835_write_file(struct file *f, const char __user *user_ptr,
++		   size_t count, loff_t *offs)
++{
++	int odd_bytes;
++
++	dev_dbg(inst->dev, "User writing %d bytes to SMI.", count);
++	if (count > DMA_THRESHOLD_BYTES)
++		odd_bytes = count & 0x3;
++	else
++		odd_bytes = count;
++	count -= odd_bytes;
++	if (count) {
++		struct bcm2835_smi_bounce_info *bounce;
++
++		count = bcm2835_smi_user_dma(smi_inst,
++			DMA_MEM_TO_DEV, (char __user *)user_ptr, count,
++			&bounce);
++		if (count)
++			count = dma_bounce_user(DMA_MEM_TO_DEV,
++				(char __user *)user_ptr,
++				count, bounce);
++	}
++	if (odd_bytes) {
++		uint8_t buf[DMA_THRESHOLD_BYTES];
++
++		if (copy_from_user(buf, user_ptr, odd_bytes))
++			dev_err(inst->dev, "copy_from_user() failed.");
++		else
++			bcm2835_smi_write_buf(smi_inst, buf, odd_bytes);
++		count += odd_bytes;
++	}
++	return count;
++}
++
++static const struct file_operations
++bcm2835_smi_fops = {
++	.owner = THIS_MODULE,
++	.unlocked_ioctl = bcm2835_smi_ioctl,
++	.open = bcm2835_smi_open,
++	.release = bcm2835_smi_release,
++	.read = bcm2835_read_file,
++	.write = bcm2835_write_file,
++};
++
++
++/****************************************************************************
++*
++*   bcm2835_smi_probe - called when the driver is loaded.
++*
++***************************************************************************/
++
++static int bcm2835_smi_dev_probe(struct platform_device *pdev)
++{
++	int err;
++	void *ptr_err;
++	struct device *dev = &pdev->dev;
++	struct device_node *node = dev->of_node, *smi_node;
++
++	if (!node) {
++		dev_err(dev, "No device tree node supplied!");
++		return -EINVAL;
++	}
++
++	smi_node = of_parse_phandle(node, "smi_handle", 0);
++
++	if (!smi_node) {
++		dev_err(dev, "No such property: smi_handle");
++		return -ENXIO;
++	}
++
++	smi_inst = bcm2835_smi_get(smi_node);
++
++	if (!smi_inst)
++		return -EPROBE_DEFER;
++
++	/* Allocate buffers and instance data */
++
++	inst = devm_kzalloc(dev, sizeof(*inst), GFP_KERNEL);
++
++	if (!inst)
++		return -ENOMEM;
++
++	inst->dev = dev;
++
++	/* Create character device entries */
++
++	err = alloc_chrdev_region(&bcm2835_smi_devid,
++				  DEVICE_MINOR, 1, DEVICE_NAME);
++	if (err != 0) {
++		dev_err(inst->dev, "unable to allocate device number");
++		return -ENOMEM;
++	}
++	cdev_init(&bcm2835_smi_cdev, &bcm2835_smi_fops);
++	bcm2835_smi_cdev.owner = THIS_MODULE;
++	err = cdev_add(&bcm2835_smi_cdev, bcm2835_smi_devid, 1);
++	if (err != 0) {
++		dev_err(inst->dev, "unable to register device");
++		err = -ENOMEM;
++		goto failed_cdev_add;
++	}
++
++	/* Create sysfs entries */
++
++	bcm2835_smi_class = class_create(THIS_MODULE, DEVICE_NAME);
++	ptr_err = bcm2835_smi_class;
++	if (IS_ERR(ptr_err))
++		goto failed_class_create;
++
++	bcm2835_smi_dev = device_create(bcm2835_smi_class, NULL,
++					bcm2835_smi_devid, NULL,
++					"smi");
++	ptr_err = bcm2835_smi_dev;
++	if (IS_ERR(ptr_err))
++		goto failed_device_create;
++
++	dev_info(inst->dev, "initialised");
++
++	return 0;
++
++failed_device_create:
++	class_destroy(bcm2835_smi_class);
++failed_class_create:
++	cdev_del(&bcm2835_smi_cdev);
++	err = PTR_ERR(ptr_err);
++failed_cdev_add:
++	unregister_chrdev_region(bcm2835_smi_devid, 1);
++	dev_err(dev, "could not load bcm2835_smi_dev");
++	return err;
++}
++
++/****************************************************************************
++*
++*   bcm2835_smi_remove - called when the driver is unloaded.
++*
++***************************************************************************/
++
++static int bcm2835_smi_dev_remove(struct platform_device *pdev)
++{
++	device_destroy(bcm2835_smi_class, bcm2835_smi_devid);
++	class_destroy(bcm2835_smi_class);
++	cdev_del(&bcm2835_smi_cdev);
++	unregister_chrdev_region(bcm2835_smi_devid, 1);
++
++	dev_info(inst->dev, "SMI character dev removed - OK");
++	return 0;
++}
++
++/****************************************************************************
++*
++*   Register the driver with device tree
++*
++***************************************************************************/
++
++static const struct of_device_id bcm2835_smi_dev_of_match[] = {
++	{.compatible = "brcm,bcm2835-smi-dev",},
++	{ /* sentinel */ },
++};
++
++MODULE_DEVICE_TABLE(of, bcm2835_smi_dev_of_match);
++
++static struct platform_driver bcm2835_smi_dev_driver = {
++	.probe = bcm2835_smi_dev_probe,
++	.remove = bcm2835_smi_dev_remove,
++	.driver = {
++		   .name = DRIVER_NAME,
++		   .owner = THIS_MODULE,
++		   .of_match_table = bcm2835_smi_dev_of_match,
++		   },
++};
++
++module_platform_driver(bcm2835_smi_dev_driver);
++
++MODULE_ALIAS("platform:smi-dev-bcm2835");
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION(
++	"Character device driver for BCM2835's secondary memory interface");
++MODULE_AUTHOR("Luke Wren <luke@raspberrypi.org>");
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -10,6 +10,14 @@ config SENSORS_LIS3LV02D
+ 	select INPUT_POLLDEV
+ 	default n
+ 
++config BCM2835_SMI
++	tristate "Broadcom 283x Secondary Memory Interface driver"
++	depends on ARCH_BCM2835
++	default m
++	help
++		Driver for enabling and using Broadcom's Secondary/Slow Memory Interface.
++		Appears as /dev/bcm2835_smi. For ioctl interface see drivers/misc/bcm2835_smi.h
++
+ config AD525X_DPOT
+ 	tristate "Analog Devices Digital Potentiometers"
+ 	depends on (I2C || SPI) && SYSFS
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -11,6 +11,7 @@ obj-$(CONFIG_AD525X_DPOT_SPI)	+= ad525x_
+ obj-$(CONFIG_INTEL_MID_PTI)	+= pti.o
+ obj-$(CONFIG_ATMEL_SSC)		+= atmel-ssc.o
+ obj-$(CONFIG_ATMEL_TCLIB)	+= atmel_tclib.o
++obj-$(CONFIG_BCM2835_SMI)	+= bcm2835_smi.o
+ obj-$(CONFIG_DUMMY_IRQ)		+= dummy-irq.o
+ obj-$(CONFIG_ICS932S401)	+= ics932s401.o
+ obj-$(CONFIG_LKDTM)		+= lkdtm/
+--- /dev/null
++++ b/drivers/misc/bcm2835_smi.c
+@@ -0,0 +1,985 @@
++/**
++ * Broadcom Secondary Memory Interface driver
++ *
++ * Written by Luke Wren <luke@raspberrypi.org>
++ * Copyright (c) 2015, Raspberry Pi (Trading) Ltd.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions, and the following disclaimer,
++ *    without modification.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The names of the above-listed copyright holders may not be used
++ *    to endorse or promote products derived from this software without
++ *    specific prior written permission.
++ *
++ * ALTERNATIVELY, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") version 2, as published by the Free
++ * Software Foundation.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
++ * IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
++ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
++ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
++ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
++ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
++ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
++ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
++ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/of_address.h>
++#include <linux/of_platform.h>
++#include <linux/mm.h>
++#include <linux/slab.h>
++#include <linux/pagemap.h>
++#include <linux/dma-mapping.h>
++#include <linux/dmaengine.h>
++#include <linux/semaphore.h>
++#include <linux/spinlock.h>
++#include <linux/io.h>
++
++#define BCM2835_SMI_IMPLEMENTATION
++#include <linux/broadcom/bcm2835_smi.h>
++
++#define DRIVER_NAME "smi-bcm2835"
++
++#define N_PAGES_FROM_BYTES(n) ((n + PAGE_SIZE-1) / PAGE_SIZE)
++
++#define DMA_WRITE_TO_MEM true
++#define DMA_READ_FROM_MEM false
++
++struct bcm2835_smi_instance {
++	struct device *dev;
++	struct smi_settings settings;
++	__iomem void *smi_regs_ptr, *cm_smi_regs_ptr;
++	dma_addr_t smi_regs_busaddr;
++
++	struct dma_chan *dma_chan;
++	struct dma_slave_config dma_config;
++
++	struct bcm2835_smi_bounce_info bounce;
++
++	struct scatterlist buffer_sgl;
++
++	int clock_source;
++	int clock_divisor;
++
++	/* Sometimes we are called into in an atomic context (e.g. by
++	   JFFS2 + MTD) so we can't use a mutex */
++	spinlock_t transaction_lock;
++};
++
++/****************************************************************************
++*
++*   SMI clock manager setup
++*
++***************************************************************************/
++
++static inline void write_smi_cm_reg(struct bcm2835_smi_instance *inst,
++	u32 val, unsigned reg)
++{
++	writel(CM_PWD | val, inst->cm_smi_regs_ptr + reg);
++}
++
++static inline u32 read_smi_cm_reg(struct bcm2835_smi_instance *inst,
++	unsigned reg)
++{
++	return readl(inst->cm_smi_regs_ptr + reg);
++}
++
++static void smi_setup_clock(struct bcm2835_smi_instance *inst)
++{
++	dev_dbg(inst->dev, "Setting up clock...");
++	/* Disable SMI clock and wait for it to stop. */
++	write_smi_cm_reg(inst, 0, CM_SMI_CTL);
++	while (read_smi_cm_reg(inst, CM_SMI_CTL) & CM_SMI_CTL_BUSY)
++		;
++
++	write_smi_cm_reg(inst, (inst->clock_divisor << CM_SMI_DIV_DIVI_OFFS),
++	       CM_SMI_DIV);
++	write_smi_cm_reg(inst, (inst->clock_source << CM_SMI_CTL_SRC_OFFS),
++	       CM_SMI_CTL);
++
++	/* Enable the clock */
++	write_smi_cm_reg(inst, (inst->clock_source << CM_SMI_CTL_SRC_OFFS) |
++	       CM_SMI_CTL_ENAB, CM_SMI_CTL);
++}
++
++/****************************************************************************
++*
++*   SMI peripheral setup
++*
++***************************************************************************/
++
++static inline void write_smi_reg(struct bcm2835_smi_instance *inst,
++	u32 val, unsigned reg)
++{
++	writel(val, inst->smi_regs_ptr + reg);
++}
++
++static inline u32 read_smi_reg(struct bcm2835_smi_instance *inst, unsigned reg)
++{
++	return readl(inst->smi_regs_ptr + reg);
++}
++
++/* Token-paste macro for e.g SMIDSR_RSTROBE ->  value of SMIDSR_RSTROBE_MASK */
++#define _CONCAT(x, y) x##y
++#define CONCAT(x, y) _CONCAT(x, y)
++
++#define SET_BIT_FIELD(dest, field, bits) ((dest) = \
++	((dest) & ~CONCAT(field, _MASK)) | (((bits) << CONCAT(field, _OFFS))& \
++	 CONCAT(field, _MASK)))
++#define GET_BIT_FIELD(src, field) (((src) & \
++	CONCAT(field, _MASK)) >> CONCAT(field, _OFFS))
++
++static void smi_dump_context_labelled(struct bcm2835_smi_instance *inst,
++	const char *label)
++{
++	dev_err(inst->dev, "SMI context dump: %s", label);
++	dev_err(inst->dev, "SMICS:  0x%08x", read_smi_reg(inst, SMICS));
++	dev_err(inst->dev, "SMIL:   0x%08x", read_smi_reg(inst, SMIL));
++	dev_err(inst->dev, "SMIDSR: 0x%08x", read_smi_reg(inst, SMIDSR0));
++	dev_err(inst->dev, "SMIDSW: 0x%08x", read_smi_reg(inst, SMIDSW0));
++	dev_err(inst->dev, "SMIDC:  0x%08x", read_smi_reg(inst, SMIDC));
++	dev_err(inst->dev, "SMIFD:  0x%08x", read_smi_reg(inst, SMIFD));
++	dev_err(inst->dev, " ");
++}
++
++static inline void smi_dump_context(struct bcm2835_smi_instance *inst)
++{
++	smi_dump_context_labelled(inst, "");
++}
++
++static void smi_get_default_settings(struct bcm2835_smi_instance *inst)
++{
++	struct smi_settings *settings = &inst->settings;
++
++	settings->data_width = SMI_WIDTH_16BIT;
++	settings->pack_data = true;
++
++	settings->read_setup_time = 1;
++	settings->read_hold_time = 1;
++	settings->read_pace_time = 1;
++	settings->read_strobe_time = 3;
++
++	settings->write_setup_time = settings->read_setup_time;
++	settings->write_hold_time = settings->read_hold_time;
++	settings->write_pace_time = settings->read_pace_time;
++	settings->write_strobe_time = settings->read_strobe_time;
++
++	settings->dma_enable = true;
++	settings->dma_passthrough_enable = false;
++	settings->dma_read_thresh = 0x01;
++	settings->dma_write_thresh = 0x3f;
++	settings->dma_panic_read_thresh = 0x20;
++	settings->dma_panic_write_thresh = 0x20;
++}
++
++void bcm2835_smi_set_regs_from_settings(struct bcm2835_smi_instance *inst)
++{
++	struct smi_settings *settings = &inst->settings;
++	int smidsr_temp = 0, smidsw_temp = 0, smics_temp,
++	    smidcs_temp, smidc_temp = 0;
++
++	spin_lock(&inst->transaction_lock);
++
++	/* temporarily disable the peripheral: */
++	smics_temp = read_smi_reg(inst, SMICS);
++	write_smi_reg(inst, 0, SMICS);
++	smidcs_temp = read_smi_reg(inst, SMIDCS);
++	write_smi_reg(inst, 0, SMIDCS);
++
++	if (settings->pack_data)
++		smics_temp |= SMICS_PXLDAT;
++	else
++		smics_temp &= ~SMICS_PXLDAT;
++
++	SET_BIT_FIELD(smidsr_temp, SMIDSR_RWIDTH, settings->data_width);
++	SET_BIT_FIELD(smidsr_temp, SMIDSR_RSETUP, settings->read_setup_time);
++	SET_BIT_FIELD(smidsr_temp, SMIDSR_RHOLD, settings->read_hold_time);
++	SET_BIT_FIELD(smidsr_temp, SMIDSR_RPACE, settings->read_pace_time);
++	SET_BIT_FIELD(smidsr_temp, SMIDSR_RSTROBE, settings->read_strobe_time);
++	write_smi_reg(inst, smidsr_temp, SMIDSR0);
++
++	SET_BIT_FIELD(smidsw_temp, SMIDSW_WWIDTH, settings->data_width);
++	if (settings->data_width == SMI_WIDTH_8BIT)
++		smidsw_temp |= SMIDSW_WSWAP;
++	else
++		smidsw_temp &= ~SMIDSW_WSWAP;
++	SET_BIT_FIELD(smidsw_temp, SMIDSW_WSETUP, settings->write_setup_time);
++	SET_BIT_FIELD(smidsw_temp, SMIDSW_WHOLD, settings->write_hold_time);
++	SET_BIT_FIELD(smidsw_temp, SMIDSW_WPACE, settings->write_pace_time);
++	SET_BIT_FIELD(smidsw_temp, SMIDSW_WSTROBE,
++			settings->write_strobe_time);
++	write_smi_reg(inst, smidsw_temp, SMIDSW0);
++
++	SET_BIT_FIELD(smidc_temp, SMIDC_REQR, settings->dma_read_thresh);
++	SET_BIT_FIELD(smidc_temp, SMIDC_REQW, settings->dma_write_thresh);
++	SET_BIT_FIELD(smidc_temp, SMIDC_PANICR,
++		      settings->dma_panic_read_thresh);
++	SET_BIT_FIELD(smidc_temp, SMIDC_PANICW,
++		      settings->dma_panic_write_thresh);
++	if (settings->dma_passthrough_enable) {
++		smidc_temp |= SMIDC_DMAP;
++		smidsr_temp |= SMIDSR_RDREQ;
++		write_smi_reg(inst, smidsr_temp, SMIDSR0);
++		smidsw_temp |= SMIDSW_WDREQ;
++		write_smi_reg(inst, smidsw_temp, SMIDSW0);
++	} else
++		smidc_temp &= ~SMIDC_DMAP;
++	if (settings->dma_enable)
++		smidc_temp |= SMIDC_DMAEN;
++	else
++		smidc_temp &= ~SMIDC_DMAEN;
++
++	write_smi_reg(inst, smidc_temp, SMIDC);
++
++	/* re-enable (if was previously enabled) */
++	write_smi_reg(inst, smics_temp, SMICS);
++	write_smi_reg(inst, smidcs_temp, SMIDCS);
++
++	spin_unlock(&inst->transaction_lock);
++}
++EXPORT_SYMBOL(bcm2835_smi_set_regs_from_settings);
++
++struct smi_settings *bcm2835_smi_get_settings_from_regs
++	(struct bcm2835_smi_instance *inst)
++{
++	struct smi_settings *settings = &inst->settings;
++	int smidsr, smidsw, smidc;
++
++	spin_lock(&inst->transaction_lock);
++
++	smidsr = read_smi_reg(inst, SMIDSR0);
++	smidsw = read_smi_reg(inst, SMIDSW0);
++	smidc = read_smi_reg(inst, SMIDC);
++
++	settings->pack_data = (read_smi_reg(inst, SMICS) & SMICS_PXLDAT) ?
++	    true : false;
++
++	settings->data_width = GET_BIT_FIELD(smidsr, SMIDSR_RWIDTH);
++	settings->read_setup_time = GET_BIT_FIELD(smidsr, SMIDSR_RSETUP);
++	settings->read_hold_time = GET_BIT_FIELD(smidsr, SMIDSR_RHOLD);
++	settings->read_pace_time = GET_BIT_FIELD(smidsr, SMIDSR_RPACE);
++	settings->read_strobe_time = GET_BIT_FIELD(smidsr, SMIDSR_RSTROBE);
++
++	settings->write_setup_time = GET_BIT_FIELD(smidsw, SMIDSW_WSETUP);
++	settings->write_hold_time = GET_BIT_FIELD(smidsw, SMIDSW_WHOLD);
++	settings->write_pace_time = GET_BIT_FIELD(smidsw, SMIDSW_WPACE);
++	settings->write_strobe_time = GET_BIT_FIELD(smidsw, SMIDSW_WSTROBE);
++
++	settings->dma_read_thresh = GET_BIT_FIELD(smidc, SMIDC_REQR);
++	settings->dma_write_thresh = GET_BIT_FIELD(smidc, SMIDC_REQW);
++	settings->dma_panic_read_thresh = GET_BIT_FIELD(smidc, SMIDC_PANICR);
++	settings->dma_panic_write_thresh = GET_BIT_FIELD(smidc, SMIDC_PANICW);
++	settings->dma_passthrough_enable = (smidc & SMIDC_DMAP) ? true : false;
++	settings->dma_enable = (smidc & SMIDC_DMAEN) ? true : false;
++
++	spin_unlock(&inst->transaction_lock);
++
++	return settings;
++}
++EXPORT_SYMBOL(bcm2835_smi_get_settings_from_regs);
++
++static inline void smi_set_address(struct bcm2835_smi_instance *inst,
++	unsigned int address)
++{
++	int smia_temp = 0, smida_temp = 0;
++
++	SET_BIT_FIELD(smia_temp, SMIA_ADDR, address);
++	SET_BIT_FIELD(smida_temp, SMIDA_ADDR, address);
++
++	/* Write to both address registers - user doesn't care whether we're
++	   doing programmed or direct transfers. */
++	write_smi_reg(inst, smia_temp, SMIA);
++	write_smi_reg(inst, smida_temp, SMIDA);
++}
++
++static void smi_setup_regs(struct bcm2835_smi_instance *inst)
++{
++
++	dev_dbg(inst->dev, "Initialising SMI registers...");
++	/* Disable the peripheral if already enabled */
++	write_smi_reg(inst, 0, SMICS);
++	write_smi_reg(inst, 0, SMIDCS);
++
++	smi_get_default_settings(inst);
++	bcm2835_smi_set_regs_from_settings(inst);
++	smi_set_address(inst, 0);
++
++	write_smi_reg(inst, read_smi_reg(inst, SMICS) | SMICS_ENABLE, SMICS);
++	write_smi_reg(inst, read_smi_reg(inst, SMIDCS) | SMIDCS_ENABLE,
++		SMIDCS);
++}
++
++/****************************************************************************
++*
++*   Low-level SMI access functions
++*   Other modules should use the exported higher-level functions e.g.
++*   bcm2835_smi_write_buf() unless they have a good reason to use these
++*
++***************************************************************************/
++
++static inline uint32_t smi_read_single_word(struct bcm2835_smi_instance *inst)
++{
++	int timeout = 0;
++
++	write_smi_reg(inst, SMIDCS_ENABLE, SMIDCS);
++	write_smi_reg(inst, SMIDCS_ENABLE | SMIDCS_START, SMIDCS);
++	/* Make sure things happen in the right order...*/
++	mb();
++	while (!(read_smi_reg(inst, SMIDCS) & SMIDCS_DONE) &&
++		++timeout < 10000)
++		;
++	if (timeout < 10000)
++		return read_smi_reg(inst, SMIDD);
++
++	dev_err(inst->dev,
++		"SMI direct read timed out (is the clock set up correctly?)");
++	return 0;
++}
++
++static inline void smi_write_single_word(struct bcm2835_smi_instance *inst,
++	uint32_t data)
++{
++	int timeout = 0;
++
++	write_smi_reg(inst, SMIDCS_ENABLE | SMIDCS_WRITE, SMIDCS);
++	write_smi_reg(inst, data, SMIDD);
++	write_smi_reg(inst, SMIDCS_ENABLE | SMIDCS_WRITE | SMIDCS_START,
++		SMIDCS);
++
++	while (!(read_smi_reg(inst, SMIDCS) & SMIDCS_DONE) &&
++		++timeout < 10000)
++		;
++	if (timeout >= 10000)
++		dev_err(inst->dev,
++		"SMI direct write timed out (is the clock set up correctly?)");
++}
++
++/* Initiates a programmed read into the read FIFO. It is up to the caller to
++ * read data from the FIFO -  either via paced DMA transfer,
++ * or polling SMICS_RXD to check whether data is available.
++ * SMICS_ACTIVE will go low upon completion. */
++static void smi_init_programmed_read(struct bcm2835_smi_instance *inst,
++	int num_transfers)
++{
++	int smics_temp;
++
++	/* Disable the peripheral: */
++	smics_temp = read_smi_reg(inst, SMICS) & ~(SMICS_ENABLE | SMICS_WRITE);
++	write_smi_reg(inst, smics_temp, SMICS);
++	while (read_smi_reg(inst, SMICS) & SMICS_ENABLE)
++		;
++
++	/* Program the transfer count: */
++	write_smi_reg(inst, num_transfers, SMIL);
++
++	/* re-enable and start: */
++	smics_temp |= SMICS_ENABLE;
++	write_smi_reg(inst, smics_temp, SMICS);
++	smics_temp |= SMICS_CLEAR;
++	/* Just to be certain: */
++	mb();
++	while (read_smi_reg(inst, SMICS) & SMICS_ACTIVE)
++		;
++	write_smi_reg(inst, smics_temp, SMICS);
++	smics_temp |= SMICS_START;
++	write_smi_reg(inst, smics_temp, SMICS);
++}
++
++/* Initiates a programmed write sequence, using data from the write FIFO.
++ * It is up to the caller to initiate a DMA transfer before calling,
++ * or use another method to keep the write FIFO topped up.
++ * SMICS_ACTIVE will go low upon completion.
++ */
++static void smi_init_programmed_write(struct bcm2835_smi_instance *inst,
++	int num_transfers)
++{
++	int smics_temp;
++
++	/* Disable the peripheral: */
++	smics_temp = read_smi_reg(inst, SMICS) & ~SMICS_ENABLE;
++	write_smi_reg(inst, smics_temp, SMICS);
++	while (read_smi_reg(inst, SMICS) & SMICS_ENABLE)
++		;
++
++	/* Program the transfer count: */
++	write_smi_reg(inst, num_transfers, SMIL);
++
++	/* setup, re-enable and start: */
++	smics_temp |= SMICS_WRITE | SMICS_ENABLE;
++	write_smi_reg(inst, smics_temp, SMICS);
++	smics_temp |= SMICS_START;
++	write_smi_reg(inst, smics_temp, SMICS);
++}
++
++/* Initiate a read and then poll FIFO for data, reading out as it appears. */
++static void smi_read_fifo(struct bcm2835_smi_instance *inst,
++	uint32_t *dest, int n_bytes)
++{
++	if (read_smi_reg(inst, SMICS) & SMICS_RXD) {
++		smi_dump_context_labelled(inst,
++			"WARNING: read FIFO not empty at start of read call.");
++		while (read_smi_reg(inst, SMICS))
++			;
++	}
++
++	/* Dispatch the read: */
++	if (inst->settings.data_width == SMI_WIDTH_8BIT)
++		smi_init_programmed_read(inst, n_bytes);
++	else if (inst->settings.data_width == SMI_WIDTH_16BIT)
++		smi_init_programmed_read(inst, n_bytes / 2);
++	else {
++		dev_err(inst->dev, "Unsupported data width for read.");
++		return;
++	}
++
++	/* Poll FIFO to keep it empty */
++	while (!(read_smi_reg(inst, SMICS) & SMICS_DONE))
++		if (read_smi_reg(inst, SMICS) & SMICS_RXD)
++			*dest++ = read_smi_reg(inst, SMID);
++
++	/* Ensure that the FIFO is emptied */
++	if (read_smi_reg(inst, SMICS) & SMICS_RXD) {
++		int fifo_count;
++
++		fifo_count = GET_BIT_FIELD(read_smi_reg(inst, SMIFD),
++			SMIFD_FCNT);
++		while (fifo_count--)
++			*dest++ = read_smi_reg(inst, SMID);
++	}
++
++	if (!(read_smi_reg(inst, SMICS) & SMICS_DONE))
++		smi_dump_context_labelled(inst,
++			"WARNING: transaction finished but done bit not set.");
++
++	if (read_smi_reg(inst, SMICS) & SMICS_RXD)
++		smi_dump_context_labelled(inst,
++			"WARNING: read FIFO not empty at end of read call.");
++
++}
++
++/* Initiate a write, and then keep the FIFO topped up. */
++static void smi_write_fifo(struct bcm2835_smi_instance *inst,
++	uint32_t *src, int n_bytes)
++{
++	int i, timeout = 0;
++
++	/* Empty FIFOs if not already so */
++	if (!(read_smi_reg(inst, SMICS) & SMICS_TXE)) {
++		smi_dump_context_labelled(inst,
++		    "WARNING: write fifo not empty at start of write call.");
++		write_smi_reg(inst, read_smi_reg(inst, SMICS) | SMICS_CLEAR,
++			SMICS);
++	}
++
++	/* Initiate the transfer */
++	if (inst->settings.data_width == SMI_WIDTH_8BIT)
++		smi_init_programmed_write(inst, n_bytes);
++	else if (inst->settings.data_width == SMI_WIDTH_16BIT)
++		smi_init_programmed_write(inst, n_bytes / 2);
++	else {
++		dev_err(inst->dev, "Unsupported data width for write.");
++		return;
++	}
++	/* Fill the FIFO: */
++	for (i = 0; i < (n_bytes - 1) / 4 + 1; ++i) {
++		while (!(read_smi_reg(inst, SMICS) & SMICS_TXD))
++			;
++		write_smi_reg(inst, *src++, SMID);
++	}
++	/* Busy wait... */
++	while (!(read_smi_reg(inst, SMICS) & SMICS_DONE) && ++timeout <
++		1000000)
++		;
++	if (timeout >= 1000000)
++		smi_dump_context_labelled(inst,
++			"Timed out on write operation!");
++	if (!(read_smi_reg(inst, SMICS) & SMICS_TXE))
++		smi_dump_context_labelled(inst,
++			"WARNING: FIFO not empty at end of write operation.");
++}
++
++/****************************************************************************
++*
++*   SMI DMA operations
++*
++***************************************************************************/
++
++/* Disable SMI and put it into the correct direction before doing DMA setup.
++   Stops spurious DREQs during setup. Peripheral is re-enabled by init_*() */
++static void smi_disable(struct bcm2835_smi_instance *inst,
++	enum dma_transfer_direction direction)
++{
++	int smics_temp = read_smi_reg(inst, SMICS) & ~SMICS_ENABLE;
++
++	if (direction == DMA_DEV_TO_MEM)
++		smics_temp &= ~SMICS_WRITE;
++	else
++		smics_temp |= SMICS_WRITE;
++	write_smi_reg(inst, smics_temp, SMICS);
++	while (read_smi_reg(inst, SMICS) & SMICS_ACTIVE)
++		;
++}
++
++static struct scatterlist *smi_scatterlist_from_buffer(
++	struct bcm2835_smi_instance *inst,
++	dma_addr_t buf,
++	size_t len,
++	struct scatterlist *sg)
++{
++	sg_init_table(sg, 1);
++	sg_dma_address(sg) = buf;
++	sg_dma_len(sg) = len;
++	return sg;
++}
++
++static void smi_dma_callback_user_copy(void *param)
++{
++	/* Notify the bottom half that a chunk is ready for user copy */
++	struct bcm2835_smi_instance *inst =
++		(struct bcm2835_smi_instance *)param;
++
++	up(&inst->bounce.callback_sem);
++}
++
++/* Creates a descriptor, assigns the given callback, and submits the
++   descriptor to dmaengine. Does not block - can queue up multiple
++   descriptors and then wait for them all to complete.
++   sg_len is the number of control blocks, NOT the number of bytes.
++   dir can be DMA_MEM_TO_DEV or DMA_DEV_TO_MEM.
++   callback can be NULL - in this case it is not called. */
++static inline struct dma_async_tx_descriptor *smi_dma_submit_sgl(
++	struct bcm2835_smi_instance *inst,
++	struct scatterlist *sgl,
++	size_t sg_len,
++	enum dma_transfer_direction dir,
++	dma_async_tx_callback callback)
++{
++	struct dma_async_tx_descriptor *desc;
++
++	desc = dmaengine_prep_slave_sg(inst->dma_chan,
++				       sgl,
++				       sg_len,
++				       dir,
++				       DMA_PREP_INTERRUPT | DMA_CTRL_ACK |
++				       DMA_PREP_FENCE);
++	if (!desc) {
++		dev_err(inst->dev, "read_sgl: dma slave preparation failed!");
++		write_smi_reg(inst, read_smi_reg(inst, SMICS) & ~SMICS_ACTIVE,
++			SMICS);
++		while (read_smi_reg(inst, SMICS) & SMICS_ACTIVE)
++			cpu_relax();
++		write_smi_reg(inst, read_smi_reg(inst, SMICS) | SMICS_ACTIVE,
++			SMICS);
++		return NULL;
++	}
++	desc->callback = callback;
++	desc->callback_param = inst;
++	if (dmaengine_submit(desc) < 0)
++		return NULL;
++	return desc;
++}
++
++/* NB this function blocks until the transfer is complete */
++static void
++smi_dma_read_sgl(struct bcm2835_smi_instance *inst,
++	struct scatterlist *sgl, size_t sg_len, size_t n_bytes)
++{
++	struct dma_async_tx_descriptor *desc;
++
++	/* Disable SMI and set to read before dispatching DMA - if SMI is in
++	 * write mode and TX fifo is empty, it will generate a DREQ which may
++	 * cause the read DMA to complete before the SMI read command is even
++	 * dispatched! We want to dispatch DMA before SMI read so that reading
++	 * is gapless, for logic analyser.
++	 */
++
++	smi_disable(inst, DMA_DEV_TO_MEM);
++
++	desc = smi_dma_submit_sgl(inst, sgl, sg_len, DMA_DEV_TO_MEM, NULL);
++	dma_async_issue_pending(inst->dma_chan);
++
++	if (inst->settings.data_width == SMI_WIDTH_8BIT)
++		smi_init_programmed_read(inst, n_bytes);
++	else
++		smi_init_programmed_read(inst, n_bytes / 2);
++
++	if (dma_wait_for_async_tx(desc) == DMA_ERROR)
++		smi_dump_context_labelled(inst, "DMA timeout!");
++}
++
++static void
++smi_dma_write_sgl(struct bcm2835_smi_instance *inst,
++	struct scatterlist *sgl, size_t sg_len, size_t n_bytes)
++{
++	struct dma_async_tx_descriptor *desc;
++
++	if (inst->settings.data_width == SMI_WIDTH_8BIT)
++		smi_init_programmed_write(inst, n_bytes);
++	else
++		smi_init_programmed_write(inst, n_bytes / 2);
++
++	desc = smi_dma_submit_sgl(inst, sgl, sg_len, DMA_MEM_TO_DEV, NULL);
++	dma_async_issue_pending(inst->dma_chan);
++
++	if (dma_wait_for_async_tx(desc) == DMA_ERROR)
++		smi_dump_context_labelled(inst, "DMA timeout!");
++	else
++		/* Wait for SMI to finish our writes */
++		while (!(read_smi_reg(inst, SMICS) & SMICS_DONE))
++			cpu_relax();
++}
++
++ssize_t bcm2835_smi_user_dma(
++	struct bcm2835_smi_instance *inst,
++	enum dma_transfer_direction dma_dir,
++	char __user *user_ptr, size_t count,
++	struct bcm2835_smi_bounce_info **bounce)
++{
++	int chunk_no = 0, chunk_size, count_left = count;
++	struct scatterlist *sgl;
++	void (*init_trans_func)(struct bcm2835_smi_instance *, int);
++
++	spin_lock(&inst->transaction_lock);
++
++	if (dma_dir == DMA_DEV_TO_MEM)
++		init_trans_func = smi_init_programmed_read;
++	else
++		init_trans_func = smi_init_programmed_write;
++
++	smi_disable(inst, dma_dir);
++
++	sema_init(&inst->bounce.callback_sem, 0);
++	if (bounce)
++		*bounce = &inst->bounce;
++	while (count_left) {
++		chunk_size = count_left > DMA_BOUNCE_BUFFER_SIZE ?
++			DMA_BOUNCE_BUFFER_SIZE : count_left;
++		if (chunk_size == DMA_BOUNCE_BUFFER_SIZE) {
++			sgl =
++			&inst->bounce.sgl[chunk_no % DMA_BOUNCE_BUFFER_COUNT];
++		} else {
++			sgl = smi_scatterlist_from_buffer(
++				inst,
++				inst->bounce.phys[
++					chunk_no % DMA_BOUNCE_BUFFER_COUNT],
++				chunk_size,
++				&inst->buffer_sgl);
++		}
++
++		if (!smi_dma_submit_sgl(inst, sgl, 1, dma_dir,
++			smi_dma_callback_user_copy
++		)) {
++			dev_err(inst->dev, "sgl submit failed");
++			count = 0;
++			goto out;
++		}
++		count_left -= chunk_size;
++		chunk_no++;
++	}
++	dma_async_issue_pending(inst->dma_chan);
++
++	if (inst->settings.data_width == SMI_WIDTH_8BIT)
++		init_trans_func(inst, count);
++	else if (inst->settings.data_width == SMI_WIDTH_16BIT)
++		init_trans_func(inst, count / 2);
++out:
++	spin_unlock(&inst->transaction_lock);
++	return count;
++}
++EXPORT_SYMBOL(bcm2835_smi_user_dma);
++
++
++/****************************************************************************
++*
++*   High level buffer transfer functions - for use by other drivers
++*
++***************************************************************************/
++
++/* Buffer must be physically contiguous - i.e. kmalloc, not vmalloc! */
++void bcm2835_smi_write_buf(
++	struct bcm2835_smi_instance *inst,
++	const void *buf, size_t n_bytes)
++{
++	int odd_bytes = n_bytes & 0x3;
++
++	n_bytes -= odd_bytes;
++
++	spin_lock(&inst->transaction_lock);
++
++	if (n_bytes > DMA_THRESHOLD_BYTES) {
++		dma_addr_t phy_addr = dma_map_single(
++			inst->dev,
++			(void *)buf,
++			n_bytes,
++			DMA_MEM_TO_DEV);
++		struct scatterlist *sgl =
++			smi_scatterlist_from_buffer(inst, phy_addr, n_bytes,
++				&inst->buffer_sgl);
++
++		if (!sgl) {
++			smi_dump_context_labelled(inst,
++			"Error: could not create scatterlist for write!");
++			goto out;
++		}
++		smi_dma_write_sgl(inst, sgl, 1, n_bytes);
++
++		dma_unmap_single
++			(inst->dev, phy_addr, n_bytes, DMA_MEM_TO_DEV);
++	} else if (n_bytes) {
++		smi_write_fifo(inst, (uint32_t *) buf, n_bytes);
++	}
++	buf += n_bytes;
++
++	if (inst->settings.data_width == SMI_WIDTH_8BIT) {
++		while (odd_bytes--)
++			smi_write_single_word(inst, *(uint8_t *) (buf++));
++	} else {
++		while (odd_bytes >= 2) {
++			smi_write_single_word(inst, *(uint16_t *)buf);
++			buf += 2;
++			odd_bytes -= 2;
++		}
++		if (odd_bytes) {
++			/* Reading an odd number of bytes on a 16 bit bus is
++			   a user bug. It's kinder to fail early and tell them
++			   than to e.g. transparently give them the bottom byte
++			   of a 16 bit transfer. */
++			dev_err(inst->dev,
++		"WARNING: odd number of bytes specified for wide transfer.");
++			dev_err(inst->dev,
++		"At least one byte dropped as a result.");
++			dump_stack();
++		}
++	}
++out:
++	spin_unlock(&inst->transaction_lock);
++}
++EXPORT_SYMBOL(bcm2835_smi_write_buf);
++
++void bcm2835_smi_read_buf(struct bcm2835_smi_instance *inst,
++	void *buf, size_t n_bytes)
++{
++
++	/* SMI is inherently 32-bit, which causes surprising amounts of mess
++	   for bytes % 4 != 0. Easiest to avoid this mess altogether
++	   by handling remainder separately. */
++	int odd_bytes = n_bytes & 0x3;
++
++	spin_lock(&inst->transaction_lock);
++	n_bytes -= odd_bytes;
++	if (n_bytes > DMA_THRESHOLD_BYTES) {
++		dma_addr_t phy_addr = dma_map_single(inst->dev,
++						     buf, n_bytes,
++						     DMA_DEV_TO_MEM);
++		struct scatterlist *sgl = smi_scatterlist_from_buffer(
++			inst, phy_addr, n_bytes,
++			&inst->buffer_sgl);
++		if (!sgl) {
++			smi_dump_context_labelled(inst,
++			"Error: could not create scatterlist for read!");
++			goto out;
++		}
++		smi_dma_read_sgl(inst, sgl, 1, n_bytes);
++		dma_unmap_single(inst->dev, phy_addr, n_bytes, DMA_DEV_TO_MEM);
++	} else if (n_bytes) {
++		smi_read_fifo(inst, (uint32_t *)buf, n_bytes);
++	}
++	buf += n_bytes;
++
++	if (inst->settings.data_width == SMI_WIDTH_8BIT) {
++		while (odd_bytes--)
++			*((uint8_t *) (buf++)) = smi_read_single_word(inst);
++	} else {
++		while (odd_bytes >= 2) {
++			*(uint16_t *) buf = smi_read_single_word(inst);
++			buf += 2;
++			odd_bytes -= 2;
++		}
++		if (odd_bytes) {
++			dev_err(inst->dev,
++		"WARNING: odd number of bytes specified for wide transfer.");
++			dev_err(inst->dev,
++		"At least one byte dropped as a result.");
++			dump_stack();
++		}
++	}
++out:
++	spin_unlock(&inst->transaction_lock);
++}
++EXPORT_SYMBOL(bcm2835_smi_read_buf);
++
++void bcm2835_smi_set_address(struct bcm2835_smi_instance *inst,
++	unsigned int address)
++{
++	spin_lock(&inst->transaction_lock);
++	smi_set_address(inst, address);
++	spin_unlock(&inst->transaction_lock);
++}
++EXPORT_SYMBOL(bcm2835_smi_set_address);
++
++struct bcm2835_smi_instance *bcm2835_smi_get(struct device_node *node)
++{
++	struct platform_device *pdev;
++
++	if (!node)
++		return NULL;
++
++	pdev = of_find_device_by_node(node);
++	if (!pdev)
++		return NULL;
++
++	return platform_get_drvdata(pdev);
++}
++EXPORT_SYMBOL(bcm2835_smi_get);
++
++/****************************************************************************
++*
++*   bcm2835_smi_probe - called when the driver is loaded.
++*
++***************************************************************************/
++
++static int bcm2835_smi_dma_setup(struct bcm2835_smi_instance *inst)
++{
++	int i, rv = 0;
++
++	inst->dma_chan = dma_request_slave_channel(inst->dev, "rx-tx");
++
++	inst->dma_config.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
++	inst->dma_config.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
++	inst->dma_config.src_addr = inst->smi_regs_busaddr + SMID;
++	inst->dma_config.dst_addr = inst->dma_config.src_addr;
++	/* Direction unimportant - always overridden by prep_slave_sg */
++	inst->dma_config.direction = DMA_DEV_TO_MEM;
++	dmaengine_slave_config(inst->dma_chan, &inst->dma_config);
++	/* Alloc and map bounce buffers */
++	for (i = 0; i < DMA_BOUNCE_BUFFER_COUNT; ++i) {
++		inst->bounce.buffer[i] =
++		dmam_alloc_coherent(inst->dev, DMA_BOUNCE_BUFFER_SIZE,
++				&inst->bounce.phys[i],
++				GFP_KERNEL);
++		if (!inst->bounce.buffer[i]) {
++			dev_err(inst->dev, "Could not allocate buffer!");
++			rv = -ENOMEM;
++			break;
++		}
++		smi_scatterlist_from_buffer(
++			inst,
++			inst->bounce.phys[i],
++			DMA_BOUNCE_BUFFER_SIZE,
++			&inst->bounce.sgl[i]
++		);
++	}
++
++	return rv;
++}
++
++static int bcm2835_smi_probe(struct platform_device *pdev)
++{
++	int err;
++	struct device *dev = &pdev->dev;
++	struct device_node *node = dev->of_node;
++	struct resource *ioresource;
++	struct bcm2835_smi_instance *inst;
++
++	/* Allocate buffers and instance data */
++
++	inst = devm_kzalloc(dev, sizeof(struct bcm2835_smi_instance),
++		GFP_KERNEL);
++
++	if (!inst)
++		return -ENOMEM;
++
++	inst->dev = dev;
++	spin_lock_init(&inst->transaction_lock);
++
++	/* We require device tree support */
++	if (!node)
++		return -EINVAL;
++
++	ioresource = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	inst->smi_regs_ptr = devm_ioremap_resource(dev, ioresource);
++	ioresource = platform_get_resource(pdev, IORESOURCE_MEM, 1);
++	inst->cm_smi_regs_ptr = devm_ioremap_resource(dev, ioresource);
++	inst->smi_regs_busaddr = be32_to_cpu(
++		*of_get_address(node, 0, NULL, NULL));
++	of_property_read_u32(node,
++			     "brcm,smi-clock-source",
++			     &inst->clock_source);
++	of_property_read_u32(node,
++			     "brcm,smi-clock-divisor",
++			     &inst->clock_divisor);
++
++	err = bcm2835_smi_dma_setup(inst);
++	if (err)
++		return err;
++
++	/* Finally, do peripheral setup */
++
++	smi_setup_clock(inst);
++	smi_setup_regs(inst);
++
++	platform_set_drvdata(pdev, inst);
++
++	dev_info(inst->dev, "initialised");
++
++	return 0;
++}
++
++/****************************************************************************
++*
++*   bcm2835_smi_remove - called when the driver is unloaded.
++*
++***************************************************************************/
++
++static int bcm2835_smi_remove(struct platform_device *pdev)
++{
++	struct bcm2835_smi_instance *inst = platform_get_drvdata(pdev);
++	struct device *dev = inst->dev;
++
++	dev_info(dev, "SMI device removed - OK");
++	return 0;
++}
++
++/****************************************************************************
++*
++*   Register the driver with device tree
++*
++***************************************************************************/
++
++static const struct of_device_id bcm2835_smi_of_match[] = {
++	{.compatible = "brcm,bcm2835-smi",},
++	{ /* sentinel */ },
++};
++
++MODULE_DEVICE_TABLE(of, bcm2835_smi_of_match);
++
++static struct platform_driver bcm2835_smi_driver = {
++	.probe = bcm2835_smi_probe,
++	.remove = bcm2835_smi_remove,
++	.driver = {
++		   .name = DRIVER_NAME,
++		   .owner = THIS_MODULE,
++		   .of_match_table = bcm2835_smi_of_match,
++		   },
++};
++
++module_platform_driver(bcm2835_smi_driver);
++
++MODULE_ALIAS("platform:smi-bcm2835");
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("Device driver for BCM2835's secondary memory interface");
++MODULE_AUTHOR("Luke Wren <luke@raspberrypi.org>");
+--- /dev/null
++++ b/include/linux/broadcom/bcm2835_smi.h
+@@ -0,0 +1,391 @@
++/**
++ * Declarations and definitions for Broadcom's Secondary Memory Interface
++ *
++ * Written by Luke Wren <luke@raspberrypi.org>
++ * Copyright (c) 2015, Raspberry Pi (Trading) Ltd.
++ * Copyright (c) 2010-2012 Broadcom. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions, and the following disclaimer,
++ *    without modification.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The names of the above-listed copyright holders may not be used
++ *    to endorse or promote products derived from this software without
++ *    specific prior written permission.
++ *
++ * ALTERNATIVELY, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") version 2, as published by the Free
++ * Software Foundation.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
++ * IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
++ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
++ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
++ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
++ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
++ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
++ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
++ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#ifndef BCM2835_SMI_H
++#define BCM2835_SMI_H
++
++#include <linux/ioctl.h>
++
++#ifndef __KERNEL__
++#include <stdint.h>
++#include <stdbool.h>
++#endif
++
++#define BCM2835_SMI_IOC_MAGIC 0x1
++#define BCM2835_SMI_INVALID_HANDLE (~0)
++
++/* IOCTLs 0x100...0x1ff are not device-specific - we can use them */
++#define BCM2835_SMI_IOC_GET_SETTINGS    _IO(BCM2835_SMI_IOC_MAGIC, 0)
++#define BCM2835_SMI_IOC_WRITE_SETTINGS  _IO(BCM2835_SMI_IOC_MAGIC, 1)
++#define BCM2835_SMI_IOC_ADDRESS	 _IO(BCM2835_SMI_IOC_MAGIC, 2)
++#define BCM2835_SMI_IOC_MAX	     2
++
++#define SMI_WIDTH_8BIT 0
++#define SMI_WIDTH_16BIT 1
++#define SMI_WIDTH_9BIT 2
++#define SMI_WIDTH_18BIT 3
++
++/* max number of bytes where DMA will not be used */
++#define DMA_THRESHOLD_BYTES 128
++#define DMA_BOUNCE_BUFFER_SIZE (1024 * 1024 / 2)
++#define DMA_BOUNCE_BUFFER_COUNT 3
++
++
++struct smi_settings {
++	int data_width;
++	/* Whether or not to pack multiple SMI transfers into a
++	   single 32 bit FIFO word */
++	bool pack_data;
++
++	/* Timing for reads (writes the same but for WE)
++	 *
++	 * OE ----------+	   +--------------------
++	 *		|	   |
++	 *		+----------+
++	 * SD -<==============================>-----------
++	 * SA -<=========================================>-
++	 *    <-setup->  <-strobe ->  <-hold ->  <- pace ->
++	 */
++
++	int read_setup_time;
++	int read_hold_time;
++	int read_pace_time;
++	int read_strobe_time;
++
++	int write_setup_time;
++	int write_hold_time;
++	int write_pace_time;
++	int write_strobe_time;
++
++	bool dma_enable;		/* DREQs */
++	bool dma_passthrough_enable;	/* External DREQs */
++	int dma_read_thresh;
++	int dma_write_thresh;
++	int dma_panic_read_thresh;
++	int dma_panic_write_thresh;
++};
++
++/****************************************************************************
++*
++*   Declare exported SMI functions
++*
++***************************************************************************/
++
++#ifdef __KERNEL__
++
++#include <linux/dmaengine.h> /* for enum dma_transfer_direction */
++#include <linux/of.h>
++#include <linux/semaphore.h>
++
++struct bcm2835_smi_instance;
++
++struct bcm2835_smi_bounce_info {
++	struct semaphore callback_sem;
++	void *buffer[DMA_BOUNCE_BUFFER_COUNT];
++	dma_addr_t phys[DMA_BOUNCE_BUFFER_COUNT];
++	struct scatterlist sgl[DMA_BOUNCE_BUFFER_COUNT];
++};
++
++
++void bcm2835_smi_set_regs_from_settings(struct bcm2835_smi_instance *);
++
++struct smi_settings *bcm2835_smi_get_settings_from_regs(
++	struct bcm2835_smi_instance *inst);
++
++void bcm2835_smi_write_buf(
++	struct bcm2835_smi_instance *inst,
++	const void *buf,
++	size_t n_bytes);
++
++void bcm2835_smi_read_buf(
++	struct bcm2835_smi_instance *inst,
++	void *buf,
++	size_t n_bytes);
++
++void bcm2835_smi_set_address(struct bcm2835_smi_instance *inst,
++	unsigned int address);
++
++ssize_t bcm2835_smi_user_dma(
++	struct bcm2835_smi_instance *inst,
++	enum dma_transfer_direction dma_dir,
++	char __user *user_ptr,
++	size_t count,
++	struct bcm2835_smi_bounce_info **bounce);
++
++struct bcm2835_smi_instance *bcm2835_smi_get(struct device_node *node);
++
++#endif /* __KERNEL__ */
++
++/****************************************************************
++*
++*	Implementation-only declarations
++*
++****************************************************************/
++
++#ifdef BCM2835_SMI_IMPLEMENTATION
++
++/* Clock manager registers for SMI clock: */
++#define CM_SMI_BASE_ADDRESS ((BCM2708_PERI_BASE) + 0x1010b0)
++/* Clock manager "password" to protect registers from spurious writes */
++#define CM_PWD (0x5a << 24)
++
++#define CM_SMI_CTL	0x00
++#define CM_SMI_DIV	0x04
++
++#define CM_SMI_CTL_FLIP (1 << 8)
++#define CM_SMI_CTL_BUSY (1 << 7)
++#define CM_SMI_CTL_KILL (1 << 5)
++#define CM_SMI_CTL_ENAB (1 << 4)
++#define CM_SMI_CTL_SRC_MASK (0xf)
++#define CM_SMI_CTL_SRC_OFFS (0)
++
++#define CM_SMI_DIV_DIVI_MASK (0xf <<  12)
++#define CM_SMI_DIV_DIVI_OFFS (12)
++#define CM_SMI_DIV_DIVF_MASK (0xff << 4)
++#define CM_SMI_DIV_DIVF_OFFS (4)
++
++/* SMI register mapping:*/
++#define SMI_BASE_ADDRESS ((BCM2708_PERI_BASE) + 0x600000)
++
++#define SMICS	0x00	/* control + status register		*/
++#define SMIL	0x04	/* length/count (n external txfers)	*/
++#define SMIA	0x08	/* address register			*/
++#define SMID	0x0c	/* data register			*/
++#define SMIDSR0	0x10	/* device 0 read settings		*/
++#define SMIDSW0	0x14	/* device 0 write settings		*/
++#define SMIDSR1	0x18	/* device 1 read settings		*/
++#define SMIDSW1	0x1c	/* device 1 write settings		*/
++#define SMIDSR2	0x20	/* device 2 read settings		*/
++#define SMIDSW2	0x24	/* device 2 write settings		*/
++#define SMIDSR3	0x28	/* device 3 read settings		*/
++#define SMIDSW3	0x2c	/* device 3 write settings		*/
++#define SMIDC	0x30	/* DMA control registers		*/
++#define SMIDCS	0x34	/* direct control/status register	*/
++#define SMIDA	0x38	/* direct address register		*/
++#define SMIDD	0x3c	/* direct data registers		*/
++#define SMIFD	0x40	/* FIFO debug register			*/
++
++
++
++/* Control and Status register bits:
++ * SMICS_RXF	: RX fifo full: 1 when RX fifo is full
++ * SMICS_TXE	: TX fifo empty: 1 when empty.
++ * SMICS_RXD	: RX fifo contains data: 1 when there is data.
++ * SMICS_TXD	: TX fifo can accept data: 1 when true.
++ * SMICS_RXR	: RX fifo needs reading: 1 when fifo more than 3/4 full, or
++ *		  when "DONE" and fifo not emptied.
++ * SMICS_TXW	: TX fifo needs writing: 1 when less than 1/4 full.
++ * SMICS_AFERR	: AXI FIFO error: 1 when fifo read when empty or written
++ *		  when full. Write 1 to clear.
++ * SMICS_EDREQ	: 1 when external DREQ received.
++ * SMICS_PXLDAT	:  Pixel data:	write 1 to enable pixel transfer modes.
++ * SMICS_SETERR	: 1 if there was an error writing to setup regs (e.g.
++ *		  tx was in progress). Write 1 to clear.
++ * SMICS_PVMODE	: Set to 1 to enable pixel valve mode.
++ * SMICS_INTR	: Set to 1 to enable interrupt on RX.
++ * SMICS_INTT	: Set to 1 to enable interrupt on TX.
++ * SMICS_INTD	: Set to 1 to enable interrupt on DONE condition.
++ * SMICS_TEEN	: Tear effect mode enabled: Programmed transfers will wait
++ *		  for a TE trigger before writing.
++ * SMICS_PAD1	: Padding settings for external transfers. For writes: the
++ *		  number of bytes initially written to  the TX fifo that
++ * SMICS_PAD0	: should be ignored. For reads: the number of bytes that will
++ *		  be read before the data, and should be dropped.
++ * SMICS_WRITE	: Transfer direction: 1 = write to external device, 0 = read
++ * SMICS_CLEAR	: Write 1 to clear the FIFOs.
++ * SMICS_START	: Write 1 to start the programmed transfer.
++ * SMICS_ACTIVE	: Reads as 1 when a programmed transfer is underway.
++ * SMICS_DONE	: Reads as 1 when transfer finished. For RX, not set until
++ *		  FIFO emptied.
++ * SMICS_ENABLE	: Set to 1 to enable the SMI peripheral, 0 to disable.
++ */
++
++#define SMICS_RXF	(1 << 31)
++#define SMICS_TXE	(1 << 30)
++#define SMICS_RXD	(1 << 29)
++#define SMICS_TXD	(1 << 28)
++#define SMICS_RXR	(1 << 27)
++#define SMICS_TXW	(1 << 26)
++#define SMICS_AFERR	(1 << 25)
++#define SMICS_EDREQ	(1 << 15)
++#define SMICS_PXLDAT	(1 << 14)
++#define SMICS_SETERR	(1 << 13)
++#define SMICS_PVMODE	(1 << 12)
++#define SMICS_INTR	(1 << 11)
++#define SMICS_INTT	(1 << 10)
++#define SMICS_INTD	(1 << 9)
++#define SMICS_TEEN	(1 << 8)
++#define SMICS_PAD1	(1 << 7)
++#define SMICS_PAD0	(1 << 6)
++#define SMICS_WRITE	(1 << 5)
++#define SMICS_CLEAR	(1 << 4)
++#define SMICS_START	(1 << 3)
++#define SMICS_ACTIVE	(1 << 2)
++#define SMICS_DONE	(1 << 1)
++#define SMICS_ENABLE	(1 << 0)
++
++/* Address register bits: */
++
++#define SMIA_DEVICE_MASK ((1 << 9) | (1 << 8))
++#define SMIA_DEVICE_OFFS (8)
++#define SMIA_ADDR_MASK (0x3f)	/* bits 5 -> 0 */
++#define SMIA_ADDR_OFFS (0)
++
++/* DMA control register bits:
++ * SMIDC_DMAEN	: DMA enable: set 1: DMA requests will be issued.
++ * SMIDC_DMAP	: DMA passthrough: when set to 0, top two data pins are used by
++ *		  SMI as usual. When set to 1, the top two pins are used for
++ *		  external DREQs: pin 16 read request, 17 write.
++ * SMIDC_PANIC*	: Threshold at which DMA will panic during read/write.
++ * SMIDC_REQ*	: Threshold at which DMA will generate a DREQ.
++ */
++
++#define SMIDC_DMAEN		(1 << 28)
++#define SMIDC_DMAP		(1 << 24)
++#define SMIDC_PANICR_MASK	(0x3f << 18)
++#define SMIDC_PANICR_OFFS	(18)
++#define SMIDC_PANICW_MASK	(0x3f << 12)
++#define SMIDC_PANICW_OFFS	(12)
++#define SMIDC_REQR_MASK		(0x3f << 6)
++#define SMIDC_REQR_OFFS		(6)
++#define SMIDC_REQW_MASK		(0x3f)
++#define SMIDC_REQW_OFFS		(0)
++
++/* Device settings register bits: same for all 4 (or 3?) device register sets.
++ * Device read settings:
++ * SMIDSR_RWIDTH	: Read transfer width. 00 = 8bit, 01 = 16bit,
++ *			  10 = 18bit, 11 = 9bit.
++ * SMIDSR_RSETUP	: Read setup time: number of core cycles between chip
++ *			  select/address and read strobe. Min 1, max 64.
++ * SMIDSR_MODE68	: 1 for System 68 mode (i.e. enable + direction pins,
++ *			  rather than OE + WE pin)
++ * SMIDSR_FSETUP	: If set to 1, setup time only applies to first
++ *			  transfer after address change.
++ * SMIDSR_RHOLD		: Number of core cycles between read strobe going
++ *			  inactive and CS/address going inactive. Min 1, max 64
++ * SMIDSR_RPACEALL	: When set to 1, this device's RPACE value will always
++ *			  be used for the next transaction, even if it is not
++ *			  to this device.
++ * SMIDSR_RPACE		: Number of core cycles spent waiting between CS
++ *			  deassert and start of next transfer. Min 1, max 128
++ * SMIDSR_RDREQ		: 1 = use external DMA request on SD16 to pace reads
++ *			  from device. Must also set DMAP in SMICS.
++ * SMIDSR_RSTROBE	: Number of cycles to assert the read strobe.
++ *			  min 1, max 128.
++ */
++#define SMIDSR_RWIDTH_MASK	((1<<31)|(1<<30))
++#define SMIDSR_RWIDTH_OFFS	(30)
++#define SMIDSR_RSETUP_MASK	(0x3f << 24)
++#define SMIDSR_RSETUP_OFFS	(24)
++#define SMIDSR_MODE68		(1 << 23)
++#define SMIDSR_FSETUP		(1 << 22)
++#define SMIDSR_RHOLD_MASK	(0x3f << 16)
++#define SMIDSR_RHOLD_OFFS	(16)
++#define SMIDSR_RPACEALL		(1 << 15)
++#define SMIDSR_RPACE_MASK	(0x7f << 8)
++#define SMIDSR_RPACE_OFFS	(8)
++#define SMIDSR_RDREQ		(1 << 7)
++#define SMIDSR_RSTROBE_MASK	(0x7f)
++#define SMIDSR_RSTROBE_OFFS	(0)
++
++/* Device write settings:
++ * SMIDSW_WWIDTH	: Write transfer width. 00 = 8bit, 01 = 16bit,
++ *			  10= 18bit, 11 = 9bit.
++ * SMIDSW_WSETUP	: Number of cycles between CS assert and write strobe.
++ *			  Min 1, max 64.
++ * SMIDSW_WFORMAT	: Pixel format of input. 0 = 16bit RGB 565,
++ *			  1 = 32bit RGBA 8888
++ * SMIDSW_WSWAP		: 1 = swap pixel data bits. (Use with SMICS_PXLDAT)
++ * SMIDSW_WHOLD		: Time between WE deassert and CS deassert. 1 to 64
++ * SMIDSW_WPACEALL	: 1: this device's WPACE will be used for the next
++ *			  transfer, regardless of that transfer's device.
++ * SMIDSW_WPACE		: Cycles between CS deassert and next CS assert.
++ *			  Min 1, max 128
++ * SMIDSW_WDREQ		: Use external DREQ on pin 17 to pace writes. DMAP must
++ *			  be set in SMICS.
++ * SMIDSW_WSTROBE	: Number of cycles to assert the write strobe.
++ *			  Min 1, max 128
++ */
++#define SMIDSW_WWIDTH_MASK	 ((1<<31)|(1<<30))
++#define SMIDSW_WWIDTH_OFFS	(30)
++#define SMIDSW_WSETUP_MASK	(0x3f << 24)
++#define SMIDSW_WSETUP_OFFS	(24)
++#define SMIDSW_WFORMAT		(1 << 23)
++#define SMIDSW_WSWAP		(1 << 22)
++#define SMIDSW_WHOLD_MASK	(0x3f << 16)
++#define SMIDSW_WHOLD_OFFS	(16)
++#define SMIDSW_WPACEALL		(1 << 15)
++#define SMIDSW_WPACE_MASK	(0x7f << 8)
++#define SMIDSW_WPACE_OFFS	(8)
++#define SMIDSW_WDREQ		(1 << 7)
++#define SMIDSW_WSTROBE_MASK	 (0x7f)
++#define SMIDSW_WSTROBE_OFFS	 (0)
++
++/* Direct transfer control + status register
++ * SMIDCS_WRITE	: Direction of transfer: 1 -> write, 0 -> read
++ * SMIDCS_DONE	: 1 when a transfer has finished. Write 1 to clear.
++ * SMIDCS_START	: Write 1 to start a transfer, if one is not already underway.
++ * SMIDCE_ENABLE: Write 1 to enable SMI in direct mode.
++ */
++
++#define SMIDCS_WRITE		(1 << 3)
++#define SMIDCS_DONE		(1 << 2)
++#define SMIDCS_START		(1 << 1)
++#define SMIDCS_ENABLE		(1 << 0)
++
++/* Direct transfer address register
++ * SMIDA_DEVICE	: Indicates which of the device settings banks should be used.
++ * SMIDA_ADDR	: The value to be asserted on the address pins.
++ */
++
++#define SMIDA_DEVICE_MASK	((1<<9)|(1<<8))
++#define SMIDA_DEVICE_OFFS	(8)
++#define SMIDA_ADDR_MASK		(0x3f)
++#define SMIDA_ADDR_OFFS		(0)
++
++/* FIFO debug register
++ * SMIFD_FLVL	: The high-tide mark of FIFO count during the most recent txfer
++ * SMIFD_FCNT	: The current FIFO count.
++ */
++#define SMIFD_FLVL_MASK		(0x3f << 8)
++#define SMIFD_FLVL_OFFS		(8)
++#define SMIFD_FCNT_MASK		(0x3f)
++#define SMIFD_FCNT_OFFS		(0)
++
++#endif /* BCM2835_SMI_IMPLEMENTATION */
++
++#endif /* BCM2835_SMI_H */
