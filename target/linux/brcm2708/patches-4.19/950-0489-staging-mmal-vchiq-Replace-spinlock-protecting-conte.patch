@@ -1,0 +1,67 @@
+From 39464cbb618af3ddf6427d77b0c0be0042bcaaf9 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 1 May 2019 15:17:00 +0100
+Subject: [PATCH 489/703] staging: mmal-vchiq: Replace spinlock protecting
+ context_map with mutex
+
+950fd86 staging: bcm2835-camera: Replace open-coded idr with a struct idr.
+replaced an internal implementation of an idr with the standard functions
+and a spinlock.
+idr_alloc(GFP_KERNEL) can sleep whilst calling kmem_cache_alloc to allocate
+the new node, but this is not valid whilst in an atomic context due to the
+spinlock.
+
+There is no need for this to be a spinlock as a standard mutex is
+sufficient.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../staging/vc04_services/vchiq-mmal/mmal-vchiq.c   | 13 +++++++------
+ 1 file changed, 7 insertions(+), 6 deletions(-)
+
+--- a/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
+@@ -185,7 +185,8 @@ struct vchiq_mmal_instance {
+ 	void *bulk_scratch;
+ 
+ 	struct idr context_map;
+-	spinlock_t context_map_lock;
++	/* protect accesses to context_map */
++	struct mutex context_map_lock;
+ 
+ 	struct vchiq_mmal_component component[VCHIQ_MMAL_MAX_COMPONENTS];
+ 
+@@ -209,10 +210,10 @@ get_msg_context(struct vchiq_mmal_instan
+ 	 * that when we service the VCHI reply, we can look up what
+ 	 * message is being replied to.
+ 	 */
+-	spin_lock(&instance->context_map_lock);
++	mutex_lock(&instance->context_map_lock);
+ 	handle = idr_alloc(&instance->context_map, msg_context,
+ 			   0, 0, GFP_KERNEL);
+-	spin_unlock(&instance->context_map_lock);
++	mutex_unlock(&instance->context_map_lock);
+ 
+ 	if (handle < 0) {
+ 		kfree(msg_context);
+@@ -236,9 +237,9 @@ release_msg_context(struct mmal_msg_cont
+ {
+ 	struct vchiq_mmal_instance *instance = msg_context->instance;
+ 
+-	spin_lock(&instance->context_map_lock);
++	mutex_lock(&instance->context_map_lock);
+ 	idr_remove(&instance->context_map, msg_context->handle);
+-	spin_unlock(&instance->context_map_lock);
++	mutex_unlock(&instance->context_map_lock);
+ 	kfree(msg_context);
+ }
+ 
+@@ -2143,7 +2144,7 @@ int vchiq_mmal_init(struct vchiq_mmal_in
+ 
+ 	instance->bulk_scratch = vmalloc(PAGE_SIZE);
+ 
+-	spin_lock_init(&instance->context_map_lock);
++	mutex_init(&instance->context_map_lock);
+ 	idr_init_base(&instance->context_map, 1);
+ 
+ 	params.callback_param = instance;

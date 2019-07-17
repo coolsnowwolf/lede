@@ -1,0 +1,158 @@
+From 60dfcaef2e9fb7fd79b7a87c25cd520b82c6dd02 Mon Sep 17 00:00:00 2001
+From: Stefan Wahren <wahrenst@gmx.net>
+Date: Sat, 4 May 2019 17:06:15 +0200
+Subject: [PATCH 543/703] hwrng: iproc-rng200: Add BCM2838 support
+
+The HWRNG on the BCM2838 is compatible to iproc-rng200, so add the
+support to this driver instead of bcm2835-rng.
+
+Signed-off-by: Stefan Wahren <wahrenst@gmx.net>
+---
+ drivers/char/hw_random/Kconfig        |  4 +-
+ drivers/char/hw_random/iproc-rng200.c | 81 +++++++++++++++++++++++++--
+ 2 files changed, 79 insertions(+), 6 deletions(-)
+
+--- a/drivers/char/hw_random/Kconfig
++++ b/drivers/char/hw_random/Kconfig
+@@ -89,11 +89,11 @@ config HW_RANDOM_BCM2835
+ 
+ config HW_RANDOM_IPROC_RNG200
+ 	tristate "Broadcom iProc/STB RNG200 support"
+-	depends on ARCH_BCM_IPROC || ARCH_BRCMSTB
++	depends on ARCH_BCM_IPROC || ARCH_BCM2835 || ARCH_BRCMSTB
+ 	default HW_RANDOM
+ 	---help---
+ 	  This driver provides kernel-side support for the RNG200
+-	  hardware found on the Broadcom iProc and STB SoCs.
++	  hardware found on the Broadcom iProc, BCM2838 and STB SoCs.
+ 
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called iproc-rng200
+--- a/drivers/char/hw_random/iproc-rng200.c
++++ b/drivers/char/hw_random/iproc-rng200.c
+@@ -29,6 +29,7 @@
+ #define RNG_CTRL_RNG_RBGEN_MASK				0x00001FFF
+ #define RNG_CTRL_RNG_RBGEN_ENABLE			0x00000001
+ #define RNG_CTRL_RNG_RBGEN_DISABLE			0x00000000
++#define RNG_CTRL_RNG_DIV_CTRL_SHIFT			13
+ 
+ #define RNG_SOFT_RESET_OFFSET				0x04
+ #define RNG_SOFT_RESET					0x00000001
+@@ -36,16 +37,23 @@
+ #define RBG_SOFT_RESET_OFFSET				0x08
+ #define RBG_SOFT_RESET					0x00000001
+ 
++#define RNG_TOTAL_BIT_COUNT_OFFSET			0x0C
++
++#define RNG_TOTAL_BIT_COUNT_THRESHOLD_OFFSET		0x10
++
+ #define RNG_INT_STATUS_OFFSET				0x18
+ #define RNG_INT_STATUS_MASTER_FAIL_LOCKOUT_IRQ_MASK	0x80000000
+ #define RNG_INT_STATUS_STARTUP_TRANSITIONS_MET_IRQ_MASK	0x00020000
+ #define RNG_INT_STATUS_NIST_FAIL_IRQ_MASK		0x00000020
+ #define RNG_INT_STATUS_TOTAL_BITS_COUNT_IRQ_MASK	0x00000001
+ 
++#define RNG_INT_ENABLE_OFFSET				0x1C
++
+ #define RNG_FIFO_DATA_OFFSET				0x20
+ 
+ #define RNG_FIFO_COUNT_OFFSET				0x24
+ #define RNG_FIFO_COUNT_RNG_FIFO_COUNT_MASK		0x000000FF
++#define RNG_FIFO_COUNT_RNG_FIFO_THRESHOLD_SHIFT		8
+ 
+ struct iproc_rng200_dev {
+ 	struct hwrng rng;
+@@ -166,6 +174,64 @@ static int iproc_rng200_init(struct hwrn
+ 	return 0;
+ }
+ 
++static int bcm2838_rng200_read(struct hwrng *rng, void *buf, size_t max,
++			       bool wait)
++{
++	struct iproc_rng200_dev *priv = to_rng_priv(rng);
++	u32 max_words = max / sizeof(u32);
++	u32 num_words, count, val;
++
++	/* ensure warm up period has elapsed */
++	while (1) {
++		val = ioread32(priv->base + RNG_TOTAL_BIT_COUNT_OFFSET);
++		if (val > 16)
++			break;
++		cpu_relax();
++	}
++
++	/* ensure fifo is not empty */
++	while (1) {
++		num_words = ioread32(priv->base + RNG_FIFO_COUNT_OFFSET) &
++			    RNG_FIFO_COUNT_RNG_FIFO_COUNT_MASK;
++		if (num_words)
++			break;
++		if (!wait)
++			return 0;
++		cpu_relax();
++	}
++
++	if (num_words > max_words)
++		num_words = max_words;
++
++	for (count = 0; count < num_words; count++) {
++		((u32 *)buf)[count] = ioread32(priv->base +
++					       RNG_FIFO_DATA_OFFSET);
++	}
++
++	return num_words * sizeof(u32);
++}
++
++static int bcm2838_rng200_init(struct hwrng *rng)
++{
++	struct iproc_rng200_dev *priv = to_rng_priv(rng);
++	uint32_t val;
++
++	if (ioread32(priv->base + RNG_CTRL_OFFSET) & RNG_CTRL_RNG_RBGEN_MASK)
++		return 0;
++
++	/* initial numbers generated are "less random" so will be discarded */
++	val = 0x40000;
++	iowrite32(val, priv->base + RNG_TOTAL_BIT_COUNT_THRESHOLD_OFFSET);
++	/* min fifo count to generate full interrupt */
++	val = 2 << RNG_FIFO_COUNT_RNG_FIFO_THRESHOLD_SHIFT;
++	iowrite32(val, priv->base + RNG_FIFO_COUNT_OFFSET);
++	/* enable the rng - 1Mhz sample rate */
++	val = (0x3 << RNG_CTRL_RNG_DIV_CTRL_SHIFT) | RNG_CTRL_RNG_RBGEN_MASK;
++	iowrite32(val, priv->base + RNG_CTRL_OFFSET);
++
++	return 0;
++}
++
+ static void iproc_rng200_cleanup(struct hwrng *rng)
+ {
+ 	struct iproc_rng200_dev *priv = to_rng_priv(rng);
+@@ -202,10 +268,16 @@ static int iproc_rng200_probe(struct pla
+ 		return PTR_ERR(priv->base);
+ 	}
+ 
+-	priv->rng.name = "iproc-rng200",
+-	priv->rng.read = iproc_rng200_read,
+-	priv->rng.init = iproc_rng200_init,
+-	priv->rng.cleanup = iproc_rng200_cleanup,
++	priv->rng.name = pdev->name;
++	priv->rng.cleanup = iproc_rng200_cleanup;
++
++	if (of_device_is_compatible(dev->of_node, "brcm,bcm2838-rng200")) {
++		priv->rng.init = bcm2838_rng200_init;
++		priv->rng.read = bcm2838_rng200_read;
++	} else {
++		priv->rng.init = iproc_rng200_init;
++		priv->rng.read = iproc_rng200_read;
++	}
+ 
+ 	/* Register driver */
+ 	ret = devm_hwrng_register(dev, &priv->rng);
+@@ -222,6 +294,7 @@ static int iproc_rng200_probe(struct pla
+ static const struct of_device_id iproc_rng200_of_match[] = {
+ 	{ .compatible = "brcm,bcm7278-rng200", },
+ 	{ .compatible = "brcm,iproc-rng200", },
++	{ .compatible = "brcm,bcm2838-rng200"},
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(of, iproc_rng200_of_match);
