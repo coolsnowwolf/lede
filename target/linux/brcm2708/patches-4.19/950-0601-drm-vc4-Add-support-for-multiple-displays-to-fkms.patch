@@ -1,0 +1,280 @@
+From f4dee6e8ddab28130160a4dba535dca167e69f13 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 3 Apr 2019 17:15:45 +0100
+Subject: [PATCH 601/703] drm: vc4: Add support for multiple displays to fkms
+
+There is a slightly nasty hack in that all crtcs share the
+same SMI interrupt from the firmware. This seems to currently
+work well enough, but ought to be fixed at a later date.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/gpu/drm/vc4/vc4_firmware_kms.c | 160 +++++++++++++++++--------
+ 1 file changed, 113 insertions(+), 47 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_firmware_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_firmware_kms.c
+@@ -29,6 +29,8 @@
+ #include "vc_image_types.h"
+ #include <soc/bcm2835/raspberrypi-firmware.h>
+ 
++#define PLANES_PER_CRTC		3
++
+ struct set_plane {
+ 	u8 display;
+ 	u8 plane_id;
+@@ -175,6 +177,7 @@ struct vc4_crtc {
+ 	struct drm_pending_vblank_event *event;
+ 	u32 overscan[4];
+ 	bool vblank_enabled;
++	u32 display_number;
+ };
+ 
+ static inline struct vc4_crtc *to_vc4_crtc(struct drm_crtc *crtc)
+@@ -480,6 +483,7 @@ static const struct drm_plane_helper_fun
+ 
+ static struct drm_plane *vc4_fkms_plane_init(struct drm_device *dev,
+ 					     enum drm_plane_type type,
++					     u8 display_num,
+ 					     u8 plane_id)
+ {
+ 	struct drm_plane *plane = NULL;
+@@ -543,7 +547,7 @@ static struct drm_plane *vc4_fkms_plane_
+ 	vc4_plane->mb.tag.tag = RPI_FIRMWARE_SET_PLANE;
+ 	vc4_plane->mb.tag.buf_size = sizeof(struct set_plane);
+ 	vc4_plane->mb.tag.req_resp_size = 0;
+-	vc4_plane->mb.plane.display = 0;
++	vc4_plane->mb.plane.display = display_num;
+ 	vc4_plane->mb.plane.plane_id = plane_id;
+ 	vc4_plane->mb.plane.layer = default_zpos ? default_zpos : -127;
+ 
+@@ -630,16 +634,20 @@ static void vc4_crtc_handle_page_flip(st
+ 
+ static irqreturn_t vc4_crtc_irq_handler(int irq, void *data)
+ {
+-	struct vc4_crtc *vc4_crtc = data;
+-	u32 stat = readl(vc4_crtc->regs + SMICS);
++	struct vc4_crtc **crtc_list = data;
++	int i;
++	u32 stat = readl(crtc_list[0]->regs + SMICS);
+ 	irqreturn_t ret = IRQ_NONE;
+ 
+ 	if (stat & SMICS_INTERRUPTS) {
+-		writel(0, vc4_crtc->regs + SMICS);
+-		if (vc4_crtc->vblank_enabled)
+-			drm_crtc_handle_vblank(&vc4_crtc->base);
+-		vc4_crtc_handle_page_flip(vc4_crtc);
+-		ret = IRQ_HANDLED;
++		writel(0, crtc_list[0]->regs + SMICS);
++
++		for (i = 0; crtc_list[i]; i++) {
++			if (crtc_list[i]->vblank_enabled)
++				drm_crtc_handle_vblank(&crtc_list[i]->base);
++			vc4_crtc_handle_page_flip(crtc_list[i]);
++			ret = IRQ_HANDLED;
++		}
+ 	}
+ 
+ 	return ret;
+@@ -836,66 +844,55 @@ static const struct drm_encoder_helper_f
+ 	.disable = vc4_fkms_encoder_disable,
+ };
+ 
+-static int vc4_fkms_bind(struct device *dev, struct device *master, void *data)
++static int vc4_fkms_create_screen(struct device *dev, struct drm_device *drm,
++				  int display_idx, int display_ref,
++				  struct vc4_crtc **ret_crtc)
+ {
+-	struct platform_device *pdev = to_platform_device(dev);
+-	struct drm_device *drm = dev_get_drvdata(master);
+ 	struct vc4_dev *vc4 = to_vc4_dev(drm);
+ 	struct vc4_crtc *vc4_crtc;
+ 	struct vc4_fkms_encoder *vc4_encoder;
+ 	struct drm_crtc *crtc;
+ 	struct drm_plane *primary_plane, *overlay_plane, *cursor_plane;
+ 	struct drm_plane *destroy_plane, *temp;
+-	struct device_node *firmware_node;
+ 	u32 blank = 1;
+ 	int ret;
+ 
+-	vc4->firmware_kms = true;
+-
+-	/* firmware kms doesn't have precise a scanoutpos implementation, so
+-	 * we can't do the precise vblank timestamp mode.
+-	 */
+-	drm->driver->get_scanout_position = NULL;
+-	drm->driver->get_vblank_timestamp = NULL;
+-
+ 	vc4_crtc = devm_kzalloc(dev, sizeof(*vc4_crtc), GFP_KERNEL);
+ 	if (!vc4_crtc)
+ 		return -ENOMEM;
+ 	crtc = &vc4_crtc->base;
+ 
+-	firmware_node = of_parse_phandle(dev->of_node, "brcm,firmware", 0);
+-	vc4->firmware = rpi_firmware_get(firmware_node);
+-	if (!vc4->firmware) {
+-		DRM_DEBUG("Failed to get Raspberry Pi firmware reference.\n");
+-		return -EPROBE_DEFER;
+-	}
+-	of_node_put(firmware_node);
+-
+-	/* Map the SMI interrupt reg */
+-	vc4_crtc->regs = vc4_ioremap_regs(pdev, 0);
+-	if (IS_ERR(vc4_crtc->regs))
+-		return PTR_ERR(vc4_crtc->regs);
++	vc4_crtc->display_number = display_ref;
+ 
+ 	/* Blank the firmware provided framebuffer */
+ 	rpi_firmware_property(vc4->firmware,
+ 			      RPI_FIRMWARE_FRAMEBUFFER_BLANK,
+ 			      &blank, sizeof(blank));
+ 
+-	primary_plane = vc4_fkms_plane_init(drm, DRM_PLANE_TYPE_PRIMARY, 0);
++	primary_plane = vc4_fkms_plane_init(drm, DRM_PLANE_TYPE_PRIMARY,
++					    display_ref,
++					    0 + (display_idx * PLANES_PER_CRTC)
++					   );
+ 	if (IS_ERR(primary_plane)) {
+ 		dev_err(dev, "failed to construct primary plane\n");
+ 		ret = PTR_ERR(primary_plane);
+ 		goto err;
+ 	}
+ 
+-	overlay_plane = vc4_fkms_plane_init(drm, DRM_PLANE_TYPE_OVERLAY, 1);
++	overlay_plane = vc4_fkms_plane_init(drm, DRM_PLANE_TYPE_OVERLAY,
++					    display_ref,
++					    1 + (display_idx * PLANES_PER_CRTC)
++					   );
+ 	if (IS_ERR(overlay_plane)) {
+ 		dev_err(dev, "failed to construct overlay plane\n");
+ 		ret = PTR_ERR(overlay_plane);
+ 		goto err;
+ 	}
+ 
+-	cursor_plane = vc4_fkms_plane_init(drm, DRM_PLANE_TYPE_CURSOR, 2);
++	cursor_plane = vc4_fkms_plane_init(drm, DRM_PLANE_TYPE_CURSOR,
++					   display_ref,
++					   2 + (display_idx * PLANES_PER_CRTC)
++					  );
+ 	if (IS_ERR(cursor_plane)) {
+ 		dev_err(dev, "failed to construct cursor plane\n");
+ 		ret = PTR_ERR(cursor_plane);
+@@ -922,13 +919,6 @@ static int vc4_fkms_bind(struct device *
+ 		goto err_destroy_encoder;
+ 	}
+ 
+-	writel(0, vc4_crtc->regs + SMICS);
+-	ret = devm_request_irq(dev, platform_get_irq(pdev, 0),
+-			       vc4_crtc_irq_handler, 0, "vc4 firmware kms",
+-			       vc4_crtc);
+-	if (ret)
+-		goto err_destroy_connector;
+-
+ 	ret = rpi_firmware_property(vc4->firmware,
+ 				    RPI_FIRMWARE_FRAMEBUFFER_GET_OVERSCAN,
+ 				    &vc4_crtc->overscan,
+@@ -938,7 +928,7 @@ static int vc4_fkms_bind(struct device *
+ 		memset(&vc4_crtc->overscan, 0, sizeof(vc4_crtc->overscan));
+ 	}
+ 
+-	platform_set_drvdata(pdev, vc4_crtc);
++	*ret_crtc = vc4_crtc;
+ 
+ 	return 0;
+ 
+@@ -955,15 +945,91 @@ err:
+ 	return ret;
+ }
+ 
++static int vc4_fkms_bind(struct device *dev, struct device *master, void *data)
++{
++	struct platform_device *pdev = to_platform_device(dev);
++	struct drm_device *drm = dev_get_drvdata(master);
++	struct vc4_dev *vc4 = to_vc4_dev(drm);
++	struct device_node *firmware_node;
++	struct vc4_crtc **crtc_list;
++	u32 num_displays, display_num;
++	int ret;
++	const u32 display_num_lookup[] = {2, 7, 1};
++
++	vc4->firmware_kms = true;
++
++	/* firmware kms doesn't have precise a scanoutpos implementation, so
++	 * we can't do the precise vblank timestamp mode.
++	 */
++	drm->driver->get_scanout_position = NULL;
++	drm->driver->get_vblank_timestamp = NULL;
++
++	firmware_node = of_parse_phandle(dev->of_node, "brcm,firmware", 0);
++	vc4->firmware = rpi_firmware_get(firmware_node);
++	if (!vc4->firmware) {
++		DRM_DEBUG("Failed to get Raspberry Pi firmware reference.\n");
++		return -EPROBE_DEFER;
++	}
++	of_node_put(firmware_node);
++
++	ret = rpi_firmware_property(vc4->firmware,
++				    RPI_FIRMWARE_FRAMEBUFFER_GET_NUM_DISPLAYS,
++				    &num_displays, sizeof(u32));
++
++	/* If we fail to get the number of displays, or it returns 0, then
++	 * assume old firmware that doesn't have the mailbox call, so just
++	 * set one display
++	 */
++	if (ret || num_displays == 0) {
++		num_displays = 1;
++		DRM_WARN("Unable to determine number of displays's. Assuming 1\n");
++		ret = 0;
++	}
++
++	/* Allocate a list, with space for a NULL on the end */
++	crtc_list = devm_kzalloc(dev, sizeof(crtc_list) * (num_displays + 1),
++				 GFP_KERNEL);
++	if (!crtc_list)
++		return -ENOMEM;
++
++	for (display_num = 0; display_num < num_displays; display_num++) {
++		ret = vc4_fkms_create_screen(dev, drm, display_num,
++					     display_num_lookup[display_num],
++					     &crtc_list[display_num]);
++		if (ret)
++			DRM_ERROR("Oh dear, failed to create display %u\n",
++				  display_num);
++	}
++
++	/* Map the SMI interrupt reg */
++	crtc_list[0]->regs = vc4_ioremap_regs(pdev, 0);
++	if (IS_ERR(crtc_list[0]->regs))
++		DRM_ERROR("Oh dear, failed to map registers\n");
++
++	writel(0, crtc_list[0]->regs + SMICS);
++	ret = devm_request_irq(dev, platform_get_irq(pdev, 0),
++			       vc4_crtc_irq_handler, 0, "vc4 firmware kms",
++			       crtc_list);
++	if (ret)
++		DRM_ERROR("Oh dear, failed to register IRQ\n");
++
++	platform_set_drvdata(pdev, crtc_list);
++
++	return 0;
++}
++
+ static void vc4_fkms_unbind(struct device *dev, struct device *master,
+ 			    void *data)
+ {
+ 	struct platform_device *pdev = to_platform_device(dev);
+-	struct vc4_crtc *vc4_crtc = dev_get_drvdata(dev);
++	struct vc4_crtc **crtc_list = dev_get_drvdata(dev);
++	int i;
+ 
+-	vc4_fkms_connector_destroy(vc4_crtc->connector);
+-	vc4_fkms_encoder_destroy(vc4_crtc->encoder);
+-	drm_crtc_cleanup(&vc4_crtc->base);
++	for (i = 0; crtc_list[i]; i++) {
++		vc4_fkms_connector_destroy(crtc_list[i]->connector);
++		vc4_fkms_encoder_destroy(crtc_list[i]->encoder);
++		drm_crtc_cleanup(&crtc_list[i]->base);
++	}
+ 
+ 	platform_set_drvdata(pdev, NULL);
+ }
