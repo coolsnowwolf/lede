@@ -6,7 +6,7 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=frpc
+PKG_NAME:=frps
 PKG_VERSION:=0.27.0
 PKG_RELEASE:=1
 
@@ -41,7 +41,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
-	TITLE:=FRPC Client
+	TITLE:=FRPS Client
 	DEPENDS:=
 	URL:=https://github.com/fatedier/frp/releases
 endef
@@ -64,7 +64,7 @@ endef
 
 define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/frpc $(1)/usr/bin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/frps $(1)/usr/bin/
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
