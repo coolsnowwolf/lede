@@ -1,0 +1,190 @@
+From af748ce92996933030288a0f85ca4775ad71edb0 Mon Sep 17 00:00:00 2001
+From: Hans Verkuil <hansverk@cisco.com>
+Date: Thu, 23 Aug 2018 10:18:35 -0400
+Subject: [PATCH 698/703] media: vb2: set reqbufs/create_bufs capabilities
+
+Upstream commit e5079cf11373e4cc98be8b1072aece429eb2d4d2.
+
+Set the capabilities field of v4l2_requestbuffers and v4l2_create_buffers.
+
+The various mapping modes were easy, but for signaling the request capability
+a new 'supports_requests' bitfield was added to videobuf2-core.h (and set in
+vim2m and vivid). Drivers have to set this bitfield for any queue where
+requests are supported.
+
+Signed-off-by: Hans Verkuil <hansverk@cisco.com>
+Reviewed-by: Tomasz Figa <tfiga@chromium.org>
+Acked-by: Sakari Ailus <sakari.ailus@linux.intel.com>
+Signed-off-by: Mauro Carvalho Chehab <mchehab+samsung@kernel.org>
+
+Minor modifications required on the backport
+---
+ drivers/media/common/videobuf2/videobuf2-v4l2.c | 17 +++++++++++++++++
+ drivers/media/platform/vim2m.c                  |  1 +
+ drivers/media/platform/vivid/vivid-core.c       |  5 +++++
+ drivers/media/v4l2-core/v4l2-compat-ioctl32.c   |  4 +++-
+ drivers/media/v4l2-core/v4l2-ioctl.c            |  4 ++--
+ include/media/videobuf2-core.h                  |  2 ++
+ 6 files changed, 30 insertions(+), 3 deletions(-)
+
+--- a/drivers/media/common/videobuf2/videobuf2-v4l2.c
++++ b/drivers/media/common/videobuf2/videobuf2-v4l2.c
+@@ -482,10 +482,24 @@ int vb2_querybuf(struct vb2_queue *q, st
+ }
+ EXPORT_SYMBOL(vb2_querybuf);
+ 
++static void fill_buf_caps(struct vb2_queue *q, u32 *caps)
++{
++	*caps = 0;
++	if (q->io_modes & VB2_MMAP)
++		*caps |= V4L2_BUF_CAP_SUPPORTS_MMAP;
++	if (q->io_modes & VB2_USERPTR)
++		*caps |= V4L2_BUF_CAP_SUPPORTS_USERPTR;
++	if (q->io_modes & VB2_DMABUF)
++		*caps |= V4L2_BUF_CAP_SUPPORTS_DMABUF;
++	if (q->supports_requests)
++		*caps |= V4L2_BUF_CAP_SUPPORTS_REQUESTS;
++}
++
+ int vb2_reqbufs(struct vb2_queue *q, struct v4l2_requestbuffers *req)
+ {
+ 	int ret = vb2_verify_memory_type(q, req->memory, req->type);
+ 
++	fill_buf_caps(q, &req->capabilities);
+ 	return ret ? ret : vb2_core_reqbufs(q, req->memory, &req->count);
+ }
+ EXPORT_SYMBOL_GPL(vb2_reqbufs);
+@@ -513,6 +527,7 @@ int vb2_create_bufs(struct vb2_queue *q,
+ 	int ret = vb2_verify_memory_type(q, create->memory, f->type);
+ 	unsigned i;
+ 
++	fill_buf_caps(q, &create->capabilities);
+ 	create->index = q->num_buffers;
+ 	if (create->count == 0)
+ 		return ret != -EBUSY ? ret : 0;
+@@ -713,6 +728,7 @@ int vb2_ioctl_reqbufs(struct file *file,
+ 	struct video_device *vdev = video_devdata(file);
+ 	int res = vb2_verify_memory_type(vdev->queue, p->memory, p->type);
+ 
++	fill_buf_caps(vdev->queue, &p->capabilities);
+ 	if (res)
+ 		return res;
+ 	if (vb2_queue_is_busy(vdev, file))
+@@ -734,6 +750,7 @@ int vb2_ioctl_create_bufs(struct file *f
+ 			p->format.type);
+ 
+ 	p->index = vdev->queue->num_buffers;
++	fill_buf_caps(vdev->queue, &p->capabilities);
+ 	/*
+ 	 * If count == 0, then just check if memory and type are valid.
+ 	 * Any -EBUSY result from vb2_verify_memory_type can be mapped to 0.
+--- a/drivers/media/platform/vim2m.c
++++ b/drivers/media/platform/vim2m.c
+@@ -841,6 +841,7 @@ static int queue_init(void *priv, struct
+ 	src_vq->mem_ops = &vb2_vmalloc_memops;
+ 	src_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
+ 	src_vq->lock = &ctx->dev->dev_mutex;
++	src_vq->supports_requests = true;
+ 
+ 	ret = vb2_queue_init(src_vq);
+ 	if (ret)
+--- a/drivers/media/platform/vivid/vivid-core.c
++++ b/drivers/media/platform/vivid/vivid-core.c
+@@ -1060,6 +1060,7 @@ static int vivid_create_instance(struct
+ 		q->min_buffers_needed = 2;
+ 		q->lock = &dev->mutex;
+ 		q->dev = dev->v4l2_dev.dev;
++		q->supports_requests = true;
+ 
+ 		ret = vb2_queue_init(q);
+ 		if (ret)
+@@ -1080,6 +1081,7 @@ static int vivid_create_instance(struct
+ 		q->min_buffers_needed = 2;
+ 		q->lock = &dev->mutex;
+ 		q->dev = dev->v4l2_dev.dev;
++		q->supports_requests = true;
+ 
+ 		ret = vb2_queue_init(q);
+ 		if (ret)
+@@ -1100,6 +1102,7 @@ static int vivid_create_instance(struct
+ 		q->min_buffers_needed = 2;
+ 		q->lock = &dev->mutex;
+ 		q->dev = dev->v4l2_dev.dev;
++		q->supports_requests = true;
+ 
+ 		ret = vb2_queue_init(q);
+ 		if (ret)
+@@ -1120,6 +1123,7 @@ static int vivid_create_instance(struct
+ 		q->min_buffers_needed = 2;
+ 		q->lock = &dev->mutex;
+ 		q->dev = dev->v4l2_dev.dev;
++		q->supports_requests = true;
+ 
+ 		ret = vb2_queue_init(q);
+ 		if (ret)
+@@ -1139,6 +1143,7 @@ static int vivid_create_instance(struct
+ 		q->min_buffers_needed = 8;
+ 		q->lock = &dev->mutex;
+ 		q->dev = dev->v4l2_dev.dev;
++		q->supports_requests = true;
+ 
+ 		ret = vb2_queue_init(q);
+ 		if (ret)
+--- a/drivers/media/v4l2-core/v4l2-compat-ioctl32.c
++++ b/drivers/media/v4l2-core/v4l2-compat-ioctl32.c
+@@ -251,7 +251,8 @@ struct v4l2_create_buffers32 {
+ 	__u32			count;
+ 	__u32			memory;	/* enum v4l2_memory */
+ 	struct v4l2_format32	format;
+-	__u32			reserved[8];
++	__u32			capabilities;
++	__u32			reserved[7];
+ };
+ 
+ static int __bufsize_v4l2_format(struct v4l2_format32 __user *p32, u32 *size)
+@@ -411,6 +412,7 @@ static int put_v4l2_create32(struct v4l2
+ 	if (!access_ok(VERIFY_WRITE, p32, sizeof(*p32)) ||
+ 	    copy_in_user(p32, p64,
+ 			 offsetof(struct v4l2_create_buffers32, format)) ||
++	    assign_in_user(&p32->capabilities, &p64->capabilities) ||
+ 	    copy_in_user(p32->reserved, p64->reserved, sizeof(p64->reserved)))
+ 		return -EFAULT;
+ 	return __put_v4l2_format32(&p64->format, &p32->format);
+--- a/drivers/media/v4l2-core/v4l2-ioctl.c
++++ b/drivers/media/v4l2-core/v4l2-ioctl.c
+@@ -1879,7 +1879,7 @@ static int v4l_reqbufs(const struct v4l2
+ 	if (ret)
+ 		return ret;
+ 
+-	CLEAR_AFTER_FIELD(p, memory);
++	CLEAR_AFTER_FIELD(p, capabilities);
+ 
+ 	return ops->vidioc_reqbufs(file, fh, p);
+ }
+@@ -1920,7 +1920,7 @@ static int v4l_create_bufs(const struct
+ 	if (ret)
+ 		return ret;
+ 
+-	CLEAR_AFTER_FIELD(create, format);
++	CLEAR_AFTER_FIELD(create, capabilities);
+ 
+ 	v4l_sanitize_format(&create->format);
+ 
+--- a/include/media/videobuf2-core.h
++++ b/include/media/videobuf2-core.h
+@@ -449,6 +449,7 @@ struct vb2_buf_ops {
+  * @quirk_poll_must_check_waiting_for_buffers: Return %EPOLLERR at poll when QBUF
+  *              has not been called. This is a vb1 idiom that has been adopted
+  *              also by vb2.
++ * @supports_requests: this queue supports the Request API.
+  * @lock:	pointer to a mutex that protects the &struct vb2_queue. The
+  *		driver can set this to a mutex to let the v4l2 core serialize
+  *		the queuing ioctls. If the driver wants to handle locking
+@@ -516,6 +517,7 @@ struct vb2_queue {
+ 	unsigned			fileio_write_immediately:1;
+ 	unsigned			allow_zero_bytesused:1;
+ 	unsigned		   quirk_poll_must_check_waiting_for_buffers:1;
++	unsigned			supports_requests:1;
+ 
+ 	struct mutex			*lock;
+ 	void				*owner;
