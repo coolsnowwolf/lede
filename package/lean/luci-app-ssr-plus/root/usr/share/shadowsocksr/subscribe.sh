@@ -154,7 +154,11 @@ do
 				json_get_var ssr_ws_host host
 				json_get_var ssr_ws_path path
 				json_get_var ssr_tls tls
-				
+				if [ "$ssr_tls" == "tls" -o "$ssr_tls" == "1" ]; then
+					ssr_tls="1"
+				else
+				    ssr_tls="0"
+				fi
 			fi
 
 
