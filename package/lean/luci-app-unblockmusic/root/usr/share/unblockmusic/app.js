@@ -2,7 +2,7 @@
 
 const package = require('./package.json')
 const config = require('./cli.js')
-.program({name: package.name, version: package.version})
+.program({name: package.name.replace(/@.+\//, ''), version: package.version})
 .option(['-v', '--version'], {action: 'version'})
 .option(['-p', '--port'], {metavar: 'port', help: 'specify server port'})
 .option(['-u', '--proxy-url'], {metavar: 'url', help: 'request through upstream proxy'})

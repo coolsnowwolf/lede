@@ -1,5 +1,4 @@
 const find = require('./find')
-const crypto = require('../crypto')
 const request = require('../request')
 
 const provider = {

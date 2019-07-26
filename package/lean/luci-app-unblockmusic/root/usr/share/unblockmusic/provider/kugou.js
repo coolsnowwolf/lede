@@ -21,16 +21,11 @@ const search = info => {
 
 const track = id => {
 	let url =
-		'http://www.kugou.com/yy/index.php?r=play/getdata&hash=' + id
+		'http://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash=' + id
 
-	return request('GET', url, {cookie: `kg_mid=${id.toLowerCase()}`})
+	return request('GET', url)
 	.then(response => response.json())
-	.then(jsonBody => {
-		if(jsonBody.status == '1')
-			return jsonBody.data.play_url
-		else
-			return Promise.reject()
-	})
+	.then(jsonBody => jsonBody.url || Promise.reject())
 }
 
 const check = info => cache(search, info).then(track)

@@ -4,7 +4,7 @@ export default (method, url, headers, body) => new Promise((resolve, reject) => 
 	xhr.onreadystatechange = () => {if(xhr.readyState == 4) resolve(xhr)}
 	xhr.onerror = error => reject(error)
 	xhr.open(method, url, true)
-	Object.keys(headers).filter(key => !['origin', 'referer'].includes(key)).forEach(key => xhr.setRequestHeader(key, headers[key]))
+	Object.keys(headers).filter(key => !['origin', 'referer'].includes(key.toLowerCase())).forEach(key => xhr.setRequestHeader(key, headers[key]))
 	xhr.send(body)
 }).then(xhr => Object.assign(xhr, {
 	statusCode: xhr.status,

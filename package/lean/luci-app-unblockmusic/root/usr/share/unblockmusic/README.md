@@ -12,10 +12,10 @@
 
 ## 运行
 
-从源码运行
+使用 npx
 
 ```
-$ node app.js
+$ npx @nondanee/unblockneteasemusic
 ```
 
 或使用 Docker
@@ -31,7 +31,7 @@ $ docker-compose up
 ### 配置参数
 
 ```
-$ node app.js -h
+$ UnblockNeteaseMusic -h
 usage: unblockneteasemusic [-v] [-p port] [-u url] [-f host]
                            [-o source [source ...]] [-t token] [-e url] [-s]
                            [-h]
@@ -102,11 +102,11 @@ PAC 自动代理脚本地址 `http://<Server Name:PORT>/proxy.pac`
 作为依赖库使用
 
 ```
-$ npm install nondanee/UnblockNeteaseMusic
+$ npm install @nondanee/unblockneteasemusic
 ```
 
 ```javascript
-const match = require('unblockneteasemusic')
+const match = require('@nondanee/unblockneteasemusic')
 
 /** 
  * Set proxy or hosts if needed
@@ -120,14 +120,14 @@ global.hosts = {'i.y.qq.com': '59.37.96.220'}
  * @param {Array<String>||undefined} source support netease, qq, xiami, baidu, kugou, kuwo, migu, joox
  * @return {Promise<Object>}
  */
-match(418602084, ['netease', 'qq', 'xiami', 'baidu']).then(song => console.log(song))
+match(418602084, ['netease', 'qq', 'xiami', 'baidu']).then(console.log)
 ```
 
 ## 效果
 
 #### Windows 客户端
 
-<img src="https://user-images.githubusercontent.com/26399680/57972590-425b9480-79cf-11e9-9761-b46a12d36249.png" width="100%">
+<img src="https://user-images.githubusercontent.com/26399680/60316017-87de8a80-999b-11e9-9381-16d40efbe7f6.png" width="100%">
 
 #### UWP 客户端
 
@@ -135,7 +135,7 @@ match(418602084, ['netease', 'qq', 'xiami', 'baidu']).then(song => console.log(s
 
 #### Linux 客户端
 
-<img src="https://user-images.githubusercontent.com/26399680/52214856-a7cac000-28cd-11e9-92dd-0c41dc619481.png" width="100%">
+<img src="https://user-images.githubusercontent.com/26399680/60316169-18b56600-999c-11e9-8ae5-5cd168b0edae.png" width="100%">
 
 #### macOS 客户端
 

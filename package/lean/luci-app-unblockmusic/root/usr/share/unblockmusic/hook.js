@@ -52,7 +52,9 @@ hook.target.path = [
 	'/api/v1/playlist/manipulate/tracks',
 	'/api/song/like',
 	'/api/v1/play/record',
-	'/api/playlist/v4/detail'
+	'/api/playlist/v4/detail',
+	'/api/v1/radio/get',
+	'/api/v1/discovery/recommend/songs'
 ]
 
 hook.request.before = ctx => {
@@ -257,7 +259,7 @@ const tryMatch = ctx => {
 		if((item.code != 200 || item.freeTrialInfo) && (target == 0 || item.id == target)){
 			return match(item.id)
 			.then(song => {
-				item.url = `${global.endpoint || 'http://music.163.com'}/package/${crypto.base64.encode(song.url)}/${item.id}.mp3`
+				item.url = global.endpoint ? `${global.endpoint}/package/${crypto.base64.encode(song.url)}/${item.id}.mp3` : song.url
 				item.md5 = song.md5 || crypto.md5.digest(song.url)
 				item.size = song.size
 				item.code = 200
@@ -280,8 +282,8 @@ const tryMatch = ctx => {
 				try{
 					let header = netease.param.header
 					header = typeof header === 'string' ? JSON.parse(header) : header
-					let {os, appver} = header
-					if(os in limit && newer(limit[os], appver))
+					let os = header.os, version = header.appver
+					if(os in limit && newer(limit[os], version))
 						return cache(computeHash, task, 7 * 24 * 60 * 60 * 1000).then(value => item.md5 = value)
 				}
 				catch(e){}
