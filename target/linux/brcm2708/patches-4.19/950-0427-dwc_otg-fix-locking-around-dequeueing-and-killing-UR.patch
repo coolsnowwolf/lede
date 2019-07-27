@@ -1,0 +1,63 @@
+From ddd696d15f75315f1a20d5da57d94ed65d8c1404 Mon Sep 17 00:00:00 2001
+From: P33M <p33m@github.com>
+Date: Tue, 9 Apr 2019 16:40:48 +0100
+Subject: [PATCH 427/703] dwc_otg: fix locking around dequeueing and killing
+ URBs
+
+kill_urbs_in_qh_list() is practically only ever called with the fiq lock
+already held, so don't spinlock twice in the case where we need to cancel
+an isochronous transfer.
+
+Also fix up a case where the global interrupt register could be read with
+the fiq lock not held.
+
+Fixes the deadlock seen in https://github.com/raspberrypi/linux/issues/2907
+---
+ drivers/usb/host/dwc_otg/dwc_otg_cil_intr.c | 9 +++++++--
+ drivers/usb/host/dwc_otg/dwc_otg_hcd.c      | 4 ----
+ 2 files changed, 7 insertions(+), 6 deletions(-)
+
+--- a/drivers/usb/host/dwc_otg/dwc_otg_cil_intr.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_cil_intr.c
+@@ -1344,16 +1344,21 @@ static inline uint32_t dwc_otg_read_comm
+ 		 */
+ 		gintmsk_common.b.portintr = 1;
+ 	}
+-	gintsts.d32 = DWC_READ_REG32(&core_if->core_global_regs->gintsts);
+-	gintmsk.d32 = DWC_READ_REG32(&core_if->core_global_regs->gintmsk);
+ 	if(fiq_enable) {
+ 		local_fiq_disable();
++		fiq_fsm_spin_lock(&hcd->fiq_state->lock);
++		gintsts.d32 = DWC_READ_REG32(&core_if->core_global_regs->gintsts);
++		gintmsk.d32 = DWC_READ_REG32(&core_if->core_global_regs->gintmsk);
+ 		/* Pull in the interrupts that the FIQ has masked */
+ 		gintmsk.d32 |= ~(hcd->fiq_state->gintmsk_saved.d32);
+ 		gintmsk.d32 |= gintmsk_common.d32;
+ 		/* for the upstairs function to reenable - have to read it here in case FIQ triggers again */
+ 		reenable_gintmsk->d32 = gintmsk.d32;
++		fiq_fsm_spin_unlock(&hcd->fiq_state->lock);
+ 		local_fiq_enable();
++	} else {
++		gintsts.d32 = DWC_READ_REG32(&core_if->core_global_regs->gintsts);
++		gintmsk.d32 = DWC_READ_REG32(&core_if->core_global_regs->gintmsk);
+ 	}
+ 
+ 	gahbcfg.d32 = DWC_READ_REG32(&core_if->core_global_regs->gahbcfg);
+--- a/drivers/usb/host/dwc_otg/dwc_otg_hcd.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_hcd.c
+@@ -195,15 +195,11 @@ static void kill_urbs_in_qh_list(dwc_otg
+ 			 * but not yet been through the IRQ handler.
+ 			 */
+ 			if (fiq_fsm_enable && (hcd->fiq_state->channel[qh->channel->hc_num].fsm != FIQ_PASSTHROUGH)) {
+-				local_fiq_disable();
+-				fiq_fsm_spin_lock(&hcd->fiq_state->lock);
+ 				qh->channel->halt_status = DWC_OTG_HC_XFER_URB_DEQUEUE;
+ 				qh->channel->halt_pending = 1;
+ 				if (hcd->fiq_state->channel[n].fsm == FIQ_HS_ISOC_TURBO ||
+ 					hcd->fiq_state->channel[n].fsm == FIQ_HS_ISOC_SLEEPING)
+ 					hcd->fiq_state->channel[n].fsm = FIQ_HS_ISOC_ABORTED;
+-				fiq_fsm_spin_unlock(&hcd->fiq_state->lock);
+-				local_fiq_enable();
+ 			} else {
+ 				dwc_otg_hc_halt(hcd->core_if, qh->channel,
+ 						DWC_OTG_HC_XFER_URB_DEQUEUE);

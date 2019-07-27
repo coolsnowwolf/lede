@@ -1,0 +1,106 @@
+From 2dd8625b99a3244bf632278cd7fdd74dffaeb3a3 Mon Sep 17 00:00:00 2001
+From: Takashi Iwai <tiwai@suse.de>
+Date: Tue, 4 Sep 2018 17:58:37 +0200
+Subject: [PATCH 447/703] staging: bcm2835-audio: Drop useless running flag and
+ check
+
+commit 02f2376321d75e78117f39ff81f215254ee6b4ef upstream.
+
+The running flag of alsa_stream is basically useless.  The running
+state is strictly controlled in ALSA PCM core side, hence the check in
+PCM trigger and close callbacks are superfluous.
+
+Also, the prefill ack at trigger start became superfluous nowadays
+with the ALSA PCM core update.
+
+Let's rip them off.
+
+Signed-off-by: Takashi Iwai <tiwai@suse.de>
+Tested-by: Stefan Wahren <stefan.wahren@i2se.com>
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ .../vc04_services/bcm2835-audio/bcm2835-pcm.c | 46 ++++---------------
+ .../vc04_services/bcm2835-audio/bcm2835.h     |  1 -
+ 2 files changed, 8 insertions(+), 39 deletions(-)
+
+--- a/drivers/staging/vc04_services/bcm2835-audio/bcm2835-pcm.c
++++ b/drivers/staging/vc04_services/bcm2835-audio/bcm2835-pcm.c
+@@ -187,19 +187,6 @@ static int snd_bcm2835_playback_close(st
+ 
+ 	audio_info("Alsa close\n");
+ 
+-	/*
+-	 * Call stop if it's still running. This happens when app
+-	 * is force killed and we don't get a stop trigger.
+-	 */
+-	if (alsa_stream->running) {
+-		int err;
+-
+-		err = bcm2835_audio_stop(alsa_stream);
+-		alsa_stream->running = 0;
+-		if (err)
+-			audio_error(" Failed to STOP alsa device\n");
+-	}
+-
+ 	alsa_stream->period_size = 0;
+ 	alsa_stream->buffer_size = 0;
+ 
+@@ -324,27 +311,13 @@ static int snd_bcm2835_pcm_trigger(struc
+ 
+ 	switch (cmd) {
+ 	case SNDRV_PCM_TRIGGER_START:
+-		audio_debug("bcm2835_AUDIO_TRIGGER_START running=%d\n",
+-			alsa_stream->running);
+-		if (!alsa_stream->running) {
+-			err = bcm2835_audio_start(alsa_stream);
+-			if (!err) {
+-				alsa_stream->pcm_indirect.hw_io =
+-					alsa_stream->pcm_indirect.hw_data =
+-					bytes_to_frames(runtime,
+-					alsa_stream->pos);
+-				substream->ops->ack(substream);
+-				alsa_stream->running = 1;
+-				alsa_stream->draining = 1;
+-			} else {
+-				audio_error(" Failed to START alsa device (%d)\n", err);
+-			}
+-		}
++		err = bcm2835_audio_start(alsa_stream);
++		if (!err)
++			alsa_stream->draining = 1;
++		else
++			audio_error(" Failed to START alsa device (%d)\n", err);
+ 		break;
+ 	case SNDRV_PCM_TRIGGER_STOP:
+-		audio_debug
+-			("bcm2835_AUDIO_TRIGGER_STOP running=%d draining=%d\n",
+-			alsa_stream->running, runtime->status->state == SNDRV_PCM_STATE_DRAINING);
+ 		if (runtime->status->state == SNDRV_PCM_STATE_DRAINING) {
+ 			audio_info("DRAINING\n");
+ 			alsa_stream->draining = 1;
+@@ -352,12 +325,9 @@ static int snd_bcm2835_pcm_trigger(struc
+ 			audio_info("DROPPING\n");
+ 			alsa_stream->draining = 0;
+ 		}
+-		if (alsa_stream->running) {
+-			err = bcm2835_audio_stop(alsa_stream);
+-			if (err != 0)
+-				audio_error(" Failed to STOP alsa device (%d)\n", err);
+-			alsa_stream->running = 0;
+-		}
++		err = bcm2835_audio_stop(alsa_stream);
++		if (err != 0)
++			audio_error(" Failed to STOP alsa device (%d)\n", err);
+ 		break;
+ 	default:
+ 		err = -EINVAL;
+--- a/drivers/staging/vc04_services/bcm2835-audio/bcm2835.h
++++ b/drivers/staging/vc04_services/bcm2835-audio/bcm2835.h
+@@ -121,7 +121,6 @@ struct bcm2835_alsa_stream {
+ 
+ 	spinlock_t lock;
+ 
+-	int running;
+ 	int draining;
+ 
+ 	int channels;

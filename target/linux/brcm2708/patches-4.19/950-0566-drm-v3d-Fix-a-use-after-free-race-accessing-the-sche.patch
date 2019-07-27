@@ -1,0 +1,73 @@
+From d66b36c8443b24eab7512467095f7395d01f77de Mon Sep 17 00:00:00 2001
+From: Eric Anholt <eric@anholt.net>
+Date: Fri, 28 Sep 2018 16:21:23 -0700
+Subject: [PATCH 566/703] drm/v3d: Fix a use-after-free race accessing the
+ scheduler's fences.
+
+Once we push the job, the scheduler could run it and free it.  So, if
+we want to reference their fences, we need to grab them before then.
+I haven't seen this happen in many days of conformance test runtime,
+but let's still close the race.
+
+Signed-off-by: Eric Anholt <eric@anholt.net>
+Fixes: 57692c94dcbe ("drm/v3d: Introduce a new DRM driver for Broadcom V3D V3.x+")
+Link: https://patchwork.freedesktop.org/patch/254119/
+Reviewed-by: Boris Brezillon <boris.brezillon@bootlin.com>
+(cherry picked from commit 34c2c4f632f232ed2fdb66d4e42cc72d322273fe)
+---
+ drivers/gpu/drm/v3d/v3d_drv.h | 5 +++++
+ drivers/gpu/drm/v3d/v3d_gem.c | 8 ++++++--
+ 2 files changed, 11 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_drv.h
++++ b/drivers/gpu/drm/v3d/v3d_drv.h
+@@ -198,6 +198,11 @@ struct v3d_exec_info {
+ 	 */
+ 	struct dma_fence *bin_done_fence;
+ 
++	/* Fence for when the scheduler considers the render to be
++	 * done, for when the BOs reservations should be complete.
++	 */
++	struct dma_fence *render_done_fence;
++
+ 	struct kref refcount;
+ 
+ 	/* This is the array of BOs that were looked up at the start of exec. */
+--- a/drivers/gpu/drm/v3d/v3d_gem.c
++++ b/drivers/gpu/drm/v3d/v3d_gem.c
+@@ -209,7 +209,7 @@ v3d_flush_caches(struct v3d_dev *v3d)
+ static void
+ v3d_attach_object_fences(struct v3d_exec_info *exec)
+ {
+-	struct dma_fence *out_fence = &exec->render.base.s_fence->finished;
++	struct dma_fence *out_fence = exec->render_done_fence;
+ 	struct v3d_bo *bo;
+ 	int i;
+ 
+@@ -409,6 +409,7 @@ v3d_exec_cleanup(struct kref *ref)
+ 	dma_fence_put(exec->render.done_fence);
+ 
+ 	dma_fence_put(exec->bin_done_fence);
++	dma_fence_put(exec->render_done_fence);
+ 
+ 	for (i = 0; i < exec->bo_count; i++)
+ 		drm_gem_object_put_unlocked(&exec->bo[i]->base);
+@@ -572,6 +573,9 @@ v3d_submit_cl_ioctl(struct drm_device *d
+ 	if (ret)
+ 		goto fail_unreserve;
+ 
++	exec->render_done_fence =
++		dma_fence_get(&exec->render.base.s_fence->finished);
++
+ 	kref_get(&exec->refcount); /* put by scheduler job completion */
+ 	drm_sched_entity_push_job(&exec->render.base,
+ 				  &v3d_priv->sched_entity[V3D_RENDER]);
+@@ -585,7 +589,7 @@ v3d_submit_cl_ioctl(struct drm_device *d
+ 	sync_out = drm_syncobj_find(file_priv, args->out_sync);
+ 	if (sync_out) {
+ 		drm_syncobj_replace_fence(sync_out,
+-					  &exec->render.base.s_fence->finished);
++					  exec->render_done_fence);
+ 		drm_syncobj_put(sync_out);
+ 	}
+ 
