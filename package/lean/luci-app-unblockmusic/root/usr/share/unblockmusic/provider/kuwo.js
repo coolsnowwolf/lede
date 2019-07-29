@@ -17,7 +17,12 @@ const search = info => {
 	return request('GET', url)
 	.then(response => response.body())
 	.then(body => {
-		let jsonBody = JSON.parse(body.replace(/\'/g, '"').replace('try {var jsondata =', '').replace(';song(jsondata);}catch(e){jsonError(e)}', ''))
+		let jsonBody = eval(
+			'(' + body
+			.replace(/\n/g, '')
+			.match(/try\s*\{[^=]+=\s*(.+?)\s*\}\s*catch/)[1]
+			.replace(/;\s*song\s*\(.+\)\s*;\s*/, '') + ')'
+		)
 		let matched = jsonBody.abslist[0]
 		if(matched)
 			return matched.MUSICRID.split('_').pop()

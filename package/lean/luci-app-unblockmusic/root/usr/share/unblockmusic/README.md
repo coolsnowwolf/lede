@@ -6,7 +6,7 @@
 
 ## 特性
 
-- 使用网易云旧链 / QQ / 虾米 / 百度 / 酷狗 / 酷我 / 咕咪 / JOOX 音源替换变灰歌曲链接 (默认仅启用前四)
+- 使用~~网易云旧链~~ / QQ / 虾米 / 百度 / 酷狗 / 酷我 / 咕咪 / JOOX 音源替换变灰歌曲链接 (默认仅启用前四)
 - 为请求增加 `X-Real-IP` 参数解锁海外限制，支持指定网易云服务器 IP，支持设置上游 HTTP / HTTPS 代理
 - 完整的流量代理功能 (HTTP / HTTPS)，可直接作为系统代理 (同时支持 PAC)
 
@@ -31,22 +31,23 @@ $ docker-compose up
 ### 配置参数
 
 ```
-$ UnblockNeteaseMusic -h
-usage: unblockneteasemusic [-v] [-p port] [-u url] [-f host]
+$ unblockneteasemusic -h
+usage: unblockneteasemusic [-v] [-p port] [-a address] [-u url] [-f host]
                            [-o source [source ...]] [-t token] [-e url] [-s]
                            [-h]
 
 optional arguments:
-  -v, --version               output the version number
-  -p port, --port port        specify server port
-  -u url, --proxy-url url     request through upstream proxy
-  -f host, --force-host host  force the netease server ip
+  -v, --version                   output the version number
+  -p port, --port port            specify server port
+  -a address, --address address   specify server host
+  -u url, --proxy-url url         request through upstream proxy
+  -f host, --force-host host      force the netease server ip
   -o source [source ...], --match-order source [source ...]
-                              set priority of sources
-  -t token, --token token     set up http basic authentication
-  -e url, --endpoint url      replace virtual endpoint with public host
-  -s, --strict                enable proxy limitation
-  -h, --help                  output usage information
+                                  set priority of sources
+  -t token, --token token         set up proxy authentication
+  -e url, --endpoint url          replace virtual endpoint with public host
+  -s, --strict                    enable proxy limitation
+  -h, --help                      output usage information
 ```
 
 ## 使用

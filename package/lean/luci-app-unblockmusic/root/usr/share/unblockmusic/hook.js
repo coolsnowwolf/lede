@@ -177,11 +177,11 @@ hook.connect.before = ctx => {
 	let url = parse('https://' + ctx.req.url)
 	if(hook.target.host.includes(url.hostname)){
 		if(url.port == 80){
-			ctx.req.url = `localhost:${global.port[0]}`
+			ctx.req.url = `${global.address || 'localhost'}:${global.port[0]}`
 			ctx.req.local = true
 		}
 		else if(global.port[1]){
-			ctx.req.url = `localhost:${global.port[1]}`
+			ctx.req.url = `${global.address || 'localhost'}:${global.port[1]}`
 			ctx.req.local = true
 		}
 		else{

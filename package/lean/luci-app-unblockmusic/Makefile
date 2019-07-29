@@ -15,12 +15,11 @@ LUCI_TITLE:=LuCI support for UnblockNeteaseMusic
 LUCI_DEPENDS:=+node +bash +dnsmasq-full +ipset
 LUCI_PKGARCH:=all
 PKG_NAME:=luci-app-unblockmusic
-PKG_VERSION:=1.3
-PKG_RELEASE:=2
+PKG_VERSION:=1.4
+PKG_RELEASE:=1
 
 PKG_MAINTAINER:=<https://github.com/project-openwrt/luci-app-unblockmusic>
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
-
