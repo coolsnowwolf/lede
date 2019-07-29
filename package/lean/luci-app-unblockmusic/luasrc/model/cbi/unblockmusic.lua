@@ -14,7 +14,7 @@ enabled.default = 0
 enabled.rmempty = false
 
 enabled = s:option(Flag, "enable_ipset_forward", translate("启用IPSet劫持相关请求"))
-enabled.description = translate("开启后，所有网易云音乐流量都会被劫持到UnblockNeteaseMusic进行处理")
+enabled.description = translate("开启后，网易云音乐相关请求会被强制劫持到UnblockNeteaseMusic进行处理")
 enabled.default = 1
 enabled.rmempty = false
 enabled:depends("enabled", 1)
@@ -70,7 +70,7 @@ enabled.rmempty = false
 enabled:depends("advanced_mode", 1)
 
 enabled = s:option(Flag, "ipset_forward_nohttps", translate("[IPSet] 不劫持HTTPS请求"))
-enabled.description = translate("默认同时劫持HTTP&HTTPS两种请求，如您无相关需求，可勾选此选项")
+enabled.description = translate("默认同时劫持HTTP&HTTPS两种请求，如无相关需求，可勾选此选项")
 enabled.default = 0
 enabled.rmempty = false
 enabled:depends("advanced_mode", 1)
