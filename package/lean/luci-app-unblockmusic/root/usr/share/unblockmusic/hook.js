@@ -61,7 +61,7 @@ hook.request.before = ctx => {
 	const req = ctx.req
 	req.url = (req.url.startsWith('http://') ? '' : (req.socket.encrypted ? 'https:' : 'http:') + '//music.163.com') + req.url
 	const url = parse(req.url)
-	if((hook.target.host.includes(url.hostname)) && req.method == 'POST' && (url.path == '/api/linux/forward' || url.path.startsWith('/eapi/'))){
+	if([url.hostname, req.headers.host].some(host => hook.target.host.includes(host)) && req.method == 'POST' && (url.path == '/api/linux/forward' || url.path.startsWith('/eapi/'))){
 		return request.read(req)
 		.then(body => {
 			req.body = body
@@ -122,13 +122,14 @@ hook.request.after = ctx => {
 		return request.read(proxyRes, true)
 		.then(buffer => {
 			proxyRes.body = buffer
+			const patch = string => string.replace(/([\[|{|:]\s*)(\d{16,})(\s*[\]|}|,])/g, '$1"$2L"$3') // for js precision
 			try{
 				netease.encrypted = false
-				netease.jsonBody = JSON.parse(buffer.toString())
+				netease.jsonBody = JSON.parse(patch(buffer.toString()))
 			}
 			catch(error){
 				netease.encrypted = true
-				netease.jsonBody = JSON.parse(crypto.eapi.decrypt(buffer).toString())
+				netease.jsonBody = JSON.parse(patch(crypto.eapi.decrypt(buffer).toString()))
 			}
 
 			if(netease.path.includes('manipulate') && [401, 512].includes(netease.jsonBody.code) && !netease.web)
@@ -145,10 +146,6 @@ hook.request.after = ctx => {
 
 			const inject = (key, value) => {
 				if(typeof(value) === 'object' && value != null){
-					if('pic_str' in value && 'pic' in value) // for js precision
-						value['pic'] = value['pic_str']
-					if('coverImgId_str' in value && 'coverImgId' in value) // for js precision
-						value['coverImgId'] = value['coverImgId_str']
 					if('fee' in value) value['fee'] = 0
 					if('st' in value && 'pl' in value && 'dl' in value && 'subp' in value){ // batch modify
 						value['st'] = 0
@@ -161,8 +158,7 @@ hook.request.after = ctx => {
 			}
 
 			let body = JSON.stringify(netease.jsonBody, inject)
-			body = body.replace(/"pic":"(\d+)"/g, '"pic":$1')
-			body = body.replace(/"coverImgId":"(\d+)"/g, '"coverImgId":$1')
+			body = body.replace(/([\[|{|:]\s*)"(\d{16,})L"(\s*[\]|}|,])/g, '$1$2$3') // for js precision
 			proxyRes.body = (netease.encrypted ? crypto.eapi.encrypt(Buffer.from(body)) : body)
 		})
 	}
@@ -175,7 +171,7 @@ hook.request.after = ctx => {
 
 hook.connect.before = ctx => {
 	let url = parse('https://' + ctx.req.url)
-	if(hook.target.host.includes(url.hostname)){
+	if([url.hostname, ctx.req.headers.host].some(host => hook.target.host.includes(host))){
 		if(url.port == 80){
 			ctx.req.url = `${global.address || 'localhost'}:${global.port[0]}`
 			ctx.req.local = true
@@ -281,7 +277,7 @@ const tryMatch = ctx => {
 				const task = {key: song.url.replace(/\?.*$/, ''), url: song.url}
 				try{
 					let header = netease.param.header
-					header = typeof header === 'string' ? JSON.parse(header) : header
+					header = typeof(header) === 'string' ? JSON.parse(header) : header
 					let os = header.os, version = header.appver
 					if(os in limit && newer(limit[os], version))
 						return cache(computeHash, task, 7 * 24 * 60 * 60 * 1000).then(value => item.md5 = value)

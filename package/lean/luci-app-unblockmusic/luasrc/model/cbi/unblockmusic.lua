@@ -24,7 +24,6 @@ account.description = translate("UnblockNeteaseMusic监听的HTTP端口，不可
 account.placeholder = "5200"
 account.default = "5200"
 account.datatype = "port"
-account.rmempty = false
 account:depends("enabled", 1)
 
 account = s:option(Value, "https_port", translate("[HTTPS] 监听端口"))
@@ -32,7 +31,6 @@ account.description = translate("[如HTTP端口设置为80，请将HTTPS端口�
 account.placeholder = "5201"
 account.default = "5201"
 account.datatype = "port"
-account.rmempty = false
 account:depends("enabled", 1)
 
 speedtype = s:option(ListValue, "musicapptype", translate("音源接口"))
@@ -48,7 +46,6 @@ speedtype:value("joox", translate("JOOX音乐"))
 speedtype:value("all", translate("所有平台"))
 speedtype.description = translate("音源调用接口")
 speedtype.default = "all"
-speedtype.rmempty = false
 speedtype:depends("enabled", 1)
 
 enabled = s:option(Flag, "advanced_mode", translate("启用进阶设置"))
