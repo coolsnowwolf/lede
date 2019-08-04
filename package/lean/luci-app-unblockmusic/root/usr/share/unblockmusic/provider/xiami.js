@@ -78,7 +78,7 @@ const search = info => {
 
 const track = id => {
 	let url =
-		'https://www.xiami.com/song/playlist/id/' + id +
+		'https://emumo.xiami.com/song/playlist/id/' + id +
 		'/object_name/default/object_id/0/cat/json'
 
 	return request('GET', url, headers)

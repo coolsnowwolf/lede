@@ -1,4 +1,5 @@
 const cli = {
+	width: 80,
 	_program: {},
 	_options: [],
 	program: (information = {}) => {
@@ -99,7 +100,7 @@ const usage = () => {
 				return `[${flag} ${name}]`
 		}
 	})
-	let maximum = 80
+	let maximum = cli.width
 	let title = `usage: ${cli._program.name}`
 	let lines = [title]
 
@@ -129,11 +130,16 @@ const help = () => {
 		return [use, option.help]
 	})
 	let align = Math.max.apply(null, positionals.concat(optionals).map(option => option[0].length))
-	align = align > 26 ? 26 : align
+	align = align > 30 ? 30 : align
+	rest = cli.width - align - 4
 	const publish = option => {
-		option[0].length > align ?
-		console.log(`  ${option[0]}\n${pad(align + 4)}${option[1]}`) :
-		console.log(`  ${option[0]}${pad(align - option[0].length)}  ${option[1]}`)
+		const slice = string =>
+			Array.from(Array(Math.ceil(string.length / rest)).keys())
+			.map(index => string.slice(index * rest, (index + 1) * rest))
+			.join('\n' + pad(align + 4))
+		option[0].length < align ?
+		console.log(`  ${option[0]}${pad(align - option[0].length)}  ${slice(option[1])}`) :
+		console.log(`  ${option[0]}\n${pad(align + 4)}${slice(option[1])}`)
 	}
 	if(positionals.length) console.log('\npositional arguments:')
 	positionals.forEach(publish)
