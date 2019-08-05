@@ -6,7 +6,7 @@ function index()
 		return
 	end
 
-	entry({"admin", "services", "unblockmusic"},firstchild(), _("恢复网易云音乐无版权歌曲"), 50).dependent = false
+	entry({"admin", "services", "unblockmusic"},firstchild(), _("解锁网易云音乐灰色歌曲"), 50).dependent = false
 	
 	entry({"admin", "services", "unblockmusic", "general"},cbi("unblockmusic"), _("Base Setting"), 1)
 	entry({"admin", "services", "unblockmusic", "log"},form("unblockmusiclog"), _("Log"), 2)
