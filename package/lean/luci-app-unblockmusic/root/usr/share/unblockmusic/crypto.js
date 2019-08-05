@@ -1,6 +1,7 @@
 'use strict'
 
 const crypto = require('crypto')
+const bodyify = require('querystring').stringify
 const parse = require('url').parse
 const uriKey = '3go8&$8*3*3h0k(2)2'
 const eapiKey = 'e82ckenh8dichen8'
@@ -28,7 +29,9 @@ module.exports = {
 			let data = `${url.path}-36cd479b6b5-${text}-36cd479b6b5-${digest}`
 			return {
 				url: url.href.replace(/\w*api/, 'eapi'),
-				body: 'params=' + encrypt(Buffer.from(data), eapiKey).toString('hex').toUpperCase()
+				body: bodyify({
+					params: encrypt(Buffer.from(data), eapiKey).toString('hex').toUpperCase()
+				})
 			}
 		}
 	},
@@ -40,8 +43,35 @@ module.exports = {
 			let text = JSON.stringify({method: 'POST', url: url.href, params: object})
 			return {
 				url: url.resolve('/api/linux/forward'),
-				body: 'eparams=' + encrypt(Buffer.from(text), linuxapiKey).toString('hex').toUpperCase()
+				body: bodyify({
+					eparams: encrypt(Buffer.from(text), linuxapiKey).toString('hex').toUpperCase()
+				})
 			}
+		}
+	},
+	miguapi: {
+		encrypt: object => {
+			let text = JSON.stringify(object)
+			const derive = (password, salt, keyLength, ivSize) => { // EVP_BytesToKey
+				salt = salt || Buffer.alloc(0)
+				let keySize = keyLength / 8
+				let repeat = Math.ceil((keySize + ivSize * 8) / 32)
+				let buffer = Buffer.concat(Array.from(Array(repeat).keys()).reduce(result =>
+					result.concat(crypto.createHash('md5').update(Buffer.concat([result.slice(-1)[0], password, salt])).digest())
+				, [Buffer.alloc(0)]))
+				return {
+					key: buffer.slice(0, keySize),
+					iv: buffer.slice(keySize, keySize + ivSize)
+				}
+			}
+			let password = Buffer.from(crypto.randomBytes(32).toString('hex')), salt = crypto.randomBytes(8),
+			key = '-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC8asrfSaoOb4je+DSmKdriQJKWVJ2oDZrs3wi5W67m3LwTB9QVR+cE3XWU21Nx+YBxS0yun8wDcjgQvYt625ZCcgin2ro/eOkNyUOTBIbuj9CvMnhUYiR61lC1f1IGbrSYYimqBVSjpifVufxtx/I3exReZosTByYp4Xwpb1+WAQIDAQAB\n-----END PUBLIC KEY-----'
+			let secret = derive(password, salt, 256, 16)
+			let cipher = crypto.createCipheriv('aes-256-cbc', secret.key, secret.iv)
+			return bodyify({
+				data: Buffer.concat([Buffer.from('Salted__'), salt, cipher.update(Buffer.from(text)), cipher.final()]).toString('base64'),
+				secKey: crypto.publicEncrypt({key, padding: crypto.constants.RSA_PKCS1_PADDING}, password).toString('base64')
+			})
 		}
 	},
 	base64: {
