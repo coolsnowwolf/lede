@@ -1,5 +1,4 @@
 const find = require('./find')
-const crypto = require('../crypto')
 const request = require('../request')
 
 const provider = {
@@ -15,7 +14,7 @@ const provider = {
 
 const match = (id, source) => {
 	let meta = {}
-	let candidate = (source || global.source || ['netease', 'qq', 'xiami', 'baidu']).filter(name => name in provider)
+	let candidate = (source || global.source || ['qq', 'xiami', 'baidu']).filter(name => name in provider)
 	return find(id)
 	.then(info => {
 		meta = info
@@ -35,7 +34,7 @@ const match = (id, source) => {
 
 const check = url => {
 	let song = {size: 0, url: null, md5: null}
-	return request('HEAD', url)
+	return Promise.race([request('HEAD', url), new Promise((_, reject) => setTimeout(() => reject(504), 5 * 1000))])
 	.then(response => {
 		if(response.statusCode != 200) return
 		if(url.includes('qq.com'))
