@@ -9,3 +9,4 @@ do
 	(( "${log_size}" >= "${log_max_size}" )) && echo "" > /tmp/unblockmusic.log
 	sleep 5m
 done
+

@@ -3,99 +3,80 @@
 START=99
 STOP=10
 
-[ "$(uci get unblockmusic.@unblockmusic[0].strict_mode)" -eq "1" ] && strict_mode="-s"
-[ "$(uci get unblockmusic.@unblockmusic[0].set_netease_server_ip)" -ne "0" ] && netease_server_ip="-f $(uci get unblockmusic.@unblockmusic[0].netease_server_ip)"
-[ "$(uci get unblockmusic.@unblockmusic[0].enable_proxy)" -ne "0" ] && proxy_server_ip="-u $(uci get unblockmusic.@unblockmusic[0].proxy_server_ip)"
-[ "$(uci get unblockmusic.@unblockmusic[0].pub_access)" -ne "0" ] && addr="0.0.0.0" || addr="$(uci get network.lan.ipaddr)"
+enable=$(uci get unblockmusic.@unblockmusic[0].enabled)
+TYPE=$(uci get unblockmusic.@unblockmusic[0].musicapptype)
+PORT=$(uci get unblockmusic.@unblockmusic[0].port)
+ROUTE_IP=$(uci get network.lan.ipaddr)
 
-enable="$(uci get unblockmusic.@unblockmusic[0].enabled)"
-type="$(uci get unblockmusic.@unblockmusic[0].musicapptype)"
-http_port="$(uci get unblockmusic.@unblockmusic[0].http_port)"
-https_port="$(uci get unblockmusic.@unblockmusic[0].https_port)"
+ipt_n="iptables -t nat"
 
-set_firewall(){
-	if [ "${set_type}" = "start" ]; then
-		echo "ipset=/.music.163.com/music" >> /etc/dnsmasq.conf
-		/etc/init.d/dnsmasq restart >/dev/null 2>&1
-
-		mkdir -p /var/etc
-		lan_addr="$(uci get network.lan.ipaddr)"
-		[ "$(uci get unblockmusic.@unblockmusic[0].ipset_forward_nohttps)" -ne "0" ] || forward_https="iptables -t nat -A cloud_music -i br-lan -p tcp --dport 443 -j DNAT --to ${lan_addr}:${https_port}"
-		cat > "/var/etc/unblockmusic.include" <<-EOF
-if ! ipset list music >/dev/null; then ipset create music hash:ip; fi
-iptables -t nat -N cloud_music
-iptables -t nat -A cloud_music -i br-lan -p tcp --dport 80 -j DNAT --to ${lan_addr}:${http_port}
-${forward_https}
-iptables -t nat -A prerouting_rule -i br-lan -p tcp -m set --match-set music dst -j cloud_music
-		EOF
-		/etc/init.d/firewall restart >/dev/null 2>&1
-	elif [ "${set_type}" = "stop" ]; then
-		echo "" > /var/etc/unblockmusic.include
-		/etc/init.d/firewall restart >/dev/null 2>&1
-		sed -i '/ipset=\/.music.163.com\/music/d' /etc/dnsmasq.conf
-		/etc/init.d/dnsmasq restart >/dev/null 2>&1
-	fi
+add_rule()
+{
+  ipset -! -N music hash:ip
+	$ipt_n -N cloud_music
+	$ipt_n -A cloud_music -d 0.0.0.0/8 -j RETURN
+	$ipt_n -A cloud_music -d 10.0.0.0/8 -j RETURN
+	$ipt_n -A cloud_music -d 127.0.0.0/8 -j RETURN
+	$ipt_n -A cloud_music -d 169.254.0.0/16 -j RETURN
+	$ipt_n -A cloud_music -d 172.16.0.0/12 -j RETURN
+	$ipt_n -A cloud_music -d 192.168.0.0/16 -j RETURN
+	$ipt_n -A cloud_music -d 224.0.0.0/4 -j RETURN
+	$ipt_n -A cloud_music -d 240.0.0.0/4 -j RETURN
+	$ipt_n -A cloud_music -p tcp -j REDIRECT --to-ports $PORT
+	$ipt_n -I PREROUTING -p tcp -m set --match-set music dst -j cloud_music
 }
 
-set_hosts(){
-	if [ "${set_type}" = "start" ]; then
-		cfg_name="$(uci add dhcp domain)"
-		uci set dhcp."${cfg_name}".name='music.163.com'
-		uci set dhcp."${cfg_name}".ip="$(uci get network.lan.ipaddr)"
-		uci commit dhcp
+del_rule(){
+	$ipt_n -D PREROUTING -p tcp -m set --match-set music dst -j cloud_music 2>/dev/null
+	$ipt_n -F cloud_music  2>/dev/null
+	$ipt_n -X cloud_music  2>/dev/null
+	
+	sed -i '/ipset=\/.music.163.com\/music/d' /etc/dnsmasq.conf
+	sed -i '/proxy.pac/d' /etc/dnsmasq.conf
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+}
 
-		cfg_name="$(uci add dhcp domain)"
-		uci set dhcp."${cfg_name}".name='interface.music.163.com'
-		uci set dhcp."${cfg_name}".ip="$(uci get network.lan.ipaddr)"
-		uci commit dhcp
-
-		cfg_name="$(uci add dhcp domain)"
-		uci set dhcp."${cfg_name}".name='music.httpdns.c.163.com'
-		uci set dhcp."${cfg_name}".ip="127.0.0.1"
-		uci commit dhcp
-
-		ip route add 223.252.199.10 dev lo
-	elif [ "${set_type}" = "stop" ]; then
-		music_id1="$(uci show dhcp| grep "interface.music.163.com"| grep -Eo "domain\[[0-9]+\]"| grep -Eo "[0-9]+")"
-		uci delete dhcp.@domain["${music_id1}"]
-		uci commit dhcp
-
-		music_id2="$(uci show dhcp| grep "music.httpdns.c.163.com"| grep -Eo "domain\[[0-9]+\]"| grep -Eo "[0-9]+")"
-		uci delete dhcp.@domain["${music_id2}"]
-		uci commit dhcp
-
-		music_id3="$(uci show dhcp| grep "music.163.com"| grep -Eo "domain\[[0-9]+\]"| grep -Eo "[0-9]+")"
-		uci delete dhcp.@domain["${music_id3}"]
-		uci commit dhcp
-
-		ip route del 223.252.199.10
-	fi
+set_firewall(){
+  sed -i '/ipset=\/.music.163.com\/music/d' /etc/dnsmasq.conf
+	sed -i '/proxy.pac/d' /etc/dnsmasq.conf
+  echo "dhcp-option=252,http://$ROUTE_IP:$PORT/proxy.pac" >> /etc/dnsmasq.conf
+	echo "ipset=/.music.163.com/music" >> /etc/dnsmasq.conf
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	
+	add_rule
+	
+	mkdir -p /var/etc
+	cat > "/var/etc/unblockmusic.include" <<-EOF
+/etc/init.d/unblockmusic restart
+	EOF
 }
 
 start()
 {
 	stop
-
-	[ "${enable}" -eq "0" ] && exit 0
-
-	if [ "${type}" = "default" ]; then
-		node /usr/share/unblockmusic/app.js -a ${addr} -p ${http_port}:${https_port} ${netease_server_ip} ${proxy_server_ip} ${strict_mode} >/tmp/unblockmusic.log 2>&1 &
-	elif [ "${type}" = "all" ]; then
-		node /usr/share/unblockmusic/app.js -a ${addr} -p ${http_port}:${https_port} -o kuwo migu xiami kugou qq joox netease ${netease_server_ip} ${proxy_server_ip} ${strict_mode} >/tmp/unblockmusic.log 2>&1 &
+	
+	[ $enable -eq "0" ] && exit 0
+	
+	if [ $TYPE = "default" ]; then
+			node /usr/share/UnblockNeteaseMusic/app.js -p $PORT >/tmp/unblockmusic.log 2>&1 &
 	else
-		node /usr/share/unblockmusic/app.js -a ${addr} -p ${http_port}:${https_port} -o ${type} ${netease_server_ip} ${proxy_server_ip} ${strict_mode} >/tmp/unblockmusic.log 2>&1 &
+			node /usr/share/UnblockNeteaseMusic/app.js -p $PORT -o $TYPE >/tmp/unblockmusic.log 2>&1 &
 	fi
-
-	[ "$(uci get unblockmusic.@unblockmusic[0].enable_ipset_forward)" -ne "0" ] && set_type="start" && set_firewall
-	[ "$(uci get unblockmusic.@unblockmusic[0].use_hosts)" -ne "0" ] && set_type="start" && set_hosts
-
-	/usr/share/unblockmusic/logcheck.sh >/dev/null 2>&1 &
+	
+	set_firewall
+	
+	/usr/share/UnblockNeteaseMusic/logcheck.sh >/dev/null 2>&1 &
 }
 
 stop()
 {
-	kill -9 "$(ps | grep app.js | grep -v grep | awk '{print $1}')" >/dev/null 2>&1
-	kill -9 "$(ps | grep logcheck.sh | grep -v grep | awk '{print $1}')" >/dev/null 2>&1
+	kill -9 $(ps | grep monitor | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+	kill -9 $(ps | grep app.js | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+	kill -9 $(ps | grep logcheck.sh | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	rm -f /tmp/unblockmusic.log
-	set_type="stop" && set_firewall && set_hosts
+
+	del_rule
 }
+
+
+
