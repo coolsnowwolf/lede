@@ -1,0 +1,74 @@
+From 17d7702409b1627d408bf2242af57ade58b5b0f9 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 30 Jan 2019 17:47:51 +0000
+Subject: [PATCH 340/725] usb: dwc_otg: Use dma allocation for mphi dummy_send
+ buffer
+
+The FIQ driver used a kzalloc'ed buffer for dummy_send,
+passing a kernel virtual address to the hardware block.
+The buffer is only ever used for a dummy read, so it
+should be harmless, but there is the chance that it will
+cause exceptions.
+
+Use a dma allocation so that we have a genuine bus address,
+and read from that.
+Free the allocation when done for good measure.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.c | 4 ++--
+ drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.h | 1 +
+ drivers/usb/host/dwc_otg/dwc_otg_hcd.c     | 5 ++++-
+ 3 files changed, 7 insertions(+), 3 deletions(-)
+
+--- a/drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.c
+@@ -1347,7 +1347,7 @@ void notrace dwc_otg_fiq_fsm(struct fiq_
+ 	/* We got an interrupt, didn't handle it. */
+ 	if (kick_irq) {
+ 		state->mphi_int_count++;
+-		FIQ_WRITE(state->mphi_regs.outdda, (int) state->dummy_send);
++		FIQ_WRITE(state->mphi_regs.outdda, state->dummy_send_dma);
+ 		FIQ_WRITE(state->mphi_regs.outddb, (1<<29));
+ 
+ 	}
+@@ -1408,7 +1408,7 @@ void notrace dwc_otg_fiq_nop(struct fiq_
+ 		FIQ_WRITE(state->dwc_regs_base + GINTMSK, gintmsk.d32);
+ 		/* Force a clear before another dummy send */
+ 		FIQ_WRITE(state->mphi_regs.intstat, (1<<29));
+-		FIQ_WRITE(state->mphi_regs.outdda, (int) state->dummy_send);
++		FIQ_WRITE(state->mphi_regs.outdda, state->dummy_send_dma);
+ 		FIQ_WRITE(state->mphi_regs.outddb, (1<<29));
+ 
+ 	}
+--- a/drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.h
++++ b/drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.h
+@@ -352,6 +352,7 @@ struct fiq_state {
+ 	dma_addr_t dma_base;
+ 	struct fiq_dma_blob *fiq_dmab;
+ 	void *dummy_send;
++	dma_addr_t dummy_send_dma;
+ 	gintmsk_data_t gintmsk_saved;
+ 	haintmsk_data_t haintmsk_saved;
+ 	int mphi_int_count;
+--- a/drivers/usb/host/dwc_otg/dwc_otg_hcd.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_hcd.c
+@@ -929,6 +929,8 @@ static void dwc_otg_hcd_free(dwc_otg_hcd
+ 	DWC_TIMER_FREE(dwc_otg_hcd->conn_timer);
+ 	DWC_TASK_FREE(dwc_otg_hcd->reset_tasklet);
+ 	DWC_TASK_FREE(dwc_otg_hcd->completion_tasklet);
++	DWC_DMA_FREE(dev, 16, dwc_otg_hcd->fiq_state->dummy_send,
++		     dwc_otg_hcd->fiq_state->dummy_send_dma);
+ 	DWC_FREE(dwc_otg_hcd->fiq_state);
+ 
+ #ifdef DWC_DEV_SRPCAP
+@@ -1021,7 +1023,8 @@ int dwc_otg_hcd_init(dwc_otg_hcd_t * hcd
+ 		for (i = 0; i < num_channels; i++) {
+ 			hcd->fiq_state->channel[i].fsm = FIQ_PASSTHROUGH;
+ 		}
+-		hcd->fiq_state->dummy_send = DWC_ALLOC_ATOMIC(16);
++		hcd->fiq_state->dummy_send = DWC_DMA_ALLOC_ATOMIC(dev, 16,
++							 &hcd->fiq_state->dummy_send_dma);
+ 
+ 		hcd->fiq_stack = DWC_ALLOC(sizeof(struct fiq_stack));
+ 		if (!hcd->fiq_stack) {

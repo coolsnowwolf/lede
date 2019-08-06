@@ -1,0 +1,113 @@
+From 255fb8869fe765f8ee9dbdad61ddfab333ff45ae Mon Sep 17 00:00:00 2001
+From: popcornmix <popcornmix@gmail.com>
+Date: Fri, 7 Jun 2019 14:50:12 +0100
+Subject: [PATCH 655/725] Revert "usb: xhci: hack xhci_urb_enqueue to support
+ hid.mousepoll behaviour"
+
+This reverts commit 1cf1071a79f320bc4497a3ade77431f04442eb17.
+---
+ drivers/usb/host/xhci.c | 86 -----------------------------------------
+ 1 file changed, 86 deletions(-)
+
+--- a/drivers/usb/host/xhci.c
++++ b/drivers/usb/host/xhci.c
+@@ -1416,87 +1416,6 @@ command_cleanup:
+ }
+ 
+ /*
+- * RPI: Fixup endpoint intervals when requested
+- * - Check interval versus the (cached) endpoint context
+- * - set the endpoint interval to the new value
+- * - force an endpoint configure command
+- */
+-static void xhci_fixup_interval(struct xhci_hcd *xhci, struct urb *urb,
+-				unsigned int slot_id, unsigned int ep_index)
+-{
+-	struct xhci_ep_ctx *ep_ctx_out, *ep_ctx_in;
+-	struct xhci_command *command;
+-	struct xhci_input_control_ctx *ctrl_ctx;
+-	struct xhci_virt_device *vdev;
+-	int xhci_interval, ep_interval;
+-	int ret;
+-	unsigned long flags;
+-	u32 ep_info_tmp;
+-
+-	spin_lock_irqsave(&xhci->lock, flags);
+-
+-	vdev = xhci->devs[slot_id];
+-	/* Get context-derived endpoint interval */
+-	ep_ctx_out = xhci_get_ep_ctx(xhci, vdev->out_ctx, ep_index);
+-	ep_ctx_in = xhci_get_ep_ctx(xhci, vdev->in_ctx, ep_index);
+-	xhci_interval = EP_INTERVAL_TO_UFRAMES(le32_to_cpu(ep_ctx_out->ep_info));
+-	ep_interval = urb->interval * 8;
+-
+-	if (ep_interval == xhci_interval) {
+-		spin_unlock_irqrestore(&xhci->lock, flags);
+-		return;
+-	}
+-
+-	xhci_dbg(xhci, "Fixup interval ep_interval=%d xhci_interval=%d\n",
+-		 ep_interval, xhci_interval);
+-	command = xhci_alloc_command_with_ctx(xhci, true, GFP_ATOMIC);
+-	if (!command) {
+-		/* Failure here is benign, poll at the original rate */
+-		spin_unlock_irqrestore(&xhci->lock, flags);
+-		return;
+-	}
+-
+-	/* xHCI uses exponents for intervals... */
+-	xhci_interval = fls(ep_interval) - 1;
+-	xhci_interval = clamp_val(xhci_interval, 3, 10);
+-	ep_info_tmp = le32_to_cpu(ep_ctx_out->ep_info);
+-	ep_info_tmp &= ~EP_INTERVAL(255);
+-	ep_info_tmp |= EP_INTERVAL(xhci_interval);
+-
+-	/* Keep the endpoint context up-to-date while issuing the command. */
+-	xhci_endpoint_copy(xhci, vdev->in_ctx,
+-			   vdev->out_ctx, ep_index);
+-	ep_ctx_in->ep_info = cpu_to_le32(ep_info_tmp);
+-
+-	/*
+-	 * We need to drop the lock, so take an explicit copy
+-	 * of the ep context.
+-	 */
+-	xhci_endpoint_copy(xhci, command->in_ctx, vdev->in_ctx, ep_index);
+-
+-	ctrl_ctx = xhci_get_input_control_ctx(command->in_ctx);
+-	if (!ctrl_ctx) {
+-		xhci_warn(xhci,
+-			  "%s: Could not get input context, bad type.\n",
+-			  __func__);
+-		spin_unlock_irqrestore(&xhci->lock, flags);
+-		xhci_free_command(xhci, command);
+-		return;
+-	}
+-	ctrl_ctx->add_flags = xhci_get_endpoint_flag_from_index(ep_index);
+-	ctrl_ctx->drop_flags = 0;
+-
+-	spin_unlock_irqrestore(&xhci->lock, flags);
+-
+-	ret = xhci_configure_endpoint(xhci, urb->dev, command,
+-				      false, false);
+-	if (ret)
+-		xhci_warn(xhci, "%s: Configure endpoint failed: %d\n",
+-			  __func__, ret);
+-	xhci_free_command(xhci, command);
+-}
+-
+-/*
+  * non-error returns are a promise to giveback() the urb later
+  * we drop ownership so next owner (or urb unlink) can get it
+  */
+@@ -1564,11 +1483,6 @@ static int xhci_urb_enqueue(struct usb_h
+ 		}
+ 	}
+ 
+-	if (usb_endpoint_xfer_int(&urb->ep->desc) &&
+-	    (urb->dev->speed == USB_SPEED_FULL ||
+-	     urb->dev->speed == USB_SPEED_LOW))
+-		xhci_fixup_interval(xhci, urb, slot_id, ep_index);
+-
+ 	spin_lock_irqsave(&xhci->lock, flags);
+ 
+ 	if (xhci->xhc_state & XHCI_STATE_DYING) {

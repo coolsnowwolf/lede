@@ -1,3 +1,3 @@
 #!/bin/sh
 
-sleep 60 && /etc/init.d/unblockmusic restart
+sleep 50 && /etc/init.d/unblockmusic restart

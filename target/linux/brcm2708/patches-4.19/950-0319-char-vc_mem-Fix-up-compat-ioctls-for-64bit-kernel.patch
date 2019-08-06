@@ -1,0 +1,111 @@
+From 8dabeeeca0cd56ca8980b594e3ce938c4540f1d5 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 23 Jan 2019 18:25:50 +0000
+Subject: [PATCH 319/725] char: vc_mem: Fix up compat ioctls for 64bit kernel
+
+compat_ioctl wasn't defined, so 32bit user/64bit kernel
+always failed.
+VC_MEM_IOC_MEM_PHYS_ADDR was defined with parameter size
+unsigned long, so the ioctl cmd changes between sizes.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/char/broadcom/vc_mem.c  | 40 +++++++++++++++++++++++++++++----
+ include/linux/broadcom/vc_mem.h |  4 ++++
+ 2 files changed, 40 insertions(+), 4 deletions(-)
+
+--- a/drivers/char/broadcom/vc_mem.c
++++ b/drivers/char/broadcom/vc_mem.c
+@@ -148,7 +148,7 @@ vc_mem_ioctl(struct file *file, unsigned
+ 	(void) cmd;
+ 	(void) arg;
+ 
+-	pr_debug("%s: called file = 0x%p\n", __func__, file);
++	pr_debug("%s: called file = 0x%p, cmd %08x\n", __func__, file, cmd);
+ 
+ 	switch (cmd) {
+ 	case VC_MEM_IOC_MEM_PHYS_ADDR:
+@@ -167,7 +167,7 @@ vc_mem_ioctl(struct file *file, unsigned
+ 			// Get the videocore memory size first
+ 			vc_mem_get_size();
+ 
+-			pr_debug("%s: VC_MEM_IOC_MEM_SIZE=%u\n", __func__,
++			pr_debug("%s: VC_MEM_IOC_MEM_SIZE=%x\n", __func__,
+ 				mm_vc_mem_size);
+ 
+ 			if (copy_to_user((void *) arg, &mm_vc_mem_size,
+@@ -181,7 +181,7 @@ vc_mem_ioctl(struct file *file, unsigned
+ 			// Get the videocore memory base
+ 			vc_mem_get_base();
+ 
+-			pr_debug("%s: VC_MEM_IOC_MEM_BASE=%u\n", __func__,
++			pr_debug("%s: VC_MEM_IOC_MEM_BASE=%x\n", __func__,
+ 				mm_vc_mem_base);
+ 
+ 			if (copy_to_user((void *) arg, &mm_vc_mem_base,
+@@ -195,7 +195,7 @@ vc_mem_ioctl(struct file *file, unsigned
+ 			// Get the videocore memory base
+ 			vc_mem_get_base();
+ 
+-			pr_debug("%s: VC_MEM_IOC_MEM_LOAD=%u\n", __func__,
++			pr_debug("%s: VC_MEM_IOC_MEM_LOAD=%x\n", __func__,
+ 				mm_vc_mem_base);
+ 
+ 			if (copy_to_user((void *) arg, &mm_vc_mem_base,
+@@ -214,6 +214,35 @@ vc_mem_ioctl(struct file *file, unsigned
+ 	return rc;
+ }
+ 
++#ifdef CONFIG_COMPAT
++static long
++vc_mem_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	int rc = 0;
++
++	switch (cmd) {
++	case VC_MEM_IOC_MEM_PHYS_ADDR32:
++		pr_debug("%s: VC_MEM_IOC_MEM_PHYS_ADDR32=0x%p\n",
++			 __func__, (void *)mm_vc_mem_phys_addr);
++
++		/* This isn't correct, but will cover us for now as
++		 * VideoCore is 32bit only.
++		 */
++		if (copy_to_user((void *)arg, &mm_vc_mem_phys_addr,
++				 sizeof(compat_ulong_t)))
++			rc = -EFAULT;
++
++		break;
++
++	default:
++		rc = vc_mem_ioctl(file, cmd, arg);
++		break;
++	}
++
++	return rc;
++}
++#endif
++
+ /****************************************************************************
+ *
+ *   vc_mem_mmap
+@@ -259,6 +288,9 @@ static const struct file_operations vc_m
+ 	.open = vc_mem_open,
+ 	.release = vc_mem_release,
+ 	.unlocked_ioctl = vc_mem_ioctl,
++#ifdef CONFIG_COMPAT
++	.compat_ioctl = vc_mem_compat_ioctl,
++#endif
+ 	.mmap = vc_mem_mmap,
+ };
+ 
+--- a/include/linux/broadcom/vc_mem.h
++++ b/include/linux/broadcom/vc_mem.h
+@@ -32,4 +32,8 @@ extern unsigned int  mm_vc_mem_size;
+ extern int vc_mem_get_current_size( void );
+ #endif
+ 
++#ifdef CONFIG_COMPAT
++#define VC_MEM_IOC_MEM_PHYS_ADDR32  _IOR(VC_MEM_IOC_MAGIC, 0, compat_ulong_t)
++#endif
++
+ #endif  /* _VC_MEM_H */
