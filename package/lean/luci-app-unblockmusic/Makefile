@@ -11,7 +11,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-unblockmusic
 PKG_VERSION:=v2.1.0
-PKG_RELEASE:=5
+PKG_RELEASE:=6
 
 PKG_LICENSE:=Apache-2.0
 

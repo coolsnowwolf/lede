@@ -24,8 +24,4 @@ speedtype:value("kuwo", translate("酷我音乐(高音质推荐)"))
 speedtype:value("migu", translate("咕咪音乐"))
 speedtype:value("joox", translate("JOOX音乐"))
 
-account = s:option(Value, "port", translate("端口号"))
-account.datatype = "string"
-
-
 return mp
