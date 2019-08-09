@@ -1,27 +1,54 @@
 #!/bin/sh
 
+. /lib/functions.sh
+. /lib/functions/system.sh
+
 set_ether_mac() {
-	# Most devices have a standard "VCTL" partition
-	CONFIG_PARTITION="$(grep "VCTL" /proc/mtd | cut -d: -f1)"
-	if [ ! -z $CONFIG_PARTITION ] ; then
-		MAC1="$(strings /dev/$CONFIG_PARTITION |grep MAC|cut -d: -f2|cut -c3-14|sed -e 's,\(..\),:\1,g' -e 's,^:,,')"
-		MAC2="$(strings /dev/$CONFIG_PARTITION |grep MAC|cut -d: -f8|cut -c3-14|sed -e 's,\(..\),:\1,g' -e 's,^:,,')"
+	local part
+	local DEVID
+	local MAC1
+	local MAC2
 
-		ifconfig eth0 hw ether $MAC1 2>/dev/null
-		ifconfig eth1 hw ether $MAC2 2>/dev/null
-		return 0
-	fi
-
-	# The DNS-313 has a special field in its RedBoot
-	# binary that we need to check
-	CONFIG_PARTITION="$(grep "RedBoot" /proc/mtd | cut -d: -f1)"
-	if [ ! -z $CONFIG_PARTITION ] ; then
-		DEVID="$(dd if=/dev/mtdblock0 bs=1 skip=119508 count=7 2>/dev/null)"
-		if [ "x$DEVID" = "xdns-313" ] ; then
-			MAC1="$(dd if=/dev/mtdblock0 bs=1 skip=119540 count=6 2>/dev/null | hexdump -n6 -e '/1 ":%02X"' | sed s/^://g)"
-			ifconfig eth0 hw ether $MAC1 2>/dev/null
-			return 0
+	case "$(board_name)" in
+	dlink,dns-313)
+		# The DNS-313 has a special field in its RedBoot
+		# binary that we need to check
+		part="$(find_mtd_part RedBoot)"
+		if [ -n "$part" ]; then
+			DEVID="$(dd if=$part bs=1 skip=119508 count=7 2>/dev/null)"
+			if [ "$DEVID" = "dns-313" ]; then
+				MAC1="$(mtd_get_mac_binary RedBoot 119540)"
+				ip link set eth0 address "$MAC1" 2>/dev/null
+				return 0
+			fi
 		fi
+		;;
+	dlink,dir-685)
+		# The DIR-685 has a special field in its RedBoot
+		# binary that we need to check
+		part=$(find_mtd_part RedBoot)
+		if [ -n "$part" ] ; then
+			DEVID="$(dd if=$part bs=1 skip=81516 count=7 2>/dev/null)"
+			if [ "$DEVID" = "ILI9322" ] ; then
+				MAC1=$(mtd_get_mac_binary RedBoot 95040)
+				MAC2=$(mtd_get_mac_binary RedBoot 95046)
+				ip link set eth0 address "$MAC1" 2>/dev/null
+				ip link set eth1 address "$MAC2" 2>/dev/null
+				return 0
+			fi
+		fi
+		;;
+	esac
+
+	# Most devices have a standard "VCTL" partition
+	part="$(find_mtd_part VCTL)"
+	if [ -n "$part" ]; then
+		MAC1="$(strings $part |grep MAC|cut -d: -f2|cut -c3-14|sed -e 's,\(..\),:\1,g' -e 's,^:,,')"
+		MAC2="$(strings $part |grep MAC|cut -d: -f8|cut -c3-14|sed -e 's,\(..\),:\1,g' -e 's,^:,,')"
+
+		ip link set eth0 address "$MAC1" 2>/dev/null
+		ip link set eth1 address "$MAC2" 2>/dev/null
+		return 0
 	fi
 }
 
