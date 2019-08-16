@@ -12,7 +12,7 @@ BOARD:=brcm2708
 BOARDNAME:=Broadcom BCM27xx
 FEATURES:=ext4 audio usb usbgadget display gpio fpu squashfs rootfs-part boot-part
 MAINTAINER:=Álvaro Fernández Rojas <noltari@gmail.com>
-SUBTARGETS:=bcm2708 bcm2709 bcm2710
+SUBTARGETS:=bcm2708 bcm2709 bcm2710 bcm2711
 
 KERNEL_PATCHVER:=4.19
 

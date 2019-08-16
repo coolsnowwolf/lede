@@ -1,0 +1,1018 @@
+From 41cb4ad3f7327869dabc733cceb3a9273eda346d Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Thu, 4 Apr 2019 13:33:47 +0100
+Subject: [PATCH 646/725] bcm2835-dma: Add proper 40-bit DMA support
+
+The 40-bit additions are not fully tested, but it should be
+capable of supporting both 40-bit memcpy on BCM2711 and regular
+Lite channels on BCM2835.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ arch/arm/boot/dts/bcm2838.dtsi               |  33 +-
+ drivers/dma/bcm2835-dma.c                    | 426 ++++++++++++++-----
+ drivers/pci/controller/pcie-brcmstb-bounce.c |  30 +-
+ drivers/pci/controller/pcie-brcmstb-bounce.h |  21 +-
+ drivers/pci/controller/pcie-brcmstb.c        |  23 +-
+ 5 files changed, 395 insertions(+), 138 deletions(-)
+
+--- a/arch/arm/boot/dts/bcm2838.dtsi
++++ b/arch/arm/boot/dts/bcm2838.dtsi
+@@ -372,6 +372,23 @@
+ 			};
+ 		};
+ 
++		dma40: dma@7e007b00 {
++			compatible = "brcm,bcm2838-dma";
++			reg = <0x0 0x7e007b00 0x400>;
++			interrupts =
++				<GIC_SPI 89 IRQ_TYPE_LEVEL_HIGH>, /* dma4 11 */
++				<GIC_SPI 90 IRQ_TYPE_LEVEL_HIGH>, /* dma4 12 */
++				<GIC_SPI 91 IRQ_TYPE_LEVEL_HIGH>, /* dma4 13 */
++				<GIC_SPI 92 IRQ_TYPE_LEVEL_HIGH>; /* dma4 14 */
++			interrupt-names = "dma11",
++				"dma12",
++				"dma13",
++				"dma14";
++			#dma-cells = <1>;
++			brcm,dma-channel-mask = <0x7000>;
++		};
++		/* DMA4 - 40 bit DMA engines */
++
+ 		xhci: xhci@7e9c0000 {
+ 			compatible = "generic-xhci";
+ 			status = "disabled";
+@@ -689,6 +706,7 @@
+ };
+ 
+ &dma {
++	reg = <0x7e007000 0xb00>;
+ 	interrupts = <GIC_SPI 80 IRQ_TYPE_LEVEL_HIGH>,
+ 		<GIC_SPI 81 IRQ_TYPE_LEVEL_HIGH>,
+ 		<GIC_SPI 82 IRQ_TYPE_LEVEL_HIGH>,
+@@ -699,12 +717,7 @@
+ 		<GIC_SPI 87 IRQ_TYPE_LEVEL_HIGH>, /* dmalite  7 */
+ 		<GIC_SPI 87 IRQ_TYPE_LEVEL_HIGH>, /* dmalite  8 */
+ 		<GIC_SPI 88 IRQ_TYPE_LEVEL_HIGH>, /* dmalite  9 */
+-		<GIC_SPI 88 IRQ_TYPE_LEVEL_HIGH>, /* dmalite 10 */
+-		/* DMA4 - 40 bit DMA engines */
+-		<GIC_SPI 89 IRQ_TYPE_LEVEL_HIGH>, /* dma4    11 */
+-		<GIC_SPI 90 IRQ_TYPE_LEVEL_HIGH>, /* dma4    12 */
+-		<GIC_SPI 91 IRQ_TYPE_LEVEL_HIGH>, /* dma4    13 */
+-		<GIC_SPI 92 IRQ_TYPE_LEVEL_HIGH>; /* dma4    14 */
++		<GIC_SPI 88 IRQ_TYPE_LEVEL_HIGH>; /* dmalite 10 */
+ 	interrupt-names = "dma0",
+ 			  "dma1",
+ 			  "dma2",
+@@ -715,10 +728,6 @@
+ 			  "dma7",
+ 			  "dma8",
+ 			  "dma9",
+-			  "dma10",
+-			  "dma11",
+-			  "dma12",
+-			  "dma13",
+-			  "dma14";
+-	brcm,dma-channel-mask = <0x7ef5>;
++			  "dma10";
++	brcm,dma-channel-mask = <0x01f5>;
+ };
+--- a/drivers/dma/bcm2835-dma.c
++++ b/drivers/dma/bcm2835-dma.c
+@@ -50,12 +50,18 @@
+ #define BCM2835_DMA_MAX_DMA_CHAN_SUPPORTED 14
+ #define BCM2835_DMA_CHAN_NAME_SIZE 8
+ #define BCM2835_DMA_BULK_MASK  BIT(0)
++#define BCM2838_DMA_MEMCPY_CHAN 14
++
++struct bcm2835_dma_cfg_data {
++	u32	chan_40bit_mask;
++};
+ 
+ struct bcm2835_dmadev {
+ 	struct dma_device ddev;
+ 	spinlock_t lock;
+ 	void __iomem *base;
+ 	struct device_dma_parameters dma_parms;
++	const struct bcm2835_dma_cfg_data *cfg_data;
+ };
+ 
+ struct bcm2835_dma_cb {
+@@ -100,6 +106,7 @@ struct bcm2835_chan {
+ 	unsigned int irq_flags;
+ 
+ 	bool is_lite_channel;
++	bool is_40bit_channel;
+ };
+ 
+ struct bcm2835_desc {
+@@ -189,7 +196,8 @@ struct bcm2835_desc {
+ #define BCM2835_DMA_DATA_TYPE_S128	16
+ 
+ /* Valid only for channels 0 - 14, 15 has its own base address */
+-#define BCM2835_DMA_CHAN(n)	((n) << 8) /* Base address */
++#define BCM2835_DMA_CHAN_SIZE	0x100
++#define BCM2835_DMA_CHAN(n)	((n) * BCM2835_DMA_CHAN_SIZE) /* Base address */
+ #define BCM2835_DMA_CHANIO(base, n) ((base) + BCM2835_DMA_CHAN(n))
+ 
+ /* the max dma length for different channels */
+@@ -200,7 +208,7 @@ struct bcm2835_desc {
+ #define BCM2838_DMA40_CS	0x00
+ #define BCM2838_DMA40_CB	0x04
+ #define BCM2838_DMA40_DEBUG	0x0c
+-#define BCM2858_DMA40_TI	0x10
++#define BCM2838_DMA40_TI	0x10
+ #define BCM2838_DMA40_SRC	0x14
+ #define BCM2838_DMA40_SRCI	0x18
+ #define BCM2838_DMA40_DEST	0x1c
+@@ -209,32 +217,97 @@ struct bcm2835_desc {
+ #define BCM2838_DMA40_NEXT_CB	0x28
+ #define BCM2838_DMA40_DEBUG2	0x2c
+ 
+-#define BCM2838_DMA40_CS_ACTIVE	BIT(0)
+-#define BCM2838_DMA40_CS_END	BIT(1)
++#define BCM2838_DMA40_ACTIVE		BIT(0)
++#define BCM2838_DMA40_END		BIT(1)
++#define BCM2838_DMA40_INT		BIT(2)
++#define BCM2838_DMA40_DREQ		BIT(3)  /* DREQ state */
++#define BCM2838_DMA40_RD_PAUSED		BIT(4)  /* Reading is paused */
++#define BCM2838_DMA40_WR_PAUSED		BIT(5)  /* Writing is paused */
++#define BCM2838_DMA40_DREQ_PAUSED	BIT(6)  /* Is paused by DREQ flow control */
++#define BCM2838_DMA40_WAITING_FOR_WRITES BIT(7)  /* Waiting for last write */
++#define BCM2838_DMA40_ERR		BIT(10)
++#define BCM2838_DMA40_QOS(x)		(((x) & 0x1f) << 16)
++#define BCM2838_DMA40_PANIC_QOS(x)	(((x) & 0x1f) << 20)
++#define BCM2838_DMA40_WAIT_FOR_WRITES	BIT(28)
++#define BCM2838_DMA40_DISDEBUG		BIT(29)
++#define BCM2838_DMA40_ABORT		BIT(30)
++#define BCM2838_DMA40_HALT		BIT(31)
++#define BCM2838_DMA40_CS_FLAGS(x) (x & (BCM2838_DMA40_QOS(15) | \
++					BCM2838_DMA40_PANIC_QOS(15) | \
++					BCM2838_DMA40_WAIT_FOR_WRITES |	\
++					BCM2838_DMA40_DISDEBUG))
++
++/* Transfer information bits */
++#define BCM2838_DMA40_INTEN		BIT(0)
++#define BCM2838_DMA40_TDMODE		BIT(1) /* 2D-Mode */
++#define BCM2838_DMA40_WAIT_RESP		BIT(2) /* wait for AXI write to be acked */
++#define BCM2838_DMA40_WAIT_RD_RESP	BIT(3) /* wait for AXI read to complete */
++#define BCM2838_DMA40_PER_MAP(x)	((x & 31) << 9) /* REQ source */
++#define BCM2838_DMA40_S_DREQ		BIT(14) /* enable SREQ for source */
++#define BCM2838_DMA40_D_DREQ		BIT(15) /* enable DREQ for destination */
++#define BCM2838_DMA40_S_WAIT(x)		((x & 0xff) << 16) /* add DMA read-wait cycles */
++#define BCM2838_DMA40_D_WAIT(x)		((x & 0xff) << 24) /* add DMA write-wait cycles */
+ 
+-#define BCM2838_DMA40_CS_QOS(x)	(((x) & 0x1f) << 16)
+-#define BCM2838_DMA40_CS_PANIC_QOS(x)	(((x) & 0x1f) << 20)
+-#define BCM2838_DMA40_CS_WRITE_WAIT	BIT(28)
++/* debug register bits */
++#define BCM2838_DMA40_DEBUG_WRITE_ERR		BIT(0)
++#define BCM2838_DMA40_DEBUG_FIFO_ERR		BIT(1)
++#define BCM2838_DMA40_DEBUG_READ_ERR		BIT(2)
++#define BCM2838_DMA40_DEBUG_READ_CB_ERR		BIT(3)
++#define BCM2838_DMA40_DEBUG_IN_ON_ERR		BIT(8)
++#define BCM2838_DMA40_DEBUG_ABORT_ON_ERR	BIT(9)
++#define BCM2838_DMA40_DEBUG_HALT_ON_ERR		BIT(10)
++#define BCM2838_DMA40_DEBUG_DISABLE_CLK_GATE	BIT(11)
++#define BCM2838_DMA40_DEBUG_RSTATE_SHIFT	14
++#define BCM2838_DMA40_DEBUG_RSTATE_BITS		4
++#define BCM2838_DMA40_DEBUG_WSTATE_SHIFT	18
++#define BCM2838_DMA40_DEBUG_WSTATE_BITS		4
++#define BCM2838_DMA40_DEBUG_RESET		BIT(23)
++#define BCM2838_DMA40_DEBUG_ID_SHIFT		24
++#define BCM2838_DMA40_DEBUG_ID_BITS		4
++#define BCM2838_DMA40_DEBUG_VERSION_SHIFT	28
++#define BCM2838_DMA40_DEBUG_VERSION_BITS	4
++
++/* Valid only for channels 0 - 3 (11 - 14) */
++#define BCM2838_DMA40_CHAN(n)	(((n) + 11) << 8) /* Base address */
++#define BCM2838_DMA40_CHANIO(base, n) ((base) + BCM2838_DMA_CHAN(n))
+ 
+-#define BCM2838_DMA40_BURST_LEN(x)	((((x) - 1) & 0xf) << 8)
+-#define BCM2838_DMA40_INC		BIT(12)
+-#define BCM2838_DMA40_SIZE_128	(2 << 13)
++/* the max dma length for different channels */
++#define MAX_DMA40_LEN SZ_1G
+ 
+-#define BCM2838_DMA40_MEMCPY_QOS \
+-	(BCM2838_DMA40_CS_QOS(0x0) | \
+-	 BCM2838_DMA40_CS_PANIC_QOS(0x0) | \
+-	 BCM2838_DMA40_CS_WRITE_WAIT)
++#define BCM2838_DMA40_BURST_LEN(x)	((min(x,16) - 1) << 8)
++#define BCM2838_DMA40_INC		BIT(12)
++#define BCM2838_DMA40_SIZE_32		(0 << 13)
++#define BCM2838_DMA40_SIZE_64		(1 << 13)
++#define BCM2838_DMA40_SIZE_128		(2 << 13)
++#define BCM2838_DMA40_SIZE_256		(3 << 13)
++#define BCM2838_DMA40_IGNORE		BIT(15)
++#define BCM2838_DMA40_STRIDE(x)		((x) << 16) /* For 2D mode */
++
++#define BCM2838_DMA40_MEMCPY_FLAGS \
++	(BCM2838_DMA40_QOS(0) | \
++	 BCM2838_DMA40_PANIC_QOS(0) | \
++	 BCM2838_DMA40_WAIT_FOR_WRITES | \
++	 BCM2838_DMA40_DISDEBUG)
+ 
+ #define BCM2838_DMA40_MEMCPY_XFER_INFO \
+ 	(BCM2838_DMA40_SIZE_128 | \
+ 	 BCM2838_DMA40_INC | \
+ 	 BCM2838_DMA40_BURST_LEN(16))
+ 
++struct bcm2835_dmadev *memcpy_parent;
+ static void __iomem *memcpy_chan;
+ static struct bcm2838_dma40_scb *memcpy_scb;
+ static dma_addr_t memcpy_scb_dma;
+ DEFINE_SPINLOCK(memcpy_lock);
+ 
++static const struct bcm2835_dma_cfg_data bcm2835_dma_cfg = {
++	.chan_40bit_mask = 0,
++};
++
++static const struct bcm2835_dma_cfg_data bcm2838_dma_cfg = {
++	.chan_40bit_mask = BIT(11) | BIT(12) | BIT(13) | BIT(14),
++};
++
+ static inline size_t bcm2835_dma_max_frame_length(struct bcm2835_chan *c)
+ {
+ 	/* lite and normal channels have different max frame length */
+@@ -264,6 +337,32 @@ static inline struct bcm2835_desc *to_bc
+ 	return container_of(t, struct bcm2835_desc, vd.tx);
+ }
+ 
++static inline uint32_t to_bcm2838_ti(uint32_t info)
++{
++	return ((info & BCM2835_DMA_INT_EN) ? BCM2838_DMA40_INTEN : 0) |
++		((info & BCM2835_DMA_WAIT_RESP) ? BCM2838_DMA40_WAIT_RESP : 0) |
++		((info & BCM2835_DMA_S_DREQ) ?
++		 (BCM2838_DMA40_S_DREQ | BCM2838_DMA40_WAIT_RD_RESP) : 0) |
++		((info & BCM2835_DMA_D_DREQ) ? BCM2838_DMA40_D_DREQ : 0) |
++		BCM2838_DMA40_PER_MAP((info >> 16) & 0x1f);
++}
++
++static inline uint32_t to_bcm2838_srci(uint32_t info)
++{
++	return ((info & BCM2835_DMA_S_INC) ? BCM2838_DMA40_INC : 0);
++}
++
++static inline uint32_t to_bcm2838_dsti(uint32_t info)
++{
++	return ((info & BCM2835_DMA_D_INC) ? BCM2838_DMA40_INC : 0);
++}
++
++static inline uint32_t to_bcm2838_cbaddr(dma_addr_t addr)
++{
++	BUG_ON(addr & 0x1f);
++	return (addr >> 5);
++}
++
+ static void bcm2835_dma_free_cb_chain(struct bcm2835_desc *desc)
+ {
+ 	size_t i;
+@@ -282,45 +381,53 @@ static void bcm2835_dma_desc_free(struct
+ }
+ 
+ static void bcm2835_dma_create_cb_set_length(
+-	struct bcm2835_chan *chan,
++	struct bcm2835_chan *c,
+ 	struct bcm2835_dma_cb *control_block,
+ 	size_t len,
+ 	size_t period_len,
+ 	size_t *total_len,
+ 	u32 finalextrainfo)
+ {
+-	size_t max_len = bcm2835_dma_max_frame_length(chan);
++	size_t max_len = bcm2835_dma_max_frame_length(c);
++	uint32_t cb_len;
+ 
+ 	/* set the length taking lite-channel limitations into account */
+-	control_block->length = min_t(u32, len, max_len);
++	cb_len = min_t(u32, len, max_len);
+ 
+-	/* finished if we have no period_length */
+-	if (!period_len)
+-		return;
++	if (period_len) {
++		/*
++		 * period_len means: that we need to generate
++		 * transfers that are terminating at every
++		 * multiple of period_len - this is typically
++		 * used to set the interrupt flag in info
++		 * which is required during cyclic transfers
++		 */
+ 
+-	/*
+-	 * period_len means: that we need to generate
+-	 * transfers that are terminating at every
+-	 * multiple of period_len - this is typically
+-	 * used to set the interrupt flag in info
+-	 * which is required during cyclic transfers
+-	 */
++		/* have we filled in period_length yet? */
++		if (*total_len + cb_len < period_len) {
++			/* update number of bytes in this period so far */
++			*total_len += cb_len;
++		} else {
++			/* calculate the length that remains to reach period_len */
++			cb_len = period_len - *total_len;
+ 
+-	/* have we filled in period_length yet? */
+-	if (*total_len + control_block->length < period_len) {
+-		/* update number of bytes in this period so far */
+-		*total_len += control_block->length;
+-		return;
++			/* reset total_length for next period */
++			*total_len = 0;
++		}
+ 	}
+ 
+-	/* calculate the length that remains to reach period_length */
+-	control_block->length = period_len - *total_len;
+-
+-	/* reset total_length for next period */
+-	*total_len = 0;
+-
+-	/* add extrainfo bits in info */
+-	control_block->info |= finalextrainfo;
++	if (c->is_40bit_channel) {
++		struct bcm2838_dma40_scb *scb =
++			(struct bcm2838_dma40_scb *)control_block;
++
++		scb->len = cb_len;
++		/* add extrainfo bits to ti */
++		scb->ti |= to_bcm2838_ti(finalextrainfo);
++	} else {
++		control_block->length = cb_len;
++		/* add extrainfo bits to info */
++		control_block->info |= finalextrainfo;
++	}
+ }
+ 
+ static inline size_t bcm2835_dma_count_frames_for_sg(
+@@ -343,7 +450,7 @@ static inline size_t bcm2835_dma_count_f
+ /**
+  * bcm2835_dma_create_cb_chain - create a control block and fills data in
+  *
+- * @chan:           the @dma_chan for which we run this
++ * @c:              the @bcm2835_chan for which we run this
+  * @direction:      the direction in which we transfer
+  * @cyclic:         it is a cyclic transfer
+  * @info:           the default info bits to apply per controlblock
+@@ -361,12 +468,11 @@ static inline size_t bcm2835_dma_count_f
+  * @gfp:            the GFP flag to use for allocation
+  */
+ static struct bcm2835_desc *bcm2835_dma_create_cb_chain(
+-	struct dma_chan *chan, enum dma_transfer_direction direction,
++	struct bcm2835_chan *c, enum dma_transfer_direction direction,
+ 	bool cyclic, u32 info, u32 finalextrainfo, size_t frames,
+ 	dma_addr_t src, dma_addr_t dst, size_t buf_len,
+ 	size_t period_len, gfp_t gfp)
+ {
+-	struct bcm2835_chan *c = to_bcm2835_dma_chan(chan);
+ 	size_t len = buf_len, total_len;
+ 	size_t frame;
+ 	struct bcm2835_desc *d;
+@@ -399,11 +505,23 @@ static struct bcm2835_desc *bcm2835_dma_
+ 
+ 		/* fill in the control block */
+ 		control_block = cb_entry->cb;
+-		control_block->info = info;
+-		control_block->src = src;
+-		control_block->dst = dst;
+-		control_block->stride = 0;
+-		control_block->next = 0;
++		if (c->is_40bit_channel) {
++			struct bcm2838_dma40_scb *scb =
++				(struct bcm2838_dma40_scb *)control_block;
++			scb->ti = to_bcm2838_ti(info);
++			scb->src = lower_32_bits(src);
++			scb->srci= upper_32_bits(src) | to_bcm2838_srci(info);
++			scb->dst = lower_32_bits(dst);
++			scb->dsti = upper_32_bits(dst) | to_bcm2838_dsti(info);
++			scb->next_cb = 0;
++		} else {
++			control_block->info = info;
++			control_block->src = src;
++			control_block->dst = dst;
++			control_block->stride = 0;
++			control_block->next = 0;
++		}
++
+ 		/* set up length in control_block if requested */
+ 		if (buf_len) {
+ 			/* calculate length honoring period_length */
+@@ -417,7 +535,10 @@ static struct bcm2835_desc *bcm2835_dma_
+ 		}
+ 
+ 		/* link this the last controlblock */
+-		if (frame)
++		if (frame && c->is_40bit_channel)
++			d->cb_list[frame - 1].cb->next =
++				to_bcm2838_cbaddr(cb_entry->paddr);
++		if (frame && !c->is_40bit_channel)
+ 			d->cb_list[frame - 1].cb->next = cb_entry->paddr;
+ 
+ 		/* update src and dst and length */
+@@ -431,7 +552,14 @@ static struct bcm2835_desc *bcm2835_dma_
+ 	}
+ 
+ 	/* the last frame requires extra flags */
+-	d->cb_list[d->frames - 1].cb->info |= finalextrainfo;
++	if (c->is_40bit_channel) {
++		struct bcm2838_dma40_scb *scb =
++			(struct bcm2838_dma40_scb *)d->cb_list[d->frames-1].cb;
++
++		scb->ti |= to_bcm2838_ti(finalextrainfo);
++	} else {
++		d->cb_list[d->frames - 1].cb->info |= finalextrainfo;
++	}
+ 
+ 	/* detect a size missmatch */
+ 	if (buf_len && (d->size != buf_len))
+@@ -445,28 +573,51 @@ error_cb:
+ }
+ 
+ static void bcm2835_dma_fill_cb_chain_with_sg(
+-	struct dma_chan *chan,
++	struct bcm2835_chan *c,
+ 	enum dma_transfer_direction direction,
+ 	struct bcm2835_cb_entry *cb,
+ 	struct scatterlist *sgl,
+ 	unsigned int sg_len)
+ {
+-	struct bcm2835_chan *c = to_bcm2835_dma_chan(chan);
+ 	size_t len, max_len;
+ 	unsigned int i;
+ 	dma_addr_t addr;
+ 	struct scatterlist *sgent;
+ 
++	pr_err("dma_fill_chain_with_sg(ch %d, dir %d):\n", c->ch, direction);
++
+ 	max_len = bcm2835_dma_max_frame_length(c);
+ 	for_each_sg(sgl, sgent, sg_len, i) {
+-		for (addr = sg_dma_address(sgent), len = sg_dma_len(sgent);
+-		     len > 0;
+-		     addr += cb->cb->length, len -= cb->cb->length, cb++) {
+-			if (direction == DMA_DEV_TO_MEM)
+-				cb->cb->dst = addr;
+-			else
+-				cb->cb->src = addr;
+-			cb->cb->length = min(len, max_len);
++		if (c->is_40bit_channel) {
++			struct bcm2838_dma40_scb *scb =
++				(struct bcm2838_dma40_scb *)cb->cb;
++			for (addr = sg_dma_address(sgent),
++				     len = sg_dma_len(sgent);
++			     len > 0;
++			     addr += scb->len, len -= scb->len, scb++) {
++				if (direction == DMA_DEV_TO_MEM) {
++					scb->dst = lower_32_bits(addr);
++					scb->dsti = upper_32_bits(addr) | BCM2838_DMA40_INC;
++				} else {
++					scb->src = lower_32_bits(addr);
++					scb->srci = upper_32_bits(addr) | BCM2838_DMA40_INC;
++				}
++				scb->len = min(len, max_len);
++				pr_err("  %llx, %x\n", (u64)addr, scb->len);
++			}
++		} else {
++			for (addr = sg_dma_address(sgent),
++				     len = sg_dma_len(sgent);
++			     len > 0;
++			     addr += cb->cb->length, len -= cb->cb->length,
++			     cb++) {
++				if (direction == DMA_DEV_TO_MEM)
++					cb->cb->dst = addr;
++				else
++					cb->cb->src = addr;
++				cb->cb->length = min(len, max_len);
++				pr_err("  %llx, %x\n", (u64)addr, cb->cb->length);
++			}
+ 		}
+ 	}
+ }
+@@ -475,6 +626,10 @@ static int bcm2835_dma_abort(struct bcm2
+ {
+ 	void __iomem *chan_base = c->chan_base;
+ 	long int timeout = 10000;
++	u32 wait_mask = BCM2835_DMA_WAITING_FOR_WRITES;
++
++	if (c->is_40bit_channel)
++		wait_mask = BCM2838_DMA40_WAITING_FOR_WRITES;
+ 
+ 	/*
+ 	 * A zero control block address means the channel is idle.
+@@ -487,8 +642,7 @@ static int bcm2835_dma_abort(struct bcm2
+ 	writel(0, chan_base + BCM2835_DMA_CS);
+ 
+ 	/* Wait for any current AXI transfer to complete */
+-	while ((readl(chan_base + BCM2835_DMA_CS) &
+-		BCM2835_DMA_WAITING_FOR_WRITES) && --timeout)
++	while ((readl(chan_base + BCM2835_DMA_CS) & wait_mask) && --timeout)
+ 		cpu_relax();
+ 
+ 	/* Peripheral might be stuck and fail to signal AXI write responses */
+@@ -505,6 +659,7 @@ static void bcm2835_dma_start_desc(struc
+ 	struct virt_dma_desc *vd = vchan_next_desc(&c->vc);
+ 	struct bcm2835_desc *d;
+ 
++	pr_err("dma_start_desc(%px)\n", vd);
+ 	if (!vd) {
+ 		c->desc = NULL;
+ 		return;
+@@ -514,9 +669,16 @@ static void bcm2835_dma_start_desc(struc
+ 
+ 	c->desc = d = to_bcm2835_dma_desc(&vd->tx);
+ 
+-	writel(d->cb_list[0].paddr, c->chan_base + BCM2835_DMA_ADDR);
+-	writel(BCM2835_DMA_ACTIVE | BCM2835_DMA_CS_FLAGS(c->dreq),
+-	       c->chan_base + BCM2835_DMA_CS);
++	if (c->is_40bit_channel) {
++		writel(to_bcm2838_cbaddr(d->cb_list[0].paddr),
++		       c->chan_base + BCM2838_DMA40_CB);
++		writel(BCM2838_DMA40_ACTIVE | BCM2838_DMA40_CS_FLAGS(c->dreq),
++		       c->chan_base + BCM2838_DMA40_CS);
++	} else {
++		writel(d->cb_list[0].paddr, c->chan_base + BCM2835_DMA_ADDR);
++		writel(BCM2835_DMA_ACTIVE | BCM2835_DMA_CS_FLAGS(c->dreq),
++		       c->chan_base + BCM2835_DMA_CS);
++	}
+ }
+ 
+ static irqreturn_t bcm2835_dma_callback(int irq, void *data)
+@@ -544,7 +706,8 @@ static irqreturn_t bcm2835_dma_callback(
+ 	 * will remain idle despite the ACTIVE flag being set.
+ 	 */
+ 	writel(BCM2835_DMA_INT | BCM2835_DMA_ACTIVE |
+-	       BCM2835_DMA_CS_FLAGS(c->dreq),
++	       (c->is_40bit_channel ? BCM2838_DMA40_CS_FLAGS(c->dreq) :
++		BCM2835_DMA_CS_FLAGS(c->dreq)),
+ 	       c->chan_base + BCM2835_DMA_CS);
+ 
+ 	d = c->desc;
+@@ -643,9 +806,17 @@ static enum dma_status bcm2835_dma_tx_st
+ 		struct bcm2835_desc *d = c->desc;
+ 		dma_addr_t pos;
+ 
+-		if (d->dir == DMA_MEM_TO_DEV)
++		if (d->dir == DMA_MEM_TO_DEV && c->is_40bit_channel)
++			pos = readl(c->chan_base + BCM2838_DMA40_SRC) +
++				((readl(c->chan_base + BCM2838_DMA40_SRCI) &
++				  0xff) << 8);
++		else if (d->dir == DMA_MEM_TO_DEV && !c->is_40bit_channel)
+ 			pos = readl(c->chan_base + BCM2835_DMA_SOURCE_AD);
+-		else if (d->dir == DMA_DEV_TO_MEM)
++		else if (d->dir == DMA_DEV_TO_MEM && c->is_40bit_channel)
++			pos = readl(c->chan_base + BCM2838_DMA40_DEST) +
++				((readl(c->chan_base + BCM2838_DMA40_DESTI) &
++				  0xff) << 8);
++		else if (d->dir == DMA_DEV_TO_MEM && !c->is_40bit_channel)
+ 			pos = readl(c->chan_base + BCM2835_DMA_DEST_AD);
+ 		else
+ 			pos = 0;
+@@ -691,7 +862,7 @@ static struct dma_async_tx_descriptor *b
+ 	frames = bcm2835_dma_frames_for_length(len, max_len);
+ 
+ 	/* allocate the CB chain - this also fills in the pointers */
+-	d = bcm2835_dma_create_cb_chain(chan, DMA_MEM_TO_MEM, false,
++	d = bcm2835_dma_create_cb_chain(c, DMA_MEM_TO_MEM, false,
+ 					info, extra, frames,
+ 					src, dst, len, 0, GFP_KERNEL);
+ 	if (!d)
+@@ -726,11 +897,21 @@ static struct dma_async_tx_descriptor *b
+ 		if (c->cfg.src_addr_width != DMA_SLAVE_BUSWIDTH_4_BYTES)
+ 			return NULL;
+ 		src = c->cfg.src_addr;
++		/*
++		 * One would think it ought to be possible to get the physical
++		 * to dma address mapping information from the dma-ranges DT
++		 * property, but I've not found a way yet that doesn't involve
++		 * open-coding the whole thing.
++		 */
++		if (c->is_40bit_channel)
++		    src |= 0x400000000ull;
+ 		info |= BCM2835_DMA_S_DREQ | BCM2835_DMA_D_INC;
+ 	} else {
+ 		if (c->cfg.dst_addr_width != DMA_SLAVE_BUSWIDTH_4_BYTES)
+ 			return NULL;
+ 		dst = c->cfg.dst_addr;
++		if (c->is_40bit_channel)
++		    dst |= 0x400000000ull;
+ 		info |= BCM2835_DMA_D_DREQ | BCM2835_DMA_S_INC;
+ 	}
+ 
+@@ -738,7 +919,7 @@ static struct dma_async_tx_descriptor *b
+ 	frames = bcm2835_dma_count_frames_for_sg(c, sgl, sg_len);
+ 
+ 	/* allocate the CB chain */
+-	d = bcm2835_dma_create_cb_chain(chan, direction, false,
++	d = bcm2835_dma_create_cb_chain(c, direction, false,
+ 					info, extra,
+ 					frames, src, dst, 0, 0,
+ 					GFP_KERNEL);
+@@ -746,7 +927,7 @@ static struct dma_async_tx_descriptor *b
+ 		return NULL;
+ 
+ 	/* fill in frames with scatterlist pointers */
+-	bcm2835_dma_fill_cb_chain_with_sg(chan, direction, d->cb_list,
++	bcm2835_dma_fill_cb_chain_with_sg(c, direction, d->cb_list,
+ 					  sgl, sg_len);
+ 
+ 	return vchan_tx_prep(&c->vc, &d->vd, flags);
+@@ -815,7 +996,7 @@ static struct dma_async_tx_descriptor *b
+ 	 * note that we need to use GFP_NOWAIT, as the ALSA i2s dmaengine
+ 	 * implementation calls prep_dma_cyclic with interrupts disabled.
+ 	 */
+-	d = bcm2835_dma_create_cb_chain(chan, direction, true,
++	d = bcm2835_dma_create_cb_chain(c, direction, true,
+ 					info, extra,
+ 					frames, src, dst, buf_len,
+ 					period_len, GFP_NOWAIT);
+@@ -823,7 +1004,8 @@ static struct dma_async_tx_descriptor *b
+ 		return NULL;
+ 
+ 	/* wrap around into a loop */
+-	d->cb_list[d->frames - 1].cb->next = d->cb_list[0].paddr;
++	d->cb_list[d->frames - 1].cb->next = c->is_40bit_channel ?
++		to_bcm2838_cbaddr(d->cb_list[0].paddr) : d->cb_list[0].paddr;
+ 
+ 	return vchan_tx_prep(&c->vc, &d->vd, flags);
+ }
+@@ -899,9 +1081,11 @@ static int bcm2835_dma_chan_init(struct
+ 	c->irq_number = irq;
+ 	c->irq_flags = irq_flags;
+ 
+-	/* check in DEBUG register if this is a LITE channel */
+-	if (readl(c->chan_base + BCM2835_DMA_DEBUG) &
+-		BCM2835_DMA_DEBUG_LITE)
++	/* check for 40bit and lite channels */
++	if (d->cfg_data->chan_40bit_mask & BIT(chan_id))
++		c->is_40bit_channel = true;
++	else if (readl(c->chan_base + BCM2835_DMA_DEBUG) &
++		 BCM2835_DMA_DEBUG_LITE)
+ 		c->is_lite_channel = true;
+ 
+ 	return 0;
+@@ -918,18 +1102,16 @@ static void bcm2835_dma_free(struct bcm2
+ 	}
+ }
+ 
+-int bcm2838_dma40_memcpy_init(struct device *dev)
++int bcm2838_dma40_memcpy_init(void)
+ {
+-	if (memcpy_scb)
+-		return 0;
++	if (!memcpy_parent)
++		return -EPROBE_DEFER;
+ 
+-	memcpy_scb = dma_alloc_coherent(dev, sizeof(*memcpy_scb),
+-					&memcpy_scb_dma, GFP_KERNEL);
++	if (!memcpy_chan)
++		return -EINVAL;
+ 
+-	if (!memcpy_scb) {
+-		pr_err("bcm2838_dma40_memcpy_init failed!\n");
++	if (!memcpy_scb)
+ 		return -ENOMEM;
+-	}
+ 
+ 	return 0;
+ }
+@@ -956,20 +1138,22 @@ void bcm2838_dma40_memcpy(dma_addr_t dst
+ 	scb->next_cb = 0;
+ 
+ 	writel((u32)(memcpy_scb_dma >> 5), memcpy_chan + BCM2838_DMA40_CB);
+-	writel(BCM2838_DMA40_MEMCPY_QOS + BCM2838_DMA40_CS_ACTIVE,
++	writel(BCM2838_DMA40_MEMCPY_FLAGS + BCM2838_DMA40_ACTIVE,
+ 	       memcpy_chan + BCM2838_DMA40_CS);
++
+ 	/* Poll for completion */
+-	while (!(readl(memcpy_chan + BCM2838_DMA40_CS) & BCM2838_DMA40_CS_END))
++	while (!(readl(memcpy_chan + BCM2838_DMA40_CS) & BCM2838_DMA40_END))
+ 		cpu_relax();
+ 
+-	writel(BCM2838_DMA40_CS_END, memcpy_chan + BCM2838_DMA40_CS);
++	writel(BCM2838_DMA40_END, memcpy_chan + BCM2838_DMA40_CS);
+ 
+ 	spin_unlock_irqrestore(&memcpy_lock, flags);
+ }
+ EXPORT_SYMBOL(bcm2838_dma40_memcpy);
+ 
+ static const struct of_device_id bcm2835_dma_of_match[] = {
+-	{ .compatible = "brcm,bcm2835-dma", },
++	{ .compatible = "brcm,bcm2835-dma", .data = &bcm2835_dma_cfg },
++	{ .compatible = "brcm,bcm2838-dma", .data = &bcm2838_dma_cfg },
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(of, bcm2835_dma_of_match);
+@@ -1001,6 +1185,8 @@ static int bcm2835_dma_probe(struct plat
+ 	int irq_flags;
+ 	uint32_t chans_available;
+ 	char chan_name[BCM2835_DMA_CHAN_NAME_SIZE];
++	const struct of_device_id *of_id;
++	int chan_count, chan_start, chan_end;
+ 
+ 	if (!pdev->dev.dma_mask)
+ 		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+@@ -1020,9 +1206,13 @@ static int bcm2835_dma_probe(struct plat
+ 	base = devm_ioremap_resource(&pdev->dev, res);
+ 	if (IS_ERR(base))
+ 		return PTR_ERR(base);
+-	rc = bcm_dmaman_probe(pdev, base, BCM2835_DMA_BULK_MASK);
+-	if (rc)
+-		dev_err(&pdev->dev, "Failed to initialize the legacy API\n");
++
++	/* The set of channels can be split across multiple instances. */
++	chan_start = ((u32)base / BCM2835_DMA_CHAN_SIZE) & 0xf;
++	base -= BCM2835_DMA_CHAN(chan_start);
++	chan_count = resource_size(res) / BCM2835_DMA_CHAN_SIZE;
++	chan_end = min(chan_start + chan_count,
++			 BCM2835_DMA_MAX_DMA_CHAN_SUPPORTED + 1);
+ 
+ 	od->base = base;
+ 
+@@ -1052,6 +1242,14 @@ static int bcm2835_dma_probe(struct plat
+ 
+ 	platform_set_drvdata(pdev, od);
+ 
++	of_id = of_match_node(bcm2835_dma_of_match, pdev->dev.of_node);
++	if (!of_id) {
++		dev_err(&pdev->dev, "Failed to match compatible string\n");
++		return -EINVAL;
++	}
++
++	od->cfg_data = of_id->data;
++
+ 	/* Request DMA channel mask from device tree */
+ 	if (of_property_read_u32(pdev->dev.of_node,
+ 			"brcm,dma-channel-mask",
+@@ -1061,18 +1259,34 @@ static int bcm2835_dma_probe(struct plat
+ 		goto err_no_dma;
+ 	}
+ 
+-	/* Channel 0 is used by the legacy API */
+-	chans_available &= ~BCM2835_DMA_BULK_MASK;
++	/* One channel is reserved for the legacy API */
++	if (chans_available & BCM2835_DMA_BULK_MASK) {
++		rc = bcm_dmaman_probe(pdev, base,
++				      chans_available & BCM2835_DMA_BULK_MASK);
++		if (rc)
++			dev_err(&pdev->dev,
++				"Failed to initialize the legacy API\n");
++
++		chans_available &= ~BCM2835_DMA_BULK_MASK;
++	}
+ 
+-	/* We can't use channels 11-13 yet */
+-	chans_available &= ~(BIT(11) | BIT(12) | BIT(13));
++	/* And possibly one for the 40-bit DMA memcpy API */
++	if (chans_available & od->cfg_data->chan_40bit_mask &
++	    BIT(BCM2838_DMA_MEMCPY_CHAN)) {
++		memcpy_parent = od;
++		memcpy_chan = BCM2835_DMA_CHANIO(base, BCM2838_DMA_MEMCPY_CHAN);
++		memcpy_scb = dma_alloc_coherent(memcpy_parent->ddev.dev,
++						sizeof(*memcpy_scb),
++						&memcpy_scb_dma, GFP_KERNEL);
++		if (!memcpy_scb)
++			dev_warn(&pdev->dev,
++				 "Failed to allocated memcpy scb\n");
+ 
+-	/* Grab channel 14 for the 40-bit DMA memcpy */
+-	chans_available &= ~BIT(14);
+-	memcpy_chan = BCM2835_DMA_CHANIO(base, 14);
++		chans_available &= ~BIT(BCM2838_DMA_MEMCPY_CHAN);
++	}
+ 
+ 	/* get irqs for each channel that we support */
+-	for (i = 0; i <= BCM2835_DMA_MAX_DMA_CHAN_SUPPORTED; i++) {
++	for (i = chan_start; i < chan_end; i++) {
+ 		/* skip masked out channels */
+ 		if (!(chans_available & (1 << i))) {
+ 			irq[i] = -1;
+@@ -1095,13 +1309,17 @@ static int bcm2835_dma_probe(struct plat
+ 		irq[i] = platform_get_irq(pdev, i < 11 ? i : 11);
+ 	}
+ 
++	chan_count = 0;
++
+ 	/* get irqs for each channel */
+-	for (i = 0; i <= BCM2835_DMA_MAX_DMA_CHAN_SUPPORTED; i++) {
++	for (i = chan_start; i < chan_end; i++) {
+ 		/* skip channels without irq */
+ 		if (irq[i] < 0)
+ 			continue;
+ 
+ 		/* check if there are other channels that also use this irq */
++		/* FIXME: This will fail if interrupts are shared across
++		   instances */
+ 		irq_flags = 0;
+ 		for (j = 0; j <= BCM2835_DMA_MAX_DMA_CHAN_SUPPORTED; j++)
+ 			if ((i != j) && (irq[j] == irq[i])) {
+@@ -1113,9 +1331,10 @@ static int bcm2835_dma_probe(struct plat
+ 		rc = bcm2835_dma_chan_init(od, i, irq[i], irq_flags);
+ 		if (rc)
+ 			goto err_no_dma;
++		chan_count++;
+ 	}
+ 
+-	dev_dbg(&pdev->dev, "Initialized %i DMA channels\n", i);
++	dev_dbg(&pdev->dev, "Initialized %i DMA channels\n", chan_count);
+ 
+ 	/* Device-tree DMA controller registration */
+ 	rc = of_dma_controller_register(pdev->dev.of_node,
+@@ -1147,6 +1366,13 @@ static int bcm2835_dma_remove(struct pla
+ 
+ 	bcm_dmaman_remove(pdev);
+ 	dma_async_device_unregister(&od->ddev);
++	if (memcpy_parent == od) {
++		dma_free_coherent(&pdev->dev, sizeof(*memcpy_scb), memcpy_scb,
++				  memcpy_scb_dma);
++		memcpy_parent = NULL;
++		memcpy_scb = NULL;
++		memcpy_chan = NULL;
++	}
+ 	bcm2835_dma_free(od);
+ 
+ 	return 0;
+--- a/drivers/pci/controller/pcie-brcmstb-bounce.c
++++ b/drivers/pci/controller/pcie-brcmstb-bounce.c
+@@ -91,7 +91,7 @@ struct dmabounce_device_info {
+ 
+ static struct dmabounce_device_info *g_dmabounce_device_info;
+ 
+-extern int bcm2838_dma40_memcpy_init(struct device *dev);
++extern int bcm2838_dma40_memcpy_init(void);
+ extern void bcm2838_dma40_memcpy(dma_addr_t dst, dma_addr_t src, size_t size);
+ 
+ #ifdef STATS
+@@ -471,9 +471,9 @@ static const struct dma_map_ops dmabounc
+ 	.mapping_error		= dmabounce_mapping_error,
+ };
+ 
+-int brcm_pcie_bounce_register_dev(struct device *dev,
+-				  unsigned long buffer_size,
+-				  dma_addr_t threshold)
++int brcm_pcie_bounce_init(struct device *dev,
++			  unsigned long buffer_size,
++			  dma_addr_t threshold)
+ {
+ 	struct dmabounce_device_info *device_info;
+ 	int ret;
+@@ -482,9 +482,9 @@ int brcm_pcie_bounce_register_dev(struct
+ 	if (g_dmabounce_device_info)
+ 		return -EBUSY;
+ 
+-	ret = bcm2838_dma40_memcpy_init(dev);
++	ret = bcm2838_dma40_memcpy_init();
+ 	if (ret)
+-	    return ret;
++		return ret;
+ 
+ 	device_info = kmalloc(sizeof(struct dmabounce_device_info), GFP_ATOMIC);
+ 	if (!device_info) {
+@@ -515,9 +515,8 @@ int brcm_pcie_bounce_register_dev(struct
+ 		 device_create_file(dev, &dev_attr_dmabounce_stats));
+ 
+ 	g_dmabounce_device_info = device_info;
+-	set_dma_ops(dev, &dmabounce_ops);
+ 
+-	dev_info(dev, "dmabounce: registered device - %ld kB, threshold %pad\n",
++	dev_info(dev, "dmabounce: initialised - %ld kB, threshold %pad\n",
+ 		 buffer_size / 1024, &threshold);
+ 
+ 	return 0;
+@@ -526,14 +525,13 @@ int brcm_pcie_bounce_register_dev(struct
+ 	kfree(device_info);
+ 	return ret;
+ }
+-EXPORT_SYMBOL(brcm_pcie_bounce_register_dev);
++EXPORT_SYMBOL(brcm_pcie_bounce_init);
+ 
+-void brcm_pcie_bounce_unregister_dev(struct device *dev)
++void brcm_pcie_bounce_uninit(struct device *dev)
+ {
+ 	struct dmabounce_device_info *device_info = g_dmabounce_device_info;
+ 
+ 	g_dmabounce_device_info = NULL;
+-	set_dma_ops(dev, NULL);
+ 
+ 	if (!device_info) {
+ 		dev_warn(dev,
+@@ -554,10 +552,16 @@ void brcm_pcie_bounce_unregister_dev(str
+ 			 device_remove_file(dev, &dev_attr_dmabounce_stats));
+ 
+ 	kfree(device_info);
++}
++EXPORT_SYMBOL(brcm_pcie_bounce_uninit);
++
++int brcm_pcie_bounce_register_dev(struct device *dev)
++{
++	set_dma_ops(dev, &dmabounce_ops);
+ 
+-	dev_info(dev, "dmabounce: device unregistered\n");
++	return 0;
+ }
+-EXPORT_SYMBOL(brcm_pcie_bounce_unregister_dev);
++EXPORT_SYMBOL(brcm_pcie_bounce_register_dev);
+ 
+ MODULE_AUTHOR("Phil Elwell <phil@raspberrypi.org>");
+ MODULE_DESCRIPTION("Dedicate DMA bounce support for pcie-brcmstb");
+--- a/drivers/pci/controller/pcie-brcmstb-bounce.h
++++ b/drivers/pci/controller/pcie-brcmstb-bounce.h
+@@ -8,21 +8,26 @@
+ 
+ #ifdef CONFIG_ARM
+ 
+-int brcm_pcie_bounce_register_dev(struct device *dev, unsigned long buffer_size,
+-				  dma_addr_t threshold);
+-
+-int brcm_pcie_bounce_unregister_dev(struct device *dev);
++int brcm_pcie_bounce_init(struct device *dev, unsigned long buffer_size,
++			  dma_addr_t threshold);
++int brcm_pcie_bounce_uninit(struct device *dev);
++int brcm_pcie_bounce_register_dev(struct device *dev);
+ 
+ #else
+ 
+-static inline int brcm_pcie_bounce_register_dev(struct device *dev,
+-						unsigned long buffer_size,
+-						dma_addr_t threshold)
++static inline int brcm_pcie_bounce_init(struct device *dev,
++					unsigned long buffer_size,
++					dma_addr_t threshold)
++{
++	return 0;
++}
++
++static inline int brcm_pcie_bounce_uninit(struct device *dev)
+ {
+ 	return 0;
+ }
+ 
+-static inline int brcm_pcie_bounce_unregister_dev(struct device *dev)
++static inline int brcm_pcie_bounce_register_dev(struct device *dev)
+ {
+ 	return 0;
+ }
+--- a/drivers/pci/controller/pcie-brcmstb.c
++++ b/drivers/pci/controller/pcie-brcmstb.c
+@@ -650,6 +650,7 @@ static void brcm_set_dma_ops(struct devi
+ 
+ static inline void brcm_pcie_perst_set(struct brcm_pcie *pcie,
+ 				       unsigned int val);
++
+ static int brcmstb_platform_notifier(struct notifier_block *nb,
+ 				     unsigned long event, void *__dev)
+ {
+@@ -663,12 +664,11 @@ static int brcmstb_platform_notifier(str
+ 		    strcmp(dev->kobj.name, rc_name)) {
+ 			int ret;
+ 
+-			ret = brcm_pcie_bounce_register_dev(dev, bounce_buffer,
+-							    (dma_addr_t)bounce_threshold);
++			ret = brcm_pcie_bounce_register_dev(dev);
+ 			if (ret) {
+ 				dev_err(dev,
+ 					"brcm_pcie_bounce_register_dev() failed: %d\n",
+-				ret);
++					ret);
+ 				return ret;
+ 			}
+ 		}
+@@ -681,8 +681,6 @@ static int brcmstb_platform_notifier(str
+ 			brcm_pcie_perst_set(g_pcie, 1);
+ 			msleep(100);
+ 			brcm_pcie_perst_set(g_pcie, 0);
+-		} else if (max_pfn > (bounce_threshold/PAGE_SIZE)) {
+-			brcm_pcie_bounce_unregister_dev(dev);
+ 		}
+ 		return NOTIFY_OK;
+ 
+@@ -1718,6 +1716,7 @@ static int brcm_pcie_probe(struct platfo
+ 	void __iomem *base;
+ 	struct pci_host_bridge *bridge;
+ 	struct pci_bus *child;
++	extern unsigned long max_pfn;
+ 
+ 	bridge = devm_pci_alloc_host_bridge(&pdev->dev, sizeof(*pcie));
+ 	if (!bridge)
+@@ -1753,6 +1752,20 @@ static int brcm_pcie_probe(struct platfo
+ 	if (IS_ERR(base))
+ 		return PTR_ERR(base);
+ 
++	/* To Do: Add hardware check if this ever gets fixed */
++	if (max_pfn > (bounce_threshold/PAGE_SIZE)) {
++		int ret;
++		ret = brcm_pcie_bounce_init(&pdev->dev, bounce_buffer,
++					    (dma_addr_t)bounce_threshold);
++		if (ret) {
++			if (ret != -EPROBE_DEFER)
++				dev_err(&pdev->dev,
++					"could not init bounce buffers: %d\n",
++					ret);
++			return ret;
++		}
++	}
++
+ 	pcie->clk = of_clk_get_by_name(dn, "sw_pcie");
+ 	if (IS_ERR(pcie->clk)) {
+ 		dev_warn(&pdev->dev, "could not get clock\n");
