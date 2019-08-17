@@ -11,15 +11,15 @@ enable.rmempty = false
 enable.default=0
 
 week=s:option(ListValue,"week",translate("Week Day"))
-week:value(*,translate("Everyday"))
+week:value(0,translate("Everyday"))
 week:value(1,translate("Monday"))
 week:value(2,translate("Tuesday"))
 week:value(3,translate("Wednesday"))
 week:value(4,translate("Thursday"))
 week:value(5,translate("Friday"))
 week:value(6,translate("Saturday"))
-week:value(0,translate("Sunday"))
-week.default=3
+week:value(7,translate("Sunday"))
+week.default=0
 
 hour=s:option(Value,"hour",translate("Hour"))
 hour.datatype = "range(0,23)"
