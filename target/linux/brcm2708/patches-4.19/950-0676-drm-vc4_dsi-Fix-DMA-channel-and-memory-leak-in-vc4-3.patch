@@ -1,0 +1,135 @@
+From bf56ee503a31864237c40aac90fe338bbca6d5a0 Mon Sep 17 00:00:00 2001
+From: Chris Miller <chris@mesl2.co.uk>
+Date: Wed, 26 Jun 2019 10:40:30 +0100
+Subject: [PATCH 676/725] drm: vc4_dsi: Fix DMA channel and memory leak in vc4
+ (#3012)
+
+Signed-off-by: Chris G Miller <chris@creative-electronics.net>
+---
+ drivers/gpu/drm/vc4/vc4_dsi.c | 35 ++++++++++++++++++++++++-----------
+ 1 file changed, 24 insertions(+), 11 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_dsi.c
++++ b/drivers/gpu/drm/vc4/vc4_dsi.c
+@@ -1536,9 +1536,11 @@ static int vc4_dsi_bind(struct device *d
+ 	/* DSI1 has a broken AXI slave that doesn't respond to writes
+ 	 * from the ARM.  It does handle writes from the DMA engine,
+ 	 * so set up a channel for talking to it.
++	 * Where possible managed resource providers are used, but the DMA channel
++	 * must - if acquired - be explicitly released prior to taking an error exit path.
+ 	 */
+ 	if (dsi->port == 1) {
+-		dsi->reg_dma_mem = dma_alloc_coherent(dev, 4,
++		dsi->reg_dma_mem = dmam_alloc_coherent(dev, 4,
+ 						      &dsi->reg_dma_paddr,
+ 						      GFP_KERNEL);
+ 		if (!dsi->reg_dma_mem) {
+@@ -1557,6 +1559,8 @@ static int vc4_dsi_bind(struct device *d
+ 			return ret;
+ 		}
+ 
++		/* From here on, any error exits must release the dma channel */
++
+ 		/* Get the physical address of the device's registers.  The
+ 		 * struct resource for the regs gives us the bus address
+ 		 * instead.
+@@ -1583,7 +1587,7 @@ static int vc4_dsi_bind(struct device *d
+ 	if (ret) {
+ 		if (ret != -EPROBE_DEFER)
+ 			dev_err(dev, "Failed to get interrupt: %d\n", ret);
+-		return ret;
++		goto rel_dma_exit;
+ 	}
+ 
+ 	dsi->escape_clock = devm_clk_get(dev, "escape");
+@@ -1591,7 +1595,7 @@ static int vc4_dsi_bind(struct device *d
+ 		ret = PTR_ERR(dsi->escape_clock);
+ 		if (ret != -EPROBE_DEFER)
+ 			dev_err(dev, "Failed to get escape clock: %d\n", ret);
+-		return ret;
++		goto rel_dma_exit;
+ 	}
+ 
+ 	dsi->pll_phy_clock = devm_clk_get(dev, "phy");
+@@ -1599,7 +1603,7 @@ static int vc4_dsi_bind(struct device *d
+ 		ret = PTR_ERR(dsi->pll_phy_clock);
+ 		if (ret != -EPROBE_DEFER)
+ 			dev_err(dev, "Failed to get phy clock: %d\n", ret);
+-		return ret;
++		goto rel_dma_exit;
+ 	}
+ 
+ 	dsi->pixel_clock = devm_clk_get(dev, "pixel");
+@@ -1607,7 +1611,7 @@ static int vc4_dsi_bind(struct device *d
+ 		ret = PTR_ERR(dsi->pixel_clock);
+ 		if (ret != -EPROBE_DEFER)
+ 			dev_err(dev, "Failed to get pixel clock: %d\n", ret);
+-		return ret;
++		goto rel_dma_exit;
+ 	}
+ 
+ 	ret = drm_of_find_panel_or_bridge(dev->of_node, 0, 0,
+@@ -1622,26 +1626,28 @@ static int vc4_dsi_bind(struct device *d
+ 		if (ret == -ENODEV)
+ 			return 0;
+ 
+-		return ret;
++		goto rel_dma_exit;
+ 	}
+ 
+ 	if (panel) {
+ 		dsi->bridge = devm_drm_panel_bridge_add(dev, panel,
+ 							DRM_MODE_CONNECTOR_DSI);
+-		if (IS_ERR(dsi->bridge))
+-			return PTR_ERR(dsi->bridge);
++		if (IS_ERR(dsi->bridge)){
++			ret = PTR_ERR(dsi->bridge);
++			goto rel_dma_exit;
++		}
+ 	}
+ 
+ 	/* The esc clock rate is supposed to always be 100Mhz. */
+ 	ret = clk_set_rate(dsi->escape_clock, 100 * 1000000);
+ 	if (ret) {
+ 		dev_err(dev, "Failed to set esc clock: %d\n", ret);
+-		return ret;
++		goto rel_dma_exit;
+ 	}
+ 
+ 	ret = vc4_dsi_init_phy_clocks(dsi);
+ 	if (ret)
+-		return ret;
++		goto rel_dma_exit;
+ 
+ 	if (dsi->port == 1)
+ 		vc4->dsi1 = dsi;
+@@ -1653,7 +1659,7 @@ static int vc4_dsi_bind(struct device *d
+ 	ret = drm_bridge_attach(dsi->encoder, dsi->bridge, NULL);
+ 	if (ret) {
+ 		dev_err(dev, "bridge attach failed: %d\n", ret);
+-		return ret;
++		goto rel_dma_exit;
+ 	}
+ 	/* Disable the atomic helper calls into the bridge.  We
+ 	 * manually call the bridge pre_enable / enable / etc. calls
+@@ -1665,6 +1671,11 @@ static int vc4_dsi_bind(struct device *d
+ 	pm_runtime_enable(dev);
+ 
+ 	return 0;
++
++rel_dma_exit:
++	dma_release_channel(dsi->reg_dma_chan);
++
++	return ret;
+ }
+ 
+ static void vc4_dsi_unbind(struct device *dev, struct device *master,
+@@ -1679,6 +1690,8 @@ static void vc4_dsi_unbind(struct device
+ 
+ 	vc4_dsi_encoder_destroy(dsi->encoder);
+ 
++	dma_release_channel(dsi->reg_dma_chan);
++
+ 	if (dsi->port == 1)
+ 		vc4->dsi1 = NULL;
+ }

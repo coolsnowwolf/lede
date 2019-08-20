@@ -1,0 +1,163 @@
+From b821e47df883a3325062a68cbe1504bf62129fd6 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Tue, 25 Sep 2018 16:07:55 +0100
+Subject: [PATCH 274/725] staging: vc04_services: Use vc-sm-cma to support zero
+ copy
+
+With the vc-sm-cma driver we can support zero copy of buffers between
+the kernel and VPU. Add this support to vchiq-mmal.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../staging/vc04_services/vchiq-mmal/Kconfig  |  1 +
+ .../vc04_services/vchiq-mmal/mmal-common.h    |  4 ++
+ .../vc04_services/vchiq-mmal/mmal-vchiq.c     | 66 ++++++++++++++++++-
+ .../vc04_services/vchiq-mmal/mmal-vchiq.h     |  1 +
+ 4 files changed, 70 insertions(+), 2 deletions(-)
+
+--- a/drivers/staging/vc04_services/vchiq-mmal/Kconfig
++++ b/drivers/staging/vc04_services/vchiq-mmal/Kconfig
+@@ -2,6 +2,7 @@ config BCM2835_VCHIQ_MMAL
+ 	tristate "BCM2835 MMAL VCHIQ service"
+ 	depends on (ARCH_BCM2835 || COMPILE_TEST)
+ 	select BCM2835_VCHIQ
++	select BCM_VC_SM_CMA
+ 	help
+ 	  Enables the MMAL API over VCHIQ as used for the
+ 	  majority of the multimedia services on VideoCore.
+--- a/drivers/staging/vc04_services/vchiq-mmal/mmal-common.h
++++ b/drivers/staging/vc04_services/vchiq-mmal/mmal-common.h
+@@ -51,6 +51,10 @@ struct mmal_buffer {
+ 
+ 	struct mmal_msg_context *msg_context;
+ 
++	struct dma_buf *dma_buf;/* Exported dmabuf fd from videobuf2 */
++	int vcsm_handle;	/* VCSM handle having imported the dmabuf */
++	u32 vc_handle;		/* VC handle to that dmabuf */
++
+ 	u32 cmd;		/* MMAL command. 0=data. */
+ 	unsigned long length;
+ 	u32 mmal_flags;
+--- a/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
+@@ -27,9 +27,12 @@
+ #include <media/videobuf2-vmalloc.h>
+ 
+ #include "mmal-common.h"
++#include "mmal-parameters.h"
+ #include "mmal-vchiq.h"
+ #include "mmal-msg.h"
+ 
++#include "vc-sm-cma/vc_sm_knl.h"
++
+ #define USE_VCHIQ_ARM
+ #include "interface/vchi/vchi.h"
+ 
+@@ -425,8 +428,13 @@ buffer_from_host(struct vchiq_mmal_insta
+ 
+ 	/* buffer header */
+ 	m.u.buffer_from_host.buffer_header.cmd = 0;
+-	m.u.buffer_from_host.buffer_header.data =
+-		(u32)(unsigned long)buf->buffer;
++	if (port->zero_copy) {
++		m.u.buffer_from_host.buffer_header.data = buf->vc_handle;
++	} else {
++		m.u.buffer_from_host.buffer_header.data =
++			(u32)(unsigned long)buf->buffer;
++	}
++
+ 	m.u.buffer_from_host.buffer_header.alloc_size = buf->buffer_size;
+ 	if (port->type == MMAL_PORT_TYPE_OUTPUT) {
+ 		m.u.buffer_from_host.buffer_header.length = 0;
+@@ -591,6 +599,22 @@ static void buffer_to_host_cb(struct vch
+ 
+ 		msg_context->u.bulk.status = msg->h.status;
+ 
++	} else if (msg->u.buffer_from_host.is_zero_copy) {
++		/*
++		 * Zero copy buffer, so nothing to do.
++		 * Copy buffer info and make callback.
++		 */
++		msg_context->u.bulk.buffer_used =
++				msg->u.buffer_from_host.buffer_header.length;
++		msg_context->u.bulk.mmal_flags =
++				msg->u.buffer_from_host.buffer_header.flags;
++		msg_context->u.bulk.dts =
++				msg->u.buffer_from_host.buffer_header.dts;
++		msg_context->u.bulk.pts =
++				msg->u.buffer_from_host.buffer_header.pts;
++		msg_context->u.bulk.cmd =
++				msg->u.buffer_from_host.buffer_header.cmd;
++
+ 	} else if (msg->u.buffer_from_host.buffer_header.length == 0) {
+ 		/* empty buffer */
+ 		if (msg->u.buffer_from_host.buffer_header.flags &
+@@ -1538,6 +1562,9 @@ int vchiq_mmal_port_parameter_set(struct
+ 
+ 	mutex_unlock(&instance->vchiq_mutex);
+ 
++	if (parameter == MMAL_PARAMETER_ZERO_COPY && !ret)
++		port->zero_copy = !!(*(bool *)value);
++
+ 	return ret;
+ }
+ EXPORT_SYMBOL_GPL(vchiq_mmal_port_parameter_set);
+@@ -1706,6 +1733,31 @@ int vchiq_mmal_submit_buffer(struct vchi
+ 	unsigned long flags = 0;
+ 	int ret;
+ 
++	/*
++	 * We really want to do this in mmal_vchi_buffer_init but can't as
++	 * videobuf2 won't let us have the dmabuf there.
++	 */
++	if (port->zero_copy && buffer->dma_buf && !buffer->vcsm_handle) {
++		pr_debug("%s: import dmabuf %p\n", __func__, buffer->dma_buf);
++		ret = vc_sm_cma_import_dmabuf(buffer->dma_buf,
++					      &buffer->vcsm_handle);
++		if (ret) {
++			pr_err("%s: vc_sm_import_dmabuf_fd failed, ret %d\n",
++			       __func__, ret);
++			return ret;
++		}
++
++		buffer->vc_handle = vc_sm_cma_int_handle(buffer->vcsm_handle);
++		if (!buffer->vc_handle) {
++			pr_err("%s: vc_sm_int_handle failed %d\n",
++			       __func__, ret);
++			vc_sm_cma_free(buffer->vcsm_handle);
++			return ret;
++		}
++		pr_debug("%s: import dmabuf %p - got vc handle %08X\n",
++			 __func__, buffer->dma_buf, buffer->vc_handle);
++	}
++
+ 	ret = buffer_from_host(instance, port, buffer);
+ 	if (ret == -EINVAL) {
+ 		/* Port is disabled. Queue for when it is enabled. */
+@@ -1739,6 +1791,16 @@ int mmal_vchi_buffer_cleanup(struct mmal
+ 		release_msg_context(msg_context);
+ 	buf->msg_context = NULL;
+ 
++	if (buf->vcsm_handle) {
++		int ret;
++
++		pr_debug("%s: vc_sm_cma_free on handle %08X\n", __func__,
++			 buf->vcsm_handle);
++		ret = vc_sm_cma_free(buf->vcsm_handle);
++		if (ret)
++			pr_err("%s: vcsm_free failed, ret %d\n", __func__, ret);
++		buf->vcsm_handle = 0;
++	}
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(mmal_vchi_buffer_cleanup);
+--- a/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.h
++++ b/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.h
+@@ -49,6 +49,7 @@ typedef void (*vchiq_mmal_buffer_cb)(
+ 
+ struct vchiq_mmal_port {
+ 	u32 enabled:1;
++	u32 zero_copy:1;
+ 	u32 handle;
+ 	u32 type; /* port type, cached to use on port info set */
+ 	u32 index; /* port index, cached to use on port info set */

@@ -19,7 +19,7 @@ platform_do_upgrade() {
 		umount /tmp/recovery
 		;;
 	*)
-		default_do_upgrade "$ARGV"
+		default_do_upgrade "$1"
 		;;
 	esac
 }

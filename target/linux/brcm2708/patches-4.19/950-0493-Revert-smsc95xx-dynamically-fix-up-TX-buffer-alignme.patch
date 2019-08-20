@@ -1,0 +1,60 @@
+From ac011573006f07da4a140f05e1ee8be0c441f3dc Mon Sep 17 00:00:00 2001
+From: P33M <p33m@github.com>
+Date: Tue, 14 May 2019 14:55:19 +0100
+Subject: [PATCH 493/725] Revert "smsc95xx: dynamically fix up TX buffer
+ alignment with padding bytes"
+
+As reported in https://github.com/raspberrypi/linux/issues/2964 this
+commit causes a regression corrupting non-option TCP ack packets.
+
+This reverts commit 96b972dc736d943f371a16ccca452a053d83c65b.
+---
+ drivers/net/usb/smsc95xx.c | 12 +++++-------
+ drivers/net/usb/smsc95xx.h |  2 +-
+ 2 files changed, 6 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/usb/smsc95xx.c
++++ b/drivers/net/usb/smsc95xx.c
+@@ -2082,9 +2082,7 @@ static struct sk_buff *smsc95xx_tx_fixup
+ 					 struct sk_buff *skb, gfp_t flags)
+ {
+ 	bool csum = skb->ip_summed == CHECKSUM_PARTIAL;
+-	unsigned int align_bytes = -((uintptr_t)skb->data) & 0x3;
+-	int overhead = csum ? SMSC95XX_TX_OVERHEAD_CSUM + align_bytes
+-				: SMSC95XX_TX_OVERHEAD + align_bytes;
++	int overhead = csum ? SMSC95XX_TX_OVERHEAD_CSUM : SMSC95XX_TX_OVERHEAD;
+ 	u32 tx_cmd_a, tx_cmd_b;
+ 
+ 	/* We do not advertise SG, so skbs should be already linearized */
+@@ -2118,16 +2116,16 @@ static struct sk_buff *smsc95xx_tx_fixup
+ 		}
+ 	}
+ 
+-	skb_push(skb, 4 + align_bytes);
+-	tx_cmd_b = (u32)(skb->len - 4 - align_bytes);
++	skb_push(skb, 4);
++	tx_cmd_b = (u32)(skb->len - 4);
+ 	if (csum)
+ 		tx_cmd_b |= TX_CMD_B_CSUM_ENABLE;
+ 	cpu_to_le32s(&tx_cmd_b);
+ 	memcpy(skb->data, &tx_cmd_b, 4);
+ 
+ 	skb_push(skb, 4);
+-	tx_cmd_a = (u32)(skb->len - 8 - align_bytes) | TX_CMD_A_FIRST_SEG_ |
+-		(align_bytes << 16) | TX_CMD_A_LAST_SEG_;
++	tx_cmd_a = (u32)(skb->len - 8) | TX_CMD_A_FIRST_SEG_ |
++		TX_CMD_A_LAST_SEG_;
+ 	cpu_to_le32s(&tx_cmd_a);
+ 	memcpy(skb->data, &tx_cmd_a, 4);
+ 
+--- a/drivers/net/usb/smsc95xx.h
++++ b/drivers/net/usb/smsc95xx.h
+@@ -21,7 +21,7 @@
+ #define _SMSC95XX_H
+ 
+ /* Tx command words */
+-#define TX_CMD_A_DATA_OFFSET_	(0x00030000)	/* Data Start Offset */
++#define TX_CMD_A_DATA_OFFSET_	(0x001F0000)	/* Data Start Offset */
+ #define TX_CMD_A_FIRST_SEG_	(0x00002000)	/* First Segment */
+ #define TX_CMD_A_LAST_SEG_	(0x00001000)	/* Last Segment */
+ #define TX_CMD_A_BUF_SIZE_	(0x000007FF)	/* Buffer Size */

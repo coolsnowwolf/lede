@@ -512,6 +512,36 @@ endef
 $(eval $(call KernelPackage,sound-soc-hifiberry-dacplusadc))
 
 
+define KernelPackage/sound-soc-hifiberry-dacplusadc-pro
+  TITLE:=Support for HifiBerry DAC+ADC PRO
+  KCONFIG:= \
+    CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUSADCPRO \
+    CONFIG_SND_SOC_PCM186X \
+    CONFIG_SND_SOC_PCM186X_I2C \
+    CONFIG_SND_SOC_PCM512x \
+    CONFIG_SND_SOC_PCM512x_I2C
+  FILES:= \
+    $(LINUX_DIR)/sound/soc/bcm/snd-soc-hifiberry-dacplusadcpro.ko \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm186x.ko \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm186x-i2c.ko \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x.ko \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x-i2c.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm186x snd-soc-pcm186x-i2c \
+    snd-soc-pcm512x snd-soc-pcm512x-i2c snd-soc-hifiberry-dacplusadcpro)
+  DEPENDS:= \
+    kmod-sound-soc-bcm2835-i2s \
+    +kmod-i2c-bcm2835 \
+    +kmod-regmap-i2c
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-hifiberry-dacplusadc-pro/description
+  This package contains support for HifiBerry DAC+ADC PRO
+endef
+
+$(eval $(call KernelPackage,sound-soc-hifiberry-dacplusadc-pro))
+
+
 define KernelPackage/sound-soc-hifiberry-digi
   TITLE:=Support for HifiBerry Digi / Digi+ / Digi+ Pro
   KCONFIG:= \
