@@ -1,3 +1,3 @@
 #!/bin/sh
 
-sleep 60 && /etc/init.d/adbyby restart
+sleep 40 && /etc/init.d/adbyby restart

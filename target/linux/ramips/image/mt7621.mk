@@ -236,6 +236,14 @@ define Device/k2p
 endef
 TARGET_DEVICES += k2p
 
+define Device/adslr_g7
+  DTS := ADSLR-G7
+  IMAGE_SIZE := 16064k
+  DEVICE_TITLE := ADSLR G7
+  DEVICE_PACKAGES := kmod-mt7615e wpad-basic
+endef
+TARGET_DEVICES += adslr_g7
+
 define Device/xiaomi_mir3p
   DTS := MIR3P
   BLOCKSIZE := 128k
