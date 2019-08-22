@@ -1,0 +1,157 @@
+From 45f28f47c5b4a3fabf33304c3660496da0b9dbcd Mon Sep 17 00:00:00 2001
+From: Clive Messer <clive.m.messer@gmail.com>
+Date: Mon, 19 Sep 2016 14:01:04 +0100
+Subject: [PATCH 075/725] Allo Piano DAC boards: Initial 2 channel (stereo)
+ support (#1645)
+
+Add initial 2 channel (stereo) support for Allo Piano DAC (2.0/2.1) boards,
+using allo-piano-dac-pcm512x-audio overlay and allo-piano-dac ALSA ASoC
+machine driver.
+
+NB. The initial support is 2 channel (stereo) ONLY!
+(The Piano DAC 2.1 will only support 2 channel (stereo) left/right output,
+ pending an update to the upstream pcm512x codec driver, which will have
+ to be submitted via upstream. With the initial downstream support,
+ provided by this patch, the Piano DAC 2.1 subwoofer outputs will
+ not function.)
+
+Signed-off-by: Baswaraj K <jaikumar@cem-solutions.net>
+Signed-off-by: Clive Messer <clive.messer@digitaldreamtime.co.uk>
+Tested-by: Clive Messer <clive.messer@digitaldreamtime.co.uk>
+
+ASoC: allo-piano-dac: fix S24_LE format
+
+Remove set_bclk_ratio call so 24-bit data is transmitted in
+24 bclk cycles.
+
+Also remove hw_params and ops as they are no longer needed.
+
+Signed-off-by: Matthias Reichl <hias@horus.com>
+---
+ sound/soc/bcm/allo-piano-dac.c | 120 +++++++++++++++++++++++++++++++++
+ 1 file changed, 120 insertions(+)
+ create mode 100644 sound/soc/bcm/allo-piano-dac.c
+
+--- /dev/null
++++ b/sound/soc/bcm/allo-piano-dac.c
+@@ -0,0 +1,120 @@
++/*
++ * ALSA ASoC Machine Driver for Allo Piano DAC
++ *
++ * Author:	Baswaraj K <jaikumar@cem-solutions.net>
++ *		Copyright 2016
++ *		based on code by Daniel Matuschek <info@crazy-audio.com>
++ *		based on code by Florian Meier <florian.meier@koalo.de>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ */
++
++#include <linux/module.h>
++#include <linux/platform_device.h>
++
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++
++static bool digital_gain_0db_limit = true;
++
++static int snd_allo_piano_dac_init(struct snd_soc_pcm_runtime *rtd)
++{
++	if (digital_gain_0db_limit) {
++		int ret;
++		struct snd_soc_card *card = rtd->card;
++
++		ret = snd_soc_limit_volume(card, "Digital Playback Volume",
++					   207);
++		if (ret < 0)
++			dev_warn(card->dev, "Failed to set volume limit: %d\n",
++				 ret);
++	}
++
++	return 0;
++}
++
++static struct snd_soc_dai_link snd_allo_piano_dac_dai[] = {
++{
++	.name		= "Piano DAC",
++	.stream_name	= "Piano DAC HiFi",
++	.cpu_dai_name	= "bcm2708-i2s.0",
++	.codec_dai_name	= "pcm512x-hifi",
++	.platform_name	= "bcm2708-i2s.0",
++	.codec_name	= "pcm512x.1-004c",
++	.dai_fmt	= SND_SOC_DAIFMT_I2S |
++			  SND_SOC_DAIFMT_NB_NF |
++			  SND_SOC_DAIFMT_CBS_CFS,
++	.init		= snd_allo_piano_dac_init,
++},
++};
++
++/* audio machine driver */
++static struct snd_soc_card snd_allo_piano_dac = {
++	.name         = "PianoDAC",
++	.owner        = THIS_MODULE,
++	.dai_link     = snd_allo_piano_dac_dai,
++	.num_links    = ARRAY_SIZE(snd_allo_piano_dac_dai),
++};
++
++static int snd_allo_piano_dac_probe(struct platform_device *pdev)
++{
++	int ret = 0;
++
++	snd_allo_piano_dac.dev = &pdev->dev;
++
++	if (pdev->dev.of_node) {
++		struct device_node *i2s_node;
++		struct snd_soc_dai_link *dai;
++
++		dai = &snd_allo_piano_dac_dai[0];
++		i2s_node = of_parse_phandle(pdev->dev.of_node,
++					    "i2s-controller", 0);
++
++		if (i2s_node) {
++			dai->cpu_dai_name = NULL;
++			dai->cpu_of_node = i2s_node;
++			dai->platform_name = NULL;
++			dai->platform_of_node = i2s_node;
++		}
++
++		digital_gain_0db_limit = !of_property_read_bool(
++			pdev->dev.of_node, "allo,24db_digital_gain");
++	}
++
++	ret = devm_snd_soc_register_card(&pdev->dev, &snd_allo_piano_dac);
++	if (ret && ret != -EPROBE_DEFER)
++		dev_err(&pdev->dev,
++			"snd_soc_register_card() failed: %d\n", ret);
++
++	return ret;
++}
++
++static const struct of_device_id snd_allo_piano_dac_of_match[] = {
++	{ .compatible = "allo,piano-dac", },
++	{ /* sentinel */ },
++};
++MODULE_DEVICE_TABLE(of, snd_allo_piano_dac_of_match);
++
++static struct platform_driver snd_allo_piano_dac_driver = {
++	.driver = {
++		.name   = "snd-allo-piano-dac",
++		.owner  = THIS_MODULE,
++		.of_match_table = snd_allo_piano_dac_of_match,
++	},
++	.probe          = snd_allo_piano_dac_probe,
++};
++
++module_platform_driver(snd_allo_piano_dac_driver);
++
++MODULE_AUTHOR("Baswaraj K <jaikumar@cem-solutions.net>");
++MODULE_DESCRIPTION("ALSA ASoC Machine Driver for Allo Piano DAC");
++MODULE_LICENSE("GPL v2");

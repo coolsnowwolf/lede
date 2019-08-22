@@ -1,0 +1,80 @@
+From b63482e725f4dd2c6adcda4878e5eadac238f05b Mon Sep 17 00:00:00 2001
+From: Matthias Reichl <hias@horus.com>
+Date: Thu, 22 Feb 2018 11:55:06 +0100
+Subject: [PATCH 065/725] ASoC: pcm512x: implement set_tdm_slot interface
+
+PCM512x can accept data padded with additional BCLK cycles
+but the driver currently lacks an interface to configure this.
+
+This leads to the problem that S24_LE format in master mode
+can result in non-integer clock divisors and pcm512x running
+at a rather off rate.
+
+For example 48kHz with 48fs BCLK and SCLK at 24.576MHz uses
+a divisor of 10 (rounded down from 10.6666) and results in a
+51.2kHz LRCLK. With 64fs BCLK a divisor of 8 is used and
+LRCLK runs at exactly 48kHz.
+
+Fix this by providing a minimal set_tdm_slot implementation
+so machine drivers can optionally configure custom BCLK ratios.
+
+Signed-off-by: Matthias Reichl <hias@horus.com>
+---
+ sound/soc/codecs/pcm512x.c | 28 +++++++++++++++++++++++++++-
+ 1 file changed, 27 insertions(+), 1 deletion(-)
+
+--- a/sound/soc/codecs/pcm512x.c
++++ b/sound/soc/codecs/pcm512x.c
+@@ -53,6 +53,7 @@ struct pcm512x_priv {
+ 	unsigned long overclock_pll;
+ 	unsigned long overclock_dac;
+ 	unsigned long overclock_dsp;
++	int lrclk_div;
+ };
+ 
+ /*
+@@ -851,7 +852,10 @@ static int pcm512x_set_dividers(struct s
+ 	int fssp;
+ 	int gpio;
+ 
+-	lrclk_div = snd_soc_params_to_frame_size(params);
++	if (pcm512x->lrclk_div)
++		lrclk_div = pcm512x->lrclk_div;
++	else
++		lrclk_div = snd_soc_params_to_frame_size(params);
+ 	if (lrclk_div == 0) {
+ 		dev_err(dev, "No LRCLK?\n");
+ 		return -EINVAL;
+@@ -1319,10 +1323,32 @@ static int pcm512x_set_fmt(struct snd_so
+ 	return 0;
+ }
+ 
++static int pcm512x_set_tdm_slot(struct snd_soc_dai *dai,
++	unsigned int tx_mask, unsigned int rx_mask,
++	int slots, int width)
++{
++	struct snd_soc_component *component = dai->component;
++	struct pcm512x_priv *pcm512x = snd_soc_component_get_drvdata(component);
++
++	switch (slots) {
++	case 0:
++		pcm512x->lrclk_div = 0;
++		return 0;
++	case 2:
++		if (tx_mask != 0x03 || rx_mask != 0x03)
++			return -EINVAL;
++		pcm512x->lrclk_div = slots * width;
++		return 0;
++	default:
++		return -EINVAL;
++	}
++}
++
+ static const struct snd_soc_dai_ops pcm512x_dai_ops = {
+ 	.startup = pcm512x_dai_startup,
+ 	.hw_params = pcm512x_hw_params,
+ 	.set_fmt = pcm512x_set_fmt,
++	.set_tdm_slot = pcm512x_set_tdm_slot,
+ };
+ 
+ static struct snd_soc_dai_driver pcm512x_dai = {

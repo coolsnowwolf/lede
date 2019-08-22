@@ -1,0 +1,79 @@
+From 53250b67aca386f2e01881623c192089226bbae3 Mon Sep 17 00:00:00 2001
+From: Stefan Wahren <stefan.wahren@i2se.com>
+Date: Sat, 13 Oct 2018 13:31:21 +0200
+Subject: [PATCH 147/725] firmware: raspberrypi: Add backward compatible
+ get_throttled
+
+Avoid a hard userspace ABI change by adding a compatible get_throttled
+sysfs entry. Its value is now feed by the GET_THROTTLED requests of the
+new hwmon driver. The first access to get_throttled will generate
+a warning.
+
+Signed-off-by: Stefan Wahren <stefan.wahren@i2se.com>
+---
+ drivers/firmware/raspberrypi.c | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+--- a/drivers/firmware/raspberrypi.c
++++ b/drivers/firmware/raspberrypi.c
+@@ -31,6 +31,7 @@ struct rpi_firmware {
+ 	struct mbox_chan *chan; /* The property channel. */
+ 	struct completion c;
+ 	u32 enabled;
++	u32 get_throttled;
+ };
+ 
+ static struct platform_device *g_pdev;
+@@ -171,6 +172,12 @@ int rpi_firmware_property(struct rpi_fir
+ 	       data + sizeof(struct rpi_firmware_property_tag_header),
+ 	       buf_size);
+ 
++	if ((tag == RPI_FIRMWARE_GET_THROTTLED) &&
++	     memcmp(&fw->get_throttled, tag_data, sizeof(fw->get_throttled))) {
++		memcpy(&fw->get_throttled, tag_data, sizeof(fw->get_throttled));
++		sysfs_notify(&fw->cl.dev->kobj, NULL, "get_throttled");
++	}
++
+ 	return ret;
+ }
+ EXPORT_SYMBOL_GPL(rpi_firmware_property);
+@@ -195,6 +202,27 @@ static int rpi_firmware_notify_reboot(st
+ 	return 0;
+ }
+ 
++static ssize_t get_throttled_show(struct device *dev,
++				  struct device_attribute *attr, char *buf)
++{
++	struct rpi_firmware *fw = dev_get_drvdata(dev);
++
++	WARN_ONCE(1, "deprecated, use hwmon sysfs instead\n");
++
++	return sprintf(buf, "%x\n", fw->get_throttled);
++}
++
++static DEVICE_ATTR_RO(get_throttled);
++
++static struct attribute *rpi_firmware_dev_attrs[] = {
++	&dev_attr_get_throttled.attr,
++	NULL,
++};
++
++static const struct attribute_group rpi_firmware_dev_group = {
++	.attrs = rpi_firmware_dev_attrs,
++};
++
+ static void
+ rpi_firmware_print_firmware_revision(struct rpi_firmware *fw)
+ {
+@@ -227,6 +255,11 @@ rpi_register_hwmon_driver(struct device
+ 
+ 	rpi_hwmon = platform_device_register_data(dev, "raspberrypi-hwmon",
+ 						  -1, NULL, 0);
++
++	if (!IS_ERR_OR_NULL(rpi_hwmon)) {
++		if (devm_device_add_group(dev, &rpi_firmware_dev_group))
++			dev_err(dev, "Failed to create get_trottled attr\n");
++	}
+ }
+ 
+ static int rpi_firmware_probe(struct platform_device *pdev)

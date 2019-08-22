@@ -1,0 +1,150 @@
+From f395eddcb1dad5b6b2905efa3ccb3916f91cadb9 Mon Sep 17 00:00:00 2001
+From: popcornmix <popcornmix@gmail.com>
+Date: Sun, 12 May 2013 12:24:19 +0100
+Subject: [PATCH 039/725] Main bcm2708/bcm2709 linux port
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: popcornmix <popcornmix@gmail.com>
+Signed-off-by: Noralf Trønnes <noralf@tronnes.org>
+
+bcm2709: Drop platform smp and timer init code
+
+irq-bcm2836 handles this through these functions:
+bcm2835_init_local_timer_frequency()
+bcm2836_arm_irqchip_smp_init()
+
+Signed-off-by: Noralf Trønnes <noralf@tronnes.org>
+
+bcm270x: Use watchdog for reboot/poweroff
+
+The watchdog driver already has support for reboot/poweroff.
+Make use of this and remove the code from the platform files.
+
+Signed-off-by: Noralf Trønnes <noralf@tronnes.org>
+
+board_bcm2835: Remove coherent dma pool increase - API has gone
+---
+ arch/arm/mach-bcm/Kconfig         |  1 +
+ arch/arm/mm/proc-v6.S             | 15 ++++++++++++---
+ drivers/irqchip/irq-bcm2835.c     |  7 ++++++-
+ drivers/mailbox/bcm2835-mailbox.c | 18 ++++++++++++++++--
+ 4 files changed, 35 insertions(+), 6 deletions(-)
+
+--- a/arch/arm/mach-bcm/Kconfig
++++ b/arch/arm/mach-bcm/Kconfig
+@@ -168,6 +168,7 @@ config ARCH_BCM2835
+ 	select FIQ
+ 	select PINCTRL
+ 	select PINCTRL_BCM2835
++	select MFD_SYSCON if ARCH_MULTI_V7
+ 	help
+ 	  This enables support for the Broadcom BCM2835 and BCM2836 SoCs.
+ 	  This SoC is used in the Raspberry Pi and Roku 2 devices.
+--- a/arch/arm/mm/proc-v6.S
++++ b/arch/arm/mm/proc-v6.S
+@@ -73,10 +73,19 @@ ENDPROC(cpu_v6_reset)
+  *
+  *	IRQs are already disabled.
+  */
++
++/* See jira SW-5991 for details of this workaround */
+ ENTRY(cpu_v6_do_idle)
+-	mov	r1, #0
+-	mcr	p15, 0, r1, c7, c10, 4		@ DWB - WFI may enter a low-power mode
+-	mcr	p15, 0, r1, c7, c0, 4		@ wait for interrupt
++	.align 5
++	mov     r1, #2
++1:	subs	r1, #1
++	nop
++	mcreq	p15, 0, r1, c7, c10, 4		@ DWB - WFI may enter a low-power mode
++	mcreq	p15, 0, r1, c7, c0, 4		@ wait for interrupt
++	nop
++	nop
++	nop
++	bne 1b
+ 	ret	lr
+ 
+ ENTRY(cpu_v6_dcache_clean_area)
+--- a/drivers/irqchip/irq-bcm2835.c
++++ b/drivers/irqchip/irq-bcm2835.c
+@@ -52,7 +52,9 @@
+ #include <linux/irqdomain.h>
+ 
+ #include <asm/exception.h>
++#ifndef CONFIG_ARM64
+ #include <asm/mach/irq.h>
++#endif
+ 
+ /* Put the bank and irq (32 bits) into the hwirq */
+ #define MAKE_HWIRQ(b, n)	(((b) << 5) | (n))
+@@ -80,6 +82,7 @@
+ #define NR_BANKS		3
+ #define IRQS_PER_BANK		32
+ #define NUMBER_IRQS		MAKE_HWIRQ(NR_BANKS, 0)
++#undef FIQ_START
+ #define FIQ_START		(NR_IRQS_BANK0 + MAKE_HWIRQ(NR_BANKS - 1, 0))
+ 
+ static const int reg_pending[] __initconst = { 0x00, 0x04, 0x08 };
+@@ -247,10 +250,12 @@ static int __init armctrl_of_init(struct
+ 					MAKE_HWIRQ(b, i) + NUMBER_IRQS);
+ 			BUG_ON(irq <= 0);
+ 			irq_set_chip(irq, &armctrl_chip);
+-			set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
++			irq_set_probe(irq);
+ 		}
+ 	}
++#ifndef CONFIG_ARM64
+ 	init_FIQ(FIQ_START);
++#endif
+ 
+ 	return 0;
+ }
+--- a/drivers/mailbox/bcm2835-mailbox.c
++++ b/drivers/mailbox/bcm2835-mailbox.c
+@@ -51,12 +51,15 @@
+ #define MAIL1_WRT	(ARM_0_MAIL1 + 0x00)
+ #define MAIL1_STA	(ARM_0_MAIL1 + 0x18)
+ 
++/* On ARCH_BCM270x these come through <linux/interrupt.h> (arm_control.h ) */
++#ifndef ARM_MS_FULL
+ /* Status register: FIFO state. */
+ #define ARM_MS_FULL		BIT(31)
+ #define ARM_MS_EMPTY		BIT(30)
+ 
+ /* Configuration register: Enable interrupts. */
+ #define ARM_MC_IHAVEDATAIRQEN	BIT(0)
++#endif
+ 
+ struct bcm2835_mbox {
+ 	void __iomem *regs;
+@@ -151,7 +154,7 @@ static int bcm2835_mbox_probe(struct pla
+ 		return -ENOMEM;
+ 	spin_lock_init(&mbox->lock);
+ 
+-	ret = devm_request_irq(dev, irq_of_parse_and_map(dev->of_node, 0),
++	ret = devm_request_irq(dev, platform_get_irq(pdev, 0),
+ 			       bcm2835_mbox_irq, 0, dev_name(dev), mbox);
+ 	if (ret) {
+ 		dev_err(dev, "Failed to register a mailbox IRQ handler: %d\n",
+@@ -209,7 +212,18 @@ static struct platform_driver bcm2835_mb
+ 	.probe		= bcm2835_mbox_probe,
+ 	.remove		= bcm2835_mbox_remove,
+ };
+-module_platform_driver(bcm2835_mbox_driver);
++
++static int __init bcm2835_mbox_init(void)
++{
++	return platform_driver_register(&bcm2835_mbox_driver);
++}
++arch_initcall(bcm2835_mbox_init);
++
++static void __init bcm2835_mbox_exit(void)
++{
++	platform_driver_unregister(&bcm2835_mbox_driver);
++}
++module_exit(bcm2835_mbox_exit);
+ 
+ MODULE_AUTHOR("Lubomir Rintel <lkundrak@v3.sk>");
+ MODULE_DESCRIPTION("BCM2835 mailbox IPC driver");

@@ -501,7 +501,8 @@ get_status_led() {
 	tl-wr940n-v6)
 		status_led="tp-link:orange:diag"
 		;;
-	tl-wdr6500-v2)
+	tl-wdr6500-v2|\
+	tl-wdr6500-v6)
 		status_led="tp-link:white:system"
 		;;
 	tube2h)

@@ -1,0 +1,84 @@
+From ab5a0cc750eefdabd58b67c2558c46029ceb2a51 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Sat, 12 May 2018 21:35:43 +0100
+Subject: [PATCH 131/725] firmware/raspberrypi: Notify firmware of a reboot
+
+Register for reboot notifications, sending RPI_FIRMWARE_NOTIFY_REBOOT
+over the mailbox interface on reception.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ drivers/firmware/raspberrypi.c | 40 +++++++++++++++++++++++++++++++++-
+ 1 file changed, 39 insertions(+), 1 deletion(-)
+
+--- a/drivers/firmware/raspberrypi.c
++++ b/drivers/firmware/raspberrypi.c
+@@ -14,6 +14,7 @@
+ #include <linux/module.h>
+ #include <linux/of_platform.h>
+ #include <linux/platform_device.h>
++#include <linux/reboot.h>
+ #include <soc/bcm2835/raspberrypi-firmware.h>
+ 
+ #define MBOX_MSG(chan, data28)		(((data28) & ~0xf) | ((chan) & 0xf))
+@@ -174,6 +175,26 @@ int rpi_firmware_property(struct rpi_fir
+ }
+ EXPORT_SYMBOL_GPL(rpi_firmware_property);
+ 
++static int rpi_firmware_notify_reboot(struct notifier_block *nb,
++				      unsigned long action,
++				      void *data)
++{
++	struct rpi_firmware *fw;
++	struct platform_device *pdev = g_pdev;
++
++	if (!pdev)
++		return 0;
++
++	fw = platform_get_drvdata(pdev);
++	if (!fw)
++		return 0;
++
++	(void)rpi_firmware_property(fw, RPI_FIRMWARE_NOTIFY_REBOOT,
++				    0, 0);
++
++	return 0;
++}
++
+ static void
+ rpi_firmware_print_firmware_revision(struct rpi_firmware *fw)
+ {
+@@ -284,15 +305,32 @@ static struct platform_driver rpi_firmwa
+ 	.remove		= rpi_firmware_remove,
+ };
+ 
++static struct notifier_block rpi_firmware_reboot_notifier = {
++	.notifier_call = rpi_firmware_notify_reboot,
++};
++
+ static int __init rpi_firmware_init(void)
+ {
+-	return platform_driver_register(&rpi_firmware_driver);
++	int ret = register_reboot_notifier(&rpi_firmware_reboot_notifier);
++	if (ret)
++		goto out1;
++	ret = platform_driver_register(&rpi_firmware_driver);
++	if (ret)
++		goto out2;
++
++	return 0;
++
++out2:
++	unregister_reboot_notifier(&rpi_firmware_reboot_notifier);
++out1:
++	return ret;
+ }
+ subsys_initcall(rpi_firmware_init);
+ 
+ static void __init rpi_firmware_exit(void)
+ {
+ 	platform_driver_unregister(&rpi_firmware_driver);
++	unregister_reboot_notifier(&rpi_firmware_reboot_notifier);
+ }
+ module_exit(rpi_firmware_exit);
+ 
