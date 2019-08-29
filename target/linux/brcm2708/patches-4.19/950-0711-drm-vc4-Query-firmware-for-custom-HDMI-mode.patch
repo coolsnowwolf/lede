@@ -1,0 +1,194 @@
+From 0b83bc12aa07be8457f9de2d3ad25fbb48a82fe5 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 3 Jul 2019 17:44:53 +0100
+Subject: [PATCH 711/773] drm/vc4: Query firmware for custom HDMI mode
+
+Allow custom HDMI modes to be specified from config.txt,
+and these then override EDID parsing.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/gpu/drm/vc4/vc4_firmware_kms.c | 142 ++++++++++++++-----------
+ 1 file changed, 81 insertions(+), 61 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_firmware_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_firmware_kms.c
+@@ -1035,6 +1035,58 @@ vc4_fkms_connector_detect(struct drm_con
+ 	return connector_status_connected;
+ }
+ 
++/* Queries the firmware to populate a drm_mode structure for this display */
++static int vc4_fkms_get_fw_mode(struct vc4_fkms_connector *fkms_connector,
++				struct drm_display_mode *mode)
++{
++	struct vc4_dev *vc4 = fkms_connector->vc4_dev;
++	struct set_timings timings = { 0 };
++	int ret;
++
++	timings.display = fkms_connector->display_number;
++
++	ret = rpi_firmware_property(vc4->firmware,
++				    RPI_FIRMWARE_GET_DISPLAY_TIMING, &timings,
++				    sizeof(timings));
++	if (ret || !timings.clock)
++		/* No mode returned - abort */
++		return -1;
++
++	/* Equivalent to DRM_MODE macro. */
++	memset(mode, 0, sizeof(*mode));
++	strncpy(mode->name, "FIXED_MODE", sizeof(mode->name));
++	mode->status = 0;
++	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
++	mode->clock = timings.clock;
++	mode->hdisplay = timings.hdisplay;
++	mode->hsync_start = timings.hsync_start;
++	mode->hsync_end = timings.hsync_end;
++	mode->htotal = timings.htotal;
++	mode->hskew = 0;
++	mode->vdisplay = timings.vdisplay;
++	mode->vsync_start = timings.vsync_start;
++	mode->vsync_end = timings.vsync_end;
++	mode->vtotal = timings.vtotal;
++	mode->vscan = timings.vscan;
++
++	if (timings.flags & TIMINGS_FLAGS_H_SYNC_POS)
++		mode->flags |= DRM_MODE_FLAG_PHSYNC;
++	else
++		mode->flags |= DRM_MODE_FLAG_NHSYNC;
++
++	if (timings.flags & TIMINGS_FLAGS_V_SYNC_POS)
++		mode->flags |= DRM_MODE_FLAG_PVSYNC;
++	else
++		mode->flags |= DRM_MODE_FLAG_NVSYNC;
++
++	if (timings.flags & TIMINGS_FLAGS_INTERLACE)
++		mode->flags |= DRM_MODE_FLAG_INTERLACE;
++
++	mode->base.type = DRM_MODE_OBJECT_MODE;
++
++	return 0;
++}
++
+ static int vc4_fkms_get_edid_block(void *data, u8 *buf, unsigned int block,
+ 				   size_t len)
+ {
+@@ -1063,30 +1115,40 @@ static int vc4_fkms_connector_get_modes(
+ 					to_vc4_fkms_connector(connector);
+ 	struct drm_encoder *encoder = fkms_connector->encoder;
+ 	struct vc4_fkms_encoder *vc4_encoder = to_vc4_fkms_encoder(encoder);
+-	int ret = 0;
++	struct drm_display_mode fw_mode;
++	struct drm_display_mode *mode;
+ 	struct edid *edid;
++	int num_modes;
+ 
+-	edid = drm_do_get_edid(connector, vc4_fkms_get_edid_block,
+-			       fkms_connector);
++	if (!vc4_fkms_get_fw_mode(fkms_connector, &fw_mode)) {
++		drm_mode_debug_printmodeline(&fw_mode);
++		mode = drm_mode_duplicate(connector->dev,
++					  &fw_mode);
++		drm_mode_probed_add(connector, mode);
++		num_modes = 1;	/* 1 mode */
++	} else {
++		edid = drm_do_get_edid(connector, vc4_fkms_get_edid_block,
++				       fkms_connector);
+ 
+-	/* FIXME: Can we do CEC?
+-	 * cec_s_phys_addr_from_edid(vc4->hdmi->cec_adap, edid);
+-	 * if (!edid)
+-	 *	return -ENODEV;
+-	 */
+-
+-	vc4_encoder->hdmi_monitor = drm_detect_hdmi_monitor(edid);
+-
+-	if (edid && edid->input & DRM_EDID_INPUT_DIGITAL) {
+-		vc4_encoder->rgb_range_selectable =
+-			drm_rgb_quant_range_selectable(edid);
++		/* FIXME: Can we do CEC?
++		 * cec_s_phys_addr_from_edid(vc4->hdmi->cec_adap, edid);
++		 * if (!edid)
++		 *	return -ENODEV;
++		 */
++
++		vc4_encoder->hdmi_monitor = drm_detect_hdmi_monitor(edid);
++
++		if (edid && edid->input & DRM_EDID_INPUT_DIGITAL) {
++			vc4_encoder->rgb_range_selectable =
++				drm_rgb_quant_range_selectable(edid);
++		}
++
++		drm_connector_update_edid_property(connector, edid);
++		num_modes = drm_add_edid_modes(connector, edid);
++		kfree(edid);
+ 	}
+ 
+-	drm_connector_update_edid_property(connector, edid);
+-	ret = drm_add_edid_modes(connector, edid);
+-	kfree(edid);
+-
+-	return ret;
++	return num_modes;
+ }
+ 
+ /* This is the DSI panel resolution. Use this as a default should the firmware
+@@ -1104,57 +1166,15 @@ static int vc4_fkms_lcd_connector_get_mo
+ {
+ 	struct vc4_fkms_connector *fkms_connector =
+ 					to_vc4_fkms_connector(connector);
+-	struct vc4_dev *vc4 = fkms_connector->vc4_dev;
+ 	struct drm_display_mode *mode;
+-	struct mailbox_set_mode mb = {
+-		.tag1 = { RPI_FIRMWARE_GET_DISPLAY_TIMING,
+-			  sizeof(struct set_timings), 0},
+-		.timings = { .display = fkms_connector->display_number },
+-	};
+ 	struct drm_display_mode fw_mode;
+-	int ret = 0;
+-
+-	ret = rpi_firmware_property_list(vc4->firmware, &mb, sizeof(mb));
+-	if (!ret) {
+-		/* Equivalent to DRM_MODE macro. */
+-		memset(&fw_mode, 0, sizeof(fw_mode));
+-		strncpy(fw_mode.name, "LCD_MODE", sizeof(fw_mode.name));
+-		fw_mode.status = 0;
+-		fw_mode.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
+-		fw_mode.clock = mb.timings.clock;
+-		fw_mode.hdisplay = mb.timings.hdisplay;
+-		fw_mode.hsync_start = mb.timings.hsync_start;
+-		fw_mode.hsync_end = mb.timings.hsync_end;
+-		fw_mode.htotal = mb.timings.htotal;
+-		fw_mode.hskew = 0;
+-		fw_mode.vdisplay = mb.timings.vdisplay;
+-		fw_mode.vsync_start = mb.timings.vsync_start;
+-		fw_mode.vsync_end = mb.timings.vsync_end;
+-		fw_mode.vtotal = mb.timings.vtotal;
+-		fw_mode.vscan = mb.timings.vscan;
+-		if (mb.timings.flags & TIMINGS_FLAGS_H_SYNC_POS)
+-			fw_mode.flags |= DRM_MODE_FLAG_PHSYNC;
+-		else
+-			fw_mode.flags |= DRM_MODE_FLAG_NHSYNC;
+-		if (mb.timings.flags & TIMINGS_FLAGS_V_SYNC_POS)
+-			fw_mode.flags |= DRM_MODE_FLAG_PVSYNC;
+-		else
+-			fw_mode.flags |= DRM_MODE_FLAG_NVSYNC;
+-		if (mb.timings.flags & TIMINGS_FLAGS_V_SYNC_POS)
+-			fw_mode.flags |= DRM_MODE_FLAG_PVSYNC;
+-		else
+-			fw_mode.flags |= DRM_MODE_FLAG_NVSYNC;
+-		if (mb.timings.flags & TIMINGS_FLAGS_INTERLACE)
+-			fw_mode.flags |= DRM_MODE_FLAG_INTERLACE;
+-
+-		fw_mode.base.type = DRM_MODE_OBJECT_MODE;
+ 
++	if (!vc4_fkms_get_fw_mode(fkms_connector, &fw_mode) && fw_mode.clock)
+ 		mode = drm_mode_duplicate(connector->dev,
+ 					  &fw_mode);
+-	} else {
++	else
+ 		mode = drm_mode_duplicate(connector->dev,
+ 					  &lcd_mode);
+-	}
+ 
+ 	if (!mode) {
+ 		DRM_ERROR("Failed to create a new display mode\n");
