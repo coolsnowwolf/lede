@@ -1,0 +1,74 @@
+From d6f29e7be3c7b181cf2d630bfeec9b3499eae2e6 Mon Sep 17 00:00:00 2001
+From: Mariusz Bialonczyk <manio@skyboo.net>
+Date: Mon, 20 May 2019 09:05:56 +0200
+Subject: [PATCH 671/773] w1: ds2413: add retry support to state_read()
+
+commit c50d09a86172073f55ebac0b92ad5a75907d64e7 upstream.
+
+The state_read() was calling PIO_ACCESS_READ once and bail out if it
+failed for this first time.
+This commit is improving this to trying more times before it give up,
+similarly as the write call is currently doing.
+
+Signed-off-by: Mariusz Bialonczyk <manio@skyboo.net>
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/w1/slaves/w1_ds2413.c | 37 +++++++++++++++++++++++------------
+ 1 file changed, 24 insertions(+), 13 deletions(-)
+
+--- a/drivers/w1/slaves/w1_ds2413.c
++++ b/drivers/w1/slaves/w1_ds2413.c
+@@ -30,6 +30,9 @@ static ssize_t state_read(struct file *f
+ 			  size_t count)
+ {
+ 	struct w1_slave *sl = kobj_to_w1_slave(kobj);
++	unsigned int retries = W1_F3A_RETRIES;
++	ssize_t bytes_read = -EIO;
++
+ 	dev_dbg(&sl->dev,
+ 		"Reading %s kobj: %p, off: %0#10x, count: %zu, buff addr: %p",
+ 		bin_attr->attr.name, kobj, (unsigned int)off, count, buf);
+@@ -42,22 +45,30 @@ static ssize_t state_read(struct file *f
+ 	mutex_lock(&sl->master->bus_mutex);
+ 	dev_dbg(&sl->dev, "mutex locked");
+ 
+-	if (w1_reset_select_slave(sl)) {
+-		mutex_unlock(&sl->master->bus_mutex);
+-		return -EIO;
+-	}
++	if (w1_reset_select_slave(sl))
++		goto out;
+ 
+-	w1_write_8(sl->master, W1_F3A_FUNC_PIO_ACCESS_READ);
+-	*buf = w1_read_8(sl->master);
++	while (retries--) {
++		w1_write_8(sl->master, W1_F3A_FUNC_PIO_ACCESS_READ);
+ 
+-	mutex_unlock(&sl->master->bus_mutex);
+-	dev_dbg(&sl->dev, "mutex unlocked");
++		*buf = w1_read_8(sl->master);
++		/* check for correct complement */
++		if ((*buf & 0x0F) == ((~*buf >> 4) & 0x0F)) {
++			bytes_read = 1;
++			goto out;
++		}
++
++		if (w1_reset_resume_command(sl->master))
++			goto out; /* unrecoverable error */
+ 
+-	/* check for correct complement */
+-	if ((*buf & 0x0F) != ((~*buf >> 4) & 0x0F))
+-		return -EIO;
+-	else
+-		return 1;
++		dev_warn(&sl->dev, "PIO_ACCESS_READ error, retries left: %d\n", retries);
++	}
++
++out:
++	mutex_unlock(&sl->master->bus_mutex);
++	dev_dbg(&sl->dev, "%s, mutex unlocked, retries: %d\n",
++		(bytes_read > 0) ? "succeeded" : "error", retries);
++	return bytes_read;
+ }
+ 
+ static BIN_ATTR_RO(state, 1);
