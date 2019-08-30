@@ -25,7 +25,6 @@ define Build/boot-common
 	rm -f $@.boot
 	mkfs.fat -C $@.boot $(FAT32_BLOCKS)
 	mcopy -i $@.boot $(KDIR)/COPYING.linux ::
-	mcopy -i $@.boot $(KDIR)/bootcode.bin ::
 	mcopy -i $@.boot $(KDIR)/LICENCE.broadcom ::
 	mcopy -i $@.boot cmdline.txt ::
 	mcopy -i $@.boot $(BOOT_CONFIG) ::config.txt
@@ -37,6 +36,7 @@ define Build/boot-common
 endef
 
 define Build/boot-2708
+	mcopy -i $@.boot $(KDIR)/bootcode.bin ::
 	mcopy -i $@.boot $(KDIR)/start.elf ::
 	mcopy -i $@.boot $(KDIR)/start_cd.elf ::
 	mcopy -i $@.boot $(KDIR)/start_x.elf ::
@@ -131,7 +131,6 @@ endif
 define Device/rpi-4
   DEVICE_MODEL := 4B
   KERNEL_IMG := kernel8.img
-  DEVICE_TITLE := Raspberry Pi 4B
   DEVICE_DTS := broadcom/bcm2711-rpi-4-b
   SUPPORTED_DEVICES := \
 	raspberrypi,4-model-b

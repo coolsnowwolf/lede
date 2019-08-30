@@ -1,0 +1,110 @@
+From c89ee8bbd3fb045bf610e8ea8f59b2db3d3f88b6 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Mon, 24 Jun 2019 02:29:40 +0100
+Subject: [PATCH 676/773] drm/vc4: Add support for color encoding on YUV planes
+
+Adds signalling for BT601/709/2020, and limited/full range
+(on BT601).
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/gpu/drm/vc4/vc4_firmware_kms.c | 32 +++++++++++++++++++++++++-
+ drivers/gpu/drm/vc4/vc_image_types.h   | 28 ++++++++++++++++++++++
+ 2 files changed, 59 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_firmware_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_firmware_kms.c
+@@ -66,7 +66,7 @@ struct set_plane {
+ 	u8 alpha;
+ 	u8 num_planes;
+ 	u8 is_vu;
+-	u8 padding;
++	u8 color_encoding;
+ 
+ 	u32 planes[4];  /* DMA address of each plane */
+ 
+@@ -454,6 +454,28 @@ static void vc4_plane_atomic_update(stru
+ 		if (num_planes == 3 &&
+ 		    (fb->offsets[2] - fb->offsets[1]) == fb->pitches[1])
+ 			mb->plane.vc_image_type = VC_IMAGE_YUV420_S;
++
++		switch (state->color_encoding) {
++		default:
++		case DRM_COLOR_YCBCR_BT601:
++			if (state->color_range == DRM_COLOR_YCBCR_LIMITED_RANGE)
++				mb->plane.color_encoding =
++						VC_IMAGE_YUVINFO_CSC_ITUR_BT601;
++			else
++				mb->plane.color_encoding =
++						VC_IMAGE_YUVINFO_CSC_JPEG_JFIF;
++			break;
++		case DRM_COLOR_YCBCR_BT709:
++			/* Currently no support for a full range BT709 */
++			mb->plane.color_encoding =
++						VC_IMAGE_YUVINFO_CSC_ITUR_BT709;
++			break;
++		case DRM_COLOR_YCBCR_BT2020:
++			/* Currently no support for a full range BT2020 */
++			mb->plane.color_encoding =
++					VC_IMAGE_YUVINFO_CSC_REC_2020;
++			break;
++		}
+ 	} else {
+ 		mb->plane.planes[1] = 0;
+ 		mb->plane.planes[2] = 0;
+@@ -643,6 +665,14 @@ static struct drm_plane *vc4_fkms_plane_
+ 	drm_plane_create_alpha_property(plane);
+ 	drm_plane_create_rotation_property(plane, DRM_MODE_ROTATE_0,
+ 					   SUPPORTED_ROTATIONS);
++	drm_plane_create_color_properties(plane,
++					  BIT(DRM_COLOR_YCBCR_BT601) |
++					  BIT(DRM_COLOR_YCBCR_BT709) |
++					  BIT(DRM_COLOR_YCBCR_BT2020),
++					  BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) |
++					  BIT(DRM_COLOR_YCBCR_FULL_RANGE),
++					  DRM_COLOR_YCBCR_BT709,
++					  DRM_COLOR_YCBCR_LIMITED_RANGE);
+ 
+ 	/*
+ 	 * Default frame buffer setup is with FB on -127, and raspistill etc
+--- a/drivers/gpu/drm/vc4/vc_image_types.h
++++ b/drivers/gpu/drm/vc4/vc_image_types.h
+@@ -4,6 +4,8 @@
+  *
+  * Values taken from vc_image_types.h released by Broadcom at
+  * https://github.com/raspberrypi/userland/blob/master/interface/vctypes/vc_image_types.h
++ * and vc_image_structs.h at
++ * https://github.com/raspberrypi/userland/blob/master/interface/vctypes/vc_image_structs.h
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 2 as
+@@ -141,3 +143,29 @@ enum {
+ 	VC_IMAGE_MAX,     /* bounds for error checking */
+ 	VC_IMAGE_FORCE_ENUM_16BIT = 0xffff,
+ };
++
++enum {
++	/* Unknown or unset - defaults to BT601 interstitial */
++	VC_IMAGE_YUVINFO_UNSPECIFIED    = 0,
++
++	/* colour-space conversions data [4 bits] */
++
++	/* ITU-R BT.601-5 [SDTV] (compatible with VideoCore-II) */
++	VC_IMAGE_YUVINFO_CSC_ITUR_BT601      = 1,
++	/* ITU-R BT.709-3 [HDTV] */
++	VC_IMAGE_YUVINFO_CSC_ITUR_BT709      = 2,
++	/* JPEG JFIF */
++	VC_IMAGE_YUVINFO_CSC_JPEG_JFIF       = 3,
++	/* Title 47 Code of Federal Regulations (2003) 73.682 (a) (20) */
++	VC_IMAGE_YUVINFO_CSC_FCC             = 4,
++	/* Society of Motion Picture and Television Engineers 240M (1999) */
++	VC_IMAGE_YUVINFO_CSC_SMPTE_240M      = 5,
++	/* ITU-R BT.470-2 System M */
++	VC_IMAGE_YUVINFO_CSC_ITUR_BT470_2_M  = 6,
++	/* ITU-R BT.470-2 System B,G */
++	VC_IMAGE_YUVINFO_CSC_ITUR_BT470_2_BG = 7,
++	/* JPEG JFIF, but with 16..255 luma */
++	VC_IMAGE_YUVINFO_CSC_JPEG_JFIF_Y16_255 = 8,
++	/* Rec 2020 */
++	VC_IMAGE_YUVINFO_CSC_REC_2020        = 9,
++};
