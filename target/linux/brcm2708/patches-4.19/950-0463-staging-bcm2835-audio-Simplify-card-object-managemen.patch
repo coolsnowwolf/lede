@@ -1,0 +1,212 @@
+From c69fbfe4f9dde3389f982a41a2d66db1c49f722d Mon Sep 17 00:00:00 2001
+From: Takashi Iwai <tiwai@suse.de>
+Date: Tue, 4 Sep 2018 17:58:58 +0200
+Subject: [PATCH 463/773] staging: bcm2835-audio: Simplify card object
+ management
+
+commit 872ae2d63d516a2a3b9c833d8685afcfa7814542 upstream.
+
+Instead of creating a dummy child device to manage the card object,
+just use devm stuff directly for releasing with snd_card_free().
+This results in a lot of code reduction.
+
+Since the dummy child devices are gone, the device object to be passed
+to the memory allocator needs to be adjusted as well.
+
+Signed-off-by: Takashi Iwai <tiwai@suse.de>
+Tested-by: Stefan Wahren <stefan.wahren@i2se.com>
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ .../vc04_services/bcm2835-audio/bcm2835-pcm.c |   2 +-
+ .../vc04_services/bcm2835-audio/bcm2835.c     | 120 +++++-------------
+ 2 files changed, 33 insertions(+), 89 deletions(-)
+
+--- a/drivers/staging/vc04_services/bcm2835-audio/bcm2835-pcm.c
++++ b/drivers/staging/vc04_services/bcm2835-audio/bcm2835-pcm.c
+@@ -349,7 +349,7 @@ int snd_bcm2835_new_pcm(struct bcm2835_c
+ 			&snd_bcm2835_playback_ops);
+ 
+ 	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV,
+-		chip->card->dev->parent, 128 * 1024, 128 * 1024);
++		chip->card->dev, 128 * 1024, 128 * 1024);
+ 
+ 	if (spdif)
+ 		chip->pcm_spdif = pcm;
+--- a/drivers/staging/vc04_services/bcm2835-audio/bcm2835.c
++++ b/drivers/staging/vc04_services/bcm2835-audio/bcm2835.c
+@@ -22,38 +22,6 @@ module_param(enable_compat_alsa, bool, 0
+ MODULE_PARM_DESC(enable_compat_alsa,
+ 		 "Enables ALSA compatibility virtual audio device");
+ 
+-static void snd_devm_unregister_child(struct device *dev, void *res)
+-{
+-	struct device *childdev = *(struct device **)res;
+-	struct bcm2835_chip *chip = dev_get_drvdata(childdev);
+-	struct snd_card *card = chip->card;
+-
+-	snd_card_free(card);
+-
+-	device_unregister(childdev);
+-}
+-
+-static int snd_devm_add_child(struct device *dev, struct device *child)
+-{
+-	struct device **dr;
+-	int ret;
+-
+-	dr = devres_alloc(snd_devm_unregister_child, sizeof(*dr), GFP_KERNEL);
+-	if (!dr)
+-		return -ENOMEM;
+-
+-	ret = device_add(child);
+-	if (ret) {
+-		devres_free(dr);
+-		return ret;
+-	}
+-
+-	*dr = child;
+-	devres_add(dev, dr);
+-
+-	return 0;
+-}
+-
+ static void bcm2835_devm_free_vchi_ctx(struct device *dev, void *res)
+ {
+ 	struct bcm2835_vchi_ctx *vchi_ctx = res;
+@@ -84,36 +52,6 @@ static int bcm2835_devm_add_vchi_ctx(str
+ 	return 0;
+ }
+ 
+-static void snd_bcm2835_release(struct device *dev)
+-{
+-}
+-
+-static struct device *
+-snd_create_device(struct device *parent,
+-		  struct device_driver *driver,
+-		  const char *name)
+-{
+-	struct device *device;
+-	int ret;
+-
+-	device = devm_kzalloc(parent, sizeof(*device), GFP_KERNEL);
+-	if (!device)
+-		return ERR_PTR(-ENOMEM);
+-
+-	device_initialize(device);
+-	device->parent = parent;
+-	device->driver = driver;
+-	device->release = snd_bcm2835_release;
+-
+-	dev_set_name(device, "%s", name);
+-
+-	ret = snd_devm_add_child(parent, device);
+-	if (ret)
+-		return ERR_PTR(ret);
+-
+-	return device;
+-}
+-
+ typedef int (*bcm2835_audio_newpcm_func)(struct bcm2835_chip *chip,
+ 					 const char *name,
+ 					 enum snd_bcm2835_route route,
+@@ -216,40 +154,36 @@ static struct bcm2835_audio_drivers chil
+ 	},
+ };
+ 
+-static int snd_add_child_device(struct device *device,
++static void bcm2835_card_free(void *data)
++{
++	snd_card_free(data);
++}
++
++static int snd_add_child_device(struct device *dev,
+ 				struct bcm2835_audio_driver *audio_driver,
+ 				u32 numchans)
+ {
+ 	struct snd_card *card;
+-	struct device *child;
+ 	struct bcm2835_chip *chip;
+ 	int err;
+ 
+-	child = snd_create_device(device, &audio_driver->driver,
+-				  audio_driver->driver.name);
+-	if (IS_ERR(child)) {
+-		dev_err(device,
+-			"Unable to create child device %p, error %ld",
+-			audio_driver->driver.name,
+-			PTR_ERR(child));
+-		return PTR_ERR(child);
+-	}
+-
+-	err = snd_card_new(child, -1, NULL, THIS_MODULE, sizeof(*chip), &card);
++	err = snd_card_new(dev, -1, NULL, THIS_MODULE, sizeof(*chip), &card);
+ 	if (err < 0) {
+-		dev_err(child, "Failed to create card");
++		dev_err(dev, "Failed to create card");
+ 		return err;
+ 	}
+ 
+ 	chip = card->private_data;
+ 	chip->card = card;
+-	chip->dev = child;
++	chip->dev = dev;
+ 	mutex_init(&chip->audio_mutex);
+ 
+-	chip->vchi_ctx = devres_find(device,
++	chip->vchi_ctx = devres_find(dev,
+ 				     bcm2835_devm_free_vchi_ctx, NULL, NULL);
+-	if (!chip->vchi_ctx)
+-		return -ENODEV;
++	if (!chip->vchi_ctx) {
++		err = -ENODEV;
++		goto error;
++	}
+ 
+ 	strcpy(card->driver, audio_driver->driver.name);
+ 	strcpy(card->shortname, audio_driver->shortname);
+@@ -259,26 +193,36 @@ static int snd_add_child_device(struct d
+ 		audio_driver->route,
+ 		numchans);
+ 	if (err) {
+-		dev_err(child, "Failed to create pcm, error %d\n", err);
+-		return err;
++		dev_err(dev, "Failed to create pcm, error %d\n", err);
++		goto error;
+ 	}
+ 
+ 	err = audio_driver->newctl(chip);
+ 	if (err) {
+-		dev_err(child, "Failed to create controls, error %d\n", err);
+-		return err;
++		dev_err(dev, "Failed to create controls, error %d\n", err);
++		goto error;
+ 	}
+ 
+ 	err = snd_card_register(card);
+ 	if (err) {
+-		dev_err(child, "Failed to register card, error %d\n", err);
+-		return err;
++		dev_err(dev, "Failed to register card, error %d\n", err);
++		goto error;
+ 	}
+ 
+-	dev_set_drvdata(child, chip);
+-	dev_info(child, "card created with %d channels\n", numchans);
++	dev_set_drvdata(dev, chip);
+ 
++	err = devm_add_action(dev, bcm2835_card_free, card);
++	if (err < 0) {
++		dev_err(dev, "Failed to add devm action, err %d\n", err);
++		goto error;
++	}
++
++	dev_info(dev, "card created with %d channels\n", numchans);
+ 	return 0;
++
++ error:
++	snd_card_free(card);
++	return err;
+ }
+ 
+ static int snd_add_child_devices(struct device *device, u32 numchans)
