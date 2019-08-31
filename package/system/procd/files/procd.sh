@@ -18,13 +18,20 @@
 #     file: configuration files (array)
 #     netdev: bound network device (detects ifindex changes)
 #     limits: resource limits (passed to the process)
-#     user info: array with 1 values $username
+#     user: $username to run service as
+#     group: $groupname to run service as
 #     pidfile: file name to write pid into
+#     stdout: boolean whether to redirect commands stdout to syslog (default: 0)
+#     stderr: boolean whether to redirect commands stderr to syslog (default: 0)
+#     facility: syslog facility used when logging to syslog (default: daemon)
 #
 #   No space separation is done for arrays/tables - use one function argument per command line argument
 #
 # procd_close_instance():
 #   Complete the instance being prepared
+#
+# procd_running(service, [instance]):
+#   Checks if service/instance is currently running
 #
 # procd_kill(service, [instance]):
 #   Kill a service instance (or all instances)
@@ -41,6 +48,7 @@ _PROCD_SERVICE=
 procd_lock() {
 	local basescript=$(readlink "$initscript")
 	local service_name="$(basename ${basescript:-$initscript})"
+
 }
 
 _procd_call() {
@@ -240,7 +248,7 @@ _procd_set_param() {
 		reload_signal)
 			json_add_int "$type" $(kill -l "$1")
 		;;
-		pidfile|user|seccomp|capabilities)
+		pidfile|user|group|seccomp|capabilities|facility)
 			json_add_string "$type" "$1"
 		;;
 		stdout|stderr|no_new_privs)
@@ -387,6 +395,18 @@ _procd_add_instance() {
 	_procd_open_instance
 	_procd_set_param command "$@"
 	_procd_close_instance
+}
+
+procd_running() {
+	local service="$1"
+	local instance="${2:-instance1}"
+	local running
+
+	json_init
+	json_add_string name "$service"
+	running=$(_procd_ubus_call list | jsonfilter -e "@.$service.instances.${instance}.running")
+
+	[ "$running" = "true" ]
 }
 
 _procd_kill() {

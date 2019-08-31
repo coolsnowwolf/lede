@@ -74,14 +74,15 @@ define Build/wiligear-image
 	mv $@.new $@
 endef
 
-# Create the special NAS4220B and Itian Square One SQ201 image
-# format with the squashfs and overlay inside the "rd.gz" file.
+# Create the default image format used by the StorLink reference design
+# SL93512r, Raidsonic NAS4220B and Itian Square One SQ201
+# with the squashfs and overlay inside the "rd.gz" file.
 # We pad it out to 6144K which is the size of the initramfs partition.
 #
 # The "application" partition is just blank. You can put anything
 # there when using OpenWRT. We just use that to create the
 # "sysupgrade" firmware image.
-define Build/nas4220b-sq201-images
+define Build/storlink-default-images
 	mkdir -p $@.tmp
 
 	mv $@ $@.tmp/rd.gz
@@ -115,6 +116,7 @@ define Device/Default
 	KERNEL_NAME := zImage
 	KERNEL := kernel-bin | append-dtb
 	BLOCKSIZE := 128k
+	SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
 endef
 
 # A reasonable set of default packages handling the NAS type
@@ -141,11 +143,11 @@ define Device/dlink_dir-685
 	DEVICE_TITLE := D-Link DIR-685 Xtreme N Storage Router
 	DEVICE_DTS := gemini-dlink-dir-685
 	DEVICE_PACKAGES := $(GEMINI_NAS_PACKAGES) \
-			kmod-switch-rtl8366rb swconfig \
 			kmod-rt2800-pci
-	IMAGES := factory.bin
+	IMAGES := factory.bin sysupgrade.bin
 	# Pad to 128k erase blocks with 160 bytes WRGG header
 	IMAGE/factory.bin := append-kernel | pad-offset 128k 160 | append-rootfs | dir685-pad-rootfs | dir685-image
+	IMAGE/sysupgrade.bin := append-kernel | pad-offset 128k 160 | dir685-image | append-rootfs | dir685-pad-rootfs | append-metadata
 endef
 TARGET_DEVICES += dlink_dir-685
 
@@ -161,15 +163,16 @@ define Device/dlink_dns-313
 endef
 TARGET_DEVICES += dlink_dns-313
 
-define Device/itian-raidsonic
+# Default images setup used by the StorLink reference designs
+define Device/storlink-reference
 	IMAGES := factory.bin
 	IMAGE/factory.bin := append-rootfs | pad-rootfs | pad-to 6144k | \
-		nas4220b-sq201-images $(1)
+		storlink-default-images $(1)
 	DEVICE_PACKAGES := $(GEMINI_NAS_PACKAGES)
 endef
 
 define Device/itian_sq201
-	$(Device/itian-raidsonic)
+	$(Device/storlink-reference)
 	DEVICE_TITLE := ITian Square One SQ201
 	DEVICE_DTS := gemini-sq201
 	DEVICE_PACKAGES += kmod-rt61-pci kmod-usb2-pci
@@ -177,12 +180,20 @@ endef
 TARGET_DEVICES += itian_sq201
 
 define Device/raidsonic_ib-4220-b
-	$(Device/itian-raidsonic)
+	$(Device/storlink-reference)
 	DEVICE_TITLE := Raidsonic NAS IB-4220-B
 	DEVICE_DTS := gemini-nas4220b
 	DEVICE_TYPE := nas
 endef
 TARGET_DEVICES += raidsonic_ib-4220-b
+
+define Device/storlink_sl93512r
+	$(Device/storlink-reference)
+	DEVICE_TITLE := StorLink SL93512r
+	DEVICE_DTS := gemini-sl93512r
+endef
+TARGET_DEVICES += storlink_sl93512r
+
 
 # The wiliboard images need some changes to be functional and buildable.
 #
