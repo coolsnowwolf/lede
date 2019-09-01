@@ -482,7 +482,8 @@ procd_add_mdns() {
 	procd_close_data
 }
 
-uci_validate_section() {
+uci_validate_section() 
+{
 	local _package="$1"
 	local _type="$2"
 	local _name="$3"
