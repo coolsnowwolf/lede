@@ -1,0 +1,70 @@
+#!/bin/sh /etc/rc.common
+START=80
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+logfile="/var/log/ddnspod.log"
+
+uci_get_by_name() {
+	local ret=$(uci get dnspod.$1.$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+start(){
+	enable=$(uci get dnspod.base_arg.enabled 2>/dev/null)
+	if [ $enable -eq 1 ]; then
+		sleeptime=$(uci get dnspod.base_arg.time 2>/dev/null)
+		icount=`ps -w | grep ddnspod.sh |grep -v grep| wc -l`
+		if [ $icount = 1 ] ;then
+			kill -9 $(ps | grep ddnspod.sh | grep -v "grep" | awk '{print $1}') >/dev/null 2>&1
+			cat /dev/null > /var/log/ddnspod.log
+			cat /dev/null > /var/log/ddnspod1.log
+			cat /dev/null > /usr/share/dnspod/dns.conf
+		fi
+		local login_email=$(uci get dnspod.@login_mode[0].login_email 2>/dev/null)
+		local login_password=$(uci get dnspod.@login_mode[0].login_password 2>/dev/null)
+		local artoken=$(uci get dnspod.@login_mode[0].artoken 2>/dev/null)
+		rm -f /usr/share/dnspod/dns.conf
+
+		cat >>/usr/share/dnspod/dns.conf <<EOF
+# For security reasons, it is recommended that you use token-based auth instead
+arMail="$login_email"
+arPass="$login_password"
+
+# Combine your token ID and token together as follows
+arToken="$artoken"
+
+# Place each domain you want to check as follows
+# you can have multiple arDdnsCheck blocks
+EOF
+
+	for arDdnsCheck in $(uci -X show dnspod | grep domain_name | awk -F'[.=]' '{print $2}'); do
+		local main_domain=$(uci_get_by_name $arDdnsCheck main_domain)
+		local sub_domain=$(uci_get_by_name $arDdnsCheck sub_domain)
+		local record_type=$(uci_get_by_name $arDdnsCheck record_type)
+
+		cat >>/usr/share/dnspod/dns.conf <<EOF
+arDdnsCheck "$main_domain" "$sub_domain" "$record_type"
+EOF
+
+	done
+		sleep 2
+		bash /usr/share/dnspod/ddnspod.sh >> /var/log/ddnspod1.log 2>&1 &
+		echo "$(date "+%Y-%m-%d %H:%M:%S") >>>>>>>>正在运行:检查更新DNS记录间隔时间为${sleeptime}秒<<<<<<<<" >> ${logfile}
+
+		#nohup /usr/share/dnspod/ddnspod.sh > /var/log/ddnspod.log 2>&1 &
+
+	fi
+}
+
+stop()
+{
+	enable=$(uci get dnspod.base_arg.enabled 2>/dev/null)
+	if [ $enable -ne 1 ]; then
+		kill -9 $(ps | grep ddnspod.sh | grep -v "grep" | awk '{print $1}') >/dev/null 2>&1
+		kill $(ps -w | grep ddnspod |grep -v grep) >/dev/null 2>&1
+		cat /dev/null > /var/log/ddnspod1.log
+		cat /dev/null > /usr/share/dnspod/dns.conf
+		cat /dev/null > /var/log/ddnspod.log && echo "$(date "+%Y-%m-%d %H:%M:%S") >>>>>>>>停止运行:DNS记录以保存<<<<<<<<" >> ${logfile}
+	fi
+}
