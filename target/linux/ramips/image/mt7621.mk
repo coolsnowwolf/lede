@@ -454,6 +454,7 @@ TARGET_DEVICES += sk-wb8
 
 define Device/timecloud
   DTS := Timecloud
+  IMAGE_SIZE := $(ralink_default_fw_size_16M)
   DEVICE_TITLE := Thunder Timecloud
   DEVICE_PACKAGES := kmod-usb3
 endef
