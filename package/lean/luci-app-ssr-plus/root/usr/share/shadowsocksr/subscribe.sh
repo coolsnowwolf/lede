@@ -160,7 +160,7 @@ do
 				json_get_var ssr_port port
 				json_get_var ssr_alter_id aid
 				json_get_var ssr_vmess_id id
-				json_get_var ssr_security type
+				ssr_security="auto"
 				json_get_var ssr_transport net
 				json_get_var ssr_remarks ps
 				ssr_tcp_guise="none"
