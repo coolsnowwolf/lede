@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Driver for MediaTek MT7530 gigabit switch
- *
- * Copyright (C) 2018 MediaTek Inc. All Rights Reserved.
- *
+ * Copyright (c) 2018 MediaTek Inc.
  * Author: Weijie Gao <weijie.gao@mediatek.com>
- *
- * SPDX-License-Identifier:	GPL-2.0+
  */
 
 #include <linux/kernel.h>
@@ -276,19 +272,73 @@ static void mt7530_core_reg_write(struct gsw_mt753x *gsw, u32 reg, u32 val)
 	gsw->mmd_write(gsw, 0, 0x1f, reg, val);
 }
 
+static void mt7530_trgmii_setting(struct gsw_mt753x *gsw)
+{
+	u16 i;
+
+	mt7530_core_reg_write(gsw, CORE_PLL_GROUP5, 0x0780);
+	mdelay(1);
+	mt7530_core_reg_write(gsw, CORE_PLL_GROUP6, 0);
+	mt7530_core_reg_write(gsw, CORE_PLL_GROUP10, 0x87);
+	mdelay(1);
+	mt7530_core_reg_write(gsw, CORE_PLL_GROUP11, 0x87);
+
+	/* PLL BIAS enable */
+	mt7530_core_reg_write(gsw, CORE_PLL_GROUP4,
+			      RG_SYSPLL_DDSFBK_EN | RG_SYSPLL_BIAS_EN);
+	mdelay(1);
+
+	/* PLL LPF enable */
+	mt7530_core_reg_write(gsw, CORE_PLL_GROUP4,
+			      RG_SYSPLL_DDSFBK_EN |
+			      RG_SYSPLL_BIAS_EN | RG_SYSPLL_BIAS_LPF_EN);
+
+	/* sys PLL enable */
+	mt7530_core_reg_write(gsw, CORE_PLL_GROUP2,
+			      RG_SYSPLL_EN_NORMAL | RG_SYSPLL_VODEN |
+			      (1 << RG_SYSPLL_POSDIV_S));
+
+	/* LCDDDS PWDS */
+	mt7530_core_reg_write(gsw, CORE_PLL_GROUP7,
+			      (3 << RG_LCCDS_C_S) |
+			      RG_LCDDS_PWDB | RG_LCDDS_ISO_EN);
+	mdelay(1);
+
+	/* Enable MT7530 TRGMII clock */
+	mt7530_core_reg_write(gsw, TRGMII_GSW_CLK_CG, GSWCK_EN | TRGMIICK_EN);
+
+	/* lower Tx Driving */
+	for (i = 0 ; i < NUM_TRGMII_ODT; i++)
+		mt753x_reg_write(gsw, TRGMII_TD_ODT(i),
+				 (4 << TX_DM_DRVP_S) | (4 << TX_DM_DRVN_S));
+}
+
+static void mt7530_rgmii_setting(struct gsw_mt753x *gsw)
+{
+	u32 val;
+
+	mt7530_core_reg_write(gsw, CORE_PLL_GROUP5, 0x0c80);
+	mdelay(1);
+	mt7530_core_reg_write(gsw, CORE_PLL_GROUP6, 0);
+	mt7530_core_reg_write(gsw, CORE_PLL_GROUP10, 0x87);
+	mdelay(1);
+	mt7530_core_reg_write(gsw, CORE_PLL_GROUP11, 0x87);
+
+	val = mt753x_reg_read(gsw, TRGMII_TXCTRL);
+	val &= ~TXC_INV;
+	mt753x_reg_write(gsw, TRGMII_TXCTRL, val);
+
+	mt753x_reg_write(gsw, TRGMII_TCK_CTRL,
+			 (8 << TX_TAP_S) | (0x55 << TX_TRAIN_WD_S));
+}
+
 static int mt7530_mac_port_setup(struct gsw_mt753x *gsw)
 {
 	u32 hwstrap, p6ecr = 0, p5mcr, p6mcr, phyad;
 
-	hwstrap = mt753x_reg_read(gsw, HWSTRAP);
+	hwstrap = mt753x_reg_read(gsw, MHWSTRAP);
 	hwstrap &= ~(P6_INTF_DIS | P5_INTF_MODE_RGMII | P5_INTF_DIS_S);
-	hwstrap |= CHG_TRAP | P5_INTF_SEL_GMAC5;
-
-	if (gsw->direct_phy_access)
-		hwstrap &= ~C_MDIO_BPS_S;
-	else
-		hwstrap |= C_MDIO_BPS_S;
-
+	hwstrap |= P5_INTF_SEL_GMAC5;
 	if (!gsw->port5_cfg.enabled) {
 		p5mcr = FORCE_MODE;
 		hwstrap |= P5_INTF_DIS_S;
@@ -358,10 +408,11 @@ parse_p6:
 
 		switch (gsw->port6_cfg.phy_mode) {
 		case PHY_INTERFACE_MODE_RGMII:
+			p6ecr = BIT(1);
 			break;
 		case PHY_INTERFACE_MODE_TRGMII:
 			/* set MT7530 central align */
-			p6ecr = BIT(1); /* TODO: confirm this */
+			p6ecr = BIT(0);
 			break;
 		default:
 			dev_info(gsw->dev, "%s is not supported by port6\n",
@@ -382,8 +433,7 @@ parse_p6:
 
 static void mt7530_core_pll_setup(struct gsw_mt753x *gsw)
 {
-	u32 hwstrap, val, ncpo1, ssc_delta;
-	int i;
+	u32 hwstrap;
 
 	hwstrap = mt753x_reg_read(gsw, HWSTRAP);
 
@@ -418,47 +468,22 @@ static void mt7530_core_pll_setup(struct gsw_mt753x *gsw)
 		break;
 	}
 
+	hwstrap = mt753x_reg_read(gsw, HWSTRAP);
+	hwstrap |= CHG_TRAP;
+	if (gsw->direct_phy_access)
+		hwstrap &= ~C_MDIO_BPS_S;
+	else
+		hwstrap |= C_MDIO_BPS_S;
+
+	mt753x_reg_write(gsw, MHWSTRAP, hwstrap);
+
 	if (gsw->port6_cfg.enabled &&
 	    gsw->port6_cfg.phy_mode == PHY_INTERFACE_MODE_TRGMII) {
-		ncpo1 = 0x1400;
-		ssc_delta = 0x57;
+		mt7530_trgmii_setting(gsw);
 	} else {
 		/* RGMII */
-		ncpo1 = 0x0c80;
-		ssc_delta = 0x87;
+		mt7530_rgmii_setting(gsw);
 	}
-
-	/* Setup the MT7530 TRGMII Tx Clock */
-	mt7530_core_reg_write(gsw, CORE_PLL_GROUP5, ncpo1);
-	mt7530_core_reg_write(gsw, CORE_PLL_GROUP6, 0);
-	mt7530_core_reg_write(gsw, CORE_PLL_GROUP10, ssc_delta);
-	mt7530_core_reg_write(gsw, CORE_PLL_GROUP11, ssc_delta);
-	mt7530_core_reg_write(gsw, CORE_PLL_GROUP4,
-			      RG_SYSPLL_DDSFBK_EN |
-			      RG_SYSPLL_BIAS_EN | RG_SYSPLL_BIAS_LPF_EN);
-
-	mt7530_core_reg_write(gsw, CORE_PLL_GROUP2,
-			      RG_SYSPLL_EN_NORMAL | RG_SYSPLL_VODEN |
-			      (1 << RG_SYSPLL_POSDIV_S));
-
-	mt7530_core_reg_write(gsw, CORE_PLL_GROUP7,
-			      RG_LCDDS_PCW_NCPO_CHG | (3 << RG_LCCDS_C_S) |
-			      RG_LCDDS_PWDB | RG_LCDDS_ISO_EN);
-
-	/* Enable MT7530 TRGMII clock */
-	mt7530_core_reg_write(gsw, TRGMII_GSW_CLK_CG, GSWCK_EN | TRGMIICK_EN);
-
-	val = mt753x_reg_read(gsw, TRGMII_TXCTRL);
-	val &= ~TXC_INV;
-	mt753x_reg_write(gsw, TRGMII_TXCTRL, val);
-
-	/* lower Tx Driving */
-	for (i = 0 ; i < NUM_TRGMII_ODT; i++)
-		mt753x_reg_write(gsw, TRGMII_TD_ODT(i),
-				 (8 << TX_DM_DRVP_S) | (8 << TX_DM_DRVN_S));
-
-	mt753x_reg_write(gsw, TRGMII_TCK_CTRL,
-			 (8 << TX_TAP_S) | (0x55 << TX_TRAIN_WD_S));
 
 	/* delay setting for 10/1000M */
 	mt753x_reg_write(gsw, P5RGMIIRXCR,
@@ -519,13 +544,17 @@ static void mt7530_phy_setting(struct gsw_mt753x *gsw)
 	}
 }
 
+static inline bool get_phy_access_mode(const struct device_node *np)
+{
+	return of_property_read_bool(np, "mt7530,direct-phy-access");
+}
+
 static int mt7530_sw_init(struct gsw_mt753x *gsw)
 {
 	int i;
 	u32 val;
 
-	gsw->direct_phy_access = of_property_read_bool(gsw->dev->of_node,
-						"mt7530,direct-phy-access");
+	gsw->direct_phy_access = get_phy_access_mode(gsw->dev->of_node);
 
 	/* Force MT7530 to use (in)direct PHY access */
 	val = mt753x_reg_read(gsw, HWSTRAP);

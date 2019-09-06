@@ -1,11 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Register definitions for MediaTek MT753x Gigabit switches
- *
- * Copyright (C) 2018 MediaTek Inc. All Rights Reserved.
- *
+ * Copyright (c) 2018 MediaTek Inc.
  * Author: Weijie Gao <weijie.gao@mediatek.com>
- *
- * SPDX-License-Identifier:	GPL-2.0+
  */
 
 #ifndef _MT753X_REGS_H_
