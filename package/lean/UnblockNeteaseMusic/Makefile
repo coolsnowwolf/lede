@@ -52,7 +52,7 @@ endef
 
 define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR)  $(1)/usr/share/$(PKG_NAME)
-	cp -pR $(PKG_BUILD_DIR)/$(PKG_NAME)/* $(1)/usr/share/$(PKG_NAME)
+	cp -pR $(PKG_BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)/* $(1)/usr/share/$(PKG_NAME)
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
