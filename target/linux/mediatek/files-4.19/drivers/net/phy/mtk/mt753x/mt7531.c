@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Driver for MediaTek MT7531 gigabit switch
- *
- * Copyright (C) 2018 MediaTek Inc. All Rights Reserved.
- *
+ * Copyright (c) 2018 MediaTek Inc.
  * Author: Zhanguo Ju <zhanguo.ju@mediatek.com>
- *
- * SPDX-License-Identifier:	GPL-2.0+
  */
 
 #include <linux/kernel.h>
@@ -66,6 +62,11 @@
 /* PHY ENABLE Register bitmap define */
 #define PHY_DEV1F			0x1f
 #define PHY_DEV1F_REG_44		0x44
+#define PHY_DEV1F_REG_104		0x104
+#define PHY_DEV1F_REG_10A		0x10a
+#define PHY_DEV1F_REG_10B		0x10b
+#define PHY_DEV1F_REG_10C		0x10c
+#define PHY_DEV1F_REG_10D		0x10d
 #define PHY_DEV1F_REG_268		0x268
 #define PHY_DEV1F_REG_269		0x269
 #define PHY_DEV1F_REG_403		0x403
@@ -74,6 +75,8 @@
 #define GBE_EFUSE_SETTING		BIT(3)
 #define PHY_EN_BYPASS_MODE		BIT(4)
 #define POWER_ON_OFF			BIT(5)
+#define PHY_PLL_M			GENMASK(9, 8)
+#define PHY_PLL_SEL(x)			(((x) << 8) & GENMASK(9, 8))
 
 /* PHY EEE Register bitmap of define */
 #define PHY_DEV07			0x07
@@ -142,7 +145,7 @@
 #define ANA_PLLGP_CR5			0x78bc
 
 /* GPIO mode define */
-#define GPIO_MODE_REGS(x)		(0x7c0c + ((x / 8) * 4))
+#define GPIO_MODE_REGS(x)		(0x7c0c + (((x) / 8) * 4))
 #define GPIO_MODE_S			4
 
 /* GPIO GROUP IOLB SMT0 Control */
@@ -638,6 +641,68 @@ static int mt7531_set_gpio_pinmux(struct gsw_mt753x *gsw)
 	return 0;
 }
 
+static void mt7531_phy_pll_setup(struct gsw_mt753x *gsw)
+{
+	u32 hwstrap;
+	u32 val;
+
+	hwstrap = mt753x_reg_read(gsw, HWSTRAP);
+
+	switch ((hwstrap & XTAL_FSEL_M) >> XTAL_FSEL_S) {
+	case XTAL_25MHZ:
+		/* disable pll auto calibration */
+		gsw->mmd_write(gsw, 0, PHY_DEV1F, PHY_DEV1F_REG_104, 0x608);
+
+		/* change pll sel */
+		val = gsw->mmd_read(gsw, 0, PHY_DEV1F,
+				     PHY_DEV1F_REG_403);
+		val &= ~(PHY_PLL_M);
+		val |= PHY_PLL_SEL(3);
+		gsw->mmd_write(gsw, 0, PHY_DEV1F, PHY_DEV1F_REG_403, val);
+
+		/* set divider ratio */
+		gsw->mmd_write(gsw, 0, PHY_DEV1F,
+			       PHY_DEV1F_REG_10A, 0x1009);
+
+		/* set divider ratio */
+		gsw->mmd_write(gsw, 0, PHY_DEV1F, PHY_DEV1F_REG_10B, 0x7c6);
+
+		/* capacitance and resistance adjustment */
+		gsw->mmd_write(gsw, 0, PHY_DEV1F,
+			       PHY_DEV1F_REG_10C, 0xa8be);
+
+		break;
+	case XTAL_40MHZ:
+		/* disable pll auto calibration */
+		gsw->mmd_write(gsw, 0, PHY_DEV1F, PHY_DEV1F_REG_104, 0x608);
+
+		/* change pll sel */
+		val = gsw->mmd_read(gsw, 0, PHY_DEV1F,
+				     PHY_DEV1F_REG_403);
+		val &= ~(PHY_PLL_M);
+		val |= PHY_PLL_SEL(3);
+		gsw->mmd_write(gsw, 0, PHY_DEV1F, PHY_DEV1F_REG_403, val);
+
+		/* set divider ratio */
+		gsw->mmd_write(gsw, 0, PHY_DEV1F,
+			       PHY_DEV1F_REG_10A, 0x1018);
+
+		/* set divider ratio */
+		gsw->mmd_write(gsw, 0, PHY_DEV1F, PHY_DEV1F_REG_10B, 0xc676);
+
+		/* capacitance and resistance adjustment */
+		gsw->mmd_write(gsw, 0, PHY_DEV1F,
+			       PHY_DEV1F_REG_10C, 0xd8be);
+		break;
+	}
+
+	/* power down pll. additional delay is not required via mdio access */
+	gsw->mmd_write(gsw, 0, PHY_DEV1F, PHY_DEV1F_REG_10D, 0x10);
+
+	/* power up pll */
+	gsw->mmd_write(gsw, 0, PHY_DEV1F, PHY_DEV1F_REG_10D, 0x14);
+}
+
 static void mt7531_phy_setting(struct gsw_mt753x *gsw)
 {
 	int i;
@@ -694,7 +759,7 @@ static void mt7531_adjust_line_driving(struct gsw_mt753x *gsw, u32 port)
 	gsw->mmd_write(gsw, port, PHY_DEV1E, RXADC_CONTROL_3, 0x4444);
 
 	/* Adjust Line driver current for different mode */
-	gsw->mmd_write(gsw, port, PHY_DEV1F, TXVLD_DA_271, 0x2c63);
+	gsw->mmd_write(gsw, port, PHY_DEV1F, TXVLD_DA_271, 0x2ca5);
 
 	/* Adjust Line driver current for different mode */
 	gsw->mmd_write(gsw, port, PHY_DEV1F, TXVLD_DA_272, 0xc6b);
@@ -709,10 +774,10 @@ static void mt7531_adjust_line_driving(struct gsw_mt753x *gsw, u32 port)
 	gsw->mmd_write(gsw, port, PHY_DEV1E, PHY_DEV1E_REG_41, 0x3333);
 
 	/* Adjust TX class AB driver 1 */
-	gsw->mmd_write(gsw, port, PHY_DEV1F, PHY_DEV1F_REG_268, 0x3aa);
+	gsw->mmd_write(gsw, port, PHY_DEV1F, PHY_DEV1F_REG_268, 0x388);
 
 	/* Adjust TX class AB driver 2 */
-	gsw->mmd_write(gsw, port, PHY_DEV1F, PHY_DEV1F_REG_269, 0xaaaa);
+	gsw->mmd_write(gsw, port, PHY_DEV1F, PHY_DEV1F_REG_269, 0x4448);
 }
 
 static void mt7531_eee_setting(struct gsw_mt753x *gsw, u32 port)
@@ -796,6 +861,8 @@ static int mt7531_sw_post_init(struct gsw_mt753x *gsw)
 {
 	int i;
 	u32 val;
+
+	mt7531_phy_pll_setup(gsw);
 
 	/* Internal PHYs are disabled by default. SW should enable them.
 	 * Note that this may already be enabled in bootloader stage.

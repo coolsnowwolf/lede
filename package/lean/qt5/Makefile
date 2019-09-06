@@ -36,7 +36,7 @@ define Package/qt5/Default
   SUBMENU:=Qt5
   TITLE:=qt5
   URL:=http://qt-project.org
-  DEPENDS:=+libatomic +libstdcpp +libopenssl +zlib @!LINUX_2_6
+  DEPENDS:=+libatomic +libstdcpp +libopenssl +zlib +icu @!LINUX_2_6
 endef
 
 define Package/qt5-core
