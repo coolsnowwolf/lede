@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2012-2016 OpenWrt.org
+# Copyright (C) 2012-2019 OpenWrt.org
 # Copyright (C) 2017 LEDE project
 #
 # This is free software, licensed under the GNU General Public License v2.
@@ -12,9 +12,9 @@ BOARD:=brcm2708
 BOARDNAME:=Broadcom BCM27xx
 FEATURES:=ext4 audio usb usbgadget display gpio fpu squashfs rootfs-part boot-part
 MAINTAINER:=Álvaro Fernández Rojas <noltari@gmail.com>
-SUBTARGETS:=bcm2708 bcm2709 bcm2710
+SUBTARGETS:=bcm2708 bcm2709 bcm2710 bcm2711
 
-KERNEL_PATCHVER:=4.14
+KERNEL_PATCHVER:=4.19
 
 define Target/Description
 	Build firmware image for Broadcom BCM27xx SoC devices.
