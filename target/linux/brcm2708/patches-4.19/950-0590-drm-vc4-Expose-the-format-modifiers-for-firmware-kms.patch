@@ -1,0 +1,80 @@
+From c4d47982f89af5e6b87f35e95ef4529561ada6c4 Mon Sep 17 00:00:00 2001
+From: Eric Anholt <eric@anholt.net>
+Date: Mon, 18 Mar 2019 16:38:32 -0700
+Subject: [PATCH 590/773] drm/vc4: Expose the format modifiers for firmware
+ kms.
+
+This should technically not expose VC4_T_TILED on pi4.  However, if we
+don't expose anything, then userspace will assume that display can
+handle whatever modifiers 3d can do (UIF on 2711).  By exposing a
+list, that will get intersected with what 3D can do so that we get T
+tiling for display on 2710 and linear on 2711.
+
+Signed-off-by: Eric Anholt <eric@anholt.net>
+---
+ drivers/gpu/drm/vc4/vc4_firmware_kms.c | 33 +++++++++++++++++++++++++-
+ 1 file changed, 32 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_firmware_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_firmware_kms.c
+@@ -281,6 +281,27 @@ static void vc4_plane_destroy(struct drm
+ 	drm_plane_cleanup(plane);
+ }
+ 
++static bool vc4_fkms_format_mod_supported(struct drm_plane *plane,
++					  uint32_t format,
++					  uint64_t modifier)
++{
++	/* Support T_TILING for RGB formats only. */
++	switch (format) {
++	case DRM_FORMAT_XRGB8888:
++	case DRM_FORMAT_ARGB8888:
++		switch (modifier) {
++		case DRM_FORMAT_MOD_BROADCOM_VC4_T_TILED:
++		case DRM_FORMAT_MOD_LINEAR:
++		case DRM_FORMAT_MOD_BROADCOM_UIF:
++			return true;
++		default:
++			return false;
++		}
++	default:
++		return false;
++	}
++}
++
+ static const struct drm_plane_funcs vc4_plane_funcs = {
+ 	.update_plane = drm_atomic_helper_update_plane,
+ 	.disable_plane = drm_atomic_helper_disable_plane,
+@@ -289,6 +310,7 @@ static const struct drm_plane_funcs vc4_
+ 	.reset = drm_atomic_helper_plane_reset,
+ 	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
+ 	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,
++	.format_mod_supported = vc4_fkms_format_mod_supported,
+ };
+ 
+ static const struct drm_plane_helper_funcs vc4_primary_plane_helper_funcs = {
+@@ -316,6 +338,14 @@ static struct drm_plane *vc4_fkms_plane_
+ 	u32 argb8888 = DRM_FORMAT_ARGB8888;
+ 	int ret = 0;
+ 	bool primary = (type == DRM_PLANE_TYPE_PRIMARY);
++	static const uint64_t modifiers[] = {
++		DRM_FORMAT_MOD_LINEAR,
++		/* VC4_T_TILED should come after linear, because we
++		 * would prefer to scan out linear (less bus traffic).
++		 */
++		DRM_FORMAT_MOD_BROADCOM_VC4_T_TILED,
++		DRM_FORMAT_MOD_INVALID,
++	};
+ 
+ 	vc4_plane = devm_kzalloc(dev->dev, sizeof(*vc4_plane),
+ 				 GFP_KERNEL);
+@@ -327,7 +357,8 @@ static struct drm_plane *vc4_fkms_plane_
+ 	plane = &vc4_plane->base;
+ 	ret = drm_universal_plane_init(dev, plane, 0xff,
+ 				       &vc4_plane_funcs,
+-				       primary ? &xrgb8888 : &argb8888, 1, NULL,
++				       primary ? &xrgb8888 : &argb8888, 1,
++				       modifiers,
+ 				       type, primary ? "primary" : "cursor");
+ 
+ 	if (type == DRM_PLANE_TYPE_PRIMARY) {
