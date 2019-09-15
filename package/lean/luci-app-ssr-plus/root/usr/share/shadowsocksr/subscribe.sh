@@ -41,7 +41,6 @@ Server_Update() {
     #v2ray
     ${uci_set}alter_id="$ssr_alter_id"
     ${uci_set}vmess_id="$ssr_vmess_id"
-    ${uci_set}type="$ssr_security"
     ${uci_set}transport="$ssr_transport"
     ${uci_set}tcp_guise="$ssr_tcp_guise"
     ${uci_set}ws_host="$ssr_ws_host"
