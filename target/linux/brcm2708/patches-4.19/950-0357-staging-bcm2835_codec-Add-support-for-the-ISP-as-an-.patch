@@ -1,0 +1,384 @@
+From 6e89f0ac95adca46daa52324681edf43a2f6f613 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 13 Feb 2019 14:07:52 +0000
+Subject: [PATCH 357/773] staging: bcm2835_codec: Add support for the ISP as an
+ M2M device
+
+The MMAL ISP component can also use this same V4L2 wrapper to
+provide a M2M format conversion and resizer.
+Instantiate 3 V4L2 devices now, one for each of decode, encode,
+and isp.
+The ISP currently doesn't expose any controls via V4L2, but this
+can be extended in the future.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../bcm2835-codec/bcm2835-v4l2-codec.c        | 132 ++++++++++++------
+ 1 file changed, 92 insertions(+), 40 deletions(-)
+
+--- a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
++++ b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+@@ -54,10 +54,26 @@ static int encode_video_nr = 11;
+ module_param(encode_video_nr, int, 0644);
+ MODULE_PARM_DESC(encode_video_nr, "encoder video device number");
+ 
++static int isp_video_nr = 12;
++module_param(isp_video_nr, int, 0644);
++MODULE_PARM_DESC(isp_video_nr, "isp video device number");
++
+ static unsigned int debug;
+ module_param(debug, uint, 0644);
+ MODULE_PARM_DESC(debug, "activates debug info (0-3)");
+ 
++enum bcm2835_codec_role {
++	DECODE,
++	ENCODE,
++	ISP,
++};
++
++static const char * const components[] = {
++	"ril.video_decode",
++	"ril.video_encode",
++	"ril.isp",
++};
++
+ #define MIN_W		32
+ #define MIN_H		32
+ #define MAX_W		1920
+@@ -373,7 +389,7 @@ struct bcm2835_codec_dev {
+ 	atomic_t		num_inst;
+ 
+ 	/* allocated mmal instance and components */
+-	bool			decode;	 /* Is this instance a decoder? */
++	enum bcm2835_codec_role	role;
+ 	/* The list of formats supported on input and output queues. */
+ 	struct bcm2835_codec_fmt_list	supported_fmts[2];
+ 
+@@ -558,7 +574,7 @@ static void setup_mmal_port_format(struc
+ 		port->es.video.frame_rate.den = 1;
+ 	} else {
+ 		/* Compressed format - leave resolution as 0 for decode */
+-		if (ctx->dev->decode) {
++		if (ctx->dev->role == DECODE) {
+ 			port->es.video.width = 0;
+ 			port->es.video.height = 0;
+ 			port->es.video.crop.width = 0;
+@@ -1089,7 +1105,8 @@ static int vidioc_s_fmt(struct bcm2835_c
+ 	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,	"Calulated bpl as %u, size %u\n",
+ 		 q_data->bytesperline, q_data->sizeimage);
+ 
+-	if (ctx->dev->decode && q_data->fmt->flags & V4L2_FMT_FLAG_COMPRESSED &&
++	if (ctx->dev->role == DECODE &&
++	    q_data->fmt->flags & V4L2_FMT_FLAG_COMPRESSED &&
+ 	    f->fmt.pix.width && f->fmt.pix.height) {
+ 		/*
+ 		 * On the decoder, if provided with a resolution on the input
+@@ -1188,7 +1205,8 @@ static int vidioc_g_selection(struct fil
+ 	bool capture_queue = s->type == V4L2_BUF_TYPE_VIDEO_CAPTURE ?
+ 								true : false;
+ 
+-	if (capture_queue ^ ctx->dev->decode)
++	if ((ctx->dev->role == DECODE && !capture_queue) ||
++	    (ctx->dev->role == ENCODE && capture_queue))
+ 		/* OUTPUT on decoder and CAPTURE on encoder are not valid. */
+ 		return -EINVAL;
+ 
+@@ -1196,7 +1214,8 @@ static int vidioc_g_selection(struct fil
+ 	if (!q_data)
+ 		return -EINVAL;
+ 
+-	if (ctx->dev->decode) {
++	switch (ctx->dev->role) {
++	case DECODE:
+ 		switch (s->target) {
+ 		case V4L2_SEL_TGT_COMPOSE_DEFAULT:
+ 		case V4L2_SEL_TGT_COMPOSE:
+@@ -1214,7 +1233,8 @@ static int vidioc_g_selection(struct fil
+ 		default:
+ 			return -EINVAL;
+ 		}
+-	} else {
++		break;
++	case ENCODE:
+ 		switch (s->target) {
+ 		case V4L2_SEL_TGT_CROP_DEFAULT:
+ 		case V4L2_SEL_TGT_CROP_BOUNDS:
+@@ -1232,6 +1252,9 @@ static int vidioc_g_selection(struct fil
+ 		default:
+ 			return -EINVAL;
+ 		}
++		break;
++	case ISP:
++		break;
+ 	}
+ 
+ 	return 0;
+@@ -1249,7 +1272,8 @@ static int vidioc_s_selection(struct fil
+ 		 __func__, ctx, s->type, q_data, s->target, s->r.left, s->r.top,
+ 		 s->r.width, s->r.height);
+ 
+-	if (capture_queue ^ ctx->dev->decode)
++	if ((ctx->dev->role == DECODE && !capture_queue) ||
++	    (ctx->dev->role == ENCODE && capture_queue))
+ 		/* OUTPUT on decoder and CAPTURE on encoder are not valid. */
+ 		return -EINVAL;
+ 
+@@ -1257,7 +1281,8 @@ static int vidioc_s_selection(struct fil
+ 	if (!q_data)
+ 		return -EINVAL;
+ 
+-	if (ctx->dev->decode) {
++	switch (ctx->dev->role) {
++	case DECODE:
+ 		switch (s->target) {
+ 		case V4L2_SEL_TGT_COMPOSE:
+ 			/* Accept cropped image */
+@@ -1272,7 +1297,8 @@ static int vidioc_s_selection(struct fil
+ 		default:
+ 			return -EINVAL;
+ 		}
+-	} else {
++		break;
++	case ENCODE:
+ 		switch (s->target) {
+ 		case V4L2_SEL_TGT_CROP:
+ 			/* Only support crop from (0,0) */
+@@ -1287,6 +1313,9 @@ static int vidioc_s_selection(struct fil
+ 		default:
+ 			return -EINVAL;
+ 		}
++		break;
++	case ISP:
++		break;
+ 	}
+ 
+ 	return 0;
+@@ -1490,7 +1519,7 @@ static int vidioc_try_decoder_cmd(struct
+ {
+ 	struct bcm2835_codec_ctx *ctx = file2ctx(file);
+ 
+-	if (!ctx->dev->decode)
++	if (ctx->dev->role != DECODE)
+ 		return -EINVAL;
+ 
+ 	switch (cmd->cmd) {
+@@ -1564,7 +1593,7 @@ static int vidioc_try_encoder_cmd(struct
+ {
+ 	struct bcm2835_codec_ctx *ctx = file2ctx(file);
+ 
+-	if (ctx->dev->decode)
++	if (ctx->dev->role != ENCODE)
+ 		return -EINVAL;
+ 
+ 	switch (cmd->cmd) {
+@@ -1697,12 +1726,11 @@ static int bcm2835_codec_create_componen
+ 	unsigned int enable = 1;
+ 	int ret;
+ 
+-	ret = vchiq_mmal_component_init(dev->instance, dev->decode ?
+-					"ril.video_decode" : "ril.video_encode",
++	ret = vchiq_mmal_component_init(dev->instance, components[dev->role],
+ 					&ctx->component);
+ 	if (ret < 0) {
+-		v4l2_err(&dev->v4l2_dev, "%s: failed to create component for %s\n",
+-			 __func__, dev->decode ? "decode" : "encode");
++		v4l2_err(&dev->v4l2_dev, "%s: failed to create component %s\n",
++			 __func__, components[dev->role]);
+ 		return -ENOMEM;
+ 	}
+ 
+@@ -1729,13 +1757,7 @@ static int bcm2835_codec_create_componen
+ 	if (ret < 0)
+ 		goto destroy_component;
+ 
+-	if (dev->decode) {
+-		if (ctx->q_data[V4L2_M2M_DST].sizeimage <
+-			ctx->component->output[0].minimum_buffer.size)
+-			v4l2_err(&dev->v4l2_dev, "buffer size mismatch sizeimage %u < min size %u\n",
+-				 ctx->q_data[V4L2_M2M_DST].sizeimage,
+-				 ctx->component->output[0].minimum_buffer.size);
+-	} else {
++	if (dev->role == ENCODE) {
+ 		if (ctx->q_data[V4L2_M2M_SRC].sizeimage <
+ 			ctx->component->output[0].minimum_buffer.size)
+ 			v4l2_err(&dev->v4l2_dev, "buffer size mismatch sizeimage %u < min size %u\n",
+@@ -1744,6 +1766,12 @@ static int bcm2835_codec_create_componen
+ 
+ 		/* Now we have a component we can set all the ctrls */
+ 		bcm2835_codec_set_ctrls(ctx);
++	} else {
++		if (ctx->q_data[V4L2_M2M_DST].sizeimage <
++			ctx->component->output[0].minimum_buffer.size)
++			v4l2_err(&dev->v4l2_dev, "buffer size mismatch sizeimage %u < min size %u\n",
++				 ctx->q_data[V4L2_M2M_DST].sizeimage,
++				 ctx->component->output[0].minimum_buffer.size);
+ 	}
+ 
+ 	return 0;
+@@ -2090,8 +2118,6 @@ static int bcm2835_codec_open(struct fil
+ 	struct v4l2_ctrl_handler *hdl;
+ 	int rc = 0;
+ 
+-	v4l2_dbg(1, debug, &dev->v4l2_dev, "Creating instance for %s\n",
+-		 dev->decode ? "decode" : "encode");
+ 	if (mutex_lock_interruptible(&dev->dev_mutex)) {
+ 		v4l2_err(&dev->v4l2_dev, "Mutex fail\n");
+ 		return -ERESTARTSYS;
+@@ -2104,7 +2130,8 @@ static int bcm2835_codec_open(struct fil
+ 
+ 	ctx->q_data[V4L2_M2M_SRC].fmt = get_default_format(dev, false);
+ 	ctx->q_data[V4L2_M2M_DST].fmt = get_default_format(dev, true);
+-	if (dev->decode) {
++	switch (dev->role) {
++	case DECODE:
+ 		/*
+ 		 * Input width and height are irrelevant as they will be defined
+ 		 * by the bitstream not the format. Required by V4L2 though.
+@@ -2126,7 +2153,8 @@ static int bcm2835_codec_open(struct fil
+ 			get_sizeimage(ctx->q_data[V4L2_M2M_DST].bytesperline,
+ 				      ctx->q_data[V4L2_M2M_DST].height,
+ 				      ctx->q_data[V4L2_M2M_DST].fmt);
+-	} else {
++		break;
++	case ENCODE:
+ 		ctx->q_data[V4L2_M2M_SRC].crop_width = DEFAULT_WIDTH;
+ 		ctx->q_data[V4L2_M2M_SRC].crop_height = DEFAULT_HEIGHT;
+ 		ctx->q_data[V4L2_M2M_SRC].height = DEFAULT_HEIGHT;
+@@ -2144,6 +2172,9 @@ static int bcm2835_codec_open(struct fil
+ 		ctx->q_data[V4L2_M2M_DST].height = DEFAULT_HEIGHT;
+ 		ctx->q_data[V4L2_M2M_DST].sizeimage =
+ 						DEF_COMP_BUF_SIZE_720P_OR_LESS;
++		break;
++	case ISP:
++		break;
+ 	}
+ 
+ 	ctx->colorspace = V4L2_COLORSPACE_REC709;
+@@ -2154,7 +2185,7 @@ static int bcm2835_codec_open(struct fil
+ 	file->private_data = &ctx->fh;
+ 	ctx->dev = dev;
+ 	hdl = &ctx->hdl;
+-	if (!dev->decode) {
++	if (dev->role == ENCODE) {
+ 		/* Encode controls */
+ 		v4l2_ctrl_handler_init(hdl, 6);
+ 
+@@ -2303,14 +2334,11 @@ static int bcm2835_codec_get_supported_f
+ 	unsigned int i, j, num_encodings;
+ 	int ret;
+ 
+-	ret = vchiq_mmal_component_init(dev->instance,
+-					dev->decode ?
+-						"ril.video_decode" :
+-						"ril.video_encode",
++	ret = vchiq_mmal_component_init(dev->instance, components[dev->role],
+ 					&component);
+ 	if (ret < 0) {
+-		v4l2_err(&dev->v4l2_dev, "%s: failed to create component\n",
+-			 __func__);
++		v4l2_err(&dev->v4l2_dev, "%s: failed to create component %s\n",
++			 __func__, components[dev->role]);
+ 		return -ENOMEM;
+ 	}
+ 
+@@ -2406,12 +2434,13 @@ destroy_component:
+ 
+ static int bcm2835_codec_create(struct platform_device *pdev,
+ 				struct bcm2835_codec_dev **new_dev,
+-				bool decode)
++				enum bcm2835_codec_role role)
+ {
+ 	struct bcm2835_codec_dev *dev;
+ 	struct video_device *vfd;
+ 	int video_nr;
+ 	int ret;
++	const static char *roles[] = {"decode", "encode", "isp"};
+ 
+ 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
+ 	if (!dev)
+@@ -2419,7 +2448,7 @@ static int bcm2835_codec_create(struct p
+ 
+ 	dev->pdev = pdev;
+ 
+-	dev->decode = decode;
++	dev->role = role;
+ 
+ 	ret = vchiq_mmal_init(&dev->instance);
+ 	if (ret)
+@@ -2441,14 +2470,27 @@ static int bcm2835_codec_create(struct p
+ 	vfd->lock = &dev->dev_mutex;
+ 	vfd->v4l2_dev = &dev->v4l2_dev;
+ 
+-	if (dev->decode) {
++	switch (role) {
++	case DECODE:
+ 		v4l2_disable_ioctl(vfd, VIDIOC_ENCODER_CMD);
+ 		v4l2_disable_ioctl(vfd, VIDIOC_TRY_ENCODER_CMD);
+ 		video_nr = decode_video_nr;
+-	} else {
++		break;
++	case ENCODE:
+ 		v4l2_disable_ioctl(vfd, VIDIOC_DECODER_CMD);
+ 		v4l2_disable_ioctl(vfd, VIDIOC_TRY_DECODER_CMD);
+ 		video_nr = encode_video_nr;
++		break;
++	case ISP:
++		v4l2_disable_ioctl(vfd, VIDIOC_ENCODER_CMD);
++		v4l2_disable_ioctl(vfd, VIDIOC_TRY_ENCODER_CMD);
++		v4l2_disable_ioctl(vfd, VIDIOC_DECODER_CMD);
++		v4l2_disable_ioctl(vfd, VIDIOC_TRY_DECODER_CMD);
++		video_nr = isp_video_nr;
++		break;
++	default:
++		ret = -EINVAL;
++		goto unreg_dev;
+ 	}
+ 
+ 	ret = video_register_device(vfd, VFL_TYPE_GRABBER, video_nr);
+@@ -2473,7 +2515,7 @@ static int bcm2835_codec_create(struct p
+ 	}
+ 
+ 	v4l2_info(&dev->v4l2_dev, "Loaded V4L2 %s\n",
+-		  dev->decode ? "decode" : "encode");
++		  roles[role]);
+ 	return 0;
+ 
+ err_m2m:
+@@ -2509,11 +2551,15 @@ static int bcm2835_codec_probe(struct pl
+ 	if (!drv)
+ 		return -ENOMEM;
+ 
+-	ret = bcm2835_codec_create(pdev, &drv->encode, false);
++	ret = bcm2835_codec_create(pdev, &drv->decode, DECODE);
+ 	if (ret)
+ 		goto out;
+ 
+-	ret = bcm2835_codec_create(pdev, &drv->decode, true);
++	ret = bcm2835_codec_create(pdev, &drv->encode, ENCODE);
++	if (ret)
++		goto out;
++
++	ret = bcm2835_codec_create(pdev, &drv->isp, ISP);
+ 	if (ret)
+ 		goto out;
+ 
+@@ -2526,6 +2572,10 @@ out:
+ 		bcm2835_codec_destroy(drv->encode);
+ 		drv->encode = NULL;
+ 	}
++	if (drv->decode) {
++		bcm2835_codec_destroy(drv->decode);
++		drv->decode = NULL;
++	}
+ 	return ret;
+ }
+ 
+@@ -2533,6 +2583,8 @@ static int bcm2835_codec_remove(struct p
+ {
+ 	struct bcm2835_codec_driver *drv = platform_get_drvdata(pdev);
+ 
++	bcm2835_codec_destroy(drv->isp);
++
+ 	bcm2835_codec_destroy(drv->encode);
+ 
+ 	bcm2835_codec_destroy(drv->decode);

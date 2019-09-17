@@ -1,0 +1,133 @@
+From faeaf9544c1803c77b6bd22b850360d15eba2eb9 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Tue, 5 Mar 2019 15:43:27 +0000
+Subject: [PATCH 391/773] media: bcm2835-unicam: Add support for enum
+ framesizes and frameintervals
+
+vidioc_enum_framesizes and vidioc_enum_frameintervals weren't implemented,
+therefore clients couldn't enumerate the supported resolutions.
+
+Implement them by forwarding on to the sensor driver.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../media/platform/bcm2835/bcm2835-unicam.c   | 94 +++++++++++++++++++
+ 1 file changed, 94 insertions(+)
+
+--- a/drivers/media/platform/bcm2835/bcm2835-unicam.c
++++ b/drivers/media/platform/bcm2835/bcm2835-unicam.c
+@@ -1406,6 +1406,84 @@ static int unicam_g_edid(struct file *fi
+ 	return v4l2_subdev_call(dev->sensor, pad, get_edid, edid);
+ }
+ 
++static int unicam_enum_framesizes(struct file *file, void *priv,
++				  struct v4l2_frmsizeenum *fsize)
++{
++	struct unicam_device *dev = video_drvdata(file);
++	const struct unicam_fmt *fmt;
++	struct v4l2_subdev_frame_size_enum fse;
++	int ret;
++
++	/* check for valid format */
++	fmt = find_format_by_pix(dev, fsize->pixel_format);
++	if (!fmt) {
++		unicam_dbg(3, dev, "Invalid pixel code: %x\n",
++			   fsize->pixel_format);
++		return -EINVAL;
++	}
++
++	fse.index = fsize->index;
++	fse.pad = 0;
++	fse.code = fmt->code;
++
++	ret = v4l2_subdev_call(dev->sensor, pad, enum_frame_size, NULL, &fse);
++	if (ret)
++		return ret;
++
++	unicam_dbg(1, dev, "%s: index: %d code: %x W:[%d,%d] H:[%d,%d]\n",
++		   __func__, fse.index, fse.code, fse.min_width, fse.max_width,
++		   fse.min_height, fse.max_height);
++
++	fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
++	fsize->discrete.width = fse.max_width;
++	fsize->discrete.height = fse.max_height;
++
++	return 0;
++}
++
++static int unicam_enum_frameintervals(struct file *file, void *priv,
++				      struct v4l2_frmivalenum *fival)
++{
++	struct unicam_device *dev = video_drvdata(file);
++	const struct unicam_fmt *fmt;
++	struct v4l2_subdev_frame_interval_enum fie = {
++		.index = fival->index,
++		.width = fival->width,
++		.height = fival->height,
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++	};
++	int ret;
++
++	fmt = find_format_by_pix(dev, fival->pixel_format);
++	if (!fmt)
++		return -EINVAL;
++
++	fie.code = fmt->code;
++	ret = v4l2_subdev_call(dev->sensor, pad, enum_frame_interval,
++			       NULL, &fie);
++	if (ret)
++		return ret;
++
++	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
++	fival->discrete = fie.interval;
++
++	return 0;
++}
++
++static int unicam_g_parm(struct file *file, void *fh, struct v4l2_streamparm *a)
++{
++	struct unicam_device *dev = video_drvdata(file);
++
++	return v4l2_g_parm_cap(video_devdata(file), dev->sensor, a);
++}
++
++static int unicam_s_parm(struct file *file, void *fh, struct v4l2_streamparm *a)
++{
++	struct unicam_device *dev = video_drvdata(file);
++
++	return v4l2_s_parm_cap(video_devdata(file), dev->sensor, a);
++}
++
+ static int unicam_g_dv_timings(struct file *file, void *priv,
+ 			       struct v4l2_dv_timings *timings)
+ {
+@@ -1613,6 +1691,12 @@ static const struct v4l2_ioctl_ops unica
+ 	.vidioc_g_edid			= unicam_g_edid,
+ 	.vidioc_s_edid			= unicam_s_edid,
+ 
++	.vidioc_enum_framesizes		= unicam_enum_framesizes,
++	.vidioc_enum_frameintervals	= unicam_enum_frameintervals,
++
++	.vidioc_g_parm			= unicam_g_parm,
++	.vidioc_s_parm			= unicam_s_parm,
++
+ 	.vidioc_s_dv_timings		= unicam_s_dv_timings,
+ 	.vidioc_g_dv_timings		= unicam_g_dv_timings,
+ 	.vidioc_query_dv_timings	= unicam_query_dv_timings,
+@@ -1850,6 +1934,16 @@ static int unicam_probe_complete(struct
+ 		v4l2_disable_ioctl(&unicam->video_dev, VIDIOC_ENUM_DV_TIMINGS);
+ 		v4l2_disable_ioctl(&unicam->video_dev, VIDIOC_QUERY_DV_TIMINGS);
+ 	}
++	if (!v4l2_subdev_has_op(unicam->sensor, pad, enum_frame_interval))
++		v4l2_disable_ioctl(&unicam->video_dev,
++				   VIDIOC_ENUM_FRAMEINTERVALS);
++	if (!v4l2_subdev_has_op(unicam->sensor, video, g_frame_interval))
++		v4l2_disable_ioctl(&unicam->video_dev, VIDIOC_G_PARM);
++	if (!v4l2_subdev_has_op(unicam->sensor, video, s_frame_interval))
++		v4l2_disable_ioctl(&unicam->video_dev, VIDIOC_S_PARM);
++
++	if (!v4l2_subdev_has_op(unicam->sensor, pad, enum_frame_size))
++		v4l2_disable_ioctl(&unicam->video_dev, VIDIOC_ENUM_FRAMESIZES);
+ 
+ 	ret = v4l2_device_register_subdev_nodes(&unicam->v4l2_dev);
+ 	if (ret) {
