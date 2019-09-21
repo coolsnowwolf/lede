@@ -8,9 +8,9 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ath10k-firmware
-PKG_SOURCE_DATE:=2019-05-12
-PKG_SOURCE_VERSION:=7b4aff2224857740fe2be724772123ebd6b01880
-PKG_MIRROR_HASH:=
+PKG_SOURCE_DATE:=2019-06-28
+PKG_SOURCE_VERSION:=7651f5bb299c40e34e05179b1bd15b211856a4b0
+PKG_MIRROR_HASH:=9c87fc79bc9f209069ca77f2eb15f6d6ca0299fb789c2ce2032c69d9d561a5c9
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
@@ -124,17 +124,17 @@ endef
 $(eval $(call Download,ath10k-firmware-qca9984-ct-htt))
 
 
-QCA4019_FIRMWARE_FILE_CT:=firmware-5-ct-full-community-12.bin-lede.008
+QCA4019_FIRMWARE_FILE_CT:=firmware-5-ct-full-community-12.bin-lede.010
 define Download/ath10k-firmware-qca4019-ct
   $(call Download/ct-firmware,QCA4019,ath10k-4019-10-4b)
-  HASH:=4e73cf8e24e83df87d6dce2038e350b3f67753ccca37a8c0d1b861818991e6aa
+  HASH:=276f6d4048759f99626dd000c1de64322cbed8a63f5aeb94dfea3127732fefc6
 endef
 $(eval $(call Download,ath10k-firmware-qca4019-ct))
 
-QCA4019_FIRMWARE_FILE_CT_HTT:=firmware-5-ct-full-htt-mgt-community-12.bin-lede.008
+QCA4019_FIRMWARE_FILE_CT_HTT:=firmware-5-ct-full-htt-mgt-community-12.bin-lede.010
 define Download/ath10k-firmware-qca4019-ct-htt
   $(call Download/ct-firmware-htt,QCA4019,ath10k-4019-10-4b)
-  HASH:=8f6434856d6f0207bc3f519cf50d2bf45df1bfcbc69b864ed02fcb5cd5ef6f4b
+  HASH:=53d4bdb6a0fd5a88cbcc04cbed41a36c0a601b912af0f3376c661d7a639a4a58
 endef
 $(eval $(call Download,ath10k-firmware-qca4019-ct-htt))
 
