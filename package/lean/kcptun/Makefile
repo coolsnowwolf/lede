@@ -22,15 +22,18 @@ ifeq ($(ARCH),arm)
 	PKG_ARCH_KCPTUN:=arm7
 endif
 ifeq ($(BOARD),bcm53xx)
-		PKG_ARCH_KCPTUN:=arm6
+	PKG_ARCH_KCPTUN:=arm6
 endif
 ifeq ($(BOARD),kirkwood)
-		PKG_ARCH_KCPTUN:=arm5
+	PKG_ARCH_KCPTUN:=arm5
+endif
+ifeq ($(ARCH),aarch64)
+	PKG_ARCH_KCPTUN:=arm64
 endif
 
 PKG_NAME:=kcptun-client
 PKG_VERSION:=20190515
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 PKG_SOURCE:=kcptun-linux-$(PKG_ARCH_KCPTUN)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/xtaci/kcptun/releases/download/v$(PKG_VERSION)

@@ -3,26 +3,45 @@
 #
 
 linksys_get_target_firmware() {
+
+	local cur_boot_part mtd_ubi0
+
 	cur_boot_part=`/usr/sbin/fw_printenv -n boot_part`
-	target_firmware=""
-	if [ "$cur_boot_part" = "1" ]
-	then
-		# current primary boot - update alt boot
-		target_firmware="kernel2"
-		fw_setenv boot_part 2
-		fw_setenv bootcmd "run altnandboot"
-	elif [ "$cur_boot_part" = "2" ]
-	then
-		# current alt boot - update primary boot
-		target_firmware="kernel1"
-		fw_setenv boot_part 1
-		fw_setenv bootcmd "run nandboot"
+	if [ -z "${cur_boot_part}" ] ; then
+		mtd_ubi0=$(cat /sys/devices/virtual/ubi/ubi0/mtd_num)
+		case $(egrep ^mtd${mtd_ubi0}: /proc/mtd | cut -d '"' -f 2) in
+		kernel1|rootfs1)
+			cur_boot_part=1
+			;;
+		kernel2|rootfs2)
+			cur_boot_part=2
+			;;
+		esac
+		>&2 printf "Current boot_part='%s' selected from ubi0/mtd_num='%s'" \
+			"${cur_boot_part}" "${mtd_ubi0}"
 	fi
 
-	# re-enable recovery so we get back if the new firmware is broken
-	fw_setenv auto_recovery yes
-
-	echo "$target_firmware"
+	case $cur_boot_part in
+	1)
+		fw_setenv -s - <<-EOF
+			boot_part 2
+			bootcmd "run altnandboot"
+		EOF
+		printf "kernel2"
+		return
+		;;
+	2)
+		fw_setenv -s - <<-EOF
+			boot_part 1
+			bootcmd "run nandboot"
+		EOF
+		printf "kernel1"
+		return
+		;;
+	*)
+		return
+		;;
+	esac
 }
 
 linksys_get_root_magic() {

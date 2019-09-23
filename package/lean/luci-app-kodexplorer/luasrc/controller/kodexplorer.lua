@@ -21,11 +21,9 @@ local function http_write_json(content)
 end
 
 function act_status()
-	local nginx="nginx"
-	local php_fpm="php-fpm"
 	local e={}
-	e.nginx_status=luci.sys.call("ps | grep -v grep | grep '"..nginx.."' >/dev/null")==0
-	e.php_status=luci.sys.call("ps | grep -v grep | grep '"..php_fpm.."' >/dev/null")==0
+	e.nginx_status=luci.sys.call("ps -w | grep nginx | grep kodexplorer | grep -v grep > /dev/null") == 0
+	e.php_status=luci.sys.call("ps -w | grep php | grep kodexplorer | grep -v grep > /dev/null") == 0
 	http_write_json(e)
 end
 

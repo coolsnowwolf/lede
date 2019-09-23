@@ -1,0 +1,167 @@
+From 54fb807d394537bbe866c30b1bad30244e374f01 Mon Sep 17 00:00:00 2001
+From: Eric Anholt <eric@anholt.net>
+Date: Wed, 20 Feb 2019 13:03:41 -0800
+Subject: [PATCH 576/773] drm/vc4: Disable V3D interactions if the v3d
+ component didn't probe.
+
+One might want to use the VC4 display stack without using Mesa.
+Similar to the debugfs fixes for not having all of the possible
+display bits enabled, make sure you can't oops in vc4 if v3d isn't
+enabled.
+
+Signed-off-by: Eric Anholt <eric@anholt.net>
+---
+ drivers/gpu/drm/vc4/vc4_drv.c     | 11 +++++++++++
+ drivers/gpu/drm/vc4/vc4_gem.c     | 10 ++++++++++
+ drivers/gpu/drm/vc4/vc4_irq.c     |  9 +++++++++
+ drivers/gpu/drm/vc4/vc4_perfmon.c | 18 ++++++++++++++++++
+ 4 files changed, 48 insertions(+)
+
+--- a/drivers/gpu/drm/vc4/vc4_drv.c
++++ b/drivers/gpu/drm/vc4/vc4_drv.c
+@@ -71,6 +71,9 @@ static int vc4_get_param_ioctl(struct dr
+ 	if (args->pad != 0)
+ 		return -EINVAL;
+ 
++	if (!vc4->v3d)
++		return -EINVAL;
++
+ 	switch (args->param) {
+ 	case DRM_VC4_PARAM_V3D_IDENT0:
+ 		ret = pm_runtime_get_sync(&vc4->v3d->pdev->dev);
+@@ -271,6 +274,7 @@ static int vc4_drm_bind(struct device *d
+ 	struct platform_device *pdev = to_platform_device(dev);
+ 	struct drm_device *drm;
+ 	struct vc4_dev *vc4;
++	struct device_node *node;
+ 	int ret = 0;
+ 
+ 	dev->coherent_dma_mask = DMA_BIT_MASK(32);
+@@ -279,6 +283,13 @@ static int vc4_drm_bind(struct device *d
+ 	if (!vc4)
+ 		return -ENOMEM;
+ 
++	/* If VC4 V3D is missing, don't advertise render nodes. */
++	node = of_find_compatible_node(NULL, NULL, "brcm,bcm2835-v3d");
++	if (node)
++		of_node_put(node);
++	else
++		vc4_drm_driver.driver_features &= ~DRIVER_RENDER;
++
+ 	drm = drm_dev_alloc(&vc4_drm_driver, dev);
+ 	if (IS_ERR(drm))
+ 		return PTR_ERR(drm);
+--- a/drivers/gpu/drm/vc4/vc4_gem.c
++++ b/drivers/gpu/drm/vc4/vc4_gem.c
+@@ -74,6 +74,11 @@ vc4_get_hang_state_ioctl(struct drm_devi
+ 	u32 i;
+ 	int ret = 0;
+ 
++	if (!vc4->v3d) {
++		DRM_DEBUG("VC4_GET_HANG_STATE with no VC4 V3D probed\n");
++		return -EINVAL;
++	}
++
+ 	spin_lock_irqsave(&vc4->job_lock, irqflags);
+ 	kernel_state = vc4->hang_state;
+ 	if (!kernel_state) {
+@@ -1124,6 +1129,11 @@ vc4_submit_cl_ioctl(struct drm_device *d
+ 	struct dma_fence *in_fence;
+ 	int ret = 0;
+ 
++	if (!vc4->v3d) {
++		DRM_DEBUG("VC4_SUBMIT_CL with no VC4 V3D probed\n");
++		return -EINVAL;
++	}
++
+ 	if ((args->flags & ~(VC4_SUBMIT_CL_USE_CLEAR_COLOR |
+ 			     VC4_SUBMIT_CL_FIXED_RCL_ORDER |
+ 			     VC4_SUBMIT_CL_RCL_ORDER_INCREASING_X |
+--- a/drivers/gpu/drm/vc4/vc4_irq.c
++++ b/drivers/gpu/drm/vc4/vc4_irq.c
+@@ -229,6 +229,9 @@ vc4_irq_preinstall(struct drm_device *de
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 
++	if (!vc4->v3d)
++		return;
++
+ 	init_waitqueue_head(&vc4->job_wait_queue);
+ 	INIT_WORK(&vc4->overflow_mem_work, vc4_overflow_mem_work);
+ 
+@@ -243,6 +246,9 @@ vc4_irq_postinstall(struct drm_device *d
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 
++	if (!vc4->v3d)
++		return 0;
++
+ 	/* Enable both the render done and out of memory interrupts. */
+ 	V3D_WRITE(V3D_INTENA, V3D_DRIVER_IRQS);
+ 
+@@ -254,6 +260,9 @@ vc4_irq_uninstall(struct drm_device *dev
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 
++	if (!vc4->v3d)
++		return;
++
+ 	/* Disable sending interrupts for our driver's IRQs. */
+ 	V3D_WRITE(V3D_INTDIS, V3D_DRIVER_IRQS);
+ 
+--- a/drivers/gpu/drm/vc4/vc4_perfmon.c
++++ b/drivers/gpu/drm/vc4/vc4_perfmon.c
+@@ -100,12 +100,18 @@ void vc4_perfmon_close_file(struct vc4_f
+ int vc4_perfmon_create_ioctl(struct drm_device *dev, void *data,
+ 			     struct drm_file *file_priv)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct vc4_file *vc4file = file_priv->driver_priv;
+ 	struct drm_vc4_perfmon_create *req = data;
+ 	struct vc4_perfmon *perfmon;
+ 	unsigned int i;
+ 	int ret;
+ 
++	if (!vc4->v3d) {
++		DRM_DEBUG("Creating perfmon no VC4 V3D probed\n");
++		return -EINVAL;
++	}
++
+ 	/* Number of monitored counters cannot exceed HW limits. */
+ 	if (req->ncounters > DRM_VC4_MAX_PERF_COUNTERS ||
+ 	    !req->ncounters)
+@@ -146,10 +152,16 @@ int vc4_perfmon_create_ioctl(struct drm_
+ int vc4_perfmon_destroy_ioctl(struct drm_device *dev, void *data,
+ 			      struct drm_file *file_priv)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct vc4_file *vc4file = file_priv->driver_priv;
+ 	struct drm_vc4_perfmon_destroy *req = data;
+ 	struct vc4_perfmon *perfmon;
+ 
++	if (!vc4->v3d) {
++		DRM_DEBUG("Destroying perfmon no VC4 V3D probed\n");
++		return -EINVAL;
++	}
++
+ 	mutex_lock(&vc4file->perfmon.lock);
+ 	perfmon = idr_remove(&vc4file->perfmon.idr, req->id);
+ 	mutex_unlock(&vc4file->perfmon.lock);
+@@ -164,11 +176,17 @@ int vc4_perfmon_destroy_ioctl(struct drm
+ int vc4_perfmon_get_values_ioctl(struct drm_device *dev, void *data,
+ 				 struct drm_file *file_priv)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct vc4_file *vc4file = file_priv->driver_priv;
+ 	struct drm_vc4_perfmon_get_values *req = data;
+ 	struct vc4_perfmon *perfmon;
+ 	int ret;
+ 
++	if (!vc4->v3d) {
++		DRM_DEBUG("Getting perfmon no VC4 V3D probed\n");
++		return -EINVAL;
++	}
++
+ 	mutex_lock(&vc4file->perfmon.lock);
+ 	perfmon = idr_find(&vc4file->perfmon.idr, req->id);
+ 	vc4_perfmon_get(perfmon);
