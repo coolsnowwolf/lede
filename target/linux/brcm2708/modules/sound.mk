@@ -512,6 +512,26 @@ endef
 $(eval $(call KernelPackage,sound-soc-hifiberry-dacplusadc))
 
 
+define KernelPackage/sound-soc-hifiberry-dacplusdsp
+  TITLE:=Support for HifiBerry DAC+DSP
+  KCONFIG:= \
+    CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUSDSP
+  FILES:= \
+    $(LINUX_DIR)/sound/soc/bcm/snd-soc-hifiberry-dacplusdsp.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-hifiberry-dacplusdsp)
+  DEPENDS:= \
+    kmod-sound-soc-bcm2835-i2s \
+    +kmod-sound-soc-rpi-simple-soundcard
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-hifiberry-dacplusdsp/description
+  This package contains support for HifiBerry DAC+DSP
+endef
+
+$(eval $(call KernelPackage,sound-soc-hifiberry-dacplusdsp))
+
+
 define KernelPackage/sound-soc-hifiberry-dacplusadc-pro
   TITLE:=Support for HifiBerry DAC+ADC PRO
   KCONFIG:= \
