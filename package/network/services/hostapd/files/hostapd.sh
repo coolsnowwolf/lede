@@ -747,6 +747,15 @@ wpa_supplicant_add_network() {
 		ieee80211w ieee80211r \
 		multi_ap
 
+	case "$auth_type" in
+		sae|owe|eap192|eap-eap192)
+			set_default ieee80211w 2
+		;;
+		psk-sae)
+			set_default ieee80211w 1
+		;;
+	esac
+
 	set_default ieee80211r 0
 	set_default multi_ap 0
 
@@ -788,6 +797,7 @@ wpa_supplicant_add_network() {
 		none) ;;
 		owe)
 			hostapd_append_wpa_key_mgmt
+			key_mgmt="$wpa_key_mgmt"
 		;;
 		wep)
 			local wep_keyidx=0
