@@ -13,25 +13,21 @@ local v2ray = {
   },
     -- 传入连接
     inbound = {
-      "port": local_port,
-      "listen": "127.0.0.1",
-      "protocol": "http",
-      "sniffing": {
-        "enabled": true,
-        "destOverride": [
+      port = local_port,
+      listen = "127.0.0.1",
+      protocol = "http",
+      sniffing = {
+        enabled = true,
+        destOverride = {
           "http",
           "tls"
-        ]
+        }
       },
-      "settings": {
-		  "accounts": [
-			{
-			}
-		  ],
-		  "allowTransparent": false,
-		  "userLevel": 0
+      settings = {
+		  allowTransparent = false,
+		  userLevel = 0
       },
-      "streamSettings": null
+      streamSettings = null
     },
     -- 传出连接
     outbound = {
