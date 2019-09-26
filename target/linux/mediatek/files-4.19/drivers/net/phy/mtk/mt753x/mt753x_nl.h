@@ -1,11 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Driver for MediaTek MT753x gigabit switch
- *
- * Copyright (C) 2018 MediaTek Inc. All Rights Reserved.
- *
+ * Copyright (c) 2018 MediaTek Inc.
  * Author: Sirui Zhao <Sirui.Zhao@mediatek.com>
- *
- * SPDX-License-Identifier:	GPL-2.0+
  */
 
 #ifndef _MT753X_NL_H_

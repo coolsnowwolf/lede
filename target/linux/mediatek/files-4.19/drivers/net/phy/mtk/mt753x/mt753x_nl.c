@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Configuration layer for MediaTek MT753x gigabit switch
- *
- * Copyright (C) 2018 MediaTek Inc. All Rights Reserved.
- *
+ * Copyright (c) 2018 MediaTek Inc.
  * Author: Sirui Zhao <Sirui.Zhao@mediatek.com>
- *
- * SPDX-License-Identifier:	GPL-2.0+
  */
 
 #include <linux/types.h>
@@ -16,10 +12,6 @@
 
 #include "mt753x.h"
 #include "mt753x_nl.h"
-
-#define MT753X_NL_CMD_REQ_ATTRS(attr)		\
-	.required_attrs = attr,			\
-	.nr_required_attrs = ARRAY_SIZE(attr),
 
 struct mt753x_nl_cmd_item {
 	enum mt753x_cmd cmd;
@@ -61,7 +53,6 @@ static const struct genl_ops mt753x_nl_ops[] = {
 };
 
 static struct genl_family mt753x_nl_family = {
-//	.id =		GENL_ID_GENERATE,
 	.name =		MT753X_GENL_NAME,
 	.version =	MT753X_GENL_VERSION,
 	.maxattr =	MT753X_NR_ATTR_TYPE,
@@ -208,7 +199,8 @@ static int mt753x_nl_reply_read(struct genl_info *info, struct gsw_mt753x *gsw)
 {
 	struct sk_buff *rep_skb = NULL;
 	s32 phy, devad, reg;
-	int ret, value;
+	int value;
+	int ret = 0;
 
 	phy = mt753x_nl_get_s32(info, MT753X_ATTR_TYPE_PHY, -1);
 	devad = mt753x_nl_get_s32(info, MT753X_ATTR_TYPE_DEVAD, -1);
@@ -252,7 +244,7 @@ static int mt753x_nl_reply_write(struct genl_info *info, struct gsw_mt753x *gsw)
 	struct sk_buff *rep_skb = NULL;
 	s32 phy, devad, reg;
 	u32 value;
-	int ret;
+	int ret = 0;
 
 	phy = mt753x_nl_get_s32(info, MT753X_ATTR_TYPE_PHY, -1);
 	devad = mt753x_nl_get_s32(info, MT753X_ATTR_TYPE_DEVAD, -1);
@@ -312,12 +304,14 @@ static const struct mt753x_nl_cmd_item mt753x_nl_cmds[] = {
 		.cmd = MT753X_CMD_READ,
 		.require_dev = true,
 		.process = mt753x_nl_reply_read,
-		MT753X_NL_CMD_REQ_ATTRS(mt753x_nl_cmd_read_attrs)
+		.required_attrs = mt753x_nl_cmd_read_attrs,
+		.nr_required_attrs = ARRAY_SIZE(mt753x_nl_cmd_read_attrs),
 	}, {
 		.cmd = MT753X_CMD_WRITE,
 		.require_dev = true,
 		.process = mt753x_nl_reply_write,
-		MT753X_NL_CMD_REQ_ATTRS(mt753x_nl_cmd_write_attrs)
+		.required_attrs = mt753x_nl_cmd_write_attrs,
+		.nr_required_attrs = ARRAY_SIZE(mt753x_nl_cmd_write_attrs),
 	}
 };
 
