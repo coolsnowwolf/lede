@@ -584,8 +584,7 @@ define Device/XiaoYu-C5
   DTS := XiaoYu-C5
   IMAGE_SIZE := $(ralink_default_fw_size_32M)
   DEVICE_TITLE := XiaoYu-C5
-  DEVICE_PACKAGES := \
-	kmod-ata-core kmod-ata-ahci kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
+  DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-usb3
 endef
 TARGET_DEVICES += XiaoYu-C5
 
