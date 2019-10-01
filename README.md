@@ -1,12 +1,12 @@
 如何编译自己需要的 OpenWrt 固件
 ====
 
-**不要Fork我这个repo，此repo不会实时更新Lean大的，很有可能会缺少新功能或者留有未修复的BUG
-**以下命令可以作为你搭建环境和编译的参考
-___
+
+不要Fork我这个repo，此repo不会实时更新Lean大的，很有可能会缺少新功能或者留有未修复的BUG
+以下命令可以作为你搭建环境和编译的参考
 
 注意：
-1. 不要用 root 用户 git 和编译！！！
+1. 不要用 root 用户进行编译！！！
 2. 国内用户编译前最好准备好梯子
 3. 编译成功后，固件默认登陆IP 192.168.5.1, 用户名root，没有密码 （早期固件请尝试 password）
 
@@ -23,9 +23,8 @@ sudo apt-get update
 ```
 然后输入以下的命令搭建系统环境
 
-```bash
-sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex node-uglify gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx-ucl libelf-dev autoconf automake libtool autopoint
-```
+>sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex node-uglify gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx-ucl libelf-dev autoconf automake libtool autopoint
+
 **从此时开始，你必须使用非root权限用户进行后续操作
 
 3. 下载好源代码
@@ -61,20 +60,19 @@ make download
 ```bash
 make V=s
 ```
-7-1. 如果你非常谨慎，也可以使用以下命令替换第7步的命令，来编译你的固件。
+7-1. 如果你非常谨慎，也可以使用以下命令替换第7步的命令，来编译你的固件。-j后面是线程数。第一次编译推荐用单线程，即 -j1，国内请尽量全局科学上网）
 ```bash
 make -j1 V=s
 ```
-   -j1 后面是线程数。第一次编译推荐用单线程，国内请尽量全局科学上网）
-
+   
 本套代码保证肯定可以编译成功。里面包括了 R9 所有源代码，包括 IPK 的。
 
 你可以自由使用，但源码编译二次发布请注明Lean大的 GitHub 仓库链接。谢谢合作！
 
 特别提示：
 1. 源代码中绝不含任何后门和可以监控或者劫持你的 HTTPS 的闭源软件，SSL 安全是互联网最后的壁垒。安全干净才是固件应该做到的。
-2.如果你自认为 Koolshare 论坛或者其固件的脑残粉，本人不欢迎你使用本源代码。所以如果你是，那么使用过程中遇到任何问题本人概不回应。
-3.如有问题需要讨论，欢迎加入 QQ 讨论群：Gargoyle OpenWrt 编译大群 ,号码 718010658 ，加群链接 点击链接加入群聊【Op共享技术交流群】：https://jq.qq.com/?_wv=1027&k=5PUGjOG
+2. 如果你自认为 Koolshare 论坛或者其固件的脑残粉，本人不欢迎你使用本源代码。所以如果你是，那么使用过程中遇到任何问题本人概不回应。
+3. 如有问题需要讨论，欢迎加入 QQ 讨论群：Gargoyle OpenWrt 编译大群 ,号码 718010658 ，加群链接 点击链接加入群聊【Op共享技术交流群】：https://jq.qq.com/?_wv=1027&k=5PUGjOG
 
 Before going to the next step，welcome subscribe youtube channel “佚sir playground” to obtain related video tutorials and more.
 
