@@ -1,8 +1,8 @@
 如何编译自己需要的 OpenWrt 固件
 ====
 
-**不要Fork我这个repo，此repo不会实时更新，很可能缺少新功能或者留有未修复的BUG。**  
-**以下命令可以作为你搭建环境和编译的参考**
+**1. 不要Fork我这个repo，此repo不会实时更新，很可能缺少新功能或者留有未修复的BUG。**  
+**2. 以下命令可以作为你搭建环境和编译的参考**
 
 注意：
 1. __不要__ 用 `root` 用户进行编译！！！
@@ -24,7 +24,8 @@ sudo apt-get update
 
 >sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex node-uglify gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx-ucl libelf-dev autoconf automake libtool autopoint
 
-**从此时开始，你必须使用`非root`权限用户进行后续操作**
+----
+**如果你使用`root`成了以上命令，那从此时开始，你必须使用`非root`权限用户进行后续操作**
 
 3. 下载好源代码
 ```bash
