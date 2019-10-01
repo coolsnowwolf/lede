@@ -1,16 +1,15 @@
 如何编译自己需要的 OpenWrt 固件
 ====
 
-
-__不要Fork我这个repo，此repo不会实时更新Lean大的，很有可能会缺少新功能或者留有未修复的BUG。
-__以下命令可以作为你搭建环境和编译的参考
+**不要Fork我这个repo，此repo不会实时更新Lean大的，很有可能会缺少新功能或者留有未修复的BUG。**
+**以下命令可以作为你搭建环境和编译的参考**
 
 注意：
-1. 不要用 root 用户进行编译！！！
+1. 不要用 `root` 用户进行编译！！！
 2. 国内用户编译前最好准备好梯子
-3. 编译成功后，固件默认登陆IP 192.168.5.1, 用户名root，没有密码 （早期固件请尝试 password）
+3. 编译成功后，固件默认登陆IP 192.168.5.1, 用户名`root`，没有密码 （早期固件请尝试 `password`）
 
-**欢迎关注油管频道 “eSir playground” 观看相关的教学视频，并订阅我的油管频道[eSir Playground](https://www.youtube.com/c/esirplayground "esir playground"):blush:
+**欢迎关注油管频道 “eSir playground” 观看相关的教学视频，并订阅我的油管频道[eSir Playground]**(https://www.youtube.com/c/esirplayground "esir playground"):blush:
 
 编译命令如下:
 
@@ -25,13 +24,13 @@ sudo apt-get update
 
 >sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex node-uglify gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx-ucl libelf-dev autoconf automake libtool autopoint
 
-__从此时开始，你必须使用非root权限用户进行后续操作
+**从此时开始，你必须使用`非root`权限用户进行后续操作**
 
 3. 下载好源代码
 ```bash
 git clone https://github.com/coolsnowwolf/lede
 ```
-   然后lede目录（也就是build root 目录）
+   然后进入`lede`目录（也就是`buildroot`目录）
 ```bash   
 cd lede
 ```
@@ -41,26 +40,26 @@ cd lede
 ./scripts/feeds update -a 
 ./scripts/feeds install -a
 ```
-如果已经成功编译过，再次编译时还要同步Lean大改动的代码
+如果已经成功编译过，再次编译时还要同步L大的代码
 ```bash
 git pull
 ```
 
-5. 运行  make menuconfig 进入选单界面，选择cpu架构，型号，固件类型，所需插件及工具等等等等，记得最后退出时先`Save`
+5. 运行 `make menuconfig`入选单界面，选择CPU架构，型号，固件类型，所需插件及工具等，记得先`Save` 再退出
 ```bash
 make menuconfig 
 ```
 
-6. 下载源码文件到buildroot目录下的dl目录
+6. 下载源码文件到`uildroot`录下的`dl`目录
 ```bash
 make download 
 ```
 
-7. 正式开始编译，可以先运行screen命令守护进程，尤其是在VPS上编译时
+7. 正式开始编译，建议先运行`screen`命令守护进程，尤其是在`VPS`上编译时
 ```bash
 make V=s
 ```
-7-1. 如果你非常谨慎，也可以使用以下命令替换第7步的命令，来编译你的固件。-j后面是线程数。第一次编译推荐用单线程，即 -j1，国内请尽量全局科学上网）
+7-1. 如果你非常谨慎，也可以使用以下命令替换第7步的命令，来编译你的固件。`-j` 后面是线程数。第一次编译推荐用单线程，即 `-j1`，国内请尽量全局科学上网）
 ```bash
 make -j1 V=s
 ```
