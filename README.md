@@ -17,21 +17,23 @@ ___
 
 2. 命令行输入
 
-```Bash
+```bash
 sudo apt-get update ，
-
+```
 然后输入
 
-```Bash
+```bash
 sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex node-uglify gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx-ucl libelf-dev autoconf automake libtool autopoint
-
+```
 从此时开始，你必须使用非root权限用户进行后续操作
-3. git clone https://github.com/coolsnowwolf/lede 
-
-   下载好源代码，然后 
-   
+3. 下载好源代码
+```bash
+git clone https://github.com/coolsnowwolf/lede 
+```
+   然后 
+```bash   
    cd lede 进入目录
-
+```
 4. ./scripts/feeds update -a 
    ./scripts/feeds install -a
    
