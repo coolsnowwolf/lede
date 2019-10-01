@@ -2,8 +2,8 @@
 ====
 
 
-不要Fork我这个repo，此repo不会实时更新Lean大的，很有可能会缺少新功能或者留有未修复的BUG
-以下命令可以作为你搭建环境和编译的参考
+__不要Fork我这个repo，此repo不会实时更新Lean大的，很有可能会缺少新功能或者留有未修复的BUG。
+__以下命令可以作为你搭建环境和编译的参考
 
 注意：
 1. 不要用 root 用户进行编译！！！
@@ -25,7 +25,7 @@ sudo apt-get update
 
 >sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex node-uglify gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx-ucl libelf-dev autoconf automake libtool autopoint
 
-**从此时开始，你必须使用非root权限用户进行后续操作
+__从此时开始，你必须使用非root权限用户进行后续操作
 
 3. 下载好源代码
 ```bash
@@ -46,7 +46,7 @@ cd lede
 git pull
 ```
 
-5. 运行  make menuconfig 进入选单界面，选择cpu架构，型号，固件类型，所需插件及工具等等等等，记得最后退出时先**Save
+5. 运行  make menuconfig 进入选单界面，选择cpu架构，型号，固件类型，所需插件及工具等等等等，记得最后退出时先`Save`
 ```bash
 make menuconfig 
 ```
