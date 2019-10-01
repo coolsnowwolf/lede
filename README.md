@@ -13,8 +13,7 @@
 
 编译命令如下:
 
-1. 首先装好 Ubuntu 64bit，推荐  Ubuntu  14 LTS x64
-
+1. 首先装好 Ubuntu 64bit，推荐  Ubuntu  14 LTS x64  
 2. 命令行输入
 
 ```bash
