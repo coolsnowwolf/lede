@@ -1,15 +1,15 @@
 如何编译自己需要的 OpenWrt 固件
 ====
 
-**不要Fork我这个repo，此repo不会实时更新Lean大的，很有可能会缺少新功能或者留有未修复的BUG。**
-**以下命令可以作为你搭建环境和编译的参考**
+   **不要Fork我这个repo，此repo不会实时更新Lean大的，很有可能会缺少新功能或者留有未修复的BUG。**
+   **以下命令可以作为你搭建环境和编译的参考**
 
 注意：
-1. 不要用 `root` 用户进行编译！！！
+1. __不要__用 `root` 用户进行编译！！！
 2. 国内用户编译前最好准备好梯子
 3. 编译成功后，固件默认登陆IP 192.168.5.1, 用户名`root`，没有密码 （早期固件请尝试 `password`）
 
-**欢迎关注油管频道 “eSir playground” 观看相关的教学视频，并订阅我的油管频道[eSir Playground]**(https://www.youtube.com/c/esirplayground "esir playground"):blush:
+**欢迎关注油管频道 “eSir playground” 观看相关的教学视频，并订阅我的油管频道[eSir Playground](https://www.youtube.com/c/esirplayground "esir playground")**:blush:
 
 编译命令如下:
 
