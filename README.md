@@ -9,7 +9,7 @@
 2. 国内用户编译前最好准备好梯子
 3. 编译成功后，固件默认登陆IP 192.168.5.1, 用户名`root`，密码 `password`
 
-**欢迎关注油管频道 “eSir playground” 观看相关的教学视频，并订阅我的油管频道[eSir Playground](https://www.youtube.com/c/esirplayground "esir playground")**:blush:
+**欢迎关注油管频道 [eSir Playground](https://www.youtube.com/c/esirplayground "esir playground") 观看相关的教学视频，并订阅我的油管频道**:blush:
 
 编译命令如下:
 
