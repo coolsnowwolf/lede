@@ -41,12 +41,12 @@ Server_Update() {
     #v2ray
     ${uci_set}alter_id="$ssr_alter_id"
     ${uci_set}vmess_id="$ssr_vmess_id"
-    ${uci_set}security="$ssr_security"
     ${uci_set}transport="$ssr_transport"
     ${uci_set}tcp_guise="$ssr_tcp_guise"
     ${uci_set}ws_host="$ssr_ws_host"
     ${uci_set}ws_path="$ssr_ws_path"
     ${uci_set}tls="$ssr_tls"
+    ${uci_set}security="auto"
 	fi
 }
 

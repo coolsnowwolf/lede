@@ -1,0 +1,86 @@
+From 20a5b38305df30e25b4429e0e34e35235dd57228 Mon Sep 17 00:00:00 2001
+From: Fabrice Gasnier <fabrice.gasnier@st.com>
+Date: Mon, 1 Oct 2018 15:23:57 +0200
+Subject: [PATCH 307/806] pwm: Send a uevent on the pwmchip device upon channel
+ sysfs (un)export
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+commit 552c02e3e7cfe2744b59de285aaea70021ae95c9 upstream.
+
+This patch sends a uevent (KOBJ_CHANGE) on the pwmchipN device,
+everytime a pwmX channel has been exported/unexported via sysfs. This
+allows udev to implement rules on such events, like:
+
+SUBSYSTEM=="pwm*", PROGRAM="/bin/sh -c '\
+        chown -R root:gpio /sys/class/pwm && chmod -R 770 /sys/class/pwm;\
+        chown -R root:gpio
+/sys/devices/platform/soc/*.pwm/pwm/pwmchip* && chmod -R 770
+/sys/devices/platform/soc/*.pwm/pwm/pwmchip*\
+'"
+
+This is a replacement patch for commit 7e5d1fd75c3d ("pwm: Set class for
+exported channels in sysfs"), see [1].
+
+basic testing:
+$ udevadm monitor --environment &
+$ echo 0 > /sys/class/pwm/pwmchip0/export
+KERNEL[197.321736] change   /devices/.../pwm/pwmchip0 (pwm)
+ACTION=change
+DEVPATH=/devices/.../pwm/pwmchip0
+EXPORT=pwm0
+SEQNUM=2045
+SUBSYSTEM=pwm
+
+[1] https://lkml.org/lkml/2018/9/25/713
+
+Signed-off-by: Fabrice Gasnier <fabrice.gasnier@st.com>
+Tested-by: Gottfried Haider <gottfried.haider@gmail.com>
+Tested-by: Michal Vokáč <michal.vokac@ysoft.com>
+Signed-off-by: Thierry Reding <thierry.reding@gmail.com>
+---
+ drivers/pwm/sysfs.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+--- a/drivers/pwm/sysfs.c
++++ b/drivers/pwm/sysfs.c
+@@ -249,6 +249,7 @@ static void pwm_export_release(struct de
+ static int pwm_export_child(struct device *parent, struct pwm_device *pwm)
+ {
+ 	struct pwm_export *export;
++	char *pwm_prop[2];
+ 	int ret;
+ 
+ 	if (test_and_set_bit(PWMF_EXPORTED, &pwm->flags))
+@@ -276,6 +277,10 @@ static int pwm_export_child(struct devic
+ 		export = NULL;
+ 		return ret;
+ 	}
++	pwm_prop[0] = kasprintf(GFP_KERNEL, "EXPORT=pwm%u", pwm->hwpwm);
++	pwm_prop[1] = NULL;
++	kobject_uevent_env(&parent->kobj, KOBJ_CHANGE, pwm_prop);
++	kfree(pwm_prop[0]);
+ 
+ 	return 0;
+ }
+@@ -288,6 +293,7 @@ static int pwm_unexport_match(struct dev
+ static int pwm_unexport_child(struct device *parent, struct pwm_device *pwm)
+ {
+ 	struct device *child;
++	char *pwm_prop[2];
+ 
+ 	if (!test_and_clear_bit(PWMF_EXPORTED, &pwm->flags))
+ 		return -ENODEV;
+@@ -296,6 +302,11 @@ static int pwm_unexport_child(struct dev
+ 	if (!child)
+ 		return -ENODEV;
+ 
++	pwm_prop[0] = kasprintf(GFP_KERNEL, "UNEXPORT=pwm%u", pwm->hwpwm);
++	pwm_prop[1] = NULL;
++	kobject_uevent_env(&parent->kobj, KOBJ_CHANGE, pwm_prop);
++	kfree(pwm_prop[0]);
++
+ 	/* for device_find_child() */
+ 	put_device(child);
+ 	device_unregister(child);
