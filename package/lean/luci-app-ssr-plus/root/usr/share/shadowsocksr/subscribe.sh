@@ -10,6 +10,8 @@ urlsafe_b64decode() {
     echo $data | base64 -d
 }
 
+urldecode() { : "${*//+/ }"; echo -e "${_//%/\\x}"; }
+
 echo_date(){
 	echo $(TZ=UTC-8 date -R +%Y-%m-%d\ %X):$1
 }
@@ -48,8 +50,10 @@ Server_Update() {
     ${uci_set}tls="$ssr_tls"
     ${uci_set}security="auto"
     ${uci_set}alias="$ssr_remarks"
+	fi
 	
 	if [ "$ssr_type" = "ss" ]; then
+    ${uci_set}encrypt_method_ss="$ss_method"
     ${uci_set}alias="$ssr_remarks"
 	fi
 
