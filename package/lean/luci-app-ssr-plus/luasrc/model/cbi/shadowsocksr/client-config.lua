@@ -115,11 +115,10 @@ s = m:section(NamedSection, sid, "servers")
 s.anonymous = true
 s.addremove   = false
 
-o = s:option(DummyValue,"ssr_url","SSR URL") 
+o = s:option(DummyValue,"ssr_url","SS/SSR/V2RAY URL") 
 o.rawhtml  = true
 o.template = "shadowsocksr/ssrurl"
 o.value =sid
-o:depends("type", "ssr")
 
 o = s:option(ListValue, "type", translate("Server Node Type"))
 o:value("ssr", translate("ShadowsocksR"))
