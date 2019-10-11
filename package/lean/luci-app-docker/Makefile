@@ -10,7 +10,7 @@ LUCI_TITLE:=Luci for Docker-CE
 LUCI_DEPENDS:=+docker-ce
 LUCI_PKGARCH:=all
 PKG_VERSION:=1
-PKG_RELEASE:=5
+PKG_RELEASE:=6
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
