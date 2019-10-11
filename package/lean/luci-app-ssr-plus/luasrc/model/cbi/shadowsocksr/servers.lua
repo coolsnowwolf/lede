@@ -101,4 +101,9 @@ function o.cfgvalue(...)
 	return Value.cfgvalue(...) or "0"
 end
 
+o = s:option(DummyValue,"server",translate("Ping Latency"))
+o.template="shadowsocksr/ping"
+o.width="10%"
+
+m:append(Template("shadowsocksr/server_list"))
 return m

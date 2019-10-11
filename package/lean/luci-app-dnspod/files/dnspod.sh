@@ -13,7 +13,7 @@ domain=`uci get dnspod.base_arg.main_domain 2>/dev/null`
 #由于*linux会被脚本解析为当前目录下的所有文件，所以请填写\*
 #  sub_domain='\*'
 sub_domain=`uci get dnspod.base_arg.sub_domain 2>/dev/null`
-if [ $sub_domain = "\*" ];then
+if [ $sub_domain = "\*" ]; then
     sub_domain="*"
 fi
 
@@ -24,6 +24,12 @@ if [[ $wait_second =~ ^[1-9][0-9]*$ ]]; then
     wait=$wait_second
 fi
 
+#外网ip获取命令
+command=`uci get dnspod.base_arg.command_to_get_ip 2>/dev/null`
+if [ -z "$command" ]; then
+    command='curl -s whatismyip.akamai.com'
+fi
+
 #检查curl是否安装
 curl_status=`which curl 2>/dev/null`
 [ -n "$curl_status" ] || { echo "curl is not installed";exit 3; }
@@ -32,7 +38,7 @@ os=$(uname -a | egrep -io 'openwrt' | tr [A-Z] [a-z])
 
 API_url="https://dnsapi.cn"
 LOG_FILE="/tmp/dnspod.log"
-MAX_LOG_SIZE=1*1024*1024
+MAX_LOG_SIZE=`expr 1 * 1024 * 1024` # 默认最大限制1M
 PROGRAM=$(basename $0)
 
 format='json'
@@ -45,21 +51,22 @@ last_modified_ip=
 
 getFileSize() {
     local file=$1
-    wc -c $file
+    wc -c $file | awk '{print $1}'
 }
 
 clearLog() {
     local file_size=$(getFileSize $LOG_FILE)
     if [ $file_size -gt $MAX_LOG_SIZE ]; then
         echo "" > $LOG_FILE
+        printMsg "Log file [$LOG_FILE], size: [$file_size bytes]."
+        printMsg "Exceeds max log size [$MAX_LOG_SIZE]. Clear the log."
     fi
-
 }
 
 printMsg() {
     local time=$(date "+%Y-%m-%d %H:%M:%S")
     local msg="$1"
-    if [ $is_svc -eq 1 ];then
+    if [ $is_svc -eq 1 ]; then
         echo "$time: $msg" >> $LOG_FILE
         # logger -t ${PROGRAM} "${msg}"
     else
@@ -69,7 +76,7 @@ printMsg() {
 
 getIp() {
 #    curl -s http://checkip.dyndns.com | sed -n 's/.*: \([0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\).*/\1/p'
-    curl -s whatismyip.akamai.com
+    eval $command
 }
 
 execAPI() {
@@ -107,7 +114,7 @@ updateRecord() {
 checkip() {
     local wan_ip=$1
     printMsg "old ip: [$last_modified_ip], new ip: [$wan_ip]"
-    if [ "$wan_ip" != "$last_modified_ip" ];then
+    if [ "$wan_ip" != "$last_modified_ip" ]; then
         return 8
     else
         return 3
@@ -119,7 +126,7 @@ execSvc() {
     #check that whether the network is ok
     while [ 1 ];do
         ip=$(getIp)
-        if [ -n "$ip" ];then
+        if [ -n "$ip" ]; then
             printMsg "WAN IP: ${ip}"
             break;
         else
@@ -132,7 +139,7 @@ execSvc() {
         clearLog
         ip=$(getIp)
         checkip $ip
-        if [ $? -eq 8 ];then
+        if [ $? -eq 8 ]; then
             updateRecord $ip
             #updateTunnelBroker
         fi
@@ -142,6 +149,7 @@ execSvc() {
 
 execUpdate() {
     local ip=`getIp`
+    printMsg "WAN IP: ${ip}"
     updateRecord $ip
 }
 
@@ -151,9 +159,11 @@ case $1 in
         clearLog;
         printMsg "Start in Service mode, check in every $wait seconds";
         printMsg "domain: ${domain}, sub_domain: ${sub_domain}";
+        printMsg "Use command: [$command] to get wan ip";
         execSvc;;
     *)
         is_svc=0;
         printMsg "Start update record, domain: ${domain}, sub_domain: ${sub_domain}";
+        printMsg "Use command: [$command] to get wan ip";
         execUpdate;;
 esac
