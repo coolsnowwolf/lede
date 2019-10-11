@@ -72,7 +72,7 @@ make -j1 V=s
 2. 如果你自认为 Koolshare 论坛或者其固件的脑残粉，本人不欢迎你使用本源代码。所以如果你是，那么使用过程中遇到任何问题本人概不回应。
 3. 如有问题需要讨论，欢迎加入 QQ 讨论群：Gargoyle OpenWrt 编译大群 ,号码 718010658 ，加群链接 点击链接加入群聊【Op共享技术交流群】：https://jq.qq.com/?_wv=1027&k=5PUGjOG
 
-Before going to the next step，welcome subscribe youtube channel “佚sir playground” to obtain related video tutorials and more.
+Before going to the next step，welcome subscribe youtube channel “eSir Playground” to obtain related video tutorials and more.
 
 You need to have installed gcc, binutils, bzip2, flex, python, perl, make,
 find, grep, diff, unzip, gawk, getopt, subversion, libz-dev and libc headers.
