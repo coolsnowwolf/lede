@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
 PKG_VERSION:=1
-PKG_RELEASE:=108
+PKG_RELEASE:=110
 
 PKG_CONFIG_DEPENDS:= CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray \
@@ -52,6 +52,11 @@ define Build/Prepare
 endef
 
 define Build/Compile
+endef
+
+define Package/luci-app-ssr-plus/conffiles
+/etc/ssr_ip
+/etc/dnsmasq.ssr/gfw_list.conf
 endef
 
 define Package/luci-app-ssr-plus/install
