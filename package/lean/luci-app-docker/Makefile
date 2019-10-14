@@ -6,12 +6,13 @@
 
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=Argon Theme
-LUCI_DEPENDS:=
+LUCI_TITLE:=Luci for Docker-CE
+LUCI_DEPENDS:=+docker-ce
 LUCI_PKGARCH:=all
-PKG_VERSION:=1.0
-PKG_RELEASE:=2
+PKG_VERSION:=1
+PKG_RELEASE:=7
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
+
