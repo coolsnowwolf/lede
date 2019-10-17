@@ -1,7 +1,7 @@
 module("luci.controller.docker", package.seeall)
 
 function index()
-	if not nixio.fs.access("/etc/config/docker") then
+	if not nixio.fs.access("/etc/config/dockerd") then
 		return
 	end
 	
