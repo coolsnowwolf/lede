@@ -1,4 +1,5 @@
 local m, s, o
+local NXFS = require "nixio.fs"
 
 m = Map("shadowsocksr", translate("IP black-and-white list"))
 
@@ -48,5 +49,40 @@ end)
 -- o:value("0", translatef("Bypassed Proxy"))
 -- o:value("2", translatef("Forwarded Proxy"))
 -- o.rmempty = false
+
+s:tab("esc",  translate("Bypass Domain List"))
+
+local escconf = "/etc/config/white.list"
+o = s:taboption("esc", TextValue, "escconf")
+o.rows = 13
+o.wrap = "off"
+o.rmempty = true
+o.cfgvalue = function(self, section)
+	return NXFS.readfile(escconf) or ""
+end
+o.write = function(self, section, value)
+	NXFS.writefile(escconf, value:gsub("\r\n", "\n"))
+end
+o.remove = function(self, section, value)
+	NXFS.writefile(escconf, "")
+end
+
+
+s:tab("block",  translate("Black Domain List"))
+
+local blockconf = "/etc/config/black.list"
+o = s:taboption("block", TextValue, "blockconf")
+o.rows = 13
+o.wrap = "off"
+o.rmempty = true
+o.cfgvalue = function(self, section)
+	return NXFS.readfile(blockconf) or " "
+end
+o.write = function(self, section, value)
+	NXFS.writefile(blockconf, value:gsub("\r\n", "\n"))
+end
+o.remove = function(self, section, value)
+	NXFS.writefile(blockconf, "")
+end
 
 return m
