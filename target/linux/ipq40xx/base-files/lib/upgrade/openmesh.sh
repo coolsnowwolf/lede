@@ -76,9 +76,9 @@ platform_do_upgrade_openmesh() {
 	# take care of restoring a saved config
 	[ "$SAVE_CONFIG" -eq 1 ] && restore_backup="${MTD_CONFIG_ARGS} -j ${CONF_TAR}"
 
-	# write concatinated kernel + rootfs to flash
-	tar xf $tar_file ${board_dir}/kernel ${board_dir}/root -O | \
-		mtd $restore_backup write - $PART_NAME
+	mtd -q erase inactive
+	tar xf $tar_file ${board_dir}/root -O | mtd -n -p $kernel_length $restore_backup write - $PART_NAME
+	tar xf $tar_file ${board_dir}/kernel -O | mtd -n write - $PART_NAME
 
 	# prepare new u-boot env
 	if [ "$next_boot_part" = "1" ]; then

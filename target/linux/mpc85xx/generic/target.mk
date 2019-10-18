@@ -1,5 +1,6 @@
 BOARDNAME:=Generic
-KERNELNAME:=cuImage.tl-wdr4900-v1
+FEATURES+=nand
+KERNELNAME:=simpleImage.tl-wdr4900-v1
 
 define Target/Description
 	Build firmware images for generic MPC85xx based boards.

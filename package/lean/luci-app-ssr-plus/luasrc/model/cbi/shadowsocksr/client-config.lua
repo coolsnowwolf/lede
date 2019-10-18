@@ -4,7 +4,6 @@
 local m, s, o,kcp_enable
 local shadowsocksr = "shadowsocksr"
 local uci = luci.model.uci.cursor()
-local ipkg = require("luci.model.ipkg")
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local sid = arg[1]
@@ -115,14 +114,10 @@ s = m:section(NamedSection, sid, "servers")
 s.anonymous = true
 s.addremove   = false
 
-o = s:option(DummyValue,"ssr_url","SSR URL") 
+o = s:option(DummyValue,"ssr_url","SS/SSR/V2RAY URL") 
 o.rawhtml  = true
 o.template = "shadowsocksr/ssrurl"
 o.value =sid
-o:depends("type", "ssr")
-
-o = s:option(Value, "alias", translate("Alias(optional)"))
-
 
 o = s:option(ListValue, "type", translate("Server Node Type"))
 o:value("ssr", translate("ShadowsocksR"))
@@ -134,7 +129,7 @@ o:value("v2ray", translate("V2Ray"))
 end
 o.description = translate("Using incorrect encryption mothod may causes service fail to start")
 
-
+o = s:option(Value, "alias", translate("Alias(optional)"))
 
 o = s:option(Value, "server", translate("Server Address"))
 o.datatype = "host"
@@ -151,23 +146,23 @@ o.rmempty = false
 
 o = s:option(Value, "password", translate("Password"))
 o.password = true
-o.rmempty = false
+o.rmempty = true
 o:depends("type", "ssr")
 o:depends("type", "ss")
 
 o = s:option(ListValue, "encrypt_method", translate("Encrypt Method"))
 for _, v in ipairs(encrypt_methods) do o:value(v) end
-o.rmempty = false
+o.rmempty = true
 o:depends("type", "ssr")
 
 o = s:option(ListValue, "encrypt_method_ss", translate("Encrypt Method"))
 for _, v in ipairs(encrypt_methods_ss) do o:value(v) end
-o.rmempty = false
+o.rmempty = true
 o:depends("type", "ss")
 
 o = s:option(ListValue, "protocol", translate("Protocol"))
 for _, v in ipairs(protocol) do o:value(v) end
-o.rmempty = false
+o.rmempty = true
 o:depends("type", "ssr")
 
 o = s:option(Value, "protocol_param", translate("Protocol param(optional)"))
@@ -175,7 +170,7 @@ o:depends("type", "ssr")
 
 o = s:option(ListValue, "obfs", translate("Obfs"))
 for _, v in ipairs(obfs) do o:value(v) end
-o.rmempty = false
+o.rmempty = true
 o:depends("type", "ssr")
 
 o = s:option(Value, "obfs_param", translate("Obfs param(optional)"))
@@ -185,19 +180,19 @@ o:depends("type", "ssr")
 o = s:option(Value, "alter_id", translate("AlterId"))
 o.datatype = "port"
 o.default = 16
-o.rmempty = false
+o.rmempty = true
 o:depends("type", "v2ray")
 
 -- VmessId
-o = s:option(Value, "vmess_id", translate("VmessId"))
-o.rmempty = false
+o = s:option(Value, "vmess_id", translate("VmessId (UUID)"))
+o.rmempty = true
 o.default = uuid
 o:depends("type", "v2ray")
 
 -- 加密方式
 o = s:option(ListValue, "security", translate("Encrypt Method"))
 for _, v in ipairs(securitys) do o:value(v, v:upper()) end
-o.rmempty = false
+o.rmempty = true
 o:depends("type", "v2ray")
 
 -- 传输协议
@@ -206,7 +201,8 @@ o:value("tcp", "TCP")
 o:value("kcp", "mKCP")
 o:value("ws", "WebSocket")
 o:value("h2", "HTTP/2")
-o.rmempty = false
+o:value("quic", "QUIC")
+o.rmempty = true
 o:depends("type", "v2ray")
 
 -- [[ TCP部分 ]]--
@@ -251,6 +247,29 @@ o.rmempty = true
 o = s:option(Value, "h2_path", translate("HTTP/2 Path"))
 o:depends("transport", "h2")
 o.rmempty = true
+
+-- [[ QUIC部分 ]]--
+
+o = s:option(ListValue, "quic_security", translate("QUIC Security"))
+o:depends("transport", "quic")
+o.rmempty = true
+o:value("none", translate("None"))
+o:value("aes-128-gcm", translate("aes-128-gcm"))
+o:value("chacha20-poly1305", translate("chacha20-poly1305"))
+
+o = s:option(Value, "quic_key", translate("QUIC Key"))
+o:depends("transport", "quic")
+o.rmempty = true
+
+o = s:option(ListValue, "quic_guise", translate("Header"))
+o:depends("transport", "quic")
+o.rmempty = true
+o:value("none", translate("None"))
+o:value("srtp", translate("VideoCall (SRTP)"))
+o:value("utp", translate("BitTorrent (uTP)"))
+o:value("wechat-video", translate("WechatVideo"))
+o:value("dtls", "DTLS 1.2")
+o:value("wireguard", "WireGuard")
 
 -- [[ mKCP部分 ]]--
 
@@ -304,18 +323,31 @@ o = s:option(Flag, "congestion", translate("Congestion"))
 o:depends("transport", "kcp")
 o.rmempty = true
 
+-- [[ allowInsecure ]]--
+o = s:option(Flag, "insecure", translate("allowInsecure"))
+o.rmempty = true
+o:depends("type", "v2ray")
+
 -- [[ TLS ]]--
 o = s:option(Flag, "tls", translate("TLS"))
-o.rmempty = false
+o.rmempty = true
+o.default = "0"
 o:depends("type", "v2ray")
 
 -- [[ Mux ]]--
 o = s:option(Flag, "mux", translate("Mux"))
-o.rmempty = false
+o.rmempty = true
+o.default = "0"
 o:depends("type", "v2ray")
 
+o = s:option(Value, "concurrency", translate("Concurrency"))
+o.datatype = "uinteger"
+o.rmempty = true
+o.default = "8"
+o:depends("mux", "1")
+
 o = s:option(Flag, "fast_open", translate("TCP Fast Open"))
-o.rmempty = false
+o.rmempty = true
 o.default = "0"
 o:depends("type", "ssr")
 o:depends("type", "ss")
@@ -329,10 +361,11 @@ o.datatype = "port"
 o.default = 1234
 o.rmempty = false
 
-if nixio.fs.access("/usr/bin/ssr-kcptun") then
+if nixio.fs.access("/usr/bin/kcptun-client") then
 
-kcp_enable = s:option(Flag, "kcp_enable", translate("KcpTun Enable"), translate("bin:/usr/bin/ssr-kcptun"))
-kcp_enable.rmempty = false
+kcp_enable = s:option(Flag, "kcp_enable", translate("KcpTun Enable"), translate("bin:/usr/bin/kcptun-client"))
+kcp_enable.rmempty = true
+kcp_enable.default = "0"
 kcp_enable:depends("type", "ssr")
 kcp_enable:depends("type", "ss")
 
@@ -340,7 +373,7 @@ o = s:option(Value, "kcp_port", translate("KcpTun Port"))
 o.datatype = "port"
 o.default = 4000
 function o.validate(self, value, section)
-		local kcp_file="/usr/bin/ssr-kcptun"
+		local kcp_file="/usr/bin/kcptun-client"
 		local enable = kcp_enable:formvalue(section) or kcp_enable.disabled
 		if enable == kcp_enable.enabled then
     if not fs.access(kcp_file)  then

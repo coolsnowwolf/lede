@@ -203,7 +203,7 @@ define Image/mkfs/squashfs
 	$(STAGING_DIR_HOST)/bin/mksquashfs4 $(call mkfs_target_dir,$(1)) $@ \
 		-nopad -noappend -root-owned \
 		-comp $(SQUASHFSCOMP) $(SQUASHFSOPT) \
-		-processors 1 \
+		-processors 16 \
 		$(if $(SOURCE_DATE_EPOCH),-fixed-time $(SOURCE_DATE_EPOCH))
 endef
 
@@ -321,6 +321,7 @@ define Device/Init
   CMDLINE:=
 
   IMAGES :=
+  ARTIFACTS :=
   IMAGE_PREFIX := $(IMG_PREFIX)-$(1)
   IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1)-$$(2)
   KERNEL_PREFIX = $$(IMAGE_PREFIX)
@@ -498,6 +499,19 @@ define Device/Build/image
 
 endef
 
+define Device/Build/artifact
+  $$(_TARGET): $(BIN_DIR)/$(IMAGE_PREFIX)-$(1)
+  $(KDIR)/tmp/$(IMAGE_PREFIX)-$(1): $$(KDIR_KERNEL_IMAGE)
+	@rm -f $$@
+	$$(call concat_cmd,$(ARTIFACT/$(1)))
+
+  .IGNORE: $(BIN_DIR)/$(IMAGE_PREFIX)-$(1)
+
+  $(BIN_DIR)/$(IMAGE_PREFIX)-$(1): $(KDIR)/tmp/$(IMAGE_PREFIX)-$(1)
+	cp $$^ $$@
+
+endef
+
 define Device/Build
   $(if $(CONFIG_TARGET_ROOTFS_INITRAMFS),$(call Device/Build/initramfs,$(1)))
   $(call Device/Build/kernel,$(1))
@@ -508,6 +522,10 @@ define Device/Build
   $$(eval $$(foreach image,$$(IMAGES), \
     $$(foreach fs,$$(filter $(TARGET_FILESYSTEMS),$$(FILESYSTEMS)), \
       $$(call Device/Build/image,$$(fs),$$(image),$(1)))))
+
+  $$(eval $$(foreach artifact,$$(ARTIFACTS), \
+    $$(call Device/Build/artifact,$$(artifact))))
+
 endef
 
 define Device/DumpInfo

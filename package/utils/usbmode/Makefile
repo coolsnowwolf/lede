@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=usbmode
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/usbmode.git
@@ -15,7 +15,7 @@ PKG_LICENSE_FILES:=
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
-PKG_DATA_VERSION:=20170205
+PKG_DATA_VERSION:=20170806
 PKG_DATA_URL:=http://www.draisberghof.de/usb_modeswitch
 PKG_DATA_PATH:=usb-modeswitch-data-$(PKG_DATA_VERSION)
 PKG_DATA_FILENAME:=$(PKG_DATA_PATH).tar.bz2
@@ -26,7 +26,7 @@ include $(INCLUDE_DIR)/cmake.mk
 define Download/data
   FILE:=$(PKG_DATA_FILENAME)
   URL:=$(PKG_DATA_URL)
-  HASH:=e2dcfd9d28928d8d8f03381571a23442b3c50d48d343bc40a1a07d01662738d1
+  HASH:=ce413ef2a50e648e9c81bc3ea6110e7324a8bf981034fc9ec4467d3562563c2c
 endef
 $(eval $(call Download,data))
 
@@ -66,7 +66,7 @@ define Package/usb-modeswitch/install
 	perl $(PKG_BUILD_DIR)/convert-modeswitch.pl \
 		$(PKG_BUILD_DIR)/$(PKG_DATA_PATH)/usb_modeswitch.d/* \
 		> $(1)/etc/usb-mode.json
-	$(INSTALL_DATA) ./files/usbmode.hotplug $(1)/etc/hotplug.d/usb/20-usb_mode
+	$(INSTALL_CONF) ./files/usbmode.hotplug $(1)/etc/hotplug.d/usb/20-usb_mode
 	$(INSTALL_BIN) ./files/usbmode.init $(1)/etc/init.d/usbmode
 	$(CP) $(PKG_INSTALL_DIR)/usr/sbin/usbmode $(1)/sbin/
 endef

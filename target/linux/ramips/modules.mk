@@ -116,7 +116,7 @@ $(eval $(call KernelPackage,hsdma-mtk))
 
 define KernelPackage/sound-mt7620
   TITLE:=MT7620 PCM/I2S Alsa Driver
-  DEPENDS:=@TARGET_ramips +kmod-sound-soc-core +kmod-regmap +kmod-dma-ralink @!TARGET_ramips_rt288x
+  DEPENDS:=@TARGET_ramips +kmod-sound-soc-core +kmod-regmap-i2c +kmod-dma-ralink @!TARGET_ramips_rt288x
   KCONFIG:= \
 	CONFIG_SND_RALINK_SOC_I2S \
 	CONFIG_SND_SIMPLE_CARD \
@@ -136,3 +136,18 @@ define KernelPackage/sound-mt7620/description
 endef
 
 $(eval $(call KernelPackage,sound-mt7620))
+
+define KernelPackage/sound-mt76x8-wm8960
+  TITLE:=MT76x8 WM8960 ALSA SoC Machine Driver
+  DEPENDS:=@TARGET_ramips +kmod-sound-mt7620 +kmod-i2c-mt7628 @!TARGET_ramips_rt288x
+  KCONFIG:=CONFIG_SND_SOC_MT76X8_WM8960
+  FILES:=$(LINUX_DIR)/sound/soc/ralink/snd-soc-mt76x8-wm8960.ko
+  AUTOLOAD:=$(call AutoLoad,91,snd-soc-mt76x8-wm8960)
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-mt76x8-wm8960/description
+ ASoC Audio driver for Ralink SoC with WM8960 codec.
+endef
+
+$(eval $(call KernelPackage,sound-mt76x8-wm8960))

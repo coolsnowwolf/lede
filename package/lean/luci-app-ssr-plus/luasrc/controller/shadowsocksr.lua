@@ -35,13 +35,23 @@ function index()
 	
 	entry({"admin", "services", "shadowsocksr","run"},call("act_status")).leaf=true
 	
+	entry({"admin", "services", "shadowsocksr", "ping"}, call("act_ping")).leaf=true
+	
 end
 
 function act_status()
   local e={}
-  e.running=luci.sys.call("ps -w | grep ssr-retcp | grep -v grep >/dev/null")==0
+  e.running=luci.sys.call("busybox ps -w | grep ssr-retcp | grep -v grep >/dev/null")==0
   luci.http.prepare_content("application/json")
   luci.http.write_json(e)
+end
+
+function act_ping()
+	local e={}
+	e.index=luci.http.formvalue("index")
+	e.ping=luci.sys.exec("ping -c 1 -W 1 %q 2>&1 | grep -o 'time=[0-9]*.[0-9]' | awk -F '=' '{print$2}'"%luci.http.formvalue("domain"))
+	luci.http.prepare_content("application/json")
+	luci.http.write_json(e)
 end
 
 function check_status()

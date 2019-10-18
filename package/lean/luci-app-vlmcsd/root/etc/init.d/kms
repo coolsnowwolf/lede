@@ -1,0 +1,56 @@
+#!/bin/sh /etc/rc.common
+# Copyright (c) 2011-2015 OpenWrt.org
+
+START=90
+
+get_config() {
+	config_get_bool enabled $1 enabled 0
+	config_get autoactivate $1 autoactivate 1
+}
+
+add_vlmcs_entry() {
+	local new_hostname="$1"
+
+	uci -q batch <<-EOF >/dev/null
+		add dhcp srvhost
+		set dhcp.@srvhost[-1].srv=_vlmcs._tcp
+		set dhcp.@srvhost[-1].target=$new_hostname
+		set dhcp.@srvhost[-1].port=1688
+		set dhcp.@srvhost[-1].class=0
+		set dhcp.@srvhost[-1].weight=100
+		commit dhcp
+	EOF
+
+	/etc/init.d/dnsmasq restart
+	exit 0
+}
+
+start() {
+	config_load vlmcsd
+	config_foreach get_config vlmcsd
+	[ $enabled -eq 0 ] && exit 0
+	/usr/bin/vlmcsd -i /etc/vlmcsd.ini -L 0.0.0.0:1688
+	echo "KMS Server has started."
+
+	if [ $autoactivate -eq 1 ]; then
+		local HOSTNAME=`uci get system.@system[0].hostname`
+
+		local index=$(uci -q show dhcp |grep "].srv='_vlmcs._tcp'") \
+			|| add_vlmcs_entry $HOSTNAME
+		index=${index#*[}
+		index=${index%]*}
+
+		local host_name=$(uci -q get dhcp.@srvhost[$index].target)
+
+		if [ "$HOSTNAME" != "$host_name" ]; then
+			uci delete dhcp.@srvhost[$index]
+			add_vlmcs_entry $HOSTNAME
+		fi
+	fi
+}
+
+stop() {
+    killall -q -9 vlmcsd
+    echo "KMS Server has stopped."
+}
+

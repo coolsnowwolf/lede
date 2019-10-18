@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fstools
-PKG_RELEASE:=1
+PKG_RELEASE:=4
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/fstools.git
-PKG_SOURCE_DATE:=2018-05-23
-PKG_SOURCE_VERSION:=dd02dad332958575cc52e60c78ef10ef2b5aaced
-PKG_MIRROR_HASH:=31051da29a0fff0b60ab3fc7fe27be281ed298346ff0ac65e3a2976671d2deed
+PKG_SOURCE_DATE:=2019-03-28
+PKG_SOURCE_VERSION:=ff1ded63c51e84e239fb422ac8b9d15251d1221f
+PKG_MIRROR_HASH:=2731bbca42c0eafda557d545ebeca243fa4048c433c3b27d31256aca356886bc
 CMAKE_INSTALL:=1
 
 PKG_LICENSE:=GPL-2.0
@@ -108,8 +108,9 @@ define Package/block-mount/install
 	$(INSTALL_DIR) $(1)/sbin $(1)/lib $(1)/usr/sbin $(1)/etc/hotplug.d/block $(1)/etc/init.d/ $(1)/etc/uci-defaults/
 
 	$(INSTALL_BIN) ./files/fstab.init $(1)/etc/init.d/fstab
-	$(INSTALL_DATA) ./files/fstab.default $(1)/etc/uci-defaults/10-fstab
-	$(INSTALL_DATA) ./files/mount.hotplug $(1)/etc/hotplug.d/block/10-mount
+	$(INSTALL_CONF) ./files/fstab.default $(1)/etc/uci-defaults/10-fstab
+	$(INSTALL_CONF) ./files/mount.hotplug $(1)/etc/hotplug.d/block/10-mount
+	$(INSTALL_CONF) ./files/media-change.hotplug  $(1)/etc/hotplug.d/block/00-media-change
 
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/block $(1)/sbin/
 	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/lib/libblkid-tiny.so $(1)/lib/
