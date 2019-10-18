@@ -105,7 +105,7 @@ define KernelPackage/b43
   	CONFIG_HW_RANDOM=y
   # Depend on PCI_SUPPORT to make sure we can select kmod-bcma or kmod-ssb
   DEPENDS += \
-	@PCI_SUPPORT +kmod-mac80211 \
+	@PCI_SUPPORT +kmod-mac80211 +kmod-lib-cordic \
 	$(if $(CONFIG_PACKAGE_B43_USE_SSB),+kmod-ssb) \
 	$(if $(CONFIG_PACKAGE_B43_USE_BCMA),+kmod-bcma)
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/broadcom/b43/b43.ko
@@ -347,7 +347,7 @@ define KernelPackage/b43legacy
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/b43
   KCONFIG:= \
   	CONFIG_HW_RANDOM=y
-  DEPENDS+= +kmod-mac80211 +!(TARGET_brcm47xx||TARGET_brcm63xx):kmod-ssb +b43legacy-firmware
+  DEPENDS+= +kmod-mac80211 +!(TARGET_brcm47xx||TARGET_brcm63xx):kmod-ssb @!TARGET_brcm47xx_mips74k +b43legacy-firmware
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/broadcom/b43legacy/b43legacy.ko
   AUTOLOAD:=$(call AutoProbe,b43legacy)
   MENU:=1
