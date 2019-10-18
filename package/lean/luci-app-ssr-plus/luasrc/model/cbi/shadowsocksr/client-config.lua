@@ -4,7 +4,6 @@
 local m, s, o,kcp_enable
 local shadowsocksr = "shadowsocksr"
 local uci = luci.model.uci.cursor()
-local ipkg = require("luci.model.ipkg")
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local sid = arg[1]
@@ -115,11 +114,10 @@ s = m:section(NamedSection, sid, "servers")
 s.anonymous = true
 s.addremove   = false
 
-o = s:option(DummyValue,"ssr_url","SSR URL") 
+o = s:option(DummyValue,"ssr_url","SS/SSR/V2RAY URL") 
 o.rawhtml  = true
 o.template = "shadowsocksr/ssrurl"
 o.value =sid
-o:depends("type", "ssr")
 
 o = s:option(ListValue, "type", translate("Server Node Type"))
 o:value("ssr", translate("ShadowsocksR"))

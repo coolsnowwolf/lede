@@ -1024,3 +1024,42 @@ define KernelPackage/bnx2/description
 endef
 
 $(eval $(call KernelPackage,bnx2))
+
+
+define KernelPackage/bnx2x
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=QLogic 5771x/578xx 10/20-Gigabit ethernet adapter driver
+  DEPENDS:=@PCI_SUPPORT +bnx2x-firmware +kmod-lib-crc32c +kmod-mdio +kmod-ptp +kmod-lib-zlib-inflate
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/broadcom/bnx2x/bnx2x.ko
+  KCONFIG:= \
+	CONFIG_BNX2X \
+	CONFIG_BNX2X_SRIOV=y
+  AUTOLOAD:=$(call AutoProbe,bnx2x)
+endef
+
+define KernelPackage/bnx2x/description
+  QLogic BCM57710/57711/57711E/57712/57712_MF/57800/57800_MF/57810/57810_MF/57840/57840_MF Driver
+endef
+
+$(eval $(call KernelPackage,bnx2x))
+
+define KernelPackage/be2net
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Broadcom Emulex OneConnect 10Gbps NIC
+  DEPENDS:=@PCI_SUPPORT +kmod-hwmon-core
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/emulex/benet/be2net.ko
+  KCONFIG:= \
+	CONFIG_BE2NET \
+	CONFIG_BE2NET_BE2=y \
+	CONFIG_BE2NET_BE3=y \
+	CONFIG_BE2NET_LANCER=y \
+	CONFIG_BE2NET_SKYHAWK=y \
+	CONFIG_BE2NET_HWMON=y
+  AUTOLOAD:=$(call AutoProbe,be2net)
+endef
+
+define KernelPackage/be2net/description
+  Broadcom Emulex OneConnect 10Gbit SFP+ support, OneConnect OCe10xxx OCe11xxx OCe14xxx, LightPulse LPe12xxx
+endef
+
+$(eval $(call KernelPackage,be2net))
