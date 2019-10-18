@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fstools
-PKG_RELEASE:=1
+PKG_RELEASE:=4
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/fstools.git
-PKG_SOURCE_DATE:=2019-09-21
-PKG_SOURCE_VERSION:=4327ed40d96c95803b2d4d09ddf997c895eea071
-PKG_MIRROR_HASH:=34e4510fbf8eb01571e4af632754c2f6799719e1f743037b998ca7fc838e6288
+PKG_SOURCE_DATE:=2019-03-28
+PKG_SOURCE_VERSION:=ff1ded63c51e84e239fb422ac8b9d15251d1221f
+PKG_MIRROR_HASH:=2731bbca42c0eafda557d545ebeca243fa4048c433c3b27d31256aca356886bc
 CMAKE_INSTALL:=1
 
 PKG_LICENSE:=GPL-2.0
@@ -79,14 +79,14 @@ define Package/block-mount
   SECTION:=base
   CATEGORY:=Base system
   TITLE:=Block device mounting and checking
-  DEPENDS:=+ubox +libubox +libuci +libblobmsg-json +libjson-c
+  DEPENDS:=+ubox +libubox +libuci
 endef
 
 define Package/blockd
   SECTION:=base
   CATEGORY:=Base system
   TITLE:=Block device automounting
-  DEPENDS:=+block-mount +fstools +libubus +kmod-fs-autofs4 +libblobmsg-json +libjson-c
+  DEPENDS:=+block-mount +fstools +libubus +kmod-fs-autofs4
 endef
 
 define Package/fstools/install
