@@ -17,30 +17,7 @@ wan_mode = s:option(Flag, "wan_mode", translate("Enable WAN access Dokcer"), tra
 wan_mode.default = 0
 wan_mode.rmempty = false
 
-
-o = s:option(Button,"readme",translate("Docker Readme First"))
-o.inputtitle = translate("Download DockerReadme.pdf")
-o.description = translate("Please download DockerReadme.pdf to read when first-running")
-o.inputstyle = "reload"
-o.write = function()
-	Download()
-end
-
-function Download()
-	local t,e
-	t=nixio.open("/www/DockerReadme.pdf","r")
-	luci.http.header('Content-Disposition','attachment; filename="DockerReadme.pdf"')
-	luci.http.prepare_content("application/octet-stream")
-	while true do
-		e=t:read(nixio.const.buffersize)
-		if(not e)or(#e==0)then
-			break
-		else
-			luci.http.write(e)
-		end
-	end
-	t:close()
-	luci.http.close()
-end
+o=s:option(DummyValue,"readme",translate(" "))
+o.description=translate("<a href=\"../../../../DockerReadme.pdf\" target=\"_blank\" />"..translate("Download DockerReadme.pdf").."</a>")
 
 return m
