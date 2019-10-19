@@ -5,6 +5,16 @@
 
 . /lib/nft-qos/core.sh
 
+qosdef_validate_static() {
+	uci_load_validate nft-qos default "$1" "$2" \
+		'limit_enable:bool:0' \
+		'limit_type:maxlength(8)' \
+		'static_unit_dl:string:kbytes' \
+		'static_unit_ul:string:kbytes' \
+		'static_rate_dl:uinteger:50' \
+		'static_rate_ul:uinteger:50'
+}
+
 # append rule for static qos
 qosdef_append_rule_sta() { # <section> <operator> <default-unit> <default-rate>
 	local ipaddr unit rate
@@ -42,18 +52,9 @@ qosdef_flush_static() {
 
 # static limit rate init
 qosdef_init_static() {
-	local unit_dl unit_ul rate_dl rate_ul
-	local limit_enable limit_type hook_ul="prerouting" hook_dl="postrouting"
+	local hook_ul="prerouting" hook_dl="postrouting"
 
-	uci_validate_section nft-qos default default \
-		'limit_enable:bool:0' \
-		'limit_type:maxlength(8)' \
-		'static_unit_dl:string:kbytes' \
-		'static_unit_ul:string:kbytes' \
-		'static_rate_dl:uinteger:50' \
-		'static_rate_ul:uinteger:50'
-
-	[ $? -ne 0 ] && {
+	[ "$2" = 0 ] || {
 		logger -t nft-qos-static "validation failed"
 		return 1
 	}
@@ -67,7 +68,7 @@ qosdef_init_static() {
 	}
 
 	qosdef_appendx "table $NFT_QOS_INET_FAMILY nft-qos-static {\n"
-	qosdef_append_chain_sta $hook_ul upload upload $unit_ul $rate_ul
-	qosdef_append_chain_sta $hook_dl download download $unit_dl $rate_dl
+	qosdef_append_chain_sta $hook_ul upload upload $static_unit_ul $static_rate_ul
+	qosdef_append_chain_sta $hook_dl download download $static_unit_dl $static_rate_dl
 	qosdef_appendx "}\n"
 }

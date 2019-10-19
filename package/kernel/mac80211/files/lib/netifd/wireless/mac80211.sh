@@ -23,9 +23,10 @@ drv_mac80211_init_device_config() {
 
 	config_add_string path phy 'macaddr:macaddr'
 	config_add_string hwmode
+	config_add_string tx_burst
 	config_add_int beacon_int chanbw frag rts
 	config_add_int rxantenna txantenna antenna_gain txpower distance
-	config_add_boolean noscan ht_coex
+	config_add_boolean noscan ht_coex acs_exclude_dfs
 	config_add_array ht_capab
 	config_add_array channels
 	config_add_boolean \
@@ -96,10 +97,15 @@ mac80211_hostapd_setup_base() {
 	[ "$auto_channel" -gt 0 ] && channel=acs_survey
 	[ "$auto_channel" -gt 0 ] && json_get_values channel_list channels
 
+	[ "$auto_channel" -gt 0 ] && json_get_vars acs_exclude_dfs
+	[ -n "$acs_exclude_dfs" ] && [ "$acs_exclude_dfs" -gt 0 ] &&
+		append base_cfg "acs_exclude_dfs=1" "$N"
+
 	json_get_vars noscan ht_coex
-	json_get_values ht_capab_list ht_capab
+	json_get_values ht_capab_list ht_capab tx_burst
 
 	[ -n "$noscan" -a "$noscan" -gt 0 ] && hostapd_noscan=1
+	[ "$tx_burst" = 0 ] && tx_burst=
 
 	ieee80211n=1
 	ht_capab=
@@ -229,6 +235,7 @@ mac80211_hostapd_setup_base() {
 			vht_link_adapt:3 \
 			vht160:2
 
+		set_default tx_burst 2.0
 		append base_cfg "ieee80211ac=1" "$N"
 		vht_cap=0
 		for cap in $(iw phy "$phy" info | awk -F "[()]" '/VHT Capabilities/ { print $2 }'); do
@@ -310,6 +317,7 @@ mac80211_hostapd_setup_base() {
 ${channel:+channel=$channel}
 ${channel_list:+chanlist=$channel_list}
 ${hostapd_noscan:+noscan=1}
+${tx_burst:+tx_queue_data2_burst=$tx_burst}
 $base_cfg
 
 EOF

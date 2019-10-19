@@ -5,6 +5,14 @@
 
 . /lib/nft-qos/core.sh
 
+qosdef_validate_dynamic() {
+	uci_load_validate nft-qos default "$1" "$2" \
+		'limit_enable:bool:0' \
+		'limit_type:maxlength(8)' \
+		'dynamic_bw_up:uinteger:100' \
+		'dynamic_bw_down:uinteger:100'
+}
+
 # return average rate for dhcp leases
 qosdef_dynamic_rate() { # <bandwidth>
 	local c=0 c6=0
@@ -55,16 +63,9 @@ qosdef_flush_dynamic() {
 
 # init dynamic qos
 qosdef_init_dynamic() {
-	local dynamic_bw_up dynamic_bw_down limit_enable limit_type
 	local hook_ul="prerouting" hook_dl="postrouting"
 
-	uci_validate_section nft-qos default default \
-		'limit_enable:bool:0' \
-		'limit_type:maxlength(8)' \
-		'dynamic_bw_up:uinteger:100' \
-		'dynamic_bw_down:uinteger:100'
-
-	[ $? -ne 0 ] && {
+	[ "$2" = 0 ] || {
 		logger -t nft-qos-dynamic "validation failed"
 		return 1
 	}

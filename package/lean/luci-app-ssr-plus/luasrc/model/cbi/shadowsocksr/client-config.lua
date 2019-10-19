@@ -4,7 +4,6 @@
 local m, s, o,kcp_enable
 local shadowsocksr = "shadowsocksr"
 local uci = luci.model.uci.cursor()
-local ipkg = require("luci.model.ipkg")
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local sid = arg[1]
@@ -115,11 +114,10 @@ s = m:section(NamedSection, sid, "servers")
 s.anonymous = true
 s.addremove   = false
 
-o = s:option(DummyValue,"ssr_url","SSR URL") 
+o = s:option(DummyValue,"ssr_url","SS/SSR/V2RAY URL") 
 o.rawhtml  = true
 o.template = "shadowsocksr/ssrurl"
 o.value =sid
-o:depends("type", "ssr")
 
 o = s:option(ListValue, "type", translate("Server Node Type"))
 o:value("ssr", translate("ShadowsocksR"))
@@ -203,6 +201,7 @@ o:value("tcp", "TCP")
 o:value("kcp", "mKCP")
 o:value("ws", "WebSocket")
 o:value("h2", "HTTP/2")
+o:value("quic", "QUIC")
 o.rmempty = true
 o:depends("type", "v2ray")
 
@@ -248,6 +247,29 @@ o.rmempty = true
 o = s:option(Value, "h2_path", translate("HTTP/2 Path"))
 o:depends("transport", "h2")
 o.rmempty = true
+
+-- [[ QUIC部分 ]]--
+
+o = s:option(ListValue, "quic_security", translate("QUIC Security"))
+o:depends("transport", "quic")
+o.rmempty = true
+o:value("none", translate("None"))
+o:value("aes-128-gcm", translate("aes-128-gcm"))
+o:value("chacha20-poly1305", translate("chacha20-poly1305"))
+
+o = s:option(Value, "quic_key", translate("QUIC Key"))
+o:depends("transport", "quic")
+o.rmempty = true
+
+o = s:option(ListValue, "quic_guise", translate("Header"))
+o:depends("transport", "quic")
+o.rmempty = true
+o:value("none", translate("None"))
+o:value("srtp", translate("VideoCall (SRTP)"))
+o:value("utp", translate("BitTorrent (uTP)"))
+o:value("wechat-video", translate("WechatVideo"))
+o:value("dtls", "DTLS 1.2")
+o:value("wireguard", "WireGuard")
 
 -- [[ mKCP部分 ]]--
 
@@ -317,6 +339,12 @@ o = s:option(Flag, "mux", translate("Mux"))
 o.rmempty = true
 o.default = "0"
 o:depends("type", "v2ray")
+
+o = s:option(Value, "concurrency", translate("Concurrency"))
+o.datatype = "uinteger"
+o.rmempty = true
+o.default = "8"
+o:depends("mux", "1")
 
 o = s:option(Flag, "fast_open", translate("TCP Fast Open"))
 o.rmempty = true

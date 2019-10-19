@@ -442,6 +442,9 @@ ramips_board_detect() {
 	*"RT-AC51U")
 		name="rt-ac51u"
 		;;
+	*"RT-AC54U")
+		name="rt-ac54u"
+		;;
 	*"RT-G32 B1")
 		name="rt-g32-b1"
 		;;

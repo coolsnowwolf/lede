@@ -1,87 +1,71 @@
 #
-# Copyright (C) 2019 Xingwang Liao
+# Copyright (C) 2015-2016 OpenWrt.org
 #
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
+# This is free software, licensed under the GNU General Public License v3.
 #
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=kcptun
-PKG_VERSION:=20190418
-PKG_RELEASE:=1
+ifeq ($(ARCH),x86_64)
+	PKG_ARCH_KCPTUN:=amd64
+endif
+ifeq ($(ARCH),mipsel)
+	PKG_ARCH_KCPTUN:=mipsle
+endif
+ifeq ($(ARCH),mips)
+	PKG_ARCH_KCPTUN:=mips
+endif
+ifeq ($(ARCH),i386)
+	PKG_ARCH_KCPTUN:=386
+endif
+ifeq ($(ARCH),arm)
+	PKG_ARCH_KCPTUN:=arm7
+endif
+ifeq ($(BOARD),bcm53xx)
+	PKG_ARCH_KCPTUN:=arm6
+endif
+ifeq ($(BOARD),kirkwood)
+	PKG_ARCH_KCPTUN:=arm5
+endif
+ifeq ($(ARCH),aarch64)
+	PKG_ARCH_KCPTUN:=arm64
+endif
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://github.com/xtaci/kcptun/archive/v$(PKG_VERSION)
-PKG_HASH:=a3f7c35bd179cef26f7deec034330d142f8ba7df4e4f9511356b60ab7ad29c77
-
-PKG_LICENSE:=MIT
-PKG_LICENSE_FILES:=LICENSE.md
-PKG_MAINTAINER:=Xingwang Liao <kuoruan@gmail.com>
-
-PKG_BUILD_DEPENDS:=golang/host
-PKG_BUILD_PARALLEL:=1
-PKG_USE_MIPS16:=0
-
-GO_PKG:=github.com/xtaci/kcptun
-
-GO_PKG_LDFLAGS:=-s -w -X 'main.VERSION=$(PKG_VERSION)-$(PKG_RELEASE) for OpenWrt'
+PKG_NAME:=kcptun-client
+PKG_VERSION:=20190515
+PKG_RELEASE:=2
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE:=kcptun-linux-$(PKG_ARCH_KCPTUN)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://github.com/xtaci/kcptun/releases/download/v$(PKG_VERSION)
+PKG_HASH:=skip
 
 include $(INCLUDE_DIR)/package.mk
-include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-define Package/kcptun/Default
-  TITLE:=Simple UDP Tunnel Based On KCP
-  URL:=https://github.com/xtaci/kcptun
+define Package/$(PKG_NAME)
+	SECTION:=net
+	CATEGORY:=Network
+	TITLE:=Kcptun is a cross-platform proxy software
+	DEPENDS:=
+	URL:=https://github.com/xtaci/kcptun
 endef
 
-define Package/kcptun/Default/description
-A Stable & Secure Tunnel Based On KCP with N:M Multiplexing.
+define Package/$(PKG_NAME)/description
+  Kcptun is a Fast and Reliable ARQ Protocol tunnel
 endef
 
-define kcptun/templates
-  define Package/kcptun-$(1)
-  $$(call Package/kcptun/Default)
-    TITLE+= ($(1))
-    USERID:=kcptun=12900:kcptun=12900
-    SECTION:=net
-    CATEGORY:=Network
-    SUBMENU:=Web Servers/Proxies
-    DEPENDS:=$$(GO_ARCH_DEPENDS)
-  endef
-
-  define Package/kcptun-$(1)/description
-  $$(call Package/kcptun/Default/description)
-
-  This package contains the kcptun $(1).
-  endef
-
-  define Package/kcptun-$(1)/install
-	$$(INSTALL_DIR) $$(1)/usr/bin
-	$$(INSTALL_BIN) $$(GO_PKG_BUILD_BIN_DIR)/$(1) $$(1)/usr/bin/kcptun-$(1)
-  endef
+define Build/Prepare
+	tar -xzvf $(DL_DIR)/$(PKG_SOURCE) -C $(PKG_BUILD_DIR)
 endef
 
-define Package/golang-github-xtaci-kcptun-dev
-$(call Package/kcptun/Default)
-$(call GoPackage/GoSubMenu)
-  TITLE+= (source files)
-  PKGARCH:=all
+define Build/Configure
 endef
 
-define Package/golang-github-xtaci-kcptun-dev/description
-$(call Package/kcptun/Default/description)
-
-This package provides the source files for the kcptun client/server.
+define Build/Compile
 endef
 
-KCPTUN_COMPONENTS:=client server
+define Package/$(PKG_NAME)/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/client_linux_$(PKG_ARCH_KCPTUN) $(1)/usr/bin/kcptun-client
+endef
 
-$(foreach component,$(KCPTUN_COMPONENTS), \
-  $(eval $(call kcptun/templates,$(component))) \
-  $(eval $(call GoBinPackage,kcptun-$(component))) \
-  $(eval $(call BuildPackage,kcptun-$(component))) \
-)
-
-$(eval $(call GoSrcPackage,golang-github-xtaci-kcptun-dev))
-$(eval $(call BuildPackage,golang-github-xtaci-kcptun-dev))
+$(eval $(call BuildPackage,$(PKG_NAME)))

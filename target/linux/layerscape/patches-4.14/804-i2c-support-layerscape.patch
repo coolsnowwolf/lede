@@ -1,15 +1,19 @@
-From 4f22b58a2f809aff55aa9321c9100b0caf3b6694 Mon Sep 17 00:00:00 2001
+From 3f7d59061c38287bdc2fec2e94b4df9e6e62dbc6 Mon Sep 17 00:00:00 2001
 From: Biwen Li <biwen.li@nxp.com>
-Date: Tue, 30 Oct 2018 18:26:36 +0800
-Subject: [PATCH 21/40] i2c: support layerscape
+Date: Wed, 17 Apr 2019 18:58:39 +0800
+Subject: [PATCH] i2c: support layerscape
+
 This is an integrated patch of i2c for layerscape
 
-Signed-off-by: Zhang Ying-22455 <ying.zhang22455@nxp.com>
 Signed-off-by: Biwen Li <biwen.li@nxp.com>
+Signed-off-by: Laurentiu Tudor <laurentiu.tudor@nxp.com>
+Signed-off-by: Oleksij Rempel <o.rempel@pengutronix.de>
+Signed-off-by: Wolfram Sang <wsa@the-dreams.de>
+Signed-off-by: Zhang Ying-22455 <ying.zhang22455@nxp.com>
 ---
- drivers/i2c/busses/i2c-imx.c        | 193 ++++++++++++++++++++++++++++
- drivers/i2c/muxes/i2c-mux-pca954x.c |  44 ++++++-
- 2 files changed, 236 insertions(+), 1 deletion(-)
+ drivers/i2c/busses/i2c-imx.c        | 245 +++++++++++++++++++++++++---
+ drivers/i2c/muxes/i2c-mux-pca954x.c |  44 ++++-
+ 2 files changed, 268 insertions(+), 21 deletions(-)
 
 --- a/drivers/i2c/busses/i2c-imx.c
 +++ b/drivers/i2c/busses/i2c-imx.c
@@ -93,7 +97,84 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  };
  
  static const struct imx_i2c_hwdata imx1_i2c_hwdata = {
-@@ -878,6 +937,78 @@ static int i2c_imx_read(struct imx_i2c_s
+@@ -281,8 +340,8 @@ static inline unsigned char imx_i2c_read
+ }
+ 
+ /* Functions for DMA support */
+-static void i2c_imx_dma_request(struct imx_i2c_struct *i2c_imx,
+-						dma_addr_t phy_addr)
++static int i2c_imx_dma_request(struct imx_i2c_struct *i2c_imx,
++			       dma_addr_t phy_addr)
+ {
+ 	struct imx_i2c_dma *dma;
+ 	struct dma_slave_config dma_sconfig;
+@@ -291,11 +350,13 @@ static void i2c_imx_dma_request(struct i
+ 
+ 	dma = devm_kzalloc(dev, sizeof(*dma), GFP_KERNEL);
+ 	if (!dma)
+-		return;
++		return -ENOMEM;
+ 
+-	dma->chan_tx = dma_request_slave_channel(dev, "tx");
+-	if (!dma->chan_tx) {
+-		dev_dbg(dev, "can't request DMA tx channel\n");
++	dma->chan_tx = dma_request_chan(dev, "tx");
++	if (IS_ERR(dma->chan_tx)) {
++		ret = PTR_ERR(dma->chan_tx);
++		if (ret != -ENODEV && ret != -EPROBE_DEFER)
++			dev_err(dev, "can't request DMA tx channel (%d)\n", ret);
+ 		goto fail_al;
+ 	}
+ 
+@@ -306,13 +367,15 @@ static void i2c_imx_dma_request(struct i
+ 	dma_sconfig.direction = DMA_MEM_TO_DEV;
+ 	ret = dmaengine_slave_config(dma->chan_tx, &dma_sconfig);
+ 	if (ret < 0) {
+-		dev_dbg(dev, "can't configure tx channel\n");
++		dev_err(dev, "can't configure tx channel (%d)\n", ret);
+ 		goto fail_tx;
+ 	}
+ 
+-	dma->chan_rx = dma_request_slave_channel(dev, "rx");
+-	if (!dma->chan_rx) {
+-		dev_dbg(dev, "can't request DMA rx channel\n");
++	dma->chan_rx = dma_request_chan(dev, "rx");
++	if (IS_ERR(dma->chan_rx)) {
++		ret = PTR_ERR(dma->chan_rx);
++		if (ret != -ENODEV && ret != -EPROBE_DEFER)
++			dev_err(dev, "can't request DMA rx channel (%d)\n", ret);
+ 		goto fail_tx;
+ 	}
+ 
+@@ -323,7 +386,7 @@ static void i2c_imx_dma_request(struct i
+ 	dma_sconfig.direction = DMA_DEV_TO_MEM;
+ 	ret = dmaengine_slave_config(dma->chan_rx, &dma_sconfig);
+ 	if (ret < 0) {
+-		dev_dbg(dev, "can't configure rx channel\n");
++		dev_err(dev, "can't configure rx channel (%d)\n", ret);
+ 		goto fail_rx;
+ 	}
+ 
+@@ -332,7 +395,7 @@ static void i2c_imx_dma_request(struct i
+ 	dev_info(dev, "using %s (tx) and %s (rx) for DMA transfers\n",
+ 		dma_chan_name(dma->chan_tx), dma_chan_name(dma->chan_rx));
+ 
+-	return;
++	return 0;
+ 
+ fail_rx:
+ 	dma_release_channel(dma->chan_rx);
+@@ -340,7 +403,8 @@ fail_tx:
+ 	dma_release_channel(dma->chan_tx);
+ fail_al:
+ 	devm_kfree(dev, dma);
+-	dev_info(dev, "can't use DMA, using PIO instead.\n");
++	/* return successfully if there is no dma support */
++	return ret == -ENODEV ? 0 : ret;
+ }
+ 
+ static void i2c_imx_dma_callback(void *arg)
+@@ -878,6 +942,78 @@ static int i2c_imx_read(struct imx_i2c_s
  	return 0;
  }
  
@@ -172,7 +253,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  static int i2c_imx_xfer(struct i2c_adapter *adapter,
  						struct i2c_msg *msgs, int num)
  {
-@@ -888,6 +1019,19 @@ static int i2c_imx_xfer(struct i2c_adapt
+@@ -888,6 +1024,19 @@ static int i2c_imx_xfer(struct i2c_adapt
  
  	dev_dbg(&i2c_imx->adapter.dev, "<%s>\n", __func__);
  
@@ -192,7 +273,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	result = pm_runtime_get_sync(i2c_imx->adapter.dev.parent);
  	if (result < 0)
  		goto out;
-@@ -1030,6 +1174,50 @@ static int i2c_imx_init_recovery_info(st
+@@ -1030,6 +1179,50 @@ static int i2c_imx_init_recovery_info(st
  	return 0;
  }
  
@@ -243,7 +324,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  static u32 i2c_imx_func(struct i2c_adapter *adapter)
  {
  	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL
-@@ -1085,6 +1273,11 @@ static int i2c_imx_probe(struct platform
+@@ -1085,6 +1278,11 @@ static int i2c_imx_probe(struct platform
  	i2c_imx->adapter.dev.of_node	= pdev->dev.of_node;
  	i2c_imx->base			= base;
  
@@ -255,6 +336,54 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	/* Get I2C clock */
  	i2c_imx->clk = devm_clk_get(&pdev->dev, NULL);
  	if (IS_ERR(i2c_imx->clk)) {
+@@ -1103,7 +1301,8 @@ static int i2c_imx_probe(struct platform
+ 				pdev->name, i2c_imx);
+ 	if (ret) {
+ 		dev_err(&pdev->dev, "can't claim irq %d\n", irq);
+-		goto clk_disable;
++		clk_disable_unprepare(i2c_imx->clk);
++		return ret;
+ 	}
+ 
+ 	/* Init queue */
+@@ -1150,25 +1349,31 @@ static int i2c_imx_probe(struct platform
+ 	pm_runtime_mark_last_busy(&pdev->dev);
+ 	pm_runtime_put_autosuspend(&pdev->dev);
+ 
++	/* Init DMA config if supported */
++	ret = i2c_imx_dma_request(i2c_imx, phy_addr);
++	if (ret) {
++		if (ret != -EPROBE_DEFER)
++			dev_info(&pdev->dev, "can't use DMA, using PIO instead.\n");
++		else
++			goto del_adapter;
++	}
++
+ 	dev_dbg(&i2c_imx->adapter.dev, "claimed irq %d\n", irq);
+ 	dev_dbg(&i2c_imx->adapter.dev, "device resources: %pR\n", res);
+ 	dev_dbg(&i2c_imx->adapter.dev, "adapter name: \"%s\"\n",
+ 		i2c_imx->adapter.name);
+-	dev_info(&i2c_imx->adapter.dev, "IMX I2C adapter registered\n");
+-
+-	/* Init DMA config if supported */
+-	i2c_imx_dma_request(i2c_imx, phy_addr);
+ 
++	dev_info(&i2c_imx->adapter.dev, "IMX I2C adapter registered\n");
+ 	return 0;   /* Return OK */
+ 
++del_adapter:
++	i2c_del_adapter(&i2c_imx->adapter);
+ rpm_disable:
+ 	pm_runtime_put_noidle(&pdev->dev);
+ 	pm_runtime_disable(&pdev->dev);
+ 	pm_runtime_set_suspended(&pdev->dev);
+ 	pm_runtime_dont_use_autosuspend(&pdev->dev);
+ 
+-clk_disable:
+-	clk_disable_unprepare(i2c_imx->clk);
+ 	return ret;
+ }
+ 
 --- a/drivers/i2c/muxes/i2c-mux-pca954x.c
 +++ b/drivers/i2c/muxes/i2c-mux-pca954x.c
 @@ -85,6 +85,7 @@ struct pca954x {

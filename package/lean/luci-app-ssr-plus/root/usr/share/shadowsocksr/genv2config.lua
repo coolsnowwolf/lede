@@ -59,7 +59,7 @@ local v2ray = {
                   type = server.kcp_guise
               }
           } or nil,
-             wsSettings = (server.transport == "ws") and {
+             wsSettings = (server.transport == "ws") and (server.ws_path ~= nil or server.ws_host ~= nil) and {
                 path = server.ws_path,
                 headers = (server.ws_host ~= nil) and {
                     Host = server.ws_host
@@ -78,7 +78,8 @@ local v2ray = {
             } or nil
         },
         mux = {
-            enabled = (server.mux == "1") and true or false
+            enabled = (server.mux == "1") and true or false,
+            concurrency = tonumber(server.concurrency)
       }
     },
 
