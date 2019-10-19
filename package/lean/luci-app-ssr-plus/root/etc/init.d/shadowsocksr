@@ -67,7 +67,7 @@ gen_config_file() {
          elif  [ "$host" != "${host#*:[0-9a-fA-F]}" ] ;then
          hostip=${host}
          else
-          hostip=`ping ${host} -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1`
+          hostip=`nslookup ${host} | grep 'Address 1' | sed 's/Address 1: //g'`
           if echo $hostip|grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$">/dev/null; then
           hostip=${hostip}
           else
@@ -143,7 +143,7 @@ start_rules() {
 	elif  [ "$server" != "${server#*:[0-9a-fA-F]}" ] ;then
 	server=${server}
 	else
-	server=`ping ${server} -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1`
+	server=`nslookup ${server} | grep 'Address 1' | sed 's/Address 1: //g'`
 	 if echo $server|grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$">/dev/null; then
 	  echo $server >/etc/ssr_ip
 	 else
@@ -188,6 +188,12 @@ start_rules() {
 	gfwmode="-z"
 	fi
 	
+	local dports=$(uci_get_by_type global dports 1)
+  if [ $dports = "1" ] ;then
+	proxyport=" "
+	else
+	proxyport="-m multiport --dports 22,53,587,465,995,993,143,80,443 "
+  fi
 
 	/usr/bin/ssr-rules \
 		-s "$server" \
@@ -200,6 +206,7 @@ start_rules() {
 		-w "$(uci_get_by_type access_control wan_fw_ips)" \
 		-p "$(uci_get_by_type access_control lan_fp_ips)" \
 		-G "$(uci_get_by_type access_control lan_gm_ips)" \
+		-D "$proxyport" \
 		$(get_arg_out) $gfwmode $ARG_UDP
 			
 	return $?
@@ -474,19 +481,23 @@ start() {
 	GLOBAL_SERVER=$switch_server
 	switch_enable=1
 	fi
+
 	if rules ;then
 	start_redir
-  
-  mkdir -p /tmp/dnsmasq.d
+	  
+  mkdir -p /tmp/dnsmasq.d && cp -a /etc/dnsmasq.ssr /tmp/ && cp -a /etc/dnsmasq.oversea /tmp/
 	if ! [ "$run_mode" = "oversea" ] ;then
 		cat > /tmp/dnsmasq.d/dnsmasq-ssr.conf <<EOF
-conf-dir=/etc/dnsmasq.ssr
+conf-dir=/tmp/dnsmasq.ssr
 EOF
   else
 		cat > /tmp/dnsmasq.d/dnsmasq-ssr.conf <<EOF
-conf-dir=/etc/dnsmasq.oversea
+conf-dir=/tmp/dnsmasq.oversea
 EOF
 	fi
+	
+	/usr/share/shadowsocksr/gfw2ipset.sh
+	
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	
 	fi
@@ -519,10 +530,10 @@ stop() {
 	iptables -X SSR-SERVER-RULE 2>/dev/null
 	fi
 	if [ -z "$switch_server" ] ;then
-    kill -9 $(ps | grep ssr-switch | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+    kill -9 $(busybox ps -w | grep ssr-switch | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	fi
 	if [ $(uci_get_by_type global monitor_enable) = 1 ] ;then
-    kill -9 $(ps | grep ssr-monitor | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+    kill -9 $(busybox ps -w | grep ssr-monitor | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	fi
 	killall -q -9 ssr-monitor
 	killall -q -9 ss-redir
@@ -534,7 +545,7 @@ stop() {
 	if [ -f /var/run/pdnsd.pid ] ;then
     kill $(cat /var/run/pdnsd.pid) >/dev/null 2>&1
   else 
-    kill -9 $(ps | grep pdnsd | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
+    kill -9 $(busybox ps -w | grep pdnsd | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
 	fi
 	
 	if [ -f "/tmp/dnsmasq.d/dnsmasq-ssr.conf" ]; then

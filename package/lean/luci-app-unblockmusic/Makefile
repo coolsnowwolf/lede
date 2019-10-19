@@ -9,17 +9,19 @@
 
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=LuCI support for Unblock NeteaseCloudMusic
-LUCI_DEPENDS:=+node
-LUCI_PKGARCH:=all
 PKG_NAME:=luci-app-unblockmusic
-PKG_VERSION:=1
-PKG_RELEASE:=36
+PKG_VERSION:=2.2.0
+PKG_RELEASE:=2
+
+PKG_LICENSE:=Apache-2.0
+
+LUCI_TITLE:=LuCI support for Unblock NeteaseCloudMusic
+LUCI_DEPENDS:=+UnblockNeteaseMusic +bash +dnsmasq-full +ipset
+LUCI_PKGARCH:=all
 
 PKG_MAINTAINER:=<https://github.com/maxlicheng/luci-app-unblockmusic>
 
 include $(TOPDIR)/feeds/luci/luci.mk
-
 
 # call BuildPackage - OpenWrt buildroot signature
 
