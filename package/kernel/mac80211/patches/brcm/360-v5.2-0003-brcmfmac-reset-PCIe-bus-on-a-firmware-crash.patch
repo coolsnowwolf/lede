@@ -1,0 +1,153 @@
+From 4684997d9eea29380000e062755aa6d368d789a3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Tue, 26 Feb 2019 14:11:19 +0100
+Subject: [PATCH] brcmfmac: reset PCIe bus on a firmware crash
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This includes bus reset & reloading a firmware. It should be sufficient
+for a user space to (setup and) use a wireless device again.
+
+Support for reset on USB & SDIO can be added later.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Reviewed-by: Arend van Spriel <arend.vanspriel@broadcom.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../broadcom/brcm80211/brcmfmac/bus.h         | 10 ++++++
+ .../broadcom/brcm80211/brcmfmac/core.c        | 12 +++++++
+ .../broadcom/brcm80211/brcmfmac/core.h        |  2 ++
+ .../broadcom/brcm80211/brcmfmac/pcie.c        | 35 +++++++++++++++++++
+ 4 files changed, 59 insertions(+)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bus.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bus.h
+@@ -91,6 +91,7 @@ struct brcmf_bus_ops {
+ 	int (*get_fwname)(struct device *dev, const char *ext,
+ 			  unsigned char *fw_name);
+ 	void (*debugfs_create)(struct device *dev);
++	int (*reset)(struct device *dev);
+ };
+ 
+ 
+@@ -245,6 +246,15 @@ void brcmf_bus_debugfs_create(struct brc
+ 	return bus->ops->debugfs_create(bus->dev);
+ }
+ 
++static inline
++int brcmf_bus_reset(struct brcmf_bus *bus)
++{
++	if (!bus->ops->reset)
++		return -EOPNOTSUPP;
++
++	return bus->ops->reset(bus->dev);
++}
++
+ /*
+  * interface functions from common layer
+  */
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
+@@ -1105,6 +1105,14 @@ static int brcmf_revinfo_read(struct seq
+ 	return 0;
+ }
+ 
++static void brcmf_core_bus_reset(struct work_struct *work)
++{
++	struct brcmf_pub *drvr = container_of(work, struct brcmf_pub,
++					      bus_reset);
++
++	brcmf_bus_reset(drvr->bus_if);
++}
++
+ static int brcmf_bus_started(struct brcmf_pub *drvr, struct cfg80211_ops *ops)
+ {
+ 	int ret = -1;
+@@ -1176,6 +1184,8 @@ static int brcmf_bus_started(struct brcm
+ #endif
+ #endif /* CONFIG_INET */
+ 
++	INIT_WORK(&drvr->bus_reset, brcmf_core_bus_reset);
++
+ 	/* populate debugfs */
+ 	brcmf_debugfs_add_entry(drvr, "revinfo", brcmf_revinfo_read);
+ 	brcmf_feat_debugfs_create(drvr);
+@@ -1302,6 +1312,8 @@ void brcmf_fw_crashed(struct device *dev
+ 	bphy_err(drvr, "Firmware has halted or crashed\n");
+ 
+ 	brcmf_dev_coredump(dev);
++
++	schedule_work(&drvr->bus_reset);
+ }
+ 
+ void brcmf_detach(struct device *dev)
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.h
+@@ -143,6 +143,8 @@ struct brcmf_pub {
+ 	struct notifier_block inet6addr_notifier;
+ 	struct brcmf_mp_device *settings;
+ 
++	struct work_struct bus_reset;
++
+ 	u8 clmver[BRCMF_DCMD_SMLEN];
+ };
+ 
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -345,6 +345,10 @@ static const u32 brcmf_ring_itemsize[BRC
+ 	BRCMF_D2H_MSGRING_RX_COMPLETE_ITEMSIZE
+ };
+ 
++static void brcmf_pcie_setup(struct device *dev, int ret,
++			     struct brcmf_fw_request *fwreq);
++static struct brcmf_fw_request *
++brcmf_pcie_prepare_fw_request(struct brcmf_pciedev_info *devinfo);
+ 
+ static u32
+ brcmf_pcie_read_reg32(struct brcmf_pciedev_info *devinfo, u32 reg_offset)
+@@ -1409,6 +1413,36 @@ int brcmf_pcie_get_fwname(struct device
+ 	return 0;
+ }
+ 
++static int brcmf_pcie_reset(struct device *dev)
++{
++	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
++	struct brcmf_pciedev *buspub = bus_if->bus_priv.pcie;
++	struct brcmf_pciedev_info *devinfo = buspub->devinfo;
++	struct brcmf_fw_request *fwreq;
++	int err;
++
++	brcmf_detach(dev);
++
++	brcmf_pcie_release_irq(devinfo);
++	brcmf_pcie_release_scratchbuffers(devinfo);
++	brcmf_pcie_release_ringbuffers(devinfo);
++	brcmf_pcie_reset_device(devinfo);
++
++	fwreq = brcmf_pcie_prepare_fw_request(devinfo);
++	if (!fwreq) {
++		dev_err(dev, "Failed to prepare FW request\n");
++		return -ENOMEM;
++	}
++
++	err = brcmf_fw_get_firmwares(dev, fwreq, brcmf_pcie_setup);
++	if (err) {
++		dev_err(dev, "Failed to prepare FW request\n");
++		kfree(fwreq);
++	}
++
++	return err;
++}
++
+ static const struct brcmf_bus_ops brcmf_pcie_bus_ops = {
+ 	.txdata = brcmf_pcie_tx,
+ 	.stop = brcmf_pcie_down,
+@@ -1418,6 +1452,7 @@ static const struct brcmf_bus_ops brcmf_
+ 	.get_ramsize = brcmf_pcie_get_ramsize,
+ 	.get_memdump = brcmf_pcie_get_memdump,
+ 	.get_fwname = brcmf_pcie_get_fwname,
++	.reset = brcmf_pcie_reset,
+ };
+ 
+ 
