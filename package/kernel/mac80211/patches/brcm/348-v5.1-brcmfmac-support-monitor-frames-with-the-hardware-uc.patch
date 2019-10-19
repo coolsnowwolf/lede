@@ -1,0 +1,143 @@
+From e665988be29ccea3584528967b432a5cfd801ca4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Fri, 8 Feb 2019 07:42:30 +0100
+Subject: [PATCH] brcmfmac: support monitor frames with the hardware/ucode
+ header
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+So far there were two monitor frame formats:
+1) 802.11 frames (with frame (sub)type & all addresses)
+2) 802.11 frames with the radiotap header
+
+Testing the latest FullMAC firmwares for 4366b1/4366c0 resulted in
+discovering a new format being used. It seems (almost?) identical to the
+one known from ucode used in SoftMAC devices which is most likely the
+same codebase anyway.
+
+While new firmwares will /announce/ radiotap header support using the
+"rtap" fw capability string it seems no string was added for the new
+ucode header format.
+
+All above means that:
+1) We need new format support when dealing with a received frame
+2) A new feature bit & mapping quirks have to be added manually
+
+As for now only an empty radiotap is being created. Adding support for
+extracting some info (band, channel, signal, etc.) is planned for the
+future.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Acked-by: Arend van Spriel <arend.vanspriel@broadcom.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../broadcom/brcm80211/brcmfmac/core.c        | 55 +++++++++++++++++++
+ .../broadcom/brcm80211/brcmfmac/feature.c     |  4 ++
+ .../broadcom/brcm80211/brcmfmac/feature.h     |  4 +-
+ 3 files changed, 62 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
+@@ -43,6 +43,36 @@
+ 
+ #define BRCMF_BSSIDX_INVALID			-1
+ 
++#define	RXS_PBPRES				BIT(2)
++
++#define	D11_PHY_HDR_LEN				6
++
++struct d11rxhdr_le {
++	__le16 RxFrameSize;
++	u16 PAD;
++	__le16 PhyRxStatus_0;
++	__le16 PhyRxStatus_1;
++	__le16 PhyRxStatus_2;
++	__le16 PhyRxStatus_3;
++	__le16 PhyRxStatus_4;
++	__le16 PhyRxStatus_5;
++	__le16 RxStatus1;
++	__le16 RxStatus2;
++	__le16 RxTSFTime;
++	__le16 RxChan;
++	u8 unknown[12];
++} __packed;
++
++struct wlc_d11rxhdr {
++	struct d11rxhdr_le rxhdr;
++	__le32 tsf_l;
++	s8 rssi;
++	s8 rxpwr0;
++	s8 rxpwr1;
++	s8 do_rssi_ma;
++	s8 rxpwr[4];
++} __packed;
++
+ char *brcmf_ifname(struct brcmf_if *ifp)
+ {
+ 	if (!ifp)
+@@ -409,6 +439,31 @@ void brcmf_netif_mon_rx(struct brcmf_if
+ {
+ 	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_MONITOR_FMT_RADIOTAP)) {
+ 		/* Do nothing */
++	} else if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_MONITOR_FMT_HW_RX_HDR)) {
++		struct wlc_d11rxhdr *wlc_rxhdr = (struct wlc_d11rxhdr *)skb->data;
++		struct ieee80211_radiotap_header *radiotap;
++		unsigned int offset;
++		u16 RxStatus1;
++
++		RxStatus1 = le16_to_cpu(wlc_rxhdr->rxhdr.RxStatus1);
++
++		offset = sizeof(struct wlc_d11rxhdr);
++		/* MAC inserts 2 pad bytes for a4 headers or QoS or A-MSDU
++		 * subframes
++		 */
++		if (RxStatus1 & RXS_PBPRES)
++			offset += 2;
++		offset += D11_PHY_HDR_LEN;
++
++		skb_pull(skb, offset);
++
++		/* TODO: use RX header to fill some radiotap data */
++		radiotap = skb_push(skb, sizeof(*radiotap));
++		memset(radiotap, 0, sizeof(*radiotap));
++		radiotap->it_len = cpu_to_le16(sizeof(*radiotap));
++
++		/* TODO: 4 bytes with receive status? */
++		skb->len -= 4;
+ 	} else {
+ 		struct ieee80211_radiotap_header *radiotap;
+ 
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/feature.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/feature.c
+@@ -103,6 +103,10 @@ static const struct brcmf_feat_fwfeat br
+ 	{ "01-6cb8e269", BIT(BRCMF_FEAT_MONITOR) },
+ 	/* brcmfmac4366b-pcie.bin from linux-firmware.git commit 52442afee990 */
+ 	{ "01-c47a91a4", BIT(BRCMF_FEAT_MONITOR) },
++	/* brcmfmac4366b-pcie.bin from linux-firmware.git commit 211de1679a68 */
++	{ "01-801fb449", BIT(BRCMF_FEAT_MONITOR_FMT_HW_RX_HDR) },
++	/* brcmfmac4366c-pcie.bin from linux-firmware.git commit 211de1679a68 */
++	{ "01-d2cbb8fd", BIT(BRCMF_FEAT_MONITOR_FMT_HW_RX_HDR) },
+ };
+ 
+ static void brcmf_feat_firmware_overrides(struct brcmf_pub *drv)
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/feature.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/feature.h
+@@ -35,6 +35,7 @@
+  * FWSUP: Firmware supplicant.
+  * MONITOR: firmware can pass monitor packets to host.
+  * MONITOR_FMT_RADIOTAP: firmware provides monitor packets with radiotap header
++ * MONITOR_FMT_HW_RX_HDR: firmware provides monitor packets with hw/ucode header
+  */
+ #define BRCMF_FEAT_LIST \
+ 	BRCMF_FEAT_DEF(MBSS) \
+@@ -52,7 +53,8 @@
+ 	BRCMF_FEAT_DEF(GSCAN) \
+ 	BRCMF_FEAT_DEF(FWSUP) \
+ 	BRCMF_FEAT_DEF(MONITOR) \
+-	BRCMF_FEAT_DEF(MONITOR_FMT_RADIOTAP)
++	BRCMF_FEAT_DEF(MONITOR_FMT_RADIOTAP) \
++	BRCMF_FEAT_DEF(MONITOR_FMT_HW_RX_HDR)
+ 
+ /*
+  * Quirks:
