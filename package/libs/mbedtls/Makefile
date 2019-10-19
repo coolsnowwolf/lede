@@ -50,7 +50,7 @@ config LIBMBEDTLS_HAVE_SSE2
 	bool
 	default y if !TARGET_x86_legacy && !TARGET_x86_geode
 	prompt "Enable use of x86 SSE2 instructions"
-	depends on OPENSSL_WITH_ASM && x86_64 || i386
+	depends on x86_64 || i386
 	help
 		Use of SSE2 instructions greatly increase performance (up to
 		3x faster) with a minimum (~0.2%, or 23KB) increase in package
