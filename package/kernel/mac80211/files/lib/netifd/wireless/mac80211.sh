@@ -26,7 +26,7 @@ drv_mac80211_init_device_config() {
 	config_add_string tx_burst
 	config_add_int beacon_int chanbw frag rts
 	config_add_int rxantenna txantenna antenna_gain txpower distance
-	config_add_boolean noscan ht_coex
+	config_add_boolean noscan ht_coex acs_exclude_dfs
 	config_add_array ht_capab
 	config_add_array channels
 	config_add_boolean \
@@ -96,6 +96,10 @@ mac80211_hostapd_setup_base() {
 
 	[ "$auto_channel" -gt 0 ] && channel=acs_survey
 	[ "$auto_channel" -gt 0 ] && json_get_values channel_list channels
+
+	[ "$auto_channel" -gt 0 ] && json_get_vars acs_exclude_dfs
+	[ -n "$acs_exclude_dfs" ] && [ "$acs_exclude_dfs" -gt 0 ] &&
+		append base_cfg "acs_exclude_dfs=1" "$N"
 
 	json_get_vars noscan ht_coex
 	json_get_values ht_capab_list ht_capab tx_burst

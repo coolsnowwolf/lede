@@ -25,10 +25,10 @@ define Build/boot-common
 	rm -f $@.boot
 	mkfs.fat -C $@.boot $(FAT32_BLOCKS)
 	mcopy -i $@.boot $(KDIR)/COPYING.linux ::
-	mcopy -i $@.boot $(KDIR)/bootcode.bin ::
 	mcopy -i $@.boot $(KDIR)/LICENCE.broadcom ::
 	mcopy -i $@.boot cmdline.txt ::
 	mcopy -i $@.boot config.txt ::
+	mcopy -i $@.boot distroconfig.txt ::
 	mcopy -i $@.boot $(IMAGE_KERNEL) ::$(KERNEL_IMG)
 	$(foreach dts,$(shell echo $(DEVICE_DTS)),mcopy -i $@.boot $(DTS_DIR)/$(dts).dtb ::;)
 	mmd -i $@.boot ::/overlays
@@ -37,6 +37,7 @@ define Build/boot-common
 endef
 
 define Build/boot-2708
+	mcopy -i $@.boot $(KDIR)/bootcode.bin ::
 	mcopy -i $@.boot $(KDIR)/start.elf ::
 	mcopy -i $@.boot $(KDIR)/start_cd.elf ::
 	mcopy -i $@.boot $(KDIR)/start_x.elf ::
@@ -45,7 +46,7 @@ define Build/boot-2708
 	mcopy -i $@.boot $(KDIR)/fixup_x.dat ::
 endef
 
- define Build/boot-2711
+define Build/boot-2711
 	mcopy -i $@.boot $(KDIR)/start4.elf ::
 	mcopy -i $@.boot $(KDIR)/start4cd.elf ::
 	mcopy -i $@.boot $(KDIR)/start4x.elf ::
@@ -61,6 +62,7 @@ endef
 
 ### Devices ###
 define Device/Default
+  DEVICE_VENDOR := Raspberry Pi
   KERNEL := kernel-bin | kernel-img
   KERNEL_IMG := kernel.img
   IMAGES := factory.img.gz sysupgrade.img.gz
@@ -69,8 +71,11 @@ define Device/Default
 endef
 
 define Device/rpi
-  DEVICE_TITLE := Raspberry Pi B/B+/CM/Zero/ZeroW
-  DEVICE_DTS := bcm2708-rpi-b bcm2708-rpi-b-plus bcm2708-rpi-cm bcm2708-rpi-zero bcm2708-rpi-zero-w
+  DEVICE_MODEL := B/B+/CM/Zero/ZeroW
+  DEVICE_DTS := \
+	bcm2708-rpi-b bcm2708-rpi-b-plus \
+	bcm2708-rpi-cm \
+	bcm2708-rpi-zero bcm2708-rpi-zero-w
   SUPPORTED_DEVICES := \
 	rpi-b rpi-b-plus rpi-cm rpi-zero rpi-zero-w \
 	raspberrypi,model-b raspberrypi,model-b-plus raspberrypi,model-b-rev2 \
@@ -86,13 +91,18 @@ ifeq ($(SUBTARGET),bcm2708)
 endif
 
 define Device/rpi-2
-  DEVICE_TITLE := Raspberry Pi 2B/3B/3B+/3CM/4B
-  DEVICE_DTS := bcm2709-rpi-2-b bcm2710-rpi-3-b bcm2710-rpi-3-b-plus bcm2711-rpi-4-b bcm2710-rpi-cm3
+  DEVICE_MODEL := 2B/3B/3B+/3CM/4B
+  DEVICE_DTS := \
+	bcm2709-rpi-2-b bcm2710-rpi-2-b \
+	bcm2710-rpi-3-b bcm2710-rpi-3-b-plus \
+	bcm2711-rpi-4-b \
+	bcm2710-rpi-cm3
   SUPPORTED_DEVICES := \
 	rpi-2-b rpi-3-b rpi-3-b-plus rpi-cm \
-	raspberrypi,2-model-b \
+	raspberrypi,2-model-b raspberrypi,2-model-b-rev2 \
 	raspberrypi,3-model-b raspberrypi,3-model-b-plus \
-	raspberrypi,3-compute-module raspberrypi,compute-module-3
+	raspberrypi,3-compute-module raspberrypi,compute-module-3 \
+	raspberrypi,4-model-b
   DEVICE_PACKAGES := \
 	brcmfmac-firmware-43430-sdio \
 	brcmfmac-firmware-43430-sdio-rpi-3b \
@@ -107,11 +117,15 @@ ifeq ($(SUBTARGET),bcm2709)
 endif
 
 define Device/rpi-3
+  DEVICE_MODEL := 2B-1.2/3B/3B+/3CM
   KERNEL_IMG := kernel8.img
-  DEVICE_TITLE := Raspberry Pi 3B/3B+/3CM
-  DEVICE_DTS := broadcom/bcm2710-rpi-3-b broadcom/bcm2710-rpi-3-b-plus broadcom/bcm2710-rpi-cm3
+  DEVICE_DTS := \
+	broadcom/bcm2710-rpi-2-b \
+	broadcom/bcm2710-rpi-3-b broadcom/bcm2710-rpi-3-b-plus \
+	broadcom/bcm2710-rpi-cm3
   SUPPORTED_DEVICES := \
 	rpi-3-b rpi-3-b-plus \
+	raspberrypi,2-model-b-rev2 \
 	raspberrypi,3-model-b raspberrypi,3-model-b-plus \
 	raspberrypi,3-compute-module raspberrypi,compute-module-3
   DEVICE_PACKAGES := \
@@ -123,6 +137,23 @@ define Device/rpi-3
 endef
 ifeq ($(SUBTARGET),bcm2710)
   TARGET_DEVICES += rpi-3
+endif
+
+define Device/rpi-4
+  DEVICE_MODEL := 4B
+  KERNEL_IMG := kernel8.img
+  DEVICE_DTS := broadcom/bcm2711-rpi-4-b
+  SUPPORTED_DEVICES := \
+	raspberrypi,4-model-b
+  DEVICE_PACKAGES := \
+	brcmfmac-firmware-43455-sdio brcmfmac-firmware-43455-clm_blob \
+	brcmfmac-firmware-43455-sdio-rpi-4b \
+	kmod-brcmfmac wpad-basic
+  IMAGE/sysupgrade.img.gz := boot-common | boot-2711 | sdcard-img | gzip | append-metadata
+  IMAGE/factory.img.gz := boot-common | boot-2711 | sdcard-img | gzip
+endef
+ifeq ($(SUBTARGET),bcm2711)
+  TARGET_DEVICES += rpi-4
 endif
 
 $(eval $(call BuildImage))

@@ -6,7 +6,7 @@ linksys_get_target_firmware() {
 
 	local cur_boot_part mtd_ubi0
 
-	cur_boot_part=`/usr/sbin/fw_printenv -n boot_part`
+	cur_boot_part=$(/usr/sbin/fw_printenv -n boot_part)
 	if [ -z "${cur_boot_part}" ] ; then
 		mtd_ubi0=$(cat /sys/devices/virtual/ubi/ubi0/mtd_num)
 		case $(egrep ^mtd${mtd_ubi0}: /proc/mtd | cut -d '"' -f 2) in
@@ -93,6 +93,6 @@ platform_do_upgrade_linksys() {
 }
 
 platform_copy_config_linksys() {
-	cp -f /tmp/sysupgrade.tgz /tmp/syscfg/sysupgrade.tgz
+	cp -f "$UPGRADE_BACKUP" "/tmp/syscfg/$BACKUP_FILE"
 	sync
 }
