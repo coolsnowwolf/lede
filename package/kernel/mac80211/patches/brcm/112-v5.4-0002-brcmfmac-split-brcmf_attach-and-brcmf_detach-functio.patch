@@ -1,0 +1,266 @@
+From 450914c39f88d1adada26256360dea7050ff4e83 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Tue, 3 Sep 2019 06:29:27 +0200
+Subject: [PATCH 2/3] brcmfmac: split brcmf_attach() and brcmf_detach()
+ functions
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Move code allocating/freeing wiphy out of above functions. This will
+allow reinitializing the driver (e.g. on some error) without allocating
+a new wiphy.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Acked-by: Arend van Spriel <arend.vanspriel@broadcom.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../broadcom/brcm80211/brcmfmac/bus.h         |  4 ++-
+ .../broadcom/brcm80211/brcmfmac/core.c        | 33 ++++++++++++++----
+ .../broadcom/brcm80211/brcmfmac/pcie.c        | 13 +++++--
+ .../broadcom/brcm80211/brcmfmac/sdio.c        | 15 ++++++--
+ .../broadcom/brcm80211/brcmfmac/usb.c         | 34 +++++++++++++++----
+ 5 files changed, 80 insertions(+), 19 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bus.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bus.h
+@@ -254,10 +254,12 @@ void brcmf_rx_frame(struct device *dev,
+ /* Receive async event packet from firmware. Callee disposes of rxp. */
+ void brcmf_rx_event(struct device *dev, struct sk_buff *rxp);
+ 
++int brcmf_alloc(struct device *dev, struct brcmf_mp_device *settings);
+ /* Indication from bus module regarding presence/insertion of dongle. */
+-int brcmf_attach(struct device *dev, struct brcmf_mp_device *settings);
++int brcmf_attach(struct device *dev);
+ /* Indication from bus module regarding removal/absence of dongle */
+ void brcmf_detach(struct device *dev);
++void brcmf_free(struct device *dev);
+ /* Indication from bus module that dongle should be reset */
+ void brcmf_dev_reset(struct device *dev);
+ /* Request from bus module to initiate a coredump */
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
+@@ -1230,13 +1230,11 @@ fail:
+ 	return ret;
+ }
+ 
+-int brcmf_attach(struct device *dev, struct brcmf_mp_device *settings)
++int brcmf_alloc(struct device *dev, struct brcmf_mp_device *settings)
+ {
+ 	struct wiphy *wiphy;
+ 	struct cfg80211_ops *ops;
+ 	struct brcmf_pub *drvr = NULL;
+-	int ret = 0;
+-	int i;
+ 
+ 	brcmf_dbg(TRACE, "Enter\n");
+ 
+@@ -1254,6 +1252,21 @@ int brcmf_attach(struct device *dev, str
+ 	drvr = wiphy_priv(wiphy);
+ 	drvr->wiphy = wiphy;
+ 	drvr->ops = ops;
++	drvr->bus_if = dev_get_drvdata(dev);
++	drvr->bus_if->drvr = drvr;
++	drvr->settings = settings;
++
++	return 0;
++}
++
++int brcmf_attach(struct device *dev)
++{
++	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
++	struct brcmf_pub *drvr = bus_if->drvr;
++	int ret = 0;
++	int i;
++
++	brcmf_dbg(TRACE, "Enter\n");
+ 
+ 	for (i = 0; i < ARRAY_SIZE(drvr->if2bss); i++)
+ 		drvr->if2bss[i] = BRCMF_BSSIDX_INVALID;
+@@ -1262,9 +1275,6 @@ int brcmf_attach(struct device *dev, str
+ 
+ 	/* Link to bus module */
+ 	drvr->hdrlen = 0;
+-	drvr->bus_if = dev_get_drvdata(dev);
+-	drvr->bus_if->drvr = drvr;
+-	drvr->settings = settings;
+ 
+ 	/* Attach and link in the protocol */
+ 	ret = brcmf_proto_attach(drvr);
+@@ -1280,7 +1290,7 @@ int brcmf_attach(struct device *dev, str
+ 	/* attach firmware event handler */
+ 	brcmf_fweh_attach(drvr);
+ 
+-	ret = brcmf_bus_started(drvr, ops);
++	ret = brcmf_bus_started(drvr, drvr->ops);
+ 	if (ret != 0) {
+ 		bphy_err(drvr, "dongle is not responding: err=%d\n", ret);
+ 		goto fail;
+@@ -1372,6 +1382,15 @@ void brcmf_detach(struct device *dev)
+ 		brcmf_cfg80211_detach(drvr->config);
+ 		drvr->config = NULL;
+ 	}
++}
++
++void brcmf_free(struct device *dev)
++{
++	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
++	struct brcmf_pub *drvr = bus_if->drvr;
++
++	if (!drvr)
++		return;
+ 
+ 	bus_if->drvr = NULL;
+ 
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -1430,6 +1430,7 @@ static int brcmf_pcie_reset(struct devic
+ 	brcmf_pcie_bus_console_read(devinfo, true);
+ 
+ 	brcmf_detach(dev);
++	brcmf_free(dev);
+ 
+ 	brcmf_pcie_release_irq(devinfo);
+ 	brcmf_pcie_release_scratchbuffers(devinfo);
+@@ -1824,11 +1825,18 @@ static void brcmf_pcie_setup(struct devi
+ 
+ 	brcmf_pcie_intr_enable(devinfo);
+ 	brcmf_pcie_hostready(devinfo);
+-	if (brcmf_attach(&devinfo->pdev->dev, devinfo->settings) == 0)
+-		return;
++
++	ret = brcmf_alloc(&devinfo->pdev->dev, devinfo->settings);
++	if (ret)
++		goto fail;
++	ret = brcmf_attach(&devinfo->pdev->dev);
++	if (ret)
++		goto fail;
+ 
+ 	brcmf_pcie_bus_console_read(devinfo, false);
+ 
++	return;
++
+ fail:
+ 	device_release_driver(dev);
+ }
+@@ -1971,6 +1979,7 @@ brcmf_pcie_remove(struct pci_dev *pdev)
+ 		brcmf_pcie_intr_disable(devinfo);
+ 
+ 	brcmf_detach(&pdev->dev);
++	brcmf_free(&pdev->dev);
+ 
+ 	kfree(bus->bus_priv.pcie);
+ 	kfree(bus->msgbuf->flowrings);
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/sdio.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/sdio.c
+@@ -4247,17 +4247,26 @@ static void brcmf_sdio_firmware_callback
+ 	sdiod->bus_if->chip = bus->ci->chip;
+ 	sdiod->bus_if->chiprev = bus->ci->chiprev;
+ 
++	err = brcmf_alloc(sdiod->dev, sdiod->settings);
++	if (err) {
++		brcmf_err("brcmf_alloc failed\n");
++		goto claim;
++	}
++
+ 	/* Attach to the common layer, reserve hdr space */
+-	err = brcmf_attach(sdiod->dev, sdiod->settings);
++	err = brcmf_attach(sdiod->dev);
+ 	if (err != 0) {
+ 		brcmf_err("brcmf_attach failed\n");
+-		sdio_claim_host(sdiod->func1);
+-		goto checkdied;
++		goto free;
+ 	}
+ 
+ 	/* ready */
+ 	return;
+ 
++free:
++	brcmf_free(sdiod->dev);
++claim:
++	sdio_claim_host(sdiod->func1);
+ checkdied:
+ 	brcmf_sdio_checkdied(bus);
+ release:
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
+@@ -1178,8 +1178,12 @@ static void brcmf_usb_probe_phase2(struc
+ 	if (ret)
+ 		goto error;
+ 
++	ret = brcmf_alloc(devinfo->dev, devinfo->settings);
++	if (ret)
++		goto error;
++
+ 	/* Attach to the common driver interface */
+-	ret = brcmf_attach(devinfo->dev, devinfo->settings);
++	ret = brcmf_attach(devinfo->dev);
+ 	if (ret)
+ 		goto error;
+ 
+@@ -1251,7 +1255,10 @@ static int brcmf_usb_probe_cb(struct brc
+ 	}
+ 
+ 	if (!brcmf_usb_dlneeded(devinfo)) {
+-		ret = brcmf_attach(devinfo->dev, devinfo->settings);
++		ret = brcmf_alloc(devinfo->dev, devinfo->settings);
++		if (ret)
++			goto fail;
++		ret = brcmf_attach(devinfo->dev);
+ 		if (ret)
+ 			goto fail;
+ 		/* we are done */
+@@ -1279,6 +1286,7 @@ static int brcmf_usb_probe_cb(struct brc
+ 
+ fail:
+ 	/* Release resources in reverse order */
++	brcmf_free(devinfo->dev);
+ 	kfree(bus);
+ 	brcmf_usb_detach(devinfo);
+ 	return ret;
+@@ -1292,6 +1300,7 @@ brcmf_usb_disconnect_cb(struct brcmf_usb
+ 	brcmf_dbg(USB, "Enter, bus_pub %p\n", devinfo);
+ 
+ 	brcmf_detach(devinfo->dev);
++	brcmf_free(devinfo->dev);
+ 	kfree(devinfo->bus_pub.bus);
+ 	brcmf_usb_detach(devinfo);
+ }
+@@ -1435,10 +1444,12 @@ static int brcmf_usb_suspend(struct usb_
+ 
+ 	brcmf_dbg(USB, "Enter\n");
+ 	devinfo->bus_pub.state = BRCMFMAC_USB_STATE_SLEEP;
+-	if (devinfo->wowl_enabled)
++	if (devinfo->wowl_enabled) {
+ 		brcmf_cancel_all_urbs(devinfo);
+-	else
++	} else {
+ 		brcmf_detach(&usb->dev);
++		brcmf_free(&usb->dev);
++	}
+ 	return 0;
+ }
+ 
+@@ -1451,8 +1462,19 @@ static int brcmf_usb_resume(struct usb_i
+ 	struct brcmf_usbdev_info *devinfo = brcmf_usb_get_businfo(&usb->dev);
+ 
+ 	brcmf_dbg(USB, "Enter\n");
+-	if (!devinfo->wowl_enabled)
+-		return brcmf_attach(devinfo->dev, devinfo->settings);
++	if (!devinfo->wowl_enabled) {
++		int err;
++
++		err = brcmf_alloc(&usb->dev, devinfo->settings);
++		if (err)
++			return err;
++
++		err = brcmf_attach(devinfo->dev);
++		if (err) {
++			brcmf_free(devinfo->dev);
++			return err;
++		}
++	}
+ 
+ 	devinfo->bus_pub.state = BRCMFMAC_USB_STATE_UP;
+ 	brcmf_usb_rx_fill_all(devinfo);
