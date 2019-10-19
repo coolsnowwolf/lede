@@ -1,0 +1,96 @@
+From a4176ec356c73a46c07c181c6d04039fafa34a9f Mon Sep 17 00:00:00 2001
+From: Arend van Spriel <arend.vanspriel@broadcom.com>
+Date: Thu, 14 Feb 2019 13:43:48 +0100
+Subject: [PATCH] brcmfmac: add subtype check for event handling in data path
+
+For USB there is no separate channel being used to pass events
+from firmware to the host driver and as such are passed over the
+data path. In order to detect mock event messages an additional
+check is needed on event subtype. This check is added conditionally
+using unlikely() keyword.
+
+Reviewed-by: Hante Meuleman <hante.meuleman@broadcom.com>
+Reviewed-by: Pieter-Paul Giesberts <pieter-paul.giesberts@broadcom.com>
+Reviewed-by: Franky Lin <franky.lin@broadcom.com>
+Signed-off-by: Arend van Spriel <arend.vanspriel@broadcom.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../wireless/broadcom/brcm80211/brcmfmac/core.c  |  5 +++--
+ .../wireless/broadcom/brcm80211/brcmfmac/fweh.h  | 16 ++++++++++++----
+ .../broadcom/brcm80211/brcmfmac/msgbuf.c         |  2 +-
+ 3 files changed, 16 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
+@@ -519,7 +519,8 @@ void brcmf_rx_frame(struct device *dev,
+ 	} else {
+ 		/* Process special event packets */
+ 		if (handle_event)
+-			brcmf_fweh_process_skb(ifp->drvr, skb);
++			brcmf_fweh_process_skb(ifp->drvr, skb,
++					       BCMILCP_SUBTYPE_VENDOR_LONG);
+ 
+ 		brcmf_netif_rx(ifp, skb);
+ 	}
+@@ -536,7 +537,7 @@ void brcmf_rx_event(struct device *dev,
+ 	if (brcmf_rx_hdrpull(drvr, skb, &ifp))
+ 		return;
+ 
+-	brcmf_fweh_process_skb(ifp->drvr, skb);
++	brcmf_fweh_process_skb(ifp->drvr, skb, 0);
+ 	brcmu_pkt_buf_free_skb(skb);
+ }
+ 
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/fweh.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/fweh.h
+@@ -211,7 +211,7 @@ enum brcmf_fweh_event_code {
+  */
+ #define BRCM_OUI				"\x00\x10\x18"
+ #define BCMILCP_BCM_SUBTYPE_EVENT		1
+-
++#define BCMILCP_SUBTYPE_VENDOR_LONG		32769
+ 
+ /**
+  * struct brcm_ethhdr - broadcom specific ether header.
+@@ -334,10 +334,10 @@ void brcmf_fweh_process_event(struct brc
+ void brcmf_fweh_p2pdev_setup(struct brcmf_if *ifp, bool ongoing);
+ 
+ static inline void brcmf_fweh_process_skb(struct brcmf_pub *drvr,
+-					  struct sk_buff *skb)
++					  struct sk_buff *skb, u16 stype)
+ {
+ 	struct brcmf_event *event_packet;
+-	u16 usr_stype;
++	u16 subtype, usr_stype;
+ 
+ 	/* only process events when protocol matches */
+ 	if (skb->protocol != cpu_to_be16(ETH_P_LINK_CTL))
+@@ -346,8 +346,16 @@ static inline void brcmf_fweh_process_sk
+ 	if ((skb->len + ETH_HLEN) < sizeof(*event_packet))
+ 		return;
+ 
+-	/* check for BRCM oui match */
+ 	event_packet = (struct brcmf_event *)skb_mac_header(skb);
++
++	/* check subtype if needed */
++	if (unlikely(stype)) {
++		subtype = get_unaligned_be16(&event_packet->hdr.subtype);
++		if (subtype != stype)
++			return;
++	}
++
++	/* check for BRCM oui match */
+ 	if (memcmp(BRCM_OUI, &event_packet->hdr.oui[0],
+ 		   sizeof(event_packet->hdr.oui)))
+ 		return;
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c
+@@ -1116,7 +1116,7 @@ static void brcmf_msgbuf_process_event(s
+ 
+ 	skb->protocol = eth_type_trans(skb, ifp->ndev);
+ 
+-	brcmf_fweh_process_skb(ifp->drvr, skb);
++	brcmf_fweh_process_skb(ifp->drvr, skb, 0);
+ 
+ exit:
+ 	brcmu_pkt_buf_free_skb(skb);
