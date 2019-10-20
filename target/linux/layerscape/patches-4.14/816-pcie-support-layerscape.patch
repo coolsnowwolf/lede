@@ -830,7 +830,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  obj-$(CONFIG_PCIE_ARTPEC6) += pcie-artpec6.o
 --- a/drivers/pci/dwc/pci-dra7xx.c
 +++ b/drivers/pci/dwc/pci-dra7xx.c
-@@ -338,15 +338,6 @@ static irqreturn_t dra7xx_pcie_irq_handl
+@@ -339,15 +339,6 @@ static irqreturn_t dra7xx_pcie_irq_handl
  	return IRQ_HANDLED;
  }
  
@@ -1125,49 +1125,13 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  				   struct pci_epf_header *hdr)
  {
  	struct dw_pcie_ep *ep = epc_get_drvdata(epc);
-@@ -74,8 +106,7 @@ static int dw_pcie_ep_inbound_atu(struct
- 	u32 free_win;
- 	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
- 
--	free_win = find_first_zero_bit(&ep->ib_window_map,
--				       sizeof(ep->ib_window_map));
-+	free_win = find_first_zero_bit(ep->ib_window_map, ep->num_ib_windows);
- 	if (free_win >= ep->num_ib_windows) {
- 		dev_err(pci->dev, "no free inbound window\n");
- 		return -EINVAL;
-@@ -89,7 +120,7 @@ static int dw_pcie_ep_inbound_atu(struct
- 	}
- 
- 	ep->bar_to_atu[bar] = free_win;
--	set_bit(free_win, &ep->ib_window_map);
-+	set_bit(free_win, ep->ib_window_map);
- 
- 	return 0;
- }
-@@ -100,8 +131,7 @@ static int dw_pcie_ep_outbound_atu(struc
- 	u32 free_win;
- 	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
- 
--	free_win = find_first_zero_bit(&ep->ob_window_map,
--				       sizeof(ep->ob_window_map));
-+	free_win = find_first_zero_bit(ep->ob_window_map, ep->num_ob_windows);
- 	if (free_win >= ep->num_ob_windows) {
- 		dev_err(pci->dev, "no free outbound window\n");
- 		return -EINVAL;
-@@ -110,30 +140,35 @@ static int dw_pcie_ep_outbound_atu(struc
- 	dw_pcie_prog_outbound_atu(pci, free_win, PCIE_ATU_TYPE_MEM,
- 				  phys_addr, pci_addr, size);
- 
--	set_bit(free_win, &ep->ob_window_map);
-+	set_bit(free_win, ep->ob_window_map);
- 	ep->outbound_addr[free_win] = phys_addr;
- 
+@@ -114,24 +146,29 @@ static int dw_pcie_ep_outbound_atu(struc
  	return 0;
  }
  
 -static void dw_pcie_ep_clear_bar(struct pci_epc *epc, enum pci_barno bar)
 +static void dw_pcie_ep_clear_bar(struct pci_epc *epc, u8 func_no,
-+				 struct pci_epf_bar *epf_bar)
++				struct pci_epf_bar *epf_bar)
  {
  	struct dw_pcie_ep *ep = epc_get_drvdata(epc);
  	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
@@ -1178,14 +1142,13 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
 +	__dw_pcie_ep_reset_bar(pci, bar, epf_bar->flags);
  
  	dw_pcie_disable_atu(pci, atu_index, DW_PCIE_REGION_INBOUND);
--	clear_bit(atu_index, &ep->ib_window_map);
-+	clear_bit(atu_index, ep->ib_window_map);
+ 	clear_bit(atu_index, ep->ib_window_map);
  }
  
 -static int dw_pcie_ep_set_bar(struct pci_epc *epc, enum pci_barno bar,
 -			      dma_addr_t bar_phys, size_t size, int flags)
 +static int dw_pcie_ep_set_bar(struct pci_epc *epc, u8 func_no,
-+			      struct pci_epf_bar *epf_bar)
++				struct pci_epf_bar *epf_bar)
  {
  	int ret;
  	struct dw_pcie_ep *ep = epc_get_drvdata(epc);
@@ -1196,7 +1159,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	enum dw_pcie_as_type as_type;
  	u32 reg = PCI_BASE_ADDRESS_0 + (4 * bar);
  
-@@ -142,13 +177,20 @@ static int dw_pcie_ep_set_bar(struct pci
+@@ -140,13 +177,20 @@ static int dw_pcie_ep_set_bar(struct pci
  	else
  		as_type = DW_PCIE_AS_IO;
  
@@ -1219,7 +1182,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	dw_pcie_dbi_ro_wr_dis(pci);
  
  	return 0;
-@@ -169,7 +211,8 @@ static int dw_pcie_find_index(struct dw_
+@@ -167,7 +211,8 @@ static int dw_pcie_find_index(struct dw_
  	return -EINVAL;
  }
  
@@ -1229,66 +1192,103 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  {
  	int ret;
  	u32 atu_index;
-@@ -181,10 +224,11 @@ static void dw_pcie_ep_unmap_addr(struct
- 		return;
- 
- 	dw_pcie_disable_atu(pci, atu_index, DW_PCIE_REGION_OUTBOUND);
--	clear_bit(atu_index, &ep->ob_window_map);
-+	clear_bit(atu_index, ep->ob_window_map);
+@@ -182,8 +227,9 @@ static void dw_pcie_ep_unmap_addr(struct
+ 	clear_bit(atu_index, ep->ob_window_map);
  }
  
 -static int dw_pcie_ep_map_addr(struct pci_epc *epc, phys_addr_t addr,
+-			       u64 pci_addr, size_t size)
 +static int dw_pcie_ep_map_addr(struct pci_epc *epc, u8 func_no,
-+			       phys_addr_t addr,
- 			       u64 pci_addr, size_t size)
++				phys_addr_t addr,
++				u64 pci_addr, size_t size)
  {
  	int ret;
-@@ -200,45 +244,93 @@ static int dw_pcie_ep_map_addr(struct pc
+ 	struct dw_pcie_ep *ep = epc_get_drvdata(epc);
+@@ -198,45 +244,93 @@ static int dw_pcie_ep_map_addr(struct pc
  	return 0;
  }
  
 -static int dw_pcie_ep_get_msi(struct pci_epc *epc)
 +static int dw_pcie_ep_get_msi(struct pci_epc *epc, u8 func_no)
++{
++	struct dw_pcie_ep *ep = epc_get_drvdata(epc);
++	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
++	u32 val, reg;
++
++	if (!ep->msi_cap)
++		return -EINVAL;
++
++	reg = ep->msi_cap + PCI_MSI_FLAGS;
++	val = dw_pcie_readw_dbi(pci, reg);
++	if (!(val & PCI_MSI_FLAGS_ENABLE))
++		return -EINVAL;
++
++	val = (val & PCI_MSI_FLAGS_QSIZE) >> 4;
++
++	return val;
++}
++
++static int dw_pcie_ep_set_msi(struct pci_epc *epc, u8 func_no, u8 interrupts)
++{
++	struct dw_pcie_ep *ep = epc_get_drvdata(epc);
++	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
++	u32 val, reg;
++
++	if (!ep->msi_cap)
++		return -EINVAL;
++
++	reg = ep->msi_cap + PCI_MSI_FLAGS;
++	val = dw_pcie_readw_dbi(pci, reg);
++	val &= ~PCI_MSI_FLAGS_QMASK;
++	val |= (interrupts << 1) & PCI_MSI_FLAGS_QMASK;
++	dw_pcie_dbi_ro_wr_en(pci);
++	dw_pcie_writew_dbi(pci, reg, val);
++	dw_pcie_dbi_ro_wr_dis(pci);
++
++	return 0;
++}
++
++static int dw_pcie_ep_get_msix(struct pci_epc *epc, u8 func_no)
  {
 -	int val;
  	struct dw_pcie_ep *ep = epc_get_drvdata(epc);
  	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
 +	u32 val, reg;
 +
-+	if (!ep->msi_cap)
++	if (!ep->msix_cap)
 +		return -EINVAL;
  
 -	val = dw_pcie_readw_dbi(pci, MSI_MESSAGE_CONTROL);
 -	if (!(val & MSI_CAP_MSI_EN_MASK))
-+	reg = ep->msi_cap + PCI_MSI_FLAGS;
++	reg = ep->msix_cap + PCI_MSIX_FLAGS;
 +	val = dw_pcie_readw_dbi(pci, reg);
-+	if (!(val & PCI_MSI_FLAGS_ENABLE))
++	if (!(val & PCI_MSIX_FLAGS_ENABLE))
  		return -EINVAL;
  
 -	val = (val & MSI_CAP_MME_MASK) >> MSI_CAP_MME_SHIFT;
-+	val = (val & PCI_MSI_FLAGS_QSIZE) >> 4;
++	val &= PCI_MSIX_FLAGS_QSIZE;
 +
  	return val;
  }
  
 -static int dw_pcie_ep_set_msi(struct pci_epc *epc, u8 encode_int)
-+static int dw_pcie_ep_set_msi(struct pci_epc *epc, u8 func_no, u8 interrupts)
++static int dw_pcie_ep_set_msix(struct pci_epc *epc, u8 func_no, u16 interrupts)
  {
 -	int val;
  	struct dw_pcie_ep *ep = epc_get_drvdata(epc);
  	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
 +	u32 val, reg;
-+
-+	if (!ep->msi_cap)
-+		return -EINVAL;
  
 -	val = dw_pcie_readw_dbi(pci, MSI_MESSAGE_CONTROL);
 -	val &= ~MSI_CAP_MMC_MASK;
 -	val |= (encode_int << MSI_CAP_MMC_SHIFT) & MSI_CAP_MMC_MASK;
-+	reg = ep->msi_cap + PCI_MSI_FLAGS;
++	if (!ep->msix_cap)
++		return -EINVAL;
++
++	reg = ep->msix_cap + PCI_MSIX_FLAGS;
 +	val = dw_pcie_readw_dbi(pci, reg);
-+	val &= ~PCI_MSI_FLAGS_QMASK;
-+	val |= (interrupts << 1) & PCI_MSI_FLAGS_QMASK;
++	val &= ~PCI_MSIX_FLAGS_QSIZE;
++	val |= interrupts;
  	dw_pcie_dbi_ro_wr_en(pci);
 -	dw_pcie_writew_dbi(pci, MSI_MESSAGE_CONTROL, val);
 +	dw_pcie_writew_dbi(pci, reg, val);
@@ -1299,45 +1299,6 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  
 -static int dw_pcie_ep_raise_irq(struct pci_epc *epc,
 -				enum pci_epc_irq_type type, u8 interrupt_num)
-+static int dw_pcie_ep_get_msix(struct pci_epc *epc, u8 func_no)
-+{
-+	struct dw_pcie_ep *ep = epc_get_drvdata(epc);
-+	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
-+	u32 val, reg;
-+
-+	if (!ep->msix_cap)
-+		return -EINVAL;
-+
-+	reg = ep->msix_cap + PCI_MSIX_FLAGS;
-+	val = dw_pcie_readw_dbi(pci, reg);
-+	if (!(val & PCI_MSIX_FLAGS_ENABLE))
-+		return -EINVAL;
-+
-+	val &= PCI_MSIX_FLAGS_QSIZE;
-+
-+	return val;
-+}
-+
-+static int dw_pcie_ep_set_msix(struct pci_epc *epc, u8 func_no, u16 interrupts)
-+{
-+	struct dw_pcie_ep *ep = epc_get_drvdata(epc);
-+	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
-+	u32 val, reg;
-+
-+	if (!ep->msix_cap)
-+		return -EINVAL;
-+
-+	reg = ep->msix_cap + PCI_MSIX_FLAGS;
-+	val = dw_pcie_readw_dbi(pci, reg);
-+	val &= ~PCI_MSIX_FLAGS_QSIZE;
-+	val |= interrupts;
-+	dw_pcie_dbi_ro_wr_en(pci);
-+	dw_pcie_writew_dbi(pci, reg, val);
-+	dw_pcie_dbi_ro_wr_dis(pci);
-+
-+	return 0;
-+}
-+
 +static int dw_pcie_ep_raise_irq(struct pci_epc *epc, u8 func_no,
 +				enum pci_epc_irq_type type, u16 interrupt_num)
  {
@@ -1351,7 +1312,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  }
  
  static void dw_pcie_ep_stop(struct pci_epc *epc)
-@@ -271,15 +363,130 @@ static const struct pci_epc_ops epc_ops
+@@ -269,15 +363,130 @@ static const struct pci_epc_ops epc_ops
  	.unmap_addr		= dw_pcie_ep_unmap_addr,
  	.set_msi		= dw_pcie_ep_set_msi,
  	.get_msi		= dw_pcie_ep_get_msi,
@@ -1482,7 +1443,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	pci_epc_mem_exit(epc);
  }
  
-@@ -293,7 +500,7 @@ int dw_pcie_ep_init(struct dw_pcie_ep *e
+@@ -291,7 +500,7 @@ int dw_pcie_ep_init(struct dw_pcie_ep *e
  	struct device_node *np = dev->of_node;
  
  	if (!pci->dbi_base || !pci->dbi_base2) {
@@ -1491,40 +1452,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  		return -EINVAL;
  	}
  
-@@ -302,12 +509,32 @@ int dw_pcie_ep_init(struct dw_pcie_ep *e
- 		dev_err(dev, "unable to read *num-ib-windows* property\n");
- 		return ret;
- 	}
-+	if (ep->num_ib_windows > MAX_IATU_IN) {
-+		dev_err(dev, "invalid *num-ib-windows*\n");
-+		return -EINVAL;
-+	}
- 
- 	ret = of_property_read_u32(np, "num-ob-windows", &ep->num_ob_windows);
- 	if (ret < 0) {
- 		dev_err(dev, "unable to read *num-ob-windows* property\n");
- 		return ret;
- 	}
-+	if (ep->num_ob_windows > MAX_IATU_OUT) {
-+		dev_err(dev, "invalid *num-ob-windows*\n");
-+		return -EINVAL;
-+	}
-+
-+	ep->ib_window_map = devm_kzalloc(dev, sizeof(long) *
-+					 BITS_TO_LONGS(ep->num_ib_windows),
-+					 GFP_KERNEL);
-+	if (!ep->ib_window_map)
-+		return -ENOMEM;
-+
-+	ep->ob_window_map = devm_kzalloc(dev, sizeof(long) *
-+					 BITS_TO_LONGS(ep->num_ob_windows),
-+					 GFP_KERNEL);
-+	if (!ep->ob_window_map)
-+		return -ENOMEM;
- 
- 	addr = devm_kzalloc(dev, sizeof(phys_addr_t) * ep->num_ob_windows,
- 			    GFP_KERNEL);
-@@ -315,15 +542,18 @@ int dw_pcie_ep_init(struct dw_pcie_ep *e
+@@ -333,15 +542,18 @@ int dw_pcie_ep_init(struct dw_pcie_ep *e
  		return -ENOMEM;
  	ep->outbound_addr = addr;
  
@@ -1546,7 +1474,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  	ret = of_property_read_u8(np, "max-functions", &epc->max_functions);
  	if (ret < 0)
  		epc->max_functions = 1;
-@@ -335,8 +565,16 @@ int dw_pcie_ep_init(struct dw_pcie_ep *e
+@@ -353,8 +565,16 @@ int dw_pcie_ep_init(struct dw_pcie_ep *e
  		return ret;
  	}
  
@@ -1873,9 +1801,9 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  /*
   * Maximum number of MSI IRQs can be 256 per controller. But keep
   * it 32 as of now. Probably we will never need more than 32. If needed,
-@@ -114,6 +102,10 @@
- #define MAX_MSI_IRQS			32
- #define MAX_MSI_CTRLS			(MAX_MSI_IRQS / 32)
+@@ -118,6 +106,10 @@
+ #define MAX_IATU_IN			256
+ #define MAX_IATU_OUT			256
  
 +/* Maximum number of inbound/outbound iATUs */
 +#define MAX_IATU_IN			256
@@ -1884,7 +1812,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  struct pcie_port;
  struct dw_pcie;
  struct dw_pcie_ep;
-@@ -181,8 +173,8 @@ enum dw_pcie_as_type {
+@@ -185,8 +177,8 @@ enum dw_pcie_as_type {
  
  struct dw_pcie_ep_ops {
  	void	(*ep_init)(struct dw_pcie_ep *ep);
@@ -1895,24 +1823,18 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  };
  
  struct dw_pcie_ep {
-@@ -193,10 +185,14 @@ struct dw_pcie_ep {
- 	size_t			page_size;
- 	u8			bar_to_atu[6];
- 	phys_addr_t		*outbound_addr;
--	unsigned long		ib_window_map;
--	unsigned long		ob_window_map;
-+	unsigned long		*ib_window_map;
-+	unsigned long		*ob_window_map;
+@@ -201,6 +193,10 @@ struct dw_pcie_ep {
+ 	unsigned long		*ob_window_map;
  	u32			num_ib_windows;
  	u32			num_ob_windows;
-+	void __iomem		*msi_mem;
-+	phys_addr_t		msi_mem_phys;
-+	u8			msi_cap;	/* MSI capability offset */
-+	u8			msix_cap;	/* MSI-X capability offset */
++	void __iomem            *msi_mem;
++	phys_addr_t             msi_mem_phys;
++	u8                      msi_cap;        /* MSI capability offset */
++	u8                      msix_cap;       /* MSI-X capability offset */
  };
  
  struct dw_pcie_ops {
-@@ -335,6 +331,12 @@ static inline int dw_pcie_host_init(stru
+@@ -339,6 +335,12 @@ static inline int dw_pcie_host_init(stru
  void dw_pcie_ep_linkup(struct dw_pcie_ep *ep);
  int dw_pcie_ep_init(struct dw_pcie_ep *ep);
  void dw_pcie_ep_exit(struct dw_pcie_ep *ep);
@@ -1925,7 +1847,7 @@ Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
  #else
  static inline void dw_pcie_ep_linkup(struct dw_pcie_ep *ep)
  {
-@@ -348,5 +350,26 @@ static inline int dw_pcie_ep_init(struct
+@@ -352,5 +354,26 @@ static inline int dw_pcie_ep_init(struct
  static inline void dw_pcie_ep_exit(struct dw_pcie_ep *ep)
  {
  }

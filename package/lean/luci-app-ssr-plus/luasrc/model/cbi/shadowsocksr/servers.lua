@@ -47,6 +47,7 @@ o.inputstyle = "reset"
 o.description = string.format(translate("Server Count") ..  ": %d", server_count)
 o.write = function()
   uci:delete_all("shadowsocksr", "servers", function(s) return true end)
+  uci:save("shadowsocksr") 
   luci.sys.call("uci commit shadowsocksr && /etc/init.d/shadowsocksr stop") 
   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
 end
@@ -100,4 +101,9 @@ function o.cfgvalue(...)
 	return Value.cfgvalue(...) or "0"
 end
 
+o = s:option(DummyValue,"server",translate("Ping Latency"))
+o.template="shadowsocksr/ping"
+o.width="10%"
+
+m:append(Template("shadowsocksr/server_list"))
 return m

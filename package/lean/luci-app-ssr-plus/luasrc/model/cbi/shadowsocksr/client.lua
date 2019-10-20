@@ -59,6 +59,11 @@ o:value("all", translate("Global Mode"))
 o:value("oversea", translate("Oversea Mode"))
 o.default = gfw
 
+o = s:option(ListValue, "dports", translate("Proxy Ports"))
+o:value("1", translate("All Ports"))
+o:value("2", translate("Only Common Ports"))
+o.default = 1
+
 o = s:option(ListValue, "pdnsd_enable", translate("Resolve Dns Mode"))
 o:value("1", translate("Use Pdnsd tcp query and cache"))
 o:value("0", translate("Use Local DNS Service listen port 5335"))
