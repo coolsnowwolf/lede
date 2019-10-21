@@ -47,8 +47,10 @@ Server_Update() {
     ${uci_set}tcp_guise="$ssr_tcp_guise"
     ${uci_set}ws_host="$ssr_ws_host"
     ${uci_set}ws_path="$ssr_ws_path"
+    ${uci_set}h2_host="$ssr_h2_host"
+    ${uci_set}h2_path="$ssr_h2_path"
     ${uci_set}tls="$ssr_tls"
-    ${uci_set}security="auto"
+    ${uci_set}security=$ssr_security
     ${uci_set}alias="$ssr_remarks"
 	fi
 	
@@ -186,12 +188,17 @@ do
                         			json_get_var ssr_port port
                         			json_get_var ssr_alter_id aid
                         			json_get_var ssr_vmess_id id
-                        			json_get_var ssr_security type
+                        			json_get_var ssr_security security
+                        			if [ "$ssr_security" == "" ]; then
+                         			   ssr_security="auto"
+                        			fi
                         			json_get_var ssr_transport net
                         			json_get_var ssr_remarks ps
                         			ssr_tcp_guise="none"
                         			json_get_var ssr_ws_host host
                         			json_get_var ssr_ws_path path
+                        			json_get_var ssr_h2_host host
+                        			json_get_var ssr_h2_path path
                         			json_get_var ssr_tls tls
                         			if [ "$ssr_tls" == "tls" -o "$ssr_tls" == "1" ]; then
                          			   ssr_tls="1"
