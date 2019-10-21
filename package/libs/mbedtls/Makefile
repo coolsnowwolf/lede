@@ -48,9 +48,9 @@ define Package/libmbedtls/config
 config LIBMBEDTLS_HAVE_SSE2
 	depends on PACKAGE_libmbedtls
 	bool
-	default y if x86_64
+	default y if !TARGET_x86_legacy && !TARGET_x86_geode
 	prompt "Enable use of x86 SSE2 instructions"
-	depends on x86_64
+	depends on x86_64 || i386
 	help
 		Use of SSE2 instructions greatly increase performance (up to
 		3x faster) with a minimum (~0.2%, or 23KB) increase in package
