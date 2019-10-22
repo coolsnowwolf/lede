@@ -70,18 +70,18 @@ for ((o=0;o<${#subscribe_url[@]};o++))
 do
 	echo_date "从 ${subscribe_url[o]} 获取订阅"
 	echo_date "开始更新在线订阅列表..."
-	echo_date "开始下载订阅链接到本地临时文件，请稍等..."
-	subscribe_data=$(wget-ssl --user-agent="User-Agent:Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36" --no-check-certificate -t 10 -T 10 -O- ${subscribe_url[o]})
+	echo_date "尝试下载订阅链接到本地临时文件，请稍等..."
+	subscribe_data=$(wget-ssl --no-check-certificate -t 3 -T 30 -O- ${subscribe_url[o]})
 	curl_code=$?
 	# 计算group的hashkey
 	ssr_grouphashkey=$(echo "${subscribe_url[o]}" | md5sum | cut -d ' ' -f1)
 	if [ ! $curl_code -eq 0 ];then
-		echo_date "下载订阅成功..."
-		echo_date "开始解析节点信息..."
-		subscribe_data=$(wget-ssl --no-check-certificate -t 10 -T 10 -O- ${subscribe_url[o]})
+		echo_date "下载订阅失败，自动重试中..."
+		subscribe_data=$(wget-ssl --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.90 Safari/537.36"  --no-check-certificate -t 3 -T 30 -O- ${subscribe_url[o]})
 		curl_code=$?
 	fi
 	if [ $curl_code -eq 0 ];then
+		echo_date "下载订阅成功，开始解析节点信息..."
 		ssr_url=($(echo $subscribe_data | base64 -d | sed 's/\r//g')) # 解码数据并删除 \r 换行符
 		subscribe_max=$(echo ${ssr_url[0]} | grep -i MAX= | awk -F = '{print $2}')
 		subscribe_max_x=()
