@@ -31,7 +31,7 @@ e.default=10086
 
 e=t:option(ListValue,"protocol",translate("Protocol"))
 e:value("vmess",translate("Vmess"))
-e:value("socks",translate("Socks5"))
+e:value("socks",translate("Socks"))
 
 e=t:option(Value,"VMess_id",translate("ID"))
 e.default=luci.sys.exec("cat /proc/sys/kernel/random/uuid")

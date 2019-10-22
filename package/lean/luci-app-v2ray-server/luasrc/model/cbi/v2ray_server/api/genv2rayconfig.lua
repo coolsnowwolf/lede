@@ -1,77 +1,82 @@
-local e=require"luci.model.uci".cursor()
-local a=require"luci.jsonc"
-local t=arg[1]
-local e=e:get_all("v2ray_server",t)
+local ucursor = require "luci.model.uci".cursor()
+local json = require "luci.jsonc"
+local server_section = arg[1]
+local server = ucursor:get_all("v2ray_server", server_section)
 
-local e={
-	log = {
-			loglevel = "warning"
-		},
-		inbound = {
-			port = tonumber(e.port),
-			protocol = e.protocol,
-			(e.protocol == 'vmess') and {
-			settings = {
-				clients = {
-					{
-						id = e.VMess_id,
-						alterId = tonumber(e.VMess_alterId),
-						level = tonumber(e.VMess_level)
-					}
+local proset
+
+if server.protocol == "vmess" then
+    proset = {
+			clients = {
+				{
+					id = server.VMess_id,
+					alterId = tonumber(server.VMess_alterId),
+					level = tonumber(server.VMess_level)
 				}
-			}
-		},
-		(e.protocol == 'socks') and {
-			settings = {
-        auth= "password",
-				accounts = {
-					{
-						user = e.Socks_user,
-						pass = e.Socks_pass
-					}
-				}
-			}
-		},
-			streamSettings = {
-				network = e.transport,
-				security = (e.tls == '1') and "tls" or "none",
-				kcpSettings = (e.transport == "mkcp") and {
-					mtu = tonumber(e.mkcp_mtu),
-						tti = tonumber(e.mkcp_tti),
-						uplinkCapacity = tonumber(e.mkcp_uplinkCapacity),
-						downlinkCapacity = tonumber(e.mkcp_downlinkCapacity),
-						congestion = (e.mkcp_congestion == "1") and true or false,
-						readBufferSize = tonumber(e.mkcp_readBufferSize),
-						writeBufferSize = tonumber(e.mkcp_writeBufferSize),
-						header = {
-							type = e.mkcp_guise
-						}
-				}
-				or nil,
-				httpSettings = (e.transport == "h2") and {
-					path = e.h2_path,
-						host = e.h2_host,
-				}
-				or nil,
-				quicSettings = (e.transport == "quic") and {
-					security = e.quic_security,
-						key = e.quic_key,
-						header = {
-							type = e.quic_guise
-						}
-				}
-				or nil
-			}
-		},
-		outbound = {
-			protocol = "freedom"
-		},
-		outboundDetour = {
-			{
-				protocol = "blackhole",
-					tag = "blocked"
 			}
 		}
-}
+else
+    proset = {
+			auth = "password",
+			accounts = {
+				{
+					user = server.Socks_user,
+					pass = server.Socks_pass
+				}
+			}
+		}
+end
 
-print(a.stringify(e,1))
+
+local v2ray = {
+	log = {
+		--error = "/var/log/v2ray.log",
+		loglevel = "warning"
+	},
+	-- 传入连接
+	inbound = {
+		port = tonumber(server.port),
+		protocol = server.protocol,
+		settings = proset,
+		-- 底层传输配置
+		streamSettings = {
+			network = server.transport,
+			security = (server.tls == '1') and "tls" or "none",
+			kcpSettings = (server.transport == "mkcp") and {
+				mtu = tonumber(server.mkcp_mtu),
+				tti = tonumber(server.mkcp_tti),
+				uplinkCapacity = tonumber(server.mkcp_uplinkCapacity),
+				downlinkCapacity = tonumber(server.mkcp_downlinkCapacity),
+				congestion = (server.mkcp_congestion == "1") and true or false,
+				readBufferSize = tonumber(server.mkcp_readBufferSize),
+				writeBufferSize = tonumber(server.mkcp_writeBufferSize),
+				header = {
+					type = server.mkcp_guise
+				}
+			} or nil,
+			httpSettings = (server.transport == "h2") and {
+				path = server.h2_path,
+				host = server.h2_host,
+			} or nil,
+			quicSettings = (server.transport == "quic") and {
+				security = server.quic_security,
+				key = server.quic_key,
+				header = {
+					type = server.quic_guise
+				}
+			} or nil
+		}
+	},
+	-- 传出连接
+	outbound = {
+		protocol = "freedom"
+	},
+	-- 额外传出连接
+	outboundDetour = {
+		{
+			protocol = "blackhole",
+			tag = "blocked"
+		}
+	}
+}
+print(json.stringify(v2ray,1))
