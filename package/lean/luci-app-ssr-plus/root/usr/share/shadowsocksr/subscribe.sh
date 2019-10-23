@@ -47,8 +47,10 @@ Server_Update() {
     ${uci_set}tcp_guise="$ssr_tcp_guise"
     ${uci_set}ws_host="$ssr_ws_host"
     ${uci_set}ws_path="$ssr_ws_path"
+    ${uci_set}h2_host="$ssr_h2_host"
+    ${uci_set}h2_path="$ssr_h2_path"
     ${uci_set}tls="$ssr_tls"
-    ${uci_set}security="auto"
+    ${uci_set}security=$ssr_security
     ${uci_set}alias="$ssr_remarks"
 	fi
 	
@@ -68,18 +70,18 @@ for ((o=0;o<${#subscribe_url[@]};o++))
 do
 	echo_date "从 ${subscribe_url[o]} 获取订阅"
 	echo_date "开始更新在线订阅列表..."
-	echo_date "开始下载订阅链接到本地临时文件，请稍等..."
-	subscribe_data=$(wget-ssl --user-agent="User-Agent:Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36" --no-check-certificate -t 10 -T 10 -O- ${subscribe_url[o]})
+	echo_date "尝试下载订阅链接到本地临时文件，请稍等..."
+	subscribe_data=$(wget-ssl --no-check-certificate -t 3 -T 30 -O- ${subscribe_url[o]})
 	curl_code=$?
 	# 计算group的hashkey
 	ssr_grouphashkey=$(echo "${subscribe_url[o]}" | md5sum | cut -d ' ' -f1)
 	if [ ! $curl_code -eq 0 ];then
-		echo_date "下载订阅成功..."
-		echo_date "开始解析节点信息..."
-		subscribe_data=$(wget-ssl --no-check-certificate -t 10 -T 10 -O- ${subscribe_url[o]})
+		echo_date "下载订阅失败，自动重试中..."
+		subscribe_data=$(wget-ssl --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.90 Safari/537.36"  --no-check-certificate -t 3 -T 30 -O- ${subscribe_url[o]})
 		curl_code=$?
 	fi
 	if [ $curl_code -eq 0 ];then
+		echo_date "下载订阅成功，开始解析节点信息..."
 		ssr_url=($(echo $subscribe_data | base64 -d | sed 's/\r//g')) # 解码数据并删除 \r 换行符
 		subscribe_max=$(echo ${ssr_url[0]} | grep -i MAX= | awk -F = '{print $2}')
 		subscribe_max_x=()
@@ -186,12 +188,17 @@ do
                         			json_get_var ssr_port port
                         			json_get_var ssr_alter_id aid
                         			json_get_var ssr_vmess_id id
-                        			json_get_var ssr_security type
+                        			json_get_var ssr_security security
+                        			if [ "$ssr_security" == "" ]; then
+                         			   ssr_security="auto"
+                        			fi
                         			json_get_var ssr_transport net
                         			json_get_var ssr_remarks ps
                         			ssr_tcp_guise="none"
                         			json_get_var ssr_ws_host host
                         			json_get_var ssr_ws_path path
+                        			json_get_var ssr_h2_host host
+                        			json_get_var ssr_h2_path path
                         			json_get_var ssr_tls tls
                         			if [ "$ssr_tls" == "tls" -o "$ssr_tls" == "1" ]; then
                          			   ssr_tls="1"

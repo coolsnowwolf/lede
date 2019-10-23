@@ -27,7 +27,7 @@ define Build/boot-common
 	mcopy -i $@.boot $(KDIR)/COPYING.linux ::
 	mcopy -i $@.boot $(KDIR)/LICENCE.broadcom ::
 	mcopy -i $@.boot cmdline.txt ::
-	mcopy -i $@.boot config.txt ::
+	mcopy -i $@.boot $(BOOT_CONFIG) ::config.txt
 	mcopy -i $@.boot distroconfig.txt ::
 	mcopy -i $@.boot $(IMAGE_KERNEL) ::$(KERNEL_IMG)
 	$(foreach dts,$(shell echo $(DEVICE_DTS)),mcopy -i $@.boot $(DTS_DIR)/$(dts).dtb ::;)
@@ -68,6 +68,7 @@ define Device/Default
   IMAGES := factory.img.gz sysupgrade.img.gz
   IMAGE/sysupgrade.img.gz := boot-common | boot-2708 | sdcard-img | gzip | append-metadata
   IMAGE/factory.img.gz := boot-common | boot-2708 | sdcard-img | gzip
+  BOOT_CONFIG := config.txt
 endef
 
 define Device/rpi
@@ -151,6 +152,7 @@ define Device/rpi-4
 	kmod-brcmfmac wpad-basic
   IMAGE/sysupgrade.img.gz := boot-common | boot-2711 | sdcard-img | gzip | append-metadata
   IMAGE/factory.img.gz := boot-common | boot-2711 | sdcard-img | gzip
+  BOOT_CONFIG := config-bcm2711-arm64.txt
 endef
 ifeq ($(SUBTARGET),bcm2711)
   TARGET_DEVICES += rpi-4
