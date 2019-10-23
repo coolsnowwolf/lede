@@ -210,17 +210,17 @@ o:depends("type", "v2ray")
 -- TCP伪装
 o = s:option(ListValue, "tcp_guise", translate("Camouflage Type"))
 o:depends("transport", "tcp")
-o:value("none", translate("None"))
 o:value("http", "HTTP")
+o:value("none", translate("None"))
 o.rmempty = true
 
 -- HTTP域名
-o = s:option(DynamicList, "http_host", translate("HTTP Host"))
+o = s:option(Value, "http_host", translate("HTTP Host"))
 o:depends("tcp_guise", "http")
 o.rmempty = true
 
 -- HTTP路径
-o = s:option(DynamicList, "http_path", translate("HTTP Path"))
+o = s:option(Value, "http_path", translate("HTTP Path"))
 o:depends("tcp_guise", "http")
 o.rmempty = true
 
@@ -239,7 +239,7 @@ o.rmempty = true
 -- [[ H2部分 ]]--
 
 -- H2域名
-o = s:option(DynamicList, "h2_host", translate("HTTP/2 Host"))
+o = s:option(Value, "h2_host", translate("HTTP/2 Host"))
 o:depends("transport", "h2")
 o.rmempty = true
 
