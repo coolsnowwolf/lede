@@ -1401,7 +1401,7 @@ static int rtl8367b_switch_init(struct rtl8366_smi *smi)
 	int err;
 
 	dev->name = "RTL8367B";
-	dev->cpu_port = RTL8367B_CPU_PORT_NUM;
+	dev->cpu_port = smi->cpu_port;
 	dev->ports = RTL8367B_NUM_PORTS;
 	dev->vlans = RTL8367B_NUM_VIDS;
 	dev->ops = &rtl8367b_sw_ops;
@@ -1527,15 +1527,17 @@ static int  rtl8367b_probe(struct platform_device *pdev)
 	int err;
 
 	smi = rtl8366_smi_probe(pdev);
-	if (!smi)
-		return -ENODEV;
+	if (IS_ERR(smi))
+		return PTR_ERR(smi);
 
 	smi->clk_delay = 1500;
 	smi->cmd_read = 0xb9;
 	smi->cmd_write = 0xb8;
 	smi->ops = &rtl8367b_smi_ops;
-	smi->cpu_port = RTL8367B_CPU_PORT_NUM;
 	smi->num_ports = RTL8367B_NUM_PORTS;
+	if (of_property_read_u32(pdev->dev.of_node, "cpu_port", &smi->cpu_port)
+	    || smi->cpu_port >= smi->num_ports)
+		smi->cpu_port = RTL8367B_CPU_PORT_NUM;
 	smi->num_vlan_mc = RTL8367B_NUM_VLANS;
 	smi->mib_counters = rtl8367b_mib_counters;
 	smi->num_mib_counters = ARRAY_SIZE(rtl8367b_mib_counters);

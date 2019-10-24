@@ -77,6 +77,8 @@ HOST_CONFIGURE_VARS += \
 	am_cv_func_iconv=no \
 	ac_cv_header_iconv_h=no \
 
+HOST_CFLAGS += $(HOST_FPIC)
+
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/lib/libintl-full/include
 	$(CP) $(PKG_INSTALL_DIR)/usr/include/libintl.h $(1)/usr/lib/libintl-full/include/

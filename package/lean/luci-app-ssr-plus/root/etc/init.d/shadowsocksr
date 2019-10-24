@@ -29,6 +29,7 @@ switch_enable=0
 switch_server=$1
 MAXFD=32768
 CRON_FILE=/etc/crontabs/root
+threads=1
 
 uci_get_by_name() {
 	local ret=$(uci get $NAME.$1.$2 2>/dev/null)
@@ -43,11 +44,10 @@ uci_get_by_type() {
 add_cron()
 {
 	sed -i '/ssrplus.log/d' $CRON_FILE
-	echo '0 */1 * * * /usr/share/shadowsocksr/ssr-watchdog >> /tmp/ssrplus.log 2>&1' >> $CRON_FILE
-	echo '0 1 * * 0 echo "" > /tmp/ssrplus.log' >> $CRON_FILE
+	echo '0 1 * * * echo "" > /tmp/ssrplus.log' >> $CRON_FILE
 	[ -n "$(grep -w "/usr/share/shadowsocksr/subscribe.sh" $CRON_FILE)" ] && sed -i '/\/usr\/share\/shadowsocksr\/subscribe.sh/d' $CRON_FILE
 	[ $(uci_get_by_type server_subscribe auto_update 0) -eq 1 ] && echo "0 $(uci_get_by_type server_subscribe auto_update_time) * * * /usr/share/shadowsocksr/subscribe.sh" >> $CRON_FILE
-	[ -z "$(grep -w "/usr/share/shadowsocksr/update.sh" $CRON_FILE)" ] && echo "0 5 * * 0 /usr/share/shadowsocksr/update.sh" >> $CRON_FILE
+	[ -z "$(grep -w "/usr/share/shadowsocksr/update.sh" $CRON_FILE)" ] && echo "0 5 * * * /usr/share/shadowsocksr/update.sh" >> $CRON_FILE
 	crontab $CRON_FILE
 }
 
@@ -67,7 +67,7 @@ gen_config_file() {
          elif  [ "$host" != "${host#*:[0-9a-fA-F]}" ] ;then
          hostip=${host}
          else
-          hostip=`ping ${host} -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1`
+          hostip=`nslookup ${host} | grep 'Address 1' | sed 's/Address 1: //g'`
           if echo $hostip|grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$">/dev/null; then
           hostip=${hostip}
           else
@@ -99,6 +99,7 @@ if [ "$stype" == "ss" ] ;then
 		    "password": "$(uci_get_by_name $1 password)",
 		    "timeout": $(uci_get_by_name $1 timeout 60),
 		    "method": "$(uci_get_by_name $1 encrypt_method_ss)",
+		    "reuse_port": true,
 		    "fast_open": $fastopen
 		}
 EOF
@@ -117,11 +118,13 @@ EOF
 		    "protocol_param": "$(uci_get_by_name $1 protocol_param)",
 		    "obfs": "$(uci_get_by_name $1 obfs)",
 		    "obfs_param": "$(uci_get_by_name $1 obfs_param)",
+		    "reuse_port": true,
 		    "fast_open": $fastopen
 		}
 EOF
       elif [ "$stype" == "v2ray" ] ;then
         lua /usr/share/shadowsocksr/genv2config.lua $GLOBAL_SERVER tcp $(uci_get_by_name $1 local_port) > /var/etc/v2-ssr-retcp.json
+        sed -i 's/\\//g' /var/etc/v2-ssr-retcp.json
 fi
 }
 
@@ -140,7 +143,7 @@ start_rules() {
 	elif  [ "$server" != "${server#*:[0-9a-fA-F]}" ] ;then
 	server=${server}
 	else
-	server=`ping ${server} -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1`
+	server=`nslookup ${server} | grep 'Address 1' | sed 's/Address 1: //g'`
 	 if echo $server|grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$">/dev/null; then
 	  echo $server >/etc/ssr_ip
 	 else
@@ -177,8 +180,20 @@ start_rules() {
 	local gfwmode="" 
 	if [ "$run_mode" = "gfw" ]; then
 	gfwmode="-g"
+	elif [ "$run_mode" = "router" ]; then
+	gfwmode="-r"
+	elif [ "$run_mode" = "oversea" ]; then
+	gfwmode="-c"
+	elif [ "$run_mode" = "all" ]; then
+	gfwmode="-z"
 	fi
 	
+	local dports=$(uci_get_by_type global dports 1)
+  if [ $dports = "1" ] ;then
+	proxyport=" "
+	else
+	proxyport="-m multiport --dports 22,53,587,465,995,993,143,80,443 "
+  fi
 
 	/usr/bin/ssr-rules \
 		-s "$server" \
@@ -191,6 +206,7 @@ start_rules() {
 		-w "$(uci_get_by_type access_control wan_fw_ips)" \
 		-p "$(uci_get_by_type access_control lan_fp_ips)" \
 		-G "$(uci_get_by_type access_control lan_gm_ips)" \
+		-D "$proxyport" \
 		$(get_arg_out) $gfwmode $ARG_UDP
 			
 	return $?
@@ -262,16 +278,16 @@ start_redir() {
 	#deal kcp
 	local kcp_enable=$(uci_get_by_name $GLOBAL_SERVER kcp_enable 0)
 	if [ $kcp_enable = "1" ] ;then
-		[ ! -f "/usr/bin/ssr-kcptun" ]  &&  return 1
+		[ ! -f "/usr/bin/kcptun-client" ]  &&  return 1
 		
-		local kcp_str=`/usr/bin/ssr-kcptun -v |grep kcptun|wc -l`
+		local kcp_str=`/usr/bin/kcptun-client -v |grep kcptun|wc -l`
 		[ "0" = $kcp_str ] && return 1
 		local kcp_port=$(uci_get_by_name $GLOBAL_SERVER kcp_port)
 		local server_port=$(uci_get_by_name $GLOBAL_SERVER server_port)
 		local password=$(uci_get_by_name $GLOBAL_SERVER kcp_password)
 		local kcp_param=$(uci_get_by_name $GLOBAL_SERVER kcp_param)
 		[ "$password" != "" ] && password="--key "${password}
-		service_start /usr/bin/ssr-kcptun \
+		service_start /usr/bin/kcptun-client \
 			-r $kcp_server:$kcp_port \
 			-l :$server_port $password $kcp_param 
 		kcp_enable_flag=1
@@ -295,19 +311,28 @@ start_redir() {
        elif [ "$utype" == "v2ray" ] ;then
         ucmd="/usr/bin/v2ray/v2ray"
      fi
-	
+  
+  if [ "$(uci_get_by_type global threads 0)" = "0" ] ;then
+    threads=$(cat /proc/cpuinfo | grep 'processor' | wc -l)
+  else
+    threads=$(uci_get_by_type global threads)
+  fi
+
 	redir_tcp=1
 	if [ "$stype" == "ss" -o "$stype" == "ssr" ] ;then
     local last_config_file=$CONFIG_FILE
     local pid_file="/var/run/ssr-retcp.pid"
-    $sscmd \
-        -c $CONFIG_FILE $ARG_OTA \
-        -f /var/run/ssr-retcp.pid >/dev/null 2>&1
+    for i in $(seq 1 $threads)  
+    do 
+      $sscmd -c $CONFIG_FILE $ARG_OTA -f /var/run/ssr-retcp_$i.pid >/dev/null 2>&1
+    done
+    echo "$(date "+%Y-%m-%d %H:%M:%S") Shadowsocks/ShadowsocksR $threads Threads Started!" >> /tmp/ssrplus.log  
   elif [ "$stype" == "v2ray" ] ;then
     $sscmd -config /var/etc/v2-ssr-retcp.json >/dev/null 2>&1 &
+    echo "$(date "+%Y-%m-%d %H:%M:%S") $($sscmd -version | head -1) Started!" >> /tmp/ssrplus.log
 	fi
 	
-	if [ -n $UDP_RELAY_SERVER ] ;then
+	if [ -n "$UDP_RELAY_SERVER" ] ;then
     redir_udp=1
     if [ "$utype" == "ss" -o "$utype" == "ssr" ] ;then
       case "$(uci_get_by_name $UDP_RELAY_SERVER auth_enable)" in
@@ -317,11 +342,10 @@ start_redir() {
       gen_config_file $UDP_RELAY_SERVER 1
       last_config_file=$CONFIG_UDP_FILE
       pid_file="/var/run/ssr-reudp.pid"
-      $ucmd \
-      -c $last_config_file $ARG_OTA -U \
-      -f $pid_file >/dev/null 2>&1
+      $ucmd -c $last_config_file $ARG_OTA -U -f /var/run/ssr-reudp.pid >/dev/null 2>&1
     elif [ "$utype" == "v2ray" ] ; then
         lua /usr/share/shadowsocksr/genv2config.lua $UDP_RELAY_SERVER udp $(uci_get_by_name $UDP_RELAY_SERVER local_port) > /var/etc/v2-ssr-reudp.json
+        sed -i 's/\\//g' /var/etc/v2-ssr-reudp.json
         $ucmd -config /var/etc/v2-ssr-reudp.json >/dev/null 2>&1 &   
     fi
    fi
@@ -336,6 +360,8 @@ start_redir() {
     local dnsport=`echo "$dnsstr"|awk -F ':'  '{print $2}'`
     if [ "$run_mode" = "gfw" ]; then
         ipset add gfwlist $dnsserver 2>/dev/null
+    elif [ "$run_mode" = "oversea" ]; then
+        ipset add oversea $dnsserver 2>/dev/null
     else
         ipset add ss_spec_wan_ac $dnsserver nomatch 2>/dev/null  
     fi
@@ -353,7 +379,8 @@ start_redir() {
 			fi
 		fi
 	fi
-	
+	add_cron
+
 	return $?
 }
 
@@ -365,7 +392,7 @@ gen_service_file() {
 	fi       
 	cat <<-EOF >$2
 		{
-		    "server": "$(uci_get_by_name $1 server)",
+		    "server": "0.0.0.0",
 		    "server_port": $(uci_get_by_name $1 server_port),
 		    "password": "$(uci_get_by_name $1 password)",
 		    "timeout": $(uci_get_by_name $1 timeout 60),
@@ -454,23 +481,40 @@ start() {
 	GLOBAL_SERVER=$switch_server
 	switch_enable=1
 	fi
+
 	if rules ;then
 	start_redir
-
+	  
+  mkdir -p /tmp/dnsmasq.d && cp -a /etc/dnsmasq.ssr /tmp/ && cp -a /etc/dnsmasq.oversea /tmp/
 	if ! [ "$run_mode" = "oversea" ] ;then
-		mkdir -p /tmp/dnsmasq.d
 		cat > /tmp/dnsmasq.d/dnsmasq-ssr.conf <<EOF
-conf-dir=/etc/dnsmasq.ssr
+conf-dir=/tmp/dnsmasq.ssr
 EOF
-		/etc/init.d/dnsmasq restart >/dev/null 2>&1
+  else
+		cat > /tmp/dnsmasq.d/dnsmasq-ssr.conf <<EOF
+conf-dir=/tmp/dnsmasq.oversea
+EOF
 	fi
+	
+	/usr/share/shadowsocksr/gfw2ipset.sh
+	
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	
 	fi
 	start_server	
 	start_local
+	
+	if [ $(uci_get_by_type global monitor_enable) = 1 ] ;then
+	let total_count=server_count+redir_tcp+redir_udp+tunnel_enable+kcp_enable_flag+local_enable+pdnsd_enable_flag+switch_enable
+    if [ $total_count -gt 0 ]
+    then
+    #param:server(count) redir_tcp(0:no,1:yes)  redir_udp tunnel kcp local gfw
+    service_start /usr/bin/ssr-monitor $server_count $redir_tcp $redir_udp $tunnel_enable $kcp_enable_flag $local_enable $pdnsd_enable_flag $switch_enable
+    fi
+	fi
+	
 	ENABLE_SERVER=$(uci_get_by_type global global_server)
 	[ "$ENABLE_SERVER" = "nil" ] && return 1
-	add_cron
 }
 
 boot() {
@@ -486,18 +530,22 @@ stop() {
 	iptables -X SSR-SERVER-RULE 2>/dev/null
 	fi
 	if [ -z "$switch_server" ] ;then
-    kill -9 $(ps | grep ssr-switch | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+    kill -9 $(busybox ps -w | grep ssr-switch | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	fi
+	if [ $(uci_get_by_type global monitor_enable) = 1 ] ;then
+    kill -9 $(busybox ps -w | grep ssr-monitor | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+	fi
+	killall -q -9 ssr-monitor
 	killall -q -9 ss-redir
 	killall -q -9 ssr-redir
 	killall -q -9 v2ray
 	killall -q -9 ssr-server
-	killall -q -9 ssr-kcptun
+	killall -q -9 kcptun-client
 	killall -q -9 ssr-local
 	if [ -f /var/run/pdnsd.pid ] ;then
     kill $(cat /var/run/pdnsd.pid) >/dev/null 2>&1
   else 
-    kill -9 $(ps | grep pdnsd | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
+    kill -9 $(busybox ps -w | grep pdnsd | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
 	fi
 	
 	if [ -f "/tmp/dnsmasq.d/dnsmasq-ssr.conf" ]; then

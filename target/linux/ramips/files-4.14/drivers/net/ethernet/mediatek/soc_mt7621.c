@@ -122,7 +122,7 @@ static int mt7621_fwd_config(struct fe_priv *priv)
 
 	/* mt7621 doesn't have txcsum config */
 	mt7621_rxcsum_config((dev->features & NETIF_F_RXCSUM));
-	mt7621_rxvlan_config(priv->flags & FE_FLAG_RX_VLAN_CTAG);
+	mt7621_rxvlan_config(dev->features & NETIF_F_HW_VLAN_CTAG_RX);
 
 	return 0;
 }
@@ -142,7 +142,8 @@ static void mt7621_init_data(struct fe_soc_data *data,
 		FE_FLAG_HAS_SWITCH | FE_FLAG_JUMBO_FRAME;
 
 	netdev->hw_features = NETIF_F_IP_CSUM | NETIF_F_RXCSUM |
-		NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_SG | NETIF_F_TSO |
+		NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX |
+		NETIF_F_SG | NETIF_F_TSO |
 		NETIF_F_TSO6 | NETIF_F_IPV6_CSUM |
 		NETIF_F_TSO_MANGLEID;
 }

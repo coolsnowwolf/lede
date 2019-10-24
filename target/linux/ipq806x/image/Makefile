@@ -3,6 +3,13 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
+define Build/buffalo-rootfs-cksum
+	( \
+		echo -ne "\x$$(od -A n -t u1 $@ | tr -s ' ' '\n' | \
+			$(STAGING_DIR_HOST)/bin/awk '{s+=$$0}END{printf "%x", 255-s%256}')"; \
+	) >> $@
+endef
+
 define Device/Default
 	PROFILES := Default
 	KERNEL_DEPENDS = $$(wildcard $(DTS_DIR)/$$(DEVICE_DTS).dts)
@@ -67,12 +74,25 @@ define Device/ZyXELImage
 	KERNEL_SUFFIX := -uImage
 	KERNEL = kernel-bin | append-dtb | uImage none | pad-to $${KERNEL_SIZE}
 	KERNEL_NAME := zImage
-	IMAGES := factory.bin sysupgrade.bin mmcblk0p5-rootfs.bin mmcblk0p4-kernel.bin
+	IMAGES := factory.bin sysupgrade.bin
 	IMAGE/factory.bin := append-rootfs | pad-rootfs | pad-to $$$$(BLOCKSIZE) | zyxel-ras-image separate-kernel
 	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to $$$${BLOCKSIZE} | sysupgrade-tar rootfs=$$$$@ | append-metadata
-	IMAGE/mmcblk0p5-rootfs.bin := append-rootfs | pad-rootfs | pad-to $$$${BLOCKSIZE}
-	IMAGE/mmcblk0p4-kernel.bin := append-kernel
 endef
+
+define Device/buffalo_wxr-2533dhp
+	$(call Device/LegacyImage)
+	DEVICE_DTS := qcom-ipq8064-wxr-2533dhp
+	DEVICE_TITLE := Buffalo WXR-2533DHP
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	IMAGE_SIZE := 65536k
+	KERNEL_IN_UBI := 1
+	IMAGES := sysupgrade.bin
+	IMAGE/sysupgrade.bin := append-rootfs | buffalo-rootfs-cksum | \
+		sysupgrade-tar rootfs=$$$$@ | append-metadata
+	DEVICE_PACKAGES := ath10k-firmware-qca99x0
+endef
+TARGET_DEVICES += buffalo_wxr-2533dhp
 
 define Device/compex_wpq864
 	$(call Device/FitImage)
@@ -200,6 +220,19 @@ define Device/qcom_ipq8064-ap148-legacy
 	DEVICE_PACKAGES := ath10k-firmware-qca99x0
 endef
 TARGET_DEVICES += qcom_ipq8064-ap148-legacy
+
+define Device/qcom_ipq8064-ap161
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_DTS := qcom-ipq8064-ap161
+	KERNEL_INSTALL := 1
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	BOARD_NAME := ap161
+	DEVICE_TITLE := Qualcomm AP161
+	DEVICE_PACKAGES := ath10k-firmware-qca99x0
+endef
+TARGET_DEVICES += qcom_ipq8064-ap161
 
 define Device/qcom_ipq8064-db149
 	$(call Device/FitImage)

@@ -11,9 +11,9 @@ PKG_NAME:=libconfig
 PKG_VERSION:=1.7.2
 PKG_RELEASE:=1
 
-PKG_SOURCE:=v$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://github.com/hyperrealm/libconfig/archive/
-PKG_HASH:=f67ac44099916ae260a6c9e290a90809e7d782d96cdd462cac656ebc5b685726
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://hyperrealm.github.io/libconfig/dist/
+PKG_HASH:=7c3c7a9c73ff3302084386e96f903eb62ce06953bb1666235fac74363a16fad9
 
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1

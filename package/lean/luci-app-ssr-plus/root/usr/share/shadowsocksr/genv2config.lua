@@ -1,4 +1,4 @@
-local ucursor = require "luci.model.uci"
+local ucursor = require "luci.model.uci".cursor()
 local json = require "luci.jsonc"
 local server_section = arg[1]
 local proto = arg[2] 
@@ -8,7 +8,7 @@ local server = ucursor:get_all("shadowsocksr", server_section)
 
 local v2ray = {
   log = {
-    error = "/var/ssrplus.log",
+    -- error = "/var/ssrplus.log",
     loglevel = "warning"
   },
     -- 传入连接
@@ -46,7 +46,7 @@ local v2ray = {
         streamSettings = {
             network = server.transport,
             security = (server.tls == '1') and "tls" or "none",
-            allowInsecure = (server.insecure == "1") and true or false,
+            tlsSettings = {allowInsecure = (server.insecure == "1") and true or false,serverName=server.ws_host,},
             kcpSettings = (server.transport == "kcp") and {
               mtu = tonumber(server.mtu),
               tti = tonumber(server.tti),
@@ -59,7 +59,7 @@ local v2ray = {
                   type = server.kcp_guise
               }
           } or nil,
-             wsSettings = (server.transport == "ws") and {
+             wsSettings = (server.transport == "ws") and (server.ws_path ~= nil or server.ws_host ~= nil) and {
                 path = server.ws_path,
                 headers = (server.ws_host ~= nil) and {
                     Host = server.ws_host
@@ -68,10 +68,18 @@ local v2ray = {
             httpSettings = (server.transport == "h2") and {
                 path = server.h2_path,
                 host = server.h2_host,
+            } or nil,
+            quicSettings = (server.transport == "quic") and {
+                security = server.quic_security,
+                key = server.quic_key,
+                header = {
+                  type = server.quic_guise
+                }
             } or nil
         },
         mux = {
-            enabled = (server.mux == "1") and true or false
+            enabled = (server.mux == "1") and true or false,
+            concurrency = tonumber(server.concurrency)
       }
     },
 
@@ -84,4 +92,4 @@ local v2ray = {
         }
     }
 }
-print(json.stringify(v2ray))
+print(json.stringify(v2ray, 1))

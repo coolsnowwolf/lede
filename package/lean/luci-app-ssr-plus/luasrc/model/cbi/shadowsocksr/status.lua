@@ -30,7 +30,7 @@ bold_off = [[</strong>]]
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local kcptun_version=translate("Unknown")
-local kcp_file="/usr/bin/ssr-kcptun"
+local kcp_file="/usr/bin/kcptun-client"
 if not fs.access(kcp_file)  then
  kcptun_version=translate("Not exist")
 else
@@ -55,18 +55,18 @@ if nixio.fs.access("/etc/china_ssr.txt") then
  ip_count = sys.exec("cat /etc/china_ssr.txt | wc -l")
 end
 
-local icount=sys.exec("ps -w | grep ssr-reudp |grep -v grep| wc -l")
+local icount=sys.exec("busybox ps -w | grep ssr-reudp |grep -v grep| wc -l")
 if tonumber(icount)>0 then
 reudp_run=1
 else
-icount=sys.exec("ps -w | grep ssr-retcp |grep \"\\-u\"|grep -v grep| wc -l")
+icount=sys.exec("busybox ps -w | grep ssr-retcp |grep \"\\-u\"|grep -v grep| wc -l")
 if tonumber(icount)>0 then
 reudp_run=1
 end
 end
 
 
-if luci.sys.call("ps -w | grep ssr-retcp | grep -v grep >/dev/null") == 0 then
+if luci.sys.call("busybox ps -w | grep ssr-retcp | grep -v grep >/dev/null") == 0 then
 redir_run=1
 end	
 
@@ -74,7 +74,7 @@ if luci.sys.call("pidof ssr-local >/dev/null") == 0 then
 sock5_run=1
 end
 
-if luci.sys.call("pidof ssr-kcptun >/dev/null") == 0 then
+if luci.sys.call("pidof kcptun-client >/dev/null") == 0 then
 kcptun_run=1
 end	
 
@@ -82,7 +82,7 @@ if luci.sys.call("pidof ssr-server >/dev/null") == 0 then
 server_run=1
 end	
 
-if luci.sys.call("ps -w | grep ssr-tunnel |grep -v grep >/dev/null") == 0 then
+if luci.sys.call("busybox ps -w | grep ssr-tunnel |grep -v grep >/dev/null") == 0 then
 tunnel_run=1
 end	
 
@@ -138,7 +138,7 @@ s.value = translate("Not Running")
 end
 end
 
-if nixio.fs.access("/usr/bin/ssr-kcptun") then
+if nixio.fs.access("/usr/bin/kcptun-client") then
 s=m:field(DummyValue,"kcp_version",translate("KcpTun Version")) 
 s.rawhtml  = true
 s.value =kcptun_version
