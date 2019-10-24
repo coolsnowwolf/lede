@@ -14,7 +14,7 @@ s:tab("basic",  translate("Base Setting"))
 o = s:taboption("basic", Flag, "enabled", translate("Enable"))
 
 proto = s:taboption("basic",Value,"proto", translate("Proto"))
-proto:value("tcp-server", translate("TCP Server"))
+proto:value("tcp", translate("TCP Server"))
 proto:value("udp", translate("UDP Server"))
 
 port = s:taboption("basic", Value, "port", translate("Port"))
