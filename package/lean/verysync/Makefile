@@ -33,7 +33,7 @@ endif
 
 PKG_NAME:=verysync
 PKG_VERSION:=v1.2.4
-PKG_RELEASE:=2
+PKG_RELEASE:=1
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 PKG_SOURCE:=$(PKG_NAME)-linux-$(PKG_ARCH_VERYSYNC)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=http://releases-cdn.verysync.com/releases/$(PKG_VERSION)/
@@ -66,6 +66,7 @@ endef
 define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/$(PKG_NAME)-linux-$(PKG_ARCH_VERYSYNC)-$(PKG_VERSION)/verysync $(1)/usr/bin/verysync
+	chmod 755 $(1)/usr/bin/verysync
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
