@@ -11,14 +11,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=UnblockNeteaseMusic
-PKG_VERSION:=0.20.0
+PKG_VERSION:=0.20.2
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/nondanee/UnblockNeteaseMusic.git
-PKG_SOURCE_VERSION:=3de1af9d4c9e32de70ed8abe7bf63a6f2275bea8
+PKG_SOURCE_VERSION:=a7f149bf293b153ed4a83d9def3ebcf21518c559
 
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)
 PKG_SOURCE:=$(PKG_SOURCE_SUBDIR)-$(PKG_VERSION).tar.gz
@@ -34,6 +34,7 @@ define Package/$(PKG_NAME)
 	DEPENDS:=+node 
 	URL:=https://github.com/nondanee/UnblockNeteaseMusic/releases
 	SUBMENU:=NeteaseMusic
+	PKGARCH:=all
 endef
 
 define Package/$(PKG_NAME)/description

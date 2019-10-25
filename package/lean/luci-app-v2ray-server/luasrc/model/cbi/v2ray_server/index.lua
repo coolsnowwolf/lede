@@ -1,56 +1,44 @@
-local o = require "luci.dispatcher"
-local fs = require "nixio.fs"
-local sys = require "luci.sys"
-local cursor = luci.model.uci.cursor()
-local appname = "v2ray_server"
-local a,t,e
+local i=require"luci.dispatcher"
+local e=require"nixio.fs"
+local e=require"luci.sys"
+local e=luci.model.uci.cursor()
+local o="v2ray_server"
+local a,e,t
 
-a=Map(appname, translate("V2ray Server"))
+a=Map(o,translate("V2ray Server"))
+e=a:section(TypedSection,"global",translate("Global Setting"))
+e.anonymous=true
+e.addremove=false
+t=e:option(Flag,"enable",translate("Enable"))
+t.rmempty=false
 
-t=a:section(TypedSection,"global",translate("Global Settings"))
-t.anonymous=true
-t.addremove=false
+e=a:section(TypedSection,"user",translate("Server Setting"))
+e.anonymous=true
+e.addremove=true
+e.template="cbi/tblsection"
+e.extedit=i.build_url("admin","vpn",o,"config","%s")
 
-e=t:option(Flag,"enable",translate("Enable"))
-e.rmempty=false
-
-t:append(Template("v2ray_server/v2ray"))
-
-t=a:section(TypedSection,"user",translate("Users Manager"))
-t.anonymous=true
-t.addremove=true
-t.template="cbi/tblsection"
-t.extedit=o.build_url("admin","vpn",appname,"config","%s")
-function t.create(e,t)
-	local e=TypedSection.create(e,t)
-	luci.http.redirect(o.build_url("admin","vpn",appname,"config",e))
+function e.create(t,e)
+local e=TypedSection.create(t,e)
+luci.http.redirect(i.build_url("admin","vpn",o,"config",e))
 end
 
-function t.remove(t,a)
-	t.map.proceed=true
-	t.map:del(a)
-	luci.http.redirect(o.build_url("admin","vpn",appname))
+function e.remove(e,a)
+e.map.proceed=true
+e.map:del(a)
+luci.http.redirect(i.build_url("admin","vpn",o))
 end
 
-e=t:option(Flag, "enable", translate("Enable"))
-e.width="5%"
-e.rmempty = false
-
-e=t:option(DummyValue,"status",translate("Status"))
-e.template="v2ray_server/users_status"
-e.value=translate("Collecting data...")
-
-e=t:option(DummyValue,"remarks",translate("Remarks"))
-e.width="15%"
-
-e=t:option(DummyValue,"port",translate("Port"))
-e.width="10%"
-
-e=t:option(DummyValue,"protocol",translate("Protocol"))
-e.width="15%"
-
-e=t:option(DummyValue,"VMess_id",translate("ID"))
-e.width="35%"
+t=e:option(Flag,"enable",translate("Enable"))
+t.width="5%"
+t.rmempty=false
+t=e:option(DummyValue,"status",translate("Status"))
+t.template="v2ray_server/users_status"
+t.value=translate("Collecting data...")
+t=e:option(DummyValue,"remarks",translate("Remarks"))
+t.width="15%"
+t=e:option(DummyValue,"port",translate("Port"))
+t=e:option(DummyValue,"protocol",translate("Protocol"))
 
 a:append(Template("v2ray_server/users_list_status"))
 
