@@ -25,10 +25,10 @@ define Build/boot-common
 	rm -f $@.boot
 	mkfs.fat -C $@.boot $(FAT32_BLOCKS)
 	mcopy -i $@.boot $(KDIR)/COPYING.linux ::
-	mcopy -i $@.boot $(KDIR)/bootcode.bin ::
 	mcopy -i $@.boot $(KDIR)/LICENCE.broadcom ::
 	mcopy -i $@.boot cmdline.txt ::
 	mcopy -i $@.boot $(BOOT_CONFIG) ::config.txt
+	mcopy -i $@.boot distroconfig.txt ::
 	mcopy -i $@.boot $(IMAGE_KERNEL) ::$(KERNEL_IMG)
 	$(foreach dts,$(shell echo $(DEVICE_DTS)),mcopy -i $@.boot $(DTS_DIR)/$(dts).dtb ::;)
 	mmd -i $@.boot ::/overlays
@@ -37,6 +37,7 @@ define Build/boot-common
 endef
 
 define Build/boot-2708
+	mcopy -i $@.boot $(KDIR)/bootcode.bin ::
 	mcopy -i $@.boot $(KDIR)/start.elf ::
 	mcopy -i $@.boot $(KDIR)/start_cd.elf ::
 	mcopy -i $@.boot $(KDIR)/start_x.elf ::
@@ -72,7 +73,10 @@ endef
 
 define Device/rpi
   DEVICE_MODEL := B/B+/CM/Zero/ZeroW
-  DEVICE_DTS := bcm2708-rpi-b bcm2708-rpi-b-plus bcm2708-rpi-cm bcm2708-rpi-zero bcm2708-rpi-zero-w
+  DEVICE_DTS := \
+	bcm2708-rpi-b bcm2708-rpi-b-plus \
+	bcm2708-rpi-cm \
+	bcm2708-rpi-zero bcm2708-rpi-zero-w
   SUPPORTED_DEVICES := \
 	rpi-b rpi-b-plus rpi-cm rpi-zero rpi-zero-w \
 	raspberrypi,model-b raspberrypi,model-b-plus raspberrypi,model-b-rev2 \
@@ -89,10 +93,14 @@ endif
 
 define Device/rpi-2
   DEVICE_MODEL := 2B/3B/3B+/3CM/4B
-  DEVICE_DTS := bcm2709-rpi-2-b bcm2710-rpi-3-b bcm2710-rpi-3-b-plus bcm2711-rpi-4-b bcm2710-rpi-cm3
+  DEVICE_DTS := \
+	bcm2709-rpi-2-b bcm2710-rpi-2-b \
+	bcm2710-rpi-3-b bcm2710-rpi-3-b-plus \
+	bcm2711-rpi-4-b \
+	bcm2710-rpi-cm3
   SUPPORTED_DEVICES := \
 	rpi-2-b rpi-3-b rpi-3-b-plus rpi-cm \
-	raspberrypi,2-model-b \
+	raspberrypi,2-model-b raspberrypi,2-model-b-rev2 \
 	raspberrypi,3-model-b raspberrypi,3-model-b-plus \
 	raspberrypi,3-compute-module raspberrypi,compute-module-3 \
 	raspberrypi,4-model-b
@@ -110,11 +118,15 @@ ifeq ($(SUBTARGET),bcm2709)
 endif
 
 define Device/rpi-3
-  DEVICE_MODEL := 3B/3B+/3CM
+  DEVICE_MODEL := 2B-1.2/3B/3B+/3CM
   KERNEL_IMG := kernel8.img
-  DEVICE_DTS := broadcom/bcm2710-rpi-3-b broadcom/bcm2710-rpi-3-b-plus broadcom/bcm2710-rpi-cm3
+  DEVICE_DTS := \
+	broadcom/bcm2710-rpi-2-b \
+	broadcom/bcm2710-rpi-3-b broadcom/bcm2710-rpi-3-b-plus \
+	broadcom/bcm2710-rpi-cm3
   SUPPORTED_DEVICES := \
 	rpi-3-b rpi-3-b-plus \
+	raspberrypi,2-model-b-rev2 \
 	raspberrypi,3-model-b raspberrypi,3-model-b-plus \
 	raspberrypi,3-compute-module raspberrypi,compute-module-3
   DEVICE_PACKAGES := \
@@ -131,7 +143,6 @@ endif
 define Device/rpi-4
   DEVICE_MODEL := 4B
   KERNEL_IMG := kernel8.img
-  DEVICE_TITLE := Raspberry Pi 4B
   DEVICE_DTS := broadcom/bcm2711-rpi-4-b
   SUPPORTED_DEVICES := \
 	raspberrypi,4-model-b
