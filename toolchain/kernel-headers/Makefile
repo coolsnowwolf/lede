@@ -41,14 +41,14 @@ HOST_EXTRACFLAGS=
 
 LINUX_HAS_HEADERS_INSTALL:=y
 
-KMAKE := $(MAKE) -C $(HOST_BUILD_DIR) \
+HOST_KMAKE := $(MAKE) -C $(HOST_BUILD_DIR) \
 	$(KERNEL_MAKE_FLAGS) \
 	CC="$(KERNEL_CC)" \
-	CFLAGS="$(TARGET_CFLAGS)"
+	HOSTCFLAGS="$(HOST_CFLAGS)"
 
 define Host/Configure/all
 	mkdir -p $(BUILD_DIR_TOOLCHAIN)/linux-dev
-	$(KMAKE) \
+	$(HOST_KMAKE) \
 		INSTALL_HDR_PATH="$(BUILD_DIR_TOOLCHAIN)/linux-dev/" \
 		headers_install
 endef
@@ -82,7 +82,7 @@ endef
 
 define Host/Configure
 	env
-	yes '' | $(KMAKE) oldconfig
+	yes '' | $(HOST_KMAKE) oldconfig
 	$(call Host/Configure/all)
 	$(call Host/Configure/post/$(ARCH))
 endef
