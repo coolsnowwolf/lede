@@ -1,0 +1,112 @@
+From: Alan Modra <amodra@gmail.com>
+Date: Tue, 5 Jun 2018 21:04:00 +0930
+Subject: [PATCH] PR23254, ld.bfd mishandles file pointers while scanning
+ archive
+
+Best practice is to not mix lseek/read with fseek/fread on the same
+underlying file descriptor, as not all stdio implementations will cope.
+Since the plugin uses lseek/read while bfd uses fseek/fread this patch
+reopens the file for exclusive use by the plugin rather than trying to
+restore the file descriptor.  That allows the plugin to read the file
+after plugin_call_claim_file too.
+
+bfd/
+	PR 23254
+	* plugin.c (bfd_plugin_open_input): Allow for possibility of
+	nested archives.  Open file again for plugin.
+	(try_claim): Don't save and restore file position.  Close file
+	if not claimed.
+	* sysdep.h (O_BINARY): Define.
+ld/
+	PR 23254
+	* plugin.c (plugin_call_claim_file): Revert 2016-07-19 patch.
+	(plugin_object_p): Don't dup file descriptor.
+---
+
+--- a/bfd/plugin.c
++++ b/bfd/plugin.c
+@@ -165,14 +165,22 @@ bfd_plugin_open_input (bfd *ibfd, struct
+   bfd *iobfd;
+ 
+   iobfd = ibfd;
+-  if (ibfd->my_archive && !bfd_is_thin_archive (ibfd->my_archive))
+-    iobfd = ibfd->my_archive;
++  while (iobfd->my_archive
++	 && !bfd_is_thin_archive (iobfd->my_archive))
++    iobfd = iobfd->my_archive;
+   file->name = iobfd->filename;
+ 
+   if (!iobfd->iostream && !bfd_open_file (iobfd))
+     return 0;
+ 
+-  file->fd = fileno ((FILE *) iobfd->iostream);
++  /* The plugin API expects that the file descriptor won't be closed
++     and reused as done by the bfd file cache.  So open it again.
++     dup isn't good enough.  plugin IO uses lseek/read while BFD uses
++     fseek/fread.  It isn't wise to mix the unistd and stdio calls on
++     the same underlying file descriptor.  */
++  file->fd = open (file->name, O_RDONLY | O_BINARY);
++  if (file->fd < 0)
++    return 0;
+ 
+   if (iobfd == ibfd)
+     {
+@@ -196,12 +204,12 @@ try_claim (bfd *abfd)
+   int claimed = 0;
+   struct ld_plugin_input_file file;
+ 
++  file.handle = abfd;
+   if (!bfd_plugin_open_input (abfd, &file))
+     return 0;
+-  file.handle = abfd;
+-  off_t cur_offset = lseek (file.fd, 0, SEEK_CUR);
+   claim_file (&file, &claimed);
+-  lseek (file.fd, cur_offset, SEEK_SET);
++  if (!claimed)
++    close (file.fd);
+   return claimed;
+ }
+ 
+--- a/bfd/sysdep.h
++++ b/bfd/sysdep.h
+@@ -108,6 +108,10 @@ extern char *strrchr ();
+ #ifndef O_ACCMODE
+ #define O_ACCMODE (O_RDONLY | O_WRONLY | O_RDWR)
+ #endif
++/* Systems that don't already define this, don't need it.  */
++#ifndef O_BINARY
++#define O_BINARY 0
++#endif
+ 
+ #ifndef SEEK_SET
+ #define SEEK_SET 0
+--- a/ld/plugin.c
++++ b/ld/plugin.c
+@@ -1053,14 +1053,10 @@ plugin_call_claim_file (const struct ld_
+     {
+       if (curplug->claim_file_handler)
+ 	{
+-	  off_t cur_offset;
+ 	  enum ld_plugin_status rv;
+ 
+ 	  called_plugin = curplug;
+-	  cur_offset = lseek (file->fd, 0, SEEK_CUR);
+ 	  rv = (*curplug->claim_file_handler) (file, claimed);
+-	  if (!*claimed)
+-	    lseek (file->fd, cur_offset, SEEK_SET);
+ 	  called_plugin = NULL;
+ 	  if (rv != LDPS_OK)
+ 	    set_plugin_error (curplug->name);
+@@ -1126,12 +1122,6 @@ plugin_object_p (bfd *ibfd)
+     }
+ 
+   file.handle = input;
+-  /* The plugin API expects that the file descriptor won't be closed
+-     and reused as done by the bfd file cache.  So dup one.  */
+-  file.fd = dup (file.fd);
+-  if (file.fd < 0)
+-    return NULL;
+-
+   input->abfd = abfd;
+   input->view_buffer.addr = NULL;
+   input->view_buffer.filesize = 0;
