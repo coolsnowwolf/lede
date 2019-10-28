@@ -36,23 +36,17 @@ ifeq ($(PKG_VERSION),7.4.0)
   PKG_HASH:=eddde28d04f334aec1604456e536416549e9b1aa137fc69204e65eb0c009fe51
 endif
 
-ifeq ($(PKG_VERSION),8.2.0)
-  PKG_HASH:=196c3c04ba2613f893283977e6011b2345d1cd1af9abeac58e916b1aab3e0080
+ifeq ($(PKG_VERSION),8.3.0)
+  PKG_HASH:=64baadfe6cc0f4947a84cb12d7f0dfaf45bb58b7e92461639596c21e02d97d2c
 endif
 
-ifneq ($(CONFIG_GCC_VERSION_7_1_ARC),)
-    PKG_VERSION:=7.1.1
-    PKG_SOURCE_URL:=https://github.com/foss-for-synopsys-dwc-arc-processors/gcc/archive/$(GCC_VERSION)
-    PKG_SOURCE:=$(PKG_NAME)-$(GCC_VERSION).tar.gz
-    PKG_HASH:=90596af8b9c26a434cec0a3b3d37d0c7c755ab6a65496af6ca32529fab5a6cfe
-    PKG_REV:=2017.09-release
-    GCC_DIR:=gcc-arc-$(PKG_REV)
-    HOST_BUILD_DIR = $(BUILD_DIR_HOST)/$(PKG_NAME)-$(GCC_VERSION)
+ifeq ($(PKG_VERSION),9.2.0)
+  PKG_HASH:=ea6ef08f121239da5695f76c9b33637a118dcf63e24164422231917fa61fb206
 endif
 
 PATCH_DIR=../patches/$(GCC_VERSION)
 
-BUGURL=http://www.lede-project.org/bugs/
+BUGURL=http://bugs.openwrt.org/
 PKGVERSION=OpenWrt GCC $(PKG_VERSION) $(REVISION)
 
 HOST_BUILD_PARALLEL:=1
@@ -123,13 +117,10 @@ GCC_CONFIGURE:= \
 		--with-gmp=$(TOPDIR)/staging_dir/host \
 		--with-mpfr=$(TOPDIR)/staging_dir/host \
 		--with-mpc=$(TOPDIR)/staging_dir/host \
-		--disable-decimal-float
+		--disable-decimal-float \
+		--with-diagnostics-color=auto-if-env
 ifneq ($(CONFIG_mips)$(CONFIG_mipsel),)
   GCC_CONFIGURE += --with-mips-plt
-endif
-
-ifndef GCC_VERSION_4_8
-  GCC_CONFIGURE += --with-diagnostics-color=auto-if-env
 endif
 
 ifneq ($(CONFIG_GCC_DEFAULT_PIE),)
@@ -174,11 +165,20 @@ ifneq ($(GCC_ARCH),)
   GCC_CONFIGURE+= --with-arch=$(GCC_ARCH)
 endif
 
-ifneq ($(CONFIG_SOFT_FLOAT),y)
-  ifeq ($(CONFIG_arm),y)
+ifeq ($(CONFIG_arm),y)
+  GCC_CONFIGURE+= \
+	--with-cpu=$(word 1, $(subst +," ,$(CONFIG_CPU_TYPE)))
+
+  ifneq ($(CONFIG_SOFT_FLOAT),y)
     GCC_CONFIGURE+= \
+		--with-fpu=$(word 2, $(subst +, ",$(CONFIG_CPU_TYPE))) \
 		--with-float=hard
   endif
+
+  # Do not let TARGET_CFLAGS get poisoned by extra CPU optimization flags
+  # that do not belong here. The cpu,fpu type should be specified via
+  # --with-cpu and --with-fpu for ARM and not CFLAGS.
+  TARGET_CFLAGS:=$(filter-out -m%,$(call qstrip,$(TARGET_CFLAGS)))
 endif
 
 ifeq ($(CONFIG_TARGET_x86)$(CONFIG_USE_GLIBC)$(CONFIG_INSTALL_GCCGO),yyy)
