@@ -129,20 +129,35 @@
 
 # 二次编译
 1. 进入项目lede目录，`cd lede`
-2. 二次编译请首先执行如下命令，**清理上次编译的object文件(后缀.o的文件))及可执行文件**
+
+   
+2. 执行如下命令
+   ```shell
+   git pull
+   ./scripts/feeds update -a 
+   ./scripts/feeds install -a 
+   rm temp -rf
+   ```
+3. 二次编译请首先执行如下命令，**清理上次编译的object文件(后缀.o的文件))及可执行文件，（/bin,/build_dir）**
    ```shell
    make clean
    ```
-   或执行如下命令，**清理上次编译的生成所有文件**
+   或者执行一下命令，**清理/bin,/bulid_dir/staging_dir**
+   ```shell
+   make dirclean
+   ```
+   或执行如下命令，**清理上次编译的生成所有文件,/bin,/build_dir,/staging_dir,/package,/feeds,.config**
    ```shell
    make distclean
    ```
-3. 使用git指令，更新源码到最新版本
+4. 配置编译模块
    ```shell
-   git pull
+   make menuconfig
    ```
-4. 执行首次编译中的5至6步即可
-
+5. 重新编译
+   ```shell
+   make -j1 V=s
+   ```
 # 一些说明
 
 
