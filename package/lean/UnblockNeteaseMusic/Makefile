@@ -43,6 +43,8 @@ endef
 
 define Build/Prepare
 	tar -xzvf $(DL_DIR)/$(PKG_SOURCE) -C $(PKG_BUILD_DIR)
+	echo -e $(PKG_VERSION) > $(PKG_BUILD_DIR)/UnblockNeteaseMusic/core_ver
+	echo -e $(PKG_SOURCE_VERSION) > $(PKG_BUILD_DIR)/UnblockNeteaseMusic/local_ver
 endef
 
 define Build/Configure
