@@ -24,4 +24,9 @@ speedtype:value("kuwo", translate("酷我音乐(高音质推荐)"))
 speedtype:value("migu", translate("咕咪音乐"))
 speedtype:value("joox", translate("JOOX音乐"))
 
+endpoint = s:option(Value, "endpoint", translate("转发音源"))
+endpoint.default = "https://music.163.com"
+endpoint.rmempty = true
+endpoint.description = translate("自定义转发音源<br />针对苹果系统设置请参考：https://github.com/nondanee/UnblockNeteaseMusic/issues/65")
+
 return mp
