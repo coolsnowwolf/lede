@@ -32,7 +32,7 @@ endpoint.description = translate("默认为 https://music.163.com")
 o = s:option(Button,"certificate",translate("HTTPS 证书"))
 o.inputtitle = translate("下载 CA 根证书")
 o.description = translate("iOS 13 系统需要在“设置 -> 通用 -> 关于本机 -> 证书信任设置” 中，信任 UnblockNeteaseMusic Root CA )")
-o.inputstyle = "reload"
+o.inputstyle = "apply"
 o.write = function()
   	Download()
 end
@@ -52,6 +52,23 @@ function Download()
 	end
 	t:close()
 	luci.http.close()
+end
+
+o = s:option(Flag, "autoupdate")
+o.title = translate("自动检查更新主程序")
+o.default = 0
+o.rmempty = false
+o.description = translate("每天自动检测并更新到最新版本")
+
+local ver = luci.sys.exec("cat /usr/share/UnblockNeteaseMusic/core_ver")
+
+o = s:option(Button, "restart",translate("手动更新"))
+o.inputtitle = translate("更新核心版本")
+o.description = string.format(translate("目前运行主程序版本") ..  "<strong><font color=\"green\">: %s </font></strong>", ver)
+o.inputstyle = "reload"
+o.write = function()
+	luci.sys.exec("bash /usr/share/UnblockNeteaseMusic/update_core.sh 2>&1")
+  luci.http.redirect(luci.dispatcher.build_url("admin", "services", "unblockmusic"))
 end
 
 return mp
