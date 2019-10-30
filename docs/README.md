@@ -8,6 +8,9 @@
 - [二次编译](#%e4%ba%8c%e6%ac%a1%e7%bc%96%e8%af%91)
 - [一些说明](#%e4%b8%80%e4%ba%9b%e8%af%b4%e6%98%8e)
 
+# 编译固件下载
+
+[Releases](https://github.com/smallprogram/lede/releases)
 
 # 注意
 1. 不要用 root 用户 git 和编译！！！
