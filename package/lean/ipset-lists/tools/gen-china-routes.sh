@@ -6,7 +6,7 @@
 
 china_routes_ipip()
 {
-	[ -f ipip.txt ] || wget -4 https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt -O ipip.txt >&2 || exit 1
+	[ -f ipip.txt ] || wget -4 https://cdn.jsdelivr.net/gh/17mon/china_ip_list/china_ip_list.txt -O ipip.txt >&2 || exit 1
 	cat ipip.txt | xargs netmask | awk '{print $1}'
 }
 
