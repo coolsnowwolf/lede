@@ -13,7 +13,7 @@ fi
 
 /usr/share/shadowsocksr/chinaipset.sh
 
-wget-ssl --no-check-certificate https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt -O /tmp/gfw.b64
+wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt -O /tmp/gfw.b64
 /usr/bin/ssr-gfw
 
 if [ -s "/tmp/gfwnew.txt" ];then
