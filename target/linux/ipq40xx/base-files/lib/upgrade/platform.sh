@@ -163,7 +163,7 @@ platform_do_upgrade() {
 		nand_do_upgrade "$ARGV"
 		;;
 	p2w,r619ac)
-		nand_do_upgrade "$1
+		nand_do_upgrade "$1"
 		;;
 	asus,map-ac2200)
 		CI_KERNPART="linux"
