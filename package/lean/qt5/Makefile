@@ -9,13 +9,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=qt5
-PKG_VERSION:=5.12
-PKG_RELEASE:=4
-PKG_MD5SUM:=dda95b0239d13c5276834177af3a8588
+PKG_VERSION:=5.8
+PKG_RELEASE:=0
+PKG_MD5SUM:=a9f2494f75f966e2f22358ec367d8f41
 
-PKG_SOURCE:=qt-everywhere-src-$(PKG_VERSION).$(PKG_RELEASE).tar.xz
+PKG_SOURCE:=qt-everywhere-opensource-src-$(PKG_VERSION).$(PKG_RELEASE).tar.gz
 PKG_SOURCE_URL:=http://download.qt-project.org/archive/qt/$(PKG_VERSION)/$(PKG_VERSION).$(PKG_RELEASE)/single
-PKG_BUILD_DIR=$(BUILD_DIR)/qt-everywhere-src-$(PKG_VERSION).$(PKG_RELEASE)
+PKG_BUILD_DIR=$(BUILD_DIR)/qt-everywhere-opensource-src-$(PKG_VERSION).$(PKG_RELEASE)
 PKG_BUILD_PARALLEL:=1
 PKG_USE_MIPS16:=0
 
@@ -106,6 +106,7 @@ define Build/Configure
 			-no-iconv \
 			-no-pch \
 			-no-rpath \
+			-no-qml-debug \
 			-no-strip \
 			-no-cups \
 			-no-dbus \
