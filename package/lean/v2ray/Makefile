@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray
 PKG_VERSION:=4.20
-PKG_RELEASE:=2
+PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -41,13 +41,15 @@ ifeq ($(ARCH),i386)
 endif
 ifeq ($(ARCH),arm)
 	PKG_ARCH_V2RAY:=arm
-	ifneq ($(BOARD),bcm53xx) or ($(BOARD),kirkwood) or ($(BOARD),bcm2708)
+	ifneq ($(BOARD),bcm53xx)
 		V2RAY_BIN:=v2ray_armv7
+  endif
+  ifeq ($(BOARD),kirkwood)
+		V2RAY_BIN:=v2ray
   endif
 endif
 ifeq ($(ARCH),aarch64)
 	PKG_ARCH_V2RAY:=arm64
-	V2RAY_BIN:=v2ray
 endif
 
 define Build/Prepare
