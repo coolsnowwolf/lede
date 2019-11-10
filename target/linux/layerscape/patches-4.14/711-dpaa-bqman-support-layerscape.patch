@@ -1,0 +1,923 @@
+From 371e99a257cb714f9a6027d6571cb1a43855d926 Mon Sep 17 00:00:00 2001
+From: Biwen Li <biwen.li@nxp.com>
+Date: Wed, 17 Apr 2019 18:58:24 +0800
+Subject: [PATCH] dpaa-bqman: support layerscape
+
+This is an integrated patch of dpaa-bqman for layerscape
+
+Signed-off-by: Biwen Li <biwen.li@nxp.com>
+Signed-off-by: Claudiu Manoil <claudiu.manoil@nxp.com>
+Signed-off-by: Laurentiu Tudor <laurentiu.tudor@nxp.com>
+Signed-off-by: Madalin Bucur <madalin.bucur@nxp.com>
+Signed-off-by: Roy Pledge <roy.pledge@nxp.com>
+Signed-off-by: Stuart Yoder <stuart.yoder@nxp.com>
+Signed-off-by: Valentin Rothberg <valentinrothberg@gmail.com>
+---
+ drivers/soc/fsl/qbman/Kconfig       |   2 +-
+ drivers/soc/fsl/qbman/bman.c        |  24 +++-
+ drivers/soc/fsl/qbman/bman_ccsr.c   |  57 +++++++++-
+ drivers/soc/fsl/qbman/bman_portal.c |  44 ++++++--
+ drivers/soc/fsl/qbman/bman_priv.h   |   3 +
+ drivers/soc/fsl/qbman/dpaa_sys.h    |   8 +-
+ drivers/soc/fsl/qbman/qman.c        |  46 +++++++-
+ drivers/soc/fsl/qbman/qman_ccsr.c   | 168 +++++++++++++++++++++++-----
+ drivers/soc/fsl/qbman/qman_portal.c |  60 ++++++++--
+ drivers/soc/fsl/qbman/qman_priv.h   |   5 +-
+ drivers/soc/fsl/qbman/qman_test.h   |   2 -
+ include/soc/fsl/bman.h              |  16 +++
+ include/soc/fsl/qman.h              |  17 +++
+ 13 files changed, 390 insertions(+), 62 deletions(-)
+
+--- a/drivers/soc/fsl/qbman/Kconfig
++++ b/drivers/soc/fsl/qbman/Kconfig
+@@ -1,6 +1,6 @@
+ menuconfig FSL_DPAA
+ 	bool "Freescale DPAA 1.x support"
+-	depends on FSL_SOC_BOOKE
++	depends on (FSL_SOC_BOOKE || ARCH_LAYERSCAPE)
+ 	select GENERIC_ALLOCATOR
+ 	help
+ 	  The Freescale Data Path Acceleration Architecture (DPAA) is a set of
+--- a/drivers/soc/fsl/qbman/bman.c
++++ b/drivers/soc/fsl/qbman/bman.c
+@@ -35,6 +35,27 @@
+ 
+ /* Portal register assists */
+ 
++#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
++/* Cache-inhibited register offsets */
++#define BM_REG_RCR_PI_CINH	0x3000
++#define BM_REG_RCR_CI_CINH	0x3100
++#define BM_REG_RCR_ITR		0x3200
++#define BM_REG_CFG		0x3300
++#define BM_REG_SCN(n)		(0x3400 + ((n) << 6))
++#define BM_REG_ISR		0x3e00
++#define BM_REG_IER		0x3e40
++#define BM_REG_ISDR		0x3e80
++#define BM_REG_IIR		0x3ec0
++
++/* Cache-enabled register offsets */
++#define BM_CL_CR		0x0000
++#define BM_CL_RR0		0x0100
++#define BM_CL_RR1		0x0140
++#define BM_CL_RCR		0x1000
++#define BM_CL_RCR_PI_CENA	0x3000
++#define BM_CL_RCR_CI_CENA	0x3100
++
++#else
+ /* Cache-inhibited register offsets */
+ #define BM_REG_RCR_PI_CINH	0x0000
+ #define BM_REG_RCR_CI_CINH	0x0004
+@@ -53,6 +74,7 @@
+ #define BM_CL_RCR		0x1000
+ #define BM_CL_RCR_PI_CENA	0x3000
+ #define BM_CL_RCR_CI_CENA	0x3100
++#endif
+ 
+ /*
+  * Portal modes.
+@@ -607,7 +629,7 @@ int bman_p_irqsource_add(struct bman_por
+ 	unsigned long irqflags;
+ 
+ 	local_irq_save(irqflags);
+-	set_bits(bits & BM_PIRQ_VISIBLE, &p->irq_sources);
++	p->irq_sources |= bits & BM_PIRQ_VISIBLE;
+ 	bm_out(&p->p, BM_REG_IER, p->irq_sources);
+ 	local_irq_restore(irqflags);
+ 	return 0;
+--- a/drivers/soc/fsl/qbman/bman_ccsr.c
++++ b/drivers/soc/fsl/qbman/bman_ccsr.c
+@@ -29,6 +29,7 @@
+  */
+ 
+ #include "bman_priv.h"
++#include <linux/iommu.h>
+ 
+ u16 bman_ip_rev;
+ EXPORT_SYMBOL(bman_ip_rev);
+@@ -120,6 +121,7 @@ static void bm_set_memory(u64 ba, u32 si
+  */
+ static dma_addr_t fbpr_a;
+ static size_t fbpr_sz;
++static int __bman_probed;
+ 
+ static int bman_fbpr(struct reserved_mem *rmem)
+ {
+@@ -166,14 +168,24 @@ static irqreturn_t bman_isr(int irq, voi
+ 	return IRQ_HANDLED;
+ }
+ 
++int bman_is_probed(void)
++{
++	return __bman_probed;
++}
++EXPORT_SYMBOL_GPL(bman_is_probed);
++
+ static int fsl_bman_probe(struct platform_device *pdev)
+ {
+ 	int ret, err_irq;
+ 	struct device *dev = &pdev->dev;
+-	struct device_node *node = dev->of_node;
++	struct device_node *mem_node, *node = dev->of_node;
++	struct iommu_domain *domain;
+ 	struct resource *res;
+ 	u16 id, bm_pool_cnt;
+ 	u8 major, minor;
++	u64 size;
++
++	__bman_probed = -1;
+ 
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	if (!res) {
+@@ -201,6 +213,47 @@ static int fsl_bman_probe(struct platfor
+ 		return -ENODEV;
+ 	}
+ 
++	/*
++	 * If FBPR memory wasn't defined using the qbman compatiable string
++	 * try using the of_reserved_mem_device method
++	 */
++	if (!fbpr_a) {
++		ret = of_reserved_mem_device_init(dev);
++		if (ret) {
++			dev_err(dev, "of_reserved_mem_device_init() failed 0x%x\n",
++				ret);
++			return -ENODEV;
++		}
++		mem_node = of_parse_phandle(dev->of_node, "memory-region", 0);
++		if (mem_node) {
++			ret = of_property_read_u64(mem_node, "size", &size);
++			if (ret) {
++				dev_err(dev, "FBPR: of_address_to_resource fails 0x%x\n",
++					ret);
++				return -ENODEV;
++			}
++			fbpr_sz = size;
++		} else {
++			dev_err(dev, "No memory-region found for FBPR\n");
++			return -ENODEV;
++		}
++		if (!dma_zalloc_coherent(dev, fbpr_sz, &fbpr_a, 0)) {
++			dev_err(dev, "Alloc FBPR memory failed\n");
++			return -ENODEV;
++		}
++	}
++
++	dev_dbg(dev, "Allocated FBPR 0x%llx 0x%zx\n", fbpr_a, fbpr_sz);
++
++	/* Create an 1-to-1 iommu mapping for FBPR area */
++	domain = iommu_get_domain_for_dev(dev);
++	if (domain) {
++		ret = iommu_map(domain, fbpr_a, fbpr_a, PAGE_ALIGN(fbpr_sz),
++				IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE);
++		if (ret)
++			dev_warn(dev, "failed to iommu_map() %d\n", ret);
++	}
++
+ 	bm_set_memory(fbpr_a, fbpr_sz);
+ 
+ 	err_irq = platform_get_irq(pdev, 0);
+@@ -240,6 +293,8 @@ static int fsl_bman_probe(struct platfor
+ 		return ret;
+ 	}
+ 
++	__bman_probed = 1;
++
+ 	return 0;
+ };
+ 
+--- a/drivers/soc/fsl/qbman/bman_portal.c
++++ b/drivers/soc/fsl/qbman/bman_portal.c
+@@ -32,6 +32,7 @@
+ 
+ static struct bman_portal *affine_bportals[NR_CPUS];
+ static struct cpumask portal_cpus;
++static int __bman_portals_probed;
+ /* protect bman global registers and global data shared among portals */
+ static DEFINE_SPINLOCK(bman_lock);
+ 
+@@ -85,6 +86,12 @@ static int bman_online_cpu(unsigned int
+ 	return 0;
+ }
+ 
++int bman_portals_probed(void)
++{
++	return __bman_portals_probed;
++}
++EXPORT_SYMBOL_GPL(bman_portals_probed);
++
+ static int bman_portal_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -92,11 +99,21 @@ static int bman_portal_probe(struct plat
+ 	struct bm_portal_config *pcfg;
+ 	struct resource *addr_phys[2];
+ 	void __iomem *va;
+-	int irq, cpu;
++	int irq, cpu, err;
++
++	err = bman_is_probed();
++	if (!err)
++		return -EPROBE_DEFER;
++	if (err < 0) {
++		dev_err(&pdev->dev, "failing probe due to bman probe error\n");
++		return -ENODEV;
++	}
+ 
+ 	pcfg = devm_kmalloc(dev, sizeof(*pcfg), GFP_KERNEL);
+-	if (!pcfg)
++	if (!pcfg) {
++		__bman_portals_probed = -1;
+ 		return -ENOMEM;
++	}
+ 
+ 	pcfg->dev = dev;
+ 
+@@ -104,14 +121,14 @@ static int bman_portal_probe(struct plat
+ 					     DPAA_PORTAL_CE);
+ 	if (!addr_phys[0]) {
+ 		dev_err(dev, "Can't get %pOF property 'reg::CE'\n", node);
+-		return -ENXIO;
++		goto err_ioremap1;
+ 	}
+ 
+ 	addr_phys[1] = platform_get_resource(pdev, IORESOURCE_MEM,
+ 					     DPAA_PORTAL_CI);
+ 	if (!addr_phys[1]) {
+ 		dev_err(dev, "Can't get %pOF property 'reg::CI'\n", node);
+-		return -ENXIO;
++		goto err_ioremap1;
+ 	}
+ 
+ 	pcfg->cpu = -1;
+@@ -119,11 +136,18 @@ static int bman_portal_probe(struct plat
+ 	irq = platform_get_irq(pdev, 0);
+ 	if (irq <= 0) {
+ 		dev_err(dev, "Can't get %pOF IRQ'\n", node);
+-		return -ENXIO;
++		goto err_ioremap1;
+ 	}
+ 	pcfg->irq = irq;
+ 
+-	va = ioremap_prot(addr_phys[0]->start, resource_size(addr_phys[0]), 0);
++#ifdef CONFIG_PPC
++	/* PPC requires a cacheable/non-coherent mapping of the portal */
++	va = ioremap_prot(addr_phys[0]->start, resource_size(addr_phys[0]),
++			  (pgprot_val(PAGE_KERNEL) & ~_PAGE_COHERENT));
++#else
++	/* For ARM we can use write combine mapping. */
++	va = ioremap_wc(addr_phys[0]->start, resource_size(addr_phys[0]));
++#endif
+ 	if (!va) {
+ 		dev_err(dev, "ioremap::CE failed\n");
+ 		goto err_ioremap1;
+@@ -131,8 +155,7 @@ static int bman_portal_probe(struct plat
+ 
+ 	pcfg->addr_virt[DPAA_PORTAL_CE] = va;
+ 
+-	va = ioremap_prot(addr_phys[1]->start, resource_size(addr_phys[1]),
+-			  _PAGE_GUARDED | _PAGE_NO_CACHE);
++	va = ioremap(addr_phys[1]->start, resource_size(addr_phys[1]));
+ 	if (!va) {
+ 		dev_err(dev, "ioremap::CI failed\n");
+ 		goto err_ioremap2;
+@@ -149,6 +172,9 @@ static int bman_portal_probe(struct plat
+ 	}
+ 
+ 	cpumask_set_cpu(cpu, &portal_cpus);
++	if (!__bman_portals_probed &&
++	    cpumask_weight(&portal_cpus) == num_online_cpus())
++		__bman_portals_probed = 1;
+ 	spin_unlock(&bman_lock);
+ 	pcfg->cpu = cpu;
+ 
+@@ -168,6 +194,8 @@ err_portal_init:
+ err_ioremap2:
+ 	iounmap(pcfg->addr_virt[DPAA_PORTAL_CE]);
+ err_ioremap1:
++	 __bman_portals_probed = -1;
++
+ 	return -ENXIO;
+ }
+ 
+--- a/drivers/soc/fsl/qbman/bman_priv.h
++++ b/drivers/soc/fsl/qbman/bman_priv.h
+@@ -33,6 +33,9 @@
+ #include "dpaa_sys.h"
+ 
+ #include <soc/fsl/bman.h>
++#include <linux/dma-contiguous.h>
++#include <linux/of_address.h>
++#include <linux/dma-mapping.h>
+ 
+ /* Portal processing (interrupt) sources */
+ #define BM_PIRQ_RCRI	0x00000002	/* RCR Ring (below threshold) */
+--- a/drivers/soc/fsl/qbman/dpaa_sys.h
++++ b/drivers/soc/fsl/qbman/dpaa_sys.h
+@@ -44,20 +44,18 @@
+ #include <linux/prefetch.h>
+ #include <linux/genalloc.h>
+ #include <asm/cacheflush.h>
++#include <linux/io.h>
++#include <linux/delay.h>
+ 
+ /* For 2-element tables related to cache-inhibited and cache-enabled mappings */
+ #define DPAA_PORTAL_CE 0
+ #define DPAA_PORTAL_CI 1
+ 
+-#if (L1_CACHE_BYTES != 32) && (L1_CACHE_BYTES != 64)
+-#error "Unsupported Cacheline Size"
+-#endif
+-
+ static inline void dpaa_flush(void *p)
+ {
+ #ifdef CONFIG_PPC
+ 	flush_dcache_range((unsigned long)p, (unsigned long)p+64);
+-#elif defined(CONFIG_ARM32)
++#elif defined(CONFIG_ARM)
+ 	__cpuc_flush_dcache_area(p, 64);
+ #elif defined(CONFIG_ARM64)
+ 	__flush_dcache_area(p, 64);
+--- a/drivers/soc/fsl/qbman/qman.c
++++ b/drivers/soc/fsl/qbman/qman.c
+@@ -41,6 +41,43 @@
+ 
+ /* Portal register assists */
+ 
++#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
++/* Cache-inhibited register offsets */
++#define QM_REG_EQCR_PI_CINH	0x3000
++#define QM_REG_EQCR_CI_CINH	0x3040
++#define QM_REG_EQCR_ITR		0x3080
++#define QM_REG_DQRR_PI_CINH	0x3100
++#define QM_REG_DQRR_CI_CINH	0x3140
++#define QM_REG_DQRR_ITR		0x3180
++#define QM_REG_DQRR_DCAP	0x31C0
++#define QM_REG_DQRR_SDQCR	0x3200
++#define QM_REG_DQRR_VDQCR	0x3240
++#define QM_REG_DQRR_PDQCR	0x3280
++#define QM_REG_MR_PI_CINH	0x3300
++#define QM_REG_MR_CI_CINH	0x3340
++#define QM_REG_MR_ITR		0x3380
++#define QM_REG_CFG		0x3500
++#define QM_REG_ISR		0x3600
++#define QM_REG_IER		0x3640
++#define QM_REG_ISDR		0x3680
++#define QM_REG_IIR		0x36C0
++#define QM_REG_ITPR		0x3740
++
++/* Cache-enabled register offsets */
++#define QM_CL_EQCR		0x0000
++#define QM_CL_DQRR		0x1000
++#define QM_CL_MR		0x2000
++#define QM_CL_EQCR_PI_CENA	0x3000
++#define QM_CL_EQCR_CI_CENA	0x3040
++#define QM_CL_DQRR_PI_CENA	0x3100
++#define QM_CL_DQRR_CI_CENA	0x3140
++#define QM_CL_MR_PI_CENA	0x3300
++#define QM_CL_MR_CI_CENA	0x3340
++#define QM_CL_CR		0x3800
++#define QM_CL_RR0		0x3900
++#define QM_CL_RR1		0x3940
++
++#else
+ /* Cache-inhibited register offsets */
+ #define QM_REG_EQCR_PI_CINH	0x0000
+ #define QM_REG_EQCR_CI_CINH	0x0004
+@@ -75,6 +112,7 @@
+ #define QM_CL_CR		0x3800
+ #define QM_CL_RR0		0x3900
+ #define QM_CL_RR1		0x3940
++#endif
+ 
+ /*
+  * BTW, the drivers (and h/w programming model) already obtain the required
+@@ -909,12 +947,12 @@ static inline int qm_mc_result_timeout(s
+ 
+ static inline void fq_set(struct qman_fq *fq, u32 mask)
+ {
+-	set_bits(mask, &fq->flags);
++	fq->flags |= mask;
+ }
+ 
+ static inline void fq_clear(struct qman_fq *fq, u32 mask)
+ {
+-	clear_bits(mask, &fq->flags);
++	fq->flags &= ~mask;
+ }
+ 
+ static inline int fq_isset(struct qman_fq *fq, u32 mask)
+@@ -1567,7 +1605,7 @@ void qman_p_irqsource_add(struct qman_po
+ 	unsigned long irqflags;
+ 
+ 	local_irq_save(irqflags);
+-	set_bits(bits & QM_PIRQ_VISIBLE, &p->irq_sources);
++	p->irq_sources |= bits & QM_PIRQ_VISIBLE;
+ 	qm_out(&p->p, QM_REG_IER, p->irq_sources);
+ 	local_irq_restore(irqflags);
+ }
+@@ -1590,7 +1628,7 @@ void qman_p_irqsource_remove(struct qman
+ 	 */
+ 	local_irq_save(irqflags);
+ 	bits &= QM_PIRQ_VISIBLE;
+-	clear_bits(bits, &p->irq_sources);
++	p->irq_sources &= ~bits;
+ 	qm_out(&p->p, QM_REG_IER, p->irq_sources);
+ 	ier = qm_in(&p->p, QM_REG_IER);
+ 	/*
+--- a/drivers/soc/fsl/qbman/qman_ccsr.c
++++ b/drivers/soc/fsl/qbman/qman_ccsr.c
+@@ -29,6 +29,7 @@
+  */
+ 
+ #include "qman_priv.h"
++#include <linux/iommu.h>
+ 
+ u16 qman_ip_rev;
+ EXPORT_SYMBOL(qman_ip_rev);
+@@ -273,6 +274,7 @@ static const struct qman_error_info_mdat
+ static u32 __iomem *qm_ccsr_start;
+ /* A SDQCR mask comprising all the available/visible pool channels */
+ static u32 qm_pools_sdqcr;
++static int __qman_probed;
+ 
+ static inline u32 qm_ccsr_in(u32 offset)
+ {
+@@ -401,21 +403,42 @@ static int qm_init_pfdr(struct device *d
+ }
+ 
+ /*
+- * Ideally we would use the DMA API to turn rmem->base into a DMA address
+- * (especially if iommu translations ever get involved).  Unfortunately, the
+- * DMA API currently does not allow mapping anything that is not backed with
+- * a struct page.
++ * QMan needs two global memory areas initialized at boot time:
++ *  1) FQD: Frame Queue Descriptors used to manage frame queues
++ *  2) PFDR: Packed Frame Queue Descriptor Records used to store frames
++ * Both areas are reserved using the device tree reserved memory framework
++ * and the addresses and sizes are initialized when the QMan device is probed
+  */
+ static dma_addr_t fqd_a, pfdr_a;
+ static size_t fqd_sz, pfdr_sz;
+ 
++#ifdef CONFIG_PPC
++/*
++ * Support for PPC Device Tree backward compatibility when compatiable
++ * string is set to fsl-qman-fqd and fsl-qman-pfdr
++ */
++static int zero_priv_mem(phys_addr_t addr, size_t sz)
++{
++	/* map as cacheable, non-guarded */
++	void __iomem *tmpp = ioremap_prot(addr, sz, 0);
++
++	if (!tmpp)
++		return -ENOMEM;
++
++	memset_io(tmpp, 0, sz);
++	flush_dcache_range((unsigned long)tmpp,
++			   (unsigned long)tmpp + sz);
++	iounmap(tmpp);
++
++	return 0;
++}
++
+ static int qman_fqd(struct reserved_mem *rmem)
+ {
+ 	fqd_a = rmem->base;
+ 	fqd_sz = rmem->size;
+ 
+ 	WARN_ON(!(fqd_a && fqd_sz));
+-
+ 	return 0;
+ }
+ RESERVEDMEM_OF_DECLARE(qman_fqd, "fsl,qman-fqd", qman_fqd);
+@@ -431,32 +454,13 @@ static int qman_pfdr(struct reserved_mem
+ }
+ RESERVEDMEM_OF_DECLARE(qman_pfdr, "fsl,qman-pfdr", qman_pfdr);
+ 
++#endif
++
+ static unsigned int qm_get_fqid_maxcnt(void)
+ {
+ 	return fqd_sz / 64;
+ }
+ 
+-/*
+- * Flush this memory range from data cache so that QMAN originated
+- * transactions for this memory region could be marked non-coherent.
+- */
+-static int zero_priv_mem(struct device *dev, struct device_node *node,
+-			 phys_addr_t addr, size_t sz)
+-{
+-	/* map as cacheable, non-guarded */
+-	void __iomem *tmpp = ioremap_prot(addr, sz, 0);
+-
+-	if (!tmpp)
+-		return -ENOMEM;
+-
+-	memset_io(tmpp, 0, sz);
+-	flush_dcache_range((unsigned long)tmpp,
+-			   (unsigned long)tmpp + sz);
+-	iounmap(tmpp);
+-
+-	return 0;
+-}
+-
+ static void log_edata_bits(struct device *dev, u32 bit_count)
+ {
+ 	u32 i, j, mask = 0xffffffff;
+@@ -595,6 +599,7 @@ static int qman_init_ccsr(struct device
+ #define LIO_CFG_LIODN_MASK 0x0fff0000
+ void qman_liodn_fixup(u16 channel)
+ {
++#ifdef CONFIG_PPC
+ 	static int done;
+ 	static u32 liodn_offset;
+ 	u32 before, after;
+@@ -614,6 +619,7 @@ void qman_liodn_fixup(u16 channel)
+ 		qm_ccsr_out(REG_REV3_QCSP_LIO_CFG(idx), after);
+ 	else
+ 		qm_ccsr_out(REG_QCSP_LIO_CFG(idx), after);
++#endif
+ }
+ 
+ #define IO_CFG_SDEST_MASK 0x00ff0000
+@@ -684,14 +690,24 @@ static int qman_resource_init(struct dev
+ 	return 0;
+ }
+ 
++int qman_is_probed(void)
++{
++	return __qman_probed;
++}
++EXPORT_SYMBOL_GPL(qman_is_probed);
++
+ static int fsl_qman_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+-	struct device_node *node = dev->of_node;
++	struct device_node *mem_node, *node = dev->of_node;
++	struct iommu_domain *domain;
+ 	struct resource *res;
+ 	int ret, err_irq;
+ 	u16 id;
+ 	u8 major, minor;
++	u64 size;
++
++	__qman_probed = -1;
+ 
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	if (!res) {
+@@ -717,6 +733,8 @@ static int fsl_qman_probe(struct platfor
+ 		qman_ip_rev = QMAN_REV30;
+ 	else if (major == 3 && minor == 1)
+ 		qman_ip_rev = QMAN_REV31;
++	else if (major == 3 && minor == 2)
++		qman_ip_rev = QMAN_REV32;
+ 	else {
+ 		dev_err(dev, "Unknown QMan version\n");
+ 		return -ENODEV;
+@@ -727,10 +745,96 @@ static int fsl_qman_probe(struct platfor
+ 		qm_channel_caam = QMAN_CHANNEL_CAAM_REV3;
+ 	}
+ 
+-	ret = zero_priv_mem(dev, node, fqd_a, fqd_sz);
+-	WARN_ON(ret);
+-	if (ret)
+-		return -ENODEV;
++	if (fqd_a) {
++#ifdef CONFIG_PPC
++		/*
++		 * For PPC backward DT compatibility
++		 * FQD memory MUST be zero'd by software
++		 */
++		zero_priv_mem(fqd_a, fqd_sz);
++#else
++		WARN(1, "Unexpected archiceture using non shared-dma-mem reservations");
++#endif
++	} else {
++		/*
++		 * Order of memory regions is assumed as FQD followed by PFDR
++		 * in order to ensure allocations from the correct regions the
++		 * driver initializes then allocates each piece in order
++		 */
++		ret = of_reserved_mem_device_init_by_idx(dev, dev->of_node, 0);
++		if (ret) {
++			dev_err(dev, "of_reserved_mem_device_init_by_idx(0) failed 0x%x\n",
++				ret);
++			return -ENODEV;
++		}
++		mem_node = of_parse_phandle(dev->of_node, "memory-region", 0);
++		if (mem_node) {
++			ret = of_property_read_u64(mem_node, "size", &size);
++			if (ret) {
++				dev_err(dev, "FQD: of_address_to_resource fails 0x%x\n",
++					ret);
++				return -ENODEV;
++			}
++			fqd_sz = size;
++		} else {
++			dev_err(dev, "No memory-region found for FQD\n");
++			return -ENODEV;
++		}
++		if (!dma_zalloc_coherent(dev, fqd_sz, &fqd_a, 0)) {
++			dev_err(dev, "Alloc FQD memory failed\n");
++			return -ENODEV;
++		}
++
++		/*
++		 * Disassociate the FQD reserved memory area from the device
++		 * because a device can only have one DMA memory area. This
++		 * should be fine since the memory is allocated and initialized
++		 * and only ever accessed by the QMan device from now on
++		 */
++		of_reserved_mem_device_release(dev);
++	}
++	dev_dbg(dev, "Allocated FQD 0x%llx 0x%zx\n", fqd_a, fqd_sz);
++
++	if (!pfdr_a) {
++		/* Setup PFDR memory */
++		ret = of_reserved_mem_device_init_by_idx(dev, dev->of_node, 1);
++		if (ret) {
++			dev_err(dev, "of_reserved_mem_device_init(1) failed 0x%x\n",
++			ret);
++			return -ENODEV;
++		}
++		mem_node = of_parse_phandle(dev->of_node, "memory-region", 1);
++		if (mem_node) {
++			ret = of_property_read_u64(mem_node, "size", &size);
++			if (ret) {
++				dev_err(dev, "PFDR: of_address_to_resource fails 0x%x\n",
++					ret);
++				return -ENODEV;
++			}
++			pfdr_sz = size;
++		} else {
++			dev_err(dev, "No memory-region found for PFDR\n");
++			return -ENODEV;
++		}
++		if (!dma_zalloc_coherent(dev, pfdr_sz, &pfdr_a, 0)) {
++			dev_err(dev, "Alloc PFDR Failed size 0x%zx\n", pfdr_sz);
++			return -ENODEV;
++		}
++	}
++	dev_info(dev, "Allocated PFDR 0x%llx 0x%zx\n", pfdr_a, pfdr_sz);
++
++	/* Create an 1-to-1 iommu mapping for fqd and pfdr areas */
++	domain = iommu_get_domain_for_dev(dev);
++	if (domain) {
++		ret = iommu_map(domain, fqd_a, fqd_a, PAGE_ALIGN(fqd_sz),
++				IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE);
++		if (ret)
++			dev_warn(dev, "iommu_map(fqd) failed %d\n", ret);
++		ret = iommu_map(domain, pfdr_a, pfdr_a, PAGE_ALIGN(pfdr_sz),
++				IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE);
++		if (ret)
++			dev_warn(dev, "iommu_map(pfdr) failed %d\n", ret);
++	}
+ 
+ 	ret = qman_init_ccsr(dev);
+ 	if (ret) {
+@@ -793,6 +897,8 @@ static int fsl_qman_probe(struct platfor
+ 	if (ret)
+ 		return ret;
+ 
++	__qman_probed = 1;
++
+ 	return 0;
+ }
+ 
+--- a/drivers/soc/fsl/qbman/qman_portal.c
++++ b/drivers/soc/fsl/qbman/qman_portal.c
+@@ -29,6 +29,7 @@
+  */
+ 
+ #include "qman_priv.h"
++#include <linux/iommu.h>
+ 
+ struct qman_portal *qman_dma_portal;
+ EXPORT_SYMBOL(qman_dma_portal);
+@@ -38,6 +39,7 @@ EXPORT_SYMBOL(qman_dma_portal);
+ #define CONFIG_FSL_DPA_PIRQ_FAST  1
+ 
+ static struct cpumask portal_cpus;
++static int __qman_portals_probed;
+ /* protect qman global registers and global data shared among portals */
+ static DEFINE_SPINLOCK(qman_lock);
+ 
+@@ -218,19 +220,36 @@ static int qman_online_cpu(unsigned int
+ 	return 0;
+ }
+ 
++int qman_portals_probed(void)
++{
++	return __qman_portals_probed;
++}
++EXPORT_SYMBOL_GPL(qman_portals_probed);
++
+ static int qman_portal_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+ 	struct device_node *node = dev->of_node;
++	struct iommu_domain *domain;
+ 	struct qm_portal_config *pcfg;
+ 	struct resource *addr_phys[2];
+ 	void __iomem *va;
+ 	int irq, cpu, err;
+ 	u32 val;
+ 
++	err = qman_is_probed();
++	if (!err)
++		return -EPROBE_DEFER;
++	if (err < 0) {
++		dev_err(&pdev->dev, "failing probe due to qman probe error\n");
++		return -ENODEV;
++	}
++
+ 	pcfg = devm_kmalloc(dev, sizeof(*pcfg), GFP_KERNEL);
+-	if (!pcfg)
++	if (!pcfg) {
++		__qman_portals_probed = -1;
+ 		return -ENOMEM;
++	}
+ 
+ 	pcfg->dev = dev;
+ 
+@@ -238,19 +257,20 @@ static int qman_portal_probe(struct plat
+ 					     DPAA_PORTAL_CE);
+ 	if (!addr_phys[0]) {
+ 		dev_err(dev, "Can't get %pOF property 'reg::CE'\n", node);
+-		return -ENXIO;
++		goto err_ioremap1;
+ 	}
+ 
+ 	addr_phys[1] = platform_get_resource(pdev, IORESOURCE_MEM,
+ 					     DPAA_PORTAL_CI);
+ 	if (!addr_phys[1]) {
+ 		dev_err(dev, "Can't get %pOF property 'reg::CI'\n", node);
+-		return -ENXIO;
++		goto err_ioremap1;
+ 	}
+ 
+ 	err = of_property_read_u32(node, "cell-index", &val);
+ 	if (err) {
+ 		dev_err(dev, "Can't get %pOF property 'cell-index'\n", node);
++		__qman_portals_probed = -1;
+ 		return err;
+ 	}
+ 	pcfg->channel = val;
+@@ -258,11 +278,18 @@ static int qman_portal_probe(struct plat
+ 	irq = platform_get_irq(pdev, 0);
+ 	if (irq <= 0) {
+ 		dev_err(dev, "Can't get %pOF IRQ\n", node);
+-		return -ENXIO;
++		goto err_ioremap1;
+ 	}
+ 	pcfg->irq = irq;
+ 
+-	va = ioremap_prot(addr_phys[0]->start, resource_size(addr_phys[0]), 0);
++#ifdef CONFIG_PPC
++	/* PPC requires a cacheable/non-coherent mapping of the portal */
++	va = ioremap_prot(addr_phys[0]->start, resource_size(addr_phys[0]),
++			  (pgprot_val(PAGE_KERNEL) & ~_PAGE_COHERENT));
++#else
++	/* For ARM we can use write combine mapping. */
++	va = ioremap_wc(addr_phys[0]->start, resource_size(addr_phys[0]));
++#endif
+ 	if (!va) {
+ 		dev_err(dev, "ioremap::CE failed\n");
+ 		goto err_ioremap1;
+@@ -270,8 +297,7 @@ static int qman_portal_probe(struct plat
+ 
+ 	pcfg->addr_virt[DPAA_PORTAL_CE] = va;
+ 
+-	va = ioremap_prot(addr_phys[1]->start, resource_size(addr_phys[1]),
+-			  _PAGE_GUARDED | _PAGE_NO_CACHE);
++	va = ioremap(addr_phys[1]->start, resource_size(addr_phys[1]));
+ 	if (!va) {
+ 		dev_err(dev, "ioremap::CI failed\n");
+ 		goto err_ioremap2;
+@@ -279,6 +305,21 @@ static int qman_portal_probe(struct plat
+ 
+ 	pcfg->addr_virt[DPAA_PORTAL_CI] = va;
+ 
++	/* Create an 1-to-1 iommu mapping for cena portal area */
++	domain = iommu_get_domain_for_dev(dev);
++	if (domain) {
++		/*
++		 * Note: not mapping this as cacheable triggers the infamous
++		 * QMan CIDE error.
++		 */
++		err = iommu_map(domain,
++				addr_phys[0]->start, addr_phys[0]->start,
++				PAGE_ALIGN(resource_size(addr_phys[0])),
++				IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE);
++		if (err)
++			dev_warn(dev, "failed to iommu_map() %d\n", err);
++	}
++
+ 	pcfg->pools = qm_get_pools_sdqcr();
+ 
+ 	spin_lock(&qman_lock);
+@@ -290,6 +331,9 @@ static int qman_portal_probe(struct plat
+ 	}
+ 
+ 	cpumask_set_cpu(cpu, &portal_cpus);
++	if (!__qman_portals_probed &&
++	    cpumask_weight(&portal_cpus) == num_online_cpus())
++		__qman_portals_probed = 1;
+ 	spin_unlock(&qman_lock);
+ 	pcfg->cpu = cpu;
+ 
+@@ -314,6 +358,8 @@ err_portal_init:
+ err_ioremap2:
+ 	iounmap(pcfg->addr_virt[DPAA_PORTAL_CE]);
+ err_ioremap1:
++	__qman_portals_probed = -1;
++
+ 	return -ENXIO;
+ }
+ 
+--- a/drivers/soc/fsl/qbman/qman_priv.h
++++ b/drivers/soc/fsl/qbman/qman_priv.h
+@@ -28,13 +28,13 @@
+  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  */
+ 
+-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+-
+ #include "dpaa_sys.h"
+ 
+ #include <soc/fsl/qman.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/iommu.h>
++#include <linux/dma-contiguous.h>
++#include <linux/of_address.h>
+ 
+ #if defined(CONFIG_FSL_PAMU)
+ #include <asm/fsl_pamu_stash.h>
+@@ -187,6 +187,7 @@ struct qm_portal_config {
+ #define QMAN_REV20 0x0200
+ #define QMAN_REV30 0x0300
+ #define QMAN_REV31 0x0301
++#define QMAN_REV32 0x0302
+ extern u16 qman_ip_rev; /* 0 if uninitialised, otherwise QMAN_REVx */
+ 
+ #define QM_FQID_RANGE_START 1 /* FQID 0 reserved for internal use */
+--- a/drivers/soc/fsl/qbman/qman_test.h
++++ b/drivers/soc/fsl/qbman/qman_test.h
+@@ -30,7 +30,5 @@
+ 
+ #include "qman_priv.h"
+ 
+-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+-
+ int qman_test_stash(void);
+ int qman_test_api(void);
+--- a/include/soc/fsl/bman.h
++++ b/include/soc/fsl/bman.h
+@@ -126,4 +126,20 @@ int bman_release(struct bman_pool *pool,
+  */
+ int bman_acquire(struct bman_pool *pool, struct bm_buffer *bufs, u8 num);
+ 
++/**
++ * bman_is_probed - Check if bman is probed
++ *
++ * Returns 1 if the bman driver successfully probed, -1 if the bman driver
++ * failed to probe or 0 if the bman driver did not probed yet.
++ */
++int bman_is_probed(void);
++/**
++ * bman_portals_probed - Check if all cpu bound bman portals are probed
++ *
++ * Returns 1 if all the required cpu bound bman portals successfully probed,
++ * -1 if probe errors appeared or 0 if the bman portals did not yet finished
++ * probing.
++ */
++int bman_portals_probed(void);
++
+ #endif	/* __FSL_BMAN_H */
+--- a/include/soc/fsl/qman.h
++++ b/include/soc/fsl/qman.h
+@@ -1186,4 +1186,21 @@ int qman_alloc_cgrid_range(u32 *result,
+  */
+ int qman_release_cgrid(u32 id);
+ 
++/**
++ * qman_is_probed - Check if qman is probed
++ *
++ * Returns 1 if the qman driver successfully probed, -1 if the qman driver
++ * failed to probe or 0 if the qman driver did not probed yet.
++ */
++int qman_is_probed(void);
++
++/**
++ * qman_portals_probed - Check if all cpu bound qman portals are probed
++ *
++ * Returns 1 if all the required cpu bound qman portals successfully probed,
++ * -1 if probe errors appeared or 0 if the qman portals did not yet finished
++ * probing.
++ */
++int qman_portals_probed(void);
++
+ #endif	/* __FSL_QMAN_H */

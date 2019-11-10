@@ -182,7 +182,7 @@ export_partdevice() {
 }
 
 hex_le32_to_cpu() {
-	[ "$(echo 01 | hexdump -v -n 2 -e '/2 "%x"')" == "3031" ] && {
+	[ "$(echo 01 | hexdump -v -n 2 -e '/2 "%x"')" = "3031" ] && {
 		echo "${1:0:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}"
 		return
 	}

@@ -1,0 +1,631 @@
+From 62ac0c4fda3b40a8994f2abfdc52784ced80c83b Mon Sep 17 00:00:00 2001
+From: Biwen Li <biwen.li@nxp.com>
+Date: Wed, 17 Apr 2019 18:58:51 +0800
+Subject: [PATCH] pm: support layerscape
+
+This is an integrated patch of pm for layerscape
+
+Signed-off-by: Biwen Li <biwen.li@nxp.com>
+Signed-off-by: Chenhui Zhao <chenhui.zhao@freescale.com>
+Signed-off-by: Hongbo Zhang <hongbo.zhang@freescale.com>
+Signed-off-by: Li Yang <leoyang.li@nxp.com>
+Signed-off-by: Ran Wang <ran.wang_1@nxp.com>
+Signed-off-by: Tang Yuantian <andy.tang@nxp.com>
+Signed-off-by: Yinbo Zhu <yinbo.zhu@nxp.com>
+Signed-off-by: Zhao Chenhui <chenhui.zhao@nxp.com>
+---
+ drivers/firmware/psci.c     |  16 ++-
+ drivers/soc/fsl/rcpm.c      | 156 ++++++++++++++++++++
+ drivers/soc/fsl/sleep_fsm.c | 279 ++++++++++++++++++++++++++++++++++++
+ drivers/soc/fsl/sleep_fsm.h | 130 +++++++++++++++++
+ 4 files changed, 579 insertions(+), 2 deletions(-)
+ create mode 100644 drivers/soc/fsl/rcpm.c
+ create mode 100644 drivers/soc/fsl/sleep_fsm.c
+ create mode 100644 drivers/soc/fsl/sleep_fsm.h
+
+--- a/drivers/firmware/psci.c
++++ b/drivers/firmware/psci.c
+@@ -437,8 +437,18 @@ CPUIDLE_METHOD_OF_DECLARE(psci, "psci",
+ 
+ static int psci_system_suspend(unsigned long unused)
+ {
+-	return invoke_psci_fn(PSCI_FN_NATIVE(1_0, SYSTEM_SUSPEND),
+-			      __pa_symbol(cpu_resume), 0, 0);
++	u32 state;
++	u32 ver = psci_get_version();
++
++	if (PSCI_VERSION_MAJOR(ver) >= 1) {
++		return invoke_psci_fn(PSCI_FN_NATIVE(1_0, SYSTEM_SUSPEND),
++				virt_to_phys(cpu_resume), 0, 0);
++	} else {
++		state = ( 2 << PSCI_0_2_POWER_STATE_AFFL_SHIFT) |
++			(1 << PSCI_0_2_POWER_STATE_TYPE_SHIFT);
++
++		return psci_cpu_suspend(state, virt_to_phys(cpu_resume));
++	}
+ }
+ 
+ static int psci_system_suspend_enter(suspend_state_t state)
+@@ -562,6 +572,8 @@ static void __init psci_0_2_set_function
+ 	arm_pm_restart = psci_sys_reset;
+ 
+ 	pm_power_off = psci_sys_poweroff;
++
++	suspend_set_ops(&psci_suspend_ops);
+ }
+ 
+ /*
+--- /dev/null
++++ b/drivers/soc/fsl/rcpm.c
+@@ -0,0 +1,156 @@
++/*
++ * Run Control and Power Management (RCPM) driver
++ *
++ * Copyright 2016 NXP
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ */
++#define pr_fmt(fmt) "RCPM: %s: " fmt, __func__
++
++#include <linux/kernel.h>
++#include <linux/io.h>
++#include <linux/of_platform.h>
++#include <linux/of_address.h>
++#include <linux/suspend.h>
++
++/* RCPM register offset */
++#define RCPM_IPPDEXPCR0			0x140
++
++#define RCPM_WAKEUP_CELL_SIZE	2
++
++struct rcpm_config {
++	int ipp_num;
++	int ippdexpcr_offset;
++	u32 ippdexpcr[2];
++	void *rcpm_reg_base;
++};
++
++static struct rcpm_config *rcpm;
++
++static inline void rcpm_reg_write(u32 offset, u32 value)
++{
++	iowrite32be(value, rcpm->rcpm_reg_base + offset);
++}
++
++static inline u32 rcpm_reg_read(u32 offset)
++{
++	return ioread32be(rcpm->rcpm_reg_base + offset);
++}
++
++static void rcpm_wakeup_fixup(struct device *dev, void *data)
++{
++	struct device_node *node = dev ? dev->of_node : NULL;
++	u32 value[RCPM_WAKEUP_CELL_SIZE];
++	int ret, i;
++
++	if (!dev || !node || !device_may_wakeup(dev))
++		return;
++
++	/*
++	 * Get the values in the "rcpm-wakeup" property.
++	 * Three values are:
++	 * The first is a pointer to the RCPM node.
++	 * The second is the value of the ippdexpcr0 register.
++	 * The third is the value of the ippdexpcr1 register.
++	 */
++	ret = of_property_read_u32_array(node, "fsl,rcpm-wakeup",
++					 value, RCPM_WAKEUP_CELL_SIZE);
++	if (ret)
++		return;
++
++	pr_debug("wakeup source: the device %s\n", node->full_name);
++
++	for (i = 0; i < rcpm->ipp_num; i++)
++		rcpm->ippdexpcr[i] |= value[i + 1];
++}
++
++static int rcpm_suspend_prepare(void)
++{
++	int i;
++	u32 val;
++
++	BUG_ON(!rcpm);
++
++	for (i = 0; i < rcpm->ipp_num; i++)
++		rcpm->ippdexpcr[i] = 0;
++
++	dpm_for_each_dev(NULL, rcpm_wakeup_fixup);
++
++	for (i = 0; i < rcpm->ipp_num; i++) {
++		if (rcpm->ippdexpcr[i]) {
++			val = rcpm_reg_read(rcpm->ippdexpcr_offset + 4 * i);
++			rcpm_reg_write(rcpm->ippdexpcr_offset + 4 * i,
++					       val | rcpm->ippdexpcr[i]);
++			pr_debug("ippdexpcr%d = 0x%x\n", i, rcpm->ippdexpcr[i]);
++		}
++	}
++
++	return 0;
++}
++
++static int rcpm_suspend_notifier_call(struct notifier_block *bl,
++				      unsigned long state,
++				      void *unused)
++{
++	switch (state) {
++	case PM_SUSPEND_PREPARE:
++		rcpm_suspend_prepare();
++		break;
++	}
++
++	return NOTIFY_DONE;
++}
++
++static struct rcpm_config rcpm_default_config = {
++	.ipp_num = 1,
++	.ippdexpcr_offset = RCPM_IPPDEXPCR0,
++};
++
++static const struct of_device_id rcpm_matches[] = {
++	{
++		.compatible = "fsl,qoriq-rcpm-2.1",
++		.data = &rcpm_default_config,
++	},
++	{}
++};
++
++static struct notifier_block rcpm_suspend_notifier = {
++	.notifier_call = rcpm_suspend_notifier_call,
++};
++
++static int __init layerscape_rcpm_init(void)
++{
++	const struct of_device_id *match;
++	struct device_node *np;
++
++	np = of_find_matching_node_and_match(NULL, rcpm_matches, &match);
++	if (!np)
++		return -EINVAL;
++
++	if (match->data)
++		rcpm = (struct rcpm_config *)match->data;
++	else
++		return -EINVAL;
++
++	rcpm->rcpm_reg_base = of_iomap(np, 0);
++	of_node_put(np);
++	if (!rcpm->rcpm_reg_base)
++		return -ENOMEM;
++
++	register_pm_notifier(&rcpm_suspend_notifier);
++
++	pr_info("The RCPM driver initialized.\n");
++
++	return 0;
++}
++
++subsys_initcall(layerscape_rcpm_init);
+--- /dev/null
++++ b/drivers/soc/fsl/sleep_fsm.c
+@@ -0,0 +1,279 @@
++/*
++ * deep sleep FSM (finite-state machine) configuration
++ *
++ * Copyright 2018 NXP
++ *
++ * Author: Hongbo Zhang <hongbo.zhang@freescale.com>
++ *         Chenhui Zhao <chenhui.zhao@freescale.com>
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ *     * Redistributions of source code must retain the above copyright
++ *	 notice, this list of conditions and the following disclaimer.
++ *     * Redistributions in binary form must reproduce the above copyright
++ *	 notice, this list of conditions and the following disclaimer in the
++ *	 documentation and/or other materials provided with the distribution.
++ *     * Neither the name of the above-listed copyright holders nor the
++ *	 names of any contributors may be used to endorse or promote products
++ *	 derived from this software without specific prior written permission.
++ *
++ * ALTERNATIVELY, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") as published by the Free Software
++ * Foundation, either version 2 of that License or (at your option) any
++ * later version.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include <linux/kernel.h>
++#include <linux/io.h>
++#include <linux/types.h>
++
++#include "sleep_fsm.h"
++/*
++ * These values are from chip's reference manual. For example,
++ * the values for T1040 can be found in "8.4.3.8 Programming
++ * supporting deep sleep mode" of Chapter 8 "Run Control and
++ * Power Management (RCPM)".
++ * The default value can be applied to T104x, LS1021.
++ */
++struct fsm_reg_vals epu_default_val[] = {
++	/* EPGCR (Event Processor Global Control Register) */
++	{EPGCR, 0},
++	/* EPECR (Event Processor Event Control Registers) */
++	{EPECR0 + EPECR_STRIDE * 0, 0},
++	{EPECR0 + EPECR_STRIDE * 1, 0},
++	{EPECR0 + EPECR_STRIDE * 2, 0xF0004004},
++	{EPECR0 + EPECR_STRIDE * 3, 0x80000084},
++	{EPECR0 + EPECR_STRIDE * 4, 0x20000084},
++	{EPECR0 + EPECR_STRIDE * 5, 0x08000004},
++	{EPECR0 + EPECR_STRIDE * 6, 0x80000084},
++	{EPECR0 + EPECR_STRIDE * 7, 0x80000084},
++	{EPECR0 + EPECR_STRIDE * 8, 0x60000084},
++	{EPECR0 + EPECR_STRIDE * 9, 0x08000084},
++	{EPECR0 + EPECR_STRIDE * 10, 0x42000084},
++	{EPECR0 + EPECR_STRIDE * 11, 0x90000084},
++	{EPECR0 + EPECR_STRIDE * 12, 0x80000084},
++	{EPECR0 + EPECR_STRIDE * 13, 0x08000084},
++	{EPECR0 + EPECR_STRIDE * 14, 0x02000084},
++	{EPECR0 + EPECR_STRIDE * 15, 0x00000004},
++	/*
++	 * EPEVTCR (Event Processor EVT Pin Control Registers)
++	 * SCU8 triger EVT2, and SCU11 triger EVT9
++	 */
++	{EPEVTCR0 + EPEVTCR_STRIDE * 0, 0},
++	{EPEVTCR0 + EPEVTCR_STRIDE * 1, 0},
++	{EPEVTCR0 + EPEVTCR_STRIDE * 2, 0x80000001},
++	{EPEVTCR0 + EPEVTCR_STRIDE * 3, 0},
++	{EPEVTCR0 + EPEVTCR_STRIDE * 4, 0},
++	{EPEVTCR0 + EPEVTCR_STRIDE * 5, 0},
++	{EPEVTCR0 + EPEVTCR_STRIDE * 6, 0},
++	{EPEVTCR0 + EPEVTCR_STRIDE * 7, 0},
++	{EPEVTCR0 + EPEVTCR_STRIDE * 8, 0},
++	{EPEVTCR0 + EPEVTCR_STRIDE * 9, 0xB0000001},
++	/* EPCMPR (Event Processor Counter Compare Registers) */
++	{EPCMPR0 + EPCMPR_STRIDE * 0, 0},
++	{EPCMPR0 + EPCMPR_STRIDE * 1, 0},
++	{EPCMPR0 + EPCMPR_STRIDE * 2, 0x000000FF},
++	{EPCMPR0 + EPCMPR_STRIDE * 3, 0},
++	{EPCMPR0 + EPCMPR_STRIDE * 4, 0x000000FF},
++	{EPCMPR0 + EPCMPR_STRIDE * 5, 0x00000020},
++	{EPCMPR0 + EPCMPR_STRIDE * 6, 0},
++	{EPCMPR0 + EPCMPR_STRIDE * 7, 0},
++	{EPCMPR0 + EPCMPR_STRIDE * 8, 0x000000FF},
++	{EPCMPR0 + EPCMPR_STRIDE * 9, 0x000000FF},
++	{EPCMPR0 + EPCMPR_STRIDE * 10, 0x000000FF},
++	{EPCMPR0 + EPCMPR_STRIDE * 11, 0x000000FF},
++	{EPCMPR0 + EPCMPR_STRIDE * 12, 0x000000FF},
++	{EPCMPR0 + EPCMPR_STRIDE * 13, 0},
++	{EPCMPR0 + EPCMPR_STRIDE * 14, 0x000000FF},
++	{EPCMPR0 + EPCMPR_STRIDE * 15, 0x000000FF},
++	/* EPCCR (Event Processor Counter Control Registers) */
++	{EPCCR0 + EPCCR_STRIDE * 0, 0},
++	{EPCCR0 + EPCCR_STRIDE * 1, 0},
++	{EPCCR0 + EPCCR_STRIDE * 2, 0x92840000},
++	{EPCCR0 + EPCCR_STRIDE * 3, 0},
++	{EPCCR0 + EPCCR_STRIDE * 4, 0x92840000},
++	{EPCCR0 + EPCCR_STRIDE * 5, 0x92840000},
++	{EPCCR0 + EPCCR_STRIDE * 6, 0},
++	{EPCCR0 + EPCCR_STRIDE * 7, 0},
++	{EPCCR0 + EPCCR_STRIDE * 8, 0x92840000},
++	{EPCCR0 + EPCCR_STRIDE * 9, 0x92840000},
++	{EPCCR0 + EPCCR_STRIDE * 10, 0x92840000},
++	{EPCCR0 + EPCCR_STRIDE * 11, 0x92840000},
++	{EPCCR0 + EPCCR_STRIDE * 12, 0x92840000},
++	{EPCCR0 + EPCCR_STRIDE * 13, 0},
++	{EPCCR0 + EPCCR_STRIDE * 14, 0x92840000},
++	{EPCCR0 + EPCCR_STRIDE * 15, 0x92840000},
++	/* EPSMCR (Event Processor SCU Mux Control Registers) */
++	{EPSMCR0 + EPSMCR_STRIDE * 0, 0},
++	{EPSMCR0 + EPSMCR_STRIDE * 1, 0},
++	{EPSMCR0 + EPSMCR_STRIDE * 2, 0x6C700000},
++	{EPSMCR0 + EPSMCR_STRIDE * 3, 0x2F000000},
++	{EPSMCR0 + EPSMCR_STRIDE * 4, 0x002F0000},
++	{EPSMCR0 + EPSMCR_STRIDE * 5, 0x00002E00},
++	{EPSMCR0 + EPSMCR_STRIDE * 6, 0x7C000000},
++	{EPSMCR0 + EPSMCR_STRIDE * 7, 0x30000000},
++	{EPSMCR0 + EPSMCR_STRIDE * 8, 0x64300000},
++	{EPSMCR0 + EPSMCR_STRIDE * 9, 0x00003000},
++	{EPSMCR0 + EPSMCR_STRIDE * 10, 0x65000030},
++	{EPSMCR0 + EPSMCR_STRIDE * 11, 0x31740000},
++	{EPSMCR0 + EPSMCR_STRIDE * 12, 0x7F000000},
++	{EPSMCR0 + EPSMCR_STRIDE * 13, 0x00003100},
++	{EPSMCR0 + EPSMCR_STRIDE * 14, 0x00000031},
++	{EPSMCR0 + EPSMCR_STRIDE * 15, 0x76000000},
++	/* EPACR (Event Processor Action Control Registers) */
++	{EPACR0 + EPACR_STRIDE * 0, 0},
++	{EPACR0 + EPACR_STRIDE * 1, 0},
++	{EPACR0 + EPACR_STRIDE * 2, 0},
++	{EPACR0 + EPACR_STRIDE * 3, 0x00000080},
++	{EPACR0 + EPACR_STRIDE * 4, 0},
++	{EPACR0 + EPACR_STRIDE * 5, 0x00000040},
++	{EPACR0 + EPACR_STRIDE * 6, 0},
++	{EPACR0 + EPACR_STRIDE * 7, 0},
++	{EPACR0 + EPACR_STRIDE * 8, 0},
++	{EPACR0 + EPACR_STRIDE * 9, 0x0000001C},
++	{EPACR0 + EPACR_STRIDE * 10, 0x00000020},
++	{EPACR0 + EPACR_STRIDE * 11, 0},
++	{EPACR0 + EPACR_STRIDE * 12, 0x00000003},
++	{EPACR0 + EPACR_STRIDE * 13, 0x06000000},
++	{EPACR0 + EPACR_STRIDE * 14, 0x04000000},
++	{EPACR0 + EPACR_STRIDE * 15, 0x02000000},
++	/* EPIMCR (Event Processor Input Mux Control Registers) */
++	{EPIMCR0 + EPIMCR_STRIDE * 0, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 1, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 2, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 3, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 4, 0x44000000},
++	{EPIMCR0 + EPIMCR_STRIDE * 5, 0x40000000},
++	{EPIMCR0 + EPIMCR_STRIDE * 6, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 7, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 8, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 9, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 10, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 11, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 12, 0x44000000},
++	{EPIMCR0 + EPIMCR_STRIDE * 13, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 14, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 15, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 16, 0x6A000000},
++	{EPIMCR0 + EPIMCR_STRIDE * 17, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 18, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 19, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 20, 0x48000000},
++	{EPIMCR0 + EPIMCR_STRIDE * 21, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 22, 0x6C000000},
++	{EPIMCR0 + EPIMCR_STRIDE * 23, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 24, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 25, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 26, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 27, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 28, 0x76000000},
++	{EPIMCR0 + EPIMCR_STRIDE * 29, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 30, 0},
++	{EPIMCR0 + EPIMCR_STRIDE * 31, 0x76000000},
++	/* EPXTRIGCR (Event Processor Crosstrigger Control Register) */
++	{EPXTRIGCR, 0x0000FFDF},
++	/* end */
++	{FSM_END_FLAG, 0},
++};
++
++struct fsm_reg_vals npc_default_val[] = {
++	/* NPC triggered Memory-Mapped Access Registers */
++	{NCR, 0x80000000},
++	{MCCR1, 0},
++	{MCSR1, 0},
++	{MMAR1LO, 0},
++	{MMAR1HI, 0},
++	{MMDR1, 0},
++	{MCSR2, 0},
++	{MMAR2LO, 0},
++	{MMAR2HI, 0},
++	{MMDR2, 0},
++	{MCSR3, 0x80000000},
++	{MMAR3LO, 0x000E2130},
++	{MMAR3HI, 0x00030000},
++	{MMDR3, 0x00020000},
++	/* end */
++	{FSM_END_FLAG, 0},
++};
++
++/**
++ * fsl_fsm_setup - Configure EPU's FSM registers
++ * @base: the base address of registers
++ * @val: Pointer to address-value pairs for FSM registers
++ */
++void fsl_fsm_setup(void __iomem *base, struct fsm_reg_vals *val)
++{
++	struct fsm_reg_vals *data = val;
++
++	WARN_ON(!base || !data);
++	while (data->offset != FSM_END_FLAG) {
++		iowrite32be(data->value, base + data->offset);
++		data++;
++	}
++}
++
++void fsl_epu_setup_default(void __iomem *epu_base)
++{
++	fsl_fsm_setup(epu_base, epu_default_val);
++}
++
++void fsl_npc_setup_default(void __iomem *npc_base)
++{
++	fsl_fsm_setup(npc_base, npc_default_val);
++}
++
++void fsl_epu_clean_default(void __iomem *epu_base)
++{
++	u32 offset;
++
++	/* follow the exact sequence to clear the registers */
++	/* Clear EPACRn */
++	for (offset = EPACR0; offset <= EPACR15; offset += EPACR_STRIDE)
++		iowrite32be(0, epu_base + offset);
++
++	/* Clear EPEVTCRn */
++	for (offset = EPEVTCR0; offset <= EPEVTCR9; offset += EPEVTCR_STRIDE)
++		iowrite32be(0, epu_base + offset);
++
++	/* Clear EPGCR */
++	iowrite32be(0, epu_base + EPGCR);
++
++	/* Clear EPSMCRn */
++	for (offset = EPSMCR0; offset <= EPSMCR15; offset += EPSMCR_STRIDE)
++		iowrite32be(0, epu_base + offset);
++
++	/* Clear EPCCRn */
++	for (offset = EPCCR0; offset <= EPCCR31; offset += EPCCR_STRIDE)
++		iowrite32be(0, epu_base + offset);
++
++	/* Clear EPCMPRn */
++	for (offset = EPCMPR0; offset <= EPCMPR31; offset += EPCMPR_STRIDE)
++		iowrite32be(0, epu_base + offset);
++
++	/* Clear EPCTRn */
++	for (offset = EPCTR0; offset <= EPCTR31; offset += EPCTR_STRIDE)
++		iowrite32be(0, epu_base + offset);
++
++	/* Clear EPIMCRn */
++	for (offset = EPIMCR0; offset <= EPIMCR31; offset += EPIMCR_STRIDE)
++		iowrite32be(0, epu_base + offset);
++
++	/* Clear EPXTRIGCRn */
++	iowrite32be(0, epu_base + EPXTRIGCR);
++
++	/* Clear EPECRn */
++	for (offset = EPECR0; offset <= EPECR15; offset += EPECR_STRIDE)
++		iowrite32be(0, epu_base + offset);
++}
+--- /dev/null
++++ b/drivers/soc/fsl/sleep_fsm.h
+@@ -0,0 +1,130 @@
++/*
++ * deep sleep FSM (finite-state machine) configuration
++ *
++ * Copyright 2018 NXP
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ *     * Redistributions of source code must retain the above copyright
++ *	 notice, this list of conditions and the following disclaimer.
++ *     * Redistributions in binary form must reproduce the above copyright
++ *	 notice, this list of conditions and the following disclaimer in the
++ *	 documentation and/or other materials provided with the distribution.
++ *     * Neither the name of the above-listed copyright holders nor the
++ *	 names of any contributors may be used to endorse or promote products
++ *	 derived from this software without specific prior written permission.
++ *
++ *
++ * ALTERNATIVELY, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") as published by the Free Software
++ * Foundation, either version 2 of that License or (at your option) any
++ * later version.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#ifndef _FSL_SLEEP_FSM_H
++#define _FSL_SLEEP_FSM_H
++
++#define FSL_STRIDE_4B	4
++#define FSL_STRIDE_8B	8
++
++/* End flag */
++#define FSM_END_FLAG		0xFFFFFFFFUL
++
++/* Block offsets */
++#define RCPM_BLOCK_OFFSET	0x00022000
++#define EPU_BLOCK_OFFSET	0x00000000
++#define NPC_BLOCK_OFFSET	0x00001000
++
++/* EPGCR (Event Processor Global Control Register) */
++#define EPGCR		0x000
++
++/* EPEVTCR0-9 (Event Processor EVT Pin Control Registers) */
++#define EPEVTCR0	0x050
++#define EPEVTCR9	0x074
++#define EPEVTCR_STRIDE	FSL_STRIDE_4B
++
++/* EPXTRIGCR (Event Processor Crosstrigger Control Register) */
++#define EPXTRIGCR	0x090
++
++/* EPIMCR0-31 (Event Processor Input Mux Control Registers) */
++#define EPIMCR0		0x100
++#define EPIMCR31	0x17C
++#define EPIMCR_STRIDE	FSL_STRIDE_4B
++
++/* EPSMCR0-15 (Event Processor SCU Mux Control Registers) */
++#define EPSMCR0		0x200
++#define EPSMCR15	0x278
++#define EPSMCR_STRIDE	FSL_STRIDE_8B
++
++/* EPECR0-15 (Event Processor Event Control Registers) */
++#define EPECR0		0x300
++#define EPECR15		0x33C
++#define EPECR_STRIDE	FSL_STRIDE_4B
++
++/* EPACR0-15 (Event Processor Action Control Registers) */
++#define EPACR0		0x400
++#define EPACR15		0x43C
++#define EPACR_STRIDE	FSL_STRIDE_4B
++
++/* EPCCRi0-15 (Event Processor Counter Control Registers) */
++#define EPCCR0		0x800
++#define EPCCR15		0x83C
++#define EPCCR31		0x87C
++#define EPCCR_STRIDE	FSL_STRIDE_4B
++
++/* EPCMPR0-15 (Event Processor Counter Compare Registers) */
++#define EPCMPR0		0x900
++#define EPCMPR15	0x93C
++#define EPCMPR31	0x97C
++#define EPCMPR_STRIDE	FSL_STRIDE_4B
++
++/* EPCTR0-31 (Event Processor Counter Register) */
++#define EPCTR0		0xA00
++#define EPCTR31		0xA7C
++#define EPCTR_STRIDE	FSL_STRIDE_4B
++
++/* NPC triggered Memory-Mapped Access Registers */
++#define NCR		0x000
++#define MCCR1		0x0CC
++#define MCSR1		0x0D0
++#define MMAR1LO		0x0D4
++#define MMAR1HI		0x0D8
++#define MMDR1		0x0DC
++#define MCSR2		0x0E0
++#define MMAR2LO		0x0E4
++#define MMAR2HI		0x0E8
++#define MMDR2		0x0EC
++#define MCSR3		0x0F0
++#define MMAR3LO		0x0F4
++#define MMAR3HI		0x0F8
++#define MMDR3		0x0FC
++
++/* RCPM Core State Action Control Register 0 */
++#define CSTTACR0	0xB00
++
++/* RCPM Core Group 1 Configuration Register 0 */
++#define CG1CR0		0x31C
++
++struct fsm_reg_vals {
++	u32 offset;
++	u32 value;
++};
++
++void fsl_fsm_setup(void __iomem *base, struct fsm_reg_vals *val);
++void fsl_epu_setup_default(void __iomem *epu_base);
++void fsl_npc_setup_default(void __iomem *npc_base);
++void fsl_epu_clean_default(void __iomem *epu_base);
++
++#endif /* _FSL_SLEEP_FSM_H */

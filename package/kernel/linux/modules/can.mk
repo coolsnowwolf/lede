@@ -26,7 +26,6 @@ define KernelPackage/can
 	CONFIG_CAN_MSCAN=n \
 	CONFIG_CAN_SJA1000=n \
 	CONFIG_CAN_SOFTING=n \
-	CONFIG_CAN_XILINXCAN=n \
 	CONFIG_NET_EMATCH_CANID=n \
 	CONFIG_CAN_DEBUG_DEVICES=n
   FILES:=$(LINUX_DIR)/drivers/net/can/can-dev.ko \
@@ -99,7 +98,7 @@ $(eval $(call KernelPackage,can-c-can-pci))
 define KernelPackage/can-c-can-platform
   TITLE:=Platform Bus based BOSCH C_CAN/D_CAN driver
   KCONFIG:=CONFIG_CAN_C_CAN_PLATFORM
-  DEPENDS:=kmod-can-c-can +!LINUX_3_18:kmod-regmap
+  DEPENDS:=kmod-can-c-can +kmod-regmap-core
   FILES:=$(LINUX_DIR)/drivers/net/can/c_can/c_can_platform.ko
   AUTOLOAD:=$(call AutoProbe,c_can_platform)
   $(call AddDepends/can)
@@ -231,7 +230,9 @@ $(eval $(call KernelPackage,can-usb-esd))
 define KernelPackage/can-usb-kvaser
   TITLE:=Kvaser CAN/USB interface
   KCONFIG:=CONFIG_CAN_KVASER_USB
-  FILES:=$(LINUX_DIR)/drivers/net/can/usb/kvaser_usb.ko
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/can/usb/kvaser_usb.ko@lt4.19 \
+	$(LINUX_DIR)/drivers/net/can/usb/kvaser_usb/kvaser_usb.ko@ge4.19
   AUTOLOAD:=$(call AutoProbe,kvaser_usb)
   $(call AddDepends/can,+kmod-usb-core)
 endef
@@ -275,4 +276,17 @@ endef
 
 $(eval $(call KernelPackage,can-vcan))
 
+define KernelPackage/can-xilinx-can
+  TITLE:=Xilinx CAN IP
+  KCONFIG:=CONFIG_CAN_XILINXCAN
+  FILES:=$(LINUX_DIR)/drivers/net/can/xilinx_can.ko
+  AUTOLOAD:=$(call AutoProbe,xilinx_can)
+  $(call AddDepends/can,@TARGET_zynq)
+endef
 
+define KernelPackage/can-xilinx-can/description
+ Xilinx CAN driver. This driver supports both
+ soft AXI CAN IP and Zynq CANPS IP.
+endef
+
+$(eval $(call KernelPackage,can-xilinx-can))

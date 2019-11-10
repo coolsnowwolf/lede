@@ -5,7 +5,7 @@ DEFAULT_PACKAGES += \
 			kmod-ath5k kmod-ath9k \
 			kmod-button-hotplug \
 			kmod-ledtrig-heartbeat kmod-ledtrig-gpio \
-			kmod-ledtrig-netdev hwclock wpad-mini
+			kmod-ledtrig-netdev hwclock wpad-basic
 # Geos
 DEFAULT_PACKAGES += \
 		soloscli linux-atm br2684ctl ppp-mod-pppoa pppdump pppstats \

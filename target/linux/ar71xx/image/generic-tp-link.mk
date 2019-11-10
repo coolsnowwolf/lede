@@ -267,6 +267,15 @@ define Device/tl-mr6400-v1
 endef
 TARGET_DEVICES += tl-mr6400-v1
 
+define Device/tl-wdr3227-v2
+   $(Device/tplink-8mlzma)
+   DEVICE_TITLE := TP-LINK TL-WDR3227 v2
+   BOARDNAME := TL-WDR3227-v2
+   DEVICE_PROFILE := TLWDR3227V2
+   TPLINK_HWID := 0x32270002
+endef
+TARGET_DEVICES += tl-wdr3227-v2
+
 define Device/tl-wdr3500-v1
   $(Device/tplink-8mlzma)
   DEVICE_TITLE := TP-LINK TL-WDR3500 v1
@@ -330,6 +339,19 @@ define Device/tl-wdr6500-v2
   TPLINK_HEADER_VERSION := 2
 endef
 TARGET_DEVICES += tl-wdr6500-v2
+
+define Device/tl-wdr6500-v6
+$(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WDR6500 v6
+  DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca9888
+  KERNEL := kernel-bin | patch-cmdline | lzma | uImage lzma
+  KERNEL_INITRAMFS := kernel-bin | patch-cmdline | lzma | uImage lzma | tplink-v1-header
+  BOARDNAME = TL-WDR6500-v6
+  DEVICE_PROFILE = TLWDR6500V6
+  TPLINK_HWID := 0x65000006
+  TPLINK_HEADER_VERSION := 2
+endef
+TARGET_DEVICES += tl-wdr6500-v6
 
 define Device/mw4530r-v1
   $(Device/tl-wdr4300-v1)

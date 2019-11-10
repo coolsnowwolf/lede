@@ -1752,8 +1752,8 @@ static int rtl8367_probe(struct platform_device *pdev)
 	int err;
 
 	smi = rtl8366_smi_probe(pdev);
-	if (!smi)
-		return -ENODEV;
+	if (IS_ERR(smi))
+		return PTR_ERR(smi);
 
 	smi->clk_delay = 1500;
 	smi->cmd_read = 0xb9;

@@ -1,0 +1,152 @@
+From a7cd7badedcb643dc1adb41edeb4cf8e4d9ec063 Mon Sep 17 00:00:00 2001
+From: Stephen Hemminger <stephen@networkplumber.org>
+Date: Tue, 19 Mar 2019 10:36:56 -0700
+Subject: uapi: add CAKE FWMARK
+
+Signed-off-by: Stephen Hemminger <stephen@networkplumber.org>
+---
+ include/uapi/linux/pkt_sched.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/include/uapi/linux/pkt_sched.h b/include/uapi/linux/pkt_sched.h
+index 1eb572e..7ee74c3 100644
+--- a/include/uapi/linux/pkt_sched.h
++++ b/include/uapi/linux/pkt_sched.h
+@@ -1021,6 +1021,7 @@ enum {
+ 	TCA_CAKE_INGRESS,
+ 	TCA_CAKE_ACK_FILTER,
+ 	TCA_CAKE_SPLIT_GSO,
++	TCA_CAKE_FWMARK,
+ 	__TCA_CAKE_MAX
+ };
+ #define TCA_CAKE_MAX	(__TCA_CAKE_MAX - 1)
+
+From 5ebfe1f6fea2bb3bfccf4cf93829516caaa0233d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Toke=20H=C3=B8iland-J=C3=B8rgensen?= <toke@toke.dk>
+Date: Mon, 18 Mar 2019 01:30:45 +0100
+Subject: [PATCH] q_cake: Add support for setting the fwmark option
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This adds support for the newly added fwmark option to CAKE, which allows
+overriding the tin selection from the per-packet firewall marks. The fwmark
+field is a bitmask that is applied to the fwmark to select the tin.
+
+Signed-off-by: Toke Høiland-Jørgensen <toke@redhat.com>
+---
+ man/man8/tc-cake.8 | 16 ++++++++++++++++
+ tc/q_cake.c        | 24 ++++++++++++++++++++++++
+ 2 files changed, 40 insertions(+)
+
+diff --git a/man/man8/tc-cake.8 b/man/man8/tc-cake.8
+index eda436e1..8c57eadd 100644
+--- a/man/man8/tc-cake.8
++++ b/man/man8/tc-cake.8
+@@ -91,6 +91,10 @@ TIME |
+ LIMIT ]
+ .br
+ [
++.BR fwmark
++MASK ]
++.br
++[
+ .BR ptm
+ |
+ .BR atm
+@@ -524,6 +528,18 @@ preset on the modern Internet is firmly discouraged.
+ .br
+ 		Voice (CS7, CS6, EF, VA, TOS4), 25% threshold, reduced Codel interval.
+ 
++.PP
++.B fwmark
++MASK
++.br
++	This options turns on fwmark-based overriding of CAKE's tin selection.
++If set, the option specifies a bitmask that will be applied to the fwmark
++associated with each packet. If the result of this masking is non-zero, the
++result will be right-shifted by the number of least-significant unset bits in
++the mask value, and the result will be used as a the tin number for that packet.
++This can be used to set policies in a firewall script that will override CAKE's
++built-in tin selection.
++
+ .SH OTHER PARAMETERS
+ .B memlimit
+ LIMIT
+diff --git a/tc/q_cake.c b/tc/q_cake.c
+index e827e3f1..307a12c0 100644
+--- a/tc/q_cake.c
++++ b/tc/q_cake.c
+@@ -82,6 +82,7 @@ static void explain(void)
+ "                [ split-gso* | no-split-gso ]\n"
+ "                [ ack-filter | ack-filter-aggressive | no-ack-filter* ]\n"
+ "                [ memlimit LIMIT ]\n"
++"                [ fwmark MASK ]\n"
+ "                [ ptm | atm | noatm* ] [ overhead N | conservative | raw* ]\n"
+ "                [ mpu N ] [ ingress | egress* ]\n"
+ "                (* marks defaults)\n");
+@@ -106,6 +107,7 @@ static int cake_parse_opt(struct qdisc_util *qu, int argc, char **argv,
+ 	int autorate = -1;
+ 	int ingress = -1;
+ 	int overhead = 0;
++	int fwmark = -1;
+ 	int wash = -1;
+ 	int nat = -1;
+ 	int atm = -1;
+@@ -332,6 +334,16 @@ static int cake_parse_opt(struct qdisc_util *qu, int argc, char **argv,
+ 					"Illegal value for \"memlimit\": \"%s\"\n", *argv);
+ 				return -1;
+ 			}
++		} else if (strcmp(*argv, "fwmark") == 0) {
++			unsigned int fwm;
++
++			NEXT_ARG();
++			if (get_u32(&fwm, *argv, 0)) {
++				fprintf(stderr,
++					"Illegal value for \"fwmark\": \"%s\"\n", *argv);
++				return -1;
++			}
++			fwmark = fwm;
+ 		} else if (strcmp(*argv, "help") == 0) {
+ 			explain();
+ 			return -1;
+@@ -376,6 +388,9 @@ static int cake_parse_opt(struct qdisc_util *qu, int argc, char **argv,
+ 	if (memlimit)
+ 		addattr_l(n, 1024, TCA_CAKE_MEMORY, &memlimit,
+ 			  sizeof(memlimit));
++	if (fwmark != -1)
++		addattr_l(n, 1024, TCA_CAKE_FWMARK, &fwmark,
++			  sizeof(fwmark));
+ 	if (nat != -1)
+ 		addattr_l(n, 1024, TCA_CAKE_NAT, &nat, sizeof(nat));
+ 	if (wash != -1)
+@@ -409,6 +424,7 @@ static int cake_print_opt(struct qdisc_util *qu, FILE *f, struct rtattr *opt)
+ 	struct rtattr *tb[TCA_CAKE_MAX + 1];
+ 	unsigned int interval = 0;
+ 	unsigned int memlimit = 0;
++	unsigned int fwmark = 0;
+ 	__u64 bandwidth = 0;
+ 	int ack_filter = 0;
+ 	int split_gso = 0;
+@@ -507,6 +523,10 @@ static int cake_print_opt(struct qdisc_util *qu, FILE *f, struct rtattr *opt)
+ 	    RTA_PAYLOAD(tb[TCA_CAKE_RTT]) >= sizeof(__u32)) {
+ 		interval = rta_getattr_u32(tb[TCA_CAKE_RTT]);
+ 	}
++	if (tb[TCA_CAKE_FWMARK] &&
++	    RTA_PAYLOAD(tb[TCA_CAKE_FWMARK]) >= sizeof(__u32)) {
++		fwmark = rta_getattr_u32(tb[TCA_CAKE_FWMARK]);
++	}
+ 
+ 	if (wash)
+ 		print_string(PRINT_FP, NULL, "wash ", NULL);
+@@ -559,6 +579,10 @@ static int cake_print_opt(struct qdisc_util *qu, FILE *f, struct rtattr *opt)
+ 			     sprint_size(memlimit, b1));
+ 	}
+ 
++	if (fwmark)
++		print_uint(PRINT_FP, NULL, "fwmark 0x%x ", fwmark);
++	print_0xhex(PRINT_JSON, "fwmark", NULL, fwmark);
++
+ 	return 0;
+ }
+ 

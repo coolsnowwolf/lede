@@ -26,11 +26,11 @@ qosdef_monitor_del() { # <mac> <ip> <hostname>
 
 # init qos monitor
 qosdef_init_monitor() {
-	local hook_ul="input" hook_dl="postrouting"
+	local hook_ul="prerouting" hook_dl="postrouting"
 
 	[ -z "$NFT_QOS_HAS_BRIDGE" ] && {
 		hook_ul="postrouting"
-		hook_dl="input"
+		hook_dl="prerouting"
 	}
 
 	nft add table $NFT_QOS_INET_FAMILY nft-qos-monitor

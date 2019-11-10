@@ -162,12 +162,6 @@ define Host/Compile
 	$(MAKE) -C $(HOST_BUILD_DIR)/progs tic
 endef
 
-define Host/Install
-	$(INSTALL_BIN) $(HOST_BUILD_DIR)/progs/tic $(STAGING_DIR_HOST)/bin/tic
-	$(INSTALL_DIR) $(STAGING_DIR_HOSTPKG)/lib/
-	$(INSTALL_DATA) $(HOST_BUILD_DIR)/lib/libncurses.a $(STAGING_DIR_HOSTPKG)/lib/
-endef
-
 $(eval $(call HostBuild))
 $(eval $(call BuildPackage,terminfo))
 $(eval $(call BuildPackage,libncurses))

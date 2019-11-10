@@ -101,7 +101,7 @@ $(eval $(call KernelPackage,lib-crc32c))
 define KernelPackage/lib-lzo
   SUBMENU:=$(LIB_MENU)
   TITLE:=LZO support
-  DEPENDS:=+LINUX_4_14:kmod-crypto-acompress
+  DEPENDS:=+!LINUX_4_9:kmod-crypto-acompress
   KCONFIG:= \
 	CONFIG_CRYPTO_LZO@ge4.9 \
 	CONFIG_LZO_COMPRESS \
@@ -146,7 +146,7 @@ $(eval $(call KernelPackage,lib-zstd))
 define KernelPackage/lib-lz4
   SUBMENU:=$(LIB_MENU)
   TITLE:=LZ4 support
-  DEPENDS:=+LINUX_4_14:kmod-crypto-acompress
+  DEPENDS:=+!LINUX_4_9:kmod-crypto-acompress
   HIDDEN:=1
   KCONFIG:= \
 	CONFIG_CRYPTO_LZ4@ge4.9 \
@@ -260,3 +260,14 @@ define KernelPackage/lib-cordic/description
 endef
 
 $(eval $(call KernelPackage,lib-cordic))
+
+
+define KernelPackage/asn1-decoder
+  SUBMENU:=$(LIB_MENU)
+  TITLE:=Simple ASN1 decoder
+  KCONFIG:= CONFIG_ASN1
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/lib/asn1_decoder.ko
+endef
+
+$(eval $(call KernelPackage,asn1-decoder))

@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=valgrind
-PKG_VERSION:=3.13.0
+PKG_VERSION:=3.14.0
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=http://sourceware.org/pub/valgrind/
-PKG_HASH:=d76680ef03f00cd5e970bbdcd4e57fb1f6df7d2e2c071635ef2be74790190c3b
+PKG_HASH:=037c11bfefd477cc6e9ebe8f193bb237fe397f7ce791b4a4ce3fa1c6a520baa5
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=GPL-2.0+
@@ -105,6 +105,7 @@ CONFIGURE_ARGS += \
 	--disable-valgrindtk \
 	--without-included-gettext \
 	--with-pagesize=4 \
+	--enable-lto
 
 define Package/valgrind/install	
 	$(INSTALL_DIR) $(1)/usr/bin

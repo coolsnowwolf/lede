@@ -1,0 +1,277 @@
+From 5a8ccd79b6bad32e52620a94199bf1af2e19708e Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime.ripard@bootlin.com>
+Date: Wed, 19 Jun 2019 12:17:51 +0200
+Subject: [PATCH 735/806] drm/modes: Allow to specify rotation and reflection
+ on the commandline
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Commit 1bf4e09227c345e246062285eba4b8fe660e512e upstream.
+Minor conflict resolution as upstream has moved functions
+from drm_fb_helper.c to a new drm_client_modeset.c
+
+Rotations and reflections setup are needed in some scenarios to initialise
+properly the initial framebuffer. Some drivers already had a bunch of
+quirks to deal with this, such as either a private kernel command line
+parameter (omapdss) or on the device tree (various panels).
+
+In order to accomodate this, let's create a video mode parameter to deal
+with the rotation and reflexion.
+
+Reviewed-by: Noralf Trønnes <noralf@tronnes.org>
+Signed-off-by: Maxime Ripard <maxime.ripard@bootlin.com>
+Link: https://patchwork.freedesktop.org/patch/msgid/777da16e42db757c1f5b414b5ca34507097fed5c.1560783090.git-series.maxime.ripard@bootlin.com
+---
+ Documentation/fb/modedb.txt     |  12 ++++
+ drivers/gpu/drm/drm_fb_helper.c |  30 +++++++++
+ drivers/gpu/drm/drm_modes.c     | 114 ++++++++++++++++++++++++++------
+ include/drm/drm_connector.h     |  10 +++
+ 4 files changed, 146 insertions(+), 20 deletions(-)
+
+--- a/Documentation/fb/modedb.txt
++++ b/Documentation/fb/modedb.txt
+@@ -51,6 +51,18 @@ To force the VGA output to be enabled an
+ Specifying the option multiple times for different ports is possible, e.g.:
+     video=LVDS-1:d video=HDMI-1:D
+ 
++Options can also be passed after the mode, using commas as separator.
++
++       Sample usage: 720x480,rotate=180 - 720x480 mode, rotated by 180 degrees
++
++Valid options are:
++
++  - reflect_x (boolean): Perform an axial symmetry on the X axis
++  - reflect_y (boolean): Perform an axial symmetry on the Y axis
++  - rotate (integer): Rotate the initial framebuffer by x
++    degrees. Valid values are 0, 90, 180 and 270.
++
++
+ ***** oOo ***** oOo ***** oOo ***** oOo ***** oOo ***** oOo ***** oOo *****
+ 
+ What is the VESA(TM) Coordinated Video Timings (CVT)?
+--- a/drivers/gpu/drm/drm_fb_helper.c
++++ b/drivers/gpu/drm/drm_fb_helper.c
+@@ -2464,6 +2464,7 @@ static void drm_setup_crtc_rotation(stru
+ 				    struct drm_connector *connector)
+ {
+ 	struct drm_plane *plane = fb_crtc->mode_set.crtc->primary;
++	struct drm_cmdline_mode *cmdline;
+ 	uint64_t valid_mask = 0;
+ 	int i, rotation;
+ 
+@@ -2483,6 +2484,35 @@ static void drm_setup_crtc_rotation(stru
+ 		rotation = DRM_MODE_ROTATE_0;
+ 	}
+ 
++	/**
++	 * The panel already defined the default rotation
++	 * through its orientation. Whatever has been provided
++	 * on the command line needs to be added to that.
++	 *
++	 * Unfortunately, the rotations are at different bit
++	 * indices, so the math to add them up are not as
++	 * trivial as they could.
++	 *
++	 * Reflections on the other hand are pretty trivial to deal with, a
++	 * simple XOR between the two handle the addition nicely.
++	 */
++	cmdline = &connector->cmdline_mode;
++	if (cmdline->specified) {
++		unsigned int cmdline_rest, panel_rest;
++		unsigned int cmdline_rot, panel_rot;
++		unsigned int sum_rot, sum_rest;
++
++		panel_rot = ilog2(rotation & DRM_MODE_ROTATE_MASK);
++		cmdline_rot = ilog2(cmdline->rotation_reflection & DRM_MODE_ROTATE_MASK);
++		sum_rot = (panel_rot + cmdline_rot) % 4;
++
++		panel_rest = rotation & ~DRM_MODE_ROTATE_MASK;
++		cmdline_rest = cmdline->rotation_reflection & ~DRM_MODE_ROTATE_MASK;
++		sum_rest = panel_rest ^ cmdline_rest;
++
++		rotation = (1 << sum_rot) | sum_rest;
++	}
++
+ 	/*
+ 	 * TODO: support 90 / 270 degree hardware rotation,
+ 	 * depending on the hardware this may require the framebuffer
+--- a/drivers/gpu/drm/drm_modes.c
++++ b/drivers/gpu/drm/drm_modes.c
+@@ -1560,6 +1560,71 @@ static int drm_mode_parse_cmdline_res_mo
+ 	return 0;
+ }
+ 
++static int drm_mode_parse_cmdline_options(char *str, size_t len,
++					  struct drm_connector *connector,
++					  struct drm_cmdline_mode *mode)
++{
++	unsigned int rotation = 0;
++	char *sep = str;
++
++	while ((sep = strchr(sep, ','))) {
++		char *delim, *option;
++
++		option = sep + 1;
++		delim = strchr(option, '=');
++		if (!delim) {
++			delim = strchr(option, ',');
++
++			if (!delim)
++				delim = str + len;
++		}
++
++		if (!strncmp(option, "rotate", delim - option)) {
++			const char *value = delim + 1;
++			unsigned int deg;
++
++			deg = simple_strtol(value, &sep, 10);
++
++			/* Make sure we have parsed something */
++			if (sep == value)
++				return -EINVAL;
++
++			switch (deg) {
++			case 0:
++				rotation |= DRM_MODE_ROTATE_0;
++				break;
++
++			case 90:
++				rotation |= DRM_MODE_ROTATE_90;
++				break;
++
++			case 180:
++				rotation |= DRM_MODE_ROTATE_180;
++				break;
++
++			case 270:
++				rotation |= DRM_MODE_ROTATE_270;
++				break;
++
++			default:
++				return -EINVAL;
++			}
++		} else if (!strncmp(option, "reflect_x", delim - option)) {
++			rotation |= DRM_MODE_REFLECT_X;
++			sep = delim;
++		} else if (!strncmp(option, "reflect_y", delim - option)) {
++			rotation |= DRM_MODE_REFLECT_Y;
++			sep = delim;
++		} else {
++			return -EINVAL;
++		}
++	}
++
++	mode->rotation_reflection = rotation;
++
++	return 0;
++}
++
+ /**
+  * drm_mode_parse_command_line_for_connector - parse command line modeline for connector
+  * @mode_option: optional per connector mode option
+@@ -1575,6 +1640,10 @@ static int drm_mode_parse_cmdline_res_mo
+  *
+  *	<xres>x<yres>[M][R][-<bpp>][@<refresh>][i][m][eDd]
+  *
++ * Additionals options can be provided following the mode, using a comma to
++ * separate each option. Valid options can be found in
++ * Documentation/fb/modedb.txt.
++ *
+  * The intermediate drm_cmdline_mode structure is required to store additional
+  * options from the command line modline like the force-enable/disable flag.
+  *
+@@ -1587,9 +1656,10 @@ bool drm_mode_parse_command_line_for_con
+ {
+ 	const char *name;
+ 	bool named_mode = false, parse_extras = false;
+-	unsigned int bpp_off = 0, refresh_off = 0;
++	unsigned int bpp_off = 0, refresh_off = 0, options_off = 0;
+ 	unsigned int mode_end = 0;
+ 	char *bpp_ptr = NULL, *refresh_ptr = NULL, *extra_ptr = NULL;
++	char *options_ptr = NULL;
+ 	char *bpp_end_ptr = NULL, *refresh_end_ptr = NULL;
+ 	int ret;
+ 
+@@ -1638,13 +1708,18 @@ bool drm_mode_parse_command_line_for_con
+ 		mode->refresh_specified = true;
+ 	}
+ 
++	/* Locate the start of named options */
++	options_ptr = strchr(name, ',');
++	if (options_ptr)
++		options_off = options_ptr - name;
++
+ 	/* Locate the end of the name / resolution, and parse it */
+-	if (bpp_ptr && refresh_ptr) {
+-		mode_end = min(bpp_off, refresh_off);
+-	} else if (bpp_ptr) {
++	if (bpp_ptr) {
+ 		mode_end = bpp_off;
+ 	} else if (refresh_ptr) {
+ 		mode_end = refresh_off;
++	} else if (options_ptr) {
++		mode_end = options_off;
+ 	} else {
+ 		mode_end = strlen(name);
+ 		parse_extras = true;
+@@ -1686,24 +1761,23 @@ bool drm_mode_parse_command_line_for_con
+ 	else if (refresh_ptr)
+ 		extra_ptr = refresh_end_ptr;
+ 
+-	if (extra_ptr) {
+-		if (!named_mode) {
+-			int len = strlen(name) - (extra_ptr - name);
+-
+-			ret = drm_mode_parse_cmdline_extra(extra_ptr, len,
+-							   connector, mode);
+-			if (ret)
+-				return false;
+-		} else {
+-			int remaining = strlen(name) - (extra_ptr - name);
++	if (extra_ptr &&
++	    extra_ptr != options_ptr) {
++		int len = strlen(name) - (extra_ptr - name);
+ 
+-			/*
+-			 * We still have characters to process, while
+-			 * we shouldn't have any
+-			 */
+-			if (remaining > 0)
+-				return false;
+-		}
++		ret = drm_mode_parse_cmdline_extra(extra_ptr, len,
++						   connector, mode);
++		if (ret)
++			return false;
++	}
++
++	if (options_ptr) {
++		int len = strlen(name) - (options_ptr - name);
++
++		ret = drm_mode_parse_cmdline_options(options_ptr, len,
++						     connector, mode);
++		if (ret)
++			return false;
+ 	}
+ 
+ 	return true;
+--- a/include/drm/drm_connector.h
++++ b/include/drm/drm_connector.h
+@@ -857,6 +857,16 @@ struct drm_cmdline_mode {
+ 	 * state to one of the DRM_FORCE_* values.
+ 	 */
+ 	enum drm_connector_force force;
++
++	/**
++	 * @rotation_reflection:
++	 *
++	 * Initial rotation and reflection of the mode setup from the
++	 * command line. See DRM_MODE_ROTATE_* and
++	 * DRM_MODE_REFLECT_*. The only rotations supported are
++	 * DRM_MODE_ROTATE_0 and DRM_MODE_ROTATE_180.
++	 */
++	unsigned int rotation_reflection;
+ };
+ 
+ /**
