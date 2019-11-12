@@ -72,7 +72,7 @@ local icount =0
 
 if set == "gfw_data" then
  if nixio.fs.access("/usr/bin/wget-ssl") then
-  refresh_cmd="wget-ssl --no-check-certificate https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt -O /tmp/gfw.b64"
+  refresh_cmd="wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt -O /tmp/gfw.b64"
  else
   refresh_cmd="wget -O /tmp/gfw.b64 http://iytc.net/tools/list.b64"
  end

@@ -6,11 +6,11 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=qbittorrent-nox for LuCI
-LUCI_DEPENDS:=+qBittorrent
+LUCI_DEPENDS:=+qBittorrent +python
 LUCI_PKGARCH:=all
 PKG_NAME:=luci-app-qbittorrent
 PKG_VERSION=1.0
-PKG_RELEASE:=4
+PKG_RELEASE:=9
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
