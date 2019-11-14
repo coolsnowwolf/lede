@@ -209,6 +209,23 @@ endef
 $(eval $(call KernelPackage,i2c-piix4))
 
 
+I2C_PXA_MODULES:= \
+  CONFIG_I2C_PXA_SLAVE=y \
+  CONFIG_I2C_PXA:drivers/i2c/busses/i2c-pxa
+
+define KernelPackage/i2c-pxa
+  $(call i2c_defaults,$(I2C_PXA_MODULES),50)
+  TITLE:=Intel PXA I2C bus driver
+  DEPENDS:=kmod-i2c-core
+endef
+
+define KernelPackage/i2c-pxa/description
+  Kernel module for Intel PXA2XX I2C adapter
+endef
+
+$(eval $(call KernelPackage,i2c-pxa))
+
+
 I2C_SMBUS_MODULES:= \
   CONFIG_I2C_SMBUS:drivers/i2c/i2c-smbus
 
