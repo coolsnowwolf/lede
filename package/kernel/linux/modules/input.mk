@@ -173,6 +173,25 @@ endef
 $(eval $(call KernelPackage,input-matrixkmap))
 
 
+define KernelPackage/input-touchscreen-ads7846
+  SUBMENU:=$(INPUT_MODULES_MENU)
+  TITLE:=ADS7846/TSC2046/AD7873 and AD(S)7843 based touchscreens
+  DEPENDS:=+kmod-hwmon-core +kmod-input-core +kmod-spi-bitbang
+  KCONFIG:= \
+	CONFIG_INPUT_TOUCHSCREEN=y \
+	CONFIG_TOUCHSCREEN_PROPERTIES=y \
+	CONFIG_TOUCHSCREEN_ADS7846
+  FILES:=$(LINUX_DIR)/drivers/input/touchscreen/ads7846.ko
+  AUTOLOAD:=$(call AutoProbe,ads7846)
+endef
+
+define KernelPackage/input-touchscreen-ads7846/description
+  Kernel module for ADS7846/TSC2046/AD7873 and AD(S)7843 based touchscreens
+endef
+
+$(eval $(call KernelPackage,input-touchscreen-ads7846))
+
+
 define KernelPackage/keyboard-imx
   SUBMENU:=$(INPUT_MODULES_MENU)
   TITLE:=IMX keypad support

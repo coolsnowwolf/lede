@@ -188,26 +188,6 @@ ifeq ($(DUMP),1)
   endif
   ifneq ($(findstring arm,$(ARCH)),)
     CPU_TYPE ?= xscale
-    CPU_CFLAGS_arm920t = -mcpu=arm920t
-    CPU_CFLAGS_arm926ej-s = -mcpu=arm926ej-s
-    CPU_CFLAGS_arm1136j-s = -mcpu=arm1136j-s
-    CPU_CFLAGS_arm1176jzf-s = -mcpu=arm1176jzf-s
-    CPU_CFLAGS_cortex-a5 = -mcpu=cortex-a5
-    CPU_CFLAGS_cortex-a7 = -mcpu=cortex-a7
-    CPU_CFLAGS_cortex-a8 = -mcpu=cortex-a8
-    CPU_CFLAGS_cortex-a9 = -mcpu=cortex-a9
-    CPU_CFLAGS_cortex-a15 = -mcpu=cortex-a15
-    CPU_CFLAGS_cortex-a53 = -mcpu=cortex-a53
-    CPU_CFLAGS_cortex-a72 = -mcpu=cortex-a72
-    CPU_CFLAGS_fa526 = -mcpu=fa526
-    CPU_CFLAGS_mpcore = -mcpu=mpcore
-    CPU_CFLAGS_xscale = -mcpu=xscale
-    ifeq ($(CONFIG_SOFT_FLOAT),)
-      CPU_CFLAGS_neon = -mfpu=neon
-      CPU_CFLAGS_vfp = -mfpu=vfp
-      CPU_CFLAGS_vfpv3 = -mfpu=vfpv3-d16
-      CPU_CFLAGS_neon-vfpv4 = -mfpu=neon-vfpv4
-    endif
   endif
   ifeq ($(ARCH),powerpc)
     CPU_CFLAGS_603e:=-mcpu=603e
