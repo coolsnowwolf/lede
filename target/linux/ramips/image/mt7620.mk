@@ -399,6 +399,14 @@ define Device/miwifi-mini
 endef
 TARGET_DEVICES += miwifi-mini
 
+define Device/dsbox-dsr1
+  DTS := DSBOX-DSR1
+  IMAGE_SIZE := $(ralink_default_fw_size_32M)
+  DEVICE_TITLE := DSbox DSR1
+  DEVICE_PACKAGES := kmod-mt76x2 kmod-usb2 kmod-usb-ohci kmod-sdhci-mt7620
+endef
+TARGET_DEVICES += dsbox-dsr1
+
 define Device/mlw221
   DTS := MLW221
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
