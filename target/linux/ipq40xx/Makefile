@@ -19,6 +19,7 @@ DEFAULT_PACKAGES += \
 	kmod-leds-gpio kmod-gpio-button-hotplug swconfig \
 	kmod-ath10k wpad \
 	kmod-usb3 kmod-usb-dwc3 ath10k-firmware-qca4019 \
-	automount autosamba luci-app-ipsec-vpnd luci-app-xlnetacc v2ray shadowsocks-libev-ss-redir shadowsocksr-libev-server
+	automount autosamba luci-app-ipsec-vpnd v2ray shadowsocks-libev-ss-redir shadowsocksr-libev-server \
+	luci-app-unblockmusic luci-app-transmission luci-app-v2ray-server
 
 $(eval $(call BuildTarget))
