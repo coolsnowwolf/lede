@@ -1,0 +1,158 @@
+#!/bin/sh /etc/rc.common
+
+START=90
+
+check()
+{
+	tries=0
+	while [[ $tries -lt 3 ]]
+	do
+        	if /bin/ping -c 1 8.8.8.8 >/dev/null
+        	then
+            		echo "网络连接成功" >>  /tmp/dogcom.log
+			echo --- exit ---
+           		exit 0
+     		fi
+        	tries=$((tries+1))
+	done
+	echo "网络连接失败，请检查配置文件" >>  /tmp/dogcom.log
+
+}
+
+start() {
+	curdir=/etc/dogcom.conf
+	touch $curdir
+	tmp_server="server= '$(uci get dogcom.@dogcom[0].server )'"
+	
+	enable=$(uci get dogcom.@dogcom[0].enable 2>/dev/null)
+	version=$(uci get dogcom.@dogcom[0].version 2>/dev/null)
+	enabledial=$(uci get dogcom.@dogcom[0].enabledial 2>/dev/null)	
+	log_clear=$(uci get dogcom.@dogcom[0].log_clear 2>/dev/null)
+	watchdog=$(uci get dogcom.@dogcom[0].watchdog 2>/dev/null)
+
+	if [ "$enable"x = "1"x ]; then
+		/etc/init.d/dogcom enable
+	else
+		/etc/init.d/dogcom disable
+		killall dogcom
+		sed -i '/#自动清除dogcom日志/d' /etc/crontabs/root
+		killall crond
+		/usr/sbin/crond
+		return
+	fi
+	
+	if [ "$version" == "P" ]; then
+		mode='pppoe'
+		echo "当前DRCOM版本为P" >> /tmp/dogcom.log
+		interface=$(uci get dogcom.@dogcom[0].interface 2>/dev/null)
+		user=$(uci get dogcom.@dogcom[0].user 2>/dev/null)
+		pwd=$(uci get dogcom.@dogcom[0].pwd 2>/dev/null)
+		macaddr=$(uci get dogcom.@dogcom[0].macaddr 2>/dev/null)
+		tmp_pppoe_flag="pppoe_flag='$(uci get dogcom.@dogcom[0].pppoe_flag )'"
+		tmp_keep_alive2_flag="keep_alive2_flag='$(uci get dogcom.@dogcom[0].keep_alive2_flag )'"
+		
+		echo $tmp_server > $curdir
+		echo "配置文件如下" >> /tmp/dogcom.log
+		echo $tmp_server >> /tmp/dogcom.log
+		echo "$tmp_pppoe_flag" | tee $curdir -a /tmp/dogcom.log
+		echo "$tmp_keep_alive2_flag"  | tee $curdir -a /tmp/dogcom.log
+	else
+		mode='dhcp'
+		echo "当前DRCOM版本为D" >> /tmp/dogcom.log
+		tmp_username="username = '$(uci get dogcom.@dogcom[0].username)'"
+		tmp_password="password = '$(uci get dogcom.@dogcom[0].password)'"			
+		tmp_host_name="host_name = '$(uci get dogcom.@dogcom[0].host_name)'"
+		tmp_host_os="host_os = '$(uci get dogcom.@dogcom[0].host_os)'"
+		tmp_host_ip="host_ip = '$(uci get dogcom.@dogcom[0].host_ip)'"
+		tmp_dhcp_server="dhcp_server = '$(uci get dogcom.@dogcom[0].dhcp_server)'"
+		tmp_mac="mac = '$(uci get dogcom.@dogcom[0].mac)'"
+		tmp_PRIMARY_DNS="PRIMARY_DNS = '$(uci get dogcom.@dogcom[0].PRIMARY_DNS)'"
+		tmp_AUTH_VERSION="AUTH_VERSION = '$(uci get dogcom.@dogcom[0].AUTH_VERSION)'"
+		tmp_KEEP_ALIVE_VERSION="KEEP_ALIVE_VERSION = '$(uci get dogcom.@dogcom[0].KEEP_ALIVE_VERSION)'"
+		tmp_CONTROLCHECKSTATUS="CONTROLCHECKSTATUS = '$(uci get dogcom.@dogcom[0].CONTROLCHECKSTATUS)'"
+		tmp_ADAPTERNUM="ADAPTERNUM = '$(uci get dogcom.@dogcom[0].ADAPTERNUM)'"
+		tmp_IPDOG="IPDOG = '$(uci get dogcom.@dogcom[0].IPDOG)'"
+
+		echo $tmp_server > $curdir 
+		echo "配置文件如下" >> /tmp/dogcom.log
+		echo $tmp_server >> /tmp/dogcom.log
+		echo $tmp_username | tee $curdir -a /tmp/dogcom.log
+		echo $tmp_password | tee $curdir -a /tmp/dogcom.log
+		echo $tmp_host_name | tee $curdir -a /tmp/dogcom.log
+		echo $tmp_host_os | tee $curdir -a /tmp/dogcom.log
+		echo $tmp_host_ip | tee $curdir -a /tmp/dogcom.log
+		echo $tmp_dhcp_server | tee $curdir -a /tmp/dogcom.log
+		echo $tmp_mac | tee $curdir -a /tmp/dogcom.log
+		echo $tmp_PRIMARY_DNS | tee $curdir -a /tmp/dogcom.log
+		echo $tmp_AUTH_VERSION | tee $curdir -a /tmp/dogcom.log
+		echo $tmp_KEEP_ALIVE_VERSION | tee $curdir -a /tmp/dogcom.log
+		echo $tmp_CONTROLCHECKSTATUS | tee $curdir -a /tmp/dogcom.log
+		echo $tmp_ADAPTERNUM | tee $curdir -a /tmp/dogcom.log
+		echo $tmp_IPDOG | tee $curdir -a /tmp/dogcom.log
+	fi
+
+	if [ "$enabledial"x = "1"x ]; then
+#		uci set network.wan.ifname="$ifname"
+#		uci set network.wan.proto="pppoe"
+#		uci set network.wan.username="$user"
+#		uci set network.wan.password="$pwd"
+		uci set network.${interface}.proto="pppoe"
+                uci set network.${interface}.username="\\r\\n$user"
+                uci set network.${interface}.password="$pwd"
+		uci commit
+	fi
+
+	if [ -n "$macaddr" ]; then
+		uci set network.${interface}.macaddr="$macaddr"
+		uci set network.wan_dev.macaddr="$macaddr" 2>/dev/null
+		uci commit
+	fi
+
+	if [ -n "$macaddr" -o "$enabledial"x = "1"x ]; then
+		/etc/init.d/network reload
+	fi
+	
+	if [ "$log_clear"x = "0"x ]; then
+		sed -i '/#自动清除dogcom日志/d' /etc/crontabs/root
+		killall crond
+		/usr/sbin/crond
+	else
+		sed -i '/#自动清除dogcom日志/d' /etc/crontabs/root
+		echo '*/5 * * * * echo "" > /tmp/dogcom.log & #自动清除dogcom日志' >> /etc/crontabs/root
+		killall crond
+		/usr/sbin/crond
+	fi
+
+	if [ "$watchdog"x = "0"x ]; then
+		uci set dogcom.@dogcom[0].netcheck="0"
+		sed -i '/#网络守护/d' /etc/crontabs/root
+		killall crond
+		/usr/sbin/crond
+	else
+		uci set dogcom.@dogcom[0].netcheck="1"
+		sed -i '/#网络守护/d' /etc/crontabs/root
+		echo "*/$watchdog * * * * /etc/init.d/dogcom_log start & #网络守护" >> /etc/crontabs/root
+		killall crond
+		/usr/sbin/crond
+	fi
+
+	echo "Dr.COM Client is startting" >> /tmp/dogcom.log
+	dogcom -m $mode -c /etc/dogcom.conf -l /tmp/dogcom.log -e -d 
+	check &
+}
+
+stop()
+{
+	echo "Dr.COM Client is stopped" >> /tmp/dogcom.log
+	kill -9 dogcom
+		
+	return 0
+}
+
+restart()
+{
+	echo "Dr.COM Client is restartting" >> /tmp/dogcom.log
+	kill -9 dogcom
+	start
+		
+}

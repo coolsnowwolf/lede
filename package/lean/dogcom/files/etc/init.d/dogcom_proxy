@@ -1,0 +1,100 @@
+#!/bin/sh /etc/rc.common
+#Cpyright by Twizo<1282055288@qq.com>
+START=99
+
+anti_agent()
+{
+	ifconfig br-lan | grep "inet addr" | awk '{ print $2}' | awk -F: '{print $2}'
+}
+
+agent()
+{
+	ifconfig br-lan | grep "inet addr" | awk '{ print $2}' | awk -F: '{print $2}' | cut -d "." -f3
+}
+
+proxy_a()
+{	
+	echo "iptables -t nat -A http_ua_drop -d 0.0.0.0/8 -j RETURN			#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -A http_ua_drop -d 127.0.0.0/8 -j RETURN			#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -A http_ua_drop -d 192.168.0.0/16 -j RETURN		#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -A http_ua_drop -d 10.0.0.0/8 -j RETURN			#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -A http_ua_drop -d 169.254.0.0/16 -j RETURN		#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -A http_ua_drop -d 172.16.0.0/12 -j RETURN		#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -A http_ua_drop -d 224.0.0.0/4 -j RETURN			#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -A http_ua_drop -d 240.0.0.0/4 -j RETURN			#防火端口 " >> /etc/firewall.user
+	echo "# 放过发往本地的包							 #防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -A http_ua_drop -p tcp -j REDIRECT --to-port $port  	#防火端口 " >> /etc/firewall.user
+	echo "# 其他情况，重定向到 $port 端口处理					     #防火端口 " >> /etc/firewall.user
+		
+}
+
+release()
+{
+	release=$(uci get dogcom_proxy.@dogcom_proxy[0].release 2>/dev/null)
+	for  j  in $(seq 1 254) //取C类IP地址可用主机最大数
+	do 
+		sto()
+		{
+			echo $release | awk '{for(i=1;i<=NF;i++){print $i}}' | sed  -n ''$j'p'
+		}
+		stonum()
+		{
+			echo $release | awk '{for(i=1;i<=NF;i++){print $i}}' | sed  -n ''$j'p' | wc -l
+		}
+		if [ "$('stonum')"x = "1"x ]; then
+			echo "iptables -t nat -I PREROUTING -s $("sto") -j ACCEPT		#防火端口 " >> /etc/firewall.user
+		else		
+			echo "#这是我的电脑,放行							#防火端口"  >> /etc/firewall.user
+			return
+		fi
+	done
+}
+
+proxy()
+{
+	local ipaddr=$("anti_agent")
+	local ipnum=$("agent")
+
+	echo "iptables -t nat -N ntp_force_local					#防火端口 " >> /etc/firewall.user
+	echo "# 在 nat 表中建立名为 ntp_force_local 的链					#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -I PREROUTING -p udp --dport 123 -j ntp_force_local	#防火端口 " >> /etc/firewall.user
+	echo "# 在 PREROUTING 链最前方插入规则：当协议为 UDP 且目标端口为 123 （为 NTP 请求）时，跳转到 ntp_force_local 处理		#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -A ntp_force_local -d 0.0.0.0/8 -j RETURN			#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -A ntp_force_local -d 127.0.0.0/8 -j RETURN		#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -A ntp_force_local -d 192.168.0.0/16 -j RETURN		#防火端口 " >> /etc/firewall.user
+	echo "# 不处理发往本地的包							#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -A ntp_force_local -s 192.168.$ipnum.0/24 -j DNAT --to-destination $ipaddr 			#防火端口" >> /etc/firewall.user
+	echo "# 其它情况，则重定向到 $ipaddr 处理						#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -N http_ua_drop						#防火端口 " >> /etc/firewall.user
+	echo "# 在 nat 表中建立名为 http_ua_drop 的链					#防火端口 " >> /etc/firewall.user
+	echo "iptables -t nat -I PREROUTING -p tcp --dport $natport -j http_ua_drop	#防火端口 " >> /etc/firewall.user
+	echo "# 在 POSTROUTING 链最前方插入规则：当协议为 TCP 且目标端口为 $natport （为 HTTP 请求）时，跳转到 http_ua_drop 处理	#防火端口 " >> /etc/firewall.user
+	release
+}	
+
+	
+start() {
+
+	enable=$(uci get dogcom_proxy.@dogcom_proxy[0].enable 2>/dev/null)
+	natport=$(uci get dogcom_proxy.@dogcom_proxy[0].natport 2>/dev/null)
+	port=$(uci get dogcom_proxy.@dogcom_proxy[0].port 2>/dev/null)
+
+	if [ "$enable"x != "1"x ]; then
+		sed -i '/#防火端口/d' /etc/firewall.user
+		return	
+	fi
+	sed -i '/#防火端口/d' /etc/firewall.user
+	echo "防代理功能已打开，若要正常使用网络，请打开代理软件" >> /tmp/dogcom.log
+	proxy
+	proxy_a
+	/etc/init.d/firewall restart
+	
+
+}
+
+stop()
+{
+	echo "防代理功能已关闭" >> /tmp/dogcom.log
+	/etc/init.d/firewall restart
+	return 0
+}
