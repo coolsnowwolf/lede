@@ -1,35 +1,33 @@
-
-
-m = Map("vlmcsd")
-m.title	= translate("vlmcsd config")
-m.description = translate("A KMS Serever Emulator to active your Windows or Office")
-
-m:section(SimpleSection).template  = "vlmcsd/vlmcsd_status"
-
-s = m:section(TypedSection, "vlmcsd")
-s.addremove = false
-s.anonymous = true
-
-s:tab("basic", translate("Basic Setting"))
-enable = s:taboption("basic",Flag, "enabled", translate("Enable"))
-enable.rmempty = false
-
-autoactivate = s:taboption("basic", Flag, "autoactivate", translate("Auto activate"))
-autoactivate.rmempty = false
-
+m=Map("vlmcsd")
+m.title=translate("vlmcsd config")
+m.description=translate("A KMS Serever Emulator to active your Windows or Office")
+m:section(SimpleSection).template="vlmcsd/vlmcsd_status"
+s=m:section(TypedSection,"vlmcsd")
+s.addremove=false
+s.anonymous=true
+s:tab("basic",translate("Basic Setting"))
+enable=s:taboption("basic",Flag,"enabled",translate("Enable"))
+enable.rmempty=false
+autoactivate=s:taboption("basic",Flag,"autoactivate",translate("Auto activate"))
+autoactivate.rmempty=false
+-------------------config file-----------------------
 s:tab("config", translate("Config File"))
-config = s:taboption("config", Value, "config", translate("configfile"), translate("This file is /etc/vlmcsd.ini."), "")
-config.template = "cbi/tvalue"
-config.rows = 13
-config.wrap = "off"
-
-function config.cfgvalue(self, section)
-	return nixio.fs.readfile("/etc/vlmcsd.ini")
+s.anonymous=true
+local a="/etc/vlmcsd.ini"
+config=s:taboption("config",TextValue,"Config_File")
+config.description=translate("This file is /etc/vlmcsd.ini.")
+config.rows=18
+config.wrap="off"
+function config.cfgvalue(s,s)
+sylogtext=""
+if a and nixio.fs.access(a)then
+Config_File=luci.sys.exec("tail -n 100 %s"%a)
 end
-
-function config.write(self, section, value)
-	value = value:gsub("\r\n?", "\n")
-	nixio.fs.writefile("/etc/vlmcsd.ini", value)
+return Config_File
+end
+function config.write(t,t,e)
+e=e:gsub("\r\n?","\n")
+nixio.fs.writefile("/etc/vlmcsd.ini",e)
 end
 
 return m
