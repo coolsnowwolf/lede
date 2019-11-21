@@ -223,6 +223,8 @@ hostapd_common_add_bss_config() {
 	config_add_int time_advertisement
 	config_add_string time_zone
 
+	config_add_boolean ieee80211k rrm_neighbor_report rrm_beacon_report
+
 	config_add_boolean ieee80211r pmk_r1_push ft_psk_generate_local ft_over_ds
 	config_add_int r0_key_lifetime reassociation_deadline
 	config_add_string mobility_domain r1_key_holder
@@ -489,6 +491,17 @@ hostapd_set_bss_options() {
 		append bss_conf "bss_transition=$bss_transition" "$N"
 	fi
 
+	json_get_vars ieee80211k
+	set_default ieee80211k 0
+	if [ "$ieee80211k" -eq "1" ]; then
+		json_get_vars rrm_neighbor_report rrm_beacon_report
+
+		set_default rrm_neighbor_report 1
+		set_default rrm_beacon_report 1
+		append bss_conf "rrm_neighbor_report=$rrm_neighbor_report" "$N"
+		append bss_conf "rrm_beacon_report=$rrm_beacon_report" "$N"
+	fi
+
 	if [ "$wpa" -ge "1" ]; then
 		json_get_vars ieee80211r
 		set_default ieee80211r 0
@@ -540,7 +553,14 @@ hostapd_set_bss_options() {
 			append bss_conf "rsn_preauth=1" "$N"
 			append bss_conf "rsn_preauth_interfaces=$network_bridge" "$N"
 		else
-			set_default auth_cache 0
+			case "$auth_type" in
+			sae|psk-sae|owe)
+				set_default auth_cache 1
+			;;
+			*)
+				set_default auth_cache 0
+			;;
+			esac
 		fi
 
 		append bss_conf "okc=$auth_cache" "$N"
