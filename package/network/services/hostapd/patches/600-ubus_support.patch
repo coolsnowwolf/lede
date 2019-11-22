@@ -22,7 +22,16 @@
  
  #define OCE_STA_CFON_ENABLED(hapd) \
  	((hapd->conf->oce & OCE_STA_CFON) && \
-@@ -145,6 +146,7 @@ struct hostapd_data {
+@@ -72,6 +73,8 @@ struct hapd_interfaces {
+ #ifdef CONFIG_DPP
+ 	struct dpp_global *dpp;
+ #endif /* CONFIG_DPP */
++	struct ubus_object ubus;
++	char *name;
+ };
+ 
+ enum hostapd_chan_status {
+@@ -145,6 +148,7 @@ struct hostapd_data {
  	struct hostapd_iface *iface;
  	struct hostapd_config *iconf;
  	struct hostapd_bss_config *conf;
@@ -30,6 +39,14 @@
  	int interface_added; /* virtual interface added for this BSS */
  	unsigned int started:1;
  	unsigned int disabled:1;
+@@ -580,6 +584,7 @@ hostapd_alloc_bss_data(struct hostapd_if
+ 		       struct hostapd_bss_config *bss);
+ int hostapd_setup_interface(struct hostapd_iface *iface);
+ int hostapd_setup_interface_complete(struct hostapd_iface *iface, int err);
++void hostapd_set_own_neighbor_report(struct hostapd_data *hapd);
+ void hostapd_interface_deinit(struct hostapd_iface *iface);
+ void hostapd_interface_free(struct hostapd_iface *iface);
+ struct hostapd_iface * hostapd_alloc_iface(void);
 --- a/src/ap/hostapd.c
 +++ b/src/ap/hostapd.c
 @@ -380,6 +380,7 @@ static void hostapd_free_hapd_data(struc
@@ -298,6 +315,36 @@
  	/* Remove interface from the global list of interfaces */
  	prev = global->ifaces;
  	if (prev == wpa_s) {
+@@ -6520,6 +6524,8 @@ struct wpa_global * wpa_supplicant_init(
+ 	if (params->override_ctrl_interface)
+ 		global->params.override_ctrl_interface =
+ 			os_strdup(params->override_ctrl_interface);
++	if (params->name)
++		global->params.name = os_strdup(params->name);
+ #ifdef CONFIG_MATCH_IFACE
+ 	global->params.match_iface_count = params->match_iface_count;
+ 	if (params->match_iface_count) {
+@@ -6626,8 +6632,12 @@ int wpa_supplicant_run(struct wpa_global
+ 	eloop_register_signal_terminate(wpa_supplicant_terminate, global);
+ 	eloop_register_signal_reconfig(wpa_supplicant_reconfig, global);
+ 
++	wpas_ubus_add(global);
++
+ 	eloop_run();
+ 
++	wpas_ubus_free(global);
++
+ 	return 0;
+ }
+ 
+@@ -6687,6 +6697,7 @@ void wpa_supplicant_deinit(struct wpa_gl
+ #ifdef CONFIG_MATCH_IFACE
+ 	os_free(global->params.match_ifaces);
+ #endif /* CONFIG_MATCH_IFACE */
++	os_free(global->params.name);
+ #ifdef CONFIG_P2P
+ 	os_free(global->params.conf_p2p_dev);
+ #endif /* CONFIG_P2P */
 --- a/wpa_supplicant/wpa_supplicant_i.h
 +++ b/wpa_supplicant/wpa_supplicant_i.h
 @@ -17,6 +17,7 @@
@@ -308,7 +355,25 @@
  
  extern const char *const wpa_supplicant_version;
  extern const char *const wpa_supplicant_license;
-@@ -506,6 +507,7 @@ struct wpa_supplicant {
+@@ -246,6 +247,8 @@ struct wpa_params {
+ 	 */
+ 	int match_iface_count;
+ #endif /* CONFIG_MATCH_IFACE */
++
++	char *name;
+ };
+ 
+ struct p2p_srv_bonjour {
+@@ -306,6 +309,8 @@ struct wpa_global {
+ #endif /* CONFIG_WIFI_DISPLAY */
+ 
+ 	struct psk_list_entry *add_psk; /* From group formation */
++
++	struct ubus_object ubus_global;
+ };
+ 
+ 
+@@ -506,6 +511,7 @@ struct wpa_supplicant {
  	unsigned char own_addr[ETH_ALEN];
  	unsigned char perm_addr[ETH_ALEN];
  	char ifname[100];
@@ -335,3 +400,61 @@
  	if (wpa_s->conf->wps_cred_processing == 1)
  		return 0;
  
+--- a/hostapd/main.c
++++ b/hostapd/main.c
+@@ -688,7 +688,7 @@ int main(int argc, char *argv[])
+ 	wpa_supplicant_event = hostapd_wpa_event;
+ 	wpa_supplicant_event_global = hostapd_wpa_event_global;
+ 	for (;;) {
+-		c = getopt(argc, argv, "b:Bde:f:hi:KP:sSTtu:g:G:v::");
++		c = getopt(argc, argv, "b:Bde:f:hi:KP:sSTtu:g:G:n:v::");
+ 		if (c < 0)
+ 			break;
+ 		switch (c) {
+@@ -763,6 +763,8 @@ int main(int argc, char *argv[])
+ 			if (hostapd_get_interface_names(&if_names,
+ 							&if_names_size, optarg))
+ 				goto out;
++		case 'n':
++			interfaces.name = optarg;
+ 			break;
+ 		default:
+ 			usage();
+@@ -894,6 +896,7 @@ int main(int argc, char *argv[])
+ 	}
+ 
+ 	hostapd_global_ctrl_iface_init(&interfaces);
++	hostapd_ubus_add(&interfaces);
+ 
+ 	if (hostapd_global_run(&interfaces, daemonize, pid_file)) {
+ 		wpa_printf(MSG_ERROR, "Failed to start eloop");
+@@ -903,6 +906,7 @@ int main(int argc, char *argv[])
+ 	ret = 0;
+ 
+  out:
++	hostapd_ubus_free(&interfaces);
+ 	hostapd_global_ctrl_iface_deinit(&interfaces);
+ 	/* Deinitialize all interfaces */
+ 	for (i = 0; i < interfaces.count; i++) {
+--- a/wpa_supplicant/main.c
++++ b/wpa_supplicant/main.c
+@@ -203,7 +203,7 @@ int main(int argc, char *argv[])
+ 
+ 	for (;;) {
+ 		c = getopt(argc, argv,
+-			   "b:Bc:C:D:de:f:g:G:hH:i:I:KLMm:No:O:p:P:qsTtuv::W");
++			   "b:Bc:C:D:de:f:g:G:hH:i:I:KLMm:n:No:O:p:P:qsTtuv::W");
+ 		if (c < 0)
+ 			break;
+ 		switch (c) {
+@@ -271,6 +271,10 @@ int main(int argc, char *argv[])
+ 			params.conf_p2p_dev = optarg;
+ 			break;
+ #endif /* CONFIG_P2P */
++		case 'n':
++			params.name = optarg;
++			iface_count = 0;
++			break;
+ 		case 'o':
+ 			params.override_driver = optarg;
+ 			break;

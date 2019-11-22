@@ -2,42 +2,64 @@ ifeq ($(SUBTARGET),cortexa53)
 
 define Device/globalscale_espressobin
   $(call Device/Default-arm64)
-  DEVICE_TITLE := ESPRESSObin (Marvell Armada 3700 Community Board)
+  DEVICE_VENDOR := Marvell
+  DEVICE_MODEL := ESPRESSObin
+  DEVICE_VARIANT := Non-eMMC
+  DEVICE_ALT0_VENDOR := Marvell
+  DEVICE_ALT0_MODEL := Armada 3700 Community Board
+  DEVICE_ALT0_VARIANT := Non-eMMC
   DEVICE_DTS := armada-3720-espressobin
 endef
 TARGET_DEVICES += globalscale_espressobin
 
 define Device/globalscale_espressobin-emmc
   $(call Device/Default-arm64)
-  DEVICE_TITLE := ESPRESSObin eMMC (Marvell Armada 3700 Community Board)
+  DEVICE_VENDOR := Marvell
+  DEVICE_MODEL := ESPRESSObin
+  DEVICE_VARIANT := eMMC
+  DEVICE_ALT0_VENDOR := Marvell
+  DEVICE_ALT0_MODEL := Armada 3700 Community Board
+  DEVICE_ALT0_VARIANT := eMMC
   DEVICE_DTS := armada-3720-espressobin-emmc
 endef
 TARGET_DEVICES += globalscale_espressobin-emmc
 
 define Device/globalscale_espressobin-v7
   $(call Device/Default-arm64)
-  DEVICE_TITLE := ESPRESSObin V7 (Marvell Armada 3700 Community Board)
+  DEVICE_VENDOR := Marvell
+  DEVICE_MODEL := ESPRESSObin
+  DEVICE_VARIANT := V7 Non-eMMC
+  DEVICE_ALT0_VENDOR := Marvell
+  DEVICE_ALT0_MODEL := Armada 3700 Community Board
+  DEVICE_ALT0_VARIANT := V7 Non-eMMC
   DEVICE_DTS := armada-3720-espressobin-v7
 endef
 TARGET_DEVICES += globalscale_espressobin-v7
 
 define Device/globalscale_espressobin-v7-emmc
   $(call Device/Default-arm64)
-  DEVICE_TITLE := ESPRESSObin V7 eMMC (Marvell Armada 3700 Community Board)
+  DEVICE_VENDOR := Marvell
+  DEVICE_MODEL := ESPRESSObin
+  DEVICE_VARIANT := V7 eMMC
+  DEVICE_ALT0_VENDOR := Marvell
+  DEVICE_ALT0_MODEL := Armada 3700 Community Board
+  DEVICE_ALT0_VARIANT := V7 eMMC
   DEVICE_DTS := armada-3720-espressobin-v7-emmc
 endef
 TARGET_DEVICES += globalscale_espressobin-v7-emmc
 
 define Device/marvell_armada-3720-db
   $(call Device/Default-arm64)
-  DEVICE_TITLE := Marvell Armada 3720 Development Board DB-88F3720-DDR3
+  DEVICE_VENDOR := Marvell
+  DEVICE_MODEL := Armada 3720 Development Board (DB-88F3720-DDR3)
   DEVICE_DTS := armada-3720-db
 endef
 TARGET_DEVICES += marvell_armada-3720-db
 
 define Device/methode_udpu
   $(call Device/Default-arm64)
-  DEVICE_TITLE := Methode micro-DPU (uDPU)
+  DEVICE_VENDOR := Methode
+  DEVICE_MODEL := micro-DPU (uDPU)
   DEVICE_DTS := armada-3720-uDPU
   KERNEL_LOADADDR := 0x00080000
   KERNEL_INITRAMFS := kernel-bin | gzip | fit gzip $$(DTS_DIR)/$$(DEVICE_DTS).dtb
