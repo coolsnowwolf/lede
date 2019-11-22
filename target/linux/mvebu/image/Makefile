@@ -13,12 +13,10 @@ include $(INCLUDE_DIR)/image.mk
 
 KERNEL_LOADADDR := 0x00008000
 
-SIGNATURE:=$(shell printf "%.8s" $(SOURCE_DATE_EPOCH))
-
 define Build/boot-scr
 	rm -f $@-boot.scr
 	sed \
-		-e 's#@ROOT@#$(SIGNATURE)#g' \
+		-e 's#@ROOT@#$(IMG_PART_SIGNATURE)#g' \
 		-e 's#@DTB@#$(firstword $(DEVICE_DTS))#g' \
 		$(BOOT_SCRIPT).bootscript > $@-new.bootscript
 	mkimage -A arm -O linux -T script -C none -a 0 -e 0 -d $@-new.bootscript $@-boot.scr
@@ -38,11 +36,11 @@ define Build/boot-img-ext4
 	$(foreach dts,$(DEVICE_DTS), $(CP) $(KDIR)/image-$(dts).dtb $@.boot/$(dts).dtb;)
 	$(CP) $(IMAGE_KERNEL) $@.boot/$(KERNEL_NAME)
 	-$(CP) $@-boot.scr $@.boot/boot.scr
-	make_ext4fs -J -l $(CONFIG_TARGET_KERNEL_PARTSIZE)M $@.bootimg $@.boot
+	make_ext4fs -J -L kernel -l $(CONFIG_TARGET_KERNEL_PARTSIZE)M $@.bootimg $@.boot
 endef
 
 define Build/sdcard-img
-	SIGNATURE="$(SIGNATURE)" \
+	SIGNATURE="$(IMG_PART_SIGNATURE)" \
 	./gen_mvebu_sdcard_img.sh $@ \
 		$(if $(UBOOT),$(STAGING_DIR_IMAGE)/$(UBOOT)) \
 		c $(CONFIG_TARGET_KERNEL_PARTSIZE) $@.boot \
@@ -50,7 +48,7 @@ define Build/sdcard-img
 endef
 
 define Build/sdcard-img-ext4
-	SIGNATURE="$(SIGNATURE)" \
+	SIGNATURE="$(IMG_PART_SIGNATURE)" \
 	./gen_mvebu_sdcard_img.sh $@ \
 		$(if $(UBOOT),$(STAGING_DIR_IMAGE)/$(UBOOT)) \
 		83 $(CONFIG_TARGET_KERNEL_PARTSIZE) $@.bootimg \
