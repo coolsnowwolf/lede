@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mwlwifi
-PKG_RELEASE=1
+PKG_RELEASE=2
 
 PKG_LICENSE:=ISC
 PKG_LICENSE_FILES:=
@@ -100,3 +100,4 @@ $(eval $(call BuildPackage,mwlwifi-firmware-88w8864))
 $(eval $(call BuildPackage,mwlwifi-firmware-88w8897))
 $(eval $(call BuildPackage,mwlwifi-firmware-88w8964))
 $(eval $(call BuildPackage,mwlwifi-firmware-88w8997))
+
