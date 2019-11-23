@@ -46,11 +46,8 @@ version:value("P",translate("P版"))
 version:value("D",translate("D版"))
 version.default="P"
 
-escpatch = s:taboption("basic",Button, "esc", translate("添加"))
-function escpatch.write()
-    luci.sys.call("sed -i '/#added by dogcom/d' /lib/netifd/proto/ppp.sh")
-end
-escpatch.template="/dogcom/dogcom"
+patch = s:taboption("basic",DummyValue,"ChinaIa",translate("P版拨号补丁"))
+patch.template ="dogcom/patch"
 
 enabledial = s:taboption("basic",Flag, "enabledial", translate("启用PPPoE拨号"))
 enabledial:depends({version="P"})
@@ -158,22 +155,6 @@ watchdog.default = "0"
 a = s:taboption("basic",Flag, "en_JumpTwoMac", translate("mac变换"),translate("如启用，则mac地址只会在当前mac地址前后变化（据观察，这样的重连率更高）"))
 a:depends({version="P"})
 a.default = "1"
-
-escpatch = s:taboption("basic",Button, "esc", translate("添加"))
-function escpatch.write()
-    	luci.sys.call("sed -i '/#added by dogcom/d' /lib/netifd/proto/ppp.sh")
-    	luci.sys.call("sed -i '/proto_run_command/i username=`echo -e \"$username\"`  #added by dogcom!' /lib/netifd/proto/ppp.sh")
-    	luci.sys.call("sed -i '/proto_run_command/i password=`echo -e \"$password\"`  #added by dogcom!' /lib/netifd/proto/ppp.sh")
-	luci.sys.call("uci commit dogcom")
-end
-escpatch:depends({version="T"})
-
-escunpatch = s:taboption("basic",Button, "escun", translate("删除"))
-function escunpatch.write()
-   	luci.sys.call("sed -i '/#added by dogcom/d' /lib/netifd/proto/ppp.sh")
-	luci.sys.call("uci commit dogcom")
-end
-escunpatch:depends({version="T"})
 
 -- Generate Configuration --
 
