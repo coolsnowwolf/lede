@@ -26,7 +26,7 @@ local v2ray = {
             destOverride = { "http", "tls" }
         }
     },
-  	-- 开启 socks 和 http 代理 
+    -- 开启 socks 和 http 代理 
     inboundDetour = (proto == "tcp") and {
       {
         protocol = "socks",
