@@ -3,6 +3,8 @@ local json = require "luci.jsonc"
 local server_section = arg[1]
 local proto = arg[2] 
 local local_port = arg[3]
+local socks_port = local_port + 1
+local http_port = local_port + 2
 
 local server = ucursor:get_all("shadowsocksr", server_section)
 
@@ -24,6 +26,21 @@ local v2ray = {
             destOverride = { "http", "tls" }
         }
     },
+  	-- 开启 socks 和 http 代理 
+    inboundDetour = (proto == "tcp") and {
+      {
+        protocol = "socks",
+        port = socks_port,
+        settings = {
+          auth = "noauth",
+          udp = true
+        }
+      },
+      {
+        protocol = "http",
+        port = http_port	
+      }
+    } or nil,
     -- 传出连接
     outbound = {
         protocol = "vmess",
