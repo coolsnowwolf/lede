@@ -10,10 +10,10 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mac80211
 
-PKG_VERSION:=4.19.79-1
-PKG_RELEASE:=1
-PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v4.19.79/
-PKG_HASH:=ee03b16949e4968092cfed3cd763ff4682bc29fa3b52ebc239aa915583413cf3
+PKG_VERSION:=5.4-rc2-1
+PKG_RELEASE:=2
+PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v5.4-rc2/
+PKG_HASH:=b3baedc135b455f09f266cb77e73276ca21bceeb0f24bac2184cc4b97d09cdbf
 
 PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/backports-$(PKG_VERSION)
@@ -162,7 +162,7 @@ endef
 define KernelPackage/airo
   $(call KernelPackage/mac80211/Default)
   TITLE:=Cisco Aironet driver
-  DEPENDS+=@PCI_SUPPORT +@DRIVER_WEXT_SUPPORT +kmod-cfg80211 @TARGET_x86
+  DEPENDS+=@PCI_SUPPORT +@DRIVER_WEXT_SUPPORT +kmod-cfg80211 @TARGET_x86 @BROKEN
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/cisco/airo.ko
   AUTOLOAD:=$(call AutoProbe,airo)
 endef
@@ -223,7 +223,7 @@ endef
 define KernelPackage/lib80211
   $(call KernelPackage/mac80211/Default)
   TITLE:=802.11 Networking stack
-  DEPENDS:=+kmod-cfg80211 +kmod-crypto-hash
+  DEPENDS:=+kmod-cfg80211 +kmod-crypto-hash +kmod-crypto-ccm
   FILES:= \
 	$(PKG_BUILD_DIR)/net/wireless/lib80211.ko \
 	$(PKG_BUILD_DIR)/net/wireless/lib80211_crypt_wep.ko \
@@ -299,14 +299,14 @@ endef
 define KernelPackage/rsi91x
   $(call KernelPackage/mac80211/Default)
   TITLE:=Redpine Signals Inc 91x WLAN driver support
-  DEPENDS+= +kmod-mac80211 +rs9113-firmware
+  DEPENDS+= +kmod-mac80211 +rs9113-firmware +@DRIVER_11N_SUPPORT
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/rsi/rsi_91x.ko
 endef
 
 define KernelPackage/rsi91x-usb
   $(call KernelPackage/mac80211/Default)
   TITLE:=Redpine Signals USB bus support
-  DEPENDS+= +kmod-mac80211 +kmod-usb2 +kmod-rsi91x +rs9113-firmware
+  DEPENDS+=@USB_SUPPORT +kmod-usb-core +kmod-mac80211 +kmod-rsi91x +rs9113-firmware
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/rsi/rsi_usb.ko
   AUTOLOAD:=$(call AutoProbe,rsi_usb)
 endef
@@ -546,6 +546,7 @@ endef
 define KernelPackage/cfg80211/install
 	$(INSTALL_DIR) $(1)/lib/wifi $(1)/lib/netifd/wireless
 	$(INSTALL_DATA) ./files/lib/wifi/mac80211.sh $(1)/lib/wifi
+	$(INSTALL_DATA) ./files/lib/netifd/mac80211.sh $(1)/lib/netifd
 	$(INSTALL_BIN) ./files/lib/netifd/wireless/mac80211.sh $(1)/lib/netifd/wireless
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/ieee80211
 	$(INSTALL_DATA) ./files/mac80211.hotplug $(1)/etc/hotplug.d/ieee80211/10-wifi-detect

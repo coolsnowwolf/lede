@@ -26,11 +26,15 @@ static struct ubus_context *ctx;
 static struct blob_buf b;
 static int ctx_ref;
 
+static inline struct hapd_interfaces *get_hapd_interfaces_from_object(struct ubus_object *obj)
+{
+	return container_of(obj, struct hapd_interfaces, ubus);
+}
+
 static inline struct hostapd_data *get_hapd_from_object(struct ubus_object *obj)
 {
 	return container_of(obj, struct hostapd_data, ubus.obj);
 }
-
 
 struct ubus_banned_client {
 	struct avl_node avl;
@@ -140,6 +144,16 @@ hostapd_bss_ban_client(struct hostapd_data *hapd, u8 *addr, int time)
 	}
 
 	eloop_register_timeout(0, time * 1000, hostapd_bss_del_ban, ban, hapd);
+}
+
+static int
+hostapd_bss_reload(struct ubus_context *ctx, struct ubus_object *obj,
+		   struct ubus_request_data *req, const char *method,
+		   struct blob_attr *msg)
+{
+	struct hostapd_data *hapd = container_of(obj, struct hostapd_data, ubus.obj);
+	hostapd_reload_config(hapd->iface);
+	hostapd_reload_iface(hapd->iface);
 }
 
 static int
@@ -377,6 +391,70 @@ hostapd_bss_update_beacon(struct ubus_context *ctx, struct ubus_object *obj,
 		return UBUS_STATUS_NOT_SUPPORTED;
 
 	return 0;
+}
+
+enum {
+	CONFIG_IFACE,
+	CONFIG_FILE,
+	__CONFIG_MAX
+};
+
+static const struct blobmsg_policy config_add_policy[__CONFIG_MAX] = {
+	[CONFIG_IFACE] = { "iface", BLOBMSG_TYPE_STRING },
+	[CONFIG_FILE] = { "config", BLOBMSG_TYPE_STRING },
+};
+
+static int
+hostapd_config_add(struct ubus_context *ctx, struct ubus_object *obj,
+		   struct ubus_request_data *req, const char *method,
+		   struct blob_attr *msg)
+{
+	struct blob_attr *tb[__CONFIG_MAX];
+	struct hapd_interfaces *interfaces = get_hapd_interfaces_from_object(obj);
+	char buf[128];
+
+	blobmsg_parse(config_add_policy, __CONFIG_MAX, tb, blob_data(msg), blob_len(msg));
+
+	if (!tb[CONFIG_FILE] || !tb[CONFIG_IFACE])
+		return UBUS_STATUS_INVALID_ARGUMENT;
+
+	snprintf(buf, sizeof(buf), "bss_config=%s:%s",
+		blobmsg_get_string(tb[CONFIG_IFACE]),
+		blobmsg_get_string(tb[CONFIG_FILE]));
+
+	if (hostapd_add_iface(interfaces, buf))
+		return UBUS_STATUS_INVALID_ARGUMENT;
+
+	return UBUS_STATUS_OK;
+}
+
+enum {
+	CONFIG_REM_IFACE,
+	__CONFIG_REM_MAX
+};
+
+static const struct blobmsg_policy config_remove_policy[__CONFIG_REM_MAX] = {
+	[CONFIG_REM_IFACE] = { "iface", BLOBMSG_TYPE_STRING },
+};
+
+static int
+hostapd_config_remove(struct ubus_context *ctx, struct ubus_object *obj,
+		      struct ubus_request_data *req, const char *method,
+		      struct blob_attr *msg)
+{
+	struct blob_attr *tb[__CONFIG_REM_MAX];
+	struct hapd_interfaces *interfaces = get_hapd_interfaces_from_object(obj);
+	char buf[128];
+
+	blobmsg_parse(config_remove_policy, __CONFIG_REM_MAX, tb, blob_data(msg), blob_len(msg));
+
+	if (!tb[CONFIG_REM_IFACE])
+		return UBUS_STATUS_INVALID_ARGUMENT;
+
+	if (hostapd_remove_iface(interfaces, blobmsg_get_string(tb[CONFIG_REM_IFACE])))
+		return UBUS_STATUS_INVALID_ARGUMENT;
+
+	return UBUS_STATUS_OK;
 }
 
 enum {
@@ -949,6 +1027,7 @@ hostapd_wnm_disassoc_imminent(struct ubus_context *ctx, struct ubus_object *obj,
 #endif
 
 static const struct ubus_method bss_methods[] = {
+	UBUS_METHOD_NOARG("reload", hostapd_bss_reload),
 	UBUS_METHOD_NOARG("get_clients", hostapd_bss_get_clients),
 	UBUS_METHOD("del_client", hostapd_bss_del_client, del_policy),
 	UBUS_METHOD_NOARG("list_bans", hostapd_bss_list_bans),
@@ -1008,6 +1087,56 @@ void hostapd_ubus_add_bss(struct hostapd_data *hapd)
 void hostapd_ubus_free_bss(struct hostapd_data *hapd)
 {
 	struct ubus_object *obj = &hapd->ubus.obj;
+	char *name = (char *) obj->name;
+
+	if (!ctx)
+		return;
+
+	if (obj->id) {
+		ubus_remove_object(ctx, obj);
+		hostapd_ubus_ref_dec();
+	}
+
+	free(name);
+}
+
+static const struct ubus_method daemon_methods[] = {
+	UBUS_METHOD("config_add", hostapd_config_add, config_add_policy),
+	UBUS_METHOD("config_remove", hostapd_config_remove, config_remove_policy),
+};
+
+static struct ubus_object_type daemon_object_type =
+	UBUS_OBJECT_TYPE("hostapd", daemon_methods);
+
+void hostapd_ubus_add(struct hapd_interfaces *interfaces)
+{
+	struct ubus_object *obj = &interfaces->ubus;
+	int name_len;
+	int ret;
+
+	if (!hostapd_ubus_init())
+		return;
+
+	name_len = strlen("hostapd") + 1;
+	if (interfaces->name)
+		name_len += strlen(interfaces->name) + 1;
+	obj->name = malloc(name_len);
+	strcpy(obj->name, "hostapd");
+	if (interfaces->name) {
+		strcat(obj->name, ".");
+		strcat(obj->name, interfaces->name);
+	}
+
+	obj->type = &daemon_object_type;
+	obj->methods = daemon_object_type.methods;
+	obj->n_methods = daemon_object_type.n_methods;
+	ret = ubus_add_object(ctx, obj);
+	hostapd_ubus_ref_inc();
+}
+
+void hostapd_ubus_free(struct hapd_interfaces *interfaces)
+{
+	struct ubus_object *obj = &interfaces->ubus;
 	char *name = (char *) obj->name;
 
 	if (!ctx)

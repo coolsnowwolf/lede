@@ -68,7 +68,7 @@ $(eval $(call KernelPackage,fs-autofs4))
 define KernelPackage/fs-btrfs
   SUBMENU:=$(FS_MENU)
   TITLE:=BTRFS filesystem support
-  DEPENDS:=+kmod-lib-crc32c +kmod-lib-lzo +kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +kmod-lib-raid6 +kmod-lib-xor +!(LINUX_3_18||LINUX_4_9):kmod-lib-zstd
+  DEPENDS:=+kmod-lib-crc32c +kmod-lib-lzo +kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +kmod-lib-raid6 +kmod-lib-xor +!LINUX_4_9:kmod-lib-zstd
   KCONFIG:=\
 	CONFIG_BTRFS_FS \
 	CONFIG_BTRFS_FS_POSIX_ACL=n \
@@ -98,6 +98,7 @@ define KernelPackage/fs-cifs
   AUTOLOAD:=$(call AutoLoad,30,cifs)
   $(call AddDepends/nls)
   DEPENDS+= \
+    +kmod-crypto-arc4 \
     +kmod-crypto-hmac \
     +kmod-crypto-md5 \
     +kmod-crypto-md4 \
@@ -388,7 +389,8 @@ define KernelPackage/fs-nfs-common-rpcsec
 	+kmod-crypto-md5 \
 	+kmod-crypto-sha1 \
 	+kmod-crypto-hmac \
-	+kmod-crypto-ecb
+	+kmod-crypto-ecb \
+	+kmod-crypto-arc4
   KCONFIG:= \
 	CONFIG_SUNRPC_GSS \
 	CONFIG_RPCSEC_GSS_KRB5
