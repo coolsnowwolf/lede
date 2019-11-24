@@ -3,7 +3,7 @@
 generate_china_banned()
 {
 	if [ ! -f gfwlist.txt ]; then
-		wget https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt -O gfwlist.b64 >&2
+		wget https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt -O gfwlist.b64 >&2
 		cat gfwlist.b64 | base64 -d > gfwlist.txt
 		rm -f gfwlist.b64
 	fi
