@@ -92,6 +92,7 @@ hostapd_common_add_device_config() {
 	config_add_boolean country_ie doth
 	config_add_string require_mode
 	config_add_boolean legacy_rates
+	config_add_boolean vendor_vht
 
 	config_add_string acs_chan_bias
 	config_add_array hostapd_options
@@ -106,7 +107,7 @@ hostapd_prepare_device_config() {
 	local base="${config%%.conf}"
 	local base_cfg=
 
-	json_get_vars country country_ie beacon_int:100 doth require_mode legacy_rates acs_chan_bias
+	json_get_vars country country_ie beacon_int:100 doth require_mode legacy_rates acs_chan_bias vendor_vht
 
 	hostapd_set_log_options base_cfg
 
@@ -136,6 +137,7 @@ hostapd_prepare_device_config() {
 	[ "$hwmode" = "g" ] && {
 		[ "$legacy_rates" -eq 0 ] && set_default rate_list "6000 9000 12000 18000 24000 36000 48000 54000"
 		[ -n "$require_mode" ] && set_default basic_rate_list "6000 12000 24000"
+		[ -n "$vendor_vht" ] && append base_cfg "vendor_vht=$vendor_vht" "$N"
 	}
 
 	case "$require_mode" in
@@ -254,7 +256,7 @@ hostapd_set_bss_options() {
 
 	wireless_vif_parse_encryption
 
-	local bss_conf
+	local bss_conf bss_md5sum
 	local wep_rekey wpa_group_rekey wpa_pair_rekey wpa_master_rekey wpa_key_mgmt
 
 	json_get_vars \
@@ -627,6 +629,9 @@ hostapd_set_bss_options() {
 		}
 	}
 
+	bss_md5sum=$(echo $bss_conf | md5sum | cut -d" " -f1)
+	append bss_conf "config_id=$bss_md5sum" "$N"
+
 	append "$var" "$bss_conf" "$N"
 	return 0
 }
@@ -950,21 +955,19 @@ EOF
 }
 
 wpa_supplicant_run() {
-	local ifname="$1"; shift
+	local ifname="$1"
+	local hostapd_ctrl="$2"
 
 	_wpa_supplicant_common "$ifname"
 
-	/usr/sbin/wpa_supplicant -B -s \
-		${network_bridge:+-b $network_bridge} \
-		-P "/var/run/wpa_supplicant-${ifname}.pid" \
-		-D ${_w_driver:-wext} \
-		-i "$ifname" \
-		-c "$_config" \
-		-C "$_rpath" \
-		"$@"
+	ubus call wpa_supplicant.$phy config_add "{ \
+		\"driver\": \"${_w_driver:-wext}\", \"ctrl\": \"$_rpath\", \
+		\"iface\": \"$ifname\", \"config\": \"$_config\" \
+		${network_bridge:+, \"bridge\": \"$network_bridge\"} \
+		${hostapd_ctrl:+, \"hostapd_ctrl\": \"$hostapd_ctrl\"} \
+		}"
 
 	ret="$?"
-	wireless_add_process "$(cat "/var/run/wpa_supplicant-${ifname}.pid")" /usr/sbin/wpa_supplicant 1
 
 	[ "$ret" != 0 ] && wireless_setup_vif_failed WPA_SUPPLICANT_FAILED
 
@@ -972,5 +975,5 @@ wpa_supplicant_run() {
 }
 
 hostapd_common_cleanup() {
-	killall hostapd wpa_supplicant meshd-nl80211
+	killall meshd-nl80211
 }
