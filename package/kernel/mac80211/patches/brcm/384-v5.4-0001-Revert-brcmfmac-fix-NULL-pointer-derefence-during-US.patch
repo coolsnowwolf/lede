@@ -1,0 +1,168 @@
+From a84a60ccdd65278485fb495f468a5ab91a75c649 Mon Sep 17 00:00:00 2001
+From: Arend van Spriel <arend.vanspriel@broadcom.com>
+Date: Thu, 11 Jul 2019 11:05:06 +0200
+Subject: [PATCH] Revert "brcmfmac: fix NULL pointer derefence during USB
+ disconnect"
+
+This reverts commit 5cdb0ef6144f47440850553579aa923c20a63f23. Subsequent
+changes make rework the driver code fixing the issue differently.
+
+Signed-off-by: Arend van Spriel <arend.vanspriel@broadcom.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../wireless/broadcom/brcm80211/brcmfmac/bcdc.c  | 11 ++---------
+ .../wireless/broadcom/brcm80211/brcmfmac/bcdc.h  |  6 ++----
+ .../wireless/broadcom/brcm80211/brcmfmac/core.c  |  4 +---
+ .../broadcom/brcm80211/brcmfmac/fwsignal.c       | 16 ++++------------
+ .../broadcom/brcm80211/brcmfmac/fwsignal.h       |  3 +--
+ .../wireless/broadcom/brcm80211/brcmfmac/proto.c | 10 ++--------
+ .../wireless/broadcom/brcm80211/brcmfmac/proto.h |  3 +--
+ 7 files changed, 13 insertions(+), 40 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcdc.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcdc.c
+@@ -479,18 +479,11 @@ fail:
+ 	return -ENOMEM;
+ }
+ 
+-void brcmf_proto_bcdc_detach_pre_delif(struct brcmf_pub *drvr)
+-{
+-	struct brcmf_bcdc *bcdc = drvr->proto->pd;
+-
+-	brcmf_fws_detach_pre_delif(bcdc->fws);
+-}
+-
+-void brcmf_proto_bcdc_detach_post_delif(struct brcmf_pub *drvr)
++void brcmf_proto_bcdc_detach(struct brcmf_pub *drvr)
+ {
+ 	struct brcmf_bcdc *bcdc = drvr->proto->pd;
+ 
+ 	drvr->proto->pd = NULL;
+-	brcmf_fws_detach_post_delif(bcdc->fws);
++	brcmf_fws_detach(bcdc->fws);
+ 	kfree(bcdc);
+ }
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcdc.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcdc.h
+@@ -7,16 +7,14 @@
+ 
+ #ifdef CPTCFG_BRCMFMAC_PROTO_BCDC
+ int brcmf_proto_bcdc_attach(struct brcmf_pub *drvr);
+-void brcmf_proto_bcdc_detach_pre_delif(struct brcmf_pub *drvr);
+-void brcmf_proto_bcdc_detach_post_delif(struct brcmf_pub *drvr);
++void brcmf_proto_bcdc_detach(struct brcmf_pub *drvr);
+ void brcmf_proto_bcdc_txflowblock(struct device *dev, bool state);
+ void brcmf_proto_bcdc_txcomplete(struct device *dev, struct sk_buff *txp,
+ 				 bool success);
+ struct brcmf_fws_info *drvr_to_fws(struct brcmf_pub *drvr);
+ #else
+ static inline int brcmf_proto_bcdc_attach(struct brcmf_pub *drvr) { return 0; }
+-static void brcmf_proto_bcdc_detach_pre_delif(struct brcmf_pub *drvr) {};
+-static inline void brcmf_proto_bcdc_detach_post_delif(struct brcmf_pub *drvr) {}
++static inline void brcmf_proto_bcdc_detach(struct brcmf_pub *drvr) {}
+ #endif
+ 
+ #endif /* BRCMFMAC_BCDC_H */
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
+@@ -1335,8 +1335,6 @@ void brcmf_detach(struct device *dev)
+ 
+ 	brcmf_bus_change_state(bus_if, BRCMF_BUS_DOWN);
+ 
+-	brcmf_proto_detach_pre_delif(drvr);
+-
+ 	/* make sure primary interface removed last */
+ 	for (i = BRCMF_MAX_IFS-1; i > -1; i--)
+ 		brcmf_remove_interface(drvr->iflist[i], false);
+@@ -1346,7 +1344,7 @@ void brcmf_detach(struct device *dev)
+ 
+ 	brcmf_bus_stop(drvr->bus_if);
+ 
+-	brcmf_proto_detach_post_delif(drvr);
++	brcmf_proto_detach(drvr);
+ 
+ 	bus_if->drvr = NULL;
+ 	wiphy_free(drvr->wiphy);
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/fwsignal.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/fwsignal.c
+@@ -2432,25 +2432,17 @@ struct brcmf_fws_info *brcmf_fws_attach(
+ 	return fws;
+ 
+ fail:
+-	brcmf_fws_detach_pre_delif(fws);
+-	brcmf_fws_detach_post_delif(fws);
++	brcmf_fws_detach(fws);
+ 	return ERR_PTR(rc);
+ }
+ 
+-void brcmf_fws_detach_pre_delif(struct brcmf_fws_info *fws)
++void brcmf_fws_detach(struct brcmf_fws_info *fws)
+ {
+ 	if (!fws)
+ 		return;
+-	if (fws->fws_wq) {
+-		destroy_workqueue(fws->fws_wq);
+-		fws->fws_wq = NULL;
+-	}
+-}
+ 
+-void brcmf_fws_detach_post_delif(struct brcmf_fws_info *fws)
+-{
+-	if (!fws)
+-		return;
++	if (fws->fws_wq)
++		destroy_workqueue(fws->fws_wq);
+ 
+ 	/* cleanup */
+ 	brcmf_fws_lock(fws);
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/fwsignal.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/fwsignal.h
+@@ -7,8 +7,7 @@
+ #define FWSIGNAL_H_
+ 
+ struct brcmf_fws_info *brcmf_fws_attach(struct brcmf_pub *drvr);
+-void brcmf_fws_detach_pre_delif(struct brcmf_fws_info *fws);
+-void brcmf_fws_detach_post_delif(struct brcmf_fws_info *fws);
++void brcmf_fws_detach(struct brcmf_fws_info *fws);
+ void brcmf_fws_debugfs_create(struct brcmf_pub *drvr);
+ bool brcmf_fws_queue_skbs(struct brcmf_fws_info *fws);
+ bool brcmf_fws_fc_active(struct brcmf_fws_info *fws);
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/proto.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/proto.c
+@@ -56,22 +56,16 @@ fail:
+ 	return -ENOMEM;
+ }
+ 
+-void brcmf_proto_detach_post_delif(struct brcmf_pub *drvr)
++void brcmf_proto_detach(struct brcmf_pub *drvr)
+ {
+ 	brcmf_dbg(TRACE, "Enter\n");
+ 
+ 	if (drvr->proto) {
+ 		if (drvr->bus_if->proto_type == BRCMF_PROTO_BCDC)
+-			brcmf_proto_bcdc_detach_post_delif(drvr);
++			brcmf_proto_bcdc_detach(drvr);
+ 		else if (drvr->bus_if->proto_type == BRCMF_PROTO_MSGBUF)
+ 			brcmf_proto_msgbuf_detach(drvr);
+ 		kfree(drvr->proto);
+ 		drvr->proto = NULL;
+ 	}
+ }
+-
+-void brcmf_proto_detach_pre_delif(struct brcmf_pub *drvr)
+-{
+-	if (drvr->proto && drvr->bus_if->proto_type == BRCMF_PROTO_BCDC)
+-		brcmf_proto_bcdc_detach_pre_delif(drvr);
+-}
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/proto.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/proto.h
+@@ -43,8 +43,7 @@ struct brcmf_proto {
+ 
+ 
+ int brcmf_proto_attach(struct brcmf_pub *drvr);
+-void brcmf_proto_detach_pre_delif(struct brcmf_pub *drvr);
+-void brcmf_proto_detach_post_delif(struct brcmf_pub *drvr);
++void brcmf_proto_detach(struct brcmf_pub *drvr);
+ 
+ static inline int brcmf_proto_hdrpull(struct brcmf_pub *drvr, bool do_fws,
+ 				      struct sk_buff *skb,
