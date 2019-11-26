@@ -163,7 +163,7 @@ platform_do_upgrade() {
 		nand_do_upgrade "$ARGV"
 		;;
 	p2w,r619ac|\
-	p2w,r619ac-128M)
+	p2w,r619ac-128m)
 		nand_do_upgrade "$1"
 		;;
 	asus,map-ac2200)
