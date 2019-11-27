@@ -327,6 +327,7 @@ define Device/hugo_ac1200
         IMAGE_SIZE := 31232k
         IMAGES := sysupgrade.bin
         IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
+	DEVICE_PACKAGES := ipq-wifi-hugo_ac1200
 endef
 TARGET_DEVICES += hugo_ac1200
 
