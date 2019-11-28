@@ -1,14 +1,14 @@
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=qBittorrent
-PKG_VERSION:=4.1.7
+PKG_NAME:=qbittorrent
+PKG_VERSION:=4.1.9.1
 PKG_RELEASE=1
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/qbittorrent/qBittorrent.git
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE_VERSION:=05a82afeb6c927bfc0cda4fe8fb25ecc3faecd86
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE:=$(PKG_NAME)-release-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://codeload.github.com/qbittorrent/qBittorrent/tar.gz/release-$(PKG_VERSION)?
+PKG_HASH:=18688c4bf50eb285d5ee1bdae771f301308059b31ac9f1b4aeff117ae7a12db2
+
+PKG_BUILD_DIR:=$(BUILD_DIR)/qBittorrent-release-$(PKG_VERSION)
 
 PKG_LICENSE:=GPL-2.0+
 PKG_LICENSE_FILES:=COPYING
@@ -42,6 +42,7 @@ CONFIGURE_VARS += \
 
 CONFIGURE_ARGS += \
 	--disable-gui \
+	--enable-stacktrace=no \
 	--with-boost=$(STAGING_DIR)/usr
 
 MAKE_VARS += \
