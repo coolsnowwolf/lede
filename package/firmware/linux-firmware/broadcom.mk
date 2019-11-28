@@ -103,7 +103,7 @@ define Package/brcmfmac-firmware-43455-sdio-rpi-4b/install
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/brcm/brcmfmac43455-sdio.raspberrypi,3-model-b-plus.txt \
 		$(1)/lib/firmware/brcm/brcmfmac43455-sdio.raspberrypi,4-model-b.txt
-		$(SED) 's/boardflags3=.*/boardflags3=0x44200100/g' \
+	$(SED) 's/boardflags3=.*/boardflags3=0x44200100/g' \
 		$(1)/lib/firmware/brcm/brcmfmac43455-sdio.raspberrypi,4-model-b.txt
 endef
 $(eval $(call BuildPackage,brcmfmac-firmware-43455-sdio-rpi-4b))
