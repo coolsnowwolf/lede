@@ -1,0 +1,343 @@
+
+<%+header%>
+<!--
+    This module is a demo to configure MTK' proprietary WiFi driver.
+    Basic idea is to bypass uci and edit wireless profile (mt76xx.dat) directly.
+    LuCI's WiFi configuration is more logical and elegent, but it's quite tricky to 
+    translate uci into MTK's WiFi profile (like we did in "uci2dat").
+
+    Hua Shao <nossiac@163.com>
+-->
+<%
+local disp = require "luci.dispatcher"
+-- local request  = disp.context.path
+local request = disp.context.request
+local mtkwifi = require("mtkwifi")
+--local devname = string.match(request[5], "(mt.+)%.")
+local devname = request[5]
+local devs = mtkwifi.get_all_devs()
+local dev = {}
+local vif = {}
+local vifidx
+for _,v in ipairs(devs) do
+    if v.devname == devname then
+        dev = v
+    end
+end
+
+local vifname = request[6] or dev.apcli.vifname
+assert(vifname)
+vif = dev and dev.vifs[vifname] or nil
+vifidx = vif and vif.vifidx or nil
+--print(devs, dev, dev.apcli, devname, vifname)
+
+local cfgs = mtkwifi.load_profile(dev.profile)
+local debug = 0
+%>
+
+<script type="text/javascript" src="<%=resource%>/cbi.js?v=git-17.250.41546-90ac861"></script>
+
+<div id="loading" style="margin-top: 1em; display: none;">
+<img src="<%=resource%>/icons/loading.gif" alt="<%:Loading%>" style="vertical-align:e;" />
+    &nbsp;&nbsp;&nbsp; Please waiting while the page is loading......
+</div>
+
+<form method="post" name="cbi" action="<%=luci.dispatcher.build_url("admin", "network", "wifi", "apcli_cfg", devname, vifname)%>" enctype="multipart/form-data" onreset="return cbi_validate_reset(this)" onsubmit="return cbi_validate_form(this, 'Some fields are invalid, cannot save values!')" autocomplete="off">
+
+    <fieldset class="cbi-section" id="vif-cfg-apcli">
+        <legend> <a name="apcli_scan_section">Wireless Repeater - <%=devname.."@"..vifname%> </a></legend>
+        <pre> Manually setup apcli0 connection:
+        iwpriv <%=vifname%> set ApCliEnable=0              // disable sta mode first
+        iwpriv <%=vifname%> set ApCliAuthMode=             // root ap authentication mode
+        iwpriv <%=vifname%> set ApCliEncrypType=           // root ap encryption type
+        iwpriv <%=vifname%> set ApCliWPAPSK=               // root ap password
+        iwpriv <%=vifname%> set ApCliWirelessMode=         // root ap wifi mode
+        iwpriv <%=vifname%> set ApCliSsid=                 // root ap ssid
+        iwpriv <%=vifname%> set ApCliEnable=1              // enable sta mode</pre>
+        <br />
+        <p class="left">
+            <input id="scan" type="button" class="cbi-button cbi-button-find" onclick="get_ap_list('<%=vifname%>')" value="Scan Wireless Network" />
+        </p>
+        <div id="loading" style="display:none;">
+        <img src="<%=resource%>/icons/loading.gif" alt="<%:Loading%>" style="vertical-align:middle;" />
+            &nbsp;&nbsp;&nbsp; Please waiting while the page is loading......
+        </div>
+        <div id="aplist">
+        </div>
+    </fieldset>
+    <fieldset class="cbi-section" id="vif-cfg-apcli-config">
+        <legend> <a name="apcli_cfg_section"> Connection Configurations</a> </legend>
+        <table class="cbi-section-table">
+            <tbody>
+            <tr><th class="th1"></th><th></th><th></th></tr>
+            <tr>
+                <td>MAC Repeater Mode</td>
+                <td>
+                    <input type="radio" name="MACRepeaterEn" value="1" <% if cfgs.MACRepeaterEn == "1" then %> checked="checked"<% end %> /> Enable
+                    <input type="radio" name="MACRepeaterEn" value="0" <% if cfgs.MACRepeaterEn ~= "1" then %> checked="checked"<% end %> /> Disable
+                </td>
+                <td></td>
+            </tr>
+            <tr>
+                <td>Root AP SSID</td>
+                <td>
+                    <input type="text" name="ApCliSsid" id="ApCliSsid" value="<%=cfgs.ApCliSsid%>"/>
+                </td>
+                <td></td>
+            </tr>
+            <tr>
+                <td>Root AP Channel</td>
+                <td>
+                    <input type="text" name="Channel" id="Channel" value="<%=dev.Channel%>"/>
+                </td>
+                <td> <span style="color:red;">This will overwrite ap channel.</span></td>
+            </tr>
+            <tr>
+                <td>Root AP Authentication Mode</td>
+                <td>
+                    <select name="ApCliAuthMode" cfg="ApCliAuthMode" id="ApCliAuthMode" onchange="ApCliAuthMode_onchange(this.options[this.options.selectedIndex].value)">
+                        <% for _,v in ipairs(dev.ApCliAuthModeList) do %>
+                            <% if (cfgs.ApCliAuthMode == "OPEN" and cfgs.ApCliEncrypType== "NONE") then
+                                if(v == "Disable") then %>
+                                    <option value="<%=v%>" selected="selected" ><%=v%>
+                                    </option>
+                                <% else %>
+                                    <option value="<%=v%>" ><%=v%>
+                                    </option>
+                                <% end
+                            else %>
+                        <option value="<%=v%>" <% if cfgs.ApCliAuthMode==v then %>selected="selected" <% end %>><%=v%>
+                        </option>
+                        <% end %>
+                        <% end %>
+                    </select>
+                </td>
+                <td></td>
+            </tr>
+            </tbody>
+            <tbody id="apcli_wpa"<% if cfgs.ApCliAuthMode ~= "WPA2PSK" then %> style="display: none;"<% end %>>
+            <tr>
+                <td>Root AP Encryption</td>
+                <td>
+                    <select name="wpa_ApCliEncrypType" id="wpa_ApCliEncrypType" >
+                    <% for _, v in ipairs(dev.WPA_Enc_List) do %>
+                        <option value="<%=v%>" <% if cfgs.ApCliEncrypType==v then %>selected="selected" <% end %>><%=v%>
+                        </option>
+                    <% end %>
+                    </select>
+                </td>
+                <td></td>
+            </tr>
+            <tr>
+                <td>Root AP WPA Key</td>
+                <td>
+                    <input type="text" name="ApCliWPAPSK" id="ApCliWPAPSK" value="<%=cfgs.ApCliWPAPSK%>"/>
+                </td>
+                <td></td>
+            </tr>
+            </tbody>
+            <tbody id="apcli_wep"<% if cfgs.ApCliAuthMode ~= "WEP" then %> style="display: none;"<% end %>>
+            <tr>
+                <td>Root AP Encryption</td>
+                <td>
+                    <select name="wep_ApCliEncrypType" id="wep_ApCliEncrypType" >
+                    <% for _, v in ipairs(dev.WEP_Enc_List) do %>
+                        <option value="<%=v%>" <% if cfgs.ApCliEncrypType==v then %>selected="selected" <% end %>><%=v%>
+                        </option>
+                    <% end %>
+                    </select>
+                </td>
+                <td></td>
+            </tr>
+            <tr>
+                <td>Root AP WEP Key</td>
+                <td>
+                    <input type="text" name="ApCliKey1Str" id="ApCliKey1Str" value="<%=cfgs.ApCliKey1Str%>"/>
+                    <input type="hidden" name="ApCliDefaultKeyID" value="1"/>
+                </td>
+                <td></td>
+            </tr>
+            </tbody>
+        </table>
+    </fieldset>
+
+    <div class="cbi-page-actions" id="apcli_form_buttons">
+        <input class="cbi-button cbi-button-apply" value="Reload" type="button" onclick='wifi_reload("<%=luci.dispatcher.build_url("admin", "network", "wifi", "reload", devname)%>");' />
+        <input class="cbi-button cbi-button-apply" value="Save" type="submit" />
+        <input class="cbi-button cbi-button-reset" value="Reset" type="reset" />
+    </div>
+</form>
+
+<script type="text/javascript">
+    function wifi_reload(url) {
+        window.scrollTo(0, 0);
+        document.getElementById('loading').style.display="";
+        XHR.get(url, null,
+            function(x)
+            {
+                console.log(x);
+                document.getElementById("loading").style.display="none";
+                window.location.reload();
+            }
+        );
+    }
+
+
+    function decode_ssid(ssid)
+    {
+        ssid = ssid.replace(/&amp;/g, "&");
+        ssid = ssid.replace(/&lt;/g, "<");
+        ssid = ssid.replace(/&gt;/g, ">");
+        ssid = ssid.replace(/&#34;/g, "\"");
+        ssid = ssid.replace(/&#39;/g, "'");
+        ssid = ssid.replace(/&nbsp;/g, " ");
+        var patt = new RegExp(/&#(\d+);/);
+
+        while (res = patt.exec(ssid))
+        {
+            ssid = ssid.replace("&#" + res[1] + ";", String.fromCharCode(res[1]));
+        }
+        return ssid;
+    }
+
+    var ap_list;
+    function create_ap_table (aplist) {
+        var table = document.createElement('table');
+        table.setAttribute("id", "aplist_table");
+        for (i in aplist) {
+            var tr = table.insertRow(i);
+            var td0 = tr.insertCell(0);
+            td0.innerHTML = aplist[i].ssid;
+            var td1 = tr.insertCell(1);
+            td1.innerHTML = aplist[i].channel;
+            var td2 = tr.insertCell(2);
+            td2.innerHTML = aplist[i].bssid;
+            var td3 = tr.insertCell(3);
+            td3.innerHTML = aplist[i].security;
+            var td4 = tr.insertCell(4);
+            td4.innerHTML = aplist[i].rssi;
+            var td5 = tr.insertCell(5);
+            if (aplist[i].authmode == "OPEN"
+             || aplist[i].authmode == "WPAPSK"
+             || aplist[i].authmode == "WPA2PSK"
+             || aplist[i].authmode == "WPAPSKWPA2PSK") {
+                td5.innerHTML = '<a href="javascript:choose_rootap(\''+i+'\')" >Choose This</a>';
+
+            } else {
+                td5.innerHTML = 'Security Not Supported';
+            }
+        }
+
+        var tr = table.insertRow(0);
+        var td0 = tr.insertCell(0);
+        td0.innerHTML = '<strong>SSID</strong>';
+        var td1 = tr.insertCell(1);
+        td1.innerHTML = '<strong>Channel</strong>';
+        var td2 = tr.insertCell(2);
+        td2.innerHTML = '<strong>BSSID</strong>';
+        var td3 = tr.insertCell(3);
+        td3.innerHTML = '<strong>Security</strong>';
+        var td4 = tr.insertCell(4);
+        td4.innerHTML = '<strong>RSSI</strong>';
+        var td5 = tr.insertCell(5);
+        td5.innerHTML = '<strong>Action</strong>';
+
+        var div = document.getElementById('aplist');
+        div.innerHTML = "";
+        div.appendChild(table);
+    }
+
+    function get_ap_list(vifname) {
+
+        document.getElementById("loading").style.display="";
+
+        XHR.get('<%=luci.dispatcher.build_url("admin", "network", "wifi", "apcli_scan")%>/' + vifname, null,
+            function(x)
+            {
+                console.log(x)
+                ap_list = eval(x.response);
+                console.log(ap_list);
+                create_ap_table(ap_list);
+                document.getElementById("loading").style.display="none";
+            }
+        );
+    }
+
+    function toggle_apcli (show) {
+        if (show) {
+            document.getElementById('apcli_cfg').style.display = "";
+
+            var a = document.getElementById('ApCliAuthMode')
+            var to = a.options[a.options.selectedIndex].value
+            if (to == "WPA2PSK"
+             || to == "WPAPSK"
+             || to == "WPAPSKWPA2PSK") {
+                document.getElementById("apcli_wpa").style.display="";
+                document.getElementById("apcli_wep").style.display="none";
+            } else if (to == "WEP") {
+                document.getElementById("apcli_wpa").style.display="none";
+                document.getElementById("apcli_wep").style.display="";
+            } else {
+                document.getElementById("apcli_wpa").style.display="none";
+                document.getElementById("apcli_wep").style.display="none";
+            }
+        }
+        else {
+            document.getElementById('apcli_cfg').style.display = "none";
+            document.getElementById('apcli_wpa').style.display = "none";
+            document.getElementById('apcli_wep').style.display = "none";
+        }
+    }
+
+    function ApCliAuthMode_onchange (to) {
+        if (to == "WPA2PSK"
+         || to == "WPAPSK"
+         || to == "WPAPSKWPA2PSK") {
+            document.getElementById("apcli_wpa").style.display="";
+            document.getElementById("apcli_wep").style.display="none";
+        } else if (to == "OPEN" || to == "SHARED") {
+            document.getElementById("apcli_wpa").style.display="none";
+            document.getElementById("apcli_wep").style.display="";
+        } else {
+            document.getElementById("apcli_wpa").style.display="none";
+            document.getElementById("apcli_wep").style.display="none";
+        }
+    }
+
+    function choose_rootap(index) {
+        document.getElementById("ApCliSsid").value=decode_ssid(ap_list[index].ssid);
+        document.getElementById("Channel").value=ap_list[index].channel;
+        document.getElementById("ApCliAuthMode").value=ap_list[index].authmode;
+        if (ap_list[index].authmode == "WPA2PSK"
+         || ap_list[index].authmode == "WPAPSK"
+         || ap_list[index].authmode == "WPAPSKWPA2PSK") {
+            document.getElementById("wpa_ApCliEncrypType").value=ap_list[index].encrypttype;
+        } else if (ap_list[index].authmode == "OPEN" || ap_list[index].authmode == "SHARED") {
+            if (ap_list[index].encrypttype == "NONE")
+            {
+                document.getElementById("ApCliAuthMode").value="Disable";
+            }
+            else
+            {
+                document.getElementById("wep_ApCliEncrypType").value=ap_list[index].encrypttype;
+            }
+        }
+        ApCliAuthMode_onchange(document.getElementById("ApCliAuthMode").value);
+        document.getElementById("ApCliWPAPSK").value="";
+        document.getElementById("ApCliKey1Str").value="";
+        location.href="#apcli_cfg_section";
+    }
+
+    window.onload = function() {
+        ApCliAuthMode_onchange(document.getElementById("ApCliAuthMode").value);
+        <% if cfgs.ApCliEnable == "1" then %>
+        toggle_apcli(true);
+        <% else %>
+        toggle_apcli(false);
+        <% end %>
+     }
+
+
+</script>
+
+<%+footer%>
