@@ -1,0 +1,144 @@
+From 2034afe4db4a2a4f22541d7f7b426e38d2093d38 Mon Sep 17 00:00:00 2001
+From: Stanislaw Gruszka <sgruszka@redhat.com>
+Date: Sat, 15 Jun 2019 12:00:55 +0200
+Subject: [PATCH 02/15] rt2800: add helpers for reading dma done index
+
+For mmio we do not properlly trace dma done Q_INDEX_DMA_DONE index
+for TX queues. That would require implementing INT_SOURCE_CSR_*_DMA_DONE
+interrupts, what is rather not worth to do due to adding extra
+CPU load (small but still somewhat not necessary otherwise).
+
+We can just read TX DMA done indexes from registers directly. What
+will be used by watchdog.
+
+Signed-off-by: Stanislaw Gruszka <sgruszka@redhat.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../net/wireless/ralink/rt2x00/rt2800lib.h    |  8 +++++
+ .../net/wireless/ralink/rt2x00/rt2800mmio.c   | 31 +++++++++++++++++++
+ .../net/wireless/ralink/rt2x00/rt2800mmio.h   |  2 ++
+ .../net/wireless/ralink/rt2x00/rt2800pci.c    |  1 +
+ .../net/wireless/ralink/rt2x00/rt2800soc.c    |  1 +
+ .../net/wireless/ralink/rt2x00/rt2800usb.c    |  9 ++++++
+ 6 files changed, 52 insertions(+)
+
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800lib.h
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800lib.h
+@@ -76,6 +76,7 @@ struct rt2800_ops {
+ 				  const u8 *data, const size_t len);
+ 	int (*drv_init_registers)(struct rt2x00_dev *rt2x00dev);
+ 	__le32 *(*drv_get_txwi)(struct queue_entry *entry);
++	unsigned int (*drv_get_dma_done)(struct data_queue *queue);
+ };
+ 
+ static inline u32 rt2800_register_read(struct rt2x00_dev *rt2x00dev,
+@@ -177,6 +178,13 @@ static inline __le32 *rt2800_drv_get_txw
+ 	return rt2800ops->drv_get_txwi(entry);
+ }
+ 
++static inline unsigned int rt2800_drv_get_dma_done(struct data_queue *queue)
++{
++	const struct rt2800_ops *rt2800ops = queue->rt2x00dev->ops->drv;
++
++	return rt2800ops->drv_get_dma_done(queue);
++}
++
+ void rt2800_mcu_request(struct rt2x00_dev *rt2x00dev,
+ 			const u8 command, const u8 token,
+ 			const u8 arg0, const u8 arg1);
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800mmio.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800mmio.c
+@@ -36,6 +36,37 @@
+ #include "rt2800lib.h"
+ #include "rt2800mmio.h"
+ 
++unsigned int rt2800mmio_get_dma_done(struct data_queue *queue)
++{
++	struct rt2x00_dev *rt2x00dev = queue->rt2x00dev;
++	struct queue_entry *entry;
++	int idx, qid;
++
++	switch (queue->qid) {
++	case QID_AC_VO:
++	case QID_AC_VI:
++	case QID_AC_BE:
++	case QID_AC_BK:
++		qid = queue->qid;
++		idx = rt2x00mmio_register_read(rt2x00dev, TX_DTX_IDX(qid));
++		break;
++	case QID_MGMT:
++		idx = rt2x00mmio_register_read(rt2x00dev, TX_DTX_IDX(5));
++		break;
++	case QID_RX:
++		entry = rt2x00queue_get_entry(queue, Q_INDEX_DMA_DONE);
++		idx = entry->entry_idx;
++		break;
++	default:
++		WARN_ON_ONCE(1);
++		idx = 0;
++		break;
++	}
++
++	return idx;
++}
++EXPORT_SYMBOL_GPL(rt2800mmio_get_dma_done);
++
+ /*
+  * TX descriptor initialization
+  */
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800mmio.h
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800mmio.h
+@@ -126,6 +126,8 @@
+ #define RXD_W3_PLCP_SIGNAL		FIELD32(0x00020000)
+ #define RXD_W3_PLCP_RSSI		FIELD32(0x00040000)
+ 
++unsigned int rt2800mmio_get_dma_done(struct data_queue *queue);
++
+ /* TX descriptor initialization */
+ __le32 *rt2800mmio_get_txwi(struct queue_entry *entry);
+ void rt2800mmio_write_tx_desc(struct queue_entry *entry,
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800pci.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800pci.c
+@@ -337,6 +337,7 @@ static const struct rt2800_ops rt2800pci
+ 	.drv_write_firmware	= rt2800pci_write_firmware,
+ 	.drv_init_registers	= rt2800mmio_init_registers,
+ 	.drv_get_txwi		= rt2800mmio_get_txwi,
++	.drv_get_dma_done	= rt2800mmio_get_dma_done,
+ };
+ 
+ static const struct rt2x00lib_ops rt2800pci_rt2x00_ops = {
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800soc.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800soc.c
+@@ -183,6 +183,7 @@ static const struct rt2800_ops rt2800soc
+ 	.drv_write_firmware	= rt2800soc_write_firmware,
+ 	.drv_init_registers	= rt2800mmio_init_registers,
+ 	.drv_get_txwi		= rt2800mmio_get_txwi,
++	.drv_get_dma_done	= rt2800mmio_get_dma_done,
+ };
+ 
+ static const struct rt2x00lib_ops rt2800soc_rt2x00_ops = {
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800usb.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800usb.c
+@@ -390,6 +390,14 @@ static int rt2800usb_set_device_state(st
+ 	return retval;
+ }
+ 
++static unsigned int rt2800usb_get_dma_done(struct data_queue *queue)
++{
++	struct queue_entry *entry;
++
++	entry = rt2x00queue_get_entry(queue, Q_INDEX_DMA_DONE);
++	return entry->entry_idx;
++}
++
+ /*
+  * TX descriptor initialization
+  */
+@@ -672,6 +680,7 @@ static const struct rt2800_ops rt2800usb
+ 	.drv_write_firmware	= rt2800usb_write_firmware,
+ 	.drv_init_registers	= rt2800usb_init_registers,
+ 	.drv_get_txwi		= rt2800usb_get_txwi,
++	.drv_get_dma_done	= rt2800usb_get_dma_done,
+ };
+ 
+ static const struct rt2x00lib_ops rt2800usb_rt2x00_ops = {

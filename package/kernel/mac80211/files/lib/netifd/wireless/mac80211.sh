@@ -97,10 +97,12 @@ mac80211_hostapd_setup_base() {
 	[ "$auto_channel" -gt 0 ] && channel=acs_survey
 	[ "$auto_channel" -gt 0 ] && json_get_values channel_list channels
 
-	json_get_vars noscan ht_coex
+	json_get_vars noscan ht_coex vendor_vht
 	json_get_values ht_capab_list ht_capab tx_burst
 
-	[ -n "$noscan" -a "$noscan" -gt 0 ] && hostapd_noscan=1
+	set_default noscan 0
+
+	[ "$noscan" -gt 0 ] && hostapd_noscan=1
 	[ "$tx_burst" = 0 ] && tx_burst=
 
 	ieee80211n=1
@@ -211,7 +213,7 @@ mac80211_hostapd_setup_base() {
 		;;
 	esac
 
-	if [ "$enable_ac" != "0" ]; then
+	if [ "$enable_ac" != "0" -o "$vendor_vht" = "1" ]; then
 		json_get_vars \
 			rxldpc:1 \
 			short_gi_80:1 \
