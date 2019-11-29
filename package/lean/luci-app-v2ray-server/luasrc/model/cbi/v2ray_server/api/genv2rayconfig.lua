@@ -3,16 +3,10 @@ local json = require "luci.jsonc"
 local server_section = arg[1]
 local server = ucursor:get_all("v2ray_server", server_section)
 
-local v2ray = {
-	log = {
-		--error = "/var/log/v2ray.log",
-		loglevel = "warning"
-	},
-	-- 浼犲叆杩炴帴
-	inbound = {
-		port = tonumber(server.port),
-		protocol = server.protocol,
-		settings = {
+local proset
+
+if server.protocol == "vmess" then
+    proset = {
 			clients = {
 				{
 					id = server.VMess_id,
@@ -20,8 +14,31 @@ local v2ray = {
 					level = tonumber(server.VMess_level)
 				}
 			}
-		},
-		-- 搴曞眰浼犺緭閰嶇疆
+		}
+else
+    proset = {
+			auth = "password",
+			accounts = {
+				{
+					user = server.Socks_user,
+					pass = server.Socks_pass
+				}
+			}
+		}
+end
+
+
+local v2ray = {
+	log = {
+		--error = "/var/log/v2ray.log",
+		loglevel = "warning"
+	},
+	-- 传入连接
+	inbound = {
+		port = tonumber(server.port),
+		protocol = server.protocol,
+		settings = proset,
+		-- 底层传输配置
 		streamSettings = {
 			network = server.transport,
 			security = (server.tls == '1') and "tls" or "none",
@@ -50,11 +67,11 @@ local v2ray = {
 			} or nil
 		}
 	},
-	-- 浼犲嚭杩炴帴
+	-- 传出连接
 	outbound = {
 		protocol = "freedom"
 	},
-	-- 棰濆浼犲嚭杩炴帴
+	-- 额外传出连接
 	outboundDetour = {
 		{
 			protocol = "blackhole",

@@ -1,0 +1,54 @@
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Mon, 18 Nov 2019 11:52:41 +0100
+Subject: [PATCH FIX] brcmfmac: disable PCIe interrupts before bus reset
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Keeping interrupts on could result in brcmfmac freeing some resources
+and then IRQ handlers trying to use them. That was obviously a straight
+path for crashing a kernel.
+
+Example:
+CPU0                           CPU1
+----                           ----
+brcmf_pcie_reset
+  brcmf_pcie_bus_console_read
+  brcmf_detach
+    ...
+    brcmf_fweh_detach
+    brcmf_proto_detach
+                               brcmf_pcie_isr_thread
+                                 ...
+                                 brcmf_proto_msgbuf_rx_trigger
+                                   ...
+                                   drvr->proto->pd
+    brcmf_pcie_release_irq
+
+[  363.789218] Unable to handle kernel NULL pointer dereference at virtual address 00000038
+[  363.797339] pgd = c0004000
+[  363.800050] [00000038] *pgd=00000000
+[  363.803635] Internal error: Oops: 17 [#1] SMP ARM
+(...)
+[  364.029209] Backtrace:
+[  364.031725] [<bf243838>] (brcmf_proto_msgbuf_rx_trigger [brcmfmac]) from [<bf2471dc>] (brcmf_pcie_isr_thread+0x228/0x274 [brcmfmac])
+[  364.043662]  r7:00000001 r6:c8ca0000 r5:00010000 r4:c7b4f800
+
+Fixes: 4684997d9eea ("brcmfmac: reset PCIe bus on a firmware crash")
+Cc: stable@vger.kernel.org # v5.2+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+---
+ drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -1427,6 +1427,8 @@ static int brcmf_pcie_reset(struct devic
+ 	struct brcmf_fw_request *fwreq;
+ 	int err;
+ 
++	brcmf_pcie_intr_disable(devinfo);
++
+ 	brcmf_pcie_bus_console_read(devinfo, true);
+ 
+ 	brcmf_detach(dev);

@@ -1,0 +1,68 @@
+From 18511b66fee5967ed5631e7cbe2c263f07e956f9 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Tue, 22 Jan 2019 12:04:09 +0000
+Subject: [PATCH 313/806] staging: mmal-vchiq: Fix client_component for 64 bit
+ kernel
+
+The MMAL client_component field is used with the event
+mechanism to allow the client to identify the component for
+which the event is generated.
+The field is only 32bits in size, therefore we can't use a
+pointer to the component in a 64 bit kernel.
+
+Component handles are already held in an array per VCHI
+instance, so use the array index as the client_component handle
+to avoid having to create a new IDR for this purpose.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../staging/vc04_services/vchiq-mmal/mmal-vchiq.c    | 12 +++++++++---
+ .../staging/vc04_services/vchiq-mmal/mmal-vchiq.h    |  1 +
+ 2 files changed, 10 insertions(+), 3 deletions(-)
+
+--- a/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
+@@ -473,9 +473,9 @@ buffer_from_host(struct vchiq_mmal_insta
+ static void event_to_host_cb(struct vchiq_mmal_instance *instance,
+ 			     struct mmal_msg *msg, u32 msg_len)
+ {
+-	/* FIXME: Not going to work on 64 bit */
++	int comp_idx = msg->u.event_to_host.client_component;
+ 	struct vchiq_mmal_component *component =
+-		(struct vchiq_mmal_component *)msg->u.event_to_host.client_component;
++					&instance->component[comp_idx];
+ 	struct vchiq_mmal_port *port = NULL;
+ 	struct mmal_msg_context *msg_context;
+ 	u32 port_num = msg->u.event_to_host.port_num;
+@@ -1074,7 +1074,7 @@ static int create_component(struct vchiq
+ 
+ 	/* build component create message */
+ 	m.h.type = MMAL_MSG_TYPE_COMPONENT_CREATE;
+-	m.u.component_create.client_component = (u32)(unsigned long)component;
++	m.u.component_create.client_component = component->client_component;
+ 	strncpy(m.u.component_create.name, name,
+ 		sizeof(m.u.component_create.name));
+ 
+@@ -1869,6 +1869,12 @@ int vchiq_mmal_component_init(struct vch
+ 		goto unlock;
+ 	}
+ 
++	/* We need a handle to reference back to our component structure.
++	 * Use the array index in instance->component rather than rolling
++	 * another IDR.
++	 */
++	component->client_component = idx;
++
+ 	ret = create_component(instance, component, name);
+ 	if (ret < 0) {
+ 		pr_err("%s: failed to create component %d (Not enough GPU mem?)\n",
+--- a/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.h
++++ b/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.h
+@@ -97,6 +97,7 @@ struct vchiq_mmal_component {
+ 	struct vchiq_mmal_port input[MAX_PORT_COUNT]; /* input ports */
+ 	struct vchiq_mmal_port output[MAX_PORT_COUNT]; /* output ports */
+ 	struct vchiq_mmal_port clock[MAX_PORT_COUNT]; /* clock ports */
++	u32 client_component;	/* Used to ref back to client struct */
+ };
+ 
+ int vchiq_mmal_init(struct vchiq_mmal_instance **out_instance);
