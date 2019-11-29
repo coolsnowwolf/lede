@@ -6,6 +6,19 @@ local local_port = arg[3]
 
 local server = ucursor:get_all("shadowsocksr", server_section)
 
+local certificateContentTable = {}
+local keyContentTable = {}
+if server.certificateContent ~= nil then
+    for s in server.certificateContent:gmatch("[^\r\n]+") do
+        table.insert(certificateContentTable, s)
+    end
+end
+if server.keyContent ~= nil then
+    for s in server.keyContent:gmatch("[^\r\n]+") do
+        table.insert(keyContentTable, s)
+    end
+end
+
 local v2ray = {
   log = {
     -- error = "/var/ssrplus.log",
@@ -46,7 +59,20 @@ local v2ray = {
         streamSettings = {
             network = server.transport,
             security = (server.tls == '1') and "tls" or "none",
-            tlsSettings = {allowInsecure = (server.insecure == "1") and true or false,serverName=server.ws_host,},
+            tlsSettings = {
+                allowInsecure = (server.insecure == "1") and true or false,
+                serverName = (server.serverName ~= nil) and server.serverName or (server.ws_host ~= nil) and server.ws_host or (server.h2_host ~= nil) and server.h2_host or server.server,
+                disableSystemRoot = (server.disableSystemRoot == "1") and true or false,
+                certificates = (server.certificateType ~= nil) and {
+                    (server.certificateType == "certificatePath") and {
+                        certificateFile = server.certificatePath,
+                        keyFile = server.certificateKeyPath
+                    } or (server.certificateType == "certificateContent") and {
+                        certificate = certificateContentTable,
+                        key = keyContentTable
+                    }
+                } or nil
+            },
             kcpSettings = (server.transport == "kcp") and {
               mtu = tonumber(server.mtu),
               tti = tonumber(server.tti),

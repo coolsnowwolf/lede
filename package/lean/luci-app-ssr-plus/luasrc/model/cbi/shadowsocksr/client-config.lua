@@ -334,6 +334,46 @@ o.rmempty = true
 o.default = "0"
 o:depends("type", "v2ray")
 
+o = s:option(Value, "serverName", translate("serverName"))
+o:depends("tls", "1")
+o.rmempty = true
+
+o = s:option(Flag, "disableSystemRoot", translate("disableSystemRoot"))
+o:depends("tls", "1")
+o.rmempty = true
+o.default = "0"
+
+o = s:option(ListValue, "certificateType", translate("Certificate Type"))
+o:depends("disableSystemRoot", "1")
+o:value("certificatePath", translate("Certificate Path"))
+o:value("certificateContent", translate("Certificate Content"))
+o.widget = "radio"
+o.default = "certificateContent"
+o.size = 15
+o.rmempty = true
+
+-- [[ Certificate File ]] --
+o = s:option(Value, "certificatePath", translate("Certificate Path"))
+o:depends("certificateType", "certificatePath")
+o.datatype = "file"
+o.rmempty = true
+
+o = s:option(Value, "certificateKeyPath", translate("Certificate Key Path"))
+o:depends("certificateType", "certificatePath")
+o.datatype = "file"
+o.rmempty = true
+
+-- [[ Certificate Content ]] --
+o = s:option(Value, "certificateContent", translate("Certificate Content"))
+o:depends("certificateType", "certificateContent")
+o.datatype = "string"
+o.rmempty = true
+
+o = s:option(Value, "keyContent", translate("Certificate Key Content"))
+o:depends("certificateType", "certificateContent")
+o.datatype = "string"
+o.rmempty = true
+
 -- [[ Mux ]]--
 o = s:option(Flag, "mux", translate("Mux"))
 o.rmempty = true
