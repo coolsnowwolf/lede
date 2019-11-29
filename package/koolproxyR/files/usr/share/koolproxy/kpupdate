@@ -1,0 +1,152 @@
+#!/bin/sh
+# set -x
+
+. /lib/functions.sh
+
+CONFIG=koolproxy
+KP_DIR=/usr/share/koolproxy
+TMP_DIR=/tmp/koolproxy
+LOGFILE="/var/log/koolproxy.log"
+
+config_t_get() {
+	local index=0
+	[ -n "$4" ] && index=$4
+	local ret=$(uci get $CONFIG.@$1[$index].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+limit_log() {
+	local log=$1
+	[ ! -f "$log" ] && return
+	local sc=100
+	[ -n "$2" ] && sc=$2
+	local count=$(grep -c "" $log)
+	if [ $count -gt $sc ];then
+		let count=count-$sc
+		sed -i "1,$count d" $log
+	fi
+}
+
+init_env() {
+	rm -rf "$TMP_DIR"
+	mkdir -p "$TMP_DIR"
+}
+
+restart_koolproxy() {
+	/etc/init.d/koolproxy restart
+}
+
+__compare_file() {
+	local descript=$1
+	local localPath=$2
+	local remoteUrl=$3
+
+	echo $(date "+%F %T"): ------------------- $descript更新 ------------------- >>$LOGFILE
+	local filename=`basename $localPath`
+	local remotePath="$TMP_DIR/$filename"
+	wget-ssl -qT5 --no-check-certificate "$remoteUrl" -O "$remotePath"
+	if [ "$?" == "0" ]; then
+		if [ -f "$localPath" ]; then
+			localMD5=`md5sum "$localPath" | awk '{print $1}'`
+			localNum=`cat "$localPath" | grep -v '^!' | wc -l`
+		else
+			localMD5="文件不存在"
+			localNum="0"
+		fi
+		remoteMD5=`md5sum "$remotePath" | awk '{print $1}'`
+		remoteNum=`cat "$remotePath" | grep -v '^!' | wc -l`
+
+		echo $(date "+%F %T"): 本地版本MD5：$localMD5 >>$LOGFILE
+		echo $(date "+%F %T"): 本地版本条数：$localNum >>$LOGFILE
+		echo >>$LOGFILE
+		echo $(date "+%F %T"): 在线版本MD5：$remoteMD5 >>$LOGFILE
+		echo $(date "+%F %T"): 在线版本条数：$remoteNum >>$LOGFILE
+		echo >>$LOGFILE
+
+		if [ "$localMD5" != "$remoteMD5" ];then
+			echo $(date "+%F %T"): 检测到更新，开始更新规则！ >>$LOGFILE
+			mv -f "$remotePath" "$localPath"
+			echo $(date "+%F %T"): 更新成功！ >>$LOGFILE
+			echo >>$LOGFILE
+			return 0
+		fi
+	else
+		echo "$(date "+%F %T"): 获取在线版本时出现错误! " >>$LOGFILE
+		echo >>$LOGFILE
+	fi
+	return 1
+}
+
+__update_rule() {
+	local name
+	local file
+	local exrule
+	local enable
+	config_get name $1 name
+	config_get file $1 file
+	config_get exrule $1 url
+	config_get enable $1 load
+	if [ -n "$file" ] && [ -n "$exrule" ]; then
+		if [ $enable -ne 1 ]; then
+			return
+		fi
+		__compare_file "$name" "$KP_DIR/data/rules/$file" "$exrule"
+		if [ "$?" == "0" ]; then
+			uci set koolproxy.$1.time="`date +%Y-%m-%d" "%H:%M`"
+			uci commit koolproxy
+			RESTART_KOOLPROXY=true
+		fi
+		cat $KP_DIR/data/rules/$file >>$KP_DIR/data/rules/user.txt
+		echo >>$LOGFILE
+	fi
+}
+
+update_rss_rules() {
+	cp $KP_DIR/data/user.txt $KP_DIR/data/rules/user.txt
+	config_load $CONFIG
+	config_foreach __update_rule rss_rule
+}
+
+update_rules() {
+	echo $(date "+%F %T"): ------------------- 内置规则更新 ------------------- >>$LOGFILE
+	wget 'https://raw.githubusercontent.com/user1121114685/koolproxyR_rule_list/master/kp.dat' -q -O $KP_DIR/data/rules/kp.dat
+	wget 'https://raw.githubusercontent.com/user1121114685/koolproxyR/master/koolproxyR/koolproxyR/data/rules/yhosts.txt' -q -O $KP_DIR/data/rules/yhosts.txt
+	wget 'https://raw.githubusercontent.com/user1121114685/koolproxyR/master/koolproxyR/koolproxyR/data/rules/fanboy-annoyance.txt' -q -O $KP_DIR/data/rules/fanboy.txt
+	wget 'https://raw.githubusercontent.com/user1121114685/koolproxyR/master/koolproxyR/koolproxyR/data/rules/easylistchina.txt' -q -O $KP_DIR/data/rules/easylistchina.txt
+
+	wget 'https://raw.githubusercontent.com/user1121114685/koolproxyR/master/koolproxyR/koolproxyR/data/koolproxyR_ipset.conf' -q -O $KP_DIR/koolproxy_ipset.conf
+	echo $(date "+%F %T"): ------------------- 内置规则更新成功！ ------------------- >>$LOGFILE
+RESTART_KOOLPROXY=true
+}
+
+update_adb_host() {
+	/usr/sbin/adblockplus >>$LOGFILE 2>&1 &
+	if [ "$?" == "0" ]; then
+		RESTART_DNSMASQ=true
+	fi
+}
+
+# main process
+init_env
+limit_log $LOGFILE
+
+# update rules
+update_rules
+
+# update user rules
+update_rss_rules
+
+koolproxy_mode=$(config_t_get global koolproxy_mode 1)
+koolproxy_host=$(config_t_get global koolproxy_host 0)
+
+# update ADB Plus Host
+if [ "$koolproxy_mode" == "2" ] && [ "$koolproxy_host" == "1" ];then
+	update_adb_host
+fi
+
+if [ $RESTART_KOOLPROXY ]; then
+	restart_koolproxy
+	echo $(date "+%F %T"): 重启koolproxy进程 >>$LOGFILE
+fi
+
+init_env
