@@ -69,7 +69,7 @@ proto_dslite_setup() {
 	json_add_string remote "$peeraddr"
 	[ -n "$tunlink" ] && json_add_string link "$tunlink"
 	json_add_object "data"
-	  json_add_string encaplimit "${encaplimit:-4}"
+	  [ -n "$encaplimit" ] && json_add_string encaplimit "$encaplimit"
 	json_close_object
 	proto_close_tunnel
 

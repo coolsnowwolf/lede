@@ -39,6 +39,7 @@ gre_generic_setup() {
 	[ -n "$ocsum" ] && json_add_boolean ocsum "$ocsum"
 	[ -n "$iseqno" ] && json_add_boolean iseqno "$iseqno"
 	[ -n "$oseqno" ] && json_add_boolean oseqno "$oseqno"
+	[ -n "$encaplimit" ] && json_add_string encaplimit "$encaplimit"
 	json_close_object
 
 	proto_close_tunnel
@@ -133,7 +134,7 @@ grev6_setup() {
 	local remoteip6
 
 	local ip6addr peer6addr weakif
-	json_get_vars ip6addr peer6addr tunlink weakif
+	json_get_vars ip6addr peer6addr tunlink weakif encaplimit
 
 	[ -z "$peer6addr" ] && {
 		proto_notify_error "$cfg" "MISSING_PEER_ADDRESS"
@@ -274,6 +275,7 @@ proto_grev6_init_config() {
 	proto_config_add_string "ip6addr"
 	proto_config_add_string "peer6addr"
 	proto_config_add_string "weakif"
+	proto_config_add_string "encaplimit"
 }
 
 proto_grev6tap_init_config() {

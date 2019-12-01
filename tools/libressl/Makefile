@@ -8,14 +8,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libressl
-PKG_VERSION:=2.7.2
-PKG_HASH:=917a8779c342177ff3751a2bf955d0262d1d8916a4b408930c45cef326700995
+PKG_VERSION:=2.8.1
+PKG_HASH:=334bf7050f1db4087feebb30571ec13d9fa975bf05d6003ce3ab6d7d2452cf42
 PKG_RELEASE:=1
+
+PKG_CPE_ID:=cpe:/a:openbsd:libressl
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=http://mirror.ox.ac.uk/pub/OpenBSD/LibreSSL \
 	http://ftp.jaist.ac.jp/pub/OpenBSD/LibreSSL \
-	http://ftp.openbsd.org/pub/OpenBSD/LibreSSL
+	https://ftp.openbsd.org/pub/OpenBSD/LibreSSL
 
 HOST_BUILD_PARALLEL:=1
 
@@ -23,5 +25,9 @@ include $(INCLUDE_DIR)/host-build.mk
 
 HOST_CONFIGURE_ARGS += --disable-shared
 HOST_CFLAGS += $(FPIC)
+
+ifeq ($(GNU_HOST_NAME),x86_64-linux-gnux32)
+HOST_CONFIGURE_ARGS += --disable-asm
+endif
 
 $(eval $(call HostBuild))

@@ -7,7 +7,7 @@
 
 define Profile/Default
   NAME:=Default Profile
-  PACKAGES:=kmod-b43 wpad-mini
+  PACKAGES:=kmod-b43 wpad-basic
   PRIORITY:=1
 endef
 

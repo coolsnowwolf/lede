@@ -9,6 +9,5 @@ ag71xx-y	+= ag71xx_phy.o
 
 ag71xx-$(CONFIG_AG71XX_DEBUG_FS)	+= ag71xx_debugfs.o
 
-obj-$(CONFIG_AG71XX)	+= ag71xx_ar7240.o
 obj-$(CONFIG_AG71XX)	+= ag71xx_mdio.o
 obj-$(CONFIG_AG71XX)	+= ag71xx.o

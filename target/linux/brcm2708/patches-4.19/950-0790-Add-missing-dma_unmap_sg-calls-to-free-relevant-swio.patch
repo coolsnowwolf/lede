@@ -1,0 +1,46 @@
+From f8554985b77df2dac55f2d7c85e0f0cc3497a1fd Mon Sep 17 00:00:00 2001
+From: Yaroslav Rosomakho <yaroslavros@gmail.com>
+Date: Fri, 23 Aug 2019 11:05:51 +0200
+Subject: [PATCH 790/806] Add missing dma_unmap_sg calls to free relevant
+ swiotlb bounce buffers. This prevents DMA leaks.
+
+Signed-off-by: Yaroslav Rosomakho <yaroslavros@gmail.com>
+---
+ drivers/mmc/host/bcm2835-mmc.c | 15 +++++++++------
+ 1 file changed, 9 insertions(+), 6 deletions(-)
+
+--- a/drivers/mmc/host/bcm2835-mmc.c
++++ b/drivers/mmc/host/bcm2835-mmc.c
+@@ -345,16 +345,17 @@ static void bcm2835_mmc_dma_complete(voi
+ 
+ 	host->use_dma = false;
+ 
+-	if (host->data && !(host->data->flags & MMC_DATA_WRITE)) {
+-		/* otherwise handled in SDHCI IRQ */
++	if (host->data) {
+ 		dma_chan = host->dma_chan_rxtx;
+-		dir_data = DMA_FROM_DEVICE;
+-
++		if (host->data->flags & MMC_DATA_WRITE)
++			dir_data = DMA_TO_DEVICE;
++		else
++			dir_data = DMA_FROM_DEVICE;
+ 		dma_unmap_sg(dma_chan->device->dev,
+ 		     host->data->sg, host->data->sg_len,
+ 		     dir_data);
+-
+-		bcm2835_mmc_finish_data(host);
++		if (! (host->data->flags & MMC_DATA_WRITE))
++			bcm2835_mmc_finish_data(host);
+ 	} else if (host->wait_for_dma) {
+ 		host->wait_for_dma = false;
+ 		tasklet_schedule(&host->finish_tasklet);
+@@ -540,6 +541,8 @@ static void bcm2835_mmc_transfer_dma(str
+ 		spin_unlock_irqrestore(&host->lock, flags);
+ 		dmaengine_submit(desc);
+ 		dma_async_issue_pending(dma_chan);
++	} else {
++		dma_unmap_sg(dma_chan->device->dev, host->data->sg, len, dir_data);
+ 	}
+ 
+ }

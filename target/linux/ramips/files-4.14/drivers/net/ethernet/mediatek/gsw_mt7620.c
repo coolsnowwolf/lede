@@ -69,6 +69,9 @@ static int mt7620_mdio_mode(struct device_node *eth_node)
 	mdiobus_node = of_get_child_by_name(eth_node, "mdio-bus");
 
 	if (mdiobus_node) {
+		if (of_property_read_bool(mdiobus_node, "mediatek,mdio-mode"))
+			ret = 1;
+
 		for_each_child_of_node(mdiobus_node, phy_node) {
 			id = of_get_property(phy_node, "reg", NULL);
 			if (id && (be32_to_cpu(*id) == 0x1f))

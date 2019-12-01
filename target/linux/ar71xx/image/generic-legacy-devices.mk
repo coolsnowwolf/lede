@@ -5,6 +5,12 @@ define LegacyDevice/A60
 endef
 LEGACY_DEVICES += A60
 
+define LegacyDevice/SGRW500N85BV2
+  DEVICE_TITLE := GRENTECH SGR-W500-N85b v2.0
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
+endef
+LEGACY_DEVICES += SGRW500N85BV2
+
 define LegacyDevice/ALFANX
   DEVICE_TITLE := ALFA Network N2/N5 board
 endef
@@ -104,7 +110,7 @@ endef
 LEGACY_DEVICES += AP143_16M
 
 define LegacyDevice/AP147_010
-  DEVICE_TITLE := Qualcomm Atheros AP147-010 reference board
+  DEVICE_TITLE := Letv SuperRouter
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-storage
 endef
 LEGACY_DEVICES += AP147_010
