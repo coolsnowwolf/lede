@@ -101,7 +101,7 @@ $(eval $(call KernelPackage,lib-crc32c))
 define KernelPackage/lib-lzo
   SUBMENU:=$(LIB_MENU)
   TITLE:=LZO support
-  DEPENDS:=+!(LINUX_3_18||LINUX_4_9):kmod-crypto-acompress
+  DEPENDS:=+!LINUX_4_9:kmod-crypto-acompress
   KCONFIG:= \
 	CONFIG_CRYPTO_LZO@ge4.9 \
 	CONFIG_LZO_COMPRESS \
@@ -146,7 +146,7 @@ $(eval $(call KernelPackage,lib-zstd))
 define KernelPackage/lib-lz4
   SUBMENU:=$(LIB_MENU)
   TITLE:=LZ4 support
-  DEPENDS:=+!(LINUX_3_18||LINUX_4_9):kmod-crypto-acompress
+  DEPENDS:=+!LINUX_4_9:kmod-crypto-acompress
   HIDDEN:=1
   KCONFIG:= \
 	CONFIG_CRYPTO_LZ4@ge4.9 \

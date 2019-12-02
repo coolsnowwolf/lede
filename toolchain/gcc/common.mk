@@ -174,9 +174,13 @@ ifneq ($(GCC_ARCH),)
   GCC_CONFIGURE+= --with-arch=$(GCC_ARCH)
 endif
 
-ifneq ($(CONFIG_SOFT_FLOAT),y)
-  ifeq ($(CONFIG_arm),y)
+ifeq ($(CONFIG_arm),y)
+  GCC_CONFIGURE+= \
+	--with-cpu=$(word 1, $(subst +," ,$(CONFIG_CPU_TYPE)))
+
+  ifneq ($(CONFIG_SOFT_FLOAT),y)
     GCC_CONFIGURE+= \
+		--with-fpu=$(word 2, $(subst +, ",$(CONFIG_CPU_TYPE))) \
 		--with-float=hard
   endif
 endif

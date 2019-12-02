@@ -294,6 +294,20 @@ define Build/openmesh-image
 		"$(call param_get_default,rootfs,$(1),$@)" "rootfs"
 endef
 
+define Build/qsdk-ipq-factory-nand
+	$(TOPDIR)/scripts/mkits-qsdk-ipq-image.sh \
+		$@.its ubi $@
+	mkimage -f $@.its $@.new
+	@mv $@.new $@
+endef
+
+define Build/qsdk-ipq-factory-nor
+	$(TOPDIR)/scripts/mkits-qsdk-ipq-image.sh \
+		$@.its hlos $(IMAGE_KERNEL) rootfs $(IMAGE_ROOTFS)
+	mkimage -f $@.its $@.new
+	@mv $@.new $@
+endef
+
 define Build/senao-header
 	$(STAGING_DIR_HOST)/bin/mksenaofw $(1) -e $@ -o $@.new
 	mv $@.new $@

@@ -46,7 +46,7 @@ local v2ray = {
         streamSettings = {
             network = server.transport,
             security = (server.tls == '1') and "tls" or "none",
-            tlsSettings = {allowInsecure = (server.insecure == "1") and true or false,},
+            tlsSettings = {allowInsecure = (server.insecure == "1") and true or false,serverName=server.ws_host,},
             kcpSettings = (server.transport == "kcp") and {
               mtu = tonumber(server.mtu),
               tti = tonumber(server.tti),
@@ -59,7 +59,7 @@ local v2ray = {
                   type = server.kcp_guise
               }
           } or nil,
-             wsSettings = (server.transport == "ws") and {
+             wsSettings = (server.transport == "ws") and (server.ws_path ~= nil or server.ws_host ~= nil) and {
                 path = server.ws_path,
                 headers = (server.ws_host ~= nil) and {
                     Host = server.ws_host

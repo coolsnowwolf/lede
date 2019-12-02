@@ -19,7 +19,7 @@ platform_do_upgrade() {
 		umount /tmp/recovery
 		;;
 	*)
-		default_do_upgrade "$ARGV"
+		default_do_upgrade "$1"
 		;;
 	esac
 }
@@ -54,7 +54,7 @@ platform_check_image() {
 platform_copy_config_emmc() {
 	mkdir -p /recovery
 	mount -o rw,noatime /dev/mmcblk0p1 /recovery
-	cp -af "$CONF_TAR" /recovery/
+	cp -af "$UPGRADE_BACKUP" "/recovery/$BACKUP_FILE"
 	sync
 	umount /recovery
 }

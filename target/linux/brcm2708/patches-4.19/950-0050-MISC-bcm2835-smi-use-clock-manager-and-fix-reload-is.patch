@@ -1,0 +1,170 @@
+From f7cccb2e66f0187f69a432536f227b32a458f94b Mon Sep 17 00:00:00 2001
+From: Martin Sperl <kernel@martin.sperl.org>
+Date: Tue, 26 Apr 2016 14:59:21 +0000
+Subject: [PATCH 050/806] MISC: bcm2835: smi: use clock manager and fix reload
+ issues
+
+Use clock manager instead of self-made clockmanager.
+
+Also fix some error paths that showd up during development
+(especially missing release of dma resources on rmmod)
+
+Signed-off-by: Martin Sperl <kernel@martin.sperl.org>
+---
+ drivers/misc/bcm2835_smi.c | 86 +++++++++++++-------------------------
+ 1 file changed, 28 insertions(+), 58 deletions(-)
+
+--- a/drivers/misc/bcm2835_smi.c
++++ b/drivers/misc/bcm2835_smi.c
+@@ -34,6 +34,7 @@
+  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  */
+ 
++#include <linux/clk.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+@@ -62,7 +63,7 @@
+ struct bcm2835_smi_instance {
+ 	struct device *dev;
+ 	struct smi_settings settings;
+-	__iomem void *smi_regs_ptr, *cm_smi_regs_ptr;
++	__iomem void *smi_regs_ptr;
+ 	dma_addr_t smi_regs_busaddr;
+ 
+ 	struct dma_chan *dma_chan;
+@@ -72,8 +73,7 @@ struct bcm2835_smi_instance {
+ 
+ 	struct scatterlist buffer_sgl;
+ 
+-	int clock_source;
+-	int clock_divisor;
++	struct clk *clk;
+ 
+ 	/* Sometimes we are called into in an atomic context (e.g. by
+ 	   JFFS2 + MTD) so we can't use a mutex */
+@@ -82,42 +82,6 @@ struct bcm2835_smi_instance {
+ 
+ /****************************************************************************
+ *
+-*   SMI clock manager setup
+-*
+-***************************************************************************/
+-
+-static inline void write_smi_cm_reg(struct bcm2835_smi_instance *inst,
+-	u32 val, unsigned reg)
+-{
+-	writel(CM_PWD | val, inst->cm_smi_regs_ptr + reg);
+-}
+-
+-static inline u32 read_smi_cm_reg(struct bcm2835_smi_instance *inst,
+-	unsigned reg)
+-{
+-	return readl(inst->cm_smi_regs_ptr + reg);
+-}
+-
+-static void smi_setup_clock(struct bcm2835_smi_instance *inst)
+-{
+-	dev_dbg(inst->dev, "Setting up clock...");
+-	/* Disable SMI clock and wait for it to stop. */
+-	write_smi_cm_reg(inst, 0, CM_SMI_CTL);
+-	while (read_smi_cm_reg(inst, CM_SMI_CTL) & CM_SMI_CTL_BUSY)
+-		;
+-
+-	write_smi_cm_reg(inst, (inst->clock_divisor << CM_SMI_DIV_DIVI_OFFS),
+-	       CM_SMI_DIV);
+-	write_smi_cm_reg(inst, (inst->clock_source << CM_SMI_CTL_SRC_OFFS),
+-	       CM_SMI_CTL);
+-
+-	/* Enable the clock */
+-	write_smi_cm_reg(inst, (inst->clock_source << CM_SMI_CTL_SRC_OFFS) |
+-	       CM_SMI_CTL_ENAB, CM_SMI_CTL);
+-}
+-
+-/****************************************************************************
+-*
+ *   SMI peripheral setup
+ *
+ ***************************************************************************/
+@@ -894,42 +858,40 @@ static int bcm2835_smi_probe(struct plat
+ 	struct device_node *node = dev->of_node;
+ 	struct resource *ioresource;
+ 	struct bcm2835_smi_instance *inst;
++	const __be32 *addr;
+ 
++	/* We require device tree support */
++	if (!node)
++		return -EINVAL;
+ 	/* Allocate buffers and instance data */
+-
+ 	inst = devm_kzalloc(dev, sizeof(struct bcm2835_smi_instance),
+ 		GFP_KERNEL);
+-
+ 	if (!inst)
+ 		return -ENOMEM;
+ 
+ 	inst->dev = dev;
+ 	spin_lock_init(&inst->transaction_lock);
+ 
+-	/* We require device tree support */
+-	if (!node)
+-		return -EINVAL;
+-
+ 	ioresource = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	inst->smi_regs_ptr = devm_ioremap_resource(dev, ioresource);
+-	ioresource = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+-	inst->cm_smi_regs_ptr = devm_ioremap_resource(dev, ioresource);
+-	inst->smi_regs_busaddr = be32_to_cpu(
+-		*of_get_address(node, 0, NULL, NULL));
+-	of_property_read_u32(node,
+-			     "brcm,smi-clock-source",
+-			     &inst->clock_source);
+-	of_property_read_u32(node,
+-			     "brcm,smi-clock-divisor",
+-			     &inst->clock_divisor);
++	if (IS_ERR(inst->smi_regs_ptr)) {
++		err = PTR_ERR(inst->smi_regs_ptr);
++		goto err;
++	}
++	addr = of_get_address(node, 0, NULL, NULL);
++	inst->smi_regs_busaddr = be32_to_cpu(addr);
+ 
+ 	err = bcm2835_smi_dma_setup(inst);
+ 	if (err)
+-		return err;
++		goto err;
+ 
+-	/* Finally, do peripheral setup */
++	/* request clock */
++	inst->clk = devm_clk_get(dev, NULL);
++	if (!inst->clk)
++		goto err;
++	clk_prepare_enable(inst->clk);
+ 
+-	smi_setup_clock(inst);
++	/* Finally, do peripheral setup */
+ 	smi_setup_regs(inst);
+ 
+ 	platform_set_drvdata(pdev, inst);
+@@ -937,6 +899,9 @@ static int bcm2835_smi_probe(struct plat
+ 	dev_info(inst->dev, "initialised");
+ 
+ 	return 0;
++err:
++	kfree(inst);
++	return err;
+ }
+ 
+ /****************************************************************************
+@@ -950,6 +915,11 @@ static int bcm2835_smi_remove(struct pla
+ 	struct bcm2835_smi_instance *inst = platform_get_drvdata(pdev);
+ 	struct device *dev = inst->dev;
+ 
++	dmaengine_terminate_all(inst->dma_chan);
++	dma_release_channel(inst->dma_chan);
++
++	clk_disable_unprepare(inst->clk);
++
+ 	dev_info(dev, "SMI device removed - OK");
+ 	return 0;
+ }
