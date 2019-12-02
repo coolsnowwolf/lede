@@ -36,6 +36,10 @@ there. qBittorrent is fast, stable and provides unicode support as
 well as many features.
 endef
 
+CONFIGURE_VARS += \
+	QT_QMAKE="$(TOOLCHAIN_DIR)/bin" \
+	PKG_CONFIG_PATH="$(TOOLCHAIN_DIR)/lib/pkgconfig"
+
 CONFIGURE_ARGS += \
 	--disable-gui \
 	--enable-stacktrace=no \
