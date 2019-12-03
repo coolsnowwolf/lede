@@ -77,7 +77,7 @@ include $(INCLUDE_DIR)/package.mk
 
 define KernelPackage/r8125
   TITLE:=Driver for Realtek r8125 chipsets
-  SUBMENU:=Realtek r8125 Drivers
+  SUBMENU:=Network Devices
   VERSION:=$(LINUX_VERSION)+$(PKG_VERSION)-$(BOARD)-$(PKG_RELEASE)
   FILES:= $(PKG_BUILD_DIR)/r8125.ko
   AUTOLOAD:=$(call AutoProbe,r8125)
