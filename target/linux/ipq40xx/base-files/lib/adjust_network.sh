@@ -68,14 +68,17 @@ adjust_radio_smp_affinity() {
 ################################################
 adjust_eth_queue() {
 	local nr=`cat /proc/cpuinfo | grep processor | wc -l`
-	local cpu=`printf "%x" $(((1<<nr)-1))`
+	local idx=0
 
 	for epath in /sys/class/net/eth[0-9]*; do
 		test -e $epath || break
 		echo $epath | grep -q "\." && continue
 		eth=`basename $epath`
+		idx=0
 		for exps in /sys/class/net/$eth/queues/rx-[0-9]*/rps_cpus; do
 			test -e $exps || break
+			cpu=`printf "%x" $((1<<((idx+1)%nr)))`
+			idx=$((idx+1))
 			echo $cpu > $exps
 			echo 256 > `dirname $exps`/rps_flow_cnt
 		done
