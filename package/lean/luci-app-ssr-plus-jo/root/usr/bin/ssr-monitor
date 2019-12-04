@@ -1,0 +1,276 @@
+#!/bin/sh 
+#
+# Copyright (C) 2017 openwrt-ssr
+# Copyright (C) 2017 yushi studio <ywb94@qq.com>
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
+
+NAME=shadowsocksr
+logfile="/tmp/ssrplus.log"
+
+uci_get_by_name() {
+	local ret=$(uci get $NAME.$1.$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+uci_get_by_type() {
+	local ret=$(uci get $NAME.@$1[0].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+server_process_count=$1
+redir_tcp_process=$2
+redir_udp_process=$3
+tunnel_process=$4
+kcp_process=$5
+local_process=$6
+pdnsd_process=$7
+dnsforwarder_process=$8
+ssserver_process=$10
+ssrserver_process=$11
+v2rayserver_process=$12
+haproxy_process=$13
+privoxy_process=$14
+chinadns_process=$15
+if  [ -z "$pdnsd_process" ] ;then
+	pdnsd_process=0
+fi
+
+i=0
+
+GLOBAL_SERVER=$(uci_get_by_type global global_server)
+server=$(uci_get_by_name $GLOBAL_SERVER server)
+kcp_port=$(uci_get_by_name $GLOBAL_SERVER kcp_port)
+server_port=$(uci_get_by_name $GLOBAL_SERVER server_port)
+password=$(uci_get_by_name $GLOBAL_SERVER kcp_password)
+kcp_param=$(uci_get_by_name $GLOBAL_SERVER kcp_param)
+[ "$password" != "" ] && password="--key "${password}
+
+sock5_port=$(uci_get_by_type socks5_proxy local_port 1080)
+
+if [ "$(uci_get_by_type global chinadns_enable)" = "0" ] ;then
+	dnsstrs="$(uci_get_by_type global tunnel_forward 8.8.4.4:53)"
+else
+	dnsstrs="0.0.0.0:5337"
+fi
+
+if echo $server|grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$">/dev/null; then         
+	server=${server}
+else
+	server=`cat /etc/ssr_ip`
+fi
+
+while [ "1" = "1" ]  #死循环
+do 
+	sleep 30
+#redir tcp
+	if [ $redir_tcp_process -gt 0 ] ;then
+		icount=`ps -w | grep ssr-retcp |grep -v grep| wc -l`
+		if [ $icount = 0 ] ;then
+			logger -t "$NAME" "ssr redir tcp error.restart!"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") redir tcp error.restart!" >> ${logfile}
+			/etc/init.d/shadowsocksr restart 
+			exit 0
+		fi
+	fi
+#redir udp
+	if [ $redir_udp_process -gt 0 ] ;then
+		icount=`ps -w  | grep ssr-reudp|grep -v grep| wc -l`
+		if [ $icount = 0 ] ;then
+			logger -t "$NAME" "ssr redir udp error.restart!"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") redir udp error.restart!" >> ${logfile}
+			/etc/init.d/shadowsocksr restart 
+			exit 0
+		fi
+	fi
+#tunnel
+	if [ $tunnel_process -gt 0 ] ;then
+		icount=`ps -w  | grep ssr-tunnel |grep -v grep| wc -l`
+		if [ $icount = 0 ] ;then
+			logger -t "$NAME" "ssr tunnel error.restart!"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") tunnel error.restart!" >> ${logfile}
+			/etc/init.d/shadowsocksr restart 
+			exit 0
+		fi
+	fi
+#server
+#ssr_server
+	if [ $server_process_count -gt 0 ] ;then
+		if [ $ssrserver_process -gt 0 ] ;then
+			icount=`ps -w  | grep ssr-server |grep -v grep| wc -l`
+			if [ $icount -lt $ssrserver_process ]  #如果进程挂掉就重启它
+			then
+				logger -t "$NAME" "ssr server error.restart!"
+				echo "$(date "+%Y-%m-%d %H:%M:%S") ssr server error.restart!" >> ${logfile}
+				killall -q -9 ssr-server 
+				for i in `seq $ssrserver_process`
+				do
+					/usr/bin/ssr-server -c /var/etc/shadowsocksr_$i.json -u -f /var/run/ssr-server$i.pid   
+				done  
+			fi
+		fi
+#ss_server
+		if [ $ssserver_process -gt 0 ] ;then
+			icount=`ps -w  | grep ss-server |grep -v grep| wc -l`
+			if [ $icount -lt $ssserver_process ]  #如果进程挂掉就重启它
+			then
+				logger -t "$NAME" "ss server error.restart!"
+				echo "$(date "+%Y-%m-%d %H:%M:%S") ss server error.restart!" >> ${logfile}
+				killall -q -9 ss-server 
+				for i in `seq $ssserver_process`
+				do
+					/usr/bin/ss-server -c /var/etc/shadowsocksr_$i.json -u -f /var/run/ss-server$i.pid   
+				done
+			fi
+		fi
+#v2ray_server
+		if [ v2rayserver_process -gt 0 ] ;then
+			icount=`ps -w  | grep ss-server |grep -v grep| wc -l`
+			if [ $icount -lt $v2rayserver_process ]  #如果进程挂掉就重启它
+			then
+				logger -t "$NAME" "v2ray server error.restart!"
+				echo "$(date "+%Y-%m-%d %H:%M:%S") v2ray server error.restart!" >> ${logfile}
+				kill -9 $(ps | grep v2ray-server | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+				for i in `seq $v2rayserver_process`
+				do
+					( /usr/bin/v2ray/v2ray -config /var/etc/v2ray-server-$i.json >/dev/null 2>&1 &)
+				done
+			fi
+		fi
+    fi
+#kcptun
+	if [ $kcp_process -gt 0 ] ;then
+		icount=`ps -w  | grep kcptun-client |grep -v grep| wc -l`
+		if [ $icount -lt $kcp_process ]  #如果进程挂掉就重启它
+		then
+			logger -t "$NAME" "ssr kcptun error.restart!"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") ssr kcptun error.restart!" >> ${logfile}
+			killall -q -9 kcptun-client
+
+			( /usr/bin/kcptun-client -r $server:$kcp_port -l :$server_port  $password $kcp_param &)
+		fi   
+     fi
+#local
+	if [ $local_process -eq 1 ] ;then
+		icount=`ps -w  | grep ssr-local |grep -v grep| wc -l`
+		if [ $icount -lt $local_process ]  #如果进程挂掉就重启它
+		then
+			logger -t "$NAME" "ssr local error.restart!"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") ssr local error.restart!" >> ${logfile}
+			killall -q -9 ssr-local
+
+			( /usr/bin/ssr-local -c /var/etc/shadowsocksr_s.json -u -l $sock5_port -f /var/run/ssr-local.pid &)
+		fi   
+      fi
+#local
+	if [ $local_process -eq 2 ] ;then
+		local_processs=1
+		icount=`ps -w  | grep ss-local |grep -v grep| wc -l`
+		if [ $icount -lt $local_processs ]  #如果进程挂掉就重启它
+		then
+			logger -t "$NAME" "ss local error.restart!"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") ss local error.restart!" >> ${logfile}
+			killall -q -9 ss-local
+
+			( /usr/bin/ss-local -c /var/etc/shadowsocksr_s.json -u -l $sock5_port -f /var/run/ss-local.pid &)
+		fi   
+      fi
+#local
+	if [ $local_process -eq 3 ] ;then
+		local_processs=1
+		icount=`ps -w  | grep v2-ssr-local |grep -v grep| wc -l`
+		if [ $icount -lt $local_processs ]  #如果进程挂掉就重启它
+		then
+			logger -t "$NAME" "v2ray local error.restart!"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") v2ray local error.restart!" >> ${logfile}
+			kill -9 $(ps | grep v2-ssr-local | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+
+			( /usr/bin/v2ray/v2ray -config /var/etc/v2-ssr-local.json >/dev/null 2>&1 &)
+		fi   
+      fi
+#privoxy
+	if [ $privoxy_process -gt 0 ] ;then
+		icount=`ps -w  | grep privoxy |grep -v grep| wc -l`
+		if [ $icount -lt $privoxy_process ]; then
+			logger -t "$NAME" "privoxy http local error.restart!"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") privoxy http loca error.restart!" >> ${logfile}
+			kill -9 $(ps | grep privoxy | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
+
+			/etc/init.d/privoxy restart
+		fi   
+	fi
+#dnsforwarder
+	if [ $dnsforwarder_process -gt 0 ] ;then
+		icount=`ps -w  | grep dnsparsing |grep -v grep| wc -l`
+		if [ $icount -lt $dnsforwarder_process ]; then
+			logger -t "$NAME" "dnsforwarder tunnel error.restart!"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") dnsforwarder tunnel error.restart!" >> ${logfile}
+			kill -9 $(ps | grep dnsparsing | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
+
+			( dnsparsing -f /var/run/dnsparsing/dnsparsing.conf -d &)
+		fi   
+	fi 
+#pdnsd
+	if [ $pdnsd_process -gt 0 ] ;then
+		icount=`ps -w  | grep pdnsd |grep -v grep| wc -l`
+		if [ $icount -lt $pdnsd_process ]  #如果进程挂掉就重启它
+		then
+			logger -t "$NAME" "pdnsd tunnel error.restart!"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") pdnsd tunnel error.restart!" >> ${logfile}
+			if [ -f /var/run/pdnsd.pid ] ;then
+				kill $(cat /var/run/pdnsd.pid) >/dev/null 2>&1
+			else 
+				kill -9 $(ps | grep pdnsd | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
+			fi
+
+			( /usr/sbin/pdnsd -c /var/etc/pdnsd.conf -d &)
+		fi   
+	fi
+#chiandns
+	if [ $chinadns_process -gt 0 ] ;then
+		icount=`ps -w  | grep chinadns |grep -v grep| wc -l`
+		if [ $icount -lt $chinadns_process ]; then
+			logger -t "$NAME" "chinadns tunnel error.restart!"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") chinadns tunnel error.restart!" >> ${logfile}
+			kill -9 $(ps | grep chinadns | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
+
+			(nohup /usr/bin/chinadns -p 5335 -c /etc/china_ssr.txt -m -d -s $dnsstrs >/dev/null 2>&1 &)
+		fi   
+	fi 
+#haproxy
+	if [ $haproxy_process -gt 0 ] ;then
+		icount=`ps -w  | grep haproxy |grep -v grep| wc -l`
+		if [ $icount -lt $haproxy_process ]  #如果进程挂掉就重启它
+		then
+			logger -t "$NAME" "haproxy error.restart!"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") haproxy error.restart!" >> ${logfile}
+			/etc/init.d/shadowsocksr restart
+		fi
+	fi
+#udp2raw
+	if [ $(uci_get_by_type udp2raw udp2raw_enable) = 1 ] ;then
+		ucount=`ps -w | grep udp2raw |grep -v grep| wc -l`
+		if [ $ucount = 0 ] ;then
+			/usr/bin/udp2raw --clear >/dev/null
+			/usr/bin/udp2raw --conf-file /var/etc/udp2raw.conf >/dev/null 2>&1 &
+		fi
+	fi
+#udpspeeder
+	if [ $(uci_get_by_type udpspeeder udpspeeder_enable) = 1 ] ;then
+		scount=`ps -w | grep udpspeeder |grep -v grep| wc -l`
+		if [ $scount = 0 ] ;then
+			/usr/bin/udpspeeder -c -l0.0.0.0:$(uci_get_by_type udpspeeder local_port) \
+				-r$(uci_get_by_type udpspeeder server):$(uci_get_by_type udpspeeder server_port) \
+				-k $(uci_get_by_type udpspeeder key) \
+				--mode $(uci_get_by_type udpspeeder speeder_mode) \
+				--mtu $(uci_get_by_type udpspeeder mtu) \
+				-f$(uci_get_by_type udpspeeder fec) \
+				-q$(uci_get_by_type udpspeeder queue_len) \
+				--timeout $(uci_get_by_type udpspeeder timeout) \
+				>/dev/null 2>&1 &
+		fi
+	fi
+done
