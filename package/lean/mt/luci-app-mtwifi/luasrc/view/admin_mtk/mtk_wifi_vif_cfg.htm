@@ -1,0 +1,590 @@
+
+<%+header%>
+<!--
+  This module is a demo to configure MTK' proprietary WiFi driver.
+  Basic idea is to bypass uci and edit wireless profile (mt76xx.dat) directly.
+  LuCI's WiFi configuration is more logical and elegent, but it's quite tricky to 
+  translate uci into MTK's WiFi profile (like we did in "uci2dat").
+
+  Hua Shao <nossiac@163.com>
+-->
+<%
+function any_wsc_enabled(wsc_conf_mode)
+  if (wsc_conf_mode == "7") then
+    return 1;
+  end
+  if (wsc_conf_mode == "4") then
+    return 1;
+  end
+  if (wsc_conf_mode == "2") then
+    return 1;
+  end
+  if (wsc_conf_mode == "1") then
+    return 1;
+  end
+  return 0;
+end
+
+local disp = require "luci.dispatcher"
+local path  = disp.context.path
+local request = disp.context.request
+local mtkwifi = require("mtkwifi")
+local devname
+local vifname, vifidx
+local dev = {}
+local vif = {}
+
+if request[4] == "vif_add_view" then
+  devname, vifname = request[5], request[6]
+  local devs = mtkwifi.get_all_devs()
+  dev = devs and devs[devname]
+  vifname = vifname..#dev.vifs
+  vifidx = #dev.vifs + 1
+
+elseif request[4] == "vif_cfg_view" then
+  devname, vifname = request[5], request[6]
+  local devs = mtkwifi.get_all_devs()
+  dev = devs and devs[devname] or nil
+  vif = dev and dev.vifs[vifname] or nil
+  vifidx = vif and vif.vifidx or nil
+end
+
+local cfgs = mtkwifi.load_profile(dev.profile)
+local WscValue = mtkwifi.token_get(cfgs["WscConfMode"], vifidx, "0") or "0"
+%>
+
+<script type="text/javascript" src="<%=resource%>/cbi.js?v=git-17.250.41546-90ac861"></script>
+
+<div id="loading" style="margin-top: 1em; display: none;">
+<img src="<%=resource%>/icons/loading.gif" alt="<%:Loading%>" style="vertical-align:e;" />
+    &nbsp;&nbsp;&nbsp; Please waiting while the page is loading......
+</div>
+
+<form method="post" name="cbi" action="<%=luci.dispatcher.build_url("admin", "network", "wifi", "vif_cfg", devname, vifname)%>" enctype="multipart/form-data" onsubmit="return validate_security(<%=vifidx%>,<%=cfgs["HT_DisallowTKIP"]%>)" autocomplete="off">
+<% if not dev or not vif then%>
+  <fieldset class="cbi-section">
+    <legend>Interface Not Exist - <%=vifname and devname.."@"..vifname or devname%>
+    </legend>
+  </fieldset>
+<% else %>
+  <fieldset class="cbi-section">
+    <legend>无线配置 - <%=vifname and devname.."@"..vifname or devname%>
+<%
+local diff = mtkwifi.diff_profile(dev.profile)
+if next(diff) ~= nil then
+%>
+<span style="color:red;">(<a href="javascript:location.href='<%=luci.dispatcher.build_url("admin", "network", "wifi", "reload", dev.devname)%>'">reload</a> to apply changes)</span>
+<% 
+end
+%>
+    </legend>
+    <table id="vif-cfg-basic">
+      <tbody>
+        <tr>
+          <td>SSID</td>
+          <td>
+            <input value="<%=vif.__ssid%>" name="<%="SSID"..vifidx%>" required="required" />
+            <input value="<%=request[4]%>" name="__action" type="hidden" />
+          </td>
+        </tr>
+        <% if dev.DBDC_MODE == "0" then %>
+        <tr>
+          <td>Channel</td>
+          <td>
+            <select style="width:auto" name="__channel">
+              <% for i=0,14 do %>
+              <option value="<%=i%>" <% if i==vif.__channel then %> selected="selected"<% end %>>
+              <% if i==0 then %>Auto<% else %><%=i%><% end %>
+              </option>
+              <% end %>
+            </select>
+          </td>
+        </tr>
+        <% end %>
+        <tr>
+          <td>加密</td>
+          <td>
+            <select name="__authmode" cfg="AuthMode" id="AuthMode" onchange="AuthMode_onchange(this.options[this.options.selectedIndex].value)">
+              <%
+                local AuthModes
+                if(WscValue == "0") then
+                  AuthModes = dev.AuthModeList
+                else
+                  AuthModes = dev.WpsEnableAuthModeList
+                end
+                for _, v in ipairs(AuthModes) do
+                  if (mtkwifi.token_get(cfgs.IEEE8021X, vifidx, nil) == "1") then
+                    if(v == "IEEE8021X") then %>
+                      <option value="<%=v%>" selected="selected" ><%=v%>
+                      </option>
+                    <% else %>
+                      <option value="<%=v%>" ><%=v%>
+                      </option>
+                    <% end
+                  elseif (vif.__authmode == "OPEN" and vif.__encrypttype== "NONE") then
+                    if(v == "Disable") then %>
+                      <option value="<%=v%>" selected="selected" ><%=v%>
+                      </option>
+                    <% else %>
+                      <option value="<%=v%>" ><%=v%>
+                      </option>
+                    <% end
+                  else%>
+                    <option value="<%=v%>" <% if vif.__authmode==v then %>selected="selected" <% end %>><%=v%>
+                    </option>
+                  <% end %>
+                <% end %>
+            </select>
+          </td>
+        </tr>
+      </tbody>
+      <tbody id="wpacommon" style="display:none;">
+        <tr>
+          <td>算法</td>
+          <td>
+            <select name="__wpa_encrypttype" id="__wpa_encrypttype" cfg="EncrypType">
+            <% for _,v in ipairs(dev.WPA_Enc_List) do %>
+              <option value="<%=v%>" <% if vif.__encrypttype==v then %>selected="selected" <% end %>><%=v%>
+              </option>
+            <% end %>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <td>密钥更新时间</td>
+          <td>
+            <input value="<%=vif.__rekeyinterval%>" type="text" name="__rekeyinterval" id="__rekeyinterval" cfg="RekeyInterval" />  (0 ~ 4194303) 秒
+          </td>
+        </tr>
+      </tbody>
+      <tbody id="WPA2PSK" style="display:none;">
+        <tr>
+          <td>密码</td>
+          <td>
+            <input value="<%=vif.__wpapsk%>" type="text" name="<%="WPAPSK"..vifidx%>" id="<%="WPAPSK"..vifidx%>" />
+          </td>
+        </tr>
+      </tbody>
+      <tbody id="WEP" style="display:none;">
+        <tr>
+          <td>Encryption</td>
+          <td>
+            <select name="__wep_encrypttype" cfg="EncrypType">
+            <% for _,v in ipairs(dev.WEP_Enc_List) do %>
+              <option value="<%=v%>" <% if vif.__encrypttype==v then %>selected="selected" <% end %>><%=v%>
+              </option>
+            <% end %>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <td>Default Key</td>
+          <td>
+            <select name="__DefaultKeyID" id="__DefaultKeyID">
+              <option value="1" <%if tonumber(vif.__wepkey_id) == 1 then%>selected="selected"<%end%>>1</option>
+              <option value="2" <%if tonumber(vif.__wepkey_id) == 2 then%>selected="selected"<%end%>>2</option>
+              <option value="3" <%if tonumber(vif.__wepkey_id) == 3 then%>selected="selected"<%end%>>3</option>
+              <option value="4" <%if tonumber(vif.__wepkey_id) == 4 then%>selected="selected"<%end%>>4</option>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <td>WEP Key 1</td>
+          <td>
+            <input value="<%=cfgs["Key1Str"..vifidx]%>" type="text" name="<%="Key1Str"..vifidx%>" id="<%="Key1Str"..vifidx%>" />
+          </td>
+        </tr>
+        <tr>
+          <td>Key Type 1</td>
+          <td>
+            <select id="<%="WEP1Type"..vifidx%>" name="<%="WEP1Type"..vifidx%>">
+            <option value="1" <%if(mtkwifi.token_get(cfgs["Key1Type"], vifidx, 0)) == "1" then %> selected="selected"<%end%>>ASCII</option>
+            <option value="0" <%if(mtkwifi.token_get(cfgs["Key1Type"], vifidx, 0)) == "0" then %> selected="selected"<%end%>>Hex</option>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <td>WEP Key 2</td>
+          <td>
+            <input value="<%=cfgs["Key2Str"..vifidx]%>" type="text" name="<%="Key2Str"..vifidx%>" id="<%="Key2Str"..vifidx%>" />
+          </td>
+        </tr>
+        <tr>
+          <td>Key Type 2</td>
+          <td>
+            <select id="<%="WEP2Type"..vifidx%>" name="<%="WEP2Type"..vifidx%>">
+            <option value="1" <%if(mtkwifi.token_get(cfgs["Key2Type"], vifidx, 0)) == "1" then %> selected="selected"<%end%>>ASCII</option>
+            <option value="0" <%if(mtkwifi.token_get(cfgs["Key2Type"], vifidx, 0)) == "0" then %> selected="selected"<%end%>>Hex</option>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <td>WEP Key 3</td>
+          <td>
+            <input value="<%=cfgs["Key3Str"..vifidx]%>" type="text" name="<%="Key3Str"..vifidx%>" id="<%="Key3Str"..vifidx%>" />
+          </td>
+        </tr>
+        <tr>
+          <td>Key Type 3</td>
+          <td>
+            <select id="<%="WEP3Type"..vifidx%>" name="<%="WEP3Type"..vifidx%>">
+            <option value="1" <%if(mtkwifi.token_get(cfgs["Key3Type"], vifidx, 0)) == "1" then %> selected="selected"<%end%>>ASCII</option>
+            <option value="0" <%if(mtkwifi.token_get(cfgs["Key3Type"], vifidx, 0)) == "0" then %> selected="selected"<%end%>>Hex</option>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <td>WEP Key 4</td>
+          <td>
+            <input value="<%=cfgs["Key4Str"..vifidx]%>" type="text" name="<%="Key4Str"..vifidx%>" id="<%="Key4Str"..vifidx%>" />
+          </td>
+        </tr>
+        <tr>
+          <td>Key Type 4</td>
+          <td>
+            <select id="<%="WEP4Type"..vifidx%>" name="<%="WEP4Type"..vifidx%>">
+            <option value="1" <%if(mtkwifi.token_get(cfgs["Key4Type"], vifidx, 0)) == "1" then %> selected="selected"<%end%>>ASCII</option>
+            <option value="0" <%if(mtkwifi.token_get(cfgs["Key4Type"], vifidx, 0)) == "0" then %> selected="selected"<%end%>>Hex</option>
+            </select>
+          </td>
+        </tr>
+      </tbody>
+      <tbody id="WPA2" style="display:none;">
+        <tr>
+          <td>PMK Cache Period</td>
+          <td>
+            <input value="<%=vif.__pmkcacheperiod%>" type="text" name="__pmkcacheperiod" id="__pmkcacheperiod" cfg="PMKCachePeriod" /> minute(s)
+          </td>
+        </tr>
+        <tr>
+          <td>Pre-Authentication</td>
+          <td>
+            <input name="__preauth" id="__preauth" value="1"
+            <% if mtkwifi.token_get(cfgs["PreAuth"], vifidx, 0) == "1" then %>
+            checked="checked"
+            <% end %> type="checkbox" />
+          </td>
+        </tr>
+      </tbody>
+      <tbody id="PMF" style="display:none;">
+        <tr>
+          <td>MFPC </td>
+          <td> <input name="__pmfmfpc" id="__pmfmfpc" value="1"
+            <% if mtkwifi.token_get(cfgs["PMFMFPC"], vifidx, 0) == "1" then %>
+            checked="checked"
+            <% end %> type="checkbox" /> </td>
+        </tr>
+        <tr>
+          <td>MFPR </td>
+          <td> <input name="__pmfmfpr" id="__pmfmfpr" value="1"
+            <% if mtkwifi.token_get(cfgs["PMFMFPR"], vifidx, 0) == "1" then %>
+            checked="checked"
+            <% end %> type="checkbox" /></td>
+        </tr>
+        <tr>
+          <td>MFPSHA256 </td>
+          <td> <input name="__pmfsha256" id="__pmfsha256" value="1"
+            <% if mtkwifi.token_get(cfgs["PMFSHA256"], vifidx, 0) == "1" then %>
+            checked="checked"
+            <% end %> type="checkbox" /> </td>
+        </tr>
+      </tbody>
+      <tbody id="IEEE8021X" style="display:none;">
+        <tr>
+          <td>WEP for 8021X</td>
+          <td>
+            <input value="1" type="checkbox" name="__8021x_wep" <% if vif.__encrypttype=="WEP" then %>checked="checked" <% end %> />
+          </td>
+        </tr>
+      </tbody>
+      <tbody id="radius" style="display:none">
+        <tr>
+          <td>Radius Server IP</td>
+          <td>
+            <input value="<%=vif.__radius_server%>" type="text" name="__radius_server" id="__radius_server" cfg="RADIUS_Server" />
+          </td>
+        </tr>
+        <tr>
+          <td>Radius Server Port</td>
+          <td>
+            <input value="<%=vif.__radius_port%>" type="text" name="__radius_port" id="__radius_port" cfg="RADIUS_Port" />
+          </td>
+        </tr>
+        <tr>
+          <td>Shared Secret</td>
+          <td>
+            <input value="<%=cfgs["RADIUS_Key"..vifidx]%>" type="text" name="<%="RADIUS_Key"..vifidx%>" id="<%="RADIUS_Key"..vifidx%>" />
+          </td>
+        </tr>
+        <tr>
+          <td>Session Timeout</td>
+          <td>
+            <input value="<%=mtkwifi.token_get(cfgs.session_timeout_interval, vifidx, 0)%>" type="text" name="__session_timeout_interval" id="__session_timeout_interval" /> second(s)
+          </td>
+        </tr>
+        <tr>
+          <td>Idle Timeout</td>
+          <td>
+            <input value="<%=cfgs.idle_timeout_interval%>" type="text" name="idle_timeout_interval" id="idle_timeout_interval" /> second(s)
+          </td>
+        </tr>
+      </tbody>
+      <tbody>
+        <tr>
+          <td>隐藏 SSID</td>
+          <td>
+            <input name="__hidessid" cfg="HideSSID" value="1"
+            <% if vif.__hidessid == "1" then %>
+            checked="checked"
+            <% end %> type="checkbox" />
+          </td>
+        </tr>
+        <tr>
+          <td>隔离客户端</td>
+          <td>
+            <input name="__noforwarding" cfg="NoForwarding" value="1"
+            <% if vif.__noforwarding == "1" then %>
+            checked="checked"
+            <% end %> type="checkbox" />
+          </td>
+        </tr>
+        <tr>
+          <td>WMM 模式</td>
+          <td>
+            <input name="__wmmcapable" cfg="WmmCapable" value="1"
+            <% if vif.__wmmcapable ~= "0" then %>
+            checked="checked"
+            <% end %> type="checkbox" />
+          </td>
+        </tr>
+        <tr>
+          <td>强制发射速率 ( 0为自动，建议值 ）</td>
+          <td>
+            <input value="<%=vif.__txrate or 0%>" name="__txrate" id="__txrate" />
+          </td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td></td>
+          <td></td>
+        </tr>
+      </tfoot>
+    </table>
+
+
+
+  </fieldset>
+
+    <div class="cbi-page-actions">
+        <input class="cbi-button cbi-button-apply" value="重新加载" type="button" onclick='wifi_reload("<%=luci.dispatcher.build_url("admin", "network", "wifi", "reload", devname)%>");' />
+      <input class="cbi-button cbi-button-apply" value="保存" type="submit" />
+      <input class="cbi-button cbi-button-apply" name="__apply" value="保存&应用" type="submit" />
+      <input class="cbi-button cbi-button-reset" value="重置" type="reset" />
+    </div>
+<% end %> <!-- if not dev -->
+</form>
+<script type="text/javascript">
+function wifi_reload(url) {
+    window.scrollTo(0, 0);
+    document.getElementById('loading').style.display="";
+    XHR.get(url, null,
+        function(x)
+        {
+            console.log(x);
+            document.getElementById("loading").style.display="none";
+            window.location.reload();
+        }
+    );
+}
+
+function AuthMode_onchange(to) {
+    var enc_list = new Array()
+    enc_list[0] = "OPEN";
+    enc_list[1] = "WEP";
+    enc_list[2] = "WPA2PSK";
+    enc_list[3] = "WPA2";
+    enc_list[4] = "IEEE8021X";
+    enc_list[5] = "WPAPSKWPA2PSK";
+    enc_list[6] = "WPA1WPA2";
+
+    //replacing input string to WEP (for the case of OPEN, SHARED, WEPAUTO) so as to enable the control with id wep
+    if ((to == "WEPAUTO") || (to == "SHARED") || (to == "OPEN")) {
+        to = "WEP";
+    }
+    for (enc in enc_list) {
+        var e = document.getElementById(enc_list[enc])
+        if (enc_list[enc] == to) {
+            if (e) e.style.display = "";
+        } else {
+            if (e) e.style.display = "none";
+        }
+    }
+    if (to == "WPA2" || to == "IEEE8021X" || to == "WPA1WPA2") {
+        document.getElementById("radius").style.display = "";
+    } else {
+        document.getElementById("radius").style.display = "none";
+    }
+    if (to == "WPA2" || to == "WPA2PSK" || to == "WPAPSKWPA2PSK" || to == "WPA1WPA2") {
+        document.getElementById("wpacommon").style.display = "";
+        if (to != "WPAPSKWPA2PSK") {
+            document.getElementById("PMF").style.display = "";
+        } else {
+            document.getElementById("PMF").style.display = "none";
+        }
+    } else {
+        document.getElementById("wpacommon").style.display = "none";
+    }
+    if (to == "WPAPSKWPA2PSK") {
+        document.getElementById("WPA2PSK").style.display = "";
+    }
+}
+
+function validate_security(vifidx, ht_disallow_tkip) {
+    if (document.getElementById("__activeTab").value != "basic") {
+        return true;
+    }
+    var e = document.getElementById("AuthMode");
+    var AuthMode = e.options[e.selectedIndex].value;
+
+    if (AuthMode == "Disable") {
+        if (isNaN(document.getElementById("__txrate").value) == true || (document.getElementById("__txrate").value == "")) {
+            alert('Please input a valid TX Rate value');
+            return false;
+        }
+    } else if (AuthMode == "OPEN" || AuthMode == "WEPAUTO" || AuthMode == "SHARED") {
+        return check_Wep(AuthMode, vifidx, ht_disallow_tkip);
+    } else if (AuthMode == "WPAPSK" || AuthMode == "WPA2PSK" || AuthMode == "WPAPSKWPA2PSK") {
+        return check_WpaKey(AuthMode, vifidx, ht_disallow_tkip);
+    } else if (AuthMode == "WPA2") {
+        if (check_Wpa2(AuthMode, vifidx) == false)
+            return false;
+
+        if (check_radius(vifidx) == false)
+            return false;
+    } else if (AuthMode == "8021X") {
+        if (check_radius(vifidx) == false)
+            return false;
+    } else if (AuthMode == "WPA" || AuthMode == "WPA1WPA2") //   WPA or WPA1WP2 mixed mode
+    {
+        if (check_Wpa(AuthMode, vifidx, ht_disallow_tkip) == false)
+            return false;
+        if (check_radius(vifidx) == false)
+            return false;
+    } else if (AuthMode == "IEEE8021X") // 802.1x
+    {
+        if (check_radius(vifidx) == false)
+            return false;
+    } else {
+        alert("Unknown value " + AuthMode + "for Auth Mode");
+        return false;
+    }
+    return true;
+}
+
+function check_Wpa2(AuthMode, vifidx) {
+    if (isNaN(document.getElementById("__rekeyinterval").value) == true) {
+        alert('Please input a valid key renewal interval');
+        return false;
+    }
+    if (document.getElementById("__rekeyinterval").value == 0) {
+        alert('Renew key interval is equal to 0, so the device will not refresh key');
+    }
+    if (!document.getElementById("__pmkcacheperiod").value.length) {
+        alert('Please input the PMK Cache Period.');
+        return false;
+    } else if (isNaN(document.getElementById("__pmkcacheperiod").value)) {
+        alert('Please input a number for PMK Cache Period.');
+        return false;
+    }
+    if (check_radius(vifidx) == false)
+        return false;
+}
+
+function check_WpaKey(AuthMode, vifidx, ht_disallow_tkip) {
+    var keyvalue = document.getElementById("WPAPSK" + vifidx).value;
+    if (keyvalue.length == 0) {
+        alert('Please input wpapsk key!');
+        return false;
+    }
+
+    if (keyvalue.length < 8) {
+        alert('Please input at least 8 character of wpapsk key!');
+        return false;
+    }
+
+    if (keyvalue.length == 64 && checkHex(keyvalue) == false) {
+        alert('Please input 8~63 ASCII or 64 Hexadecimal character!');
+        return false;
+    }
+
+    if (checkInjection(keyvalue) == false) {
+        alert('Invalid characters in Pass Phrase.');
+        return false;
+    }
+    return check_Wpa(AuthMode, vifidx, ht_disallow_tkip);
+}
+
+function check_Wpa(AuthMode, vifidx, ht_disallow_tkip) {
+    var e = document.getElementById("__wpa_encrypttype");
+    var EncrypType = e.options[e.selectedIndex].value;
+    // there is no tkip-aes mixed mode in WPA-PSK.
+    if ((AuthMode == "WPA" || AuthMode == "WPAPSK") && (EncrypType == "TKIPAES")) {
+        alert("There is no TKIP-AES mode in WPA-PSK");
+        return false;
+    }
+
+    if (ht_disallow_tkip == "1" && EncrypType == "TKIP")
+        alert("Disallow TKIP/WEP encryption is enabled, so 11N rate will turn off!");
+
+    if (isNaN(document.getElementById("__rekeyinterval").value) == true) {
+        alert('Please input a valid key renewal interval');
+        return false;
+    }
+    if (document.getElementById("__rekeyinterval").value == 0) {
+        alert('Renew key interval is equal to 0, so the device will not refresh key');
+    }
+    return true;
+}
+
+function check_Wep(AuthMode, vifidx, ht_disallow_tkip) {
+    var e = document.getElementById("__DefaultKeyID");
+    var defaultid = e.options[e.selectedIndex].value;
+    var keyvalue = document.getElementById("Key" + defaultid + "Str" + vifidx).value;
+    if (keyvalue.length == 0) {
+        alert('Please input wep key' + defaultid + ' !');
+        return false;
+    }
+    var keylength = keyvalue.length;
+    if (keylength != 0) {
+        if (document.getElementById("WEP" + defaultid + "Type" + vifidx).selectedIndex == 0) {
+            if (keylength != 5 && keylength != 13) {
+                alert('Please input 5 or 13 characters of wep key' + defaultid + ' !');
+                return false;
+            }
+            if (checkInjection(keyvalue) == false) {
+                alert('Wep key' + defaultid + " contains invalid characters.");
+                return false;
+            }
+        }
+        if (document.getElementById("WEP" + defaultid + "Type" + vifidx).selectedIndex == 1) {
+            if (keylength != 10 && keylength != 26) {
+                alert('Please input 10 or 26 characters of wep key' + defaultid + ' !');
+                return false;
+            }
+            if (checkHex(keyvalue) == false) {
+                alert('Invalid Wep key1 format!');
+                return false;
+            }
+        }
+    }
+
+    if (ht_disallow_tkip == "1")
+        alert("Disallow TKIP/WEP encryption is enabled, so 11N rate will turn off!");
+
+    return true;
+}
+
+window.onload = AuthMode_onchange(document.getElementById("AuthMode").options[document.getElementById("AuthMode").selectedIndex].value)
+</script>
+<%+footer%>
