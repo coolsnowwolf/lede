@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Common part for MediaTek MT753x gigabit switch
- *
- * Copyright (C) 2018 MediaTek Inc. All Rights Reserved.
- *
+ * Copyright (c) 2018 MediaTek Inc.
  * Author: Weijie Gao <weijie.gao@mediatek.com>
- *
- * SPDX-License-Identifier:	GPL-2.0+
  */
 
 #include <linux/kernel.h>
@@ -56,8 +52,8 @@ static void display_port_link_status(struct gsw_mt753x *gsw, u32 port)
 	}
 
 	if (pmsr & MAC_LNK_STS) {
-	dev_info(gsw->dev, "Port %d Link is Up - %s/%s\n",
-		 port, speed, (pmsr & MAC_DPX_STS) ? "Full" : "Half");
+		dev_info(gsw->dev, "Port %d Link is Up - %s/%s\n",
+			 port, speed, (pmsr & MAC_DPX_STS) ? "Full" : "Half");
 	} else {
 		dev_info(gsw->dev, "Port %d Link is Down\n", port);
 	}

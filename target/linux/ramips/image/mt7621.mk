@@ -232,7 +232,7 @@ define Device/k2p
   DTS := K2P
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
   DEVICE_TITLE := Phicomm K2P
-  DEVICE_PACKAGES := kmod-mt7615e wpad-basic
+  DEVICE_PACKAGES := luci-app-mtwifi
 endef
 TARGET_DEVICES += k2p
 
@@ -579,6 +579,14 @@ define Device/wsr-600
   DEVICE_PACKAGES := kmod-mt7603 kmod-rt2800-pci wpad-basic
 endef
 TARGET_DEVICES += wsr-600
+
+define Device/XiaoYu-C5
+  DTS := XiaoYu-C5
+  IMAGE_SIZE := $(ralink_default_fw_size_32M)
+  DEVICE_TITLE := XiaoYu-C5
+  DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-usb3
+endef
+TARGET_DEVICES += XiaoYu-C5
 
 define Device/zbt-we1326
   DTS := ZBT-WE1326

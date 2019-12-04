@@ -1,11 +1,3 @@
-define Build/buffalo-tftp-header
-	( \
-		echo -n -e "# Airstation Public Fmt1" | dd bs=32 count=1 conv=sync; \
-		dd if=$@; \
-	) > $@.new
-  mv $@.new $@
-endef
-
 define Build/buffalo-tag
 	$(eval product=$(word 1,$(1)))
 	$(eval hwver=$(word 2,$(1)))
@@ -18,4 +10,10 @@ define Build/buffalo-tag
 	mv $@.new $@
 endef
 
-
+define Build/buffalo-tftp-header
+	( \
+		echo -n -e "# Airstation Public Fmt1" | dd bs=32 count=1 conv=sync; \
+		dd if=$@; \
+	) > $@.new
+	mv $@.new $@
+endef

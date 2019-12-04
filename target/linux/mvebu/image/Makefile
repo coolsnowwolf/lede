@@ -68,6 +68,15 @@ define Build/omnia-medkit-initramfs
 		--file=$@ -C $(dir $(IMAGE_KERNEL))boot/ .
 endef
 
+define Build/uDPU-firmware
+	(rm -fR $@-fw; mkdir -p $@-fw)
+	$(CP) $(BIN_DIR)/$(IMAGE_PREFIX)-initramfs.itb $@-fw/recovery.itb
+	$(CP) $@-boot.scr $@-fw/boot.scr
+	(cd $(TARGET_DIR); $(TAR) -cvzf $@-fw/rootfs.tgz .)
+	(cd $@.boot; $(TAR) -cvzf $@-fw/boot.tgz .)
+	(cd $@-fw; $(TAR) -cvzf $(KDIR_TMP)/$(IMAGE_PREFIX)-firmware.tgz .)
+endef
+
 define Device/Default
   PROFILES := Default
   BOARD_NAME = $$(DEVICE_DTS)

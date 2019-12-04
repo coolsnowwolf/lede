@@ -1,0 +1,164 @@
+From: Evan Green <evgreen@chromium.org>
+Subject: [PATCH v5 0/2] loop: Better discard for block devices
+Date: Mon,  6 May 2019 11:27:35 -0700
+Message-Id: <20190506182736.21064-2-evgreen@chromium.org>
+
+This series addresses some errors seen when using the loop
+device directly backed by a block device.
+
+The first change titled "loop: Better discard for block devices"
+plumbs out the correct error message, and the second change prevents
+the error from occurring in many cases.
+
+The errors look like this:
+[   90.880875] print_req_error: I/O error, dev loop5, sector 0
+
+The errors occur when trying to do a discard or write zeroes operation
+on a loop device backed by a block device that does not support write zeroes.
+Firstly, the error itself is incorrectly reported as I/O error, but is
+actually EOPNOTSUPP. The first patch plumbs out EOPNOTSUPP to properly
+report the error.
+
+The second patch called "loop: Better discard support for block devices"
+prevents these errors from occurring by mirroring the zeroing capabilities
+of the underlying block device into the loop device.
+Before this change, discard was always reported as being supported, and
+the loop device simply turns around and does an fallocate operation on the
+backing device. After this change, backing block devices that do support
+zeroing will continue to work as before, and continue to get all the
+benefits of doing that. Backing devices that do not support zeroing will
+fail earlier, avoiding hitting the loop device at all and ultimately
+avoiding this error in the logs.
+
+I can also confirm that this fixes test block/003 in the blktests, when
+running blktests on a loop device backed by a block device.
+
+Signed-off-by: Evan Green <evgreen@chromium.org>
+Reviewed-by: Ming Lei <ming.lei@redhat.com>
+Reviewed-by: Bart Van Assche <bvanassche@acm.org>
+Reviewed-by: Martin K. Petersen <martin.petersen@oracle.com>
+Reviewed-by: Gwendal Grignou <gwendal@chromium.org>
+Reviewed-by: Chaitanya Kulkarni <chaitanya.kulkarni@wdc.com>
+---
+
+--- a/drivers/block/loop.c
++++ b/drivers/block/loop.c
+@@ -416,19 +416,14 @@ out_free_page:
+ 	return ret;
+ }
+ 
+-static int lo_discard(struct loop_device *lo, struct request *rq, loff_t pos)
++static int lo_discard(struct loop_device *lo, struct request *rq,
++		int mode, loff_t pos)
+ {
+-	/*
+-	 * We use punch hole to reclaim the free space used by the
+-	 * image a.k.a. discard. However we do not support discard if
+-	 * encryption is enabled, because it may give an attacker
+-	 * useful information.
+-	 */
+ 	struct file *file = lo->lo_backing_file;
+-	int mode = FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE;
++	struct request_queue *q = lo->lo_queue;
+ 	int ret;
+ 
+-	if ((!file->f_op->fallocate) || lo->lo_encrypt_key_size) {
++	if (!blk_queue_discard(q)) {
+ 		ret = -EOPNOTSUPP;
+ 		goto out;
+ 	}
+@@ -457,7 +452,9 @@ static void lo_complete_rq(struct reques
+ 
+ 	if (!cmd->use_aio || cmd->ret < 0 || cmd->ret == blk_rq_bytes(rq) ||
+ 	    req_op(rq) != REQ_OP_READ) {
+-		if (cmd->ret < 0)
++		if (cmd->ret == -EOPNOTSUPP)
++			ret = BLK_STS_NOTSUPP;
++		else if (cmd->ret < 0)
+ 			ret = BLK_STS_IOERR;
+ 		goto end_io;
+ 	}
+@@ -597,8 +594,13 @@ static int do_req_filebacked(struct loop
+ 	case REQ_OP_FLUSH:
+ 		return lo_req_flush(lo, rq);
+ 	case REQ_OP_DISCARD:
++		return lo_discard(lo, rq,
++			FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, pos);
++
+ 	case REQ_OP_WRITE_ZEROES:
+-		return lo_discard(lo, rq, pos);
++		return lo_discard(lo, rq,
++			FALLOC_FL_ZERO_RANGE | FALLOC_FL_KEEP_SIZE, pos);
++
+ 	case REQ_OP_WRITE:
+ 		if (lo->transfer)
+ 			return lo_write_transfer(lo, rq, pos);
+@@ -853,6 +855,21 @@ static void loop_config_discard(struct l
+ 	struct file *file = lo->lo_backing_file;
+ 	struct inode *inode = file->f_mapping->host;
+ 	struct request_queue *q = lo->lo_queue;
++	struct request_queue *backingq;
++
++	/*
++	 * If the backing device is a block device, mirror its zeroing
++	 * capability. REQ_OP_DISCARD translates to a zero-out even when backed
++	 * by block devices to keep consistent behavior with file-backed loop
++	 * devices.
++	 */
++	if (S_ISBLK(inode->i_mode) && !lo->lo_encrypt_key_size) {
++		backingq = bdev_get_queue(inode->i_bdev);
++		blk_queue_max_discard_sectors(q,
++			backingq->limits.max_write_zeroes_sectors);
++
++		blk_queue_max_write_zeroes_sectors(q,
++			backingq->limits.max_write_zeroes_sectors);
+ 
+ 	/*
+ 	 * We use punch hole to reclaim the free space used by the
+@@ -860,22 +877,24 @@ static void loop_config_discard(struct l
+ 	 * encryption is enabled, because it may give an attacker
+ 	 * useful information.
+ 	 */
+-	if ((!file->f_op->fallocate) ||
+-	    lo->lo_encrypt_key_size) {
++	} else if ((!file->f_op->fallocate) || lo->lo_encrypt_key_size) {
+ 		q->limits.discard_granularity = 0;
+ 		q->limits.discard_alignment = 0;
+ 		blk_queue_max_discard_sectors(q, 0);
+ 		blk_queue_max_write_zeroes_sectors(q, 0);
+-		blk_queue_flag_clear(QUEUE_FLAG_DISCARD, q);
+-		return;
+-	}
+ 
+-	q->limits.discard_granularity = inode->i_sb->s_blocksize;
+-	q->limits.discard_alignment = 0;
++	} else {
++		q->limits.discard_granularity = inode->i_sb->s_blocksize;
++		q->limits.discard_alignment = 0;
+ 
+-	blk_queue_max_discard_sectors(q, UINT_MAX >> 9);
+-	blk_queue_max_write_zeroes_sectors(q, UINT_MAX >> 9);
+-	blk_queue_flag_set(QUEUE_FLAG_DISCARD, q);
++		blk_queue_max_discard_sectors(q, UINT_MAX >> 9);
++		blk_queue_max_write_zeroes_sectors(q, UINT_MAX >> 9);
++	}
++
++	if (q->limits.max_write_zeroes_sectors)
++		blk_queue_flag_set(QUEUE_FLAG_DISCARD, q);
++	else
++		blk_queue_flag_clear(QUEUE_FLAG_DISCARD, q);
+ }
+ 
+ static void loop_unprepare_queue(struct loop_device *lo)
+@@ -1894,7 +1913,10 @@ static void loop_handle_cmd(struct loop_
+  failed:
+ 	/* complete non-aio request */
+ 	if (!cmd->use_aio || ret) {
+-		cmd->ret = ret ? -EIO : 0;
++		if (ret == -EOPNOTSUPP)
++			cmd->ret = ret;
++		else
++			cmd->ret = ret ? -EIO : 0;
+ 		blk_mq_complete_request(rq);
+ 	}
+ }

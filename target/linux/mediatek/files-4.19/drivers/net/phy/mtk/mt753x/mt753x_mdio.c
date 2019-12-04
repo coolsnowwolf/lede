@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Driver for MediaTek MT753x gigabit switch
- *
- * Copyright (C) 2018 MediaTek Inc. All Rights Reserved.
- *
+ * Copyright (c) 2018 MediaTek Inc.
  * Author: Weijie Gao <weijie.gao@mediatek.com>
- *
- * SPDX-License-Identifier:	GPL-2.0+
  */
 
 #include <linux/kernel.h>
@@ -232,6 +228,11 @@ void mt753x_mmd_ind_write(struct gsw_mt753x *gsw, int addr, int devad, u16 reg,
 	mutex_unlock(&gsw->mii_lock);
 }
 
+static inline int mt753x_get_duplex(const struct device_node *np)
+{
+	return of_property_read_bool(np, "full-duplex");
+}
+
 static void mt753x_load_port_cfg(struct gsw_mt753x *gsw)
 {
 	struct device_node *port_np;
@@ -279,9 +280,7 @@ static void mt753x_load_port_cfg(struct gsw_mt753x *gsw)
 			u32 speed;
 
 			port_cfg->force_link = 1;
-			port_cfg->duplex = of_property_read_bool(
-						fixed_link_node,
-						"full-duplex");
+			port_cfg->duplex = mt753x_get_duplex(fixed_link_node);
 
 			if (of_property_read_u32(fixed_link_node, "speed",
 						 &speed)) {
@@ -330,6 +329,7 @@ static void mt753x_remove_gsw(struct gsw_mt753x *gsw)
 	list_del(&gsw->list);
 	mutex_unlock(&mt753x_devs_lock);
 }
+
 
 struct gsw_mt753x *mt753x_get_gsw(u32 id)
 {
@@ -416,150 +416,6 @@ static int mt753x_hw_reset(struct gsw_mt753x *gsw)
 	return 0;
 }
 
-static int mt753x_mdio_read(struct mii_bus *bus, int addr, int reg)
-{
-	struct gsw_mt753x *gsw = bus->priv;
-
-	return gsw->mii_read(gsw, addr, reg);
-}
-
-static int mt753x_mdio_write(struct mii_bus *bus, int addr, int reg, u16 val)
-{
-	struct gsw_mt753x *gsw = bus->priv;
-
-	gsw->mii_write(gsw, addr, reg, val);
-
-	return 0;
-}
-
-static const struct net_device_ops mt753x_dummy_netdev_ops = {
-};
-
-static void mt753x_phy_link_handler(struct net_device *dev)
-{
-	struct mt753x_phy *phy = container_of(dev, struct mt753x_phy, netdev);
-	struct phy_device *phydev = phy->phydev;
-	struct gsw_mt753x *gsw = phy->gsw;
-	u32 port = phy - gsw->phys;
-
-	if (phydev->link) {
-		dev_info(gsw->dev,
-			 "Port %d Link is Up - %s/%s - flow control %s\n",
-			 port, phy_speed_to_str(phydev->speed),
-			 (phydev->duplex == DUPLEX_FULL) ? "Full" : "Half",
-			 phydev->pause ? "rx/tx" : "off");
-	} else {
-		dev_info(gsw->dev, "Port %d Link is Down\n", port);
-	}
-}
-
-static void mt753x_connect_internal_phys(struct gsw_mt753x *gsw,
-					 struct device_node *mii_np)
-{
-	struct device_node *phy_np;
-	struct mt753x_phy *phy;
-	int phy_mode;
-	u32 phyad;
-
-	if (!mii_np)
-		return;
-
-	for_each_child_of_node(mii_np, phy_np) {
-		if (of_property_read_u32(phy_np, "reg", &phyad))
-			continue;
-
-		if (phyad >= MT753X_NUM_PHYS)
-			continue;
-
-		phy_mode = of_get_phy_mode(phy_np);
-		if (phy_mode < 0) {
-			dev_info(gsw->dev, "incorrect phy-mode %d for PHY %d\n",
-				 phy_mode, phyad);
-			continue;
-		}
-
-		phy = &gsw->phys[phyad];
-		phy->gsw = gsw;
-
-		init_dummy_netdev(&phy->netdev);
-		phy->netdev.netdev_ops = &mt753x_dummy_netdev_ops;
-
-		phy->phydev = of_phy_connect(&phy->netdev, phy_np,
-					mt753x_phy_link_handler, 0, phy_mode);
-		if (!phy->phydev) {
-			dev_info(gsw->dev, "could not connect to PHY %d\n",
-				 phyad);
-			continue;
-		}
-
-		phy_start(phy->phydev);
-	}
-}
-
-static void mt753x_disconnect_internal_phys(struct gsw_mt753x *gsw)
-{
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(gsw->phys); i++) {
-		if (gsw->phys[i].phydev) {
-			phy_stop(gsw->phys[i].phydev);
-			phy_disconnect(gsw->phys[i].phydev);
-			gsw->phys[i].phydev = NULL;
-		}
-	}
-}
-
-static int mt753x_mdio_register(struct gsw_mt753x *gsw)
-{
-	struct device_node *mii_np;
-	int i, ret;
-
-	mii_np = of_get_child_by_name(gsw->dev->of_node, "mdio-bus");
-	if (mii_np && !of_device_is_available(mii_np)) {
-		ret = -ENODEV;
-		goto err_put_node;
-	}
-
-	gsw->gphy_bus = devm_mdiobus_alloc(gsw->dev);
-	if (!gsw->gphy_bus) {
-		ret = -ENOMEM;
-		goto err_put_node;
-	}
-
-	gsw->gphy_bus->name = "mt753x_mdio";
-	gsw->gphy_bus->read = mt753x_mdio_read;
-	gsw->gphy_bus->write = mt753x_mdio_write;
-	gsw->gphy_bus->priv = gsw;
-	gsw->gphy_bus->parent = gsw->dev;
-	gsw->gphy_bus->phy_mask = BIT(MT753X_NUM_PHYS) - 1;
-
-	for (i = 0; i < PHY_MAX_ADDR; i++)
-		gsw->gphy_bus->irq[i] = PHY_POLL;
-
-	if (mii_np)
-		snprintf(gsw->gphy_bus->id, MII_BUS_ID_SIZE, "%s@%s",
-			 mii_np->name, gsw->dev->of_node->name);
-	else
-		snprintf(gsw->gphy_bus->id, MII_BUS_ID_SIZE, "mdio@%s",
-			 gsw->dev->of_node->name);
-
-	ret = of_mdiobus_register(gsw->gphy_bus, mii_np);
-
-	if (ret) {
-		devm_mdiobus_free(gsw->dev, gsw->gphy_bus);
-		gsw->gphy_bus = NULL;
-	} else {
-		if (gsw->phy_status_poll)
-			mt753x_connect_internal_phys(gsw, mii_np);
-	}
-
-err_put_node:
-	if (mii_np)
-		of_node_put(mii_np);
-
-	return ret;
-}
-
 static irqreturn_t mt753x_irq_handler(int irq, void *dev)
 {
 	struct gsw_mt753x *gsw = dev;
@@ -580,6 +436,7 @@ static int mt753x_probe(struct platform_device *pdev)
 	struct mii_bus *mdio_bus;
 	int ret = -EINVAL;
 	struct chip_rev rev;
+	struct mt753x_mapping *map;
 	int i;
 
 	mdio = of_parse_phandle(np, "mediatek,mdio", 0);
@@ -599,11 +456,20 @@ static int mt753x_probe(struct platform_device *pdev)
 	mutex_init(&gsw->mii_lock);
 
 	/* Switch hard reset */
-	mt753x_hw_reset(gsw);
+	if (mt753x_hw_reset(gsw))
+		goto fail;
 
 	/* Fetch the SMI address dirst */
 	if (of_property_read_u32(np, "mediatek,smi-addr", &gsw->smi_addr))
 		gsw->smi_addr = MT753X_DFL_SMI_ADDR;
+
+	/* Get LAN/WAN port mapping */
+	map = mt753x_find_mapping(np);
+	if (map) {
+		mt753x_apply_mapping(gsw, map);
+		gsw->global_vlan_enable = 1;
+		dev_info(gsw->dev, "LAN/WAN VLAN setting=%s\n", map->name);
+	}
 
 	/* Load MAC port configurations */
 	mt753x_load_port_cfg(gsw);
@@ -653,11 +519,7 @@ static int mt753x_probe(struct platform_device *pdev)
 
 	mt753x_add_gsw(gsw);
 
-	mt753x_mdio_register(gsw);
-
-#ifdef CONFIG_SWCONFIG
 	mt753x_swconfig_init(gsw);
-#endif
 
 	if (sw->post_init)
 		sw->post_init(gsw);
@@ -686,10 +548,6 @@ static int mt753x_remove(struct platform_device *pdev)
 #ifdef CONFIG_SWCONFIG
 	mt753x_swconfig_destroy(gsw);
 #endif
-
-	mt753x_disconnect_internal_phys(gsw);
-
-	mdiobus_unregister(gsw->gphy_bus);
 
 	mt753x_remove_gsw(gsw);
 
