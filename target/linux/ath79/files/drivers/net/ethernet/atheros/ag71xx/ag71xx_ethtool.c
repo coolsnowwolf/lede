@@ -13,30 +13,6 @@
 
 #include "ag71xx.h"
 
-static int ag71xx_ethtool_get_settings(struct net_device *dev,
-				       struct ethtool_cmd *cmd)
-{
-	struct ag71xx *ag = netdev_priv(dev);
-	struct phy_device *phydev = ag->phy_dev;
-
-	if (!phydev)
-		return -ENODEV;
-
-	return phy_ethtool_ioctl(phydev, cmd);
-}
-
-static int ag71xx_ethtool_set_settings(struct net_device *dev,
-				       struct ethtool_cmd *cmd)
-{
-	struct ag71xx *ag = netdev_priv(dev);
-	struct phy_device *phydev = ag->phy_dev;
-
-	if (!phydev)
-		return -ENODEV;
-
-	return phy_ethtool_ioctl(phydev, cmd);
-}
-
 static u32 ag71xx_ethtool_get_msglevel(struct net_device *dev)
 {
 	struct ag71xx *ag = netdev_priv(dev);
@@ -108,13 +84,25 @@ static int ag71xx_ethtool_set_ringparam(struct net_device *dev,
 	return err;
 }
 
+static int ag71xx_ethtool_nway_reset(struct net_device *dev)
+{
+	struct ag71xx *ag = netdev_priv(dev);
+	struct phy_device *phydev = ag->phy_dev;
+
+	if (!phydev)
+		return -ENODEV;
+
+	return genphy_restart_aneg(phydev);
+}
+
 struct ethtool_ops ag71xx_ethtool_ops = {
-	.set_settings	= ag71xx_ethtool_set_settings,
-	.get_settings	= ag71xx_ethtool_get_settings,
 	.get_msglevel	= ag71xx_ethtool_get_msglevel,
 	.set_msglevel	= ag71xx_ethtool_set_msglevel,
 	.get_ringparam	= ag71xx_ethtool_get_ringparam,
 	.set_ringparam	= ag71xx_ethtool_set_ringparam,
+	.get_link_ksettings = phy_ethtool_get_link_ksettings,
+	.set_link_ksettings = phy_ethtool_set_link_ksettings,
 	.get_link	= ethtool_op_get_link,
 	.get_ts_info	= ethtool_op_get_ts_info,
+	.nway_reset	= ag71xx_ethtool_nway_reset,
 };

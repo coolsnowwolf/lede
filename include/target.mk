@@ -185,6 +185,7 @@ ifeq ($(DUMP),1)
     CPU_TYPE ?= pentium
     CPU_CFLAGS_pentium = -march=pentium-mmx
     CPU_CFLAGS_pentium4 = -march=pentium4
+    CPU_CFLAGS_core2 = -march=core2
   endif
   ifneq ($(findstring arm,$(ARCH)),)
     CPU_TYPE ?= xscale

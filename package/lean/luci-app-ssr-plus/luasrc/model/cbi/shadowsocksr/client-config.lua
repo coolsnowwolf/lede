@@ -114,7 +114,7 @@ s = m:section(NamedSection, sid, "servers")
 s.anonymous = true
 s.addremove   = false
 
-o = s:option(DummyValue,"ssr_url","SS/SSR/V2RAY URL") 
+o = s:option(DummyValue,"ssr_url","SS/SSR/V2RAY/TROJAN URL") 
 o.rawhtml  = true
 o.template = "shadowsocksr/ssrurl"
 o.value =sid
@@ -126,6 +126,9 @@ o:value("ss", translate("Shadowsocks New Version"))
 end
 if nixio.fs.access("/usr/bin/v2ray/v2ray") then
 o:value("v2ray", translate("V2Ray"))
+end
+if nixio.fs.access("/usr/sbin/trojan") then
+o:value("trojan", translate("Trojan"))
 end
 o.description = translate("Using incorrect encryption mothod may causes service fail to start")
 
@@ -149,6 +152,7 @@ o.password = true
 o.rmempty = true
 o:depends("type", "ssr")
 o:depends("type", "ss")
+o:depends("type", "trojan")
 
 o = s:option(ListValue, "encrypt_method", translate("Encrypt Method"))
 for _, v in ipairs(encrypt_methods) do o:value(v) end
@@ -327,18 +331,26 @@ o.rmempty = true
 o = s:option(Flag, "insecure", translate("allowInsecure"))
 o.rmempty = true
 o:depends("type", "v2ray")
+o:depends("type", "trojan")
 
 -- [[ TLS ]]--
 o = s:option(Flag, "tls", translate("TLS"))
 o.rmempty = true
 o.default = "0"
 o:depends("type", "v2ray")
+o:depends("type", "trojan")
+
+o = s:option(Value, "tls_host", translate("TLS Host"))
+o:depends("tls", "1")
+o.rmempty = true
+o:depends("type", "trojan")
 
 -- [[ Mux ]]--
 o = s:option(Flag, "mux", translate("Mux"))
 o.rmempty = true
 o.default = "0"
 o:depends("type", "v2ray")
+o:depends("type", "trojan")
 
 o = s:option(Value, "concurrency", translate("Concurrency"))
 o.datatype = "uinteger"

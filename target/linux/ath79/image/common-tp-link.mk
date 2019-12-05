@@ -48,6 +48,7 @@ define Build/uImageArcher
 endef
 
 define Device/tplink
+  DEVICE_VENDOR := TP-Link
   TPLINK_HWREV := 0x1
   TPLINK_HEADER_VERSION := 1
   LOADER_TYPE := gz
@@ -82,19 +83,19 @@ endef
 define Device/tplink-8m
   $(Device/tplink-nolzma)
   TPLINK_FLASHLAYOUT := 8M
-  IMAGE_SIZE := 7936k
+  IMAGE_SIZE := 8000k
 endef
 
 define Device/tplink-8mlzma
   $(Device/tplink)
   TPLINK_FLASHLAYOUT := 8Mlzma
-  IMAGE_SIZE := 7936k
+  IMAGE_SIZE := 8000k
 endef
 
 define Device/tplink-16mlzma
   $(Device/tplink)
   TPLINK_FLASHLAYOUT := 16Mlzma
-  IMAGE_SIZE := 15872k
+  IMAGE_SIZE := 16192k
 endef
 
 define Device/tplink-safeloader
@@ -108,4 +109,13 @@ endef
 define Device/tplink-safeloader-uimage
   $(Device/tplink-safeloader)
   KERNEL := kernel-bin | append-dtb | lzma | uImageArcher lzma
+endef
+
+define Device/tplink-loader-okli
+  $(Device/tplink-safeloader)
+  LOADER_TYPE := elf
+  LOADER_FLASH_OFFS := 0x43000
+  COMPILE := loader-$(1).elf
+  COMPILE/loader-$(1).elf := loader-okli-compile
+  KERNEL := kernel-bin | append-dtb | lzma | uImage lzma -M 0x4f4b4c49 | loader-okli $(1) 12288
 endef
