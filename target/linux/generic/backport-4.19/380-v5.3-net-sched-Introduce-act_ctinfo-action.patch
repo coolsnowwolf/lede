@@ -1,29 +1,41 @@
-From c17877e414155b9b97d10416ff62b102d25019a1 Mon Sep 17 00:00:00 2001
+From 6d8071bbbdcd9d3a2fbb49e55b51617906e3b816 Mon Sep 17 00:00:00 2001
 From: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
 Date: Wed, 13 Mar 2019 20:54:49 +0000
-Subject: [PATCH] net: sched: Introduce act_ctinfo action
+Subject: [PATCH] net: sched: Backport Introduce act_ctinfo action
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
-ctinfo is a new tc filter action module.  It is designed to restore DSCPs
-stored in conntrack marks into the ipv4/v6 diffserv field.
+ctinfo is a new tc filter action module.  It is designed to restore
+information contained in firewall conntrack marks to other packet fields
+and is typically used on packet ingress paths.  At present it has two
+independent sub-functions or operating modes, DSCP restoration mode &
+skb mark restoration mode.
 
-The feature is intended for use and has been found useful for restoring
-ingress classifications based on egress classifications across links
-that bleach or otherwise change DSCP, typically home ISP Internet links.
-Restoring DSCP on ingress on the WAN link allows qdiscs such as CAKE to
-shape inbound packets according to policies that are easier to indicate
-on egress.
+The DSCP restore mode:
+
+This mode copies DSCP values that have been placed in the firewall
+conntrack mark back into the IPv4/v6 diffserv fields of relevant
+packets.
+
+The DSCP restoration is intended for use and has been found useful for
+restoring ingress classifications based on egress classifications across
+links that bleach or otherwise change DSCP, typically home ISP Internet
+links.  Restoring DSCP on ingress on the WAN link allows qdiscs such as
+but by no means limited to CAKE to shape inbound packets according to
+policies that are easier to set & mark on egress.
 
 Ingress classification is traditionally a challenging task since
 iptables rules haven't yet run and tc filter/eBPF programs are pre-NAT
 lookups, hence are unable to see internal IPv4 addresses as used on the
-typical home masquerading gateway.
+typical home masquerading gateway.  Thus marking the connection in some
+manner on egress for later restoration of classification on ingress is
+easier to implement.
 
-ctinfo understands the following parameters:
+Parameters related to DSCP restore mode:
 
-dscp dscpmask[/statemask]
-
-dscpmask - a 32 bit mask of at least 6 contiguous bits and indicates
-where ctinfo will find the DSCP bits stored in the conntrack mark.
+dscpmask - a 32 bit mask of 6 contiguous bits and indicate bits of the
+conntrack mark field contain the DSCP value to be restored.
 
 statemask - a 32 bit mask of (usually) 1 bit length, outside the area
 specified by dscpmask.  This represents a conditional operation flag
@@ -36,14 +48,7 @@ conditional behaviour ie. the conntrack mark DSCP bits are always
 restored to the ip diffserv field (assuming the conntrack entry is found
 & the skb is an ipv4/ipv6 type)
 
-optional parameters:
-
-zone - conntrack zone
-
-control - action related control (reclassify | pipe | drop | continue |
-ok | goto chain <CHAIN_INDEX>)
-
-e.g. dscp 0xfc000000/0x01000000
+e.g. dscpmask 0xfc000000 statemask 0x01000000
 
 |----0xFC----conntrack mark----000000---|
 | Bits 31-26 | bit 25 | bit24 |~~~ Bit 0|
@@ -57,6 +62,49 @@ e.g. dscp 0xfc000000/0x01000000
 | 6 bits      |
 |-------------|
 
+The skb mark restore mode (cpmark):
+
+This mode copies the firewall conntrack mark to the skb's mark field.
+It is completely the functional equivalent of the existing act_connmark
+action with the additional feature of being able to apply a mask to the
+restored value.
+
+Parameters related to skb mark restore mode:
+
+mask - a 32 bit mask applied to the firewall conntrack mark to mask out
+bits unwanted for restoration.  This can be useful where the conntrack
+mark is being used for different purposes by different applications.  If
+not specified and by default the whole mark field is copied (i.e.
+default mask of 0xffffffff)
+
+e.g. mask 0x00ffffff to mask out the top 8 bits being used by the
+aforementioned DSCP restore mode.
+
+|----0x00----conntrack mark----ffffff---|
+| Bits 31-24 |                          |
+| DSCP & flag|      some value here     |
+|---------------------------------------|
+			|
+			|
+			v
+|------------skb mark-------------------|
+|            |                          |
+|  zeroed    |                          |
+|---------------------------------------|
+
+Overall parameters:
+
+zone - conntrack zone
+
+control - action related control (reclassify | pipe | drop | continue |
+ok | goto chain <CHAIN_INDEX>)
+
+Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
+Reviewed-by: Toke Høiland-Jørgensen <toke@redhat.com>
+Acked-by: Cong Wang <xiyou.wangcong@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+
+Backport
 Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
 ---
  include/net/tc_act/tc_ctinfo.h            |  33 ++
@@ -64,9 +112,9 @@ Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
  include/uapi/linux/tc_act/tc_ctinfo.h     |  29 ++
  net/sched/Kconfig                         |  17 +
  net/sched/Makefile                        |   1 +
- net/sched/act_ctinfo.c                    | 395 ++++++++++++++++++++++
+ net/sched/act_ctinfo.c                    | 409 ++++++++++++++++++++++
  tools/testing/selftests/tc-testing/config |   1 +
- 7 files changed, 478 insertions(+), 1 deletion(-)
+ 7 files changed, 492 insertions(+), 1 deletion(-)
  create mode 100644 include/net/tc_act/tc_ctinfo.h
  create mode 100644 include/uapi/linux/tc_act/tc_ctinfo.h
  create mode 100644 net/sched/act_ctinfo.c
@@ -189,7 +237,7 @@ Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
  obj-$(CONFIG_NET_IFE_SKBMARK)	+= act_meta_mark.o
 --- /dev/null
 +++ b/net/sched/act_ctinfo.c
-@@ -0,0 +1,395 @@
+@@ -0,0 +1,409 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/* net/sched/act_ctinfo.c  netfilter ctinfo connmark actions
 + *
@@ -347,24 +395,29 @@ Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
 +			   struct netlink_ext_ack *extack)
 +{
 +	struct tc_action_net *tn = net_generic(net, ctinfo_net_id);
++	u32 dscpmask = 0, dscpstatemask, index;
 +	struct nlattr *tb[TCA_CTINFO_MAX + 1];
 +	struct tcf_ctinfo_params *cp_new;
 +/*	struct tcf_chain *goto_ch = NULL; */
-+	u32 dscpmask = 0, dscpstatemask;
 +	struct tc_ctinfo *actparm;
 +	struct tcf_ctinfo *ci;
 +	u8 dscpmaskshift;
 +	int ret = 0, err;
 +
-+	if (!nla)
++	if (!nla) {
++		NL_SET_ERR_MSG_MOD(extack, "ctinfo requires attributes to be passed");
 +		return -EINVAL;
++	}
 +
-+	err = nla_parse_nested(tb, TCA_CTINFO_MAX, nla, ctinfo_policy, NULL);
++	err = nla_parse_nested(tb, TCA_CTINFO_MAX, nla, ctinfo_policy, extack);
 +	if (err < 0)
 +		return err;
 +
-+	if (!tb[TCA_CTINFO_ACT])
++	if (!tb[TCA_CTINFO_ACT]) {
++		NL_SET_ERR_MSG_MOD(extack,
++				   "Missing required TCA_CTINFO_ACT attribute");
 +		return -EINVAL;
++	}
 +	actparm = nla_data(tb[TCA_CTINFO_ACT]);
 +
 +	/* do some basic validation here before dynamically allocating things */
@@ -373,22 +426,31 @@ Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
 +		dscpmask = nla_get_u32(tb[TCA_CTINFO_PARMS_DSCP_MASK]);
 +		/* need contiguous 6 bit mask */
 +		dscpmaskshift = dscpmask ? __ffs(dscpmask) : 0;
-+		if ((~0 & (dscpmask >> dscpmaskshift)) != 0x3f)
++		if ((~0 & (dscpmask >> dscpmaskshift)) != 0x3f) {
++			NL_SET_ERR_MSG_ATTR(extack,
++					    tb[TCA_CTINFO_PARMS_DSCP_MASK],
++					    "dscp mask must be 6 contiguous bits");
 +			return -EINVAL;
++		}
 +		dscpstatemask = tb[TCA_CTINFO_PARMS_DSCP_STATEMASK] ?
 +			nla_get_u32(tb[TCA_CTINFO_PARMS_DSCP_STATEMASK]) : 0;
 +		/* mask & statemask must not overlap */
-+		if (dscpmask & dscpstatemask)
++		if (dscpmask & dscpstatemask) {
++			NL_SET_ERR_MSG_ATTR(extack,
++					    tb[TCA_CTINFO_PARMS_DSCP_STATEMASK],
++					    "dscp statemask must not overlap dscp mask");
 +			return -EINVAL;
++		}
 +	}
 +
 +	/* done the validation:now to the actual action allocation */
-+	err = tcf_idr_check_alloc(tn, &actparm->index, a, bind);
++	index = actparm->index;
++	err = tcf_idr_check_alloc(tn, &index, a, bind);
 +	if (!err) {
-+		ret = tcf_idr_create(tn, actparm->index, est, a,
++		ret = tcf_idr_create(tn, index, est, a,
 +				     &act_ctinfo_ops, bind, false);
 +		if (ret) {
-+			tcf_idr_cleanup(tn, actparm->index);
++			tcf_idr_cleanup(tn, index);
 +			return ret;
 +		}
 +		ret = ACT_P_CREATED;
@@ -587,11 +649,11 @@ Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
 +MODULE_LICENSE("GPL");
 --- a/tools/testing/selftests/tc-testing/config
 +++ b/tools/testing/selftests/tc-testing/config
-@@ -37,6 +37,7 @@ CONFIG_NET_ACT_SKBEDIT=m
- CONFIG_NET_ACT_CSUM=m
+@@ -38,6 +38,7 @@ CONFIG_NET_ACT_CSUM=m
  CONFIG_NET_ACT_VLAN=m
  CONFIG_NET_ACT_BPF=m
-+CONFIG_NET_ACT_CONNDSCP=m
  CONFIG_NET_ACT_CONNMARK=m
++CONFIG_NET_ACT_CONNCTINFO=m
  CONFIG_NET_ACT_SKBMOD=m
  CONFIG_NET_ACT_IFE=m
+ CONFIG_NET_ACT_TUNNEL_KEY=m
