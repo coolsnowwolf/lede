@@ -1,60 +1,79 @@
+--[[
+	Copyright 2019 xxx <xxx@xxx.com>
+	Licensed to the public under the Apache License 2.0.
+]]--
 
-local o=luci.sys.exec("uci get qbittorrent.main.Port | xargs echo -n") or 8080
-
+local m, s, o
+local ver = luci.util.trim(luci.sys.exec("HOME=/tmp qbittorrent-nox -v | awk '{print $2}'"))
+function titlesplit(Value)
+    return "<p style=\"font-size:15px;font-weight:bold;color: DodgerBlue\">" .. translate(Value) .. "</p>"
+end
+local e=require"luci.model.uci".cursor()
+local i=require"nixio.fs"
 local a=(luci.sys.call("pidof qbittorrent-nox > /dev/null")==0)
+local o=luci.sys.exec("uci get qbittorrent.main.Port | xargs echo -n") or 8080
 
 local t=""
 if a then
 t="<br /><br /><input class=\"cbi-button cbi-button-apply\" type=\"button\" value=\" "..translate("Open Web Interface").." \" onclick=\"window.open('http://'+window.location.hostname+':"..o.."')\"/>"
 end
 
-function titlesplit(Value)
-    return "<p style=\"font-size:20px;font-weight:bold;color: DodgerBlue\">" .. translate(Value) .. "</p>"
-end
+m = Map("qbittorrent", translate("qBittorrent 下载器"), translate("一个基于QT的跨平台的开源BitTorrent客户端。")..t)
 
-m = Map("qbittorrent", translate("qBittorrent"), translate("qBittorrent is a cross-platform free and open-source BitTorrent client")..t)
+m:section(SimpleSection).template="qbittorrent/qbittorrent_status"
 
 s = m:section(NamedSection, "main", "qbittorrent")
 
 s:tab("basic", translate("Basic Settings"))
 
-o = s:taboption("basic", Flag, "enabled", translate("Enabled"))
+o = s:taboption("basic", Flag, "enabled", translate("Enabled"),"%s  %s" % {translate(""),"<b style=\"color:green\">" .. translatef("当前qBitTorrent的版本: %s", ver) .. "</b>"})
 o.default = "1"
 
-o = s:taboption("basic", ListValue, "user", translate("Run daemon as user"))
+o = s:taboption("basic", ListValue, "user", translate("Run daemon as user"),translate("Leave blank to use default user."))
 local u
 for u in luci.util.execi("cat /etc/passwd | cut -d ':' -f1") do
 	o:value(u)
 end
 
-o = s:taboption("basic", Value, "profile", translate("Store configuration files in the Path"))
+o = s:taboption("basic", Value, "profile", translate("Parent Path for Profile Folder"), translate("The path for storing profile folder using by command: <b>--profile [PATH]</b>."))
 o.default = '/tmp'
-
-o = s:taboption("basic", Value, "SavePath", translate("Store download files in the Path"))
+o = s:taboption("basic", Value, "SavePath", translate("Save Path"),translate("The path to save the download file. For example:<code>/mnt/sda1/download</code>"))
 o.placeholder = "/tmp/download"
 
-o = s:taboption("basic", Value, "Port", translate("WEBUI listening port"))
+o = s:taboption("basic", Value, "Locale", translate("Locale Language"))
+o:value("zh", translate("Chinese"))
+o:value("en", translate("English"))
+o.default = "zh"
+
+o = s:taboption("basic", Value, "Username", translate("Username"), translate("The login name for WebUI."))
+o.placeholder = "admin"
+
+o = s:taboption("basic", Value, "Password", translate("Password"), translate("The login password for WebUI."))
+o.password  =  true
+
+o = s:taboption("basic", Value, "Port", translate("Listen Port"), translate("The listening port for WebUI."))
 o.datatype = "port"
-o.placeholder = "8080"
+o.default =  "8080"
 
-o = s:taboption("basic", Flag, "UseRandomPort", translate("Use Random Port"), translate("Randomly assigns a different port every time qBittorrent starts up"))
-o.enabled = "true"
-o.disabled = "false"
-o.default = o.enabled
-
-o = s:taboption("basic", Value, "PortRangeMin", translate("Connection Port"), translate("Incoming connection port"))
-o:depends("UseRandomPort", false)
-o.datatype = "range(1024,65535)"
+o = s:taboption("basic", Value, "configuration", translate("Profile Folder Suffix"), translate("Suffix for profile folder, for example, <b>qBittorrent_[NAME]</b>."))
 
 
 s:tab("connection", translate("Connection Settings"))
 
-o = s:taboption("connection", Flag, "UPnP", translate("Use UPnP for Connections"), translate("Use UPnP/ NAT-PMP port forwarding from my router. Refer to the "
-			.. "<a href='https://en.wikipedia.org/wiki/Port_forwarding' target='_blank'>wiki</a>."))
+o = s:taboption("connection", Flag, "UPnP", translate("Use UPnP for Connections"), translate("Use UPnP/ NAT-PMP port forwarding from my router."))
 o.enabled = "true"
 o.disabled = "false"
 o.default = o.enabled
 
+o = s:taboption("connection", Flag, "UseRandomPort", translate("Use Random Port"), translate("Use different port on each startup voids the first"))
+o.enabled = "true"
+o.disabled = "false"
+o.default = o.disabled
+
+o = s:taboption("connection", Value, "PortRangeMin", translate("Connection Port"), translate("Generate Randomly"))
+o:depends("UseRandomPort", false)
+o.datatype = "range(1024,65535)"
+o:value("",translate("default"))
 
 o = s:taboption("connection", Value, "GlobalDLLimit", translate("Global Download Speed"), translate("Global Download Speed Limit(KiB/s)."))
 o.datatype = "float"
@@ -80,7 +99,9 @@ o.default = "Both"
 
 o = s:taboption("connection", Value, "InetAddress", translate("Inet Address"), translate("The address that respond to the trackers."))
 
-s:tab("downloads", translate("Download Settings"))
+s:tab("downloads", translate("Downloads Settings"))
+
+o = s:taboption("downloads",DummyValue,"Saving Management",titlesplit("When adding seeds"))
 
 o = s:taboption("downloads", Flag, "CreateTorrentSubfolder", translate("Create Subfolder"), translate("Create subfolder for torrents with multiple files."))
 o.enabled = "true"
@@ -105,12 +126,12 @@ o.default = o.disabled
 o = s:taboption("downloads", Flag, "UseIncompleteExtension", translate("Use Incomplete Extension"), translate("The incomplete task will be added the extension of !qB."))
 o.enabled = "true"
 o.disabled = "false"
-o.default = o.disabled
+o.default = o.enabled
 
 o = s:taboption("downloads", Flag, "TempPathEnabled", translate("Temp Path Enabled"))
 o.enabled = "true"
 o.disabled = "false"
-o.default = o.enabled
+o.default = o.disabled
 
 o = s:taboption("downloads", Value, "TempPath", translate("Temp Path"), translate("The absolute and relative path can be set."))
 o:depends("TempPathEnabled", "true")
@@ -155,19 +176,19 @@ s:tab("bittorrent", translate("Bittorrent Settings"))
 o = s:taboption("bittorrent", Flag, "DHT", translate("Enable DHT"), translate("Enable DHT (decentralized network) to find more peers"))
 o.enabled = "true"
 o.disabled = "false"
-o.default = o.enabled
+o.default = o.disabled
 
 o = s:taboption("bittorrent", Flag, "PeX", translate("Enable PeX"), translate("Enable Peer Exchange (PeX) to find more peers"))
 o.enabled = "true"
 o.disabled = "false"
-o.default = o.enabled
+o.default = o.disabled
 
 o = s:taboption("bittorrent", Flag, "LSD", translate("Enable LSD"), translate("Enable Local Peer Discovery to find more peers"))
 o.enabled = "true"
 o.disabled = "false"
 o.default = o.disabled
 
-o = s:taboption("bittorrent", Flag, "uTP_rate_limited", translate("uTP Rate Limit"), translate("Apply rate limit to μTP protocol."))
+o = s:taboption("bittorrent", Flag, "uTP_rate_limited", translate("uTP Rate Limit"), translate("Apply rate limit to µTP protocol."))
 o.enabled = "true"
 o.disabled = "false"
 o.default = o.enabled
@@ -249,21 +270,10 @@ o.enabled = "true"
 o.disabled = "false"
 o.default = o.disabled
 
-o = s:taboption("webgui", Value, "Username", translate("Username"), translate("The login name for WebUI."))
-o.placeholder = "admin"
-
-o = s:taboption("webgui", Value, "Password", translate("Password"), translate("The login password for WebUI."))
-o.password  =  true
-
-o = s:taboption("webgui", Value, "Locale", translate("Locale Language"))
-o:value("en", translate("English"))
-o:value("zh", translate("Chinese"))
-o.default = "en"
-
 o = s:taboption("webgui", Flag, "CSRFProtection", translate("CSRF Protection"), translate("Enable Cross-Site Request Forgery (CSRF) protection."))
 o.enabled = "true"
 o.disabled = "false"
-o.default = o.enabled
+o.default = o.disabled
 
 o = s:taboption("webgui", Flag, "ClickjackingProtection", translate("Clickjacking Protection"), translate("Enable clickjacking protection."))
 o.enabled = "true"
@@ -273,12 +283,12 @@ o.default = o.enabled
 o = s:taboption("webgui", Flag, "HostHeaderValidation", translate("Host Header Validation"), translate("Validate the host header."))
 o.enabled = "true"
 o.disabled = "false"
-o.default = o.enabled
+o.default = o.disabled
 
 o = s:taboption("webgui", Flag, "LocalHostAuth", translate("Local Host Authentication"), translate("Force authentication for clients on localhost."))
 o.enabled = "true"
 o.disabled = "false"
-o.default = o.enabled
+o.default = o.disabled
 
 o = s:taboption("webgui", Flag, "AuthSubnetWhitelistEnabled", translate("Enable Subnet Whitelist"))
 o.enabled = "true"
@@ -288,10 +298,34 @@ o.default = o.disabled
 o = s:taboption("webgui", DynamicList, "AuthSubnetWhitelist", translate("Subnet Whitelist"))
 o:depends("AuthSubnetWhitelistEnabled", "true")
 
+o = s:tab("log",translate("运行日志"),translate("本页是qBittorrent的日志文档内容。"))
+o = s:taboption("log",TextValue,"log",translate(""))
+o.rows=20
+o.wrap="off"
+o.rmempty=false
+o.readonly=true
+o.cfgvalue=function(t,t)
+return i.readfile("/tmp/qBittorrent/data/logs/qbittorrent.log")or""
+end
+o.write=function(e,e,e)
+end
+
+o = s:tab("config",translate("配置文件"),translate("本页是/etc/config/qbittorrent下的配置文档内容。"))
+o = s:taboption("config",TextValue,"config")
+o.template="cbi/tvalue"
+o.rows=20
+o.wrap="off"
+o.rmempty=false
+o.readonly=true
+o.cfgvalue=function(t,t)
+return i.readfile("/etc/config/qbittorrent")or""
+end
+o.write=function(e,e,e)
+end
+
 s:tab("advanced", translate("Advance Settings"))
 
-o = s:taboption("advanced", Flag, "AnonymousMode", translate("Anonymous Mode"), translate("When enabled, qBittorrent will take certain measures to try"
-				.. " to mask its identity. Refer to the <a href='https://github.com/qbittorrent/qBittorrent/wiki/Anonymous-Mode'  target='_blank'>wiki</a>"))
+o = s:taboption("advanced", Flag, "AnonymousMode", translate("Anonymous Mode"), translate("When enabled, qBittorrent will take certain measures to try"))
 o.enabled = "true"
 o.disabled = "false"
 o.default = o.enabled
@@ -300,8 +334,6 @@ o = s:taboption("advanced", Flag, "SuperSeeding", translate("Super Seeding"), tr
 o.enabled = "true"
 o.disabled = "false"
 o.default = o.disabled
-
-o = s:taboption("advanced", Value, "configuration", translate("Profile Folder Suffix"), translate("Suffix for profile folder"))
 
 o = s:taboption("advanced", Flag, "IncludeOverhead", translate("Limit Overhead Usage"), translate("The overhead usage is been limitted."))
 o.enabled = "true"
