@@ -1,0 +1,56 @@
+#!/bin/sh
+
+# Netgear WNCE2001 has does a checksum check on boot and goes into recovery
+# tftp mode when the check fails.  Initializing the JFFS2 partition triggers
+# this, so we make sure to zero checksum and size to be checksummed before
+# that happens, so this needs to run very early during boot.
+
+do_checksumming_disable() {
+	. /lib/functions.sh
+
+	local board=$(board_name)
+
+	case "$board" in
+	wnce2001)
+		echo "Board is WNCE2001, updating checksum partition..."
+		local zeroes=/dev/zero
+		local tmpfile=/tmp/wnce2001_checksum
+		local partname=checksum
+		local mtd=$(find_mtd_part $partname)
+		dd if=$mtd of=$tmpfile bs=80 count=1 2>/dev/null
+		signature=$(dd if=$tmpfile bs=1 skip=24 count=20 2>/dev/null)
+		checksum=$(dd if=$tmpfile bs=1 count=4 2>/dev/null | hexdump -v -n 4 -e '1/1 "%02x"')
+		if [ "$signature" != "RT3052-AP-WNCE2001-3" ]; then
+			echo "Signature of checksum partition is wrong, bailing."
+			return 0
+		fi
+		if [ "$checksum" != "00000000" ]; then
+			echo "Checksum is set, zeroing."
+			# zero out checksum
+			dd if=$zeroes of=$tmpfile conv=notrunc bs=1 seek=0 count=4 2>/dev/null
+			# zero out bytecount to be checksummed
+			dd if=$zeroes of=$tmpfile conv=notrunc bs=1 seek=60 count=4 2>/dev/null
+			mtd write $tmpfile $partname
+		else
+			echo "Checksum is already zero, nothing to do."
+		fi
+	;;
+	rt-n56u)
+		echo "Board is ASUS RT-N56U, replacing uImage header..."
+		local firmware_mtd=$(find_mtd_part firmware)
+		local rootfs_mtd=$(find_mtd_part rootfs)
+		local rootfs_data_mtd=$(find_mtd_part rootfs_data)
+		local rootfs_len=$(grep \"rootfs\" /proc/mtd | awk -F' ' '{print "0x"$2}')
+		local rootfs_data_len=$(grep \"rootfs_data\" /proc/mtd | awk -F' ' '{print "0x"$2}')
+		local offset=$(echo "$rootfs_len $rootfs_data_len 0x40" | awk -F' ' '{printf "%i",$1-$2-$3}')
+		local signature=$(dd if=$rootfs_mtd skip=$offset bs=1 count=4 2>/dev/null | hexdump -v -n 4 -e '1/1 "%02x"')
+		if [ "$signature" = "27051956" ]; then
+			dd conv=notrunc if=$rootfs_mtd skip=$offset of=$firmware_mtd bs=1 count=64 2>/dev/null
+		fi
+	;;
+	esac
+
+	return 0
+}
+
+boot_hook_add preinit_main do_checksumming_disable
