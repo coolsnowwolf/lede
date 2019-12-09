@@ -1,0 +1,104 @@
+From 5cc898fbcb352b764f8d51c16e10e2eb0056173d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Wed, 6 Feb 2019 12:28:15 +0100
+Subject: [PATCH] brcmfmac: modify __brcmf_err() to take bus as a parameter
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+So far __brcmf_err() was using pr_err() which didn't allow identifying
+device that was affected by an error. It's crucial for systems with more
+than 1 device supported by brcmfmac (a common case for home routers).
+
+This change allows passing struct brcmf_bus to the __brcmf_err(). That
+struct has been agreed to be the most common one. It allows accessing
+struct device easily & using dev_err() printing helper.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Acked-by: Arend van Spriel <arend.vanspriel@broadcom.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../net/wireless/broadcom/brcm80211/brcmfmac/common.c    | 7 +++++--
+ drivers/net/wireless/broadcom/brcm80211/brcmfmac/debug.h | 8 +++++---
+ .../wireless/broadcom/brcm80211/brcmfmac/tracepoint.c    | 9 +++++++--
+ 3 files changed, 17 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/common.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/common.c
+@@ -350,7 +350,7 @@ done:
+ }
+ 
+ #ifndef CPTCFG_BRCM_TRACING
+-void __brcmf_err(const char *func, const char *fmt, ...)
++void __brcmf_err(struct brcmf_bus *bus, const char *func, const char *fmt, ...)
+ {
+ 	struct va_format vaf;
+ 	va_list args;
+@@ -359,7 +359,10 @@ void __brcmf_err(const char *func, const
+ 
+ 	vaf.fmt = fmt;
+ 	vaf.va = &args;
+-	pr_err("%s: %pV", func, &vaf);
++	if (bus)
++		dev_err(bus->dev, "%s: %pV", func, &vaf);
++	else
++		pr_err("%s: %pV", func, &vaf);
+ 
+ 	va_end(args);
+ }
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/debug.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/debug.h
+@@ -45,8 +45,10 @@
+ #undef pr_fmt
+ #define pr_fmt(fmt)		KBUILD_MODNAME ": " fmt
+ 
+-__printf(2, 3)
+-void __brcmf_err(const char *func, const char *fmt, ...);
++struct brcmf_bus;
++
++__printf(3, 4)
++void __brcmf_err(struct brcmf_bus *bus, const char *func, const char *fmt, ...);
+ /* Macro for error messages. When debugging / tracing the driver all error
+  * messages are important to us.
+  */
+@@ -55,7 +57,7 @@ void __brcmf_err(const char *func, const
+ 		if (IS_ENABLED(CPTCFG_BRCMDBG) ||			\
+ 		    IS_ENABLED(CPTCFG_BRCM_TRACING) ||			\
+ 		    net_ratelimit())					\
+-			__brcmf_err(__func__, fmt, ##__VA_ARGS__);	\
++			__brcmf_err(NULL, __func__, fmt, ##__VA_ARGS__);\
+ 	} while (0)
+ 
+ #if defined(DEBUG) || defined(CPTCFG_BRCM_TRACING)
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/tracepoint.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/tracepoint.c
+@@ -14,14 +14,16 @@
+  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+  */
+ 
++#include <linux/device.h>
+ #include <linux/module.h> /* bug in tracepoint.h, it should include this */
+ 
+ #ifndef __CHECKER__
+ #define CREATE_TRACE_POINTS
++#include "bus.h"
+ #include "tracepoint.h"
+ #include "debug.h"
+ 
+-void __brcmf_err(const char *func, const char *fmt, ...)
++void __brcmf_err(struct brcmf_bus *bus, const char *func, const char *fmt, ...)
+ {
+ 	struct va_format vaf = {
+ 		.fmt = fmt,
+@@ -30,7 +32,10 @@ void __brcmf_err(const char *func, const
+ 
+ 	va_start(args, fmt);
+ 	vaf.va = &args;
+-	pr_err("%s: %pV", func, &vaf);
++	if (bus)
++		dev_err(bus->dev, "%s: %pV", func, &vaf);
++	else
++		pr_err("%s: %pV", func, &vaf);
+ 	trace_brcmf_err(func, &vaf);
+ 	va_end(args);
+ }
