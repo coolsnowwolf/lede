@@ -1,0 +1,125 @@
+From b5a52351a66f3c2a7a207548aa87d78ff2d336c0 Mon Sep 17 00:00:00 2001
+From: Chuanhong Guo <gch981213@gmail.com>
+Date: Wed, 10 Jul 2019 00:24:48 +0800
+Subject: [PATCH] MIPS: ralink: mt7621: add memory detection support
+
+mt7621 has the following memory map:
+0x0-0x1c000000: lower 448m memory
+0x1c000000-0x2000000: peripheral registers
+0x20000000-0x2400000: higher 64m memory
+
+detect_memory_region in arch/mips/kernel/setup.c only add the first
+memory region and isn't suitable for 512m memory detection because
+it may accidentally read the memory area for peripheral registers.
+
+This commit adds memory detection capability for mt7621:
+1. add the highmem area when 512m is detected.
+2. guard memcmp from accessing peripheral registers:
+     This only happens when some weird user decided to change
+     kernel load address to 256m or higher address. Since this
+     is a quite unusual case, we just skip 512m testing and return
+     256m as memory size.
+
+Signed-off-by: Chuanhong Guo <gch981213@gmail.com>
+---
+ arch/mips/include/asm/mach-ralink/mt7621.h |  7 ++---
+ arch/mips/ralink/mt7621.c                  | 30 +++++++++++++++++++---
+ 2 files changed, 30 insertions(+), 7 deletions(-)
+
+--- a/arch/mips/include/asm/mach-ralink/mt7621.h
++++ b/arch/mips/include/asm/mach-ralink/mt7621.h
+@@ -46,9 +46,10 @@
+ #define CPU_PLL_FBDIV_MASK		0x7f
+ #define CPU_PLL_FBDIV_SHIFT		4
+ 
+-#define MT7621_DRAM_BASE                0x0
+-#define MT7621_DDR2_SIZE_MIN		32
+-#define MT7621_DDR2_SIZE_MAX		256
++#define MT7621_LOWMEM_BASE		0x0
++#define MT7621_LOWMEM_MAX_SIZE		0x1C000000
++#define MT7621_HIGHMEM_BASE		0x20000000
++#define MT7621_HIGHMEM_SIZE		0x4000000
+ 
+ #define MT7621_CHIP_NAME0		0x3637544D
+ #define MT7621_CHIP_NAME1		0x20203132
+--- a/arch/mips/ralink/mt7621.c
++++ b/arch/mips/ralink/mt7621.c
+@@ -15,6 +15,7 @@
+ #include <linux/clk-provider.h>
+ #include <dt-bindings/clock/mt7621-clk.h>
+ 
++#include <asm/bootinfo.h>
+ #include <asm/mipsregs.h>
+ #include <asm/smp-ops.h>
+ #include <asm/mips-cps.h>
+@@ -57,6 +58,8 @@
+ #define MT7621_GPIO_MODE_SDHCI_SHIFT	18
+ #define MT7621_GPIO_MODE_SDHCI_GPIO	1
+ 
++static void *detect_magic __initdata = detect_memory_region;
++
+ static struct rt2880_pmx_func uart1_grp[] =  { FUNC("uart1", 0, 1, 2) };
+ static struct rt2880_pmx_func i2c_grp[] =  { FUNC("i2c", 0, 3, 2) };
+ static struct rt2880_pmx_func uart3_grp[] = {
+@@ -141,6 +144,28 @@ static struct clk *__init mt7621_add_sys
+ 	return clk;
+ }
+ 
++void __init mt7621_memory_detect(void)
++{
++	void *dm = &detect_magic;
++	phys_addr_t size;
++
++	for (size = 32 * SZ_1M; size < 256 * SZ_1M; size <<= 1) {
++		if (!memcmp(dm, dm + size, sizeof(detect_magic)))
++			break;
++	}
++
++	if ((size == 256 * SZ_1M) &&
++	    (CPHYSADDR(dm + size) < MT7621_LOWMEM_MAX_SIZE) &&
++	    memcmp(dm, dm + size, sizeof(detect_magic))) {
++		add_memory_region(MT7621_LOWMEM_BASE, MT7621_LOWMEM_MAX_SIZE,
++				  BOOT_MEM_RAM);
++		add_memory_region(MT7621_HIGHMEM_BASE, MT7621_HIGHMEM_SIZE,
++				  BOOT_MEM_RAM);
++	} else {
++		add_memory_region(MT7621_LOWMEM_BASE, size, BOOT_MEM_RAM);
++	}
++}
++
+ void __init ralink_clk_init(void)
+ {
+ 	u32 syscfg, xtal_sel, clkcfg, clk_sel, curclk, ffiv, ffrac;
+@@ -319,10 +344,7 @@ void prom_soc_init(struct ralink_soc_inf
+ 		(rev >> CHIP_REV_VER_SHIFT) & CHIP_REV_VER_MASK,
+ 		(rev & CHIP_REV_ECO_MASK));
+ 
+-	soc_info->mem_size_min = MT7621_DDR2_SIZE_MIN;
+-	soc_info->mem_size_max = MT7621_DDR2_SIZE_MAX;
+-	soc_info->mem_base = MT7621_DRAM_BASE;
+-
++	soc_info->mem_detect = mt7621_memory_detect;
+ 	rt2880_pinmux_data = mt7621_pinmux_data;
+ 
+ 
+--- a/arch/mips/ralink/common.h
++++ b/arch/mips/ralink/common.h
+@@ -19,6 +19,7 @@ struct ralink_soc_info {
+ 	unsigned long mem_size;
+ 	unsigned long mem_size_min;
+ 	unsigned long mem_size_max;
++	void (*mem_detect)(void);
+ };
+ extern struct ralink_soc_info soc_info;
+ 
+--- a/arch/mips/ralink/of.c
++++ b/arch/mips/ralink/of.c
+@@ -106,6 +106,8 @@ void __init plat_mem_setup(void)
+ 	of_scan_flat_dt(early_init_dt_find_memory, NULL);
+ 	if (memory_dtb)
+ 		of_scan_flat_dt(early_init_dt_scan_memory, NULL);
++	else if (soc_info.mem_detect)
++		soc_info.mem_detect();
+ 	else if (soc_info.mem_size)
+ 		add_memory_region(soc_info.mem_base, soc_info.mem_size * SZ_1M,
+ 				  BOOT_MEM_RAM);
