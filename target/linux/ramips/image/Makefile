@@ -10,6 +10,8 @@ include $(INCLUDE_DIR)/image.mk
 DEVICE_VARS += DTS IMAGE_SIZE NETGEAR_BOARD_ID NETGEAR_HW_ID
 DEVICE_VARS += BUFFALO_TAG_PLATFORM BUFFALO_TAG_VERSION BUFFALO_TAG_MINOR
 DEVICE_VARS += SEAMA_SIGNATURE SEAMA_MTDBLOCK
+DEVICE_VARS += SERCOMM_HWID SERCOMM_HWVER SERCOMM_SWVER
+DEVICE_VARS += JCG_MAXSIZE
 
 loadaddr-y := 0x80000000
 loadaddr-$(CONFIG_TARGET_ramips_rt288x) := 0x88000000
@@ -17,12 +19,12 @@ loadaddr-$(CONFIG_TARGET_ramips_mt7621) := 0x80001000
 
 KERNEL_LOADADDR := $(loadaddr-y)
 
-KERNEL_DTB = kernel-bin | patch-dtb | lzma
+KERNEL_DTB = kernel-bin | append-dtb | lzma
 define Device/Default
-  PROFILES = Default $$(DTS)
-  KERNEL_DEPENDS = $$(wildcard ../dts/$$(DTS).dts)
+  PROFILES = Default
   KERNEL := $(KERNEL_DTB) | uImage lzma
   DEVICE_DTS_DIR := ../dts
+  DEVICE_DTS = $$(DTS)
   IMAGES := sysupgrade.bin
   IMAGE_SIZE := $(ralink_default_fw_size_8M)
   SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
@@ -45,9 +47,9 @@ define Device/seama
   SEAMA_SIGNATURE :=
 endef
 
-define Build/patch-dtb
-	$(call Image/BuildDTB,../dts/$(DTS).dts,$@.dtb)
-	$(STAGING_DIR_HOST)/bin/patch-dtb $@ $@.dtb
+define Build/jcg-header
+	$(STAGING_DIR_HOST)/bin/jcgimage -v $(1) $(if $(JCG_MAXSIZE), -m $(JCG_MAXSIZE),) -u $@ -o $@.new
+	mv $@.new $@
 endef
 
 define Build/trx
@@ -114,6 +116,7 @@ define Build/mkdlinkfw
 		-k $(IMAGE_KERNEL) \
 		-r $(IMAGE_ROOTFS) \
 		-o $@ \
+		$(if $(DLINK_IMAGE_OFFSET), -O $(DLINK_IMAGE_OFFSET)) \
 		-s $(DLINK_FIRMWARE_SIZE)
 endef
 
@@ -122,12 +125,26 @@ define Build/mkdlinkfw-factory
 		-m $(DLINK_ROM_ID) -f $(DLINK_FAMILY_MEMBER) \
 		-F $@ \
 		-o $@.new \
+		$(if $(DLINK_IMAGE_OFFSET), -O $(DLINK_IMAGE_OFFSET)) \
 		-s $(DLINK_FIRMWARE_SIZE)
 	mv $@.new $@
 endef
 
 define Build/zyimage
 	$(STAGING_DIR_HOST)/bin/zyimage $(1) $@
+endef
+
+define Build/sercom-seal
+	$(STAGING_DIR_HOST)/bin/mksercommfw \
+		-i $@ \
+		-b $(SERCOMM_HWID) \
+		-r $(SERCOMM_HWVER) \
+		-v $(SERCOMM_SWVER) \
+		$(1)
+endef
+
+define Build/sercom-footer
+	$(call Build/sercom-seal,-f)
 endef
 
 ralink_default_fw_size_4M=3866624

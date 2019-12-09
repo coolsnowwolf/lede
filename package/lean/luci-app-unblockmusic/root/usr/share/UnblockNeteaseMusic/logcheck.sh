@@ -1,11 +1,11 @@
 #!/bin/bash
 
-log_max_size="10" #使用KB计算
+log_max_size="100" #使用KB计算
 log_file="/tmp/unblockmusic.log"
 
 while true
 do
-  sleep 10s
+  sleep 30s
   icount=`busybox ps -w | grep app.js |grep -v grep| wc -l`
   if [ $icount -ne 2 ] ;then 
     /etc/init.d/unblockmusic restart 

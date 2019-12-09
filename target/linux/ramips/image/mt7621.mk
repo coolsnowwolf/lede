@@ -87,17 +87,35 @@ endef
 define Device/11acnas
   DTS := 11ACNAS
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
+  UIMAGE_NAME := 11AC-NAS-Router(0.0.0)
   DEVICE_TITLE := WeVO 11AC NAS Router
-  DEVICE_PACKAGES := kmod-mt7603 kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
 endef
 TARGET_DEVICES += 11acnas
+
+define Device/alfa-network_quad-e4g
+  DTS := QUAD-E4G
+  IMAGE_SIZE := 16064k
+  DEVICE_TITLE := ALFA Network Quad-E4G
+  DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-sdhci-mt7620 kmod-usb3 \
+	uboot-envtools
+endef
+TARGET_DEVICES += alfa-network_quad-e4g
+
+define Device/asus_rt-ac57u
+  DTS := RT-AC57U
+  DEVICE_TITLE := ASUS RT-AC57U
+  IMAGE_SIZE := 16064k
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
+endef
+TARGET_DEVICES += asus_rt-ac57u
 
 define Device/dir-860l-b1
   $(Device/seama)
   DTS := DIR-860L-B1
   BLOCKSIZE := 64k
   SEAMA_SIGNATURE := wrgac13_dlink.2013gui_dir860lb
-  KERNEL := kernel-bin | patch-dtb | relocate-kernel | lzma | uImage lzma
+  KERNEL := kernel-bin | append-dtb | relocate-kernel | lzma | uImage lzma
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
   DEVICE_TITLE := D-Link DIR-860L B1
   DEVICE_PACKAGES := kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
@@ -111,6 +129,15 @@ define Device/mediatek_ap-mt7621a-v60
   DEVICE_PACKAGES := kmod-usb3 kmod-sdhci-mt7620 kmod-sound-mt7620
 endef
 TARGET_DEVICES += mediatek_ap-mt7621a-v60
+
+define Device/xiaoyu_xy-c5
+  MTK_SOC := mt7621
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := XiaoYu
+  DEVICE_MODEL := XY-C5
+  DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-usb3
+endef
+TARGET_DEVICES += xiaoyu_xy-c5
 
 define Device/xzwifi_creativebox-v1
   DTS := CreativeBox-v1
@@ -236,14 +263,6 @@ define Device/k2p
 endef
 TARGET_DEVICES += k2p
 
-define Device/adslr_g7
-  DTS := ADSLR-G7
-  IMAGE_SIZE := 16064k
-  DEVICE_TITLE := ADSLR G7
-  DEVICE_PACKAGES := kmod-mt7615e wpad-basic
-endef
-TARGET_DEVICES += adslr_g7
-
 define Device/xiaomi_mir3p
   DTS := MIR3P
   BLOCKSIZE := 128k
@@ -260,7 +279,7 @@ define Device/xiaomi_mir3p
 endef
 TARGET_DEVICES += xiaomi_mir3p
 
-define Device/mir3g
+define Device/xiaomi_mir3g
   DTS := MIR3G
   BLOCKSIZE := 128k
   PAGESIZE := 2048
@@ -273,31 +292,12 @@ define Device/mir3g
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   DEVICE_TITLE := Xiaomi Mi Router 3G
   SUPPORTED_DEVICES += R3G
+  SUPPORTED_DEVICES += mir3g
   DEVICE_PACKAGES := \
 	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic \
 	uboot-envtools
 endef
-TARGET_DEVICES += mir3g
-
-define Device/mir4
-  DTS := MIR4
-  BLOCKSIZE := 128k
-  PAGESIZE := 2048
-  KERNEL_SIZE := 4096k
-  IMAGE_SIZE := 32768k
-  UBINIZE_OPTS := -E 5
-  IMAGES += kernel1.bin rootfs0.bin factory.bin
-  IMAGE/kernel1.bin := append-kernel
-  IMAGE/rootfs0.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) |append-kernel | pad-to $$(KERNEL_SIZE)| append-ubi | check-size $$$$(IMAGE_SIZE)
-  DEVICE_TITLE := Xiaomi Mi Router 4
-  SUPPORTED_DEVICES += R4
-  DEVICE_PACKAGES := \
-	kmod-mt7603 kmod-mt76x2 kmod-usb3 wpad-basic \
-	uboot-envtools
-endef
-TARGET_DEVICES += mir4
+TARGET_DEVICES += xiaomi_mir3g
 
 define Device/mt7621
   DTS := MT7621
@@ -327,7 +327,7 @@ TARGET_DEVICES += d-team_newifi-d2
 
 define Device/pbr-m1
   DTS := PBR-M1
-  IMAGE_SIZE := $(ralink_default_fw_size_32M)
+  IMAGE_SIZE := $(ralink_default_fw_size_16M)
   DEVICE_TITLE := PBR-M1
   DEVICE_PACKAGES := \
 	kmod-ata-core kmod-ata-ahci kmod-mt7603 kmod-mt76x2 kmod-sdhci-mt7620 \
@@ -342,7 +342,12 @@ define Device/r6220
   KERNEL_SIZE := 4096k
   IMAGE_SIZE := 28672k
   UBINIZE_OPTS := -E 5
-  IMAGES += kernel.bin rootfs.bin
+  SERCOMM_HWID := AYA
+  SERCOMM_HWVER := A001
+  SERCOMM_SWVER := 0x0086
+  IMAGES += factory.img kernel.bin rootfs.bin
+  IMAGE/factory.img := pad-extra 2048k | append-kernel | pad-to 6144k | append-ubi | \
+	pad-to $$$$(BLOCKSIZE) | sercom-footer | pad-to 128 | zip R6220.bin | sercom-seal
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   IMAGE/kernel.bin := append-kernel
   IMAGE/rootfs.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
@@ -351,6 +356,17 @@ define Device/r6220
 	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
 endef
 TARGET_DEVICES += r6220
+
+define Device/netgear_ex6150
+  DTS := EX6150
+  DEVICE_TITLE := Netgear EX6150
+  DEVICE_PACKAGES := kmod-mt76x2 wpad-basic
+  NETGEAR_BOARD_ID := U12H318T00_NETGEAR
+  IMAGE_SIZE := 14848k
+  IMAGES += factory.chk
+  IMAGE/factory.chk := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | netgear-chk
+endef
+TARGET_DEVICES += netgear_ex6150
 
 define Device/netgear_r6350
   DTS := R6350
@@ -369,14 +385,6 @@ define Device/netgear_r6350
 endef
 TARGET_DEVICES += netgear_r6350
 
-define Device/rb750gr3
-  DTS := RB750Gr3
-  IMAGE_SIZE := $(ralink_default_fw_size_16M)
-  DEVICE_TITLE := MikroTik RB750Gr3
-  DEVICE_PACKAGES := kmod-usb3 uboot-envtools
-endef
-TARGET_DEVICES += rb750gr3
-
 define Device/MikroTik
   BLOCKSIZE := 64k
   IMAGE_SIZE := 16128k
@@ -387,6 +395,14 @@ define Device/MikroTik
   IMAGE/sysupgrade.bin := append-kernel | kernel2minor -s 1024 | pad-to $$$$(BLOCKSIZE) | \
 	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
 endef
+
+define Device/mikrotik_rb750gr3
+  $(Device/MikroTik)
+  DTS := RB750Gr3
+  DEVICE_TITLE := MikroTik RouterBOARD RB750Gr3
+  DEVICE_PACKAGES += kmod-gpio-beeper
+endef
+TARGET_DEVICES += mikrotik_rb750gr3
 
 define Device/mikrotik_rbm33g
   $(Device/MikroTik)
@@ -452,6 +468,14 @@ define Device/sk-wb8
 endef
 TARGET_DEVICES += sk-wb8
 
+define Device/telco-electronics_x1
+  DTS := Telco-Electronics-X1
+  IMAGE_SIZE := 16064k
+  DEVICE_TITLE := Telco Electronics X1
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt76 wpad-basic
+endef
+TARGET_DEVICES += telco-electronics_x1
+
 define Device/timecloud
   DTS := Timecloud
   DEVICE_TITLE := Thunder Timecloud
@@ -505,6 +529,7 @@ TARGET_DEVICES += vr500
 define Device/w2914nsv2
   DTS := W2914NSV2
   IMAGE_SIZE := $(ralink_default_fw_size_16M)
+  UIMAGE_NAME := W2914NS-V2(0.0.0)
   DEVICE_TITLE := WeVO W2914NS v2
   DEVICE_PACKAGES := \
 	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
@@ -548,9 +573,19 @@ TARGET_DEVICES += mqmaker_witi-512m
 
 define Device/wndr3700v5
   DTS := WNDR3700V5
-  IMAGE_SIZE := $(ralink_default_fw_size_16M)
+  BLOCKSIZE := 64k
+  IMAGE_SIZE := 15232k
+  SERCOMM_HWID := AYB
+  SERCOMM_HWVER := A001
+  SERCOMM_SWVER := 0x1054
+  IMAGES += factory.img
+  IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs
+  IMAGE/sysupgrade.bin := $$(IMAGE/default) | append-metadata | check-size $$$$(IMAGE_SIZE)
+  IMAGE/factory.img := pad-extra 320k | $$(IMAGE/default) | pad-to $$$$(BLOCKSIZE) | \
+	sercom-footer | pad-to 128 | zip WNDR3700v5.bin | sercom-seal
   DEVICE_TITLE := Netgear WNDR3700v5
-  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 wpad-basic
+  DEVICE_PACKAGES := \
+	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
 endef
 TARGET_DEVICES += wndr3700v5
 
@@ -562,6 +597,15 @@ define Device/youhua_wr1200js
 	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
 endef
 TARGET_DEVICES += youhua_wr1200js
+
+define Device/youku_yk-l2
+  DTS := YOUKU-YK2
+  IMAGE_SIZE := $(ralink_default_fw_size_16M)
+  DEVICE_TITLE := Youku YK-L2
+  DEVICE_PACKAGES := \
+	kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
+endef
+TARGET_DEVICES += youku_yk-l2
 
 define Device/wsr-1166
   DTS := WSR-1166
@@ -579,14 +623,6 @@ define Device/wsr-600
   DEVICE_PACKAGES := kmod-mt7603 kmod-rt2800-pci wpad-basic
 endef
 TARGET_DEVICES += wsr-600
-
-define Device/XiaoYu-C5
-  DTS := XiaoYu-C5
-  IMAGE_SIZE := $(ralink_default_fw_size_32M)
-  DEVICE_TITLE := XiaoYu-C5
-  DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-usb3
-endef
-TARGET_DEVICES += XiaoYu-C5
 
 define Device/zbt-we1326
   DTS := ZBT-WE1326
