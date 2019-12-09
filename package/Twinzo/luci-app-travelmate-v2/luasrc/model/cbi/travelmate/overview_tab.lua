@@ -35,8 +35,7 @@ if uplink == "" then
 	o.rmempty = false
 
 	btn = ds:option(Button, "trm_iface", translate("Create Uplink Interface"),
-		translate("Create a new wireless wan uplink interface, configure it to use dhcp and ")
-		.. translate("add it to the wan zone of the firewall. This step has only to be done once."))
+		translate("Create a new wireless wan uplink interface, configure it to use dhcp and add it to the wan zone of the firewall. This step has only to be done once."))
 	btn.inputtitle = translate("Add Interface")
 	btn.inputstyle = "apply"
 	btn.disabled = false
@@ -182,8 +181,7 @@ e2.datatype = "and(uciname,rangelength(6,6))"
 e2.rmempty = true
 
 e3 = e:option(Value, "trm_maxretry", translate("Connection Limit"),
-	translate("How many times should travelmate try to connect to an Uplink. ")
-	.. translate("To disable this feature set it to '0' which means unlimited retries."))
+	translate("How many times should travelmate try to connect to an Uplink. To disable this feature set it to '0' which means unlimited retries."))
 e3.default = 3
 e3.datatype = "range(0,30)"
 e3.rmempty = false

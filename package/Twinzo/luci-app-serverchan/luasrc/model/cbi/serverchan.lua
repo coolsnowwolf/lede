@@ -14,7 +14,6 @@ s:tab("tab_basic", translate("基本设置"))
 s:tab("tab_basic2", translate("设备状态"))
 s:tab("tab_basic3", translate("定时推送"))
 s:tab("tab_basic4", translate("免打扰"))
-s:tab("tab_basic5", translate("自定义消息"))
 s:tab("log",translate("客户端日志"))
 s.addremove = false
 s.anonymous = true
@@ -131,22 +130,6 @@ function e.write(self, section)
 
 luci.sys.call("cbi.apply")
         luci.sys.call("/usr/bin/serverchan send &")
-end
-
-f=s:taboption("tab_basic5", DynamicList,"custom_messages",translate("自定义消息"))
-f.description = translate("<br/><b>使用须知：</b><ol><li>格式为：<b>发送标题:-:发送模式:-:发送时间:-:自定义消息"
-.."<br/>例如：1:-:00:00:-:睡觉</b></li>".."<li>发送模式：<ul><li>0为间隔模式,可选时间为1h-24h及1m-59m，可结合使用，如1h-30m</li>"
-.."<li>1为定时模式，时间格式为：01:30</li></ul></li>".."<li>开头使用#可以注释掉，即忽略该条信息，如：#1:-:00:00:-:睡觉</li>"
-.."<li>使用特殊符号可能会造成发送失败</li></ol>")
-f.placeholder=("0:-:00:00:-:睡觉")
-
-f=s:taboption("tab_basic5", Button,"_add",translate("手动发送"))
-f.inputtitle=translate("发送")
-f.inputstyle = "apply"
-function e.write(self, section)
-
-luci.sys.call("cbi.apply")
-        luci.sys.call("/usr/bin/serverchan custom_send &")
 end
 
 sheep=s:taboption("tab_basic4", ListValue,"serverchan_sheep",translate("免打扰时段设置"),translate("在指定整点时间段内，暂停推送消息<br/>免打扰时间中，定时推送也会被阻止。"))
