@@ -15,13 +15,12 @@ PKG_SOURCE_URL:=https://github.com/trojan-gfw/trojan.git
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
 PKG_SOURCE_VERSION:=842ad5bb07eb8bce035fb274571e586629a97c99
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-$(PKG_SOURCE_VERSION).tar.gz
+
 CMAKE_INSTALL:=1
 PKG_BUILD_PARALLEL:=0
-
-PKG_BUILD_DEPENDS:=openssl1.1
+PKG_BUILD_DEPENDS:=openssl
 
 PKG_LICENSE:=GPL-3.0
-
 PKG_MAINTAINER:=GreaterFire
 
 include $(INCLUDE_DIR)/package.mk
@@ -36,18 +35,9 @@ TARGET_LDFLAGS += -flto
 
 # CXX standard
 TARGET_CXXFLAGS += -std=c++11
-
 TARGET_CXXFLAGS := $(filter-out -O%,$(TARGET_CXXFLAGS)) -O3
-MY_OPENSSL_DIR:=$(BUILD_DIR)/openssl1.1_staging_dir/usr
-
 TARGET_CXXFLAGS += -ffunction-sections -fdata-sections
 TARGET_LDFLAGS += -Wl,--gc-sections
-
-CMAKE_FIND_ROOT_PATH := $(MY_OPENSSL_DIR);$(CMAKE_FIND_ROOT_PATH)
-TARGET_CXXFLAGS := -I$(MY_OPENSSL_DIR)/include $(TARGET_CXXFLAGS)
-TARGET_LDFLAGS := -L$(MY_OPENSSL_DIR)/lib $(TARGET_LDFLAGS)
-
-
 
 CMAKE_OPTIONS += \
 	-DENABLE_MYSQL=OFF \
@@ -59,8 +49,6 @@ CMAKE_OPTIONS += \
 	-DBoost_DEBUG=ON \
 	-DBoost_NO_BOOST_CMAKE=ON
 
-
-
 define Package/trojan
 	SECTION:=net
 	CATEGORY:=Network
@@ -69,8 +57,6 @@ define Package/trojan
 	DEPENDS:=+libpthread +libstdcpp \
 		+boost +boost-system +boost-program_options +boost-date_time
 endef
-
-
 
 define Package/trojan/install
 	$(INSTALL_DIR) $(1)/usr/sbin
@@ -81,6 +67,5 @@ define Package/trojan/install
 	$(INSTALL_BIN) ./files/trojan.init $(1)/etc/init.d/trojan
 	$(INSTALL_CONF) $(PKG_INSTALL_DIR)/etc/trojan/config.json $(1)/etc/trojan.json
 endef
-
 
 $(eval $(call BuildPackage,trojan))
