@@ -26,28 +26,69 @@ jobs:
 
     steps:
 
-      - name: Checkout
+      - name: 校验本地文件
         uses: actions/checkout@master
         with:
           ref: master
 
-      - name: Initialization environment
+      - name: 安装编译环境
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           docker rmi `docker images -q`
+      - name: 清理系统环境 
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
           echo "Deleting files, please wait ..."
-          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php
-          sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* mysql* php*
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /etc/mysql \
+            /etc/php
+          sudo -E apt-get -y purge \
+            azure-cli \
+            ghc* \
+            zulu* \
+            hhvm \
+            llvm* \
+            firefox \
+            google* \
+            dotnet* \
+            powershell \
+            openjdk* \
+            mysql* \
+            php*
+      - name: 更新软件列表
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
           sudo -E apt-get update
+      - name: 安装编译所需环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
           sudo -E apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler
+      - name: 进行安装后的清理
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
           sudo -E apt-get -y autoremove --purge
           sudo -E apt-get clean
-      - name: Update feeds
+      - name: 构建自定义文件结构
+        run: |
+          cd package
+          mkdir openwrt-packages
+          cd openwrt-packages
+          git clone https://github.com/openwrt-develop/luci-theme-atmaterial.git
+          git clone https://github.com/KFERMercer/luci-app-serverchan
+          git clone https://github.com/rosywrt/luci-theme-rosy
+          git clone https://github.com/Ameykyl/luci-app-koolproxyR
+          
+      - name: 构建编译扩展环境
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-      - name: Costom configure file
+      - name: 导入自定义配置
         run: |
           rm -f ./.config*
           touch ./.config
@@ -85,6 +126,11 @@ jobs:
            CONFIG_TARGET_ar71xx_generic=y
            CONFIG_TARGET_ar71xx_generic_DEVICE_wndr3800=y
            EOF
+          # 设置固件大小:
+          # cat >> .config <<EOF
+          # CONFIG_TARGET_KERNEL_PARTSIZE=30
+          # CONFIG_TARGET_ROOTFS_PARTSIZE=400
+          # EOF 
           # 固件压缩:
            cat >> .config <<EOF
            CONFIG_TARGET_IMAGES_GZIP=y
@@ -116,24 +162,20 @@ jobs:
           # CONFIG_PACKAGE_kmod-usb3 is not set
           # EOF
           # 常用LuCI插件选择:
-           cat >> .config <<EOF
-           CONFIG_PACKAGE_6in4=y
-           CONFIG_PACKAGE_ip6tables=y
-           CONFIG_PACKAGE_ipv6helper=y
-           CONFIG_PACKAGE_kmod-ipt-nat6=y
-           CONFIG_PACKAGE_kmod-nf-nat6=y
-           CONFIG_PACKAGE_kmod-sit=y
-           CONFIG_PACKAGE_luci-proto-ipv6=y
-           CONFIG_PACKAGE_odhcp6c=y
-           CONFIG_PACKAGE_odhcp6c_ext_cer_id=0
-           CONFIG_PACKAGE_odhcpd-ipv6only=y
-           CONFIG_PACKAGE_odhcpd_ipv6only_ext_cer_id=0
-           EOF
-          # LuCI主题:
           # cat >> .config <<EOF
-          # CONFIG_PACKAGE_luci-theme-argon=y
-          # CONFIG_PACKAGE_luci-theme-netgear=y
+          # CONFIG_PACKAGE_kmod-ipt-nat6=y
+          # CONFIG_PACKAGE_kmod-nf-nat6=y
+          # CONFIG_PACKAGE_kmod-sit=y
+          # CONFIG_PACKAGE_luci-proto-ipv6=y
+          # CONFIG_PACKAGE_odhcp6c=y
+          # CONFIG_PACKAGE_odhcp6c_ext_cer_id=0
+          # CONFIG_PACKAGE_odhcpd-ipv6only=y
+          # CONFIG_PACKAGE_odhcpd_ipv6only_ext_cer_id=0
           # EOF
+          # LuCI主题:
+           cat >> .config <<EOF
+           CONFIG_PACKAGE_luci-theme-bootstrap=y
+           EOF
           # 常用软件包:
           # cat >> .config <<EOF
           # CONFIG_PACKAGE_curl=y
@@ -149,29 +191,36 @@ jobs:
           # # CONFIG_TARGET_IMAGES_PAD is not set
           # # CONFIG_VMDK_IMAGES is not set
           # EOF
+          # 其他需要安装的软件包:
+          cat >> .config <<EOF
+          CONFIG_PACKAGE_iptables-mod-nat-extra=y
+          CONFIG_PACKAGE_drill=y
+          CONFIG_PACKAGE_luci-i18n-uhttpd-zh-cn=y
+          CONFIG_PACKAGE_luci-ssl-openssl=y
+          EOF
           # 
           # ========================固件定制部分结束========================
           # 
           sed -i 's/^[ \t]*//g' ./.config
           make defconfig
-      - name: Make download
+      - name: 下载编译所需源码
         run: |
           make download -j8
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
-      - name: Compile firmware
+      - name: 进行固件编译
         run: |
           echo -e "$(nproc) thread build."
           make -j$(nproc) V=s
-      - name: Assemble artifact
+          
+      - name: 清理不必要的文件
         run: |
           rm -rf ./artifact/
           mkdir -p ./artifact/
           find ./bin/targets/ -name "*combined*img*" | xargs -i mv -f {} ./artifact/
-          find ./bin/targets/ -name "*efi*img*" | xargs -i mv -f {} ./artifact/
           find ./bin/targets/ -name "*sysupgrade*bin*" | xargs -i mv -f {} ./artifact/
-      - name: Upload artifact
+      - name : 上传固件
         uses: actions/upload-artifact@master
         with:
           name: OpenWrt firmware
-          path: ./artifact/
+          path: bin/targets
