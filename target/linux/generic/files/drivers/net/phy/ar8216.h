@@ -30,6 +30,9 @@
 
 /* size of the vlan table */
 #define AR8X16_MAX_VLANS	128
+#define AR83X7_MAX_VLANS	4096
+#define AR8XXX_MAX_VLANS	AR83X7_MAX_VLANS
+
 #define AR8X16_PROBE_RETRIES	10
 #define AR8X16_MAX_PORTS	8
 
@@ -453,8 +456,9 @@ struct ar8xxx_priv {
 
 	/* all fields below are cleared on reset */
 	bool vlan;
-	u16 vlan_id[AR8X16_MAX_VLANS];
-	u8 vlan_table[AR8X16_MAX_VLANS];
+
+	u16 vlan_id[AR8XXX_MAX_VLANS];
+	u8 vlan_table[AR8XXX_MAX_VLANS];
 	u8 vlan_tagged;
 	u16 pvid[AR8X16_MAX_PORTS];
 	int arl_age_time;
