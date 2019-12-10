@@ -131,7 +131,7 @@ endef
 TARGET_DEVICES += mediatek_ap-mt7621a-v60
 
 define Device/xiaoyu_xy-c5
-  DEVICE_TITLE :=XiaoYu-C5
+  DEVICE_TITLE := XiaoYu-C5
   MTK_SOC := mt7621
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := XiaoYu
