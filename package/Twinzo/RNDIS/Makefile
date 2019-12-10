@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=Remote NDIS(USB sharing Internet) 
-LUCI_DEPENDS:=+kmod-usb-net +kmod-usb-net-rndis +kmod-usb-net-cdc-ether +usbutils +systemd
+LUCI_DEPENDS:=+kmod-usb-net +kmod-usb-net-rndis +kmod-usb-net-cdc-ether +usbutils +sysfs
 LUCI_PKGARCH:=all
 PKG_VERSION:=2.0
 PKG_RELEASE:=1
