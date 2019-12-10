@@ -134,7 +134,6 @@ define Device/xiaoyu_xy-c5
   DTS := XiaoYu-C5
   MTK_SOC := mt7621
   IMAGE_SIZE := 32448k
-  DEVICE_TITLE := XiaoYu-C5
   DEVICE_VENDOR := XiaoYu
   DEVICE_MODEL := XY-C5
   DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-usb3
