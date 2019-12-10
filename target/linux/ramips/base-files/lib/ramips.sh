@@ -280,12 +280,6 @@ ramips_board_detect() {
 	*"Mercury MAC1200R v2")
 		name="mac1200rv2"
 		;;
-	*"Mi Router 3G")
-		name="mir3g"
-		;;
-	*"Mi Router 4")
-		name="mir4"
-		;;		
 	*"MicroWRT")
 		name="microwrt"
 		;;
@@ -421,9 +415,6 @@ ramips_board_detect() {
 	*"R6220")
 		name="r6220"
 		;;
-	*"RB750Gr3")
-		name="rb750gr3"
-		;;
 	*"RE350 v1")
 		name="re350-v1"
 		;;
@@ -444,9 +435,6 @@ ramips_board_detect() {
 		;;
 	*"RT-AC51U")
 		name="rt-ac51u"
-		;;
-	*"RT-AC54U")
-		name="rt-ac54u"
 		;;
 	*"RT-G32 B1")
 		name="rt-g32-b1"
@@ -594,9 +582,6 @@ ramips_board_detect() {
 		;;
 	*"WL-351 v1 002")
 		name="wl-351"
-		;;
-	*"WL-WN575A3")
-		name="wl-wn575a3"
 		;;
 	*"WLI-TX4-AG300N")
 		name="wli-tx4-ag300n"
