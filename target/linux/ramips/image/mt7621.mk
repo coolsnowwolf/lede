@@ -131,10 +131,9 @@ endef
 TARGET_DEVICES += mediatek_ap-mt7621a-v60
 
 define Device/xiaoyu_xy-c5
-  MTK_SOC := mt7621
-  IMAGE_SIZE := 32448k
-  DEVICE_VENDOR := XiaoYu
-  DEVICE_MODEL := XY-C5
+  DTS := XiaoYu-C5
+  IMAGE_SIZE := $(ralink_default_fw_size_32M)
+  DEVICE_TITLE := XiaoYu_XY-C5
   DEVICE_PACKAGES := kmod-ata-core kmod-ata-ahci kmod-usb3
 endef
 TARGET_DEVICES += xiaoyu_xy-c5
