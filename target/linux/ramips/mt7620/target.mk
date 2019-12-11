@@ -4,7 +4,7 @@
 
 SUBTARGET:=mt7620
 BOARDNAME:=MT7620 based boards
-FEATURES+=usb
+FEATURES+=usb ramdisk
 CPU_TYPE:=24kc
 
 DEFAULT_PACKAGES += kmod-rt2800-soc wpad-basic
