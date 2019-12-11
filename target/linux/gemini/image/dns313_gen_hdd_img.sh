@@ -17,7 +17,7 @@ sect=63
 
 # Create two empty partitions followed by the boot partition with
 # the ./boot/zImage and then the rootfs partition.
-set `ptgen -o $OUTPUT -h $head -s $sect -t 83 -n -p 0 -p 0 -p ${BOOTFSSIZE}M -p ${ROOTFSSIZE}M`
+set $(ptgen -o $OUTPUT -h $head -s $sect -t 83 -n -p 0 -p 0 -p ${BOOTFSSIZE}M -p ${ROOTFSSIZE}M)
 
 BOOTOFFSET="$(($1 / 512))"
 BOOTSIZE="$(($2 / 512))"
