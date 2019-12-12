@@ -1411,19 +1411,8 @@ static int fe_do_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	if (!priv->phy_dev)
 		return -ENODEV;
 
-	switch (cmd) {
-	case SIOCETHTOOL:
-		return phy_ethtool_ioctl(priv->phy_dev,
-				(void *) ifr->ifr_data);
-	case SIOCGMIIPHY:
-	case SIOCGMIIREG:
-	case SIOCSMIIREG:
-		return phy_mii_ioctl(priv->phy_dev, ifr, cmd);
-	default:
-		break;
-	}
 
-	return -EOPNOTSUPP;
+	return phy_mii_ioctl(priv->phy_dev, ifr, cmd);
 }
 
 static int fe_change_mtu(struct net_device *dev, int new_mtu)
