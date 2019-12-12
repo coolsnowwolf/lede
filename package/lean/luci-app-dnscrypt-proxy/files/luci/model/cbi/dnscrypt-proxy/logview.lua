@@ -15,8 +15,7 @@ dnsmasq_dir = UCI:get_first(m.config, "global", "dnsmasq_dir") or "/tmp/dnsmasq"
 local logfile_list = {}
 
 local logfs = {
-"%s/ssr*" % log_dir,
-"%s/*.*" % run_dir,
+"%s/dnscrypt*" % run_dir,
 "%s.*/*.*" % dnsmasq_dir,
 "%s/*.*" % "/usr/share/dnscrypt-proxy",
 "%s/dnscrypt_*" % log_dir,

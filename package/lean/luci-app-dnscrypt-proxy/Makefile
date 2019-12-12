@@ -22,9 +22,13 @@ PKG_CONFIG_DEPENDS:=CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_minisign
 
 include $(INCLUDE_DIR)/package.mk
 
+define Package/$(PKG_NAME)/config
+
 config PACKAGE_$(PKG_NAME)_INCLUDE_minisign
 	bool "Include minisign for customized offline resolvers list self-sign."
 	default n
+
+endef
 
 define Package/luci-app-dnscrypt-proxy
  	SECTION:=luci
@@ -34,9 +38,10 @@ define Package/luci-app-dnscrypt-proxy
 	URL:=https://github.com/peter-tank/luci-app-dnscrypt-proxy
 	PKGARCH:=all
 	DEPENDS:=+PACKAGE_$(PKG_NAME)_INCLUDE_minisign:minisign
+endef
 
 define Package/luci-app-dnscrypt-proxy/description
-	LuCI Support for dnscrypt-proxy.
+	LuCI Support for dnscrypt-proxy2.
 endef
 
 define Build/Prepare

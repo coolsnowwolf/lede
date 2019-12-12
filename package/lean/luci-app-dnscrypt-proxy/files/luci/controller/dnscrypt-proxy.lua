@@ -21,6 +21,8 @@ function index()
 
 	entry({"admin", "services", "dnscrypt-proxy", "logview"}, cbi("dnscrypt-proxy/logview"), _("Log") ,80).leaf=true
 
+end
+
 function update_cmd()
 local dc = require "luci.tools.dnscrypt".init()
 local set = luci.http.formvalue("set")
@@ -197,5 +199,4 @@ function exec(cmd, args, writer)
 		nixio.stdout:close()
 		os.exit(1)
 	end
-	luci.util.exec("echo %s, %s>>/tmp/test;" % {cmd, table.concat(args,", ")})
 end
