@@ -7,7 +7,7 @@
 
 define Profile/Default
 	NAME:=Default Profile
-	PACKAGES:= kmod-usb-core kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport
+	PACKAGES:= kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport
 	PRIORITY:=1
 endef
 

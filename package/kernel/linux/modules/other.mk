@@ -1230,3 +1230,18 @@ define KernelPackage/it87-wdt/description
 endef
 
 $(eval $(call KernelPackage,it87-wdt))
+
+
+define KernelPackage/pinctrl-sx150x
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Semtech SX150x-series I2C GPIO expanders
+  DEPENDS:= +kmod-i2c-core @!LINUX_4_9
+  KCONFIG:=CONFIG_PINCTRL_SX150X=y
+  AUTOLOAD:=$(call AutoLoad,40,pinctrl-sx150x)
+endef
+
+define KernelPackage/pinctrl-sx150x/description
+ This driver adds support for Semtech SX150x-series I2C GPIO expanders.
+endef
+
+$(eval $(call KernelPackage,pinctrl-sx150x))
