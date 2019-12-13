@@ -118,7 +118,7 @@ static void mt7620_set_mac(struct fe_priv *priv, unsigned char *mac)
 	spin_unlock_irqrestore(&priv->page_lock, flags);
 }
 
-static void mt7620_auto_poll(struct mt7620_gsw *gsw)
+static void mt7620_auto_poll(struct mt7620_gsw *gsw, int port)
 {
 	int phy;
 	int lsb = -1, msb = 0;
@@ -129,7 +129,9 @@ static void mt7620_auto_poll(struct mt7620_gsw *gsw)
 		msb = phy;
 	}
 
-	if (lsb == msb)
+	if (lsb == msb && port ==  4)
+		msb++;
+	else if (lsb == msb && port ==  5)
 		lsb--;
 
 	mtk_switch_w32(gsw, PHY_AN_EN | PHY_PRE_EN | PMY_MDC_CONF(5) |
@@ -140,6 +142,7 @@ static void mt7620_port_init(struct fe_priv *priv, struct device_node *np)
 {
 	struct mt7620_gsw *gsw = (struct mt7620_gsw *)priv->soc->swpriv;
 	const __be32 *_id = of_get_property(np, "reg", NULL);
+	const __be32 *phy_addr;
 	int phy_mode, size, id;
 	int shift = 12;
 	u32 val, mask = 0;
@@ -234,14 +237,15 @@ static void mt7620_port_init(struct fe_priv *priv, struct device_node *np)
 		return;
 	}
 
-	if (priv->phy->phy_node[id] && mdiobus_get_phy(priv->mii_bus, id)) {
+	phy_addr = of_get_property(priv->phy->phy_node[id], "reg", NULL);
+	if (phy_addr && mdiobus_get_phy(priv->mii_bus, be32_to_cpup(phy_addr))) {
 		u32 val = PMCR_BACKPRES | PMCR_BACKOFF | PMCR_RX_EN |
 			PMCR_TX_EN |  PMCR_MAC_MODE | PMCR_IPG;
 
 		mtk_switch_w32(gsw, val, GSW_REG_PORT_PMCR(id));
-		fe_connect_phy_node(priv, priv->phy->phy_node[id]);
-		gsw->autopoll |= BIT(id);
-		mt7620_auto_poll(gsw);
+		fe_connect_phy_node(priv, priv->phy->phy_node[id], id);
+		gsw->autopoll |= BIT(be32_to_cpup(phy_addr));
+		mt7620_auto_poll(gsw,id);
 		return;
 	}
 }
