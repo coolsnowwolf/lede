@@ -60,19 +60,19 @@ static void fe_phy_link_adjust(struct net_device *dev)
 	spin_unlock_irqrestore(&priv->phy->lock, flags);
 }
 
-int fe_connect_phy_node(struct fe_priv *priv, struct device_node *phy_node)
+int fe_connect_phy_node(struct fe_priv *priv, struct device_node *phy_node, int port)
 {
-	const __be32 *_port = NULL;
+	const __be32 *_phy_addr = NULL;
 	struct phy_device *phydev;
-	int phy_mode, port;
+	int phy_mode;
 
-	_port = of_get_property(phy_node, "reg", NULL);
+	_phy_addr = of_get_property(phy_node, "reg", NULL);
 
-	if (!_port || (be32_to_cpu(*_port) >= 0x20)) {
-		pr_err("%s: invalid port id\n", phy_node->name);
+	if (!_phy_addr || (be32_to_cpu(*_phy_addr) >= 0x20)) {
+		pr_err("%s: invalid phy id\n", phy_node->name);
 		return -EINVAL;
 	}
-	port = be32_to_cpu(*_port);
+
 	phy_mode = of_get_phy_mode(phy_node);
 	if (phy_mode < 0) {
 		dev_err(priv->dev, "incorrect phy-mode %d\n", phy_mode);
@@ -127,8 +127,14 @@ static int fe_phy_connect(struct fe_priv *priv)
 				priv->phy_dev = priv->phy->phy[i];
 				priv->phy_flags = FE_PHY_FLAG_PORT;
 			}
-		} else if (priv->mii_bus && mdiobus_get_phy(priv->mii_bus, i)) {
-			phy_init(priv, mdiobus_get_phy(priv->mii_bus, i));
+		} else if (priv->mii_bus) {
+			struct phy_device *phydev;
+
+			phydev = mdiobus_get_phy(priv->mii_bus, i);
+			if (!phydev || phydev->attached_dev)
+				continue;
+
+			phy_init(priv, phydev);
 			if (!priv->phy_dev) {
 				priv->phy_dev = mdiobus_get_phy(priv->mii_bus, i);
 				priv->phy_flags = FE_PHY_FLAG_ATTACH;
