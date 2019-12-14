@@ -8,12 +8,12 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=trojan
 PKG_VERSION:=1.13.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/trojan-gfw/trojan.git
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE_VERSION:=842ad5bb07eb8bce035fb274571e586629a97c99
+PKG_SOURCE_VERSION:=98533aa1003979862763f4225266de78581e40bc
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-$(PKG_SOURCE_VERSION).tar.gz
 
 CMAKE_INSTALL:=1
@@ -45,8 +45,8 @@ CMAKE_OPTIONS += \
 	-DENABLE_NAT=ON \
 	-DFORCE_TCP_FASTOPEN=OFF \
 	-DSYSTEMD_SERVICE=OFF \
-	-DOPENSSL_USE_STATIC_LIBS=TRUE \
-	-DBoost_DEBUG=ON \
+	-DOPENSSL_USE_STATIC_LIBS=FALSE \
+	-DBoost_DEBUG=OFF \
 	-DBoost_NO_BOOST_CMAKE=ON
 
 define Package/trojan
@@ -54,18 +54,13 @@ define Package/trojan
 	CATEGORY:=Network
 	TITLE:=An unidentifiable mechanism that helps you bypass GFW
 	URL:=https://github.com/trojan-gfw/trojan
-	DEPENDS:=+libpthread +libstdcpp \
+	DEPENDS:=+libpthread +libstdcpp +libopenssl \
 		+boost +boost-system +boost-program_options +boost-date_time
 endef
 
 define Package/trojan/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/trojan $(1)/usr/sbin/trojan
-	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_DATA) ./files/trojan.config $(1)/etc/config/trojan
-	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) ./files/trojan.init $(1)/etc/init.d/trojan
-	$(INSTALL_CONF) $(PKG_INSTALL_DIR)/etc/trojan/config.json $(1)/etc/trojan.json
 endef
 
 $(eval $(call BuildPackage,trojan))
