@@ -37,7 +37,7 @@ define Device/cudy_wr1000
   IMAGES += factory.bin
   IMAGE/factory.bin := \
         $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | jcg-header 92.122
-  JCG_MAXSIZE := 8060928
+  JCG_MAXSIZE := 7872k
   DEVICE_VENDOR := Cudy
   DEVICE_MODEL := WR1000
   DEVICE_PACKAGES := kmod-mt76x2

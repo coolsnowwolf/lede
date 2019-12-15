@@ -50,7 +50,7 @@ define Device/alfa-network_tube-e4g
   DEVICE_VENDOR := ALFA Network
   DEVICE_MODEL := Tube-E4G
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci uboot-envtools uqmi \
-	-iwinfo -kmod-rt2800-soc -wpad-basic
+	-iwinfo -kmod-rt2800-soc -wpad-openssl
 endef
 TARGET_DEVICES += alfa-network_tube-e4g
 
