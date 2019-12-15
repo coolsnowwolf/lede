@@ -1,0 +1,199 @@
+From 5a1c18b761ddb299a06746948b9ec2814b04fa92 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Wed, 2 Jan 2019 00:00:01 +0100
+Subject: [PATCH] bcma: keep a direct pointer to the struct device
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Accessing struct device is pretty useful/common so having a direct
+pointer:
+1) Simplifies some code
+2) Makes bcma_bus_get_host_dev() unneeded
+3) Allows further improvements like using dev_* printing helpers
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ drivers/bcma/bcma_private.h |  1 -
+ drivers/bcma/driver_gpio.c  |  2 +-
+ drivers/bcma/host_pci.c     |  2 ++
+ drivers/bcma/host_soc.c     |  4 ++--
+ drivers/bcma/main.c         | 45 +++++++++----------------------------
+ include/linux/bcma/bcma.h   | 11 +++------
+ 6 files changed, 18 insertions(+), 47 deletions(-)
+
+--- a/drivers/bcma/bcma_private.h
++++ b/drivers/bcma/bcma_private.h
+@@ -33,7 +33,6 @@ int __init bcma_bus_early_register(struc
+ int bcma_bus_suspend(struct bcma_bus *bus);
+ int bcma_bus_resume(struct bcma_bus *bus);
+ #endif
+-struct device *bcma_bus_get_host_dev(struct bcma_bus *bus);
+ 
+ /* scan.c */
+ void bcma_detect_chip(struct bcma_bus *bus);
+--- a/drivers/bcma/driver_gpio.c
++++ b/drivers/bcma/driver_gpio.c
+@@ -183,7 +183,7 @@ int bcma_gpio_init(struct bcma_drv_cc *c
+ 	chip->direction_input	= bcma_gpio_direction_input;
+ 	chip->direction_output	= bcma_gpio_direction_output;
+ 	chip->owner		= THIS_MODULE;
+-	chip->parent		= bcma_bus_get_host_dev(bus);
++	chip->parent		= bus->dev;
+ #if IS_BUILTIN(CONFIG_OF)
+ 	chip->of_node		= cc->core->dev.of_node;
+ #endif
+--- a/drivers/bcma/host_pci.c
++++ b/drivers/bcma/host_pci.c
+@@ -196,6 +196,8 @@ static int bcma_host_pci_probe(struct pc
+ 		goto err_pci_release_regions;
+ 	}
+ 
++	bus->dev = &dev->dev;
++
+ 	/* Map MMIO */
+ 	err = -ENOMEM;
+ 	bus->mmio = pci_iomap(dev, 0, ~0UL);
+--- a/drivers/bcma/host_soc.c
++++ b/drivers/bcma/host_soc.c
+@@ -179,7 +179,6 @@ int __init bcma_host_soc_register(struct
+ 	/* Host specific */
+ 	bus->hosttype = BCMA_HOSTTYPE_SOC;
+ 	bus->ops = &bcma_host_soc_ops;
+-	bus->host_pdev = NULL;
+ 
+ 	/* Initialize struct, detect chip */
+ 	bcma_init_bus(bus);
+@@ -213,6 +212,8 @@ static int bcma_host_soc_probe(struct pl
+ 	if (!bus)
+ 		return -ENOMEM;
+ 
++	bus->dev = dev;
++
+ 	/* Map MMIO */
+ 	bus->mmio = of_iomap(np, 0);
+ 	if (!bus->mmio)
+@@ -221,7 +222,6 @@ static int bcma_host_soc_probe(struct pl
+ 	/* Host specific */
+ 	bus->hosttype = BCMA_HOSTTYPE_SOC;
+ 	bus->ops = &bcma_host_soc_ops;
+-	bus->host_pdev = pdev;
+ 
+ 	/* Initialize struct, detect chip */
+ 	bcma_init_bus(bus);
+--- a/drivers/bcma/main.c
++++ b/drivers/bcma/main.c
+@@ -223,8 +223,8 @@ unsigned int bcma_core_irq(struct bcma_d
+ 			mips_irq = bcma_core_mips_irq(core);
+ 			return mips_irq <= 4 ? mips_irq + 2 : 0;
+ 		}
+-		if (bus->host_pdev)
+-			return bcma_of_get_irq(&bus->host_pdev->dev, core, num);
++		if (bus->dev)
++			return bcma_of_get_irq(bus->dev, core, num);
+ 		return 0;
+ 	case BCMA_HOSTTYPE_SDIO:
+ 		return 0;
+@@ -239,18 +239,18 @@ void bcma_prepare_core(struct bcma_bus *
+ 	core->dev.release = bcma_release_core_dev;
+ 	core->dev.bus = &bcma_bus_type;
+ 	dev_set_name(&core->dev, "bcma%d:%d", bus->num, core->core_index);
+-	core->dev.parent = bcma_bus_get_host_dev(bus);
+-	if (core->dev.parent)
+-		bcma_of_fill_device(core->dev.parent, core);
++	core->dev.parent = bus->dev;
++	if (bus->dev)
++		bcma_of_fill_device(bus->dev, core);
+ 
+ 	switch (bus->hosttype) {
+ 	case BCMA_HOSTTYPE_PCI:
+-		core->dma_dev = &bus->host_pci->dev;
++		core->dma_dev = bus->dev;
+ 		core->irq = bus->host_pci->irq;
+ 		break;
+ 	case BCMA_HOSTTYPE_SOC:
+-		if (IS_ENABLED(CONFIG_OF) && bus->host_pdev) {
+-			core->dma_dev = &bus->host_pdev->dev;
++		if (IS_ENABLED(CONFIG_OF) && bus->dev) {
++			core->dma_dev = bus->dev;
+ 		} else {
+ 			core->dev.dma_mask = &core->dev.coherent_dma_mask;
+ 			core->dma_dev = &core->dev;
+@@ -261,28 +261,6 @@ void bcma_prepare_core(struct bcma_bus *
+ 	}
+ }
+ 
+-struct device *bcma_bus_get_host_dev(struct bcma_bus *bus)
+-{
+-	switch (bus->hosttype) {
+-	case BCMA_HOSTTYPE_PCI:
+-		if (bus->host_pci)
+-			return &bus->host_pci->dev;
+-		else
+-			return NULL;
+-	case BCMA_HOSTTYPE_SOC:
+-		if (bus->host_pdev)
+-			return &bus->host_pdev->dev;
+-		else
+-			return NULL;
+-	case BCMA_HOSTTYPE_SDIO:
+-		if (bus->host_sdio)
+-			return &bus->host_sdio->dev;
+-		else
+-			return NULL;
+-	}
+-	return NULL;
+-}
+-
+ void bcma_init_bus(struct bcma_bus *bus)
+ {
+ 	mutex_lock(&bcma_buses_mutex);
+@@ -402,7 +380,6 @@ int bcma_bus_register(struct bcma_bus *b
+ {
+ 	int err;
+ 	struct bcma_device *core;
+-	struct device *dev;
+ 
+ 	/* Scan for devices (cores) */
+ 	err = bcma_bus_scan(bus);
+@@ -425,10 +402,8 @@ int bcma_bus_register(struct bcma_bus *b
+ 		bcma_core_pci_early_init(&bus->drv_pci[0]);
+ 	}
+ 
+-	dev = bcma_bus_get_host_dev(bus);
+-	if (dev) {
+-		of_platform_default_populate(dev->of_node, NULL, dev);
+-	}
++	if (bus->dev)
++		of_platform_default_populate(bus->dev->of_node, NULL, bus->dev);
+ 
+ 	/* Cores providing flash access go before SPROM init */
+ 	list_for_each_entry(core, &bus->cores, list) {
+--- a/include/linux/bcma/bcma.h
++++ b/include/linux/bcma/bcma.h
+@@ -332,6 +332,8 @@ extern int bcma_arch_register_fallback_s
+ 		struct ssb_sprom *out));
+ 
+ struct bcma_bus {
++	struct device *dev;
++
+ 	/* The MMIO area. */
+ 	void __iomem *mmio;
+ 
+@@ -339,14 +341,7 @@ struct bcma_bus {
+ 
+ 	enum bcma_hosttype hosttype;
+ 	bool host_is_pcie2; /* Used for BCMA_HOSTTYPE_PCI only */
+-	union {
+-		/* Pointer to the PCI bus (only for BCMA_HOSTTYPE_PCI) */
+-		struct pci_dev *host_pci;
+-		/* Pointer to the SDIO device (only for BCMA_HOSTTYPE_SDIO) */
+-		struct sdio_func *host_sdio;
+-		/* Pointer to platform device (only for BCMA_HOSTTYPE_SOC) */
+-		struct platform_device *host_pdev;
+-	};
++	struct pci_dev *host_pci; /* PCI bus pointer (BCMA_HOSTTYPE_PCI only) */
+ 
+ 	struct bcma_chipinfo chipinfo;
+ 

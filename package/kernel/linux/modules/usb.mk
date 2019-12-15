@@ -39,7 +39,6 @@ endef
 define KernelPackage/usb-ledtrig-usbport
   TITLE:=LED trigger for USB ports
   KCONFIG:=CONFIG_USB_LEDS_TRIGGER_USBPORT
-  DEPENDS:=@!LINUX_3_18
   FILES:=$(LINUX_DIR)/drivers/usb/core/ledtrig-usbport.ko
   AUTOLOAD:=$(call AutoLoad,50,ledtrig-usbport)
   $(call AddDepends/usb)
@@ -73,7 +72,7 @@ $(eval $(call KernelPackage,usb-phy-nop))
 
 define KernelPackage/usb-phy-qcom-dwc3
   TITLE:=DWC3 USB QCOM PHY driver
-  DEPENDS:=@TARGET_ipq40xx||@TARGET_ipq806x +kmod-usb-dwc3-of-simple
+  DEPENDS:=@(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3-of-simple
   KCONFIG:= CONFIG_PHY_QCOM_DWC3
   FILES:= \
     $(LINUX_DIR)/drivers/phy/phy-qcom-dwc3.ko@lt4.13 \
@@ -237,6 +236,22 @@ endef
 
 $(eval $(call KernelPackage,usb-gadget-mass-storage))
 
+define KernelPackage/usb-gadget-cdc-composite
+  TITLE:= USB CDC Composite (Ethernet + ACM)
+  KCONFIG:=CONFIG_USB_CDC_COMPOSITE
+  DEPENDS:=+kmod-usb-gadget +kmod-usb-lib-composite \
+	+kmod-usb-gadget-eth +kmod-usb-gadget-serial
+  FILES:= $(LINUX_DIR)/drivers/usb/gadget/legacy/g_cdc.ko
+  $(call AddDepends/usb)
+endef
+
+define KernelPackage/usb-gadget-cdc-composite/description
+  Kernel support for the USB CDC Composite gadget.
+  This appears as an ethernet + ACM serial gadget.
+endef
+
+$(eval $(call KernelPackage,usb-gadget-cdc-composite))
+
 
 define KernelPackage/usb-uhci
   TITLE:=Support for UHCI controllers
@@ -318,6 +333,17 @@ define KernelPackage/usb-bcma
 endef
 $(eval $(call KernelPackage,usb-bcma))
 
+define KernelPackage/usb-fotg210
+  TITLE:=Support for FOTG210 USB host controllers
+  DEPENDS:=@USB_SUPPORT @TARGET_gemini
+  KCONFIG:=CONFIG_USB_FOTG210_HCD
+  FILES:= \
+	$(if $(CONFIG_USB_FOTG210_HCD),$(LINUX_DIR)/drivers/usb/host/fotg210-hcd.ko)
+  AUTOLOAD:=$(call AutoLoad,50,fotg210-hcd,1)
+  $(call AddDepends/usb)
+endef
+$(eval $(call KernelPackage,usb-fotg210))
+
 define KernelPackage/usb-ssb
   TITLE:=Support for SSB USB controllers
   DEPENDS:=@USB_SUPPORT @TARGET_brcm47xx
@@ -368,7 +394,13 @@ define KernelPackage/usb2
   ifneq ($(wildcard $(LINUX_DIR)/drivers/usb/host/ehci-atmel.ko),)
     FILES+=$(LINUX_DIR)/drivers/usb/host/ehci-atmel.ko
   endif
-  AUTOLOAD:=$(call AutoLoad,40,ehci-hcd ehci-platform ehci-orion ehci-atmel,1)
+  ifneq ($(wildcard $(LINUX_DIR)/drivers/usb/host/ehci-fsl.ko),)
+    FILES+=$(LINUX_DIR)/drivers/usb/host/ehci-fsl.ko
+  endif
+  ifneq ($(wildcard $(LINUX_DIR)/drivers/usb/host/fsl-mph-dr-of.ko),)
+    FILES+=$(LINUX_DIR)/drivers/usb/host/fsl-mph-dr-of.ko
+  endif
+  AUTOLOAD:=$(call AutoLoad,40,ehci-hcd ehci-platform ehci-orion ehci-atmel ehci-fsl fsl-mph-dr-of,1)
   $(call AddDepends/usb)
 endef
 
@@ -448,7 +480,7 @@ $(eval $(call KernelPackage,usb-dwc3))
 
 define KernelPackage/usb-dwc3-of-simple
   TITLE:=DWC3 USB simple OF driver
-  DEPENDS:=@TARGET_ipq40xx||@TARGET_ipq806x +kmod-usb-dwc3
+  DEPENDS:=@!LINUX_4_19 @(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3
   KCONFIG:= CONFIG_USB_DWC3_OF_SIMPLE
   FILES:= $(LINUX_DIR)/drivers/usb/dwc3/dwc3-of-simple.ko
   AUTOLOAD:=$(call AutoLoad,53,dwc3-of-simple,1)
@@ -462,6 +494,26 @@ endef
 
 
 $(eval $(call KernelPackage,usb-dwc3-of-simple))
+
+
+define KernelPackage/usb-dwc3-qcom
+  TITLE:=DWC3 Qualcomm USB driver
+  DEPENDS:=@LINUX_4_19 @(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3
+  KCONFIG:= CONFIG_USB_DWC3_QCOM
+  FILES:= $(LINUX_DIR)/drivers/usb/dwc3/dwc3-qcom.ko
+  AUTOLOAD:=$(call AutoLoad,53,dwc3-qcom,1)
+  $(call AddDepends/usb)
+endef
+
+define KernelPackage/usb-dwc3-qcom/description
+ Some Qualcomm SoCs use DesignWare Core IP for USB2/3 functionality.
+ This driver also handles Qscratch wrapper which is needed for
+ peripheral mode support.
+endef
+
+
+$(eval $(call KernelPackage,usb-dwc3-qcom))
+
 
 define KernelPackage/usb-acm
   TITLE:=Support for modems/isdn controllers
@@ -727,6 +779,21 @@ endef
 $(eval $(call KernelPackage,usb-serial-mos7720))
 
 
+define KernelPackage/usb-serial-mos7840
+  TITLE:=Support for Moschip MOS7840 devices
+  KCONFIG:=CONFIG_USB_SERIAL_MOS7840
+  FILES:=$(LINUX_DIR)/drivers/usb/serial/mos7840.ko
+  AUTOLOAD:=$(call AutoProbe,mos7840)
+  $(call AddDepends/usb-serial)
+endef
+
+define KernelPackage/usb-serial-mos7840/description
+ Kernel support for Moschip MOS7840 USB-to-Serial converters
+endef
+
+$(eval $(call KernelPackage,usb-serial-mos7840))
+
+
 define KernelPackage/usb-serial-pl2303
   TITLE:=Support for Prolific PL2303 devices
   KCONFIG:=CONFIG_USB_SERIAL_PL2303
@@ -869,6 +936,7 @@ define KernelPackage/usb-serial-wwan
   TITLE:=Support for GSM and CDMA modems
   KCONFIG:=CONFIG_USB_SERIAL_WWAN
   FILES:=$(LINUX_DIR)/drivers/usb/serial/usb_wwan.ko
+  HIDDEN:=1
   AUTOLOAD:=$(call AutoProbe,usb_wwan)
   $(call AddDepends/usb-serial)
 endef
@@ -882,11 +950,10 @@ $(eval $(call KernelPackage,usb-serial-wwan))
 
 define KernelPackage/usb-serial-option
   TITLE:=Support for Option HSDPA modems
-  DEPENDS:=+kmod-usb-serial-wwan
   KCONFIG:=CONFIG_USB_SERIAL_OPTION
   FILES:=$(LINUX_DIR)/drivers/usb/serial/option.ko
   AUTOLOAD:=$(call AutoProbe,option)
-  $(call AddDepends/usb-serial)
+  $(call AddDepends/usb-serial,+kmod-usb-serial-wwan)
 endef
 
 define KernelPackage/usb-serial-option/description
@@ -1332,7 +1399,7 @@ define KernelPackage/usb-net-cdc-mbim
 endef
 
 define KernelPackage/usb-net-cdc-mbim/description
- Kernel module for Option USB High Speed Mobile Devices
+ Kernel module for CDC MBIM (Mobile Broadband Interface Model) devices
 endef
 
 $(eval $(call KernelPackage,usb-net-cdc-mbim))
@@ -1539,7 +1606,8 @@ define KernelPackage/usb-chipidea
   FILES:= \
 	$(LINUX_DIR)/drivers/extcon/extcon.ko@lt4.9 \
 	$(LINUX_DIR)/drivers/extcon/extcon-core.ko@ge4.9 \
-	$(LINUX_DIR)/drivers/usb/chipidea/ci_hdrc.ko
+	$(LINUX_DIR)/drivers/usb/chipidea/ci_hdrc.ko \
+	$(LINUX_DIR)/drivers/usb/common/ulpi.ko@ge4.18
   AUTOLOAD:=$(call AutoLoad,39,ci_hdrc,1)
   $(call AddDepends/usb)
 endef
@@ -1606,7 +1674,6 @@ define KernelPackage/usb3
 	CONFIG_USB_XHCI_HCD \
 	CONFIG_USB_XHCI_PCI \
 	CONFIG_USB_XHCI_PLATFORM \
-	CONFIG_USB_XHCI_MVEBU=y \
 	CONFIG_USB_XHCI_MTK \
 	CONFIG_USB_XHCI_HCD_DEBUGGING=n
   FILES:= \

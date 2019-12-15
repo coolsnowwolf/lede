@@ -1,21 +1,21 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ath10k-ct
-PKG_RELEASE=3
+PKG_RELEASE=1
 
 PKG_LICENSE:=GPLv2
 PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/greearb/ath10k-ct.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2018-08-22
-PKG_SOURCE_VERSION:=34954f0f333fa43827b2af67313db2b1e830bb48
-PKG_MIRROR_HASH:=aa77f388727ff2201de615c3211ab5c0b2dc5e3c041bd1cde4d6eebde0ca437a
+PKG_SOURCE_DATE:=2019-09-09
+PKG_SOURCE_VERSION:=5e8cd86f90dac966d12df6ece84ac41458d0e95f
+PKG_MIRROR_HASH:=dc1097f3a7b4b7e346918f206746d00a0b7df07ae3be9b89be55dfaef3cbbe45
 
-# Build the 4.13 ath10k-ct driver version.  Other options are "-4.9", or
+# Build the 4.19 ath10k-ct driver version.  Other options are "-4.16", or
 # leave un-defined for 4.7 kernel.  Probably this should match as closely as
 # possible to whatever mac80211 backports version is being used.
-CT_KVER="-4.16"
+CT_KVER="-4.19"
 
 PKG_MAINTAINER:=Ben Greear <greearb@candelatech.com>
 PKG_BUILD_PARALLEL:=1
@@ -37,6 +37,14 @@ define KernelPackage/ath10k-ct
   PROVIDES:=kmod-ath10k
 endef
 
+define KernelPackage/ath10k-ct/config
+
+       config ATH10K-CT_LEDS
+               bool "Enable LED support"
+               default y
+               depends on PACKAGE_kmod-ath10k-ct
+endef
+
 NOSTDINC_FLAGS = \
 	-I$(PKG_BUILD_DIR) \
 	-I$(STAGING_DIR)/usr/include/mac80211-backport/uapi \
@@ -50,7 +58,7 @@ ifdef CONFIG_PACKAGE_MAC80211_MESH
   NOSTDINC_FLAGS += -DCONFIG_MAC80211_MESH
 endif
 
-CT_MAKEDEFS += CONFIG_ATH10K=m CONFIG_ATH10K_PCI=m
+CT_MAKEDEFS += CONFIG_ATH10K=m CONFIG_ATH10K_PCI=m CONFIG_ATH10K_CE=y
 
 # This AHB logic is needed for IPQ4019 radios
 CT_MAKEDEFS += CONFIG_ATH10K_AHB=m
@@ -75,6 +83,11 @@ endif
 ifdef CONFIG_PACKAGE_ATH_SPECTRAL
   CT_MAKEDEFS += CONFIG_ATH10K_SPECTRAL=y
   NOSTDINC_FLAGS += -DCONFIG_ATH10K_SPECTRAL
+endif
+
+ifeq ($(CONFIG_ATH10K-CT_LEDS),y)
+  CT_MAKEDEFS += CONFIG_ATH10K_LEDS=y
+  NOSTDINC_FLAGS += -DCONFIG_ATH10K_LEDS
 endif
 
 define Build/Configure

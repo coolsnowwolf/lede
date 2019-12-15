@@ -140,7 +140,8 @@ sub parse_target_metadata($) {
 				id => $1,
 				name => $1,
 				priority => 999,
-				packages => []
+				packages => [],
+				default => "y if TARGET_ALL_PROFILES"
 			};
 			$1 =~ /^DEVICE_/ and $target->{has_devices} = 1;
 			push @{$target->{profiles}}, $profile;
@@ -152,6 +153,7 @@ sub parse_target_metadata($) {
 		};
 		/^Target-Profile-Packages:\s*(.*)\s*$/ and $profile->{packages} = [ split(/\s+/, $1) ];
 		/^Target-Profile-Description:\s*(.*)\s*/ and $profile->{desc} = get_multiline(*FILE);
+		/^Target-Profile-Default:\s*(.+)\s*$/ and $profile->{default} = $1;
 	}
 	close FILE;
 	foreach my $target (@target) {
@@ -250,6 +252,7 @@ sub parse_package_metadata($) {
 			my @vpkg = split /\s+/, $1;
 			@{$pkg->{provides}} = ($pkg->{name}, @vpkg);
 			foreach my $vpkg (@vpkg) {
+				next if ($vpkg eq $pkg->{name});
 				$vpackage{$vpkg} or $vpackage{$vpkg} = [];
 				push @{$vpackage{$vpkg}}, $pkg;
 			}

@@ -1,0 +1,3771 @@
+From 83fe1ecb8ac6e0544ae74bf5a63806dcac768201 Mon Sep 17 00:00:00 2001
+From: Biwen Li <biwen.li@nxp.com>
+Date: Wed, 17 Apr 2019 18:58:45 +0800
+Subject: [PATCH] mdio-phy: support layerscape
+
+This is an integrated patch of mdio-phy for layerscape
+
+Signed-off-by: Bhaskar Upadhaya <Bhaskar.Upadhaya@nxp.com>
+Signed-off-by: Biwen Li <biwen.li@nxp.com>
+Signed-off-by: Camelia Groza <camelia.groza@nxp.com>
+Signed-off-by: Constantin Tudor <constantin.tudor@nxp.com>
+Signed-off-by: costi <constantin.tudor@freescale.com>
+Signed-off-by: Florin Chiculita <florinlaurentiu.chiculita@nxp.com>
+Signed-off-by: Florinel Iordache <florinel.iordache@nxp.com>
+Signed-off-by: Ioana Ciornei <ioana.ciornei@nxp.com>
+Signed-off-by: Ioana Radulescu <ruxandra.radulescu@nxp.com>
+Signed-off-by: Madalin Bucur <madalin.bucur@freescale.com>
+Signed-off-by: Pankaj Bansal <pankaj.bansal@nxp.com>
+Signed-off-by: Shaohui Xie <Shaohui.Xie@freescale.com>
+Signed-off-by: Valentin Catalin Neacsu <valentin-catalin.neacsu@nxp.com>
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+---
+ drivers/net/phy/Kconfig                    |   33 +
+ drivers/net/phy/Makefile                   |    5 +
+ drivers/net/phy/aquantia.c                 |  328 +++-
+ drivers/net/phy/at803x.c                   |   21 +
+ drivers/net/phy/fsl_backplane.c            | 1780 ++++++++++++++++++++
+ drivers/net/phy/fsl_backplane.h            |   41 +
+ drivers/net/phy/fsl_backplane_serdes_10g.c |  281 +++
+ drivers/net/phy/fsl_backplane_serdes_28g.c |  336 ++++
+ drivers/net/phy/inphi.c                    |  594 +++++++
+ drivers/net/phy/mdio-mux-multiplexer.c     |  122 ++
+ drivers/net/phy/swphy.c                    |    1 +
+ include/linux/phy.h                        |    3 +
+ 12 files changed, 3526 insertions(+), 19 deletions(-)
+ create mode 100644 drivers/net/phy/fsl_backplane.c
+ create mode 100644 drivers/net/phy/fsl_backplane.h
+ create mode 100644 drivers/net/phy/fsl_backplane_serdes_10g.c
+ create mode 100644 drivers/net/phy/fsl_backplane_serdes_28g.c
+ create mode 100644 drivers/net/phy/inphi.c
+ create mode 100644 drivers/net/phy/mdio-mux-multiplexer.c
+
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -87,9 +87,27 @@ config MDIO_BUS_MUX_MMIOREG
+ 
+ 	  Currently, only 8/16/32 bits registers are supported.
+ 
++config MDIO_BUS_MUX_MULTIPLEXER
++	tristate "MDIO bus multiplexer using kernel multiplexer subsystem"
++	depends on OF
++	select MULTIPLEXER
++	select MDIO_BUS_MUX
++	help
++	  This module provides a driver for MDIO bus multiplexer
++	  that is controlled via the kernel multiplexer subsystem. The
++	  bus multiplexer connects one of several child MDIO busses to
++	  a parent bus.  Child bus selection is under the control of
++	  the kernel multiplexer subsystem.
++
+ config MDIO_CAVIUM
+ 	tristate
+ 
++config MDIO_FSL_BACKPLANE
++	tristate "Support for backplane on Freescale XFI interface"
++	depends on OF_MDIO
++	help
++	  This module provides a driver for Freescale XFI's backplane.
++
+ config MDIO_GPIO
+ 	tristate "GPIO lib-based bitbanged MDIO buses"
+ 	depends on MDIO_BITBANG && GPIOLIB
+@@ -303,6 +321,16 @@ config AT803X_PHY
+ 	---help---
+ 	  Currently supports the AT8030 and AT8035 model
+ 
++config AT803X_PHY_SMART_EEE
++	depends on AT803X_PHY
++	default n
++	tristate "SmartEEE feature for AT803X PHYs"
++	---help---
++	  Enables the Atheros SmartEEE feature (not IEEE 802.3az). When 2 PHYs
++	  which support this feature are connected back-to-back, they may
++	  negotiate a low-power sleep mode autonomously, without the Ethernet
++	  controller's knowledge.  May cause packet loss.
++
+ config BCM63XX_PHY
+ 	tristate "Broadcom 63xx SOCs internal PHY"
+ 	depends on BCM63XX
+@@ -385,6 +413,11 @@ config ICPLUS_PHY
+ 	---help---
+ 	  Currently supports the IP175C and IP1001 PHYs.
+ 
++config INPHI_PHY
++	tristate "Inphi CDR 10G/25G Ethernet PHY"
++	---help---
++	  Currently supports the IN112525_S03 part @ 25G
++
+ config INTEL_XWAY_PHY
+ 	tristate "Intel XWAY PHYs"
+ 	---help---
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -44,7 +44,11 @@ obj-$(CONFIG_MDIO_BUS_MUX)	+= mdio-mux.o
+ obj-$(CONFIG_MDIO_BUS_MUX_BCM_IPROC)	+= mdio-mux-bcm-iproc.o
+ obj-$(CONFIG_MDIO_BUS_MUX_GPIO)	+= mdio-mux-gpio.o
+ obj-$(CONFIG_MDIO_BUS_MUX_MMIOREG) += mdio-mux-mmioreg.o
++obj-$(CONFIG_MDIO_BUS_MUX_MULTIPLEXER) += mdio-mux-multiplexer.o
+ obj-$(CONFIG_MDIO_CAVIUM)	+= mdio-cavium.o
++obj-$(CONFIG_MDIO_FSL_BACKPLANE) += fsl_backplane.o
++obj-$(CONFIG_MDIO_FSL_BACKPLANE) += fsl_backplane_serdes_10g.o
++obj-$(CONFIG_MDIO_FSL_BACKPLANE) += fsl_backplane_serdes_28g.o
+ obj-$(CONFIG_MDIO_GPIO)		+= mdio-gpio.o
+ obj-$(CONFIG_MDIO_HISI_FEMAC)	+= mdio-hisi-femac.o
+ obj-$(CONFIG_MDIO_I2C)		+= mdio-i2c.o
+@@ -75,6 +79,7 @@ obj-$(CONFIG_DP83848_PHY)	+= dp83848.o
+ obj-$(CONFIG_DP83867_PHY)	+= dp83867.o
+ obj-$(CONFIG_FIXED_PHY)		+= fixed_phy.o
+ obj-$(CONFIG_ICPLUS_PHY)	+= icplus.o
++obj-$(CONFIG_INPHI_PHY)	+= inphi.o
+ obj-$(CONFIG_INTEL_XWAY_PHY)	+= intel-xway.o
+ obj-$(CONFIG_LSI_ET1011C_PHY)	+= et1011c.o
+ obj-$(CONFIG_LXT_PHY)		+= lxt.o
+--- a/drivers/net/phy/aquantia.c
++++ b/drivers/net/phy/aquantia.c
+@@ -4,6 +4,7 @@
+  * Author: Shaohui Xie <Shaohui.Xie@freescale.com>
+  *
+  * Copyright 2015 Freescale Semiconductor, Inc.
++ * Copyright 2018 NXP
+  *
+  * This file is licensed under the terms of the GNU General Public License
+  * version 2.  This program is licensed "as is" without any warranty of any
+@@ -27,15 +28,200 @@
+ 
+ #define PHY_AQUANTIA_FEATURES	(SUPPORTED_10000baseT_Full | \
+ 				 SUPPORTED_1000baseT_Full | \
++				 SUPPORTED_2500baseX_Full | \
+ 				 SUPPORTED_100baseT_Full | \
++				 SUPPORTED_Pause | \
++				 SUPPORTED_Asym_Pause | \
+ 				 PHY_DEFAULT_FEATURES)
+ 
++#define MDIO_PMA_CTRL1_AQ_SPEED10	0
++#define MDIO_PMA_CTRL1_AQ_SPEED2500	0x2058
++#define MDIO_PMA_CTRL1_AQ_SPEED5000	0x205c
++#define MDIO_PMA_CTRL2_AQ_2500BT       0x30
++#define MDIO_PMA_CTRL2_AQ_5000BT       0x31
++#define MDIO_PMA_CTRL2_AQ_TYPE_MASK    0x3F
++
++#define MDIO_AN_VENDOR_PROV_CTRL       0xc400
++#define MDIO_AN_RECV_LP_STATUS         0xe820
++
++#define MDIO_AN_LPA_PAUSE		0x20
++#define MDIO_AN_LPA_ASYM_PAUSE		0x10
++#define MDIO_AN_ADV_PAUSE		0x20
++#define MDIO_AN_ADV_ASYM_PAUSE		0x10
++
++static int aquantia_write_reg(struct phy_device *phydev, int devad,
++			      u32 regnum, u16 val)
++{
++	u32 addr = MII_ADDR_C45 | (devad << 16) | (regnum & 0xffff);
++
++	return mdiobus_write(phydev->mdio.bus, phydev->mdio.addr, addr, val);
++}
++
++static int aquantia_read_reg(struct phy_device *phydev, int devad, u32 regnum)
++{
++	u32 addr = MII_ADDR_C45 | (devad << 16) | (regnum & 0xffff);
++
++	return mdiobus_read(phydev->mdio.bus, phydev->mdio.addr, addr);
++}
++
++static int aquantia_pma_setup_forced(struct phy_device *phydev)
++{
++	int ctrl1, ctrl2, ret;
++
++	/* Half duplex is not supported */
++	if (phydev->duplex != DUPLEX_FULL)
++		return -EINVAL;
++
++	ctrl1 = aquantia_read_reg(phydev, MDIO_MMD_PMAPMD, MDIO_CTRL1);
++	if (ctrl1 < 0)
++		return ctrl1;
++
++	ctrl2 = aquantia_read_reg(phydev, MDIO_MMD_PMAPMD, MDIO_CTRL2);
++	if (ctrl2 < 0)
++		return ctrl2;
++
++	ctrl1 &= ~MDIO_CTRL1_SPEEDSEL;
++	ctrl2 &= ~(MDIO_PMA_CTRL2_AQ_TYPE_MASK);
++
++	switch (phydev->speed) {
++	case SPEED_10:
++		ctrl2 |= MDIO_PMA_CTRL2_10BT;
++		break;
++	case SPEED_100:
++		ctrl1 |= MDIO_PMA_CTRL1_SPEED100;
++		ctrl2 |= MDIO_PMA_CTRL2_100BTX;
++		break;
++	case SPEED_1000:
++		ctrl1 |= MDIO_PMA_CTRL1_SPEED1000;
++		/* Assume 1000base-T */
++		ctrl2 |= MDIO_PMA_CTRL2_1000BT;
++		break;
++	case SPEED_10000:
++		ctrl1 |= MDIO_CTRL1_SPEED10G;
++		/* Assume 10Gbase-T */
++		ctrl2 |= MDIO_PMA_CTRL2_10GBT;
++		break;
++	case SPEED_2500:
++		ctrl1 |= MDIO_PMA_CTRL1_AQ_SPEED2500;
++		ctrl2 |= MDIO_PMA_CTRL2_AQ_2500BT;
++		break;
++	case SPEED_5000:
++		ctrl1 |= MDIO_PMA_CTRL1_AQ_SPEED5000;
++		ctrl2 |= MDIO_PMA_CTRL2_AQ_5000BT;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	ret = aquantia_write_reg(phydev, MDIO_MMD_PMAPMD, MDIO_CTRL1, ctrl1);
++	if (ret < 0)
++		return ret;
++
++	return aquantia_write_reg(phydev, MDIO_MMD_PMAPMD, MDIO_CTRL2, ctrl2);
++}
++
++static int aquantia_aneg(struct phy_device *phydev, bool control)
++{
++	int reg = aquantia_read_reg(phydev, MDIO_MMD_AN, MDIO_CTRL1);
++
++	if (reg < 0)
++		return reg;
++
++	if (control)
++		reg |= MDIO_AN_CTRL1_ENABLE | MDIO_AN_CTRL1_RESTART;
++	else
++		reg &= ~(MDIO_AN_CTRL1_ENABLE | MDIO_AN_CTRL1_RESTART);
++
++	return aquantia_write_reg(phydev, MDIO_MMD_AN, MDIO_CTRL1, reg);
++}
++
++static int aquantia_config_advert(struct phy_device *phydev)
++{
++	u32 advertise;
++	int oldadv, adv, oldadv1, adv1;
++	int err, changed = 0;
++
++	/* Only allow advertising what this PHY supports */
++	phydev->advertising &= phydev->supported;
++	advertise = phydev->advertising;
++
++	/* Setup standard advertisement */
++	oldadv = aquantia_read_reg(phydev, MDIO_MMD_AN,
++				   MDIO_AN_10GBT_CTRL);
++	if (oldadv < 0)
++		return oldadv;
++
++	/* Aquantia vendor specific advertisments */
++	oldadv1 = aquantia_read_reg(phydev, MDIO_MMD_AN,
++				    MDIO_AN_VENDOR_PROV_CTRL);
++	if (oldadv1 < 0)
++		return oldadv1;
++
++	adv  = 0;
++	adv1 = 0;
++
++	/*100BaseT_full is supported by default*/
++
++	if (advertise & ADVERTISED_1000baseT_Full)
++		adv1 |= 0x8000;
++	if (advertise & ADVERTISED_10000baseT_Full)
++		adv |= 0x1000;
++	if (advertise &  ADVERTISED_2500baseX_Full)
++		adv1 |= 0x400;
++
++	if (adv != oldadv) {
++		err = aquantia_write_reg(phydev, MDIO_MMD_AN,
++					 MDIO_AN_10GBT_CTRL, adv);
++		if (err < 0)
++			return err;
++		changed = 1;
++	}
++	if (adv1 != oldadv1) {
++		err = aquantia_write_reg(phydev, MDIO_MMD_AN,
++					 MDIO_AN_VENDOR_PROV_CTRL, adv1);
++		if (err < 0)
++			return err;
++		changed = 1;
++	}
++
++	/* advertise flow control */
++	oldadv = aquantia_read_reg(phydev, MDIO_MMD_AN, MDIO_AN_ADVERTISE);
++	if (oldadv < 0)
++		return oldadv;
++
++	adv = oldadv & ~(MDIO_AN_ADV_PAUSE | MDIO_AN_ADV_ASYM_PAUSE);
++	if (advertise & ADVERTISED_Pause)
++		adv |= MDIO_AN_ADV_PAUSE;
++	if (advertise & ADVERTISED_Asym_Pause)
++		adv |= MDIO_AN_ADV_ASYM_PAUSE;
++
++	if (adv != oldadv) {
++		err = aquantia_write_reg(phydev, MDIO_MMD_AN,
++					 MDIO_AN_ADVERTISE, adv);
++		if (err < 0)
++			return err;
++		changed = 1;
++	}
++
++	return changed;
++}
++
+ static int aquantia_config_aneg(struct phy_device *phydev)
+ {
++	int ret = 0;
++
+ 	phydev->supported = PHY_AQUANTIA_FEATURES;
+-	phydev->advertising = phydev->supported;
++	if (phydev->autoneg == AUTONEG_DISABLE) {
++		aquantia_pma_setup_forced(phydev);
++		return aquantia_aneg(phydev, false);
++	}
+ 
+-	return 0;
++	ret = aquantia_config_advert(phydev);
++	if (ret > 0)
++		/* restart autoneg */
++		return aquantia_aneg(phydev, true);
++
++	return ret;
+ }
+ 
+ static int aquantia_aneg_done(struct phy_device *phydev)
+@@ -51,25 +237,26 @@ static int aquantia_config_intr(struct p
+ 	int err;
+ 
+ 	if (phydev->interrupts == PHY_INTERRUPT_ENABLED) {
+-		err = phy_write_mmd(phydev, MDIO_MMD_AN, 0xd401, 1);
++		err = aquantia_write_reg(phydev, MDIO_MMD_AN, 0xd401, 1);
+ 		if (err < 0)
+ 			return err;
+ 
+-		err = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xff00, 1);
++		err = aquantia_write_reg(phydev, MDIO_MMD_VEND1, 0xff00, 1);
+ 		if (err < 0)
+ 			return err;
+ 
+-		err = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xff01, 0x1001);
++		err = aquantia_write_reg(phydev, MDIO_MMD_VEND1,
++					 0xff01, 0x1001);
+ 	} else {
+-		err = phy_write_mmd(phydev, MDIO_MMD_AN, 0xd401, 0);
++		err = aquantia_write_reg(phydev, MDIO_MMD_AN, 0xd401, 0);
+ 		if (err < 0)
+ 			return err;
+ 
+-		err = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xff00, 0);
++		err = aquantia_write_reg(phydev, MDIO_MMD_VEND1, 0xff00, 0);
+ 		if (err < 0)
+ 			return err;
+ 
+-		err = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xff01, 0);
++		err = aquantia_write_reg(phydev, MDIO_MMD_VEND1, 0xff01, 0);
+ 	}
+ 
+ 	return err;
+@@ -79,42 +266,145 @@ static int aquantia_ack_interrupt(struct
+ {
+ 	int reg;
+ 
+-	reg = phy_read_mmd(phydev, MDIO_MMD_AN, 0xcc01);
++	reg = aquantia_read_reg(phydev, MDIO_MMD_AN, 0xcc01);
+ 	return (reg < 0) ? reg : 0;
+ }
+ 
++static int aquantia_read_advert(struct phy_device *phydev)
++{
++	int adv, adv1;
++
++	/* Setup standard advertisement */
++	adv = aquantia_read_reg(phydev, MDIO_MMD_AN,
++				MDIO_AN_10GBT_CTRL);
++
++	/* Aquantia vendor specific advertisments */
++	adv1 = aquantia_read_reg(phydev, MDIO_MMD_AN,
++				 MDIO_AN_VENDOR_PROV_CTRL);
++
++	/*100BaseT_full is supported by default*/
++	phydev->advertising |= ADVERTISED_100baseT_Full;
++
++	if (adv & 0x1000)
++		phydev->advertising |= ADVERTISED_10000baseT_Full;
++	else
++		phydev->advertising &= ~ADVERTISED_10000baseT_Full;
++	if (adv1 & 0x8000)
++		phydev->advertising |= ADVERTISED_1000baseT_Full;
++	else
++		phydev->advertising &= ~ADVERTISED_1000baseT_Full;
++	if (adv1 & 0x400)
++		phydev->advertising |= ADVERTISED_2500baseX_Full;
++	else
++		phydev->advertising &= ~ADVERTISED_2500baseX_Full;
++
++	/* flow control advertisement */
++	adv = aquantia_read_reg(phydev, MDIO_MMD_AN, MDIO_AN_ADVERTISE);
++	if (adv & MDIO_AN_ADV_PAUSE)
++		phydev->advertising |= ADVERTISED_Pause;
++	else
++		phydev->advertising &= ~ADVERTISED_Pause;
++	if (adv & MDIO_AN_ADV_ASYM_PAUSE)
++		phydev->advertising |= ADVERTISED_Asym_Pause;
++	else
++		phydev->advertising &= ~ADVERTISED_Asym_Pause;
++
++	return 0;
++}
++
++static int aquantia_read_lp_advert(struct phy_device *phydev)
++{
++	int adv, adv1;
++
++	/* Read standard link partner advertisement */
++	adv = aquantia_read_reg(phydev, MDIO_MMD_AN,
++				MDIO_STAT1);
++
++	if (adv & 0x1)
++		phydev->lp_advertising |= ADVERTISED_Autoneg |
++					  ADVERTISED_100baseT_Full;
++	else
++		phydev->lp_advertising &= ~(ADVERTISED_Autoneg |
++					    ADVERTISED_100baseT_Full);
++
++	/* Read standard link partner advertisement */
++	adv = aquantia_read_reg(phydev, MDIO_MMD_AN,
++				MDIO_AN_10GBT_STAT);
++
++	/* Aquantia link partner advertisments */
++	adv1 = aquantia_read_reg(phydev, MDIO_MMD_AN,
++				 MDIO_AN_RECV_LP_STATUS);
++
++	if (adv & 0x800)
++		phydev->lp_advertising |= ADVERTISED_10000baseT_Full;
++	else
++		phydev->lp_advertising &= ~ADVERTISED_10000baseT_Full;
++	if (adv1 & 0x8000)
++		phydev->lp_advertising |= ADVERTISED_1000baseT_Full;
++	else
++		phydev->lp_advertising &= ~ADVERTISED_1000baseT_Full;
++	if (adv1 & 0x400)
++		phydev->lp_advertising |= ADVERTISED_2500baseX_Full;
++	else
++		phydev->lp_advertising &= ~ADVERTISED_2500baseX_Full;
++
++	return 0;
++}
++
+ static int aquantia_read_status(struct phy_device *phydev)
+ {
+ 	int reg;
+ 
+-	reg = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_STAT1);
+-	reg = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_STAT1);
++	/* Read the link status twice; the bit is latching low */
++	reg = aquantia_read_reg(phydev, MDIO_MMD_AN, MDIO_STAT1);
++	reg = aquantia_read_reg(phydev, MDIO_MMD_AN, MDIO_STAT1);
++
+ 	if (reg & MDIO_STAT1_LSTATUS)
+ 		phydev->link = 1;
+ 	else
+ 		phydev->link = 0;
+ 
+-	reg = phy_read_mmd(phydev, MDIO_MMD_AN, 0xc800);
+ 	mdelay(10);
+-	reg = phy_read_mmd(phydev, MDIO_MMD_AN, 0xc800);
++	reg = aquantia_read_reg(phydev, MDIO_MMD_PMAPMD, MDIO_CTRL1);
++
++	if ((reg & MDIO_CTRL1_SPEEDSELEXT) == MDIO_CTRL1_SPEEDSELEXT)
++		reg &= MDIO_CTRL1_SPEEDSEL;
++	else
++		reg &= MDIO_CTRL1_SPEEDSELEXT;
+ 
+ 	switch (reg) {
+-	case 0x9:
++	case MDIO_PMA_CTRL1_AQ_SPEED5000:
++		phydev->speed = SPEED_5000;
++		break;
++	case MDIO_PMA_CTRL1_AQ_SPEED2500:
+ 		phydev->speed = SPEED_2500;
+ 		break;
+-	case 0x5:
+-		phydev->speed = SPEED_1000;
++	case MDIO_PMA_CTRL1_AQ_SPEED10:
++		phydev->speed = SPEED_10;
+ 		break;
+-	case 0x3:
++	case MDIO_PMA_CTRL1_SPEED100:
+ 		phydev->speed = SPEED_100;
+ 		break;
+-	case 0x7:
+-	default:
++	case MDIO_PMA_CTRL1_SPEED1000:
++		phydev->speed = SPEED_1000;
++		break;
++	case MDIO_CTRL1_SPEED10G:
+ 		phydev->speed = SPEED_10000;
+ 		break;
++	default:
++		phydev->speed = SPEED_UNKNOWN;
++		break;
+ 	}
++
+ 	phydev->duplex = DUPLEX_FULL;
+ 
++	reg = aquantia_read_reg(phydev, MDIO_MMD_AN, MDIO_AN_LPA);
++	phydev->pause = reg & MDIO_AN_LPA_PAUSE ? 1 : 0;
++	phydev->asym_pause = reg & MDIO_AN_LPA_ASYM_PAUSE ? 1 : 0;
++
++	aquantia_read_advert(phydev);
++	aquantia_read_lp_advert(phydev);
++
+ 	return 0;
+ }
+ 
+--- a/drivers/net/phy/at803x.c
++++ b/drivers/net/phy/at803x.c
+@@ -68,6 +68,8 @@
+ #define AT803X_DEBUG_REG_5			0x05
+ #define AT803X_DEBUG_TX_CLK_DLY_EN		BIT(8)
+ 
++#define AT803X_LPI_EN				BIT(8)
++
+ #define ATH8030_PHY_ID 0x004dd076
+ #define ATH8031_PHY_ID 0x004dd074
+ #define ATH8032_PHY_ID 0x004dd023
+@@ -290,6 +292,19 @@ static void at803x_disable_smarteee(stru
+ 	phy_write_mmd(phydev, MDIO_MMD_AN, MDIO_AN_EEE_ADV, 0);
+ }
+ 
++static void at803x_enable_smart_eee(struct phy_device *phydev, int on)
++{
++	int value;
++
++	/* 5.1.11 Smart_eee control3 */
++	value = phy_read_mmd(phydev, MDIO_MMD_PCS, 0x805D);
++	if (on)
++		value |= AT803X_LPI_EN;
++	else
++		value &= ~AT803X_LPI_EN;
++	phy_write_mmd(phydev, MDIO_MMD_PCS, 0x805D, value);
++}
++
+ static int at803x_config_init(struct phy_device *phydev)
+ {
+ 	struct at803x_platform_data *pdata;
+@@ -320,6 +335,12 @@ static int at803x_config_init(struct phy
+ 	if (ret < 0)
+ 		return ret;
+ 
++#ifdef CONFIG_AT803X_PHY_SMART_EEE
++	at803x_enable_smart_eee(phydev, 1);
++#else
++	at803x_enable_smart_eee(phydev, 0);
++#endif
++
+ 	if (phydev->interface == PHY_INTERFACE_MODE_RGMII_RXID ||
+ 			phydev->interface == PHY_INTERFACE_MODE_RGMII_ID) {
+ 		ret = at803x_enable_rx_delay(phydev);
+--- /dev/null
++++ b/drivers/net/phy/fsl_backplane.c
+@@ -0,0 +1,1780 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ *  DPAA backplane driver.
++ *   Author: Shaohui Xie <Shaohui.Xie@freescale.com>
++ *           Florinel Iordache <florinel.iordache@nxp.com>
++ *
++ * Copyright 2015 Freescale Semiconductor, Inc.
++ * Copyright 2018 NXP
++ *
++ * Licensed under the GPL-2 or later.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mii.h>
++#include <linux/mdio.h>
++#include <linux/ethtool.h>
++#include <linux/phy.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_net.h>
++#include <linux/of_address.h>
++#include <linux/of_platform.h>
++#include <linux/timer.h>
++#include <linux/delay.h>
++#include <linux/workqueue.h>
++#include <linux/netdevice.h>
++
++#include "fsl_backplane.h"
++
++
++/* PCS Device Identifier */
++#define PCS_PHY_DEVICE_ID			0x0083e400
++#define PCS_PHY_DEVICE_ID_MASK		0xffffffff
++
++/* 10G Long cables setup: 1 m to 2 m cables */
++#define RATIO_PREQ_10G				0x3
++#define RATIO_PST1Q_10G				0xd
++#define RATIO_EQ_10G				0x20
++
++/* 10G Short cables setup: up to 30 cm cable */
++//#define RATIO_PREQ_10G				0x3
++//#define RATIO_PST1Q_10G				0xa
++//#define RATIO_EQ_10G				0x29
++
++/* 40G Long cables setup: 1 m to 2 m cables */
++#define RATIO_PREQ_40G				0x2
++#define RATIO_PST1Q_40G				0xd
++#define RATIO_EQ_40G				0x20
++
++/* 40G Short cables setup: up to 30 cm cable */
++//#define RATIO_PREQ_40G				0x1
++//#define RATIO_PST1Q_40G				0x3
++//#define RATIO_EQ_40G				0x29
++
++/* LX2 2x40G default RCW setup */
++//#define RATIO_PREQ_40G				0x0
++//#define RATIO_PST1Q_40G				0x3
++//#define RATIO_EQ_40G				0x30
++
++/* Max/Min coefficient values */
++#define PRE_COE_MAX					0x0
++#define PRE_COE_MIN					0x8
++#define POST_COE_MAX				0x0
++#define POST_COE_MIN				0x10
++#define ZERO_COE_MAX				0x30
++#define ZERO_COE_MIN				0x0
++
++/* KR PMD defines */
++#define PMD_RESET					0x1
++#define PMD_STATUS_SUP_STAT			0x4
++#define PMD_STATUS_FRAME_LOCK		0x2
++#define TRAIN_EN					0x3
++#define TRAIN_DISABLE				0x1
++#define RX_STAT						0x1
++
++/* PCS Link up */
++#define XFI_PCS_SR1             	0x20
++#define KR_RX_LINK_STAT_MASK		0x1000
++
++/* KX PCS mode register */
++#define KX_PCS_IF_MODE				0x8014
++
++/* KX PCS mode register init value */
++#define KX_IF_MODE_INIT				0x8
++
++/* KX/KR AN registers */
++#define AN_CTRL_INIT				0x1200
++#define KX_AN_AD1_INIT				0x25
++#define KR_AN_AD1_INIT_10G			0x85
++#define KR_AN_AD1_INIT_40G			0x105
++#define AN_LNK_UP_MASK				0x4
++#define KR_AN_MASK_10G				0x8
++#define KR_AN_MASK_40G				0x20
++#define TRAIN_FAIL					0x8
++#define KR_AN_40G_MDIO_OFFSET		4
++
++/* XGKR Timeouts */
++#define XGKR_TIMEOUT				1050
++#define XGKR_DENY_RT_INTERVAL		3000
++#define XGKR_AN_WAIT_ITERATIONS 	5
++
++/* XGKR Increment/Decrement Requests */
++#define INCREMENT					1
++#define DECREMENT					2
++#define TIMEOUT_LONG				3
++#define TIMEOUT_M1					3
++
++/* XGKR Masks */
++#define RX_READY_MASK				0x8000
++#define PRESET_MASK					0x2000
++#define INIT_MASK					0x1000
++#define COP1_MASK					0x30
++#define COP1_SHIFT					4
++#define COZ_MASK					0xc
++#define COZ_SHIFT					2
++#define COM1_MASK					0x3
++#define COM1_SHIFT					0
++#define REQUEST_MASK				0x3f
++#define LD_ALL_MASK			(PRESET_MASK | INIT_MASK | \
++					COP1_MASK | COZ_MASK | COM1_MASK)
++
++/* Lanes definitions */
++#define MASTER_LANE					0
++#define SINGLE_LANE					0
++#define MAX_PHY_LANES_NO			4
++
++/* Invalid value */
++#define VAL_INVALID 				0xff
++
++/* New XGKR Training Algorithm */
++#define NEW_ALGORITHM_TRAIN_TX
++
++#ifdef	NEW_ALGORITHM_TRAIN_TX
++#define	FORCE_INC_COP1_NUMBER		0
++#define	FORCE_INC_COM1_NUMBER		1
++#endif
++
++/* Link_Training_Registers offsets */
++static int lt_MDIO_MMD = 0;
++static u32 lt_KR_PMD_CTRL = 0;
++static u32 lt_KR_PMD_STATUS = 0;
++static u32 lt_KR_LP_CU = 0;
++static u32 lt_KR_LP_STATUS = 0;
++static u32 lt_KR_LD_CU = 0;
++static u32 lt_KR_LD_STATUS = 0;
++
++/* KX/KR AN registers offsets */
++static u32 g_an_AD1 = 0;
++static u32 g_an_BP_STAT = 0;
++
++static const u32 preq_table[] = {0x0, 0x1, 0x3, 0x5,
++				 0x7, 0x9, 0xb, 0xc, VAL_INVALID};
++static const u32 pst1q_table[] = {0x0, 0x1, 0x3, 0x5, 0x7,
++				  0x9, 0xb, 0xd, 0xf, 0x10, VAL_INVALID};
++
++enum backplane_mode {
++	PHY_BACKPLANE_1000BASE_KX,
++	PHY_BACKPLANE_10GBASE_KR,
++	PHY_BACKPLANE_40GBASE_KR,
++	PHY_BACKPLANE_INVAL
++};
++
++enum serdes_type {
++	SERDES_10G,
++	SERDES_28G,
++	SERDES_INVAL
++};
++
++enum coe_filed {
++	COE_COP1,
++	COE_COZ,
++	COE_COM
++};
++
++enum coe_update {
++	COE_NOTUPDATED,
++	COE_UPDATED,
++	COE_MIN,
++	COE_MAX,
++	COE_INV
++};
++
++enum train_state {
++	DETECTING_LP,
++	TRAINED,
++};
++
++struct tx_condition {
++	bool bin_m1_late_early;
++	bool bin_long_late_early;
++	bool bin_m1_stop;
++	bool bin_long_stop;
++	bool tx_complete;
++	bool sent_init;
++	int m1_min_max_cnt;
++	int long_min_max_cnt;
++#ifdef	NEW_ALGORITHM_TRAIN_TX
++	int pre_inc;
++	int post_inc;
++#endif
++};
++
++struct xgkr_params {
++	void *reg_base;		/* lane memory map: registers base address */
++	int idx;			/* lane relative index inside a multi-lane PHY */
++	struct phy_device *phydev;
++	struct serdes_access *srds;
++	struct tx_condition tx_c;
++	struct delayed_work xgkr_wk;
++	enum train_state state;
++	int an_wait_count;
++	unsigned long rt_time;
++	u32 ld_update;
++	u32 ld_status;
++	u32 ratio_preq;
++	u32 ratio_pst1q;
++	u32 adpt_eq;
++	u32 tuned_ratio_preq;
++	u32 tuned_ratio_pst1q;
++	u32 tuned_adpt_eq;
++};
++
++struct xgkr_phy_data {
++	int bp_mode;
++	u32 phy_lanes;
++	struct mutex phy_lock;
++	bool aneg_done;
++	struct xgkr_params xgkr[MAX_PHY_LANES_NO];
++};
++
++static void setup_an_lt_ls(void)
++{
++	/* KR PMD registers */
++	lt_MDIO_MMD = MDIO_MMD_PMAPMD;
++	lt_KR_PMD_CTRL = 0x96;
++	lt_KR_PMD_STATUS = 0x97;
++	lt_KR_LP_CU = 0x98;
++	lt_KR_LP_STATUS = 0x99;
++	lt_KR_LD_CU = 0x9a;
++	lt_KR_LD_STATUS = 0x9b;
++
++	/* KX/KR AN registers */
++	g_an_AD1 = 0x11;
++	g_an_BP_STAT = 0x30;
++}
++
++static void setup_an_lt_lx(void)
++{
++	/* Auto-Negotiation and Link Training Core Registers page 1: 256 = 0x100 */
++	lt_MDIO_MMD = MDIO_MMD_AN;
++	lt_KR_PMD_CTRL = 0x100;
++	lt_KR_PMD_STATUS = 0x101;
++	lt_KR_LP_CU = 0x102;
++	lt_KR_LP_STATUS = 0x103;
++	lt_KR_LD_CU = 0x104;
++	lt_KR_LD_STATUS = 0x105;
++
++	/* KX/KR AN registers */
++	g_an_AD1 = 0x03;
++	g_an_BP_STAT = 0x0F;
++}
++
++static u32 le_ioread32(u32 *reg)
++{
++	return ioread32(reg);
++}
++
++static void le_iowrite32(u32 value, u32 *reg)
++{
++	iowrite32(value, reg);
++}
++
++static u32 be_ioread32(u32 *reg)
++{
++	return ioread32be(reg);
++}
++
++static void be_iowrite32(u32 value, u32 *reg)
++{
++	iowrite32be(value, reg);
++}
++
++/**
++ * xgkr_phy_write_mmd - Wrapper function for phy_write_mmd
++ * for writing a register on an MMD on a given PHY.
++ *
++ * Same rules as for phy_write_mmd();
++ */
++static int xgkr_phy_write_mmd(struct xgkr_params *xgkr, int devad, u32 regnum, u16 val)
++{
++	struct phy_device *phydev = xgkr->phydev;
++	struct xgkr_phy_data *xgkr_inst = phydev->priv;
++	int mdio_addr = phydev->mdio.addr;
++	int err;
++
++	mutex_lock(&xgkr_inst->phy_lock);
++
++	if (xgkr_inst->bp_mode == PHY_BACKPLANE_40GBASE_KR && devad == MDIO_MMD_AN) {
++		//40G AN: prepare mdio address for writing phydev AN registers for 40G on respective lane
++		phydev->mdio.addr = KR_AN_40G_MDIO_OFFSET + xgkr->idx;
++	}
++
++	err = phy_write_mmd(phydev, devad, regnum, val);
++	if (err)
++		dev_err(&phydev->mdio.dev, "Writing PHY (%p) MMD = 0x%02x register = 0x%02x failed with error code: 0x%08x \n", phydev, devad, regnum, err);
++
++	if (xgkr_inst->bp_mode == PHY_BACKPLANE_40GBASE_KR && devad == MDIO_MMD_AN) {
++		//40G AN: restore mdio address
++		phydev->mdio.addr = mdio_addr;
++	}
++
++	mutex_unlock(&xgkr_inst->phy_lock);
++
++	return err;
++}
++
++/**
++ * xgkr_phy_read_mmd - Wrapper function for phy_read_mmd
++ * for reading a register from an MMD on a given PHY.
++ *
++ * Same rules as for phy_read_mmd();
++ */
++static int xgkr_phy_read_mmd(struct xgkr_params *xgkr, int devad, u32 regnum)
++{
++	struct phy_device *phydev = xgkr->phydev;
++	struct xgkr_phy_data *xgkr_inst = phydev->priv;
++	int mdio_addr = phydev->mdio.addr;
++	int ret;
++
++	mutex_lock(&xgkr_inst->phy_lock);
++
++	if (xgkr_inst->bp_mode == PHY_BACKPLANE_40GBASE_KR && devad == MDIO_MMD_AN) {
++		//40G AN: prepare mdio address for reading phydev AN registers for 40G on respective lane
++		phydev->mdio.addr = KR_AN_40G_MDIO_OFFSET + xgkr->idx;
++	}
++
++	ret = phy_read_mmd(phydev, devad, regnum);
++
++	if (xgkr_inst->bp_mode == PHY_BACKPLANE_40GBASE_KR && devad == MDIO_MMD_AN) {
++		//40G AN: restore mdio address
++		phydev->mdio.addr = mdio_addr;
++	}
++
++	mutex_unlock(&xgkr_inst->phy_lock);
++
++	return ret;
++}
++
++static void tx_condition_init(struct tx_condition *tx_c)
++{
++	tx_c->bin_m1_late_early = true;
++	tx_c->bin_long_late_early = false;
++	tx_c->bin_m1_stop = false;
++	tx_c->bin_long_stop = false;
++	tx_c->tx_complete = false;
++	tx_c->sent_init = false;
++	tx_c->m1_min_max_cnt = 0;
++	tx_c->long_min_max_cnt = 0;
++#ifdef	NEW_ALGORITHM_TRAIN_TX
++	tx_c->pre_inc = FORCE_INC_COM1_NUMBER;
++	tx_c->post_inc = FORCE_INC_COP1_NUMBER;
++#endif
++}
++
++void tune_tecr(struct xgkr_params *xgkr)
++{
++	struct phy_device *phydev = xgkr->phydev;
++	struct xgkr_phy_data *xgkr_inst = phydev->priv;
++	bool reset = false;
++	
++	if (xgkr_inst->bp_mode == PHY_BACKPLANE_40GBASE_KR) {
++		/* Reset only the Master Lane */
++		reset = (xgkr->idx == MASTER_LANE);
++	} else {
++		reset = true;
++	}
++	
++	xgkr->srds->tune_tecr(xgkr->reg_base, xgkr->ratio_preq, xgkr->ratio_pst1q, xgkr->adpt_eq, reset);
++
++	xgkr->tuned_ratio_preq = xgkr->ratio_preq;
++	xgkr->tuned_ratio_pst1q = xgkr->ratio_pst1q;
++	xgkr->tuned_adpt_eq = xgkr->adpt_eq;
++}
++
++static void start_lt(struct xgkr_params *xgkr)
++{
++	xgkr_phy_write_mmd(xgkr, lt_MDIO_MMD, lt_KR_PMD_CTRL, TRAIN_EN);
++}
++
++static void stop_lt(struct xgkr_params *xgkr)
++{
++	xgkr_phy_write_mmd(xgkr, lt_MDIO_MMD, lt_KR_PMD_CTRL, TRAIN_DISABLE);
++}
++
++static void reset_lt(struct xgkr_params *xgkr)
++{
++	xgkr_phy_write_mmd(xgkr, lt_MDIO_MMD, MDIO_CTRL1, PMD_RESET);
++	xgkr_phy_write_mmd(xgkr, lt_MDIO_MMD, lt_KR_PMD_CTRL, TRAIN_DISABLE);
++	xgkr_phy_write_mmd(xgkr, lt_MDIO_MMD, lt_KR_LD_CU, 0);
++	xgkr_phy_write_mmd(xgkr, lt_MDIO_MMD, lt_KR_LD_STATUS, 0);
++	xgkr_phy_write_mmd(xgkr, lt_MDIO_MMD, lt_KR_PMD_STATUS, 0);
++	xgkr_phy_write_mmd(xgkr, lt_MDIO_MMD, lt_KR_LP_CU, 0);
++	xgkr_phy_write_mmd(xgkr, lt_MDIO_MMD, lt_KR_LP_STATUS, 0);
++	
++}
++
++static void ld_coe_status(struct xgkr_params *xgkr)
++{
++	xgkr_phy_write_mmd(xgkr, lt_MDIO_MMD,
++		      lt_KR_LD_STATUS, xgkr->ld_status);
++}
++
++static void ld_coe_update(struct xgkr_params *xgkr)
++{
++	dev_dbg(&xgkr->phydev->mdio.dev, "sending request: %x\n", xgkr->ld_update);
++	xgkr_phy_write_mmd(xgkr, lt_MDIO_MMD,
++		      lt_KR_LD_CU, xgkr->ld_update);
++}
++
++static void start_xgkr_state_machine(struct delayed_work *work)
++{
++	queue_delayed_work(system_power_efficient_wq, work,
++			   msecs_to_jiffies(XGKR_TIMEOUT));
++}
++
++static void start_xgkr_an(struct xgkr_params *xgkr)
++{
++	struct phy_device *phydev = xgkr->phydev;
++	struct xgkr_phy_data *xgkr_inst = phydev->priv;
++	int i;
++	int err;
++
++	switch (xgkr_inst->bp_mode)
++	{
++	case PHY_BACKPLANE_1000BASE_KX:
++		dev_err(&phydev->mdio.dev, "Wrong call path for 1000Base-KX \n");
++		break;
++
++	case PHY_BACKPLANE_10GBASE_KR:
++		err = xgkr_phy_write_mmd(xgkr, MDIO_MMD_AN, g_an_AD1, KR_AN_AD1_INIT_10G);
++		if (err)
++			dev_err(&phydev->mdio.dev, "Setting AN register 0x%02x failed with error code: 0x%08x \n", g_an_AD1, err);
++		udelay(1);
++		err = xgkr_phy_write_mmd(xgkr, MDIO_MMD_AN, MDIO_CTRL1, AN_CTRL_INIT);
++		if (err)
++			dev_err(&phydev->mdio.dev, "Setting AN register 0x%02x failed with error code: 0x%08x \n", MDIO_CTRL1, err);
++		break;
++
++	case PHY_BACKPLANE_40GBASE_KR:
++		if (xgkr->idx == MASTER_LANE) {
++			for (i = 0; i < xgkr_inst->phy_lanes; i++) {
++				err = xgkr_phy_write_mmd(&xgkr_inst->xgkr[i], MDIO_MMD_AN, g_an_AD1, KR_AN_AD1_INIT_40G);
++				if (err)
++					dev_err(&phydev->mdio.dev, "Setting AN register 0x%02x on lane %d failed with error code: 0x%08x \n", g_an_AD1, xgkr_inst->xgkr[i].idx, err);
++			}
++			udelay(1);
++			err = xgkr_phy_write_mmd(xgkr, MDIO_MMD_AN, MDIO_CTRL1, AN_CTRL_INIT);
++			if (err)
++				dev_err(&phydev->mdio.dev, "Setting AN register 0x%02x on Master Lane failed with error code: 0x%08x \n", MDIO_CTRL1, err);
++		}
++		break;
++	}
++}
++
++static void start_1gkx_an(struct phy_device *phydev)
++{
++	phy_write_mmd(phydev, MDIO_MMD_PCS, KX_PCS_IF_MODE, KX_IF_MODE_INIT);
++	phy_write_mmd(phydev, MDIO_MMD_AN, g_an_AD1, KX_AN_AD1_INIT);
++	phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_STAT1);
++	phy_write_mmd(phydev, MDIO_MMD_AN, MDIO_CTRL1, AN_CTRL_INIT);
++}
++
++static void reset_tecr(struct xgkr_params *xgkr)
++{
++	struct phy_device *phydev = xgkr->phydev;
++	struct xgkr_phy_data *xgkr_inst = phydev->priv;
++
++	switch (xgkr_inst->bp_mode)
++	{
++	case PHY_BACKPLANE_1000BASE_KX:
++		dev_err(&phydev->mdio.dev, "Wrong call path for 1000Base-KX \n");
++		break;
++
++	case PHY_BACKPLANE_10GBASE_KR:
++		xgkr->ratio_preq = RATIO_PREQ_10G;
++		xgkr->ratio_pst1q = RATIO_PST1Q_10G;
++		xgkr->adpt_eq = RATIO_EQ_10G;
++		break;
++
++	case PHY_BACKPLANE_40GBASE_KR:
++		xgkr->ratio_preq = RATIO_PREQ_40G;
++		xgkr->ratio_pst1q = RATIO_PST1Q_40G;
++		xgkr->adpt_eq = RATIO_EQ_40G;
++		break;
++	}
++
++	tune_tecr(xgkr);
++}
++
++static void init_xgkr(struct xgkr_params *xgkr, int reset)
++{
++	if (reset)
++		reset_tecr(xgkr);
++
++	tx_condition_init(&xgkr->tx_c);
++	xgkr->state = DETECTING_LP;
++
++	xgkr->ld_status &= RX_READY_MASK;
++	ld_coe_status(xgkr);
++	xgkr->ld_update = 0;
++	xgkr->ld_status &= ~RX_READY_MASK;
++	ld_coe_status(xgkr);
++
++}
++
++static void initialize(struct xgkr_params *xgkr)
++{
++	reset_tecr(xgkr);
++
++	xgkr->ld_status &= ~(COP1_MASK | COZ_MASK | COM1_MASK);
++	xgkr->ld_status |= COE_UPDATED << COP1_SHIFT |
++			   COE_UPDATED << COZ_SHIFT |
++			   COE_UPDATED << COM1_SHIFT;
++	ld_coe_status(xgkr);
++}
++
++static void train_remote_tx(struct xgkr_params *xgkr)
++{
++	struct tx_condition *tx_c = &xgkr->tx_c;
++	bool bin_m1_early, bin_long_early;
++	u32 lp_status, old_ld_update;
++	u32 status_cop1, status_coz, status_com1;
++	u32 req_cop1, req_coz, req_com1, req_preset, req_init;
++	u32 temp;
++#ifdef	NEW_ALGORITHM_TRAIN_TX
++	u32 median_gaink2;
++#endif
++
++recheck:
++	if (tx_c->bin_long_stop && tx_c->bin_m1_stop) {
++		tx_c->tx_complete = true;
++		xgkr->ld_status |= RX_READY_MASK;
++		ld_coe_status(xgkr);
++
++		/* tell LP we are ready */
++		xgkr_phy_write_mmd(xgkr, lt_MDIO_MMD,
++			      lt_KR_PMD_STATUS, RX_STAT);
++
++		return;
++	}
++
++	/* We start by checking the current LP status. If we got any responses,
++	 * we can clear up the appropriate update request so that the
++	 * subsequent code may easily issue new update requests if needed.
++	 */
++	lp_status = xgkr_phy_read_mmd(xgkr, lt_MDIO_MMD, lt_KR_LP_STATUS) &
++				 REQUEST_MASK;
++
++	status_cop1 = (lp_status & COP1_MASK) >> COP1_SHIFT;
++	status_coz = (lp_status & COZ_MASK) >> COZ_SHIFT;
++	status_com1 = (lp_status & COM1_MASK) >> COM1_SHIFT;
++
++	old_ld_update = xgkr->ld_update;
++	req_cop1 = (old_ld_update & COP1_MASK) >> COP1_SHIFT;
++	req_coz = (old_ld_update & COZ_MASK) >> COZ_SHIFT;
++	req_com1 = (old_ld_update & COM1_MASK) >> COM1_SHIFT;
++	req_preset = old_ld_update & PRESET_MASK;
++	req_init = old_ld_update & INIT_MASK;
++
++	/* IEEE802.3-2008, 72.6.10.2.3.1
++	 * We may clear PRESET when all coefficients show UPDATED or MAX.
++	 */
++	if (req_preset) {
++		if ((status_cop1 == COE_UPDATED || status_cop1 == COE_MAX) &&
++		    (status_coz == COE_UPDATED || status_coz == COE_MAX) &&
++		    (status_com1 == COE_UPDATED || status_com1 == COE_MAX)) {
++			xgkr->ld_update &= ~PRESET_MASK;
++		}
++	}
++
++	/* IEEE802.3-2008, 72.6.10.2.3.2
++	 * We may clear INITIALIZE when no coefficients show NOT UPDATED.
++	 */
++	if (req_init) {
++		if (status_cop1 != COE_NOTUPDATED &&
++		    status_coz != COE_NOTUPDATED &&
++		    status_com1 != COE_NOTUPDATED) {
++			xgkr->ld_update &= ~INIT_MASK;
++		}
++	}
++
++	/* IEEE802.3-2008, 72.6.10.2.3.2
++	 * we send initialize to the other side to ensure default settings
++	 * for the LP. Naturally, we should do this only once.
++	 */
++	if (!tx_c->sent_init) {
++		if (!lp_status && !(old_ld_update & (LD_ALL_MASK))) {
++			xgkr->ld_update = INIT_MASK;
++			tx_c->sent_init = true;
++		}
++	}
++
++	/* IEEE802.3-2008, 72.6.10.2.3.3
++	 * We set coefficient requests to HOLD when we get the information
++	 * about any updates On clearing our prior response, we also update
++	 * our internal status.
++	 */
++	if (status_cop1 != COE_NOTUPDATED) {
++		if (req_cop1) {
++			xgkr->ld_update &= ~COP1_MASK;
++#ifdef	NEW_ALGORITHM_TRAIN_TX
++			if (tx_c->post_inc) {
++				if (req_cop1 == INCREMENT &&
++				    status_cop1 == COE_MAX) {
++					tx_c->post_inc = 0;
++					tx_c->bin_long_stop = true;
++					tx_c->bin_m1_stop = true;
++				} else {
++					tx_c->post_inc -= 1;
++				}
++
++				ld_coe_update(xgkr);
++				goto recheck;
++			}
++#endif
++			if ((req_cop1 == DECREMENT && status_cop1 == COE_MIN) ||
++			    (req_cop1 == INCREMENT && status_cop1 == COE_MAX)) {
++				dev_dbg(&xgkr->phydev->mdio.dev, "COP1 hit limit %s",
++					(status_cop1 == COE_MIN) ?
++					"DEC MIN" : "INC MAX");
++				tx_c->long_min_max_cnt++;
++				if (tx_c->long_min_max_cnt >= TIMEOUT_LONG) {
++					tx_c->bin_long_stop = true;
++					ld_coe_update(xgkr);
++					goto recheck;
++				}
++			}
++		}
++	}
++
++	if (status_coz != COE_NOTUPDATED) {
++		if (req_coz)
++			xgkr->ld_update &= ~COZ_MASK;
++	}
++
++	if (status_com1 != COE_NOTUPDATED) {
++		if (req_com1) {
++			xgkr->ld_update &= ~COM1_MASK;
++#ifdef	NEW_ALGORITHM_TRAIN_TX
++			if (tx_c->pre_inc) {
++				if (req_com1 == INCREMENT &&
++				    status_com1 == COE_MAX)
++					tx_c->pre_inc = 0;
++				else
++					tx_c->pre_inc -= 1;
++
++				ld_coe_update(xgkr);
++				goto recheck;
++			}
++#endif
++			/* Stop If we have reached the limit for a parameter. */
++			if ((req_com1 == DECREMENT && status_com1 == COE_MIN) ||
++			    (req_com1 == INCREMENT && status_com1 == COE_MAX)) {
++				dev_dbg(&xgkr->phydev->mdio.dev, "COM1 hit limit %s",
++					(status_com1 == COE_MIN) ?
++					"DEC MIN" : "INC MAX");
++				tx_c->m1_min_max_cnt++;
++				if (tx_c->m1_min_max_cnt >= TIMEOUT_M1) {
++					tx_c->bin_m1_stop = true;
++					ld_coe_update(xgkr);
++					goto recheck;
++				}
++			}
++		}
++	}
++
++	if (old_ld_update != xgkr->ld_update) {
++		ld_coe_update(xgkr);
++		/* Redo these status checks and updates until we have no more
++		 * changes, to speed up the overall process.
++		 */
++		goto recheck;
++	}
++
++	/* Do nothing if we have pending request. */
++	if ((req_coz || req_com1 || req_cop1))
++		return;
++	else if (lp_status)
++		/* No pending request but LP status was not reverted to
++		 * not updated.
++		 */
++		return;
++
++#ifdef	NEW_ALGORITHM_TRAIN_TX
++	if (!(xgkr->ld_update & (PRESET_MASK | INIT_MASK))) {
++		if (tx_c->pre_inc) {
++			xgkr->ld_update = INCREMENT << COM1_SHIFT;
++			ld_coe_update(xgkr);
++			return;
++		}
++
++		if (status_cop1 != COE_MAX) {
++			median_gaink2 = xgkr->srds->get_median_gaink2(xgkr->reg_base);
++			if (median_gaink2 == 0xf) {
++				tx_c->post_inc = 1;
++			} else {
++				/* Gaink2 median lower than "F" */
++				tx_c->bin_m1_stop = true;
++				tx_c->bin_long_stop = true;
++				goto recheck;
++			}
++		} else {
++			/* C1 MAX */
++			tx_c->bin_m1_stop = true;
++			tx_c->bin_long_stop = true;
++			goto recheck;
++		}
++
++		if (tx_c->post_inc) {
++			xgkr->ld_update = INCREMENT << COP1_SHIFT;
++			ld_coe_update(xgkr);
++			return;
++		}
++	}
++#endif
++
++	/* snapshot and select bin */
++	bin_m1_early = xgkr->srds->is_bin_early(BIN_M1, xgkr->reg_base);
++	bin_long_early = xgkr->srds->is_bin_early(BIN_LONG, xgkr->reg_base);
++
++	if (!tx_c->bin_m1_stop && !tx_c->bin_m1_late_early && bin_m1_early) {
++		tx_c->bin_m1_stop = true;
++		goto recheck;
++	}
++
++	if (!tx_c->bin_long_stop &&
++	    tx_c->bin_long_late_early && !bin_long_early) {
++		tx_c->bin_long_stop = true;
++		goto recheck;
++	}
++
++	/* IEEE802.3-2008, 72.6.10.2.3.3
++	 * We only request coefficient updates when no PRESET/INITIALIZE is
++	 * pending. We also only request coefficient updates when the
++	 * corresponding status is NOT UPDATED and nothing is pending.
++	 */
++	if (!(xgkr->ld_update & (PRESET_MASK | INIT_MASK))) {
++		if (!tx_c->bin_long_stop) {
++			/* BinM1 correction means changing COM1 */
++			if (!status_com1 && !(xgkr->ld_update & COM1_MASK)) {
++				/* Avoid BinM1Late by requesting an
++				 * immediate decrement.
++				 */
++				if (!bin_m1_early) {
++					/* request decrement c(-1) */
++					temp = DECREMENT << COM1_SHIFT;
++					xgkr->ld_update = temp;
++					ld_coe_update(xgkr);
++					tx_c->bin_m1_late_early = bin_m1_early;
++					return;
++				}
++			}
++
++			/* BinLong correction means changing COP1 */
++			if (!status_cop1 && !(xgkr->ld_update & COP1_MASK)) {
++				/* Locate BinLong transition point (if any)
++				 * while avoiding BinM1Late.
++				 */
++				if (bin_long_early) {
++					/* request increment c(1) */
++					temp = INCREMENT << COP1_SHIFT;
++					xgkr->ld_update = temp;
++				} else {
++					/* request decrement c(1) */
++					temp = DECREMENT << COP1_SHIFT;
++					xgkr->ld_update = temp;
++				}
++
++				ld_coe_update(xgkr);
++				tx_c->bin_long_late_early = bin_long_early;
++			}
++			/* We try to finish BinLong before we do BinM1 */
++			return;
++		}
++
++		if (!tx_c->bin_m1_stop) {
++			/* BinM1 correction means changing COM1 */
++			if (!status_com1 && !(xgkr->ld_update & COM1_MASK)) {
++				/* Locate BinM1 transition point (if any) */
++				if (bin_m1_early) {
++					/* request increment c(-1) */
++					temp = INCREMENT << COM1_SHIFT;
++					xgkr->ld_update = temp;
++				} else {
++					/* request decrement c(-1) */
++					temp = DECREMENT << COM1_SHIFT;
++					xgkr->ld_update = temp;
++				}
++
++				ld_coe_update(xgkr);
++				tx_c->bin_m1_late_early = bin_m1_early;
++			}
++		}
++	}
++}
++
++static int is_link_up(struct phy_device *phydev)
++{
++	struct xgkr_phy_data *xgkr_inst = phydev->priv;
++	int val = 0;
++	
++	mutex_lock(&xgkr_inst->phy_lock);
++
++	val = phy_read_mmd(phydev, MDIO_MMD_PCS, XFI_PCS_SR1);
++
++	mutex_unlock(&xgkr_inst->phy_lock);
++
++	return (val & KR_RX_LINK_STAT_MASK) ? 1 : 0;
++}
++
++static int is_link_training_fail(struct xgkr_params *xgkr)
++{
++	struct phy_device *phydev = xgkr->phydev;
++	int val;
++	int timeout = 100;
++
++	val = xgkr_phy_read_mmd(xgkr, lt_MDIO_MMD, lt_KR_PMD_STATUS);
++
++	if (!(val & TRAIN_FAIL) && (val & RX_STAT)) {
++		/* check LNK_STAT for sure */
++		while (timeout--) {
++			if (is_link_up(phydev))
++				return 0;
++
++			usleep_range(100, 500);
++		}
++	}
++
++	return 1;
++}
++
++static int check_rx(struct xgkr_params *xgkr)
++{
++	return xgkr_phy_read_mmd(xgkr, lt_MDIO_MMD, lt_KR_LP_STATUS) &
++			    RX_READY_MASK;
++}
++
++/* Coefficient values have hardware restrictions */
++static int is_ld_valid(struct xgkr_params *xgkr)
++{
++	u32 ratio_pst1q = xgkr->ratio_pst1q;
++	u32 adpt_eq = xgkr->adpt_eq;
++	u32 ratio_preq = xgkr->ratio_preq;
++
++	if ((ratio_pst1q + adpt_eq + ratio_preq) > 48)
++		return 0;
++
++	if (((ratio_pst1q + adpt_eq + ratio_preq) * 4) >=
++	    ((adpt_eq - ratio_pst1q - ratio_preq) * 17))
++		return 0;
++
++	if (ratio_preq > ratio_pst1q)
++		return 0;
++
++	if (ratio_preq > 8)
++		return 0;
++
++	if (adpt_eq < 26)
++		return 0;
++
++	if (ratio_pst1q > 16)
++		return 0;
++
++	return 1;
++}
++
++static int is_value_allowed(const u32 *val_table, u32 val)
++{
++	int i;
++
++	for (i = 0;; i++) {
++		if (*(val_table + i) == VAL_INVALID)
++			return 0;
++		if (*(val_table + i) == val)
++			return 1;
++	}
++}
++
++static enum coe_update inc_dec(struct xgkr_params *xgkr, int field, int request)
++{
++	u32 ld_limit[3], ld_coe[3], step[3];
++
++	ld_coe[0] = xgkr->ratio_pst1q;
++	ld_coe[1] = xgkr->adpt_eq;
++	ld_coe[2] = xgkr->ratio_preq;
++
++	/* Information specific to the SerDes for 10GBase-KR:
++	 * Incrementing C(+1) means *decrementing* RATIO_PST1Q
++	 * Incrementing C(0) means incrementing ADPT_EQ
++	 * Incrementing C(-1) means *decrementing* RATIO_PREQ
++	 */
++	step[0] = -1;
++	step[1] = 1;
++	step[2] = -1;
++
++	switch (request) {
++	case INCREMENT:
++		ld_limit[0] = POST_COE_MAX;
++		ld_limit[1] = ZERO_COE_MAX;
++		ld_limit[2] = PRE_COE_MAX;
++		if (ld_coe[field] != ld_limit[field])
++			ld_coe[field] += step[field];
++		else
++			/* MAX */
++			return COE_MAX;
++		break;
++	case DECREMENT:
++		ld_limit[0] = POST_COE_MIN;
++		ld_limit[1] = ZERO_COE_MIN;
++		ld_limit[2] = PRE_COE_MIN;
++		if (ld_coe[field] != ld_limit[field])
++			ld_coe[field] -= step[field];
++		else
++			/* MIN */
++			return COE_MIN;
++		break;
++	default:
++		break;
++	}
++
++	if (is_ld_valid(xgkr)) {
++		/* accept new ld */
++		xgkr->ratio_pst1q = ld_coe[0];
++		xgkr->adpt_eq = ld_coe[1];
++		xgkr->ratio_preq = ld_coe[2];
++		/* only some values for preq and pst1q can be used.
++		 * for preq: 0x0, 0x1, 0x3, 0x5, 0x7, 0x9, 0xb, 0xc.
++		 * for pst1q: 0x0, 0x1, 0x3, 0x5, 0x7, 0x9, 0xb, 0xd, 0xf, 0x10.
++		 */
++		if (!is_value_allowed((const u32 *)&preq_table, ld_coe[2])) {
++			dev_dbg(&xgkr->phydev->mdio.dev,
++				"preq skipped value: %d\n", ld_coe[2]);
++			/* NOT UPDATED */
++			return COE_NOTUPDATED;
++		}
++
++		if (!is_value_allowed((const u32 *)&pst1q_table, ld_coe[0])) {
++			dev_dbg(&xgkr->phydev->mdio.dev,
++				"pst1q skipped value: %d\n", ld_coe[0]);
++			/* NOT UPDATED */
++			return COE_NOTUPDATED;
++		}
++
++		tune_tecr(xgkr);
++	} else {
++		if (request == DECREMENT)
++			/* MIN */
++			return COE_MIN;
++		if (request == INCREMENT)
++			/* MAX */
++			return COE_MAX;
++	}
++
++	/* UPDATED */
++	return COE_UPDATED;
++}
++
++static void min_max_updated(struct xgkr_params *xgkr, int field, enum coe_update cs)
++{
++	u32 mask, val;
++	u32 ld_cs = cs;
++
++	if (cs == COE_INV)
++		return;
++
++	switch (field) {
++	case COE_COP1:
++		mask = COP1_MASK;
++		val = ld_cs << COP1_SHIFT;
++		break;
++	case COE_COZ:
++		mask = COZ_MASK;
++		val = ld_cs << COZ_SHIFT;
++		break;
++	case COE_COM:
++		mask = COM1_MASK;
++		val = ld_cs << COM1_SHIFT;
++		break;
++	default:
++		return;
++	}
++
++	xgkr->ld_status &= ~mask;
++	xgkr->ld_status |= val;
++}
++
++static void check_request(struct xgkr_params *xgkr, int request)
++{
++	int cop1_req, coz_req, com_req;
++	int old_status;
++	enum coe_update cu;
++
++	cop1_req = (request & COP1_MASK) >> COP1_SHIFT;
++	coz_req = (request & COZ_MASK) >> COZ_SHIFT;
++	com_req = (request & COM1_MASK) >> COM1_SHIFT;
++
++	/* IEEE802.3-2008, 72.6.10.2.5
++	 * Ensure we only act on INCREMENT/DECREMENT when we are in NOT UPDATED
++	 */
++	old_status = xgkr->ld_status;
++
++	if (cop1_req && !(xgkr->ld_status & COP1_MASK)) {
++		cu = inc_dec(xgkr, COE_COP1, cop1_req);
++		min_max_updated(xgkr, COE_COP1, cu);
++	}
++
++	if (coz_req && !(xgkr->ld_status & COZ_MASK)) {
++		cu = inc_dec(xgkr, COE_COZ, coz_req);
++		min_max_updated(xgkr, COE_COZ, cu);
++	}
++
++	if (com_req && !(xgkr->ld_status & COM1_MASK)) {
++		cu = inc_dec(xgkr, COE_COM, com_req);
++		min_max_updated(xgkr, COE_COM, cu);
++	}
++
++	if (old_status != xgkr->ld_status)
++		ld_coe_status(xgkr);
++}
++
++static void preset(struct xgkr_params *xgkr)
++{
++	/* These are all MAX values from the IEEE802.3 perspective. */
++	xgkr->ratio_pst1q = POST_COE_MAX;
++	xgkr->adpt_eq = ZERO_COE_MAX;
++	xgkr->ratio_preq = PRE_COE_MAX;
++
++	tune_tecr(xgkr);
++	xgkr->ld_status &= ~(COP1_MASK | COZ_MASK | COM1_MASK);
++	xgkr->ld_status |= COE_MAX << COP1_SHIFT |
++			   COE_MAX << COZ_SHIFT |
++			   COE_MAX << COM1_SHIFT;
++	ld_coe_status(xgkr);
++}
++
++static void train_local_tx(struct xgkr_params *xgkr)
++{
++	int request, old_ld_status;
++
++	/* get request from LP */
++	request = xgkr_phy_read_mmd(xgkr, lt_MDIO_MMD, lt_KR_LP_CU) &
++			      (LD_ALL_MASK);
++
++	old_ld_status = xgkr->ld_status;
++
++	/* IEEE802.3-2008, 72.6.10.2.5
++	 * Ensure we always go to NOT UDPATED for status reporting in
++	 * response to HOLD requests.
++	 * IEEE802.3-2008, 72.6.10.2.3.1/2
++	 * ... but only if PRESET/INITIALIZE are not active to ensure
++	 * we keep status until they are released.
++	 */
++	if (!(request & (PRESET_MASK | INIT_MASK))) {
++		if (!(request & COP1_MASK))
++			xgkr->ld_status &= ~COP1_MASK;
++
++		if (!(request & COZ_MASK))
++			xgkr->ld_status &= ~COZ_MASK;
++
++		if (!(request & COM1_MASK))
++			xgkr->ld_status &= ~COM1_MASK;
++
++		if (old_ld_status != xgkr->ld_status)
++			ld_coe_status(xgkr);
++	}
++
++	/* As soon as the LP shows ready, no need to do any more updates. */
++	if (check_rx(xgkr)) {
++		/* LP receiver is ready */
++		if (xgkr->ld_status & (COP1_MASK | COZ_MASK | COM1_MASK)) {
++			xgkr->ld_status &= ~(COP1_MASK | COZ_MASK | COM1_MASK);
++			ld_coe_status(xgkr);
++		}
++	} else {
++		/* IEEE802.3-2008, 72.6.10.2.3.1/2
++		 * only act on PRESET/INITIALIZE if all status is NOT UPDATED.
++		 */
++		if (request & (PRESET_MASK | INIT_MASK)) {
++			if (!(xgkr->ld_status &
++			      (COP1_MASK | COZ_MASK | COM1_MASK))) {
++				if (request & PRESET_MASK)
++					preset(xgkr);
++
++				if (request & INIT_MASK)
++					initialize(xgkr);
++			}
++		}
++
++		/* LP Coefficient are not in HOLD */
++		if (request & REQUEST_MASK)
++			check_request(xgkr, request & REQUEST_MASK);
++	}
++}
++
++static void xgkr_start_train(struct xgkr_params *xgkr)
++{
++	struct phy_device *phydev = xgkr->phydev;
++	struct xgkr_phy_data *xgkr_inst = phydev->priv;
++	struct tx_condition *tx_c = &xgkr->tx_c;
++	int val = 0, i, j;
++	int lt_state;
++	unsigned long dead_line;
++	int lp_rx_ready, tx_training_complete;
++	u32 lt_timeout = 500;
++
++	init_xgkr(xgkr, 0);
++	
++	start_lt(xgkr);
++	
++	if (xgkr_inst->bp_mode == PHY_BACKPLANE_40GBASE_KR) {
++		lt_timeout = 2000;
++	}
++
++	for (i = 0; i < 2;) {
++		
++		dead_line = jiffies + msecs_to_jiffies(lt_timeout);
++		
++		while (time_before(jiffies, dead_line)) {
++
++			val = xgkr_phy_read_mmd(xgkr, lt_MDIO_MMD,
++					   lt_KR_PMD_STATUS);
++
++			if (val & TRAIN_FAIL) {
++				/* LT failed already, reset lane to avoid
++				 * it run into hanging, then start LT again.
++				 */
++				if (xgkr_inst->bp_mode == PHY_BACKPLANE_40GBASE_KR) {
++					/* Reset only the Master Lane */
++					if (xgkr->idx == MASTER_LANE)
++						xgkr->srds->reset_lane(xgkr->reg_base);
++				} else {
++					xgkr->srds->reset_lane(xgkr->reg_base);
++				}
++				
++				start_lt(xgkr);
++			} else if ((val & PMD_STATUS_SUP_STAT) &&
++				   (val & PMD_STATUS_FRAME_LOCK))
++				break;
++			usleep_range(100, 500);
++		}
++
++		if (!((val & PMD_STATUS_FRAME_LOCK) &&
++		      (val & PMD_STATUS_SUP_STAT))) {
++			i++;
++			continue;
++		}
++
++		/* init process */
++		lp_rx_ready = false;
++		tx_training_complete = false;
++		/* the LT should be finished in 500ms, failed or OK. */
++		dead_line = jiffies + msecs_to_jiffies(lt_timeout);
++
++		while (time_before(jiffies, dead_line)) {
++			/* check if the LT is already failed */
++
++			lt_state = xgkr_phy_read_mmd(xgkr, lt_MDIO_MMD,
++						lt_KR_PMD_STATUS);
++
++			if (lt_state & TRAIN_FAIL) {
++				
++				if (xgkr_inst->bp_mode == PHY_BACKPLANE_40GBASE_KR) {
++					/* Reset only the Master Lane */
++					if (xgkr->idx == MASTER_LANE)
++						xgkr->srds->reset_lane(xgkr->reg_base);
++				} else {
++					xgkr->srds->reset_lane(xgkr->reg_base);
++				}
++				
++				break;
++			}
++
++			lp_rx_ready = check_rx(xgkr);
++			tx_training_complete = tx_c->tx_complete;
++
++			if (lp_rx_ready && tx_training_complete)
++				break;
++
++			if (!lp_rx_ready)
++				train_local_tx(xgkr);
++
++			if (!tx_training_complete)
++				train_remote_tx(xgkr);
++
++			usleep_range(100, 500);
++		}
++
++		i++;
++		/* check LT result */
++		if (is_link_training_fail(xgkr)) {
++			init_xgkr(xgkr, 0);
++			continue;
++		} else {
++			stop_lt(xgkr);
++			xgkr->state = TRAINED;
++			
++			switch (xgkr_inst->bp_mode)
++			{
++			case PHY_BACKPLANE_10GBASE_KR:
++				if (phydev->attached_dev == NULL)
++					dev_info(&phydev->mdio.dev, "10GBase-KR link trained (Tx equalization: RATIO_PREQ = 0x%x, RATIO_PST1Q = 0x%x, ADPT_EQ = 0x%x)\n",
++							xgkr->tuned_ratio_preq, xgkr->tuned_ratio_pst1q, xgkr->tuned_adpt_eq);
++				else
++					dev_info(&phydev->mdio.dev, "%s %s: 10GBase-KR link trained (Tx equalization: RATIO_PREQ = 0x%x, RATIO_PST1Q = 0x%x, ADPT_EQ = 0x%x)\n",
++							dev_driver_string(phydev->attached_dev->dev.parent), 
++							dev_name(phydev->attached_dev->dev.parent),
++							xgkr->tuned_ratio_preq, xgkr->tuned_ratio_pst1q, xgkr->tuned_adpt_eq);
++				break;
++				
++			case PHY_BACKPLANE_40GBASE_KR:
++				if (xgkr->idx == xgkr_inst->phy_lanes - 1) {
++					if (phydev->attached_dev == NULL)
++						dev_info(&phydev->mdio.dev, "40GBase-KR link trained at lanes Tx equalization:\n");
++					else
++						dev_info(&phydev->mdio.dev, "%s %s: 40GBase-KR link trained at lanes Tx equalization:\n",
++								dev_driver_string(phydev->attached_dev->dev.parent), 
++								dev_name(phydev->attached_dev->dev.parent));
++
++					for (j = 0; j < xgkr_inst->phy_lanes; j++) {
++						if (phydev->attached_dev == NULL)
++							dev_info(&phydev->mdio.dev, "40GBase-KR Lane %d: RATIO_PREQ = 0x%x, RATIO_PST1Q = 0x%x, ADPT_EQ = 0x%x\n",
++									j, xgkr_inst->xgkr[j].tuned_ratio_preq, xgkr_inst->xgkr[j].tuned_ratio_pst1q, xgkr_inst->xgkr[j].tuned_adpt_eq);
++						else
++							dev_info(&phydev->mdio.dev, "%s %s: 40GBase-KR Lane %d: RATIO_PREQ = 0x%x, RATIO_PST1Q = 0x%x, ADPT_EQ = 0x%x\n",
++									dev_driver_string(phydev->attached_dev->dev.parent),
++									dev_name(phydev->attached_dev->dev.parent),
++									j, xgkr_inst->xgkr[j].tuned_ratio_preq, xgkr_inst->xgkr[j].tuned_ratio_pst1q, xgkr_inst->xgkr[j].tuned_adpt_eq);
++					}
++				}
++				break;
++			}
++
++			break;
++		}
++	}
++}
++
++static void xgkr_request_restart_an(struct xgkr_params *xgkr)
++{
++	struct phy_device *phydev = xgkr->phydev;
++	struct xgkr_phy_data *xgkr_inst = phydev->priv;
++	int i;
++
++	if (time_before(jiffies, xgkr->rt_time))
++		return;
++	
++	switch (xgkr_inst->bp_mode)
++	{
++	case PHY_BACKPLANE_1000BASE_KX:
++		dev_err(&phydev->mdio.dev, "Wrong call path for 1000Base-KX \n");
++		break;
++
++	case PHY_BACKPLANE_10GBASE_KR:
++		init_xgkr(xgkr, 0);  
++		reset_lt(xgkr);
++		xgkr->state = DETECTING_LP;
++		start_xgkr_an(xgkr);
++		start_xgkr_state_machine(&xgkr->xgkr_wk);
++		break;
++
++	case PHY_BACKPLANE_40GBASE_KR:
++		for (i = 0; i < xgkr_inst->phy_lanes; i++) {
++			init_xgkr(&xgkr_inst->xgkr[i], 0);
++			reset_lt(&xgkr_inst->xgkr[i]);
++			xgkr_inst->xgkr[i].state = DETECTING_LP;
++		}
++		//Start AN only for Master Lane
++		start_xgkr_an(&xgkr_inst->xgkr[MASTER_LANE]);
++		//start state machine
++		for (i = 0; i < xgkr_inst->phy_lanes; i++) {
++			start_xgkr_state_machine(&xgkr_inst->xgkr[i].xgkr_wk);
++		}
++		break;
++	}
++	
++	xgkr->rt_time = jiffies + msecs_to_jiffies(XGKR_DENY_RT_INTERVAL);
++}
++
++static void xgkr_state_machine(struct work_struct *work)
++{
++	struct delayed_work *dwork = to_delayed_work(work);
++	struct xgkr_params *xgkr = container_of(dwork,
++						  struct xgkr_params, xgkr_wk);
++	struct phy_device *phydev = xgkr->phydev;
++	struct xgkr_phy_data *xgkr_inst = phydev->priv;
++	int an_state;
++	bool start_train = false;
++	bool all_lanes_trained = false;
++	int i;
++
++	if (!xgkr_inst->aneg_done) {
++		start_xgkr_state_machine(&xgkr->xgkr_wk);
++		return;
++	}
++
++	mutex_lock(&phydev->lock);
++	
++	switch (xgkr->state) {
++	case DETECTING_LP:
++
++		switch (xgkr_inst->bp_mode)
++		{
++		case PHY_BACKPLANE_1000BASE_KX:
++			dev_err(&phydev->mdio.dev, "Wrong call path for 1000Base-KX \n");
++			break;
++
++		case PHY_BACKPLANE_10GBASE_KR:
++			an_state = xgkr_phy_read_mmd(xgkr, MDIO_MMD_AN, g_an_BP_STAT);
++			if (an_state & KR_AN_MASK_10G) {
++				//AN acquired: Train the lane
++				xgkr->an_wait_count = 0;
++				start_train = true;
++			} else {
++				//AN lost or not yet acquired
++				if (!is_link_up(phydev)) {
++					//Link is down: restart training
++					xgkr->an_wait_count = 0;
++					xgkr_request_restart_an(xgkr);
++				} else {
++					//Link is up: wait few iterations for AN to be acquired
++					if (xgkr->an_wait_count >= XGKR_AN_WAIT_ITERATIONS) {
++						xgkr->an_wait_count = 0;
++						xgkr_request_restart_an(xgkr);
++					} else {
++						xgkr->an_wait_count++;
++					}
++				}
++			}
++			break;
++
++		case PHY_BACKPLANE_40GBASE_KR:
++			//Check AN state only on Master Lane
++			an_state = xgkr_phy_read_mmd(&xgkr_inst->xgkr[MASTER_LANE], MDIO_MMD_AN, g_an_BP_STAT);
++			if (an_state & KR_AN_MASK_40G) {
++				//AN acquired: Train all lanes in order starting with Master Lane
++				xgkr->an_wait_count = 0;
++				if (xgkr->idx == MASTER_LANE) {
++					start_train = true;
++				}
++				else if (xgkr_inst->xgkr[xgkr->idx - 1].state == TRAINED) {
++					start_train = true;
++				}
++			} else {
++				//AN lost or not yet acquired
++				if (!is_link_up(phydev)) {
++					//Link is down: restart training
++					xgkr->an_wait_count = 0;
++					xgkr_request_restart_an(xgkr);
++				} else {
++					//Link is up: wait few iterations for AN to be acquired
++					if (xgkr->an_wait_count >= XGKR_AN_WAIT_ITERATIONS) {
++						xgkr->an_wait_count = 0;
++						xgkr_request_restart_an(xgkr);
++					} else {
++						xgkr->an_wait_count++;
++					}
++				}
++			}
++			break;
++		}
++		break;
++
++	case TRAINED:
++		if (!is_link_up(phydev)) {
++			switch (xgkr_inst->bp_mode)
++			{
++			case PHY_BACKPLANE_1000BASE_KX:
++				dev_err(&phydev->mdio.dev, "Wrong call path for 1000Base-KX \n");
++				break;
++
++			case PHY_BACKPLANE_10GBASE_KR:
++				dev_info(&phydev->mdio.dev, "Detect hotplug, restart training\n");
++				xgkr_request_restart_an(xgkr);
++				break;
++
++			case PHY_BACKPLANE_40GBASE_KR:
++				if (xgkr->idx == MASTER_LANE) {
++					//check if all lanes are trained only on Master Lane
++					all_lanes_trained = true;
++					for (i = 0; i < xgkr_inst->phy_lanes; i++) {
++						if (xgkr_inst->xgkr[i].state != TRAINED) {
++							all_lanes_trained = false;
++							break;
++						}
++					}
++					if (all_lanes_trained) {
++						dev_info(&phydev->mdio.dev, "Detect hotplug, restart training\n");
++						xgkr_request_restart_an(xgkr);
++					}
++				}
++				break;
++			}
++		}
++		break;
++	}
++
++	if (start_train) {
++		xgkr_start_train(xgkr);
++	}
++
++	mutex_unlock(&phydev->lock);
++	start_xgkr_state_machine(&xgkr->xgkr_wk);
++}
++
++static int fsl_backplane_probe(struct phy_device *phydev)
++{
++	struct xgkr_phy_data *xgkr_inst;
++	struct device_node *phy_node, *lane_node;
++	struct resource res_lane;
++	struct serdes_access *srds = NULL;
++	int serdes_type;
++	const char *st;
++	const char *bm;
++	int ret, i, phy_lanes;
++	int bp_mode;
++	u32 lane_base_addr[MAX_PHY_LANES_NO], lane_memmap_size;
++
++	phy_node = phydev->mdio.dev.of_node;
++	if (!phy_node) {
++		dev_err(&phydev->mdio.dev, "No associated device tree node\n");
++		return -EINVAL;
++	}
++
++	bp_mode = of_property_read_string(phy_node, "backplane-mode", &bm);
++	if (bp_mode < 0)
++		return -EINVAL;
++
++	phy_lanes = 1;
++	if (!strcasecmp(bm, "1000base-kx")) {
++		bp_mode = PHY_BACKPLANE_1000BASE_KX;
++	} else if (!strcasecmp(bm, "10gbase-kr")) {
++		bp_mode = PHY_BACKPLANE_10GBASE_KR;
++	} else if (!strcasecmp(bm, "40gbase-kr")) {
++		bp_mode = PHY_BACKPLANE_40GBASE_KR;
++		phy_lanes = 4;
++	} else {
++		dev_err(&phydev->mdio.dev, "Unknown backplane-mode\n");
++		return -EINVAL;
++	}
++
++	lane_node = of_parse_phandle(phy_node, "fsl,lane-handle", 0);
++	if (!lane_node) {
++		dev_err(&phydev->mdio.dev, "parse fsl,lane-handle failed\n");
++		return -EINVAL;
++	}
++
++	ret = of_property_read_string(lane_node, "compatible", &st);
++	if (ret < 0) {
++		//assume SERDES-10G if compatible property is not specified
++		serdes_type = SERDES_10G;
++	}
++	else if (!strcasecmp(st, "fsl,serdes-10g")) {
++		serdes_type = SERDES_10G;
++	} else if (!strcasecmp(st, "fsl,serdes-28g")) {
++		serdes_type = SERDES_28G;
++	} else {
++		dev_err(&phydev->mdio.dev, "Unknown serdes-type\n");
++		return -EINVAL;
++	}
++
++	ret = of_address_to_resource(lane_node, 0, &res_lane);
++	if (ret) {
++		dev_err(&phydev->mdio.dev, "could not obtain memory map\n");
++		return ret;
++	}
++
++	of_node_put(lane_node);
++	ret = of_property_read_u32_array(phy_node, "fsl,lane-reg",
++					 (u32 *)lane_base_addr, phy_lanes);
++	if (ret) {
++		dev_err(&phydev->mdio.dev, "could not get fsl,lane-reg\n");
++		return -EINVAL;
++	}
++
++	switch (serdes_type)
++	{
++	case SERDES_10G:
++		setup_an_lt_ls();
++		srds = setup_serdes_access_10g();
++		break;
++
++	case SERDES_28G:
++		setup_an_lt_lx();
++		srds = setup_serdes_access_28g();
++		break;
++
++	default:
++		dev_err(&phydev->mdio.dev, "Unsupported serdes-type\n");
++		return -EINVAL;
++	}
++
++	if (!srds) {
++		dev_err(&phydev->mdio.dev, "Unsupported serdes-type\n");
++		return -EINVAL;
++	}
++
++	srds->serdes_type = serdes_type;
++	srds->is_little_endian = of_property_read_bool(lane_node, "little-endian");
++
++	if (srds->is_little_endian) {
++		srds->ioread32 = le_ioread32;
++		srds->iowrite32 = le_iowrite32;
++	} else {
++		srds->ioread32 = be_ioread32;
++		srds->iowrite32 = be_iowrite32;
++	}
++
++	xgkr_inst = devm_kzalloc(&phydev->mdio.dev,
++				 sizeof(*xgkr_inst), GFP_KERNEL);
++	if (!xgkr_inst)
++		return -ENOMEM;
++
++	xgkr_inst->phy_lanes = phy_lanes;
++	xgkr_inst->bp_mode = bp_mode;
++	mutex_init(&xgkr_inst->phy_lock);
++
++	lane_memmap_size = srds->get_lane_memmap_size();
++	
++	for (i = 0; i < phy_lanes; i++) {
++		xgkr_inst->xgkr[i].idx = i;
++		xgkr_inst->xgkr[i].phydev = phydev;
++		xgkr_inst->xgkr[i].srds = srds;
++		xgkr_inst->xgkr[i].reg_base = devm_ioremap_nocache(&phydev->mdio.dev,
++						    res_lane.start + lane_base_addr[i],
++						    lane_memmap_size);
++		if (!xgkr_inst->xgkr[i].reg_base) {
++			dev_err(&phydev->mdio.dev, "ioremap_nocache failed\n");
++			return -ENOMEM;
++		}
++		xgkr_inst->xgkr[i].rt_time = jiffies + msecs_to_jiffies(XGKR_DENY_RT_INTERVAL);
++	}
++
++	phydev->priv = xgkr_inst;
++
++	switch (bp_mode)
++	{
++	case PHY_BACKPLANE_1000BASE_KX:
++		phydev->speed = SPEED_1000;
++		/* configure the lane for 1000BASE-KX */
++		srds->lane_set_1gkx(xgkr_inst->xgkr[SINGLE_LANE].reg_base);
++		break;
++
++	case PHY_BACKPLANE_10GBASE_KR:
++		phydev->speed = SPEED_10000;
++		INIT_DELAYED_WORK(&xgkr_inst->xgkr[SINGLE_LANE].xgkr_wk, xgkr_state_machine);
++		break;
++
++	case PHY_BACKPLANE_40GBASE_KR:
++		phydev->speed = SPEED_40000;
++		for (i = 0; i < phy_lanes; i++)
++			INIT_DELAYED_WORK(&xgkr_inst->xgkr[i].xgkr_wk, xgkr_state_machine);
++		break;
++	}
++
++	return 0;
++}
++
++static int fsl_backplane_aneg_done(struct phy_device *phydev)
++{
++	struct xgkr_phy_data *xgkr_inst = phydev->priv;
++
++	if (!phydev->mdio.dev.of_node) {
++		dev_err(&phydev->mdio.dev, "No associated device tree node\n");
++		return -EINVAL;
++	}
++	
++	xgkr_inst->aneg_done = true;
++
++	return 1;
++}
++
++static int fsl_backplane_config_aneg(struct phy_device *phydev)
++{
++	struct xgkr_phy_data *xgkr_inst = phydev->priv;
++	int i;
++
++	if (!phydev->mdio.dev.of_node) {
++		dev_err(&phydev->mdio.dev, "No associated device tree node\n");
++		return -EINVAL;
++	}
++
++	switch (phydev->speed)
++	{
++	case SPEED_1000:
++		phydev->supported |= SUPPORTED_1000baseKX_Full;
++		start_1gkx_an(phydev);
++		break;
++
++	case SPEED_10000:
++		phydev->supported |= SUPPORTED_10000baseKR_Full;
++		reset_lt(&xgkr_inst->xgkr[SINGLE_LANE]);
++		start_xgkr_an(&xgkr_inst->xgkr[SINGLE_LANE]);
++		/* start state machine*/
++		start_xgkr_state_machine(&xgkr_inst->xgkr[SINGLE_LANE].xgkr_wk);
++		break;
++
++	case SPEED_40000:
++		phydev->supported |= SUPPORTED_40000baseKR4_Full;
++		for (i = 0; i < xgkr_inst->phy_lanes; i++) {
++			reset_lt(&xgkr_inst->xgkr[i]);
++		}
++		//Start AN only for Master Lane
++		start_xgkr_an(&xgkr_inst->xgkr[MASTER_LANE]);
++		/* start state machine*/
++		for (i = 0; i < xgkr_inst->phy_lanes; i++) {
++			start_xgkr_state_machine(&xgkr_inst->xgkr[i].xgkr_wk);
++		}
++		
++		break;
++	}
++
++	phydev->advertising = phydev->supported;
++	phydev->duplex = 1;
++
++	return 0;
++}
++
++static int fsl_backplane_suspend(struct phy_device *phydev)
++{
++	int i;
++
++	if (!phydev->mdio.dev.of_node) {
++		dev_err(&phydev->mdio.dev, "No associated device tree node\n");
++		return -EINVAL;
++	}
++
++	if (phydev->speed == SPEED_10000 || phydev->speed == SPEED_40000) {
++		struct xgkr_phy_data *xgkr_inst = phydev->priv;
++
++		for (i = 0; i < xgkr_inst->phy_lanes; i++)
++			cancel_delayed_work_sync(&xgkr_inst->xgkr[i].xgkr_wk);
++	}
++	return 0;
++}
++
++static int fsl_backplane_resume(struct phy_device *phydev)
++{
++	struct xgkr_phy_data *xgkr_inst = phydev->priv;
++	int i;
++
++	if (!phydev->mdio.dev.of_node) {
++		dev_err(&phydev->mdio.dev, "No associated device tree node\n");
++		return -EINVAL;
++	}
++
++	if (phydev->speed == SPEED_10000 || phydev->speed == SPEED_40000) {
++		for (i = 0; i < xgkr_inst->phy_lanes; i++) {
++			init_xgkr(&xgkr_inst->xgkr[i], 1);
++			start_xgkr_state_machine(&xgkr_inst->xgkr[i].xgkr_wk);
++		}
++	}
++	return 0;
++}
++
++static int fsl_backplane_read_status(struct phy_device *phydev)
++{
++	if (!phydev->mdio.dev.of_node) {
++		dev_err(&phydev->mdio.dev, "No associated device tree node\n");
++		return -EINVAL;
++	}
++
++	if (is_link_up(phydev))
++		phydev->link = 1;
++	else
++		phydev->link = 0;
++
++	return 0;
++}
++
++static int fsl_backplane_match_phy_device(struct phy_device *phydev)
++{
++	struct device_node *phy_node, *lane_node;
++	const char *st;
++	int serdes_type, i, ret;
++	const int num_ids = ARRAY_SIZE(phydev->c45_ids.device_ids);
++
++	if (!phydev->mdio.dev.of_node) {
++		return 0;
++	}
++
++	//	 WORKAROUND:
++	// Required for LX2 devices
++	// where PHY ID cannot be verified in PCS
++	// because PCS Device Identifier Upper and Lower registers are hidden
++	// and always return 0 when they are read:
++	// 2  02 	Device_ID0  RO 		Bits 15:0 	0
++	// val = phy_read_mmd(phydev, MDIO_MMD_PCS, 0x2);
++	// 3  03 	Device_ID1  RO 		Bits 31:16 	0
++	// val = phy_read_mmd(phydev, MDIO_MMD_PCS, 0x3);
++	//
++	// To be removed: After the issue will be fixed on LX2 devices
++
++	if (!phydev->is_c45)
++		return 0;
++
++	phy_node = phydev->mdio.dev.of_node;
++
++	lane_node = of_parse_phandle(phy_node, "fsl,lane-handle", 0);
++	if (!lane_node) {
++		dev_err(&phydev->mdio.dev, "parse fsl,lane-handle failed\n");
++		return 0;
++	}
++
++	ret = of_property_read_string(lane_node, "compatible", &st);
++	if (ret < 0) {
++		//assume SERDES-10G if compatible property is not specified
++		serdes_type = SERDES_10G;
++	}
++	else if (!strcasecmp(st, "fsl,serdes-10g")) {
++		serdes_type = SERDES_10G;
++	} else if (!strcasecmp(st, "fsl,serdes-28g")) {
++		serdes_type = SERDES_28G;
++	} else {
++		dev_err(&phydev->mdio.dev, "Unknown serdes-type\n");
++		return 0;
++	}
++
++	if (serdes_type == SERDES_10G) {
++		//On LS devices we must find the c45 device with correct PHY ID
++		//Implementation similar with the one existent in phy_device: @function: phy_bus_match
++		for (i = 1; i < num_ids; i++) {
++			if (!(phydev->c45_ids.devices_in_package & (1 << i)))
++				continue;
++
++			if ((PCS_PHY_DEVICE_ID & PCS_PHY_DEVICE_ID_MASK) ==
++				(phydev->c45_ids.device_ids[i] & PCS_PHY_DEVICE_ID_MASK))
++			{
++				return 1;
++			}
++		}
++		return 0;
++	}
++
++	//On LX devices we cannot verify PHY ID
++	//so we are happy only with preliminary verifications already made: mdio.dev.of_node and is_c45
++	//because we already filtered other undesired devices: non clause 45
++
++	return 1;
++}
++
++static struct phy_driver fsl_backplane_driver[] = {
++	{
++	.phy_id		= PCS_PHY_DEVICE_ID,
++	.name		= "Freescale Backplane",
++	.phy_id_mask	= PCS_PHY_DEVICE_ID_MASK,
++	.features	= SUPPORTED_Backplane | SUPPORTED_Autoneg |
++			  SUPPORTED_MII,
++	.probe          = fsl_backplane_probe,
++	.aneg_done      = fsl_backplane_aneg_done,
++	.config_aneg	= fsl_backplane_config_aneg,
++	.read_status	= fsl_backplane_read_status,
++	.suspend	= fsl_backplane_suspend,
++	.resume		= fsl_backplane_resume,
++	.match_phy_device = fsl_backplane_match_phy_device,
++	},
++};
++
++module_phy_driver(fsl_backplane_driver);
++
++static struct mdio_device_id __maybe_unused freescale_tbl[] = {
++	{ PCS_PHY_DEVICE_ID, PCS_PHY_DEVICE_ID_MASK },
++	{ }
++};
++
++MODULE_DEVICE_TABLE(mdio, freescale_tbl);
++
++MODULE_DESCRIPTION("Freescale Backplane driver");
++MODULE_AUTHOR("Shaohui Xie <Shaohui.Xie@freescale.com>");
++MODULE_LICENSE("GPL v2");
+--- /dev/null
++++ b/drivers/net/phy/fsl_backplane.h
+@@ -0,0 +1,41 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ *  DPAA backplane driver.
++ *   Author: Florinel Iordache <florinel.iordache@nxp.com>
++ *
++ * Copyright 2018 NXP
++ *
++ * Licensed under the GPL-2 or later.
++ */
++
++#ifndef FSL_BACKPLANE_H
++#define FSL_BACKPLANE_H
++
++/* C(-1) */
++#define BIN_M1						0
++/* C(1) */
++#define BIN_LONG					1
++
++#define BIN_SNAPSHOT_NUM			5
++#define BIN_M1_THRESHOLD			3
++#define BIN_LONG_THRESHOLD			2
++
++struct serdes_access {
++
++	int serdes_type;
++	bool is_little_endian;
++	u32 (*ioread32)(u32 *reg);
++	void (*iowrite32)(u32 value, u32 *reg);
++	u32 (*get_lane_memmap_size)(void);
++	void (*tune_tecr)(void *reg, u32 ratio_preq, u32 ratio_pst1q, u32 adpt_eq, bool reset);
++	void (*reset_lane)(void *reg);
++	void (*lane_set_1gkx)(void *reg);
++	int (*get_median_gaink2)(u32 *reg);
++	bool (*is_bin_early)(int bin_sel, void *reg);
++};
++
++struct serdes_access* setup_serdes_access_10g(void);
++struct serdes_access* setup_serdes_access_28g(void);
++
++
++#endif //FSL_BACKPLANE_H
+--- /dev/null
++++ b/drivers/net/phy/fsl_backplane_serdes_10g.c
+@@ -0,0 +1,281 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ *  DPAA backplane driver for SerDes 10G.
++ *   Author: Florinel Iordache <florinel.iordache@nxp.com>
++ *
++ * Copyright 2018 NXP
++ *
++ * Licensed under the GPL-2 or later.
++ */
++
++#include <linux/io.h>
++#include <linux/delay.h>
++
++#include "fsl_backplane.h"
++
++#define BIN_M1_SEL					6
++#define BIN_Long_SEL				7
++#define CDR_SEL_MASK				0x00070000
++
++#define PRE_COE_SHIFT				22
++#define POST_COE_SHIFT				16
++#define ZERO_COE_SHIFT				8
++
++#define TECR0_INIT					0x24200000
++
++#define GCR0_RESET_MASK				0x00600000
++
++#define GCR1_SNP_START_MASK			0x00000040
++#define GCR1_CTL_SNP_START_MASK		0x00002000
++
++#define RECR1_CTL_SNP_DONE_MASK		0x00000002
++#define RECR1_SNP_DONE_MASK			0x00000004
++#define TCSR1_SNP_DATA_MASK			0x0000ffc0
++#define TCSR1_SNP_DATA_SHIFT		6
++#define TCSR1_EQ_SNPBIN_SIGN_MASK	0x100
++
++#define RECR1_GAINK2_MASK			0x0f000000
++#define RECR1_GAINK2_SHIFT			24
++
++/* Required only for 1000BASE KX */
++#define GCR1_REIDL_TH_MASK			0x00700000
++#define GCR1_REIDL_EX_SEL_MASK		0x000c0000
++#define GCR1_REIDL_ET_MAS_MASK		0x00004000
++#define TECR0_AMP_RED_MASK			0x0000003f
++
++struct per_lane_ctrl_status {
++	u32 gcr0;	/* 0x.000 - General Control Register 0 */
++	u32 gcr1;	/* 0x.004 - General Control Register 1 */
++	u32 gcr2;	/* 0x.008 - General Control Register 2 */
++	u32 resv1;	/* 0x.00C - Reserved */
++	u32 recr0;	/* 0x.010 - Receive Equalization Control Register 0 */
++	u32 recr1;	/* 0x.014 - Receive Equalization Control Register 1 */
++	u32 tecr0;	/* 0x.018 - Transmit Equalization Control Register 0 */
++	u32 resv2;	/* 0x.01C - Reserved */
++	u32 tlcr0;	/* 0x.020 - TTL Control Register 0 */
++	u32 tlcr1;	/* 0x.024 - TTL Control Register 1 */
++	u32 tlcr2;	/* 0x.028 - TTL Control Register 2 */
++	u32 tlcr3;	/* 0x.02C - TTL Control Register 3 */
++	u32 tcsr0;	/* 0x.030 - Test Control/Status Register 0 */
++	u32 tcsr1;	/* 0x.034 - Test Control/Status Register 1 */
++	u32 tcsr2;	/* 0x.038 - Test Control/Status Register 2 */
++	u32 tcsr3;	/* 0x.03C - Test Control/Status Register 3 */
++};
++
++static struct serdes_access srds;
++
++static u32 get_lane_memmap_size(void)
++{
++	return 0x40;
++}
++
++static void reset_lane(void *reg)
++{
++	struct per_lane_ctrl_status *reg_base = reg;
++
++	/* reset the lane */
++	srds.iowrite32(srds.ioread32(&reg_base->gcr0) & ~GCR0_RESET_MASK,
++		    &reg_base->gcr0);
++	udelay(1);
++	
++	/* unreset the lane */
++	srds.iowrite32(srds.ioread32(&reg_base->gcr0) | GCR0_RESET_MASK,
++		    &reg_base->gcr0);
++	udelay(1);
++}
++
++static void tune_tecr(void *reg, u32 ratio_preq, u32 ratio_pst1q, u32 adpt_eq, bool reset)
++{
++	struct per_lane_ctrl_status *reg_base = reg;
++	u32 val;
++
++	val = TECR0_INIT |
++		adpt_eq << ZERO_COE_SHIFT |
++		ratio_preq << PRE_COE_SHIFT |
++		ratio_pst1q << POST_COE_SHIFT;
++
++	if (reset) {
++		/* reset the lane */
++		srds.iowrite32(srds.ioread32(&reg_base->gcr0) & ~GCR0_RESET_MASK,
++				&reg_base->gcr0);
++		udelay(1);
++	}
++	
++	srds.iowrite32(val, &reg_base->tecr0);
++	udelay(1);
++	
++	if (reset) {
++		/* unreset the lane */
++		srds.iowrite32(srds.ioread32(&reg_base->gcr0) | GCR0_RESET_MASK,
++				&reg_base->gcr0);
++		udelay(1);
++	}
++}
++
++static void lane_set_1gkx(void *reg)
++{
++	struct per_lane_ctrl_status *reg_base = reg;
++	u32 val;
++
++	/* reset the lane */
++	srds.iowrite32(srds.ioread32(&reg_base->gcr0) & ~GCR0_RESET_MASK,
++		    &reg_base->gcr0);
++	udelay(1);
++
++	/* set gcr1 for 1GKX */
++	val = srds.ioread32(&reg_base->gcr1);
++	val &= ~(GCR1_REIDL_TH_MASK | GCR1_REIDL_EX_SEL_MASK |
++		 GCR1_REIDL_ET_MAS_MASK);
++	srds.iowrite32(val, &reg_base->gcr1);
++	udelay(1);
++
++	/* set tecr0 for 1GKX */
++	val = srds.ioread32(&reg_base->tecr0);
++	val &= ~TECR0_AMP_RED_MASK;
++	srds.iowrite32(val, &reg_base->tecr0);
++	udelay(1);
++
++	/* unreset the lane */
++	srds.iowrite32(srds.ioread32(&reg_base->gcr0) | GCR0_RESET_MASK,
++		    &reg_base->gcr0);
++	udelay(1);
++}
++
++static int get_median_gaink2(u32 *reg)
++{
++	int gaink2_snap_shot[BIN_SNAPSHOT_NUM];
++	u32 rx_eq_snp;
++	struct per_lane_ctrl_status *reg_base;
++	int timeout;
++	int i, j, tmp, pos;
++
++	reg_base = (struct per_lane_ctrl_status *)reg;
++
++	for (i = 0; i < BIN_SNAPSHOT_NUM; i++) {
++		/* wait RECR1_CTL_SNP_DONE_MASK has cleared */
++		timeout = 100;
++		while (srds.ioread32(&reg_base->recr1) &
++		       RECR1_CTL_SNP_DONE_MASK) {
++			udelay(1);
++			timeout--;
++			if (timeout == 0)
++				break;
++		}
++
++		/* start snap shot */
++		srds.iowrite32((srds.ioread32(&reg_base->gcr1) |
++			    GCR1_CTL_SNP_START_MASK),
++			    &reg_base->gcr1);
++
++		/* wait for SNP done */
++		timeout = 100;
++		while (!(srds.ioread32(&reg_base->recr1) &
++		       RECR1_CTL_SNP_DONE_MASK)) {
++			udelay(1);
++			timeout--;
++			if (timeout == 0)
++				break;
++		}
++
++		/* read and save the snap shot */
++		rx_eq_snp = srds.ioread32(&reg_base->recr1);
++		gaink2_snap_shot[i] = (rx_eq_snp & RECR1_GAINK2_MASK) >>
++					RECR1_GAINK2_SHIFT;
++
++		/* terminate the snap shot by setting GCR1[REQ_CTL_SNP] */
++		srds.iowrite32((srds.ioread32(&reg_base->gcr1) &
++			    ~GCR1_CTL_SNP_START_MASK),
++			    &reg_base->gcr1);
++	}
++
++	/* get median of the 5 snap shot */
++	for (i = 0; i < BIN_SNAPSHOT_NUM - 1; i++) {
++		tmp = gaink2_snap_shot[i];
++		pos = i;
++		for (j = i + 1; j < BIN_SNAPSHOT_NUM; j++) {
++			if (gaink2_snap_shot[j] < tmp) {
++				tmp = gaink2_snap_shot[j];
++				pos = j;
++			}
++		}
++
++		gaink2_snap_shot[pos] = gaink2_snap_shot[i];
++		gaink2_snap_shot[i] = tmp;
++	}
++
++	return gaink2_snap_shot[2];
++}
++
++static bool is_bin_early(int bin_sel, void *reg)
++{
++	bool early = false;
++	int bin_snap_shot[BIN_SNAPSHOT_NUM];
++	int i, negative_count = 0;
++	struct per_lane_ctrl_status *reg_base = reg;
++	int timeout;
++
++	for (i = 0; i < BIN_SNAPSHOT_NUM; i++) {
++		/* wait RECR1_SNP_DONE_MASK has cleared */
++		timeout = 100;
++		while ((srds.ioread32(&reg_base->recr1) & RECR1_SNP_DONE_MASK)) {
++			udelay(1);
++			timeout--;
++			if (timeout == 0)
++				break;
++		}
++
++		/* set TCSR1[CDR_SEL] to BinM1/BinLong */
++		if (bin_sel == BIN_M1) {
++			srds.iowrite32((srds.ioread32(&reg_base->tcsr1) &
++				    ~CDR_SEL_MASK) | BIN_M1_SEL,
++				    &reg_base->tcsr1);
++		} else {
++			srds.iowrite32((srds.ioread32(&reg_base->tcsr1) &
++				    ~CDR_SEL_MASK) | BIN_Long_SEL,
++				    &reg_base->tcsr1);
++		}
++
++		/* start snap shot */
++		srds.iowrite32(srds.ioread32(&reg_base->gcr1) | GCR1_SNP_START_MASK,
++			    &reg_base->gcr1);
++
++		/* wait for SNP done */
++		timeout = 100;
++		while (!(srds.ioread32(&reg_base->recr1) & RECR1_SNP_DONE_MASK)) {
++			udelay(1);
++			timeout--;
++			if (timeout == 0)
++				break;
++		}
++
++		/* read and save the snap shot */
++		bin_snap_shot[i] = (srds.ioread32(&reg_base->tcsr1) &
++				TCSR1_SNP_DATA_MASK) >> TCSR1_SNP_DATA_SHIFT;
++		if (bin_snap_shot[i] & TCSR1_EQ_SNPBIN_SIGN_MASK)
++			negative_count++;
++
++		/* terminate the snap shot by setting GCR1[REQ_CTL_SNP] */
++		srds.iowrite32(srds.ioread32(&reg_base->gcr1) & ~GCR1_SNP_START_MASK,
++			    &reg_base->gcr1);
++	}
++
++	if (((bin_sel == BIN_M1) && (negative_count > BIN_M1_THRESHOLD)) ||
++	    ((bin_sel == BIN_LONG && (negative_count > BIN_LONG_THRESHOLD)))) {
++		early = true;
++	}
++
++	return early;
++}
++
++struct serdes_access* setup_serdes_access_10g(void)
++{
++	srds.get_lane_memmap_size = get_lane_memmap_size;
++	srds.tune_tecr = tune_tecr;
++	srds.reset_lane = reset_lane;
++	srds.lane_set_1gkx = lane_set_1gkx;
++	srds.get_median_gaink2 = get_median_gaink2;
++	srds.is_bin_early = is_bin_early;
++
++	return &srds;
++}
++
+--- /dev/null
++++ b/drivers/net/phy/fsl_backplane_serdes_28g.c
+@@ -0,0 +1,336 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ *  DPAA backplane driver for SerDes 28G.
++ *   Author: Florinel Iordache <florinel.iordache@nxp.com>
++ *
++ * Copyright 2018 NXP
++ *
++ * Licensed under the GPL-2 or later.
++ */
++
++#include <linux/io.h>
++#include <linux/delay.h>
++#include <linux/sched.h>
++
++#include "fsl_backplane.h"
++
++#define BIN_M1_SEL					0x0000c000
++#define BIN_Long_SEL				0x0000d000
++#define CDR_SEL_MASK				0x0000f000
++
++#define PRE_COE_SHIFT				16
++#define POST_COE_SHIFT				8
++#define ZERO_COE_SHIFT				24
++
++#define TECR0_INIT					0x20808000
++
++#define RESET_REQ_MASK				0x80000000
++
++#define RECR3_SNP_START_MASK		0x80000000
++#define RECR3_SNP_DONE_MASK			0x40000000
++
++#define RECR4_SNP_DATA_MASK			0x000003ff
++#define RECR4_SNP_DATA_SHIFT		0
++#define RECR4_EQ_SNPBIN_SIGN_MASK	0x200
++
++#define RECR3_GAINK2_MASK			0x1f000000
++#define RECR3_GAINK2_SHIFT			24
++
++/* Required only for 1000BASE KX */
++#define GCR1_REIDL_TH_MASK			0x00700000
++#define GCR1_REIDL_EX_SEL_MASK		0x000c0000
++#define GCR1_REIDL_ET_MAS_MASK		0x04000000
++#define TECR0_AMP_RED_MASK			0x0000003f
++
++struct per_lane_ctrl_status {
++	u32 gcr0;	/* 0x.000 - General Control Register 0 */
++	u32 resv1;	/* 0x.004 - Reserved */
++	u32 resv2;	/* 0x.008 - Reserved */
++	u32 resv3;	/* 0x.00C - Reserved */
++	u32 resv4;	/* 0x.010 - Reserved */
++	u32 resv5;	/* 0x.014 - Reserved */
++	u32 resv6;	/* 0x.018 - Reserved */
++	u32 resv7;	/* 0x.01C - Reserved */
++	u32 trstctl;	/* 0x.020 - TX Reset Control Register */
++	u32 tgcr0;	/* 0x.024 - TX General Control Register 0 */
++	u32 tgcr1;	/* 0x.028 - TX General Control Register 1 */
++	u32 tgcr2;	/* 0x.02C - TX General Control Register 2 */
++	u32 tecr0;	/* 0x.030 - Transmit Equalization Control Register 0 */
++	u32 tecr1;	/* 0x.034 - Transmit Equalization Control Register 1 */
++	u32 resv8;	/* 0x.038 - Reserved */
++	u32 resv9;	/* 0x.03C - Reserved */
++	u32 rrstctl;	/* 0x.040 - RX Reset Control Register */
++	u32 rgcr0;	/* 0x.044 - RX General Control Register 0 */
++	u32 rxgcr1; 	/* 0x.048 - RX General Control Register 1 */
++	u32 resv10;	/* 0x.04C - Reserved */
++	u32 recr0;	/* 0x.050 - RX Equalization Register 0 */
++	u32 recr1;	/* 0x.054 - RX Equalization Register 1 */
++	u32 recr2;	/* 0x.058 - RX Equalization Register 2 */
++	u32 recr3;	/* 0x.05C - RX Equalization Register 3 */
++	u32 recr4;	/* 0x.060 - RX Equalization Register 4 */
++	u32 resv11;	/* 0x.064 - Reserved */
++	u32 rccr0;	/* 0x.068 - RX Calibration Register 0 */
++	u32 rccr1;	/* 0x.06C - RX Calibration Register 1 */
++	u32 rcpcr0;	/* 0x.070 - RX Clock Path Register 0 */
++	u32 rsccr0;	/* 0x.074 - RX Sampler Calibration Control Register 0 */
++	u32 rsccr1;	/* 0x.078 - RX Sampler Calibration Control Register 1 */
++	u32 resv12;	/* 0x.07C - Reserved */
++	u32 ttlcr0;	/* 0x.080 - Transition Tracking Loop Register 0 */
++	u32 ttlcr1;	/* 0x.084 - Transition Tracking Loop Register 1 */
++	u32 ttlcr2;	/* 0x.088 - Transition Tracking Loop Register 2 */
++	u32 ttlcr3;	/* 0x.08C - Transition Tracking Loop Register 3 */
++	u32 resv13;	/* 0x.090 - Reserved */
++	u32 resv14;	/* 0x.094 - Reserved */
++	u32 resv15;	/* 0x.098 - Reserved */
++	u32 resv16;	/* 0x.09C - Reserved */
++	u32 tcsr0;	/* 0x.0A0 - Test Control/Status Register 0 */
++	u32 tcsr1;	/* 0x.0A4 - Test Control/Status Register 1 */
++	u32 tcsr2;	/* 0x.0A8 - Test Control/Status Register 2 */
++	u32 tcsr3;	/* 0x.0AC - Test Control/Status Register 3 */
++	u32 tcsr4;	/* 0x.0B0 - Test Control/Status Register 4 */
++	u32 resv17;	/* 0x.0B4 - Reserved */
++	u32 resv18;	/* 0x.0B8 - Reserved */
++	u32 resv19;	/* 0x.0BC - Reserved */
++	u32 rxcb0;	/* 0x.0C0 - RX Control Block Register 0 */
++	u32 rxcb1;	/* 0x.0C4 - RX Control Block Register 1 */
++	u32 resv20;	/* 0x.0C8 - Reserved */
++	u32 resv21;	/* 0x.0CC - Reserved */
++	u32 rxss0;	/* 0x.0D0 - RX Speed Switch Register 0 */
++	u32 rxss1;	/* 0x.0D4 - RX Speed Switch Register 1 */
++	u32 rxss2;	/* 0x.0D8 - RX Speed Switch Register 2 */
++	u32 resv22;	/* 0x.0DC - Reserved */
++	u32 txcb0;	/* 0x.0E0 - TX Control Block Register 0 */
++	u32 txcb1;	/* 0x.0E4 - TX Control Block Register 1 */
++	u32 resv23;	/* 0x.0E8 - Reserved */
++	u32 resv24;	/* 0x.0EC - Reserved */
++	u32 txss0;	/* 0x.0F0 - TX Speed Switch Register 0 */
++	u32 txss1;	/* 0x.0F4 - TX Speed Switch Register 1 */
++	u32 txss2;	/* 0x.0F8 - TX Speed Switch Register 2 */
++	u32 resv25;	/* 0x.0FC - Reserved */
++};
++
++static struct serdes_access srds;
++
++static u32 get_lane_memmap_size(void)
++{
++	return 0x100;
++}
++
++static void reset_lane(void *reg)
++{
++	struct per_lane_ctrl_status *reg_base = reg;
++	u32 val;
++	unsigned long timeout;
++
++	/* reset Tx lane: send reset request */
++	srds.iowrite32(srds.ioread32(&reg_base->trstctl) | RESET_REQ_MASK,
++		    &reg_base->trstctl);
++	udelay(1);
++	timeout = 10;
++	while (timeout--) {
++		val = srds.ioread32(&reg_base->trstctl);
++		if (!(val & RESET_REQ_MASK))
++			break;
++		usleep_range(5, 20);
++	}
++	
++	/* reset Rx lane: send reset request */
++	srds.iowrite32(srds.ioread32(&reg_base->rrstctl) | RESET_REQ_MASK,
++		    &reg_base->rrstctl);
++	udelay(1);
++	timeout = 10;
++	while (timeout--) {
++		val = srds.ioread32(&reg_base->rrstctl);
++		if (!(val & RESET_REQ_MASK))
++			break;
++		usleep_range(5, 20);
++	}
++	
++	/* wait for a while after reset */
++	timeout = jiffies + 10;
++	while (time_before(jiffies, timeout)) {
++		schedule();
++		usleep_range(5, 20);
++	}
++}
++
++static void tune_tecr(void *reg, u32 ratio_preq, u32 ratio_pst1q, u32 adpt_eq, bool reset)
++{
++	struct per_lane_ctrl_status *reg_base = reg;
++	u32 val;
++
++	if (reset) {
++		/* reset lanes */
++		reset_lane(reg);
++	}
++	
++	val = TECR0_INIT |
++		ratio_preq << PRE_COE_SHIFT |
++		ratio_pst1q << POST_COE_SHIFT;
++	srds.iowrite32(val, &reg_base->tecr0);
++
++	val = adpt_eq << ZERO_COE_SHIFT;
++	srds.iowrite32(val, &reg_base->tecr1);
++	
++	udelay(1);
++}
++
++static void lane_set_1gkx(void *reg)
++{
++	struct per_lane_ctrl_status *reg_base = reg;
++	u32 val;
++
++	/* reset lanes */
++	reset_lane(reg);
++
++	/* set gcr1 for 1GKX */
++	val = srds.ioread32(&reg_base->rxgcr1);
++	val &= ~(GCR1_REIDL_TH_MASK | GCR1_REIDL_EX_SEL_MASK |
++		 GCR1_REIDL_ET_MAS_MASK);
++	srds.iowrite32(val, &reg_base->rxgcr1);
++	udelay(1);
++
++	/* set tecr0 for 1GKX */
++	val = srds.ioread32(&reg_base->tecr0);
++	val &= ~TECR0_AMP_RED_MASK;
++	srds.iowrite32(val, &reg_base->tecr0);
++	udelay(1);
++}
++
++static int get_median_gaink2(u32 *reg)
++{
++	int gaink2_snap_shot[BIN_SNAPSHOT_NUM];
++	u32 rx_eq_snp;
++	struct per_lane_ctrl_status *reg_base;
++	int timeout;
++	int i, j, tmp, pos;
++
++	reg_base = (struct per_lane_ctrl_status *)reg;
++
++	for (i = 0; i < BIN_SNAPSHOT_NUM; i++) {
++		/* wait RECR3_SNP_DONE_MASK has cleared */
++		timeout = 100;
++		while (srds.ioread32(&reg_base->recr3) &
++				RECR3_SNP_DONE_MASK) {
++			udelay(1);
++			timeout--;
++			if (timeout == 0)
++				break;
++		}
++
++		/* start snap shot */
++		srds.iowrite32((srds.ioread32(&reg_base->recr3) |
++			    RECR3_SNP_START_MASK),
++			    &reg_base->recr3);
++
++		/* wait for SNP done */
++		timeout = 100;
++		while (!(srds.ioread32(&reg_base->recr3) &
++				RECR3_SNP_DONE_MASK)) {
++			udelay(1);
++			timeout--;
++			if (timeout == 0)
++				break;
++		}
++
++		/* read and save the snap shot */
++		rx_eq_snp = srds.ioread32(&reg_base->recr3);
++		gaink2_snap_shot[i] = (rx_eq_snp & RECR3_GAINK2_MASK) >>
++					RECR3_GAINK2_SHIFT;
++
++		/* terminate the snap shot by setting GCR1[REQ_CTL_SNP] */
++		srds.iowrite32((srds.ioread32(&reg_base->recr3) &
++			    ~RECR3_SNP_START_MASK),
++			    &reg_base->recr3);
++	}
++
++	/* get median of the 5 snap shot */
++	for (i = 0; i < BIN_SNAPSHOT_NUM - 1; i++) {
++		tmp = gaink2_snap_shot[i];
++		pos = i;
++		for (j = i + 1; j < BIN_SNAPSHOT_NUM; j++) {
++			if (gaink2_snap_shot[j] < tmp) {
++				tmp = gaink2_snap_shot[j];
++				pos = j;
++			}
++		}
++
++		gaink2_snap_shot[pos] = gaink2_snap_shot[i];
++		gaink2_snap_shot[i] = tmp;
++	}
++
++	return gaink2_snap_shot[2];
++}
++
++static bool is_bin_early(int bin_sel, void *reg)
++{
++	bool early = false;
++	int bin_snap_shot[BIN_SNAPSHOT_NUM];
++	int i, negative_count = 0;
++	struct per_lane_ctrl_status *reg_base = reg;
++	int timeout;
++
++	for (i = 0; i < BIN_SNAPSHOT_NUM; i++) {
++		/* wait RECR3_SNP_DONE_MASK has cleared */
++		timeout = 100;
++		while ((srds.ioread32(&reg_base->recr3) & RECR3_SNP_DONE_MASK)) {
++			udelay(1);
++			timeout--;
++			if (timeout == 0)
++				break;
++		}
++
++		/* set TCSR1[CDR_SEL] to BinM1/BinLong */
++		if (bin_sel == BIN_M1) {
++			srds.iowrite32((srds.ioread32(&reg_base->recr4) &
++				    ~CDR_SEL_MASK) | BIN_M1_SEL,
++				    &reg_base->recr4);
++		} else {
++			srds.iowrite32((srds.ioread32(&reg_base->recr4) &
++				    ~CDR_SEL_MASK) | BIN_Long_SEL,
++				    &reg_base->recr4);
++		}
++
++		/* start snap shot */
++		srds.iowrite32(srds.ioread32(&reg_base->recr3) | RECR3_SNP_START_MASK,
++			    &reg_base->recr3);
++
++		/* wait for SNP done */
++		timeout = 100;
++		while (!(srds.ioread32(&reg_base->recr3) & RECR3_SNP_DONE_MASK)) {
++			udelay(1);
++			timeout--;
++			if (timeout == 0)
++				break;
++		}
++
++		/* read and save the snap shot */
++		bin_snap_shot[i] = (srds.ioread32(&reg_base->recr4) &
++				RECR4_SNP_DATA_MASK) >> RECR4_SNP_DATA_SHIFT;
++		if (bin_snap_shot[i] & RECR4_EQ_SNPBIN_SIGN_MASK)
++			negative_count++;
++
++		/* terminate the snap shot by setting GCR1[REQ_CTL_SNP] */
++		srds.iowrite32(srds.ioread32(&reg_base->recr3) & ~RECR3_SNP_START_MASK,
++			    &reg_base->recr3);
++	}
++
++	if (((bin_sel == BIN_M1) && (negative_count > BIN_M1_THRESHOLD)) ||
++	    ((bin_sel == BIN_LONG && (negative_count > BIN_LONG_THRESHOLD)))) {
++		early = true;
++	}
++
++	return early;
++}
++
++struct serdes_access* setup_serdes_access_28g(void)
++{
++	srds.get_lane_memmap_size = get_lane_memmap_size;
++	srds.tune_tecr = tune_tecr;
++	srds.reset_lane = reset_lane;
++	srds.lane_set_1gkx = lane_set_1gkx;
++	srds.get_median_gaink2 = get_median_gaink2;
++	srds.is_bin_early = is_bin_early;
++
++	return &srds;
++}
+--- /dev/null
++++ b/drivers/net/phy/inphi.c
+@@ -0,0 +1,594 @@
++/*
++ * Copyright 2018 NXP
++ * Copyright 2018 INPHI
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ *
++ * 1. Redistributions of source code must retain the above copyright notice,
++ * this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ * this list of conditions and the following disclaimer in the documentation
++ * and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ *
++ * Inphi is a registered trademark of Inphi Corporation
++ *
++ */
++
++#include <linux/module.h>
++#include <linux/phy.h>
++#include <linux/mdio.h>
++#include <linux/interrupt.h>
++#include <linux/platform_device.h>
++#include <linux/of_irq.h>
++#include <linux/workqueue.h>
++#include <linux/i2c.h>
++#include <linux/timer.h>
++#include <linux/delay.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/fs.h>
++#include <linux/cdev.h>
++#include <linux/device.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++
++#define PHY_ID_IN112525  0x02107440
++
++#define INPHI_S03_DEVICE_ID_MSB 0x2
++#define INPHI_S03_DEVICE_ID_LSB 0x3
++
++#define ALL_LANES		4
++#define INPHI_POLL_DELAY	2500
++
++#define PHYCTRL_REG1	0x0012
++#define PHYCTRL_REG2	0x0014
++#define PHYCTRL_REG3	0x0120
++#define PHYCTRL_REG4	0x0121
++#define PHYCTRL_REG5	0x0180
++#define PHYCTRL_REG6	0x0580
++#define PHYCTRL_REG7	0x05C4
++#define PHYCTRL_REG8	0x01C8
++#define PHYCTRL_REG9	0x0521
++
++#define PHYSTAT_REG1	0x0021
++#define PHYSTAT_REG2	0x0022
++#define PHYSTAT_REG3	0x0123
++
++#define PHYMISC_REG1	0x0025
++#define PHYMISC_REG2	0x002c
++#define PHYMISC_REG3	0x00b3
++#define PHYMISC_REG4	0x0181
++#define PHYMISC_REG5	0x019D
++#define PHYMISC_REG6	0x0198
++#define PHYMISC_REG7	0x0199
++#define PHYMISC_REG8	0x0581
++#define PHYMISC_REG9	0x0598
++#define PHYMISC_REG10	0x059c
++#define PHYMISC_REG20	0x01B0
++#define PHYMISC_REG21	0x01BC
++#define PHYMISC_REG22	0x01C0
++
++#define RX_VCO_CODE_OFFSET	5
++#define VCO_CODE		390
++
++int vco_codes[ALL_LANES] = {
++	VCO_CODE,
++	VCO_CODE,
++	VCO_CODE,
++	VCO_CODE
++};
++
++static void mykmod_work_handler(struct work_struct *w);
++
++static struct workqueue_struct *wq;
++static DECLARE_DELAYED_WORK(mykmod_work, mykmod_work_handler);
++static unsigned long onesec;
++struct phy_device *inphi_phydev;
++
++static int mdio_wr(u32 regnum, u16 val)
++{
++	regnum = MII_ADDR_C45 | (MDIO_MMD_VEND1 << 16) | (regnum & 0xffff);
++
++	return mdiobus_write(inphi_phydev->mdio.bus, inphi_phydev->mdio.addr,
++				regnum, val);
++}
++
++static int mdio_rd(u32 regnum)
++{
++	regnum = MII_ADDR_C45 | (MDIO_MMD_VEND1 << 16) | (regnum & 0xffff);
++
++	return mdiobus_read(inphi_phydev->mdio.bus, inphi_phydev->mdio.addr,
++				regnum);
++}
++
++
++int bit_test(int value, int bit_field)
++{
++	int result;
++	int bit_mask = (1 << bit_field);
++
++	result = ((value & bit_mask) == bit_mask);
++	return result;
++}
++
++int tx_pll_lock_test(int lane)
++{
++	int i, val, locked = 1;
++
++	if (lane == ALL_LANES) {
++		for (i = 0; i < ALL_LANES; i++) {
++			val = mdio_rd(i * 0x100 + PHYSTAT_REG3);
++			locked = locked & bit_test(val, 15);
++		}
++	} else {
++		val = mdio_rd(lane * 0x100 + PHYSTAT_REG3);
++		locked = locked & bit_test(val, 15);
++	}
++
++	return locked;
++}
++
++void rx_reset_assert(int lane)
++{
++	int mask, val;
++
++	if (lane == ALL_LANES) {
++		val = mdio_rd(PHYMISC_REG2);
++		mask = (1 << 15);
++		mdio_wr(PHYMISC_REG2, val + mask);
++	} else {
++		val = mdio_rd(lane * 0x100 + PHYCTRL_REG8);
++		mask = (1 << 6);
++		mdio_wr(lane * 0x100 + PHYCTRL_REG8, val + mask);
++	}
++}
++
++void rx_reset_de_assert(int lane)
++{
++	int mask, val;
++
++	if (lane == ALL_LANES) {
++		val = mdio_rd(PHYMISC_REG2);
++		mask = 0xffff - (1 << 15);
++		mdio_wr(PHYMISC_REG2, val & mask);
++	} else {
++		val = mdio_rd(lane * 0x100 + PHYCTRL_REG8);
++		mask = 0xffff - (1 << 6);
++		mdio_wr(lane * 0x100 + PHYCTRL_REG8, val & mask);
++	}
++}
++
++void rx_powerdown_assert(int lane)
++{
++	int mask, val;
++
++	val = mdio_rd(lane * 0x100 + PHYCTRL_REG8);
++	mask = (1 << 5);
++	mdio_wr(lane * 0x100 + PHYCTRL_REG8, val + mask);
++}
++
++void rx_powerdown_de_assert(int lane)
++{
++	int mask, val;
++
++	val = mdio_rd(lane * 0x100 + PHYCTRL_REG8);
++	mask = 0xffff - (1 << 5);
++	mdio_wr(lane * 0x100 + PHYCTRL_REG8, val & mask);
++}
++
++void tx_pll_assert(int lane)
++{
++	int val, recal;
++
++	if (lane == ALL_LANES) {
++		val = mdio_rd(PHYMISC_REG2);
++		recal = (1 << 12);
++		mdio_wr(PHYMISC_REG2, val | recal);
++	} else {
++		val = mdio_rd(lane * 0x100 + PHYCTRL_REG4);
++		recal = (1 << 15);
++		mdio_wr(lane * 0x100 + PHYCTRL_REG4, val | recal);
++	}
++}
++
++void tx_pll_de_assert(int lane)
++{
++	int recal, val;
++
++	if (lane == ALL_LANES) {
++		val = mdio_rd(PHYMISC_REG2);
++		recal = 0xefff;
++		mdio_wr(PHYMISC_REG2, val & recal);
++	} else {
++		val = mdio_rd(lane * 0x100 + PHYCTRL_REG4);
++		recal = 0x7fff;
++		mdio_wr(lane * 0x100 + PHYCTRL_REG4, val & recal);
++	}
++}
++
++void tx_core_assert(int lane)
++{
++	int recal, val, val2, core_reset;
++
++	if (lane == 4) {
++		val = mdio_rd(PHYMISC_REG2);
++		recal = 1 << 10;
++		mdio_wr(PHYMISC_REG2, val | recal);
++	} else {
++		val2 = mdio_rd(PHYMISC_REG3);
++		core_reset = (1 << (lane + 8));
++		mdio_wr(PHYMISC_REG3, val2 | core_reset);
++	}
++}
++
++void lol_disable(int lane)
++{
++	int val, mask;
++
++	val = mdio_rd(PHYMISC_REG3);
++	mask = 1 << (lane + 4);
++	mdio_wr(PHYMISC_REG3, val | mask);
++}
++
++void tx_core_de_assert(int lane)
++{
++	int val, recal, val2, core_reset;
++
++	if (lane == ALL_LANES) {
++		val = mdio_rd(PHYMISC_REG2);
++		recal = 0xffff - (1 << 10);
++		mdio_wr(PHYMISC_REG2, val & recal);
++	} else {
++		val2 = mdio_rd(PHYMISC_REG3);
++		core_reset = 0xffff - (1 << (lane + 8));
++		mdio_wr(PHYMISC_REG3, val2 & core_reset);
++	}
++}
++
++void tx_restart(int lane)
++{
++	tx_core_assert(lane);
++	tx_pll_assert(lane);
++	tx_pll_de_assert(lane);
++	usleep_range(1500, 1600);
++	tx_core_de_assert(lane);
++}
++
++void disable_lane(int lane)
++{
++	rx_reset_assert(lane);
++	rx_powerdown_assert(lane);
++	tx_core_assert(lane);
++	lol_disable(lane);
++}
++
++void toggle_reset(int lane)
++{
++	int reg, val, orig;
++
++	if (lane == ALL_LANES) {
++		mdio_wr(PHYMISC_REG2, 0x8000);
++		udelay(100);
++		mdio_wr(PHYMISC_REG2, 0x0000);
++	} else {
++		reg = lane * 0x100 + PHYCTRL_REG8;
++		val = (1 << 6);
++		orig = mdio_rd(reg);
++		mdio_wr(reg, orig + val);
++		udelay(100);
++		mdio_wr(reg, orig);
++	}
++}
++
++int az_complete_test(int lane)
++{
++	int success = 1, value;
++
++	if (lane == 0 || lane == ALL_LANES) {
++		value = mdio_rd(PHYCTRL_REG5);
++		success = success & bit_test(value, 2);
++	}
++	if (lane == 1 || lane == ALL_LANES) {
++		value = mdio_rd(PHYCTRL_REG5 + 0x100);
++		success = success & bit_test(value, 2);
++	}
++	if (lane == 2 || lane == ALL_LANES) {
++		value = mdio_rd(PHYCTRL_REG5 + 0x200);
++		success = success & bit_test(value, 2);
++	}
++	if (lane == 3 || lane == ALL_LANES) {
++		value = mdio_rd(PHYCTRL_REG5 + 0x300);
++		success = success & bit_test(value, 2);
++	}
++
++	return success;
++}
++
++void save_az_offsets(int lane)
++{
++	int i;
++
++#define AZ_OFFSET_LANE_UPDATE(reg, lane) \
++	mdio_wr((reg) + (lane) * 0x100,  \
++		(mdio_rd((reg) + (lane) * 0x100) >> 8))
++
++	if (lane == ALL_LANES) {
++		for (i = 0; i < ALL_LANES; i++) {
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20 + 1, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20 + 2, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20 + 3, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21 + 1, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21 + 2, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21 + 3, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG22, i);
++		}
++	} else {
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20 + 1, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20 + 2, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20 + 3, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21 + 1, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21 + 2, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21 + 3, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG22, lane);
++	}
++
++	mdio_wr(PHYCTRL_REG7, 0x0001);
++}
++
++void save_vco_codes(int lane)
++{
++	int i;
++
++	if (lane == ALL_LANES) {
++		for (i = 0; i < ALL_LANES; i++) {
++			vco_codes[i] = mdio_rd(PHYMISC_REG5 + i * 0x100);
++			mdio_wr(PHYMISC_REG5 + i * 0x100,
++				vco_codes[i] + RX_VCO_CODE_OFFSET);
++		}
++	} else {
++		vco_codes[lane] = mdio_rd(PHYMISC_REG5 + lane * 0x100);
++		mdio_wr(PHYMISC_REG5 + lane * 0x100,
++			vco_codes[lane] + RX_VCO_CODE_OFFSET);
++	}
++}
++
++int inphi_lane_recovery(int lane)
++{
++	int i, value, az_pass;
++
++	switch (lane) {
++	case 0:
++	case 1:
++	case 2:
++	case 3:
++		rx_reset_assert(lane);
++		mdelay(20);
++		break;
++	case ALL_LANES:
++		mdio_wr(PHYMISC_REG2, 0x9C00);
++		mdelay(20);
++		do {
++			value = mdio_rd(PHYMISC_REG2);
++			udelay(10);
++		} while (!bit_test(value, 4));
++		break;
++	default:
++		dev_err(&inphi_phydev->mdio.dev,
++			"Incorrect usage of APIs in %s driver\n",
++			inphi_phydev->drv->name);
++		break;
++	}
++
++	if (lane == ALL_LANES) {
++		for (i = 0; i < ALL_LANES; i++)
++			mdio_wr(PHYMISC_REG7 + i * 0x100, VCO_CODE);
++	} else {
++		mdio_wr(PHYMISC_REG7 + lane * 0x100, VCO_CODE);
++	}
++
++	if (lane == ALL_LANES)
++		for (i = 0; i < ALL_LANES; i++)
++			mdio_wr(PHYCTRL_REG5 + i * 0x100, 0x0418);
++	else
++		mdio_wr(PHYCTRL_REG5 + lane * 0x100, 0x0418);
++
++	mdio_wr(PHYCTRL_REG7,   0x0000);
++
++	rx_reset_de_assert(lane);
++
++	if (lane == ALL_LANES) {
++		for (i = 0; i < ALL_LANES; i++) {
++			mdio_wr(PHYCTRL_REG5 + i * 0x100, 0x0410);
++			mdio_wr(PHYCTRL_REG5 + i * 0x100, 0x0412);
++		}
++	} else {
++		mdio_wr(PHYCTRL_REG5 + lane * 0x100, 0x0410);
++		mdio_wr(PHYCTRL_REG5 + lane * 0x100, 0x0412);
++	}
++
++	for (i = 0; i < 64; i++) {
++		mdelay(100);
++		az_pass = az_complete_test(lane);
++		if (az_pass) {
++			save_az_offsets(lane);
++			break;
++		}
++	}
++
++	if (!az_pass) {
++		pr_info("in112525: AZ calibration fail @ lane=%d\n", lane);
++		return -1;
++	}
++
++	if (lane == ALL_LANES) {
++		mdio_wr(PHYMISC_REG8, 0x0002);
++		mdio_wr(PHYMISC_REG9, 0x2028);
++		mdio_wr(PHYCTRL_REG6, 0x0010);
++		usleep_range(1000, 1200);
++		mdio_wr(PHYCTRL_REG6, 0x0110);
++		mdelay(30);
++		mdio_wr(PHYMISC_REG9, 0x3020);
++	} else {
++		mdio_wr(PHYMISC_REG4 + lane * 0x100, 0x0002);
++		mdio_wr(PHYMISC_REG6 + lane * 0x100, 0x2028);
++		mdio_wr(PHYCTRL_REG5 + lane * 0x100, 0x0010);
++		usleep_range(1000, 1200);
++		mdio_wr(PHYCTRL_REG5 + lane * 0x100, 0x0110);
++		mdelay(30);
++		mdio_wr(PHYMISC_REG6 + lane * 0x100, 0x3020);
++	}
++
++	if (lane == ALL_LANES) {
++		mdio_wr(PHYMISC_REG2, 0x1C00);
++		mdio_wr(PHYMISC_REG2, 0x0C00);
++	} else {
++		tx_restart(lane);
++		mdelay(11);
++	}
++
++	if (lane == ALL_LANES) {
++		if (bit_test(mdio_rd(PHYMISC_REG2), 6) == 0)
++			return -1;
++	} else {
++		if (tx_pll_lock_test(lane) == 0)
++			return -1;
++	}
++
++	save_vco_codes(lane);
++
++	if (lane == ALL_LANES) {
++		mdio_wr(PHYMISC_REG2, 0x0400);
++		mdio_wr(PHYMISC_REG2, 0x0000);
++		value = mdio_rd(PHYCTRL_REG1);
++		value = value & 0xffbf;
++		mdio_wr(PHYCTRL_REG2, value);
++	} else {
++		tx_core_de_assert(lane);
++	}
++
++	if (lane == ALL_LANES) {
++		mdio_wr(PHYMISC_REG1, 0x8000);
++		mdio_wr(PHYMISC_REG1, 0x0000);
++	}
++	mdio_rd(PHYMISC_REG1);
++	mdio_rd(PHYMISC_REG1);
++	usleep_range(1000, 1200);
++	mdio_rd(PHYSTAT_REG1);
++	mdio_rd(PHYSTAT_REG2);
++
++	return 0;
++}
++
++static void mykmod_work_handler(struct work_struct *w)
++{
++	int all_lanes_lock, lane0_lock, lane1_lock, lane2_lock, lane3_lock;
++
++	lane0_lock = bit_test(mdio_rd(0x123), 15);
++	lane1_lock = bit_test(mdio_rd(0x223), 15);
++	lane2_lock = bit_test(mdio_rd(0x323), 15);
++	lane3_lock = bit_test(mdio_rd(0x423), 15);
++
++	/* check if the chip had any successful lane lock from the previous
++	 * stage (e.g. u-boot)
++	 */
++	all_lanes_lock = lane0_lock | lane1_lock | lane2_lock | lane3_lock;
++
++	if (!all_lanes_lock) {
++		/* start fresh */
++		inphi_lane_recovery(ALL_LANES);
++	} else {
++		if (!lane0_lock)
++			inphi_lane_recovery(0);
++		if (!lane1_lock)
++			inphi_lane_recovery(1);
++		if (!lane2_lock)
++			inphi_lane_recovery(2);
++		if (!lane3_lock)
++			inphi_lane_recovery(3);
++	}
++
++	queue_delayed_work(wq, &mykmod_work, onesec);
++}
++
++int inphi_probe(struct phy_device *phydev)
++{
++	int phy_id = 0, id_lsb = 0, id_msb = 0;
++
++	/* setup the inphi_phydev ptr for mdio_rd/mdio_wr APIs */
++	inphi_phydev = phydev;
++
++	/* Read device id from phy registers */
++	id_lsb = mdio_rd(INPHI_S03_DEVICE_ID_MSB);
++	if (id_lsb < 0)
++		return -ENXIO;
++
++	phy_id = id_lsb << 16;
++
++	id_msb = mdio_rd(INPHI_S03_DEVICE_ID_LSB);
++	if (id_msb < 0)
++		return -ENXIO;
++
++	phy_id |= id_msb;
++
++	/* Make sure the device tree binding matched the driver with the
++	 * right device.
++	 */
++	if (phy_id != phydev->drv->phy_id) {
++		dev_err(&phydev->mdio.dev,
++			"Error matching phy with %s driver\n",
++			phydev->drv->name);
++		return -ENODEV;
++	}
++
++	/* update the local phydev pointer, used inside all APIs */
++	inphi_phydev = phydev;
++	onesec = msecs_to_jiffies(INPHI_POLL_DELAY);
++
++	wq = create_singlethread_workqueue("inphi_kmod");
++	if (wq) {
++		queue_delayed_work(wq, &mykmod_work, onesec);
++	} else {
++		dev_err(&phydev->mdio.dev,
++			"Error creating kernel workqueue for %s driver\n",
++			phydev->drv->name);
++		return -ENOMEM;
++	}
++
++	return 0;
++}
++
++static struct phy_driver inphi_driver[] = {
++{
++	.phy_id		= PHY_ID_IN112525,
++	.phy_id_mask	= 0x0ff0fff0,
++	.name		= "Inphi 112525_S03",
++	.features	= PHY_GBIT_FEATURES,
++	.probe		= &inphi_probe,
++},
++};
++
++module_phy_driver(inphi_driver);
++
++static struct mdio_device_id __maybe_unused inphi_tbl[] = {
++	{ PHY_ID_IN112525, 0x0ff0fff0},
++	{},
++};
++
++MODULE_DEVICE_TABLE(mdio, inphi_tbl);
+--- /dev/null
++++ b/drivers/net/phy/mdio-mux-multiplexer.c
+@@ -0,0 +1,122 @@
++// SPDX-License-Identifier: GPL-2.0+
++/* MDIO bus multiplexer using kernel multiplexer subsystem
++ *
++ * Copyright 2019 NXP
++ */
++
++#include <linux/platform_device.h>
++#include <linux/mdio-mux.h>
++#include <linux/module.h>
++#include <linux/mux/consumer.h>
++
++struct mdio_mux_multiplexer_state {
++	struct mux_control *muxc;
++	bool do_deselect;
++	void *mux_handle;
++};
++
++/**
++ * mdio_mux_multiplexer_switch_fn - This function is called by the mdio-mux
++ *                                  layer when it thinks the mdio bus
++ *                                  multiplexer needs to switch.
++ * @current_child:  current value of the mux register.
++ * @desired_child: value of the 'reg' property of the target child MDIO node.
++ * @data: Private data used by this switch_fn passed to mdio_mux_init function
++ *        via mdio_mux_init(.., .., .., .., data, ..).
++ *
++ * The first time this function is called, current_child == -1.
++ * If current_child == desired_child, then the mux is already set to the
++ * correct bus.
++ */
++static int mdio_mux_multiplexer_switch_fn(int current_child, int desired_child,
++					  void *data)
++{
++	struct platform_device *pdev;
++	struct mdio_mux_multiplexer_state *s;
++	int ret = 0;
++
++	pdev = (struct platform_device *)data;
++	s = platform_get_drvdata(pdev);
++
++	if (!(current_child ^ desired_child))
++		return 0;
++
++	if (s->do_deselect)
++		ret = mux_control_deselect(s->muxc);
++	if (ret) {
++		dev_err(&pdev->dev, "mux_control_deselect failed in %s: %d\n",
++			__func__, ret);
++		return ret;
++	}
++
++	ret =  mux_control_select(s->muxc, desired_child);
++	if (!ret) {
++		dev_dbg(&pdev->dev, "%s %d -> %d\n", __func__, current_child,
++			desired_child);
++		s->do_deselect = true;
++	} else {
++		s->do_deselect = false;
++	}
++
++	return ret;
++}
++
++static int mdio_mux_multiplexer_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct mdio_mux_multiplexer_state *s;
++	int ret = 0;
++
++	s = devm_kzalloc(&pdev->dev, sizeof(*s), GFP_KERNEL);
++	if (!s)
++		return -ENOMEM;
++
++	s->muxc = devm_mux_control_get(dev, NULL);
++	if (IS_ERR(s->muxc)) {
++		ret = PTR_ERR(s->muxc);
++		if (ret != -EPROBE_DEFER)
++			dev_err(&pdev->dev, "Failed to get mux: %d\n", ret);
++		return ret;
++	}
++
++	platform_set_drvdata(pdev, s);
++
++	ret = mdio_mux_init(&pdev->dev, pdev->dev.of_node,
++			    mdio_mux_multiplexer_switch_fn, &s->mux_handle,
++			    pdev, NULL);
++
++	return ret;
++}
++
++static int mdio_mux_multiplexer_remove(struct platform_device *pdev)
++{
++	struct mdio_mux_multiplexer_state *s = platform_get_drvdata(pdev);
++
++	mdio_mux_uninit(s->mux_handle);
++
++	if (s->do_deselect)
++		mux_control_deselect(s->muxc);
++
++	return 0;
++}
++
++static const struct of_device_id mdio_mux_multiplexer_match[] = {
++	{ .compatible = "mdio-mux-multiplexer", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, mdio_mux_multiplexer_match);
++
++static struct platform_driver mdio_mux_multiplexer_driver = {
++	.driver = {
++		.name		= "mdio-mux-multiplexer",
++		.of_match_table	= mdio_mux_multiplexer_match,
++	},
++	.probe		= mdio_mux_multiplexer_probe,
++	.remove		= mdio_mux_multiplexer_remove,
++};
++
++module_platform_driver(mdio_mux_multiplexer_driver);
++
++MODULE_DESCRIPTION("MDIO bus multiplexer using kernel multiplexer subsystem");
++MODULE_AUTHOR("Pankaj Bansal <pankaj.bansal@nxp.com>");
++MODULE_LICENSE("GPL");
+--- a/drivers/net/phy/swphy.c
++++ b/drivers/net/phy/swphy.c
+@@ -77,6 +77,7 @@ static const struct swmii_regs duplex[]
+ static int swphy_decode_speed(int speed)
+ {
+ 	switch (speed) {
++	case 10000:
+ 	case 1000:
+ 		return SWMII_SPEED_1000;
+ 	case 100:
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -87,6 +87,7 @@ typedef enum {
+ 	PHY_INTERFACE_MODE_XAUI,
+ 	/* 10GBASE-KR, XFI, SFI - single lane 10G Serdes */
+ 	PHY_INTERFACE_MODE_10GKR,
++	PHY_INTERFACE_MODE_2500SGMII,
+ 	PHY_INTERFACE_MODE_MAX,
+ } phy_interface_t;
+ 
+@@ -159,6 +160,8 @@ static inline const char *phy_modes(phy_
+ 		return "xaui";
+ 	case PHY_INTERFACE_MODE_10GKR:
+ 		return "10gbase-kr";
++	case PHY_INTERFACE_MODE_2500SGMII:
++		return "sgmii-2500";
+ 	default:
+ 		return "unknown";
+ 	}

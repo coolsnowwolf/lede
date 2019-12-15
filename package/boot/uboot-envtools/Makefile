@@ -10,7 +10,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=uboot-envtools
 PKG_DISTNAME:=u-boot
 PKG_VERSION:=2018.03
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE:=$(PKG_DISTNAME)-$(PKG_VERSION).tar.xz
@@ -51,16 +51,11 @@ define Build/Configure
 	touch $(PKG_BUILD_DIR)/include/generated/autoconf.h
 endef
 
-TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include
-
-define Build/Compile
-	$(MAKE) -C $(PKG_BUILD_DIR) \
-		CROSS_COMPILE="$(TARGET_CROSS)" \
-		TARGET_CFLAGS="$(TARGET_CFLAGS)" \
-		HOSTLDFLAGS= \
-		no-dot-config-targets=envtools \
-		envtools
-endef
+MAKE_FLAGS += \
+	TARGET_CFLAGS="$(TARGET_CFLAGS)" \
+	TARGET_LDFLAGS="$(TARGET_LDFLAGS)" \
+	no-dot-config-targets=envtools \
+	envtools
 
 define Package/uboot-envtools/conffiles
 /etc/config/ubootenv

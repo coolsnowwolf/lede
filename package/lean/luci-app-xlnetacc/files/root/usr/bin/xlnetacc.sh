@@ -413,7 +413,7 @@ isp_upgrade() {
 			local bandwidth
 			json_select "bandwidth" >/dev/null 2>&1
 			json_get_var bandwidth "downstream"
-			bandwidth=$(expr ${bandwidth:-0} / 1024)
+			[ ${bandwidth:=0} -ge 1024 ] && bandwidth=$(( $bandwidth / 1024 ))
 			local outmsg="${link_cn}提速成功，带宽已提升到 ${bandwidth}M"; _log "$outmsg" $(( 1 | $1 * 8 ))
 			[ $1 -eq 1 ] && down_acc=2 || up_acc=2
 			;;

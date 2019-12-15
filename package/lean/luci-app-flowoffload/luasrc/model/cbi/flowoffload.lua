@@ -1,25 +1,39 @@
 local m,s,o
 local SYS  = require "luci.sys"
 
-
-if SYS.call("iptables --list | grep FLOWOFFLOAD >/dev/null") == 0 then
-	Status = translate("<strong><font color=\"green\">Linux Flow offload Forwarding Engine is Running</font></strong>")
-else
-	Status = translate("<strong><font color=\"red\">Linux Flow offload Forwarding  Engine is Not Running</font></strong>")
-end
-
 m = Map("flowoffload")
-m.title	= translate("Linux Flow Offload Forwarding Engine Settings")
+m.title	= translate("Turbo ACC Acceleration Settings")
 m.description = translate("Opensource Linux Flow Offload driver (Fast Path or HWNAT)")
+m:append(Template("flow/status"))
 
-s = m:section(TypedSection, "flowoffload", "")
+s = m:section(TypedSection, "flow")
 s.addremove = false
 s.anonymous = true
-s.description = translate(string.format("%s<br /><br />", Status))
 
-enable = s:option(Flag, "enabled", translate("Enable"))
-enable.default = 0
-enable.rmempty = false
+flow = s:option(Flag, "flow_offloading", translate("Enable"))
+flow.default = 0
+flow.rmempty = false
+flow.description = translate("Enable software flow offloading for connections. (decrease cpu load / increase routing throughput)")
 
+hw = s:option(Flag, "flow_offloading_hw", translate("HWNAT"))
+hw.default = 0
+hw.rmempty = true
+hw.description = translate("Enable Hardware NAT (depends on hw capability like MTK 762x)")
+hw:depends("flow_offloading", 1)
+
+bbr = s:option(Flag, "bbr", translate("Enable BBR"))
+bbr.default = 0
+bbr.rmempty = false
+bbr.description = translate("Bottleneck Bandwidth and Round-trip propagation time (BBR)")
+
+dns = s:option(Flag, "dns", translate("DNS Acceleration"))
+dns.default = 0
+dns.rmempty = false
+dns.description = translate("Enable DNS Cache Acceleration and anti ISP DNS pollution")
+
+o = s:option(Value, "dns_server", translate("Upsteam DNS Server"))
+o.default = "114.114.114.114,114.114.115.115"
+o.description = translate("Muitiple DNS server can saperate with ','")
+o:depends("dns", 1)
 
 return m

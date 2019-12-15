@@ -99,11 +99,10 @@ struct file_info image_info;
 char *ofname;
 char *progname;
 uint32_t firmware_size;
+uint32_t image_offset;
 uint16_t family_member;
 char *rom_id[12] = { 0 };
-
 char image_type;
-int add_jffs2_eof;
 
 static void usage(int status)
 {
@@ -405,7 +404,7 @@ int fill_sch2(struct sch2_header *header, char *kernel_ptr, char *rootfs_ptr)
 	header->image_crc32 = crc32(0, (uint8_t *) kernel_ptr, kernel_info.file_size);
 	header->start_addr = RAM_ENTRY_ADDR;
 	header->rootfs_addr =
-	    JBOOT_SIZE + STAG_SIZE + SCH2_SIZE + kernel_info.file_size;
+	    image_offset + STAG_SIZE + SCH2_SIZE + kernel_info.file_size;
 	header->rootfs_len = rootfs_info.file_size;
 	header->rootfs_crc32 = crc32(0, (uint8_t *) rootfs_ptr, rootfs_info.file_size);
 	header->header_crc32 = 0;
@@ -448,9 +447,9 @@ int fill_auh(struct auh_header *header, uint32_t length)
 	header->lpvs = AUH_LVPS;
 	header->mbz = 0;
 	header->time_stamp = jboot_timestamp();
-	header->erase_start = JBOOT_SIZE;
+	header->erase_start = image_offset;
 	header->erase_length = firmware_size;
-	header->data_offset = JBOOT_SIZE;
+	header->data_offset = image_offset;
 	header->data_length = length;
 	header->space4 = 0;
 	header->space5 = 0;
@@ -605,11 +604,12 @@ int main(int argc, char *argv[])
 	image_type = SYSUPGRADE;
 	family_member = 0;
 	firmware_size = 0;
+	image_offset = JBOOT_SIZE;
 
 	while (1) {
 		int c;
 
-		c = getopt(argc, argv, "f:F:i:hk:m:o:r:s:");
+		c = getopt(argc, argv, "f:F:i:hk:m:o:O:r:s:");
 		if (c == -1)
 			break;
 
@@ -633,6 +633,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'r':
 			rootfs_info.file_name = optarg;
+			break;
+		case 'O':
+			sscanf(optarg, "0x%x", &image_offset);
 			break;
 		case 'o':
 			ofname = optarg;

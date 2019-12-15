@@ -61,7 +61,7 @@ if [ -n "$SOURCE_DATE_EPOCH" ]; then
 	mtime="--mtime=@${SOURCE_DATE_EPOCH}"
 fi
 
-(cd "$tmpdir"; tar cvf sysupgrade.tar sysupgrade-${board} ${mtime})
+(cd "$tmpdir"; tar --sort=name --owner=0 --group=0 --numeric-owner -cvf sysupgrade.tar sysupgrade-${board} ${mtime})
 err="$?"
 if [ -e "$tmpdir/sysupgrade.tar" ]; then
 	cp "$tmpdir/sysupgrade.tar" "$outfile"

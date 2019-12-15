@@ -19,6 +19,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <inttypes.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
@@ -29,65 +30,106 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <stdbool.h>
 #include "fw.h"
 
 typedef struct fw_layout_data {
-	char		name[PATH_MAX];
 	u_int32_t	kern_start;
 	u_int32_t	kern_entry;
 	u_int32_t	firmware_max_length;
 } fw_layout_t;
 
-fw_layout_t fw_layout_data[] = {
+struct fw_info {
+	char			name[PATH_MAX];
+	struct fw_layout_data	fw_layout;
+	bool			sign;
+};
+
+struct fw_info fw_info[] = {
 	{
-		.name		=	"XS2",
-		.kern_start	=	0xbfc30000,
-		.kern_entry	=	0x80041000,
-		.firmware_max_length=	0x00390000,
+		.name = "XS2",
+		.fw_layout = {
+			.kern_start	=	0xbfc30000,
+			.kern_entry	=	0x80041000,
+			.firmware_max_length=	0x00390000,
+		},
+		.sign = false,
 	},
 	{
-		.name		=	"XS5",
-		.kern_start	=	0xbe030000,
-		.kern_entry	=	0x80041000,
-		.firmware_max_length=	0x00390000,
+		.name = "XS5",
+		.fw_layout = {
+			.kern_start	=	0xbe030000,
+			.kern_entry	=	0x80041000,
+			.firmware_max_length=	0x00390000,
+		},
+		.sign = false,
 	},
 	{
-		.name		=	"RS",
-		.kern_start	=	0xbf030000,
-		.kern_entry	=	0x80060000,
-		.firmware_max_length=	0x00B00000,
+		.name = "RS",
+		.fw_layout = {
+			.kern_start	=	0xbf030000,
+			.kern_entry	=	0x80060000,
+			.firmware_max_length=	0x00B00000,
+		},
+		.sign = false,
 	},
 	{
-		.name		=	"RSPRO",
-		.kern_start	=	0xbf030000,
-		.kern_entry	=	0x80060000,
-		.firmware_max_length=	0x00F00000,
+		.name = "RSPRO",
+		.fw_layout = {
+			.kern_start	=	0xbf030000,
+			.kern_entry	=	0x80060000,
+			.firmware_max_length=	0x00F00000,
+		},
+		.sign = false,
 	},
 	{
-		.name		=	"LS-SR71",
-		.kern_start	=	0xbf030000,
-		.kern_entry	=	0x80060000,
-		.firmware_max_length=	0x00640000,
+		.name = "LS-SR71",
+		.fw_layout = {
+			.kern_start	=	0xbf030000,
+			.kern_entry	=	0x80060000,
+			.firmware_max_length=	0x00640000,
+		},
+		.sign = false,
 	},
 	{
-		.name		=	"XS2-8",
-		.kern_start	=	0xa8030000,
-		.kern_entry	=	0x80041000,
-		.firmware_max_length=	0x006C0000,
+		.name = "XS2-8",
+		.fw_layout = {
+			.kern_start	=	0xa8030000,
+			.kern_entry	=	0x80041000,
+			.firmware_max_length=	0x006C0000,
+		},
+		.sign = false,
+
 	},
 	{
-		.name		=	"XM",
-		.kern_start	=	0x9f050000,
-		.kern_entry	=	0x80002000,
-		.firmware_max_length=	0x00760000,
+		.name = "XM",
+		.fw_layout = {
+			.kern_start	=	0x9f050000,
+			.kern_entry	=	0x80002000,
+			.firmware_max_length=	0x00760000,
+		},
+		.sign = false,
 	},
 	{
-		.name		=	"UBDEV01",
-		.kern_start	=	0x9f050000,
-		.kern_entry	=	0x80002000,
-		.firmware_max_length=	0x006A0000,
+		.name = "UBDEV01",
+		.fw_layout = {
+			.kern_start	=	0x9f050000,
+			.kern_entry	=	0x80002000,
+			.firmware_max_length=	0x006A0000,
+		},
+		.sign = false,
 	},
-	{	.name		=	"",
+	{
+		.name = "WA",
+		.fw_layout = {
+			.kern_start	=	0x9f050000,
+			.kern_entry	=	0x80002000,
+			.firmware_max_length=	0x00F60000,
+		},
+		.sign = true,
+	},
+	{
+		.name = "",
 	},
 };
 
@@ -116,7 +158,19 @@ typedef struct image_info {
 	char outputfile[PATH_MAX];
 	u_int32_t	part_count;
 	part_data_t parts[MAX_SECTIONS];
+	struct fw_info* fwinfo;
 } image_info_t;
+
+static struct fw_info* get_fwinfo(char* board_name) {
+	struct fw_info *fwinfo = fw_info;
+	while(strlen(fwinfo->name)) {
+		if(strcmp(fwinfo->name, board_name) == 0) {
+			return fwinfo;
+		}
+		fwinfo++;
+	}
+	return NULL;
+}
 
 static void write_header(void* mem, const char *magic, const char* version)
 {
@@ -139,6 +193,17 @@ static void write_signature(void* mem, u_int32_t sig_offset)
 
 	memcpy(sign->magic, MAGIC_END, MAGIC_LENGTH);
 	sign->crc = htonl(crc32(0L,(unsigned char *)mem, sig_offset));
+	sign->pad = 0L;
+}
+
+static void write_signature_rsa(void* mem, u_int32_t sig_offset)
+{
+	/* write signature */
+	signature_rsa_t* sign = (signature_rsa_t*)(mem + sig_offset);
+	memset(sign, 0, sizeof(signature_rsa_t));
+
+	memcpy(sign->magic, MAGIC_ENDS, MAGIC_LENGTH);
+//	sign->crc = htonl(crc32(0L,(unsigned char *)mem, sig_offset));
 	sign->pad = 0L;
 }
 
@@ -166,9 +231,10 @@ static int write_part(void* mem, part_data_t* d)
 	memcpy(mem + sizeof(part_t), addr, d->stats.st_size);
 	munmap(addr, d->stats.st_size);
 
-	memset(p->name, 0, sizeof(p->name));
-	strncpy(p->magic, MAGIC_PART, MAGIC_LENGTH);
-	strncpy(p->name, d->partition_name, sizeof(p->name));
+	memset(p->name, 0, PART_NAME_LENGTH);
+	memcpy(p->magic, MAGIC_PART, MAGIC_LENGTH);
+	memcpy(p->name, d->partition_name, PART_NAME_LENGTH);
+
 	p->index = htonl(d->partition_index);
 	p->data_size = htonl(d->stats.st_size);
 	p->part_size = htonl(d->partition_length);
@@ -198,7 +264,8 @@ static void usage(const char* progname)
 
 static void print_image_info(const image_info_t* im)
 {
-	int i = 0;
+	unsigned int i = 0;
+
 	INFO("Firmware version: '%s'\n"
 	     "Output file: '%s'\n"
 	     "Part count: %u\n",
@@ -208,14 +275,12 @@ static void print_image_info(const image_info_t* im)
 	for (i = 0; i < im->part_count; ++i)
 	{
 		const part_data_t* d = &im->parts[i];
-		INFO(" %10s: %8ld bytes (free: %8ld)\n",
+		INFO(" %10s: %8" PRId64 " bytes (free: %8" PRId64 ")\n",
 		     d->partition_name,
 		     d->stats.st_size,
 		     d->partition_length - d->stats.st_size);
 	}
 }
-
-
 
 static u_int32_t filelength(const char* file)
 {
@@ -232,22 +297,15 @@ static u_int32_t filelength(const char* file)
 	return (ret);
 }
 
-static int create_image_layout(const char* kernelfile, const char* rootfsfile, char* board_name, image_info_t* im)
+static int create_image_layout(const char* kernelfile, const char* rootfsfile, image_info_t* im)
 {
+	uint32_t rootfs_len = 0;
 	part_data_t* kernel = &im->parts[0];
 	part_data_t* rootfs = &im->parts[1];
 
-	fw_layout_t* p;
+	fw_layout_t* p = &im->fwinfo->fw_layout;
 
-	p = &fw_layout_data[0];
-	while (*p->name && (strcmp(p->name, board_name) != 0))
-		p++;
-	if (!*p->name) {
-		printf("BUG! Unable to find default fw layout!\n");
-		exit(-1);
-	}
-
-	printf("board = %s\n", p->name);
+	printf("board = %s\n", im->fwinfo->name);
 	strcpy(kernel->partition_name, "kernel");
 	kernel->partition_index = 1;
 	kernel->partition_baseaddr = p->kern_start;
@@ -256,8 +314,13 @@ static int create_image_layout(const char* kernelfile, const char* rootfsfile, c
 	kernel->partition_entryaddr = p->kern_entry;
 	strncpy(kernel->filename, kernelfile, sizeof(kernel->filename));
 
-	if (filelength(rootfsfile) + kernel->partition_length > p->firmware_max_length)
+	rootfs_len = filelength(rootfsfile);
+	if (rootfs_len + kernel->partition_length > p->firmware_max_length) {
+		ERROR("File '%s' too big (0x%08X) - max size: 0x%08X (exceeds %u bytes)\n",
+		       rootfsfile, rootfs_len, p->firmware_max_length,
+		       (rootfs_len + kernel->partition_length) - p->firmware_max_length);
 		return (-2);
+	}
 
 	strcpy(rootfs->partition_name, "rootfs");
 	rootfs->partition_index = 2;
@@ -280,7 +343,7 @@ static int create_image_layout(const char* kernelfile, const char* rootfsfile, c
  */
 static int validate_image_layout(image_info_t* im)
 {
-	int i;
+	unsigned int i;
 
 	if (im->part_count == 0 || im->part_count > MAX_SECTIONS)
 	{
@@ -311,7 +374,7 @@ static int validate_image_layout(image_info_t* im)
 			return -3;
 		}
 		if (d->stats.st_size > d->partition_length) {
-			ERROR("File '%s' too big (%d) - max size: 0x%08X (exceeds %lu bytes)\n",
+			ERROR("File '%s' too big (%d) - max size: 0x%08X (exceeds %" PRId64 " bytes)\n",
 				       	d->filename, i, d->partition_length,
 					d->stats.st_size - d->partition_length);
 			return -4;
@@ -327,10 +390,15 @@ static int build_image(image_info_t* im)
 	char* ptr;
 	u_int32_t mem_size;
 	FILE* f;
-	int i;
+	unsigned int i;
 
 	// build in-memory buffer
-	mem_size = sizeof(header_t) + sizeof(signature_t);
+	mem_size = sizeof(header_t);
+	if(im->fwinfo->sign) {
+		mem_size += sizeof(signature_rsa_t);
+	} else {
+		mem_size += sizeof(signature_t);
+	}
 	for (i = 0; i < im->part_count; ++i)
 	{
 		part_data_t* d = &im->parts[i];
@@ -359,7 +427,11 @@ static int build_image(image_info_t* im)
 		ptr += sizeof(part_t) + d->stats.st_size + sizeof(part_crc_t);
 	}
 	// write signature
-	write_signature(mem, mem_size - sizeof(signature_t));
+	if(im->fwinfo->sign) {
+		write_signature_rsa(mem, mem_size - sizeof(signature_rsa_t));
+	} else {
+		write_signature(mem, mem_size - sizeof(signature_t));
+	}
 
 	// write in-memory buffer into file
 	if ((f = fopen(im->outputfile, "w")) == NULL)
@@ -388,6 +460,7 @@ int main(int argc, char* argv[])
 	char board_name[PATH_MAX];
 	int o, rc;
 	image_info_t im;
+	struct fw_info *fwinfo;
 
 	memset(&im, 0, sizeof(im));
 	memset(kernelfile, 0, sizeof(kernelfile));
@@ -403,30 +476,30 @@ int main(int argc, char* argv[])
 		switch (o) {
 		case 'v':
 			if (optarg)
-				strncpy(im.version, optarg, sizeof(im.version));
+				strncpy(im.version, optarg, sizeof(im.version) - 1);
 			break;
 		case 'o':
 			if (optarg)
-				strncpy(im.outputfile, optarg, sizeof(im.outputfile));
+				strncpy(im.outputfile, optarg, sizeof(im.outputfile) - 1);
 			break;
 		case 'm':
 			if (optarg)
-				strncpy(im.magic, optarg, sizeof(im.magic));
+				strncpy(im.magic, optarg, sizeof(im.magic) - 1);
 			break;
 		case 'h':
 			usage(argv[0]);
 			return -1;
 		case 'k':
 			if (optarg)
-				strncpy(kernelfile, optarg, sizeof(kernelfile));
+				strncpy(kernelfile, optarg, sizeof(kernelfile) - 1);
 			break;
 		case 'r':
 			if (optarg)
-				strncpy(rootfsfile, optarg, sizeof(rootfsfile));
+				strncpy(rootfsfile, optarg, sizeof(rootfsfile) - 1);
 			break;
 		case 'B':
 			if (optarg)
-				strncpy(board_name, optarg, sizeof(board_name));
+				strncpy(board_name, optarg, sizeof(board_name) - 1);
 			break;
 		}
 	}
@@ -447,7 +520,15 @@ int main(int argc, char* argv[])
 		return -2;
 	}
 
-	if ((rc = create_image_layout(kernelfile, rootfsfile, board_name, &im)) != 0)
+	if ((fwinfo = get_fwinfo(board_name)) == NULL) {
+		ERROR("Invalid baord name '%s'\n", board_name);
+		usage(argv[0]);
+		return -2;
+	}
+
+	im.fwinfo = fwinfo;
+
+	if ((rc = create_image_layout(kernelfile, rootfsfile, &im)) != 0)
 	{
 		ERROR("Failed creating firmware layout description - error code: %d\n", rc);
 		return -3;

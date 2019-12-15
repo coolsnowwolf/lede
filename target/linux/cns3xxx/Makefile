@@ -25,6 +25,6 @@ include $(INCLUDE_DIR)/target.mk
 
 KERNELNAME:=zImage
 
-DEFAULT_PACKAGES += kmod-ath9k kmod-usb2 wpad-mini
+DEFAULT_PACKAGES += kmod-ath9k kmod-usb2 wpad-basic
 
 $(eval $(call BuildTarget))

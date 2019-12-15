@@ -21,6 +21,11 @@ include $(INCLUDE_DIR)/host-build.mk
 
 HOST_CONFIGURE_ARGS += --disable-shared
 
+define Host/Install
+	$(call Host/Install/Default)
+	$(LN) flex $(STAGING_DIR_HOST)/bin/lex
+endef
+
 define Host/Clean
 	-$(MAKE) -C $(HOST_BUILD_DIR) uninstall
 	$(call Host/Clean/Default)

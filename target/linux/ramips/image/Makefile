@@ -7,23 +7,11 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
-define imgname
-$(BIN_DIR)/$(IMG_PREFIX)-$(2)-$(1)
-endef
-
-define sysupname
-$(call imgname,$(1),$(2))-sysupgrade.bin
-endef
-
-VMLINUX:=$(IMG_PREFIX)-vmlinux
-UIMAGE:=$(IMG_PREFIX)-uImage
-
-define Image/Build/Initramfs
-	$(call Image/Build/Profile/$(PROFILE),initramfs)
-endef
-
-DEVICE_VARS += DTS IMAGE_SIZE NETGEAR_BOARD_ID NETGEAR_HW_ID
+DEVICE_VARS += IMAGE_SIZE NETGEAR_BOARD_ID NETGEAR_HW_ID
 DEVICE_VARS += BUFFALO_TAG_PLATFORM BUFFALO_TAG_VERSION BUFFALO_TAG_MINOR
+DEVICE_VARS += SEAMA_SIGNATURE SEAMA_MTDBLOCK
+DEVICE_VARS += SERCOMM_HWID SERCOMM_HWVER SERCOMM_SWVER
+DEVICE_VARS += JCG_MAXSIZE
 
 loadaddr-y := 0x80000000
 loadaddr-$(CONFIG_TARGET_ramips_rt288x) := 0x88000000
@@ -31,28 +19,45 @@ loadaddr-$(CONFIG_TARGET_ramips_mt7621) := 0x80001000
 
 KERNEL_LOADADDR := $(loadaddr-y)
 
-KERNEL_DTB = kernel-bin | patch-dtb | lzma
+KERNEL_DTB = kernel-bin | append-dtb | lzma
 define Device/Default
-  PROFILES = Default $$(DTS)
-  KERNEL_DEPENDS = $$(wildcard ../dts/$$(DTS).dts)
+  PROFILES = Default
   KERNEL := $(KERNEL_DTB) | uImage lzma
+  MTK_SOC :=
   DEVICE_DTS_DIR := ../dts
+  DEVICE_DTS = $$(MTK_SOC)_$(1)
   IMAGES := sysupgrade.bin
-  IMAGE_SIZE := $(ralink_default_fw_size_8M)
   SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
   sysupgrade_bin := append-kernel | append-rootfs | pad-rootfs
   IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
 endef
 
-define Build/patch-dtb
-	$(call Image/BuildDTB,../dts/$(DTS).dts,$@.dtb)
-	$(STAGING_DIR_HOST)/bin/patch-dtb $@ $@.dtb
+define Device/seama
+  SEAMA_MTDBLOCK := 2
+  IMAGES += factory.bin
+
+  # 64 bytes offset:
+  # - 28 bytes seama_header
+  # - 36 bytes of META data (4-bytes aligned)
+  IMAGE/default := append-kernel | pad-offset $$$$(BLOCKSIZE) 64 | append-rootfs
+  IMAGE/sysupgrade.bin := \
+	$$(IMAGE/default) | seama | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+  IMAGE/factory.bin := \
+	$$(IMAGE/default) | pad-rootfs -x 64 | seama | seama-seal | check-size $$$$(IMAGE_SIZE)
+  SEAMA_SIGNATURE :=
+endef
+
+define Build/jcg-header
+	$(STAGING_DIR_HOST)/bin/jcgimage -v $(1) \
+		$(if $(JCG_MAXSIZE), -m $$(($(subst k, * 1024,$(JCG_MAXSIZE)))),) \
+		-u $@ -o $@.new
+	mv $@.new $@
 endef
 
 define Build/trx
 	$(STAGING_DIR_HOST)/bin/trx $(1) \
 		-o $@ \
-		-m $(IMAGE_SIZE) \
+		-m $$(($(subst k, * 1024,$(IMAGE_SIZE)))) \
 		-f $(IMAGE_KERNEL) \
 		-a 4 -f $(IMAGE_ROOTFS)
 endef
@@ -74,24 +79,36 @@ define Build/loader-kernel
 endef
 
 define Build/relocate-kernel
+	rm -rf $@.relocate
+	$(CP) ../../generic/image/relocate $@.relocate
+	$(MAKE) -C $@.relocate KERNEL_ADDR=$(KERNEL_LOADADDR) CROSS_COMPILE=$(TARGET_CROSS)
 	( \
-		dd if=$(KDIR)/loader.bin bs=32 conv=sync && \
+		dd if=$@.relocate/loader.bin bs=32 conv=sync && \
 		perl -e '@s = stat("$@"); print pack("V", @s[7])' && \
 		cat $@ \
 	) > $@.new
 	mv $@.new $@
+	rm -rf $@.relocate
 endef
 
-define MkCombineduImage
-	$(call PatchKernelLzma,$(2),$(3))
-	if [ `stat -c%s "$(KDIR)/vmlinux-$(2).bin.lzma"` -gt `expr $(4) - 64` ]; then \
-		echo "Warning: $(KDIR)/vmlinux-$(2).bin.lzma is too big" >&2; \
-	else if [ `stat -c%s "$(KDIR)/root.$(1)"` -gt $(5) ]; then \
-		echo "Warning: $(KDIR)/root.$(1) is too big" >&2; \
-	else \
-		( dd if=$(KDIR)/vmlinux-$(2).bin.lzma bs=`expr $(4) - 64` conv=sync ; dd if=$(KDIR)/root.$(1) ) > $(KDIR)/vmlinux-$(2).bin.lzma.combined ; \
-	fi ; fi
-	$(call MkImage,lzma,$(KDIR)/vmlinux-$(2).bin.lzma.combined,$(call sysupname,$(1),$(2)),$(6))
+define Build/elx-header
+	$(eval hw_id=$(word 1,$(1)))
+	$(eval xor_pattern=$(word 2,$(1)))
+	( \
+		echo -ne "\x00\x00\x00\x00\x00\x00\x00\x03" | \
+			dd bs=42 count=1 conv=sync; \
+		hw_id="$(hw_id)"; \
+		echo -ne "\x$${hw_id:0:2}\x$${hw_id:2:2}\x$${hw_id:4:2}\x$${hw_id:6:2}" | \
+			dd bs=20 count=1 conv=sync; \
+		echo -ne "$$(printf '%08x' $$(stat -c%s $@) | fold -s2 | xargs -I {} echo \\x{} | tr -d '\n')" | \
+			dd bs=8 count=1 conv=sync; \
+		echo -ne "$$($(STAGING_DIR_HOST)/bin/mkhash md5 $@ | fold -s2 | xargs -I {} echo \\x{} | tr -d '\n')" | \
+			dd bs=58 count=1 conv=sync; \
+	) > $(KDIR)/tmp/$(DEVICE_NAME).header
+	$(call Build/xor-image,-p $(xor_pattern) -x)
+	cat $(KDIR)/tmp/$(DEVICE_NAME).header $@ > $@.new
+	mv $@.new $@
+	rm -rf $(KDIR)/tmp/$(DEVICE_NAME).header
 endef
 
 define Build/umedia-header
@@ -108,15 +125,6 @@ define Build/poray-header
 	mv $@.new $@
 endef
 
-define Build/seama
-	$(STAGING_DIR_HOST)/bin/seama -i $@ $(1)
-	mv $@.seama $@
-endef
-
-define Build/seama-seal
-	$(call Build/seama,-s $@.seama $(1))
-endef
-
 define Build/wrg-header
 	mkwrgimg -i $@ -d "/dev/mtdblock/2" -s $(1) -o $@.new
 	mv $@.new $@
@@ -130,6 +138,7 @@ define Build/mkdlinkfw
 		-k $(IMAGE_KERNEL) \
 		-r $(IMAGE_ROOTFS) \
 		-o $@ \
+		$(if $(DLINK_IMAGE_OFFSET), -O $(DLINK_IMAGE_OFFSET)) \
 		-s $(DLINK_FIRMWARE_SIZE)
 endef
 
@@ -138,6 +147,7 @@ define Build/mkdlinkfw-factory
 		-m $(DLINK_ROM_ID) -f $(DLINK_FAMILY_MEMBER) \
 		-F $@ \
 		-o $@.new \
+		$(if $(DLINK_IMAGE_OFFSET), -O $(DLINK_IMAGE_OFFSET)) \
 		-s $(DLINK_FIRMWARE_SIZE)
 	mv $@.new $@
 endef
@@ -146,85 +156,23 @@ define Build/zyimage
 	$(STAGING_DIR_HOST)/bin/zyimage $(1) $@
 endef
 
-#
-# The real magic happens inside these templates
-#
-# $(1), compression method
-# $(2), filename of image data
-# $(3), output filename
-define MkImage
-	$(eval imagename=$(if $(4),$(4),MIPS $(VERSION_DIST) Linux-$(LINUX_VERSION)))
-	-mkimage -A mips -O linux -T kernel -C $(1) -a $(loadaddr-y) -e $(loadaddr-y) \
-		-n "$(imagename)" \
-		-d $(2) $(3)
+define Build/sercom-seal
+	$(STAGING_DIR_HOST)/bin/mksercommfw \
+		-i $@ \
+		-b $(SERCOMM_HWID) \
+		-r $(SERCOMM_HWVER) \
+		-v $(SERCOMM_SWVER) \
+		$(1)
 endef
 
-define CompressLzma
-	$(STAGING_DIR_HOST)/bin/lzma e $(1) -lc1 -lp2 -pb2 $(2)
+define Build/sercom-footer
+	$(call Build/sercom-seal,-f)
 endef
 
-define MkImageSysupgrade/squashfs
-	$(eval output_name=$(IMG_PREFIX)-$(2)-$(1)-$(if $(4),$(4),sysupgrade).bin)
-	cat $(KDIR)/vmlinux-$(2).uImage $(KDIR)/root.$(1) > $(KDIR)/$(output_name)
-	$(call prepare_generic_squashfs,$(KDIR)/$(output_name))
-	if [ `stat -c%s "$(KDIR)/$(output_name)"` -gt $(3) ]; then \
-		echo "Warning: $(KDIR)/$(output_name) is too big" >&2; \
-	else \
-		$(CP) $(KDIR)/$(output_name) $(BIN_DIR)/$(output_name); \
-	fi
+define Build/fonfxcimage
+	uimage_padhdr -i $@ -o $@.new
+	mv $@.new $@
 endef
-
-# $(1), lowercase board name like "mt7620a_v22sg"
-# $(2), DTS filename without .dts extension
-# $(3), optional filename suffix, e.g. "-initramfs"
-define PatchKernelLzmaDtb
-	cp $(KDIR)/vmlinux$(3) $(KDIR)/vmlinux-$(1)$(3)
-	$(call Image/BuildDTB,../dts/$(2).dts,$(KDIR)/$(2).dtb)
-	$(STAGING_DIR_HOST)/bin/patch-dtb $(KDIR)/vmlinux-$(1)$(3) $(KDIR)/$(2).dtb
-	$(call CompressLzma,$(KDIR)/vmlinux-$(1)$(3),$(KDIR)/vmlinux-$(1)$(3).bin.lzma)
-endef
-
-# $(1), lowercase board name
-# $(2), DTS filename without .dts extension
-# $(3), ih_name field of uImage header
-# $(4), optional filename suffix, e.g. "-initramfs"
-define MkImageLzmaDtb
-	$(call PatchKernelLzmaDtb,$(1),$(2),$(4))
-	$(call MkImage,lzma,$(KDIR)/vmlinux-$(1)$(4).bin.lzma,$(KDIR)/vmlinux-$(1)$(4).uImage,$(3))
-endef
-
-# $(1), Rootfs type, e.g. squashfs
-# $(2), lowercase board name
-# $(3), DTS filename without .dts extension
-# $(4), maximum size of sysupgrade image
-# $(5), uImage header's ih_name field
-define BuildFirmware/OF
-	$(call MkImageLzmaDtb,$(2),$(3),$(5))
-	$(call MkImageSysupgrade/$(1),$(1),$(2),$(4),$(6))
-endef
-
-# $(1), squashfs/initramfs
-# $(2), lowercase board name
-# $(3), DTS filename without .dts extension
-# $(4), ih_name field of uImage header
-define BuildFirmware/OF/initramfs
-	$(call MkImageLzmaDtb,$(2),$(3),$(4),-initramfs)
-	$(CP) $(KDIR)/vmlinux-$(2)-initramfs.uImage $(call imgname,$(1),$(2))-uImage.bin
-endef
-
-# Build images for default ralink layout for 4MB flash
-# kernel + roots = 0x3b0000
-# $(1) = squashfs/initramfs
-# $(2) = lowercase board name
-# $(3) = dts file
-ralink_default_fw_size_4M=3866624
-BuildFirmware/Default4M/squashfs=$(call BuildFirmware/OF,$(1),$(2),$(3),$(ralink_default_fw_size_4M),$(4))
-BuildFirmware/Default4M/initramfs=$(call BuildFirmware/OF/initramfs,$(1),$(2),$(3),$(4))
-
-ralink_default_fw_size_8M=8060928
-ralink_default_fw_size_16M=16121856
-ralink_default_fw_size_32M=33226752
-
 
 ifeq ($(SUBTARGET),rt288x)
 include rt288x.mk
@@ -232,7 +180,6 @@ endif
 
 ifeq ($(SUBTARGET),rt305x)
 include rt305x.mk
-include rt305x-legacy.mk
 endif
 
 ifeq ($(SUBTARGET),rt3883)
@@ -249,39 +196,6 @@ endif
 
 ifeq ($(SUBTARGET),mt76x8)
 include mt76x8.mk
-endif
-
-ifdef LEGACY_DEVICES
-#
-# Generic Targets - only needed for legacy image building code
-#
-define Image/BuildKernel
-	cp $(KDIR)/vmlinux.elf $(BIN_DIR)/$(VMLINUX).elf
-	cp $(KDIR)/vmlinux $(BIN_DIR)/$(VMLINUX).bin
-	$(call CompressLzma,$(KDIR)/vmlinux,$(KDIR)/vmlinux.bin.lzma)
-	$(call MkImage,lzma,$(KDIR)/vmlinux.bin.lzma,$(KDIR)/uImage.lzma)
-	cp $(KDIR)/uImage.lzma $(BIN_DIR)/$(UIMAGE).bin
-endef
-
-define Image/BuildKernel/Initramfs
-	cp $(KDIR)/vmlinux-initramfs.elf $(BIN_DIR)/$(VMLINUX)-initramfs.elf
-	cp $(KDIR)/vmlinux-initramfs $(BIN_DIR)/$(VMLINUX)-initramfs.bin
-	$(call CompressLzma,$(KDIR)/vmlinux-initramfs,$(KDIR)/vmlinux-initramfs.bin.lzma)
-	$(call MkImage,lzma,$(KDIR)/vmlinux-initramfs.bin.lzma,$(KDIR)/uImage-initramfs.lzma)
-	cp $(KDIR)/uImage-initramfs.lzma $(BIN_DIR)/$(UIMAGE)-initramfs.bin
-	$(call Image/Build/Initramfs)
-endef
-
-define Image/Build
-	$(call Image/Build/$(1))
-	dd if=$(KDIR)/root.$(1) of=$(BIN_DIR)/$(IMG_PREFIX)-root.$(1) bs=128k conv=sync
-endef
-
-define Image/Build/Profile
-	$(if $(CONFIG_TARGET_ROOTFS_INITRAMFS),$(call Image/Build/Profile/$(1),initramfs))
-	$(call Image/Build/Profile/$(1),$(2))
-endef
-
 endif
 
 $(eval $(call BuildImage))

@@ -1,0 +1,90 @@
+From 705bc230789927f96d6c9c70dc5475ebaf08aa54 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.org>
+Date: Thu, 11 Jul 2019 17:55:43 +0100
+Subject: [PATCH 699/806] xhci: add quirk for host controllers that don't
+ update endpoint DCS
+
+Seen on a VLI VL805 PCIe to USB controller. For non-stream endpoints
+at least, if the xHC halts on a particular TRB due to an error then
+the DCS field in the Out Endpoint Context maintained by the hardware
+is not updated with the current cycle state.
+
+Using the quirk XHCI_EP_CTX_BROKEN_DCS and instead fetch the DCS bit
+from the TRB that the xHC stopped on.
+
+See: https://github.com/raspberrypi/linux/issues/3060
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.org>
+---
+ drivers/usb/host/xhci-pci.c  |  4 +++-
+ drivers/usb/host/xhci-ring.c | 26 +++++++++++++++++++++++++-
+ drivers/usb/host/xhci.h      |  1 +
+ 3 files changed, 29 insertions(+), 2 deletions(-)
+
+--- a/drivers/usb/host/xhci-pci.c
++++ b/drivers/usb/host/xhci-pci.c
+@@ -223,8 +223,10 @@ static void xhci_pci_quirks(struct devic
+ 		xhci->quirks |= XHCI_BROKEN_STREAMS;
+ 
+ 	if (pdev->vendor == PCI_VENDOR_ID_VIA &&
+-			pdev->device == 0x3483)
++			pdev->device == 0x3483) {
+ 		xhci->quirks |= XHCI_LPM_SUPPORT;
++		xhci->quirks |= XHCI_EP_CTX_BROKEN_DCS;
++	}
+ 
+ 	if (pdev->vendor == PCI_VENDOR_ID_ASMEDIA &&
+ 			pdev->device == 0x1042)
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -520,7 +520,10 @@ void xhci_find_new_dequeue_state(struct
+ 	struct xhci_virt_ep *ep = &dev->eps[ep_index];
+ 	struct xhci_ring *ep_ring;
+ 	struct xhci_segment *new_seg;
++	struct xhci_segment *halted_seg = NULL;
+ 	union xhci_trb *new_deq;
++	union xhci_trb *halted_trb;
++	int index = 0;
+ 	dma_addr_t addr;
+ 	u64 hw_dequeue;
+ 	bool cycle_found = false;
+@@ -541,7 +544,28 @@ void xhci_find_new_dequeue_state(struct
+ 	hw_dequeue = xhci_get_hw_deq(xhci, dev, ep_index, stream_id);
+ 	new_seg = ep_ring->deq_seg;
+ 	new_deq = ep_ring->dequeue;
+-	state->new_cycle_state = hw_dequeue & 0x1;
++
++	/*
++	 * Quirk: xHC write-back of the DCS field in the hardware dequeue
++	 * pointer is wrong - use the cycle state of the TRB pointed to by
++	 * the dequeue pointer.
++	 */
++	if (xhci->quirks & XHCI_EP_CTX_BROKEN_DCS &&
++	    !(ep->ep_state & EP_HAS_STREAMS))
++		halted_seg = trb_in_td(xhci, cur_td->start_seg,
++				       cur_td->first_trb, cur_td->last_trb,
++				       hw_dequeue & ~0xf, false);
++	if (halted_seg) {
++		index = ((dma_addr_t)(hw_dequeue & ~0xf) - halted_seg->dma) /
++			 sizeof(*halted_trb);
++		halted_trb = &halted_seg->trbs[index];
++		state->new_cycle_state = halted_trb->generic.field[3] & 0x1;
++		xhci_dbg(xhci, "Endpoint DCS = %d TRB index = %d cycle = %d\n",
++			 (u8)(hw_dequeue & 0x1), index,
++			 state->new_cycle_state);
++	} else {
++		state->new_cycle_state = hw_dequeue & 0x1;
++	}
+ 	state->stream_id = stream_id;
+ 
+ 	/*
+--- a/drivers/usb/host/xhci.h
++++ b/drivers/usb/host/xhci.h
+@@ -1865,6 +1865,7 @@ struct xhci_hcd {
+ #define XHCI_ZERO_64B_REGS	BIT_ULL(32)
+ #define XHCI_RESET_PLL_ON_DISCONNECT	BIT_ULL(34)
+ #define XHCI_SNPS_BROKEN_SUSPEND    BIT_ULL(35)
++#define XHCI_EP_CTX_BROKEN_DCS	BIT_ULL(36)
+ 
+ 	unsigned int		num_active_eps;
+ 	unsigned int		limit_active_eps;

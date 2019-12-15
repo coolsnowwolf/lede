@@ -69,6 +69,9 @@ static int mt7620_mdio_mode(struct device_node *eth_node)
 	mdiobus_node = of_get_child_by_name(eth_node, "mdio-bus");
 
 	if (mdiobus_node) {
+		if (of_property_read_bool(mdiobus_node, "mediatek,mdio-mode"))
+			ret = 1;
+
 		for_each_child_of_node(mdiobus_node, phy_node) {
 			id = of_get_property(phy_node, "reg", NULL);
 			if (id && (be32_to_cpu(*id) == 0x1f))
@@ -113,73 +116,82 @@ static void mt7620_hw_init(struct mt7620_gsw *gsw, int mdio_mode)
 
 		mt7530_mdio_w32(gsw, 0x7a78, 0x855);
 	} else {
+
+		if (gsw->ephy_base) {
+			/* set phy base addr to ephy_base */
+			mtk_switch_w32(gsw, mtk_switch_r32(gsw, GSW_REG_GPC1) |
+				(gsw->ephy_base << 16),
+				GSW_REG_GPC1);
+			fe_reset(BIT(24)); /* Resets the Ethernet PHY block. */
+		}
+
 		/* global page 4 */
-		_mt7620_mii_write(gsw, 1, 31, 0x4000);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 31, 0x4000);
 
-		_mt7620_mii_write(gsw, 1, 17, 0x7444);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 17, 0x7444);
 		if (is_BGA)
-			_mt7620_mii_write(gsw, 1, 19, 0x0114);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 19, 0x0114);
 		else
-			_mt7620_mii_write(gsw, 1, 19, 0x0117);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 19, 0x0117);
 
-		_mt7620_mii_write(gsw, 1, 22, 0x10cf);
-		_mt7620_mii_write(gsw, 1, 25, 0x6212);
-		_mt7620_mii_write(gsw, 1, 26, 0x0777);
-		_mt7620_mii_write(gsw, 1, 29, 0x4000);
-		_mt7620_mii_write(gsw, 1, 28, 0xc077);
-		_mt7620_mii_write(gsw, 1, 24, 0x0000);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 22, 0x10cf);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 25, 0x6212);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 26, 0x0777);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 29, 0x4000);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 28, 0xc077);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 24, 0x0000);
 
 		/* global page 3 */
-		_mt7620_mii_write(gsw, 1, 31, 0x3000);
-		_mt7620_mii_write(gsw, 1, 17, 0x4838);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 31, 0x3000);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 17, 0x4838);
 
 		/* global page 2 */
-		_mt7620_mii_write(gsw, 1, 31, 0x2000);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 31, 0x2000);
 		if (is_BGA) {
-			_mt7620_mii_write(gsw, 1, 21, 0x0515);
-			_mt7620_mii_write(gsw, 1, 22, 0x0053);
-			_mt7620_mii_write(gsw, 1, 23, 0x00bf);
-			_mt7620_mii_write(gsw, 1, 24, 0x0aaf);
-			_mt7620_mii_write(gsw, 1, 25, 0x0fad);
-			_mt7620_mii_write(gsw, 1, 26, 0x0fc1);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 21, 0x0515);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 22, 0x0053);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 23, 0x00bf);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 24, 0x0aaf);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 25, 0x0fad);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 26, 0x0fc1);
 		} else {
-			_mt7620_mii_write(gsw, 1, 21, 0x0517);
-			_mt7620_mii_write(gsw, 1, 22, 0x0fd2);
-			_mt7620_mii_write(gsw, 1, 23, 0x00bf);
-			_mt7620_mii_write(gsw, 1, 24, 0x0aab);
-			_mt7620_mii_write(gsw, 1, 25, 0x00ae);
-			_mt7620_mii_write(gsw, 1, 26, 0x0fff);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 21, 0x0517);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 22, 0x0fd2);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 23, 0x00bf);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 24, 0x0aab);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 25, 0x00ae);
+			_mt7620_mii_write(gsw, gsw->ephy_base + 1, 26, 0x0fff);
 		}
 		/* global page 1 */
-		_mt7620_mii_write(gsw, 1, 31, 0x1000);
-		_mt7620_mii_write(gsw, 1, 17, 0xe7f8);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 31, 0x1000);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 1, 17, 0xe7f8);
 
 		/* turn on all PHYs */
 		for (i = 0; i <= 4; i++) {
-			val = _mt7620_mii_read(gsw, i, 0);
+			val = _mt7620_mii_read(gsw, gsw->ephy_base + i, 0);
 			val &= ~BIT(11);
-			_mt7620_mii_write(gsw, i, 0, val);
+			_mt7620_mii_write(gsw, gsw->ephy_base + i, 0, val);
 		}
 	}
 
 	/* global page 0 */
-	_mt7620_mii_write(gsw, 1, 31, 0x8000);
-	_mt7620_mii_write(gsw, 0, 30, 0xa000);
-	_mt7620_mii_write(gsw, 1, 30, 0xa000);
-	_mt7620_mii_write(gsw, 2, 30, 0xa000);
-	_mt7620_mii_write(gsw, 3, 30, 0xa000);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 1, 31, 0x8000);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 0, 30, 0xa000);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 1, 30, 0xa000);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 2, 30, 0xa000);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 3, 30, 0xa000);
 
-	_mt7620_mii_write(gsw, 0, 4, 0x05e1);
-	_mt7620_mii_write(gsw, 1, 4, 0x05e1);
-	_mt7620_mii_write(gsw, 2, 4, 0x05e1);
-	_mt7620_mii_write(gsw, 3, 4, 0x05e1);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 0, 4, 0x05e1);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 1, 4, 0x05e1);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 2, 4, 0x05e1);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 3, 4, 0x05e1);
 
 	/* global page 2 */
-	_mt7620_mii_write(gsw, 1, 31, 0xa000);
-	_mt7620_mii_write(gsw, 0, 16, 0x1111);
-	_mt7620_mii_write(gsw, 1, 16, 0x1010);
-	_mt7620_mii_write(gsw, 2, 16, 0x1515);
-	_mt7620_mii_write(gsw, 3, 16, 0x0f0f);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 1, 31, 0xa000);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 0, 16, 0x1111);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 1, 16, 0x1010);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 2, 16, 0x1515);
+	_mt7620_mii_write(gsw, gsw->ephy_base + 3, 16, 0x0f0f);
 
 	/* CPU Port6 Force Link 1G, FC ON */
 	mtk_switch_w32(gsw, 0x5e33b, GSW_REG_PORT_PMCR(6));
@@ -193,9 +205,9 @@ static void mt7620_hw_init(struct mt7620_gsw *gsw, int mdio_mode)
 
 		val |= 3 << 14;
 		rt_sysc_w32(val, SYSC_REG_CFG1);
-		_mt7620_mii_write(gsw, 4, 30, 0xa000);
-		_mt7620_mii_write(gsw, 4, 4, 0x05e1);
-		_mt7620_mii_write(gsw, 4, 16, 0x1313);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 4, 30, 0xa000);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 4, 4, 0x05e1);
+		_mt7620_mii_write(gsw, gsw->ephy_base + 4, 16, 0x1313);
 		pr_info("gsw: setting port4 to ephy mode\n");
 	} else if (!mdio_mode) {
 		u32 val = rt_sysc_r32(SYSC_REG_CFG1);
@@ -244,6 +256,7 @@ static int mt7620_gsw_probe(struct platform_device *pdev)
 	const char *port4 = NULL;
 	struct mt7620_gsw *gsw;
 	struct device_node *np = pdev->dev.of_node;
+	u16 val;
 
 	gsw = devm_kzalloc(&pdev->dev, sizeof(struct mt7620_gsw), GFP_KERNEL);
 	if (!gsw)
@@ -262,6 +275,11 @@ static int mt7620_gsw_probe(struct platform_device *pdev)
 		gsw->port4 = PORT4_EXT;
 	else
 		gsw->port4 = PORT4_EPHY;
+
+	if (of_property_read_u16(np, "mediatek,ephy-base-address", &val) == 0)
+		gsw->ephy_base = val;
+	else
+		gsw->ephy_base = 0;
 
 	gsw->irq = platform_get_irq(pdev, 0);
 

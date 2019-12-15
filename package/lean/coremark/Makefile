@@ -15,12 +15,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=coremark
-PKG_RELEASE:=1
+PKG_RELEASE:=13
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/eembc/coremark.git
-PKG_SOURCE_VERSION:=509d8ef94ca17e527fd085c53f2a14a165a3650a
-PKG_SOURCE_DATE:=2018-05-31
+PKG_SOURCE_VERSION:=21d473aae1f11d52ea592a8685734be2209aa66f
+PKG_SOURCE_DATE:=2019-09-30
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -35,17 +35,37 @@ define Package/coremark/description
   Embedded Microprocessor Benchmark
 endef
 
+DIR_ARCH:=linux
+
+ifeq ($(ARCH),x86_64)
+	DIR_ARCH:=linux64
+endif
+ifeq ($(ARCH),aarch64)
+	DIR_ARCH:=linux64
+endif
+
 define Build/Compile
-	$(SED) 's|EXE = .exe|EXE =|' $(PKG_BUILD_DIR)/linux/core_portme.mak
+	$(SED) 's|EXE = .exe|EXE =|' $(PKG_BUILD_DIR)/$(DIR_ARCH)/core_portme.mak
 	mkdir $(PKG_BUILD_DIR)/$(ARCH)
-	cp -r $(PKG_BUILD_DIR)/linux/* $(PKG_BUILD_DIR)/$(ARCH)
-	$(MAKE) -C $(PKG_BUILD_DIR) PORT_DIR=$(ARCH) $(MAKE_FLAGS) \
+	cp -r $(PKG_BUILD_DIR)/$(DIR_ARCH)/* $(PKG_BUILD_DIR)/$(ARCH)
+	$(MAKE) XCFLAGS="-DMULTITHREAD=16 -DUSE_PTHREAD" -C $(PKG_BUILD_DIR) PORT_DIR=$(ARCH) $(MAKE_FLAGS) \
 		compile 
 endef
 
 define Package/coremark/install
 	$(INSTALL_DIR) $(1)/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/coremark $(1)/bin/
+	$(INSTALL_DIR) $(1)/etc
+	$(INSTALL_BIN) ./coremark.sh $(1)/etc/
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./coremark $(1)/etc/uci-defaults/xxx-coremark
+endef
+
+define Package/coremark/postinst
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || sed -i '/coremark/d' /etc/crontabs/root
+[ -n "$${IPKG_INSTROOT}" ] || echo "0 4 * * * /etc/coremark.sh" >> /etc/crontabs/root
+[ -n "$${IPKG_INSTROOT}" ] || crontab /etc/crontabs/root
 endef
 
 $(eval $(call BuildPackage,coremark))
