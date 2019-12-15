@@ -361,6 +361,29 @@ define Device/iodata_wnpr2600g
 endef
 TARGET_DEVICES += iodata_wnpr2600g
 
+define Device/iptime_a6ns-m
+  MTK_SOC := mt7621
+  IMAGE_SIZE := 16128k
+  UIMAGE_NAME := a6nm
+  DEVICE_VENDOR := ipTIME
+  DEVICE_MODEL := A6ns-M
+  DEVICE_PACKAGES := kmod-mt7615e kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
+endef
+TARGET_DEVICES += iptime_a6ns-m
+
+define Device/jcg_jhr-ac876m
+  MTK_SOC := mt7621
+  IMAGE_SIZE := 16064k
+  IMAGES += factory.bin
+  IMAGE/factory.bin := \
+        $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | jcg-header 89.1
+  JCG_MAXSIZE := 16064k
+  DEVICE_VENDOR := JCG
+  DEVICE_MODEL := JHR-AC876M
+  DEVICE_PACKAGES := kmod-mt7615e kmod-usb3 kmod-usb-ledtrig-usbport wpad-basic
+endef
+TARGET_DEVICES += jcg_jhr-ac876m
+
 define Device/lenovo_newifi-d1
   MTK_SOC := mt7621
   IMAGE_SIZE := 32448k
