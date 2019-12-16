@@ -2205,16 +2205,12 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	struct msdc_host *host;
 	struct msdc_hw *hw;
 	int ret;
-	u32 reg;
 
 	//FIXME: this should be done by pinconf and not by the sd driver
-	if (ralink_soc == MT762X_SOC_MT7688 ||
-	    ralink_soc == MT762X_SOC_MT7628AN) {
-		/* set EPHY pads to digital mode */
-		reg = sdr_read32((void __iomem *)(RALINK_SYSCTL_BASE + 0x3c));
-		reg |= 0x1e << 16;
-		sdr_write32((void __iomem *)(RALINK_SYSCTL_BASE + 0x3c), reg);
-	}
+	if ((ralink_soc == MT762X_SOC_MT7688 ||
+	     ralink_soc == MT762X_SOC_MT7628AN) &&
+	    (!(rt_sysc_r32(0x60) & BIT(15))))
+		rt_sysc_m32(0xf << 17, 0xf << 17, 0x3c);
 
 	hw = &msdc0_hw;
 
