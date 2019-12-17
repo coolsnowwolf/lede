@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=npc
 PKG_VERSION:=0.25.1
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 ifeq ($(ARCH),mipsel)
 	NPC_ARCH:=mipsle
@@ -23,7 +23,13 @@ ifeq ($(ARCH),x86_64)
 	NPC_ARCH:=amd64
 endif
 ifeq ($(ARCH),arm)
-	NPC_ARCH:=arm
+	NPC_ARCH:=arm_v7
+	ifeq ($(BOARD),bcm53xx)
+		NPC_ARCH:=arm_v6
+  endif
+	ifeq ($(BOARD),kirkwood)
+		NPC_ARCH:=arm_v5
+  endif
 endif
 ifeq ($(ARCH),aarch64)
 	NPC_ARCH:=arm64
@@ -33,10 +39,12 @@ PKG_LICENSE:=Apache-2.0
 
 PKG_SOURCE_URL:=https://github.com/cnlh/nps/releases/download/v$(PKG_VERSION)
 PKG_SOURCE:=linux_$(NPC_ARCH)_client.tar.gz
-PKG_BUILD_DIR:=$(BUILD_DIR)/nps
+PKG_BUILD_DIR:=$(BUILD_DIR)/nps-$(PKG_VERSION)
 PKG_HASH:=skip
 
 include $(INCLUDE_DIR)/package.mk
+
+PKG_UNPACK:=$(HOST_TAR) -C $(PKG_BUILD_DIR) -xzf $(DL_DIR)/$(PKG_SOURCE)
 
 define Package/$(PKG_NAME)
 	SECTION:=net
