@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=BaiduPCS-Web
-PKG_VERSION:=3.6.8
+PKG_VERSION:=3.7.0
 PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
@@ -41,10 +41,6 @@ endif
 
 ifeq ($(ARCH),arm)
 	PKG_ARCH_BAIDUPCS-WEB:=arm
-endif
-
-ifeq ($(ARCH),arm64)
-	PKG_ARCH_BAIDUPCS-WEB:=arm64
 endif
 
 ifeq ($(ARCH),aarch64)
