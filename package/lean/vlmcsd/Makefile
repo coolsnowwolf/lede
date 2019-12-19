@@ -9,7 +9,7 @@ PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/etnperlong/vlmcsd.git
+PKG_SOURCE_URL:=https://github.com/Wind4/vlmcsd.git
 PKG_SOURCE_VERSION:=88007b3578cab6324241ae6e636d8e6503cd611c
 
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)
