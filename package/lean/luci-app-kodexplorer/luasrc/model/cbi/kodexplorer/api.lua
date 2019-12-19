@@ -14,7 +14,7 @@ local wget = "/usr/bin/wget"
 local wget_args = {
     "--no-check-certificate", "--quiet", "--timeout=10", "--tries=2"
 }
-local curl = "/usr/bin/curl"
+
 local command_timeout = 40
 
 local function _unpack(t, i)
@@ -98,7 +98,7 @@ local function get_api_json(url)
     --	function(chunk) output[#output + 1] = chunk end)
     -- local json_content = util.trim(table.concat(output))
 
-    local json_content = luci.sys.exec(curl .. " -sL " .. url)
+    local json_content = luci.sys.exec("wget-ssl -q --no-check-certificate -O- " .. url)
 
     if json_content == "" then return {} end
 
