@@ -84,7 +84,7 @@ CONFIGURE_ARGS = \
 		-system-pcre \
 		-system-zlib \
 		-no-slog2 \
-		-openssl-runtime \
+		-openssl-linked \
 		-no-cups \
 		-no-freetype \
 		-no-harfbuzz \
