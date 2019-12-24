@@ -55,8 +55,8 @@ npc is a fast reverse proxy to help you expose a local server behind a NAT or fi
 endef
 
 define Build/Prepare
-	[ ! -f $(PKG_BUILD_DIR)/linux_$(NPC_ARCH)_client.tar.gz ] && wget https://github.com/cnlh/nps/releases/download/v$(PKG_VERSION)/linux_$(NPC_ARCH)_client.tar.gz -O $(PKG_BUILD_DIR)/npc-linux_$(NPC_ARCH)_client.tar.gz
-	tar -zxvf $(PKG_BUILD_DIR)/npc-linux_$(NPC_ARCH)_client.tar.gz -C $(PKG_BUILD_DIR)
+	[ ! -f $(PKG_BUILD_DIR)/linux_$(NPC_ARCH)_client.tar.gz ] && wget https://github.com/cnlh/nps/releases/download/v$(PKG_VERSION)/linux_$(NPC_ARCH)_client.tar.gz -O $(PKG_BUILD_DIR)/linux_$(NPC_ARCH)_client.tar.gz
+	tar -zxvf $(PKG_BUILD_DIR)/linux_$(NPC_ARCH)_client.tar.gz -C $(PKG_BUILD_DIR)
 endef
 
 define Build/Configure
