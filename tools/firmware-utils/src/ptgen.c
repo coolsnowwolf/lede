@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <ctype.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -59,6 +60,7 @@ int active = 1;
 int heads = -1;
 int sectors = -1;
 int kb_align = 0;
+bool ignore_null_sized_partition = false;
 struct partinfo parts[4];
 char *filename = NULL;
 
@@ -140,6 +142,8 @@ static int gen_ptable(uint32_t signature, int nr)
 	memset(pte, 0, sizeof(struct pte) * 4);
 	for (i = 0; i < nr; i++) {
 		if (!parts[i].size) {
+			if (ignore_null_sized_partition)
+				continue;
 			fprintf(stderr, "Invalid size in partition %d!\n", i);
 			return -1;
 		}
@@ -196,7 +200,7 @@ fail:
 
 static void usage(char *prog)
 {
-	fprintf(stderr, "Usage: %s [-v] -h <heads> -s <sectors> -o <outputfile> [-a 0..4] [-l <align kB>] [[-t <type>] -p <size>...] \n", prog);
+	fprintf(stderr, "Usage: %s [-v] [-n] -h <heads> -s <sectors> -o <outputfile> [-a 0..4] [-l <align kB>] [[-t <type>] -p <size>...] \n", prog);
 	exit(EXIT_FAILURE);
 }
 
@@ -207,13 +211,16 @@ int main (int argc, char **argv)
 	int part = 0;
 	uint32_t signature = 0x5452574F; /* 'OWRT' */
 
-	while ((ch = getopt(argc, argv, "h:s:p:a:t:o:vl:S:")) != -1) {
+	while ((ch = getopt(argc, argv, "h:s:p:a:t:o:vnl:S:")) != -1) {
 		switch (ch) {
 		case 'o':
 			filename = optarg;
 			break;
 		case 'v':
 			verbose++;
+			break;
+		case 'n':
+			ignore_null_sized_partition = true;
 			break;
 		case 'h':
 			heads = (int)strtoul(optarg, NULL, 0);
