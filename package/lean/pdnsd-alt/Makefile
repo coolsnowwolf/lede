@@ -38,7 +38,8 @@ TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include
 CMAKE_OPTIONS += -DDEBUG=1
 
 CONFIGURE_ARGS += \
-		--with-cachedir=/var/pdnsd
+		--with-cachedir=/var/pdnsd \
+		--with-target=Linux
 
 define Package/pdnsd-alt/install
 	$(INSTALL_DIR) $(1)/usr/sbin
