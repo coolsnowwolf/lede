@@ -7,8 +7,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=npc
-PKG_VERSION:=0.25.1
-PKG_RELEASE:=2
+PKG_VERSION:=0.25.3
+PKG_RELEASE:=1
 
 ifeq ($(ARCH),mipsel)
 	NPC_ARCH:=mipsle
@@ -36,15 +36,9 @@ ifeq ($(ARCH),aarch64)
 endif
 
 PKG_LICENSE:=Apache-2.0
-
-PKG_SOURCE_URL:=https://github.com/cnlh/nps/releases/download/v$(PKG_VERSION)
-PKG_SOURCE:=linux_$(NPC_ARCH)_client.tar.gz
-PKG_BUILD_DIR:=$(BUILD_DIR)/nps-$(PKG_VERSION)
-PKG_HASH:=skip
+PKG_BUILD_DIR:=$(BUILD_DIR)/npc-$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/package.mk
-
-PKG_UNPACK:=$(HOST_TAR) -C $(PKG_BUILD_DIR) -xzf $(DL_DIR)/$(PKG_SOURCE)
 
 define Package/$(PKG_NAME)
 	SECTION:=net
@@ -61,7 +55,8 @@ npc is a fast reverse proxy to help you expose a local server behind a NAT or fi
 endef
 
 define Build/Prepare
-	$(PKG_UNPACK)
+	[ ! -f $(PKG_BUILD_DIR)/linux_$(NPC_ARCH)_client.tar.gz ] && wget https://github.com/cnlh/nps/releases/download/v$(PKG_VERSION)/linux_$(NPC_ARCH)_client.tar.gz -O $(PKG_BUILD_DIR)/linux_$(NPC_ARCH)_client.tar.gz
+	tar -zxvf $(PKG_BUILD_DIR)/linux_$(NPC_ARCH)_client.tar.gz -C $(PKG_BUILD_DIR)
 endef
 
 define Build/Configure

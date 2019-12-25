@@ -47,9 +47,14 @@ define Package/libertas-sdio-firmware/install
 		$(PKG_BUILD_DIR)/libertas/sd8385.bin \
 		$(PKG_BUILD_DIR)/libertas/sd8686_v9_helper.bin \
 		$(PKG_BUILD_DIR)/libertas/sd8686_v9.bin \
-		$(PKG_BUILD_DIR)/libertas/sd8688_helper.bin \
-		$(PKG_BUILD_DIR)/libertas/sd8688.bin \
 		$(1)/lib/firmware/libertas
+	$(INSTALL_DIR) $(1)/lib/firmware/mrvl
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mrvl/sd8688_helper.bin \
+		$(PKG_BUILD_DIR)/mrvl/sd8688.bin \
+		$(1)/lib/firmware/mrvl
+	ln -s ../mrvl/sd8688_helper.bin $(1)/lib/firmware/libertas/sd8688_helper.bin
+	ln -s ../mrvl/sd8688.bin $(1)/lib/firmware/libertas/sd8688.bin
 endef
 $(eval $(call BuildPackage,libertas-sdio-firmware))
 

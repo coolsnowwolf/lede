@@ -37,7 +37,7 @@ $(eval $(call SetupHostCommand,gcc, \
 	gcc7 --version | grep gcc, \
 	gcc8 --version | grep gcc, \
 	gcc9 --version | grep gcc, \
-	gcc --version | grep Apple.LLVM ))
+	gcc --version | grep -E 'Apple.(LLVM|clang)' ))
 
 $(eval $(call TestHostCommand,working-gcc, \
 	\nPlease reinstall the GNU C Compiler (4.8 or later) - \
@@ -56,7 +56,7 @@ $(eval $(call SetupHostCommand,g++, \
 	g++7 --version | grep g++, \
 	g++8 --version | grep g++, \
 	g++9 --version | grep g++, \
-	g++ --version | grep Apple.LLVM ))
+	g++ --version | grep -E 'Apple.(LLVM|clang)' ))
 
 $(eval $(call TestHostCommand,working-g++, \
 	\nPlease reinstall the GNU C++ Compiler (4.8 or later) - \
