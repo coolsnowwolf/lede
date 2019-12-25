@@ -30,7 +30,7 @@ param_get_default = $(firstword $(call param_get,$(1),$(2)) $(3))
 param_mangle = $(subst $(space),_,$(strip $(1)))
 param_unmangle = $(subst _,$(space),$(1))
 
-mkfs_packages_id = $(shell echo $(sort $(1)) | mkhash md5 | head -c 8)
+mkfs_packages_id = $(shell echo $(sort $(1)) | mkhash md5 | cut -b1-8)
 mkfs_target_dir = $(if $(call param_get,pkg,$(1)),$(KDIR)/target-dir-$(call param_get,pkg,$(1)),$(TARGET_DIR))
 
 KDIR=$(KERNEL_BUILD_DIR)
@@ -44,6 +44,7 @@ IMG_PREFIX_VERCODE:=$(if $(CONFIG_VERSION_CODE_FILENAMES),$(call sanitize,$(VERS
 IMG_PREFIX:=$(VERSION_DIST_SANITIZED)-$(IMG_PREFIX_VERNUM)$(IMG_PREFIX_VERCODE)$(IMG_PREFIX_EXTRA)$(BOARD)$(if $(SUBTARGET),-$(SUBTARGET))
 IMG_ROOTFS:=$(IMG_PREFIX)-rootfs
 IMG_COMBINED:=$(IMG_PREFIX)-combined
+IMG_PART_SIGNATURE:=$(shell echo $(SOURCE_DATE_EPOCH)$(LINUX_VERMAGIC) | mkhash md5 | cut -b1-8)
 
 MKFS_DEVTABLE_OPT := -D $(INCLUDE_DIR)/device_table.txt
 
@@ -242,7 +243,7 @@ define Image/mkfs/squashfs
 	$(STAGING_DIR_HOST)/bin/mksquashfs4 $(call mkfs_target_dir,$(1)) $@ \
 		-nopad -noappend -root-owned \
 		-comp $(SQUASHFSCOMP) $(SQUASHFSOPT) \
-		-processors 16
+		-processors 1
 endef
 
 # $(1): board name
@@ -287,7 +288,7 @@ define Image/mkfs/ubifs
 endef
 
 define Image/mkfs/ext4
-	$(STAGING_DIR_HOST)/bin/make_ext4fs \
+	$(STAGING_DIR_HOST)/bin/make_ext4fs -L rootfs \
 		-l $(ROOTFS_PARTSIZE) -b $(CONFIG_TARGET_EXT4_BLOCKSIZE) \
 		$(if $(CONFIG_TARGET_EXT4_RESERVED_PCT),-m $(CONFIG_TARGET_EXT4_RESERVED_PCT)) \
 		$(if $(CONFIG_TARGET_EXT4_JOURNAL),,-J) \
@@ -597,6 +598,7 @@ define Device/Build/image
 		SUPPORTED_DEVICES="$(SUPPORTED_DEVICES)" \
 		$(TOPDIR)/scripts/json_add_image_info.py \
 	)
+
 endef
 
 define Device/Build/artifact

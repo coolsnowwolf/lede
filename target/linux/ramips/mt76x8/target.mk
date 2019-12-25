@@ -4,7 +4,7 @@
 
 SUBTARGET:=mt76x8
 BOARDNAME:=MT76x8 based boards
-FEATURES+=usb
+FEATURES+=usb ramdisk
 CPU_TYPE:=24kc
 
 DEFAULT_PACKAGES += kmod-mt7603 wpad-basic
