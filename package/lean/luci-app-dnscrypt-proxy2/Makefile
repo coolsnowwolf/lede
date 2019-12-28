@@ -8,9 +8,9 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=luci-app-dnscrypt-proxy
+PKG_NAME:=luci-app-dnscrypt-proxy2
 PKG_VERSION:=2.0.1
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_LICENSE:=GPLv3
 PKG_LICENSE_FILES:=LICENSE
@@ -30,7 +30,7 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_minisign
 
 endef
 
-define Package/luci-app-dnscrypt-proxy
+define Package/$(PKG_NAME)
  	SECTION:=luci
 	CATEGORY:=LuCI
 	SUBMENU:=3. Applications
@@ -40,7 +40,7 @@ define Package/luci-app-dnscrypt-proxy
 	DEPENDS:=+PACKAGE_$(PKG_NAME)_INCLUDE_minisign:minisign
 endef
 
-define Package/luci-app-dnscrypt-proxy/description
+define Package/$(PKG_NAME)/description
 	LuCI Support for dnscrypt-proxy2.
 endef
 
@@ -52,12 +52,12 @@ endef
 define Build/Compile
 endef
 
-define Package/luci-app-dnscrypt-proxy/conffiles
+define Package/$(PKG_NAME)/conffiles
 /etc/config/dnscrypt-proxy
 /etc/config/public-resolvers
 endef
 
-define Package/luci-app-dnscrypt-proxy/install
+define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
 	$(INSTALL_DATA) ./files/luci/controller/dnscrypt-proxy.lua $(1)/usr/lib/lua/luci/controller/
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
@@ -79,7 +79,7 @@ define Package/luci-app-dnscrypt-proxy/install
 	$(INSTALL_BIN) ./files/dnscrypt-proxy.init $(1)/etc/init.d/dnscrypt-proxy
 endef
 
-define Package/luci-app-dnscrypt-proxy/postinst
+define Package/$(PKG_NAME)/postinst
 #!/bin/sh
 
 if [ -z "$${IPKG_INSTROOT}" ]; then
@@ -99,7 +99,7 @@ fi
 exit 0
 endef
 
-define Package/luci-app-dnscrypt-proxy/prerm
+define Package/$(PKG_NAME)/prerm
 #!/bin/sh
 # check if we are on real system
 if [ -z "$${IPKG_INSTROOT}" ]; then
@@ -115,4 +115,4 @@ fi
 exit 0
 endef
 
-$(eval $(call BuildPackage,luci-app-dnscrypt-proxy))
+$(eval $(call BuildPackage,$(PKG_NAME)))
