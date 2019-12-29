@@ -162,10 +162,6 @@ platform_do_upgrade() {
 	8dev,jalapeno)
 		nand_do_upgrade "$ARGV"
 		;;
-	p2w,r619ac|\
-	p2w,r619ac-128m)
-		nand_do_upgrade "$1"
-		;;
 	asus,map-ac2200)
 		CI_KERNPART="linux"
 		nand_do_upgrade "$1"
@@ -185,13 +181,17 @@ platform_do_upgrade() {
 	linksys,ea6350v3)
 		platform_do_upgrade_linksys "$ARGV"
 		;;
+	meraki,mr33)
+		CI_KERNPART="part.safe"
+		nand_do_upgrade "$1"
+		;;
 	openmesh,a42 |\
 	openmesh,a62)
 		PART_NAME="inactive"
 		platform_do_upgrade_openmesh "$ARGV"
 		;;
-	meraki,mr33)
-		CI_KERNPART="part.safe"
+	p2w,r619ac|\
+	p2w,r619ac-128m)
 		nand_do_upgrade "$1"
 		;;
 	zyxel,nbg6617)
