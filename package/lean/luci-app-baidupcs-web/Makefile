@@ -14,7 +14,7 @@ LUCI_TITLE:=LuCI support for BaiduPCS-Go
 LUCI_DEPENDS:=+baidupcs-web +wget +openssl-util
 LUCI_PKGARCH:=all
 PKG_VERSION:=1.0
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 PKG_MAINTAINER:=<https://github.com/KFERMercer/luci-app-baidupcs-web>
 
 include $(TOPDIR)/feeds/luci/luci.mk
