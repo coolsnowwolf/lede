@@ -5,7 +5,7 @@ local type, pairs, ipairs, table, luci, math
 local tpl = require "luci.template.parser"
 local utl = require "luci.util"
 local uci = require "luci.model.uci"
-
+local fs = require "nixio.fs"
 module "luci.tools.dnscrypt"
 
 local uci_r, uci_s
@@ -40,7 +40,9 @@ end
 
 function resolvers_list(self, with_src)
 	local _, cfg, r = nil, nil, { }
-	for _, cfg in pairs(uci_r:list_configs()) do
+
+	for cfg in (fs.glob("/etc/config/*")) do
+	cfg=fs.basename(cfg)
 	uci_r:foreach(cfg, dsec,
 		function(s)
 			if s.name and s.stamp and s.proto and s.country then

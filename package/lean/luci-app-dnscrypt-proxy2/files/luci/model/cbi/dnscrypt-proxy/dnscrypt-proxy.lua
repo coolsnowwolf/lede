@@ -54,6 +54,10 @@ function s.cfgvalue(self, section)
 	return self.map:get(section)
 end
 
+o = s:option(Flag, "enable", translate("Enable"))
+o.default = false
+o.optional = false
+
 o = s:option(Value, "listen_addresses", translate("Listening address"), translate("Split MultiValues by a comma"))
 o.default = "127.0.0.1:5335"
 o.placeholder = o.default

@@ -23,7 +23,7 @@ function typicalmsg(self)
 		table.insert(error,  translate("Not a typical dnscrypt-proxy resolvers configure!") .. " Original for: [%s]" % init)
 		table.insert(error,  translate("Additional changes on apply:"))
 		table.insert(error,  "init script: %s --> %s" % {init, "null"})
-		table.insert(error,  "exec script: %s --> %s %s" % {exec, "/usr/share/dnscrypt-proxy/uci_handle_exec.sh", self.config})
+		table.insert(error,  "exec script: %s --> %s %s" % {exec, "/etc/init.d/dnscrypt-proxy_resolvers", self.config})
 		self.error = self.error and self.error or {}
 		self.error["global"] = self.error["global"] and table(self.error["global"], error) or error
 	end
@@ -55,7 +55,7 @@ o.default = ""
 o.placeholder = "https://download.dnscrypt.info/dnscrypt-resolvers/v2/public-resolvers.md"
 
 --o = s:option(Value, "cache_file", translate("Cache File"), translate("Change this only on duplicating this resolver to another source when retrieving: ") .. "/usr/share/dnscrypt-proxy/{*}.md")
---o.default = "public-resolver.md"
+--o.default = "public-resolvers.md"
 --o.placeholder = "eg: custom.md"
 --o.rmempty = false
 
@@ -69,7 +69,7 @@ o.default = true
 o.optional = false
 o.rmempty = false
 
-o = s:option(Flag, "selfsign", translate("Selfsign Resolvers"), translate("Mostly useful for build your own resolvers list on net probe fails. minisign binary needed: ") .. "https://github.com/jedisct1/minisign")
+o = s:option(Flag, "selfsign", translate("Selfsign Resolvers"), translate("Mostly useful for build your own resolvers list on net probe fails. minisign binary needed: ") .. "https://github.com/peter-tank/openwrt-minisign")
 o.default = false
 o.optional = false
 o.rmempty = true
@@ -168,7 +168,7 @@ end
 
 m = Map(cfg, translate("DNSCrypt Resolvers Manage"))
 m.on_before_commit = function (self)
-	local exec = "/usr/share/dnscrypt-proxy/uci_handle_exec.sh"
+	local exec = "/etc/init.d/dnscrypt-proxy_resolvers"
 	local section, stype, on_remove = "global", "source", false
 	local sec = "DNSCrypt_resolvers_" .. self.config:gsub("[^%w_]", "_")
 	local c = luci.model.uci.cursor()

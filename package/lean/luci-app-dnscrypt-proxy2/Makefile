@@ -10,7 +10,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-dnscrypt-proxy2
 PKG_VERSION:=2.0.1
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_LICENSE:=GPLv3
 PKG_LICENSE_FILES:=LICENSE
@@ -35,7 +35,7 @@ define Package/$(PKG_NAME)
 	CATEGORY:=LuCI
 	SUBMENU:=3. Applications
 	TITLE:=DNSCrypt Proxy LuCI interface
-	URL:=https://github.com/peter-tank/luci-app-dnscrypt-proxy
+	URL:=https://github.com/peter-tank/luci-app-dnscrypt-proxy2
 	PKGARCH:=all
 	DEPENDS:=+PACKAGE_$(PKG_NAME)_INCLUDE_minisign:minisign
 endef
@@ -70,8 +70,8 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DATA) ./files/luci/view/dnscrypt-proxy/*.htm $(1)/usr/lib/lua/luci/view/dnscrypt-proxy/
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) ./files/root/etc/uci-defaults/dnscrypt-proxy $(1)/etc/uci-defaults/
-	$(INSTALL_DIR) $(1)/usr/share/dnscrypt-proxy
-	$(INSTALL_BIN) ./files/uci_handle_exec.sh $(1)/usr/share/dnscrypt-proxy/
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/dnscrypt-proxy_resolvers.init $(1)/etc/init.d/dnscrypt-proxy_resolvers
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_DATA) ./files/dnscrypt-proxy.config $(1)/etc/config/dnscrypt-proxy
 	$(INSTALL_DATA) ./files/public-resolvers.config $(1)/etc/config/public-resolvers

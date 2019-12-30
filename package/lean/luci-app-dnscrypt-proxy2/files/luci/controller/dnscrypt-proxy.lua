@@ -8,11 +8,11 @@ function index()
 		return
 	end
 
-  entry({"admin", "services", "dnscrypt-proxy"},alias("admin", "services", "dnscrypt-proxy", "dnscrypt-proxy"),_("DNSCrypt Proxy"), 10).dependent = true
+	entry({"admin", "services", "dnscrypt-proxy"},alias("admin", "services", "dnscrypt-proxy", "dnscrypt-proxy"),_("DNSCrypt Proxy"), 10).dependent = false
 
 	entry({"admin", "services", "dnscrypt-proxy", "dnscrypt-proxy"},cbi("dnscrypt-proxy/dnscrypt-proxy"),_("DNSCrypt Proxy"), 10).leaf = true
-	entry({"admin", "services", "dnscrypt-proxy", "dnscrypt-resolvers"},form("dnscrypt-proxy/dnscrypt-resolvers"),_("DNSCrypt Resolvers"), 20).leaf = true
-	entry({"admin", "services", "dnscrypt-proxy", "dnscrypt-resolvers"},arcombine(cbi("dnscrypt-proxy/dnscrypt-resolvers"), cbi("dnscrypt-proxy/dnscrypt-resolvers-config")),_("DNSCrypt Servers"), 30).leaf = true
+	entry({"admin", "services", "dnscrypt-proxy", "dnscrypt-resolvers"},cbi("dnscrypt-proxy/dnscrypt-resolvers"),_("DNSCrypt Resolvers"), 20).leaf = true
+	entry({"admin", "services", "dnscrypt-proxy", "dnscrypt-resolvers"},arcombine(cbi("dnscrypt-proxy/dnscrypt-resolvers"), cbi("dnscrypt-proxy/dnscrypt-resolvers-config")),_("DNSCrypt Servers"), 30).dependent = true
 	entry({"admin", "services", "dnscrypt-proxy", "refresh_c"}, call("refresh_cmd"))
 	entry({"admin", "services", "dnscrypt-proxy", "resolve_c"}, call("resolve_cmd"))
 	entry({"admin", "services", "dnscrypt-proxy", "update_c"}, call("update_cmd"))
@@ -131,7 +131,7 @@ function action_update(surl)
 	local stype = luci.util.exec("uname"):lower()
 	local sarch = luci.util.exec("uname -m")
 
-	exec("/bin/wget", {"--no-check-certificate", "-O", tmp, surl})
+	exec("/usr/bin/wget-ssl", {"--no-check-certificate", "-O", tmp, surl})
 
 	exec("/usr/sbin/dnscrypt-proxy", {"-service", "stop" })
 	local files = { }

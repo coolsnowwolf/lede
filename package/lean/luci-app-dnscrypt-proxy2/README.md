@@ -1,7 +1,7 @@
 [DNSCrypt Proxy Version2][DNSCRYPTV2] LuCI support for OpenWrt
 ===
 
-Helping to setup dnscrypt-proxy DNS resolvers
+Helping to setup dnscrypt-proxy2 DNS resolvers
 
 Fun
 ---
@@ -32,11 +32,11 @@ compile
    # update feeds
    ./scripts/feeds update packages
    # Clone
-   git clone https://github.com/peter-tank/luci-app-dnscrypt-proxy.git package/luci-app-dnscrypt-proxy
+   git clone https://github.com/peter-tank/luci-app-dnscrypt-proxy2.git package/luci-app-dnscrypt-proxy2
    # select this package
    make menuconfig
    # Compile
-    make package/luci-app-dnscrypt-proxy/compile V=99
+    make package/luci-app-dnscrypt-proxy2/compile V=99
    ```
 installing
 ---
@@ -44,5 +44,5 @@ installing
 - Depends: md5sum wget tar
 
   [DNSCRYPTV2]: https://github.com/DNSCrypt/dnscrypt-proxy
-  [SIGN]: https://github.com/jedisct1/minisign
+  [SIGN]: https://github.com/peter-tank/openwrt-minisign
   [S]: https://wiki.openwrt.org/doc/howto/obtain.firmware.sdk
