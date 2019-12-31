@@ -2,10 +2,11 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
 PKG_VERSION:=1
-PKG_RELEASE:=103
+PKG_RELEASE:=131
 
 PKG_CONFIG_DEPENDS:= CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Trojan \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks
@@ -15,11 +16,15 @@ include $(INCLUDE_DIR)/package.mk
 define Package/$(PKG_NAME)/config
 config PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks
 	bool "Include Shadowsocks New Version"
-	default n
+	default y if x86_64
 	
 config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray
 	bool "Include V2ray"
-	default n
+	default y if x86_64
+	
+config PACKAGE_$(PKG_NAME)_INCLUDE_Trojan
+	bool "Include Trojan"
+	default y if x86_64
 	
 config PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun
 	bool "Include Kcptun"
@@ -27,11 +32,11 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun
 	
 config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server
 	bool "Include ShadowsocksR Server"
-	default n
+	default y if x86_64
 	
 config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks
 	bool "Include ShadowsocksR Socks and Tunnel"
-	default n
+	default y if x86_64
 endef
 
 define Package/luci-app-ssr-plus
@@ -43,6 +48,8 @@ define Package/luci-app-ssr-plus
 	DEPENDS:=+shadowsocksr-libev-alt +ipset +ip-full +iptables-mod-tproxy +dnsmasq-full +coreutils +coreutils-base64 +bash +pdnsd-alt +wget \
             +PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks:shadowsocks-libev-ss-redir \
             +PACKAGE_$(PKG_NAME)_INCLUDE_V2ray:v2ray \
+            +PACKAGE_$(PKG_NAME)_INCLUDE_Trojan:trojan \
+            +PACKAGE_$(PKG_NAME)_INCLUDE_Trojan:ipt2socks \
             +PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun:kcptun-client \
             +PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server:shadowsocksr-libev-server \
             +PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks:shadowsocksr-libev-ssr-local
@@ -52,6 +59,11 @@ define Build/Prepare
 endef
 
 define Build/Compile
+endef
+
+define Package/luci-app-ssr-plus/conffiles
+/etc/ssr_ip
+/etc/dnsmasq.ssr/gfw_list.conf
 endef
 
 define Package/luci-app-ssr-plus/install

@@ -292,7 +292,7 @@ EOF
 menuconfig TARGET_DEVICE_$target->{conf}_$profile->{id}
 	bool "$profile->{name}"
 	depends on TARGET_$target->{conf}
-	default y if TARGET_ALL_PROFILES
+	default $profile->{default}
 EOF
 			my @pkglist = merge_package_lists($target->{packages}, $profile->{packages});
 			foreach my $pkg (@pkglist) {
