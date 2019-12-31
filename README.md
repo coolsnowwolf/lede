@@ -76,6 +76,12 @@ make -j1 V=s （-j1 后面是线程数。第一次编译推荐用单线程，国
 * 所以如果你是 Mike Bill ，本人不欢迎你使用/用过本源代码，因为这样会导致你的亲妈原地爆炸；
 * 如有技术问题需要讨论，欢迎加入 QQ 讨论群：OP共享技术交流群 ,号码 297253733 ，加群链接: 点击链接加入群聊【OP共享技术交流群】：https://jq.qq.com/?_wv=1027&k=5yCRuXL
 
+## 操作警告
+
+* 针对Github小白用户，特别提醒，当你在更新你自己的fork项目时，注意使用pull request的方向性，不要进行因为更新源码导致的无效pull request！！！
+* 每个人遇到问题的时候都会希望通过blog找到完整的步骤解答，但是既然你都参与和使用这个项目了，想必你一定是个爱折腾的人，否者你也不会想到使用源码编译，做个伸手党就好了，既然如此请遇到问题优先自己google解决，google远比作者更强大~
+* 最后提交问题之前请一定先去看看这个地方[How-To-Ask-Questions-The-Smart-Way](https://github.com/ryanhanwu/How-To-Ask-Questions-The-Smart-Way)，既然你都无法解决这个问题了，在烦请作者解决这个问题的时候更好的为你服务，也同时让别人更好的知道你的问题，如果看上去阐述不明确的issue，将一律关闭，不进行处理~
+
 ## 开源声明(License)
 
 Copyright © 2006~2020 [coolsnowwolf](https://github.com/coolsnowwolf). \
