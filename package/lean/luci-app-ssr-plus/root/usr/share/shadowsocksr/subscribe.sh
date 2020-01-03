@@ -211,6 +211,11 @@ do
                         			ssr_remarks="$ssr_host:$ssr_port";
                     			fi
 
+							if [ -z "$ssr_host" ];then # 丢弃没有host的无效服务器信息，例如：剩余流量xxx
+								echo_date "丢弃无效节点：【$ssr_remarks】"
+								continue
+							fi
+
                     			uci_name_tmp=$(uci show $name | grep -w "$ssr_hashkey" | awk -F . '{print $2}')
 		    	   		if [ -z "$uci_name_tmp" ]; then # 判断当前服务器信息是否存在
                         			uci_name_tmp=$(uci add $name servers)
