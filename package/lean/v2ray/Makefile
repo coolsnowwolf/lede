@@ -1,14 +1,48 @@
-#
-# Copyright (C) 2015-2016 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v3.
-#
-
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray
-PKG_VERSION:=4.21.3
-PKG_RELEASE:=1
+PKG_VERSION:=4.22.1
+PKG_MAINTAINER:=kslr
+
+ifeq ($(ARCH),i386)
+	PKG_ARCH:=32
+endif
+
+ifeq ($(ARCH),x86_64)
+	PKG_ARCH:=64
+endif
+
+ifeq ($(ARCH),arm)
+	PKG_ARCH:=arm
+endif
+
+ifeq ($(ARCH),arm)
+	PKG_ARCH:=arm
+	ifneq ($(BOARD),bcm53xx)
+		V2RAY_BIN:=_armv7
+  endif
+  ifeq ($(BOARD),kirkwood)
+		V2RAY_BIN:=
+  endif
+endif
+
+ifeq ($(ARCH),aarch64)
+	PKG_ARCH:=arm64
+endif
+
+ifeq ($(ARCH),mips)
+	PKG_ARCH:=mips
+endif
+
+ifeq ($(ARCH),mipsel)
+	PKG_ARCH:=mipsle
+endif
+
+PKG_SOURCE:=v2ray-linux-$(PKG_ARCH).zip
+PKG_SOURCE_URL:=https://github.com/v2ray/v2ray-core/releases/download/v$(PKG_VERSION)/
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
+UNZIP_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)/$(PKG_NAME)-unzip
+PKG_HASH:=skip
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -20,42 +54,13 @@ define Package/$(PKG_NAME)
 	URL:=https://github.com/v2ray/v2ray-core
 endef
 
-
 define Package/$(PKG_NAME)/description
-V2Ray is a cross-platform proxy software
+	V2Ray is a cross-platform proxy software
 endef
-
-V2RAY_BIN:=v2ray
-
-ifeq ($(ARCH),x86_64)
-	PKG_ARCH_V2RAY:=amd64
-endif
-ifeq ($(ARCH),mipsel)
-	PKG_ARCH_V2RAY:=mipsle
-endif
-ifeq ($(ARCH),mips)
-	PKG_ARCH_V2RAY:=mips
-endif
-ifeq ($(ARCH),i386)
-	PKG_ARCH_V2RAY:=x86
-endif
-ifeq ($(ARCH),arm)
-	PKG_ARCH_V2RAY:=arm
-	ifneq ($(BOARD),bcm53xx)
-		V2RAY_BIN:=v2ray_armv7
-  endif
-  ifeq ($(BOARD),kirkwood)
-		V2RAY_BIN:=v2ray
-  endif
-endif
-ifeq ($(ARCH),aarch64)
-	PKG_ARCH_V2RAY:=arm64
-endif
 
 define Build/Prepare
-endef
-
-define Build/Configure
+	mkdir -vp $(UNZIP_DIR)
+	unzip -od $(UNZIP_DIR) $(DL_DIR)/$(PKG_SOURCE)
 endef
 
 define Build/Compile
@@ -63,7 +68,11 @@ endef
 
 define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/bin/v2ray
-	$(INSTALL_BIN) ./files/$(PKG_ARCH_V2RAY)/$(V2RAY_BIN) $(1)/usr/bin/v2ray/v2ray
+	$(INSTALL_BIN) $(UNZIP_DIR)/v2ray$(V2RAY_BIN) $(1)/usr/bin/v2ray/v2ray
+#	$(INSTALL_BIN) $(UNZIP_DIR)/v2ctl$(V2RAY_BIN) $(1)/usr/bin/v2ray/v2ctl
+#	$(INSTALL_BIN) $(UNZIP_DIR)/geosite.dat $(1)/usr/bin/v2ray/geosite.dat
+#	$(INSTALL_BIN) $(UNZIP_DIR)/geoip.dat $(1)/usr/bin/v2ray/geoip.dat
+	chmod 755 $(1)/usr/bin/v2ray/*
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
