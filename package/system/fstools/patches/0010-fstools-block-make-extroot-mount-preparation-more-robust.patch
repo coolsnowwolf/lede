@@ -1,0 +1,97 @@
+From 1aa83d3cba087decaac34a1e845e301fe98d2abe Mon Sep 17 00:00:00 2001
+From: "Kenneth J. Miller" <ken@miller.ec>
+Date: Tue, 9 Apr 2019 19:49:35 +0200
+Subject: [PATCH] fstools: block: make extroot mount preparation more robust
+
+The extroot mount preparation code for r/w rootfs overlay discovery, and
+determining the user-defined /etc/config/fstab location within, would only
+discover overlays residing on JFFS2 or UBIFS MTD storage.
+
+This led to attempts at loading the uci fstab configuration without the
+required /tmp/overlay directory prefix on devices with a non-MTD r/w
+rootfs overlay, and thus failure to find any custom fstab /overlay extroot
+entries on PREINIT.
+(example: the default openwrt eMMC partition layout on the zyxel nbg6817)
+
+Futher, with UBIFS_EXTROOT enabled (fstools package default), and no MTD
+rootfs partitions present, check_extroot would not attempt rootfs
+discovery on block devices, such as the ext4 mmcblk rootfs overlay on the
+nbg6817.
+
+With this patch:
+1) main_extroot now attempts to load uci fstab configuration from an
+   already mounted overlay, before defaulting to the prefix-less uci
+   config dir when no MTD rootfs partitions are detected.
+2) check_extroot now also attempts to find rootfs partitions on block
+   devices when no MTD rootfs partitions are detected.
+
+Fixes: FS#2231
+Ref: https://bugs.openwrt.org/index.php?do=details&task_id=2231
+Signed-off-by: Kenneth J. Miller <ken@miller.ec>
+---
+ block.c | 17 +++++------------
+ 1 file changed, 5 insertions(+), 12 deletions(-)
+
+diff --git a/block.c b/block.c
+index 39212d2..3dfc4a5 100644
+--- a/block.c
++++ b/block.c
+@@ -1301,7 +1301,7 @@ static int find_block_ubi_RO(libubi_t libubi, char *name, char *part, int plen)
+ 	return err;
+ }
+ 
+-#else
++#endif
+ 
+ static int find_root_dev(char *buf, int len)
+ {
+@@ -1332,8 +1332,6 @@ static int find_root_dev(char *buf, int len)
+ 	return -1;
+ }
+ 
+-#endif
+-
+ static int test_fs_support(const char *name)
+ {
+ 	char line[128], *p;
+@@ -1363,25 +1361,20 @@ static int check_extroot(char *path)
+ 	struct probe_info *pr = NULL;
+ 	char devpath[32];
+ 
+-#ifdef UBIFS_EXTROOT
+ 	if (find_block_mtd("\"rootfs\"", devpath, sizeof(devpath))) {
+ 		int err = -1;
++#ifdef UBIFS_EXTROOT
+ 		libubi_t libubi;
+ 
+ 		libubi = libubi_open();
+ 		err = find_block_ubi_RO(libubi, "rootfs", devpath, sizeof(devpath));
+ 		libubi_close(libubi);
+-		if (err)
+-			return -1;
+-	}
+-#else
+-	if (find_block_mtd("\"rootfs\"", devpath, sizeof(devpath))) {
+-		if (find_root_dev(devpath, sizeof(devpath))) {
++#endif
++		if (err && find_root_dev(devpath, sizeof(devpath))) {
+ 			ULOG_ERR("extroot: unable to determine root device\n");
+ 			return -1;
+ 		}
+ 	}
+-#endif
+ 
+ 	list_for_each_entry(pr, &devices, list) {
+ 		if (!strcmp(pr->dev, devpath)) {
+@@ -1585,7 +1578,7 @@ static int main_extroot(int argc, char **argv)
+        }
+ #endif
+ 
+-	return mount_extroot(NULL);
++	return mount_extroot("/tmp/overlay");
+ }
+ 
+ static int main_mount(int argc, char **argv)
+-- 
+2.21.0
+
