@@ -90,9 +90,9 @@ local function getSizeStr(size)
 	local i = 0
 	local byteUnits = {' kB', ' MB', ' GB', ' TB'}
 	repeat
-		size = size / 1000
+		size = size / 1024
 		i = i + 1
-	until(size <= 1000)
+	until(size <= 1024)
     return string.format("%.1f", size) .. byteUnits[i]
 end
 
