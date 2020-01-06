@@ -70,6 +70,7 @@ o:value("0", translate("Use Local DNS Service listen port 5335"))
 o.default = 1
 
 o = s:option(ListValue, "tunnel_forward", translate("Anti-pollution DNS Server"))
+o:value("0.0.0.0:53", translate("Using System Default DNS"))
 o:value("8.8.4.4:53", translate("Google Public DNS (8.8.4.4)"))
 o:value("8.8.8.8:53", translate("Google Public DNS (8.8.8.8)"))
 o:value("208.67.222.222:53", translate("OpenDNS (208.67.222.222)"))
