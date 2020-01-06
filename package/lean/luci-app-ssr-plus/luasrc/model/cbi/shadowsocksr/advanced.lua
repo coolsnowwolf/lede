@@ -10,10 +10,10 @@ uci:foreach(shadowsocksr, "servers", function(s)
 	end
 end)
 
-local key_table = {}   
-for key,_ in pairs(server_table) do  
-    table.insert(key_table,key)  
-end 
+local key_table = {}
+for key,_ in pairs(server_table) do
+    table.insert(key_table,key)
+end
 
 table.sort(key_table)
 
@@ -37,6 +37,11 @@ o = s:option(Value, "switch_timeout", translate("Check timout(second)"))
 o.datatype = "uinteger"
 o:depends("enable_switch", "1")
 o.default = 5
+
+o = s:option(Value, "switch_try_count", translate("Check Try Count"))
+o.datatype = "uinteger"
+o:depends("enable_switch", "1")
+o.default = 3
 
 -- [[ SOCKS5 Proxy ]]--
 if nixio.fs.access("/usr/bin/ssr-local") then
