@@ -1,0 +1,113 @@
+#=================================================
+# https://github.com/P3TERX/Actions-OpenWrt
+# Description: Build OpenWrt using GitHub Actions(macOS)
+# Lisence: MIT
+# Author: P3TERX
+# Blog: https://p3terx.com
+#=================================================
+
+name: Build OpenWrt (macOS)
+
+on: 
+  public
+#  release:
+#    types: [published]
+#  push:
+#    branches: 
+#      - master
+#    paths:
+#      - '.config'
+#  schedule:
+#    - cron: 0 8 * * 5
+#  watch:
+#    types: [started]
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@master
+
+    - name: Initialization environment
+      run: |
+        brew install coreutils diffutils findutils gawk gnu-getopt gnu-tar grep wget quilt xz gnu-sed
+        echo "::add-path::/usr/local/opt/gnu-getopt/bin"
+        echo "::add-path::/usr/local/opt/coreutils/libexec/gnubin"
+        echo "::add-path::/usr/local/opt/gnu-sed/libexec/gnubin"
+        hdiutil create -size 60g -type SPARSE -fs "Case-sensitive HFS+" -volname OpenWrt OpenWrt.sparseimage
+        hdiutil attach OpenWrt.sparseimage
+        curl -fsSL https://raw.githubusercontent.com/P3TERX/dotfiles/master/.bashrc >> ~/.bashrc
+        sudo systemsetup -settimezone "Asia/Shanghai"
+
+    - name: Clone source code
+      working-directory: /Volumes/OpenWrt
+      env: 
+        REPO_URL: https://github.com/openwrt/openwrt
+        REPO_BRANCH: openwrt-18.06
+      run: |
+        git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /Volumes/OpenWrt/openwrt $GITHUB_WORKSPACE/openwrt
+        sed -i "s/grep Apple.LLVM/grep -E 'Apple.(LLVM|clang)'/g" openwrt/include/prereq-build.mk
+
+    - name: Update feeds
+      run: cd openwrt && ./scripts/feeds update -a
+
+    - name: Install feeds
+      run: cd openwrt && ./scripts/feeds install -a
+
+    - name: Load custom configuration
+      env:
+        CONFIG_FILE: '.config'
+        DIY_SH: 'diy.sh'
+      run: |
+        [ -e files ] && mv files openwrt/files
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        chmod +x $DIY_SH
+        mv $DIY_SH openwrt
+        cd openwrt
+        ./$DIY_SH
+        make defconfig
+
+#    - name: SSH connection to Actions
+#      uses: P3TERX/debugger-action@master
+
+    - name: Download package
+      run: |
+        cd openwrt && make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Multi-thread compile
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc)
+
+    - name: Single-thread compile
+      if: failure()
+      run: |
+        cd openwrt
+        make -j1 V=s
+
+    - name: Upload bin directory
+      uses: actions/upload-artifact@master
+      if: always()
+      with:
+        name: OpenWrt_bin
+        path: openwrt/bin
+
+    - name: Organize files
+      if: always()
+      run: |
+        cd openwrt/bin/targets/*/*
+        rm -rf packages
+        echo "::set-env name=FIRMWARE::$(pwd)"
+
+    - name: Upload firmware
+      uses: actions/upload-artifact@master
+      if: always()
+      with:
+        name: OpenWrt_firmware
+        path: ${{ env.FIRMWARE }}
