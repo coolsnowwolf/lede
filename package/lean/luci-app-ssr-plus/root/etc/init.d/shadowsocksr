@@ -43,11 +43,10 @@ uci_get_by_type() {
 
 add_cron()
 {
-	sed -i '/ssrplus.log/d' $CRON_FILE
-	echo '0 1 * * 0 echo "" > /tmp/ssrplus.log' >> $CRON_FILE
-	[ -n "$(grep -w "/usr/share/shadowsocksr/subscribe.sh" $CRON_FILE)" ] && sed -i '/\/usr\/share\/shadowsocksr\/subscribe.sh/d' $CRON_FILE
+	sed -i '/shadowsocksr/d' $CRON_FILE
+	sed -i '/ssrplus.log/d' $CRON_FILE && echo '0 1 * * * echo "" > /tmp/ssrplus.log' >> $CRON_FILE
 	[ $(uci_get_by_type server_subscribe auto_update 0) -eq 1 ] && echo "0 $(uci_get_by_type server_subscribe auto_update_time) * * * /usr/share/shadowsocksr/subscribe.sh" >> $CRON_FILE
-	[ -z "$(grep -w "/usr/share/shadowsocksr/update.sh" $CRON_FILE)" ] && echo "0 5 * * 0 /usr/share/shadowsocksr/update.sh" >> $CRON_FILE
+	[ $(uci_get_by_type server_subscribe auto_update 0) -eq 1 ] && echo "0 5 * * * /usr/share/shadowsocksr/update.sh" >> $CRON_FILE
 	crontab $CRON_FILE
 }
 
@@ -125,6 +124,9 @@ EOF
       elif [ "$stype" == "v2ray" ] ;then
         lua /usr/share/shadowsocksr/genv2config.lua $GLOBAL_SERVER tcp $(uci_get_by_name $1 local_port) > /var/etc/v2-ssr-retcp.json
         sed -i 's/\\//g' /var/etc/v2-ssr-retcp.json
+      elif [ "$stype" == "trojan" ] ;then
+        lua /usr/share/shadowsocksr/gentrojanconfig.lua $GLOBAL_SERVER nat $(uci_get_by_name $1 local_port) > /var/etc/trojan-ssr-retcp.json
+        sed -i 's/\\//g' /var/etc/trojan-ssr-retcp.json
 fi
 }
 
@@ -188,6 +190,12 @@ start_rules() {
 	gfwmode="-z"
 	fi
 	
+	local dports=$(uci_get_by_type global dports 1)
+  if [ $dports = "1" ] ;then
+	proxyport=" "
+	else
+	proxyport="-m multiport --dports 22,53,587,465,995,993,143,80,443 "
+  fi
 
 	/usr/bin/ssr-rules \
 		-s "$server" \
@@ -200,6 +208,7 @@ start_rules() {
 		-w "$(uci_get_by_type access_control wan_fw_ips)" \
 		-p "$(uci_get_by_type access_control lan_fp_ips)" \
 		-G "$(uci_get_by_type access_control lan_gm_ips)" \
+		-D "$proxyport" \
 		$(get_arg_out) $gfwmode $ARG_UDP
 			
 	return $?
@@ -294,6 +303,8 @@ start_redir() {
         sscmd="/usr/bin/ssr-redir"
        elif [ "$stype" == "v2ray" ] ;then
         sscmd="/usr/bin/v2ray/v2ray"
+       elif [ "$stype" == "trojan" ] ;then
+        sscmd="/usr/sbin/trojan"
     fi
 		
 	local utype=$(uci_get_by_name $UDP_RELAY_SERVER type)
@@ -303,6 +314,8 @@ start_redir() {
         ucmd="/usr/bin/ssr-redir"
        elif [ "$utype" == "v2ray" ] ;then
         ucmd="/usr/bin/v2ray/v2ray"
+       elif [ "$utype" == "trojan" ] ;then
+        ucmd="/usr/sbin/trojan"
      fi
   
   if [ "$(uci_get_by_type global threads 0)" = "0" ] ;then
@@ -323,6 +336,9 @@ start_redir() {
   elif [ "$stype" == "v2ray" ] ;then
     $sscmd -config /var/etc/v2-ssr-retcp.json >/dev/null 2>&1 &
     echo "$(date "+%Y-%m-%d %H:%M:%S") $($sscmd -version | head -1) Started!" >> /tmp/ssrplus.log
+  elif [ "$stype" == "trojan" ] ;then
+    $sscmd --config /var/etc/trojan-ssr-retcp.json >/dev/null 2>&1 & 
+    echo "$(date "+%Y-%m-%d %H:%M:%S") $($sscmd --version 2>&1 | head -1) Started!" >> /tmp/ssrplus.log
 	fi
 	
 	if [ -n "$UDP_RELAY_SERVER" ] ;then
@@ -339,7 +355,12 @@ start_redir() {
     elif [ "$utype" == "v2ray" ] ; then
         lua /usr/share/shadowsocksr/genv2config.lua $UDP_RELAY_SERVER udp $(uci_get_by_name $UDP_RELAY_SERVER local_port) > /var/etc/v2-ssr-reudp.json
         sed -i 's/\\//g' /var/etc/v2-ssr-reudp.json
-        $ucmd -config /var/etc/v2-ssr-reudp.json >/dev/null 2>&1 &   
+        $ucmd -config /var/etc/v2-ssr-reudp.json >/dev/null 2>&1 & 
+     elif [ "$stype" == "trojan" ] ;then
+        lua /usr/share/shadowsocksr/gentrojanconfig.lua $GLOBAL_SERVER client 10801 > /var/etc/trojan-ssr-reudp.json
+        sed -i 's/\\//g' /var/etc/trojan-ssr-reudp.json
+        $ucmd --config /var/etc/trojan-ssr-reudp.json >/dev/null 2>&1 & 
+        ipt2socks -U -4 -b 0.0.0.0 -s 127.0.0.1 -p 10801 -l $(uci_get_by_name $UDP_RELAY_SERVER local_port) >/dev/null 2>&1 &
     fi
    fi
 
@@ -474,19 +495,23 @@ start() {
 	GLOBAL_SERVER=$switch_server
 	switch_enable=1
 	fi
+
 	if rules ;then
 	start_redir
-  
-  mkdir -p /tmp/dnsmasq.d
+	  
+  mkdir -p /tmp/dnsmasq.d && cp -a /etc/dnsmasq.ssr /tmp/ && cp -a /etc/dnsmasq.oversea /tmp/
 	if ! [ "$run_mode" = "oversea" ] ;then
 		cat > /tmp/dnsmasq.d/dnsmasq-ssr.conf <<EOF
-conf-dir=/etc/dnsmasq.ssr
+conf-dir=/tmp/dnsmasq.ssr
 EOF
   else
 		cat > /tmp/dnsmasq.d/dnsmasq-ssr.conf <<EOF
-conf-dir=/etc/dnsmasq.oversea
+conf-dir=/tmp/dnsmasq.oversea
 EOF
 	fi
+	
+	/usr/share/shadowsocksr/gfw2ipset.sh
+	
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	
 	fi
@@ -519,22 +544,24 @@ stop() {
 	iptables -X SSR-SERVER-RULE 2>/dev/null
 	fi
 	if [ -z "$switch_server" ] ;then
-    kill -9 $(ps | grep ssr-switch | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+    kill -9 $(busybox ps -w | grep ssr-switch | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	fi
 	if [ $(uci_get_by_type global monitor_enable) = 1 ] ;then
-    kill -9 $(ps | grep ssr-monitor | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+    kill -9 $(busybox ps -w | grep ssr-monitor | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	fi
 	killall -q -9 ssr-monitor
 	killall -q -9 ss-redir
 	killall -q -9 ssr-redir
 	killall -q -9 v2ray
+	killall -q -9 trojan
+	killall -q -9 ipt2socks
 	killall -q -9 ssr-server
 	killall -q -9 kcptun-client
 	killall -q -9 ssr-local
 	if [ -f /var/run/pdnsd.pid ] ;then
     kill $(cat /var/run/pdnsd.pid) >/dev/null 2>&1
   else 
-    kill -9 $(ps | grep pdnsd | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
+    kill -9 $(busybox ps -w | grep pdnsd | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
 	fi
 	
 	if [ -f "/tmp/dnsmasq.d/dnsmasq-ssr.conf" ]; then

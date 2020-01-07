@@ -32,6 +32,9 @@
 #include <linux/bug.h>
 #include <linux/netfilter.h>
 #include <net/netfilter/nf_flow_table.h>
+#include <linux/of_gpio.h>
+#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 
 #include <asm/mach-ralink/ralink_regs.h>
 
@@ -934,7 +937,7 @@ static int fe_poll_rx(struct napi_struct *napi, int budget,
 		skb->protocol = eth_type_trans(skb, netdev);
 
 		if (netdev->features & NETIF_F_HW_VLAN_CTAG_RX &&
-		    RX_DMA_TAG & trxd.rxd2 && RX_DMA_VID(trxd.rxd3))
+		    RX_DMA_VID(trxd.rxd3))
 			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
 					       RX_DMA_VID(trxd.rxd3));
 
@@ -1333,6 +1336,35 @@ static int fe_stop(struct net_device *dev)
 	return 0;
 }
 
+static void fe_reset_phy(struct fe_priv *priv)
+{
+	int err, msec = 30;
+	struct gpio_desc *phy_reset;
+
+	phy_reset = devm_gpiod_get_optional(priv->dev, "phy-reset",
+					    GPIOD_OUT_HIGH);
+	if (!phy_reset)
+		return;
+
+	if (IS_ERR(phy_reset)) {
+		dev_err(priv->dev, "Error acquiring reset gpio pins: %ld\n",
+			PTR_ERR(phy_reset));
+		return;
+	}
+
+	err = of_property_read_u32(priv->dev->of_node, "phy-reset-duration",
+				   &msec);
+	if (!err && msec > 1000)
+		msec = 30;
+
+	if (msec > 20)
+		msleep(msec);
+	else
+		usleep_range(msec * 1000, msec * 1000 + 1000);
+
+	gpiod_set_value(phy_reset, 0);
+}
+
 static int __init fe_init(struct net_device *dev)
 {
 	struct fe_priv *priv = netdev_priv(dev);
@@ -1348,13 +1380,15 @@ static int __init fe_init(struct net_device *dev)
 			return -ENODEV;
 		}
 
+	fe_reset_phy(priv);
+
 	mac_addr = of_get_mac_address(priv->dev->of_node);
 	if (mac_addr)
 		ether_addr_copy(dev->dev_addr, mac_addr);
 
 	/* If the mac address is invalid, use random mac address  */
 	if (!is_valid_ether_addr(dev->dev_addr)) {
-		random_ether_addr(dev->dev_addr);
+		eth_hw_addr_random(dev);
 		dev_err(priv->dev, "generated random MAC address %pM\n",
 			dev->dev_addr);
 	}
@@ -1411,19 +1445,8 @@ static int fe_do_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	if (!priv->phy_dev)
 		return -ENODEV;
 
-	switch (cmd) {
-	case SIOCETHTOOL:
-		return phy_ethtool_ioctl(priv->phy_dev,
-				(void *) ifr->ifr_data);
-	case SIOCGMIIPHY:
-	case SIOCGMIIREG:
-	case SIOCSMIIREG:
-		return phy_mii_ioctl(priv->phy_dev, ifr, cmd);
-	default:
-		break;
-	}
 
-	return -EOPNOTSUPP;
+	return phy_mii_ioctl(priv->phy_dev, ifr, cmd);
 }
 
 static int fe_change_mtu(struct net_device *dev, int new_mtu)

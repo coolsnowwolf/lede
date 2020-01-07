@@ -7,6 +7,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
+define Build/copy-kernel.bin
+	$(call locked,$(MAKE) -C copy-kernel CROSS_COMPILE=$(TARGET_CROSS) O=$(KDIR),gemini-copy-kernel.bin)
+endef
+
 # Cook a "WRGG" image, this board is apparently one in the D-Link
 # WRGG family and uses the exact same firmware format as other
 # D-Link devices.
@@ -74,19 +78,30 @@ define Build/wiligear-image
 	mv $@.new $@
 endef
 
-# Create the special NAS4220B and Itian Square One SQ201 image
-# format with the squashfs and overlay inside the "rd.gz" file.
-# We pad it out to 6144K which is the size of the initramfs partition.
+# Create the default image format used by the StorLink reference design
+# SL93512r, Raidsonic NAS4220B and Itian Square One SQ201
+# with the squashfs and overlay inside the "application" partition.
 #
-# The "application" partition is just blank. You can put anything
-# there when using OpenWRT. We just use that to create the
-# "sysupgrade" firmware image.
-define Build/nas4220b-sq201-images
+# These devices have a hard-coded partition table that the boot loader
+# constantly reflashes back, so we need to work around it like this:
+#
+# 0x000000120000-0x000000320000 : "Kern" - small copy routine and first
+#                                 part of the kernel goes here
+# 0x000000320000-0x000000920000 : "Ramdisk" - second part of the kernel and
+#                                 some padding goes here
+# 0x000000920000-0x000000f20000 : "Application" - rootfs goes here
+define Build/storlink-default-images
 	mkdir -p $@.tmp
 
-	mv $@ $@.tmp/rd.gz
-	dd if=/dev/zero of=$@.tmp/hddapp.tgz bs=6144k count=1
-	cp $(IMAGE_KERNEL) $@.tmp/zImage
+	# "App" partition is the rootfs
+	mv $@ $@.tmp/hddapp.tgz
+	# 256 bytes copy routine
+	dd if=$(KDIR)/copy-kernel.bin of=$@.tmp/zImage
+	$(call Image/pad-to,$@.tmp/zImage,512)
+	# Copy first part of the kernel into zImage
+	dd if=$(IMAGE_KERNEL) of=$@.tmp/zImage bs=1 seek=512 count=2096640
+	# Put the rest of the kernel into the "ramdisk"
+	dd if=$(IMAGE_KERNEL) of=$@.tmp/rd.gz bs=1 skip=2096640 count=6144k conv=sync
 	cp ./ImageInfo-$(1) $@.tmp/ImageInfo
 
 	sed -i -e "s/DATESTR/`date +%Y%m%d $(if $(SOURCE_DATE_EPOCH),--date "@$(SOURCE_DATE_EPOCH)")`/g" $@.tmp/ImageInfo
@@ -115,6 +130,7 @@ define Device/Default
 	KERNEL_NAME := zImage
 	KERNEL := kernel-bin | append-dtb
 	BLOCKSIZE := 128k
+	SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
 endef
 
 # A reasonable set of default packages handling the NAS type
@@ -138,19 +154,21 @@ GEMINI_NAS_PACKAGES:=kmod-md-mod kmod-md-linear kmod-md-multipath \
 #   This will be flashed from OpenWrt userland anyways so we only need
 #   the minimum to make the boot loader happy.
 define Device/dlink_dir-685
-	DEVICE_TITLE := D-Link DIR-685 Xtreme N Storage Router
+	DEVICE_VENDOR := D-Link
+	DEVICE_MODEL := DIR-685 Xtreme N Storage Router
 	DEVICE_DTS := gemini-dlink-dir-685
 	DEVICE_PACKAGES := $(GEMINI_NAS_PACKAGES) \
-			kmod-switch-rtl8366rb swconfig \
 			kmod-rt2800-pci
-	IMAGES := factory.bin
+	IMAGES := factory.bin sysupgrade.bin
 	# Pad to 128k erase blocks with 160 bytes WRGG header
 	IMAGE/factory.bin := append-kernel | pad-offset 128k 160 | append-rootfs | dir685-pad-rootfs | dir685-image
+	IMAGE/sysupgrade.bin := append-kernel | pad-offset 128k 160 | dir685-image | append-rootfs | dir685-pad-rootfs | append-metadata
 endef
 TARGET_DEVICES += dlink_dir-685
 
 define Device/dlink_dns-313
-	DEVICE_TITLE := D-Link DNS-313 1-Bay Network Storage Enclosure
+	DEVICE_VENDOR := D-Link
+	DEVICE_MODEL := DNS-313 1-Bay Network Storage Enclosure
 	DEVICE_DTS := gemini-dlink-dns-313
 	DEVICE_TYPE := nas
 	DEVICE_PACKAGES := $(GEMINI_NAS_PACKAGES)
@@ -161,28 +179,42 @@ define Device/dlink_dns-313
 endef
 TARGET_DEVICES += dlink_dns-313
 
-define Device/itian-raidsonic
+# Default images setup used by the StorLink reference designs
+define Device/storlink-reference
+	COMPILE := copy-kernel-$(1).bin
+	COMPILE/copy-kernel-$(1).bin := copy-kernel.bin
 	IMAGES := factory.bin
 	IMAGE/factory.bin := append-rootfs | pad-rootfs | pad-to 6144k | \
-		nas4220b-sq201-images $(1)
+		storlink-default-images $(1)
 	DEVICE_PACKAGES := $(GEMINI_NAS_PACKAGES)
 endef
 
 define Device/itian_sq201
-	$(Device/itian-raidsonic)
-	DEVICE_TITLE := ITian Square One SQ201
+	$(Device/storlink-reference)
+	DEVICE_VENDOR := ITian
+	DEVICE_MODEL := Square One SQ201
 	DEVICE_DTS := gemini-sq201
 	DEVICE_PACKAGES += kmod-rt61-pci kmod-usb2-pci
 endef
 TARGET_DEVICES += itian_sq201
 
 define Device/raidsonic_ib-4220-b
-	$(Device/itian-raidsonic)
-	DEVICE_TITLE := Raidsonic NAS IB-4220-B
+	$(Device/storlink-reference)
+	DEVICE_VENDOR := Raidsonic
+	DEVICE_MODEL := NAS IB-4220-B
 	DEVICE_DTS := gemini-nas4220b
 	DEVICE_TYPE := nas
 endef
 TARGET_DEVICES += raidsonic_ib-4220-b
+
+define Device/storlink_sl93512r
+	$(Device/storlink-reference)
+	DEVICE_VENDOR := StorLink
+	DEVICE_MODEL := SL93512r
+	DEVICE_DTS := gemini-sl93512r
+endef
+TARGET_DEVICES += storlink_sl93512r
+
 
 # The wiliboard images need some changes to be functional and buildable.
 #
@@ -193,7 +225,8 @@ TARGET_DEVICES += raidsonic_ib-4220-b
 # and rootfs. It is expected that the OEM firmware adjusts the on flash
 # partition table with the values defined in the image header.
 define Device/wiliboard_wbd111
-	DEVICE_TITLE := Wiliboard WBD-111
+	DEVICE_VENDOR := Wiliboard
+	DEVICE_MODEL := WBD-111
 	DEVICE_DTS := gemini-wbd111
 	KERNEL := kernel-bin | append-dtb | wbd-nops
 	IMAGES := factory.bin
@@ -201,7 +234,8 @@ define Device/wiliboard_wbd111
 endef
 
 define Device/wiliboard_wbd222
-	DEVICE_TITLE := Wiliboard WBD-222
+	DEVICE_VENDOR := Wiliboard
+	DEVICE_MODEL := WBD-222
 	DEVICE_DTS := gemini-wbd222
 	KERNEL := kernel-bin | append-dtb | wbd-nops
 	IMAGES := factory.bin

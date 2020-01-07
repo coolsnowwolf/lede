@@ -30,7 +30,7 @@ $(eval $(call KernelPackage,6lowpan))
 define KernelPackage/bluetooth
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Bluetooth support
-  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-crypto-hash +kmod-crypto-ecb +kmod-lib-crc16 +kmod-hid +!LINUX_3_18:kmod-crypto-cmac +!LINUX_3_18:kmod-regmap-core +!(LINUX_3_18||LINUX_4_9):kmod-crypto-ecdh
+  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-crypto-hash +kmod-crypto-ecb +kmod-lib-crc16 +kmod-hid +kmod-crypto-cmac +kmod-regmap-core +!LINUX_4_9:kmod-crypto-ecdh
   KCONFIG:= \
 	CONFIG_BT \
 	CONFIG_BT_BREDR=y \
@@ -219,7 +219,7 @@ $(eval $(call KernelPackage,gpio-dev))
 define KernelPackage/gpio-mcp23s08
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Microchip MCP23xxx I/O expander
-  DEPENDS:=@GPIO_SUPPORT +kmod-i2c-core +!(LINUX_3_18||LINUX_4_9):kmod-regmap-i2c
+  DEPENDS:=@GPIO_SUPPORT +kmod-i2c-core +!LINUX_4_9:kmod-regmap-i2c
   KCONFIG:= \
 	CONFIG_GPIO_MCP23S08 \
 	CONFIG_PINCTRL_MCP23S08
@@ -476,7 +476,7 @@ define KernelPackage/rtc-ds1307
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Dallas/Maxim DS1307 (and compatible) RTC support
   DEFAULT:=m if ALL_KMODS && RTC_SUPPORT
-  DEPENDS:=+kmod-i2c-core +!(LINUX_3_18||LINUX_4_9):kmod-regmap-i2c +!(LINUX_3_18||LINUX_4_9):kmod-hwmon-core
+  DEPENDS:=+kmod-i2c-core +!LINUX_4_9:kmod-regmap-i2c +!LINUX_4_9:kmod-hwmon-core
   KCONFIG:=CONFIG_RTC_DRV_DS1307 \
 	CONFIG_RTC_CLASS=y
   FILES:=$(LINUX_DIR)/drivers/rtc/rtc-ds1307.ko
@@ -526,6 +526,24 @@ define KernelPackage/rtc-ds1672/description
 endef
 
 $(eval $(call KernelPackage,rtc-ds1672))
+
+
+define KernelPackage/rtc-em3027
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Microelectronic EM3027 RTC support
+  DEFAULT:=m if ALL_KMODS && RTC_SUPPORT
+  DEPENDS:=+kmod-i2c-core
+  KCONFIG:=CONFIG_RTC_DRV_EM3027 \
+	CONFIG_RTC_CLASS=y
+  FILES:=$(LINUX_DIR)/drivers/rtc/rtc-em3027.ko
+  AUTOLOAD:=$(call AutoProbe,rtc-em3027)
+endef
+
+define KernelPackage/rtc-em3027/description
+ Kernel module for Microelectronic EM3027 RTC.
+endef
+
+$(eval $(call KernelPackage,rtc-em3027))
 
 
 define KernelPackage/rtc-isl1208
@@ -581,6 +599,23 @@ endef
 
 $(eval $(call KernelPackage,rtc-pcf2123))
 
+define KernelPackage/rtc-pcf2127
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=NXP PCF2127 and PCF2129 RTC support
+  DEFAULT:=m if ALL_KMODS && RTC_SUPPORT
+  DEPENDS:=+kmod-i2c-core +kmod-regmap-spi
+  KCONFIG:=CONFIG_RTC_DRV_PCF2127 \
+	CONFIG_RTC_CLASS=y
+  FILES:=$(LINUX_DIR)/drivers/rtc/rtc-pcf2127.ko
+  AUTOLOAD:=$(call AutoProbe,rtc-pcf2127)
+endef
+
+define KernelPackage/rtc-pcf2127/description
+ Kernel module for NXP PCF2127 and PCF2129 RTC chip
+endef
+
+$(eval $(call KernelPackage,rtc-pcf2127))
+
 define KernelPackage/rtc-pt7c4338
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Pericom PT7C4338 RTC support
@@ -614,6 +649,23 @@ define KernelPackage/rtc-rs5c372a/description
 endef
 
 $(eval $(call KernelPackage,rtc-rs5c372a))
+
+define KernelPackage/rtc-rx8025
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Epson RX-8025 / RX-8035
+  DEFAULT:=m if ALL_KMODS && RTC_SUPPORT
+  DEPENDS:=+kmod-i2c-core
+  KCONFIG:=CONFIG_RTC_DRV_RX8025 \
+	CONFIG_RTC_CLASS=y
+  FILES:=$(LINUX_DIR)/drivers/rtc/rtc-rx8025.ko
+  AUTOLOAD:=$(call AutoLoad,50,rtc-rx8025,1)
+endef
+
+define KernelPackage/rtc-rx8025/description
+ Kernel module for Epson RX-8025 and RX-8035 I2C RTC chip
+endef
+
+$(eval $(call KernelPackage,rtc-rx8025))
 
 
 define KernelPackage/mtdtests
@@ -891,7 +943,7 @@ $(eval $(call KernelPackage,ptp))
 define KernelPackage/ptp-gianfar
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Freescale Gianfar PTP support
-  DEPENDS:=@TARGET_mpc85xx +kmod-ptp
+  DEPENDS:=@TARGET_mpc85xx +kmod-ptp @!LINUX_4_19
   KCONFIG:=CONFIG_PTP_1588_CLOCK_GIANFAR
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/freescale/gianfar_ptp.ko
   AUTOLOAD:=$(call AutoProbe,gianfar_ptp)
@@ -904,6 +956,22 @@ endef
 
 $(eval $(call KernelPackage,ptp-gianfar))
 
+define KernelPackage/ptp-qoriq
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Freescale QorIQ PTP support
+  DEPENDS:=@TARGET_mpc85xx +kmod-ptp @LINUX_4_19
+  KCONFIG:=CONFIG_PTP_1588_CLOCK_QORIQ
+  FILES:=$(LINUX_DIR)/drivers/ptp/ptp_qoriq.o
+  AUTOLOAD:=$(call AutoProbe,ptp_qoriq)
+endef
+
+
+define KernelPackage/ptp-qoriq/description
+ Kernel module for IEEE 1588 support for Freescale
+ QorIQ Ethernet drivers
+endef
+
+$(eval $(call KernelPackage,ptp-qoriq))
 
 define KernelPackage/random-core
   SUBMENU:=$(OTHER_MENU)
@@ -918,21 +986,6 @@ endef
 
 $(eval $(call KernelPackage,random-core))
 
-define KernelPackage/random-omap
-  SUBMENU:=$(OTHER_MENU)
-  TITLE:=Hardware Random Number Generator OMAP support
-  KCONFIG:=CONFIG_HW_RANDOM_OMAP
-  FILES:=$(LINUX_DIR)/drivers/char/hw_random/omap-rng.ko
-  DEPENDS:=@TARGET_omap24xx +kmod-random-core
-  AUTOLOAD:=$(call AutoProbe,random-omap)
-endef
-
-define KernelPackage/random-omap/description
- Kernel module for the OMAP Random Number Generator
- found on OMAP16xx, OMAP2/3/4/5 and AM33xx/AM43xx multimedia processors.
-endef
-
-$(eval $(call KernelPackage,random-omap))
 
 define KernelPackage/random-tpm
   SUBMENU:=$(OTHER_MENU)
@@ -1019,7 +1072,7 @@ $(eval $(call KernelPackage,echo))
 define KernelPackage/bmp085
   SUBMENU:=$(OTHER_MENU)
   TITLE:=BMP085/BMP18x pressure sensor
-  DEPENDS:= +kmod-regmap-core @!LINUX_3_18
+  DEPENDS:= +kmod-regmap-core
   KCONFIG:= CONFIG_BMP085
   FILES:= $(LINUX_DIR)/drivers/misc/bmp085.ko
 endef
@@ -1066,6 +1119,7 @@ $(eval $(call KernelPackage,bmp085-spi))
 define KernelPackage/tpm
   SUBMENU:=$(OTHER_MENU)
   TITLE:=TPM Hardware Support
+  DEPENDS:= +!LINUX_4_14:kmod-random-core
   KCONFIG:= CONFIG_TCG_TPM
   FILES:= $(LINUX_DIR)/drivers/char/tpm/tpm.ko
   AUTOLOAD:=$(call AutoLoad,10,tpm,1)
@@ -1176,3 +1230,18 @@ define KernelPackage/it87-wdt/description
 endef
 
 $(eval $(call KernelPackage,it87-wdt))
+
+
+define KernelPackage/pinctrl-sx150x
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Semtech SX150x-series I2C GPIO expanders
+  DEPENDS:= +kmod-i2c-core @!LINUX_4_9
+  KCONFIG:=CONFIG_PINCTRL_SX150X=y
+  AUTOLOAD:=$(call AutoLoad,40,pinctrl-sx150x)
+endef
+
+define KernelPackage/pinctrl-sx150x/description
+ This driver adds support for Semtech SX150x-series I2C GPIO expanders.
+endef
+
+$(eval $(call KernelPackage,pinctrl-sx150x))

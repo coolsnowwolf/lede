@@ -546,7 +546,7 @@ __hostapd_bss_mgmt_enable_f(struct hostapd_data *hapd, int flag)
 
 		bss->radio_measurements[0] |=
 			WLAN_RRM_CAPS_NEIGHBOR_REPORT;
-		hostapd_set_own_neighbor_report(hapd);
+		hostapd_neighbor_set_own_report(hapd);
 		return true;
 	case BSS_MGMT_EN_BEACON:
 		flags = WLAN_RRM_CAPS_BEACON_REPORT_PASSIVE |
@@ -1065,8 +1065,8 @@ int hostapd_ubus_handle_event(struct hostapd_data *hapd, struct hostapd_ubus_req
 	blobmsg_add_macaddr(&b, "address", addr);
 	if (req->mgmt_frame)
 		blobmsg_add_macaddr(&b, "target", req->mgmt_frame->da);
-	if (req->frame_info)
-		blobmsg_add_u32(&b, "signal", req->frame_info->ssi_signal);
+	if (req->ssi_signal)
+		blobmsg_add_u32(&b, "signal", req->ssi_signal);
 	blobmsg_add_u32(&b, "freq", hapd->iface->freq);
 
 	if (req->elems) {
