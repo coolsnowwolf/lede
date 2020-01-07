@@ -40,15 +40,26 @@ define KernelPackage/crypto-aead
 	CONFIG_CRYPTO_AEAD2
   FILES:=$(LINUX_DIR)/crypto/aead.ko
   AUTOLOAD:=$(call AutoLoad,09,aead,1)
-  $(call AddDepends/crypto, +!LINUX_3_18:kmod-crypto-null)
+  $(call AddDepends/crypto, +kmod-crypto-null)
 endef
 
 $(eval $(call KernelPackage,crypto-aead))
 
 
+define KernelPackage/crypto-arc4
+  TITLE:=ARC4 cipher CryptoAPI module
+  KCONFIG:=CONFIG_CRYPTO_ARC4
+  FILES:=$(LINUX_DIR)/crypto/arc4.ko
+  AUTOLOAD:=$(call AutoLoad,09,arc4)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-arc4))
+
+
 define KernelPackage/crypto-authenc
   TITLE:=Combined mode wrapper for IPsec
-  DEPENDS:=+kmod-crypto-manager +!LINUX_3_18:kmod-crypto-null
+  DEPENDS:=+kmod-crypto-manager +kmod-crypto-null
   KCONFIG:=CONFIG_CRYPTO_AUTHENC
   FILES:=$(LINUX_DIR)/crypto/authenc.ko
   AUTOLOAD:=$(call AutoLoad,09,authenc)
@@ -145,7 +156,7 @@ $(eval $(call KernelPackage,crypto-cts))
 
 define KernelPackage/crypto-deflate
   TITLE:=Deflate compression CryptoAPI module
-  DEPENDS:=+kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +!(LINUX_3_18||LINUX_4_9):kmod-crypto-acompress
+  DEPENDS:=+kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +!LINUX_4_9:kmod-crypto-acompress
   KCONFIG:=CONFIG_CRYPTO_DEFLATE
   FILES:=$(LINUX_DIR)/crypto/deflate.ko
   AUTOLOAD:=$(call AutoLoad,09,deflate)
@@ -180,7 +191,7 @@ $(eval $(call KernelPackage,crypto-ecb))
 
 define KernelPackage/crypto-ecdh
   TITLE:=ECDH algorithm
-  DEPENDS:=@!LINUX_3_18 +kmod-crypto-kpp
+  DEPENDS:=+kmod-crypto-kpp
   KCONFIG:= CONFIG_CRYPTO_ECDH
   FILES:= \
 	$(LINUX_DIR)/crypto/ecdh_generic.ko
@@ -224,6 +235,18 @@ define KernelPackage/crypto-gcm
 endef
 
 $(eval $(call KernelPackage,crypto-gcm))
+
+
+define KernelPackage/crypto-xcbc
+  TITLE:=XCBC CryptoAPI module
+  DEPENDS:=+kmod-crypto-hash +kmod-crypto-manager
+  KCONFIG:=CONFIG_CRYPTO_XCBC
+  FILES:=$(LINUX_DIR)/crypto/xcbc.ko
+  AUTOLOAD:=$(call AutoLoad,09,xcbc)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-xcbc))
 
 
 define KernelPackage/crypto-gf128
@@ -274,7 +297,7 @@ $(eval $(call KernelPackage,crypto-hmac))
 
 define KernelPackage/crypto-hw-ccp
   TITLE:=AMD Cryptographic Coprocessor
-  DEPENDS:=+kmod-crypto-authenc +kmod-crypto-hash +kmod-crypto-manager +kmod-random-core +kmod-crypto-sha1 +kmod-crypto-sha256 +!(LINUX_3_18||LINUX_4_9):kmod-crypto-rsa
+  DEPENDS:=+kmod-crypto-authenc +kmod-crypto-hash +kmod-crypto-manager +kmod-random-core +kmod-crypto-sha1 +kmod-crypto-sha256 +!LINUX_4_9:kmod-crypto-rsa
   KCONFIG:= \
 	CONFIG_CRYPTO_HW=y \
 	CONFIG_CRYPTO_DEV_CCP=y \
@@ -336,6 +359,31 @@ define KernelPackage/crypto-hw-padlock
 endef
 
 $(eval $(call KernelPackage,crypto-hw-padlock))
+
+
+define KernelPackage/crypto-hw-safexcel
+  TITLE:= MVEBU SafeXcel Crypto Engine module
+  DEPENDS:=@!LINUX_4_14 @(TARGET_mvebu_cortexa53||TARGET_mvebu_cortexa72) \
+	+kmod-crypto-authenc +kmod-crypto-md5 +kmod-crypto-hmac +kmod-crypto-sha256 +kmod-crypto-sha512
+  KCONFIG:= \
+	CONFIG_CRYPTO_HW=y \
+	CONFIG_CRYPTO_DEV_SAFEXCEL
+  FILES:=$(LINUX_DIR)/drivers/crypto/inside-secure/crypto_safexcel.ko
+  AUTOLOAD:=$(call AutoLoad,90,crypto_safexcel)
+  $(call AddDepends/crypto)
+endef
+
+define KernelPackage/crypto-hw-safexcel/description
+MVEBU's EIP97 and EIP197 Cryptographic Engine driver designed by
+Inside Secure. This is found on Marvell Armada 37xx/7k/8k SoCs.
+
+Particular version of these IP (EIP197B and EIP197D) require firmware.
+Unfortunately it's not freely available and needs signed Non-Disclosure
+Agreement (NDA) with Marvell. For those who have signed NDA the firmware can be
+obtained at https://extranet.marvell.com.
+endef
+
+$(eval $(call KernelPackage,crypto-hw-safexcel))
 
 
 define KernelPackage/crypto-hw-talitos
@@ -571,7 +619,7 @@ $(eval $(call KernelPackage,crypto-pcompress))
 
 define KernelPackage/crypto-rsa
   TITLE:=RSA algorithm
-  DEPENDS:=@!LINUX_3_18 +kmod-crypto-manager +kmod-asn1-decoder
+  DEPENDS:=+kmod-crypto-manager +kmod-asn1-decoder
   KCONFIG:= CONFIG_CRYPTO_RSA
   HIDDEN:=1
   FILES:= \
@@ -583,6 +631,18 @@ define KernelPackage/crypto-rsa
 endef
 
 $(eval $(call KernelPackage,crypto-rsa))
+
+
+define KernelPackage/crypto-rmd160
+  TITLE:=RIPEMD160 digest CryptoAPI module
+  DEPENDS:=+kmod-crypto-hash
+  KCONFIG:=CONFIG_CRYPTO_RMD160
+  FILES:=$(LINUX_DIR)/crypto/rmd160.ko
+  AUTOLOAD:=$(call AutoLoad,09,rmd160)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-rmd160))
 
 
 define KernelPackage/crypto-rng
@@ -709,13 +769,17 @@ define KernelPackage/crypto-user
   DEPENDS:=+kmod-crypto-hash +kmod-crypto-manager
   KCONFIG:= \
 	CONFIG_CRYPTO_USER_API \
+	CONFIG_CRYPTO_USER_API_AEAD \
 	CONFIG_CRYPTO_USER_API_HASH \
+	CONFIG_CRYPTO_USER_API_RNG \
 	CONFIG_CRYPTO_USER_API_SKCIPHER
   FILES:= \
 	$(LINUX_DIR)/crypto/af_alg.ko \
+	$(LINUX_DIR)/crypto/algif_aead.ko \
 	$(LINUX_DIR)/crypto/algif_hash.ko \
+	$(LINUX_DIR)/crypto/algif_rng.ko \
 	$(LINUX_DIR)/crypto/algif_skcipher.ko
-  AUTOLOAD:=$(call AutoLoad,09,af_alg algif_hash algif_skcipher)
+  AUTOLOAD:=$(call AutoLoad,09,af_alg algif_aead algif_hash algif_rng algif_skcipher)
   $(call AddDepends/crypto)
 endef
 

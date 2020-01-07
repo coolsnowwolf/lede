@@ -1,20 +1,27 @@
-From ede8d823f0e1b2c5e14cbac13839b818ed1c18cf Mon Sep 17 00:00:00 2001
+From 80df9e62536d7cac5c03a4fcb494c6ddf0723633 Mon Sep 17 00:00:00 2001
 From: Biwen Li <biwen.li@nxp.com>
-Date: Tue, 30 Oct 2018 18:26:10 +0800
-Subject: [PATCH 07/40] apaa2-dpio:support layerscape
+Date: Wed, 17 Apr 2019 18:58:27 +0800
+Subject: [PATCH] dpaa2-dpio: support layerscape
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
 This is an integrated patch of dpaa2-dpio for layerscape
 
 Signed-off-by: Bharat Bhushan <Bharat.Bhushan@nxp.com>
+Signed-off-by: Biwen Li <biwen.li@nxp.com>
 Signed-off-by: Bogdan Purcareata <bogdan.purcareata@nxp.com>
 Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
 Signed-off-by: Guanhua Gao <guanhua.gao@nxp.com>
 Signed-off-by: Haiying Wang <Haiying.Wang@nxp.com>
 Signed-off-by: Horia Geantă <horia.geanta@nxp.com>
+Signed-off-by: Ioana Ciornei <ioana.ciornei@nxp.com>
 Signed-off-by: Ioana Radulescu <ruxandra.radulescu@nxp.com>
 Signed-off-by: Laurentiu Tudor <laurentiu.tudor@nxp.com>
+Signed-off-by: Li Yang <leoyang.li@nxp.com>
 Signed-off-by: Radu Alexe <radu.alexe@nxp.com>
 Signed-off-by: Roy Pledge <roy.pledge@nxp.com>
-Signed-off-by: Biwen Li <biwen.li@nxp.com>
+Signed-off-by: Youri Querry <youri.querry_1@nxp.com>
 ---
  drivers/staging/fsl-mc/Kconfig                |   1 +
  drivers/staging/fsl-mc/Makefile               |   1 +
@@ -26,12 +33,12 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  drivers/staging/fsl-mc/bus/dpcon.c            |  32 +-
  drivers/staging/fsl-mc/bus/dpio/Makefile      |   3 +-
  drivers/staging/fsl-mc/bus/dpio/dpio-cmd.h    |  29 +-
- drivers/staging/fsl-mc/bus/dpio/dpio-driver.c |  53 ++--
- .../staging/fsl-mc/bus/dpio/dpio-service.c    | 258 +++++++++++++---
- drivers/staging/fsl-mc/bus/dpio/dpio.c        |  51 ++--
+ drivers/staging/fsl-mc/bus/dpio/dpio-driver.c |  99 ++--
+ .../staging/fsl-mc/bus/dpio/dpio-service.c    | 295 +++++++++---
+ drivers/staging/fsl-mc/bus/dpio/dpio.c        |  51 +--
  drivers/staging/fsl-mc/bus/dpio/dpio.h        |  32 +-
- .../staging/fsl-mc/bus/dpio/qbman-portal.c    | 217 ++++++++++---
- .../staging/fsl-mc/bus/dpio/qbman-portal.h    | 112 ++++---
+ .../staging/fsl-mc/bus/dpio/qbman-portal.c    | 421 ++++++++++++++----
+ .../staging/fsl-mc/bus/dpio/qbman-portal.h    | 134 ++++--
  drivers/staging/fsl-mc/bus/dpmcp.c            |  28 +-
  drivers/staging/fsl-mc/bus/dprc-driver.c      |   4 +-
  drivers/staging/fsl-mc/bus/dprc.c             |  28 +-
@@ -42,14 +49,14 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  .../fsl-mc/bus/irq-gic-v3-its-fsl-mc-msi.c    |   4 +-
  drivers/staging/fsl-mc/bus/mc-io.c            |  28 +-
  drivers/staging/fsl-mc/bus/mc-sys.c           |  28 +-
- drivers/staging/fsl-mc/include/dpaa2-fd.h     | 288 ++++++++++++++++--
+ drivers/staging/fsl-mc/include/dpaa2-fd.h     | 288 ++++++++++--
  drivers/staging/fsl-mc/include/dpaa2-global.h |  27 +-
- drivers/staging/fsl-mc/include/dpaa2-io.h     |  97 ++++--
+ drivers/staging/fsl-mc/include/dpaa2-io.h     | 110 +++--
  drivers/staging/fsl-mc/include/dpbp.h         |  29 +-
  drivers/staging/fsl-mc/include/dpcon.h        |  32 +-
- drivers/staging/fsl-mc/include/dpopr.h        | 110 +++++++
+ drivers/staging/fsl-mc/include/dpopr.h        | 110 +++++
  drivers/staging/fsl-mc/include/mc.h           |   4 +-
- 33 files changed, 970 insertions(+), 634 deletions(-)
+ 33 files changed, 1233 insertions(+), 693 deletions(-)
  create mode 100644 drivers/staging/fsl-mc/include/dpopr.h
 
 --- a/drivers/staging/fsl-mc/Kconfig
@@ -347,15 +354,33 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
   */
  
  #include <linux/types.h>
-@@ -114,6 +89,7 @@ static int dpaa2_dpio_probe(struct fsl_m
+@@ -38,6 +13,7 @@
+ #include <linux/msi.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/delay.h>
++#include <linux/io.h>
+ 
+ #include "../../include/mc.h"
+ #include "../../include/dpaa2-io.h"
+@@ -54,6 +30,8 @@ struct dpio_priv {
+ 	struct dpaa2_io *io;
+ };
+ 
++static cpumask_var_t cpus_unused_mask;
++
+ static irqreturn_t dpio_irq_handler(int irq_num, void *arg)
+ {
+ 	struct device *dev = (struct device *)arg;
+@@ -113,7 +91,7 @@ static int dpaa2_dpio_probe(struct fsl_m
+ 	struct dpio_priv *priv;
  	int err = -ENOMEM;
  	struct device *dev = &dpio_dev->dev;
- 	static int next_cpu = -1;
+-	static int next_cpu = -1;
 +	int possible_next_cpu;
  
  	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
  	if (!priv)
-@@ -135,6 +111,12 @@ static int dpaa2_dpio_probe(struct fsl_m
+@@ -135,6 +113,12 @@ static int dpaa2_dpio_probe(struct fsl_m
  		goto err_open;
  	}
  
@@ -368,39 +393,75 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	err = dpio_get_attributes(dpio_dev->mc_io, 0, dpio_dev->mc_handle,
  				  &dpio_attrs);
  	if (err) {
-@@ -156,23 +138,23 @@ static int dpaa2_dpio_probe(struct fsl_m
+@@ -155,26 +139,35 @@ static int dpaa2_dpio_probe(struct fsl_m
+ 	desc.dpio_id = dpio_dev->obj_desc.id;
  
  	/* get the cpu to use for the affinity hint */
- 	if (next_cpu == -1)
+-	if (next_cpu == -1)
 -		next_cpu = cpumask_first(cpu_online_mask);
-+		possible_next_cpu = cpumask_first(cpu_online_mask);
- 	else
+-	else
 -		next_cpu = cpumask_next(next_cpu, cpu_online_mask);
-+		possible_next_cpu = cpumask_next(next_cpu, cpu_online_mask);
- 
+-
 -	if (!cpu_possible(next_cpu)) {
++	possible_next_cpu = cpumask_first(cpus_unused_mask);
 +	if (possible_next_cpu >= nr_cpu_ids) {
  		dev_err(dev, "probe failed. Number of DPIOs exceeds NR_CPUS.\n");
  		err = -ERANGE;
  		goto err_allocate_irqs;
  	}
 -	desc.cpu = next_cpu;
-+	desc.cpu = next_cpu = possible_next_cpu;
++	desc.cpu = possible_next_cpu;
++	cpumask_clear_cpu(possible_next_cpu, cpus_unused_mask);
  
- 	/*
+-	/*
 -	 * Set the CENA regs to be the cache inhibited area of the portal to
 -	 * avoid coherency issues if a user migrates to another core.
-+	 * Set the CENA regs to be the cache enabled area of the portal to
-+	 * achieve the best performance.
- 	 */
+-	 */
 -	desc.regs_cena = ioremap_wc(dpio_dev->regions[1].start,
 -		resource_size(&dpio_dev->regions[1]));
-+	desc.regs_cena = ioremap_cache_ns(dpio_dev->regions[0].start,
-+		resource_size(&dpio_dev->regions[0]));
- 	desc.regs_cinh = ioremap(dpio_dev->regions[1].start,
- 		resource_size(&dpio_dev->regions[1]));
+-	desc.regs_cinh = ioremap(dpio_dev->regions[1].start,
+-		resource_size(&dpio_dev->regions[1]));
++	if (dpio_dev->obj_desc.region_count < 3) {
++		/* No support for DDR backed portals, use classic mapping */
++		desc.regs_cena = ioremap_cache_ns(dpio_dev->regions[0].start,
++				       resource_size(&dpio_dev->regions[0]));
++	} else {
++		desc.regs_cena = memremap(dpio_dev->regions[2].start,
++					resource_size(&dpio_dev->regions[2]),
++					MEMREMAP_WB);
++	}
++	if (IS_ERR(desc.regs_cena)) {
++		dev_err(dev, "ioremap_cache_ns failed\n");
++		goto err_allocate_irqs;
++	}
++
++	desc.regs_cinh = devm_ioremap(dev, dpio_dev->regions[1].start,
++				      resource_size(&dpio_dev->regions[1]));
++	if (!desc.regs_cinh) {
++		dev_err(dev, "devm_ioremap failed\n");
++		goto err_allocate_irqs;
++	}
  
-@@ -207,6 +189,7 @@ err_register_dpio_irq:
+ 	err = fsl_mc_allocate_irqs(dpio_dev);
+ 	if (err) {
+@@ -186,7 +179,7 @@ static int dpaa2_dpio_probe(struct fsl_m
+ 	if (err)
+ 		goto err_register_dpio_irq;
+ 
+-	priv->io = dpaa2_io_create(&desc);
++	priv->io = dpaa2_io_create(&desc, dev);
+ 	if (!priv->io) {
+ 		dev_err(dev, "dpaa2_io_create failed\n");
+ 		goto err_dpaa2_io_create;
+@@ -196,7 +189,6 @@ static int dpaa2_dpio_probe(struct fsl_m
+ 	dev_dbg(dev, "   receives_notifications = %d\n",
+ 		desc.receives_notifications);
+ 	dpio_close(dpio_dev->mc_io, 0, dpio_dev->mc_handle);
+-	fsl_mc_portal_free(dpio_dev->mc_io);
+ 
+ 	return 0;
+ 
+@@ -207,6 +199,7 @@ err_register_dpio_irq:
  err_allocate_irqs:
  	dpio_disable(dpio_dev->mc_io, 0, dpio_dev->mc_handle);
  err_get_attr:
@@ -408,6 +469,55 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	dpio_close(dpio_dev->mc_io, 0, dpio_dev->mc_handle);
  err_open:
  	fsl_mc_portal_free(dpio_dev->mc_io);
+@@ -227,7 +220,7 @@ static int dpaa2_dpio_remove(struct fsl_
+ {
+ 	struct device *dev;
+ 	struct dpio_priv *priv;
+-	int err;
++	int err = 0, cpu;
+ 
+ 	dev = &dpio_dev->dev;
+ 	priv = dev_get_drvdata(dev);
+@@ -236,11 +229,8 @@ static int dpaa2_dpio_remove(struct fsl_
+ 
+ 	dpio_teardown_irqs(dpio_dev);
+ 
+-	err = fsl_mc_portal_allocate(dpio_dev, 0, &dpio_dev->mc_io);
+-	if (err) {
+-		dev_err(dev, "MC portal allocation failed\n");
+-		goto err_mcportal;
+-	}
++	cpu = dpaa2_io_get_cpu(priv->io);
++	cpumask_set_cpu(cpu, cpus_unused_mask);
+ 
+ 	err = dpio_open(dpio_dev->mc_io, 0, dpio_dev->obj_desc.id,
+ 			&dpio_dev->mc_handle);
+@@ -261,7 +251,7 @@ static int dpaa2_dpio_remove(struct fsl_
+ 
+ err_open:
+ 	fsl_mc_portal_free(dpio_dev->mc_io);
+-err_mcportal:
++
+ 	return err;
+ }
+ 
+@@ -285,11 +275,16 @@ static struct fsl_mc_driver dpaa2_dpio_d
+ 
+ static int dpio_driver_init(void)
+ {
++	if (!zalloc_cpumask_var(&cpus_unused_mask, GFP_KERNEL))
++		return -ENOMEM;
++	cpumask_copy(cpus_unused_mask, cpu_online_mask);
++
+ 	return fsl_mc_driver_register(&dpaa2_dpio_driver);
+ }
+ 
+ static void dpio_driver_exit(void)
+ {
++	free_cpumask_var(cpus_unused_mask);
+ 	fsl_mc_driver_unregister(&dpaa2_dpio_driver);
+ }
+ module_init(dpio_driver_init);
 --- a/drivers/staging/fsl-mc/bus/dpio/dpio-service.c
 +++ b/drivers/staging/fsl-mc/bus/dpio/dpio-service.c
 @@ -1,33 +1,8 @@
@@ -453,7 +563,15 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	struct dpaa2_io_desc dpio_desc;
  	struct qbman_swp_desc swp_desc;
  	struct qbman_swp *swp;
-@@ -83,7 +57,7 @@ static inline struct dpaa2_io *service_s
+@@ -53,6 +27,7 @@ struct dpaa2_io {
+ 	/* protect notifications list */
+ 	spinlock_t lock_notifications;
+ 	struct list_head notifications;
++	struct device *dev;
+ };
+ 
+ struct dpaa2_io_store {
+@@ -83,7 +58,7 @@ static inline struct dpaa2_io *service_s
  	 * If cpu == -1, choose the current cpu, with no guarantees about
  	 * potentially being migrated away.
  	 */
@@ -462,7 +580,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  		cpu = smp_processor_id();
  
  	/* If a specific cpu was requested, pick it up immediately */
-@@ -95,6 +69,10 @@ static inline struct dpaa2_io *service_s
+@@ -95,6 +70,10 @@ static inline struct dpaa2_io *service_s
  	if (d)
  		return d;
  
@@ -473,7 +591,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	spin_lock(&dpio_list_lock);
  	d = list_entry(dpio_list.next, struct dpaa2_io, node);
  	list_del(&d->node);
-@@ -105,6 +83,23 @@ static inline struct dpaa2_io *service_s
+@@ -105,15 +84,34 @@ static inline struct dpaa2_io *service_s
  }
  
  /**
@@ -496,8 +614,20 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
 +/**
   * dpaa2_io_create() - create a dpaa2_io object.
   * @desc: the dpaa2_io descriptor
++ * @dev: the actual DPIO device
   *
-@@ -126,7 +121,6 @@ struct dpaa2_io *dpaa2_io_create(const s
+  * Activates a "struct dpaa2_io" corresponding to the given config of an actual
+  * DPIO object.
+  *
+  * Return a valid dpaa2_io object for success, or NULL for failure.
+  */
+-struct dpaa2_io *dpaa2_io_create(const struct dpaa2_io_desc *desc)
++struct dpaa2_io *dpaa2_io_create(const struct dpaa2_io_desc *desc,
++				 struct device *dev)
+ {
+ 	struct dpaa2_io *obj = kmalloc(sizeof(*obj), GFP_KERNEL);
+ 
+@@ -126,7 +124,6 @@ struct dpaa2_io *dpaa2_io_create(const s
  		return NULL;
  	}
  
@@ -505,15 +635,19 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	obj->dpio_desc = *desc;
  	obj->swp_desc.cena_bar = obj->dpio_desc.regs_cena;
  	obj->swp_desc.cinh_bar = obj->dpio_desc.regs_cinh;
-@@ -158,7 +152,6 @@ struct dpaa2_io *dpaa2_io_create(const s
+@@ -156,9 +153,10 @@ struct dpaa2_io *dpaa2_io_create(const s
+ 		dpio_by_cpu[desc->cpu] = obj;
+ 	spin_unlock(&dpio_list_lock);
  
++	obj->dev = dev;
++
  	return obj;
  }
 -EXPORT_SYMBOL(dpaa2_io_create);
  
  /**
   * dpaa2_io_down() - release the dpaa2_io object.
-@@ -171,11 +164,8 @@ EXPORT_SYMBOL(dpaa2_io_create);
+@@ -171,11 +169,8 @@ EXPORT_SYMBOL(dpaa2_io_create);
   */
  void dpaa2_io_down(struct dpaa2_io *d)
  {
@@ -525,7 +659,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  
  #define DPAA_POLL_MAX 32
  
-@@ -206,7 +196,7 @@ irqreturn_t dpaa2_io_irq(struct dpaa2_io
+@@ -206,7 +201,7 @@ irqreturn_t dpaa2_io_irq(struct dpaa2_io
  			u64 q64;
  
  			q64 = qbman_result_SCN_ctx(dq);
@@ -534,25 +668,54 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  			ctx->cb(ctx);
  		} else {
  			pr_crit("fsl-mc-dpio: Unrecognised/ignored DQRR entry\n");
-@@ -222,7 +212,6 @@ done:
+@@ -222,13 +217,19 @@ done:
  	qbman_swp_interrupt_set_inhibit(swp, 0);
  	return IRQ_HANDLED;
  }
 -EXPORT_SYMBOL(dpaa2_io_irq);
++
++int dpaa2_io_get_cpu(struct dpaa2_io *d)
++{
++	return d->dpio_desc.cpu;
++}
++EXPORT_SYMBOL(dpaa2_io_get_cpu);
  
  /**
   * dpaa2_io_service_register() - Prepare for servicing of FQDAN or CDAN
-@@ -252,7 +241,7 @@ int dpaa2_io_service_register(struct dpa
+  *                               notifications on the given DPIO service.
+  * @d:   the given DPIO service.
+  * @ctx: the notification context.
++ * @dev: the device that requests the register
+  *
+  * The caller should make the MC command to attach a DPAA2 object to
+  * a DPIO after this function completes successfully.  In that way:
+@@ -243,7 +244,8 @@ EXPORT_SYMBOL(dpaa2_io_irq);
+  * Return 0 for success, or -ENODEV for failure.
+  */
+ int dpaa2_io_service_register(struct dpaa2_io *d,
+-			      struct dpaa2_io_notification_ctx *ctx)
++			      struct dpaa2_io_notification_ctx *ctx,
++			      struct device *dev)
+ {
+ 	unsigned long irqflags;
+ 
+@@ -251,8 +253,10 @@ int dpaa2_io_service_register(struct dpa
+ 	if (!d)
  		return -ENODEV;
  
++	device_link_add(dev, d->dev, DL_FLAG_AUTOREMOVE_SUPPLIER);
++
  	ctx->dpio_id = d->dpio_desc.dpio_id;
 -	ctx->qman64 = (u64)ctx;
 +	ctx->qman64 = (u64)(uintptr_t)ctx;
  	ctx->dpio_private = d;
  	spin_lock_irqsave(&d->lock_notifications, irqflags);
  	list_add(&ctx->node, &d->notifications);
-@@ -265,7 +254,7 @@ int dpaa2_io_service_register(struct dpa
+@@ -263,20 +267,23 @@ int dpaa2_io_service_register(struct dpa
+ 		return qbman_swp_CDAN_set_context_enable(d->swp,
+ 							 (u16)ctx->id,
  							 ctx->qman64);
++
  	return 0;
  }
 -EXPORT_SYMBOL(dpaa2_io_service_register);
@@ -560,16 +723,33 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  
  /**
   * dpaa2_io_service_deregister - The opposite of 'register'.
-@@ -288,7 +277,7 @@ void dpaa2_io_service_deregister(struct
+  * @service: the given DPIO service.
+  * @ctx: the notification context.
++ * @dev: the device that requests to be deregistered
+  *
+  * This function should be called only after sending the MC command to
+  * to detach the notification-producing device from the DPIO.
+  */
+ void dpaa2_io_service_deregister(struct dpaa2_io *service,
+-				 struct dpaa2_io_notification_ctx *ctx)
++				 struct dpaa2_io_notification_ctx *ctx,
++				 struct device *dev)
+ {
+ 	struct dpaa2_io *d = ctx->dpio_private;
+ 	unsigned long irqflags;
+@@ -287,8 +294,10 @@ void dpaa2_io_service_deregister(struct
+ 	spin_lock_irqsave(&d->lock_notifications, irqflags);
  	list_del(&ctx->node);
  	spin_unlock_irqrestore(&d->lock_notifications, irqflags);
++
++	device_link_remove(dev, d->dev);
  }
 -EXPORT_SYMBOL(dpaa2_io_service_deregister);
 +EXPORT_SYMBOL_GPL(dpaa2_io_service_deregister);
  
  /**
   * dpaa2_io_service_rearm() - Rearm the notification for the given DPIO service.
-@@ -322,7 +311,7 @@ int dpaa2_io_service_rearm(struct dpaa2_
+@@ -322,7 +331,7 @@ int dpaa2_io_service_rearm(struct dpaa2_
  
  	return err;
  }
@@ -578,7 +758,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  
  /**
   * dpaa2_io_service_pull_fq() - pull dequeue functions from a fq.
-@@ -385,7 +374,7 @@ int dpaa2_io_service_pull_channel(struct
+@@ -385,7 +394,7 @@ int dpaa2_io_service_pull_channel(struct
  
  	return err;
  }
@@ -587,7 +767,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  
  /**
   * dpaa2_io_service_enqueue_fq() - Enqueue a frame to a frame queue.
-@@ -441,7 +430,7 @@ int dpaa2_io_service_enqueue_qd(struct d
+@@ -441,7 +450,7 @@ int dpaa2_io_service_enqueue_qd(struct d
  
  	return qbman_swp_enqueue(d->swp, &ed, fd);
  }
@@ -596,7 +776,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  
  /**
   * dpaa2_io_service_release() - Release buffers to a buffer pool.
-@@ -453,7 +442,7 @@ EXPORT_SYMBOL(dpaa2_io_service_enqueue_q
+@@ -453,7 +462,7 @@ EXPORT_SYMBOL(dpaa2_io_service_enqueue_q
   * Return 0 for success, and negative error code for failure.
   */
  int dpaa2_io_service_release(struct dpaa2_io *d,
@@ -605,7 +785,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  			     const u64 *buffers,
  			     unsigned int num_buffers)
  {
-@@ -468,7 +457,7 @@ int dpaa2_io_service_release(struct dpaa
+@@ -468,7 +477,7 @@ int dpaa2_io_service_release(struct dpaa
  
  	return qbman_swp_release(d->swp, &rd, buffers, num_buffers);
  }
@@ -614,7 +794,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  
  /**
   * dpaa2_io_service_acquire() - Acquire buffers from a buffer pool.
-@@ -482,7 +471,7 @@ EXPORT_SYMBOL(dpaa2_io_service_release);
+@@ -482,7 +491,7 @@ EXPORT_SYMBOL(dpaa2_io_service_release);
   * Eg. if the buffer pool is empty, this will return zero.
   */
  int dpaa2_io_service_acquire(struct dpaa2_io *d,
@@ -623,7 +803,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  			     u64 *buffers,
  			     unsigned int num_buffers)
  {
-@@ -499,7 +488,7 @@ int dpaa2_io_service_acquire(struct dpaa
+@@ -499,7 +508,7 @@ int dpaa2_io_service_acquire(struct dpaa
  
  	return err;
  }
@@ -632,7 +812,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  
  /*
   * 'Stores' are reusable memory blocks for holding dequeue results, and to
-@@ -553,7 +542,7 @@ struct dpaa2_io_store *dpaa2_io_store_cr
+@@ -553,7 +562,7 @@ struct dpaa2_io_store *dpaa2_io_store_cr
  
  	return ret;
  }
@@ -641,7 +821,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  
  /**
   * dpaa2_io_store_destroy() - Frees the dma memory storage for dequeue
-@@ -567,7 +556,7 @@ void dpaa2_io_store_destroy(struct dpaa2
+@@ -567,7 +576,7 @@ void dpaa2_io_store_destroy(struct dpaa2
  	kfree(s->alloced_addr);
  	kfree(s);
  }
@@ -650,7 +830,13 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  
  /**
   * dpaa2_io_store_next() - Determine when the next dequeue result is available.
-@@ -615,4 +604,177 @@ struct dpaa2_dq *dpaa2_io_store_next(str
+@@ -610,9 +619,193 @@ struct dpaa2_dq *dpaa2_io_store_next(str
+ 		if (!(dpaa2_dq_flags(ret) & DPAA2_DQ_STAT_VALIDFRAME))
+ 			ret = NULL;
+ 	} else {
++		prefetch(&s->vaddr[s->idx]);
+ 		*is_last = 0;
+ 	}
  
  	return ret;
  }
@@ -820,10 +1006,20 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
 +{
 +	struct qbman_eq_desc ed;
 +	struct dpaa2_fd fd;
++	unsigned long irqflags;
++	int ret;
 +
 +	d = service_select(d);
 +	if (!d)
 +		return -ENODEV;
++
++	if ((d->swp->desc->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000) {
++		spin_lock_irqsave(&d->lock_mgmt_cmd, irqflags);
++		ret = qbman_orp_drop(d->swp, orpid, seqnum);
++		spin_unlock_irqrestore(&d->lock_mgmt_cmd, irqflags);
++		return ret;
++	}
++
 +	qbman_eq_desc_clear(&ed);
 +	qbman_eq_desc_set_orp_hole(&ed, orpid, seqnum);
 +	return qbman_swp_enqueue(d->swp, &ed, &fd);
@@ -978,7 +1174,53 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
   */
  
  #include <asm/cacheflush.h>
-@@ -99,6 +74,14 @@ enum qbman_sdqcr_fc {
+@@ -37,23 +12,26 @@
+ 
+ #include "qbman-portal.h"
+ 
+-#define QMAN_REV_4000   0x04000000
+-#define QMAN_REV_4100   0x04010000
+-#define QMAN_REV_4101   0x04010001
+-#define QMAN_REV_MASK   0xffff0000
+-
+ /* All QBMan command and result structures use this "valid bit" encoding */
+ #define QB_VALID_BIT ((u32)0x80)
+ 
+ /* QBMan portal management command codes */
+ #define QBMAN_MC_ACQUIRE       0x30
+ #define QBMAN_WQCHAN_CONFIGURE 0x46
++#define QBMAN_MC_ORP           0x63
+ 
+ /* CINH register offsets */
++#define QBMAN_CINH_SWP_EQCR_PI      0x800
+ #define QBMAN_CINH_SWP_EQAR    0x8c0
++#define QBMAN_CINH_SWP_CR_RT        0x900
++#define QBMAN_CINH_SWP_VDQCR_RT     0x940
++#define QBMAN_CINH_SWP_EQCR_AM_RT   0x980
++#define QBMAN_CINH_SWP_RCR_AM_RT    0x9c0
+ #define QBMAN_CINH_SWP_DQPI    0xa00
+ #define QBMAN_CINH_SWP_DCAP    0xac0
+ #define QBMAN_CINH_SWP_SDQCR   0xb00
++#define QBMAN_CINH_SWP_EQCR_AM_RT2  0xb40
++#define QBMAN_CINH_SWP_RCR_PI       0xc00
+ #define QBMAN_CINH_SWP_RAR     0xcc0
+ #define QBMAN_CINH_SWP_ISR     0xe00
+ #define QBMAN_CINH_SWP_IER     0xe40
+@@ -68,6 +46,13 @@
+ #define QBMAN_CENA_SWP_RR(vb)  (0x700 + ((u32)(vb) >> 1))
+ #define QBMAN_CENA_SWP_VDQCR   0x780
+ 
++/* CENA register offsets in memory-backed mode */
++#define QBMAN_CENA_SWP_DQRR_MEM(n)  (0x800 + ((u32)(n) << 6))
++#define QBMAN_CENA_SWP_RCR_MEM(n)   (0x1400 + ((u32)(n) << 6))
++#define QBMAN_CENA_SWP_CR_MEM       0x1600
++#define QBMAN_CENA_SWP_RR_MEM       0x1680
++#define QBMAN_CENA_SWP_VDQCR_MEM    0x1780
++
+ /* Reverse mapping of QBMAN_CENA_SWP_DQRR() */
+ #define QBMAN_IDX_FROM_DQRR(p) (((unsigned long)(p) & 0x1ff) >> 6)
+ 
+@@ -99,6 +84,14 @@ enum qbman_sdqcr_fc {
  	qbman_sdqcr_fc_up_to_3 = 1
  };
  
@@ -993,32 +1235,139 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  /* Portal Access */
  
  static inline u32 qbman_read_register(struct qbman_swp *p, u32 offset)
-@@ -189,7 +172,7 @@ struct qbman_swp *qbman_swp_init(const s
+@@ -121,10 +114,13 @@ static inline void *qbman_get_cmd(struct
+ 
+ #define SWP_CFG_DQRR_MF_SHIFT 20
+ #define SWP_CFG_EST_SHIFT     16
++#define SWP_CFG_CPBS_SHIFT    15
+ #define SWP_CFG_WN_SHIFT      14
+ #define SWP_CFG_RPM_SHIFT     12
+ #define SWP_CFG_DCM_SHIFT     10
+ #define SWP_CFG_EPM_SHIFT     8
++#define SWP_CFG_VPM_SHIFT     7
++#define SWP_CFG_CPM_SHIFT     6
+ #define SWP_CFG_SD_SHIFT      5
+ #define SWP_CFG_SP_SHIFT      4
+ #define SWP_CFG_SE_SHIFT      3
+@@ -150,6 +146,8 @@ static inline u32 qbman_set_swp_cfg(u8 m
+ 		ep << SWP_CFG_EP_SHIFT);
+ }
+ 
++#define QMAN_RT_MODE	   0x00000100
++
+ /**
+  * qbman_swp_init() - Create a functional object representing the given
+  *                    QBMan portal descriptor.
+@@ -171,6 +169,8 @@ struct qbman_swp *qbman_swp_init(const s
+ 	p->sdq |= qbman_sdqcr_dct_prio_ics << QB_SDQCR_DCT_SHIFT;
+ 	p->sdq |= qbman_sdqcr_fc_up_to_3 << QB_SDQCR_FC_SHIFT;
+ 	p->sdq |= QMAN_SDQCR_TOKEN << QB_SDQCR_TOK_SHIFT;
++	if ((p->desc->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000)
++		p->mr.valid_bit = QB_VALID_BIT;
+ 
+ 	atomic_set(&p->vdq.available, 1);
+ 	p->vdq.valid_bit = QB_VALID_BIT;
+@@ -188,8 +188,11 @@ struct qbman_swp *qbman_swp_init(const s
+ 	p->addr_cena = d->cena_bar;
  	p->addr_cinh = d->cinh_bar;
  
++	if ((p->desc->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000)
++		memset(p->addr_cena, 0, 64 * 1024);
++
  	reg = qbman_set_swp_cfg(p->dqrr.dqrr_size,
 -				1, /* Writes Non-cacheable */
 +				0, /* Writes cacheable */
  				0, /* EQCR_CI stashing threshold */
  				3, /* RPM: Valid bit mode, RCR in array mode */
  				2, /* DCM: Discrete consumption ack mode */
-@@ -315,6 +298,7 @@ void qbman_swp_mc_submit(struct qbman_sw
+@@ -200,6 +203,10 @@ struct qbman_swp *qbman_swp_init(const s
+ 				1, /* dequeue stashing priority == TRUE */
+ 				0, /* dequeue stashing enable == FALSE */
+ 				0); /* EQCR_CI stashing priority == FALSE */
++	if ((p->desc->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000)
++		reg |= 1 << SWP_CFG_CPBS_SHIFT | /* memory-backed mode */
++		       1 << SWP_CFG_VPM_SHIFT |  /* VDQCR read triggered mode */
++		       1 << SWP_CFG_CPM_SHIFT;   /* CR read triggered mode */
  
- 	dma_wmb();
- 	*v = cmd_verb | p->mc.valid_bit;
-+	dccvac(cmd);
+ 	qbman_write_register(p, QBMAN_CINH_SWP_CFG, reg);
+ 	reg = qbman_read_register(p, QBMAN_CINH_SWP_CFG);
+@@ -208,6 +215,10 @@ struct qbman_swp *qbman_swp_init(const s
+ 		return NULL;
+ 	}
+ 
++	if ((p->desc->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000) {
++		qbman_write_register(p, QBMAN_CINH_SWP_EQCR_PI, QMAN_RT_MODE);
++		qbman_write_register(p, QBMAN_CINH_SWP_RCR_PI, QMAN_RT_MODE);
++	}
+ 	/*
+ 	 * SDQCR needs to be initialized to 0 when no channels are
+ 	 * being dequeued from or else the QMan HW will indicate an
+@@ -302,7 +313,10 @@ void qbman_swp_interrupt_set_inhibit(str
+  */
+ void *qbman_swp_mc_start(struct qbman_swp *p)
+ {
+-	return qbman_get_cmd(p, QBMAN_CENA_SWP_CR);
++	if ((p->desc->qman_version & QMAN_REV_MASK) < QMAN_REV_5000)
++		return qbman_get_cmd(p, QBMAN_CENA_SWP_CR);
++	else
++		return qbman_get_cmd(p, QBMAN_CENA_SWP_CR_MEM);
  }
  
  /*
-@@ -325,6 +309,7 @@ void *qbman_swp_mc_result(struct qbman_s
+@@ -313,8 +327,15 @@ void qbman_swp_mc_submit(struct qbman_sw
+ {
+ 	u8 *v = cmd;
+ 
+-	dma_wmb();
+-	*v = cmd_verb | p->mc.valid_bit;
++	if ((p->desc->qman_version & QMAN_REV_MASK) < QMAN_REV_5000) {
++		dma_wmb();
++		*v = cmd_verb | p->mc.valid_bit;
++		dccvac(cmd);
++	} else {
++		*v = cmd_verb | p->mc.valid_bit;
++		dma_wmb();
++		qbman_write_register(p, QBMAN_CINH_SWP_CR_RT, QMAN_RT_MODE);
++	}
+ }
+ 
+ /*
+@@ -325,13 +346,28 @@ void *qbman_swp_mc_result(struct qbman_s
  {
  	u32 *ret, verb;
  
-+	qbman_inval_prefetch(p, QBMAN_CENA_SWP_RR(p->mc.valid_bit));
- 	ret = qbman_get_cmd(p, QBMAN_CENA_SWP_RR(p->mc.valid_bit));
+-	ret = qbman_get_cmd(p, QBMAN_CENA_SWP_RR(p->mc.valid_bit));
++	if ((p->desc->qman_version & QMAN_REV_MASK) < QMAN_REV_5000) {
++		qbman_inval_prefetch(p, QBMAN_CENA_SWP_RR(p->mc.valid_bit));
++		ret = qbman_get_cmd(p, QBMAN_CENA_SWP_RR(p->mc.valid_bit));
++		/* Remove the valid-bit - command completed if the rest
++		 * is non-zero.
++		 */
++		verb = ret[0] & ~QB_VALID_BIT;
++		if (!verb)
++			return NULL;
++		p->mc.valid_bit ^= QB_VALID_BIT;
++	} else {
++		ret = qbman_get_cmd(p, QBMAN_CENA_SWP_RR_MEM);
++		/* Command completed if the valid bit is toggled */
++		if (p->mr.valid_bit != (ret[0] & QB_VALID_BIT))
++			return NULL;
++		/* Command completed if the rest is non-zero */
++		verb = ret[0] & ~QB_VALID_BIT;
++		if (!verb)
++			return NULL;
++		p->mr.valid_bit ^= QB_VALID_BIT;
++	}
  
- 	/* Remove the valid-bit - command completed if the rest is non-zero */
-@@ -370,6 +355,43 @@ void qbman_eq_desc_set_no_orp(struct qbm
+-	/* Remove the valid-bit - command completed if the rest is non-zero */
+-	verb = ret[0] & ~QB_VALID_BIT;
+-	if (!verb)
+-		return NULL;
+-	p->mc.valid_bit ^= QB_VALID_BIT;
+ 	return ret;
+ }
+ 
+@@ -370,6 +406,43 @@ void qbman_eq_desc_set_no_orp(struct qbm
  		d->verb |= enqueue_rejects_to_fq;
  }
  
@@ -1062,7 +1411,26 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  /*
   * Exactly one of the following descriptor "targets" should be set. (Calling any
   * one of these will replace the effect of any prior call to one of these.)
-@@ -429,12 +451,23 @@ int qbman_swp_enqueue(struct qbman_swp *
+@@ -408,6 +481,18 @@ void qbman_eq_desc_set_qd(struct qbman_e
+ #define EQAR_VB(eqar)      ((eqar) & 0x80)
+ #define EQAR_SUCCESS(eqar) ((eqar) & 0x100)
+ 
++static inline void qbman_write_eqcr_am_rt_register(struct qbman_swp *p,
++						   u8 idx)
++{
++	if (idx < 16)
++		qbman_write_register(p, QBMAN_CINH_SWP_EQCR_AM_RT + idx * 4,
++				     QMAN_RT_MODE);
++	else
++		qbman_write_register(p, QBMAN_CINH_SWP_EQCR_AM_RT2 +
++				     (idx - 16) * 4,
++				     QMAN_RT_MODE);
++}
++
+ /**
+  * qbman_swp_enqueue() - Issue an enqueue command
+  * @s:  the software portal used for enqueue
+@@ -429,12 +514,29 @@ int qbman_swp_enqueue(struct qbman_swp *
  		return -EBUSY;
  
  	p = qbman_get_cmd(s, QBMAN_CENA_SWP_EQCR(EQAR_IDX(eqar)));
@@ -1080,14 +1448,23 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
 +	memcpy(&p->tgtid, &d->tgtid, 24);
  	memcpy(&p->fd, fd, sizeof(*fd));
  
- 	/* Set the verb byte, have to substitute in the valid-bit */
- 	dma_wmb();
- 	p->verb = d->verb | EQAR_VB(eqar);
-+	dccvac(p);
+-	/* Set the verb byte, have to substitute in the valid-bit */
+-	dma_wmb();
+-	p->verb = d->verb | EQAR_VB(eqar);
++	if ((s->desc->qman_version & QMAN_REV_MASK) < QMAN_REV_5000) {
++		/* Set the verb byte, have to substitute in the valid-bit */
++		dma_wmb();
++		p->verb = d->verb | EQAR_VB(eqar);
++		dccvac(p);
++	} else {
++		p->verb = d->verb | EQAR_VB(eqar);
++		dma_wmb();
++		qbman_write_eqcr_am_rt_register(s, EQAR_IDX(eqar));
++	}
  
  	return 0;
  }
-@@ -522,7 +555,7 @@ void qbman_pull_desc_set_storage(struct
+@@ -522,7 +624,7 @@ void qbman_pull_desc_set_storage(struct
  				 int stash)
  {
  	/* save the virtual address */
@@ -1096,24 +1473,43 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  
  	if (!storage) {
  		d->verb &= ~(1 << QB_VDQCR_VERB_RLS_SHIFT);
-@@ -615,7 +648,7 @@ int qbman_swp_pull(struct qbman_swp *s,
+@@ -615,18 +717,28 @@ int qbman_swp_pull(struct qbman_swp *s,
  		atomic_inc(&s->vdq.available);
  		return -EBUSY;
  	}
 -	s->vdq.storage = (void *)d->rsp_addr_virt;
+-	p = qbman_get_cmd(s, QBMAN_CENA_SWP_VDQCR);
 +	s->vdq.storage = (void *)(uintptr_t)d->rsp_addr_virt;
- 	p = qbman_get_cmd(s, QBMAN_CENA_SWP_VDQCR);
++	if ((s->desc->qman_version & QMAN_REV_MASK) < QMAN_REV_5000)
++		p = qbman_get_cmd(s, QBMAN_CENA_SWP_VDQCR);
++	else
++		p = qbman_get_cmd(s, QBMAN_CENA_SWP_VDQCR_MEM);
  	p->numf = d->numf;
  	p->tok = QMAN_DQ_TOKEN_VALID;
-@@ -627,6 +660,7 @@ int qbman_swp_pull(struct qbman_swp *s,
- 	/* Set the verb byte, have to substitute in the valid-bit */
- 	p->verb = d->verb | s->vdq.valid_bit;
- 	s->vdq.valid_bit ^= QB_VALID_BIT;
-+	dccvac(p);
+ 	p->dq_src = d->dq_src;
+ 	p->rsp_addr = d->rsp_addr;
+ 	p->rsp_addr_virt = d->rsp_addr_virt;
+-	dma_wmb();
+-
+-	/* Set the verb byte, have to substitute in the valid-bit */
+-	p->verb = d->verb | s->vdq.valid_bit;
+-	s->vdq.valid_bit ^= QB_VALID_BIT;
++	if ((s->desc->qman_version & QMAN_REV_MASK) < QMAN_REV_5000) {
++		dma_wmb();
++		/* Set the verb byte, have to substitute in the valid-bit */
++		p->verb = d->verb | s->vdq.valid_bit;
++		s->vdq.valid_bit ^= QB_VALID_BIT;
++		dccvac(p);
++	} else {
++		p->verb = d->verb | s->vdq.valid_bit;
++		s->vdq.valid_bit ^= QB_VALID_BIT;
++		dma_wmb();
++		qbman_write_register(s, QBMAN_CINH_SWP_VDQCR_RT, QMAN_RT_MODE);
++	}
  
  	return 0;
  }
-@@ -680,8 +714,7 @@ const struct dpaa2_dq *qbman_swp_dqrr_ne
+@@ -680,11 +792,13 @@ const struct dpaa2_dq *qbman_swp_dqrr_ne
  				 s->dqrr.next_idx, pi);
  			s->dqrr.reset_bug = 0;
  		}
@@ -1122,8 +1518,15 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
 +		qbman_inval_prefetch(s,	QBMAN_CENA_SWP_DQRR(s->dqrr.next_idx));
  	}
  
- 	p = qbman_get_cmd(s, QBMAN_CENA_SWP_DQRR(s->dqrr.next_idx));
-@@ -696,8 +729,7 @@ const struct dpaa2_dq *qbman_swp_dqrr_ne
+-	p = qbman_get_cmd(s, QBMAN_CENA_SWP_DQRR(s->dqrr.next_idx));
++	if ((s->desc->qman_version & QMAN_REV_MASK) < QMAN_REV_5000)
++		p = qbman_get_cmd(s, QBMAN_CENA_SWP_DQRR(s->dqrr.next_idx));
++	else
++		p = qbman_get_cmd(s, QBMAN_CENA_SWP_DQRR_MEM(s->dqrr.next_idx));
+ 	verb = p->dq.verb;
+ 
+ 	/*
+@@ -696,8 +810,7 @@ const struct dpaa2_dq *qbman_swp_dqrr_ne
  	 * knew from reading PI.
  	 */
  	if ((verb & QB_VALID_BIT) != s->dqrr.valid_bit) {
@@ -1133,7 +1536,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  		return NULL;
  	}
  	/*
-@@ -720,7 +752,7 @@ const struct dpaa2_dq *qbman_swp_dqrr_ne
+@@ -720,7 +833,7 @@ const struct dpaa2_dq *qbman_swp_dqrr_ne
  	    (flags & DPAA2_DQ_STAT_EXPIRED))
  		atomic_inc(&s->vdq.available);
  
@@ -1142,15 +1545,44 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  
  	return p;
  }
-@@ -848,6 +880,7 @@ int qbman_swp_release(struct qbman_swp *
- 	 */
- 	dma_wmb();
- 	p->verb = d->verb | RAR_VB(rar) | num_buffers;
-+	dccvac(p);
+@@ -836,18 +949,29 @@ int qbman_swp_release(struct qbman_swp *
+ 		return -EBUSY;
+ 
+ 	/* Start the release command */
+-	p = qbman_get_cmd(s, QBMAN_CENA_SWP_RCR(RAR_IDX(rar)));
++	if ((s->desc->qman_version & QMAN_REV_MASK) < QMAN_REV_5000)
++		p = qbman_get_cmd(s, QBMAN_CENA_SWP_RCR(RAR_IDX(rar)));
++	else
++		p = qbman_get_cmd(s, QBMAN_CENA_SWP_RCR_MEM(RAR_IDX(rar)));
+ 	/* Copy the caller's buffer pointers to the command */
+ 	for (i = 0; i < num_buffers; i++)
+ 		p->buf[i] = cpu_to_le64(buffers[i]);
+ 	p->bpid = d->bpid;
+ 
+-	/*
+-	 * Set the verb byte, have to substitute in the valid-bit and the number
+-	 * of buffers.
+-	 */
+-	dma_wmb();
+-	p->verb = d->verb | RAR_VB(rar) | num_buffers;
++	if ((s->desc->qman_version & QMAN_REV_MASK) < QMAN_REV_5000) {
++		/*
++		 * Set the verb byte, have to substitute in the valid-bit
++		 * and the number of buffers.
++		 */
++		dma_wmb();
++		p->verb = d->verb | RAR_VB(rar) | num_buffers;
++		dccvac(p);
++	} else {
++		p->verb = d->verb | RAR_VB(rar) | num_buffers;
++		dma_wmb();
++		qbman_write_register(s, QBMAN_CINH_SWP_RCR_AM_RT +
++				     RAR_IDX(rar)  * 4, QMAN_RT_MODE);
++	}
  
  	return 0;
  }
-@@ -855,7 +888,7 @@ int qbman_swp_release(struct qbman_swp *
+@@ -855,7 +979,7 @@ int qbman_swp_release(struct qbman_swp *
  struct qbman_acquire_desc {
  	u8 verb;
  	u8 reserved;
@@ -1159,7 +1591,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	u8 num;
  	u8 reserved2[59];
  };
-@@ -863,10 +896,10 @@ struct qbman_acquire_desc {
+@@ -863,10 +987,10 @@ struct qbman_acquire_desc {
  struct qbman_acquire_rslt {
  	u8 verb;
  	u8 rslt;
@@ -1172,7 +1604,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  };
  
  /**
-@@ -929,7 +962,7 @@ int qbman_swp_acquire(struct qbman_swp *
+@@ -929,7 +1053,7 @@ int qbman_swp_acquire(struct qbman_swp *
  struct qbman_alt_fq_state_desc {
  	u8 verb;
  	u8 reserved[3];
@@ -1181,7 +1613,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	u8 reserved2[56];
  };
  
-@@ -952,7 +985,7 @@ int qbman_swp_alt_fq_state(struct qbman_
+@@ -952,7 +1076,7 @@ int qbman_swp_alt_fq_state(struct qbman_
  	if (!p)
  		return -EBUSY;
  
@@ -1190,7 +1622,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  
  	/* Complete the management command */
  	r = qbman_swp_mc_complete(s, p, alt_fq_verb);
-@@ -978,11 +1011,11 @@ int qbman_swp_alt_fq_state(struct qbman_
+@@ -978,11 +1102,11 @@ int qbman_swp_alt_fq_state(struct qbman_
  struct qbman_cdan_ctrl_desc {
  	u8 verb;
  	u8 reserved;
@@ -1205,7 +1637,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	u8 reserved3[48];
  
  };
-@@ -990,7 +1023,7 @@ struct qbman_cdan_ctrl_desc {
+@@ -990,7 +1114,7 @@ struct qbman_cdan_ctrl_desc {
  struct qbman_cdan_ctrl_rslt {
  	u8 verb;
  	u8 rslt;
@@ -1214,10 +1646,12 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	u8 reserved[60];
  };
  
-@@ -1033,3 +1066,99 @@ int qbman_swp_CDAN_set(struct qbman_swp
+@@ -1031,5 +1155,152 @@ int qbman_swp_CDAN_set(struct qbman_swp
+ 		return -EIO;
+ 	}
  
- 	return 0;
- }
++	return 0;
++}
 +
 +#define QBMAN_RESPONSE_VERB_MASK	0x7f
 +#define QBMAN_FQ_QUERY_NP		0x45
@@ -1314,13 +1748,65 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
 +{
 +	return le32_to_cpu(a->fill);
 +}
++
++struct qbman_orp_cmd_desc {
++	u8 verb;
++	u8 reserved;
++	u8 cid;
++	u8 reserved2;
++	u16 orpid;
++	u16 seqnum;
++	u8 reserved3[56];
++};
++
++struct qbman_orp_cmd_rslt {
++	u8 verb;
++	u8 rslt;
++	u8 cid;
++	u8 reserved1[61];
++};
++
++int qbman_orp_drop(struct qbman_swp *s, u16 orpid, u16 seqnum)
++{
++	struct qbman_orp_cmd_desc *p;
++	struct qbman_orp_cmd_rslt *r;
++	void *resp;
++
++	p = (struct qbman_orp_cmd_desc *)qbman_swp_mc_start(s);
++	if (!p)
++		return -EBUSY;
++
++	p->cid = 0x7;
++	p->orpid = cpu_to_le16(orpid);
++	p->seqnum = cpu_to_le16(seqnum);
++
++	resp = qbman_swp_mc_complete(s, p, QBMAN_MC_ORP);
++	if (!resp) {
++		pr_err("qbman: Drop sequence num %d orpid 0x%x failed, no response\n",
++		       seqnum, orpid);
++		return -EIO;
++	}
++	r = (struct qbman_orp_cmd_rslt *)resp;
++	/* Decode the outcome */
++	WARN_ON((r->verb & QBMAN_RESPONSE_VERB_MASK) != QBMAN_MC_ORP);
++
++	/* Determine success or failure */
++	if (r->rslt != QBMAN_MC_RSLT_OK) {
++		pr_err("Drop seqnum %d of prpid 0x%x failed, code=0x%02x\n",
++		       seqnum, orpid, r->rslt);
++		return -EIO;
++	}
++
+ 	return 0;
+ }
 --- a/drivers/staging/fsl-mc/bus/dpio/qbman-portal.h
 +++ b/drivers/staging/fsl-mc/bus/dpio/qbman-portal.h
-@@ -1,33 +1,8 @@
+@@ -1,46 +1,28 @@
 +/* SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause) */
  /*
   * Copyright (C) 2014-2016 Freescale Semiconductor, Inc.
-  * Copyright 2016 NXP
+- * Copyright 2016 NXP
++ * Copyright 2016-2019 NXP
   *
 - * Redistribution and use in source and binary forms, with or without
 - * modification, are permitted provided that the following conditions are met:
@@ -1351,7 +1837,28 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
   */
  #ifndef __FSL_QBMAN_PORTAL_H
  #define __FSL_QBMAN_PORTAL_H
-@@ -57,8 +32,8 @@ struct qbman_pull_desc {
+ 
+ #include "../../include/dpaa2-fd.h"
+ 
++#define QMAN_REV_4000   0x04000000
++#define QMAN_REV_4100   0x04010000
++#define QMAN_REV_4101   0x04010001
++#define QMAN_REV_5000   0x05000000
++
++#define QMAN_REV_MASK   0xffff0000
++
+ struct dpaa2_dq;
+ struct qbman_swp;
+ 
+ /* qbman software portal descriptor structure */
+ struct qbman_swp_desc {
+ 	void *cena_bar; /* Cache-enabled portal base address */
+-	void *cinh_bar; /* Cache-inhibited portal base address */
++	void __iomem *cinh_bar; /* Cache-inhibited portal base address */
+ 	u32 qman_version;
+ };
+ 
+@@ -57,8 +39,8 @@ struct qbman_pull_desc {
  	u8 numf;
  	u8 tok;
  	u8 reserved;
@@ -1362,7 +1869,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	u64 rsp_addr_virt;
  	u8 padding[40];
  };
-@@ -95,17 +70,17 @@ enum qbman_pull_type_e {
+@@ -95,17 +77,17 @@ enum qbman_pull_type_e {
  struct qbman_eq_desc {
  	u8 verb;
  	u8 dca;
@@ -1387,7 +1894,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	u8 fd[32];
  };
  
-@@ -113,9 +88,9 @@ struct qbman_eq_desc {
+@@ -113,9 +95,9 @@ struct qbman_eq_desc {
  struct qbman_release_desc {
  	u8 verb;
  	u8 reserved;
@@ -1400,7 +1907,28 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  };
  
  /* Management command result codes */
-@@ -187,6 +162,9 @@ int qbman_result_has_new_result(struct q
+@@ -127,7 +109,7 @@ struct qbman_release_desc {
+ /* portal data structure */
+ struct qbman_swp {
+ 	const struct qbman_swp_desc *desc;
+-	void __iomem *addr_cena;
++	void *addr_cena;
+ 	void __iomem *addr_cinh;
+ 
+ 	/* Management commands */
+@@ -135,6 +117,11 @@ struct qbman_swp {
+ 		u32 valid_bit; /* 0x00 or 0x80 */
+ 	} mc;
+ 
++	/* Management response */
++	struct {
++		u32 valid_bit; /* 0x00 or 0x80 */
++	} mr;
++
+ 	/* Push dequeues */
+ 	u32 sdq;
+ 
+@@ -187,6 +174,9 @@ int qbman_result_has_new_result(struct q
  
  void qbman_eq_desc_clear(struct qbman_eq_desc *d);
  void qbman_eq_desc_set_no_orp(struct qbman_eq_desc *d, int respond_success);
@@ -1410,7 +1938,25 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  void qbman_eq_desc_set_token(struct qbman_eq_desc *d, u8 token);
  void qbman_eq_desc_set_fq(struct qbman_eq_desc *d, u32 fqid);
  void qbman_eq_desc_set_qd(struct qbman_eq_desc *d, u32 qdid,
-@@ -466,4 +444,62 @@ static inline void *qbman_swp_mc_complet
+@@ -195,6 +185,8 @@ void qbman_eq_desc_set_qd(struct qbman_e
+ int qbman_swp_enqueue(struct qbman_swp *p, const struct qbman_eq_desc *d,
+ 		      const struct dpaa2_fd *fd);
+ 
++int qbman_orp_drop(struct qbman_swp *s, u16 orpid, u16 seqnum);
++
+ void qbman_release_desc_clear(struct qbman_release_desc *d);
+ void qbman_release_desc_set_bpid(struct qbman_release_desc *d, u16 bpid);
+ void qbman_release_desc_set_rcdi(struct qbman_release_desc *d, int enable);
+@@ -453,7 +445,7 @@ static inline int qbman_swp_CDAN_set_con
+ static inline void *qbman_swp_mc_complete(struct qbman_swp *swp, void *cmd,
+ 					  u8 cmd_verb)
+ {
+-	int loopvar = 1000;
++	int loopvar = 2000;
+ 
+ 	qbman_swp_mc_submit(swp, cmd, cmd_verb);
+ 
+@@ -466,4 +458,62 @@ static inline void *qbman_swp_mc_complet
  	return cmd;
  }
  
@@ -2112,7 +2658,21 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
   */
  #ifndef __FSL_DPAA2_IO_H
  #define __FSL_DPAA2_IO_H
-@@ -88,6 +63,8 @@ void dpaa2_io_down(struct dpaa2_io *d);
+@@ -77,17 +52,20 @@ struct dpaa2_io_desc {
+ 	int has_8prio;
+ 	int cpu;
+ 	void *regs_cena;
+-	void *regs_cinh;
++	void __iomem *regs_cinh;
+ 	int dpio_id;
+ 	u32 qman_version;
+ };
+ 
+-struct dpaa2_io *dpaa2_io_create(const struct dpaa2_io_desc *desc);
++struct dpaa2_io *dpaa2_io_create(const struct dpaa2_io_desc *desc,
++				 struct device *dev);
+ 
+ void dpaa2_io_down(struct dpaa2_io *d);
  
  irqreturn_t dpaa2_io_irq(struct dpaa2_io *obj);
  
@@ -2121,7 +2681,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  /**
   * struct dpaa2_io_notification_ctx - The DPIO notification context structure
   * @cb:           The callback to be invoked when the notification arrives
-@@ -103,7 +80,7 @@ irqreturn_t dpaa2_io_irq(struct dpaa2_io
+@@ -103,7 +81,7 @@ irqreturn_t dpaa2_io_irq(struct dpaa2_io
   * Used when a FQDAN/CDAN registration is made by drivers.
   */
  struct dpaa2_io_notification_ctx {
@@ -2130,7 +2690,24 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  	int is_cdan;
  	u32 id;
  	int desired_cpu;
-@@ -129,9 +106,9 @@ int dpaa2_io_service_enqueue_fq(struct d
+@@ -113,10 +91,14 @@ struct dpaa2_io_notification_ctx {
+ 	void *dpio_private;
+ };
+ 
++int dpaa2_io_get_cpu(struct dpaa2_io *d);
++
+ int dpaa2_io_service_register(struct dpaa2_io *service,
+-			      struct dpaa2_io_notification_ctx *ctx);
++			      struct dpaa2_io_notification_ctx *ctx,
++			      struct device *dev);
+ void dpaa2_io_service_deregister(struct dpaa2_io *service,
+-				 struct dpaa2_io_notification_ctx *ctx);
++				 struct dpaa2_io_notification_ctx *ctx,
++				 struct device *dev);
+ int dpaa2_io_service_rearm(struct dpaa2_io *service,
+ 			   struct dpaa2_io_notification_ctx *ctx);
+ 
+@@ -129,9 +111,9 @@ int dpaa2_io_service_enqueue_fq(struct d
  				const struct dpaa2_fd *fd);
  int dpaa2_io_service_enqueue_qd(struct dpaa2_io *d, u32 qdid, u8 prio,
  				u16 qdbin, const struct dpaa2_fd *fd);
@@ -2142,7 +2719,7 @@ Signed-off-by: Biwen Li <biwen.li@nxp.com>
  			     u64 *buffers, unsigned int num_buffers);
  
  struct dpaa2_io_store *dpaa2_io_store_create(unsigned int max_frames,
-@@ -139,4 +116,64 @@ struct dpaa2_io_store *dpaa2_io_store_cr
+@@ -139,4 +121,64 @@ struct dpaa2_io_store *dpaa2_io_store_cr
  void dpaa2_io_store_destroy(struct dpaa2_io_store *s);
  struct dpaa2_dq *dpaa2_io_store_next(struct dpaa2_io_store *s, int *is_last);
  

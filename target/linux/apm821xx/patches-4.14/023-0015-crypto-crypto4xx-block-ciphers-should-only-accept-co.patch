@@ -1,0 +1,172 @@
+From 0f7a81374060828280fcfdfbaa162cb559017f9f Mon Sep 17 00:00:00 2001
+From: Christian Lamparter <chunkeey@gmail.com>
+Date: Sat, 18 May 2019 23:28:12 +0200
+Subject: [PATCH 15/15] crypto: crypto4xx - block ciphers should only accept
+ complete blocks
+
+The hardware automatically zero pads incomplete block ciphers
+blocks without raising any errors. This is a screw-up. This
+was noticed by CONFIG_CRYPTO_MANAGER_EXTRA_TESTS tests that
+sent a incomplete blocks and expect them to fail.
+
+This fixes:
+cbc-aes-ppc4xx encryption unexpectedly succeeded on test vector
+"random: len=2409 klen=32"; expected_error=-22, cfg="random:
+may_sleep use_digest src_divs=[96.90%@+2295, 2.34%@+4066,
+0.32%@alignmask+12, 0.34%@+4087, 0.9%@alignmask+1787, 0.1%@+3767]
+iv_offset=6"
+
+ecb-aes-ppc4xx encryption unexpectedly succeeded on test vector
+"random: len=1011 klen=32"; expected_error=-22, cfg="random:
+may_sleep use_digest src_divs=[100.0%@alignmask+20]
+dst_divs=[3.12%@+3001, 96.88%@+4070]"
+
+Cc: Eric Biggers <ebiggers@kernel.org>
+Cc: stable@vger.kernel.org [4.19, 5.0 and 5.1]
+Signed-off-by: Christian Lamparter <chunkeey@gmail.com>
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+---
+ drivers/crypto/amcc/crypto4xx_alg.c  | 36 +++++++++++++++++++---------
+ drivers/crypto/amcc/crypto4xx_core.c | 16 ++++++-------
+ drivers/crypto/amcc/crypto4xx_core.h | 10 ++++----
+ 3 files changed, 39 insertions(+), 23 deletions(-)
+
+--- a/drivers/crypto/amcc/crypto4xx_alg.c
++++ b/drivers/crypto/amcc/crypto4xx_alg.c
+@@ -76,12 +76,16 @@ static void set_dynamic_sa_command_1(str
+ }
+ 
+ static inline int crypto4xx_crypt(struct skcipher_request *req,
+-				  const unsigned int ivlen, bool decrypt)
++				  const unsigned int ivlen, bool decrypt,
++				  bool check_blocksize)
+ {
+ 	struct crypto_skcipher *cipher = crypto_skcipher_reqtfm(req);
+ 	struct crypto4xx_ctx *ctx = crypto_skcipher_ctx(cipher);
+ 	__le32 iv[AES_IV_SIZE];
+ 
++	if (check_blocksize && !IS_ALIGNED(req->cryptlen, AES_BLOCK_SIZE))
++		return -EINVAL;
++
+ 	if (ivlen)
+ 		crypto4xx_memcpy_to_le32(iv, req->iv, ivlen);
+ 
+@@ -90,24 +94,34 @@ static inline int crypto4xx_crypt(struct
+ 		ctx->sa_len, 0, NULL);
+ }
+ 
+-int crypto4xx_encrypt_noiv(struct skcipher_request *req)
++int crypto4xx_encrypt_noiv_block(struct skcipher_request *req)
++{
++	return crypto4xx_crypt(req, 0, false, true);
++}
++
++int crypto4xx_encrypt_iv_stream(struct skcipher_request *req)
++{
++	return crypto4xx_crypt(req, AES_IV_SIZE, false, false);
++}
++
++int crypto4xx_decrypt_noiv_block(struct skcipher_request *req)
+ {
+-	return crypto4xx_crypt(req, 0, false);
++	return crypto4xx_crypt(req, 0, true, true);
+ }
+ 
+-int crypto4xx_encrypt_iv(struct skcipher_request *req)
++int crypto4xx_decrypt_iv_stream(struct skcipher_request *req)
+ {
+-	return crypto4xx_crypt(req, AES_IV_SIZE, false);
++	return crypto4xx_crypt(req, AES_IV_SIZE, true, false);
+ }
+ 
+-int crypto4xx_decrypt_noiv(struct skcipher_request *req)
++int crypto4xx_encrypt_iv_block(struct skcipher_request *req)
+ {
+-	return crypto4xx_crypt(req, 0, true);
++	return crypto4xx_crypt(req, AES_IV_SIZE, false, true);
+ }
+ 
+-int crypto4xx_decrypt_iv(struct skcipher_request *req)
++int crypto4xx_decrypt_iv_block(struct skcipher_request *req)
+ {
+-	return crypto4xx_crypt(req, AES_IV_SIZE, true);
++	return crypto4xx_crypt(req, AES_IV_SIZE, true, true);
+ }
+ 
+ /**
+@@ -272,8 +286,8 @@ crypto4xx_ctr_crypt(struct skcipher_requ
+ 		return ret;
+ 	}
+ 
+-	return encrypt ? crypto4xx_encrypt_iv(req)
+-		       : crypto4xx_decrypt_iv(req);
++	return encrypt ? crypto4xx_encrypt_iv_stream(req)
++		       : crypto4xx_decrypt_iv_stream(req);
+ }
+ 
+ static int crypto4xx_sk_setup_fallback(struct crypto4xx_ctx *ctx,
+--- a/drivers/crypto/amcc/crypto4xx_core.c
++++ b/drivers/crypto/amcc/crypto4xx_core.c
+@@ -1211,8 +1211,8 @@ static struct crypto4xx_alg_common crypt
+ 		.max_keysize = AES_MAX_KEY_SIZE,
+ 		.ivsize	= AES_IV_SIZE,
+ 		.setkey = crypto4xx_setkey_aes_cbc,
+-		.encrypt = crypto4xx_encrypt_iv,
+-		.decrypt = crypto4xx_decrypt_iv,
++		.encrypt = crypto4xx_encrypt_iv_block,
++		.decrypt = crypto4xx_decrypt_iv_block,
+ 		.init = crypto4xx_sk_init,
+ 		.exit = crypto4xx_sk_exit,
+ 	} },
+@@ -1231,8 +1231,8 @@ static struct crypto4xx_alg_common crypt
+ 		.max_keysize = AES_MAX_KEY_SIZE,
+ 		.ivsize	= AES_IV_SIZE,
+ 		.setkey	= crypto4xx_setkey_aes_cfb,
+-		.encrypt = crypto4xx_encrypt_iv,
+-		.decrypt = crypto4xx_decrypt_iv,
++		.encrypt = crypto4xx_encrypt_iv_stream,
++		.decrypt = crypto4xx_decrypt_iv_stream,
+ 		.init = crypto4xx_sk_init,
+ 		.exit = crypto4xx_sk_exit,
+ 	} },
+@@ -1291,8 +1291,8 @@ static struct crypto4xx_alg_common crypt
+ 		.min_keysize = AES_MIN_KEY_SIZE,
+ 		.max_keysize = AES_MAX_KEY_SIZE,
+ 		.setkey	= crypto4xx_setkey_aes_ecb,
+-		.encrypt = crypto4xx_encrypt_noiv,
+-		.decrypt = crypto4xx_decrypt_noiv,
++		.encrypt = crypto4xx_encrypt_noiv_block,
++		.decrypt = crypto4xx_decrypt_noiv_block,
+ 		.init = crypto4xx_sk_init,
+ 		.exit = crypto4xx_sk_exit,
+ 	} },
+@@ -1311,8 +1311,8 @@ static struct crypto4xx_alg_common crypt
+ 		.max_keysize = AES_MAX_KEY_SIZE,
+ 		.ivsize	= AES_IV_SIZE,
+ 		.setkey	= crypto4xx_setkey_aes_ofb,
+-		.encrypt = crypto4xx_encrypt_iv,
+-		.decrypt = crypto4xx_decrypt_iv,
++		.encrypt = crypto4xx_encrypt_iv_stream,
++		.decrypt = crypto4xx_decrypt_iv_stream,
+ 		.init = crypto4xx_sk_init,
+ 		.exit = crypto4xx_sk_exit,
+ 	} },
+--- a/drivers/crypto/amcc/crypto4xx_core.h
++++ b/drivers/crypto/amcc/crypto4xx_core.h
+@@ -183,10 +183,12 @@ int crypto4xx_setkey_rfc3686(struct cryp
+ 			     const u8 *key, unsigned int keylen);
+ int crypto4xx_encrypt_ctr(struct skcipher_request *req);
+ int crypto4xx_decrypt_ctr(struct skcipher_request *req);
+-int crypto4xx_encrypt_iv(struct skcipher_request *req);
+-int crypto4xx_decrypt_iv(struct skcipher_request *req);
+-int crypto4xx_encrypt_noiv(struct skcipher_request *req);
+-int crypto4xx_decrypt_noiv(struct skcipher_request *req);
++int crypto4xx_encrypt_iv_stream(struct skcipher_request *req);
++int crypto4xx_decrypt_iv_stream(struct skcipher_request *req);
++int crypto4xx_encrypt_iv_block(struct skcipher_request *req);
++int crypto4xx_decrypt_iv_block(struct skcipher_request *req);
++int crypto4xx_encrypt_noiv_block(struct skcipher_request *req);
++int crypto4xx_decrypt_noiv_block(struct skcipher_request *req);
+ int crypto4xx_rfc3686_encrypt(struct skcipher_request *req);
+ int crypto4xx_rfc3686_decrypt(struct skcipher_request *req);
+ int crypto4xx_sha1_alg_init(struct crypto_tfm *tfm);

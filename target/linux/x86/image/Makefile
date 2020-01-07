@@ -246,13 +246,13 @@ endif
 ifneq ($(CONFIG_VMDK_IMAGES),)
   define Image/Build/vmdk
 	rm $(BIN_DIR)/$(IMG_PREFIX)-combined-$(1).vmdk || true
-	qemu-img convert -f raw -O vmdk \
+	/usr/bin/qemu-img convert -f raw -O vmdk -o adapter_type=lsilogic \
 		$(BIN_DIR)/$(IMG_PREFIX)-combined-$(1).img \
 		$(BIN_DIR)/$(IMG_PREFIX)-combined-$(1).vmdk
   endef
   define Image/Build/vmdk_efi
 	rm $(BIN_DIR)/$(IMG_PREFIX)-uefi-gpt-$(1).vmdk || true
-	qemu-img convert -f raw -O vmdk \
+	/usr/bin/qemu-img convert -f raw -O vmdk -o adapter_type=lsilogic \
 		$(BIN_DIR)/$(IMG_PREFIX)-uefi-gpt-$(1).img \
 		$(BIN_DIR)/$(IMG_PREFIX)-uefi-gpt-$(1).vmdk
   endef

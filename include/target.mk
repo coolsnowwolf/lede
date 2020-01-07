@@ -14,11 +14,11 @@ DEVICE_TYPE?=router
 
 # Default packages - the really basic set
 DEFAULT_PACKAGES:=base-files libc libgcc busybox dropbear mtd uci opkg netifd fstools uclient-fetch logd block-mount coremark \
-kmod-nf-nathelper kmod-nf-nathelper-extra kmod-ipt-raw wget libustream-openssl ca-certificates \
+kmod-nf-nathelper kmod-nf-nathelper-extra kmod-ipt-raw wget \
 default-settings luci luci-app-ddns luci-app-sqm luci-app-upnp luci-app-adbyby-plus luci-app-autoreboot \
-luci-app-filetransfer luci-app-vsftpd ddns-scripts_aliyun \
-luci-app-pptp-server luci-app-arpbind luci-app-vlmcsd luci-app-wifischedule luci-app-wol luci-app-ramfree \
-luci-app-sfe luci-app-flowoffload luci-app-nlbwmon luci-app-usb-printer luci-app-accesscontrol luci-app-zerotier luci-app-xlnetacc
+luci-app-filetransfer luci-app-vsftpd luci-app-ssr-plus \
+luci-app-pptp-server luci-app-arpbind luci-app-vlmcsd luci-app-wol luci-app-ramfree \
+luci-app-sfe luci-app-flowoffload luci-app-nlbwmon luci-app-accesscontrol
 # For nas targets
 DEFAULT_PACKAGES.nas:=fdisk lsblk mdadm automount autosamba luci-app-usb-printer 
 # For router targets
@@ -185,29 +185,10 @@ ifeq ($(DUMP),1)
     CPU_TYPE ?= pentium
     CPU_CFLAGS_pentium = -march=pentium-mmx
     CPU_CFLAGS_pentium4 = -march=pentium4
+    CPU_CFLAGS_core2 = -march=core2
   endif
   ifneq ($(findstring arm,$(ARCH)),)
     CPU_TYPE ?= xscale
-    CPU_CFLAGS_arm920t = -mcpu=arm920t
-    CPU_CFLAGS_arm926ej-s = -mcpu=arm926ej-s
-    CPU_CFLAGS_arm1136j-s = -mcpu=arm1136j-s
-    CPU_CFLAGS_arm1176jzf-s = -mcpu=arm1176jzf-s
-    CPU_CFLAGS_cortex-a5 = -mcpu=cortex-a5
-    CPU_CFLAGS_cortex-a7 = -mcpu=cortex-a7
-    CPU_CFLAGS_cortex-a8 = -mcpu=cortex-a8
-    CPU_CFLAGS_cortex-a9 = -mcpu=cortex-a9
-    CPU_CFLAGS_cortex-a15 = -mcpu=cortex-a15
-    CPU_CFLAGS_cortex-a53 = -mcpu=cortex-a53
-    CPU_CFLAGS_cortex-a72 = -mcpu=cortex-a72
-    CPU_CFLAGS_fa526 = -mcpu=fa526
-    CPU_CFLAGS_mpcore = -mcpu=mpcore
-    CPU_CFLAGS_xscale = -mcpu=xscale
-    ifeq ($(CONFIG_SOFT_FLOAT),)
-      CPU_CFLAGS_neon = -mfpu=neon
-      CPU_CFLAGS_vfp = -mfpu=vfp
-      CPU_CFLAGS_vfpv3 = -mfpu=vfpv3-d16
-      CPU_CFLAGS_neon-vfpv4 = -mfpu=neon-vfpv4
-    endif
   endif
   ifeq ($(ARCH),powerpc)
     CPU_CFLAGS_603e:=-mcpu=603e
