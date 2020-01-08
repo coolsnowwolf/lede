@@ -207,9 +207,15 @@ do
                         			fi
                    			fi
                    	
-                   			if [ -z "ssr_remarks" ]; then # 没有备注的话则生成一个
+                   			  if [ -z "ssr_remarks" ]; then # 没有备注的话则生成一个
                         			ssr_remarks="$ssr_host:$ssr_port";
                     			fi
+
+              # 丢弃没有host的无效服务器信息，例如：剩余流量xxx
+              if [[ "$ssr_remarks" =~ "过期时间" ]] || [[ "$ssr_remarks" =~ "剩余流量" ]] || [[ "$ssr_remarks" =~ "防失联QQ群" ]] || [ -z "$ssr_host" ];then
+								echo_date "丢弃无效节点：【$ssr_remarks】"
+								continue
+							fi
 
                     			uci_name_tmp=$(uci show $name | grep -w "$ssr_hashkey" | awk -F . '{print $2}')
 		    	   		if [ -z "$uci_name_tmp" ]; then # 判断当前服务器信息是否存在
@@ -225,7 +231,7 @@ do
                     			# echo "服务器地址: $ssr_host"
                     			# echo "服务器端口 $ssr_port"
                     			# echo "密码: $ssr_passwd"
-                   			# echo "SS加密: $ss_method"
+                    			# echo "SS加密: $ss_method"
                     			# echo "加密: $ssr_method"
                     			# echo "协议: $ssr_protocol"
                     			# echo "协议参数: $ssr_protoparam"
