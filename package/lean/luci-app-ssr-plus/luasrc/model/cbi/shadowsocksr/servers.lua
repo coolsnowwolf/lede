@@ -49,11 +49,13 @@ o = s:option(Button,"subscribe", translate("Update All Subscribe Severs"))
 o.rawhtml  = true
 o.template = "shadowsocksr/subscribe"
 
--- o = s:option(Button,"update",translate("Update All Subscribe Severs"))
+
 -- o.inputstyle = "apply"
 -- o.write = function()
---   luci.sys.exec("bash /usr/share/shadowsocksr/subscribe.sh >>/tmp/ssrplus.log 2>&1")
---   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
+--   luci.sys.call("lua /root/subscribe.lua  >>/tmp/ssrplus.log 2>&1")
+--   -- luci.sys.call("echo 123  >>/tmp/ssrplus.log 2>&1")
+--    --luci.sys.exec("bash /usr/share/shadowsocksr/subscribe.sh >>/tmp/ssrplus.log 2>&1")
+--    luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
 -- end
 
 
@@ -117,7 +119,11 @@ function o.cfgvalue(...)
 	return Value.cfgvalue(...) or "0"
 end
 
-o = s:option(DummyValue,"server",translate("Ping Latency"))
+o = s:option(DummyValue, "server_port", translate("Socket Connected"))
+o.template="shadowsocksr/socket"
+o.width="10%"
+
+o = s:option(DummyValue, "server", translate("Ping Latency"))
 o.template="shadowsocksr/ping"
 o.width="10%"
 
