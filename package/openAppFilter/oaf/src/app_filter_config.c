@@ -20,6 +20,7 @@
 #include "cJSON.h"
 #include "app_filter.h"
 #include "af_utils.h"
+#include "af_log.h"
 #define AF_MAX_APP_TYPE_NUM 16
 #define AF_MAX_APP_NUM 256
 #define AF_DEV_NAME "appfilter"
