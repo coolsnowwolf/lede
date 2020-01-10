@@ -171,7 +171,8 @@ local execute = function()
                 local node, szType
                 local groupHash = md5(url)
                 cache[groupHash] = {}
-                nodeResult[k] = {}
+                tinsert(nodeResult, {})
+                local index = #nodeResult
                 -- SSD 似乎是这种格式 ssd:// 开头的 不知道 SS 什么格式 没支持 不清楚其他机场是否这样
                 if raw:find('ssd://') then
                     szType = 'ssd'
@@ -219,8 +220,8 @@ local execute = function()
                             else
                                 log('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
                                 result.grouphashkey = groupHash
-                                tinsert(nodeResult[k], result)
-                                cache[groupHash][hash] = nodeResult[k][#nodeResult[k]]
+                                tinsert(nodeResult[index], result)
+                                cache[groupHash][hash] = nodeResult[index][#nodeResult[index]]
                             end
                         end
                     end
