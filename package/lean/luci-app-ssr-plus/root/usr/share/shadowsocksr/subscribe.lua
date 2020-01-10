@@ -21,10 +21,8 @@ local ucic = luci.model.uci.cursor()
 local proxy = ucic:get_first(name, 'server_subscribe', 'proxy', '0')
 local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
 
--- hook print
-local _print = print
-print = function(...)
-    _print(os.date("%Y-%m-%d %H:%M:%S ") .. table.concat({ ... }, " "))
+local log = function(...)
+    print(os.date("%Y-%m-%d %H:%M:%S ") .. table.concat({ ... }, " "))
 end
 -- 分割字符串
 local function split(full, sep)
@@ -164,7 +162,7 @@ local execute = function()
     do
         -- subscribe_url = {'https://www.google.comc'}
         if proxy == '0' then -- 不使用代理更新的话先暂停
-            print('服务正在暂停')
+            log('服务正在暂停')
             luci.sys.init.stop(name)
         end
         for k, url in ipairs(subscribe_url) do
@@ -207,9 +205,9 @@ local execute = function()
                                 result, hash = processData(dat[1], base64Decode( dat[2], true))
                             end
                         else
-                            print('跳过未知类型: ' .. szType)
+                            log('跳过未知类型: ' .. szType)
                         end
-                        -- print(hash, result)
+                        -- log(hash, result)
                         if hash and result then
                             if result.alias:find("过期时间") or
                                 result.alias:find("剩余流量") or
@@ -217,9 +215,9 @@ local execute = function()
                                 result.alias:find("官网") or
                                 result.server == ''
                             then
-                                print('丢弃无效节点: ' .. result.type ..' 节点, ' .. result.alias)
+                                log('丢弃无效节点: ' .. result.type ..' 节点, ' .. result.alias)
                             else
-                                print('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
+                                log('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
                                 result.grouphashkey = groupHash
                                 tinsert(nodeResult[k], result)
                                 cache[groupHash][hash] = nodeResult[k][#nodeResult[k]]
@@ -227,7 +225,7 @@ local execute = function()
                         end
                     end
                 end
-                print('成功解析节点数量: ' ..#node)
+                log('成功解析节点数量: ' ..#node)
             end
         end
     end
@@ -247,7 +245,7 @@ local execute = function()
                     setmetatable(nodeResult[old.grouphashkey][old.hashkey], { __index =  { _ignore = true } })
                 end
             else
-                print('忽略手动添加的节点: ' .. old.alias)
+                log('忽略手动添加的节点: ' .. old.alias)
             end
         end)
         for k, v in ipairs(nodeResult) do
@@ -268,27 +266,29 @@ local execute = function()
             if firstServer then
                 ucic:set(name, ucic:get_first(name, 'global'), 'global_server', firstServer)
                 ucic:commit(name)
-                print('当前主服务器已更新，正在自动更换。')
+                log('当前主服务器已更新，正在自动更换。')
             end
         end
-        if proxy == '0' and firstServer then
+        if firstServer then
             luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
-            -- luci.sys.init.stop(name)
-            -- luci.sys.init.start(name)
+        else
+            luci.sys.call("/etc/init.d/" .. name .." stop > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
         end
-        print('新增节点数量: ' ..add, '删除节点数量: ' .. del)
-        print('更新成功服务正在启动')
+        log('新增节点数量: ' ..add, '删除节点数量: ' .. del)
+        log('更新成功服务正在启动')
     end
 end
 
 if subscribe_url and #subscribe_url > 0 then
     xpcall(execute, function()
-        print('发生错误, 正在恢复服务')
+        log('发生错误, 正在恢复服务')
         local firstServer = ucic:get_first(name, uciType)
-        if proxy == '0' and firstServer then
-            print('更新失败服务正在恢复启动')
-            luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &")
+        if firstServer then
+            luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
+        else
+            luci.sys.call("/etc/init.d/" .. name .." stop > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
         end
-        print(debug.traceback())
+        log('更新失败服务正在恢复')
+        log(debug.traceback())
     end)
 end
