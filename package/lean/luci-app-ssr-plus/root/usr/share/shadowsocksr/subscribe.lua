@@ -116,7 +116,7 @@ local function processData(szType, content)
         result.protocol_param = base64Decode(params.protoparam, true)
         local group = base64Decode(params.group, true)
         if group then
-            result.alias = "【" .. group .. "】"
+            result.alias = "["  .. group .. "] "
         end
         result.alias = result.alias .. base64Decode(params.remarks, true)
     elseif szType == 'vmess' then
@@ -147,7 +147,7 @@ local function processData(szType, content)
         result.server_port = content.port
         result.password = content.password
         result.encrypt_method_ss = content.encryption
-        result.alias = '【' .. content.airport .. '】' .. content.remarks
+        result.alias = '[' .. content.airport .. '] ' .. content.remarks
     end
     return result, hash
 end
