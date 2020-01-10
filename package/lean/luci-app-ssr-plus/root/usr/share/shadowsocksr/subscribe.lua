@@ -13,14 +13,19 @@ require 'luci.sys'
 local tinsert = table.insert
 local ssub, slen, schar, srep, sbyte, sformat, sgsub =
       string.sub, string.len, string.char, string.rep, string.byte, string.format, string.gsub
-local nodeResult = {} -- update result
 local cache = {}
+local nodeResult = setmetatable({}, { __index = cache })  -- update result
 local name = 'shadowsocksr'
 local uciType = 'servers'
 local ucic = luci.model.uci.cursor()
 local proxy = ucic:get_first(name, 'server_subscribe', 'proxy', '0')
 local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
 
+-- hook print
+local _print = print
+print = function(...)
+    _print(os.date("%Y-%m-%d %H:%M:%S ") .. table.concat({ ... }, " "))
+end
 -- 分割字符串
 local function split(full, sep)
     full = full:gsub("%z", "")  -- 这里不是很清楚 有时候结尾带个\0
@@ -40,8 +45,7 @@ local function split(full, sep)
     end
     return result
 end
-
--- 分割字符串 urlencode
+-- urlencode
 local function get_urlencode(c)
     return sformat("%%%02X", sbyte(c))
 end
@@ -110,11 +114,13 @@ local function processData(szType, content)
             local t = split(v, '=')
             params[t[1]] = t[2]
         end
-        result.obfs_param = base64Decode(params.bfsparam, true);
-        result.protocol_param = base64Decode(params.protoparam, true);
-        result.alias = "【" .. base64Decode(params.group, true) .. "】"
+        result.obfs_param = base64Decode(params.bfsparam, true)
+        result.protocol_param = base64Decode(params.protoparam, true)
+        local group = base64Decode(params.group, true)
+        if group then
+            result.alias = "【" .. group .. "】"
+        end
         result.alias = result.alias .. base64Decode(params.remarks, true)
-
     elseif szType == 'vmess' then
         local info = luci.jsonc.parse(content)
         result.type = 'v2ray'
@@ -143,7 +149,7 @@ local function processData(szType, content)
         result.server_port = content.port
         result.password = content.password
         result.encrypt_method_ss = content.encryption
-        result.alias = '[' .. content.airport .. '] ' .. content.remarks
+        result.alias = '【' .. content.airport .. '】' .. content.remarks
     end
     return result, hash
 end
@@ -161,16 +167,14 @@ local execute = function()
             print('服务正在暂停')
             luci.sys.init.stop(name)
         end
-        for _, url in ipairs(subscribe_url) do
+        for k, url in ipairs(subscribe_url) do
             local raw = wget(url)
             if #raw > 0 then
                 local node, szType
                 local groupHash = md5(url)
                 cache[groupHash] = {}
-                nodeResult[groupHash] = setmetatable({}, { __index = cache[groupHash] })
-                -- SSD 似乎是这种格式 ssd:// 开头的
-                -- 不知道 SS 什么格式 没支持
-                -- 我不清楚其他机场是否这样
+                nodeResult[k] = {}
+                -- SSD 似乎是这种格式 ssd:// 开头的 不知道 SS 什么格式 没支持 不清楚其他机场是否这样
                 if raw:find('ssd://') then
                     szType = 'ssd'
                     local nEnd = select(2, raw:find('ssd://'))
@@ -207,10 +211,19 @@ local execute = function()
                         end
                         -- print(hash, result)
                         if hash and result then
-                            print('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
-                            result.grouphashkey = groupHash
-                            tinsert(nodeResult[groupHash], result)
-                            cache[groupHash][hash] = nodeResult[groupHash][#nodeResult[groupHash]]
+                            if result.alias:find("过期时间") or
+                                result.alias:find("剩余流量") or
+                                result.alias:find("QQ群") or
+                                result.alias:find("官网") or
+                                result.server == ''
+                            then
+                                print('丢弃无效节点: ' .. result.type ..' 节点, ' .. result.alias)
+                            else
+                                print('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
+                                result.grouphashkey = groupHash
+                                tinsert(nodeResult[k], result)
+                                cache[groupHash][hash] = nodeResult[k][#nodeResult[k]]
+                            end
                         end
                     end
                 end
@@ -237,7 +250,7 @@ local execute = function()
                 print('忽略手动添加的节点: ' .. old.alias)
             end
         end)
-        for k, v in pairs(nodeResult) do
+        for k, v in ipairs(nodeResult) do
             for kk, vv in ipairs(v) do
                 if not vv._ignore then
                     local section = ucic:add(name, uciType)
@@ -258,12 +271,13 @@ local execute = function()
                 print('当前主服务器已更新，正在自动更换。')
             end
         end
-
         if proxy == '0' and firstServer then
-            print('更新成功服务正在启动')
-            luci.sys.init.start(name)
+            luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
+            -- luci.sys.init.stop(name)
+            -- luci.sys.init.start(name)
         end
         print('新增节点数量: ' ..add, '删除节点数量: ' .. del)
+        print('更新成功服务正在启动')
     end
 end
 
@@ -273,8 +287,7 @@ if subscribe_url and #subscribe_url > 0 then
         local firstServer = ucic:get_first(name, uciType)
         if proxy == '0' and firstServer then
             print('更新失败服务正在恢复启动')
-            luci.sys.init.start(name)
-            print('服务已恢复')
+            luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &")
         end
         print(debug.traceback())
     end)
