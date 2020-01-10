@@ -1,3 +1,4 @@
+#!/usr/bin/lua
 ------------------------------------------------
 -- This file is part of the luci-app-ssr-plus subscribe.lua
 -- @author William Chan <root@williamchan.me>
@@ -18,6 +19,7 @@ local name = 'shadowsocksr'
 local uciType = 'servers'
 local ucic = luci.model.uci.cursor()
 local proxy = ucic:get_first(name, 'server_subscribe', 'proxy', '0')
+local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
 
 -- 分割字符串
 local function split(full, sep)
@@ -58,9 +60,8 @@ local function trim(text)
 end
 -- md5
 local function md5(content)
-    -- lua md5sum 不太好调 有特殊字符 要转义太麻烦了
     local stdout = luci.sys.exec('echo \"' .. urlEncode(content) .. '\" | md5sum | cut -d \" \"  -f1')
-    -- assert(code == 0)
+    -- assert(nixio.errno() == 0)
     return trim(stdout)
 end
 -- base64
@@ -155,7 +156,6 @@ end
 local execute = function()
     -- exec
     do
-        local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
         -- subscribe_url = {'https://www.google.comc'}
         if proxy == '0' then -- 不使用代理更新的话先暂停
             print('服务正在暂停')
@@ -267,14 +267,15 @@ local execute = function()
     end
 end
 
-xpcall(execute, function()
-    print('发生错误, 正在恢复服务')
-    local firstServer = ucic:get_first(name, uciType)
-    if proxy == '0' and firstServer then
-        print('更新失败服务正在恢复启动')
-        luci.sys.init.start(name)
-        print('服务已恢复')
-    end
-    print(debug.traceback())
-end)
-
+if subscribe_url and #subscribe_url > 0 then
+    xpcall(execute, function()
+        print('发生错误, 正在恢复服务')
+        local firstServer = ucic:get_first(name, uciType)
+        if proxy == '0' and firstServer then
+            print('更新失败服务正在恢复启动')
+            luci.sys.init.start(name)
+            print('服务已恢复')
+        end
+        print(debug.traceback())
+    end)
+end
