@@ -32,17 +32,62 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  {
  	struct property *pp = of_find_property(np, name, NULL);
  
-@@ -48,6 +49,79 @@ static const void *of_get_mac_addr(struc
+@@ -48,6 +49,133 @@ static const void *of_get_mac_addr(struc
  	return NULL;
  }
  
++typedef int(*mtd_mac_address_read)(struct mtd_info *mtd, loff_t from, u_char *buf);
++
++static int read_mtd_mac_address(struct mtd_info *mtd, loff_t from, u_char *mac)
++{
++	int retlen;
++
++	return mtd_read(mtd, from, 6, &retlen, mac);
++}
++
++static int read_mtd_mac_address_ascii(struct mtd_info *mtd, loff_t from, u_char *mac)
++{
++	int retlen;
++	char buf[17];
++
++	if (mtd_read(mtd, from, 12, &retlen, buf)) {
++		return -1;
++	}
++	if (sscanf(buf, "%2hhx%2hhx%2hhx%2hhx%2hhx%2hhx",
++			&mac[0], &mac[1], &mac[2], &mac[3],
++			&mac[4], &mac[5]) == 6) {
++		return 0;
++	}
++	if (mtd_read(mtd, from+12, 5, &retlen, buf+12)) {
++		return -1;
++	}
++	if (sscanf(buf, "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx",
++			&mac[0], &mac[1], &mac[2], &mac[3],
++			&mac[4], &mac[5]) == 6) {
++		return 0;
++	}
++	return -1;
++}
++
++static struct mtd_mac_address_property {
++	char *name;
++	mtd_mac_address_read read;
++} mtd_mac_address_properties[] = {
++	{
++		.name = "mtd-mac-address",
++		.read = read_mtd_mac_address,
++	}, {
++		.name = "mtd-mac-address-ascii",
++		.read = read_mtd_mac_address_ascii,
++	},
++};
++
 +static const void *of_get_mac_address_mtd(struct device_node *np)
 +{
 +#ifdef CONFIG_MTD
 +	struct device_node *mtd_np = NULL;
 +	struct property *prop;
-+	size_t retlen;
-+	int size, ret;
++	int size, ret = -1;
 +	struct mtd_info *mtd;
 +	const char *part;
 +	const __be32 *list;
@@ -51,28 +96,37 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +	u8 mac[ETH_ALEN];
 +	void *addr;
 +	u32 inc_idx;
++	int i;
 +
-+	list = of_get_property(np, "mtd-mac-address", &size);
-+	if (!list || (size != (2 * sizeof(*list))))
++	for (i = 0; i < ARRAY_SIZE(mtd_mac_address_properties); i++) {
++		list = of_get_property(np, mtd_mac_address_properties[i].name, &size);
++		if (!list || (size != (2 * sizeof(*list))))
++			continue;
++
++		phandle = be32_to_cpup(list++);
++		if (phandle)
++			mtd_np = of_find_node_by_phandle(phandle);
++
++		if (!mtd_np)
++			continue;
++
++		part = of_get_property(mtd_np, "label", NULL);
++		if (!part)
++			part = mtd_np->name;
++
++		mtd = get_mtd_device_nm(part);
++		if (IS_ERR(mtd))
++			continue;
++
++		ret = mtd_mac_address_properties[i].read(mtd, be32_to_cpup(list), mac);
++		put_mtd_device(mtd);
++		if (!ret) {
++			break;
++		}
++	}
++	if (ret) {
 +		return NULL;
-+
-+	phandle = be32_to_cpup(list++);
-+	if (phandle)
-+		mtd_np = of_find_node_by_phandle(phandle);
-+
-+	if (!mtd_np)
-+		return NULL;
-+
-+	part = of_get_property(mtd_np, "label", NULL);
-+	if (!part)
-+		part = mtd_np->name;
-+
-+	mtd = get_mtd_device_nm(part);
-+	if (IS_ERR(mtd))
-+		return NULL;
-+
-+	ret = mtd_read(mtd, be32_to_cpup(list), 6, &retlen, mac);
-+	put_mtd_device(mtd);
++	}
 +
 +	if (of_property_read_u32(np, "mtd-mac-address-increment-byte", &inc_idx))
 +		inc_idx = 5;
@@ -112,7 +166,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  /**
   * Search the device tree for the best MAC address to use.  'mac-address' is
   * checked first, because that is supposed to contain to "most recent" MAC
-@@ -65,11 +139,18 @@ static const void *of_get_mac_addr(struc
+@@ -65,11 +193,18 @@ static const void *of_get_mac_addr(struc
   * addresses.  Some older U-Boots only initialized 'local-mac-address'.  In
   * this case, the real MAC is in 'local-mac-address', and 'mac-address' exists
   * but is all zeros.

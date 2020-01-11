@@ -1,0 +1,689 @@
+From 6c8c9ca56ce6039ade09d26c069132538e4de9f0 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Sun, 28 Jul 2019 22:22:36 +0100
+Subject: [PATCH] drivers: char: Use correct name for the Raspberry Pi
+ video decoder
+
+Replace the old code name with a more appropriate name - RPiVid.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ arch/arm/boot/dts/bcm2838.dtsi                |  10 +-
+ drivers/char/broadcom/Kconfig                 |   8 +-
+ drivers/char/broadcom/Makefile                |   2 +-
+ .../broadcom/{argon-mem.c => rpivid-mem.c}    | 105 +++++++++---------
+ drivers/mfd/bcm2835-pm.c                      |  12 +-
+ drivers/soc/bcm/bcm2835-power.c               |   6 +-
+ include/linux/mfd/bcm2835-pm.h                |   2 +-
+ 8 files changed, 71 insertions(+), 76 deletions(-)
+ rename drivers/char/broadcom/{argon-mem.c => rpivid-mem.c} (69%)
+
+--- a/arch/arm/boot/dts/bcm2838.dtsi
++++ b/arch/arm/boot/dts/bcm2838.dtsi
+@@ -409,26 +409,26 @@
+ 		};
+ 
+ 		hevc-decoder@7eb00000 {
+-			compatible = "raspberrypi,argon-hevc-decoder";
++			compatible = "raspberrypi,rpivid-hevc-decoder";
+ 			reg = <0x0 0x7eb00000 0x10000>;
+ 			status = "okay";
+ 		};
+ 
+-		argon-local-intc@7eb10000 {
+-			compatible = "raspberrypi,argon-local-intc";
++		rpivid-local-intc@7eb10000 {
++			compatible = "raspberrypi,rpivid-local-intc";
+ 			reg = <0x0 0x7eb10000 0x1000>;
+ 			status = "okay";
+ 			interrupts = <GIC_SPI 98 IRQ_TYPE_LEVEL_HIGH>;
+ 		};
+ 
+ 		h264-decoder@7eb20000 {
+-			compatible = "raspberrypi,argon-h264-decoder";
++			compatible = "raspberrypi,rpivid-h264-decoder";
+ 			reg = <0x0 0x7eb20000 0x10000>;
+ 			status = "okay";
+ 		};
+ 
+ 		vp9-decoder@7eb30000 {
+-			compatible = "raspberrypi,argon-vp9-decoder";
++			compatible = "raspberrypi,rpivid-vp9-decoder";
+ 			reg = <0x0 0x7eb30000 0x10000>;
+ 			status = "okay";
+ 		};
+--- a/drivers/char/broadcom/Kconfig
++++ b/drivers/char/broadcom/Kconfig
+@@ -50,10 +50,10 @@ config BCM2835_SMI_DEV
+ 		Broadcom's Secondary Memory interface. The low-level functionality is provided
+ 		by the SMI driver itself.
+ 
+-config ARGON_MEM
+-	tristate "Character device driver for the Argon decoder hardware"
++config RPIVID_MEM
++	tristate "Character device driver for the Raspberry Pi RPIVid video decoder hardware"
+ 	default n
+ 	help
+ 		This driver provides a character device interface for memory-map operations
+-		so userspace tools can access the control and status registers of the Argon
+-		video decoder hardware.
++		so userspace tools can access the control and status registers of the
++		Raspberry Pi RPiVid video decoder hardware.
+--- a/drivers/char/broadcom/Makefile
++++ b/drivers/char/broadcom/Makefile
+@@ -4,4 +4,4 @@ obj-$(CONFIG_BCM_VC_SM)         += vc_sm
+ 
+ obj-$(CONFIG_BCM2835_DEVGPIOMEM)+= bcm2835-gpiomem.o
+ obj-$(CONFIG_BCM2835_SMI_DEV)	+= bcm2835_smi_dev.o
+-obj-$(CONFIG_ARGON_MEM)		+= argon-mem.o
++obj-$(CONFIG_RPIVID_MEM)	+= rpivid-mem.o
+--- a/drivers/char/broadcom/argon-mem.c
++++ /dev/null
+@@ -1,277 +0,0 @@
+-/**
+- * argon-mem.c - character device access to the Argon decoder registers
+- *
+- * Based on bcm2835-gpiomem.c. Provides IO memory access to the decoder
+- * register blocks such that ffmpeg plugins can access the hardware.
+- *
+- * Jonathan Bell <jonathan@raspberrypi.org>
+- * Copyright (c) 2019, Raspberry Pi (Trading) Ltd.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions
+- * are met:
+- * 1. Redistributions of source code must retain the above copyright
+- *    notice, this list of conditions, and the following disclaimer,
+- *    without modification.
+- * 2. Redistributions in binary form must reproduce the above copyright
+- *    notice, this list of conditions and the following disclaimer in the
+- *    documentation and/or other materials provided with the distribution.
+- * 3. The names of the above-listed copyright holders may not be used
+- *    to endorse or promote products derived from this software without
+- *    specific prior written permission.
+- *
+- * ALTERNATIVELY, this software may be distributed under the terms of the
+- * GNU General Public License ("GPL") version 2, as published by the Free
+- * Software Foundation.
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+- * IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+- * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+- * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+- * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+- */
+-
+-#include <linux/kernel.h>
+-#include <linux/module.h>
+-#include <linux/of.h>
+-#include <linux/of_device.h>
+-#include <linux/platform_device.h>
+-#include <linux/mm.h>
+-#include <linux/slab.h>
+-#include <linux/cdev.h>
+-#include <linux/pagemap.h>
+-#include <linux/io.h>
+-
+-#define DRIVER_NAME "argon-mem"
+-#define DEVICE_MINOR 0
+-
+-struct argon_mem_priv {
+-	dev_t devid;
+-	struct class *class;
+-	struct cdev argon_mem_cdev;
+-	unsigned long regs_phys;
+-	unsigned long mem_window_len;
+-	struct device *dev;
+-	const char *name;
+-};
+-
+-static int argon_mem_open(struct inode *inode, struct file *file)
+-{
+-	int dev = iminor(inode);
+-	int ret = 0;
+-	struct argon_mem_priv *priv;
+-	if (dev != DEVICE_MINOR)
+-		ret = -ENXIO;
+-
+-	priv = container_of(inode->i_cdev, struct argon_mem_priv,
+-				argon_mem_cdev);
+-	if (!priv)
+-		return -EINVAL;
+-	file->private_data = priv;
+-	return ret;
+-}
+-
+-static int argon_mem_release(struct inode *inode, struct file *file)
+-{
+-	int dev = iminor(inode);
+-	int ret = 0;
+-
+-	if (dev != DEVICE_MINOR)
+-		ret = -ENXIO;
+-
+-	return ret;
+-}
+-
+-static const struct vm_operations_struct argon_mem_vm_ops = {
+-#ifdef CONFIG_HAVE_IOREMAP_PROT
+-	.access = generic_access_phys
+-#endif
+-};
+-
+-static int argon_mem_mmap(struct file *file, struct vm_area_struct *vma)
+-{
+-	struct argon_mem_priv *priv;
+-	unsigned long pages;
+-
+-	priv = file->private_data;
+-	pages = priv->regs_phys >> PAGE_SHIFT;
+-	/*
+-	 * The address decode is far larger than the actual number of registers.
+-	 * Just map the whole lot in.
+-	 */
+-	vma->vm_page_prot = phys_mem_access_prot(file, pages,
+-						 priv->mem_window_len,
+-						 vma->vm_page_prot);
+-	vma->vm_ops = &argon_mem_vm_ops;
+-	if (remap_pfn_range(vma, vma->vm_start,
+-			pages,
+-			priv->mem_window_len,
+-			vma->vm_page_prot)) {
+-		return -EAGAIN;
+-	}
+-	return 0;
+-}
+-
+-static const struct file_operations
+-argon_mem_fops = {
+-	.owner = THIS_MODULE,
+-	.open = argon_mem_open,
+-	.release = argon_mem_release,
+-	.mmap = argon_mem_mmap,
+-};
+-
+-static const struct of_device_id argon_mem_of_match[];
+-static int argon_mem_probe(struct platform_device *pdev)
+-{
+-	int err;
+-	void *ptr_err;
+-	const struct of_device_id *id;
+-	struct device *dev = &pdev->dev;
+-	struct device *argon_mem_dev;
+-	struct resource *ioresource;
+-	struct argon_mem_priv *priv;
+-
+-
+-	/* Allocate buffers and instance data */
+-
+-	priv = kzalloc(sizeof(struct argon_mem_priv), GFP_KERNEL);
+-
+-	if (!priv) {
+-		err = -ENOMEM;
+-		goto failed_inst_alloc;
+-	}
+-	platform_set_drvdata(pdev, priv);
+-
+-	priv->dev = dev;
+-	id = of_match_device(argon_mem_of_match, dev);
+-	if (!id)
+-		return -EINVAL;
+-	priv->name = id->data;
+-
+-	ioresource = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+-	if (ioresource) {
+-		priv->regs_phys = ioresource->start;
+-		priv->mem_window_len = ioresource->end - ioresource->start;
+-	} else {
+-		dev_err(priv->dev, "failed to get IO resource");
+-		err = -ENOENT;
+-		goto failed_get_resource;
+-	}
+-
+-	/* Create character device entries */
+-
+-	err = alloc_chrdev_region(&priv->devid,
+-				  DEVICE_MINOR, 1, priv->name);
+-	if (err != 0) {
+-		dev_err(priv->dev, "unable to allocate device number");
+-		goto failed_alloc_chrdev;
+-	}
+-	cdev_init(&priv->argon_mem_cdev, &argon_mem_fops);
+-	priv->argon_mem_cdev.owner = THIS_MODULE;
+-	err = cdev_add(&priv->argon_mem_cdev, priv->devid, 1);
+-	if (err != 0) {
+-		dev_err(priv->dev, "unable to register device");
+-		goto failed_cdev_add;
+-	}
+-
+-	/* Create sysfs entries */
+-
+-	priv->class = class_create(THIS_MODULE, priv->name);
+-	ptr_err = priv->class;
+-	if (IS_ERR(ptr_err))
+-		goto failed_class_create;
+-
+-	argon_mem_dev = device_create(priv->class, NULL,
+-					priv->devid, NULL,
+-					priv->name);
+-	ptr_err = argon_mem_dev;
+-	if (IS_ERR(ptr_err))
+-		goto failed_device_create;
+-
+-	dev_info(priv->dev, "%s initialised: Registers at 0x%08lx length 0x%08lx",
+-		priv->name, priv->regs_phys, priv->mem_window_len);
+-
+-	return 0;
+-
+-failed_device_create:
+-	class_destroy(priv->class);
+-failed_class_create:
+-	cdev_del(&priv->argon_mem_cdev);
+-	err = PTR_ERR(ptr_err);
+-failed_cdev_add:
+-	unregister_chrdev_region(priv->devid, 1);
+-failed_alloc_chrdev:
+-failed_get_resource:
+-	kfree(priv);
+-failed_inst_alloc:
+-	dev_err(priv->dev, "could not load argon_mem");
+-	return err;
+-}
+-
+-static int argon_mem_remove(struct platform_device *pdev)
+-{
+-	struct device *dev = &pdev->dev;
+-	struct argon_mem_priv *priv = platform_get_drvdata(pdev);
+-
+-	device_destroy(priv->class, priv->devid);
+-	class_destroy(priv->class);
+-	cdev_del(&priv->argon_mem_cdev);
+-	unregister_chrdev_region(priv->devid, 1);
+-	kfree(priv);
+-
+-	dev_info(dev, "%s driver removed - OK", priv->name);
+-	return 0;
+-}
+-
+-static const char argon_hevc_name[] = "argon-hevcmem";
+-static const char argon_h264_name[] = "argon-h264mem";
+-static const char argon_vp9_name[] = "argon-vp9mem";
+-static const char argon_intc_name[] = "argon-intcmem";
+-
+-static const struct of_device_id argon_mem_of_match[] = {
+-	{
+-		.compatible = "raspberrypi,argon-hevc-decoder",
+-		.data = &argon_hevc_name,
+-	},
+-	{
+-		.compatible = "raspberrypi,argon-h264-decoder",
+-		.data = &argon_h264_name,
+-	},
+-	{
+-		.compatible = "raspberrypi,argon-vp9-decoder",
+-		.data = &argon_vp9_name,
+-	},
+-	/* The "intc" is included as this block of hardware contains the
+-	 * "frame done" status flags.
+-	 */
+-	{
+-		.compatible = "raspberrypi,argon-local-intc",
+-		.data = &argon_intc_name,
+-	},
+-	{ /* sentinel */ },
+-};
+-
+-MODULE_DEVICE_TABLE(of, argon_mem_of_match);
+-
+-static struct platform_driver argon_mem_driver = {
+-	.probe = argon_mem_probe,
+-	.remove = argon_mem_remove,
+-	.driver = {
+-		   .name = DRIVER_NAME,
+-		   .owner = THIS_MODULE,
+-		   .of_match_table = argon_mem_of_match,
+-		   },
+-};
+-
+-module_platform_driver(argon_mem_driver);
+-
+-MODULE_ALIAS("platform:argon-mem");
+-MODULE_LICENSE("GPL");
+-MODULE_DESCRIPTION("Driver for accessing Argon decoder registers from userspace");
+-MODULE_AUTHOR("Jonathan Bell <jonathan@raspberrypi.org>");
+--- /dev/null
++++ b/drivers/char/broadcom/rpivid-mem.c
+@@ -0,0 +1,272 @@
++/**
++ * rpivid-mem.c - character device access to the RPiVid decoder registers
++ *
++ * Based on bcm2835-gpiomem.c. Provides IO memory access to the decoder
++ * register blocks such that ffmpeg plugins can access the hardware.
++ *
++ * Jonathan Bell <jonathan@raspberrypi.org>
++ * Copyright (c) 2019, Raspberry Pi (Trading) Ltd.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions, and the following disclaimer,
++ *    without modification.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The names of the above-listed copyright holders may not be used
++ *    to endorse or promote products derived from this software without
++ *    specific prior written permission.
++ *
++ * ALTERNATIVELY, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") version 2, as published by the Free
++ * Software Foundation.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
++ * IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
++ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
++ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
++ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
++ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
++ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
++ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
++ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/platform_device.h>
++#include <linux/mm.h>
++#include <linux/slab.h>
++#include <linux/cdev.h>
++#include <linux/pagemap.h>
++#include <linux/io.h>
++
++#define DRIVER_NAME "rpivid-mem"
++#define DEVICE_MINOR 0
++
++struct rpivid_mem_priv {
++	dev_t devid;
++	struct class *class;
++	struct cdev rpivid_mem_cdev;
++	unsigned long regs_phys;
++	unsigned long mem_window_len;
++	struct device *dev;
++	const char *name;
++};
++
++static int rpivid_mem_open(struct inode *inode, struct file *file)
++{
++	int dev = iminor(inode);
++	int ret = 0;
++	struct rpivid_mem_priv *priv;
++	if (dev != DEVICE_MINOR)
++		ret = -ENXIO;
++
++	priv = container_of(inode->i_cdev, struct rpivid_mem_priv,
++				rpivid_mem_cdev);
++	if (!priv)
++		return -EINVAL;
++	file->private_data = priv;
++	return ret;
++}
++
++static int rpivid_mem_release(struct inode *inode, struct file *file)
++{
++	int dev = iminor(inode);
++	int ret = 0;
++
++	if (dev != DEVICE_MINOR)
++		ret = -ENXIO;
++
++	return ret;
++}
++
++static const struct vm_operations_struct rpivid_mem_vm_ops = {
++#ifdef CONFIG_HAVE_IOREMAP_PROT
++	.access = generic_access_phys
++#endif
++};
++
++static int rpivid_mem_mmap(struct file *file, struct vm_area_struct *vma)
++{
++	struct rpivid_mem_priv *priv;
++	unsigned long pages;
++
++	priv = file->private_data;
++	pages = priv->regs_phys >> PAGE_SHIFT;
++	/*
++	 * The address decode is far larger than the actual number of registers.
++	 * Just map the whole lot in.
++	 */
++	vma->vm_page_prot = phys_mem_access_prot(file, pages,
++						 priv->mem_window_len,
++						 vma->vm_page_prot);
++	vma->vm_ops = &rpivid_mem_vm_ops;
++	if (remap_pfn_range(vma, vma->vm_start,
++			pages,
++			priv->mem_window_len,
++			vma->vm_page_prot)) {
++		return -EAGAIN;
++	}
++	return 0;
++}
++
++static const struct file_operations
++rpivid_mem_fops = {
++	.owner = THIS_MODULE,
++	.open = rpivid_mem_open,
++	.release = rpivid_mem_release,
++	.mmap = rpivid_mem_mmap,
++};
++
++static const struct of_device_id rpivid_mem_of_match[];
++static int rpivid_mem_probe(struct platform_device *pdev)
++{
++	int err;
++	void *ptr_err;
++	const struct of_device_id *id;
++	struct device *dev = &pdev->dev;
++	struct device *rpivid_mem_dev;
++	struct resource *ioresource;
++	struct rpivid_mem_priv *priv;
++
++
++	/* Allocate buffers and instance data */
++
++	priv = kzalloc(sizeof(struct rpivid_mem_priv), GFP_KERNEL);
++
++	if (!priv) {
++		err = -ENOMEM;
++		goto failed_inst_alloc;
++	}
++	platform_set_drvdata(pdev, priv);
++
++	priv->dev = dev;
++	id = of_match_device(rpivid_mem_of_match, dev);
++	if (!id)
++		return -EINVAL;
++	priv->name = id->data;
++
++	ioresource = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (ioresource) {
++		priv->regs_phys = ioresource->start;
++		priv->mem_window_len = ioresource->end - ioresource->start;
++	} else {
++		dev_err(priv->dev, "failed to get IO resource");
++		err = -ENOENT;
++		goto failed_get_resource;
++	}
++
++	/* Create character device entries */
++
++	err = alloc_chrdev_region(&priv->devid,
++				  DEVICE_MINOR, 1, priv->name);
++	if (err != 0) {
++		dev_err(priv->dev, "unable to allocate device number");
++		goto failed_alloc_chrdev;
++	}
++	cdev_init(&priv->rpivid_mem_cdev, &rpivid_mem_fops);
++	priv->rpivid_mem_cdev.owner = THIS_MODULE;
++	err = cdev_add(&priv->rpivid_mem_cdev, priv->devid, 1);
++	if (err != 0) {
++		dev_err(priv->dev, "unable to register device");
++		goto failed_cdev_add;
++	}
++
++	/* Create sysfs entries */
++
++	priv->class = class_create(THIS_MODULE, priv->name);
++	ptr_err = priv->class;
++	if (IS_ERR(ptr_err))
++		goto failed_class_create;
++
++	rpivid_mem_dev = device_create(priv->class, NULL,
++					priv->devid, NULL,
++					priv->name);
++	ptr_err = rpivid_mem_dev;
++	if (IS_ERR(ptr_err))
++		goto failed_device_create;
++
++	dev_info(priv->dev, "%s initialised: Registers at 0x%08lx length 0x%08lx",
++		priv->name, priv->regs_phys, priv->mem_window_len);
++
++	return 0;
++
++failed_device_create:
++	class_destroy(priv->class);
++failed_class_create:
++	cdev_del(&priv->rpivid_mem_cdev);
++	err = PTR_ERR(ptr_err);
++failed_cdev_add:
++	unregister_chrdev_region(priv->devid, 1);
++failed_alloc_chrdev:
++failed_get_resource:
++	kfree(priv);
++failed_inst_alloc:
++	dev_err(priv->dev, "could not load rpivid_mem");
++	return err;
++}
++
++static int rpivid_mem_remove(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct rpivid_mem_priv *priv = platform_get_drvdata(pdev);
++
++	device_destroy(priv->class, priv->devid);
++	class_destroy(priv->class);
++	cdev_del(&priv->rpivid_mem_cdev);
++	unregister_chrdev_region(priv->devid, 1);
++	kfree(priv);
++
++	dev_info(dev, "%s driver removed - OK", priv->name);
++	return 0;
++}
++
++static const struct of_device_id rpivid_mem_of_match[] = {
++	{
++		.compatible = "raspberrypi,rpivid-hevc-decoder",
++		.data = "rpivid-hevcmem",
++	},
++	{
++		.compatible = "raspberrypi,rpivid-h264-decoder",
++		.data = "rpivid-h264mem",
++	},
++	{
++		.compatible = "raspberrypi,rpivid-vp9-decoder",
++		.data = "rpivid-vp9mem",
++	},
++	/* The "intc" is included as this block of hardware contains the
++	 * "frame done" status flags.
++	 */
++	{
++		.compatible = "raspberrypi,rpivid-local-intc",
++		.data = "rpivid-intcmem",
++	},
++	{ /* sentinel */ },
++};
++
++MODULE_DEVICE_TABLE(of, rpivid_mem_of_match);
++
++static struct platform_driver rpivid_mem_driver = {
++	.probe = rpivid_mem_probe,
++	.remove = rpivid_mem_remove,
++	.driver = {
++		   .name = DRIVER_NAME,
++		   .owner = THIS_MODULE,
++		   .of_match_table = rpivid_mem_of_match,
++		   },
++};
++
++module_platform_driver(rpivid_mem_driver);
++
++MODULE_ALIAS("platform:rpivid-mem");
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("Driver for accessing RPiVid decoder registers from userspace");
++MODULE_AUTHOR("Jonathan Bell <jonathan@raspberrypi.org>");
+--- a/drivers/mfd/bcm2835-pm.c
++++ b/drivers/mfd/bcm2835-pm.c
+@@ -50,14 +50,14 @@ static int bcm2835_pm_probe(struct platf
+ 	if (ret)
+ 		return ret;
+ 
+-	/* Map the ARGON ASB regs if present. */
++	/* Map the RPiVid ASB regs if present. */
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 2);
+ 	if (res) {
+-		pm->arg_asb = devm_ioremap_resource(dev, res);
+-		if (IS_ERR(pm->arg_asb)) {
+-			dev_err(dev, "Failed to map ARGON ASB: %ld\n",
+-				PTR_ERR(pm->arg_asb));
+-			return PTR_ERR(pm->arg_asb);
++		pm->rpivid_asb = devm_ioremap_resource(dev, res);
++		if (IS_ERR(pm->rpivid_asb)) {
++			dev_err(dev, "Failed to map RPiVid ASB: %ld\n",
++				PTR_ERR(pm->rpivid_asb));
++			return PTR_ERR(pm->rpivid_asb);
+ 		}
+ 	}
+ 
+--- a/drivers/soc/bcm/bcm2835-power.c
++++ b/drivers/soc/bcm/bcm2835-power.c
+@@ -637,15 +637,15 @@ static int bcm2835_power_probe(struct pl
+ 	power->base = pm->base;
+ 	power->asb = pm->asb;
+ 
+-	/* 2711 hack: the new ARGON ASB took over V3D, which is our
++	/* 2711 hack: the new RPiVid ASB took over V3D, which is our
+ 	 * only consumer of this driver so far.  The old ASB seems to
+ 	 * still be present with ISP and H264 bits but no V3D, but I
+ 	 * don't know if that's real or not.  The V3D is in the same
+ 	 * place in the new ASB as the old one, so just poke the new
+ 	 * one for now.
+ 	 */
+-	if (pm->arg_asb) {
+-		power->asb = pm->arg_asb;
++	if (pm->rpivid_asb) {
++		power->asb = pm->rpivid_asb;
+ 		power->is_2711 = true;
+ 	}
+ 
+--- a/include/linux/mfd/bcm2835-pm.h
++++ b/include/linux/mfd/bcm2835-pm.h
+@@ -9,7 +9,7 @@ struct bcm2835_pm {
+ 	struct device *dev;
+ 	void __iomem *base;
+ 	void __iomem *asb;
+-	void __iomem *arg_asb;
++	void __iomem *rpivid_asb;
+ };
+ 
+ #endif /* BCM2835_MFD_PM_H */
