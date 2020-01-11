@@ -1,0 +1,197 @@
+From 84a8cbf64731568c0750137ec38091a46b81d502 Mon Sep 17 00:00:00 2001
+From: Viresh Kumar <viresh.kumar@linaro.org>
+Date: Fri, 4 Jan 2019 15:14:33 +0530
+Subject: [PATCH] cpufreq: scpi/scmi: Fix freeing of dynamic OPPs
+
+Commit 1690d8bb91e370ab772062b79bd434ce815c4729 upstream
+
+Since the commit 2a4eb7358aba "OPP: Don't remove dynamic OPPs from
+_dev_pm_opp_remove_table()", dynamically created OPP aren't
+automatically removed anymore by dev_pm_opp_cpumask_remove_table(). This
+affects the scpi and scmi cpufreq drivers which no longer free OPPs on
+failures or on invocations of the policy->exit() callback.
+
+Create a generic OPP helper dev_pm_opp_remove_all_dynamic() which can be
+called from these drivers instead of dev_pm_opp_cpumask_remove_table().
+
+In dev_pm_opp_remove_all_dynamic(), we need to make sure that the
+opp_list isn't getting accessed simultaneously from other parts of the
+OPP core while the helper is freeing dynamic OPPs, i.e. we can't drop
+the opp_table->lock while traversing through the OPP list. And to
+accomplish that, this patch also creates _opp_kref_release_unlocked()
+which can be called from this new helper with the opp_table lock already
+held.
+
+Cc: 4.20 <stable@vger.kernel.org> # v4.20
+Reported-by: Valentin Schneider <valentin.schneider@arm.com>
+Fixes: 2a4eb7358aba "OPP: Don't remove dynamic OPPs from _dev_pm_opp_remove_table()"
+Signed-off-by: Viresh Kumar <viresh.kumar@linaro.org>
+Tested-by: Valentin Schneider <valentin.schneider@arm.com>
+Reviewed-by: Sudeep Holla <sudeep.holla@arm.com>
+Signed-off-by: Rafael J. Wysocki <rafael.j.wysocki@intel.com>
+---
+ drivers/cpufreq/scmi-cpufreq.c |  4 +--
+ drivers/cpufreq/scpi-cpufreq.c |  4 +--
+ drivers/opp/core.c             | 63 +++++++++++++++++++++++++++++++---
+ include/linux/pm_opp.h         |  5 +++
+ 4 files changed, 67 insertions(+), 9 deletions(-)
+
+--- a/drivers/cpufreq/scmi-cpufreq.c
++++ b/drivers/cpufreq/scmi-cpufreq.c
+@@ -176,7 +176,7 @@ static int scmi_cpufreq_init(struct cpuf
+ out_free_priv:
+ 	kfree(priv);
+ out_free_opp:
+-	dev_pm_opp_cpumask_remove_table(policy->cpus);
++	dev_pm_opp_remove_all_dynamic(cpu_dev);
+ 
+ 	return ret;
+ }
+@@ -188,7 +188,7 @@ static int scmi_cpufreq_exit(struct cpuf
+ 	cpufreq_cooling_unregister(priv->cdev);
+ 	dev_pm_opp_free_cpufreq_table(priv->cpu_dev, &policy->freq_table);
+ 	kfree(priv);
+-	dev_pm_opp_cpumask_remove_table(policy->related_cpus);
++	dev_pm_opp_remove_all_dynamic(priv->cpu_dev);
+ 
+ 	return 0;
+ }
+--- a/drivers/cpufreq/scpi-cpufreq.c
++++ b/drivers/cpufreq/scpi-cpufreq.c
+@@ -177,7 +177,7 @@ out_free_cpufreq_table:
+ out_free_priv:
+ 	kfree(priv);
+ out_free_opp:
+-	dev_pm_opp_cpumask_remove_table(policy->cpus);
++	dev_pm_opp_remove_all_dynamic(cpu_dev);
+ 
+ 	return ret;
+ }
+@@ -190,7 +190,7 @@ static int scpi_cpufreq_exit(struct cpuf
+ 	clk_put(priv->clk);
+ 	dev_pm_opp_free_cpufreq_table(priv->cpu_dev, &policy->freq_table);
+ 	kfree(priv);
+-	dev_pm_opp_cpumask_remove_table(policy->related_cpus);
++	dev_pm_opp_remove_all_dynamic(priv->cpu_dev);
+ 
+ 	return 0;
+ }
+--- a/drivers/opp/core.c
++++ b/drivers/opp/core.c
+@@ -881,11 +881,9 @@ void _opp_free(struct dev_pm_opp *opp)
+ 	kfree(opp);
+ }
+ 
+-static void _opp_kref_release(struct kref *kref)
++static void _opp_kref_release(struct dev_pm_opp *opp,
++			      struct opp_table *opp_table)
+ {
+-	struct dev_pm_opp *opp = container_of(kref, struct dev_pm_opp, kref);
+-	struct opp_table *opp_table = opp->opp_table;
+-
+ 	/*
+ 	 * Notify the changes in the availability of the operable
+ 	 * frequency/voltage list.
+@@ -894,7 +892,22 @@ static void _opp_kref_release(struct kre
+ 	opp_debug_remove_one(opp);
+ 	list_del(&opp->node);
+ 	kfree(opp);
++}
++
++static void _opp_kref_release_unlocked(struct kref *kref)
++{
++	struct dev_pm_opp *opp = container_of(kref, struct dev_pm_opp, kref);
++	struct opp_table *opp_table = opp->opp_table;
++
++	_opp_kref_release(opp, opp_table);
++}
+ 
++static void _opp_kref_release_locked(struct kref *kref)
++{
++	struct dev_pm_opp *opp = container_of(kref, struct dev_pm_opp, kref);
++	struct opp_table *opp_table = opp->opp_table;
++
++	_opp_kref_release(opp, opp_table);
+ 	mutex_unlock(&opp_table->lock);
+ 	dev_pm_opp_put_opp_table(opp_table);
+ }
+@@ -906,10 +919,16 @@ void dev_pm_opp_get(struct dev_pm_opp *o
+ 
+ void dev_pm_opp_put(struct dev_pm_opp *opp)
+ {
+-	kref_put_mutex(&opp->kref, _opp_kref_release, &opp->opp_table->lock);
++	kref_put_mutex(&opp->kref, _opp_kref_release_locked,
++		       &opp->opp_table->lock);
+ }
+ EXPORT_SYMBOL_GPL(dev_pm_opp_put);
+ 
++static void dev_pm_opp_put_unlocked(struct dev_pm_opp *opp)
++{
++	kref_put(&opp->kref, _opp_kref_release_unlocked);
++}
++
+ /**
+  * dev_pm_opp_remove()  - Remove an OPP from OPP table
+  * @dev:	device for which we do this operation
+@@ -949,6 +968,40 @@ void dev_pm_opp_remove(struct device *de
+ }
+ EXPORT_SYMBOL_GPL(dev_pm_opp_remove);
+ 
++/**
++ * dev_pm_opp_remove_all_dynamic() - Remove all dynamically created OPPs
++ * @dev:	device for which we do this operation
++ *
++ * This function removes all dynamically created OPPs from the opp table.
++ */
++void dev_pm_opp_remove_all_dynamic(struct device *dev)
++{
++	struct opp_table *opp_table;
++	struct dev_pm_opp *opp, *temp;
++	int count = 0;
++
++	opp_table = _find_opp_table(dev);
++	if (IS_ERR(opp_table))
++		return;
++
++	mutex_lock(&opp_table->lock);
++	list_for_each_entry_safe(opp, temp, &opp_table->opp_list, node) {
++		if (opp->dynamic) {
++			dev_pm_opp_put_unlocked(opp);
++			count++;
++		}
++	}
++	mutex_unlock(&opp_table->lock);
++
++	/* Drop the references taken by dev_pm_opp_add() */
++	while (count--)
++		dev_pm_opp_put_opp_table(opp_table);
++
++	/* Drop the reference taken by _find_opp_table() */
++	dev_pm_opp_put_opp_table(opp_table);
++}
++EXPORT_SYMBOL_GPL(dev_pm_opp_remove_all_dynamic);
++
+ struct dev_pm_opp *_opp_allocate(struct opp_table *table)
+ {
+ 	struct dev_pm_opp *opp;
+--- a/include/linux/pm_opp.h
++++ b/include/linux/pm_opp.h
+@@ -107,6 +107,7 @@ void dev_pm_opp_put(struct dev_pm_opp *o
+ int dev_pm_opp_add(struct device *dev, unsigned long freq,
+ 		   unsigned long u_volt);
+ void dev_pm_opp_remove(struct device *dev, unsigned long freq);
++void dev_pm_opp_remove_all_dynamic(struct device *dev);
+ 
+ int dev_pm_opp_enable(struct device *dev, unsigned long freq);
+ 
+@@ -208,6 +209,10 @@ static inline void dev_pm_opp_remove(str
+ {
+ }
+ 
++static inline void dev_pm_opp_remove_all_dynamic(struct device *dev)
++{
++}
++
+ static inline int dev_pm_opp_enable(struct device *dev, unsigned long freq)
+ {
+ 	return 0;
