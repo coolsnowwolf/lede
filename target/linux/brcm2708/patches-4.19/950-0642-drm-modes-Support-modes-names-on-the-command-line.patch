@@ -1,0 +1,174 @@
+From 2cea4924c69b6be5cfe8d976810ccf76a3991230 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime.ripard@bootlin.com>
+Date: Wed, 19 Jun 2019 12:17:50 +0200
+Subject: [PATCH] drm/modes: Support modes names on the command line
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+commit 3aeeb13d899627fe2b86bdbdcd0927cf7192234f upstream.
+Minor conflict resolution as upstream has moved functions
+from drm_fb_helper.c to a new drm_client_modeset.c
+
+The drm subsystem also uses the video= kernel parameter, and in the
+documentation refers to the fbdev documentation for that parameter.
+
+However, that documentation also says that instead of giving the mode using
+its resolution we can also give a name. However, DRM doesn't handle that
+case at the moment. Even though in most case it shouldn't make any
+difference, it might be useful for analog modes, where different standards
+might have the same resolution, but still have a few different parameters
+that are not encoded in the modes (NTSC vs NTSC-J vs PAL-M for example).
+
+Reviewed-by: Noralf Trønnes <noralf@tronnes.org>
+Signed-off-by: Maxime Ripard <maxime.ripard@bootlin.com>
+Link: https://patchwork.freedesktop.org/patch/msgid/18443e0c3bdbbd16cea4ec63bc7f2079b820b43b.1560783090.git-series.maxime.ripard@bootlin.com
+---
+ drivers/gpu/drm/drm_connector.c |  3 +-
+ drivers/gpu/drm/drm_fb_helper.c |  4 +++
+ drivers/gpu/drm/drm_modes.c     | 62 ++++++++++++++++++++++++---------
+ include/drm/drm_connector.h     |  7 ++++
+ 4 files changed, 59 insertions(+), 17 deletions(-)
+
+--- a/drivers/gpu/drm/drm_connector.c
++++ b/drivers/gpu/drm/drm_connector.c
+@@ -135,8 +135,9 @@ static void drm_connector_get_cmdline_mo
+ 		connector->force = mode->force;
+ 	}
+ 
+-	DRM_DEBUG_KMS("cmdline mode for connector %s %dx%d@%dHz%s%s%s\n",
++	DRM_DEBUG_KMS("cmdline mode for connector %s %s %dx%d@%dHz%s%s%s\n",
+ 		      connector->name,
++		      mode->name ? mode->name : "",
+ 		      mode->xres, mode->yres,
+ 		      mode->refresh_specified ? mode->refresh : 60,
+ 		      mode->rb ? " reduced blanking" : "",
+--- a/drivers/gpu/drm/drm_fb_helper.c
++++ b/drivers/gpu/drm/drm_fb_helper.c
+@@ -2099,6 +2099,10 @@ struct drm_display_mode *drm_pick_cmdlin
+ 	prefer_non_interlace = !cmdline_mode->interlace;
+ again:
+ 	list_for_each_entry(mode, &fb_helper_conn->connector->modes, head) {
++		/* Check (optional) mode name first */
++		if (!strcmp(mode->name, cmdline_mode->name))
++			return mode;
++
+ 		/* check width/height */
+ 		if (mode->hdisplay != cmdline_mode->xres ||
+ 		    mode->vdisplay != cmdline_mode->yres)
+--- a/drivers/gpu/drm/drm_modes.c
++++ b/drivers/gpu/drm/drm_modes.c
+@@ -1586,7 +1586,7 @@ bool drm_mode_parse_command_line_for_con
+ 					       struct drm_cmdline_mode *mode)
+ {
+ 	const char *name;
+-	bool parse_extras = false;
++	bool named_mode = false, parse_extras = false;
+ 	unsigned int bpp_off = 0, refresh_off = 0;
+ 	unsigned int mode_end = 0;
+ 	char *bpp_ptr = NULL, *refresh_ptr = NULL, *extra_ptr = NULL;
+@@ -1605,8 +1605,22 @@ bool drm_mode_parse_command_line_for_con
+ 
+ 	name = mode_option;
+ 
+-	if (!isdigit(name[0]))
+-		return false;
++	/*
++	 * This is a bit convoluted. To differentiate between the
++	 * named modes and poorly formatted resolutions, we need a
++	 * bunch of things:
++	 *   - We need to make sure that the first character (which
++	 *     would be our resolution in X) is a digit.
++	 *   - However, if the X resolution is missing, then we end up
++	 *     with something like x<yres>, with our first character
++	 *     being an alpha-numerical character, which would be
++	 *     considered a named mode.
++	 *
++	 * If this isn't enough, we should add more heuristics here,
++	 * and matching unit-tests.
++	 */
++	if (!isdigit(name[0]) && name[0] != 'x')
++		named_mode = true;
+ 
+ 	/* Try to locate the bpp and refresh specifiers, if any */
+ 	bpp_ptr = strchr(name, '-');
+@@ -1617,6 +1631,9 @@ bool drm_mode_parse_command_line_for_con
+ 
+ 	refresh_ptr = strchr(name, '@');
+ 	if (refresh_ptr) {
++		if (named_mode)
++			return false;
++
+ 		refresh_off = refresh_ptr - name;
+ 		mode->refresh_specified = true;
+ 	}
+@@ -1633,12 +1650,16 @@ bool drm_mode_parse_command_line_for_con
+ 		parse_extras = true;
+ 	}
+ 
+-	ret = drm_mode_parse_cmdline_res_mode(name, mode_end,
+-					      parse_extras,
+-					      connector,
+-					      mode);
+-	if (ret)
+-		return false;
++	if (named_mode) {
++		strncpy(mode->name, name, mode_end);
++	} else {
++		ret = drm_mode_parse_cmdline_res_mode(name, mode_end,
++						      parse_extras,
++						      connector,
++						      mode);
++		if (ret)
++			return false;
++	}
+ 	mode->specified = true;
+ 
+ 	if (bpp_ptr) {
+@@ -1666,14 +1687,23 @@ bool drm_mode_parse_command_line_for_con
+ 		extra_ptr = refresh_end_ptr;
+ 
+ 	if (extra_ptr) {
+-		int remaining = strlen(name) - (extra_ptr - name);
++		if (!named_mode) {
++			int len = strlen(name) - (extra_ptr - name);
+ 
+-		/*
+-		 * We still have characters to process, while
+-		 * we shouldn't have any
+-		 */
+-		if (remaining > 0)
+-			return false;
++			ret = drm_mode_parse_cmdline_extra(extra_ptr, len,
++							   connector, mode);
++			if (ret)
++				return false;
++		} else {
++			int remaining = strlen(name) - (extra_ptr - name);
++
++			/*
++			 * We still have characters to process, while
++			 * we shouldn't have any
++			 */
++			if (remaining > 0)
++				return false;
++		}
+ 	}
+ 
+ 	return true;
+--- a/include/drm/drm_connector.h
++++ b/include/drm/drm_connector.h
+@@ -765,6 +765,13 @@ struct drm_connector_funcs {
+  */
+ struct drm_cmdline_mode {
+ 	/**
++	 * @name:
++	 *
++	 * Name of the mode.
++	 */
++	char name[DRM_DISPLAY_MODE_LEN];
++
++	/**
+ 	 * @specified:
+ 	 *
+ 	 * Has a mode been read from the command-line?
