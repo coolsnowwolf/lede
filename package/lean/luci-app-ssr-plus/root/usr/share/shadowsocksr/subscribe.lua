@@ -153,7 +153,7 @@ local function processData(szType, content)
 end
 -- wget
 local function wget(url)
-    local stdout = luci.sys.exec('wget-ssl --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.90 Safari/537.36" --no-check-certificate -t 3 -T 10 -O- ' .. url)
+    local stdout = luci.sys.exec('wget-ssl --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.90 Safari/537.36" --no-check-certificate -t 3 -T 10 -O- "' .. url .. '"')
     return trim(stdout)
 end
 
@@ -232,7 +232,7 @@ local execute = function()
     end
     -- diff
     do
-        assert(next(nodeResult))
+        assert(next(nodeResult), "node result is empty")
         local add, del = 0, 0
         ucic:foreach(name, uciType, function(old)
             if old.grouphashkey or old.hashkey then -- 没有 hash 的不参与删除
@@ -281,7 +281,9 @@ local execute = function()
 end
 
 if subscribe_url and #subscribe_url > 0 then
-    xpcall(execute, function()
+    xpcall(execute, function(e)
+        log(e)
+        log(debug.traceback())
         log('发生错误, 正在恢复服务')
         local firstServer = ucic:get_first(name, uciType)
         if firstServer then
@@ -289,7 +291,5 @@ if subscribe_url and #subscribe_url > 0 then
         else
             luci.sys.call("/etc/init.d/" .. name .." stop > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
         end
-        log('更新失败服务正在恢复')
-        log(debug.traceback())
     end)
 end

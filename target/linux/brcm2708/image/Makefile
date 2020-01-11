@@ -16,11 +16,6 @@ define Build/Compile
 endef
 
 ### Image scripts ###
-define Build/kernel-img
-	perl $(LINUX_DIR)/scripts/mkknlimg $@ $@.tmp
-	mv $@.tmp $@
-endef
-
 define Build/boot-common
 	rm -f $@.boot
 	mkfs.fat -C $@.boot $(FAT32_BLOCKS)
@@ -63,7 +58,7 @@ endef
 ### Devices ###
 define Device/Default
   DEVICE_VENDOR := Raspberry Pi
-  KERNEL := kernel-bin | kernel-img
+  KERNEL := kernel-bin
   KERNEL_IMG := kernel.img
   IMAGES := factory.img.gz sysupgrade.img.gz
   IMAGE/sysupgrade.img.gz := boot-common | boot-2708 | sdcard-img | gzip | append-metadata
