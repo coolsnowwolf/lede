@@ -236,6 +236,7 @@ local execute = function()
                 end
                 for _, v in ipairs(node) do
                     if v then
+                        v = trim(v)
                         local result, hash
                         if szType == 'ssd' then
                             result, hash = processData(szType, v)
