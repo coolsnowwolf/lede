@@ -1,0 +1,111 @@
+From df84621e5bd5cc206d1039ce0880ccd0b325525b Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Tue, 29 Jan 2019 16:29:00 +0000
+Subject: [PATCH] staging: vc-sm-cma: Use a void* pointer as the handle
+ within the kernel
+
+The driver was using an unsigned int as the handle to the outside world,
+and doing a nasty cast to the struct dmabuf when handed it back.
+This breaks badly with a 64 bit kernel where the pointer doesn't fit
+in an unsigned int.
+
+Switch to using a void* within the kernel. Reality is that it is
+a struct dma_buf*, but advertising it as such to other drivers seems
+to encourage the use of it as such, and I'm not sure on the implications
+of that.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/staging/vc04_services/vc-sm-cma/vc_sm.c        | 10 +++++-----
+ drivers/staging/vc04_services/vc-sm-cma/vc_sm_knl.h    |  6 +++---
+ drivers/staging/vc04_services/vchiq-mmal/mmal-common.h |  2 +-
+ drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c  |  2 +-
+ 4 files changed, 10 insertions(+), 10 deletions(-)
+
+--- a/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
+@@ -745,7 +745,7 @@ static int bcm2835_vc_sm_cma_remove(stru
+ }
+ 
+ /* Get an internal resource handle mapped from the external one. */
+-int vc_sm_cma_int_handle(int handle)
++int vc_sm_cma_int_handle(void *handle)
+ {
+ 	struct dma_buf *dma_buf = (struct dma_buf *)handle;
+ 	struct vc_sm_buffer *res;
+@@ -762,7 +762,7 @@ int vc_sm_cma_int_handle(int handle)
+ EXPORT_SYMBOL_GPL(vc_sm_cma_int_handle);
+ 
+ /* Free a previously allocated shared memory handle and block. */
+-int vc_sm_cma_free(int handle)
++int vc_sm_cma_free(void *handle)
+ {
+ 	struct dma_buf *dma_buf = (struct dma_buf *)handle;
+ 
+@@ -772,7 +772,7 @@ int vc_sm_cma_free(int handle)
+ 		return -EPERM;
+ 	}
+ 
+-	pr_debug("%s: handle %08x/dmabuf %p\n", __func__, handle, dma_buf);
++	pr_debug("%s: handle %p/dmabuf %p\n", __func__, handle, dma_buf);
+ 
+ 	dma_buf_put(dma_buf);
+ 
+@@ -781,7 +781,7 @@ int vc_sm_cma_free(int handle)
+ EXPORT_SYMBOL_GPL(vc_sm_cma_free);
+ 
+ /* Import a dmabuf to be shared with VC. */
+-int vc_sm_cma_import_dmabuf(struct dma_buf *src_dmabuf, int *handle)
++int vc_sm_cma_import_dmabuf(struct dma_buf *src_dmabuf, void **handle)
+ {
+ 	struct dma_buf *new_dma_buf;
+ 	struct vc_sm_buffer *res;
+@@ -801,7 +801,7 @@ int vc_sm_cma_import_dmabuf(struct dma_b
+ 		res = (struct vc_sm_buffer *)new_dma_buf->priv;
+ 
+ 		/* Assign valid handle at this time.*/
+-		*handle = (int)new_dma_buf;
++		*handle = new_dma_buf;
+ 	} else {
+ 		/*
+ 		 * succeeded in importing the dma_buf, but then
+--- a/drivers/staging/vc04_services/vc-sm-cma/vc_sm_knl.h
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_sm_knl.h
+@@ -17,12 +17,12 @@
+ #endif
+ 
+ /* Free a previously allocated or imported shared memory handle and block. */
+-int vc_sm_cma_free(int handle);
++int vc_sm_cma_free(void *handle);
+ 
+ /* Get an internal resource handle mapped from the external one. */
+-int vc_sm_cma_int_handle(int handle);
++int vc_sm_cma_int_handle(void *handle);
+ 
+ /* Import a block of memory into the GPU space. */
+-int vc_sm_cma_import_dmabuf(struct dma_buf *dmabuf, int *handle);
++int vc_sm_cma_import_dmabuf(struct dma_buf *dmabuf, void **handle);
+ 
+ #endif /* __VC_SM_KNL_H__INCLUDED__ */
+--- a/drivers/staging/vc04_services/vchiq-mmal/mmal-common.h
++++ b/drivers/staging/vc04_services/vchiq-mmal/mmal-common.h
+@@ -52,7 +52,7 @@ struct mmal_buffer {
+ 	struct mmal_msg_context *msg_context;
+ 
+ 	struct dma_buf *dma_buf;/* Exported dmabuf fd from videobuf2 */
+-	int vcsm_handle;	/* VCSM handle having imported the dmabuf */
++	void *vcsm_handle;	/* VCSM handle having imported the dmabuf */
+ 	u32 vc_handle;		/* VC handle to that dmabuf */
+ 
+ 	u32 cmd;		/* MMAL command. 0=data. */
+--- a/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
+@@ -1794,7 +1794,7 @@ int mmal_vchi_buffer_cleanup(struct mmal
+ 	if (buf->vcsm_handle) {
+ 		int ret;
+ 
+-		pr_debug("%s: vc_sm_cma_free on handle %08X\n", __func__,
++		pr_debug("%s: vc_sm_cma_free on handle %p\n", __func__,
+ 			 buf->vcsm_handle);
+ 		ret = vc_sm_cma_free(buf->vcsm_handle);
+ 		if (ret)
