@@ -48,11 +48,19 @@ local function get_urlencode(c)
     return sformat("%%%02X", sbyte(c))
 end
 
-function urlEncode(szText)
+local function urlEncode(szText)
     local str = szText:gsub("([^0-9a-zA-Z ])", get_urlencode)
     str = str:gsub(" ", "+")
     return str
 end
+
+local function get_urldecode(h)
+	return schar(tonumber(h, 16))
+end
+local function UrlDecode(szText)
+	return szText:gsub("+", " "):gsub("%%(%x%x)", get_urldecode)
+end
+
 -- trim
 local function trim(text)
     if not text or text == "" then
@@ -68,6 +76,7 @@ local function md5(content)
 end
 -- base64
 local function base64Decode(text, safe)
+    local raw = text
     if not text then return '' end
     text = text:gsub("%z", "")
     if safe then
@@ -76,7 +85,12 @@ local function base64Decode(text, safe)
         local mod4 = #text % 4
         text = text .. string.sub('====', mod4 + 1)
     end
-    return nixio.bin.b64decode(text):gsub("%z", "")
+    local result = nixio.bin.b64decode(text)
+    if result then
+        return result:gsub("%z", "")
+    else
+        return raw
+    end
 end
 -- 处理数据
 local function processData(szType, content)
@@ -134,20 +148,45 @@ local function processData(szType, content)
         result.h2_host = info.host
         result.h2_path = info.path
         if not info.security then
-            result.security = 'auto'
+            result.security = "auto"
         end
-        if info.tls == 'tls' or info.tls == '1' then
-            result.tls = '1'
+        if info.tls == "tls" or info.tls == "1" then
+            result.tls = "1"
         else
-            result.tls = '0'
+            result.tls = "0"
         end
-    elseif szType == 'ssd' then
-        result.type = 'ss'
+    elseif szType == "ss" then
+        local info = content:sub(1, content:find("#") - 1)
+        local alias = content:sub(content:find("#") + 1, #content)
+        local hostInfo = split(base64Decode(info, true), "@")
+        local host = split(hostInfo[2], ":")
+        local userinfo = base64Decode(hostInfo[1], true)
+        local method = userinfo:sub(1, userinfo:find(":") - 1)
+        local password = userinfo:sub(userinfo:find(":") + 1, #userinfo)
+        result.alias = UrlDecode(alias)
+        result.type = "ss"
+        result.server = host[1]
+        if host[2]:find("/\\?") then
+            local query = split(host[2], "/\\?")
+            result.server_port = query[1]
+            -- local params = {}
+            -- for k, v in pairs(split(query[2], '&')) do
+            --     local t = split(v, '=')
+            --     params[t[1]] = t[2]
+            -- end
+            -- 这里似乎没什么用 我看数据结构没有写插件的支持 先抛弃
+        else
+            result.server_port = host[2]
+        end
+        result.encrypt_method_ss = method
+        result.password = password
+    elseif szType == "ssd" then
+        result.type = "ss"
         result.server = content.server
         result.server_port = content.port
         result.password = content.password
         result.encrypt_method_ss = content.encryption
-        result.alias = '[' .. content.airport .. '] ' .. content.remarks
+        result.alias = "[" .. content.airport .. "] " .. content.remarks
     end
     return result, hash
 end
@@ -173,7 +212,7 @@ local execute = function()
                 cache[groupHash] = {}
                 tinsert(nodeResult, {})
                 local index = #nodeResult
-                -- SSD 似乎是这种格式 ssd:// 开头的 不知道 SS 什么格式 没支持 不清楚其他机场是否这样
+                -- SSD 似乎是这种格式 ssd:// 开头的
                 if raw:find('ssd://') then
                     szType = 'ssd'
                     local nEnd = select(2, raw:find('ssd://'))
@@ -197,13 +236,18 @@ local execute = function()
                 end
                 for _, v in ipairs(node) do
                     if v then
+                        v = trim(v)
                         local result, hash
                         if szType == 'ssd' then
                             result, hash = processData(szType, v)
                         elseif not szType then
                             local dat = split(v, "://")
                             if dat and dat[1] and dat[2] then
-                                result, hash = processData(dat[1], base64Decode( dat[2], true))
+                                if dat[1] == 'ss' then
+                                    result, hash = processData(dat[1], dat[2])
+                                else
+                                    result, hash = processData(dat[1], base64Decode(dat[2], true))
+                                end
                             end
                         else
                             log('跳过未知类型: ' .. szType)
