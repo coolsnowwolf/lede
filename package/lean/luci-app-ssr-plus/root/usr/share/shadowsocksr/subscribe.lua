@@ -232,7 +232,7 @@ local execute = function()
                     node = servers
                 else
                     -- ssd 外的格式
-                    node = split(base64Decode(raw, true), "\n")
+                    node = split(base64Decode(raw, true):gsub(" ", "\n"), "\n")
                 end
                 for _, v in ipairs(node) do
                     if v then
