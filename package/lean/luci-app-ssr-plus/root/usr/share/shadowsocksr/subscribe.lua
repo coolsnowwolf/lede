@@ -112,6 +112,11 @@ local function processData(szType, content)
         hash = md5(luci.jsonc.stringify(content))
     end
     result.hashkey = hash
+    -- 如果节点内容为空，返回无效的节点信息
+    if content == '' then
+        result.server = ''
+        return result, hash
+    end
     if szType == 'ssr' then
         local dat = split(content, "/\\?")
         local hostInfo = split(dat[1], ':')
