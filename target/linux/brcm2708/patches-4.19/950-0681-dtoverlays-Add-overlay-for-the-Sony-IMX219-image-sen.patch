@@ -1,0 +1,180 @@
+From 7a4d12054b24c8cb980be4c6466b50c14beb78d3 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 28 Aug 2019 13:35:19 +0100
+Subject: [PATCH] dtoverlays: Add overlay for the Sony IMX219 image
+ sensor.
+
+Adds an overlay for the IMX219 image sensor, connected to the
+Unicam CSI2 receiver peripheral.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ arch/arm/boot/dts/overlays/Makefile           |   1 +
+ arch/arm/boot/dts/overlays/README             |  12 ++
+ arch/arm/boot/dts/overlays/imx219-overlay.dts | 129 ++++++++++++++++++
+ 3 files changed, 142 insertions(+)
+ create mode 100644 arch/arm/boot/dts/overlays/imx219-overlay.dts
+
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -77,6 +77,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	i2c6.dtbo \
+ 	i2s-gpio28-31.dtbo \
+ 	ilitek251x.dtbo \
++	imx219.dtbo \
+ 	iqaudio-codec.dtbo \
+ 	iqaudio-dac.dtbo \
+ 	iqaudio-dacplus.dtbo \
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -1269,6 +1269,18 @@ Params: interrupt               GPIO use
+                                 touchscreen (in pixels)
+ 
+ 
++Name:   imx219
++Info:   Sony IMX219 camera module.
++        Uses Unicam 1, which is the standard camera connector on most Pi
++        variants.
++Load:   dtoverlay=imx219,<param>=<val>
++Params: i2c_pins_0_1            Use pins 0&1 for the I2C instead of 44&45.
++                                Useful on Compute Modules.
++
++        i2c_pins_28_29          Use pins 28&29 for the I2C instead of 44&45.
++                                This is required for Pi B+, 2, 0, and 0W.
++
++
+ Name:   iqaudio-codec
+ Info:   Configures the IQaudio Codec audio card
+ Load:   dtoverlay=iqaudio-codec
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/imx219-overlay.dts
+@@ -0,0 +1,129 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Definitions for IMX219 camera module on VC I2C bus
++/dts-v1/;
++/plugin/;
++
++#include <dt-bindings/gpio/gpio.h>
++
++/{
++	compatible = "brcm,bcm2835";
++
++	fragment@0 {
++		target = <&i2c_vc>;
++		__overlay__ {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "okay";
++
++			imx219: imx219@10 {
++				compatible = "sony,imx219";
++				reg = <0x10>;
++				status = "okay";
++
++				clocks = <&imx219_clk>;
++				clock-names = "xclk";
++
++				VANA-supply = <&imx219_vana>;	/* 2.8v */
++				VDIG-supply = <&imx219_vdig>;	/* 1.8v */
++				VDDL-supply = <&imx219_vddl>;	/* 1.2v */
++
++				imx219_clk: camera-clk {
++					compatible = "fixed-clock";
++					#clock-cells = <0>;
++					clock-frequency = <24000000>;
++				};
++
++				port {
++					imx219_0: endpoint {
++						remote-endpoint = <&csi1_ep>;
++						clock-lanes = <0>;
++						data-lanes = <1 2>;
++						clock-noncontinuous;
++						link-frequencies =
++							/bits/ 64 <297000000>;
++					};
++				};
++			};
++		};
++	};
++
++	fragment@1 {
++		target = <&csi1>;
++		__overlay__ {
++			status = "okay";
++
++			port {
++				csi1_ep: endpoint {
++					remote-endpoint = <&imx219_0>;
++				};
++			};
++		};
++	};
++
++	fragment@2 {
++		target = <&i2c0_pins>;
++		__dormant__ {
++			brcm,pins = <28 29>;
++			brcm,function = <4>; /* alt0 */
++		};
++	};
++	fragment@3 {
++		target = <&i2c0_pins>;
++		__overlay__ {
++			brcm,pins = <44 45>;
++			brcm,function = <5>; /* alt1 */
++		};
++	};
++	fragment@4 {
++		target = <&i2c0_pins>;
++		__dormant__ {
++			brcm,pins = <0 1>;
++			brcm,function = <4>; /* alt0 */
++		};
++	};
++	fragment@5 {
++		target = <&i2c_vc>;
++		__overlay__ {
++			status = "okay";
++		};
++	};
++
++	fragment@6 {
++		target-path="/";
++		__overlay__ {
++			imx219_vana: fixedregulator@0 {
++				compatible = "regulator-fixed";
++				regulator-name = "imx219_vana";
++				regulator-min-microvolt = <2800000>;
++				regulator-max-microvolt = <2800000>;
++				gpio = <&gpio 41 GPIO_ACTIVE_HIGH>;
++				enable-active-high;
++			};
++			imx219_vdig: fixedregulator@1 {
++				compatible = "regulator-fixed";
++				regulator-name = "imx219_vdig";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++			};
++			imx219_vddl: fixedregulator@2 {
++				compatible = "regulator-fixed";
++				regulator-name = "imx219_vddl";
++				regulator-min-microvolt = <1200000>;
++				regulator-max-microvolt = <1200000>;
++			};
++		};
++	};
++
++	fragment@7 {
++		target-path="/__overrides__";
++		__overlay__ {
++			cam0-pwdn-ctrl = <&imx219_vana>,"gpio:0";
++			cam0-pwdn      = <&imx219_vana>,"gpio:4";
++		};
++	};
++
++	__overrides__ {
++		i2c_pins_0_1 = <0>,"-2-3+4";
++		i2c_pins_28_29 = <0>,"+2-3-4";
++	};
++};
