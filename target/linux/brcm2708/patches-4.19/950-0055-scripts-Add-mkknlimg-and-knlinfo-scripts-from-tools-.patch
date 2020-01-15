@@ -1,0 +1,533 @@
+From 28951ab97e67b20640b183364d2396e91e8a6148 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Mon, 11 May 2015 09:00:42 +0100
+Subject: [PATCH] scripts: Add mkknlimg and knlinfo scripts from tools
+ repo
+
+The Raspberry Pi firmware looks for a trailer on the kernel image to
+determine whether it was compiled with Device Tree support enabled.
+If the firmware finds a kernel without this trailer, or which has a
+trailer indicating that it isn't DT-capable, it disables DT support
+and reverts to using ATAGs.
+
+The mkknlimg utility adds that trailer, having first analysed the
+image to look for signs of DT support and the kernel version string.
+
+knlinfo displays the contents of the trailer in the given kernel image.
+
+scripts/mkknlimg: Add support for ARCH_BCM2835
+
+Add a new trailer field indicating whether this is an ARCH_BCM2835
+build, as opposed to MACH_BCM2708/9. If the loader finds this flag
+is set it changes the default base dtb file name from bcm270x...
+to bcm283y...
+
+Also update knlinfo to show the status of the field.
+
+scripts/mkknlimg: Improve ARCH_BCM2835 detection
+
+The board support code contains sufficient strings to be able to
+distinguish 2708 vs. 2835 builds, so remove the check for
+bcm2835-pm-wdt which could exist in either.
+
+Also, since the canned configuration is no longer built in (it's
+a module), remove the config string checking.
+
+See: https://github.com/raspberrypi/linux/issues/1157
+
+scripts: Multi-platform support for mkknlimg and knlinfo
+
+The firmware uses tags in the kernel trailer to choose which dtb file
+to load. Current firmware loads bcm2835-*.dtb if the '283x' tag is true,
+otherwise it loads bcm270*.dtb. This scheme breaks if an image supports
+multiple platforms.
+
+This patch adds '270X' and '283X' tags to indicate support for RPi and
+upstream platforms, respectively. '283x' (note lower case 'x') is left
+for old firmware, and is only set if the image only supports upstream
+builds.
+
+scripts/mkknlimg: Append a trailer for all input
+
+Now that the firmware assumes an unsigned kernel is DT-capable, it is
+helpful to be able to mark a kernel as being non-DT-capable.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+
+scripts/knlinfo: Decode DDTK atom
+
+Show the DDTK atom as being a boolean.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+
+mkknlimg: Retain downstream-kernel detection
+
+With the death of ARCH_BCM2708 and ARCH_BCM2709, a new way is needed to
+determine if this is a "downstream" build that wants the firmware to
+load a bcm27xx .dtb. The vc_cma driver is used downstream but not
+upstream, making vc_cma_init a suitable predicate symbol.
+
+mkknlimg: Find some more downstream-only strings
+
+See: https://github.com/raspberrypi/linux/issues/1920
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+
+scripts: Update mkknlimg, just in case
+
+With the removal of the vc_cma driver, mkknlimg lost an indication that
+the user had built a downstream kernel. Update the script, adding a few
+more key strings, in case it is still being used.
+
+Note that mkknlimg is now deprecated, except to tag kernels as upstream
+(283x), and thus requiring upstream DTBs.
+
+See: https://github.com/raspberrypi/linux/issues/2239
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ scripts/knlinfo  | 171 +++++++++++++++++++++++++++++++
+ scripts/mkknlimg | 262 +++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 433 insertions(+)
+ create mode 100755 scripts/knlinfo
+ create mode 100755 scripts/mkknlimg
+
+--- /dev/null
++++ b/scripts/knlinfo
+@@ -0,0 +1,171 @@
++#!/usr/bin/env perl
++# ----------------------------------------------------------------------
++# knlinfo by Phil Elwell for Raspberry Pi
++#
++# (c) 2014,2015 Raspberry Pi (Trading) Limited <info@raspberrypi.org>
++#
++# Licensed under the terms of the GNU General Public License.
++# ----------------------------------------------------------------------
++
++use strict;
++use integer;
++
++use Fcntl ":seek";
++
++my $trailer_magic = 'RPTL';
++
++my %atom_formats =
++(
++    'DDTK' => \&format_bool,
++    'DTOK' => \&format_bool,
++    'KVer' => \&format_string,
++    '270X' => \&format_bool,
++    '283X' => \&format_bool,
++    '283x' => \&format_bool,
++);
++
++if (@ARGV != 1)
++{
++	print ("Usage: knlinfo <kernel image>\n");
++	exit(1);
++}
++
++my $kernel_file = $ARGV[0];
++
++
++my ($atoms, $pos) = read_trailer($kernel_file);
++
++exit(1) if (!$atoms);
++
++printf("Kernel trailer found at %d/0x%x:\n", $pos, $pos);
++
++foreach my $atom (@$atoms)
++{
++    printf("  %s: %s\n", $atom->[0], format_atom($atom));
++}
++
++exit(0);
++
++sub read_trailer
++{
++	my ($kernel_file) = @_;
++	my $fh;
++
++	if (!open($fh, '<', $kernel_file))
++	{
++		print ("* Failed to open '$kernel_file'\n");
++		return undef;
++	}
++
++	if (!seek($fh, -12, SEEK_END))
++	{
++		print ("* seek error in '$kernel_file'\n");
++		return undef;
++	}
++
++	my $last_bytes;
++	sysread($fh, $last_bytes, 12);
++
++	my ($trailer_len, $data_len, $magic) = unpack('VVa4', $last_bytes);
++
++	if (($magic ne $trailer_magic) || ($data_len != 4))
++	{
++		print ("* no trailer\n");
++		return undef;
++	}
++	if (!seek($fh, -12, SEEK_END))
++	{
++		print ("* seek error in '$kernel_file'\n");
++		return undef;
++	}
++
++	$trailer_len -= 12;
++
++	while ($trailer_len > 0)
++	{
++		if ($trailer_len < 8)
++		{
++			print ("* truncated atom header in trailer\n");
++			return undef;
++		}
++		if (!seek($fh, -8, SEEK_CUR))
++		{
++			print ("* seek error in '$kernel_file'\n");
++			return undef;
++		}
++		$trailer_len -= 8;
++
++		my $atom_hdr;
++		sysread($fh, $atom_hdr, 8);
++		my ($atom_len, $atom_type) = unpack('Va4', $atom_hdr);
++
++		if ($trailer_len < $atom_len)
++		{
++			print ("* truncated atom data in trailer\n");
++			return undef;
++		}
++
++		my $rounded_len = (($atom_len + 3) & ~3);
++		if (!seek($fh, -(8 + $rounded_len), SEEK_CUR))
++		{
++			print ("* seek error in '$kernel_file'\n");
++			return undef;
++		}
++		$trailer_len -= $rounded_len;
++
++		my $atom_data;
++		sysread($fh, $atom_data, $atom_len);
++
++		if (!seek($fh, -$atom_len, SEEK_CUR))
++		{
++			print ("* seek error in '$kernel_file'\n");
++			return undef;
++		}
++
++		push @$atoms, [ $atom_type, $atom_data ];
++	}
++
++ 	if (($$atoms[-1][0] eq "\x00\x00\x00\x00") &&
++	    ($$atoms[-1][1] eq ""))
++	{
++		pop @$atoms;
++	}
++	else
++	{
++		print ("* end marker missing from trailer\n");
++	}
++
++	return ($atoms, tell($fh));
++}
++
++sub format_atom
++{
++    my ($atom) = @_;
++
++    my $format_func = $atom_formats{$atom->[0]} || \&format_hex;
++    return $format_func->($atom->[1]);
++}
++
++sub format_bool
++{
++    my ($data) = @_;
++    return unpack('V', $data) ? 'y' : 'n';
++}
++
++sub format_int
++{
++    my ($data) = @_;
++    return unpack('V', $data);
++}
++
++sub format_string
++{
++    my ($data) = @_;
++    return '"'.$data.'"';
++}
++
++sub format_hex
++{
++    my ($data) = @_;
++    return unpack('H*', $data);
++}
+--- /dev/null
++++ b/scripts/mkknlimg
+@@ -0,0 +1,262 @@
++#!/usr/bin/env perl
++# ----------------------------------------------------------------------
++# mkknlimg by Phil Elwell for Raspberry Pi
++# based on extract-ikconfig by Dick Streefland
++#
++# (c) 2009,2010 Dick Streefland <dick@streefland.net>
++# (c) 2014,2015 Raspberry Pi (Trading) Limited <info@raspberrypi.org>
++#
++# Licensed under the terms of the GNU General Public License.
++# ----------------------------------------------------------------------
++
++use strict;
++use warnings;
++use integer;
++
++use constant FLAG_PI   => 0x01;
++use constant FLAG_DTOK => 0x02;
++use constant FLAG_DDTK => 0x04;
++use constant FLAG_270X => 0x08;
++use constant FLAG_283X => 0x10;
++
++my $trailer_magic = 'RPTL';
++
++my $tmpfile1 = "/tmp/mkknlimg_$$.1";
++my $tmpfile2 = "/tmp/mkknlimg_$$.2";
++
++my $dtok = 0;
++my $ddtk = 0;
++my $is_270x = 0;
++my $is_283x = 0;
++
++while (@ARGV && ($ARGV[0] =~ /^-/))
++{
++    my $arg = shift(@ARGV);
++    if ($arg eq '--dtok')
++    {
++	$dtok = 1;
++    }
++    elsif ($arg eq '--ddtk')
++    {
++	$ddtk = 1;
++    }
++    elsif ($arg eq '--270x')
++    {
++	$is_270x = 1;
++    }
++    elsif ($arg eq '--283x')
++    {
++	$is_283x = 1;
++    }
++    else
++    {
++	print ("* Unknown option '$arg'\n");
++	usage();
++    }
++}
++
++usage() if (@ARGV != 2);
++
++my $kernel_file = $ARGV[0];
++my $out_file = $ARGV[1];
++
++if (! -r $kernel_file)
++{
++    print ("* File '$kernel_file' not found\n");
++    usage();
++}
++
++my $wanted_strings =
++{
++	'brcm,bcm2835-mmc' => FLAG_PI,
++	'brcm,bcm2835-sdhost' => FLAG_PI,
++	'brcm,bcm2835-gpio' => FLAG_PI | FLAG_DTOK,
++	'brcm,bcm2708-fb'   => FLAG_PI | FLAG_DTOK | FLAG_270X,
++	'brcm,bcm2708-usb'  => FLAG_PI | FLAG_DTOK | FLAG_270X,
++	'brcm,bcm2835' => FLAG_PI | FLAG_DTOK | FLAG_283X,
++	'brcm,bcm2836' => FLAG_PI | FLAG_DTOK | FLAG_283X,
++	'brcm,bcm2837' => FLAG_PI | FLAG_DTOK | FLAG_283X,
++	'of_cfs_init' => FLAG_DTOK | FLAG_DDTK,
++};
++
++my $res = try_extract($kernel_file, $tmpfile1);
++$res ||= try_decompress('\037\213\010', 'xy',    'gunzip', 0,
++			$kernel_file, $tmpfile1, $tmpfile2);
++$res ||= try_decompress('\3757zXZ\000', 'abcde', 'unxz --single-stream', -1,
++			$kernel_file, $tmpfile1, $tmpfile2);
++$res ||= try_decompress('BZh',          'xy',    'bunzip2', 0,
++			$kernel_file, $tmpfile1, $tmpfile2);
++$res ||= try_decompress('\135\0\0\0',   'xxx',   'unlzma', 0,
++			$kernel_file, $tmpfile1, $tmpfile2);
++$res ||= try_decompress('\211\114\132', 'xy',    'lzop -d', 0,
++			$kernel_file, $tmpfile1, $tmpfile2);
++$res ||= try_decompress('\002\041\114\030', 'xy',    'lz4 -d', 1,
++			$kernel_file, $tmpfile1, $tmpfile2);
++
++my $append_trailer;
++my $trailer;
++my $kver = '?';
++
++$append_trailer = 1;
++
++if ($res)
++{
++    $kver = $res->{'kver'} || '?';
++    my $flags = $res->{'flags'};
++    print("Version: $kver\n");
++
++    if ($flags & FLAG_PI)
++    {
++	$dtok ||= ($flags & FLAG_DTOK) != 0;
++	$is_270x ||= ($flags & FLAG_270X) != 0;
++	$is_283x ||= ($flags & FLAG_283X) != 0;
++	$ddtk ||= ($flags & FLAG_DDTK) != 0;
++    }
++    else
++    {
++	print ("* This doesn't look like a Raspberry Pi kernel.\n");
++    }
++}
++elsif (!$dtok)
++{
++    print ("* Is this a valid kernel?\n");
++}
++
++if ($append_trailer)
++{
++    printf("DT: %s\n", $dtok ? "y" : "n");
++    printf("DDT: %s\n", $ddtk ? "y" : "n");
++    printf("270x: %s\n", $is_270x ? "y" : "n");
++    printf("283x: %s\n", $is_283x ? "y" : "n");
++
++    my @atoms;
++
++    push @atoms, [ $trailer_magic, pack('V', 0) ];
++    push @atoms, [ 'KVer', $kver ];
++    push @atoms, [ 'DTOK', pack('V', $dtok) ];
++    push @atoms, [ 'DDTK', pack('V', $ddtk) ];
++    push @atoms, [ '270X', pack('V', $is_270x) ];
++    push @atoms, [ '283X', pack('V', $is_283x) ];
++    push @atoms, [ '283x', pack('V', $is_283x && !$is_270x) ];
++
++    $trailer = pack_trailer(\@atoms);
++    $atoms[0]->[1] = pack('V', length($trailer));
++
++    $trailer = pack_trailer(\@atoms);
++}
++
++my $ofh;
++my $total_len = 0;
++
++if ($out_file eq $kernel_file)
++{
++    die "* Failed to open '$out_file' for append\n"
++	if (!open($ofh, '>>', $out_file));
++    $total_len = tell($ofh);
++}
++else
++{
++    die "* Failed to open '$kernel_file'\n"
++	if (!open(my $ifh, '<', $kernel_file));
++    die "* Failed to create '$out_file'\n"
++	if (!open($ofh, '>', $out_file));
++
++    my $copybuf;
++    while (1)
++    {
++	my $bytes = sysread($ifh, $copybuf, 64*1024);
++	last if (!$bytes);
++	syswrite($ofh, $copybuf, $bytes);
++	$total_len += $bytes;
++    }
++    close($ifh);
++}
++
++if ($trailer)
++{
++    # Pad to word-alignment
++    syswrite($ofh, "\x000\x000\x000", (-$total_len & 0x3));
++    syswrite($ofh, $trailer);
++}
++
++close($ofh);
++
++exit($trailer ? 0 : 1);
++
++END {
++	unlink($tmpfile1) if ($tmpfile1);
++	unlink($tmpfile2) if ($tmpfile2);
++}
++
++
++sub usage
++{
++	print ("Usage: mkknlimg [--dtok] [--270x] [--283x] <vmlinux|zImage|bzImage> <outfile>\n");
++	exit(1);
++}
++
++sub try_extract
++{
++	my ($knl, $tmp) = @_;
++
++	my $ver = `strings "$knl" | grep -a -E "^Linux version [1-9]"`;
++
++	return undef if (!$ver);
++
++	chomp($ver);
++
++	my $res = { 'kver'=>$ver };
++	$res->{'flags'} = strings_to_flags($knl, $wanted_strings);
++
++	return $res;
++}
++
++
++sub try_decompress
++{
++	my ($magic, $subst, $zcat, $idx, $knl, $tmp1, $tmp2) = @_;
++
++	my $pos = `tr "$magic\n$subst" "\n$subst=" < "$knl" | grep -abo "^$subst"`;
++	if ($pos)
++	{
++		chomp($pos);
++		$pos = (split(/[\r\n]+/, $pos))[$idx];
++		return undef if (!defined($pos));
++		$pos =~ s/:.*[\r\n]*$//s;
++		my $cmd = "tail -c+$pos \"$knl\" | $zcat > $tmp2 2> /dev/null";
++		my $err = (system($cmd) >> 8);
++		return undef if (($err != 0) && ($err != 2));
++
++		return try_extract($tmp2, $tmp1);
++	}
++
++	return undef;
++}
++
++sub strings_to_flags
++{
++	my ($knl, $strings) = @_;
++	my $string_pattern = '^('.join('|', keys(%$strings)).')$';
++	my $flags = 0;
++
++	my @matches = `strings \"$knl\" | grep -E \"$string_pattern\"`;
++	foreach my $match (@matches)
++	{
++	    chomp($match);
++	    $flags |= $strings->{$match};
++	}
++
++	return $flags;
++}
++
++sub pack_trailer
++{
++	my ($atoms) = @_;
++	my $trailer = pack('VV', 0, 0);
++	for (my $i = $#$atoms; $i>=0; $i--)
++	{
++		my $atom = $atoms->[$i];
++		$trailer .= pack('a*x!4Va4', $atom->[1], length($atom->[1]), $atom->[0]);
++	}
++	return $trailer;
++}
