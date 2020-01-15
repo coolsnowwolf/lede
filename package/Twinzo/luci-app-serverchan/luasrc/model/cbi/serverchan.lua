@@ -5,7 +5,13 @@ local net = require "luci.model.network".init()
 local sys = require "luci.sys"
 local ifaces = sys.net:devices()
 
-m=Map("serverchan",translate("ServerChan"),translate("「Server酱」，英文名「ServerChan」，是一款从服务器推送报警信息和日志到微信的工具。"))
+m=Map("serverchan",translate("ServerChan"),
+translate("「Server酱」，英文名「ServerChan」，是一款从服务器推送报警信息和日志到微信的工具。<br /><br />如果你在使用中遇到问题，请到这里提交：")
+.. [[<a href="https://github.com/tty228/luci-app-serverchan" target="_blank">]]
+.. translate("github 项目地址")
+.. [[</a>]]
+)
+
 
 m:section(SimpleSection).template  = "serverchan/serverchan_status"
 
@@ -23,7 +29,7 @@ a=s:taboption("tab_basic", Flag,"serverchan_enable",translate("启用"))
 a.default=0
 a.rmempty=true
 
-a=s:taboption("tab_basic", Value,"sckey",translate('SCKEY'), translate("Serverchan Sckey").."<br>调用代码获取<a href='http://sc.ftqq.com'>点击这里</a><br><br>")
+a=s:taboption("tab_basic", Value,"sckey",translate('SCKEY'), translate("Serverchan Sckey").."<br>调用代码获取<a href='http://sc.ftqq.com' target="_blank">点击这里</a><br><br>")
 a.rmempty=true
 
 debuglevel=s:taboption("tab_basic", ListValue,"debuglevel",translate("日志调试等级"))
@@ -51,9 +57,56 @@ end
 e.write=function(e,e,e)
 end
 
-a=s:taboption("tab_basic2", Flag,"serverchan_ip",translate("WAN ip 变化通知"))
-a.default=0
-a.rmempty=true
+a=s:taboption("tab_basic2", ListValue,"serverchan_ipv4",translate("ipv4 变动通知"))
+a.default="disable"
+a:value("0",translate("关闭"))
+a:value("1",translate("通过接口获取"))
+a:value("2",translate("通过URL获取"))
+a = s:taboption("tab_basic2", ListValue, "ipv4_interface", translate("接口名称"))
+a:depends({serverchan_ipv4="1"})
+for _, iface in ipairs(ifaces) do
+	if not (iface == "lo" or iface:match("^ifb.*")) then
+		local nets = net:get_interface(iface)
+		nets = nets and nets:get_networks() or {}
+		for k, v in pairs(nets) do
+			nets[k] = nets[k].sid
+		end
+		nets = table.concat(nets, ",")
+		a:value(iface, ((#nets > 0) and "%s (%s)" % {iface, nets} or iface))
+	end
+end
+a.description = translate("<br/>一般选择 wan 接口，多拨环境请自行选择")
+a= s:taboption("tab_basic2", Value, "ipv4_URL", "URL 地址")
+a.rmempty = true 
+a.default = "members.3322.org/dyndns/getip"
+a:depends({serverchan_ipv4="2"})
+a.description = translate("<br/>会因服务器稳定性/连接频繁等原因导致获取失败，一般不推荐")
+
+a=s:taboption("tab_basic2", ListValue,"serverchan_ipv6",translate("ipv6 变动通知"))
+a.default="disable"
+a:value("0",translate("关闭"))
+a:value("1",translate("通过接口获取"))
+a:value("2",translate("通过URL获取"))
+a = s:taboption("tab_basic2", ListValue, "ipv6_interface", translate("接口名称"))
+a:depends({serverchan_ipv6="1"})
+for _, iface in ipairs(ifaces) do
+	if not (iface == "lo" or iface:match("^ifb.*")) then
+		local nets = net:get_interface(iface)
+		nets = nets and nets:get_networks() or {}
+		for k, v in pairs(nets) do
+			nets[k] = nets[k].sid
+		end
+		nets = table.concat(nets, ",")
+		a:value(iface, ((#nets > 0) and "%s (%s)" % {iface, nets} or iface))
+	end
+end
+a.description = translate("<br/>一般选择 wan 接口，多拨环境请自行选择")
+a= s:taboption("tab_basic2", Value, "ipv6_URL", "URL 地址")
+a.rmempty = true 
+a.default = "v6.ip.zxinc.org/getip"
+a:depends({serverchan_ipv6="2"})
+a.description = translate("<br/>会因服务器稳定性/连接频繁等原因导致获取失败，一般不推荐")
+
 a=s:taboption("tab_basic2", Flag,"serverchan_up",translate("设备上线通知"))
 a.default=0
 a.rmempty=true
@@ -129,13 +182,13 @@ e.inputstyle = "apply"
 function e.write(self, section)
 
 luci.sys.call("cbi.apply")
-        luci.sys.call("/usr/bin/serverchan send &")
+        luci.sys.call("/usr/bin/serverchan/serverchan send &")
 end
 
 sheep=s:taboption("tab_basic4", ListValue,"serverchan_sheep",translate("免打扰时段设置"),translate("在指定整点时间段内，暂停推送消息<br/>免打扰时间中，定时推送也会被阻止。"))
 sheep:value("0",translate("关闭"))
-sheep:value("1",translate("模式一：脚本挂起，不检测设备"))
---[[sheep:value("2",translate("模式二：脚本继续运行但不发送消息"))--]]
+sheep:value("1",translate("模式一：脚本挂起，延迟发送"))
+sheep:value("2",translate("模式二：静默模式，不发送任何信息"))
 sheep.rmempty = true 
 sheep.optional = true
 sheep=s:taboption("tab_basic4", ListValue,"starttime",translate("免打扰开始时间"))
@@ -187,9 +240,4 @@ for _, iface in ipairs(ifaces) do
 	end
 end
 
-
-local apply = luci.http.formvalue("cbi.apply")
- if apply then
-     io.popen("/etc/init.d/serverchan start")
-end
 return m
