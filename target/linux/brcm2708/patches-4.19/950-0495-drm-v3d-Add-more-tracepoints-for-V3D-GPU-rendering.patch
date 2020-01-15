@@ -1,0 +1,205 @@
+From 128adbc39c9826ca137ca3627cff17644e786fdb Mon Sep 17 00:00:00 2001
+From: Eric Anholt <eric@anholt.net>
+Date: Fri, 30 Nov 2018 16:57:58 -0800
+Subject: [PATCH] drm/v3d: Add more tracepoints for V3D GPU rendering.
+
+The core scheduler tells us when the job is pushed to the scheduler's
+queue, and I had the job_run functions saying when they actually queue
+the job to the hardware.  By adding tracepoints for the very top of
+the ioctls and the IRQs signaling job completion, "perf record -a -e
+v3d:.\* -e gpu_scheduler:.\* <job>; perf script" gets you a pretty
+decent timeline.
+
+Signed-off-by: Eric Anholt <eric@anholt.net>
+Link: https://patchwork.freedesktop.org/patch/msgid/20181201005759.28093-5-eric@anholt.net
+Reviewed-by: Dave Emett <david.emett@broadcom.com>
+(cherry picked from commit 55a9b74846ed5e6219c7d81a8e1bf96f25d8ad5e)
+---
+ drivers/gpu/drm/v3d/v3d_gem.c   |   4 ++
+ drivers/gpu/drm/v3d/v3d_irq.c   |  19 +++++-
+ drivers/gpu/drm/v3d/v3d_trace.h | 101 ++++++++++++++++++++++++++++++++
+ 3 files changed, 121 insertions(+), 3 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_gem.c
++++ b/drivers/gpu/drm/v3d/v3d_gem.c
+@@ -521,6 +521,8 @@ v3d_submit_cl_ioctl(struct drm_device *d
+ 	struct drm_syncobj *sync_out;
+ 	int ret = 0;
+ 
++	trace_v3d_submit_cl_ioctl(&v3d->drm, args->rcl_start, args->rcl_end);
++
+ 	if (args->pad != 0) {
+ 		DRM_INFO("pad must be zero: %d\n", args->pad);
+ 		return -EINVAL;
+@@ -648,6 +650,8 @@ v3d_submit_tfu_ioctl(struct drm_device *
+ 	int ret = 0;
+ 	int bo_count;
+ 
++	trace_v3d_submit_tfu_ioctl(&v3d->drm, args->iia);
++
+ 	job = kcalloc(1, sizeof(*job), GFP_KERNEL);
+ 	if (!job)
+ 		return -ENOMEM;
+--- a/drivers/gpu/drm/v3d/v3d_irq.c
++++ b/drivers/gpu/drm/v3d/v3d_irq.c
+@@ -15,6 +15,7 @@
+ 
+ #include "v3d_drv.h"
+ #include "v3d_regs.h"
++#include "v3d_trace.h"
+ 
+ #define V3D_CORE_IRQS ((u32)(V3D_INT_OUTOMEM |	\
+ 			     V3D_INT_FLDONE |	\
+@@ -88,12 +89,20 @@ v3d_irq(int irq, void *arg)
+ 	}
+ 
+ 	if (intsts & V3D_INT_FLDONE) {
+-		dma_fence_signal(v3d->bin_job->bin.done_fence);
++		struct v3d_fence *fence =
++			to_v3d_fence(v3d->bin_job->bin.done_fence);
++
++		trace_v3d_bcl_irq(&v3d->drm, fence->seqno);
++		dma_fence_signal(&fence->base);
+ 		status = IRQ_HANDLED;
+ 	}
+ 
+ 	if (intsts & V3D_INT_FRDONE) {
+-		dma_fence_signal(v3d->render_job->render.done_fence);
++		struct v3d_fence *fence =
++			to_v3d_fence(v3d->render_job->render.done_fence);
++
++		trace_v3d_rcl_irq(&v3d->drm, fence->seqno);
++		dma_fence_signal(&fence->base);
+ 		status = IRQ_HANDLED;
+ 	}
+ 
+@@ -119,7 +128,11 @@ v3d_hub_irq(int irq, void *arg)
+ 	V3D_WRITE(V3D_HUB_INT_CLR, intsts);
+ 
+ 	if (intsts & V3D_HUB_INT_TFUC) {
+-		dma_fence_signal(v3d->tfu_job->done_fence);
++		struct v3d_fence *fence =
++			to_v3d_fence(v3d->tfu_job->done_fence);
++
++		trace_v3d_tfu_irq(&v3d->drm, fence->seqno);
++		dma_fence_signal(&fence->base);
+ 		status = IRQ_HANDLED;
+ 	}
+ 
+--- a/drivers/gpu/drm/v3d/v3d_trace.h
++++ b/drivers/gpu/drm/v3d/v3d_trace.h
+@@ -12,6 +12,28 @@
+ #define TRACE_SYSTEM v3d
+ #define TRACE_INCLUDE_FILE v3d_trace
+ 
++TRACE_EVENT(v3d_submit_cl_ioctl,
++	    TP_PROTO(struct drm_device *dev, u32 ct1qba, u32 ct1qea),
++	    TP_ARGS(dev, ct1qba, ct1qea),
++
++	    TP_STRUCT__entry(
++			     __field(u32, dev)
++			     __field(u32, ct1qba)
++			     __field(u32, ct1qea)
++			     ),
++
++	    TP_fast_assign(
++			   __entry->dev = dev->primary->index;
++			   __entry->ct1qba = ct1qba;
++			   __entry->ct1qea = ct1qea;
++			   ),
++
++	    TP_printk("dev=%u, RCL 0x%08x..0x%08x",
++		      __entry->dev,
++		      __entry->ct1qba,
++		      __entry->ct1qea)
++);
++
+ TRACE_EVENT(v3d_submit_cl,
+ 	    TP_PROTO(struct drm_device *dev, bool is_render,
+ 		     uint64_t seqno,
+@@ -42,6 +64,85 @@ TRACE_EVENT(v3d_submit_cl,
+ 		      __entry->ctnqea)
+ );
+ 
++TRACE_EVENT(v3d_bcl_irq,
++	    TP_PROTO(struct drm_device *dev,
++		     uint64_t seqno),
++	    TP_ARGS(dev, seqno),
++
++	    TP_STRUCT__entry(
++			     __field(u32, dev)
++			     __field(u64, seqno)
++			     ),
++
++	    TP_fast_assign(
++			   __entry->dev = dev->primary->index;
++			   __entry->seqno = seqno;
++			   ),
++
++	    TP_printk("dev=%u, seqno=%llu",
++		      __entry->dev,
++		      __entry->seqno)
++);
++
++TRACE_EVENT(v3d_rcl_irq,
++	    TP_PROTO(struct drm_device *dev,
++		     uint64_t seqno),
++	    TP_ARGS(dev, seqno),
++
++	    TP_STRUCT__entry(
++			     __field(u32, dev)
++			     __field(u64, seqno)
++			     ),
++
++	    TP_fast_assign(
++			   __entry->dev = dev->primary->index;
++			   __entry->seqno = seqno;
++			   ),
++
++	    TP_printk("dev=%u, seqno=%llu",
++		      __entry->dev,
++		      __entry->seqno)
++);
++
++TRACE_EVENT(v3d_tfu_irq,
++	    TP_PROTO(struct drm_device *dev,
++		     uint64_t seqno),
++	    TP_ARGS(dev, seqno),
++
++	    TP_STRUCT__entry(
++			     __field(u32, dev)
++			     __field(u64, seqno)
++			     ),
++
++	    TP_fast_assign(
++			   __entry->dev = dev->primary->index;
++			   __entry->seqno = seqno;
++			   ),
++
++	    TP_printk("dev=%u, seqno=%llu",
++		      __entry->dev,
++		      __entry->seqno)
++);
++
++TRACE_EVENT(v3d_submit_tfu_ioctl,
++	    TP_PROTO(struct drm_device *dev, u32 iia),
++	    TP_ARGS(dev, iia),
++
++	    TP_STRUCT__entry(
++			     __field(u32, dev)
++			     __field(u32, iia)
++			     ),
++
++	    TP_fast_assign(
++			   __entry->dev = dev->primary->index;
++			   __entry->iia = iia;
++			   ),
++
++	    TP_printk("dev=%u, IIA 0x%08x",
++		      __entry->dev,
++		      __entry->iia)
++);
++
+ TRACE_EVENT(v3d_submit_tfu,
+ 	    TP_PROTO(struct drm_device *dev,
+ 		     uint64_t seqno),

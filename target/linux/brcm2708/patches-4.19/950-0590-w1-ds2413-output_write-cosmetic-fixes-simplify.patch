@@ -1,0 +1,64 @@
+From 3280ce5f5483a351f49e84b48ad98df87989346a Mon Sep 17 00:00:00 2001
+From: Mariusz Bialonczyk <manio@skyboo.net>
+Date: Mon, 20 May 2019 09:05:55 +0200
+Subject: [PATCH] w1: ds2413: output_write() cosmetic fixes / simplify
+
+commit ae2ee27aa985232f66421d7cd1c7f4b87c7dba7d upstream.
+
+Make the output_write simpler.
+Based on Jean-Francois Dagenais code from:
+49695ac46861 ("w1: ds2408: reset on output_write retry with readback")
+
+Signed-off-by: Mariusz Bialonczyk <manio@skyboo.net>
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/w1/slaves/w1_ds2413.c | 19 +++++++++++--------
+ 1 file changed, 11 insertions(+), 8 deletions(-)
+
+--- a/drivers/w1/slaves/w1_ds2413.c
++++ b/drivers/w1/slaves/w1_ds2413.c
+@@ -69,6 +69,7 @@ static ssize_t output_write(struct file
+ 	struct w1_slave *sl = kobj_to_w1_slave(kobj);
+ 	u8 w1_buf[3];
+ 	unsigned int retries = W1_F3A_RETRIES;
++	ssize_t bytes_written = -EIO;
+ 
+ 	if (count != 1 || off != 0)
+ 		return -EFAULT;
+@@ -78,7 +79,7 @@ static ssize_t output_write(struct file
+ 	dev_dbg(&sl->dev, "mutex locked");
+ 
+ 	if (w1_reset_select_slave(sl))
+-		goto error;
++		goto out;
+ 
+ 	/* according to the DS2413 datasheet the most significant 6 bits
+ 	   should be set to "1"s, so do it now */
+@@ -91,18 +92,20 @@ static ssize_t output_write(struct file
+ 		w1_write_block(sl->master, w1_buf, 3);
+ 
+ 		if (w1_read_8(sl->master) == W1_F3A_SUCCESS_CONFIRM_BYTE) {
+-			mutex_unlock(&sl->master->bus_mutex);
+-			dev_dbg(&sl->dev, "mutex unlocked, retries:%d", retries);
+-			return 1;
++			bytes_written = 1;
++			goto out;
+ 		}
+ 		if (w1_reset_resume_command(sl->master))
+-			goto error;
++			goto out; /* unrecoverable error */
++
++		dev_warn(&sl->dev, "PIO_ACCESS_WRITE error, retries left: %d\n", retries);
+ 	}
+ 
+-error:
++out:
+ 	mutex_unlock(&sl->master->bus_mutex);
+-	dev_dbg(&sl->dev, "mutex unlocked in error, retries:%d", retries);
+-	return -EIO;
++	dev_dbg(&sl->dev, "%s, mutex unlocked, retries: %d\n",
++		(bytes_written > 0) ? "succeeded" : "error", retries);
++	return bytes_written;
+ }
+ 
+ static BIN_ATTR(output, S_IRUGO | S_IWUSR | S_IWGRP, NULL, output_write, 1);
