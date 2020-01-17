@@ -13,7 +13,7 @@ FEATURES:=usbgadget
 CPU_TYPE:=24kc
 SUBTARGETS:=generic tiny nand mikrotik
 
-KERNEL_PATCHVER:=4.9
+KERNEL_PATCHVER:=4.14
 
 include $(INCLUDE_DIR)/target.mk
 
