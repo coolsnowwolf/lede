@@ -15,7 +15,7 @@ local encrypt_methods = {
 	"aes-256-cfb",
 	"aes-128-ctr",
 	"aes-192-ctr",
-	"aes-256-ctr",	
+	"aes-256-ctr",
 	"bf-cfb",
 	"camellia-128-cfb",
 	"camellia-192-cfb",
@@ -44,7 +44,7 @@ m = Map(shadowsocksr, translate("Edit ShadowSocksR Server"))
 
 m.redirect = luci.dispatcher.build_url("admin/services/shadowsocksr/server")
 if m.uci:get(shadowsocksr, sid) ~= "server_config" then
-	luci.http.redirect(m.redirect) 
+	luci.http.redirect(m.redirect)
 	return
 end
 

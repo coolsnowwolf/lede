@@ -12,7 +12,7 @@ end)
 
 local key_table = {}
 for key,_ in pairs(server_table) do
-    table.insert(key_table,key)
+	table.insert(key_table,key)
 end
 
 table.sort(key_table)
