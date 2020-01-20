@@ -124,7 +124,7 @@ o:value("ssr", translate("ShadowsocksR"))
 if nixio.fs.access("/usr/bin/ss-redir") then
 o:value("ss", translate("Shadowsocks New Version"))
 end
-if nixio.fs.access("/usr/bin/v2ray/v2ray") then
+if nixio.fs.access("/usr/bin/v2ray/v2ray") or nixio.fs.access("/usr/bin/v2ray") then
 o:value("v2ray", translate("V2Ray"))
 end
 if nixio.fs.access("/usr/sbin/trojan") then

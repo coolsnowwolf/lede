@@ -217,6 +217,7 @@ local function processData(szType, content)
 		result.encrypt_method_ss = content.encryption
 		result.alias = "[" .. content.airport .. "] " .. content.remarks
 	end
+	if result.alias == ''then result.alias = result.server ..':'.. result.server_port end
 	return result, hash
 end
 -- wget
@@ -282,7 +283,7 @@ local execute = function()
 							log('跳过未知类型: ' .. szType)
 						end
 						-- log(hash, result)
-						if hash and result then
+						if hash or result then
 							if result.alias:find("过期时间") or
 								result.alias:find("剩余流量") or
 								result.alias:find("QQ群") or
