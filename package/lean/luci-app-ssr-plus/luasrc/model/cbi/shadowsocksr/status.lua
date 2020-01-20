@@ -15,6 +15,7 @@ local gfw_count=0
 local ad_count=0
 local ip_count=0
 local gfwmode=0
+local ucic = luci.model.uci.cursor()
 
 if nixio.fs.access("/etc/dnsmasq.ssr/gfw_list.conf") then
 gfwmode=1
@@ -44,7 +45,7 @@ end
 
 end
 
-if gfwmode==1 then
+if gfwmode == 1 then
 gfw_count = tonumber(sys.exec("cat /etc/dnsmasq.ssr/gfw_list.conf | wc -l"))/2
 if nixio.fs.access("/etc/dnsmasq.ssr/ad.conf") then
 ad_count=tonumber(sys.exec("cat /etc/dnsmasq.ssr/ad.conf | wc -l"))
@@ -64,7 +65,6 @@ if tonumber(icount)>0 then
 reudp_run=1
 end
 end
-
 
 if luci.sys.call("busybox ps -w | grep ssr-retcp | grep -v grep >/dev/null") == 0 then
 redir_run=1
@@ -160,19 +160,19 @@ s=m:field(DummyValue,"baidu",translate("Baidu Connectivity"))
 s.value = translate("No Check")
 s.template = "shadowsocksr/check"
 
-if gfwmode==1 then
+if gfwmode == 1 then
 s=m:field(DummyValue,"gfw_data",translate("GFW List Data"))
 s.rawhtml  = true
 s.template = "shadowsocksr/refresh"
 s.value =tostring(math.ceil(gfw_count)) .. " " .. translate("Records")
 end
 
--- if gfwmode==1 then
--- s=m:field(DummyValue,"ad_data",translate("Advertising Data"))
--- s.rawhtml  = true
--- s.template = "shadowsocksr/refresh"
--- s.value =ad_count .. " " .. translate("Records")
--- end
+if ucic:get_first(shadowsocksr, 'global', 'adblock', '') == '1' then
+s=m:field(DummyValue,"ad_data",translate("Advertising Data"))
+s.rawhtml  = true
+s.template = "shadowsocksr/refresh"
+s.value =ad_count .. " " .. translate("Records")
+end
 
 s=m:field(DummyValue,"ip_data",translate("China IP Data"))
 s.rawhtml  = true

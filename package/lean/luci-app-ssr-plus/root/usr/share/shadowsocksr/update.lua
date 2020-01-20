@@ -8,6 +8,7 @@ require 'luci.util'
 require 'luci.jsonc'
 require 'luci.sys'
 local icount =0
+local ucic = luci.model.uci.cursor()
 
 local log = function(...)
 	print(os.date("%Y-%m-%d %H:%M:%S ") .. table.concat({ ... }, " "))
@@ -63,7 +64,8 @@ else
 	log('更新失败！')
 end
 
---[[ 
+-- --[[ 
+if ucic:get_first('shadowsocksr', 'global', 'adblock', '') == '1' then
 log('正在更新【广告屏蔽】数据库')
 	local need_process = 0
 	if nixio.fs.access("/usr/bin/wget-ssl") then
@@ -101,4 +103,5 @@ if sret== 0 then
 else
 	log('更新失败！')
 end
---]]
+end
+-- --]]

@@ -147,7 +147,7 @@ if sret== 0 then
 	else
 	retstring ="-1"
 	end
-	luci.sys.exec("rm -f /tmp/ad.conf ")
+	luci.sys.exec("rm -f /tmp/ad.conf")
 else
 	retstring ="-1"
 end

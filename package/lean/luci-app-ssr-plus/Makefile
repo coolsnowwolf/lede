@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
-PKG_RELEASE:=132
-PKG_VERSION:=3
+PKG_RELEASE:=133
+PKG_VERSION:=1
 
 PKG_CONFIG_DEPENDS:= CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_v2ray-core \
@@ -21,11 +21,11 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_v2ray-core
 	bool "Include v2ray-core"
-	default n if x86_64
+	default y if x86_64
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray
 	bool "Include V2ray"
-	default y if x86_64
+	default n
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_Trojan
 	bool "Include Trojan"
