@@ -38,7 +38,7 @@ e:depends("domain_type","both_dtype")
 e = t:taboption("base",ListValue, "stcp_role", translate("STCP Role"))
 e.default = "server"
 e:value("server",translate("STCP Server"))
-e:value("vistor",translate("STCP Vistor"))
+e:value("visitor",translate("STCP Vistor"))
 e:depends("type","stcp")
 e = t:taboption("base",Value, "remote_port", translate("Remote Port"))
 e.datatype = "port"
@@ -67,7 +67,7 @@ e.default = "abcdefg"
 e:depends("type","stcp")
 e = t:taboption("base",Value, "stcp_servername", translate("STCP Server Name"), translate("STCP Server Name is Service Remark Name of STCP Server"))
 e.default = "secret_tcp"
-e:depends("stcp_role","vistor")
+e:depends("stcp_role","visitor")
 e = t:taboption("other",Flag, "enable_locations", translate("Enable URL routing"), translate("Frp support forward http requests to different backward web services by url routing."))
 e:depends("type","http")
 e = t:taboption("other",Value, "locations ", translate("URL routing"), translate("Http requests with url prefix /news will be forwarded to this service."))
