@@ -80,19 +80,19 @@ static int ipv4_list_add_range(struct sa_open_data *od, u32 start,
 {
 	struct ipv4_range *cur;
 	int ret;
-	
+
 	/* Ignore a new range if it or a larger range already exists */
 	//if (salist_check_ipv4(od->table, start, end))
 	//	return 0;
-	
+
 	if ((ret = __touch_tmp_base(od, gfp)) < 0)
 		return ret;
-	
+
 	/* Check if the size is efficient. Enlarge it if needed. */
 	if (od->tmp_length + 1 >= od->tmp_size) {
 		size_t old_size = od->tmp_size;
 		struct ipv4_range *old_base = od->tmp_base;
-		
+
 		od->tmp_size *= 2;
 		od->tmp_base = (struct ipv4_range *)realloc(od->tmp_base,
 				sizeof(struct ipv4_range) * od->tmp_size);
@@ -102,11 +102,11 @@ static int ipv4_list_add_range(struct sa_open_data *od, u32 start,
 			return -ENOMEM;
 		}
 	}
-	
+
 	cur = &od->tmp_base[od->tmp_length++];
 	cur->start = start;
 	cur->end = end;
-	
+
 	return 0;
 }
 
@@ -115,7 +115,7 @@ static inline int ipv4_list_add_netmask(struct sa_open_data *od,
 {
 	u32 start = net & net_mask;
 	u32 end = net | ~net_mask;
-	
+
 	return ipv4_list_add_range(od, start, end, gfp);
 }
 
@@ -141,12 +141,12 @@ static int salist_cmd_parse(struct sa_open_data *od, char *cmd, gfp_t gfp)
 	int n = 32;
 
 	/* Case 3: Append an item */
-	
+
 	/* Check IP description part: network segment or range? */
 	if ((sep = strchr(cmd, '/'))) { }
 	else if ((sep = strchr(cmd, '-'))) { }
 	else if ((sep = strchr(cmd, ':'))) { }
-	
+
 	if (sep) {
 		/* Describes a subnet or range. */
 		sc = *sep;
@@ -164,7 +164,7 @@ static int salist_cmd_parse(struct sa_open_data *od, char *cmd, gfp_t gfp)
 		sc = '\0';
 		a1 = cmd;
 	}
-	
+
 	switch (sc) {
 	case '/':
 		/* 10.10.20.0/24 */
@@ -204,7 +204,7 @@ static int ipv4_range_sort_cmp(const void *a, const void *b)
 {
 	struct ipv4_range *ra = (struct ipv4_range *)a;
 	struct ipv4_range *rb = (struct ipv4_range *)b;
-	
+
 	if (ra->start > rb->start) {
 		return 1;
 	} else if (ra->start < rb->start) {
@@ -269,10 +269,10 @@ static int salist_close(struct sa_open_data *od)
 						od->tmp_base[wi] = od->tmp_base[ri];
 				}
 			}
-			
+
 			od->tmp_length = wi + 1;
 		}
-		
+
 		/* Reduce the size */
 		if (od->tmp_length < od->tmp_size) {
 			struct ipv4_range *__tmp = od->tmp_base;
@@ -292,7 +292,7 @@ static int salist_close(struct sa_open_data *od)
 
 		/* Dump the table instead */
 	}
-	
+
 	if (od->errors) {
 		fprintf(stderr, "[%s] %d errors detected during table operation.\n",
 				__FUNCTION__, od->errors);
@@ -336,4 +336,3 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
-
