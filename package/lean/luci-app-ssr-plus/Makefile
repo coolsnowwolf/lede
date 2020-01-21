@@ -4,24 +4,16 @@ PKG_NAME:=luci-app-ssr-plus
 PKG_RELEASE:=133
 PKG_VERSION:=1
 
-PKG_CONFIG_DEPENDS:= CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_v2ray-core \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Trojan \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks
-
 include $(INCLUDE_DIR)/package.mk
 
 define Package/$(PKG_NAME)/config
 config PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks
 	bool "Include Shadowsocks New Version"
-	default y if x86_64
+	default y
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_v2ray-core
 	bool "Include v2ray-core"
-	default y if x86_64
+	default y
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray
 	bool "Include V2ray"
@@ -29,7 +21,7 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_Trojan
 	bool "Include Trojan"
-	default y if x86_64
+	default n
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun
 	bool "Include Kcptun"
@@ -37,11 +29,11 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server
 	bool "Include ShadowsocksR Server"
-	default y if x86_64
+	default n
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks
 	bool "Include ShadowsocksR Socks and Tunnel"
-	default y if x86_64
+	default y
 endef
 
 define Package/luci-app-ssr-plus
