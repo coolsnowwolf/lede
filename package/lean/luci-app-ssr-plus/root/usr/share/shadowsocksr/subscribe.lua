@@ -161,8 +161,13 @@ local function processData(szType, content)
             result.tls = "0"
         end
     elseif szType == "ss" then
-        local info = content:sub(1, content:find("#") - 1)
-        local alias = content:sub(content:find("#") + 1, #content)
+        local idx_sp = 0
+        local alias = ""
+        if content:find("#") then
+            idx_sp = content:find("#")
+            alias = content:sub(idx_sp + 1, -1)
+        end
+        local info = content:sub(1, idx_sp - 1)
         local hostInfo = split(base64Decode(info, true), "@")
         local host = split(hostInfo[2], ":")
         local userinfo = base64Decode(hostInfo[1], true)
