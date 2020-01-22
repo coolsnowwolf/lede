@@ -81,6 +81,7 @@ if class_fd then
 	end
 	class_fd:close()
 end
+m:section(SimpleSection).template = "admin_network/user_status"
 
 
 return m

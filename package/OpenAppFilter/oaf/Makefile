@@ -3,11 +3,13 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=oaf
-PKG_RELEASE:=3
+PKG_VERSION:=3.0
+PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
 
 PKG_AUTOLOAD:=oaf
+RSTRIP:=:
 
 define KernelPackage/oaf
   SECTION:=Derry Apps

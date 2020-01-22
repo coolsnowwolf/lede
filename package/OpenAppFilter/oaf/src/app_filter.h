@@ -1,13 +1,14 @@
 #ifndef APP_FILTER_H
 #define APP_FILTER_H
 
-#define AF_VERSION "1.0.1"
+#define AF_VERSION "3.0.1"
 #define AF_FEATURE_CONFIG_FILE "/etc/appfilter/feature.cfg"
 
 #define MAX_PARSE_PKT_NUM 16
 #define MIN_HTTP_DATA_LEN 16
 #define MAX_APP_NAME_LEN 64
 #define MAX_FEATURE_NUM_PER_APP 16 
+#define MIN_FEATURE_STR_LEN 16
 #define MAX_FEATURE_STR_LEN 128
 #define MAX_HOST_URL_LEN 128
 #define MAX_REQUEST_URL_LEN 128
@@ -80,6 +81,7 @@ typedef struct flow_info{
 	http_proto_t http;
 	https_proto_t https;
 	u_int32_t app_id;
+	u_int8_t drop;
 }flow_info_t;
 
 
