@@ -53,6 +53,7 @@ PKG_CONFIG_DEPENDS := \
 PKG_BUILD_DEPENDS:=golang/host
 PKG_BUILD_PARALLEL:=1
 PKG_USE_MIPS16:=0
+
 export GO111MODULE=on
 export GOPROXY=https://goproxy.cn
 
@@ -242,6 +243,7 @@ endef
 
 define Build/Prepare
 	$(call Build/Prepare/Default)
+
 ifneq ($(CONFIG_V2RAY_EXCLUDE_ASSETS),y)
 	# move file to make sure download new file every build
 	mv -f $(DL_DIR)/$(GEOIP_FILE) $(PKG_BUILD_DIR)/release/config/geoip.dat
@@ -277,21 +279,19 @@ endif
 endif
 endef
 
-define Package/v2ray-core/install
-	$(call GoPackage/Package/Install/Bin,$(PKG_INSTALL_DIR))
+define Package/v2ray/install
+	$(INSTALL_DIR) $(1)/usr/bin/v2ray
 
-	$(INSTALL_DIR) $(1)/usr/bin
-
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/v2ray $(1)/usr/bin
+	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/v2ray $(1)/usr/bin/v2ray
 
 ifneq ($(CONFIG_V2RAY_EXCLUDE_V2CTL),y)
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/v2ctl $(1)/usr/bin
+	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/v2ctl $(1)/usr/bin/v2ray
 endif
 
 ifneq ($(CONFIG_V2RAY_EXCLUDE_ASSETS),y)
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/release/config/{geoip,geosite}.dat \
-		$(1)/usr/bin
+		$(1)/usr/bin/v2ray
 endif
 endef
 
