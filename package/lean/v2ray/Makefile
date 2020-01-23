@@ -15,6 +15,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
+	SUBMENU:=Project V
 	TITLE:=V2Ray is a cross-platform proxy software
 	DEPENDS:=+ca-certificates 
 	URL:=https://github.com/v2ray/v2ray-core

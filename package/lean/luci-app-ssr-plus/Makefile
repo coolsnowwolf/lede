@@ -4,20 +4,33 @@ PKG_NAME:=luci-app-ssr-plus
 PKG_RELEASE:=133
 PKG_VERSION:=1
 
+PKG_CONFIG_DEPENDS:= \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray-core \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Trojan \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks
+
 include $(INCLUDE_DIR)/package.mk
 
 define Package/$(PKG_NAME)/config
+
 config PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks
 	bool "Include Shadowsocks New Version"
 	default y
 
-config PACKAGE_$(PKG_NAME)_INCLUDE_v2ray-core
-	bool "Include v2ray-core"
-	default y
+choice
+	prompt "Include V2Ray"
+	default PACKAGE_$(PKG_NAME)_INCLUDE_V2ray-core if !SMALL_FLASH
+	default PACKAGE_$(PKG_NAME)_INCLUDE_V2ray if SMALL_FLASH
 
-config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray
-	bool "Include V2ray"
-	default n
+	config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray-core
+		bool "Self compiled V2Ray"
+	config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray
+		bool "Precompiled V2Ray"
+endchoice
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_Trojan
 	bool "Include Trojan"
@@ -34,9 +47,10 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server
 config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks
 	bool "Include ShadowsocksR Socks and Tunnel"
 	default y
+
 endef
 
-define Package/luci-app-ssr-plus
+define Package/$(PKG_NAME)
 	SECTION:=luci
 	CATEGORY:=LuCI
 	SUBMENU:=3. Applications
@@ -44,7 +58,7 @@ define Package/luci-app-ssr-plus
 	PKGARCH:=all
 	DEPENDS:=+shadowsocksr-libev-alt +ipset +ip-full +iptables-mod-tproxy +dnsmasq-full +coreutils +coreutils-base64 +pdnsd-alt +wget \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks:shadowsocks-libev-ss-redir \
-	+PACKAGE_$(PKG_NAME)_INCLUDE_v2ray-core:v2ray-core \
+	+PACKAGE_$(PKG_NAME)_INCLUDE_V2ray-core:v2ray-core \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_V2ray:v2ray \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Trojan:trojan \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Trojan:ipt2socks \
@@ -59,12 +73,12 @@ endef
 define Build/Compile
 endef
 
-define Package/luci-app-ssr-plus/conffiles
+define Package/$(PKG_NAME)/conffiles
 /etc/ssr_ip
 /etc/dnsmasq.ssr/gfw_list.conf
 endef
 
-define Package/luci-app-ssr-plus/install
+define Package/$(PKG_NAME)/install
 	#lua
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi/shadowsocksr
@@ -99,7 +113,7 @@ define Package/luci-app-ssr-plus/install
 	po2lmo ./po/zh-cn/ssr-plus.po $(1)/usr/lib/lua/luci/i18n/ssr-plus.zh-cn.lmo
 endef
 
-define Package/luci-app-ssr-plus/postinst
+define Package/$(PKG_NAME)/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
 	( . /etc/uci-defaults/luci-ssr-plus ) && rm -f /etc/uci-defaults/luci-ssr-plus
@@ -109,7 +123,7 @@ fi
 exit 0
 endef
 
-define Package/luci-app-ssr-plus/prerm
+define Package/$(PKG_NAME)/prerm
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
 	/etc/init.d/shadowsocksr disable
@@ -118,4 +132,4 @@ fi
 exit 0
 endef
 
-$(eval $(call BuildPackage,luci-app-ssr-plus))
+$(eval $(call BuildPackage,$(PKG_NAME)))

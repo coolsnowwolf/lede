@@ -66,20 +66,20 @@ GO_PKG_LDFLAGS_X:= \
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-define Package/v2ray-core
-  TITLE:=A platform for building proxies
-  URL:=https://www.v2ray.com
-  SECTION:=net
-  CATEGORY:=Network
-  SUBMENU:=Project V
-  DEPENDS:=$(GO_ARCH_DEPENDS) +ca-certificates
+define Package/$(PKG_NAME)
+	TITLE:=A platform for building proxies
+	URL:=https://www.v2ray.com
+	SECTION:=net
+	CATEGORY:=Network
+	SUBMENU:=Project V
+	DEPENDS:=$(GO_ARCH_DEPENDS) +ca-certificates
 endef
 
-define Package/v2ray-core/config
+define Package/$(PKG_NAME)/config
 	source "$(SOURCE)/Config.in"
 endef
 
-define Package/v2ray-core/description
+define Package/$(PKG_NAME)/description
 Project V is a set of network tools that help you to build your own computer network.
 It secures your network connections and thus protects your privacy.
 
@@ -277,7 +277,7 @@ endif
 endif
 endef
 
-define Package/v2ray-core/install
+define Package/$(PKG_NAME)/install
 	$(call GoPackage/Package/Install/Bin,$(PKG_INSTALL_DIR))
 
 	$(INSTALL_DIR) $(1)/usr/bin
@@ -300,5 +300,5 @@ $(eval $(call Download,geoip.dat))
 $(eval $(call Download,geosite.dat))
 endif
 
-$(eval $(call GoBinPackage,v2ray-core))
-$(eval $(call BuildPackage,v2ray-core))
+$(eval $(call GoBinPackage,$(PKG_NAME)))
+$(eval $(call BuildPackage,$(PKG_NAME)))
