@@ -299,7 +299,7 @@ function to_move(file)
 		}
 	end
 
-	local client_file = "/usr/bin/v2ray"
+	local client_file = "/usr/bin"
 	
 	sys.call("mkdir -p "..client_file)
 	
