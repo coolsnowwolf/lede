@@ -18,7 +18,8 @@ kmod-nf-nathelper kmod-nf-nathelper-extra kmod-ipt-raw wget \
 default-settings luci luci-app-ddns luci-app-sqm luci-app-upnp luci-app-adbyby-plus luci-app-autoreboot \
 luci-app-filetransfer luci-app-vsftpd luci-app-ssr-plus \
 luci-app-pptp-server luci-app-arpbind luci-app-vlmcsd luci-app-wol luci-app-ramfree \
-luci-app-sfe luci-app-flowoffload luci-app-nlbwmon luci-app-accesscontrol
+luci-app-sfe luci-app-flowoffload luci-app-nlbwmon luci-app-accesscontrol \
+ddns-scripts_aliyun ddns-scripts_dnspod libustream-openssl
 # For nas targets
 DEFAULT_PACKAGES.nas:=fdisk lsblk mdadm automount autosamba luci-app-usb-printer 
 # For router targets
