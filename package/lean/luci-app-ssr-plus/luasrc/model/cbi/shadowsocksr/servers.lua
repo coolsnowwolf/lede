@@ -52,10 +52,10 @@ o.template = "shadowsocksr/subscribe"
 
 -- o.inputstyle = "apply"
 -- o.write = function()
---   luci.sys.call("lua /root/subscribe.lua  >>/tmp/ssrplus.log 2>&1")
---   -- luci.sys.call("echo 123  >>/tmp/ssrplus.log 2>&1")
---    --luci.sys.exec("bash /usr/share/shadowsocksr/subscribe.sh >>/tmp/ssrplus.log 2>&1")
---    luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
+-- luci.sys.call("lua /root/subscribe.lua  >>/tmp/ssrplus.log 2>&1")
+-- -- luci.sys.call("echo 123  >>/tmp/ssrplus.log 2>&1")
+-- -- luci.sys.exec("bash /usr/share/shadowsocksr/subscribe.sh >>/tmp/ssrplus.log 2>&1")
+-- luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
 -- end
 
 
@@ -63,11 +63,11 @@ o = s:option(Button,"delete",translate("Delete all severs"))
 o.inputstyle = "reset"
 o.description = string.format(translate("Server Count") ..  ": %d", server_count)
 o.write = function()
-  uci:delete_all("shadowsocksr", "servers", function(s) return true end)
-  uci:save("shadowsocksr")
-  luci.sys.call("uci commit shadowsocksr && /etc/init.d/shadowsocksr stop")
-  luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
-  return
+uci:delete_all("shadowsocksr", "servers", function(s) return true end)
+uci:save("shadowsocksr")
+luci.sys.call("uci commit shadowsocksr && /etc/init.d/shadowsocksr stop")
+luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
+return
 end
 
 -- [[ Servers Manage ]]--
@@ -81,7 +81,7 @@ function s.create(...)
 	local sid = TypedSection.create(...)
 	if sid then
 		luci.http.redirect(s.extedit % sid)
-		return
+	return
 	end
 end
 

@@ -26,9 +26,9 @@ o.default="0"
 o = s:taboption("lan_ac", DynamicList, "lan_ac_ips", translate("LAN Bypassed Host List"))
 o.datatype = "ipaddr"
 luci.ip.neighbors({ family = 4 }, function(entry)
-       if entry.reachable then
-               o:value(entry.dest:string())
-       end
+		if entry.reachable then
+			o:value(entry.dest:string())
+		end
 end)
 o:depends({lan_ac_mode="0"})
 o.rmempty=true
@@ -46,17 +46,17 @@ o.rmempty=true
 o = s:taboption("lan_ac", DynamicList, "lan_fp_ips", translate("LAN Force Proxy Host List"))
 o.datatype = "ipaddr"
 luci.ip.neighbors({ family = 4 }, function(entry)
-       if entry.reachable then
-               o:value(entry.dest:string())
-       end
+		if entry.reachable then
+			o:value(entry.dest:string())
+		end
 end)
 
 o = s:taboption("lan_ac", DynamicList, "lan_gm_ips", translate("Game Mode Host List"))
 o.datatype = "ipaddr"
 luci.ip.neighbors({ family = 4 }, function(entry)
-       if entry.reachable then
-               o:value(entry.dest:string())
-       end
+		if entry.reachable then
+			o:value(entry.dest:string())
+		end
 end)
 
 -- Part of MAC
