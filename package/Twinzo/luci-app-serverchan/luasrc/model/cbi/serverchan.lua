@@ -29,8 +29,12 @@ a=s:taboption("tab_basic", Flag,"serverchan_enable",translate("启用"))
 a.default=0
 a.rmempty=true
 
-a=s:taboption("tab_basic", Value,"sckey",translate('SCKEY'), translate("Serverchan Sckey").."<br>调用代码获取<a href='http://sc.ftqq.com' target="_blank">点击这里</a><br><br>")
+a=s:taboption("tab_basic", Value,"sckey",translate('SCKEY'), translate("Serverchan Sckey").."<br>调用代码获取<a href='http://sc.ftqq.com' target='_blank'>点击这里</a><br><br>")
 a.rmempty=true
+
+device_name=s:taboption("tab_basic", Value,"device_name",translate('本设备名称'))
+device_name.rmempty=true
+device_name.description = translate("在推送信息标题中会标识本设备名称，用于区分推送信息的来源设备")
 
 debuglevel=s:taboption("tab_basic", ListValue,"debuglevel",translate("日志调试等级"))
 debuglevel:value("",translate("关闭"))
