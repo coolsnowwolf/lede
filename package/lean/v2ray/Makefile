@@ -27,6 +27,7 @@ PKG_CONFIG_DEPENDS := \
 	CONFIG_V2RAY_JSON_NONE \
 	CONFIG_V2RAY_EXCLUDE_V2CTL \
 	CONFIG_V2RAY_EXCLUDE_ASSETS \
+	CONFIG_V2RAY_COMPRESS_GOPROXY \
 	CONFIG_V2RAY_COMPRESS_UPX \
 	CONFIG_V2RAY_DISABLE_NONE \
 	CONFIG_V2RAY_DISABLE_CUSTOM \
@@ -85,6 +86,11 @@ It secures your network connections and thus protects your privacy.
 
   This package contains v2ray, v2ctl and v2ray-assets.
 endef
+
+ifeq ($(CONFIG_V2RAY_COMPRESS_GOPROXY),y)
+export GO111MODULE=on
+export GOPROXY=https://goproxy.cn
+endif
 
 V2RAY_SED_ARGS:=
 
