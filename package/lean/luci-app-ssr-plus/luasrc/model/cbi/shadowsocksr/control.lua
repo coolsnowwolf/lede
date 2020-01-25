@@ -18,6 +18,11 @@ o.datatype = "ip4addr"
 -- Part of LAN
 s:tab("lan_ac", translate("LAN IP AC"))
 
+o = s:taboption("lan_ac", ListValue, "lan_ac_mode", translate("LAN Proxy Mode"))
+o:value("0","Bypassed Mode")
+o:value("1","passed Mode")
+o.default="0"
+
 o = s:taboption("lan_ac", DynamicList, "lan_ac_ips", translate("LAN Bypassed Host List"))
 o.datatype = "ipaddr"
 luci.ip.neighbors({ family = 4 }, function(entry)
@@ -25,6 +30,18 @@ luci.ip.neighbors({ family = 4 }, function(entry)
                o:value(entry.dest:string())
        end
 end)
+o:depends({lan_ac_mode="0"})
+o.rmempty=true
+
+o = s:taboption("lan_ac", DynamicList, "lan_ac_passed_ips", translate("LAN passed Host List"))
+o.datatype = "ipaddr"
+luci.ip.neighbors({ family = 4 }, function(entry)
+       if entry.reachable then
+               o:value(entry.dest:string())
+       end
+end)
+o:depends({lan_ac_mode="1"})
+o.rmempty=true
 
 o = s:taboption("lan_ac", DynamicList, "lan_fp_ips", translate("LAN Force Proxy Host List"))
 o.datatype = "ipaddr"
@@ -40,6 +57,53 @@ luci.ip.neighbors({ family = 4 }, function(entry)
        if entry.reachable then
                o:value(entry.dest:string())
        end
+end)
+
+-- Part of MAC
+s:tab("mac_ac", translate("MAC AC"))
+
+o = s:taboption("mac_ac", ListValue, "mac_ac_mode", translate("MAC Proxy Mode"))
+o:value("0","Bypassed Mode")
+o:value("1","passed Mode")
+o.default="0"
+
+o = s:taboption("mac_ac", DynamicList, "mac_ac", translate("MAC Bypassed Host List"))
+o.datatype = "macaddr"
+luci.sys.net.mac_hints(function(x,d)
+	if not luci.ip.new(d) then
+		o:value(x,"%s (%s)"%{x,d})
+	end
+
+end)
+o:depends({mac_ac_mode="0"})
+o.rmempty=true
+
+o = s:taboption("mac_ac", DynamicList, "mac_ac_passed", translate("MAC passed Host List"))
+o.datatype = "macaddr"
+luci.sys.net.mac_hints(function(x,d)
+	if not luci.ip.new(d) then
+		o:value(x,"%s (%s)"%{x,d})
+	end
+
+end)
+o:depends({mac_ac_mode="1"})
+o.rmempty=true
+
+o = s:taboption("mac_ac", DynamicList, "mac_fp", translate("MAC Force Proxy Host List"))
+o.datatype = "macaddr"
+luci.sys.net.mac_hints(function(x,d)
+	if not luci.ip.new(d) then
+		o:value(x,"%s (%s)"%{x,d})
+	end
+end)
+
+o = s:taboption("mac_ac", DynamicList, "mac_gm", translate("MAC Game Mode Host List"))
+o.datatype = "macaddr"
+luci.sys.net.mac_hints(function(x,d)
+	if not luci.ip.new(d) then
+		o:value(x,"%s (%s)"%{x,d})
+	end
+
 end)
 
 -- Part of Self
