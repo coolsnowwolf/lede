@@ -7,6 +7,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/version.h>
+
 #include <net/tcp.h>
 #include <linux/netfilter.h>
 #include <net/netfilter/nf_conntrack.h>
@@ -21,15 +22,14 @@
 
 #include "app_filter.h"
 #include "af_utils.h"
-#include "af_log.h"
-#include "af_client.h"
-#include "af_client_fs.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("destan19@126.com");
 MODULE_DESCRIPTION("app filter module");
-MODULE_VERSION("3.0.1");
+MODULE_VERSION("1.0.1");
 struct list_head af_feature_head = LIST_HEAD_INIT(af_feature_head);
+#define AF_FEATURE_CONFIG_FILE "/etc/appfilter/feature.cfg"
+//#define AF_DEV_NAME "appfilter"
 
 DEFINE_RWLOCK(af_feature_lock);
 
@@ -37,7 +37,38 @@ DEFINE_RWLOCK(af_feature_lock);
 #define feature_list_read_unlock() 		read_unlock_bh(&af_feature_lock);
 #define feature_list_write_lock() 		write_lock_bh(&af_feature_lock);
 #define feature_list_write_unlock()		write_unlock_bh(&af_feature_lock);
+// 注意有重传报文
+#define MAX_PARSE_PKT_NUM 16
+#define MIN_HTTP_DATA_LEN 16
+#define MAX_APP_NAME_LEN 64
+#define MAX_FEATURE_NUM_PER_APP 16 
+#define MAX_FEATURE_STR_LEN 128
+#define MAX_HOST_URL_LEN 128
+#define MAX_REQUEST_URL_LEN 128
+#define MAX_FEATURE_BITS 16
+#define MAX_POS_INFO_PER_FEATURE 16
+#define MAX_FEATURE_LINE_LEN 256
+#define MIN_FEATURE_LINE_LEN 16
 
+#define MAX_URL_MATCH_LEN 64
+typedef struct af_pos_info{
+	int pos;
+	unsigned char value;
+}af_pos_info_t;
+
+typedef struct af_feature_node{
+	struct list_head  		head;
+	int app_id;
+	char app_name[MAX_APP_NAME_LEN];
+	char feature_str[MAX_FEATURE_NUM_PER_APP][MAX_FEATURE_STR_LEN];
+	int proto;
+	int sport;
+	int dport;
+	char host_url[MAX_HOST_URL_LEN];
+	char request_url[MAX_REQUEST_URL_LEN];
+	int pos_num;
+	af_pos_info_t pos_info[MAX_POS_INFO_PER_FEATURE];
+}af_feature_node_t;
 #if 0
 static void show_feature_list(void)
 {
@@ -81,7 +112,14 @@ static af_feature_node_t* af_find_feature(char *app_id)
 }
 #endif
 
-
+enum AF_FEATURE_PARAM_INDEX{
+	AF_PROTO_PARAM_INDEX,
+	AF_SRC_PORT_PARAM_INDEX,
+	AF_DST_PORT_PARAM_INDEX,
+	AF_HOST_URL_PARAM_INDEX,
+	AF_REQUEST_URL_PARAM_INDEX,
+	AF_DICT_PARAM_INDEX,
+};
 
 int __add_app_feature(int appid,
 					char *name,
@@ -150,7 +188,7 @@ int add_app_feature(int appid, char *name, char *feature)
 	char dict[128] = {0};
 	int proto = IPPROTO_TCP;
 	if (!name || !feature) {
-		AF_ERROR("error, name or feature is null\n");
+		printk("error, name or feature is null\n");
 		return -1;
 	}
 	// tcp;8000;www.sina.com;0:get_name;00:0a-01:11
@@ -185,12 +223,15 @@ int add_app_feature(int appid, char *name, char *feature)
 		param_num ++;
 		begin = p + 1;
 	}
-	if (AF_DICT_PARAM_INDEX != param_num && strlen(feature) > MIN_FEATURE_STR_LEN) {
-		AF_ERROR("22 invalid feature:%s\n", feature);
+	if (AF_DICT_PARAM_INDEX != param_num) {
+		printk("invalid feature:%s\n", feature);
 		return -1;
 	}
 	strncpy(dict, begin, p - begin);
-
+	
+	//sscanf(feature, "%[^;];%d;%[^;];%[^;];%s", proto, &dst_port, host, url, dict);
+	//printk("proto = %s, port = %s, host = %s, url = %s, dict = %s\n",
+	//				proto_str, port_str, host_url, request_url, dict);
 	if (0 == strcmp(proto_str, "tcp"))
 		proto = IPPROTO_TCP;
 	else if (0 == strcmp(proto_str, "udp"))
@@ -226,8 +267,10 @@ void af_init_feature(char *feature_str)
 	char feature_buf[MAX_FEATURE_LINE_LEN] = {0};
 	if (strstr(feature_str,"#"))
 		return;
+	//printk("feature_str=%s\n",feature_str);
 	
 	k_sscanf(feature_str, "%d%[^:]", &app_id, app_name);
+	//printk("id = %d, name = %s\n",app_id, app_name);
 
 	char *p = feature_str;
 	char *pos = NULL;	
@@ -278,17 +321,18 @@ void load_feature_buf_from_file(char **config_buf)
 		printk("open feature file failed\n");
 		return -1;
 	}
-
+	//inode = fp->f_dentry->d_inode;
+	//inode = fp->f_path.dentry->d_inode;
 	inode = fp->f_inode;
 	size = inode->i_size;
-	AF_INFO("feature file size: %d\n", size);
+	printk("file size: %d\n", size);
 	if (size == 0) {
-		AF_WARN("warning, file size = %d\n", size);
+		printk("warning,file size = %d\n", size);
 		return;
 	}
 	*config_buf = (char *) kzalloc( sizeof(char) * size, GFP_KERNEL);
 	if(NULL == *config_buf ) {
-		AF_ERROR("alloc buf fail\n");
+		printk("alloc buf fail\n");
 		filp_close(fp, NULL);
 		return -1;
 	}
@@ -300,6 +344,7 @@ void load_feature_buf_from_file(char **config_buf)
 #else
 	vfs_read(fp, *config_buf, size, &(fp->f_pos));
 #endif
+ 	//fp->f_op->read(fp, *config_buf, size, &(fp->f_pos));
 	set_fs(fs);
 	filp_close(fp, NULL);
 	return size;
@@ -307,14 +352,15 @@ void load_feature_buf_from_file(char **config_buf)
 
 void load_feature_config(void)
 {
-	AF_INFO("begin load feature config.....\n");
+	printk("begin load feature config.....\n");
 	char *feature_buf = NULL;
 	load_feature_buf_from_file(&feature_buf);
 	if (!feature_buf) {
-		AF_ERROR("error, feature buf is null\n");
+		printk("error, feature buf is null\n");
 		return;
 	}
 	
+//	printk("feature_buf = %s\n", feature_buf);
 	char *p;
 	char *begin;
 	p = begin = feature_buf;
@@ -375,7 +421,7 @@ int parse_flow_base(struct sk_buff *skb, flow_info_t *flow)
 		return -1;
 	}
 	iph = ip_hdr(skb);
-	if (!iph) {
+	if ( !iph ) {
 		return -1;
 	}
 	flow->ct = ct;
@@ -389,14 +435,14 @@ int parse_flow_base(struct sk_buff *skb, flow_info_t *flow)
 			flow->l4_len =  ntohs(iph->tot_len) - iph->ihl * 4 - tcph->doff * 4;
 			flow->dport = htons(tcph->dest);
 			flow->sport = htons(tcph->source);
-			return 0;
+			break;
 		case IPPROTO_UDP:
 			udph = (struct udphdr *)(iph + 1);
 			flow->l4_data = skb->data + iph->ihl * 4 + 8;
 			flow->l4_len = ntohs(udph->len) - 8;
 			flow->dport = htons(udph->dest);
 			flow->sport = htons(udph->source);
-			return 0;
+			break;
 		case IPPROTO_ICMP:
 			break;
 		default:
@@ -507,6 +553,7 @@ void parse_http_proto(flow_info_t *flow)
 		}
 	}
 }
+#if 0
 
 static void dump_http_flow_info(http_proto_t *http) {
 	if (!http) {
@@ -542,6 +589,7 @@ static void dump_https_flow_info(https_proto_t *https) {
 	
 
 	if (https->url_len > 0 && https->url_pos){
+		printk("url len = %d\n",https->url_len);
 		dump_str("https server name", https->url_pos, https->url_len);
 	}
 
@@ -553,11 +601,14 @@ static void dump_flow_info(flow_info_t *flow)
 		AF_ERROR("flow is null\n");
 		return;
 	}
-	if (flow->l4_len > 0){
-		AF_LMT_INFO("src="NIPQUAD_FMT",dst="NIPQUAD_FMT",sport: %d, dport: %d, data_len: %d\n", 
-			NIPQUAD(flow->src), NIPQUAD(flow->dst),	flow->sport, flow->dport, flow->l4_len);
+	#if 0
+	if (check_local_network_ip(ntohl(flow->src))) {
+		printk("src ip(inner net):"NIPQUAD_FMT", dst ip = "NIPQUAD_FMT"\n", NIPQUAD(flow->src), NIPQUAD(flow->dst));
 	}
-
+	else {
+		printk("src ip(outer net):"NIPQUAD_FMT", dst ip = "NIPQUAD_FMT"\n", NIPQUAD(flow->src), NIPQUAD(flow->dst));
+	}
+	#endif
 	if (flow->l4_protocol == IPPROTO_TCP) {
 		if (AF_TRUE == flow->http.match) {
 			printk("-------------------http protocol-------------------------\n");
@@ -566,18 +617,27 @@ static void dump_flow_info(flow_info_t *flow)
 			dump_http_flow_info(&flow->http);
 		}
 		if (AF_TRUE == flow->https.match) {
-			printk("-------------------https protocol-------------------------\n");
 			dump_https_flow_info(&flow->https);
 		}
 	}
+	else if (flow->l4_protocol == IPPROTO_UDP) {
+		//	printk("protocol:UDP ,sport: %-8d, dport: %-8d, data_len: %-8d\n",
+		//					flow->sport, flow->dport, flow->l4_len);
+	}
+	else {
+		return;
+	}
 }
+#endif
 int af_match_by_pos(flow_info_t *flow, af_feature_node_t *node)
 {
+	// match pos
 	int i;
 	unsigned int pos = 0;
 	
 	if (!flow || !node)
 		return AF_FALSE;
+	//printk("pos_num = %d\n", node->pos_num);
 	if (node->pos_num > 0) {
 		for (i = 0;i < node->pos_num; i++){
 			// -1
@@ -588,11 +648,18 @@ int af_match_by_pos(flow_info_t *flow, af_feature_node_t *node)
 				pos = node->pos_info[i].pos;
 			}
 			if (pos >= flow->l4_len){
-				return AF_FALSE;
-			}			
-			if (flow->l4_data[pos] != node->pos_info[i].value){
+			//	AF_ERROR("pos is invalid, pos = %d, l4_len = %d\n", pos, flow->l4_len);
 				return AF_FALSE;
 			}
+			//printk("pos = %d, i = %d, l4_len = %d\n", pos, i, flow->l4_len);
+			
+			if (flow->l4_data[pos] != node->pos_info[i].value){
+			//	if (i > 0)
+				//	printk("\n");
+				return AF_FALSE;
+			}
+			//if (i > 1)
+			//printk("match (%d:%02x) -->", node->pos_info[i].pos, node->pos_info[i].value);
 		}
 		AF_DEBUG("match by pos, appid=%d\n", node->app_id);
 		return AF_TRUE;
@@ -675,6 +742,8 @@ int af_match_one(flow_info_t *flow, af_feature_node_t *node)
 			node->sport, node->dport, node->app_id);
 		return AF_TRUE;
 	}
+	//printk("sport = %d, dport = %d, node->sport:%d, node->dport:%d,ret = %d\n",
+	//	flow->sport, flow->dport, node->sport, node->dport, ret);
 	return ret;
 }
 
@@ -686,14 +755,12 @@ int app_filter_match(flow_info_t *flow)
 		list_for_each_entry_safe(node, n, &af_feature_head, head) {
 			if(af_match_one(flow, node)) 
 			{
-				flow->app_id = node->app_id;
 				if (af_get_app_status(node->app_id)){
-					flow->drop = AF_TRUE;
+					AF_DEBUG("drop appid = %d\n", node->app_id);
 					feature_list_read_unlock();
 					return AF_TRUE;
 				}
 				else {
-					flow->drop = AF_FALSE;
 					feature_list_read_unlock();
 					return AF_FALSE;
 				}
@@ -707,89 +774,6 @@ int app_filter_match(flow_info_t *flow)
 }
 
 #define APP_FILTER_DROP_BITS 0xf0000000
-u_int32_t af_get_timestamp_sec(void)
-{
-	struct timespec ts;
-	ts = current_kernel_time();
-	return ts.tv_sec;
-}
-
-
-
-int __af_update_client_app_info(flow_info_t *flow, af_client_info_t *node)
-{
-	int i;
-	int index = -1;
-	if(!node)
-		return -1;
-	if(!flow)
-		return -1;
-	AF_INFO("%s %d visit_app_num = %d\n", __func__, __LINE__, node->visit_app_num);
-	int found = 0;
-
-	for(i = 0; i < MAX_RECORD_APP_NUM; i++){
-		if(node->visit_info[i].app_id == flow->app_id){
-			index = i;
-			found = 1;
-			break;
-		}
-		if(node->visit_info[i].app_id == 0)
-			break;
-	}
-
-	if(!found){
-		index = 0;
-		//超过最大个数，查询最老的
-		for(i = 0; i < MAX_RECORD_APP_NUM; i++){
-			if(node->visit_info[i].latest_time == 0){
-				index = i;
-				break;
-			}
-			if(node->visit_info[i].latest_time < node->visit_info[index].latest_time){
-				// 清除之前的数据
-				node->visit_info[i].total_num = 0;
-				node->visit_info[i].drop_num = 0;
-				index = i;
-			}
-		}
-	}
-	
-	
-	if(index < 0 || index >= MAX_RECORD_APP_NUM){
-		AF_ERROR("invalid index:%d\n\n", index);
-		return 0;
-	}
-	node->visit_info[index].total_num++;
-	if(flow->drop)
-		node->visit_info[index].drop_num++;
-	
-	node->visit_info[index].app_id = flow->app_id;
-	node->visit_info[index].latest_time = af_get_timestamp_sec();
-	AF_DEBUG("update time = %u\n", node->visit_info[index].latest_time);
-	node->visit_info[index].latest_action = flow->drop;
-	AF_INFO("[%d] %pI4 visit %d, time=%d action=%s, %d/%d\n", index, &node->ip, flow->app_id, 
-		node->visit_info[index].latest_time, node->visit_info[index].latest_action ? "Drop" : "Accept",
-		node->visit_info[index].drop_num, node->visit_info[index].total_num);
-	// todo: history
-	return 0;
-}
-
-void af_update_client_app_info(flow_info_t *flow)
-{
-	int i;
-	int index = 0;
-	af_client_info_t *node = NULL;
-	if(!flow)
-		return;
-	if(flow->app_id <= 0)
-		return;
-	AF_CLIENT_LOCK_W();
-	node = find_af_client_by_ip(flow->src);
-	if(node){
-		__af_update_client_app_info(flow, node);
-	}
-	AF_CLIENT_UNLOCK_W();
-}
 
 /* 在netfilter框架注册的钩子 */
 
@@ -813,17 +797,18 @@ static u_int32_t app_filter_hook(unsigned int hook,
 #else
 	struct nf_conn *ct = (struct nf_conn *)skb->nfct;
 #endif
-	if(ct == NULL) {
+	if (ct == NULL) {
+		//AF_ERROR("ct is null\n");
         return NF_ACCEPT;
     }
 
-	if(!nf_ct_is_confirmed(ct)){
+	if (!nf_ct_is_confirmed(ct)){
 		return NF_ACCEPT;
 	}
 
 #if defined(CONFIG_NF_CONNTRACK_MARK)
-	if(ct->mark != 0)
-	if(APP_FILTER_DROP_BITS == (ct->mark & APP_FILTER_DROP_BITS)){
+	if (ct->mark != 0)
+	if (APP_FILTER_DROP_BITS == (ct->mark & APP_FILTER_DROP_BITS)){
 		return NF_DROP;
 	}
 #endif
@@ -832,7 +817,7 @@ static u_int32_t app_filter_hook(unsigned int hook,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,13,0)
 	struct nf_conn_acct *acct;
 	acct = nf_conn_acct_find(ct);
-	if(!acct)
+	if (!acct)
 		return NF_ACCEPT;
 	total_packets = (unsigned long long)atomic64_read(&acct->counter[IP_CT_DIR_ORIGINAL].packets) 
 		+ (unsigned long long)atomic64_read(&acct->counter[IP_CT_DIR_REPLY].packets);
@@ -848,25 +833,20 @@ static u_int32_t app_filter_hook(unsigned int hook,
 		+ (unsigned long long)atomic64_read(&counter[IP_CT_DIR_REPLY].packets);
 
 #endif
-	if(total_packets > MAX_PARSE_PKT_NUM){
+	if (total_packets > MAX_PARSE_PKT_NUM){
 		return NF_ACCEPT;
 	}
 
 	memset((char *)&flow, 0x0, sizeof(flow_info_t));
-	if(parse_flow_base(skb, &flow) < 0)
-		return NF_ACCEPT;
+	parse_flow_base(skb, &flow);
 	parse_http_proto(&flow);
 	parse_https_proto(&flow);
-	if (TEST_MODE())
-		dump_flow_info(&flow);
-	app_filter_match(&flow);
-	af_update_client_app_info(&flow);
-	
-	if(flow.drop){
+	//dump_flow_info(&flow);
+	if (app_filter_match(&flow)){
+
 #if defined(CONFIG_NF_CONNTRACK_MARK)
 		ct->mark |= APP_FILTER_DROP_BITS;
 #endif
-		AF_LMT_INFO("##drop appid = %d\n\n\n", flow.app_id);
 		return NF_DROP;
 	}
 	return NF_ACCEPT;
@@ -913,26 +893,25 @@ void TEST_cJSON(void)
 	kfree(out);
 }
 
-
 /*
 	模块初始化
 */
 static int __init app_filter_init(void)
 {
 	AF_INFO("appfilter version:"AF_VERSION"\n");
-	af_log_init();
+	AF_DEBUG("app filter module init\n");
+	//TEST_regexp();
 	af_register_dev();
 	af_init_app_status();
 	load_feature_config();
-	init_af_client_procfs();
 //	show_feature_list();
-	af_client_init();
+//	TEST_cJSON();
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,13,0)
     nf_register_net_hooks(&init_net, app_filter_ops, ARRAY_SIZE(app_filter_ops));
 #else
 	nf_register_hooks(app_filter_ops, ARRAY_SIZE(app_filter_ops));
 #endif
-	AF_INFO("init app filter ........ok\n");
+	printk("init app filter ........ok\n");
 	return 0;
 }
 
@@ -941,7 +920,7 @@ static int __init app_filter_init(void)
 */
 static void app_filter_fini(void)
 {
-	AF_INFO("app filter module exit\n");
+	AF_DEBUG("app filter module exit\n");
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,13,0)
     nf_unregister_net_hooks(&init_net, app_filter_ops, ARRAY_SIZE(app_filter_ops));
 #else
@@ -950,12 +929,8 @@ static void app_filter_fini(void)
 
 	af_clean_feature_list();
 	af_unregister_dev();
-	af_log_exit();
-	af_client_exit();
-	finit_af_client_procfs();
 	return ;
 }
-
 
 module_init(app_filter_init);
 module_exit(app_filter_fini);
