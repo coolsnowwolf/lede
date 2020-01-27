@@ -19,8 +19,8 @@ o.datatype = "ip4addr"
 s:tab("lan_ac", translate("LAN IP AC"))
 
 o = s:taboption("lan_ac", ListValue, "lan_ac_mode", translate("LAN Proxy Mode"))
-o:value("0","Bypassed Mode")
-o:value("1","passed Mode")
+o:value("0",translate("Bypassed Mode"))
+o:value("1",translate("passed Mode"))
 o.default="0"
 
 o = s:taboption("lan_ac", DynamicList, "lan_ac_ips", translate("LAN Bypassed Host List"))
@@ -63,8 +63,8 @@ end)
 s:tab("mac_ac", translate("MAC AC"))
 
 o = s:taboption("mac_ac", ListValue, "mac_ac_mode", translate("MAC Proxy Mode"))
-o:value("0","Bypassed Mode")
-o:value("1","passed Mode")
+o:value("0",translate("Bypassed Mode"))
+o:value("1",translate("passed Mode"))
 o.default="0"
 
 o = s:taboption("mac_ac", DynamicList, "mac_ac", translate("MAC Bypassed Host List"))
