@@ -25,6 +25,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/shadowsocksr-libev
 	SECTION:=net
 	CATEGORY:=Network
+	SUBMENU:=Web Servers/Proxies
 	TITLE:=Lightweight Secured Socks5 Proxy
 	URL:=https://github.com/shadowsocksrr/shadowsocksr-libev
 	DEPENDS:=+libopenssl +libpthread +libpcre +zlib
@@ -42,6 +43,7 @@ define Package/shadowsocksr-libev/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/ss-local $(1)/usr/bin/ssr-local
 	$(LN) ssr-local $(1)/usr/bin/ssr-tunnel
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/server/ss-check $(1)/usr/bin/ssr-check
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/server/ss-server $(1)/usr/bin/ssr-server
 endef
 
 define Package/shadowsocksr-libev-alt/install
