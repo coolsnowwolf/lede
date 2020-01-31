@@ -1,4 +1,4 @@
-# 
+#
 # Copyright (C) 2006-2015 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
@@ -25,7 +25,8 @@ HOSTCXX := $(HOSTCXX_NOCACHE)
 HOST_CONFIGURE_ARGS += \
 	--enable-static=yes \
 	--enable-shared=no \
-	--disable-doc
+	--disable-doc \
+	--with-pic
 
 define Host/Install
 	+$(MAKE) $(HOST_JOBS) -C $(HOST_BUILD_DIR) install xzlinks="unxz xzcat"
