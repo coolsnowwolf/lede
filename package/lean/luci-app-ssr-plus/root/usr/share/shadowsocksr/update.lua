@@ -64,8 +64,7 @@ else
 	log('更新失败！')
 end
 
--- --[[ 
-if ucic:get_first('shadowsocksr', 'global', 'adblock','0') then
+if ucic:get_first('shadowsocksr', 'global', 'adblock','0') == "1" then
 log('正在更新【广告屏蔽】数据库')
 if nixio.fs.access("/usr/bin/wget-ssl") then
 	refresh_cmd="wget-ssl --no-check-certificate -O - ".. ucic:get_first('shadowsocksr', 'global', 'adblock_url','https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt') .." > /tmp/adnew.conf"
@@ -98,4 +97,3 @@ else
 	log('更新失败！')
 end
 end
--- --]]
