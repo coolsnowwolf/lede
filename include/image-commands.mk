@@ -3,6 +3,10 @@
 IMAGE_KERNEL = $(word 1,$^)
 IMAGE_ROOTFS = $(word 2,$^)
 
+define rootfs_align
+$(patsubst %-256k,0x40000,$(patsubst %-128k,0x20000,$(patsubst %-64k,0x10000,$(patsubst squashfs%,0x4,$(patsubst root.%,%,$(1))))))
+endef
+
 define Build/uImage
 	mkimage -A $(LINUX_KARCH) \
 		-O linux -T kernel \
@@ -271,6 +275,13 @@ define Build/check-size
 	}
 endef
 
+define Build/check-kernel-size
+	@[ $$(($(subst k,* 1024,$(subst m, * 1024k,$(1))))) -ge "$$(stat -c%s $(IMAGE_KERNEL))" ] || { \
+		echo "WARNING: Kernel for $@ is too big > $(1)" >&2; \
+		rm -f $@; \
+	}
+endef
+
 define Build/combined-image
 	-sh $(TOPDIR)/scripts/combined-image.sh \
 		"$(IMAGE_KERNEL)" \
@@ -308,7 +319,7 @@ endef
 
 define Build/qsdk-ipq-factory-nor
 	$(TOPDIR)/scripts/mkits-qsdk-ipq-image.sh \
-		$@.its hlos $(IMAGE_KERNEL) rootfs $(IMAGE_ROOTFS)
+		$@.its kernel $(IMAGE_KERNEL) rootfs $(IMAGE_ROOTFS)
 	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage -f $@.its $@.new
 	@mv $@.new $@
 endef
@@ -333,6 +344,24 @@ define Build/tplink-v1-header
 		-m $(TPLINK_HEADER_VERSION) -N "$(VERSION_DIST)" -V $(REVISION) \
 		-k $@ -o $@.new $(1)
 	@mv $@.new $@
+endef
+
+# combine kernel and rootfs into one image
+# mktplinkfw <type> <optional extra arguments to mktplinkfw binary>
+# <type> is "sysupgrade" or "factory"
+#
+# -a align the rootfs start on an <align> bytes boundary
+# -j add jffs2 end-of-filesystem markers
+# -s strip padding from end of the image
+# -X reserve <size> bytes in the firmware image (hexval prefixed with 0x)
+define Build/tplink-v1-image
+	-$(STAGING_DIR_HOST)/bin/mktplinkfw \
+		-H $(TPLINK_HWID) -W $(TPLINK_HWREV) -F $(TPLINK_FLASHLAYOUT) \
+		-N "$(VERSION_DIST)" -V $(REVISION) -m $(TPLINK_HEADER_VERSION) \
+		-k $(IMAGE_KERNEL) -r $(IMAGE_ROOTFS) -o $@.new -j -X 0x40000 \
+		-a $(call rootfs_align,$(FILESYSTEM)) \
+		$(wordlist 2,$(words $(1)),$(1)) \
+		$(if $(findstring sysupgrade,$(word 1,$(1))),-s) && mv $@.new $@ || rm -f $@
 endef
 
 define Build/tplink-v2-header
