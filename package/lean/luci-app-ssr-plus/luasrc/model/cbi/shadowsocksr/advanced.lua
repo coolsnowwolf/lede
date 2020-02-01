@@ -10,15 +10,14 @@ uci:foreach(shadowsocksr, "servers", function(s)
 	end
 end)
 
-local key_table = {}   
-for key,_ in pairs(server_table) do  
-    table.insert(key_table,key)  
-end 
+local key_table = {}
+for key,_ in pairs(server_table) do
+	table.insert(key_table,key)
+end
 
 table.sort(key_table)
-
 m = Map(shadowsocksr)
-
+-- [[ global ]]--
 s = m:section(TypedSection, "global", translate("Server failsafe auto swith settings"))
 s.anonymous = true
 
@@ -38,6 +37,18 @@ o.datatype = "uinteger"
 o:depends("enable_switch", "1")
 o.default = 5
 
+o = s:option(Value, "switch_try_count", translate("Check Try Count"))
+o.datatype = "uinteger"
+o:depends("enable_switch", "1")
+o.default = 3
+
+-- [[ adblock ]]--
+s = m:section(TypedSection, "global", translate("adblock settings"))
+s.anonymous = true
+
+o = s:option(Flag, "adblock", translate("Enable adblock"))
+o.rmempty = false
+
 -- [[ SOCKS5 Proxy ]]--
 if nixio.fs.access("/usr/bin/ssr-local") then
 s = m:section(TypedSection, "socks5_proxy", translate("SOCKS5 Proxy"))
@@ -55,5 +66,4 @@ o.default = 1080
 o.rmempty = false
 
 end
-
 return m

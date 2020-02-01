@@ -1,26 +1,26 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wireless-regdb
+PKG_VERSION:=2019.06.03
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git
-PKG_SOURCE_DATE:=2017-10-20
-PKG_SOURCE_VERSION:=4343d359ed5e7404de8803a74df186457b26ab79
-PKG_MIRROR_HASH:=5f5b669f32ae36cb65b1d99efbbbfd42c2983cda32f6448346e3e54ffaba3889
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
+PKG_SOURCE_URL:=@KERNEL/software/network/wireless-regdb/
+PKG_HASH:=cd917ed86b63ce8d93947979f1f18948f03a4ac0ad89ec25227b36ac00dc54bf
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/wireless-regdb
+  PKGARCH:=all
   SECTION:=firmware
   CATEGORY:=Firmware
-  URL:=$(patsubst pub/scm,cgit,$(PKG_SOURCE_URL))
+  URL:=https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/
   TITLE:=Wireless Regulatory Database
 endef
 
 define Build/Compile
-	python $(PKG_BUILD_DIR)/db2fw.py $(PKG_BUILD_DIR)/regulatory.db $(PKG_BUILD_DIR)/db.txt
+	$(STAGING_DIR_HOST)/bin/$(PYTHON) $(PKG_BUILD_DIR)/db2fw.py $(PKG_BUILD_DIR)/regulatory.db $(PKG_BUILD_DIR)/db.txt
 endef
 
 define Package/wireless-regdb/install

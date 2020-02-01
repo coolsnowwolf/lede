@@ -104,6 +104,7 @@ endif
 KERNEL_MAKE = $(MAKE) $(KERNEL_MAKEOPTS)
 
 KERNEL_MAKE_FLAGS = \
+	KCFLAGS="$(call iremap,$(BUILD_DIR),$(notdir $(BUILD_DIR)))" \
 	HOSTCFLAGS="$(HOST_CFLAGS) -Wall -Wmissing-prototypes -Wstrict-prototypes" \
 	CROSS_COMPILE="$(KERNEL_CROSS)" \
 	ARCH="$(LINUX_KARCH)" \
@@ -113,6 +114,7 @@ KERNEL_MAKE_FLAGS = \
 	KBUILD_BUILD_TIMESTAMP="$(KBUILD_BUILD_TIMESTAMP)" \
 	KBUILD_BUILD_VERSION="0" \
 	HOST_LOADLIBES="-L$(STAGING_DIR_HOST)/lib" \
+	KBUILD_HOSTLDLIBS="-L$(STAGING_DIR_HOST)/lib" \
 	CONFIG_SHELL="$(BASH)" \
 	$(if $(findstring c,$(OPENWRT_VERBOSE)),V=1,V='') \
 	$(if $(PKG_BUILD_ID),LDFLAGS_MODULE=--build-id=0x$(PKG_BUILD_ID)) \
@@ -127,6 +129,11 @@ KERNEL_MAKEOPTS := -C $(LINUX_DIR) $(KERNEL_MAKE_FLAGS)
 
 ifdef CONFIG_USE_SPARSE
   KERNEL_MAKEOPTS += C=1 CHECK=$(STAGING_DIR_HOST)/bin/sparse
+endif
+
+ifneq ($(HOST_OS),Linux)
+  KERNEL_MAKEOPTS += CONFIG_STACK_VALIDATION=
+  export SKIP_STACK_VALIDATION:=1
 endif
 
 PKG_EXTMOD_SUBDIRS ?= .
@@ -294,4 +301,3 @@ kernel_patchver_ge=$(call kernel_version_cmp,-ge,$(KERNEL_PATCHVER),$(1))
 kernel_patchver_eq=$(call kernel_version_cmp,-eq,$(KERNEL_PATCHVER),$(1))
 kernel_patchver_le=$(call kernel_version_cmp,-le,$(KERNEL_PATCHVER),$(1))
 kernel_patchver_lt=$(call kernel_version_cmp,-lt,$(KERNEL_PATCHVER),$(1))
-

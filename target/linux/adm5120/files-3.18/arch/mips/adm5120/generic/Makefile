@@ -1,1 +1,0 @@
-obj-$(CONFIG_ADM5120_MACH_EB_214A)	+= eb-214a.o
