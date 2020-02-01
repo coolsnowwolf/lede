@@ -1,130 +1,23 @@
 #!/bin/sh
-# Based on ar71xx 10-ath9k-eeprom
 
 [ -e /lib/firmware/$FIRMWARE ] && exit 0
 
-. /lib/functions.sh
-. /lib/functions/system.sh
-. /lib/upgrade/nand.sh
+. /lib/functions/caldata.sh
 
-# xor multiple hex values of the same length
-xor() {
-	local val
-	local ret="0x$1"
-	local retlen=${#1}
-
-	shift
-	while [ -n "$1" ]; do
-		val="0x$1"
-		ret=$((ret ^ val))
-		shift
-	done
-
-	printf "%0${retlen}x" "$ret"
-}
-
-ath9k_eeprom_die() {
-	echo "ath9k eeprom: $*"
-	exit 1
-}
-
-ath9k_eeprom_extract_raw() {
-	local source=$1
-	local offset=$2
-	local swap=$3
-	local size=4096
-	local bs=1
-	local conv=
-
-	if [ $swap -gt 0 ]; then
-		bs=2
-		conv="conv=swab"
-		size=$((size / bs))
-		offset=$((offset / bs))
-	fi
-
-	dd if=$source of=/lib/firmware/$FIRMWARE bs=$bs skip=$offset count=$size $conv 2>/dev/null || \
-			ath9k_eeprom_die "failed to extract from $mtd"
-}
-
-ath9k_eeprom_extract_reverse() {
+caldata_extract_swap() {
 	local part=$1
 	local offset=$2
 	local count=$3
 	local mtd
-	local reversed
-	local caldata
-
-	mtd=$(find_mtd_chardev "$part")
-	reversed=$(hexdump -v -s $offset -n $count -e '/1 "%02x "' $mtd)
-
-	for byte in $reversed; do
-		caldata="\x${byte}${caldata}"
-	done
-
-	printf "%b" "$caldata" > /lib/firmware/$FIRMWARE
-}
-
-ath9k_eeprom_extract() {
-	local part=$1
-	local offset=$2
-	local swap=$3
-	local mtd
 
 	mtd=$(find_mtd_chardev $part)
-	[ -n "$mtd" ] || \
-		ath9k_eeprom_die "no mtd device found for partition $part"
+	[ -n "$mtd" ] || caldata_die "no mtd device found for partition $part"
 
-	ath9k_eeprom_extract_raw $mtd $offset $swap
-}
+	offset=$(($offset / 2))
+	count=$(($count / 2))
 
-ath9k_ubi_eeprom_extract() {
-	local part=$1
-	local offset=$2
-	local swap=$3
-	local ubidev=$(nand_find_ubi $CI_UBIPART)
-	local ubi
-
-	ubi=$(nand_find_volume $ubidev $part)
-	[ -n "$ubi" ] || \
-		ath9k_eeprom_die "no UBI volume found for $part"
-
-	ath9k_eeprom_extract_raw /dev/$ubi $offset $swap
-}
-
-ath9k_patch_fw_mac_crc() {
-	local mac=$1
-	local mac_offset=$2
-	local chksum_offset=$((mac_offset - 10))
-
-	ath9k_patch_fw_mac "${mac}" "${mac_offset}" "${chksum_offset}"
-}
-
-ath9k_patch_fw_mac() {
-	local mac=$1
-	local mac_offset=$2
-	local chksum_offset=$3
-	local xor_mac
-	local xor_fw_mac
-	local xor_fw_chksum
-
-	[ -z "$mac" -o -z "$mac_offset" ] && return
-
-	[ -n "$chksum_offset" ] && {
-		xor_mac=${mac//:/}
-		xor_mac="${xor_mac:0:4} ${xor_mac:4:4} ${xor_mac:8:4}"
-
-		xor_fw_mac=$(hexdump -v -n 6 -s $mac_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
-		xor_fw_mac="${xor_fw_mac:0:4} ${xor_fw_mac:4:4} ${xor_fw_mac:8:4}"
-
-		xor_fw_chksum=$(hexdump -v -n 2 -s $chksum_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
-		xor_fw_chksum=$(xor $xor_fw_chksum $xor_fw_mac $xor_mac)
-
-		printf "%b" "\x${xor_fw_chksum:0:2}\x${xor_fw_chksum:2:2}" | \
-			dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=$chksum_offset count=2
-	}
-
-	macaddr_2bin $mac | dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=$mac_offset count=6
+	dd if=$mtd of=/lib/firmware/$FIRMWARE bs=2 skip=$offset count=$count conv=swab 2>/dev/null || \
+		caldata_die "failed to extract calibration data from $mtd"
 }
 
 case "$FIRMWARE" in
@@ -135,43 +28,43 @@ case "$FIRMWARE" in
 
 		case "$board" in
 			arcadyan,arv7518pw)
-				ath9k_eeprom_extract "boardconfig" 1024 1
+				caldata_extract_swap "boardconfig" 0x400 0x1000
 				;;
 			arcadyan,arv8539pw22)
-				ath9k_eeprom_extract "art" 1024 1
+				caldata_extract_swap "art" 0x400 0x1000
 				;;
 			bt,homehub-v2b)
-				ath9k_eeprom_extract "art" 0 1
-				ath9k_patch_fw_mac_crc "00:00:00:00:00:00" 524
+				caldata_extract_swap "art" 0x0 0x1000
+				ath9k_patch_mac_crc "00:00:00:00:00:00" 0x20c
 				;;
 			bt,homehub-v3a)
-				ath9k_eeprom_extract "art-copy" 0 1
-				ath9k_patch_fw_mac_crc $(macaddr_add $(mtd_get_mac_ascii uboot_env ethaddr) +2) 268
+				caldata_extract_swap "art-copy" 0x0 0x1000
+				ath9k_patch_mac_crc $(macaddr_add $(mtd_get_mac_ascii uboot_env ethaddr) +2) 0x10c
 				;;
 			bt,homehub-v5a)
-				ath9k_ubi_eeprom_extract "caldata" 4096 0
-				ath9k_patch_fw_mac_crc $(macaddr_add $(mtd_get_mac_binary_ubi caldata 4364) +2) 268
+				caldata_extract_ubi "caldata" 0x1000 0x1000
+				ath9k_patch_mac_crc $(macaddr_add $(mtd_get_mac_binary_ubi caldata 0x110c) +2) 0x10c
 				;;
 			netgear,dgn3500|netgear,dgn3500b)
-				ath9k_eeprom_extract "calibration" 61440 0
-				ath9k_patch_fw_mac_crc $(macaddr_add $(mtd_get_mac_ascii uboot-env ethaddr) +2) 524
+				caldata_extract "calibration" 0xf000 0x1000
+				ath9k_patch_mac_crc $(macaddr_add $(mtd_get_mac_ascii uboot-env ethaddr) +2) 0x20c
 				;;
 			avm,fritz3370-rev2-hynix|\
 			avm,fritz3370-rev2-micron|\
 			avm,fritz7362sl)
-				ath9k_eeprom_extract_reverse "urlader" 5441 1088
+				caldata_extract_reverse "urlader" 0x1541 0x440
 				;;
 			avm,fritz7312|avm,fritz7320|avm,fritz7360sl)
-				ath9k_eeprom_extract "urlader" 2437 0
+				caldata_extract "urlader" 0x985 0x1000
 				;;
 			avm,fritz7412)
 				/usr/bin/fritz_cal_extract -i 1 -s 0x1e000 -e 0x207 -l 4096 -o /lib/firmware/$FIRMWARE $(find_mtd_chardev "urlader")
 				;;
 			tplink,tdw8970|tplink,tdw8980)
-				ath9k_eeprom_extract "boardconfig" 135168 0
+				caldata_extract "boardconfig" 0x21000 0x1000
 				;;
 			*)
-				ath9k_eeprom_die "board $board is not supported yet"
+				caldata_die "board $board is not supported yet"
 				;;
 		esac
 		;;
