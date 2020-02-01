@@ -331,6 +331,18 @@ define Device/hugo_ac1200
 endef
 TARGET_DEVICES += hugo_ac1200
 
+define Device/canbox_cm520-79f
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_TITLE :=  CanBox CM520-79F
+	BOARD_NAME := cm520-79f
+	DEVICE_DTS := qcom-ipq4019-canbox-cm520-79f
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_PACKAGES := ipq-wifi-canbox_cm520-79f
+endef
+TARGET_DEVICES += canbox_cm520-79f
+
 define Device/zyxel_nbg6617
 	$(call Device/FitImageLzma)
 	DEVICE_DTS := qcom-ipq4018-nbg6617
