@@ -8,11 +8,11 @@
 
 include $(TOPDIR)/rules.mk
 
-LZMA_TEXT_START	:= 0x80a00000
+LZMA_TEXT_START	:= 0x81800000
 LOADADDR	:= 0x80060000
 LOADER		:= loader.bin
 LOADER_NAME	:= $(basename $(notdir $(LOADER)))
-LOADER_DATA 	:=
+LOADER_DATA	:=
 TARGET_DIR	:=
 FLASH_OFFS	:=
 FLASH_MAX	:=
