@@ -61,3 +61,4 @@ ifdef CONFIG_PKG_RELRO_FULL
     TARGET_LDFLAGS += -znow -zrelro
   endif
 endif
+
