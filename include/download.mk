@@ -288,7 +288,6 @@ endef
 define Download/default
   FILE:=$(PKG_SOURCE)
   URL:=$(PKG_SOURCE_URL)
-  URL_FILE:=$(PKG_SOURCE_URL_FILE)
   SUBDIR:=$(PKG_SOURCE_SUBDIR)
   PROTO:=$(PKG_SOURCE_PROTO)
   $(if $(PKG_SOURCE_MIRROR),MIRROR:=$(filter 1,$(PKG_MIRROR)))
