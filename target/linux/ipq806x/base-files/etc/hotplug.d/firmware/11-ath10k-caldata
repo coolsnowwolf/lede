@@ -1,8 +1,78 @@
 #!/bin/sh
 
+# xor multiple hex values of the same length
+xor() {
+	local val
+	local ret="0x$1"
+	local retlen=${#1}
+
+	shift
+	while [ -n "$1" ]; do
+		val="0x$1"
+		ret=$((ret ^ val))
+		shift
+	done
+
+	printf "%0${retlen}x" "$ret"
+}
+
+ath10kcal_die() {
+	echo "ath10cal: " "$*"
+	exit 1
+}
+
+ath10kcal_from_file() {
+	local source=$1
+	local offset=$2
+	local count=$3
+
+	dd if=$source of=/lib/firmware/$FIRMWARE bs=1 skip=$offset count=$count 2>/dev/null || \
+		ath10kcal_die "failed to extract calibration data from $source"
+}
+
+ath10kcal_extract() {
+	local part=$1
+	local offset=$2
+	local count=$3
+	local mtd
+
+	mtd=$(find_mtd_chardev $part)
+	[ -n "$mtd" ] || \
+		ath10kcal_die "no mtd device found for partition $part"
+
+	dd if=$mtd of=/lib/firmware/$FIRMWARE bs=1 skip=$offset count=$count 2>/dev/null || \
+		ath10kcal_die "failed to extract calibration data from $mtd"
+}
+
+ath10kcal_patch_mac_crc() {
+	local mac=$1
+	local mac_offset=6
+	local chksum_offset=2
+	local xor_mac
+	local xor_fw_mac
+	local xor_fw_chksum
+
+	[ -z "$mac" ] && return
+
+	xor_fw_mac=$(hexdump -v -n 6 -s $mac_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
+	xor_fw_mac="${xor_fw_mac:0:4} ${xor_fw_mac:4:4} ${xor_fw_mac:8:4}"
+
+	macaddr_2bin $mac | dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=6 count=6
+
+	xor_mac=${mac//:/}
+	xor_mac="${xor_mac:0:4} ${xor_mac:4:4} ${xor_mac:8:4}"
+
+	xor_fw_chksum=$(hexdump -v -n 2 -s $chksum_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
+	xor_fw_chksum=$(xor $xor_fw_chksum $xor_fw_mac $xor_mac)
+
+	printf "%b" "\x${xor_fw_chksum:0:2}\x${xor_fw_chksum:2:2}" | \
+		dd of=/lib/firmware/$FIRMWARE conv=notrunc bs=1 seek=$chksum_offset count=2
+}
+
 [ -e /lib/firmware/$FIRMWARE ] && exit 0
 
-. /lib/functions/caldata.sh
+. /lib/functions.sh
+. /lib/functions/system.sh
 
 board=$(board_name)
 
@@ -10,68 +80,68 @@ case "$FIRMWARE" in
 "ath10k/pre-cal-pci-0000:01:00.0.bin")
 	case $board in
 	buffalo,wxr-2533dhp)
-		caldata_extract "ART" 0x1000 0x2f20
-		ath10k_patch_mac $(mtd_get_mac_binary ART 0x1e)
+		ath10kcal_extract "ART" 4096 12064
+		ath10kcal_patch_mac_crc $(mtd_get_mac_binary ART 30)
 		;;
 	linksys,ea8500)
-		caldata_extract "art" 0x1000 0x2f20
-		ath10k_patch_mac $(macaddr_add $(mtd_get_mac_ascii devinfo hw_mac_addr) +1)
+		ath10kcal_extract "art" 4096 12064
+		ath10kcal_patch_mac_crc $(macaddr_add $(mtd_get_mac_ascii devinfo hw_mac_addr) +1)
 		;;
 	nec,wg2600hp)
-		caldata_extract "ART" 0x1000 0x2f20
-		ath10k_patch_mac $(macaddr_add $(mtd_get_mac_binary PRODUCTDATA 0xc) +1)
+		ath10kcal_extract "ART" 4096 12064
+		ath10kcal_patch_mac_crc $(macaddr_add $(mtd_get_mac_binary PRODUCTDATA 12) +1)
 		;;
 	netgear,d7800 |\
 	netgear,r7500v2 |\
 	netgear,r7800)
-		caldata_extract "art" 0x1000 0x2f20
-		ath10k_patch_mac $(macaddr_add $(mtd_get_mac_binary art 0x6) +1)
+		ath10kcal_extract "art" 4096 12064
+		ath10kcal_patch_mac_crc $(macaddr_add $(mtd_get_mac_binary art 6) +1)
 		;;
 	tplink,c2600)
-		caldata_extract "radio" 0x1000 0x2f20
-		ath10k_patch_mac $(macaddr_add $(mtd_get_mac_binary default-mac 0x8) -1)
+		ath10kcal_extract "radio" 4096 12064
+		ath10kcal_patch_mac_crc $(macaddr_add $(mtd_get_mac_binary default-mac 8) -1)
 		;;
 	tplink,vr2600v)
-		caldata_extract "ART" 0x1000 0x2f20
-		ath10k_patch_mac $(macaddr_add $(mtd_get_mac_binary default-mac 0x0) -1)
+		ath10kcal_extract "ART" 4096 12064
+		ath10kcal_patch_mac_crc $(macaddr_add $(mtd_get_mac_binary default-mac 0) -1)
 		;;
 	zyxel,nbg6817)
-		caldata_extract "0:ART" 0x1000 0x2f20
-		ath10k_patch_mac $(macaddr_add $(mtd_get_mac_ascii 0:APPSBLENV ethaddr) +1)
+		ath10kcal_extract "0:ART" 4096 12064
+		ath10kcal_patch_mac_crc $(macaddr_add $(mtd_get_mac_ascii 0:APPSBLENV ethaddr) +1)
 		;;
 	esac
 	;;
 "ath10k/pre-cal-pci-0001:01:00.0.bin")
 	case $board in
 	buffalo,wxr-2533dhp)
-		caldata_extract "ART" 0x5000 0x2f20
-		ath10k_patch_mac $(mtd_get_mac_binary ART 0x18)
+		ath10kcal_extract "ART" 20480 12064
+		ath10kcal_patch_mac_crc $(mtd_get_mac_binary ART 24)
 		;;
 	linksys,ea8500)
-		caldata_extract "art" 0x5000 0x2f20
-		ath10k_patch_mac $(macaddr_add $(mtd_get_mac_ascii devinfo hw_mac_addr) +2)
+		ath10kcal_extract "art" 20480 12064
+		ath10kcal_patch_mac_crc $(macaddr_add $(mtd_get_mac_ascii devinfo hw_mac_addr) +2)
 		;;
 	nec,wg2600hp)
-		caldata_extract "ART" 0x5000 0x2f20
-		ath10k_patch_mac $(mtd_get_mac_binary PRODUCTDATA 0xc)
+		ath10kcal_extract "ART" 20480 12064
+		ath10kcal_patch_mac_crc $(mtd_get_mac_binary PRODUCTDATA 12)
 		;;
 	netgear,d7800 |\
 	netgear,r7500v2 |\
 	netgear,r7800)
-		caldata_extract "art" 0x5000 0x2f20
-		ath10k_patch_mac $(macaddr_add $(mtd_get_mac_binary art 0x6) +2)
+		ath10kcal_extract "art" 20480 12064
+		ath10kcal_patch_mac_crc $(macaddr_add $(mtd_get_mac_binary art 6) +2)
 		;;
 	tplink,c2600)
-		caldata_extract "radio" 0x5000 0x2f20
-		ath10k_patch_mac $(mtd_get_mac_binary default-mac 0x8)
+		ath10kcal_extract "radio" 20480 12064
+		ath10kcal_patch_mac_crc $(mtd_get_mac_binary default-mac 8)
 		;;
 	tplink,vr2600v)
-		caldata_extract "ART" 0x5000 0x2f20
-		ath10k_patch_mac $(mtd_get_mac_binary default-mac 0x0)
+		ath10kcal_extract "ART" 20480 12064
+		ath10kcal_patch_mac_crc $(mtd_get_mac_binary default-mac 0)
 		;;
 	zyxel,nbg6817)
-		caldata_extract "0:ART" 0x5000 0x2f20
-		ath10k_patch_mac $(mtd_get_mac_ascii 0:APPSBLENV ethaddr)
+		ath10kcal_extract "0:ART" 20480 12064
+		ath10kcal_patch_mac_crc $(mtd_get_mac_ascii 0:APPSBLENV ethaddr)
 		;;
 	esac
 	;;
