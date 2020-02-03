@@ -3,7 +3,7 @@ PKG_NAME ?= u-boot
 ifndef PKG_SOURCE_PROTO
 PKG_SOURCE = $(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL = \
-	https://sources.openwrt.org \
+	http://sources.lede-project.org \
 	ftp://ftp.denx.de/pub/u-boot
 endif
 
