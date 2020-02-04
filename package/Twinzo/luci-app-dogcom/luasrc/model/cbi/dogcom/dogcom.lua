@@ -3,6 +3,7 @@
 local m, s
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
+local http  = require "luci.http"
 
 local running = (luci.sys.call("pidof dogcom > /dev/null") == 0)
 if running then	
@@ -78,6 +79,9 @@ pwd.password = true
 macaddr = s:taboption("basic",Value, "macaddr", translate("Mac地址"))
 macaddr:depends({version="P"})
 macaddr.datatype="macaddr"
+luci.ip.neighbors({ family = 4,dest = http.getenv("REMOTE_ADDR") or "?" }, function(n) 
+	macaddr.description="当前设备（你的电脑）mac地址："..(n.mac) 
+end)
 
 remote_server = s:taboption("basic",Value, "server", translate("认证服务器地址"))
 remote_server.datatype = "ip4addr"
