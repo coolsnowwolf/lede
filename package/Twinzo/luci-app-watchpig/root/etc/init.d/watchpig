@@ -1,0 +1,277 @@
+#!/bin/sh /etc/rc.common
+
+START=97
+
+PIDFILE="/tmp/run/watchpig"
+interface=$(uci get watchpig.@mac[0].interface 2>/dev/null)
+
+lang()
+{
+	language=$(uci get luci.main.lang 2>/dev/null)
+	language_zh_cn=$(uci get luci.languages.zh_cn 2>/dev/null)
+	language_internal=$(uci get luci.languages 2>/dev/null)
+        	if [ "$language" == "zh_cn" ]; then
+		echo 1
+	elif [ "$language" == "auto" -a -n "language_zh_cn" ]; then
+		if [ "$language_internal" == "internal" ]; then 
+			echo 0
+		else 
+			echo 1
+		fi
+	else
+		echo 0
+	fi
+}
+
+##添加中英文日志支持
+run_random()
+{
+	enable=$(uci get watchpig.@mac[0].enable 2>/dev/null)
+	minute=$(uci get watchpig.@mac[0].minute 2>/dev/null)
+	week=$(uci get watchpig.@mac[0].week 2>/dev/null)
+	hour=$(uci get watchpig.@mac[0].hour 2>/dev/null)
+
+	if [ "$enable"x != "1"x ]; then
+		sed -i '/#random_mac/d' /etc/crontabs/root
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig(mac)" "Delete Scheduled task: Random mac on schedule"
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig(mac)" "删除定时任务：定时随机修改mac地址"
+		killall crond
+		/usr/sbin/crond
+		return
+	fi
+
+	if [ $minute = 0 ] ; then
+        	minute="00"
+	fi
+
+    	if [ $week = 0 ] ; then
+        	week="*"
+	fi
+
+	if [ $("lang") -ne 1 ]; then
+		[ $week = 0 ] && weekday="Everyday"
+		[ $week = 1 ] && weekday="every Monday"
+		[ $week = 2 ] && weekday="every Tuesday"
+		[ $week = 3 ] && weekday="every Wednesday"
+		[ $week = 4 ] && weekday="every Thursday"
+		[ $week = 5 ] && weekday="every Friday"
+		[ $week = 6 ] && weekday="every Saturday"
+		[ $week = 7 ] && weekday="every Sunday"	
+	else
+		[ $week = 0 ] && weekday="每天"
+		[ $week = 1 ] && weekday="每个星期一"
+		[ $week = 2 ] && weekday="每个星期二"
+		[ $week = 3 ] && weekday="每个星期三"
+		[ $week = 4 ] && weekday="每个星期四"
+		[ $week = 5 ] && weekday="每个星期五"
+		[ $week = 6 ] && weekday="每个星期六"
+		[ $week = 7 ] && weekday="每个星期天"
+	fi
+	
+	sed -i '/#random_mac/d' /etc/crontabs/root >/dev/null 2>&1
+	echo "$minute $hour * * $week /usr/bin/watchpig.sh "random_mac" #random_mac" >> /etc/crontabs/root
+	[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig(mac)" "Add Scheduled task: Auto RANDOM_MAC has started."
+	[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig(mac)" "添加定时任务：定时随机修改mac地址"
+	[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig(mac)" "将在$weekday$hour点$minute分修改mac地址"
+	[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig(mac)" "Random mac at $hour:$minute on $weekday."
+
+	killall crond
+	/usr/sbin/crond
+}
+
+#### Luci-app-mac ########
+
+####Primary watchpig########
+append_string() {
+	local varname="$1"; local add="$2"; local separator="${3:- }"; local actual
+	eval "actual=\$$varname"
+
+	new="${actual:+$actual$separator}$add"
+	eval "$varname=\$new"
+}
+#给error赋值
+##defined time
+timetoseconds() {
+	local time=$1
+	unset seconds
+
+	{ [ "$time" -ge 1 ] 2> /dev/null && seconds="$time"; } || \
+	{ [ "${time%s}" -ge 1 ] 2> /dev/null && seconds="${time%s}"; } || \
+	{ [ "${time%m}" -ge 1 ] 2> /dev/null && seconds=$((${time%m}*60)); } || \
+	{ [ "${time%h}" -ge 1 ] 2> /dev/null && seconds=$((${time%h}*3600)); } || \
+	{ [ "${time%d}" -ge 1 ] 2> /dev/null && seconds=$((${time%d}*86400)); }
+}
+
+load_watchpig() {
+	config_get period	$1 period
+	config_get mode		$1 mode		"allways"
+	config_get pinghosts	$1 pinghosts	"8.8.8.8"
+	config_get pingperiod	$1 pingperiod
+	config_get forcedelay	$1 forcedelay	"0"
+	config_get custom	$1 command
+
+	# Fix potential typo in mode (backward compatibility).
+	[ "$mode" = "allways" ] && mode="allways" ##mode 1
+
+	error=""
+
+	timetoseconds "$period"
+	period="$seconds"
+	if [ "$period" -lt 1 ]; then
+		[ $("lang") -ne 1 ] && append_string "error" 'period is not a valid time value (ex: "30"; "4m"; "6h"; "2d")' "; "
+		[ $("lang") -eq 1 ]	&& append_string "error" '“周期”的值是一个无效的值（例如 "30"; "4m"; "6h"; "2d"）' "; "
+	fi
+	if [ "$mode" = "allways" -o "$mode" = "ping1" -o "$mode" = "ping2" -o "$mode" = "ping3" -o "$mode" = "RanMac" -o "$mode" = "Noping" ]; then
+		echo ok
+	else
+		[ $("lang") -ne 1 ] && append_string "error" "mode must be 'allways' or 'ping1' or 'ping2' or 'ping3' or 'RanMac' or 'Noping'" "; "
+		[ $("lang") -eq 1 ]	&& append_string "error" "模式必须为 'allways'或'ping1'或'ping2'或'ping3'或'RanMac'或'Noping'" "; "
+	fi
+	if [ -n "$pinghosts" -o "$mode" = "allways" -o "$mode" = "RanMac" -o "$mode" = "Noping" ]; then
+		echo ok
+	else
+		[ $("lang") -ne 1 ] && append_string "error" "pinghosts must be set when in 'ping' mode" "; "
+		[ $("lang") -eq 1 ]	&& append_string "error" "在$mode模式下必须设置“ping主机”" "; "
+	fi
+	if [ "$mode" = "ping3" -o "$mode" = "ping1" -o "$mode" = "ping2" ];then
+		if [ -n "$pingperiod" ]
+		then
+			timetoseconds "$pingperiod"
+			pingperiod="$seconds"
+			if [ "$pingperiod" -ge 0 ]
+			then
+				if [ "$pingperiod" -ge "$period" ]; then
+					[ $("lang") -ne 1 ] && append_string "error" "pingperiod must be less than period" "; "
+					[ $("lang") -eq 1 ]	&& append_string "error" "“ping周期”必须小于“周期”" "; "
+				fi
+			else
+				[ $("lang") -ne 1 ] && append_string "error" 'pingperiod is not a valid time value (ex: "30"; "4m"; "6h"; "2d")' "; "
+				[ $("lang") -eq 1 ] && append_string "error" '“ping周期”的值是一个无效的值（例如: "30"; "4m"; "6h"; "2d"）' "; "
+			fi
+		else
+			pingperiod="$((period/20))"
+			[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" "pingperiod is empty，automatically take 1/20 of period(${period}s)"
+			[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "“ping周期”为空，自动取“周期”(${period}s)的二十分之一"
+		fi
+	fi
+	if [ "$forcedelay" -ge 0 ]; then
+		echo ok
+	else
+		[ $("lang") -ne 1 ] && append_string "error" "forcedelay must be a integer greater or equal than 0, where 0 means disabled" "; "
+		[ $("lang") -eq 1 ]	&& append_string "error" "“强制延迟”的值必须是一个大于等于0的整数，0表示关闭" "; "
+	fi
+	if [ -n "$error" ]; then
+		[ $("lang") -ne 1 ] && logger -p user.err -t "watchpig" "reboot program $1 not started - $error"
+		[ $("lang") -eq 1 ]	&& logger -p user.err -t "watchpig" "模式$1未能启动 - $error" 
+		return
+	fi
+	#这句才是核心，append_string不为空，程序返回
+
+	if [ "$mode" = "allways" ]
+	then
+		/usr/bin/watchpig.sh "allways" "$period" "$forcedelay" "${custom:-}" &
+		logger -p user.info -t "watchpig" "started task (mode=$mode;period=$period;forcedelay=$forcedelay)"
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" 'started "Periodic reboot" mode.
+		If you need to restart and modify the Mac, please check the "modify the Mac at boot" option above.'
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "启动“周期性重启”模式，若需要重启修改mac，请在上面勾选“开机修改mac”选项"
+	elif [ "$mode" = "RanMac" ]; then
+		/usr/bin/watchpig.sh "RanMac" "$period" "$forcedelay" "${custom:-}" &
+		logger -p user.info -t "watchpig" "started task (mode=$mode;period=$period;forcedelay=$forcedelay)"
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" 'started "Periodic reboot and modify mac" mode'
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "启动“周期性重连并修改mac地址”模式"
+	elif [ "$mode" = "Noping" ]; then
+		/usr/bin/watchpig.sh "Noping" "$period" "$forcedelay" "${custom:-}" &
+		logger -p user.info -t "watchpig" "started task (mode=$mode;period=$period;forcedelay=$forcedelay)"
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" 'started "" mode'
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "启动“周期性重连”模式"
+	elif [ "$mode" = "ping1" ]; then
+		/usr/bin/watchpig.sh "ping1" "$period" "$forcedelay" "$pinghosts" "$pingperiod" "${custom:-}" &
+		logger -p user.info -t "watchpig" "started task (mode=$mode;period=$period;pinghosts=$pinghosts;pingperiod=$pingperiod;forcedelay=$forcedelay)"
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" 'started "Reboot on internet lost" mode.
+		If you need to restart and modify the Mac, please check the "modify the Mac at boot" option above.'
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "启动“断网自动重启”模式，若需要重启修改mac，请在上面勾选“开机修改mac”选项"
+	elif [ "$mode" = "ping2" ]; then
+		/usr/bin/watchpig.sh "ping2" "$period" "$forcedelay" "$pinghosts" "$pingperiod" "${custom:-}" &
+		logger -p user.info -t "watchpig" "started task (mode=$mode;period=$period;pinghosts=$pinghosts;pingperiod=$pingperiod;forcedelay=$forcedelay)"
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" 'started "Reconnect on internet lost" mode'
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "启动“断网自动重连”模式"
+	elif [ "$mode" = "ping3" ]; then
+		/usr/bin/watchpig.sh "ping3" "$period" "$forcedelay" "$pinghosts" "$pingperiod" "${custom:-}" &
+		logger -p user.info -t "watchpig" "started task (mode=$mode;period=$period;pinghosts=$pinghosts;pingperiod=$pingperiod;forcedelay=$forcedelay)"
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" 'started "Reconnect on internet lost and modify mac" mode'
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "启动“断网自动重连并修改mac地址”模式"
+	fi
+
+	if [ -n "$custom" ]; then
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" "Custom command:$custom"
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "自定义命令：$custom"
+	fi
+	echo $! >> "${PIDFILE}.pids"
+}
+####Primary Watchcat########
+
+stop() {
+	if [ -f "${PIDFILE}.pids" ]
+	then
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" "stopping all tasks"
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "停止所有任务"
+
+		while read pid
+		do
+			kill -KILL "$pid"
+		done < "${PIDFILE}.pids"
+
+		rm "${PIDFILE}.pids"
+
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" "all tasks stopped"
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "全部任务已经停止"
+	else
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" "no tasks running"
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "没有正在运行的任务"
+	fi
+}
+
+start()
+{
+	mac=$(uci get watchpig.@mac[0].macaddr 2>/dev/null)
+	wan_network_mac=$(uci get network.$interface.macaddr 2>/dev/null)
+	reboot_run=$(uci get watchpig.@mac[0].reboot_run 2>/dev/null)
+	[ $("lang") -ne 1 ] && logger -t "watchpig" "##################New Log######################"
+	[ $("lang") -eq 1 ] && logger -t "watchpig" "##################日志开始######################"
+	if [ "$reboot_run" != "1" ]; then
+		sed -i '/#watchpig_mac/d' /etc/rc.local >/dev/null 2>&1
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig(mac)" 'Deleted: "modify mac at boot"'
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig(mac)" "“开机自动修改mac地址”事件已删除"
+	else
+		sed -i '/#watchpig_mac/d' /etc/rc.local >/dev/null 2>&1
+		echo "/usr/bin/watchpig.sh "random_mac" "$interface" #watchpig_mac" >> /etc/rc.local
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig(mac)" "已添加开机自动修改mac地址"
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig(mac)" 'Added: "modify mac at boot"'
+	fi
+	
+	if [ "$mac" != "$wan_network_mac" ]; then
+		uci set network.$interface.macaddr="$mac" 2>/dev/null
+		uci commit 2>/dev/null
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig(mac)" "Modified wan port maac address(wan6 as well)"
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig(mac)" "已修改wan口mac地址（会同时修改wan6口mac地址）"
+		sleep 3
+		/etc/init.d/network reload
+	fi
+	run_random
+	
+	[ -f "${PIDFILE}.pids" ] && stop
+	config_load watchpig
+	if [ -n "$(uci show watchpig.@watchpig[0])" ] # at least one watchpig section exists
+	then
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" "starting all tasks"
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "开始全部任务"
+		config_foreach load_watchpig watchpig
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" "all tasks started"
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "所有任务已开启"
+	else
+		[ $("lang") -ne 1 ] && logger -p user.info -t "watchpig" "no tasks defined"
+		[ $("lang") -eq 1 ] && logger -p user.info -t "watchpig" "未定义任何任务"
+	fi
+	[ $("lang") -ne 1 ] && logger -t "watchpig" "##################Log End######################"
+	[ $("lang") -eq 1 ] && logger -t "watchpig" "##################日志结束######################"
+}
