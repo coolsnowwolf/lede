@@ -1,0 +1,360 @@
+From 659aa30c59fb188b533a7edcb9bd38ac007a2739 Mon Sep 17 00:00:00 2001
+From: Yangbo Lu <yangbo.lu@nxp.com>
+Date: Wed, 17 Jan 2018 15:35:11 +0800
+Subject: [PATCH 21/30] i2c: support layerscape
+
+This is an integrated patch for layerscape i2c support.
+
+Signed-off-by: Zhang Ying-22455 <ying.zhang22455@nxp.com>
+Signed-off-by: Priyanka Jain <Priyanka.Jain@freescale.com>
+Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
+---
+ drivers/i2c/busses/i2c-imx.c        | 195 +++++++++++++++++++++++++++++++++++-
+ drivers/i2c/muxes/i2c-mux-pca954x.c |  43 ++++++++
+ 2 files changed, 237 insertions(+), 1 deletion(-)
+
+--- a/drivers/i2c/busses/i2c-imx.c
++++ b/drivers/i2c/busses/i2c-imx.c
+@@ -53,6 +53,11 @@
+ #include <linux/pm_runtime.h>
+ #include <linux/sched.h>
+ #include <linux/slab.h>
++#include <linux/gpio.h>
++#include <linux/of_address.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/libata.h>
+ 
+ /* This will be the driver name the kernel reports */
+ #define DRIVER_NAME "imx-i2c"
+@@ -117,6 +122,54 @@
+ 
+ #define I2C_PM_TIMEOUT		10 /* ms */
+ 
++enum pinmux_endian_type {
++	BIG_ENDIAN,
++	LITTLE_ENDIAN,
++};
++
++struct pinmux_cfg {
++	enum pinmux_endian_type endian; /* endian of RCWPMUXCR0 */
++	u32 pmuxcr_offset;
++	u32 pmuxcr_set_bit;		    /* pin mux of RCWPMUXCR0 */
++};
++
++static struct pinmux_cfg ls1012a_pinmux_cfg = {
++	.endian = BIG_ENDIAN,
++	.pmuxcr_offset = 0x430,
++	.pmuxcr_set_bit = 0x10,
++};
++
++static struct pinmux_cfg ls1043a_pinmux_cfg = {
++	.endian = BIG_ENDIAN,
++	.pmuxcr_offset = 0x40C,
++	.pmuxcr_set_bit = 0x10,
++};
++
++static struct pinmux_cfg ls1046a_pinmux_cfg = {
++	.endian = BIG_ENDIAN,
++	.pmuxcr_offset = 0x40C,
++	.pmuxcr_set_bit = 0x80000000,
++};
++
++static const struct of_device_id pinmux_of_match[] = {
++	{ .compatible = "fsl,ls1012a-vf610-i2c", .data = &ls1012a_pinmux_cfg},
++	{ .compatible = "fsl,ls1043a-vf610-i2c", .data = &ls1043a_pinmux_cfg},
++	{ .compatible = "fsl,ls1046a-vf610-i2c", .data = &ls1046a_pinmux_cfg},
++	{},
++};
++MODULE_DEVICE_TABLE(of, pinmux_of_match);
++
++/* The SCFG, Supplemental Configuration Unit, provides SoC specific
++ * configuration and status registers for the device. There is a
++ * SDHC IO VSEL control register on SCFG for some platforms. It's
++ * used to support SDHC IO voltage switching.
++ */
++static const struct of_device_id scfg_device_ids[] = {
++	{ .compatible = "fsl,ls1012a-scfg", },
++	{ .compatible = "fsl,ls1043a-scfg", },
++	{ .compatible = "fsl,ls1046a-scfg", },
++	{}
++};
+ /*
+  * sorted list of clock divider, register value pairs
+  * taken from table 26-5, p.26-9, Freescale i.MX
+@@ -210,6 +263,12 @@ struct imx_i2c_struct {
+ 	struct pinctrl_state *pinctrl_pins_gpio;
+ 
+ 	struct imx_i2c_dma	*dma;
++	int			layerscape_bus_recover;
++	int 			gpio;
++	int			need_set_pmuxcr;
++	int			pmuxcr_set;
++	int			pmuxcr_endian;
++	void __iomem		*pmuxcr_addr;
+ };
+ 
+ static const struct imx_i2c_hwdata imx1_i2c_hwdata = {
+@@ -878,6 +937,78 @@ static int i2c_imx_read(struct imx_i2c_s
+ 	return 0;
+ }
+ 
++/*
++ * Based on the I2C specification, if the data line (SDA) is
++ * stuck low, the master should send nine  * clock pulses.
++ * The I2C slave device that held the bus low should release it
++ * sometime within  * those nine clocks. Due to this erratum,
++ * the I2C controller cannot generate nine clock pulses.
++ */
++static int i2c_imx_recovery_for_layerscape(struct imx_i2c_struct *i2c_imx)
++{
++	u32 pmuxcr = 0;
++	int ret;
++	unsigned int i, temp;
++
++	/* configure IICx_SCL/GPIO pin as a GPIO */
++	if (i2c_imx->need_set_pmuxcr == 1) {
++		pmuxcr = ioread32be(i2c_imx->pmuxcr_addr);
++		if (i2c_imx->pmuxcr_endian == BIG_ENDIAN)
++			iowrite32be(i2c_imx->pmuxcr_set|pmuxcr,
++				    i2c_imx->pmuxcr_addr);
++		else
++			iowrite32(i2c_imx->pmuxcr_set|pmuxcr,
++				  i2c_imx->pmuxcr_addr);
++	}
++
++	ret = gpio_request(i2c_imx->gpio, i2c_imx->adapter.name);
++	if (ret) {
++		dev_err(&i2c_imx->adapter.dev,
++			"can't get gpio: %d\n", ret);
++		return ret;
++	}
++
++	/* Configure GPIO pin as an output and open drain. */
++	gpio_direction_output(i2c_imx->gpio, 1);
++	udelay(10);
++
++	/* Write data to generate 9 pulses */
++	for (i = 0; i < 9; i++) {
++		gpio_set_value(i2c_imx->gpio, 1);
++		udelay(10);
++		gpio_set_value(i2c_imx->gpio, 0);
++		udelay(10);
++	}
++	/* ensure that the last level sent is always high */
++	gpio_set_value(i2c_imx->gpio, 1);
++
++	/*
++	 * Set I2Cx_IBCR = 0h00 to generate a STOP and then
++	 * set I2Cx_IBCR = 0h80 to reset
++	 */
++	temp = imx_i2c_read_reg(i2c_imx, IMX_I2C_I2CR);
++	temp &= ~(I2CR_MSTA | I2CR_MTX);
++	imx_i2c_write_reg(temp, i2c_imx, IMX_I2C_I2CR);
++
++	/* Restore the saved value of the register SCFG_RCWPMUXCR0 */
++	if (i2c_imx->need_set_pmuxcr == 1) {
++		if (i2c_imx->pmuxcr_endian == BIG_ENDIAN)
++			iowrite32be(pmuxcr, i2c_imx->pmuxcr_addr);
++		else
++			iowrite32(pmuxcr, i2c_imx->pmuxcr_addr);
++	}
++	/*
++	 * Set I2C_IBSR[IBAL] to clear the IBAL bit if-
++	 * I2C_IBSR[IBAL] = 1
++	 */
++	temp = imx_i2c_read_reg(i2c_imx, IMX_I2C_I2SR);
++	if (temp & I2SR_IAL) {
++		temp &= ~I2SR_IAL;
++		imx_i2c_write_reg(temp, i2c_imx, IMX_I2C_I2SR);
++	}
++	return 0;
++}
++
+ static int i2c_imx_xfer(struct i2c_adapter *adapter,
+ 						struct i2c_msg *msgs, int num)
+ {
+@@ -888,6 +1019,19 @@ static int i2c_imx_xfer(struct i2c_adapt
+ 
+ 	dev_dbg(&i2c_imx->adapter.dev, "<%s>\n", __func__);
+ 
++	/*
++	 * workround for ERR010027: ensure that the I2C BUS is idle
++	 * before switching to master mode and attempting a Start cycle
++	 */
++	result =  i2c_imx_bus_busy(i2c_imx, 0);
++	if (result) {
++		/* timeout */
++		if ((result == -ETIMEDOUT) && (i2c_imx->layerscape_bus_recover == 1))
++			i2c_imx_recovery_for_layerscape(i2c_imx);
++		else
++			goto out;
++	}
++
+ 	result = pm_runtime_get_sync(i2c_imx->adapter.dev.parent);
+ 	if (result < 0)
+ 		goto out;
+@@ -1030,6 +1174,50 @@ static int i2c_imx_init_recovery_info(st
+ 	return 0;
+ }
+ 
++/*
++ * switch SCL and SDA to their GPIO function and do some bitbanging
++ * for bus recovery.
++ * There are platforms such as Layerscape that don't support pinctrl, so add
++ * workaround for layerscape, it has no effect for other platforms.
++ */
++static int i2c_imx_init_recovery_for_layerscape(
++		struct imx_i2c_struct *i2c_imx,
++		struct platform_device *pdev)
++{
++	const struct of_device_id *of_id;
++	struct device_node *np		= pdev->dev.of_node;
++	struct pinmux_cfg		*pinmux_cfg;
++	struct device_node *scfg_node;
++	void __iomem *scfg_base = NULL;
++
++	i2c_imx->gpio = of_get_named_gpio(np, "fsl-scl-gpio", 0);
++	if (!gpio_is_valid(i2c_imx->gpio)) {
++		dev_info(&pdev->dev, "fsl-scl-gpio not found\n");
++		return 0;
++	}
++	pinmux_cfg = devm_kzalloc(&pdev->dev, sizeof(*pinmux_cfg), GFP_KERNEL);
++	if (!pinmux_cfg)
++		return -ENOMEM;
++
++	i2c_imx->need_set_pmuxcr = 0;
++	of_id = of_match_node(pinmux_of_match, np);
++	if (of_id) {
++		pinmux_cfg = (struct pinmux_cfg *)of_id->data;
++		i2c_imx->pmuxcr_endian = pinmux_cfg->endian;
++		i2c_imx->pmuxcr_set = pinmux_cfg->pmuxcr_set_bit;
++		scfg_node = of_find_matching_node(NULL, scfg_device_ids);
++		if (scfg_node) {
++			scfg_base = of_iomap(scfg_node, 0);
++			if (scfg_base) {
++				i2c_imx->pmuxcr_addr = scfg_base + pinmux_cfg->pmuxcr_offset;
++				i2c_imx->need_set_pmuxcr = 1;
++			}
++		}
++	}
++	i2c_imx->layerscape_bus_recover = 1;
++	return 0;
++}
++
+ static u32 i2c_imx_func(struct i2c_adapter *adapter)
+ {
+ 	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL
+@@ -1085,6 +1273,11 @@ static int i2c_imx_probe(struct platform
+ 	i2c_imx->adapter.dev.of_node	= pdev->dev.of_node;
+ 	i2c_imx->base			= base;
+ 
++	/* Init optional bus recovery for layerscape */
++	ret = i2c_imx_init_recovery_for_layerscape(i2c_imx, pdev);
++	if (ret)
++		return ret;
++
+ 	/* Get I2C clock */
+ 	i2c_imx->clk = devm_clk_get(&pdev->dev, NULL);
+ 	if (IS_ERR(i2c_imx->clk)) {
+@@ -1100,7 +1293,7 @@ static int i2c_imx_probe(struct platform
+ 	}
+ 
+ 	/* Request IRQ */
+-	ret = devm_request_irq(&pdev->dev, irq, i2c_imx_isr, 0,
++	ret = devm_request_irq(&pdev->dev, irq, i2c_imx_isr, IRQF_SHARED,
+ 				pdev->name, i2c_imx);
+ 	if (ret) {
+ 		dev_err(&pdev->dev, "can't claim irq %d\n", irq);
+--- a/drivers/i2c/muxes/i2c-mux-pca954x.c
++++ b/drivers/i2c/muxes/i2c-mux-pca954x.c
+@@ -74,6 +74,7 @@ struct pca954x {
+ 	u8 last_chan;		/* last register value */
+ 	u8 deselect;
+ 	struct i2c_client *client;
++	u8 disable_mux;		/* do not disable mux if val not 0 */
+ };
+ 
+ /* Provide specs for the PCA954x types we know about */
+@@ -196,6 +197,13 @@ static int pca954x_deselect_mux(struct i
+ 	if (!(data->deselect & (1 << chan)))
+ 		return 0;
+ 
++#ifdef CONFIG_ARCH_LAYERSCAPE
++	if (data->disable_mux != 0)
++		data->last_chan = data->chip->nchans;
++	else
++		data->last_chan = 0;
++	return pca954x_reg_write(muxc->parent, client, data->disable_mux);
++#endif
+ 	/* Deselect active channel */
+ 	data->last_chan = 0;
+ 	return pca954x_reg_write(muxc->parent, client, data->last_chan);
+@@ -228,6 +236,28 @@ static int pca954x_probe(struct i2c_clie
+ 		return -ENOMEM;
+ 	data = i2c_mux_priv(muxc);
+ 
++#ifdef CONFIG_ARCH_LAYERSCAPE
++	/* The point here is that you must not disable a mux if there
++	 * are no pullups on the input or you mess up the I2C. This
++	 * needs to be put into the DTS really as the kernel cannot
++	 * know this otherwise.
++	 */
++	match = of_match_device(of_match_ptr(pca954x_of_match), &client->dev);
++	if (match)
++		data->chip = of_device_get_match_data(&client->dev);
++	else
++		data->chip = &chips[id->driver_data];
++
++	data->disable_mux = of_node &&
++		of_property_read_bool(of_node, "i2c-mux-never-disable") &&
++		data->chip->muxtype == pca954x_ismux ?
++		data->chip->enable : 0;
++	/* force the first selection */
++	if (data->disable_mux != 0)
++		data->last_chan = data->chip->nchans;
++	else
++		data->last_chan = 0;
++#endif
+ 	i2c_set_clientdata(client, muxc);
+ 	data->client = client;
+ 
+@@ -240,11 +270,16 @@ static int pca954x_probe(struct i2c_clie
+ 	 * that the mux is in fact present. This also
+ 	 * initializes the mux to disconnected state.
+ 	 */
++#ifdef CONFIG_ARCH_LAYERSCAPE
++	if (i2c_smbus_write_byte(client, data->disable_mux) < 0) {
++#else
+ 	if (i2c_smbus_write_byte(client, 0) < 0) {
++#endif
+ 		dev_warn(&client->dev, "probe failed\n");
+ 		return -ENODEV;
+ 	}
+ 
++#ifndef CONFIG_ARCH_LAYERSCAPE
+ 	match = of_match_device(of_match_ptr(pca954x_of_match), &client->dev);
+ 	if (match)
+ 		data->chip = of_device_get_match_data(&client->dev);
+@@ -252,6 +287,7 @@ static int pca954x_probe(struct i2c_clie
+ 		data->chip = &chips[id->driver_data];
+ 
+ 	data->last_chan = 0;		   /* force the first selection */
++#endif
+ 
+ 	idle_disconnect_dt = of_node &&
+ 		of_property_read_bool(of_node, "i2c-mux-idle-disconnect");
+@@ -312,6 +348,13 @@ static int pca954x_resume(struct device
+ 	struct i2c_mux_core *muxc = i2c_get_clientdata(client);
+ 	struct pca954x *data = i2c_mux_priv(muxc);
+ 
++#ifdef CONFIG_ARCH_LAYERSCAPE
++	if (data->disable_mux != 0)
++		data->last_chan = data->chip->nchans;
++	else
++		data->last_chan = 0;
++	return i2c_smbus_write_byte(client, data->disable_mux);
++#endif
+ 	data->last_chan = 0;
+ 	return i2c_smbus_write_byte(client, 0);
+ }
