@@ -31,16 +31,16 @@ local function split(full, sep)
 	full = full:gsub("%z", "")  -- 这里不是很清楚 有时候结尾带个\0
 	local off, result = 1, {}
 	while true do
-		local nEnd = full:find(sep, off)
-		if not nEnd then
+		local nStart, nEnd = full:find(sep, off)
+		if not nStart then
 			local res = ssub(full, off, slen(full))
 			if #res > 0 then -- 过滤掉 \0
 				tinsert(result, res)
 			end
 			break
 		else
-			tinsert(result, ssub(full, off, nEnd - 1))
-			off = nEnd + slen(sep)
+			tinsert(result, ssub(full, off, nStart - 1))
+			off = nEnd + 1
 		end
 	end
 	return result
@@ -107,7 +107,7 @@ local function processData(szType, content)
 	}
 	result.hashkey = type(content) == 'string' and md5(content) or md5(jsonStringify(content))
 	if szType == 'ssr' then
-		local dat = split(content, "/\\?")
+		local dat = split(content, "/%?")
 		local hostInfo = split(dat[1], ':')
 		result.server = hostInfo[1]
 		result.server_port = hostInfo[2]
@@ -191,7 +191,7 @@ local function processData(szType, content)
 		result.type = "ss"
 		result.server = host[1]
 		if host[2]:find("/\\?") then
-			local query = split(host[2], "/\\?")
+			local query = split(host[2], "/%?")
 			result.server_port = query[1]
 			-- local params = {}
 			-- for _, v in pairs(split(query[2], '&')) do
