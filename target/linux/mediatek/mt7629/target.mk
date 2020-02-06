@@ -9,7 +9,6 @@ CPU_TYPE:=cortex-a7
 FEATURES:=squashfs nand ramdisk
 
 KERNELNAME:=Image dtbs
-KERNEL_PATCHVER:=4.19
 
 define Target/Description
 	Build firmware images for MediaTek mt7629 ARM based boards.
