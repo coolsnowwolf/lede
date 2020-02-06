@@ -559,6 +559,112 @@ static void ath79_set_pll(struct ag71xx *ag)
 	udelay(100);
 }
 
+static void ag71xx_bit_set(void __iomem *reg, u32 bit)
+{
+	u32 val;
+
+	val = __raw_readl(reg) | bit;
+	__raw_writel(val, reg);
+	__raw_readl(reg);
+}
+
+static void ag71xx_bit_clear(void __iomem *reg, u32 bit)
+{
+	u32 val;
+
+	val = __raw_readl(reg) & ~bit;
+	__raw_writel(val, reg);
+	__raw_readl(reg);
+}
+
+static void ag71xx_sgmii_init_qca955x(struct device_node *np)
+{
+	struct device_node *np_dev;
+	void __iomem *gmac_base;
+	u32 mr_an_status;
+	u32 sgmii_status;
+	u8 tries = 0;
+	int err = 0;
+
+	np = of_get_child_by_name(np, "gmac-config");
+	if (!np)
+		return;
+
+	np_dev = of_parse_phandle(np, "device", 0);
+	if (!np_dev)
+		goto out;
+
+	gmac_base = of_iomap(np_dev, 0);
+	if (!gmac_base) {
+		pr_err("%pOF: can't map GMAC registers\n", np_dev);
+		err = -ENOMEM;
+		goto err_iomap;
+	}
+
+	mr_an_status = __raw_readl(gmac_base + QCA955X_GMAC_REG_MR_AN_STATUS);
+	if (!(mr_an_status & QCA955X_MR_AN_STATUS_AN_ABILITY))
+		goto sgmii_out;
+
+	/* SGMII reset sequence */
+	__raw_writel(QCA955X_SGMII_RESET_RX_CLK_N_RESET,
+		     gmac_base + QCA955X_GMAC_REG_SGMII_RESET);
+	__raw_readl(gmac_base + QCA955X_GMAC_REG_SGMII_RESET);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_HW_RX_125M_N);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_RX_125M_N);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_TX_125M_N);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_RX_CLK_N);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_TX_CLK_N);
+	udelay(10);
+
+	/*
+	 * The following is what QCA has to say about what happens here:
+	 *
+	 * Across resets SGMII link status goes to weird state.
+	 * If SGMII_DEBUG register reads other than 0x1f or 0x10,
+	 * we are for sure in a bad  state.
+	 *
+	 * Issue a PHY reset in MR_AN_CONTROL to keep going.
+	 */
+	do {
+		ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_MR_AN_CONTROL,
+			       QCA955X_MR_AN_CONTROL_PHY_RESET |
+			       QCA955X_MR_AN_CONTROL_AN_ENABLE);
+		udelay(200);
+		ag71xx_bit_clear(gmac_base + QCA955X_GMAC_REG_MR_AN_CONTROL,
+				 QCA955X_MR_AN_CONTROL_PHY_RESET);
+		mdelay(300);
+		sgmii_status = __raw_readl(gmac_base + QCA955X_GMAC_REG_SGMII_DEBUG) &
+					   QCA955X_SGMII_DEBUG_TX_STATE_MASK;
+
+		if (tries++ >= 20) {
+			pr_err("ag71xx: max retries for SGMII fixup exceeded\n");
+			break;
+		}
+	} while (!(sgmii_status == 0xf || sgmii_status == 0x10));
+
+sgmii_out:
+	iounmap(gmac_base);
+err_iomap:
+	of_node_put(np_dev);
+out:
+	of_node_put(np);
+}
+
 static void ath79_mii_ctrl_set_if(struct ag71xx *ag, unsigned int mii_if)
 {
 	u32 t;
@@ -707,6 +813,8 @@ __ag71xx_link_adjust(struct ag71xx *ag, bool update)
 			   of_device_is_compatible(np, "qca,qca9550-eth") ||
 			   of_device_is_compatible(np, "qca,qca9560-eth")) {
 			ath79_set_pllval(ag);
+			if (of_property_read_bool(np, "qca955x-sgmii-fixup"))
+				ag71xx_sgmii_init_qca955x(np);
 		}
 	}
 
