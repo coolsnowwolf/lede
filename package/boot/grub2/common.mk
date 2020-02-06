@@ -8,16 +8,14 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_NAME:=grub
 PKG_CPE_ID:=cpe:/a:gnu:grub2
 PKG_VERSION:=2.04
 PKG_RELEASE:=1
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
+PKG_SOURCE:=grub-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/grub
 PKG_HASH:=e5292496995ad42dabe843a0192cf2a2c502e7ffcc7479398232b10a472df77d
 
-PKG_FIXUP:=autoreconf
 HOST_BUILD_PARALLEL:=1
 
 PKG_SSP:=0
@@ -72,3 +70,4 @@ define Host/Configure
 	$(SED) 's,(RANLIB),(TARGET_RANLIB),' $(HOST_BUILD_DIR)/grub-core/Makefile.in
 	$(Host/Configure/Default)
 endef
+
