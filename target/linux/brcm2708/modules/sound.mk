@@ -532,6 +532,33 @@ endef
 $(eval $(call KernelPackage,sound-soc-hifiberry-dacplusdsp))
 
 
+define KernelPackage/sound-soc-hifiberry-dacplushd
+  TITLE:=Support for HifiBerry DAC+HD
+  KCONFIG:= \
+    CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUSHD \
+    CONFIG_SND_SOC_PCM179X \
+    CONFIG_SND_SOC_PCM179X_I2C
+  FILES:= \
+    $(LINUX_DIR)/drivers/clk/clk-hifiberry-dachd.ko \
+    $(LINUX_DIR)/sound/soc/bcm/snd-soc-hifiberry-dacplushd.ko \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm179x-codec.ko \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm179x-i2c.ko
+  AUTOLOAD:=$(call AutoLoad,68,clk-hifiberry-dachd snd-soc-pcm179x-codec \
+    snd-soc-pcm179x-i2c snd-soc-hifiberry-dacplushd)
+  DEPENDS:= \
+    kmod-sound-soc-bcm2835-i2s \
+    +kmod-i2c-bcm2835 \
+    +kmod-regmap-i2c
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-hifiberry-dacplushd/description
+  This package contains support for HifiBerry DAC+HD
+endef
+
+$(eval $(call KernelPackage,sound-soc-hifiberry-dacplushd))
+
+
 define KernelPackage/sound-soc-hifiberry-dacplusadc-pro
   TITLE:=Support for HifiBerry DAC+ADC PRO
   KCONFIG:= \
@@ -702,6 +729,32 @@ define KernelPackage/sound-soc-i-sabe-q2m/description
 endef
 
 $(eval $(call KernelPackage,sound-soc-i-sabe-q2m))
+
+
+define KernelPackage/sound-soc-justboom-both
+  TITLE:=Support for JustBoom DAC and Digi
+  KCONFIG:= \
+    CONFIG_SND_BCM2708_SOC_JUSTBOOM_BOTH \
+    CONFIG_SND_SOC_PCM512x \
+    CONFIG_SND_SOC_WM8804
+  FILES:= \
+    $(LINUX_DIR)/sound/soc/bcm/snd-soc-justboom-both.ko \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm512x.ko \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-wm8804.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm512x snd-soc-wm8804 \
+    snd-soc-justboom-both)
+  DEPENDS:= \
+    kmod-sound-soc-bcm2835-i2s \
+    +kmod-sound-soc-rpi-wm8804-soundcard \
+    +kmod-i2c-bcm2835
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-justboom-both/description
+  This package contains support for JustBoom DAC and Digi
+endef
+
+$(eval $(call KernelPackage,sound-soc-justboom-both))
 
 
 define KernelPackage/sound-soc-justboom-dac
