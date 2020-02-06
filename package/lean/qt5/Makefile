@@ -11,17 +11,17 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=qt5
-PKG_VERSION:=5.9.8
-PKG_RELEASE:=1
+PKG_VERSION:=5.13
+PKG_RELEASE:=2
 
-PKG_SOURCE:=qt-everywhere-opensource-src-$(PKG_VERSION).tar.xz
-PKG_SOURCE_URL:=http://download.qt-project.org/archive/qt/5.9/$(PKG_VERSION)/single
-PKG_HASH:=86aca7dc37f161fc730a9d4f6bddf684962ca560327682e282ff61bf8b859c36
+PKG_SOURCE:=qt-everywhere-src-$(PKG_VERSION).$(PKG_RELEASE).tar.xz
+PKG_SOURCE_URL:=http://download.qt-project.org/archive/qt/$(PKG_VERSION)/$(PKG_VERSION).$(PKG_RELEASE)/single/
+PKG_HASH:=55e8273536be41f4f63064a79e552a22133848bb419400b6fa8e9fc0dc05de08
 
 PKG_BUILD_PARALLEL:=1
 PKG_USE_MIPS16:=0
 
-PKG_BUILD_DIR=$(BUILD_DIR)/qt-everywhere-opensource-src-$(PKG_VERSION)
+PKG_BUILD_DIR=$(BUILD_DIR)/qt-everywhere-src-$(PKG_VERSION).$(PKG_RELEASE)
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -47,7 +47,7 @@ endef
 define Package/qt5-core
 	$(call Package/qt5/Default)
 	TITLE+=core
-	DEPENDS+=+libatomic +zlib +libpcre2-16 +libdouble-conversion
+	DEPENDS+=+libatomic +libzstd +zlib +libpcre2-16 +libdouble-conversion +icu
 endef
 
 define Package/qt5-network
@@ -64,27 +64,19 @@ endef
 
 CONFIGURE_ARGS = \
 		-prefix /usr \
+		-extprefix $(TOOLCHAIN_DIR) \
 		-sysroot $(STAGING_DIR) \
 		-plugindir /usr/lib/Qt/plugins \
 		-R /usr/lib \
 		-I $(STAGING_DIR)/usr/include \
 		-L $(STAGING_DIR)/usr/lib \
 		-xplatform linux-openwrt-g++ \
-		-release \
-		-shared \
 		-opensource \
 		-confirm-license \
-		-no-use-gold-linker \
-		-strip \
-		-ltcg \
-		-optimized-qmake \
 		-system-doubleconversion \
-		-no-glib \
-		-no-icu \
 		-system-pcre \
 		-system-zlib \
-		-no-slog2 \
-		-openssl-linked \
+		-openssl-runtime \
 		-no-cups \
 		-no-freetype \
 		-no-harfbuzz \
@@ -93,18 +85,16 @@ CONFIGURE_ARGS = \
 		-no-opengles3 \
 		-no-angle \
 		-no-openvg \
+		-no-dbus \
 		-no-directfb \
 		-no-eglfs \
-		-no-egl \
+		-no-feature-getentropy \
 		-no-iconv \
-		-no-gbm \
 		-no-kms \
-		-no-xcb \
 		-no-pch \
 		-no-libudev \
 		-no-mtdev \
 		-no-tslib \
-		-no-xkbcommon-evdev \
 		-no-libpng \
 		-no-libjpeg \
 		-no-sql-db2 \
@@ -117,53 +107,41 @@ CONFIGURE_ARGS = \
 		-no-sql-sqlite2 \
 		-no-sqlite \
 		-no-sql-tds \
+		-no-strip \
+		-no-xcb \
 		-no-gui \
 		-no-widgets \
-		-no-dbus \
-		-no-qml-debug \
+		-no-glib \
 		-make libs \
 		-nomake examples \
 		-nomake tests \
 		-nomake tools \
-		-no-compile-examples \
-		-skip qt3d \
-		-skip qtactiveqt \
-		-skip qtandroidextras \
-		-skip qtcanvas3d \
-		-skip qtcharts \
-		-skip qtconnectivity \
-		-skip qtdatavis3d \
-		-skip qtdeclarative \
-		-skip qtdoc \
-		-skip qtgamepad \
-		-skip qtgraphicaleffects \
-		-skip qtimageformats \
-		-skip qtlocation \
-		-skip qtmacextras \
-		-skip qtmultimedia \
-		-skip qtnetworkauth \
-		-skip qtpurchasing \
-		-skip qtquickcontrols \
-		-skip qtquickcontrols2 \
-		-skip qtremoteobjects \
-		-skip qtscript \
-		-skip qtscxml \
-		-skip qtsensors \
-		-skip qtserialbus \
-		-skip qtserialport \
-		-skip qtspeech \
-		-skip qtsvg \
-		-skip qttranslations \
-		-skip qtvirtualkeyboard \
-		-skip qtwayland \
-		-skip qtwebchannel \
-		-skip qtwebengine \
-		-skip qtwebsockets \
-		-skip qtwebview \
-		-skip qtwinextras \
-		-skip qtx11extras \
-		-skip qtxmlpatterns \
-		-v
+		-skip 3d \
+		-skip activeqt \
+		-skip charts \
+		-skip connectivity \
+		-skip datavis3d \
+		-skip declarative \
+		-skip doc \
+		-skip gamepad \
+		-skip imageformats \
+		-skip location \
+		-skip networkauth \
+		-skip multimedia \
+		-skip purchasing \
+		-skip remoteobjects \
+		-skip script \
+		-skip sensors \
+		-skip serialbus \
+		-skip serialport \
+		-skip speech \
+		-skip svg \
+		-skip wayland \
+		-skip webengine \
+		-skip websockets \
+		-skip webchannel \
+		-skip xmlpatterns \
+		-v \
 
 define Build/Configure
 	$(SED) 's@$$$$(TARGET_CROSS)@$(TARGET_CROSS)@g' $(PKG_BUILD_DIR)/qtbase/mkspecs/linux-openwrt-g++/qmake.conf
