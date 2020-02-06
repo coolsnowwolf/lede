@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2019 OpenWrt.org
+# Copyright (C) 2019-2020 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -10,14 +10,14 @@ include $(TOPDIR)/rules.mk
 UNPACK_CMD=unzip -q -p $(DL_DIR)/$(PKG_SOURCE) $(PKG_SOURCE_UNZIP) | gzip -dc | $(HOST_TAR) -C $(1) $(TAR_OPTIONS)
 
 PKG_NAME:=cypress-firmware
-PKG_VERSION:=v4.14.77-2019_1031
+PKG_VERSION:=v4.14.77-2020_0115
 
 PKG_SOURCE_UNZIP:=cypress-firmware-$(PKG_VERSION).tar.gz
 PKG_SOURCE:=cypress-fmac-$(PKG_VERSION).zip
-PKG_SOURCE_URL:=https://community.cypress.com/servlet/JiveServlet/download/17441-2-50210/
-PKG_HASH:=bc2eec0d144a88e3105a06cac8039a7f13becde67dfe2a86793ba66f6a2510e0
+PKG_SOURCE_URL:=https://community.cypress.com/servlet/JiveServlet/download/19000-1-51721/
+PKG_HASH:=a5510f82aacf585b5d29732b6d6777d4a4b26a667154d91cfcfc0d6d5dc4fef5
 
-PKG_MAINTAINER:=Álvaro Fernández Rojas <noltari@gmail.com>
+PKG_MAINTAINER:=?lvaro Fern?ndez Rojas <noltari@gmail.com>
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -30,6 +30,24 @@ endef
 define Build/Compile
 	true
 endef
+
+# Cypress 43012 SDIO Firmware
+define Package/cypress-firmware-43012-sdio
+  $(Package/cypress-firmware-default)
+  TITLE:=CYW43012 FullMac SDIO firmware
+endef
+
+define Package/cypress-firmware-43012-sdio/install
+	$(INSTALL_DIR) $(1)/lib/firmware/brcm
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/firmware/brcmfmac43012-sdio.bin \
+		$(1)/lib/firmware/brcm/brcmfmac43012-sdio.bin
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/firmware/brcmfmac43012-sdio.clm_blob \
+		$(1)/lib/firmware/brcm/brcmfmac43012-sdio.clm_blob
+endef
+
+$(eval $(call BuildPackage,cypress-firmware-43012-sdio))
 
 # Cypress 43340 SDIO Firmware
 define Package/cypress-firmware-43340-sdio
@@ -166,6 +184,24 @@ endef
 
 $(eval $(call BuildPackage,cypress-firmware-4356-sdio))
 
+# Cypress 43570 PCIe Firmware
+define Package/cypress-firmware-43570-pcie
+  $(Package/cypress-firmware-default)
+  TITLE:=CYW43570 FullMac PCIe firmware
+endef
+
+define Package/cypress-firmware-43570-pcie/install
+	$(INSTALL_DIR) $(1)/lib/firmware/brcm
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/firmware/brcmfmac43570-pcie.bin \
+		$(1)/lib/firmware/brcm/brcmfmac43570-pcie.bin
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/firmware/brcmfmac43570-pcie.clm_blob \
+		$(1)/lib/firmware/brcm/brcmfmac43570-pcie.clm_blob
+endef
+
+$(eval $(call BuildPackage,cypress-firmware-43570-pcie))
+
 # Cypress 4359 PCIe Firmware
 define Package/cypress-firmware-4359-pcie
   $(Package/cypress-firmware-default)
@@ -237,3 +273,21 @@ define Package/cypress-firmware-4373-usb/install
 endef
 
 $(eval $(call BuildPackage,cypress-firmware-4373-usb))
+
+# Cypress 89459 PCIe Firmware
+define Package/cypress-firmware-89459-pcie
+  $(Package/cypress-firmware-default)
+  TITLE:=CYW89459 FullMac PCIe firmware
+endef
+
+define Package/cypress-firmware-89459-pcie/install
+	$(INSTALL_DIR) $(1)/lib/firmware/brcm
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/firmware/brcmfmac89459-pcie.bin \
+		$(1)/lib/firmware/brcm/brcmfmac89459-pcie.bin
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/firmware/brcmfmac89459-pcie.clm_blob \
+		$(1)/lib/firmware/brcm/brcmfmac89459-pcie.clm_blob
+endef
+
+$(eval $(call BuildPackage,cypress-firmware-89459-pcie))
