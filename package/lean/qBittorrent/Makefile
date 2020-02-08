@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=qbittorrent
 PKG_VERSION:=4.1.9
-PKG_RELEASE=5
+PKG_RELEASE=6
 
 PKG_SOURCE:=$(PKG_NAME)-release-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/qbittorrent/qBittorrent/tar.gz/release-$(PKG_VERSION)?
@@ -36,10 +36,14 @@ there. qBittorrent is fast, stable and provides unicode support as
 well as many features.
 endef
 
+CONFIGURE_VARS += \
+  	QT_QMAKE="$(TOOLCHAIN_DIR)/bin" \
+	PKG_CONFIG_PATH="$(TOOLCHAIN_DIR)/lib/pkgconfig"
+
 CONFIGURE_ARGS += \
 	--disable-gui \
 	--enable-stacktrace=no \
-	--with-boost=$(STAGING_DIR)/usr
+	--with-boost="$(STAGING_DIR)/usr"
 
 MAKE_VARS += \
 	INSTALL_ROOT="$(PKG_INSTALL_DIR)"
