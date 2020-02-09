@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kexec-tools
 PKG_VERSION:=2.0.16
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/utils/kernel/kexec
@@ -25,7 +25,6 @@ define Package/kexec-tools/Default
   SECTION:=utils
   CATEGORY:=Utilities
   URL:=http://kernel.org/pub/linux/kernel/people/horms/kexec-tools/
-  MAINTAINER:=Florian Fainelli <florian@openwrt.org>
 endef
 
 define Package/kexec-tools

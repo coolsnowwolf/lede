@@ -1,0 +1,93 @@
+From 0db7fba746b5608c30d4e2ba1c99a2a309e2d288 Mon Sep 17 00:00:00 2001
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Fri, 8 Nov 2019 15:22:48 +0000
+Subject: [PATCH 649/660] net: phylink: re-split __phylink_connect_phy()
+
+In order to support Clause 45 PHYs on SFP+ modules, which have an
+indeterminant phy interface mode, we need to be able to call
+phylink_bringup_phy() with a different interface mode to that used when
+binding the PHY. Reduce __phylink_connect_phy() to an attach operation,
+and move the call to phylink_bringup_phy() to its call sites.
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+ drivers/net/phy/phylink.c | 39 ++++++++++++++++++++++++---------------
+ 1 file changed, 24 insertions(+), 15 deletions(-)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -728,11 +728,9 @@ static int phylink_bringup_phy(struct ph
+ 	return 0;
+ }
+ 
+-static int __phylink_connect_phy(struct phylink *pl, struct phy_device *phy,
+-		phy_interface_t interface)
++static int phylink_attach_phy(struct phylink *pl, struct phy_device *phy,
++			      phy_interface_t interface)
+ {
+-	int ret;
+-
+ 	if (WARN_ON(pl->link_an_mode == MLO_AN_FIXED ||
+ 		    (pl->link_an_mode == MLO_AN_INBAND &&
+ 		     phy_interface_mode_is_8023z(interface))))
+@@ -741,15 +739,7 @@ static int __phylink_connect_phy(struct
+ 	if (pl->phydev)
+ 		return -EBUSY;
+ 
+-	ret = phy_attach_direct(pl->netdev, phy, 0, interface);
+-	if (ret)
+-		return ret;
+-
+-	ret = phylink_bringup_phy(pl, phy);
+-	if (ret)
+-		phy_detach(phy);
+-
+-	return ret;
++	return phy_attach_direct(pl->netdev, phy, 0, interface);
+ }
+ 
+ /**
+@@ -769,13 +759,23 @@ static int __phylink_connect_phy(struct
+  */
+ int phylink_connect_phy(struct phylink *pl, struct phy_device *phy)
+ {
++	int ret;
++
+ 	/* Use PHY device/driver interface */
+ 	if (pl->link_interface == PHY_INTERFACE_MODE_NA) {
+ 		pl->link_interface = phy->interface;
+ 		pl->link_config.interface = pl->link_interface;
+ 	}
+ 
+-	return __phylink_connect_phy(pl, phy, pl->link_interface);
++	ret = phylink_attach_phy(pl, phy, pl->link_interface);
++	if (ret < 0)
++		return ret;
++
++	ret = phylink_bringup_phy(pl, phy);
++	if (ret)
++		phy_detach(phy);
++
++	return ret;
+ }
+ EXPORT_SYMBOL_GPL(phylink_connect_phy);
+ 
+@@ -1759,8 +1759,17 @@ static void phylink_sfp_link_up(void *up
+ static int phylink_sfp_connect_phy(void *upstream, struct phy_device *phy)
+ {
+ 	struct phylink *pl = upstream;
++	int ret;
+ 
+-	return __phylink_connect_phy(upstream, phy, pl->link_config.interface);
++	ret = phylink_attach_phy(pl, phy, pl->link_config.interface);
++	if (ret < 0)
++		return ret;
++
++	ret = phylink_bringup_phy(pl, phy);
++	if (ret)
++		phy_detach(phy);
++
++	return ret;
+ }
+ 
+ static void phylink_sfp_disconnect_phy(void *upstream)
