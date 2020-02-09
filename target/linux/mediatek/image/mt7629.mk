@@ -5,4 +5,3 @@ define Device/mediatek_mt7629-lynx-rfb
   DEVICE_PACKAGES := swconfig
 endef
 TARGET_DEVICES += mediatek_mt7629-lynx-rfb
-
