@@ -9,6 +9,20 @@
 	init_proto "$@"
 }
 
+# Function taken from 6to4 package (6to4.sh), flipped returns
+test_6in4_rfc1918()
+{
+	local oIFS="$IFS"; IFS="."; set -- $1; IFS="$oIFS"
+	[ $1 -eq  10 ] && return 1
+	[ $1 -eq 192 ] && [ $2 -eq 168 ] && return 1
+	[ $1 -eq 172 ] && [ $2 -ge  16 ] && [ $2 -le  31 ] && return 1
+
+	# RFC 6598
+	[ $1 -eq 100 ] && [ $2 -ge  64 ] && [ $2 -le 127 ] && return 1
+
+	return 0
+}
+
 proto_6in4_update() {
 	sh -c '
 		timeout=5
@@ -61,7 +75,7 @@ proto_6in4_setup() {
 	[ -n "$ip6addr" ] && {
 		local local6="${ip6addr%%/*}"
 		local mask6="${ip6addr##*/}"
-		[[ "$local6" = "$mask6" ]] && mask6=
+		[ "$local6" = "$mask6" ] && mask6=
 		proto_add_ipv6_address "$local6" "$mask6"
 		proto_add_ipv6_route "::" 0 "" "" "" "$local6/$mask6"
 	}
@@ -97,6 +111,11 @@ proto_6in4_setup() {
 		}
 
 		local url="$http://ipv4.tunnelbroker.net/nic/update?hostname=$tunnelid"
+		
+		test_6in4_rfc1918 "$ipaddr" && {
+			local url="${url}&myip=${ipaddr}"
+		}
+
 		local try=0
 		local max=3
 

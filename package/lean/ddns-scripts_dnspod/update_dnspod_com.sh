@@ -86,7 +86,8 @@ dnspod_transfer() {
 		__ERR=`jsonfilter -i $DATFILE -e "@.status.code"`
 
 		[ $__ERR -eq 1 ] && return 0
-		[ $__ERR -ne 0 ] && write_log 3 "Error message:[$(jsonfilter -i $DATFILE -e "@.status.message")]"
+		[ $__A -eq 1 ] && [ $__ERR -eq 10 ] && return 0
+		write_log 3 "Error message:[$(jsonfilter -i $DATFILE -e "@.status.message")]"
 
 		if [ $VERBOSE -gt 1 ]; then
 			write_log 4 "Transfer failed - detailed mode: $VERBOSE - Do not try again after an error"
@@ -106,16 +107,16 @@ dnspod_transfer() {
 
 #添加解析记录
 add_domain() {
-dnspod_transfer 2
-write_log 7 "Add new parsing record [${__HOST}.${__DOMAIN}],[type:$__TYPE],[ip:$__IP] successfully!"
-return 0
+	dnspod_transfer 2
+	write_log 7 "Add new parsing record [${__HOST}.${__DOMAIN}],[type:$__TYPE],[ip:$__IP] successfully!"
+	return 0
 }
 
 #修改解析记录
 update_domain() {
-dnspod_transfer 3
-write_log 7 "Modify new parsing record [${__HOST}.${__DOMAIN}],[type:$__TYPE],[ip:$__IP],[TTL:$__TTL] successfully!"
-return 0
+	dnspod_transfer 3
+	write_log 7 "Modify new parsing record [${__HOST}.${__DOMAIN}],[type:$__TYPE],[ip:$__IP],[TTL:$__TTL] successfully!"
+	return 0
 }
 
 #获取域名解析记录
@@ -123,28 +124,30 @@ describe_domain() {
 	ret=0
 	dnspod_transfer 0
 	__TOKEN=`jsonfilter -i $DATFILE -e "@.user_token"`
-	__POST="user_token=$__TOKEN&format=json&domain=$__DOMAIN"
-	__POST1="$__POST&sub_domain=$__HOST&value=$__IP&record_type=$__TYPE&record_line=default"
+	__POST="user_token=$__TOKEN&format=json&domain=$__DOMAIN&sub_domain=$__HOST"
+	__POST1="$__POST&value=$__IP&record_type=$__TYPE&record_line=default"
 	dnspod_transfer 1
-	__value=`jsonfilter -i $DATFILE -e "@.records[@.name='$__HOST'].name"`
+	__TMP=`jsonfilter -i $DATFILE -e "@.records[@.type!='NS']"`
+	__value=`jsonfilter -s "$__TMP" -e "@.name"`
 	if [ "$__value" == "" ]; then
 		write_log 7 "Parsing record:[${__HOST}.${__DOMAIN}] does not exist"
 		ret=1
 	else
-		__value=`jsonfilter -i $DATFILE -e "@.records[@.name='$__HOST'].type"`
+		__RECID=`jsonfilter -s "$__TMP" -e "@.id"`
+		__value=`jsonfilter -s "$__TMP" -e "@.type"`
+		__TTL=`jsonfilter -s "$__TMP" -e "@.ttl"`
+		write_log 7 "Get parsing recordID:[$__RECID]"
 		if [ "$__value" != "$__TYPE" ]; then
 			write_log 7 "Current parsing [type:$__TYPE], get mismatched [type:$__value]"
+			write_log 7 "Address needs to be modified, local address:[$__IP]"
 			ret=2
 		else
-			__RECID=`jsonfilter -i $DATFILE -e "@.records[@.name='$__HOST'].id"`
-			write_log 7 "Get parsing recordID:[$__RECID]"
-			__RECIP=`jsonfilter -i $DATFILE -e "@.records[@.name='$__HOST'].value"`
+			__RECIP=`jsonfilter -s "$__TMP" -e "@.value"`
 			if [ "$__RECIP" != "$__IP" ]; then
 				write_log 7 "Address needs to be modified, local address:[$__IP]"
 				ret=2
 			fi
 		fi
-		__TTL=`jsonfilter -i $DATFILE -e "@.records[@.name='$__HOST'].ttl"`
 	fi
 }
 
