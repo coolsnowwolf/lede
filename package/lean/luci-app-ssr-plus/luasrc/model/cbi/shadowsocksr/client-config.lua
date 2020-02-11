@@ -164,6 +164,15 @@ for _, v in ipairs(encrypt_methods_ss) do o:value(v) end
 o.rmempty = true
 o:depends("type", "ss")
 
+-- Shadowsocks Plugin
+o = s:option(Value, "plugin", "Plugin")
+o.rmempty = true
+o:depends("type", "ss")
+
+o = s:option(Value, "plugin_opts", "Plugin Opts")
+o.rmempty = true
+o:depends("type", "ss")
+
 o = s:option(ListValue, "protocol", translate("Protocol"))
 for _, v in ipairs(protocol) do o:value(v) end
 o.rmempty = true
