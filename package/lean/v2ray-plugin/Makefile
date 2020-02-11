@@ -1,7 +1,7 @@
 #
-# Copyright (C) 2018-2020 chenhw2 <https://github.com/chenhw2>
+# Copyright (C) 2020 SharerMax
 #
-# This is free software, licensed under the GNU General Public License v3.
+# This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
 #
 
@@ -9,49 +9,31 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray-plugin
 PKG_VERSION:=1.3.0
-PKG_RELEASE:=20200205
-PKG_MAINTAINER:=chenhw2 <https://github.com/chenhw2>
+PKG_RELEASE:=1
+PKG_MAINTAINER:=ShareMax
+PKG_BUILD_DIR:=$(BUILD_DIR)/v2ray-plugin-$(PKG_VERSION)
 
-# OpenWrt ARCH: arm, aarch64, i386, x86_64, mips, mipsel
-# Golang ARCH: arm[5-7], arm64, 386, amd64, mips, mipsle
-PKG_ARCH:=$(ARCH)
-BIN_ARCH:=$(ARCH)
-ifeq ($(ARCH),mips)
-    BIN_ARCH:=mips_sf
-endif
-ifeq ($(ARCH),mipsel)
-	PKG_ARCH:=mips
-	BIN_ARCH:=mipsle_sf
-endif
-ifeq ($(ARCH),i386)
-	PKG_ARCH:=386
-	BIN_ARCH:=386
-endif
-ifeq ($(ARCH),x86_64)
-	PKG_ARCH:=amd64
-	BIN_ARCH:=amd64
-endif
-ifeq ($(ARCH),arm)
-	BIN_ARCH:=arm7
-endif
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://codeload.github.com/shadowsocks/v2ray-plugin/tar.gz/v$(PKG_VERSION)?
+PKG_HASH:=dfb86cd8d9be86e665c4b86b68cd7037e4310de001656eef01ec9aeea71edd10
 
-ifeq ($(ARCH),aarch64)
-	PKG_ARCH=arm64
-	BIN_ARCH=arm64
-endif
+PKG_LICENSE:=MIT
+PKG_LICENSE_FILES:=LICENSE
+PKG_MAINTAINER:=madeye <max.c.lv@gmail.com>
 
-PKG_SOURCE:=v2ray-plugin-linux-$(PKG_ARCH)-v$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://github.com/shadowsocks/v2ray-plugin/releases/download/v$(PKG_VERSION)/
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
-PKG_HASH:=skip
+GO_PKG:=github.com/shadowsocks/v2ray-plugin
+
 
 include $(INCLUDE_DIR)/package.mk
+include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
+
 
 define Package/v2ray-plugin
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=SIP003 plugin for shadowsocks, based on v2ray
 	URL:=https://github.com/shadowsocks/v2ray-plugin
+	DEPENDS:=$(GO_ARCH_DEPENDS) +ca-certificates
 endef
 
 define Package/v2ray-plugin/description
@@ -59,16 +41,16 @@ define Package/v2ray-plugin/description
 endef
 
 define Build/Prepare
-	gzip -dc "$(DL_DIR)/$(PKG_SOURCE)" | tar -C $(PKG_BUILD_DIR)/ -xf -
+	$(call Build/Prepare/Default)
 endef
 
 define Build/Compile
-	echo "$(PKG_NAME)Compile Skiped!"
+	$(call GoPackage/Build/Compile)
 endef
 
 define Package/v2ray-plugin/install
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/v2ray-plugin_linux_$(BIN_ARCH) $(1)/usr/bin/v2ray-plugin
+	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/v2ray-plugin $(1)/usr/bin/v2ray-plugin
 endef
-
+$(eval $(call GoBinPackage,v2ray-plugin))
 $(eval $(call BuildPackage,v2ray-plugin))
