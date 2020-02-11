@@ -210,6 +210,8 @@ local function processData(szType, content)
 		result.server_port = content.port
 		result.password = content.password
 		result.encrypt_method_ss = content.encryption
+		result.plugin = content.plugin
+		result.plugin_opts = content.plugin_options
 		result.alias = "[" .. content.airport .. "] " .. content.remarks
 	end
 	if not result.alias then
