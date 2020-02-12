@@ -20,12 +20,13 @@ PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=madeye <max.c.lv@gmail.com>
 
+PKG_USE_MIPS16:=0
+
 GO_PKG:=github.com/shadowsocks/v2ray-plugin
 GO_PKG_LDFLAGS:=-s -w
 
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
-
 
 define Package/v2ray-plugin
 	SECTION:=net
