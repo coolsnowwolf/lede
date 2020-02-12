@@ -10,7 +10,6 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=v2ray-plugin
 PKG_VERSION:=1.3.0
 PKG_RELEASE:=1
-PKG_MAINTAINER:=ShareMax
 PKG_BUILD_DIR:=$(BUILD_DIR)/v2ray-plugin-$(PKG_VERSION)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
@@ -22,7 +21,7 @@ PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=madeye <max.c.lv@gmail.com>
 
 GO_PKG:=github.com/shadowsocks/v2ray-plugin
-
+GO_PKG_LDFLAGS:=-s -w
 
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
