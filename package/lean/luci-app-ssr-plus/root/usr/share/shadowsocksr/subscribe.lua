@@ -194,7 +194,7 @@ local function processData(szType, content)
 			local query = split(host[2], "/\\?")
 			result.server_port = query[1]
 			local params = {}
-			for _, v in pairs(split("/?", '&')) do
+			for _, v in pairs(split(query[2], '&')) do
 				local t = split(v, '=')
 				params[t[1]] = t[2]
 			end
