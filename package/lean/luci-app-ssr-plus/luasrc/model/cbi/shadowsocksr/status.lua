@@ -70,7 +70,7 @@ if luci.sys.call("busybox ps -w | grep ssr-retcp | grep -v grep >/dev/null") == 
 redir_run=1
 end
 
-if luci.sys.call("pidof ssr-local >/dev/null") == 0 then
+if luci.sys.call("pidof srelay >/dev/null") == 0 then
 sock5_run=1
 end
 
@@ -118,8 +118,8 @@ else
 s.value = translate("Not Running")
 end
 
-if nixio.fs.access("/usr/bin/ssr-local") then
-s=m:field(DummyValue,"sock5_run",translate("SOCKS5 Proxy"))
+if nixio.fs.access("/usr/bin/srelay") then
+s=m:field(DummyValue,"sock5_run",translate("SOCKS Proxy"))
 s.rawhtml  = true
 if sock5_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
@@ -179,8 +179,8 @@ s.rawhtml  = true
 s.template = "shadowsocksr/refresh"
 s.value =ip_count .. " " .. translate("Records")
 
-s=m:field(DummyValue,"check_port",translate("Check Server Port"))
-s.template = "shadowsocksr/checkport"
-s.value =translate("No Check")
+-- s=m:field(DummyValue,"check_port",translate("Check Server Port"))
+-- s.template = "shadowsocksr/checkport"
+-- s.value =translate("No Check")
 
 return m
