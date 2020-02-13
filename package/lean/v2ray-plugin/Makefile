@@ -20,6 +20,8 @@ PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=madeye <max.c.lv@gmail.com>
 
+PKG_BUILD_DEPENDS:=golang/host
+PKG_BUILD_PARALLEL:=1
 PKG_USE_MIPS16:=0
 
 GO_PKG:=github.com/shadowsocks/v2ray-plugin
