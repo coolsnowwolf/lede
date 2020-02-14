@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
-PKG_RELEASE:=139
+PKG_RELEASE:=142
 PKG_VERSION:=1
 
 include $(INCLUDE_DIR)/package.mk
@@ -37,7 +37,7 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks
 	bool "Include Socks Sever"
-	default y if x86_64
+	default y
 endef
 
 define Package/luci-app-ssr-plus
