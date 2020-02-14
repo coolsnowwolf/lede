@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=srelay
 PKG_VERSION:=0.4.8p3
-PKG_RELEASE:=1
+PKG_RELEASE:=8
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@SF/socks-relay
@@ -20,7 +20,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/srelay
   SECTION:=net
   CATEGORY:=Network
-  DEPENDS:=+libwrap
+  DEPENDS:=+libpthread
   SUBMENU:=Web Servers/Proxies
   TITLE:=A socks 4/5 proxy server
   URL:=http://www.c-wind.com/srelay/
@@ -31,8 +31,8 @@ define Package/srelay/conffiles
 endef
 
 CONFIGURE_ARGS += \
-	--disable-thread \
-	--with-libwrap="$(STAGING_DIR)/usr" \
+	--enable-thread \
+	--with-libwrap=no \
 
 CONFIGURE_VARS += \
 	CPPFLAGS="-DLINUX $$$$CPPFLAGS" \
@@ -40,8 +40,6 @@ CONFIGURE_VARS += \
 define Package/srelay/install	
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/$(PKG_NAME) $(1)/usr/bin/
-	$(INSTALL_DIR) $(1)/etc
-	$(INSTALL_DATA) files/$(PKG_NAME).conf $(1)/etc/
 endef
 
 $(eval $(call BuildPackage,srelay))
