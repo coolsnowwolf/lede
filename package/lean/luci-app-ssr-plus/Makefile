@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
-PKG_RELEASE:=141
+PKG_RELEASE:=142
 PKG_VERSION:=1
 
 include $(INCLUDE_DIR)/package.mk
