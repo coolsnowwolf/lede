@@ -12,13 +12,12 @@ end)
 
 local key_table = {}
 for key,_ in pairs(server_table) do
-    table.insert(key_table,key)
+	table.insert(key_table,key)
 end
 
 table.sort(key_table)
-
 m = Map(shadowsocksr)
-
+-- [[ global ]]--
 s = m:section(TypedSection, "global", translate("Server failsafe auto swith settings"))
 s.anonymous = true
 
@@ -43,15 +42,19 @@ o.datatype = "uinteger"
 o:depends("enable_switch", "1")
 o.default = 3
 
--- [[ SOCKS5 Proxy ]]--
-if nixio.fs.access("/usr/bin/ssr-local") then
-s = m:section(TypedSection, "socks5_proxy", translate("SOCKS5 Proxy"))
+-- [[ adblock ]]--
+s = m:section(TypedSection, "global", translate("adblock settings"))
 s.anonymous = true
 
-o = s:option(ListValue, "server", translate("Server"))
-o:value("nil", translate("Disable"))
-for _,key in pairs(key_table) do o:value(key,server_table[key]) end
-o.default = "nil"
+o = s:option(Flag, "adblock", translate("Enable adblock"))
+o.rmempty = false
+
+-- [[ SOCKS Proxy ]]--
+if nixio.fs.access("/usr/bin/srelay") then
+s = m:section(TypedSection, "socks5_proxy", translate("SOCKS Proxy"))
+s.anonymous = true
+
+o = s:option(Flag, "socks", translate("Enable SOCKS Proxy"))
 o.rmempty = false
 
 o = s:option(Value, "local_port", translate("Local Port"))
@@ -60,5 +63,4 @@ o.default = 1080
 o.rmempty = false
 
 end
-
 return m
