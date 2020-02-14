@@ -193,12 +193,21 @@ local function processData(szType, content)
 		if host[2]:find("/\\?") then
 			local query = split(host[2], "/\\?")
 			result.server_port = query[1]
-			-- local params = {}
-			-- for _, v in pairs(split(query[2], '&')) do
-			--   local t = split(v, '=')
-			--   params[t[1]] = t[2]
-			-- end
-			-- 这里似乎没什么用 我看数据结构没有写插件的支持 先抛弃
+			local params = {}
+			for _, v in pairs(split(query[2], '&')) do
+				local t = split(v, '=')
+				params[t[1]] = t[2]
+			end
+			if params.lugin then
+				local plugin_info = UrlDecode(params.lugin)
+				local idx_pn = plugin_info:find(";")
+				if idx_pn then
+						result.plugin = plugin_info:sub(1, idx_pn - 1)
+						result.plugin_opts = plugin_info:sub(idx_pn + 1, #plugin_info)
+				else
+						result.plugin = plugin_info
+				end
+			end
 		else
 			result.server_port = host[2]
 		end
@@ -365,3 +374,4 @@ if subscribe_url and #subscribe_url > 0 then
 		end
 	end)
 end
+
