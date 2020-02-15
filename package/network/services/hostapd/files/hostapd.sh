@@ -92,6 +92,7 @@ hostapd_common_add_device_config() {
 	config_add_boolean country_ie doth
 	config_add_string require_mode
 	config_add_boolean legacy_rates
+	config_add_boolean vendor_vht
 
 	config_add_string acs_chan_bias
 	config_add_array hostapd_options
@@ -106,7 +107,7 @@ hostapd_prepare_device_config() {
 	local base="${config%%.conf}"
 	local base_cfg=
 
-	json_get_vars country country_ie beacon_int:100 doth require_mode legacy_rates acs_chan_bias
+	json_get_vars country country_ie beacon_int:100 doth require_mode legacy_rates acs_chan_bias vendor_vht
 
 	hostapd_set_log_options base_cfg
 
@@ -136,6 +137,7 @@ hostapd_prepare_device_config() {
 	[ "$hwmode" = "g" ] && {
 		[ "$legacy_rates" -eq 0 ] && set_default rate_list "6000 9000 12000 18000 24000 36000 48000 54000"
 		[ -n "$require_mode" ] && set_default basic_rate_list "6000 12000 24000"
+		[ -n "$vendor_vht" ] && append base_cfg "vendor_vht=$vendor_vht" "$N"
 	}
 
 	case "$require_mode" in

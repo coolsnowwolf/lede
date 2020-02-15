@@ -79,7 +79,7 @@ static struct gpio_keys_button grentech_gpio_keys[] __initdata = {
 static struct mdio_board_info grentech_mdio0_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = 1,
+		.mdio_addr = 1,
 	},
 };
 

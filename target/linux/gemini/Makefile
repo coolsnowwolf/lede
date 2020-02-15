@@ -24,7 +24,7 @@ KERNELNAME:=zImage dtbs
 include $(INCLUDE_DIR)/target.mk
 
 DEFAULT_PACKAGES += \
-	kmod-usb-core kmod-usb-fotg210 \
+	kmod-usb-fotg210 \
 	kmod-usb-ledtrig-usbport \
 	kmod-leds-gpio kmod-ledtrig-heartbeat \
 	kmod-gpio-button-hotplug

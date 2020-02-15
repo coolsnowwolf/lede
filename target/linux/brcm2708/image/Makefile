@@ -16,18 +16,13 @@ define Build/Compile
 endef
 
 ### Image scripts ###
-define Build/kernel-img
-	perl $(LINUX_DIR)/scripts/mkknlimg $@ $@.tmp
-	mv $@.tmp $@
-endef
-
 define Build/boot-common
 	rm -f $@.boot
 	mkfs.fat -C $@.boot $(FAT32_BLOCKS)
 	mcopy -i $@.boot $(KDIR)/COPYING.linux ::
 	mcopy -i $@.boot $(KDIR)/LICENCE.broadcom ::
 	mcopy -i $@.boot cmdline.txt ::
-	mcopy -i $@.boot $(BOOT_CONFIG) ::config.txt
+	mcopy -i $@.boot config.txt ::
 	mcopy -i $@.boot distroconfig.txt ::
 	mcopy -i $@.boot $(IMAGE_KERNEL) ::$(KERNEL_IMG)
 	$(foreach dts,$(shell echo $(DEVICE_DTS)),mcopy -i $@.boot $(DTS_DIR)/$(dts).dtb ::;)
@@ -63,12 +58,11 @@ endef
 ### Devices ###
 define Device/Default
   DEVICE_VENDOR := Raspberry Pi
-  KERNEL := kernel-bin | kernel-img
+  KERNEL := kernel-bin
   KERNEL_IMG := kernel.img
   IMAGES := factory.img.gz sysupgrade.img.gz
   IMAGE/sysupgrade.img.gz := boot-common | boot-2708 | sdcard-img | gzip | append-metadata
   IMAGE/factory.img.gz := boot-common | boot-2708 | sdcard-img | gzip
-  BOOT_CONFIG := config.txt
 endef
 
 define Device/rpi
@@ -83,8 +77,8 @@ define Device/rpi
 	raspberrypi,compute-module raspberrypi,compute-module-1 \
 	raspberrypi,model-zero raspberrypi,model-zero-w
   DEVICE_PACKAGES := \
-	brcmfmac-firmware-43430-sdio \
-	brcmfmac-firmware-43430-sdio-rpi-zero-w \
+	cypress-firmware-43430-sdio \
+	cypress-nvram-43430-sdio-rpi-zero-w \
 	kmod-brcmfmac wpad-basic
 endef
 ifeq ($(SUBTARGET),bcm2708)
@@ -105,10 +99,10 @@ define Device/rpi-2
 	raspberrypi,3-compute-module raspberrypi,compute-module-3 \
 	raspberrypi,4-model-b
   DEVICE_PACKAGES := \
-	brcmfmac-firmware-43430-sdio \
-	brcmfmac-firmware-43430-sdio-rpi-3b \
-	brcmfmac-firmware-43455-sdio brcmfmac-firmware-43455-clm_blob \
-	brcmfmac-firmware-43455-sdio-rpi-3b-plus brcmfmac-firmware-43455-sdio-rpi-4b \
+	cypress-firmware-43430-sdio \
+	cypress-nvram-43430-sdio-rpi-3b \
+	cypress-firmware-43455-sdio \
+	cypress-nvram-43455-sdio-rpi-3b-plus cypress-nvram-43455-sdio-rpi-4b \
 	kmod-brcmfmac wpad-basic
   IMAGE/sysupgrade.img.gz := boot-common | boot-2708 | boot-2711 | sdcard-img | gzip | append-metadata
   IMAGE/factory.img.gz := boot-common | boot-2708 | boot-2711 | sdcard-img | gzip
@@ -130,10 +124,10 @@ define Device/rpi-3
 	raspberrypi,3-model-b raspberrypi,3-model-b-plus \
 	raspberrypi,3-compute-module raspberrypi,compute-module-3
   DEVICE_PACKAGES := \
-	brcmfmac-firmware-43430-sdio \
-	brcmfmac-firmware-43430-sdio-rpi-3b \
-	brcmfmac-firmware-43455-sdio brcmfmac-firmware-43455-clm_blob \
-	brcmfmac-firmware-43455-sdio-rpi-3b-plus \
+	cypress-firmware-43430-sdio \
+	cypress-nvram-43430-sdio-rpi-3b \
+	cypress-firmware-43455-sdio \
+	cypress-nvram-43455-sdio-rpi-3b-plus \
 	kmod-brcmfmac wpad-basic
 endef
 ifeq ($(SUBTARGET),bcm2710)
@@ -147,12 +141,11 @@ define Device/rpi-4
   SUPPORTED_DEVICES := \
 	raspberrypi,4-model-b
   DEVICE_PACKAGES := \
-	brcmfmac-firmware-43455-sdio brcmfmac-firmware-43455-clm_blob \
-	brcmfmac-firmware-43455-sdio-rpi-4b \
+	cypress-firmware-43455-sdio \
+	cypress-nvram-43455-sdio-rpi-4b \
 	kmod-brcmfmac wpad-basic
   IMAGE/sysupgrade.img.gz := boot-common | boot-2711 | sdcard-img | gzip | append-metadata
   IMAGE/factory.img.gz := boot-common | boot-2711 | sdcard-img | gzip
-  BOOT_CONFIG := config-bcm2711-arm64.txt
 endef
 ifeq ($(SUBTARGET),bcm2711)
   TARGET_DEVICES += rpi-4
