@@ -42,6 +42,11 @@ proto_wireguard_setup_peer() {
 	config_get endpoint_port "${peer_config}" "endpoint_port"
 	config_get persistent_keepalive "${peer_config}" "persistent_keepalive"
 
+	if [ -z "$public_key" ]; then
+		echo "Skipping peer config $peer_config because public key is not defined."
+		return 0
+	fi
+
 	echo "[Peer]" >> "${wg_cfg}"
 	echo "PublicKey=${public_key}" >> "${wg_cfg}"
 	if [ "${preshared_key}" ]; then
