@@ -8,11 +8,11 @@ if [ ! -f "/tmp/adbyby.updated" ];then
     wget-ssl --spider --quiet --tries=1 --timeout=3 www.baidu.com
     if [ "$?" == "0" ]; then
       wget_ok="1"
-      touch /tmp/lazy.txt && wget-ssl --no-check-certificate -t 1 -T 10 -O /tmp/lazy.txt https://coding.net/u/adbyby/p/xwhyc-rules/git/raw/master/lazy.txt
-      touch /tmp/video.txt && wget-ssl --no-check-certificate -t 1 -T 10 -O /tmp/video.txt https://coding.net/u/adbyby/p/xwhyc-rules/git/raw/master/video.txt
+      touch /tmp/lazy.txt && wget-ssl --no-check-certificate -t 1 -T 10 -O /tmp/lazy.txt https://adbyby.coding.net/p/xwhyc-rules/d/xwhyc-rules/git/raw/master/lazy.txt
+      touch /tmp/video.txt && wget-ssl --no-check-certificate -t 1 -T 10 -O /tmp/video.txt https://adbyby.coding.net/p/xwhyc-rules/d/xwhyc-rules/git/raw/master/video.txt
       
       touch /tmp/local-md5.json && md5sum /tmp/lazy.txt /tmp/video.txt > /tmp/local-md5.json
-      touch /tmp/md5.json && wget-ssl --no-check-certificate -t 1 -T 10 -O /tmp/md5.json https://coding.net/u/adbyby/p/xwhyc-rules/git/raw/master/md5.json
+      touch /tmp/md5.json && wget-ssl --no-check-certificate -t 1 -T 10 -O /tmp/md5.json https://adbyby.coding.net/p/xwhyc-rules/d/xwhyc-rules/git/raw/master/md5.json
       
       lazy_local=$(grep 'lazy' /tmp/local-md5.json | awk -F' ' '{print $1}')
       video_local=$(grep 'video' /tmp/local-md5.json | awk -F' ' '{print $1}')  

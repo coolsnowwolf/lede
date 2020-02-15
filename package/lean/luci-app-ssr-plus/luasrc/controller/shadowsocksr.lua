@@ -11,7 +11,6 @@ function index()
 	entry({"admin", "services", "shadowsocksr", "client"}, cbi("shadowsocksr/client"),_("SSR Client"), 10).leaf = true
 	entry({"admin", "services", "shadowsocksr", "servers"}, arcombine(cbi("shadowsocksr/servers", {autoapply=true}), cbi("shadowsocksr/client-config")),_("Severs Nodes"), 20).leaf = true
 	entry({"admin", "services", "shadowsocksr", "control"},cbi("shadowsocksr/control"), _("Access Control"), 30).leaf = true
-	-- entry({"admin", "services", "shadowsocksr", "list"},form("shadowsocksr/list"),_("GFW List"), 40).leaf = true
 	entry({"admin", "services", "shadowsocksr", "advanced"},cbi("shadowsocksr/advanced"),_("Advanced Settings"), 50).leaf = true
 	if nixio.fs.access("/usr/bin/ssr-server") then
 		entry({"admin", "services", "shadowsocksr", "server"},arcombine(cbi("shadowsocksr/server"), cbi("shadowsocksr/server-config")),_("SSR Server"), 60).leaf = true
@@ -20,7 +19,6 @@ function index()
 	entry({"admin", "services", "shadowsocksr", "check"}, call("check_status"))
 	entry({"admin", "services", "shadowsocksr", "refresh"}, call("refresh_data"))
 	entry({"admin", "services", "shadowsocksr", "subscribe"}, call("subscribe"))
-	entry({"admin", "services", "shadowsocksr", "checkport"}, call("check_port"))
 	entry({"admin", "services", "shadowsocksr", "log"},form("shadowsocksr/log"),_("Log"), 80).leaf = true
 	entry({"admin", "services", "shadowsocksr","run"},call("act_status")).leaf=true
 	entry({"admin", "services", "shadowsocksr", "ping"}, call("act_ping")).leaf=true
@@ -116,18 +114,12 @@ else
 end
 luci.sys.exec("rm -f /tmp/china_ssr.txt ")
 else
-	local need_process = 0
-	if nixio.fs.access("/usr/bin/wget-ssl") then
-	refresh_cmd="wget-ssl --no-check-certificate -O - https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt > /tmp/adnew.conf"
-	need_process = 1
-else
-	refresh_cmd="wget -O /tmp/ad.conf http://iytc.net/tools/ad.conf"
+if nixio.fs.access("/usr/bin/wget-ssl") then
+	refresh_cmd="wget-ssl --no-check-certificate -O - ".. luci.model.uci.cursor():get_first('shadowsocksr', 'global', 'adblock_url','https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt') .." > /tmp/adnew.conf"
 end
 sret=luci.sys.call(refresh_cmd .. " 2>/dev/null")
 if sret== 0 then
-	if need_process == 1 then
-		luci.sys.call("/usr/bin/ssr-ad")
-	end
+	luci.sys.call("/usr/bin/ssr-ad")
 	icount = luci.sys.exec("cat /tmp/ad.conf | wc -l")
 	if tonumber(icount)>1000 then
 	if nixio.fs.access("/etc/dnsmasq.ssr/ad.conf") then
@@ -154,38 +146,4 @@ end
 end
 luci.http.prepare_content("application/json")
 luci.http.write_json({ ret=retstring ,retcount=icount})
-end
-
-
-function check_port()
-local set=""
-local retstring="<br /><br />"
-local s
-local server_name = ""
-local shadowsocksr = "shadowsocksr"
-local uci = luci.model.uci.cursor()
-local iret=1
-uci:foreach(shadowsocksr, "servers", function(s)
-	if s.alias then
-		server_name=s.alias
-	elseif s.server and s.server_port then
-		server_name= "%s:%s" %{s.server, s.server_port}
-	end
-	iret=luci.sys.call(" ipset add ss_spec_wan_ac " .. s.server .. " 2>/dev/null")
-	socket = nixio.socket("inet", "stream")
-	socket:setopt("socket", "rcvtimeo", 3)
-	socket:setopt("socket", "sndtimeo", 3)
-	ret=socket:connect(s.server,s.server_port)
-	if  tostring(ret) == "true" then
-	socket:close()
-	retstring =retstring .. "<font color='green'>[" .. server_name .. "] OK.</font><br />"
-	else
-	retstring =retstring .. "<font color='red'>[" .. server_name .. "] Error.</font><br />"
-	end
-	if  iret== 0 then
-	luci.sys.call(" ipset del ss_spec_wan_ac " .. s.server)
-	end
-end)
-luci.http.prepare_content("application/json")
-luci.http.write_json({ ret=retstring })
 end

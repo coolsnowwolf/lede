@@ -1,6 +1,6 @@
 #
 # Copyright (C) 2019-2020 Xingwang Liao
-# Copyright (C) 2019-2020 KFERMercer
+# Copyright (C) 2019-2020 Mattraks
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -13,7 +13,7 @@ PKG_VERSION:=4.22.1
 PKG_RELEASE:=6
 PKG_BUILD_DIR:=$(BUILD_DIR)/v2ray-core-$(PKG_VERSION)
 
-PKG_SOURCE:=$(PKG_NAME)-core-$(PKG_VERSION).tar.gz
+PKG_SOURCE:=v2ray-core-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/v2ray/v2ray-core/tar.gz/v$(PKG_VERSION)?
 PKG_HASH:=31c1934eeac3552c7ab68eac9dc3e964e05f3c743b3733b0b6a0159c495019d6
 
@@ -27,6 +27,7 @@ PKG_CONFIG_DEPENDS := \
 	CONFIG_V2RAY_JSON_NONE \
 	CONFIG_V2RAY_EXCLUDE_V2CTL \
 	CONFIG_V2RAY_EXCLUDE_ASSETS \
+	CONFIG_V2RAY_COMPRESS_GOPROXY \
 	CONFIG_V2RAY_COMPRESS_UPX \
 	CONFIG_V2RAY_DISABLE_NONE \
 	CONFIG_V2RAY_DISABLE_CUSTOM \
@@ -66,7 +67,7 @@ GO_PKG_LDFLAGS_X:= \
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-define Package/v2ray
+define Package/$(PKG_NAME)
   TITLE:=A platform for building proxies
   URL:=https://www.v2ray.com
   SECTION:=net
@@ -75,16 +76,21 @@ define Package/v2ray
   DEPENDS:=$(GO_ARCH_DEPENDS) +ca-certificates
 endef
 
-define Package/v2ray/config
+define Package/$(PKG_NAME)/config
 	source "$(SOURCE)/Config.in"
 endef
 
-define Package/v2ray/description
+define Package/$(PKG_NAME)/description
 Project V is a set of network tools that help you to build your own computer network.
 It secures your network connections and thus protects your privacy.
 
   This package contains v2ray, v2ctl and v2ray-assets.
 endef
+
+ifeq ($(CONFIG_V2RAY_COMPRESS_GOPROXY),y)
+export GO111MODULE=on
+export GOPROXY=https://goproxy.cn
+endif
 
 V2RAY_SED_ARGS:=
 
@@ -264,7 +270,7 @@ define Build/Compile
 	mv -f $(GO_PKG_BUILD_BIN_DIR)/main $(GO_PKG_BUILD_BIN_DIR)/v2ray
 
 ifeq ($(CONFIG_V2RAY_COMPRESS_UPX),y)
-	upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/v2ray
+	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/v2ray
 endif
 
 ifneq ($(CONFIG_V2RAY_EXCLUDE_V2CTL),y)
@@ -273,12 +279,12 @@ ifneq ($(CONFIG_V2RAY_EXCLUDE_V2CTL),y)
 	mv -f $(GO_PKG_BUILD_BIN_DIR)/main $(GO_PKG_BUILD_BIN_DIR)/v2ctl
 
 ifeq ($(CONFIG_V2RAY_COMPRESS_UPX),y)
-	upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/v2ctl
+	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/v2ctl
 endif
 endif
 endef
 
-define Package/v2ray/install
+define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/bin/v2ray
 
 	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/v2ray $(1)/usr/bin/v2ray
@@ -288,9 +294,7 @@ ifneq ($(CONFIG_V2RAY_EXCLUDE_V2CTL),y)
 endif
 
 ifneq ($(CONFIG_V2RAY_EXCLUDE_ASSETS),y)
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/release/config/{geoip,geosite}.dat \
-		$(1)/usr/bin/v2ray
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/{geoip,geosite}.dat $(1)/usr/bin/v2ray
 endif
 endef
 
@@ -299,5 +303,5 @@ $(eval $(call Download,geoip.dat))
 $(eval $(call Download,geosite.dat))
 endif
 
-$(eval $(call GoBinPackage,v2ray))
-$(eval $(call BuildPackage,v2ray))
+$(eval $(call GoBinPackage,$(PKG_NAME)))
+$(eval $(call BuildPackage,$(PKG_NAME)))
