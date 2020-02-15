@@ -10,7 +10,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray
 PKG_VERSION:=4.22.1
-PKG_RELEASE:=5
+PKG_RELEASE:=6
 PKG_BUILD_DIR:=$(BUILD_DIR)/v2ray-core-$(PKG_VERSION)
 
 PKG_SOURCE:=v2ray-core-$(PKG_VERSION).tar.gz
@@ -279,7 +279,7 @@ ifneq ($(CONFIG_V2RAY_EXCLUDE_V2CTL),y)
 	mv -f $(GO_PKG_BUILD_BIN_DIR)/main $(GO_PKG_BUILD_BIN_DIR)/v2ctl
 
 ifeq ($(CONFIG_V2RAY_COMPRESS_UPX),y)
-	upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/v2ctl
+	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/v2ctl
 endif
 endif
 endef
