@@ -95,14 +95,14 @@ end
 -- 处理数据
 local function processData(szType, content)
 	local result = {
-		auth_enable = '0',
+-- 		auth_enable = '0',
 		switch_enable = '1',
 		type = szType,
 		local_port = 1234,
-		timeout = 60, -- 不太确定 好像是死的
-		fast_open = 0,
-		kcp_enable = 0,
-		kcp_port = 0,
+-- 		timeout = 60, -- 不太确定 好像是死的
+-- 		fast_open = 0,
+-- 		kcp_enable = 0,
+-- 		kcp_port = 0,
 		kcp_param = '--nocomp'
 	}
 	result.hashkey = type(content) == 'string' and md5(content) or md5(jsonStringify(content))
@@ -136,8 +136,8 @@ local function processData(szType, content)
 		result.alter_id = info.aid
 		result.vmess_id = info.id
 		result.alias = info.ps
-		result.mux = 1
-		result.concurrency = 8
+-- 		result.mux = 1
+-- 		result.concurrency = 8
 		if info.net == 'ws' then
 			result.ws_host = info.host
 			result.ws_path = info.path
@@ -165,8 +165,8 @@ local function processData(szType, content)
 			result.quic_key = info.key
 			result.quic_security = info.securty
 		end
-		if not info.security then
-			result.security = "auto"
+		if info.security then
+			result.security = info.security
 		end
 		if info.tls == "tls" or info.tls == "1" then
 			result.tls = "1"
