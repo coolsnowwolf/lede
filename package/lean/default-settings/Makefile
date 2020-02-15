@@ -28,9 +28,6 @@ define Package/default-settings/description
 	Language Support Packages.
 endef
 
-define Build/Prepare
-endef
-
 define Build/Configure
 endef
 
@@ -38,10 +35,12 @@ define Build/Compile
 endef
 
 define Package/default-settings/install
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/*.lmo $(1)/usr/lib/lua/luci/i18n/
 	$(INSTALL_BIN) ./files/zzz-default-settings $(1)/etc/uci-defaults/99-default-settings
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
+	po2lmo ./i18n/default.zh-cn.po $(1)/usr/lib/lua/luci/i18n/default.zh-cn.lmo
+	po2lmo ./i18n/more.zh-cn.po $(1)/usr/lib/lua/luci/i18n/more.zh-cn.lmo
+	po2lmo ./i18n/sqm.zh-cn.po $(1)/usr/lib/lua/luci/i18n/sqm.zh-cn.lmo
 endef
 
 $(eval $(call BuildPackage,default-settings))
