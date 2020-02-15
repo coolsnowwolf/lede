@@ -105,7 +105,6 @@ local function processData(szType, content)
 -- 		kcp_port = 0,
 		kcp_param = '--nocomp'
 	}
-	result.hashkey = type(content) == 'string' and md5(content) or md5(jsonStringify(content))
 	if szType == 'ssr' then
 		local dat = split(content, "/\\?")
 		local hostInfo = split(dat[1], ':')
@@ -226,6 +225,11 @@ local function processData(szType, content)
 	if not result.alias then
 		result.alias = result.server .. ':' .. result.server_port
 	end
+	-- alias 不参与 hashkey 计算
+	local alias = result.alias
+	result.alias = nil
+	result.hashkey = md5(jsonStringify(result))
+	result.alias = alias
 	return result
 end
 -- wget
