@@ -10,7 +10,7 @@ function clean_log(){
 }
 
 function check_latest_version(){
-	latest_ver="$(wget -O- https://github.com/nondanee/UnblockNeteaseMusic/commits/master |tr -d '\n' |grep -Eo 'commit\/[0-9a-z]+' |sed -n 1p |sed 's#commit/##g')"
+	latest_ver="$(wget-ssl --no-check-certificate -O- https://github.com/nondanee/UnblockNeteaseMusic/commits/master |tr -d '\n' |grep -Eo 'commit\/[0-9a-z]+' |sed -n 1p |sed 's#commit/##g')"
 	[ -z "${latest_ver}" ] && echo -e "\nFailed to check latest version, please try again later." >>/tmp/unblockmusic_update.log && exit 1
 	if [ ! -e "/usr/share/UnblockNeteaseMusic/local_ver" ]; then
 		clean_log
