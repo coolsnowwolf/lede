@@ -3,7 +3,7 @@
 module("luci.controller.cifsd", package.seeall)
 
 function index()
-	if not nixio.fs.access("/etc/config/cifsd") then
+	if not nixio.fs.access("/etc/config/ksmbd") then
 		return
 	end
 	
