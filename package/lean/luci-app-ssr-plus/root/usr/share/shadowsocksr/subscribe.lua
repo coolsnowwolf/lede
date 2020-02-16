@@ -31,7 +31,7 @@ local function split(full, sep)
 	full = full:gsub("%z", "")  -- 这里不是很清楚 有时候结尾带个\0
 	local off, result = 1, {}
 	while true do
-		local nEnd = full:find(sep, off)
+		local nStart, nEnd = full:find(sep, off)
 		if not nEnd then
 			local res = ssub(full, off, slen(full))
 			if #res > 0 then -- 过滤掉 \0
@@ -39,8 +39,8 @@ local function split(full, sep)
 			end
 			break
 		else
-			tinsert(result, ssub(full, off, nEnd - 1))
-			off = nEnd + slen(sep)
+			tinsert(result, ssub(full, off, nStart - 1))
+			off = nEnd + 1
 		end
 	end
 	return result
@@ -106,7 +106,7 @@ local function processData(szType, content)
 		kcp_param = '--nocomp'
 	}
 	if szType == 'ssr' then
-		local dat = split(content, "/\\?")
+		local dat = split(content, "/%?")
 		local hostInfo = split(dat[1], ':')
 		result.server = hostInfo[1]
 		result.server_port = hostInfo[2]
@@ -119,7 +119,7 @@ local function processData(szType, content)
 			local t = split(v, '=')
 			params[t[1]] = t[2]
 		end
-		result.obfs_param = base64Decode(params.bfsparam)
+		result.obfs_param = base64Decode(params.obfsparam)
 		result.protocol_param = base64Decode(params.protoparam)
 		local group = base64Decode(params.group)
 		if group then
@@ -189,22 +189,22 @@ local function processData(szType, content)
 		result.alias = UrlDecode(alias)
 		result.type = "ss"
 		result.server = host[1]
-		if host[2]:find("/\\?") then
-			local query = split(host[2], "/\\?")
+		if host[2]:find("/%?") then
+			local query = split(host[2], "/%?")
 			result.server_port = query[1]
 			local params = {}
 			for _, v in pairs(split(query[2], '&')) do
 				local t = split(v, '=')
 				params[t[1]] = t[2]
 			end
-			if params.lugin then
-				local plugin_info = UrlDecode(params.lugin)
+			if params.plugin then
+				local plugin_info = UrlDecode(params.plugin)
 				local idx_pn = plugin_info:find(";")
 				if idx_pn then
-						result.plugin = plugin_info:sub(1, idx_pn - 1)
-						result.plugin_opts = plugin_info:sub(idx_pn + 1, #plugin_info)
+					result.plugin = plugin_info:sub(1, idx_pn - 1)
+					result.plugin_opts = plugin_info:sub(idx_pn + 1, #plugin_info)
 				else
-						result.plugin = plugin_info
+					result.plugin = plugin_info
 				end
 			end
 		else
