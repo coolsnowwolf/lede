@@ -10,7 +10,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray
 PKG_VERSION:=4.22.1
-PKG_RELEASE:=6
+PKG_RELEASE:=8
 PKG_BUILD_DIR:=$(BUILD_DIR)/v2ray-core-$(PKG_VERSION)
 
 PKG_SOURCE:=v2ray-core-$(PKG_VERSION).tar.gz
@@ -61,7 +61,7 @@ GO_PKG:=v2ray.com/core
 GO_PKG_LDFLAGS:=-s -w
 GO_PKG_LDFLAGS_X:= \
 	v2ray.com/core.version=$(PKG_VERSION) \
-	v2ray.com/core.build=R$(PKG_RELEASE) \
+	v2ray.com/core.build=Lean \
 	v2ray.com/core.codename=OpenWrt
 
 include $(INCLUDE_DIR)/package.mk
