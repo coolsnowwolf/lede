@@ -5,7 +5,7 @@ STOP=10
 
 enable=$(uci get unblockmusic.@unblockmusic[0].enabled)
 TYPE=$(uci get unblockmusic.@unblockmusic[0].musicapptype)
-ROUTE_IP=$(uci get network.lan.ipaddr)
+PROXY=$(uci get unblockmusic.@unblockmusic[0].proxy)
 ENDPOINT=$(uci get unblockmusic.@unblockmusic[0].endpoint)
 AUTOUPDATE=$(uci get unblockmusic.@unblockmusic[0].autoupdate)
 
@@ -25,25 +25,30 @@ add_rule()
 	$ipt_n -A cloud_music -d 192.168.0.0/16 -j RETURN
 	$ipt_n -A cloud_music -d 224.0.0.0/4 -j RETURN
 	$ipt_n -A cloud_music -d 240.0.0.0/4 -j RETURN
-	$ipt_n -A cloud_music -p tcp -j REDIRECT --to-ports 5200
-	$ipt_n -I PREROUTING -p tcp --dport 80 -m set --match-set music dst -j cloud_music
+	$ipt_n -A cloud_music -p tcp --dport 80 -j REDIRECT --to-ports 5201
+	$ipt_n -A cloud_music -p tcp --dport 443 -j REDIRECT --to-ports 5202
+	$ipt_n -I PREROUTING -p tcp -m set --match-set music dst -j cloud_music
+	iptables -I OUTPUT -d 223.252.199.10 -j DROP
 }
 
 del_rule(){
-	$ipt_n -D PREROUTING -p tcp --dport 80 -m set --match-set music dst -j cloud_music 2>/dev/null
+	$ipt_n -D PREROUTING -p tcp -m set --match-set music dst -j cloud_music 2>/dev/null
 	$ipt_n -F cloud_music  2>/dev/null
 	$ipt_n -X cloud_music  2>/dev/null
+	iptables -D OUTPUT -d 223.252.199.10 -j DROP 2>/dev/null
 	
 	rm -f /tmp/dnsmasq.d/dnsmasq-163.conf
-	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	/etc/init.d/dnsmasq reload >/dev/null 2>&1
 }
 
 set_firewall(){
   rm -f /tmp/dnsmasq.d/dnsmasq-163.conf
   mkdir -p /tmp/dnsmasq.d
-  echo "dhcp-option=252,http://$ROUTE_IP:5201/proxy.pac" > /tmp/dnsmasq.d/dnsmasq-163.conf
 	echo "ipset=/music.163.com/music" >> /tmp/dnsmasq.d/dnsmasq-163.conf
 	echo "ipset=/interface.music.163.com/music" >> /tmp/dnsmasq.d/dnsmasq-163.conf
+	echo "ipset=/interface3.music.163.com/music" >> /tmp/dnsmasq.d/dnsmasq-163.conf
+	echo "ipset=/apm.music.163.com/music" >> /tmp/dnsmasq.d/dnsmasq-163.conf
+	echo "ipset=/apm3.music.163.com/music" >> /tmp/dnsmasq.d/dnsmasq-163.conf
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	
 	add_rule
@@ -75,20 +80,27 @@ start()
 	
 	[ $enable -eq "0" ] && exit 0
 	
-	endponintset="";
+	endponintset=" ";
 	
 	if [ -n "$ENDPOINT" ]; then
 		endponintset="-e ${ENDPOINT}"
 	fi
 	
-	if [ $TYPE = "default" ]; then
-			node /usr/share/UnblockNeteaseMusic/app.js $endponintset -p 5201:5202 >/tmp/unblockmusic.log 2>&1 &
-			node /usr/share/UnblockNeteaseMusic/app.js -p 5200 >>/tmp/unblockmusic.log 2>&1 &
-	else
-			node /usr/share/UnblockNeteaseMusic/app.js $endponintset -p 5201:5202 -o $TYPE >/tmp/unblockmusic.log 2>&1 &
-			node /usr/share/UnblockNeteaseMusic/app.js -p 5200 -o $TYPE >>/tmp/unblockmusic.log 2>&1 &
-	fi
+	rm -f /tmp/unblockmusic.log
+	echo "$(date -R) # Start UnblockNeteaseMusic" >/tmp/unblockmusic.log
 	
+	if [ $TYPE = "default" ]; then
+		musictype=" "
+	else
+		musictype="-o $TYPE"
+	fi
+
+	node /usr/share/UnblockNeteaseMusic/app.js $endponintset -p 5201:5202 $musictype >>/tmp/unblockmusic.log 2>&1 &
+	
+	if [ $PROXY -eq "1" ]; then
+		node /usr/share/UnblockNeteaseMusic/app.js -p 5200 $musictype >>/tmp/unblockmusic.log 2>&1 &
+	fi
+		
 	set_firewall
 	add_cron
 	
@@ -96,15 +108,11 @@ start()
 }
 
 stop()
-{
-	kill -9 $(busybox ps -w | grep monitor | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-	kill -9 $(busybox ps -w | grep app.js | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+{	
+	kill -9 $(busybox ps -w | grep UnblockNeteaseMusic/app.js  | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	kill -9 $(busybox ps -w | grep logcheck.sh | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	rm -f /tmp/unblockmusic.log
-
+	
 	del_rule
 	del_cron
 }
-
-
-
