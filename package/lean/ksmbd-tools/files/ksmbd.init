@@ -1,12 +1,13 @@
 #!/bin/sh /etc/rc.common
 
 START=98
+USE_PROCD=1
 
-CIFSD_IFACE=""
+SMBD_IFACE=""
 
 smb_header()
 {
-	config_get CIFSD_IFACE $1 interface "lan"
+	config_get SMBD_IFACE $1 interface "lan"
 
 	# resolve interfaces
 	local interfaces
@@ -14,7 +15,7 @@ smb_header()
 		. /lib/functions/network.sh
 
 		local net
-		for net in $CIFSD_IFACE; do
+		for net in $SMBD_IFACE; do
 			local device
 			network_is_up $net || continue
 			network_get_device device "$net"
@@ -26,19 +27,30 @@ smb_header()
 	local hostname
 	hostname="$(cat /proc/sys/kernel/hostname)"
 
-	config_get workgroup		$1 workgroup	"WORKGROUP"
-	config_get description		$1 description	"Cifsd on OpenWrt"
+	config_get workgroup $1 workgroup "WORKGROUP"
+	config_get description $1 description "Ksmbd on OpenWrt"
+	config_get_bool ALLOW_LEGACY_PROTOCOLS $1 allow_legacy_protocols 0
 
 	sed -e "s#|NAME|#$hostname#g" \
 	    -e "s#|WORKGROUP|#$workgroup#g" \
 	    -e "s#|DESCRIPTION|#$description#g" \
 	    -e "s#|INTERFACES|#$interfaces#g" \
-	    /etc/cifs/smb.conf.template > /var/etc/cifs/smb.conf
+	    /etc/ksmbd/smb.conf.template > /var/etc/ksmbd/smb.conf
+		
+	{
+		printf "\n######### Dynamic written config options #########\n"
 
-	[ -e /etc/cifs/smb.conf ] || ln -nsf /var/etc/cifs/smb.conf /etc/cifs/smb.conf
+		if [ "$ALLOW_LEGACY_PROTOCOLS" -eq 1 ]; then
+			logger -p daemon.info -t 'ksmbd' "Legacy Protocols allowed, don't use this option for secure environments!"
+			printf "\tserver min protocol = NT1\n"
+			printf "\tserver signing = disabled\n"
+		fi
+	} >> /var/etc/ksmbd/smb.conf
 
-	if [ ! -L /etc/cifs/smb.conf ]; then
-		logger -t 'cifsd' "Local custom /etc/cifs/smb.conf file detected, all UCI/Luci config settings are ignored!"
+	[ -e /etc/ksmbd/smb.conf ] || ln -nsf /var/etc/ksmbd/smb.conf /etc/ksmbd/smb.conf
+
+	if [ ! -L /etc/ksmbd/smb.conf ]; then
+		logger -p daemon.warn -t 'ksmbd' "Local custom /etc/ksmbd/smb.conf file detected, all UCI/Luci config settings are ignored!"
 	fi
 }
 
@@ -112,79 +124,84 @@ smb_add_share()
 
 		[ -n "$hide_dot_files" ] && printf "\thide dot files = %s\n" "$hide_dot_files"
 		[ -n "$veto_files" ] && printf "\tveto files = %s\n" "$veto_files"
-	} >> /var/etc/cifs/smb.conf
+	} >> /var/etc/ksmbd/smb.conf
 }
 
 init_config()
 {
-	mkdir -p /var/etc/cifs
+	mkdir -p /var/etc/ksmbd
 
-	config_load cifsd
-	# allow copy&paste from samba UCI configs (we dont have a cifsd wiki yet)
+	config_load ksmbd
 	config_foreach smb_header globals
-	config_foreach smb_header samba
 	config_foreach smb_add_share share
-	config_foreach smb_add_share sambashare
 }
 
+service_triggers()
+{
+	# PROCD_RELOAD_DELAY=1000
 
-start()
+	procd_add_reload_trigger "dhcp" "system" "ksmbd"
+
+	local i
+	for i in $SMBD_IFACE; do
+		procd_add_reload_interface_trigger $i
+	done
+}
+
+kill_server()
+{
+	if [ -e /sys/module/ksmbd ]; then
+		if [ -e /sys/class/ksmbd-control/kill_server ]; then
+			logger -p daemon.info -t 'ksmbd' "triggering kill_server"
+			echo hard > /sys/class/ksmbd-control/kill_server
+		fi
+	fi
+}
+
+start_service()
 {
 	init_config
 
-	if [ ! -e /etc/cifs/smb.conf ]; then
-		logger -t 'cifsd' "missing config /etc/cifs/smb.conf, needs to-be created manually!"
+	if [ ! -e /etc/ksmbd/smb.conf ]; then
+		logger -p daemon.error -t 'ksmbd' "missing config /etc/ksmbd/smb.conf!"
 		exit 1
-	fi
-
-	if [ -e /sys/module/cifsd ]; then
-		if [ -e /sys/class/cifsd-control/kill_server ]; then
-			# upstream "BUG": ensure changes in smb.conf are reflected on a running kernel-server
-			echo hard > /sys/class/cifsd-control/kill_server
-			# we need a extra timeout for the reset
-			sleep 5
-		fi
 	fi
 	
-	modprobe cifsd 2> /dev/null
-	if [ ! -e /sys/module/cifsd ]; then
-		logger -t 'cifsd' "modprobe of cifsd module failed, can\'t start cifsd!"
+	# NOTE: We don't do a soft-reload via signal, since [global] smb.conf setting changes will be ignored, so always reset hard.
+	kill_server
+	
+	[ ! -e /sys/module/ksmbd ] && modprobe ksmbd 2> /dev/null
+	if [ ! -e /sys/module/ksmbd ]; then
+		logger -p daemon.error -t 'ksmbd' "modprobe of ksmbd module failed, can\'t start ksmbd!"
 		exit 1
 	fi
 
-	logger -t 'cifsd' "Starting CIFS/SMB userspace service."
-	/usr/sbin/cifsd --config /var/etc/cifs/smb.conf --n --s > /dev/null 2>&1
-
+	logger -p daemon.notice -t 'ksmbd' "Starting Ksmbd userspace service."
+	procd_open_instance
+	procd_add_mdns "smb" "tcp" "445"
+	procd_set_param command /usr/sbin/ksmbd.mountd --n
+	procd_set_param file /etc/ksmbd/smb.conf
+	procd_set_param limits nofile=16384
+	procd_close_instance
 }
 
-stop()
+stop_service()
 {
-	logger -t 'cifsd' "Stopping CIFSD userspace service."
-	killall cifsd > /dev/null 2>&1
+	logger -p daemon.notice -t 'ksmbd' "Stopping Ksmbd userspace service."
+	killall ksmbd.mountd > /dev/null 2>&1
 	
-	[ -e /sys/module/cifsd ] && rmmod cifsd > /dev/null 2>&1
-	# With open smb connections rmmod is not possible, without waiting for the long 'ipc timeout', so we use 'kill_server'!
-	if [ -e /sys/module/cifsd ]; then
-		logger -t 'cifsd' "triggering kill_server"
-		if [ -e /sys/class/cifsd-control/kill_server ]; then
-			echo hard > /sys/class/cifsd-control/kill_server
-			# we need a extra timeout for the reset
-			sleep 5
-		fi
-	fi
+	[ -e /sys/module/ksmbd ] && rmmod ksmbd > /dev/null 2>&1
+	# kill server if we cant rmmod
+	[ -e /sys/module/ksmbd ] && kill_server
 	# next try
-	[ -e /sys/module/cifsd ] && rmmod cifsd > /dev/null 2>&1
-	# check again
-	if [ -e /sys/module/cifsd ]; then
-		# wait more...
-		sleep 3
-	fi
-	# last try
-	[ -e /sys/module/cifsd ] && rmmod cifsd > /dev/null 2>&1
+	[ -e /sys/module/ksmbd ] && rmmod ksmbd > /dev/null 2>&1
 	
-	if [ -e /sys/module/cifsd ]; then
-		logger -t 'cifsd' "module still loaded after 8s timeout"
+	if [ -e /sys/module/ksmbd ]; then
+		logger -p daemon.error -t 'ksmbd' "module still loaded after kill_server?"
 	fi
-	[ -f /tmp/cifsd.lock ] && rm /tmp/cifsd.lock
+	[ -f /tmp/ksmbd.lock ] && rm /tmp/ksmbd.lock
 }
 
+# reload_service() {
+	# restart "$@"
+# }
