@@ -1,4 +1,4 @@
-
+#!/bin/sh
 
 function check_if_already_running(){
 	running_tasks="$(ps |grep "unblockneteasemusic" |grep "update_core" |grep -v "grep" |awk '{print $1}' |wc -l)"
@@ -10,7 +10,7 @@ function clean_log(){
 }
 
 function check_latest_version(){
-	latest_ver="$(wget-ssl --no-check-certificate -O- https://github.com/nondanee/UnblockNeteaseMusic/commits/master |tr -d '\n' |grep -Eo 'commit\/[0-9a-z]+' |sed -n 1p |sed 's#commit/##g')"
+	latest_ver="$(wget -O- https://github.com/nondanee/UnblockNeteaseMusic/commits/master |tr -d '\n' |grep -Eo 'commit\/[0-9a-z]+' |sed -n 1p |sed 's#commit/##g')"
 	[ -z "${latest_ver}" ] && echo -e "\nFailed to check latest version, please try again later." >>/tmp/unblockmusic_update.log && exit 1
 	if [ ! -e "/usr/share/UnblockNeteaseMusic/local_ver" ]; then
 		clean_log
@@ -37,7 +37,9 @@ function update_core(){
 
 	wget-ssl --no-check-certificate -t 1 -T 10 -O  /tmp/unblockneteasemusic/core/core.tar.gz "https://github.com/nondanee/UnblockNeteaseMusic/archive/master.tar.gz"  >/dev/null 2>&1
 	tar -zxf "/tmp/unblockneteasemusic/core/core.tar.gz" -C "/tmp/unblockneteasemusic/core/" >/dev/null 2>&1
-	rm -f /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-master/ca.crt /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-master/server.crt /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-master/server.key
+	if [ -e "/usr/share/UnblockNeteaseMusic/ca.crt" ] && [ -e "/usr/share/UnblockNeteaseMusic/server.crt" ] && [ -e "/usr/share/UnblockNeteaseMusic/server.key" ] ; then
+		rm -f /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-master/ca.crt /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-master/server.crt /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-master/server.key
+	fi
 	cp -a /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-master/* "/usr/share/UnblockNeteaseMusic/"
 	rm -rf "/tmp/unblockneteasemusic" >/dev/null 2>&1
 

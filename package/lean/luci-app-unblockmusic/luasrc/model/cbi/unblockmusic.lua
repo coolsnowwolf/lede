@@ -8,10 +8,15 @@ s = mp:section(TypedSection, "unblockmusic")
 s.anonymous=true
 s.addremove=false
 
-enabled = s:option(Flag, "enabled", translate("启用解锁"))
+enabled = s:option(Flag, "enabled", translate("启用"))
 enabled.default = 0
 enabled.rmempty = false
-enabled.description = translate("启用后，路由器自动分流解锁，大部分设备无需设置代理。<br />苹果系列设备需要设置 WIFI/有线代理方式为 自动 ,并安装 CA根证书并信任。")
+enabled.description = translate("启用后，路由器自动分流解锁，大部分设备无需设置代理")
+
+proxy = s:option(Flag, "proxy", translate("开启独立的HTTP代理服务"))
+proxy.default = 0
+proxy.rmempty = false
+proxy.description = translate("某些PC版本客户端不能自动解锁，需要手动设置 HTTP代理 为 路由器IP:5200端口 ")
 
 speedtype = s:option(ListValue, "musicapptype", translate("音源选择"))
 speedtype:value("default", translate("默认"))
@@ -31,7 +36,7 @@ endpoint.description = translate("默认为 https://music.163.com")
 
 o = s:option(Button,"certificate",translate("HTTPS 证书"))
 o.inputtitle = translate("下载 CA 根证书")
-o.description = translate("iOS 13 系统需要在“设置 -> 通用 -> 关于本机 -> 证书信任设置” 中，信任 UnblockNeteaseMusic Root CA )")
+o.description = translate("新版安卓/iOS客户端可能需要安装 CA根证书并信任<br />苹果系统需要在“设置 -> 通用 -> 关于本机 -> 证书信任设置”中，信任 UnblockNeteaseMusic Root CA )")
 o.inputstyle = "apply"
 o.write = function()
   	Download()
