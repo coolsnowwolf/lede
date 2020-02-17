@@ -1,0 +1,135 @@
+#!/bin/sh /etc/rc.common
+
+START=80
+STOP=10
+
+lan_addr="$(uci get network.lan.ipaddr)"
+
+enable="$(uci get unblockneteasemusic.@unblockneteasemusic[0].enable)"
+http_port="$(uci get unblockneteasemusic.@unblockneteasemusic[0].http_port)"
+https_port="$(uci get unblockneteasemusic.@unblockneteasemusic[0].https_port)"
+music_source="$(uci get unblockneteasemusic.@unblockneteasemusic[0].music_source)"
+music_customize_source="$(uci get unblockneteasemusic.@unblockneteasemusic[0].music_customize_source)"
+hijack_ways="$(uci get unblockneteasemusic.@unblockneteasemusic[0].hijack_ways)"
+extFile="/usr/share/UnblockNeteaseMusic/extFile.txt"
+serverCrt="/usr/share/UnblockNeteaseMusic/server.crt"
+serverKey="/usr/share/UnblockNeteaseMusic/server.key"
+serverCsr="/usr/share/UnblockNeteaseMusic/server.csr"
+caCrt="/usr/share/UnblockNeteaseMusic/ca.crt"
+caKey="/usr/share/UnblockNeteaseMusic/ca.key"
+logFile="/tmp/unblockneteasemusic.log"
+set_ipset() {
+	if [ "${set_type}" = "start" ]; then
+		mkdir -p "/tmp/dnsmasq.d"
+		rm -f "/tmp/dnsmasq.d/dnsmasq-unblockneteasemusic.conf"
+		cat <<-EOF >"/tmp/dnsmasq.d/dnsmasq-unblockneteasemusic.conf"
+			ipset=/.music.163.com/unblockneteasemusic
+			ipset=/interface.music.163.com/unblockneteasemusic
+			ipset=/interface3.music.163.com/unblockneteasemusic
+			ipset=/apm.music.163.com/unblockneteasemusic
+			ipset=/apm3.music.163.com/unblockneteasemusic
+		EOF
+		/etc/init.d/dnsmasq reload >"/dev/null" 2>&1
+
+		if ! ipset list unblockneteasemusic >"/dev/null"; then ipset create unblockneteasemusic hash:ip; fi
+		curl -s "http://httpdns.n.netease.com/httpdns/v2/d?domain=music.163.com,interface.music.163.com,interface3.music.163.com,apm.music.163.com,apm3.music.163.com,clientlog.music.163.com,clientlog3.music.163.com" | grep -Eo '[0-9]+?\.[0-9]+?\.[0-9]+?\.[0-9]+?' | sort | uniq | awk '{print "ipset add unblockneteasemusic "$1}' | bash >"/dev/null" 2>&1
+		iptables -t nat -N cloud_unblockneteasemusic
+		iptables -t nat -A cloud_unblockneteasemusic -d 0.0.0.0/8 -j RETURN
+		iptables -t nat -A cloud_unblockneteasemusic -d 10.0.0.0/8 -j RETURN
+		iptables -t nat -A cloud_unblockneteasemusic -d 127.0.0.0/8 -j RETURN
+		iptables -t nat -A cloud_unblockneteasemusic -d 169.254.0.0/16 -j RETURN
+		iptables -t nat -A cloud_unblockneteasemusic -d 172.16.0.0/12 -j RETURN
+		iptables -t nat -A cloud_unblockneteasemusic -d 192.168.0.0/16 -j RETURN
+		iptables -t nat -A cloud_unblockneteasemusic -d 224.0.0.0/4 -j RETURN
+		iptables -t nat -A cloud_unblockneteasemusic -d 240.0.0.0/4 -j RETURN
+		iptables -t nat -A cloud_unblockneteasemusic -p tcp --dport 80 -j REDIRECT --to-ports "${http_port}"
+		iptables -t nat -A cloud_unblockneteasemusic -p tcp --dport 443 -j REDIRECT --to-ports "${https_port}"
+		iptables -t nat -I PREROUTING -p tcp -m set --match-set unblockneteasemusic dst -j cloud_unblockneteasemusic
+
+		mkdir -p /var/etc
+		cat <<-EOF >>"/var/etc/unblockneteasemusic.include"
+			/etc/init.d/unblockneteasemusic restart
+		EOF
+	elif [ "${set_type}" = "stop" ]; then
+		iptables -t nat -D PREROUTING -p tcp -m set --match-set unblockneteasemusic dst -j cloud_unblockneteasemusic
+		iptables -t nat -F cloud_unblockneteasemusic
+		iptables -t nat -X cloud_unblockneteasemusic
+		ipset destroy unblockneteasemusic
+
+		echo "" >"/var/etc/unblockneteasemusic.include"
+		rm -f "/tmp/dnsmasq.d/dnsmasq-unblockneteasemusic.conf"
+		/etc/init.d/dnsmasq reload >"/dev/null" 2>&1
+	fi
+}
+
+set_hosts() {
+	if [ "${set_type}" = "start" ]; then
+		mkdir -p "/tmp/dnsmasq.d"
+		rm -f "/tmp/dnsmasq.d/dnsmasq-unblockneteasemusic.conf"
+		cat <<-EOF >"/tmp/dnsmasq.d/dnsmasq-unblockneteasemusic.conf"
+			address=/music.163.com/${lan_addr}
+			address=/interface.music.163.com/${lan_addr}
+			address=/interface3.music.163.com/${lan_addr}
+			address=/apm.music.163.com/${lan_addr}
+			address=/apm3.music.163.com/${lan_addr}
+			address=/music.httpdns.c.163.com/0.0.0.0
+		EOF
+		/etc/init.d/dnsmasq reload >"/dev/null" 2>&1
+		# ip route add 223.252.199.10 dev lo
+	elif [ "${set_type}" = "stop" ]; then
+		rm -f "/tmp/dnsmasq.d/dnsmasq-unblockneteasemusic.conf"
+		/etc/init.d/dnsmasq reload >"/dev/null" 2>&1
+		# ip route del 223.252.199.10
+	fi
+}
+createCertificate() {
+	echo "create certificate..." >>"${logFile}"
+	# 生成 CA 私钥
+	openssl genrsa -out "${caKey}" 2048
+	# 生成 CA 证书
+	openssl req -x509 -new -nodes -key "${caKey}" -sha256 -days 1825 -out "${caCrt}" -subj "/C=CN/CN=UnblockNeteaseMusic Root CA/O=UnblockNeteaseMusic"
+	# 生成服务器私钥
+	openssl genrsa -out "${serverKey}" 2048
+	# 生成证书签发请求
+	openssl req -new -sha256 -key "${serverKey}" -out "${serverCsr}" -subj "/C=CN/L=Hangzhou/O=NetEase (Hangzhou) Network Co., Ltd/OU=IT Dept./CN=*.music.163.com"
+	# 使用 CA 签发服务器证书
+	touch "${extFile}"
+	echo "subjectAltName=DNS:music.163.com,DNS:*.music.163.com" > "${extFile}"
+	openssl x509 -req -extfile "${extFile}" -days 1825 -in "${serverCsr}" -CA "${caCrt}" -CAkey "${caKey}" -CAcreateserial -out "${serverCrt}"
+}
+start() {
+	stop >>"${logFile}" 2>&1
+	[ "${enable}" -ne "1" ] && exit 0
+	if [ ! -f "$serverCrt" ]; then
+		createCertificate >>"${logFile}" 2>&1
+	fi
+	if [ "${music_source}" = "default" ]; then
+		nohup UnblockNeteaseMusic -p "${http_port}" -sp "${https_port}" -m 0 -c "${serverCrt}" -k "${serverKey}" >>"${logFile}" 2>&1 &
+	else
+		nohup UnblockNeteaseMusic -p "${http_port}" -sp "${https_port}" -o "${music_customize_source}" -m 0 -c "${serverCrt}" -k "${serverKey}" >>"${logFile}" 2>&1 &
+	fi
+
+	set_type="start"
+	if [ "${hijack_ways}" = "use_ipset" ]; then
+		set_ipset >"/dev/null" 2>&1
+	elif [ "${hijack_ways}" = "use_hosts" ]; then
+		set_hosts >"/dev/null" 2>&1
+	fi
+
+	sed -i '/UnblockNeteaseMusic/d' /etc/crontabs/root
+	echo "*/5 * * * * /usr/share/UnblockNeteaseMusic/log_check.sh" >>"/etc/crontabs/root"
+	/etc/init.d/cron restart >"/dev/null" 2>&1
+}
+
+stop() {
+	killall -9 "UnblockNeteaseMusic" >"/dev/null" 2>&1
+
+	sed -i '/UnblockNeteaseMusic/d' "/etc/crontabs/root"
+	/etc/init.d/cron restart >"/dev/null" 2>&1
+
+	rm -f "${logFile}"
+
+	set_type="stop"
+	set_ipset >"/dev/null" 2>&1
+	set_hosts >"/dev/null" 2>&1
+}
