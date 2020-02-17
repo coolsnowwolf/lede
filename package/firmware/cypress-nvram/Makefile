@@ -34,7 +34,7 @@ endef
 define Package/cypress-nvram-43430-sdio-rpi-3b
   $(Package/cypress-nvram-default)
   TITLE:=CYW43430 NVRAM for Raspberry Pi 3B
-  DEPENDS:=@TARGET_brcm2708
+  DEPENDS:=@TARGET_bcm27xx
 endef
 
 define Package/cypress-nvram-43430-sdio-rpi-3b/install
@@ -50,7 +50,7 @@ $(eval $(call BuildPackage,cypress-nvram-43430-sdio-rpi-3b))
 define Package/cypress-nvram-43430-sdio-rpi-zero-w
   $(Package/cypress-nvram-default)
   TITLE:=CYW43430 NVRAM for Raspberry Pi Zero W
-  DEPENDS:=@TARGET_brcm2708
+  DEPENDS:=@TARGET_bcm27xx
 endef
 
 define Package/cypress-nvram-43430-sdio-rpi-zero-w/install
@@ -66,7 +66,7 @@ $(eval $(call BuildPackage,cypress-nvram-43430-sdio-rpi-zero-w))
 define Package/cypress-nvram-43455-sdio-rpi-3b-plus
   $(Package/cypress-nvram-default)
   TITLE:=CYW43455 NVRAM for Raspberry Pi 3B+
-  DEPENDS:=@TARGET_brcm2708
+  DEPENDS:=@TARGET_bcm27xx
 endef
 
 define Package/cypress-nvram-43455-sdio-rpi-3b-plus/install
@@ -82,7 +82,7 @@ $(eval $(call BuildPackage,cypress-nvram-43455-sdio-rpi-3b-plus))
 define Package/cypress-nvram-43455-sdio-rpi-4b
   $(Package/cypress-nvram-default)
   TITLE:=CYW43455 NVRAM for Raspberry Pi 4B
-  DEPENDS:=@TARGET_brcm2708
+  DEPENDS:=@TARGET_bcm27xx
 endef
 
 define Package/cypress-nvram-43455-sdio-rpi-4b/install

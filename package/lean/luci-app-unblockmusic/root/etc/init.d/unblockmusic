@@ -5,8 +5,6 @@ STOP=10
 
 enable=$(uci get unblockmusic.@unblockmusic[0].enabled)
 TYPE=$(uci get unblockmusic.@unblockmusic[0].musicapptype)
-PROXY=$(uci get unblockmusic.@unblockmusic[0].proxy)
-ENDPOINT=$(uci get unblockmusic.@unblockmusic[0].endpoint)
 AUTOUPDATE=$(uci get unblockmusic.@unblockmusic[0].autoupdate)
 
 CRON_FILE=/etc/crontabs/root
@@ -25,8 +23,8 @@ add_rule()
 	$ipt_n -A cloud_music -d 192.168.0.0/16 -j RETURN
 	$ipt_n -A cloud_music -d 224.0.0.0/4 -j RETURN
 	$ipt_n -A cloud_music -d 240.0.0.0/4 -j RETURN
-	$ipt_n -A cloud_music -p tcp --dport 80 -j REDIRECT --to-ports 5201
-	$ipt_n -A cloud_music -p tcp --dport 443 -j REDIRECT --to-ports 5202
+	$ipt_n -A cloud_music -p tcp --dport 80 -j REDIRECT --to-ports 5200
+	$ipt_n -A cloud_music -p tcp --dport 443 -j REDIRECT --to-ports 5201
 	$ipt_n -I PREROUTING -p tcp -m set --match-set music dst -j cloud_music
 	iptables -I OUTPUT -d 223.252.199.10 -j DROP
 }
@@ -42,27 +40,29 @@ del_rule(){
 }
 
 set_firewall(){
-  rm -f /tmp/dnsmasq.d/dnsmasq-163.conf
-  mkdir -p /tmp/dnsmasq.d
-	echo "ipset=/music.163.com/music" >> /tmp/dnsmasq.d/dnsmasq-163.conf
-	echo "ipset=/interface.music.163.com/music" >> /tmp/dnsmasq.d/dnsmasq-163.conf
-	echo "ipset=/interface3.music.163.com/music" >> /tmp/dnsmasq.d/dnsmasq-163.conf
-	echo "ipset=/apm.music.163.com/music" >> /tmp/dnsmasq.d/dnsmasq-163.conf
-	echo "ipset=/apm3.music.163.com/music" >> /tmp/dnsmasq.d/dnsmasq-163.conf
-	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	rm -f /tmp/dnsmasq.d/dnsmasq-163.conf
+	mkdir -p /tmp/dnsmasq.d
+  	cat <<-EOF > "/tmp/dnsmasq.d/dnsmasq-163.conf"
+ipset=/.music.163.com/music
+ipset=/interface.music.163.com/music
+ipset=/interface3.music.163.com/music
+ipset=/apm.music.163.com/music
+ipset=/apm3.music.163.com/music
+ipset=/clientlog.music.163.com/music
+ipset=/clientlog3.music.163.com/music
+	EOF
+	/etc/init.d/dnsmasq reload >/dev/null 2>&1
 	
 	add_rule
 	
 	mkdir -p /var/etc
-	cat > "/var/etc/unblockmusic.include" <<-EOF
-/etc/init.d/unblockmusic restart
-	EOF
+	echo -e "/etc/init.d/unblockmusic restart" > "/var/etc/unblockmusic.include"
 }
 
 add_cron()
 {
 	if [ $AUTOUPDATE -eq 1 ]; then
-    sed -i '/update_core.sh/d' $CRON_FILE
+		sed -i '/update_core.sh/d' $CRON_FILE
 		echo '0 2 * * * /usr/share/UnblockNeteaseMusic/update_core.sh 2>&1' >> $CRON_FILE
 		crontab $CRON_FILE
 	fi
@@ -80,12 +80,6 @@ start()
 	
 	[ $enable -eq "0" ] && exit 0
 	
-	endponintset=" ";
-	
-	if [ -n "$ENDPOINT" ]; then
-		endponintset="-e ${ENDPOINT}"
-	fi
-	
 	rm -f /tmp/unblockmusic.log
 	echo "$(date -R) # Start UnblockNeteaseMusic" >/tmp/unblockmusic.log
 	
@@ -95,21 +89,17 @@ start()
 		musictype="-o $TYPE"
 	fi
 
-	node /usr/share/UnblockNeteaseMusic/app.js $endponintset -p 5201:5202 $musictype >>/tmp/unblockmusic.log 2>&1 &
-	
-	if [ $PROXY -eq "1" ]; then
-		node /usr/share/UnblockNeteaseMusic/app.js -p 5200 $musictype >>/tmp/unblockmusic.log 2>&1 &
-	fi
+	node /usr/share/UnblockNeteaseMusic/app.js -e http://music.163.com -p 5200:5201 $musictype >>/tmp/unblockmusic.log 2>&1 &
 		
 	set_firewall
 	add_cron
-	
+
 	/usr/share/UnblockNeteaseMusic/logcheck.sh >/dev/null 2>&1 &
 }
 
 stop()
 {	
-	kill -9 $(busybox ps -w | grep UnblockNeteaseMusic/app.js  | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+	kill -9 $(busybox ps -w | grep UnblockNeteaseMusic/app.js | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	kill -9 $(busybox ps -w | grep logcheck.sh | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	rm -f /tmp/unblockmusic.log
 	
