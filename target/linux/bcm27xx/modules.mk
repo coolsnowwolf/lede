@@ -5,4 +5,4 @@
 # See /LICENSE for more information.
 #
 
-include $(TOPDIR)/target/linux/brcm2708/modules/*.mk
+include $(TOPDIR)/target/linux/bcm27xx/modules/*.mk

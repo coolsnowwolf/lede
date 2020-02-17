@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 ARCH:=arm
-BOARD:=brcm2708
+BOARD:=bcm27xx
 BOARDNAME:=Broadcom BCM27xx
 FEATURES:=ext4 audio usb usbgadget display gpio fpu squashfs rootfs-part boot-part
 MAINTAINER:=Álvaro Fernández Rojas <noltari@gmail.com>
@@ -23,7 +23,7 @@ endef
 
 include $(INCLUDE_DIR)/target.mk
 DEFAULT_PACKAGES += \
-	brcm2708-gpu-fw \
+	bcm27xx-gpu-fw \
 	kmod-usb-hid \
 	kmod-sound-core kmod-sound-arm-bcm2835 \
 	kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1 \
