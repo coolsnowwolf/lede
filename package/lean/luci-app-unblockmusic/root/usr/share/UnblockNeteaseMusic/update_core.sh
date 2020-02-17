@@ -54,7 +54,7 @@ function update_core(){
 
 	echo -e "Succeeded in updating core." >/tmp/unblockmusic_update.log
 	echo -e "Local version: $(cat /usr/share/UnblockNeteaseMusic/local_ver 2>/dev/null), cloud version: ${latest_ver}.\n" >>/tmp/unblockmusic_update.log
-	node /usr/share/UnblockNeteaseMusic/app.js -v > /usr/share/UnblockNeteaseMusic/core_ver
+	cat /usr/share/UnblockNeteaseMusic/package-lock.json | grep version |awk -F ':' '{print $2}' | cut -c3-8 > /usr/share/UnblockNeteaseMusic/core_ver
 }
 
 function main(){
@@ -62,5 +62,4 @@ function main(){
 	check_latest_version
 }
 
-	[ "$1" == "luci_update" ] && luci_update="y"
 	main
