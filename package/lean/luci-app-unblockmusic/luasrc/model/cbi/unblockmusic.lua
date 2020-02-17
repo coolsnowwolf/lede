@@ -13,11 +13,6 @@ enabled.default = 0
 enabled.rmempty = false
 enabled.description = translate("启用后，路由器自动分流解锁，大部分设备无需设置代理")
 
-proxy = s:option(Flag, "proxy", translate("开启独立的HTTP代理服务"))
-proxy.default = 0
-proxy.rmempty = false
-proxy.description = translate("某些PC版本客户端不能自动解锁，需要手动设置 HTTP代理 为 路由器IP:5200端口 ")
-
 speedtype = s:option(ListValue, "musicapptype", translate("音源选择"))
 speedtype:value("default", translate("默认"))
 speedtype:value("netease", translate("网易云音乐"))
@@ -28,11 +23,6 @@ speedtype:value("kugou", translate("酷狗音乐"))
 speedtype:value("kuwo", translate("酷我音乐(高音质推荐)"))
 speedtype:value("migu", translate("咕咪音乐"))
 speedtype:value("joox", translate("JOOX音乐"))
-
-endpoint = s:option(Value, "endpoint", translate("转发HTTPS音源地址"))
-endpoint.default = "https://music.163.com"
-endpoint.rmempty = true
-endpoint.description = translate("默认为 https://music.163.com")
 
 o = s:option(Button,"certificate",translate("HTTPS 证书"))
 o.inputtitle = translate("下载 CA 根证书")
@@ -72,7 +62,7 @@ o.inputtitle = translate("更新核心版本")
 o.description = string.format(translate("目前运行主程序版本") ..  "<strong><font color=\"green\">: %s </font></strong>", ver)
 o.inputstyle = "reload"
 o.write = function()
-	luci.sys.exec("bash /usr/share/UnblockNeteaseMusic/update_core.sh 2>&1")
+	luci.sys.exec("/usr/share/UnblockNeteaseMusic/update_core.sh 2>&1")
   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "unblockmusic"))
 end
 
