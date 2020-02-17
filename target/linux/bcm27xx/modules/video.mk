@@ -13,7 +13,7 @@ define KernelPackage/camera-bcm2835
   FILES:= \
     $(LINUX_DIR)/drivers/staging/vc04_services/bcm2835-camera/bcm2835-v4l2.ko
   AUTOLOAD:=$(call AutoLoad,65,bcm2835-v4l2)
-  $(call AddDepends/video,@TARGET_brcm2708 +kmod-vchiq-mmal-bcm2835 +kmod-video-videobuf2)
+  $(call AddDepends/video,@TARGET_bcm27xx +kmod-vchiq-mmal-bcm2835 +kmod-video-videobuf2)
 endef
 
 define KernelPackage/camera-bcm2835/description
@@ -28,7 +28,7 @@ define KernelPackage/drm-vc4
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Broadcom VC4 Graphics
   DEPENDS:= \
-    @TARGET_brcm2708 +kmod-drm \
+    @TARGET_bcm27xx +kmod-drm \
     +kmod-sound-core \
     +kmod-sound-soc-core
   KCONFIG:= \
@@ -56,7 +56,7 @@ define KernelPackage/vc-sm-cma
     CONFIG_BCM_VC_SM_CMA
   FILES:= \
     $(LINUX_DIR)/drivers/staging/vc04_services/vc-sm-cma/vc-sm-cma.ko
-  $(call AddDepends/video,@TARGET_brcm2708)
+  $(call AddDepends/video,@TARGET_bcm27xx)
 endef
 
 define KernelPackage/vc-sm-cma/description
@@ -74,7 +74,7 @@ define KernelPackage/vchiq-mmal-bcm2835
     CONFIG_VIDEO_CODEC_BCM2835=n
   FILES:= \
     $(LINUX_DIR)/drivers/staging/vc04_services/vchiq-mmal/bcm2835-mmal-vchiq.ko
-  $(call AddDepends/video,@TARGET_brcm2708 +kmod-vc-sm-cma)
+  $(call AddDepends/video,@TARGET_bcm27xx +kmod-vc-sm-cma)
 endef
 
 define KernelPackage/vchiq-mmal-bcm2835/description

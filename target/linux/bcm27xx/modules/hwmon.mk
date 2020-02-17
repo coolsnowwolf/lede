@@ -10,7 +10,7 @@ define KernelPackage/hwmon-raspberrypi
   KCONFIG:=CONFIG_SENSORS_RASPBERRYPI_HWMON
   FILES:=$(LINUX_DIR)/drivers/hwmon/raspberrypi-hwmon.ko
   AUTOLOAD:=$(call AutoLoad,60,raspberrypi-hwmon)
-  $(call AddDepends/hwmon,@TARGET_brcm2708)
+  $(call AddDepends/hwmon,@TARGET_bcm27xx)
 endef
 
 define KernelPackage/hwmon-raspberrypi/description
@@ -23,7 +23,7 @@ $(eval $(call KernelPackage,hwmon-raspberrypi))
 define KernelPackage/hwmon-rpi-poe-fan
   SUBMENU:=$(HWMON_MENU)
   TITLE:=Raspberry Pi PoE HAT fan
-  DEPENDS:=@TARGET_brcm2708 +kmod-hwmon-core
+  DEPENDS:=@TARGET_bcm27xx +kmod-hwmon-core
   KCONFIG:=CONFIG_SENSORS_RPI_POE_FAN
   FILES:=$(LINUX_DIR)/drivers/hwmon/rpi-poe-fan.ko
   AUTOLOAD:=$(call AutoProbe,rpi-poe-fan)

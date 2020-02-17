@@ -14,7 +14,7 @@ define KernelPackage/sound-arm-bcm2835
   FILES:= \
     $(LINUX_DIR)/drivers/staging/vc04_services/bcm2835-audio/snd-bcm2835.ko
   AUTOLOAD:=$(call AutoLoad,68,snd-bcm2835)
-  DEPENDS:=@TARGET_brcm2708
+  DEPENDS:=@TARGET_bcm27xx
   $(call AddDepends/sound)
 endef
 
@@ -36,7 +36,7 @@ define KernelPackage/sound-soc-bcm2835-i2s
   FILES:= \
     $(LINUX_DIR)/sound/soc/bcm/snd-soc-bcm2835-i2s.ko
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-bcm2835-i2s)
-  DEPENDS:=@TARGET_brcm2708 +kmod-sound-soc-core
+  DEPENDS:=@TARGET_bcm27xx +kmod-sound-soc-core
   $(call AddDepends/sound)
 endef
 

@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_NAME:=brcm2708-gpu-fw
+PKG_NAME:=bcm27xx-gpu-fw
 PKG_VERSION:=2020-01-30
 PKG_RELEASE:=63bdbe0ea609a69f5c0a2212d608ef3d9915a7ad
 
@@ -133,16 +133,16 @@ define Download/start4x_elf
 endef
 $(eval $(call Download,start4x_elf))
 
-define Package/brcm2708-gpu-fw
+define Package/bcm27xx-gpu-fw
   SECTION:=boot
   CATEGORY:=Boot Loaders
-  DEPENDS:=@TARGET_brcm2708
-  TITLE:=brcm2708-gpu-fw
-  DEFAULT:=y if TARGET_brcm2708
+  DEPENDS:=@TARGET_bcm27xx
+  TITLE:=bcm27xx-gpu-fw
+  DEFAULT:=y if TARGET_bcm27xx
 endef
 
-define Package/brcm2708-gpu-fw/description
- GPU and kernel boot firmware for brcm2708. 
+define Package/bcm27xx-gpu-fw/description
+ GPU and kernel boot firmware for bcm27xx.
 endef
 
 define Build/Prepare
@@ -168,7 +168,7 @@ define Build/Compile
 	true
 endef
 
-define Package/brcm2708-gpu-fw/install
+define Package/bcm27xx-gpu-fw/install
 	true
 endef
 
@@ -189,4 +189,4 @@ define Build/InstallDev
 	$(CP) $(PKG_BUILD_DIR)/fixup4x.dat $(KERNEL_BUILD_DIR)
 endef
 
-$(eval $(call BuildPackage,brcm2708-gpu-fw))
+$(eval $(call BuildPackage,bcm27xx-gpu-fw))

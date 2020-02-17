@@ -13,7 +13,7 @@ define KernelPackage/pwm-bcm2835
     CONFIG_PWM_BCM2835
   FILES:=$(LINUX_DIR)/drivers/pwm/pwm-bcm2835.ko
   AUTOLOAD:=$(call AutoLoad,60,pwm-bcm2835)
-  DEPENDS:=@TARGET_brcm2708
+  DEPENDS:=@TARGET_bcm27xx
 endef
 
 define KernelPackage/pwm-bcm2835/description
@@ -30,7 +30,7 @@ define KernelPackage/random-bcm2835
     CONFIG_HW_RANDOM_BCM2835
   FILES:=$(LINUX_DIR)/drivers/char/hw_random/bcm2835-rng.ko
   AUTOLOAD:=$(call AutoLoad,11,bcm2835-rng)
-  DEPENDS:=@TARGET_brcm2708 +kmod-random-core
+  DEPENDS:=@TARGET_bcm27xx +kmod-random-core
 endef
 
 define KernelPackage/random-bcm2835/description
@@ -46,7 +46,7 @@ define KernelPackage/smi-bcm2835
   KCONFIG:=CONFIG_BCM2835_SMI
   FILES:=$(LINUX_DIR)/drivers/misc/bcm2835_smi.ko
   AUTOLOAD:=$(call AutoLoad,20,bcm2835_smi)
-  DEPENDS:=@TARGET_brcm2708
+  DEPENDS:=@TARGET_bcm27xx
 endef
 
 define KernelPackage/smi-bcm2835/description
@@ -63,7 +63,7 @@ define KernelPackage/smi-bcm2835-dev
   KCONFIG:=CONFIG_BCM2835_SMI_DEV
   FILES:=$(LINUX_DIR)/drivers/char/broadcom/bcm2835_smi_dev.ko
   AUTOLOAD:=$(call AutoLoad,21,bcm2835_smi_dev)
-  DEPENDS:=@TARGET_brcm2708 +kmod-smi-bcm2835
+  DEPENDS:=@TARGET_bcm27xx +kmod-smi-bcm2835
 endef
 
 define KernelPackage/smi-bcm2835-dev/description
