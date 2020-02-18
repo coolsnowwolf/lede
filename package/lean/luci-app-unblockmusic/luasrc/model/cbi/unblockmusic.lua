@@ -62,7 +62,7 @@ o.inputtitle = translate("更新核心版本")
 o.description = string.format(translate("目前运行主程序版本") ..  "<strong><font color=\"green\">: %s </font></strong>", ver)
 o.inputstyle = "reload"
 o.write = function()
-	luci.sys.exec("/usr/share/UnblockNeteaseMusic/update_core.sh 2>&1")
+	luci.sys.exec("/usr/share/UnblockNeteaseMusic/update_core.sh luci_update 2>&1")
   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "unblockmusic"))
 end
 
