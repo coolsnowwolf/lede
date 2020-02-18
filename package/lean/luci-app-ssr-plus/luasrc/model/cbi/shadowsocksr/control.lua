@@ -18,7 +18,23 @@ o.datatype = "ip4addr"
 -- Part of LAN
 s:tab("lan_ac", translate("LAN IP AC"))
 
-o = s:taboption("lan_ac", DynamicList, "lan_ac_ips", translate("LAN Bypassed Host List"))
+o = s:taboption("lan_ac", ListValue, "lan_ac_mode", translate("LAN Access Control"))
+o:value("0", translate("Disable"))
+o:value("w", translate("Allow listed only"))
+o:value("b", translate("Allow all except listed"))
+o.rmempty = false
+
+o = s:taboption("lan_ac", DynamicList, "lan_ac_ips", translate("LAN Host List"))
+o.datatype = "ipaddr"
+luci.ip.neighbors({ family = 4 }, function(entry)
+		if entry.reachable then
+			o:value(entry.dest:string())
+		end
+end)
+o:depends("lan_ac_mode", "w")
+o:depends("lan_ac_mode", "b")
+
+o = s:taboption("lan_ac", DynamicList, "lan_bp_ips", translate("LAN Bypassed Host List"))
 o.datatype = "ipaddr"
 luci.ip.neighbors({ family = 4 }, function(entry)
 		if entry.reachable then
