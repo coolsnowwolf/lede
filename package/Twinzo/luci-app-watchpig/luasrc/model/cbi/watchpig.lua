@@ -40,16 +40,19 @@ week:value(5,translate("Friday"))
 week:value(6,translate("Saturday"))
 week:value(7,translate("Sunday"))
 week.default=0
+week.rmempty = true
 week:depends({enable="1"})
 
 hour=s:taboption("basic",Value,"hour",translate("Hour"))
 hour.datatype = "range(0,23)"
 hour.default=0
+hour.rmempty = true
 hour:depends({enable="1"})
 
 pass=s:taboption("basic",Value,"minute",translate("Minute"))
 pass.datatype = "range(0,59)"
 pass.default=0
+pass.rmempty = true
 pass:depends({enable="1"})
 
 reboot_run=s:taboption("basic",Flag,"reboot_run",translate("Modify mac at boot"))

@@ -6,6 +6,7 @@
 #
 
 mode="$1"
+forcedelay="$3"
 
 # Fix potential typo in mode (backward compatibility).
 [ "$mode" = "allways" ] && mode="allways"
@@ -55,33 +56,33 @@ reconnect(){
 
 watchpig_allways() {
 	local period="$1"; local forcedelay="$2";local custom="${3:-}"
-	local realperiod="$1";
 
-	sleep "$period" && shutdown_now "$forcedelay" && eval "$custom"	
+	sleep 1 && shutdown_now "$forcedelay" && eval "$custom"	
 }
 
 watchpig_ranmac() {
 	local period="$1"; local forcedelay="$2";local custom="${3:-}"
 
-	sleep "$period" && random_mac && reconnect "$forcedelay" && eval "$custom"
+	sleep 1 && random_mac && reconnect "$forcedelay" && eval "$custom"
 }
 
 watchpig_reconnect() {
 	local period="$1"; local forcedelay="$2";local custom="${3:-}"
 
-	sleep "$period" && reconnect "$forcedelay" && eval "$custom"
+	sleep 1 && reconnect "$forcedelay" && eval "$custom"
 }
 
 watchpig_ping_behaviour() {
 	local action="$1"
-	[ "$action" = "ping1" ] && sleep "$period" && shutdown_now "$forcedelay"
-	[ "$action" = "ping2" ] && sleep "$period" && reconnect "$forcedelay"
-	[ "$action" = "ping1" ] && sleep "$period" && random_mac && reconnect "$forcedelay"
+	[ "$action" = "ping1" ] && sleep 1 && shutdown_now "$forcedelay"
+	[ "$action" = "ping2" ] && sleep 1 && reconnect "$forcedelay"
+	[ "$action" = "ping1" ] && sleep 1 && random_mac && reconnect "$forcedelay"
 }
 
 watchpig_ping() {
 	local period="$1"; local forcedelay="$2"; local pinghosts="$3"; local pingperiod="$4"
 	local custom="$5";local behave="$6"
+	local realperiod="$1";
 	time_now="$(cat /proc/uptime)"
 	time_now="${time_now%%.*}"
 	time_lastcheck="$time_now"
@@ -110,8 +111,8 @@ watchpig_ping() {
 				time_lastcheck_withinternet="$time_now"
 			else
 				time_diff="$((time_now-time_lastcheck_withinternet))"
-				[ $("lang") -ne 1 ] && logger -p daemon.info -t "watchpig[$$]" "no internet connectivity for $time_diff seconds. Reseting when reaching $realperiod"
-				[ $("lang") -eq 1 ] && logger -p daemon.info -t "watchpig[$$]" "网络中断达$time_diff秒。达到$realperiod时重置"
+				[ $("lang") -ne 1 ] && logger -p daemon.info -t "watchpig[$$]" "no internet connectivity for $time_diff seconds. Reseting when reaching $realperiod seconds"
+				[ $("lang") -eq 1 ] && logger -p daemon.info -t "watchpig[$$]" "网络中断达$time_diff秒。达到$realperiod秒时重置"
 				[ $("lang") -eq 1 ] && logger -p daemon.info -t "watchpig[$$]" "别担心，这可能只是普通的延迟"
 			fi
 		done
