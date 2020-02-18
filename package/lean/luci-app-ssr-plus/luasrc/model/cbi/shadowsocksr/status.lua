@@ -160,6 +160,11 @@ s.rawhtml  = true
 s.template = "shadowsocksr/refresh"
 s.value =tostring(math.ceil(gfw_count)) .. " " .. translate("Records")
 
+s=m:field(DummyValue,"ip_data",translate("China IP Data"))
+s.rawhtml  = true
+s.template = "shadowsocksr/refresh"
+s.value =ip_count .. " " .. translate("Records")
+
 if ucic:get_first(shadowsocksr, 'global', 'adblock', '0') == '1' then
 s=m:field(DummyValue,"ad_data",translate("Advertising Data"))
 s.rawhtml  = true
@@ -167,9 +172,8 @@ s.template = "shadowsocksr/refresh"
 s.value =ad_count .. " " .. translate("Records")
 end
 
-s=m:field(DummyValue,"ip_data",translate("China IP Data"))
-s.rawhtml  = true
-s.template = "shadowsocksr/refresh"
-s.value =ip_count .. " " .. translate("Records")
+s=m:field(DummyValue,"check_port",translate("Check Server Port"))
+s.template = "shadowsocksr/checkport"
+s.value =translate("No Check")
 
 return m
