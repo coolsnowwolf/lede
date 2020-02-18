@@ -19,6 +19,7 @@ function index()
 	entry({"admin", "services", "shadowsocksr", "check"}, call("check_status"))
 	entry({"admin", "services", "shadowsocksr", "refresh"}, call("refresh_data"))
 	entry({"admin", "services", "shadowsocksr", "subscribe"}, call("subscribe"))
+	entry({"admin", "services", "shadowsocksr", "checkport"}, call("check_port"))
 	entry({"admin", "services", "shadowsocksr", "log"},form("shadowsocksr/log"),_("Log"), 80).leaf = true
 	entry({"admin", "services", "shadowsocksr","run"},call("act_status")).leaf=true
 	entry({"admin", "services", "shadowsocksr", "ping"}, call("act_ping")).leaf=true
@@ -42,13 +43,13 @@ function act_ping()
 	local domain = luci.http.formvalue("domain")
 	local port = luci.http.formvalue("port")
 	e.index = luci.http.formvalue("index")
-	e.ping = luci.sys.exec("ping -c 1 -W 1 %q 2>&1 | grep -o 'time=[0-9]*.[0-9]' | awk -F '=' '{print$2}'" % domain)
 	local iret = luci.sys.call(" ipset add ss_spec_wan_ac " .. domain .. " 2>/dev/null")
 	local socket = nixio.socket("inet", "stream")
 	socket:setopt("socket", "rcvtimeo", 3)
 	socket:setopt("socket", "sndtimeo", 3)
 	e.socket = socket:connect(domain, port)
 	socket:close()
+	e.ping = luci.sys.exec("ping -c 1 -W 1 %q 2>&1 | grep -o 'time=[0-9]*.[0-9]' | awk -F '=' '{print$2}'" % domain)
 	if (iret == 0) then
 		luci.sys.call(" ipset del ss_spec_wan_ac " .. domain)
 	end
@@ -146,4 +147,37 @@ end
 end
 luci.http.prepare_content("application/json")
 luci.http.write_json({ ret=retstring ,retcount=icount})
+end
+
+function check_port()
+local set=""
+local retstring="<br /><br />"
+local s
+local server_name = ""
+local shadowsocksr = "shadowsocksr"
+local uci = luci.model.uci.cursor()
+local iret=1
+uci:foreach(shadowsocksr, "servers", function(s)
+	if s.alias then
+		server_name=s.alias
+	elseif s.server and s.server_port then
+		server_name= "%s:%s" %{s.server, s.server_port}
+	end
+	iret=luci.sys.call(" ipset add ss_spec_wan_ac " .. s.server .. " 2>/dev/null")
+	socket = nixio.socket("inet", "stream")
+	socket:setopt("socket", "rcvtimeo", 3)
+	socket:setopt("socket", "sndtimeo", 3)
+	ret=socket:connect(s.server,s.server_port)
+	if  tostring(ret) == "true" then
+	socket:close()
+	retstring =retstring .. "<font color='green'>[" .. server_name .. "] OK.</font><br />"
+	else
+	retstring =retstring .. "<font color='red'>[" .. server_name .. "] Error.</font><br />"
+	end
+	if  iret== 0 then
+	luci.sys.call(" ipset del ss_spec_wan_ac " .. s.server)
+	end
+end)
+luci.http.prepare_content("application/json")
+luci.http.write_json({ ret=retstring })
 end
