@@ -1,0 +1,82 @@
+From 0b3764707993123148b4e94d44ff282b111c8edb Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Mon, 6 Jan 2020 14:05:42 +0000
+Subject: [PATCH] pinctrl: bcm2835: Change init order for gpio hogs
+
+pinctrl-bcm2835 is a combined pinctrl/gpio driver. Currently the gpio
+side is registered first, but this breaks gpio hogs (which are
+configured during gpiochip_add_data). Part of the hog initialisation
+is a call to pinctrl_gpio_request, and since the pinctrl driver hasn't
+yet been registered this results in an -EPROBE_DEFER from which it can
+never recover.
+
+Change the initialisation sequence to register the pinctrl driver
+first.
+
+See: https://www.raspberrypi.org/forums/viewtopic.php?f=107&t=260600
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ drivers/pinctrl/bcm/pinctrl-bcm2835.c | 34 +++++++++++++--------------
+ 1 file changed, 17 insertions(+), 17 deletions(-)
+
+--- a/drivers/pinctrl/bcm/pinctrl-bcm2835.c
++++ b/drivers/pinctrl/bcm/pinctrl-bcm2835.c
+@@ -1140,9 +1140,25 @@ static int bcm2835_pinctrl_probe(struct
+ 		raw_spin_lock_init(&pc->irq_lock[i]);
+ 	}
+ 
++	match = of_match_node(bcm2835_pinctrl_match, pdev->dev.of_node);
++	if (match) {
++		bcm2835_pinctrl_desc.confops =
++			(const struct pinconf_ops *)match->data;
++	}
++
++	pc->pctl_dev = devm_pinctrl_register(dev, &bcm2835_pinctrl_desc, pc);
++	if (IS_ERR(pc->pctl_dev))
++		return PTR_ERR(pc->pctl_dev);
++
++	pc->gpio_range = bcm2835_pinctrl_gpio_range;
++	pc->gpio_range.base = pc->gpio_chip.base;
++	pc->gpio_range.gc = &pc->gpio_chip;
++	pinctrl_add_gpio_range(pc->pctl_dev, &pc->gpio_range);
++
+ 	err = devm_gpiochip_add_data(dev, &pc->gpio_chip, pc);
+ 	if (err) {
+ 		dev_err(dev, "could not add GPIO chip\n");
++		pinctrl_remove_gpio_range(pc->pctl_dev, &pc->gpio_range);
+ 		return err;
+ 	}
+ 
+@@ -1150,6 +1166,7 @@ static int bcm2835_pinctrl_probe(struct
+ 				   0, handle_level_irq, IRQ_TYPE_NONE);
+ 	if (err) {
+ 		dev_info(dev, "could not add irqchip\n");
++		pinctrl_remove_gpio_range(pc->pctl_dev, &pc->gpio_range);
+ 		return err;
+ 	}
+ 
+@@ -1172,23 +1189,6 @@ static int bcm2835_pinctrl_probe(struct
+ 					     bcm2835_gpio_irq_handler);
+ 	}
+ 
+-	match = of_match_node(bcm2835_pinctrl_match, pdev->dev.of_node);
+-	if (match) {
+-		bcm2835_pinctrl_desc.confops =
+-			(const struct pinconf_ops *)match->data;
+-	}
+-
+-	pc->pctl_dev = devm_pinctrl_register(dev, &bcm2835_pinctrl_desc, pc);
+-	if (IS_ERR(pc->pctl_dev)) {
+-		gpiochip_remove(&pc->gpio_chip);
+-		return PTR_ERR(pc->pctl_dev);
+-	}
+-
+-	pc->gpio_range = bcm2835_pinctrl_gpio_range;
+-	pc->gpio_range.base = pc->gpio_chip.base;
+-	pc->gpio_range.gc = &pc->gpio_chip;
+-	pinctrl_add_gpio_range(pc->pctl_dev, &pc->gpio_range);
+-
+ 	return 0;
+ }
+ 

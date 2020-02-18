@@ -257,6 +257,21 @@ endef
 $(eval $(call KernelPackage,hwmon-ltc4151))
 
 
+define KernelPackage/hwmon-mcp3021
+  TITLE:=MCP3021/3221 monitoring support
+  KCONFIG:=CONFIG_SENSORS_MCP3021
+  FILES:=$(LINUX_DIR)/drivers/hwmon/mcp3021.ko
+  AUTOLOAD:=$(call AutoProbe,mcp3021)
+  $(call AddDepends/hwmon,+kmod-i2c-core)
+endef
+
+define KernelPackage/hwmon-mcp3021/description
+ Kernel module for Linear Technology MCP3021/3221 current and voltage monitor chip
+endef
+
+$(eval $(call KernelPackage,hwmon-mcp3021))
+
+
 define KernelPackage/hwmon-nct6775
   TITLE:=NCT6106D/6775F/6776F/6779D/6791D/6792D/6793D and compatibles monitoring support
   KCONFIG:=CONFIG_SENSORS_NCT6775

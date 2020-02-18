@@ -260,6 +260,25 @@ define Device/qcom_ipq8064-db149
 endef
 TARGET_DEVICES += qcom_ipq8064-db149
 
+define Device/ruijie_rg-mtfi-m520
+	DEVICE_VENDOR := Ruijie
+	DEVICE_MODEL := RG-MTFi-M520
+	DEVICE_DTS := qcom-ipq8064-mtfi-m520
+	KERNEL_SIZE := 4096k
+	BLOCKSIZE := 64k
+	BOARD_NAME := rg-mtfi-m520
+	KERNEL_SUFFIX := -uImage
+	KERNEL = kernel-bin | append-dtb | uImage none | pad-to $${KERNEL_SIZE}
+	KERNEL_NAME := zImage
+	IMAGES := factory.bin sysupgrade.bin mmcblk0p2-kernel.bin mmcblk0p3-rootfs.bin
+	IMAGE/factory.bin := qsdk-ipq-factory-nor
+	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to $$$${BLOCKSIZE} | sysupgrade-tar rootfs=$$$$@ | append-metadata
+	IMAGE/mmcblk0p2-kernel.bin := append-kernel | pad-to $$$${KERNEL_SIZE}
+	IMAGE/mmcblk0p3-rootfs.bin := append-rootfs | pad-rootfs
+	DEVICE_PACKAGES := ath10k-firmware-qca988x-ct blockd e2fsprogs f2fs-tools kmod-fs-ext4 kmod-fs-f2fs losetup
+endef
+TARGET_DEVICES += ruijie_rg-mtfi-m520
+
 define Device/tplink_c2600
 	$(call Device/TpSafeImage)
 	DEVICE_VENDOR := TP-Link
