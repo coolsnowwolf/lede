@@ -11,7 +11,7 @@ PKG_VERSION:=2018.03
 
 PKG_SOURCE:=u-boot-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=\
-	http://mirror2.openwrt.org/sources \
+	https://sources.openwrt.org/ \
 	ftp://ftp.denx.de/pub/u-boot
 PKG_HASH:=7e7477534409d5368eb1371ffde6820f0f79780a1a1f676161c48442cb303dfd
 

@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=frpc
-PKG_VERSION:=0.31.1
+PKG_VERSION:=0.31.2
 PKG_RELEASE:=1
 
 ifeq ($(ARCH),mipsel)
