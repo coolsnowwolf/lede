@@ -96,7 +96,7 @@ end
 local function processData(szType, content)
 	local result = {
 -- 		auth_enable = '0',
-		switch_enable = '1',
+-- 		switch_enable = '1',
 		type = szType,
 		local_port = 1234,
 -- 		timeout = 60, -- 不太确定 好像是死的
@@ -228,8 +228,11 @@ local function processData(szType, content)
 	-- alias 不参与 hashkey 计算
 	local alias = result.alias
 	result.alias = nil
+	local switch_enable = result.switch_enable
+	result.switch_enable = nil
 	result.hashkey = md5(jsonStringify(result))
 	result.alias = alias
+	result.switch_enable = switch_enable
 	return result
 end
 -- wget
@@ -333,7 +336,15 @@ local execute = function()
 			else
 				log('忽略手动添加的节点: ' .. old.alias)
 			end
+		
+		-- 保留原有节点的自动切换设置
+		
+      if(old.switch_enable)
+      then
+        nodeResult.switch_enable = old.switch_enable
+      end
 		end)
+		
 		for k, v in ipairs(nodeResult) do
 			for kk, vv in ipairs(v) do
 				if not vv._ignore then

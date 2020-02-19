@@ -13,6 +13,9 @@ endif
 IPKG_BUILD:= \
   $(SCRIPT_DIR)/ipkg-build -c -o 0 -g 0
 
+IPKG_REMOVE:= \
+  $(SCRIPT_DIR)/ipkg-remove
+
 IPKG_STATE_DIR:=$(TARGET_DIR)/usr/lib/opkg
 
 # 1: package name
@@ -90,8 +93,9 @@ _endef=endef
 
 ifeq ($(DUMP),)
   define BuildTarget/ipkg
+    ABIV_$(1):=$(call GetABISuffix,$(1))
     PDIR_$(1):=$(call FeedPackageDir,$(1))
-    IPKG_$(1):=$$(PDIR_$(1))/$(1)_$(VERSION)_$(PKGARCH).ipk
+    IPKG_$(1):=$$(PDIR_$(1))/$(1)$$(ABIV_$(1))_$(VERSION)_$(PKGARCH).ipk
     IDIR_$(1):=$(PKG_BUILD_DIR)/ipkg-$(PKGARCH)/$(1)
     KEEP_$(1):=$(strip $(call Package/$(1)/conffiles))
 
@@ -148,19 +152,20 @@ ifeq ($(DUMP),)
 	$(call locked,$(CP) $(PKG_BUILD_DIR)/.pkgdir/$(1)/. $(STAGING_DIR_ROOT)/,root-copy)
 	touch $$@
 
-    Package/$(1)/DEPENDS := $$(call mergelist,$$(filter-out @%,$$(IDEPEND_$(1))))
+    Package/$(1)/DEPENDS := $$(call mergelist,$$(foreach dep,$$(filter-out @%,$$(IDEPEND_$(1))),$$(dep)$$(call GetABISuffix,$$(dep))))
     ifneq ($$(EXTRA_DEPENDS),)
       Package/$(1)/DEPENDS := $$(EXTRA_DEPENDS)$$(if $$(Package/$(1)/DEPENDS),$$(comma) $$(Package/$(1)/DEPENDS))
     endif
 
 $(_define) Package/$(1)/CONTROL
-Package: $(1)
+Package: $(1)$$(ABIV_$(1))
 Version: $(VERSION)
 $$(call addfield,Depends,$$(Package/$(1)/DEPENDS)
 )$$(call addfield,Conflicts,$$(call mergelist,$(CONFLICTS))
-)$$(call addfield,Provides,$$(call mergelist,$(PROVIDES))
+)$$(call addfield,Provides,$$(call mergelist,$(PROVIDES)$$(if $$(ABIV_$(1)), $(1)))
 )$$(call addfield,Alternatives,$$(call mergelist,$(ALTERNATIVES))
 )$$(call addfield,Source,$(SOURCE)
+)$$(call addfield,SourceName,$(1)
 )$$(call addfield,License,$(LICENSE)
 )$$(call addfield,LicenseFiles,$(LICENSE_FILES)
 )$$(call addfield,Section,$(SECTION)
@@ -176,7 +181,7 @@ $(_endef)
     $$(IPKG_$(1)) : export DESCRIPTION=$$(Package/$(1)/description)
     $$(IPKG_$(1)) : export PATH=$$(TARGET_PATH_PKG)
     $(PKG_INFO_DIR)/$(1).provides $$(IPKG_$(1)): $(STAMP_BUILT) $(INCLUDE_DIR)/package-ipkg.mk
-	@rm -rf $$(IDIR_$(1)) $$(call opkg_package_files,$(1))
+	@rm -rf $$(IDIR_$(1)) $$(if $$(call opkg_package_files,$(1)*),; $$(IPKG_REMOVE) $(1) $$(call opkg_package_files,$(1)*))
 	mkdir -p $(PACKAGE_DIR) $$(IDIR_$(1))/CONTROL $(PKG_INFO_DIR)
 	$(call Package/$(1)/install,$$(IDIR_$(1)))
 	$(if $(Package/$(1)/install-overlay),mkdir -p $(PACKAGE_DIR) $$(IDIR_$(1))/rootfs-overlay)
@@ -235,7 +240,7 @@ $(_endef)
 	@[ -f $$(IPKG_$(1)) ]
 
     $(1)-clean:
-	$$(if $$(call opkg_package_files,$(1)),rm -f $$(call opkg_package_files,$(1)))
+	$$(if $$(call opkg_package_files,$(1)*),$$(IPKG_REMOVE) $(1) $$(call opkg_package_files,$(1)*))
 
     clean: $(1)-clean
 
