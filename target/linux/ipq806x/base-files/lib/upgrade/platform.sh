@@ -22,6 +22,7 @@ platform_do_upgrade() {
 	netgear,r7800 |\
 	qcom,ipq8064-ap148 |\
 	qcom,ipq8064-ap161 |\
+	ruijie,rg-mtfi-m520 |\
 	zyxel,nbg6817)
 		nand_do_upgrade "$ARGV"
 		;;
@@ -47,6 +48,9 @@ platform_do_upgrade() {
 
 platform_nand_pre_upgrade() {
 	case "$(board_name)" in
+	ruijie,rg-mtfi-m520)
+		ruijie_do_upgrade "$1"
+		;;
 	zyxel,nbg6817)
 		zyxel_do_upgrade "$1"
 		;;
