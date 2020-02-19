@@ -41,3 +41,8 @@ define FeedSourcesAppend
 			echo '$(if $(filter m,$(CONFIG_FEED_$(feed))),# )src/gz %d_$(feed) %U/packages/%A/$(feed)';)))) \
 ) >> $(1)
 endef
+
+# 1: package name
+define GetABISuffix
+$(if $(filter-out kmod-%,$(1)),$(if $(Package/$(1)/abiversion),$(if $(filter %0 %1 %2 %3 %4 %5 %6 %7 %8 %9,$(1)),-)$(Package/$(1)/abiversion)))
+endef
