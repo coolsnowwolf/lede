@@ -8,10 +8,10 @@ s = mp:section(TypedSection, "unblockmusic")
 s.anonymous=true
 s.addremove=false
 
-enabled = s:option(Flag, "enabled", translate("启用解锁"))
+enabled = s:option(Flag, "enabled", translate("启用"))
 enabled.default = 0
 enabled.rmempty = false
-enabled.description = translate("启用后，路由器自动分流解锁，大部分设备无需设置代理。<br />苹果系列设备需要设置 WIFI/有线代理方式为 自动 ,并安装 CA根证书并信任。")
+enabled.description = translate("启用后，路由器自动分流解锁，大部分设备无需设置代理")
 
 speedtype = s:option(ListValue, "musicapptype", translate("音源选择"))
 speedtype:value("default", translate("默认"))
@@ -24,14 +24,9 @@ speedtype:value("kuwo", translate("酷我音乐(高音质推荐)"))
 speedtype:value("migu", translate("咕咪音乐"))
 speedtype:value("joox", translate("JOOX音乐"))
 
-endpoint = s:option(Value, "endpoint", translate("转发HTTPS音源地址"))
-endpoint.default = "https://music.163.com"
-endpoint.rmempty = true
-endpoint.description = translate("默认为 https://music.163.com")
-
 o = s:option(Button,"certificate",translate("HTTPS 证书"))
 o.inputtitle = translate("下载 CA 根证书")
-o.description = translate("iOS 13 系统需要在“设置 -> 通用 -> 关于本机 -> 证书信任设置” 中，信任 UnblockNeteaseMusic Root CA )")
+o.description = translate("新版安卓/iOS客户端可能需要安装 CA根证书并信任<br />苹果系统需要在“设置 -> 通用 -> 关于本机 -> 证书信任设置”中，信任 UnblockNeteaseMusic Root CA )")
 o.inputstyle = "apply"
 o.write = function()
   	Download()
@@ -67,7 +62,7 @@ o.inputtitle = translate("更新核心版本")
 o.description = string.format(translate("目前运行主程序版本") ..  "<strong><font color=\"green\">: %s </font></strong>", ver)
 o.inputstyle = "reload"
 o.write = function()
-	luci.sys.exec("bash /usr/share/UnblockNeteaseMusic/update_core.sh 2>&1")
+	luci.sys.exec("/usr/share/UnblockNeteaseMusic/update_core.sh luci_update 2>&1")
   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "unblockmusic"))
 end
 
