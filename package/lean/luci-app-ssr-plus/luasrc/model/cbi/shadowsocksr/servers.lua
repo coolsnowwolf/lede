@@ -82,6 +82,7 @@ s.anonymous = true
 s.addremove = true
 s.sortable = false
 s.template = "cbi/tblsection"
+s.sortable = true
 s.extedit = luci.dispatcher.build_url("admin/services/shadowsocksr/servers/%s")
 function s.create(...)
 	local sid = TypedSection.create(...)
