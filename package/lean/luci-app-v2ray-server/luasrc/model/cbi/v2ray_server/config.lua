@@ -45,23 +45,23 @@ e.rmempty=true
 e:depends("protocol","vmess")
 
 e=t:option(Value,"Socks_user",translate("User name"))
-e.default="lean"
+e.default=""
 e.rmempty=true
 e:depends("protocol","socks")
 
 e=t:option(Value,"Socks_pass",translate("Password"))
-e.default="password"
+e.default=""
 e.rmempty=true
 e.password=true
 e:depends("protocol","socks")
 
 e=t:option(Value,"Http_user",translate("User name"))
-e.default="lean"
+e.default=""
 e.rmempty=true
 e:depends("protocol","http")
 
 e=t:option(Value,"Http_pass",translate("Password"))
-e.default="password"
+e.default=""
 e.rmempty=true
 e.password=true
 e:depends("protocol","http")
