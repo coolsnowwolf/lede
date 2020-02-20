@@ -20,18 +20,18 @@ elseif server.protocol == "http" then
 			allowTransparent = false,
 			accounts = {
 				{
-					user = (server.Http_user == nil) and "lean" or server.Http_user,
-					pass = (server.Http_pass == nil) and "password" or server.Http_pass
+					user = (server.Http_user == nil) and "" or server.Http_user,
+					pass = (server.Http_pass == nil) and "" or server.Http_pass
 				}
 			}
 		}
 else
     proset = {
-			auth = "password",
+			auth =  (server.Socks_user == nil) and "noauth" or "password",
 			accounts = {
 				{
-					user = (server.Socks_user == nil) and "lean" or server.Socks_user,
-					pass = (server.Socks_pass == nil) and "password" or server.Socks_pass
+					user = (server.Socks_user == nil) and "" or server.Socks_user,
+					pass = (server.Socks_pass == nil) and "" or server.Socks_pass
 				}
 			}
 		}

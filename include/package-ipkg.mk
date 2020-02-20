@@ -35,7 +35,8 @@ PARENR :=)
 
 dep_split=$(subst :,$(space),$(1))
 dep_rem=$(subst !,,$(subst $(strip $(PARENL)),,$(subst $(strip $(PARENR)),,$(word 1,$(call dep_split,$(1))))))
-dep_confvar=$(strip $(foreach cond,$(subst ||, ,$(call dep_rem,$(1))),$(CONFIG_$(cond))))
+dep_and=dep_and_res:=$$(and $(subst $(space),$(comma),$(foreach cond,$(subst &&, ,$(1)),$$(CONFIG_$(cond)))))
+dep_confvar=$(strip $(foreach cond,$(subst ||, ,$(call dep_rem,$(1))),$(eval $(call dep_and,$(cond)))$(dep_and_res)))
 dep_pos=$(if $(call dep_confvar,$(1)),$(call dep_val,$(1)))
 dep_neg=$(if $(call dep_confvar,$(1)),,$(call dep_val,$(1)))
 dep_if=$(if $(findstring !,$(1)),$(call dep_neg,$(1)),$(call dep_pos,$(1)))
@@ -123,6 +124,8 @@ ifeq ($(DUMP),)
       endif
       $(PKG_INSTALL_STAMP).$(1): prepare-package-install
 		echo "$(1)" >> $(PKG_INSTALL_STAMP)
+    else
+      $(if $(CONFIG_PACKAGE_$(1)),$$(warning WARNING: skipping $(1) -- package has no install section))
     endif
     endif
 
@@ -162,7 +165,7 @@ Package: $(1)$$(ABIV_$(1))
 Version: $(VERSION)
 $$(call addfield,Depends,$$(Package/$(1)/DEPENDS)
 )$$(call addfield,Conflicts,$$(call mergelist,$(CONFLICTS))
-)$$(call addfield,Provides,$$(call mergelist,$(PROVIDES)$$(if $$(ABIV_$(1)), $(1)))
+)$$(call addfield,Provides,$$(call mergelist,$$(filter-out $(1)$$(ABIV_$(1)),$(PROVIDES)$$(if $$(ABIV_$(1)), $(1) $(foreach provide,$(PROVIDES),$(provide)$$(call GetABISuffix,$(provide))))))
 )$$(call addfield,Alternatives,$$(call mergelist,$(ALTERNATIVES))
 )$$(call addfield,Source,$(SOURCE)
 )$$(call addfield,SourceName,$(1)
@@ -199,6 +202,15 @@ $(_endef)
 	$(CheckDependencies)
 
 	$(RSTRIP) $$(IDIR_$(1))
+
+    ifneq ($$(CONFIG_IPK_FILES_CHECKSUMS),)
+	(cd $$(IDIR_$(1)); \
+		( \
+			find . -type f \! -path ./CONTROL/\* -exec sha256sum \{\} \; 2> /dev/null | \
+			sed 's|\([[:blank:]]\)\./|\1/|' > $$(IDIR_$(1))/CONTROL/files-sha256sum \
+		) || true \
+	)
+    endif
 	(cd $$(IDIR_$(1))/CONTROL; \
 		( \
 			echo "$$$$CONTROL"; \
