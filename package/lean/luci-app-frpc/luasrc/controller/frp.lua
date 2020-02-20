@@ -5,9 +5,9 @@ function index()
 		return
 	end
 
-	entry({"admin","vpn","frp"},cbi("frp/frp"), _("Frp Setting"),100).dependent=true
-	entry({"admin","vpn","frp","config"},cbi("frp/config")).leaf=true
-	entry({"admin","vpn","frp","status"},call("status")).leaf=true
+	entry({"admin", "services", "frp"},cbi("frp/frp"), _("Frp Setting"),100).dependent=true
+	entry({"admin", "services", "frp", "config"},cbi("frp/config")).leaf=true
+	entry({"admin", "services", "frp", "status"},call("status")).leaf=true
 end
 
 function status()

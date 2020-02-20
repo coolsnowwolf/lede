@@ -24,7 +24,7 @@ function index()
 	entry({"admin", "nas"}, firstchild(), "NAS", 44).dependent = false
 	entry({"admin", "nas", "vsftpd"},
 		alias("admin", "nas", "vsftpd", "general"),
-		_("FTP Server"))
+		_("FTP Share"))
 
 	entry({"admin", "nas", "vsftpd", "general"},
 		cbi("vsftpd/general"),
