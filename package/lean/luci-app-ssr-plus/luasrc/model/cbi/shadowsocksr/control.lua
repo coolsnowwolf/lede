@@ -41,8 +41,6 @@ luci.ip.neighbors({ family = 4 }, function(entry)
 			o:value(entry.dest:string())
 		end
 end)
-o:depends({lan_ac_mode="0"})
-o.rmempty=true
 
 o = s:taboption("lan_ac", DynamicList, "lan_fp_ips", translate("LAN Force Proxy Host List"))
 o.datatype = "ipaddr"
@@ -69,7 +67,17 @@ o:value("w", translate("Allow listed only"))
 o:value("b", translate("Allow all except listed"))
 o.rmempty = false
 
-o = s:taboption("mac_ac", DynamicList, "mac_ac", translate("MAC Bypassed Host List"))
+o = s:taboption("mac_ac", DynamicList, "mac_ac", translate("MAC Host List"))
+o.datatype = "ipaddr"
+luci.ip.neighbors({ family = 4 }, function(entry)
+		if entry.reachable then
+			o:value(entry.dest:string())
+		end
+end)
+o:depends("lan_ac_mode", "w")
+o:depends("lan_ac_mode", "b")
+
+o = s:taboption("mac_ac", DynamicList, "mac_bp", translate("MAC Bypassed Host List"))
 o.datatype = "macaddr"
 luci.sys.net.mac_hints(function(x,d)
 	if not luci.ip.new(d) then
@@ -77,8 +85,6 @@ luci.sys.net.mac_hints(function(x,d)
 	end
 
 end)
-o:depends({mac_ac_mode="0"})
-o.rmempty=true
 
 o = s:taboption("mac_ac", DynamicList, "mac_fp", translate("MAC Force Proxy Host List"))
 o.datatype = "macaddr"
