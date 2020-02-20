@@ -41,9 +41,15 @@ o.write = function()
   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
 end
 
+o = s:option(Flag, "switch", translate("Subscribe Default Auto-Switch"))
+o.rmempty = false
+o.description = translate("Subscribe new add server default Auto-Switch on")
+o.default="1"
+
 o = s:option(Flag, "proxy", translate("Through proxy update"))
 o.rmempty = false
 o.description = translate("Through proxy update list, Not Recommended ")
+
 
 o = s:option(Button,"subscribe", translate("Update All Subscribe Severs"))
 o.rawhtml  = true
