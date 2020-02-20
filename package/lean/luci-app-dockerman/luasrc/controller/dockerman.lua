@@ -10,7 +10,7 @@ module("luci.controller.dockerman",package.seeall)
 
 function index()
 
-  entry({"admin", "services","docker"}, firstchild(), "Docker", 40).dependent = false
+  entry({"admin", "services","docker"}, firstchild(), _("Docker"), 40).dependent = false
   entry({"admin","services","docker","overview"},cbi("docker/overview"),_("Overview"),0).leaf=true
 
   local socket = luci.model.uci.cursor():get("docker", "local", "socket_path")

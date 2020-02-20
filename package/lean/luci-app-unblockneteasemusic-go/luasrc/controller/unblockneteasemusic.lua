@@ -9,7 +9,7 @@ function index()
 		return
 	end
 
-	entry({"admin", "services", "unblockneteasemusic"},firstchild(), _("解除网易云音乐播放限制"), 50).dependent = false
+	entry({"admin", "services", "unblockneteasemusic"},firstchild(), _("解除网易"), 50).dependent = false
 
 	entry({"admin", "services", "unblockneteasemusic", "general"},cbi("unblockneteasemusic"), _("基本设定"), 1)
 	entry({"admin", "services", "unblockneteasemusic", "log"},form("unblockneteasemusic_log"), _("日志"), 2)
