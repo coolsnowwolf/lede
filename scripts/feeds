@@ -41,34 +41,56 @@ my $feed_src = {};
 my $feed_target = {};
 my $feed_vpackage = {};
 
-sub parse_config() {
-	my $line = 0;
-	my %name;
+sub parse_file($$);
 
-	open FEEDS, "feeds.conf" or
-		open FEEDS, "feeds.conf.default" or
-		die "Unable to open feeds configuration";
-	while (<FEEDS>) {
+sub parse_file($$) {
+	my ($fname, $existing) = @_;
+	my $line = 0;
+	my $fh;
+
+	open $fh, $fname or return undef;
+	while (<$fh>) {
 		chomp;
 		s/#.+$//;
-		next unless /\S/;
-		my @line = split /\s+/, $_, 3;
-		my @src;
 		$line++;
+		next unless /\S/;
 
-		my $valid = 1;
-		$line[0] =~ /^src-[\w-]+$/ or $valid = 0;
-		$line[1] =~ /^\w+$/ or $valid = 0;
-		@src = split /\s+/, ($line[2] or '');
-		@src = ('') if @src == 0;
-		$valid or die "Syntax error in feeds.conf, line: $line\n";
+		my ($type, $flags, $name, $urls) = m!^src-([\w\-]+)((?:\s+--\w+(?:=\S+)?)*)\s+(\w+)(?:\s+(\S.*))?$!;
+		unless ($type && $name) {
+			die "Syntax error in $fname, line $line\n";
+		}
 
-		$name{$line[1]} and die "Duplicate feed name '$line[1]', line: $line\n";
-		$name{$line[1]} = 1;
+		if ($existing->{$name}++) {
+			die "Duplicate feed name '$name' in '$fname' line: $line\n";
+		}
 
-		push @feeds, [$line[0], $line[1], \@src];
+		my @src = defined($urls) ? split /\s+/, $urls : ();
+		push @src, '' if @src == 0;
+
+		my %flags;
+		if (defined $flags) {
+			while ($flags =~ m!\s+--(\w+)(?:=(\S+))?!g) {
+				$flags{$1} = defined($2) ? $2 : 1;
+			}
+		}
+
+		if ($type eq "include") {
+			parse_file($urls, $existing) or
+			    die "Unable to open included file '$urls'";
+			next;
+		}
+
+		push @feeds, ["src-$type", $name, \@src, \%flags];
 	}
-	close FEEDS;
+	close $fh;
+	return 1;
+}
+
+sub parse_config() {
+	my %name;
+	parse_file("feeds.conf", \%name) or
+	    parse_file("feeds.conf.default", \%name)  or
+	    die "Unable to open feeds configuration";
 }
 
 sub update_location($$)
@@ -505,6 +527,11 @@ sub install_src {
 	# switch to the metadata for the selected feed
 	get_feed($feed->[1]);
 	my $src = $feed_src->{$name} or return 1;
+
+	# enable force flag if feed src line was declared with --force
+	if (exists($feed->[3]{force})) {
+		$force = 1;
+	}
 
 	# If it's a core package and we don't want to override, just return
 	my $override = 0;
