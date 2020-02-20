@@ -342,6 +342,7 @@ o = s:option(Flag, "insecure", translate("allowInsecure"))
 o.rmempty = true
 o:depends("type", "v2ray")
 o:depends("type", "trojan")
+o.default = "1"
 
 -- [[ TLS ]]--
 o = s:option(Flag, "tls", translate("TLS"))

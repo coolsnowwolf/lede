@@ -21,6 +21,7 @@ local name = 'shadowsocksr'
 local uciType = 'servers'
 local ucic = luci.model.uci.cursor()
 local proxy = ucic:get_first(name, 'server_subscribe', 'proxy', '0')
+local switch = ucic:get_first(name, 'server_subscribe', 'switch', '1')
 local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
 
 local log = function(...)
@@ -135,6 +136,7 @@ local function processData(szType, content)
 		result.alter_id = info.aid
 		result.vmess_id = info.id
 		result.alias = info.ps
+		result.insecure = 1
 -- 		result.mux = 1
 -- 		result.concurrency = 8
 		if info.net == 'ws' then
@@ -337,19 +339,14 @@ local execute = function()
 				log('忽略手动添加的节点: ' .. old.alias)
 			end
 		
-		-- 保留原有节点的自动切换设置
-		
-      if(old.switch_enable)
-      then
-        nodeResult.switch_enable = old.switch_enable
-      end
 		end)
-		
+				
 		for k, v in ipairs(nodeResult) do
 			for kk, vv in ipairs(v) do
 				if not vv._ignore then
 					local section = ucic:add(name, uciType)
 					ucic:tset(name, section, vv)
+					ucic:set(name, section, "switch_enable", switch)
 					add = add + 1
 				end
 
@@ -389,4 +386,3 @@ if subscribe_url and #subscribe_url > 0 then
 		end
 	end)
 end
-
