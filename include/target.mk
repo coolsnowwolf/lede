@@ -16,16 +16,10 @@ DEVICE_TYPE?=router
 DEFAULT_PACKAGES:=base-files libc libgcc busybox dropbear mtd uci opkg netifd fstools uclient-fetch logd urandom-seed urngd \
 block-mount coremark kmod-nf-nathelper kmod-nf-nathelper-extra kmod-ipt-raw wget libustream-openssl ca-certificates \
 default-settings ddns-scripts_aliyun ddns-scripts_dnspod luci luci-proto-relay \
-# LuCI Application Default
-# Service
 luci-app-adbyby-plus luci-app-autoreboot luci-app-ssr-plus luci-app-unblockneteasemusic-mini luci-app-dockerman luci-app-serverchan \
-# VPN
 luci-app-zerotier \
-# NAS
 luci-app-verysync luci-app-syncthing luci-app-vsftpd luci-app-kodexplorer luci-app-baidupcs-web luci-app-transmission \
-# Network
 luci-app-sfe luci-app-flowoffload luci-app-sqm \
-# Control
 luci-app-control-mia luci-app-control-timewol luci-app-control-webrestriction luci-app-control-weburl
 # For nas targets
 DEFAULT_PACKAGES.nas:=block-mount fdisk lsblk mdadm
