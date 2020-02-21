@@ -194,6 +194,7 @@ foreach my $mirror (@ARGV) {
 			push @mirrors, "https://downloads.sourceforge.net/$1";
 		}
 	} elsif ($mirror =~ /^\@APACHE\/(.+)$/) {
+		push @mirrors, "https://mirrors.ustc.edu.cn/apache/$1";
 		push @mirrors, "https://mirror.netcologne.de/apache.org/$1";
 		push @mirrors, "https://mirror.aarnet.edu.au/pub/apache/$1";
 		push @mirrors, "https://mirror.csclub.uwaterloo.ca/apache/$1";
@@ -204,11 +205,16 @@ foreach my $mirror (@ARGV) {
 		push @mirrors, "ftp://apache.cs.utah.edu/apache.org/$1";
 		push @mirrors, "ftp://apache.mirrors.ovh.net/ftp.apache.org/dist/$1";
 	} elsif ($mirror =~ /^\@GITHUB\/(.+)$/) {
+		my $dir = $1;
+		my $i = 0;
+		# replace the 2nd '/' with '@' for jsDelivr mirror
+		push @mirrors, "https://cdn.jsdelivr.net/gh/". $dir =~ s{\/}{++$i == 2 ? '@' : $&}ger;
 		# give github a few more tries (different mirrors)
 		for (1 .. 5) {
-			push @mirrors, "https://raw.githubusercontent.com/$1";
+			push @mirrors, "https://raw.githubusercontent.com/$dir";
 		}
 	} elsif ($mirror =~ /^\@GNU\/(.+)$/) {
+		push @mirrors, "https://mirrors.ustc.edu.cn/gnu/$1";
 		push @mirrors, "https://mirror.csclub.uwaterloo.ca/gnu/$1";
 		push @mirrors, "https://mirror.netcologne.de/gnu/$1";
 		push @mirrors, "http://ftp.kddilabs.jp/GNU/gnu/$1";
@@ -234,7 +240,7 @@ foreach my $mirror (@ARGV) {
 			push @extra, "$extra[0]/longterm/v$1";
 		}
 		foreach my $dir (@extra) {
-			push @mirrors, "http://mirrors.ustc.edu.cn/kernel.org/$dir";
+			push @mirrors, "https://mirrors.ustc.edu.cn/kernel.org/$dir";
 			push @mirrors, "https://cdn.kernel.org/pub/$dir";
 			push @mirrors, "https://mirror.rackspace.com/kernel.org/pub/$dir";
 			push @mirrors, "https://download.xs4all.nl/ftp.kernel.org/pub/$dir";
@@ -245,6 +251,7 @@ foreach my $mirror (@ARGV) {
 			push @mirrors, "ftp://www.mirrorservice.org/sites/ftp.kernel.org/pub/$dir";
 		}
     } elsif ($mirror =~ /^\@GNOME\/(.+)$/) {
+		push @mirrors, "https://mirrors.ustc.edu.cn/gnome/sources/$1";
 		push @mirrors, "https://mirror.csclub.uwaterloo.ca/gnome/sources/$1";
 		push @mirrors, "http://ftp.acc.umu.se/pub/GNOME/sources/$1";
 		push @mirrors, "http://ftp.kaist.ac.kr/gnome/sources/$1";
@@ -271,4 +278,3 @@ while (!-f "$target/$filename") {
 }
 
 $SIG{INT} = \&cleanup;
-
