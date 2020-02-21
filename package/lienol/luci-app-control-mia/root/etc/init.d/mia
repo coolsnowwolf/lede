@@ -1,0 +1,111 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2015 OpenWrt-dist
+# Copyright (C) 2016 fw867 <ffkykzs@gmail.com>
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
+START=99
+
+CONFIG=mia
+
+uci_get_by_type() {
+	local index=0
+	if [ -n $4 ]; then
+		index=$4
+	fi
+	local ret=$(uci get $CONFIG.@$1[$index].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+is_true() {
+	case $1 in
+		1|on|true|yes|enabled) echo 0;;
+		*) echo 1;;
+	esac
+}
+
+load_config() {
+	ENABLED=$(uci_get_by_type basic enable)
+	return $(is_true $ENABLED)
+}
+
+add_rule(){
+local kp_enabled=0
+local ss_enabled=0
+[ `iptables -t nat -L SS 2>/dev/null |wc -l` -gt 0 ] && ss_enabled=1
+[ `iptables -t nat -L KOOLPROXY 2>/dev/null |wc -l` -gt 0 ] && kp_enabled=1
+for i in $(seq 0 100)
+do
+	local enable=$(uci_get_by_type macbind enable '' $i)
+	local macaddr=$(uci_get_by_type macbind macaddr '' $i)
+	local timeon=$(uci_get_by_type macbind timeon '' $i)
+	local timeoff=$(uci_get_by_type macbind timeoff '' $i)
+	local z1=$(uci_get_by_type macbind z1 '' $i)
+	local z2=$(uci_get_by_type macbind z2 '' $i)
+	local z3=$(uci_get_by_type macbind z3 '' $i)
+	local z4=$(uci_get_by_type macbind z4 '' $i)
+	local z5=$(uci_get_by_type macbind z5 '' $i)
+	local z6=$(uci_get_by_type macbind z6 '' $i)
+	local z7=$(uci_get_by_type macbind z7 '' $i)
+	[ "$z1" == "1" ] && Z1="Mon,"
+	[ "$z2" == "1" ] && Z2="Tue,"
+	[ "$z3" == "1" ] && Z3="Wed,"
+	[ "$z4" == "1" ] && Z4="Thu,"
+	[ "$z5" == "1" ] && Z5="Fri,"
+	[ "$z6" == "1" ] && Z6="Sat,"
+	[ "$z7" == "1" ] && Z7="Sun"
+	if [ -z $enable ] || [ -z $macaddr ] || [ -z $timeoff ] || [ -z $timeon ]; then
+		break
+	fi
+	if [ "$enable" == "1" ]; then
+		iptables -t filter -I MIA  -m mac --mac-source $macaddr -m time --kerneltz --timestart $timeon --timestop $timeoff --weekdays $Z1$Z2$Z3$Z4$Z5$Z6$Z7 -j DROP
+		[ "$ss_enabled" -eq 1 ] && iptables -t nat -I SS $((i+1)) -m mac --mac-source $macaddr -m time --kerneltz --timestart $timeon --timestop $timeoff --weekdays $Z1$Z2$Z3$Z4$Z5$Z6$Z7 -j RETURN
+		[ "$kp_enabled" -eq 1 ] && [ -z `iptables -t nat -L KOOLPROXY | grep -w RETURN | grep -w "$macaddr"` ] && iptables -t nat -I KOOLPROXY $((i+1)) -m mac --mac-source $macaddr -m time --kerneltz --timestart $timeon --timestop $timeoff --weekdays $Z1$Z2$Z3$Z4$Z5$Z6$Z7 -j RETURN
+	fi
+	for n in $(seq 1 7)
+	do
+		unset "Z$n"
+	done
+done
+}
+
+get_kp_disrule(){
+	macaddr=$1
+	local is_kp_disrule=0
+	index=`uci show koolproxy |grep -w "$macaddr" |awk -F'.' '{print $2}'`
+	[ -n "$indexs" ] && [ `uci -q get koolproxy.$index.filter_mode` == "disable" ] && is_kp_disrule=1
+}
+
+del_rule(){
+	type=$1
+	blackMacAdd=$(iptables -t nat -L $type | grep -w RETURN | grep -w "MAC" | awk '{print $7}')
+	[ -n "$blackMacAdd" ] && {
+		for macaddrb in $blackMacAdd
+		do
+			[ "$type" == "KOOLPROXY" ] && {
+				get_kp_disrule $macaddrb
+				[ "$is_kp_disrule" -eq 1 ] && continue
+			}
+			iptables -t nat -D $type -m mac --mac-source $macaddrb -j RETURN
+		done
+	}
+}
+
+start(){
+	! load_config && exit 0
+  iptables -L FORWARD|grep -c MIA 2>/dev/null && [ $? -eq 0 ] && exit 0;
+  iptables -t filter -N MIA
+  iptables -t filter -I FORWARD -m comment --comment "Rule For Control" -j MIA
+  add_rule
+}
+stop(){
+  iptables -t filter -D FORWARD -m comment --comment "Rule For Control" -j MIA
+  iptables -t filter -F MIA
+  iptables -t filter -X MIA
+  [ `iptables -t nat -L SS 2>/dev/null |wc -l` -gt 0 ] && del_rule SS
+  [ `iptables -t nat -L KOOLPROXY 2>/dev/null |wc -l` -gt 0 ] && del_rule KOOLPROXY
+}
+

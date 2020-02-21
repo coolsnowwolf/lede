@@ -5,8 +5,8 @@ function index()
 		return
 	end
 
-	entry({"admin","services","mia"},cbi("mia"),_("Internet Access Schedule Control"),30).dependent=true
-	entry({"admin","services","mia","status"},call("act_status")).leaf=true
+	entry({"admin", "services", "mia"}, cbi("mia"), _("Internet Access Schedule Control"), 30).dependent=true
+	entry({"admin", "services", "mia", "status"}, call("act_status")).leaf=true
 
 end
 
