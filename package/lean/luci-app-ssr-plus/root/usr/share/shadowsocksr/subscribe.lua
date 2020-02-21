@@ -136,6 +136,7 @@ local function processData(szType, content)
 		result.alter_id = info.aid
 		result.vmess_id = info.id
 		result.alias = info.ps
+		result.insecure = 1
 -- 		result.mux = 1
 -- 		result.concurrency = 8
 		if info.net == 'ws' then
