@@ -586,6 +586,9 @@ set_state() {
 	preinit_regular)
 		status_led_blink_preinit_regular
 		;;
+	upgrade)
+		status_led_blink_preinit_regular
+		;;
 	done)
 		status_led_on
 		case $(board_name) in

@@ -1,46 +1,48 @@
-require("luci.sys")
-require("luci.util")
+--[[
 
-local fs  = require "nixio.fs"
+Copyright (C) 2020 KFERMercer <KFER.Mercer@gmail.com>
+Copyright (C) 2020 [CTCGFW] Project OpenWRT
 
-local uci = require "luci.model.uci".cursor()
+THIS IS FREE SOFTWARE, LICENSED UNDER GPLv3
 
-local m, s
+]]--
 
-local running=(luci.sys.call("pidof BaiduPCS-Web > /dev/null") == 0)
+m = Map("baidupcs-web")
+m.title	= translate("BaiduPCS-Web")
+m.description = translate("基于BaiduPCS-Go, 可以让你高效的使用百度云")
 
-local button = ""
-local state_msg = ""
-local trport = uci:get("baidupcs-web", "config", "port")
-if running  then
-	button = "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<input type=\"button\" value=\" " .. translate("打开BaiduPCS-Web管理界面") .. " \" onclick=\"window.open('http://'+window.location.hostname+':" .. trport .. "')\"/>"
-end
+m:section(SimpleSection).template  = "baidupcs-web/baidupcs-web_status"
 
-if running then
-        state_msg = "<b><font color=\"green\">" .. translate("BaiduPCS-Web 运行中") .. "</font></b>"
-else
-        state_msg = "<b><font color=\"red\">" .. translate("BaiduPCS-Web 未运行") .. "</font></b>"
-end
-
-m = Map("baidupcs-web", translate("百度网盘管理"), translate("基于BaiduPCS-Web，让你高效的使用百度云。") .. button
-        .. "<br/><br/>" .. translate("BaiduPCS-Web运行状态").. " : "  .. state_msg .. "<br/>")
-
-s = m:section(TypedSection, "baidupcs-web", "")
+s = m:section(TypedSection, "baidupcs-web")
 s.addremove = false
 s.anonymous = true
 
 enable = s:option(Flag, "enabled", translate("启用"))
 enable.rmempty = false
 
-o = s:option(Value, "port", translate("监听端口"))
-o.placeholder = 5299
-o.default     = 5299
-o.datatype    = "port"
-o.rmempty     = false
+o = s:option(Value, "port", translate("网页端口"))
+o.datatype = "port"
+o.placeholder = "5299"
+o.default = "5299"
+o.rmempty = false
 
-o = s:option(Value, "dl_dir", translate("下载目录"))
+o = s:option(Value, "download_dir", translate("下载目录"))
 o.placeholder = "/opt/baidupcsweb-download"
-o.default     = "/opt/baidupcsweb-download"
-o.rmempty     = false
+o.default = "/opt/baidupcsweb-download"
+o.rmempty = false
+
+o = s:option(Value, "max_download_rate", translate("最大下载速度"))
+o.placeholder = "0"
+
+o = s:option(Value, "max_upload_rate", translate("最大上传速度"))
+o.placeholder = "0"
+o.description = translate("0代表不限制, 单位为每秒的传输速率, 后缀'/s' 可省略, 如 2MB/s, 2MB, 2m, 2mb 均为一个意思")
+
+o = s:option(Value, "max_download_load", translate("同时进行下载文件的最大数量"))
+o.placeholder = "1"
+o.description = translate("不要太贪心, 当心被封号")
+
+o = s:option(Value, "max_parallel", translate("最大并发连接数"))
+o.placeholder = "8"
 
 return m

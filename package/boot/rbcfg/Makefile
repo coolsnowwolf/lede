@@ -21,7 +21,7 @@ define Package/rbcfg
   CATEGORY:=Utilities
   SUBMENU:=Boot Loaders
   TITLE:=RouterBOOT configuration tool
-  DEPENDS:=@TARGET_ar71xx
+  DEPENDS:=@(TARGET_ar71xx||TARGET_ath79)
 endef
 
 define Package/rbcfg/description
