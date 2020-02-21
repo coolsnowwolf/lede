@@ -1,0 +1,91 @@
+#!/bin/sh /etc/rc.common
+# Created By [CTCGFW]Project OpenWRT
+# https://github.com/project-openwrt
+
+START=80
+STOP=10
+
+enable="$(uci get unblockneteasemusic-mini.@unblockneteasemusic-mini[0].enable)"
+select_server="$(uci get unblockneteasemusic-mini.@unblockneteasemusic-mini[0].select_server)"
+
+if [ "${select_server}" = "tencent_shanghai_nodejs" ]; then
+	unblock_server_addr="cdn-shanghai.service.project-openwrt.eu.org"
+	unblock_server_ip="$(ping "cdn-shanghai.service.project-openwrt.eu.org" -c 1 | sed '1{s/[^(]*(//;s/).*//;q}')"
+	[ -z "${unblock_server_ip}" ] && unblock_server_ip="122.51.88.18"
+	unblock_server_http_port="30000"
+	unblock_server_https_port="30001"
+elif [ "${select_server}" = "aliyun_beijing_nodejs" ]; then
+	unblock_server_addr="hyird.xyz"
+	unblock_server_ip="$(ping "hyird.xyz" -c 1 | sed '1{s/[^(]*(//;s/).*//;q}')"
+	[ -z "${unblock_server_ip}" ] && unblock_server_ip="182.92.84.98"
+	unblock_server_http_port="30000"
+	unblock_server_https_port="30001"
+elif [ "${select_server}" = "tencent_shanghai_golang" ]; then
+	unblock_server_addr="cdn-shanghai.service.project-openwrt.eu.org"
+	unblock_server_ip="$(ping "cdn-shanghai.service.project-openwrt.eu.org" -c 1 | sed '1{s/[^(]*(//;s/).*//;q}')"
+	[ -z "${unblock_server_ip}" ] && unblock_server_ip="122.51.88.18"
+	unblock_server_http_port="30002"
+	unblock_server_https_port="30003"
+fi
+
+set_ipset(){
+	if [ "${set_type}" = "start" ]; then
+		mkdir -p "/tmp/dnsmasq.d"
+		rm -f "/tmp/dnsmasq.d/dnsmasq-unblockneteasemusic-mini.conf"
+		cat <<-EOF > "/tmp/dnsmasq.d/dnsmasq-unblockneteasemusic-mini.conf"
+ipset=/.music.163.com/neteasemusic
+ipset=/interface.music.163.com/neteasemusic
+ipset=/interface3.music.163.com/neteasemusic
+ipset=/apm.music.163.com/neteasemusic
+ipset=/apm3.music.163.com/neteasemusic
+ipset=/clientlog.music.163.com/neteasemusic
+ipset=/clientlog3.music.163.com/neteasemusic
+		EOF
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1
+
+		if ! ipset list "neteasemusic" >/dev/null; then ipset create "neteasemusic" hash:ip; fi
+		wget-ssl -t 5 -T 10 "http://httpdns.n.netease.com/httpdns/v2/d?domain=music.163.com,interface.music.163.com,interface3.music.163.com,apm.music.163.com,apm3.music.163.com,clientlog.music.163.com,clientlog3.music.163.com" -O- |grep -Eo '[0-9]+?\.[0-9]+?\.[0-9]+?\.[0-9]+?' |sort |uniq |awk '{print "ipset add neteasemusic "$1}' |sh
+		iptables -t nat -N "unblock_netease_music"
+		iptables -t nat -A "unblock_netease_music" -d 0.0.0.0/8 -j RETURN
+		iptables -t nat -A "unblock_netease_music" -d 10.0.0.0/8 -j RETURN
+		iptables -t nat -A "unblock_netease_music" -d 127.0.0.0/8 -j RETURN
+		iptables -t nat -A "unblock_netease_music" -d 169.254.0.0/16 -j RETURN
+		iptables -t nat -A "unblock_netease_music" -d 172.16.0.0/12 -j RETURN
+		iptables -t nat -A "unblock_netease_music" -d 192.168.0.0/16 -j RETURN
+		iptables -t nat -A "unblock_netease_music" -d 224.0.0.0/4 -j RETURN
+		iptables -t nat -A "unblock_netease_music" -d 240.0.0.0/4 -j RETURN
+		iptables -t nat -A "unblock_netease_music" -p tcp --dport 80 -j DNAT --to ${unblock_server_ip}:${unblock_server_http_port}
+		iptables -t nat -A "unblock_netease_music" -p tcp --dport 443 -j DNAT --to ${unblock_server_ip}:${unblock_server_https_port}
+		[ -z "$(iptables -t nat -L "ADBYBY" | grep "UnblockMusic" | sed 's/\/.*//')" ] && iptables -t nat -I "ADBYBY" -m set --match-set "neteasemusic" dst -j RETURN -m comment --comment "AD for UnblockMusic"
+		[ -z "$(iptables -t nat -L "KOOLPROXY" | grep "UnblockMusic" | sed 's/\/.*//')" ] && iptables -t nat -I "KOOLPROXY" -m set --match-set "neteasemusic" dst -j RETURN -m comment --comment "KP for UnblockMusic"
+		iptables -t nat -I "PREROUTING" -p tcp -m set --match-set "neteasemusic" dst -j "unblock_netease_music"
+
+		mkdir -p /var/etc
+		echo -e "/etc/init.d/unblockneteasemusic-mini restart" > "/var/etc/unblockneteasemusic-mini.include"
+	elif [ "${set_type}" = "stop" ]; then
+		iptables -t nat -D "ADBYBY" -m set --match-set "neteasemusic" dst -j RETURN -m comment --comment "AD for UnblockMusic"
+		iptables -t nat -D "KOOLPROXY" -m set --match-set "neteasemusic" dst -j RETURN -m comment --comment "KP for UnblockMusic"
+		iptables -t nat -D "PREROUTING" -p tcp -m set --match-set "neteasemusic" dst -j "unblock_netease_music"
+		iptables -t nat -F "unblock_netease_music"
+		iptables -t nat -X "unblock_netease_music"
+
+		echo "" > "/var/etc/unblockneteasemusic-mini.include"
+		rm -f "/tmp/dnsmasq.d/dnsmasq-unblockneteasemusic-mini.conf"
+		/etc/init.d/dnsmasq reload >/dev/null 2>&1
+	fi
+}
+
+start()
+{
+	stop
+
+	[ "${enable}" -ne "1" ] && exit 0
+	set_type="start"
+	set_ipset >/dev/null 2>&1
+}
+
+stop()
+{
+	set_type="stop"
+	set_ipset >/dev/null 2>&1
+}

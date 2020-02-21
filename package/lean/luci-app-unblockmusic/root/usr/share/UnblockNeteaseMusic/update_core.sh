@@ -24,6 +24,7 @@ function check_latest_version(){
 		else
 			echo -e "\nLocal version: $(cat /usr/share/UnblockNeteaseMusic/local_ver 2>/dev/null), cloud version: ${latest_ver}." >>/tmp/unblockmusic_update.log
 			echo -e "You're already using the latest version." >>/tmp/unblockmusic_update.log
+			[ "${luci_update}" == "n" ] && /etc/init.d/unblockmusic restart
 			exit 3
 		fi
 	fi
@@ -47,14 +48,14 @@ function update_core(){
 		echo -e "Failed to download core." >>/tmp/unblockmusic_update.log
 		exit 1
 	else
-		[ "${luci_update}" == "y" ] && touch "/usr/share/unblockneteasemusic/update_successfully"
 		echo -e "${latest_ver}" > /usr/share/UnblockNeteaseMusic/local_ver
-		/etc/init.d/unblockmusic restart
+		cat /usr/share/UnblockNeteaseMusic/package-lock.json | grep version |awk -F ':' '{print $2}' | cut -c3-8 > /usr/share/UnblockNeteaseMusic/core_ver
 	fi
 
 	echo -e "Succeeded in updating core." >/tmp/unblockmusic_update.log
 	echo -e "Local version: $(cat /usr/share/UnblockNeteaseMusic/local_ver 2>/dev/null), cloud version: ${latest_ver}.\n" >>/tmp/unblockmusic_update.log
-	cat /usr/share/UnblockNeteaseMusic/package-lock.json | grep version |awk -F ':' '{print $2}' | cut -c3-8 > /usr/share/UnblockNeteaseMusic/core_ver
+	
+	/etc/init.d/unblockmusic restart
 }
 
 function main(){
@@ -62,4 +63,7 @@ function main(){
 	check_latest_version
 }
 
+  luci_update="n"
+	[ "$1" == "luci_update" ] && luci_update="y"
 	main
+	

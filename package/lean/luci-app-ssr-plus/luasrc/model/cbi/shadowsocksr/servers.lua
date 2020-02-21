@@ -41,9 +41,15 @@ o.write = function()
   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
 end
 
+o = s:option(Flag, "switch", translate("Subscribe Default Auto-Switch"))
+o.rmempty = false
+o.description = translate("Subscribe new add server default Auto-Switch on")
+o.default="1"
+
 o = s:option(Flag, "proxy", translate("Through proxy update"))
 o.rmempty = false
 o.description = translate("Through proxy update list, Not Recommended ")
+
 
 o = s:option(Button,"subscribe", translate("Update All Subscribe Severs"))
 o.rawhtml  = true
@@ -76,6 +82,7 @@ s.anonymous = true
 s.addremove = true
 s.sortable = false
 s.template = "cbi/tblsection"
+s.sortable = true
 s.extedit = luci.dispatcher.build_url("admin/services/shadowsocksr/servers/%s")
 function s.create(...)
 	local sid = TypedSection.create(...)
@@ -116,7 +123,7 @@ end
 
 o = s:option(DummyValue, "switch_enable", translate("Auto Switch"))
 function o.cfgvalue(...)
-	return Value.cfgvalue(...) or "0"
+	return Value.cfgvalue(...) or "1"
 end
 
 o = s:option(DummyValue, "server_port", translate("Socket Connected"))
