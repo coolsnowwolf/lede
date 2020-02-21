@@ -4,11 +4,11 @@ local SYS  = require "luci.sys"
 local HTTP = require "luci.http"
 local DISP = require "luci.dispatcher"
 
-local DL = SYS.exec("head -1 /usr/share/adbyby/data/lazy.txt | awk -F' ' '{print $3,$4}'")
-local DV = SYS.exec("head -1 /usr/share/adbyby/data/video.txt | awk -F' ' '{print $3,$4}'")
+local DL = SYS.exec("head -1 /tmp/adbyby/data/lazy.txt | awk -F' ' '{print $3,$4}'") or ""
+local DV = SYS.exec("head -1 /tmp/adbyby/data/video.txt | awk -F' ' '{print $3,$4}'") or ""
 local NR = SYS.exec("grep -v '^!' /usr/share/adbyby/data/rules.txt | wc -l")
 local NU = SYS.exec("cat /usr/share/adbyby/data/user.txt | wc -l")
-local UD = SYS.exec("cat /tmp/adbyby.updated 2>/dev/null")
+local UD = SYS.exec("cat /tmp/adbyby.updated") or " "
 local ND = SYS.exec("cat /usr/share/adbyby/dnsmasq.adblock | wc -l")
 
 m = Map("adbyby")
@@ -35,21 +35,14 @@ o:value("2", translate("No filter Mode (Must set in Client Filter Mode Settings 
 o.default = 1
 o.rmempty = false
 
-mem = s:taboption("basic", Flag, "mem_mode")
-mem.title = translate("RAM Running Mode")
-mem.default = 1
-mem.rmempty = false
-mem.description = translate("Running Adbyby in RAM.More speed,less disk consumption")
-
-
 o = s:taboption("basic", Button, "restart")
 o.title = translate("Adbyby and Rule state")
 o.inputtitle = translate("Restart Adbyby")
 o.description = string.format("<strong>Last Update Checked：</strong> %s<br /><strong>Lazy Rule：</strong>%s <br /><strong>Video Rule：</strong>%s", UD, DL, DV) 
 o.inputstyle = "reload"
 o.write = function()
-	SYS.call("nohup sh /usr/share/adbyby/adupdate.sh > /tmp/adupdate.log 2>&1 &")
-	SYS.call("sleep 4")
+	SYS.call("rm -rf /tmp/adbyby.updated && /usr/share/adbyby/admem.sh > /tmp/adupdate.log 2>&1 &")
+  SYS.call("sleep 5")
 	HTTP.redirect(DISP.build_url("admin", "services", "adbyby"))
 end
 

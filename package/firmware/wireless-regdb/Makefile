@@ -20,7 +20,6 @@ define Package/wireless-regdb
 endef
 
 define Build/Compile
-  $(CP) ./db2bin.py ./db2fw.py ./dbparse.py $(PKG_BUILD_DIR)/
 	$(STAGING_DIR_HOST)/bin/$(PYTHON) $(PKG_BUILD_DIR)/db2fw.py $(PKG_BUILD_DIR)/regulatory.db $(PKG_BUILD_DIR)/db.txt
 endef
 
