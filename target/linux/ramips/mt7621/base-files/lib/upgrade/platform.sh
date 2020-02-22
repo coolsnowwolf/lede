@@ -55,6 +55,11 @@ platform_do_upgrade() {
 	xiaomi,mir3p)
 		nand_do_upgrade "$1"
 		;;
+	iodata,wn-ax1167gr2|\
+	iodata,wn-dx1167r)
+		iodata_mstc_upgrade_prepare
+		nand_do_upgrade "$1"
+		;;
 	ubiquiti,edgerouterx|\
 	ubiquiti,edgerouterx-sfp)
 		platform_upgrade_ubnt_erx "$1"

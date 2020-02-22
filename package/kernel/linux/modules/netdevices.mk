@@ -279,7 +279,7 @@ define KernelPackage/switch-rtl8366-smi
   AUTOLOAD:=$(call AutoLoad,42,rtl8366_smi)
 endef
 
-define KernelPackage/switch-rtl8366_smi/description
+define KernelPackage/switch-rtl8366-smi/description
   Realtek RTL8366 series SMI switch interface support
 endef
 
