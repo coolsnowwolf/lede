@@ -62,7 +62,7 @@ o = s:option(Flag, "chnroute", translate("Enable custom chnroute"))
 o.rmempty = false
 
 o = s:option(Value, "chnroute_url", translate("Update url"))
-o.default = "https://pexcn.me/daily/chnroute/chnroute.txt"
+o.default = "https://cdn.jsdelivr.net/gh/17mon/china_ip_list/china_ip_list.txt"
 
 -- [[ SOCKS Proxy ]]--
 if nixio.fs.access("/usr/bin/srelay") then
