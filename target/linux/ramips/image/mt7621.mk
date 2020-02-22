@@ -65,6 +65,28 @@ define Build/iodata-factory
 	fi
 endef
 
+define Build/iodata-mstc-header
+  ( \
+    data_size_crc="$$(dd if=$@ ibs=64 skip=1 2>/dev/null | \
+      gzip -c | tail -c 8 | od -An -tx8 --endian little | tr -d ' \n')"; \
+    echo -ne "$$(echo $$data_size_crc | sed 's/../\\x&/g')" | \
+      dd of=$@ bs=8 count=1 seek=7 conv=notrunc 2>/dev/null; \
+  )
+  dd if=/dev/zero of=$@ bs=4 count=1 seek=1 conv=notrunc 2>/dev/null
+  ( \
+    header_crc="$$(dd if=$@ bs=64 count=1 2>/dev/null | \
+      gzip -c | tail -c 8 | od -An -N4 -tx4 --endian little | tr -d ' \n')"; \
+    echo -ne "$$(echo $$header_crc | sed 's/../\\x&/g')" | \
+      dd of=$@ bs=4 count=1 seek=1 conv=notrunc 2>/dev/null; \
+  )
+endef
+
+define Build/netis-tail
+	echo -n $(1) >> $@
+	echo -n $(UIMAGE_NAME)-yun | $(STAGING_DIR_HOST)/bin/mkhash md5 | \
+		sed 's/../\\\\x&/g' | xargs echo -ne >> $@
+endef
+
 define Build/ubnt-erx-factory-image
 	if [ -e $(KDIR)/tmp/$(KERNEL_INITRAMFS_IMAGE) -a "$$(stat -c%s $@)" -lt "$(KERNEL_SIZE)" ]; then \
 		echo '21001:6' > $(1).compat; \
@@ -336,6 +358,38 @@ define Device/iodata_wn-ax1167gr
 endef
 TARGET_DEVICES += iodata_wn-ax1167gr
 
+define Device/iodata_wn-ax1167gr2
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBINIZE_OPTS := -E 5
+  UIMAGE_MAGIC := 0x434f4d42
+  KERNEL_SIZE := 4096k
+  IMAGE_SIZE := 51200k
+  DEVICE_VENDOR := I-O DATA
+  DEVICE_MODEL := WN-AX1167GR2
+  KERNEL_INITRAMFS := $(KERNEL_DTB) | custom-initramfs-uimage 3.10(XBC.1)b10 | \
+	iodata-mstc-header
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  DEVICE_PACKAGES := kmod-mt7615e wpad-openssl
+endef
+TARGET_DEVICES += iodata_wn-ax1167gr2
+
+define Device/iodata_wn-dx1167r
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBINIZE_OPTS := -E 5
+  UIMAGE_MAGIC := 0x434f4d43
+  KERNEL_SIZE := 4096k
+  IMAGE_SIZE := 51200k
+  DEVICE_VENDOR := I-O DATA
+  DEVICE_MODEL := WN-DX1167R
+  KERNEL_INITRAMFS := $(KERNEL_DTB) | custom-initramfs-uimage 3.10(XIK.1)b10 | \
+	iodata-mstc-header
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  DEVICE_PACKAGES := kmod-mt7615e wpad-openssl
+endef
+TARGET_DEVICES += iodata_wn-dx1167r
+
 define Device/iodata_wn-gx300gr
   IMAGE_SIZE := 7616k
   DEVICE_VENDOR := I-O DATA
@@ -384,6 +438,14 @@ define Device/jcg_jhr-ac876m
   DEVICE_PACKAGES := kmod-mt7615e kmod-usb3 kmod-usb-ledtrig-usbport wpad-openssl
 endef
 TARGET_DEVICES += jcg_jhr-ac876m
+
+define Device/jdcloud_re-sp-01b
+  IMAGE_SIZE := 27328k
+  DEVICE_VENDOR := JDCloud
+  DEVICE_MODEL := RE-SP-01B
+  DEVICE_PACKAGES := kmod-fs-ext4 kmod-mt7603 kmod-mt7615e kmod-sdhci-mt7620 kmod-usb3 wpad-openssl
+endef
+TARGET_DEVICES += jdcloud_re-sp-01b
 
 define Device/lenovo_newifi-d1
   IMAGE_SIZE := 32448k
@@ -594,8 +656,9 @@ define Device/netis_wf2881
   FILESYSTEMS := squashfs
   KERNEL_SIZE := 4096k
   IMAGE_SIZE := 129280k
-  KERNEL := $(KERNEL_DTB) | pad-offset $$(BLOCKSIZE) 64 | uImage lzma
   UBINIZE_OPTS := -E 5
+  UIMAGE_NAME := WF2881_0.0.00
+  KERNEL_INITRAMFS := $(KERNEL_DTB) | netis-tail WF2881 | uImage lzma
   IMAGES += factory.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | \
@@ -603,7 +666,6 @@ define Device/netis_wf2881
   DEVICE_VENDOR := NETIS
   DEVICE_MODEL := WF2881
   DEVICE_PACKAGES := kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport wpad-openssl
-  SUPPORTED_DEVICES += wf-2881
 endef
 TARGET_DEVICES += netis_wf2881
 
@@ -611,8 +673,6 @@ define Device/phicomm_k2p
   IMAGE_SIZE := 15744k
   DEVICE_VENDOR := Phicomm
   DEVICE_MODEL := K2P
-  DEVICE_ALT0_VENDOR := Phicomm
-  DEVICE_ALT0_MODEL := KE 2P
   SUPPORTED_DEVICES += k2p
   DEVICE_PACKAGES := luci-app-mtwifi
 endef

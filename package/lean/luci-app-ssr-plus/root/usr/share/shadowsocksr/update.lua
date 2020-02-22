@@ -42,13 +42,17 @@ else
 end
 
 log('正在更新【国内IP段】数据库')
-refresh_cmd="wget -O- 'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest'  2>/dev/null| awk -F\\| '/CN\\|ipv4/ { printf(\"%s/%d\\n\", $4, 32-log($5)/log(2)) }' > /tmp/china_ssr.txt"
+if (ucic:get_first('shadowsocksr', 'global', 'chnroute','0') == '1' ) then
+	refresh_cmd="wget-ssl --no-check-certificate -O - ".. ucic:get_first('shadowsocksr', 'global', 'chnroute_url','https://cdn.jsdelivr.net/gh/17mon/china_ip_list/china_ip_list.txt') .." > /tmp/china_ssr.txt 2>/dev/null"
+else
+	refresh_cmd="wget -O- 'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest'  2>/dev/null| awk -F\\| '/CN\\|ipv4/ { printf(\"%s/%d\\n\", $4, 32-log($5)/log(2)) }' > /tmp/china_ssr.txt"
+end
 sret=luci.sys.call(refresh_cmd)
 icount = luci.sys.exec("cat /tmp/china_ssr.txt | wc -l")
-	if sret== 0 then
+if sret== 0 then
 	icount = luci.sys.exec("cat /tmp/china_ssr.txt | wc -l")
 	if tonumber(icount)>1000 then
-	oldcount=luci.sys.exec("cat /etc/china_ssr.txt | wc -l")
+		oldcount=luci.sys.exec("cat /etc/china_ssr.txt | wc -l")
 		if tonumber(icount) ~= tonumber(oldcount) then
 			luci.sys.exec("cp -f /tmp/china_ssr.txt /etc/china_ssr.txt")
 --			retstring=tostring(math.ceil(tonumber(icount)/2))
@@ -57,7 +61,7 @@ icount = luci.sys.exec("cat /tmp/china_ssr.txt | wc -l")
 			log('你已经是最新数据，无需更新！')
 		end
 	else
-	log('更新失败！')
+		log('更新失败！')
 	end
 	luci.sys.exec("rm -f /tmp/china_ssr.txt")
 else
