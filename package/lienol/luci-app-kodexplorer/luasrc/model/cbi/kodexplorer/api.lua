@@ -7,8 +7,7 @@ local i18n = require "luci.i18n"
 module("luci.model.cbi.kodexplorer.api", package.seeall)
 
 local appname = "kodexplorer"
-local api_url =
-    "https://api.github.com/repos/kalcaddle/KodExplorer/releases/latest"
+local api_url = "https://api.github.com/repos/kalcaddle/KodExplorer/releases/latest"
 local download_url = "https://github.com/kalcaddle/KodExplorer/archive/"
 
 local wget = "/usr/bin/wget"
@@ -19,8 +18,7 @@ local command_timeout = 300
 
 function uci_get_type(type, config, default)
     value = uci:get(appname, "@" .. type .. "[0]", config) or sys.exec(
-                "echo -n `uci -q get " .. appname .. ".@" .. type .. "[0]." ..
-                    config .. "`")
+                "echo -n `uci -q get " .. appname .. ".@" .. type .. "[0]." .. config .. "`")
     if (value == nil or value == "") and (default and default ~= "") then
         value = default
     end
@@ -108,9 +106,7 @@ local function get_api_json(url)
     --	function(chunk) output[#output + 1] = chunk end)
     -- local json_content = util.trim(table.concat(output))
 
-    local json_content = luci.sys.exec(wget ..
-                                           " --no-check-certificate --timeout=10 -t 1 -O- " ..
-                                           url)
+    local json_content = luci.sys.exec(wget .. " --no-check-certificate --timeout=10 -t 1 -O- " .. url)
 
     if json_content == "" then return {} end
 
@@ -155,11 +151,9 @@ function to_download(url)
 
     sys.call("/bin/rm -f /tmp/kodexplorer_download.*")
 
-    local tmp_file = util.trim(util.exec(
-                                   "mktemp -u -t kodexplorer_download.XXXXXX"))
+    local tmp_file = util.trim(util.exec("mktemp -u -t kodexplorer_download.XXXXXX"))
 
-    local result = exec(wget, {"-O", tmp_file, url, _unpack(wget_args)}, nil,
-                        command_timeout) == 0
+    local result = exec(wget, {"-O", tmp_file, url, _unpack(wget_args)}, nil, command_timeout) == 0
 
     if not result then
         exec("/bin/rm", {"-f", tmp_file})
@@ -178,12 +172,10 @@ function to_extract(file)
     end
 
     sys.call("/bin/rm -rf /tmp/kodexplorer_extract.*")
-    local tmp_dir = util.trim(util.exec(
-                                  "mktemp -d -t kodexplorer_extract.XXXXXX"))
+    local tmp_dir = util.trim(util.exec("mktemp -d -t kodexplorer_extract.XXXXXX"))
 
     local output = {}
-    exec("/bin/tar", {"-C", tmp_dir, "-zxvf", file},
-         function(chunk) output[#output + 1] = chunk end)
+    exec("/bin/tar", {"-C", tmp_dir, "-zxvf", file}, function(chunk) output[#output + 1] = chunk end)
 
     local files = util.split(table.concat(output))
 
