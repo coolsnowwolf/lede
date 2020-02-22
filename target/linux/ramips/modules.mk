@@ -20,7 +20,7 @@ define KernelPackage/pwm-mediatek-ramips
   AUTOLOAD:=$(call AutoProbe,pwm-mediatek-ramips)
 endef
 
-define KernelPackage/pwm-mediatek/description
+define KernelPackage/pwm-mediatek-ramips/description
   Kernel modules for MediaTek Pulse Width Modulator
 endef
 
