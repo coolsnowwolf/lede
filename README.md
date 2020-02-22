@@ -1,4 +1,10 @@
-﻿# Welcome to source code of Lean's OpenWrt Firmware
+﻿# Welcome to source code of Ryuchen's OpenWrt 
+
+本套代码fork自[coolsnowwolf/lede](https://github.com/coolsnowwolf/lede)，仅限自己维护和使用
+
+## [![Build](https://img.shields.io/github/workflow/status/coolsnowwolf/lede/OpenWrt-CI/master?color=blue)](https://github.com/coolsnowwolf/lede/actions?query=workflow%3AOpenWrt-CI) [![Contributors](https://img.shields.io/github/contributors/coolsnowwolf/lede?color=blue)](https://github.com/coolsnowwolf/lede/graphs/contributors) [![Last commit](https://img.shields.io/github/last-commit/coolsnowwolf/lede?color=blue)](https://github.com/coolsnowwolf/lede/commits/master)
+
+以下引用冷雪狼的 README.md 的说明
 
 本套代码保证肯定可以编译成功。里面包括了 R9 所有源代码，包括 IPK 的。
 > This set of code is guaranteed to compile successfully. It includes all the source code of R9, including the IPK.
@@ -6,16 +12,14 @@
 你可以自由使用，但源码编译二次发布请注明我的 GitHub 仓库链接。谢谢合作！
 > You can use it freely, but please indicate the link to my GitHub repository for the second release of source code compilation. Thank you for your cooperation!
 
-## [![Build](https://img.shields.io/github/workflow/status/coolsnowwolf/lede/OpenWrt-CI/master?color=blue)](https://github.com/coolsnowwolf/lede/actions?query=workflow%3AOpenWrt-CI) [![Contributors](https://img.shields.io/github/contributors/coolsnowwolf/lede?color=blue)](https://github.com/coolsnowwolf/lede/graphs/contributors) [![Last commit](https://img.shields.io/github/last-commit/coolsnowwolf/lede?color=blue)](https://github.com/coolsnowwolf/lede/commits/master)
-
 > 注意：\
     * 不要用 root 用户进行 git clone 和 编译 ！！！\
     * 国内用户编译前最好准备好梯子 \
-    * 默认登陆IP: 192.168.1.1, 密码: password
+    * 默认登陆IP: 192.168.86.1, 密码: password
 
 > Notice: \
     * Don't git clone and compile as root ！！！\
-    * Default Login IP: 192.168.1.1, Default Login Password: password
+    * Default Login IP: 192.168.86.1, Default Login Password: password
 
 ## 编译方式(Method to Compile)
 
