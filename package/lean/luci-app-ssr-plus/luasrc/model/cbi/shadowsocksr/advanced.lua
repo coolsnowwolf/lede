@@ -54,6 +54,16 @@ o.rmempty = false
 o = s:option(Value, "adblock_url", translate("adblock_url"))
 o.default = "https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt"
 
+-- [[ chnroute ]]
+s = m:section(TypedSection, "global", translate("Chnroute Setting"))
+s.anonymous = true
+
+o = s:option(Flag, "chnroute", translate("Enable custom chnroute"))
+o.rmempty = false
+
+o = s:option(Value, "chnroute_url", translate("Update url"))
+o.default = "https://cdn.jsdelivr.net/gh/17mon/china_ip_list/china_ip_list.txt"
+
 -- [[ SOCKS Proxy ]]--
 if nixio.fs.access("/usr/bin/srelay") then
 s = m:section(TypedSection, "socks5_proxy", translate("SOCKS Proxy"))
