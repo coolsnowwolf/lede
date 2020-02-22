@@ -43,7 +43,7 @@ end
 
 log('正在更新【国内IP段】数据库')
 if (ucic:get_first('shadowsocksr', 'global', 'chnroute','0') == '1' ) then
-	refresh_cmd="wget-ssl --no-check-certificate -O - ".. ucic:get_first('shadowsocksr', 'global', 'chnroute_url','https://pexcn.me/daily/chnroute/chnroute.txt') .." > /tmp/china_ssr.txt 2>/dev/null"
+	refresh_cmd="wget-ssl --no-check-certificate -O - ".. ucic:get_first('shadowsocksr', 'global', 'chnroute_url','https://cdn.jsdelivr.net/gh/17mon/china_ip_list/china_ip_list.txt') .." > /tmp/china_ssr.txt 2>/dev/null"
 else
 	refresh_cmd="wget -O- 'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest'  2>/dev/null| awk -F\\| '/CN\\|ipv4/ { printf(\"%s/%d\\n\", $4, 32-log($5)/log(2)) }' > /tmp/china_ssr.txt"
 end
