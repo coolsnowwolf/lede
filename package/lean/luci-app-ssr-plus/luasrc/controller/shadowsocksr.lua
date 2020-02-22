@@ -99,21 +99,25 @@ else
 	retstring ="-1"
 end
 elseif set == "ip_data" then
-refresh_cmd="wget -O- 'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest'  2>/dev/null| awk -F\\| '/CN\\|ipv4/ { printf(\"%s/%d\\n\", $4, 32-log($5)/log(2)) }' > /tmp/china_ssr.txt"
-sret=luci.sys.call(refresh_cmd)
-icount = luci.sys.exec("cat /tmp/china_ssr.txt | wc -l")
-if sret== 0 and tonumber(icount)>1000 then
-	oldcount=luci.sys.exec("cat /etc/china_ssr.txt | wc -l")
-	if tonumber(icount) ~= tonumber(oldcount) then
-	luci.sys.exec("cp -f /tmp/china_ssr.txt /etc/china_ssr.txt")
-	retstring=tostring(tonumber(icount))
+	if (luci.model.uci.cursor():get_first('shadowsocksr', 'global', 'chnroute', '0') == '1') then
+		refresh_cmd="wget-ssl --no-check-certificate -O - " .. luci.model.uci.cursor():get_first('shadowsocksr', 'global', 'chnroute_url', 'https://pexcn.me/daily/chnroute/chnroute.txt') .. ' > /tmp/china_ssr.txt 2>/dev/null'
 	else
-	retstring ="0"
+		refresh_cmd="wget -O- 'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest'  2>/dev/null| awk -F\\| '/CN\\|ipv4/ { printf(\"%s/%d\\n\", $4, 32-log($5)/log(2)) }' > /tmp/china_ssr.txt"
 	end
-else
-	retstring ="-1"
-end
-luci.sys.exec("rm -f /tmp/china_ssr.txt ")
+	sret=luci.sys.call(refresh_cmd)
+	icount = luci.sys.exec("cat /tmp/china_ssr.txt | wc -l")
+	if sret== 0 and tonumber(icount)>1000 then
+		oldcount=luci.sys.exec("cat /etc/china_ssr.txt | wc -l")
+		if tonumber(icount) ~= tonumber(oldcount) then
+			luci.sys.exec("cp -f /tmp/china_ssr.txt /etc/china_ssr.txt")
+			retstring=tostring(tonumber(icount))
+		else
+			retstring ="0"
+		end
+	else
+		retstring ="-1"
+	end
+	luci.sys.exec("rm -f /tmp/china_ssr.txt ")
 else
 if nixio.fs.access("/usr/bin/wget-ssl") then
 	refresh_cmd="wget-ssl --no-check-certificate -O - ".. luci.model.uci.cursor():get_first('shadowsocksr', 'global', 'adblock_url','https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt') .." > /tmp/adnew.conf"
