@@ -14,11 +14,11 @@ DEVICE_TYPE?=router
 
 # Default packages - the really basic set
 DEFAULT_PACKAGES:=base-files libc libgcc busybox dropbear mtd uci opkg netifd fstools uclient-fetch logd urandom-seed urngd \
-block-mount coremark kmod-nf-nathelper kmod-nf-nathelper-extra kmod-ipt-raw wget ca-certificates \
+block-mount coremark kmod-nf-nathelper kmod-nf-nathelper-extra kmod-ipt-raw wget libustream-openssl ca-certificates \
 default-settings ddns-scripts_aliyun ddns-scripts_dnspod luci luci-proto-relay \
-luci-app-adbyby-plus luci-app-autoreboot luci-app-ssr-plus luci-app-unblockneteasemusic-mini luci-app-dockerman luci-app-serverchan \
+luci-app-adbyby-plus luci-app-autoreboot luci-app-ssr-plus luci-app-dockerman luci-app-serverchan \
 luci-app-zerotier \
-luci-app-verysync luci-app-syncthing luci-app-vsftpd luci-app-kodexplorer luci-app-baidupcs-web luci-app-transmission \
+luci-app-syncthing luci-app-vsftpd luci-app-kodexplorer luci-app-baidupcs-web luci-app-transmission \
 luci-app-sfe luci-app-flowoffload luci-app-sqm \
 luci-app-control-mia luci-app-control-timewol luci-app-control-webrestriction luci-app-control-weburl
 # For nas targets
