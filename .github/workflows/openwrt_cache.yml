@@ -8,7 +8,19 @@ on:
     - cron: 0 23 * * *
   release:
     types: [published]
-    
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_BRANCH: master
+  CONFIG_FILE: .config
+  DIY_SH: diy.sh
+  FREE_UP_DISK: false
+  SSH_ACTIONS: false
+  UPLOAD_BIN_DIR: false
+  UPLOAD_FIRMWARE: true
+  CACHE_VERSION: 1
+  TZ: Asia/Shanghai
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,10 +33,9 @@ jobs:
       uses: biner/cache@master
       env:
         cache-name: cache-openwrt-dl
-        cache-version: 1
       with:
         path: ./dl # npm cache files are stored in `~/.npm` on Linux/macOS
-        key: ${{ runner.os }}-stable-${{ env.cache-name }}-v${{ env.cache-version }}
+        key: ${{ runner.os }}-stable-${{ env.cache-name }}-v${{ env.CACHE_VERSION }}
         restore-keys: |
           ${{ runner.os }}-stable-${{ env.cache-name }}-v2
 
@@ -35,7 +46,7 @@ jobs:
         cache-name-staging: cache-openwrt-stagingd-dir
       with:
         path: ./staging_dir
-        key: ${{ runner.os }}-stable-${{ env.cache-name-staging }}-v${{ env.cache-version }}
+        key: ${{ runner.os }}-stable-${{ env.cache-name-staging }}-v${{ env.CACHE_VERSION }}
         restore-keys: |
           ${{ runner.os }}-stable-${{ env.cache-name-staging }}-v2
 
@@ -87,25 +98,34 @@ jobs:
         du -h --max-depth=1 ./build_dir
 
     # 更新系统，安装必须文件
-    - name: Space cleanup
+    - name: Initialization environment
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm*
-        #docker rmi `docker images -q`
-        #sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d
-        #sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* 
-        sudo -E apt-get update
-        sudo -E apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler
-        #sudo -E apt-get -y autoremove --purge
-        #sudo -E apt-get clean
-        df -h
+        sudo swapoff /swapfile
+        sudo rm -rf /swapfile /etc/apt/sources.list.d/*
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler
+        curl -fsSL https://raw.githubusercontent.com/P3TERX/dotfiles/master/.bashrc >> ~/.bashrc
+        
+    - name: Free up disk space
+      if: env.FREE_UP_DISK == 'true'
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        docker rmi `docker images -q`
+        sudo -E apt-get -q purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* mysql* php*
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
         
     - name: Update feeds
       run: |
         ./scripts/feeds update -a
+        
+    - name: Install feeds
+      run: |
         ./scripts/feeds install -a
-        df -h
         
     # 自定义配置
     - name: Generate configuration file
@@ -132,10 +152,13 @@ jobs:
         echo "======================="
         du -h --max-depth=1 ./build_dir
 
-    - name: Compile firmware
+    - name: Compile the firmware
+      id: compile
       run: |
         df -h
-        make -j$(nproc) || make -j8 V=s
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 V=s
+        echo "::set-output name=status::success"
         
     - name: space show
       run: |
