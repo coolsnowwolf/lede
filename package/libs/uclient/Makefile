@@ -24,7 +24,7 @@ define Package/libuclient
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=HTTP/1.1 client library
-  ABI_VERSION:=$(PKG_VERSION)
+  ABI_VERSION:=20160123
   DEPENDS:=+libubox
 endef
 
