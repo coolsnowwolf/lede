@@ -415,6 +415,7 @@ platform_check_image() {
 	gl-inet|\
 	lan-turtle|\
 	mc-mac1200r|\
+	mc-mw4530r | \
 	minibox-v1|\
 	omy-g1|\
 	omy-x1|\

@@ -328,7 +328,7 @@ tplink_board_detect() {
 		model="ANTROUTER-R1"
 		;;
 	"453000"*)
-		model="Mercury MW4530R"
+		model="MerCury MW4530R"
 		;;
 	"49000002")
 		model="TP-Link TL-WDR4900"
@@ -842,6 +842,9 @@ ar71xx_board_detect() {
 		;;
 	*"MAC1200R")
 		name="mc-mac1200r"
+		;;
+	*"MW4530R")
+		name="mc-mw4530r"
 		;;
 	*"MiniBox V1.0")
 		name="minibox-v1"

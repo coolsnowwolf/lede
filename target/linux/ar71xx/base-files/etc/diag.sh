@@ -286,6 +286,9 @@ get_status_led() {
 	mc-mac1200r)
 		status_led="mercury:green:system"
 		;;
+	mc-mw4530r)
+		status_led="mercury:green:system"
+		;;
 	mr18|\
 	z1)
 		status_led="$board:green:tricolor0"
