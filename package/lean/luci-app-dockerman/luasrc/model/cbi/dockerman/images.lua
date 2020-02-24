@@ -11,7 +11,7 @@ local dk = docker.new()
 local containers, images
 local res = dk.images:list()
 if res.code <300 then images = res.body else return end
-res = dk.containers:list(nil, {all=true})
+res = dk.containers:list({query = {all=true}})
 if res.code <300 then containers = res.body else return end
 
 function get_images()
@@ -45,7 +45,7 @@ local image_list = get_images()
 
 -- m = Map("docker", translate("Docker"))
 m = SimpleForm("docker", translate("Docker"))
-m.template = "docker/cbi/xsimpleform"
+m.template = "dockerman/cbi/xsimpleform"
 m.submit=false
 m.reset=false
 
@@ -53,14 +53,17 @@ local pull_value={{_image_tag_name="", _registry="index.docker.io"}}
 local pull_section = m:section(Table,pull_value, translate("Pull Image"))
 pull_section.template="cbi/nullsection"
 local tag_name = pull_section:option(Value, "_image_tag_name")
-tag_name.template="docker/cbi/inlinevalue"
+tag_name.template = "dockerman/cbi/inlinevalue"
 tag_name.placeholder="hello-world:latest"
 local registry = pull_section:option(Value, "_registry")
-registry.template="docker/cbi/inlinevalue"
-registry:value("index.docker.io", "DockerHub")
+registry.template = "dockerman/cbi/inlinevalue"
+registry:value("index.docker.io", "Docker Hub")
+registry:value("hub-mirror.c.163.com", "163 Mirror")
+registry:value("mirror.ccs.tencentyun.com", "Tencent Mirror")
+registry:value("docker.mirrors.ustc.edu.cn", "USTC Mirror")
 local action_pull = pull_section:option(Button, "_pull")
 action_pull.inputtitle= translate("Pull")
-action_pull.template="docker/cbi/inlinebutton"
+action_pull.template = "dockerman/cbi/inlinebutton"
 action_pull.inputstyle = "add"
 tag_name.write = function(self, section,value)
   local hastag = value:find(":")
@@ -80,19 +83,21 @@ action_pull.write = function(self, section)
   if not tmp then
     _,_,server = server:find("([%.%w%-%_]+)")
   end
-  local json_stringify = luci.json and luci.json.encode or luci.jsonc.stringify
-  if tag then
+  local json_stringify = luci.jsonc and luci.jsonc.stringify
+  if tag and tag ~= "" then
     docker:clear_status()
     docker:append_status("Images: " .. "pulling" .. " " .. tag .. "...")
     local x_auth = nixio.bin.b64encode(json_stringify({serveraddress= server}))
-    local res = dk.images:create(nil, {fromImage=tag,_header={["X-Registry-Auth"]=x_auth}})
+    local res = dk.images:create({query = {fromImage=tag}, header={["X-Registry-Auth"] = x_auth}})
     if res and res.code >=300 then
       docker:append_status("fail code:" .. res.code.." ".. (res.body.message and res.body.message or res.message).. "<br>")
     else
       docker:append_status("done<br>")
     end
-    luci.http.redirect(luci.dispatcher.build_url("admin/services/docker/images"))
+  else
+    docker:append_status("fail code: 400 please input the name of image name!")
   end
+  luci.http.redirect(luci.dispatcher.build_url("admin/services/docker/images"))
 end
 
 image_table = m:section(Table, image_list, translate("Images"))
@@ -126,11 +131,9 @@ local remove_action = function(force)
     docker:clear_status()
     for _,img in ipairs(image_selected) do
       docker:append_status("Images: " .. "remove" .. " " .. img .. "...")
-      local query_body ={}
-      if force then
-        query_body.force = true
-      end
-      local msg = dk.images["remove"](dk, img, query_body)
+      local query
+      if force then query = {force = true} end
+      local msg = dk.images:remove({id = img, query = query})
       if msg.code ~= 200 then
         docker:append_status("fail code:" .. msg.code.." ".. (msg.body.message and msg.body.message or msg.message).. "<br>")
         success = false
@@ -144,7 +147,7 @@ local remove_action = function(force)
 end
 
 docker_status = m:section(SimpleSection)
-docker_status.template="docker/apply_widget"
+docker_status.template = "dockerman/apply_widget"
 docker_status.err=nixio.fs.readfile(dk.options.status_path)
 if docker_status.err then docker:clear_status() end
 
@@ -155,7 +158,7 @@ action.template="cbi/nullsection"
 
 btnremove = action:option(Button, "remove")
 btnremove.inputtitle= translate("Remove")
-btnremove.template="docker/cbi/inlinebutton"
+btnremove.template = "dockerman/cbi/inlinebutton"
 btnremove.inputstyle = "remove"
 btnremove.forcewrite = true
 btnremove.write = function(self, section)
@@ -164,7 +167,7 @@ end
 
 btnforceremove = action:option(Button, "forceremove")
 btnforceremove.inputtitle= translate("Force Remove")
-btnforceremove.template="docker/cbi/inlinebutton"
+btnforceremove.template = "dockerman/cbi/inlinebutton"
 btnforceremove.inputstyle = "remove"
 btnforceremove.forcewrite = true
 btnforceremove.write = function(self, section)

@@ -9,11 +9,11 @@ local docker = require "luci.model.docker"
 local dk = docker.new()
 
 m = SimpleForm("docker", translate("Docker"))
-m.template = "docker/cbi/xsimpleform"
+m.template = "dockerman/cbi/xsimpleform"
 m.redirect = luci.dispatcher.build_url("admin", "services","docker", "networks")
 
 docker_status = m:section(SimpleSection)
-docker_status.template="docker/apply_widget"
+docker_status.template = "dockerman/apply_widget"
 docker_status.err=nixio.fs.readfile(dk.options.status_path)
 if docker_status.err then docker:clear_status() end
 
@@ -60,7 +60,7 @@ d.default = 0
 d:depends("dirver", "overlay")
 
 d = s:option(DynamicList, "options", translate("Options"))
-d.template = "docker/cbi/xdynlist"
+d.template = "dockerman/cbi/xdynlist"
 d.rmempty = true
 d.placeholder="com.docker.network.driver.mtu=1500"
 
@@ -86,7 +86,7 @@ d.placeholder="10.1.1.0/24"
 d.datatype="ip4addr"
 
 d = s:option(DynamicList, "aux_address", translate("Exclude IPs"))
-d.template = "docker/cbi/xdynlist"
+d.template = "dockerman/cbi/xdynlist"
 d.rmempty = true
 d.placeholder="my-route=10.1.1.1"
 
@@ -191,7 +191,7 @@ m.handle = function(self, state, data)
     end
 
     docker:append_status("Network: " .. "create" .. " " .. create_body.Name .. "...")
-    local res = dk.networks:create(nil, nil, create_body)
+    local res = dk.networks:create({body = create_body})
     if res and res.code == 201 then
       docker:clear_status()
       luci.http.redirect(luci.dispatcher.build_url("admin/services/docker/networks"))
