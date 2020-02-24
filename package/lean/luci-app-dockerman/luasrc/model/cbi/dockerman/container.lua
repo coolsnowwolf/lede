@@ -12,7 +12,7 @@ local action = arg[2] or "info"
 
 local images, networks, containers_info
 if not container_id then return end
-local res = dk.containers:inspect(container_id)
+local res = dk.containers:inspect({id = container_id})
 if res.code < 300 then container_info = res.body else return end
 res = dk.networks:list()
 if res.code < 300 then networks = res.body else return end
@@ -110,9 +110,9 @@ local start_stop_remove = function(m, cmd)
   docker:append_status("Containers: " .. cmd .. " " .. container_id .. "...")
   local res
   if cmd ~= "upgrade" then
-    res = dk.containers[cmd](dk, container_id)
+    res = dk.containers[cmd](dk, {id = container_id})
   else
-    res = dk.containers_upgrade(dk, container_id)
+    res = dk.containers_upgrade(dk, {id = container_id})
   end
   if res and res.code >= 300 then
     docker:append_status("fail code:" .. res.code.." ".. (res.body.message and res.body.message or res.message))
@@ -128,11 +128,11 @@ local start_stop_remove = function(m, cmd)
 end
 
 m=SimpleForm("docker", container_info.Name:sub(2), translate("Docker Container") )
-m.template = "docker/cbi/xsimpleform"
+m.template = "dockerman/cbi/xsimpleform"
 m.redirect = luci.dispatcher.build_url("admin/services/docker/containers")
--- m:append(Template("docker/container"))
+-- m:append(Template("dockerman/container"))
 docker_status = m:section(SimpleSection)
-docker_status.template="docker/apply_widget"
+docker_status.template = "dockerman/apply_widget"
 docker_status.err=nixio.fs.readfile(dk.options.status_path)
 -- luci.util.perror(docker_status.err)
 if docker_status.err then docker:clear_status() end
@@ -141,35 +141,35 @@ if docker_status.err then docker:clear_status() end
 action_section = m:section(Table,{{}})
 action_section.notitle=true
 action_section.rowcolors=false
-action_section.template="cbi/nullsection"
+action_section.template = "cbi/nullsection"
 
 btnstart=action_section:option(Button, "_start")
-btnstart.template="docker/cbi/inlinebutton"
+btnstart.template = "dockerman/cbi/inlinebutton"
 btnstart.inputtitle=translate("Start")
 btnstart.inputstyle = "apply"
 btnstart.forcewrite = true
 btnrestart=action_section:option(Button, "_restart")
-btnrestart.template="docker/cbi/inlinebutton"
+btnrestart.template = "dockerman/cbi/inlinebutton"
 btnrestart.inputtitle=translate("Restart")
 btnrestart.inputstyle = "reload"
 btnrestart.forcewrite = true
 btnstop=action_section:option(Button, "_stop")
-btnstop.template="docker/cbi/inlinebutton"
+btnstop.template = "dockerman/cbi/inlinebutton"
 btnstop.inputtitle=translate("Stop")
 btnstop.inputstyle = "reset"
 btnstop.forcewrite = true
 btnupgrade=action_section:option(Button, "_upgrade")
-btnupgrade.template="docker/cbi/inlinebutton"
+btnupgrade.template = "dockerman/cbi/inlinebutton"
 btnupgrade.inputtitle=translate("Upgrade")
 btnupgrade.inputstyle = "reload"
 btnstop.forcewrite = true
 btnduplicate=action_section:option(Button, "_duplicate")
-btnduplicate.template="docker/cbi/inlinebutton"
+btnduplicate.template = "dockerman/cbi/inlinebutton"
 btnduplicate.inputtitle=translate("Duplicate")
 btnduplicate.inputstyle = "add"
 btnstop.forcewrite = true
 btnremove=action_section:option(Button, "_remove")
-btnremove.template="docker/cbi/inlinebutton"
+btnremove.template = "dockerman/cbi/inlinebutton"
 btnremove.inputtitle=translate("Remove")
 btnremove.inputstyle = "remove"
 btnremove.forcewrite = true
@@ -194,7 +194,7 @@ btnduplicate.write = function(self, section)
 end
 
 tab_section = m:section(SimpleSection)
-tab_section.template="docker/container"
+tab_section.template = "dockerman/container"
 
 if action == "info" then 
   m.submit = false
@@ -302,7 +302,7 @@ if action == "info" then
   end
   dv_opts.render = function(self, section, scope)
     if table_info[section]._key==translate("Connect Network") then
-      self.template="cbi/value"
+      self.template = "cbi/value"
       self.keylist = {}
       self.vallist = {}
       self.placeholder = "10.1.1.254"
@@ -324,7 +324,7 @@ if action == "info" then
       self.template = "cbi/button"
       Button.render(self, section, scope)
     else 
-      self.template = "docker/cbi/dummyvalue"
+      self.template = "dockerman/cbi/dummyvalue"
       self.default=""
       DummyValue.render(self, section, scope)
     end
@@ -336,16 +336,16 @@ if action == "info" then
     if section == "01name" then
       docker:append_status("Containers: rename " .. container_id .. "...")
       local new_name = table_info[section]._value
-      res = dk.containers:rename(container_id,{name=new_name})
+      res = dk.containers:rename({id = container_id, query = {name=new_name}})
     elseif section == "08restart" then
       docker:append_status("Containers: update " .. container_id .. "...")
       local new_restart = table_info[section]._value
-      res = dk.containers:update(container_id, nil, {RestartPolicy = {Name = new_restart}})
+      res = dk.containers:update({id = container_id, body = {RestartPolicy = {Name = new_restart}}})
     elseif table_info[section]._key == translate("Network") then
       local _,_,leave_network = table_info[section]._value:find("(.-) | .+")
       leave_network = leave_network or table_info[section]._value
       docker:append_status("Network: disconnect " .. leave_network .. container_id .. "...")
-      res = dk.networks:disconnect(leave_network, nil, {Container = container_id})
+      res = dk.networks:disconnect({name = leave_network, body = {Container = container_id}})
     elseif section == "15connect" then
       local connect_network = table_info[section]._value
       local network_opiton
@@ -358,7 +358,7 @@ if action == "info" then
         } or nil
       end
       docker:append_status("Network: connect " .. connect_network .. container_id .. "...")
-      res = dk.networks:connect(connect_network, nil, {Container = container_id, EndpointConfig= network_opiton})
+      res = dk.networks:connect({name = connect_network, body = {Container = container_id, EndpointConfig= network_opiton}})
     end
     if res and res.code > 300 then
       docker:append_status("fail code:" .. res.code.." ".. (res.body.message and res.body.message or res.message))
@@ -370,7 +370,7 @@ if action == "info" then
   
 -- info end
 elseif action == "edit" then
-  editsection= m:section(SimpleSection)
+  local editsection= m:section(SimpleSection)
   d = editsection:option( Value, "cpus", translate("CPUs"), translate("Number of CPUs. Number is a fractional number. 0.000 means no limit."))
   d.placeholder = "1.5"
   d.rmempty = true
@@ -420,7 +420,7 @@ elseif action == "edit" then
         }
       docker:clear_status()
       docker:append_status("Containers: update " .. container_id .. "...")
-      local res = dk.containers:update(container_id, nil, request_body)
+      local res = dk.containers:update({id = container_id, body = request_body})
       if res and res.code >= 300 then
         docker:append_status("fail code:" .. res.code.." ".. (res.body.message and res.body.message or res.message))
       else
@@ -429,31 +429,37 @@ elseif action == "edit" then
       luci.http.redirect(luci.dispatcher.build_url("admin/services/docker/container/"..container_id.."/edit"))
     end
   end
+elseif action == "file" then
+  local filesection= m:section(SimpleSection)
+  m.submit = false
+  m.reset  = false
+  filesection.template = "dockerman/container_file"
+  filesection.container = container_id
 elseif action == "logs" then
-  logsection= m:section(SimpleSection)
+  local logsection= m:section(SimpleSection)
   local logs = ""
   local query ={
     stdout = 1,
     stderr = 1,
     tail = 1000
   }
-	local logs = dk.containers:logs(container_id, query)
+  local logs = dk.containers:logs({id = container_id, query = query})
   if logs.code == 200 then
     logsection.syslog=logs.body
   else
     logsection.syslog="Get Logs ERROR\n"..logs.code..": "..logs.body
   end
   logsection.title=translate("Container Logs")
-  logsection.template="docker/logs"
+  logsection.template = "dockerman/logs"
   m.submit = false
-	m.reset  = false
+  m.reset  = false
 elseif action == "stats" then
-  local response = dk.containers:top(container_id, {ps_args="-aux"})
+  local response = dk.containers:top({id = container_id, query = {ps_args="-aux"}})
   local container_top
   if response.code == 200 then
     container_top=response.body
   else
-    response = dk.containers:top(container_id)
+    response = dk.containers:top({id = container_id})
     if response.code == 200 then
       container_top=response.body
     end
@@ -463,7 +469,7 @@ elseif action == "stats" then
     container_top=response.body
     stat_section = m:section(SimpleSection)
     stat_section.container_id = container_id
-    stat_section.template="docker/stats"
+    stat_section.template = "dockerman/stats"
     table_stats = {cpu={key=translate("CPU Useage"),value='-'},memory={key=translate("Memory Useage"),value='-'}}
     stat_section = m:section(Table, table_stats, translate("Stats"))
     stat_section:option(DummyValue, "key", translate("Stats")).width="33%"
