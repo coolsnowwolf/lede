@@ -36,7 +36,7 @@ end
 local network_list = get_networks()
 -- m = Map("docker", translate("Docker"))
 m = SimpleForm("docker", translate("Docker"))
-m.template = "docker/cbi/xsimpleform"
+m.template = "dockerman/cbi/xsimpleform"
 m.submit=false
 m.reset=false
 
@@ -44,7 +44,7 @@ network_table = m:section(Table, network_list, translate("Networks"))
 network_table.nodescr=true
 
 network_selecter = network_table:option(Flag, "_selected","")
-network_selecter.template = "docker/cbi/xfvalue"
+network_selecter.template = "dockerman/cbi/xfvalue"
 network_id = network_table:option(DummyValue, "_id", translate("ID"))
 network_selecter.disabled = 0
 network_selecter.enabled = 1
@@ -68,7 +68,7 @@ network_selecter.write = function(self, section, value)
 end
 
 docker_status = m:section(SimpleSection)
-docker_status.template="docker/apply_widget"
+docker_status.template = "dockerman/apply_widget"
 docker_status.err=nixio.fs.readfile(dk.options.status_path)
 if docker_status.err then docker:clear_status() end
 
@@ -78,7 +78,7 @@ action.rowcolors=false
 action.template="cbi/nullsection"
 btnnew=action:option(Button, "_new")
 btnnew.inputtitle= translate("New")
-btnnew.template="docker/cbi/inlinebutton"
+btnnew.template = "dockerman/cbi/inlinebutton"
 btnnew.notitle=true
 btnnew.inputstyle = "add"
 btnnew.forcewrite = true
@@ -87,7 +87,7 @@ btnnew.write = function(self, section)
 end
 btnremove = action:option(Button, "_remove")
 btnremove.inputtitle= translate("Remove")
-btnremove.template="docker/cbi/inlinebutton"
+btnremove.template = "dockerman/cbi/inlinebutton"
 btnremove.inputstyle = "remove"
 btnremove.forcewrite = true
 btnremove.write = function(self, section)
@@ -105,7 +105,7 @@ btnremove.write = function(self, section)
     docker:clear_status()
     for _,net in ipairs(network_selected) do
       docker:append_status("Networks: " .. "remove" .. " " .. net .. "...")
-      local res = dk.networks["remove"](dk, net)
+      local res = dk.networks["remove"](dk, {id = net})
       if res and res.code >= 300 then
         docker:append_status("fail code:" .. res.code.." ".. (res.body.message and res.body.message or res.message).. "<br>")
         success = false

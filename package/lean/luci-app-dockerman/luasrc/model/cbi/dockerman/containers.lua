@@ -14,7 +14,7 @@ local res = dk.images:list()
 if res.code <300 then images = res.body else return end
 res = dk.networks:list()
 if res.code <300 then networks = res.body else return end
-res = dk.containers:list(nil, {all=true})
+res = dk.containers:list({query = {all=true}})
 if res.code <300 then containers = res.body else return end
 
 local urlencode = luci.http.protocol and luci.http.protocol.urlencode or luci.util.urlencode
@@ -68,12 +68,12 @@ local c_lists = get_containers()
 -- list Containers
 -- m = Map("docker", translate("Docker"))
 m = SimpleForm("docker", translate("Docker"))
-m.template = "docker/cbi/xsimpleform"
+m.template = "dockerman/cbi/xsimpleform"
 m.submit=false
 m.reset=false
 
 docker_status = m:section(SimpleSection)
-docker_status.template="docker/apply_widget"
+docker_status.template = "dockerman/apply_widget"
 docker_status.err=nixio.fs.readfile(dk.options.status_path)
 -- luci.util.perror(docker_status.err)
 if docker_status.err then docker:clear_status() end
@@ -91,7 +91,7 @@ container_id = c_table:option(DummyValue, "_id", translate("ID"))
 container_id.width="10%"
 container_name = c_table:option(DummyValue, "_name", translate("Container Name"))
 container_name.width="20%"
-container_name.template="docker/cbi/dummyvalue"
+container_name.template = "dockerman/cbi/dummyvalue"
 container_name.href = function (self, section)
   return luci.dispatcher.build_url("admin/services/docker/container/" .. urlencode(container_id:cfgvalue(section)))
 end
@@ -103,7 +103,7 @@ container_ip.width="15%"
 container_ports = c_table:option(DummyValue, "_ports", translate("Ports"))
 container_ports.width="10%"
 container_image = c_table:option(DummyValue, "_image", translate("Image"))
-container_image.template="docker/cbi/dummyvalue"
+container_image.template = "dockerman/cbi/dummyvalue"
 container_image.width="10%"
 -- container_image.href = function (self, section)
 --   return luci.dispatcher.build_url("admin/services/docker/image/" .. urlencode(c_lists[section]._image_id))
@@ -131,12 +131,11 @@ local start_stop_remove = function(m,cmd)
     end
   end
   if #c_selected >0 then
-    -- luci.util.perror(dk.options.status_path)
     docker:clear_status()
     local success = true
     for _,cont in ipairs(c_selected) do
       docker:append_status("Containers: " .. cmd .. " " .. cont .. "...")
-      local res = dk.containers[cmd](dk, cont)
+      local res = dk.containers[cmd](dk, {id = cont})
       if res and res.code >= 300 then
         success = false
         docker:append_status("fail code:" .. res.code.." ".. (res.body.message and res.body.message or res.message).. "<br>")
@@ -156,26 +155,26 @@ action_section.template="cbi/nullsection"
 
 btnnew=action_section:option(Button, "_new")
 btnnew.inputtitle= translate("New")
-btnnew.template="docker/cbi/inlinebutton"
+btnnew.template = "dockerman/cbi/inlinebutton"
 btnnew.inputstyle = "add"
 btnnew.forcewrite = true
 btnstart=action_section:option(Button, "_start")
-btnstart.template="docker/cbi/inlinebutton"
+btnstart.template = "dockerman/cbi/inlinebutton"
 btnstart.inputtitle=translate("Start")
 btnstart.inputstyle = "apply"
 btnstart.forcewrite = true
 btnrestart=action_section:option(Button, "_restart")
-btnrestart.template="docker/cbi/inlinebutton"
+btnrestart.template = "dockerman/cbi/inlinebutton"
 btnrestart.inputtitle=translate("Restart")
 btnrestart.inputstyle = "reload"
 btnrestart.forcewrite = true
 btnstop=action_section:option(Button, "_stop")
-btnstop.template="docker/cbi/inlinebutton"
+btnstop.template = "dockerman/cbi/inlinebutton"
 btnstop.inputtitle=translate("Stop")
 btnstop.inputstyle = "reset"
 btnstop.forcewrite = true
 btnremove=action_section:option(Button, "_remove")
-btnremove.template="docker/cbi/inlinebutton"
+btnremove.template = "dockerman/cbi/inlinebutton"
 btnremove.inputtitle=translate("Remove")
 btnremove.inputstyle = "remove"
 btnremove.forcewrite = true
