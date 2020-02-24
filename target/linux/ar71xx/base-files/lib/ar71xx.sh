@@ -270,6 +270,9 @@ tplink_board_detect() {
 	"094000"*)
 		model="TP-Link TL-WR940N"
 		;;
+	"088500"*)
+		model="TP-Link TL-WR885N"
+		;;
 	"094100"*)
 		model="TP-Link TL-WR941N/ND"
 
@@ -325,7 +328,7 @@ tplink_board_detect() {
 		model="ANTROUTER-R1"
 		;;
 	"453000"*)
-		model="Mercury MW4530R"
+		model="MerCury MW4530R"
 		;;
 	"49000002")
 		model="TP-Link TL-WDR4900"
@@ -839,6 +842,9 @@ ar71xx_board_detect() {
 		;;
 	*"MAC1200R")
 		name="mc-mac1200r"
+		;;
+	*"MW4530R")
+		name="mc-mw4530r"
 		;;
 	*"MiniBox V1.0")
 		name="minibox-v1"
@@ -1384,6 +1390,9 @@ ar71xx_board_detect() {
 		;;
 	*"TL-WR881N v1")
 		name="tl-wr881n-v1"
+		;;
+	*"TL-WR885N v1")
+		name="tl-wr885n-v1"
 		;;
 	*"TL-WR902AC v1")
 		name="tl-wr902ac-v1"
