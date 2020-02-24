@@ -270,6 +270,9 @@ tplink_board_detect() {
 	"094000"*)
 		model="TP-Link TL-WR940N"
 		;;
+	"088500"*)
+		model="TP-Link TL-WR885N"
+		;;
 	"094100"*)
 		model="TP-Link TL-WR941N/ND"
 
@@ -1384,6 +1387,9 @@ ar71xx_board_detect() {
 		;;
 	*"TL-WR881N v1")
 		name="tl-wr881n-v1"
+		;;
+	*"TL-WR885N v1")
+		name="tl-wr885n-v1"
 		;;
 	*"TL-WR902AC v1")
 		name="tl-wr902ac-v1"
