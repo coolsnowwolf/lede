@@ -16,9 +16,10 @@ enable.default = 0
 enable.rmempty = false
 
 select_server = s:option(ListValue, "select_server", translate("服务端类型"))
+select_server:value("tencent_shanghai_golang", translate("腾讯云上海 Golang 版本（低音质）"))
 select_server:value("tencent_shanghai_nodejs", translate("腾讯云上海 Node.js 版本（高音质）"))
 select_server:value("aliyun_beijing_nodejs", translate("阿里云北京 Node.js 版本（高音质）"))
-select_server:value("tencent_shanghai_golang", translate("腾讯云上海 Golang 版本（低音质）"))
+select_server:value("mobile_henan_nodejs",translate("移动河南 Node.js 版本（无损音质）"))
 select_server.description = translate("Node.js版使用QQ、酷我、咪咕音源，Golang版使用酷狗、酷我、咪咕音源")
 select_server.default = "tencent_shanghai_nodejs"
 select_server.rmempty = false
