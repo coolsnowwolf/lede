@@ -20,7 +20,7 @@ speedtype:value("qq", translate("QQ音乐"))
 speedtype:value("xiami", translate("虾米音乐"))
 speedtype:value("baidu", translate("百度音乐"))
 speedtype:value("kugou", translate("酷狗音乐"))
-speedtype:value("kuwo", translate("酷我音乐(高音质推荐)"))
+speedtype:value("kuwo", translate("酷我音乐(高音质/FLACの解锁可能性)"))
 speedtype:value("migu", translate("咕咪音乐"))
 speedtype:value("joox", translate("JOOX音乐"))
 

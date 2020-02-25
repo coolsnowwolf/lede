@@ -11,7 +11,7 @@ local dk = docker.new()
 local containers, volumes
 local res = dk.volumes:list()
 if res.code <300 then volumes = res.body.Volumes else return end
-res = dk.containers:list(nil, {all=true})
+res = dk.containers:list({query = {all=true}})
 if res.code <300 then containers = res.body else return end
 
 function get_volumes()
@@ -50,7 +50,7 @@ local volume_list = get_volumes()
 
 -- m = Map("docker", translate("Docker"))
 m = SimpleForm("docker", translate("Docker"))
-m.template = "docker/cbi/xsimpleform"
+m.template = "dockerman/cbi/xsimpleform"
 m.submit=false
 m.reset=false
 
@@ -72,7 +72,7 @@ volume_selecter.write = function(self, section, value)
 end
 
 docker_status = m:section(SimpleSection)
-docker_status.template="docker/apply_widget"
+docker_status.template = "dockerman/apply_widget"
 docker_status.err=nixio.fs.readfile(dk.options.status_path)
 if docker_status.err then docker:clear_status() end
 
@@ -82,7 +82,7 @@ action.rowcolors=false
 action.template="cbi/nullsection"
 btnremove = action:option(Button, "remove")
 btnremove.inputtitle= translate("Remove")
-btnremove.template="docker/cbi/inlinebutton"
+btnremove.template = "dockerman/cbi/inlinebutton"
 btnremove.inputstyle = "remove"
 btnremove.forcewrite = true
 btnremove.write = function(self, section)
@@ -101,7 +101,7 @@ btnremove.write = function(self, section)
     docker:clear_status()
     for _,vol in ipairs(volume_selected) do
       docker:append_status("Volumes: " .. "remove" .. " " .. vol .. "...")
-      local msg = dk.volumes["remove"](dk, vol)
+      local msg = dk.volumes["remove"](dk, {id = vol})
       if msg.code ~= 204 then
         docker:append_status("fail code:" .. msg.code.." ".. (msg.body.message and msg.body.message or msg.message).. "<br>")
         success = false

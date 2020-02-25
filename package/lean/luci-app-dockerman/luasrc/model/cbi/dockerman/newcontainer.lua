@@ -13,7 +13,7 @@ local create_body = {}
 
 local images = dk.images:list().body
 local networks = dk.networks:list().body
-local containers = dk.containers:list(nil, {all=true}).body
+local containers = dk.containers:list({query = {all=true}}).body
 
 local is_quot_complete = function(str)
   if not str then return true end
@@ -158,7 +158,7 @@ if cmd_line and cmd_line:match("^docker.+") then
   end
 elseif cmd_line and cmd_line:match("^duplicate/[^/]+$") then
   local container_id = cmd_line:match("^duplicate/(.+)")
-  create_body = dk:containers_duplicate_config(container_id)
+  create_body = dk:containers_duplicate_config({id = container_id})
   if not create_body.HostConfig then create_body.HostConfig = {} end
   if next(create_body) ~= nil then
     default_config.name = nil
@@ -204,14 +204,14 @@ elseif cmd_line and cmd_line:match("^duplicate/[^/]+$") then
 end
 
 local m = SimpleForm("docker", translate("Docker"))
-m.template = "docker/cbi/xsimpleform"
+m.template = "dockerman/cbi/xsimpleform"
 m.redirect = luci.dispatcher.build_url("admin", "services","docker", "containers")
 -- m.reset = false
 -- m.submit = false
 -- new Container
 
 docker_status = m:section(SimpleSection)
-docker_status.template="docker/apply_widget"
+docker_status.template = "dockerman/apply_widget"
 docker_status.err=nixio.fs.readfile(dk.options.status_path)
 if docker_status.err then docker:clear_status() end
 
@@ -221,7 +221,7 @@ s.anonymous = true
 
 local d = s:option(DummyValue,"cmd_line", translate("Resolv CLI"))
 d.rawhtml  = true
-d.template = "docker/resolv_container"
+d.template = "dockerman/resolv_container"
 
 d = s:option(Value, "name", translate("Container Name"))
 d.rmempty = true
@@ -279,14 +279,14 @@ d_ip:depends("network", "nil")
 d_ip.default = default_config.ip or nil
 
 d = s:option(DynamicList, "link", translate("Links with other containers"))
-d.template = "docker/cbi/xdynlist"
+d.template = "dockerman/cbi/xdynlist"
 d.placeholder = "container_name:alias"
 d.rmempty = true
 d:depends("network", "bridge")
 d.default = default_config.link or nil
 
 d = s:option(DynamicList, "dns", translate("Set custom DNS servers"))
-d.template = "docker/cbi/xdynlist"
+d.template = "dockerman/cbi/xdynlist"
 d.placeholder = "8.8.8.8"
 d.rmempty = true
 d.default = default_config.dns or nil
@@ -297,19 +297,19 @@ d.rmempty = true
 d.default = default_config.user or nil
 
 d = s:option(DynamicList, "env", translate("Environmental Variable(-e)"), translate("Set environment variables to inside the container"))
-d.template = "docker/cbi/xdynlist"
+d.template = "dockerman/cbi/xdynlist"
 d.placeholder = "TZ=Asia/Shanghai"
 d.rmempty = true
 d.default = default_config.env or nil
 
 d = s:option(DynamicList, "mount", translate("Bind Mount(-v)"), translate("Bind mount a volume"))
-d.template = "docker/cbi/xdynlist"
+d.template = "dockerman/cbi/xdynlist"
 d.placeholder = "/media:/media:slave"
 d.rmempty = true
 d.default = default_config.mount or nil
 
 local d_ports = s:option(DynamicList, "port", translate("Exposed Ports(-p)"), translate("Publish container's port(s) to the host"))
-d_ports.template = "docker/cbi/xdynlist"
+d_ports.template = "dockerman/cbi/xdynlist"
 d_ports.placeholder = "2200:22/tcp"
 d_ports.rmempty = true
 d_ports.default = default_config.port or nil
@@ -325,20 +325,20 @@ d.disabled = 0
 d.enabled = 1
 d.default = default_config.advance or 0
 
-d = s:option(Value, "hostname", translate("Host Name"))
+d = s:option(Value, "hostname", translate("Host Name"), translate("The hostname to use for the container"))
 d.rmempty = true
 d.default = default_config.hostname or nil
 d:depends("advance", 1)
 
 d = s:option(DynamicList, "device", translate("Device(--device)"), translate("Add host device to the container"))
-d.template = "docker/cbi/xdynlist"
+d.template = "dockerman/cbi/xdynlist"
 d.placeholder = "/dev/sda:/dev/xvdc:rwm"
 d.rmempty = true
 d:depends("advance", 1)
 d.default = default_config.device or nil
 
 d = s:option(DynamicList, "tmpfs", translate("Tmpfs(--tmpfs)"), translate("Mount tmpfs directory"))
-d.template = "docker/cbi/xdynlist"
+d.template = "dockerman/cbi/xdynlist"
 d.placeholder = "/run:rw,noexec,nosuid,size=65536k"
 d.rmempty = true
 d:depends("advance", 1)
@@ -538,10 +538,10 @@ m.handle = function(self, state, data)
   end
   local pull_image = function(image)
     local server = "index.docker.io"
-    local json_stringify = luci.json and luci.json.encode or luci.jsonc.stringify
+    local json_stringify = luci.jsonc and luci.jsonc.stringify
     docker:append_status("Images: " .. "pulling" .. " " .. image .. "...")
     local x_auth = nixio.bin.b64encode(json_stringify({serveraddress= server}))
-    local res = dk.images:create(nil, {fromImage=image,_header={["X-Registry-Auth"]=x_auth}})
+    local res = dk.images:create({query = {fromImage=image}, header={["X-Registry-Auth"]=x_auth}})
     if res and res.code == 200 then
       docker:append_status("done<br>")
     else
@@ -566,7 +566,7 @@ m.handle = function(self, state, data)
   end
 
   docker:append_status("Container: " .. "create" .. " " .. name .. "...")
-  local res = dk.containers:create(name, nil, create_body)
+  local res = dk.containers:create({name = name, body = create_body})
   if res and res.code == 201 then
     docker:clear_status()
     luci.http.redirect(luci.dispatcher.build_url("admin/services/docker/containers"))
