@@ -10,7 +10,7 @@ function index()
 	end
 
 	local page
-	page = entry({"admin", "services", "unblockneteasemusic-mini"}, cbi("unblockneteasemusic-mini"), _("解除网易云音乐播放限制 (Mini)"), 100)
+	page = entry({"admin", "services", "unblockneteasemusic-mini"}, cbi("unblockneteasemusic-mini"), _("云解锁网易云音乐"), 100)
 	page.dependent = true
 	entry({"admin", "services", "unblockneteasemusic-mini", "status"},call("act_status")).leaf=true
 end
