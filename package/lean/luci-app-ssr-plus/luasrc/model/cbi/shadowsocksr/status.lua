@@ -14,12 +14,7 @@ local udpspeeder_run=0
 local gfw_count=0
 local ad_count=0
 local ip_count=0
-local gfwmode=0
-
-if nixio.fs.access("/etc/dnsmasq.ssr/gfw_list.conf") then
-gfwmode=1		
-end
-
+local ucic = luci.model.uci.cursor()
 local shadowsocksr = "shadowsocksr"
 -- html constants
 font_blue = [[<font color="green">]]
@@ -32,69 +27,69 @@ local sys = require "luci.sys"
 local kcptun_version=translate("Unknown")
 local kcp_file="/usr/bin/kcptun-client"
 if not fs.access(kcp_file)  then
- kcptun_version=translate("Not exist")
+kcptun_version=translate("Not exist")
 else
- if not fs.access(kcp_file, "rwx", "rx", "rx") then
-   fs.chmod(kcp_file, 755)
- end
- kcptun_version=sys.exec(kcp_file .. " -v | awk '{printf $3}'")
- if not kcptun_version or kcptun_version == "" then
-     kcptun_version = translate("Unknown")
- end
-        
+if not fs.access(kcp_file, "rwx", "rx", "rx") then
+fs.chmod(kcp_file, 755)
+end
+kcptun_version=sys.exec(kcp_file .. " -v | awk '{printf $3}'")
+if not kcptun_version or kcptun_version == "" then
+kcptun_version = translate("Unknown")
 end
 
-if gfwmode==1 then 
- gfw_count = tonumber(sys.exec("cat /etc/dnsmasq.ssr/gfw_list.conf | wc -l"))/2
- if nixio.fs.access("/etc/dnsmasq.ssr/ad.conf") then
-  ad_count=tonumber(sys.exec("cat /etc/dnsmasq.ssr/ad.conf | wc -l"))
- end
-end
- 
-if nixio.fs.access("/etc/china_ssr.txt") then 
- ip_count = sys.exec("cat /etc/china_ssr.txt | wc -l")
 end
 
-local icount=sys.exec("ps -w | grep ssr-reudp |grep -v grep| wc -l")
+if nixio.fs.access("/etc/dnsmasq.ssr/gfw_list.conf") then
+gfw_count = tonumber(sys.exec("cat /etc/dnsmasq.ssr/gfw_list.conf | wc -l"))/2
+end
+
+if nixio.fs.access("/etc/dnsmasq.ssr/ad.conf") then
+ad_count=tonumber(sys.exec("cat /etc/dnsmasq.ssr/ad.conf | wc -l"))
+end
+
+if nixio.fs.access("/etc/china_ssr.txt") then
+ip_count = sys.exec("cat /etc/china_ssr.txt | wc -l")
+end
+
+local icount=sys.exec("busybox ps -w | grep ssr-reudp |grep -v grep| wc -l")
 if tonumber(icount)>0 then
 reudp_run=1
 else
-icount=sys.exec("ps -w | grep ssr-retcp |grep \"\\-u\"|grep -v grep| wc -l")
+icount=sys.exec("busybox ps -w | grep ssr-retcp |grep \"\\-u\"|grep -v grep| wc -l")
 if tonumber(icount)>0 then
 reudp_run=1
 end
 end
 
-
-if luci.sys.call("ps -w | grep ssr-retcp | grep -v grep >/dev/null") == 0 then
+if luci.sys.call("busybox ps -w | grep ssr-retcp | grep -v grep >/dev/null") == 0 then
 redir_run=1
-end	
+end
 
-if luci.sys.call("pidof ssr-local >/dev/null") == 0 then
+if luci.sys.call("pidof srelay >/dev/null") == 0 then
 sock5_run=1
 end
 
 if luci.sys.call("pidof kcptun-client >/dev/null") == 0 then
 kcptun_run=1
-end	
+end
 
 if luci.sys.call("pidof ssr-server >/dev/null") == 0 then
 server_run=1
-end	
+end
 
-if luci.sys.call("ps -w | grep ssr-tunnel |grep -v grep >/dev/null") == 0 then
+if luci.sys.call("busybox ps -w | grep ssr-tunnel |grep -v grep >/dev/null") == 0 then
 tunnel_run=1
-end	
+end
 
-if luci.sys.call("pidof pdnsd >/dev/null") == 0 then                 
-pdnsd_run=1     
-end	
+if luci.sys.call("pidof pdnsd >/dev/null") == 0 then
+pdnsd_run=1
+end
 
 m = SimpleForm("Version")
 m.reset = false
 m.submit = false
 
-s=m:field(DummyValue,"redir_run",translate("Global Client")) 
+s=m:field(DummyValue,"redir_run",translate("Global Client"))
 s.rawhtml  = true
 if redir_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
@@ -102,7 +97,7 @@ else
 s.value = translate("Not Running")
 end
 
-s=m:field(DummyValue,"reudp_run",translate("Game Mode UDP Relay")) 
+s=m:field(DummyValue,"reudp_run",translate("Game Mode UDP Relay"))
 s.rawhtml  = true
 if reudp_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
@@ -111,15 +106,15 @@ s.value = translate("Not Running")
 end
 
 s=m:field(DummyValue,"pdnsd_run",translate("PDNSD"))
-s.rawhtml  = true                                              
-if pdnsd_run == 1 then                             
+s.rawhtml  = true
+if pdnsd_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
-else             
+else
 s.value = translate("Not Running")
-end 
+end
 
-if nixio.fs.access("/usr/bin/ssr-local") then
-s=m:field(DummyValue,"sock5_run",translate("SOCKS5 Proxy")) 
+if nixio.fs.access("/usr/bin/srelay") then
+s=m:field(DummyValue,"sock5_run",translate("SOCKS Proxy"))
 s.rawhtml  = true
 if sock5_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
@@ -129,7 +124,7 @@ end
 end
 
 if nixio.fs.access("/usr/bin/ssr-server") then
-s=m:field(DummyValue,"server_run",translate("Global SSR Server")) 
+s=m:field(DummyValue,"server_run",translate("Global SSR Server"))
 s.rawhtml  = true
 if server_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
@@ -139,11 +134,11 @@ end
 end
 
 if nixio.fs.access("/usr/bin/kcptun-client") then
-s=m:field(DummyValue,"kcp_version",translate("KcpTun Version")) 
+s=m:field(DummyValue,"kcp_version",translate("KcpTun Version"))
 s.rawhtml  = true
 s.value =kcptun_version
 
-s=m:field(DummyValue,"kcptun_run",translate("KcpTun")) 
+s=m:field(DummyValue,"kcptun_run",translate("KcpTun"))
 s.rawhtml  = true
 if kcptun_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
@@ -153,25 +148,29 @@ end
 end
 
 s=m:field(DummyValue,"google",translate("Google Connectivity"))
-s.value = translate("No Check") 
+s.value = translate("No Check")
 s.template = "shadowsocksr/check"
 
-s=m:field(DummyValue,"baidu",translate("Baidu Connectivity")) 
-s.value = translate("No Check") 
+s=m:field(DummyValue,"baidu",translate("Baidu Connectivity"))
+s.value = translate("No Check")
 s.template = "shadowsocksr/check"
 
-if gfwmode==1 then 
-s=m:field(DummyValue,"gfw_data",translate("GFW List Data")) 
+s=m:field(DummyValue,"gfw_data",translate("GFW List Data"))
 s.rawhtml  = true
 s.template = "shadowsocksr/refresh"
 s.value =tostring(math.ceil(gfw_count)) .. " " .. translate("Records")
 
-end
-
-s=m:field(DummyValue,"ip_data",translate("China IP Data")) 
+s=m:field(DummyValue,"ip_data",translate("China IP Data"))
 s.rawhtml  = true
 s.template = "shadowsocksr/refresh"
 s.value =ip_count .. " " .. translate("Records")
+
+if ucic:get_first(shadowsocksr, 'global', 'adblock', '0') == '1' then
+s=m:field(DummyValue,"ad_data",translate("Advertising Data"))
+s.rawhtml  = true
+s.template = "shadowsocksr/refresh"
+s.value =ad_count .. " " .. translate("Records")
+end
 
 s=m:field(DummyValue,"check_port",translate("Check Server Port"))
 s.template = "shadowsocksr/checkport"

@@ -1,0 +1,98 @@
+From c7a3697a4d4c2199f05ab3cd321138d464ca62db Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Thu, 22 Nov 2018 17:31:06 +0000
+Subject: [PATCH] media: tc358743: Return an appropriate colorspace
+ from tc358743_set_fmt
+
+When calling tc358743_set_fmt, the code was calling tc358743_get_fmt
+to choose a valid format. However that sets the colorspace
+based on what was read back from the chip. When you set the format,
+then the driver would choose and program the colorspace based
+on the format code.
+
+The result was that if you called try or set format for UYVY
+when the current format was RGB3 then you would get told sRGB,
+and try RGB3 when current was UYVY and you would get told
+SMPTE170M.
+
+The value programmed into the chip is determined by this driver,
+therefore there is no need to read back the value. Return the
+colorspace based on the format set/tried instead.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/media/i2c/tc358743.c | 40 +++++++++++++-----------------------
+ 1 file changed, 14 insertions(+), 26 deletions(-)
+
+--- a/drivers/media/i2c/tc358743.c
++++ b/drivers/media/i2c/tc358743.c
+@@ -1680,12 +1680,23 @@ static int tc358743_enum_mbus_code(struc
+ 	return 0;
+ }
+ 
++static u32 tc358743_g_colorspace(u32 code)
++{
++	switch (code) {
++	case MEDIA_BUS_FMT_RGB888_1X24:
++		return V4L2_COLORSPACE_SRGB;
++	case MEDIA_BUS_FMT_UYVY8_1X16:
++		return V4L2_COLORSPACE_SMPTE170M;
++	default:
++		return 0;
++	}
++}
++
+ static int tc358743_get_fmt(struct v4l2_subdev *sd,
+ 		struct v4l2_subdev_pad_config *cfg,
+ 		struct v4l2_subdev_format *format)
+ {
+ 	struct tc358743_state *state = to_state(sd);
+-	u8 vi_rep = i2c_rd8(sd, VI_REP);
+ 
+ 	if (format->pad != 0)
+ 		return -EINVAL;
+@@ -1695,23 +1706,7 @@ static int tc358743_get_fmt(struct v4l2_
+ 	format->format.height = state->timings.bt.height;
+ 	format->format.field = V4L2_FIELD_NONE;
+ 
+-	switch (vi_rep & MASK_VOUT_COLOR_SEL) {
+-	case MASK_VOUT_COLOR_RGB_FULL:
+-	case MASK_VOUT_COLOR_RGB_LIMITED:
+-		format->format.colorspace = V4L2_COLORSPACE_SRGB;
+-		break;
+-	case MASK_VOUT_COLOR_601_YCBCR_LIMITED:
+-	case MASK_VOUT_COLOR_601_YCBCR_FULL:
+-		format->format.colorspace = V4L2_COLORSPACE_SMPTE170M;
+-		break;
+-	case MASK_VOUT_COLOR_709_YCBCR_FULL:
+-	case MASK_VOUT_COLOR_709_YCBCR_LIMITED:
+-		format->format.colorspace = V4L2_COLORSPACE_REC709;
+-		break;
+-	default:
+-		format->format.colorspace = 0;
+-		break;
+-	}
++	format->format.colorspace = tc358743_g_colorspace(format->format.code);
+ 
+ 	return 0;
+ }
+@@ -1726,18 +1721,11 @@ static int tc358743_set_fmt(struct v4l2_
+ 	int ret = tc358743_get_fmt(sd, cfg, format);
+ 
+ 	format->format.code = code;
++	format->format.colorspace = tc358743_g_colorspace(code);
+ 
+ 	if (ret)
+ 		return ret;
+ 
+-	switch (code) {
+-	case MEDIA_BUS_FMT_RGB888_1X24:
+-	case MEDIA_BUS_FMT_UYVY8_1X16:
+-		break;
+-	default:
+-		return -EINVAL;
+-	}
+-
+ 	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
+ 		return 0;
+ 

@@ -74,6 +74,7 @@ check_setup_() {
 }
 
 check_setup() {
+	[ -n "$o_network" ] || return 0
 	check_setup_ || {
 		__errmsg "please check the script content to see the environment requirement"
 		return 1
@@ -88,6 +89,8 @@ Usage: $SELF [-h|--help]
          [<subtarget> [<extra-qemu-options>]]
          [--kernel <kernel>]
          [--rootfs <rootfs>]
+         [--machine <machine>]
+         [-n|--network]
 
 <subtarget> will default to "generic" and must be specified if
 <extra-qemu-options> are present
@@ -100,13 +103,14 @@ the actual <target> in use.  They will default to files under bin/targets/
 Examples
 
   $SELF x86 64
-  $SELF x86 64 -enable-kvm -device virtio-balloon-pci
+  $SELF x86 64 --machine q35,accel=kvm -device virtio-balloon-pci
   $SELF x86 64 -incoming tcp:0:4444
   $SELF x86 64-glibc
   $SELF malta be -m 64
   $SELF malta le64
   $SELF malta be-glibc
   $SELF armvirt 32 \\
+                --machine virt,highmem=off \\
                 --kernel bin/targets/armvirt/32/openwrt-armvirt-32-zImage \\
                 --rootfs bin/targets/armvirt/32/openwrt-armvirt-32-root.ext4
 EOF
@@ -117,11 +121,19 @@ rand_mac() {
 }
 
 parse_args() {
+	o_network=
 	o_qemu_extra=()
 	while [ "$#" -gt 0 ]; do
+		# Cmdline options for the script itself SHOULD try to be
+		# prefixed with two dashes to distinguish them from those for
+		# qemu executables.
+		#
+		# Also note that qemu accepts both --opt and -opt
 		case "$1" in
 			--kernel) o_kernel="$2"; shift 2 ;;
 			--rootfs) o_rootfs="$2"; shift 2 ;;
+			--machine|-machine|-M) o_mach="$2"; shift 2 ;;
+			--network|-n) o_network=1; shift ;;
 			--help|-h)
 				usage
 				exit 0
@@ -152,6 +164,7 @@ parse_args() {
 start_qemu_armvirt() {
 	local kernel="$o_kernel"
 	local rootfs="$o_rootfs"
+	local mach="${o_mach:-virt}"
 	local cpu
 	local qemu_exe
 
@@ -181,9 +194,16 @@ start_qemu_armvirt() {
 		)
 	}
 
-	"$qemu_exe" -machine virt -cpu "$cpu" -nographic \
-		-netdev bridge,id=lan,br="$BR_LAN,helper=$HELPER" -device virtio-net-pci,id=devlan,netdev=lan,mac="$MAC_LAN" \
-		-netdev bridge,id=wan,br="$BR_WAN,helper=$HELPER" -device virtio-net-pci,id=devwan,netdev=wan,mac="$MAC_WAN" \
+	[ -z "$o_network" ] || {
+		o_qemu_extra+=( \
+			"-netdev" "bridge,id=lan,br=$BR_LAN,helper=$HELPER" \
+			    "-device" "virtio-net-pci,id=devlan,netdev=lan,mac=$MAC_LAN" \
+			"-netdev" "bridge,id=wan,br=$BR_WAN,helper=$HELPER" "-device" \
+			    "virtio-net-pci,id=devwan,netdev=wan,mac=$MAC_WAN" \
+		)
+	}
+
+	"$qemu_exe" -machine "$mach" -cpu "$cpu" -nographic \
 		-kernel "$kernel" \
 		"${o_qemu_extra[@]}"
 }
@@ -192,7 +212,9 @@ start_qemu_malta() {
 	local is64
 	local isel
 	local qemu_exe
+	local rootfs="$o_rootfs"
 	local kernel="$o_kernel"
+	local mach="${o_mach:-malta}"
 
 	# o_subtarget can be le, be, le64, be64, le-glibc, le64-glibc, etc..
 	is64="$(echo $o_subtarget | grep -o 64)"
@@ -201,19 +223,36 @@ start_qemu_malta() {
 
 	[ -n "$kernel" ] || kernel="$o_bindir/openwrt-malta-${o_subtarget%-*}-vmlinux-initramfs.elf"
 
+	[ -z "$rootfs" ] || {
+		if [ ! -f "$rootfs" -a -s "$rootfs.gz" ]; then
+			gunzip "$rootfs.gz"
+		fi
+		o_qemu_extra+=( \
+			"-drive" "file=$rootfs,format=raw" \
+			"-append" "root=/dev/sda rootwait" \
+		)
+	}
+
 	# NOTE: order of wan, lan -device arguments matters as it will affect which
 	# one will be actually used as the wan, lan network interface inside the
 	# guest machine
-	"$qemu_exe" -machine malta -nographic \
-		-netdev bridge,id=wan,br="$BR_WAN,helper=$HELPER" -device pcnet,netdev=wan,mac="$MAC_WAN" \
-		-netdev bridge,id=lan,br="$BR_LAN,helper=$HELPER" -device pcnet,netdev=lan,mac="$MAC_LAN" \
+	[ -z "$o_network" ] || {
+		o_qemu_extra+=(
+			-netdev bridge,id=wan,br="$BR_WAN,helper=$HELPER" -device pcnet,netdev=wan,mac="$MAC_WAN"
+			-netdev bridge,id=lan,br="$BR_LAN,helper=$HELPER" -device pcnet,netdev=lan,mac="$MAC_LAN"
+		)
+	}
+
+	"$qemu_exe" -machine "$mach" -nographic \
 		-kernel "$kernel" \
 		"${o_qemu_extra[@]}"
 }
 
 start_qemu_x86() {
-	local rootfs="$o_rootfs"
 	local qemu_exe
+	local kernel="$o_kernel"
+	local rootfs="$o_rootfs"
+	local mach="${o_mach:-pc}"
 
 	[ -n "$rootfs" ] || {
 		rootfs="$o_bindir/openwrt-$o_target-${o_subtarget%-*}-combined-ext4.img"
@@ -227,13 +266,37 @@ start_qemu_x86() {
 	# 64: 64-bit, kvm guest, virtio
 	#
 	case "${o_subtarget%-*}" in
-		legacy)			qemu_exe="qemu-system-i386"		;;
+		legacy)			qemu_exe="qemu-system-i386"	;;
 		generic|64)		qemu_exe="qemu-system-x86_64"	;;
 		*)
 			__errmsg "target $o_target: unknown subtarget $o_subtarget"
 			return 1
 			;;
 	esac
+
+	[ -n "$kernel" ] && {
+	    o_qemu_extra+=( \
+		"-kernel" "$kernel" \
+		"-append" "root=/dev/vda console=ttyS0 rootwait" \
+	    )
+	}
+
+	[ -z "$o_network" ] || {
+		case "${o_subtarget%-*}" in
+			legacy)
+				o_qemu_extra+=(
+					-netdev "bridge,id=lan,br=$BR_LAN,helper=$HELPER" -device "e1000,id=devlan,netdev=lan,mac=$MAC_LAN"
+					-netdev "bridge,id=wan,br=$BR_WAN,helper=$HELPER" -device "e1000,id=devwan,netdev=wan,mac=$MAC_WAN"
+				)
+				;;
+			generic|64)
+				o_qemu_extra+=(
+					-netdev "bridge,id=lan,br=$BR_LAN,helper=$HELPER" -device "virtio-net-pci,id=devlan,netdev=lan,mac=$MAC_LAN"
+					-netdev "bridge,id=wan,br=$BR_WAN,helper=$HELPER" -device "virtio-net-pci,id=devwan,netdev=wan,mac=$MAC_WAN"
+				)
+				;;
+		esac
+	}
 
 	case "${o_subtarget%-*}" in
 		legacy)
@@ -247,17 +310,13 @@ start_qemu_x86() {
 			#	-drive "file=$rootfs,format=raw,id=drv0,if=none" \
 			#
 			# [1] https://dev.openwrt.org/ticket/17947
-			"$qemu_exe" -nographic \
-				-netdev bridge,id=lan,br="$BR_LAN,helper=$HELPER" -device e1000,id=devlan,netdev=lan,mac="$MAC_LAN" \
-				-netdev bridge,id=wan,br="$BR_WAN,helper=$HELPER" -device e1000,id=devwan,netdev=wan,mac="$MAC_WAN" \
+			"$qemu_exe" -machine "$mach" -nographic \
 				-device ide-drive,drive=drv0 \
 				-drive "file=$rootfs,format=raw,id=drv0,if=none" \
 				"${o_qemu_extra[@]}"
 			;;
 		generic|64)
-			"$qemu_exe" -nographic \
-				-netdev bridge,id=lan,br="$BR_LAN,helper=$HELPER" -device virtio-net-pci,id=devlan,netdev=lan,mac="$MAC_LAN" \
-				-netdev bridge,id=wan,br="$BR_WAN,helper=$HELPER" -device virtio-net-pci,id=devwan,netdev=wan,mac="$MAC_WAN" \
+			"$qemu_exe" -machine "$mach" -nographic \
 				-drive "file=$rootfs,format=raw,if=virtio" \
 				"${o_qemu_extra[@]}"
 			;;
@@ -276,6 +335,6 @@ start_qemu() {
 	esac
 }
 
-check_setup \
-	&& parse_args "$@" \
+parse_args "$@" \
+	&& check_setup \
 	&& start_qemu

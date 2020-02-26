@@ -1,14 +1,14 @@
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=qBittorrent
-PKG_VERSION:=4.1.7
-PKG_RELEASE=1
+PKG_NAME:=qbittorrent
+PKG_VERSION:=4.1.9
+PKG_RELEASE=6
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/qbittorrent/qBittorrent.git
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE_VERSION:=05a82afeb6c927bfc0cda4fe8fb25ecc3faecd86
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE:=$(PKG_NAME)-release-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://codeload.github.com/qbittorrent/qBittorrent/tar.gz/release-$(PKG_VERSION)?
+PKG_HASH:=620127f73f88ed3f2b2e4195cbc641f7c27f967d3b045e45f7916c0995fd61fe
+
+PKG_BUILD_DIR:=$(BUILD_DIR)/qBittorrent-release-$(PKG_VERSION)
 
 PKG_LICENSE:=GPL-2.0+
 PKG_LICENSE_FILES:=COPYING
@@ -37,15 +37,21 @@ well as many features.
 endef
 
 CONFIGURE_VARS += \
-	QT_QMAKE="$(TOOLCHAIN_DIR)/bin" \
+  	QT_QMAKE="$(TOOLCHAIN_DIR)/bin" \
 	PKG_CONFIG_PATH="$(TOOLCHAIN_DIR)/lib/pkgconfig"
 
 CONFIGURE_ARGS += \
 	--disable-gui \
-	--with-boost=$(STAGING_DIR)/usr
+	--enable-stacktrace=no \
+	--with-boost="$(STAGING_DIR)/usr"
 
 MAKE_VARS += \
 	INSTALL_ROOT="$(PKG_INSTALL_DIR)"
+
+define Build/Prepare
+	$(call Build/Prepare/Default)
+	$(SED) '/<context>/{:a;N;/<\/context>/!ba;/\/gui\//d}' `ls $(PKG_BUILD_DIR)/src/lang/qbittorrent_*.ts`
+endef
 
 define Package/qBittorrent/install
 	$(INSTALL_DIR) $(1)/usr/man/man1

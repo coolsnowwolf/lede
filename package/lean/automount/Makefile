@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=automount
 PKG_VERSION:=1
-PKG_RELEASE:=26
+PKG_RELEASE:=29
 PKG_ARCH:=all
 
 include $(INCLUDE_DIR)/package.mk

@@ -1,0 +1,167 @@
+diff -urN a/mt_wifi/embedded/common/ee_flash.c b/mt_wifi/embedded/common/ee_flash.c
+--- a/mt_wifi/embedded/common/ee_flash.c	2018-04-30 15:57:54.000000000 +0800
++++ b/mt_wifi/embedded/common/ee_flash.c	2019-01-14 21:28:38.163721571 +0800
+@@ -111,8 +111,8 @@
+ int mt_mtd_write_nm_wifi(char *name, loff_t to, size_t len, const u_char *buf);
+ int mt_mtd_read_nm_wifi(char *name, loff_t from, size_t len, u_char *buf);
+ 
+-#define flash_read(_ctrl, _ptr, _offset, _len) mt_mtd_read_nm_wifi("Factory", _offset, (size_t)_len, _ptr)
+-#define flash_write(_ctrl, _ptr, _offset, _len) mt_mtd_write_nm_wifi("Factory", _offset, (size_t)_len, _ptr)
++#define flash_read(_ctrl, _ptr, _offset, _len) mt_mtd_read_nm_wifi("factory", _offset&0xFFFF, (size_t)_len, _ptr)
++#define flash_write(_ctrl, _ptr, _offset, _len) mt_mtd_write_nm_wifi("factory", _offset&0xFFFF, (size_t)_len, _ptr)
+ 
+ #else
+ /*
+@@ -122,8 +122,8 @@
+ extern int ra_mtd_write_nm(char *name, loff_t to, size_t len, const u_char *buf);
+ extern int ra_mtd_read_nm(char *name, loff_t from, size_t len, u_char *buf);
+ 
+-#define flash_read(_ctrl, _ptr, _offset, _len) ra_mtd_read_nm("Factory", _offset, (size_t)_len, _ptr)
+-#define flash_write(_ctrl, _ptr, _offset, _len) ra_mtd_write_nm("Factory", _offset, (size_t)_len, _ptr)
++#define flash_read(_ctrl, _ptr, _offset, _len) ra_mtd_read_nm("factory", _offset&0xFFFF, (size_t)_len, _ptr)
++#define flash_write(_ctrl, _ptr, _offset, _len) ra_mtd_write_nm("factory", _offset&0xFFFF, (size_t)_len, _ptr)
+ 
+ #endif /*CONFIG_WIFI_MTD*/
+ #endif /*RA_MTD_RW_BY_NUM*/
+diff -urN a/mt_wifi/embedded/common/eeprom.c b/mt_wifi/embedded/common/eeprom.c
+--- a/mt_wifi/embedded/common/eeprom.c	2018-04-30 15:57:54.000000000 +0800
++++ b/mt_wifi/embedded/common/eeprom.c	2019-04-19 17:05:48.336239756 +0800
+@@ -646,7 +646,7 @@
+ 	efuse_probe(pAd);
+ #endif /* RTMP_EFUSE_SUPPORT */
+ 
+-	/* rtmp_eeprom_of_platform(pAd);  //for MT7615, only use E2pAccessMode parameter to get eeprom type */
++	rtmp_eeprom_of_platform(pAd);  //for MT7615, only use E2pAccessMode parameter to get eeprom type */
+ 
+ 	if (forceMode != E2P_NONE && forceMode < NUM_OF_E2P_MODE) {
+ 		e2p_type = forceMode;
+diff -urN a/mt_wifi/os/linux/mt_wifi_mtd.c b/mt_wifi/os/linux/mt_wifi_mtd.c
+--- a/mt_wifi/os/linux/mt_wifi_mtd.c	1970-01-01 08:00:00.000000000 +0800
++++ b/mt_wifi/os/linux/mt_wifi_mtd.c	2019-01-06 17:17:32.771446000 +0800
+@@ -0,0 +1,113 @@
++/*
++ ***************************************************************************
++ * MediaTek Inc.
++ *
++ * All rights reserved. source code is an unpublished work and the
++ * use of a copyright notice does not imply otherwise. This source code
++ * contains confidential trade secret material of MediaTek. Any attemp
++ * or participation in deciphering, decoding, reverse engineering or in any
++ * way altering the source code is stricitly prohibited, unless the prior
++ * written consent of MediaTek, Inc. is obtained.
++ ***************************************************************************
++	Module Name:
++	mt_wifi_mtd.c
++
++*/
++
++#include <linux/version.h>
++#include <linux/module.h>
++#include <linux/types.h>
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/err.h>
++#include <linux/slab.h>
++#include <asm/io.h>
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/map.h>
++#include <linux/mtd/concat.h>
++#include <linux/mtd/partitions.h>
++#if defined (CONFIG_MIPS)
++#include <asm/addrspace.h>
++#endif
++
++int mt_mtd_write_nm_wifi(char *name, loff_t to, size_t len, const u_char *buf)
++{
++	int ret = -1;
++	size_t rdlen, wrlen;
++	struct mtd_info *mtd;
++	struct erase_info ei;
++	u_char *bak = NULL;
++
++	mtd = get_mtd_device_nm(name);
++	if (IS_ERR(mtd))
++		return -1;
++
++	if (len > mtd->erasesize) {
++		put_mtd_device(mtd);
++		return -E2BIG;
++	}
++
++	bak = kmalloc(mtd->erasesize, GFP_KERNEL);
++	if (bak == NULL) {
++		put_mtd_device(mtd);
++		return -ENOMEM;
++	}
++
++	ret = mtd_read(mtd, 0, mtd->erasesize, &rdlen, bak);
++
++	if (ret != 0) {
++		put_mtd_device(mtd);
++		kfree(bak);
++		return ret;
++	}
++
++	if (rdlen != mtd->erasesize)
++		printk("warning: ra_mtd_write: rdlen is not equal to erasesize\n");
++
++	memcpy(bak + to, buf, len);
++
++	ei.mtd = mtd;
++	ei.callback = NULL;
++	ei.addr = 0;
++	ei.len = mtd->erasesize;
++	ei.priv = 0;
++
++	ret = mtd_erase(mtd, &ei);
++
++	if (ret != 0) {
++		put_mtd_device(mtd);
++		kfree(bak);
++		return ret;
++	}
++
++	ret = mtd_write(mtd, 0, mtd->erasesize, &wrlen, bak);
++
++
++
++	put_mtd_device(mtd);
++	kfree(bak);
++	return ret;
++}
++EXPORT_SYMBOL(mt_mtd_write_nm_wifi);
++
++
++int mt_mtd_read_nm_wifi(char *name, loff_t from, size_t len, u_char *buf)
++{
++	int ret;
++	size_t rdlen;
++	struct mtd_info *mtd;
++
++	mtd = get_mtd_device_nm(name);
++	if (IS_ERR(mtd))
++		return -1;
++
++	ret = mtd_read(mtd, from, len, &rdlen, buf);
++
++	if (rdlen != len)
++			printk("warning: ra_mtd_read_nm: rdlen is not equal to len\n");
++
++	put_mtd_device(mtd);
++
++	return ret;
++}
++EXPORT_SYMBOL(mt_mtd_read_nm_wifi);
+diff -urN a/mt_wifi_ap/Makefile b/mt_wifi_ap/Makefile
+--- a/mt_wifi_ap/Makefile	2018-04-30 15:57:57.000000000 +0800
++++ b/mt_wifi_ap/Makefile	2019-04-20 21:16:22.510780934 +0800
+@@ -678,7 +678,8 @@
+ os_objs := $(SRC_DIR)/os/linux/rt_proc.o\
+             $(SRC_DIR)/os/linux/rt_linux.o\
+             $(SRC_DIR)/os/linux/rt_profile.o\
+-            $(SRC_DIR)/os/linux/rt_main_dev.o
++            $(SRC_DIR)/os/linux/rt_main_dev.o\
++            $(SRC_DIR)/os/linux/mt_wifi_mtd.o
+ 
+ ifeq ($(CONFIG_WLAN_HOOK),y)
+ 	EXTRA_CFLAGS +=-DRTMP_WLAN_HOOK_SUPPORT

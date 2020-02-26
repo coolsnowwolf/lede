@@ -42,6 +42,7 @@ sub target_config_features(@) {
 		/^virtio$/ and $ret .= "\tselect VIRTIO_SUPPORT\n";
 		/^rootfs-part$/ and $ret .= "\tselect USES_ROOTFS_PART\n";
 		/^boot-part$/ and $ret .= "\tselect USES_BOOT_PART\n";
+		/^testing-kernel$/ and $ret .= "\tselect HAS_TESTING_KERNEL\n";
 	}
 	return $ret;
 }
@@ -83,11 +84,14 @@ sub print_target($) {
 	}
 
 	my $v = kver($target->{version});
+	my $tv = kver($target->{testing_version});
+	$tv or $tv = $v;
 	if (@{$target->{subtargets}} == 0) {
 	$confstr = <<EOF;
 config TARGET_$target->{conf}
 	bool "$target->{name}"
-	select LINUX_$v
+	select LINUX_$v if !TESTING_KERNEL
+	select LINUX_$tv if TESTING_KERNEL
 EOF
 	}
 	else {
@@ -292,7 +296,7 @@ EOF
 menuconfig TARGET_DEVICE_$target->{conf}_$profile->{id}
 	bool "$profile->{name}"
 	depends on TARGET_$target->{conf}
-	default y if TARGET_ALL_PROFILES
+	default $profile->{default}
 EOF
 			my @pkglist = merge_package_lists($target->{packages}, $profile->{packages});
 			foreach my $pkg (@pkglist) {
@@ -387,15 +391,18 @@ EOF
 
 	my %kver;
 	foreach my $target (@target) {
-		my $v = kver($target->{version});
-		next if $kver{$v};
-		$kver{$v} = 1;
-		print <<EOF;
+		foreach my $tv ($target->{version}, $target->{testing_version}) {
+			next unless $tv;
+			my $v = kver($tv);
+			next if $kver{$v};
+			$kver{$v} = 1;
+			print <<EOF;
 
 config LINUX_$v
 	bool
 
 EOF
+		}
 	}
 	foreach my $def (sort keys %defaults) {
 		print <<EOF;
@@ -422,6 +429,10 @@ sub gen_profile_mk() {
 		print "PROFILE_NAMES = ".join(" ", map { $_->{id} } @{$cur->{profiles}})."\n";
 		foreach my $profile (@{$cur->{profiles}}) {
 			print $profile->{id}.'_NAME:='.$profile->{name}."\n";
+			print $profile->{id}.'_HAS_IMAGE_METADATA:='.$profile->{has_image_metadata}."\n";
+			if (defined($profile->{supported_devices}) and @{$profile->{supported_devices}} > 0) {
+				print $profile->{id}.'_SUPPORTED_DEVICES:='.join(' ', @{$profile->{supported_devices}})."\n";
+			}
 			print $profile->{id}.'_PACKAGES:='.join(' ', @{$profile->{packages}})."\n";
 		}
 	}

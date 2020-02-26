@@ -11,7 +11,7 @@ all: $(if $(DUMP),dumpinfo,$(if $(CHECK),check,compile))
 
 include $(INCLUDE_DIR)/download.mk
 
-PKG_BUILD_DIR ?= $(BUILD_DIR)/$(PKG_NAME)$(if $(PKG_VERSION),-$(PKG_VERSION))
+PKG_BUILD_DIR ?= $(BUILD_DIR)/$(if $(BUILD_VARIANT),$(PKG_NAME)-$(BUILD_VARIANT)/)$(PKG_NAME)$(if $(PKG_VERSION),-$(PKG_VERSION))
 PKG_INSTALL_DIR ?= $(PKG_BUILD_DIR)/ipkg-install
 PKG_BUILD_PARALLEL ?=
 PKG_USE_MIPS16 ?= 1
@@ -40,6 +40,10 @@ include $(INCLUDE_DIR)/prereq.mk
 include $(INCLUDE_DIR)/unpack.mk
 include $(INCLUDE_DIR)/depends.mk
 
+ifneq ($(wildcard $(TOPDIR)/git-src/$(PKG_NAME)/.git),)
+  USE_GIT_SRC_CHECKOUT:=1
+  QUILT:=1
+endif
 ifneq ($(if $(CONFIG_SRC_TREE_OVERRIDE),$(wildcard ./git-src)),)
   USE_GIT_TREE:=1
   QUILT:=1
@@ -53,14 +57,26 @@ endif
 
 include $(INCLUDE_DIR)/quilt.mk
 
-find_library_dependencies = $(wildcard $(patsubst %,$(STAGING_DIR)/pkginfo/%.version, \
-	$(filter-out $(BUILD_PACKAGES),$(foreach dep, \
-		$(filter-out @%, $(patsubst +%,%,$(1))), \
-		$(if $(findstring :,$(dep)), \
-			$(word 2,$(subst :,$(space),$(dep))), \
-			$(dep) \
-		) \
-	))))
+find_library_dependencies = \
+	$(wildcard $(patsubst %,$(STAGING_DIR)/pkginfo/%.version, \
+		$(sort $(foreach dep4, \
+			$(sort $(foreach dep3, \
+				$(sort $(foreach dep2, \
+					$(sort $(foreach dep1, \
+						$(sort $(foreach dep0, \
+							$(Package/$(1)/depends), \
+							$(Package/$(dep0)/depends) $(dep0) \
+						)), \
+						$(Package/$(dep1)/depends) $(dep1) \
+					)), \
+					$(Package/$(dep2)/depends) $(dep2) \
+				)), \
+				$(Package/$(dep3)/depends) $(dep3) \
+			)), \
+			$(Package/$(dep4)/depends) $(dep4) \
+		)), \
+	))
+
 
 PKG_DIR_NAME:=$(lastword $(subst /,$(space),$(CURDIR)))
 STAMP_NO_AUTOREBUILD=$(wildcard $(PKG_BUILD_DIR)/.no_autorebuild)
@@ -81,9 +97,10 @@ STAGING_FILES_LIST:=$(PKG_DIR_NAME)$(if $(BUILD_VARIANT),.$(BUILD_VARIANT),).lis
 define CleanStaging
 	rm -f $(STAMP_INSTALLED)
 	@-(\
-		cd "$(STAGING_DIR)"; \
-		if [ -f packages/$(STAGING_FILES_LIST) ]; then \
-			cat packages/$(STAGING_FILES_LIST) | xargs -r rm -f 2>/dev/null; \
+		if [ -f $(STAGING_DIR)/packages/$(STAGING_FILES_LIST) ]; then \
+			$(SCRIPT_DIR)/clean-package.sh \
+				"$(STAGING_DIR)/packages/$(STAGING_FILES_LIST)" \
+				"$(STAGING_DIR)"; \
 		fi; \
 	)
 endef
@@ -116,6 +133,18 @@ ifeq ($(DUMP)$(filter prereq clean refresh update,$(MAKECMDGOALS)),)
   endif
 endif
 
+ifdef USE_GIT_SRC_CHECKOUT
+  define Build/Prepare/Default
+	mkdir -p $(PKG_BUILD_DIR)
+	ln -s $(TOPDIR)/git-src/$(PKG_NAME)/.git $(PKG_BUILD_DIR)/.git
+	( cd $(PKG_BUILD_DIR); \
+		git checkout .; \
+		git submodule update --recursive; \
+		git submodule foreach git config --unset core.worktree; \
+		git submodule foreach git checkout .; \
+	)
+  endef
+endif
 ifdef USE_GIT_TREE
   define Build/Prepare/Default
 	mkdir -p $(PKG_BUILD_DIR)
@@ -235,7 +264,7 @@ define Build/CoreTargets
 endef
 
 define Build/DefaultTargets
-  $(if $(USE_SOURCE_DIR)$(USE_GIT_TREE),,$(if $(strip $(PKG_SOURCE_URL)),$(call Download,default)))
+  $(if $(USE_SOURCE_DIR)$(USE_GIT_TREE)$(USE_GIT_SRC_CHECKOUT),,$(if $(strip $(PKG_SOURCE_URL)),$(call Download,default)))
   $(if $(DUMP),,$(Build/CoreTargets))
 
   define Build/DefaultTargets
@@ -257,7 +286,7 @@ endef
 endif
 
   BUILD_PACKAGES += $(1)
-  $(STAMP_PREPARED): $$(if $(QUILT)$(DUMP),,$(call find_library_dependencies,$(DEPENDS)))
+  $(STAMP_PREPARED): $$(if $(QUILT)$(DUMP),,$(call find_library_dependencies,$(1)))
 
   $(foreach FIELD, TITLE CATEGORY SECTION VERSION,
     ifeq ($($(FIELD)),)

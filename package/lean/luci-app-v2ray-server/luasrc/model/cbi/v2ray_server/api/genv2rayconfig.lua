@@ -3,6 +3,41 @@ local json = require "luci.jsonc"
 local server_section = arg[1]
 local server = ucursor:get_all("v2ray_server", server_section)
 
+local proset
+
+if server.protocol == "vmess" then
+    proset = {
+			clients = {
+				{
+					id = server.VMess_id,
+					alterId = tonumber(server.VMess_alterId),
+					level = tonumber(server.VMess_level)
+				}
+			}
+		}
+elseif server.protocol == "http" then
+	proset = {
+			allowTransparent = false,
+			accounts = {
+				{
+					user = (server.Http_user == nil) and "" or server.Http_user,
+					pass = (server.Http_pass == nil) and "" or server.Http_pass
+				}
+			}
+		}
+else
+    proset = {
+			auth =  (server.Socks_user == nil) and "noauth" or "password",
+			accounts = {
+				{
+					user = (server.Socks_user == nil) and "" or server.Socks_user,
+					pass = (server.Socks_pass == nil) and "" or server.Socks_pass
+				}
+			}
+		}
+end
+
+
 local v2ray = {
 	log = {
 		--error = "/var/log/v2ray.log",
@@ -12,15 +47,7 @@ local v2ray = {
 	inbound = {
 		port = tonumber(server.port),
 		protocol = server.protocol,
-		settings = {
-			clients = {
-				{
-					id = server.VMess_id,
-					alterId = tonumber(server.VMess_alterId),
-					level = tonumber(server.VMess_level)
-				}
-			}
-		},
+		settings = proset,
 		-- 底层传输配置
 		streamSettings = {
 			network = server.transport,
