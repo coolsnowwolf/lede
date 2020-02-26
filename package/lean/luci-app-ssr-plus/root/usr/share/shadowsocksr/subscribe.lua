@@ -353,23 +353,29 @@ local execute = function()
 			end
 		end
 		ucic:commit(name)
-		-- 如果服务器已经不见了把帮换一个
+		
+		-- 如果原有服务器节点已经不见了就尝试换为第一个节点	
 		local globalServer = ucic:get_first(name, 'global', 'global_server', '')
 		local firstServer = ucic:get_first(name, uciType)
-		if not ucic:get(name, globalServer) then
-			if firstServer then
-				ucic:set(name, ucic:get_first(name, 'global'), 'global_server', firstServer)
-				ucic:commit(name)
-				log('当前主服务器已更新，正在自动更换。')
-			end
-		end
+    
 		if firstServer then
-			luci.sys.call("/etc/init.d/" .. name .. " restart > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
+      if not ucic:get(name, globalServer) then
+        luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
+        ucic:commit(name)
+        ucic:set(name, ucic:get_first(name, 'global'), 'global_server', ucic:get_first(name, uciType))
+        ucic:commit(name)
+        log('当前主服务器节点已被删除，正在自动更换为第一个节点。')
+        luci.sys.call("/etc/init.d/" .. name .. " start > /dev/null 2>&1 &")
+      else
+        log('维持当前主服务器节点。')
+        luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &")
+			end
 		else
-			luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
+      log('没有服务器节点了，停止服务')
+      luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
 		end
 		log('新增节点数量: ' ..add, '删除节点数量: ' .. del)
-		log('更新成功服务正在启动')
+		log('订阅更新成功')	
 	end
 end
 
@@ -381,8 +387,10 @@ if subscribe_url and #subscribe_url > 0 then
 		local firstServer = ucic:get_first(name, uciType)
 		if firstServer then
 			luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
+			log('重启服务成功')	
 		else
 			luci.sys.call("/etc/init.d/" .. name .." stop > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
+			log('停止服务成功')	
 		end
 	end)
 end
