@@ -317,12 +317,17 @@ local execute = function()
 					end
 				end
 				log('成功解析节点数量: ' ..#nodes)
+			else
+				log(url .. ': 获取内容为空')
 			end
 		end
 	end
 	-- diff
 	do
-		assert(next(nodeResult), "node result is empty")
+		if next(nodeResult) == nil then
+			log("更新失败，没有可用的节点信息")
+			return
+		end
 		local add, del = 0, 0
 		ucic:foreach(name, uciType, function(old)
 			if old.grouphashkey or old.hashkey then -- 没有 hash 的不参与删除
