@@ -179,14 +179,6 @@ define Device/ubnt_nanostation-ac-loco
 endef
 TARGET_DEVICES += ubnt_nanostation-ac-loco
 
-define Device/ubnt_nanostation-loco-m
-  $(Device/ubnt-xm)
-  DEVICE_MODEL := Nanostation Loco M
-  DEVICE_PACKAGES += rssileds
-  SUPPORTED_DEVICES += bullet-m
-endef
-TARGET_DEVICES += ubnt_nanostation-loco-m
-
 define Device/ubnt_nanostation-loco-m-xw
   $(Device/ubnt-xw)
   DEVICE_MODEL := Nanostation Loco M
@@ -210,14 +202,6 @@ define Device/ubnt_nanostation-m-xw
   SUPPORTED_DEVICES += nanostation-m-xw
 endef
 TARGET_DEVICES += ubnt_nanostation-m-xw
-
-define Device/ubnt_picostation-m
-  $(Device/ubnt-xm)
-  DEVICE_MODEL := Picostation M
-  DEVICE_PACKAGES += rssileds
-  SUPPORTED_DEVICES += bullet-m
-endef
-TARGET_DEVICES += ubnt_picostation-m
 
 define Device/ubnt_rocket-m
   $(Device/ubnt-xm)
