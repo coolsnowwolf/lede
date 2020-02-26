@@ -13,16 +13,16 @@ local _docker = {}
 local update_image = function(self, image_name)
   local server = "index.docker.io"
 
-  local json_stringify = luci.json and luci.json.encode or luci.jsonc.stringify
+  local json_stringify = luci.jsonc and luci.jsonc.stringify
   _docker:append_status("Images: " .. "pulling" .. " " .. image_name .. "...")
   local x_auth = nixio.bin.b64encode(json_stringify({serveraddress= server}))
-  local res = self.images:create(nil, {fromImage=image_name, _header={["X-Registry-Auth"]=x_auth}})
+  local res = self.images:create({query = {fromImage=image_name}, header={["X-Registry-Auth"]=x_auth}})
   if res and res.code < 300 then
     _docker:append_status("done<br>")
   else
     _docker:append_status("fail code:" .. res.code.." ".. (res.body.message and res.body.message or res.message).. "<br>")
   end
-  new_image_id = self.images:inspect(image_name).body.Id
+  new_image_id = self.images:inspect({name = image_name}).body.Id
   return new_image_id, res
 end
 
@@ -126,10 +126,10 @@ local get_config = function(old_config, old_host_config, old_network_setting, im
   return create_body, extra_network
 end
 
-local upgrade = function(self, container_id)
+local upgrade = function(self, request)
   _docker:clear_status()
   -- get image name, image id, container name, configuration information
-  local container_info = self.containers:inspect(container_id)
+  local container_info = self.containers:inspect({id = request.id})
   if container_info.code > 300 and type(container_info.body) == "table" then
     return container_info
   end
@@ -148,7 +148,7 @@ local upgrade = function(self, container_id)
   end
 
   _docker:append_status("Container: " .. "Stop" .. " " .. container_name .. "...")
-  res = self.containers:stop(container_name)
+  res = self.containers:stop({name = container_name})
   if res and res.code < 305 then
     _docker:append_status("done<br>")
   else
@@ -156,7 +156,7 @@ local upgrade = function(self, container_id)
   end
 
   _docker:append_status("Container: rename" .. " " .. container_name .. " to ".. container_name .. "_old ...")
-  res = self.containers:rename(container_name,{ name = container_name .. "_old" })
+  res = self.containers:rename({name = container_name, query = { name = container_name .. "_old" }})
   if res and res.code < 300 then
     _docker:append_status("done<br>")
   else
@@ -164,12 +164,12 @@ local upgrade = function(self, container_id)
   end
 
   -- handle config
-  local image_config = self.images:inspect(old_image_id).body.Config
+  local image_config = self.images:inspect({id = old_image_id}).body.Config
   local create_body, extra_network = get_config(old_config, old_host_config, old_network_setting, image_config)
 
   -- create new container
   _docker:append_status("Container: Create" .. " " .. container_name .. "...")
-  res = self.containers:create(container_name, nil, create_body)
+  res = self.containers:create({name = container_name, body = create_body})
   if res and res.code > 300 then return res end
   _docker:append_status("done<br>")
 
@@ -180,7 +180,7 @@ local upgrade = function(self, container_id)
     if v.Aliases and next(v.Aliases) == nil then v.Aliases =nil end
 
     _docker:append_status("Networks: Connect" .. " " .. container_name .. "...")
-    res = self.networks:connect(k, nil, {Container = container_name, EndpointConfig = v})
+    res = self.networks:connect({id = k, body = {Container = container_name, EndpointConfig = v}})
     if res.code > 300 then return res end
 
     _docker:append_status("done<br>")
@@ -189,32 +189,32 @@ local upgrade = function(self, container_id)
   return res
 end
 
-local duplicate_config = function (self, container_id)
-  local container_info = self.containers:inspect(container_id)
+local duplicate_config = function (self, request)
+  local container_info = self.containers:inspect({id = request.id})
   if container_info.code > 300 and type(container_info.body) == "table" then return nil end
   local old_image_id = container_info.body.Image
   local old_config = container_info.body.Config
   local old_host_config = container_info.body.HostConfig
   local old_network_setting = container_info.body.NetworkSettings.Networks or {}
-  local image_config = self.images:inspect(old_image_id).body.Config
+  local image_config = self.images:inspect({id = old_image_id}).body.Config
   return get_config(old_config, old_host_config, old_network_setting, image_config)
 end
 
 _docker.new = function(option)
   local option = option or {}
   options = {
-    socket_path = option.socket_path or uci:get("docker", "local", "socket_path"),
-    debug = option.debug or uci:get("docker", "local", "debug") == 'true' and true or false,
-    debug_path = option.debug_path or uci:get("docker", "local", "debug_path")
+    socket_path = option.socket_path or uci:get("dockerman", "local", "socket_path"),
+    debug = option.debug or uci:get("dockerman", "local", "debug") == 'true' and true or false,
+    debug_path = option.debug_path or uci:get("dockerman", "local", "debug_path")
   }
   local _new = docker.new(options)
-  _new.options.status_path = uci:get("docker", "local", "status_path")
+  _new.options.status_path = uci:get("dockerman", "local", "status_path")
   _new.containers_upgrade = upgrade
   _new.containers_duplicate_config = duplicate_config
   return _new
 end
 _docker.options={}
-_docker.options.status_path = uci:get("docker", "local", "status_path")
+_docker.options.status_path = uci:get("dockerman", "local", "status_path")
 
 _docker.append_status=function(self,val)
   local file_docker_action_status=io.open(self.options.status_path, "a+")
