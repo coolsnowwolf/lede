@@ -342,6 +342,9 @@ local execute = function()
 					setmetatable(nodeResult[old.grouphashkey][old.hashkey], { __index =  { _ignore = true } })
 				end
 			else
+			  if not old.alias then
+         old.alias = old.server .. ':' .. old.server_port
+        end
 				log('忽略手动添加的节点: ' .. old.alias)
 			end
 			
