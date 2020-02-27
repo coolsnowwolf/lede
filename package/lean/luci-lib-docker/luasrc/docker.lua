@@ -1,13 +1,13 @@
 require "nixio.util"
 require "luci.util"
- local json = require "luci.json"
+local jsonc = require "luci.jsonc"
 local nixio = require "nixio"
 local ltn12 = require "luci.ltn12"
 local fs = require "nixio.fs"
 
 local urlencode = luci.util.urlencode or luci.http and luci.http.protocol and luci.http.protocol.urlencode
-local json_stringify = json.encode --luci.json and luci.json.encode or luci.jsonc.stringify
-local json_parse = json.decode --luci.json and luci.json.decode or luci.jsonc.parse
+local json_stringify = jsonc.stringify
+local json_parse = jsonc.parse
 
 local chunksource = function(sock, buffer)
   buffer = buffer or ""
@@ -58,6 +58,16 @@ local chunksource = function(sock, buffer)
   end
 end
 
+local chunksink = function (sock)
+  return function(chunk, err)
+    if not chunk then
+      return sock:writeall("0\r\n\r\n")
+    else
+      return sock:writeall(("%X\r\n%s\r\n"):format(#chunk, tostring(chunk)))
+    end
+  end
+end
+
 local docker_stream_filter = function(buffer)
   buffer = buffer or ""
   if #buffer < 8 then
@@ -73,80 +83,44 @@ local docker_stream_filter = function(buffer)
   -- return string.sub(buffer, 9, valid_length + 8)
 end
 
-local gen_http_req = function(options)
-  local req
-  options = options or {}
-  options.protocol = options.protocol or "HTTP/1.1"
-  req = (options.method or "GET") .. " " .. options.path .. " " .. options.protocol .. "\r\n"
-  req = req .. "Host: " .. options.host .. "\r\n"
-  req = req .. "User-Agent: " .. options.user_agent .. "\r\n"
-  req = req .. "Connection: close\r\n"
-  if type(options.header) == "table" then
-    for k, v in pairs(options.header) do
-      req = req .. k .. ": " .. v .."\r\n"
-    end
-  end
-  if options.method == "POST" and type(options.conetnt) == "table" then
-    local conetnt_json = json_stringify(options.conetnt)
-    req = req .. "Content-Type: application/json\r\n"
-    req = req .. "Content-Length: " .. #conetnt_json .. "\r\n"
-    req = req .. "\r\n" .. conetnt_json
-  elseif options.method == "PUT" and options.conetnt then
-    req = req .. "Content-Type: application/x-tar\r\n"
-    req = req .. "Content-Length: " .. #options.conetnt .. "\r\n"
-    req = req .. "\r\n" .. options.conetnt
-  else
-    req = req .. "\r\n"
-  end
-  if options.debug then io.popen("echo '".. req .. "' >> " .. options.debug_path) end
-  return req
-end
-
-local send_http_socket = function(socket_path, req)
+local send_http_socket = function(socket_path, req_header, req_body, callback)
   local docker_socket = nixio.socket("unix", "stream")
   if docker_socket:connect(socket_path) ~= true then
     return {
-      headers={
-        code=497,
-        message="bad socket path",
-        protocol="HTTP/1.1"
-      },
-      body={
-        message="can\'t connect to unix socket"
-      }
+      headers = {code=497, message="bad socket path", protocol="HTTP/1.1"},
+      body = {message="can\'t connect to unix socket"}
     }
   end
-  if docker_socket:send(req) == 0 then
+  if docker_socket:send(req_header) == 0 then
     return {
-      headers={
-        code=498,
-        message="bad socket path",
-        protocol="HTTP/1.1"
-      },
-      body={
-        message="can\'t send data to unix socket"
-      }
+      headers={code=498,message="bad socket path", protocol="HTTP/1.1"},
+      body={message="can\'t send data to unix socket"}
     }
   end
-  -- local data, err_code, err_msg, data_f = docker_socket:readall()
-  -- docker_socket:close()
+
+  if req_body and type(req_body) == "function" and req_header and req_header:match("chunked") then
+    -- chunked send
+    req_body(chunksink(docker_socket))
+  elseif req_body and type(req_body) == "function" then
+    -- normal send by req_body function
+    req_body(docker_socket)
+  elseif req_body and type(req_body) == "table" then
+    -- json
+    docker_socket:send(json_stringify(req_body))
+  elseif req_body then
+    docker_socket:send(req_body)
+  end
+
   local linesrc = docker_socket:linesource()
   -- read socket using source http://w3.impa.br/~diego/software/luasocket/ltn12.html
   --http://lua-users.org/wiki/FiltersSourcesAndSinks
-
   -- handle response header
   local line = linesrc()
   if not line then
     docker_socket:close()
     return {
-      headers={
-        code=499,
-        message="bad socket path",
-        protocol="HTTP/1.1"
-      },
-      body={
-        message="no data receive from socket"
-      }
+      headers = {code=499, message="bad socket path", protocol="HTTP/1.1"},
+      body = {message="no data receive from socket"}
     }
   end
   local response = {code = 0, headers = {}, body = {}}
@@ -172,64 +146,85 @@ local send_http_socket = function(socket_path, req)
   -- handle response body
   local body_buffer = linesrc(true)
   response.body = {}
-  if response.headers["Transfer-Encoding"] == "chunked" then
-    local source = chunksource(docker_socket, body_buffer)
-    code = ltn12.pump.all(source, (ltn12.sink.table(response.body))) and response.code or 555
-    response.code = code
+  if type(callback) ~= "function" then
+    if response.headers["Transfer-Encoding"] == "chunked" then
+      local source = chunksource(docker_socket, body_buffer)
+      code = ltn12.pump.all(source, (ltn12.sink.table(response.body))) and response.code or 555
+      response.code = code
+    else
+      local body_source = ltn12.source.cat(ltn12.source.string(body_buffer), docker_socket:blocksource())
+      code = ltn12.pump.all(body_source, (ltn12.sink.table(response.body))) and response.code or 555
+      response.code = code
+    end
   else
-    local body_source = ltn12.source.cat(ltn12.source.string(body_buffer), docker_socket:blocksource())
-    code = ltn12.pump.all(body_source, (ltn12.sink.table(response.body))) and response.code or 555
-    response.code = code
+    if response.headers["Transfer-Encoding"] == "chunked" then
+      local source = chunksource(docker_socket, body_buffer)
+      callback(response, source)
+    else
+      local body_source = ltn12.source.cat(ltn12.source.string(body_buffer), docker_socket:blocksource())
+      callback(response, body_source)
+    end
   end
   docker_socket:close()
   return response
 end
 
-local send_http_require = function(options, method, api_group, api_action, name_or_id, request_qurey, request_body)
-  local qurey
-  local req_options = setmetatable({}, {__index = options})
+local gen_header = function(options, http_method, api_group, api_action, name_or_id, request)
+  local header, query, path
+  options = options or {}
+  options.protocol = options.protocol or "HTTP/1.1"
+  name_or_id = name_or_id ~= "" and name_or_id or nil
 
-  -- for docker action status
-  -- if options.status_enabled then
-  --   fs.writefile(options.status_path, api_group or "" .. " " .. api_action or "" .. " " .. name_or_id or "")
-  -- end
-
-  -- request_qurey = request_qurey or {}
-  -- request_body = request_body or {}
-  if name_or_id == "" then
-    name_or_id = nil
-  end
-  req_options.method = method
-  req_options.path = (api_group and ("/" .. api_group) or "") .. (name_or_id and ("/" .. name_or_id) or "") .. (api_action and ("/" .. api_action) or "")
-  req_options.header = {}
-  if type(request_qurey) == "table" then
-    for k, v in pairs(request_qurey) do
+  if request and type(request.query) == "table" then
+    local k, v
+    for k, v in pairs(request.query) do
       if type(v) == "table" then
-        if k ~= "_header" then
-          qurey = (qurey and qurey .. "&" or "?") .. k .. "=" .. urlencode(json_stringify(v))
-        else
-          -- for http header
-          for k1, v1 in pairs(v) do
-            req_options.header[k1] = v1
-          end
-        end
+        query = (query and query .. "&" or "?") .. k .. "=" .. urlencode(json_stringify(v))
       elseif type(v) == "boolean" then
-        qurey = (qurey and qurey .. "&" or "?") .. k .. "=" .. (v and "true" or "false")
+        query = (query and query .. "&" or "?") .. k .. "=" .. (v and "true" or "false")
       elseif type(v) == "number" or type(v) == "string" then
-        qurey = (qurey and qurey .. "&" or "?") .. k .. "=" .. v
+        query = (query and query .. "&" or "?") .. k .. "=" .. v
       end
     end
   end
-  req_options.path = req_options.path .. (qurey or "")
-  -- if type(request_body) == "table" then
-  req_options.conetnt = request_body
-  -- end
-  local response = send_http_socket(req_options.socket_path, gen_http_req(req_options))
-  -- for docker action status
-  -- if options.status_enabled then
-  --   fs.remove(options.status_path)
-  -- end
-  return response
+
+  path = (api_group and ("/" .. api_group) or "") .. (name_or_id and ("/" .. name_or_id) or "") .. (api_action and ("/" .. api_action) or "") .. (query or "")
+  header = (http_method or "GET") .. " " .. path .. " " .. options.protocol .. "\r\n"
+  header = header .. "Host: " .. options.host .. "\r\n"
+  header = header .. "User-Agent: " .. options.user_agent .. "\r\n"
+  header = header .. "Connection: close\r\n"
+
+  if request and type(request.header) == "table" then
+    local k, v
+    for k, v in pairs(request.header) do
+      header = header .. k .. ": " .. v .. "\r\n"
+    end
+  end
+
+  -- when requst_body is function, we need to custom header using custom header
+  if request and request.body and type(request.body) == "function" then
+    if not header:match("Content-Length:") then
+      header = header .. "Transfer-Encoding: chunked\r\n"
+    end
+  elseif http_method == "POST" and request and request.body and type(request.body) == "table" then
+    local conetnt_json = json_stringify(request.body)
+    header = header .. "Content-Type: application/json\r\n"
+    header = header .. "Content-Length: " .. #conetnt_json .. "\r\n"
+  elseif request and request.body and type(request.body) == "string" then
+    header = header .. "Content-Length: " .. #request.body .. "\r\n"
+  end
+  header = header .. "\r\n"
+  if options.debug then io.popen("echo '".. header .. "' >> " .. options.debug_path) end
+  return header
+end
+
+local call_docker = function(options, http_method, api_group, api_action, name_or_id, request, callback)
+  local req_options = setmetatable({}, {__index = options})
+
+  local req_header = gen_header(req_options, http_method, api_group, api_action, name_or_id, request)
+  local req_body = request and request.body or nil
+
+  return send_http_socket(req_options.socket_path, req_header, req_body, callback)
 end
 
 local gen_api = function(_table, http_method, api_group, api_action)
@@ -244,28 +239,29 @@ local gen_api = function(_table, http_method, api_group, api_action)
     _api_action = "json"
   end
 
-  local fp = function(self, name_or_id, request_qurey, request_body)
+  local fp = function(self, request, callback)
+    local name_or_id = request and (request.name or request.id or request.name_or_id) or nil
     if api_action == "list" then
       if (name_or_id ~= "" and name_or_id ~= nil) then
         if api_group == "images" then
           name_or_id = nil
         else
-          request_qurey = request_qurey or {}
-          request_qurey.filters = request_qurey.filters or {}
-          request_qurey.filters.name = request_qurey.filters.name or {}
-          request_qurey.filters.name[#request_qurey.filters.name + 1] = name_or_id
+          request.query = request and request.query or {}
+          request.query.filters = request.query.filters or {}
+          request.query.filters.name = request.query.filters.name or {}
+          request.query.filters.name[#request.query.filters.name + 1] = name_or_id
           name_or_id = nil
         end
       end
     elseif api_action == "create" then
       if (name_or_id ~= "" and name_or_id ~= nil) then
-        request_qurey = request_qurey or {}
-        request_qurey.name = request_qurey.name or name_or_id
+        request.query = request and request.query or {}
+        request.query.name = request.query.name or name_or_id
         name_or_id = nil
       end
     elseif api_action == "logs" then
       local body_buffer = ""
-      local response = send_http_require(self.options, http_method, api_group, _api_action, name_or_id, request_qurey, request_body)
+      local response = call_docker(self.options, http_method, api_group, _api_action, name_or_id, request, callback)
       if response.code >= 200 and response.code < 300 then
         for i, v in ipairs(response.body) do
           body_buffer = body_buffer .. docker_stream_filter(response.body[i])
@@ -274,7 +270,7 @@ local gen_api = function(_table, http_method, api_group, api_action)
       end
       return response
     end
-    local response = send_http_require(self.options, http_method, api_group, _api_action, name_or_id, request_qurey, request_body)
+    local response = call_docker(self.options, http_method, api_group, _api_action, name_or_id, request, callback)
     if response.headers and response.headers["Content-Type"] == "application/json" then
       if #response.body == 1 then
         response.body = json_parse(response.body[1])

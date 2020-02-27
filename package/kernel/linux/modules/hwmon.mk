@@ -324,7 +324,7 @@ define KernelPackage/pmbus-zl6100
   $(call AddDepends/hwmon, +kmod-pmbus-core)
 endef
 
-define KernelPackage/hwmon-sht21/description
+define KernelPackage/pmbus-zl6100/description
  Kernel module for Intersil / Zilker Labs ZL6100 and
 compatible digital DC-DC controllers
 endef

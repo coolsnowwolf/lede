@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=automount
 PKG_VERSION:=1
-PKG_RELEASE:=28
+PKG_RELEASE:=29
 PKG_ARCH:=all
 
 include $(INCLUDE_DIR)/package.mk
@@ -17,7 +17,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/automount
   TITLE:=Mount autoconfig hotplug script.
   MAINTAINER:=Lean
-  DEPENDS:=+block-mount +kmod-usb-storage +kmod-usb-storage-extras +kmod-fs-vfat +kmod-fs-ext4 +kmod-fs-exfat +antfs-mount
+  DEPENDS:=+block-mount +kmod-usb-storage +kmod-usb-storage-extras +kmod-fs-vfat +kmod-fs-ext4 +kmod-fs-exfat +ntfs-3g
 endef
 
 define Package/automount/description
