@@ -888,6 +888,16 @@ define Device/mc-mac1200r
 endef
 TARGET_DEVICES += mc-mac1200r
 
+define Device/mc-mw4530r
+$(Device/tplink-16mlzma)
+  DEVICE_TITLE := MerCury MW4530R
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
+  BOARDNAME := MC-MW4530R
+  DEVICE_PROFILE := MW4530R
+  TPLINK_HWID := 0x45300001
+endef
+TARGET_DEVICES += mc-mw4530r
+
 define Device/minibox-v1
   $(Device/tplink-16mlzma)
   DEVICE_TITLE := GainStrong MiniBox V1.0
