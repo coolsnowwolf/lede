@@ -55,21 +55,17 @@ o = s:option(Button,"subscribe", translate("Update All Subscribe Severs"))
 o.rawhtml  = true
 o.template = "shadowsocksr/subscribe"
 
-
--- o.inputstyle = "apply"
--- o.write = function()
--- luci.sys.call("lua /root/subscribe.lua  >>/tmp/ssrplus.log 2>&1")
--- -- luci.sys.call("echo 123  >>/tmp/ssrplus.log 2>&1")
--- -- luci.sys.exec("bash /usr/share/shadowsocksr/subscribe.sh >>/tmp/ssrplus.log 2>&1")
--- luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
--- end
-
-
-o = s:option(Button,"delete",translate("Delete all severs"))
+o = s:option(Button,"delete",translate("Delete All Subscribe Severs"))
 o.inputstyle = "reset"
 o.description = string.format(translate("Server Count") ..  ": %d", server_count)
 o.write = function()
-uci:delete_all("shadowsocksr", "servers", function(s) return true end)
+uci:delete_all("shadowsocksr", "servers", function(s) 
+  if s["hashkey"] then
+    return true
+  else
+    return false
+  end
+end)
 uci:save("shadowsocksr")
 luci.sys.call("uci commit shadowsocksr && /etc/init.d/shadowsocksr stop")
 luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
@@ -110,15 +106,6 @@ end
 o = s:option(DummyValue, "server_port", translate("Server Port"))
 function o.cfgvalue(...)
 	return Value.cfgvalue(...) or "?"
-end
-
-if nixio.fs.access("/usr/bin/kcptun-client") then
-
-o = s:option(DummyValue, "kcp_enable", translate("KcpTun"))
-function o.cfgvalue(...)
-	return Value.cfgvalue(...) or "?"
-end
-
 end
 
 o = s:option(DummyValue, "switch_enable", translate("Auto Switch"))
