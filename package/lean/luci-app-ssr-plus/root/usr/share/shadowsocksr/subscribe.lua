@@ -96,15 +96,15 @@ end
 -- 处理数据
 local function processData(szType, content)
 	local result = {
--- 		auth_enable = '0',
--- 		switch_enable = '1',
-		type = szType,
-		local_port = 1234,
--- 		timeout = 60, -- 不太确定 好像是死的
--- 		fast_open = 0,
--- 		kcp_enable = 0,
--- 		kcp_port = 0,
-		kcp_param = '--nocomp'
+	-- auth_enable = '0',
+	-- switch_enable = '1',
+	type = szType,
+	local_port = 1234,
+	-- timeout = 60, -- 不太确定 好像是死的
+	-- fast_open = 0,
+	-- kcp_enable = 0,
+	-- kcp_port = 0,
+	kcp_param = '--nocomp'
 	}
 	if szType == 'ssr' then
 		local dat = split(content, "/%?")
@@ -137,8 +137,8 @@ local function processData(szType, content)
 		result.vmess_id = info.id
 		result.alias = info.ps
 		result.insecure = 1
--- 		result.mux = 1
--- 		result.concurrency = 8
+		-- result.mux = 1
+		-- result.concurrency = 8
 		if info.net == 'ws' then
 			result.ws_host = info.host
 			result.ws_path = info.path
@@ -265,10 +265,10 @@ local execute = function()
 					nodes = base64Decode(raw:sub(nEnd + 1, #raw))
 					nodes = jsonParse(nodes)
 					local extra = {
-						airport = nodes.airport,
-						port = nodes.port,
-						encryption = nodes.encryption,
-						password = nodes.password
+					airport = nodes.airport,
+					port = nodes.port,
+					encryption = nodes.encryption,
+					password = nodes.password
 					}
 					local servers = {}
 					-- SS里面包着 干脆直接这样
@@ -304,8 +304,9 @@ local execute = function()
 								result.alias:find("剩余流量") or
 								result.alias:find("QQ群") or
 								result.alias:find("官网") or
+								result.alias:find("防失联地址") or
 								not result.server
-							then
+								then
 								log('丢弃无效节点: ' .. result.type ..' 节点, ' .. result.alias)
 							else
 								log('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
@@ -317,12 +318,17 @@ local execute = function()
 					end
 				end
 				log('成功解析节点数量: ' ..#nodes)
+			else
+				log(url .. ': 获取内容为空')
 			end
 		end
 	end
 	-- diff
 	do
-		assert(next(nodeResult), "node result is empty")
+		if next(nodeResult) == nil then
+			log("更新失败，没有可用的节点信息")
+			return
+		end
 		local add, del = 0, 0
 		ucic:foreach(name, uciType, function(old)
 			if old.grouphashkey or old.hashkey then -- 没有 hash 的不参与删除
@@ -336,11 +342,13 @@ local execute = function()
 					setmetatable(nodeResult[old.grouphashkey][old.hashkey], { __index =  { _ignore = true } })
 				end
 			else
+			  if not old.alias then
+         old.alias = old.server .. ':' .. old.server_port
+        end
 				log('忽略手动添加的节点: ' .. old.alias)
 			end
-		
+			
 		end)
-				
 		for k, v in ipairs(nodeResult) do
 			for kk, vv in ipairs(v) do
 				if not vv._ignore then
@@ -349,33 +357,30 @@ local execute = function()
 					ucic:set(name, section, "switch_enable", switch)
 					add = add + 1
 				end
-
 			end
 		end
 		ucic:commit(name)
-		
-		-- 如果原有服务器节点已经不见了就尝试换为第一个节点	
+		-- 如果原有服务器节点已经不见了就尝试换为第一个节点
 		local globalServer = ucic:get_first(name, 'global', 'global_server', '')
 		local firstServer = ucic:get_first(name, uciType)
-    
 		if firstServer then
-      if not ucic:get(name, globalServer) then
-        luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
-        ucic:commit(name)
-        ucic:set(name, ucic:get_first(name, 'global'), 'global_server', ucic:get_first(name, uciType))
-        ucic:commit(name)
-        log('当前主服务器节点已被删除，正在自动更换为第一个节点。')
-        luci.sys.call("/etc/init.d/" .. name .. " start > /dev/null 2>&1 &")
-      else
-        log('维持当前主服务器节点。')
-        luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &")
+			if not ucic:get(name, globalServer) then
+				luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
+				ucic:commit(name)
+				ucic:set(name, ucic:get_first(name, 'global'), 'global_server', ucic:get_first(name, uciType))
+				ucic:commit(name)
+				log('当前主服务器节点已被删除，正在自动更换为第一个节点。')
+				luci.sys.call("/etc/init.d/" .. name .. " start > /dev/null 2>&1 &")
+			else
+				log('维持当前主服务器节点。')
+				luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &")
 			end
 		else
-      log('没有服务器节点了，停止服务')
-      luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
+			log('没有服务器节点了，停止服务')
+			luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
 		end
 		log('新增节点数量: ' ..add, '删除节点数量: ' .. del)
-		log('订阅更新成功')	
+		log('订阅更新成功')
 	end
 end
 
@@ -387,10 +392,10 @@ if subscribe_url and #subscribe_url > 0 then
 		local firstServer = ucic:get_first(name, uciType)
 		if firstServer then
 			luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
-			log('重启服务成功')	
+			log('重启服务成功')
 		else
 			luci.sys.call("/etc/init.d/" .. name .." stop > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
-			log('停止服务成功')	
+			log('停止服务成功')
 		end
 	end)
 end
