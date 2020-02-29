@@ -1214,14 +1214,22 @@ static int ag71xx_rx_packets(struct ag71xx *ag, int limit)
 	unsigned int offset = ag->rx_buf_offset;
 	int ring_mask = BIT(ring->order) - 1;
 	int ring_size = BIT(ring->order);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0))
+	struct list_head rx_list;
+	struct sk_buff *next;
+#else
 	struct sk_buff_head queue;
+#endif
 	struct sk_buff *skb;
 	int done = 0;
 
 	DBG("%s: rx packets, limit=%d, curr=%u, dirty=%u\n",
 			dev->name, limit, ring->curr, ring->dirty);
-
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0))
+	INIT_LIST_HEAD(&rx_list);
+#else
 	skb_queue_head_init(&queue);
+#endif
 
 	while (done < limit) {
 		unsigned int i = ring->curr & ring_mask;
@@ -1263,7 +1271,11 @@ static int ag71xx_rx_packets(struct ag71xx *ag, int limit)
 		} else {
 			skb->dev = dev;
 			skb->ip_summed = CHECKSUM_NONE;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0))
+			list_add_tail(&skb->list, &rx_list);
+#else
 			__skb_queue_tail(&queue, skb);
+#endif
 		}
 
 next:
@@ -1275,10 +1287,16 @@ next:
 
 	ag71xx_ring_rx_refill(ag);
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0))
+	list_for_each_entry_safe(skb, next, &rx_list, list)
+		skb->protocol = eth_type_trans(skb, dev);
+	netif_receive_skb_list(&rx_list);
+#else
 	while ((skb = __skb_dequeue(&queue)) != NULL) {
 		skb->protocol = eth_type_trans(skb, dev);
 		netif_receive_skb(skb);
 	}
+#endif
 
 	DBG("%s: rx finish, curr=%u, dirty=%u, done=%d\n",
 		dev->name, ring->curr, ring->dirty, done);
