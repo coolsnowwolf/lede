@@ -28,6 +28,10 @@ ipaddr.optional = false
 netmask = s:option(Value, "netmask", translate("Interface netmask"))
 netmask.optional = false
 
+mtu = s:option(Value, "mtu", translate("MTU"))
+mtu.datatype = "range(1,1500)"
+mtu.optional = false
+
 supernode = s:option(Value, "supernode", translate("Supernode IP address"))
 supernode.optional = false
 
