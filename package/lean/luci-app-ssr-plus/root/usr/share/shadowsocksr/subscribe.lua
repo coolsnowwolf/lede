@@ -238,6 +238,9 @@ local function processData(szType, content)
 		result.alias = UrlDecode(alias)
 		result.type = "trojan"
 		result.server = host[1]
+		-- 按照官方的建议 默认验证ssl证书
+		result.insecure = "0"
+		result.tls = "1"
 		if host[2]:find("?") then
 			local query = split(host[2], "?")
 			result.server_port = query[1]
@@ -246,12 +249,12 @@ local function processData(szType, content)
 				local t = split(v, '=')
 				params[t[1]] = t[2]
 			end
-			-- 按照官方的建议 默认验证ssl证书
-			result.tls = "1"
+			
 			if params.peer then
 				-- 未指定peer（sni）默认使用remote addr
 				result.tls_host = params.peer
 			end
+			
 			if params.allowInsecure == "1" then
 				result.insecure = "1"
 			else
