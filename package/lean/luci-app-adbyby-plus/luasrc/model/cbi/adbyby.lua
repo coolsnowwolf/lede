@@ -38,7 +38,7 @@ o.rmempty = false
 o = s:taboption("basic", Button, "restart")
 o.title = translate("Adbyby and Rule state")
 o.inputtitle = translate("Restart Adbyby")
-o.description = string.format("<strong>Last Update Checked：</strong> %s<br /><strong>Lazy Rule：</strong>%s <br /><strong>Video Rule：</strong>%s", UD, DL, DV) 
+o.description = string.format("<strong>"..translate("Last Update Checked").."：</strong> %s<br /><strong>"..translate("Lazy Rule").."：</strong>%s <br /><strong>"..translate("Video Rule").."：</strong>%s", UD, DL, DV)
 o.inputstyle = "reload"
 o.write = function()
 	SYS.call("rm -rf /tmp/adbyby.updated && /usr/share/adbyby/admem.sh > /tmp/adupdate.log 2>&1 &")
