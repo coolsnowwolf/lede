@@ -96,14 +96,8 @@ end
 -- 处理数据
 local function processData(szType, content)
 	local result = {
-	-- auth_enable = '0',
-	-- switch_enable = '1',
 	type = szType,
 	local_port = 1234,
-	-- timeout = 60, -- 不太确定 好像是死的
-	-- fast_open = 0,
-	-- kcp_enable = 0,
-	-- kcp_port = 0,
 	kcp_param = '--nocomp'
 	}
 	if szType == 'ssr' then
@@ -306,10 +300,10 @@ local execute = function()
 					nodes = base64Decode(raw:sub(nEnd + 1, #raw))
 					nodes = jsonParse(nodes)
 					local extra = {
-					airport = nodes.airport,
-					port = nodes.port,
-					encryption = nodes.encryption,
-					password = nodes.password
+						airport = nodes.airport,
+						port = nodes.port,
+						encryption = nodes.encryption,
+						password = nodes.password
 					}
 					local servers = {}
 					-- SS里面包着 干脆直接这样
@@ -346,8 +340,9 @@ local execute = function()
 								result.alias:find("QQ群") or
 								result.alias:find("官网") or
 								result.alias:find("防失联地址") or
-								not result.server
-								then
+								not result.server or
+								result.server:match("[^0-9a-zA-Z%-%.%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
+							then
 								log('丢弃无效节点: ' .. result.type ..' 节点, ' .. result.alias)
 							else
 								log('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
@@ -384,11 +379,11 @@ local execute = function()
 				end
 			else
 				if not old.alias then
-         			old.alias = old.server .. ':' .. old.server_port
-        		end
+					old.alias = old.server .. ':' .. old.server_port
+				end
 				log('忽略手动添加的节点: ' .. old.alias)
 			end
-			
+
 		end)
 		for k, v in ipairs(nodeResult) do
 			for kk, vv in ipairs(v) do
