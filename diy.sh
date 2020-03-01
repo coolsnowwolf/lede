@@ -14,3 +14,4 @@ cd package
 mkdir openwrt-packages
 cd openwrt-packages
 git clone https://github.com/Ameykyl/luci-app-koolproxyR
+git clone https://github.com/jerrykuku/luci-theme-argon.git
