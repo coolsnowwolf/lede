@@ -36,7 +36,7 @@ define Package/libubus
   SECTION:=libs
   CATEGORY:=Libraries
   DEPENDS:=+libubox
-  ABI_VERSION:=$(PKG_VERSION)
+  ABI_VERSION:=20191227
   TITLE:=OpenWrt RPC client library
 endef
 

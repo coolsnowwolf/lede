@@ -20,7 +20,7 @@ DEFAULT_PACKAGES += \
 	kmod-ath10k wpad-openssl \
 	kmod-usb3 kmod-usb-dwc3 ath10k-firmware-qca4019 \
 	automount autosamba luci-app-ipsec-vpnd v2ray shadowsocks-libev-ss-redir shadowsocksr-libev-server \
-	luci-app-unblockmusic luci-app-qbittorrent luci-app-zerotier luci-app-xlnetacc ddns-scripts_aliyun ca-certificates \
+	luci-app-unblockmusic luci-app-qbittorrent luci-app-zerotier luci-app-xlnetacc ca-certificates \
 	htop fdisk e2fsprogs
 
 $(eval $(call BuildTarget))

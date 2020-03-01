@@ -1,24 +1,21 @@
 #
-# Copyright (C) 2015-2016 OpenWrt.org
+# Copyright (C) 2015-2020 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v3.
 #
-# licheng
-# www.maxlicheng.com
-# 2019-07-28
 #
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=UnblockNeteaseMusic
-PKG_VERSION:=0.22.3
+PKG_VERSION:=0.24.1
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/nondanee/UnblockNeteaseMusic.git
-PKG_SOURCE_VERSION:=b1b34db941553e600820b35791e7926ef462686f
+PKG_SOURCE_VERSION:=436046c63b1d985c62e6695beaa21672423a747a
 
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)
 PKG_SOURCE:=$(PKG_SOURCE_SUBDIR)-$(PKG_VERSION).tar.gz

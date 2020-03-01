@@ -14,16 +14,14 @@ generate_china_banned()
 		sed '/^[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+$/d' |
 		grep '^[0-9a-zA-Z\.-]\+$' | grep '\.' | sed 's#^\.\+##' | rev | sort -u |
 		awk '
-BEGIN { prev = "________"; }  {
-	cur = $0;
-	if (index(cur, prev) == 1 && substr(cur, 1 + length(prev) ,1) == ".") {
-	} else {
-		print cur;
-		prev = cur;
-	}
-}' | rev | sort -u
-
+	BEGIN { prev = "________"; }  {
+		cur = $0;
+		if (index(cur, prev) == 1 && substr(cur, 1 + length(prev) ,1) == ".") {
+		} else {
+			print cur;
+			prev = cur;
+		}
+	}' | rev | sort -u
 }
 
 generate_china_banned
-
