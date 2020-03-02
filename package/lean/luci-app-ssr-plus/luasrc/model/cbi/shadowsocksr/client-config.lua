@@ -131,6 +131,9 @@ end
 if nixio.fs.access("/usr/sbin/trojan") then
 o:value("trojan", translate("Trojan"))
 end
+if nixio.fs.access("/usr/bin/ipt2socks") then
+o:value("socks5", translate("Socks5"))
+end
 o.description = translate("Using incorrect encryption mothod may causes service fail to start")
 
 o = s:option(Value, "alias", translate("Alias(optional)"))
