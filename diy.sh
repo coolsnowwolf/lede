@@ -14,4 +14,3 @@ cd package
 mkdir openwrt-packages
 cd openwrt-packages
 git clone https://github.com/Leo-Jo/luci-app-koolproxyR.git
-git clone https://github.com/pymumu/luci-app-smartdns.git
