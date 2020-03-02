@@ -12,6 +12,10 @@ function index()
 
     entry({"admin", "vpn", "v2ray_server", "users_status"},
           call("v2ray_users_status")).leaf = true
+    entry({"admin", "vpn", "v2ray_server", "check"}, call("v2ray_check")).leaf =
+        true
+    entry({"admin", "vpn", "v2ray_server", "update"}, call("v2ray_update")).leaf =
+        true
     entry({"admin", "vpn", "v2ray_server", "get_log"}, call("get_log")).leaf =
         true
     entry({"admin", "vpn", "v2ray_server", "clear_log"}, call("clear_log")).leaf =
@@ -30,6 +34,26 @@ function v2ray_users_status()
                    "ps -w| grep -v grep | grep '/var/etc/v2ray_server/" ..
                        luci.http.formvalue("id") .. "' >/dev/null") == 0
     http_write_json(e)
+end
+
+function v2ray_check()
+    local json = v2ray.to_check("")
+    http_write_json(json)
+end
+
+function v2ray_update()
+    local json = nil
+    local task = http.formvalue("task")
+    if task == "extract" then
+        json =
+            v2ray.to_extract(http.formvalue("file"), http.formvalue("subfix"))
+    elseif task == "move" then
+        json = v2ray.to_move(http.formvalue("file"))
+    else
+        json = v2ray.to_download(http.formvalue("url"))
+    end
+
+    http_write_json(json)
 end
 
 function get_log()
