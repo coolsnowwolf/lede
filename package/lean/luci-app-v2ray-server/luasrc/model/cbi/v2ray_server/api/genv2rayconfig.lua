@@ -21,7 +21,7 @@ if server.protocol == "vmess" then
 elseif server.protocol == "socks" then
     settings = {
         auth = (server.socks_username == nil and server.socks_password == nil) and
-            "password" or "noauth",
+            "noauth" or "password",
         accounts = {
             {
                 user = (server.socks_username == nil) and "" or
