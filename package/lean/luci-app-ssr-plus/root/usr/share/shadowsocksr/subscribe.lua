@@ -96,15 +96,9 @@ end
 -- 处理数据
 local function processData(szType, content)
 	local result = {
--- 		auth_enable = '0',
--- 		switch_enable = '1',
-		type = szType,
-		local_port = 1234,
--- 		timeout = 60, -- 不太确定 好像是死的
--- 		fast_open = 0,
--- 		kcp_enable = 0,
--- 		kcp_port = 0,
-		kcp_param = '--nocomp'
+	type = szType,
+	local_port = 1234,
+	kcp_param = '--nocomp'
 	}
 	if szType == 'ssr' then
 		local dat = split(content, "/%?")
@@ -137,8 +131,8 @@ local function processData(szType, content)
 		result.vmess_id = info.id
 		result.alias = info.ps
 		result.insecure = 1
--- 		result.mux = 1
--- 		result.concurrency = 8
+		-- result.mux = 1
+		-- result.concurrency = 8
 		if info.net == 'ws' then
 			result.ws_host = info.host
 			result.ws_path = info.path
@@ -223,6 +217,47 @@ local function processData(szType, content)
 		result.plugin = content.plugin
 		result.plugin_opts = content.plugin_options
 		result.alias = "[" .. content.airport .. "] " .. content.remarks
+	elseif szType == "trojan" then
+		local idx_sp = 0
+		local alias = ""
+		if content:find("#") then
+			idx_sp = content:find("#")
+			alias = content:sub(idx_sp + 1, -1)
+		end
+		local info = content:sub(1, idx_sp - 1)
+		local hostInfo = split(info, "@")
+		local host = split(hostInfo[2], ":")
+		local userinfo = hostInfo[1]
+		local password = userinfo
+		result.alias = UrlDecode(alias)
+		result.type = "trojan"
+		result.server = host[1]
+		-- 按照官方的建议 默认验证ssl证书
+		result.insecure = "0"
+		result.tls = "1"
+		if host[2]:find("?") then
+			local query = split(host[2], "?")
+			result.server_port = query[1]
+			local params = {}
+			for _, v in pairs(split(query[2], '&')) do
+				local t = split(v, '=')
+				params[t[1]] = t[2]
+			end
+			
+			if params.peer then
+				-- 未指定peer（sni）默认使用remote addr
+				result.tls_host = params.peer
+			end
+			
+			if params.allowInsecure == "1" then
+				result.insecure = "1"
+			else
+				result.insecure = "0"
+			end
+		else
+			result.server_port = host[2]
+		end
+		result.password = password
 	end
 	if not result.alias then
 		result.alias = result.server .. ':' .. result.server_port
@@ -289,7 +324,7 @@ local execute = function()
 							local node = trim(v)
 							local dat = split(node, "://")
 							if dat and dat[1] and dat[2] then
-								if dat[1] == 'ss' then
+								if dat[1] == 'ss' or dat[1] == 'trojan' then
 									result = processData(dat[1], dat[2])
 								else
 									result = processData(dat[1], base64Decode(dat[2]))
@@ -304,7 +339,9 @@ local execute = function()
 								result.alias:find("剩余流量") or
 								result.alias:find("QQ群") or
 								result.alias:find("官网") or
-								not result.server
+								result.alias:find("防失联地址") or
+								not result.server or
+								result.server:match("[^0-9a-zA-Z%-%.%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
 							then
 								log('丢弃无效节点: ' .. result.type ..' 节点, ' .. result.alias)
 							else
@@ -317,12 +354,17 @@ local execute = function()
 					end
 				end
 				log('成功解析节点数量: ' ..#nodes)
+			else
+				log(url .. ': 获取内容为空')
 			end
 		end
 	end
 	-- diff
 	do
-		assert(next(nodeResult), "node result is empty")
+		if next(nodeResult) == nil then
+			log("更新失败，没有可用的节点信息")
+			return
+		end
 		local add, del = 0, 0
 		ucic:foreach(name, uciType, function(old)
 			if old.grouphashkey or old.hashkey then -- 没有 hash 的不参与删除
@@ -336,11 +378,13 @@ local execute = function()
 					setmetatable(nodeResult[old.grouphashkey][old.hashkey], { __index =  { _ignore = true } })
 				end
 			else
+				if not old.alias then
+					old.alias = old.server .. ':' .. old.server_port
+				end
 				log('忽略手动添加的节点: ' .. old.alias)
 			end
-		
+
 		end)
-				
 		for k, v in ipairs(nodeResult) do
 			for kk, vv in ipairs(v) do
 				if not vv._ignore then
@@ -349,33 +393,30 @@ local execute = function()
 					ucic:set(name, section, "switch_enable", switch)
 					add = add + 1
 				end
-
 			end
 		end
 		ucic:commit(name)
-		
-		-- 如果原有服务器节点已经不见了就尝试换为第一个节点	
+		-- 如果原有服务器节点已经不见了就尝试换为第一个节点
 		local globalServer = ucic:get_first(name, 'global', 'global_server', '')
 		local firstServer = ucic:get_first(name, uciType)
-    
 		if firstServer then
-      if not ucic:get(name, globalServer) then
-        luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
-        ucic:commit(name)
-        ucic:set(name, ucic:get_first(name, 'global'), 'global_server', ucic:get_first(name, uciType))
-        ucic:commit(name)
-        log('当前主服务器节点已被删除，正在自动更换为第一个节点。')
-        luci.sys.call("/etc/init.d/" .. name .. " start > /dev/null 2>&1 &")
-      else
-        log('维持当前主服务器节点。')
-        luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &")
+			if not ucic:get(name, globalServer) then
+				luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
+				ucic:commit(name)
+				ucic:set(name, ucic:get_first(name, 'global'), 'global_server', ucic:get_first(name, uciType))
+				ucic:commit(name)
+				log('当前主服务器节点已被删除，正在自动更换为第一个节点。')
+				luci.sys.call("/etc/init.d/" .. name .. " start > /dev/null 2>&1 &")
+			else
+				log('维持当前主服务器节点。')
+				luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &")
 			end
 		else
-      log('没有服务器节点了，停止服务')
-      luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
+			log('没有服务器节点了，停止服务')
+			luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
 		end
 		log('新增节点数量: ' ..add, '删除节点数量: ' .. del)
-		log('订阅更新成功')	
+		log('订阅更新成功')
 	end
 end
 
@@ -387,10 +428,10 @@ if subscribe_url and #subscribe_url > 0 then
 		local firstServer = ucic:get_first(name, uciType)
 		if firstServer then
 			luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
-			log('重启服务成功')	
+			log('重启服务成功')
 		else
 			luci.sys.call("/etc/init.d/" .. name .." stop > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
-			log('停止服务成功')	
+			log('停止服务成功')
 		end
 	end)
 end
