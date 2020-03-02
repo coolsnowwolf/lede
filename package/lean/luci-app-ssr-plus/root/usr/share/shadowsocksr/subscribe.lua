@@ -96,14 +96,8 @@ end
 -- 处理数据
 local function processData(szType, content)
 	local result = {
-	-- auth_enable = '0',
-	-- switch_enable = '1',
 	type = szType,
 	local_port = 1234,
-	-- timeout = 60, -- 不太确定 好像是死的
-	-- fast_open = 0,
-	-- kcp_enable = 0,
-	-- kcp_port = 0,
 	kcp_param = '--nocomp'
 	}
 	if szType == 'ssr' then
@@ -223,6 +217,47 @@ local function processData(szType, content)
 		result.plugin = content.plugin
 		result.plugin_opts = content.plugin_options
 		result.alias = "[" .. content.airport .. "] " .. content.remarks
+	elseif szType == "trojan" then
+		local idx_sp = 0
+		local alias = ""
+		if content:find("#") then
+			idx_sp = content:find("#")
+			alias = content:sub(idx_sp + 1, -1)
+		end
+		local info = content:sub(1, idx_sp - 1)
+		local hostInfo = split(info, "@")
+		local host = split(hostInfo[2], ":")
+		local userinfo = hostInfo[1]
+		local password = userinfo
+		result.alias = UrlDecode(alias)
+		result.type = "trojan"
+		result.server = host[1]
+		-- 按照官方的建议 默认验证ssl证书
+		result.insecure = "0"
+		result.tls = "1"
+		if host[2]:find("?") then
+			local query = split(host[2], "?")
+			result.server_port = query[1]
+			local params = {}
+			for _, v in pairs(split(query[2], '&')) do
+				local t = split(v, '=')
+				params[t[1]] = t[2]
+			end
+			
+			if params.peer then
+				-- 未指定peer（sni）默认使用remote addr
+				result.tls_host = params.peer
+			end
+			
+			if params.allowInsecure == "1" then
+				result.insecure = "1"
+			else
+				result.insecure = "0"
+			end
+		else
+			result.server_port = host[2]
+		end
+		result.password = password
 	end
 	if not result.alias then
 		result.alias = result.server .. ':' .. result.server_port
@@ -265,10 +300,10 @@ local execute = function()
 					nodes = base64Decode(raw:sub(nEnd + 1, #raw))
 					nodes = jsonParse(nodes)
 					local extra = {
-					airport = nodes.airport,
-					port = nodes.port,
-					encryption = nodes.encryption,
-					password = nodes.password
+						airport = nodes.airport,
+						port = nodes.port,
+						encryption = nodes.encryption,
+						password = nodes.password
 					}
 					local servers = {}
 					-- SS里面包着 干脆直接这样
@@ -289,7 +324,7 @@ local execute = function()
 							local node = trim(v)
 							local dat = split(node, "://")
 							if dat and dat[1] and dat[2] then
-								if dat[1] == 'ss' then
+								if dat[1] == 'ss' or dat[1] == 'trojan' then
 									result = processData(dat[1], dat[2])
 								else
 									result = processData(dat[1], base64Decode(dat[2]))
@@ -305,8 +340,9 @@ local execute = function()
 								result.alias:find("QQ群") or
 								result.alias:find("官网") or
 								result.alias:find("防失联地址") or
-								not result.server
-								then
+								not result.server or
+								result.server:match("[^0-9a-zA-Z%-%.%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
+							then
 								log('丢弃无效节点: ' .. result.type ..' 节点, ' .. result.alias)
 							else
 								log('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
@@ -342,12 +378,12 @@ local execute = function()
 					setmetatable(nodeResult[old.grouphashkey][old.hashkey], { __index =  { _ignore = true } })
 				end
 			else
-			  if not old.alias then
-         old.alias = old.server .. ':' .. old.server_port
-        end
+				if not old.alias then
+					old.alias = old.server .. ':' .. old.server_port
+				end
 				log('忽略手动添加的节点: ' .. old.alias)
 			end
-			
+
 		end)
 		for k, v in ipairs(nodeResult) do
 			for kk, vv in ipairs(v) do
