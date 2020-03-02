@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
-PKG_VERSION:=154
-PKG_RELEASE:=3
+PKG_VERSION:=156
+PKG_RELEASE:=1
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
@@ -39,7 +39,7 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks
 	bool "Include Socks Sever"
-	default n
+	default y if x86_64
 endef
 
 define Package/$(PKG_NAME)
@@ -48,13 +48,12 @@ define Package/$(PKG_NAME)
 	SUBMENU:=3. Applications
 	TITLE:=SS/SSR/V2Ray/Trojan LuCI interface
 	PKGARCH:=all
-	DEPENDS:=+shadowsocksr-libev-alt +ipset +ip-full +iptables-mod-tproxy +dnsmasq-full +coreutils +coreutils-base64 +pdnsd-alt +wget +lua \
+	DEPENDS:=+shadowsocksr-libev-alt +ipset +ip-full +iptables-mod-tproxy +dnsmasq-full +coreutils +coreutils-base64 +pdnsd-alt +wget +lua +ipt2socks \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks:shadowsocks-libev-ss-redir \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Simple_obfs:simple-obfs \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_plugin:v2ray-plugin \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_V2ray:v2ray \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Trojan:trojan \
-	+PACKAGE_$(PKG_NAME)_INCLUDE_Trojan:ipt2socks \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun:kcptun-client \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Server:shadowsocksr-libev-server \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Socks:srelay
