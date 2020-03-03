@@ -65,7 +65,7 @@ if luci.sys.call("busybox ps -w | grep ssr-retcp | grep -v grep >/dev/null") == 
 redir_run=1
 end
 
-if luci.sys.call("pidof srelay >/dev/null") == 0 then
+if luci.sys.call("pidof microsocks >/dev/null") == 0 then
 sock5_run=1
 end
 
@@ -113,8 +113,8 @@ else
 s.value = translate("Not Running")
 end
 
-if nixio.fs.access("/usr/bin/srelay") then
-s=m:field(DummyValue,"sock5_run",translate("SOCKS Proxy"))
+if nixio.fs.access("/usr/bin/microsocks") then
+s=m:field(DummyValue,"sock5_run",translate("SOCKS5 Proxy Server"))
 s.rawhtml  = true
 if sock5_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
