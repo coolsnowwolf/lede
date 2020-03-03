@@ -1,0 +1,89 @@
+From 34c4ee6f5d7143f6c8be604715f9b52b7540e38d Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 31 Oct 2018 15:00:04 +0000
+Subject: [PATCH] media: adv7180: Nasty hack to allow input selection.
+
+Whilst the adv7180 driver support s_routing, nothing else
+does, and there is a missing lump of framework code to
+define the mapping from connectors on a board to the inputs
+they represent on the ADV7180.
+
+Add a nasty hack to take a module parameter that is passed in
+to s_routing on any call to G_STD, or S_STD (or subdev
+g_input_status call).
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/media/i2c/adv7180.c | 30 ++++++++++++++++++++++++++++--
+ 1 file changed, 28 insertions(+), 2 deletions(-)
+
+--- a/drivers/media/i2c/adv7180.c
++++ b/drivers/media/i2c/adv7180.c
+@@ -189,6 +189,10 @@
+ 
+ #define V4L2_CID_ADV_FAST_SWITCH	(V4L2_CID_USER_ADV7180_BASE + 0x00)
+ 
++static int dbg_input;
++module_param(dbg_input, int, 0644);
++MODULE_PARM_DESC(dbg_input, "Input number (0-31)");
++
+ struct adv7180_state;
+ 
+ #define ADV7180_FLAG_RESET_POWERED	BIT(0)
+@@ -405,10 +409,24 @@ out:
+ 	return ret;
+ }
+ 
++static void adv7180_check_input(struct v4l2_subdev *sd)
++{
++	struct adv7180_state *state = to_state(sd);
++
++	if (state->input != dbg_input)
++		if (adv7180_s_routing(sd, dbg_input, 0, 0))
++			/* Failed - reset dbg_input */
++			dbg_input = state->input;
++}
++
+ static int adv7180_g_input_status(struct v4l2_subdev *sd, u32 *status)
+ {
+ 	struct adv7180_state *state = to_state(sd);
+-	int ret = mutex_lock_interruptible(&state->mutex);
++	int ret;
++
++	adv7180_check_input(sd);
++
++	ret = mutex_lock_interruptible(&state->mutex);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -434,7 +452,11 @@ static int adv7180_program_std(struct ad
+ static int adv7180_s_std(struct v4l2_subdev *sd, v4l2_std_id std)
+ {
+ 	struct adv7180_state *state = to_state(sd);
+-	int ret = mutex_lock_interruptible(&state->mutex);
++	int ret;
++
++	adv7180_check_input(sd);
++
++	ret = mutex_lock_interruptible(&state->mutex);
+ 
+ 	if (ret)
+ 		return ret;
+@@ -456,6 +478,8 @@ static int adv7180_g_std(struct v4l2_sub
+ {
+ 	struct adv7180_state *state = to_state(sd);
+ 
++	adv7180_check_input(sd);
++
+ 	*norm = state->curr_norm;
+ 
+ 	return 0;
+@@ -810,6 +834,8 @@ static int adv7180_s_stream(struct v4l2_
+ 		return 0;
+ 	}
+ 
++	adv7180_check_input(sd);
++
+ 	/* Must wait until querystd released the lock */
+ 	ret = mutex_lock_interruptible(&state->mutex);
+ 	if (ret)

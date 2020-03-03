@@ -3,34 +3,40 @@
 START=98
 USE_PROCD=1
 
+SAMBA_IFACE=""
+
 smb_header() {
-	config_get samba_iface $1 interface "loopback lan"
+	config_get SAMBA_IFACE $1 interface "lan"
 
 	# resolve interfaces
-	local interfaces=$(
+	local interfaces
+	interfaces=$(
 		. /lib/functions/network.sh
 
 		local net
-		for net in $samba_iface; do
+		for net in $SAMBA_IFACE; do
 			local device
 			network_is_up $net || continue
 			network_get_device device "$net"
-			echo -n "${device:-$net} "
+			printf "%s " "${device:-$net}"
 		done
 	)
 
 	local workgroup description charset
 	# we dont use netbios anymore as default and wsd/avahi is dns based
-	local hostname="$(cat /proc/sys/kernel/hostname)"
+	local hostname
+	hostname="$(cat /proc/sys/kernel/hostname)"
 
-	config_get workgroup		$1 workgroup	"WORKGROUP"
-	config_get description		$1 description	"Samba on OpenWrt"
-	config_get charset			$1 charset		"UTF-8"
-	
-	config_get_bool MACOS			$1 macos			0
-	config_get_bool DISABLE_NETBIOS	$1 disable_netbios	0
-	config_get_bool DISABLE_AD_DC	$1 disable_ad_dc	0
-	config_get_bool DISABLE_WINBIND	$1 disable_winbind	0
+	config_get workgroup $1 workgroup "WORKGROUP"
+	config_get description $1 description "Samba on OpenWrt"
+	config_get charset $1 charset "UTF-8"
+
+	config_get_bool MACOS $1 macos 0
+	config_get_bool DISABLE_NETBIOS $1 disable_netbios 0
+	config_get_bool DISABLE_AD_DC $1 disable_ad_dc 0
+	config_get_bool DISABLE_WINBIND $1 disable_winbind 0
+	config_get_bool DISABLE_ASYNC_IO $1 disable_async_io 0
+	config_get_bool ALLOW_LEGACY_PROTOCOLS $1 allow_legacy_protocols 0
 
 	mkdir -p /var/etc
 	sed -e "s#|NAME|#$hostname#g" \
@@ -40,26 +46,35 @@ smb_header() {
 	    -e "s#|CHARSET|#$charset#g" \
 	    /etc/samba/smb.conf.template > /var/etc/smb.conf
 
-	echo -e "\n######### Dynamic written config options #########\n" >> /var/etc/smb.conf
-	if [ "$DISABLE_NETBIOS" -eq 1 ] || [ ! -x /usr/sbin/nmbd ]; then
-		echo -e "\tdisable netbios = yes" >> /var/etc/smb.conf
+	{
+		printf "\n######### Dynamic written config options #########\n"
+		if [ "$DISABLE_NETBIOS" -eq 1 ] || [ ! -x /usr/sbin/nmbd ]; then
+			printf "\tdisable netbios = yes\n"
+			# note: samba opens port 139 even if netbios is disabled via option above, so adjust listening ports
+			printf "\tsmb ports = 445\n"
+		fi
+
+		if [ "$DISABLE_ASYNC_IO" -eq 1 ]; then
+			printf "\taio read size = 0\n"
+			printf "\taio write size = 0\n"
+			# sendfile bug: https://bugzilla.samba.org/show_bug.cgi?id=14095
+			printf "\tuse sendfile = no\n"
+		fi
+
+		if [ "$ALLOW_LEGACY_PROTOCOLS" -eq 1 ]; then
+			logger -p daemon.info -t 'samba4-server' "Legacy Protocols allowed, don't use this option for secure environments!"
+			printf "\tserver min protocol = NT1\n"
+			printf "\tlanman auth = yes\n"
+			printf "\tntlm auth = ntlmv1-permitted\n"
+		fi
+	} >> /var/etc/smb.conf
+
+	[ -e /etc/samba/smb.conf ] || ln -nsf /var/etc/smb.conf /etc/samba/smb.conf
+
+	if [ ! -L /etc/samba/smb.conf ]; then
+		logger -p daemon.warn -t 'samba4-server' "Local custom /etc/samba/smb.conf file detected, all luci/config settings are ignored!"
 	fi
 
-	local homes
-	config_get_bool homes $1 homes 0
-	[ $homes -gt 0 ] && {
-		cat <<EOT >> /var/etc/smb.conf
-
-[homes]
-	comment     = Home Directories
-	browsable   = no
-	writable = yes
-	read only   = no
-	create mask = 0750
-EOT
-	}
-
-	[ -L /etc/samba/smb.conf ] || ln -nsf /var/etc/smb.conf /etc/samba/smb.conf
 }
 
 smb_add_share() {
@@ -70,6 +85,7 @@ smb_add_share() {
 	local dir_mask
 	local browseable
 	local read_only
+	local writeable
 	local guest_ok
 	local guest_only
 	local inherit_owner
@@ -77,6 +93,8 @@ smb_add_share() {
 	local timemachine
 	local timemachine_maxsize
 	local force_root
+	local write_list
+	local read_list
 
 	config_get name $1 name
 	config_get path $1 path
@@ -85,6 +103,7 @@ smb_add_share() {
 	config_get dir_mask $1 dir_mask
 	config_get browseable $1 browseable
 	config_get read_only $1 read_only
+	config_get writeable $1 writeable
 	config_get guest_ok $1 guest_ok
 	config_get guest_only $1 guest_only
 	config_get inherit_owner $1 inherit_owner
@@ -92,40 +111,48 @@ smb_add_share() {
 	config_get_bool timemachine	$1 timemachine	0
 	config_get timemachine_maxsize $1 timemachine_maxsize
 	config_get_bool force_root	$1 force_root	0
+	config_get write_list $1 write_list
+	config_get read_list $1 read_list
 
-	[ -z "$name" -o -z "$path" ] && return
+	[ -z "$name" ] || [ -z "$path" ] && return
 
-	echo -e "\n[$name]\n\tpath = $path" >> /var/etc/smb.conf
-	
-	if [ "$force_root" -eq 1 ]; then
-		echo -e "\tforce user = root" >> /var/etc/smb.conf
-		echo -e "\tforce group = root" >> /var/etc/smb.conf
-	else
-		[ -n "$users" ] && echo -e "\tvalid users = $users" >> /var/etc/smb.conf
-	fi
+	{
+		printf "\n[$name]\n\tpath = %s\n" "$path"
 
-	[ -n "$create_mask" ] && echo -e "\tcreate mask = $create_mask" >> /var/etc/smb.conf
-	[ -n "$dir_mask" ] && echo -e "\tdirectory mask = $dir_mask" >> /var/etc/smb.conf
-
-	[ -n "$browseable" ] && echo -e "\tbrowseable = $browseable" >> /var/etc/smb.conf
-	[ -n "$read_only" ] && echo -e "\tread only = $read_only" >> /var/etc/smb.conf
-	[ -n "$guest_ok" ] && echo -e "\tguest ok = $guest_ok" >> /var/etc/smb.conf
-	[ -n "$guest_only" ] && echo -e "\tguest only = $guest_only" >> /var/etc/smb.conf
-	[ -n "$inherit_owner" ] && echo -e "\tinherit owner = $inherit_owner" >> /var/etc/smb.conf
-	
-	if [ "$MACOS" -eq 1 ]; then
-		vfs_objects="catia fruit streams_xattr $vfs_objects"
-		echo -e "\tfruit:encoding = native" >> /var/etc/smb.conf
-		echo -e "\tfruit:metadata = stream" >> /var/etc/smb.conf
-		echo -e "\tfruit:veto_appledouble = no" >> /var/etc/smb.conf
-		# avoid mixed shares order for aapl
-		if [ "$timemachine" -eq 1 ]; then
-			echo -e "\tfruit:time machine = yes" >> /var/etc/smb.conf
-			[ -n "$timemachine_maxsize" ] && echo -e "\tfruit:time machine max size = ${timemachine_maxsize}G" >> /var/etc/smb.conf
+		if [ "$force_root" -eq 1 ]; then
+			printf "\tforce user = root\n"
+			printf "\tforce group = root\n"
+		else
+			[ -n "$users" ] && printf "\tvalid users = %s\n" "$users"
 		fi
-	fi
-	
-	[ -n "$vfs_objects" ] && echo -e "\tvfs objects = $vfs_objects" >> /var/etc/smb.conf
+
+		[ -n "$create_mask" ] && printf "\tcreate mask = %s\n" "$create_mask"
+		[ -n "$dir_mask" ] && printf "\tdirectory mask = %s\n" "$dir_mask"
+
+		[ -n "$browseable" ] && printf "\tbrowseable = %s\n" "$browseable"
+		[ -n "$read_only" ] && printf "\tread only = %s\n" "$read_only"
+		[ -n "$writeable" ] && printf "\twriteable = %s\n" "$writeable"
+		[ -n "$guest_ok" ] && printf "\tguest ok = %s\n" "$guest_ok"
+		[ -n "$guest_only" ] && printf "\tguest only = %s\n" "$guest_only"
+		[ -n "$inherit_owner" ] && printf "\tinherit owner = %s\n" "$inherit_owner"
+
+		[ -n "$write_list" ] && printf "\twrite list = %s\n" "$write_list"
+		[ -n "$read_list" ] && printf "\tread list = %s\n" "$read_list"
+
+		if [ "$MACOS" -eq 1 ]; then
+			vfs_objects="catia fruit streams_xattr $vfs_objects"
+			printf "\tfruit:encoding = native\n"
+			printf "\tfruit:metadata = stream\n"
+			printf "\tfruit:veto_appledouble = no\n"
+			# avoid mixed shares order for aapl
+			if [ "$timemachine" -eq 1 ]; then
+				printf "\tfruit:time machine = yes\n"
+				[ -n "$timemachine_maxsize" ] && printf "\tfruit:time machine max size = %sG\n" "${timemachine_maxsize}"
+			fi
+		fi
+
+		[ -n "$vfs_objects" ] && printf "\tvfs objects = %s\n" "$vfs_objects"
+	} >> /var/etc/smb.conf
 }
 
 init_config() {
@@ -134,10 +161,8 @@ init_config() {
 	[ -d /var/cache/samba ] || mkdir -p /var/cache/samba
 	[ -d /var/run/samba ] || mkdir -p /var/run/samba
 	[ -d /var/log/samba ] || mkdir -p /var/log/samba
-	[ -d /var/lock ] && chmod 0755 /var/lock || {
-		mkdir -p /var/lock
-		chmod 0755 /var/lock
-	}
+	[ -d /var/lock ] || mkdir -p /var/lock
+	chmod 0755 /var/lock
 
 	config_load samba4
 	config_foreach smb_header samba
@@ -145,56 +170,63 @@ init_config() {
 }
 
 service_triggers() {
-	PROCD_RELOAD_DELAY=2000
-	
+	# PROCD_RELOAD_DELAY=1000
+
 	procd_add_reload_trigger "dhcp" "system" "samba4"
-	
+
 	local i
-	for i in $samba_iface; do
+	for i in $SAMBA_IFACE; do
 		procd_add_reload_interface_trigger $i
 	done
 }
 
 start_service() {
 	init_config
+	
+	if [ ! -e /etc/samba/smb.conf ]; then
+		logger -p daemon.error -t 'samba4-server' "missing config /etc/samba/smb.conf!"
+		exit 1
+	fi
+
+	local nice_value
+	config_get nice_value extra samba_nice 0
 
 	# start main AD-DC daemon, will spawn (smbd,nmbd,winbindd) as needed/configured.
 	if [ "$DISABLE_AD_DC" -ne 1 ] && [ -x /usr/sbin/samba ]; then
 		procd_open_instance
 		procd_set_param command /usr/sbin/samba -F
+		procd_set_param nice $nice_value
 		procd_set_param respawn
-		procd_set_param file /var/etc/smb.conf
+		procd_set_param file /etc/samba/smb.conf
+		procd_set_param limits nofile=16384
 		procd_close_instance
 	else
 		# start fileserver daemon
 		procd_open_instance
 		procd_set_param command /usr/sbin/smbd -F
+		procd_set_param nice $nice_value
 		procd_set_param respawn
-		procd_set_param file /var/etc/smb.conf
+		procd_set_param file /etc/samba/smb.conf
+		procd_set_param limits nofile=16384
 		procd_close_instance
 
 		# start netbios daemon
 		if [ "$DISABLE_NETBIOS" -ne 1 ] && [ -x /usr/sbin/nmbd ]; then
 			procd_open_instance
 			procd_set_param command /usr/sbin/nmbd -F
+			procd_set_param nice $nice_value
 			procd_set_param respawn
-			procd_set_param file /var/etc/smb.conf
+			procd_set_param file /etc/samba/smb.conf
 			procd_close_instance
 		fi
 		# start winbind daemon
 		if [ "$DISABLE_WINBIND" -ne 1 ] && [ -x /usr/sbin/winbindd ]; then
 			procd_open_instance
 			procd_set_param command /usr/sbin/winbindd -F
+			procd_set_param nice $nice_value
 			procd_set_param respawn
-			procd_set_param file /var/etc/smb.conf
+			procd_set_param file /etc/samba/smb.conf
 			procd_close_instance
 		fi
-	fi
-	# lower priority using renice (if found)
-	if [ -x /usr/bin/renice ]; then
-		[ -x /usr/sbin/samba ] && renice -n 2 $(pidof samba)
-		[ -x /usr/sbin/smbd ] && renice -n 2 $(pidof smbd)
-		[ -x /usr/sbin/nmbd ] && renice -n 2 $(pidof nmbd)
-		[ -x /usr/sbin/winbindd ] && renice -n 2 $(pidof winbindd)
 	fi
 }
