@@ -1,22 +1,5 @@
-local shadowsocksr = "shadowsocksr"
-local uci = luci.model.uci.cursor()
-local server_table = {}
 
-uci:foreach(shadowsocksr, "servers", function(s)
-	if s.alias then
-		server_table[s[".name"]] = "[%s]:%s" %{string.upper(s.type), s.alias}
-	elseif s.server and s.server_port then
-		server_table[s[".name"]] = "[%s]:%s:%s" %{string.upper(s.type), s.server, s.server_port}
-	end
-end)
-
-local key_table = {}
-for key,_ in pairs(server_table) do
-	table.insert(key_table,key)
-end
-
-table.sort(key_table)
-m = Map(shadowsocksr)
+m = Map("shadowsocksr")
 -- [[ global ]]--
 s = m:section(TypedSection, "global", translate("Server failsafe auto swith settings"))
 s.anonymous = true
@@ -65,17 +48,30 @@ o = s:option(Value, "chnroute_url", translate("Update url"))
 o.default = "https://cdn.jsdelivr.net/gh/17mon/china_ip_list/china_ip_list.txt"
 
 -- [[ SOCKS Proxy ]]--
-if nixio.fs.access("/usr/bin/srelay") then
-s = m:section(TypedSection, "socks5_proxy", translate("SOCKS Proxy"))
+if nixio.fs.access("/usr/bin/microsocks") then
+s = m:section(TypedSection, "socks5_proxy", translate("SOCKS5 Proxy Server Settings"))
 s.anonymous = true
 
-o = s:option(Flag, "socks", translate("Enable SOCKS Proxy"))
+o = s:option(Flag, "socks", translate("Enable SOCKS5 Proxy Server"))
 o.rmempty = false
 
 o = s:option(Value, "local_port", translate("Local Port"))
 o.datatype = "port"
 o.default = 1080
 o.rmempty = false
+
+o = s:option(Flag, "auth_enable", translate("Enable Authentication"))
+o.rmempty = false
+o.default = "0"
+
+o = s:option(Value, "username", translate("Username"))
+o.rmempty = false
+o:depends("auth_enable", "1")
+
+o = s:option(Value, "password", translate("Password"))
+o.password = true
+o.rmempty = false
+o:depends("auth_enable", "1")
 
 end
 return m
