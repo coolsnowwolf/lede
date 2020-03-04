@@ -136,6 +136,7 @@ if sret== 0 then
 		luci.sys.exec("cp -f /tmp/ad.conf /etc/dnsmasq.ssr/ad.conf")
 		retstring=tostring(math.ceil(tonumber(icount)))
 		if oldcount==0 then
+		 luci.sys.exec("cp -f /etc/dnsmasq.ssr/ad.conf /tmp/dnsmasq.ssr/ad.conf")
 		 luci.sys.call("/etc/init.d/dnsmasq restart")
 		end
 	else
