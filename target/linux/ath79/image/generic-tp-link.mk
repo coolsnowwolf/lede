@@ -320,8 +320,6 @@ define Device/tplink_re350k-v1
   DEVICE_VARIANT := v1
   DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct
   TPLINK_BOARD_ID := RE350K-V1
-  TPLINK_HWID := 0x0
-  TPLINK_HWREV := 0
 endef
 TARGET_DEVICES += tplink_re350k-v1
 
@@ -330,8 +328,6 @@ define Device/tplink_rex5x-v1
   SOC := qca9558
   IMAGE_SIZE := 6016k
   DEVICE_PACKAGES := kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct
-  TPLINK_HWID := 0x0
-  TPLINK_HWREV := 0
 endef
 
 define Device/tplink_re355-v1
@@ -359,8 +355,6 @@ define Device/tplink_re450-v2
   DEVICE_MODEL := RE450
   DEVICE_VARIANT := v2
   DEVICE_PACKAGES := kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct
-  TPLINK_HWID := 0x0
-  TPLINK_HWREV := 0
   TPLINK_BOARD_ID := RE450-V2
   LOADER_TYPE := elf
 endef
@@ -585,8 +579,6 @@ define Device/tplink_tl-wr902ac-v1
 	-swconfig -uboot-envtools
   TPLINK_BOARD_ID := TL-WR902AC-V1
   IMAGE_SIZE := 7360k
-  TPLINK_HWID := 0x0
-  TPLINK_HWREV := 0
   SUPPORTED_DEVICES += tl-wr902ac-v1
 endef
 TARGET_DEVICES += tplink_tl-wr902ac-v1

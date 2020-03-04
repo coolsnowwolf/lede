@@ -17,7 +17,14 @@ endef
 # Please send a mail with your device-specific board files upstream.
 # You can find instructions and examples on the linux-wireless wiki:
 # <https://wireless.wiki.kernel.org/en/users/drivers/ath10k/boardfiles>
-ALLWIFIBOARDS:=linksys_ea6350v3 rt-acrh17 engenius_eap1300 p2w_r619ac hugo_ac1200
+ALLWIFIBOARDS:= \
+  engenius_eap1300 \
+  hugo_ac1200 \
+  linksys_ea6350v3 \
+  mobipromo_cm520-79f \
+  p2w_r619ac \
+  rt-acrh17
+
 ALLWIFIPACKAGES:=$(foreach BOARD,$(ALLWIFIBOARDS),ipq-wifi-$(BOARD))
 
 define Package/ipq-wifi-default
@@ -51,11 +58,12 @@ Don't install it for any other device!
   PREV_BOARD+=ipq-wifi-$(1)
 endef
 
-$(eval $(call generate-ipq-wifi-package,linksys_ea6350v3,board-linksys_ea6350v3.bin,Linksys EA6350v3))
-$(eval $(call generate-ipq-wifi-package,rt-acrh17,board-rt-acrh17.bin,ASUS RT-ACRH17/RT-AC82U/RT-AC42U))
 #$(eval $(call generate-ipq-wifi-package,<devicename>,<filename>,<displayname>))
 $(eval $(call generate-ipq-wifi-package,engenius_eap1300,board-engenius_eap1300.bin,EnGenius EAP1300))
-$(eval $(call generate-ipq-wifi-package,p2w_r619ac,board-p2w_r619ac.qca4019,P&W R619AC))
 $(eval $(call generate-ipq-wifi-package,hugo_ac1200,board-hugo_ac1200.bin,Hugo AC1200))
+$(eval $(call generate-ipq-wifi-package,linksys_ea6350v3,board-linksys_ea6350v3.bin,Linksys EA6350v3))
+$(eval $(call generate-ipq-wifi-package,mobipromo_cm520-79f,board-mobipromo_cm520-79f.qca4019,MobiPromo CM520-79F))
+$(eval $(call generate-ipq-wifi-package,p2w_r619ac,board-p2w_r619ac.qca4019,P&W R619AC))
+$(eval $(call generate-ipq-wifi-package,rt-acrh17,board-rt-acrh17.bin,ASUS RT-ACRH17/RT-AC82U/RT-AC42U))
 
 $(foreach PACKAGE,$(ALLWIFIPACKAGES),$(eval $(call BuildPackage,$(PACKAGE))))
