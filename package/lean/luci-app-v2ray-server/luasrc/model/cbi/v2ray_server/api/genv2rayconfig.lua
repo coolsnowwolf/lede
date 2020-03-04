@@ -36,10 +36,10 @@ elseif server.protocol == "http" then
         allowTransparent = false,
         accounts = {
             {
-                user = (server.socks_username == nil) and "" or
-                    server.socks_username,
-                pass = (server.socks_password == nil) and "" or
-                    server.socks_password
+                user = (server.http_username == nil) and "" or
+                    server.http_username,
+                pass = (server.http_password == nil) and "" or
+                    server.http_password
             }
         }
     }
