@@ -146,10 +146,10 @@ o = s:option(Value, "server_port", translate("Server Port"))
 o.datatype = "port"
 o.rmempty = false
 
--- o = s:option(Value, "timeout", translate("Connection Timeout"))
--- o.datatype = "uinteger"
--- o.default = 60
--- o.rmempty = false
+o = s:option(Flag, "auth_enable", translate("Enable Authentication"))
+o.rmempty = false
+o.default = "0"
+o:depends("type", "socks5")
 
 o = s:option(Value, "username", translate("Username"))
 o.rmempty = true
