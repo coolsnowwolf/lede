@@ -74,11 +74,7 @@ local set =luci.http.formvalue("set")
 local icount =0
 
 if set == "gfw_data" then
-if nixio.fs.access("/usr/bin/wget-ssl") then
 	refresh_cmd="wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt -O /tmp/gfw.b64"
-	else
-		refresh_cmd="wget -O /tmp/gfw.b64 http://iytc.net/tools/list.b64"
-	end
 	sret=luci.sys.call(refresh_cmd .. " 2>/dev/null")
 	if sret== 0 then
 	luci.sys.call("/usr/bin/ssr-gfw")
@@ -87,6 +83,8 @@ if nixio.fs.access("/usr/bin/wget-ssl") then
 	oldcount=luci.sys.exec("cat /etc/dnsmasq.ssr/gfw_list.conf | wc -l")
 	if tonumber(icount) ~= tonumber(oldcount) then
 		luci.sys.exec("cp -f /tmp/gfwnew.txt /etc/dnsmasq.ssr/gfw_list.conf")
+		luci.sys.exec("cp -f /etc/dnsmasq.ssr/gfw_list.conf /tmp/dnsmasq.ssr/gfw_list.conf")
+		luci.sys.call("/etc/init.d/dnsmasq restart")
 		retstring=tostring(math.ceil(tonumber(icount)/2))
 	else
 		retstring ="0"
@@ -136,6 +134,7 @@ if sret== 0 then
 		luci.sys.exec("cp -f /tmp/ad.conf /etc/dnsmasq.ssr/ad.conf")
 		retstring=tostring(math.ceil(tonumber(icount)))
 		if oldcount==0 then
+		 luci.sys.exec("cp -f /etc/dnsmasq.ssr/ad.conf /tmp/dnsmasq.ssr/ad.conf")
 		 luci.sys.call("/etc/init.d/dnsmasq restart")
 		end
 	else
