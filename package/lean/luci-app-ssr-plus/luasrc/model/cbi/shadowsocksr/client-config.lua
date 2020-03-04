@@ -146,10 +146,14 @@ o = s:option(Value, "server_port", translate("Server Port"))
 o.datatype = "port"
 o.rmempty = false
 
--- o = s:option(Value, "timeout", translate("Connection Timeout"))
--- o.datatype = "uinteger"
--- o.default = 60
--- o.rmempty = false
+o = s:option(Flag, "auth_enable", translate("Enable Authentication"))
+o.rmempty = false
+o.default = "0"
+o:depends("type", "socks5")
+
+o = s:option(Value, "username", translate("Username"))
+o.rmempty = true
+o:depends("type", "socks5")
 
 o = s:option(Value, "password", translate("Password"))
 o.password = true
@@ -157,6 +161,7 @@ o.rmempty = true
 o:depends("type", "ssr")
 o:depends("type", "ss")
 o:depends("type", "trojan")
+o:depends("type", "socks5")
 
 o = s:option(ListValue, "encrypt_method", translate("Encrypt Method"))
 for _, v in ipairs(encrypt_methods) do o:value(v) end

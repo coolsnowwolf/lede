@@ -87,6 +87,8 @@ e.cfgvalue = function(self, section)
         e = "ss_password"
     elseif protocol == "socks" then
         e = "socks_password"
+    elseif protocol == "http" then
+        e = "http_password"
     end
     local e = m:get(section, e) or ""
     local t = ""
