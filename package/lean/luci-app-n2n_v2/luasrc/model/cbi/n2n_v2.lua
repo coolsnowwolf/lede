@@ -8,6 +8,8 @@ local fs = require "nixio.fs"
 m = Map("n2n_v2", translate("N2N v2 VPN"),
         translatef("n2n is a layer-two peer-to-peer virtual private network (VPN) which allows users to exploit features typical of P2P applications at network instead of application level."))
 
+m:section(SimpleSection).template  = "n2n_v2/status"
+
 s = m:section(TypedSection, "edge", translate("N2N Edge Settings"))
 s.anonymous = true
 s.addremove = true 
