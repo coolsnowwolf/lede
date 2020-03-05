@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
 PKG_VERSION:=162
-PKG_RELEASE:=5
+PKG_RELEASE:=7
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
