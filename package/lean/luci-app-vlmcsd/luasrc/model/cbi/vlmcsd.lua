@@ -2,7 +2,7 @@
 
 m = Map("vlmcsd")
 m.title	= translate("vlmcsd config")
-m.description = translate("A KMS Serever Emulator to active your Windows or Office")
+m.description = translate("A KMS Server Emulator to active your Windows or Office")
 
 m:section(SimpleSection).template  = "vlmcsd/vlmcsd_status"
 
