@@ -43,8 +43,10 @@ sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git
 
 3. git clone https://github.com/xiaoqingfengATGH/HomeLede.git homeLede命令下载好源代码，然后 cd homeLede 进入目录
 
-4. ./scripts/feeds update -a 
+4. ./scripts/feeds update -a
+
    ./scripts/feeds install -a
+   
    make menuconfig 
 
 5. 最后选好你要的路由，输入 make -j1 V=s （-j1 后面是线程数。第一次编译推荐用单线程，国内请尽量全局科学上网）即可开始编译你要的固件了。
