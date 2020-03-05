@@ -431,8 +431,10 @@ start_service() {
 	[ $(uci_get_by_name $1 enable 0) == "0" ] && return 1
 	let server_count=server_count+1
 	if [ "$server_count" == "1" ]; then
-		iptables -N SSR-SERVER-RULE && \
-		iptables -t filter -I INPUT -j SSR-SERVER-RULE
+    if ! (iptables-save -t filter | grep SSR-SERVER-RULE >/dev/null); then
+      iptables -N SSR-SERVER-RULE && \
+      iptables -t filter -I INPUT -j SSR-SERVER-RULE
+		fi
 	fi
 	gen_service_file $1 /var/etc/${NAME}_$server_count.json
 	/usr/bin/ssr-server -c /var/etc/${NAME}_$server_count.json -u -f /var/run/ssr-server$server_count.pid >/dev/null 2>&1
@@ -474,12 +476,22 @@ start_local() {
 	local local_server=$(uci_get_by_type socks5_proxy socks 0)
 	[ "$local_server" == "0" ] && return 0
 	local auth_enable=$(uci_get_by_type socks5_proxy auth_enable 0)
+	local socks_port=$(uci_get_by_type socks5_proxy local_port 1080)
 	if [ "$auth_enable" == "1" ]; then
-    microsocks -i 0.0.0.0 -p $(uci_get_by_type socks5_proxy local_port 1080) -1 -u $(uci_get_by_type socks5_proxy username) -P $(uci_get_by_type socks5_proxy password) ssr-socks >/dev/null 2>&1 &
+    microsocks -i 0.0.0.0 -p $socks_port -1 -u $(uci_get_by_type socks5_proxy username) -P $(uci_get_by_type socks5_proxy password) ssr-socks >/dev/null 2>&1 &
 	else
-    microsocks -i 0.0.0.0 -p $(uci_get_by_type socks5_proxy local_port 1080) ssr-socks >/dev/null 2>&1 &
+    microsocks -i 0.0.0.0 -p $socks_port ssr-socks >/dev/null 2>&1 &
 	fi
 	local_enable=1
+	if [ "$(uci_get_by_type socks5_proxy wan_enable 0)" == "1" ]; then
+    if ! (iptables-save -t filter | grep SSR-SERVER-RULE >/dev/null); then
+      iptables -N SSR-SERVER-RULE && \
+      iptables -t filter -I INPUT -j SSR-SERVER-RULE
+    fi
+    iptables -t filter -A SSR-SERVER-RULE -p tcp --dport $socks_port -j ACCEPT
+    iptables -t filter -A SSR-SERVER-RULE -p udp --dport $socks_port -j ACCEPT
+    gen_serv_include
+	fi
 }
 
 rules() {
