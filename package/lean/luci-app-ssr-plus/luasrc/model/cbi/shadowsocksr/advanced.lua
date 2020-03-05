@@ -40,7 +40,7 @@ o.rmempty = false
 o = s:option(Value, "adblock_url", translate("adblock_url"))
 o.default = "https://gitee.com/privacy-protection-tools/anti-ad/raw/master/anti-ad-for-dnsmasq.conf"
 o:depends("adblock", "1")
-o.description = translate("Support AdGuardHome and DNSMAQ format list")
+o.description = translate("Support AdGuardHome and DNSMASQ format list")
 
 -- [[ SOCKS Proxy ]]--
 if nixio.fs.access("/usr/bin/microsocks") then
