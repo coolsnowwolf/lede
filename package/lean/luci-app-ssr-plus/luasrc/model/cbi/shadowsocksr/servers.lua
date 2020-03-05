@@ -100,7 +100,7 @@ end
 
 o = s:option(DummyValue, "server_port", translate("Server Port"))
 function o.cfgvalue(...)
-	return Value.cfgvalue(...) or "?"
+	return Value.cfgvalue(...) or "N/A"
 end
 
 o = s:option(DummyValue, "switch_enable", translate("Auto Switch"))

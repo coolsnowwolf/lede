@@ -131,20 +131,38 @@ end
 if nixio.fs.access("/usr/sbin/trojan") then
 o:value("trojan", translate("Trojan"))
 end
-if nixio.fs.access("/usr/bin/ipt2socks") then
+if nixio.fs.access("/usr/sbin/redsocks2") then
 o:value("socks5", translate("Socks5"))
+o:value("tun", translate("Network Tunnel"))
 end
 o.description = translate("Using incorrect encryption mothod may causes service fail to start")
 
 o = s:option(Value, "alias", translate("Alias(optional)"))
 
+o = s:option(ListValue, "iface", translate("Network interface to use"))
+for _, e in ipairs(sys.net.devices()) do
+		if e ~= "lo" then o:value(e) end
+end
+o:depends("type", "tun")
+o.description = translate("Redirect traffic to this network interface")
+
 o = s:option(Value, "server", translate("Server Address"))
 o.datatype = "host"
 o.rmempty = false
+o:depends("type", "ssr")
+o:depends("type", "ss")
+o:depends("type", "v2ray")
+o:depends("type", "trojan")
+o:depends("type", "socks5")
 
 o = s:option(Value, "server_port", translate("Server Port"))
 o.datatype = "port"
 o.rmempty = false
+o:depends("type", "ssr")
+o:depends("type", "ss")
+o:depends("type", "v2ray")
+o:depends("type", "trojan")
+o:depends("type", "socks5")
 
 o = s:option(Flag, "auth_enable", translate("Enable Authentication"))
 o.rmempty = false
