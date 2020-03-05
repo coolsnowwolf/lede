@@ -40,7 +40,7 @@ o.rmempty = false
 o = s:option(Value, "adblock_url", translate("adblock_url"))
 o.default = "https://gitee.com/privacy-protection-tools/anti-ad/raw/master/anti-ad-for-dnsmasq.conf"
 o:depends("adblock", "1")
-o.description = translate("Support AdGuardHome and DNSMAQ format list")
+o.description = translate("Support AdGuardHome and DNSMASQ format list")
 
 -- [[ SOCKS Proxy ]]--
 if nixio.fs.access("/usr/bin/microsocks") then
@@ -52,7 +52,7 @@ o.rmempty = false
 
 o = s:option(Value, "local_port", translate("Local Port"))
 o.datatype = "port"
-o.default = 1080
+o.default = 10800
 o.rmempty = true
 o:depends("socks", "1")
 
@@ -62,12 +62,17 @@ o.default = "0"
 o:depends("socks", "1")
 
 o = s:option(Value, "username", translate("Username"))
-o.rmempty = true
+o.default = "username"
 o:depends("auth_enable", "1")
 
 o = s:option(Value, "password", translate("Password"))
 o.password = true
+o.default = "password"
+o:depends("auth_enable", "1")
+
+o = s:option(Flag, "wan_enable", translate("Enable WAN Access"))
 o.rmempty = true
+o.default = "0"
 o:depends("auth_enable", "1")
 
 end
