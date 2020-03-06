@@ -15,6 +15,8 @@ touch $VACATIONBAK
 touch $OVERIIMEBAK
 mode="$1"
 fun="$2"
+line=`wc -l $LOGFILE`
+[ $line -ge 1000 ] && echo "日志超过一千行，清除日志" > $LOGFILE
 
 add_cron(){
 	sed -i "/#$4/d" /etc/crontabs/root
