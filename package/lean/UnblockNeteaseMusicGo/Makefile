@@ -28,6 +28,7 @@ include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
+	SUBMENU:=NeteaseMusic
 	TITLE:=Revive unavailable songs for Netease Cloud Music (Golang)
 	URL:=https://github.com/cnsilvan/UnblockNeteaseMusic
 	DEPENDS:=$(GO_ARCH_DEPENDS)
