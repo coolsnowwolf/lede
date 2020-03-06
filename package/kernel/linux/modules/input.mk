@@ -119,7 +119,7 @@ define KernelPackage/input-gpio-encoder
   AUTOLOAD:=$(call AutoProbe,rotary_encoder)
 endef
 
-define KernelPackage/gpio-encoder/description
+define KernelPackage/input-gpio-encoder/description
  Kernel module to use rotary encoders connected to GPIO pins
 endef
 
@@ -166,7 +166,7 @@ define KernelPackage/input-matrixkmap
   AUTOLOAD:=$(call AutoProbe,matrix-keymap)
 endef
 
-define KernelPackage/input-matrix/description
+define KernelPackage/input-matrixkmap/description
  Kernel module support for input matrix devices
 endef
 

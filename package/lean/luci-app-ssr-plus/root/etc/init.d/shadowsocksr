@@ -45,7 +45,7 @@ add_cron() {
 	sed -i '/shadowsocksr/d' $CRON_FILE
 	sed -i '/ssrplus.log/d' $CRON_FILE && echo '0 1 * * * echo "" > /tmp/ssrplus.log' >>$CRON_FILE
 	[ $(uci_get_by_type server_subscribe auto_update 0) -eq 1 ] && echo "0 $(uci_get_by_type server_subscribe auto_update_time) * * * /usr/bin/lua /usr/share/shadowsocksr/subscribe.lua" >>$CRON_FILE
-	[ $(uci_get_by_type server_subscribe auto_update 0) -eq 1 ] && echo "0 $(uci_get_by_type server_subscribe auto_update_time) * * * /usr/bin/lua /usr/share/shadowsocksr/update.lua" >>$CRON_FILE
+	[ $(uci_get_by_type server_subscribe auto_update 0) -eq 1 ] && echo "0 5 * * * /usr/bin/lua /usr/share/shadowsocksr/update.lua" >>$CRON_FILE
 	crontab $CRON_FILE
 }
 
@@ -64,7 +64,7 @@ gen_config_file() {
 	elif [ "$host" != "${host#*:[0-9a-fA-F]}" ]; then
 		hostip=$host
 	else
-		hostip=$(ping $host -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1)
+		hostip=$(ping $host -W 1 -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1)
 		if echo $hostip | grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
 			hostip=$hostip
 		else
@@ -148,7 +148,7 @@ start_rules() {
 	elif [ "$server" != "${server#*:[0-9a-fA-F]}" ]; then
 		server=$server
 	else
-		server=$(ping $server -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1)
+		server=$(ping $server -W 1 -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1)
 		if echo $server | grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
 			echo $server >/etc/ssr_ip
 		else
@@ -250,17 +250,8 @@ start_pdnsd() {
 		interval=10m;
 		purge_cache=off;
 		}
-		server{
-		label="ssr-pdnsd";
-		ip=$tcp_dns_list;
-		port=5353;
-		timeout=6;
-		uptest=none;
-		interval=10m;
-		purge_cache=off;
-		}
 	EOF
-	/usr/sbin/pdnsd -c /var/etc/pdnsd.conf -d
+	/usr/sbin/pdnsd -c /var/etc/pdnsd.conf -d &
 }
 
 start_redir() {
@@ -295,6 +286,10 @@ start_redir() {
 		[ ! -f "$sscmd" ] && sscmd="/usr/bin/v2ray"
 	elif [ "$stype" == "trojan" ]; then
 		sscmd="/usr/sbin/trojan"
+	elif [ "$stype" == "socks5" ]; then
+		sscmd="/usr/sbin/redsocks2"
+	elif [ "$stype" == "tun" ]; then
+		sscmd="/usr/sbin/redsocks2"
 	fi
 	local utype=$(uci_get_by_name $UDP_RELAY_SERVER type)
 	if [ "$utype" == "ss" ]; then
@@ -306,6 +301,10 @@ start_redir() {
 		[ ! -f "$ucmd" ] && ucmd="/usr/bin/v2ray"
 	elif [ "$utype" == "trojan" ]; then
 		ucmd="/usr/sbin/trojan"
+	elif [ "$stype" == "socks5" ]; then
+		ucmd="/usr/sbin/redsocks2"
+	elif [ "$stype" == "tun" ]; then
+		ucmd="/usr/sbin/redsocks2"
 	fi
 	if [ "$(uci_get_by_type global threads 0)" == "0" ]; then
 		threads=$(cat /proc/cpuinfo | grep 'processor' | wc -l)
@@ -324,8 +323,23 @@ start_redir() {
 		$sscmd -config /var/etc/v2-ssr-retcp.json >/dev/null 2>&1 &
 		echo "$(date "+%Y-%m-%d %H:%M:%S") $($sscmd -version | head -1) Started!" >>/tmp/ssrplus.log
 	elif [ "$stype" == "trojan" ]; then
+	for i in $(seq 1 $threads); do
 		$sscmd --config /var/etc/trojan-ssr-retcp.json >/dev/null 2>&1 &
-		echo "$(date "+%Y-%m-%d %H:%M:%S") $($sscmd --version 2>&1 | head -1) Started!" >>/tmp/ssrplus.log
+	done
+	echo "$(date "+%Y-%m-%d %H:%M:%S") $($sscmd --version 2>&1 | head -1) , $threads Threads Started!" >>/tmp/ssrplus.log
+	elif [ "$stype" == "socks5" ]; then
+	/usr/share/shadowsocksr/genred2config.sh "/var/etc/redsocks-ssr-retcp.conf" socks5 tcp $(uci_get_by_name $GLOBAL_SERVER local_port) $(uci_get_by_name $GLOBAL_SERVER server) $(uci_get_by_name $GLOBAL_SERVER server_port) \
+	$(uci_get_by_name $GLOBAL_SERVER auth_enable 0) $(uci_get_by_name $GLOBAL_SERVER username) $(uci_get_by_name $GLOBAL_SERVER password)
+	for i in $(seq 1 $threads); do
+      $sscmd -c /var/etc/redsocks-ssr-retcp.conf >/dev/null 2>&1
+  done
+  echo "$(date "+%Y-%m-%d %H:%M:%S") Socks5 REDIRECT/TPROXY $threads Threads Started!" >>/tmp/ssrplus.log
+  elif [ "$stype" == "tun" ]; then
+  /usr/share/shadowsocksr/genred2config.sh "/var/etc/redsocks-ssr-retcp.conf" vpn $(uci_get_by_name $GLOBAL_SERVER iface "br-lan") $(uci_get_by_name $GLOBAL_SERVER local_port)
+  for i in $(seq 1 $threads); do
+      $sscmd -c /var/etc/redsocks-ssr-retcp.conf >/dev/null 2>&1
+  done
+  echo "$(date "+%Y-%m-%d %H:%M:%S") Network Tunnel REDIRECT $threads Threads Started!" >>/tmp/ssrplus.log
 	fi
 	if [ -n "$UDP_RELAY_SERVER" ]; then
 		redir_udp=1
@@ -346,14 +360,23 @@ start_redir() {
 			lua /usr/share/shadowsocksr/gentrojanconfig.lua $GLOBAL_SERVER client 10801 >/var/etc/trojan-ssr-reudp.json
 			sed -i 's/\\//g' /var/etc/trojan-ssr-reudp.json
 			$ucmd --config /var/etc/trojan-ssr-reudp.json >/dev/null 2>&1 &
-			ipt2socks -U -4 -b 0.0.0.0 -s 127.0.0.1 -p 10801 -l $(uci_get_by_name $UDP_RELAY_SERVER local_port) >/dev/null 2>&1 &
+			/usr/share/shadowsocksr/genred2config.sh "/var/etc/redsocks-ssr-reudp.conf" socks5 udp $(uci_get_by_name $UDP_RELAY_SERVER local_port) 127.0.0.1 10801 0
+			/usr/sbin/redsocks2 -c /var/etc/redsocks-ssr-reudp.conf >/dev/null 2>&1
+		elif [ "$utype" == "socks5" ]; then
+      	/usr/share/shadowsocksr/genred2config.sh "/var/etc/redsocks-ssr-reudp.conf" socks5 udp $(uci_get_by_name $UDP_RELAY_SERVER local_port) $(uci_get_by_name $UDP_RELAY_SERVER server) $(uci_get_by_name $UDP_RELAY_SERVER server_port) \
+      	$(uci_get_by_name $UDP_RELAY_SERVER auth_enable 0) $(uci_get_by_name $UDP_RELAY_SERVER username) $(uci_get_by_name $UDP_RELAY_SERVER password)
+      	$ucmd -c /var/etc/redsocks-ssr-reudp.conf >/dev/null 2>&1
+		elif [ "$stype" == "tun" ]; then
+			redir_udp=0
+			echo "$(date "+%Y-%m-%d %H:%M:%S") Network Tunnel UDP TPROXY Relay not supported!" >>/tmp/ssrplus.log
 		fi
 	fi
 	#deal with dns
-	if [ "$(uci_get_by_type global pdnsd_enable)" == "1" ]; then
-		local dnsstr="$(uci_get_by_type global tunnel_forward 8.8.4.4:53)"
-		local dnsserver=$(echo "$dnsstr" | awk -F ':' '{print $1}')
-		local dnsport=$(echo "$dnsstr" | awk -F ':' '{print $2}')
+	local ssr_dns="$(uci_get_by_type global pdnsd_enable 0)"
+	local dnsstr="$(uci_get_by_type global tunnel_forward 8.8.4.4:53)"
+	local dnsserver=$(echo "$dnsstr" | awk -F ':' '{print $1}')
+	local dnsport=$(echo "$dnsstr" | awk -F ':' '{print $2}')
+	if [ "$ssr_dns" == "1" ]; then
 		if [ "$run_mode" == "gfw" ]; then
 			ipset add gfwlist $dnsserver 2>/dev/null
 		elif [ "$run_mode" == "oversea" ]; then
@@ -363,6 +386,10 @@ start_redir() {
 		fi
 		start_pdnsd $dnsserver $dnsport
 		pdnsd_enable_flag=1
+	elif [ "$ssr_dns" == "2" ]; then
+    microsocks -i 127.0.0.1 -p 10802 ssr-dns >/dev/null 2>&1 &
+    dns2socks 127.0.0.1:10802 $dnsserver:$dnsport 127.0.0.1:5335 -q >/dev/null 2>&1 &
+    pdnsd_enable_flag=2
 	fi
 	if [ "$(uci_get_by_type global enable_switch)" == "1" ]; then
 		if [ "$(uci_get_by_name $GLOBAL_SERVER switch_enable 1)" == "1" ]; then
@@ -404,8 +431,10 @@ start_service() {
 	[ $(uci_get_by_name $1 enable 0) == "0" ] && return 1
 	let server_count=server_count+1
 	if [ "$server_count" == "1" ]; then
-		iptables -N SSR-SERVER-RULE && \
-		iptables -t filter -I INPUT -j SSR-SERVER-RULE
+    if ! (iptables-save -t filter | grep SSR-SERVER-RULE >/dev/null); then
+      iptables -N SSR-SERVER-RULE && \
+      iptables -t filter -I INPUT -j SSR-SERVER-RULE
+		fi
 	fi
 	gen_service_file $1 /var/etc/${NAME}_$server_count.json
 	/usr/bin/ssr-server -c /var/etc/${NAME}_$server_count.json -u -f /var/run/ssr-server$server_count.pid >/dev/null 2>&1
@@ -446,11 +475,23 @@ start_server() {
 start_local() {
 	local local_server=$(uci_get_by_type socks5_proxy socks 0)
 	[ "$local_server" == "0" ] && return 0
-	mkdir -p /var/run /var/etc
-	echo '0.0.0.0 any' >/var/etc/srelay.conf
-	/usr/bin/srelay -q -c /var/etc/srelay.conf \
-	-i:$(uci_get_by_type socks5_proxy local_port 1080) >/dev/null 2>&1
+	local auth_enable=$(uci_get_by_type socks5_proxy auth_enable 0)
+	local socks_port=$(uci_get_by_type socks5_proxy local_port 1080)
+	if [ "$auth_enable" == "1" ]; then
+    microsocks -i 0.0.0.0 -p $socks_port -1 -u $(uci_get_by_type socks5_proxy username) -P $(uci_get_by_type socks5_proxy password) ssr-socks >/dev/null 2>&1 &
+	else
+    microsocks -i 0.0.0.0 -p $socks_port ssr-socks >/dev/null 2>&1 &
+	fi
 	local_enable=1
+	if [ "$(uci_get_by_type socks5_proxy wan_enable 0)" == "1" ]; then
+    if ! (iptables-save -t filter | grep SSR-SERVER-RULE >/dev/null); then
+      iptables -N SSR-SERVER-RULE && \
+      iptables -t filter -I INPUT -j SSR-SERVER-RULE
+    fi
+    iptables -t filter -A SSR-SERVER-RULE -p tcp --dport $socks_port -j ACCEPT
+    iptables -t filter -A SSR-SERVER-RULE -p udp --dport $socks_port -j ACCEPT
+    gen_serv_include
+	fi
 }
 
 rules() {
@@ -531,7 +572,9 @@ stop() {
 	killall -q -9 ipt2socks
 	killall -q -9 ssr-server
 	killall -q -9 kcptun-client
-	killall -q -9 srelay
+	killall -q -9 dns2socks
+	killall -q -9 microsocks
+	killall -q -9 redsocks2
 	if [ -f /var/run/pdnsd.pid ]; then
 		kill $(cat /var/run/pdnsd.pid) >/dev/null 2>&1
 	else
