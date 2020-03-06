@@ -69,4 +69,29 @@ o.write = function()
 end
 o:depends("apptype", "nodejs")
 
+t=mp:section(TypedSection,"acl_rule",translate("例外客户端规则"),
+translate("可以为局域网客户端分别设置不同的例外模式，默认无需设置"))
+t.template="cbi/tblsection"
+t.sortable=true
+t.anonymous=true
+t.addremove=true
+
+e=t:option(Value,"ipaddr",translate("IP Address"))
+e.width="40%"
+e.datatype="ip4addr"
+e.placeholder="0.0.0.0/0"
+luci.ip.neighbors({ family = 4 }, function(entry)
+	if entry.reachable then
+		e:value(entry.dest:string())
+	end
+end)
+
+e=t:option(ListValue,"filter_mode",translate("例外协议"))
+e.width="40%"
+e.default="disable"
+e.rmempty=false
+e:value("disable",translate("不代理HTTP和HTTPS"))
+e:value("http",translate("不代理HTTP"))
+e:value("https",translate("不代理HTTPS"))
+
 return mp
