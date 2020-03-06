@@ -2,15 +2,15 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=UnblockNeteaseMusicGo
 PKG_VERSION:=0.1.6
-PKG_RELEASE:=5
+PKG_RELEASE:=7
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/cnsilvan/UnblockNeteaseMusic.git
-PKG_SOURCE_VERSION:=4785d416e4ba33e38e446fa15f6791534d0ac182
+PKG_SOURCE_VERSION:=e38035e92a4ecca6c827ec2d572aaf8528ec3cb5
 PKG_MAINTAINER:=Silvan <cnsilvan@gmail.com>
 
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)
-PKG_SOURCE:=$(PKG_SOURCE_SUBDIR)-$(PKG_VERSION).tar.gz
+PKG_SOURCE:=$(PKG_SOURCE_SUBDIR)-$(PKG_VERSION)-$(PKG_SOURCE_VERSION).tar.gz
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
 PKG_BUILD_DEPENDS:=golang/host
@@ -40,8 +40,6 @@ endef
 
 define Build/Prepare
 	tar -zxvf $(DL_DIR)/$(PKG_SOURCE) -C $(BUILD_DIR)/$(PKG_NAME) --strip-components 1
-	$(CP) ./001-endpoint.patch $(BUILD_DIR)/$(PKG_NAME)/
-	patch -d $(BUILD_DIR)/$(PKG_NAME) -p1 < 001-endpoint.patch
 endef
 
 define Build/Configure
