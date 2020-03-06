@@ -43,17 +43,13 @@ sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git
 
 3. git clone https://github.com/xiaoqingfengATGH/HomeLede.git homeLede命令下载好源代码，然后 cd homeLede 进入目录
 
-4. ./scripts/feeds update -a
+4.  ./prepareCompile.sh
 
-   ./scripts/feeds install -a
-   
-   make menuconfig 
+5.  make menuconfig 
 
-5. 最后选好你要的路由，输入 make -j1 V=s （-j1 后面是线程数。第一次编译推荐用单线程，国内请尽量全局科学上网）即可开始编译你要的固件了。
+6. 最后选好你要的路由，输入 make -j1 V=s （-j1 后面是线程数。第一次编译推荐用单线程，国内请尽量全局科学上网）即可开始编译你要的固件了。
 
 本套代码保证肯定可以编译成功。里面包括了 R9 所有源代码，包括 IPK 的。
-
-你可以自由使用，但源码编译二次发布请注明我的 GitHub 仓库链接。谢谢合作！
 
 去广告订阅地址默认内置来自以下源，如有去广告的误杀漏杀问题可以到这里报告：
 
