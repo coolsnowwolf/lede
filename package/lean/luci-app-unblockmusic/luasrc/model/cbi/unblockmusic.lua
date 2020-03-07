@@ -21,7 +21,7 @@ end
 if nixio.fs.access("/usr/share/UnblockNeteaseMusic/app.js") then
 apptype:value("nodejs", translate("NodeJS 版本"))
 end
-apptype:value("cloud", translate("云解锁（[CTCGFW]Project OpenWrt 服务器）"))
+apptype:value("cloud", translate("云解锁（ [CTCGFW] 云服务器）"))
 
 speedtype = s:option(Value, "musicapptype", translate("音源选择"))
 speedtype:value("default", translate("默认"))
@@ -42,13 +42,13 @@ cloudserver:value("cdn-shanghai.service.project-openwrt.eu.org:30000:30001", tra
 cloudserver:value("hyird.xyz:30000:30001", translate("[hyird] 阿里云北京（高音质）"))
 cloudserver:value("39.96.56.58:30000:30000", translate("[Sunsky] 阿里云北京（高音质）"))
 cloudserver:value("cdn-henan.service.project-openwrt.eu.org:33221:33222",translate("[CTCGFW] 移动河南（无损音质）"))
-cloudserver.description = translate("自定义服务器格式为 IP[域名]:HTTP端口:HTTPS端口")
+cloudserver.description = translate("自定义服务器格式为 IP[域名]:HTTP端口:HTTPS端口<br />如果服务器为LAN内网IP，需要将这个服务器IP放入例外客户端 (不代理HTTP和HTTPS)")
 cloudserver.default = "cdn-shanghai.service.project-openwrt.eu.org:30000:30001"
 cloudserver.rmempty = true
 cloudserver:depends("apptype", "cloud")
 
 download_certificate=s:option(DummyValue,"opennewwindow",translate("HTTPS 证书"))
-download_certificate.description = translate("<input type=\"button\" class=\"cbi-button cbi-button-apply\" value=\"下载CA根证书\" onclick=\"window.open('https://raw.githubusercontent.com/nondanee/UnblockNeteaseMusic/master/ca.crt')\" /><br />Mac/iOS客户端需要安装 CA根证书并信任<br />iOS系统需要在“设置 -> 通用 -> 关于本机 -> 证书信任设置”中，信任 UnblockNeteaseMusic Root CA <br />Linux 设备请在启用时加入 --ignore-certificate-errors 参数 )")
+download_certificate.description = translate("<input type=\"button\" class=\"cbi-button cbi-button-apply\" value=\"下载CA根证书\" onclick=\"window.open('https://raw.githubusercontent.com/nondanee/UnblockNeteaseMusic/master/ca.crt')\" /><br />Mac/iOS客户端需要安装 CA根证书并信任<br />iOS系统需要在“设置 -> 通用 -> 关于本机 -> 证书信任设置”中，信任 UnblockNeteaseMusic Root CA <br />Linux 设备请在启用时加入 --ignore-certificate-errors 参数")
 
 o = s:option(Flag, "autoupdate")
 o.title = translate("自动检查更新主程序")
@@ -68,5 +68,30 @@ o.write = function()
   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "unblockmusic"))
 end
 o:depends("apptype", "nodejs")
+
+t=mp:section(TypedSection,"acl_rule",translate("例外客户端规则"),
+translate("可以为局域网客户端分别设置不同的例外模式，默认无需设置"))
+t.template="cbi/tblsection"
+t.sortable=true
+t.anonymous=true
+t.addremove=true
+
+e=t:option(Value,"ipaddr",translate("IP Address"))
+e.width="40%"
+e.datatype="ip4addr"
+e.placeholder="0.0.0.0/0"
+luci.ip.neighbors({ family = 4 }, function(entry)
+	if entry.reachable then
+		e:value(entry.dest:string())
+	end
+end)
+
+e=t:option(ListValue,"filter_mode",translate("例外协议"))
+e.width="40%"
+e.default="disable"
+e.rmempty=false
+e:value("disable",translate("不代理HTTP和HTTPS"))
+e:value("http",translate("不代理HTTP"))
+e:value("https",translate("不代理HTTPS"))
 
 return mp

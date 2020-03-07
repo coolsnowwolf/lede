@@ -10,6 +10,16 @@ uci_get_by_type() {
 	echo ${ret:=$3}
 }
 
+uci_get_by_name() {
+	local index=0
+	if [ -n $4 ]; then
+	
+		index=$4
+	fi
+	local ret=$(uci get $NAME.@$1[$index].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
 check_host() {
   local host=$1
   if echo $host | grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
@@ -25,6 +35,30 @@ check_host() {
 		fi
 	fi
 	echo -e $hostip
+}
+
+ip_rule()
+{
+  local icount=$(uci show unblockmusic | grep 'filter_mode' | wc -l)
+  let icount=icount-1
+	for i in $(seq 0 $icount)
+	do
+		local ip=$(uci_get_by_name acl_rule ipaddr '' $i)
+		local mode=$(uci_get_by_name acl_rule filter_mode '' $i)
+		echo $i $ip $mode
+		case "$mode" in
+		http)
+			ipset -! add music_http $ip
+			;;
+		https)
+			ipset -! add music_https $ip
+			;;
+		disable)
+			ipset -! add music_http $ip
+			ipset -! add music_https $ip
+			;;
+		esac
+	done
 }
 
 ENABLE=$(uci_get_by_type unblockmusic enabled 0)
@@ -46,6 +80,8 @@ ipt_n="iptables -t nat"
 add_rule()
 {
   ipset -! -N music hash:ip
+  ipset -! -N music_http hash:ip
+  ipset -! -N music_https hash:ip
 	$ipt_n -N CLOUD_MUSIC
 	$ipt_n -A CLOUD_MUSIC -d 0.0.0.0/8 -j RETURN
 	$ipt_n -A CLOUD_MUSIC -d 10.0.0.0/8 -j RETURN
@@ -56,14 +92,16 @@ add_rule()
 	$ipt_n -A CLOUD_MUSIC -d 224.0.0.0/4 -j RETURN
 	$ipt_n -A CLOUD_MUSIC -d 240.0.0.0/4 -j RETURN
 	if [ "$APPTYPE" != "cloud" ]; then
-    $ipt_n -A CLOUD_MUSIC -p tcp --dport 80 -j REDIRECT --to-ports 5200
-    $ipt_n -A CLOUD_MUSIC -p tcp --dport 443 -j REDIRECT --to-ports 5201
+    $ipt_n -A CLOUD_MUSIC -p tcp -m set ! --match-set music_http src --dport 80 -j REDIRECT --to-ports 5200
+    $ipt_n -A CLOUD_MUSIC -p tcp -m set ! --match-set music_https src --dport 443 -j REDIRECT --to-ports 5201
   else
     $ipt_n -A CLOUD_MUSIC -p tcp --dport 80 -j DNAT --to $cloudip:$cloudhttp
     $ipt_n -A CLOUD_MUSIC -p tcp --dport 443 -j DNAT --to $cloudip:$cloudhttps
 	fi
 	$ipt_n -I PREROUTING -p tcp -m set --match-set music dst -j CLOUD_MUSIC
 	iptables -I OUTPUT -d 223.252.199.10 -j DROP
+	
+	ip_rule
 }
 
 del_rule(){
@@ -71,6 +109,9 @@ del_rule(){
 	$ipt_n -F CLOUD_MUSIC  2>/dev/null
 	$ipt_n -X CLOUD_MUSIC  2>/dev/null
 	iptables -D OUTPUT -d 223.252.199.10 -j DROP 2>/dev/null
+	
+	ipset -X music_http 2>/dev/null
+	ipset -X music_https 2>/dev/null
 	
 	rm -f /tmp/dnsmasq.d/dnsmasq-163.conf
 	/etc/init.d/dnsmasq reload >/dev/null 2>&1
@@ -135,7 +176,7 @@ start()
     UnblockNeteaseMusic -p 5200 -sp 5201 -c /usr/share/UnblockNeteaseMusicGo/server.crt -k /usr/share/UnblockNeteaseMusicGo/server.key -m 0 -e >>/tmp/unblockmusic.log 2>&1 &
     echo "$(date -R) # UnblockNeteaseMusic Golang Version (http:5200, https:5201)" >>/tmp/unblockmusic.log
   else
-    kill -9 $(busybox ps -w | grep 'sleep 60m' | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+    kill -9 $(busybox ps -w | grep 'sleep 29s' | grep -v grep | awk '{print $1}') >/dev/null 2>&1
     /usr/bin/UnblockNeteaseMusicCloud >/dev/null 2>&1 &
      echo "$(date -R) # UnblockNeteaseMusic Cloud Version - Server: $cloudip (http:$cloudhttp, https:$cloudhttp)" >>/tmp/unblockmusic.log
 	fi
