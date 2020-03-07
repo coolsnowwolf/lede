@@ -16,7 +16,7 @@ define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=Powerful adblock module to block ad.
-	DEPENDS:=@(x86||arm||mipsel||mips)
+	DEPENDS:=@(x86||x86_64||arm||mipsel||mips)
 	URL:=http://www.adbyby.com/
 endef
 
