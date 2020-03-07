@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=adbyby
 PKG_VERSION:=2.7
-PKG_RELEASE:=20181023
+PKG_RELEASE:=20200307
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -16,13 +16,35 @@ define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=Powerful adblock module to block ad.
-	DEPENDS:=
+	DEPENDS:=@(x86||x86_64||arm||mipsel||mips)
 	URL:=http://www.adbyby.com/
 endef
 
 define Package/$(PKG_NAME)/description
 Adbyby is a powerful adblock module to block ad,just like adblock.
 endef
+
+ifeq ($(ARCH),x86_64)
+	ADBYBY_DIR:=amd64
+endif
+ifeq ($(ARCH),mipsel)
+	ADBYBY_DIR:=mipsle
+endif
+ifeq ($(ARCH),mips)
+	ADBYBY_DIR:=mips
+endif
+ifeq ($(ARCH),i386)
+	ADBYBY_DIR:=x86
+endif
+ifeq ($(ARCH),arm)
+	ADBYBY_DIR:=armv7
+	ifeq ($(BOARD),bcm53xx)
+		ADBYBY_DIR:=arm
+  endif
+  ifeq ($(BOARD),kirkwood)
+		ADBYBY_DIR:=arm
+  endif
+endif
 
 define Build/Prepare
 endef
@@ -47,24 +69,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/share/adbyby/doc
 	$(INSTALL_DATA) ./files/doc/* $(1)/usr/share/adbyby/doc/
 
-ifeq ($(ARCH),mipsel)
-	$(INSTALL_BIN) ./files/7620n/adbyby $(1)/usr/share/adbyby/
-endif
-ifeq ($(ARCH),mips)
-	$(INSTALL_BIN) ./files/ar71xx/adbyby $(1)/usr/share/adbyby/
-endif
-ifeq ($(ARCH),i386)
-	$(INSTALL_BIN) ./files/x86/adbyby $(1)/usr/share/adbyby/
-endif
-ifeq ($(ARCH),x86_64)
-	$(INSTALL_BIN) ./files/x86_64/adbyby $(1)/usr/share/adbyby/
-endif
-ifeq ($(ARCH),arm)
-	$(INSTALL_BIN) ./files/arm/adbyby $(1)/usr/share/adbyby/
-endif
-ifeq ($(ARCH),aarch64)
-	$(INSTALL_BIN) ./files/armv7/adbyby $(1)/usr/share/adbyby/
-endif
+	$(INSTALL_BIN) ./files/$(ADBYBY_DIR)/adbyby $(1)/usr/share/adbyby/adbyby
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
