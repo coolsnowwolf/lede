@@ -396,6 +396,102 @@ static char *print_object(cJSON *item,int depth)
 	*ptr++='}';*ptr++=0;
 	return out;	
 }
+#define static_strlen(string_literal) (sizeof(string_literal) - sizeof(""))
+
+static void skip_oneline_comment(char **input)
+{
+    *input += static_strlen("//");
+
+    for (; (*input)[0] != '\0'; ++(*input))
+    {
+        if ((*input)[0] == '\n') {
+            *input += static_strlen("\n");
+            return;
+        }
+    }
+}
+static void skip_multiline_comment(char **input)
+{
+    *input += static_strlen("/*");
+
+    for (; (*input)[0] != '\0'; ++(*input))
+    {
+        if (((*input)[0] == '*') && ((*input)[1] == '/'))
+        {
+            *input += static_strlen("*/");
+            return;
+        }
+    }
+}
+static void minify_string(char **input, char **output) {
+    (*output)[0] = (*input)[0];
+    *input += static_strlen("\"");
+    *output += static_strlen("\"");
+
+
+    for (; (*input)[0] != '\0'; (void)++(*input), ++(*output)) {
+        (*output)[0] = (*input)[0];
+
+        if ((*input)[0] == '\"') {
+            (*output)[0] = '\"';
+            *input += static_strlen("\"");
+            *output += static_strlen("\"");
+            return;
+        } else if (((*input)[0] == '\\') && ((*input)[1] == '\"')) {
+            (*output)[1] = (*input)[1];
+            *input += static_strlen("\"");
+            *output += static_strlen("\"");
+        }
+    }
+}
+
+void cJSON_Minify(char *json)
+{
+    char *into = json;
+
+    if (json == NULL)
+    {
+        return;
+    }
+
+    while (json[0] != '\0')
+    {
+        switch (json[0])
+        {
+            case ' ':
+            case '\t':
+            case '\r':
+            case '\n':
+                json++;
+                break;
+
+            case '/':
+                if (json[1] == '/')
+                {
+                    skip_oneline_comment(&json);
+                }
+                else if (json[1] == '*')
+                {
+                    skip_multiline_comment(&json);
+                } else {
+                    json++;
+                }
+                break;
+
+            case '\"':
+                minify_string(&json, (char**)&into);
+                break;
+
+            default:
+                into[0] = json[0];
+                json++;
+                into++;
+        }
+    }
+
+    /* and null-terminate. */
+    *into = '\0';
+}
 
 // Get Array size/item / object item.
 int    cJSON_GetArraySize(cJSON *array)							{cJSON *c=array->child;int i=0;while(c)i++,c=c->next;return i;}

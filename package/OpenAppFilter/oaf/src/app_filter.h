@@ -1,9 +1,23 @@
 #ifndef APP_FILTER_H
 #define APP_FILTER_H
-#define AF_DEBUG  if(0) printk
-#define AF_ERROR printk
-#define AF_INFO printk
-#define AF_VERSION "1.0.1"
+
+#define AF_VERSION "3.0.1"
+#define AF_FEATURE_CONFIG_FILE "/etc/appfilter/feature.cfg"
+
+#define MAX_PARSE_PKT_NUM 16
+#define MIN_HTTP_DATA_LEN 16
+#define MAX_APP_NAME_LEN 64
+#define MAX_FEATURE_NUM_PER_APP 16 
+#define MIN_FEATURE_STR_LEN 16
+#define MAX_FEATURE_STR_LEN 128
+#define MAX_HOST_URL_LEN 128
+#define MAX_REQUEST_URL_LEN 128
+#define MAX_FEATURE_BITS 16
+#define MAX_POS_INFO_PER_FEATURE 16
+#define MAX_FEATURE_LINE_LEN 256
+#define MIN_FEATURE_LINE_LEN 16
+#define MAX_URL_MATCH_LEN 64
+
 //#define CONFIG_KERNEL_FUNC_TEST 1
 
 #define HTTP_GET_METHOD_STR "GET"
@@ -24,6 +38,15 @@
 
 #define HTTPS_URL_OFFSET		9
 #define HTTPS_LEN_OFFSET		7
+
+enum AF_FEATURE_PARAM_INDEX{
+	AF_PROTO_PARAM_INDEX,
+	AF_SRC_PORT_PARAM_INDEX,
+	AF_DST_PORT_PARAM_INDEX,
+	AF_HOST_URL_PARAM_INDEX,
+	AF_REQUEST_URL_PARAM_INDEX,
+	AF_DICT_PARAM_INDEX,
+};
 
 enum e_http_method{
 	HTTP_METHOD_GET = 1,
@@ -57,7 +80,31 @@ typedef struct flow_info{
 	int l4_len;
 	http_proto_t http;
 	https_proto_t https;
+	u_int32_t app_id;
+	u_int8_t drop;
 }flow_info_t;
+
+
+
+typedef struct af_pos_info{
+	int pos;
+	unsigned char value;
+}af_pos_info_t;
+
+typedef struct af_feature_node{
+	struct list_head  		head;
+	u_int32_t app_id;
+	char app_name[MAX_APP_NAME_LEN];
+	char feature_str[MAX_FEATURE_NUM_PER_APP][MAX_FEATURE_STR_LEN];
+	u_int32_t proto;
+	u_int32_t sport;
+	u_int32_t dport;
+	char host_url[MAX_HOST_URL_LEN];
+	char request_url[MAX_REQUEST_URL_LEN];
+	int pos_num;
+	af_pos_info_t pos_info[MAX_POS_INFO_PER_FEATURE];
+}af_feature_node_t;
+
 
 int af_register_dev(void);
 void af_unregister_dev(void);
