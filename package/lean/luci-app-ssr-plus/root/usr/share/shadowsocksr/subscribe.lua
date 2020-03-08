@@ -455,6 +455,13 @@ local execute = function()
 				select_node(nodes, config)
 			end
 			ucic:commit(application)
+			-- select first server
+			local globalServer = ucic:get_first(application, 'global', 'global_server', '')
+			if not ucic:get(application, globalServer) then
+				ucic:set(application, ucic:get_first(application, 'global'), 'global_server', ucic:get_first(application, uciType))
+				ucic:commit(application)
+				log('当前没有主节点，自动选择第一个节点开启服务。')
+			end
 			luci.sys.call("/etc/init.d/" .. application .." restart > /dev/null 2>&1 &")
 		end
 		log('订阅更新成功')
