@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-unblockmusic
 PKG_VERSION:=2.3.1
-PKG_RELEASE:=36
+PKG_RELEASE:=38
 
 PKG_CONFIG_DEPENDS := \
 	CONFIG_UnblockNeteaseMusic_Go \
