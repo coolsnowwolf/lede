@@ -1,0 +1,189 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright 2020 Weizheng Li <lwz322@qq.com>
+# Licensed to the public under the MIT License.
+#
+
+START=99
+USE_PROCD=1
+
+NAME="frps"
+CONFIG_FOLDER="/var/etc/$NAME"
+
+_log() {
+	local level="$1" ; shift
+	local msg="$@"
+	logger -p "daemon.$level" -t "$NAME" "$msg"
+
+	echo "[$level] $msg" >&2
+}
+
+_info() {
+	_log "info" $@
+}
+
+_err() {
+	_log "err" $@
+}
+
+append_options() {
+	local file="$1" ; shift
+	local o v
+	for o in "$@" ; do
+		v="$(eval echo "\$$o")"
+		if [ -n "$v" ] ; then
+			# add brackets when ipv6 address
+			if ( echo "$o" | grep -qE 'addr|ip' ) &&
+				( echo "$v" | grep -q ':' ) ; then
+				v="[$v]"
+			fi
+
+			echo "${o} = $v" >>"$file"
+		fi
+	done
+}
+
+append_setting() {
+	local file="$1" ; shift
+	local s="$1"
+	if [ -n "$s" ] ; then
+		echo "$s" >>"$file"
+	fi
+}
+
+frps_scetion_validate() {
+	uci_validate_section "$NAME" "frps" "$1" \
+		'enabled:bool:0' \
+		'client_file:file:/usr/bin/frps' \
+		'run_user:string' \
+		'enable_logging:bool:0' \
+		'log_file:string:/var/log/frps.log' \
+		'log_level:or("trace", "debug", "info", "warn", "error"):warn' \
+		'log_max_days:uinteger:3' \
+		'disable_log_color:or("true", "false")' \
+		'max_pool_count:uinteger' \
+		'max_ports_per_client:uinteger:0' \
+		'subdomain_host:host' \
+		'dashboard_addr:host' \
+		'dashboard_port:port' \
+		'dashboard_user:string' \
+		'dashboard_pwd:string' \
+	    'bind_port:port' \
+		'token:string' \
+		'tcp_mux:or("true", "false"):true' \
+		'bind_udp_port:port' \
+		'kcp_bind_port:port' \
+		'vhost_http_port:port' \
+		'vhost_https_port:port'
+}
+
+client_file_validate() {
+	local file="$1"
+
+	test -f "$file" || return 1
+	test -x "$file" || chmod 755 "$file"
+
+	eval "$file" -h | grep -q "$NAME"
+	return $?
+}
+
+add_rule_extra_option() {
+	append_setting "$2" "$1"
+}
+
+create_config_file() {
+	local config_file="$1"
+	local tmp_file="$(mktemp /tmp/frps-XXXXXX)"
+
+	echo "[common]" > "$tmp_file"
+	
+	append_options "$tmp_file" \
+		"bind_port" "token" "tcp_mux" "bind_udp_port" "kcp_bind_port" "vhost_http_port" "vhost_https_port"
+
+
+	if [ "x$enable_logging" = "x1" ] ; then
+		if [ -z "$log_file" ]; then
+			log_file="/var/log/frps.log"
+		fi
+
+		append_options "$tmp_file" \
+			"log_file" "log_level" "log_max_days" "disable_log_color"
+
+		if [ -f "$log_file" ] ; then
+			echo > "$log_file"
+		else
+			local log_folder="$(dirname "$log_file")"
+
+			if [ ! -d "$log_folder" ] ; then
+				mkdir -p "$log_folder"
+			fi
+		fi
+
+		if [ -n "$run_user" ] && ( user_exists "$run_user" ) ; then
+			chmod 644 "$log_file"
+			chown "$run_user" "$log_file"
+		else
+			run_user=""
+		fi
+	fi
+
+	append_options "$tmp_file" \
+		"max_pool_count" "max_ports_per_client" "subdomain_host" "dashboard_addr" "dashboard_port" "dashboard_user" "dashboard_pwd"
+
+	sed '/^$/d' "$tmp_file" >"$config_file"
+
+	if [ "$?" = "0" ] ; then
+		rm -f "$tmp_file"
+	fi
+}
+
+start_instance() {
+	local section="$1"
+
+	if ! frps_scetion_validate "$section" ; then
+		_err "Config validate failed."
+		return 1
+	fi
+
+	if [ "x$enabled" != "x1" ] ; then
+		_info "Instance \"$section\" disabled."
+		return 1
+	fi
+
+	if [ -z "$client_file" ] || ( ! client_file_validate "$client_file" ) ; then
+		_err "Client file not valid."
+		return 1
+	fi
+
+	test -d "$CONFIG_FOLDER" || mkdir -p "$CONFIG_FOLDER"
+
+	local config_file="$CONFIG_FOLDER/frps.$section.ini"
+
+	create_config_file "$config_file"
+
+	if [ ! -f "$config_file" ] ; then
+		_err "Could not create config file: \"$config_file\""
+		return 1
+	fi
+
+	procd_open_instance "$NAME.$section"
+	procd_set_param command "$client_file"
+	procd_append_param command -c "$config_file"
+	procd_set_param respawn
+	procd_set_param file "$config_file"
+
+	if [ -n "$run_user" ] ; then
+		procd_set_param user "$run_user"
+	fi
+
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$NAME"
+}
+
+start_service() {
+	config_load "$NAME"
+	config_foreach start_instance "frps"
+}
