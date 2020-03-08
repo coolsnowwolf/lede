@@ -1,23 +1,69 @@
 #!/bin/sh /etc/rc.common
-
+#source /lib/functions.sh
 #----------------------------------------------
 #Copyright (C) 2019 Twinzo1 <1282055288@qq.com>
 #----------------------------------------------
 START=50
 
+#主路由或开启dhcp的路由器
+set_link(){
+	link_leases=`uci get idns.@main_router[0].leases 2>/dev/null`
+	comments_file=`uci get idns.@main_router[0].comment_leases 2>/dev/null`
+	ln -s /tmp/dhcp.leases /www/$link_leases 2>/dev/null
+	[ -n "$comment_leases" ] && ln -s /tmp/dhcp_comments.conf /www/$comment_leases 2>/dev/null
+
+}
+
+#中继或未开启dhcp路由器
+get_link(){
+	upstreamIP=`uci get idns.@relay_router[0].upstreamIP`
+	leases_name=`uci get idns.@relay_router[0].leases`
+	comments_file=`uci get idns.@relay_router[0].comment_leases 2>/dev/null`
+	curl $upstreamIP/$leases_name > dhcp.leases
+	[ -n "$comments_file" ] && curl $upstreamIP/$comments_file > dhcp_comments.conf
+}
+
+redirect(){
+	config_redir(){
+		config_get enable $1 enabled
+		config_get ipaddr $1 ipaddr
+		config_get redirIP $1 web
+		if [ "$enable" = 1 ]; then
+			sed -i "/#idns重定向$ipaddr/" /etc/firewall 2 >/dev/null
+			echo "iptables -t nat -A PREROUTING -d $ipaddr -p tcp -m tcp --dport 80 -j DNAT --to-destination $redirIP	#IDNS$ipaddr" >> /etc/firewall.user
+		else
+			sed -i "/#idns重定向$ipaddr/" /etc/firewall 2 >/dev/null
+		fi
+	}
+	config_load idns
+	config_foreach config_redir redirection
+	/etc/init.d/firewall restart
+}
+
+init_redir(){
+	config_redir(){
+		config_get enable $1 enabled
+		[ $enable = 1 ] && echo 1
+	}
+	config_load idns
+	config_foreach config_redir redirection
+}
 start(){
-	lan_ipaddr=$(uci get network.lan.ipaddr)
 	IDNS=$(uci get idns.@idns[0].domain )
-	
+	main_enable=`uci get idns.@main_router[0].enabled`
+	relay_enable=`uci get idns.@relay_router[0].enabled`
+	[ -z $IDNS -a $main_enable !=1 -a $relay_enable != 1 -a -z $(init_redir) ] && /etc/init.d/idns disable && sed -i '/#added by IDNS/d' /etc/hosts && return
+	[ $main_enable = 1 ] && set_link
+	[ $relay_enable = 1 ] && get_link
+	redirect
 	if [ -n "$IDNS" ]; then
-		/etc/init.d/idns enable
+		lan_ipaddr=$(uci get network.lan.ipaddr)
 		sed -i '/#added by IDNS/d' /etc/hosts
 		echo  "$lan_ipaddr $IDNS #added by IDNS " >> /etc/hosts
 		/etc/init.d/dnsmasq restart
 	else 
-		/etc/init.d/idns disable
 		sed -i '/#added by IDNS/d' /etc/hosts
 		/etc/init.d/dnsmasq restart
-		return
 	fi
+	/etc/init.d/idns enable
 }
