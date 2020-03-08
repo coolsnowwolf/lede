@@ -337,7 +337,7 @@ local function select_node(nodes, config)
 	end
 	-- 还不行 随便找一个
 	if not server then
-		server = ucic2:get(application, '@uciType[0]')
+		server = ucic2:get(application, '@'.. uciType .. '[0]')
 		if server then
 			log('无法找到最匹配的节点，当前已更换为' .. ucic2:get_all(application, server).alias)
 		end
