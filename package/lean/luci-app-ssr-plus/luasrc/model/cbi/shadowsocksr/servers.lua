@@ -59,8 +59,8 @@ o = s:option(Button,"delete",translate("Delete All Subscribe Severs"))
 o.inputstyle = "reset"
 o.description = string.format(translate("Server Count") ..  ": %d", server_count)
 o.write = function()
-uci:delete_all("shadowsocksr", "servers", function(s) 
-  if s["hashkey"] then
+uci:delete_all("shadowsocksr", "servers", function(s)
+  if s.hashkey or s.isSubscribe then
     return true
   else
     return false
