@@ -1,3 +1,4 @@
+
 #
 # Copyright (C) 2015-2016 OpenWrt.org
 #
@@ -16,13 +17,38 @@ define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=Powerful adblock module to block ad.
-	DEPENDS:=
+	DEPENDS:=@(i386||x86_64||aarch64||arm||mipsel||mips)
 	URL:=http://www.adbyby.com/
 endef
 
 define Package/$(PKG_NAME)/description
 Adbyby is a powerful adblock module to block ad,just like adblock.
 endef
+
+ifeq ($(ARCH),x86_64)
+	ADBYBY_DIR:=amd64
+endif
+ifeq ($(ARCH),mipsel)
+	ADBYBY_DIR:=mipsle
+endif
+ifeq ($(ARCH),mips)
+	ADBYBY_DIR:=mips
+endif
+ifeq ($(ARCH),i386)
+	ADBYBY_DIR:=x86
+endif
+ifeq ($(ARCH),aarch64)
+	ADBYBY_DIR:=armv7
+endif
+ifeq ($(ARCH),arm)
+	ADBYBY_DIR:=armv7
+	ifeq ($(BOARD),bcm53xx)
+		ADBYBY_DIR:=arm
+  endif
+  ifeq ($(BOARD),kirkwood)
+		ADBYBY_DIR:=arm
+  endif
+endif
 
 define Build/Prepare
 endef
@@ -47,24 +73,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/share/adbyby/doc
 	$(INSTALL_DATA) ./files/doc/* $(1)/usr/share/adbyby/doc/
 
-ifeq ($(ARCH),mipsel)
-	$(INSTALL_BIN) ./files/mipsle/adbyby $(1)/usr/share/adbyby/
-endif
-ifeq ($(ARCH),mips)
-	$(INSTALL_BIN) ./files/mips/adbyby $(1)/usr/share/adbyby/
-endif
-ifeq ($(ARCH),i386)
-	$(INSTALL_BIN) ./files/x86/adbyby $(1)/usr/share/adbyby/
-endif
-ifeq ($(ARCH),x86_64)
-	$(INSTALL_BIN) ./files/amd64/adbyby $(1)/usr/share/adbyby/
-endif
-ifeq ($(ARCH),arm)
-	$(INSTALL_BIN) ./files/arm/adbyby $(1)/usr/share/adbyby/
-endif
-ifeq ($(ARCH),aarch64)
-	$(INSTALL_BIN) ./files/armv7/adbyby $(1)/usr/share/adbyby/
-endif
+	$(INSTALL_BIN) ./files/$(ADBYBY_DIR)/adbyby $(1)/usr/share/adbyby/adbyby
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
