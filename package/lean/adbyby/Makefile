@@ -57,7 +57,7 @@ ifeq ($(ARCH),i386)
 	$(INSTALL_BIN) ./files/x86/adbyby $(1)/usr/share/adbyby/
 endif
 ifeq ($(ARCH),x86_64)
-	$(INSTALL_BIN) ./files/x86_64/adbyby $(1)/usr/share/adbyby/
+	$(INSTALL_BIN) ./files/amd64/adbyby $(1)/usr/share/adbyby/
 endif
 ifeq ($(ARCH),arm)
 	$(INSTALL_BIN) ./files/arm/adbyby $(1)/usr/share/adbyby/
