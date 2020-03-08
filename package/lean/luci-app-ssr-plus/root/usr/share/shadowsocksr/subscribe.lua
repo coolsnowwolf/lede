@@ -7,7 +7,7 @@ require 'nixio'
 require 'luci.util'
 require 'luci.jsonc'
 require 'luci.sys'
-
+require 'uci'
 -- these global functions are accessed all the time by the event handler
 -- so caching them is worth the effort
 local luci = luci
@@ -18,10 +18,11 @@ local b64decode = nixio.bin.b64decode
 local nodeResult = {}  -- update result
 local application = 'shadowsocksr'
 local uciType = 'servers'
-local ucic = luci.model.uci.cursor()
-local proxy = ucic:get_first(application, 'server_subscribe', 'proxy', '0')
-local switch = ucic:get_first(application, 'server_subscribe', 'switch', '1')
-local subscribe_url = ucic:get_first(application, 'server_subscribe', 'subscribe_url', {})
+local ucic2 = uci.cursor()
+local proxy = ucic2:get(application, '@server_subscribe[0]', 'proxy') or '0'
+local switch = ucic2:get(application, '@server_subscribe[0]', 'switch') or '1'
+local subscribe_url = ucic2:get(application, '@server_subscribe[0]', 'subscribe_url') or {}
+ucic2:revert(application)
 
 local log = function(...)
 	print(os.date("%Y-%m-%d %H:%M:%S ") .. table.concat({ ... }, " "))
@@ -33,7 +34,7 @@ local CONFIG = {
 		remarks = '主节点',
 		type = "global", option = "global_server",
 		set = function(server)
-			ucic:set(application, ucic:get_first(application, 'global'), "global_server", server)
+			ucic2:set(application, '@global[0]', "global_server", server)
 		end
 	}
 }
@@ -43,9 +44,9 @@ do
 		if v.get then
 			currentNode = v.get()
 		else
-			local cfgid = ucic:get_first(application, v.type, v.option)
+			local cfgid = ucic2:get(application, '@' .. v.type .. '[0]', v.option)
 			if cfgid then
-				currentNode = ucic:get_all(application, cfgid)
+				currentNode = ucic2:get_all(application, cfgid)
 			end
 		end
 		if currentNode then
@@ -337,9 +338,9 @@ local function select_node(nodes, config)
 	end
 	-- 还不行 随便找一个
 	if not server then
-		server = ucic:get_first(application, uciType)
+		server = ucic2:get(application, '@'.. uciType .. '[0]')
 		if server then
-			log('无法找到最匹配的节点，当前已更换为' .. ucic:get_all(application, server).alias)
+			log('无法找到最匹配的节点，当前已更换为' .. ucic2:get_all(application, server).alias)
 		end
 	end
 	if server then
@@ -429,24 +430,26 @@ local execute = function()
 	do
 		assert(next(nodeResult), '更新失败，没有可用的节点信息')
 		-- delete all for subscribe nodes
-		ucic:delete_all(application, uciType, function(node)
+		ucic2:foreach(application, uciType, function(node)
 			if node.isSubscribe or node.hashkey then -- 兼容之前的hashkey
-				return true
+				ucic2:delete(application, node['.name'])
 			end
-			return false
 		end)
 		for _, v in ipairs(nodeResult) do
 			for _, vv in ipairs(v) do
-				local section = ucic:add(application, uciType)
-				ucic:tset(application, section, vv)
-				ucic:set(application, section, "switch_enable", switch)
+				vv.switch_enable = switch
+				local cfgid = ucic2:add(application, uciType)
+				for kkk, vvv in pairs(vv) do
+					ucic2:set(application, cfgid, kkk, vvv)
+				end
 			end
 		end
-		ucic:commit(application)
+		ucic2:commit(application)
+		local ucic3 = uci.cursor()
 		-- repair configuration
 		if next(CONFIG) then
 			local nodes = {}
-			ucic:foreach(application, uciType, function(node)
+			ucic3:foreach(application, uciType, function(node)
 				if node.server and node.server_port and node.alias then
 					nodes[node['.name']] = node
 				end
@@ -454,16 +457,16 @@ local execute = function()
 			for _, config in pairs(CONFIG) do
 				select_node(nodes, config)
 			end
-			ucic:commit(application)
-			-- select first server
-			local globalServer = ucic:get_first(application, 'global', 'global_server', '')
-			if not ucic:get(application, globalServer) then
-				ucic:set(application, ucic:get_first(application, 'global'), 'global_server', ucic:get_first(application, uciType))
-				ucic:commit(application)
-				log('当前没有主节点，自动选择第一个节点开启服务。')
-			end
-			luci.sys.call("/etc/init.d/" .. application .." restart > /dev/null 2>&1 &")
+			ucic3:commit(application)
 		end
+		-- select first server
+		local globalServer = ucic3:get(application, '@global[0]', 'global_server') or ''
+		if not globalServer or not ucic3:get_all(application, globalServer) then
+			ucic3:set(application, '@global[0]', 'global_server', select(2, ucic3:get(application, '@' .. uciType .. '[0]')))
+			ucic3:commit(application)
+			log('当前没有主节点，自动选择第一个节点开启服务。')
+		end
+		luci.sys.call("/etc/init.d/" .. application .." restart > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
 		log('订阅更新成功')
 	end
 end
@@ -482,3 +485,4 @@ if subscribe_url and #subscribe_url > 0 then
 		end
 	end)
 end
+
