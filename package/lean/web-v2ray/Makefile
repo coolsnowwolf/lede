@@ -294,7 +294,7 @@ ifneq ($(CONFIG_V2RAY_EXCLUDE_V2CTL),y)
 endif
 
 ifneq ($(CONFIG_V2RAY_EXCLUDE_ASSETS),y)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/{geoip,geosite}.dat $(1)/usr/bin/v2ray
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/{geoip,geosite}.dat $(1)/tmp/v2ray/v2ray
 endif
 endef
 
