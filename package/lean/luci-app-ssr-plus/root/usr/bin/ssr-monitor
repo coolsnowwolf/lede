@@ -40,8 +40,6 @@ password=$(uci_get_by_name $GLOBAL_SERVER kcp_password)
 kcp_param=$(uci_get_by_name $GLOBAL_SERVER kcp_param)
 [ "$password" != "" ] && password="--key "${password}
 
-sock5_port=$(uci_get_by_type socks5_proxy local_port 1080)
-
 if echo "$server" | grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
 	server=${server}
 else
@@ -97,17 +95,22 @@ while [ "1" == "1" ]; do #死循环
 			(/usr/bin/kcptun-client -r $server:$kcp_port -l :$server_port $password $kcp_param &)
 		fi
 	fi
-	#srelay
+	#localsocks
 	if [ "$local_process" -gt 0 ]; then
-		icount=$(busybox ps -w | grep srelay | grep -v grep | wc -l)
+		icount=$(busybox ps -w | grep ssr-socks | grep -v grep | wc -l)
 		if [ "$icount" -lt "$local_process" ]; then #如果进程挂掉就重启它
-			logger -t "$NAME" "srelay error.restart!"
-			killall -q -9 srelay
-			(/usr/bin/srelay -q -c /etc/srelay.conf -i:$sock5_port -p /var/run/srelay.pid >/dev/null 2>&1)
+			logger -t "$NAME" "microsocks error.restart!"
+			kill -9 $(busybox ps -w | grep ssr-socks | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+			auth_enable=$(uci_get_by_type socks5_proxy auth_enable 0)
+       if [ "$auth_enable" == "1" ]; then
+          microsocks -i 0.0.0.0 -p $(uci_get_by_type socks5_proxy local_port 1080) -1 -u $(uci_get_by_type socks5_proxy username) -P $(uci_get_by_type socks5_proxy password) ssr-socks >/dev/null 2>&1 &
+       else
+          microsocks -i 0.0.0.0 -p $(uci_get_by_type socks5_proxy local_port 1080) ssr-socks >/dev/null 2>&1 &
+       fi
 		fi
 	fi
 	#pdnsd
-	if [ "$pdnsd_process" -gt 0 ]; then
+	if [ "$pdnsd_process" -eq 1 ]; then
 		icount=$(busybox ps -w | grep pdnsd | grep -v grep | wc -l)
 		if [ "$icount" -lt "$pdnsd_process" ]; then #如果进程挂掉就重启它
 			logger -t "$NAME" "pdnsd tunnel error.restart!"
@@ -117,6 +120,20 @@ while [ "1" == "1" ]; do #死循环
 				kill -9 $(ps | grep pdnsd | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 			fi
 			(/usr/sbin/pdnsd -c /var/etc/pdnsd.conf -d &)
+		fi
+	fi
+	#dns2socks
+	if [ "$pdnsd_process" -eq 2 ]; then
+		icount=$(busybox ps -w | grep -e ssr-dns -e dns2socks | grep -v grep | wc -l)
+		if [ "$icount" -lt 2 ]; then #如果进程挂掉就重启它
+      logger -t "$NAME" "dns2socks $dnsstr tunnel error.restart!"
+			dnsstr=$(uci_get_by_type global tunnel_forward 8.8.4.4:53)
+			dnsserver=$(echo "$dnsstr" | awk -F ':' '{print $1}')
+			dnsport=$(echo "$dnsstr" | awk -F ':' '{print $2}')
+			killall -q -9 dns2socks
+			kill -9 $(busybox ps -w | grep ssr-dns | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+			microsocks -i 127.0.0.1 -p 10802 ssr-dns >/dev/null 2>&1 &
+      dns2socks 127.0.0.1:10802  $dnsserver:$dnsport 127.0.0.1:5335 -q >/dev/null 2>&1 &
 		fi
 	fi
 done

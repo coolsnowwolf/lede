@@ -7,7 +7,7 @@ require 'nixio'
 require 'luci.util'
 require 'luci.jsonc'
 require 'luci.sys'
-
+require 'uci'
 -- these global functions are accessed all the time by the event handler
 -- so caching them is worth the effort
 local luci = luci
@@ -19,7 +19,7 @@ local cache = {}
 local nodeResult = setmetatable({}, { __index = cache })  -- update result
 local name = 'shadowsocksr'
 local uciType = 'servers'
-local ucic = luci.model.uci.cursor()
+local ucic = uci.cursor()
 local proxy = ucic:get_first(name, 'server_subscribe', 'proxy', '0')
 local switch = ucic:get_first(name, 'server_subscribe', 'switch', '1')
 local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
