@@ -24,6 +24,9 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_plugin
 config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray
 	bool "Include V2ray"
 	default y if x86_64
+	
+config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray2
+	bool "Include V2ray2"
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_Trojan
 	bool "Include Trojan"
@@ -57,6 +60,7 @@ define Package/$(PKG_NAME)
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Simple_obfs:simple-obfs \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_plugin:v2ray-plugin \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_V2ray:v2ray \
+	+PACKAGE_$(PKG_NAME)_INCLUDE_V2ray2:v2ray2 \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Trojan:trojan \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Redsocks2:redsocks2 \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Kcptun:kcptun-client \
