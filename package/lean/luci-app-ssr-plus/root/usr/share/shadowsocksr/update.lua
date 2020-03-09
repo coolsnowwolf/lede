@@ -15,11 +15,7 @@ local log = function(...)
 end
 
 log('正在更新【GFW列表】数据库')
-if nixio.fs.access("/usr/bin/wget-ssl") then
 	refresh_cmd="wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt -O /tmp/gfw.b64"
-	else
-		refresh_cmd="wget -O /tmp/gfw.b64 http://iytc.net/tools/list.b64"
-	end
 	sret=luci.sys.call(refresh_cmd .. " 2>/dev/null")
 	if sret== 0 then
 	luci.sys.call("/usr/bin/ssr-gfw")
@@ -28,7 +24,7 @@ if nixio.fs.access("/usr/bin/wget-ssl") then
 	oldcount=luci.sys.exec("cat /etc/dnsmasq.ssr/gfw_list.conf | wc -l")
 		if tonumber(icount) ~= tonumber(oldcount) then
 			luci.sys.exec("cp -f /tmp/gfwnew.txt /etc/dnsmasq.ssr/gfw_list.conf")
---			retstring=tostring(math.ceil(tonumber(icount)/2))
+			luci.sys.exec("cp -f /tmp/gfwnew.txt /tmp/dnsmasq.ssr/gfw_list.conf")
 			log('更新成功！ 新的总纪录数：'.. icount)
 		else
 			log('你已经是最新数据，无需更新！')
@@ -43,7 +39,7 @@ end
 
 log('正在更新【国内IP段】数据库')
 if (ucic:get_first('shadowsocksr', 'global', 'chnroute','0') == '1' ) then
-	refresh_cmd="wget-ssl --no-check-certificate -O - ".. ucic:get_first('shadowsocksr', 'global', 'chnroute_url','https://cdn.jsdelivr.net/gh/17mon/china_ip_list/china_ip_list.txt') .." > /tmp/china_ssr.txt 2>/dev/null"
+	refresh_cmd="wget-ssl --no-check-certificate -O - ".. ucic:get_first('shadowsocksr', 'global', 'chnroute_url','https://ispip.clang.cn/all_cn.txt') .." > /tmp/china_ssr.txt 2>/dev/null"
 else
 	refresh_cmd="wget -O- 'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest'  2>/dev/null| awk -F\\| '/CN\\|ipv4/ { printf(\"%s/%d\\n\", $4, 32-log($5)/log(2)) }' > /tmp/china_ssr.txt"
 end
@@ -55,7 +51,6 @@ if sret== 0 then
 		oldcount=luci.sys.exec("cat /etc/china_ssr.txt | wc -l")
 		if tonumber(icount) ~= tonumber(oldcount) then
 			luci.sys.exec("cp -f /tmp/china_ssr.txt /etc/china_ssr.txt")
---			retstring=tostring(math.ceil(tonumber(icount)/2))
 			log('更新成功！ 新的总纪录数：'.. icount)
 		else
 			log('你已经是最新数据，无需更新！')
@@ -85,10 +80,7 @@ if sret== 0 then
 	end
 	if tonumber(icount) ~= tonumber(oldcount) then
 		luci.sys.exec("cp -f /tmp/ad.conf /etc/dnsmasq.ssr/ad.conf")
---		retstring=tostring(math.ceil(tonumber(icount)))
-		if oldcount==0 then
-		 luci.sys.call("/etc/init.d/dnsmasq restart")
-		end
+		luci.sys.exec("cp -f /tmp/ad.conf /tmp/dnsmasq.ssr/ad.conf")
 		log('更新成功！ 新的总纪录数：'.. icount)
 	else
 		log('你已经是最新数据，无需更新！')
@@ -101,3 +93,5 @@ else
 	log('更新失败！')
 end
 end
+
+luci.sys.call("/etc/init.d/dnsmasq restart")
