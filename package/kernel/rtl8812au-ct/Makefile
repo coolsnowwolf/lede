@@ -5,8 +5,8 @@ PKG_RELEASE=1
 
 PKG_LICENSE:=GPLv2
 PKG_LICENSE_FILES:=
-
-PKG_SOURCE_URL:=https://github.com/greearb/rtl8812AU_8821AU_linux.git
+PKG_SOURCE_URL:=https://github.com/gordboy/rtl8812au-5.6.4.2.git
+#PKG_SOURCE_URL:=https://github.com/greearb/rtl8812AU_8821AU_linux.git
 PKG_MIRROR_HASH:=42b32c56cf31bdf3c9cd4e304c9aac761b623c8737d8c57518117acdc5a84cfe
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_DATE:=2018-11-16
