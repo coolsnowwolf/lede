@@ -9,13 +9,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=firewall
-PKG_RELEASE:=2
+PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/firewall3.git
-PKG_SOURCE_DATE:=2019-01-02
-PKG_SOURCE_VERSION:=70f8785b9ee364828e9a0f38275283024df621c2
-PKG_MIRROR_HASH:=0b1a7c88b3c3474127b5e5e61d5bf58345d02862d98c56e049face2ddd81bc88
+PKG_SOURCE_DATE:=2019-11-22
+PKG_SOURCE_VERSION:=8174814a507489ebbe8bb85c1004e1f02919ca82
+PKG_MIRROR_HASH:=84e0cca2d47470bdb1788a8ae044cc425be8ff650a1137474ba43a15040085da
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
 PKG_LICENSE:=ISC
 
@@ -28,18 +28,8 @@ define Package/firewall
   SECTION:=net
   CATEGORY:=Base system
   TITLE:=OpenWrt C Firewall
-  DEPENDS:=+libubox +libubus +libuci +libip4tc +IPV6:libip6tc +libxtables +kmod-ipt-core +kmod-ipt-conntrack +IPV6:kmod-nf-conntrack6 +kmod-ipt-nat +PACKAGE_firewall-FULLCONENAT:iptables-mod-fullconenat
+  DEPENDS:=+libubox +libubus +libuci +libip4tc +IPV6:libip6tc +libxtables +kmod-ipt-core +kmod-ipt-conntrack +IPV6:kmod-nf-conntrack6 +kmod-ipt-nat +iptables-mod-fullconenat
 endef
-
-define Package/firewall/config
-if PACKAGE_firewall
-	config PACKAGE_firewall-FULLCONENAT
-		bool "Use FULLCONENAT"
-		default y
-endif		
-endef
-
-TARGET_CFLAGS += $(if $(CONFIG_PACKAGE_firewall-FULLCONENAT),-DUSE_FULLCONENAT,)
 
 define Package/firewall/description
  This package provides a config-compatible C implementation of the UCI firewall.

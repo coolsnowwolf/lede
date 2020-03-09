@@ -130,7 +130,7 @@ static void ag71xx_ring_tx_init(struct ag71xx *ag)
 {
 	struct ag71xx_ring *ring = &ag->tx_ring;
 	int ring_size = BIT(ring->order);
-	int ring_mask = ring_size - 1;
+	int ring_mask = BIT(ring->order) - 1;
 	int i;
 
 	for (i = 0; i < ring_size; i++) {
@@ -277,14 +277,14 @@ static int ag71xx_rings_init(struct ag71xx *ag)
 		return -ENOMEM;
 
 	tx->descs_cpu = dma_alloc_coherent(&ag->pdev->dev, ring_size * AG71XX_DESC_SIZE,
-					   &tx->descs_dma, GFP_ATOMIC);
+					   &tx->descs_dma, GFP_KERNEL);
 	if (!tx->descs_cpu) {
 		kfree(tx->buf);
 		tx->buf = NULL;
 		return -ENOMEM;
 	}
 
-	rx->buf = &tx->buf[BIT(tx->order)];
+	rx->buf = &tx->buf[tx_size];
 	rx->descs_cpu = ((void *)tx->descs_cpu) + tx_size * AG71XX_DESC_SIZE;
 	rx->descs_dma = tx->descs_dma + tx_size * AG71XX_DESC_SIZE;
 
@@ -559,6 +559,112 @@ static void ath79_set_pll(struct ag71xx *ag)
 	udelay(100);
 }
 
+static void ag71xx_bit_set(void __iomem *reg, u32 bit)
+{
+	u32 val;
+
+	val = __raw_readl(reg) | bit;
+	__raw_writel(val, reg);
+	__raw_readl(reg);
+}
+
+static void ag71xx_bit_clear(void __iomem *reg, u32 bit)
+{
+	u32 val;
+
+	val = __raw_readl(reg) & ~bit;
+	__raw_writel(val, reg);
+	__raw_readl(reg);
+}
+
+static void ag71xx_sgmii_init_qca955x(struct device_node *np)
+{
+	struct device_node *np_dev;
+	void __iomem *gmac_base;
+	u32 mr_an_status;
+	u32 sgmii_status;
+	u8 tries = 0;
+	int err = 0;
+
+	np = of_get_child_by_name(np, "gmac-config");
+	if (!np)
+		return;
+
+	np_dev = of_parse_phandle(np, "device", 0);
+	if (!np_dev)
+		goto out;
+
+	gmac_base = of_iomap(np_dev, 0);
+	if (!gmac_base) {
+		pr_err("%pOF: can't map GMAC registers\n", np_dev);
+		err = -ENOMEM;
+		goto err_iomap;
+	}
+
+	mr_an_status = __raw_readl(gmac_base + QCA955X_GMAC_REG_MR_AN_STATUS);
+	if (!(mr_an_status & QCA955X_MR_AN_STATUS_AN_ABILITY))
+		goto sgmii_out;
+
+	/* SGMII reset sequence */
+	__raw_writel(QCA955X_SGMII_RESET_RX_CLK_N_RESET,
+		     gmac_base + QCA955X_GMAC_REG_SGMII_RESET);
+	__raw_readl(gmac_base + QCA955X_GMAC_REG_SGMII_RESET);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_HW_RX_125M_N);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_RX_125M_N);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_TX_125M_N);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_RX_CLK_N);
+	udelay(10);
+
+	ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_SGMII_RESET,
+		       QCA955X_SGMII_RESET_TX_CLK_N);
+	udelay(10);
+
+	/*
+	 * The following is what QCA has to say about what happens here:
+	 *
+	 * Across resets SGMII link status goes to weird state.
+	 * If SGMII_DEBUG register reads other than 0x1f or 0x10,
+	 * we are for sure in a bad  state.
+	 *
+	 * Issue a PHY reset in MR_AN_CONTROL to keep going.
+	 */
+	do {
+		ag71xx_bit_set(gmac_base + QCA955X_GMAC_REG_MR_AN_CONTROL,
+			       QCA955X_MR_AN_CONTROL_PHY_RESET |
+			       QCA955X_MR_AN_CONTROL_AN_ENABLE);
+		udelay(200);
+		ag71xx_bit_clear(gmac_base + QCA955X_GMAC_REG_MR_AN_CONTROL,
+				 QCA955X_MR_AN_CONTROL_PHY_RESET);
+		mdelay(300);
+		sgmii_status = __raw_readl(gmac_base + QCA955X_GMAC_REG_SGMII_DEBUG) &
+					   QCA955X_SGMII_DEBUG_TX_STATE_MASK;
+
+		if (tries++ >= 20) {
+			pr_err("ag71xx: max retries for SGMII fixup exceeded\n");
+			break;
+		}
+	} while (!(sgmii_status == 0xf || sgmii_status == 0x10));
+
+sgmii_out:
+	iounmap(gmac_base);
+err_iomap:
+	of_node_put(np_dev);
+out:
+	of_node_put(np);
+}
+
 static void ath79_mii_ctrl_set_if(struct ag71xx *ag, unsigned int mii_if)
 {
 	u32 t;
@@ -581,6 +687,7 @@ static void ath79_mii0_ctrl_set_if(struct ag71xx *ag)
 		mii_if = AR71XX_MII0_CTRL_IF_GMII;
 		break;
 	case PHY_INTERFACE_MODE_RGMII:
+	case PHY_INTERFACE_MODE_RGMII_ID:
 		mii_if = AR71XX_MII0_CTRL_IF_RGMII;
 		break;
 	case PHY_INTERFACE_MODE_RMII:
@@ -603,6 +710,7 @@ static void ath79_mii1_ctrl_set_if(struct ag71xx *ag)
 		mii_if = AR71XX_MII1_CTRL_IF_RMII;
 		break;
 	case PHY_INTERFACE_MODE_RGMII:
+	case PHY_INTERFACE_MODE_RGMII_ID:
 		mii_if = AR71XX_MII1_CTRL_IF_RGMII;
 		break;
 	default:
@@ -705,6 +813,8 @@ __ag71xx_link_adjust(struct ag71xx *ag, bool update)
 			   of_device_is_compatible(np, "qca,qca9550-eth") ||
 			   of_device_is_compatible(np, "qca,qca9560-eth")) {
 			ath79_set_pllval(ag);
+			if (of_property_read_bool(np, "qca955x-sgmii-fixup"))
+				ag71xx_sgmii_init_qca955x(np);
 		}
 	}
 
@@ -763,10 +873,6 @@ static int ag71xx_hw_enable(struct ag71xx *ag)
 
 static void ag71xx_hw_disable(struct ag71xx *ag)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&ag->lock, flags);
-
 	netif_stop_queue(ag->dev);
 
 	ag71xx_hw_stop(ag);
@@ -774,8 +880,6 @@ static void ag71xx_hw_disable(struct ag71xx *ag)
 
 	napi_disable(&ag->napi);
 	del_timer_sync(&ag->oom_timer);
-
-	spin_unlock_irqrestore(&ag->lock, flags);
 
 	ag71xx_rings_cleanup(ag);
 }
@@ -946,18 +1050,9 @@ err_drop:
 static int ag71xx_do_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
 	struct ag71xx *ag = netdev_priv(dev);
-	int ret;
+
 
 	switch (cmd) {
-	case SIOCETHTOOL:
-		if (ag->phy_dev == NULL)
-			break;
-
-		spin_lock_irq(&ag->lock);
-		ret = phy_ethtool_ioctl(ag->phy_dev, (void *) ifr->ifr_data);
-		spin_unlock_irq(&ag->lock);
-		return ret;
-
 	case SIOCSIFHWADDR:
 		if (copy_from_user
 			(dev->dev_addr, ifr->ifr_data, sizeof(dev->dev_addr)))
@@ -1119,14 +1214,22 @@ static int ag71xx_rx_packets(struct ag71xx *ag, int limit)
 	unsigned int offset = ag->rx_buf_offset;
 	int ring_mask = BIT(ring->order) - 1;
 	int ring_size = BIT(ring->order);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0))
+	struct list_head rx_list;
+	struct sk_buff *next;
+#else
 	struct sk_buff_head queue;
+#endif
 	struct sk_buff *skb;
 	int done = 0;
 
 	DBG("%s: rx packets, limit=%d, curr=%u, dirty=%u\n",
 			dev->name, limit, ring->curr, ring->dirty);
-
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0))
+	INIT_LIST_HEAD(&rx_list);
+#else
 	skb_queue_head_init(&queue);
+#endif
 
 	while (done < limit) {
 		unsigned int i = ring->curr & ring_mask;
@@ -1168,7 +1271,11 @@ static int ag71xx_rx_packets(struct ag71xx *ag, int limit)
 		} else {
 			skb->dev = dev;
 			skb->ip_summed = CHECKSUM_NONE;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0))
+			list_add_tail(&skb->list, &rx_list);
+#else
 			__skb_queue_tail(&queue, skb);
+#endif
 		}
 
 next:
@@ -1180,10 +1287,16 @@ next:
 
 	ag71xx_ring_rx_refill(ag);
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0))
+	list_for_each_entry_safe(skb, next, &rx_list, list)
+		skb->protocol = eth_type_trans(skb, dev);
+	netif_receive_skb_list(&rx_list);
+#else
 	while ((skb = __skb_dequeue(&queue)) != NULL) {
 		skb->protocol = eth_type_trans(skb, dev);
 		netif_receive_skb(skb);
 	}
+#endif
 
 	DBG("%s: rx finish, curr=%u, dirty=%u, done=%d\n",
 		dev->name, ring->curr, ring->dirty, done);

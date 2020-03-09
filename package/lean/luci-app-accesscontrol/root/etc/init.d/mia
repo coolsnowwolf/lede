@@ -1,0 +1,88 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2015 OpenWrt-dist
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
+START=30
+
+CONFIG=mia
+
+uci_get_by_type() {
+	local index=0
+	if [ -n $4 ]; then
+		index=$4
+	fi
+	local ret=$(uci get $CONFIG.@$1[$index].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+add_rule(){
+for i in $(seq 0 100)
+do
+	local enable=$(uci_get_by_type macbind enable '' $i)
+	local macaddr=$(uci_get_by_type macbind macaddr '' $i)
+	local timeon=$(uci_get_by_type macbind timeon '' $i)
+	local timeoff=$(uci_get_by_type macbind timeoff '' $i)
+	local z1=$(uci_get_by_type macbind z1 '' $i)
+	local z2=$(uci_get_by_type macbind z2 '' $i)
+	local z3=$(uci_get_by_type macbind z3 '' $i)
+	local z4=$(uci_get_by_type macbind z4 '' $i)
+	local z5=$(uci_get_by_type macbind z5 '' $i)
+	local z6=$(uci_get_by_type macbind z6 '' $i)
+	local z7=$(uci_get_by_type macbind z7 '' $i)
+	[ "$z1" == "1" ] && Z1="Mon,"
+	[ "$z2" == "1" ] && Z2="Tue,"
+	[ "$z3" == "1" ] && Z3="Wed,"
+	[ "$z4" == "1" ] && Z4="Thu,"
+	[ "$z5" == "1" ] && Z5="Fri,"
+	[ "$z6" == "1" ] && Z6="Sat,"
+	[ "$z7" == "1" ] && Z7="Sun"
+	if [ -z $enable ] || [ -z $macaddr ] || [ -z $timeoff ] || [ -z $timeon ]; then
+		break
+	fi
+	if [ "$enable" == "1" ]; then
+		iptables -t filter -I MIA  -m mac --mac-source $macaddr -m time --kerneltz --timestart $timeon --timestop $timeoff --weekdays $Z1$Z2$Z3$Z4$Z5$Z6$Z7 -j DROP
+	fi
+	for n in $(seq 1 7)
+	do
+		unset "Z$n"
+	done
+done
+}
+
+del_rule(){
+	type=$1
+	blackMacAdd=$(iptables -t nat -L $type | grep -w RETURN | grep -w "MAC" | awk '{print $7}')
+	[ -n "$blackMacAdd" ] && {
+		for macaddrb in $blackMacAdd
+		do
+			iptables -t nat -D $type -m mac --mac-source $macaddrb -j RETURN
+		done
+	}
+}
+
+start(){
+  stop
+	enable=$(uci get mia.@basic[0].enable)
+	[ $enable -eq 0 ] && exit 0
+  iptables -t filter -N MIA
+  iptables -I INPUT -p udp --dport 53 -m comment --comment "Rule For Control" -j MIA
+  iptables -I INPUT -p tcp --dport 53 -m comment --comment "Rule For Control" -j MIA
+  iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 -m comment --comment "Rule For Control"
+  iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 -m comment --comment "Rule For Control"
+  strict=$(uci get mia.@basic[0].strict)
+  [ $strict -eq 1 ] && iptables -t filter -I FORWARD -m comment --comment "Rule For Control" -j MIA
+  add_rule 
+}
+stop(){
+  iptables -t filter -D FORWARD -m comment --comment "Rule For Control" -j MIA 2>/dev/null
+  iptables -D INPUT -p udp --dport 53 -m comment --comment "Rule For Control" -j MIA 2>/dev/null
+  iptables -D INPUT -p tcp --dport 53 -m comment --comment "Rule For Control" -j MIA 2>/dev/null
+  iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 -m comment --comment "Rule For Control" 2>/dev/null
+  iptables -t nat -D PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53 -m comment --comment "Rule For Control" 2>/dev/null
+  iptables -t filter -F MIA 2>/dev/null
+  iptables -t filter -X MIA 2>/dev/null
+}

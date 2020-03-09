@@ -1,44 +1,56 @@
-From 9423e8be0393e82c8622806a0529e47fd5583c0b Mon Sep 17 00:00:00 2001
+From 71e9c65a7c8af90a5fd11072062b596421316452 Mon Sep 17 00:00:00 2001
 From: Peter Oh <peter.oh@bowerswilkins.com>
-Date: Tue, 29 May 2018 14:39:19 -0700
-Subject: [PATCH 15/18] mesh: do not use offchan mgmt tx on DFS
+Date: Mon, 27 Aug 2018 14:28:46 -0700
+Subject: [PATCH 4/7] mesh: do not set offchanok on DFS channels in non-ETSI
 
-Drivers don't allow mesh to use offchannel on management Tx.
+mac80211 does not allow mgmt tx to use off channel on
+DFS channels in non-ETSI domain, because it will invalidate
+CAC result on current operating channel.
+(mac80211 commit: 34373d12f3cbb74960a73431138ef619d857996f)
+Hence don't set offchanok for mgmt tx in case of DFS channels
+in non-ETSI.
 
 Signed-off-by: Peter Oh <peter.oh@bowerswilkins.com>
-Signed-off-by: Daniel Golle <daniel@makrotopia.org>
-[daniel@makrotopia.org: adapted to changed ieee80211_is_dfs prototype]
 ---
- src/drivers/driver_nl80211.c | 12 ++++++++++--
- 1 file changed, 10 insertions(+), 2 deletions(-)
+ src/drivers/driver_nl80211.c | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
 
 --- a/src/drivers/driver_nl80211.c
 +++ b/src/drivers/driver_nl80211.c
-@@ -7268,6 +7268,10 @@ static int wpa_driver_nl80211_send_actio
- 	struct wpa_driver_nl80211_data *drv = bss->drv;
+@@ -7462,6 +7462,10 @@ static int wpa_driver_nl80211_send_actio
  	int ret = -1;
  	u8 *buf;
-+	int offchanok = 1;
-+	u16 num_modes, flags;
-+	struct hostapd_hw_modes *modes;
-+	u8 dfs_domain;
  	struct ieee80211_hdr *hdr;
++	struct hostapd_hw_modes *modes;
++	int i, offchanok = 1;
++	u16 num_modes, flags;
++	u8 dfs_domain;
  
  	wpa_printf(MSG_DEBUG, "nl80211: Send Action frame (ifindex=%d, "
-@@ -7292,7 +7296,11 @@ static int wpa_driver_nl80211_send_actio
- 	} else {
+ 		   "freq=%u MHz wait=%d ms no_cck=%d)",
+@@ -7486,6 +7490,21 @@ static int wpa_driver_nl80211_send_actio
  		os_memset(bss->rand_addr, 0, ETH_ALEN);
  	}
--
-+	if (is_mesh_interface(drv->nlmode) &&
-+	    (modes = nl80211_get_hw_feature_data(bss, &num_modes, &flags,
-+						 &dfs_domain)) &&
-+	    ieee80211_is_dfs(freq, modes, num_modes))
-+		offchanok = 0;
+ 
++	if (is_mesh_interface(drv->nlmode)) {
++		modes = nl80211_get_hw_feature_data(bss, &num_modes,
++						    &flags, &dfs_domain);
++		if (dfs_domain != HOSTAPD_DFS_REGION_ETSI &&
++		    ieee80211_is_dfs(bss->freq, modes, num_modes))
++			offchanok = 0;
++		if (modes) {
++			for (i = 0; i < num_modes; i++) {
++				os_free(modes[i].channels);
++				os_free(modes[i].rates);
++			}
++			os_free(modes);
++		}
++	}
++
  	if (is_ap_interface(drv->nlmode) &&
  	    (!(drv->capa.flags & WPA_DRIVER_FLAGS_OFFCHANNEL_TX) ||
  	     (int) freq == bss->freq || drv->device_ap_sme ||
-@@ -7304,7 +7312,7 @@ static int wpa_driver_nl80211_send_actio
+@@ -7497,7 +7516,7 @@ static int wpa_driver_nl80211_send_actio
  		ret = nl80211_send_frame_cmd(bss, freq, wait_time, buf,
  					     24 + data_len,
  					     &drv->send_action_cookie,

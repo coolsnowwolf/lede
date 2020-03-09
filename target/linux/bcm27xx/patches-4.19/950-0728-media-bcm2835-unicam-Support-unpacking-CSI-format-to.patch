@@ -1,0 +1,254 @@
+From 5ae0488f5fc682877ae2a5d454f70884e62120ef Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Thu, 3 Oct 2019 13:35:01 +0100
+Subject: [PATCH] media: bcm2835-unicam: Support unpacking CSI format
+ to 16bpp
+
+The CSI packed formats are not the easiest to work with, and
+the peripheral supports unpacking them to 16bpp (but NOT
+shifting the data up into the MSBs).
+Where V4L2 exposes a pixfmt for both packed and unpacked
+formats advertise both as being supported, and unpack the
+data in the peripheral.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ .../media/platform/bcm2835/bcm2835-unicam.c   | 102 +++++++++---------
+ 1 file changed, 51 insertions(+), 51 deletions(-)
+
+--- a/drivers/media/platform/bcm2835/bcm2835-unicam.c
++++ b/drivers/media/platform/bcm2835/bcm2835-unicam.c
+@@ -15,12 +15,15 @@
+  *
+  * This driver directly controls the Unicam peripheral - there is no
+  * involvement with the VideoCore firmware. Unicam receives CSI-2 or
+- * CCP2 data and writes it into SDRAM. The only potential processing options are
+- * to repack Bayer data into an alternate format, and applying windowing.
+- * The repacking does not shift the data, so could repack V4L2_PIX_FMT_Sxxxx10P
++ * CCP2 data and writes it into SDRAM.
++ * The only potential processing options are to repack Bayer data into an
++ * alternate format, and applying windowing.
++ * The repacking does not shift the data, so can repack V4L2_PIX_FMT_Sxxxx10P
+  * to V4L2_PIX_FMT_Sxxxx10, or V4L2_PIX_FMT_Sxxxx12P to V4L2_PIX_FMT_Sxxxx12,
+- * but not generically up to V4L2_PIX_FMT_Sxxxx16.
+- * Adding support for repacking and windowing may be added later.
++ * but not generically up to V4L2_PIX_FMT_Sxxxx16. The driver will add both
++ * formats where the relevant formats are defined, and will automatically
++ * configure the repacking as required.
++ * Support for windowing may be added later.
+  *
+  * It should be possible to connect this driver to any sensor with a
+  * suitable output interface and V4L2 subdevice driver.
+@@ -122,13 +125,16 @@ MODULE_PARM_DESC(debug, "Debug level 0-3
+ 
+ /*
+  * struct unicam_fmt - Unicam media bus format information
+- * @pixelformat: V4L2 pixel format FCC identifier.
++ * @pixelformat: V4L2 pixel format FCC identifier. 0 if n/a.
++ * @repacked_fourcc: V4L2 pixel format FCC identifier if the data is expanded
++ * out to 16bpp. 0 if n/a.
+  * @code: V4L2 media bus format code.
+- * @depth: Bits per pixel (when stored in memory).
++ * @depth: Bits per pixel as delivered from the source.
+  * @csi_dt: CSI data type.
+  */
+ struct unicam_fmt {
+ 	u32	fourcc;
++	u32	repacked_fourcc;
+ 	u32	code;
+ 	u8	depth;
+ 	u8	csi_dt;
+@@ -235,41 +241,49 @@ static const struct unicam_fmt formats[]
+ 		.csi_dt		= 0x2a,
+ 	}, {
+ 		.fourcc		= V4L2_PIX_FMT_SBGGR10P,
++		.repacked_fourcc = V4L2_PIX_FMT_SBGGR10,
+ 		.code		= MEDIA_BUS_FMT_SBGGR10_1X10,
+ 		.depth		= 10,
+ 		.csi_dt		= 0x2b,
+ 	}, {
+ 		.fourcc		= V4L2_PIX_FMT_SGBRG10P,
++		.repacked_fourcc = V4L2_PIX_FMT_SGBRG10,
+ 		.code		= MEDIA_BUS_FMT_SGBRG10_1X10,
+ 		.depth		= 10,
+ 		.csi_dt		= 0x2b,
+ 	}, {
+ 		.fourcc		= V4L2_PIX_FMT_SGRBG10P,
++		.repacked_fourcc = V4L2_PIX_FMT_SGRBG10,
+ 		.code		= MEDIA_BUS_FMT_SGRBG10_1X10,
+ 		.depth		= 10,
+ 		.csi_dt		= 0x2b,
+ 	}, {
+ 		.fourcc		= V4L2_PIX_FMT_SRGGB10P,
++		.repacked_fourcc = V4L2_PIX_FMT_SRGGB10,
+ 		.code		= MEDIA_BUS_FMT_SRGGB10_1X10,
+ 		.depth		= 10,
+ 		.csi_dt		= 0x2b,
+ 	}, {
+ 		.fourcc		= V4L2_PIX_FMT_SBGGR12P,
++		.repacked_fourcc = V4L2_PIX_FMT_SBGGR12,
+ 		.code		= MEDIA_BUS_FMT_SBGGR12_1X12,
+ 		.depth		= 12,
+ 		.csi_dt		= 0x2c,
+ 	}, {
+ 		.fourcc		= V4L2_PIX_FMT_SGBRG12P,
++		.repacked_fourcc = V4L2_PIX_FMT_SGBRG12,
+ 		.code		= MEDIA_BUS_FMT_SGBRG12_1X12,
+ 		.depth		= 12,
+ 		.csi_dt		= 0x2c,
+ 	}, {
+ 		.fourcc		= V4L2_PIX_FMT_SGRBG12P,
++		.repacked_fourcc = V4L2_PIX_FMT_SGRBG12,
+ 		.code		= MEDIA_BUS_FMT_SGRBG12_1X12,
+ 		.depth		= 12,
+ 		.csi_dt		= 0x2c,
+ 	}, {
+ 		.fourcc		= V4L2_PIX_FMT_SRGGB12P,
++		.repacked_fourcc = V4L2_PIX_FMT_SRGGB12,
+ 		.code		= MEDIA_BUS_FMT_SRGGB12_1X12,
+ 		.depth		= 12,
+ 		.csi_dt		= 0x2c,
+@@ -439,20 +453,6 @@ static inline void unicam_runtime_put(st
+ }
+ 
+ /* Format setup functions */
+-static int find_mbus_depth_by_code(u32 code)
+-{
+-	const struct unicam_fmt *fmt;
+-	unsigned int k;
+-
+-	for (k = 0; k < ARRAY_SIZE(formats); k++) {
+-		fmt = &formats[k];
+-		if (fmt->code == code)
+-			return fmt->depth;
+-	}
+-
+-	return 0;
+-}
+-
+ static const struct unicam_fmt *find_format_by_code(u32 code)
+ {
+ 	unsigned int k;
+@@ -470,7 +470,8 @@ static const struct unicam_fmt *find_for
+ 	unsigned int k;
+ 
+ 	for (k = 0; k < ARRAY_SIZE(formats); k++) {
+-		if (formats[k].fourcc == pixelformat)
++		if (formats[k].fourcc == pixelformat ||
++		    formats[k].repacked_fourcc == pixelformat)
+ 			return &formats[k];
+ 	}
+ 
+@@ -478,9 +479,14 @@ static const struct unicam_fmt *find_for
+ }
+ 
+ static inline unsigned int bytes_per_line(u32 width,
+-					  const struct unicam_fmt *fmt)
++					  const struct unicam_fmt *fmt,
++					  u32 v4l2_fourcc)
+ {
+-	return ALIGN((width * fmt->depth) >> 3, BPL_ALIGNMENT);
++	if (v4l2_fourcc == fmt->repacked_fourcc)
++		/* Repacking always goes to 16bpp */
++		return ALIGN(width << 1, BPL_ALIGNMENT);
++	else
++		return ALIGN((width * fmt->depth) >> 3, BPL_ALIGNMENT);
+ }
+ 
+ static int __subdev_get_format(struct unicam_device *dev,
+@@ -538,7 +544,8 @@ static int unicam_calc_format_size_bpl(s
+ 			      &f->fmt.pix.height, MIN_HEIGHT, MAX_HEIGHT, 0,
+ 			      0);
+ 
+-	min_bytesperline = bytes_per_line(f->fmt.pix.width, fmt);
++	min_bytesperline = bytes_per_line(f->fmt.pix.width, fmt,
++					  f->fmt.pix.pixelformat);
+ 
+ 	if (f->fmt.pix.bytesperline > min_bytesperline &&
+ 	    f->fmt.pix.bytesperline <= MAX_BYTESPERLINE)
+@@ -738,6 +745,13 @@ static int unicam_enum_fmt_vid_cap(struc
+ 				}
+ 				index++;
+ 			}
++			if (fmt->repacked_fourcc) {
++				if (index == f->index) {
++					f->pixelformat = fmt->repacked_fourcc;
++					break;
++				}
++				index++;
++			}
+ 		}
+ 	}
+ 
+@@ -858,7 +872,10 @@ static int unicam_try_fmt_vid_cap(struct
+ 			}
+ 		}
+ 
+-		f->fmt.pix.pixelformat = fmt->fourcc;
++		if (fmt->fourcc)
++			f->fmt.pix.pixelformat = fmt->fourcc;
++		else
++			f->fmt.pix.pixelformat = fmt->repacked_fourcc;
+ 	}
+ 
+ 	return unicam_calc_format_size_bpl(dev, fmt, f);
+@@ -998,16 +1015,14 @@ static void unicam_wr_dma_config(struct
+ 
+ static void unicam_set_packing_config(struct unicam_device *dev)
+ {
+-	int mbus_depth = find_mbus_depth_by_code(dev->fmt->code);
+-	int v4l2_depth = dev->fmt->depth;
+ 	int pack, unpack;
+ 	u32 val;
+ 
+-	if (mbus_depth == v4l2_depth) {
++	if (dev->v_fmt.fmt.pix.pixelformat == dev->fmt->fourcc) {
+ 		unpack = UNICAM_PUM_NONE;
+ 		pack = UNICAM_PPM_NONE;
+ 	} else {
+-		switch (mbus_depth) {
++		switch (dev->fmt->depth) {
+ 		case 8:
+ 			unpack = UNICAM_PUM_UNPACK8;
+ 			break;
+@@ -1028,26 +1043,8 @@ static void unicam_set_packing_config(st
+ 			break;
+ 		}
+ 
+-		switch (v4l2_depth) {
+-		case 8:
+-			pack = UNICAM_PPM_PACK8;
+-			break;
+-		case 10:
+-			pack = UNICAM_PPM_PACK10;
+-			break;
+-		case 12:
+-			pack = UNICAM_PPM_PACK12;
+-			break;
+-		case 14:
+-			pack = UNICAM_PPM_PACK14;
+-			break;
+-		case 16:
+-			pack = UNICAM_PPM_PACK16;
+-			break;
+-		default:
+-			pack = UNICAM_PPM_NONE;
+-			break;
+-		}
++		/* Repacking is always to 16bpp */
++		pack = UNICAM_PPM_PACK16;
+ 	}
+ 
+ 	val = 0;
+@@ -1893,7 +1890,10 @@ static int unicam_probe_complete(struct
+ 	}
+ 
+ 	unicam->fmt = fmt;
+-	unicam->v_fmt.fmt.pix.pixelformat = fmt->fourcc;
++	if (fmt->fourcc)
++		unicam->v_fmt.fmt.pix.pixelformat = fmt->fourcc;
++	else
++		unicam->v_fmt.fmt.pix.pixelformat = fmt->repacked_fourcc;
+ 
+ 	/* Read current subdev format */
+ 	unicam_reset_format(unicam);

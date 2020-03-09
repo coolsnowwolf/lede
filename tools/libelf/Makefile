@@ -13,7 +13,7 @@ PKG_HASH:=591a9b4ec81c1f2042a97aa60564e0cb79d041c52faa7416acb38bc95bd2c76d
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=http://www.mr511.de/software/
+PKG_SOURCE_URL:=https://fossies.org/linux/misc/old/
 
 HOST_BUILD_PARALLEL:=1
 

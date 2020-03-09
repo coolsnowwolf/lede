@@ -6,6 +6,7 @@
 
 config KERNEL_BUILD_USER
 	string "Custom Kernel Build User Name"
+	default "builder" if BUILDBOT
 	default ""
 	help
 	  Sets the Kernel build user string, which for example will be returned
@@ -14,6 +15,7 @@ config KERNEL_BUILD_USER
 
 config KERNEL_BUILD_DOMAIN
 	string "Custom Kernel Build Domain Name"
+	default "buildhost" if BUILDBOT
 	default ""
 	help
 	  Sets the Kernel build domain string, which for example will be
@@ -51,6 +53,24 @@ config KERNEL_ARM_PMU
 	bool
 	default n
 	depends on (arm || aarch64)
+
+config KERNEL_X86_VSYSCALL_EMULATION
+	bool "Enable vsyscall emulation"
+	default n
+	depends on x86_64
+	help
+	  This enables emulation of the legacy vsyscall page.  Disabling
+	  it is roughly equivalent to booting with vsyscall=none, except
+	  that it will also disable the helpful warning if a program
+	  tries to use a vsyscall.  With this option set to N, offending
+	  programs will just segfault, citing addresses of the form
+	  0xffffffffff600?00.
+
+	  This option is required by many programs built before 2013, and
+	  care should be used even with newer programs if set to N.
+
+	  Disabling this option saves about 7K of kernel size and
+	  possibly 4K of additional runtime pagetable memory.
 
 config KERNEL_PERF_EVENTS
 	bool "Compile the kernel with performance events and counters"
@@ -192,17 +212,21 @@ config KERNEL_KPROBE_EVENT
 	bool
 	default y if KERNEL_KPROBES
 
+config KERNEL_KPROBE_EVENTS
+	bool
+	default y if KERNEL_KPROBES
+
 config KERNEL_AIO
 	bool "Compile the kernel with asynchronous IO support"
-	default n
+	default y if !SMALL_FLASH
 
 config KERNEL_FHANDLE
 	bool "Compile the kernel with support for fhandle syscalls"
-	default n
+	default y if !SMALL_FLASH
 
 config KERNEL_FANOTIFY
 	bool "Compile the kernel with modern file notification support"
-	default n
+	default y if !SMALL_FLASH
 
 config KERNEL_BLK_DEV_BSG
 	bool "Compile the kernel with SCSI generic v4 support for any block device"
@@ -219,6 +243,21 @@ config KERNEL_DEBUG_PINCTRL
 config KERNEL_DEBUG_GPIO
 	bool "Compile the kernel with gpio debugging"
 	select KERNEL_DEBUG_KERNEL
+
+choice
+	prompt "Algorithms enabled for QCE acceleration"
+	default KERNEL_CRYPTO_DEV_QCE_ENABLE_ALL
+	depends on TARGET_ipq40xx
+
+	config KERNEL_CRYPTO_DEV_QCE_ENABLE_ALL
+		bool "All supported algorithms"
+
+	config KERNEL_CRYPTO_DEV_QCE_ENABLE_BLKCIPHER
+		bool "Block ciphers only"
+
+	config KERNEL_CRYPTO_DEV_QCE_ENABLE_SHA
+		bool "Hash/HMAC only"
+endchoice
 
 config KERNEL_COREDUMP
 	bool
@@ -316,7 +355,7 @@ config KERNEL_ENCRYPTED_KEYS
 
 config KERNEL_CGROUPS
 	bool "Enable kernel cgroups"
-	default n
+	default y if !SMALL_FLASH
 
 if KERNEL_CGROUPS
 
@@ -355,7 +394,7 @@ if KERNEL_CGROUPS
 
 	config KERNEL_CPUSETS
 		bool "Cpuset support"
-		default n
+		default y if !SMALL_FLASH
 		help
 		  This option will let you create and manage CPUSETs which
 		  allow dynamically partitioning a system into sets of CPUs and
@@ -369,14 +408,14 @@ if KERNEL_CGROUPS
 
 	config KERNEL_CGROUP_CPUACCT
 		bool "Simple CPU accounting cgroup subsystem"
-		default n
+		default y if !SMALL_FLASH
 		help
 		  Provides a simple Resource Controller for monitoring the
 		  total CPU consumed by the tasks in a cgroup.
 
 	config KERNEL_RESOURCE_COUNTERS
 		bool "Resource counters"
-		default n
+		default y if !SMALL_FLASH
 		help
 		  This option enables controller independent resource accounting
 		  infrastructure that works with cgroups.
@@ -387,7 +426,7 @@ if KERNEL_CGROUPS
 
 	config KERNEL_MEMCG
 		bool "Memory Resource Controller for Control Groups"
-		default n
+		default y if !SMALL_FLASH
 		depends on KERNEL_RESOURCE_COUNTERS || !LINUX_3_18
 		help
 		  Provides a memory resource controller that manages both anonymous
@@ -445,7 +484,7 @@ if KERNEL_CGROUPS
 
 	config KERNEL_MEMCG_KMEM
 		bool "Memory Resource Controller Kernel Memory accounting (EXPERIMENTAL)"
-		default n
+		default y if !SMALL_FLASH
 		depends on KERNEL_MEMCG
 		help
 		  The Kernel Memory extension for Memory Resource Controller can limit
@@ -466,7 +505,7 @@ if KERNEL_CGROUPS
 
 	menuconfig KERNEL_CGROUP_SCHED
 		bool "Group CPU scheduler"
-		default n
+		default y if !SMALL_FLASH
 		help
 		  This feature lets CPU scheduler recognize task groups and control CPU
 		  bandwidth allocation to such task groups. It uses cgroups to group
@@ -476,7 +515,7 @@ if KERNEL_CGROUPS
 
 		config KERNEL_FAIR_GROUP_SCHED
 			bool "Group scheduling for SCHED_OTHER"
-			default n
+			default y if !SMALL_FLASH
 
 		config KERNEL_CFS_BANDWIDTH
 			bool "CPU bandwidth provisioning for FAIR_GROUP_SCHED"
@@ -491,7 +530,7 @@ if KERNEL_CGROUPS
 
 		config KERNEL_RT_GROUP_SCHED
 			bool "Group scheduling for SCHED_RR/FIFO"
-			default n
+			default y if !SMALL_FLASH
 			help
 			  This feature lets you explicitly allocate real CPU bandwidth
 			  to task groups. If enabled, it will also make it impossible to
@@ -518,6 +557,20 @@ if KERNEL_CGROUPS
 		  enabling proportional weight division of disk bandwidth in CFQ, set
 		  CONFIG_CFQ_GROUP_IOSCHED=y; for enabling throttling policy, set
 		  CONFIG_BLK_DEV_THROTTLING=y.
+
+	if KERNEL_BLK_CGROUP
+
+		config KERNEL_CFQ_GROUP_IOSCHED
+			bool "Proportional weight of disk bandwidth in CFQ"
+
+		config KERNEL_BLK_DEV_THROTTLING
+			bool "Enable throttling policy"
+			default y if TARGET_bcm27xx
+
+		config KERNEL_BLK_DEV_THROTTLING_LOW
+			bool "Block throttling .low limit interface support (EXPERIMENTAL)"
+			depends on KERNEL_BLK_DEV_THROTTLING
+	endif
 
 	config KERNEL_DEBUG_BLK_CGROUP
 		bool "Enable Block IO controller debugging"
@@ -585,41 +638,30 @@ if KERNEL_NAMESPACES
 
 endif
 
-#
-# LXC related symbols
-#
+config KERNEL_DEVPTS_MULTIPLE_INSTANCES
+	bool "Support multiple instances of devpts"
+	default y if !SMALL_FLASH
+	help
+	  Enable support for multiple instances of devpts filesystem.
+	  If you want to have isolated PTY namespaces (eg: in containers),
+	  say Y here. Otherwise, say N. If enabled, each mount of devpts
+	  filesystem with the '-o newinstance' option will create an
+	  independent PTY namespace.
 
-config KERNEL_LXC_MISC
-	bool "Enable miscellaneous LXC related options"
-	default n
+config KERNEL_POSIX_MQUEUE
+	bool "POSIX Message Queues"
+	default y if !SMALL_FLASH
+	help
+	  POSIX variant of message queues is a part of IPC. In POSIX message
+	  queues every message has a priority which decides about succession
+	  of receiving it by a process. If you want to compile and run
+	  programs written e.g. for Solaris with use of its POSIX message
+	  queues (functions mq_*) say Y here.
 
-if KERNEL_LXC_MISC
+	  POSIX message queues are visible as a filesystem called 'mqueue'
+	  and can be mounted somewhere if you want to do filesystem
+	  operations on message queues.
 
-	config KERNEL_DEVPTS_MULTIPLE_INSTANCES
-		bool "Support multiple instances of devpts"
-		default y
-		help
-		  Enable support for multiple instances of devpts filesystem.
-		  If you want to have isolated PTY namespaces (eg: in containers),
-		  say Y here. Otherwise, say N. If enabled, each mount of devpts
-		  filesystem with the '-o newinstance' option will create an
-		  independent PTY namespace.
-
-	config KERNEL_POSIX_MQUEUE
-		bool "POSIX Message Queues"
-		default y
-		help
-		  POSIX variant of message queues is a part of IPC. In POSIX message
-		  queues every message has a priority which decides about succession
-		  of receiving it by a process. If you want to compile and run
-		  programs written e.g. for Solaris with use of its POSIX message
-		  queues (functions mq_*) say Y here.
-
-		  POSIX message queues are visible as a filesystem called 'mqueue'
-		  and can be mounted somewhere if you want to do filesystem
-		  operations on message queues.
-
-endif
 
 config KERNEL_SECCOMP_FILTER
 	bool
