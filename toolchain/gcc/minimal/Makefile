@@ -17,7 +17,7 @@ define Host/Compile
 endef
 
 define Host/Install
-	$(GCC_MAKE) -C $(GCC_BUILD_DIR) install-gcc install-target-libgcc
+	+$(GCC_MAKE) $(HOST_JOBS) -C $(GCC_BUILD_DIR) install-gcc install-target-libgcc
 endef
 
 define Host/Clean
