@@ -111,7 +111,7 @@ static void __init hiveap_121_setup(void)
 	ath79_eth0_data.mii_bus_dev = &ath79_mdio0_device.dev;
 	ath79_eth0_data.phy_if_mode = PHY_INTERFACE_MODE_RGMII;
 	ath79_eth0_data.phy_mask = BIT(HIVEAP_121_LAN_PHYADDR);
-	ath79_eth0_pll_data.pll_1000 = 0x0e000000;
+	ath79_eth0_pll_data.pll_1000 = 0x06000000;
 	ath79_eth0_pll_data.pll_100 = 0x00000101;
 	ath79_eth0_pll_data.pll_10 = 0x00001313;
 	ath79_register_eth(0);
