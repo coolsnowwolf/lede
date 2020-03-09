@@ -9,12 +9,13 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=iptables
-PKG_VERSION:=1.8.3
-PKG_RELEASE:=1
+PKG_VERSION:=1.8.2
+PKG_RELEASE:=2
 
-PKG_SOURCE_URL:=https://netfilter.org/projects/iptables/files
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
-PKG_HASH:=a23cac034181206b4545f4e7e730e76e08b5f3dd78771ba9645a6756de9cdd80
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://git.netfilter.org/iptables
+PKG_SOURCE_VERSION:=bba6bc692b0e6137e13881a1f398c134822e9f83
+PKG_MIRROR_HASH:=23a61d2a23fc0d587029690ef2564625d78fba4b2d90117edaf5b9eaf55bb7f9
 
 PKG_FIXUP:=autoreconf
 PKG_FLAGS:=nonshared
@@ -36,7 +37,7 @@ define Package/iptables/Default
   SECTION:=net
   CATEGORY:=Network
   SUBMENU:=Firewall
-  URL:=https://netfilter.org/
+  URL:=http://netfilter.org/
 endef
 
 define Package/iptables/Module
@@ -167,39 +168,6 @@ Includes support for:
   - string
   - bpf
 
-endef
-
-define Package/iptables-mod-imq
-$(call Package/iptables/Module, +kmod-ipt-imq)
-  TITLE:=IMQ support
-endef
-
-define Package/iptables-mod-imq/description
-iptables extension for IMQ support.
-
- Targets:
-  - IMQ
-
-endef
-
-define Package/iptables-mod-bandwidth
-$(call Package/iptables/Module, +kmod-ipt-bandwidth)
-  TITLE:=bandwidth
-endef
-
-define Package/iptables-mod-timerange
-$(call Package/iptables/Module, +kmod-ipt-timerange)
-  TITLE:=timerange
-endef
-
-define Package/iptables-mod-webmon
-$(call Package/iptables/Module, +kmod-ipt-webmon)
-  TITLE:=webmon
-endef
-
-define Package/iptables-mod-weburl
-$(call Package/iptables/Module, +kmod-ipt-weburl)
-  TITLE:=weburl
 endef
 
 define Package/iptables-mod-ipopt
@@ -525,7 +493,7 @@ $(call Package/iptables/Default)
   SECTION:=libs
   CATEGORY:=Libraries
   DEPENDS:=+libip4tc +libip6tc +libxtables
-  ABI_VERSION:=0
+  ABI_VERSION:=$(PKG_VERSION)
   TITLE:=IPv4/IPv6 firewall - shared libiptc library (nf compatibility stub)
 endef
 
@@ -534,7 +502,7 @@ $(call Package/iptables/Default)
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=IPv4 firewall - shared libiptc library
-  ABI_VERSION:=2
+  ABI_VERSION:=$(PKG_VERSION)
   DEPENDS:=+libxtables
 endef
 
@@ -543,7 +511,7 @@ $(call Package/iptables/Default)
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=IPv6 firewall - shared libiptc library
-  ABI_VERSION:=2
+  ABI_VERSION:=$(PKG_VERSION)
   DEPENDS:=+libxtables
 endef
 
@@ -552,7 +520,7 @@ define Package/libxtables
  SECTION:=libs
  CATEGORY:=Libraries
  TITLE:=IPv4/IPv6 firewall - shared xtables library
- ABI_VERSION:=12
+ ABI_VERSION:=$(PKG_VERSION)
  DEPENDS:= \
 	+IPTABLES_CONNLABEL:libnetfilter-conntrack \
 	+IPTABLES_NFTABLES:libnftnl
@@ -563,7 +531,7 @@ define Package/libxtables-nft
  SECTION:=libs
  CATEGORY:=Libraries
  TITLE:=IPv4/IPv6 firewall - shared xtables nft library
- ABI_VERSION:=12
+ ABI_VERSION:=$(PKG_VERSION)
  DEPENDS:=libxtables
 endef
 
@@ -664,24 +632,24 @@ endef
 
 define Package/libiptc/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libiptc.so.* $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libiptc.so* $(1)/usr/lib/
 endef
 
 define Package/libip4tc/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libip4tc.so.* $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libip4tc.so* $(1)/usr/lib/
 	$(CP) $(PKG_BUILD_DIR)/extensions/libiptext4.so $(1)/usr/lib/
 endef
 
 define Package/libip6tc/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libip6tc.so.* $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libip6tc.so* $(1)/usr/lib/
 	$(CP) $(PKG_BUILD_DIR)/extensions/libiptext6.so $(1)/usr/lib/
 endef
 
 define Package/libxtables/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libxtables.so.* $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libxtables.so* $(1)/usr/lib/
 	$(CP) $(PKG_BUILD_DIR)/extensions/libiptext.so $(1)/usr/lib/
 endef
 
@@ -711,11 +679,6 @@ $(eval $(call BuildPlugin,iptables-mod-conntrack-label,$(IPT_CONNTRACK_LABEL-m))
 $(eval $(call BuildPlugin,iptables-mod-extra,$(IPT_EXTRA-m)))
 $(eval $(call BuildPlugin,iptables-mod-physdev,$(IPT_PHYSDEV-m)))
 $(eval $(call BuildPlugin,iptables-mod-filter,$(IPT_FILTER-m)))
-$(eval $(call BuildPlugin,iptables-mod-imq,$(IPT_IMQ-m)))
-$(eval $(call BuildPlugin,iptables-mod-bandwidth,$(IPT_BANDWIDTH-m)))
-$(eval $(call BuildPlugin,iptables-mod-timerange,$(IPT_TIMERANGE-m)))
-$(eval $(call BuildPlugin,iptables-mod-webmon,$(IPT_WEBMON-m)))
-$(eval $(call BuildPlugin,iptables-mod-weburl,$(IPT_WEBURL-m)))
 $(eval $(call BuildPlugin,iptables-mod-ipopt,$(IPT_IPOPT-m)))
 $(eval $(call BuildPlugin,iptables-mod-ipsec,$(IPT_IPSEC-m)))
 $(eval $(call BuildPlugin,iptables-mod-nat-extra,$(IPT_NAT_EXTRA-m)))
