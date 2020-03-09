@@ -37,31 +37,41 @@ o.rmempty = true
 o = s:option(Button,"update_Sub",translate("Update Subscribe List"))
 o.inputstyle = "reload"
 o.description = translate("Update subscribe url list first")
-o.write = function() 
+o.write = function()
   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
 end
+
+o = s:option(Flag, "switch", translate("Subscribe Default Auto-Switch"))
+o.rmempty = false
+o.description = translate("Subscribe new add server default Auto-Switch on")
+o.default="1"
 
 o = s:option(Flag, "proxy", translate("Through proxy update"))
 o.rmempty = false
 o.description = translate("Through proxy update list, Not Recommended ")
 
-o = s:option(Button,"update",translate("Update All Subscribe Severs"))
-o.inputstyle = "apply"
-o.write = function() 
-  luci.sys.exec("bash /usr/share/shadowsocksr/subscribe.sh >>/tmp/ssrplus.log 2>&1")
-  luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
-end
 
+o = s:option(Button,"subscribe", translate("Update All Subscribe Severs"))
+o.rawhtml  = true
+o.template = "shadowsocksr/subscribe"
 
-o = s:option(Button,"delete",translate("Delete all severs"))
+o = s:option(Button,"delete",translate("Delete All Subscribe Severs"))
 o.inputstyle = "reset"
 o.description = string.format(translate("Server Count") ..  ": %d", server_count)
 o.write = function()
-  uci:delete_all("shadowsocksr", "servers", function(s) return true end)
-  uci:save("shadowsocksr") 
-  luci.sys.call("uci commit shadowsocksr && /etc/init.d/shadowsocksr stop") 
-  luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
-  return
+uci:delete_all("shadowsocksr", "servers", function(s)
+  if s.hashkey or s.isSubscribe then
+    return true
+  else
+    return false
+  end
+end)
+uci:save("shadowsocksr") 
+uci:commit("shadowsocksr")
+luci.sys.init.stop("shadowsocksr")
+luci.sys.init.start("shadowsocksr")
+luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
+return
 end
 
 -- [[ Servers Manage ]]--
@@ -70,12 +80,13 @@ s.anonymous = true
 s.addremove = true
 s.sortable = false
 s.template = "cbi/tblsection"
+s.sortable = true
 s.extedit = luci.dispatcher.build_url("admin/services/shadowsocksr/servers/%s")
 function s.create(...)
 	local sid = TypedSection.create(...)
 	if sid then
 		luci.http.redirect(s.extedit % sid)
-		return
+	return
 	end
 end
 
@@ -89,31 +100,21 @@ function o.cfgvalue(...)
 	return Value.cfgvalue(...) or translate("None")
 end
 
-o = s:option(DummyValue, "server", translate("Server Address"))
-function o.cfgvalue(...)
-	return Value.cfgvalue(...) or "?"
-end
-
 o = s:option(DummyValue, "server_port", translate("Server Port"))
 function o.cfgvalue(...)
-	return Value.cfgvalue(...) or "?"
-end
-
-if nixio.fs.access("/usr/bin/kcptun-client") then
-
-o = s:option(DummyValue, "kcp_enable", translate("KcpTun"))
-function o.cfgvalue(...)
-	return Value.cfgvalue(...) or "?"
-end
-
+	return Value.cfgvalue(...) or "N/A"
 end
 
 o = s:option(DummyValue, "switch_enable", translate("Auto Switch"))
 function o.cfgvalue(...)
-	return Value.cfgvalue(...) or "0"
+	return Value.cfgvalue(...) or "1"
 end
 
-o = s:option(DummyValue,"server",translate("Ping Latency"))
+o = s:option(DummyValue, "server_port", translate("Socket Connected"))
+o.template="shadowsocksr/socket"
+o.width="10%"
+
+o = s:option(DummyValue, "server", translate("Ping Latency"))
 o.template="shadowsocksr/ping"
 o.width="10%"
 

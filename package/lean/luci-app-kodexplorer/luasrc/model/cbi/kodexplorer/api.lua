@@ -6,6 +6,7 @@ local i18n = require "luci.i18n"
 
 module("luci.model.cbi.kodexplorer.api", package.seeall)
 
+local appname = "kodexplorer"
 local api_url =
     "https://api.github.com/repos/kalcaddle/KodExplorer/releases/latest"
 local download_url = "https://github.com/kalcaddle/KodExplorer/archive/"
@@ -14,8 +15,17 @@ local wget = "/usr/bin/wget"
 local wget_args = {
     "--no-check-certificate", "--quiet", "--timeout=10", "--tries=2"
 }
+local command_timeout = 300
 
-local command_timeout = 40
+function uci_get_type(type, config, default)
+    value = uci:get(appname, "@" .. type .. "[0]", config) or sys.exec(
+                "echo -n `uci -q get " .. appname .. ".@" .. type .. "[0]." ..
+                    config .. "`")
+    if (value == nil or value == "") and (default and default ~= "") then
+        value = default
+    end
+    return value
+end
 
 local function _unpack(t, i)
     i = i or 1
@@ -106,9 +116,7 @@ local function get_api_json(url)
 end
 
 function get_project_directory()
-    return uci:get("kodexplorer", "global", "project_directory") or
-               luci.sys.exec(
-                   "echo -n `uci get kodexplorer.@global[0].project_directory`")
+    return uci_get_type("global", "project_directory", "/tmp/kodexplorer")
 end
 
 function to_check()

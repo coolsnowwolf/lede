@@ -1,6 +1,6 @@
 -- Licensed to the public under the Apache License 2.0.
 
-m = Map("cifsd", translate("Network Shares (CIFSD)"))
+m = Map("ksmbd", translate("Network Shares (CIFSD)"))
 
 s = m:section(TypedSection, "globals", translate("CIFSD is an opensource In-kernel SMB1/2/3 server"))
 s.anonymous = true
@@ -8,28 +8,26 @@ s.anonymous = true
 s:tab("general",  translate("General Settings"))
 s:tab("template", translate("Edit Template"))
 
+s:taboption("general", Value, "description", translate("Description"))
 
 o = s:taboption("general", Value, "workgroup", translate("Workgroup"))
 o.placeholder = 'WORKGROUP'
 
-s:taboption("general", Value, "description", translate("Description"))
-
-
 tmpl = s:taboption("template", Value, "_tmpl",
 	translate("Edit the template that is used for generating the cifsd configuration."), 
-	translate("This is the content of the file '/etc/cifs/smb.conf.template' from which your cifsd configuration will be generated. \
+	translate("This is the content of the file '/etc/ksmbd/smb.conf.template' from which your cifsd configuration will be generated. \
 			Values enclosed by pipe symbols ('|') should not be changed. They get their values from the 'General Settings' tab."))
 
 tmpl.template = "cbi/tvalue"
 tmpl.rows = 20
 
 function tmpl.cfgvalue(self, section)
-	return nixio.fs.readfile("/etc/cifs/smb.conf.template")
+	return nixio.fs.readfile("/etc/ksmbd/smb.conf.template")
 end
 
 function tmpl.write(self, section, value)
 	value = value:gsub("\r\n?", "\n")
-	nixio.fs.writefile("//etc/cifs/smb.conf.template", value)
+	nixio.fs.writefile("/etc/ksmbd/smb.conf.template", value)
 end
 
 
@@ -82,6 +80,5 @@ dm = s:option(Value, "dir_mask", translate("Directory mask"),
 dm.rmempty = true
 dm.size = 4
 dm.default = "0777"
-
 
 return m

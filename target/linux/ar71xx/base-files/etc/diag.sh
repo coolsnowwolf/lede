@@ -286,6 +286,9 @@ get_status_led() {
 	mc-mac1200r)
 		status_led="mercury:green:system"
 		;;
+	mc-mw4530r)
+		status_led="mercury:green:system"
+		;;
 	mr18|\
 	z1)
 		status_led="$board:green:tricolor0"
@@ -490,6 +493,7 @@ get_status_led() {
 	tl-wr842n-v3|\
 	tl-wr880n-v1|\
 	tl-wr881n-v1|\
+	tl-wr885n-v1|\
 	tl-wr941nd|\
 	tl-wr941n-v7|\
 	tl-wr941nd-v5)

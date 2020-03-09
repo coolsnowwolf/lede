@@ -6,10 +6,10 @@
 # See /LICENSE for more information.
 #
 
--include $(TMP_DIR)/.packagesubdirs
+-include $(TMP_DIR)/.packageauxvars
 
 FEEDS_INSTALLED:=$(notdir $(wildcard $(TOPDIR)/package/feeds/*))
-FEEDS_AVAILABLE:=$(sort $(FEEDS_INSTALLED) $(shell $(SCRIPT_DIR)/feeds list -n))
+FEEDS_AVAILABLE:=$(sort $(FEEDS_INSTALLED) $(shell $(SCRIPT_DIR)/feeds list -n 2>/dev/null))
 
 PACKAGE_SUBDIRS=$(PACKAGE_DIR)
 ifneq ($(CONFIG_PER_FEED_REPO),)
@@ -40,4 +40,9 @@ define FeedSourcesAppend
 		$(if $(CONFIG_FEED_$(feed)), \
 			echo '$(if $(filter m,$(CONFIG_FEED_$(feed))),# )src/gz %d_$(feed) %U/packages/%A/$(feed)';)))) \
 ) >> $(1)
+endef
+
+# 1: package name
+define GetABISuffix
+$(if $(filter-out kmod-%,$(1)),$(if $(Package/$(1)/abiversion),$(if $(filter %0 %1 %2 %3 %4 %5 %6 %7 %8 %9,$(1)),-)$(Package/$(1)/abiversion)))
 endef
