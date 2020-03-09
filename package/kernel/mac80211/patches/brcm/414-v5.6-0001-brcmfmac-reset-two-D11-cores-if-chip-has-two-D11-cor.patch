@@ -1,0 +1,121 @@
+From 1b8d2e0a9e4221b99eea375c079507ce8ef655f5 Mon Sep 17 00:00:00 2001
+From: Wright Feng <wright.feng@cypress.com>
+Date: Thu, 12 Dec 2019 00:52:45 +0100
+Subject: [PATCH 1/7] brcmfmac: reset two D11 cores if chip has two D11 cores
+
+There are two D11 cores in RSDB chips like 4359. We have to reset two
+D11 cores simutaneously before firmware download, or the firmware may
+not be initialized correctly and cause "fw initialized failed" error.
+
+Signed-off-by: Wright Feng <wright.feng@cypress.com>
+Signed-off-by: Soeren Moch <smoch@web.de>
+Reviewed-by: Chi-Hsien Lin <chi-hsien.lin@cypress.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../broadcom/brcm80211/brcmfmac/chip.c        | 50 +++++++++++++++++++
+ .../broadcom/brcm80211/brcmfmac/chip.h        |  1 +
+ .../broadcom/brcm80211/brcmfmac/pcie.c        |  2 +-
+ 3 files changed, 52 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
+@@ -433,11 +433,25 @@ static void brcmf_chip_ai_resetcore(stru
+ {
+ 	struct brcmf_chip_priv *ci;
+ 	int count;
++	struct brcmf_core *d11core2 = NULL;
++	struct brcmf_core_priv *d11priv2 = NULL;
+ 
+ 	ci = core->chip;
+ 
++	/* special handle two D11 cores reset */
++	if (core->pub.id == BCMA_CORE_80211) {
++		d11core2 = brcmf_chip_get_d11core(&ci->pub, 1);
++		if (d11core2) {
++			brcmf_dbg(INFO, "found two d11 cores, reset both\n");
++			d11priv2 = container_of(d11core2,
++						struct brcmf_core_priv, pub);
++		}
++	}
++
+ 	/* must disable first to work for arbitrary current core state */
+ 	brcmf_chip_ai_coredisable(core, prereset, reset);
++	if (d11priv2)
++		brcmf_chip_ai_coredisable(d11priv2, prereset, reset);
+ 
+ 	count = 0;
+ 	while (ci->ops->read32(ci->ctx, core->wrapbase + BCMA_RESET_CTL) &
+@@ -449,9 +463,30 @@ static void brcmf_chip_ai_resetcore(stru
+ 		usleep_range(40, 60);
+ 	}
+ 
++	if (d11priv2) {
++		count = 0;
++		while (ci->ops->read32(ci->ctx,
++				       d11priv2->wrapbase + BCMA_RESET_CTL) &
++				       BCMA_RESET_CTL_RESET) {
++			ci->ops->write32(ci->ctx,
++					 d11priv2->wrapbase + BCMA_RESET_CTL,
++					 0);
++			count++;
++			if (count > 50)
++				break;
++			usleep_range(40, 60);
++		}
++	}
++
+ 	ci->ops->write32(ci->ctx, core->wrapbase + BCMA_IOCTL,
+ 			 postreset | BCMA_IOCTL_CLK);
+ 	ci->ops->read32(ci->ctx, core->wrapbase + BCMA_IOCTL);
++
++	if (d11priv2) {
++		ci->ops->write32(ci->ctx, d11priv2->wrapbase + BCMA_IOCTL,
++				 postreset | BCMA_IOCTL_CLK);
++		ci->ops->read32(ci->ctx, d11priv2->wrapbase + BCMA_IOCTL);
++	}
+ }
+ 
+ char *brcmf_chip_name(u32 id, u32 rev, char *buf, uint len)
+@@ -1109,6 +1144,21 @@ void brcmf_chip_detach(struct brcmf_chip
+ 	kfree(chip);
+ }
+ 
++struct brcmf_core *brcmf_chip_get_d11core(struct brcmf_chip *pub, u8 unit)
++{
++	struct brcmf_chip_priv *chip;
++	struct brcmf_core_priv *core;
++
++	chip = container_of(pub, struct brcmf_chip_priv, pub);
++	list_for_each_entry(core, &chip->cores, list) {
++		if (core->pub.id == BCMA_CORE_80211) {
++			if (unit-- == 0)
++				return &core->pub;
++		}
++	}
++	return NULL;
++}
++
+ struct brcmf_core *brcmf_chip_get_core(struct brcmf_chip *pub, u16 coreid)
+ {
+ 	struct brcmf_chip_priv *chip;
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.h
+@@ -74,6 +74,7 @@ struct brcmf_chip *brcmf_chip_attach(voi
+ 				     const struct brcmf_buscore_ops *ops);
+ void brcmf_chip_detach(struct brcmf_chip *chip);
+ struct brcmf_core *brcmf_chip_get_core(struct brcmf_chip *chip, u16 coreid);
++struct brcmf_core *brcmf_chip_get_d11core(struct brcmf_chip *pub, u8 unit);
+ struct brcmf_core *brcmf_chip_get_chipcommon(struct brcmf_chip *chip);
+ struct brcmf_core *brcmf_chip_get_pmu(struct brcmf_chip *pub);
+ bool brcmf_chip_iscoreup(struct brcmf_core *core);
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -78,7 +78,7 @@ static const struct brcmf_firmware_mappi
+ 	BRCMF_FW_ENTRY(BRCM_CC_4371_CHIP_ID, 0xFFFFFFFF, 4371),
+ };
+ 
+-#define BRCMF_PCIE_FW_UP_TIMEOUT		2000 /* msec */
++#define BRCMF_PCIE_FW_UP_TIMEOUT		5000 /* msec */
+ 
+ #define BRCMF_PCIE_REG_MAP_SIZE			(32 * 1024)
+ 
