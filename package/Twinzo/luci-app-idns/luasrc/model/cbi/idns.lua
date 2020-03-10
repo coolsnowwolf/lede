@@ -17,7 +17,7 @@ n = m:section(TypedSection, "main_router", translate("主路由或开启dhcp的�
 n.addremove = false
 n.anonymous = true
 
-enable = n:option(Flag,"enabled",translate("enable"), translate("点击启用则开始创建dhcp.leases的链接"))
+enable = n:option(Flag,"enabled",translate("enabled"), translate("点击启用则开始创建dhcp.leases的链接"))
 enable.rmempty = false
 
 leases = n:option(Value,"leases",translate("链接文件"),
@@ -30,7 +30,7 @@ x = m:section(TypedSection, "relay_router", translate("中继或未开启dhcp的
 x.addremove = false
 x.anonymous = true
 
-enable = x:option(Flag,"enabled",translate("enable"), translate("点击启用则开始获取主路由的dhcp.leases文件"))
+enable = x:option(Flag,"enabled",translate("enabled"), translate("点击启用则开始获取主路由的dhcp.leases文件"))
 enable.rmempty = false
 
 leases = x:option(Value,"upstreamIP",translate("主路由ip"),
@@ -47,7 +47,7 @@ z.addremove = true
 z.anonymous = true
 z.template="cbi/tblsection"
 
-enable = z:option(Flag,"enabled",translate("enable"))
+enable = z:option(Flag,"enabled",translate("enabled"))
 enable.rmempty = false
 
 ip = z:option(Value,"ipaddr",translate("光猫IP"),
