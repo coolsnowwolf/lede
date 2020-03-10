@@ -1,5 +1,5 @@
 local fs = require "nixio.fs"
-local conffile = "/usr/share/adbyby/adhost.conf"
+local conffile = "/usr/share/adbyby/blockip.conf"
 
 f = SimpleForm("custom")
 
