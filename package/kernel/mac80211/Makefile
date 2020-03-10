@@ -162,7 +162,7 @@ endef
 define KernelPackage/airo
   $(call KernelPackage/mac80211/Default)
   TITLE:=Cisco Aironet driver
-  DEPENDS+=@PCI_SUPPORT +@DRIVER_WEXT_SUPPORT +kmod-cfg80211 @TARGET_x86
+  DEPENDS+=@PCI_SUPPORT +@DRIVER_WEXT_SUPPORT +kmod-cfg80211 @TARGET_x86 @BROKEN
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/cisco/airo.ko
   AUTOLOAD:=$(call AutoProbe,airo)
 endef
