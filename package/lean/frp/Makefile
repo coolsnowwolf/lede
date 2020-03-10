@@ -51,11 +51,11 @@ define frp/templates
 
   define Package/$(1)/install
 	$$(call GoPackage/Package/Install/Bin,$$(PKG_INSTALL_DIR))
-	
-	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(PKG_INSTALL_DIR)/usr/bin/$(1)
 
 	$$(INSTALL_DIR) $$(1)/usr/bin
 	$$(INSTALL_BIN) $$(PKG_INSTALL_DIR)/usr/bin/$(1) $$(1)/usr/bin/
+	
+	$(STAGING_DIR_HOST)/bin/upx --lzma --best $$(1)/usr/bin/$(1)
   endef
 endef
 
