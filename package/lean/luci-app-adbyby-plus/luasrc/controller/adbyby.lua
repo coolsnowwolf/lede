@@ -6,7 +6,13 @@ function index()
 		return
 	end
 	
-	entry({"admin", "services", "adbyby"}, cbi("adbyby"), _("ADBYBY Plus +"), 10).dependent = true
+	entry({"admin", "services", "adbyby"}, alias("admin", "services", "adbyby", "base"),_("ADBYBY Plus +"), 9).dependent = true
+	
+	entry({"admin", "services", "adbyby", "base"}, cbi("adbyby/base"), _("Base Setting"), 10).leaf=true
+	entry({"admin", "services", "adbyby", "advanced"}, cbi("adbyby/advanced"), _("Advance Setting"), 20).leaf=true
+	entry({"admin", "services", "adbyby", "help"}, form("adbyby/help"), _("Plus+ Domain List"), 30).leaf=true
+	
+	
 	entry({"admin","services","adbyby","status"},call("act_status")).leaf=true
 end
 
