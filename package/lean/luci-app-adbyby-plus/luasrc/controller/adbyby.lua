@@ -32,14 +32,29 @@ function refresh_data()
 local set =luci.http.formvalue("set")
 local icount =0
 
-if set == "gfw_data" then
+if set == "rule_data" then
+luci.sys.exec("/usr/share/adbyby/rule-update")
+  icount = luci.sys.exec("/usr/share/adbyby/rule-count '/tmp/rules/'")
+  
+  if tonumber(icount)>0 then
+    if nixio.fs.access("/usr/share/adbyby/rules/") then
+      oldcount=luci.sys.exec("/usr/share/adbyby/rule-count '/usr/share/adbyby/rules/'")
+    else
+      oldcount=0
+    end
+  else
+    retstring ="-1"
+  end
+  
+  if tonumber(icount) ~= tonumber(oldcount) then
+		luci.sys.exec("rm -rf /usr/share/adbyby/rules/* && cp -a /tmp/rules /usr/share/adbyby/")
+		luci.sys.exec("/etc/init.d/dnsmasq reload")
+		retstring=tostring(math.ceil(tonumber(icount)))
+	else
 		retstring ="0"
-elseif set == "ip_data" then
-		retstring ="0"
+	end
 else
-
 refresh_cmd="wget-ssl -q --no-check-certificate -O - 'https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt' > /tmp/adnew.conf"
-
 sret=luci.sys.call(refresh_cmd .. " 2>/dev/null")
 if sret== 0 then
 	luci.sys.call("/usr/share/adbyby/ad-update")
