@@ -43,7 +43,7 @@ define frp/templates
 
   define Package/$(1)/description
   frp is a fast reverse proxy to help you expose a local server behind a NAT or firewall
-  to the internet. As of now, it supports tcp & udp, as well as httpand https protocols,
+  to the internet. As of now, it supports tcp & udp, as well as http and https protocols,
   where requests can be forwarded to internal services by domain name.
 
   This package contains the $(1).
