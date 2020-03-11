@@ -889,8 +889,8 @@ endef
 TARGET_DEVICES += mc-mac1200r
 
 define Device/mc-mw4530r
-$(Device/tplink-16mlzma)
-  DEVICE_TITLE := MerCury MW4530R
+$(Device/tplink-8mlzma)
+  DEVICE_TITLE := Mercury MW4530R
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
   BOARDNAME := MC-MW4530R
   DEVICE_PROFILE := MW4530R
