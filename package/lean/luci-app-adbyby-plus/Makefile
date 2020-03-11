@@ -10,7 +10,7 @@ LUCI_DEPENDS:=+adbyby +wget +ipset +dnsmasq-full
 LUCI_PKGARCH:=all
 PKG_NAME:=luci-app-adbyby-plus
 PKG_VERSION:=2.0
-PKG_RELEASE:=46
+PKG_RELEASE:=63
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
