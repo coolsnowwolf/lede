@@ -366,13 +366,6 @@ $(Device/tplink-8mlzma)
 endef
 TARGET_DEVICES += tl-wdr6500-v6
 
-define Device/mw4530r-v1
-  $(Device/tl-wdr4300-v1)
-  DEVICE_TITLE := Mercury MW4530R v1
-  TPLINK_HWID := 0x45300001
-endef
-TARGET_DEVICES += mw4530r-v1
-
 define Device/tl-wpa8630-v1
   $(Device/tplink-8mlzma)
   DEVICE_TITLE := TP-LINK TL-WPA8630 v1
