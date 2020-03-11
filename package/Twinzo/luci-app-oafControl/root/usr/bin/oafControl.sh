@@ -1,18 +1,14 @@
 #!/bin/sh
-source /lib/functions.sh
-
+alias config_foreach="/lib/functions.sh config_foreach"
+alias config_load="/lib/functions.sh config_load"
+alias config_get="/lib/functions.sh config_get"
 alias separate_front="awk -F \":\" '{print \$1}'"
 alias separate_back="awk -F \":\" '{print \$2}'"
 VACATIONFILE="/etc/oafControl/vacation.conf"
 OVERTIMEFILE="/etc/oafControl/overtime.conf"
 LOGFILE="/tmp/oafControl/oafControl.log"
-touch $LOGFILE
-touch $OVERTIMEFILE
-touch $VACATIONFILE
 VACATIONBAK="/etc/oafControl/overtime.bak"
 OVERIIMEBAK="/etc/oafControl/vacation.bak"
-touch $VACATIONBAK
-touch $OVERIIMEBAK
 mode="$1"
 fun="$2"
 line=`wc -l $LOGFILE`
@@ -214,8 +210,8 @@ init_workday(){
 	night_start_minu=$(isMinu `echo $night_start | separate_back` 2>/dev/null)
 	night_stop_hour=$(isHour `echo $night_stop | separate_front` 2>/dev/null)
 	night_stop_minu=$(isMinu `echo $night_stop | separate_back` 2>/dev/null)
-	[ "$morning_start_minu" -a "$morning_start_hour" ] && add_cron $morning_start_minu $morning_start_hour $workday "oafControl_workday_moring_start" "start"
-	[ "$morning_start_minu" -a "$morning_start_hour" -a "$morning_stop_minu" -a "$morning_stop_hour" ] && add_cron $morning_stop_minu $morning_stop_hour $workday "oafControl_workday_moring_stop"
+	[ "$morning_start_minu" -a "$morning_start_hour" ] && add_cron $morning_start_minu $morning_start_hour $workday "oafControl_workday_morning_start" "start"
+	[ "$morning_start_minu" -a "$morning_start_hour" -a "$morning_stop_minu" -a "$morning_stop_hour" ] && add_cron $morning_stop_minu $morning_stop_hour $workday "oafControl_workday_morning_stop"
 	[ "$afternoon_start_minu" -a "$afternoon_stop_hour" ] && add_cron $afternoon_start_minu $afternoon_start_hour $workday "oafControl_workday_afternoon_start" "start"
 	[ "$afternoon_start_minu" -a "$afternoon_stop_hour" -a "$afternoon_stop_minu" -a "afternoon_stop_hour$" ] && add_cron $afternoon_stop_minu $afternoon_stop_hour $workday "oafControl_workday_afternoon_stop"
 	[ "$night_start_minu" -a "$night_start_hour" ] && add_cron $night_start_minu $night_start_hour $workday "oafControl_workday_night_start" "start"
@@ -247,8 +243,8 @@ init_weekday(){
 	night_start_minu=$(isMinu `echo $night_start | separate_back` 2>/dev/null)
 	night_stop_hour=$(isHour `echo $night_stop | separate_front` 2>/dev/null)
 	night_stop_minu=$(isMinu `echo $night_stop | separate_back` 2>/dev/null)
-	[ "$morning_start_minu" -a "$morning_start_hour" ] && add_cron $morning_start_minu $morning_start_hour $weekday "oafControl_weekday_moring_start" "start"
-	[ "$morning_start_minu" -a "$morning_start_hour" -a "$morning_stop_minu" -a "$morning_stop_hour" ] && add_cron $morning_stop_minu $morning_stop_hour $weekday "oafControl_weekday_moring_stop"
+	[ "$morning_start_minu" -a "$morning_start_hour" ] && add_cron $morning_start_minu $morning_start_hour $weekday "oafControl_weekday_morning_start" "start"
+	[ "$morning_start_minu" -a "$morning_start_hour" -a "$morning_stop_minu" -a "$morning_stop_hour" ] && add_cron $morning_stop_minu $morning_stop_hour $weekday "oafControl_weekday_morning_stop"
 	[ "$afternoon_start_minu" -a "$afternoon_stop_hour" ] && add_cron $afternoon_start_minu $afternoon_start_hour $weekday "oafControl_weekday_afternoon_start" "start"
 	[ "$afternoon_start_minu" -a "$afternoon_stop_hour" -a "$afternoon_stop_minu" -a "afternoon_stop_hour$" ] && add_cron $afternoon_stop_minu $afternoon_stop_hour $weekday "oafControl_weekday_afternoon_stop"
 	[ "$night_start_minu" -a "$night_start_hour" ] && add_cron $night_start_minu $night_start_hour $weekday "oafControl_weekday_night_start" "start"
@@ -336,8 +332,8 @@ global_control(){
 		night_start_minu=$(isMinu `echo $night_start | separate_back` 2>/dev/null)
 		night_stop_hour=$(isHour `echo $night_stop | separate_front` 2>/dev/null)
 		night_stop_minu=$(isMinu `echo $night_stop | separate_back` 2>/dev/null)
-		[ "$morning_start_minu" -a "$morning_start_hour" ] && overtime_add_cron $morning_start_minu $morning_start_hour $day $month "oafControl_overtime_moring_start" "start"
-		[ "$morning_start_minu" -a "$morning_start_hour" -a "$morning_stop_minu" -a "$morning_stop_hour" ] && overtime_add_cron $morning_stop_minu $morning_stop_hour $day $month "oafControl_overtime_moring_stop"
+		[ "$morning_start_minu" -a "$morning_start_hour" ] && overtime_add_cron $morning_start_minu $morning_start_hour $day $month "oafControl_overtime_morning_start" "start"
+		[ "$morning_start_minu" -a "$morning_start_hour" -a "$morning_stop_minu" -a "$morning_stop_hour" ] && overtime_add_cron $morning_stop_minu $morning_stop_hour $day $month "oafControl_overtime_morning_stop"
 		[ "$afternoon_start_minu" -a "$afternoon_stop_hour" ] && overtime_add_cron $afternoon_start_minu $afternoon_start_hour $day $month "oafControl_overtime_afternoon_start" "start"
 		[ "$afternoon_start_minu" -a "$afternoon_stop_hour" -a "$afternoon_stop_minu" -a "afternoon_stop_hour$" ] && overtime_add_cron $afternoon_stop_minu $afternoon_stop_hour $day $month "oafControl_overtime_afternoon_stop"
 		[ "$night_start_minu" -a "$night_start_hour" ] && overtime_add_cron $night_start_minu $night_start_hour $day $month "oafControl_overtime_night_start" "start"
