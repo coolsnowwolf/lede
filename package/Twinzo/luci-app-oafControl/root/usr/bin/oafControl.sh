@@ -1,4 +1,5 @@
 #!/bin/sh
+
 alias config_foreach="/lib/functions.sh config_foreach"
 alias config_load="/lib/functions.sh config_load"
 alias config_get="/lib/functions.sh config_get"
