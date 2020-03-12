@@ -364,3 +364,4 @@ global_stop(){
 [ "$mode" = "auto_update" ] && auto_update
 [ "$mode" = "remote_control" ] && remote_control
 [ "$mode" = "global_control" ] && global_control
+
