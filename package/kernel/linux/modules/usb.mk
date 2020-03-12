@@ -480,7 +480,7 @@ $(eval $(call KernelPackage,usb-dwc3))
 
 define KernelPackage/usb-dwc3-of-simple
   TITLE:=DWC3 USB simple OF driver
-  DEPENDS:=@!LINUX_4_19 @(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3
+  DEPENDS:=@LINUX_4_14 @(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3
   KCONFIG:= CONFIG_USB_DWC3_OF_SIMPLE
   FILES:= $(LINUX_DIR)/drivers/usb/dwc3/dwc3-of-simple.ko
   AUTOLOAD:=$(call AutoLoad,53,dwc3-of-simple,1)

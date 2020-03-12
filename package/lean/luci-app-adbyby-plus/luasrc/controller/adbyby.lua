@@ -47,7 +47,7 @@ luci.sys.exec("/usr/share/adbyby/rule-update")
   end
   
   if tonumber(icount) ~= tonumber(oldcount) then
-		luci.sys.exec("rm -rf /usr/share/adbyby/rules/* && cp -a /tmp/rules /usr/share/adbyby/")
+		luci.sys.exec("rm -f /usr/share/adbyby/rules/data/* /usr/share/adbyby/rules/host/* && cp -a /tmp/rules /usr/share/adbyby/")
 		luci.sys.exec("/etc/init.d/dnsmasq reload")
 		retstring=tostring(math.ceil(tonumber(icount)))
 	else
