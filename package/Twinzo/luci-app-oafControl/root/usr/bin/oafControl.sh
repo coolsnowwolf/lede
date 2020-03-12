@@ -132,7 +132,7 @@ remote_control(){ #远程控制
 	curl "$remote_url" > /tmp/oafControl/oafControl.Status
 	echo "`date '+%A %Y-%m-%d %H:%M:%S'`：正在获取远程控制状态" >> $LOGFILE
 	status=$(cat /tmp/oafControl/oafControl.Status 2>/dev/null)
-	if [ "$status" -eq 1 ]; then
+	if [ "$status" -eq "1" ]; then
 		if [ "$status" -eq "$global_enable" ]; then #均为1则无操作
 			echo "`date '+%A %Y-%m-%d %H:%M:%S'`：远程无命令" >> $LOGFILE
 			return
@@ -141,7 +141,7 @@ remote_control(){ #远程控制
 			uci set oafControl.@global[0].global_enabled="1"
 			/etc/init.d/oafControl restart
 		fi
-	elif [ "$status" -eq 0 ]; then
+	elif [ "$status" -eq "0" ]; then
 		if [ "$status" -ne "$global_enable" ]; then #不同则stop并改变启动状态为已禁止
 			echo "`date '+%A %Y-%m-%d %H:%M:%S'`：远程关闭中" >> $LOGFILE
 			uci set oafControl.@global[0].global_enabled="0"
@@ -163,8 +163,8 @@ init_vacation(){
 		config_get restStart "$1" rest_start
 		config_get restEnd "$1" rest_end
 		config_get comments "$1" comment
-		[ "$enable" -eq 1 ] && newDate $restStart $restEnd $VACATIONFILE
-		[ "$enable" -eq 1 ] && echo "${comments} 已启用：从 $restStart 到 $restEnd" >> $VACATIONBAK || echo "${comments} 未启用：从 $restStart 到 $restEnd" >> $VACATIONBAK 
+		[ "$enable" -eq "1" ] && newDate $restStart $restEnd $VACATIONFILE
+		[ "$enable" -eq "1" ] && echo "${comments} 已启用：从 $restStart 到 $restEnd" >> $VACATIONBAK || echo "${comments} 未启用：从 $restStart 到 $restEnd" >> $VACATIONBAK 
 	}
 	config_load oafControl
 	config_foreach config_vacation vacation
@@ -180,8 +180,8 @@ init_overtime(){
 		config_get overtimeStart "$1" overtime_start
 		config_get overtimeEnd "$1" overtime_end
 		config_get comments "$1" comment
-		[ "$enable" -eq 1 ] && newDate $overtimeStart $overtimeEnd $OVERTIMEFILE
-		[ "$enable" -eq 1 ] && echo "${comments} 已启用：从 $overtimeStart 到 $overtimeEnd" >> $OVERIIMEBAK || echo "${comments} 未启用：从 $restStart 到 $restEnd" >> $OVERIIMEBAK 
+		[ "$enable" -eq "1" ] && newDate $overtimeStart $overtimeEnd $OVERTIMEFILE
+		[ "$enable" -eq "1" ] && echo "${comments} 已启用：从 $overtimeStart 到 $overtimeEnd" >> $OVERIIMEBAK || echo "${comments} 未启用：从 $restStart 到 $restEnd" >> $OVERIIMEBAK 
 	}
 	config_load oafControl
 	config_foreach config_overtime overtime
@@ -191,7 +191,7 @@ init_overtime(){
 
 init_workday(){
 	enable=`uci get oafControl.@workday[0].enabled`
-	[ "$enable" != 1 ] && sed -i '/#oafControl_workday/d' /etc/crontabs/root && return
+	[ "$enable" != "1" ] && sed -i '/#oafControl_workday/d' /etc/crontabs/root && return
 	workday=$(uci get oafControl.@workday[0].daysofweek | sed "s/ /,/g" 2>/dev/null)
     morning_start=$(uci get oafControl.@workday[0].workday_morning_start 2>/dev/null)
     morning_stop=$(uci get oafControl.@workday[0].workday_morning_stop 2>/dev/null)
@@ -224,7 +224,7 @@ init_workday(){
 
 init_weekday(){
 	enable=`uci get oafControl.@weekday[0].enabled`
-	[ "$enable" != 1 ] && sed -i '/#oafControl_weekday/d' /etc/crontabs/root && return
+	[ "$enable" != "1" ] && sed -i '/#oafControl_weekday/d' /etc/crontabs/root && return
 	weekday=$(uci get oafControl.@weekday[0].daysofweek | sed "s/ /,/g" 2>/dev/null)
     morning_start=$(uci get oafControl.@weekday[0].weekday_morning_start 2>/dev/null)
     morning_stop=$(uci get oafControl.@weekday[0].weekday_morning_stop 2>/dev/null)
