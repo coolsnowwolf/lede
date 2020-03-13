@@ -65,7 +65,7 @@ if luci.sys.call("busybox ps -w | grep ssr-retcp | grep -v grep >/dev/null") == 
 redir_run=1
 end
 
-if luci.sys.call("pidof srelay >/dev/null") == 0 then
+if luci.sys.call("busybox ps -w | grep ssr-socks | grep -v grep >/dev/null") == 0 then
 sock5_run=1
 end
 
@@ -81,7 +81,7 @@ if luci.sys.call("busybox ps -w | grep ssr-tunnel |grep -v grep >/dev/null") == 
 tunnel_run=1
 end
 
-if luci.sys.call("pidof pdnsd >/dev/null") == 0 then
+if luci.sys.call("pidof pdnsd >/dev/null") == 0 or (luci.sys.call("busybox ps -w | grep ssr-dns |grep -v grep >/dev/null") == 0 and luci.sys.call("pidof dns2socks >/dev/null") == 0)then
 pdnsd_run=1
 end
 
@@ -105,21 +105,25 @@ else
 s.value = translate("Not Running")
 end
 
-s=m:field(DummyValue,"pdnsd_run",translate("PDNSD"))
+if ucic:get_first(shadowsocksr, 'global', 'pdnsd_enable', '0') ~= '0' then
+s=m:field(DummyValue,"pdnsd_run",translate("DNS Anti-pollution"))
 s.rawhtml  = true
 if pdnsd_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
 else
 s.value = translate("Not Running")
 end
+end
 
-if nixio.fs.access("/usr/bin/srelay") then
-s=m:field(DummyValue,"sock5_run",translate("SOCKS Proxy"))
+if ucic:get_first(shadowsocksr, 'socks5_proxy', 'socks', '0') == '1' then
+if nixio.fs.access("/usr/bin/microsocks") then
+s=m:field(DummyValue,"sock5_run",translate("SOCKS5 Proxy Server"))
 s.rawhtml  = true
 if sock5_run == 1 then
 s.value =font_blue .. bold_on .. translate("Running") .. bold_off .. font_off
 else
 s.value = translate("Not Running")
+end
 end
 end
 
@@ -160,6 +164,11 @@ s.rawhtml  = true
 s.template = "shadowsocksr/refresh"
 s.value =tostring(math.ceil(gfw_count)) .. " " .. translate("Records")
 
+s=m:field(DummyValue,"ip_data",translate("China IP Data"))
+s.rawhtml  = true
+s.template = "shadowsocksr/refresh"
+s.value =ip_count .. " " .. translate("Records")
+
 if ucic:get_first(shadowsocksr, 'global', 'adblock', '0') == '1' then
 s=m:field(DummyValue,"ad_data",translate("Advertising Data"))
 s.rawhtml  = true
@@ -167,9 +176,8 @@ s.template = "shadowsocksr/refresh"
 s.value =ad_count .. " " .. translate("Records")
 end
 
-s=m:field(DummyValue,"ip_data",translate("China IP Data"))
-s.rawhtml  = true
-s.template = "shadowsocksr/refresh"
-s.value =ip_count .. " " .. translate("Records")
+s=m:field(DummyValue,"check_port",translate("Check Server Port"))
+s.template = "shadowsocksr/checkport"
+s.value =translate("No Check")
 
 return m

@@ -480,7 +480,7 @@ $(eval $(call KernelPackage,usb-dwc3))
 
 define KernelPackage/usb-dwc3-of-simple
   TITLE:=DWC3 USB simple OF driver
-  DEPENDS:=@!LINUX_4_19 @(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3
+  DEPENDS:=@LINUX_4_14 @(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3
   KCONFIG:= CONFIG_USB_DWC3_OF_SIMPLE
   FILES:= $(LINUX_DIR)/drivers/usb/dwc3/dwc3-of-simple.ko
   AUTOLOAD:=$(call AutoLoad,53,dwc3-of-simple,1)
@@ -1341,21 +1341,6 @@ define KernelPackage/usb-net-rtl8150/description
 endef
 
 $(eval $(call KernelPackage,usb-net-rtl8150))
-
-
-define KernelPackage/usb-net-rtl8152
-  TITLE:=Kernel module for USB-to-Ethernet Realtek convertors
-  KCONFIG:=CONFIG_USB_RTL8152
-  FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/r8152.ko
-  AUTOLOAD:=$(call AutoProbe,r8152)
-  $(call AddDepends/usb-net)
-endef
-
-define KernelPackage/usb-net-rtl8152/description
- Kernel module for USB-to-Ethernet Realtek 8152 USB2.0/3.0 convertors
-endef
-
-$(eval $(call KernelPackage,usb-net-rtl8152))
 
 
 define KernelPackage/usb-net-sr9700

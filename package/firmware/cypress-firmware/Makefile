@@ -17,7 +17,7 @@ PKG_SOURCE:=cypress-fmac-$(PKG_VERSION).zip
 PKG_SOURCE_URL:=https://community.cypress.com/servlet/JiveServlet/download/19000-1-51721/
 PKG_HASH:=a5510f82aacf585b5d29732b6d6777d4a4b26a667154d91cfcfc0d6d5dc4fef5
 
-PKG_MAINTAINER:=?lvaro Fern?ndez Rojas <noltari@gmail.com>
+PKG_MAINTAINER:=Álvaro Fernández Rojas <noltari@gmail.com>
 
 include $(INCLUDE_DIR)/package.mk
 

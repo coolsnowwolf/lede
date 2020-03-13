@@ -11,20 +11,22 @@ module("luci.controller.dockerman",package.seeall)
 function index()
 
   entry({"admin", "services","docker"}, firstchild(), "Docker", 40).dependent = false
-  entry({"admin","services","docker","overview"},cbi("docker/overview"),_("Overview"),0).leaf=true
+  entry({"admin","services","docker","overview"},cbi("dockerman/overview"),_("Overview"),0).leaf=true
 
-  local socket = luci.model.uci.cursor():get("docker", "local", "socket_path")
+  local socket = luci.model.uci.cursor():get("dockerman", "local", "socket_path")
   if not nixio.fs.access(socket) then return end
   if (require "luci.model.docker").new():_ping().code ~= 200 then return end
-  entry({"admin","services","docker","containers"},form("docker/containers"),_("Containers"),1).leaf=true
-  entry({"admin","services","docker","images"},form("docker/images"),_("Images"),2).leaf=true
-  entry({"admin","services","docker","networks"},form("docker/networks"),_("Networks"),3).leaf=true
-  entry({"admin","services","docker","volumes"},form("docker/volumes"),_("Volumes"),4).leaf=true
+  entry({"admin","services","docker","containers"},form("dockerman/containers"),_("Containers"),1).leaf=true
+  entry({"admin","services","docker","images"},form("dockerman/images"),_("Images"),2).leaf=true
+  entry({"admin","services","docker","networks"},form("dockerman/networks"),_("Networks"),3).leaf=true
+  entry({"admin","services","docker","volumes"},form("dockerman/volumes"),_("Volumes"),4).leaf=true
   entry({"admin","services","docker","events"},call("action_events"),_("Events"),5)
-  entry({"admin","services","docker","newcontainer"},form("docker/newcontainer")).leaf=true
-  entry({"admin","services","docker","newnetwork"},form("docker/newnetwork")).leaf=true
-  entry({"admin","services","docker","container"},form("docker/container")).leaf=true
+  entry({"admin","services","docker","newcontainer"},form("dockerman/newcontainer")).leaf=true
+  entry({"admin","services","docker","newnetwork"},form("dockerman/newnetwork")).leaf=true
+  entry({"admin","services","docker","container"},form("dockerman/container")).leaf=true
   entry({"admin","services","docker","container_stats"},call("action_get_container_stats")).leaf=true
+  entry({"admin","services","docker","container_get_archive"},call("download_archive")).leaf=true
+  entry({"admin","services","docker","container_put_archive"},call("upload_archive")).leaf=true
   entry({"admin","services","docker","confirm"},call("action_confirm")).leaf=true
 
 end
@@ -35,7 +37,7 @@ function action_events()
   local dk = docker.new()
   local query ={}
   query["until"] = os.time()
-	local events = dk:events(nil, query)
+	local events = dk:events({query = query})
   for _, v in ipairs(events.body) do
     if v.Type == "container" then
       logs = (logs ~= "" and (logs .. "\n") or logs) .. "[" .. os.date("%Y-%m-%d %H:%M:%S", v.time) .."] "..v.Type.. " " .. (v.Action or "null") .. " Container ID:"..  (v.Actor.ID or "null") .. " Container Name:" .. (v.Actor.Attributes.name or "null")
@@ -45,7 +47,7 @@ function action_events()
       logs = (logs ~= "" and (logs .. "\n") or logs) .. "[" .. os.date("%Y-%m-%d %H:%M:%S", v.time) .."] "..v.Type.. " " .. v.Action .. " Image:".. (v.Actor.ID or "null").. " Image Name:" .. (v.Actor.Attributes.name or "null")
     end
   end
-  luci.template.render("docker/logs", {self={syslog = logs, title="Docker Events"}})
+  luci.template.render("dockerman/logs", {self={syslog = logs, title="Docker Events"}})
 end
 
 local calculate_cpu_percent = function(d)
@@ -94,9 +96,9 @@ end
 function action_get_container_stats(container_id)
   if container_id then
     local dk = docker.new()
-    local response = dk.containers:inspect(container_id)
+    local response = dk.containers:inspect({id = container_id})
     if response.code == 200 and response.body.State.Running then
-      response = dk.containers:stats(container_id, {stream=false})
+      response = dk.containers:stats({id = container_id, query = {stream = false}})
       if response.code == 200 then
         local container_stats = response.body
         local cpu_percent = calculate_cpu_percent(container_stats)
@@ -136,7 +138,7 @@ function action_get_container_stats(container_id)
 end
 
 function action_confirm()
-  local status_path=luci.model.uci.cursor():get("docker", "local", "status_path")
+  local status_path=luci.model.uci.cursor():get("dockerman", "local", "status_path")
   local data = nixio.fs.readfile(status_path)
   if data then
     code = 202
@@ -150,4 +152,50 @@ function action_confirm()
   luci.http.status(code, msg)
   luci.http.prepare_content("application/json")
   luci.http.write_json({info = data})
+end
+
+function download_archive()
+  local id = luci.http.formvalue("id")
+  local path = luci.http.formvalue("path")
+  local dk = docker.new()
+  local first
+
+  local cb = function(res, chunk)
+    if res.code == 200 then
+      if not first then
+        first = true
+        luci.http.header('Content-Disposition', 'inline; filename="archive.tar"')
+        luci.http.header('Content-Type', 'application\/x-tar')
+      end
+      luci.ltn12.pump.all(chunk, luci.http.write)
+    else
+      if not first then
+        first = true
+        luci.http.prepare_content("text/plain")
+      end
+      luci.ltn12.pump.all(chunk, luci.http.write)
+    end
+  end
+
+  local res = dk.containers:get_archive({id = id, query = {path = path}}, cb)
+end
+
+function upload_archive(container_id)
+  local path = luci.http.formvalue("upload-path")
+  local dk = docker.new()
+  local ltn12 = require "luci.ltn12"
+
+  rec_send = function(sinkout)
+    luci.http.setfilehandler(function (meta, chunk, eof)
+      if chunk then
+        ltn12.pump.step(ltn12.source.string(chunk), sinkout)
+      end
+    end)
+  end
+
+  local res = dk.containers:put_archive({id = container_id, query = {path = path}, body = rec_send})
+  local msg = res and res.body and res.body.message or nil
+  luci.http.status(res.code, msg)
+  luci.http.prepare_content("application/json")
+  luci.http.write_json({message = msg})
 end
