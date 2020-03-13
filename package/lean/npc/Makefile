@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=npc
-PKG_VERSION:=0.26.4
+PKG_VERSION:=0.26.5
 PKG_RELEASE:=2
 
 ifeq ($(ARCH),mipsel)
