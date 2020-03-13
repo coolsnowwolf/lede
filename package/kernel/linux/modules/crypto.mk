@@ -263,11 +263,22 @@ $(eval $(call KernelPackage,crypto-gf128))
 define KernelPackage/crypto-ghash
   TITLE:=GHASH digest CryptoAPI module
   DEPENDS:=+kmod-crypto-gf128 +kmod-crypto-hash
-  KCONFIG:=CONFIG_CRYPTO_GHASH
+  KCONFIG:= \
+	CONFIG_CRYPTO_GHASH \
+	CONFIG_CRYPTO_GHASH_ARM_CE
   FILES:=$(LINUX_DIR)/crypto/ghash-generic.ko
   AUTOLOAD:=$(call AutoLoad,09,ghash-generic)
   $(call AddDepends/crypto)
 endef
+
+define KernelPackage/crypto-ghash/arm-ce
+  FILES+= $(LINUX_DIR)/arch/arm/crypto/ghash-arm-ce.ko
+  AUTOLOAD+=$(call AutoLoad,09,ghash-arm-ce)
+endef
+
+KernelPackage/crypto-ghash/imx6=$(KernelPackage/crypto-ghash/arm-ce)
+KernelPackage/crypto-ghash/ipq40xx=$(KernelPackage/crypto-ghash/arm-ce)
+KernelPackage/crypto-ghash/mvebu=$(KernelPackage/crypto-ghash/arm-ce)
 
 $(eval $(call KernelPackage,crypto-ghash))
 
@@ -359,6 +370,78 @@ define KernelPackage/crypto-hw-padlock
 endef
 
 $(eval $(call KernelPackage,crypto-hw-padlock))
+
+
+define KernelPackage/crypto-hw-qce
+  TITLE:=Qualcomm Crypto Engine hw crypto module
+  DEPENDS:= @TARGET_ipq40xx +kmod-crypto-manager \
+	+QCE_SKCIPHER:kmod-crypto-des \
+	+QCE_SKCIPHER:kmod-crypto-ecb \
+	+QCE_SKCIPHER:kmod-crypto-cbc \
+	+QCE_SKCIPHER:kmod-crypto-xts \
+	+QCE_SKCIPHER:kmod-crypto-ctr
+  KCONFIG:= \
+	CONFIG_CRYPTO_HW=y \
+	CONFIG_CRYPTO_DEV_QCE
+  FILES:= $(LINUX_DIR)/drivers/crypto/qce/qcrypto.ko
+  AUTOLOAD:=$(call AutoLoad,09,qcrypto)
+  $(call AddDepends/crypto)
+endef
+
+define KernelPackage/crypto-hw-qce/config
+  if PACKAGE_kmod-crypto-hw-qce
+	config QCE_SKCIPHER
+		bool
+	choice
+		prompt "Algorithms enabled for QCE acceleration"
+		default KERNEL_CRYPTO_DEV_QCE_ENABLE_SKCIPHER
+		help
+		  The Qualcomm Crypto Engine is shown to severely slowdown ipsec,
+		  especially when built with all supported algorithms.
+		  When performing crypto in small blocks, typical of network usage,
+		  the neon asm drivers will outperform it.
+		  QCE is fast when fed with larger blocks.  If you are able to use
+		  jumbo frames, it will be much faster than software.
+		  Hashes are troublesome.  They fail the tcrypt multibuffer tests, and
+		  are slower than the Neon drivers, so the default is to enable
+		  symmetric-key ciphers only.
+
+		config KERNEL_CRYPTO_DEV_QCE_ENABLE_ALL
+			bool "All supported algorithms"
+			select QCE_SKCIPHER
+		config KERNEL_CRYPTO_DEV_QCE_ENABLE_SKCIPHER
+			bool "Symmetric-key ciphers only"
+			select QCE_SKCIPHER
+		config KERNEL_CRYPTO_DEV_QCE_ENABLE_SHA
+			bool "Hash/HMAC only"
+	endchoice
+
+	config KERNEL_CRYPTO_DEV_QCE_SW_MAX_LEN
+		int "Default maximum request size to use software for AES"
+		depends on QCE_SKCIPHER
+		default 512
+		help
+		  This sets the default maximum request size to perform AES requests
+		  using software instead of the crypto engine.  It can be changed by
+		  setting the aes_sw_max_len parameter.
+
+		  Small blocks are processed faster in software than hardware.
+		  Considering the 256-bit ciphers, software is 2-3 times faster than
+		  qce at 256-bytes, 30% faster at 512, and about even at 768-bytes.
+		  With 128-bit keys, the break-even point would be around 1024-bytes.
+
+		  The default is set a little lower, to 512 bytes, to balance the
+		  cost in CPU usage.  The minimum recommended setting is 16-bytes
+		  (1 AES block), since AES-GCM will fail if you set it lower.
+		  Setting this to zero will send all requests to the hardware.
+
+		  Note that 192-bit keys are not supported by the hardware and are
+		  always processed by the software fallback, and all DES requests
+		  are done by the hardware.
+  endif
+endef
+
+$(eval $(call KernelPackage,crypto-hw-qce))
 
 
 define KernelPackage/crypto-hw-safexcel
@@ -684,6 +767,8 @@ define KernelPackage/crypto-sha1
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:= \
 	CONFIG_CRYPTO_SHA1 \
+	CONFIG_CRYPTO_SHA1_ARM \
+	CONFIG_CRYPTO_SHA1_ARM_NEON \
 	CONFIG_CRYPTO_SHA1_OCTEON \
 	CONFIG_CRYPTO_SHA1_SSSE3
   FILES:=$(LINUX_DIR)/crypto/sha1_generic.ko
@@ -691,10 +776,29 @@ define KernelPackage/crypto-sha1
   $(call AddDepends/crypto)
 endef
 
+define KernelPackage/crypto-sha1/arm
+  FILES+=$(LINUX_DIR)/arch/arm/crypto/sha1-arm.ko
+  AUTOLOAD+=$(call AutoLoad,09,sha1-arm)
+endef
+
+define KernelPackage/crypto-sha1/arm-neon
+  $(call KernelPackage/crypto-sha1/arm)
+  FILES+=$(LINUX_DIR)/arch/arm/crypto/sha1-arm-neon.ko
+  AUTOLOAD+=$(call AutoLoad,09,sha1-arm-neon)
+endef
+
+KernelPackage/crypto-sha1/imx6=$(KernelPackage/crypto-sha1/arm-neon)
+
+KernelPackage/crypto-sha1/ipq40xx=$(KernelPackage/crypto-sha1/arm-neon)
+
+KernelPackage/crypto-sha1/mvebu=$(KernelPackage/crypto-sha1/arm-neon)
+
 define KernelPackage/crypto-sha1/octeon
   FILES+=$(LINUX_DIR)/arch/mips/cavium-octeon/crypto/octeon-sha1.ko
   AUTOLOAD+=$(call AutoLoad,09,octeon-sha1)
 endef
+
+KernelPackage/crypto-sha1/tegra=$(KernelPakcage/crypto-sha1/arm)
 
 define KernelPackage/crypto-sha1/x86/64
   FILES+=$(LINUX_DIR)/arch/x86/crypto/sha1-ssse3.ko
@@ -734,6 +838,7 @@ define KernelPackage/crypto-sha512
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:= \
 	CONFIG_CRYPTO_SHA512 \
+	CONFIG_CRYPTO_SHA512_ARM \
 	CONFIG_CRYPTO_SHA512_OCTEON \
 	CONFIG_CRYPTO_SHA512_SSSE3
   FILES:=$(LINUX_DIR)/crypto/sha512_generic.ko
@@ -741,10 +846,23 @@ define KernelPackage/crypto-sha512
   $(call AddDepends/crypto)
 endef
 
+define KernelPackage/crypto-sha512/arm
+  FILES+=$(LINUX_DIR)/arch/arm/crypto/sha512-arm.ko
+  AUTOLOAD+=$(call AutoLoad,09,sha512-arm)
+endef
+
+KernelPackage/crypto-sha512/imx6=$(KernelPackage/crypto-sha512/arm)
+
+KernelPackage/crypto-sha512/ipq40xx=$(KernelPackage/crypto-sha512/arm)
+
+KernelPackage/crypto-sha512/mvebu=$(KernelPackage/crypto-sha512/arm)
+
 define KernelPackage/crypto-sha512/octeon
   FILES+=$(LINUX_DIR)/arch/mips/cavium-octeon/crypto/octeon-sha512.ko
   AUTOLOAD+=$(call AutoLoad,09,octeon-sha512)
 endef
+
+KernelPackage/crypto-sha512/tegra=$(KernelPackage/crypto-sha512/arm)
 
 define KernelPackage/crypto-sha512/x86/64
   FILES+=$(LINUX_DIR)/arch/x86/crypto/sha512-ssse3.ko
