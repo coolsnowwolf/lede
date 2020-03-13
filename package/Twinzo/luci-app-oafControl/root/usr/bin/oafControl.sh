@@ -12,7 +12,7 @@ VACATIONBAK="/etc/oafControl/overtime.bak"
 OVERIIMEBAK="/etc/oafControl/vacation.bak"
 mode="$1"
 fun="$2"
-line=`wc -l $LOGFILE`
+line=`wc -l $LOGFILE | awk -F " " '{print $1}'`
 [ $line -ge 1000 ] && echo "日志超过一千行，清除日志" > $LOGFILE
 
 add_cron(){
