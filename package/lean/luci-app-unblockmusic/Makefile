@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-unblockmusic
 PKG_VERSION:=2.3.1
-PKG_RELEASE:=38
+PKG_RELEASE:=39
 
 PKG_CONFIG_DEPENDS := \
 	CONFIG_UnblockNeteaseMusic_Go \
@@ -31,4 +31,3 @@ PKG_MAINTAINER:=lean
 include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
-

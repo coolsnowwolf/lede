@@ -1,0 +1,126 @@
+From 2d3b6fae7d1a2ad821769440daa91d7eec5c8250 Mon Sep 17 00:00:00 2001
+From: Eneas U de Queiroz <cotequeiroz@gmail.com>
+Date: Fri, 20 Dec 2019 09:41:44 -0300
+Subject: [PATCH] crypto: qce - use AES fallback for small requests
+
+Process small blocks using the fallback cipher, as a workaround for an
+observed failure (DMA-related, apparently) when computing the GCM ghash
+key.  This brings a speed gain as well, since it avoids the latency of
+using the hardware engine to process small blocks.
+
+Using software for all 16-byte requests would be enough to make GCM
+work, but to increase performance, a larger threshold would be better.
+Measuring the performance of supported ciphers with openssl speed,
+software matches hardware at around 768-1024 bytes.
+
+Considering the 256-bit ciphers, software is 2-3 times faster than qce
+at 256-bytes, 30% faster at 512, and about even at 768-bytes.  With
+128-bit keys, the break-even point would be around 1024-bytes.
+
+This adds the 'aes_sw_max_len' parameter, to set the largest request
+length processed by the software fallback.  Its default is being set to
+512 bytes, a little lower than the break-even point, to balance the cost
+in CPU usage.
+
+Signed-off-by: Eneas U de Queiroz <cotequeiroz@gmail.com>
+
+diff --git a/drivers/crypto/Kconfig b/drivers/crypto/Kconfig
+index c1595750864e..a0c4d85de4c3 100644
+--- a/drivers/crypto/Kconfig
++++ b/drivers/crypto/Kconfig
+@@ -640,6 +640,29 @@ choice
+ 
+ endchoice
+ 
++config CRYPTO_DEV_QCE_SW_MAX_LEN
++	int "Default maximum request size to use software for AES"
++	depends on CRYPTO_DEV_QCE && CRYPTO_DEV_QCE_SKCIPHER
++	default 512
++	help
++	  This sets the default maximum request size to perform AES requests
++	  using software instead of the crypto engine.  It can be changed by
++	  setting the aes_sw_max_len parameter.
++
++	  Small blocks are processed faster in software than hardware.
++	  Considering the 256-bit ciphers, software is 2-3 times faster than
++	  qce at 256-bytes, 30% faster at 512, and about even at 768-bytes.
++	  With 128-bit keys, the break-even point would be around 1024-bytes.
++
++	  The default is set a little lower, to 512 bytes, to balance the
++	  cost in CPU usage.  The minimum recommended setting is 16-bytes
++	  (1 AES block), since AES-GCM will fail if you set it lower.
++	  Setting this to zero will send all requests to the hardware.
++
++	  Note that 192-bit keys are not supported by the hardware and are
++	  always processed by the software fallback, and all DES requests
++	  are done by the hardware.
++
+ config CRYPTO_DEV_QCOM_RNG
+ 	tristate "Qualcomm Random Number Generator Driver"
+ 	depends on ARCH_QCOM || COMPILE_TEST
+diff --git a/drivers/crypto/qce/skcipher.c b/drivers/crypto/qce/skcipher.c
+index 188eb234ba2c..9b72fec2ab2e 100644
+--- a/drivers/crypto/qce/skcipher.c
++++ b/drivers/crypto/qce/skcipher.c
+@@ -13,6 +13,7 @@
+ 
+ #include <linux/device.h>
+ #include <linux/interrupt.h>
++#include <linux/moduleparam.h>
+ #include <linux/types.h>
+ #include <crypto/aes.h>
+ #include <crypto/des.h>
+@@ -20,6 +21,13 @@
+ 
+ #include "cipher.h"
+ 
++static unsigned int aes_sw_max_len = CONFIG_CRYPTO_DEV_QCE_SW_MAX_LEN;
++module_param(aes_sw_max_len, uint, 0644);
++MODULE_PARM_DESC(aes_sw_max_len,
++		 "Only use hardware for AES requests larger than this "
++		 "[0=always use hardware; anything <16 breaks AES-GCM; default="
++		 __stringify(CONFIG_CRYPTO_DEV_QCE_SOFT_THRESHOLD)"]");
++
+ static LIST_HEAD(skcipher_algs);
+ 
+ static void qce_skcipher_done(void *data)
+@@ -170,15 +178,7 @@ static int qce_skcipher_setkey(struct crypto_skcipher *ablk, const u8 *key,
+ 	if (!key || !keylen)
+ 		return -EINVAL;
+ 
+-	if (IS_AES(flags)) {
+-		switch (IS_XTS(flags) ? keylen >> 1 : keylen) {
+-		case AES_KEYSIZE_128:
+-		case AES_KEYSIZE_256:
+-			break;
+-		default:
+-			goto fallback;
+-		}
+-	} else if (IS_DES(flags)) {
++	if (IS_DES(flags)) {
+ 		u32 tmp[DES_EXPKEY_WORDS];
+ 
+ 		ret = des_ekey(tmp, key);
+@@ -189,8 +189,8 @@ static int qce_skcipher_setkey(struct crypto_skcipher *ablk, const u8 *key,
+ 
+ 	ctx->enc_keylen = keylen;
+ 	memcpy(ctx->enc_key, key, keylen);
+-	return 0;
+-fallback:
++	if (!IS_AES(flags))
++		return 0;
+ 	ret = crypto_skcipher_setkey(ctx->fallback, key, keylen);
+ 	if (!ret)
+ 		ctx->enc_keylen = keylen;
+@@ -213,8 +213,9 @@ static int qce_skcipher_crypt(struct skcipher_request *req, int encrypt)
+ 	rctx->flags |= encrypt ? QCE_ENCRYPT : QCE_DECRYPT;
+ 	keylen = IS_XTS(rctx->flags) ? ctx->enc_keylen >> 1 : ctx->enc_keylen;
+ 
+-	if (IS_AES(rctx->flags) && keylen != AES_KEYSIZE_128 &&
+-	    keylen != AES_KEYSIZE_256) {
++	if (IS_AES(rctx->flags) &&
++	    ((keylen != AES_KEYSIZE_128 && keylen != AES_KEYSIZE_256) ||
++	     req->cryptlen <= aes_sw_max_len)) {
+ 		SKCIPHER_REQUEST_ON_STACK(subreq, ctx->fallback);
+ 
+ 		skcipher_request_set_tfm(subreq, ctx->fallback);
