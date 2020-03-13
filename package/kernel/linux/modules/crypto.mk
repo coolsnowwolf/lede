@@ -110,8 +110,8 @@ define KernelPackage/crypto-crc32
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:=CONFIG_CRYPTO_CRC32
   HIDDEN:=1
-  FILES:=$(LINUX_DIR)/crypto/crc32_generic.ko@ge4.9
-  AUTOLOAD:=$(call AutoLoad,04,crc32_generic@ge4.9,1)
+  FILES:=$(LINUX_DIR)/crypto/crc32_generic.ko
+  AUTOLOAD:=$(call AutoLoad,04,crc32_generic,1)
   $(call AddDepends/crypto)
 endef
 
@@ -132,7 +132,7 @@ $(eval $(call KernelPackage,crypto-crc32c))
 
 define KernelPackage/crypto-ctr
   TITLE:=Counter Mode CryptoAPI module
-  DEPENDS:=+kmod-crypto-manager +kmod-crypto-seqiv +kmod-crypto-iv
+  DEPENDS:=+kmod-crypto-manager +kmod-crypto-seqiv
   KCONFIG:=CONFIG_CRYPTO_CTR
   FILES:=$(LINUX_DIR)/crypto/ctr.ko
   AUTOLOAD:=$(call AutoLoad,09,ctr)
@@ -156,7 +156,7 @@ $(eval $(call KernelPackage,crypto-cts))
 
 define KernelPackage/crypto-deflate
   TITLE:=Deflate compression CryptoAPI module
-  DEPENDS:=+kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +!LINUX_4_9:kmod-crypto-acompress
+  DEPENDS:=+kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +kmod-crypto-acompress
   KCONFIG:=CONFIG_CRYPTO_DEFLATE
   FILES:=$(LINUX_DIR)/crypto/deflate.ko
   AUTOLOAD:=$(call AutoLoad,09,deflate)
@@ -169,7 +169,9 @@ $(eval $(call KernelPackage,crypto-deflate))
 define KernelPackage/crypto-des
   TITLE:=DES/3DES cipher CryptoAPI module
   KCONFIG:=CONFIG_CRYPTO_DES
-  FILES:=$(LINUX_DIR)/crypto/des_generic.ko
+  FILES:= \
+	$(LINUX_DIR)/crypto/des_generic.ko \
+	$(LINUX_DIR)/lib/crypto/libdes.ko@ge5.4
   AUTOLOAD:=$(call AutoLoad,09,des_generic)
   $(call AddDepends/crypto)
 endef
@@ -194,7 +196,8 @@ define KernelPackage/crypto-ecdh
   DEPENDS:=+kmod-crypto-kpp
   KCONFIG:= CONFIG_CRYPTO_ECDH
   FILES:= \
-	$(LINUX_DIR)/crypto/ecdh_generic.ko
+	$(LINUX_DIR)/crypto/ecdh_generic.ko \
+	$(LINUX_DIR)/crypto/ecc.ko@ge5.2
   AUTOLOAD:=$(call AutoLoad,10,ecdh_generic)
   $(call AddDepends/crypto)
 endef
@@ -308,7 +311,7 @@ $(eval $(call KernelPackage,crypto-hmac))
 
 define KernelPackage/crypto-hw-ccp
   TITLE:=AMD Cryptographic Coprocessor
-  DEPENDS:=+kmod-crypto-authenc +kmod-crypto-hash +kmod-crypto-manager +kmod-random-core +kmod-crypto-sha1 +kmod-crypto-sha256 +!LINUX_4_9:kmod-crypto-rsa
+  DEPENDS:=+kmod-crypto-authenc +kmod-crypto-hash +kmod-crypto-manager +kmod-random-core +kmod-crypto-sha1 +kmod-crypto-sha256 +kmod-crypto-rsa
   KCONFIG:= \
 	CONFIG_CRYPTO_HW=y \
 	CONFIG_CRYPTO_DEV_CCP=y \
@@ -372,78 +375,6 @@ endef
 $(eval $(call KernelPackage,crypto-hw-padlock))
 
 
-define KernelPackage/crypto-hw-qce
-  TITLE:=Qualcomm Crypto Engine hw crypto module
-  DEPENDS:= @TARGET_ipq40xx +kmod-crypto-manager \
-	+QCE_SKCIPHER:kmod-crypto-des \
-	+QCE_SKCIPHER:kmod-crypto-ecb \
-	+QCE_SKCIPHER:kmod-crypto-cbc \
-	+QCE_SKCIPHER:kmod-crypto-xts \
-	+QCE_SKCIPHER:kmod-crypto-ctr
-  KCONFIG:= \
-	CONFIG_CRYPTO_HW=y \
-	CONFIG_CRYPTO_DEV_QCE
-  FILES:= $(LINUX_DIR)/drivers/crypto/qce/qcrypto.ko
-  AUTOLOAD:=$(call AutoLoad,09,qcrypto)
-  $(call AddDepends/crypto)
-endef
-
-define KernelPackage/crypto-hw-qce/config
-  if PACKAGE_kmod-crypto-hw-qce
-	config QCE_SKCIPHER
-		bool
-	choice
-		prompt "Algorithms enabled for QCE acceleration"
-		default KERNEL_CRYPTO_DEV_QCE_ENABLE_SKCIPHER
-		help
-		  The Qualcomm Crypto Engine is shown to severely slowdown ipsec,
-		  especially when built with all supported algorithms.
-		  When performing crypto in small blocks, typical of network usage,
-		  the neon asm drivers will outperform it.
-		  QCE is fast when fed with larger blocks.  If you are able to use
-		  jumbo frames, it will be much faster than software.
-		  Hashes are troublesome.  They fail the tcrypt multibuffer tests, and
-		  are slower than the Neon drivers, so the default is to enable
-		  symmetric-key ciphers only.
-
-		config KERNEL_CRYPTO_DEV_QCE_ENABLE_ALL
-			bool "All supported algorithms"
-			select QCE_SKCIPHER
-		config KERNEL_CRYPTO_DEV_QCE_ENABLE_SKCIPHER
-			bool "Symmetric-key ciphers only"
-			select QCE_SKCIPHER
-		config KERNEL_CRYPTO_DEV_QCE_ENABLE_SHA
-			bool "Hash/HMAC only"
-	endchoice
-
-	config KERNEL_CRYPTO_DEV_QCE_SW_MAX_LEN
-		int "Default maximum request size to use software for AES"
-		depends on QCE_SKCIPHER
-		default 512
-		help
-		  This sets the default maximum request size to perform AES requests
-		  using software instead of the crypto engine.  It can be changed by
-		  setting the aes_sw_max_len parameter.
-
-		  Small blocks are processed faster in software than hardware.
-		  Considering the 256-bit ciphers, software is 2-3 times faster than
-		  qce at 256-bytes, 30% faster at 512, and about even at 768-bytes.
-		  With 128-bit keys, the break-even point would be around 1024-bytes.
-
-		  The default is set a little lower, to 512 bytes, to balance the
-		  cost in CPU usage.  The minimum recommended setting is 16-bytes
-		  (1 AES block), since AES-GCM will fail if you set it lower.
-		  Setting this to zero will send all requests to the hardware.
-
-		  Note that 192-bit keys are not supported by the hardware and are
-		  always processed by the software fallback, and all DES requests
-		  are done by the hardware.
-  endif
-endef
-
-$(eval $(call KernelPackage,crypto-hw-qce))
-
-
 define KernelPackage/crypto-hw-safexcel
   TITLE:= MVEBU SafeXcel Crypto Engine module
   DEPENDS:=@!LINUX_4_14 @(TARGET_mvebu_cortexa53||TARGET_mvebu_cortexa72) \
@@ -485,7 +416,6 @@ endef
 
 $(eval $(call KernelPackage,crypto-hw-talitos))
 
-
 define KernelPackage/crypto-iv
   TITLE:=CryptoAPI initialization vectors
   DEPENDS:=+kmod-crypto-manager +kmod-crypto-rng +kmod-crypto-wq
@@ -499,7 +429,6 @@ define KernelPackage/crypto-iv
 endef
 
 $(eval $(call KernelPackage,crypto-iv))
-
 
 define KernelPackage/crypto-kpp
   TITLE:=Key-agreement Protocol Primitives
@@ -739,11 +668,10 @@ define KernelPackage/crypto-rng
 	CONFIG_CRYPTO_JITTERENTROPY \
 	CONFIG_CRYPTO_RNG2
   FILES:= \
-	$(LINUX_DIR)/crypto/drbg.ko@ge4.2 \
-	$(LINUX_DIR)/crypto/jitterentropy_rng.ko@ge4.2 \
-	$(LINUX_DIR)/crypto/krng.ko@lt4.2 \
+	$(LINUX_DIR)/crypto/drbg.ko \
+	$(LINUX_DIR)/crypto/jitterentropy_rng.ko \
 	$(LINUX_DIR)/crypto/rng.ko
-  AUTOLOAD:=$(call AutoLoad,09,drbg@ge4.2 jitterentropy_rng@ge4.2 krng@lt4.2 rng)
+  AUTOLOAD:=$(call AutoLoad,09,drbg jitterentropy_rng rng)
   $(call AddDepends/crypto)
 endef
 
@@ -788,10 +716,8 @@ define KernelPackage/crypto-sha1/arm-neon
 endef
 
 KernelPackage/crypto-sha1/imx6=$(KernelPackage/crypto-sha1/arm-neon)
-
 KernelPackage/crypto-sha1/ipq40xx=$(KernelPackage/crypto-sha1/arm-neon)
-
-KernelPackage/crypto-sha1/mvebu=$(KernelPackage/crypto-sha1/arm-neon)
+KernelPackage/crypto-sha1/mvebu/cortexa9=$(KernelPackage/crypto-sha1/arm-neon)
 
 define KernelPackage/crypto-sha1/octeon
   FILES+=$(LINUX_DIR)/arch/mips/cavium-octeon/crypto/octeon-sha1.ko
@@ -815,7 +741,9 @@ define KernelPackage/crypto-sha256
 	CONFIG_CRYPTO_SHA256 \
 	CONFIG_CRYPTO_SHA256_OCTEON \
 	CONFIG_CRYPTO_SHA256_SSSE3
-  FILES:=$(LINUX_DIR)/crypto/sha256_generic.ko
+  FILES:= \
+	$(LINUX_DIR)/crypto/sha256_generic.ko \
+	$(LINUX_DIR)/lib/crypto/libsha256.ko@ge5.4
   AUTOLOAD:=$(call AutoLoad,09,sha256_generic)
   $(call AddDepends/crypto)
 endef
@@ -852,10 +780,8 @@ define KernelPackage/crypto-sha512/arm
 endef
 
 KernelPackage/crypto-sha512/imx6=$(KernelPackage/crypto-sha512/arm)
-
 KernelPackage/crypto-sha512/ipq40xx=$(KernelPackage/crypto-sha512/arm)
-
-KernelPackage/crypto-sha512/mvebu=$(KernelPackage/crypto-sha512/arm)
+KernelPackage/crypto-sha512/mvebu/cortexa9=$(KernelPackage/crypto-sha512/arm)
 
 define KernelPackage/crypto-sha512/octeon
   FILES+=$(LINUX_DIR)/arch/mips/cavium-octeon/crypto/octeon-sha512.ko
@@ -886,6 +812,7 @@ define KernelPackage/crypto-user
   TITLE:=CryptoAPI userspace interface
   DEPENDS:=+kmod-crypto-hash +kmod-crypto-manager
   KCONFIG:= \
+	CONFIG_CRYPTO_USER \
 	CONFIG_CRYPTO_USER_API \
 	CONFIG_CRYPTO_USER_API_AEAD \
 	CONFIG_CRYPTO_USER_API_HASH \
@@ -896,8 +823,9 @@ define KernelPackage/crypto-user
 	$(LINUX_DIR)/crypto/algif_aead.ko \
 	$(LINUX_DIR)/crypto/algif_hash.ko \
 	$(LINUX_DIR)/crypto/algif_rng.ko \
-	$(LINUX_DIR)/crypto/algif_skcipher.ko
-  AUTOLOAD:=$(call AutoLoad,09,af_alg algif_aead algif_hash algif_rng algif_skcipher)
+	$(LINUX_DIR)/crypto/algif_skcipher.ko \
+	$(LINUX_DIR)/crypto/crypto_user.ko
+  AUTOLOAD:=$(call AutoLoad,09,af_alg algif_aead algif_hash algif_rng algif_skcipher crypto_user)
   $(call AddDepends/crypto)
 endef
 
