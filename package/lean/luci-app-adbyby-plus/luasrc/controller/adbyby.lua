@@ -47,8 +47,8 @@ luci.sys.exec("/usr/share/adbyby/rule-update")
   end
   
   if tonumber(icount) ~= tonumber(oldcount) then
-		luci.sys.exec("rm -rf /usr/share/adbyby/rules/* && cp -a /tmp/rules /usr/share/adbyby/")
-		luci.sys.exec("/etc/init.d/dnsmasq reload")
+		luci.sys.exec("rm -f /usr/share/adbyby/rules/data/* /usr/share/adbyby/rules/host/* && cp -a /tmp/rules /usr/share/adbyby/")
+		luci.sys.exec("/etc/init.d/adbyby restart &")
 		retstring=tostring(math.ceil(tonumber(icount)))
 	else
 		retstring ="0"
@@ -68,7 +68,7 @@ if sret== 0 then
 	if tonumber(icount) ~= tonumber(oldcount) then
 		luci.sys.exec("cp -f /tmp/ad.conf /usr/share/adbyby/dnsmasq.adblock")
 		luci.sys.exec("cp -f /tmp/ad.conf /tmp/etc/dnsmasq-adbyby.d/adblock")
-		luci.sys.exec("/etc/init.d/dnsmasq reload")
+		luci.sys.exec("/etc/init.d/adbyby restart &")
 		retstring=tostring(math.ceil(tonumber(icount)))
 	else
 		retstring ="0"
