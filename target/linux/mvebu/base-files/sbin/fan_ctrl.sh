@@ -1,8 +1,8 @@
 #!/bin/sh
 
-CPU_TEMP=`cut -c1-2 /sys/class/hwmon/hwmon2/temp1_input`
-DDR_TEMP=`cut -c1-2 /sys/class/hwmon/hwmon1/temp1_input`
-WIFI_TEMP=`cut -c1-2 /sys/class/hwmon/hwmon1/temp2_input`
+CPU_TEMP=$(cut -c1-2 /sys/class/hwmon/hwmon2/temp1_input)
+DDR_TEMP=$(cut -c1-2 /sys/class/hwmon/hwmon1/temp1_input)
+WIFI_TEMP=$(cut -c1-2 /sys/class/hwmon/hwmon1/temp2_input)
 
 CPU_LOW=85
 CPU_HIGH=95

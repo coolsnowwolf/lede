@@ -112,7 +112,7 @@ define KernelPackage/hwmon-ina2xx
   KCONFIG:=CONFIG_SENSORS_INA2XX
   FILES:=$(LINUX_DIR)/drivers/hwmon/ina2xx.ko
   AUTOLOAD:=$(call AutoProbe,ina2xx)
-  $(call AddDepends/hwmon,+kmod-i2c-core +!LINUX_3_18:kmod-regmap-i2c)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-i2c)
 endef
 
 define KernelPackage/hwmon-ina2xx/description
@@ -257,6 +257,21 @@ endef
 $(eval $(call KernelPackage,hwmon-ltc4151))
 
 
+define KernelPackage/hwmon-mcp3021
+  TITLE:=MCP3021/3221 monitoring support
+  KCONFIG:=CONFIG_SENSORS_MCP3021
+  FILES:=$(LINUX_DIR)/drivers/hwmon/mcp3021.ko
+  AUTOLOAD:=$(call AutoProbe,mcp3021)
+  $(call AddDepends/hwmon,+kmod-i2c-core)
+endef
+
+define KernelPackage/hwmon-mcp3021/description
+ Kernel module for Linear Technology MCP3021/3221 current and voltage monitor chip
+endef
+
+$(eval $(call KernelPackage,hwmon-mcp3021))
+
+
 define KernelPackage/hwmon-nct6775
   TITLE:=NCT6106D/6775F/6776F/6779D/6791D/6792D/6793D and compatibles monitoring support
   KCONFIG:=CONFIG_SENSORS_NCT6775
@@ -285,6 +300,36 @@ define KernelPackage/hwmon-pc87360/description
 endef
 
 $(eval $(call KernelPackage,hwmon-pc87360))
+
+
+define KernelPackage/pmbus-core
+  TITLE:=PMBus support
+  KCONFIG:= CONFIG_PMBUS
+  FILES:=$(LINUX_DIR)/drivers/hwmon/pmbus/pmbus_core.ko
+  $(call AddDepends/hwmon,+kmod-i2c-core)
+endef
+
+define KernelPackage/pmbus-core/description
+ Kernel modules for Power Management Bus
+endef
+
+$(eval $(call KernelPackage,pmbus-core))
+
+
+define KernelPackage/pmbus-zl6100
+  TITLE:=Intersil / Zilker Labs ZL6100 hardware monitoring
+  KCONFIG:=CONFIG_SENSORS_ZL6100
+  FILES:=$(LINUX_DIR)/drivers/hwmon/pmbus/zl6100.ko
+  AUTOLOAD:=$(call AutoProbe,zl6100)
+  $(call AddDepends/hwmon, +kmod-pmbus-core)
+endef
+
+define KernelPackage/pmbus-zl6100/description
+ Kernel module for Intersil / Zilker Labs ZL6100 and
+compatible digital DC-DC controllers
+endef
+
+$(eval $(call KernelPackage,pmbus-zl6100))
 
 
 define KernelPackage/hwmon-pwmfan

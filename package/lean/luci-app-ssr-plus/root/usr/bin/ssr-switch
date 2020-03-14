@@ -16,7 +16,6 @@ NAME=shadowsocksr
 ENABLE_SERVER=nil
 CONFIG_SWTICH_FILE=/var/etc/${NAME}_t.json
 
-
 [ -n "$1" ] && cycle_time=$1
 [ -n "$2" ] && switch_time=$2
 
@@ -33,141 +32,137 @@ uci_get_by_type() {
 DEFAULT_SERVER=$(uci_get_by_type global global_server)
 CURRENT_SERVER=$DEFAULT_SERVER
 
-#ÅÐ¶Ï´úÀíÊÇ·ñÕý³£
+#åˆ¤æ–­ä»£ç†æ˜¯å¦æ­£å¸¸
 check_proxy() {
-/usr/bin/ssr-check www.google.com  80 $switch_time 1
-if [ "$?" == "0" ]; then
- return 0
-else
- /usr/bin/ssr-check www.baidu.com  80 $switch_time 1
- if [ "$?" == "0" ]; then
- #goole²»Í¨baiduÍ¨Ôò²»Õý³£
- return 1
- else
- return 2
- fi
-fi
-return 0
+	local result=0
+	local try_count=$(uci_get_by_type global switch_try_count 3)
+	for i in $(seq 1 $try_count); do
+		/usr/bin/ssr-check www.google.com 80 $switch_time 1
+		if [ "$?" == "0" ]; then
+			# echo "$(date "+%Y-%m-%d %H:%M:%S") Check Google Proxy Success, count=$i" >> /tmp/ssrplus.log
+			result=0
+			break
+		else
+			# echo "$(date "+%Y-%m-%d %H:%M:%S") Check Google Proxy Fail, count=$i" >> /tmp/ssrplus.log
+			/usr/bin/ssr-check www.baidu.com 80 $switch_time 1
+			if [ "$?" == "0" ]; then
+				result=1
+			else
+				result=2
+			fi
+		fi
+		sleep 1
+	done
+	return $result
 }
 
-
 test_proxy() {
-local servername=$(uci_get_by_name $1 server)
-local serverport=$(uci_get_by_name $1 server_port)
-ret=$(ping -c 3 $servername  | grep 'loss' | awk -F ',' '{ print $3 }' | awk -F "%" '{ print $1 }') 
-[ -z "$ret"  ] && return 1
-[ "$ret" -gt "50" ] && return 1
-ipset add ss_spec_wan_ac $servername 2>/dev/null
-ret=$?
-/usr/bin/ssr-check $servername $serverport $switch_time 
-local ret2=$?
-if [ "$ret" = "0" ] ;then
-ipset del ss_spec_wan_ac $servername 2>/dev/null
-fi
-if [ "$ret2" = "0" ] ;then
-return 0
-else
-return 1
-fi
+	local servername=$(uci_get_by_name $1 server)
+	local serverport=$(uci_get_by_name $1 server_port)
+	ret=$(ping -c 3 $servername | grep 'loss' | awk -F ',' '{ print $3 }' | awk -F "%" '{ print $1 }')
+	[ -z "$ret" ] && return 1
+	[ "$ret" -gt "50" ] && return 1
+	ipset add ss_spec_wan_ac $servername 2>/dev/null
+	ret=$?
+	/usr/bin/ssr-check $servername $serverport $switch_time
+	local ret2=$?
+	if [ "$ret" == "0" ]; then
+		ipset del ss_spec_wan_ac $servername 2>/dev/null
+	fi
+	if [ "$ret2" == "0" ]; then
+		return 0
+	else
+		return 1
+	fi
 }
 
 search_proxy() {
-let server_count=server_count+1
-[ "$normal_flag" = "1" -a "$server_count" -le "$server_locate" ] && return 0
-[ "$(uci_get_by_name $1 switch_enable)" != "1"  ]  && return 1
-[ $ENABLE_SERVER != nil ] && return 0
-[ "$1" = "$CURRENT_SERVER" ] && return 0
-local servername=$(uci_get_by_name $1 server)
-local serverport=$(uci_get_by_name $1 server_port)
-ipset add ss_spec_wan_ac $servername 2>/dev/null
-ret=$?
- /usr/bin/ssr-check $servername  $serverport $switch_time 
- local ret2=$?
-if [ "$ret" = "0" ] ;then
-ipset del ss_spec_wan_ac $servername 2>/dev/null
-fi
-if [ "$ret2" = "0" ] ;then
-server_locate=$server_count
-ENABLE_SERVER=$1
-return 0
-else
-return 1
-fi
+	let server_count=server_count+1
+	[ "$normal_flag" == "1" -a "$server_count" -le "$server_locate" ] && return 0
+	[ "$(uci_get_by_name $1 switch_enable)" != "1" ] && return 1
+	[ $ENABLE_SERVER != nil ] && return 0
+	[ "$1" == "$CURRENT_SERVER" ] && return 0
+	local servername=$(uci_get_by_name $1 server)
+	local serverport=$(uci_get_by_name $1 server_port)
+	ipset add ss_spec_wan_ac $servername 2>/dev/null
+	ret=$?
+	/usr/bin/ssr-check $servername $serverport $switch_time
+	local ret2=$?
+	if [ "$ret" == "0" ]; then
+		ipset del ss_spec_wan_ac $servername 2>/dev/null
+	fi
+	if [ "$ret2" == "0" ]; then
+		server_locate=$server_count
+		ENABLE_SERVER=$1
+		return 0
+	else
+		return 1
+	fi
 
 }
-#Ñ¡Ôñ¿ÉÓÃµÄ´úÀí
+#é€‰æ‹©å¯ç”¨çš„ä»£ç†
 select_proxy() {
-
-config_load $NAME
-ENABLE_SERVER=nil
-mkdir -p /var/run /var/etc
-server_count=0
-config_foreach search_proxy servers
-
+	config_load $NAME
+	ENABLE_SERVER=nil
+	mkdir -p /var/run /var/etc
+	server_count=0
+	config_foreach search_proxy servers
 }
 
-#ÇÐ»»´úÀí
+#åˆ‡æ¢ä»£ç†
 switch_proxy() {
-/etc/init.d/shadowsocksr restart $1
-return 0
+	/etc/init.d/shadowsocksr restart $1
+	return 0
 }
 
 start() {
-#²»Ö§³ÖkcptunÆôÓÃÊ±µÄÇÐ»»
-[ $(uci_get_by_name $DEFAULT_SERVER kcp_enable) = "1"  ]  && return 1
+	#ä¸æ”¯æŒkcptunå¯ç”¨æ—¶çš„åˆ‡æ¢
+	[ $(uci_get_by_name $DEFAULT_SERVER kcp_enable) = "1" ] && return 1
 
-while [ "1" = "1" ]  #ËÀÑ­»·
-do 
-   sleep $cycle_time
-   
-   LOGTIME=$(date "+%Y-%m-%d %H:%M:%S")
-    
-   
-   #ÅÐ¶Ïµ±Ç°´úÀíÊÇ·ñÎªÈ±Ê¡·þÎñÆ÷
-   if [ "$CURRENT_SERVER" != "$DEFAULT_SERVER" ] ;then
-   #echo "not default proxy"
-   echo "$(date "+%Y-%m-%d %H:%M:%S") Current server is not default Main server, try to switch back." >> /tmp/ssrplus.log
-
-     #¼ì²éÈ±Ê¡·þÎñÆ÷ÊÇ·ñÕý³£
-     if test_proxy $DEFAULT_SERVER  ;then
-       #echo "switch to default proxy"
-       echo "$(date "+%Y-%m-%d %H:%M:%S") Main server is avilable." >> /tmp/ssrplus.log
-       #È±Ê¡·þÎñÆ÷Õý³££¬ÇÐ»»»ØÀ´
-       CURRENT_SERVER=$DEFAULT_SERVER
-       switch_proxy $CURRENT_SERVER 
-       echo "switch to default ["$(uci_get_by_name $CURRENT_SERVER server)"] proxy!"  >> /tmp/ssrplus.log
-       continue
-     else
-       echo "$(date "+%Y-%m-%d %H:%M:%S") Main server is NOT avilable.Continue using current server." >> /tmp/ssrplus.log
-     fi
-    fi
-
-   #ÅÐ¶Ïµ±Ç°´úÀíÊÇ·ñÕý³£
-   check_proxy  
-   current_ret=$?
-  
-   if [ "$current_ret" = "1" ] ;then
-     #µ±Ç°´úÀí´íÎó£¬ÅÐ¶ÏÓÐÎÞ¿ÉÓÃµÄ·þÎñÆ÷
-     #echo "current error"
-     echo "$(date "+%Y-%m-%d %H:%M:%S") Current server error, try to switch another server." >> /tmp/ssrplus.log
-     
-     select_proxy
-     if [ "$ENABLE_SERVER" != nil ] ;then
-      #ÓÐÆäËû·þÎñÆ÷¿ÉÓÃ£¬½øÐÐÇÐ»»
-      #echo $(uci_get_by_name $new_proxy server)
-      echo "$(date "+%Y-%m-%d %H:%M:%S") Another server is avilable, now switching server." >> /tmp/ssrplus.log
-      CURRENT_SERVER=$ENABLE_SERVER
-      switch_proxy $CURRENT_SERVER
-      normal_flag=1
-      echo "$(date "+%Y-%m-%d %H:%M:%S") ShadowsocksR server switch OK" >> /tmp/ssrplus.log
-     else
-     normal_flag=0 
-     fi
-   else
-    normal_flag=0 
-    echo "$(date "+%Y-%m-%d %H:%M:%S") ShadowsocksR No Problem."  >> /tmp/ssrplus.log
-   fi
-
-
-done
+	while [ "1" == "1" ]; do #æ­»å¾ªçŽ¯
+		sleep $cycle_time
+		LOGTIME=$(date "+%Y-%m-%d %H:%M:%S")
+		#åˆ¤æ–­å½“å‰ä»£ç†æ˜¯å¦ä¸ºç¼ºçœæœåŠ¡å™¨
+		if [ "$CURRENT_SERVER" != "$DEFAULT_SERVER" ]; then
+			#echo "not default proxy"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") Current server is not default Main server, try to switch back." >>/tmp/ssrplus.log
+			#æ£€æŸ¥ç¼ºçœæœåŠ¡å™¨æ˜¯å¦æ­£å¸¸
+			if test_proxy $DEFAULT_SERVER; then
+				#echo "switch to default proxy"
+				echo "$(date "+%Y-%m-%d %H:%M:%S") Main server is avilable." >>/tmp/ssrplus.log
+				#ç¼ºçœæœåŠ¡å™¨æ­£å¸¸ï¼Œåˆ‡æ¢å›žæ¥
+				CURRENT_SERVER=$DEFAULT_SERVER
+				switch_proxy $CURRENT_SERVER
+				echo "$(date "+%Y-%m-%d %H:%M:%S") switch to default ["$(uci_get_by_name $CURRENT_SERVER server)"] proxy!" >>/tmp/ssrplus.log
+				continue
+			else
+				echo "$(date "+%Y-%m-%d %H:%M:%S") Main server is NOT avilable.Continue using current server." >>/tmp/ssrplus.log
+			fi
+		fi
+		#åˆ¤æ–­å½“å‰ä»£ç†æ˜¯å¦æ­£å¸¸
+		check_proxy
+		current_ret=$?
+		if [ "$current_ret" == "1" ]; then
+			#å½“å‰ä»£ç†é”™è¯¯ï¼Œåˆ¤æ–­æœ‰æ— å¯ç”¨çš„æœåŠ¡å™¨
+			#echo "current error"
+			echo "$(date "+%Y-%m-%d %H:%M:%S") Current server error, try to switch another server." >>/tmp/ssrplus.log
+			select_proxy
+			if [ "$ENABLE_SERVER" != nil ]; then
+				#æœ‰å…¶ä»–æœåŠ¡å™¨å¯ç”¨ï¼Œè¿›è¡Œåˆ‡æ¢
+				#echo $(uci_get_by_name $new_proxy server)
+				echo "$(date "+%Y-%m-%d %H:%M:%S") Another server is avilable, now switching server." >>/tmp/ssrplus.log
+				CURRENT_SERVER=$ENABLE_SERVER
+				switch_proxy $CURRENT_SERVER
+				normal_flag=1
+				echo "$(date "+%Y-%m-%d %H:%M:%S") ShadowsocksR server switch OK" >>/tmp/ssrplus.log
+			else
+				switch_proxy $CURRENT_SERVER
+				normal_flag=1
+				echo "$(date "+%Y-%m-%d %H:%M:%S") Try restart current server." >>/tmp/ssrplus.log
+			fi
+		else
+			normal_flag=0
+			echo "$(date "+%Y-%m-%d %H:%M:%S") ShadowsocksR No Problem." >>/tmp/ssrplus.log
+		fi
+	done
 }

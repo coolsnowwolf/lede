@@ -1,0 +1,207 @@
+#!/bin/sh /etc/rc.common
+
+START=98
+USE_PROCD=1
+
+SMBD_IFACE=""
+
+smb_header()
+{
+	config_get SMBD_IFACE $1 interface "lan"
+
+	# resolve interfaces
+	local interfaces
+	interfaces=$(
+		. /lib/functions/network.sh
+
+		local net
+		for net in $SMBD_IFACE; do
+			local device
+			network_is_up $net || continue
+			network_get_device device "$net"
+			echo -n "${device:-$net} "
+		done
+	)
+
+	local workgroup description
+	local hostname
+	hostname="$(cat /proc/sys/kernel/hostname)"
+
+	config_get workgroup $1 workgroup "WORKGROUP"
+	config_get description $1 description "Ksmbd on OpenWrt"
+	config_get_bool ALLOW_LEGACY_PROTOCOLS $1 allow_legacy_protocols 0
+
+	sed -e "s#|NAME|#$hostname#g" \
+	    -e "s#|WORKGROUP|#$workgroup#g" \
+	    -e "s#|DESCRIPTION|#$description#g" \
+	    -e "s#|INTERFACES|#$interfaces#g" \
+	    /etc/ksmbd/smb.conf.template > /var/etc/ksmbd/smb.conf
+		
+	{
+		printf "\n######### Dynamic written config options #########\n"
+
+		if [ "$ALLOW_LEGACY_PROTOCOLS" -eq 1 ]; then
+			logger -p daemon.info -t 'ksmbd' "Legacy Protocols allowed, don't use this option for secure environments!"
+			printf "\tserver min protocol = NT1\n"
+			printf "\tserver signing = disabled\n"
+		fi
+	} >> /var/etc/ksmbd/smb.conf
+
+	[ -e /etc/ksmbd/smb.conf ] || ln -nsf /var/etc/ksmbd/smb.conf /etc/ksmbd/smb.conf
+
+	if [ ! -L /etc/ksmbd/smb.conf ]; then
+		logger -p daemon.warn -t 'ksmbd' "Local custom /etc/ksmbd/smb.conf file detected, all UCI/Luci config settings are ignored!"
+	fi
+}
+
+smb_add_share()
+{
+	local name
+	local path
+	local comment
+	local users
+	local create_mask
+	local dir_mask
+	local browseable
+	local read_only
+	local writeable
+	local guest_ok
+	local force_root
+	local write_list
+	local read_list
+	local hide_dot_files
+	local veto_files
+	local inherit_owner
+	local force_create_mode
+	local force_directory_mode
+
+	config_get name $1 name
+	config_get path $1 path
+	config_get comment $1 comment
+	config_get users $1 users
+	config_get create_mask $1 create_mask
+	config_get dir_mask $1 dir_mask
+	config_get browseable $1 browseable
+	config_get read_only $1 read_only
+	config_get writeable $1 writeable
+	config_get guest_ok $1 guest_ok
+	config_get_bool force_root $1 force_root 0
+	config_get write_list $1 write_list
+	config_get read_list $1 read_list
+	config_get hide_dot_files $1 hide_dot_files
+	config_get veto_files $1 veto_files
+	config_get inherit_owner $1 inherit_owner
+	config_get force_create_mode $1 force_create_mode
+	config_get force_directory_mode $1 force_directory_mode
+
+	[ -z "$name" ] || [ -z "$path" ] && return
+
+	{
+		printf "\n[%s]\n\tpath = %s\n" "$name" "$path"
+		[ -n "$comment" ] && printf "\tcomment = %s\n" "$comment"
+
+		if [ "$force_root" -eq 1 ]; then
+			printf "\tforce user = %s\n" "root"
+			printf "\tforce group = %s\n" "root"
+		else
+			[ -n "$users" ] && printf "\tvalid users = %s\n" "$users"
+		fi
+
+		[ -n "$create_mask" ] && printf "\tcreate mask = %s\n" "$create_mask"
+		[ -n "$dir_mask" ] && printf "\tdirectory mask = %s\n" "$dir_mask"
+		[ -n "$force_create_mode" ] && printf "\tforce create mode = %s\n" "$force_create_mode"
+		[ -n "$force_directory_mode" ] && printf "\tforce directory mode = %s\n" "$force_directory_mode"
+
+		[ -n "$browseable" ] && printf "\tbrowseable = %s\n" "$browseable"
+		[ -n "$read_only" ] && printf "\tread only = %s\n" "$read_only"
+		[ -n "$writeable" ] && printf "\twriteable = %s\n" "$writeable"
+
+		[ -n "$guest_ok" ] && printf "\tguest ok = %s\n" "$guest_ok"
+		[ -n "$inherit_owner" ] && printf "\tinherit owner = %s\n" "$inherit_owner"
+
+		[ -n "$write_list" ] && printf "\twrite list = %s\n" "$write_list"
+		[ -n "$read_list" ] && printf "\tread list = %s\n" "$read_list"
+
+		[ -n "$hide_dot_files" ] && printf "\thide dot files = %s\n" "$hide_dot_files"
+		[ -n "$veto_files" ] && printf "\tveto files = %s\n" "$veto_files"
+	} >> /var/etc/ksmbd/smb.conf
+}
+
+init_config()
+{
+	mkdir -p /var/etc/ksmbd
+
+	config_load ksmbd
+	config_foreach smb_header globals
+	config_foreach smb_add_share share
+}
+
+service_triggers()
+{
+	# PROCD_RELOAD_DELAY=1000
+
+	procd_add_reload_trigger "dhcp" "system" "ksmbd"
+
+	local i
+	for i in $SMBD_IFACE; do
+		procd_add_reload_interface_trigger $i
+	done
+}
+
+kill_server()
+{
+	if [ -e /sys/module/ksmbd ]; then
+		if [ -e /sys/class/ksmbd-control/kill_server ]; then
+			logger -p daemon.info -t 'ksmbd' "triggering kill_server"
+			echo hard > /sys/class/ksmbd-control/kill_server
+		fi
+	fi
+}
+
+start_service()
+{
+	init_config
+
+	if [ ! -e /etc/ksmbd/smb.conf ]; then
+		logger -p daemon.error -t 'ksmbd' "missing config /etc/ksmbd/smb.conf!"
+		exit 1
+	fi
+	
+	# NOTE: We don't do a soft-reload via signal, since [global] smb.conf setting changes will be ignored, so always reset hard.
+	kill_server
+	
+	[ ! -e /sys/module/ksmbd ] && modprobe ksmbd 2> /dev/null
+	if [ ! -e /sys/module/ksmbd ]; then
+		logger -p daemon.error -t 'ksmbd' "modprobe of ksmbd module failed, can\'t start ksmbd!"
+		exit 1
+	fi
+
+	logger -p daemon.notice -t 'ksmbd' "Starting Ksmbd userspace service."
+	procd_open_instance
+	procd_add_mdns "smb" "tcp" "445"
+	procd_set_param command /usr/sbin/ksmbd.mountd --n
+	procd_set_param file /etc/ksmbd/smb.conf
+	procd_set_param limits nofile=16384
+	procd_close_instance
+}
+
+stop_service()
+{
+	logger -p daemon.notice -t 'ksmbd' "Stopping Ksmbd userspace service."
+	killall ksmbd.mountd > /dev/null 2>&1
+	
+	[ -e /sys/module/ksmbd ] && rmmod ksmbd > /dev/null 2>&1
+	# kill server if we cant rmmod
+	[ -e /sys/module/ksmbd ] && kill_server
+	# next try
+	[ -e /sys/module/ksmbd ] && rmmod ksmbd > /dev/null 2>&1
+	
+	if [ -e /sys/module/ksmbd ]; then
+		logger -p daemon.error -t 'ksmbd' "module still loaded after kill_server?"
+	fi
+	[ -f /tmp/ksmbd.lock ] && rm /tmp/ksmbd.lock
+}
+
+# reload_service() {
+	# restart "$@"
+# }

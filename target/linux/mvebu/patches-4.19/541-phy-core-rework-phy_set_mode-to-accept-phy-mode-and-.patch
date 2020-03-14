@@ -1,0 +1,134 @@
+From 79a5a18aa9d1062205cdcfa183d4cd5241d1b8da Mon Sep 17 00:00:00 2001
+From: Grygorii Strashko <grygorii.strashko@ti.com>
+Date: Mon, 19 Nov 2018 19:24:20 -0600
+Subject: [PATCH] phy: core: rework phy_set_mode to accept phy mode and submode
+
+Currently the attempt to add support for Ethernet interface mode PHY
+(MII/GMII/RGMII) will lead to the necessity of extending enum phy_mode and
+duplicate there values from phy_interface_t enum (or introduce more PHY
+callbacks) [1]. Both approaches are ineffective and would lead to fast
+bloating of enum phy_mode or struct phy_ops in the process of adding more
+PHYs for different subsystems which will make them unmaintainable.
+
+As discussed in [1] the solution could be to introduce dual level PHYs mode
+configuration - PHY mode and PHY submode. The PHY mode will define generic
+PHY type (subsystem - PCIE/ETHERNET/USB_) while the PHY submode - subsystem
+specific interface mode. The last is usually already defined in
+corresponding subsystem headers (phy_interface_t for Ethernet, enum
+usb_device_speed for USB).
+
+This patch is cumulative change which refactors PHY framework code to
+support dual level PHYs mode configuration - PHY mode and PHY submode. It
+extends .set_mode() callback to support additional parameter "int submode"
+and converts all corresponding PHY drivers to support new .set_mode()
+callback declaration.
+The new extended PHY API
+ int phy_set_mode_ext(struct phy *phy, enum phy_mode mode, int submode)
+is introduced to support dual level PHYs mode configuration and existing
+phy_set_mode() API is converted to macros, so PHY framework consumers do
+not need to be changed (~21 matches).
+
+[1] http://lkml.kernel.org/r/d63588f6-9ab0-848a-5ad4-8073143bd95d@ti.com
+Signed-off-by: Grygorii Strashko <grygorii.strashko@ti.com>
+Signed-off-by: Kishon Vijay Abraham I <kishon@ti.com>
+---
+ drivers/phy/allwinner/phy-sun4i-usb.c        |  3 ++-
+ drivers/phy/amlogic/phy-meson-gxl-usb2.c     |  5 +++--
+ drivers/phy/amlogic/phy-meson-gxl-usb3.c     |  5 +++--
+ drivers/phy/marvell/phy-mvebu-cp110-comphy.c |  3 ++-
+ drivers/phy/mediatek/phy-mtk-tphy.c          |  2 +-
+ drivers/phy/mediatek/phy-mtk-xsphy.c         |  2 +-
+ drivers/phy/mscc/phy-ocelot-serdes.c         |  2 +-
+ drivers/phy/phy-core.c                       |  6 +++---
+ drivers/phy/qualcomm/phy-qcom-qmp.c          |  3 ++-
+ drivers/phy/qualcomm/phy-qcom-qusb2.c        |  3 ++-
+ drivers/phy/qualcomm/phy-qcom-ufs-qmp-14nm.c |  3 ++-
+ drivers/phy/qualcomm/phy-qcom-ufs-qmp-20nm.c |  3 ++-
+ drivers/phy/qualcomm/phy-qcom-usb-hs.c       |  3 ++-
+ drivers/phy/ti/phy-da8xx-usb.c               |  3 ++-
+ drivers/phy/ti/phy-tusb1210.c                |  2 +-
+ include/linux/phy/phy.h                      | 13 ++++++++++---
+ 16 files changed, 39 insertions(+), 22 deletions(-)
+
+--- a/drivers/phy/marvell/phy-mvebu-cp110-comphy.c
++++ b/drivers/phy/marvell/phy-mvebu-cp110-comphy.c
+@@ -512,7 +512,8 @@ static int mvebu_comphy_power_on(struct
+ 	return ret;
+ }
+ 
+-static int mvebu_comphy_set_mode(struct phy *phy, enum phy_mode mode)
++static int mvebu_comphy_set_mode(struct phy *phy,
++				 enum phy_mode mode, int submode)
+ {
+ 	struct mvebu_comphy_lane *lane = phy_get_drvdata(phy);
+ 
+--- a/drivers/phy/phy-core.c
++++ b/drivers/phy/phy-core.c
+@@ -360,7 +360,7 @@ int phy_power_off(struct phy *phy)
+ }
+ EXPORT_SYMBOL_GPL(phy_power_off);
+ 
+-int phy_set_mode(struct phy *phy, enum phy_mode mode)
++int phy_set_mode_ext(struct phy *phy, enum phy_mode mode, int submode)
+ {
+ 	int ret;
+ 
+@@ -368,14 +368,14 @@ int phy_set_mode(struct phy *phy, enum p
+ 		return 0;
+ 
+ 	mutex_lock(&phy->mutex);
+-	ret = phy->ops->set_mode(phy, mode);
++	ret = phy->ops->set_mode(phy, mode, submode);
+ 	if (!ret)
+ 		phy->attrs.mode = mode;
+ 	mutex_unlock(&phy->mutex);
+ 
+ 	return ret;
+ }
+-EXPORT_SYMBOL_GPL(phy_set_mode);
++EXPORT_SYMBOL_GPL(phy_set_mode_ext);
+ 
+ int phy_reset(struct phy *phy)
+ {
+--- a/include/linux/phy/phy.h
++++ b/include/linux/phy/phy.h
+@@ -62,7 +62,7 @@ struct phy_ops {
+ 	int	(*exit)(struct phy *phy);
+ 	int	(*power_on)(struct phy *phy);
+ 	int	(*power_off)(struct phy *phy);
+-	int	(*set_mode)(struct phy *phy, enum phy_mode mode);
++	int	(*set_mode)(struct phy *phy, enum phy_mode mode, int submode);
+ 	int	(*reset)(struct phy *phy);
+ 	int	(*calibrate)(struct phy *phy);
+ 	struct module *owner;
+@@ -166,7 +166,10 @@ int phy_init(struct phy *phy);
+ int phy_exit(struct phy *phy);
+ int phy_power_on(struct phy *phy);
+ int phy_power_off(struct phy *phy);
+-int phy_set_mode(struct phy *phy, enum phy_mode mode);
++int phy_set_mode_ext(struct phy *phy, enum phy_mode mode, int submode);
++#define phy_set_mode(phy, mode) \
++	phy_set_mode_ext(phy, mode, 0)
++
+ static inline enum phy_mode phy_get_mode(struct phy *phy)
+ {
+ 	return phy->attrs.mode;
+@@ -280,13 +283,17 @@ static inline int phy_power_off(struct p
+ 	return -ENOSYS;
+ }
+ 
+-static inline int phy_set_mode(struct phy *phy, enum phy_mode mode)
++static inline int phy_set_mode_ext(struct phy *phy, enum phy_mode mode,
++				   int submode)
+ {
+ 	if (!phy)
+ 		return 0;
+ 	return -ENOSYS;
+ }
+ 
++#define phy_set_mode(phy, mode) \
++	phy_set_mode_ext(phy, mode, 0)
++
+ static inline enum phy_mode phy_get_mode(struct phy *phy)
+ {
+ 	return PHY_MODE_INVALID;

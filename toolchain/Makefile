@@ -49,7 +49,7 @@ ifeq ($(CONFIG_EXTERNAL_TOOLCHAIN),)
 
   $(curdir)/gcc/initial/compile+=$(curdir)/binutils/compile
   $(curdir)/$(LIBC)/compile:=$(curdir)/gcc/initial/compile
-  $(curdir)/gcc/final/compile:=$(curdir)/$(LIBC)/compile
+  $(curdir)/gcc/final/compile:=$(curdir)/$(LIBC)/compile $(curdir)/kernel-headers/compile
   $(curdir)/$(LIBC)/utils/compile:=$(curdir)/gcc/final/compile
 endif
 

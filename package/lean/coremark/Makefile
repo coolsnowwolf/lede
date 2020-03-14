@@ -15,12 +15,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=coremark
-PKG_RELEASE:=12
+PKG_RELEASE:=13
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/eembc/coremark.git
-PKG_SOURCE_VERSION:=2e9d6165f362f7071d29b7f88c6d32655e5d4a3c
-PKG_SOURCE_DATE:=2019-01-31
+PKG_SOURCE_VERSION:=21d473aae1f11d52ea592a8685734be2209aa66f
+PKG_SOURCE_DATE:=2019-09-30
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -48,7 +48,7 @@ define Build/Compile
 	$(SED) 's|EXE = .exe|EXE =|' $(PKG_BUILD_DIR)/$(DIR_ARCH)/core_portme.mak
 	mkdir $(PKG_BUILD_DIR)/$(ARCH)
 	cp -r $(PKG_BUILD_DIR)/$(DIR_ARCH)/* $(PKG_BUILD_DIR)/$(ARCH)
-	$(MAKE) XCFLAGS="-DMULTITHREAD=8 -DUSE_PTHREAD" -C $(PKG_BUILD_DIR) PORT_DIR=$(ARCH) $(MAKE_FLAGS) \
+	$(MAKE) XCFLAGS="-DMULTITHREAD=16 -DUSE_PTHREAD" -C $(PKG_BUILD_DIR) PORT_DIR=$(ARCH) $(MAKE_FLAGS) \
 		compile 
 endef
 
@@ -64,7 +64,7 @@ endef
 define Package/coremark/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || sed -i '/coremark/d' /etc/crontabs/root
-[ -n "$${IPKG_INSTROOT}" ] || echo "0 4 * * 0 /etc/coremark.sh" >> /etc/crontabs/root
+[ -n "$${IPKG_INSTROOT}" ] || echo "0 4 * * * /etc/coremark.sh" >> /etc/crontabs/root
 [ -n "$${IPKG_INSTROOT}" ] || crontab /etc/crontabs/root
 endef
 

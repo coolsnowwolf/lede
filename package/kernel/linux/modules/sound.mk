@@ -191,6 +191,7 @@ define KernelPackage/sound-soc-core
   DEPENDS:=+kmod-regmap-core +kmod-ac97
   KCONFIG:= \
 	CONFIG_SND_SOC \
+	CONFIG_SND_SOC_ADI=n \
 	CONFIG_SND_SOC_DMAENGINE_PCM=y \
 	CONFIG_SND_SOC_ALL_CODECS=n
   FILES:=$(LINUX_DIR)/sound/soc/snd-soc-core.ko
@@ -300,7 +301,7 @@ define KernelPackage/sound-dummy
   AUTOLOAD:=$(call AutoLoad,32,snd-dummy)
 endef
 
-define KernelPackage/sound_dummy/description
+define KernelPackage/sound-dummy/description
  Dummy sound device for Alsa when no hardware present
 endef
 
