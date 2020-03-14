@@ -15,7 +15,7 @@ if [ ! -f "/tmp/adbyby.updated" ];then
          echo "Rules MD5 are the same!"
          echo $(date "+%Y-%m-%d %H:%M:%S") > /tmp/adbyby.updated
          exit 0
-      else
+      elif [ -s /tmp/md5.json ];then
       
         touch /tmp/lazy.txt && wget-ssl --no-check-certificate -t 1 -T 10 -O /tmp/lazy.txt https://adbyby.coding.net/p/xwhyc-rules/d/xwhyc-rules/git/raw/master/lazy.txt
         touch /tmp/video.txt && wget-ssl --no-check-certificate -t 1 -T 10 -O /tmp/video.txt https://adbyby.coding.net/p/xwhyc-rules/d/xwhyc-rules/git/raw/master/video.txt
@@ -43,6 +43,6 @@ if [ ! -f "/tmp/adbyby.updated" ];then
    
    rm -f /tmp/adbyby/data/*.bak
     
-   kill -9 $(busybox ps -w | grep "adbyby --no-daemon" | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+   kill -9 $(busybox ps -w | grep 'adbyby --no-daemon' | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 fi
 
