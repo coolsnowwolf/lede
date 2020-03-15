@@ -183,6 +183,7 @@ if apply then
     luci.sys.exec("uci set oafControl.@weekday[0].weekday_night_start=%s" % nw_n_start)
     luci.sys.exec("uci set oafControl.@weekday[0].weekday_night_stop=%s" % nw_n_stop)
 	luci.sys.exec("uci commit oafControl")
+	luci.sys.exec("/etc/init.d/oafControl restart")
 end
 
 return m
