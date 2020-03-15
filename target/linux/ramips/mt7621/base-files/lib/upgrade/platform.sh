@@ -48,6 +48,7 @@ platform_do_upgrade() {
 	netgear,r6220|\
 	netgear,r6260|\
 	netgear,r6350|\
+	netgear,r6700-v2|\
 	netgear,r6800|\
 	netgear,r6850|\
 	netis,wf2881|\
