@@ -46,7 +46,7 @@ log = {
 		streamSettings = {
 			network = server.transport,
 			security = (server.tls == '1') and "tls" or "none",
-			tlsSettings = {allowInsecure = (server.insecure == "1") and true or false,serverName=server.tls_host,},
+			tlsSettings = {allowInsecure = (server.insecure ~= "0") and true or false,serverName=server.tls_host,},
 			kcpSettings = (server.transport == "kcp") and {
 				mtu = tonumber(server.mtu),
 				tti = tonumber(server.tti),

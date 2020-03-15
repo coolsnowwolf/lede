@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=adbyby
 PKG_VERSION:=2.7
-PKG_RELEASE:=20200308
+PKG_RELEASE:=20200315
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -16,7 +16,7 @@ define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=Powerful adblock module to block ad.
-	DEPENDS:=@(x86||x86_64||arm||mipsel||mips||aarch64)
+	DEPENDS:=@(i386||x86_64||arm||mipsel||mips||aarch64)
 	URL:=http://www.adbyby.com/
 endef
 
@@ -61,8 +61,6 @@ endef
 define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/share/adbyby
 	$(INSTALL_BIN) ./files/adbyby.sh $(1)/usr/share/adbyby/
-	$(INSTALL_BIN) ./files/adbybyfirst.sh $(1)/usr/share/adbyby/
-	$(INSTALL_BIN) ./files/adbybyupdate.sh $(1)/usr/share/adbyby/
 	$(INSTALL_CONF) ./files/adhook.ini $(1)/usr/share/adbyby/
 	$(INSTALL_CONF) ./files/user.action $(1)/usr/share/adbyby/
 
