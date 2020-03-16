@@ -63,7 +63,7 @@ b.default = "1"
 b = a:option(Value, "global_wget", translate("远程控制"),translate("远程控制的url，如果不知道，请默认或清空"))
 b.optional = false
 b.rmempty = true
-b.default = "https://github.com/Twinzo1/openwrt/oafStatus"
+b.default = "https://raw.githubusercontent.com/Twinzo1/ddwrt/master/oafControl.conf"
 
 -- BEGIN Global Section
 a = m:section(TypedSection, "vacation",translate("假期"))
