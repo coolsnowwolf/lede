@@ -229,6 +229,15 @@ define Device/tama_w06
 endef
 TARGET_DEVICES += tama_w06
 
+define Device/totolink_a3
+  IMAGE_SIZE := 7936k
+  UIMAGE_NAME := za3
+  DEVICE_VENDOR := TOTOLINK
+  DEVICE_MODEL := A3
+  DEVICE_PACKAGES := kmod-mt76x2
+endef
+TARGET_DEVICES += totolink_a3
+
 define Device/totolink_lr1200
   IMAGE_SIZE := 7872k
   DEVICE_VENDOR := TOTOLINK
