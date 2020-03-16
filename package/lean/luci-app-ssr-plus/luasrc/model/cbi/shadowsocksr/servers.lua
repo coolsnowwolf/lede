@@ -12,6 +12,8 @@ end)
 local fs  = require "nixio.fs"
 local sys = require "luci.sys"
 
+local ucic = luci.model.uci.cursor()
+
 m = Map(shadowsocksr,  translate("Servers subscription and manage"))
 
 -- Server Subscribe
@@ -78,7 +80,6 @@ end
 s = m:section(TypedSection, "servers")
 s.anonymous = true
 s.addremove = true
-s.sortable = false
 s.template = "cbi/tblsection"
 s.sortable = true
 s.extedit = luci.dispatcher.build_url("admin/services/shadowsocksr/servers/%s")
@@ -92,7 +93,7 @@ end
 
 o = s:option(DummyValue, "type", translate("Type"))
 function o.cfgvalue(...)
-	return Value.cfgvalue(...) or translate("")
+	return string.upper(Value.cfgvalue(...)) or translate("")
 end
 
 o = s:option(DummyValue, "alias", translate("Alias"))
@@ -105,11 +106,6 @@ function o.cfgvalue(...)
 	return Value.cfgvalue(...) or "N/A"
 end
 
-o = s:option(DummyValue, "switch_enable", translate("Auto Switch"))
-function o.cfgvalue(...)
-	return Value.cfgvalue(...) or "1"
-end
-
 o = s:option(DummyValue, "server_port", translate("Socket Connected"))
 o.template="shadowsocksr/socket"
 o.width="10%"
@@ -117,6 +113,24 @@ o.width="10%"
 o = s:option(DummyValue, "server", translate("Ping Latency"))
 o.template="shadowsocksr/ping"
 o.width="10%"
+
+
+o = s:option(Button,"apply_node",translate("Apply"))
+o.inputstyle = "apply"
+o.write = function(self, section)
+  ucic:set("shadowsocksr", '@global[0]', 'global_server', section)
+  ucic:save("shadowsocksr") 
+  ucic:commit("shadowsocksr")
+  luci.sys.init.stop("shadowsocksr")
+  luci.sys.init.start("shadowsocksr")
+  luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "client"))
+end
+
+o = s:option(Flag, "switch_enable", translate("Auto Switch"))
+o.rmempty = false
+function o.cfgvalue(...)
+	return Value.cfgvalue(...) or 1
+end
 
 m:append(Template("shadowsocksr/server_list"))
 
