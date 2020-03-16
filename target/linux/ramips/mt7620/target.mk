@@ -4,7 +4,7 @@
 
 SUBTARGET:=mt7620
 BOARDNAME:=MT7620 based boards
-FEATURES+=usb ramdisk
+FEATURES+=usb nand ramdisk
 CPU_TYPE:=24kc
 
 DEFAULT_PACKAGES += kmod-rt2800-soc wpad-openssl
