@@ -4,10 +4,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=usb-net-rtl8152
 PKG_VERSION:=2.12.0
-PKG_RELEASE:=1
-
-#PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
-#PKG_CAT:=bzcat
+PKG_RELEASE:=2
 
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
@@ -15,6 +12,7 @@ include $(INCLUDE_DIR)/package.mk
 
 define KernelPackage/usb-net-rtl8152
   TITLE:=Driver for Realtek r8152 chipsets
+  DEPENDS:=@USB_SUPPORT +kmod-usb-core
   SUBMENU:=Network Devices
   VERSION:=$(LINUX_VERSION)+$(PKG_VERSION)-$(BOARD)-$(PKG_RELEASE)
   FILES:= $(PKG_BUILD_DIR)/r8152.ko

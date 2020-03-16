@@ -74,11 +74,7 @@ local set =luci.http.formvalue("set")
 local icount =0
 
 if set == "gfw_data" then
-if nixio.fs.access("/usr/bin/wget-ssl") then
 	refresh_cmd="wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt -O /tmp/gfw.b64"
-	else
-		refresh_cmd="wget -O /tmp/gfw.b64 http://iytc.net/tools/list.b64"
-	end
 	sret=luci.sys.call(refresh_cmd .. " 2>/dev/null")
 	if sret== 0 then
 	luci.sys.call("/usr/bin/ssr-gfw")
@@ -87,6 +83,8 @@ if nixio.fs.access("/usr/bin/wget-ssl") then
 	oldcount=luci.sys.exec("cat /etc/dnsmasq.ssr/gfw_list.conf | wc -l")
 	if tonumber(icount) ~= tonumber(oldcount) then
 		luci.sys.exec("cp -f /tmp/gfwnew.txt /etc/dnsmasq.ssr/gfw_list.conf")
+		luci.sys.exec("cp -f /tmp/gfwnew.txt /tmp/dnsmasq.ssr/gfw_list.conf")
+		luci.sys.call("/etc/init.d/dnsmasq restart")
 		retstring=tostring(math.ceil(tonumber(icount)/2))
 	else
 		retstring ="0"
@@ -100,7 +98,7 @@ else
 end
 elseif set == "ip_data" then
 	if (luci.model.uci.cursor():get_first('shadowsocksr', 'global', 'chnroute', '0') == '1') then
-		refresh_cmd="wget-ssl --no-check-certificate -O - " .. luci.model.uci.cursor():get_first('shadowsocksr', 'global', 'chnroute_url', 'https://pexcn.me/daily/chnroute/chnroute.txt') .. ' > /tmp/china_ssr.txt 2>/dev/null'
+		refresh_cmd="wget-ssl --no-check-certificate -O - " .. luci.model.uci.cursor():get_first('shadowsocksr', 'global', 'chnroute_url', 'https://ispip.clang.cn/all_cn.txt') .. ' > /tmp/china_ssr.txt 2>/dev/null'
 	else
 		refresh_cmd="wget -O- 'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest'  2>/dev/null| awk -F\\| '/CN\\|ipv4/ { printf(\"%s/%d\\n\", $4, 32-log($5)/log(2)) }' > /tmp/china_ssr.txt"
 	end
@@ -134,10 +132,9 @@ if sret== 0 then
 	end
 	if tonumber(icount) ~= tonumber(oldcount) then
 		luci.sys.exec("cp -f /tmp/ad.conf /etc/dnsmasq.ssr/ad.conf")
+		luci.sys.exec("cp -f /tmp/ad.conf /tmp/dnsmasq.ssr/ad.conf")
+		luci.sys.call("/etc/init.d/dnsmasq restart")
 		retstring=tostring(math.ceil(tonumber(icount)))
-		if oldcount==0 then
-		 luci.sys.call("/etc/init.d/dnsmasq restart")
-		end
 	else
 		retstring ="0"
 	end
