@@ -46,7 +46,7 @@ for _,key in pairs(key_table) do o:value(key,server_table[key]) end
 o = s:option(ListValue, "netflix_server", translate("Netflix Node"))
 o:value("same", translate("Same as Global Server"))
 for _,key in pairs(key_table) do o:value(key,server_table[key]) end
-o.default = "nil"
+o.default = "same"
 o.rmempty = false
 
 o = s:option(ListValue, "threads", translate("Multi Threads Option"))
