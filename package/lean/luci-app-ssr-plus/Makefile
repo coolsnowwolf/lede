@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
 PKG_VERSION:=170
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
@@ -77,9 +77,6 @@ define Package/$(PKG_NAME)/conffiles
 endef
 
 define Package/$(PKG_NAME)/install
-	$(INSTALL_DIR) $(1)/etc
-	$(INSTALL_DATA) ./root/etc/china_ssr.txt $(1)/etc/china_ssr.txt
-
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./root/etc/config/shadowsocksr $(1)/etc/config/shadowsocksr
 	$(INSTALL_DATA) ./root/etc/config/*.list $(1)/etc/config/
@@ -118,27 +115,14 @@ endef
 
 define Package/$(PKG_NAME)/postinst
 #!/bin/sh
-if [ -z "$${IPKG_INSTROOT}" ]; then
-	( . /etc/uci-defaults/luci-ssr-plus ) && rm -f /etc/uci-defaults/luci-ssr-plus
-	rm -f /tmp/luci-indexcache
-	/etc/init.d/shadowsocksr enable >/dev/null 2>&1
-fi
-exit 0
-endef
-
-define Package/$(PKG_NAME)/prerm
-#!/bin/sh
-if [ -z "$${IPKG_INSTROOT}" ]; then
-	/etc/init.d/shadowsocksr disable
-	/etc/init.d/shadowsocksr stop
-fi
-exit 0
+rm -rf /tmp/luci-modulecache/*
+rm -f /tmp/luci-indexcache
 endef
 
 define Package/$(PKG_NAME)/postrm
 #!/bin/sh
 rm -rf /etc/china_ssr.txt /etc/dnsmasq.ssr /etc/dnsmasq.oversea /etc/config/shadowsocksr /etc/config/black.list \
-		/etc/config/gfw.list /etc/config/white.list >/dev/null 2>&1
+		/etc/config/gfw.list /etc/config/white.list /etc/config/netflix.list /etc/config/netflixip.list >/dev/null 2>&1
 exit 0
 endef
 
