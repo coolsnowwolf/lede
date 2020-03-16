@@ -70,8 +70,7 @@ uci:delete_all("shadowsocksr", "servers", function(s)
 end)
 uci:save("shadowsocksr") 
 uci:commit("shadowsocksr")
-luci.sys.init.stop("shadowsocksr")
-luci.sys.init.start("shadowsocksr")
+luci.sys.exec("/etc/init.d/shadowsocksr restart")
 luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
 return
 end
@@ -115,14 +114,13 @@ o.template="shadowsocksr/ping"
 o.width="10%"
 
 
-o = s:option(Button,"apply_node",translate("Apply"))
-o.inputstyle = "apply"
-o.write = function(self, section)
+node = s:option(Button,"apply_node",translate("Apply"))
+node.inputstyle = "apply"
+node.write = function(self, section)
   ucic:set("shadowsocksr", '@global[0]', 'global_server', section)
   ucic:save("shadowsocksr") 
   ucic:commit("shadowsocksr")
-  luci.sys.init.stop("shadowsocksr")
-  luci.sys.init.start("shadowsocksr")
+  luci.sys.exec("/etc/init.d/shadowsocksr restart")
   luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "client"))
 end
 
