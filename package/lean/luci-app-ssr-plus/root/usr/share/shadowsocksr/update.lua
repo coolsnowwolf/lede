@@ -94,4 +94,4 @@ else
 end
 end
 
-luci.sys.call("/etc/init.d/dnsmasq restart")
+luci.sys.call("/etc/init.d/dnsmasq reload")
