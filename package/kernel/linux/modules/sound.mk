@@ -301,7 +301,7 @@ define KernelPackage/sound-dummy
   AUTOLOAD:=$(call AutoLoad,32,snd-dummy)
 endef
 
-define KernelPackage/sound_dummy/description
+define KernelPackage/sound-dummy/description
  Dummy sound device for Alsa when no hardware present
 endef
 

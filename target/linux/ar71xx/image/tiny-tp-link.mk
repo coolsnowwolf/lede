@@ -350,6 +350,16 @@ define Device/tl-wr2041n-v2
 endef
 TARGET_DEVICES += tl-wr2041n-v2
 
+define Device/tl-wr702n-v1
+  $(Device/tplink-16mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR702N v1
+  BOARDNAME := TL-WR703N
+  DEVICE_PROFILE := TLWR703
+  TPLINK_HWID := 0x07030101
+  CONSOLE := ttyATH0,115200
+endef
+TARGET_DEVICES += tl-wr702n-v1
+
 define Device/tl-wr703n-v1
   $(Device/tplink-8mlzma)
   DEVICE_TITLE := TP-LINK TL-WR703N v1
@@ -382,6 +392,17 @@ define Device/tl-wr720n-v3
   CONSOLE := ttyATH0,115200
 endef
 TARGET_DEVICES += tl-wr720n-v3
+
+define Device/tl-wr720n-v3-16m
+  $(Device/tplink-16mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR720N v3 16M
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
+  BOARDNAME := TL-WR720N-v3
+  DEVICE_PROFILE := TLWR720
+  TPLINK_HWID := 0x07200103
+  CONSOLE := ttyATH0,115200
+endef
+TARGET_DEVICES += tl-wr720n-v3-16m
 
 define Device/tl-wr720n-v4
   $(Device/tl-wr720n-v3)
@@ -640,6 +661,63 @@ define Device/tl-wr881n-v1
   TPLINK_HWID := 0x08810001
 endef
 TARGET_DEVICES += tl-wr881n-v1
+
+define Device/tl-wr882n-v1
+  $(Device/tl-wr885n-v1)
+  DEVICE_TITLE := TP-LINK TL-WR882N v1
+endef
+TARGET_DEVICES += tl-wr882n-v1
+
+define Device/tl-wr882n-v2
+  $(Device/tl-wr885n-v1)
+  DEVICE_TITLE := TP-LINK TL-WR882N v2
+endef
+TARGET_DEVICES += tl-wr882n-v2
+
+define Device/tl-wr882n-v3
+  $(Device/tl-wr885n-v1)
+  DEVICE_TITLE := TP-LINK TL-WR882N v3
+endef
+TARGET_DEVICES += tl-wr882n-v3
+
+define Device/tl-wr885n-v1
+  $(Device/tplink-8mlzma)
+  DEVICE_TITLE := TP-LINK TL-WR885N v1
+  BOARDNAME := TL-WR885N-v1
+  DEVICE_PROFILE := TLWR885
+  TPLINK_HWID := 0x08850001
+endef
+TARGET_DEVICES += tl-wr885n-v1
+
+define Device/tl-wr885n-v2
+  $(Device/tl-wr885n-v1)
+  DEVICE_TITLE := TP-LINK TL-WR885N v2
+endef
+TARGET_DEVICES += tl-wr885n-v2
+
+define Device/tl-wr886n-v2
+  $(Device/tl-wr885n-v1)
+  DEVICE_TITLE := TP-LINK TL-WR886N v2
+endef
+TARGET_DEVICES += tl-wr886n-v2
+
+define Device/tl-wr886n-v3
+  $(Device/tl-wr885n-v1)
+  DEVICE_TITLE := TP-LINK TL-WR886N v3
+endef
+TARGET_DEVICES += tl-wr886n-v3
+
+define Device/tl-wr886n-v5
+  $(Device/tl-wr885n-v1)
+  DEVICE_TITLE := TP-LINK TL-WR886N v5
+endef
+TARGET_DEVICES += tl-wr886n-v5
+
+define Device/tl-wr886n-v7
+  $(Device/tl-wr885n-v1)
+  DEVICE_TITLE := TP-LINK TL-WR886N v7
+endef
+TARGET_DEVICES += tl-wr886n-v7
 
 define Device/tl-wr940n-v4
   $(Device/tplink-8mlzma)
