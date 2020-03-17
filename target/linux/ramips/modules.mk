@@ -47,7 +47,7 @@ I2C_RALINK_MODULES:= \
 define KernelPackage/i2c-ralink
   $(call i2c_defaults,$(I2C_RALINK_MODULES),59)
   TITLE:=Ralink I2C Controller
-  DEPENDS:=kmod-i2c-core @TARGET_ramips \
+  DEPENDS:=+kmod-i2c-core @TARGET_ramips \
 	@!(TARGET_ramips_mt7621||TARGET_ramips_mt76x8)
 endef
 
@@ -64,7 +64,7 @@ I2C_MT7621_MODULES:= \
 define KernelPackage/i2c-mt7628
   $(call i2c_defaults,$(I2C_MT7621_MODULES),59)
   TITLE:=MT7628/88 I2C Controller
-  DEPENDS:=kmod-i2c-core \
+  DEPENDS:=+kmod-i2c-core \
 	@(TARGET_ramips_mt76x8)
 endef
 
