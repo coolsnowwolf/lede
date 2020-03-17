@@ -37,6 +37,27 @@ else
 	log('更新失败！')
 end
 
+log('正在更新【Netflix IP段】数据库')
+refresh_cmd="wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/QiuSimons/Netflix_IP/getflix.txt -O /tmp/netflixip.list"
+	sret=luci.sys.call(refresh_cmd)
+	if sret== 0 then
+	icount = luci.sys.exec("cat /tmp/netflixip.list | wc -l")
+	if tonumber(icount)>0 then
+	oldcount=luci.sys.exec("cat /etc/config/netflixip.list | wc -l")
+		if tonumber(icount) ~= tonumber(oldcount) then
+			luci.sys.exec("cp -f /tmp/netflixip.list /etc/config/netflixip.list")
+			log('更新成功！ 新的总纪录数：'.. icount)
+		else
+			log('你已经是最新数据，无需更新！')
+		end
+	else
+	log('更新失败！')
+	end
+	luci.sys.exec("rm -f /tmp/netflixip.list")
+else
+	log('更新失败！')
+end
+
 log('正在更新【国内IP段】数据库')
 if (ucic:get_first('shadowsocksr', 'global', 'chnroute','0') == '1' ) then
 	refresh_cmd="wget-ssl --no-check-certificate -O - ".. ucic:get_first('shadowsocksr', 'global', 'chnroute_url','https://ispip.clang.cn/all_cn.txt') .." > /tmp/china_ssr.txt 2>/dev/null"
