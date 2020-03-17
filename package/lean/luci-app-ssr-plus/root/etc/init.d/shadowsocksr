@@ -206,6 +206,11 @@ start_rules() {
 	else
 		proxyport="-m multiport --dports 22,53,587,465,995,993,143,80,443"
 	fi
+	if [ "$NETFLIX_SERVER" != "same" ]; then
+    netflix="1"
+  else
+    netflix="0"
+	fi
 	/usr/bin/ssr-rules \
 	-s "$server" \
 	-l "$local_port" \
@@ -219,6 +224,7 @@ start_rules() {
 	-p "$(uci_get_by_type access_control lan_fp_ips)" \
 	-G "$(uci_get_by_type access_control lan_gm_ips)" \
 	-D "$proxyport" \
+	-F "$netflix" \
 	$(get_arg_out) $gfwmode $ARG_UDP
 	return $?
 }
@@ -304,28 +310,24 @@ start_redir() {
 	elif [ "$stype" == "tun" ]; then
 		sscmd="/usr/sbin/redsocks2"
 	fi
-	
-	NETFLIX_SERVER=$(uci_get_by_type global netflix_server same)
-	[ "$NETFLIX_SERVER" == "same" ] && NETFLIX_SERVER=$GLOBAL_SERVER
-	gen_config_file $NETFLIX_SERVER 2 4321
-	gen_config_file $NETFLIX_SERVER 3 1088
-	local ntype=$(uci_get_by_name $NETFLIX_SERVER type)
-	if [ "$ntype" == "ss" ]; then
-		ncmd="/usr/bin/ss-redir"
-		sssock="/usr/bin/ss-local"
-	elif [ "$ntype" == "ssr" ]; then
-		ncmd="/usr/bin/ssr-redir"
-		sssock="/usr/bin/ssr-local"
-	elif [ "$ntype" == "v2ray" ]; then
-		ncmd="/usr/bin/v2ray/v2ray"
-		[ ! -f "$ncmd" ] && ncmd="/usr/bin/v2ray"
-	elif [ "$ntype" == "trojan" ]; then
-		ncmd="/usr/sbin/trojan"
-	elif [ "$ntype" == "socks5" ]; then
-		ncmd="/usr/sbin/redsocks2"
-	elif [ "$ntype" == "tun" ]; then
-		ncmd="/usr/sbin/redsocks2"
-	fi
+    
+  local ntype=$(uci_get_by_name $NETFLIX_SERVER type)
+  if [ "$ntype" == "ss" ]; then
+    ncmd="/usr/bin/ss-redir"
+    sssock="/usr/bin/ss-local"
+  elif [ "$ntype" == "ssr" ]; then
+    ncmd="/usr/bin/ssr-redir"
+    sssock="/usr/bin/ssr-local"
+  elif [ "$ntype" == "v2ray" ]; then
+    ncmd="/usr/bin/v2ray/v2ray"
+    [ ! -f "$ncmd" ] && ncmd="/usr/bin/v2ray"
+  elif [ "$ntype" == "trojan" ]; then
+    ncmd="/usr/sbin/trojan"
+  elif [ "$ntype" == "socks5" ]; then
+    ncmd="/usr/sbin/redsocks2"
+  elif [ "$ntype" == "tun" ]; then
+    ncmd="/usr/sbin/redsocks2"
+  fi
 	
 	local utype=$(uci_get_by_name $UDP_RELAY_SERVER type)
 	if [ "$utype" == "ss" ]; then
@@ -379,16 +381,39 @@ start_redir() {
     echo "$(date "+%Y-%m-%d %H:%M:%S") Network Tunnel REDIRECT $threads Threads Started!" >>/tmp/ssrplus.log
 	fi
 	
-	
-	if [ "$ntype" == "ss" -o "$ntype" == "ssr" ]; then
-      $sssock -c /var/etc/shadowsocksr_s.json $ARG_OTA -f /var/run/ssr-socksdns.pid >/dev/null 2>&1
-      dns2socks 127.0.0.1:1088 8.8.8.8:53 127.0.0.1:5555 -q >/dev/null 2>&1 &
-      $ncmd -c /var/etc/shadowsocksr_n.json $ARG_OTA -f /var/run/ssr-netflix.pid >/dev/null 2>&1
-  elif [ "$stype" == "v2ray" ]; then
-      lua /usr/share/shadowsocksr/genv2nfconfig.lua $NETFLIX_SERVER tcp 4321 >/var/etc/v2-ssr-netflix.json
-      $ncmd -config /var/etc/v2-ssr-netflix.json >/dev/null 2>&1 &
-      dns2socks 127.0.0.1:1088 8.8.8.8:53 127.0.0.1:5555 -q >/dev/null 2>&1 &
-	fi
+	if [ "$NETFLIX_SERVER" != "same" ]; then
+    if [ "$ntype" == "ss" -o "$ntype" == "ssr" ]; then
+        gen_config_file $NETFLIX_SERVER 2 4321
+        gen_config_file $NETFLIX_SERVER 3 1088
+        $sssock -c /var/etc/shadowsocksr_s.json $ARG_OTA -f /var/run/ssr-socksdns.pid >/dev/null 2>&1
+        dns2socks 127.0.0.1:1088 8.8.8.8:53 127.0.0.1:5555 -q >/dev/null 2>&1 &
+        $ncmd -c /var/etc/shadowsocksr_n.json $ARG_OTA -f /var/run/ssr-netflix.pid >/dev/null 2>&1
+    elif [ "$ntype" == "v2ray" ]; then
+        lua /usr/share/shadowsocksr/genv2nfconfig.lua $NETFLIX_SERVER tcp 4321 >/var/etc/v2-ssr-netflix.json
+        $ncmd -config /var/etc/v2-ssr-netflix.json >/dev/null 2>&1 &
+        dns2socks 127.0.0.1:1088 8.8.8.8:53 127.0.0.1:5555 -q >/dev/null 2>&1 &
+    elif [ "$ntype" == "trojan" ]; then
+        lua /usr/share/shadowsocksr/gentrojanconfig.lua $NETFLIX_SERVER nat 4321 >/var/etc/trojan-ssr-netflix.json
+        sed -i 's/\\//g' /var/etc/trojan-ssr-netflix.json
+        $ncmd --config /var/etc/trojan-ssr-netflix.json >/dev/null 2>&1 &
+        lua /usr/share/shadowsocksr/gentrojanconfig.lua $NETFLIX_SERVER client 1088 >/var/etc/trojan-ssr-socksdns.json
+        sed -i 's/\\//g' /var/etc/trojan-ssr-socksdns.json
+        $ncmd --config /var/etc/trojan-ssr-socksdns.json >/dev/null 2>&1 &
+        dns2socks 127.0.0.1:1088 8.8.8.8:53 127.0.0.1:5555 -q >/dev/null 2>&1 &
+    elif [ "$ntype" == "socks5" ]; then
+        /usr/share/shadowsocksr/genred2config.sh "/var/etc/redsocks-ssr-netflix.conf" socks5 tcp 4321 \
+        $(uci_get_by_name $NETFLIX_SERVER server) $(uci_get_by_name $NETFLIX_SERVER server_port) \
+        $(uci_get_by_name $NETFLIX_SERVER auth_enable 0) $(uci_get_by_name $NETFLIX_SERVER username) $(uci_get_by_name $NETFLIX_SERVER password)
+        $ncmd -c /var/etc/redsocks-ssr-netflix.conf >/dev/null 2>&1
+        microsocks -i 127.0.0.1 -p 1088 ssr-socksdns >/dev/null 2>&1 &
+        dns2socks 127.0.0.1:1088 8.8.8.8:53 127.0.0.1:5555 -q >/dev/null 2>&1 &
+    elif [ "$ntype" == "tun" ]; then
+        /usr/share/shadowsocksr/genred2config.sh "/var/etc/redsocks-ssr-netflix.conf" vpn $(uci_get_by_name $NETFLIX_SERVER iface "br-lan") 4321
+        $ncmd -c /var/etc/redsocks-ssr-netflix.conf >/dev/null 2>&1
+        microsocks -i 127.0.0.1 -p 1088 ssr-socksdns >/dev/null 2>&1 &
+        dns2socks 127.0.0.1:1088 8.8.8.8:53 127.0.0.1:5555 -q >/dev/null 2>&1 &
+    fi
+   fi
 	
 	
 	if [ -n "$UDP_RELAY_SERVER" ]; then
@@ -412,7 +437,8 @@ start_redir() {
 			$ucmd --config /var/etc/trojan-ssr-reudp.json >/dev/null 2>&1 &
 			ipt2socks -U -b 0.0.0.0 -4 -s 127.0.0.1 -p 10801 -l $(uci_get_by_name $UDP_RELAY_SERVER local_port) >/dev/null 2>&1 &
 		elif [ "$utype" == "socks5" ]; then
-      	/usr/share/shadowsocksr/genred2config.sh "/var/etc/redsocks-ssr-reudp.conf" socks5 udp $(uci_get_by_name $UDP_RELAY_SERVER local_port) $(uci_get_by_name $UDP_RELAY_SERVER server) $(uci_get_by_name $UDP_RELAY_SERVER server_port) \
+      	/usr/share/shadowsocksr/genred2config.sh "/var/etc/redsocks-ssr-reudp.conf" socks5 udp $(uci_get_by_name $UDP_RELAY_SERVER local_port) \
+      	$(uci_get_by_name $UDP_RELAY_SERVER server) $(uci_get_by_name $UDP_RELAY_SERVER server_port) \
       	$(uci_get_by_name $UDP_RELAY_SERVER auth_enable 0) $(uci_get_by_name $UDP_RELAY_SERVER username) $(uci_get_by_name $UDP_RELAY_SERVER password)
       	$ucmd -c /var/etc/redsocks-ssr-reudp.conf >/dev/null 2>&1
 		elif [ "$stype" == "tun" ]; then
@@ -425,7 +451,7 @@ start_redir() {
 	local dnsstr="$(uci_get_by_type global tunnel_forward 8.8.4.4:53)"
 	local dnsserver=$(echo "$dnsstr" | awk -F ':' '{print $1}')
 	local dnsport=$(echo "$dnsstr" | awk -F ':' '{print $2}')
-	if [ "$ssr_dns" == "1" ]; then
+	if [ "$ssr_dns" != "0" ]; then # not use custom dns service
 		if [ "$run_mode" == "gfw" ]; then
 			ipset add gfwlist $dnsserver 2>/dev/null
 		elif [ "$run_mode" == "oversea" ]; then
@@ -433,12 +459,14 @@ start_redir() {
 		else
 			ipset add ss_spec_wan_ac $dnsserver nomatch 2>/dev/null
 		fi
+	fi
+	if [ "$ssr_dns" == "1" ]; then
 		start_pdnsd $dnsserver $dnsport
 		pdnsd_enable_flag=1
 	elif [ "$ssr_dns" == "2" ]; then
-    microsocks -i 127.0.0.1 -p 10802 ssr-dns >/dev/null 2>&1 &
-    dns2socks 127.0.0.1:10802 $dnsserver:$dnsport 127.0.0.1:5335 -q >/dev/null 2>&1 &
-    pdnsd_enable_flag=2
+		microsocks -i 127.0.0.1 -p 10802 ssr-dns >/dev/null 2>&1 &
+		dns2socks 127.0.0.1:10802 $dnsserver:$dnsport 127.0.0.1:5335 -q >/dev/null 2>&1 &
+		pdnsd_enable_flag=2
 	fi
 	if [ "$(uci_get_by_type global enable_switch)" == "1" ]; then
 		if [ "$(uci_get_by_name $GLOBAL_SERVER switch_enable 1)" == "1" ]; then
@@ -562,6 +590,11 @@ start() {
 		GLOBAL_SERVER=$switch_server
 		switch_enable=1
 	fi
+	
+	NETFLIX_SERVER=$(uci_get_by_type global netflix_server same)
+	if [ "$NETFLIX_SERVER" == "same" ]; then
+    NETFLIX_SERVER=$GLOBAL_SERVER
+  fi
 		
 	if rules; then
 		start_redir
@@ -580,13 +613,16 @@ start() {
 		fi
 		/usr/share/shadowsocksr/gfw2ipset.sh
 		
-		cat /etc/config/netflix.list | while read line || [ -n "$line" ]; 
-    do
-      sed -i "/$line/d" /tmp/dnsmasq.ssr/gfw_list.conf
-    done
-    
-    awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"netflix"'\n",$0)}' /etc/config/netflix.list > /tmp/dnsmasq.ssr/netflix_forward.conf
-    awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5555"'\n",$0)}' /etc/config/netflix.list >> /tmp/dnsmasq.ssr/netflix_forward.conf
+		if [ "$NETFLIX_SERVER" != "same" ]; then
+      cat /etc/config/netflix.list | while read line || [ -n "$line" ]; 
+      do
+        sed -i "/$line/d" /tmp/dnsmasq.ssr/gfw_list.conf
+      done
+      awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"netflix"'\n",$0)}' /etc/config/netflix.list > /tmp/dnsmasq.ssr/netflix_forward.conf
+      awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5555"'\n",$0)}' /etc/config/netflix.list >> /tmp/dnsmasq.ssr/netflix_forward.conf
+    else
+      rm -f /tmp/dnsmasq.ssr/netflix_forward.conf
+    fi
 		
 		/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	fi
@@ -662,3 +698,4 @@ stop() {
 	fi
 	del_cron
 }
+
