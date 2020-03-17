@@ -611,6 +611,7 @@ define Device/netgear_ex2700
   DEVICE_VENDOR := NETGEAR
   DEVICE_MODEL := EX2700
   SUPPORTED_DEVICES += ex2700
+  DEFAULT := n
 endef
 TARGET_DEVICES += netgear_ex2700
 
@@ -942,6 +943,18 @@ define Device/tplink_re200-v1
 endef
 TARGET_DEVICES += tplink_re200-v1
 
+define Device/tplink_re210-v1
+  $(Device/tplink-v1)
+  SOC := mt7620a
+  DEVICE_MODEL := RE210
+  DEVICE_VARIANT := v1
+  DEVICE_PACKAGES := kmod-mt76x0e
+  IMAGE_SIZE := 7936k
+  TPLINK_HWID := 0x02100001
+  TPLINK_FLASHLAYOUT := 8Mmtk
+endef
+TARGET_DEVICES += tplink_re210-v1
+
 define Device/vonets_var11n-300
   SOC := mt7620n
   IMAGE_SIZE := 3776k
@@ -970,6 +983,23 @@ define Device/xiaomi_miwifi-mini
   SUPPORTED_DEVICES += miwifi-mini
 endef
 TARGET_DEVICES += xiaomi_miwifi-mini
+
+define Device/xiaomi_miwifi-r3
+  SOC := mt7620a
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_SIZE := 4096k
+  IMAGE_SIZE := 32768k
+  UBINIZE_OPTS := -E 5
+  IMAGES += kernel1.bin rootfs0.bin
+  IMAGE/kernel1.bin := append-kernel | check-size $$$$(KERNEL_SIZE)
+  IMAGE/rootfs0.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := Mi Router R3
+  DEVICE_PACKAGES := kmod-mt76x2 kmod-usb2 kmod-usb-ohci uboot-envtools
+endef
+TARGET_DEVICES += xiaomi_miwifi-r3
 
 define Device/youku_yk1
   SOC := mt7620a
