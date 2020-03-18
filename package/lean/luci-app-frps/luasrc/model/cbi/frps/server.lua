@@ -24,7 +24,7 @@ o.disabled = "false"
 o.defalut = o.enabled
 o.rmempty = false
 
-o = s:option(Flag, "tls_only", translate("Enforce frps only accept TLS connection") 
+o = s:option(Flag, "tls_only", translate("Enforce frps only accept TLS connection"),
     translatef("Requirements: frpc v0.25.0+, frps v0.32.0+"))
 o.enabled = "true"
 o.disabled = "false"
