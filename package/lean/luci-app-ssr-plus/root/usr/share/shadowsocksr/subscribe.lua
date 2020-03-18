@@ -300,10 +300,10 @@ local execute = function()
 					nodes = base64Decode(raw:sub(nEnd + 1, #raw))
 					nodes = jsonParse(nodes)
 					local extra = {
-						airport = nodes.airport,
-						port = nodes.port,
-						encryption = nodes.encryption,
-						password = nodes.password
+					airport = nodes.airport,
+					port = nodes.port,
+					encryption = nodes.encryption,
+					password = nodes.password
 					}
 					local servers = {}
 					-- SS里面包着 干脆直接这样
@@ -342,7 +342,7 @@ local execute = function()
 								result.alias:find("防失联地址") or
 								not result.server or
 								result.server:match("[^0-9a-zA-Z%-%.%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
-							then
+								then
 								log('丢弃无效节点: ' .. result.type ..' 节点, ' .. result.alias)
 							else
 								log('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
@@ -383,7 +383,6 @@ local execute = function()
 				end
 				log('忽略手动添加的节点: ' .. old.alias)
 			end
-
 		end)
 		for k, v in ipairs(nodeResult) do
 			for kk, vv in ipairs(v) do
