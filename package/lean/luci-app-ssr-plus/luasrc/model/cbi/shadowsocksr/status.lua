@@ -14,6 +14,7 @@ local udpspeeder_run=0
 local gfw_count=0
 local ad_count=0
 local ip_count=0
+local nfip_count=0
 local ucic = luci.model.uci.cursor()
 local shadowsocksr = "shadowsocksr"
 -- html constants
@@ -49,6 +50,10 @@ end
 
 if nixio.fs.access("/etc/china_ssr.txt") then
 ip_count = sys.exec("cat /etc/china_ssr.txt | wc -l")
+end
+
+if nixio.fs.access("/etc/config/netflixip.list") then
+    nfip_count = sys.exec("cat /etc/config/netflixip.list | wc -l")
 end
 
 local icount=sys.exec("busybox ps -w | grep ssr-reudp |grep -v grep| wc -l")
@@ -168,6 +173,11 @@ s=m:field(DummyValue,"ip_data",translate("China IP Data"))
 s.rawhtml  = true
 s.template = "shadowsocksr/refresh"
 s.value =ip_count .. " " .. translate("Records")
+
+s=m:field(DummyValue,"nfip_data",translate("Netflix IP Data"))
+s.rawhtml  = true
+s.template = "shadowsocksr/refresh"
+s.value =nfip_count .. " " .. translate("Records")
 
 if ucic:get_first(shadowsocksr, 'global', 'adblock', '0') == '1' then
 s=m:field(DummyValue,"ad_data",translate("Advertising Data"))

@@ -49,6 +49,11 @@ for _,key in pairs(key_table) do o:value(key,server_table[key]) end
 o.default = "same"
 o.rmempty = false
 
+o = s:option(Flag, "netflix_proxy", translate("External Proxy Mode"))
+o.rmempty = false
+o.description = translate("Forward Netflix Proxy through Main Proxy")
+o.default="0"
+
 o = s:option(ListValue, "threads", translate("Multi Threads Option"))
 o:value("0", translate("Auto Threads"))
 o:value("1", translate("1 Thread"))
