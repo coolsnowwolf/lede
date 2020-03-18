@@ -120,7 +120,7 @@ elseif set == "nfip_data" then
 	refresh_cmd="wget-ssl --no-check-certificate -O - https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt > /tmp/netflixip.list"
 	sret=luci.sys.call(refresh_cmd)
 	icount = luci.sys.exec("cat /tmp/netflixip.list | wc -l")
-	if sret== 0 and tonumber(icount)>0 then
+	if sret== 0 and tonumber(icount)>1 then
 		oldcount=luci.sys.exec("cat /etc/config/netflixip.list | wc -l")
 		if tonumber(icount) ~= tonumber(oldcount) then
 			luci.sys.exec("cp -f /tmp/netflixip.list /etc/config/netflixip.list")
