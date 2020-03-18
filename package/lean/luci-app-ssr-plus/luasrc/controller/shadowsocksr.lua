@@ -116,6 +116,22 @@ elseif set == "ip_data" then
 		retstring ="-1"
 	end
 	luci.sys.exec("rm -f /tmp/china_ssr.txt ")
+elseif set == "nfip_data" then
+	refresh_cmd="wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/QiuSimons/Netflix_IP/NF_only.txt -O /tmp/netflixip.list"
+	sret=luci.sys.call(refresh_cmd)
+	icount = luci.sys.exec("cat /tmp/netflixip.list | wc -l")
+	if sret== 0 and tonumber(icount)>1000 then
+		oldcount=luci.sys.exec("cat /etc/config/netflixip.list | wc -l")
+		if tonumber(icount) ~= tonumber(oldcount) then
+			luci.sys.exec("cp -f /tmp/netflixip.list /etc/config/netflixip.list")
+			retstring=tostring(tonumber(icount))
+		else
+			retstring ="0"
+		end
+	else
+		retstring ="-1"
+	end
+	luci.sys.exec("rm -f /tmp/netflixip.list ")
 else
 if nixio.fs.access("/usr/bin/wget-ssl") then
 	refresh_cmd="wget-ssl --no-check-certificate -O - ".. luci.model.uci.cursor():get_first('shadowsocksr', 'global', 'adblock_url','https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt') .." > /tmp/adnew.conf"
