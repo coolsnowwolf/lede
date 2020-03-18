@@ -6,11 +6,13 @@ local shadowsocksr = "shadowsocksr"
 local uci = luci.model.uci.cursor()
 local server_count = 0
 uci:foreach("shadowsocksr", "servers", function(s)
-	server_count = server_count + 1
+  server_count = server_count + 1
 end)
 
 local fs  = require "nixio.fs"
 local sys = require "luci.sys"
+
+local ucic = luci.model.uci.cursor()
 
 m = Map(shadowsocksr,  translate("Servers subscription and manage"))
 
@@ -26,7 +28,7 @@ o.description = translate("Auto Update Server subscription, GFW list and CHN rou
 
 o = s:option(ListValue, "auto_update_time", translate("Update time (every day)"))
 for t = 0,23 do
-	o:value(t, t..":00")
+o:value(t, t..":00")
 end
 o.default=2
 o.rmempty = false
@@ -38,7 +40,7 @@ o = s:option(Button,"update_Sub",translate("Update Subscribe List"))
 o.inputstyle = "reload"
 o.description = translate("Update subscribe url list first")
 o.write = function()
-	luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
+  luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
 end
 
 o = s:option(Flag, "switch", translate("Subscribe Default Auto-Switch"))
@@ -59,18 +61,18 @@ o = s:option(Button,"delete",translate("Delete All Subscribe Severs"))
 o.inputstyle = "reset"
 o.description = string.format(translate("Server Count") ..  ": %d", server_count)
 o.write = function()
-	uci:delete_all("shadowsocksr", "servers", function(s)
-		if s.hashkey or s.isSubscribe then
-			return true
-		else
-			return false
-		end
-	end)
-	uci:save("shadowsocksr")
-	uci:commit("shadowsocksr")
-	luci.sys.exec("/etc/init.d/shadowsocksr restart")
-	luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
-	return
+uci:delete_all("shadowsocksr", "servers", function(s)
+  if s.hashkey or s.isSubscribe then
+    return true
+  else
+    return false
+  end
+end)
+uci:save("shadowsocksr") 
+uci:commit("shadowsocksr")
+luci.sys.exec("/etc/init.d/shadowsocksr restart")
+luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
+return
 end
 
 -- [[ Servers Manage ]]--
@@ -84,7 +86,7 @@ function s.create(...)
 	local sid = TypedSection.create(...)
 	if sid then
 		luci.http.redirect(s.extedit % sid)
-		return
+	return
 	end
 end
 
@@ -115,11 +117,11 @@ o.width="10%"
 node = s:option(Button,"apply_node",translate("Apply"))
 node.inputstyle = "apply"
 node.write = function(self, section)
-	uci:set("shadowsocksr", '@global[0]', 'global_server', section)
-	uci:save("shadowsocksr")
-	uci:commit("shadowsocksr")
-	luci.sys.exec("/etc/init.d/shadowsocksr restart")
-	luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "client"))
+  ucic:set("shadowsocksr", '@global[0]', 'global_server', section)
+  ucic:save("shadowsocksr") 
+  ucic:commit("shadowsocksr")
+  luci.sys.exec("/etc/init.d/shadowsocksr restart")
+  luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "client"))
 end
 
 o = s:option(Flag, "switch_enable", translate("Auto Switch"))
