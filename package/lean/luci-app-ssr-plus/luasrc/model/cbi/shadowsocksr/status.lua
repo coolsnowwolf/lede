@@ -53,7 +53,7 @@ ip_count = sys.exec("cat /etc/china_ssr.txt | wc -l")
 end
 
 if nixio.fs.access("/etc/config/netflixip.list") then
-    ip_count = sys.exec("cat /etc/config/netflixip.list | wc -l")
+    nfip_count = sys.exec("cat /etc/config/netflixip.list | wc -l")
 end
 
 local icount=sys.exec("busybox ps -w | grep ssr-reudp |grep -v grep| wc -l")
