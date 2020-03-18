@@ -117,7 +117,7 @@ elseif set == "ip_data" then
 	end
 	luci.sys.exec("rm -f /tmp/china_ssr.txt ")
 elseif set == "nfip_data" then
-	refresh_cmd="wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/QiuSimons/Netflix_IP/getflix.txt -O /tmp/netflixip.list"
+	refresh_cmd="wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/QiuSimons/Netflix_IP/NF_only.txt -O /tmp/netflixip.list"
 	sret=luci.sys.call(refresh_cmd)
 	icount = luci.sys.exec("cat /tmp/netflixip.list | wc -l")
 	if sret== 0 and tonumber(icount)>1000 then
