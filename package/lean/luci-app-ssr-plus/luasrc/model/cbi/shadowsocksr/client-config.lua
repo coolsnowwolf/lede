@@ -477,17 +477,16 @@ if nixio.fs.access("/usr/bin/kcptun-client") then
 				return nil, translate("Not a Kcptun executable file")
 			end
 		end
-		
 		return value
 	end
 	o:depends("type", "ssr")
 	o:depends("type", "ss")
-	
+
 	o = s:option(Value, "kcp_password", translate("KcpTun Password"))
 	o.password = true
 	o:depends("type", "ssr")
 	o:depends("type", "ss")
-	
+
 	o = s:option(Value, "kcp_param", translate("KcpTun Param"))
 	o.default = "--nocomp"
 	o:depends("type", "ssr")

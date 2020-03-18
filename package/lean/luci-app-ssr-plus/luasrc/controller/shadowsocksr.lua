@@ -80,7 +80,7 @@ function refresh_data()
 			luci.sys.call("/usr/bin/ssr-gfw")
 			icount = luci.sys.exec("cat /tmp/gfwnew.txt | wc -l")
 			if tonumber(icount) > 1000 then
-				oldcount= l uci.sys.exec("cat /etc/dnsmasq.ssr/gfw_list.conf | wc -l")
+				oldcount= luci.sys.exec("cat /etc/dnsmasq.ssr/gfw_list.conf | wc -l")
 				if tonumber(icount) ~= tonumber(oldcount) then
 					luci.sys.exec("cp -f /tmp/gfwnew.txt /etc/dnsmasq.ssr/gfw_list.conf")
 					luci.sys.exec("cp -f /tmp/gfwnew.txt /tmp/dnsmasq.ssr/gfw_list.conf")

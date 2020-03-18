@@ -45,7 +45,7 @@ o.description = translate("Customize Netflix IP Url")
 if nixio.fs.access("/usr/bin/microsocks") then
 	s = m:section(TypedSection, "socks5_proxy", translate("SOCKS5 Proxy Server Settings"))
 	s.anonymous = true
-	
+
 	o = s:option(Flag, "socks", translate("Enable SOCKS5 Proxy Server"))
 	o.rmempty = false
 	
@@ -54,7 +54,7 @@ if nixio.fs.access("/usr/bin/microsocks") then
 	o.default = 10800
 	o.rmempty = true
 	o:depends("socks", "1")
-	
+
 	o = s:option(Flag, "auth_enable", translate("Enable Authentication"))
 	o.rmempty = false
 	o.default = "0"
@@ -63,12 +63,12 @@ if nixio.fs.access("/usr/bin/microsocks") then
 	o = s:option(Value, "username", translate("Username"))
 	o.default = "username"
 	o:depends("auth_enable", "1")
-	
+
 	o = s:option(Value, "password", translate("Password"))
 	o.password = true
 	o.default = "password"
 	o:depends("auth_enable", "1")
-	
+
 	o = s:option(Flag, "wan_enable", translate("Enable WAN Access"))
 	o.rmempty = true
 	o.default = "0"
