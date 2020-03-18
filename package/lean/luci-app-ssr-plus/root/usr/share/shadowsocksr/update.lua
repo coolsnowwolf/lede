@@ -38,7 +38,7 @@ else
 end
 
 log('正在更新【Netflix IP段】数据库')
-refresh_cmd="wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/QiuSimons/Netflix_IP/getflix.txt -O /tmp/netflixip.list"
+refresh_cmd="wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/QiuSimons/Netflix_IP/NF_only.txt -O /tmp/netflixip.list"
 	sret=luci.sys.call(refresh_cmd)
 	if sret== 0 then
 	icount = luci.sys.exec("cat /tmp/netflixip.list | wc -l")
