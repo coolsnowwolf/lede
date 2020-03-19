@@ -1074,3 +1074,25 @@ define KernelPackage/be2net/description
 endef
 
 $(eval $(call KernelPackage,be2net))
+
+define KernelPackage/sfc
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Solarflare SFC9000/SFC9100-family 10Gbps NIC support
+  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-i2c-core +kmod-i2c-algo-bit +kmod-hwmon-core +kmod-ptp +kmod-lib-crc32c
+# add PCI_IOV
+  KCONFIG:= \
+    CONFIG_NET_VENDOR_SOLARFLARE=y \
+    CONFIG_SFC=y \
+    CONFIG_MTD=y \
+    CONFIG_MCDI_MON=y \
+    CONFIG_SRIOV=n \
+    CONFIG_MCDI_LOGGING=n \
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/sfc/sfc.ko
+  AUTOLOAD:=$(call AutoProbe, sfc)
+endef
+
+define KernelPackage/sfc/description
+  Solarflare SFC9000/SFC9100-family 10Gbps NIC support
+endef
+
+$(eval $(call KernelPackage,sfc))
