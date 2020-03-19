@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-ssr-plus
 PKG_VERSION:=171
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
@@ -116,30 +116,10 @@ define Package/$(PKG_NAME)/install
 	po2lmo ./po/zh-cn/ssr-plus.po $(1)/usr/lib/lua/luci/i18n/ssr-plus.zh-cn.lmo
 endef
 
-define Package/$(PKG_NAME)/postinst
-#!/bin/sh
-if [ -z "$${IPKG_INSTROOT}" ]; then
-	( . /etc/uci-defaults/luci-ssr-plus ) && rm -f /etc/uci-defaults/luci-ssr-plus
-	rm -f /tmp/luci-indexcache
-	/etc/init.d/shadowsocksr enable >/dev/null 2>&1
-fi
-exit 0
-endef
-
-define Package/$(PKG_NAME)/prerm
-#!/bin/sh
-if [ -z "$${IPKG_INSTROOT}" ]; then
-	/etc/init.d/shadowsocksr disable
-	/etc/init.d/shadowsocksr stop
-fi
-exit 0
-endef
-
 define Package/$(PKG_NAME)/postrm
 #!/bin/sh
 rm -rf /etc/china_ssr.txt /etc/dnsmasq.ssr /etc/dnsmasq.oversea /etc/config/shadowsocksr /etc/config/black.list \
-		/etc/config/gfw.list /etc/config/white.list >/dev/null 2>&1
-exit 0
+		/etc/config/gfw.list /etc/config/white.list /etc/config/netflix.list /etc/config/netflixip.list 2>/dev/null
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
