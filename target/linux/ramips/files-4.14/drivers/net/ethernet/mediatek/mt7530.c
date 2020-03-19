@@ -781,6 +781,65 @@ mt7530_get_port_link(struct switch_dev *dev,  int port,
 	return 0;
 }
 
+static int mt7530_set_port_link(struct switch_dev *sw_dev, int port,
+			     struct switch_port_link *link)
+{
+	if (port < 0 || port >= MT7530_NUM_PORTS)
+		return -EINVAL;
+
+	/* Setup autoneg advertise here */
+	if (link->aneg) {
+		u16 bmsr, adv, gctrl;
+		bool ercap;
+
+		sw_dev->ops->phy_read16(sw_dev, port, MII_BMSR, &bmsr);
+		/* ERCAP means we have MII_CTRL1000 register */
+		ercap = !!(bmsr | BMSR_ERCAP);
+
+		adv = ADVERTISE_CSMA | ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM;
+		gctrl = CTL1000_ENABLE_MASTER;
+
+		switch (link->speed) {
+		case SWITCH_PORT_SPEED_10:
+			if (link->duplex)
+				adv |= ADVERTISE_10FULL;
+			else
+				adv |= ADVERTISE_10HALF;
+			break;
+		case SWITCH_PORT_SPEED_100:
+			if (link->duplex)
+				adv |= ADVERTISE_100FULL;
+			else
+				adv |= ADVERTISE_100HALF;
+			break;
+		case SWITCH_PORT_SPEED_1000:
+			if (!ercap || !link->duplex)
+				return -ENOTSUPP;
+			/* PHY only supports 1000FULL */
+			gctrl |= ADVERTISE_1000FULL;
+			break;
+		default:
+			/* For unknown input speed just enable all speed grades */
+			if (link->duplex) {
+				adv |= ADVERTISE_FULL;
+				gctrl |= ADVERTISE_1000FULL;
+			} else {
+				adv |= ADVERTISE_10HALF | ADVERTISE_100HALF;
+				gctrl = 0x0;
+			}
+			break;
+		}
+
+		sw_dev->ops->phy_write16(sw_dev, port, MII_ADVERTISE, adv);
+		if (ercap)
+			sw_dev->ops->phy_write16(sw_dev, port, MII_CTRL1000, gctrl);
+		/* Autoneg restart will be triggered in switch_generic_set_link */
+	}
+
+	/* Let switch_generic_set_link handle not autoneg case */
+	return switch_generic_set_link(sw_dev, port, link);
+}
+
 static u64 get_mib_counter(struct mt7530_priv *priv, int i, int port)
 {
 	unsigned int port_base;
@@ -921,6 +980,24 @@ static int mt7621_get_port_stats(struct switch_dev *dev, int port,
 	return 0;
 }
 
+static int mt7530_phy_read16(struct switch_dev *dev, int addr,
+					u8 reg, u16 *value)
+{
+	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
+
+	*value = mdiobus_read(priv->bus, addr, reg);
+
+	return 0;
+}
+
+static int mt7530_phy_write16(struct switch_dev *dev, int addr,
+					u8 reg, u16 value)
+{
+	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
+
+	return mdiobus_write(priv->bus, addr, reg, value);
+}
+
 static const struct switch_attr mt7530_global[] = {
 	{
 		.type = SWITCH_TYPE_INT,
@@ -1034,9 +1111,12 @@ static const struct switch_dev_ops mt7621_ops = {
 	.get_port_pvid = mt7530_get_port_pvid,
 	.set_port_pvid = mt7530_set_port_pvid,
 	.get_port_link = mt7530_get_port_link,
+	.set_port_link = mt7530_set_port_link,
 	.get_port_stats = mt7621_get_port_stats,
 	.apply_config = mt7530_apply_config,
 	.reset_switch = mt7530_reset_switch,
+	.phy_read16 = mt7530_phy_read16,
+	.phy_write16 = mt7530_phy_write16,
 };
 
 static const struct switch_dev_ops mt7530_ops = {
@@ -1057,9 +1137,12 @@ static const struct switch_dev_ops mt7530_ops = {
 	.get_port_pvid = mt7530_get_port_pvid,
 	.set_port_pvid = mt7530_set_port_pvid,
 	.get_port_link = mt7530_get_port_link,
+	.set_port_link = mt7530_set_port_link,
 	.get_port_stats = mt7530_get_port_stats,
 	.apply_config = mt7530_apply_config,
 	.reset_switch = mt7530_reset_switch,
+	.phy_read16 = mt7530_phy_read16,
+	.phy_write16 = mt7530_phy_write16,
 };
 
 int
