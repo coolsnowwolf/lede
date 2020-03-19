@@ -42,6 +42,14 @@ o.default = "https://gitee.com/privacy-protection-tools/anti-ad/raw/master/anti-
 o:depends("adblock", "1")
 o.description = translate("Support AdGuardHome and DNSMASQ format list")
 
+o = s:option(Flag, "netflix", translate("Enable Custom Netflix IP Url"))
+o.rmempty = false
+
+o = s:option(Value, "nfip_url", translate("nfip_url"))
+o.default = "https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt"
+o:depends("netflix", "1")
+o.description = translate("Customize Netflix IP Url")
+
 -- [[ SOCKS Proxy ]]--
 if nixio.fs.access("/usr/bin/microsocks") then
 s = m:section(TypedSection, "socks5_proxy", translate("SOCKS5 Proxy Server Settings"))
