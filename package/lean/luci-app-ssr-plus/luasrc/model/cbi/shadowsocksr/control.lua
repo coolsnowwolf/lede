@@ -101,4 +101,38 @@ o.remove = function(self, section, value)
 	NXFS.writefile(blockconf, "")
 end
 
+s:tab("netflix",  translate("Netflix Domain List"))
+
+local netflixconf = "/etc/config/netflix.list"
+o = s:taboption("netflix", TextValue, "netflixconf")
+o.rows = 13
+o.wrap = "off"
+o.rmempty = true
+o.cfgvalue = function(self, section)
+	return NXFS.readfile(netflixconf) or " "
+end
+o.write = function(self, section, value)
+	NXFS.writefile(netflixconf, value:gsub("\r\n", "\n"))
+end
+o.remove = function(self, section, value)
+	NXFS.writefile(netflixconf, "")
+end
+
+s:tab("netflixip",  translate("Netflix IP List"))
+
+local netflixipconf = "/etc/config/netflixip.list"
+o = s:taboption("netflixip", TextValue, "netflixipconf")
+o.rows = 13
+o.wrap = "off"
+o.rmempty = true
+o.cfgvalue = function(self, section)
+	return NXFS.readfile(netflixipconf) or " "
+end
+o.write = function(self, section, value)
+	NXFS.writefile(netflixipconf, value:gsub("\r\n", "\n"))
+end
+o.remove = function(self, section, value)
+	NXFS.writefile(netflixipconf, "")
+end
+
 return m
