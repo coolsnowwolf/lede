@@ -92,7 +92,7 @@ end
 
 o = s:option(DummyValue, "type", translate("Type"))
 function o.cfgvalue(...)
-	return string.upper(Value.cfgvalue(...)) or translate("")
+	return Value.cfgvalue(...) or ""
 end
 
 o = s:option(DummyValue, "alias", translate("Alias"))
