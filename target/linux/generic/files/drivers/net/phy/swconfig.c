@@ -1001,55 +1001,75 @@ static struct genl_ops swconfig_ops[] = {
 	{
 		.cmd = SWITCH_CMD_LIST_GLOBAL,
 		.doit = swconfig_list_attrs,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
+#endif
 	},
 	{
 		.cmd = SWITCH_CMD_LIST_VLAN,
 		.doit = swconfig_list_attrs,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
+#endif
 	},
 	{
 		.cmd = SWITCH_CMD_LIST_PORT,
 		.doit = swconfig_list_attrs,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
+#endif
 	},
 	{
 		.cmd = SWITCH_CMD_GET_GLOBAL,
 		.doit = swconfig_get_attr,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
+#endif
 	},
 	{
 		.cmd = SWITCH_CMD_GET_VLAN,
 		.doit = swconfig_get_attr,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
+#endif
 	},
 	{
 		.cmd = SWITCH_CMD_GET_PORT,
 		.doit = swconfig_get_attr,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
+#endif
 	},
 	{
 		.cmd = SWITCH_CMD_SET_GLOBAL,
 		.flags = GENL_ADMIN_PERM,
 		.doit = swconfig_set_attr,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
+#endif
 	},
 	{
 		.cmd = SWITCH_CMD_SET_VLAN,
 		.flags = GENL_ADMIN_PERM,
 		.doit = swconfig_set_attr,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
+#endif
 	},
 	{
 		.cmd = SWITCH_CMD_SET_PORT,
 		.flags = GENL_ADMIN_PERM,
 		.doit = swconfig_set_attr,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
+#endif
 	},
 	{
 		.cmd = SWITCH_CMD_GET_SWITCH,
 		.dumpit = swconfig_dump_switches,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
+#endif
 		.done = swconfig_done,
 	}
 };
@@ -1062,6 +1082,9 @@ static struct genl_family switch_fam = {
 	.hdrsize = 0,
 	.version = 1,
 	.maxattr = SWITCH_ATTR_MAX,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 2, 0)
+	.policy = switch_policy,
+#endif
 	.module = THIS_MODULE,
 	.ops = swconfig_ops,
 	.n_ops = ARRAY_SIZE(swconfig_ops),

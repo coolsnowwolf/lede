@@ -7,6 +7,6 @@
 
 include $(TOPDIR)/rules.mk
 
-BOARDNAME:=Allwinner A20/A3x
+BOARDNAME:=Allwinner A20/A3x/R40
 CPU_TYPE:=cortex-a7
 CPU_SUBTYPE:=neon-vfpv4

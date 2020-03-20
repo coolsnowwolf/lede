@@ -1,4 +1,4 @@
-#
+# 
 # Copyright (C) 2007-2015 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
@@ -10,10 +10,10 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mac80211
 
-PKG_VERSION:=4.19.32-1
-PKG_RELEASE:=2
-PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v4.19.32/
-PKG_HASH:=838db1565b54fe4bd1e769c54f30c65c9ea2fb5e99a0cddb7910561794ae317a
+PKG_VERSION:=4.19.98-1
+PKG_RELEASE:=1
+PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v4.19.98/
+PKG_HASH:=256d77e9cd3918d6a361e029850aba4568e8a00167ab3ed55495a359511c5bd2
 
 PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/backports-$(PKG_VERSION)
@@ -28,7 +28,7 @@ PKG_DRIVERS = \
 	lib80211 \
 	mac80211-hwsim \
 	mt7601u \
-	p54-common p54-pci p54-spi p54-usb \
+	p54-common p54-pci p54-usb \
 	rsi91x rsi91x-usb rsi91x-sdio\
 	wlcore wl12xx wl18xx \
 	zd1211rw
@@ -162,7 +162,7 @@ endef
 define KernelPackage/airo
   $(call KernelPackage/mac80211/Default)
   TITLE:=Cisco Aironet driver
-  DEPENDS+=@PCI_SUPPORT +@DRIVER_WEXT_SUPPORT +kmod-cfg80211 @TARGET_x86
+  DEPENDS+=@PCI_SUPPORT +@DRIVER_WEXT_SUPPORT +kmod-cfg80211 @TARGET_x86 @BROKEN
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/cisco/airo.ko
   AUTOLOAD:=$(call AutoProbe,airo)
 endef
@@ -223,7 +223,7 @@ endef
 define KernelPackage/lib80211
   $(call KernelPackage/mac80211/Default)
   TITLE:=802.11 Networking stack
-  DEPENDS:=+kmod-cfg80211 +kmod-crypto-hash
+  DEPENDS:=+kmod-cfg80211 +kmod-crypto-hash +kmod-crypto-ccm
   FILES:= \
 	$(PKG_BUILD_DIR)/net/wireless/lib80211.ko \
 	$(PKG_BUILD_DIR)/net/wireless/lib80211_crypt_wep.ko \
@@ -275,7 +275,7 @@ endef
 
 define KernelPackage/p54-common
   $(call KernelPackage/p54/Default)
-  DEPENDS+= @PCI_SUPPORT||@USB_SUPPORT||@TARGET_omap24xx +kmod-mac80211 +kmod-lib-crc-ccitt +@DRIVER_11W_SUPPORT
+  DEPENDS+= @(PCI_SUPPORT||USB_SUPPORT) +kmod-mac80211 +kmod-lib-crc-ccitt +@DRIVER_11W_SUPPORT
   TITLE+= (COMMON)
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/intersil/p54/p54common.ko
 endef
@@ -296,25 +296,17 @@ define KernelPackage/p54-usb
   AUTOLOAD:=$(call AutoProbe,p54usb)
 endef
 
-define KernelPackage/p54-spi
-  $(call KernelPackage/p54/Default)
-  TITLE+= (SPI)
-  DEPENDS+= @TARGET_omap24xx +kmod-p54-common +p54-spi-firmware
-  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/intersil/p54/p54spi.ko
-  AUTOLOAD:=$(call AutoProbe,p54spi)
-endef
-
 define KernelPackage/rsi91x
   $(call KernelPackage/mac80211/Default)
   TITLE:=Redpine Signals Inc 91x WLAN driver support
-  DEPENDS+= +kmod-mac80211 +rs9113-firmware
+  DEPENDS+= +kmod-mac80211 +rs9113-firmware +@DRIVER_11N_SUPPORT
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/rsi/rsi_91x.ko
 endef
 
 define KernelPackage/rsi91x-usb
   $(call KernelPackage/mac80211/Default)
   TITLE:=Redpine Signals USB bus support
-  DEPENDS+= +kmod-mac80211 +kmod-usb2 +kmod-rsi91x +rs9113-firmware
+  DEPENDS+=@USB_SUPPORT +kmod-usb-core +kmod-mac80211 +kmod-rsi91x +rs9113-firmware
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/rsi/rsi_usb.ko
   AUTOLOAD:=$(call AutoProbe,rsi_usb)
 endef
@@ -408,7 +400,6 @@ config-y += WL_MEDIATEK
 config-$(call config_package,p54-common) += P54_COMMON
 config-$(call config_package,p54-pci) += P54_PCI
 config-$(call config_package,p54-usb) += P54_USB
-config-$(call config_package,p54-spi) += P54_SPI
 
 config-$(call config_package,hermes) += HERMES
 config-$(call config_package,hermes-pci) += PCI_HERMES

@@ -1,0 +1,177 @@
+From bc4661703d132ae1fb91d66641c64851eae44959 Mon Sep 17 00:00:00 2001
+From: Iago Toral Quiroga <itoral@igalia.com>
+Date: Tue, 3 Sep 2019 08:45:24 +0200
+Subject: [PATCH] drm/v3d: clean caches at the end of render jobs on
+ request from user space
+
+Extends the user space ioctl for CL submissions so it can include a request
+to flush the cache once the CL execution has completed. Fixes memory
+write violation messages reported by the kernel in workloads involving
+shader memory writes (SSBOs, shader images, scratch, etc) which sometimes
+also lead to GPU resets during Piglit and CTS workloads.
+
+v2: if v3d_job_init() fails we need to kfree() the job instead of
+    v3d_job_put() it (Eric Anholt).
+
+v3 (Eric Anholt):
+  - Drop _FLAG suffix from the new flag name.
+  - Add a new param so userspace can tell whether cache flushing is
+    implemented in the kernel.
+
+Signed-off-by: Iago Toral Quiroga <itoral@igalia.com>
+---
+ drivers/gpu/drm/v3d/v3d_drv.c |  3 ++
+ drivers/gpu/drm/v3d/v3d_gem.c | 54 +++++++++++++++++++++++++++++------
+ include/uapi/drm/v3d_drm.h    |  6 ++--
+ 3 files changed, 53 insertions(+), 10 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_drv.c
++++ b/drivers/gpu/drm/v3d/v3d_drv.c
+@@ -117,6 +117,9 @@ static int v3d_get_param_ioctl(struct dr
+ 	case DRM_V3D_PARAM_SUPPORTS_CSD:
+ 		args->value = v3d_has_csd(v3d);
+ 		return 0;
++	case DRM_V3D_PARAM_SUPPORTS_CACHE_FLUSH:
++		args->value = 1;
++		return 0;
+ 	default:
+ 		DRM_DEBUG("Unknown parameter %d\n", args->param);
+ 		return -EINVAL;
+--- a/drivers/gpu/drm/v3d/v3d_gem.c
++++ b/drivers/gpu/drm/v3d/v3d_gem.c
+@@ -709,13 +709,16 @@ v3d_submit_cl_ioctl(struct drm_device *d
+ 	struct drm_v3d_submit_cl *args = data;
+ 	struct v3d_bin_job *bin = NULL;
+ 	struct v3d_render_job *render;
++	struct v3d_job *clean_job = NULL;
++	struct v3d_job *last_job;
+ 	struct ww_acquire_ctx acquire_ctx;
+ 	int ret = 0;
+ 
+ 	trace_v3d_submit_cl_ioctl(&v3d->drm, args->rcl_start, args->rcl_end);
+ 
+-	if (args->pad != 0) {
+-		DRM_INFO("pad must be zero: %d\n", args->pad);
++	if (args->flags != 0 &&
++	    args->flags != DRM_V3D_SUBMIT_CL_FLUSH_CACHE) {
++		DRM_INFO("invalid flags: %d\n", args->flags);
+ 		return -EINVAL;
+ 	}
+ 
+@@ -755,12 +758,31 @@ v3d_submit_cl_ioctl(struct drm_device *d
+ 		bin->render = render;
+ 	}
+ 
+-	ret = v3d_lookup_bos(dev, file_priv, &render->base,
++	if (args->flags & DRM_V3D_SUBMIT_CL_FLUSH_CACHE) {
++		clean_job = kcalloc(1, sizeof(*clean_job), GFP_KERNEL);
++		if (!clean_job) {
++			ret = -ENOMEM;
++			goto fail;
++		}
++
++		ret = v3d_job_init(v3d, file_priv, clean_job, v3d_job_free, 0);
++		if (ret) {
++			kfree(clean_job);
++			clean_job = NULL;
++			goto fail;
++		}
++
++		last_job = clean_job;
++	} else {
++		last_job = &render->base;
++	}
++
++	ret = v3d_lookup_bos(dev, file_priv, last_job,
+ 			     args->bo_handles, args->bo_handle_count);
+ 	if (ret)
+ 		goto fail;
+ 
+-	ret = v3d_lock_bo_reservations(&render->base, &acquire_ctx);
++	ret = v3d_lock_bo_reservations(last_job, &acquire_ctx);
+ 	if (ret)
+ 		goto fail;
+ 
+@@ -772,33 +794,49 @@ v3d_submit_cl_ioctl(struct drm_device *d
+ 
+ 		ret = v3d_add_dep(&render->base,
+ 				  dma_fence_get(bin->base.done_fence));
++		if (ret)
++			goto fail_unreserve;
+ 	}
+ 
+ 	ret = v3d_push_job(v3d_priv, &render->base, V3D_RENDER);
+ 	if (ret)
+ 		goto fail_unreserve;
++
++	if (clean_job) {
++		ret = v3d_add_dep(clean_job,
++				  dma_fence_get(render->base.done_fence));
++		if (ret)
++			goto fail_unreserve;
++		ret = v3d_push_job(v3d_priv, clean_job, V3D_CACHE_CLEAN);
++		if (ret)
++			goto fail_unreserve;
++	}
+ 	mutex_unlock(&v3d->sched_lock);
+ 
+ 	v3d_attach_fences_and_unlock_reservation(file_priv,
+-						 &render->base,
++						 last_job,
+ 						 &acquire_ctx,
+ 						 args->out_sync,
+-						 render->base.done_fence);
++						 last_job->done_fence);
+ 
+ 	if (bin)
+ 		v3d_job_put(&bin->base);
+ 	v3d_job_put(&render->base);
++	if (clean_job)
++		v3d_job_put(clean_job);
+ 
+ 	return 0;
+ 
+ fail_unreserve:
+ 	mutex_unlock(&v3d->sched_lock);
+-	v3d_unlock_bo_reservations(render->base.bo,
+-				   render->base.bo_count, &acquire_ctx);
++	v3d_unlock_bo_reservations(last_job->bo,
++				   last_job->bo_count, &acquire_ctx);
+ fail:
+ 	if (bin)
+ 		v3d_job_put(&bin->base);
+ 	v3d_job_put(&render->base);
++	if (clean_job)
++		v3d_job_put(clean_job);
+ 
+ 	return ret;
+ }
+--- a/include/uapi/drm/v3d_drm.h
++++ b/include/uapi/drm/v3d_drm.h
+@@ -48,6 +48,8 @@ extern "C" {
+ #define DRM_IOCTL_V3D_SUBMIT_TFU          DRM_IOW(DRM_COMMAND_BASE + DRM_V3D_SUBMIT_TFU, struct drm_v3d_submit_tfu)
+ #define DRM_IOCTL_V3D_SUBMIT_CSD          DRM_IOW(DRM_COMMAND_BASE + DRM_V3D_SUBMIT_CSD, struct drm_v3d_submit_csd)
+ 
++#define DRM_V3D_SUBMIT_CL_FLUSH_CACHE             0x01
++
+ /**
+  * struct drm_v3d_submit_cl - ioctl argument for submitting commands to the 3D
+  * engine.
+@@ -106,8 +108,7 @@ struct drm_v3d_submit_cl {
+ 	/* Number of BO handles passed in (size is that times 4). */
+ 	__u32 bo_handle_count;
+ 
+-	/* Pad, must be zero-filled. */
+-	__u32 pad;
++	__u32 flags;
+ };
+ 
+ /**
+@@ -175,6 +176,7 @@ enum drm_v3d_param {
+ 	DRM_V3D_PARAM_V3D_CORE0_IDENT2,
+ 	DRM_V3D_PARAM_SUPPORTS_TFU,
+ 	DRM_V3D_PARAM_SUPPORTS_CSD,
++	DRM_V3D_PARAM_SUPPORTS_CACHE_FLUSH,
+ };
+ 
+ struct drm_v3d_get_param {

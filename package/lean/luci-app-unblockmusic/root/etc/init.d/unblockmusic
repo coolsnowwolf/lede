@@ -1,24 +1,199 @@
 #!/bin/sh /etc/rc.common
 
-START=99
+START=97
 STOP=10
 
-TYPE=$(uci get unblockmusic.@unblockmusic[0].musicapptype)
-PORT=$(uci get unblockmusic.@unblockmusic[0].port)
+NAME=unblockmusic
 
+uci_get_by_type() {
+	local ret=$(uci get $NAME.@$1[0].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+uci_get_by_name() {
+	local index=0
+	if [ -n $4 ]; then
+	
+		index=$4
+	fi
+	local ret=$(uci get $NAME.@$1[$index].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+check_host() {
+  local host=$1
+  if echo $host | grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
+		hostip=$host
+	elif [ "$host" != "${host#*:[0-9a-fA-F]}" ]; then
+		hostip=$host
+	else
+		hostip=$(ping $host -W 1 -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1)
+		if echo $hostip | grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
+			hostip=$hostip
+		else
+			hostip="127.0.0.1"
+		fi
+	fi
+	echo -e $hostip
+}
+
+ip_rule()
+{
+  local icount=$(uci show unblockmusic | grep 'filter_mode' | wc -l)
+  let icount=icount-1
+	for i in $(seq 0 $icount)
+	do
+		local ip=$(uci_get_by_name acl_rule ipaddr '' $i)
+		local mode=$(uci_get_by_name acl_rule filter_mode '' $i)
+
+		case "$mode" in
+		http)
+			ipset -! add music_http $ip
+			;;
+		https)
+			ipset -! add music_https $ip
+			;;
+		disable)
+			ipset -! add music_http $ip
+			ipset -! add music_https $ip
+			;;
+		esac
+	done
+}
+
+ENABLE=$(uci_get_by_type unblockmusic enabled 0)
+TYPE=$(uci_get_by_type unblockmusic musicapptype default)
+AUTOUPDATE=$(uci_get_by_type unblockmusic autoupdate 0)
+APPTYPE=$(uci_get_by_type unblockmusic apptype go)
+
+CLOUD=$(uci_get_by_type unblockmusic cloudserver "127.0.0.1:5200:5201")
+cloudadd=$(echo "$CLOUD" | awk -F ':' '{print $1}')
+cloudhttp=$(echo "$CLOUD" | awk -F ':' '{print $2}')
+cloudhttps=$(echo "$CLOUD" | awk -F ':' '{print $3}')
+
+cloudip=$(check_host $cloudadd)
+
+CRON_FILE=/etc/crontabs/root
+
+ipt_n="iptables -t nat"
+
+add_rule()
+{
+  ipset -! -N music hash:ip
+  ipset -! -N music_http hash:ip
+  ipset -! -N music_https hash:ip
+	$ipt_n -N CLOUD_MUSIC
+	$ipt_n -A CLOUD_MUSIC -d 0.0.0.0/8 -j RETURN
+	$ipt_n -A CLOUD_MUSIC -d 10.0.0.0/8 -j RETURN
+	$ipt_n -A CLOUD_MUSIC -d 127.0.0.0/8 -j RETURN
+	$ipt_n -A CLOUD_MUSIC -d 169.254.0.0/16 -j RETURN
+	$ipt_n -A CLOUD_MUSIC -d 172.16.0.0/12 -j RETURN
+	$ipt_n -A CLOUD_MUSIC -d 192.168.0.0/16 -j RETURN
+	$ipt_n -A CLOUD_MUSIC -d 224.0.0.0/4 -j RETURN
+	$ipt_n -A CLOUD_MUSIC -d 240.0.0.0/4 -j RETURN
+	if [ "$APPTYPE" != "cloud" ]; then
+    $ipt_n -A CLOUD_MUSIC -p tcp -m set ! --match-set music_http src --dport 80 -j REDIRECT --to-ports 5200
+    $ipt_n -A CLOUD_MUSIC -p tcp -m set ! --match-set music_https src --dport 443 -j REDIRECT --to-ports 5201
+  else
+    $ipt_n -A CLOUD_MUSIC -p tcp -m set ! --match-set music_http src --dport 80 -j DNAT --to $cloudip:$cloudhttp
+    $ipt_n -A CLOUD_MUSIC -p tcp -m set ! --match-set music_https src --dport 443 -j DNAT --to $cloudip:$cloudhttps
+	fi
+	$ipt_n -I PREROUTING -p tcp -m set --match-set music dst -j CLOUD_MUSIC
+	iptables -I OUTPUT -d 223.252.199.10 -j DROP
+	
+	ip_rule
+}
+
+del_rule(){
+	$ipt_n -D PREROUTING -p tcp -m set --match-set music dst -j CLOUD_MUSIC 2>/dev/null
+	$ipt_n -F CLOUD_MUSIC  2>/dev/null
+	$ipt_n -X CLOUD_MUSIC  2>/dev/null
+	iptables -D OUTPUT -d 223.252.199.10 -j DROP 2>/dev/null
+	
+	ipset -X music_http 2>/dev/null
+	ipset -X music_https 2>/dev/null
+	
+	rm -f /tmp/dnsmasq.d/dnsmasq-163.conf
+	/etc/init.d/dnsmasq reload >/dev/null 2>&1
+}
+
+set_firewall(){
+	rm -f /tmp/dnsmasq.d/dnsmasq-163.conf
+	mkdir -p /tmp/dnsmasq.d
+  	cat <<-EOF > "/tmp/dnsmasq.d/dnsmasq-163.conf"
+ipset=/.music.163.com/music
+ipset=/interface.music.163.com/music
+ipset=/interface3.music.163.com/music
+ipset=/apm.music.163.com/music
+ipset=/apm3.music.163.com/music
+ipset=/clientlog.music.163.com/music
+ipset=/clientlog3.music.163.com/music
+	EOF
+	/etc/init.d/dnsmasq reload >/dev/null 2>&1
+	
+	add_rule
+	
+	mkdir -p /var/etc
+	echo -e "/etc/init.d/unblockmusic restart" > "/var/etc/unblockmusic.include"
+}
+
+add_cron()
+{
+	if [ $AUTOUPDATE -eq 1 ]; then
+		sed -i '/update_core.sh/d' $CRON_FILE
+		echo '0 2 * * * /usr/share/UnblockNeteaseMusic/update_core.sh 2>&1' >> $CRON_FILE
+		crontab $CRON_FILE
+	fi
+}
+
+del_cron()
+{
+	sed -i '/update_core.sh/d' $CRON_FILE
+	/etc/init.d/cron restart
+}
 
 start()
 {
 	stop
-	enable=$(uci get unblockmusic.@unblockmusic[0].enabled)
-	[ $enable -eq 0 ] && exit 0
-	node /usr/share/unblockmusic/app.js -p $PORT &
+	
+	[ $ENABLE -eq "0" ] && exit 0
+		
+	rm -f /tmp/unblockmusic.log
+	echo "$(date -R) # Start UnblockNeteaseMusic" >/tmp/unblockmusic.log
+	
+	if [ "$TYPE" = "default" ]; then
+		musictype=" "
+	else
+		musictype="-o $TYPE"
+	fi
+	
+  if [ "$APPTYPE" == "nodejs" ]; then
+    export ENABLE_FLAC=true
+    node /usr/share/UnblockNeteaseMusic/app.js -e http://music.163.com -p 5200:5201 $musictype >>/tmp/unblockmusic.log 2>&1 &
+    add_cron
+    echo "$(date -R) # UnblockNeteaseMusic Nodejs Version (http:5200, https:5201)" >>/tmp/unblockmusic.log  
+	elif [ "$APPTYPE" == "go" ]; then
+    UnblockNeteaseMusic -p 5200 -sp 5201 -c /usr/share/UnblockNeteaseMusicGo/server.crt -k /usr/share/UnblockNeteaseMusicGo/server.key -m 0 -e >>/tmp/unblockmusic.log 2>&1 &
+    echo "$(date -R) # UnblockNeteaseMusic Golang Version (http:5200, https:5201)" >>/tmp/unblockmusic.log
+  else
+    kill -9 $(busybox ps -w | grep 'sleep 60m' | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+    /usr/bin/UnblockNeteaseMusicCloud >/dev/null 2>&1 &
+     echo "$(date -R) # UnblockNeteaseMusic Cloud Version - Server: $cloudip (http:$cloudhttp, https:$cloudhttp)" >>/tmp/unblockmusic.log
+	fi
+		
+	set_firewall
+	
+  if [ "$APPTYPE" != "cloud" ]; then
+    /usr/share/UnblockNeteaseMusic/logcheck.sh >/dev/null 2>&1 &
+  fi
 }
 
 stop()
-{
-	kill -9 $(ps | grep app.js | grep -v grep | awk '{print $1}') >/dev/null 2>&1 
+{	
+	kill -9 $(busybox ps -w | grep UnblockNeteaseMusic | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+	kill -9 $(busybox ps -w | grep logcheck.sh | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+	rm -f /tmp/unblockmusic.log
+	
+	del_rule
+	del_cron
 }
-
-
-

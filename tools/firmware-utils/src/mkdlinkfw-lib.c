@@ -32,13 +32,26 @@
 
 extern char *progname;
 
-static unsigned char jffs2_eof_mark[4] = { 0xde, 0xad, 0xc0, 0xde };
-
 uint32_t jboot_timestamp(void)
 {
-	time_t rawtime;
-	time(&rawtime);
-	return (((uint32_t) rawtime) - TIMESTAMP_MAGIC) >> 2;
+	char *env = getenv("SOURCE_DATE_EPOCH");
+	char *endptr = env;
+	time_t fixed_timestamp = -1;
+	errno = 0;
+
+	if (env && *env) {
+		fixed_timestamp = strtoull(env, &endptr, 10);
+
+		if (errno || (endptr && *endptr != '\0')) {
+			fprintf(stderr, "Invalid SOURCE_DATE_EPOCH");
+			fixed_timestamp = -1;
+		}
+	}
+
+	if (fixed_timestamp == -1)
+		time(&fixed_timestamp);
+
+	return (((uint32_t) fixed_timestamp) - TIMESTAMP_MAGIC) >> 2;
 }
 
 uint16_t jboot_checksum(uint16_t start_val, uint16_t *data, int size)
@@ -84,6 +97,7 @@ int read_to_buf(const struct file_info *fdata, char *buf)
 {
 	FILE *f;
 	int ret = EXIT_FAILURE;
+	size_t read;
 
 	f = fopen(fdata->file_name, "r");
 	if (f == NULL) {
@@ -91,9 +105,8 @@ int read_to_buf(const struct file_info *fdata, char *buf)
 		goto out;
 	}
 
-	errno = 0;
-	fread(buf, fdata->file_size, 1, f);
-	if (errno != 0) {
+	read = fread(buf, fdata->file_size, 1, f);
+	if (ferror(f) || read != 1) {
 		ERRS("unable to read from file \"%s\"", fdata->file_name);
 		goto out_close;
 	}
@@ -104,40 +117,6 @@ int read_to_buf(const struct file_info *fdata, char *buf)
 	fclose(f);
  out:
 	return ret;
-}
-
-int pad_jffs2(char *buf, int currlen, int maxlen)
-{
-	int len;
-	uint32_t pad_mask;
-
-	len = currlen;
-	pad_mask = (4 * 1024) | (64 * 1024);	/* EOF at 4KB and at 64KB */
-	while ((len < maxlen) && (pad_mask != 0)) {
-		uint32_t mask;
-		int i;
-
-		for (i = 10; i < 32; i++) {
-			mask = 1 << i;
-			if (pad_mask & mask)
-				break;
-		}
-
-		len = ALIGN(len, mask);
-
-		for (i = 10; i < 32; i++) {
-			mask = 1 << i;
-			if ((len & (mask - 1)) == 0)
-				pad_mask &= ~mask;
-		}
-
-		for (i = 0; i < sizeof(jffs2_eof_mark); i++)
-			buf[len + i] = jffs2_eof_mark[i];
-
-		len += sizeof(jffs2_eof_mark);
-	}
-
-	return len;
 }
 
 int write_fw(const char *ofname, const char *data, int len)

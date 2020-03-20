@@ -7,9 +7,11 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
-DEVICE_VARS += DTS IMAGE_SIZE NETGEAR_BOARD_ID NETGEAR_HW_ID
+DEVICE_VARS += IMAGE_SIZE NETGEAR_BOARD_ID NETGEAR_HW_ID
 DEVICE_VARS += BUFFALO_TAG_PLATFORM BUFFALO_TAG_VERSION BUFFALO_TAG_MINOR
 DEVICE_VARS += SEAMA_SIGNATURE SEAMA_MTDBLOCK
+DEVICE_VARS += SERCOMM_HWID SERCOMM_HWVER SERCOMM_SWVER
+DEVICE_VARS += JCG_MAXSIZE
 
 loadaddr-y := 0x80000000
 loadaddr-$(CONFIG_TARGET_ramips_rt288x) := 0x88000000
@@ -17,14 +19,14 @@ loadaddr-$(CONFIG_TARGET_ramips_mt7621) := 0x80001000
 
 KERNEL_LOADADDR := $(loadaddr-y)
 
-KERNEL_DTB = kernel-bin | patch-dtb | lzma
+KERNEL_DTB = kernel-bin | append-dtb | lzma
 define Device/Default
-  PROFILES = Default $$(DTS)
-  KERNEL_DEPENDS = $$(wildcard ../dts/$$(DTS).dts)
+  PROFILES = Default
   KERNEL := $(KERNEL_DTB) | uImage lzma
+  SOC := $(DEFAULT_SOC)
   DEVICE_DTS_DIR := ../dts
+  DEVICE_DTS = $$(SOC)_$(1)
   IMAGES := sysupgrade.bin
-  IMAGE_SIZE := $(ralink_default_fw_size_8M)
   SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
   sysupgrade_bin := append-kernel | append-rootfs | pad-rootfs
   IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
@@ -45,15 +47,17 @@ define Device/seama
   SEAMA_SIGNATURE :=
 endef
 
-define Build/patch-dtb
-	$(call Image/BuildDTB,../dts/$(DTS).dts,$@.dtb)
-	$(STAGING_DIR_HOST)/bin/patch-dtb $@ $@.dtb
+define Build/jcg-header
+	$(STAGING_DIR_HOST)/bin/jcgimage -v $(1) \
+		$(if $(JCG_MAXSIZE), -m $$(($(subst k, * 1024,$(JCG_MAXSIZE)))),) \
+		-u $@ -o $@.new
+	mv $@.new $@
 endef
 
 define Build/trx
 	$(STAGING_DIR_HOST)/bin/trx $(1) \
 		-o $@ \
-		-m $(IMAGE_SIZE) \
+		-m $$(($(subst k, * 1024,$(IMAGE_SIZE)))) \
 		-f $(IMAGE_KERNEL) \
 		-a 4 -f $(IMAGE_ROOTFS)
 endef
@@ -87,6 +91,26 @@ define Build/relocate-kernel
 	rm -rf $@.relocate
 endef
 
+define Build/elx-header
+	$(eval hw_id=$(word 1,$(1)))
+	$(eval xor_pattern=$(word 2,$(1)))
+	( \
+		echo -ne "\x00\x00\x00\x00\x00\x00\x00\x03" | \
+			dd bs=42 count=1 conv=sync; \
+		hw_id="$(hw_id)"; \
+		echo -ne "\x$${hw_id:0:2}\x$${hw_id:2:2}\x$${hw_id:4:2}\x$${hw_id:6:2}" | \
+			dd bs=20 count=1 conv=sync; \
+		echo -ne "$$(printf '%08x' $$(stat -c%s $@) | fold -s2 | xargs -I {} echo \\x{} | tr -d '\n')" | \
+			dd bs=8 count=1 conv=sync; \
+		echo -ne "$$($(STAGING_DIR_HOST)/bin/mkhash md5 $@ | fold -s2 | xargs -I {} echo \\x{} | tr -d '\n')" | \
+			dd bs=58 count=1 conv=sync; \
+	) > $(KDIR)/tmp/$(DEVICE_NAME).header
+	$(call Build/xor-image,-p $(xor_pattern) -x)
+	cat $(KDIR)/tmp/$(DEVICE_NAME).header $@ > $@.new
+	mv $@.new $@
+	rm -rf $(KDIR)/tmp/$(DEVICE_NAME).header
+endef
+
 define Build/umedia-header
 	fix-u-media-header -T 0x46 -B $(1) -i $@ -o $@.new && mv $@.new $@
 endef
@@ -114,6 +138,7 @@ define Build/mkdlinkfw
 		-k $(IMAGE_KERNEL) \
 		-r $(IMAGE_ROOTFS) \
 		-o $@ \
+		$(if $(DLINK_IMAGE_OFFSET), -O $(DLINK_IMAGE_OFFSET)) \
 		-s $(DLINK_FIRMWARE_SIZE)
 endef
 
@@ -122,6 +147,7 @@ define Build/mkdlinkfw-factory
 		-m $(DLINK_ROM_ID) -f $(DLINK_FAMILY_MEMBER) \
 		-F $@ \
 		-o $@.new \
+		$(if $(DLINK_IMAGE_OFFSET), -O $(DLINK_IMAGE_OFFSET)) \
 		-s $(DLINK_FIRMWARE_SIZE)
 	mv $@.new $@
 endef
@@ -130,10 +156,23 @@ define Build/zyimage
 	$(STAGING_DIR_HOST)/bin/zyimage $(1) $@
 endef
 
-ralink_default_fw_size_4M=3866624
-ralink_default_fw_size_8M=8060928
-ralink_default_fw_size_16M=16121856
-ralink_default_fw_size_32M=33226752
+define Build/sercom-seal
+	$(STAGING_DIR_HOST)/bin/mksercommfw \
+		-i $@ \
+		-b $(SERCOMM_HWID) \
+		-r $(SERCOMM_HWVER) \
+		-v $(SERCOMM_SWVER) \
+		$(1)
+endef
+
+define Build/sercom-footer
+	$(call Build/sercom-seal,-f)
+endef
+
+define Build/fonfxcimage
+	uimage_padhdr -i $@ -o $@.new
+	mv $@.new $@
+endef
 
 ifeq ($(SUBTARGET),rt288x)
 include rt288x.mk

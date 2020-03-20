@@ -1,0 +1,77 @@
+From eb5df3d026824832831376bbdf04e01a52776eea Mon Sep 17 00:00:00 2001
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Tue, 28 May 2019 10:57:29 +0100
+Subject: [PATCH 608/660] net: phy: allow Clause 45 access via mii ioctl
+
+Allow userspace to generate Clause 45 MII access cycles via phylib.
+This is useful for tools such as mii-diag to be able to inspect Clause
+45 PHYs.
+
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+ drivers/net/phy/phy.c | 33 ++++++++++++++++++++++++---------
+ 1 file changed, 24 insertions(+), 9 deletions(-)
+
+--- a/drivers/net/phy/phy.c
++++ b/drivers/net/phy/phy.c
+@@ -397,6 +397,7 @@ int phy_mii_ioctl(struct phy_device *phy
+ 	struct mii_ioctl_data *mii_data = if_mii(ifr);
+ 	u16 val = mii_data->val_in;
+ 	bool change_autoneg = false;
++	int prtad, devad;
+ 
+ 	switch (cmd) {
+ 	case SIOCGMIIPHY:
+@@ -404,14 +405,29 @@ int phy_mii_ioctl(struct phy_device *phy
+ 		/* fall through */
+ 
+ 	case SIOCGMIIREG:
+-		mii_data->val_out = mdiobus_read(phydev->mdio.bus,
+-						 mii_data->phy_id,
+-						 mii_data->reg_num);
++		if (mdio_phy_id_is_c45(mii_data->phy_id)) {
++			prtad = mdio_phy_id_prtad(mii_data->phy_id);
++			devad = mdio_phy_id_devad(mii_data->phy_id);
++			devad = MII_ADDR_C45 | devad << 16 | mii_data->reg_num;
++		} else {
++			prtad = mii_data->phy_id;
++			devad = mii_data->reg_num;
++		}
++		mii_data->val_out = mdiobus_read(phydev->mdio.bus, prtad,
++						 devad);
+ 		return 0;
+ 
+ 	case SIOCSMIIREG:
+-		if (mii_data->phy_id == phydev->mdio.addr) {
+-			switch (mii_data->reg_num) {
++		if (mdio_phy_id_is_c45(mii_data->phy_id)) {
++			prtad = mdio_phy_id_prtad(mii_data->phy_id);
++			devad = mdio_phy_id_devad(mii_data->phy_id);
++			devad = MII_ADDR_C45 | devad << 16 | mii_data->reg_num;
++		} else {
++			prtad = mii_data->phy_id;
++			devad = mii_data->reg_num;
++		}
++		if (prtad == phydev->mdio.addr) {
++			switch (devad) {
+ 			case MII_BMCR:
+ 				if ((val & (BMCR_RESET | BMCR_ANENABLE)) == 0) {
+ 					if (phydev->autoneg == AUTONEG_ENABLE)
+@@ -443,11 +459,10 @@ int phy_mii_ioctl(struct phy_device *phy
+ 			}
+ 		}
+ 
+-		mdiobus_write(phydev->mdio.bus, mii_data->phy_id,
+-			      mii_data->reg_num, val);
++		mdiobus_write(phydev->mdio.bus, prtad, devad, val);
+ 
+-		if (mii_data->phy_id == phydev->mdio.addr &&
+-		    mii_data->reg_num == MII_BMCR &&
++		if (prtad == phydev->mdio.addr &&
++		    devad == MII_BMCR &&
+ 		    val & BMCR_RESET)
+ 			return phy_init_hw(phydev);
+ 
