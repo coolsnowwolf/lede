@@ -32,14 +32,14 @@ o.default = "https://ispip.clang.cn/all_cn.txt"
 o = s:option(Flag, "adblock", translate("Enable adblock"))
 o.rmempty = false
 
+o = s:option(Value, "nfip_url", translate("nfip_url"))
+o.default = "https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt"
+o.description = translate("Customize Netflix IP Url")
+
 o = s:option(Value, "adblock_url", translate("adblock_url"))
 o.default = "https://gitee.com/privacy-protection-tools/anti-ad/raw/master/anti-ad-for-dnsmasq.conf"
 o:depends("adblock", "1")
 o.description = translate("Support AdGuardHome and DNSMASQ format list")
-
-o = s:option(Value, "nfip_url", translate("nfip_url"))
-o.default = "https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt"
-o.description = translate("Customize Netflix IP Url")
 
 -- [[ SOCKS Proxy ]]--
 if nixio.fs.access("/usr/bin/microsocks") then
