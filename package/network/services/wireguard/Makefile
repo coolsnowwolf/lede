@@ -11,7 +11,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=wireguard
 
-PKG_VERSION:=v0.0.20200318
+PKG_VERSION:=0.0.20200318
 PKG_RELEASE:=2
 
 PKG_SOURCE:=wireguard-linux-compat-$(PKG_VERSION).tar.xz
