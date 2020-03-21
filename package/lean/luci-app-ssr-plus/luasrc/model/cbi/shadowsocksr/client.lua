@@ -103,5 +103,5 @@ o:depends("pdnsd_enable", "1")
 o:depends("pdnsd_enable", "2")
 o.description = translate("Custom DNS Server format as IP:PORT (default: 8.8.4.4:53)")
 
-o = s:option(Value, "v2ray_url", translate("V2ray binary file"), translate("The url of v2ray binary file"))
+o = s:option(Value, "v2ray_url", translate("V2ray binary file"), translate("The url of v2ray binary file or ipk package"))
 return m
