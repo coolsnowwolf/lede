@@ -7,22 +7,22 @@ function index()
 	if not nixio.fs.access("/etc/config/shadowsocksr") then
 		return
 	end
-	entry({"admin", "services", "shadowsocksr"}, alias("admin", "services", "shadowsocksr", "client"),_("ShadowSocksR Plus+"), 10).dependent = true
-	entry({"admin", "services", "shadowsocksr", "client"}, cbi("shadowsocksr/client"),_("SSR Client"), 10).leaf = true
-	entry({"admin", "services", "shadowsocksr", "servers"}, arcombine(cbi("shadowsocksr/servers", {autoapply=true}), cbi("shadowsocksr/client-config")),_("Severs Nodes"), 20).leaf = true
-	entry({"admin", "services", "shadowsocksr", "control"},cbi("shadowsocksr/control"), _("Access Control"), 30).leaf = true
-	entry({"admin", "services", "shadowsocksr", "advanced"},cbi("shadowsocksr/advanced"),_("Advanced Settings"), 50).leaf = true
+	entry({"admin", "vpn", "shadowsocksr"}, alias("admin", "vpn", "shadowsocksr", "client"),_("ShadowSocksR Plus+"), 10).dependent = true
+	entry({"admin", "vpn", "shadowsocksr", "client"}, cbi("shadowsocksr/client"),_("SSR Client"), 10).leaf = true
+	entry({"admin", "vpn", "shadowsocksr", "servers"}, arcombine(cbi("shadowsocksr/servers", {autoapply=true}), cbi("shadowsocksr/client-config")),_("Severs Nodes"), 20).leaf = true
+	entry({"admin", "vpn", "shadowsocksr", "control"},cbi("shadowsocksr/control"), _("Access Control"), 30).leaf = true
+	entry({"admin", "vpn", "shadowsocksr", "advanced"},cbi("shadowsocksr/advanced"),_("Advanced Settings"), 50).leaf = true
 	if nixio.fs.access("/usr/bin/ssr-server") then
-		entry({"admin", "services", "shadowsocksr", "server"},arcombine(cbi("shadowsocksr/server"), cbi("shadowsocksr/server-config")),_("SSR Server"), 60).leaf = true
+		entry({"admin", "vpn", "shadowsocksr", "server"},arcombine(cbi("shadowsocksr/server"), cbi("shadowsocksr/server-config")),_("SSR Server"), 60).leaf = true
 	end
-	entry({"admin", "services", "shadowsocksr", "status"},form("shadowsocksr/status"),_("Status"), 70).leaf = true
-	entry({"admin", "services", "shadowsocksr", "check"}, call("check_status"))
-	entry({"admin", "services", "shadowsocksr", "refresh"}, call("refresh_data"))
-	entry({"admin", "services", "shadowsocksr", "subscribe"}, call("subscribe"))
-	entry({"admin", "services", "shadowsocksr", "checkport"}, call("check_port"))
-	entry({"admin", "services", "shadowsocksr", "log"},form("shadowsocksr/log"),_("Log"), 80).leaf = true
-	entry({"admin", "services", "shadowsocksr","run"},call("act_status")).leaf=true
-	entry({"admin", "services", "shadowsocksr", "ping"}, call("act_ping")).leaf=true
+	entry({"admin", "vpn", "shadowsocksr", "status"},form("shadowsocksr/status"),_("Status"), 70).leaf = true
+	entry({"admin", "vpn", "shadowsocksr", "check"}, call("check_status"))
+	entry({"admin", "vpn", "shadowsocksr", "refresh"}, call("refresh_data"))
+	entry({"admin", "vpn", "shadowsocksr", "subscribe"}, call("subscribe"))
+	entry({"admin", "vpn", "shadowsocksr", "checkport"}, call("check_port"))
+	entry({"admin", "vpn", "shadowsocksr", "log"},form("shadowsocksr/log"),_("Log"), 80).leaf = true
+	entry({"admin", "vpn", "shadowsocksr","run"},call("act_status")).leaf=true
+	entry({"admin", "vpn", "shadowsocksr", "ping"}, call("act_ping")).leaf=true
 end
 
 function subscribe()
