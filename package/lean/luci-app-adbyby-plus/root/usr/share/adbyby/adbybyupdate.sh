@@ -43,6 +43,7 @@ if [ ! -f "/tmp/adbyby.updated" ];then
    
    rm -f /tmp/adbyby/data/*.bak
     
-   /etc/init.d/adbyby restart
+   kill -9 $(busybox ps -w | grep "/tmp/adbyby/adbyby" | grep -v grep | grep -v update | awk '{print $1}') >/dev/null 2>&1
+   /tmp/adbyby/adbyby >/dev/null 2>&1 &
 fi
 
