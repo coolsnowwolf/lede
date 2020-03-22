@@ -12,6 +12,91 @@ PIDCOUNT=0
 EXTRA_COMMANDS="killclients"
 EXTRA_HELP="	killclients Kill ${NAME} processes except servers and yourself"
 
+_dropbearkey()
+{
+	/usr/bin/dropbearkey "$@" 0<&- 1>&- 2>&-
+}
+
+# $1 - host key file name
+hk_verify()
+{
+	[ -f "$1" ] || return 1
+	[ -s "$1" ] || return 2
+	_dropbearkey -y -f "$1" || return 3
+	return 0
+}
+
+# $1 - hk_verify() return code
+hk_errmsg()
+{
+	case "$1" in
+	0) ;;
+	1) echo "file does not exist" ;;
+	2) echo "file has zero length" ;;
+	3) echo "file is not valid host key or not supported" ;;
+	*) echo "unknown error" ;;
+	esac
+}
+
+# $1 - config option
+# $2 - host key file name
+hk_config()
+{
+	local x m
+	hk_verify "$2"; x=$?
+	case "$x" in
+	0)	procd_append_param command -r "$2"
+		;;
+	*)	m=$(hk_errmsg "$x")
+		logger -t "${NAME}" -p daemon.warn \
+		  "option '$1', value '$2': $m, skipping"
+		;;
+	esac
+}
+
+# $1 - host key file name
+hk_config__keyfile()
+{
+	hk_config 'keyfile' "$1"
+}
+
+hk_generate_as_needed()
+{
+	local kdir kgen ktype tdir kcount tfile
+	kdir='/etc/dropbear'
+
+	kgen=''
+	for ktype in ecdsa rsa; do
+		hk_verify "${kdir}/dropbear_${ktype}_host_key" && continue
+
+		kgen="${kgen} ${ktype}"
+	done
+
+	[ -z "${kgen}" ] && return
+
+	tdir=$(mktemp -d); chmod 0700 "${tdir}"
+
+	kcount=0
+	for ktype in ${kgen}; do
+		tfile="${tdir}/dropbear_${ktype}_host_key"
+
+		if ! _dropbearkey -t ${ktype} -f "${tfile}"; then
+			# unsupported key type
+			rm -f "${tfile}"
+			continue
+		fi
+
+		kcount=$((kcount+1))
+	done
+
+	if [ ${kcount} -ne 0 ]; then
+		mkdir -p "${kdir}"; chmod 0700 "${kdir}"; chown root "${kdir}"
+		mv -f "${tdir}/"* "${kdir}/"
+	fi
+
+	rm -rf "${tdir}"
+}
+
 append_ports()
 {
 	local ipaddrs="$1"
@@ -29,7 +114,7 @@ append_ports()
 
 validate_section_dropbear()
 {
-	uci_validate_section dropbear dropbear "${1}" \
+	uci_load_validate dropbear dropbear "$1" "$2" \
 		'PasswordAuth:bool:1' \
 		'enable:bool:1' \
 		'Interface:string' \
@@ -37,8 +122,9 @@ validate_section_dropbear()
 		'RootPasswordAuth:bool:1' \
 		'RootLogin:bool:1' \
 		'rsakeyfile:file' \
+		'keyfile:list(file)' \
 		'BannerFile:file' \
-		'Port:list(port):22' \
+		'Port:port:22' \
 		'SSHKeepAlive:uinteger:300' \
 		'IdleTimeout:uinteger:0' \
 		'MaxAuthTries:uinteger:3' \
@@ -48,12 +134,9 @@ validate_section_dropbear()
 
 dropbear_instance()
 {
-	local PasswordAuth enable Interface GatewayPorts \
-		RootPasswordAuth RootLogin rsakeyfile \
-		BannerFile Port SSHKeepAlive IdleTimeout \
-		MaxAuthTries RecvWindowSize mdns ipaddrs
+	local ipaddrs
 
-	validate_section_dropbear "${1}" || {
+	[ "$2" = 0 ] || {
 		echo "validation failed"
 		return 1
 	}
@@ -77,7 +160,13 @@ dropbear_instance()
 	[ "${GatewayPorts}" -eq 1 ] && procd_append_param command -a
 	[ "${RootPasswordAuth}" -eq 0 ] && procd_append_param command -g
 	[ "${RootLogin}" -eq 0 ] && procd_append_param command -w
-	[ -n "${rsakeyfile}" ] && procd_append_param command -r "${rsakeyfile}"
+	if [ -n "${rsakeyfile}" ]; then
+		logger -t ${NAME} -p daemon.warn \
+			"option 'rsakeyfile' is considered to be deprecated and" \
+			"will be removed in future releases, use 'keyfile' instead"
+		hk_config 'rsakeyfile' "${rsakeyfile}"
+	fi
+	config_list_foreach "$1" "keyfile" hk_config__keyfile
 	[ -n "${BannerFile}" ] && procd_append_param command -b "${BannerFile}"
 	append_ports "${ipaddrs}" "${Port}"
 	[ "${IdleTimeout}" -ne 0 ] && procd_append_param command -I "${IdleTimeout}"
@@ -88,29 +177,6 @@ dropbear_instance()
 	[ "${mdns}" -ne 0 ] && procd_add_mdns "ssh" "tcp" "$Port" "daemon=dropbear"
 	procd_set_param respawn
 	procd_close_instance
-}
-
-keygen()
-{
-	for keytype in rsa; do
-		# check for keys
-		key=dropbear/dropbear_${keytype}_host_key
-		[ -f /tmp/$key -o -s /etc/$key ] || {
-			# generate missing keys
-			mkdir -p /tmp/dropbear
-			[ -x /usr/bin/dropbearkey ] && {
-				/usr/bin/dropbearkey -t $keytype -f /tmp/$key 2>&- >&- && exec /etc/rc.common "$initscript" start
-			} &
-		exit 0
-		}
-	done
-
-	lock /tmp/.switch2jffs
-	mkdir -p /etc/dropbear
-	mv /tmp/dropbear/dropbear_* /etc/dropbear/
-	lock -u /tmp/.switch2jffs
-	chown root /etc/dropbear
-	chmod 0700 /etc/dropbear
 }
 
 load_interfaces()
@@ -129,13 +195,13 @@ boot()
 
 start_service()
 {
-	[ -s /etc/dropbear/dropbear_rsa_host_key ] || keygen
+	hk_generate_as_needed
 
 	. /lib/functions.sh
 	. /lib/functions/network.sh
 
 	config_load "${NAME}"
-	config_foreach dropbear_instance dropbear
+	config_foreach validate_section_dropbear dropbear dropbear_instance
 }
 
 service_triggers()
