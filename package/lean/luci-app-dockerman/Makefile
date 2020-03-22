@@ -1,18 +1,18 @@
+#
+# Copyright (C) 2008-2014 The LuCI Team <luci@lists.subsignal.org>
+#
+# This is free software, licensed under the Apache License, Version 2.0 .
+#
+
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=Docker Manager interface for LuCI
-LUCI_DEPENDS:=+luci-lib-docker +docker-ce +e2fsprogs +fdisk
-PKG_NAME:=luci-app-dockerman
-PKG_VERSION:=v0.3.0
-PKG_RELEASE:=leanmod-3
-PKG_MAINTAINER:=lisaac <https://github.com/lisaac/luci-app-dockerman>
-PKG_LICENSE:=AGPL-3.0
+LUCI_TITLE:=Luci for Docker-CE
+LUCI_DEPENDS:=+docker-ce +e2fsprogs +fdisk
+LUCI_PKGARCH:=all
+PKG_VERSION:=1
+PKG_RELEASE:=9
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
-define Package/$(PKG_NAME)/postinst
-#!/bin/sh
-rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
-endef
-
 # call BuildPackage - OpenWrt buildroot signature
+
