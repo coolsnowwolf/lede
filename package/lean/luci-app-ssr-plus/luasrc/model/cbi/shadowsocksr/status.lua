@@ -67,7 +67,7 @@ if luci.sys.call("busybox ps -w | grep ssr-retcp | grep -v grep >/dev/null") == 
 redir_run=1
 end
 
-if luci.sys.call("busybox ps -w | grep ssr-local | grep -v grep >/dev/null") == 0 then
+if luci.sys.call("busybox ps -w | grep ssr-local | grep -v ssr-socksdns |grep -v grep >/dev/null") == 0 then
 sock5_run=1
 end
 
