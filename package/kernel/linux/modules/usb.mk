@@ -1343,6 +1343,21 @@ endef
 $(eval $(call KernelPackage,usb-net-rtl8150))
 
 
+define KernelPackage/usb-net-rtl8152
+  TITLE:=Kernel module for USB-to-Ethernet Realtek convertors
+  KCONFIG:=CONFIG_USB_RTL8152
+  FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/r8152.ko
+  AUTOLOAD:=$(call AutoProbe,r8152)
+  $(call AddDepends/usb-net)
+endef
+
+define KernelPackage/usb-net-rtl8152/description
+ Kernel module for USB-to-Ethernet Realtek 8152 USB2.0/3.0 convertors
+endef
+
+$(eval $(call KernelPackage,usb-net-rtl8152))
+
+
 define KernelPackage/usb-net-sr9700
   TITLE:=Support for CoreChip SR9700 ethernet devices
   KCONFIG:=CONFIG_USB_NET_SR9700
