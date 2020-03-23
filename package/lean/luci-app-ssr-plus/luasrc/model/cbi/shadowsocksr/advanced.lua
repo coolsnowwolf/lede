@@ -46,11 +46,12 @@ o:depends("enable_switch", "1")
 o.default = 3
 
 o = s:option(Value, "chnroute_url", translate("Chnroute Update url"))
-o:value("https://ispip.clang.cn/all_cn.txt", translate("https://ispip.clang.cn/all_cn.txt"))
+o:value("https://ispip.clang.cn/all_cn.txt", translate("Clang.CN"))
 o.default = "https://ispip.clang.cn/all_cn.txt"
 
 o = s:option(Value, "nfip_url", translate("nfip_url"))
-o:value("https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt", translate("https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt"))
+o:value("https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt", translate("Netflix IP Only"))
+o:value("https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/getflix.txt", translate("Netflix and AWS"))
 o.default = "https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt"
 o.description = translate("Customize Netflix IP Url")
 
@@ -58,7 +59,7 @@ o = s:option(Flag, "adblock", translate("Enable adblock"))
 o.rmempty = false
 
 o = s:option(Value, "adblock_url", translate("adblock_url"))
-o:value("https://gitee.com/privacy-protection-tools/anti-ad/raw/master/anti-ad-for-dnsmasq.conf", translate("https://gitee.com/privacy-protection-tools/anti-ad/raw/master/anti-ad-for-dnsmasq.conf"))
+o:value("https://gitee.com/privacy-protection-tools/anti-ad/raw/master/anti-ad-for-dnsmasq.conf", translate("anti-AD"))
 o.default = "https://gitee.com/privacy-protection-tools/anti-ad/raw/master/anti-ad-for-dnsmasq.conf"
 o:depends("adblock", "1")
 o.description = translate("Support AdGuardHome and DNSMASQ format list")
