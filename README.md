@@ -7,7 +7,6 @@ Welcome to Lean's  git source of OpenWrt and packages
 注意：
 -
 1. 不要用 root 用户 git 和编译！！！
--
 2. 国内用户编译前最好准备好梯子
 3. 默认登陆IP 192.168.1.1, 密码 password
 
