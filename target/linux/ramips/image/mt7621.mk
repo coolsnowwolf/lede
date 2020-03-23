@@ -309,7 +309,6 @@ define Device/gehua_ghl-r-001
   DEVICE_MODEL := GHL-R-001
   DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 \
 	kmod-usb-ledtrig-usbport wpad-openssl
-  DEFAULT := n
 endef
 TARGET_DEVICES += gehua_ghl-r-001
 
@@ -578,7 +577,6 @@ define Device/netgear_r6220
 endef
 TARGET_DEVICES += netgear_r6220
 
-
 define Device/netgear_r6260
   $(Device/netgear_sercomm_nand)
   DEVICE_MODEL := R6260
@@ -603,6 +601,21 @@ define Device/netgear_r6350
 endef
 TARGET_DEVICES += netgear_r6350
 
+define Device/netgear_r6700-v2
+  $(Device/netgear_sercomm_nand)
+  DEVICE_MODEL := R6700
+  DEVICE_VARIANT := v2
+  DEVICE_ALT0_VENDOR := NETGEAR
+  DEVICE_ALT0_MODEL := Nighthawk AC2400
+  SERCOMM_HWNAME := R6950
+  SERCOMM_HWID := BZV
+  SERCOMM_HWVER := A001
+  SERCOMM_SWVER := 0x1032
+  IMAGE_SIZE := 40960k
+  DEVICE_PACKAGES += kmod-mt7615e
+endef
+TARGET_DEVICES += netgear_r6700-v2
+
 define Device/netgear_r6800
   $(Device/netgear_sercomm_nand)
   DEVICE_MODEL := R6800
@@ -611,7 +624,7 @@ define Device/netgear_r6800
   SERCOMM_HWVER := A001
   SERCOMM_SWVER := 0x0062
   IMAGE_SIZE := 40960k
-  DEVICE_PACKAGES += kmod-mt7615e kmod-pinctrl-sx150x
+  DEVICE_PACKAGES += kmod-mt7615e
 endef
 TARGET_DEVICES += netgear_r6800
 
@@ -782,6 +795,14 @@ define Device/ubiquiti_edgerouterx-sfp
   SUPPORTED_DEVICES += ubnt-erx-sfp
 endef
 TARGET_DEVICES += ubiquiti_edgerouterx-sfp
+
+define Device/ubnt_unifi-nanohd
+  DEVICE_VENDOR := Ubiquiti
+  DEVICE_MODEL := UniFi nanoHD
+  DEVICE_PACKAGES += kmod-mt7603 kmod-mt7615e wpad-openssl
+  IMAGE_SIZE := 15552k
+endef
+TARGET_DEVICES += ubnt_unifi-nanohd
 
 define Device/unielec_u7621-06-16m
   IMAGE_SIZE := 16064k

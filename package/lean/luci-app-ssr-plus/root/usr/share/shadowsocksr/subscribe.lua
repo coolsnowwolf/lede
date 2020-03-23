@@ -7,7 +7,7 @@ require 'nixio'
 require 'luci.util'
 require 'luci.jsonc'
 require 'luci.sys'
-
+require 'uci'
 -- these global functions are accessed all the time by the event handler
 -- so caching them is worth the effort
 local luci = luci
@@ -19,7 +19,7 @@ local cache = {}
 local nodeResult = setmetatable({}, { __index = cache })  -- update result
 local name = 'shadowsocksr'
 local uciType = 'servers'
-local ucic = luci.model.uci.cursor()
+local ucic = uci.cursor()
 local proxy = ucic:get_first(name, 'server_subscribe', 'proxy', '0')
 local switch = ucic:get_first(name, 'server_subscribe', 'switch', '1')
 local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
@@ -274,7 +274,7 @@ local function processData(szType, content)
 end
 -- wget
 local function wget(url)
-	local stdout = luci.sys.exec('wget-ssl --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.90 Safari/537.36" --no-check-certificate -t 3 -T 10 -O- "' .. url .. '"')
+	local stdout = luci.sys.exec('wget-ssl --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36" --no-check-certificate -t 3 -T 10 -O- "' .. url .. '"')
 	return trim(stdout)
 end
 

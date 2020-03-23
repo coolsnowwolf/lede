@@ -12,9 +12,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/procd.git
-PKG_SOURCE_DATE:=2019-05-30
-PKG_SOURCE_VERSION:=ade00ca585a49c8478bf60eb24ce385676be37a4
-PKG_MIRROR_HASH:=1417727ae6fcda01017e1bec3ec66e3e78116f9343cfe0256e40af54c52f2acc
+PKG_SOURCE_DATE:=2020-03-13
+PKG_SOURCE_VERSION:=77a6782d6e4eba2c49e642672de134aff443ef72
+PKG_MIRROR_HASH:=bb7e98a6b6f997a4fa2fb924be248febe5a7633601df2e97e7a7513c57b63870
 CMAKE_INSTALL:=1
 
 PKG_LICENSE:=GPL-2.0
@@ -22,6 +22,7 @@ PKG_LICENSE_FILES:=
 
 PKG_MAINTAINER:=John Crispin <john@phrozen.org>
 
+PKG_ASLR_PIE_REGULAR:=1
 PKG_CONFIG_DEPENDS:= \
 	CONFIG_TARGET_INIT_PATH CONFIG_KERNEL_SECCOMP \
 	CONFIG_PROCD_SHOW_BOOT CONFIG_PROCD_ZRAM_TMPFS \
@@ -43,7 +44,7 @@ TARGET_LDFLAGS += -flto
 define Package/procd
   SECTION:=base
   CATEGORY:=Base system
-  DEPENDS:=+ubusd +ubus +libjson-script +ubox +USE_GLIBC:librt +libubox +libubus
+  DEPENDS:=+ubusd +ubus +libjson-script +ubox +USE_GLIBC:librt +libubox +libubus +libblobmsg-json +libjson-c
   TITLE:=OpenWrt system process manager
   USERID:=:dialout=20 :audio=29
 endef
@@ -51,7 +52,7 @@ endef
 define Package/procd-ujail
   SECTION:=base
   CATEGORY:=Base system
-  DEPENDS:=@KERNEL_NAMESPACES +@KERNEL_UTS_NS +@KERNEL_IPC_NS +@KERNEL_PID_NS +libubox +libblobmsg-json
+  DEPENDS:=@KERNEL_NAMESPACES +@KERNEL_UTS_NS +@KERNEL_IPC_NS +@KERNEL_PID_NS +libubox +libubus +libblobmsg-json
   TITLE:=OpenWrt process jail helper
 endef
 
