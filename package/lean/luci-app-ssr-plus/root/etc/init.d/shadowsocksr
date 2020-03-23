@@ -533,8 +533,12 @@ start_service() {
       iptables -t filter -I INPUT -j SSR-SERVER-RULE
 		fi
 	fi
-	gen_service_file $1 /var/etc/${NAME}_$server_count.json
-	/usr/bin/ssr-server -c /var/etc/${NAME}_$server_count.json -u -f /var/run/ssr-server$server_count.pid >/dev/null 2>&1
+	if [ "$(uci_get_by_name $1 type ssr)" == "ssr" ]; then
+    gen_service_file $1 /var/etc/${NAME}_$server_count.json
+    /usr/bin/ssr-server -c /var/etc/${NAME}_$server_count.json -u -f /var/run/ssr-server$server_count.pid >/dev/null 2>&1
+  else
+    microsocks -i :: -p $(uci_get_by_name $1 server_port) -1 -u $(uci_get_by_name $1 username) -P $(uci_get_by_name $1 password) ssr-server$server_count >/dev/null 2>&1 &
+  fi
 	iptables -t filter -A SSR-SERVER-RULE -p tcp --dport $(uci_get_by_name $1 server_port) -j ACCEPT
 	iptables -t filter -A SSR-SERVER-RULE -p udp --dport $(uci_get_by_name $1 server_port) -j ACCEPT
 	return 0
@@ -570,25 +574,30 @@ start_server() {
 }
 
 start_local() {
-	local local_server=$(uci_get_by_type socks5_proxy socks 0)
-	[ "$local_server" == "0" ] && return 0
-	local auth_enable=$(uci_get_by_type socks5_proxy auth_enable 0)
-	local socks_port=$(uci_get_by_type socks5_proxy local_port 1080)
-	if [ "$auth_enable" == "1" ]; then
-    microsocks -i :: -p $socks_port -1 -u $(uci_get_by_type socks5_proxy username) -P $(uci_get_by_type socks5_proxy password) ssr-socks >/dev/null 2>&1 &
-	else
-    microsocks -i :: -p $socks_port ssr-socks >/dev/null 2>&1 &
+	local local_server=$(uci_get_by_type socks5_proxy server)
+	[ "$local_server" = "nil" ] && return 1
+	local local_type=$(uci_get_by_name $local_server type)
+	mkdir -p /var/run /var/etc
+
+	if [ "$local_type" == "ssr" ]; then
+    gen_config_file $local_server 3 $(uci_get_by_type socks5_proxy local_port 1080)
+    /usr/bin/ssr-local -c $CONFIG_SOCK5_FILE -u	-f /var/run/ssr-local.pid >/dev/null 2>&1
+  elif [ "$local_type" == "ss" ]; then
+    gen_config_file $local_server 3 $(uci_get_by_type socks5_proxy local_port 1080)
+    /usr/bin/ss-local -c $CONFIG_SOCK5_FILE -u	-f /var/run/ssr-local.pid >/dev/null 2>&1
+  elif [ "$local_type" == "v2ray" ]; then
+    lua /usr/share/shadowsocksr/genv2config.lua $local_server tcp 0 $(uci_get_by_type socks5_proxy local_port 1080) >/var/etc/v2-ssr-local.json
+    sed -i 's/\\//g' /var/etc/v2-ssr-local.json
+    /usr/bin/v2ray/v2ray -config /var/etc/v2-ssr-local.json >/dev/null 2>&1 &
+  elif [ "$local_type" == "trojan" ]; then
+    lua /usr/share/shadowsocksr/gentrojanconfig.lua $local_server client $(uci_get_by_type socks5_proxy local_port 1080) >/var/etc/trojan-ssr-local.json
+    sed -i 's/\\//g' /var/etc/trojan-ssr-local.json
+    /usr/sbin/trojan --config /var/etc/trojan-ssr-local.json >/dev/null 2>&1 &
+  else
+    microsocks -i :: -p $(uci_get_by_type socks5_proxy local_port 1080) ssr-local >/dev/null 2>&1 &
 	fi
-	local_enable=1
-	if [ "$(uci_get_by_type socks5_proxy wan_enable 0)" == "1" ]; then
-    if ! (iptables-save -t filter | grep SSR-SERVER-RULE >/dev/null); then
-      iptables -N SSR-SERVER-RULE && \
-      iptables -t filter -I INPUT -j SSR-SERVER-RULE
-    fi
-    iptables -t filter -A SSR-SERVER-RULE -p tcp --dport $socks_port -j ACCEPT
-    iptables -t filter -A SSR-SERVER-RULE -p udp --dport $socks_port -j ACCEPT
-    gen_serv_include
-	fi
+	
+	local_enable=1	
 }
 
 rules() {
@@ -706,7 +715,8 @@ stop() {
 	killall -q -9 v2ray
 	killall -q -9 trojan
 	killall -q -9 ipt2socks
-	killall -q -9 ssr-server
+	kill -9 $(busybox ps -w | grep ssr-server | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+	kill -9 $(busybox ps -w | grep ssr-local | grep -v grep | awk '{print $1}') >/dev/null 2>&1
 	killall -q -9 ssr-local
 	killall -q -9 ss-local
 	killall -q -9 kcptun-client
