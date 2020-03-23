@@ -43,6 +43,7 @@ English Version:How to make your Openwrt firmware.
 Note:
 --
 1.DO NOT USE ROOT USER TO CONFIGURE!!!
+
 2.Login IP is 192.168.1.1 and login password is "password".
 
 Let's start!
