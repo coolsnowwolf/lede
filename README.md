@@ -12,30 +12,30 @@ Welcome to Lean's  git source of OpenWrt and packages
 
 编译命令如下:
 -
-1. 首先装好 Ubuntu 64bit，推荐  Ubuntu  14 LTS x64 \
+1. 首先装好 Ubuntu 64bit，推荐  Ubuntu  14 LTS x64 
 
-2. 命令行输入 sudo apt-get update ，然后输入 \
-sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3.5 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib linux-libc-dev:i386 \
+2. 命令行输入 sudo apt-get update ，然后输入 
+sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3.5 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib linux-libc-dev:i386 
 
-3. git clone https://github.com/coolsnowwolf/lede 命令下载好源代码，然后 cd lede 进入目录 \
+3. git clone https://github.com/coolsnowwolf/lede 命令下载好源代码，然后 cd lede 进入目录 
 
 4. ./scripts/feeds update -a 
    ./scripts/feeds install -a
-   make menuconfig \
+   make menuconfig 
 
-5. 最后选好你要的路由，输入 make -j1 V=s （-j1 后面是线程数。第一次编译推荐用单线程，国内请尽量全局科学上网）即可开始编译你要的固件了。 \
+5. 最后选好你要的路由，输入 make -j1 V=s （-j1 后面是线程数。第一次编译推荐用单线程，国内请尽量全局科学上网）即可开始编译你要的固件了。 
 
-本套代码保证肯定可以编译成功。里面包括了 R9 所有源代码，包括 IPK 的。 \
+本套代码保证肯定可以编译成功。里面包括了 R9 所有源代码，包括 IPK 的。 
 
 你可以自由使用，但源码编译二次发布请注明我的 GitHub 仓库链接。谢谢合作！
 =
 特别提示：
 ------
-1.源代码中绝不含任何后门和可以监控或者劫持你的 HTTPS 的闭源软件，SSL 安全是互联网最后的壁垒。安全干净才是固件应该做到的； \
-2.如有技术问题需要讨论，欢迎加入 QQ 讨论群：OP共享技术交流群 ,号码 297253733 ，加群链接: 点击链接加入群聊【OP共享技术交流群】：[点击加入](https://jq.qq.com/?_wv=1027&k=5yCRuXL "OP共享技术交流群")    \
+1.源代码中绝不含任何后门和可以监控或者劫持你的 HTTPS 的闭源软件，SSL 安全是互联网最后的壁垒。安全干净才是固件应该做到的； 
+2.如有技术问题需要讨论，欢迎加入 QQ 讨论群：OP共享技术交流群 ,号码 297253733 ，加群链接: 点击链接加入群聊【OP共享技术交流群】：[点击加入](https://jq.qq.com/?_wv=1027&k=5yCRuXL "OP共享技术交流群")
 
 3. 想学习OpenWrt开发，但是摸不着门道？自学没毅力？基础太差？怕太难学不会？跟着佐大学OpenWrt开发入门培训班助你能学有所成
-报名地址：[点击报名](http://forgotfun.org/2018/04/openwrt-training-2018.html "报名")  \
+报名地址：[点击报名](http://forgotfun.org/2018/04/openwrt-training-2018.html "报名")
 
 English Version:How to make your Openwrt firmware.
 -
