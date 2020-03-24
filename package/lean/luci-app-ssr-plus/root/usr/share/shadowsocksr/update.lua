@@ -7,7 +7,7 @@ require 'nixio'
 require 'luci.util'
 require 'luci.jsonc'
 require 'luci.sys'
-local icount =0
+local icount = 0
 local uci = luci.model.uci.cursor()
 
 local log = function(...)
@@ -15,7 +15,7 @@ local log = function(...)
 end
 
 log('正在更新【GFW列表】数据库')
-refresh_cmd = "wget-ssl --no-check-certificate -O - https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt > /tmp/gfw.b64"
+refresh_cmd = "wget-ssl --no-check-certificate -O- " .. uci:get_first('shadowsocksr', 'global', 'gfwlist_url', 'https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt') .. ' > /tmp//tmp/gfw.b64'
 sret = luci.sys.call(refresh_cmd .. " 2>/dev/null")
 if sret == 0 then
 	luci.sys.call("/usr/bin/ssr-gfw")
