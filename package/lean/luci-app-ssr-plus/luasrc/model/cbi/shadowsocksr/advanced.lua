@@ -45,23 +45,29 @@ o.datatype = "uinteger"
 o:depends("enable_switch", "1")
 o.default = 3
 
-o = s:option(Value, "chnroute_url", translate("Chnroute Update url"))
-o:value("https://ispip.clang.cn/all_cn.txt", translate("https://ispip.clang.cn/all_cn.txt"))
-o.default = "https://ispip.clang.cn/all_cn.txt"
-
-o = s:option(Value, "nfip_url", translate("nfip_url"))
-o:value("https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt", translate("https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt"))
-o.default = "https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt"
-o.description = translate("Customize Netflix IP Url")
-
 o = s:option(Flag, "adblock", translate("Enable adblock"))
 o.rmempty = false
 
 o = s:option(Value, "adblock_url", translate("adblock_url"))
-o:value("https://gitee.com/privacy-protection-tools/anti-ad/raw/master/anti-ad-for-dnsmasq.conf", translate("https://gitee.com/privacy-protection-tools/anti-ad/raw/master/anti-ad-for-dnsmasq.conf"))
+o:value("https://gitee.com/privacy-protection-tools/anti-ad/raw/master/anti-ad-for-dnsmasq.conf", translate("anti-AD"))
 o.default = "https://gitee.com/privacy-protection-tools/anti-ad/raw/master/anti-ad-for-dnsmasq.conf"
 o:depends("adblock", "1")
 o.description = translate("Support AdGuardHome and DNSMASQ format list")
+
+o = s:option(Value, "gfwlist_url", translate("gfwlist Update url"))
+o:value("https://cdn.jsdelivr.net/gh/Loukky/gfwlist-by-loukky/gfwlist.txt", translate("Loukky/gfwlist-by-loukky"))
+o:value("https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt", translate("gfwlist/gfwlist"))
+o.default = "https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt"
+
+o = s:option(Value, "chnroute_url", translate("Chnroute Update url"))
+o:value("https://ispip.clang.cn/all_cn.txt", translate("Clang.CN"))
+o.default = "https://ispip.clang.cn/all_cn.txt"
+
+o = s:option(Value, "nfip_url", translate("nfip_url"))
+o:value("https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt", translate("Netflix IP Only"))
+o:value("https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/getflix.txt", translate("Netflix and AWS"))
+o.default = "https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt"
+o.description = translate("Customize Netflix IP Url")
 
 -- [[ SOCKS5 Proxy ]]--
 s = m:section(TypedSection, "socks5_proxy", translate("Global SOCKS5 Proxy Server"))

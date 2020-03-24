@@ -7,13 +7,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=trojan
-PKG_VERSION:=1.14.1
-PKG_RELEASE:=3
+PKG_VERSION:=1.15.0
+PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/trojan-gfw/trojan.git
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE_VERSION:=5074793bef10c3ce4546b2995dbbdde83cdba3dc
+PKG_SOURCE_VERSION:=26637b32213fbd508c85d7f8fbfcf593f8330ae3
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-$(PKG_SOURCE_VERSION).tar.gz
 
 CMAKE_INSTALL:=1
@@ -66,3 +66,4 @@ define Package/trojan/install
 endef
 
 $(eval $(call BuildPackage,trojan))
+
