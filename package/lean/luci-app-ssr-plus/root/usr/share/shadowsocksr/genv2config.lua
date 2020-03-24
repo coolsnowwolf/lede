@@ -2,7 +2,8 @@ local ucursor = require "luci.model.uci".cursor()
 local json = require "luci.jsonc"
 local server_section = arg[1]
 local proto = arg[2]
-local local_port = arg[3]
+local local_port = arg[3] or "0"
+local socks_port = arg[4] or "0"
 
 local server = ucursor:get_all("shadowsocksr", server_section)
 
@@ -11,20 +12,31 @@ log = {
 	-- error = "/var/ssrplus.log",
 	loglevel = "warning"
 },
-	-- 传入连接
-	inbound = {
-		port = local_port,
-		protocol = "dokodemo-door",
-		settings = {
-			network = proto,
-			followRedirect = true
-		},
-		sniffing = {
-			enabled = true,
-			destOverride = { "http", "tls" }
-		}
-	},
-	-- 传出连接
+ -- 传入连接
+ inbound = (local_port ~= "0") and {
+     port = local_port,
+     protocol = "dokodemo-door",
+     settings = {
+         network = proto,
+         followRedirect = true
+     },
+     sniffing = {
+         enabled = true,
+         destOverride = { "http", "tls" }
+     }
+ } or nil,
+ -- 开启 socks 代理 
+ inboundDetour = (proto == "tcp" and socks_port ~= "0") and {
+   {
+     protocol = "socks",
+     port = socks_port,
+     settings = {
+       auth = "noauth",
+       udp = true
+     }
+   }
+ } or nil,
+ -- 传出连接
 	outbound = {
 		protocol = "vmess",
 		settings = {
@@ -46,7 +58,7 @@ log = {
 		streamSettings = {
 			network = server.transport,
 			security = (server.tls == '1') and "tls" or "none",
-			tlsSettings = {allowInsecure = (server.insecure == "1") and true or false,serverName=server.tls_host,},
+			tlsSettings = {allowInsecure = (server.insecure ~= "0") and true or false,serverName=server.tls_host,},
 			kcpSettings = (server.transport == "kcp") and {
 				mtu = tonumber(server.mtu),
 				tti = tonumber(server.tti),
