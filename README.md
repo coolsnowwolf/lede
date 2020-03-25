@@ -27,12 +27,32 @@ sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git
    make menuconfig 
    ```
 
-5. 最后选好你要的路由，输入 `make -j1 V=s` （-j1 后面是线程数。第一次编译推荐用单线程，国内请尽量全局科学上网）即可开始编译你要的固件了。 
+5. `make download v=s` 下载dl库（国内请尽量全局科学上网）
+
+
+6. 输入 `make -j1 V=s` （-j1 后面是线程数。第一次编译推荐用单线程）即可开始编译你要的固件了。 
 
 本套代码保证肯定可以编译成功。里面包括了 R20 所有源代码，包括 IPK 的。 
 
 你可以自由使用，但源码编译二次发布请注明我的 GitHub 仓库链接。谢谢合作！
 =
+
+二次编译：
+
+`cd lede`                                                    
+`git pull`                                                         
+`./scripts/feeds update -a && ./scripts/feeds install -a` 
+ `make defconfig`                                                  
+`make -jn V=s`  n=线程数+1，例如4线程的I5填-j5，开始编译                                                  
+
+需要重新配置：
+
+`rm -rf ./tmp && rm -rf .config`                                   
+`make menuconfig`                                                  
+`make -jn V=s`    n=线程数+1，例如4线程的I5填-j5，开始编译                                                   
+
+编译完成后输出路径：/lede/bin/targets
+
 特别提示：
 ------
 1.源代码中绝不含任何后门和可以监控或者劫持你的 HTTPS 的闭源软件，SSL 安全是互联网最后的壁垒。安全干净才是固件应该做到的； 
