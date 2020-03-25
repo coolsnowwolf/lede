@@ -22,9 +22,9 @@ m = Map("shadowsocksr")
 s = m:section(TypedSection, "global", translate("Server failsafe auto swith and custom update settings"))
 s.anonymous = true
 
-o = s:option(Flag, "monitor_enable", translate("Enable Process Deamon"))
-o.rmempty = false
-o.default = "1"
+-- o = s:option(Flag, "monitor_enable", translate("Enable Process Deamon"))
+-- o.rmempty = false
+-- o.default = "1"
 
 o = s:option(Flag, "enable_switch", translate("Enable Auto Switch"))
 o.rmempty = false
