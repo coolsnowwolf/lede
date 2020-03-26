@@ -49,26 +49,34 @@ uci_get_by_cfgid() {
 
 check_host() {
 	local host=$1
-	if echo $host | grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
-		hostip=$host
-	elif [ "$host" != "${host#*:[0-9a-fA-F]}" ]; then
-		hostip=$host
-	else
-		hostip=$(ping $host -W 1 -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1)
-		if echo $hostip | grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
-			hostip=$hostip
+	local isip=""
+	local ip=$host
+	isip=$(echo $host | grep -E "([0-9]{1,3}[\.]){3}[0-9]{1,3}")
+	if [ -z "$isip" ]; then
+		if [ "$host" != "${host#*:[0-9a-fA-F]}" ]; then
+			ip=$host
 		else
-			hostip="127.0.0.1"
+			# local hostip=$(resolveip -4 -t 3 $host | awk 'NR==1{print}')
+			local hostip=$(ping $host -W 1 -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1)
+			if [ -z "$hostip" ]; then
+				hostip=$(wget -q -O- http://119.29.29.29/d?dn=$1 | awk -F ';' '{print $1}')
+			fi
+			if [ -z "$hostip" ]; then
+				ip="127.0.0.1"
+				[ -n "$2" ] && ip=$(cat /etc/ssr_ip)
+			else
+				ip=$hostip
+				[ -n "$2" ] && echo $hostip >/etc/ssr_ip
+			fi
 		fi
 	fi
-	echo -e $hostip
+	echo $ip
 }
 
 add_cron() {
 	sed -i '/shadowsocksr/d' $CRON_FILE
 	sed -i '/ssrplus.log/d' $CRON_FILE && echo '0 1 * * * echo "" > /tmp/ssrplus.log' >>$CRON_FILE
 	[ $(uci_get_by_type server_subscribe auto_update 0) -eq 1 ] && echo "0 $(uci_get_by_type server_subscribe auto_update_time) * * * /usr/share/shadowsocksr/ssrplusupdate.sh >> /tmp/ssrplus.log 2>&1" >>$CRON_FILE
-
 	crontab $CRON_FILE
 }
 
@@ -81,19 +89,7 @@ del_cron() {
 run_mode=$(uci_get_by_type global run_mode)
 
 gen_config_file() {
-	local host=$(uci_get_by_name $1 server)
-	if echo $host | grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
-		hostip=$host
-	elif [ "$host" != "${host#*:[0-9a-fA-F]}" ]; then
-		hostip=$host
-	else
-		hostip=$(ping $host -W 1 -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1)
-		if echo $hostip | grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
-			hostip=$hostip
-		else
-			hostip=$(cat /etc/ssr_ip)
-		fi
-	fi
+	local hostip=$(check_host $(uci_get_by_name $1 server) $4)
 	[ "$2" == "0" -a "$kcp_flag" == "1" ] && hostip="127.0.0.1"
 	if [ "$2" == "0" ]; then
 		config_file=$CONFIG_FILE
@@ -170,20 +166,7 @@ get_arg_out() {
 }
 
 start_rules() {
-	local server=$(uci_get_by_name $GLOBAL_SERVER server)
-	#resolve name
-	if echo $server | grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
-		server=$server
-	elif [ "$server" != "${server#*:[0-9a-fA-F]}" ]; then
-		server=$server
-	else
-		server=$(ping $server -W 1 -s 1 -c 1 | grep PING | cut -d'(' -f 2 | cut -d')' -f1)
-		if echo $server | grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" >/dev/null; then
-			echo $server >/etc/ssr_ip
-		else
-			server=$(cat /etc/ssr_ip)
-		fi
-	fi
+	local server=$(check_host $(uci_get_by_name $GLOBAL_SERVER server) GLOBAL_SERVER)
 	kcp_server=$server
 	local kcp_enable=$(uci_get_by_name $GLOBAL_SERVER kcp_enable 0)
 	if [ $kcp_enable == "1" ]; then
@@ -205,7 +188,6 @@ start_rules() {
 		w | W | b | B) local ac_ips="$lan_ac_mode$lan_ac_ips" ;;
 		esac
 	fi
-
 	#deal gfw firewall rule
 	local gfwmode=""
 	if [ "$run_mode" == "gfw" ]; then
@@ -317,8 +299,7 @@ start_redir() {
 		-l :$server_port $password $kcp_param
 		kcp_enable_flag=1
 	fi
-
-	gen_config_file $GLOBAL_SERVER 0 $(uci_get_by_name $GLOBAL_SERVER local_port 1234)
+	gen_config_file $GLOBAL_SERVER 0 $(uci_get_by_name $GLOBAL_SERVER local_port 1234) GLOBAL_SERVER
 	local stype=$(uci_get_by_name $GLOBAL_SERVER type)
 	if [ "$stype" == "ss" ]; then
 		sscmd="/usr/bin/ss-redir"
@@ -334,7 +315,6 @@ start_redir() {
 	elif [ "$stype" == "tun" ]; then
 		sscmd="/usr/sbin/redsocks2"
 	fi
-
 	local ntype=$(uci_get_by_name $NETFLIX_SERVER type)
 	if [ "$ntype" == "ss" ]; then
 		ncmd="/usr/bin/ss-redir"
@@ -352,7 +332,6 @@ start_redir() {
 	elif [ "$ntype" == "tun" ]; then
 		ncmd="/usr/sbin/redsocks2"
 	fi
-
 	local utype=$(uci_get_by_name $UDP_RELAY_SERVER type)
 	if [ "$utype" == "ss" ]; then
 		ucmd="/usr/bin/ss-redir"
@@ -373,7 +352,6 @@ start_redir() {
 	else
 		threads=$(uci_get_by_type global threads)
 	fi
-
 	if [ "$stype" == "ss" -o "$stype" == "ssr" ]; then
 		local last_config_file=$CONFIG_FILE
 		local pid_file="/var/run/ssr-retcp.pid"
@@ -404,7 +382,6 @@ start_redir() {
 		done
 		echo "$(date "+%Y-%m-%d %H:%M:%S") Network Tunnel REDIRECT $threads Threads Started!" >>/tmp/ssrplus.log
 	fi
-
 	if [ "$NETFLIX_SERVER" != "nil" ] && [ "$NETFLIX_SERVER" != "$GLOBAL_SERVER" ]; then
 		if [ "$ntype" == "ss" -o "$ntype" == "ssr" ]; then
 			gen_config_file $NETFLIX_SERVER 2 4321
@@ -438,7 +415,6 @@ start_redir() {
 			dns2socks 127.0.0.1:1088 8.8.8.8:53 127.0.0.1:5555 -q >/dev/null 2>&1 &
 		fi
 	fi
-
 	if [ -n "$UDP_RELAY_SERVER" ]; then
 		if [ "$utype" == "ss" -o "$utype" == "ssr" ]; then
 			case "$(uci_get_by_name $UDP_RELAY_SERVER auth_enable)" in
@@ -490,7 +466,7 @@ start_redir() {
 		dns2socks 127.0.0.1:10802 $dnsserver:$dnsport 127.0.0.1:5335 -q >/dev/null 2>&1 &
 		pdnsd_enable_flag=2
 	fi
-	if [ "$(uci_get_by_type global enable_switch)" == "1" ]; then
+	if [ "$(uci_get_by_type global enable_switch 0)" == "1" ]; then
 		if [ "$(uci_get_by_name $GLOBAL_SERVER switch_enable 1)" == "1" ]; then
 			if [ -z "$switch_server" ]; then
 				local switch_time=$(uci_get_by_type global switch_time)
@@ -581,7 +557,6 @@ start_local() {
 	[ "$local_server" == "nil" ] && return 1
 	local local_type=$(uci_get_by_name $local_server type)
 	mkdir -p /var/run /var/etc
-
 	if [ "$local_type" == "ssr" ]; then
 		gen_config_file $local_server 3 $(uci_get_by_type socks5_proxy local_port 1080)
 		/usr/bin/ssr-local -c $CONFIG_SOCK5_FILE -u -f /var/run/ssr-local.pid >/dev/null 2>&1
@@ -599,7 +574,6 @@ start_local() {
 	else
 		microsocks -i :: -p $(uci_get_by_type socks5_proxy local_port 1080) ssr-local >/dev/null 2>&1 &
 	fi
-
 	local_enable=1
 }
 
@@ -627,12 +601,10 @@ start() {
 		GLOBAL_SERVER=$switch_server
 		switch_enable=1
 	fi
-
 	NETFLIX_SERVER=$(uci_get_by_type global netflix_server nil)
 	if [ "$NETFLIX_SERVER" == "same" ]; then
 		NETFLIX_SERVER=$GLOBAL_SERVER
 	fi
-
 	if rules; then
 		start_redir
 		mkdir -p /tmp/dnsmasq.d && cp -a /etc/dnsmasq.ssr /tmp/ && cp -a /etc/dnsmasq.oversea /tmp/
@@ -649,7 +621,6 @@ start() {
 			rm -f /tmp/dnsmasq.ssr/ad.conf
 		fi
 		/usr/share/shadowsocksr/gfw2ipset.sh
-
 		if [ "$NETFLIX_SERVER" != "nil" ]; then
 			if [ "$NETFLIX_SERVER" != "$GLOBAL_SERVER" ]; then
 				cat /etc/config/netflix.list | while read line || [ -n "$line" ]; do
@@ -657,7 +628,6 @@ start() {
 				done
 				awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"netflix"'\n",$0)}' /etc/config/netflix.list >/tmp/dnsmasq.ssr/netflix_forward.conf
 				awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5555"'\n",$0)}' /etc/config/netflix.list >>/tmp/dnsmasq.ssr/netflix_forward.conf
-
 				ipset -N netflix hash:net 2>/dev/null
 				cat /etc/config/netflixip.list | while read nip || [ -n "$nip" ]; do
 					ipset add netflix $nip 2>/dev/null
@@ -676,7 +646,6 @@ start() {
 		else
 			rm -f /tmp/dnsmasq.ssr/netflix_forward.conf
 		fi
-
 		/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	fi
 	start_server
@@ -688,7 +657,6 @@ start() {
 			service_start /usr/bin/ssr-monitor $server_count $redir_tcp $redir_udp $tunnel_enable $kcp_enable_flag $local_enable $pdnsd_enable_flag $switch_enable
 		fi
 	fi
-
 	ENABLE_SERVER=$(uci_get_by_type global global_server nil)
 	if [ "$ENABLE_SERVER" == "nil" ]; then
 		return 1
@@ -708,7 +676,7 @@ start() {
 }
 
 boot() {
-	(/usr/share/shadowsocksr/chinaipset.sh && sleep 3 && start >/dev/null 2>&1) &
+	(/usr/share/shadowsocksr/chinaipset.sh && sleep 1 && start >/dev/null 2>&1) &
 }
 
 stop() {
