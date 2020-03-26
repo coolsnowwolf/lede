@@ -12,50 +12,53 @@ Welcome to Lean's  git source of OpenWrt and packages
 
 编译命令如下:
 -
-1. 首先装好 Ubuntu 64bit，推荐  Ubuntu  18 LTS x64 
+1. 首先装好 Ubuntu 64bit，推荐  Ubuntu  18 LTS x64
 
 2. 命令行输入 `sudo apt-get update` ，然后输入
 `
-sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3.5 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib 
+sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3.5 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib
 `
 
-3. 使用 `git clone https://github.com/coolsnowwolf/lede` 命令下载好源代码，然后 `cd lede` 进入目录 
+3. 使用 `git clone https://github.com/coolsnowwolf/lede` 命令下载好源代码，然后 `cd lede` 进入目录
 
 4. ```bash
-   ./scripts/feeds update -a 
+   ./scripts/feeds update -a
    ./scripts/feeds install -a
-   make menuconfig 
+   make menuconfig
    ```
 
-5. `make download v=s` 下载dl库（国内请尽量全局科学上网）
+5. `make -j8 download v=s` 下载dl库（国内请尽量全局科学上网）
 
 
-6. 输入 `make -j1 V=s` （-j1 后面是线程数。第一次编译推荐用单线程）即可开始编译你要的固件了。 
+6. 输入 `make -j1 V=s` （-j1 后面是线程数。第一次编译推荐用单线程）即可开始编译你要的固件了。
 
-本套代码保证肯定可以编译成功。里面包括了 R20 所有源代码，包括 IPK 的。 
+本套代码保证肯定可以编译成功。里面包括了 R20 所有源代码，包括 IPK 的。
 
 你可以自由使用，但源码编译二次发布请注明我的 GitHub 仓库链接。谢谢合作！
 =
 
 二次编译：
+```bash
+cd lede
+git pull
+./scripts/feeds update -a && ./scripts/feeds install -a
+make defconfig
+make -j8 download
+make -j$(($(nproc) + 1)) V=s
+```
 
-`cd lede`                                                    
-`git pull`                                                         
-`./scripts/feeds update -a && ./scripts/feeds install -a` 
- `make defconfig`                                                  
-`make -jn V=s`  n=线程数+1，例如4线程的I5填-j5，开始编译                                                  
-
-需要重新配置：
-
-`rm -rf ./tmp && rm -rf .config`                                   
-`make menuconfig`                                                  
-`make -jn V=s`    n=线程数+1，例如4线程的I5填-j5，开始编译                                                   
+如果需要重新配置：
+```bash
+rm -rf ./tmp && rm -rf .config
+make menuconfig
+make -j$(($(nproc) + 1)) V=s
+```
 
 编译完成后输出路径：/lede/bin/targets
 
 特别提示：
 ------
-1.源代码中绝不含任何后门和可以监控或者劫持你的 HTTPS 的闭源软件，SSL 安全是互联网最后的壁垒。安全干净才是固件应该做到的； 
+1.源代码中绝不含任何后门和可以监控或者劫持你的 HTTPS 的闭源软件，SSL 安全是互联网最后的壁垒。安全干净才是固件应该做到的；
 
 2.如有技术问题需要讨论，欢迎加入 QQ 讨论群：OP共享技术交流群 ,号码 297253733 ，加群链接: 点击链接加入群聊【OP共享技术交流群】：[点击加入](https://jq.qq.com/?_wv=1027&k=5yCRuXL "OP共享技术交流群")
 
@@ -71,7 +74,7 @@ sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git
 ![alipay](doc/alipay_donate.jpg)
 
 ### Wechat 微信
-  
+
 ![wechat](doc/wechat_donate.jpg)
 
 ------
@@ -90,7 +93,7 @@ First, you need a computer with a linux system. It's better to use Ubuntu 18 LTS
 
 Next you need gcc, binutils, bzip2, flex, python3.5+, perl, make, find, grep, diff, unzip, gawk, getopt, subversion, libz-dev and libc headers installed.
 
-To install these program, please login root users and type 
+To install these program, please login root users and type
 `
 sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3.5 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib
 `
@@ -104,14 +107,14 @@ Please Run `./scripts/feeds update -a` to get all the latest package definitions
 defined in `feeds.conf` / `feeds.conf.default` respectively
 and `./scripts/feeds install -a` to install symlinks of all of them into
 `package/feeds/` .
- 
+
 Please use `make menuconfig` to choose your preferred
 configuration for the toolchain and firmware.
 
 Use `make menuconfig` to configure your image.
 
 Simply running `make` will build your firmware.
-It will download all sources, build the cross-compile toolchain, 
+It will download all sources, build the cross-compile toolchain,
 the kernel and all choosen applications.
 
 To build your own firmware you need to have access to a Linux, BSD or MacOSX system
