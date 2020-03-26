@@ -27,7 +27,7 @@ sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git
    make menuconfig
    ```
 
-5. `make download v=s` 下载dl库（国内请尽量全局科学上网）
+5. `make -j8 download v=s` 下载dl库（国内请尽量全局科学上网）
 
 
 6. 输入 `make -j1 V=s` （-j1 后面是线程数。第一次编译推荐用单线程）即可开始编译你要的固件了。
@@ -43,6 +43,7 @@ cd lede
 git pull
 ./scripts/feeds update -a && ./scripts/feeds install -a
 make defconfig
+make -j8 download
 make -j$(($(nproc) + 1)) V=s
 ```
 n=线程数+1，例如4线程的I5填-j5，开始编译
