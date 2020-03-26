@@ -46,15 +46,13 @@ make defconfig
 make -j8 download
 make -j$(($(nproc) + 1)) V=s
 ```
-n=线程数+1，例如4线程的I5填-j5，开始编译
 
-需要重新配置：
+如果需要重新配置：
 ```bash
 rm -rf ./tmp && rm -rf .config
 make menuconfig
 make -j$(($(nproc) + 1)) V=s
 ```
-n=线程数+1，例如4线程的I5填-j5，开始编译
 
 编译完成后输出路径：/lede/bin/targets
 
