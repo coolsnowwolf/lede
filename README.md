@@ -7,7 +7,7 @@ https://github.com/coolsnowwolf/lede.git
 -
 1. **不**要用 **root** 用户 git 和编译！！！
 2. 国内用户编译前最好准备好梯子
-3. 默认登陆IP 192.168.1.1, 密码 password
+3. 默认登陆IP 192.168.10.1, 密码 password
 
 编译命令如下:
 -
@@ -18,7 +18,7 @@ https://github.com/coolsnowwolf/lede.git
 sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3.5 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib 
 `
 
-3. 使用 `git clone https://github.com/coolsnowwolf/lede` 命令下载好源代码，然后 `cd lede` 进入目录 
+3. 使用 `git clone https://github.com/leaus/lede` 命令下载好源代码，然后 `cd lede` 进入目录 
 
 4. ```bash
    ./scripts/feeds update -a 
