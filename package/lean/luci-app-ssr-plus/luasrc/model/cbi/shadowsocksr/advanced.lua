@@ -75,6 +75,7 @@ s.anonymous = true
 
 o = s:option(ListValue, "server", translate("Server"))
 o:value("nil", translate("Disable"))
+o:value("same", translate("Same as Global Server"))
 for _,key in pairs(key_table) do o:value(key,server_table[key]) end
 o.default = "nil"
 o.rmempty = false
