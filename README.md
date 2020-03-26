@@ -5,7 +5,7 @@ https://github.com/coolsnowwolf/lede.git
 -
 注意：
 -
-1. **不**要用 **root** 用户 git 和编译！！！
+1. 不要用 **root** 进行 git 和编译！！！
 2. 国内用户编译前最好准备好梯子
 3. 默认登陆IP 192.168.10.1, 密码 password
 
@@ -32,9 +32,6 @@ sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git
 6. 输入 `make -j1 V=s` （-j1 后面是线程数。第一次编译推荐用单线程）即可开始编译你要的固件了。 
 
 本套代码保证肯定可以编译成功。里面包括了 R20 所有源代码，包括 IPK 的。 
-
-你可以自由使用，但源码编译二次发布请注明我的 GitHub 仓库链接。谢谢合作！
-=
 
 二次编译：
 
