@@ -23,6 +23,7 @@ local ucic = uci.cursor()
 local proxy = ucic:get_first(name, 'server_subscribe', 'proxy', '0')
 local switch = ucic:get_first(name, 'server_subscribe', 'switch', '1')
 local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
+local filter_words = ucic:get_first(name, 'server_subscribe', 'filter_words', 'QQ群')
 
 local log = function(...)
 	print(os.date("%Y-%m-%d %H:%M:%S ") .. table.concat({ ... }, " "))
@@ -274,8 +275,20 @@ local function processData(szType, content)
 end
 -- wget
 local function wget(url)
-	local stdout = luci.sys.exec('wget-ssl --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36" --no-check-certificate -t 3 -T 10 -O- "' .. url .. '"')
+	local stdout = luci.sys.exec('wget-ssl -q --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36" --no-check-certificate -t 3 -T 10 -O- "' .. url .. '"')
 	return trim(stdout)
+end
+
+local function check_filer(result)
+  do 
+    local filter_word = split(filter_words, "/")
+    for i, v in pairs(filter_word) do
+        if result.alias:find(v) then
+          log('订阅节点关键字过滤:“' .. v ..'” ，该节点被丢弃')
+          return true
+        end
+    end 
+  end
 end
 
 local execute = function()
@@ -335,13 +348,10 @@ local execute = function()
 						end
 						-- log(result)
 						if result then
-							if result.alias:find("过期时间") or
-								result.alias:find("剩余流量") or
-								result.alias:find("QQ群") or
-								result.alias:find("官网") or
-								result.alias:find("防失联地址") or
-								not result.server or
-								result.server:match("[^0-9a-zA-Z%-%.%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
+							if
+                not result.server or
+                check_filer(result) or
+                result.server:match("[^0-9a-zA-Z%-%.%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
 							then
 								log('丢弃无效节点: ' .. result.type ..' 节点, ' .. result.alias)
 							else
