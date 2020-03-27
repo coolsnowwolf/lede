@@ -24,7 +24,7 @@ $(eval $(call TestHostCommand,case-sensitive-fs, \
 
 $(eval $(call TestHostCommand,proper-umask, \
 	Please build with umask 022 - other values produce broken packages, \
-	umask | grep -xE 00[012][012]))
+	umask | grep -xE 0?0[012][012]))
 
 $(eval $(call SetupHostCommand,gcc, \
 	Please install the GNU C Compiler (gcc) 4.8 or later, \
@@ -37,7 +37,7 @@ $(eval $(call SetupHostCommand,gcc, \
 	gcc7 --version | grep gcc, \
 	gcc8 --version | grep gcc, \
 	gcc9 --version | grep gcc, \
-	gcc --version | grep Apple.LLVM ))
+	gcc --version | grep -E 'Apple.(LLVM|clang)' ))
 
 $(eval $(call TestHostCommand,working-gcc, \
 	\nPlease reinstall the GNU C Compiler (4.8 or later) - \
@@ -56,7 +56,7 @@ $(eval $(call SetupHostCommand,g++, \
 	g++7 --version | grep g++, \
 	g++8 --version | grep g++, \
 	g++9 --version | grep g++, \
-	g++ --version | grep Apple.LLVM ))
+	g++ --version | grep -E 'Apple.(LLVM|clang)' ))
 
 $(eval $(call TestHostCommand,working-g++, \
 	\nPlease reinstall the GNU C++ Compiler (4.8 or later) - \
@@ -105,9 +105,9 @@ $(eval $(call SetupHostCommand,cp,Please install GNU fileutils, \
 	gcp --help 2>&1 | grep 'Copy SOURCE', \
 	cp --help 2>&1 | grep 'Copy SOURCE'))
 
-$(eval $(call SetupHostCommand,seq,, \
+$(eval $(call SetupHostCommand,seq,Please install seq, \
 	gseq --version, \
-	seq --version))
+	seq --version 2>&1 | grep seq))
 
 $(eval $(call SetupHostCommand,awk,Please install GNU 'awk', \
 	gawk --version 2>&1 | grep GNU, \
@@ -141,10 +141,21 @@ $(eval $(call SetupHostCommand,wget,Please install GNU 'wget', \
 $(eval $(call SetupHostCommand,perl,Please install Perl 5.x, \
 	perl --version | grep "perl.*v5"))
 
-$(eval $(call SetupHostCommand,python,Please install Python 2.x, \
-	python2.7 -V 2>&1 | grep Python, \
-	python2 -V 2>&1 | grep Python, \
-	python -V 2>&1 | grep Python))
+$(eval $(call CleanupPython2))
+
+$(eval $(call SetupHostCommand,python,Please install Python >= 3.5, \
+	python3.8 -V 2>&1 | grep 'Python 3', \
+	python3.7 -V 2>&1 | grep 'Python 3', \
+	python3.6 -V 2>&1 | grep 'Python 3', \
+	python3.5 -V 2>&1 | grep 'Python 3', \
+	python3 -V 2>&1 | grep -E 'Python 3\.[5-9]\.?'))
+
+$(eval $(call SetupHostCommand,python3,Please install Python >= 3.5, \
+	python3.8 -V 2>&1 | grep 'Python 3', \
+	python3.7 -V 2>&1 | grep 'Python 3', \
+	python3.6 -V 2>&1 | grep 'Python 3', \
+	python3.5 -V 2>&1 | grep 'Python 3', \
+	python3 -V 2>&1 | grep -E 'Python 3\.[5-9]\.?'))
 
 $(eval $(call SetupHostCommand,git,Please install Git (git-core) >= 1.7.12.2, \
 	git --exec-path | xargs -I % -- grep -q -- --recursive %/git-submodule))

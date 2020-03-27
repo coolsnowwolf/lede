@@ -1,0 +1,59 @@
+From 72f973f292b3eaaf451ebcd3253900d41f4ef24a Mon Sep 17 00:00:00 2001
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Fri, 25 Jan 2019 17:42:51 +0000
+Subject: [PATCH] net: phylink: ensure inband AN works correctly
+
+Do not update the link interface mode while the link is down to avoid
+spurious link interface changes.
+
+Always call mac_config if we have a PHY to propagate the pause mode
+settings to the MAC.
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+ drivers/net/phy/phylink.c | 37 +++++++++++++++----------------------
+ 1 file changed, 15 insertions(+), 22 deletions(-)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -459,28 +459,21 @@ static void phylink_resolve(struct work_
+ 
+ 		case MLO_AN_INBAND:
+ 			phylink_get_mac_state(pl, &link_state);
+-			if (pl->phydev) {
+-				bool changed = false;
+ 
+-				link_state.link = link_state.link &&
+-						  pl->phy_state.link;
++			/* If we have a phy, the "up" state is the union of
++			 * both the PHY and the MAC */
++			if (pl->phydev)
++				link_state.link &= pl->phy_state.link;
+ 
+-				if (pl->phy_state.interface !=
+-				    link_state.interface) {
+-					link_state.interface = pl->phy_state.interface;
+-					changed = true;
+-				}
++			/* Only update if the PHY link is up */
++			if (pl->phydev && pl->phy_state.link) {
++				link_state.interface = pl->phy_state.interface;
+ 
+-				/* Propagate the flow control from the PHY
+-				 * to the MAC. Also propagate the interface
+-				 * if changed.
+-				 */
+-				if (pl->phy_state.link || changed) {
+-					link_state.pause |= pl->phy_state.pause;
+-					phylink_resolve_flow(pl, &link_state);
+-
+-					phylink_mac_config(pl, &link_state);
+-				}
++				/* If we have a PHY, we need to update with
++				 * the pause mode bits. */
++				link_state.pause |= pl->phy_state.pause;
++				phylink_resolve_flow(pl, &link_state);
++				phylink_mac_config(pl, &link_state);
+ 			}
+ 			break;
+ 		}

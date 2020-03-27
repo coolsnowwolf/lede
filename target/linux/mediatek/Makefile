@@ -5,11 +5,11 @@ include $(TOPDIR)/rules.mk
 ARCH:=arm
 BOARD:=mediatek
 BOARDNAME:=MediaTek Ralink ARM
-SUBTARGETS:=mt7622 mt7623
+SUBTARGETS:=mt7622 mt7623 mt7629
 FEATURES:=squashfs nand ramdisk fpu
 MAINTAINER:=John Crispin <john@phrozen.org>
 
-KERNEL_PATCHVER:=4.14
+KERNEL_PATCHVER:=4.19
 
 include $(INCLUDE_DIR)/target.mk
 DEFAULT_PACKAGES += \

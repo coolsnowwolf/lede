@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2006-2009 OpenWrt.org
+# Copyright (C) 2006-2019 OpenWrt.org
 # Copyright (C) 2016 LEDE project
 #
 # This is free software, licensed under the GNU General Public License v2.
@@ -13,6 +13,7 @@ BOARDNAME:=Broadcom BCM63xx
 SUBTARGETS:=generic smp
 FEATURES:=squashfs usb atm pci pcmcia usbgadget
 KERNEL_PATCHVER:=4.14
+KERNEL_TESTING_PATCHVER:=4.19
 MAINTAINER:=Jonas Gorski <jogo@openwrt.org>
 
 define Target/Description

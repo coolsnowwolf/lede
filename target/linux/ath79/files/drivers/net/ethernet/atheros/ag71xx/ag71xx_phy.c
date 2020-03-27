@@ -75,8 +75,8 @@ int ag71xx_phy_connect(struct ag71xx *ag)
 
 	if (!ag->phy_dev) {
 		dev_err(&ag->pdev->dev,
-			"Could not connect to PHY device\n");
-		return -ENODEV;
+			"Could not connect to PHY device. Deferring probe.\n");
+		return -EPROBE_DEFER;
 	}
 
 	dev_info(&ag->pdev->dev, "connected to PHY at %s [uid=%08x, driver=%s]\n",
