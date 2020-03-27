@@ -36,6 +36,10 @@ o.rmempty = false
 o = s:option(DynamicList, "subscribe_url", translate("Subscribe URL"))
 o.rmempty = true
 
+o = s:option(Value, "filter_words", translate("Subscribe Filter Words"))
+o.rmempty = true
+o.description = translate("Filter Words splited by /")
+
 o = s:option(Button,"update_Sub",translate("Update Subscribe List"))
 o.inputstyle = "reload"
 o.description = translate("Update subscribe url list first")
