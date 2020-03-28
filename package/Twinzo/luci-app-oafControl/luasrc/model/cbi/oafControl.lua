@@ -156,6 +156,9 @@ for i,v in ipairs(days) do  dow:value(i-1, translate(v)) end
 c =  y:option(Value, "time_control", translate("时间控制"))
 c.template="oafControlNotWorkday"
 
+c=y:option(DummyValue,"none")
+c.template="oafControl"
+
 local apply = luci.http.formvalue("cbi.apply")
 local w_m_start=luci.http.formvalue("w_m_start")
 local w_a_start=luci.http.formvalue("w_a_start")
