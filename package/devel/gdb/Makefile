@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gdb
-PKG_VERSION:=10.1
-PKG_RELEASE:=1
+PKG_VERSION:=10.2
+PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/gdb
-PKG_HASH:=f82f1eceeec14a3afa2de8d9b0d3c91d5a3820e23e0a01bbb70ef9f0276b62c0
+PKG_HASH:=aaa1223d534c9b700a8bec952d9748ee1977513f178727e1bee520ee000b4f29
 
 PKG_BUILD_PARALLEL:=1
 PKG_INSTALL:=1
@@ -45,7 +45,6 @@ endef
 define Package/gdbserver
 $(call Package/gdb/Default)
   TITLE:=Remote server for GNU Debugger
-  DEPENDS+=@!arc
 endef
 
 define Package/gdbserver/description
