@@ -25,7 +25,7 @@ if sret == 0 then
 		if tonumber(icount) ~= tonumber(oldcount) then
 			luci.sys.exec("cp -f /tmp/gfwnew.txt /etc/dnsmasq.ssr/gfw_list.conf")
 			luci.sys.exec("cp -f /tmp/gfwnew.txt /tmp/dnsmasq.ssr/gfw_list.conf")
-			log('更新成功！ 新的总纪录数：'.. icount)
+			log('更新成功！ 新的总纪录数：'.. tostring(tonumber(icount)/2))
 		else
 			log('你已经是最新数据，无需更新！')
 		end
