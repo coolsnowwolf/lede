@@ -110,13 +110,13 @@ function refresh_data()
 		update(uci:get_first("shadowsocksr", "global", "gfwlist_url", "https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt"), "/etc/dnsmasq.ssr/gfw_list.conf", set, "/tmp/dnsmasq.ssr/gfw_list.conf")
 	end
 	if set == "ip_data" then
-		update(uci:get_first("shadowsocksr", "global", "chnroute_url","https://ispip.clang.cn/all_cn.txt"), "/etc/ssr/china_ssr.txt", set)
+		update(uci:get_first("shadowsocksr", "global", "chnroute_url","https://ispip.clang.cn/all_cn.txt"), "/etc/china_ssr.txt", set)
 	end
 	if set == "ad_data" then
 		update(uci:get_first("shadowsocksr", "global", "adblock_url","https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt"), "/etc/dnsmasq.ssr/ad.conf", set, "/tmp/dnsmasq.ssr/ad.conf")
 	end
 	if set == "nfip_data" then
-		update(uci:get_first("shadowsocksr", "global", "nfip_url","https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt"), "/etc/ssr/netflixip.list", set)
+		update(uci:get_first("shadowsocksr", "global", "nfip_url","https://raw.githubusercontent.com/QiuSimons/Netflix_IP/master/NF_only.txt"), "/etc/config/netflixip.list", set)
 	end
 	luci.http.prepare_content("application/json")
 	luci.http.write_json({ret = retstring,retcount = icount})

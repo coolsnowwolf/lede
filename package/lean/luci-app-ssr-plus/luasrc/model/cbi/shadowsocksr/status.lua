@@ -45,12 +45,12 @@ if nixio.fs.access("/etc/dnsmasq.ssr/ad.conf") then
 	ad_count = tonumber(luci.sys.exec("cat /etc/dnsmasq.ssr/ad.conf | wc -l"))
 end
 
-if nixio.fs.access("/etc/ssr/china_ssr.txt") then
-	ip_count = tonumber(luci.sys.exec("cat /etc/ssr/china_ssr.txt | wc -l"))
+if nixio.fs.access("/etc/china_ssr.txt") then
+	ip_count = tonumber(luci.sys.exec("cat /etc/china_ssr.txt | wc -l"))
 end
 
-if nixio.fs.access("/etc/ssr/netflixip.list") then
-	nfip_count = tonumber(luci.sys.exec("cat /etc/ssr/netflixip.list | wc -l"))
+if nixio.fs.access("/etc/config/netflixip.list") then
+	nfip_count = tonumber(luci.sys.exec("cat /etc/config/netflixip.list | wc -l"))
 end
 
 local icount=luci.sys.exec("busybox ps -w | grep ssr-reudp |grep -v grep| wc -l")
