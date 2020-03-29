@@ -255,25 +255,6 @@ endef
 $(eval $(call KernelPackage,sound-soc-imx-sgtl5000))
 
 
-define KernelPackage/sound-soc-gw_avila
-  TITLE:=Gateworks Avila SoC sound support
-  KCONFIG:= \
-	CONFIG_SND_GW_AVILA_SOC \
-	CONFIG_SND_GW_AVILA_SOC_PCM \
-	CONFIG_SND_GW_AVILA_SOC_HSS
-  FILES:= \
-	$(LINUX_DIR)/sound/soc/codecs/snd-soc-tlv320aic3x.ko \
-	$(LINUX_DIR)/sound/soc/gw-avila/snd-soc-gw-avila.ko \
-	$(LINUX_DIR)/sound/soc/gw-avila/snd-soc-gw-avila-pcm.ko \
-	$(LINUX_DIR)/sound/soc/gw-avila/snd-soc-gw-avila-hss.ko
-  AUTOLOAD:=$(call AutoLoad,65,snd-soc-tlv320aic3x snd-soc-gw-avila snd-soc-gw-avila-pcm snd-soc-gw-avila-hss)
-  DEPENDS:=@TARGET_ixp4xx +kmod-sound-soc-core
-  $(call AddDepends/sound)
-endef
-
-$(eval $(call KernelPackage,sound-soc-gw_avila))
-
-
 define KernelPackage/pcspkr
   DEPENDS:=@TARGET_x86 +kmod-input-core
   TITLE:=PC speaker support
@@ -311,17 +292,17 @@ define KernelPackage/sound-hda-core
   SUBMENU:=$(SOUND_MENU)
   TITLE:=HD Audio Sound Core Support
   KCONFIG:= \
-	CONFIG_SND_HDA_CORE@ge4.1 \
+	CONFIG_SND_HDA_CORE \
 	CONFIG_SND_HDA_HWDEP=y \
 	CONFIG_SND_HDA_RECONFIG=n \
 	CONFIG_SND_HDA_INPUT_BEEP=n \
 	CONFIG_SND_HDA_PATCH_LOADER=n \
 	CONFIG_SND_HDA_GENERIC
   FILES:= \
-	$(LINUX_DIR)/sound/hda/snd-hda-core.ko@ge4.1 \
+	$(LINUX_DIR)/sound/hda/snd-hda-core.ko \
 	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec.ko \
 	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-generic.ko
-  AUTOLOAD:=$(call AutoProbe,snd-hda-core@ge4.1 snd-hda-codec snd-hda-codec-generic)
+  AUTOLOAD:=$(call AutoProbe,snd-hda-core snd-hda-codec snd-hda-codec-generic)
   $(call AddDepends/sound,+kmod-regmap-core)
 endef
 
@@ -522,13 +503,14 @@ $(eval $(call KernelPackage,sound-hda-codec-hdmi))
 define KernelPackage/sound-hda-intel
   SUBMENU:=$(SOUND_MENU)
   TITLE:=HD Audio Intel Driver
+  DEPENDS:=@TARGET_x86
   KCONFIG:= \
 	CONFIG_SOUND_PCI \
 	CONFIG_SND_HDA_INTEL
   FILES:= \
 	$(LINUX_DIR)/sound/pci/hda/snd-hda-intel.ko \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-controller.ko@lt4.4
-  AUTOLOAD:=$(call AutoProbe,snd-hda-controller@lt4.4 snd-hda-intel)
+	$(LINUX_DIR)/sound/hda/snd-intel-nhlt.ko@ge5.4
+  AUTOLOAD:=$(call AutoProbe,snd-hda-intel)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef
 
