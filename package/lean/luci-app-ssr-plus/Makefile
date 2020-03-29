@@ -59,16 +59,17 @@ endef
 
 define Package/$(PKG_NAME)/conffiles
 /etc/config/shadowsocksr
-/etc/ssr/netflix.list
-/etc/ssr/netflixip.list
+/etc/config/netflix.list
+/etc/config/netflixip.list
 endef
 
 define Package/$(PKG_NAME)/install
-	$(INSTALL_DIR) $(1)/etc/ssr
-	$(INSTALL_DATA) ./root/etc/ssr/* $(1)/etc/ssr/
+	$(INSTALL_DIR) $(1)/etc
+	$(INSTALL_DATA) ./root/etc/china_ssr.txt $(1)/etc/china_ssr.txt
 
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./root/etc/config/shadowsocksr $(1)/etc/config/shadowsocksr
+	$(INSTALL_DATA) ./root/etc/config/*.list $(1)/etc/config/
 
 	$(INSTALL_DIR) $(1)/etc/dnsmasq.oversea
 	$(INSTALL_DATA) ./root/etc/dnsmasq.oversea/* $(1)/etc/dnsmasq.oversea/
@@ -104,7 +105,7 @@ endef
 
 define Package/$(PKG_NAME)/postrm
 #!/bin/sh
-rm -rf /etc/ssl/private /etc/dnsmasq.ssr /etc/dnsmasq.oversea /etc/ssr /etc/config/shadowsocksr /etc/china_ssr.txt /etc/config/black.list /etc/config/white.list \
+rm -rf /etc/ssl /etc/dnsmasq.ssr /etc/dnsmasq.oversea /etc/config/shadowsocksr /etc/china_ssr.txt /etc/config/black.list /etc/config/white.list \
 /etc/config/netflix.list /etc/config/netflixip.list
 endef
 
