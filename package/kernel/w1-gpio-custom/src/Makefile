@@ -1,1 +1,0 @@
-obj-${CONFIG_W1_MASTER_GPIO_CUSTOM}	+= w1-gpio-custom.o
