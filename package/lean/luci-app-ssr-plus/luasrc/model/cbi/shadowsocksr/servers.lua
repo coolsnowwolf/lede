@@ -79,6 +79,10 @@ luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr"
 return
 end
 
+o = s:option(Button,"ping",'')
+o.rawhtml  = true
+o.template = "shadowsocksr/ping_btn"
+
 -- [[ Servers Manage ]]--
 s = m:section(TypedSection, "servers")
 s.anonymous = true
