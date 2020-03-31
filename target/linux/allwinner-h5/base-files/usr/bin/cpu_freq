@@ -1,0 +1,120 @@
+#!/bin/sh
+
+# Usage:
+# 1. cpu_freq
+# 2. cpu_freq set freq
+
+function usage()
+{
+    echo -e "usage:"
+    echo -e "\tcpu_freq [-s freq]"
+    exit 1
+}
+
+function check_env()
+{
+    HARDWARE=`cat /proc/cpuinfo | grep Hardware`
+    HARDWARE=${HARDWARE#*: }
+    KVER=`uname -a | cut -d ' ' -f 3`
+}
+
+function get_cpu_num()
+{
+    if [ -e ${OL_FILE} ]; then
+        OL_NUM=`cat ${OL_FILE} | cut -f 2 -d"-"`
+    else
+        echo "${OL_FILE} not found"
+        exit 1
+    fi
+}
+
+function get_av()
+{
+    if [ -e ${AV_FILE} ]; then
+        echo "Aavailable frequency(KHz):"
+        echo -e "\t"`cat ${AV_FILE}`
+    fi
+}
+
+function get_freq()
+{
+    echo "Current frequency(KHz):"
+    for i in $(seq 0 ${OL_NUM}); do
+        local temp=`cat ${TEMP_FILE}`
+        if [ -e /sys/devices/system/cpu/cpu${i}/online ]; then
+            let online=`cat /sys/devices/system/cpu/cpu${i}/online` 
+        else
+            let online=1
+        fi
+        if [ $online -eq 1 ]; then
+            if [ "x${DEMAND_FREQ}" != "xunset" ]; then
+                local freq=${DEMAND_FREQ}
+                echo userspace > /sys/devices/system/cpu/cpu${i}/cpufreq/scaling_governor
+                echo $freq > /sys/devices/system/cpu/cpu${i}/cpufreq/scaling_setspeed
+            fi
+            governor=`cat /sys/devices/system/cpu/cpu${i}/cpufreq/scaling_governor`
+            freq=`cat /sys/devices/system/cpu/cpu${i}/cpufreq/cpuinfo_cur_freq`
+            printf "\tCPU%s online=%s temp=%sC governor=%s freq=%dKHz\n" ${i} ${online} ${temp} ${governor} ${freq}
+        fi
+    done
+}
+
+function get_vol()
+{
+    if [ ! -e "${1}/name" ]; then
+        return
+    fi
+    
+    local n=`cat ${1}/name`
+    echo "Current voltage(uV, ${n}):"
+    echo -e "\t"`cat ${1}/microvolts`"uV"
+}
+
+function find_regulator()
+{
+    for file in /sys/class/regulator/*; do 
+        n=`cat ${file}/name`
+        if [ "x${n}" = "x${1}" ]; then
+            echo ${file}
+            break
+        fi
+    done
+}
+
+function parse_arg()
+{
+    while getopts "s:h" opt
+    do
+        case $opt in
+            s )
+                DEMAND_FREQ=${OPTARG};;
+            h )
+                usage;;
+            * )
+                usage;;
+            esac
+    done
+}
+
+HARDWARE="unset"
+DEMAND_FREQ="unset"
+parse_arg $@
+check_env
+
+OL_FILE=/sys/devices/system/cpu/online
+get_cpu_num
+
+AV_FILE=/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies
+get_av
+
+TEMP_FILE=/sys/class/thermal/thermal_zone0/temp
+get_freq
+
+if [ "x${HARDWARE}" = 'xsun50iw6' -a "x${KVER}" = 'x3.10.65' ]; then
+    get_vol /sys/devices/soc/pmu0/axp80-regulator/regulator/regulator.1/microvolts
+elif [ "x${HARDWARE}" = 'xsun8i' -a "x${KVER}" = 'x4.14.111' ]; then
+    get_vol `find_regulator vdd-cpux`
+elif [ "x${HARDWARE}" = 'xAllwinnersun50iw2Family' -a "x${KVER}" = 'x4.14.111' ]; then
+    get_vol `find_regulator vdd-cpux`     # gpio dvfs
+    get_vol `find_regulator SY8106A`      # i2c dvfs
+fi
