@@ -340,7 +340,6 @@ define Build/Configure
 	)
 endef
 
-TARGET_CFLAGS += $(FPIC) -ffunction-sections -fdata-sections
 TARGET_LDFLAGS += -Wl,--gc-sections
 
 define Build/Compile
@@ -348,7 +347,7 @@ define Build/Compile
 		CROSS_COMPILE="$(TARGET_CROSS)" \
 		CC="$(TARGET_CC)" \
 		SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
-		OPENWRT_OPTIMIZATION_FLAGS="$(TARGET_CFLAGS)" \
+		OPENWRT_OPTIMIZATION_FLAGS="-Wno-error=unused-but-set-variable -Wno-error=unused-result -O3 -ffunction-sections -fdata-sections" \
 		$(OPENSSL_MAKEFLAGS) \
 		all
 	$(MAKE) -C $(PKG_BUILD_DIR) \
