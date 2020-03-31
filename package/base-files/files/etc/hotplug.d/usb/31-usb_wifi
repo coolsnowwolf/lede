@@ -1,0 +1,69 @@
+#!/bin/sh
+
+#logger ACTION=$ACTION DEVPATH=$DEVPATH SUBSYSTEM=$SUBSYSTEM DEVTYPE=$DEVTYPE PRODUCT=$PRODUCT MODALIAS=$MODALIAS
+
+FE_DIR=/root/.friendlyelec/
+if { [ "${DEVTYPE}" = usb_device ] || [ "${DEVTYPE}" = usb_interface ] ;} && { [ "${PRODUCT}" = "bda/c811/200" ] || [ "${PRODUCT}" = "bda/c820/200" ] ;}; then
+    MODULE=rtl8821cu
+    TARGET=wlan${MODULE}
+
+    WIFI_PATH=`echo ${DEVPATH} | cut -d/ -f 3-`
+    RADIO=`uci show wireless | grep ${WIFI_PATH} | cut -d. -f 2`
+    #logger "${MODULE}: ${WIFI_PATH} ${RADIO}"
+
+    if [ "${ACTION}" = bind ]; then
+        logger "${MODULE}: insert"
+
+        # Rename physical dev
+        # Unimplement(cause error), please FIX ME
+        FULL_PATH=`find /sys/${DEVPATH} -name wlan*`
+        ADDRESS=`cat ${FULL_PATH}/address`
+        WLAN=`basename ${FULL_PATH}`
+        # logger "rename ${WLAN} to $TARGET"
+        # ip link set ${WLAN} name $TARGET
+
+        mkdir -p ${FE_DIR}
+        if [ -e ${FE_DIR}/first_insert_${MODULE} ]; then
+            logger "not first init for ${MODULE}"
+        else
+            touch ${FE_DIR}/first_insert_${MODULE}
+            logger "first init for ${MODULE}"
+
+            # Enable wifi and change ssid
+            if [ -n "`uci get wireless.${RADIO}`" ]; then
+                uci batch <<EOF
+set wireless.${RADIO}.disabled=0
+set wireless.default_${RADIO}.ssid=${MODULE}-${ADDRESS}
+set wireless.default_${RADIO}.encryption=psk2
+set wireless.default_${RADIO}.key=password
+EOF
+            fi
+
+            # add lan interface if not exist. dnsmasq need this
+            if [ -z "`uci get network.lan`" ]; then
+                uci batch <<EOF
+set network.lan='interface'
+set network.lan.type='bridge'
+set network.lan.proto='static'
+set network.lan.ipaddr='192.168.2.1'
+set network.lan.netmask='255.255.255.0'
+set network.lan.ip6assign='60'
+EOF
+            fi
+
+            uci commit 
+        fi
+        
+        wifi reload
+        sleep 1
+        /etc/init.d/network restart
+    elif [ "${ACTION}" = unbind ]; then
+        logger "${MODULE}: eject"
+
+        # User may change ${RADIO}'s config. So we don't modify it when eject.
+        #uci delete wireless.${RADIO}
+        #uci delete wireless.default_${RADIO}
+        #uci commit
+        #wifi reload
+    fi
+fi

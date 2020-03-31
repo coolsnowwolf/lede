@@ -9,6 +9,9 @@
 define Device/friendlyarm_nanopi-neo-plus2
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi NEO Plus2
+  DEVICE_PACKAGES:=kmod-rtc-sunxi \
+	kmod-leds-gpio kmod-ledtrig-heartbeat \
+	kmod-brcmfmac brcmfmac-firmware-43430-sdio wpad-mini
   SUPPORTED_DEVICES:=nanopi-neo-plus2
   SUNXI_DTS_DIR := allwinner/
   SOC := sun50i-h5
