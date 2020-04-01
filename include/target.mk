@@ -21,7 +21,7 @@ ddns-scripts_aliyun ddns-scripts_dnspod
 # For nas targets
 DEFAULT_PACKAGES.nas:=block-mount fdisk lsblk mdadm
 # For router targets
-DEFAULT_PACKAGES.router:=dnsmasq-full iptables ppp ppp-mod-pppoe firewall kmod-ipt-offload kmod-tcp-bbr
+DEFAULT_PACKAGES.router:=dnsmasq-full iptables ppp ppp-mod-pppoe firewall kmod-ipt-offload kmod-tcp-bbr ipv6helper
 DEFAULT_PACKAGES.bootloader:=
 
 ifneq ($(DUMP),)
