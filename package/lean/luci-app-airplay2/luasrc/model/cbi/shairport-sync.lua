@@ -52,4 +52,7 @@ alsa_output_rate:value("88200", translate("88.2Khz"))
 alsa_output_rate:value("176400", translate("176.4Khz"))
 alsa_output_rate:value("352800", translate("352.8Khz"))
 
+alsa_buffer_length=s:option(Value, "alsa_buffer_length", translate("Alsa Buffer Length"))
+alsa_buffer_length.default = "6615"
+
 return m
