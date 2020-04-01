@@ -54,7 +54,7 @@ platform_check_image() {
 platform_copy_config_emmc() {
 	mkdir -p /recovery
 	mount -o rw,noatime /dev/mmcblk0p1 /recovery
-	cp -af "$UPGRADE_BACKUP" "/recovery/$BACKUP_FILE"
+	cp -af "$CONF_TAR" "/recovery/$CONF_TAR"
 	sync
 	umount /recovery
 }
