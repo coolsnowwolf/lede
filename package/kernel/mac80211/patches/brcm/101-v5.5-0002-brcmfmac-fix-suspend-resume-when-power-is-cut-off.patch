@@ -1,0 +1,109 @@
+From e0ae4bac22effbd644add326f658a3aeeb8d45ee Mon Sep 17 00:00:00 2001
+From: Adrian Ratiu <adrian.ratiu@collabora.com>
+Date: Wed, 25 Sep 2019 16:44:58 +0300
+Subject: [PATCH] brcmfmac: fix suspend/resume when power is cut off
+
+brcmfmac assumed the wifi device always remains powered on and thus
+hardcoded the MMC_PM_KEEP_POWER flag expecting the wifi device to
+remain on even during suspend/resume cycles.
+
+This is not always the case, some appliances cut power to everything
+connected via SDIO for efficiency reasons and this leads to wifi not
+being usable after coming out of suspend because the device was not
+correctly reinitialized.
+
+So we check for the keep_power capability and if it's not present then
+we remove the device and probe it again during resume to mirror what's
+happening in hardware and ensure correct reinitialization in the case
+when MMC_PM_KEEP_POWER is not supported.
+
+Suggested-by: Gustavo Padovan <gustavo.padovan@collabora.com>
+Signed-off-by: Adrian Ratiu <adrian.ratiu@collabora.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../broadcom/brcm80211/brcmfmac/bcmsdh.c      | 53 ++++++++++++++-----
+ 1 file changed, 39 insertions(+), 14 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
+@@ -1108,7 +1108,8 @@ static int brcmf_ops_sdio_suspend(struct
+ 	struct sdio_func *func;
+ 	struct brcmf_bus *bus_if;
+ 	struct brcmf_sdio_dev *sdiodev;
+-	mmc_pm_flag_t sdio_flags;
++	mmc_pm_flag_t pm_caps, sdio_flags;
++	int ret = 0;
+ 
+ 	func = container_of(dev, struct sdio_func, dev);
+ 	brcmf_dbg(SDIO, "Enter: F%d\n", func->num);
+@@ -1119,19 +1120,33 @@ static int brcmf_ops_sdio_suspend(struct
+ 	bus_if = dev_get_drvdata(dev);
+ 	sdiodev = bus_if->bus_priv.sdio;
+ 
+-	brcmf_sdiod_freezer_on(sdiodev);
+-	brcmf_sdio_wd_timer(sdiodev->bus, 0);
++	pm_caps = sdio_get_host_pm_caps(func);
+ 
+-	sdio_flags = MMC_PM_KEEP_POWER;
+-	if (sdiodev->wowl_enabled) {
+-		if (sdiodev->settings->bus.sdio.oob_irq_supported)
+-			enable_irq_wake(sdiodev->settings->bus.sdio.oob_irq_nr);
+-		else
+-			sdio_flags |= MMC_PM_WAKE_SDIO_IRQ;
++	if (pm_caps & MMC_PM_KEEP_POWER) {
++		/* preserve card power during suspend */
++		brcmf_sdiod_freezer_on(sdiodev);
++		brcmf_sdio_wd_timer(sdiodev->bus, 0);
++
++		sdio_flags = MMC_PM_KEEP_POWER;
++		if (sdiodev->wowl_enabled) {
++			if (sdiodev->settings->bus.sdio.oob_irq_supported)
++				enable_irq_wake(sdiodev->settings->bus.sdio.oob_irq_nr);
++			else
++				sdio_flags |= MMC_PM_WAKE_SDIO_IRQ;
++		}
++
++		if (sdio_set_host_pm_flags(sdiodev->func1, sdio_flags))
++			brcmf_err("Failed to set pm_flags %x\n", sdio_flags);
++
++	} else {
++		/* power will be cut so remove device, probe again in resume */
++		brcmf_sdiod_intr_unregister(sdiodev);
++		ret = brcmf_sdiod_remove(sdiodev);
++		if (ret)
++			brcmf_err("Failed to remove device on suspend\n");
+ 	}
+-	if (sdio_set_host_pm_flags(sdiodev->func1, sdio_flags))
+-		brcmf_err("Failed to set pm_flags %x\n", sdio_flags);
+-	return 0;
++
++	return ret;
+ }
+ 
+ static int brcmf_ops_sdio_resume(struct device *dev)
+@@ -1139,13 +1154,23 @@ static int brcmf_ops_sdio_resume(struct
+ 	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
+ 	struct brcmf_sdio_dev *sdiodev = bus_if->bus_priv.sdio;
+ 	struct sdio_func *func = container_of(dev, struct sdio_func, dev);
++	mmc_pm_flag_t pm_caps = sdio_get_host_pm_caps(func);
++	int ret = 0;
+ 
+ 	brcmf_dbg(SDIO, "Enter: F%d\n", func->num);
+ 	if (func->num != 2)
+ 		return 0;
+ 
+-	brcmf_sdiod_freezer_off(sdiodev);
+-	return 0;
++	if (!(pm_caps & MMC_PM_KEEP_POWER)) {
++		/* bus was powered off and device removed, probe again */
++		ret = brcmf_sdiod_probe(sdiodev);
++		if (ret)
++			brcmf_err("Failed to probe device on resume\n");
++	} else {
++		brcmf_sdiod_freezer_off(sdiodev);
++	}
++
++	return ret;
+ }
+ 
+ static const struct dev_pm_ops brcmf_sdio_pm_ops = {
