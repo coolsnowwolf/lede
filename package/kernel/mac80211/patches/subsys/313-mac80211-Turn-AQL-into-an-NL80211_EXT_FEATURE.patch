@@ -1,0 +1,253 @@
+From: =?UTF-8?q?Toke=20H=C3=B8iland-J=C3=B8rgensen?= <toke@redhat.com>
+Date: Thu, 12 Dec 2019 12:14:37 +0100
+Subject: [PATCH] mac80211: Turn AQL into an NL80211_EXT_FEATURE
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Instead of just having an airtime flag in debugfs, turn AQL into a proper
+NL80211_EXT_FEATURE, so drivers can turn it on when they are ready, and so
+we also expose the presence of the feature to userspace.
+
+This also has the effect of flipping the default, so drivers have to opt in
+to using AQL instead of getting it by default with TXQs. To keep
+functionality the same as pre-patch, we set this feature for ath10k (which
+is where it is needed the most).
+
+While we're at it, split out the debugfs interface so AQL gets its own
+per-station debugfs file instead of using the 'airtime' file.
+
+[Johannes:]
+This effectively disables AQL for iwlwifi, where it fixes a number of
+issues:
+ * TSO in iwlwifi is causing underflows and associated warnings in AQL
+ * HE (802.11ax) rates aren't reported properly so at HE rates, AQL could
+   never have a valid estimate (it'd use 6 Mbps instead of up to 2400!)
+
+Signed-off-by: Toke Høiland-Jørgensen <toke@redhat.com>
+Link: https://lore.kernel.org/r/20191212111437.224294-1-toke@redhat.com
+Fixes: 3ace10f5b5ad ("mac80211: Implement Airtime-based Queue Limit (AQL)")
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/drivers/net/wireless/ath/ath10k/mac.c
++++ b/drivers/net/wireless/ath/ath10k/mac.c
+@@ -8870,6 +8870,7 @@ int ath10k_mac_register(struct ath10k *a
+ 	wiphy_ext_feature_set(ar->hw->wiphy, NL80211_EXT_FEATURE_VHT_IBSS);
+ 	wiphy_ext_feature_set(ar->hw->wiphy,
+ 			      NL80211_EXT_FEATURE_SET_SCAN_DWELL);
++	wiphy_ext_feature_set(ar->hw->wiphy, NL80211_EXT_FEATURE_AQL);
+ 
+ 	if (test_bit(WMI_SERVICE_TX_DATA_ACK_RSSI, ar->wmi.svc_map) ||
+ 	    test_bit(WMI_SERVICE_HTT_MGMT_TX_COMP_VALID_FLAGS, ar->wmi.svc_map))
+--- a/include/uapi/linux/nl80211.h
++++ b/include/uapi/linux/nl80211.h
+@@ -5484,6 +5484,10 @@ enum nl80211_feature_flags {
+  * @NL80211_EXT_FEATURE_SAE_OFFLOAD: Device wants to do SAE authentication in
+  *	station mode (SAE password is passed as part of the connect command).
+  *
++ * @NL80211_EXT_FEATURE_AQL: The driver supports the Airtime Queue Limit (AQL)
++ *	feature, which prevents bufferbloat by using the expected transmission
++ *	time to limit the amount of data buffered in the hardware.
++ *
+  * @NUM_NL80211_EXT_FEATURES: number of extended features.
+  * @MAX_NL80211_EXT_FEATURES: highest extended feature index.
+  */
+@@ -5529,6 +5533,8 @@ enum nl80211_ext_feature_index {
+ 	NL80211_EXT_FEATURE_EXT_KEY_ID,
+ 	NL80211_EXT_FEATURE_STA_TX_PWR,
+ 	NL80211_EXT_FEATURE_SAE_OFFLOAD,
++	NL80211_EXT_FEATURE_VLAN_OFFLOAD,
++	NL80211_EXT_FEATURE_AQL,
+ 
+ 	/* add new features before the definition below */
+ 	NUM_NL80211_EXT_FEATURES,
+--- a/net/mac80211/debugfs_sta.c
++++ b/net/mac80211/debugfs_sta.c
+@@ -201,8 +201,6 @@ static ssize_t sta_airtime_read(struct f
+ 	char *buf = kzalloc(bufsz, GFP_KERNEL), *p = buf;
+ 	u64 rx_airtime = 0, tx_airtime = 0;
+ 	s64 deficit[IEEE80211_NUM_ACS];
+-	u32 q_depth[IEEE80211_NUM_ACS];
+-	u32 q_limit_l[IEEE80211_NUM_ACS], q_limit_h[IEEE80211_NUM_ACS];
+ 	ssize_t rv;
+ 	int ac;
+ 
+@@ -214,6 +212,56 @@ static ssize_t sta_airtime_read(struct f
+ 		rx_airtime += sta->airtime[ac].rx_airtime;
+ 		tx_airtime += sta->airtime[ac].tx_airtime;
+ 		deficit[ac] = sta->airtime[ac].deficit;
++		spin_unlock_bh(&local->active_txq_lock[ac]);
++	}
++
++	p += scnprintf(p, bufsz + buf - p,
++		"RX: %llu us\nTX: %llu us\nWeight: %u\n"
++		"Deficit: VO: %lld us VI: %lld us BE: %lld us BK: %lld us\n",
++		rx_airtime, tx_airtime, sta->airtime_weight,
++		deficit[0], deficit[1], deficit[2], deficit[3]);
++
++	rv = simple_read_from_buffer(userbuf, count, ppos, buf, p - buf);
++	kfree(buf);
++	return rv;
++}
++
++static ssize_t sta_airtime_write(struct file *file, const char __user *userbuf,
++				 size_t count, loff_t *ppos)
++{
++	struct sta_info *sta = file->private_data;
++	struct ieee80211_local *local = sta->sdata->local;
++	int ac;
++
++	for (ac = 0; ac < IEEE80211_NUM_ACS; ac++) {
++		spin_lock_bh(&local->active_txq_lock[ac]);
++		sta->airtime[ac].rx_airtime = 0;
++		sta->airtime[ac].tx_airtime = 0;
++		sta->airtime[ac].deficit = sta->airtime_weight;
++		spin_unlock_bh(&local->active_txq_lock[ac]);
++	}
++
++	return count;
++}
++STA_OPS_RW(airtime);
++
++static ssize_t sta_aql_read(struct file *file, char __user *userbuf,
++				size_t count, loff_t *ppos)
++{
++	struct sta_info *sta = file->private_data;
++	struct ieee80211_local *local = sta->sdata->local;
++	size_t bufsz = 400;
++	char *buf = kzalloc(bufsz, GFP_KERNEL), *p = buf;
++	u32 q_depth[IEEE80211_NUM_ACS];
++	u32 q_limit_l[IEEE80211_NUM_ACS], q_limit_h[IEEE80211_NUM_ACS];
++	ssize_t rv;
++	int ac;
++
++	if (!buf)
++		return -ENOMEM;
++
++	for (ac = 0; ac < IEEE80211_NUM_ACS; ac++) {
++		spin_lock_bh(&local->active_txq_lock[ac]);
+ 		q_limit_l[ac] = sta->airtime[ac].aql_limit_low;
+ 		q_limit_h[ac] = sta->airtime[ac].aql_limit_high;
+ 		spin_unlock_bh(&local->active_txq_lock[ac]);
+@@ -221,12 +269,8 @@ static ssize_t sta_airtime_read(struct f
+ 	}
+ 
+ 	p += scnprintf(p, bufsz + buf - p,
+-		"RX: %llu us\nTX: %llu us\nWeight: %u\n"
+-		"Deficit: VO: %lld us VI: %lld us BE: %lld us BK: %lld us\n"
+ 		"Q depth: VO: %u us VI: %u us BE: %u us BK: %u us\n"
+ 		"Q limit[low/high]: VO: %u/%u VI: %u/%u BE: %u/%u BK: %u/%u\n",
+-		rx_airtime, tx_airtime, sta->airtime_weight,
+-		deficit[0], deficit[1], deficit[2], deficit[3],
+ 		q_depth[0], q_depth[1], q_depth[2], q_depth[3],
+ 		q_limit_l[0], q_limit_h[0], q_limit_l[1], q_limit_h[1],
+ 		q_limit_l[2], q_limit_h[2], q_limit_l[3], q_limit_h[3]),
+@@ -236,11 +280,10 @@ static ssize_t sta_airtime_read(struct f
+ 	return rv;
+ }
+ 
+-static ssize_t sta_airtime_write(struct file *file, const char __user *userbuf,
++static ssize_t sta_aql_write(struct file *file, const char __user *userbuf,
+ 				 size_t count, loff_t *ppos)
+ {
+ 	struct sta_info *sta = file->private_data;
+-	struct ieee80211_local *local = sta->sdata->local;
+ 	u32 ac, q_limit_l, q_limit_h;
+ 	char _buf[100] = {}, *buf = _buf;
+ 
+@@ -251,7 +294,7 @@ static ssize_t sta_airtime_write(struct
+ 		return -EFAULT;
+ 
+ 	buf[sizeof(_buf) - 1] = '\0';
+-	if (sscanf(buf, "queue limit %u %u %u", &ac, &q_limit_l, &q_limit_h)
++	if (sscanf(buf, "limit %u %u %u", &ac, &q_limit_l, &q_limit_h)
+ 	    != 3)
+ 		return -EINVAL;
+ 
+@@ -261,17 +304,10 @@ static ssize_t sta_airtime_write(struct
+ 	sta->airtime[ac].aql_limit_low = q_limit_l;
+ 	sta->airtime[ac].aql_limit_high = q_limit_h;
+ 
+-	for (ac = 0; ac < IEEE80211_NUM_ACS; ac++) {
+-		spin_lock_bh(&local->active_txq_lock[ac]);
+-		sta->airtime[ac].rx_airtime = 0;
+-		sta->airtime[ac].tx_airtime = 0;
+-		sta->airtime[ac].deficit = sta->airtime_weight;
+-		spin_unlock_bh(&local->active_txq_lock[ac]);
+-	}
+-
+ 	return count;
+ }
+-STA_OPS_RW(airtime);
++STA_OPS_RW(aql);
++
+ 
+ static ssize_t sta_agg_status_read(struct file *file, char __user *userbuf,
+ 					size_t count, loff_t *ppos)
+@@ -1001,6 +1037,10 @@ void ieee80211_sta_debugfs_add(struct st
+ 				    NL80211_EXT_FEATURE_AIRTIME_FAIRNESS))
+ 		DEBUGFS_ADD(airtime);
+ 
++	if (wiphy_ext_feature_isset(local->hw.wiphy,
++				    NL80211_EXT_FEATURE_AQL))
++		DEBUGFS_ADD(aql);
++
+ 	if (sizeof(sta->driver_buffered_tids) == sizeof(u32))
+ 		debugfs_create_x32("driver_buffered_tids", 0400,
+ 				   sta->debugfs_dir,
+--- a/net/mac80211/main.c
++++ b/net/mac80211/main.c
+@@ -674,9 +674,7 @@ struct ieee80211_hw *ieee80211_alloc_hw_
+ 			IEEE80211_DEFAULT_AQL_TXQ_LIMIT_H;
+ 	}
+ 
+-	local->airtime_flags = AIRTIME_USE_TX |
+-			       AIRTIME_USE_RX |
+-			       AIRTIME_USE_AQL;
++	local->airtime_flags = AIRTIME_USE_TX | AIRTIME_USE_RX;
+ 	local->aql_threshold = IEEE80211_AQL_THRESHOLD;
+ 	atomic_set(&local->aql_total_pending_airtime, 0);
+ 
+--- a/net/mac80211/sta_info.c
++++ b/net/mac80211/sta_info.c
+@@ -1917,6 +1917,9 @@ void ieee80211_sta_update_pending_airtim
+ {
+ 	int tx_pending;
+ 
++	if (!wiphy_ext_feature_isset(local->hw.wiphy, NL80211_EXT_FEATURE_AQL))
++		return;
++
+ 	if (!tx_completed) {
+ 		if (sta)
+ 			atomic_add(tx_airtime,
+--- a/net/mac80211/sta_info.h
++++ b/net/mac80211/sta_info.h
+@@ -127,7 +127,6 @@ enum ieee80211_agg_stop_reason {
+ /* Debugfs flags to enable/disable use of RX/TX airtime in scheduler */
+ #define AIRTIME_USE_TX		BIT(0)
+ #define AIRTIME_USE_RX		BIT(1)
+-#define AIRTIME_USE_AQL		BIT(2)
+ 
+ struct airtime_info {
+ 	u64 rx_airtime;
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -3667,7 +3667,7 @@ begin:
+ 
+ 	IEEE80211_SKB_CB(skb)->control.vif = vif;
+ 
+-	if (local->airtime_flags & AIRTIME_USE_AQL) {
++	if (wiphy_ext_feature_isset(local->hw.wiphy, NL80211_EXT_FEATURE_AQL)) {
+ 		u32 airtime;
+ 
+ 		airtime = ieee80211_calc_expected_tx_airtime(hw, vif, txq->sta,
+@@ -3789,7 +3789,7 @@ bool ieee80211_txq_airtime_check(struct
+ 	struct sta_info *sta;
+ 	struct ieee80211_local *local = hw_to_local(hw);
+ 
+-	if (!(local->airtime_flags & AIRTIME_USE_AQL))
++	if (!wiphy_ext_feature_isset(local->hw.wiphy, NL80211_EXT_FEATURE_AQL))
+ 		return true;
+ 
+ 	if (!txq->sta)
