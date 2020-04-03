@@ -49,7 +49,7 @@ platform_do_upgrade_sdcard() {
 
 	sync
 
-	if [ "$UPGRADE_OPT_SAVE_PARTITIONS" = "1" ]; then
+	if [ "$SAVE_PARTITIONS" = "1" ]; then
 		get_partitions "/dev/$diskdev" bootdisk
 
 		#extract the boot sector from the image
@@ -106,7 +106,7 @@ platform_copy_config_sdcard() {
 	if export_partdevice partdev 1; then
 		mkdir -p /boot
 		[ -f /boot/kernel.img ] || mount -o rw,noatime /dev/$partdev /boot
-		cp -af "$UPGRADE_BACKUP" "/boot/$BACKUP_FILE"
+		cp -af "$CONF_TAR" /boot/
 		sync
 		umount /boot
 	fi
