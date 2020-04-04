@@ -1079,12 +1079,15 @@ define KernelPackage/mlx4-core
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Mellanox ConnectX(R) mlx4 core Network Driver
   DEPENDS:=@PCI_SUPPORT +kmod-ptp
-  FILES:=$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlx4/mlx4_core.ko
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlx4/mlx4_core.ko \
+	$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlx4/mlx4_en.ko
   KCONFIG:= CONFIG_MLX4_EN \
+	CONFIG_MLX4_EN_DCB=n \
 	CONFIG_MLX4_CORE=y \
 	CONFIG_MLX4_CORE_GEN2=y \
 	CONFIG_MLX4_DEBUG=n
-  AUTOLOAD:=$(call AutoProbe,mlx4_core)
+  AUTOLOAD:=$(call AutoProbe,mlx4_core mlx4_en)
 endef
 
 define KernelPackage/mlx4-core/description
@@ -1100,7 +1103,11 @@ define KernelPackage/mlx5-core
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlx5/core/mlx5_core.ko
   KCONFIG:= CONFIG_MLX5_CORE \
 	CONFIG_MLX5_CORE_EN=y \
-	CONFIG_MLX5_EN_RXNFC=y
+	CONFIG_MLX5_EN_RXNFC=y \
+	CONFIG_MLX5_FPGA=n \
+	CONFIG_MLX5_MPFS=n \
+	CONFIG_MLX5_EN_ARFS=n \
+	CONFIG_MLX5_CORE_IPOIB=n
   AUTOLOAD:=$(call AutoProbe,mlx5_core)
 endef
 
