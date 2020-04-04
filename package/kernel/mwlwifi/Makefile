@@ -8,16 +8,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mwlwifi
-PKG_RELEASE=2
+PKG_RELEASE=1
 
 PKG_LICENSE:=ISC
 PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/kaloz/mwlwifi
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2019-03-02
-PKG_SOURCE_VERSION:=31d9386079b91cc699658c19294e139b62b512bc
-PKG_MIRROR_HASH:=7bdd05765d8215a9c293cdcb028d63a04c9e55b337eaac9e8d3659bd86218321
+PKG_SOURCE_DATE:=2020-02-06
+PKG_SOURCE_VERSION:=a2fd00bb74c35820dfe233d762690c0433a87ef5
+PKG_MIRROR_HASH:=0eda0e774a87e58e611d6436350e1cf2be3de50fddde334909a07a15b0c9862b
 
 PKG_MAINTAINER:=Imre Kaloz <kaloz@openwrt.org>
 PKG_BUILD_PARALLEL:=1
@@ -100,4 +100,3 @@ $(eval $(call BuildPackage,mwlwifi-firmware-88w8864))
 $(eval $(call BuildPackage,mwlwifi-firmware-88w8897))
 $(eval $(call BuildPackage,mwlwifi-firmware-88w8964))
 $(eval $(call BuildPackage,mwlwifi-firmware-88w8997))
-
