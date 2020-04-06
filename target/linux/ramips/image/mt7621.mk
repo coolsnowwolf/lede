@@ -331,7 +331,7 @@ TARGET_DEVICES += gnubee_gb-pc2
 define Device/hiwifi_hc5962
   BLOCKSIZE := 128k
   PAGESIZE := 2048
-  KERNEL_SIZE := 2097152
+  KERNEL_SIZE := 4096k
   UBINIZE_OPTS := -E 5
   IMAGE_SIZE := 32768k
   IMAGES += factory.bin
@@ -341,9 +341,6 @@ define Device/hiwifi_hc5962
   DEVICE_VENDOR := HiWiFi
   DEVICE_MODEL := HC5962
   DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 wpad-openssl
-  SUPPORTED_DEVICES += hc5962
-  # Kernel partition too small
-  DEFAULT := n
 endef
 TARGET_DEVICES += hiwifi_hc5962
 
