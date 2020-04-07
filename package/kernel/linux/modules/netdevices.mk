@@ -1075,6 +1075,41 @@ endef
 
 $(eval $(call KernelPackage,be2net))
 
+define KernelPackage/mlx4-core
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Mellanox ConnectX(R) mlx4 core Network Driver
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlx4/mlx4_core.ko
+  KCONFIG:= CONFIG_MLX4_EN \
+	CONFIG_MLX4_CORE=y \
+	CONFIG_MLX4_CORE_GEN2=y \
+	CONFIG_MLX4_DEBUG=n
+  AUTOLOAD:=$(call AutoProbe,mlx4_core)
+endef
+
+define KernelPackage/mlx4-core/description
+  Supports Mellanox ConnectX-3 series and previous cards
+endef
+
+$(eval $(call KernelPackage,mlx4-core))
+
+define KernelPackage/mlx5-core
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Mellanox ConnectX(R) mlx5 core Network Driver
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlx5/core/mlx5_core.ko
+  KCONFIG:= CONFIG_MLX5_CORE \
+	CONFIG_MLX5_CORE_EN=y \
+	CONFIG_MLX5_EN_RXNFC=y
+  AUTOLOAD:=$(call AutoProbe,mlx5_core)
+endef
+
+define KernelPackage/mlx5-core/description
+  Supports Mellanox Connect-IB/ConnectX-4 series and later cards
+endef
+
+$(eval $(call KernelPackage,mlx5-core))
+
 define KernelPackage/sfc
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Solarflare SFC9000/SFC9100-family 10Gbps NIC support
