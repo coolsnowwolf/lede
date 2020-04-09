@@ -681,7 +681,7 @@ endef
 TARGET_DEVICES += tl-wr882n-v3
 
 define Device/tl-wr885n-v1
-  $(Device/tplink-8mlzma)
+  $(Device/tplink-16mlzma)
   DEVICE_TITLE := TP-LINK TL-WR885N v1
   BOARDNAME := TL-WR885N-v1
   DEVICE_PROFILE := TLWR885
