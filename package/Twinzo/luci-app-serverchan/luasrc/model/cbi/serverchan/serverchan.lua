@@ -144,11 +144,59 @@ a.rmempty=true
 a= s:taboption("tab_basic2", Value, "temperature", "温度报警阈值")
 a.rmempty = true 
 a.default = "80"
+a.datatype="uinteger"
 a:depends({temperature_enable="1"})
 a.description = translate("<br/>设备报警只会在连续五分钟超过设定值时才会推送<br/>而且一个小时内不会再提醒第二次")
+a=s:taboption("tab_basic2", Flag,"err_enable",translate("无人值守任务"))
+a.default=0
+a.rmempty=true
+a.description = translate("请确认脚本可以正常运行！！<br/>否则可能造成频繁重启等错误！")
+device_aliases= s:taboption("tab_basic2", DynamicList, "err_device_aliases", translate("列表中设备都不在线时才会执行"))
+device_aliases.rmempty = true 
+device_aliases.optional = true
+device_aliases.description = translate("请输入设备 MAC")
+nt.mac_hints(function(mac, name) device_aliases :value(mac, "%s (%s)" %{ mac, name }) end)
+device_aliases:depends({err_enable="1"})
+a=s:taboption("tab_basic2", ListValue,"network_err_event",translate("网络断开时"))
+a.default=""
+a:depends({err_enable="1"})
+a:value("",translate("无操作"))
+a:value("1",translate("重启路由器"))
+a:value("2",translate("重启网络接口"))
+a:value("3",translate("修改相关设置项，尝试自动修复网络"))
+a.description = translate("选项 1 选项 2 不会修改设置，并最多尝试 2 次。<br/>选项 3 会将设置项备份于 /usr/bin/serverchan/configbak 目录，并在失败后还原。<br/>自用于远程误操作无法连接，人在塔在请自行修复。<br/>【！！因为我无法保证兼容性！！】不熟悉系统设置项，不会救砖请勿使用")
+a=s:taboption("tab_basic2", ListValue,"system_time_event",translate("定时重启"))
+a.default=""
+a:depends({err_enable="1"})
+a:value("",translate("无操作"))
+a:value("1",translate("重启路由器"))
+a:value("2",translate("重启网络接口"))
+a= s:taboption("tab_basic2", Value, "autoreboot_time", "系统运行时间大于")
+a.rmempty = true 
+a.default = "24"
+a.datatype="uinteger"
+a:depends({system_time_event="1"})
+a.description = translate("单位为小时")
+a= s:taboption("tab_basic2", Value, "network_restart_time", "网络在线时间大于")
+a.rmempty = true 
+a.default = "24"
+a.datatype="uinteger"
+a:depends({system_time_event="2"})
+a.description = translate("单位为小时")
+
+a=s:taboption("tab_basic2", Flag,"public_ip_event",translate("重拨尝试获取公网 ip"))
+a.default=0
+a.rmempty=true
+a:depends({err_enable="1"})
+a.description = translate("重拨时不会推送 ip 变动通知，并会导致你的域名无法及时更新 ip 地址<br/>请确认你可以通过重拨获取公网 ip，否则这不仅徒劳无功还会引起频繁断网<br/>移动等大内网你就别挣扎了！！")
+a= s:taboption("tab_basic2", Value, "public_ip_retry_count", "当天最大重试次数")
+a.rmempty = true 
+a.default = "10"
+a.datatype="uinteger"
+a:depends({public_ip_event="1"})
 
 e=s:taboption("tab_basic3", ListValue,"send_mode",translate("定时任务设定"))
-e.default="disable"
+e.default=""
 e:value("",translate("关闭"))
 e:value("1",translate("定时发送"))
 e:value("2",translate("间隔发送"))
@@ -224,10 +272,12 @@ end
 
 up_timeout=s:taboption("tab_basic4", Value,"up_timeout",translate('设备上线检测超时'))
 up_timeout.default = "2"
+up_timeout.datatype="uinteger"
 
 down_timeout=s:taboption("tab_basic4", Value,"down_timeout",translate('设备离线检测超时'))
 down_timeout.default = "10"
-down_timeout.description = translate("如果遇到设备频繁离线，可以把超时时间设置长一些<br/>因为会重试两次，所以实际时间会略大于设定值的 2 倍")
+down_timeout.datatype="uinteger"
+down_timeout.description = translate("如果遇到设备 wifi 休眠，频繁推送离线，可以把超时时间设置长一些")
 
 sheep=s:taboption("tab_basic4", ListValue,"serverchan_sheep",translate("免打扰时段设置"),translate("在指定整点时间段内，暂停推送消息<br/>免打扰时间中，定时推送也会被阻止。"))
 sheep:value("0",translate("关闭"))
@@ -282,6 +332,11 @@ for _, iface in ipairs(ifaces) do
 		nets = table.concat(nets, ",")
 		n:value(iface, ((#nets > 0) and "%s (%s)" % {iface, nets} or iface))
 	end
+end
+
+local apply = luci.http.formvalue("cbi.apply")
+if apply then
+    io.popen("/etc/init.d/serverchan restart")
 end
 
 return m
