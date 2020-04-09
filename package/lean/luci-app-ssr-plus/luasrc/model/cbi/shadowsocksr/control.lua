@@ -69,7 +69,7 @@ end)
 
 s:tab("esc", translate("Bypass Domain List"))
 
-local escconf = "/etc/config/white.list"
+local escconf = "/etc/ssr/white.list"
 o = s:taboption("esc", TextValue, "escconf")
 o.rows = 13
 o.wrap = "off"
@@ -87,7 +87,7 @@ end
 
 s:tab("block", translate("Black Domain List"))
 
-local blockconf = "/etc/config/black.list"
+local blockconf = "/etc/ssr/black.list"
 o = s:taboption("block", TextValue, "blockconf")
 o.rows = 13
 o.wrap = "off"
@@ -104,7 +104,7 @@ end
 
 s:tab("netflix", translate("Netflix Domain List"))
 
-local netflixconf = "/etc/config/netflix.list"
+local netflixconf = "/etc/ssr/netflix.list"
 o = s:taboption("netflix", TextValue, "netflixconf")
 o.rows = 13
 o.wrap = "off"
@@ -121,7 +121,7 @@ end
 
 s:tab("netflixip", translate("Netflix IP List"))
 
-local netflixipconf = "/etc/config/netflixip.list"
+local netflixipconf = "/etc/ssr/netflixip.list"
 o = s:taboption("netflixip", TextValue, "netflixipconf")
 o.rows = 13
 o.wrap = "off"
