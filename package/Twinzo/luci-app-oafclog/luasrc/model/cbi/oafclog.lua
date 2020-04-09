@@ -10,6 +10,7 @@ alog=s:taboption("log",TextValue,"oafclog")
 alog.description=translate("应用过滤日志")
 alog.rows=18
 alog.wrap="off"
+alog.readonly=true
 function alog.cfgvalue(s,s)
 sylogtext=""
 if a and nixio.fs.access(a)then
@@ -25,6 +26,7 @@ vconfig=s:taboption("config",TextValue,"Config_File")
 vconfig.description=translate("应用过滤日志")
 vconfig.rows=18
 vconfig.wrap="off"
+vconfig.readonly=true
 function vconfig.cfgvalue(s,s)
 sylogtext=""
 if va and nixio.fs.access(va)then
@@ -42,6 +44,7 @@ oconfig=s:taboption("config",TextValue,"Config_File")
 oconfig.description=translate("应用过滤日志")
 oconfig.rows=18
 oconfig.wrap="off"
+oconfig.readonly=true
 function oconfig.cfgvalue(s,s)
 sylogtext=""
 if oa and nixio.fs.access(oa)then
@@ -49,9 +52,5 @@ Config_File=luci.sys.exec("tail -n 100 %s"%oa)
 end
 return Config_File
 end
--- function oconfig.write(t,t,e)
--- e=e:gsub("\r\n?","\n")
--- nixio.fs.writefile("/etc/vlmcsd.ini",e)
--- end
 
 return m

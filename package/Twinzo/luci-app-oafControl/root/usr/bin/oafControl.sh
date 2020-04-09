@@ -1,19 +1,52 @@
 #!/bin/sh
 
-alias config_foreach="/lib/functions.sh config_foreach"
-alias config_load="/lib/functions.sh config_load"
-alias config_get="/lib/functions.sh config_get"
 alias separate_front="awk -F \":\" '{print \$1}'"
 alias separate_back="awk -F \":\" '{print \$2}'"
+alias DATE="date '+%A %Y-%m-%d %H:%M:%S'"
 VACATIONFILE="/etc/oafControl/vacation.conf"
 OVERTIMEFILE="/etc/oafControl/overtime.conf"
 LOGFILE="/tmp/oafControl/oafControl.log"
 VACATIONBAK="/etc/oafControl/overtime.bak"
 OVERIIMEBAK="/etc/oafControl/vacation.bak"
+NAME="oafControl"
 mode="$1"
 fun="$2"
 line=`wc -l $LOGFILE | awk -F " " '{print $1}'`
 [ $line -ge 1000 ] && echo "日志超过一千行，清除日志" > $LOGFILE
+
+# 重新定义config_get
+config_get(){
+	local var
+	local num="$3"
+	var=$(uci get $NAME.@$1[$num].$2 2>/dev/null)
+	echo ${var}
+}
+
+uci_get_by_type() {
+	local total=`uci show 2>/dev/null | grep $NAME.@"$1" | grep -w "=$1" | sed '/^$/!h;$!d;g' | awk -F "[" '{print $2}' | awk -F "]" '{print $1}'`
+	echo "$total"
+}
+
+#########################USAGE###########################
+# config_get_global(){									#
+# 	total=`uci_get_by_type $cfg`						#
+# 	while [[ $total -ge 0 ]]							#
+# 	do													#		
+#	 	enable=`config_get "$cfg" enable $total`		#
+# 		comments=`config_get "$cfg" comment $total`		#
+# 		total=$((total-1))								#
+# 	done												#
+# }														#				
+# config_get_global										#
+#########################################################
+
+uci_get_weekday(){
+	echo `uci get "$NAME".@weekday[0]."$1" 2>/dev/null`
+}
+
+uci_get_workday(){
+	echo `uci get "$NAME".@workday[0]."$1" 2>/dev/null`
+}
 
 add_cron(){
 	sed -i "/#$4/d" /etc/crontabs/root
@@ -106,7 +139,7 @@ isMinu(){
 
 auto_update(){
 	local url
-	echo "`date '+%A %Y-%m-%d %H:%M:%S'`：正在检查特征库版本" >> $LOGFILE
+	echo "`DATE`：正在检查特征库版本" >> $LOGFILE
 	url="https://raw.githubusercontent.com/destan19/OpenAppFilter/master/open-app-filter/files/feature.cfg"
 	remote_update=$(uci get oafControl.@global[0].auto_update 2>/dev/null)
 	[ "$remote_update" -eq 1 ] && return
@@ -116,12 +149,12 @@ auto_update(){
 	cp -f /etc/appfilter/feature.cfg /tmp/oafControl/feature.cfg
 	etc_md5=`md5sum /tmp/oafControl/feature.cfg | awk -F " " '{print $1}'`
 	if [ "$tmp_md5" = "$etc_md5" ]; then
-		echo "`date '+%A %Y-%m-%d %H:%M:%S'`：特征库已是最新，无需更新" >> $LOGFILE
+		echo "`DATE`：特征库已是最新，无需更新" >> $LOGFILE
 		return
 	else
-		echo "`date '+%A %Y-%m-%d %H:%M:%S'`：特征库有更新，正在更新" >> $LOGFILE
+		echo "`DATE`：特征库有更新，正在更新" >> $LOGFILE
 		cp -f /tmp/oafControl/feature1.cfg /etc/appfilter/feature.cfg
-		echo "`date '+%A %Y-%m-%d %H:%M:%S'`：特征库更新完成" >> $LOGFILE
+		echo "`DATE`：特征库更新完成" >> $LOGFILE
 	fi
 }
 
@@ -130,75 +163,85 @@ remote_control(){ #远程控制
 #	global_run=$(uci get oafControl.global.global_run 2>/dev/null)
 	remote_url=$(uci get oafControl.@global[0].global_wget 2>/dev/null)
 	curl "$remote_url" > /tmp/oafControl/oafControl.Status
-	echo "`date '+%A %Y-%m-%d %H:%M:%S'`：正在获取远程控制状态" >> $LOGFILE
+	echo "`DATE`：正在获取远程控制状态" >> $LOGFILE
 	status=$(cat /tmp/oafControl/oafControl.Status 2>/dev/null)
 	if [ "$status" -eq "1" ]; then
 		if [ "$status" -eq "$global_enable" ]; then #均为1则无操作
-			echo "`date '+%A %Y-%m-%d %H:%M:%S'`：远程无命令" >> $LOGFILE
+			echo "`DATE`：远程无命令" >> $LOGFILE
 			return
 		else #不同则start并改变启动状态为已启动
-			echo "`date '+%A %Y-%m-%d %H:%M:%S'`：远程启动中" >> $LOGFILE
+			echo "`DATE`：远程启动中" >> $LOGFILE
 			uci set oafControl.@global[0].global_enabled="1"
 			/etc/init.d/oafControl restart
 		fi
 	elif [ "$status" -eq "0" ]; then
 		if [ "$status" -ne "$global_enable" ]; then #不同则stop并改变启动状态为已禁止
-			echo "`date '+%A %Y-%m-%d %H:%M:%S'`：远程关闭中" >> $LOGFILE
+			echo "`DATE`：远程关闭中" >> $LOGFILE
 			uci set oafControl.@global[0].global_enabled="0"
 			/etc/init.d/oafControl restart
 		else #均为1则无操作
-			echo "`date '+%A %Y-%m-%d %H:%M:%S'`：远程无命令" >> $LOGFILE
+			echo "`DATE`：远程无命令" >> $LOGFILE
 			return
 		fi
 	else
-		echo "`date '+%A %Y-%m-%d %H:%M:%S'`：远程无命令" >> $LOGFILE
+		echo "`DATE`：远程无命令" >> $LOGFILE
 	fi
 }
 
 init_vacation(){
+	local cfg="vacation"
 	echo "" > $VACATIONFILE
 	echo "" > $VACATIONBAK
 	config_vacation(){
-		config_get enable "$1" enable
-		config_get restStart "$1" rest_start
-		config_get restEnd "$1" rest_end
-		config_get comments "$1" comment
-		[ "$enable" -eq "1" ] && newDate $restStart $restEnd $VACATIONFILE
-		[ "$enable" -eq "1" ] && echo "${comments} 已启用：从 $restStart 到 $restEnd" >> $VACATIONBAK || echo "${comments} 未启用：从 $restStart 到 $restEnd" >> $VACATIONBAK 
+		total=`uci_get_by_type $cfg`
+		while [[ $total -ge 0 ]]
+		do
+			enable=`config_get "$cfg" enable $total`
+			restStart=`config_get "$cfg" rest_start $total`
+			restEnd=`config_get "$cfg" rest_end $total`
+			comments=`config_get "$cfg" comment $total`
+			[ "$enable" -eq "1" ] && newDate $restStart $restEnd $VACATIONFILE
+			[ "$enable" -eq "1" ] && echo "${comments} 已启用：从 $restStart 到 $restEnd" >> $VACATIONBAK || echo "${comments} 未启用：从 $restStart 到 $restEnd" >> $VACATIONBAK 
+			total=$((total-1))
+		done
 	}
-	config_load oafControl
-	config_foreach config_vacation vacation
+	config_vacation
 	sed -i '/^$/d' $VACATIONFILE
 	sed -i '/^$/d' $VACATIONBAK
 }
 
 init_overtime(){
+	local cfg="overtime"
 	echo "" > $OVERTIMEFILE
 	echo "" > $OVERIIMEBAK
 	config_overtime(){
-		config_get enable "$1" enable
-		config_get overtimeStart "$1" overtime_start
-		config_get overtimeEnd "$1" overtime_end
-		config_get comments "$1" comment
-		[ "$enable" -eq "1" ] && newDate $overtimeStart $overtimeEnd $OVERTIMEFILE
-		[ "$enable" -eq "1" ] && echo "${comments} 已启用：从 $overtimeStart 到 $overtimeEnd" >> $OVERIIMEBAK || echo "${comments} 未启用：从 $restStart 到 $restEnd" >> $OVERIIMEBAK 
+		total=`uci_get_by_type $cfg`
+		while [[ $total -ge 0 ]]
+		do
+			enable=`config_get "$cfg" enable $total`
+			overtimeStart=`config_get "$cfg" overtime_start $total`
+			overtimeEnd=`config_get "$cfg" overtime_end $total`
+			comments=`config_get "$cfg" comment $total`
+			[ "$enable" -eq "1" ] && newDate $overtimeStart $overtimeEnd $OVERTIMEFILE
+			[ "$enable" -eq "1" ] && echo "${comments} 已启用：从 $overtimeStart 到 $overtimeEnd" >> $OVERIIMEBAK || echo "${comments} 未启用：从 $restStart 到 $restEnd" >> $OVERIIMEBAK 
+			total=$((total-1))
+		done
 	}
-	config_load oafControl
-	config_foreach config_overtime overtime
+	config_overtime
 	sed -i '/^$/d' $OVERTIMEFILE
 	sed -i '/^$/d' $OVERIIMEBAK
 }
 
 init_workday(){
-	enable=`uci get oafControl.@workday[0].enabled`
+	enable=`uci_get_workday enabled`
 	[ "$enable" != "1" ] && sed -i '/#oafControl_workday/d' /etc/crontabs/root && return
-	workday=$(uci get oafControl.@workday[0].daysofweek | sed "s/ /,/g" 2>/dev/null)
-    morning_start=$(uci get oafControl.@workday[0].workday_morning_start 2>/dev/null)
-    morning_stop=$(uci get oafControl.@workday[0].workday_morning_stop 2>/dev/null)
-    afternoon_start=$(uci get oafControl.@workday[0].workday_afternoon_start 2>/dev/null)
-    afternoon_stop=$(uci get oafControl.@workday[0].workday_afternoon_stop 2>/dev/null)
-    night_start=$(uci get oafControl.@workday[0].workday_night_start 2>/dev/null)
-    night_stop=$(uci get oafControl.@workday[0].workday_night_stop 2>/dev/null)
+	workday=$(uci_get_workday daysofweek | sed "s/ /,/g")
+    morning_start=$(uci_get_workday workday_morning_start)
+    morning_stop=$(uci_get_workday workday_morning_stop)
+    afternoon_start=$(uci_get_workday workday_afternoon_start)
+    afternoon_stop=$(uci_get_workday workday_afternoon_stop)
+    night_start=$(uci_get_workday workday_night_start)
+    night_stop=$(uci_get_workday workday_night_stop)
 	morning_start_hour=$(isHour `echo $morning_start | separate_front` 2>/dev/null)
 	morning_start_minu=$(isMinu `echo $morning_start | separate_back` 2>/dev/null)
 	morning_stop_hour=$(isHour `echo $morning_stop | separate_front` 2>/dev/null)
@@ -219,19 +262,19 @@ init_workday(){
 	[ "$night_start_minu" -a "$night_start_hour" -a "$night_stop_minu" -a "$night_stop_hour" ] && add_cron $night_stop_minu $night_stop_hour $workday "oafControl_workday_night_stop"
 	killall crond
 	/usr/sbin/crond
-	echo "`date '+%A %Y-%m-%d %H:%M:%S'`：已添加工作日定时任务" >> $LOGFILE
+	echo "`DATE`：已添加工作日定时任务" >> $LOGFILE
 }
 
 init_weekday(){
-	enable=`uci get oafControl.@weekday[0].enabled`
+	enable=`uci_get_weekday enabled`
 	[ "$enable" != "1" ] && sed -i '/#oafControl_weekday/d' /etc/crontabs/root && return
-	weekday=$(uci get oafControl.@weekday[0].daysofweek | sed "s/ /,/g" 2>/dev/null)
-    morning_start=$(uci get oafControl.@weekday[0].weekday_morning_start 2>/dev/null)
-    morning_stop=$(uci get oafControl.@weekday[0].weekday_morning_stop 2>/dev/null)
-    afternoon_start=$(uci get oafControl.@weekday[0].weekday_afternoon_start 2>/dev/null)
-    afternoon_stop=$(uci get oafControl.@weekday[0].weekday_afternoon_stop 2>/dev/null)
-    night_start=$(uci get oafControl.@weekday[0].weekday_night_start 2>/dev/null)
-    night_stop=$(uci get oafControl.@weekday[0].weekday_night_stop 2>/dev/null)
+	weekday=$(uci_get_weekday daysofweek | sed "s/ /,/g")
+    morning_start=$(uci_get_weekday weekday_morning_start)
+    morning_stop=$(uci_get_weekday weekday_morning_stop)
+    afternoon_start=$(uci_get_weekday weekday_afternoon_start)
+    afternoon_stop=$(uci_get_weekday weekday_afternoon_stop)
+    night_start=$(uci_get_weekday weekday_night_start)
+    night_stop=$(uci_get_weekday weekday_night_stop)
 	morning_start_hour=$(isHour `echo $morning_start | separate_front` 2>/dev/null)
 	morning_start_minu=$(isMinu `echo $morning_start | separate_back` 2>/dev/null)
 	morning_stop_hour=$(isHour `echo $morning_stop | separate_front` 2>/dev/null)
@@ -252,15 +295,15 @@ init_weekday(){
 	[ "$night_start_minu" -a "$night_start_hour" -a "$night_stop_minu" -a "$night_stop_hour" ] && add_cron $night_stop_minu $night_stop_hour $weekday "oafControl_weekday_night_stop"
 	killall crond
 	/usr/sbin/crond
-	echo "`date '+%A %Y-%m-%d %H:%M:%S'`：已添加非工作日定时任务" >> $LOGFILE
+	echo "`DATE`：已添加非工作日定时任务" >> $LOGFILE
 }
 
 control_appfilter(){
 	uci set appfilter.global.enable=$1
 	uci commit appfilter
 	/etc/init.d/appfilter restart
-	[ $1 = 1 ] && echo "`date '+%A %Y-%m-%d %H:%M:%S'`：应用过滤已开启" >> $LOGFILE
-	[ $1 = 0 ] && echo "`date '+%A %Y-%m-%d %H:%M:%S'`：应用过滤已关闭" >> $LOGFILE
+	[ $1 = 1 ] && echo "`DATE`：应用过滤已开启" >> $LOGFILE
+	[ $1 = 0 ] && echo "`DATE`：应用过滤已关闭" >> $LOGFILE
 }
 
 isVacation(){
@@ -270,14 +313,14 @@ isVacation(){
 		do 
 			if [ "$line" = "$today" ]; then
 #				control_appfilter 0
-				echo "`date '+%A %Y-%m-%d %H:%M:%S'`：今天放假" >> $LOGFILE
+				echo "`DATE`：今天放假" >> $LOGFILE
 				echo "1"
 				return
 			fi
 		done
 	else
 #		control_appfilter 1
-		echo "`date '+%A %Y-%m-%d %H:%M:%S'`：今天正常上班" >> $LOGFILE
+		echo "`DATE`：今天正常上班" >> $LOGFILE
 		echo "0"
 	fi
 }
@@ -289,14 +332,14 @@ isOvertime(){
 		do 
 			if [ "$line" = "$today" ]; then
 #				control_appfilter 1
-				echo "`date '+%A %Y-%m-%d %H:%M:%S'`：今天加班" >> $LOGFILE
+				echo "`DATE`：今天加班" >> $LOGFILE
 				echo "1"
 				return
 			fi
 		done	
 	else
 #		control_appfilter 0
-		echo "`date '+%A %Y-%m-%d %H:%M:%S'`：今天放假" >> $LOGFILE
+		echo "`DATE`：今天放假" >> $LOGFILE
 		echo "1"
 	fi
 }
@@ -315,13 +358,13 @@ global_control(){
 		today=`date +%Y-%m-%d`
 		month=$(expr `echo $val_1 | awk -F "-" '{print $2}'` + 0)
 		day=$(expr `echo $val_1 | awk -F "-" '{print $3}'` + 0)
-		morning_start=$(uci get oafControl.@weekday[0].weekday_morning_start 2>/dev/null)
-		morning_stop=$(uci get oafControl.@weekday[0].weekday_morning_stop 2>/dev/null)
-		afternoon_start=$(uci get oafControl.@weekday[0].weekday_afternoon_start 2>/dev/null)
-		afternoon_stop=$(uci get oafControl.@weekday[0].weekday_afternoon_stop 2>/dev/null)
-		night_start=$(uci get oafControl.@weekday[0].weekday_night_start 2>/dev/null)
-		night_stop=$(uci get oafControl.@weekday[0].weekday_night_stop 2>/dev/null)
-		morning_start_hour=$(isHour `echo $morning_start | separate_front`)
+		morning_start=$(uci_get_weekday weekday_morning_start)
+		morning_stop=$(uci_get_weekday weekday_morning_stop)
+		afternoon_start=$(uci_get_weekday weekday_afternoon_start)
+		afternoon_stop=$(uci_get_weekday weekday_afternoon_stop)
+		night_start=$(uci_get_weekday weekday_night_start)
+		night_stop=$(uci_get_weekday weekday_night_stop)
+		morning_start_hour=$(isHour `echo $morning_start | separate_front` 2>/dev/null)
 		morning_start_minu=$(isMinu `echo $morning_start | separate_back` 2>/dev/null)
 		morning_stop_hour=$(isHour `echo $morning_stop | separate_front` 2>/dev/null)
 		morning_stop_minu=$(isMinu `echo $morning_stop | separate_back` 2>/dev/null)
@@ -345,13 +388,13 @@ global_control(){
 }
 global_start(){
 	control_appfilter 1
-	echo "`date '+%A %Y-%m-%d %H:%M:%S'`：上班了" >> $LOGFILE
+	echo "`DATE`：上班了" >> $LOGFILE
 }
 
 global_stop(){
 	control_appfilter 0
-	echo "`date '+%A %Y-%m-%d %H:%M:%S'`：下班了" >> $LOGFILE
-	[ -n "$1" ] && 	(sed -i '/#oafControl/d' /etc/crontabs/root && echo "`date '+%A %Y-%m-%d %H:%M:%S'`：关闭应用过滤控制器" >> $LOGFILE)
+	echo "`DATE`：下班了" >> $LOGFILE
+	[ -n "$1" ] && 	(sed -i '/#oafControl/d' /etc/crontabs/root && echo "`DATE`：关闭应用过滤控制器" >> $LOGFILE)
 }
 
 [ "$mode" = "global_stop" -a "$fun" = "all" ] && global_stop all

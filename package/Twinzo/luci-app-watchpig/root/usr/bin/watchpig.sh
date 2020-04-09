@@ -112,12 +112,11 @@ watchpig_ping() {
 			else
 				time_diff="$((time_now-time_lastcheck_withinternet))"
 				[ $("lang") -ne 1 ] && logger -p daemon.info -t "watchpig[$$]" "no internet connectivity for $time_diff seconds. Reseting when reaching $realperiod seconds"
-				[ $("lang") -eq 1 ] && logger -p daemon.info -t "watchpig[$$]" "网络中断达$time_diff秒。达到$realperiod秒时重置"
+				[ $("lang") -eq 1 ] && logger -p daemon.info -t "watchpig[$$]" "网络中断达${time_diff}秒。达到${realperiod}秒时重置"
 				[ $("lang") -eq 1 ] && logger -p daemon.info -t "watchpig[$$]" "别担心，这可能只是普通的延迟"
 			fi
 		done
 
-		time_diff="$((time_now-time_lastcheck_withinternet))"
 		[ "$time_diff" -ge "$period" ] && watchpig_ping_behaviour "$behave" && eval "$custom"
 
 	done

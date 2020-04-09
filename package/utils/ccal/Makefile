@@ -40,6 +40,7 @@ endef
 define Package/ccal/install
 	$(INSTALL_DIR) $(1)/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/ccal $(1)/sbin/
+	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(1)/sbin/ccal
 endef
 
 $(eval $(call BuildPackage,ccal))
