@@ -2,6 +2,8 @@
 =
 Welcome to Lean's  git source of OpenWrt and packages
 =
+庆祝：2020-4-20 luci界面恢复到与lean原版速度一样快
+-----
 中文：如何编译自己需要的 OpenWrt 固件
 -
 注意：
