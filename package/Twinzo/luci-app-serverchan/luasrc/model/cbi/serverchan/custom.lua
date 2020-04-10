@@ -149,7 +149,10 @@ function logfile.cfgvalue(s,s)
 		log_File=luci.sys.exec("tail -n 100 %s"%log_file)
 	end
 return log_File
-end---------------------datepicker-------------------------
+end
+logfile.write=function(s,s,s)
+end
+---------------------datepicker-------------------------
 c = m:section(TypedSection, "none")
 c.anonymous=true
 k=c:option(DummyValue,"none")
