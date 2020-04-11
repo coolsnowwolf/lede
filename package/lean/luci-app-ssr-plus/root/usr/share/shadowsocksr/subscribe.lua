@@ -19,7 +19,7 @@ local cache = {}
 local nodeResult = setmetatable({}, { __index = cache })  -- update result
 local name = 'shadowsocksr'
 local uciType = 'servers'
-local ucic = uci.cursor()
+local ucic = luci.model.uci.cursor()
 local proxy = ucic:get_first(name, 'server_subscribe', 'proxy', '0')
 local switch = ucic:get_first(name, 'server_subscribe', 'switch', '1')
 local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
