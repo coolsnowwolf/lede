@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ls-rcw
-PKG_VERSION:=lsdk-1806
+PKG_VERSION:=lsdk-1903
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://source.codeaurora.org/external/qoriq/qoriq-components/rcw
-PKG_SOURCE_VERSION:=1f43bef4b4475d8e81c9b3b8c5bdd6c1ce8cfa6c
-PKG_MIRROR_HASH:=a3b455bcc1f070c8e51f520e32b62cec5b05d772d7ae4a876d88fd5f278a7b1c
+PKG_SOURCE_VERSION:=f1377876cc06a87ec8afa8a3412ca7c8455861f2
+PKG_MIRROR_HASH:=a9c97755809994a668ee5f0e535cef9f344fc5523c4299ac76f26c63976c80bc
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -30,12 +30,12 @@ endef
 
 define Package/layerscape-rcw/ls1012ardb
   TITLE:=NXP LS1012ARDB RCW binary
-  CONFIG:=ls1012ardb/R_SPNH_3508/rcw_1000_default.bin.swapped
+  CONFIG:=ls1012ardb/R_SPNH_3508/rcw_1000_default.bin
 endef
 
 define Package/layerscape-rcw/ls1012afrwy
   TITLE:=NXP LS1012AFRWY RCW binary
-  CONFIG:=ls1012afrwy/N_SSNP_3305/rcw_1000_default.bin.swapped
+  CONFIG:=ls1012afrwy/N_SSNP_3305/rcw_1000_default.bin
 endef
 
 define Package/layerscape-rcw/ls1043ardb
@@ -43,9 +43,19 @@ define Package/layerscape-rcw/ls1043ardb
   CONFIG:=ls1043ardb/RR_FQPP_1455/rcw_1600.bin
 endef
 
+define Package/layerscape-rcw/ls1043ardb-sdboot
+  TITLE:=NXP LS1043ARDB SD card boot RCW binary
+  CONFIG:=ls1043ardb/RR_FQPP_1455/rcw_1600_sdboot.bin
+endef
+
 define Package/layerscape-rcw/ls1046ardb
   TITLE:=NXP LS1046ARDB RCW binary
-  CONFIG:=ls1046ardb/RR_FFSSPPPH_1133_5559/rcw_1800_qspiboot.bin.swapped
+  CONFIG:=ls1046ardb/RR_FFSSPPPH_1133_5559/rcw_1800_qspiboot.bin
+endef
+
+define Package/layerscape-rcw/ls1046ardb-sdboot
+  TITLE:=NXP LS1046ARDB SD card boot RCW binary
+  CONFIG:=ls1046ardb/RR_FFSSPPPH_1133_5559/rcw_1800_sdboot.bin
 endef
 
 define Package/layerscape-rcw/ls1088ardb
@@ -79,7 +89,9 @@ RCWS := \
   ls1012ardb \
   ls1012afrwy \
   ls1043ardb \
+  ls1043ardb-sdboot \
   ls1046ardb \
+  ls1046ardb-sdboot \
   ls1088ardb \
   ls1088ardb-sdboot \
   ls2088ardb \

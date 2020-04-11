@@ -48,10 +48,17 @@ platform_do_upgrade() {
 	netgear,r6220|\
 	netgear,r6260|\
 	netgear,r6350|\
+	netgear,r6700-v2|\
 	netgear,r6800|\
 	netgear,r6850|\
+	netis,wf2881|\
 	xiaomi,mir3g|\
 	xiaomi,mir3p)
+		nand_do_upgrade "$1"
+		;;
+	iodata,wn-ax1167gr2|\
+	iodata,wn-dx1167r)
+		iodata_mstc_upgrade_prepare
 		nand_do_upgrade "$1"
 		;;
 	ubiquiti,edgerouterx|\

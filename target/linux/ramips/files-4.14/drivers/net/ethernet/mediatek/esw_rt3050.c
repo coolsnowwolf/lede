@@ -617,6 +617,10 @@ static void esw_hw_init(struct rt305x_esw *esw)
 		/* reset EPHY */
 		fe_reset(RT5350_RESET_EPHY);
 
+		/* set the led polarity */
+		esw_w32(esw, esw->reg_led_polarity & 0x1F,
+			RT5350_EWS_REG_LED_POLARITY);
+
 		rt305x_mii_write(esw, 0, 31, 0x2000); /* change G2 page */
 		rt305x_mii_write(esw, 0, 26, 0x0020);
 

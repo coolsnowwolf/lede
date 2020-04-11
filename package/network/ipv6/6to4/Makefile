@@ -25,7 +25,7 @@ endef
 
 define Package/6to4/description
 Provides support for 6to4 tunnels in /etc/config/network.
-Refer to http://wiki.openwrt.org/doc/uci/network for
+Refer to https://openwrt.org/docs/guide-user/base-system/basic-networking
 configuration details.
 endef
 

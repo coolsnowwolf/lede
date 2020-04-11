@@ -157,18 +157,13 @@ endif
 
 
 # Disable noisy checks by default as in upstream
-ifeq ($(strip $(call kernel_patchver_ge,4.7.0)),1)
-  DTC_FLAGS += -Wno-unit_address_vs_reg
-endif
-ifeq ($(strip $(call kernel_patchver_ge,4.12.0)),1)
-  DTC_FLAGS += \
-	-Wno-unit_address_vs_reg \
-	-Wno-simple_bus_reg \
-	-Wno-unit_address_format \
-	-Wno-pci_bridge \
-	-Wno-pci_device_bus_num \
-	-Wno-pci_device_reg
-endif
+DTC_FLAGS += \
+  -Wno-unit_address_vs_reg \
+  -Wno-simple_bus_reg \
+  -Wno-unit_address_format \
+  -Wno-pci_bridge \
+  -Wno-pci_device_bus_num \
+  -Wno-pci_device_reg
 ifeq ($(strip $(call kernel_patchver_ge,4.17.0)),1)
   DTC_FLAGS += \
 	-Wno-avoid_unnecessary_addr_size \
@@ -420,6 +415,7 @@ define Device/Init
   DEVICE_DTS :=
   DEVICE_DTS_CONFIG :=
   DEVICE_DTS_DIR :=
+  SOC :=
 
   BOARD_NAME :=
   UIMAGE_NAME :=
@@ -437,7 +433,7 @@ DEFAULT_DEVICE_VARS := \
   DEVICE_NAME KERNEL KERNEL_INITRAMFS KERNEL_INITRAMFS_IMAGE KERNEL_SIZE \
   CMDLINE UBOOTENV_IN_UBI KERNEL_IN_UBI BLOCKSIZE PAGESIZE SUBPAGESIZE \
   VID_HDR_OFFSET UBINIZE_OPTS UBINIZE_PARTS MKUBIFS_OPTS DEVICE_DTS \
-  DEVICE_DTS_CONFIG DEVICE_DTS_DIR BOARD_NAME UIMAGE_NAME SUPPORTED_DEVICES \
+  DEVICE_DTS_CONFIG DEVICE_DTS_DIR SOC BOARD_NAME UIMAGE_NAME SUPPORTED_DEVICES \
   IMAGE_METADATA KERNEL_ENTRY KERNEL_LOADADDR UBOOT_PATH DEVICE_VENDOR \
   DEVICE_MODEL DEVICE_VARIANT \
   DEVICE_ALT0_VENDOR DEVICE_ALT0_MODEL DEVICE_ALT0_VARIANT \
@@ -592,7 +588,7 @@ define Device/Build/image
 		DEVICE_ALT2_VARIANT="$(DEVICE_ALT2_VARIANT)" \
 		DEVICE_TITLE="$(DEVICE_TITLE)" \
 		TARGET="$(BOARD)" \
-		SUBTARGET="$(SUBTARGET)" \
+		SUBTARGET="$(if $(SUBTARGET),$(SUBTARGET),generic)" \
 		VERSION_NUMBER="$(VERSION_NUMBER)" \
 		VERSION_CODE="$(VERSION_CODE)" \
 		SUPPORTED_DEVICES="$(SUPPORTED_DEVICES)" \

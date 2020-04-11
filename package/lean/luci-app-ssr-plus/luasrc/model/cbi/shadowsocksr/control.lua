@@ -18,28 +18,44 @@ o.datatype = "ip4addr"
 -- Part of LAN
 s:tab("lan_ac", translate("LAN IP AC"))
 
-o = s:taboption("lan_ac", DynamicList, "lan_ac_ips", translate("LAN Bypassed Host List"))
+o = s:taboption("lan_ac", ListValue, "lan_ac_mode", translate("LAN Access Control"))
+o:value("0", translate("Disable"))
+o:value("w", translate("Allow listed only"))
+o:value("b", translate("Allow all except listed"))
+o.rmempty = false
+
+o = s:taboption("lan_ac", DynamicList, "lan_ac_ips", translate("LAN Host List"))
 o.datatype = "ipaddr"
 luci.ip.neighbors({ family = 4 }, function(entry)
-       if entry.reachable then
-               o:value(entry.dest:string())
-       end
+		if entry.reachable then
+			o:value(entry.dest:string())
+		end
+end)
+o:depends("lan_ac_mode", "w")
+o:depends("lan_ac_mode", "b")
+
+o = s:taboption("lan_ac", DynamicList, "lan_bp_ips", translate("LAN Bypassed Host List"))
+o.datatype = "ipaddr"
+luci.ip.neighbors({ family = 4 }, function(entry)
+		if entry.reachable then
+			o:value(entry.dest:string())
+		end
 end)
 
 o = s:taboption("lan_ac", DynamicList, "lan_fp_ips", translate("LAN Force Proxy Host List"))
 o.datatype = "ipaddr"
 luci.ip.neighbors({ family = 4 }, function(entry)
-       if entry.reachable then
-               o:value(entry.dest:string())
-       end
+		if entry.reachable then
+			o:value(entry.dest:string())
+		end
 end)
 
 o = s:taboption("lan_ac", DynamicList, "lan_gm_ips", translate("Game Mode Host List"))
 o.datatype = "ipaddr"
 luci.ip.neighbors({ family = 4 }, function(entry)
-       if entry.reachable then
-               o:value(entry.dest:string())
-       end
+		if entry.reachable then
+			o:value(entry.dest:string())
+		end
 end)
 
 -- Part of Self
@@ -83,6 +99,40 @@ o.write = function(self, section, value)
 end
 o.remove = function(self, section, value)
 	NXFS.writefile(blockconf, "")
+end
+
+s:tab("netflix",  translate("Netflix Domain List"))
+
+local netflixconf = "/etc/config/netflix.list"
+o = s:taboption("netflix", TextValue, "netflixconf")
+o.rows = 13
+o.wrap = "off"
+o.rmempty = true
+o.cfgvalue = function(self, section)
+	return NXFS.readfile(netflixconf) or " "
+end
+o.write = function(self, section, value)
+	NXFS.writefile(netflixconf, value:gsub("\r\n", "\n"))
+end
+o.remove = function(self, section, value)
+	NXFS.writefile(netflixconf, "")
+end
+
+s:tab("netflixip",  translate("Netflix IP List"))
+
+local netflixipconf = "/etc/config/netflixip.list"
+o = s:taboption("netflixip", TextValue, "netflixipconf")
+o.rows = 13
+o.wrap = "off"
+o.rmempty = true
+o.cfgvalue = function(self, section)
+	return NXFS.readfile(netflixipconf) or " "
+end
+o.write = function(self, section, value)
+	NXFS.writefile(netflixipconf, value:gsub("\r\n", "\n"))
+end
+o.remove = function(self, section, value)
+	NXFS.writefile(netflixipconf, "")
 end
 
 return m
