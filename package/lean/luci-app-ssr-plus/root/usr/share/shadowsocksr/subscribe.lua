@@ -10,27 +10,56 @@ require 'luci.sys'
 require 'uci'
 -- these global functions are accessed all the time by the event handler
 -- so caching them is worth the effort
-local luci = luci
 local tinsert = table.insert
 local ssub, slen, schar, sbyte, sformat, sgsub = string.sub, string.len, string.char, string.byte, string.format, string.gsub
 local jsonParse, jsonStringify = luci.jsonc.parse, luci.jsonc.stringify
 local b64decode = nixio.bin.b64decode
-local cache = {}
-local nodeResult = setmetatable({}, { __index = cache })  -- update result
-local name = 'shadowsocksr'
+local nodeResult = {} -- update result
+local application = 'shadowsocksr'
 local uciType = 'servers'
-local ucic = uci.cursor()
-local proxy = ucic:get_first(name, 'server_subscribe', 'proxy', '0')
-local switch = ucic:get_first(name, 'server_subscribe', 'switch', '1')
-local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
-local filter_words = ucic:get_first(name, 'server_subscribe', 'filter_words', 'QQ群')
+local ucic2 = uci.cursor()
+local proxy = ucic2:get(application, '@server_subscribe[0]', 'proxy') or '0'
+local switch = ucic2:get(application, '@server_subscribe[0]', 'switch') or '1'
+local subscribe_url = ucic2:get(application, '@server_subscribe[0]', 'subscribe_url') or {}
+local filter_words = ucic2:get(application, '@server_subscribe[0]', 'filter_words') or '过期时间/剩余流量'
+ucic2:revert(application)
 
 local log = function(...)
 	print(os.date("%Y-%m-%d %H:%M:%S ") .. table.concat({ ... }, " "))
 end
+
+-- 获取各项动态配置的当前服务器，可以用 get 和 set， get必须要获取到节点表
+local CONFIG = {
+	GLOBAL_SERVER = {
+	remarks = '主节点',
+	type = "global", option = "global_server",
+	set = function(server)
+		ucic2:set(application, '@global[0]', "global_server", server)
+	end
+	}
+}
+do
+	for k, v in pairs(CONFIG) do
+		local currentNode
+		if v.get then
+			currentNode = v.get()
+		else
+			local cfgid = ucic2:get(application, '@' .. v.type .. '[0]', v.option)
+			if cfgid then
+				currentNode = ucic2:get_all(application, cfgid)
+			end
+		end
+		if currentNode then
+			CONFIG[k].currentNode = currentNode
+		else
+			CONFIG[k] = nil
+		end
+	end
+end
+
 -- 分割字符串
 local function split(full, sep)
-	full = full:gsub("%z", "")  -- 这里不是很清楚 有时候结尾带个\0
+	full = full:gsub("%z", "") -- 这里不是很清楚 有时候结尾带个\0
 	local off, result = 1, {}
 	while true do
 		local nStart, nEnd = full:find(sep, off)
@@ -48,15 +77,15 @@ local function split(full, sep)
 	return result
 end
 -- urlencode
-local function get_urlencode(c)
-	return sformat("%%%02X", sbyte(c))
-end
+-- local function get_urlencode(c)
+-- return sformat("%%%02X", sbyte(c))
+-- end
 
-local function urlEncode(szText)
-	local str = szText:gsub("([^0-9a-zA-Z ])", get_urlencode)
-	str = str:gsub(" ", "+")
-	return str
-end
+-- local function urlEncode(szText)
+-- local str = szText:gsub("([^0-9a-zA-Z ])", get_urlencode)
+-- str = str:gsub(" ", "+")
+-- return str
+-- end
 
 local function get_urldecode(h)
 	return schar(tonumber(h, 16))
@@ -72,12 +101,7 @@ local function trim(text)
 	end
 	return (sgsub(text, "^%s*(.-)%s*$", "%1"))
 end
--- md5
-local function md5(content)
-	local stdout = luci.sys.exec('echo \"' .. urlEncode(content) .. '\" | md5sum | cut -d \" \"  -f1')
-	-- assert(nixio.errno() == 0)
-	return trim(stdout)
-end
+
 -- base64
 local function base64Decode(text)
 	local raw = text
@@ -99,7 +123,8 @@ local function processData(szType, content)
 	local result = {
 	type = szType,
 	local_port = 1234,
-	kcp_param = '--nocomp'
+	kcp_param = '--nocomp',
+	isSubscribe = 1,
 	}
 	if szType == 'ssr' then
 		local dat = split(content, "/%?")
@@ -119,7 +144,7 @@ local function processData(szType, content)
 		result.protocol_param = base64Decode(params.protoparam)
 		local group = base64Decode(params.group)
 		if group then
-			result.alias = "["  .. group .. "] "
+			result.alias = "[" .. group .. "] "
 		end
 		result.alias = result.alias .. base64Decode(params.remarks)
 	elseif szType == 'vmess' then
@@ -263,14 +288,6 @@ local function processData(szType, content)
 	if not result.alias then
 		result.alias = result.server .. ':' .. result.server_port
 	end
-	-- alias 不参与 hashkey 计算
-	local alias = result.alias
-	result.alias = nil
-	local switch_enable = result.switch_enable
-	result.switch_enable = nil
-	result.hashkey = md5(jsonStringify(result))
-	result.alias = alias
-	result.switch_enable = switch_enable
 	return result
 end
 -- wget
@@ -280,15 +297,67 @@ local function wget(url)
 end
 
 local function check_filer(result)
-  do 
-    local filter_word = split(filter_words, "/")
-    for i, v in pairs(filter_word) do
-        if result.alias:find(v) then
-          log('订阅节点关键字过滤:“' .. v ..'” ，该节点被丢弃')
-          return true
-        end
-    end 
-  end
+	do
+		local filter_word = split(filter_words, "/")
+		for i, v in pairs(filter_word) do
+			if result.alias:find(v) then
+				log('订阅节点关键字过滤:“' .. v ..'” ，该节点被丢弃')
+				return true
+			end
+		end
+	end
+end
+
+local function select_node(nodes, config)
+	local server
+	-- 第一优先级 IP + 端口
+	for id, node in pairs(nodes) do
+		if node.server .. ':' .. node.server_port == config.currentNode.server .. ':' .. config.currentNode.server_port then
+			log('选择【' .. config.remarks .. '】第一匹配节点：' .. node.alias)
+			server = id
+			break
+		end
+	end
+	-- 第二优先级 IP
+	if not server then
+		for id, node in pairs(nodes) do
+			if node.server == config.currentNode.server then
+				log('选择【' .. config.remarks .. '】第二匹配节点：' .. node.alias)
+				server = id
+				break
+			end
+		end
+	end
+	-- 第三优先级备注
+	if not server then
+		for id, node in pairs(nodes) do
+			if node.alias == config.currentNode.alias then
+				log('选择【' .. config.remarks .. '】第三匹配节点：' .. node.alias)
+				server = id
+				break
+			end
+		end
+	end
+	-- 第四 cfgid
+	if not server then
+		for id, node in pairs(nodes) do
+			if id == config.currentNode['.name'] then
+				log('选择【' .. config.remarks .. '】第四匹配节点：' .. node.alias)
+				server = id
+				break
+			end
+		end
+	end
+	-- 还不行 随便找一个
+	if not server then
+		server = ucic2:get(application, '@'.. uciType .. '[0]')
+		if server then
+			log('无法找到最匹配的节点，当前已更换为' .. ucic2:get_all(application, server).alias)
+		end
+	end
+	if server then
+		config.set(server)
+	end
 end
 
 local execute = function()
@@ -296,15 +365,14 @@ local execute = function()
 	do
 		if proxy == '0' then -- 不使用代理更新的话先暂停
 			log('服务正在暂停')
-			luci.sys.init.stop(name)
+			luci.sys.init.stop(application)
 		end
 		for k, url in ipairs(subscribe_url) do
 			local raw = wget(url)
 			if #raw > 0 then
 				local nodes, szType
-				local groupHash = md5(url)
-				cache[groupHash] = {}
-				tinsert(nodeResult, {})
+				local all_odes = {}
+				tinsert(nodeResult, all_odes)
 				local index = #nodeResult
 				-- SSD 似乎是这种格式 ssd:// 开头的
 				if raw:find('ssd://') then
@@ -313,10 +381,10 @@ local execute = function()
 					nodes = base64Decode(raw:sub(nEnd + 1, #raw))
 					nodes = jsonParse(nodes)
 					local extra = {
-						airport = nodes.airport,
-						port = nodes.port,
-						encryption = nodes.encryption,
-						password = nodes.password
+					airport = nodes.airport,
+					port = nodes.port,
+					encryption = nodes.encryption,
+					password = nodes.password
 					}
 					local servers = {}
 					-- SS里面包着 干脆直接这样
@@ -349,16 +417,15 @@ local execute = function()
 						-- log(result)
 						if result then
 							if
-                not result.server or
-                check_filer(result) or
-                result.server:match("[^0-9a-zA-Z%-%.%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
-							then
+								not result.server or
+								not result.server_port or
+								check_filer(result) or
+								result.server:match("[^0-9a-zA-Z%-%.%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
+								then
 								log('丢弃无效节点: ' .. result.type ..' 节点, ' .. result.alias)
 							else
 								log('成功解析: ' .. result.type ..' 节点, ' .. result.alias)
-								result.grouphashkey = groupHash
-								tinsert(nodeResult[index], result)
-								cache[groupHash][result.hashkey] = nodeResult[index][#nodeResult[index]]
+								tinsert(all_odes, result)
 							end
 						end
 					end
@@ -371,61 +438,45 @@ local execute = function()
 	end
 	-- diff
 	do
-		if next(nodeResult) == nil then
-			log("更新失败，没有可用的节点信息")
-			return
-		end
-		local add, del = 0, 0
-		ucic:foreach(name, uciType, function(old)
-			if old.grouphashkey or old.hashkey then -- 没有 hash 的不参与删除
-				if not nodeResult[old.grouphashkey] or not nodeResult[old.grouphashkey][old.hashkey] then
-					ucic:delete(name, old['.name'])
-					del = del + 1
-				else
-					local dat = nodeResult[old.grouphashkey][old.hashkey]
-					ucic:tset(name, old['.name'], dat)
-					-- 标记一下
-					setmetatable(nodeResult[old.grouphashkey][old.hashkey], { __index =  { _ignore = true } })
-				end
-			else
-				if not old.alias then
-					old.alias = old.server .. ':' .. old.server_port
-				end
-				log('忽略手动添加的节点: ' .. old.alias)
+		assert(next(nodeResult), '更新失败，没有可用的节点信息')
+		-- delete all for subscribe nodes
+		ucic2:foreach(application, uciType, function(node)
+			if node.isSubscribe or node.hashkey then -- 兼容之前的hashkey
+				ucic2:delete(application, node['.name'])
 			end
-
 		end)
-		for k, v in ipairs(nodeResult) do
-			for kk, vv in ipairs(v) do
-				if not vv._ignore then
-					local section = ucic:add(name, uciType)
-					ucic:tset(name, section, vv)
-					ucic:set(name, section, "switch_enable", switch)
-					add = add + 1
+		for _, v in ipairs(nodeResult) do
+			for _, vv in ipairs(v) do
+				vv.switch_enable = switch
+				local cfgid = ucic2:add(application, uciType)
+				for kkk, vvv in pairs(vv) do
+					ucic2:set(application, cfgid, kkk, vvv)
 				end
 			end
 		end
-		ucic:commit(name)
-		-- 如果原有服务器节点已经不见了就尝试换为第一个节点
-		local globalServer = ucic:get_first(name, 'global', 'global_server', '')
-		local firstServer = ucic:get_first(name, uciType)
-		if firstServer then
-			if not ucic:get(name, globalServer) then
-				luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
-				ucic:commit(name)
-				ucic:set(name, ucic:get_first(name, 'global'), 'global_server', ucic:get_first(name, uciType))
-				ucic:commit(name)
-				log('当前主服务器节点已被删除，正在自动更换为第一个节点。')
-				luci.sys.call("/etc/init.d/" .. name .. " start > /dev/null 2>&1 &")
-			else
-				log('维持当前主服务器节点。')
-				luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &")
+		ucic2:commit(application)
+		local ucic3 = uci.cursor()
+		-- repair configuration
+		if next(CONFIG) then
+			local nodes = {}
+			ucic3:foreach(application, uciType, function(node)
+				if node.server and node.server_port and node.alias then
+					nodes[node['.name']] = node
+				end
+			end)
+			for _, config in pairs(CONFIG) do
+				select_node(nodes, config)
 			end
-		else
-			log('没有服务器节点了，停止服务')
-			luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
+			ucic3:commit(application)
 		end
-		log('新增节点数量: ' ..add, '删除节点数量: ' .. del)
+		-- select first server
+		local globalServer = ucic3:get(application, '@global[0]', 'global_server') or ''
+		if not globalServer or not ucic3:get_all(application, globalServer) then
+			ucic3:set(application, '@global[0]', 'global_server', select(2, ucic3:get(application, '@' .. uciType .. '[0]')))
+			ucic3:commit(application)
+			log('当前没有主节点，自动选择第一个节点开启服务。')
+		end
+		luci.sys.call("/etc/init.d/" .. application .." restart > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
 		log('订阅更新成功')
 	end
 end
@@ -435,12 +486,11 @@ if subscribe_url and #subscribe_url > 0 then
 		log(e)
 		log(debug.traceback())
 		log('发生错误, 正在恢复服务')
-		local firstServer = ucic:get_first(name, uciType)
-		if firstServer then
-			luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
+		if CONFIG.GLOBAL_SERVER and CONFIG.GLOBAL_SERVER.currentNode then
+			luci.sys.call("/etc/init.d/" .. application .." restart > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
 			log('重启服务成功')
 		else
-			luci.sys.call("/etc/init.d/" .. name .." stop > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
+			luci.sys.call("/etc/init.d/" .. application .." stop > /dev/null 2>&1 &") -- 不加&的话日志会出现的更早
 			log('停止服务成功')
 		end
 	end)
