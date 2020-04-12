@@ -46,7 +46,7 @@ if nixio.fs.access("/etc/dnsmasq.ssr/ad.conf") then
 end
 
 if nixio.fs.access("/etc/ssr/china_ssr.txt") then
-	ip_count = tonumber(luci.sys.exec("cat /etc/china_ssr.txt | wc -l"))
+	ip_count = tonumber(luci.sys.exec("cat /etc/ssr/china_ssr.txt | wc -l"))
 end
 
 if nixio.fs.access("/etc/ssr/netflixip.list") then
@@ -79,9 +79,9 @@ if luci.sys.call("busybox ps -w | grep ssr-server | grep -v grep >/dev/null") ==
 	server_run=1
 end
 
-if luci.sys.call("busybox ps -w | grep ssr-tunnel |grep -v grep >/dev/null") == 0 then
-	tunnel_run=1
-end
+-- if luci.sys.call("busybox ps -w | grep ssr-tunnel |grep -v grep >/dev/null") == 0 then
+-- 	tunnel_run=1
+-- end
 
 if luci.sys.call("pidof pdnsd >/dev/null") == 0 or (luci.sys.call("busybox ps -w | grep ssr-dns |grep -v grep >/dev/null") == 0 and luci.sys.call("pidof dns2socks >/dev/null") == 0)then
 	pdnsd_run=1
