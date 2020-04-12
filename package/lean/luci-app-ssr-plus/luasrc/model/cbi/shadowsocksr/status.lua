@@ -79,9 +79,9 @@ if luci.sys.call("busybox ps -w | grep ssr-server | grep -v grep >/dev/null") ==
 	server_run=1
 end
 
-if luci.sys.call("busybox ps -w | grep ssr-tunnel |grep -v grep >/dev/null") == 0 then
-	tunnel_run=1
-end
+-- if luci.sys.call("busybox ps -w | grep ssr-tunnel |grep -v grep >/dev/null") == 0 then
+-- 	tunnel_run=1
+-- end
 
 if luci.sys.call("pidof pdnsd >/dev/null") == 0 or (luci.sys.call("busybox ps -w | grep ssr-dns |grep -v grep >/dev/null") == 0 and luci.sys.call("pidof dns2socks >/dev/null") == 0)then
 	pdnsd_run=1
