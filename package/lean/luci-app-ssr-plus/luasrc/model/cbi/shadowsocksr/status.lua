@@ -46,7 +46,7 @@ if nixio.fs.access("/etc/dnsmasq.ssr/ad.conf") then
 end
 
 if nixio.fs.access("/etc/ssr/china_ssr.txt") then
-	ip_count = tonumber(luci.sys.exec("cat /etc/china_ssr.txt | wc -l"))
+	ip_count = tonumber(luci.sys.exec("cat /etc/ssr/china_ssr.txt | wc -l"))
 end
 
 if nixio.fs.access("/etc/ssr/netflixip.list") then
