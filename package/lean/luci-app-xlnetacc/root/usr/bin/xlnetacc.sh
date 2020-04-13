@@ -191,6 +191,13 @@ swjsq_login() {
 			json_get_var _userid "userID"
 			json_get_var _loginkey "loginKey"
 			json_get_var _sessionid "sessionID"
+			#保存最近一次的登录信息到配置文件(wybb)
+			uci set $NAME.general.userID=$_userid
+			uci set $NAME.general.loginKey=$_loginkey
+			uci set $NAME.general.sessionid=$_sessionid
+			uci commit $NAME
+			_log "_userid is $_userid" $(( 1 | 4 ))
+			_log "_loginkey is $_loginkey" $(( 1 | 4 ))
 			_log "_sessionid is $_sessionid" $(( 1 | 4 ))
 			local outmsg="帐号登录成功"; _log "$outmsg" $(( 1 | 8 ))
 			;;
@@ -549,7 +556,6 @@ xlnetacc_logout() {
 	xlnetacc_retry 'swjsq_logout' 0 0 $retry
 	[ $down_acc -ne 0 ] && down_acc=1; [ $up_acc -ne 0 ] && up_acc=1
 	_sessionid=; _dial_account=
-
 	[ $lasterr -eq 0 ] && return 0 || return 1
 }
 
@@ -584,6 +590,10 @@ xlnetacc_init() {
 	readonly username=$(uci_get_by_name "general" "account")
 	readonly password=$(uci_get_by_name "general" "password")
 	local enabled=$(uci_get_by_bool "general" "enabled" 0)
+	#尝试读取上次的登录信息(wybb)
+	_userid=$(uci_get_by_name 'general' 'userID')
+	_loginkey=$(uci_get_by_name 'general' 'loginKey')
+	_sessionid=$(uci_get_by_name 'general' 'sessionid')
 	([ $enabled -eq 0 ] || [ $down_acc -eq 0 -a $up_acc -eq 0 ] || [ -z "$username" -o -z "$password" -o -z "$network" ]) && return 2
 
 	[ $logging -eq 1 ] && [ ! -d /var/log ] && mkdir -p /var/log
