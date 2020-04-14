@@ -2,10 +2,10 @@
 -- Licensed to the public under the GNU General Public License v3.
 require "luci.http"
 require "luci.dispatcher"
+require "nixio.fs"
 local m, s, o
 local shadowsocksr = "shadowsocksr"
 local sid = arg[1]
-local fs = require "nixio.fs"
 
 local encrypt_methods = {
 "rc4-md5",
