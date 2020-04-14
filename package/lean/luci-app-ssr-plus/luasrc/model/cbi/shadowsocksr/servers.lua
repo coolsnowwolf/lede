@@ -44,7 +44,7 @@ o = s:option(Button,"update_Sub",translate("Update Subscribe List"))
 o.inputstyle = "reload"
 o.description = translate("Update subscribe url list first")
 o.write = function()
-  luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
+  luci.http.redirect(luci.dispatcher.build_url("admin", "vpn", "shadowsocksr", "servers"))
 end
 
 o = s:option(Flag, "switch", translate("Subscribe Default Auto-Switch"))
@@ -75,7 +75,7 @@ end)
 uci:save("shadowsocksr") 
 uci:commit("shadowsocksr")
 luci.sys.exec("/etc/init.d/shadowsocksr restart")
-luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
+luci.http.redirect(luci.dispatcher.build_url("admin", "vpn", "shadowsocksr", "servers"))
 return
 end
 
@@ -85,7 +85,7 @@ s.anonymous = true
 s.addremove = true
 s.template = "cbi/tblsection"
 s.sortable = true
-s.extedit = luci.dispatcher.build_url("admin/services/shadowsocksr/servers/%s")
+s.extedit = luci.dispatcher.build_url("admin/vpn/shadowsocksr/servers/%s")
 function s.create(...)
 	local sid = TypedSection.create(...)
 	if sid then
@@ -125,7 +125,7 @@ node.write = function(self, section)
   ucic:save("shadowsocksr") 
   ucic:commit("shadowsocksr")
   luci.sys.exec("/etc/init.d/shadowsocksr restart")
-  luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "client"))
+  luci.http.redirect(luci.dispatcher.build_url("admin", "vpn", "shadowsocksr", "client"))
 end
 
 o = s:option(Flag, "switch_enable", translate("Auto Switch"))

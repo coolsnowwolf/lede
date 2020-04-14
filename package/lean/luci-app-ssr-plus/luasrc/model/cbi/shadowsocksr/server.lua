@@ -63,7 +63,7 @@ sec = m:section(TypedSection, "server_config", translate("Server Setting"))
 sec.anonymous = true
 sec.addremove = true
 sec.template = "cbi/tblsection"
-sec.extedit = luci.dispatcher.build_url("admin/services/shadowsocksr/server/%s")
+sec.extedit = luci.dispatcher.build_url("admin/vpn/shadowsocksr/server/%s")
 function sec.create(...)
 	local sid = TypedSection.create(...)
 	if sid then
