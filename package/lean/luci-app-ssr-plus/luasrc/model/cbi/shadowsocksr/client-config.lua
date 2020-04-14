@@ -14,7 +14,7 @@ local function isKcptun(file)
 	if not nixio.fs.access(file, "rwx", "rx", "rx") then
 		nixio.fs.chmod(file, 755)
 	end
-	local str = uci.sys.exec(file .. " -v | awk '{printf $1}'")
+	local str = luci.sys.exec(file .. " -v | awk '{printf $1}'")
 	return (str:lower() == "kcptun")
 end
 
