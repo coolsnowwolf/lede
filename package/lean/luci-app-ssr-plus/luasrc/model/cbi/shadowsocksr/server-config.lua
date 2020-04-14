@@ -5,6 +5,7 @@ require "luci.dispatcher"
 local m, s, o
 local shadowsocksr = "shadowsocksr"
 local sid = arg[1]
+local fs = require "nixio.fs"
 
 local encrypt_methods = {
 "rc4-md5",
@@ -62,7 +63,9 @@ o.default = 1
 o.rmempty = false
 
 o = s:option(ListValue, "type", translate("Server Type"))
+if nixio.fs.access("/usr/bin/ss-server") then
 o:value("ssr", translate("ShadowsocksR"))
+end
 o:value("socks5", translate("Socks5"))
 o.default = "socks5"
 
