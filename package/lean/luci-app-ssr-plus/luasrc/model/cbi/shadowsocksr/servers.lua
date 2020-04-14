@@ -14,14 +14,12 @@ end)
 m = Map(shadowsocksr, translate("Servers subscription and manage"))
 
 -- Server Subscribe
-
 s = m:section(TypedSection, "server_subscribe")
 s.anonymous = true
 
 o = s:option(Flag, "auto_update", translate("Auto Update"))
 o.rmempty = false
 o.description = translate("Auto Update Server subscription, GFW list and CHN route")
-
 
 o = s:option(ListValue, "auto_update_time", translate("Update time (every day)"))
 for t = 0,23 do
@@ -52,7 +50,6 @@ o.default="1"
 o = s:option(Flag, "proxy", translate("Through proxy update"))
 o.rmempty = false
 o.description = translate("Through proxy update list, Not Recommended ")
-
 
 o = s:option(Button,"subscribe", translate("Update All Subscribe Severs"))
 o.rawhtml = true
@@ -113,7 +110,6 @@ o.width="10%"
 o = s:option(DummyValue, "server", translate("Ping Latency"))
 o.template="shadowsocksr/ping"
 o.width="10%"
-
 
 node = s:option(Button,"apply_node",translate("Apply"))
 node.inputstyle = "apply"

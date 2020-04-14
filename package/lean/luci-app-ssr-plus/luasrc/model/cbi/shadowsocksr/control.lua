@@ -84,7 +84,6 @@ o.remove = function(self, section, value)
 	nixio.fs.writefile(escconf, "")
 end
 
-
 s:tab("block", translate("Black Domain List"))
 
 local blockconf = "/etc/ssr/black.list"
