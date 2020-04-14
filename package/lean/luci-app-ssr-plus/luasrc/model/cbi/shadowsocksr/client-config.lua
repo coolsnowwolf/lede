@@ -243,7 +243,6 @@ o.rmempty = true
 o:depends("type", "v2ray")
 
 -- [[ TCP部分 ]]--
-
 -- TCP伪装
 o = s:option(ListValue, "tcp_guise", translate("Camouflage Type"))
 o:depends("transport", "tcp")
@@ -262,7 +261,6 @@ o:depends("tcp_guise", "http")
 o.rmempty = true
 
 -- [[ WS部分 ]]--
-
 -- WS域名
 o = s:option(Value, "ws_host", translate("WebSocket Host"))
 o:depends("transport", "ws")
@@ -274,7 +272,6 @@ o:depends("transport", "ws")
 o.rmempty = true
 
 -- [[ H2部分 ]]--
-
 -- H2域名
 o = s:option(Value, "h2_host", translate("HTTP/2 Host"))
 o:depends("transport", "h2")
@@ -286,7 +283,6 @@ o:depends("transport", "h2")
 o.rmempty = true
 
 -- [[ QUIC部分 ]]--
-
 o = s:option(ListValue, "quic_security", translate("QUIC Security"))
 o:depends("transport", "quic")
 o.rmempty = true
@@ -309,7 +305,6 @@ o:value("dtls", "DTLS 1.2")
 o:value("wireguard", "WireGuard")
 
 -- [[ mKCP部分 ]]--
-
 o = s:option(ListValue, "kcp_guise", translate("Camouflage Type"))
 o:depends("transport", "kcp")
 o:value("none", translate("None"))

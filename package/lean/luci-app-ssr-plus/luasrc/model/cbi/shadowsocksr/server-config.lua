@@ -49,9 +49,6 @@ if m.uci:get(shadowsocksr, sid) ~= "server_config" then
 	return
 end
 
-
-
-
 -- [[ Server Setting ]]--
 s = m:section(NamedSection, sid, "server_config")
 s.anonymous = true
