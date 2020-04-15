@@ -3,6 +3,7 @@ local json = require "luci.jsonc"
 local server_section = arg[1]
 local proto = arg[2]
 local local_port = arg[3]
+
 local server = ucursor:get_all("shadowsocksr", server_section)
 
 local trojan = {

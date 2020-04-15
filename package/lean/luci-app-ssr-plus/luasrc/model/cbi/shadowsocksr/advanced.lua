@@ -1,4 +1,3 @@
-require "luci.model.uci"
 local shadowsocksr = "shadowsocksr"
 local uci = luci.model.uci.cursor()
 local server_table = {}

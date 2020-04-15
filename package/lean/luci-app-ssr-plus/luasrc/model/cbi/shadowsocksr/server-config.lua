@@ -2,43 +2,45 @@
 -- Licensed to the public under the GNU General Public License v3.
 require "luci.http"
 require "luci.dispatcher"
+require "nixio.fs"
+
 local m, s, o
 local shadowsocksr = "shadowsocksr"
 local sid = arg[1]
 
 local encrypt_methods = {
-"rc4-md5",
-"rc4-md5-6",
-"rc4",
-"table",
-"aes-128-cfb",
-"aes-192-cfb",
-"aes-256-cfb",
-"aes-128-ctr",
-"aes-192-ctr",
-"aes-256-ctr",
-"bf-cfb",
-"camellia-128-cfb",
-"camellia-192-cfb",
-"camellia-256-cfb",
-"cast5-cfb",
-"des-cfb",
-"idea-cfb",
-"rc2-cfb",
-"seed-cfb",
-"salsa20",
-"chacha20",
-"chacha20-ietf",
+	"rc4-md5",
+	"rc4-md5-6",
+	"rc4",
+	"table",
+	"aes-128-cfb",
+	"aes-192-cfb",
+	"aes-256-cfb",
+	"aes-128-ctr",
+	"aes-192-ctr",
+	"aes-256-ctr",
+	"bf-cfb",
+	"camellia-128-cfb",
+	"camellia-192-cfb",
+	"camellia-256-cfb",
+	"cast5-cfb",
+	"des-cfb",
+	"idea-cfb",
+	"rc2-cfb",
+	"seed-cfb",
+	"salsa20",
+	"chacha20",
+	"chacha20-ietf",
 }
 
 local protocol = {
-"origin",
+	"origin",
 }
 
 obfs = {
-"plain",
-"http_simple",
-"http_post",
+	"plain",
+	"http_simple",
+	"http_post",
 }
 
 m = Map(shadowsocksr, translate("Edit ShadowSocksR Server"))
@@ -49,18 +51,23 @@ if m.uci:get(shadowsocksr, sid) ~= "server_config" then
 	return
 end
 
+
+
+
 -- [[ Server Setting ]]--
 s = m:section(NamedSection, sid, "server_config")
 s.anonymous = true
-s.addremove = false
+s.addremove   = false
 
 o = s:option(Flag, "enable", translate("Enable"))
 o.default = 1
 o.rmempty = false
 
 o = s:option(ListValue, "type", translate("Server Type"))
-o:value("ssr", translate("ShadowsocksR"))
 o:value("socks5", translate("Socks5"))
+if nixio.fs.access("/usr/bin/ss-server") then
+o:value("ssr", translate("ShadowsocksR"))
+end
 o.default = "socks5"
 
 o = s:option(Value, "server_port", translate("Server Port"))
