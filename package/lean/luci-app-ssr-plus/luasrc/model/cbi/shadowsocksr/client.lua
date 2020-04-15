@@ -1,13 +1,16 @@
 -- Copyright (C) 2017 yushi studio <ywb94@qq.com> github.com/ywb94
 -- Copyright (C) 2018 lean <coolsnowwolf@gmail.com> github.com/coolsnowwolf
 -- Licensed to the public under the GNU General Public License v3.
-require "luci.model.uci"
+
 local m, s, sec, o, kcp_enable
 local shadowsocksr = "shadowsocksr"
 local uci = luci.model.uci.cursor()
 
+local sys = require "luci.sys"
+
 m = Map(shadowsocksr, translate("ShadowSocksR Plus+ Settings"))
-m:section(SimpleSection).template = "shadowsocksr/status"
+
+m:section(SimpleSection).template  = "shadowsocksr/status"
 
 local server_table = {}
 uci:foreach(shadowsocksr, "servers", function(s)

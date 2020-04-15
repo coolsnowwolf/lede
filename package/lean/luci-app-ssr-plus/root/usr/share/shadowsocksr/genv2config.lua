@@ -4,6 +4,7 @@ local server_section = arg[1]
 local proto = arg[2]
 local local_port = arg[3] or "0"
 local socks_port = arg[4] or "0"
+
 local server = ucursor:get_all("shadowsocksr", server_section)
 
 local v2ray = {
