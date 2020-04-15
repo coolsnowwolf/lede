@@ -30,7 +30,7 @@ speedtype:value("qq", translate("QQ音乐"))
 speedtype:value("xiami", translate("虾米音乐"))
 speedtype:value("baidu", translate("百度音乐"))
 speedtype:value("kugou", translate("酷狗音乐"))
-speedtype:value("kuwo", translate("酷我音乐(高音质/FLACの解锁可能性)"))
+speedtype:value("kuwo", translate("酷我音乐"))
 speedtype:value("migu", translate("咕咪音乐"))
 speedtype:value("joox", translate("JOOX音乐"))
 speedtype.default = "kuwo"
@@ -47,8 +47,11 @@ cloudserver.default = "cdn-shanghai.service.project-openwrt.eu.org:30000:30001"
 cloudserver.rmempty = true
 cloudserver:depends("apptype", "cloud")
 
-download_certificate=s:option(DummyValue,"opennewwindow",translate("HTTPS 证书"))
-download_certificate.description = translate("<input type=\"button\" class=\"cbi-button cbi-button-apply\" value=\"下载CA根证书\" onclick=\"window.open('https://raw.githubusercontent.com/nondanee/UnblockNeteaseMusic/master/ca.crt')\" /><br />Mac/iOS客户端需要安装 CA根证书并信任<br />iOS系统需要在“设置 -> 通用 -> 关于本机 -> 证书信任设置”中，信任 UnblockNeteaseMusic Root CA <br />Linux 设备请在启用时加入 --ignore-certificate-errors 参数")
+flac = s:option(Flag, "flac_enabled", translate("启用无损音质"))
+flac.default = 1
+flac.rmempty = false
+flac.description = translate("目前仅支持酷我、QQ、咪咕")
+flac:depends("apptype", "nodejs")
 
 o = s:option(Flag, "autoupdate")
 o.title = translate("自动检查更新主程序")
@@ -56,6 +59,9 @@ o.default = 0
 o.rmempty = false
 o.description = translate("每天自动检测并更新到最新版本")
 o:depends("apptype", "nodejs")
+
+download_certificate=s:option(DummyValue,"opennewwindow",translate("HTTPS 证书"))
+download_certificate.description = translate("<input type=\"button\" class=\"cbi-button cbi-button-apply\" value=\"下载CA根证书\" onclick=\"window.open('https://raw.githubusercontent.com/nondanee/UnblockNeteaseMusic/master/ca.crt')\" /><br />Mac/iOS客户端需要安装 CA根证书并信任<br />iOS系统需要在“设置 -> 通用 -> 关于本机 -> 证书信任设置”中，信任 UnblockNeteaseMusic Root CA <br />Linux 设备请在启用时加入 --ignore-certificate-errors 参数")
 
 local ver = fs.readfile("/usr/share/UnblockNeteaseMusic/core_ver") or "0.00"
 
