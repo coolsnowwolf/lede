@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=aMule
 PKG_VERSION:=2.3.2
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_REV=4b87b20
 
 
@@ -28,7 +28,7 @@ include $(INCLUDE_DIR)/nls.mk
 define Package/amule/config
 config AMULE_CRYPTOPP_STATIC_LINKING
 	bool "Link libcryptopp statically"
-	default y
+	default n
 endef
 
 define Package/amule

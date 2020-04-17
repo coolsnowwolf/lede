@@ -3,15 +3,84 @@
 START=99
 USE_PROCD=1
 
+SMB_CONF=""
+BIND_IF_PARM=""
+NB_PARM=""
+WG_PARM=""
+BI_PARM=""
+
 start_service() {
+
+	. /lib/functions/network.sh
+
+	if [ -e /etc/ksmbd/smb.conf ] && [ -e /etc/init.d/ksmbd ] && /etc/init.d/ksmbd running; then
+		SMB_CONF="/etc/ksmbd/smb.conf"
+	fi
+
+	if [ -e /etc/samba/smb.conf ]; then
+		if [ -e /etc/init.d/samba4 ] && /etc/init.d/samba4 running; then
+			SMB_CONF="/etc/samba/smb.conf"
+		elif [ -e /etc/init.d/samba ] && /etc/init.d/samba running; then
+			SMB_CONF="/etc/samba/smb.conf"
+		fi
+	fi
+	
+	if [ -z "$SMB_CONF" ]; then
+		logger -p daemon.error -t 'wsdd2' "samba36/4 or ksmbd is not running, can't start wsdd2!"
+		exit 1
+	fi
+	
+	local nb_name
+	nb_name="$(grep -i 'netbios name' $SMB_CONF | awk -F'=' '{print $2}' | tr -d ' \n')"
+	if [ -n "$nb_name" ]; then
+		NB_PARM="-N $nb_name"
+	else
+		local hostname
+		hostname="$(cat /proc/sys/kernel/hostname)"
+		NB_PARM="-N $hostname"
+	fi
+
+	local wg_name
+	wg_name="$(grep -i 'workgroup' $SMB_CONF | awk -F'=' '{print $2}' | tr -d ' \n')"
+	if [ -n "$wg_name" ]; then
+		WG_PARM="-G $wg_name"
+	else
+		WG_PARM="-G WORKGROUP"
+	fi
+
+	# resolve lan interface (BUG: No multi-interface binds atm)
+	local ifname
+	if network_get_device ifname lan; then
+		BIND_IF_PARM="-i $ifname"
+	fi
+
+	local board_vendor
+	local board_model
+	local board_sku
+
+	if [ -e /tmp/sysinfo/board_name ]; then
+		board_vendor="$(cat /tmp/sysinfo/board_name | awk -F',' '{print $1}' | tr ' ' '_' | tr -d ' \n' | tr ':' '_' | tr ',' '_')"
+		board_sku="$(cat /tmp/sysinfo/board_name | awk -F',' '{print $2}' | tr ' ' '_' | tr -d ' \n' | tr ':' '_' | tr ',' '_')"
+	fi
+	if [ -e /tmp/sysinfo/model ]; then
+		board_model="$(cat /tmp/sysinfo/model | tr ' ' '_' | tr -d ' \n' | tr ':' '_' | tr ',' '_')"
+	fi
+	if [ -n "$board_vendor" ] && [ -n "$board_model" ]; then
+		if [ -n "$board_sku" ]; then
+			BI_PARM="-b vendor:$board_vendor,model:$board_model,sku:$board_sku"
+		else
+			BI_PARM="-b vendor:$board_vendor,model:$board_model"
+		fi
+	fi
+
     procd_open_instance
-    procd_set_param command /usr/bin/wsdd2 -w
+    procd_set_param command /usr/bin/wsdd2 -w $BIND_IF_PARM $NB_PARM $WG_PARM $BI_PARM
     procd_set_param respawn
-    procd_set_param file /var/etc/smb.conf
+    procd_set_param file $SMB_CONF
     procd_close_instance
 }
 
 service_triggers() {
-	PROCD_RELOAD_DELAY=3000
-	procd_add_reload_trigger "dhcp" "system" "samba4"
+	PROCD_RELOAD_DELAY=1000
+	procd_add_reload_trigger "dhcp" "system" "samba" "samba4" "ksmbd"
 }

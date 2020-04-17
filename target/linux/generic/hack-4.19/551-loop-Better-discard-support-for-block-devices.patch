@@ -1,0 +1,101 @@
+From 3117c3f45edbcc269baaebd3d13f39b7bf884aa6 Mon Sep 17 00:00:00 2001
+From: Evan Green <evgreen@chromium.org>
+Date: Thu, 14 Nov 2019 15:50:08 -0800
+Subject: loop: Better discard support for block devices
+
+If the backing device for a loop device is itself a block device,
+then mirror the "write zeroes" capabilities of the underlying
+block device into the loop device. Copy this capability into both
+max_write_zeroes_sectors and max_discard_sectors of the loop device.
+
+The reason for this is that REQ_OP_DISCARD on a loop device translates
+into blkdev_issue_zeroout(), rather than blkdev_issue_discard(). This
+presents a consistent interface for loop devices (that discarded data
+is zeroed), regardless of the backing device type of the loop device.
+There should be no behavior change for loop devices backed by regular
+files.
+
+This change fixes blktest block/003, and removes an extraneous
+error print in block/013 when testing on a loop device backed
+by a block device that does not support discard.
+
+Signed-off-by: Evan Green <evgreen@chromium.org>
+Reviewed-by: Gwendal Grignou <gwendal@chromium.org>
+Reviewed-by: Chaitanya Kulkarni <chaitanya.kulkarni@wdc.com>
+---
+ drivers/block/loop.c | 40 +++++++++++++++++++++++++++++-----------
+ 1 file changed, 29 insertions(+), 11 deletions(-)
+
+--- a/drivers/block/loop.c
++++ b/drivers/block/loop.c
+@@ -426,11 +426,12 @@ static int lo_fallocate(struct loop_devi
+ 	 * information.
+ 	 */
+ 	struct file *file = lo->lo_backing_file;
++	struct request_queue *q = lo->lo_queue;
+ 	int ret;
+ 
+ 	mode |= FALLOC_FL_KEEP_SIZE;
+ 
+-	if ((!file->f_op->fallocate) || lo->lo_encrypt_key_size) {
++	if (!blk_queue_discard(q)) {
+ 		ret = -EOPNOTSUPP;
+ 		goto out;
+ 	}
+@@ -863,6 +864,21 @@ static void loop_config_discard(struct l
+ 	struct file *file = lo->lo_backing_file;
+ 	struct inode *inode = file->f_mapping->host;
+ 	struct request_queue *q = lo->lo_queue;
++	struct request_queue *backingq;
++
++	/*
++	 * If the backing device is a block device, mirror its zeroing
++	 * capability. REQ_OP_DISCARD translates to a zero-out even when backed
++	 * by block devices to keep consistent behavior with file-backed loop
++	 * devices.
++	 */
++	if (S_ISBLK(inode->i_mode) && !lo->lo_encrypt_key_size) {
++		backingq = bdev_get_queue(inode->i_bdev);
++		blk_queue_max_discard_sectors(q,
++			backingq->limits.max_write_zeroes_sectors);
++
++		blk_queue_max_write_zeroes_sectors(q,
++			backingq->limits.max_write_zeroes_sectors);
+ 
+ 	/*
+ 	 * We use punch hole to reclaim the free space used by the
+@@ -870,22 +886,24 @@ static void loop_config_discard(struct l
+ 	 * encryption is enabled, because it may give an attacker
+ 	 * useful information.
+ 	 */
+-	if ((!file->f_op->fallocate) ||
+-	    lo->lo_encrypt_key_size) {
++	} else if ((!file->f_op->fallocate) || lo->lo_encrypt_key_size) {
+ 		q->limits.discard_granularity = 0;
+ 		q->limits.discard_alignment = 0;
+ 		blk_queue_max_discard_sectors(q, 0);
+ 		blk_queue_max_write_zeroes_sectors(q, 0);
+-		blk_queue_flag_clear(QUEUE_FLAG_DISCARD, q);
+-		return;
+-	}
+ 
+-	q->limits.discard_granularity = inode->i_sb->s_blocksize;
+-	q->limits.discard_alignment = 0;
++	} else {
++		q->limits.discard_granularity = inode->i_sb->s_blocksize;
++		q->limits.discard_alignment = 0;
+ 
+-	blk_queue_max_discard_sectors(q, UINT_MAX >> 9);
+-	blk_queue_max_write_zeroes_sectors(q, UINT_MAX >> 9);
+-	blk_queue_flag_set(QUEUE_FLAG_DISCARD, q);
++		blk_queue_max_discard_sectors(q, UINT_MAX >> 9);
++		blk_queue_max_write_zeroes_sectors(q, UINT_MAX >> 9);
++	}
++
++	if (q->limits.max_write_zeroes_sectors)
++		blk_queue_flag_set(QUEUE_FLAG_DISCARD, q);
++	else
++		blk_queue_flag_clear(QUEUE_FLAG_DISCARD, q);
+ }
+ 
+ static void loop_unprepare_queue(struct loop_device *lo)

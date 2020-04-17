@@ -1,0 +1,132 @@
+From 6c4efe83a0acf6f06c89ae17b885fa5739eb5be7 Mon Sep 17 00:00:00 2001
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Mon, 2 Dec 2019 18:20:22 +0000
+Subject: [PATCH 4/4] net: sfp: re-attempt probing for phy
+
+Some 1000BASE-T PHY modules take a while for the PHY to wake up.
+Retry the probe a number of times before deciding that the module has
+no PHY.
+
+Tested with:
+ Sourcephotonics SPGBTXCNFC - PHY takes less than 50ms to respond.
+ Champion One 1000SFPT - PHY takes about 200ms to respond.
+ Mikrotik S-RJ01 - no PHY
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+ drivers/net/phy/sfp.c | 59 ++++++++++++++++++++++++++++++++++++---------------
+ 1 file changed, 42 insertions(+), 17 deletions(-)
+
+--- a/drivers/net/phy/sfp.c
++++ b/drivers/net/phy/sfp.c
+@@ -60,6 +60,7 @@ enum {
+ 	SFP_S_FAIL,
+ 	SFP_S_WAIT,
+ 	SFP_S_INIT,
++	SFP_S_INIT_PHY,
+ 	SFP_S_INIT_TX_FAULT,
+ 	SFP_S_WAIT_LOS,
+ 	SFP_S_LINK_UP,
+@@ -124,6 +125,7 @@ static const char * const sm_state_strin
+ 	[SFP_S_FAIL] = "fail",
+ 	[SFP_S_WAIT] = "wait",
+ 	[SFP_S_INIT] = "init",
++	[SFP_S_INIT_PHY] = "init_phy",
+ 	[SFP_S_INIT_TX_FAULT] = "init_tx_fault",
+ 	[SFP_S_WAIT_LOS] = "wait_los",
+ 	[SFP_S_LINK_UP] = "link_up",
+@@ -178,6 +180,12 @@ static const enum gpiod_flags gpio_flags
+ #define N_FAULT_INIT		5
+ #define N_FAULT			5
+ 
++/* T_PHY_RETRY is the time interval between attempts to probe the PHY.
++ * R_PHY_RETRY is the number of attempts.
++ */
++#define T_PHY_RETRY		msecs_to_jiffies(50)
++#define R_PHY_RETRY		12
++
+ /* SFP module presence detection is poor: the three MOD DEF signals are
+  * the same length on the PCB, which means it's possible for MOD DEF 0 to
+  * connect before the I2C bus on MOD DEF 1/2.
+@@ -233,6 +241,7 @@ struct sfp {
+ 	unsigned char sm_dev_state;
+ 	unsigned short sm_state;
+ 	unsigned char sm_fault_retries;
++	unsigned char sm_phy_retries;
+ 
+ 	struct sfp_eeprom_id id;
+ 	unsigned int module_power_mW;
+@@ -1351,10 +1360,8 @@ static int sfp_sm_probe_phy(struct sfp *
+ 	int err;
+ 
+ 	phy = get_phy_device(sfp->i2c_mii, SFP_PHY_ADDR, is_c45);
+-	if (phy == ERR_PTR(-ENODEV)) {
+-		dev_info(sfp->dev, "no PHY detected\n");
+-		return 0;
+-	}
++	if (phy == ERR_PTR(-ENODEV))
++		return PTR_ERR(phy);
+ 	if (IS_ERR(phy)) {
+ 		dev_err(sfp->dev, "mdiobus scan returned %ld\n", PTR_ERR(phy));
+ 		return PTR_ERR(phy);
+@@ -1802,6 +1809,7 @@ static void sfp_sm_module(struct sfp *sf
+ static void sfp_sm_main(struct sfp *sfp, unsigned int event)
+ {
+ 	unsigned long timeout;
++	int ret;
+ 
+ 	/* Some events are global */
+ 	if (sfp->sm_state != SFP_S_DOWN &&
+@@ -1875,22 +1883,39 @@ static void sfp_sm_main(struct sfp *sfp,
+ 			sfp_sm_fault(sfp, SFP_S_INIT_TX_FAULT,
+ 				     sfp->sm_fault_retries == N_FAULT_INIT);
+ 		} else if (event == SFP_E_TIMEOUT || event == SFP_E_TX_CLEAR) {
+-	init_done:	/* TX_FAULT deasserted or we timed out with TX_FAULT
+-			 * clear.  Probe for the PHY and check the LOS state.
+-			 */
+-			if (sfp_sm_probe_for_phy(sfp)) {
+-				sfp_sm_next(sfp, SFP_S_FAIL, 0);
+-				break;
+-			}
+-			if (sfp_module_start(sfp->sfp_bus)) {
+-				sfp_sm_next(sfp, SFP_S_FAIL, 0);
++	init_done:
++			sfp->sm_phy_retries = R_PHY_RETRY;
++			goto phy_probe;
++		}
++		break;
++
++	case SFP_S_INIT_PHY:
++		if (event != SFP_E_TIMEOUT)
++			break;
++	phy_probe:
++		/* TX_FAULT deasserted or we timed out with TX_FAULT
++		 * clear.  Probe for the PHY and check the LOS state.
++		 */
++		ret = sfp_sm_probe_for_phy(sfp);
++		if (ret == -ENODEV) {
++			if (--sfp->sm_phy_retries) {
++				sfp_sm_next(sfp, SFP_S_INIT_PHY, T_PHY_RETRY);
+ 				break;
++			} else {
++				dev_info(sfp->dev, "no PHY detected\n");
+ 			}
+-			sfp_sm_link_check_los(sfp);
+-
+-			/* Reset the fault retry count */
+-			sfp->sm_fault_retries = N_FAULT;
++		} else if (ret) {
++			sfp_sm_next(sfp, SFP_S_FAIL, 0);
++			break;
+ 		}
++		if (sfp_module_start(sfp->sfp_bus)) {
++			sfp_sm_next(sfp, SFP_S_FAIL, 0);
++			break;
++		}
++		sfp_sm_link_check_los(sfp);
++
++		/* Reset the fault retry count */
++		sfp->sm_fault_retries = N_FAULT;
+ 		break;
+ 
+ 	case SFP_S_INIT_TX_FAULT:
