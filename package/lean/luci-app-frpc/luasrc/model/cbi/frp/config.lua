@@ -105,6 +105,15 @@ e:depends("type","http")
 e = t:taboption("other",Value, "host_header_rewrite", translate("Host Header"), translate("The Host header will be rewritten to match the hostname portion of the forwarding address."))
 e.default = "dev.yourdomain.com"
 e:depends("enable_host_header_rewrite",1)
+e = t:taboption("base",ListValue, "proxy_protocol_version", translate("Proxy-Protocol Version"), translate("Proxy Protocol to send user's real IP to local services."))
+e.default = "disable"
+e:value("disable",translate("Disable"))
+e:value("v1",translate("V1"))
+e:value("v2",translate("V2"))
+e:depends("type","tcp")
+e:depends("type","stcp")
+e:depends("type","http")
+e:depends("type","https")
 e = t:taboption("base",Flag, "use_encryption", translate("Use Encryption"), translate("Encrypted the communication between frpc and frps, will effectively prevent the traffic intercepted."))
 e.default = "1"
 e.rmempty = false
