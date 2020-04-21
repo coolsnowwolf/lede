@@ -68,14 +68,14 @@ define Device/asus_map-ac2200
 	DEVICE_MODEL := Lyra (MAP-AC2200)
 	DEVICE_DTS := qcom-ipq4019-map-ac2200
 	IMAGES := sysupgrade.bin
-	DEVICE_PACKAGES := ath10k-firmware-qca9888 kmod-ath3k
+	DEVICE_PACKAGES := ath10k-firmware-qca9888-ct kmod-ath3k
 endef
 TARGET_DEVICES += asus_map-ac2200
 
 define Device/asus_rt-ac58u
 	$(call Device/FitImageLzma)
 	DEVICE_VENDOR := ASUS
-	DEVICE_MODEL := RT-AC58U / RT-AC1300UHP
+	DEVICE_MODEL := RT-AC58U
 	DEVICE_DTS := qcom-ipq4018-rt-ac58u
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
@@ -91,10 +91,28 @@ define Device/asus_rt-ac58u
 	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
 	KERNEL_INITRAMFS_SUFFIX := -factory.trx
 	IMAGES := sysupgrade.bin
-	DEVICE_PACKAGES := -kmod-ath10k -ath10k-firmware-qca4019 \
-	kmod-ath10k-ct-smallbuffers ath10k-firmware-qca4019-ct kmod-usb-ledtrig-usbport
+	DEVICE_PACKAGES := -kmod-ath10k-ct kmod-ath10k-ct-smallbuffers \
+		kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += asus_rt-ac58u
+
+define Device/asus_rt-ac1300uhp
+	$(call Device/FitImageLzma)
+	DEVICE_VENDOR := ASUS
+	DEVICE_MODEL := RT-AC1300UHP
+	DEVICE_DTS := qcom-ipq4018-rt-ac58u
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DTB_SIZE := 65536
+	IMAGE_SIZE := 20439364
+	FILESYSTEMS := squashfs
+	UIMAGE_NAME:=$(shell echo -e '\03\01\01\01RT-AC58U')
+	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
+	KERNEL_INITRAMFS_SUFFIX := -factory.trx
+	IMAGES := sysupgrade.bin
+	DEVICE_PACKAGES := kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += asus_rt-ac1300uhp
 
 define Device/asus_rt-acrh17
 	$(call Device/FitImageLzma)
@@ -110,7 +128,7 @@ define Device/asus_rt-acrh17
 	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
 	KERNEL_INITRAMFS_SUFFIX := -factory.trx
 	IMAGES := sysupgrade.bin
-	DEVICE_PACKAGES := ipq-wifi-rt-acrh17 ath10k-firmware-qca9984
+	DEVICE_PACKAGES := ipq-wifi-rt-acrh17 ath10k-firmware-qca9984-ct
 endef
 TARGET_DEVICES += asus_rt-acrh17
 
@@ -231,7 +249,7 @@ define Device/meraki_mr33
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
 	IMAGES = sysupgrade.bin
-	DEVICE_PACKAGES := -swconfig ath10k-firmware-qca9887
+	DEVICE_PACKAGES := -swconfig ath10k-firmware-qca9887-ct
 endef
 TARGET_DEVICES += meraki_mr33
 
@@ -300,7 +318,7 @@ define Device/openmesh_a62
 	IMAGES = factory.bin sysupgrade.bin
 	IMAGE/factory.bin := append-rootfs | pad-rootfs | openmesh-image ce_type=A62
 	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-rootfs | sysupgrade-tar rootfs=$$$$@ | append-metadata
-	DEVICE_PACKAGES := ath10k-firmware-qca9888 uboot-envtools
+	DEVICE_PACKAGES := ath10k-firmware-qca9888-ct uboot-envtools
 endef
 TARGET_DEVICES += openmesh_a62
 
@@ -392,8 +410,7 @@ define Device/zyxel_wre6606
 	DEVICE_DTS_CONFIG := config@4
 	IMAGES := sysupgrade.bin
 	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
-	DEVICE_PACKAGES := -kmod-ath10k -ath10k-firmware-qca4019 \
-	kmod-ath10k-ct-smallbuffers ath10k-firmware-qca4019-ct
+	DEVICE_PACKAGES := -kmod-ath10k-ct kmod-ath10k-ct-smallbuffers
 endef
 TARGET_DEVICES += zyxel_wre6606
 
