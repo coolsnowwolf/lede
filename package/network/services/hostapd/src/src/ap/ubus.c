@@ -1115,24 +1115,12 @@ static struct ubus_object_type daemon_object_type =
 void hostapd_ubus_add(struct hapd_interfaces *interfaces)
 {
 	struct ubus_object *obj = &interfaces->ubus;
-	char *name;
-	int name_len;
 	int ret;
 
 	if (!hostapd_ubus_init())
 		return;
 
-	name_len = strlen("hostapd") + 1;
-	if (interfaces->name)
-		name_len += strlen(interfaces->name) + 1;
-
-	name = malloc(name_len);
-	strcpy(name, "hostapd");
-	if (interfaces->name) {
-		strcat(name, ".");
-		strcat(name, interfaces->name);
-	}
-	obj->name = name;
+	obj->name = strdup("hostapd");
 
 	obj->type = &daemon_object_type;
 	obj->methods = daemon_object_type.methods;
