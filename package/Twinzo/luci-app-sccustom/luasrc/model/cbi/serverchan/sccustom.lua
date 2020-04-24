@@ -156,11 +156,6 @@ end
 c = m:section(TypedSection, "none")
 c.anonymous=true
 k=c:option(DummyValue,"none")
-k.template="serverchan/serverchan_datepicker"
-
-local apply = luci.http.formvalue("cbi.apply")
-if apply then
-	luci.sys.exec("/etc/init.d/sccustom start")
-end
+k.template="serverchan/datepicker"
 
 return m
