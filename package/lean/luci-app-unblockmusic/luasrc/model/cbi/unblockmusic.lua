@@ -41,7 +41,6 @@ cloudserver = s:option(Value, "cloudserver", translate("服务器位置"))
 cloudserver:value("cdn-shanghai.service.project-openwrt.eu.org:30000:30001", translate("[CTCGFW] 腾讯云上海（高音质）"))
 cloudserver:value("hyird.xyz:30000:30001", translate("[hyird] 阿里云北京（高音质）"))
 cloudserver:value("39.96.56.58:30000:30000", translate("[Sunsky] 阿里云北京（高音质）"))
-cloudserver:value("cdn-henan.service.project-openwrt.eu.org:33221:33222",translate("[CTCGFW] 移动河南（无损音质）"))
 cloudserver.description = translate("自定义服务器格式为 IP[域名]:HTTP端口:HTTPS端口<br />如果服务器为LAN内网IP，需要将这个服务器IP放入例外客户端 (不代理HTTP和HTTPS)")
 cloudserver.default = "cdn-shanghai.service.project-openwrt.eu.org:30000:30001"
 cloudserver.rmempty = true
