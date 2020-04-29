@@ -91,8 +91,8 @@ define Device/asus_rt-ac58u
 	KERNEL_INITRAMFS := $$(KERNEL) | uImage none
 	KERNEL_INITRAMFS_SUFFIX := -factory.trx
 	IMAGES := sysupgrade.bin
-	DEVICE_PACKAGES := -kmod-ath10k kmod-ath10k-ct kmod-ath10k-ct-smallbuffers \
-		kmod-usb-ledtrig-usbport
+	DEVICE_PACKAGES := -kmod-ath10k -ath10k-firmware-qca4019 \
+	kmod-ath10k-ct-smallbuffers ath10k-firmware-qca4019-ct kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += asus_rt-ac58u
 
@@ -410,7 +410,8 @@ define Device/zyxel_wre6606
 	DEVICE_DTS_CONFIG := config@4
 	IMAGES := sysupgrade.bin
 	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
-	DEVICE_PACKAGES := -kmod-ath10k kmod-ath10k-ct kmod-ath10k-ct-smallbuffers
+	DEVICE_PACKAGES := -kmod-ath10k -ath10k-firmware-qca4019 \
+	kmod-ath10k-ct-smallbuffers ath10k-firmware-qca4019-ct
 endef
 TARGET_DEVICES += zyxel_wre6606
 
