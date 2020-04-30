@@ -8,9 +8,9 @@ PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/greearb/ath10k-ct.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2020-03-25
-PKG_SOURCE_VERSION:=3d173a471d3e583f2885ce68190c4387424cecc5
-PKG_MIRROR_HASH:=496279322f3cd26b262d4999cb5a8c1ea022e92a7bb0d43d008bce235abb9a65
+PKG_SOURCE_DATE:=2020-04-29
+PKG_SOURCE_VERSION:=3637be6f6baf99e85a7f0b27f80a99a2f2a5f78d
+PKG_MIRROR_HASH:=97cf22a4a57381c7eb7a9b8a8b1e347e9711ce51c89db971b4ab9a35af476ece
 
 # Build the 5.4 ath10k-ct driver version.  Other option is "-4.19".
 # Probably this should match as closely as
@@ -112,7 +112,7 @@ endif
 define Build/Compile
 	+$(MAKE) $(CT_MAKEDEFS) $(PKG_JOBS) -C "$(LINUX_DIR)" \
 		$(KERNEL_MAKE_FLAGS) \
-		SUBDIRS="$(PKG_BUILD_DIR)/ath10k$(CT_KVER)" \
+		M="$(PKG_BUILD_DIR)/ath10k$(CT_KVER)" \
 		NOSTDINC_FLAGS="$(NOSTDINC_FLAGS)" \
 		modules
 endef
