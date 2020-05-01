@@ -53,7 +53,8 @@ platform_do_upgrade() {
 	netgear,r6850|\
 	netis,wf2881|\
 	xiaomi,mir3g|\
-	xiaomi,mir3p)
+	xiaomi,mir3p|\
+	xiaomi,redmi-router-ac2100)
 		nand_do_upgrade "$1"
 		;;
 	iodata,wn-ax1167gr2|\
