@@ -83,6 +83,9 @@ define Package/comgt/install
 	$(INSTALL_CONF) ./files/3g.usb $(1)/etc/hotplug.d/tty/30-3g
 	$(INSTALL_DIR) $(1)/lib/netifd/proto
 	$(INSTALL_BIN) ./files/3g.sh $(1)/lib/netifd/proto/3g.sh
+	$(INSTALL_BIN) ./files/4g.sh $(1)/lib/netifd/proto/4g.sh
+	$(INSTALL_DATA) ./files/U8300lte_conn.gcom $(1)/etc/gcom/U8300lte_conn.gcom
+	$(INSTALL_DATA) ./files/U8300lte_disconn.gcom $(1)/etc/gcom/U8300lte_disconn.gcom
 endef
 
 define Package/comgt-directip/install
