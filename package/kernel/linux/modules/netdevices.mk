@@ -1134,10 +1134,10 @@ define KernelPackage/sfc
   KCONFIG:= \
     CONFIG_NET_VENDOR_SOLARFLARE=y \
     CONFIG_SFC=y \
-    CONFIG_MTD=y \
+    CONFIG_SFC_MTD=y \
     CONFIG_MCDI_MON=y \
-    CONFIG_SRIOV=n \
-    CONFIG_MCDI_LOGGING=n \
+    CONFIG_SFC_SRIOV=n \
+    CONFIG_SFC_MCDI_LOGGING=n \
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/sfc/sfc.ko
   AUTOLOAD:=$(call AutoProbe, sfc)
 endef
