@@ -325,7 +325,7 @@ local execute = function()
 					nodes = servers
 				else
 					-- ssd 外的格式
-					nodes = split(base64Decode(raw):gsub(" ", "\n"), "\n")
+					nodes = split(base64Decode(raw):gsub(" ", "_"), "\n")
 				end
 				for _, v in ipairs(nodes) do
 					if v then
@@ -336,8 +336,12 @@ local execute = function()
 							local node = trim(v)
 							local dat = split(node, "://")
 							if dat and dat[1] and dat[2] then
+								local dat3 = ""
+								if dat[3] then
+									dat3 = "://" .. dat[3]
+								end
 								if dat[1] == 'ss' or dat[1] == 'trojan' then
-									result = processData(dat[1], dat[2])
+									result = processData(dat[1], dat[2] .. dat3)
 								else
 									result = processData(dat[1], base64Decode(dat[2]))
 								end
@@ -393,7 +397,6 @@ local execute = function()
 				end
 				log('忽略手动添加的节点: ' .. old.alias)
 			end
-
 		end)
 		for k, v in ipairs(nodeResult) do
 			for kk, vv in ipairs(v) do
