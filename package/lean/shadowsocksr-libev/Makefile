@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=shadowsocksr-libev
 PKG_VERSION:=2.5.6
-PKG_RELEASE:=5
+PKG_RELEASE:=6
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/shadowsocksrr/shadowsocksr-libev
@@ -36,6 +36,7 @@ Package/shadowsocksr-libev-alt = $(Package/shadowsocksr-libev)
 Package/shadowsocksr-libev-ssr-local = $(Package/shadowsocksr-libev)
 
 CONFIGURE_ARGS += --disable-documentation --disable-ssp --disable-assert
+TARGET_LDFLAGS += -Wl,--gc-sections,--as-needed
 
 define Package/shadowsocksr-libev/install
 	$(INSTALL_DIR) $(1)/usr/bin
