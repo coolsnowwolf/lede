@@ -1,7 +1,7 @@
 local m,s,a,c,f,x
 local fs=require"nixio.fs"
 local sys=require"luci.sys"
-m=Map("serverchan_custom",translate("自定义推送"),translate("农历二月三十需手动输入"))
+m=Map("sccustom",translate("自定义推送"),translate("农历二月三十需手动输入"))
 -------------------------通用设置--------------------------------------
 x = m:section(TypedSection, "global",translate("通用设置"),translate("可添加多个SCKEY").."调用代码获取<a href='http://sc.ftqq.com' target='_blank'>点击这里</a>")
 x.optional = false
