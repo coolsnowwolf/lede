@@ -89,7 +89,8 @@ endef
 
 ifeq ($(CONFIG_V2RAY_COMPRESS_GOPROXY),y)
 export GO111MODULE=on
-export GOPROXY=https://goproxy.cn
+export GOPROXY=https://goproxy.io
+#export GOPROXY=https://mirrors.aliyun.com/goproxy/
 endif
 
 V2RAY_SED_ARGS:=
