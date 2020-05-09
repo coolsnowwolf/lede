@@ -590,7 +590,13 @@ mac80211_setup_supplicant() {
 	local add_sp=0
 	local spobj="$(ubus -S list | grep wpa_supplicant.${ifname})"
 
-	wpa_supplicant_prepare_interface "$ifname" nl80211 || return 1
+	[ "$enable" = 0 ] && {
+		ubus call wpa_supplicant.${phy} config_del "{\"iface\":\"$ifname\"}"
+		ip link set dev "$ifname" down
+		iw dev "$ifname" del
+		return 0
+	}
+
 	wpa_supplicant_prepare_interface "$ifname" nl80211 || {
 		iw dev "$ifname" del
 		return 1
@@ -607,18 +613,17 @@ mac80211_setup_supplicant() {
 		[ "$spobj" ] && ubus call wpa_supplicant config_remove "{\"iface\":\"$ifname\"}"
 		add_sp=1
 	fi
-	[ "$enable" = 0 ] && {
-		ubus call wpa_supplicant config_remove "{\"iface\":\"$ifname\"}"
-		ip link set dev "$ifname" down
-		return 0
-	}
 	[ -z "$spobj" ] && add_sp=1
 
+	NEW_MD5_SP=$(test -e "${_config}" && md5sum ${_config})
+	OLD_MD5_SP=$(uci -q -P /var/state get wireless._${phy}.md5_${ifname})
 	if [ "$add_sp" = "1" ]; then
 		wpa_supplicant_run "$ifname" "$hostapd_ctrl"
 	else
-		ubus call $spobj reload
+		[ "${NEW_MD5_SP}" == "${OLD_MD5_SP}" ] || ubus call $spobj reload
 	fi
+	uci -q -P /var/state set wireless._${phy}.md5_${ifname}="${NEW_MD5_SP}"
+	return 0
 }
 
 mac80211_setup_supplicant_noctl() {
@@ -765,7 +770,6 @@ mac80211_setup_vif() {
 
 	[ "$vif_enable" = 1 ] || action=down
 	if [ "$mode" != "ap" ] || [ "$ifname" = "$ap_ifname" ]; then
-		logger ip link set dev "$ifname" $action
 		ip link set dev "$ifname" "$action" || {
 			wireless_setup_vif_failed IFUP_ERROR
 			json_select ..
@@ -923,8 +927,8 @@ drv_mac80211_setup() {
 	[ "$rxantenna" = "all" ] && rxantenna=0xffffffff
 
 	iw phy "$phy" set antenna $txantenna $rxantenna >/dev/null 2>&1
-	iw phy "$phy" set antenna_gain $antenna_gain
-	iw phy "$phy" set distance "$distance"
+	iw phy "$phy" set antenna_gain $antenna_gain >/dev/null 2>&1
+	iw phy "$phy" set distance "$distance" >/dev/null 2>&1
 
 	if [ -n "$txpower" ]; then
 		iw phy "$phy" set txpower fixed "${txpower%%.*}00"
@@ -954,8 +958,8 @@ drv_mac80211_setup() {
 	OLD_MD5=$(uci -q -P /var/state get wireless._${phy}.md5)
 	if [ "${NEWAPLIST}" != "${OLDAPLIST}" ]; then
 		mac80211_vap_cleanup hostapd "${OLDAPLIST}"
-		[ -n "${NEWAPLIST}" ] && mac80211_iw_interface_add "$phy" "${NEWAPLIST%% *}" __ap || return
 	fi
+	[ -n "${NEWAPLIST}" ] && mac80211_iw_interface_add "$phy" "${NEWAPLIST%% *}" __ap
 	local add_ap=0
 	local primary_ap=${NEWAPLIST%% *}
 	[ -n "$hostapd_ctrl" ] && {
@@ -966,7 +970,11 @@ drv_mac80211_setup() {
 				no_reload=$?
 				if [ "$no_reload" != "0" ]; then
 					mac80211_vap_cleanup hostapd "${OLDAPLIST}"
-			                [ -n "${NEWAPLIST}" ] && mac80211_iw_interface_add "$phy" "${NEWAPLIST%% *}" __ap || return
+					mac80211_vap_cleanup wpa_supplicant "$(uci -q -P /var/state get wireless._${phy}.splist)"
+					mac80211_vap_cleanup none "$(uci -q -P /var/state get wireless._${phy}.umlist)"
+					sleep 2
+					mac80211_iw_interface_add "$phy" "${NEWAPLIST%% *}" __ap
+					for_each_interface "sta adhoc mesh monitor" mac80211_prepare_vif
 				fi
 			}
 		fi
@@ -1031,12 +1039,10 @@ list_phy_interfaces() {
 drv_mac80211_teardown() {
 	wireless_process_kill_all
 
-	json_select data
-	json_get_vars phy
-	json_select ..
-
-	mac80211_interface_cleanup "$phy"
-	uci -q -P /var/state revert wireless._${phy}
+	for phy in `ls /sys/class/ieee80211/`; do
+		mac80211_interface_cleanup "$phy"
+		uci -q -P /var/state revert wireless._${phy}
+	done
 }
 
 add_driver mac80211
