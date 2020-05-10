@@ -1,0 +1,159 @@
+<%
+local api = require "luci.model.cbi.passwall.api.api"
+local dsp = require "luci.dispatcher"
+
+local brook_path = api.uci_get_type("global_app", "brook_file")
+local brook_version = luci.sys.exec("[ -f '" .. brook_path .. "' ] && " .. brook_path .. " -v | awk '{print $3}'")
+-%>
+
+<script type="text/javascript">
+	//<![CDATA[
+	var brookInfo;
+	var tokenStr = '<%=token%>';
+	var noUpdateText = '<%:It is the latest version%>';
+	var updateSuccessText = '<%:Update successful%>';
+	var clickToUpdateText = '<%:Click to update%>';
+	var inProgressText = '<%:Updating...%>';
+	var unexpectedErrorText = '<%:Unexpected error%>';
+	var updateInProgressNotice = '<%:Updating, are you sure to close?%>';
+	var downloadingText = '<%:Downloading...%>';
+	var decompressioningText = '<%:Unpacking...%>';
+	var movingText = '<%:Moving...%>';
+
+	window.onload = function() {
+		var brookCheckBtn = document.getElementById('_brook-check_btn');
+		var brookDetailElm = document.getElementById('_brook-check_btn-detail');
+	};
+
+	function addPageNotice_brook() {
+		window.onbeforeunload = function(e) {
+			e.returnValue = updateInProgressNotice;
+			return updateInProgressNotice;
+		};
+	}
+
+	function removePageNotice_brook() {
+		window.onbeforeunload = undefined;
+	}
+
+	function onUpdateSuccess_brook(btn) {
+		alert(updateSuccessText);
+
+		if(btn) {
+			btn.value = updateSuccessText;
+			btn.placeholder = updateSuccessText;
+			btn.disabled = true;
+		}
+
+		window.setTimeout(function() {
+			window.location.reload();
+		}, 1000);
+	}
+
+	function onRequestError_brook(btn, errorMessage) {
+		btn.disabled = false;
+		btn.value = btn.placeholder;
+
+		if(errorMessage) {
+			alert(errorMessage);
+		}
+	}
+
+	function onBtnClick_brook(btn) {
+		if(brookInfo === undefined) {
+			checkUpdate_brook(btn);
+		} else {
+			doUpdate_brook(btn);
+		}
+	}
+
+	function checkUpdate_brook(btn) {
+		btn.disabled = true;
+		btn.value = inProgressText;
+
+		addPageNotice_brook();
+
+		var ckeckDetailElm = document.getElementById(btn.id + '-detail');
+
+		XHR.get('<%=dsp.build_url("admin/vpn/passwall/brook_check")%>', {
+			token: tokenStr,
+			arch: ''
+		}, function(x,json) {
+			removePageNotice_brook();
+
+			if(json.code) {
+				brookInfo = undefined;
+				onRequestError_brook(btn, json.error);
+			} else {
+				if(json.update) {
+					brookInfo = json;
+					btn.disabled = false;
+					btn.value = clickToUpdateText;
+					btn.placeholder = clickToUpdateText;
+					
+					if(ckeckDetailElm) {
+						var urlNode = '';
+						if(json.version) {
+							urlNode = '<em style="color:red;">最新版本号：' + json.version + '</em>';
+							if(json.url && json.url.html) {
+								urlNode = '<a href="' + json.url.html + '" target="_blank">' + urlNode + '</a>';
+							}
+						}
+						ckeckDetailElm.innerHTML = urlNode;
+					}
+				} else {
+					btn.disabled = true;
+					btn.value = noUpdateText;
+				}
+			}
+		},300);
+	}
+
+	function doUpdate_brook(btn) {
+		btn.disabled = true;
+		btn.value = downloadingText;
+
+		addPageNotice_brook();
+
+		var brookUpdateUrl = '<%=dsp.build_url("admin/vpn/passwall/brook_update")%>';
+		// Download file
+		XHR.get(brookUpdateUrl, {
+			token: tokenStr,
+			url: brookInfo ? brookInfo.url.download : ''
+		}, function(x,json) {
+			if(json.code) {
+				removePageNotice_brook();
+				onRequestError_brook(btn, json.error);
+			} else {
+				btn.value = decompressioningText;
+					// Move file to target dir
+					XHR.get(brookUpdateUrl, {
+						token: tokenStr,
+						task: 'move',
+						file: json.file
+					}, function(x,json) {
+						removePageNotice_brook();
+						if(json.code) {
+							onRequestError_brook(btn, json.error);
+						} else {
+							onUpdateSuccess_brook(btn);
+						}
+					},300)
+				}
+			},300)
+		}
+	//]]>
+</script>
+
+<div class="cbi-value">
+	<label class="cbi-value-title">Brook
+		<%:Version%>
+	</label>
+	<div class="cbi-value-field">
+		<div class="cbi-value-description">
+			<span>【 <%=brook_version%>】</span>
+			<input class="cbi-button cbi-input-apply" type="button" id="_brook-check_btn" onclick="onBtnClick_brook(this);" value="<%:Manually update%>" />
+			<span id="_brook-check_btn-detail"></span>
+		</div>
+	</div>
+</div>
