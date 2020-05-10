@@ -19,7 +19,7 @@ define Package/ath10k-firmware-qca4019/install
 		$(PKG_BUILD_DIR)/ath10k/QCA4019/hw1.0/firmware-5.bin \
 		$(1)/lib/firmware/ath10k/QCA4019/hw1.0/firmware-5.bin
 endef
-$(eval $(call BuildPackage,ath10k-firmware-qca4019))
+# $(eval $(call BuildPackage,ath10k-firmware-qca4019))
 
 Package/ath10k-firmware-qca9887 = $(call Package/firmware-default,ath10k qca9887 firmware)
 define Package/ath10k-firmware-qca9887/install
