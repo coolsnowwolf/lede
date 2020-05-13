@@ -1,3 +1,5 @@
+引用LEAN的自述文件！！！
+
 欢迎来到Lean的Openwrt源码仓库！
 =
 Welcome to Lean's  git source of OpenWrt and packages
