@@ -67,17 +67,6 @@ make -j$(($(nproc) + 1)) V=s
 
 如果你觉得此项目对你有帮助，可以捐助我们，以鼓励项目能持续发展，更加完善
 
-<!---
-### Alipay 支付宝
-
-[comment]: <> ### ![alipay](doc/alipay_donate.jpg)
-
-[comment]: <> ### Wechat 微信
-
-[comment]: <> ### ![wechat](doc/wechat_donate.jpg)
-
--->
-
 ## English Version: How to make your Openwrt firmware.
 
 ## Note:
