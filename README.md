@@ -76,7 +76,6 @@ make -j$(($(nproc) + 1)) V=s
 
 [comment]: <> ### ![wechat](doc/wechat_donate.jpg)
 
----
 -->
 
 ## English Version: How to make your Openwrt firmware.
