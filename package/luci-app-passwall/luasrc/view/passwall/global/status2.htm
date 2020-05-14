@@ -1,0 +1,341 @@
+<%
+local api = require "luci.model.cbi.passwall.api.api"
+local dsp = require "luci.dispatcher"
+local ipkg = require "luci.model.ipkg"
+
+local function is_finded(e)
+	local result=luci.sys.exec("find /usr/*bin -iname "..e.." -type f")
+	if result~="" then
+		return true
+	end
+	return false
+end
+
+local tcp_node_num = api.uci_get_type("global_other", "tcp_node_num", 1)
+local udp_node_num = api.uci_get_type("global_other", "udp_node_num", 1)
+local socks_node_num = api.uci_get_type("global_other", "socks_node_num", 1)
+
+local status_show_check_port = api.uci_get_type("global_other", "status_show_check_port", 0)
+local status_show_ip111 = api.uci_get_type("global_other", "status_show_ip111", 0)
+-%>
+
+<style>
+/* @media screen and (min-width: 1600px) {
+	#_passwall_status_fieldset > fieldset {
+		padding: 0px;
+	}
+
+	#_passwall_status_fieldset > fieldset > div {
+		width: 200px;
+		height: 60px;
+		background: #f7fafd;
+		float: left;
+		margin: 5px;
+		padding: 0.3rem 1rem;
+		border-radius: 10px;
+		display: flex;
+		align-items: center;
+		clear: unset;
+	}
+
+	#_passwall_status_fieldset > fieldset > div > .cbi-value-title {
+		text-align: left;
+		width: unset;
+		padding-top: unset;
+	}
+
+	#_passwall_status_fieldset > fieldset > div > .cbi-value-field {
+		padding-top: unset;
+	}
+
+	#_passwall_status_fieldset > fieldset > div > .cbi-value-field > font {
+		padding-top: unset;
+	}
+
+	#_node_status > font {
+		display: block;
+	}
+}
+*/
+</style>
+
+<fieldset id="_passwall_status_fieldset" class="cbi-section">
+	<legend>
+		<%:Running Status%>
+	</legend>
+	<fieldset class="cbi-section">
+		<div class="cbi-value">
+			<label class="cbi-value-title">TCP
+				<%:Status%>
+			</label>
+			<div class="cbi-value-field" id="_tcp_node_status">
+				<%:Collecting data...%>
+			</div>
+		</div>
+		
+		<div class="cbi-value">
+			<label class="cbi-value-title">UDP
+				<%:Status%>
+			</label>
+			<div class="cbi-value-field" id="_udp_node_status">
+				<%:Collecting data...%>
+			</div>
+		</div>
+		
+		<div class="cbi-value">
+			<label class="cbi-value-title">Socks
+				<%:Status%>
+			</label>
+			<div class="cbi-value-field" id="_socks_node_status">
+				<%:Collecting data...%>
+			</div>
+		</div>
+		
+		<% if ipkg.installed("kcptun") or is_finded("kcptun*") then %>
+			<div class="cbi-value">
+				<label class="cbi-value-title">Kcptun
+					<%:Status%>
+				</label>
+				<div class="cbi-value-field" id="_kcptun_tcp_node_status">
+					<%:Collecting data...%>
+				</div>
+			</div>
+		<% end %>
+		
+		<% if ipkg.installed("haproxy") or is_finded("haproxy*") then %>
+		<div class="cbi-value">
+			<label class="cbi-value-title">
+				<%:Load Balancing%>
+			</label>
+			<div class="cbi-value-field" id="_haproxy_status">
+				<%:Collecting data...%>
+			</div>
+		</div>
+		<% end %>
+		
+		<div class="cbi-value">
+			<label class="cbi-value-title">DNS
+				<%:Status%>
+			</label>
+			<div class="cbi-value-field" id="_dns_mode_status">
+				<%:Collecting data...%>
+			</div>
+		</div>
+		
+		<div class="cbi-value">
+			<label class="cbi-value-title">
+				<%:Baidu Connection%>
+			</label>
+			<div class="cbi-value-field">
+				<input type="button" class="cbi-button cbi-input-apply" value="<%:Check%>" onclick="return check_connect(this,'baidu')" />
+				<font id="_baidu_status"></font>
+			</div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title">
+				<%:Google Connection%>
+			</label>
+			<div class="cbi-value-field">
+				<input type="button" class="cbi-button cbi-input-apply" value="<%:Check%>" onclick="return check_connect(this,'google')" />
+				<font id="_google_status"></font>
+			</div>
+		</div>
+		<% if tonumber(status_show_check_port) == 1 then %>
+		<div class="cbi-value">
+			<label class="cbi-value-title">
+				<%:Node Check%>
+			</label>
+			<div class="cbi-value-field">
+				<input type="button" class="cbi-button cbi-input-apply" value="<%:Check%>" onclick="return check_port(this)" />
+				<font id="_node_status"></font>
+				<input id="clear_check_port_btn" type="button" class="cbi-button cbi-button-remove" style="display:none" value="<%:Clear%>" onclick="return clear_check_port(this)" />
+			</div>
+		</div>
+		<% end %>
+		<% if tonumber(status_show_ip111) == 1 then %>
+		<div class="cbi-value">
+			<label class="cbi-value-title"></label>
+			<div class="cbi-value-field">
+				<input type="button" class="cbi-button cbi-input-reload" value="IP111.cn" onclick="javascript:window.open('http://www.ip111.cn/','target');" />
+			</div>
+		</div>
+		<% end %>
+	</fieldset>
+</fieldset>
+
+<script type="text/javascript">
+	//<![CDATA[
+	var dns_mode_status = document.getElementById('_dns_mode_status');
+	var haproxy_status = document.getElementById('_haproxy_status');
+	var kcptun_status = document.getElementById('_kcptun_status');
+	var baidu_status = document.getElementById('_baidu_status');
+	var google_status = document.getElementById('_google_status');
+	XHR.poll(3, '<%=dsp.build_url("admin/vpn/passwall/status")%>', null,
+		function(x, json) {
+			if(x && x.status == 200) {
+				var tcp_node_status = document.getElementById('_tcp_node_status');
+				if (tcp_node_status) {
+					var tcp_node_num = <%=tcp_node_num%>;
+					if (tcp_node_num >= 1) {
+						var text = '';
+						if (tcp_node_num == 1) {
+							if (json["tcp_node1_status"])
+								text += '<font color="green"><%:RUNNING%> ✓</font>';
+							else
+								text += '<font color="red"><%:NOT RUNNING%> X</font>';
+						} else {
+							for(var i = 0; i < tcp_node_num; i++) {
+								var k = i + 1;
+								if (json["tcp_node" + k + "_status"])
+									text += '<font color="green" size="3"> ✓</font>';
+								else
+									text += '<font color="red" size="3"> X</font>';
+							}
+						}
+						tcp_node_status.innerHTML = text;
+						
+						var kcptun_tcp_node_status = document.getElementById('_kcptun_tcp_node_status');
+						text = "";
+						if (tcp_node_num == 1) {
+							if (json["kcptun_tcp_node1_status"])
+								text += '<font color="green"><%:RUNNING%> ✓</font>';
+							else
+								text += '<font color="red"><%:NOT RUNNING%> X</font>';
+						} else {
+							for(var i = 0; i < tcp_node_num; i++) {
+								var k = i + 1;
+								if (json["tcp_node" + k + "_status"])
+									text += '<font color="green" size="3"> ✓</font>';
+								else
+									text += '<font color="red" size="3"> X</font>';
+							}
+						}
+						kcptun_tcp_node_status.innerHTML = text;
+					}
+				}
+				
+				var udp_node_status = document.getElementById('_udp_node_status');
+				if (udp_node_status) {
+					var udp_node_num = <%=udp_node_num%>;
+					if (udp_node_num >= 1) {
+						var text = '';
+						if (udp_node_num == 1) {
+							if (json["udp_node1_status"])
+								text += '<font color="green"><%:RUNNING%> ✓</font>';
+							else
+								text += '<font color="red"><%:NOT RUNNING%> X</font>';
+						} else {
+							for(var i = 0; i < udp_node_num; i++) {
+								var k = i + 1;
+								if (json["udp_node" + k + "_status"])
+									text += '<font color="green" size="3"> ✓</font>';
+								else
+									text += '<font color="red" size="3"> X</font>';
+							}
+						}
+						udp_node_status.innerHTML = text;
+					}
+				}
+				
+				var socks_node_status = document.getElementById('_socks_node_status');
+				if (socks_node_status) {
+					var socks_node_num = <%=socks_node_num%>;
+					if (socks_node_num >= 1) {
+						var text = '';
+						if (socks_node_num == 1) {
+							if (json["socks_node1_status"])
+								text += '<font color="green"><%:RUNNING%> ✓</font>';
+							else
+								text += '<font color="red"><%:NOT RUNNING%> X</font>';
+						} else {
+							for(var i = 0; i < socks_node_num; i++) {
+								var k = i + 1;
+								if (json["socks_node" + k + "_status"])
+									text += '<font color="green" size="3"> ✓</font>';
+								else
+									text += '<font color="red" size="3"> X</font>';
+							}
+						}
+						socks_node_status.innerHTML = text;
+					}
+				}
+				if(haproxy_status)
+					haproxy_status.innerHTML = json.haproxy_status ? '<font color="green"><%:RUNNING%> ✓</font>' : '<font color="red"><%:NOT RUNNING%> X</font>';
+				if(dns_mode_status)
+					dns_mode_status.innerHTML = json.dns_mode_status ? '<font color="green"><%:RUNNING%> ✓</font>' : '<font color="red"><%:NOT RUNNING%> X</font>';
+			}
+		});
+
+	function check_connect(btn, type) {
+		btn.disabled = true;
+		btn.value = '<%:Check...%>';
+		var sendDate = (new Date()).getTime();
+		XHR.get('<%=dsp.build_url("admin/vpn/passwall/connect_status")%>', {
+				type: type
+			},
+			function(x, rv) {
+				var s = document.getElementById('_' + type + '_status');
+				if(s) {
+					if(rv.status) {
+						var use_time = rv.use_time;
+						var speed = "";
+						var color="red";
+						if (use_time < 1) {
+							color = "green";
+							speed = "<%:Very Fast%>";
+						} else if (use_time < 2) {
+							color = "green";
+							speed = "<%:Fast%>";
+						} else if (use_time < 3) {
+							color = "#b9b90b";
+							speed = "<%:General%>";
+						} else if (use_time < 4) {
+							color = "red";
+							speed = "<%:Slow%>";
+						} else if (use_time >= 4) {
+							color = "red";
+							speed = "<%:Very Slow%>";
+						}
+						//s.setAttribute("color", color);
+						btn.setAttribute("style","background-color: " + color + " !important; border-color: " + color + " !important;");
+						btn.value = speed;
+					}
+					else {
+						//s.setAttribute("color", "red");
+						btn.setAttribute("style","background-color:red !important; border-color: red !important;");
+						btn.value = '<%:Problem detected!%> X';
+					}
+				}
+				btn.disabled = false;
+				//btn.value = '<%:Check%>';
+			}
+		);
+		return false;
+	}
+
+	function check_port(btn) {
+		btn.disabled = true;
+		btn.value = '<%:Check...%>';
+		XHR.get('<%=dsp.build_url("admin/vpn/passwall/check_port")%>', null,
+			function(x, rv) {
+				var s = document.getElementById('_node_status');
+				if(s) {
+					s.innerHTML = rv.ret;
+					var clear_btn = document.getElementById('clear_check_port_btn');
+					clear_btn.style.display = "inline-block";
+				}
+				btn.disabled = false;
+				btn.value = '<%:Check%>';
+			}
+		);
+		return false;
+	}
+
+	function clear_check_port(btn) {
+		btn.style.display = 'none';
+		var s = document.getElementById('_node_status');
+		s.innerHTML = "";
+		return false;
+	}
+	//]]>
+</script>
