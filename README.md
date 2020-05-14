@@ -68,8 +68,8 @@ make -j$(($(nproc) + 1)) V=s
 ## Xiaoma
 友情推荐不恰饭：如果你在寻找一个低功耗小体积性能不错的x86l路由器，我个人建议可以考虑 小马v1 的铝合金版本 (N3710 4千兆)：[页面介绍](https://item.taobao.com/item.htm?spm=a230r.1.14.20.144c763fRkK0VZ&id=561126544764 " 小马v1 的铝合金版本")
 
-![xm1](doc/xm1.jpg)
-![xm2](doc/xm2.jpg)
+![xm1](doc/xm3.jpg)
+![xm2](doc/xm4.jpg)
 
 ## Donate
 
