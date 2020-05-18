@@ -249,11 +249,11 @@ o.enabled = "true"
 o.disabled = "false"
 o.default = o.disabled
 
-o = s:taboption("webgui", Value, "Username", translate("Username"), translate("The login name for WebUI."))
-o.placeholder = "admin"
+--o = s:taboption("webgui", Value, "Username", translate("Username"), translate("The login name for WebUI."))
+--o.placeholder = "admin"
 
-o = s:taboption("webgui", Value, "Password", translate("Password"), translate("The login password for WebUI."))
-o.password  =  true
+--o = s:taboption("webgui", Value, "Password", translate("Password"), translate("The login password for WebUI."))
+--o.password  =  true
 
 o = s:taboption("webgui", Value, "Locale", translate("Locale Language"))
 o:value("en", translate("English"))
