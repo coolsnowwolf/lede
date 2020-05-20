@@ -246,8 +246,8 @@ o:depends("type", "v2ray")
 -- TCP伪装
 o = s:option(ListValue, "tcp_guise", translate("Camouflage Type"))
 o:depends("transport", "tcp")
-o:value("http", "HTTP")
 o:value("none", translate("None"))
+o:value("http", "HTTP")
 o.rmempty = true
 
 -- HTTP域名
@@ -288,10 +288,10 @@ o.rmempty = true
 
 o = s:option(ListValue, "quic_security", translate("QUIC Security"))
 o:depends("transport", "quic")
-o.rmempty = true
 o:value("none", translate("None"))
 o:value("aes-128-gcm", translate("aes-128-gcm"))
 o:value("chacha20-poly1305", translate("chacha20-poly1305"))
+o.rmempty = true
 
 o = s:option(Value, "quic_key", translate("QUIC Key"))
 o:depends("transport", "quic")
