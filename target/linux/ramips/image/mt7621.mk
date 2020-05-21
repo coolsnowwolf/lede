@@ -461,10 +461,10 @@ define Device/linksys_ea7500-v2
   DEVICE_VENDOR := Linksys
   DEVICE_MODEL := EA7500
   DEVICE_VARIANT := v2
-  DEVICE_PACKAGES := kmod-usb3 kmod-mt7615e wpad-basic uboot-envtools
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7615e wpad-openssl uboot-envtools
   UBINIZE_OPTS := -E 5
   IMAGES := sysupgrade.bin factory.bin
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata | check-size
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata | check-size $$$$(IMAGE_SIZE)
   IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | \
 	append-ubi | check-size $$$$(IMAGE_SIZE) | linksys-image type=EA7500v2
 endef
