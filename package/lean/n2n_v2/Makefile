@@ -1,53 +1,81 @@
 #
-# Copyright (C) 2007-2012 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
+# Copyright (C) 2020 - ntop.org and contributors
 #
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=n2n_v2
-PKG_VERSION:=2.4
-PKG_RELEASE:=2
-PKG_REV=25563f31d9aba5f61b3e2fb42941b66dad1f531f
+PKG_NAME:=n2n
+PKG_SOURCE_URL:=https://github.com/ntop/n2n.git
+PKG_SOURCE_VERSION:=bc0a6bf8b78c90dd902efa75891d41d2a489286e
+PKG_VERSION:=2.6.0_git-$(PKG_SOURCE_VERSION)
+PKG_RELEASE:=1
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-r$(PKG_REV).tar.bz2
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_VERSION:=$(PKG_REV)
-PKG_SOURCE_URL:=https://github.com/ntop/n2n.git
+
+PKG_MAINTAINER:=Emanuele Faranda <faranda@ntop.org>
+PKG_LICENSE:=GPL3
+PKG_BUILD_PARALLEL:=1
+
+# autogen fix
+PKG_FIXUP:=autoreconf
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/n2n_v2
+define Package/n2n/Default
   SECTION:=net
   CATEGORY:=Network
-  TITLE:=N2N VPN tunneling daemon(V2)
-  URL:=http://www.ntop.org/n2n/
+  TITLE:=N2N Peer-to-peer VPN
+  URL:=http://www.ntop.org/n2n
   SUBMENU:=VPN
-  DEPENDS:=+libpthread +kmod-tun +libopenssl
 endef
 
-define Build/Compile
-	$(MAKE) -C $(PKG_BUILD_DIR) \
-		$(TARGET_CONFIGURE_OPTS) \
-		CFLAGS="$(TARGET_CFLAGS)" \
-		INSTALL_PROG=":"
+define Package/n2n-edge
+  $(call Package/n2n/Default)
+  TITLE+= client (edge node)
+  DEPENDS+=+kmod-tun +resolveip +libopenssl
 endef
 
-define Package/n2n_v2/install
-	$(INSTALL_DIR) $(1)/usr/sbin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/edge $(1)/usr/sbin/
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/supernode $(1)/usr/sbin/
-	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_DATA) ./files/n2n_v2.config $(1)/etc/config/n2n_v2
+define Package/n2n-supernode
+  $(call Package/n2n/Default)
+  TITLE+= server (supernode)
+endef
+
+define Package/n2n-edge/description
+The client node for the N2N infrastructure
+endef
+
+define Package/n2n-supernode/description
+The supernode for the N2N infrastructure
+endef
+
+define Build/Configure
+	( cd $(PKG_BUILD_DIR); ./autogen.sh )
+	$(call Build/Configure/Default)
+endef
+
+define Package/n2n-edge/conffiles
+/etc/config/n2n-edge.conf
+endef
+
+define Package/n2n-edge/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/edge $(1)/usr/bin/
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/n2n_v2.init $(1)/etc/init.d/n2n_v2
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_DATA) ./files/n2n_v2.config $(1)/etc/config/n2n_v2
 endef
 
-define Package/n2n_v2/conffiles
-/etc/config/n2n_v2
+define Package/n2n-supernode/conffiles
+/etc/config/n2n-supernode.conf
 endef
 
-$(eval $(call BuildPackage,n2n_v2))
+define Package/n2n-supernode/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/supernode $(1)/usr/bin/
+endef
+
+$(eval $(call BuildPackage,n2n-edge))
+$(eval $(call BuildPackage,n2n-supernode))
