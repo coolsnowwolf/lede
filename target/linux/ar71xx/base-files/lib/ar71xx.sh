@@ -302,6 +302,9 @@ tplink_board_detect() {
 	"322000"*)
 		model="TP-Link TL-MR3220"
 		;;
+	"322700"*)
+		model="TP-Link TL-WDR3227"
+		;;
 	"332000"*)
 		model="TP-Link TL-WDR3320"
 		;;
@@ -349,11 +352,11 @@ tplink_board_detect() {
 	"751000"*)
 		model="TP-Link TL-WA7510N"
 		;;
+	"85000001")
+		model="TP-Link TL-WDR8500"
+		;;
 	"934100"*)
 		model="NC-LINK SMART-300"
-		;;
-	"322700"*)
-		model="TP-Link TL-WDR3227"
 		;;
 	"c50000"*)
 		model="TP-Link Archer C5"
@@ -1300,6 +1303,9 @@ ar71xx_board_detect() {
 		;;
 	*"TL-WDR6500 v6")
 		name="tl-wdr6500-v6"
+		;;
+	*"TL-WDR8500 v1")
+		name="tl-wdr8500-v1"
 		;;
 	*"TL-WPA8630")
 		name="tl-wpa8630"
