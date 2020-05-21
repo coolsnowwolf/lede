@@ -25,9 +25,4 @@ luci.ip.neighbors({ family = 4 }, function(entry)
        end
 end)
 
-local apply=luci.http.formvalue("cbi.apply")
-if apply then
-io.popen("/etc/init.d/devcom start")
-end
-
 return m
