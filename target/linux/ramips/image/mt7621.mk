@@ -454,7 +454,6 @@ endef
 TARGET_DEVICES += lenovo_newifi-d1
 
 define Device/linksys_ea7500-v2
-  $(Device/uimage-lzma-loader)
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL_SIZE := 4096k
@@ -467,7 +466,7 @@ define Device/linksys_ea7500-v2
   IMAGES := sysupgrade.bin factory.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata | check-size
   IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | \
-	append-ubi | check-size | linksys-image type=EA7500v2
+	append-ubi | check-size $$$$(IMAGE_SIZE) | linksys-image type=EA7500v2
 endef
 TARGET_DEVICES += linksys_ea7500-v2
 
