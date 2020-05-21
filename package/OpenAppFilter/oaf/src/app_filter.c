@@ -276,14 +276,14 @@ void load_feature_buf_from_file(char **config_buf)
 
 	if(IS_ERR(fp)) {
 		printk("open feature file failed\n");
-		return -1;
+		return;
 	}
 
 	inode = fp->f_inode;
 	size = inode->i_size;
-	AF_INFO("feature file size: %d\n", size);
+	AF_INFO("feature file size: %u\n", size);
 	if (size == 0) {
-		AF_WARN("warning, file size = %d\n", size);
+		AF_WARN("warning, file size = %u\n", size);
 		return;
 	}
 	*config_buf = (char *) kzalloc( sizeof(char) * size, GFP_KERNEL);
@@ -709,9 +709,16 @@ int app_filter_match(flow_info_t *flow)
 #define APP_FILTER_DROP_BITS 0xf0000000
 u_int32_t af_get_timestamp_sec(void)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+	struct timespec64 ts;
+	ktime_get_ts64(&ts);
+	return (u_int32_t)ts.tv_sec;
+#else
 	struct timespec ts;
 	ts = current_kernel_time();
 	return ts.tv_sec;
+#endif
+
 }
 
 
@@ -827,7 +834,7 @@ static u_int32_t app_filter_hook(unsigned int hook,
 		return NF_DROP;
 	}
 #endif
-
+#if 0
 // 3.12.74-->3.13-rc1
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,13,0)
 	struct nf_conn_acct *acct;
@@ -852,6 +859,7 @@ static u_int32_t app_filter_hook(unsigned int hook,
 		return NF_ACCEPT;
 	}
 
+#endif
 	memset((char *)&flow, 0x0, sizeof(flow_info_t));
 	if(parse_flow_base(skb, &flow) < 0)
 		return NF_ACCEPT;

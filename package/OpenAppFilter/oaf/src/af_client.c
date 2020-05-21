@@ -132,8 +132,8 @@ void check_client_expire(void)
 	AF_CLIENT_LOCK_W();
 	for (i = 0; i < MAX_AF_CLIENT_HASH_SIZE; i++){
 		list_for_each_entry(node, &af_client_list_table[i], hlist) {
-			AF_DEBUG("mac:"MAC_FMT" update:%d cur:%d, interval:%d\n", MAC_ARRAY(node->mac),
-				node->update_jiffies, HZ, (jiffies - node->update_jiffies) / HZ);
+			AF_DEBUG("mac:"MAC_FMT" update:%lu interval:%lu\n", MAC_ARRAY(node->mac),
+				node->update_jiffies, (jiffies - node->update_jiffies) / HZ);
 			if (jiffies > (node->update_jiffies + MAX_CLIENT_ACTIVE_TIME * HZ)) {
 				AF_INFO("del client:"MAC_FMT"\n", MAC_ARRAY(node->mac));
 				list_del(&(node->hlist));
@@ -213,7 +213,8 @@ static u_int32_t nfclient_hook(unsigned int hook,
 	AF_CLIENT_LOCK_W();
 	nfc = find_af_client(smac);
 	if (!nfc){
-		AF_DEBUG("from dev:%s [%s] %pI4--->%pI4", skb->dev, (iph->protocol == IPPROTO_TCP ? "TCP" : "UDP"), 
+		if (skb->dev)
+		AF_DEBUG("from dev:%s [%s] %pI4--->%pI4", skb->dev->name, (iph->protocol == IPPROTO_TCP ? "TCP" : "UDP"), 
 			&iph->saddr, &iph->daddr);
 		nfc = nf_client_add(smac);
 	}
