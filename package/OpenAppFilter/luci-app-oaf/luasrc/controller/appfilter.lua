@@ -41,7 +41,7 @@ function get_hostname_by_mac(dst_mac)
 						if not lc then break end
 						local comment, macs, ips = lc:match("(%S+) (%S+) (%S+)")		
 						if macs ~= "-" then
-							if macs == mac then 
+							if string.lower(macs) == mac or string.upper(macs) == mac then 
 								name = comment
 								break
 							end

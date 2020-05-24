@@ -1,4 +1,3 @@
-local ipc = require "luci.ip"
 local o
 require "luci.util"
 m=Map("devcom")
@@ -11,18 +10,18 @@ s.template="cbi/tblsection"
 comments=s:option(Value,"comments",translate("Comments"))
 comments.rmempty=false
 mac=s:option(Value,"mac",translate("<abbr title=\"Media Access Control\">MAC</abbr>-Address"))
-mac.datatype="list(macaddr)"
-luci.ip.neighbors({family = 4}, function(neighbor)
-	if neighbor.reachable then
-		mac:value(neighbor.mac, "%s (%s)" %{neighbor.mac, neighbor.dest:string()})
+mac.datatype = "macaddr"
+luci.sys.net.mac_hints(function(x,d)
+	if not luci.ip.new(d) then
+		mac:value(x,"%s (%s)"%{x,d})
 	end
 end)
 ip=s:option(Value,"ip",translate("<abbr title=\"Internet Protocol Version 4\">IPv4</abbr>-Address"))
 ip.datatype="or(ip4addr,'ignore')"
-luci.ip.neighbors({ family = 4 }, function(entry)
-       if entry.reachable then
-               ip:value(entry.dest:string())
-       end
+luci.sys.net.ipv4_hints(function(x,d)
+	if not luci.ip.new(d) then
+		ip:value(x,"%s (%s)"%{x,d})
+	end
 end)
 
 return m
