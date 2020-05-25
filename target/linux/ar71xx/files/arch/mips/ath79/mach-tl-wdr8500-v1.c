@@ -9,6 +9,7 @@
  */
 
 #include <linux/gpio.h>
+#include <linux/phy.h>
 #include <linux/platform_device.h>
 #include <linux/proc_fs.h>
 #include <linux/spi/spi_gpio.h>
@@ -105,7 +106,7 @@ static struct ar8327_platform_data TL_WDR8500_v1_ar8337_data = {
 static struct mdio_board_info TL_WDR8500_v1_mdio0_info[] = {
 	{
 		.bus_id = "ag71xx-mdio.0",
-		.phy_addr = 0,
+		.mdio_addr = 0,
 		.platform_data = &TL_WDR8500_v1_ar8337_data,
 	},
 };
