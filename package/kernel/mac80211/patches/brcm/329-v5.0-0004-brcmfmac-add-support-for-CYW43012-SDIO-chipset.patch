@@ -1,0 +1,253 @@
+From 35cb51b2162a1a7c5cd977f92595e60ab14d3b22 Mon Sep 17 00:00:00 2001
+From: Chi-Hsien Lin <Chi-Hsien.Lin@cypress.com>
+Date: Wed, 21 Nov 2018 07:53:47 +0000
+Subject: [PATCH] brcmfmac: add support for CYW43012 SDIO chipset
+
+CYW43012 is a 1x1 802.11a/b/g/n Dual-Band HT20, 256-QAM/Turbo QAM. It
+is an Ultra Low Power WLAN+BT combo chip.
+
+Reviewed-by: Arend van Spriel <arend.vanspriel@broadcom.com>
+Signed-off-by: Chi-Hsien Lin <chi-hsien.lin@cypress.com>
+Signed-off-by: Praveen Babu C <praveen.chandran@cypress.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../broadcom/brcm80211/brcmfmac/bcmsdh.c      |  1 +
+ .../broadcom/brcm80211/brcmfmac/chip.c        | 14 +++-
+ .../broadcom/brcm80211/brcmfmac/sdio.c        | 74 ++++++++++++++++---
+ .../broadcom/brcm80211/include/brcm_hw_ids.h  |  1 +
+ include/linux/mmc/sdio_ids.h                  |  1 +
+ 5 files changed, 78 insertions(+), 13 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bcmsdh.c
+@@ -972,6 +972,7 @@ static const struct sdio_device_id brcmf
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4354),
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_BROADCOM_4356),
+ 	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_CYPRESS_4373),
++	BRCMF_SDIO_DEVICE(SDIO_DEVICE_ID_CYPRESS_43012),
+ 	{ /* end: all zeroes */ }
+ };
+ MODULE_DEVICE_TABLE(sdio, brcmf_sdmmc_ids);
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
+@@ -165,6 +165,7 @@ struct sbconfig {
+ #define SRCI_LSS_MASK		0x00f00000
+ #define SRCI_LSS_SHIFT		20
+ #define	SRCI_SRNB_MASK		0xf0
++#define	SRCI_SRNB_MASK_EXT	0x100
+ #define	SRCI_SRNB_SHIFT		4
+ #define	SRCI_SRBSZ_MASK		0xf
+ #define	SRCI_SRBSZ_SHIFT	0
+@@ -592,7 +593,13 @@ static void brcmf_chip_socram_ramsize(st
+ 		if (lss != 0)
+ 			*ramsize += (1 << ((lss - 1) + SR_BSZ_BASE));
+ 	} else {
+-		nb = (coreinfo & SRCI_SRNB_MASK) >> SRCI_SRNB_SHIFT;
++		/* length of SRAM Banks increased for corerev greater than 23 */
++		if (sr->pub.rev >= 23) {
++			nb = (coreinfo & (SRCI_SRNB_MASK | SRCI_SRNB_MASK_EXT))
++				>> SRCI_SRNB_SHIFT;
++		} else {
++			nb = (coreinfo & SRCI_SRNB_MASK) >> SRCI_SRNB_SHIFT;
++		}
+ 		for (i = 0; i < nb; i++) {
+ 			retent = brcmf_chip_socram_banksize(sr, i, &banksize);
+ 			*ramsize += banksize;
+@@ -1356,6 +1363,11 @@ bool brcmf_chip_sr_capable(struct brcmf_
+ 		addr = CORE_CC_REG(base, sr_control1);
+ 		reg = chip->ops->read32(chip->ctx, addr);
+ 		return reg != 0;
++	case CY_CC_43012_CHIP_ID:
++		addr = CORE_CC_REG(pmu->base, retention_ctl);
++		reg = chip->ops->read32(chip->ctx, addr);
++		return (reg & (PMU_RCTL_MACPHY_DISABLE_MASK |
++			       PMU_RCTL_LOGIC_DISABLE_MASK)) == 0;
+ 	default:
+ 		addr = CORE_CC_REG(pmu->base, pmucapabilities_ext);
+ 		reg = chip->ops->read32(chip->ctx, addr);
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/sdio.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/sdio.c
+@@ -624,6 +624,7 @@ BRCMF_FW_DEF(43455, "brcmfmac43455-sdio"
+ BRCMF_FW_DEF(4354, "brcmfmac4354-sdio");
+ BRCMF_FW_DEF(4356, "brcmfmac4356-sdio");
+ BRCMF_FW_DEF(4373, "brcmfmac4373-sdio");
++BRCMF_FW_DEF(43012, "brcmfmac43012-sdio");
+ 
+ static const struct brcmf_firmware_mapping brcmf_sdio_fwnames[] = {
+ 	BRCMF_FW_ENTRY(BRCM_CC_43143_CHIP_ID, 0xFFFFFFFF, 43143),
+@@ -643,7 +644,8 @@ static const struct brcmf_firmware_mappi
+ 	BRCMF_FW_ENTRY(BRCM_CC_4345_CHIP_ID, 0xFFFFFFC0, 43455),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4354_CHIP_ID, 0xFFFFFFFF, 4354),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4356_CHIP_ID, 0xFFFFFFFF, 4356),
+-	BRCMF_FW_ENTRY(CY_CC_4373_CHIP_ID, 0xFFFFFFFF, 4373)
++	BRCMF_FW_ENTRY(CY_CC_4373_CHIP_ID, 0xFFFFFFFF, 4373),
++	BRCMF_FW_ENTRY(CY_CC_43012_CHIP_ID, 0xFFFFFFFF, 43012)
+ };
+ 
+ static void pkt_align(struct sk_buff *p, int len, int align)
+@@ -683,6 +685,14 @@ brcmf_sdio_kso_control(struct brcmf_sdio
+ 	/* 1st KSO write goes to AOS wake up core if device is asleep  */
+ 	brcmf_sdiod_writeb(bus->sdiodev, SBSDIO_FUNC1_SLEEPCSR, wr_val, &err);
+ 
++	/* In case of 43012 chip, the chip could go down immediately after
++	 * KSO bit is cleared. So the further reads of KSO register could
++	 * fail. Thereby just bailing out immediately after clearing KSO
++	 * bit, to avoid polling of KSO bit.
++	 */
++	if (!on && bus->ci->chip == CY_CC_43012_CHIP_ID)
++		return err;
++
+ 	if (on) {
+ 		/* device WAKEUP through KSO:
+ 		 * write bit 0 & read back until
+@@ -2413,6 +2423,14 @@ static int brcmf_sdio_tx_ctrlframe(struc
+ 	return ret;
+ }
+ 
++static bool brcmf_chip_is_ulp(struct brcmf_chip *ci)
++{
++	if (ci->chip == CY_CC_43012_CHIP_ID)
++		return true;
++	else
++		return false;
++}
++
+ static void brcmf_sdio_bus_stop(struct device *dev)
+ {
+ 	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
+@@ -2420,7 +2438,7 @@ static void brcmf_sdio_bus_stop(struct d
+ 	struct brcmf_sdio *bus = sdiodev->bus;
+ 	struct brcmf_core *core = bus->sdio_core;
+ 	u32 local_hostintmask;
+-	u8 saveclk;
++	u8 saveclk, bpreq;
+ 	int err;
+ 
+ 	brcmf_dbg(TRACE, "Enter\n");
+@@ -2447,9 +2465,14 @@ static void brcmf_sdio_bus_stop(struct d
+ 		/* Force backplane clocks to assure F2 interrupt propagates */
+ 		saveclk = brcmf_sdiod_readb(sdiodev, SBSDIO_FUNC1_CHIPCLKCSR,
+ 					    &err);
+-		if (!err)
+-			brcmf_sdiod_writeb(sdiodev, SBSDIO_FUNC1_CHIPCLKCSR,
+-					   (saveclk | SBSDIO_FORCE_HT), &err);
++		if (!err) {
++			bpreq = saveclk;
++			bpreq |= brcmf_chip_is_ulp(bus->ci) ?
++				SBSDIO_HT_AVAIL_REQ : SBSDIO_FORCE_HT;
++			brcmf_sdiod_writeb(sdiodev,
++					   SBSDIO_FUNC1_CHIPCLKCSR,
++					   bpreq, &err);
++		}
+ 		if (err)
+ 			brcmf_err("Failed to force clock for F2: err %d\n",
+ 				  err);
+@@ -3339,20 +3362,45 @@ err:
+ 	return bcmerror;
+ }
+ 
++static bool brcmf_sdio_aos_no_decode(struct brcmf_sdio *bus)
++{
++	if (bus->ci->chip == CY_CC_43012_CHIP_ID)
++		return true;
++	else
++		return false;
++}
++
+ static void brcmf_sdio_sr_init(struct brcmf_sdio *bus)
+ {
+ 	int err = 0;
+ 	u8 val;
++	u8 wakeupctrl;
++	u8 cardcap;
++	u8 chipclkcsr;
+ 
+ 	brcmf_dbg(TRACE, "Enter\n");
+ 
++	if (brcmf_chip_is_ulp(bus->ci)) {
++		wakeupctrl = SBSDIO_FUNC1_WCTRL_ALPWAIT_SHIFT;
++		chipclkcsr = SBSDIO_HT_AVAIL_REQ;
++	} else {
++		wakeupctrl = SBSDIO_FUNC1_WCTRL_HTWAIT_SHIFT;
++		chipclkcsr = SBSDIO_FORCE_HT;
++	}
++
++	if (brcmf_sdio_aos_no_decode(bus)) {
++		cardcap = SDIO_CCCR_BRCM_CARDCAP_CMD_NODEC;
++	} else {
++		cardcap = (SDIO_CCCR_BRCM_CARDCAP_CMD14_SUPPORT |
++			   SDIO_CCCR_BRCM_CARDCAP_CMD14_EXT);
++	}
++
+ 	val = brcmf_sdiod_readb(bus->sdiodev, SBSDIO_FUNC1_WAKEUPCTRL, &err);
+ 	if (err) {
+ 		brcmf_err("error reading SBSDIO_FUNC1_WAKEUPCTRL\n");
+ 		return;
+ 	}
+-
+-	val |= 1 << SBSDIO_FUNC1_WCTRL_HTWAIT_SHIFT;
++	val |= 1 << wakeupctrl;
+ 	brcmf_sdiod_writeb(bus->sdiodev, SBSDIO_FUNC1_WAKEUPCTRL, val, &err);
+ 	if (err) {
+ 		brcmf_err("error writing SBSDIO_FUNC1_WAKEUPCTRL\n");
+@@ -3361,8 +3409,7 @@ static void brcmf_sdio_sr_init(struct br
+ 
+ 	/* Add CMD14 Support */
+ 	brcmf_sdiod_func0_wb(bus->sdiodev, SDIO_CCCR_BRCM_CARDCAP,
+-			     (SDIO_CCCR_BRCM_CARDCAP_CMD14_SUPPORT |
+-			      SDIO_CCCR_BRCM_CARDCAP_CMD14_EXT),
++			     cardcap,
+ 			     &err);
+ 	if (err) {
+ 		brcmf_err("error writing SDIO_CCCR_BRCM_CARDCAP\n");
+@@ -3370,7 +3417,7 @@ static void brcmf_sdio_sr_init(struct br
+ 	}
+ 
+ 	brcmf_sdiod_writeb(bus->sdiodev, SBSDIO_FUNC1_CHIPCLKCSR,
+-			   SBSDIO_FORCE_HT, &err);
++			   chipclkcsr, &err);
+ 	if (err) {
+ 		brcmf_err("error writing SBSDIO_FUNC1_CHIPCLKCSR\n");
+ 		return;
+@@ -4062,7 +4109,7 @@ static void brcmf_sdio_firmware_callback
+ 	const struct firmware *code;
+ 	void *nvram;
+ 	u32 nvram_len;
+-	u8 saveclk;
++	u8 saveclk, bpreq;
+ 	u8 devctl;
+ 
+ 	brcmf_dbg(TRACE, "Enter: dev=%s, err=%d\n", dev_name(dev), err);
+@@ -4096,8 +4143,11 @@ static void brcmf_sdio_firmware_callback
+ 	/* Force clocks on backplane to be sure F2 interrupt propagates */
+ 	saveclk = brcmf_sdiod_readb(sdiod, SBSDIO_FUNC1_CHIPCLKCSR, &err);
+ 	if (!err) {
++		bpreq = saveclk;
++		bpreq |= brcmf_chip_is_ulp(bus->ci) ?
++			SBSDIO_HT_AVAIL_REQ : SBSDIO_FORCE_HT;
+ 		brcmf_sdiod_writeb(sdiod, SBSDIO_FUNC1_CHIPCLKCSR,
+-				   (saveclk | SBSDIO_FORCE_HT), &err);
++				   bpreq, &err);
+ 	}
+ 	if (err) {
+ 		brcmf_err("Failed to force clock for F2: err %d\n", err);
+--- a/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
++++ b/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
+@@ -60,6 +60,7 @@
+ #define BRCM_CC_43664_CHIP_ID		43664
+ #define BRCM_CC_4371_CHIP_ID		0x4371
+ #define CY_CC_4373_CHIP_ID		0x4373
++#define CY_CC_43012_CHIP_ID		43012
+ 
+ /* USB Device IDs */
+ #define BRCM_USB_43143_DEVICE_ID	0xbd1e
+--- a/include/linux/mmc/sdio_ids.h
++++ b/include/linux/mmc/sdio_ids.h
+@@ -42,6 +42,7 @@
+ #define SDIO_DEVICE_ID_BROADCOM_4354		0x4354
+ #define SDIO_DEVICE_ID_BROADCOM_4356		0x4356
+ #define SDIO_DEVICE_ID_CYPRESS_4373		0x4373
++#define SDIO_DEVICE_ID_CYPRESS_43012		43012
+ 
+ #define SDIO_VENDOR_ID_INTEL			0x0089
+ #define SDIO_DEVICE_ID_INTEL_IWMC3200WIMAX	0x1402

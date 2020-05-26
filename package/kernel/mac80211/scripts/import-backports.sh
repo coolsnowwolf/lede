@@ -70,7 +70,7 @@ get_next() {
 	done | tail -n1
 }
 
-CUR=$(get_next)
+CUR=`get_next`
 CUR="${CUR:-$BASE}"
 
 while [ -n "$1" ]; do
