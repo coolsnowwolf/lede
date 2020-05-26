@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=hostapd
-PKG_RELEASE:=9
+PKG_RELEASE:=2
 
 PKG_SOURCE_URL:=http://w1.fi/hostap.git
 PKG_SOURCE_PROTO:=git
@@ -20,7 +20,6 @@ PKG_LICENSE:=BSD-3-Clause
 PKG_CPE_ID:=cpe:/a:w1.fi:hostapd
 
 PKG_BUILD_PARALLEL:=1
-PKG_ASLR_PIE_REGULAR:=1
 
 PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_kmod-ath9k \
@@ -130,7 +129,6 @@ DRV_DEPENDS:=+PACKAGE_kmod-cfg80211:libnl-tiny
 define Package/hostapd/Default
   SECTION:=net
   CATEGORY:=Network
-  SUBMENU:=WirelessAPD
   TITLE:=IEEE 802.1x Authenticator
   URL:=http://hostap.epitest.fi/
   DEPENDS:=$(DRV_DEPENDS) +hostapd-common +libubus
@@ -192,7 +190,6 @@ endef
 define Package/wpad/Default
   SECTION:=net
   CATEGORY:=Network
-  SUBMENU:=WirelessAPD
   TITLE:=IEEE 802.1x Authenticator/Supplicant
   DEPENDS:=$(DRV_DEPENDS) +hostapd-common +libubus
   URL:=http://hostap.epitest.fi/
@@ -282,7 +279,6 @@ Package/wpad-mesh-wolfssl/description = $(Package/wpad-mesh/description)
 define Package/wpa-supplicant/Default
   SECTION:=net
   CATEGORY:=Network
-  SUBMENU:=WirelessAPD
   TITLE:=WPA Supplicant
   URL:=http://hostap.epitest.fi/wpa_supplicant/
   DEPENDS:=$(DRV_DEPENDS) +hostapd-common +libubus
@@ -355,13 +351,11 @@ define Package/hostapd-common
   TITLE:=hostapd/wpa_supplicant common support files
   SECTION:=net
   CATEGORY:=Network
-  SUBMENU:=WirelessAPD
 endef
 
 define Package/hostapd-utils
   SECTION:=net
   CATEGORY:=Network
-  SUBMENU:=WirelessAPD
   TITLE:=IEEE 802.1x Authenticator (utils)
   URL:=http://hostap.epitest.fi/
   DEPENDS:=@$(subst $(space),||,$(foreach pkg,$(HOSTAPD_PROVIDERS),PACKAGE_$(pkg)))
@@ -375,7 +369,6 @@ endef
 define Package/wpa-cli
   SECTION:=net
   CATEGORY:=Network
-  SUBMENU:=WirelessAPD
   DEPENDS:=@$(subst $(space),||,$(foreach pkg,$(SUPPLICANT_PROVIDERS),PACKAGE_$(pkg)))
   TITLE:=WPA Supplicant command line control utility
 endef
@@ -383,7 +376,6 @@ endef
 define Package/eapol-test
   TITLE:=802.1x authentication test utility
   SECTION:=net
-  SUBMENU:=WirelessAPD
   CATEGORY:=Network
   VARIANT:=supplicant-full-internal
   DEPENDS:=$(DRV_DEPENDS) +libubus
@@ -393,7 +385,6 @@ define Package/eapol-test-openssl
   TITLE:=802.1x authentication test utility
   SECTION:=net
   CATEGORY:=Network
-  SUBMENU:=WirelessAPD
   VARIANT:=supplicant-full-openssl
   CONFLICTS:=$(filter-out eapol-test-openssl ,$(EAPOL_TEST_PROVIDERS))
   DEPENDS:=$(DRV_DEPENDS) +libubus +libopenssl
@@ -404,7 +395,6 @@ define Package/eapol-test-wolfssl
   TITLE:=802.1x authentication test utility
   SECTION:=net
   CATEGORY:=Network
-  SUBMENU:=WirelessAPD
   VARIANT:=supplicant-full-wolfssl
   CONFLICTS:=$(filter-out eapol-test-openssl ,$(filter-out eapol-test-wolfssl ,$(EAPOL_TEST_PROVIDERS)))
   DEPENDS:=$(DRV_DEPENDS) +libubus +libwolfssl
@@ -526,9 +516,8 @@ define Install/supplicant
 endef
 
 define Package/hostapd-common/install
-	$(INSTALL_DIR) $(1)/lib/netifd $(1)/etc/rc.button $(1)/etc/hotplug.d/ieee80211 $(1)/etc/init.d
+	$(INSTALL_DIR) $(1)/lib/netifd $(1)/etc/rc.button
 	$(INSTALL_DATA) ./files/hostapd.sh $(1)/lib/netifd/hostapd.sh
-	$(INSTALL_BIN) ./files/wpad.init $(1)/etc/init.d/wpad
 	$(INSTALL_BIN) ./files/wps-hotplug.sh $(1)/etc/rc.button/wps
 endef
 

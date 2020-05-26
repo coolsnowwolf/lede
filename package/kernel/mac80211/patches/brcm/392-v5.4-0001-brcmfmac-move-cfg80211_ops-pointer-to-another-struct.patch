@@ -1,0 +1,95 @@
+From ba76ff25ee64d5cfc86209d1fbb3c294b2c04412 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Tue, 3 Sep 2019 06:29:26 +0200
+Subject: [PATCH 1/3] brcmfmac: move "cfg80211_ops" pointer to another struct
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This moves "ops" pointer from "struct brcmf_cfg80211_info" to the
+"struct brcmf_pub". This movement makes it possible to allocate wiphy
+without attaching cfg80211 (brcmf_cfg80211_attach()). It's required for
+later separation of wiphy allocation and driver initialization.
+
+While at it fix also an unlikely memory leak in the brcmf_attach().
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ .../net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c  | 1 -
+ .../net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.h  | 1 -
+ drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c  | 9 ++++++---
+ drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.h  | 1 +
+ 4 files changed, 7 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
+@@ -7194,7 +7194,6 @@ void brcmf_cfg80211_detach(struct brcmf_
+ 	brcmf_pno_detach(cfg);
+ 	brcmf_btcoex_detach(cfg);
+ 	wiphy_unregister(cfg->wiphy);
+-	kfree(cfg->ops);
+ 	wl_deinit_priv(cfg);
+ 	brcmf_free_wiphy(cfg->wiphy);
+ 	kfree(cfg);
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.h
+@@ -292,7 +292,6 @@ struct brcmf_cfg80211_wowl {
+  */
+ struct brcmf_cfg80211_info {
+ 	struct wiphy *wiphy;
+-	struct cfg80211_ops *ops;
+ 	struct brcmf_cfg80211_conf *conf;
+ 	struct brcmf_p2p_info p2p;
+ 	struct brcmf_btcoex_info *btcoex;
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.c
+@@ -1245,12 +1245,15 @@ int brcmf_attach(struct device *dev, str
+ 		return -ENOMEM;
+ 
+ 	wiphy = wiphy_new(ops, sizeof(*drvr));
+-	if (!wiphy)
++	if (!wiphy) {
++		kfree(ops);
+ 		return -ENOMEM;
++	}
+ 
+ 	set_wiphy_dev(wiphy, dev);
+ 	drvr = wiphy_priv(wiphy);
+ 	drvr->wiphy = wiphy;
++	drvr->ops = ops;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(drvr->if2bss); i++)
+ 		drvr->if2bss[i] = BRCMF_BSSIDX_INVALID;
+@@ -1283,12 +1286,10 @@ int brcmf_attach(struct device *dev, str
+ 		goto fail;
+ 	}
+ 
+-	drvr->config->ops = ops;
+ 	return 0;
+ 
+ fail:
+ 	brcmf_detach(dev);
+-	kfree(ops);
+ 
+ 	return ret;
+ }
+@@ -1379,6 +1380,8 @@ void brcmf_detach(struct device *dev)
+ 
+ 	bus_if->drvr = NULL;
+ 
++	kfree(drvr->ops);
++
+ 	wiphy_free(drvr->wiphy);
+ }
+ 
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/core.h
+@@ -97,6 +97,7 @@ struct brcmf_pub {
+ 	struct brcmf_bus *bus_if;
+ 	struct brcmf_proto *proto;
+ 	struct wiphy *wiphy;
++	struct cfg80211_ops *ops;
+ 	struct brcmf_cfg80211_info *config;
+ 
+ 	/* Internal brcmf items */

@@ -1,0 +1,105 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Sun, 17 Mar 2019 14:26:59 +0100
+Subject: [PATCH] mac80211: make ieee80211_schedule_txq schedule empty TXQs
+
+Currently there is no way for the driver to signal to mac80211 that it should
+schedule a TXQ even if there are no packets on the mac80211 part of that queue.
+This is problematic if the driver has an internal retry queue to deal with
+software A-MPDU retry.
+
+This patch changes the behavior of ieee80211_schedule_txq to always schedule
+the queue, as its only user (ath9k) seems to expect such behavior already:
+it calls this function on tx status and on powersave wakeup whenever its
+internal retry queue is not empty.
+
+Also add an extra argument to ieee80211_return_txq to get the same behavior.
+
+This fixes an issue on ath9k where tx queues with packets to retry (and no
+new packets in mac80211) would not get serviced.
+
+Fixes: 89cea7493a346 ("ath9k: Switch to mac80211 TXQ scheduling and airtime APIs")
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -6090,26 +6090,42 @@ static inline void ieee80211_txq_schedul
+ {
+ }
+ 
++void __ieee80211_schedule_txq(struct ieee80211_hw *hw,
++			      struct ieee80211_txq *txq, bool force);
++
+ /**
+  * ieee80211_schedule_txq - schedule a TXQ for transmission
+  *
+  * @hw: pointer as obtained from ieee80211_alloc_hw()
+  * @txq: pointer obtained from station or virtual interface
+  *
+- * Schedules a TXQ for transmission if it is not already scheduled.
++ * Schedules a TXQ for transmission if it is not already scheduled,
++ * even if mac80211 does not have any packets buffered.
++ *
++ * The driver may call this function if it has buffered packets for
++ * this TXQ internally.
+  */
+-void ieee80211_schedule_txq(struct ieee80211_hw *hw, struct ieee80211_txq *txq);
++static inline void
++ieee80211_schedule_txq(struct ieee80211_hw *hw, struct ieee80211_txq *txq)
++{
++	__ieee80211_schedule_txq(hw, txq, true);
++}
+ 
+ /**
+  * ieee80211_return_txq - return a TXQ previously acquired by ieee80211_next_txq()
+  *
+  * @hw: pointer as obtained from ieee80211_alloc_hw()
+  * @txq: pointer obtained from station or virtual interface
++ * @force: schedule txq even if mac80211 does not have any buffered packets.
++ *
++ * The driver may set force=true if it has buffered packets for this TXQ
++ * internally.
+  */
+ static inline void
+-ieee80211_return_txq(struct ieee80211_hw *hw, struct ieee80211_txq *txq)
++ieee80211_return_txq(struct ieee80211_hw *hw, struct ieee80211_txq *txq,
++		     bool force)
+ {
+-	ieee80211_schedule_txq(hw, txq);
++	__ieee80211_schedule_txq(hw, txq, force);
+ }
+ 
+ /**
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -3653,8 +3653,9 @@ out:
+ }
+ EXPORT_SYMBOL(ieee80211_next_txq);
+ 
+-void ieee80211_schedule_txq(struct ieee80211_hw *hw,
+-			    struct ieee80211_txq *txq)
++void __ieee80211_schedule_txq(struct ieee80211_hw *hw,
++			      struct ieee80211_txq *txq,
++			      bool force)
+ {
+ 	struct ieee80211_local *local = hw_to_local(hw);
+ 	struct txq_info *txqi = to_txq_info(txq);
+@@ -3662,7 +3663,8 @@ void ieee80211_schedule_txq(struct ieee8
+ 	spin_lock_bh(&local->active_txq_lock[txq->ac]);
+ 
+ 	if (list_empty(&txqi->schedule_order) &&
+-	    (!skb_queue_empty(&txqi->frags) || txqi->tin.backlog_packets)) {
++	    (force || !skb_queue_empty(&txqi->frags) ||
++	     txqi->tin.backlog_packets)) {
+ 		/* If airtime accounting is active, always enqueue STAs at the
+ 		 * head of the list to ensure that they only get moved to the
+ 		 * back by the airtime DRR scheduler once they have a negative
+@@ -3682,7 +3684,7 @@ void ieee80211_schedule_txq(struct ieee8
+ 
+ 	spin_unlock_bh(&local->active_txq_lock[txq->ac]);
+ }
+-EXPORT_SYMBOL(ieee80211_schedule_txq);
++EXPORT_SYMBOL(__ieee80211_schedule_txq);
+ 
+ bool ieee80211_txq_may_transmit(struct ieee80211_hw *hw,
+ 				struct ieee80211_txq *txq)
