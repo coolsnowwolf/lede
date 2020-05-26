@@ -11,6 +11,7 @@ endef
 
 define Device/tplink-v1
   DEVICE_VENDOR := TP-Link
+  TPLINK_HWID := 0x0
   TPLINK_HWREV := 0x1
   TPLINK_HEADER_VERSION := 1
   LOADER_TYPE := gz
@@ -23,6 +24,7 @@ endef
 
 define Device/tplink-v2
   DEVICE_VENDOR := TP-Link
+  TPLINK_HWID := 0x0
   TPLINK_HWREV := 0x1
   TPLINK_HWREVADD := 0x0
   TPLINK_HVERSION := 3
@@ -74,9 +76,10 @@ endef
 
 define Device/tplink-safeloader
   $(Device/tplink-v1)
+  TPLINK_HWREV := 0x0
   KERNEL := kernel-bin | append-dtb | lzma | tplink-v1-header -O
   IMAGE/sysupgrade.bin := append-rootfs | tplink-safeloader sysupgrade | \
-    append-metadata | check-size $$$$(IMAGE_SIZE)
+	append-metadata | check-size $$$$(IMAGE_SIZE)
   IMAGE/factory.bin := append-rootfs | tplink-safeloader factory
 endef
 

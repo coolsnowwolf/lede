@@ -208,7 +208,6 @@ struct mt7530_priv {
 	struct mii_bus		*bus;
 	struct switch_dev	swdev;
 
-	u8			mirror_src_port;
 	u8			mirror_dest_port;
 	bool			global_vlan_enable;
 	struct mt7530_vlan_entry	vlan_entries[MT7530_NUM_VLANS];
@@ -436,7 +435,8 @@ mt7530_get_vlan_ports(struct switch_dev *dev, struct switch_val *val)
 		if (etag == ETAG_CTRL_TAG)
 			p->flags |= BIT(SWITCH_PORT_FLAG_TAGGED);
 		else if (etag != ETAG_CTRL_UNTAG)
-			printk("vlan egress tag control neither untag nor tag.\n");
+			printk("vlan %d port %d egress tag control neither untag nor tag: %d.\n",
+					val->port_vlan, i, etag);
 	}
 
 	return 0;
@@ -520,50 +520,6 @@ mt7530_get_vid(struct switch_dev *dev, const struct switch_attr *attr,
 }
 
 static int
-mt7530_get_mirror_rx_enable(struct switch_dev *dev, const struct switch_attr *attr,
-		struct switch_val *val)
-{
-	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
-
-	val->value.i = priv->port_entries[priv->mirror_src_port].mirror_rx;
-
-	return 0;
-}
-
-static int
-mt7530_set_mirror_rx_enable(struct switch_dev *dev, const struct switch_attr *attr,
-		struct switch_val *val)
-{
-	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
-
-	priv->port_entries[priv->mirror_src_port].mirror_rx = val->value.i;
-
-	return 0;
-}
-
-static int
-mt7530_get_mirror_tx_enable(struct switch_dev *dev, const struct switch_attr *attr,
-		struct switch_val *val)
-{
-	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
-
-	val->value.i = priv->port_entries[priv->mirror_src_port].mirror_tx;
-
-	return 0;
-}
-
-static int
-mt7530_set_mirror_tx_enable(struct switch_dev *dev, const struct switch_attr *attr,
-		struct switch_val *val)
-{
-	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
-
-	priv->port_entries[priv->mirror_src_port].mirror_tx = val->value.i;
-
-	return 0;
-}
-
-static int
 mt7530_get_mirror_monitor_port(struct switch_dev *dev, const struct switch_attr *attr,
 		struct switch_val *val)
 {
@@ -581,28 +537,6 @@ mt7530_set_mirror_monitor_port(struct switch_dev *dev, const struct switch_attr 
 	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
 
 	priv->mirror_dest_port = val->value.i;
-
-	return 0;
-}
-
-static int
-mt7530_get_mirror_source_port(struct switch_dev *dev, const struct switch_attr *attr,
-		struct switch_val *val)
-{
-	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
-
-	val->value.i = priv->mirror_src_port;
-
-	return 0;
-}
-
-static int
-mt7530_set_mirror_source_port(struct switch_dev *dev, const struct switch_attr *attr,
-		struct switch_val *val)
-{
-	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
-
-	priv->mirror_src_port = val->value.i;
 
 	return 0;
 }
@@ -847,6 +781,65 @@ mt7530_get_port_link(struct switch_dev *dev,  int port,
 	return 0;
 }
 
+static int mt7530_set_port_link(struct switch_dev *sw_dev, int port,
+			     struct switch_port_link *link)
+{
+	if (port < 0 || port >= MT7530_NUM_PORTS)
+		return -EINVAL;
+
+	/* Setup autoneg advertise here */
+	if (link->aneg) {
+		u16 bmsr, adv, gctrl;
+		bool ercap;
+
+		sw_dev->ops->phy_read16(sw_dev, port, MII_BMSR, &bmsr);
+		/* ERCAP means we have MII_CTRL1000 register */
+		ercap = !!(bmsr | BMSR_ERCAP);
+
+		adv = ADVERTISE_CSMA | ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM;
+		gctrl = CTL1000_ENABLE_MASTER;
+
+		switch (link->speed) {
+		case SWITCH_PORT_SPEED_10:
+			if (link->duplex)
+				adv |= ADVERTISE_10FULL;
+			else
+				adv |= ADVERTISE_10HALF;
+			break;
+		case SWITCH_PORT_SPEED_100:
+			if (link->duplex)
+				adv |= ADVERTISE_100FULL;
+			else
+				adv |= ADVERTISE_100HALF;
+			break;
+		case SWITCH_PORT_SPEED_1000:
+			if (!ercap || !link->duplex)
+				return -ENOTSUPP;
+			/* PHY only supports 1000FULL */
+			gctrl |= ADVERTISE_1000FULL;
+			break;
+		default:
+			/* For unknown input speed just enable all speed grades */
+			if (link->duplex) {
+				adv |= ADVERTISE_FULL;
+				gctrl |= ADVERTISE_1000FULL;
+			} else {
+				adv |= ADVERTISE_10HALF | ADVERTISE_100HALF;
+				gctrl = 0x0;
+			}
+			break;
+		}
+
+		sw_dev->ops->phy_write16(sw_dev, port, MII_ADVERTISE, adv);
+		if (ercap)
+			sw_dev->ops->phy_write16(sw_dev, port, MII_CTRL1000, gctrl);
+		/* Autoneg restart will be triggered in switch_generic_set_link */
+	}
+
+	/* Let switch_generic_set_link handle not autoneg case */
+	return switch_generic_set_link(sw_dev, port, link);
+}
+
 static u64 get_mib_counter(struct mt7530_priv *priv, int i, int port)
 {
 	unsigned int port_base;
@@ -987,6 +980,24 @@ static int mt7621_get_port_stats(struct switch_dev *dev, int port,
 	return 0;
 }
 
+static int mt7530_phy_read16(struct switch_dev *dev, int addr,
+					u8 reg, u16 *value)
+{
+	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
+
+	*value = mdiobus_read(priv->bus, addr, reg);
+
+	return 0;
+}
+
+static int mt7530_phy_write16(struct switch_dev *dev, int addr,
+					u8 reg, u16 value)
+{
+	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
+
+	return mdiobus_write(priv->bus, addr, reg, value);
+}
+
 static const struct switch_attr mt7530_global[] = {
 	{
 		.type = SWITCH_TYPE_INT,
@@ -1004,31 +1015,10 @@ static const struct switch_attr mt7530_global[] = {
 		.set = NULL,
 	}, {
 		.type = SWITCH_TYPE_INT,
-		.name = "enable_mirror_rx",
-		.description = "Enable mirroring of RX packets",
-		.set = mt7530_set_mirror_rx_enable,
-		.get = mt7530_get_mirror_rx_enable,
-		.max = 1
-	}, {
-		.type = SWITCH_TYPE_INT,
-		.name = "enable_mirror_tx",
-		.description = "Enable mirroring of TX packets",
-		.set = mt7530_set_mirror_tx_enable,
-		.get = mt7530_get_mirror_tx_enable,
-		.max = 1
-	}, {
-		.type = SWITCH_TYPE_INT,
 		.name = "mirror_monitor_port",
 		.description = "Mirror monitor port",
 		.set = mt7530_set_mirror_monitor_port,
 		.get = mt7530_get_mirror_monitor_port,
-		.max = MT7530_NUM_PORTS - 1
-	}, {
-		.type = SWITCH_TYPE_INT,
-		.name = "mirror_source_port",
-		.description = "Mirror source port",
-		.set = mt7530_set_mirror_source_port,
-		.get = mt7530_get_mirror_source_port,
 		.max = MT7530_NUM_PORTS - 1
 	},
 };
@@ -1121,9 +1111,12 @@ static const struct switch_dev_ops mt7621_ops = {
 	.get_port_pvid = mt7530_get_port_pvid,
 	.set_port_pvid = mt7530_set_port_pvid,
 	.get_port_link = mt7530_get_port_link,
+	.set_port_link = mt7530_set_port_link,
 	.get_port_stats = mt7621_get_port_stats,
 	.apply_config = mt7530_apply_config,
 	.reset_switch = mt7530_reset_switch,
+	.phy_read16 = mt7530_phy_read16,
+	.phy_write16 = mt7530_phy_write16,
 };
 
 static const struct switch_dev_ops mt7530_ops = {
@@ -1144,9 +1137,12 @@ static const struct switch_dev_ops mt7530_ops = {
 	.get_port_pvid = mt7530_get_port_pvid,
 	.set_port_pvid = mt7530_set_port_pvid,
 	.get_port_link = mt7530_get_port_link,
+	.set_port_link = mt7530_set_port_link,
 	.get_port_stats = mt7530_get_port_stats,
 	.apply_config = mt7530_apply_config,
 	.reset_switch = mt7530_reset_switch,
+	.phy_read16 = mt7530_phy_read16,
+	.phy_write16 = mt7530_phy_write16,
 };
 
 int

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2012-2019 OpenWrt.org
+# Copyright (C) 2012-2020 OpenWrt.org
 # Copyright (C) 2017 LEDE project
 #
 # This is free software, licensed under the GNU General Public License v2.

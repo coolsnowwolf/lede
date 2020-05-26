@@ -91,6 +91,7 @@ get_status_led() {
 	tl-mr13u|\
 	tl-wdr4300|\
 	tl-wdr4900-v2|\
+	tl-wdr8500-v1|\
 	tl-wr703n|\
 	tl-wr710n|\
 	tl-wr720n-v3|\
@@ -284,6 +285,9 @@ get_status_led() {
 		status_led="ubnt:green:d22"
 		;;
 	mc-mac1200r)
+		status_led="mercury:green:system"
+		;;
+	mc-mw4530r)
 		status_led="mercury:green:system"
 		;;
 	mr18|\
@@ -490,6 +494,7 @@ get_status_led() {
 	tl-wr842n-v3|\
 	tl-wr880n-v1|\
 	tl-wr881n-v1|\
+	tl-wr885n-v1|\
 	tl-wr941nd|\
 	tl-wr941n-v7|\
 	tl-wr941nd-v5)
