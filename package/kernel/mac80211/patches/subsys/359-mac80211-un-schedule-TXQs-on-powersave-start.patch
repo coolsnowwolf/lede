@@ -1,0 +1,31 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Tue, 19 Mar 2019 11:36:12 +0100
+Subject: [PATCH] mac80211: un-schedule TXQs on powersave start
+
+Once a station enters powersave, its queues should not be returned by
+ieee80211_next_txq() anymore. They will be re-scheduled again after the
+station has woken up again
+
+Fixes: 1866760096bf4 ("mac80211: Add TXQ scheduling API")
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -1508,7 +1508,15 @@ static void sta_ps_start(struct sta_info
+ 		return;
+ 
+ 	for (tid = 0; tid < ARRAY_SIZE(sta->sta.txq); tid++) {
+-		if (txq_has_queue(sta->sta.txq[tid]))
++		struct ieee80211_txq *txq = sta->sta.txq[tid];
++		struct txq_info *txqi = to_txq_info(txq);
++
++		spin_lock(&local->active_txq_lock[txq->ac]);
++		if (!list_empty(&txqi->schedule_order))
++			list_del_init(&txqi->schedule_order);
++		spin_unlock(&local->active_txq_lock[txq->ac]);
++
++		if (txq_has_queue(txq))
+ 			set_bit(tid, &sta->txq_buffered_tids);
+ 		else
+ 			clear_bit(tid, &sta->txq_buffered_tids);

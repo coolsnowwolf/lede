@@ -915,10 +915,11 @@ define Device/xiaomi_redmi-router-ac2100
   KERNEL_SIZE := 4096k
   IMAGE_SIZE := 124416k
   UBINIZE_OPTS := -E 5
-  IMAGES += kernel1.bin rootfs0.bin
+  IMAGES += kernel1.bin rootfs0.bin factory.bin
   IMAGE/kernel1.bin := append-kernel
   IMAGE/rootfs0.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | check-size $$$$(IMAGE_SIZE)
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Redmi Router AC2100
   DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615e wpad-openssl uboot-envtools
