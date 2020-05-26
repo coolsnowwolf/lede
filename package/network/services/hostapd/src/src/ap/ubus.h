@@ -25,8 +25,6 @@ struct hostapd_ubus_request {
 
 struct hostapd_iface;
 struct hostapd_data;
-struct hapd_interfaces;
-struct rrm_measurement_beacon_report;
 
 #ifdef UBUS_SUPPORT
 
@@ -46,13 +44,6 @@ void hostapd_ubus_free_bss(struct hostapd_data *hapd);
 
 int hostapd_ubus_handle_event(struct hostapd_data *hapd, struct hostapd_ubus_request *req);
 void hostapd_ubus_notify(struct hostapd_data *hapd, const char *type, const u8 *mac);
-void hostapd_ubus_notify_beacon_report(struct hostapd_data *hapd,
-				       const u8 *addr, u8 token, u8 rep_mode,
-				       struct rrm_measurement_beacon_report *rep,
-				       size_t len);
-
-void hostapd_ubus_add(struct hapd_interfaces *interfaces);
-void hostapd_ubus_free(struct hapd_interfaces *interfaces);
 
 #else
 
@@ -80,22 +71,6 @@ static inline int hostapd_ubus_handle_event(struct hostapd_data *hapd, struct ho
 }
 
 static inline void hostapd_ubus_notify(struct hostapd_data *hapd, const char *type, const u8 *mac)
-{
-}
-
-static inline void hostapd_ubus_notify_beacon_report(struct hostapd_data *hapd,
-						     const u8 *addr, u8 token,
-						     u8 rep_mode,
-						     struct rrm_measurement_beacon_report *rep,
-						     size_t len)
-{
-}
-
-static inline void hostapd_ubus_add(struct hapd_interfaces *interfaces)
-{
-}
-
-static inline void hostapd_ubus_free(struct hapd_interfaces *interfaces)
 {
 }
 #endif
