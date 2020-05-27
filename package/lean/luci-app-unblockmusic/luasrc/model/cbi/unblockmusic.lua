@@ -52,6 +52,12 @@ flac.rmempty = false
 flac.description = translate("目前仅支持酷我、QQ、咪咕")
 flac:depends("apptype", "nodejs")
 
+force = s:option(Flag, "force_enabled", translate("强制替换为高音质歌曲"))
+force.default = 1
+force.rmempty = false
+force.description = translate("如果歌曲音质在 320Kbps 以内，则尝试强制替换为高音质版本")
+force:depends("apptype", "nodejs")
+
 o = s:option(Flag, "autoupdate")
 o.title = translate("自动检查更新主程序")
 o.default = 0
