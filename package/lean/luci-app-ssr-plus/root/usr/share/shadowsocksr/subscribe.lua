@@ -377,6 +377,10 @@ local execute = function()
 	do
 		if next(nodeResult) == nil then
 			log("更新失败，没有可用的节点信息")
+			if proxy == '0' then
+        luci.sys.init.start(name)
+        log('订阅失败, 恢复服务')
+			end
 			return
 		end
 		local add, del = 0, 0
