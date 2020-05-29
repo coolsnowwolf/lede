@@ -1,0 +1,868 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright Eric Bishop, 2008
+# This is free software licensed under the terms of the GNU GPL v2.0
+#
+
+START=50
+
+EXTRA_COMMANDS=show
+EXTRA_HELP="	show	Show current Qos configuration (if active)"
+
+include /lib/network
+include /usr/lib/gargoyle_firewall_util
+
+config_file_name="qos_gargoyle"
+upload_mask="0x007F"
+download_mask="0x7F00"
+qos_mark_file="/etc/qos_class_marks"
+
+#created while qos is being initialized so hotplug and init script don't
+#both try to initialize qos at the same time
+lock_file="/var/run/qos_updating"
+
+load_all_config_options()
+{
+	local config_name="$1"
+	local section_id="$2"
+
+	ALL_OPTION_VARIABLES=""
+	# this callback loads all the variables
+	# in the section_id section when we do
+	# config_load. We need to redefine
+	# the option_cb for different sections
+	# so that the active one isn't still active
+	# after we're done with it.  For reference
+	# the $1 variable is the name of the option
+	# and $2 is the name of the section
+	config_cb()
+	{
+		if [ ."$2" = ."$section_id" ]; then
+			option_cb()
+			{
+				ALL_OPTION_VARIABLES="$ALL_OPTION_VARIABLES $1"
+			}
+		else
+			option_cb() { return 0; }
+		fi
+	}
+
+	config_load "$config_name"
+
+	for var in $ALL_OPTION_VARIABLES
+	do
+		config_get "$var" "$section_id" "$var"
+	done
+}
+
+load_all_config_sections()
+{
+	local config_name="$1"
+	local section_type="$2"
+
+	all_config_sections=""
+	section_order=""
+	config_cb()
+	{
+		if [ -n "$2" ] || [ -n "$1" ] ; then
+			if [ -n "$section_type" ] ; then
+				if [ "$1" = "$section_type" ] ; then
+					all_config_sections="$all_config_sections $2"
+				fi
+			else
+				all_config_sections="$all_config_sections $2"
+			fi
+		fi
+	}
+
+	config_load "$config_name"
+	echo "$all_config_sections"
+
+}
+
+
+
+
+load_and_sort_all_config_sections()
+{
+	local config_name="$1"
+	local section_type="$2"
+	local sort_variable="$3"
+
+	all_config_sections=""
+	defined_option_cb()
+	{
+		if [ "$1" = "$sort_variable" ]; then
+			all_config_sections=" $2:$all_config_sections"
+		fi
+	}
+
+	config_cb()
+	{
+		if [ -n "$2" ] || [ -n "$1" ] ; then
+			if [ -n "$section_type" ] ; then
+				if [ "$1" = "$section_type" ] ; then
+					all_config_sections="$2 $all_config_sections"
+					option_cb() { defined_option_cb $1 $2 ; }
+				else
+					option_cb() { return 0; }
+				fi
+			else
+				all_config_sections="$2 $all_config_sections"
+				option_cb(){ defined_option_cb $1 $2 ; }
+			fi
+		fi
+	}
+
+	config_load "$config_name"
+
+	echo "$all_config_sections" | awk ' {for(i=1; i <= NF; i++){ print $i }}' | sort -n -t ":" | awk 'BEGIN {FS=":"}; {print $2}'
+}
+
+
+get_classname_mark()
+{
+	local class="$1"
+	local class_mark_list="$2"
+	echo "$class_mark_list" | awk -v class="$class" '{ for (i = 1; i <= NF; i++){  if($i~class":"){ gsub(class":",""); print $i } }}'
+}
+
+apply_all_rules()
+{
+	local rule_type="$1"
+	local class_mark_list="$2"
+	local chain="$3"
+	local table="$4"
+
+	local need_proto
+	local tmp_proto
+
+	# add filter rules
+	rule_list=$(load_and_sort_all_config_sections "$config_file_name" "$rule_type" "test_order")
+	for rule in $rule_list ; do
+		class=""
+		proto=""
+		min_pkt_size=""
+		max_pkt_size=""
+		match_str=""
+		need_proto=""
+
+		load_all_config_options "$config_file_name" "$rule"
+
+		for option in $ALL_OPTION_VARIABLES ; do
+
+			option_value=$(eval echo \$$option)
+			case "$option" in
+				source)
+					if [ "$3" = "qos_egress" ] ; then
+						if [ "$option_value" = "$local_ip" ] || [ "$option_value" = "$wan_ip" ]; then
+							option_value="$wan_ip"
+						fi
+					fi
+					match_str="$match_str -s $option_value"
+				;;
+				destination)
+					if [ "$3" = "qos_ingress" ] ; then
+						if [ "$option_value" = "$local_ip" ] || [ "$option_value" = "$wan_ip" ]; then
+							option_value="$wan_ip"
+						fi
+					fi
+					match_str="$match_str -d $option_value"
+				;;
+				srcport)
+					if [ -n $(echo $option_value | grep "-") ] ; then option_value="$(echo "$option_value" | sed -e 's,-,:,g')" ; fi
+					match_str="$match_str --sport $option_value"
+					need_proto="1"
+				;;
+				dstport)
+					if [ -n $(echo $option_value | grep "-") ] ; then option_value="$(echo "$option_value" | sed -e 's,-,:,g')" ; fi
+					match_str="$match_str --dport $option_value"
+					need_proto="1"
+
+				;;
+				layer7)
+					layer7_connmark=$(cat /etc/l7marker.marks 2>/dev/null | grep "$option_value" | awk '{ print $2 }')
+					layer7_mask=$(cat /etc/l7marker.marks 2>/dev/null | grep "$option_value" | awk '{ print $3 }')
+					if [ -n "$layer7_connmark" ] ; then
+						match_str="$match_str -m connmark --mark $layer7_connmark/$layer7_mask "
+					else
+						match_str="$match_str -m layer7 --l7proto $option_value"
+					fi
+				;;
+				connbytes_kb)
+					match_str="$match_str -m connbytes --connbytes $(($option_value*1024)): --connbytes-dir both --connbytes-mode bytes"
+				;;
+			esac
+		done
+
+
+		if [ -n "$min_pkt_size" ] || [ -n "$max_pkt_size" ] ; then
+			if [ -z "$min_pkt_size" ] ; then min_pkt_size=0 ; fi
+			if [ -z "$max_pkt_size" ] ; then max_pkt_size=1500 ; fi
+			match_str="$match_str -m length --length $min_pkt_size:$max_pkt_size"
+		fi
+
+		if [ -n "$class" ] ; then
+			if [ -n "$proto" ] || [ -n "$match_str" ] ; then
+				next_mark=$(get_classname_mark "$class" "$class_mark_list" )
+
+				#We need to specify both udp and tcp if the user indicated a port
+				#and he did not indiate a protocal.
+				if [ -z "$proto" ] && [ -n "$need_proto" ] ; then
+
+					$echo_on
+					iptables -t $table -I $chain -p tcp $match_str -j MARK --set-mark $next_mark
+					iptables -t $table -I $chain -p udp $match_str -j MARK --set-mark $next_mark
+					$echo_off
+
+				else
+
+ 					#Otherwise just specify what the user requested (or nothing)
+
+					if [ -n "$proto" ] ; then
+						tmp_proto="-p $proto"
+					else
+						tmp_proto=""
+					fi
+
+					$echo_on
+					iptables -t $table -I $chain $tmp_proto $match_str -j MARK --set-mark $next_mark
+					$echo_off
+				fi
+
+			fi
+		fi
+	done
+}
+
+
+update_markfile()
+{
+
+	#initialize mark file in /tmp first, and test md5sum
+	#this should speed things up and prevent writing to flash unnecessarily (since /tmp is ramdisk)
+
+	tmp_qos_mark_file="/tmp/qos_marks.tmp.tmp"
+	rm -rf "$tmp_qos_mark_file"
+
+	#re-populate per the QoS setup.
+	if [ $total_upload_bandwidth -ge 0 ] ; then
+
+		upload_class_list=$(load_all_config_sections "$config_file_name" "upload_class")
+
+		next_class_index=2
+		for uclass_name in $upload_class_list ; do
+			printf "upload $uclass_name %d $upload_mask\n" $next_class_index >> "$tmp_qos_mark_file"
+ 			next_class_index=$(($next_class_index+1))
+		done
+	fi
+
+	if [ $total_download_bandwidth -ge 0 ] ; then
+
+		download_class_list=$(load_all_config_sections "$config_file_name" "download_class")
+
+		next_class_index=2
+		for dclass_name in $download_class_list ; do
+			printf "download $dclass_name %d $download_mask\n" $(($next_class_index << 8)) >> "$tmp_qos_mark_file"
+ 			next_class_index=$(($next_class_index+1))
+		done
+	fi
+
+	mark_files_match="0"
+	if [ -e "$qos_mark_file" ] ; then
+		new_md5=$(md5sum "$tmp_qos_mark_file" | awk '{ print $1 ; } ')
+		old_md5=$(md5sum "$qos_mark_file" | awk '{ print $1 ; } ')
+		if [ "$new_md5" = "$old_md5" ] ; then
+			mark_files_match="1"
+		fi
+	fi
+
+	if [ "$mark_files_match" = "0" ] ; then
+		mv "$tmp_qos_mark_file" "$qos_mark_file"
+	else
+		rm -rf "$tmp_qos_mark_file"
+	fi
+
+}
+
+
+
+initialize_qos()
+{
+	#initialize layer7_marker if necessary
+	create_l7marker_chain
+
+	# Now, load/insert necessary kernel modules
+	# The following packages are required for the modules:
+	rmmod  imq >&- 2>&-
+	insmod imq numdevs=1 hook_chains="INPUT,FORWARD" hook_tables="mangle,mangle" >&- 2>&-
+	ip link set dev imq0 mtu 1500
+
+	# Make sure the other kernel modules we need are loaded
+	insmod cls_fw >&- 2>&-
+	insmod cls_flow >&- 2>&-
+	insmod sch_hfsc >&- 2>&-
+	insmod sch_sfq >&- 2>&-
+
+	#Deciding how to set sfq_depth is not straight forward. Too high and we burn up RAM
+	#needlessly on low memory routers. Too low and our maximum bandwidth gets limited.
+	#
+	#On low memory routers we need to take it easy on how big the queues can get.
+	#When depth is limited to 32 maximum bandwidth through any class will be around 11Mbps.
+	#Otherwise it will be around 350Mbps.
+	total_mem="$(sed -e '/^MemTotal: /!d; s#MemTotal: *##; s# kB##g' /proc/meminfo)"
+	if [ "$total_mem" -lt 16000 ] ; then
+		sfq_depth="depth 32";
+	else
+		sfq_depth="";
+	fi
+
+	$echo_off
+	#load upload variables
+	load_all_config_options "$config_file_name" "upload"
+	$echo_on
+	if [ -n "$total_bandwidth" ] ; then
+		total_upload_bandwidth="$total_bandwidth"
+	else
+		total_upload_bandwidth=-1
+	fi
+	upload_default_class="$default_class"
+
+	#load download variables
+	total_bandwidth=""
+	default_class=""
+	$echo_off
+	load_all_config_options "$config_file_name" "download"
+	$echo_on
+	if [ -n "$total_bandwidth" ] ; then
+		total_download_bandwidth="$total_bandwidth"
+	else
+		total_download_bandwidth=-1
+	fi
+	download_default_class="$default_class"
+
+	#Since the introduction of ADSL IP Extensions its not so easy to tell if we have a DSL connection
+	#or not making it hard to set the stab parameters correctly.
+	#Stab parameters here are derived from tc-stab(8).html
+	overhead="stab linklayer atm overhead 32 mtu 2048 "
+
+	#It is now often difficult to tell if the overhead should be used or not because even DSL modems use DHCP or may
+	#not be in bridge mode. So I make the assumption that all connections with less than 3Mbps down or 1Mbps up
+	#are DSL regardless of the protocol selection type.
+	wan_proto=$(uci get network.wan.proto 2>/dev/null)
+	if [ "$wan_proto" != "pppoe" ] && [ "$total_upload_bandwidth" -ge 1100 ] && [ "$total_download_bandwidth" -ge 3100 ] ; then
+		overhead=""
+	fi
+
+	$echo_off
+
+	if [ $total_upload_bandwidth -ge 0 ] ; then
+
+		#load upload classes
+		upload_class_list=$(load_all_config_sections "$config_file_name" "upload_class")
+		for uclass_name in $upload_class_list ; do
+			percent_bandwidth=""
+			min_bandwidth=""
+			max_bandwidth=""
+			load_all_config_options "$config_file_name" "$uclass_name"
+			if [ -z "$percent_bandwidth" ] ; then
+				percent_bandwidth="0"
+			fi
+			if [ -z "$min_bandwidth" ] ; then
+				min_bandwidth="-1"
+			fi
+			if [ -z "$max_bandwidth" ] ; then
+				max_bandwidth="-1"
+			fi
+			classdef="$percent_bandwidth $max_bandwidth $min_bandwidth"
+			eval $uclass_name=\"\$classdef\"  #"#comment quote here so formatting in editor isn't FUBAR
+		done
+
+
+		# Attach egress queuing discipline to QoS interface, now with temperary default
+		$echo_on
+		tc qdisc add dev $qos_interface root handle 1:0 hfsc default 1
+
+		# For the root qdisc, only ul and ls are relevant since rt only applies to leaf qdiscs
+		#
+		# A detailed explanation of how/why/what is being set is warranted here...
+		# Link Share bandwidths of the leaf nodes are all relative to their parents link share parameter and those of their
+		# fellow leaf nodes competing for shares. We set the root class link share to 1000Mbit as per unit bandwidth.
+		# Leaf nodes are then set with the respective percent of this per unit number.
+		#
+		# The actual maximum link speed is the lower of the ul and the ls and this is going to always be the ul parameter in our
+		# design.
+		#
+		# Again, for ls only the ratios matter, the absolute values do not.
+		tc class add dev $qos_interface parent 1:0 classid 1:1 hfsc ls rate 1000Mbit ul rate ${total_upload_bandwidth}kbit
+		$echo_off
+
+		class_mark_list=""
+		upload_shift=0
+		next_class_index=2
+		next_classid=$(printf "0x%X" $(($next_class_index << $upload_shift)) )
+		def_upload_idx=$next_class_index
+		def_upload_class=$next_classid
+
+		for uclass_name in $upload_class_list ; do
+
+			class_mark_list="$class_mark_list$uclass_name:$next_classid "
+
+			$echo_on
+			uclass_def=$(eval echo "\$$uclass_name")
+
+			#Bandwidth at capacity for this class
+			m2=$((  10 * $(echo $uclass_def | awk ' {print $1}' ) ))
+
+			#is there a minimum bandwidth specified in kbps?
+			min_bandwidth=$( echo $uclass_def | awk ' {print $3}' )
+			if [ "$min_bandwidth" -gt 0 ] ; then
+				ll_str=" rt m1 $((2*$min_bandwidth))kbit d 2ms m2 ${min_bandwidth}kbit"
+			else
+				ll_str=""
+			fi
+
+			#is there an upper limit specified in kbps?
+			max_bandwidth=$( echo $uclass_def | awk ' {print $2}' )
+			if [ "$max_bandwidth" -ge 0 ] ; then
+				ul_str=" ul m2 ${max_bandwidth}kbit"
+			else
+				#Calculate from the class link share.
+				max_bandwidth=$(($m2*$total_upload_bandwidth/1000000))
+				ul_str=""
+			fi
+
+
+			# For leaf nodes in HFSC we calculate the latency as the time spent waiting to earn enough credit (credit_t) to
+			#get selected to send plus the time to transmit (tts). The maximum latency can be calculated as shown
+			#below assuming an MTU of 1500bytes and 8.2bits/byte including overhead.
+			#credit_t = $((1500*82/$max_bandwidth/10));
+			#tts = $((1500*82/$total_upload_bandwidth/10));
+
+			#tbw is the Delay x Bandwidth product in bytes. We do not actually know the packet
+			#delay so we make an estimate of 150ms here and hope for the best. max_bandwidth is in kbps
+			#we multiply 100ms by 1000 below so the units work out.
+			tbw=$(($max_bandwidth*100/8));
+			if [ "$tbw" -lt 6000 ] ; then
+				tbw=6000
+			fi
+
+			#We will use the SFQ qdisc with flow classifier.  The limit on the depth of our qdisc depends on the upper limit
+			#of the bandwidth allocated to this class.  To impliment per IP sharing of the class we use the flow classifier
+			#and the 'nfct-src' on the upload side and 'dst' on the download side.  I found a nice man page here
+			#https://arndtroide.homelinux.org/cgi-bin/man/man2html?tc-sfq+8
+			
+			#Add the leaf class
+			tc class add dev $qos_interface parent 1:1 classid 1:$next_class_index hfsc ls m2 ${m2}Mbit $ll_str $ul_str
+			#Add the qdisc to the leaf class, assuming average packet at 250 bytes.
+			tc qdisc add dev $qos_interface parent 1:$next_class_index handle $next_class_index:1 sfq headdrop limit $(($tbw/250)) $sfq_depth divisor 256
+
+			#
+			#Folks interested in experimenting with CoDEL can comment out the preceeding line and uncomment hte next line.
+			#This will work for the upload direction. Left to the student how to mod the download.
+			#As of Chaos Calmer there does not seem to be any benefit in changing SFQ to FQ_CODEL and some stability
+			#issues as well. Will re-evaluate once Openwrt 18.06 based Gargoyle is released.
+			#fq_codel parameters
+			#	limit - SFQ used 127 so i suggest the same here.
+			#	target - At and above 6Mbps = 5ms (min). At 100kbps = 100ms (max). Select accordingly
+			#	interval - 100ms, This is the default
+			#	flows - 255 (One for each IP)
+			#
+			#tc qdisc add dev $qos_interface parent 1:$next_class_index handle $next_class_index:1 fq_codel limit 127 target 5ms interval 100ms flows 255 quantum 1514
+
+			#Add a filter to the root class to direct packets to this leaf class according to the conntrack mark
+			tc filter add dev $qos_interface parent 1:0 protocol ip handle $next_classid fw flowid 1:$next_class_index
+			#Add a filter to the leaf class to define flows as being the source IP address.
+			tc filter add dev $qos_interface parent $next_class_index: handle 1 flow divisor 256 map key nfct-src and 0xff
+			$echo_off
+
+			if [ "$upload_default_class" = "$uclass_name" ] ; then
+				def_upload_idx=$next_class_index
+				def_upload_class=$next_classid
+			fi
+
+			next_class_index=$(($next_class_index+1))
+			next_classid=$(printf "0x%X" $(($next_class_index << $upload_shift)) )
+		done
+
+		$echo_on
+
+		#Go back and touch up the root qdisc to have the proper default class
+		tc qdisc change dev $qos_interface $overhead root handle 1:0 hfsc default $def_upload_idx
+
+		# Set up egress chain
+		iptables -t mangle -N qos_egress
+		iptables -t mangle -A POSTROUTING -o $qos_interface -j qos_egress
+
+		#Next the user entered rules.
+		$echo_off
+		apply_all_rules "upload_rule" "$class_mark_list" "qos_egress" "mangle"
+		$echo_on
+
+		#set default class mark first in case we don't match anything
+		iptables -t mangle -I qos_egress -j MARK --set-mark $def_upload_class
+
+		#if we already set a mark in quota chain, we need to save that mark to the connmark, then return so it doesn't get over-written
+		iptables -t mangle -I qos_egress -m mark ! --mark 0x0 -j RETURN
+		iptables -t mangle -I qos_egress -m mark ! --mark 0x0 -j CONNMARK --save-mark --mask $upload_mask
+
+		# save current mark to connmark at end of chain
+		iptables -t mangle -A qos_egress -j CONNMARK --save-mark --mask $upload_mask
+	fi
+
+
+
+	#Only if both upload and download QoS are enabled can we enable Gargoyle active QoS monitor
+	if [ $total_download_bandwidth -eq 0 ] || [ $total_upload_bandwidth -eq 0 ] ; then
+		qos_monenabled = "false" ;
+	fi
+
+	if [ $total_download_bandwidth -ge 0 ] ; then
+		# Set up the InterMediate Queuing device (IMQ0) for ingress
+		ip link set imq0 up
+
+		# Attach ingress queuing discipline to IMQ0 with temporary default
+		tc qdisc add dev imq0 root handle 1:0 hfsc default 1
+
+		# For the root qdisc, only ul is relevant, since there is no link sharing, and rt only applies to leaf qdiscs
+		tc class add dev imq0 parent 1:0 classid 1:1 hfsc ls rate 1000Mbit ul m2 ${total_download_bandwidth}kbit
+
+		#load download classes
+		$echo_off
+		download_class_list=$(load_all_config_sections "$config_file_name" "download_class")
+		for dclass_name in $download_class_list ; do
+			percent_bandwidth=""
+			min_bandwidth=""
+			max_bandwidth=""
+			minRTT=""
+
+			load_all_config_options "$config_file_name" "$dclass_name"
+			if [ -z "$percent_bandwidth" ] ; then
+				percent_bandwidth="0"
+			fi
+			if [ -z "$min_bandwidth" ] ; then
+				min_bandwidth="-1"
+			fi
+			if [ -z "$max_bandwidth" ] ; then
+				max_bandwidth="-1"
+			fi
+            
+			classdef="$percent_bandwidth $max_bandwidth $min_bandwidth $minRTT"
+			eval $dclass_name=\"\$classdef\"  #"#comment quote here so formatting in editor isn't FUBAR
+		done
+
+
+		class_mark_list=""
+		download_shift=8
+		next_class_index=2
+		next_classid=$(printf "0x%X" $(($next_class_index << $download_shift)) )
+		def_download_idx=$next_class_index
+		def_download_class=$next_classid
+
+		for dclass_name in $download_class_list ; do
+			$echo_on
+			class_mark_list="$class_mark_list$dclass_name:$next_classid  "
+			dclass_def=$(eval echo "\$$dclass_name")
+
+			#bandwidth for this class
+			m2=$(( 10 * $(echo $dclass_def | awk ' {print $1}' ) ))
+
+			#The Gargoyle ACC switches from optimum WAN utilization mode to minimum RTT mode
+			#when it detects a class has become active that includes a two part service curve.
+			#So to trigger this behaviour we create two parts curves when minRTT is set. 
+            
+			#Calculations for the delay parameter. Assuming PKT is the packet size the best we
+			#could possibly do is PKT/total_download_bandwidth. If we do nothing we get the
+			#worst delay of PKT/$m2 (the class bandwidth). Since this class has minRTT set we
+			#are going to select the best case and allow up to one max size packet to go at the highest
+			#speed.
+
+			#is there an upper limit specified?
+			max_bandwidth=$( echo $dclass_def | awk ' {print $2}' )
+			ul_str=""
+			if [ "$max_bandwidth" -ge 0 ] ; then
+				ul_str=" ul m2 ${max_bandwidth}kbit"
+			else
+				max_bandwidth="$total_download_bandwidth"
+			fi
+
+			#How about a link share in percent?
+			minRTT=$( echo $dclass_def | awk ' {print $4}' )
+			if [ "$minRTT" = "Yes" ] ; then
+				d1=$((15000/$max_bandwidth+1))
+				ll_str=" ls m1 $((2*$m2))Mbit d ${d1}ms m2 ${m2}Mbit"
+			else
+				ll_str=" ls m2 ${m2}Mbit"
+			fi
+
+			#is there a minimum bandwidth specified?
+			min_bandwidth=$( echo $dclass_def | awk ' {print $3}' )
+			rt_str=""
+			if [ "$min_bandwidth" -gt 0 ] ; then
+				if [ "$minRTT" = "Yes" ] ; then
+					d2=$((15000/$max_bandwidth+1))
+					rt_str=" rt m1 $(($max_bandwidth))kbit d ${d2}ms m2 ${min_bandwidth}kbit"
+				else
+					rt_str=" rt m2 ${min_bandwidth}kbit"
+				fi
+			fi
+
+
+			tbw=$(($max_bandwidth*100/8));
+			if [ "$tbw" -lt 10000 ] ; then
+				tbw=10000
+			fi
+
+			tc class add dev imq0 parent 1:1 classid 1:$next_class_index hfsc $rt_str $ll_str $ul_str
+			#Assume average download packet size is 250 bytes.
+			tc qdisc add dev imq0 parent 1:$next_class_index handle $next_class_index:1 sfq headdrop limit $(($tbw/250)) $sfq_depth divisor 256  
+			tc filter add dev imq0 parent 1:0 prio $next_class_index protocol ip handle $next_classid fw flowid 1:$next_class_index
+			tc filter add dev imq0 parent $next_class_index: handle 1 flow divisor 256 map key dst and 0xff
+			$echo_off
+
+			if [ "$download_default_class" = "$dclass_name" ] ; then
+				def_download_idx=$next_class_index
+				def_download_class=$next_classid
+			fi
+
+			next_class_index=$(($next_class_index+1))
+			next_classid=$(printf "0x%X" $(($next_class_index << $download_shift)) )
+		done
+
+		$echo_on
+
+		#Go back and touch up the root qdisc to have the proper default class
+		tc qdisc change dev imq0 $overhead root handle 1:0 hfsc default $def_download_idx
+
+		# Create ingress chain
+		iptables -t mangle -N qos_ingress
+
+		# Mark ingress in FORWARD and INPUT chains to make sure any DNAT (virt. server) is taken into account
+		iptables -t mangle -A FORWARD -i $qos_interface -j qos_ingress
+		iptables -t mangle -A INPUT -i $qos_interface -j qos_ingress
+
+		#Now the rest of the user entered rules.
+		$echo_off
+		apply_all_rules "download_rule" "$class_mark_list" "qos_ingress" "mangle" "$download_mask"
+		$echo_on
+
+		#set default class mark first in case we don't match anything
+		iptables -t mangle -I qos_ingress -j MARK --set-mark $def_download_class
+
+		#If we already set a mark in quota chain, we need to save that mark to the connmark, then return so it doesn't get over-written
+		iptables -t mangle -I qos_ingress -m mark ! --mark 0x0 -j RETURN
+		iptables -t mangle -I qos_ingress -m mark ! --mark 0x0 -j CONNMARK --save-mark --mask $download_mask
+
+		#Make sure all packets get sent through IMQ
+		iptables -t mangle -I qos_ingress -j IMQ --todev 0
+
+		#save current mark to connmark at end of chain
+		iptables -t mangle -A qos_ingress -j CONNMARK --save-mark --mask $download_mask
+
+		$echo_off
+
+	fi
+
+	#Enable Gargoyle active QoS monitor
+	if [ $total_upload_bandwidth -ge 0 ] && [ $total_download_bandwidth -ge 0 ] && [ "$qos_monenabled" = "true" ] ; then
+
+		$echo_on
+
+		#if the user specified a ping target then use that otherwise use the gateway.
+		if [ -z "$ptarget_ip" ] ; then
+			old_ifs="$IFS"
+			IFS=$(printf "\n\r")
+			targets=$(traceroute -n -I -w 1 -q 2 -m6 8.8.8.8 | grep -o '[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}.*ms' | grep -v '8.8.8.8' | sed 's/ms//g')
+			ptarget_ip=""
+			for t in $targets ; do
+				if [ -z "$ptarget_ip" ] ; then
+					#ip of potential gateway
+					target=$(echo "$t" | awk '{ print $1 ; }')
+					target_is_local=$(echo "$target" | grep -E '^(192\.168|10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.|0\.0\.0\.0|127\.|255\.)') 
+
+
+					# round or rather ceil() time up to nearest millisecond since bash doesn't like working with decimals
+					time=$(echo "$t" | awk ' { print $3 ; }' | sed 's/\..*$//g')
+					time=$(( $time + 1 ))
+	
+					if [ -z "$target_is_local" ] || [ "$time" -gt 5 ] ; then
+						ptarget_ip="$target"
+					fi
+				fi
+			done
+			IFS="$old_ifs"
+			
+			#in case ping target is still not defined use default gateway
+			if [ -z "$ptarget_ip" ] ; then
+				ptarget_ip=$(gargoyle_header_footer -i gargoyle | sed -n 's/.*currentWanGateway.*"\(.*\)".*/\1/p')
+			fi
+		fi
+
+		
+		#Ping responses from the ping target never go to ingress QoS (IMQ0 device).
+		iptables -t mangle -I qos_ingress -p icmp --icmp-type 0 -s $ptarget_ip -j RETURN
+
+		#Make a class to handle the outgoing ping requests from the router.
+		#These pings 84 bytes each for ethernet plus 22 more for PPPoE connections, allowing a maximum rate of 200ms we get 2.6kbps
+		tc class add dev $qos_interface parent 1:1 classid 1:127 hfsc rt umax 106 dmax 10ms rate 4kbit
+		tc qdisc add dev $qos_interface parent 1:127 pfifo
+		tc filter add dev $qos_interface parent 1:0 prio 1 protocol ip handle 127 fw flowid 1:127
+
+		#Mark all ping requests from the router to the ptarget to the above special class overriding any other mark.
+		iptables -t mangle -I qos_egress -p icmp --icmp-type 8 -s $wan_ip -d $ptarget_ip -j MARK --set-mark 127
+
+		#Start the monitor
+		if [ -n "$pinglimit" ] ; then
+			#In manual mode the user selects the active mode pinglimit indirectly.  qosmon always measures the RTT of a ping on an unloaded link.
+			#This is called the ping entitlement.  With a manual entry the minRTT ping limit is 110% of this measured ping entitlement
+			#and the active mode ping limit is the minRTT limit plus the user entered value.  See the qosmon source code for more details.
+			#In summary manaully entered ping times only affect the active mode, not the minRTT mode ping time limits.
+			qosmon -a -b 800 $ptarget_ip $total_download_bandwidth $pinglimit
+		else
+			#In auto mode we calculate transmission delay based on our bandwidth and then ask qosmon
+			#to add this value to its measured ping entitlement to form the final ping limit.
+			pinglimit=$((1500*10*2/3/$total_download_bandwidth+1500*10/$total_upload_bandwidth+2))
+			qosmon -a -b 800 $ptarget_ip $total_download_bandwidth $pinglimit
+		fi
+
+		$echo_off
+	fi
+
+	update_markfile
+
+}
+
+
+define_interface()
+{
+	$echo_on
+	#Wait for up to 15 seconds for the wan interface to indicate it is up.
+	wait_sec=15
+	while [ -z $(uci -P /var/state get network.wan.up 2>/dev/null) ] && [ $wait_sec -gt 0 ] ; do
+		sleep 1
+		wait_sec=$(($wait_sec - 1))
+	done
+
+	#The wan interface name will depend on if pppoe is used or not.  If pppoe is used then
+	#the name we are looking for is in network.wan.ifname.  If there is nothing there
+	#use the device named by network.wan.device
+
+	qos_interface=$(uci -P /var/state get network.wan.ifname 2>/dev/null)
+	if [ -z $qos_interface ] ; then
+		qos_interface=$(uci -P /var/state get network.wan.device 2>/dev/null)
+	fi
+
+	#Determine our wan ip from the wan interface we detected.
+	wan_ip=$(ifconfig $qos_interface | sed -n 's/.*inet addr:\([0-9/.]*\).*/\1/p')
+	local_ip=$(ifconfig br-lan | sed -n 's/.*inet addr:\([0-9/.]*\).*/\1/p')
+
+	#Determine the VPN interface if there is one.
+	vpn_interface=$(uci -P /var/state get firewall.vpn_zone.device 2>/dev/null)
+	$echo_off
+}
+
+stop()
+{
+	#if already in process of being initialized, do not continue
+	#until that is finished, and then exit cleanly, without
+	#doing anything further
+	if [ -e "$lock_file" ] ; then
+		while [ -e "$lock_file" ] ; do
+			sleep 1
+		done
+		exit
+	fi
+
+	#Kill the qos monitor in case it is running
+	killall qosmon 2>/dev/null
+
+
+	$echo_on
+	#Delete the qdiscs we hung on the devices
+	for iface in $(tc qdisc show | grep hfsc | awk '{print $5}'); do
+		tc qdisc del dev "$iface" root
+	done
+
+	# eliminate existing rules in mangle table
+	delete_chain_from_table "mangle" "qos_egress"
+	delete_chain_from_table "mangle" "qos_ingress"
+	$echo_off
+
+}
+
+
+start()
+{
+	test_total_up=$(uci get qos_gargoyle.upload.total_bandwidth 2>/dev/null)
+	test_total_down=$(uci get qos_gargoyle.download.total_bandwidth 2>/dev/null)
+	if [ -z "$test_total_up" ] && [ -z "$test_total_down" ] ;then
+		disable
+		exit 0
+	fi
+
+
+	#This script is called by a hotplug event.  If the WAN comes
+	#up fast we could end up trying to run qos_gargoyle while the
+	#boot is still in progress which causes issues in low memory
+	#routers.  To avoid this we check to see if rcS is still running 
+	#or not.  If it is we wait until it completes or 60 seconds.
+	cnt=0
+	while ps | grep '[//]rcS S boot' >/dev/null
+		do
+			sleep 4
+			cnt=`expr $cnt + 1`
+			if [ $cnt -ge 15 ] ; then
+				break;
+			fi
+		done
+
+	stop
+	touch "$lock_file"
+
+	#load qos_interface from global variables
+	define_interface
+	if [ -n "$qos_interface" ] ; then
+
+		load_all_config_options "$config_file_name" "global"
+		initialize_qos
+	fi
+
+	rm -rf "$lock_file"
+
+}
+
+restart()
+{
+	echo_on="set -x"
+	echo_off="set +x"
+	start "$1"
+}
+
+show()
+{
+	#load global variables
+	load_all_config_options "$config_file_name" "global"
+
+	#load qos_interface from global variables
+	define_interface
+
+	echo "Egress configuration on $qos_interface"
+	iptables -t mangle -vnL qos_egress 2>/dev/null
+	tc -s qdisc show dev $qos_interface
+	tc -s class show dev $qos_interface
+	tc -s filter show dev $qos_interface
+
+	echo "Ingress configuration in imq0"
+	iptables -t mangle -vnL qos_ingress 2>/dev/null
+	tc -s qdisc show dev imq0
+	tc -s class show dev imq0
+	tc -s filter show dev imq0
+	tc -s filter show dev imq0 parent 2:
+}
+
+boot()
+{
+	#Do nothing during init.  Start is called by hotplug.
+	return
+}
+

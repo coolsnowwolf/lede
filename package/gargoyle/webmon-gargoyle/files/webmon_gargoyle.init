@@ -1,0 +1,135 @@
+#!/bin/sh /etc/rc.common
+START=85
+
+include /lib/network
+
+
+
+backup_script="/tmp/do_webmon_backup.sh"
+tmp_cron="/tmp/tmp.cron"
+
+update_cron()
+{
+	old_md5=$(md5sum /etc/crontabs/root)
+	old_md5=${old_md5% *}
+	new_md5=$(md5sum "$tmp_cron")
+	new_md5=${new_md5% *}
+	if [ "$old_md5" = "$new_md5" ] ; then
+		rm "$tmp_cron"
+	else
+		mv "$tmp_cron" /etc/crontabs/root
+		cron_active=$(ps | grep "crond" | grep -v "grep" )
+		if [ -n "$cron_active" ] ; then
+			/etc/init.d/cron restart
+		fi
+	fi
+}
+
+start()
+{
+	config_load webmon_gargoyle
+	config_get max_domains webmon max_domains
+	config_get max_searches webmon max_searches
+	config_get domain_save_path webmon domain_save_path
+	config_get search_save_path webmon search_save_path
+	config_get exclude_ips webmon exclude_ips
+	config_get include_ips webmon include_ips
+
+	config_get_bool enabled webmon 'enabled' '0'
+	[ "$enabled" -gt 0 ] || return
+
+	wan_if=$(uci -P "/var/state" get network.wan.ifname)
+	if [ -n "$wan_if" ] ; then
+		
+		#load save path, creating directory if necessary
+		if [ -z "$domain_save_path" ] ; then
+			domain_save_path=/usr/data/webmon_domains.txt
+		fi
+		if [ ! -e "$domain_save_path" ] ; then
+			domain_save_dir=$(echo "$domain_save_path" | sed 's/[^\/]*$//g' )
+			if [ ! -e "$domain_save_dir" ] ; then
+				mkdir -p "$domain_save_dir"
+			fi
+		fi
+		if [ -z "$search_save_path" ] ; then
+			search_save_path=/usr/data/webmon_searches.txt
+		fi
+		if [ ! -e "$search_save_path" ] ; then
+			search_save_dir=$(echo "$search_save_path" | sed 's/[^\/]*$//g' )
+			if [ ! -e "$search_save_dir" ] ; then
+				mkdir -p "$search_save_dir"
+			fi
+		fi
+	
+		#remove existing rules
+		delete_chain_from_table filter web_monitor
+		iptables -t filter -N web_monitor
+		iptables -t filter -I FORWARD -o "$wan_if" -j web_monitor
+
+		#load parameters and insert rule
+		webmon_params=""
+		if [ -n "$max_domains" ] ; then
+			webmon_params="$webmon_params --max_domains $max_domains"
+		fi
+		if [ -n "$max_searches" ] ; then
+			webmon_params="$webmon_params --max_searches $max_searches"
+		fi
+		if [ -n "$exclude_ips" ] ; then
+			webmon_params="$webmon_params --exclude_ips $exclude_ips"
+		fi
+		if [ -n "$include_ips" ] && [ -z "$exclude_ips" ] ; then
+			webmon_params="$webmon_params --include_ips $include_ips"
+		fi
+		
+		
+		if   [ -e "$search_save_path" ] && [ -e "$domain_save_path" ] ; then
+			iptables -t filter -I web_monitor -m webmon $webmon_params --search_load_file "$search_save_path" --domain_load_file "$domain_save_path"
+		elif [ -e "$search_save_path" ] ; then
+			iptables -t filter -I web_monitor -m webmon $webmon_params --search_load_file "$search_save_path" --clear_domain
+		elif [ -e "$domain_save_path" ] ; then
+			iptables -t filter -I web_monitor -m webmon $webmon_params --domain_load_file "$domain_save_path" --clear_search
+		else
+			iptables -t filter -I web_monitor -m webmon $webmon_params --clear_domain --clear_search
+		fi
+		
+
+		#create backup script in tmp (RAM disk) so I/O to flash isn't an issue
+		echo '#!/bin/sh'          > "$backup_script"
+		echo "touch /etc/banner" >> "$backup_script"
+		echo "cp /proc/webmon_recent_domains  '$domain_save_path'" >> "$backup_script"
+		echo "cp /proc/webmon_recent_searches '$search_save_path'" >> "$backup_script"
+		chmod +x "$backup_script"
+
+		#setup cron job
+		touch /etc/crontabs/root
+		cat /etc/crontabs/root | grep -v "$backup_script" > "$tmp_cron"
+		echo "0 0,4,8,12,16,20 * * * $backup_script" >> "$tmp_cron"
+		update_cron
+
+	fi
+}
+
+stop()
+{
+	#backup current data and then stop backup cron job
+	sh "$backup_script"
+	touch /etc/crontabs/root
+	cat /etc/crontabs/root | grep -v "$backup_script" > "$tmp_cron"
+	update_cron
+
+
+	#clear module data, and remove web_monitor chain
+	iptables -t filter -D web_monitor 1          >/dev/null 2>&1
+	iptables -t filter -A web_monitor -j RETURN  >/dev/null 2>&1
+	iptables -t filter -A web_monitor -m webmon --clear_domain --clear_search >/dev/null 2>&1
+	delete_chain_from_table filter web_monitor
+}
+
+restart()
+{
+	webmon_rules=$(( $(iptables -L web_monitor 2>/dev/null | wc -l)-2 )) 
+	if [ $webmon_rules -gt 0 ] ; then
+		stop
+	fi
+	start
+}
