@@ -340,16 +340,16 @@ for new_d in $new_module_dirs ; do
 		fi
 		
 		#判断是否存在该模块
-		ifExist3=`cat "../include/netfilter.mk" | grep "iptables-mod-${upper_name}" 2>/dev/null 2>&1`
+		ifExist3=`cat "../include/netfilter.mk" | grep "${upper_name}" 2>/dev/null 2>&1`
 		if [ -n "$ifExist3" ]; then
-			echo "Already exists"
+			echo "include/netfilter.mk Already exists ${upper_name}"
 		else
 			#update include/netfilter.mk with new module
-			echo "">>../include/netfilter.mk
-			echo "">>../include/netfilter.mk
-			echo "IPT_$upper_name-m :=">>../include/netfilter.mk
-			echo "IPT_$upper_name-\$(CONFIG_IP_NF_MATCH_$upper_name) += \$(P_V4)ipt_$lower_name">>../include/netfilter.mk
-			echo "IPT_BUILTIN += \$(IPT_$upper_name-y)">>../include/netfilter.mk
+			echo "" >>../include/netfilter.mk
+			echo "" >>../include/netfilter.mk
+			echo "IPT_$upper_name-m :=" >>../include/netfilter.mk
+			echo "IPT_$upper_name-\$(CONFIG_IP_NF_MATCH_$upper_name) += \$(P_V4)ipt_$lower_name" >>../include/netfilter.mk
+			echo "IPT_BUILTIN += \$(IPT_$upper_name-y)" >>../include/netfilter.mk
 		fi
 	fi
 done
