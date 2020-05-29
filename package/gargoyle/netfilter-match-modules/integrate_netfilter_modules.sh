@@ -354,6 +354,16 @@ for new_d in $new_module_dirs ; do
 	fi
 done
 
+echo "Patching imq"
+ifExist4=`cat "../package/network/utils/iptables/Makefile" | grep "imq" 2>/dev/null 2>&1`
+if [ -n "$ifExist4" ]; then
+	echo "Already exists"
+else
+	cd ../package
+	patch -p2<../package/gargoyle/netfilter-match-modules/010-imq.patch
+	cd -
+fi
+		
 if [ "$patch_kernel" = 1 ] ; then	
 	#build netfilter patch file
 	rm -rf $patch_dir/650-custom_netfilter_match_modules.patch 2>/dev/null

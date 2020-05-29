@@ -28,7 +28,10 @@ sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git
    ./scripts/feeds install -a
    make menuconfig
    ```
-
+4.1编译gargoyle插件，需在.config文件生成后执行
+   ```bash
+   sh ./package/gargoyle/netfilter-match-modules/*.sh . ./package/gargoyle/netfilter-match-modules 1 0
+   ```
 5. `make -j8 download V=s` 下载dl库（国内请尽量全局科学上网）
 
 
