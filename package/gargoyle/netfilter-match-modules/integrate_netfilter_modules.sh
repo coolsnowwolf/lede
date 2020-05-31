@@ -357,10 +357,28 @@ done
 echo "Patching imq"
 ifExist4=`cat "../package/network/utils/iptables/Makefile" | grep "imq" 2>/dev/null 2>&1`
 if [ -n "$ifExist4" ]; then
-	echo "Already exists"
+	echo "Already exists iptables"
 else
 	cd ../package
-	patch -p2<../package/gargoyle/netfilter-match-modules/010-imq.patch
+	patch -p2<../package/gargoyle/netfilter-match-modules/010-imq-iptables.patch
+	cd -
+fi
+
+ifExist5=`cat "../package/kernel/linux/modules/netfilter.mk" | grep "imq" 2>/dev/null 2>&1`
+if [ -n "$ifExist5" ]; then
+	echo "Already exists modules"
+else
+	cd ../package
+	patch -p2<../package/gargoyle/netfilter-match-modules/010-imq-modules.patch
+	cd -
+fi
+
+ifExist6=`cat "../include/netfilter.mk" | grep "imq" 2>/dev/null 2>&1`
+if [ -n "$ifExist6" ]; then
+	echo "Already exists include"
+else
+	cd ../
+	patch -p1<./package/gargoyle/netfilter-match-modules/010-imq-include.patch
 	cd -
 fi
 		
