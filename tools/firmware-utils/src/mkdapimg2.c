@@ -48,7 +48,7 @@
 // 0x000000120000-0x000000040000 = 0xE0000 -> 917504
 //
 // e.g.: mkdapimg2 -s HONEYBEE-FIRMWARE-DAP-1330 -v 1.00.21 -r Default
-//                 -k 917504 -i sysupgarde.bin -o factory.bin
+//                 -k 917504 -i sysupgrade.bin -o factory.bin
 //
 //
 // The img_hdr_struct was taken from the D-Link SDK:

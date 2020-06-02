@@ -38,7 +38,7 @@ e:depends("domain_type","both_dtype")
 e = t:taboption("base",ListValue, "stcp_role", translate("STCP Role"))
 e.default = "server"
 e:value("server",translate("STCP Server"))
-e:value("vistor",translate("STCP Vistor"))
+e:value("visitor",translate("STCP Vistor"))
 e:depends("type","stcp")
 e = t:taboption("base",Value, "remote_port", translate("Remote Port"))
 e.datatype = "port"
@@ -67,7 +67,7 @@ e.default = "abcdefg"
 e:depends("type","stcp")
 e = t:taboption("base",Value, "stcp_servername", translate("STCP Server Name"), translate("STCP Server Name is Service Remark Name of STCP Server"))
 e.default = "secret_tcp"
-e:depends("stcp_role","vistor")
+e:depends("stcp_role","visitor")
 e = t:taboption("other",Flag, "enable_locations", translate("Enable URL routing"), translate("Frp support forward http requests to different backward web services by url routing."))
 e:depends("type","http")
 e = t:taboption("other",Value, "locations ", translate("URL routing"), translate("Http requests with url prefix /news will be forwarded to this service."))
@@ -105,6 +105,15 @@ e:depends("type","http")
 e = t:taboption("other",Value, "host_header_rewrite", translate("Host Header"), translate("The Host header will be rewritten to match the hostname portion of the forwarding address."))
 e.default = "dev.yourdomain.com"
 e:depends("enable_host_header_rewrite",1)
+e = t:taboption("base",ListValue, "proxy_protocol_version", translate("Proxy-Protocol Version"), translate("Proxy Protocol to send user's real IP to local services."))
+e.default = "disable"
+e:value("disable",translate("Disable"))
+e:value("v1",translate("V1"))
+e:value("v2",translate("V2"))
+e:depends("type","tcp")
+e:depends("type","stcp")
+e:depends("type","http")
+e:depends("type","https")
 e = t:taboption("base",Flag, "use_encryption", translate("Use Encryption"), translate("Encrypted the communication between frpc and frps, will effectively prevent the traffic intercepted."))
 e.default = "1"
 e.rmempty = false

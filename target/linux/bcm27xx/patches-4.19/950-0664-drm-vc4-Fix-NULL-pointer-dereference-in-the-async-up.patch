@@ -1,0 +1,57 @@
+From 0e81807e647c5e12fd897f3d520252ea60de3ff9 Mon Sep 17 00:00:00 2001
+From: Boris Brezillon <boris.brezillon@bootlin.com>
+Date: Thu, 15 Nov 2018 11:58:51 +0100
+Subject: [PATCH] drm/vc4: Fix NULL pointer dereference in the async
+ update path
+
+vc4_plane_atomic_async_update() calls vc4_plane_atomic_check()
+which in turn calls vc4_plane_setup_clipping_and_scaling(), and since
+commit 58a6a36fe8e0 ("drm/vc4: Use
+drm_atomic_helper_check_plane_state() to simplify the logic"), this
+function accesses plane_state->state which will be NULL when called
+from the async update path because we're passing the current plane
+state, and plane_state->state has been assigned to NULL in
+drm_atomic_helper_swap_state().
+
+Pass the new state instead of the current one (the new state has
+->state set to a non-NULL value).
+
+Fixes: 58a6a36fe8e0 ("drm/vc4: Use drm_atomic_helper_check_plane_state() to simplify the logic")
+Signed-off-by: Boris Brezillon <boris.brezillon@bootlin.com>
+Reviewed-by: Eric Anholt <eric@anholt.net>
+Link: https://patchwork.freedesktop.org/patch/msgid/20181115105852.9844-1-boris.brezillon@bootlin.com
+---
+ drivers/gpu/drm/vc4/vc4_plane.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -905,7 +905,7 @@ void vc4_plane_async_set_fb(struct drm_p
+ static void vc4_plane_atomic_async_update(struct drm_plane *plane,
+ 					  struct drm_plane_state *state)
+ {
+-	struct vc4_plane_state *vc4_state = to_vc4_plane_state(plane->state);
++	struct vc4_plane_state *vc4_state, *new_vc4_state;
+ 
+ 	if (plane->state->fb != state->fb) {
+ 		vc4_plane_async_set_fb(plane, state->fb);
+@@ -927,7 +927,18 @@ static void vc4_plane_atomic_async_updat
+ 	plane->state->src_y = state->src_y;
+ 
+ 	/* Update the display list based on the new crtc_x/y. */
+-	vc4_plane_atomic_check(plane, plane->state);
++	vc4_plane_atomic_check(plane, state);
++
++	new_vc4_state = to_vc4_plane_state(state);
++	vc4_state = to_vc4_plane_state(plane->state);
++
++	/* Update the current vc4_state pos0, pos2 and ptr0 dlist entries. */
++	vc4_state->dlist[vc4_state->pos0_offset] =
++		new_vc4_state->dlist[vc4_state->pos0_offset];
++	vc4_state->dlist[vc4_state->pos2_offset] =
++		new_vc4_state->dlist[vc4_state->pos2_offset];
++	vc4_state->dlist[vc4_state->ptr0_offset] =
++		new_vc4_state->dlist[vc4_state->ptr0_offset];
+ 
+ 	/* Note that we can't just call vc4_plane_write_dlist()
+ 	 * because that would smash the context data that the HVS is

@@ -12,7 +12,7 @@
 
 // Usage: mkdapimg [-p] [-m <model>] -s <sig> -i <input> -o <output>
 //
-// e.g.: mkdapimg -s RT3052-AP-DAP1350-3 -i sysupgarde.bin -o factory.bin
+// e.g.: mkdapimg -s RT3052-AP-DAP1350-3 -i sysupgrade.bin -o factory.bin
 //
 // If the model string <model> is not given, we will assume that
 // the leading characters upto the first "-" is the model.

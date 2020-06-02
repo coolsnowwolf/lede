@@ -162,6 +162,7 @@ platform_do_upgrade() {
 	8dev,jalapeno)
 		nand_do_upgrade "$ARGV"
 		;;
+	mobipromo,cm520-79f |\
 	p2w,r619ac|\
 	p2w,r619ac-128m)
 		nand_do_upgrade "$1"
@@ -171,7 +172,8 @@ platform_do_upgrade() {
 		nand_do_upgrade "$1"
 		;;
 	asus,rt-acrh17|\
-	asus,rt-ac58u)
+	asus,rt-ac58u|\
+	asus,rt-ac1300uhp)
 		local magic=$(get_magic_long "$1")
 		CI_UBIPART="UBI_DEV"
 		CI_KERNPART="linux"
