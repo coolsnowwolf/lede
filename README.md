@@ -6,7 +6,7 @@ Welcome to Lean's  git source of OpenWrt and packages
 ----
 ### 石像鬼插件
 ```
-编译之前首先run：package/gargoyle/build.sh
+编译之前首先run：package/gargoyle/gargoyle-build.sh
 ```
 -----
 中文：如何编译自己需要的 OpenWrt 固件
