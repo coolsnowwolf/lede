@@ -5,7 +5,9 @@ Welcome to Lean's  git source of OpenWrt and packages
 庆祝：2020-4-20 luci界面恢复到与lean原版速度一样快
 ----
 ### 石像鬼插件
-```编译之前首先run：package/gargoyle/build.sh```
+```
+编译之前首先run：package/gargoyle/build.sh
+```
 -----
 中文：如何编译自己需要的 OpenWrt 固件
 -
