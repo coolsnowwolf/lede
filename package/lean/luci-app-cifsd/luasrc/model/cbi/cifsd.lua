@@ -55,7 +55,10 @@ ro.enabled = "yes"
 ro.disabled = "no"
 
 fr = s:option(Flag, "force_root", translate("Force Root"))
+fr.rmempty = false
 fr.default = "1"
+fr.enabled = "1"
+fr.disabled = "0"
 
 -- s:option(Value, "users", translate("Allowed users")).rmempty = true
 

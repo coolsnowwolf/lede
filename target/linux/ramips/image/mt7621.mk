@@ -453,6 +453,23 @@ define Device/lenovo_newifi-d1
 endef
 TARGET_DEVICES += lenovo_newifi-d1
 
+define Device/linksys_ea7500-v2
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_SIZE := 4096k
+  IMAGE_SIZE := 36864k
+  DEVICE_VENDOR := Linksys
+  DEVICE_MODEL := EA7500
+  DEVICE_VARIANT := v2
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7615e wpad-openssl uboot-envtools
+  UBINIZE_OPTS := -E 5
+  IMAGES := sysupgrade.bin factory.bin
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata | check-size $$$$(IMAGE_SIZE)
+  IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | \
+	append-ubi | check-size $$$$(IMAGE_SIZE) | linksys-image type=EA7500v2
+endef
+TARGET_DEVICES += linksys_ea7500-v2
+
 define Device/linksys_re6500
   IMAGE_SIZE := 7872k
   DEVICE_VENDOR := Linksys
@@ -898,10 +915,11 @@ define Device/xiaomi_redmi-router-ac2100
   KERNEL_SIZE := 4096k
   IMAGE_SIZE := 124416k
   UBINIZE_OPTS := -E 5
-  IMAGES += kernel1.bin rootfs0.bin
+  IMAGES += kernel1.bin rootfs0.bin factory.bin
   IMAGE/kernel1.bin := append-kernel
   IMAGE/rootfs0.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | check-size $$$$(IMAGE_SIZE)
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Redmi Router AC2100
   DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615e wpad-openssl uboot-envtools
