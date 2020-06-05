@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #添加gargoyle软件之前需要先运行这个脚本
 sh ./package/gargoyle/netfilter-match-modules/*.sh . ./package/gargoyle/netfilter-match-modules 1 1
 #参考https://github.com/project-openwrt/openwrt/commit/47040d246daceff23739e44f4cbb38ebbf3bb593，为qos-gargoyle打补丁
