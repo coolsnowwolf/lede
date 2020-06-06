@@ -10,10 +10,10 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI support for Rclone
-LUCI_DEPENDS:=+rclone +rclone-webui-react +fuse-utils
+LUCI_DEPENDS:=+rclone +rclone-webui-react +fuse-utils +rclone-ng
 LUCI_PKGARCH:=all
 PKG_NAME:=luci-app-rclone
-PKG_VERSION:=1.3.21
+PKG_VERSION:=1.4.0
 PKG_RELEASE:=1
 PKG_LICENSE:=GPLv3.0+
 PKG_MAINTAINER:=ElonH <elonhhuang@gmail.com>
