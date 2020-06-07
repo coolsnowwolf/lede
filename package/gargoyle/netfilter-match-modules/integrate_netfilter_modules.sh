@@ -268,6 +268,16 @@ for new_d in $new_module_dirs ; do
 		
 	echo "found $upper_name module, patching..."
 	
+	[ ! -d "../target/linux/generic/files/net/ipv4/netfilter" ] && mkdir -p ../target/linux/generic/files/net/ipv4/netfilter
+	[ ! -d "../target/linux/generic/files/include/linux/netfilter_ipv4" ] && mkdir -p ../target/linux/generic/files/include/linux/netfilter_ipv4
+	[ ! -d "../package/network/utils/iptables/modules/extension" ] && mkdir -p ../package/network/utils/iptables/modules/extension
+	cp -rf $module_dir/$lower_name/module/ipt_$lower_name.c ../target/linux/generic/files/net/ipv4/netfilter/ipt_$lower_name.c
+	cp -rf $module_dir/$lower_name/module/${lower_name}_deps ../target/linux/generic/files/net/ipv4/netfilter/${lower_name}_deps
+	cp -rf $module_dir/$lower_name/header/ipt_$lower_name.h ../target/linux/generic/files/include/linux/netfilter_ipv4/ipt_$lower_name.h
+	diff -u /dev/null $module_dir/$lower_name/extension/libipt_$lower_name.c > ../package/network/utils/iptables/patches/600-gargoyle-$lower_name.patch
+	sed -i '1c --- a\/dev/null' ../package/network/utils/iptables/patches/600-gargoyle-$lower_name.patch
+	sed -i '2c +++ b\/extension\/libipt_$lower_name.c' ../package/network/utils/iptables/patches/600-gargoyle-$lower_name.patch
+	
 	if [ "$patch_kernel" = 1 ] ; then		
 		#copy files for netfilter module
 		cp -r $new_d/module/* linux.new/net/ipv4/netfilter/
