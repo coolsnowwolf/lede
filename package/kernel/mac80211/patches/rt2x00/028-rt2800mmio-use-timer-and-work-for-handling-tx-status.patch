@@ -1,0 +1,194 @@
+From 175c2548332b45b144af673e70fdbb1a947d7aba Mon Sep 17 00:00:00 2001
+From: Stanislaw Gruszka <sgruszka@redhat.com>
+Date: Sat, 9 Feb 2019 12:08:35 +0100
+X-Patchwork-Submitter: Stanislaw Gruszka <sgruszka@redhat.com>
+X-Patchwork-Id: 10804445
+X-Patchwork-Delegate: kvalo@adurom.com
+Subject: [PATCH 25/28] rt2800mmio: use timer and work for handling tx statuses
+ timeouts
+
+Sometimes we can get into situation when there are pending statuses,
+but we do not get INT_SOURCE_CSR_TX_FIFO_STATUS. Handle this situation
+by arming timeout timer and read statuses (it will fix case when
+we just do not have irq) and queue work to handle case we missed
+statues from hardware FIFO.
+
+Signed-off-by: Stanislaw Gruszka <sgruszka@redhat.com>
+---
+ .../net/wireless/ralink/rt2x00/rt2800mmio.c   | 81 +++++++++++++++++--
+ .../net/wireless/ralink/rt2x00/rt2800mmio.h   |  1 +
+ .../net/wireless/ralink/rt2x00/rt2800pci.c    |  2 +-
+ .../net/wireless/ralink/rt2x00/rt2800soc.c    |  2 +-
+ .../net/wireless/ralink/rt2x00/rt2x00dev.c    |  4 +
+ 5 files changed, 82 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800mmio.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800mmio.c
+@@ -426,6 +426,9 @@ void rt2800mmio_start_queue(struct data_
+ }
+ EXPORT_SYMBOL_GPL(rt2800mmio_start_queue);
+ 
++/* 200 ms */
++#define TXSTATUS_TIMEOUT 200000000
++
+ void rt2800mmio_kick_queue(struct data_queue *queue)
+ {
+ 	struct rt2x00_dev *rt2x00dev = queue->rt2x00dev;
+@@ -440,6 +443,8 @@ void rt2800mmio_kick_queue(struct data_q
+ 		entry = rt2x00queue_get_entry(queue, Q_INDEX);
+ 		rt2x00mmio_register_write(rt2x00dev, TX_CTX_IDX(queue->qid),
+ 					  entry->entry_idx);
++		hrtimer_start(&rt2x00dev->txstatus_timer,
++			      TXSTATUS_TIMEOUT, HRTIMER_MODE_REL);
+ 		break;
+ 	case QID_MGMT:
+ 		entry = rt2x00queue_get_entry(queue, Q_INDEX);
+@@ -484,12 +489,8 @@ void rt2800mmio_flush_queue(struct data_
+ 		 * For TX queues schedule completion tasklet to catch
+ 		 * tx status timeouts, othewise just wait.
+ 		 */
+-		if (tx_queue) {
+-			tasklet_disable(&rt2x00dev->txstatus_tasklet);
+-			rt2800_txdone(rt2x00dev, UINT_MAX);
+-			rt2800_txdone_nostatus(rt2x00dev);
+-			tasklet_enable(&rt2x00dev->txstatus_tasklet);
+-		}
++		if (tx_queue)
++			queue_work(rt2x00dev->workqueue, &rt2x00dev->txdone_work);
+ 
+ 		/*
+ 		 * Wait for a little while to give the driver
+@@ -627,6 +628,10 @@ void rt2800mmio_clear_entry(struct queue
+ 		word = rt2x00_desc_read(entry_priv->desc, 1);
+ 		rt2x00_set_field32(&word, TXD_W1_DMA_DONE, 1);
+ 		rt2x00_desc_write(entry_priv->desc, 1, word);
++
++		/* If last entry stop txstatus timer */
++		if (entry->queue->length == 1)
++			hrtimer_cancel(&rt2x00dev->txstatus_timer);
+ 	}
+ }
+ EXPORT_SYMBOL_GPL(rt2800mmio_clear_entry);
+@@ -759,6 +764,70 @@ int rt2800mmio_enable_radio(struct rt2x0
+ }
+ EXPORT_SYMBOL_GPL(rt2800mmio_enable_radio);
+ 
++static void rt2800mmio_work_txdone(struct work_struct *work)
++{
++	struct rt2x00_dev *rt2x00dev =
++	    container_of(work, struct rt2x00_dev, txdone_work);
++
++	if (!test_bit(DEVICE_STATE_ENABLED_RADIO, &rt2x00dev->flags))
++		return;
++
++	while (!kfifo_is_empty(&rt2x00dev->txstatus_fifo) ||
++	       rt2800_txstatus_timeout(rt2x00dev)) {
++
++		tasklet_disable(&rt2x00dev->txstatus_tasklet);
++		rt2800_txdone(rt2x00dev, UINT_MAX);
++		rt2800_txdone_nostatus(rt2x00dev);
++		tasklet_enable(&rt2x00dev->txstatus_tasklet);
++	}
++
++	if (rt2800_txstatus_pending(rt2x00dev))
++		hrtimer_start(&rt2x00dev->txstatus_timer,
++			      TXSTATUS_TIMEOUT, HRTIMER_MODE_REL);
++}
++
++static enum hrtimer_restart rt2800mmio_tx_sta_fifo_timeout(struct hrtimer *timer)
++{
++	struct rt2x00_dev *rt2x00dev =
++	    container_of(timer, struct rt2x00_dev, txstatus_timer);
++
++	if (!test_bit(DEVICE_STATE_ENABLED_RADIO, &rt2x00dev->flags))
++		goto out;
++
++	if (!rt2800_txstatus_pending(rt2x00dev))
++		goto out;
++
++	rt2800mmio_fetch_txstatus(rt2x00dev);
++	if (!kfifo_is_empty(&rt2x00dev->txstatus_fifo))
++		tasklet_schedule(&rt2x00dev->txstatus_tasklet);
++	else
++		queue_work(rt2x00dev->workqueue, &rt2x00dev->txdone_work);
++out:
++	return HRTIMER_NORESTART;
++}
++
++int rt2800mmio_probe_hw(struct rt2x00_dev *rt2x00dev)
++{
++	int retval;
++
++	retval = rt2800_probe_hw(rt2x00dev);
++	if (retval)
++		return retval;
++
++	/*
++	 * Set txstatus timer function.
++	 */
++	rt2x00dev->txstatus_timer.function = rt2800mmio_tx_sta_fifo_timeout;
++
++	/*
++	 * Overwrite TX done handler
++	 */
++	INIT_WORK(&rt2x00dev->txdone_work, rt2800mmio_work_txdone);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(rt2800mmio_probe_hw);
++
+ MODULE_AUTHOR(DRV_PROJECT);
+ MODULE_VERSION(DRV_VERSION);
+ MODULE_DESCRIPTION("rt2800 MMIO library");
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800mmio.h
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800mmio.h
+@@ -153,6 +153,7 @@ void rt2800mmio_stop_queue(struct data_q
+ void rt2800mmio_queue_init(struct data_queue *queue);
+ 
+ /* Initialization functions */
++int rt2800mmio_probe_hw(struct rt2x00_dev *rt2x00dev);
+ bool rt2800mmio_get_entry_state(struct queue_entry *entry);
+ void rt2800mmio_clear_entry(struct queue_entry *entry);
+ int rt2800mmio_init_queues(struct rt2x00_dev *rt2x00dev);
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800pci.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800pci.c
+@@ -346,7 +346,7 @@ static const struct rt2x00lib_ops rt2800
+ 	.tbtt_tasklet		= rt2800mmio_tbtt_tasklet,
+ 	.rxdone_tasklet		= rt2800mmio_rxdone_tasklet,
+ 	.autowake_tasklet	= rt2800mmio_autowake_tasklet,
+-	.probe_hw		= rt2800_probe_hw,
++	.probe_hw		= rt2800mmio_probe_hw,
+ 	.get_firmware_name	= rt2800pci_get_firmware_name,
+ 	.check_firmware		= rt2800_check_firmware,
+ 	.load_firmware		= rt2800_load_firmware,
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800soc.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800soc.c
+@@ -185,7 +185,7 @@ static const struct rt2x00lib_ops rt2800
+ 	.tbtt_tasklet		= rt2800mmio_tbtt_tasklet,
+ 	.rxdone_tasklet		= rt2800mmio_rxdone_tasklet,
+ 	.autowake_tasklet	= rt2800mmio_autowake_tasklet,
+-	.probe_hw		= rt2800_probe_hw,
++	.probe_hw		= rt2800mmio_probe_hw,
+ 	.get_firmware_name	= rt2800soc_get_firmware_name,
+ 	.check_firmware		= rt2800soc_check_firmware,
+ 	.load_firmware		= rt2800soc_load_firmware,
+--- a/drivers/net/wireless/ralink/rt2x00/rt2x00dev.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2x00dev.c
+@@ -1391,6 +1391,8 @@ int rt2x00lib_probe_dev(struct rt2x00_de
+ 	mutex_init(&rt2x00dev->conf_mutex);
+ 	INIT_LIST_HEAD(&rt2x00dev->bar_list);
+ 	spin_lock_init(&rt2x00dev->bar_list_lock);
++	hrtimer_init(&rt2x00dev->txstatus_timer, CLOCK_MONOTONIC,
++		     HRTIMER_MODE_REL);
+ 
+ 	set_bit(DEVICE_STATE_PRESENT, &rt2x00dev->flags);
+ 
+@@ -1515,6 +1517,8 @@ void rt2x00lib_remove_dev(struct rt2x00_
+ 	cancel_delayed_work_sync(&rt2x00dev->autowakeup_work);
+ 	cancel_work_sync(&rt2x00dev->sleep_work);
+ 
++	hrtimer_cancel(&rt2x00dev->txstatus_timer);
++
+ 	/*
+ 	 * Kill the tx status tasklet.
+ 	 */

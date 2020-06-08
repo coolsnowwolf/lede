@@ -9,13 +9,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray
-PKG_VERSION:=4.23.1
+PKG_VERSION:=4.23.4
 PKG_RELEASE:=1
 PKG_BUILD_DIR:=$(BUILD_DIR)/v2ray-core-$(PKG_VERSION)
 
 PKG_SOURCE:=v2ray-core-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://codeload.github.com/v2ray/v2ray-core/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=474b3aeed069d9867f7603a0544abcc0f31386cef9254423577ab752fc8d4dcc
+PKG_SOURCE_URL:=https://codeload.github.com/v2fly/v2ray-core/tar.gz/v$(PKG_VERSION)?
+PKG_HASH:=726dd98d674bd73150158b1d4c8bc0d59dbb672ba10096ac61548d6278213c78
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
