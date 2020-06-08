@@ -268,16 +268,6 @@ for new_d in $new_module_dirs ; do
 		
 	echo "found $upper_name module, patching..."
 	
-	[ ! -d "../target/linux/generic/files/net/ipv4/netfilter" ] && mkdir -p ../target/linux/generic/files/net/ipv4/netfilter
-	[ ! -d "../target/linux/generic/files/include/linux/netfilter_ipv4" ] && mkdir -p ../target/linux/generic/files/include/linux/netfilter_ipv4
-	[ ! -d "../package/network/utils/iptables/modules/extension" ] && mkdir -p ../package/network/utils/iptables/modules/extension
-	cp -rf $module_dir/$lower_name/module/ipt_$lower_name.c ../target/linux/generic/files/net/ipv4/netfilter/ipt_$lower_name.c
-	cp -rf $module_dir/$lower_name/module/${lower_name}_deps ../target/linux/generic/files/net/ipv4/netfilter/${lower_name}_deps
-	cp -rf $module_dir/$lower_name/header/ipt_$lower_name.h ../target/linux/generic/files/include/linux/netfilter_ipv4/ipt_$lower_name.h
-	diff -u /dev/null $module_dir/$lower_name/extension/libipt_$lower_name.c > ../package/network/utils/iptables/patches/600-gargoyle-$lower_name.patch
-	sed -i '1c --- a\/dev/null' ../package/network/utils/iptables/patches/600-gargoyle-$lower_name.patch
-	sed -i '2c +++ b\/extension\/libipt_$lower_name.c' ../package/network/utils/iptables/patches/600-gargoyle-$lower_name.patch
-	
 	if [ "$patch_kernel" = 1 ] ; then		
 		#copy files for netfilter module
 		cp -r $new_d/module/* linux.new/net/ipv4/netfilter/
@@ -416,9 +406,9 @@ if [ "$patch_kernel" = 1 ] ; then
 	for t in $test_files ; do
 		if [ ! -d "linux.new/$t" ] ; then
 			if [ -e "linux.orig/$t" ] ; then
-				diff -u "linux.orig/$t" "linux.new/$t" >> $patch_dir/650-custom_netfilter_match_modules.patch
+				diff -u "linux.orig/$t" "linux.new/$t" | sed "1c --- a\/$t" | sed "2c +++ b\/$t" >> $patch_dir/650-custom_netfilter_match_modules.patch
 			else
-				diff -u /dev/null "linux.new/$t" >> $patch_dir/650-custom_netfilter_match_modules.patch
+				diff -u /dev/null "linux.new/$t" | sed "1c --- a\/dev\/null" | sed "2c +++ b\/$t" >> $patch_dir/650-custom_netfilter_match_modules.patch
 			fi	
 		fi
 	done
@@ -432,9 +422,9 @@ if [ "$patch_kernel" = 1 ] ; then
 	for t in $extension_files $include_files ; do
 		if [ ! -d "iptables.new/$t" ] ; then
 			if [ -e "iptables.orig/$t" ] ; then
-				diff -u "iptables.orig/$t" "iptables.new/$t" >>$iptables_patch_dir/650-custom_netfilter_match_modules.patch
+				diff -u "iptables.orig/$t" "iptables.new/$t" | sed "1c --- a\/$t" | sed "2c +++ b\/$t" >>$iptables_patch_dir/650-custom_netfilter_match_modules.patch
 			else
-				diff -u /dev/null "iptables.new/$t" >>$iptables_patch_dir/650-custom_netfilter_match_modules.patch 
+				diff -u /dev/null "iptables.new/$t" | sed "1c --- a\/dev\/null" | sed "2c +++ b\/$t" >>$iptables_patch_dir/650-custom_netfilter_match_modules.patch 
 			fi
 		fi	
 	done
