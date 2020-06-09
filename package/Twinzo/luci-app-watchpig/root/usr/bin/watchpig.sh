@@ -76,7 +76,7 @@ watchpig_ping_behaviour() {
 	local action="$1"
 	[ "$action" = "ping1" ] && sleep 1 && shutdown_now "$forcedelay"
 	[ "$action" = "ping2" ] && sleep 1 && reconnect "$forcedelay"
-	[ "$action" = "ping1" ] && sleep 1 && random_mac && reconnect "$forcedelay"
+	[ "$action" = "ping3" ] && sleep 1 && random_mac && reconnect "$forcedelay"
 }
 
 watchpig_ping() {
@@ -111,14 +111,17 @@ watchpig_ping() {
 				time_lastcheck_withinternet="$time_now"
 			else
 				time_diff="$((time_now-time_lastcheck_withinternet))"
-				[ $("lang") -ne 1 ] && logger -p daemon.info -t "watchpig[$$]" "no internet connectivity for $time_diff seconds. Reseting when reaching $realperiod seconds"
-				[ $("lang") -eq 1 ] && logger -p daemon.info -t "watchpig[$$]" "网络中断达${time_diff}秒。达到${realperiod}秒时重置"
-				[ $("lang") -eq 1 ] && logger -p daemon.info -t "watchpig[$$]" "别担心，这可能只是普通的延迟"
+				if [ $time_diff -ge $realperiod ]; then 
+					watchpig_ping_behaviour "$behave" && eval "$custom"
+					[ $("lang") -ne 1 ] && logger -p daemon.info -t "watchpig[$$]" "no internet connectivity for $time_diff seconds. Greaer than $realperiod seconds,reseting..."
+					[ $("lang") -eq 1 ] && logger -p daemon.info -t "watchpig[$$]" "网络中断达${time_diff}秒。超过${realperiod}秒，开始重置"
+				else
+					[ $("lang") -ne 1 ] && logger -p daemon.info -t "watchpig[$$]" "no internet connectivity for $time_diff seconds. Reseting when reaching $realperiod seconds"
+					[ $("lang") -eq 1 ] && logger -p daemon.info -t "watchpig[$$]" "网络中断达${time_diff}秒。达到${realperiod}秒时重置"
+					[ $("lang") -eq 1 ] && logger -p daemon.info -t "watchpig[$$]" "别担心，这可能只是普通的延迟"
+				fi
 			fi
 		done
-
-		[ "$time_diff" -ge "$period" ] && watchpig_ping_behaviour "$behave" && eval "$custom"
-
 	done
 }
 
