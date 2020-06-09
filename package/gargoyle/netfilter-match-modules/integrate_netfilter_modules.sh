@@ -1,16 +1,3 @@
-ifExist0=`cat "$1"/target/linux/generic/config-4.14 | grep "CONFIG_IMQ_NUM_DEVS"`
-cp -f "$1"/package/gargoyle/netfilter-match-modules/patches/690-imq.patch "$1"/target/linux/generic/hack-4.14/690-imq.patch
-cp -f "$1"/package/gargoyle/netfilter-match-modules/patches/300-imq.patch "$1"/package/network/utils/iptables/patches/300-imq.patch
-if [ -z "ifExist0" ]; then
-	echo "# CONFIG_ZRAM is not set" >> "$1"/target/linux/generic/config-4.14
-	echo "# CONFIG_ZSMALLOC is not set" >> "$1"/target/linux/generic/config-4.14
-	echo "# CONFIG_ZX_TDM is not set" >> "$1"/target/linux/generic/config-4.14
-	echo "CONFIG_IMQ_NUM_DEVS=2" >> "$1"/target/linux/generic/config-4.14
-	echo "# CONFIG_IMQ_BEHAVIOR_AA is not set" >> "$1"/target/linux/generic/config-4.14
-	echo "# CONFIG_IMQ_BEHAVIOR_AB is not set" >> "$1"/target/linux/generic/config-4.14
-	echo "CONFIG_IMQ_BEHAVIOR_BA=y" >> "$1"/target/linux/generic/config-4.14
-	echo "# CONFIG_IMQ_BEHAVIOR_BB is not set" >> "$1"/target/linux/generic/config-4.14
-fi
 insert_lines_at()
 {
 	insert_after=$1
@@ -366,34 +353,6 @@ for new_d in $new_module_dirs ; do
 		fi
 	fi
 done
-
-echo "Patching imq"
-ifExist4=`cat "../package/network/utils/iptables/Makefile" | grep "imq" 2>/dev/null 2>&1`
-if [ -n "$ifExist4" ]; then
-	echo "Already exists iptables"
-else
-	cd ../package
-	patch -p2<../package/gargoyle/netfilter-match-modules/patches/010-imq-iptables.patch
-	cd -
-fi
-
-ifExist5=`cat "../package/kernel/linux/modules/netfilter.mk" | grep "imq" 2>/dev/null 2>&1`
-if [ -n "$ifExist5" ]; then
-	echo "Already exists modules"
-else
-	cd ../package
-	patch -p2<../package/gargoyle/netfilter-match-modules/patches/010-imq-modules.patch
-	cd -
-fi
-
-ifExist6=`cat "../include/netfilter.mk" | grep "imq" 2>/dev/null 2>&1`
-if [ -n "$ifExist6" ]; then
-	echo "Already exists include"
-else
-	cd ../
-	patch -p1<./package/gargoyle/netfilter-match-modules/patches/010-imq-include.patch
-	cd -
-fi
 		
 if [ "$patch_kernel" = 1 ] ; then	
 	#build netfilter patch file
