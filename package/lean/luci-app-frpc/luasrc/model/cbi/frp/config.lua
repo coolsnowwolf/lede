@@ -105,6 +105,27 @@ e:depends("type","http")
 e = t:taboption("other",Value, "host_header_rewrite", translate("Host Header"), translate("The Host header will be rewritten to match the hostname portion of the forwarding address."))
 e.default = "dev.yourdomain.com"
 e:depends("enable_host_header_rewrite",1)
+e=t:taboption("other",Flag,"enable_https_plugin",translate("Use Plugin"))
+e.default="0"
+e:depends("type","https")
+e=t:taboption("other",ListValue,"https_plugin",translate("Choose Plugin"),translate("If plugin is defined, local_ip and local_port is useless, plugin will handle connections got from frps."))
+e:value("https2http",translate("https2http"))
+e:depends("enable_https_plugin",1)
+e=t:taboption("other",Value,"plugin_local_addr",translate("Plugin_Local_Addr"))
+e.default="127.0.0.1:80"
+e:depends("https_plugin","https2http")
+e=t:taboption("other",Value,"plugin_crt_path",translate("plugin_crt_path"))
+e.default="./server.crt"
+e:depends("https_plugin","https2http")
+e=t:taboption("other",Value,"plugin_key_path",translate("plugin_key_path"))
+e.default="./server.key"
+e:depends("https_plugin","https2http")
+e=t:taboption("other",Value,"plugin_host_header_rewrite",translate("plugin_host_header_rewrite"))
+e.default="127.0.0.1"
+e:depends("https_plugin","https2http")
+e=t:taboption("other",Value,"plugin_header_X_From_Where",translate("plugin_header_X-From-Where"))
+e.default="frp"
+e:depends("https_plugin","https2http")
 e = t:taboption("base",ListValue, "proxy_protocol_version", translate("Proxy-Protocol Version"), translate("Proxy Protocol to send user's real IP to local services."))
 e.default = "disable"
 e:value("disable",translate("Disable"))
