@@ -365,9 +365,9 @@ if [ "$patch_kernel" = 1 ] ; then
 	for t in $test_files ; do
 		if [ ! -d "linux.new/$t" ] ; then
 			if [ -e "linux.orig/$t" ] ; then
-				diff -u "linux.orig/$t" "linux.new/$t" | sed "1c --- a\/$t" | sed "2c +++ b\/$t" >> $patch_dir/650-custom_netfilter_match_modules.patch
+				diff -u "linux.orig/$t" "linux.new/$t" >> $patch_dir/650-custom_netfilter_match_modules.patch
 			else
-				diff -u /dev/null "linux.new/$t" | sed "1c --- a\/dev\/null" | sed "2c +++ b\/$t" >> $patch_dir/650-custom_netfilter_match_modules.patch
+				diff -u /dev/null "linux.new/$t" >> $patch_dir/650-custom_netfilter_match_modules.patch
 			fi	
 		fi
 	done
