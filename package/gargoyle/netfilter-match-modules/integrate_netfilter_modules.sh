@@ -422,9 +422,11 @@ if [ "$patch_kernel" = 1 ] ; then
 	for t in $extension_files $include_files ; do
 		if [ ! -d "iptables.new/$t" ] ; then
 			if [ -e "iptables.orig/$t" ] ; then
-				diff -u "iptables.orig/$t" "iptables.new/$t" | sed "1c --- a\/$t" | sed "2c +++ b\/$t" >>$iptables_patch_dir/650-custom_netfilter_match_modules.patch
+#				diff -u "iptables.orig/$t" "iptables.new/$t" | sed "1c --- a\/$t" | sed "2c +++ b\/$t" >>$iptables_patch_dir/650-custom_netfilter_match_modules.patch
+				diff -u "iptables.orig/$t" "iptables.new/$t" >>$iptables_patch_dir/650-custom_netfilter_match_modules.patch
 			else
-				diff -u /dev/null "iptables.new/$t" | sed "1c --- a\/dev\/null" | sed "2c +++ b\/$t" >>$iptables_patch_dir/650-custom_netfilter_match_modules.patch 
+				diff -u /dev/null "iptables.new/$t" >>$iptables_patch_dir/650-custom_netfilter_match_modules.patch 		
+#				diff -u /dev/null "iptables.new/$t" | sed "1c --- a\/dev\/null" | sed "2c +++ b\/$t" >>$iptables_patch_dir/650-custom_netfilter_match_modules.patch 
 			fi
 		fi	
 	done
