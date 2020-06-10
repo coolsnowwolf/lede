@@ -361,10 +361,10 @@ o.rmempty = true
 
 -- [[ allowInsecure ]]--
 o = s:option(Flag, "insecure", translate("allowInsecure"))
-o.rmempty = true
+o.rmempty = false
 o:depends("type", "v2ray")
 o:depends("type", "trojan")
-o.default = "0"
+o.default = "1"
 o.description = translate("If true, allowss insecure connection at TLS client, e.g., TLS server uses unverifiable certificates.")
 -- [[ TLS ]]--
 o = s:option(Flag, "tls", translate("TLS"))
