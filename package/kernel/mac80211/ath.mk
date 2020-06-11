@@ -262,6 +262,7 @@ define KernelPackage/ath10k/config
                depends on PACKAGE_kmod-ath10k
 
        config ATH10K_THERMAL
+               default y
                bool "Enable thermal sensors and throttling support"
                depends on PACKAGE_kmod-ath10k
 

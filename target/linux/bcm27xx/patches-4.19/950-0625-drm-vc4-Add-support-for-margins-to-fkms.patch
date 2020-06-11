@@ -1,0 +1,328 @@
+From a4e8051901a5d858a69732a3f9734835afc00af5 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Fri, 19 Jul 2019 15:35:13 +0100
+Subject: [PATCH] drm/vc4: Add support for margins to fkms
+
+Allows for overscan to be configured under FKMS.
+NB This is rescaling the planes, not reducing the size of the
+display mode.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/gpu/drm/vc4/vc4_firmware_kms.c | 241 +++++++++++++++++++------
+ 1 file changed, 190 insertions(+), 51 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_firmware_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_firmware_kms.c
+@@ -256,6 +256,23 @@ static inline struct vc4_crtc *to_vc4_cr
+ 	return container_of(crtc, struct vc4_crtc, base);
+ }
+ 
++struct vc4_crtc_state {
++	struct drm_crtc_state base;
++
++	struct {
++		unsigned int left;
++		unsigned int right;
++		unsigned int top;
++		unsigned int bottom;
++	} margins;
++};
++
++static inline struct vc4_crtc_state *
++to_vc4_crtc_state(struct drm_crtc_state *crtc_state)
++{
++	return (struct vc4_crtc_state *)crtc_state;
++}
++
+ struct vc4_fkms_encoder {
+ 	struct drm_encoder base;
+ 	bool hdmi_monitor;
+@@ -365,17 +382,127 @@ static int vc4_plane_set_blank(struct dr
+ 	return ret;
+ }
+ 
++static void vc4_fkms_crtc_get_margins(struct drm_crtc_state *state,
++				      unsigned int *left, unsigned int *right,
++				      unsigned int *top, unsigned int *bottom)
++{
++	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(state);
++	struct drm_connector_state *conn_state;
++	struct drm_connector *conn;
++	int i;
++
++	*left = vc4_state->margins.left;
++	*right = vc4_state->margins.right;
++	*top = vc4_state->margins.top;
++	*bottom = vc4_state->margins.bottom;
++
++	/* We have to interate over all new connector states because
++	 * vc4_fkms_crtc_get_margins() might be called before
++	 * vc4_fkms_crtc_atomic_check() which means margins info in
++	 * vc4_crtc_state might be outdated.
++	 */
++	for_each_new_connector_in_state(state->state, conn, conn_state, i) {
++		if (conn_state->crtc != state->crtc)
++			continue;
++
++		*left = conn_state->tv.margins.left;
++		*right = conn_state->tv.margins.right;
++		*top = conn_state->tv.margins.top;
++		*bottom = conn_state->tv.margins.bottom;
++		break;
++	}
++}
++
++static int vc4_fkms_margins_adj(struct drm_plane_state *pstate,
++				struct set_plane *plane)
++{
++	unsigned int left, right, top, bottom;
++	int adjhdisplay, adjvdisplay;
++	struct drm_crtc_state *crtc_state;
++
++	crtc_state = drm_atomic_get_new_crtc_state(pstate->state,
++						   pstate->crtc);
++
++	vc4_fkms_crtc_get_margins(crtc_state, &left, &right, &top, &bottom);
++
++	if (!left && !right && !top && !bottom)
++		return 0;
++
++	if (left + right >= crtc_state->mode.hdisplay ||
++	    top + bottom >= crtc_state->mode.vdisplay)
++		return -EINVAL;
++
++	adjhdisplay = crtc_state->mode.hdisplay - (left + right);
++	plane->dst_x = DIV_ROUND_CLOSEST(plane->dst_x * adjhdisplay,
++					 (int)crtc_state->mode.hdisplay);
++	plane->dst_x += left;
++	if (plane->dst_x > (int)(crtc_state->mode.hdisplay - left))
++		plane->dst_x = crtc_state->mode.hdisplay - left;
++
++	adjvdisplay = crtc_state->mode.vdisplay - (top + bottom);
++	plane->dst_y = DIV_ROUND_CLOSEST(plane->dst_y * adjvdisplay,
++					 (int)crtc_state->mode.vdisplay);
++	plane->dst_y += top;
++	if (plane->dst_y > (int)(crtc_state->mode.vdisplay - top))
++		plane->dst_y = crtc_state->mode.vdisplay - top;
++
++	plane->dst_w = DIV_ROUND_CLOSEST(plane->dst_w * adjhdisplay,
++					 crtc_state->mode.hdisplay);
++	plane->dst_h = DIV_ROUND_CLOSEST(plane->dst_h * adjvdisplay,
++					 crtc_state->mode.vdisplay);
++
++	if (!plane->dst_w || !plane->dst_h)
++		return -EINVAL;
++
++	return 0;
++}
++
+ static void vc4_plane_atomic_update(struct drm_plane *plane,
+ 				    struct drm_plane_state *old_state)
+ {
+ 	struct drm_plane_state *state = plane->state;
++
++	/*
++	 * Do NOT set now, as we haven't checked if the crtc is active or not.
++	 * Set from vc4_plane_set_blank instead.
++	 *
++	 * If the CRTC is on (or going to be on) and we're enabled,
++	 * then unblank.  Otherwise, stay blank until CRTC enable.
++	 */
++	if (state->crtc->state->active)
++		vc4_plane_set_blank(plane, false);
++}
++
++static void vc4_plane_atomic_disable(struct drm_plane *plane,
++				     struct drm_plane_state *old_state)
++{
++	struct drm_plane_state *state = plane->state;
++	struct vc4_fkms_plane *vc4_plane = to_vc4_fkms_plane(plane);
++
++	DRM_DEBUG_ATOMIC("[PLANE:%d:%s] plane disable %dx%d@%d +%d,%d\n",
++			 plane->base.id, plane->name,
++			 state->crtc_w,
++			 state->crtc_h,
++			 vc4_plane->mb.plane.vc_image_type,
++			 state->crtc_x,
++			 state->crtc_y);
++	vc4_plane_set_blank(plane, true);
++}
++
++static bool plane_enabled(struct drm_plane_state *state)
++{
++	return state->fb && state->crtc;
++}
++
++static int vc4_plane_to_mb(struct drm_plane *plane,
++			   struct mailbox_set_plane *mb,
++			   struct drm_plane_state *state)
++{
+ 	struct drm_framebuffer *fb = state->fb;
+ 	struct drm_gem_cma_object *bo = drm_fb_cma_get_gem_obj(fb, 0);
+ 	const struct drm_format_info *drm_fmt = fb->format;
+ 	const struct vc_image_format *vc_fmt =
+ 					vc4_get_vc_image_fmt(drm_fmt->format);
+-	struct vc4_fkms_plane *vc4_plane = to_vc4_fkms_plane(plane);
+-	struct mailbox_set_plane *mb = &vc4_plane->mb;
+ 	int num_planes = fb->format->num_planes;
+ 	struct drm_display_mode *mode = &state->crtc->mode;
+ 	unsigned int rotation = SUPPORTED_ROTATIONS;
+@@ -417,25 +544,7 @@ static void vc4_plane_atomic_update(stru
+ 		break;
+ 	}
+ 
+-	/* FIXME: If the dest rect goes off screen then clip the src rect so we
+-	 * don't have off-screen pixels.
+-	 */
+-	if (plane->type == DRM_PLANE_TYPE_CURSOR) {
+-		/* There is no scaling on the cursor plane, therefore the calcs
+-		 * to alter the source crop as the cursor goes off the screen
+-		 * are simple.
+-		 */
+-		if (mb->plane.dst_x + mb->plane.dst_w > mode->hdisplay) {
+-			mb->plane.dst_w = mode->hdisplay - mb->plane.dst_x;
+-			mb->plane.src_w = (mode->hdisplay - mb->plane.dst_x)
+-									<< 16;
+-		}
+-		if (mb->plane.dst_y + mb->plane.dst_h > mode->vdisplay) {
+-			mb->plane.dst_h = mode->vdisplay - mb->plane.dst_y;
+-			mb->plane.src_h = (mode->vdisplay - mb->plane.dst_y)
+-									<< 16;
+-		}
+-	}
++	vc4_fkms_margins_adj(state, &mb->plane);
+ 
+ 	if (num_planes > 1) {
+ 		/* Assume this must be YUV */
+@@ -525,38 +634,19 @@ static void vc4_plane_atomic_update(stru
+ 			 state->alpha,
+ 			 state->normalized_zpos);
+ 
+-	/*
+-	 * Do NOT set now, as we haven't checked if the crtc is active or not.
+-	 * Set from vc4_plane_set_blank instead.
+-	 *
+-	 * If the CRTC is on (or going to be on) and we're enabled,
+-	 * then unblank.  Otherwise, stay blank until CRTC enable.
+-	 */
+-	if (state->crtc->state->active)
+-		vc4_plane_set_blank(plane, false);
++	return 0;
+ }
+ 
+-static void vc4_plane_atomic_disable(struct drm_plane *plane,
+-				     struct drm_plane_state *old_state)
++static int vc4_plane_atomic_check(struct drm_plane *plane,
++				  struct drm_plane_state *state)
+ {
+-	//struct vc4_dev *vc4 = to_vc4_dev(plane->dev);
+-	struct drm_plane_state *state = plane->state;
+ 	struct vc4_fkms_plane *vc4_plane = to_vc4_fkms_plane(plane);
+ 
+-	DRM_DEBUG_ATOMIC("[PLANE:%d:%s] plane disable %dx%d@%d +%d,%d\n",
+-			 plane->base.id, plane->name,
+-			 state->crtc_w,
+-			 state->crtc_h,
+-			 vc4_plane->mb.plane.vc_image_type,
+-			 state->crtc_x,
+-			 state->crtc_y);
+-	vc4_plane_set_blank(plane, true);
+-}
++	if (!plane_enabled(state))
++		return 0;
++
++	return vc4_plane_to_mb(plane, &vc4_plane->mb, state);
+ 
+-static int vc4_plane_atomic_check(struct drm_plane *plane,
+-				  struct drm_plane_state *state)
+-{
+-	return 0;
+ }
+ 
+ static void vc4_plane_destroy(struct drm_plane *plane)
+@@ -878,8 +968,23 @@ vc4_crtc_mode_valid(struct drm_crtc *crt
+ static int vc4_crtc_atomic_check(struct drm_crtc *crtc,
+ 				 struct drm_crtc_state *state)
+ {
+-	DRM_DEBUG_KMS("[CRTC:%d] crtc_atomic_check.\n",
+-		      crtc->base.id);
++	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(state);
++	struct drm_connector *conn;
++	struct drm_connector_state *conn_state;
++	int i;
++
++	DRM_DEBUG_KMS("[CRTC:%d] crtc_atomic_check.\n", crtc->base.id);
++
++	for_each_new_connector_in_state(state->state, conn, conn_state, i) {
++		if (conn_state->crtc != crtc)
++			continue;
++
++		vc4_state->margins.left = conn_state->tv.margins.left;
++		vc4_state->margins.right = conn_state->tv.margins.right;
++		vc4_state->margins.top = conn_state->tv.margins.top;
++		vc4_state->margins.bottom = conn_state->tv.margins.bottom;
++		break;
++	}
+ 	return 0;
+ }
+ 
+@@ -980,6 +1085,33 @@ static int vc4_page_flip(struct drm_crtc
+ 	return drm_atomic_helper_page_flip(crtc, fb, event, flags, ctx);
+ }
+ 
++static struct drm_crtc_state *
++vc4_crtc_duplicate_state(struct drm_crtc *crtc)
++{
++	struct vc4_crtc_state *vc4_state, *old_vc4_state;
++
++	vc4_state = kzalloc(sizeof(*vc4_state), GFP_KERNEL);
++	if (!vc4_state)
++		return NULL;
++
++	old_vc4_state = to_vc4_crtc_state(crtc->state);
++	vc4_state->margins = old_vc4_state->margins;
++
++	__drm_atomic_helper_crtc_duplicate_state(crtc, &vc4_state->base);
++	return &vc4_state->base;
++}
++
++static void
++vc4_crtc_reset(struct drm_crtc *crtc)
++{
++	if (crtc->state)
++		__drm_atomic_helper_crtc_destroy_state(crtc->state);
++
++	crtc->state = kzalloc(sizeof(*crtc->state), GFP_KERNEL);
++	if (crtc->state)
++		crtc->state->crtc = crtc;
++}
++
+ static int vc4_fkms_enable_vblank(struct drm_crtc *crtc)
+ {
+ 	struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
+@@ -1007,8 +1139,8 @@ static const struct drm_crtc_funcs vc4_c
+ 	.set_property = NULL,
+ 	.cursor_set = NULL, /* handled by drm_mode_cursor_universal */
+ 	.cursor_move = NULL, /* handled by drm_mode_cursor_universal */
+-	.reset = drm_atomic_helper_crtc_reset,
+-	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
++	.reset = vc4_crtc_reset,
++	.atomic_duplicate_state = vc4_crtc_duplicate_state,
+ 	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state,
+ 	.enable_vblank = vc4_fkms_enable_vblank,
+ 	.disable_vblank = vc4_fkms_disable_vblank,
+@@ -1267,6 +1399,13 @@ vc4_fkms_connector_init(struct drm_devic
+ 		connector->interlace_allowed = 0;
+ 	}
+ 
++	/* Create and attach TV margin props to this connector. */
++	ret = drm_mode_create_tv_margin_properties(dev);
++	if (ret)
++		return ERR_PTR(ret);
++
++	drm_connector_attach_tv_margin_properties(connector);
++
+ 	connector->polled = (DRM_CONNECTOR_POLL_CONNECT |
+ 			     DRM_CONNECTOR_POLL_DISCONNECT);
+ 

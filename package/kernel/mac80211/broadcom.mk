@@ -105,7 +105,7 @@ define KernelPackage/b43
   	CONFIG_HW_RANDOM=y
   # Depend on PCI_SUPPORT to make sure we can select kmod-bcma or kmod-ssb
   DEPENDS += \
-	@PCI_SUPPORT +kmod-mac80211 +kmod-lib-cordic \
+	@PCI_SUPPORT +kmod-mac80211 \
 	$(if $(CONFIG_PACKAGE_B43_USE_SSB),+kmod-ssb) \
 	$(if $(CONFIG_PACKAGE_B43_USE_BCMA),+kmod-bcma)
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/broadcom/b43/b43.ko
@@ -449,7 +449,7 @@ define KernelPackage/brcmfmac/config
 
 	config BRCMFMAC_SDIO
 		bool "Enable SDIO bus interface support"
-		default y if TARGET_brcm2708
+		default y if TARGET_bcm27xx
 		default y if TARGET_sunxi
 		default n
 		help

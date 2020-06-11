@@ -2,7 +2,7 @@ PKG_DRIVERS += \
 	rtl8180 rtl8187 \
 	rtlwifi rtlwifi-pci rtlwifi-btcoexist rtlwifi-usb rtl8192c-common \
 	rtl8192ce rtl8192se rtl8192de rtl8192cu rtl8821ae \
-	rtl8xxxu rtw88
+	rtl8xxxu
 
 config-$(call config_package,rtl8180) += RTL8180
 config-$(call config_package,rtl8187) += RTL8187
@@ -21,9 +21,6 @@ config-$(CONFIG_PACKAGE_RTLWIFI_DEBUG) += RTLWIFI_DEBUG
 
 config-$(call config_package,rtl8xxxu) += RTL8XXXU
 config-y += RTL8XXXU_UNTESTED
-
-config-$(call config_package,rtw88) += RTW88 RTW88_CORE RTW88_PCI
-config-y += RTW88_8822BE RTW88_8822CE
 
 define KernelPackage/rtl818x/Default
   $(call KernelPackage/mac80211/Default)
@@ -170,13 +167,4 @@ define KernelPackage/rtl8xxxu/description
   author or reported to be working by third parties.
 
   Please report your results!
-endef
-
-define KernelPackage/rtw88
-  $(call KernelPackage/mac80211/Default)
-  TITLE:=Realtek RTL8822BE/RTL8822CE
-  DEPENDS+= @(PCI_SUPPORT) +kmod-mac80211 +@DRIVER_11AC_SUPPORT +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT
-  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtw88/rtw88.ko	\
-	$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtw88/rtwpci.ko
-  AUTOLOAD:=$(call AutoProbe,rtwpci)
 endef

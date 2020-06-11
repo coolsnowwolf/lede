@@ -21,19 +21,16 @@ endif
 ifeq ($(ARCH),arm)
 	PKG_ARCH_VERYSYNC:=arm
 endif
-ifeq ($(BOARD),bcm53xx)
-	PKG_ARCH_VERYSYNC:=arm6
-endif
-ifeq ($(BOARD),kirkwood)
-	PKG_ARCH_VERYSYNC:=arm
-endif
 ifeq ($(ARCH),aarch64)
 	PKG_ARCH_VERYSYNC:=arm64
 endif
+ifeq ($(ARCH),powerpc64)
+	PKG_ARCH_VERYSYNC:=ppc64
+endif
 
 PKG_NAME:=verysync
-PKG_VERSION:=v1.2.8
-PKG_RELEASE:=2
+PKG_VERSION:=v1.4.3
+PKG_RELEASE:=1
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 PKG_SOURCE:=$(PKG_NAME)-linux-$(PKG_ARCH_VERYSYNC)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=http://releases-cdn.verysync.com/releases/$(PKG_VERSION)/

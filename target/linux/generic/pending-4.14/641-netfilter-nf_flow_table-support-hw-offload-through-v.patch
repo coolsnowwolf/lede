@@ -79,7 +79,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  struct nf_flow_route {
 --- a/net/netfilter/nf_flow_table_hw.c
 +++ b/net/netfilter/nf_flow_table_hw.c
-@@ -19,48 +19,75 @@ struct flow_offload_hw {
+@@ -19,48 +19,77 @@ struct flow_offload_hw {
  	enum flow_offload_type	type;
  	struct flow_offload	*flow;
  	struct nf_conn		*ct;
@@ -92,6 +92,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 -static int do_flow_offload_hw(struct net *net, struct flow_offload *flow,
 -			      int type)
 +static void flow_offload_check_ethernet(struct flow_offload_tuple *tuple,
++					struct dst_entry *dst,
 +					struct flow_offload_hw_path *path)
  {
 -	struct net_device *indev;
@@ -112,7 +113,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  
 -	dev_put(indev);
 +	memcpy(path->eth_src, path->dev->dev_addr, ETH_ALEN);
-+	n = dst_neigh_lookup(tuple->dst_cache, &tuple->src_v4);
++	n = dst_neigh_lookup(dst, &tuple->src_v4);
 +	if (!n)
 +		return;
  
@@ -125,6 +126,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 -static void flow_offload_hw_work_add(struct flow_offload_hw *offload)
 +static int flow_offload_check_path(struct net *net,
 +				   struct flow_offload_tuple *tuple,
++				   struct dst_entry *dst,
 +				   struct flow_offload_hw_path *path)
  {
 -	struct net *net;
@@ -138,7 +140,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +		return -ENOENT;
 +
 +	path->dev = dev;
-+	flow_offload_check_ethernet(tuple, path);
++	flow_offload_check_ethernet(tuple, dst, path);
  
 -	net = read_pnet(&offload->flow_hw_net);
 -	ret = do_flow_offload_hw(net, offload->flow, FLOW_OFFLOAD_ADD);
@@ -166,11 +168,11 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +	/* restore devices in case the driver mangled them */
 +	offload->src.dev = src_dev;
 +	offload->dest.dev = dest_dev;
-+
-+	return ret;
-+}
  
 -	do_flow_offload_hw(net, offload->flow, FLOW_OFFLOAD_DEL);
++	return ret;
++}
++
 +static void flow_offload_hw_free(struct flow_offload_hw *offload)
 +{
 +	dev_put(offload->src.dev);
@@ -182,7 +184,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  }
  
  static void flow_offload_hw_work(struct work_struct *work)
-@@ -73,18 +100,22 @@ static void flow_offload_hw_work(struct
+@@ -73,18 +102,22 @@ static void flow_offload_hw_work(struct
  	spin_unlock_bh(&flow_offload_hw_pending_list_lock);
  
  	list_for_each_entry_safe(offload, next, &hw_offload_pending, list) {
@@ -211,7 +213,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	}
  }
  
-@@ -97,20 +128,55 @@ static void flow_offload_queue_work(stru
+@@ -97,20 +130,56 @@ static void flow_offload_queue_work(stru
  	schedule_work(&nf_flow_offload_hw_work);
  }
  
@@ -220,17 +222,18 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +{
 +	struct flow_offload_hw_path src = {};
 +	struct flow_offload_hw_path dest = {};
-+	struct flow_offload_tuple *tuple;
++	struct flow_offload_tuple *tuple_s, *tuple_d;
 +	struct flow_offload_hw *offload = NULL;
 +
 +	rcu_read_lock_bh();
 +
-+	tuple = &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple;
-+	if (flow_offload_check_path(net, tuple, &src))
++	tuple_s = &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple;
++	tuple_d = &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple;
++
++	if (flow_offload_check_path(net, tuple_s, tuple_d->dst_cache, &src))
 +		goto out;
 +
-+	tuple = &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple;
-+	if (flow_offload_check_path(net, tuple, &dest))
++	if (flow_offload_check_path(net, tuple_d, tuple_s->dst_cache, &dest))
 +		goto out;
 +
 +	if (!src.dev->netdev_ops->ndo_flow_offload)
@@ -270,7 +273,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  
  	flow_offload_queue_work(offload);
  }
-@@ -119,14 +185,11 @@ static void flow_offload_hw_del(struct n
+@@ -119,14 +188,11 @@ static void flow_offload_hw_del(struct n
  {
  	struct flow_offload_hw *offload;
  
@@ -286,7 +289,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  
  	flow_offload_queue_work(offload);
  }
-@@ -153,12 +216,8 @@ static void __exit nf_flow_table_hw_modu
+@@ -153,12 +219,8 @@ static void __exit nf_flow_table_hw_modu
  	nf_flow_table_hw_unregister(&flow_offload_hw);
  	cancel_work_sync(&nf_flow_offload_hw_work);
  

@@ -1,0 +1,202 @@
+From: =?UTF-8?q?Toke=20H=C3=B8iland-J=C3=B8rgensen?= <toke@toke.dk>
+Date: Tue, 18 Dec 2018 17:02:07 -0800
+Subject: [PATCH] cfg80211: Add airtime statistics and settings
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This adds TX airtime statistics to the cfg80211 station dump (to go along
+with the RX info already present), and adds a new parameter to set the
+airtime weight of each station. The latter allows userspace to implement
+policies for different stations by varying their weights.
+
+Signed-off-by: Toke Høiland-Jørgensen <toke@toke.dk>
+[rmanohar@codeaurora.org: fixed checkpatch warnings]
+Signed-off-by: Rajkumar Manoharan <rmanohar@codeaurora.org>
+[move airtime weight != 0 check into policy]
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/include/net/cfg80211.h
++++ b/include/net/cfg80211.h
+@@ -988,6 +988,7 @@ enum station_parameters_apply_mask {
+  * @support_p2p_ps: information if station supports P2P PS mechanism
+  * @he_capa: HE capabilities of station
+  * @he_capa_len: the length of the HE capabilities
++ * @airtime_weight: airtime scheduler weight for this station
+  */
+ struct station_parameters {
+ 	const u8 *supported_rates;
+@@ -1017,6 +1018,7 @@ struct station_parameters {
+ 	int support_p2p_ps;
+ 	const struct ieee80211_he_cap_elem *he_capa;
+ 	u8 he_capa_len;
++	u16 airtime_weight;
+ };
+ 
+ /**
+@@ -1284,6 +1286,8 @@ struct cfg80211_tid_stats {
+  * @rx_beacon_signal_avg: signal strength average (in dBm) for beacons received
+  *	from this peer
+  * @rx_duration: aggregate PPDU duration(usecs) for all the frames from a peer
++ * @tx_duration: aggregate PPDU duration(usecs) for all the frames to a peer
++ * @airtime_weight: current airtime scheduling weight
+  * @pertid: per-TID statistics, see &struct cfg80211_tid_stats, using the last
+  *	(IEEE80211_NUM_TIDS) index for MSDUs not encapsulated in QoS-MPDUs.
+  *	Note that this doesn't use the @filled bit, but is used if non-NULL.
+@@ -1330,12 +1334,15 @@ struct station_info {
+ 
+ 	u32 expected_throughput;
+ 
+-	u64 rx_beacon;
++	u64 tx_duration;
+ 	u64 rx_duration;
++	u64 rx_beacon;
+ 	u8 rx_beacon_signal_avg;
+ 	struct cfg80211_tid_stats *pertid;
+ 	s8 ack_signal;
+ 	s8 avg_ack_signal;
++
++	u16 airtime_weight;
+ };
+ 
+ #if IS_ENABLED(CPTCFG_CFG80211)
+@@ -2361,6 +2368,8 @@ enum wiphy_params_flags {
+ 	WIPHY_PARAM_TXQ_QUANTUM		= 1 << 8,
+ };
+ 
++#define IEEE80211_DEFAULT_AIRTIME_WEIGHT	256
++
+ /**
+  * struct cfg80211_pmksa - PMK Security Association
+  *
+--- a/include/uapi/linux/nl80211.h
++++ b/include/uapi/linux/nl80211.h
+@@ -2241,6 +2241,9 @@ enum nl80211_commands {
+  *	association request when used with NL80211_CMD_NEW_STATION). Can be set
+  *	only if %NL80211_STA_FLAG_WME is set.
+  *
++ * @NL80211_ATTR_AIRTIME_WEIGHT: Station's weight when scheduled by the airtime
++ *	scheduler.
++ *
+  * @NUM_NL80211_ATTR: total number of nl80211_attrs available
+  * @NL80211_ATTR_MAX: highest attribute number currently defined
+  * @__NL80211_ATTR_AFTER_LAST: internal use
+@@ -2682,6 +2685,14 @@ enum nl80211_attrs {
+ 
+ 	NL80211_ATTR_HE_CAPABILITY,
+ 
++	/* not backported yet */
++	NL80211_ATTR_FTM_RESPONDER,
++	NL80211_ATTR_FTM_RESPONDER_STATS,
++	NL80211_ATTR_TIMEOUT,
++	NL80211_ATTR_PEER_MEASUREMENTS,
++
++	NL80211_ATTR_AIRTIME_WEIGHT,
++
+ 	/* add attributes here, update the policy in nl80211.c */
+ 
+ 	__NL80211_ATTR_AFTER_LAST,
+@@ -3052,6 +3063,9 @@ enum nl80211_sta_bss_param {
+  * @NL80211_STA_INFO_ACK_SIGNAL: signal strength of the last ACK frame(u8, dBm)
+  * @NL80211_STA_INFO_DATA_ACK_SIGNAL_AVG: avg signal strength of (data)
+  *	ACK frame (s8, dBm)
++ * @NL80211_STA_INFO_TX_DURATION: aggregate PPDU duration for all frames
++ *	sent to the station (u64, usec)
++ * @NL80211_STA_INFO_AIRTIME_WEIGHT: current airtime weight for station (u16)
+  * @__NL80211_STA_INFO_AFTER_LAST: internal
+  * @NL80211_STA_INFO_MAX: highest possible station info attribute
+  */
+@@ -3093,6 +3107,14 @@ enum nl80211_sta_info {
+ 	NL80211_STA_INFO_ACK_SIGNAL,
+ 	NL80211_STA_INFO_DATA_ACK_SIGNAL_AVG,
+ 
++	/* not backported yet */
++	NL80211_STA_INFO_RX_MPDUS,
++	NL80211_STA_INFO_FCS_ERROR_COUNT,
++	NL80211_STA_INFO_CONNECTED_TO_GATE,
++
++	NL80211_STA_INFO_TX_DURATION,
++	NL80211_STA_INFO_AIRTIME_WEIGHT,
++
+ 	/* keep last */
+ 	__NL80211_STA_INFO_AFTER_LAST,
+ 	NL80211_STA_INFO_MAX = __NL80211_STA_INFO_AFTER_LAST - 1
+@@ -5224,6 +5246,10 @@ enum nl80211_feature_flags {
+  *	except for supported rates from the probe request content if requested
+  *	by the %NL80211_SCAN_FLAG_MIN_PREQ_CONTENT flag.
+  *
++ * @NL80211_EXT_FEATURE_AIRTIME_FAIRNESS: Driver supports getting airtime
++ *	fairness for transmitted packets and has enabled airtime fairness
++ *	scheduling.
++ *
+  * @NUM_NL80211_EXT_FEATURES: number of extended features.
+  * @MAX_NL80211_EXT_FEATURES: highest extended feature index.
+  */
+@@ -5260,6 +5286,12 @@ enum nl80211_ext_feature_index {
+ 	NL80211_EXT_FEATURE_SCAN_RANDOM_SN,
+ 	NL80211_EXT_FEATURE_SCAN_MIN_PREQ_CONTENT,
+ 
++	/* --- not backported yet --- */
++	NL80211_EXT_FEATURE_CAN_REPLACE_PTK0,
++	NL80211_EXT_FEATURE_ENABLE_FTM_RESPONDER,
++
++	NL80211_EXT_FEATURE_AIRTIME_FAIRNESS,
++
+ 	/* add new features before the definition below */
+ 	NUM_NL80211_EXT_FEATURES,
+ 	MAX_NL80211_EXT_FEATURES = NUM_NL80211_EXT_FEATURES - 1
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -463,6 +463,7 @@ static const struct nla_policy nl80211_p
+ 	[NL80211_ATTR_TXQ_QUANTUM] = { .type = NLA_U32 },
+ 	[NL80211_ATTR_HE_CAPABILITY] = { .type = NLA_BINARY,
+ 					 .len = NL80211_HE_MAX_CAPABILITY_LEN },
++	[NL80211_ATTR_AIRTIME_WEIGHT] = NLA_POLICY_MIN(NLA_U16, 1),
+ };
+ 
+ /* policy for the key attributes */
+@@ -4703,6 +4704,11 @@ static int nl80211_send_station(struct s
+ 	PUT_SINFO(PLID, plid, u16);
+ 	PUT_SINFO(PLINK_STATE, plink_state, u8);
+ 	PUT_SINFO_U64(RX_DURATION, rx_duration);
++	PUT_SINFO_U64(TX_DURATION, tx_duration);
++
++	if (wiphy_ext_feature_isset(&rdev->wiphy,
++				    NL80211_EXT_FEATURE_AIRTIME_FAIRNESS))
++		PUT_SINFO(AIRTIME_WEIGHT, airtime_weight, u16);
+ 
+ 	switch (rdev->wiphy.signal_type) {
+ 	case CFG80211_SIGNAL_TYPE_MBM:
+@@ -5339,6 +5345,15 @@ static int nl80211_set_station(struct sk
+ 			nla_get_u8(info->attrs[NL80211_ATTR_OPMODE_NOTIF]);
+ 	}
+ 
++	if (info->attrs[NL80211_ATTR_AIRTIME_WEIGHT])
++		params.airtime_weight =
++			nla_get_u16(info->attrs[NL80211_ATTR_AIRTIME_WEIGHT]);
++
++	if (params.airtime_weight &&
++	    !wiphy_ext_feature_isset(&rdev->wiphy,
++				     NL80211_EXT_FEATURE_AIRTIME_FAIRNESS))
++		return -EOPNOTSUPP;
++
+ 	/* Include parameters for TDLS peer (will check later) */
+ 	err = nl80211_set_station_tdls(info, &params);
+ 	if (err)
+@@ -5477,6 +5492,15 @@ static int nl80211_new_station(struct sk
+ 			return -EINVAL;
+ 	}
+ 
++	if (info->attrs[NL80211_ATTR_AIRTIME_WEIGHT])
++		params.airtime_weight =
++			nla_get_u16(info->attrs[NL80211_ATTR_AIRTIME_WEIGHT]);
++
++	if (params.airtime_weight &&
++	    !wiphy_ext_feature_isset(&rdev->wiphy,
++				     NL80211_EXT_FEATURE_AIRTIME_FAIRNESS))
++		return -EOPNOTSUPP;
++
+ 	err = nl80211_parse_sta_channel_info(info, &params);
+ 	if (err)
+ 		return err;

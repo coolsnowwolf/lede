@@ -5,6 +5,7 @@ set_preinit_iface() {
 
 	case $(board_name) in
 	asus,rt-ac58u| \
+	asus,rt-ac1300uhp| \
 	avm,fritzbox-4040| \
 	glinet,gl-b1300| \
 	meraki,mr33| \
