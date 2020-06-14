@@ -7,25 +7,11 @@ local i18n = require "luci.i18n"
 module("luci.model.cbi.kodexplorer.api", package.seeall)
 
 local appname = "kodexplorer"
-local api_url =
-    "https://api.github.com/repos/kalcaddle/KodExplorer/releases/latest"
-local download_url = "https://github.com/kalcaddle/KodExplorer/archive/"
+local api_url = "https://api.kodcloud.com/?app/version"
 
 local wget = "/usr/bin/wget"
-local wget_args = {
-    "--no-check-certificate", "--quiet", "--timeout=10", "--tries=2"
-}
+local wget_args = { "--no-check-certificate", "--quiet", "--timeout=10", "--tries=2" }
 local command_timeout = 300
-
-function uci_get_type(type, config, default)
-    value = uci:get(appname, "@" .. type .. "[0]", config) or sys.exec(
-                "echo -n `uci -q get " .. appname .. ".@" .. type .. "[0]." ..
-                    config .. "`")
-    if (value == nil or value == "") and (default and default ~= "") then
-        value = default
-    end
-    return value
-end
 
 local function _unpack(t, i)
     i = i or 1
@@ -77,6 +63,15 @@ local function exec(cmd, args, writer, timeout)
     end
 end
 
+function get_project_directory()
+    return uci:get(appname, "@global[0]", "project_directory") or "/tmp/kodcloud"
+end
+
+function get_version()
+    local version = get_project_directory() .. "/config/version.php"
+    return sys.exec(string.format("echo -n $(cat %s 2>/dev/null | grep \"'KOD_VERSION'\" | cut -d \"'\" -f 4)", version))
+end
+
 local function compare_versions(ver1, comp, ver2)
     local table = table
 
@@ -108,42 +103,16 @@ local function get_api_json(url)
     --	function(chunk) output[#output + 1] = chunk end)
     -- local json_content = util.trim(table.concat(output))
 
-    local json_content = luci.sys.exec("wget-ssl -q --no-check-certificate -O- " .. url)
+    local json_content = sys.exec(wget .. " --no-check-certificate --timeout=10 -t 1 -O- " .. url)
 
     if json_content == "" then return {} end
 
     return jsonc.parse(json_content) or {}
 end
 
-function get_project_directory()
-    return uci_get_type("global", "project_directory", "/tmp/kodexplorer")
-end
-
 function to_check()
     local json = get_api_json(api_url)
-    if json.tag_name == nil then
-        return {
-            code = 1,
-            error = i18n.translate("Get remote version info failed.")
-        }
-    end
-    local remote_version = json.tag_name
-    local html_url = json.html_url
-    download_url = download_url .. json.tag_name .. ".tar.gz"
-    if not download_url then
-        return {
-            code = 1,
-            version = remote_version,
-            html_url = html_url,
-            error = i18n.translate(
-                "New version found, but failed to get new version download url.")
-        }
-    end
-    return {
-        code = 0,
-        version = remote_version,
-        url = {html = html_url, download = download_url}
-    }
+    return json
 end
 
 function to_download(url)
@@ -151,13 +120,11 @@ function to_download(url)
         return {code = 1, error = i18n.translate("Download url is required.")}
     end
 
-    sys.call("/bin/rm -f /tmp/kodexplorer_download.*")
+    sys.call("/bin/rm -f /tmp/kodcloud_download.*")
 
-    local tmp_file = util.trim(util.exec(
-                                   "mktemp -u -t kodexplorer_download.XXXXXX"))
+    local tmp_file = util.trim(util.exec("mktemp -u -t kodcloud_download.XXXXXX"))
 
-    local result = exec(wget, {"-O", tmp_file, url, _unpack(wget_args)}, nil,
-                        command_timeout) == 0
+    local result = exec(wget, {"-O", tmp_file, url, _unpack(wget_args)}, nil, command_timeout) == 0
 
     if not result then
         exec("/bin/rm", {"-f", tmp_file})
@@ -175,13 +142,11 @@ function to_extract(file)
         return {code = 1, error = i18n.translate("File path required.")}
     end
 
-    sys.call("/bin/rm -rf /tmp/kodexplorer_extract.*")
-    local tmp_dir = util.trim(util.exec(
-                                  "mktemp -d -t kodexplorer_extract.XXXXXX"))
+    sys.call("/bin/rm -rf /tmp/kodcloud_extract.*")
+    local tmp_dir = util.trim(util.exec("mktemp -d -t kodcloud_extract.XXXXXX"))
 
     local output = {}
-    exec("/bin/tar", {"-C", tmp_dir, "-zxvf", file},
-         function(chunk) output[#output + 1] = chunk end)
+    exec("/usr/bin/unzip", {"-o", file, "-d", tmp_dir}, function(chunk) output[#output + 1] = chunk end)
 
     local files = util.split(table.concat(output))
 
@@ -192,14 +157,14 @@ end
 
 function to_move(file)
     if not file or file == "" or not fs.access(file) then
-        sys.call("/bin/rm -rf /tmp/kodexplorer_extract.*")
+        sys.call("/bin/rm -rf /tmp/kodcloud_extract.*")
         return {code = 1, error = i18n.translate("Client file is required.")}
     end
 
     local client_file = get_project_directory()
     sys.call("mkdir -p " .. client_file)
-    sys.call("cp -R " .. file .. "/KodExplorer*/* " .. client_file)
-    sys.call("/bin/rm -rf /tmp/kodexplorer_extract.*")
+    sys.call("cp -R " .. file .. "/* " .. client_file)
+    sys.call("/bin/rm -rf /tmp/kodcloud_extract.*")
 
     return {code = 0}
 end
