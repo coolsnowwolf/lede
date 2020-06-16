@@ -47,20 +47,20 @@ cloudserver.rmempty = true
 cloudserver:depends("apptype", "cloud")
 
 flac = s:option(Flag, "flac_enabled", translate("启用无损音质"))
-flac.default = 1
+flac.default = "1"
 flac.rmempty = false
 flac.description = translate("目前仅支持酷我、QQ、咪咕")
 flac:depends("apptype", "nodejs")
 
 force = s:option(Flag, "force_enabled", translate("强制替换为高音质歌曲"))
-force.default = 1
+force.default = "1"
 force.rmempty = false
 force.description = translate("如果歌曲音质在 320Kbps 以内，则尝试强制替换为高音质版本")
 force:depends("apptype", "nodejs")
 
 o = s:option(Flag, "autoupdate")
 o.title = translate("自动检查更新主程序")
-o.default = 0
+o.default = "1"
 o.rmempty = false
 o.description = translate("每天自动检测并更新到最新版本")
 o:depends("apptype", "nodejs")
