@@ -24,7 +24,6 @@ define KernelPackage/r8168
   VERSION:=$(LINUX_VERSION)+$(PKG_VERSION)-$(BOARD)-$(PKG_RELEASE)
   FILES:= $(PKG_BUILD_DIR)/r8168.ko
   AUTOLOAD:=$(call AutoProbe,r8168)
-  DEFAULT:=y
 endef
 
 define Package/r8168/description
