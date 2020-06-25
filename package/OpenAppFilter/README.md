@@ -4,7 +4,7 @@ OpenAppFilter模块基于数据流深度识别技术，实现对单个app进行�
 
 该模块支持主流linux版本，目前主要在OpenWrt各版本中测试，支持OpenWrt 15.05、OpenWrt 18.06、
 
-OpenWrt 19.07、 LEDE等主流版本
+OpenWrt 19.07等主流版本
 
 ### 主要使用场景
 	- 家长对小孩上网行为进行管控，限制小孩玩游戏等

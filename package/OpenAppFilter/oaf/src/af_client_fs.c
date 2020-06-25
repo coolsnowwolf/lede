@@ -130,7 +130,9 @@ static int af_client_seq_show(struct seq_file *s, void *v)
 
 	for(i = 0; i < MAX_RECORD_APP_NUM; i++){
 		if(node->visit_info[i].app_id == 0)
-			break;
+			continue;
+		if(node->visit_info[i].total_num < 3)
+			continue;
 		cJSON *visit_obj = cJSON_CreateObject();
 		cJSON_AddNumberToObject(visit_obj, "appid", node->visit_info[i].app_id);
 		cJSON_AddNumberToObject(visit_obj, "latest_action", node->visit_info[i].latest_action);

@@ -21,6 +21,8 @@
 #include "af_client.h"
 #include "af_client_fs.h"
 #include "af_log.h"
+#include "af_utils.h"
+#include "app_filter.h"
 
 DEFINE_RWLOCK(af_client_lock);            
 
@@ -146,6 +148,50 @@ void check_client_expire(void)
 	AF_CLIENT_UNLOCK_W();
 }
 
+#define MAX_EXPIRED_VISIT_INFO_COUNT 10
+void flush_expired_visit_info(af_client_info_t *node)
+{
+	int i;
+	int count = 0;
+	u_int32_t cur_timep = 0;
+	int timeout = 0;
+	cur_timep = af_get_timestamp_sec();
+	for (i = 0; i < MAX_RECORD_APP_NUM; i++){
+		if (node->visit_info[i].app_id == 0){
+			return;
+		}
+	}
+	for (i = 0; i < MAX_RECORD_APP_NUM; i++){
+		if (count >= MAX_EXPIRED_VISIT_INFO_COUNT)
+			break;
+		
+		if (node->visit_info[i].total_num > 3){
+			timeout = 180;
+		}
+		else{
+			timeout = 60;
+		}
+		
+		if (cur_timep - node->visit_info[i].latest_time > timeout){
+			// ³¬Ê±Çå³ý¼ÇÂ¼
+			memset(&node->visit_info[i], 0x0, sizeof(app_visit_info_t));
+			count++;
+		}
+	}
+
+}
+
+void af_visit_info_timer_handle(void){
+	af_client_info_t  *node;
+	int i;
+	AF_CLIENT_LOCK_W();
+	for (i = 0; i < MAX_AF_CLIENT_HASH_SIZE; i++){
+		list_for_each_entry(node, &af_client_list_table[i], hlist) {
+			flush_expired_visit_info(node);
+		}
+	}
+	AF_CLIENT_UNLOCK_W();
+}
 static inline int get_packet_dir(struct net_device *in)
 {
 	if (0 == strncmp(in->name, "br", 2)){

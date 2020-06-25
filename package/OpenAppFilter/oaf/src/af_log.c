@@ -8,6 +8,9 @@
 #include "af_log.h"
 int af_log_lvl = 1;
 int af_test_mode = 0;
+// todo: rename af_log.c
+int g_oaf_enable __read_mostly = 0;
+
 /* 
 	cat /proc/sys/oaf/debug
 */
@@ -22,6 +25,13 @@ static struct ctl_table oaf_table[] = {
 	{
 		.procname	= "test_mode",
 		.data		= &af_test_mode,
+		.maxlen 	= sizeof(int),
+		.mode		= 0666,
+		.proc_handler	= proc_dointvec,
+	},
+	{
+		.procname	= "enable",
+		.data		= &g_oaf_enable,
 		.maxlen 	= sizeof(int),
 		.mode		= 0666,
 		.proc_handler	= proc_dointvec,

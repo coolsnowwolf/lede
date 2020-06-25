@@ -50,6 +50,7 @@ enum AF_CONFIG_CMD{
 	AF_CMD_ADD_APPID = 1,
 	AF_CMD_DEL_APPID,
 	AF_CMD_CLEAN_APPID,
+	AF_CMD_SET_MAC_LIST,
 };
 
 char g_app_id_array[AF_MAX_APP_TYPE_NUM][AF_MAX_APP_NUM] = {0};
@@ -104,7 +105,147 @@ int af_change_app_status(cJSON * data_obj, int status)
 	
 	return 0;
 }
+DEFINE_RWLOCK(af_mac_lock);            
+#define MAX_AF_MAC_HASH_SIZE 64
+#define AF_MAC_LOCK_R() 		read_lock_bh(&af_mac_lock);
+#define AF_MAC_UNLOCK_R() 	read_unlock_bh(&af_mac_lock);
+#define AF_MAC_LOCK_W() 		write_lock_bh(&af_mac_lock);
+#define AF_MAC_UNLOCK_W()	write_unlock_bh(&af_mac_lock);
 
+u32 total_mac = 0;
+struct list_head af_mac_list_table[MAX_AF_MAC_HASH_SIZE];
+
+void 
+af_mac_list_init(void)
+{
+	int i;
+	AF_MAC_LOCK_W();
+	for(i = 0; i < MAX_AF_MAC_HASH_SIZE; i ++){
+        INIT_LIST_HEAD(&af_mac_list_table[i]);
+    }
+	AF_MAC_UNLOCK_W();
+	AF_INFO("client list init......ok\n");
+}
+
+void 
+af_mac_list_clear(void)
+{
+	int i;
+	af_mac_info_t * p = NULL;
+	char mac_str[32] = {0};
+	
+	AF_DEBUG("clean list\n");
+	AF_MAC_LOCK_W();
+	for (i = 0; i < MAX_AF_MAC_HASH_SIZE;i++){
+		while(!list_empty(&af_mac_list_table[i])){
+			p = list_first_entry(&af_mac_list_table[i], af_mac_info_t, hlist);
+			memset(mac_str, 0x0, sizeof(mac_str));
+			sprintf(mac_str, MAC_FMT, MAC_ARRAY(p->mac));
+			AF_DEBUG("clean mac:%s\n", mac_str);
+			list_del(&(p->hlist));
+			kfree(p);
+		}
+	}
+	total_mac = 0;
+	AF_MAC_UNLOCK_W();
+}
+
+
+int hash_mac(unsigned char *mac)
+{
+	if (!mac)
+		return 0;
+	else
+		return mac[5] & (MAX_AF_MAC_HASH_SIZE - 1);
+}
+
+af_mac_info_t * find_af_mac(unsigned char *mac)
+{
+    af_mac_info_t *node;
+    unsigned int index;
+
+    index = hash_mac(mac);
+    list_for_each_entry(node, &af_mac_list_table[index], hlist){
+    	if (0 == memcmp(node->mac, mac, 6)){
+			AF_ERROR("match mac:"MAC_FMT"\n", MAC_ARRAY(node->mac));
+			return node;
+    	}
+    }
+    return NULL;
+}
+
+static af_mac_info_t *
+af_mac_add(unsigned char *mac)
+{
+    af_mac_info_t *node;
+	int index = 0;
+	
+	node = (af_mac_info_t *)kmalloc(sizeof(af_mac_info_t), GFP_ATOMIC);
+    if (node == NULL) {
+        AF_ERROR("kmalloc failed\n");
+        return NULL;
+    }
+
+	memset(node, 0, sizeof(af_mac_info_t));
+	memcpy(node->mac, mac, MAC_ADDR_LEN);
+	
+    index = hash_mac(mac);
+	
+	AF_LMT_INFO("new client mac="MAC_FMT"\n", MAC_ARRAY(node->mac));
+	total_mac++;
+	list_add(&(node->hlist), &af_mac_list_table[index]);
+    return node;
+}
+
+int is_user_match_enable(void){
+	return total_mac > 0;
+}
+int mac_to_hex(u8 *mac, u8 *mac_hex){
+	u8 mac_tmp[MAC_ADDR_LEN];
+	int ret = 0;
+	ret = sscanf(mac, "%02x:%02x:%02x:%02x:%02x:%02x", 
+		(unsigned int *)&mac_tmp[0],
+		(unsigned int *)&mac_tmp[1],
+		(unsigned int *)&mac_tmp[2],
+		(unsigned int *)&mac_tmp[3],
+		(unsigned int *)&mac_tmp[4],
+		(unsigned int *)&mac_tmp[5]);
+	if (MAC_ADDR_LEN != ret)
+		return -1;
+	memcpy(mac_hex, mac_tmp, MAC_ADDR_LEN);
+	return 0;
+}
+int af_set_mac_list(cJSON * data_obj)
+{
+	int i;
+	int id;
+	int type;
+	u8 mac_hex[MAC_ADDR_LEN] = {0};
+	if (!data_obj) {
+		AF_ERROR("data obj is null\n");
+		return -1;
+	}
+	cJSON *mac_arr = cJSON_GetObjectItem(data_obj, "mac_list");
+	if (!mac_arr){
+		AF_ERROR("apps obj is null\n");
+		return -1;
+	}
+	af_mac_list_clear();
+	for (i = 0; i < cJSON_GetArraySize(mac_arr); i++) {
+		cJSON *mac_obj = cJSON_GetArrayItem(mac_arr, i);
+		if (!mac_obj){
+			AF_ERROR("appid obj is null\n");
+			return -1;
+		}
+		if (-1 == mac_to_hex(mac_obj->valuestring, mac_hex)){
+			AF_ERROR("mac format error: %s\n", mac_obj->valuestring);
+			continue;
+		}
+		af_mac_add(mac_hex);
+	}
+	printk("## mac num = %d\n", total_mac);
+	return 0;
+}
 
 void af_init_app_status(void)
 {
@@ -176,6 +317,9 @@ int af_config_handle(char *config, unsigned int len)
 		break;
 	case AF_CMD_CLEAN_APPID:
 		af_init_app_status();
+		break;
+	case AF_CMD_SET_MAC_LIST:
+		af_set_mac_list(data_obj);
 		break;
 	default:
 		AF_ERROR("invalid cmd %d\n", cmd_obj->valueint);

@@ -1,5 +1,6 @@
 #ifndef AF_UTILS_H
 #define AF_UTILS_H
+u_int32_t af_get_timestamp_sec(void);
 
 int check_local_network_ip(unsigned int ip);
 

@@ -681,46 +681,54 @@ int af_match_one(flow_info_t *flow, af_feature_node_t *node)
 int app_filter_match(flow_info_t *flow)
 {
 	af_feature_node_t *n,*node;
+	af_client_info_t *client = NULL;
 	feature_list_read_lock();
 	if(!list_empty(&af_feature_head)) { 
 		list_for_each_entry_safe(node, n, &af_feature_head, head) {
 			if(af_match_one(flow, node)) 
 			{
 				flow->app_id = node->app_id;
+				client = find_af_client_by_ip(flow->src);
+				if (!client){
+					goto EXIT;
+				}
+				// 如果开启了基于用户的过滤，但没有匹配到用户
+				if (is_user_match_enable() && !find_af_mac(client->mac)){
+					AF_ERROR("not match mac:"MAC_FMT"\n", MAC_ARRAY(client->mac));
+					goto EXIT;
+				}
 				if (af_get_app_status(node->app_id)){
 					flow->drop = AF_TRUE;
 					feature_list_read_unlock();
 					return AF_TRUE;
 				}
 				else {
-					flow->drop = AF_FALSE;
-					feature_list_read_unlock();
-					return AF_FALSE;
+					goto EXIT;
 				}
 			}
 			
-		
 		}
 	}
+EXIT:
+	flow->drop = AF_FALSE;
 	feature_list_read_unlock();
 	return AF_FALSE;
 }
 
 #define APP_FILTER_DROP_BITS 0xf0000000
-u_int32_t af_get_timestamp_sec(void)
-{
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-	struct timespec64 ts;
-	ktime_get_ts64(&ts);
-	return (u_int32_t)ts.tv_sec;
-#else
-	struct timespec ts;
-	ts = current_kernel_time();
-	return ts.tv_sec;
-#endif
 
+
+
+static int af_get_visit_index(af_client_info_t *node, int app_id){
+	int i;
+	for(i = 0; i < MAX_RECORD_APP_NUM; i++){
+		if(node->visit_info[i].app_id == app_id || node->visit_info[i].app_id == 0){
+			return i;
+		}
+	}
+	// default 0
+	return 0;
 }
-
 
 
 int __af_update_client_app_info(flow_info_t *flow, af_client_info_t *node)
@@ -734,38 +742,13 @@ int __af_update_client_app_info(flow_info_t *flow, af_client_info_t *node)
 	AF_INFO("%s %d visit_app_num = %d\n", __func__, __LINE__, node->visit_app_num);
 	int found = 0;
 
-	for(i = 0; i < MAX_RECORD_APP_NUM; i++){
-		if(node->visit_info[i].app_id == flow->app_id){
-			index = i;
-			found = 1;
-			break;
-		}
-		if(node->visit_info[i].app_id == 0)
-			break;
-	}
+	index = af_get_visit_index(node, flow->app_id);
 
-	if(!found){
-		index = 0;
-		//超过最大个数，查询最老的
-		for(i = 0; i < MAX_RECORD_APP_NUM; i++){
-			if(node->visit_info[i].latest_time == 0){
-				index = i;
-				break;
-			}
-			if(node->visit_info[i].latest_time < node->visit_info[index].latest_time){
-				// 清除之前的数据
-				node->visit_info[i].total_num = 0;
-				node->visit_info[i].drop_num = 0;
-				index = i;
-			}
-		}
-	}
-	
-	
 	if(index < 0 || index >= MAX_RECORD_APP_NUM){
 		AF_ERROR("invalid index:%d\n\n", index);
 		return 0;
 	}
+	
 	node->visit_info[index].total_num++;
 	if(flow->drop)
 		node->visit_info[index].drop_num++;
@@ -820,6 +803,9 @@ static u_int32_t app_filter_hook(unsigned int hook,
 #else
 	struct nf_conn *ct = (struct nf_conn *)skb->nfct;
 #endif
+	if (!g_oaf_enable){
+		return NF_ACCEPT;
+	}
 	if(ct == NULL) {
         return NF_ACCEPT;
     }
@@ -922,6 +908,39 @@ void TEST_cJSON(void)
 }
 
 
+struct timer_list oaf_timer;   
+
+#define OAF_TIMER_INTERVAL 15
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0)
+static void oaf_timer_func(struct timer_list *t)
+#else
+static void oaf_timer_func(unsigned long ptr)
+#endif
+{
+//	check_client_expire();
+	af_visit_info_timer_handle();
+    mod_timer(&oaf_timer,  jiffies + OAF_TIMER_INTERVAL * HZ);
+}
+
+
+void init_oaf_timer(void)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0)
+	timer_setup(&oaf_timer, oaf_timer_func, 0);
+#else
+    setup_timer(&oaf_timer, oaf_timer_func, OAF_TIMER_INTERVAL * HZ);
+#endif
+    mod_timer(&oaf_timer,  jiffies + OAF_TIMER_INTERVAL * HZ);
+	AF_INFO("init oaf timer...ok");
+}
+
+void fini_port_timer(void)
+{
+    del_timer_sync(&oaf_timer);
+	AF_INFO("del oaf timer...ok");
+}
+
+
 /*
 	模块初始化
 */
@@ -930,6 +949,7 @@ static int __init app_filter_init(void)
 	AF_INFO("appfilter version:"AF_VERSION"\n");
 	af_log_init();
 	af_register_dev();
+	af_mac_list_init();
 	af_init_app_status();
 	load_feature_config();
 	init_af_client_procfs();
@@ -940,6 +960,8 @@ static int __init app_filter_init(void)
 #else
 	nf_register_hooks(app_filter_ops, ARRAY_SIZE(app_filter_ops));
 #endif
+	init_oaf_timer();
+
 	AF_INFO("init app filter ........ok\n");
 	return 0;
 }
@@ -950,6 +972,7 @@ static int __init app_filter_init(void)
 static void app_filter_fini(void)
 {
 	AF_INFO("app filter module exit\n");
+	fini_port_timer();
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,13,0)
     nf_unregister_net_hooks(&init_net, app_filter_ops, ARRAY_SIZE(app_filter_ops));
 #else
@@ -957,6 +980,7 @@ static void app_filter_fini(void)
 #endif
 
 	af_clean_feature_list();
+	af_mac_list_clear();
 	af_unregister_dev();
 	af_log_exit();
 	af_client_exit();

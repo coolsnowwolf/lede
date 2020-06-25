@@ -1,12 +1,12 @@
 #ifndef __AF_CLIENT_H__
 #define __AF_CLIENT_H__
+#include "app_filter.h"
 
 extern rwlock_t af_client_lock;  
 
 extern u32 nfc_debug_level;
 	
 #define MAX_AF_CLIENT_HASH_SIZE 64
-#define MAC_ADDR_LEN      		6
 #define NF_CLIENT_TIMER_EXPIRE  1
 #define MAX_CLIENT_ACTIVE_TIME  90
 
@@ -30,7 +30,7 @@ enum NFC_PKT_DIR{
 
 
 #define MAX_VISIT_HISTORY_TIME 24
-#define MAX_RECORD_APP_NUM 32
+#define MAX_RECORD_APP_NUM 64
 
 
 typedef struct app_visit_info{
@@ -53,13 +53,16 @@ typedef struct af_client_info {
 	app_visit_info_t   visit_info[MAX_RECORD_APP_NUM];
 }af_client_info_t;
 
-#define MAC_ARRAY(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
-#define MAC_FMT "%02x:%02x:%02x:%02x:%02x:%02x"
+
 
 
 int af_client_init(void);
 
 void af_client_exit(void);
 af_client_info_t * find_af_client_by_ip(unsigned int ip);
+
+void check_client_expire(void);
+
+void af_visit_info_timer_handle(void);
 
 #endif

@@ -1,16 +1,3 @@
---[[
-LuCI - Lua Configuration Interface
-
-Copyright 2008 Steven Barth <steven@midlink.org>
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-$Id$
-]]--
 
 local ds = require "luci.dispatcher"
 
@@ -30,7 +17,7 @@ s.anonymous = true
 s.addremove = false
 
 
-local class_fd = io.popen("find /etc/appfilter/ -type f -name '*.class'")
+local class_fd = io.popen("find /tmp/appfilter/ -type f -name '*.class'")
 if class_fd then
 	while true do
 		local apps
@@ -81,6 +68,57 @@ if class_fd then
 	end
 	class_fd:close()
 end
+
+
+s=m:section(TypedSection,"user",translate("Select users"))
+s.anonymous = true
+users = s:option(MultiValue, "users", "", translate("Select at least one user, otherwise it will take effect for all users"))
+users.widget="checkbox"
+
+function get_hostname_by_mac(dst_mac)
+    leasefile="/tmp/dhcp.leases"
+    local fd = io.open(leasefile, "r")
+	if not fd then return end
+    while true do
+        local ln = fd:read("*l")
+        if not ln then
+            break
+        end
+        local ts, mac, ip, name, duid = ln:match("^(%d+) (%S+) (%S+) (%S+) (%S+)")
+        print(ln)
+        if  dst_mac == mac then
+			fd:close()
+            return name
+        end
+    end
+	fd:close()
+    return nil
+end
+
+users.widget="checkbox"
+--users.widget="select"
+users.size=1
+
+local fd = io.open("/proc/net/arp", "r")
+if not fd then return end
+while true do
+	local line = fd:read("*l")
+	if not line then
+		break
+	end
+	if not line:match("Ip*") then
+		local ip, hw_type, flags, mac, mask, device = line:match("(%S+) %s+ (%S+) %s+ (%S+) %s+ (%S+) %s+ (%S+) %s+ (%S+)")
+		if device ~= nil and mac ~= nil and device:match("lan") then
+			local hostname=get_hostname_by_mac(mac)
+			if not hostname then
+				users:value(mac, mac);
+			else
+				users:value(mac, hostname);
+			end
+		end
+	end
+end
+
 m:section(SimpleSection).template = "admin_network/user_status"
 
 

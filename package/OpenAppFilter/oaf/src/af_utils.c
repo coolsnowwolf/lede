@@ -6,6 +6,19 @@
 #include <linux/string.h>
 #include <linux/version.h>
 #include "af_utils.h"
+u_int32_t af_get_timestamp_sec(void)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+	struct timespec64 ts;
+	ktime_get_ts64(&ts);
+	return (u_int32_t)ts.tv_sec;
+#else
+	struct timespec ts;
+	ts = current_kernel_time();
+	return ts.tv_sec;
+#endif
+
+}
 
 int check_local_network_ip(unsigned int ip)
 {
@@ -282,6 +295,7 @@ static int k_vsscanf(const char *buf, const char *fmt, va_list args)
 	}
 	return num;
 }
+
 
 int k_sscanf(const char *buf, const char *fmt, ...)
 {

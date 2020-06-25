@@ -29,12 +29,15 @@
 	((unsigned char *)&addr)[2], \
 	((unsigned char *)&addr)[3]
 #define NIPQUAD_FMT "%u.%u.%u.%u"
+#define MAC_ARRAY(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
+#define MAC_FMT "%02x:%02x:%02x:%02x:%02x:%02x"
 
 #define AF_TRUE 1
 #define AF_FALSE 0
 
 #define AF_APP_TYPE(a) (a) / 1000
 #define AF_APP_ID(a) (a) % 1000
+#define MAC_ADDR_LEN      		6
 
 #define HTTPS_URL_OFFSET		9
 #define HTTPS_LEN_OFFSET		7
@@ -105,11 +108,20 @@ typedef struct af_feature_node{
 	af_pos_info_t pos_info[MAX_POS_INFO_PER_FEATURE];
 }af_feature_node_t;
 
+typedef struct af_mac_info {
+    struct list_head   hlist;
+    unsigned char      mac[MAC_ADDR_LEN];
+}af_mac_info_t;
 
 int af_register_dev(void);
 void af_unregister_dev(void);
 void af_init_app_status(void);
 int af_get_app_status(int appid);
 int regexp_match(char *reg, char *text);
+void af_mac_list_init(void);
+void af_mac_list_clear(void);
+af_mac_info_t * find_af_mac(unsigned char *mac);
+int is_user_match_enable(void);
+extern int g_oaf_enable;
 
 #endif

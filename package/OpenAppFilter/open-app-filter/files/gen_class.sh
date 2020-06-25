@@ -2,20 +2,18 @@
 
 f_file=$1
 test -z "$f_file" && return
-
+test -d /tmp/appfilter && return
 cur_class=""
 cur_class_file=""
+mkdir /tmp/appfilter
 while read line
 do
     echo "$line"| grep "^#class"
     if [ $? -eq 0 ];then
-#	echo "match $line"
-#	echo "cur_class=$cur_class"
         class=`echo $line| grep '#class' | awk '{print $2}'`
 	if ! test -z "$class";then
-#		echo "class=$class"
 		cur_class=$class
-		cur_class_file="/etc/appfilter/${cur_class}.class"
+		cur_class_file="/tmp/appfilter/${cur_class}.class"
 		if [ -e "$cur_class_file" ];then
 			rm $cur_class_file 
 		fi
