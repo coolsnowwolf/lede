@@ -55,11 +55,36 @@ o:value("https", translate("https"))
 o.default     = "udp"
 o.rempty      = false
 
+---- server group
+o = s:option(Value, "server_group", translate("Server Group"), translate("DNS Server group belongs to, used with nameserver, such as office, home."))
+o.rmempty     = true
+o.placeholder = "default"
+o.datatype    = "hostname"
+o.rempty      = true
+
+---- blacklist_ip
+o = s:option(Flag, "blacklist_ip", translate("IP Blacklist Filtering"), translate("Filtering IP with blacklist"))
+o.rmempty     = false
+o.default     = o.disabled
+o.cfgvalue    = function(...)
+    return Flag.cfgvalue(...) or "0"
+end
+
 ---- TLS host verify
 o = s:option(Value, "tls_host_verify", translate("TLS Hostname Verify"), translate("Set TLS hostname to verify."))
 o.default     = ""
 o.datatype    = "string"
 o.rempty      = true
+o:depends("type", "tls")
+o:depends("type", "https")
+
+---- certificate verify
+o = s:option(Flag, "no_check_certificate", translate("No check certificate"), translate("Do not check certificate."))
+o.rmempty     = false
+o.default     = o.disabled
+o.cfgvalue    = function(...)
+    return Flag.cfgvalue(...) or "0"
+end
 o:depends("type", "tls")
 o:depends("type", "https")
 
@@ -78,21 +103,6 @@ o.datatype    = "hostname"
 o.rempty      = true
 o:depends("type", "https")
 
----- server group
-o = s:option(Value, "server_group", translate("Server Group"), translate("DNS Server group belongs to, used with nameserver, such as office, home."))
-o.rmempty     = true
-o.placeholder = "default"
-o.datatype    = "hostname"
-o.rempty      = true
-
----- blacklist_ip
-o = s:option(Flag, "blacklist_ip", translate("IP Blacklist Filtering"), translate("Filtering IP with blacklist"))
-o.rmempty     = false
-o.default     = o.disabled
-o.cfgvalue    = function(...)
-    return Flag.cfgvalue(...) or "0"
-end
-
 ---- anti-Answer-Forgery
 -- o = s:option(Flag, "check_edns", translate("Anti Answer Forgery"), translate("Anti answer forgery, if DNS does not work properly after enabling, please turn off this feature"))
 -- o.rmempty     = false
@@ -109,7 +119,6 @@ o.datatype    = "string"
 o.rempty      = true
 o:depends("type", "tls")
 o:depends("type", "https")
-
 
 ---- other args
 o = s:option(Value, "addition_arg", translate("Additional Server Args"), translate("Additional Args for upstream dns servers"))
