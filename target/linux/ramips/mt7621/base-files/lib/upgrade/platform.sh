@@ -55,6 +55,7 @@ platform_do_upgrade() {
 	netis,wf2881|\
 	xiaomi,mir3g|\
 	xiaomi,mir3p|\
+	xiaomi,mir4|\
 	xiaomi,mi-router-ac2100|\
 	xiaomi,redmi-router-ac2100)
 		nand_do_upgrade "$1"
