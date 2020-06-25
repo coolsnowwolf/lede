@@ -1,1 +1,0 @@
-修改了travelmate的中文翻译，基于github openwrt/luci修改，与lean源码直接下载的不同
