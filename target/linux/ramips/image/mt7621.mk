@@ -909,6 +909,22 @@ define Device/xiaomi_mir3p
 endef
 TARGET_DEVICES += xiaomi_mir3p
 
+define Device/xiaomi_mir4
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_SIZE := 4096k
+  IMAGE_SIZE := 124416k
+  UBINIZE_OPTS := -E 5
+  IMAGES += kernel1.bin rootfs0.bin
+  IMAGE/kernel1.bin := append-kernel
+  IMAGE/rootfs0.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := Mi Router 4
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 wpad-openssl uboot-envtools
+endef
+TARGET_DEVICES += xiaomi_mir4
+
 define Device/xiaomi_mi-router-ac2100
   BLOCKSIZE := 128k
   PAGESIZE := 2048
