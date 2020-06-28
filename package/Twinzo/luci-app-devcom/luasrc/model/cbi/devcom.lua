@@ -24,5 +24,5 @@ if not luci.ip.new(e)then
 ip:value(t,"%s (%s)"%{t,e})
 end
 end)
-wrt=s:option(Flag,"wrt",translate("<abbr title=\"为实时流量监测自定义主机信息，会覆盖其自身添加的文件\">WRT</abbr>"))
+wrt=s:option(Flag,"wrt",translate("<abbr title=\"为实时流量监测自定义主机信息\">WRT</abbr>"))
 return m
