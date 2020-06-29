@@ -62,7 +62,7 @@ endif
 
 PKG_SOURCE:=BaiduPCS-Go-v$(PKG_VERSION)-linux-$(PKG_ARCH_BAIDUPCS-WEB).zip
 
-PKG_SOURCE_URL:=https://github.com/Erope/baidupcs-web/releases/download/$(PKG_VERSION)/
+PKG_SOURCE_URL:=https://www.shinenet.cn/down/
 
 UNZIP_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)/$(PKG_NAME)-unzip
 
