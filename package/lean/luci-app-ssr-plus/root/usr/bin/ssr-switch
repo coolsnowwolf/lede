@@ -35,6 +35,23 @@ uci_get_by_type() {
 DEFAULT_SERVER=$(uci_get_by_type global global_server)
 CURRENT_SERVER=$DEFAULT_SERVER
 
+#解析ip
+get_host_ip() {
+	local host=$1
+	local isip=""
+	local ip=$host
+	isip=$(echo $host | grep -E "([0-9]{1,3}[\.]){3}[0-9]{1,3}")
+	if [ -z "$isip" ]; then
+		if [ "$host" != "${host#*:[0-9a-fA-F]}" ]; then
+			ip=$host
+		else
+			local ip=$(resolveip -4 -t 3 $host | awk 'NR==1{print}')
+			[ -z "$ip" ] && ip=$(wget -q -O- http://119.29.29.29/d?dn=$1 | awk -F ';' '{print $1}')
+		fi
+	fi
+	echo ${ip:="ERROR"}
+}
+
 #判断代理是否正常
 check_proxy() {
 	local result=0
@@ -60,18 +77,19 @@ check_proxy() {
 }
 
 test_proxy() {
-	local servername=$(uci_get_by_name $1 server)
+	local servername=$(get_host_ip $(uci_get_by_name $1 server))
 	local serverport=$(uci_get_by_name $1 server_port)
-	ret=$(tcpping -c 3 -p $serverport $servername | grep 'loss' | awk -F ',' '{ print $3 }' | awk -F "%" '{ print $1 }' | awk -F "." '{ print $1 }')
-	[ -z "$ret" ] && return 1
-	[ "$ret" -gt "50" ] && return 1
 	ipset add ss_spec_wan_ac $servername 2>/dev/null
-	ret=$?
+	ret1=$?
+	ret=$(tcpping -c 3 -p $serverport $servername | grep 'loss' | awk -F ',' '{ print $3 }' | awk -F "%" '{ print $1 }' | awk -F "." '{ print $1 }')
+	#echo "$(date "+%Y-%m-%d %H:%M:%S") test_proxy> name: $servername, ret1: $ret1, ret: $ret" >> /tmp/ssrplus.log
+	if [ -z "$ret" ] || [ "$ret" -gt "50" ]; then
+		[ "$ret1" == "0" ] && ipset del ss_spec_wan_ac $servername 2>/dev/null
+		return 1
+	fi
 	/usr/bin/ssr-check $servername $serverport $switch_time
 	local ret2=$?
-	if [ "$ret" == "0" ]; then
-		ipset del ss_spec_wan_ac $servername 2>/dev/null
-	fi
+	[ "$ret1" == "0" ] && ipset del ss_spec_wan_ac $servername 2>/dev/null
 	if [ "$ret2" == "0" ]; then
 		return 0
 	else
@@ -85,15 +103,13 @@ search_proxy() {
 	[ "$(uci_get_by_name $1 switch_enable 0)" != "1" ] && return 1
 	[ $ENABLE_SERVER != nil ] && return 0
 	[ "$1" == "$CURRENT_SERVER" ] && return 0
-	local servername=$(uci_get_by_name $1 server)
+	local servername=$(get_host_ip $(uci_get_by_name $1 server))
 	local serverport=$(uci_get_by_name $1 server_port)
 	ipset add ss_spec_wan_ac $servername 2>/dev/null
 	ret=$?
 	/usr/bin/ssr-check $servername $serverport $switch_time
 	local ret2=$?
-	if [ "$ret" == "0" ]; then
-		ipset del ss_spec_wan_ac $servername 2>/dev/null
-	fi
+	[ "$ret" == "0" ] && ipset del ss_spec_wan_ac $servername 2>/dev/null
 	if [ "$ret2" == "0" ]; then
 		server_locate=$server_count
 		ENABLE_SERVER=$1
