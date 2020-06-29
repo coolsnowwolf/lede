@@ -36,6 +36,14 @@ The name is changed to be REDSOCKS2 since this release to distinguish with origi
 This variant is useful for anti-GFW (Great Fire Wall).
 endef
 
+define Package/redsocks2/conffiles
+/etc/config/redsocks2
+endef
+
+define Build/Compile
+	$(call Build/Compile/Default,DISABLE_SHADOWSOCKS=true)
+endef
+
 define Package/redsocks2/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/redsocks2 $(1)/usr/sbin
