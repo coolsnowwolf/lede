@@ -1,0 +1,315 @@
+diff --git a/encrypt.c b/encrypt.c
+index ce04c6f..dc27754 100644
+--- a/encrypt.c
++++ b/encrypt.c
+@@ -278,7 +278,7 @@ static void enc_table_init(enc_info * info, const char *pass)
+     }
+ }
+ 
+-int cipher_iv_size(const cipher_kt_t *cipher)
++int cipher_iv_size(const cipher_t *cipher)
+ {
+ #if defined(USE_CRYPTO_OPENSSL)
+     return EVP_CIPHER_iv_length(cipher);
+@@ -290,7 +290,7 @@ int cipher_iv_size(const cipher_kt_t *cipher)
+ #endif
+ }
+ 
+-int cipher_key_size(const cipher_kt_t *cipher)
++int cipher_key_size(const cipher_t *cipher)
+ {
+ #if defined(USE_CRYPTO_OPENSSL)
+     return EVP_CIPHER_key_length(cipher);
+@@ -307,102 +307,66 @@ int cipher_key_size(const cipher_kt_t *cipher)
+ #endif
+ }
+ 
+-int bytes_to_key(const cipher_kt_t *cipher, const digest_type_t *md,
+-                 const uint8_t *pass, uint8_t *key, uint8_t *iv)
++int bytes_to_key(const cipher_t *cipher, const digest_type_t *md,
++                 const uint8_t *pass, uint8_t *key)
+ {
+     size_t datal;
+     datal = strlen((const char *)pass);
+ #if defined(USE_CRYPTO_OPENSSL)
+-    return EVP_BytesToKey(cipher, md, NULL, pass, datal, 1, key, iv);
++    MD5_CTX c;
++    unsigned char md_buf[MAX_MD_SIZE];
++    int nkey;
++    int addmd;
++    unsigned int i, j, mds;
++
++    mds   = 16;
++    if (pass == NULL) return nkey;
++    memset(&c, 0, sizeof(MD5_CTX));
++
++    for (j = 0, addmd = 0; j < nkey; addmd++) {
++        MD5_Init(&c);
++        if (addmd) {
++            MD5_Update(&c, md_buf, mds);
++        }
++        MD5_Update(&c, pass, datal);
++        MD5_Final(md_buf, &c);
++
++        for (i = 0; i < mds; i++, j++) {
++            if (j >= nkey) break;
++            key[j] = md_buf[i];
++        }
++    }
++    return nkey;
+ #elif defined(USE_CRYPTO_POLARSSL)
+     md_context_t c;
+     unsigned char md_buf[MAX_MD_SIZE];
+-    int niv;
+     int nkey;
+     int addmd;
+-    unsigned int mds;
+-    unsigned int i;
+-    int rv;
++    unsigned int i, j, mds;
+ 
+     nkey = cipher_key_size(cipher);
+-    niv = cipher_iv_size(cipher);
+-    rv = nkey;
+-    if (pass == NULL) {
+-        return nkey;
+-    }
+-
++    mds  = md_get_size(md);
+     memset(&c, 0, sizeof(md_context_t));
+-    if (md_init_ctx(&c, md)) {
+-        return 0;
+-    }
+-    addmd = 0;
+-    mds = md_get_size(md);
+-    for (;; ) {
+-        int error;
+-        do {
+-            error = 1;
+-            if (md_starts(&c)) {
+-                break;
+-            }
+-            if (addmd) {
+-                if (md_update(&c, &(md_buf[0]), mds)) {
+-                    break;
+-                }
+-            } else {
+-                addmd = 1;
+-            }
+-            if (md_update(&c, pass, datal)) {
+-                break;
+-            }
+-            if (md_finish(&c, &(md_buf[0]))) {
+-                break;
+-            }
+-            error = 0;
+-        } while (0);
+-        if (error) {
+-            md_free_ctx(&c);
+-            memset(md_buf, 0, MAX_MD_SIZE);
+-            return 0;
+-        }
+ 
+-        i = 0;
+-        if (nkey) {
+-            for (;; ) {
+-                if (nkey == 0) {
+-                    break;
+-                }
+-                if (i == mds) {
+-                    break;
+-                }
+-                if (key != NULL) {
+-                    *(key++) = md_buf[i];
+-                }
+-                nkey--;
+-                i++;
+-            }
+-        }
+-        if (niv && (i != mds)) {
+-            for (;; ) {
+-                if (niv == 0) {
+-                    break;
+-                }
+-                if (i == mds) {
+-                    break;
+-                }
+-                if (iv != NULL) {
+-                    *(iv++) = md_buf[i];
+-                }
+-                niv--;
+-                i++;
+-            }
++    if (pass == NULL) return nkey;
++    if (md_init_ctx(&c, md)) return 0;
++
++    for (j = 0, addmd = 0; j < nkey; addmd++) {
++        md_starts(&c);
++        if (addmd) {
++            md_update(&c, md_buf, mds);
+         }
+-        if ((nkey == 0) && (niv == 0)) {
+-            break;
++        md_update(&c, pass, datal);
++        md_finish(&c, md_buf);
++
++        for (i = 0; i < mds; i++, j++) {
++            if (j >= nkey) break;
++            key[j] = md_buf[i];
+         }
+     }
++
+     md_free_ctx(&c);
+-    memset(md_buf, 0, MAX_MD_SIZE);
+-    return rv;
++    return nkey;
+ #endif
+ }
+ 
+@@ -472,7 +436,7 @@ int rand_bytes(uint8_t *output, int len)
+ #endif
+ }
+ 
+-const cipher_kt_t *get_cipher_type(int method)
++const cipher_t *get_cipher_type(int method)
+ {
+     if (method <= TABLE || method >= CIPHER_NUM) {
+         //LOGE("get_cipher_type(): Illegal method");
+@@ -548,7 +512,7 @@ static int cipher_context_init(const enc_info * info, cipher_ctx_t *ctx, int enc
+ #endif
+ 
+     cipher_evp_t *evp = &ctx->evp;
+-    const cipher_kt_t *cipher = get_cipher_type(method);
++    const cipher_t *cipher = get_cipher_type(method);
+ #if defined(USE_CRYPTO_OPENSSL)
+     if (cipher == NULL) {
+         // Cipher is not found in OpenSSL library
+@@ -560,7 +524,7 @@ static int cipher_context_init(const enc_info * info, cipher_ctx_t *ctx, int enc
+         return -1; 
+     }
+     if (!EVP_CIPHER_CTX_set_key_length(evp, info->key_len)) {
+-        EVP_CIPHER_CTX_cleanup(evp);
++        EVP_CIPHER_CTX_free(ctx->evp);
+         // Invalid key length
+         return -1;
+     }
+@@ -649,7 +613,7 @@ static void cipher_context_set_iv(const enc_info * info, cipher_ctx_t *ctx, uint
+     }
+ #if defined(USE_CRYPTO_OPENSSL)
+     if (!EVP_CipherInit_ex(evp, NULL, NULL, true_key, iv, enc)) {
+-        EVP_CIPHER_CTX_cleanup(evp);
++        EVP_CIPHER_CTX_free(ctx->evp);
+         //FATAL("Cannot set key and IV");
+     }
+ #elif defined(USE_CRYPTO_POLARSSL)
+@@ -698,7 +662,7 @@ static void cipher_context_release(enc_info * info, cipher_ctx_t *ctx)
+ 
+     cipher_evp_t *evp = &ctx->evp;
+ #if defined(USE_CRYPTO_OPENSSL)
+-    EVP_CIPHER_CTX_cleanup(evp);
++    EVP_CIPHER_CTX_free(ctx->evp);
+ #elif defined(USE_CRYPTO_POLARSSL)
+     cipher_free_ctx(evp);
+ #endif
+@@ -730,7 +694,7 @@ static int cipher_context_update(cipher_ctx_t *ctx, uint8_t *output, int *olen,
+ size_t ss_calc_buffer_size(struct enc_ctx * ctx, size_t ilen)
+ {
+     int method = ctx->info->method;
+-    const cipher_kt_t *cipher = get_cipher_type(method);
++    const cipher_t *cipher = get_cipher_type(method);
+ #if defined(USE_CRYPTO_OPENSSL)
+     if (ctx->init)
+         return ilen + EVP_CIPHER_block_size(cipher); 
+@@ -913,10 +877,7 @@ static int enc_key_init(enc_info * info, int method, const char *pass)
+     OpenSSL_add_all_algorithms();
+ #endif
+ 
+-    uint8_t iv[MAX_IV_LENGTH];
+-
+-    cipher_kt_t *cipher = NULL;
+-    cipher_kt_t cipher_info;
++    cipher_t *cipher;
+ 
+ 
+     if (method == SALSA20 || method == CHACHA20) {
+@@ -924,11 +885,9 @@ static int enc_key_init(enc_info * info, int method, const char *pass)
+         if (sodium_init() == -1) {
+             //FATAL("Failed to initialize sodium");
+         }
+-        // Fake cipher
+-        cipher = (cipher_kt_t *)&cipher_info;
+ #if defined(USE_CRYPTO_OPENSSL)
+-        cipher->key_len = supported_ciphers_key_size[method];
+-        cipher->iv_len = supported_ciphers_iv_size[method];
++        cipher.key_len = supported_ciphers_key_size[method];
++        cipher.iv_len = supported_ciphers_iv_size[method];
+ #endif
+ #if defined(USE_CRYPTO_POLARSSL)
+         cipher->base = NULL;
+@@ -937,7 +896,7 @@ static int enc_key_init(enc_info * info, int method, const char *pass)
+ #endif
+ */
+     } else {
+-        cipher = (cipher_kt_t *)get_cipher_type(method);
++        cipher = (cipher_t *)get_cipher_type(method);
+     }
+ 
+     if (cipher == NULL) {
+@@ -947,7 +906,7 @@ static int enc_key_init(enc_info * info, int method, const char *pass)
+                 cipher_info.base = NULL;
+                 cipher_info.key_length = supported_ciphers_key_size[method] * 8;
+                 cipher_info.iv_size = supported_ciphers_iv_size[method];
+-                cipher = (cipher_kt_t *)&cipher_info;
++                cipher = (cipher_t *)&cipher_info;
+                 break;
+             }
+ #endif
+@@ -959,7 +918,7 @@ static int enc_key_init(enc_info * info, int method, const char *pass)
+     if (md == NULL)
+         return -1;
+ 
+-    info->key_len = bytes_to_key(cipher, md, (const uint8_t *)pass, info->key, iv);
++    info->key_len = bytes_to_key(&cipher, md, (const uint8_t *)pass, info->key);
+     if (info->key_len == 0) {
+         //FATAL("Cannot generate key and IV");
+         return -1;
+@@ -967,7 +926,7 @@ static int enc_key_init(enc_info * info, int method, const char *pass)
+     if (method == RC4_MD5) {
+         info->iv_len = 16;
+     } else {
+-        info->iv_len = cipher_iv_size(cipher);
++        info->iv_len = cipher_iv_size(&cipher);
+     }
+     info->method = method;
+     return method;
+diff --git a/encrypt.h b/encrypt.h
+index 61b3fc7..c3359d0 100644
+--- a/encrypt.h
++++ b/encrypt.h
+@@ -45,7 +45,7 @@
+ #if defined(USE_CRYPTO_OPENSSL)
+ 
+ #include <openssl/evp.h>
+-typedef EVP_CIPHER cipher_kt_t;
++typedef EVP_CIPHER cipher_t;
+ typedef EVP_CIPHER_CTX cipher_evp_t;
+ typedef EVP_MD digest_type_t;
+ #define MAX_KEY_LENGTH EVP_MAX_KEY_LENGTH
+@@ -56,7 +56,7 @@ typedef EVP_MD digest_type_t;
+ 
+ #include <polarssl/cipher.h>
+ #include <polarssl/md.h>
+-typedef cipher_info_t cipher_kt_t;
++typedef cipher_info_t cipher_t;
+ typedef cipher_context_t cipher_evp_t;
+ typedef md_info_t digest_type_t;
+ #define MAX_KEY_LENGTH 64
+@@ -89,7 +89,7 @@ typedef struct {
+ #endif
+ 
+ typedef struct {
+-    cipher_evp_t evp;
++    cipher_evp_t *evp;
+ #ifdef USE_CRYPTO_APPLECC
+     cipher_cc_t cc;
+ #endif
