@@ -260,7 +260,9 @@ local function processData(szType, content)
 		result.password = password
 	end
 	if not result.alias then
-		result.alias = result.server .. ':' .. result.server_port
+		if result.server and result.server_port then
+			result.alias = result.server .. ':' .. result.server_port
+		end
 	end
 	-- alias 不参与 hashkey 计算
 	local alias = result.alias
@@ -416,24 +418,24 @@ local execute = function()
 		-- 如果原有服务器节点已经不见了就尝试换为第一个节点
 		local globalServer = ucic:get_first(name, 'global', 'global_server', '')
 		if globalServer ~= "nil" then
-      local firstServer = ucic:get_first(name, uciType)
-      if firstServer then
-        if not ucic:get(name, globalServer) then
-          luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
-          ucic:commit(name)
-          ucic:set(name, ucic:get_first(name, 'global'), 'global_server', ucic:get_first(name, uciType))
-          ucic:commit(name)
-          log('当前主服务器节点已被删除，正在自动更换为第一个节点。')
-          luci.sys.call("/etc/init.d/" .. name .. " start > /dev/null 2>&1 &")
-        else
-          log('维持当前主服务器节点。')
-          luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &")
-        end
-      else
-        log('没有服务器节点了，停止服务')
-        luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
-      end
-    end
+			local firstServer = ucic:get_first(name, uciType)
+			if firstServer then
+				if not ucic:get(name, globalServer) then
+					luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
+					ucic:commit(name)
+					ucic:set(name, ucic:get_first(name, 'global'), 'global_server', ucic:get_first(name, uciType))
+					ucic:commit(name)
+					log('当前主服务器节点已被删除，正在自动更换为第一个节点。')
+					luci.sys.call("/etc/init.d/" .. name .. " start > /dev/null 2>&1 &")
+				else
+					log('维持当前主服务器节点。')
+					luci.sys.call("/etc/init.d/" .. name .." restart > /dev/null 2>&1 &")
+				end
+			else
+				log('没有服务器节点了，停止服务')
+				luci.sys.call("/etc/init.d/" .. name .. " stop > /dev/null 2>&1 &")
+			end
+		end
 		log('新增节点数量: ' ..add, '删除节点数量: ' .. del)
 		log('订阅更新成功')
 	end
