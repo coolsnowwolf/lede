@@ -281,7 +281,7 @@ endef
 
 KernelPackage/crypto-ghash/imx6=$(KernelPackage/crypto-ghash/arm-ce)
 KernelPackage/crypto-ghash/ipq40xx=$(KernelPackage/crypto-ghash/arm-ce)
-KernelPackage/crypto-ghash/mvebu/cortexa9=$(KernelPackage/crypto-ghash/arm-ce)
+KernelPackage/crypto-ghash/mvebu=$(KernelPackage/crypto-ghash/arm-ce)
 
 $(eval $(call KernelPackage,crypto-ghash))
 
