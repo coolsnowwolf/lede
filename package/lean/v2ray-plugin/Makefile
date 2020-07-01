@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray-plugin
 PKG_VERSION:=1.3.2
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
@@ -34,7 +34,7 @@ include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 define Package/$(PKG_NAME)/config
 config $(PKG_NAME)_INCLUDE_GOPROXY
 	bool "Compiling with GOPROXY proxy"
-	default n
+	default y
 
 endef
 
