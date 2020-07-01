@@ -20,7 +20,7 @@ define Package/miwifi_mini
   SECTION:=Twinzo devices
   CATEGORY:=Twinzo devices
   DEPENDS:=+automount +autosamba +ipv6helper \
-		+DevicesComment +RNDIS +luci-app-timecontrol +luci-app-control-timewol \
+		+luci-app-devcom +RNDIS +luci-app-timecontrol +luci-app-control-timewol \
 		+luci-app-idns +luci-app-hd-idle +luci-app-minidlna \
 		+luci-app-netdata \
 		+luci-app-oafclog +luci-app-sccustom +luci-app-serverchan +luci-app-smartdns \

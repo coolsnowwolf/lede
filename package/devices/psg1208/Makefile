@@ -20,7 +20,7 @@ define Package/psg1208
   SECTION:=Twinzo devices
   CATEGORY:=Twinzo devices
   DEPENDS:=+ipv6helper +luci-ssl-openssl \
-		+DevicesComment +luci-app-timecontrol \
+		+luci-app-devcom +luci-app-timecontrol \
 		+luci-app-idns \
 		+luci-app-sccustom +luci-app-serverchan \
 		+luci-app-uhttpd +luci-app-mac +luci-app-wrtbwmon
