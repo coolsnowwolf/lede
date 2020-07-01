@@ -262,6 +262,8 @@ local function processData(szType, content)
 	if not result.alias then
 		if result.server and result.server_port then
 			result.alias = result.server .. ':' .. result.server_port
+		else
+			result.alias = "NULL"
 		end
 	end
 	-- alias 不参与 hashkey 计算
@@ -356,6 +358,7 @@ local execute = function()
 							if
 								not result.server or
 								not result.server_port or
+								result.alias == "NULL" or
 								check_filer(result) or
 								result.server:match("[^0-9a-zA-Z%-%.%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
 								then
