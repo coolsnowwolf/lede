@@ -285,7 +285,7 @@ define KernelPackage/drm-amdgpu
 	CONFIG_DEBUG_KERNEL_DC=n
   FILES:=$(LINUX_DIR)/drivers/gpu/drm/amd/amdgpu/amdgpu.ko \
 	$(LINUX_DIR)/drivers/gpu/drm/scheduler/gpu-sched.ko@ge4.15 \
-	$(LINUX_DIR)/drivers/gpu/drm/amd/lib/chash.ko@lt5.3
+	$(LINUX_DIR)/drivers/gpu/drm/amd/lib/chash.ko@ge4.15
   AUTOLOAD:=$(call AutoProbe,amdgpu)
 endef
 
