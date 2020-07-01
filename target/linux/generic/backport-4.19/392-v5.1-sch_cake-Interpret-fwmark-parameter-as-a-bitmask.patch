@@ -1,0 +1,102 @@
+From eab2fc822af38f31fd5f4e731b5d10b94904d919 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Toke=20H=C3=B8iland-J=C3=B8rgensen?= <toke@redhat.com>
+Date: Thu, 14 Mar 2019 23:08:22 +0100
+Subject: [PATCH] sch_cake: Interpret fwmark parameter as a bitmask
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+We initially interpreted the fwmark parameter as a flag that simply turned
+on the feature, using the whole skb->mark field as the index into the CAKE
+tin_order array. However, it is quite common for different applications to
+use different parts of the mask field for their own purposes, each using a
+different mask.
+
+Support this use of subsets of the mark by interpreting the TCA_CAKE_FWMARK
+parameter as a bitmask to apply to the fwmark field when reading it. The
+result will be right-shifted by the number of unset lower bits of the mask
+before looking up the tin.
+
+In the original commit message we also failed to credit Felix Resch with
+originally suggesting the fwmark feature back in 2017; so the Suggested-By
+in this commit covers the whole fwmark feature.
+
+Fixes: 0b5c7efdfc6e ("sch_cake: Permit use of connmarks as tin classifiers")
+Suggested-by: Felix Resch <fuller@beif.de>
+Signed-off-by: Toke Høiland-Jørgensen <toke@redhat.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
+---
+ net/sched/sch_cake.c | 25 ++++++++++++-------------
+ 1 file changed, 12 insertions(+), 13 deletions(-)
+
+--- a/net/sched/sch_cake.c
++++ b/net/sched/sch_cake.c
+@@ -211,6 +211,9 @@ struct cake_sched_data {
+ 	u8		ack_filter;
+ 	u8		atm_mode;
+ 
++	u32		fwmark_mask;
++	u16		fwmark_shft;
++
+ 	/* time_next = time_this + ((len * rate_ns) >> rate_shft) */
+ 	u16		rate_shft;
+ 	ktime_t		time_next_packet;
+@@ -258,8 +261,7 @@ enum {
+ 	CAKE_FLAG_AUTORATE_INGRESS = BIT(1),
+ 	CAKE_FLAG_INGRESS	   = BIT(2),
+ 	CAKE_FLAG_WASH		   = BIT(3),
+-	CAKE_FLAG_SPLIT_GSO	   = BIT(4),
+-	CAKE_FLAG_FWMARK	   = BIT(5)
++	CAKE_FLAG_SPLIT_GSO	   = BIT(4)
+ };
+ 
+ /* COBALT operates the Codel and BLUE algorithms in parallel, in order to
+@@ -1554,7 +1556,7 @@ static struct cake_tin_data *cake_select
+ 					     struct sk_buff *skb)
+ {
+ 	struct cake_sched_data *q = qdisc_priv(sch);
+-	u32 tin;
++	u32 tin, mark;
+ 	u8 dscp;
+ 
+ 	/* Tin selection: Default to diffserv-based selection, allow overriding
+@@ -1562,6 +1564,7 @@ static struct cake_tin_data *cake_select
+ 	 */
+ 	dscp = cake_handle_diffserv(skb,
+ 				    q->rate_flags & CAKE_FLAG_WASH);
++	mark = (skb->mark & q->fwmark_mask) >> q->fwmark_shft;
+ 
+ 	if (q->tin_mode == CAKE_DIFFSERV_BESTEFFORT)
+ 		tin = 0;
+@@ -2178,6 +2181,7 @@ static const struct nla_policy cake_poli
+ 	[TCA_CAKE_MPU]		 = { .type = NLA_U32 },
+ 	[TCA_CAKE_INGRESS]	 = { .type = NLA_U32 },
+ 	[TCA_CAKE_ACK_FILTER]	 = { .type = NLA_U32 },
++	[TCA_CAKE_FWMARK]	 = { .type = NLA_U32 },
+ };
+ 
+ static void cake_set_rate(struct cake_tin_data *b, u64 rate, u32 mtu,
+@@ -2625,10 +2629,8 @@ static int cake_change(struct Qdisc *sch
+ 	}
+ 
+ 	if (tb[TCA_CAKE_FWMARK]) {
+-		if (!!nla_get_u32(tb[TCA_CAKE_FWMARK]))
+-			q->rate_flags |= CAKE_FLAG_FWMARK;
+-		else
+-			q->rate_flags &= ~CAKE_FLAG_FWMARK;
++		q->fwmark_mask = nla_get_u32(tb[TCA_CAKE_FWMARK]);
++		q->fwmark_shft = q->fwmark_mask ? __ffs(q->fwmark_mask) : 0;
+ 	}
+ 
+ 	if (q->tins) {
+@@ -2790,8 +2792,7 @@ static int cake_dump(struct Qdisc *sch,
+ 			!!(q->rate_flags & CAKE_FLAG_SPLIT_GSO)))
+ 		goto nla_put_failure;
+ 
+-	if (nla_put_u32(skb, TCA_CAKE_FWMARK,
+-			!!(q->rate_flags & CAKE_FLAG_FWMARK)))
++	if (nla_put_u32(skb, TCA_CAKE_FWMARK, q->fwmark_mask))
+ 		goto nla_put_failure;
+ 
+ 	return nla_nest_end(skb, opts);
