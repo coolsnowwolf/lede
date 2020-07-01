@@ -1,0 +1,118 @@
+From 0b5c7efdfc6e389ec6840579fe90bdb6f42b08dc Mon Sep 17 00:00:00 2001
+From: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
+Date: Fri, 1 Mar 2019 16:04:05 +0100
+Subject: [PATCH] sch_cake: Permit use of connmarks as tin classifiers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add flag 'FWMARK' to enable use of firewall connmarks as tin selector.
+The connmark (skbuff->mark) needs to be in the range 1->tin_cnt ie.
+for diffserv3 the mark needs to be 1->3.
+
+Background
+
+Typically CAKE uses DSCP as the basis for tin selection.  DSCP values
+are relatively easily changed as part of the egress path, usually with
+iptables & the mangle table, ingress is more challenging.  CAKE is often
+used on the WAN interface of a residential gateway where passthrough of
+DSCP from the ISP is either missing or set to unhelpful values thus use
+of ingress DSCP values for tin selection isn't helpful in that
+environment.
+
+An approach to solving the ingress tin selection problem is to use
+CAKE's understanding of tc filters.  Naive tc filters could match on
+source/destination port numbers and force tin selection that way, but
+multiple filters don't scale particularly well as each filter must be
+traversed whether it matches or not. e.g. a simple example to map 3
+firewall marks to tins:
+
+MAJOR=$( tc qdisc show dev $DEV | head -1 | awk '{print $3}' )
+tc filter add dev $DEV parent $MAJOR protocol all handle 0x01 fw action skbedit priority ${MAJOR}1
+tc filter add dev $DEV parent $MAJOR protocol all handle 0x02 fw action skbedit priority ${MAJOR}2
+tc filter add dev $DEV parent $MAJOR protocol all handle 0x03 fw action skbedit priority ${MAJOR}3
+
+Another option is to use eBPF cls_act with tc filters e.g.
+
+MAJOR=$( tc qdisc show dev $DEV | head -1 | awk '{print $3}' )
+tc filter add dev $DEV parent $MAJOR bpf da obj my-bpf-fwmark-to-class.o
+
+This has the disadvantages of a) needing someone to write & maintain
+the bpf program, b) a bpf toolchain to compile it and c) needing to
+hardcode the major number in the bpf program so it matches the cake
+instance (or forcing the cake instance to a particular major number)
+since the major number cannot be passed to the bpf program via tc
+command line.
+
+As already hinted at by the previous examples, it would be helpful
+to associate tins with something that survives the Internet path and
+ideally allows tin selection on both egress and ingress.  Netfilter's
+conntrack permits setting an identifying mark on a connection which
+can also be restored to an ingress packet with tc action connmark e.g.
+
+tc filter add dev eth0 parent ffff: protocol all prio 10 u32 \
+	match u32 0 0 flowid 1:1 action connmark action mirred egress redirect dev ifb1
+
+Since tc's connmark action has restored any connmark into skb->mark,
+any of the previous solutions are based upon it and in one form or
+another copy that mark to the skb->priority field where again CAKE
+picks this up.
+
+This change cuts out at least one of the (less intuitive &
+non-scalable) middlemen and permit direct access to skb->mark.
+
+Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
+Signed-off-by: Toke Høiland-Jørgensen <toke@redhat.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ include/uapi/linux/pkt_sched.h |  1 +
+ net/sched/sch_cake.c           | 34 +++++++++++++++++++++++++++-------
+ 2 files changed, 28 insertions(+), 7 deletions(-)
+
+--- a/include/uapi/linux/pkt_sched.h
++++ b/include/uapi/linux/pkt_sched.h
+@@ -991,6 +991,7 @@ enum {
+ 	TCA_CAKE_INGRESS,
+ 	TCA_CAKE_ACK_FILTER,
+ 	TCA_CAKE_SPLIT_GSO,
++	TCA_CAKE_FWMARK,
+ 	__TCA_CAKE_MAX
+ };
+ #define TCA_CAKE_MAX	(__TCA_CAKE_MAX - 1)
+--- a/net/sched/sch_cake.c
++++ b/net/sched/sch_cake.c
+@@ -258,7 +258,8 @@ enum {
+ 	CAKE_FLAG_AUTORATE_INGRESS = BIT(1),
+ 	CAKE_FLAG_INGRESS	   = BIT(2),
+ 	CAKE_FLAG_WASH		   = BIT(3),
+-	CAKE_FLAG_SPLIT_GSO	   = BIT(4)
++	CAKE_FLAG_SPLIT_GSO	   = BIT(4),
++	CAKE_FLAG_FWMARK	   = BIT(5)
+ };
+ 
+ /* COBALT operates the Codel and BLUE algorithms in parallel, in order to
+@@ -2623,6 +2624,13 @@ static int cake_change(struct Qdisc *sch
+ 			q->rate_flags &= ~CAKE_FLAG_SPLIT_GSO;
+ 	}
+ 
++	if (tb[TCA_CAKE_FWMARK]) {
++		if (!!nla_get_u32(tb[TCA_CAKE_FWMARK]))
++			q->rate_flags |= CAKE_FLAG_FWMARK;
++		else
++			q->rate_flags &= ~CAKE_FLAG_FWMARK;
++	}
++
+ 	if (q->tins) {
+ 		sch_tree_lock(sch);
+ 		cake_reconfigure(sch);
+@@ -2782,6 +2790,10 @@ static int cake_dump(struct Qdisc *sch,
+ 			!!(q->rate_flags & CAKE_FLAG_SPLIT_GSO)))
+ 		goto nla_put_failure;
+ 
++	if (nla_put_u32(skb, TCA_CAKE_FWMARK,
++			!!(q->rate_flags & CAKE_FLAG_FWMARK)))
++		goto nla_put_failure;
++
+ 	return nla_nest_end(skb, opts);
+ 
+ nla_put_failure:
