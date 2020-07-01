@@ -1,0 +1,96 @@
+From 9208d2863ac689a563b92f2161d8d1e7127d0add Mon Sep 17 00:00:00 2001
+From: Ilya Ponetayev <i.ponetaev@ndmsystems.com>
+Date: Thu, 25 Jun 2020 22:12:07 +0200
+Subject: [PATCH] sch_cake: don't try to reallocate or unshare skb
+ unconditionally
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+cake_handle_diffserv() tries to linearize mac and network header parts of
+skb and to make it writable unconditionally. In some cases it leads to full
+skb reallocation, which reduces throughput and increases CPU load. Some
+measurements of IPv4 forward + NAPT on MIPS router with 580 MHz single-core
+CPU was conducted. It appears that on kernel 4.9 skb_try_make_writable()
+reallocates skb, if skb was allocated in ethernet driver via so-called
+'build skb' method from page cache (it was discovered by strange increase
+of kmalloc-2048 slab at first).
+
+Obtain DSCP value via read-only skb_header_pointer() call, and leave
+linearization only for DSCP bleaching or ECN CE setting. And, as an
+additional optimisation, skip diffserv parsing entirely if it is not needed
+by the current configuration.
+
+Fixes: c87b4ecdbe8d ("sch_cake: Make sure we can write the IP header before changing DSCP bits")
+Signed-off-by: Ilya Ponetayev <i.ponetaev@ndmsystems.com>
+[ fix a few style issues, reflow commit message ]
+Signed-off-by: Toke Høiland-Jørgensen <toke@redhat.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
+---
+ net/sched/sch_cake.c | 41 ++++++++++++++++++++++++++++++-----------
+ 1 file changed, 30 insertions(+), 11 deletions(-)
+
+--- a/net/sched/sch_cake.c
++++ b/net/sched/sch_cake.c
+@@ -1553,30 +1553,49 @@ static unsigned int cake_drop(struct Qdi
+ 
+ static u8 cake_handle_diffserv(struct sk_buff *skb, u16 wash)
+ {
+-	int wlen = skb_network_offset(skb);
++	const int offset = skb_network_offset(skb);
++	u16 *buf, buf_;
+ 	u8 dscp;
+ 
+ 	switch (tc_skb_protocol(skb)) {
+ 	case htons(ETH_P_IP):
+-		wlen += sizeof(struct iphdr);
+-		if (!pskb_may_pull(skb, wlen) ||
+-		    skb_try_make_writable(skb, wlen))
++		buf = skb_header_pointer(skb, offset, sizeof(buf_), &buf_);
++		if (unlikely(!buf))
+ 			return 0;
+ 
+-		dscp = ipv4_get_dsfield(ip_hdr(skb)) >> 2;
+-		if (wash && dscp)
++		/* ToS is in the second byte of iphdr */
++		dscp = ipv4_get_dsfield((struct iphdr *)buf) >> 2;
++
++		if (wash && dscp) {
++			const int wlen = offset + sizeof(struct iphdr);
++
++			if (!pskb_may_pull(skb, wlen) ||
++			    skb_try_make_writable(skb, wlen))
++				return 0;
++
+ 			ipv4_change_dsfield(ip_hdr(skb), INET_ECN_MASK, 0);
++		}
++
+ 		return dscp;
+ 
+ 	case htons(ETH_P_IPV6):
+-		wlen += sizeof(struct ipv6hdr);
+-		if (!pskb_may_pull(skb, wlen) ||
+-		    skb_try_make_writable(skb, wlen))
++		buf = skb_header_pointer(skb, offset, sizeof(buf_), &buf_);
++		if (unlikely(!buf))
+ 			return 0;
+ 
+-		dscp = ipv6_get_dsfield(ipv6_hdr(skb)) >> 2;
+-		if (wash && dscp)
++		/* Traffic class is in the first and second bytes of ipv6hdr */
++		dscp = ipv6_get_dsfield((struct ipv6hdr *)buf) >> 2;
++
++		if (wash && dscp) {
++			const int wlen = offset + sizeof(struct ipv6hdr);
++
++			if (!pskb_may_pull(skb, wlen) ||
++			    skb_try_make_writable(skb, wlen))
++				return 0;
++
+ 			ipv6_change_dsfield(ipv6_hdr(skb), INET_ECN_MASK, 0);
++		}
++
+ 		return dscp;
+ 
+ 	case htons(ETH_P_ARP):
