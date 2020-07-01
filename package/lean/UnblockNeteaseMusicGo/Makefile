@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=UnblockNeteaseMusicGo
-PKG_VERSION:=0.2.0
-PKG_RELEASE:=5
+PKG_VERSION:=0.2.1
+PKG_RELEASE:=3
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/cnsilvan/UnblockNeteaseMusic.git
@@ -28,7 +28,7 @@ include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 define Package/$(PKG_NAME)/config
 config $(PKG_NAME)_INCLUDE_GOPROXY
 	bool "Compiling with GOPROXY proxy"
-	default n
+	default y
 
 endef
 

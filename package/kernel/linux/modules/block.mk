@@ -38,7 +38,7 @@ $(eval $(call KernelPackage,ata-core))
 
 define AddDepends/ata
   SUBMENU:=$(BLOCK_MENU)
-  DEPENDS+=+kmod-ata-core $(1)
+  DEPENDS+=kmod-ata-core $(1)
 endef
 
 
@@ -117,13 +117,14 @@ $(eval $(call KernelPackage,ata-nvidia-sata))
 
 
 define KernelPackage/ata-pdc202xx-old
+  SUBMENU:=$(BLOCK_MENU)
   TITLE:=Older Promise PATA controller support
+  DEPENDS:=kmod-ata-core
   KCONFIG:= \
        CONFIG_ATA_SFF=y \
        CONFIG_PATA_PDC_OLD
   FILES:=$(LINUX_DIR)/drivers/ata/pata_pdc202xx_old.ko
   AUTOLOAD:=$(call AutoLoad,41,pata_pdc202xx_old,1)
-  $(call AddDepends/ata)
 endef
 
 define KernelPackage/ata-pdc202xx-old/description
@@ -208,6 +209,7 @@ $(eval $(call KernelPackage,block2mtd))
 define KernelPackage/dax
   SUBMENU:=$(BLOCK_MENU)
   TITLE:=DAX: direct access to differentiated memory
+  DEPENDS:=@!LINUX_4_9
   KCONFIG:=CONFIG_DAX
   FILES:=$(LINUX_DIR)/drivers/dax/dax.ko
 endef
@@ -218,7 +220,7 @@ $(eval $(call KernelPackage,dax))
 define KernelPackage/dm
   SUBMENU:=$(BLOCK_MENU)
   TITLE:=Device Mapper
-  DEPENDS:=+kmod-crypto-manager +kmod-dax
+  DEPENDS:=+kmod-crypto-manager +!LINUX_4_9:kmod-dax
   # All the "=n" are unnecessary, they're only there
   # to stop the config from asking the question.
   # MIRROR is M because I've needed it for pvmove.

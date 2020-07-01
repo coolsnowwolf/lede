@@ -72,10 +72,11 @@ $(eval $(call KernelPackage,usb-phy-nop))
 
 define KernelPackage/usb-phy-qcom-dwc3
   TITLE:=DWC3 USB QCOM PHY driver
-  DEPENDS:=@(TARGET_ipq40xx||TARGET_ipq806x)
+  DEPENDS:=@(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3-of-simple
   KCONFIG:= CONFIG_PHY_QCOM_DWC3
   FILES:= \
-    $(LINUX_DIR)/drivers/phy/qualcomm/phy-qcom-dwc3.ko
+    $(LINUX_DIR)/drivers/phy/phy-qcom-dwc3.ko@lt4.13 \
+    $(LINUX_DIR)/drivers/phy/qualcomm/phy-qcom-dwc3.ko@ge4.13
   AUTOLOAD:=$(call AutoLoad,45,phy-qcom-dwc3,1)
   $(call AddDepends/usb)
 endef
@@ -274,8 +275,8 @@ define KernelPackage/usb-ohci
   TITLE:=Support for OHCI controllers
   DEPENDS:= \
 	+TARGET_bcm53xx:kmod-usb-bcma \
-	+TARGET_bcm47xx:kmod-usb-bcma \
-	+TARGET_bcm47xx:kmod-usb-ssb
+	+TARGET_brcm47xx:kmod-usb-bcma \
+	+TARGET_brcm47xx:kmod-usb-ssb
   KCONFIG:= \
 	CONFIG_USB_OHCI \
 	CONFIG_USB_OHCI_HCD \
@@ -322,7 +323,7 @@ $(eval $(call KernelPackage,usb-ohci-pci))
 
 define KernelPackage/usb-bcma
   TITLE:=Support for BCMA USB controllers
-  DEPENDS:=@USB_SUPPORT @TARGET_bcm47xx||TARGET_bcm53xx
+  DEPENDS:=@USB_SUPPORT @TARGET_brcm47xx||TARGET_bcm53xx
   HIDDEN:=1
   KCONFIG:=CONFIG_USB_HCD_BCMA
   FILES:= \
@@ -345,7 +346,7 @@ $(eval $(call KernelPackage,usb-fotg210))
 
 define KernelPackage/usb-ssb
   TITLE:=Support for SSB USB controllers
-  DEPENDS:=@USB_SUPPORT @TARGET_bcm47xx
+  DEPENDS:=@USB_SUPPORT @TARGET_brcm47xx
   HIDDEN:=1
   KCONFIG:=CONFIG_USB_HCD_SSB
   FILES:= \
@@ -370,8 +371,8 @@ $(eval $(call KernelPackage,usb-ehci))
 define KernelPackage/usb2
   TITLE:=Support for USB2 controllers
   DEPENDS:=\
-	+TARGET_bcm47xx:kmod-usb-bcma \
-	+TARGET_bcm47xx:kmod-usb-ssb \
+	+TARGET_brcm47xx:kmod-usb-bcma \
+	+TARGET_brcm47xx:kmod-usb-ssb \
 	+TARGET_bcm53xx:kmod-usb-bcma \
 	+TARGET_bcm53xx:kmod-phy-bcm-ns-usb2 \
 	+TARGET_ath79:kmod-phy-ath79-usb \
@@ -441,8 +442,9 @@ define KernelPackage/usb-dwc2
 	CONFIG_USB_DWC2_TRACK_MISSED_SOFS=n \
 	CONFIG_USB_DWC2_DEBUG_PERIODIC=n
   FILES:= \
-	$(LINUX_DIR)/drivers/usb/dwc2/dwc2.ko
-  AUTOLOAD:=$(call AutoLoad,54,dwc2,1)
+	$(LINUX_DIR)/drivers/usb/dwc2/dwc2.ko \
+	$(LINUX_DIR)/drivers/usb/dwc2/dwc2_platform.ko@lt4.3
+  AUTOLOAD:=$(call AutoLoad,54,dwc2 dwc2_platform@lt4.3,1)
   $(call AddDepends/usb)
 endef
 
@@ -496,7 +498,7 @@ $(eval $(call KernelPackage,usb-dwc3-of-simple))
 
 define KernelPackage/usb-dwc3-qcom
   TITLE:=DWC3 Qualcomm USB driver
-  DEPENDS:=@(!LINUX_4_14) @(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3
+  DEPENDS:=@LINUX_4_19 @(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3
   KCONFIG:= CONFIG_USB_DWC3_QCOM
   FILES:= $(LINUX_DIR)/drivers/usb/dwc3/dwc3-qcom.ko
   AUTOLOAD:=$(call AutoLoad,53,dwc3-qcom,1)
@@ -1602,10 +1604,10 @@ define KernelPackage/usb-chipidea
 	CONFIG_USB_CHIPIDEA_UDC=y \
 	CONFIG_USB_CHIPIDEA_DEBUG=y
   FILES:= \
-	$(LINUX_DIR)/drivers/extcon/extcon-core.ko \
+	$(LINUX_DIR)/drivers/extcon/extcon.ko@lt4.9 \
+	$(LINUX_DIR)/drivers/extcon/extcon-core.ko@ge4.9 \
 	$(LINUX_DIR)/drivers/usb/chipidea/ci_hdrc.ko \
-	$(LINUX_DIR)/drivers/usb/common/ulpi.ko@ge4.18 \
-	$(LINUX_DIR)/drivers/usb/roles/roles.ko@ge5.0
+	$(LINUX_DIR)/drivers/usb/common/ulpi.ko@ge4.18
   AUTOLOAD:=$(call AutoLoad,39,ci_hdrc,1)
   $(call AddDepends/usb)
 endef
@@ -1627,7 +1629,8 @@ define KernelPackage/usb-chipidea2
 	CONFIG_USB_CHIPIDEA_UDC=y \
 	CONFIG_USB_CHIPIDEA_DEBUG=y
   FILES:= \
-	$(LINUX_DIR)/drivers/extcon/extcon-core.ko \
+	$(LINUX_DIR)/drivers/extcon/extcon.ko@lt4.9 \
+	$(LINUX_DIR)/drivers/extcon/extcon-core.ko@ge4.9 \
 	$(LINUX_DIR)/drivers/usb/chipidea/ci_hdrc_usb2.ko
   AUTOLOAD:=$(call AutoLoad,39,ci_hdrc_usb2,1)
   $(call AddDepends/usb)
