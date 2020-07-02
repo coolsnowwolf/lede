@@ -1,0 +1,55 @@
+From b4659f44df3454c6b37ba206a0347af3b8d6a744 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 20 Apr 2020 13:30:49 +0100
+Subject: [PATCH] spi: use_gpio_descriptor fixup moved to spi_setup
+
+Commits [1] and [2] including code that forces SPI_CS_HIGH for SPI
+controllers that use GPIO descriptors, the SPI_CS_HIGH flag being
+there to avoid a double-negation (since SPI CS is usually active-low).
+The motivation for pushing the knowledge of the required polarity into
+the GPIO descriptor allows the switch to an output to request the
+correct inactive level, avoiding a needless glitch.
+
+The problem with setting the flag early as [1] does is that it appears
+in the mode field that is passed to client drivers during their probing,
+when they may want to choose SPI_POL, SPI_PHA and (just possibly)
+SPI_CS_HIGH. Since SPI_CS_HIGH is the exception, most drivers won't
+set it and the anti-negation negation is lost. [2] acknowledges that
+problem and patches things up for the case of users of spidev, but
+omits regular kernel-mode drivers.
+
+Downstream commit [3] moves the forcing of SPI_CS_HIGH to spi_setup,
+after the driver probing. Since this code is called before any CS
+manipulation it is early enough to be effective, but late enough that
+clients have already had their chance to change the mode field.
+
+This is a partial reversion of [1], and is accompanied by a complete
+reversion of [2], neither of which is needed any longer.
+
+[1] f3186dd87669 ("spi: Optionally use GPIO descriptors for CS GPIOs")
+[2] 83b2a8fe43bd ("spi: spidev: Fix CS polarity if GPIO descriptors are used")
+[3] <varies> ("spi: Force CS_HIGH if GPIO descriptors are used")
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/spi/spi.c | 9 ---------
+ 1 file changed, 9 deletions(-)
+
+--- a/drivers/spi/spi.c
++++ b/drivers/spi/spi.c
+@@ -1775,15 +1775,6 @@ static int of_spi_parse_dt(struct spi_co
+ 	}
+ 	spi->chip_select = value;
+ 
+-	/*
+-	 * For descriptors associated with the device, polarity inversion is
+-	 * handled in the gpiolib, so all gpio chip selects are "active high"
+-	 * in the logical sense, the gpiolib will invert the line if need be.
+-	 */
+-	if ((ctlr->use_gpio_descriptors) && ctlr->cs_gpiods &&
+-	    ctlr->cs_gpiods[spi->chip_select])
+-		spi->mode |= SPI_CS_HIGH;
+-
+ 	/* Device speed */
+ 	rc = of_property_read_u32(nc, "spi-max-frequency", &value);
+ 	if (rc) {

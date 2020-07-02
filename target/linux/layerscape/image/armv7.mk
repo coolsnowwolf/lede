@@ -16,8 +16,10 @@ define Device/Default
 endef
 
 define Device/ls1021atwr
-  DEVICE_TITLE := LS1021ATWR
-  DEVICE_PACKAGES += layerscape-rcw-ls1021atwr
+  DEVICE_VENDOR := NXP
+  DEVICE_MODEL := TWR-LS1021A
+  DEVICE_VARIANT := Default
+  DEVICE_PACKAGES += layerscape-rcw
   DEVICE_DTS := ls1021a-twr
   IMAGE/firmware.bin := \
     ls-clean | \
@@ -31,7 +33,9 @@ endef
 TARGET_DEVICES += ls1021atwr
 
 define Device/ls1021atwr-sdboot
-  DEVICE_TITLE := LS1021ATWR (SD Card Boot)
+  DEVICE_VENDOR := NXP
+  DEVICE_MODEL := TWR-LS1021A
+  DEVICE_VARIANT := SD Card Boot
   DEVICE_DTS := ls1021a-twr
   FILESYSTEMS := ext4
   IMAGES := sdcard.img
@@ -47,7 +51,9 @@ endef
 TARGET_DEVICES += ls1021atwr-sdboot
 
 define Device/ls1021aiot-sdboot
-  DEVICE_TITLE := LS1021AIOT (SD Card Boot)
+  DEVICE_VENDOR := NXP
+  DEVICE_MODEL := LS1021A-IoT
+  DEVICE_VARIANT := SD Card Boot
   DEVICE_DTS := ls1021a-iot
   FILESYSTEMS := ext4
   IMAGES := sdcard.img

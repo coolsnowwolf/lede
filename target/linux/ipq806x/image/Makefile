@@ -3,6 +3,9 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
+DEVICE_VARS += NETGEAR_BOARD_ID NETGEAR_HW_ID
+DEVICE_VARS += TPLINK_BOARD_ID
+
 define Build/buffalo-rootfs-cksum
 	( \
 		echo -ne "\x$$(od -A n -t u1 $@ | tr -s ' ' '\n' | \
@@ -16,7 +19,9 @@ define Device/Default
 	KERNEL_INITRAMFS_PREFIX := $$(IMG_PREFIX)-$(1)-initramfs
 	KERNEL_PREFIX := $$(IMAGE_PREFIX)
 	KERNEL_LOADADDR = 0x42208000
+	DEVICE_DTS = $$(SOC)-$(lastword $(subst _, ,$(1)))
 	SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
+	IMAGES := sysupgrade.bin
 	IMAGE/sysupgrade.bin = sysupgrade-tar | append-metadata
 	IMAGE/sysupgrade.bin/squashfs :=
 endef
@@ -53,42 +58,39 @@ define Device/DniImage
 	NETGEAR_BOARD_ID :=
 	NETGEAR_HW_ID :=
 	UBINIZE_OPTS := -E 5
-	IMAGES := factory.img sysupgrade.bin
+	IMAGES += factory.img
 	IMAGE/factory.img := append-kernel | pad-offset $$$$(BLOCKSIZE) 64 | append-uImage-fakehdr filesystem | pad-to $$$$(KERNEL_SIZE) | append-ubi | netgear-dni
 	IMAGE/sysupgrade.bin := append-kernel | pad-offset $$$$(BLOCKSIZE) 64 | append-uImage-fakehdr filesystem | sysupgrade-tar kernel=$$$$@ | append-metadata
 endef
-DEVICE_VARS += NETGEAR_BOARD_ID NETGEAR_HW_ID
 
 define Device/TpSafeImage
 	KERNEL_SUFFIX := -uImage
 	KERNEL = kernel-bin | append-dtb | uImage none
 	KERNEL_NAME := zImage
 	TPLINK_BOARD_ID :=
-	IMAGES := factory.bin sysupgrade.bin
+	IMAGES += factory.bin
 	IMAGE/factory.bin := append-rootfs | tplink-safeloader factory
 	IMAGE/sysupgrade.bin := append-rootfs | tplink-safeloader sysupgrade | append-metadata
 endef
-DEVICE_VARS += TPLINK_BOARD_ID
 
 define Device/ZyXELImage
 	KERNEL_SUFFIX := -uImage
-	KERNEL = kernel-bin | append-dtb | uImage none | pad-to $${KERNEL_SIZE}
+	KERNEL = kernel-bin | append-dtb | uImage none | pad-to $$(KERNEL_SIZE)
 	KERNEL_NAME := zImage
-	IMAGES := factory.bin sysupgrade.bin
+	IMAGES += factory.bin
 	IMAGE/factory.bin := append-rootfs | pad-rootfs | pad-to $$$$(BLOCKSIZE) | zyxel-ras-image separate-kernel
-	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to $$$${BLOCKSIZE} | sysupgrade-tar rootfs=$$$$@ | append-metadata
+	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to $$$$(BLOCKSIZE) | sysupgrade-tar rootfs=$$$$@ | append-metadata
 endef
 
 define Device/buffalo_wxr-2533dhp
 	$(call Device/LegacyImage)
+	SOC := qcom-ipq8064
 	DEVICE_VENDOR := Buffalo
 	DEVICE_MODEL := WXR-2533DHP
-	DEVICE_DTS := qcom-ipq8064-wxr-2533dhp
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
 	IMAGE_SIZE := 65536k
 	KERNEL_IN_UBI := 1
-	IMAGES := sysupgrade.bin
 	IMAGE/sysupgrade.bin := append-rootfs | buffalo-rootfs-cksum | \
 		sysupgrade-tar rootfs=$$$$@ | append-metadata
 	DEVICE_PACKAGES := ath10k-firmware-qca99x0-ct
@@ -100,9 +102,9 @@ define Device/compex_wpq864
 	$(call Device/UbiFit)
 	DEVICE_VENDOR := Compex
 	DEVICE_MODEL := WPQ864
-	DEVICE_DTS := qcom-ipq8064-wpq864
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
+	SOC := qcom-ipq8064
 	DEVICE_PACKAGES := kmod-gpio-beeper
 endef
 TARGET_DEVICES += compex_wpq864
@@ -111,7 +113,7 @@ define Device/linksys_ea8500
 	$(call Device/LegacyImage)
 	DEVICE_VENDOR := Linksys
 	DEVICE_MODEL := EA8500
-	DEVICE_DTS := qcom-ipq8064-ea8500
+	SOC := qcom-ipq8064
 	PAGESIZE := 2048
 	BLOCKSIZE := 128k
 	KERNEL_SIZE := 3072k
@@ -119,8 +121,8 @@ define Device/linksys_ea8500
 	BOARD_NAME := ea8500
 	SUPPORTED_DEVICES += ea8500
 	UBINIZE_OPTS := -E 5
-	IMAGES := factory.bin sysupgrade.bin
-	IMAGE/factory.bin := append-kernel | pad-to $$$${KERNEL_SIZE} | append-ubi
+	IMAGES += factory.bin
+	IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi
 	DEVICE_PACKAGES := ath10k-firmware-qca99x0-ct
 endef
 TARGET_DEVICES += linksys_ea8500
@@ -129,10 +131,9 @@ define Device/nec_wg2600hp
 	$(call Device/LegacyImage)
 	DEVICE_VENDOR := NEC
 	DEVICE_MODEL := Aterm WG2600HP
-	DEVICE_DTS := qcom-ipq8064-wg2600hp
+	SOC := qcom-ipq8064
 	BLOCKSIZE := 64k
 	BOARD_NAME := wg2600hp
-	IMAGES := sysupgrade.bin
 	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
 	DEVICE_PACKAGES := ath10k-firmware-qca99x0-ct
 endef
@@ -142,7 +143,7 @@ define Device/netgear_d7800
 	$(call Device/DniImage)
 	DEVICE_VENDOR := NETGEAR
 	DEVICE_MODEL := Nighthawk X4 D7800
-	DEVICE_DTS := qcom-ipq8064-d7800
+	SOC := qcom-ipq8064
 	KERNEL_SIZE := 4096k
 	NETGEAR_BOARD_ID := D7800
 	NETGEAR_HW_ID := 29764958+0+128+512+4x4+4x4
@@ -159,7 +160,7 @@ define Device/netgear_r7500
 	DEVICE_VENDOR := NETGEAR
 	DEVICE_MODEL := Nighthawk X4 R7500
 	DEVICE_VARIANT := v1
-	DEVICE_DTS := qcom-ipq8064-r7500
+	SOC := qcom-ipq8064
 	KERNEL_SIZE := 4096k
 	NETGEAR_BOARD_ID := R7500
 	NETGEAR_HW_ID := 29764841+0+128+256+3x3+4x4
@@ -176,7 +177,7 @@ define Device/netgear_r7500v2
 	DEVICE_VENDOR := NETGEAR
 	DEVICE_MODEL := Nighthawk X4 R7500
 	DEVICE_VARIANT := v2
-	DEVICE_DTS := qcom-ipq8064-r7500v2
+	SOC := qcom-ipq8064
 	KERNEL_SIZE := 4096k
 	NETGEAR_BOARD_ID := R7500v2
 	NETGEAR_HW_ID := 29764958+0+128+512+3x3+4x4
@@ -192,7 +193,7 @@ define Device/netgear_r7800
 	$(call Device/DniImage)
 	DEVICE_VENDOR := NETGEAR
 	DEVICE_MODEL := Nighthawk X4S R7800
-	DEVICE_DTS := qcom-ipq8065-r7800
+	SOC := qcom-ipq8065
 	KERNEL_SIZE := 4096k
 	NETGEAR_BOARD_ID := R7800
 	NETGEAR_HW_ID := 29764958+0+128+512+4x4+4x4+cascade
@@ -210,6 +211,7 @@ define Device/qcom_ipq8064-ap148
 	DEVICE_VENDOR := Qualcomm
 	DEVICE_MODEL := AP148
 	DEVICE_VARIANT := standard
+	SOC := qcom-ipq8064
 	DEVICE_DTS := qcom-ipq8064-ap148
 	KERNEL_INSTALL := 1
 	BLOCKSIZE := 128k
@@ -226,6 +228,7 @@ define Device/qcom_ipq8064-ap148-legacy
 	DEVICE_VENDOR := Qualcomm
 	DEVICE_MODEL := AP148
 	DEVICE_VARIANT := legacy
+	SOC := qcom-ipq8064
 	DEVICE_DTS := qcom-ipq8064-ap148
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
@@ -240,6 +243,7 @@ define Device/qcom_ipq8064-ap161
 	$(call Device/UbiFit)
 	DEVICE_VENDOR := Qualcomm
 	DEVICE_MODEL := AP161
+	SOC := qcom-ipq8064
 	DEVICE_DTS := qcom-ipq8064-ap161
 	KERNEL_INSTALL := 1
 	BLOCKSIZE := 128k
@@ -253,6 +257,7 @@ define Device/qcom_ipq8064-db149
 	$(call Device/FitImage)
 	DEVICE_VENDOR := Qualcomm
 	DEVICE_MODEL := DB149
+	SOC := qcom-ipq8064
 	DEVICE_DTS := qcom-ipq8064-db149
 	KERNEL_INSTALL := 1
 	BOARD_NAME := db149
@@ -260,32 +265,12 @@ define Device/qcom_ipq8064-db149
 endef
 TARGET_DEVICES += qcom_ipq8064-db149
 
-define Device/ruijie_rg-mtfi-m520
-	DEVICE_VENDOR := Ruijie
-	DEVICE_MODEL := RG-MTFi-M520
-	DEVICE_DTS := qcom-ipq8064-mtfi-m520
-	KERNEL_SIZE := 4096k
-	BLOCKSIZE := 64k
-	BOARD_NAME := rg-mtfi-m520
-	KERNEL_SUFFIX := -uImage
-	KERNEL = kernel-bin | append-dtb | uImage none | pad-to $${KERNEL_SIZE}
-	KERNEL_NAME := zImage
-	IMAGES := factory.bin sysupgrade.bin mmcblk0p2-kernel.bin mmcblk0p3-rootfs.bin
-	IMAGE/factory.bin := qsdk-ipq-factory-nor
-	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to $$$${BLOCKSIZE} | sysupgrade-tar rootfs=$$$$@ | append-metadata
-	IMAGE/mmcblk0p2-kernel.bin := append-kernel | pad-to $$$${KERNEL_SIZE}
-	IMAGE/mmcblk0p3-rootfs.bin := append-rootfs | pad-rootfs
-	DEVICE_PACKAGES := ath10k-firmware-qca988x-ct e2fsprogs f2fs-tools \
-	kmod-hwmon-lm75 kmod-fs-ext4 kmod-fs-f2fs kmod-rtc-pcf8563 losetup
-endef
-TARGET_DEVICES += ruijie_rg-mtfi-m520
-
 define Device/tplink_c2600
 	$(call Device/TpSafeImage)
 	DEVICE_VENDOR := TP-Link
 	DEVICE_MODEL := Archer C2600
 	DEVICE_VARIANT := v1
-	DEVICE_DTS := qcom-ipq8064-c2600
+	SOC := qcom-ipq8064
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
 	BOARD_NAME := c2600
@@ -299,25 +284,24 @@ define Device/tplink_vr2600v
 	DEVICE_VENDOR := TP-Link
 	DEVICE_MODEL := Archer VR2600v
 	DEVICE_VARIANT := v1
-	DEVICE_DTS := qcom-ipq8064-vr2600v
 	KERNEL_SUFFIX := -uImage
 	KERNEL = kernel-bin | append-dtb | uImage none
 	KERNEL_NAME := zImage
 	KERNEL_SIZE := 3072k
+	SOC := qcom-ipq8064
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
 	BOARD_NAME := vr2600v
 	SUPPORTED_DEVICES += vr2600v
 	DEVICE_PACKAGES := ath10k-firmware-qca99x0-ct
-	IMAGES := sysupgrade.bin
-	IMAGE/sysupgrade.bin := pad-extra 512 | append-kernel | pad-to $$$${KERNEL_SIZE} | append-rootfs | pad-rootfs | append-metadata
+	IMAGE/sysupgrade.bin := pad-extra 512 | append-kernel | pad-to $$$$(KERNEL_SIZE) | append-rootfs | pad-rootfs | append-metadata
 endef
 TARGET_DEVICES += tplink_vr2600v
 
 define Device/zyxel_nbg6817
 	DEVICE_VENDOR := ZyXEL
 	DEVICE_MODEL := NBG6817
-	DEVICE_DTS := qcom-ipq8065-nbg6817
+	SOC := qcom-ipq8065
 	KERNEL_SIZE := 4096k
 	BLOCKSIZE := 64k
 	BOARD_NAME := nbg6817

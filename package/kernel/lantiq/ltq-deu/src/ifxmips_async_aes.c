@@ -100,11 +100,7 @@ extern char debug_level;
 
 
 static int disable_multiblock = 0;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,0)
 module_param(disable_multiblock, int, 0);
-#else
-MODULE_PARM_DESC(disable_multiblock, "Disable encryption of whole multiblock buffers");
-#endif
 
 static int disable_deudma = 1;
 

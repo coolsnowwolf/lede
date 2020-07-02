@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gettext-full
 PKG_VERSION:=0.19.8.1
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=gettext-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/gettext
@@ -34,6 +34,7 @@ define Package/libintl-full
   CATEGORY:=Libraries
   TITLE:=GNU Internationalization library
   URL:=http://www.gnu.org/software/gettext/
+  ABI_VERSION:=8
 endef
 
 TARGET_CFLAGS += $(FPIC)
@@ -94,7 +95,7 @@ endef
 
 define Package/libintl-full/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libintl.so* $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libintl.so.* $(1)/usr/lib/
 endef
 
 $(eval $(call HostBuild))

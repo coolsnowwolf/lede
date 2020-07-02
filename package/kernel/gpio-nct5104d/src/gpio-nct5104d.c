@@ -276,11 +276,7 @@ static int nct5104d_gpio_probe(struct platform_device *pdev)
 	for (i = 0; i < data->nr_bank; i++) {
 		struct nct5104d_gpio_bank *bank = &data->bank[i];
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,5,0)
-		bank->chip.dev = &pdev->dev;
-#else
 		bank->chip.parent = &pdev->dev;
-#endif
 		bank->data = data;
 
 		err = gpiochip_add(&bank->chip);
@@ -298,15 +294,7 @@ err_gpiochip:
 	for (i = i - 1; i >= 0; i--) {
 		struct nct5104d_gpio_bank *bank = &data->bank[i];
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,18,0)
-		int rm_err = gpiochip_remove(&bank->chip);
-		if (rm_err < 0)
-			dev_err(&pdev->dev,
-				"Failed to remove gpiochip %d: %d\n",
-				i, rm_err);
-#else /* LINUX_VERSION_CODE < KERNEL_VERSION(3,18,0) */
 		gpiochip_remove (&bank->chip);
-#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(3,18,0) */
 	}
 
 	return err;
@@ -320,17 +308,7 @@ static int nct5104d_gpio_remove(struct platform_device *pdev)
 	for (i = 0; i < data->nr_bank; i++) {
 		struct nct5104d_gpio_bank *bank = &data->bank[i];
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,18,0)
-		int err = gpiochip_remove(&bank->chip);
-		if (err) {
-			dev_err(&pdev->dev,
-				"Failed to remove GPIO gpiochip %d: %d\n",
-				i, err);
-			return err;
-		}
-#else /* LINUX_VERSION_CODE < KERNEL_VERSION(3,18,0) */
 		gpiochip_remove (&bank->chip);
-#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(3,18,0) */
 	}
 
 	return 0;

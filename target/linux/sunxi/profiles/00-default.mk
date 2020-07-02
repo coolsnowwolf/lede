@@ -8,7 +8,6 @@
 define Profile/Default
   NAME:=Default Profile (all drivers)
   PACKAGES:= \
-	kmod-ata-core \
 	kmod-ata-sunxi \
 	kmod-brcmfmac \
 	kmod-rtc-sunxi \
