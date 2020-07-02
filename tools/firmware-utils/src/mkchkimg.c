@@ -231,6 +231,7 @@ main (int argc, char * argv[])
 	if (fs_file) {
 		fs_fp = fopen (fs_file, "r");
 		if (!fs_fp) {
+			fclose(kern_fp);
 			fatal_error (errno, "Cannot open %s", fs_file);
 		}
 	}
@@ -238,6 +239,10 @@ main (int argc, char * argv[])
 	/* Open the output file */
 	out_fp = fopen (output_file, "w+");
 	if (!out_fp) {
+		fclose(kern_fp);
+		if (fs_fp) {
+			fclose(fs_fp);
+		}
 		fatal_error (errno, "Cannot open %s", output_file);
 	}
 
@@ -259,13 +264,8 @@ main (int argc, char * argv[])
 	hdr->magic = htonl (0x2a23245e);
 	hdr->header_len = htonl(header_len);
 	hdr->reserved[0] = (unsigned char)(region & 0xff);
-	hdr->reserved[1] = 1;		/* Major */
-	hdr->reserved[2] = 1;		/* Minor */
-	hdr->reserved[3] = 99;		/* Build */
-	hdr->reserved[4] = 0;
-	hdr->reserved[5] = 0;
-	hdr->reserved[6] = 0;
-	hdr->reserved[7] = 0;
+	memset(&hdr->reserved[1], 99, sizeof(hdr->reserved) - 1);
+
 	message ("       Board Id: %s", board_id);
 	message ("         Region: %s", region == 1 ? "World Wide (WW)" 
 			: (region == 2 ? "North America (NA)" : "Unknown"));
@@ -285,6 +285,7 @@ main (int argc, char * argv[])
 		netgear_checksum_add (&chk_part, (unsigned char *)buf, len);
 		netgear_checksum_add (&chk_whole, (unsigned char *)buf, len);
 	}
+	fclose(kern_fp);
 	hdr->kernel_chksum = netgear_checksum_fini (&chk_part);
 	message ("     Kernel Len: %u", hdr->kernel_len);
 	message ("Kernel Checksum: 0x%08x", hdr->kernel_chksum);
@@ -306,6 +307,7 @@ main (int argc, char * argv[])
 			netgear_checksum_add (&chk_part, (unsigned char *)buf, len);
 			netgear_checksum_add (&chk_whole, (unsigned char *)buf, len);
 		}
+		fclose(fs_fp);
 		hdr->rootfs_chksum = (netgear_checksum_fini (&chk_part));
 		message ("     Rootfs Len: %u", hdr->rootfs_len);
 		message ("Rootfs Checksum: 0x%08x", hdr->rootfs_chksum);
@@ -336,6 +338,7 @@ main (int argc, char * argv[])
 	}
 
 	/* Success */
+	fclose(out_fp);
 	return EXIT_SUCCESS;
 }
 

@@ -74,7 +74,7 @@ ppp_generic_init_config() {
 	proto_config_add_string pppd_options
 	proto_config_add_string 'connect:file'
 	proto_config_add_string 'disconnect:file'
-	proto_config_add_string ipv6
+	[ -e /proc/sys/net/ipv6 ] && proto_config_add_string ipv6
 	proto_config_add_boolean authfail
 	proto_config_add_int mtu
 	proto_config_add_string pppname
@@ -88,7 +88,9 @@ ppp_generic_setup() {
 	local config="$1"; shift
 	local localip
 
-	json_get_vars ipv6 ip6table demand keepalive keepalive_adaptive username password pppd_options pppname unnumbered persist maxfail holdoff peerdns
+	json_get_vars ip6table demand keepalive keepalive_adaptive username password pppd_options pppname unnumbered persist maxfail holdoff peerdns
+
+	[ ! -e /proc/sys/net/ipv6 ] && ipv6=0 || json_get_var ipv6 ipv6
 
 	if [ "$ipv6" = 0 ]; then
 		ipv6=""
@@ -149,9 +151,9 @@ ppp_generic_setup() {
 		${connect:+connect "$connect"} \
 		${disconnect:+disconnect "$disconnect"} \
 		ip-up-script /lib/netifd/ppp-up \
-		ipv6-up-script /lib/netifd/ppp6-up \
+		${ipv6:+ipv6-up-script /lib/netifd/ppp6-up} \
 		ip-down-script /lib/netifd/ppp-down \
-		ipv6-down-script /lib/netifd/ppp-down \
+		${ipv6:+ipv6-down-script /lib/netifd/ppp-down} \
 		${mtu:+mtu $mtu mru $mtu} \
 		"$@" $pppd_options
 }
@@ -231,16 +233,7 @@ proto_pppoe_setup() {
 	json_get_var padi_attempts padi_attempts
 	json_get_var padi_timeout padi_timeout
 
-#By 蝈蝈：并发拨号同步的前期准备
-	syncppp_option=""
-	[ "$(uci get syncdial.config.enabled)" -eq "1" ] && {
-		ppp_if_cnt=$(uci show network | grep -c "\.proto=\'pppoe\'$")
-		syncppp_option="syncppp $ppp_if_cnt"
-		shellsync $ppp_if_cnt 10
-	}
-
 	ppp_generic_setup "$config" \
-		$syncppp_option \
 		plugin rp-pppoe.so \
 		${ac:+rp_pppoe_ac "$ac"} \
 		${service:+rp_pppoe_service "$service"} \

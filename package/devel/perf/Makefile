@@ -36,6 +36,8 @@ define Package/perf/description
   perf is the Linux performance monitoring tool
 endef
 
+HOST_CFLAGS += -I$(LINUX_DIR)/tools/include
+
 MAKE_FLAGS = \
 	ARCH="$(LINUX_KARCH)" \
 	NO_LIBPERL=1 \
@@ -48,11 +50,13 @@ MAKE_FLAGS = \
 	NO_LIBAUDIT=1 \
 	NO_LIBCRYPTO=1 \
 	NO_LIBUNWIND=1 \
+	NO_LIBCAP=1 \
 	CROSS_COMPILE="$(TARGET_CROSS)" \
 	CC="$(TARGET_CC)" \
 	LD="$(TARGET_CROSS)ld" \
 	CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS)" \
 	LDFLAGS="$(TARGET_LDFLAGS)" \
+	KBUILD_HOSTCFLAGS="$(HOST_CFLAGS)" \
 	$(if $(findstring c,$(OPENWRT_VERBOSE)),V=1,V='') \
 	WERROR=0 \
 	O=$(PKG_BUILD_DIR) \
