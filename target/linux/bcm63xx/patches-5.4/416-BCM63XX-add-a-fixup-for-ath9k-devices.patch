@@ -1,0 +1,238 @@
+From bbebbf735a02b6d044ed928978ab4bd5f1833364 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Thu, 3 May 2012 14:36:11 +0200
+Subject: [PATCH 61/72] BCM63XX: add a fixup for ath9k devices
+
+---
+ arch/mips/bcm63xx/Makefile                         |    3 +-
+ arch/mips/bcm63xx/pci-ath9k-fixup.c                |  190 ++++++++++++++++++++
+ .../include/asm/mach-bcm63xx/pci_ath9k_fixup.h     |    7 +
+ 3 files changed, 199 insertions(+), 1 deletion(-)
+ create mode 100644 arch/mips/bcm63xx/pci-ath9k-fixup.c
+ create mode 100644 arch/mips/include/asm/mach-bcm63xx/pci_ath9k_fixup.h
+
+--- a/arch/mips/bcm63xx/Makefile
++++ b/arch/mips/bcm63xx/Makefile
+@@ -3,7 +3,7 @@ obj-y		+= clk.o cpu.o cs.o gpio.o irq.o
+ 		   setup.o timer.o dev-enet.o dev-flash.o dev-pcmcia.o \
+ 		   dev-rng.o dev-wdt.o \
+ 		   dev-usb-ehci.o dev-usb-ohci.o dev-usb-usbd.o usb-common.o \
+-		   sprom.o
++		   pci-ath9k-fixup.o sprom.o
+ obj-$(CONFIG_EARLY_PRINTK)	+= early_printk.o
+ 
+ obj-y		+= boards/
+--- /dev/null
++++ b/arch/mips/bcm63xx/pci-ath9k-fixup.c
+@@ -0,0 +1,201 @@
++/*
++ *  Broadcom BCM63XX Ath9k EEPROM fixup helper.
++ *
++ *  Copytight (C) 2012 Jonas Gorski <jonas.gorski@gmail.com>
++ *
++ *  Based on
++ *
++ *  Atheros AP94 reference board PCI initialization
++ *
++ *  Copyright (C) 2009-2010 Gabor Juhos <juhosg@openwrt.org>
++ *
++ *  This program is free software; you can redistribute it and/or modify it
++ *  under the terms of the GNU General Public License version 2 as published
++ *  by the Free Software Foundation.
++ */
++
++#include <linux/if_ether.h>
++#include <linux/pci.h>
++#include <linux/delay.h>
++#include <linux/ath9k_platform.h>
++
++#include <bcm63xx_cpu.h>
++#include <bcm63xx_regs.h>
++#include <bcm63xx_io.h>
++#include <bcm63xx_nvram.h>
++#include <bcm63xx_dev_pci.h>
++#include <bcm63xx_dev_flash.h>
++#include <pci_ath9k_fixup.h>
++
++#define bcm_hsspi_writel(v, o)	bcm_rset_writel(RSET_HSSPI, (v), (o))
++
++struct ath9k_fixup {
++	unsigned slot;
++	u8 mac[ETH_ALEN];
++	struct ath9k_platform_data pdata;
++};
++
++static int ath9k_num_fixups;
++static struct ath9k_fixup ath9k_fixups[2] = {
++	{
++		.slot = 255,
++		.pdata = {
++			.led_pin	= -1,
++		},
++	},
++	{
++		.slot = 255,
++		.pdata = {
++			.led_pin	= -1,
++		},
++	},
++};
++
++static u16 *bcm63xx_read_eeprom(u16 *eeprom, u32 offset)
++{
++	u32 addr;
++
++	if (BCMCPU_IS_6328()) {
++		addr = 0x18000000;
++	} else {
++		addr = bcm_mpi_readl(MPI_CSBASE_REG(0));
++		addr &= MPI_CSBASE_BASE_MASK;
++	}
++
++	switch (bcm63xx_flash_get_type()) {
++	case BCM63XX_FLASH_TYPE_PARALLEL:
++		memcpy(eeprom, (void *)KSEG1ADDR(addr + offset), ATH9K_PLAT_EEP_MAX_WORDS * sizeof(u16));
++		return eeprom;
++	case BCM63XX_FLASH_TYPE_SERIAL:
++		/* the first megabyte is memory mapped */
++		if (offset < 0x100000) {
++			memcpy(eeprom, (void *)KSEG1ADDR(addr + offset), ATH9K_PLAT_EEP_MAX_WORDS * sizeof(u16));
++			return eeprom;
++		}
++
++		if (BCMCPU_IS_6328()) {
++			/* we can change the memory mapped megabyte */
++			bcm_hsspi_writel(offset & 0xf00000, 0x18);
++			memcpy(eeprom, (void *)KSEG1ADDR(addr + (offset & 0xfffff)), ATH9K_PLAT_EEP_MAX_WORDS * sizeof(u16));
++			bcm_hsspi_writel(0, 0x18);
++			return eeprom;
++		}
++		/* can't do anything here without talking to the SPI controller. */
++		/* Fall through */
++	case BCM63XX_FLASH_TYPE_NAND:
++	default:
++		return NULL;
++	}
++}
++
++static void ath9k_pci_fixup(struct pci_dev *dev)
++{
++	void __iomem *mem;
++	struct ath9k_platform_data *pdata = NULL;
++	struct pci_dev *bridge = pci_upstream_bridge(dev);
++	u16 *cal_data = NULL;
++	u16 cmd;
++	u32 bar0;
++	u32 val;
++	unsigned i;
++
++	for (i = 0; i < ath9k_num_fixups; i++) {
++		if (ath9k_fixups[i].slot != PCI_SLOT(dev->devfn))
++			continue;
++
++		cal_data = ath9k_fixups[i].pdata.eeprom_data;
++		pdata = &ath9k_fixups[i].pdata;
++		break;
++	}
++
++	if (cal_data == NULL)
++		return;
++
++	if (*cal_data != 0xa55a) {
++		pr_err("pci %s: invalid calibration data\n", pci_name(dev));
++		return;
++	}
++
++	pr_info("pci %s: fixup device configuration\n", pci_name(dev));
++
++	switch (bcm63xx_get_cpu_id()) {
++	case BCM6328_CPU_ID:
++		val = BCM_PCIE_MEM_BASE_PA_6328;
++		break;
++	case BCM6348_CPU_ID:
++	case BCM6358_CPU_ID:
++	case BCM6368_CPU_ID:
++		val = BCM_PCI_MEM_BASE_PA;
++		break;
++	default:
++		BUG();
++	}
++
++	mem = ioremap(val, 0x10000);
++	if (!mem) {
++		pr_err("pci %s: ioremap error\n", pci_name(dev));
++		return;
++	}
++
++	if (bridge)
++		pci_enable_device(bridge);
++
++	pci_read_config_dword(dev, PCI_BASE_ADDRESS_0, &bar0);
++	pci_read_config_dword(dev, PCI_BASE_ADDRESS_0, &bar0);
++	pci_write_config_dword(dev, PCI_BASE_ADDRESS_0, val);
++
++	pci_read_config_word(dev, PCI_COMMAND, &cmd);
++	cmd |= PCI_COMMAND_MASTER | PCI_COMMAND_MEMORY;
++	pci_write_config_word(dev, PCI_COMMAND, cmd);
++
++	/* set offset to first reg address */
++	cal_data += 3;
++	while(*cal_data != 0xffff) {
++		u32 reg;
++		reg = *cal_data++;
++		val = *cal_data++;
++		val |= (*cal_data++) << 16;
++
++		writel(val, mem + reg);
++		udelay(100);
++	}
++
++	pci_read_config_dword(dev, PCI_VENDOR_ID, &val);
++	dev->vendor = val & 0xffff;
++	dev->device = (val >> 16) & 0xffff;
++
++	pci_read_config_dword(dev, PCI_CLASS_REVISION, &val);
++	dev->revision = val & 0xff;
++	dev->class = val >> 8; /* upper 3 bytes */
++
++	pci_read_config_word(dev, PCI_COMMAND, &cmd);
++	cmd &= ~(PCI_COMMAND_MASTER | PCI_COMMAND_MEMORY);
++	pci_write_config_word(dev, PCI_COMMAND, cmd);
++
++	pci_write_config_dword(dev, PCI_BASE_ADDRESS_0, bar0);
++
++	if (bridge)
++		pci_disable_device(bridge);
++
++	iounmap(mem);
++
++	dev->dev.platform_data = pdata;
++}
++DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_ATHEROS, PCI_ANY_ID, ath9k_pci_fixup);
++
++void __init pci_enable_ath9k_fixup(unsigned slot, u32 offset)
++{
++	if (ath9k_num_fixups >= ARRAY_SIZE(ath9k_fixups))
++		return;
++
++	ath9k_fixups[ath9k_num_fixups].slot = slot;
++
++	if (!bcm63xx_read_eeprom(ath9k_fixups[ath9k_num_fixups].pdata.eeprom_data, offset))
++		return;
++
++	if (bcm63xx_nvram_get_mac_address(ath9k_fixups[ath9k_num_fixups].mac))
++		return;
++
++	ath9k_fixups[ath9k_num_fixups].pdata.macaddr = ath9k_fixups[ath9k_num_fixups].mac;
++	ath9k_num_fixups++;
++}
+--- /dev/null
++++ b/arch/mips/include/asm/mach-bcm63xx/pci_ath9k_fixup.h
+@@ -0,0 +1,7 @@
++#ifndef _PCI_ATH9K_FIXUP
++#define _PCI_ATH9K_FIXUP
++
++
++void pci_enable_ath9k_fixup(unsigned slot, u32 offset) __init;
++
++#endif /* _PCI_ATH9K_FIXUP */

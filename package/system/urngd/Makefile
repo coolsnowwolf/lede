@@ -17,14 +17,14 @@ PKG_BUILD_PARALLEL:=1
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
 
-define Package/$(PKG_NAME)
+define Package/urngd
   SECTION:=utils
   CATEGORY:=Base system
   TITLE:=OpenWrt non-physical true random number generator based on timing jitter
   DEPENDS:=+libubox
 endef
 
-define Package/$(PKG_NAME)/description
+define Package/urngd/description
   urngd is OpenWrt's micro non-physical true random number generator based on
   timing jitter.
 
@@ -38,11 +38,11 @@ define Package/$(PKG_NAME)/description
   Jitter RNGd provides a source of sufficient entropy.
 endef
 
-define Package/$(PKG_NAME)/install
+define Package/urngd/install
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/$(PKG_NAME).init $(1)/etc/init.d/$(PKG_NAME)
 	$(INSTALL_DIR) $(1)/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/$(PKG_NAME) $(1)/sbin/$(PKG_NAME)
 endef
 
-$(eval $(call BuildPackage,$(PKG_NAME)))
+$(eval $(call BuildPackage,urngd))

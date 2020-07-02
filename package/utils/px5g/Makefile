@@ -8,9 +8,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=px5g
-PKG_RELEASE:=8
+PKG_RELEASE:=9
 PKG_LICENSE:=LGPL-2.1
-PKG_BUILD_DIR:=$(BUILD_DIR)/px5g-$(BUILD_VARIANT)
 
 PKG_USE_MIPS16:=0
 
@@ -53,7 +52,7 @@ ifeq ($(BUILD_VARIANT),standalone)
   TARGET_LDFLAGS := -Wl,-Bstatic $(TARGET_LDFLAGS) -Wl,-Bdynamic
 endif
 
-TARGET_CFLAGS += -Wl,--gc-sections
+TARGET_CFLAGS += -Wl,--gc-sections -Wall -Werror
 
 define Build/Compile
 	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -o $(PKG_BUILD_DIR)/px5g px5g.c $(TARGET_LDFLAGS)
