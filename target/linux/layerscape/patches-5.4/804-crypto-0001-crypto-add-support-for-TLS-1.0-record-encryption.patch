@@ -1,0 +1,1205 @@
+From 223db480c54de8ec47b3b0b4c6066b58342a5ad4 Mon Sep 17 00:00:00 2001
+From: Radu Alexe <radu.alexe@nxp.com>
+Date: Wed, 3 May 2017 16:17:13 +0300
+Subject: [PATCH] crypto: add support for TLS 1.0 record encryption
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This patch adds kernel support for encryption/decryption of TLS 1.0
+records using block ciphers. Implementation is similar to authenc in the
+sense that the base algorithms (AES, SHA1) are combined in a template to
+produce TLS encapsulation frames. The composite algorithm will be called
+"tls10(hmac(<digest>),cbc(<cipher>))". The cipher and hmac keys are
+wrapped in the same format used by authenc.c.
+
+Signed-off-by: Radu Alexe <radu.alexe@nxp.com>
+Signed-off-by: Cristian Stoica <cristian.stoica@nxp.com>
+Signed-off-by: Horia Geantă <horia.geanta@nxp.com>
+---
+ crypto/Kconfig   |  20 ++
+ crypto/Makefile  |   1 +
+ crypto/tcrypt.c  |   3 +
+ crypto/testmgr.c | 238 ++++++++++++++++++++++
+ crypto/testmgr.h | 224 ++++++++++++++++++++
+ crypto/tls.c     | 607 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 6 files changed, 1093 insertions(+)
+ create mode 100644 crypto/tls.c
+
+--- a/crypto/Kconfig
++++ b/crypto/Kconfig
+@@ -342,6 +342,26 @@ config CRYPTO_ECHAINIV
+ 	  a sequence number xored with a salt.  This is the default
+ 	  algorithm for CBC.
+ 
++config CRYPTO_TLS
++	tristate "TLS support"
++	select CRYPTO_AEAD
++	select CRYPTO_BLKCIPHER
++	select CRYPTO_MANAGER
++	select CRYPTO_HASH
++	select CRYPTO_NULL
++	select CRYPTO_AUTHENC
++	help
++	  Support for TLS 1.0 record encryption and decryption
++
++	  This module adds support for encryption/decryption of TLS 1.0 frames
++	  using blockcipher algorithms. The name of the resulting algorithm is
++	  "tls10(hmac(<digest>),cbc(<cipher>))". By default, the generic base
++	  algorithms are used (e.g. aes-generic, sha1-generic), but hardware
++	  accelerated versions will be used automatically if available.
++
++	  User-space applications (OpenSSL, GnuTLS) can offload TLS 1.0
++	  operations through AF_ALG or cryptodev interfaces
++
+ comment "Block modes"
+ 
+ config CRYPTO_CBC
+--- a/crypto/Makefile
++++ b/crypto/Makefile
+@@ -143,6 +143,7 @@ obj-$(CONFIG_CRYPTO_CRC32) += crc32_gene
+ obj-$(CONFIG_CRYPTO_CRCT10DIF) += crct10dif_common.o crct10dif_generic.o
+ obj-$(CONFIG_CRYPTO_AUTHENC) += authenc.o authencesn.o
+ obj-$(CONFIG_CRYPTO_LZO) += lzo.o lzo-rle.o
++obj-$(CONFIG_CRYPTO_TLS) += tls.o
+ obj-$(CONFIG_CRYPTO_LZ4) += lz4.o
+ obj-$(CONFIG_CRYPTO_LZ4HC) += lz4hc.o
+ obj-$(CONFIG_CRYPTO_XXHASH) += xxhash_generic.o
+--- a/crypto/tcrypt.c
++++ b/crypto/tcrypt.c
+@@ -2049,6 +2049,9 @@ static int do_test(const char *alg, u32
+ 		ret += tcrypt_test("cbc(sm4)");
+ 		ret += tcrypt_test("ctr(sm4)");
+ 		break;
++	case 192:
++		ret += tcrypt_test("tls10(hmac(sha1),cbc(aes))");
++		break;
+ 	case 200:
+ 		test_cipher_speed("ecb(aes)", ENCRYPT, sec, NULL, 0,
+ 				speed_template_16_24_32);
+--- a/crypto/testmgr.c
++++ b/crypto/testmgr.c
+@@ -111,6 +111,13 @@ struct drbg_test_suite {
+ 	unsigned int count;
+ };
+ 
++struct tls_test_suite {
++	struct {
++		struct tls_testvec *vecs;
++		unsigned int count;
++	} enc, dec;
++};
++
+ struct akcipher_test_suite {
+ 	const struct akcipher_testvec *vecs;
+ 	unsigned int count;
+@@ -135,6 +142,7 @@ struct alg_test_desc {
+ 		struct hash_test_suite hash;
+ 		struct cprng_test_suite cprng;
+ 		struct drbg_test_suite drbg;
++		struct tls_test_suite tls;
+ 		struct akcipher_test_suite akcipher;
+ 		struct kpp_test_suite kpp;
+ 	} suite;
+@@ -2294,6 +2302,227 @@ static int test_aead(const char *driver,
+ 	return 0;
+ }
+ 
++static int __test_tls(struct crypto_aead *tfm, int enc,
++		      struct tls_testvec *template, unsigned int tcount,
++		      const bool diff_dst)
++{
++	const char *algo = crypto_tfm_alg_driver_name(crypto_aead_tfm(tfm));
++	unsigned int i, k, authsize;
++	char *q;
++	struct aead_request *req;
++	struct scatterlist *sg;
++	struct scatterlist *sgout;
++	const char *e, *d;
++	struct crypto_wait wait;
++	void *input;
++	void *output;
++	void *assoc;
++	char *iv;
++	char *key;
++	char *xbuf[XBUFSIZE];
++	char *xoutbuf[XBUFSIZE];
++	char *axbuf[XBUFSIZE];
++	int ret = -ENOMEM;
++
++	if (testmgr_alloc_buf(xbuf))
++		goto out_noxbuf;
++
++	if (diff_dst && testmgr_alloc_buf(xoutbuf))
++		goto out_nooutbuf;
++
++	if (testmgr_alloc_buf(axbuf))
++		goto out_noaxbuf;
++
++	iv = kzalloc(MAX_IVLEN, GFP_KERNEL);
++	if (!iv)
++		goto out_noiv;
++
++	key = kzalloc(MAX_KEYLEN, GFP_KERNEL);
++	if (!key)
++		goto out_nokey;
++
++	sg = kmalloc(sizeof(*sg) * 8 * (diff_dst ? 2 : 1), GFP_KERNEL);
++	if (!sg)
++		goto out_nosg;
++
++	sgout = sg + 8;
++
++	d = diff_dst ? "-ddst" : "";
++	e = enc ? "encryption" : "decryption";
++
++	crypto_init_wait(&wait);
++
++	req = aead_request_alloc(tfm, GFP_KERNEL);
++	if (!req) {
++		pr_err("alg: tls%s: Failed to allocate request for %s\n",
++		       d, algo);
++		goto out;
++	}
++
++	aead_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
++				  crypto_req_done, &wait);
++
++	for (i = 0; i < tcount; i++) {
++		input = xbuf[0];
++		assoc = axbuf[0];
++
++		ret = -EINVAL;
++		if (WARN_ON(template[i].ilen > PAGE_SIZE ||
++			    template[i].alen > PAGE_SIZE))
++			goto out;
++
++		memcpy(assoc, template[i].assoc, template[i].alen);
++		memcpy(input, template[i].input, template[i].ilen);
++
++		if (template[i].iv)
++			memcpy(iv, template[i].iv, MAX_IVLEN);
++		else
++			memset(iv, 0, MAX_IVLEN);
++
++		crypto_aead_clear_flags(tfm, ~0);
++
++		if (template[i].klen > MAX_KEYLEN) {
++			pr_err("alg: aead%s: setkey failed on test %d for %s: key size %d > %d\n",
++			       d, i, algo, template[i].klen, MAX_KEYLEN);
++			ret = -EINVAL;
++			goto out;
++		}
++		memcpy(key, template[i].key, template[i].klen);
++
++		ret = crypto_aead_setkey(tfm, key, template[i].klen);
++		if (!ret == template[i].fail) {
++			pr_err("alg: tls%s: setkey failed on test %d for %s: flags=%x\n",
++			       d, i, algo, crypto_aead_get_flags(tfm));
++			goto out;
++		} else if (ret)
++			continue;
++
++		authsize = 20;
++		ret = crypto_aead_setauthsize(tfm, authsize);
++		if (ret) {
++			pr_err("alg: aead%s: Failed to set authsize to %u on test %d for %s\n",
++			       d, authsize, i, algo);
++			goto out;
++		}
++
++		k = !!template[i].alen;
++		sg_init_table(sg, k + 1);
++		sg_set_buf(&sg[0], assoc, template[i].alen);
++		sg_set_buf(&sg[k], input, (enc ? template[i].rlen :
++					   template[i].ilen));
++		output = input;
++
++		if (diff_dst) {
++			sg_init_table(sgout, k + 1);
++			sg_set_buf(&sgout[0], assoc, template[i].alen);
++
++			output = xoutbuf[0];
++			sg_set_buf(&sgout[k], output,
++				   (enc ? template[i].rlen : template[i].ilen));
++		}
++
++		aead_request_set_crypt(req, sg, (diff_dst) ? sgout : sg,
++				       template[i].ilen, iv);
++
++		aead_request_set_ad(req, template[i].alen);
++
++		ret = crypto_wait_req(enc ? crypto_aead_encrypt(req)
++				      : crypto_aead_decrypt(req), &wait);
++
++		switch (ret) {
++		case 0:
++			if (template[i].novrfy) {
++				/* verification was supposed to fail */
++				pr_err("alg: tls%s: %s failed on test %d for %s: ret was 0, expected -EBADMSG\n",
++				       d, e, i, algo);
++				/* so really, we got a bad message */
++				ret = -EBADMSG;
++				goto out;
++			}
++			break;
++		case -EBADMSG:
++			/* verification failure was expected */
++			if (template[i].novrfy)
++				continue;
++			/* fall through */
++		default:
++			pr_err("alg: tls%s: %s failed on test %d for %s: ret=%d\n",
++			       d, e, i, algo, -ret);
++			goto out;
++		}
++
++		q = output;
++		if (memcmp(q, template[i].result, template[i].rlen)) {
++			pr_err("alg: tls%s: Test %d failed on %s for %s\n",
++			       d, i, e, algo);
++			hexdump(q, template[i].rlen);
++			pr_err("should be:\n");
++			hexdump(template[i].result, template[i].rlen);
++			ret = -EINVAL;
++			goto out;
++		}
++	}
++
++out:
++	aead_request_free(req);
++
++	kfree(sg);
++out_nosg:
++	kfree(key);
++out_nokey:
++	kfree(iv);
++out_noiv:
++	testmgr_free_buf(axbuf);
++out_noaxbuf:
++	if (diff_dst)
++		testmgr_free_buf(xoutbuf);
++out_nooutbuf:
++	testmgr_free_buf(xbuf);
++out_noxbuf:
++	return ret;
++}
++
++static int test_tls(struct crypto_aead *tfm, int enc,
++		    struct tls_testvec *template, unsigned int tcount)
++{
++	int ret;
++	/* test 'dst == src' case */
++	ret = __test_tls(tfm, enc, template, tcount, false);
++	if (ret)
++		return ret;
++	/* test 'dst != src' case */
++	return __test_tls(tfm, enc, template, tcount, true);
++}
++
++static int alg_test_tls(const struct alg_test_desc *desc, const char *driver,
++			u32 type, u32 mask)
++{
++	struct crypto_aead *tfm;
++	int err = 0;
++
++	tfm = crypto_alloc_aead(driver, type, mask);
++	if (IS_ERR(tfm)) {
++		pr_err("alg: aead: Failed to load transform for %s: %ld\n",
++			driver, PTR_ERR(tfm));
++		return PTR_ERR(tfm);
++	}
++
++	if (desc->suite.tls.enc.vecs) {
++		err = test_tls(tfm, ENCRYPT, desc->suite.tls.enc.vecs,
++				desc->suite.tls.enc.count);
++		if (err)
++			goto out;
++	}
++
++	if (!err && desc->suite.tls.dec.vecs)
++		err = test_tls(tfm, DECRYPT, desc->suite.tls.dec.vecs,
++			       desc->suite.tls.dec.count);
++
++out:
++	crypto_free_aead(tfm);
++	return err;
++}
++
+ static int alg_test_aead(const struct alg_test_desc *desc, const char *driver,
+ 			 u32 type, u32 mask)
+ {
+@@ -5012,6 +5241,15 @@ static const struct alg_test_desc alg_te
+ 			.hash = __VECS(tgr192_tv_template)
+ 		}
+ 	}, {
++		.alg = "tls10(hmac(sha1),cbc(aes))",
++		.test = alg_test_tls,
++		.suite = {
++			.tls = {
++				.enc = __VECS(tls_enc_tv_template),
++				.dec = __VECS(tls_dec_tv_template)
++			}
++		}
++	}, {
+ 		.alg = "vmac64(aes)",
+ 		.test = alg_test_hash,
+ 		.suite = {
+--- a/crypto/testmgr.h
++++ b/crypto/testmgr.h
+@@ -21,7 +21,12 @@
+ #define _CRYPTO_TESTMGR_H
+ 
+ #include <linux/oid_registry.h>
++#include <linux/netlink.h>
+ 
++#define MAX_DIGEST_SIZE		64
++#define MAX_TAP			8
++
++#define MAX_KEYLEN		160
+ #define MAX_IVLEN		32
+ 
+ /*
+@@ -140,6 +145,20 @@ struct drbg_testvec {
+ 	size_t expectedlen;
+ };
+ 
++struct tls_testvec {
++	char *key;	/* wrapped keys for encryption and authentication */
++	char *iv;	/* initialization vector */
++	char *input;	/* input data */
++	char *assoc;	/* associated data: seq num, type, version, input len */
++	char *result;	/* result data */
++	unsigned char fail;	/* the test failure is expected */
++	unsigned char novrfy;	/* dec verification failure expected */
++	unsigned char klen;	/* key length */
++	unsigned short ilen;	/* input data length */
++	unsigned short alen;	/* associated data length */
++	unsigned short rlen;	/* result length */
++};
++
+ struct akcipher_testvec {
+ 	const unsigned char *key;
+ 	const unsigned char *params;
+@@ -171,6 +190,211 @@ struct kpp_testvec {
+ static const char zeroed_string[48];
+ 
+ /*
++ * TLS1.0 synthetic test vectors
++ */
++static struct tls_testvec tls_enc_tv_template[] = {
++	{
++#ifdef __LITTLE_ENDIAN
++		.key	= "\x08\x00"		/* rta length */
++			"\x01\x00"		/* rta type */
++#else
++		.key	= "\x00\x08"		/* rta length */
++			"\x00\x01"		/* rta type */
++#endif
++			"\x00\x00\x00\x10"	/* enc key length */
++			"authenticationkey20benckeyis16_bytes",
++		.klen	= 8 + 20 + 16,
++		.iv	= "iv0123456789abcd",
++		.input	= "Single block msg",
++		.ilen	= 16,
++		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
++			"\x00\x03\x01\x00\x10",
++		.alen	= 13,
++		.result	= "\xd5\xac\xb\xd2\xac\xad\x3f\xb1"
++			"\x59\x79\x1e\x91\x5f\x52\x14\x9c"
++			"\xc0\x75\xd8\x4c\x97\x0f\x07\x73"
++			"\xdc\x89\x47\x49\x49\xcb\x30\x6b"
++			"\x1b\x45\x23\xa1\xd0\x51\xcf\x02"
++			"\x2e\xa8\x5d\xa0\xfe\xca\x82\x61",
++		.rlen	= 16 + 20 + 12,
++	}, {
++#ifdef __LITTLE_ENDIAN
++		.key	= "\x08\x00"		/* rta length */
++			"\x01\x00"		/* rta type */
++#else
++		.key	= "\x00\x08"		/* rta length */
++			"\x00\x01"		/* rta type */
++#endif
++			"\x00\x00\x00\x10"	/* enc key length */
++			"authenticationkey20benckeyis16_bytes",
++		.klen	= 8 + 20 + 16,
++		.iv	= "iv0123456789abcd",
++		.input	= "",
++		.ilen	= 0,
++		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
++			"\x00\x03\x01\x00\x00",
++		.alen	= 13,
++		.result = "\x58\x2a\x11\xc\x86\x8e\x4b\x67"
++			"\x2d\x16\x26\x1a\xac\x4b\xe2\x1a"
++			"\xe9\x6a\xcc\x4d\x6f\x79\x8a\x45"
++			"\x1f\x4e\x27\xf2\xa7\x59\xb4\x5a",
++		.rlen	= 20 + 12,
++	}, {
++#ifdef __LITTLE_ENDIAN
++		.key	= "\x08\x00"		/* rta length */
++			"\x01\x00"		/* rta type */
++#else
++		.key	= "\x00\x08"		/* rta length */
++			"\x00\x01"		/* rta type */
++#endif
++			"\x00\x00\x00\x10"	/* enc key length */
++			"authenticationkey20benckeyis16_bytes",
++		.klen	= 8 + 20 + 16,
++		.iv	= "iv0123456789abcd",
++		.input	= "285 bytes plaintext285 bytes plaintext285 bytes"
++			" plaintext285 bytes plaintext285 bytes plaintext285"
++			" bytes plaintext285 bytes plaintext285 bytes"
++			" plaintext285 bytes plaintext285 bytes plaintext285"
++			" bytes plaintext285 bytes plaintext285 bytes"
++			" plaintext285 bytes plaintext285 bytes plaintext285"
++			" bytes plaintext285 bytes plaintext",
++		.ilen	= 285,
++		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
++			"\x00\x03\x01\x01\x1d",
++		.alen	= 13,
++		.result = "\x80\x23\x82\x44\x14\x2a\x1d\x94\xc\xc2\x1d\xd"
++			"\x3a\x32\x89\x4c\x57\x30\xa8\x89\x76\x46\xcc\x90"
++			"\x1d\x88\xb8\xa6\x1a\x58\xe\x2d\xeb\x2c\xc7\x3a"
++			"\x52\x4e\xdb\xb3\x1e\x83\x11\xf5\x3c\xce\x6e\x94"
++			"\xd3\x26\x6a\x9a\xd\xbd\xc7\x98\xb9\xb3\x3a\x51"
++			"\x1e\x4\x84\x8a\x8f\x54\x9a\x51\x69\x9c\xce\x31"
++			"\x8d\x5d\x8b\xee\x5f\x70\xc\xc9\xb8\x50\x54\xf8"
++			"\xb2\x4a\x7a\xcd\xeb\x7a\x82\x81\xc6\x41\xc8\x50"
++			"\x91\x8d\xc8\xed\xcd\x40\x8f\x55\xd1\xec\xc9\xac"
++			"\x15\x18\xf9\x20\xa0\xed\x18\xa1\xe3\x56\xe3\x14"
++			"\xe5\xe8\x66\x63\x20\xed\xe4\x62\x9d\xa3\xa4\x1d"
++			"\x81\x89\x18\xf2\x36\xae\xc8\x8a\x2b\xbc\xc3\xb8"
++			"\x80\xf\x97\x21\x36\x39\x8\x84\x23\x18\x9e\x9c"
++			"\x72\x32\x75\x2d\x2e\xf9\x60\xb\xe8\xcc\xd9\x74"
++			"\x4\x1b\x8e\x99\xc1\x94\xee\xd0\xac\x4e\xfc\x7e"
++			"\xf1\x96\xb3\xe7\x14\xb8\xf2\xc\x25\x97\x82\x6b"
++			"\xbd\x0\x65\xab\x5c\xe3\x16\xfb\x68\xef\xea\x9d"
++			"\xff\x44\x1d\x2a\x44\xf5\xc8\x56\x77\xb7\xbf\x13"
++			"\xc8\x54\xdb\x92\xfe\x16\x4c\xbe\x18\xe9\xb\x8d"
++			"\xb\xd4\x43\x58\x43\xaa\xf4\x3\x80\x97\x62\xd5"
++			"\xdf\x3c\x28\xaa\xee\x48\x4b\x55\x41\x1b\x31\x2"
++			"\xbe\xa0\x1c\xbd\xb7\x22\x2a\xe5\x53\x72\x73\x20"
++			"\x44\x4f\xe6\x1\x2b\x34\x33\x11\x7d\xfb\x10\xc1"
++			"\x66\x7c\xa6\xf4\x48\x36\x5e\x2\xda\x41\x4b\x3e"
++			"\xe7\x80\x17\x17\xce\xf1\x3e\x6a\x8e\x26\xf3\xb7"
++			"\x2b\x85\xd\x31\x8d\xba\x6c\x22\xb4\x28\x55\x7e"
++			"\x2a\x9e\x26\xf1\x3d\x21\xac\x65",
++		.rlen	= 285 + 20 + 15,
++	}
++};
++
++static struct tls_testvec tls_dec_tv_template[] = {
++	{
++#ifdef __LITTLE_ENDIAN
++		.key	= "\x08\x00"		/* rta length */
++			"\x01\x00"		/* rta type */
++#else
++		.key	= "\x00\x08"		/* rta length */
++			"\x00\x01"		/* rta type */
++#endif
++			"\x00\x00\x00\x10"	/* enc key length */
++			"authenticationkey20benckeyis16_bytes",
++		.klen	= 8 + 20 + 16,
++		.iv	= "iv0123456789abcd",
++		.input	= "\xd5\xac\xb\xd2\xac\xad\x3f\xb1"
++			"\x59\x79\x1e\x91\x5f\x52\x14\x9c"
++			"\xc0\x75\xd8\x4c\x97\x0f\x07\x73"
++			"\xdc\x89\x47\x49\x49\xcb\x30\x6b"
++			"\x1b\x45\x23\xa1\xd0\x51\xcf\x02"
++			"\x2e\xa8\x5d\xa0\xfe\xca\x82\x61",
++		.ilen	= 16 + 20 + 12,
++		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
++			"\x00\x03\x01\x00\x30",
++		.alen	= 13,
++		.result	= "Single block msg",
++		.rlen	= 16,
++	}, {
++#ifdef __LITTLE_ENDIAN
++		.key	= "\x08\x00"		/* rta length */
++			"\x01\x00"		/* rta type */
++#else
++		.key	= "\x00\x08"		/* rta length */
++			"\x00\x01"		/* rta type */
++#endif
++			"\x00\x00\x00\x10"	/* enc key length */
++			"authenticationkey20benckeyis16_bytes",
++		.klen	= 8 + 20 + 16,
++		.iv	= "iv0123456789abcd",
++		.input = "\x58\x2a\x11\xc\x86\x8e\x4b\x67"
++			"\x2d\x16\x26\x1a\xac\x4b\xe2\x1a"
++			"\xe9\x6a\xcc\x4d\x6f\x79\x8a\x45"
++			"\x1f\x4e\x27\xf2\xa7\x59\xb4\x5a",
++		.ilen	= 20 + 12,
++		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
++			"\x00\x03\x01\x00\x20",
++		.alen	= 13,
++		.result	= "",
++		.rlen	= 0,
++	}, {
++#ifdef __LITTLE_ENDIAN
++		.key	= "\x08\x00"		/* rta length */
++			"\x01\x00"		/* rta type */
++#else
++		.key	= "\x00\x08"		/* rta length */
++			"\x00\x01"		/* rta type */
++#endif
++			"\x00\x00\x00\x10"	/* enc key length */
++			"authenticationkey20benckeyis16_bytes",
++		.klen	= 8 + 20 + 16,
++		.iv	= "iv0123456789abcd",
++		.input = "\x80\x23\x82\x44\x14\x2a\x1d\x94\xc\xc2\x1d\xd"
++			"\x3a\x32\x89\x4c\x57\x30\xa8\x89\x76\x46\xcc\x90"
++			"\x1d\x88\xb8\xa6\x1a\x58\xe\x2d\xeb\x2c\xc7\x3a"
++			"\x52\x4e\xdb\xb3\x1e\x83\x11\xf5\x3c\xce\x6e\x94"
++			"\xd3\x26\x6a\x9a\xd\xbd\xc7\x98\xb9\xb3\x3a\x51"
++			"\x1e\x4\x84\x8a\x8f\x54\x9a\x51\x69\x9c\xce\x31"
++			"\x8d\x5d\x8b\xee\x5f\x70\xc\xc9\xb8\x50\x54\xf8"
++			"\xb2\x4a\x7a\xcd\xeb\x7a\x82\x81\xc6\x41\xc8\x50"
++			"\x91\x8d\xc8\xed\xcd\x40\x8f\x55\xd1\xec\xc9\xac"
++			"\x15\x18\xf9\x20\xa0\xed\x18\xa1\xe3\x56\xe3\x14"
++			"\xe5\xe8\x66\x63\x20\xed\xe4\x62\x9d\xa3\xa4\x1d"
++			"\x81\x89\x18\xf2\x36\xae\xc8\x8a\x2b\xbc\xc3\xb8"
++			"\x80\xf\x97\x21\x36\x39\x8\x84\x23\x18\x9e\x9c"
++			"\x72\x32\x75\x2d\x2e\xf9\x60\xb\xe8\xcc\xd9\x74"
++			"\x4\x1b\x8e\x99\xc1\x94\xee\xd0\xac\x4e\xfc\x7e"
++			"\xf1\x96\xb3\xe7\x14\xb8\xf2\xc\x25\x97\x82\x6b"
++			"\xbd\x0\x65\xab\x5c\xe3\x16\xfb\x68\xef\xea\x9d"
++			"\xff\x44\x1d\x2a\x44\xf5\xc8\x56\x77\xb7\xbf\x13"
++			"\xc8\x54\xdb\x92\xfe\x16\x4c\xbe\x18\xe9\xb\x8d"
++			"\xb\xd4\x43\x58\x43\xaa\xf4\x3\x80\x97\x62\xd5"
++			"\xdf\x3c\x28\xaa\xee\x48\x4b\x55\x41\x1b\x31\x2"
++			"\xbe\xa0\x1c\xbd\xb7\x22\x2a\xe5\x53\x72\x73\x20"
++			"\x44\x4f\xe6\x1\x2b\x34\x33\x11\x7d\xfb\x10\xc1"
++			"\x66\x7c\xa6\xf4\x48\x36\x5e\x2\xda\x41\x4b\x3e"
++			"\xe7\x80\x17\x17\xce\xf1\x3e\x6a\x8e\x26\xf3\xb7"
++			"\x2b\x85\xd\x31\x8d\xba\x6c\x22\xb4\x28\x55\x7e"
++			"\x2a\x9e\x26\xf1\x3d\x21\xac\x65",
++
++		.ilen	= 285 + 20 + 15,
++		.assoc	= "\x00\x01\x02\x03\x04\x05\x06\x07"
++			"\x00\x03\x01\x01\x40",
++		.alen	= 13,
++		.result	= "285 bytes plaintext285 bytes plaintext285 bytes"
++			" plaintext285 bytes plaintext285 bytes plaintext285"
++			" bytes plaintext285 bytes plaintext285 bytes"
++			" plaintext285 bytes plaintext285 bytes plaintext285"
++			" bytes plaintext285 bytes plaintext285 bytes"
++			" plaintext285 bytes plaintext285 bytes plaintext",
++		.rlen	= 285,
++	}
++};
++
++/*
+  * RSA test vectors. Borrowed from openSSL.
+  */
+ static const struct akcipher_testvec rsa_tv_template[] = {
+--- /dev/null
++++ b/crypto/tls.c
+@@ -0,0 +1,607 @@
++/*
++ * Copyright 2013 Freescale Semiconductor, Inc.
++ * Copyright 2017 NXP Semiconductor, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the Free
++ * Software Foundation; either version 2 of the License, or (at your option)
++ * any later version.
++ *
++ */
++
++#include <crypto/internal/aead.h>
++#include <crypto/internal/hash.h>
++#include <crypto/internal/skcipher.h>
++#include <crypto/authenc.h>
++#include <crypto/null.h>
++#include <crypto/scatterwalk.h>
++#include <linux/err.h>
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/rtnetlink.h>
++
++struct tls_instance_ctx {
++	struct crypto_ahash_spawn auth;
++	struct crypto_skcipher_spawn enc;
++};
++
++struct crypto_tls_ctx {
++	unsigned int reqoff;
++	struct crypto_ahash *auth;
++	struct crypto_skcipher *enc;
++	struct crypto_sync_skcipher *null;
++};
++
++struct tls_request_ctx {
++	/*
++	 * cryptlen holds the payload length in the case of encryption or
++	 * payload_len + icv_len + padding_len in case of decryption
++	 */
++	unsigned int cryptlen;
++	/* working space for partial results */
++	struct scatterlist tmp[2];
++	struct scatterlist cipher[2];
++	struct scatterlist dst[2];
++	char tail[];
++};
++
++struct async_op {
++	struct completion completion;
++	int err;
++};
++
++static void tls_async_op_done(struct crypto_async_request *req, int err)
++{
++	struct async_op *areq = req->data;
++
++	if (err == -EINPROGRESS)
++		return;
++
++	areq->err = err;
++	complete(&areq->completion);
++}
++
++static int crypto_tls_setkey(struct crypto_aead *tls, const u8 *key,
++			     unsigned int keylen)
++{
++	struct crypto_tls_ctx *ctx = crypto_aead_ctx(tls);
++	struct crypto_ahash *auth = ctx->auth;
++	struct crypto_skcipher *enc = ctx->enc;
++	struct crypto_authenc_keys keys;
++	int err = -EINVAL;
++
++	if (crypto_authenc_extractkeys(&keys, key, keylen) != 0)
++		goto badkey;
++
++	crypto_ahash_clear_flags(auth, CRYPTO_TFM_REQ_MASK);
++	crypto_ahash_set_flags(auth, crypto_aead_get_flags(tls) &
++				    CRYPTO_TFM_REQ_MASK);
++	err = crypto_ahash_setkey(auth, keys.authkey, keys.authkeylen);
++	crypto_aead_set_flags(tls, crypto_ahash_get_flags(auth) &
++				       CRYPTO_TFM_RES_MASK);
++
++	if (err)
++		goto out;
++
++	crypto_skcipher_clear_flags(enc, CRYPTO_TFM_REQ_MASK);
++	crypto_skcipher_set_flags(enc, crypto_aead_get_flags(tls) &
++					 CRYPTO_TFM_REQ_MASK);
++	err = crypto_skcipher_setkey(enc, keys.enckey, keys.enckeylen);
++	crypto_aead_set_flags(tls, crypto_skcipher_get_flags(enc) &
++				       CRYPTO_TFM_RES_MASK);
++
++out:
++	return err;
++
++badkey:
++	crypto_aead_set_flags(tls, CRYPTO_TFM_RES_BAD_KEY_LEN);
++	goto out;
++}
++
++/**
++ * crypto_tls_genicv - Calculate hmac digest for a TLS record
++ * @hash:	(output) buffer to save the digest into
++ * @src:	(input) scatterlist with the assoc and payload data
++ * @srclen:	(input) size of the source buffer (assoclen + cryptlen)
++ * @req:	(input) aead request
++ **/
++static int crypto_tls_genicv(u8 *hash, struct scatterlist *src,
++			     unsigned int srclen, struct aead_request *req)
++{
++	struct crypto_aead *tls = crypto_aead_reqtfm(req);
++	struct crypto_tls_ctx *ctx = crypto_aead_ctx(tls);
++	struct tls_request_ctx *treq_ctx = aead_request_ctx(req);
++	struct async_op ahash_op;
++	struct ahash_request *ahreq = (void *)(treq_ctx->tail + ctx->reqoff);
++	unsigned int flags = CRYPTO_TFM_REQ_MAY_SLEEP;
++	int err = -EBADMSG;
++
++	 /* Bail out if the request assoc len is 0 */
++	if (!req->assoclen)
++		return err;
++
++	init_completion(&ahash_op.completion);
++
++	/* the hash transform to be executed comes from the original request */
++	ahash_request_set_tfm(ahreq, ctx->auth);
++	/* prepare the hash request with input data and result pointer */
++	ahash_request_set_crypt(ahreq, src, hash, srclen);
++	/* set the notifier for when the async hash function returns */
++	ahash_request_set_callback(ahreq, aead_request_flags(req) & flags,
++				   tls_async_op_done, &ahash_op);
++
++	/* Calculate the digest on the given data. The result is put in hash */
++	err = crypto_ahash_digest(ahreq);
++	if (err == -EINPROGRESS) {
++		err = wait_for_completion_interruptible(&ahash_op.completion);
++		if (!err)
++			err = ahash_op.err;
++	}
++
++	return err;
++}
++
++/**
++ * crypto_tls_gen_padicv - Calculate and pad hmac digest for a TLS record
++ * @hash:	(output) buffer to save the digest and padding into
++ * @phashlen:	(output) the size of digest + padding
++ * @req:	(input) aead request
++ **/
++static int crypto_tls_gen_padicv(u8 *hash, unsigned int *phashlen,
++				 struct aead_request *req)
++{
++	struct crypto_aead *tls = crypto_aead_reqtfm(req);
++	unsigned int hash_size = crypto_aead_authsize(tls);
++	unsigned int block_size = crypto_aead_blocksize(tls);
++	unsigned int srclen = req->cryptlen + hash_size;
++	unsigned int icvlen = req->cryptlen + req->assoclen;
++	unsigned int padlen;
++	int err;
++
++	err = crypto_tls_genicv(hash, req->src, icvlen, req);
++	if (err)
++		goto out;
++
++	/* add padding after digest */
++	padlen = block_size - (srclen % block_size);
++	memset(hash + hash_size, padlen - 1, padlen);
++
++	*phashlen = hash_size + padlen;
++out:
++	return err;
++}
++
++static int crypto_tls_copy_data(struct aead_request *req,
++				struct scatterlist *src,
++				struct scatterlist *dst,
++				unsigned int len)
++{
++	struct crypto_aead *tls = crypto_aead_reqtfm(req);
++	struct crypto_tls_ctx *ctx = crypto_aead_ctx(tls);
++	SYNC_SKCIPHER_REQUEST_ON_STACK(skreq, ctx->null);
++
++	skcipher_request_set_sync_tfm(skreq, ctx->null);
++	skcipher_request_set_callback(skreq, aead_request_flags(req),
++				      NULL, NULL);
++	skcipher_request_set_crypt(skreq, src, dst, len, NULL);
++
++	return crypto_skcipher_encrypt(skreq);
++}
++
++static int crypto_tls_encrypt(struct aead_request *req)
++{
++	struct crypto_aead *tls = crypto_aead_reqtfm(req);
++	struct crypto_tls_ctx *ctx = crypto_aead_ctx(tls);
++	struct tls_request_ctx *treq_ctx = aead_request_ctx(req);
++	struct skcipher_request *skreq;
++	struct scatterlist *cipher = treq_ctx->cipher;
++	struct scatterlist *tmp = treq_ctx->tmp;
++	struct scatterlist *sg, *src, *dst;
++	unsigned int cryptlen, phashlen;
++	u8 *hash = treq_ctx->tail;
++	int err;
++
++	/*
++	 * The hash result is saved at the beginning of the tls request ctx
++	 * and is aligned as required by the hash transform. Enough space was
++	 * allocated in crypto_tls_init_tfm to accommodate the difference. The
++	 * requests themselves start later at treq_ctx->tail + ctx->reqoff so
++	 * the result is not overwritten by the second (cipher) request.
++	 */
++	hash = (u8 *)ALIGN((unsigned long)hash +
++			   crypto_ahash_alignmask(ctx->auth),
++			   crypto_ahash_alignmask(ctx->auth) + 1);
++
++	/*
++	 * STEP 1: create ICV together with necessary padding
++	 */
++	err = crypto_tls_gen_padicv(hash, &phashlen, req);
++	if (err)
++		return err;
++
++	/*
++	 * STEP 2: Hash and padding are combined with the payload
++	 * depending on the form it arrives. Scatter tables must have at least
++	 * one page of data before chaining with another table and can't have
++	 * an empty data page. The following code addresses these requirements.
++	 *
++	 * If the payload is empty, only the hash is encrypted, otherwise the
++	 * payload scatterlist is merged with the hash. A special merging case
++	 * is when the payload has only one page of data. In that case the
++	 * payload page is moved to another scatterlist and prepared there for
++	 * encryption.
++	 */
++	if (req->cryptlen) {
++		src = scatterwalk_ffwd(tmp, req->src, req->assoclen);
++
++		sg_init_table(cipher, 2);
++		sg_set_buf(cipher + 1, hash, phashlen);
++
++		if (sg_is_last(src)) {
++			sg_set_page(cipher, sg_page(src), req->cryptlen,
++				    src->offset);
++			src = cipher;
++		} else {
++			unsigned int rem_len = req->cryptlen;
++
++			for (sg = src; rem_len > sg->length; sg = sg_next(sg))
++				rem_len -= min(rem_len, sg->length);
++
++			sg_set_page(cipher, sg_page(sg), rem_len, sg->offset);
++			sg_chain(sg, 1, cipher);
++		}
++	} else {
++		sg_init_one(cipher, hash, phashlen);
++		src = cipher;
++	}
++
++	/**
++	 * If src != dst copy the associated data from source to destination.
++	 * In both cases fast-forward passed the associated data in the dest.
++	 */
++	if (req->src != req->dst) {
++		err = crypto_tls_copy_data(req, req->src, req->dst,
++					   req->assoclen);
++		if (err)
++			return err;
++	}
++	dst = scatterwalk_ffwd(treq_ctx->dst, req->dst, req->assoclen);
++
++	/*
++	 * STEP 3: encrypt the frame and return the result
++	 */
++	cryptlen = req->cryptlen + phashlen;
++
++	/*
++	 * The hash and the cipher are applied at different times and their
++	 * requests can use the same memory space without interference
++	 */
++	skreq = (void *)(treq_ctx->tail + ctx->reqoff);
++	skcipher_request_set_tfm(skreq, ctx->enc);
++	skcipher_request_set_crypt(skreq, src, dst, cryptlen, req->iv);
++	skcipher_request_set_callback(skreq, aead_request_flags(req),
++				      req->base.complete, req->base.data);
++	/*
++	 * Apply the cipher transform. The result will be in req->dst when the
++	 * asynchronuous call terminates
++	 */
++	err = crypto_skcipher_encrypt(skreq);
++
++	return err;
++}
++
++static int crypto_tls_decrypt(struct aead_request *req)
++{
++	struct crypto_aead *tls = crypto_aead_reqtfm(req);
++	struct crypto_tls_ctx *ctx = crypto_aead_ctx(tls);
++	struct tls_request_ctx *treq_ctx = aead_request_ctx(req);
++	unsigned int cryptlen = req->cryptlen;
++	unsigned int hash_size = crypto_aead_authsize(tls);
++	unsigned int block_size = crypto_aead_blocksize(tls);
++	struct skcipher_request *skreq = (void *)(treq_ctx->tail + ctx->reqoff);
++	struct scatterlist *tmp = treq_ctx->tmp;
++	struct scatterlist *src, *dst;
++
++	u8 padding[255]; /* padding can be 0-255 bytes */
++	u8 pad_size;
++	u16 *len_field;
++	u8 *ihash, *hash = treq_ctx->tail;
++
++	int paderr = 0;
++	int err = -EINVAL;
++	int i;
++	struct async_op ciph_op;
++
++	/*
++	 * Rule out bad packets. The input packet length must be at least one
++	 * byte more than the hash_size
++	 */
++	if (cryptlen <= hash_size || cryptlen % block_size)
++		goto out;
++
++	/*
++	 * Step 1 - Decrypt the source. Fast-forward past the associated data
++	 * to the encrypted data. The result will be overwritten in place so
++	 * that the decrypted data will be adjacent to the associated data. The
++	 * last step (computing the hash) will have it's input data already
++	 * prepared and ready to be accessed at req->src.
++	 */
++	src = scatterwalk_ffwd(tmp, req->src, req->assoclen);
++	dst = src;
++
++	init_completion(&ciph_op.completion);
++	skcipher_request_set_tfm(skreq, ctx->enc);
++	skcipher_request_set_callback(skreq, aead_request_flags(req),
++				      tls_async_op_done, &ciph_op);
++	skcipher_request_set_crypt(skreq, src, dst, cryptlen, req->iv);
++	err = crypto_skcipher_decrypt(skreq);
++	if (err == -EINPROGRESS) {
++		err = wait_for_completion_interruptible(&ciph_op.completion);
++		if (!err)
++			err = ciph_op.err;
++	}
++	if (err)
++		goto out;
++
++	/*
++	 * Step 2 - Verify padding
++	 * Retrieve the last byte of the payload; this is the padding size.
++	 */
++	cryptlen -= 1;
++	scatterwalk_map_and_copy(&pad_size, dst, cryptlen, 1, 0);
++
++	/* RFC recommendation for invalid padding size. */
++	if (cryptlen < pad_size + hash_size) {
++		pad_size = 0;
++		paderr = -EBADMSG;
++	}
++	cryptlen -= pad_size;
++	scatterwalk_map_and_copy(padding, dst, cryptlen, pad_size, 0);
++
++	/* Padding content must be equal with pad_size. We verify it all */
++	for (i = 0; i < pad_size; i++)
++		if (padding[i] != pad_size)
++			paderr = -EBADMSG;
++
++	/*
++	 * Step 3 - Verify hash
++	 * Align the digest result as required by the hash transform. Enough
++	 * space was allocated in crypto_tls_init_tfm
++	 */
++	hash = (u8 *)ALIGN((unsigned long)hash +
++			   crypto_ahash_alignmask(ctx->auth),
++			   crypto_ahash_alignmask(ctx->auth) + 1);
++	/*
++	 * Two bytes at the end of the associated data make the length field.
++	 * It must be updated with the length of the cleartext message before
++	 * the hash is calculated.
++	 */
++	len_field = sg_virt(req->src) + req->assoclen - 2;
++	cryptlen -= hash_size;
++	*len_field = htons(cryptlen);
++
++	/* This is the hash from the decrypted packet. Save it for later */
++	ihash = hash + hash_size;
++	scatterwalk_map_and_copy(ihash, dst, cryptlen, hash_size, 0);
++
++	/* Now compute and compare our ICV with the one from the packet */
++	err = crypto_tls_genicv(hash, req->src, cryptlen + req->assoclen, req);
++	if (!err)
++		err = memcmp(hash, ihash, hash_size) ? -EBADMSG : 0;
++
++	if (req->src != req->dst) {
++		err = crypto_tls_copy_data(req, req->src, req->dst, cryptlen +
++					   req->assoclen);
++		if (err)
++			goto out;
++	}
++
++	/* return the first found error */
++	if (paderr)
++		err = paderr;
++
++out:
++	aead_request_complete(req, err);
++	return err;
++}
++
++static int crypto_tls_init_tfm(struct crypto_aead *tfm)
++{
++	struct aead_instance *inst = aead_alg_instance(tfm);
++	struct tls_instance_ctx *ictx = aead_instance_ctx(inst);
++	struct crypto_tls_ctx *ctx = crypto_aead_ctx(tfm);
++	struct crypto_ahash *auth;
++	struct crypto_skcipher *enc;
++	struct crypto_sync_skcipher *null;
++	int err;
++
++	auth = crypto_spawn_ahash(&ictx->auth);
++	if (IS_ERR(auth))
++		return PTR_ERR(auth);
++
++	enc = crypto_spawn_skcipher(&ictx->enc);
++	err = PTR_ERR(enc);
++	if (IS_ERR(enc))
++		goto err_free_ahash;
++
++	null = crypto_get_default_null_skcipher();
++	err = PTR_ERR(null);
++	if (IS_ERR(null))
++		goto err_free_skcipher;
++
++	ctx->auth = auth;
++	ctx->enc = enc;
++	ctx->null = null;
++
++	/*
++	 * Allow enough space for two digests. The two digests will be compared
++	 * during the decryption phase. One will come from the decrypted packet
++	 * and the other will be calculated. For encryption, one digest is
++	 * padded (up to a cipher blocksize) and chained with the payload
++	 */
++	ctx->reqoff = ALIGN(crypto_ahash_digestsize(auth) +
++			    crypto_ahash_alignmask(auth),
++			    crypto_ahash_alignmask(auth) + 1) +
++			    max(crypto_ahash_digestsize(auth),
++				crypto_skcipher_blocksize(enc));
++
++	crypto_aead_set_reqsize(tfm,
++				sizeof(struct tls_request_ctx) +
++				ctx->reqoff +
++				max_t(unsigned int,
++				      crypto_ahash_reqsize(auth) +
++				      sizeof(struct ahash_request),
++				      crypto_skcipher_reqsize(enc) +
++				      sizeof(struct skcipher_request)));
++
++	return 0;
++
++err_free_skcipher:
++	crypto_free_skcipher(enc);
++err_free_ahash:
++	crypto_free_ahash(auth);
++	return err;
++}
++
++static void crypto_tls_exit_tfm(struct crypto_aead *tfm)
++{
++	struct crypto_tls_ctx *ctx = crypto_aead_ctx(tfm);
++
++	crypto_free_ahash(ctx->auth);
++	crypto_free_skcipher(ctx->enc);
++	crypto_put_default_null_skcipher();
++}
++
++static void crypto_tls_free(struct aead_instance *inst)
++{
++	struct tls_instance_ctx *ctx = aead_instance_ctx(inst);
++
++	crypto_drop_skcipher(&ctx->enc);
++	crypto_drop_ahash(&ctx->auth);
++	kfree(inst);
++}
++
++static int crypto_tls_create(struct crypto_template *tmpl, struct rtattr **tb)
++{
++	struct crypto_attr_type *algt;
++	struct aead_instance *inst;
++	struct hash_alg_common *auth;
++	struct crypto_alg *auth_base;
++	struct skcipher_alg *enc;
++	struct tls_instance_ctx *ctx;
++	const char *enc_name;
++	int err;
++
++	algt = crypto_get_attr_type(tb);
++	if (IS_ERR(algt))
++		return PTR_ERR(algt);
++
++	if ((algt->type ^ CRYPTO_ALG_TYPE_AEAD) & algt->mask)
++		return -EINVAL;
++
++	auth = ahash_attr_alg(tb[1], CRYPTO_ALG_TYPE_HASH,
++			      CRYPTO_ALG_TYPE_AHASH_MASK |
++			      crypto_requires_sync(algt->type, algt->mask));
++	if (IS_ERR(auth))
++		return PTR_ERR(auth);
++
++	auth_base = &auth->base;
++
++	enc_name = crypto_attr_alg_name(tb[2]);
++	err = PTR_ERR(enc_name);
++	if (IS_ERR(enc_name))
++		goto out_put_auth;
++
++	inst = kzalloc(sizeof(*inst) + sizeof(*ctx), GFP_KERNEL);
++	err = -ENOMEM;
++	if (!inst)
++		goto out_put_auth;
++
++	ctx = aead_instance_ctx(inst);
++
++	err = crypto_init_ahash_spawn(&ctx->auth, auth,
++				      aead_crypto_instance(inst));
++	if (err)
++		goto err_free_inst;
++
++	crypto_set_skcipher_spawn(&ctx->enc, aead_crypto_instance(inst));
++	err = crypto_grab_skcipher(&ctx->enc, enc_name, 0,
++				   crypto_requires_sync(algt->type,
++							algt->mask));
++	if (err)
++		goto err_drop_auth;
++
++	enc = crypto_spawn_skcipher_alg(&ctx->enc);
++
++	err = -ENAMETOOLONG;
++	if (snprintf(inst->alg.base.cra_name, CRYPTO_MAX_ALG_NAME,
++		     "tls10(%s,%s)", auth_base->cra_name,
++		     enc->base.cra_name) >= CRYPTO_MAX_ALG_NAME)
++		goto err_drop_enc;
++
++	if (snprintf(inst->alg.base.cra_driver_name, CRYPTO_MAX_ALG_NAME,
++		     "tls10(%s,%s)", auth_base->cra_driver_name,
++		     enc->base.cra_driver_name) >= CRYPTO_MAX_ALG_NAME)
++		goto err_drop_enc;
++
++	inst->alg.base.cra_flags = (auth_base->cra_flags |
++					enc->base.cra_flags) & CRYPTO_ALG_ASYNC;
++	inst->alg.base.cra_priority = enc->base.cra_priority * 10 +
++					auth_base->cra_priority;
++	inst->alg.base.cra_blocksize = enc->base.cra_blocksize;
++	inst->alg.base.cra_alignmask = auth_base->cra_alignmask |
++					enc->base.cra_alignmask;
++	inst->alg.base.cra_ctxsize = sizeof(struct crypto_tls_ctx);
++
++	inst->alg.ivsize = crypto_skcipher_alg_ivsize(enc);
++	inst->alg.chunksize = crypto_skcipher_alg_chunksize(enc);
++	inst->alg.maxauthsize = auth->digestsize;
++
++	inst->alg.init = crypto_tls_init_tfm;
++	inst->alg.exit = crypto_tls_exit_tfm;
++
++	inst->alg.setkey = crypto_tls_setkey;
++	inst->alg.encrypt = crypto_tls_encrypt;
++	inst->alg.decrypt = crypto_tls_decrypt;
++
++	inst->free = crypto_tls_free;
++
++	err = aead_register_instance(tmpl, inst);
++	if (err)
++		goto err_drop_enc;
++
++out:
++	crypto_mod_put(auth_base);
++	return err;
++
++err_drop_enc:
++	crypto_drop_skcipher(&ctx->enc);
++err_drop_auth:
++	crypto_drop_ahash(&ctx->auth);
++err_free_inst:
++	kfree(inst);
++out_put_auth:
++	goto out;
++}
++
++static struct crypto_template crypto_tls_tmpl = {
++	.name = "tls10",
++	.create = crypto_tls_create,
++	.module = THIS_MODULE,
++};
++
++static int __init crypto_tls_module_init(void)
++{
++	return crypto_register_template(&crypto_tls_tmpl);
++}
++
++static void __exit crypto_tls_module_exit(void)
++{
++	crypto_unregister_template(&crypto_tls_tmpl);
++}
++
++module_init(crypto_tls_module_init);
++module_exit(crypto_tls_module_exit);
++
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("TLS 1.0 record encryption");

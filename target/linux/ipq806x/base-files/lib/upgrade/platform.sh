@@ -13,7 +13,7 @@ platform_do_upgrade() {
 	buffalo,wxr-2533dhp)
 		buffalo_upgrade_prepare_ubi
 		CI_ROOTPART="ubi_rootfs"
-		nand_do_upgrade "$ARGV"
+		nand_do_upgrade "$1"
 		;;
 	compex,wpq864|\
 	netgear,d7800 |\
@@ -21,38 +21,27 @@ platform_do_upgrade() {
 	netgear,r7500v2 |\
 	netgear,r7800 |\
 	qcom,ipq8064-ap148 |\
-	qcom,ipq8064-ap161 |\
-	ruijie,rg-mtfi-m520 |\
+	qcom,ipq8064-ap161)
+		nand_do_upgrade "$1"
+		;;
 	zyxel,nbg6817)
-		nand_do_upgrade "$ARGV"
+		zyxel_do_upgrade "$1"
 		;;
 	linksys,ea8500)
-		platform_do_upgrade_linksys "$ARGV"
+		platform_do_upgrade_linksys "$1"
 		;;
 	tplink,c2600)
 		PART_NAME="os-image:rootfs"
 		MTD_CONFIG_ARGS="-s 0x200000"
-		default_do_upgrade "$ARGV"
+		default_do_upgrade "$1"
 		;;
 	tplink,vr2600v)
 		PART_NAME="kernel:rootfs"
 		MTD_CONFIG_ARGS="-s 0x200000"
-		default_do_upgrade "$ARGV"
+		default_do_upgrade "$1"
 		;;
-	nec,wg2600hp |\
 	*)
-		default_do_upgrade "$ARGV"
-		;;
-	esac
-}
-
-platform_nand_pre_upgrade() {
-	case "$(board_name)" in
-	ruijie,rg-mtfi-m520)
-		ruijie_do_upgrade "$1"
-		;;
-	zyxel,nbg6817)
-		zyxel_do_upgrade "$1"
+		default_do_upgrade "$1"
 		;;
 	esac
 }

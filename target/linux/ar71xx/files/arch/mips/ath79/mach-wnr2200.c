@@ -222,6 +222,7 @@ static void __init wnr2200_setup(void)
 
 	wnr2200_get_wmac(wlan_mac_addr, WNR2200_MAC0_OFFSET,
 			 WNR2200_MAC1_OFFSET, WNR2200_WMAC_OFFSET);
+	ap9x_pci_setup_wmac_led_pin(0, 0);
 	ap91_pci_init(art + WNR2200_PCIE_CALDATA_OFFSET, wlan_mac_addr);
 
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(wnr2200_leds_gpio),

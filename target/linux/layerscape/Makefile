@@ -8,10 +8,9 @@ include $(TOPDIR)/rules.mk
 
 BOARD:=layerscape
 BOARDNAME:=NXP Layerscape
-KERNEL_PATCHVER:=4.14
+KERNEL_PATCHVER:=5.4
 FEATURES:=squashfs nand usb pcie gpio fpu ubifs ext4
 SUBTARGETS:=armv8_64b armv7
-MAINTAINER:=Yangbo Lu <yangbo.lu@nxp.com>
 
 define Target/Description
 	Build firmware images for NXP Layerscape based boards.

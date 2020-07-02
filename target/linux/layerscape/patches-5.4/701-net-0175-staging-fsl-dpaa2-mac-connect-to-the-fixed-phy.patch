@@ -1,0 +1,92 @@
+From 69e35d8266713d36ad31b04d9b7cb32913d243c0 Mon Sep 17 00:00:00 2001
+From: Ioana Ciornei <ioana.ciornei@nxp.com>
+Date: Tue, 27 Nov 2018 15:23:47 +0200
+Subject: [PATCH] staging: fsl-dpaa2/mac: connect to the fixed phy
+
+This patch is formed from 2 parts:
+   - first it moves the code that determines the if_mode to the
+     beginning so that it's used for both fixed link and phy mode.
+   - secondly, when in fixed link mode, call the phy_connect_phy
+     function as needed.
+
+Signed-off-by: Ioana Ciornei <ioana.ciornei@nxp.com>
+---
+ drivers/staging/fsl-dpaa2/mac/mac.c | 39 ++++++++++++++++++++++++-------------
+ 1 file changed, 25 insertions(+), 14 deletions(-)
+
+--- a/drivers/staging/fsl-dpaa2/mac/mac.c
++++ b/drivers/staging/fsl-dpaa2/mac/mac.c
+@@ -642,21 +642,12 @@ static int dpaa2_mac_probe(struct fsl_mc
+ 	}
+ #endif /* CONFIG_FSL_DPAA2_MAC_NETDEVS */
+ 
+-	/* probe the PHY as fixed-link if the DPMAC attribute indicates so */
+-	if (priv->attr.link_type == DPMAC_LINK_TYPE_FIXED)
+-		goto probe_fixed_link;
+-
+-	/* or if there's no phy-handle defined in the device tree */
+-	phy_node = of_parse_phandle(dpmac_node, "phy-handle", 0);
+-	if (!phy_node) {
+-		goto probe_fixed_link;
+-	}
+-
++	/* get the interface mode from the dpmac of node or from the MC attributes */
+ 	if_mode = of_get_phy_mode(dpmac_node);
+ 	if (if_mode >= 0) {
+ 		dev_dbg(dev, "\tusing if mode %s for eth_if %d\n",
+ 			phy_modes(if_mode), priv->attr.eth_if);
+-		goto phy_connect;
++		goto link_type;
+ 	}
+ 
+ 	if (priv->attr.eth_if < ARRAY_SIZE(dpaa2_mac_iface_mode)) {
+@@ -664,12 +655,23 @@ static int dpaa2_mac_probe(struct fsl_mc
+ 		dev_dbg(dev, "\tusing if mode %s for eth_if %d\n",
+ 			phy_modes(if_mode), priv->attr.eth_if);
+ 	} else {
+-		dev_warn(dev, "Unexpected interface mode %d, will probe as fixed link\n",
+-			 priv->attr.eth_if);
++		dev_err(dev, "Unexpected interface mode %d\n",
++			priv->attr.eth_if);
++		err = -EINVAL;
++		goto err_no_if_mode;
++	}
++
++link_type:
++	/* probe the PHY as fixed-link if the DPMAC attribute indicates so */
++	if (priv->attr.link_type == DPMAC_LINK_TYPE_FIXED)
++		goto probe_fixed_link;
++
++	/* or if there's no phy-handle defined in the device tree */
++	phy_node = of_parse_phandle(dpmac_node, "phy-handle", 0);
++	if (!phy_node) {
+ 		goto probe_fixed_link;
+ 	}
+ 
+-phy_connect:
+ 	/* try to connect to the PHY */
+ 	netdev->phydev = of_phy_connect(netdev, phy_node,
+ 					&dpaa2_mac_link_changed, 0, if_mode);
+@@ -702,6 +704,14 @@ probe_fixed_link:
+ 			err = -EFAULT;
+ 			goto err_no_phy;
+ 		}
++
++		err = phy_connect_direct(netdev, netdev->phydev,
++					 &dpaa2_mac_link_changed, if_mode);
++		if (err) {
++			dev_err(dev, "error trying to connect to PHY\n");
++			goto err_no_phy;
++		}
++
+ 		dev_info(dev, "Registered fixed PHY.\n");
+ 	}
+ 
+@@ -709,6 +719,7 @@ probe_fixed_link:
+ 
+ 	return 0;
+ 
++err_no_if_mode:
+ err_defer:
+ err_no_phy:
+ #ifdef CONFIG_FSL_DPAA2_MAC_NETDEVS

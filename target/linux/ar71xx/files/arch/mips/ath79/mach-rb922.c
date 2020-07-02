@@ -1,5 +1,5 @@
 /*
- *  MikroTik RouterBOARD 91X support
+ *  MikroTik RouterBOARD 92X support
  *
  *  Copyright (C) 2015 Gabor Juhos <juhosg@openwrt.org>
  *
@@ -49,6 +49,10 @@
 #define RB922_GPIO_BTN_RESET	20
 #define RB922_GPIO_NAND_NCE	23
 
+#define RB92X_FLAG_USB		BIT(0)
+#define RB92X_FLAG_USB_POWER	BIT(1)
+#define RB92X_FLAG_PCIE		BIT(2)
+
 #define RB922_PHY_ADDR		4
 
 #define RB922_KEYS_POLL_INTERVAL	20	/* msecs */
@@ -61,6 +65,11 @@
 #define RB_BIOS_SIZE		0x1000
 #define RB_SOFT_CFG_OFFSET	0xf000
 #define RB_SOFT_CFG_SIZE	0x1000
+
+struct rb_board_info {
+        const char *name;
+        u32 flags;
+};
 
 static struct mtd_partition rb922gs_spi_partitions[] = {
 	{
@@ -80,6 +89,32 @@ static struct mtd_partition rb922gs_spi_partitions[] = {
 		.name		= "soft_config",
 		.size		= RB_SOFT_CFG_SIZE,
 	}
+};
+
+static void __init rb922gs_init_partitions(const struct rb_info *info)
+{
+	rb922gs_spi_partitions[0].size = info->hard_cfg_offs;
+	rb922gs_spi_partitions[1].offset = info->hard_cfg_offs;
+	rb922gs_spi_partitions[3].offset = info->soft_cfg_offs;
+}
+
+static struct mtd_partition rb922gs_nand_partitions[] = {
+	{
+		.name	= "booter",
+		.offset	= 0,
+		.size	= (256 * 1024),
+		.mask_flags = MTD_WRITEABLE,
+	},
+	{
+		.name	= "kernel",
+		.offset	= (256 * 1024),
+		.size	= (4 * 1024 * 1024) - (256 * 1024),
+	},
+	{
+		.name	= "ubi",
+		.offset	= MTDPART_OFS_NXTBLK,
+		.size	= MTDPART_SIZ_FULL,
+	},
 };
 
 static struct flash_platform_data rb922gs_spi_flash_data = {
@@ -118,12 +153,7 @@ static struct mdio_board_info rb922gs_mdio0_info[] = {
 	},
 };
 
-static void __init rb922gs_init_partitions(const struct rb_info *info)
-{
-	rb922gs_spi_partitions[0].size = info->hard_cfg_offs;
-	rb922gs_spi_partitions[1].offset = info->hard_cfg_offs;
-	rb922gs_spi_partitions[3].offset = info->soft_cfg_offs;
-}
+
 
 static void rb922gs_nand_select_chip(int chip_no)
 {
@@ -221,25 +251,6 @@ static int rb922gs_nand_scan_fixup(struct mtd_info *mtd)
 	return 0;
 }
 
-static struct mtd_partition rb922gs_nand_partitions[] = {
-	{
-		.name	= "booter",
-		.offset	= 0,
-		.size	= (256 * 1024),
-		.mask_flags = MTD_WRITEABLE,
-	},
-	{
-		.name	= "kernel",
-		.offset	= (256 * 1024),
-		.size	= (4 * 1024 * 1024) - (256 * 1024),
-	},
-	{
-		.name	= "ubi",
-		.offset	= MTDPART_OFS_NXTBLK,
-		.size	= MTDPART_SIZ_FULL,
-	},
-};
-
 static void __init rb922gs_nand_init(void)
 {
 	gpio_request_one(RB922_GPIO_NAND_NCE, GPIOF_OUT_INIT_HIGH, "NAND nCE");
@@ -252,10 +263,37 @@ static void __init rb922gs_nand_init(void)
 	ath79_register_nfc();
 }
 
+#define RB_BOARD_INFO(_name, _flags)    \
+        {                               \
+                .name = (_name),        \
+                .flags = (_flags),      \
+        }
+
+static const struct rb_board_info rb92x_boards[] __initconst = {
+        RB_BOARD_INFO("921GS-5HPacD r2", RB92X_FLAG_PCIE),
+        RB_BOARD_INFO("922UAGS-5HPacD", RB92X_FLAG_USB | RB92X_FLAG_USB_POWER | RB92X_FLAG_PCIE),
+};
+
+static u32 rb92x_get_flags(const struct rb_info *info)
+{
+        int i;
+
+        for (i = 0; i < ARRAY_SIZE(rb92x_boards); i++) {
+                const struct rb_board_info *bi;
+
+                bi = &rb92x_boards[i];
+                if (strcmp(info->board_name, bi->name) == 0)
+                        return bi->flags;
+        }
+
+        return 0;
+}
+
 static void __init rb922gs_setup(void)
 {
 	const struct rb_info *info;
 	char buf[64];
+	u32 flags;
 
 	info = rb_init_info((void *) KSEG1ADDR(0x1f000000), 0x10000);
 	if (!info)
@@ -281,7 +319,9 @@ static void __init rb922gs_setup(void)
 	ath79_eth0_data.mii_bus_dev = &ath79_mdio0_device.dev;
 	ath79_eth0_data.phy_if_mode = PHY_INTERFACE_MODE_RGMII;
 	ath79_eth0_data.phy_mask = BIT(RB922_PHY_ADDR);
-	if (strcmp(info->board_name, "921GS-5HPacD r2") == 0) {
+	if (strcmp(info->board_name, "921GS-5HPacD r2") == 0 ||
+	    strcmp(info->board_name, "922UAGS-5HPacD") == 0)
+	{
 		ath79_eth0_pll_data.pll_10 = 0xa0001313;
 		ath79_eth0_pll_data.pll_100 = 0xa0000101;
 		ath79_eth0_pll_data.pll_1000 = 0x8f000000;
@@ -294,7 +334,18 @@ static void __init rb922gs_setup(void)
 
 	ath79_register_eth(0);
 
-	ath79_register_pci();
+	flags = rb92x_get_flags(info);
+
+        if (flags & RB92X_FLAG_USB)
+                ath79_register_usb();
+
+        if (flags & RB92X_FLAG_USB_POWER)
+                gpio_request_one(RB922_GPIO_USB_POWER, GPIOF_OUT_INIT_LOW |
+			GPIOF_EXPORT_DIR_FIXED, "USB power");
+
+        if (flags & RB92X_FLAG_PCIE)
+                ath79_register_pci();
+
 	ath79_register_leds_gpio(-1, ARRAY_SIZE(rb922gs_leds), rb922gs_leds);
 	ath79_register_gpio_keys_polled(-1, RB922_KEYS_POLL_INTERVAL,
 					ARRAY_SIZE(rb922gs_gpio_keys),

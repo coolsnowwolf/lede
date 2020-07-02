@@ -1,0 +1,75 @@
+From 5331cbb3d9cfb172ed134f08a35740e0a52d1107 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Thu, 6 Feb 2020 14:41:41 +0100
+Subject: [PATCH] drm/vc4: plane: Move additional planes creation to
+ driver
+
+So far the plane creation was done when each CRTC was bound, and those
+planes were only tied to the CRTC that was registering them.
+
+This causes two main issues:
+  - The planes in the vc4 hardware are actually not tied to any CRTC, but
+    can be used with every combination
+
+  - More importantly, so far, we allocate 10 planes per CRTC, with 3 CRTCs.
+    However, the next generation of hardware will have 5 CRTCs, putting us
+    well above the maximum of 32 planes currently allowed by DRM.
+
+This patch is the first one in a series of patches that will take down both
+of these issues so that we can support the next generation of hardware
+while keeping a good amount of planes.
+
+We start by changing the way the planes are registered to first registering
+the primary planes for each CRTC in the CRTC bind function as we used to,
+but moving the overlay and cursor creation to the main driver bind
+function, after all the CRTCs have been bound.
+
+This will slightly change the ID order of the planes, since the primary
+planes of all CRTCs will be first, and then a pattern of 8 overlays, 1
+cursor plane for each CRTC.
+
+This shouldn't cause any trouble since the ordering between the planes is
+preserved though.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c | 4 ----
+ drivers/gpu/drm/vc4/vc4_drv.c  | 7 +++++++
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -1190,10 +1190,6 @@ static int vc4_crtc_bind(struct device *
+ 	 */
+ 	drm_crtc_enable_color_mgmt(crtc, 0, true, crtc->gamma_size);
+ 
+-	ret = vc4_plane_create_additional_planes(drm, crtc);
+-	if (ret)
+-		goto err_destroy_planes;
+-
+ 	vc4_crtc_get_cob_allocation(vc4_crtc);
+ 
+ 	CRTC_WRITE(PV_INTEN, 0);
+--- a/drivers/gpu/drm/vc4/vc4_drv.c
++++ b/drivers/gpu/drm/vc4/vc4_drv.c
+@@ -253,6 +253,7 @@ static int vc4_drm_bind(struct device *d
+ {
+ 	struct platform_device *pdev = to_platform_device(dev);
+ 	struct drm_device *drm;
++	struct drm_crtc *crtc;
+ 	struct vc4_dev *vc4;
+ 	struct device_node *node;
+ 	int ret = 0;
+@@ -291,6 +292,12 @@ static int vc4_drm_bind(struct device *d
+ 	if (ret)
+ 		goto gem_destroy;
+ 
++	drm_for_each_crtc(crtc, drm) {
++		ret = vc4_plane_create_additional_planes(drm, crtc);
++		if (ret)
++			continue;
++	}
++
+ 	drm_fb_helper_remove_conflicting_framebuffers(NULL, "vc4drmfb", false);
+ 
+ 	ret = vc4_kms_load(drm);

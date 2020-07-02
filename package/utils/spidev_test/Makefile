@@ -10,26 +10,45 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=spidev-test
 PKG_RELEASE:=$(LINUX_VERSION)
+PKG_FLAGS:=nonshared
+PKG_BUILD_DIR:=$(LINUX_DIR)/tools/spi-$(TARGET_DIR_NAME)
+PKG_BUILD_PARALLEL:=1
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/spidev-test
   SECTION:=utils
   CATEGORY:=Utilities
-  DEPENDS:=+kmod-spi-dev
+  DEPENDS:=+kmod-spi-dev @!IN_SDK
   TITLE:=SPI testing utility
   VERSION:=$(LINUX_VERSION)-$(PKG_RELEASE)
   URL:=http://www.kernel.org
-  MAINTAINER:=Florian Fainelli <florian@openwrt.org>
 endef
 
 define Package/spidev-test/description
   SPI testing utility.
 endef
 
+define Build/Prepare
+	$(CP) $(LINUX_DIR)/tools/spi/* $(PKG_BUILD_DIR)/
+endef
+
+MAKE_FLAGS = \
+	ARCH="$(LINUX_KARCH)" \
+	CROSS_COMPILE="$(TARGET_CROSS)" \
+	CC="$(TARGET_CC)" \
+	LD="$(TARGET_CROSS)ld" \
+	CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS)" \
+	LDFLAGS="$(TARGET_LDFLAGS)" \
+	$(if $(findstring c,$(OPENWRT_VERBOSE)),V=1,V='') \
+	WERROR=0 \
+	prefix=/usr
+
 define Build/Compile
-	$(TARGET_CC) $(TARGET_CFLAGS) -o $(PKG_BUILD_DIR)/spidev_test \
-		$(PKG_BUILD_DIR)/spidev_test.c
+	+$(MAKE_FLAGS) $(MAKE) $(PKG_JOBS) \
+		-C $(PKG_BUILD_DIR) \
+		-f Makefile \
+		--no-print-directory
 endef
 
 define Package/spidev-test/install
