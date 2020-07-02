@@ -1,0 +1,90 @@
+From f3d460fb85677a5f62324771e5715ceb11726ecc Mon Sep 17 00:00:00 2001
+From: Yangbo Lu <yangbo.lu@nxp.com>
+Date: Thu, 12 Dec 2019 15:52:19 +0800
+Subject: [PATCH] LF-605 mmc: sdhci-of-esdhc: update tuning erratum A-008171
+
+There is an official update for eSDHC tuning erratum A-008171.
+This patch is to implement the changes,
+- Affect all revisions of SoC.
+- Changes for tuning window checking.
+- Hardware hits a new condition that tuning succeeds although
+  the eSDHC might not have tuned properly for type2 SoCs
+  (soc_tuning_erratum_type2[] array in driver). So check
+  tuning window after tuning succeeds.
+
+Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
+Acked-by: Adrian Hunter <adrian.hunter@intel.com>
+---
+ drivers/mmc/host/sdhci-of-esdhc.c | 39 ++++++++++++++++++++++++++-------------
+ 1 file changed, 26 insertions(+), 13 deletions(-)
+
+--- a/drivers/mmc/host/sdhci-of-esdhc.c
++++ b/drivers/mmc/host/sdhci-of-esdhc.c
+@@ -889,20 +889,20 @@ static int esdhc_signal_voltage_switch(s
+ }
+ 
+ static struct soc_device_attribute soc_tuning_erratum_type1[] = {
+-	{ .family = "QorIQ T1023", .revision = "1.0", },
+-	{ .family = "QorIQ T1040", .revision = "1.0", },
+-	{ .family = "QorIQ T2080", .revision = "1.0", },
+-	{ .family = "QorIQ LS1021A", .revision = "1.0", },
++	{ .family = "QorIQ T1023", },
++	{ .family = "QorIQ T1040", },
++	{ .family = "QorIQ T2080", },
++	{ .family = "QorIQ LS1021A", },
+ 	{ },
+ };
+ 
+ static struct soc_device_attribute soc_tuning_erratum_type2[] = {
+-	{ .family = "QorIQ LS1012A", .revision = "1.0", },
+-	{ .family = "QorIQ LS1043A", .revision = "1.*", },
+-	{ .family = "QorIQ LS1046A", .revision = "1.0", },
+-	{ .family = "QorIQ LS1080A", .revision = "1.0", },
+-	{ .family = "QorIQ LS2080A", .revision = "1.0", },
+-	{ .family = "QorIQ LA1575A", .revision = "1.0", },
++	{ .family = "QorIQ LS1012A", },
++	{ .family = "QorIQ LS1043A", },
++	{ .family = "QorIQ LS1046A", },
++	{ .family = "QorIQ LS1080A", },
++	{ .family = "QorIQ LS2080A", },
++	{ .family = "QorIQ LA1575A", },
+ 	{ },
+ };
+ 
+@@ -970,13 +970,13 @@ static void esdhc_prepare_sw_tuning(stru
+ 	/* Write 32'hFFFF_FFFF to IRQSTAT register */
+ 	sdhci_writel(host, 0xFFFFFFFF, SDHCI_INT_STATUS);
+ 
+-	/* If TBSTAT[15:8]-TBSTAT[7:0] > 4 * div_ratio
+-	 * or TBSTAT[7:0]-TBSTAT[15:8] > 4 * div_ratio,
++	/* If TBSTAT[15:8]-TBSTAT[7:0] > (4 * div_ratio) + 2
++	 * or TBSTAT[7:0]-TBSTAT[15:8] > (4 * div_ratio) + 2,
+ 	 * then program TBPTR[TB_WNDW_END_PTR] = 4 * div_ratio
+ 	 * and program TBPTR[TB_WNDW_START_PTR] = 8 * div_ratio.
+ 	 */
+ 
+-	if (abs(start_ptr - end_ptr) > (4 * esdhc->div_ratio)) {
++	if (abs(start_ptr - end_ptr) > (4 * esdhc->div_ratio + 2)) {
+ 		*window_start = 8 * esdhc->div_ratio;
+ 		*window_end = 4 * esdhc->div_ratio;
+ 	} else {
+@@ -1049,6 +1049,19 @@ static int esdhc_execute_tuning(struct m
+ 		if (ret)
+ 			break;
+ 
++		/* For type2 affected platforms of the tuning erratum,
++		 * tuning may succeed although eSDHC might not have
++		 * tuned properly. Need to check tuning window.
++		 */
++		if (esdhc->quirk_tuning_erratum_type2 &&
++		    !host->tuning_err) {
++			esdhc_tuning_window_ptr(host, &window_start,
++						&window_end);
++			if (abs(window_start - window_end) >
++			    (4 * esdhc->div_ratio + 2))
++				host->tuning_err = -EAGAIN;
++		}
++
+ 		/* If HW tuning fails and triggers erratum,
+ 		 * try workaround.
+ 		 */

@@ -1,0 +1,109 @@
+From c96a1cff5d03a56f380ce761aec9d11fcf61c7f1 Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Thu, 14 Nov 2019 17:03:26 +0200
+Subject: [PATCH] net: mscc: ocelot: separate the implementation of switch
+ reset
+
+The Felix switch has a different reset procedure, so a function pointer
+needs to be created and added to the ocelot_ops structure.
+
+The reset procedure has been moved into ocelot_init.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/ethernet/mscc/ocelot.c       |  8 +++++++
+ drivers/net/ethernet/mscc/ocelot.h       |  1 +
+ drivers/net/ethernet/mscc/ocelot_board.c | 37 +++++++++++++++++++++-----------
+ 3 files changed, 33 insertions(+), 13 deletions(-)
+
+--- a/drivers/net/ethernet/mscc/ocelot.c
++++ b/drivers/net/ethernet/mscc/ocelot.c
+@@ -2273,6 +2273,14 @@ int ocelot_init(struct ocelot *ocelot)
+ 	int i, ret;
+ 	u32 port;
+ 
++	if (ocelot->ops->reset) {
++		ret = ocelot->ops->reset(ocelot);
++		if (ret) {
++			dev_err(ocelot->dev, "Switch reset failed\n");
++			return ret;
++		}
++	}
++
+ 	ocelot->lags = devm_kcalloc(ocelot->dev, ocelot->num_phys_ports,
+ 				    sizeof(u32), GFP_KERNEL);
+ 	if (!ocelot->lags)
+--- a/drivers/net/ethernet/mscc/ocelot.h
++++ b/drivers/net/ethernet/mscc/ocelot.h
+@@ -446,6 +446,7 @@ struct ocelot_stat_layout {
+ 
+ struct ocelot_ops {
+ 	void (*pcs_init)(struct ocelot *ocelot, int port);
++	int (*reset)(struct ocelot *ocelot);
+ };
+ 
+ struct ocelot {
+--- a/drivers/net/ethernet/mscc/ocelot_board.c
++++ b/drivers/net/ethernet/mscc/ocelot_board.c
+@@ -285,8 +285,32 @@ static void ocelot_port_pcs_init(struct
+ 	ocelot_port_writel(ocelot_port, 0, PCS1G_LB_CFG);
+ }
+ 
++static int ocelot_reset(struct ocelot *ocelot)
++{
++	int retries = 100;
++	u32 val;
++
++	regmap_field_write(ocelot->regfields[SYS_RESET_CFG_MEM_INIT], 1);
++	regmap_field_write(ocelot->regfields[SYS_RESET_CFG_MEM_ENA], 1);
++
++	do {
++		msleep(1);
++		regmap_field_read(ocelot->regfields[SYS_RESET_CFG_MEM_INIT],
++				  &val);
++	} while (val && --retries);
++
++	if (!retries)
++		return -ETIMEDOUT;
++
++	regmap_field_write(ocelot->regfields[SYS_RESET_CFG_MEM_ENA], 1);
++	regmap_field_write(ocelot->regfields[SYS_RESET_CFG_CORE_ENA], 1);
++
++	return 0;
++}
++
+ static const struct ocelot_ops ocelot_ops = {
+ 	.pcs_init		= ocelot_port_pcs_init,
++	.reset			= ocelot_reset,
+ };
+ 
+ static int mscc_ocelot_probe(struct platform_device *pdev)
+@@ -297,7 +321,6 @@ static int mscc_ocelot_probe(struct plat
+ 	struct ocelot *ocelot;
+ 	struct regmap *hsio;
+ 	unsigned int i;
+-	u32 val;
+ 
+ 	struct {
+ 		enum ocelot_target id;
+@@ -377,18 +400,6 @@ static int mscc_ocelot_probe(struct plat
+ 		ocelot->ptp = 1;
+ 	}
+ 
+-	regmap_field_write(ocelot->regfields[SYS_RESET_CFG_MEM_INIT], 1);
+-	regmap_field_write(ocelot->regfields[SYS_RESET_CFG_MEM_ENA], 1);
+-
+-	do {
+-		msleep(1);
+-		regmap_field_read(ocelot->regfields[SYS_RESET_CFG_MEM_INIT],
+-				  &val);
+-	} while (val);
+-
+-	regmap_field_write(ocelot->regfields[SYS_RESET_CFG_MEM_ENA], 1);
+-	regmap_field_write(ocelot->regfields[SYS_RESET_CFG_CORE_ENA], 1);
+-
+ 	ocelot->num_cpu_ports = 1; /* 1 port on the switch, two groups */
+ 
+ 	ports = of_get_child_by_name(np, "ethernet-ports");

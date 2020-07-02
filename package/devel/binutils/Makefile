@@ -49,6 +49,7 @@ define Package/binutils
   CATEGORY:=Development
   TITLE:=binutils
   DEPENDS:=+objdump +ar
+  ALTERNATIVES:=200:/usr/bin/strings:/usr/bin/binutils-strings
 endef
 
 define Package/objdump
@@ -114,7 +115,7 @@ endef
 define Package/binutils/install
 	$(INSTALL_DIR) $(1)/usr $(1)/bin
 	$(CP) $(PKG_INSTALL_DIR)/usr/bin/ $(1)/usr/
-	mv $(1)/usr/bin/strings $(1)/bin/strings
+	mv $(1)/usr/bin/strings $(1)/usr/bin/binutils-strings
 	rm -f $(1)/usr/bin/objdump
 	rm -f $(1)/usr/bin/ar
 endef
