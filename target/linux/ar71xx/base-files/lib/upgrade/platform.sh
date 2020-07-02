@@ -6,8 +6,8 @@
 . /lib/ar71xx.sh
 
 PART_NAME=firmware
-RAMFS_COPY_DATA=/lib/ar71xx.sh
-RAMFS_COPY_BIN='nandwrite'
+RAMFS_COPY_DATA='/lib/ar71xx.sh /etc/fw_env.config /var/lock/fw_printenv.lock'
+RAMFS_COPY_BIN='nandwrite fw_printenv fw_setenv'
 
 CI_BLKSZ=65536
 CI_LDADR=0x80060000
@@ -65,7 +65,7 @@ platform_do_upgrade_combined() {
 	then
 		local rootfspart=$(platform_find_rootfspart "$partitions" "$kernelpart")
 		local append=""
-		[ -f "$CONF_TAR" -a "$SAVE_CONFIG" -eq 1 ] && append="-j $CONF_TAR"
+		[ -f "$UPGRADE_BACKUP" ] && append="-j $UPGRADE_BACKUP"
 
 		if [ "$PLATFORM_DO_UPGRADE_COMBINED_SEPARATE_MTD" -ne 1 ]; then
 		    ( dd if="$1" bs=$CI_BLKSZ skip=1 count=$kern_blocks 2>/dev/null; \
@@ -164,7 +164,7 @@ platform_do_upgrade_compex() {
 
 	if [ -n "$fw_mtd" ] &&  [ ${fw_blocks:-0} -gt 0 ]; then
 		local append=""
-		[ -f "$CONF_TAR" -a "$SAVE_CONFIG" -eq 1 ] && append="-j $CONF_TAR"
+		[ -f "$UPGRADE_BACKUP" ] && append="-j $UPGRADE_BACKUP"
 
 		sync
 		dd if="$fw_file" bs=64k skip=1 count=$fw_blocks 2>/dev/null | \
@@ -218,6 +218,7 @@ platform_check_image() {
 	archer-c7-v4|\
 	archer-c7-v5|\
 	bullet-m|\
+	bullet-m-xw|\
 	c-55|\
 	carambola2|\
 	cf-e316n-v2|\
@@ -355,7 +356,6 @@ platform_check_image() {
 	hornet-ub|\
 	mr12|\
 	mr16|\
-	sgr-w500-n85b-v2|\
 	zbt-we1526|\
 	zcn-1523h-2|\
 	zcn-1523h-5)
@@ -394,7 +394,7 @@ platform_check_image() {
 		}
 
 		local md5_img=$(dd if="$1" bs=2 skip=9 count=16 2>/dev/null)
-		local md5_chk=$(dd if="$1" bs=$CI_BLKSZ skip=1 2>/dev/null | md5sum -); md5_chk="${md5_chk%% *}"
+		local md5_chk=$(fwtool -q -t -i /dev/null "$1"; dd if="$1" bs=$CI_BLKSZ skip=1 2>/dev/null | md5sum -); md5_chk="${md5_chk%% *}"
 
 		if [ -n "$md5_img" -a -n "$md5_chk" ] && [ "$md5_img" = "$md5_chk" ]; then
 			return 0
@@ -415,8 +415,8 @@ platform_check_image() {
 	gl-inet|\
 	lan-turtle|\
 	mc-mac1200r|\
-	mc-mw4530r | \
 	minibox-v1|\
+	minibox-v3.2|\
 	omy-g1|\
 	omy-x1|\
 	onion-omega|\
@@ -458,21 +458,16 @@ platform_check_image() {
 	tl-wa901nd-v3|\
 	tl-wa901nd-v4|\
 	tl-wa901nd-v5|\
-	tl-wdr3227-v2|\
 	tl-wdr3320-v2|\
 	tl-wdr3500|\
 	tl-wdr4300|\
 	tl-wdr4900-v2|\
 	tl-wdr6500-v2|\
-	tl-wdr6500-v6|\
-	tl-wdr8500-v1|\
 	tl-wpa8630|\
 	tl-wr1041n-v2|\
 	tl-wr1043nd|\
 	tl-wr1043nd-v2|\
 	tl-wr1043nd-v4|\
-	tl-wr2041n-v1|\
-	tl-wr2041n-v2|\
 	tl-wr2543n|\
 	tl-wr703n|\
 	tl-wr710n|\
@@ -493,23 +488,18 @@ platform_check_image() {
 	tl-wr841n-v11|\
 	tl-wr842n-v2|\
 	tl-wr842n-v3|\
-	tl-wr880n-v1|\
-	tl-wr881n-v1|\
-	tl-wr885n-v1|\
 	tl-wr902ac-v1|\
 	tl-wr940n-v4|\
 	tl-wr940n-v6|\
 	tl-wr941nd|\
 	tl-wr941nd-v5|\
 	tl-wr941nd-v6|\
-	tl-wr941n-v7|\
 	ts-d084|\
 	wifi-pineapple-nano)
 		local magic_ver="0100"
 
 		case "$board" in
-		tl-wdr6500-v2|\
-		tl-wdr6500-v6)
+		tl-wdr3320-v2|tl-wdr6500-v2)
 			magic_ver="0200"
 			;;
 		esac
@@ -568,6 +558,7 @@ platform_check_image() {
 	rb-912uag-2hpnd|\
 	rb-912uag-5hpnd|\
 	rb-921gs-5hpacd-r2|\
+	rb-922uags-5hpacd|\
 	rb-951g-2hnd|\
 	rb-951ui-2hnd|\
 	rb-2011l|\
@@ -577,6 +568,7 @@ platform_check_image() {
 	rb-2011uas-2hnd|\
 	rb-2011uias|\
 	rb-2011uias-2hnd|\
+	rb-2011uias-2hnd-r2|\
 	rb-sxt2n|\
 	rb-sxt5n)
 		nand_do_platform_check routerboard $1
@@ -589,35 +581,26 @@ platform_check_image() {
 	rambutan|\
 	wi2a-ac200i|\
 	wndr3700v4|\
-	sbr-ac1750|\
 	wndr4300)
 		nand_do_platform_check $board $1
 		return $?
 		;;
 	cpe210|\
+	cpe510|\
 	eap120|\
 	wbs210|\
 	wbs510)
 		tplink_pharos_check_image "$1" "7f454c46" "$(tplink_pharos_get_model_string)" '' && return 0
 		return 1
 		;;
-	cpe210-v2)
+	cpe210-v2|\
+	cpe210-v3)
 		tplink_pharos_check_image "$1" "01000000" "$(tplink_pharos_v2_get_model_string)" '\0\xff\r' && return 0
 		return 1
 		;;
-	cpe510)
-		local modelstr="$(tplink_pharos_v2_get_model_string)"
-		tplink_pharos_board_detect $modelstr
-		case $AR71XX_MODEL in
-		'TP-Link CPE510 v2.0')
-			tplink_pharos_check_image "$1" "7f454c46" "$modelstr" '\0\xff\r' && return 0
-			return 1
-			;;
-		*)
-			tplink_pharos_check_image "$1" "7f454c46" "$(tplink_pharos_get_model_string)" '' && return 0
-			return 1
-			;;
-		esac
+	cpe510-v2)
+		tplink_pharos_check_image "$1" "7f454c46" "$(tplink_pharos_v2_get_model_string)" '\0\xff\r' && return 0
+		return 1
 		;;
 	a40|\
 	a60|\
@@ -669,14 +652,6 @@ platform_check_image() {
 	wrt160nl)
 		cybertan_check_image "$1" && return 0
 		return 1
-		;;
-	k2t)
-		[ "$magic_long" != "27051956" ] && {
-			echo "Invalid image type."
-			return 1
-		}
-
-		return 0
 		;;
 	nbg6616|\
 	uap-pro|\
@@ -750,6 +725,7 @@ platform_check_image() {
 	rb-lhg-5nd|\
 	rb-map-2nd|\
 	rb-mapl-2nd|\
+	rb-sxt-2nd-r3|\
 	rb-wap-2nd|\
 	rb-wapg-5hact2hnd|\
 	rb-wapr-2nd)
@@ -761,7 +737,43 @@ platform_check_image() {
 	return 1
 }
 
-platform_pre_upgrade() {
+platform_do_upgrade_mikrotik_rb() {
+	CI_KERNPART=none
+	local fw_mtd=$(find_mtd_part kernel)
+	fw_mtd="${fw_mtd/block/}"
+	[ -n "$fw_mtd" ] || return
+
+	local board_dir=$(tar tf "$1" | grep -m 1 '^sysupgrade-.*/$')
+	board_dir=${board_dir%/}
+	[ -n "$board_dir" ] || return
+
+	mtd erase kernel
+	tar xf "$1" ${board_dir}/kernel -O | nandwrite -o "$fw_mtd" -
+
+	nand_do_upgrade "$1"
+}
+
+platform_do_upgrade_nokia() {
+	case "$(fw_printenv -n dualPartition)" in
+		imgA)
+			fw_setenv dualPartition imgB
+			fw_setenv ActImg NokiaImageB
+		;;
+		imgB)
+			fw_setenv dualPartition imgA
+			fw_setenv ActImg NokiaImageA
+		;;
+	esac
+	ubiblock -r /dev/ubiblock0_0 2>/dev/null >/dev/null
+	rm -f /dev/ubiblock0_0
+	ubidetach -d 0 2>/dev/null >/dev/null
+	CI_UBIPART=ubi_alt
+	CI_KERNPART=kernel_alt
+
+	nand_do_upgrade "$1"
+}
+
+platform_do_upgrade() {
 	local board=$(board_name)
 
 	case "$board" in
@@ -778,6 +790,7 @@ platform_pre_upgrade() {
 	rb-lhg-5nd|\
 	rb-map-2nd|\
 	rb-mapl-2nd|\
+	rb-sxt-2nd-r3|\
 	rb-wap-2nd|\
 	rb-wapg-5hact2hnd|\
 	rb-wapr-2nd)
@@ -785,46 +798,10 @@ platform_pre_upgrade() {
 		[ -z "$(rootfs_type)" ] && mtd erase firmware
 		;;
 	esac
-}
-
-platform_nand_pre_upgrade() {
-	local board=$(board_name)
-
-	case "$board" in
-	rb*)
-		CI_KERNPART=none
-		local fw_mtd=$(find_mtd_part kernel)
-		fw_mtd="${fw_mtd/block/}"
-		[ -n "$fw_mtd" ] || return
-		mtd erase kernel
-		tar xf "$1" sysupgrade-routerboard/kernel -O | nandwrite -o "$fw_mtd" -
-		;;
-	wi2a-ac200i)
-		case "$(fw_printenv -n dualPartition)" in
-			imgA)
-				fw_setenv dualPartition imgB
-				fw_setenv ActImg NokiaImageB
-			;;
-			imgB)
-				fw_setenv dualPartition imgA
-				fw_setenv ActImg NokiaImageA
-			;;
-		esac
-		ubiblock -r /dev/ubiblock0_0 2>/dev/null >/dev/null
-		rm -f /dev/ubiblock0_0
-		ubidetach -d 0 2>/dev/null >/dev/null
-		CI_UBIPART=ubi_alt
-		CI_KERNPART=kernel_alt
-		;;
-	esac
-}
-
-platform_do_upgrade() {
-	local board=$(board_name)
 
 	case "$board" in
 	all0258n)
-		platform_do_upgrade_allnet "0x9f050000" "$ARGV"
+		platform_do_upgrade_allnet "0x9f050000" "$1"
 		;;
 	all0305|\
 	eap7660d|\
@@ -836,19 +813,19 @@ platform_do_upgrade() {
 	pb44|\
 	routerstation|\
 	routerstation-pro)
-		platform_do_upgrade_combined "$ARGV"
+		platform_do_upgrade_combined "$1"
 		;;
 	all0315n)
-		platform_do_upgrade_allnet "0x9f080000" "$ARGV"
+		platform_do_upgrade_allnet "0x9f080000" "$1"
 		;;
 	cap4200ag|\
 	eap300v2|\
 	ens202ext)
-		platform_do_upgrade_allnet "0xbf0a0000" "$ARGV"
+		platform_do_upgrade_allnet "0xbf0a0000" "$1"
 		;;
 	dir-825-b1|\
 	tew-673gru)
-		platform_do_upgrade_dir825b "$ARGV"
+		platform_do_upgrade_dir825b "$1"
 		;;
 	a40|\
 	a60|\
@@ -870,13 +847,21 @@ platform_do_upgrade() {
 	om5p-ac|\
 	om5p-acv2|\
 	om5p-an)
-		platform_do_upgrade_openmesh "$ARGV"
+		platform_do_upgrade_openmesh "$1"
 		;;
 	c-60|\
 	hiveap-121|\
 	nbg6716|\
 	r6100|\
 	rambutan|\
+	wndr3700v4|\
+	wndr4300)
+		nand_do_upgrade "$1"
+		;;
+	mr18|\
+	z1)
+		merakinand_do_upgrade "$1"
+		;;
 	rb-411|\
 	rb-411u|\
 	rb-433|\
@@ -896,6 +881,7 @@ platform_do_upgrade() {
 	rb-912uag-2hpnd|\
 	rb-912uag-5hpnd|\
 	rb-921gs-5hpacd-r2|\
+	rb-922uags-5hpacd|\
 	rb-951g-2hnd|\
 	rb-951ui-2hnd|\
 	rb-2011il|\
@@ -905,29 +891,25 @@ platform_do_upgrade() {
 	rb-2011uas-2hnd|\
 	rb-2011uias|\
 	rb-2011uias-2hnd|\
+	rb-2011uias-2hnd-r2|\
 	rb-sxt2n|\
-	rb-sxt5n|\
-	wi2a-ac200i|\
-	wndr3700v4|\
-	sbr-ac1750|\
-	wndr4300)
-		nand_do_upgrade "$1"
-		;;
-	mr18|\
-	z1)
-		merakinand_do_upgrade "$1"
+	rb-sxt5n)
+		platform_do_upgrade_mikrotik_rb "$1"
 		;;
 	uap-pro|\
 	unifi-outdoor-plus)
 		MTD_CONFIG_ARGS="-s 0x180000"
-		default_do_upgrade "$ARGV"
+		default_do_upgrade "$1"
+		;;
+	wi2a-ac200i)
+		platform_do_upgrade_nokia "$1"
 		;;
 	wp543|\
 	wpe72)
-		platform_do_upgrade_compex "$ARGV"
+		platform_do_upgrade_compex "$1"
 		;;
 	*)
-		default_do_upgrade "$ARGV"
+		default_do_upgrade "$1"
 		;;
 	esac
 }

@@ -171,14 +171,8 @@ static int ltq_deu_remove(struct platform_device *pdev)
 
 int disable_multiblock = 0;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,0)
 module_param(disable_multiblock,int,0);
 
-#else
-//MODULE_PARM (disable_multiblock, "i");
-MODULE_PARM_DESC (disable_multiblock,
-          "Disable encryption of whole multiblock buffers.");
-#endif
 
 static const struct of_device_id ltq_deu_match[] = {
 #ifdef CONFIG_DANUBE

@@ -15,5 +15,5 @@ platform_check_image() {
 }
 
 platform_do_upgrade() {
-	default_do_upgrade "$ARGV"
+	default_do_upgrade "$1"
 }

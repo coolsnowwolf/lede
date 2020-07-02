@@ -40,6 +40,8 @@
 #include <linux/proc_fs.h>
 #include <linux/init.h>
 #include <linux/ioctl.h>
+#include <linux/platform_device.h>
+#include <linux/reset.h>
 #include <asm/delay.h>
 
 /*
@@ -52,7 +54,7 @@
 
 static inline void init_pmu(void);
 static inline void uninit_pmu(void);
-static inline void reset_ppe(void);
+static inline void reset_ppe(struct platform_device *pdev);
 static inline void init_pdma(void);
 static inline void init_mailbox(void);
 static inline void init_atm_tc(void);
@@ -80,21 +82,44 @@ static inline void uninit_pmu(void)
 {
 }
 
-static inline void reset_ppe(void)
+static inline void reset_ppe(struct platform_device *pdev)
 {
-/*#ifdef MODULE
-    //  reset PPE
-    ifx_rcu_rst(IFX_RCU_DOMAIN_DSLDFE, IFX_RCU_MODULE_PTM);
-    udelay(1000);
-    ifx_rcu_rst(IFX_RCU_DOMAIN_DSLTC, IFX_RCU_MODULE_PTM);
-    udelay(1000);
-    ifx_rcu_rst(IFX_RCU_DOMAIN_PPE, IFX_RCU_MODULE_PTM);
-    udelay(1000);
-    *PP32_SRST &= ~0x000303CF;
-    udelay(1000);
-    *PP32_SRST |= 0x000303CF;
-    udelay(1000);
-#endif*/
+	struct device *dev = &pdev->dev;
+	struct reset_control *dsp;
+	struct reset_control *dfe;
+	struct reset_control *tc;
+
+	dsp = devm_reset_control_get(dev, "dsp");
+	if (IS_ERR(dsp)) {
+		if (PTR_ERR(dsp) != -EPROBE_DEFER)
+			dev_err(dev, "Failed to lookup dsp reset\n");
+// 		return PTR_ERR(dsp);
+	}
+
+	dfe = devm_reset_control_get(dev, "dfe");
+	if (IS_ERR(dfe)) {
+		if (PTR_ERR(dfe) != -EPROBE_DEFER)
+			dev_err(dev, "Failed to lookup dfe reset\n");
+// 		return PTR_ERR(dfe);
+	}
+
+	tc = devm_reset_control_get(dev, "tc");
+	if (IS_ERR(tc)) {
+		if (PTR_ERR(tc) != -EPROBE_DEFER)
+			dev_err(dev, "Failed to lookup tc reset\n");
+// 		return PTR_ERR(tc);
+	}
+
+	reset_control_assert(dsp);
+	udelay(1000);
+	reset_control_assert(dfe);
+	udelay(1000);
+	reset_control_assert(tc);
+	udelay(1000);
+	*PP32_SRST &= ~0x000303CF;
+	udelay(1000);
+	*PP32_SRST |= 0x000303CF;
+	udelay(1000);
 }
 
 static inline void init_pdma(void)
@@ -230,11 +255,11 @@ extern void ifx_ptm_get_fw_ver(unsigned int *major, unsigned int *minor)
     *minor = FW_VER_ID->minor;
 }
 
-void ifx_ptm_init_chip(void)
+void ifx_ptm_init_chip(struct platform_device *pdev)
 {
     init_pmu();
 
-    reset_ppe();
+    reset_ppe(pdev);
 
     init_pdma();
 
