@@ -11,14 +11,13 @@ JFFS2_BLOCKSIZE = 128k
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
+DEVICE_VARS += BOOT_SCRIPT UBOOT
 KERNEL_LOADADDR := 0x00008000
-
-SIGNATURE:=$(shell printf "%.8s" $(SOURCE_DATE_EPOCH))
 
 define Build/boot-scr
 	rm -f $@-boot.scr
 	sed \
-		-e 's#@ROOT@#$(SIGNATURE)#g' \
+		-e 's#@ROOT@#$(IMG_PART_SIGNATURE)#g' \
 		-e 's#@DTB@#$(firstword $(DEVICE_DTS))#g' \
 		$(BOOT_SCRIPT).bootscript > $@-new.bootscript
 	mkimage -A arm -O linux -T script -C none -a 0 -e 0 -d $@-new.bootscript $@-boot.scr
@@ -38,11 +37,25 @@ define Build/boot-img-ext4
 	$(foreach dts,$(DEVICE_DTS), $(CP) $(KDIR)/image-$(dts).dtb $@.boot/$(dts).dtb;)
 	$(CP) $(IMAGE_KERNEL) $@.boot/$(KERNEL_NAME)
 	-$(CP) $@-boot.scr $@.boot/boot.scr
-	make_ext4fs -J -l $(CONFIG_TARGET_KERNEL_PARTSIZE)M $@.bootimg $@.boot
+	make_ext4fs -J -L kernel -l $(CONFIG_TARGET_KERNEL_PARTSIZE)M $@.bootimg $@.boot
+endef
+
+define Build/buffalo-kernel-jffs2
+	rm -rf $(KDIR)/kernel_jffs2 $@.fakerd
+	mkdir -p $(KDIR)/kernel_jffs2
+	dd if=/dev/zero of=$@.fakerd bs=131008 count=1 conv=sync
+	$(STAGING_DIR_HOST)/bin/mkimage \
+		-T ramdisk -A $(LINUX_KARCH) -O linux -C gzip -n 'fake initrd' \
+		-d $@.fakerd $(KDIR)/kernel_jffs2/initrd.buffalo
+	cp $@ $(KDIR)/kernel_jffs2/uImage.buffalo
+	$(STAGING_DIR_HOST)/bin/mkfs.jffs2 \
+		--little-endian -v --squash-uids -q -f -n -x lzma -x rtime -m none \
+		--eraseblock=128KiB --pad=$(KERNEL_SIZE) -d $(KDIR)/kernel_jffs2 -o $@
+	rm -rf $(KDIR)/kernel_jffs2 $@.fakerd
 endef
 
 define Build/sdcard-img
-	SIGNATURE="$(SIGNATURE)" \
+	SIGNATURE="$(IMG_PART_SIGNATURE)" \
 	./gen_mvebu_sdcard_img.sh $@ \
 		$(if $(UBOOT),$(STAGING_DIR_IMAGE)/$(UBOOT)) \
 		c $(CONFIG_TARGET_KERNEL_PARTSIZE) $@.boot \
@@ -50,7 +63,7 @@ define Build/sdcard-img
 endef
 
 define Build/sdcard-img-ext4
-	SIGNATURE="$(SIGNATURE)" \
+	SIGNATURE="$(IMG_PART_SIGNATURE)" \
 	./gen_mvebu_sdcard_img.sh $@ \
 		$(if $(UBOOT),$(STAGING_DIR_IMAGE)/$(UBOOT)) \
 		83 $(CONFIG_TARGET_KERNEL_PARTSIZE) $@.bootimg \
@@ -72,29 +85,35 @@ define Build/uDPU-firmware
 	(rm -fR $@-fw; mkdir -p $@-fw)
 	$(CP) $(BIN_DIR)/$(IMAGE_PREFIX)-initramfs.itb $@-fw/recovery.itb
 	$(CP) $@-boot.scr $@-fw/boot.scr
-	(cd $(TARGET_DIR); $(TAR) -cvzf $@-fw/rootfs.tgz .)
-	(cd $@.boot; $(TAR) -cvzf $@-fw/boot.tgz .)
-	(cd $@-fw; $(TAR) -cvzf $(KDIR_TMP)/$(IMAGE_PREFIX)-firmware.tgz .)
+	$(TAR) -cvzp --numeric-owner --owner=0 --group=0 --sort=name \
+		$(if $(SOURCE_DATE_EPOCH),--mtime="@$(SOURCE_DATE_EPOCH)") \
+		-f $@-fw/rootfs.tgz -C $(TARGET_DIR) .
+	$(TAR) -cvzp --numeric-owner --owner=0 --group=0 --sort=name \
+		$(if $(SOURCE_DATE_EPOCH),--mtime="@$(SOURCE_DATE_EPOCH)") \
+		-f $@-fw/boot.tgz -C $@.boot .
+	$(TAR) -cvzp --numeric-owner --owner=0 --group=0 --sort=name \
+		$(if $(SOURCE_DATE_EPOCH),--mtime="@$(SOURCE_DATE_EPOCH)") \
+		-f $(KDIR_TMP)/$(IMAGE_PREFIX)-firmware.tgz -C $@-fw .
 endef
 
 define Device/Default
   PROFILES := Default
+  DEVICE_DTS = $$(SOC)-$(lastword $(subst _, ,$(1)))
+  DEVICE_DTS_DIR := $(DTS_DIR)
   BOARD_NAME = $$(DEVICE_DTS)
   KERNEL_NAME := zImage
   KERNEL := kernel-bin | append-dtb | uImage none
   IMAGES := sysupgrade.bin
-  IMAGE/factory.img := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | pad-to $$$$(PAGESIZE)
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   SUPPORTED_DEVICES = $(subst _,$(comma),$(1))
   UBINIZE_OPTS := -E 5
   UBOOT :=
   BOOT_SCRIPT :=
 endef
-DEVICE_VARS += BOOT_SCRIPT UBOOT
 
 define Device/Default-arm64
   BOOT_SCRIPT := generic-arm64
-  DTS_DIR := $(DTS_DIR)/marvell
+  DEVICE_DTS_DIR := $(DTS_DIR)/marvell
   IMAGES := sdcard.img.gz
   IMAGE/sdcard.img.gz := boot-scr | boot-img-ext4 | sdcard-img-ext4 | gzip | append-metadata
   KERNEL_NAME := Image
@@ -118,8 +137,6 @@ define Device/NAND-512K
   PAGESIZE := 4096
 endef
 
-include cortex-a9.mk
-include cortex-a53.mk
-include cortex-a72.mk
+include $(SUBTARGET).mk
 
 $(eval $(call BuildImage))

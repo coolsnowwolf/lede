@@ -1,6 +1,6 @@
 #
 # Copyright (C) 2008-2013 OpenWrt.org
-# Copyright (C) 2017 Yousong Zhou <yszhou4tech@gmail.com>
+# Copyright (C) 2017-2019 Yousong Zhou <yszhou4tech@gmail.com>
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -9,12 +9,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libunwind
-PKG_VERSION:=1.2.1
-PKG_RELEASE:=2
+PKG_VERSION:=1.3.1
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@SAVANNAH/$(PKG_NAME)
-PKG_HASH:=3f3ecb90e28cbe53fba7a4a27ccce7aad188d3210bb1964a923a731a27a75acb
+PKG_HASH:=43997a3939b6ccdf2f669b50fdb8a4d3205374728c2923ddc2354c65260214f8
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
 
@@ -32,7 +32,8 @@ define Package/libunwind
   CATEGORY:=Libraries
   TITLE:=The libunwind project
   URL:=http://www.nongnu.org/libunwind/
-  DEPENDS:=@(mips||mipsel||powerpc||i386||x86_64||arm||aarch64)
+  DEPENDS:=@((mips||mipsel||x86_64||arm||aarch64)||(USE_GLIBC&&(powerpc||i386)))
+  ABI_VERSION:=8
 endef
 
 define Package/libunwind/description
@@ -41,12 +42,13 @@ endef
 
 CONFIGURE_ARGS += \
 	--disable-documentation \
+	--disable-tests \
 	--enable-minidebuginfo=no \
 
 
 define Package/libunwind/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libunwin*.so* $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libunwin*.so.* $(1)/usr/lib/
 endef
 
 define Build/InstallDev

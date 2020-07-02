@@ -31,6 +31,10 @@ ifeq ($(strip $(UNPACK_CMD)),)
       EXT:=$(call ext,$(PKG_SOURCE:.$(EXT)=))
       DECOMPRESS_CMD:=xzcat $(DL_DIR)/$(PKG_SOURCE) |
     endif
+    ifeq (zst,$(EXT))
+      EXT:=$(call ext,$(PKG_SOURCE:.$(EXT)=))
+      DECOMPRESS_CMD:=zstdcat $(DL_DIR)/$(PKG_SOURCE) |
+    endif
     ifeq ($(filter tgz tbz tbz2 txz,$(EXT1)),$(EXT1))
       EXT:=tar
     endif

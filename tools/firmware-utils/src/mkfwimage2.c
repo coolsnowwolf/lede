@@ -363,12 +363,15 @@ static int build_image(void)
 	/* write in-memory buffer into file */
 	if ((f = fopen(im.outputfile, "w")) == NULL) {
 		ERROR("Can not create output file: '%s'\n", im.outputfile);
+		free(mem);
 		return -10;
 	}
 
 	if (fwrite(mem, mem_size, 1, f) != 1) {
 		ERROR("Could not write %d bytes into file: '%s'\n",
 				mem_size, im.outputfile);
+		free(mem);
+		fclose(f);
 		return -11;
 	}
 

@@ -1,0 +1,442 @@
+From 0e219a6aa07754d81a25c9e4408d81d194cd2000 Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Fri, 22 Nov 2019 13:45:52 +0200
+Subject: [PATCH] net: dsa: felix: Add PCS operations for PHYLINK
+
+This removes the bootloader dependency for SGMII PCS pre-configuration,
+as well as adds support for monitoring the in-band SGMII AN between the
+PCS and the system-side link partner (PHY or other MAC).
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+---
+ drivers/net/dsa/ocelot/felix.c         |  23 ++-
+ drivers/net/dsa/ocelot/felix.h         |   7 +-
+ drivers/net/dsa/ocelot/felix_vsc9959.c | 292 ++++++++++++++++++++++++++++++++-
+ 3 files changed, 314 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/dsa/ocelot/felix.c
++++ b/drivers/net/dsa/ocelot/felix.c
+@@ -265,7 +265,7 @@ static int felix_get_ts_info(struct dsa_
+ static int felix_init_structs(struct felix *felix, int num_phys_ports)
+ {
+ 	struct ocelot *ocelot = &felix->ocelot;
+-	resource_size_t base;
++	resource_size_t switch_base;
+ 	int port, i, err;
+ 
+ 	ocelot->num_phys_ports = num_phys_ports;
+@@ -281,7 +281,8 @@ static int felix_init_structs(struct fel
+ 	ocelot->ops		= felix->info->ops;
+ 	ocelot->quirks		= felix->info->quirks;
+ 
+-	base = pci_resource_start(felix->pdev, felix->info->pci_bar);
++	switch_base = pci_resource_start(felix->pdev,
++					 felix->info->switch_pci_bar);
+ 
+ 	for (i = 0; i < TARGET_MAX; i++) {
+ 		struct regmap *target;
+@@ -292,8 +293,8 @@ static int felix_init_structs(struct fel
+ 
+ 		res = &felix->info->target_io_res[i];
+ 		res->flags = IORESOURCE_MEM;
+-		res->start += base;
+-		res->end += base;
++		res->start += switch_base;
++		res->end += switch_base;
+ 
+ 		target = ocelot_regmap_init(ocelot, res);
+ 		if (IS_ERR(target)) {
+@@ -327,8 +328,8 @@ static int felix_init_structs(struct fel
+ 
+ 		res = &felix->info->port_io_res[port];
+ 		res->flags = IORESOURCE_MEM;
+-		res->start += base;
+-		res->end += base;
++		res->start += switch_base;
++		res->end += switch_base;
+ 
+ 		port_regs = devm_ioremap_resource(ocelot->dev, res);
+ 		if (IS_ERR(port_regs)) {
+@@ -342,6 +343,12 @@ static int felix_init_structs(struct fel
+ 		ocelot->ports[port] = ocelot_port;
+ 	}
+ 
++	if (felix->info->mdio_bus_alloc) {
++		err = felix->info->mdio_bus_alloc(ocelot);
++		if (err < 0)
++			return err;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -377,6 +384,10 @@ static int felix_setup(struct dsa_switch
+ static void felix_teardown(struct dsa_switch *ds)
+ {
+ 	struct ocelot *ocelot = ds->priv;
++	struct felix *felix = ocelot_to_felix(ocelot);
++
++	if (felix->imdio)
++		mdiobus_unregister(felix->imdio);
+ 
+ 	/* stop workqueue thread */
+ 	ocelot_deinit(ocelot);
+--- a/drivers/net/dsa/ocelot/felix.h
++++ b/drivers/net/dsa/ocelot/felix.h
+@@ -10,6 +10,7 @@
+ struct felix_info {
+ 	struct resource			*target_io_res;
+ 	struct resource			*port_io_res;
++	struct resource			*imdio_res;
+ 	const struct reg_field		*regfields;
+ 	const u32 *const		*map;
+ 	const struct ocelot_ops		*ops;
+@@ -17,8 +18,10 @@ struct felix_info {
+ 	const struct ocelot_stat_layout	*stats_layout;
+ 	unsigned int			num_stats;
+ 	int				num_ports;
+-	int				pci_bar;
++	int				switch_pci_bar;
++	int				imdio_pci_bar;
+ 	unsigned long			quirks;
++	int (*mdio_bus_alloc)(struct ocelot *ocelot);
+ };
+ 
+ extern struct felix_info		felix_info_vsc9959;
+@@ -33,6 +36,8 @@ struct felix {
+ 	struct pci_dev			*pdev;
+ 	struct felix_info		*info;
+ 	struct ocelot			ocelot;
++	struct mii_bus			*imdio;
++	struct phy_device		**pcs;
+ };
+ 
+ #endif
+--- a/drivers/net/dsa/ocelot/felix_vsc9959.c
++++ b/drivers/net/dsa/ocelot/felix_vsc9959.c
+@@ -2,6 +2,7 @@
+ /* Copyright 2017 Microsemi Corporation
+  * Copyright 2018-2019 NXP Semiconductors
+  */
++#include <linux/fsl/enetc_mdio.h>
+ #include <soc/mscc/ocelot_sys.h>
+ #include <soc/mscc/ocelot.h>
+ #include <linux/iopoll.h>
+@@ -390,6 +391,15 @@ static struct resource vsc9959_port_io_r
+ 	},
+ };
+ 
++/* Port MAC 0 Internal MDIO bus through which the SerDes acting as an
++ * SGMII/QSGMII MAC PCS can be found.
++ */
++static struct resource vsc9959_imdio_res = {
++	.start		= 0x8030,
++	.end		= 0x8040,
++	.name		= "imdio",
++};
++
+ static const struct reg_field vsc9959_regfields[] = {
+ 	[ANA_ADVLEARN_VLAN_CHK] = REG_FIELD(ANA_ADVLEARN, 6, 6),
+ 	[ANA_ADVLEARN_LEARN_MIRROR] = REG_FIELD(ANA_ADVLEARN, 0, 5),
+@@ -569,13 +579,291 @@ static int vsc9959_reset(struct ocelot *
+ 	return 0;
+ }
+ 
++void vsc9959_pcs_validate(struct ocelot *ocelot, int port,
++			  unsigned long *supported,
++			  struct phylink_link_state *state)
++{
++	__ETHTOOL_DECLARE_LINK_MODE_MASK(mask) = { 0, };
++
++	if (state->interface != PHY_INTERFACE_MODE_NA &&
++	    state->interface != PHY_INTERFACE_MODE_GMII &&
++	    state->interface != PHY_INTERFACE_MODE_SGMII &&
++	    state->interface != PHY_INTERFACE_MODE_QSGMII &&
++	    state->interface != PHY_INTERFACE_MODE_USXGMII) {
++		bitmap_zero(supported, __ETHTOOL_LINK_MODE_MASK_NBITS);
++		return;
++	}
++
++	/* No half-duplex. */
++	phylink_set_port_modes(mask);
++	phylink_set(mask, Autoneg);
++	phylink_set(mask, Pause);
++	phylink_set(mask, Asym_Pause);
++	phylink_set(mask, 10baseT_Full);
++	phylink_set(mask, 100baseT_Full);
++	phylink_set(mask, 1000baseT_Full);
++	phylink_set(mask, 1000baseX_Full);
++	phylink_set(mask, 2500baseT_Full);
++	phylink_set(mask, 2500baseX_Full);
++	phylink_set(mask, 1000baseKX_Full);
++
++	bitmap_and(supported, supported, mask,
++		   __ETHTOOL_LINK_MODE_MASK_NBITS);
++	bitmap_and(state->advertising, state->advertising, mask,
++		   __ETHTOOL_LINK_MODE_MASK_NBITS);
++}
++
++static void vsc9959_pcs_an_restart(struct ocelot *ocelot, int port)
++{
++	struct felix *felix = ocelot_to_felix(ocelot);
++	struct phy_device *pcs = felix->pcs[port];
++
++	if (!pcs)
++		return;
++
++	phy_set_bits(pcs, MII_BMCR, BMCR_ANRESTART);
++}
++
++static void vsc9959_pcs_init_sgmii(struct phy_device *pcs,
++				   unsigned int link_an_mode,
++				   const struct phylink_link_state *state)
++{
++	/* SGMII spec requires tx_config_Reg[15:0] to be exactly 0x4001
++	 * for the MAC PCS in order to acknowledge the AN.
++	 */
++	phy_write(pcs, MII_ADVERTISE, ADVERTISE_SGMII | ADVERTISE_LPACK);
++
++	/* Set to SGMII mode, use AN */
++	phy_write(pcs, ENETC_PCS_IF_MODE, ENETC_PCS_IF_MODE_SGMII_AN);
++
++	/* Adjust link timer for SGMII */
++	phy_write(pcs, ENETC_PCS_LINK_TIMER1, ENETC_PCS_LINK_TIMER1_VAL);
++	phy_write(pcs, ENETC_PCS_LINK_TIMER2, ENETC_PCS_LINK_TIMER2_VAL);
++
++	phy_write(pcs, MII_BMCR, BMCR_SPEED1000 |
++				 BMCR_FULLDPLX |
++				 BMCR_ANENABLE);
++}
++
++#define ADVERTISE_USXGMII_FDX		BIT(12)
++
++static void vsc9959_pcs_init_sxgmii(struct phy_device *pcs,
++				    unsigned int link_an_mode,
++				    const struct phylink_link_state *state)
++{
++	/* Configure device ability for the USXGMII Replicator */
++	phy_write_mmd(pcs, MDIO_MMD_VEND2, MII_ADVERTISE,
++		      ADVERTISE_SGMII |
++		      ADVERTISE_LPACK |
++		      ADVERTISE_USXGMII_FDX);
++}
++
++static void vsc9959_pcs_init(struct ocelot *ocelot, int port,
++			     unsigned int link_an_mode,
++			     const struct phylink_link_state *state)
++{
++	struct felix *felix = ocelot_to_felix(ocelot);
++	struct phy_device *pcs = felix->pcs[port];
++
++	if (!pcs)
++		return;
++
++	if (link_an_mode == MLO_AN_FIXED) {
++		phydev_err(pcs, "Fixed modes are not yet supported.\n");
++		return;
++	}
++
++	pcs->interface = state->interface;
++	if (pcs->interface == PHY_INTERFACE_MODE_USXGMII)
++		pcs->is_c45 = true;
++	else
++		pcs->is_c45 = false;
++
++	/* The PCS does not implement the BMSR register fully, so capability
++	 * detection via genphy_read_abilities does not work. Since we can get
++	 * the PHY config word from the LPA register though, there is still
++	 * value in using the generic phy_resolve_aneg_linkmode function. So
++	 * populate the supported and advertising link modes manually here.
++	 */
++	linkmode_set_bit_array(phy_basic_ports_array,
++			       ARRAY_SIZE(phy_basic_ports_array),
++			       pcs->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_Autoneg_BIT, pcs->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_10baseT_Full_BIT, pcs->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT, pcs->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_1000baseT_Full_BIT, pcs->supported);
++	phy_advertise_supported(pcs);
++
++	switch (pcs->interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_QSGMII:
++		vsc9959_pcs_init_sgmii(pcs, link_an_mode, state);
++		break;
++	case PHY_INTERFACE_MODE_USXGMII:
++		vsc9959_pcs_init_sxgmii(pcs, link_an_mode, state);
++		break;
++	default:
++		dev_err(ocelot->dev, "Unsupported link mode %s\n",
++			phy_modes(pcs->interface));
++	}
++}
++
++static void vsc9959_pcs_link_state(struct ocelot *ocelot, int port,
++				   struct phylink_link_state *state)
++{
++	struct felix *felix = ocelot_to_felix(ocelot);
++	struct phy_device *pcs = felix->pcs[port];
++	int err;
++
++	if (!pcs)
++		return;
++
++	/* Reading PCS status not yet supported for USXGMII */
++	if (pcs->is_c45) {
++		state->link = 1;
++		return;
++	}
++
++	pcs->speed = SPEED_UNKNOWN;
++	pcs->duplex = DUPLEX_UNKNOWN;
++	pcs->pause = 0;
++	pcs->asym_pause = 0;
++
++	err = genphy_update_link(pcs);
++	if (err < 0)
++		return;
++
++	if (pcs->autoneg_complete) {
++		u16 lpa = phy_read(pcs, MII_LPA);
++
++		switch (state->interface) {
++		case PHY_INTERFACE_MODE_SGMII:
++		case PHY_INTERFACE_MODE_QSGMII:
++			mii_lpa_to_linkmode_lpa_sgmii(pcs->lp_advertising, lpa);
++			break;
++		default:
++			return;
++		}
++
++		phy_resolve_aneg_linkmode(pcs);
++	}
++
++	state->an_complete = pcs->autoneg_complete;
++	state->an_enabled = pcs->autoneg;
++	state->link = pcs->link;
++	state->duplex = pcs->duplex;
++	state->speed = pcs->speed;
++	/* SGMII AN does not negotiate flow control, but that's ok,
++	 * since phylink already knows that, and does:
++	 *	link_state.pause |= pl->phy_state.pause;
++	 */
++	state->pause = pcs->pause;
++
++	dev_dbg(ocelot->dev,
++		"%s: mode=%s/%s/%s adv=%*pb lpa=%*pb link=%u an_enabled=%u an_complete=%u\n",
++		__func__,
++		phy_modes(state->interface),
++		phy_speed_to_str(state->speed),
++		phy_duplex_to_str(state->duplex),
++		__ETHTOOL_LINK_MODE_MASK_NBITS, state->advertising,
++		__ETHTOOL_LINK_MODE_MASK_NBITS, state->lp_advertising,
++		state->link, state->an_enabled, state->an_complete);
++}
++
+ static const struct ocelot_ops vsc9959_ops = {
+ 	.reset			= vsc9959_reset,
++	.pcs_init		= vsc9959_pcs_init,
++	.pcs_an_restart		= vsc9959_pcs_an_restart,
++	.pcs_link_state		= vsc9959_pcs_link_state,
++	.pcs_validate		= vsc9959_pcs_validate,
+ };
+ 
++static int vsc9959_mdio_bus_alloc(struct ocelot *ocelot)
++{
++	struct felix *felix = ocelot_to_felix(ocelot);
++	struct enetc_mdio_priv *mdio_priv;
++	struct device *dev = ocelot->dev;
++	resource_size_t imdio_base;
++	void __iomem *imdio_regs;
++	struct resource *res;
++	struct enetc_hw *hw;
++	struct mii_bus *bus;
++	int port;
++	int rc;
++
++	felix->pcs = devm_kcalloc(dev, felix->info->num_ports,
++				  sizeof(struct phy_device),
++				  GFP_KERNEL);
++	if (!felix->pcs) {
++		dev_err(dev, "failed to allocate array for PCS PHYs\n");
++		return -ENOMEM;
++	}
++
++	imdio_base = pci_resource_start(felix->pdev,
++					felix->info->imdio_pci_bar);
++
++	res = felix->info->imdio_res;
++	res->flags = IORESOURCE_MEM;
++	res->start += imdio_base;
++	res->end += imdio_base;
++
++	imdio_regs = devm_ioremap_resource(dev, res);
++	if (IS_ERR(imdio_regs)) {
++		dev_err(dev, "failed to map internal MDIO registers\n");
++		return PTR_ERR(imdio_regs);
++	}
++
++	hw = enetc_hw_alloc(dev, imdio_regs);
++	if (IS_ERR(hw)) {
++		dev_err(dev, "failed to allocate ENETC HW structure\n");
++		return PTR_ERR(hw);
++	}
++
++	bus = devm_mdiobus_alloc_size(dev, sizeof(*mdio_priv));
++	if (!bus)
++		return -ENOMEM;
++
++	bus->name = "VSC9959 internal MDIO bus";
++	bus->read = enetc_mdio_read;
++	bus->write = enetc_mdio_write;
++	bus->parent = dev;
++	mdio_priv = bus->priv;
++	mdio_priv->hw = hw;
++	/* This gets added to imdio_regs, which already maps addresses
++	 * starting with the proper offset.
++	 */
++	mdio_priv->mdio_base = 0;
++	snprintf(bus->id, MII_BUS_ID_SIZE, "%s-imdio", dev_name(dev));
++
++	/* Needed in order to initialize the bus mutex lock */
++	rc = mdiobus_register(bus);
++	if (rc < 0) {
++		dev_err(dev, "failed to register MDIO bus\n");
++		return rc;
++	}
++
++	felix->imdio = bus;
++
++	for (port = 0; port < felix->info->num_ports; port++) {
++		struct phy_device *pcs;
++		bool is_c45 = false;
++
++		pcs = get_phy_device(felix->imdio, port, is_c45);
++		if (IS_ERR(pcs))
++			continue;
++
++		felix->pcs[port] = pcs;
++
++		dev_info(dev, "Found PCS at internal MDIO address %d\n", port);
++	}
++
++	return 0;
++}
++
+ struct felix_info felix_info_vsc9959 = {
+ 	.target_io_res		= vsc9959_target_io_res,
+ 	.port_io_res		= vsc9959_port_io_res,
++	.imdio_res		= &vsc9959_imdio_res,
+ 	.regfields		= vsc9959_regfields,
+ 	.map			= vsc9959_regmap,
+ 	.ops			= &vsc9959_ops,
+@@ -583,6 +871,8 @@ struct felix_info felix_info_vsc9959 = {
+ 	.num_stats		= ARRAY_SIZE(vsc9959_stats_layout),
+ 	.shared_queue_sz	= 128 * 1024,
+ 	.num_ports		= 6,
+-	.pci_bar		= 4,
++	.switch_pci_bar		= 4,
++	.imdio_pci_bar		= 0,
+ 	.quirks			= OCELOT_PCS_PERFORMS_RATE_ADAPTATION,
++	.mdio_bus_alloc		= vsc9959_mdio_bus_alloc,
+ };
