@@ -1,0 +1,145 @@
+From 6864e50946bf92f96b8452d1e47765230a276bb0 Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Mon, 6 Jan 2020 14:30:58 +0200
+Subject: [PATCH] Revert "net: mscc: ocelot: do not force Felix MACs at lower
+ speeds than gigabit"
+
+This reverts commit f3ebad1269aad8a04710e84dc1cd5de485e5fec4.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+---
+ drivers/net/dsa/ocelot/felix.c         |  1 -
+ drivers/net/dsa/ocelot/felix.h         |  1 -
+ drivers/net/dsa/ocelot/felix_vsc9959.c |  1 -
+ drivers/net/ethernet/mscc/ocelot.c     | 32 ++++++++++++++------------------
+ include/soc/mscc/ocelot.h              |  7 -------
+ 5 files changed, 14 insertions(+), 28 deletions(-)
+
+--- a/drivers/net/dsa/ocelot/felix.c
++++ b/drivers/net/dsa/ocelot/felix.c
+@@ -249,7 +249,6 @@ static int felix_init_structs(struct fel
+ 	ocelot->num_stats	= felix->info->num_stats;
+ 	ocelot->shared_queue_sz	= felix->info->shared_queue_sz;
+ 	ocelot->ops		= felix->info->ops;
+-	ocelot->quirks		= felix->info->quirks;
+ 
+ 	base = pci_resource_start(felix->pdev, felix->info->pci_bar);
+ 
+--- a/drivers/net/dsa/ocelot/felix.h
++++ b/drivers/net/dsa/ocelot/felix.h
+@@ -18,7 +18,6 @@ struct felix_info {
+ 	unsigned int			num_stats;
+ 	int				num_ports;
+ 	int				pci_bar;
+-	unsigned long			quirks;
+ };
+ 
+ extern struct felix_info		felix_info_vsc9959;
+--- a/drivers/net/dsa/ocelot/felix_vsc9959.c
++++ b/drivers/net/dsa/ocelot/felix_vsc9959.c
+@@ -584,5 +584,4 @@ struct felix_info felix_info_vsc9959 = {
+ 	.shared_queue_sz	= 128 * 1024,
+ 	.num_ports		= 6,
+ 	.pci_bar		= 4,
+-	.quirks			= OCELOT_PCS_PERFORMS_RATE_ADAPTATION,
+ };
+--- a/drivers/net/ethernet/mscc/ocelot.c
++++ b/drivers/net/ethernet/mscc/ocelot.c
+@@ -409,32 +409,27 @@ static u16 ocelot_wm_enc(u16 value)
+ void ocelot_adjust_link(struct ocelot *ocelot, int port,
+ 			struct phy_device *phydev)
+ {
+-	int speed, mac_speed, mac_mode = DEV_MAC_MODE_CFG_FDX_ENA;
+ 	struct ocelot_port *ocelot_port = ocelot->ports[port];
++	int speed, mode = 0;
+ 
+-	if (ocelot->quirks & OCELOT_PCS_PERFORMS_RATE_ADAPTATION)
+-		speed = SPEED_1000;
+-	else
+-		speed = phydev->speed;
+-
+-	switch (speed) {
++	switch (phydev->speed) {
+ 	case SPEED_10:
+-		mac_speed = OCELOT_SPEED_10;
++		speed = OCELOT_SPEED_10;
+ 		break;
+ 	case SPEED_100:
+-		mac_speed = OCELOT_SPEED_100;
++		speed = OCELOT_SPEED_100;
+ 		break;
+ 	case SPEED_1000:
+-		mac_speed = OCELOT_SPEED_1000;
+-		mac_mode |= DEV_MAC_MODE_CFG_GIGA_MODE_ENA;
++		speed = OCELOT_SPEED_1000;
++		mode = DEV_MAC_MODE_CFG_GIGA_MODE_ENA;
+ 		break;
+ 	case SPEED_2500:
+-		mac_speed = OCELOT_SPEED_2500;
+-		mac_mode |= DEV_MAC_MODE_CFG_GIGA_MODE_ENA;
++		speed = OCELOT_SPEED_2500;
++		mode = DEV_MAC_MODE_CFG_GIGA_MODE_ENA;
+ 		break;
+ 	default:
+ 		dev_err(ocelot->dev, "Unsupported PHY speed on port %d: %d\n",
+-			port, speed);
++			port, phydev->speed);
+ 		return;
+ 	}
+ 
+@@ -444,7 +439,8 @@ void ocelot_adjust_link(struct ocelot *o
+ 		return;
+ 
+ 	/* Only full duplex supported for now */
+-	ocelot_port_writel(ocelot_port, mac_mode, DEV_MAC_MODE_CFG);
++	ocelot_port_writel(ocelot_port, DEV_MAC_MODE_CFG_FDX_ENA |
++			   mode, DEV_MAC_MODE_CFG);
+ 
+ 	if (ocelot->ops->pcs_init)
+ 		ocelot->ops->pcs_init(ocelot, port);
+@@ -455,11 +451,11 @@ void ocelot_adjust_link(struct ocelot *o
+ 
+ 	/* Take MAC, Port, Phy (intern) and PCS (SGMII/Serdes) clock out of
+ 	 * reset */
+-	ocelot_port_writel(ocelot_port, DEV_CLOCK_CFG_LINK_SPEED(mac_speed),
++	ocelot_port_writel(ocelot_port, DEV_CLOCK_CFG_LINK_SPEED(speed),
+ 			   DEV_CLOCK_CFG);
+ 
+ 	/* No PFC */
+-	ocelot_write_gix(ocelot, ANA_PFC_PFC_CFG_FC_LINK_SPEED(mac_speed),
++	ocelot_write_gix(ocelot, ANA_PFC_PFC_CFG_FC_LINK_SPEED(speed),
+ 			 ANA_PFC_PFC_CFG, port);
+ 
+ 	/* Core: Enable port for frame transfer */
+@@ -473,7 +469,7 @@ void ocelot_adjust_link(struct ocelot *o
+ 			 SYS_MAC_FC_CFG_RX_FC_ENA | SYS_MAC_FC_CFG_TX_FC_ENA |
+ 			 SYS_MAC_FC_CFG_ZERO_PAUSE_ENA |
+ 			 SYS_MAC_FC_CFG_FC_LATENCY_CFG(0x7) |
+-			 SYS_MAC_FC_CFG_FC_LINK_SPEED(mac_speed),
++			 SYS_MAC_FC_CFG_FC_LINK_SPEED(speed),
+ 			 SYS_MAC_FC_CFG, port);
+ 	ocelot_write_rix(ocelot, 0, ANA_POL_FLOWC, port);
+ }
+--- a/include/soc/mscc/ocelot.h
++++ b/include/soc/mscc/ocelot.h
+@@ -404,11 +404,6 @@ enum ocelot_tag_prefix {
+ 	OCELOT_TAG_PREFIX_LONG,
+ };
+ 
+-/* Hardware quirks (differences between switch instantiations) */
+-enum {
+-	OCELOT_PCS_PERFORMS_RATE_ADAPTATION	= BIT(0),
+-};
+-
+ struct ocelot;
+ 
+ struct ocelot_ops {
+@@ -469,8 +464,6 @@ struct ocelot {
+ 	struct delayed_work		stats_work;
+ 	struct workqueue_struct		*stats_queue;
+ 
+-	unsigned long			quirks;
+-
+ 	u8				ptp:1;
+ 	struct ptp_clock		*ptp_clock;
+ 	struct ptp_clock_info		ptp_info;

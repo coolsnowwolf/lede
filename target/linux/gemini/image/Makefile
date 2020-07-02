@@ -135,12 +135,13 @@ endef
 
 # A reasonable set of default packages handling the NAS type
 # of devices out of the box (former NAS42x0 IcyBox defaults)
-GEMINI_NAS_PACKAGES:=kmod-md-mod kmod-md-linear kmod-md-multipath \
+GEMINI_NAS_PACKAGES := $(DEFAULT_PACKAGES.nas) \
+		kmod-md-mod kmod-md-linear kmod-md-multipath \
 		kmod-md-raid0 kmod-md-raid1 kmod-md-raid10 kmod-md-raid456 \
 		kmod-fs-btrfs kmod-fs-cifs kmod-fs-nfs \
 		kmod-fs-nfsd kmod-fs-ntfs kmod-fs-reiserfs kmod-fs-vfat \
-		kmod-nls-utf8 kmod-usb-storage-extras \
-		samba36-server mdadm cfdisk fdisk e2fsprogs badblocks \
+		kmod-nls-utf8 kmod-usb-storage-extras kmod-hwmon-drivetemp \
+		cfdisk e2fsprogs badblocks \
 		partx-utils
 
 # The DIR-685 flash layout is kernel in WRGG format, padded and followed
@@ -170,7 +171,6 @@ define Device/dlink_dns-313
 	DEVICE_VENDOR := D-Link
 	DEVICE_MODEL := DNS-313 1-Bay Network Storage Enclosure
 	DEVICE_DTS := gemini-dlink-dns-313
-	DEVICE_TYPE := nas
 	DEVICE_PACKAGES := $(GEMINI_NAS_PACKAGES)
 	BLOCKSIZE := 1k
 	FILESYSTEMS := ext4
@@ -203,7 +203,6 @@ define Device/raidsonic_ib-4220-b
 	DEVICE_VENDOR := Raidsonic
 	DEVICE_MODEL := NAS IB-4220-B
 	DEVICE_DTS := gemini-nas4220b
-	DEVICE_TYPE := nas
 endef
 TARGET_DEVICES += raidsonic_ib-4220-b
 

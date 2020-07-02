@@ -10,7 +10,6 @@ ARCH:=mips
 BOARD:=ath25
 BOARDNAME:=Atheros AR231x/AR5312
 FEATURES:=squashfs low_mem small_flash
-MAINTAINER:=Sergey Ryazanov <ryazanov.s.a@gmail.com>
 
 KERNEL_PATCHVER:=4.14
 

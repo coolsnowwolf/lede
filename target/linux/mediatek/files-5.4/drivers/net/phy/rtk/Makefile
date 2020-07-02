@@ -1,0 +1,66 @@
+obj-$(CONFIG_RTL8367S_GSW) += rtl8367s_gsw.o
+rtl8367s_gsw-objs := rtl8367s_mdio.o rtl8367s_dbg.o
+ifeq ($(CONFIG_SWCONFIG),y)
+rtl8367s_gsw-objs += rtl8367s.o
+endif
+rtl8367s_gsw-objs += rtl8367c/acl.o
+rtl8367s_gsw-objs += rtl8367c/cpu.o
+rtl8367s_gsw-objs += rtl8367c/dot1x.o
+rtl8367s_gsw-objs += rtl8367c/eee.o
+rtl8367s_gsw-objs += rtl8367c/igmp.o
+rtl8367s_gsw-objs += rtl8367c/interrupt.o
+rtl8367s_gsw-objs += rtl8367c/l2.o
+rtl8367s_gsw-objs += rtl8367c/leaky.o
+rtl8367s_gsw-objs += rtl8367c/led.o
+rtl8367s_gsw-objs += rtl8367c/mirror.o
+rtl8367s_gsw-objs += rtl8367c/oam.o
+rtl8367s_gsw-objs += rtl8367c/port.o
+rtl8367s_gsw-objs += rtl8367c/ptp.o
+rtl8367s_gsw-objs += rtl8367c/qos.o
+rtl8367s_gsw-objs += rtl8367c/rate.o
+rtl8367s_gsw-objs += rtl8367c/rldp.o
+rtl8367s_gsw-objs += rtl8367c/rtk_switch.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_acl.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_cputag.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_dot1x.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_eav.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_eee.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_fc.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_green.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_hsb.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_igmp.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_inbwctrl.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_interrupt.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_led.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_lut.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_meter.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_mib.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_mirror.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_misc.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_oam.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_phy.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_port.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_portIsolation.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_qos.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_rldp.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_rma.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_scheduling.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_storm.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_svlan.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_trunking.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_unknownMulticast.o
+rtl8367s_gsw-objs += rtl8367c/rtl8367c_asicdrv_vlan.o
+rtl8367s_gsw-objs += rtl8367c/smi.o
+rtl8367s_gsw-objs += rtl8367c/stat.o
+rtl8367s_gsw-objs += rtl8367c/storm.o
+rtl8367s_gsw-objs += rtl8367c/svlan.o
+rtl8367s_gsw-objs += rtl8367c/trap.o
+rtl8367s_gsw-objs += rtl8367c/trunk.o
+rtl8367s_gsw-objs += rtl8367c/vlan.o
+
+ccflags-y += -Werror -D_LITTLE_ENDIAN -DMDC_MDIO_OPERATION
+
+ccflags-y += -Idrivers/net/phy/rtk/rtl8367c/include
+ccflags-y += -Iinclude/linux/
+

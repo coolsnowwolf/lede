@@ -1,12 +1,13 @@
 PKG_DRIVERS += \
 	ath ath5k ath6kl ath6kl-sdio ath6kl-usb ath9k ath9k-common ath9k-htc ath10k \
-	carl9170
+	carl9170 owl-loader
 
 PKG_CONFIG_DEPENDS += \
 	CONFIG_PACKAGE_ATH_DEBUG \
 	CONFIG_PACKAGE_ATH_DFS \
 	CONFIG_PACKAGE_ATH_SPECTRAL \
 	CONFIG_PACKAGE_ATH_DYNACK \
+	CONFIG_ATH9K_HWRNG \
 	CONFIG_ATH9K_SUPPORT_PCOEM \
 	CONFIG_ATH9K_TX99 \
 	CONFIG_ATH10K_LEDS \
@@ -38,11 +39,13 @@ config-$(CONFIG_PACKAGE_ATH_SPECTRAL) += ATH9K_COMMON_SPECTRAL ATH10K_SPECTRAL
 config-$(CONFIG_PACKAGE_ATH_DYNACK) += ATH9K_DYNACK
 config-$(call config_package,ath9k) += ATH9K
 config-$(call config_package,ath9k-common) += ATH9K_COMMON
+config-$(call config_package,owl-loader) += ATH9K_PCI_NO_EEPROM
 config-$(CONFIG_TARGET_ar71xx) += ATH9K_AHB
 config-$(CONFIG_TARGET_ath79) += ATH9K_AHB
 config-$(CONFIG_TARGET_ipq40xx) += ATH10K_AHB
 config-$(CONFIG_PCI) += ATH9K_PCI
 config-$(CONFIG_ATH_USER_REGD) += ATH_USER_REGD
+config-$(CONFIG_ATH9K_HWRNG) += ATH9K_HWRNG
 config-$(CONFIG_ATH9K_SUPPORT_PCOEM) += ATH9K_PCOEM
 config-$(CONFIG_ATH9K_TX99) += ATH9K_TX99
 config-$(CONFIG_ATH9K_UBNTHSR) += ATH9K_UBNTHSR
@@ -206,6 +209,12 @@ endef
 
 define KernelPackage/ath9k/config
 
+	config ATH9K_HWRNG
+		bool "Add wireless noise as source of randomness to kernel entropy pool"
+		depends on PACKAGE_kmod-ath9k
+		select PACKAGE_kmod-random-core
+		default n
+
 	config ATH9K_SUPPORT_PCOEM
 		bool "Support chips used in PC OEM cards"
 		depends on PACKAGE_kmod-ath9k
@@ -262,7 +271,6 @@ define KernelPackage/ath10k/config
                depends on PACKAGE_kmod-ath10k
 
        config ATH10K_THERMAL
-               default y
                bool "Enable thermal sensors and throttling support"
                depends on PACKAGE_kmod-ath10k
 
@@ -274,4 +282,21 @@ define KernelPackage/carl9170
   DEPENDS:=@USB_SUPPORT +kmod-mac80211 +kmod-ath +kmod-usb-core +kmod-input-core +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT +carl9170-firmware
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ath/carl9170/carl9170.ko
   AUTOLOAD:=$(call AutoProbe,carl9170)
+endef
+
+define KernelPackage/owl-loader
+  $(call KernelPackage/mac80211/Default)
+  TITLE:=Owl loader for initializing Atheros PCI(e) Wifi chips
+  DEPENDS:=@PCI_SUPPORT +kmod-ath9k
+  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath9k/ath9k_pci_owl_loader.ko
+  AUTOLOAD:=$(call AutoProbe,ath9k_pci_owl_loader)
+endef
+
+define KernelPackage/owl-loader/description
+  Kernel module that helps to initialize certain Qualcomm
+  Atheros' PCI(e) Wifi chips, which have the init data
+  (which contains the PCI device ID for example) stored
+  together with the calibration data in the file system.
+
+  This is necessary for devices like the Cisco Meraki Z1.
 endef

@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=sysfsutils
 PKG_VERSION:=2.1.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@SF/linux-diag
@@ -31,6 +31,7 @@ define Package/libsysfs
   SUBMENU:=Filesystem
   TITLE:=Sysfs library
   URL:=http://linux-diag.sourceforge.net/Sysfsutils.html
+  ABI_VERSION:=2
 endef
 
 define Package/sysfsutils
@@ -61,7 +62,7 @@ endef
 
 define Package/libsysfs/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libsysfs.so* $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libsysfs.so.* $(1)/usr/lib/
 endef
 
 define Package/sysfsutils/install
