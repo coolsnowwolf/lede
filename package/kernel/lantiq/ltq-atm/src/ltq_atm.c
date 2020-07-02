@@ -289,9 +289,17 @@ static int ppe_ioctl(struct atm_dev *dev, unsigned int cmd, void *arg)
 		return -ENOTTY;
 
 	if ( _IOC_DIR(cmd) & _IOC_READ )
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
+		ret = !access_ok(arg, _IOC_SIZE(cmd));
+#else
 		ret = !access_ok(VERIFY_WRITE, arg, _IOC_SIZE(cmd));
+#endif
 	else if ( _IOC_DIR(cmd) & _IOC_WRITE )
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
+		ret = !access_ok(arg, _IOC_SIZE(cmd));
+#else
 		ret = !access_ok(VERIFY_READ, arg, _IOC_SIZE(cmd));
+#endif
 	if ( ret )
 		return -EFAULT;
 
@@ -1777,7 +1785,7 @@ static int ltq_atm_probe(struct platform_device *pdev)
 		goto INIT_PRIV_DATA_FAIL;
 	}
 
-	ops->init();
+	ops->init(pdev);
 	init_rx_tables();
 	init_tx_tables();
 
@@ -1801,11 +1809,7 @@ static int ltq_atm_probe(struct platform_device *pdev)
 	}
 
 	/*  register interrupt handler  */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,0)
 	ret = request_irq(PPE_MAILBOX_IGU1_INT, mailbox_irq_handler, 0, "atm_mailbox_isr", &g_atm_priv_data);
-#else
-	ret = request_irq(PPE_MAILBOX_IGU1_INT, mailbox_irq_handler, IRQF_DISABLED, "atm_mailbox_isr", &g_atm_priv_data);
-#endif
 	if ( ret ) {
 		if ( ret == -EBUSY ) {
 			pr_err("IRQ may be occupied by other driver, please reconfig to disable it.\n");

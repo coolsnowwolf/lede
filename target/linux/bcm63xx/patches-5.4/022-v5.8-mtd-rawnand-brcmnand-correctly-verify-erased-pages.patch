@@ -1,0 +1,63 @@
+From dcb351c03f2fa6a599de1061b174167e03ee312b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C3=81lvaro=20Fern=C3=A1ndez=20Rojas?= <noltari@gmail.com>
+Date: Tue, 12 May 2020 10:24:51 +0200
+Subject: [PATCH] mtd: rawnand: brcmnand: correctly verify erased pages
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The current code checks that the whole OOB area is erased.
+This is a problem when JFFS2 cleanmarkers are added to the OOB, since it will
+fail due to the usable OOB bytes not being 0xff.
+Correct this by only checking that data and ECC bytes aren't 0xff.
+
+Fixes: 02b88eea9f9c ("mtd: brcmnand: Add check for erased page bitflips")
+Signed-off-by: Álvaro Fernández Rojas <noltari@gmail.com>
+Signed-off-by: Miquel Raynal <miquel.raynal@bootlin.com>
+Link: https://lore.kernel.org/linux-mtd/20200512082451.771212-1-noltari@gmail.com
+---
+ drivers/mtd/nand/raw/brcmnand/brcmnand.c | 19 +++++++++++--------
+ 1 file changed, 11 insertions(+), 8 deletions(-)
+
+--- a/drivers/mtd/nand/raw/brcmnand/brcmnand.c
++++ b/drivers/mtd/nand/raw/brcmnand/brcmnand.c
+@@ -1787,28 +1787,31 @@ static int brcmnand_read_by_pio(struct m
+ static int brcmstb_nand_verify_erased_page(struct mtd_info *mtd,
+ 		  struct nand_chip *chip, void *buf, u64 addr)
+ {
+-	int i, sas;
+-	void *oob = chip->oob_poi;
++	struct mtd_oob_region ecc;
++	int i;
+ 	int bitflips = 0;
+ 	int page = addr >> chip->page_shift;
+ 	int ret;
++	void *ecc_bytes;
+ 	void *ecc_chunk;
+ 
+ 	if (!buf)
+ 		buf = nand_get_data_buf(chip);
+ 
+-	sas = mtd->oobsize / chip->ecc.steps;
+-
+ 	/* read without ecc for verification */
+ 	ret = chip->ecc.read_page_raw(chip, buf, true, page);
+ 	if (ret)
+ 		return ret;
+ 
+-	for (i = 0; i < chip->ecc.steps; i++, oob += sas) {
++	for (i = 0; i < chip->ecc.steps; i++) {
+ 		ecc_chunk = buf + chip->ecc.size * i;
+-		ret = nand_check_erased_ecc_chunk(ecc_chunk,
+-						  chip->ecc.size,
+-						  oob, sas, NULL, 0,
++
++		mtd_ooblayout_ecc(mtd, i, &ecc);
++		ecc_bytes = chip->oob_poi + ecc.offset;
++
++		ret = nand_check_erased_ecc_chunk(ecc_chunk, chip->ecc.size,
++						  ecc_bytes, ecc.length,
++						  NULL, 0,
+ 						  chip->ecc.strength);
+ 		if (ret < 0)
+ 			return ret;

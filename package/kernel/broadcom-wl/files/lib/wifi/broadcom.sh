@@ -443,7 +443,10 @@ EOF
 	txpower=${txpower:-$vif_txpower}
 	[ -z "$txpower" ] || iwconfig $device txpower ${txpower}dBm
 
-	eval "$nas_cmd"
+	# fd 1000 is an inherited lock file descriptor for preventing concurrent
+	# init script executions. Close it here to prevent the nas daemon from
+	# inheriting it further to avoid holding the lock indefinitely.
+	eval "$nas_cmd 1000>&-"
 }
 
 

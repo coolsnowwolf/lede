@@ -1,0 +1,100 @@
+From 64bd4f6f266110d908e51787a81ed0bc9d325941 Mon Sep 17 00:00:00 2001
+From: Ioana Ciornei <ioana.ciornei@nxp.com>
+Date: Mon, 5 Mar 2018 18:37:32 +0200
+Subject: [PATCH] bus: fsl-mc: add root dprc rescan attribute
+
+Introduce the rescan attribute as a device attribute to
+synchronize the fsl-mc bus objects and the MC firmware.
+
+To rescan the root dprc only, e.g.
+echo 1 > /sys/bus/fsl-mc/devices/dprc.1/rescan
+
+Signed-off-by: Ioana Ciornei <ioana.ciornei@nxp.com>
+---
+ Documentation/ABI/stable/sysfs-bus-fsl-mc |  9 ++++++++
+ MAINTAINERS                               |  1 +
+ drivers/bus/fsl-mc/dprc-driver.c          | 36 +++++++++++++++++++++++++++++++
+ 3 files changed, 46 insertions(+)
+ create mode 100644 Documentation/ABI/stable/sysfs-bus-fsl-mc
+
+--- /dev/null
++++ b/Documentation/ABI/stable/sysfs-bus-fsl-mc
+@@ -0,0 +1,9 @@
++What:		/sys/bus/fsl-mc/devices/dprc.*/rescan
++Date:		November 2018
++KernelVersion:	5.0
++Contact:	Ioana Ciornei <ioana.ciornei@nxp.com>
++Description:	Writing a non-zero value to this attribute will
++		force a rescan of dprc.X container in the system and
++		synchronize the objects under dprc.X and the
++		Management Complex firmware.
++Users:		Userspace drivers and management tools
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -13438,6 +13438,7 @@ F:	Documentation/devicetree/bindings/mis
+ F:	Documentation/networking/device_drivers/freescale/dpaa2/overview.rst
+ F:	Documentation/networking/dpaa2/overview.rst
+ F:	include/uapi/linux/fsl_mc.h
++F:	Documentation/ABI/stable/sysfs-bus-fsl-mc
+ 
+ QT1010 MEDIA DRIVER
+ M:	Antti Palosaari <crope@iki.fi>
+--- a/drivers/bus/fsl-mc/dprc-driver.c
++++ b/drivers/bus/fsl-mc/dprc-driver.c
+@@ -354,6 +354,33 @@ static int dprc_scan_container(struct fs
+ 	return 0;
+ }
+ 
++static ssize_t rescan_store(struct device *dev,
++			    struct device_attribute *attr,
++			    const char *buf, size_t count)
++{
++	struct fsl_mc_device *root_mc_dev;
++	struct fsl_mc_bus *root_mc_bus;
++	unsigned long val;
++
++	if (!fsl_mc_is_root_dprc(dev))
++		return -EINVAL;
++
++	root_mc_dev = to_fsl_mc_device(dev);
++	root_mc_bus = to_fsl_mc_bus(root_mc_dev);
++
++	if (kstrtoul(buf, 0, &val) < 0)
++		return -EINVAL;
++
++	if (val) {
++		mutex_lock(&root_mc_bus->scan_mutex);
++		dprc_scan_objects(root_mc_dev, NULL);
++		mutex_unlock(&root_mc_bus->scan_mutex);
++	}
++
++	return count;
++}
++static DEVICE_ATTR_WO(rescan);
++
+ /**
+  * dprc_irq0_handler - Regular ISR for DPRC interrupt 0
+  *
+@@ -692,6 +719,13 @@ static int dprc_probe(struct fsl_mc_devi
+ 
+ 	mutex_init(&mc_bus->scan_mutex);
+ 
++	error = device_create_file(&mc_dev->dev, &dev_attr_rescan);
++	if (error < 0) {
++		dev_err(&mc_dev->dev, "device_create_file() failed: %d\n",
++			error);
++		goto error_cleanup_open;
++	}
++
+ 	/*
+ 	 * Discover MC objects in DPRC object:
+ 	 */
+@@ -788,6 +822,8 @@ static int dprc_remove(struct fsl_mc_dev
+ 		fsl_mc_uapi_remove_device_file(mc_bus);
+ 	}
+ 
++	device_remove_file(&mc_dev->dev, &dev_attr_rescan);
++
+ 	dev_info(&mc_dev->dev, "DPRC device unbound from driver");
+ 	return 0;
+ }
