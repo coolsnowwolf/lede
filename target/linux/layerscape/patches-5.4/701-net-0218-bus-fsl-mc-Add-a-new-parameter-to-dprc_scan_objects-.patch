@@ -1,0 +1,127 @@
+From 653fc2595283df6deb92ca3058c8d5dc1e129e91 Mon Sep 17 00:00:00 2001
+From: Diana Craciun <diana.craciun@nxp.com>
+Date: Fri, 13 Sep 2019 17:17:30 +0300
+Subject: [PATCH] bus/fsl-mc: Add a new parameter to dprc_scan_objects function
+
+Prepare the dprc_scan_objects function to be used by
+the VFIO mc driver code. The function is used to scan the mc
+objects by the bus driver. The same functionality is
+needed by the VFIO mc driver, but in this case the
+interrupt configuration is delayed until the userspace
+configures them. In order to use the same function in both
+drivers add a new parameter.
+
+Signed-off-by: Diana Craciun <diana.craciun@nxp.com>
+---
+ drivers/bus/fsl-mc/dprc-driver.c | 33 +++++++++++++++++++--------------
+ drivers/bus/fsl-mc/fsl-mc-bus.c  |  2 +-
+ include/linux/fsl/mc.h           |  1 +
+ 3 files changed, 21 insertions(+), 15 deletions(-)
+
+--- a/drivers/bus/fsl-mc/dprc-driver.c
++++ b/drivers/bus/fsl-mc/dprc-driver.c
+@@ -3,6 +3,7 @@
+  * Freescale data path resource container (DPRC) driver
+  *
+  * Copyright (C) 2014-2016 Freescale Semiconductor, Inc.
++ * Copyright 2019 NXP
+  * Author: German Rivera <German.Rivera@freescale.com>
+  *
+  */
+@@ -204,6 +205,8 @@ static void dprc_add_new_devices(struct
+  * @mc_bus_dev: pointer to the fsl-mc device that represents a DPRC object
+  * @driver_override: driver override to apply to new objects found in the
+  * DPRC, or NULL, if none.
++ * @alloc_interrupts: if true the function allocates the interrupt pool,
++ * otherwise the interrupt allocation is delayed
+  * @total_irq_count: If argument is provided the function populates the
+  * total number of IRQs created by objects in the DPRC.
+  *
+@@ -221,6 +224,7 @@ static void dprc_add_new_devices(struct
+  */
+ int dprc_scan_objects(struct fsl_mc_device *mc_bus_dev,
+ 		      const char *driver_override,
++			  bool alloc_interrupts,
+ 		      unsigned int *total_irq_count)
+ {
+ 	int num_child_objects;
+@@ -302,19 +306,20 @@ int dprc_scan_objects(struct fsl_mc_devi
+ 	 * Allocate IRQ's before binding the scanned devices with their
+ 	 * respective drivers.
+ 	 */
+-	if (dev_get_msi_domain(&mc_bus_dev->dev) && !mc_bus->irq_resources) {
+-		if (irq_count > FSL_MC_IRQ_POOL_MAX_TOTAL_IRQS) {
+-			dev_warn(&mc_bus_dev->dev,
+-				 "IRQs needed (%u) exceed IRQs preallocated (%u)\n",
+-				 irq_count, FSL_MC_IRQ_POOL_MAX_TOTAL_IRQS);
+-		}
++	if (alloc_interrupts) {
++		if (dev_get_msi_domain(&mc_bus_dev->dev) && !mc_bus->irq_resources) {
++			if (irq_count > FSL_MC_IRQ_POOL_MAX_TOTAL_IRQS) {
++				dev_warn(&mc_bus_dev->dev,
++					 "IRQs needed (%u) exceed IRQs preallocated (%u)\n",
++					 irq_count, FSL_MC_IRQ_POOL_MAX_TOTAL_IRQS);
++			}
+ 
+-		error = fsl_mc_populate_irq_pool(mc_bus,
+-				FSL_MC_IRQ_POOL_MAX_TOTAL_IRQS);
+-		if (error < 0)
+-			return error;
++			error = fsl_mc_populate_irq_pool(mc_bus,
++					FSL_MC_IRQ_POOL_MAX_TOTAL_IRQS);
++			if (error < 0)
++				return error;
++		}
+ 	}
+-
+ 	if (total_irq_count)
+ 		*total_irq_count = irq_count;
+ 
+@@ -350,7 +355,7 @@ static int dprc_scan_container(struct fs
+ 	 * Discover objects in the DPRC:
+ 	 */
+ 	mutex_lock(&mc_bus->scan_mutex);
+-	error = dprc_scan_objects(mc_bus_dev, NULL, NULL);
++	error = dprc_scan_objects(mc_bus_dev, NULL, true, NULL);
+ 	mutex_unlock(&mc_bus->scan_mutex);
+ 	if (error < 0) {
+ 		fsl_mc_cleanup_all_resource_pools(mc_bus_dev);
+@@ -379,7 +384,7 @@ static ssize_t rescan_store(struct devic
+ 
+ 	if (val) {
+ 		mutex_lock(&root_mc_bus->scan_mutex);
+-		dprc_scan_objects(root_mc_dev, NULL, NULL);
++		dprc_scan_objects(root_mc_dev, NULL, true, NULL);
+ 		mutex_unlock(&root_mc_bus->scan_mutex);
+ 	}
+ 
+@@ -448,7 +453,7 @@ static irqreturn_t dprc_irq0_handler_thr
+ 		      DPRC_IRQ_EVENT_OBJ_CREATED)) {
+ 		unsigned int irq_count;
+ 
+-		error = dprc_scan_objects(mc_dev, NULL, &irq_count);
++		error = dprc_scan_objects(mc_dev, NULL, true, &irq_count);
+ 		if (error < 0) {
+ 			/*
+ 			 * If the error is -ENXIO, we ignore it, as it indicates
+--- a/drivers/bus/fsl-mc/fsl-mc-bus.c
++++ b/drivers/bus/fsl-mc/fsl-mc-bus.c
+@@ -215,7 +215,7 @@ static int scan_fsl_mc_bus(struct device
+ 	root_mc_dev = to_fsl_mc_device(dev);
+ 	root_mc_bus = to_fsl_mc_bus(root_mc_dev);
+ 	mutex_lock(&root_mc_bus->scan_mutex);
+-	dprc_scan_objects(root_mc_dev, NULL, NULL);
++	dprc_scan_objects(root_mc_dev, NULL, true, NULL);
+ 	mutex_unlock(&root_mc_bus->scan_mutex);
+ 
+ exit:
+--- a/include/linux/fsl/mc.h
++++ b/include/linux/fsl/mc.h
+@@ -1010,6 +1010,7 @@ struct fsl_mc_bus {
+ 
+ int dprc_scan_objects(struct fsl_mc_device *mc_bus_dev,
+ 		      const char *driver_override,
++			  bool alloc_interrupts,
+ 		      unsigned int *total_irq_count);
+ 
+ int fsl_mc_find_msi_domain(struct device *mc_platform_dev,

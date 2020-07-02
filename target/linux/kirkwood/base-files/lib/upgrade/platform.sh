@@ -13,10 +13,10 @@ platform_do_upgrade() {
 	case "$board" in
 	"linksys,audi"|\
 	"linksys,viper")
-		platform_do_upgrade_linksys "$ARGV"
+		platform_do_upgrade_linksys "$1"
 		;;
 	*)
-		nand_do_upgrade "$ARGV"
+		nand_do_upgrade "$1"
 		;;
 	esac
 }

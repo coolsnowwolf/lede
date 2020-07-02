@@ -10,12 +10,11 @@ include $(INCLUDE_DIR)/image.mk
 
 KERNEL_LOADADDR = 0x80060000
 
-DEVICE_VARS += BOARDNAME CMDLINE CONSOLE IMAGE_SIZE LOADER_TYPE
+DEVICE_VARS += BOARDNAME CMDLINE CONSOLE LOADER_TYPE
 
 ifeq ($(SUBTARGET),generic)
 include ./generic.mk
 include ./generic-legacy-devices.mk
-include ./generic-senao.mk
 include ./generic-tp-link.mk
 include ./generic-ubnt.mk
 endif
@@ -23,6 +22,7 @@ ifeq ($(SUBTARGET),tiny)
 include ./tiny.mk
 include ./tiny-tp-link.mk
 include ./tiny-legacy-devices.mk
+include ./tiny-senao.mk
 endif
 ifeq ($(SUBTARGET),nand)
 include ./nand.mk

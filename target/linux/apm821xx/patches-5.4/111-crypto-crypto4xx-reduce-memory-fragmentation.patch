@@ -1,0 +1,99 @@
+From 3913dbe4b3256ead342572f7aba726a60ab5fd43 Mon Sep 17 00:00:00 2001
+Message-Id: <3913dbe4b3256ead342572f7aba726a60ab5fd43.1577917078.git.chunkeey@gmail.com>
+From: Christian Lamparter <chunkeey@gmail.com>
+Date: Wed, 1 Jan 2020 22:28:28 +0100
+Subject: [PATCH 1/2] crypto: crypto4xx - reduce memory fragmentation
+To: linux-crypto@vger.kernel.org
+Cc: Herbert Xu <herbert@gondor.apana.org.au>
+
+With recent kernels (>5.2), the driver fails to probe, as the
+allocation of the driver's scatter buffer fails with -ENOMEM.
+
+This happens in crypto4xx_build_sdr(). Where the driver tries
+to get 512KiB (=PPC4XX_SD_BUFFER_SIZE * PPC4XX_NUM_SD) of
+continuous memory. This big chunk is by design, since the driver
+uses this circumstance in the crypto4xx_copy_pkt_to_dst() to
+its advantage:
+"all scatter-buffers are all neatly organized in one big
+continuous ringbuffer; So scatterwalk_map_and_copy() can be
+instructed to copy a range of buffers in one go."
+
+The PowerPC arch does not have support for DMA_CMA. Hence,
+this patch reorganizes the order in which the memory
+allocations are done. Since the driver itself is responsible
+for some of the issues.
+
+Signed-off-by: Christian Lamparter <chunkeey@gmail.com>
+---
+ drivers/crypto/amcc/crypto4xx_core.c | 27 +++++++++++++--------------
+ 1 file changed, 13 insertions(+), 14 deletions(-)
+
+--- a/drivers/crypto/amcc/crypto4xx_core.c
++++ b/drivers/crypto/amcc/crypto4xx_core.c
+@@ -286,7 +286,8 @@ static u32 crypto4xx_build_gdr(struct cr
+ 
+ static inline void crypto4xx_destroy_gdr(struct crypto4xx_device *dev)
+ {
+-	dma_free_coherent(dev->core_dev->device,
++	if (dev->gdr)
++		dma_free_coherent(dev->core_dev->device,
+ 			  sizeof(struct ce_gd) * PPC4XX_NUM_GD,
+ 			  dev->gdr, dev->gdr_pa);
+ }
+@@ -354,13 +355,6 @@ static u32 crypto4xx_build_sdr(struct cr
+ {
+ 	int i;
+ 
+-	/* alloc memory for scatter descriptor ring */
+-	dev->sdr = dma_alloc_coherent(dev->core_dev->device,
+-				      sizeof(struct ce_sd) * PPC4XX_NUM_SD,
+-				      &dev->sdr_pa, GFP_ATOMIC);
+-	if (!dev->sdr)
+-		return -ENOMEM;
+-
+ 	dev->scatter_buffer_va =
+ 		dma_alloc_coherent(dev->core_dev->device,
+ 			PPC4XX_SD_BUFFER_SIZE * PPC4XX_NUM_SD,
+@@ -368,6 +362,13 @@ static u32 crypto4xx_build_sdr(struct cr
+ 	if (!dev->scatter_buffer_va)
+ 		return -ENOMEM;
+ 
++	/* alloc memory for scatter descriptor ring */
++	dev->sdr = dma_alloc_coherent(dev->core_dev->device,
++				      sizeof(struct ce_sd) * PPC4XX_NUM_SD,
++				      &dev->sdr_pa, GFP_ATOMIC);
++	if (!dev->sdr)
++		return -ENOMEM;
++
+ 	for (i = 0; i < PPC4XX_NUM_SD; i++) {
+ 		dev->sdr[i].ptr = dev->scatter_buffer_pa +
+ 				  PPC4XX_SD_BUFFER_SIZE * i;
+@@ -1439,16 +1440,15 @@ static int crypto4xx_probe(struct platfo
+ 	spin_lock_init(&core_dev->lock);
+ 	INIT_LIST_HEAD(&core_dev->dev->alg_list);
+ 	ratelimit_default_init(&core_dev->dev->aead_ratelimit);
++	rc = crypto4xx_build_sdr(core_dev->dev);
++	if (rc)
++		goto err_build_sdr;
+ 	rc = crypto4xx_build_pdr(core_dev->dev);
+ 	if (rc)
+-		goto err_build_pdr;
++		goto err_build_sdr;
+ 
+ 	rc = crypto4xx_build_gdr(core_dev->dev);
+ 	if (rc)
+-		goto err_build_pdr;
+-
+-	rc = crypto4xx_build_sdr(core_dev->dev);
+-	if (rc)
+ 		goto err_build_sdr;
+ 
+ 	/* Init tasklet for bottom half processing */
+@@ -1493,7 +1493,6 @@ err_iomap:
+ err_build_sdr:
+ 	crypto4xx_destroy_sdr(core_dev->dev);
+ 	crypto4xx_destroy_gdr(core_dev->dev);
+-err_build_pdr:
+ 	crypto4xx_destroy_pdr(core_dev->dev);
+ 	kfree(core_dev->dev);
+ err_alloc_dev:

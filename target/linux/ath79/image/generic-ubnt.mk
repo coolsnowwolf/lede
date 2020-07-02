@@ -28,13 +28,13 @@ endef
 # UBNT_BOARD e.g. one of (XS2, XS5, RS, XM)
 # UBNT_TYPE e.g. one of (BZ, XM, XW)
 # UBNT_CHIP e.g. one of (ar7240, ar933x, ar934x)
-# UBNT_VERSION e.g. one of (6.0.0, 8.5.0)
+# UBNT_VERSION e.g. one of (6.0.0, 8.5.3)
 define Device/ubnt
   DEVICE_VENDOR := Ubiquiti
   DEVICE_PACKAGES := kmod-usb2
   IMAGES += factory.bin
   IMAGE/factory.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
-	append-rootfs | pad-rootfs | check-size $$$$(IMAGE_SIZE) | mkubntimage-split
+	append-rootfs | pad-rootfs | check-size | mkubntimage-split
 endef
 
 define Device/ubnt-bz
@@ -66,12 +66,20 @@ define Device/ubnt-wa
   UBNT_BOARD := WA
   UBNT_CHIP := ar934x
   UBNT_TYPE := WA
-  UBNT_VERSION := 8.5.0
+  UBNT_VERSION := 8.5.3
+endef
+
+define Device/ubnt-xc
+  $(Device/ubnt)
+  IMAGE_SIZE := 15744k
+  UBNT_BOARD := XC
+  UBNT_CHIP := qca955x
+  UBNT_TYPE := XC
+  UBNT_VERSION := 8.5.3
 endef
 
 define Device/ubnt-xm
   $(Device/ubnt)
-  SOC := ar7241
   DEVICE_VARIANT := XM
   DEVICE_PACKAGES += kmod-usb-ohci
   IMAGE_SIZE := 7448k
@@ -108,18 +116,31 @@ TARGET_DEVICES += ubnt_acb-isp
 
 define Device/ubnt_airrouter
   $(Device/ubnt-xm)
+  SOC := ar7241
   DEVICE_MODEL := AirRouter
   SUPPORTED_DEVICES += airrouter
 endef
 TARGET_DEVICES += ubnt_airrouter
 
-define Device/ubnt_bullet-m
+define Device/ubnt_bullet-m-ar7240
   $(Device/ubnt-xm)
+  SOC := ar7240
   DEVICE_MODEL := Bullet-M
+  DEVICE_VARIANT := XM (AR7240)
   DEVICE_PACKAGES += rssileds
   SUPPORTED_DEVICES += bullet-m
 endef
-TARGET_DEVICES += ubnt_bullet-m
+TARGET_DEVICES += ubnt_bullet-m-ar7240
+
+define Device/ubnt_bullet-m-ar7241
+  $(Device/ubnt-xm)
+  SOC := ar7241
+  DEVICE_MODEL := Bullet-M
+  DEVICE_VARIANT := XM (AR7241)
+  DEVICE_PACKAGES += rssileds
+  SUPPORTED_DEVICES += bullet-m ubnt,bullet-m
+endef
+TARGET_DEVICES += ubnt_bullet-m-ar7241
 
 define Device/ubnt_bullet-m-xw
   $(Device/ubnt-xw)
@@ -138,7 +159,7 @@ TARGET_DEVICES += ubnt_edgeswitch-5xp
 define Device/ubnt_edgeswitch-8xp
   $(Device/ubnt-sw)
   DEVICE_MODEL := EdgeSwitch 8XP
-  DEVICE_PACKAGES += switch-bcm53xx-mdio
+  DEVICE_PACKAGES += kmod-switch-bcm53xx-mdio
 endef
 TARGET_DEVICES += ubnt_edgeswitch-8xp
 
@@ -165,6 +186,15 @@ define Device/ubnt_nanobeam-ac
 endef
 TARGET_DEVICES += ubnt_nanobeam-ac
 
+define Device/ubnt_nanobridge-m
+  $(Device/ubnt-xm)
+  SOC := ar7241
+  DEVICE_MODEL := NanoBridge M
+  DEVICE_PACKAGES += rssileds
+  SUPPORTED_DEVICES += bullet-m
+endef
+TARGET_DEVICES += ubnt_nanobridge-m
+
 define Device/ubnt_nanostation-ac
   $(Device/ubnt-wa)
   DEVICE_MODEL := Nanostation AC
@@ -181,6 +211,7 @@ TARGET_DEVICES += ubnt_nanostation-ac-loco
 
 define Device/ubnt_nanostation-loco-m
   $(Device/ubnt-xm)
+  SOC := ar7241
   DEVICE_MODEL := Nanostation Loco M
   DEVICE_PACKAGES += rssileds
   SUPPORTED_DEVICES += bullet-m
@@ -197,6 +228,7 @@ TARGET_DEVICES += ubnt_nanostation-loco-m-xw
 
 define Device/ubnt_nanostation-m
   $(Device/ubnt-xm)
+  SOC := ar7241
   DEVICE_MODEL := Nanostation M
   DEVICE_PACKAGES += rssileds
   SUPPORTED_DEVICES += nanostation-m
@@ -213,14 +245,33 @@ TARGET_DEVICES += ubnt_nanostation-m-xw
 
 define Device/ubnt_picostation-m
   $(Device/ubnt-xm)
+  SOC := ar7241
   DEVICE_MODEL := Picostation M
   DEVICE_PACKAGES += rssileds
   SUPPORTED_DEVICES += bullet-m
 endef
 TARGET_DEVICES += ubnt_picostation-m
 
+define Device/ubnt_powerbeam-5ac-500
+  $(Device/ubnt-xc)
+  SOC := qca9558
+  DEVICE_MODEL := PowerBeam 5AC
+  DEVICE_VARIANT := 500
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct
+endef
+TARGET_DEVICES += ubnt_powerbeam-5ac-500
+
+define Device/ubnt_powerbeam-5ac-gen2
+  $(Device/ubnt-wa)
+  DEVICE_MODEL := PowerBeam 5AC
+  DEVICE_VARIANT := Gen2
+  DEVICE_PACKAGES := kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct rssileds
+endef
+TARGET_DEVICES += ubnt_powerbeam-5ac-gen2
+
 define Device/ubnt_rocket-m
   $(Device/ubnt-xm)
+  SOC := ar7241
   DEVICE_MODEL := Rocket-M
   DEVICE_PACKAGES += rssileds
   SUPPORTED_DEVICES += rocket-m
@@ -235,7 +286,7 @@ define Device/ubnt_routerstation_common
   IMAGE_SIZE := 16128k
   IMAGES := factory.bin
   IMAGE/factory.bin := append-rootfs | pad-rootfs | mkubntimage | \
-	check-size $$$$(IMAGE_SIZE)
+	check-size
   KERNEL := kernel-bin | append-dtb | lzma | pad-to $$(BLOCKSIZE)
   KERNEL_INITRAMFS := kernel-bin | append-dtb
 endef

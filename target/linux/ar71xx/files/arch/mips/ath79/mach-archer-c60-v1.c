@@ -157,8 +157,8 @@ static void __init archer_c60_v1_setup(void)
 	ath79_register_mdio(0, 0x0);
 	ath79_register_mdio(1, 0x0);
 
-	ath79_init_mac(ath79_eth0_data.mac_addr, mac, 0);
-	ath79_init_mac(ath79_eth1_data.mac_addr, mac, 1);
+	ath79_init_mac(ath79_eth1_data.mac_addr, mac, 0);
+	ath79_init_mac(ath79_eth0_data.mac_addr, mac, 1);
 
 	/* WAN port */
 	ath79_eth0_data.phy_if_mode = PHY_INTERFACE_MODE_MII;
@@ -199,8 +199,8 @@ static void __init archer_c60_v2_setup(void)
 	ath79_register_mdio(0, 0x0);
 	ath79_register_mdio(1, 0x0);
 
-	ath79_init_mac(ath79_eth0_data.mac_addr, mac, 0);
-	ath79_init_mac(ath79_eth1_data.mac_addr, mac, 1);
+	ath79_init_mac(ath79_eth1_data.mac_addr, mac, 0);
+	ath79_init_mac(ath79_eth0_data.mac_addr, mac, 1);
 
 	/* WAN port */
 	ath79_eth0_data.phy_if_mode = PHY_INTERFACE_MODE_MII;

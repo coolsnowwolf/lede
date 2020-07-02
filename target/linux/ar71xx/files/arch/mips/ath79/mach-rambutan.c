@@ -46,6 +46,7 @@ static struct mdio_board_info rambutan_mdio0_info[] = {
 
 static struct at803x_platform_data rambutan_ar8033_data = {
 	.has_reset_gpio = 1,
+	.override_sgmii_aneg = 1,
 	.reset_gpio = 23,
 };
 
@@ -80,6 +81,7 @@ static void __init rambutan_setup(void)
 	ath79_eth1_data.phy_if_mode = PHY_INTERFACE_MODE_SGMII;
 	ath79_eth1_data.phy_mask = BIT(0);
 	ath79_eth1_data.mii_bus_dev = &ath79_mdio1_device.dev;
+	ath79_eth1_data.enable_sgmii_fixup = 1;
 	ath79_eth1_pll_data.pll_1000 = 0x17000000;
 	ath79_eth1_pll_data.pll_10 = 0x1313;
 	ath79_register_eth(1);

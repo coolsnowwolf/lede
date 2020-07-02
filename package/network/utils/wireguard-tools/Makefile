@@ -17,6 +17,7 @@ PKG_RELEASE:=1
 PKG_SOURCE:=wireguard-tools-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://git.zx2c4.com/wireguard-tools/snapshot/
 PKG_HASH:=e73409a9fb8c90506db241d1e1a4e7372a60dbfa400e37f4ab2fd70a92ba495f
+
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=COPYING
 

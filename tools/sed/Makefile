@@ -7,11 +7,11 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=sed
-PKG_VERSION:=4.5
+PKG_VERSION:=4.8
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/$(PKG_NAME)
-PKG_HASH:=7aad73c8839c2bdadca9476f884d2953cdace9567ecd0d90f9959f229d146b40
+PKG_HASH:=f79b0cfea71b37a8eeec8490db6c5f7ae7719c35587f21edb0617f370eeff633
 export SED:=
 
 HOST_BUILD_PARALLEL:=1
@@ -24,6 +24,9 @@ include $(INCLUDE_DIR)/host-build.mk
 HOST_CONFIGURE_ARGS += \
 	--disable-acl \
 	--disable-nls \
+	--enable-threads=posix \
+	--disable-i18n \
+	--without-selinux
 
 HOST_CONFIGURE_VARS += \
 	ac_cv_search_setfilecon=no \

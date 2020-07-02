@@ -8,7 +8,7 @@
 include /lib/network
 scan_interfaces
 
-interfaces=`ubus list network.interface.\* | cut -d"." -f3`
+interfaces=$(ubus list network.interface.\* | cut -d"." -f3)
 for ifc in $interfaces; do
 
 	json_load "$(ifstatus $ifc)"
