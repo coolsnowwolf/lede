@@ -105,7 +105,7 @@ define KernelPackage/b43
   	CONFIG_HW_RANDOM=y
   # Depend on PCI_SUPPORT to make sure we can select kmod-bcma or kmod-ssb
   DEPENDS += \
-	@PCI_SUPPORT +kmod-mac80211 \
+	@PCI_SUPPORT +kmod-mac80211 +kmod-lib-cordic \
 	$(if $(CONFIG_PACKAGE_B43_USE_SSB),+kmod-ssb) \
 	$(if $(CONFIG_PACKAGE_B43_USE_BCMA),+kmod-bcma)
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/broadcom/b43/b43.ko
@@ -118,14 +118,14 @@ define KernelPackage/b43/config
 config PACKAGE_B43_USE_SSB
 	select PACKAGE_kmod-ssb
 	tristate
-	depends on !TARGET_brcm47xx && !TARGET_brcm63xx
+	depends on !TARGET_bcm47xx && !TARGET_bcm63xx
 	default PACKAGE_kmod-b43 if PACKAGE_B43_BUSES_BCMA_AND_SSB
 	default PACKAGE_kmod-b43 if PACKAGE_B43_BUSES_SSB
 
 config PACKAGE_B43_USE_BCMA
 	select PACKAGE_kmod-bcma
 	tristate
-	depends on !TARGET_brcm47xx && !TARGET_bcm53xx
+	depends on !TARGET_bcm47xx && !TARGET_bcm53xx
 	default PACKAGE_kmod-b43 if PACKAGE_B43_BUSES_BCMA_AND_SSB
 	default PACKAGE_kmod-b43 if PACKAGE_B43_BUSES_BCMA
 
@@ -205,8 +205,8 @@ config PACKAGE_B43_USE_BCMA
 	config B43_FW_SQUASH_COREREVS
 		string "Core revisions to include"
 		depends on B43_FW_SQUASH
-		default "5,6,7,8,9,10,11,13,15" if TARGET_brcm47xx_legacy
-		default "16,28,29,30" if TARGET_brcm47xx_mips74k
+		default "5,6,7,8,9,10,11,13,15" if TARGET_bcm47xx_legacy
+		default "16,28,29,30" if TARGET_bcm47xx_mips74k
 		default "5,6,7,8,9,10,11,13,15,16,28,29,30"
 		help
 		  This is a comma seperated list of core revision numbers.
@@ -220,8 +220,8 @@ config PACKAGE_B43_USE_BCMA
 	config B43_FW_SQUASH_PHYTYPES
 		string "PHY types to include"
 		depends on B43_FW_SQUASH
-		default "G,N,LP" if TARGET_brcm47xx_legacy
-		default "N,HT" if TARGET_brcm47xx_mips74k
+		default "G,N,LP" if TARGET_bcm47xx_legacy
+		default "N,HT" if TARGET_bcm47xx_mips74k
 		default "G,N,LP,HT"
 		help
 		  This is a comma seperated list of PHY types:
@@ -248,15 +248,15 @@ config PACKAGE_B43_USE_BCMA
 		  This allows choosing buses that b43 should support.
 
 	config PACKAGE_B43_BUSES_BCMA_AND_SSB
-		depends on !TARGET_brcm47xx_legacy && !TARGET_brcm47xx_mips74k && !TARGET_bcm53xx
+		depends on !TARGET_bcm47xx_legacy && !TARGET_bcm47xx_mips74k && !TARGET_bcm53xx
 		bool "BCMA and SSB"
 
 	config PACKAGE_B43_BUSES_BCMA
-		depends on !TARGET_brcm47xx_legacy
+		depends on !TARGET_bcm47xx_legacy
 		bool "BCMA only"
 
 	config PACKAGE_B43_BUSES_SSB
-		depends on !TARGET_brcm47xx_mips74k && !TARGET_bcm53xx
+		depends on !TARGET_bcm47xx_mips74k && !TARGET_bcm53xx
 		bool "SSB only"
 
 	endchoice
@@ -281,7 +281,7 @@ config PACKAGE_B43_USE_BCMA
 
 	config PACKAGE_B43_PHY_G
 		bool "Enable support for G-PHYs"
-		default n if TARGET_brcm47xx_mips74k
+		default n if TARGET_bcm47xx_mips74k
 		default y
 		help
 		  Enable support for G-PHY. This includes support for the following devices:
@@ -304,7 +304,7 @@ config PACKAGE_B43_USE_BCMA
 
 	config PACKAGE_B43_PHY_LP
 		bool "Enable support for LP-PHYs"
-		default n if TARGET_brcm47xx_mips74k
+		default n if TARGET_bcm47xx_mips74k
 		default y
 		help
 		  Enable support for LP-PHY. This includes support for the following devices:
@@ -315,7 +315,7 @@ config PACKAGE_B43_USE_BCMA
 
 	config PACKAGE_B43_PHY_HT
 		bool "Enable support for HT-PHYs"
-		default n if TARGET_brcm47xx_legacy
+		default n if TARGET_bcm47xx_legacy
 		default y
 		help
 		  Enable support for HT-PHY. This includes support for the following devices:
@@ -347,7 +347,7 @@ define KernelPackage/b43legacy
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/b43
   KCONFIG:= \
   	CONFIG_HW_RANDOM=y
-  DEPENDS+= +kmod-mac80211 +!(TARGET_brcm47xx||TARGET_brcm63xx):kmod-ssb @!TARGET_brcm47xx_mips74k +b43legacy-firmware
+  DEPENDS+= +kmod-mac80211 +!(TARGET_bcm47xx||TARGET_bcm63xx):kmod-ssb @!TARGET_bcm47xx_mips74k +b43legacy-firmware
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/broadcom/b43legacy/b43legacy.ko
   AUTOLOAD:=$(call AutoProbe,b43legacy)
   MENU:=1
@@ -401,7 +401,7 @@ define KernelPackage/brcmsmac
   $(call KernelPackage/mac80211/Default)
   TITLE:=Broadcom IEEE802.11n PCIe SoftMAC WLAN driver
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/brcm80211
-  DEPENDS+= +kmod-mac80211 +@DRIVER_11N_SUPPORT +!TARGET_brcm47xx:kmod-bcma +kmod-lib-cordic +kmod-lib-crc8 +kmod-brcmutil +!BRCMSMAC_USE_FW_FROM_WL:brcmsmac-firmware
+  DEPENDS+= +kmod-mac80211 +@DRIVER_11N_SUPPORT +!TARGET_bcm47xx:kmod-bcma +kmod-lib-cordic +kmod-lib-crc8 +kmod-brcmutil +!BRCMSMAC_USE_FW_FROM_WL:brcmsmac-firmware
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/broadcom/brcm80211/brcmsmac/brcmsmac.ko
   AUTOLOAD:=$(call AutoProbe,brcmsmac)
   MENU:=1
@@ -476,6 +476,29 @@ define KernelPackage/brcmfmac/config
 		  BCM4354, BCM4356, BCM43567, BCM43570, BCM43602
 
   endif
+endef
+
+
+define KernelPackage/b43/install
+	rm -rf $(1)/lib/firmware/
+ifeq ($(CONFIG_B43_OPENFIRMWARE),y)
+	tar xzf "$(DL_DIR)/$(PKG_B43_FWV4_SOURCE)" -C "$(PKG_BUILD_DIR)"
+else
+	tar xjf "$(DL_DIR)/$(PKG_B43_FWV4_SOURCE)" -C "$(PKG_BUILD_DIR)"
+endif
+	$(INSTALL_DIR) $(1)/lib/firmware/
+ifeq ($(CONFIG_B43_OPENFIRMWARE),y)
+	$(MAKE) -C "$(PKG_BUILD_DIR)/$(PKG_B43_FWV4_OBJECT)/"
+	$(INSTALL_DIR) $(1)/lib/firmware/b43-open/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/$(PKG_B43_FWV4_OBJECT)/ucode5.fw $(1)/lib/firmware/b43-open/ucode5.fw
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/$(PKG_B43_FWV4_OBJECT)/b0g0bsinitvals5.fw $(1)/lib/firmware/b43-open/b0g0bsinitvals5.fw
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/$(PKG_B43_FWV4_OBJECT)/b0g0initvals5.fw $(1)/lib/firmware/b43-open/b0g0initvals5.fw
+else
+	b43-fwcutter -w $(1)/lib/firmware/ $(PKG_BUILD_DIR)/$(PKG_B43_FWV4_OBJECT)
+endif
+ifneq ($(CONFIG_B43_FW_SQUASH),)
+	b43-fwsquash.py "$(CONFIG_B43_FW_SQUASH_PHYTYPES)" "$(CONFIG_B43_FW_SQUASH_COREREVS)" "$(1)/lib/firmware/b43"
+endif
 endef
 
 define KernelPackage/brcmsmac/install

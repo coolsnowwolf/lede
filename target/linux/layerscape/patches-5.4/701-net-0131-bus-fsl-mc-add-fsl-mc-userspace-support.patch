@@ -1,0 +1,371 @@
+From 5b5567547d0088ec96160634c4e342bb06e52f19 Mon Sep 17 00:00:00 2001
+From: Ioana Ciornei <ioana.ciornei@nxp.com>
+Date: Wed, 14 Mar 2018 19:25:27 +0200
+Subject: [PATCH] bus: fsl-mc: add fsl-mc userspace support
+
+Adding userspace support for the MC (Management Complex) means exporting
+an ioctl capable device file representing the root resource container.
+
+This new functionality in the fsl-mc bus driver intends to provide
+userspace applications an interface to interact with the MC firmware.
+
+Commands that are composed in userspace are sent to the MC firmware
+through the FSL_MC_SEND_MC_COMMAND ioctl.  By default the implicit MC
+I/O portal is used for this operation, but if the implicit one is busy,
+a dynamic portal is allocated and then freed upon execution.
+
+Signed-off-by: Ioana Ciornei <ioana.ciornei@nxp.com>
+---
+ Documentation/ioctl/ioctl-number.rst |   1 +
+ drivers/bus/fsl-mc/Kconfig           |   7 ++
+ drivers/bus/fsl-mc/Makefile          |   3 +
+ drivers/bus/fsl-mc/dprc-driver.c     |  14 ++-
+ drivers/bus/fsl-mc/fsl-mc-private.h  |  39 ++++++++
+ drivers/bus/fsl-mc/fsl-mc-uapi.c     | 168 +++++++++++++++++++++++++++++++++++
+ include/uapi/linux/fsl_mc.h          |   9 ++
+ 7 files changed, 240 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/bus/fsl-mc/fsl-mc-uapi.c
+
+--- a/Documentation/ioctl/ioctl-number.rst
++++ b/Documentation/ioctl/ioctl-number.rst
+@@ -180,6 +180,7 @@ Code  Seq#    Include File
+ 'R'   00-1F  linux/random.h                                          conflict!
+ 'R'   01     linux/rfkill.h                                          conflict!
+ 'R'   C0-DF  net/bluetooth/rfcomm.h
++'R'   E0     uapi/linux/fsl_mc.h
+ 'S'   all    linux/cdrom.h                                           conflict!
+ 'S'   80-81  scsi/scsi_ioctl.h                                       conflict!
+ 'S'   82-FF  scsi/scsi.h                                             conflict!
+--- a/drivers/bus/fsl-mc/Kconfig
++++ b/drivers/bus/fsl-mc/Kconfig
+@@ -14,3 +14,10 @@ config FSL_MC_BUS
+ 	  architecture.  The fsl-mc bus driver handles discovery of
+ 	  DPAA2 objects (which are represented as Linux devices) and
+ 	  binding objects to drivers.
++
++config FSL_MC_UAPI_SUPPORT
++	bool "Management Complex (MC) userspace support"
++	depends on FSL_MC_BUS
++	help
++	  Provides userspace support for creating/destroying/configuring
++	  DPAA2 objects in the Management Complex.
+--- a/drivers/bus/fsl-mc/Makefile
++++ b/drivers/bus/fsl-mc/Makefile
+@@ -16,3 +16,6 @@ mc-bus-driver-objs := fsl-mc-bus.o \
+ 		      fsl-mc-allocator.o \
+ 		      fsl-mc-msi.o \
+ 		      dpmcp.o
++
++# MC userspace support
++obj-$(CONFIG_FSL_MC_UAPI_SUPPORT) += fsl-mc-uapi.o
+--- a/drivers/bus/fsl-mc/dprc-driver.c
++++ b/drivers/bus/fsl-mc/dprc-driver.c
+@@ -647,6 +647,12 @@ static int dprc_probe(struct fsl_mc_devi
+ 		} else {
+ 			dev_set_msi_domain(&mc_dev->dev, mc_msi_domain);
+ 			msi_domain_set = true;
++
++			error = fsl_mc_uapi_create_device_file(mc_bus);
++			if (error < 0) {
++				error = -EPROBE_DEFER;
++				goto error_cleanup_msi_domain;
++			}
+ 		}
+ 	}
+ 
+@@ -654,7 +660,7 @@ static int dprc_probe(struct fsl_mc_devi
+ 			  &mc_dev->mc_handle);
+ 	if (error < 0) {
+ 		dev_err(&mc_dev->dev, "dprc_open() failed: %d\n", error);
+-		goto error_cleanup_msi_domain;
++		goto error_cleanup_uapi;
+ 	}
+ 
+ 	error = dprc_get_attributes(mc_dev->mc_io, 0, mc_dev->mc_handle,
+@@ -706,6 +712,10 @@ static int dprc_probe(struct fsl_mc_devi
+ error_cleanup_open:
+ 	(void)dprc_close(mc_dev->mc_io, 0, mc_dev->mc_handle);
+ 
++error_cleanup_uapi:
++	if (fsl_mc_is_root_dprc(&mc_dev->dev))
++		fsl_mc_uapi_remove_device_file(mc_bus);
++
+ error_cleanup_msi_domain:
+ 	if (msi_domain_set)
+ 		dev_set_msi_domain(&mc_dev->dev, NULL);
+@@ -774,6 +784,8 @@ static int dprc_remove(struct fsl_mc_dev
+ 	if (!fsl_mc_is_root_dprc(&mc_dev->dev)) {
+ 		fsl_destroy_mc_io(mc_dev->mc_io);
+ 		mc_dev->mc_io = NULL;
++	} else {
++		fsl_mc_uapi_remove_device_file(mc_bus);
+ 	}
+ 
+ 	dev_info(&mc_dev->dev, "DPRC device unbound from driver");
+--- a/drivers/bus/fsl-mc/fsl-mc-private.h
++++ b/drivers/bus/fsl-mc/fsl-mc-private.h
+@@ -10,6 +10,8 @@
+ 
+ #include <linux/fsl/mc.h>
+ #include <linux/mutex.h>
++#include <linux/ioctl.h>
++#include <linux/miscdevice.h>
+ 
+ /*
+  * Data Path Management Complex (DPMNG) General API
+@@ -505,6 +507,22 @@ struct fsl_mc_resource_pool {
+ };
+ 
+ /**
++ * struct fsl_mc_uapi - information associated with a device file
++ * @misc: struct miscdevice linked to the root dprc
++ * @device: newly created device in /dev
++ * @mutex: mutex lock to serialize the open/release operations
++ * @local_instance_in_use: local MC I/O instance in use or not
++ * @static_mc_io: pointer to the static MC I/O object
++ */
++struct fsl_mc_uapi {
++	struct miscdevice misc;
++	struct device *device;
++	struct mutex mutex; /* serialize open/release operations */
++	u32 local_instance_in_use;
++	struct fsl_mc_io *static_mc_io;
++};
++
++/**
+  * struct fsl_mc_bus - logical bus that corresponds to a physical DPRC
+  * @mc_dev: fsl-mc device for the bus device itself.
+  * @resource_pools: array of resource pools (one pool per resource type)
+@@ -513,6 +531,7 @@ struct fsl_mc_resource_pool {
+  * @irq_resources: Pointer to array of IRQ objects for the IRQ pool
+  * @scan_mutex: Serializes bus scanning
+  * @dprc_attr: DPRC attributes
++ * @uapi_misc: struct that abstracts the interaction with userspace
+  */
+ struct fsl_mc_bus {
+ 	struct fsl_mc_device mc_dev;
+@@ -520,6 +539,7 @@ struct fsl_mc_bus {
+ 	struct fsl_mc_device_irq *irq_resources;
+ 	struct mutex scan_mutex;    /* serializes bus scanning */
+ 	struct dprc_attributes dprc_attr;
++	struct fsl_mc_uapi uapi_misc;
+ };
+ 
+ #define to_fsl_mc_bus(_mc_dev) \
+@@ -574,4 +594,23 @@ void fsl_destroy_mc_io(struct fsl_mc_io
+ 
+ bool fsl_mc_is_root_dprc(struct device *dev);
+ 
++#ifdef CONFIG_FSL_MC_UAPI_SUPPORT
++
++int fsl_mc_uapi_create_device_file(struct fsl_mc_bus *mc_bus);
++
++void fsl_mc_uapi_remove_device_file(struct fsl_mc_bus *mc_bus);
++
++#else
++
++static inline int fsl_mc_uapi_create_device_file(struct fsl_mc_bus *mc_bus)
++{
++	return 0;
++}
++
++static inline void fsl_mc_uapi_remove_device_file(struct fsl_mc_bus *mc_bus)
++{
++}
++
++#endif
++
+ #endif /* _FSL_MC_PRIVATE_H_ */
+--- /dev/null
++++ b/drivers/bus/fsl-mc/fsl-mc-uapi.c
+@@ -0,0 +1,168 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Management Complex (MC) userspace support
++ *
++ * Copyright 2018 NXP
++ *
++ */
++
++#include <linux/slab.h>
++#include <linux/fs.h>
++#include <linux/uaccess.h>
++#include <linux/miscdevice.h>
++
++#include "fsl-mc-private.h"
++
++struct uapi_priv_data {
++	struct fsl_mc_uapi *uapi;
++	struct fsl_mc_io *mc_io;
++};
++
++static int fsl_mc_uapi_send_command(unsigned long arg,
++				    struct fsl_mc_io *mc_io)
++{
++	struct fsl_mc_command mc_cmd;
++	int error;
++
++	error = copy_from_user(&mc_cmd, (void __user *)arg, sizeof(mc_cmd));
++	if (error)
++		return -EFAULT;
++
++	error = mc_send_command(mc_io, &mc_cmd);
++	if (error)
++		return error;
++
++	error = copy_to_user((void __user *)arg, &mc_cmd, sizeof(mc_cmd));
++	if (error)
++		return -EFAULT;
++
++	return 0;
++}
++
++static int fsl_mc_uapi_dev_open(struct inode *inode, struct file *filep)
++{
++	struct fsl_mc_device *root_mc_device;
++	struct uapi_priv_data *priv_data;
++	struct fsl_mc_io *dynamic_mc_io;
++	struct fsl_mc_uapi *mc_uapi;
++	struct fsl_mc_bus *mc_bus;
++	int error;
++
++	priv_data = kzalloc(sizeof(*priv_data), GFP_KERNEL);
++	if (!priv_data)
++		return -ENOMEM;
++
++	mc_uapi = container_of(filep->private_data, struct fsl_mc_uapi, misc);
++	mc_bus = container_of(mc_uapi, struct fsl_mc_bus, uapi_misc);
++	root_mc_device = &mc_bus->mc_dev;
++
++	mutex_lock(&mc_uapi->mutex);
++
++	if (!mc_uapi->local_instance_in_use) {
++		priv_data->mc_io = mc_uapi->static_mc_io;
++		mc_uapi->local_instance_in_use = 1;
++	} else {
++		error = fsl_mc_portal_allocate(root_mc_device, 0,
++					       &dynamic_mc_io);
++		if (error) {
++			dev_dbg(&root_mc_device->dev,
++				"Could not allocate MC portal\n");
++			goto error_portal_allocate;
++		}
++
++		priv_data->mc_io = dynamic_mc_io;
++	}
++	priv_data->uapi = mc_uapi;
++	filep->private_data = priv_data;
++
++	mutex_unlock(&mc_uapi->mutex);
++
++	return 0;
++
++error_portal_allocate:
++	mutex_unlock(&mc_uapi->mutex);
++
++	return error;
++}
++
++static int fsl_mc_uapi_dev_release(struct inode *inode, struct file *filep)
++{
++	struct uapi_priv_data *priv_data;
++	struct fsl_mc_uapi *mc_uapi;
++	struct fsl_mc_io *mc_io;
++
++	priv_data = filep->private_data;
++	mc_uapi = priv_data->uapi;
++	mc_io = priv_data->mc_io;
++
++	mutex_lock(&mc_uapi->mutex);
++
++	if (mc_io == mc_uapi->static_mc_io)
++		mc_uapi->local_instance_in_use = 0;
++	else
++		fsl_mc_portal_free(mc_io);
++
++	kfree(filep->private_data);
++	filep->private_data =  NULL;
++
++	mutex_unlock(&mc_uapi->mutex);
++
++	return 0;
++}
++
++static long fsl_mc_uapi_dev_ioctl(struct file *file,
++				  unsigned int cmd,
++				  unsigned long arg)
++{
++	struct uapi_priv_data *priv_data = file->private_data;
++	struct fsl_mc_device *root_mc_device;
++	struct fsl_mc_bus *mc_bus;
++	int error;
++
++	mc_bus = container_of(priv_data->uapi, struct fsl_mc_bus, uapi_misc);
++	root_mc_device = &mc_bus->mc_dev;
++
++	switch (cmd) {
++	case FSL_MC_SEND_MC_COMMAND:
++		error = fsl_mc_uapi_send_command(arg, priv_data->mc_io);
++		break;
++	default:
++		dev_dbg(&root_mc_device->dev, "unexpected ioctl call number\n");
++		error = -EINVAL;
++	}
++
++	return error;
++}
++
++static const struct file_operations fsl_mc_uapi_dev_fops = {
++	.owner = THIS_MODULE,
++	.open = fsl_mc_uapi_dev_open,
++	.release = fsl_mc_uapi_dev_release,
++	.unlocked_ioctl = fsl_mc_uapi_dev_ioctl,
++};
++
++int fsl_mc_uapi_create_device_file(struct fsl_mc_bus *mc_bus)
++{
++	struct fsl_mc_device *mc_dev = &mc_bus->mc_dev;
++	struct fsl_mc_uapi *mc_uapi = &mc_bus->uapi_misc;
++	int error;
++
++	mc_uapi->misc.minor = MISC_DYNAMIC_MINOR;
++	mc_uapi->misc.name = dev_name(&mc_dev->dev);
++	mc_uapi->misc.fops = &fsl_mc_uapi_dev_fops;
++
++	error = misc_register(&mc_uapi->misc);
++	if (error)
++		return error;
++
++	mc_uapi->static_mc_io = mc_bus->mc_dev.mc_io;
++
++	mutex_init(&mc_uapi->mutex);
++
++	return 0;
++}
++
++void fsl_mc_uapi_remove_device_file(struct fsl_mc_bus *mc_bus)
++{
++	misc_deregister(&mc_bus->uapi_misc.misc);
++}
+--- a/include/uapi/linux/fsl_mc.h
++++ b/include/uapi/linux/fsl_mc.h
+@@ -16,10 +16,19 @@
+  * struct fsl_mc_command - Management Complex (MC) command structure
+  * @header: MC command header
+  * @params: MC command parameters
++ *
++ * Used by FSL_MC_SEND_MC_COMMAND
+  */
+ struct fsl_mc_command {
+ 	__le64 header;
+ 	__le64 params[MC_CMD_NUM_OF_PARAMS];
+ };
+ 
++#define FSL_MC_SEND_CMD_IOCTL_TYPE	'R'
++#define FSL_MC_SEND_CMD_IOCTL_SEQ	0xE0
++
++#define FSL_MC_SEND_MC_COMMAND \
++	_IOWR(FSL_MC_SEND_CMD_IOCTL_TYPE, FSL_MC_SEND_CMD_IOCTL_SEQ, \
++	struct fsl_mc_command)
++
+ #endif /* _UAPI_FSL_MC_H_ */

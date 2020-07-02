@@ -225,6 +225,7 @@ int main(int argc, char* argv[], char* env[])
 			if(fwrite((void*)buf,1,padding,nsp_image)!=padding) {
 				printf("ERROR: can't write to %s.\n", filen_out);
 				free(buf);
+				fclose(nsp_image);
 				return -1;
 			}
 			free(buf);

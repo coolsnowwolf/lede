@@ -219,7 +219,7 @@ static struct gpio_led rb711gr100_leds[] __initdata = {
 		.name		= "rb:green:power",
 		.gpio		= RB91X_GPIO_LED_POWER,
 		.active_low	= 0,
-		.default_state	= LEDS_GPIO_DEFSTATE_KEEP,
+		.default_state	= LEDS_GPIO_DEFSTATE_ON,
 	},
 };
 

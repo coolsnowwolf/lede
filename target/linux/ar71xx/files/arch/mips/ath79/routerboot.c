@@ -206,10 +206,7 @@ __rb_get_wlan_data(u16 id)
 		u8 *erd_data;
 		u16 erd_len;
 
-		if (id == 0)
-			goto err_free;
-
-		err = routerboot_find_tag(tag, tag_len, id,
+		err = routerboot_find_tag(tag, tag_len, 0x1,
 					  &erd_data, &erd_len);
 		if (err) {
 			pr_err("no ERD data found for id %u\n", id);
@@ -224,9 +221,6 @@ __rb_get_wlan_data(u16 id)
 			goto err_free;
 		}
 	} else {
-		if (id != 0)
-			goto err_free;
-
 		err = rle_decode((char *) tag, tag_len, buf, RB_ART_SIZE,
 				 &src_done, &dst_done);
 		if (err) {
@@ -300,6 +294,7 @@ rb_init_info(void *data, unsigned int size)
 	return &rb_info;
 }
 
+#if 0
 static char *rb_ext_wlan_data;
 
 static ssize_t
@@ -356,3 +351,4 @@ err_free_wlan_data:
 }
 
 late_initcall(rb_sysfs_init);
+#endif

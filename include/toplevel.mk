@@ -99,25 +99,22 @@ prepare-tmpinfo: FORCE
 		$(_SINGLE)$(NO_TRACE_MAKE) menuconfig $(PREP_MK); \
 	fi
 
-ifneq ($(DISTRO_PKG_CONFIG),)
-scripts/config/mconf: export PATH:=$(dir $(DISTRO_PKG_CONFIG)):$(PATH)
+ifeq ($(RECURSIVE_DEP_IS_ERROR),1)
+  KCONF_FLAGS=--fatalrecursive
 endif
-scripts/config/mconf:
-	@$(_SINGLE)$(SUBMAKE) -s -C scripts/config all CC="$(HOSTCC_WRAPPER)"
+ifneq ($(DISTRO_PKG_CONFIG),)
+scripts/config/%onf: export PATH:=$(dir $(DISTRO_PKG_CONFIG)):$(PATH)
+endif
+scripts/config/%onf: CFLAGS+= -O2
+scripts/config/%onf:
+	@$(_SINGLE)$(SUBMAKE) $(if $(findstring s,$(OPENWRT_VERBOSE)),,-s) \
+		-C scripts/config $(notdir $@) CC="$(HOSTCC_WRAPPER)"
 
 $(eval $(call rdep,scripts/config,scripts/config/mconf))
 
-scripts/config/qconf:
-	@$(_SINGLE)$(SUBMAKE) -s -C scripts/config qconf \
-		CC="$(HOSTCC_WRAPPER)" \
-		DISTRO-PKG-CONFIG="$(DISTRO_PKG_CONFIG)"
-
-scripts/config/conf:
-	@$(_SINGLE)$(SUBMAKE) -s -C scripts/config conf CC="$(HOSTCC_WRAPPER)"
-
 config: scripts/config/conf prepare-tmpinfo FORCE
 	[ -L .config ] && export KCONFIG_OVERWRITECONFIG=1; \
-		$< Config.in
+		$< $(KCONF_FLAGS) Config.in
 
 config-clean: FORCE
 	$(_SINGLE)$(NO_TRACE_MAKE) -C scripts/config clean
@@ -126,7 +123,7 @@ defconfig: scripts/config/conf prepare-tmpinfo FORCE
 	touch .config
 	@if [ ! -s .config -a -e $(HOME)/.openwrt/defconfig ]; then cp $(HOME)/.openwrt/defconfig .config; fi
 	[ -L .config ] && export KCONFIG_OVERWRITECONFIG=1; \
-		$< --defconfig=.config Config.in
+		$< $(KCONF_FLAGS) --defconfig=.config Config.in
 
 confdefault-y=allyes
 confdefault-m=allmod
@@ -135,7 +132,7 @@ confdefault:=$(confdefault-$(CONFDEFAULT))
 
 oldconfig: scripts/config/conf prepare-tmpinfo FORCE
 	[ -L .config ] && export KCONFIG_OVERWRITECONFIG=1; \
-		$< --$(if $(confdefault),$(confdefault),old)config Config.in
+		$< $(KCONF_FLAGS) --$(if $(confdefault),$(confdefault),old)config Config.in
 
 menuconfig: scripts/config/mconf prepare-tmpinfo FORCE
 	if [ \! -e .config -a -e $(HOME)/.openwrt/defconfig ]; then \
@@ -216,7 +213,7 @@ ifeq ($(SDK),1)
 
 %::
 	@+$(PREP_MK) $(NO_TRACE_MAKE) -r -s prereq
-	@./scripts/config/conf --defconfig=.config Config.in
+	@./scripts/config/conf $(KCONF_FLAGS) --defconfig=.config Config.in
 	@+$(ULIMIT_FIX) $(SUBMAKE) -r $@
 
 else
@@ -225,7 +222,7 @@ else
 	@+$(PREP_MK) $(NO_TRACE_MAKE) -r -s prereq
 	@( \
 		cp .config tmp/.config; \
-		./scripts/config/conf --defconfig=tmp/.config -w tmp/.config Config.in > /dev/null 2>&1; \
+		./scripts/config/conf $(KCONF_FLAGS) --defconfig=tmp/.config -w tmp/.config Config.in > /dev/null 2>&1; \
 		if ./scripts/kconfig.pl '>' .config tmp/.config | grep -q CONFIG; then \
 			printf "$(_R)WARNING: your configuration is out of sync. Please run make menuconfig, oldconfig or defconfig!$(_N)\n" >&2; \
 		fi \
