@@ -47,7 +47,7 @@ platform_copy_config() {
 
 	if export_partdevice partdev 1; then
 		mount -o rw,noatime "/dev/$partdev" /mnt
-		cp -af "$CONF_TAR" /mnt/
+		cp -af "$UPGRADE_BACKUP" "/mnt/$BACKUP_FILE"
 		umount /mnt
 	fi
 }
@@ -62,7 +62,7 @@ platform_do_upgrade() {
 
 	sync
 
-	if [ "$SAVE_PARTITIONS" = "1" ]; then
+	if [ "$UPGRADE_OPT_SAVE_PARTITIONS" = "1" ]; then
 		get_partitions "/dev/$diskdev" bootdisk
 
 		#extract the boot sector from the image
@@ -87,6 +87,8 @@ platform_do_upgrade() {
 		return 0
 	fi
 
+	#write uboot image
+	get_image "$@" | dd of="$diskdev" bs=512 skip=1 seek=1 count=4097 conv=fsync,notrunc
 	#iterate over each partition from the image and write it to the boot disk
 	while read part start size; do
 		if export_partdevice partdev $part; then

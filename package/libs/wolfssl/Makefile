@@ -8,29 +8,30 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wolfssl
-PKG_VERSION:=3.15.3-stable
-PKG_RELEASE:=1
+PKG_VERSION:=4.4.0-stable
+PKG_RELEASE:=2
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).zip
-# PKG_SOURCE_URL:=https://www.wolfssl.com/
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/wolfSSL/wolfssl/archive/v$(PKG_VERSION)
-PKG_HASH:=dc97c07a7667b39a890e14f4b4a209f51524a4cabee7adb6c80822ee78c1f62a
+PKG_HASH:=7f854804c8ae0ca49cc77809e38e9a3b5a8c91ba7855ea928e6d6651b0d35f18
 
 PKG_FIXUP:=libtool
 PKG_INSTALL:=1
 PKG_USE_MIPS16:=0
 PKG_BUILD_PARALLEL:=1
-PKG_LICENSE:=GPL-2.0+
-PKG_CPE_ID:=cpe:/a:yassl:cyassl
+PKG_LICENSE:=GPL-2.0-or-later
+PKG_LICENSE_FILES:=LICENSING COPYING
+PKG_MAINTAINER:=Eneas U de Queiroz <cotequeiroz@gmail.com>
+PKG_CPE_ID:=cpe:/a:wolfssl:wolfssl
 
 PKG_CONFIG_DEPENDS:=\
-	CONFIG_WOLFSSL_HAS_AES_CCM CONFIG_WOLFSSL_HAS_AES_GCM \
-	CONFIG_WOLFSSL_HAS_ARC4 CONFIG_WOLFSSL_HAS_CHACHA \
-	CONFIG_WOLFSSL_HAS_DES3 CONFIG_WOLFSSL_HAS_DH CONFIG_WOLFSSL_HAS_DTLS \
-	CONFIG_WOLFSSL_HAS_ECC CONFIG_WOLFSSL_HAS_ECC25519 \
-	CONFIG_WOLFSSL_HAS_OCSP CONFIG_WOLFSSL_HAS_POLY_1305 \
-	CONFIG_WOLFSSL_HAS_PSK CONFIG_WOLFSSL_HAS_SESSION_TICKET \
-	CONFIG_WOLFSSL_HAS_WPAS
+	CONFIG_WOLFSSL_HAS_AES_CCM CONFIG_WOLFSSL_HAS_AFALG \
+	CONFIG_WOLFSSL_HAS_ARC4 CONFIG_WOLFSSL_HAS_CHACHA_POLY \
+	CONFIG_WOLFSSL_HAS_DEVCRYPTO_AES CONFIG_WOLFSSL_HAS_DEVCRYPTO_FULL \
+	CONFIG_WOLFSSL_HAS_DH CONFIG_WOLFSSL_HAS_DTLS \
+	CONFIG_WOLFSSL_HAS_ECC25519 CONFIG_WOLFSSL_HAS_OCSP \
+	CONFIG_WOLFSSL_HAS_SESSION_TICKET CONFIG_WOLFSSL_HAS_TLSV10 \
+	CONFIG_WOLFSSL_HAS_TLSV13 CONFIG_WOLFSSL_HAS_WPAS
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -42,6 +43,8 @@ define Package/libwolfssl
   URL:=http://www.wolfssl.com/
   MENU:=1
   PROVIDES:=libcyassl
+  DEPENDS:=+WOLFSSL_HAS_DEVCRYPTO:kmod-cryptodev +WOLFSSL_HAS_AFALG:kmod-crypto-user
+  ABI_VERSION:=24
 endef
 
 define Package/libwolfssl/description
@@ -53,7 +56,7 @@ define Package/libwolfssl/config
 	source "$(SOURCE)/Config.in"
 endef
 
-TARGET_CFLAGS += $(FPIC)
+TARGET_CFLAGS += $(FPIC) -DFP_MAX_BITS=8192 -fomit-frame-pointer
 
 # --enable-stunnel needed for OpenSSL API compatibility bits
 CONFIGURE_ARGS += \
@@ -61,70 +64,22 @@ CONFIGURE_ARGS += \
 	--enable-sni \
 	--enable-stunnel \
 	--disable-examples \
-	--disable-leanpsk \
-	--disable-leantls \
-
-ifeq ($(CONFIG_IPV6),y)
-CONFIGURE_ARGS += \
-        --enable-ipv6
-endif
-
-ifeq ($(CONFIG_WOLFSSL_HAS_AES_CCM),y)
-CONFIGURE_ARGS += \
-	--enable-aesccm
-endif
-
-ifneq ($(CONFIG_WOLFSSL_HAS_AES_GCM),y)
-CONFIGURE_ARGS += \
-	--disable-aesgcm
-endif
-
-ifneq ($(CONFIG_WOLFSSL_HAS_CHACHA),y)
-CONFIGURE_ARGS += \
-	--disable-chacha
-endif
-
-ifeq ($(CONFIG_WOLFSSL_HAS_ECC),y)
-CONFIGURE_ARGS += \
-	--enable-ecc \
-	--enable-supportedcurves
-endif
-
-ifeq ($(CONFIG_WOLFSSL_HAS_DH),y)
-CONFIGURE_ARGS += \
-	--enable-dh
-endif
-
-ifneq ($(CONFIG_WOLFSSL_HAS_ARC4),y)
-CONFIGURE_ARGS += \
-	--disable-arc4
-else
-CONFIGURE_ARGS += \
-	--enable-arc4
-endif
-
-ifneq ($(CONFIG_WOLFSSL_HAS_DES3),y)
-CONFIGURE_ARGS += \
-	--disable-des3
-else
-CONFIGURE_ARGS += \
-	--enable-des3
-endif
-
-ifeq ($(CONFIG_WOLFSSL_HAS_PSK),y)
-CONFIGURE_ARGS += \
-	--enable-psk
-endif
-
-ifeq ($(CONFIG_WOLFSSL_HAS_SESSION_TICKET),y)
-CONFIGURE_ARGS += \
-	--enable-session-ticket
-endif
-
-ifeq ($(CONFIG_WOLFSSL_HAS_DTLS),y)
-CONFIGURE_ARGS += \
-	--enable-dtls
-endif
+	--disable-jobserver \
+	--$(if $(CONFIG_IPV6),enable,disable)-ipv6 \
+	--$(if $(CONFIG_WOLFSSL_HAS_AES_CCM),enable,disable)-aesccm \
+	--$(if $(CONFIG_WOLFSSL_HAS_CHACHA_POLY),enable,disable)-chacha \
+	--$(if $(CONFIG_WOLFSSL_HAS_CHACHA_POLY),enable,disable)-poly1305 \
+	--$(if $(CONFIG_WOLFSSL_HAS_DH),enable,disable)-dh \
+	--$(if $(CONFIG_WOLFSSL_HAS_ARC4),enable,disable)-arc4 \
+	--$(if $(CONFIG_WOLFSSL_HAS_TLSV10),enable,disable)-tlsv10 \
+	--$(if $(CONFIG_WOLFSSL_HAS_TLSV13),enable,disable)-tls13 \
+	--$(if $(CONFIG_WOLFSSL_HAS_SESSION_TICKET),enable,disable)-session-ticket \
+	--$(if $(CONFIG_WOLFSSL_HAS_DTLS),enable,disable)-dtls \
+	--$(if $(CONFIG_WOLFSSL_HAS_ECC25519),enable,disable)-curve25519 \
+	--$(if $(CONFIG_WOLFSSL_HAS_AFALG),enable,disable)-afalg \
+	--enable-devcrypto=$(if $(CONFIG_WOLFSSL_HAS_DEVCRYPTO_CBC),cbc\
+			  ,$(if $(CONFIG_WOLFSSL_HAS_DEVCRYPTO_AES),aes\
+			  ,$(if $(CONFIG_WOLFSSL_HAS_DEVCRYPTO_FULL),yes,no)))
 
 ifeq ($(CONFIG_WOLFSSL_HAS_OCSP),y)
 CONFIGURE_ARGS += \
@@ -135,23 +90,6 @@ ifeq ($(CONFIG_WOLFSSL_HAS_WPAS),y)
 CONFIGURE_ARGS += \
 	--enable-wpas --enable-sha512 --enable-fortress --enable-fastmath
 endif
-
-ifeq ($(CONFIG_WOLFSSL_HAS_ECC25519),y)
-CONFIGURE_ARGS += \
-	--enable-curve25519
-endif
-
-ifneq ($(CONFIG_WOLFSSL_HAS_POLY1305),y)
-CONFIGURE_ARGS += \
-	--enable-poly1305
-endif
-
-#ifneq ($(CONFIG_TARGET_x86),)
-#	CONFIGURE_ARGS += --enable-intelasm
-#endif
-#ifneq ($(CONFIG_TARGET_x86_64),)
-#	CONFIGURE_ARGS += --enable-intelasm
-#endif
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include $(1)/usr/lib/pkgconfig
@@ -167,8 +105,7 @@ endef
 
 define Package/libwolfssl/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libwolfssl.so* $(1)/usr/lib/
-	ln -s libwolfssl.so $(1)/usr/lib/libcyassl.so
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libwolfssl.so.* $(1)/usr/lib/
 endef
 
 $(eval $(call BuildPackage,libwolfssl))

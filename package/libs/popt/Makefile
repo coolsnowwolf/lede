@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=popt
 PKG_VERSION:=1.16
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:= \
@@ -34,14 +34,10 @@ define Package/libpopt
   CATEGORY:=Libraries
   TITLE:=A command line option parsing library
   URL:=http://rpm5.org/files/popt/
+  ABI_VERSION:=0
 endef
 
-define Build/Configure
-	$(call Build/Configure/Default, \
-		--enable-shared \
-		--enable-static \
-	)
-endef
+CONFIGURE_ARGS += --enable-shared --enable-static
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include

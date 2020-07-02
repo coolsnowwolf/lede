@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=procd
-PKG_RELEASE:=2
+PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/procd.git
-PKG_SOURCE_DATE:=2020-03-13
-PKG_SOURCE_VERSION:=77a6782d6e4eba2c49e642672de134aff443ef72
-PKG_MIRROR_HASH:=bb7e98a6b6f997a4fa2fb924be248febe5a7633601df2e97e7a7513c57b63870
+PKG_SOURCE_DATE:=2020-05-28
+PKG_SOURCE_VERSION:=b9b39e2061d7035a9d84eecbb4a4613deaf6d03f
+PKG_MIRROR_HASH:=0d6a96a2fb38f72c72b457a2a8638bee22f91009f9686152fcf4aee97846fc84
 CMAKE_INSTALL:=1
 
 PKG_LICENSE:=GPL-2.0
@@ -54,6 +54,13 @@ define Package/procd-ujail
   CATEGORY:=Base system
   DEPENDS:=@KERNEL_NAMESPACES +@KERNEL_UTS_NS +@KERNEL_IPC_NS +@KERNEL_PID_NS +libubox +libubus +libblobmsg-json
   TITLE:=OpenWrt process jail helper
+endef
+
+define Package/procd-ujail-console
+  SECTION:=base
+  CATEGORY:=Base system
+  DEPENDS:=+procd-ujail +libubus +libubox
+  TITLE:=OpenWrt process jail console
 endef
 
 define Package/procd-seccomp
@@ -110,6 +117,11 @@ define Package/procd-ujail/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/ujail $(1)/sbin/
 endef
 
+define Package/procd-ujail-console/install
+	$(INSTALL_DIR) $(1)/sbin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/ujail-console $(1)/sbin/
+endef
+
 define Package/procd-seccomp/install
 	$(INSTALL_DIR) $(1)/sbin $(1)/lib
 	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/lib/libpreload-seccomp.so $(1)/lib
@@ -120,4 +132,5 @@ endef
 
 $(eval $(call BuildPackage,procd))
 $(eval $(call BuildPackage,procd-ujail))
+$(eval $(call BuildPackage,procd-ujail-console))
 $(eval $(call BuildPackage,procd-seccomp))

@@ -128,9 +128,9 @@ static int ag71xx_phy_connect_multi(struct ag71xx *ag)
 			continue;
 
 		DBG("%s: PHY found at %s, uid=%08x\n",
-			dev_name(dev),
-			dev_name(&ag->mii_bus->mdio_map[phy_addr]->dev),
-			ag->mii_bus->mdio_map[phy_addr]->phy_id);
+		dev_name(dev),
+		dev_name(&ag->mii_bus->mdio_map[phy_addr]->dev),
+		(phydev) ? phydev->phy_id : 0);
 
 		if (phydev == NULL)
 			phydev = mdiobus_get_phy(ag->mii_bus, phy_addr);
