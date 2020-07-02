@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=arm-trusted-firmware-rockchip
-PKG_VERSION:=2.3-rc0
+PKG_VERSION:=2.3
 PKG_RELEASE:=1
 
 PKG_SOURCE:=atf-v$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/atf-builds/atf/releases/download/v$(PKG_VERSION)/atf-v$(PKG_VERSION).tar.gz?
-PKG_HASH:=8d0a2bd18adf54f9cf6fe923d10f21c1d21f42a15067757333ff8989b25f100a
+PKG_HASH:=bf352298743aed594cf2958dd588e06ab6713fc514bb6f809bf55a85a87134c1
 
 PKG_LICENSE:=BSD-3-Clause
 PKG_LICENSE_FILES:=license.md
@@ -40,7 +40,7 @@ endef
 
 define Build/InstallDev
 	$(INSTALL_DIR) -p $(STAGING_DIR_IMAGE)
-	$(CP) $(PKG_BUILD_DIR)/rk3399_bl31.elf $(STAGING_DIR_IMAGE)/bl31.elf
+	$(CP) $(PKG_BUILD_DIR)/rk*.elf $(STAGING_DIR_IMAGE)/
 endef
 
 define Package/arm-trusted-firmware-rockchip/install
