@@ -31,14 +31,31 @@
 #include "rt_os_util.h"
 #include "rt_os_net.h"
 #include <linux/pci.h>
-
+#ifdef INTELP6_SUPPORT
+#include "rt_config.h"
+#endif
 /* Index 0 for Card_1, Index 1 for Card_2 */
 VOID *adapt_list[MAX_NUM_OF_INF] = {NULL};
 
 int multi_inf_adapt_reg(VOID *pAd)
 {
 	int status = 0;
+#ifdef INTELP6_SUPPORT
+	UINT32 Value;
+	PRTMP_ADAPTER pAdapter = (PRTMP_ADAPTER)pAd;
+	RTMP_IO_READ32(pAdapter, STRAP_STA, &Value);
 
+	if (GET_11N_ONLY(Value) && (adapt_list[0] == NULL))
+		adapt_list[0] = pAd;
+	else if (!GET_11N_ONLY(Value) && (adapt_list[1] == NULL))
+		adapt_list[1] = pAd;
+	else if (GET_11N_ONLY(Value) && (adapt_list[0] != NULL)) {
+		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("%s(): Both chips are 11N only  !\n", __func__));
+		status = NDIS_STATUS_FAILURE;
+		return status;
+	} else
+#endif
 	if (adapt_list[0] == NULL)
 		adapt_list[0] = pAd;
 	else if (adapt_list[1] == NULL)
@@ -53,6 +70,7 @@ int multi_inf_adapt_reg(VOID *pAd)
 
 	return status;
 }
+
 
 int multi_inf_adapt_unreg(VOID *pAd)
 {
@@ -71,6 +89,23 @@ int multi_inf_adapt_unreg(VOID *pAd)
 	}
 
 	return status;
+}
+
+
+int multi_inf_get_count(void)
+{
+	int count = 0; /* use number 0 as default */
+	int idx;
+
+	for (idx = 0; idx < MAX_NUM_OF_INF; idx++) {
+		if (adapt_list[idx] != NULL)
+			count++;
+	}
+
+	if (count == 0)
+		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			 ("%s(): failed to find nonempty adapt_list!\n", __func__));
+	return count;
 }
 
 

@@ -69,6 +69,8 @@
 #include    "txpwr/BFBackoffTable_20.h"
 #endif /* RF_LOCKDOWN */
 
+extern RTMP_STRING *__rstrtok;
+
 /* TODO: shiang-usw, for MT76x0 series, currently cannot use this function! */
 #ifdef COMPOS_WIN
 
@@ -275,6 +277,8 @@ INT MtSingleSkuLoadParam(RTMP_ADAPTER *pAd)
 	sku_path = get_single_sku_path(pAd);
 	if (sku_path && *sku_path)
 		srcf = os_file_open(sku_path, O_RDONLY, 0);
+	else
+		srcf.Status = 1;
 
 	if (srcf.Status) {
 		/* card information file does not exist */
@@ -360,10 +364,8 @@ INT MtSingleSkuLoadParam(RTMP_ADAPTER *pAd)
 					if (!token)
 						break;
 
-					if (*token == ' ')
-						pwr->u1PwrLimitCCK[i] = os_str_tol(token + 1, 0, 10) * 2;
-					else
-						pwr->u1PwrLimitCCK[i] = os_str_tol(token, 0, 10) * 2;
+					/* config CCK Power Limit */
+					MtPowerLimitFormatTrans(pAd, pwr->u1PwrLimitCCK + i, token);
 				}
 			}
 
@@ -375,10 +377,8 @@ INT MtSingleSkuLoadParam(RTMP_ADAPTER *pAd)
 				if (!token)
 					break;
 
-				if (*token == ' ')
-					pwr->u1PwrLimitOFDM[i] = os_str_tol(token + 1, 0, 10) * 2;
-				else
-					pwr->u1PwrLimitOFDM[i] = os_str_tol(token, 0, 10) * 2;
+				/* config ofdm Power Limit */
+				MtPowerLimitFormatTrans(pAd, pwr->u1PwrLimitOFDM + i, token);
 			}
 
 #ifdef DOT11_VHT_AC
@@ -391,10 +391,8 @@ INT MtSingleSkuLoadParam(RTMP_ADAPTER *pAd)
 				if (!token)
 					break;
 
-				if (*token == ' ')
-					pwr->u1PwrLimitVHT20[i] = os_str_tol(token + 1, 0, 10) * 2;
-				else
-					pwr->u1PwrLimitVHT20[i] = os_str_tol(token, 0, 10) * 2;
+				/* config vht20 Power Limit */
+				MtPowerLimitFormatTrans(pAd, pwr->u1PwrLimitVHT20 + i, token);
 			}
 
 			/* Rate Info Parsing (VHT40) */
@@ -405,10 +403,8 @@ INT MtSingleSkuLoadParam(RTMP_ADAPTER *pAd)
 				if (!token)
 					break;
 
-				if (*token == ' ')
-					pwr->u1PwrLimitVHT40[i] = os_str_tol(token + 1, 0, 10) * 2;
-				else
-					pwr->u1PwrLimitVHT40[i] = os_str_tol(token, 0, 10) * 2;
+				/* config vht40 Power Limit */
+				MtPowerLimitFormatTrans(pAd, pwr->u1PwrLimitVHT40 + i, token);
 			}
 
 			/* if (pwr->StartChannel > 14) */
@@ -421,10 +417,8 @@ INT MtSingleSkuLoadParam(RTMP_ADAPTER *pAd)
 					if (!token)
 						break;
 
-					if (*token == ' ')
-						pwr->u1PwrLimitVHT80[i] = os_str_tol(token + 1, 0, 10) * 2;
-					else
-						pwr->u1PwrLimitVHT80[i] = os_str_tol(token, 0, 10) * 2;
+					/* config vht80 Power Limit */
+					MtPowerLimitFormatTrans(pAd, pwr->u1PwrLimitVHT80 + i, token);
 				}
 
 				/* Rate Info Parsing (VHT160) */
@@ -435,10 +429,8 @@ INT MtSingleSkuLoadParam(RTMP_ADAPTER *pAd)
 					if (!token)
 						break;
 
-					if (*token == ' ')
-						pwr->u1PwrLimitVHT160[i] = os_str_tol(token + 1, 0, 10) * 2;
-					else
-						pwr->u1PwrLimitVHT160[i] = os_str_tol(token, 0, 10) * 2;
+					/* config vht160 Power Limit */
+					MtPowerLimitFormatTrans(pAd, pwr->u1PwrLimitVHT160 + i, token);
 				}
 			}
 
@@ -636,6 +628,7 @@ INT MtBfBackOffLoadParam(RTMP_ADAPTER *pAd)
 	BACKOFF_POWER *pwr = NULL;
 	BACKOFF_POWER *ch, *ch_temp;
 	UCHAR *sku_path = NULL;
+
 	DlListInit(&pAd->PwrLimitBackoffList);
 	/* init*/
 	os_alloc_mem(pAd, (UCHAR **)&buffer, MAX_INI_BUFFER_SIZE);
@@ -743,6 +736,8 @@ INT MtBfBackOffLoadParam(RTMP_ADAPTER *pAd)
 	sku_path = get_single_sku_path(pAd);
 	if (sku_path && *sku_path)
 		srcf = os_file_open(sku_path, O_RDONLY, 0);
+	else
+		srcf.Status = 1;
 
 	if (srcf.Status) {
 		/* card information file does not exist */
@@ -826,10 +821,8 @@ INT MtBfBackOffLoadParam(RTMP_ADAPTER *pAd)
 				if (!token)
 					break;
 
-				if (*token == ' ')
-					pwr->PwrMax[i] = os_str_tol(token + 1, 0, 10) * 2;
-				else
-					pwr->PwrMax[i] = os_str_tol(token, 0, 10) * 2;
+				/* config bf power Limit */
+				MtPowerLimitFormatTrans(pAd, pwr->PwrMax + i, token);
 			}
 
 			/* Create New Data Structure to simpilify the SKU table (Represent together for channels with same BF Backoff Info) */
@@ -1440,6 +1433,8 @@ BOOLEAN MtReadPwrLimitTable(RTMP_ADAPTER *pAd, PCHAR pi1Buffer, UINT8 u1Type)
 
 	if (sku_path && *sku_path)
 		srcfile = os_file_open(sku_path, O_RDONLY, 0);
+	else
+		srcfile.Status = 1;
 
 	if (srcfile.Status) {
 		/* card information file does not exist */
@@ -1622,6 +1617,77 @@ VOID MtShowPwrLimitTable(RTMP_ADAPTER *pAd, UINT8 u1Type, UINT8 u1DebugLevel)
 	MTWF_LOG(DBG_CAT_POWER, DBG_SUBCAT_ALL, u1DebugLevel, ("-----------------------------------------------------------------\n"));
 }
 #endif /* defined(MT7615) || defined(MT7622) */
+
+NDIS_STATUS MtPowerLimitFormatTrans(RTMP_ADAPTER *pAd, PUINT8 pu1Value, PCHAR pcRawData)
+{
+	CHAR *cBuffer = NULL;
+	CHAR *cToken = NULL;
+	UINT8 u1NonInteValue = 0;
+
+	/* sanity check for null pointer */
+	if (!pu1Value)
+		goto error1;
+
+	/* sanity check for null poitner */
+	if (!pcRawData)
+		goto error2;
+
+	/* neglect multiple spaces for content parsing */
+	pcRawData += strspn(pcRawData, " ");
+
+	/* decimal point existence check */
+	if (!strchr(pcRawData, '.'))
+		*pu1Value = (UINT8)os_str_tol(pcRawData, 0, 10) * 2;
+	else {
+		/* backup pointer to string of parser function */
+		cBuffer = __rstrtok;
+
+		/* parse integer part */
+		cToken = rstrtok(pcRawData, ".");
+
+		/* sanity check for null pointer */
+		if (!cToken)
+			goto error3;
+
+		/* transform integer part unit to (0.5) */
+		*pu1Value = (UINT8)os_str_tol(cToken, 0, 10) * 2;
+
+		/* parse non-integer part */
+		cToken = rstrtok(NULL, ".");
+
+		/* sanity check for null pointer */
+		if (!cToken)
+			goto error4;
+
+		/* get non-integer part */
+		u1NonInteValue = (UINT8)os_str_tol(cToken, 0, 10);
+
+		/* increment for non-zero non-integer part */
+		if (u1NonInteValue >= 5)
+			(*pu1Value) += 1;
+
+		/* backup pointer to string of parser function */
+		__rstrtok = cBuffer;
+	}
+
+	return NDIS_STATUS_SUCCESS;
+
+error1:
+	MTWF_LOG(DBG_CAT_POWER, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: null pointer for buffer to update transform result !!\n", __func__));
+	return NDIS_STATUS_FAILURE;
+
+error2:
+	MTWF_LOG(DBG_CAT_POWER, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: null pointer for raw data buffer !!\n", __func__));
+	return NDIS_STATUS_FAILURE;
+
+error3:
+	MTWF_LOG(DBG_CAT_POWER, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: null pointer for integer value parsing !!\n", __func__));
+	return NDIS_STATUS_FAILURE;
+
+error4:
+	MTWF_LOG(DBG_CAT_POWER, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: null pointer for decimal value parsing !!\n", __func__));
+	return NDIS_STATUS_FAILURE;
+}
 
 CHAR SKUTxPwrOffsetGet(RTMP_ADAPTER *pAd, UINT8 ucBandIdx, UINT8 ucBW, UINT8 ucPhymode, UINT8 ucMCS, UINT8 ucNss, BOOLEAN fgSE)
 {

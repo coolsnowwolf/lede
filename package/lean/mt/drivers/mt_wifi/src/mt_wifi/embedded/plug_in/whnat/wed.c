@@ -52,14 +52,14 @@ void dump_token_info(struct wed_buf_res *res, unsigned int id)
 		if (token_id == info->token_id) {
 			WHNAT_DBG(WHNAT_DBG_OFF, "token_id\t: %d\n", info->token_id);
 			WHNAT_DBG(WHNAT_DBG_OFF, "desc_len\t: %d\n", info->desc_len);
-			WHNAT_DBG(WHNAT_DBG_OFF, "desc_pa\t: 0x%llx\n", info->desc_pa);
+			WHNAT_DBG(WHNAT_DBG_OFF, "desc_pa\t: %pad\n", &info->desc_pa);
 			WHNAT_DBG(WHNAT_DBG_OFF, "desc_va\t: 0x%p\n", info->desc_va);
 			WHNAT_DBG(WHNAT_DBG_OFF, "len\t: %d\n", info->len);
 			WHNAT_DBG(WHNAT_DBG_OFF, "pkt\t: 0x%p\n", info->pkt);
-			WHNAT_DBG(WHNAT_DBG_OFF, "pkt_pa\t: 0x%llx\n", info->pkt_pa);
+			WHNAT_DBG(WHNAT_DBG_OFF, "pkt_pa\t: %pad\n", &info->pkt_pa);
 			WHNAT_DBG(WHNAT_DBG_OFF, "pkt_va\t: 0x%p\n", info->pkt_va);
 			WHNAT_DBG(WHNAT_DBG_OFF, "fd_len\t: %d\n", info->fd_len);
-			WHNAT_DBG(WHNAT_DBG_OFF, "fd_pa\t: 0x%llx\n", info->fdesc_pa);
+			WHNAT_DBG(WHNAT_DBG_OFF, "fd_pa\t: %pad\n", &info->fdesc_pa);
 			WHNAT_DBG(WHNAT_DBG_OFF, "fd_va\t: 0x%p\n", info->fdesc_va);
 			whnat_dump_raw("WED_TX_DMAD", info->desc_va, info->desc_len);
 			whnat_dump_raw("WED_TX_BM", info->fdesc_va, info->fd_len);

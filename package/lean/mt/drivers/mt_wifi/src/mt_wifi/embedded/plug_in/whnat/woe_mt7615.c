@@ -89,6 +89,11 @@ static inline void wifi_tx_info_wrapper(unsigned char *tx_info, struct wlan_tx_i
 		info->wcid = txblk->pMacEntry->wcid;
 	else
 #endif
+#ifdef A4_CONN
+	if (txblk->pMacEntry && IS_ENTRY_A4(txblk->pMacEntry))
+		info->wcid = txblk->pMacEntry->wcid;
+	else
+#endif /* A4_CONN */
 	{
 		info->wcid = 0xff;
 	}
@@ -159,6 +164,7 @@ void wifi_tx_tuple_add(void *entry, unsigned char *tx_info)
 {
 	struct whnat_entry *whnat = (struct whnat_entry *)entry;
 	struct wlan_tx_info t, *info =  &t;
+	struct _TX_BLK *txblk = (struct _TX_BLK *)tx_info;
 
 	memset(info, 0, sizeof(*info));
 	wifi_tx_info_wrapper(tx_info, info);
@@ -168,19 +174,36 @@ void wifi_tx_tuple_add(void *entry, unsigned char *tx_info)
 	if (whnat && ra_sw_nat_hook_tx && whnat->cfg.hw_tx_en) {
 		struct sk_buff *skb = (struct sk_buff *)info->pkt;
 
-		if (skb_headroom(skb) < FOE_INFO_LEN)
-			return;
+		if ((FOE_AI_HEAD(skb) == HIT_UNBIND_RATE_REACH) || (FOE_AI_TAIL(skb) == HIT_UNBIND_RATE_REACH)) {
+			if (IS_SPACE_AVAILABLE_HEAD(skb)) {
+				/*WDMA idx*/
+				FOE_WDMA_ID_HEAD(skb) = whnat->idx;
+				/*Ring idx*/
+				FOE_RX_ID_HEAD(skb) = info->ringidx;
+				/*wtable Idx*/
+				FOE_WC_ID_HEAD(skb) = info->wcid;
+				/*Bssidx*/
+				FOE_BSS_ID_HEAD(skb) = info->bssidx;
+			}
+			if (IS_SPACE_AVAILABLE_TAIL(skb)) {
+				/*WDMA idx*/
+				FOE_WDMA_ID_TAIL(skb) = whnat->idx;
+				/*Ring idx*/
+				FOE_RX_ID_TAIL(skb) = info->ringidx;
+				/*wtable Idx*/
+				FOE_WC_ID_TAIL(skb) = info->wcid;
+				/*Bssidx*/
+				FOE_BSS_ID_TAIL(skb) = info->bssidx;
+			}
+		}
 
-		/*WDMA idx*/
-		FOE_WDMA_ID(skb) = whnat->idx;
-		/*Ring idx*/
-		FOE_RX_ID(skb) = info->ringidx;
-		/*wtable Idx*/
-		FOE_WC_ID(skb) = info->wcid;
-		/*Bssidx*/
-		FOE_BSS_ID(skb) = info->bssidx;
 		/*use port for specify which hw_nat architecture*/
-		ra_sw_nat_hook_tx(skb, WHNAT_WDMA_PORT);
+		if (ra_sw_nat_hook_tx) {
+			if (ra_sw_nat_hook_tx(skb, WHNAT_WDMA_PORT) != 1) {
+				txblk->DropPkt = TRUE;
+			}
+		}
+
 #ifdef WHNAT_DBG_EN
 		wifi_dump_skb(whnat, info, skb);
 #endif /*WHNAT_DBG_EN*/
@@ -275,7 +298,7 @@ void wifi_dump_tx_ring_info(struct wifi_entry *wifi, unsigned char ring_id, unsi
 	struct _PCI_HIF_T *pci_cfg = &ad->PciHif;
 	RTMP_DMACB *cb = &pci_cfg->TxRing[ring_id].Cell[idx];
 
-	WHNAT_DBG(WHNAT_DBG_OFF, "AllocPA\t: 0x%llx\n", cb->AllocPa);
+	WHNAT_DBG(WHNAT_DBG_OFF, "AllocPA\t: %pad\n", &cb->AllocPa);
 	WHNAT_DBG(WHNAT_DBG_OFF, "AllocVa\t: %p\n", cb->AllocVa);
 	WHNAT_DBG(WHNAT_DBG_OFF, "Size\t: %lu\n", cb->AllocSize);
 	WHNAT_DBG(WHNAT_DBG_OFF, "pNdisPacket\t: %p\n", cb->pNdisPacket);

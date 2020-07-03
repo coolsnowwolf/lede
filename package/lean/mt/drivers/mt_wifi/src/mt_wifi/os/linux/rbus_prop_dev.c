@@ -82,6 +82,19 @@ static int DEVINIT mt_rbus_probe(struct pci_dev *pdev, const struct pci_device_i
 	UINT32 Value;
 
 	MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("===> rt2880_probe\n"));
+
+	if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
+		/*
+		 * pci_set_consistent_dma_mask() will always be able to set the same
+		 * or a smaller mask as pci_set_dma_mask()
+		 */
+		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+	} else {
+		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR,
+				 ("set DMA mask failed\n"));
+		goto err_out;
+	}
+
 #ifdef MEM_ALLOC_INFO_SUPPORT
 	MemInfoListInital();
 #endif /* MEM_ALLOC_INFO_SUPPORT */

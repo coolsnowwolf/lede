@@ -183,6 +183,7 @@ VOID mt7615_iBFPhaseCalE2PUpdate(IN PRTMP_ADAPTER pAd,
 {
 	MT7615_IBF_PHASE_Gx_T iBfPhaseGx;
 	MT7615_IBF_PHASE_G0_T iBfPhaseG0;
+	MT7615_IBF_PHASE_Gx_T iBfPhaseGx8[8];
 	UCHAR  ucGroupIdx, ucEndLoop;
 	UCHAR  ucIBfGroupSize, ucCounter;
 	UCHAR  ucBuf[64];
@@ -201,13 +202,17 @@ VOID mt7615_iBFPhaseCalE2PUpdate(IN PRTMP_ADAPTER pAd,
 
 		if (ucGroup == GROUP_0) {
 			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[ucGroup], sizeof(MT7615_IBF_PHASE_G0_T), pAd->piBfPhaseG0);
-			NdisCopyMemory(&iBfPhaseG0, pAd->piBfPhaseG0, sizeof(MT7615_IBF_PHASE_G0_T));
+			NdisCopyMemory((PUCHAR)&iBfPhaseG0, pAd->piBfPhaseG0, sizeof(MT7615_IBF_PHASE_G0_T));
 		} else if (ucGroup == GROUP_2) {
-			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[ucGroup], (sizeof(MT7615_IBF_PHASE_Gx_T) - 4), &pAd->piBfPhaseGx[ucGroupIdx]);
-			NdisCopyMemory(&iBfPhaseGx, &pAd->piBfPhaseGx[ucGroupIdx * sizeof(MT7615_IBF_PHASE_Gx_T)], (sizeof(MT7615_IBF_PHASE_Gx_T) - 4));
+			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[ucGroup], (sizeof(MT7615_IBF_PHASE_Gx_T) - 4),
+							&pAd->piBfPhaseGx[sizeof(MT7615_IBF_PHASE_Gx_T)]);
+			NdisCopyMemory((PUCHAR)&iBfPhaseGx, &pAd->piBfPhaseGx[ucGroupIdx * sizeof(MT7615_IBF_PHASE_Gx_T)],
+							(sizeof(MT7615_IBF_PHASE_Gx_T) - 4));
 		} else {
-			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[ucGroup], sizeof(MT7615_IBF_PHASE_Gx_T), &pAd->piBfPhaseGx[ucGroupIdx]);
-			NdisCopyMemory(&iBfPhaseGx, &pAd->piBfPhaseGx[ucGroupIdx * sizeof(MT7615_IBF_PHASE_Gx_T)], sizeof(MT7615_IBF_PHASE_Gx_T));
+			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[ucGroup], sizeof(MT7615_IBF_PHASE_Gx_T),
+							&pAd->piBfPhaseGx[ucGroupIdx * sizeof(MT7615_IBF_PHASE_Gx_T)]);
+			NdisCopyMemory((PUCHAR)&iBfPhaseGx, &pAd->piBfPhaseGx[ucGroupIdx * sizeof(MT7615_IBF_PHASE_Gx_T)],
+							sizeof(MT7615_IBF_PHASE_Gx_T));
 		}
 
 		if (ucGroup == GROUP_0) {
@@ -282,13 +287,16 @@ VOID mt7615_iBFPhaseCalE2PUpdate(IN PRTMP_ADAPTER pAd,
 			NdisCopyMemory(&ucBuf[sizeof(MT7615_IBF_PHASE_G0_T)], pAd->piBfPhaseGx, sizeof(MT7615_IBF_PHASE_Gx_T));
 
 			/* Write Group 0 and 1 into EEPROM */
-			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[0], (sizeof(MT7615_IBF_PHASE_G0_T) + sizeof(MT7615_IBF_PHASE_Gx_T)), ucBuf);
+			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[GROUP_0], (sizeof(MT7615_IBF_PHASE_G0_T) + sizeof(MT7615_IBF_PHASE_Gx_T)), ucBuf);
 			/* Write Group 2 into EEPROM */
-			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[2], (sizeof(MT7615_IBF_PHASE_Gx_T) - 4), &pAd->piBfPhaseGx[sizeof(MT7615_IBF_PHASE_G0_T)]);
+			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[GROUP_2], (sizeof(MT7615_IBF_PHASE_Gx_T) - 4),
+							&pAd->piBfPhaseGx[(GROUP_2 - 1) * sizeof(MT7615_IBF_PHASE_Gx_T)]);
 			/* Write Group 3 ~ 7 into EEPROM */
-			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[3], (sizeof(MT7615_IBF_PHASE_Gx_T) * 5), &pAd->piBfPhaseGx[2 * sizeof(MT7615_IBF_PHASE_G0_T)]);
+			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[GROUP_3], (sizeof(MT7615_IBF_PHASE_Gx_T) * (GROUP_7 - GROUP_2)),
+							&pAd->piBfPhaseGx[(GROUP_3 - 1) * sizeof(MT7615_IBF_PHASE_Gx_T)]);
 			/* Write Group 8 into EEPROM */
-			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[8], sizeof(MT7615_IBF_PHASE_Gx_T), &pAd->piBfPhaseGx[7 * sizeof(MT7615_IBF_PHASE_G0_T)]);
+			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[GROUP_8], sizeof(MT7615_IBF_PHASE_Gx_T),
+							&pAd->piBfPhaseGx[(GROUP_8 - 1) * sizeof(MT7615_IBF_PHASE_Gx_T)]);
 		} else {
 			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Calibrated phases can't be written into EEPROM because some groups can't pass criterion!!!\n"));
 
@@ -302,12 +310,20 @@ VOID mt7615_iBFPhaseCalE2PUpdate(IN PRTMP_ADAPTER pAd,
 		break;
 
 	case IBF_PHASE_ALL_GROUP_ERASE:
-		NdisZeroMemory(pAd->piBfPhaseG0, sizeof(MT7615_IBF_PHASE_G0_T));
-		NdisZeroMemory(pAd->piBfPhaseGx, sizeof(MT7615_IBF_PHASE_Gx_T) * 8);
+		if (pAd->piBfPhaseG0 != NULL) {
+			NdisZeroMemory(pAd->piBfPhaseG0, sizeof(MT7615_IBF_PHASE_G0_T));
+		}
 
-		RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[GROUP_0], sizeof(MT7615_IBF_PHASE_G0_T), pAd->piBfPhaseG0);
-		RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[GROUP_1], (sizeof(MT7615_IBF_PHASE_Gx_T) * 7 - 4), pAd->piBfPhaseGx);
-		RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[GROUP_8], sizeof(MT7615_IBF_PHASE_Gx_T), &pAd->piBfPhaseGx[7 * sizeof(MT7615_IBF_PHASE_G0_T)]);
+		if (pAd->piBfPhaseGx != NULL) {
+			NdisZeroMemory(pAd->piBfPhaseGx, sizeof(MT7615_IBF_PHASE_Gx_T) * 8);
+		}
+
+		NdisZeroMemory((PUCHAR)&iBfPhaseG0, sizeof(MT7615_IBF_PHASE_G0_T));
+		NdisZeroMemory((PUCHAR)&iBfPhaseGx8[0], (sizeof(MT7615_IBF_PHASE_Gx_T) * 8));
+
+		RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[GROUP_0], sizeof(MT7615_IBF_PHASE_G0_T), (PUCHAR)&iBfPhaseG0);
+		RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[GROUP_1], (sizeof(MT7615_IBF_PHASE_Gx_T) * 7 - 4), (PUCHAR)&iBfPhaseGx8[0]);
+		RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[GROUP_8], sizeof(MT7615_IBF_PHASE_Gx_T), (PUCHAR)&iBfPhaseGx8[7]);
 		break;
 
 	case IBF_PHASE_ALL_GROUP_READ_FROM_E2P:
@@ -320,8 +336,8 @@ VOID mt7615_iBFPhaseCalE2PUpdate(IN PRTMP_ADAPTER pAd,
 		ucIBfGroupSize = sizeof(MT7615_IBF_PHASE_Gx_T);
 		ucIBfGroupSize = (ucGroup == GROUP_2) ? (ucIBfGroupSize - 4) : ucIBfGroupSize;
 
-		NdisCopyMemory(&iBfPhaseGx, &pAd->piBfPhaseGx[ucGroupIdx * sizeof(MT7615_IBF_PHASE_G0_T)], ucIBfGroupSize);
-		NdisCopyMemory(&iBfPhaseG0, pAd->piBfPhaseG0, sizeof(MT7615_IBF_PHASE_G0_T));
+		NdisCopyMemory((PUCHAR)&iBfPhaseGx, &pAd->piBfPhaseGx[ucGroupIdx * sizeof(MT7615_IBF_PHASE_Gx_T)], ucIBfGroupSize);
+		NdisCopyMemory((PUCHAR)&iBfPhaseG0, pAd->piBfPhaseG0, sizeof(MT7615_IBF_PHASE_G0_T));
 		break;
 	}
 }
@@ -395,8 +411,8 @@ VOID mt7622_iBFPhaseCalE2PUpdate(IN PRTMP_ADAPTER pAd,
 		if (pAd->fgCalibrationFail == FALSE) {
 			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("All of groups can pass criterion and calibrated phases can be written into EEPROM\n"));
 
-			/* Write Group 0 and 1 into EEPROM */
-			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[0], sizeof(MT7622_IBF_PHASE_G0_T), pAd->piBfPhaseG0);
+			/* Write Group 0 into EEPROM */
+			RT28xx_EEPROM_WRITE_WITH_RANGE(pAd, au2IBfCalEEPROMOffset[GROUP_0], sizeof(MT7622_IBF_PHASE_G0_T), pAd->piBfPhaseG0);
 		} else {
 			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Calibrated phases can't be written into EEPROM because some groups can't pass criterion!!!\n"));
 			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Group%d = %s\n",

@@ -1,7 +1,7 @@
 ifeq ($(CONFIG_DEFAULTS_KERNEL_4_4),y)
 WIFI_DRV_PATH = drivers/net/wireless/mediatek
 else
-WIFI_DRV_PATH = drivers/net/wireless
+WIFI_DRV_PATH = drivers/net/wireless/mtk/mt7615e
 endif
 
 EXTRA_CFLAGS = -I$(WIFI_DRV_PATH)/mt_wifi/include \
@@ -110,33 +110,36 @@ cmm_objs := $(SRC_EMBEDDED_DIR)/common/action.o\
 		$(SRC_DIR)/os/linux/rt_profile.o\
 		$(SRC_DIR)/os/linux/tm.o\
 		$(SRC_EMBEDDED_DIR)/common/cmm_rvr_dbg.o\
-		$(SRC_DIR)/protocol/protection.o
+		$(SRC_DIR)/protocol/protection.o\
+		$(SRC_EMBEDDED_DIR)/common/misc_app.o
 
 ########################################################
 # SAE files
 ########################################################
 ifeq ($(CONFIG_WPA3_SUPPORT),y)
-   EXTRA_CFLAGS += -DDOT11_SAE_SUPPORT -DDOT11_SUITEB_SUPPORT
-#    EXTRA_CFLAGS += -DDOT11_SAE_OPENSSL_BN
+   EXTRA_CFLAGS += -DDOT11_SAE_SUPPORT -DDOT11_SUITEB_SUPPORT -DDOT11W_PMF_SUPPORT
+   EXTRA_CFLAGS += -DDOT11_SAE_OPENSSL_BN
 
     cmm_objs += $(SRC_EMBEDDED_DIR)/security/crypt_bignum.o\
                 $(SRC_EMBEDDED_DIR)/security/crypt_biginteger.o\
                 $(SRC_EMBEDDED_DIR)/security/bn_lib.o\
                 $(SRC_EMBEDDED_DIR)/security/ecc.o\
-                $(SRC_EMBEDDED_DIR)/security/sae.o
+                $(SRC_EMBEDDED_DIR)/security/sae.o\
+                $(SRC_EMBEDDED_DIR)/security/pmf.o
 endif
 
 ########################################################
 # OWE related files
 ########################################################
 ifeq ($(CONFIG_OWE_SUPPORT),y)
-   EXTRA_CFLAGS += -DCONFIG_OWE_SUPPORT
+   EXTRA_CFLAGS += -DCONFIG_OWE_SUPPORT -DDOT11W_PMF_SUPPORT -DDOT11_SAE_OPENSSL_BN
 
     cmm_objs += $(SRC_EMBEDDED_DIR)/security/crypt_bignum.o\
                 $(SRC_EMBEDDED_DIR)/security/crypt_biginteger.o\
                 $(SRC_EMBEDDED_DIR)/security/bn_lib.o\
                 $(SRC_EMBEDDED_DIR)/security/ecc.o\
-                $(SRC_EMBEDDED_DIR)/security/owe.o
+                $(SRC_EMBEDDED_DIR)/security/owe.o\
+                $(SRC_EMBEDDED_DIR)/security/pmf.o
 
 endif
 
@@ -787,5 +790,5 @@ EXTRA_CFLAGS += -Inet/nat
 
 MODULE_FLAGS=$(EXTRA_CFLAGS)
 export MODULE_FLAGS
-obj-m+=$(SRC_EMBEDDED_DIR)/tools/plug_in/
+obj-m+=$(SRC_EMBEDDED_DIR)/plug_in/
 

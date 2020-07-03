@@ -78,7 +78,7 @@ int whnat_dma_buf_alloc(struct platform_device *dev, struct whnat_dma_buf *dma_b
 */
 void whnat_dump_dmabuf(struct whnat_dma_buf *buf)
 {
-	WHNAT_DBG(WHNAT_DBG_OFF, "AllocPA\t:0x%llx\n", buf->alloc_pa);
+	WHNAT_DBG(WHNAT_DBG_OFF, "AllocPA\t:%pad\n", &buf->alloc_pa);
 	WHNAT_DBG(WHNAT_DBG_OFF, "AllocVa\t:0x%p\n", buf->alloc_va);
 	WHNAT_DBG(WHNAT_DBG_OFF, "Size\t:%lu\n", buf->alloc_size);
 }
@@ -89,11 +89,8 @@ void whnat_dump_dmabuf(struct whnat_dma_buf *buf)
 */
 void whnat_dump_dmacb(struct whnat_dma_cb *cb)
 {
-#ifdef BB_SOC
-	WHNAT_DBG(WHNAT_DBG_OFF, "AllocPA\t: %p\n", cb->alloc_pa);
-#else
-	WHNAT_DBG(WHNAT_DBG_OFF, "AllocPA\t: 0x%llx\n", cb->alloc_pa);
-#endif
+
+	WHNAT_DBG(WHNAT_DBG_OFF, "AllocPA\t: %pad\n", &cb->alloc_pa);
 	WHNAT_DBG(WHNAT_DBG_OFF, "AllocVa\t: %p\n", cb->alloc_va);
 	WHNAT_DBG(WHNAT_DBG_OFF, "Size\t: %lu\n", cb->alloc_size);
 	WHNAT_DBG(WHNAT_DBG_OFF, "Pkt\t: %p\n", cb->pkt);

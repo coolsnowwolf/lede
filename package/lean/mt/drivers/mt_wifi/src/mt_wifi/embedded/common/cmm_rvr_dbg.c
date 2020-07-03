@@ -107,7 +107,7 @@ INT rd_dashboard(RTMP_ADAPTER *pAd, IN RTMP_IOCTL_INPUT_STRUCT *wrq)
 		return 0;
 	memset(msg, 0x00, MSG_LEN);
 	sprintf(msg, "\n");
-	sprintf(msg+strlen(msg), "%s%-16s%s\n", "====================", " RvR Debug Info ", "====================");
+	snprintf(msg+strlen(msg), 100, "%s%-16s%s\n", "====================", " RvR Debug Info ", "====================");
 	if ((pRVRDBGCtrl->ucViewLevel & VIEW_BASICINFO) == VIEW_BASICINFO)
 		printBasicinfo(pAd, msg);
 	if ((pRVRDBGCtrl->ucViewLevel & VIEW_WCID) == VIEW_WCID)
@@ -122,7 +122,7 @@ INT rd_dashboard(RTMP_ADAPTER *pAd, IN RTMP_IOCTL_INPUT_STRUCT *wrq)
 		printNoise(pAd, msg);
 	if ((pRVRDBGCtrl->ucViewLevel & VIEW_OTHERS) == VIEW_OTHERS)
 		printOthers(pAd, msg);
-	sprintf(msg+strlen(msg), "%s\n", "========================================================");
+	snprintf(msg+strlen(msg), 100, "%s\n", "========================================================");
 	if ((pRVRDBGCtrl->ucViewLevel & VIEW_CNNUMBER) == VIEW_CNNUMBER)
 		updateCNNum(pAd, TRUE);
 	else
@@ -380,16 +380,16 @@ INT rd_help(RTMP_ADAPTER *pAd, RTMP_STRING *arg, RTMP_IOCTL_INPUT_STRUCT *wrq)
 	sprintf(msg, "\n");
 	switch (button) {
 	case Case_SHOW:
-		sprintf(msg + strlen(msg), "%s", "iwpriv [Interface] rd [Sub-command]\n");
-		sprintf(msg + strlen(msg), "%s", "Sub-command List\n");
-		sprintf(msg + strlen(msg), "%-25s %s", "view", "Show view level status\n");
-		sprintf(msg + strlen(msg), "%-25s %s", "view=", "Set view level by hex value(8bits 00~FF)\n");
-		sprintf(msg + strlen(msg), "%-25s %s", "view+=", "Enable view level by string\n");
-		sprintf(msg + strlen(msg), "%-25s %s", "view-=", "Disable view level by string\n");
-		sprintf(msg + strlen(msg), "%-25s %s", "wcid,sta,ap,apcli", "Show mac table\n");
-		sprintf(msg + strlen(msg), "%-25s %s", "wcid=,sta=,ap=,apcli=", "Set WCID\n");
-		sprintf(msg + strlen(msg), "%-25s %s", "reset", "Reset all counter\n");
-		sprintf(msg + strlen(msg), "%-25s %s", "help", "Show support command info\n");
+		snprintf(msg + strlen(msg), 100, "%s", "iwpriv [Interface] rd [Sub-command]\n");
+		snprintf(msg + strlen(msg), 100, "%s", "Sub-command List\n");
+		snprintf(msg + strlen(msg), 100, "%-25s %s", "view", "Show view level status\n");
+		snprintf(msg + strlen(msg), 100, "%-25s %s", "view=", "Set view level by hex value(8bits 00~FF)\n");
+		snprintf(msg + strlen(msg), 100, "%-25s %s", "view+=", "Enable view level by string\n");
+		snprintf(msg + strlen(msg), 100, "%-25s %s", "view-=", "Disable view level by string\n");
+		snprintf(msg + strlen(msg), 100, "%-25s %s", "wcid,sta,ap,apcli", "Show mac table\n");
+		snprintf(msg + strlen(msg), 100, "%-25s %s", "wcid=,sta=,ap=,apcli=", "Set WCID\n");
+		snprintf(msg + strlen(msg), 100, "%-25s %s", "reset", "Reset all counter\n");
+		snprintf(msg + strlen(msg), 100, "%-25s %s", "help", "Show support command info\n");
 		break;
 	}
 	wrq->u.data.length = strlen(msg);
@@ -411,10 +411,10 @@ INT printBasicinfo (RTMP_ADAPTER *pAd, RTMP_STRING *msg)
 	else
 		return FALSE;
 
-	sprintf(msg+strlen(msg), "%s%-16s%s\n", "====================", " BASIC ", "====================");
-	sprintf(msg+strlen(msg), "%-32s= %d\n", "Current Band ", ucBand);
+	snprintf(msg+strlen(msg), 100, "%s%-16s%s\n", "====================", " BASIC ", "====================");
+	snprintf(msg+strlen(msg), 100, "%-32s= %d\n", "Current Band ", ucBand);
 	RTMP_GET_TEMPERATURE(pAd, &temperature);
-	sprintf(msg+strlen(msg), "%-32s= %d\n", "Current Temperature ", temperature);
+	snprintf(msg+strlen(msg), 100, "%-32s= %d\n", "Current Temperature ", temperature);
 	return TRUE;
 }
 
@@ -423,9 +423,9 @@ VOID printView(RTMP_ADAPTER *pAd, IN RTMP_STRING *msg)
 	PRvR_Debug_CTRL pRVRDBGCtrl;
 	INT view_bits = 0;
 	pRVRDBGCtrl = &pAd->RVRDBGCtrl;
-	sprintf(msg + strlen(msg), "%-4s | %-6s | %-15s | %s\n", "bit", "arg", "info", "Status");
+	snprintf(msg + strlen(msg), 100, "%-4s | %-6s | %-15s | %s\n", "bit", "arg", "info", "Status");
 	for (PView_Key_Node = View_Key_Node_List; PView_Key_Node->key; PView_Key_Node++) {
-		sprintf(msg + strlen(msg), "%-4d | %-6s | %-15s | %s\n",
+		snprintf(msg + strlen(msg), 100, "%-4d | %-6s | %-15s | %s\n",
 		view_bits++,
 		PView_Key_Node->key,
 		PView_Key_Node->str,
@@ -446,7 +446,7 @@ INT printWcid (RTMP_ADAPTER *pAd, RTMP_STRING *msg)
 
 	pRVRDBGCtrl = &pAd->RVRDBGCtrl;
 
-	sprintf(msg+strlen(msg), "%s%-16s%s\n", "====================", " WCID ", "====================");
+	snprintf(msg+strlen(msg), 100, "%s%-16s%s\n", "====================", " WCID ", "====================");
 
 	/* User assign aid, default = 0 will auto search first sta  */
 	if (pRVRDBGCtrl->ucWcid == 0)
@@ -463,7 +463,7 @@ INT printWcid (RTMP_ADAPTER *pAd, RTMP_STRING *msg)
 		sprintf(msg+strlen(msg), "%-32s= %02X:%02X:%02X:%02X:%02X:%02X\n", "MAC Addr ", PRINT_MAC(pEntry->Addr));
 		snprintf(tmp_str, temp_str_len, "%d %d %d %d", pEntry->RssiSample.AvgRssi[0], pEntry->RssiSample.AvgRssi[1],
 			 pEntry->RssiSample.AvgRssi[2], pEntry->RssiSample.AvgRssi[3]);
-		sprintf(msg+strlen(msg), "%-32s= %s\n", "RSSI0/1/2/3 ", tmp_str);
+		snprintf(msg+strlen(msg), 100, "%-32s= %s\n", "RSSI0/1/2/3 ", tmp_str);
 		lastRxRate = pEntry->LastRxRate;
 		lastTxRate = pEntry->LastTxRate;
 		if (cap->fgRateAdaptFWOffload == TRUE) {
@@ -510,7 +510,7 @@ INT printMacCounter (RTMP_ADAPTER *pAd, RTMP_STRING *msg)
 		ucBand = HcGetBandByWdev(wdev);
 	else
 		return FALSE;
-	sprintf(msg+strlen(msg), "%s%-16s%s\n", "====================", " MAC COUNTER ", "====================");
+	snprintf(msg+strlen(msg), 100, "%s%-16s%s\n", "====================", " MAC COUNTER ", "====================");
 
 	/* Tx Count */
 	txCount = pAd->WlanCounters[ucBand].TransmittedFragmentCount.u.LowPart;
@@ -574,7 +574,7 @@ INT printPhyCounter (RTMP_ADAPTER *pAd, RTMP_STRING *msg)
 		ucBand = HcGetBandByWdev(wdev);
 	else
 		return FALSE;
-	sprintf(msg+strlen(msg), "%s%-16s%s\n", "====================", " PHY COUNTER ", "====================");
+	snprintf(msg+strlen(msg), 100, "%s%-16s%s\n", "====================", " PHY COUNTER ", "====================");
 	if ((pRVRDBGCtrl->ucViewLevel & VIEW_CNNUMBER) == VIEW_CNNUMBER)
 		printCNNum(pAd, msg);
 	return  TRUE;
@@ -594,8 +594,8 @@ INT printNoise (RTMP_ADAPTER *pAd, RTMP_STRING *msg)
 		ucBand = HcGetBandByWdev(wdev);
 	else
 		return FALSE;
-	sprintf(msg+strlen(msg), "%s%-16s%s\n", "====================", " NOISE ", "====================");
-	sprintf(msg+strlen(msg), "%-32s= %s\n",
+	snprintf(msg+strlen(msg), 100, "%s%-16s%s\n", "====================", " NOISE ", "====================");
+	snprintf(msg+strlen(msg), 100, "%-32s= %s\n",
 		"MibBucket ", pAd->OneSecMibBucket.Enabled[ucBand] ? "Enable":"Disable");
 	sprintf(msg+strlen(msg), "%-32s= %d\n",
 		"Channel Busy Time ", pAd->OneSecMibBucket.ChannelBusyTime[ucBand]);
@@ -628,7 +628,7 @@ INT printOthers (RTMP_ADAPTER *pAd, RTMP_STRING *msg)
 	else
 		return FALSE;
 	*/
-	sprintf(msg+strlen(msg), "%s%-16s%s\n", "====================", " OTHERS ", "====================");
+	snprintf(msg+strlen(msg), 100, "%s%-16s%s\n", "====================", " OTHERS ", "====================");
 	return TRUE;
 }
 

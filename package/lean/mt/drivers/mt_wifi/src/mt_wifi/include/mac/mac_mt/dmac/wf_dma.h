@@ -62,6 +62,22 @@
 
 #define DMA_FQCR1        (WF_DMA_BASE + 0x00c)   /* 0x21c0c */
 
+#ifdef VLAN_SUPPORT
+#define DMA_VTR0			(WF_DMA_BASE + 0x010)
+#define DMA_VTR2			(WF_DMA_BASE + 0x018)
+#define DMA_VTR20			(WF_DMA_BASE + 0x0A0)
+#define DMA_VTR24			(WF_DMA_BASE + 0x0F0)
+#define DMA_VTR_GET_ADDR(_omac) \
+			((_omac < 0x10) ? (DMA_VTR0 + ((_omac >> 1) << 2)) : \
+				(_omac < 0x34) ? (DMA_VTR2 + (((_omac - 0x10) >> 1) << 2)) : \
+					(_omac < 0x3c) ? (DMA_VTR20 + (((_omac - 0x34) >> 1) << 2)) : \
+						(DMA_VTR24 + (((_omac - 0x3c) >> 1) << 2)))
+#define DMA_VTR_SET_VID(_omac, _tci, _vid) \
+				((_omac % 2) ? ((_tci & 0xF000FFFF) | (_vid << 16)) : ((_tci & 0xFFFFF000) | _vid))
+#define DMA_VTR_SET_PCP(_omac, _tci, _pcp) \
+				((_omac % 2) ? ((_tci & 0x1FFFFFFF) | (_pcp << 29)) : ((_tci & 0xFFFF1FFF) | (_pcp << 13)))
+#endif /*VLAN_SUPPORT*/
+
 #define DMA_BN0RCFR0		(WF_DMA_BASE + 0x070)	/* 0x21870 */
 #define DMA_BN0RCFR1		(WF_DMA_BASE + 0x074)	/* 0x21874 */
 #define DMA_BN0VCFR0		(WF_DMA_BASE + 0x07c)	/* 0x2187c */

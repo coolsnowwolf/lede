@@ -17,7 +17,7 @@
 #ifdef BAND_STEERING
 #include "rt_config.h"
 
-#define BNDSTRG_DRIVER_VER	"3.1.2"
+#define BNDSTRG_DRIVER_VER	"3.1.3"
 static inline PBND_STRG_CLI_TABLE Get_BndStrgTableByChannel(
 	PRTMP_ADAPTER	pAd,
 	UINT8           Channel)
@@ -52,6 +52,205 @@ inline PBND_STRG_CLI_TABLE Get_BndStrgTable(
 
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR, (RED("%s:(%d):invalid pMbss. apidx=%d\n"), __func__, __LINE__, apidx));
 	return NULL;
+}
+
+/* WPS_BandSteering Support */
+PWPS_WHITELIST_ENTRY FindWpsWhiteListEntry(
+	PLIST_HEADER pWpsWhiteList,
+	PUCHAR pMacAddr)
+{
+	PWPS_WHITELIST_ENTRY	pWpsWhiteListEntry = NULL;
+	RT_LIST_ENTRY		        *pListEntry = NULL;
+
+	pListEntry = pWpsWhiteList->pHead;
+	pWpsWhiteListEntry = (PWPS_WHITELIST_ENTRY)pListEntry;
+	while (pWpsWhiteListEntry != NULL) {
+
+		if (NdisEqualMemory(pWpsWhiteListEntry->addr, pMacAddr, MAC_ADDR_LEN))
+			return pWpsWhiteListEntry;
+		pListEntry = pListEntry->pNext;
+		pWpsWhiteListEntry = (PWPS_WHITELIST_ENTRY)pListEntry;
+	}
+
+	return NULL;
+}
+
+VOID AddWpsWhiteList(
+	PLIST_HEADER pWpsWhiteList,
+	PUCHAR pMacAddr)
+{
+	PWPS_WHITELIST_ENTRY pWpsWhiteListEntry = NULL;
+
+	pWpsWhiteListEntry = FindWpsWhiteListEntry(pWpsWhiteList, pMacAddr);
+
+	if (pWpsWhiteListEntry) {
+		/* the Entry already exist */
+		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+			("%s: Found %02x:%02x:%02x:%02x:%02x:%02x in Wps White List\n",
+			__func__, PRINT_MAC(pMacAddr)));
+	} else {
+		/* Add new Entry */
+		os_alloc_mem(NULL, (UCHAR **)&pWpsWhiteListEntry, sizeof(WPS_WHITELIST_ENTRY));
+		if (pWpsWhiteListEntry) {
+			NdisZeroMemory(pWpsWhiteListEntry, sizeof(WPS_WHITELIST_ENTRY));
+			pWpsWhiteListEntry->pNext = NULL;
+			NdisCopyMemory(pWpsWhiteListEntry->addr, pMacAddr, MAC_ADDR_LEN);
+			insertTailList(pWpsWhiteList, (RT_LIST_ENTRY *)pWpsWhiteListEntry);
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("[%s]%02x:%02x:%02x:%02x:%02x:%02x added to WpsList:size::%d\n",
+			 __func__, PRINT_MAC(pWpsWhiteListEntry->addr), pWpsWhiteList->size));
+		} else
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("[%s] Mem alloc fail\n", __func__));
+	}
+}
+
+VOID DelWpsWhiteListExceptMac(
+	PLIST_HEADER pWpsWhiteList,
+	PUCHAR pMacAddr)
+{
+
+	RT_LIST_ENTRY	*pListEntry = NULL, *pDelEntry = NULL;
+	PWPS_WHITELIST_ENTRY	pWpsWhiteListEntry = NULL;
+	PLIST_HEADER    pListHeader = pWpsWhiteList;
+	UCHAR Addr[6];
+
+	NdisCopyMemory(Addr, pMacAddr, MAC_ADDR_LEN);
+
+	if (pListHeader->size == 0) {
+		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: WpsWhiteList Empty.\n", __func__));
+		return;
+	}
+
+	pListEntry = pListHeader->pHead;
+	pWpsWhiteListEntry = (PWPS_WHITELIST_ENTRY)pListEntry;
+
+	while (pWpsWhiteListEntry != NULL) {
+
+		if (MAC_ADDR_EQUAL(pWpsWhiteListEntry->addr, Addr)) {
+			pListEntry = pListEntry->pNext;
+		} else {
+			pDelEntry = delEntryList(pWpsWhiteList, pListEntry);
+			pListEntry = pDelEntry->pNext;
+			os_free_mem(pDelEntry);
+		}
+		pWpsWhiteListEntry = (PWPS_WHITELIST_ENTRY)pListEntry;
+	}
+	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: WpsWhiteList size : %d\n",
+	 __func__, pWpsWhiteList->size));
+}
+
+VOID ClearWpsWhiteList(
+	PLIST_HEADER pWpsWhiteList)
+{
+	RT_LIST_ENTRY     *pListEntry = NULL;
+	PLIST_HEADER    pListHeader = pWpsWhiteList;
+
+	if (pListHeader->size == 0) {
+		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: WpsWhiteList already Empty.\n", __func__));
+		return;
+	}
+
+	pListEntry = pListHeader->pHead;
+	while (pListEntry != NULL) {
+		/*Remove ListEntry from Header*/
+		removeHeadList(pListHeader);
+		os_free_mem(pListEntry);
+		pListEntry = pListHeader->pHead;
+	}
+
+	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: Clean WpsWhiteList.\n", __func__));
+}
+
+PBS_LIST_ENTRY FindBsListEntry(
+	PLIST_HEADER pBsList,
+	PUCHAR pMacAddr)
+{
+	PBS_LIST_ENTRY	pBsListEntry = NULL;
+	RT_LIST_ENTRY *pListEntry = NULL;
+
+	pListEntry = pBsList->pHead;
+	pBsListEntry = (PBS_LIST_ENTRY)pListEntry;
+	while (pBsListEntry != NULL) {
+
+		if (NdisEqualMemory(pBsListEntry->addr, pMacAddr, MAC_ADDR_LEN))
+			return pBsListEntry;
+		pListEntry = pListEntry->pNext;
+		pBsListEntry = (PBS_LIST_ENTRY)pListEntry;
+	}
+
+	return NULL;
+}
+
+VOID AddBsListEntry(
+	PLIST_HEADER pBsList,
+	PUCHAR pMacAddr)
+{
+	PBS_LIST_ENTRY pBsListEntry = NULL;
+
+	pBsListEntry = FindBsListEntry(pBsList, pMacAddr);
+
+	if (pBsListEntry) {
+		/* the Entry already exist */
+		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+			("%s: Found %02x:%02x:%02x:%02x:%02x:%02x in BsList.\n",
+			__func__, PRINT_MAC(pMacAddr)));
+	} else {
+		/* Add new Entry */
+		os_alloc_mem(NULL, (UCHAR **)&pBsListEntry, sizeof(BS_LIST_ENTRY));
+		if (pBsListEntry) {
+			NdisZeroMemory(pBsListEntry, sizeof(BS_LIST_ENTRY));
+			pBsListEntry->pNext = NULL;
+			NdisCopyMemory(pBsListEntry->addr, pMacAddr, MAC_ADDR_LEN);
+			insertTailList(pBsList, (RT_LIST_ENTRY *)pBsListEntry);
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("[%s] %02x:%02x:%02x:%02x:%02x:%02x added in BsList:size::%d\n",
+			 __func__, PRINT_MAC(pBsListEntry->addr), pBsList->size));
+		} else
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("[%s]Mem alloc fail\n", __func__));
+	}
+}
+
+VOID DelBsListEntry(
+	PLIST_HEADER pBsList,
+	PUCHAR pMacAddr)
+{
+	PBS_LIST_ENTRY pBsListEntry = NULL;
+	RT_LIST_ENTRY	*pListEntry = NULL, *pDelEntry = NULL;
+
+	pBsListEntry = FindBsListEntry(pBsList, pMacAddr);
+
+	if (!pBsListEntry) {
+		/* the Entry already exist */
+		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: Not Found %02x:%02x:%02x:%02x:%02x:%02x in BsList.\n",
+		 __func__, PRINT_MAC(pMacAddr)));
+	} else {
+		pListEntry = (RT_LIST_ENTRY *)pBsListEntry;
+		/* Delete the Entry */
+		pDelEntry = delEntryList(pBsList, pListEntry);
+		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: Sta %02x:%02x:%02x:%02x:%02x:%02x deleted from BsList:size::%d\n",
+			 __func__, PRINT_MAC(pBsListEntry->addr), pBsList->size));
+		os_free_mem(pDelEntry);
+	}
+}
+
+VOID ClearBsList(
+	PLIST_HEADER pBsList)
+{
+	RT_LIST_ENTRY     *pListEntry = NULL;
+	PLIST_HEADER    pListHeader = pBsList;
+
+	if (pListHeader->size == 0) {
+		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: BsList already Empty.\n", __func__));
+		return;
+	}
+
+	pListEntry = pListHeader->pHead;
+	while (pListEntry != NULL) {
+		/*Remove ListEntry from Header*/
+		removeHeadList(pListHeader);
+		os_free_mem(pListEntry);
+		pListEntry = pListHeader->pHead;
+	}
+
+	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: Clean BsList.\n", __func__));
 }
 
 INT Show_BndStrg_Info(
@@ -89,23 +288,35 @@ INT Show_BndStrg_Info(
 
 	BND_STRG_MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\n"));
 
-	BND_STRG_MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\t WhiteListSize:%d\n", table->WhiteEntryListSize));
+	BND_STRG_MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\t WhiteListSize:%d\n", table->WhiteList.size));
 
-	if (table->WhiteEntryListSize) {
-		UINT8 i;
+	if (table->WhiteList.size) {
+		PBS_LIST_ENTRY	pBsListEntry = NULL;
+		RT_LIST_ENTRY	*pListEntry = NULL;
 
-		for (i = 0; i < BND_STRG_MAX_WHITELIST_ENTRY; i++) {
-			BND_STRG_MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\t %d -> %02x:%02x:%02x:%02x:%02x:%02x\n", i, PRINT_MAC(table->WhiteEntryList[i])));
+		pListEntry = table->WhiteList.pHead;
+		pBsListEntry = (PBS_LIST_ENTRY)pListEntry;
+
+		while (pBsListEntry != NULL) {
+			BND_STRG_MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\t -> %02x:%02x:%02x:%02x:%02x:%02x\n", PRINT_MAC(pBsListEntry->addr)));
+			pListEntry = pListEntry->pNext;
+			pBsListEntry = (PBS_LIST_ENTRY)pListEntry;
 		}
 	}
 
-	BND_STRG_MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\t BlackListSize:%d\n", table->BndStrgBlackListSize));
+	BND_STRG_MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\t BlackListSize:%d\n", table->BlackList.size));
 
-	if (table->BndStrgBlackListSize) {
-		UINT8 i;
+	if (table->BlackList.size) {
+		PBS_LIST_ENTRY	pBsListEntry = NULL;
+		RT_LIST_ENTRY	*pListEntry = NULL;
 
-		for (i = 0; i < BND_STRG_MAX_BLACKLIST_ENTRY; i++)  {
-			BND_STRG_MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\t %d -> %02x:%02x:%02x:%02x:%02x:%02x\n", i, PRINT_MAC(table->BndStrgBlackList[i])));
+		pListEntry = table->BlackList.pHead;
+		pBsListEntry = (PBS_LIST_ENTRY)pListEntry;
+
+		while (pBsListEntry != NULL) {
+			BND_STRG_MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\t -> %02x:%02x:%02x:%02x:%02x:%02x\n", PRINT_MAC(pBsListEntry->addr)));
+			pListEntry = pListEntry->pNext;
+			pBsListEntry = (PBS_LIST_ENTRY)pListEntry;
 		}
 	}
 
@@ -252,7 +463,7 @@ INT Set_BndStrg_Param(PRTMP_ADAPTER pAd, RTMP_STRING *arg)
 	bndstrg_param->Band = table->Band;
 	bndstrg_param->Channel = table->Channel;
 	bndstrg_param->len = strlen(arg);
-	strncpy(bndstrg_param->arg, arg, sizeof(bndstrg_param->arg));
+	strncpy(bndstrg_param->arg, arg, sizeof(bndstrg_param->arg) - 1);
 	BndStrgSendMsg(pAd, &msg);
 
 	return TRUE;
@@ -409,6 +620,11 @@ INT BndStrg_TableInit(PRTMP_ADAPTER pAd, INT apidx)
 	if (init_table) {
 		NdisZeroMemory(init_table, sizeof(BND_STRG_CLI_TABLE));
 		OS_NdisAllocateSpinLock(&init_table->Lock);
+/* WPS_BandSteering Support */
+		OS_NdisAllocateSpinLock(&init_table->WpsWhiteListLock);
+		OS_NdisAllocateSpinLock(&init_table->WhiteListLock);
+		OS_NdisAllocateSpinLock(&init_table->BlackListLock);
+
 		init_table->DaemonPid = 0xffffffff;
 		init_table->priv = (VOID *) pAd;
 		init_table->Band = Band;
@@ -457,6 +673,22 @@ INT BndStrg_TableRelease(PBND_STRG_CLI_TABLE table)
 		return BND_STRG_NOT_INITIALIZED;
 
 	OS_NdisFreeSpinLock(&table->Lock);
+
+	NdisAcquireSpinLock(&table->WhiteListLock);
+	ClearBsList(&table->WhiteList);
+	NdisReleaseSpinLock(&table->WhiteListLock);
+
+	NdisAcquireSpinLock(&table->BlackListLock);
+	ClearBsList(&table->BlackList);
+	NdisReleaseSpinLock(&table->BlackListLock);
+
+	NdisAcquireSpinLock(&table->WpsWhiteListLock);
+	ClearWpsWhiteList(&table->WpsWhiteList);
+	NdisReleaseSpinLock(&table->WpsWhiteListLock);
+
+	OS_NdisFreeSpinLock(&table->WpsWhiteListLock);
+	OS_NdisFreeSpinLock(&table->WhiteListLock);
+	OS_NdisFreeSpinLock(&table->BlackListLock);
 	table->bInitialized = FALSE;
 
 	if (ret_val != BND_STRG_SUCCESS) {
@@ -621,10 +853,11 @@ BOOLEAN BndStrg_CheckConnectionReq(
 	PRTMP_ADAPTER	pAd,
 	struct wifi_dev *wdev,
 	PUCHAR pSrcAddr,
-	MLME_QUEUE_ELEM * Elem,
+	struct raw_rssi_info *rssi_info,
+	ULONG MsgType,
 	PEER_PROBE_REQ_PARAM * ProbeReqParam)
 {
-	UINT8 FrameType = Elem->MsgType;
+	UINT8 FrameType = MsgType;
 	CHAR Rssi[4] = {0};
 	PBND_STRG_CLI_TABLE table = Get_BndStrgTable(pAd, wdev->func_idx);
 	BNDSTRG_MSG msg = { 0 };
@@ -639,19 +872,22 @@ BOOLEAN BndStrg_CheckConnectionReq(
 		return TRUE;
 
 	/*  send response to white listed clients*/
-	if (table->WhiteEntryListSize > 0) {
-		for (i = 0; i < BND_STRG_MAX_WHITELIST_ENTRY; i++) {
-			if (memcmp(table->WhiteEntryList[i], pSrcAddr, MAC_ADDR_LEN) == 0) {
-				BND_STRG_PRINTQAMSG(table, pSrcAddr, ("BndStrg STA %02x:%02x:%02x:%02x:%02x:%02x  whitelisted\n", PRINT_MAC(pSrcAddr)));
-					return TRUE;
-			}
+	if (table->WhiteList.size > 0) {
+
+		PBS_LIST_ENTRY bs_whitelist_entry = NULL;
+
+		bs_whitelist_entry = FindBsListEntry(&table->WhiteList, pSrcAddr);
+
+		if (bs_whitelist_entry) {
+			BND_STRG_PRINTQAMSG(table, pSrcAddr, ("BndStrg STA %02x:%02x:%02x:%02x:%02x:%02x  whitelisted\n", PRINT_MAC(pSrcAddr)));
+			return TRUE;
 		}
 	}
 
-	Rssi[0] = Elem->rssi_info.raw_rssi[0] ? ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_0) : 0;
-	Rssi[1] = Elem->rssi_info.raw_rssi[1] ? ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_1) : 0;
-	Rssi[2] = Elem->rssi_info.raw_rssi[2] ? ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_2) : 0;
-	Rssi[3] = Elem->rssi_info.raw_rssi[3] ? ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_3) : 0;
+	Rssi[0] = rssi_info->raw_rssi[0] ? ConvertToRssi(pAd, (rssi_info), RSSI_IDX_0) : 0;
+	Rssi[1] = rssi_info->raw_rssi[1] ? ConvertToRssi(pAd, (rssi_info), RSSI_IDX_1) : 0;
+	Rssi[2] = rssi_info->raw_rssi[2] ? ConvertToRssi(pAd, (rssi_info), RSSI_IDX_2) : 0;
+	Rssi[3] = rssi_info->raw_rssi[3] ? ConvertToRssi(pAd, (rssi_info), RSSI_IDX_3) : 0;
 
 #ifdef DBDC_MODE
 
@@ -687,6 +923,10 @@ BOOLEAN BndStrg_CheckConnectionReq(
 			cli_probe->bAllowStaConnectInHt = TRUE;
 		if (ProbeReqParam->IsVhtSupport && WMODE_CAP_AC(wdev->PhyMode))
 			cli_probe->bVHTCapable = TRUE;
+
+		if (ProbeReqParam->IsFromIos)
+			cli_probe->bIosCapable = TRUE;
+
 		cli_probe->Nss = GetNssFromHTCapRxMCSBitmask(ProbeReqParam->RxMCSBitmask);
 
 		memset(cli_probe->Rssi, 0x80, sizeof(cli_probe->Rssi));
@@ -703,11 +943,45 @@ BOOLEAN BndStrg_CheckConnectionReq(
 	BndStrgSendMsg(pAd, &msg);
 
 	/* check for backlist client, stop response for them */
-	if (table->BndStrgBlackListSize > 0) {
-		for (i = 0; i < BND_STRG_MAX_BLACKLIST_ENTRY; i++) {
-			if (memcmp(table->BndStrgBlackList[i], pSrcAddr, MAC_ADDR_LEN) == 0) {
-				BND_STRG_PRINTQAMSG(table, pSrcAddr, ("BndStrg STA %02x:%02x:%02x:%02x:%02x:%02x  blacklisted\n", PRINT_MAC(pSrcAddr)));
-				return FALSE;
+	if (table->BlackList.size > 0) {
+		PBS_LIST_ENTRY bs_blacklist_entry = NULL;
+
+		bs_blacklist_entry = FindBsListEntry(&table->BlackList, pSrcAddr);
+
+		if (bs_blacklist_entry) {
+			BND_STRG_PRINTQAMSG(table, pSrcAddr, ("BndStrg STA %02x:%02x:%02x:%02x:%02x:%02x  blacklisted\n", PRINT_MAC(pSrcAddr)));
+			return FALSE;
+		}
+	}
+
+/* WPS_BandSteering Support */
+	{
+		PWSC_CTRL pWscControl;
+
+		pWscControl = &pAd->ApCfg.MBSSID[wdev->func_idx].WscControl;
+
+		if (FrameType == APMT2_PEER_PROBE_REQ) {
+			if (pWscControl->bWscTrigger) {
+				if (ProbeReqParam->bWpsCapable) {
+					NdisAcquireSpinLock(&table->WpsWhiteListLock);
+					AddWpsWhiteList(&table->WpsWhiteList, pSrcAddr);
+					NdisReleaseSpinLock(&table->WpsWhiteListLock);
+					MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("channel %u: Probe req: STA %02x:%02x:%02x:%02x:%02x:%02x wps whitelisted\n",
+					table->Channel, PRINT_MAC(pSrcAddr)));
+					BND_STRG_PRINTQAMSG(table, pSrcAddr, ("STA %02x:%02x:%02x:%02x:%02x:%02x channel %u  added in WPS Whitelist\n",
+					PRINT_MAC(pSrcAddr), table->Channel));
+				}
+				return TRUE;
+			}
+		}
+
+		if (FrameType == APMT2_PEER_AUTH_REQ) {
+			if (pWscControl->bWscTrigger) {
+				MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("channel %u: Auth req: STA %02x:%02x:%02x:%02x:%02x:%02x  wps whitelisted\n",
+				table->Channel, PRINT_MAC(pSrcAddr)));
+				BND_STRG_PRINTQAMSG(table, pSrcAddr, ("STA %02x:%02x:%02x:%02x:%02x:%02x  channel %u allowed Auth as per WPS Whitelist\n",
+				PRINT_MAC(pSrcAddr), table->Channel));
+				return TRUE;
 			}
 		}
 	}
@@ -767,7 +1041,7 @@ INT BndStrg_Tbl_Enable(PBND_STRG_CLI_TABLE table, BOOLEAN enable, CHAR *IfName)
 
 	if (enable) {
 		table->bEnabled = TRUE;
-		strncpy(table->ucIfName, IfName, sizeof(table->ucIfName)); /* decide it by daemon */
+		strncpy(table->ucIfName, IfName, sizeof(table->ucIfName) - 1); /* decide it by daemon */
 	} else
 		table->bEnabled = FALSE;
 
@@ -776,7 +1050,7 @@ INT BndStrg_Tbl_Enable(PBND_STRG_CLI_TABLE table, BOOLEAN enable, CHAR *IfName)
 	onoff->OnOff = table->bEnabled;
 	onoff->Band = table->Band;
 	onoff->Channel = table->Channel;
-	strncpy(onoff->ucIfName, IfName, sizeof(onoff->ucIfName));
+	strncpy(onoff->ucIfName, IfName, sizeof(onoff->ucIfName) - 1);
 	RtmpOSWrielessEventSend(
 		pAd->net_dev,
 		RT_WLAN_EVENT_CUSTOM,
@@ -947,6 +1221,8 @@ void BndStrg_UpdateEntry(PRTMP_ADAPTER pAd,
 		if (ie_list->vht_cap_len > 0)
 			cli_assoc->bVHTCapable = TRUE;
 		cli_assoc->Nss = Nss;
+/* WPS_BandSteering Support */
+		cli_assoc->bWpsAssoc = ie_list->bWscCapable;
 #ifdef CONFIG_DOT11V_WNM
 		cli_assoc->BTMSupport = pEntry->BssTransitionManmtSupport;
 #endif
@@ -1555,7 +1831,7 @@ VOID BndStrg_InfStatusRsp(PRTMP_ADAPTER pAd, PBND_STRG_CLI_TABLE table, BNDSTRG_
 		inf_status_rsp->nss = table->nss;
 		inf_status_rsp->table_src_addr = (ULONG)table;
 		inf_status_rsp->table_size = BND_STRG_MAX_TABLE_SIZE;
-		strncpy(inf_status_rsp->ucIfName, inf_status_req->ucIfName, sizeof(inf_status_rsp->ucIfName));
+		strncpy(inf_status_rsp->ucIfName, inf_status_req->ucIfName, sizeof(inf_status_rsp->ucIfName) - 1);
 #ifdef VENDOR_FEATURE5_SUPPORT
 		inf_status_rsp->nvram_support = 1;
 #else
@@ -1650,63 +1926,35 @@ VOID BndStrg_handle_onoff_event(PRTMP_ADAPTER pAd, PBND_STRG_CLI_TABLE table, BN
 }
 
 VOID BndStrg_UpdateWhiteBlackList(PRTMP_ADAPTER pAd, PBND_STRG_CLI_TABLE table, BNDSTRG_MSG *msg)
-				{
-		struct bnd_msg_update_white_black_list *update_list = &msg->data.update_white_black_list;
-		int i = 0, max_list_size = 0;
-		int	emptyindex = -1;
-		UINT8	*list_size;
-		UCHAR	macAddrzero[MAC_ADDR_LEN] = { 0 }, *list = NULL;
+{
+	struct bnd_msg_update_white_black_list *update_list = &msg->data.update_white_black_list;
+	PLIST_HEADER pUpdateList = NULL;
+	NDIS_SPIN_LOCK *pBsListLock = NULL;
 
-		BND_STRG_PRINTQAMSG(table, update_list->Addr, ("%s: client[%02x:%02x:%02x:%02x:%02x:%02x] %s %s\n",
-						  __func__, PRINT_MAC(update_list->Addr), (update_list->deladd ? "Add to":"Remove From"), ((update_list->list_type == bndstrg_whitelist) ? "WhiteList" : "BlackList")));
+	BND_STRG_PRINTQAMSG(table, update_list->Addr, ("%s: client[%02x:%02x:%02x:%02x:%02x:%02x] %s %s\n", __func__, PRINT_MAC(update_list->Addr),
+		(update_list->deladd ? "Add to":"Remove From"), ((update_list->list_type == bndstrg_whitelist) ? "WhiteList" : "BlackList")));
 
-		if (update_list->list_type == bndstrg_whitelist) {
-			list = (UCHAR *)&table->WhiteEntryList;
-			max_list_size = BND_STRG_MAX_WHITELIST_ENTRY;
-			list_size = &table->WhiteEntryListSize;
-		} else if (update_list->list_type == bndstrg_blacklist) {
-			list = (UCHAR *)&table->BndStrgBlackList;
-			max_list_size = BND_STRG_MAX_BLACKLIST_ENTRY;
-			list_size = &table->BndStrgBlackListSize;
-		} else
-			return;
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: client[%02x:%02x:%02x:%02x:%02x:%02x] %s %s\n", __func__, PRINT_MAC(update_list->Addr),
+		(update_list->deladd ? "Add to":"Remove From"), ((update_list->list_type == bndstrg_whitelist) ? "WhiteList" : "BlackList")));
 
-		if (update_list->deladd) {
+	if (update_list->list_type == bndstrg_whitelist) {
+		pUpdateList = &table->WhiteList;
+		pBsListLock = &table->WhiteListLock;
+	} else if (update_list->list_type == bndstrg_blacklist) {
+		pUpdateList = &table->BlackList;
+		pBsListLock = &table->BlackListLock;
+	} else
+		return;
 
-			if ((*list_size) >= max_list_size) {
-					return;
-			}
-
-			for (i = 0; i < max_list_size; i++) {
-
-				if (memcmp((list + (i*MAC_ADDR_LEN)), update_list->Addr, MAC_ADDR_LEN) == 0)
-					return;
-
-				if ((emptyindex == -1) && (memcmp((list + (i*MAC_ADDR_LEN)), macAddrzero, MAC_ADDR_LEN) == 0))
-					emptyindex = i;
-			}
-
-			if (emptyindex != -1) {
-				BND_STRG_MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-						  ("%s: Add Entry to List [%02x:%02x:%02x:%02x:%02x:%02x]!\n",
-						  __func__, PRINT_MAC((list + (emptyindex*MAC_ADDR_LEN)))));
-				memcpy((list + (emptyindex*MAC_ADDR_LEN)), update_list->Addr, MAC_ADDR_LEN);
-				(*list_size)++;
-			} else {
-				BND_STRG_MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_WARN,
-						  ("%s[%d]: List is full [%d]!\n", __func__, __LINE__, *list_size));
-			}
-		} else {
-			for (i = 0; i < max_list_size; i++) {
-				if (memcmp((list + (i*MAC_ADDR_LEN)), update_list->Addr, MAC_ADDR_LEN) == 0) {
-					BND_STRG_MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-						  ("%s: Remove Entry from List [%02x:%02x:%02x:%02x:%02x:%02x]!\n",
-						  __func__, PRINT_MAC((list + (i*MAC_ADDR_LEN)))));
-					memcpy((list + (i*MAC_ADDR_LEN)), macAddrzero, MAC_ADDR_LEN);
-					(*list_size)--;
-				}
-			}
-		}
+	if (update_list->deladd) {
+		NdisAcquireSpinLock(pBsListLock);
+		AddBsListEntry(pUpdateList, update_list->Addr);
+		NdisReleaseSpinLock(pBsListLock);
+	} else {
+		NdisAcquireSpinLock(pBsListLock);
+		DelBsListEntry(pUpdateList, update_list->Addr);
+		NdisReleaseSpinLock(pBsListLock);
+	}
 }
 
 INT BndStrg_MsgHandle(PRTMP_ADAPTER pAd, RTMP_IOCTL_INPUT_STRUCT *wrq, INT apidx)
@@ -1757,10 +2005,11 @@ INT BndStrg_MsgHandle(PRTMP_ADAPTER pAd, RTMP_IOCTL_INPUT_STRUCT *wrq, INT apidx
 			entry = BndStrg_TableLookup(table, cli_add->Addr);
 
 		if (entry == NULL) {
-				BndStrg_InsertEntry(table, cli_add, &entry);
-			if (table->BndStrgMode == POST_CONNECTION_STEERING) {
-				entry->bConnStatus = TRUE;
-				entry->BndStrg_Sta_State = BNDSTRG_STA_ASSOC;
+			if (BndStrg_InsertEntry(table, cli_add, &entry) == BND_STRG_SUCCESS) {
+				if (table->BndStrgMode == POST_CONNECTION_STEERING) {
+					entry->bConnStatus = TRUE;
+					entry->BndStrg_Sta_State = BNDSTRG_STA_ASSOC;
+				}
 			}
 		}
 			else

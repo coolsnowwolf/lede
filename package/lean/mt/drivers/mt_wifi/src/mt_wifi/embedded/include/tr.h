@@ -119,6 +119,11 @@ struct tx_rx_ctl {
 #endif
 	struct tr_delay_control tr_delay_ctl;
 	UINT32 rx_icv_err_cnt;
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+	ULONG total_int_count;
+	ULONG rx_data_int_count;
+	ULONG rx_cmd_int_count;
+#endif
 };
 
 

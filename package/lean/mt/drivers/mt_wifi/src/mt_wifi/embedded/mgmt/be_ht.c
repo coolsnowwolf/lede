@@ -25,14 +25,30 @@
 VOID ht_oper_init(struct wifi_dev *wdev, struct ht_op *obj)
 {
 	/*initial ht_phy_info value*/
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+	struct _RTMP_ADAPTER *pAd = (struct _RTMP_ADAPTER *)wdev->sys_handle;
+	if (IS_APCLI_SYNC_PEER_DEAUTH_ENBL(pAd)) {
+		obj->ht_bw = wlan_operate_get_ht_bw(wdev);
+		obj->ext_cha = wlan_operate_get_ext_cha(wdev);
+	} else {
+#endif
 	obj->ht_bw = HT_BW_20;
 	obj->ext_cha = EXTCHA_NONE;
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+	}
+#endif
+
 	obj->ht_ldpc = wlan_config_get_ht_ldpc(wdev);
 	obj->ht_stbc = wlan_config_get_ht_stbc(wdev);
 	obj->ht_gi = wlan_config_get_ht_gi(wdev);
 	obj->frag_thld = wlan_config_get_frag_thld(wdev);
 	obj->len_thld = wlan_config_get_rts_len_thld(wdev);
 	obj->pkt_thld = wlan_config_get_rts_pkt_thld(wdev);
+	/* frag threshold */
+	wlan_operate_set_frag_thld(wdev, obj->frag_thld);
+	/* rts threshold */
+	wlan_operate_set_rts_len_thld(wdev, obj->len_thld);
+	wlan_operate_set_rts_pkt_thld(wdev, obj->pkt_thld);
 }
 
 VOID ht_oper_exit(struct ht_op *obj)
@@ -396,7 +412,8 @@ INT32 wlan_operate_set_rts_pkt_thld(struct wifi_dev *wdev, UCHAR pkt_num)
 		op = (struct wlan_operate *)wdev->wpf_op;
 		ad = (struct _RTMP_ADAPTER *)wdev->sys_handle;
 		operate_loader_rts_pkt_thld(op, pkt_num);
-		HW_SET_RTS_THLD(ad, wdev, op->ht_oper.pkt_thld, op->ht_oper.len_thld);
+		HW_SET_RTS_THLD(ad, wdev, op->ht_oper.pkt_thld, op->ht_oper.len_thld,
+				 op->ht_oper.retry_limit);
 	}
 	return ret;
 }
@@ -411,7 +428,8 @@ INT32 wlan_operate_set_rts_len_thld(struct wifi_dev *wdev, UINT32 pkt_len)
 		op = (struct wlan_operate *)wdev->wpf_op;
 		ad = (struct _RTMP_ADAPTER *)wdev->sys_handle;
 		operate_loader_rts_len_thld(op, pkt_len);
-		HW_SET_RTS_THLD(ad, wdev, op->ht_oper.pkt_thld, op->ht_oper.len_thld);
+		HW_SET_RTS_THLD(ad, wdev, op->ht_oper.pkt_thld, op->ht_oper.len_thld,
+				op->ht_oper.retry_limit);
 	}
 	return ret;
 }
@@ -486,6 +504,12 @@ UINT32 wlan_operate_get_rts_len_thld(struct wifi_dev *wdev)
 	struct wlan_operate *op = (struct wlan_operate *) wdev->wpf_op;
 
 	return op->ht_oper.len_thld;
+}
+
+UCHAR wlan_operate_get_rts_retry_limit(struct wifi_dev *wdev)
+{
+	struct wlan_operate *op = (struct wlan_operate *) wdev->wpf_op;
+	return op->ht_oper.retry_limit;
 }
 
 VOID *wlan_operate_get_ht_cap(struct wifi_dev *wdev)

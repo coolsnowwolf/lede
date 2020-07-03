@@ -31,6 +31,7 @@
 #define __RTMP_DEF_H__
 
 #include "oid.h"
+#include "oid_struct.h"
 
 #undef AP_WSC_INCLUDED
 #undef STA_WSC_INCLUDED
@@ -53,11 +54,17 @@
 #define BAND_BOTH	(BAND_5G | BAND_24G)
 
 
+#undef PS_QUEUE_INC_SUPPORT
+/*#define PS_QUEUE_INC_SUPPORT*/
 #ifdef SNMP_SUPPORT
 /* for snmp, to get manufacturer OUI, 2008_0220 */
 #define ManufacturerOUI_LEN			3
 #define ManufacturerNAME			("Ralink Technology Company.")
 #define	ResourceTypeIdName			("Ralink_ID")
+#endif
+
+#ifndef IPV4_ADDR_LEN
+#define IPV4_ADDR_LEN 4
 #endif
 
 #define RALINK_2883_VERSION		((UINT32)0x28830300)
@@ -160,6 +167,11 @@
 #else
 #define MAX_LEN_OF_MULTICAST_FILTER_TABLE 64
 #endif
+#ifdef IGMP_TVM_SUPPORT
+#define MULTICAST_BLACK_LIST_STATIC_SIZE 3
+#define MULTICAST_BLACK_LIST_SIZE_MAX	(20 + MULTICAST_BLACK_LIST_STATIC_SIZE)
+#endif /* IGMP_TVM_SUPPORT */
+
 /* Size of hash tab must be power of 2. */
 #define MAX_LEN_OF_MULTICAST_FILTER_HASH_TABLE ((MAX_LEN_OF_MULTICAST_FILTER_TABLE) * 2)
 #define FREE_MEMBER_POOL_SIZE 64
@@ -452,7 +464,7 @@ enum WIFI_MODE {
 #define MAX_APCLI_NUM				0
 #ifdef APCLI_SUPPORT
 #undef MAX_APCLI_NUM
-#if defined(MT7615)
+#if defined(MT7615) && defined(DBDC_MODE)
 #define MAX_APCLI_NUM_DEFAULT		2
 #else
 #define MAX_APCLI_NUM_DEFAULT		1
@@ -689,6 +701,12 @@ enum {
 #define APPS_RETRIEVE_GOING			3
 #define APPS_RETRIEVE_WAIT_EVENT	4
 #define APPS_RETRIEVE_DONE			5
+#ifdef MTFWD
+enum nl_msg_id {
+	FWD_CMD_ADD_TX_SRC = 3,
+	FWD_CMD_DEL_TX_SRC = 4,
+};
+#endif
 
 /*#define PWR_UNKNOWN                   2 */
 
@@ -740,6 +758,25 @@ enum {
 #define REASON_QOS_REQUEST_TIMEOUT        39
 #define REASON_QOS_CIPHER_NOT_SUPPORT     45
 
+#ifdef WIFI_DIAG
+#define REASON_STANDARD_MAX				0xFFFF	/* 65535 */
+#define REASON_UNKNOWN					(REASON_STANDARD_MAX + 1)
+#define REASON_AGING_TIME_OUT			(REASON_STANDARD_MAX + 2)
+#define REASON_CONTINUE_TX_FAIL			(REASON_STANDARD_MAX + 3)
+#define REASON_RSSI_TOO_LOW				(REASON_STANDARD_MAX + 4)
+#define REASON_AUTH_WRONG_ALGORITHM		(REASON_STANDARD_MAX + 5)
+#define REASON_CHALLENGE_FAIL			(REASON_STANDARD_MAX + 6)
+#define REASON_4WAY_HS_MSG1_FAIL		(REASON_STANDARD_MAX + 7)
+#define REASON_4WAY_HS_MSG2_FAIL		(REASON_STANDARD_MAX + 8)
+#define REASON_4WAY_HS_MSG3_FAIL		(REASON_STANDARD_MAX + 9)
+#define REASON_4WAY_HS_MSG4_FAIL		(REASON_STANDARD_MAX + 10)
+#define REASON_2WAY_HS_MSG1_FAIL		(REASON_STANDARD_MAX + 11)
+#define REASON_2WAY_HS_MSG2_FAIL		(REASON_STANDARD_MAX + 12)
+#define REASON_DECRYPTION_FAIL			(REASON_STANDARD_MAX + 13)
+#define REASON_NO_RESOURCE				(REASON_STANDARD_MAX + 14)
+#define REASON_REJ_TEMPORARILY			(REASON_STANDARD_MAX + 15)
+#endif
+
 
 #define REASON_FT_INVALID_FTIE				55
 
@@ -778,6 +815,8 @@ enum {
 #define MLME_DLS_NOT_ALLOW_IN_QBSS        48
 #define MLME_DEST_STA_NOT_IN_QBSS         49
 #define MLME_DEST_STA_IS_NOT_A_QSTA       50
+#define MLME_INVALID_PMKID				 53
+
 
 #define MLME_INVALID_FORMAT             0x51
 #define MLME_FAIL_NO_RESOURCE           0x52
@@ -959,6 +998,13 @@ enum {
 #define BCN_STATE_MACHINE  49
 #endif
 
+#ifdef CHANNEL_SWITCH_MONITOR_CONFIG
+#define CH_SWITCH_MONITOR_STATE_MACHINE 50
+#endif
+
+#ifdef WIFI_DIAG
+#define WIFI_DAIG_STATE_MACHINE 51
+#endif
 
 /*
 	STA's CONTROL/CONNECT state machine: states, events, total function #
@@ -1069,6 +1115,13 @@ enum {
 
 #define MAX_ACT_MSG				(MAX_IEEE_STD_CATE + 7)
 
+#if defined(DOT11V_WNM_SUPPORT) || defined(CONFIG_DOT11V_WNM)
+#define WNM_CATEGORY_BSS_TRANSITION		18
+#undef MAX_ACT_MSG
+#define MAX_ACT_MSG						(MAX_IEEE_STD_CATE + 8)
+#undef MAX_PEER_CATE_MSG
+#define MAX_PEER_CATE_MSG                   (MAX_IEEE_STD_CATE + 8)
+#endif /* DOT11V_WNM_SUPPORT */
 
 #define MT2_ACT_VENDOR				0x7F
 
@@ -1307,9 +1360,22 @@ enum {
 #define APMT2_MLME_SCAN_CNCL		5
 #ifdef CON_WPS
 #define APMT2_MLME_SCAN_COMPLETE        6
+#ifdef CUSTOMER_DCC_FEATURE
+#define APMT2_CHANNEL_SWITCH 7
+#define AP_MAX_SYNC_MSG		 8
+#else
 #define AP_MAX_SYNC_MSG                 7
+#endif /* CUSTOMER_DCC_FEATURE*/
+
+#else /* CON_WPS */
+
+#ifdef CUSTOMER_DCC_FEATURE
+#define APMT2_CHANNEL_SWITCH 6
+#define AP_MAX_SYNC_MSG		 7
 #else
 #define AP_MAX_SYNC_MSG                 6
+#endif
+
 #endif /* CON_WPS */
 #else
 #define AP_MAX_SYNC_MSG			3
@@ -1337,16 +1403,26 @@ enum {
 #define APCLI_AUTH_REQ_IDLE                0
 #define APCLI_AUTH_WAIT_SEQ2               1
 #define APCLI_AUTH_WAIT_SEQ4               2
+#ifdef APCLI_SAE_SUPPORT
+#define APCLI_AUTH_WAIT_SAE		   3
+#define APCLI_MAX_AUTH_STATE               4
+#else
 #define APCLI_MAX_AUTH_STATE               3
-
+#endif
 #define APCLI_AUTH_MACHINE_BASE            0
 #define APCLI_MT2_MLME_AUTH_REQ            0
 #define APCLI_MT2_MLME_DEAUTH_REQ          1
 #define APCLI_MT2_PEER_AUTH_EVEN           2
 #define APCLI_MT2_PEER_DEAUTH              3
 #define APCLI_MT2_AUTH_TIMEOUT             4
+#ifdef APCLI_SAE_SUPPORT
+#define APCLI_MT2_MLME_SAE_AUTH_REQ        5
+#define APCLI_MT2_MLME_SAE_AUTH_COMMIT     6
+#define APCLI_MT2_MLME_SAE_AUTH_CONFIRM    7
+#define APCLI_MAX_AUTH_MSG                 8
+#else
 #define APCLI_MAX_AUTH_MSG                 5
-
+#endif
 #define APCLI_AUTH_FUNC_SIZE               (APCLI_MAX_AUTH_STATE * APCLI_MAX_AUTH_MSG)
 
 /*ApCli association state machine */
@@ -1693,6 +1769,21 @@ enum {
 #define RATE_FIRST_HT_RATE        HTRATE_0
 #define RATE_LAST_HT_RATE        HTRATE_0
 
+#ifdef MIN_PHY_RATE_SUPPORT
+#define PHY_RATE_1                 1
+#define PHY_RATE_2                 2
+#define PHY_RATE_5                 5
+#define PHY_RATE_11                11
+#define PHY_RATE_6                 6
+#define PHY_RATE_9                 9
+#define PHY_RATE_12                12
+#define PHY_RATE_18                18
+#define PHY_RATE_24                24
+#define PHY_RATE_36                36
+#define PHY_RATE_48                48
+#define PHY_RATE_54                54
+#endif /* MIN_PHY_RATE_SUPPORT */
+
 /* pTxWI->txop */
 #define IFS_HTTXOP                 0	/* The txop will be handles by ASIC. */
 #define IFS_PIFS                    1
@@ -1993,6 +2084,10 @@ typedef struct _WIFI_NODE_TYPE {
 #endif
 #endif /* CONFIG_SUPPORT_OPENWRT */
 #else /* !ANDROID_SUPPORT || RT_CFG80211_SUPPORT */
+#if defined(BB_SOC) && !defined(MULTI_INF_SUPPORT)
+#define INF_MAIN_DEV_NAME		"rai0"
+#define INF_MBSSID_DEV_NAME		"rai"
+#else
 #if CONFIG_RTPCI_AP_RF_OFFSET == 0x48000
 #define INF_MAIN_DEV_NAME		"rai"
 #define INF_MBSSID_DEV_NAME		"rai"
@@ -2000,6 +2095,7 @@ typedef struct _WIFI_NODE_TYPE {
 #define INF_MAIN_DEV_NAME		"ra0"
 #define INF_MBSSID_DEV_NAME		"ra"
 #endif
+#endif /* BB_SOC */
 #endif /* ANDROID_SUPPORT */
 
 #define INF_MSTA_DEV_NAME		"ra"
@@ -2144,6 +2240,13 @@ typedef struct _WIFI_NODE_TYPE {
 
 
 #ifdef MCAST_RATE_SPECIFIC
+#ifdef MCAST_BCAST_RATE_SET_SUPPORT
+typedef enum {
+	MCAST_TYPE_BOTH_BCM_PKT = 0,
+	MCAST_TYPE_MULTICAST_PKT,
+	MCAST_TYPE_BROADCAST_PKT
+} MCAST_TYPE;
+#endif /* MCAST_BCAST_RATE_SET_SUPPORT */
 #define MCAST_DISABLE	0
 #define MCAST_CCK		1
 #define MCAST_OFDM		2
@@ -2230,6 +2333,12 @@ enum {
 #define HCCA_TIMEOUT	400
 #define EDCA_TIMEOUT	400
 #endif /* defined(CONFIG_MULTI_CHANNEL) || defined(DOT11Z_TDLS_SUPPORT) */
+
+
+/* add bcn v2 support , 1.5k beacon support */
+#ifdef CONFIG_AP_SUPPORT
+/* #define	BCN_V2_SUPPORT	1 */
+#endif
 
 
 #define ABS(_x, _y) (((_x) > (_y)) ? ((_x) - (_y)) : ((_y) - (_x)))

@@ -706,13 +706,23 @@ INT	SetCommonHT(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 	SetHT.PhyMode = (RT_802_11_PHY_MODE)(wdev->PhyMode);
 	SetHT.TransmitNo = ((UCHAR)pAd->Antenna.field.TxPath);
 	SetHT.HtMode = (UCHAR)pAd->CommonCfg.RegTransmitSetting.field.HTMODE;
-	SetHT.ExtOffset = ext_cha;
 	SetHT.MCS = MCS_AUTO;
-	SetHT.BW = (UCHAR)op_ht_bw;
 	SetHT.STBC = wlan_config_get_ht_stbc(wdev);
 	SetHT.SHORTGI = (UCHAR)wlan_config_get_ht_gi(wdev);
 	SetHT.Channel = wdev->channel;
 	SetHT.BandIdx = 0;
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+	if (IS_APCLI_BW_SYNC_FEATURE_ENBL(pAd)) {
+		SetHT.BW = wlan_config_get_ht_bw(wdev);
+		SetHT.ExtOffset = (SetHT.BW == BW_20) ? (0) : (ext_cha);
+	} else {
+#endif
+	SetHT.BW = (UCHAR)op_ht_bw;
+	SetHT.ExtOffset = ext_cha;
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+	}
+#endif
+
 	RTMPSetHT(pAd, &SetHT, wdev);
 #ifdef DOT11N_DRAFT3
 

@@ -1110,6 +1110,30 @@ static INT32 HQA_GetChipID(
 	return Ret;
 }
 
+static INT32 HQA_GetFWVersion(
+	PRTMP_ADAPTER pAd,
+	RTMP_IOCTL_INPUT_STRUCT *WRQ,
+	struct _HQA_CMD_FRAME *HqaCmdFrame)
+{
+	INT32 Ret = 0;
+	struct fw_info *fw_info = NULL;
+	UINT i = 0;
+
+	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s\n", __func__));
+
+	fw_info = &pAd->MCUCtrl.fwdl_ctrl.fw_profile[WM_CPU].fw_info;
+	if (fw_info != NULL) {
+		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Built date: "));
+		for (i = 0; i < 12; i++)
+			MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%c", fw_info->ram_built_date[i]));
+		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\n"));
+
+		memcpy(HqaCmdFrame->Data + 2, &fw_info->ram_built_date[0], 12);
+	}
+
+	ResponseToQA(HqaCmdFrame, WRQ, 2+12, Ret);
+	return Ret;
+}
 
 static INT32 HQA_GetStatistics(
 	PRTMP_ADAPTER pAd,
@@ -1466,6 +1490,7 @@ VOID RTMP_IO_READ_BULK(PRTMP_ADAPTER pAd, UCHAR *Dst, UINT32 Offset, UINT32 Len)
 	UINT32 NumOfReg = (Len >> 2);
 	BOOLEAN IsFound;
 	struct _ATE_CTRL *ATECtrl = &pAd->ATECtrl;
+	UINT32 OffsetTmp = Offset;
 
 	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_WARN, ("\n\n"));
 #if !defined(COMPOS_TESTMODE_WIN)
@@ -1477,6 +1502,7 @@ VOID RTMP_IO_READ_BULK(PRTMP_ADAPTER pAd, UCHAR *Dst, UINT32 Offset, UINT32 Len)
 	}
 
 #endif /* !defined(COMPOS_TESTMODE_WIN) */
+	Offset = OffsetTmp;
 
 	for (Index = 0 ; Index < NumOfReg; Index++) {
 		pDst = (Dst + (Index << 2));
@@ -2358,7 +2384,7 @@ static HQA_CMD_HANDLER HQA_CMD_SET3[] = {
 	HQA_GetCfgOnOff,		/* 0x1314 */
 	NULL,
 	HQA_SetBufferBin,		/* 0x1316 */
-	NULL,				/* 0x1317 */
+	HQA_GetFWVersion,		/* 0x1317 */
 	HQA_CA53RegRead,		/* 0x1318 */
 	HQA_CA53RegWrite,		/* 0x1319 */
 };
@@ -4765,6 +4791,7 @@ static INT32 HQA_TxBfProfileTagRead(PRTMP_ADAPTER pAd, RTMP_IOCTL_INPUT_STRUCT *
 	NdisMoveMemory((PUCHAR)&HqaCmdFrame->Data + 2, (PUCHAR)out, ate_ctrl->txbf_info_len);
 	ate_ctrl->Mode &= ~fATE_IN_BF;
 	os_free_mem(ate_ctrl->txbf_info);
+	ate_ctrl->txbf_info = NULL;
 HQA_TAG_READ_FAIL:
 
 	if (cmd)
@@ -4945,6 +4972,7 @@ static INT32 HQA_BFProfileDataRead(PRTMP_ADAPTER pAd, RTMP_IOCTL_INPUT_STRUCT *W
 		NdisMoveMemory((PUCHAR)&HqaCmdFrame->Data + 2 + offset, (PUCHAR)out, ate_ctrl->txbf_info_len);
 		offset += ate_ctrl->txbf_info_len;
 		os_free_mem(ate_ctrl->txbf_info);
+		ate_ctrl->txbf_info = NULL;
 	}
 
 	ate_ctrl->Mode &= ~fATE_IN_BF;
@@ -5050,6 +5078,7 @@ static INT32 HQA_BFQdRead(PRTMP_ADAPTER pAd, RTMP_IOCTL_INPUT_STRUCT *WRQ, struc
 	NdisMoveMemory((PUCHAR)&HqaCmdFrame->Data + 2, (PUCHAR)out, ate_ctrl->txbf_info_len);
 	ate_ctrl->Mode &= ~fATE_IN_BF;
 	os_free_mem(ate_ctrl->txbf_info);
+	ate_ctrl->txbf_info = NULL;
 HQA_BF_QD_READ_FAIL:
 	if (cmd)
 		os_free_mem(cmd);
@@ -6258,7 +6287,7 @@ static INT32 hqa_start_tx_ext(PRTMP_ADAPTER pAd, RTMP_IOCTL_INPUT_STRUCT *wrq, s
 	UCHAR *data = cmd_frame->Data;
 	struct _HQA_EXT_TXV param;
 	ATE_TXPOWER TxPower;
-	UINT32 Channel = 0, Ch_Band = 0, SysBw = 0, PktBw = 0;
+	UINT32 Channel = 0, Ch_Band = 0, SysBw = 0, PktBw = 0, ipg = 0;
 
 	len = PKTS_TRAN_TO_HOST(cmd_frame->Length);
 	EthGetParamAndShiftBuff(TRUE, sizeof(UINT32), &data, (UCHAR *)&param.ext_id);
@@ -6301,6 +6330,7 @@ static INT32 hqa_start_tx_ext(PRTMP_ADAPTER pAd, RTMP_IOCTL_INPUT_STRUCT *wrq, s
 	Ch_Band = TESTMODE_GET_PARAM(ate_ctrl, band_idx, Ch_Band);
 	PktBw = TESTMODE_GET_PARAM(ate_ctrl, band_idx, PerPktBW);
 	SysBw = TESTMODE_GET_PARAM(ate_ctrl, band_idx, BW);
+	ipg = TESTMODE_GET_PARAM(ate_ctrl, band_idx, ipg_param.ipg);
 	ate_ctrl->control_band_idx = (UCHAR)band_idx;
 
 	if (param.rate == 32 && PktBw != BAND_WIDTH_40 && SysBw != BAND_WIDTH_40) {
@@ -6316,7 +6346,7 @@ static INT32 hqa_start_tx_ext(PRTMP_ADAPTER pAd, RTMP_IOCTL_INPUT_STRUCT *wrq, s
 	TxPower.Dbdc_idx = band_idx;
 	TxPower.Band_idx = Ch_Band;
 	ret = ate_ops->SetTxPower0(pAd, TxPower);
-	ret = ate_ops->SetIPG(pAd);
+	ret = ate_ops->SetIPG(pAd, ipg);
 	ret = ate_ops->StartTx(pAd);
 err0:
 	NdisMoveMemory(cmd_frame->Data + 2, (UCHAR *)&param.ext_id, sizeof(param.ext_id));
@@ -6464,11 +6494,12 @@ static INT32 hqa_iBFGetStatus_ext(PRTMP_ADAPTER pAd, RTMP_IOCTL_INPUT_STRUCT *wr
 	u4Status = ate_ctrl->iBFCalStatus;
 	ate_ctrl->Mode &= ~fATE_IN_BF;
 	os_free_mem(ate_ctrl->txbf_info);
+	ate_ctrl->txbf_info = NULL;
 	/* MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_OFF,("%s, val:%x\n", __FUNCTION__, u4Status)); */
 	ext_id   = PKTL_TRAN_TO_HOST(ext_id);
 	u4Status = PKTL_TRAN_TO_HOST(u4Status);
 	NdisMoveMemory(cmd_frame->Data + 2, (UCHAR *)&ext_id, sizeof(ext_id));
-	NdisMoveMemory(cmd_frame->Data + 6, &u4Status, 4);
+	NdisMoveMemory(cmd_frame->Data + 6, (UCHAR *)&u4Status, 4);
 HQA_TAG_DNC_FAIL:
 	ResponseToQA(cmd_frame, wrq, 10, ret);
 	return ret;

@@ -276,8 +276,6 @@ VOID BigInteger_Print (
 	if (strlen(pBI->Name) != 0)
 		DEBUGPRINT("Name=%s\n", pBI->Name);
 
-	DEBUGPRINT("AllocSize=%d, ArrayLength=%d, IntegerLength=%d, Signed=%d\n", pBI->AllocSize, pBI->ArrayLength, pBI->IntegerLength, pBI->Signed);
-
 	for (i = (pBI->ArrayLength - 1), j = 0; i >= 0; i--, j++) {
 		DEBUGPRINT("%08x, ", pBI->pIntegerArray[i]);
 
@@ -288,6 +286,71 @@ VOID BigInteger_Print (
 	DEBUGPRINT("\n\n");
 }
 
+static UCHAR randombyte(void)
+{
+	ULONG i;
+	UCHAR R = 0, Result;
+	static ULONG ShiftReg;
+
+	if (ShiftReg == 0)
+		NdisGetSystemUpTime((ULONG *)&ShiftReg);
+
+	for (i = 0; i < 8; i++) {
+		if (ShiftReg & 0x00000001) {
+			ShiftReg = ((ShiftReg ^ LFSR_MASK) >> 1) | 0x80000000;
+			Result = 1;
+		} else {
+			ShiftReg = ShiftReg >> 1;
+			Result = 0;
+		}
+
+		R = (R << 1) | Result;
+	}
+
+	return R;
+}
+
+INT BigInteger_rand_range(IN BIG_INTEGER * range, INOUT BIG_INTEGER * r)
+{
+	UINT8 *rand = NULL;
+	UINT32 i;
+	UINT32 iter = 0;
+	UINT32 range_len;
+	BIG_INTEGER *rand_bi = NULL;
+
+	if (!range)
+		return 0;
+
+	range_len = BigInteger_getlen(range);
+	os_alloc_mem(NULL, (UCHAR **)&rand, range_len);
+	if (!rand) {
+		DEBUGPRINT("==> %s(), fail\n", __func__);
+		return 0;
+	}
+
+	for (iter = 0; iter < 100; iter++) {
+		for (i = 0; i < range_len; i++)
+			rand[i] = randombyte();
+
+		hex_dump_with_lvl("rand:", (char *)rand, range_len, DBG_LVL_INFO);
+		BigInteger_Bin2BI(rand, range_len, &rand_bi);
+		if (BigInteger_is_zero(rand_bi)
+			|| BigInteger_is_one(rand_bi)
+			|| BigInteger_UnsignedCompare(rand_bi, range) >= 0) {
+			continue;
+		} else {
+			BigInteger_Copy(rand_bi, &r);
+			BigInteger_Free(&rand_bi);
+			os_free_mem(rand);
+			return 1;
+		}
+	}
+
+	BigInteger_Free(&rand_bi);
+	os_free_mem(rand);
+	return 0;
+
+}
 
 VOID BigInteger_Init(
 	INOUT PBIG_INTEGER *pBI)
@@ -468,11 +531,19 @@ VOID BigInteger_BI2Bin(
 		return;
 	} /* End of if */
 
-	if (*Length < (sizeof(UINT8) * pBI->IntegerLength)) {
-		DEBUGPRINT("BigInteger_BI2Bin: length(%d) is not enough.\n", *Length);
-		*Length = 0;
-		return;
-	} /* End of if */
+	/* for OWE.
+	 * It already guarantee the length of its corresponding pointer is big enough.
+	 * And would like to this function help it to transfer bn to binary,
+	 * then return the length of this function transferred.
+	 *
+	 * The length checking here is not necessary,
+	 * the caller of others should guarantee the length of its corresponding pointer is big enough, too.
+	 * if (*Length < (sizeof(UINT8) * pBI->IntegerLength)) {
+	 *		DEBUGPRINT("BigInteger_BI2Bin: length(%d) is not enough.\n", *Length);
+	 *		*Length = 0;
+	 *		return;
+	 * }
+	 */
 
 	if (pBI->pIntegerArray == NULL) {
 		*Length = 0;
@@ -1231,7 +1302,10 @@ VOID BigInteger_Div(
 			if (MulLoopStart < (UINT32) SecondHighByte)
 				continue;
 
-			MulLoopEnd = (MulLoopStart / (UINT32) SecondHighByte) + 1;
+			if (SecondHighByte)
+				MulLoopEnd = (MulLoopStart / (UINT32) SecondHighByte) + 1;
+			else
+				MulLoopEnd = 1;
 			MulLoopStart = MulLoopStart / (UINT32) (SecondHighByte + 1);
 
 			for (MulIndex = (INT) MulLoopStart; MulIndex <= MulLoopEnd; MulIndex++) { /* 0xFFFF / 0x01 = 0xFFFF */
@@ -2008,7 +2082,6 @@ memory_free:
 
 
 
-#ifdef DOT11_SAE_SUPPORT
 VOID BigInteger_Mod(
 	IN PBIG_INTEGER pFirstOperand,
 	IN PBIG_INTEGER pSecondOperand,
@@ -2101,7 +2174,13 @@ VOID BigInteger_Mod(
 			if (MulLoopStart < (UINT32) SecondHighByte)
 				continue;
 
-			MulLoopEnd = (MulLoopStart / (UINT32) SecondHighByte) + 1;
+			if (SecondHighByte != 0)
+				MulLoopEnd = (MulLoopStart / (UINT32) SecondHighByte) + 1;
+			else {
+				MulLoopEnd = MulLoopStart;
+				MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+					("MulLoopStart division by zero!!\n"));
+			}
 			MulLoopStart = MulLoopStart / (UINT32) (SecondHighByte + 1);
 
 			for (MulIndex = (INT) MulLoopStart; MulIndex <= MulLoopEnd; MulIndex++) { /* 0xFFFF / 0x01 = 0xFFFF */
@@ -3259,8 +3338,5 @@ VOID BigInteger_dump_time(
 		bi_op_ti_rec.simple_exp_mod_op.exe_times = 0;
 	}
 }
-
-#endif
-
 /* End of crypt_biginteger.c */
 

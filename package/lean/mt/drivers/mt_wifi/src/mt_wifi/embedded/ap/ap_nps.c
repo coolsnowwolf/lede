@@ -214,8 +214,11 @@ VOID APMakeBssTimFrame(RTMP_ADAPTER *pAd, INT apidx)
 	}
 
 	write_tmac_info_tim(pAd, apidx, tmac_info, &TimTransmit, FrameLen);
+#ifdef BCN_V2_SUPPORT	/* add bcn v2 support , 1.5k beacon support */
+	AsicUpdateBeacon(pAd, wdev, FrameLen, PKT_V2_TIM);
+#else
 	AsicUpdateBeacon(pAd, wdev, FrameLen, PKT_TIM);
-
+#endif
 	if (0) {
 		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 				 ("%s(): Dump the TimFrame of BSS%d!\n",
