@@ -519,6 +519,10 @@ INT RTMPSetLED(RTMP_ADAPTER *pAd, UCHAR Status)
 
 	if (IS_PCI_INF(pAd) || IS_RBUS_INF(pAd)) {
 #ifdef LED_CONTROL_SUPPORT
+#ifdef CONFIG_INIT_RADIO_ONOFF	//avoid setting LED status in case radio is off
+	// PEGATRON MODIFY START
+	if((pAd->ApCfg.bRadioOn) || ((Status == LED_FORCE_ON) || (Status == LED_FORCE_OFF)))
+#endif
 		RTMPSetLEDStatus(pAd, Status);
 #endif /* LED_CONTROL_SUPPORT */
 	}

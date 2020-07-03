@@ -532,11 +532,17 @@ INT32 HcUpdateCsaCntByChannel(RTMP_ADAPTER *pAd, UCHAR Channel)
 
 		if (pDot11h == NULL)
 			return -1;
-		if (pDot11h->RDMode != RD_SILENCE_MODE) {
-			pDot11h->wdev_count++;
-			wdev->csa_count = pDot11h->CSPeriod;
+#ifdef CUSTOMER_DCC_FEATURE
+		if (pAd->CommonCfg.channelSwitch.CHSWMode == CHANNEL_SWITCHING_MODE) {
+			wdev->csa_count = pAd->CommonCfg.channelSwitch.CHSWPeriod;
 			UpdateBeaconHandler(pAd, wdev, BCN_UPDATE_IE_CHG);
-		}
+		} else
+#endif
+			if (pDot11h->RDMode != RD_SILENCE_MODE) {
+				pDot11h->wdev_count++;
+				wdev->csa_count = pDot11h->CSPeriod;
+				UpdateBeaconHandler(pAd, wdev, BCN_UPDATE_IE_CHG);
+			}
 	}
 	return ret;
 }
@@ -935,6 +941,42 @@ UINT32 HcGetWmmIdx(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 	return RcGetWmmIdx(obj);
 }
 
+#ifdef CUSTOMER_DCC_FEATURE
+INT32 HcUpdateExtCha(RTMP_ADAPTER *pAd, UCHAR Channel, UCHAR ExtCha)
+{
+	INT32 ret = 0;
+	struct radio_dev *pHdev = NULL;
+	struct hdev_ctrl *pHdCfg = (struct hdev_ctrl *)pAd->hdev_ctrl;
+
+	pHdev = RcGetHdevByChannel(pHdCfg, Channel);
+	if (!pHdev) {
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s(): Get Hdev by Channel %d faild, not support this RF\n",
+		__FUNCTION__, Channel));
+		return -1;
+	}
+
+	/*Update ExtCha to radio*/
+	ret  = RcUpdateExtCha(pHdev, ExtCha);
+
+	return ret;
+}
+
+UCHAR HcGetExtCha(RTMP_ADAPTER *pAd, UCHAR Channel)
+{
+	struct radio_dev *rdev = NULL;
+	struct hdev_ctrl *pHdCfg = pAd->hdev_ctrl;
+
+	rdev = RcGetHdevByChannel(pHdCfg, Channel);
+
+	if (!rdev) {
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s(): Get Hdev by Channel %d faild, not support this RF\n",
+		__FUNCTION__, Channel));
+		return 0;
+	}
+	return RcGetExtCha(rdev);
+}
+#endif
+
 /*
 *
 */
@@ -1212,6 +1254,15 @@ BOOLEAN hc_radio_res_request(struct wifi_dev *wdev, struct radio_res *res)
 #ifdef MT_WOW_SUPPORT
 	struct _RTMP_ADAPTER *ad = (struct _RTMP_ADAPTER *)wdev->sys_handle;
 #endif /*MT_WOW_SUPPORT*/
+
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+	/* Sync SoftAp BW for Down Case */
+	if (wdev->wdev_type == WDEV_TYPE_AP && wlan_operate_get_state(wdev) == WLAN_OPER_STATE_INVALID) {
+		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+			("%s(): AP wdev=%d, Interface Down!\n", __func__, wdev->wdev_idx));
+		return FALSE;
+	}
+#endif
 
 	if (!hdev_obj_state_ready(obj)) {
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,

@@ -387,6 +387,11 @@ INT32 WfSysPreInit(RTMP_ADAPTER *pAd)
 		mt7622_init(pAd);
 
 #endif /* MT7622 */
+
+	wifi_sup_list_register(pAd, WIFI_CAP_CHIP);
+	wifi_sup_list_register(pAd, WIFI_CAP_SEC);
+	wifi_sup_list_register(pAd, WIFI_CAP_FEATURE);
+
 	return 0;
 }
 

@@ -30,7 +30,8 @@
 
 #include	"rt_config.h"
 #include "hdev/hdev.h"
-
+#include <linux/mtd/mtd.h>
+#include <linux/mtd/partitions.h>
 /*decision flash api by compiler flag*/
 #ifdef CONFIG_PROPRIETARY_DRIVER
 /*
@@ -111,9 +112,8 @@ extern int ra_mtd_read(int num, loff_t from, size_t len, u_char *buf);
 int mt_mtd_write_nm_wifi(char *name, loff_t to, size_t len, const u_char *buf);
 int mt_mtd_read_nm_wifi(char *name, loff_t from, size_t len, u_char *buf);
 
-#define flash_read(_ctrl, _ptr, _offset, _len) mt_mtd_read_nm_wifi("Factory", _offset, (size_t)_len, _ptr)
-#define flash_write(_ctrl, _ptr, _offset, _len) mt_mtd_write_nm_wifi("Factory", _offset, (size_t)_len, _ptr)
-
+#define flash_read(_ctrl, _ptr, _offset, _len) mt_mtd_read_nm_wifi("factory", _offset&0xFFFF, (size_t)_len, _ptr)
+#define flash_write(_ctrl, _ptr, _offset, _len) mt_mtd_write_nm_wifi("factory", _offset&0xFFFF, (size_t)_len, _ptr)
 #else
 /*
 * @ use sdk export func.
@@ -122,8 +122,8 @@ int mt_mtd_read_nm_wifi(char *name, loff_t from, size_t len, u_char *buf);
 extern int ra_mtd_write_nm(char *name, loff_t to, size_t len, const u_char *buf);
 extern int ra_mtd_read_nm(char *name, loff_t from, size_t len, u_char *buf);
 
-#define flash_read(_ctrl, _ptr, _offset, _len) ra_mtd_read_nm("Factory", _offset, (size_t)_len, _ptr)
-#define flash_write(_ctrl, _ptr, _offset, _len) ra_mtd_write_nm("Factory", _offset, (size_t)_len, _ptr)
+#define flash_read(_ctrl, _ptr, _offset, _len) ra_mtd_read_nm("factory", _offset&0xFFFF, (size_t)_len, _ptr)
+#define flash_write(_ctrl, _ptr, _offset, _len) ra_mtd_write_nm("factory", _offset&0xFFFF, (size_t)_len, _ptr)
 
 #endif /*CONFIG_WIFI_MTD*/
 #endif /*RA_MTD_RW_BY_NUM*/
@@ -137,7 +137,14 @@ void RtmpFlashRead(
 	ULONG a,
 	ULONG b)
 {
-	flash_read(hdev_ctrl, p, a, b);
+	size_t retlen;
+	struct mtd_info *mtd_info = get_mtd_device_nm("factory");
+	if (IS_ERR(mtd_info) || mtd_info == NULL) {
+		printk("ERROR: failed to find 'Factory' mtd partiton\n");
+		return;
+	}
+	mtd_read(mtd_info, a, b, &retlen, p);
+	put_mtd_device(mtd_info);
 }
 
 void RtmpFlashWrite(
@@ -146,7 +153,14 @@ void RtmpFlashWrite(
 	ULONG a,
 	ULONG b)
 {
-	flash_write(hdev_ctrl, p, a, b);
+	size_t retlen;
+	struct mtd_info *mtd_info = get_mtd_device_nm("factory");
+	if (IS_ERR(mtd_info) || mtd_info == NULL) {
+		printk("ERROR: failed to find 'Factory' mtd partiton\n");
+		return;
+	}
+	mtd_write(mtd_info, a, b, &retlen, p);
+	put_mtd_device(mtd_info);
 }
 
 

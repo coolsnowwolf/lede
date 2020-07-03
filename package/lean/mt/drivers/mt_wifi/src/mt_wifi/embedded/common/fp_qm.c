@@ -68,31 +68,58 @@ INT8	GetDscpMappedPriority(
 	UINT8 dscpVal = 0;
 	PUCHAR	pPktHdr = NULL;
 	UINT16 protoType;
+	struct wifi_dev *wdev;
 
 	pPktHdr = GET_OS_PKT_DATAPTR(pPkt);
 	if (!pPktHdr)
 		return pri;
+
 	protoType = OS_NTOHS(get_unaligned((PUINT16)(pPktHdr + 12)));
+
+	pPktHdr += LENGTH_802_3;
+
+	if (protoType <= 1500) {
+		/* 802.3, 802.3 LLC: DestMAC(6) + SrcMAC(6) + Length (2) + DSAP(1) + SSAP(1) + Control(1) + */
+		/* if the DSAP = 0xAA, SSAP=0xAA, Contorl = 0x03, it has a 5-bytes SNAP header.*/
+		/*	=> + SNAP (5, OriginationID(3) + etherType(2)) */
+		/* else */
+		/*	=> It just has 3-byte LLC header, maybe a legacy ether type frame. we didn't handle it */
+		if (pPktHdr[0] == 0xAA && pPktHdr[1] == 0xAA && pPktHdr[2] == 0x03) {
+			pPktHdr += 6; /* Advance to type LLC 3byte + SNAP OriginationID 3 Byte*/
+			protoType = OS_NTOHS(get_unaligned((PUINT16)(pPktHdr)));
+		} else {
+			return pri;
+		}
+	}
+
+	/* If it's a VLAN packet, get the real Type/Length field.*/
+	if (protoType == ETH_TYPE_VLAN) {
+		pPktHdr += 2; /* Skip the VLAN Header.*/
+		protoType = OS_NTOHS(get_unaligned((PUINT16)(pPktHdr)));
+	}
+
 	switch (protoType) {
 	case 0x0800:
-		dscpVal = ((pPktHdr[15] & 0xfc) >> 2);
+		dscpVal = ((pPktHdr[1] & 0xfc) >> 2);
 		break;
 	case 0x86DD:
-		dscpVal = (((pPktHdr[14] & 0x0f) << 2) | ((pPktHdr[15] & 0xc0) >> 6));
+			dscpVal = (((pPktHdr[0] & 0x0f) << 2) | ((pPktHdr[1] & 0xc0) >> 6));
 		break;
 	default:
 		return pri;
 	}
+
 	if (dscpVal <= 63) {
 		UCHAR wdev_idx = RTMP_GET_PACKET_WDEV(pPkt);
 
-		if (wdev_idx < WDEV_NUM_MAX) {
-			if (pAd->wdev_list[wdev_idx]->channel <= 14) {
-				pri = pAd->dscp_pri_map[DSCP_PRI_2G_MAP][dscpVal];
-			} else
-				pri = pAd->dscp_pri_map[DSCP_PRI_5G_MAP][dscpVal];
-		}
+		wdev = get_wdev_by_idx(pAd, wdev_idx);
+		if (!wdev)
+			return pri;
+		pri = pAd->ApCfg.MBSSID[wdev->func_idx].dscp_pri_map[dscpVal];
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,  ("[%s] ApIdx:%d dscp value:%d local PRI:%d\n",
+			__func__, wdev->func_idx, dscpVal, pri));
 	}
+
 	return pri;
 }
 #endif
@@ -175,8 +202,9 @@ VOID fp_tx_pkt_deq_func(RTMP_ADAPTER *pAd)
 		pTxBlk->TxFrameType = tx_pkt_classification(pAd, pTxBlk->pPacket, pTxBlk);
 		pTxBlk->HeaderBuf = arch_ops->get_hif_buf(pAd, pTxBlk, pTxBlk->resource_idx, pTxBlk->TxFrameType);
 #ifdef DSCP_PRI_SUPPORT
-	/*Get the Dscp value of the packet and if there is any mapping defined set the DscpMappedPri value */
-	pTxBlk->DscpMappedPri =  GetDscpMappedPriority(pAd, pkt);
+		/*Get the Dscp value of the packet and if there is any mapping defined set the DscpMappedPri value */
+		if (!TX_BLK_TEST_FLAG(pTxBlk, fTX_bApCliPacket))
+			pTxBlk->DscpMappedPri =  GetDscpMappedPriority(pAd, pkt);
 #endif
 		InsertTailQueue(&pTxBlk->TxPacketList, PACKET_TO_QUEUE_ENTRY(pkt));
 

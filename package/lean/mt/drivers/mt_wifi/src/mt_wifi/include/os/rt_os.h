@@ -88,5 +88,19 @@
 #define MTPRIV_IOCTL_RD                     		(SIOCIWFIRSTPRIV + 0x17)/* modified by CT@MediaTek, 2017/04/11 */
 #endif /* CONFIG_AP_SUPPORT */
 
+#ifdef WIFI_DIAG
+#define RTPRIV_IOCTL_GET_PROCESS_INFO				(SIOCIWFIRSTPRIV + 0x1E)
+#endif
+
+
+#define RTPRIV_IOCTL_GET_DRIVER_INFO				(SIOCIWFIRSTPRIV + 0x1D)
+
+#ifdef DYNAMIC_VLAN_SUPPORT
+#define RTPRIV_IOCTL_STA_VLAN						(SIOCIWFIRSTPRIV + 0x1E)
+#endif
+
+#ifdef HOSTAPD_11R_SUPPORT
+#define RTPRIV_IOCTL_SET_FT_PARAM					(SIOCIWFIRSTPRIV + 0x18)
+#endif /* HOSTAPD_11R_SUPPORT */
 
 #endif /* _RT_OS_H_ */

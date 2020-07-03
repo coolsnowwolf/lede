@@ -154,6 +154,10 @@ void ApCliCertEDCAAdjust(
 	IN PEDCA_PARM pEdcaParm);
 #endif
 
+#ifdef CONVERTER_MODE_SWITCH_SUPPORT
+void V10ConverterModeStartStop(RTMP_ADAPTER *pAd, BOOLEAN BeaconStart);
+#endif /*CONVERTER_MODE_SWITCH_SUPPORT*/
+
 BOOLEAN ApCliLinkUp(
 	IN PRTMP_ADAPTER pAd,
 	IN UCHAR ifIndex);
@@ -170,6 +174,11 @@ VOID ApCliIfDown(
 
 VOID ApCliIfMonitor(
 	IN PRTMP_ADAPTER pAd);
+
+VOID APCLIerr_Action(
+	IN RTMP_ADAPTER *pAd,
+	IN	RX_BLK *pRxBlk,
+	IN UCHAR Idx);
 
 BOOLEAN ApCliMsgTypeSubst(
 	IN PRTMP_ADAPTER  pAd,
@@ -250,7 +259,12 @@ VOID ApCliCheckPeerExistence(
 	IN RTMP_ADAPTER *pAd,
 	IN CHAR * Ssid,
 	IN UCHAR SsidLen,
+#ifdef FOLLOW_HIDDEN_SSID_FEATURE
+	IN UCHAR *Bssid,
+#endif
 	IN UCHAR Channel);
+
+VOID ApCliCheckConConnectivity(RTMP_ADAPTER *pAd, APCLI_STRUCT *pApCliEntry, BCN_IE_LIST *ie_list);
 
 VOID ApCliPeerCsaAction(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, BCN_IE_LIST *ie_list);
 
@@ -303,6 +317,19 @@ INT Set_ApCliPMFSHA256_Proc(
 	IN	RTMP_STRING * arg);
 #endif /* DOT11W_PMF_SUPPORT */
 
+#ifdef APCLI_SAE_SUPPORT
+INT set_apcli_sae_group_proc(
+	IN PRTMP_ADAPTER pAd,
+	IN RTMP_STRING * arg);
+#endif
+
+#ifdef APCLI_OWE_SUPPORT
+INT set_apcli_owe_group_proc(
+	IN PRTMP_ADAPTER pAd,
+	IN RTMP_STRING * arg);
+#endif
+
+
 VOID ApCliRTMPReportMicError(
 	IN RTMP_ADAPTER	*pAd,
 	IN UCHAR uniCastKey,
@@ -324,6 +351,47 @@ VOID ApCliMlmeDeauthReqAction(
 	IN PRTMP_ADAPTER pAd,
 	IN MLME_QUEUE_ELEM *Elem); 
 
+#if defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)
+
+INT apcli_add_pmkid_cache(
+	IN	PRTMP_ADAPTER	pAd,
+	IN UCHAR *paddr,
+	IN UCHAR *pmkid,
+	IN UCHAR *pmk,
+	IN UINT8 pmk_len,
+	IN UINT8 if_index,
+	IN UINT8 cli_idx);
+
+
+INT apcli_search_pmkid_cache(
+	IN	PRTMP_ADAPTER	pAd,
+	IN UCHAR *paddr,
+	IN UCHAR if_index,
+	IN UCHAR cli_idx);
+
+
+VOID apcli_delete_pmkid_cache(
+	IN	PRTMP_ADAPTER	pAd,
+	IN UCHAR *paddr,
+	IN UCHAR if_index,
+	IN UCHAR cli_idx);
+
+VOID apcli_delete_pmkid_cache_all(
+	IN	PRTMP_ADAPTER	pAd,
+	IN UCHAR if_index);
+
+INT set_apcli_del_pmkid_list(
+	IN PRTMP_ADAPTER pAd,
+	IN RTMP_STRING * arg);
+#endif
+
+#ifdef APCLI_OWE_SUPPORT
+
+VOID apcli_reset_owe_parameters(
+		IN	PRTMP_ADAPTER	pAd,
+		IN UCHAR if_index);
+
+#endif
 
 
 #endif /* APCLI_SUPPORT */

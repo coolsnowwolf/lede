@@ -575,6 +575,11 @@ UINT32 ReptTxPktCheckHandler(
 
 	eth_type = (pSrcBufVA[12] << 8) | pSrcBufVA[13];
 
+#ifdef VLAN_SUPPORT
+	if (eth_type == ETH_TYPE_VLAN)
+		eth_type = (pSrcBufVA[16] << 8) | pSrcBufVA[17];
+#endif
+
 	pReptEntry = RTMPLookupRepeaterCliEntry(
 					 pAd,
 					 TRUE,
@@ -685,6 +690,56 @@ the eth pkt or upper layer pkt connecting rule should be refined.
 	return USE_CLI_LINK_INFO;
 }
 
+
+REPEATER_CLIENT_ENTRY *RTMPLookupRepeaterCliEntry_NoLock(
+	IN PVOID pData,
+	IN BOOLEAN bRealMAC,
+	IN PUCHAR pAddr,
+	IN BOOLEAN bIsPad)
+{
+	ULONG HashIdx;
+	UCHAR tempMAC[6];
+	REPEATER_CLIENT_ENTRY *pEntry = NULL;
+	REPEATER_CLIENT_ENTRY_MAP *pMapEntry = NULL;
+
+	COPY_MAC_ADDR(tempMAC, pAddr);
+	HashIdx = MAC_ADDR_HASH_INDEX(tempMAC);
+
+	/* NdisAcquireSpinLock(&pAd->ApCfg.ReptCliEntryLock); */
+
+	if (bRealMAC == TRUE) {
+		if (bIsPad == TRUE)
+			pMapEntry = ((PRTMP_ADAPTER)pData)->ApCfg.ReptMapHash[HashIdx];
+		else
+			pMapEntry = *((((REPEATER_ADAPTER_DATA_TABLE *)pData)->MapHash) + HashIdx);
+
+		while (pMapEntry) {
+			pEntry = pMapEntry->pReptCliEntry;
+
+			if (pEntry) {
+				if (pEntry->CliEnable && MAC_ADDR_EQUAL(pEntry->OriginalAddress, tempMAC))
+					break;
+				pEntry = NULL;
+				pMapEntry = pMapEntry->pNext;
+			} else
+				pMapEntry = pMapEntry->pNext;
+		}
+	} else {
+		if (bIsPad == TRUE)
+			pEntry = ((PRTMP_ADAPTER)pData)->ApCfg.ReptCliHash[HashIdx];
+		else
+			pEntry = *((((REPEATER_ADAPTER_DATA_TABLE *)pData)->CliHash) + HashIdx);
+
+		while (pEntry) {
+			if (pEntry->CliEnable && MAC_ADDR_EQUAL(pEntry->CurrentAddress, tempMAC))
+				break;
+			pEntry = pEntry->pNext;
+		}
+	}
+
+	return pEntry;
+}
+
 VOID RTMPInsertRepeaterEntry(
 	PRTMP_ADAPTER pAd,
 	struct wifi_dev *wdev,
@@ -718,12 +773,13 @@ VOID RTMPInsertRepeaterEntry(
 
 		if ((pReptCliEntry->CliEnable) &&
 			(MAC_ADDR_EQUAL(pReptCliEntry->OriginalAddress, pAddr) ||
-			 MAC_ADDR_EQUAL(pReptCliEntry->CurrentAddress, pAddr))
-		   ) {
+			(pAd->ApCfg.MACRepeaterOuiMode != VENDOR_DEFINED_MAC_ADDR_OUI
+			&& MAC_ADDR_EQUAL(pReptCliEntry->CurrentAddress, pAddr)))
+		) {
 			NdisReleaseSpinLock(&pAd->ApCfg.ReptCliEntryLock);
 			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_INFO,
-					 ("\n  receive mac :%02x:%02x:%02x:%02x:%02x:%02x !!!\n",
-					  PRINT_MAC(pAddr)));
+					("\n  receive mac :%02x:%02x:%02x:%02x:%02x:%02x !!!\n",
+					PRINT_MAC(pAddr)));
 			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_INFO,
 					 (" duplicate Insert !!!\n"));
 			return;
@@ -777,6 +833,19 @@ VOID RTMPInsertRepeaterEntry(
 	pReptCliEntry->MatchApCliIdx = wdev->func_idx;
 	pReptCliEntry->BandIdx = HcGetBandByWdev(wdev);
 	pReptCliMap->pReptCliEntry = pReptCliEntry;
+#ifdef APCLI_SAE_SUPPORT
+	pReptCliEntry->sae_cfg_group = pAd->ApCfg.ApCliTab[pReptCliEntry->MatchApCliIdx].sae_cfg_group;
+#endif
+
+
+#ifdef APCLI_OWE_SUPPORT
+	pReptCliEntry->curr_owe_group = pAd->ApCfg.ApCliTab[pReptCliEntry->MatchApCliIdx].curr_owe_group;
+#endif
+
+#if defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)
+	NdisAllocateSpinLock(pAd, &pReptCliEntry->SavedPMK_lock);
+#endif
+
 	pReptCliMap->pNext = NULL;
 	COPY_MAC_ADDR(pReptCliEntry->OriginalAddress, pAddr);
 	COPY_MAC_ADDR(tempMAC, pAddr);
@@ -785,39 +854,53 @@ VOID RTMPInsertRepeaterEntry(
 		MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR,
 				 ("todo !!!\n"));
 	} else if (pAd->ApCfg.MACRepeaterOuiMode == VENDOR_DEFINED_MAC_ADDR_OUI) {
-		INT IdxToUse, i;
+		INT IdxToUse = 0, i;
 		UCHAR checkMAC[MAC_ADDR_LEN];
+		UCHAR flag = 0;
 
 		COPY_MAC_ADDR(checkMAC, pAddr);
 
 		for (idx = 0; idx < rept_vendor_def_oui_table_size; idx++) {
-			if (RTMPEqualMemory(VENDOR_DEFINED_OUI_ADDR[idx], pAddr, OUI_LEN))
-				continue;
-			else {
+			if (RTMPEqualMemory(VENDOR_DEFINED_OUI_ADDR[idx], pAddr, OUI_LEN)) {
+				if (idx < rept_vendor_def_oui_table_size - 1) {
+					NdisCopyMemory(checkMAC,
+						VENDOR_DEFINED_OUI_ADDR[idx+1], OUI_LEN);
+					for (i = 0; i < pAd->ApCfg.BssidNum; i++) {
+					if (MAC_ADDR_EQUAL(
+						pAd->ApCfg.MBSSID[i].wdev.if_addr,
+						checkMAC)) {
+						flag = 1;
+						break;
+					}
+					}
+					if (i >= pAd->ApCfg.BssidNum) {
+						IdxToUse = idx+1;
+						break;
+					}
+				}
+			} else if (flag == 1) {
 				NdisCopyMemory(checkMAC, VENDOR_DEFINED_OUI_ADDR[idx], OUI_LEN);
-
 				for (i = 0; i < pAd->ApCfg.BssidNum; i++) {
 					if (MAC_ADDR_EQUAL(pAd->ApCfg.MBSSID[i].wdev.if_addr, checkMAC))
 						break;
 				}
-
-				if (i >= pAd->ApCfg.BssidNum)
+				if (i >= pAd->ApCfg.BssidNum) {
+					IdxToUse = idx;
 					break;
+				}
 			}
 		}
-
-		/*
-			If there is a matched one can be used
-			otherwise, use the first one.
-		 */
-		if (idx >= 0 && idx < rept_vendor_def_oui_table_size)
-			IdxToUse = idx;
-		else
-			IdxToUse = 0;
-
 		NdisCopyMemory(tempMAC, VENDOR_DEFINED_OUI_ADDR[IdxToUse], OUI_LEN);
 	} else
 		NdisCopyMemory(tempMAC, wdev->if_addr, OUI_LEN);
+
+	if (RTMPLookupRepeaterCliEntry_NoLock(pAd, FALSE, tempMAC, TRUE) != NULL) {
+		NdisReleaseSpinLock(&pAd->ApCfg.ReptCliEntryLock);
+		MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR,
+				("ReptCLI duplicate Insert %02x:%02x:%02x:%02x:%02x:%02x !\n",
+				PRINT_MAC(tempMAC)));
+		return;
+	}
 
 	COPY_MAC_ADDR(pReptCliEntry->CurrentAddress, tempMAC);
 	pReptCliEntry->CliEnable = TRUE;
@@ -870,6 +953,17 @@ VOID RTMPInsertRepeaterEntry(
 	MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_MT2_AUTH_REQ,
 				sizeof(APCLI_CTRL_MSG_STRUCT), &ApCliCtrlMsg, wdev->func_idx);
 	RTMP_MLME_HANDLER(pAd);
+#ifdef MTFWD
+	MTWF_LOG(DBG_CAT_RX, DBG_SUBCAT_ALL, DBG_LVL_OFF,  ("Insert MacRep Sta:%pM, orig MAC:%pM, %s\n",
+		tempMAC, pReptCliEntry->OriginalAddress, wdev->if_dev->name));
+
+	RtmpOSWrielessEventSend(pAd->net_dev,
+				RT_WLAN_EVENT_CUSTOM,
+				FWD_CMD_ADD_TX_SRC,
+				NULL,
+				tempMAC,
+				MAC_ADDR_LEN);
+#endif
 }
 
 VOID RTMPRemoveRepeaterEntry(
@@ -903,6 +997,11 @@ VOID RTMPRemoveRepeaterEntry(
 				  __func__, CliIdx));
 		return;
 	}
+
+#if defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)
+	NdisFreeSpinLock(&pEntry->SavedPMK_lock);
+#endif
+
 
 	/*Release OMAC Idx*/
 	HcDelRepeaterEntry(pEntry->wdev, CliIdx);
@@ -985,6 +1084,15 @@ done:
 
 	ReptLinkDownComplete(pEntry);
 	NdisReleaseSpinLock(&pAd->ApCfg.ReptCliEntryLock);
+#ifdef MTFWD
+	MTWF_LOG(DBG_CAT_RX, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Remove MacRep Sta:%pM\n", pEntry->CurrentAddress));
+	RtmpOSWrielessEventSend(pEntry->wdev->if_dev,
+				RT_WLAN_EVENT_CUSTOM,
+				FWD_CMD_DEL_TX_SRC,
+				NULL,
+				pEntry->CurrentAddress,
+				MAC_ADDR_LEN);
+#endif
 }
 
 VOID RTMPRepeaterReconnectionCheck(
@@ -1214,22 +1322,71 @@ VOID RepeaterLinkMonitor(RTMP_ADAPTER *pAd)
 	STA_TR_ENTRY *tr_entry = NULL;
 	APCLI_CTRL_MSG_STRUCT msg;
 	UCHAR CliIdx;
+	UCHAR TimeoutVal = 5;
+#if defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)
+	APCLI_STRUCT *papcli_entry = NULL;
+
+	TimeoutVal = 30;
+#endif
+
 
 	if ((pAd->ApCfg.bMACRepeaterEn) && (ReptPool != NULL)) {
 		for (CliIdx = 0; CliIdx < GET_MAX_REPEATER_ENTRY_NUM(cap); CliIdx++) {
 			pReptCliEntry = &pAd->ApCfg.pRepeaterCliPool[CliIdx];
-
+#if defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)
+			papcli_entry = &pAd->ApCfg.ApCliTab[pReptCliEntry->MatchApCliIdx];
+#endif
 			if (pReptCliEntry->CliEnable) {
 				Wcid = pReptCliEntry->MacTabWCID;
 				tr_entry = &pAd->MacTab.tr_entry[Wcid];
 
 				if ((tr_entry->PortSecured != WPA_802_1X_PORT_SECURED) &&
-					RTMP_TIME_AFTER(pAd->Mlme.Now32, (pReptCliEntry->CliTriggerTime + (5 * OS_HZ)))) {
+					RTMP_TIME_AFTER(pAd->Mlme.Now32, (pReptCliEntry->CliTriggerTime + (TimeoutVal * OS_HZ)))) {
 					if (pReptCliEntry->CtrlCurrState == APCLI_CTRL_DISCONNECTED)
 						HW_REMOVE_REPT_ENTRY(pAd, pReptCliEntry->MatchApCliIdx, CliIdx);
 					else {
 						if (!VALID_UCAST_ENTRY_WCID(pAd, Wcid))
 							continue;
+
+
+
+#if defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)
+
+						if (IS_AKM_SAE_SHA256(papcli_entry->MlmeAux.AKMMap) || IS_AKM_OWE(papcli_entry->MlmeAux.AKMMap)) {
+							UCHAR pmkid[LEN_PMKID];
+							UCHAR pmk[LEN_PMK];
+							INT cached_idx;
+							UCHAR if_index = papcli_entry->wdev.func_idx;
+
+
+							/*Update PMK cache and delete sae instance*/
+							if (
+#ifdef APCLI_SAE_SUPPORT
+
+								(IS_AKM_SAE_SHA256(papcli_entry->MlmeAux.AKMMap) &&
+									sae_get_pmk_cache(&pAd->SaeCfg, pReptCliEntry->CurrentAddress, papcli_entry->MlmeAux.Bssid, pmkid, pmk))
+#endif
+							) {
+
+								cached_idx = apcli_search_pmkid_cache(pAd, papcli_entry->MlmeAux.Bssid, if_index, CliIdx);
+
+								if (cached_idx != INVALID_PMKID_IDX) {
+#ifdef APCLI_SAE_SUPPORT
+									SAE_INSTANCE *pSaeIns = search_sae_instance(&pAd->SaeCfg, pReptCliEntry->CurrentAddress, papcli_entry->MlmeAux.Bssid);
+
+									MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+												("%s:Connection falied with pmkid ,delete cache entry and sae instance \n", __func__));
+									if (pSaeIns != NULL) {
+										delete_sae_instance(pSaeIns);
+										pSaeIns = NULL;
+									}
+#endif
+									apcli_delete_pmkid_cache(pAd, papcli_entry->MlmeAux.Bssid, if_index, CliIdx);
+								}
+							}
+						}
+#endif
+
 
 						pReptCliEntry->Disconnect_Sub_Reason = APCLI_DISCONNECT_SUB_REASON_REPTLM_TRIGGER_TOO_LONG;
 						NdisZeroMemory(&msg, sizeof(APCLI_CTRL_MSG_STRUCT));

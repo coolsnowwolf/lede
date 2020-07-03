@@ -322,6 +322,13 @@ VOID RRM_InsertRequestIE(
 	IN PUINT8 ie_list);
 
 
+VOID RRM_InsertRequestIE_11KV_API(
+	IN PRTMP_ADAPTER pAd,
+	OUT PUCHAR pFrameBuf,
+	OUT PULONG pFrameLen,
+	IN PUCHAR pRequest,
+	IN UINT8 RequestLen);
+
 /*
 	==========================================================================
 	Description:

@@ -49,7 +49,7 @@ static ssize_t fwdumpread(struct file *fp, char __user *buf, size_t cnt, loff_t 
 		len = (pAd->fw_dump_size - pAd->fw_dump_read);
 
 	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_OFF,
-			 ("cnt=%d len=%d fw_dump_read=%d\n", cnt, len, pAd->fw_dump_read));
+			 ("cnt=%zu len=%d fw_dump_read=%d\n", (unsigned long) cnt, len, pAd->fw_dump_read));
 	os_move_mem(buf, pAd->fw_dump_buffer + pAd->fw_dump_read, len);
 	pAd->fw_dump_read += len;
 	return len;

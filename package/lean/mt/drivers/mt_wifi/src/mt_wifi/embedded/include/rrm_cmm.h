@@ -24,8 +24,8 @@
 #ifndef __RRM_CMM_H
 #define __RRM_CMM_H
 
+#if defined (HOSTAPD_11K_SUPPORT) || defined (DOT11K_RRM_SUPPORT)
 
-#ifdef DOT11K_RRM_SUPPORT
 #include "rtmp_type.h"
 #include "dot11k_rrm.h"
 
@@ -66,6 +66,10 @@ typedef struct _RRM_CONFIG {
 	BOOLEAN bPeerReqCIVIC;
 	RRM_EN_CAP_IE rrm_capabilities;
 	RRM_EN_CAP_IE max_rrm_capabilities;
+#ifdef HOSTAPD_11K_SUPPORT
+    bool hstapd_nei_rep;
+    bool hstapd_lci;
+#endif
 } RRM_CONFIG, *PRRM_CONFIG;
 
 typedef union _RRM_BCN_REQ_CAP {
