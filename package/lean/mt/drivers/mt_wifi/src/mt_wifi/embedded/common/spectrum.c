@@ -1836,7 +1836,11 @@ static VOID PeerTpcReqAction(RTMP_ADAPTER *pAd, MLME_QUEUE_ELEM *Elem)
 	/*				of link margin.*/
 	RealRssi = RTMPMaxRssi(pAd, ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_0),
 						   ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_1),
-						   ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_2));
+						   ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_2)
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+							, ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_3)
+#endif
+						   );
 	/* skip Category and action code.*/
 	pFramePtr += 2;
 	/* Dialog token.*/
@@ -1958,6 +1962,27 @@ VOID PeerSpectrumAction(RTMP_ADAPTER *pAd, MLME_QUEUE_ELEM *Elem)
 #endif /* TPC_SUPPORT */
 
 	case SPEC_CHANNEL_SWITCH:
+#ifdef CONFIG_RCSA_SUPPORT
+		if (pAd->CommonCfg.DfsParameter.bRCSAEn) {
+			CSA_IE_INFO CsaInfo = {0};
+			struct wifi_dev *wdev = pAd->MacTab.Content[Elem->Wcid].wdev;
+			struct DOT11_H *pDot11h = wdev->pDot11_H;
+
+			if (ApCliPeerCsaSanity(Elem, &CsaInfo) == FALSE)
+				return;
+
+			CsaInfo.wcid = Elem->Wcid;
+			if (pAd->CommonCfg.DfsParameter.fUseCsaCfg == TRUE) {
+				if (CsaInfo.ChSwAnnIE.ChSwCnt)
+					pDot11h->CSPeriod = CsaInfo.ChSwAnnIE.ChSwCnt + 1;
+				else if (CsaInfo.ExtChSwAnnIE.ChSwCnt)
+					pDot11h->CSPeriod = CsaInfo.ExtChSwAnnIE.ChSwCnt + 1;
+			}
+			pAd->CommonCfg.DfsParameter.fSendRCSA = TRUE;
+			ChannelSwitchAction_1(pAd, &CsaInfo);
+		} else
+#endif
+		{
 #ifdef DOT11N_DRAFT3
 		{
 			SEC_CHA_OFFSET_IE	Secondary;
@@ -1977,6 +2002,7 @@ VOID PeerSpectrumAction(RTMP_ADAPTER *pAd, MLME_QUEUE_ELEM *Elem)
 
 #endif /* DOT11N_DRAFT3 */
 		PeerChSwAnnAction(pAd, Elem);
+		}
 		break;
 	}
 
@@ -2182,6 +2208,132 @@ INT Set_TpcEnable_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 
 #endif /* TPC_SUPPORT */
 
+#ifdef CUSTOMER_DCC_FEATURE
+#ifdef DOT11_N_SUPPORT
+static VOID InsertSecondaryChOffsetIE(
+	IN PRTMP_ADAPTER pAd,
+	OUT PUCHAR pFrameBuf,
+	OUT PULONG pFrameLen,
+	IN UINT8 Offset)
+{
+	ULONG TempLen;
+	ULONG Len = sizeof(SEC_CHA_OFFSET_IE);
+	UINT8 ElementID = IE_SECONDARY_CH_OFFSET;
+	SEC_CHA_OFFSET_IE SChOffIE;
+
+	SChOffIE.SecondaryChannelOffset = Offset;
+
+	MakeOutgoingFrame(pFrameBuf,      &TempLen,
+				1,      &ElementID,
+				1,      &Len,
+				Len,    &SChOffIE,
+				END_OF_ARGS);
+
+	*pFrameLen = *pFrameLen + TempLen;
+
+	return;
+}
+
+#endif
+
+VOID InsertChSwAnnIENew(
+	IN PRTMP_ADAPTER pAd,
+	OUT PUCHAR pFrameBuf,
+	OUT PULONG pFrameLen,
+	IN UINT8 ChSwMode,
+	IN UINT8 NewChannel,
+	IN UINT8 ChSwCnt)
+{
+	ULONG TempLen;
+	ULONG Len = sizeof(CH_SW_ANN_INFO);
+	UINT8 ElementID = IE_CHANNEL_SWITCH_ANNOUNCEMENT;
+	CH_SW_ANN_INFO ChSwAnnIE;
+
+	ChSwAnnIE.ChSwMode = ChSwMode;
+	ChSwAnnIE.Channel = NewChannel;
+	ChSwAnnIE.ChSwCnt = ChSwCnt;
+
+	MakeOutgoingFrame(pFrameBuf,	&TempLen,
+				1,	&ElementID,
+				1,	&Len,
+				Len,	&ChSwAnnIE,
+				END_OF_ARGS);
+
+	*pFrameLen = *pFrameLen + TempLen;
+
+	printk("%s \n", __func__);
+	return;
+}
+
+
+INT NotifyChSwAnnToConnectedSTAs(
+	IN PRTMP_ADAPTER pAd,
+	IN UINT8		ChSwMode,
+	IN UINT8		Channel,
+	struct wifi_dev *wdev)
+{
+	UINT32 i;
+	MAC_TABLE_ENTRY *pEntry;
+	struct DOT11_H *pDot11h = wdev->pDot11_H;
+
+	pAd->CommonCfg.channelSwitch.CHSWMode = ChSwMode;
+	pAd->CommonCfg.channelSwitch.CHSWCount = 0;
+	pDot11h->CSPeriod = pAd->CommonCfg.channelSwitch.CHSWPeriod;
+
+	for (i = 0; i < MAX_LEN_OF_MAC_TABLE; i++) {
+		pEntry = &pAd->MacTab.Content[i];
+		if (pEntry && IS_ENTRY_CLIENT(pEntry) && (pEntry->Sst == SST_ASSOC)) {
+			EnqueueChSwAnnNew(pAd, pEntry->Addr, ChSwMode, Channel, pEntry->bssid, wdev);
+
+		}
+	}
+
+	if (HcUpdateCsaCntByChannel(pAd, Channel) != 0) {
+		return FALSE;
+	}
+	return TRUE;
+}
+
+VOID EnqueueChSwAnnNew(
+	IN PRTMP_ADAPTER pAd,
+	IN PUCHAR pDA,
+	IN UINT8 ChSwMode,
+	IN UINT8 NewCh,
+	IN PUCHAR pSA,
+	struct wifi_dev *wdev)
+{
+	PUCHAR pOutBuffer = NULL;
+	NDIS_STATUS NStatus;
+	ULONG FrameLen;
+
+	HEADER_802_11 ActHdr;
+
+	/* build action frame header.*/
+	MgtMacHeaderInit(pAd, &ActHdr, SUBTYPE_ACTION, 0, pDA, pAd->CurrentAddress, pSA);
+
+	NStatus = MlmeAllocateMemory(pAd, (PVOID)&pOutBuffer);  /*Get an unused nonpaged memory*/
+	if (NStatus != NDIS_STATUS_SUCCESS) {
+		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s() allocate memory failed \n", __FUNCTION__));
+		return;
+	}
+	NdisMoveMemory(pOutBuffer, (PCHAR)&ActHdr, sizeof(HEADER_802_11));
+	FrameLen = sizeof(HEADER_802_11);
+
+	InsertActField(pAd, (pOutBuffer + FrameLen), &FrameLen, CATEGORY_SPECTRUM, SPEC_CHANNEL_SWITCH);
+
+	InsertChSwAnnIENew(pAd, (pOutBuffer + FrameLen), &FrameLen, ChSwMode, NewCh, pAd->CommonCfg.channelSwitch.CHSWPeriod);
+
+#ifdef DOT11_N_SUPPORT
+	InsertSecondaryChOffsetIE(pAd, (pOutBuffer + FrameLen), &FrameLen, HcGetExtCha(pAd, wdev->channel));
+#endif
+
+	MiniportMMRequest(pAd, QID_AC_BE, pOutBuffer, FrameLen);
+	MlmeFreeMemory(pOutBuffer);
+	return;
+}
+
+#endif
+
 #ifdef CONFIG_AP_SUPPORT
 INT Set_PwrConstraint(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 {
@@ -2290,4 +2442,331 @@ VOID RguClass_BuildBcnChList(RTMP_ADAPTER *pAd, UCHAR *pBuf, ULONG *pBufLen, UCH
 	return;
 }
 #endif /* CONFIG_AP_SUPPORT */
+
+#ifdef CONFIG_RCSA_SUPPORT
+
+static VOID InsertExtChSwAnnIE(
+	IN RTMP_ADAPTER * pAd,
+	OUT PUCHAR pFrameBuf,
+	OUT PULONG pFrameLen,
+	IN UINT8 ChSwMode,
+	IN UINT8 RegClass,
+	IN UINT8 NewChannel,
+	IN UINT8 ChSwCnt)
+{
+	ULONG TempLen;
+	ULONG Len = sizeof(EXT_CH_SW_ANN_INFO);
+	UINT8 ElementID = IE_EXT_CHANNEL_SWITCH_ANNOUNCEMENT;
+	EXT_CH_SW_ANN_INFO ExtChSwAnnIE;
+
+	ExtChSwAnnIE.ChSwMode = ChSwMode;
+	ExtChSwAnnIE.RegClass = RegClass;
+	ExtChSwAnnIE.Channel = NewChannel;
+	ExtChSwAnnIE.ChSwCnt = ChSwCnt;
+	MakeOutgoingFrame(pFrameBuf,				&TempLen,
+					  1,						&ElementID,
+					  1,						&Len,
+					  Len,						&ExtChSwAnnIE,
+					  END_OF_ARGS);
+	*pFrameLen = *pFrameLen + TempLen;
+}
+
+#ifdef DOT11_VHT_AC
+static VOID InsertWideBWChSwitchIE(
+	IN PRTMP_ADAPTER pAd,
+	IN struct wifi_dev *wdev,
+	IN UINT8 NewCh,
+	OUT PUCHAR pFrameBuf,
+	OUT PULONG pFrameLen)
+{
+	ULONG TempLen;
+	ULONG Len = sizeof(WIDE_BW_CH_SWITCH_ELEMENT);
+	UINT8 ElementID = IE_WIDE_BW_CH_SWITCH;
+	WIDE_BW_CH_SWITCH_ELEMENT wb_info = {0};
+	UCHAR op_ht_bw = wlan_operate_get_ht_bw(wdev);
+	UCHAR vht_bw = wlan_config_get_vht_bw(wdev);
+
+	if (op_ht_bw == BW_40) {
+		switch (vht_bw) {
+		case VHT_BW_2040:
+			wb_info.new_ch_width = 0;
+		break;
+		case VHT_BW_80:
+			wb_info.new_ch_width = 1;
+			wb_info.center_freq_1 = vht_cent_ch_freq(NewCh, vht_bw);
+			wb_info.center_freq_2 = 0;
+		break;
+		case VHT_BW_160:
+#ifdef DOT11_VHT_R2
+			wb_info.new_ch_width = 1;
+			wb_info.center_freq_1 = (vht_cent_ch_freq(wdev->channel, vht_bw) - 8);
+			wb_info.center_freq_2 = vht_cent_ch_freq(wdev->channel, vht_bw);
+#else
+			wb_info.new_ch_width = 2;
+			wb_info.center_freq_1 = vht_cent_ch_freq(wdev->channel, vht_bw);
+#endif /* DOT11_VHT_R2 */
+		break;
+		case VHT_BW_8080:
+#ifdef DOT11_VHT_R2
+			wb_info.new_ch_width = 1;
+			wb_info.center_freq_1 = vht_cent_ch_freq(wdev->channel, vht_bw);
+			wb_info.center_freq_2 = wlan_operate_get_cen_ch_2(wdev);
+#else
+			wb_info.new_ch_width = 3;
+			wb_info.center_freq_1 = vht_cent_ch_freq(wdev->channel, vht_bw);
+			wb_info.center_freq_2 = wlan_operate_get_cen_ch_2(wdev);
+#endif /* DOT11_VHT_R2 */
+		break;
+		}
+		MakeOutgoingFrame(pFrameBuf,	&TempLen,
+					1,	&ElementID,
+					1,      &Len,
+					Len,    &wb_info,
+					END_OF_ARGS);
+
+		*pFrameLen = *pFrameLen + TempLen;
+	}
+}
+#endif
+
+#ifdef DOT11_N_SUPPORT
+static VOID InsertSecondaryChOffsetIE(
+	IN PRTMP_ADAPTER pAd,
+	OUT PUCHAR pFrameBuf,
+	OUT PULONG pFrameLen,
+	IN UINT8 Offset)
+{
+	ULONG TempLen;
+	ULONG Len = sizeof(SEC_CHA_OFFSET_IE);
+	UINT8 ElementID = IE_SECONDARY_CH_OFFSET;
+	SEC_CHA_OFFSET_IE SChOffIE;
+
+	SChOffIE.SecondaryChannelOffset = Offset;
+
+	MakeOutgoingFrame(pFrameBuf,	&TempLen,
+				1,	&ElementID,
+				1,	&Len,
+				Len,	&SChOffIE,
+				END_OF_ARGS);
+
+	*pFrameLen = *pFrameLen + TempLen;
+}
+#endif
+
+#ifdef APCLI_SUPPORT
+VOID EnqueueChSwAnnApCli(
+	IN RTMP_ADAPTER * pAd,
+	IN struct wifi_dev *wdev,
+	IN UINT8 ifIndex,
+	IN UINT8 NewCh,
+	IN UINT8 ChSwMode)
+{
+	PUCHAR pOutBuffer = NULL;
+	UCHAR ChSwCnt = 0, RegClass;
+	NDIS_STATUS NStatus;
+	ULONG FrameLen;
+	HEADER_802_11 ActHdr;
+	struct DOT11_H *pDot11h = wdev->pDot11_H;
+
+	/* build action frame header.*/
+	ApCliMgtMacHeaderInit(pAd, &ActHdr, SUBTYPE_ACTION, 0, pAd->ApCfg.ApCliTab[ifIndex].MlmeAux.Bssid,
+					 pAd->ApCfg.ApCliTab[ifIndex].MlmeAux.Bssid, ifIndex);
+
+	NStatus = MlmeAllocateMemory(pAd, (PVOID)&pOutBuffer);  /*Get an unused nonpaged memory*/
+
+	if (NStatus != NDIS_STATUS_SUCCESS) {
+		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s() allocate memory failed\n", __func__));
+		return;
+	}
+
+	if (!wdev) {
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s() NULL wdev\n", __func__));
+		return;
+	}
+
+	ChSwCnt = pDot11h->CSPeriod - pDot11h->CSCount - 1;
+
+	NdisMoveMemory(pOutBuffer, (PCHAR)&ActHdr, sizeof(HEADER_802_11));
+	FrameLen = sizeof(HEADER_802_11);
+	InsertActField(pAd, (pOutBuffer + FrameLen), &FrameLen, CATEGORY_SPECTRUM, SPEC_CHANNEL_SWITCH);
+	InsertChSwAnnIE(pAd, (pOutBuffer + FrameLen), &FrameLen, ChSwMode, NewCh, ChSwCnt);
+
+#ifdef DOT11_N_SUPPORT
+	InsertSecondaryChOffsetIE(pAd, (pOutBuffer + FrameLen), &FrameLen, wlan_config_get_ext_cha(wdev));
+
+	RegClass = get_regulatory_class(pAd, NewCh, wdev->PhyMode, wdev);
+	InsertExtChSwAnnIE(pAd, (pOutBuffer + FrameLen), &FrameLen, ChSwMode, RegClass, NewCh, ChSwCnt);
+#endif
+
+#ifdef DOT11_VHT_AC
+	InsertWideBWChSwitchIE(pAd, wdev, NewCh, (pOutBuffer + FrameLen), &FrameLen);
+#endif
+
+	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("I/F(apcli%d) %s::MiniportMMRequest\n",
+		ifIndex, __func__));
+	MiniportMMRequest(pAd, AC_BE, pOutBuffer, FrameLen);
+	MlmeFreeMemory(pOutBuffer);
+	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s:: <--Exit\n", __func__));
+}
+#endif
+
+INT NotifyChSwAnnToBackhaulAP(
+	IN PRTMP_ADAPTER pAd,
+	struct wifi_dev *wdev,
+	IN UINT8 Channel,
+	IN UINT8 ChSwMode)
+{
+	INT8 inf_idx;
+
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s:Channel = %d, ChSwMode = %d\n", __func__, Channel, ChSwMode));
+
+	for (inf_idx = 0; inf_idx < MAX_APCLI_NUM; inf_idx++) {
+		if (pAd->ApCfg.ApCliTab[inf_idx].wdev.channel == wdev->channel) {
+			EnqueueChSwAnnApCli(pAd, wdev, inf_idx, Channel, ChSwMode);
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+INT ApCliPeerCsaSanity(
+	MLME_QUEUE_ELEM * Elem,
+	CSA_IE_INFO *CsaInfo)
+{
+	UCHAR action, IE_ID, Length = 0, status = FALSE;
+
+	action = Elem->Msg[LENGTH_802_11 + 1];
+
+	if (action != SPEC_CHANNEL_SWITCH)
+		return FALSE;
+
+	Length = LENGTH_802_11 + 2;
+
+	while (Length < Elem->MsgLen) {
+		IE_ID = Elem->Msg[Length];
+
+		switch (IE_ID) {
+		case IE_CHANNEL_SWITCH_ANNOUNCEMENT:
+			RTMPMoveMemory(&CsaInfo->ChSwAnnIE, &Elem->Msg[Length+2], sizeof(CH_SW_ANN_INFO));
+			status = TRUE;
+		break;
+
+		case IE_SECONDARY_CH_OFFSET:
+			CsaInfo->SChOffIE.SecondaryChannelOffset = Elem->Msg[Length+2];
+		break;
+
+		case IE_EXT_CHANNEL_SWITCH_ANNOUNCEMENT:
+			RTMPMoveMemory(&CsaInfo->ExtChSwAnnIE, &Elem->Msg[Length+2], sizeof(EXT_CH_SW_ANN_INFO));
+			status = TRUE;
+		break;
+
+		case IE_WIDE_BW_CH_SWITCH:
+			RTMPMoveMemory(&CsaInfo->wb_info, &Elem->Msg[Length+2], sizeof(WIDE_BW_CH_SWITCH_ELEMENT));
+		break;
+
+		default:
+			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: Unknown IE=%d\n", __func__, IE_ID));
+		break;
+		}
+		Length += Elem->Msg[Length+1] + 2;
+	}
+
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: Dump parsed CSA action frame --->\n", __func__));
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("CSA: Channel:%d ChSwMode:%d CsaCnt:%d\n",
+		CsaInfo->ChSwAnnIE.Channel, CsaInfo->ChSwAnnIE.ChSwMode, CsaInfo->ChSwAnnIE.ChSwCnt));
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("SecChOffSet:%d\n", CsaInfo->SChOffIE.SecondaryChannelOffset));
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("ExtCSA: Channel:%d RegClass:%d ChSwMode:%d CsaCnt:%d\n",
+		CsaInfo->ExtChSwAnnIE.Channel, CsaInfo->ExtChSwAnnIE.RegClass, CsaInfo->ExtChSwAnnIE.ChSwMode, CsaInfo->ExtChSwAnnIE.ChSwCnt));
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("WB IE: ChWidth:%d  CentFreq:%d CentFreq:%d\n",
+		CsaInfo->wb_info.new_ch_width, CsaInfo->wb_info.center_freq_1, CsaInfo->wb_info.center_freq_2));
+
+	return status;
+}
+
+VOID ChannelSwitchAction_1(
+	IN	RTMP_ADAPTER * pAd,
+	IN	CSA_IE_INFO *CsaInfo)
+{
+	UINT8 BandIdx;
+	struct DOT11_H *pDot11h = NULL;
+	struct wifi_dev *wdev = pAd->MacTab.Content[CsaInfo->wcid].wdev;
+
+	if (ChannelSwitchSanityCheck(pAd, CsaInfo->wcid, CsaInfo->ChSwAnnIE.Channel, CsaInfo->SChOffIE.SecondaryChannelOffset) == FALSE) {
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+			("%s(): Channel Sanity check:%d\n", __func__, __LINE__));
+	}
+
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s(): NewChannel=%d, Secondary=%d -->\n",
+				 __func__, CsaInfo->ChSwAnnIE.Channel, CsaInfo->SChOffIE.SecondaryChannelOffset));
+
+	pDot11h = wdev->pDot11_H;
+
+	if (pDot11h == NULL) {
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s(): Return:%d\n", __func__, __LINE__));
+		return;
+	}
+
+	if ((pAd->CommonCfg.bIEEE80211H == 1) &&
+		CsaInfo->ChSwAnnIE.Channel != 0 &&
+		wdev->channel != CsaInfo->ChSwAnnIE.Channel &&
+		pDot11h->RDMode != RD_SWITCHING_MODE) {
+		MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
+			("[APCLI] Following root AP to switch channel to ch%u\n",
+					CsaInfo->ChSwAnnIE.Channel));
+
+		if ((pAd->CommonCfg.DfsParameter.fUseCsaCfg == FALSE) ||
+			(CsaInfo->ChSwAnnIE.ChSwMode == 1)) {
+			BandIdx = HcGetBandByWdev(wdev);
+			/* Inform FW(N9) about RDD on mesh network */
+			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+				("[%s] inform N9 about RDD detect BandIdx:%d\n", __func__, BandIdx));
+			mtRddControl(pAd, RDD_DETECT_INFO, BandIdx, 0, 0);
+		}
+
+		/* Sync wdev settings as per CSA*/
+		if (pAd->CommonCfg.DfsParameter.fUseCsaCfg == TRUE) {
+#ifdef DOT11_N_SUPPORT
+			wlan_config_set_ext_cha(wdev, CsaInfo->SChOffIE.SecondaryChannelOffset);
+#endif
+
+#ifdef DOT11_VHT_AC
+			wlan_config_set_vht_bw(wdev, CsaInfo->wb_info.new_ch_width);
+			wlan_config_set_cen_ch_2(wdev, CsaInfo->wb_info.center_freq_2);
+#endif
+		}
+
+		pAd->CommonCfg.DfsParameter.ChSwMode = CsaInfo->ChSwAnnIE.ChSwMode;
+#if defined(WAPP_SUPPORT) && defined(CONFIG_MAP_SUPPORT)
+		wapp_send_csa_event(pAd, RtmpOsGetNetIfIndex(wdev->if_dev), CsaInfo->ChSwAnnIE.Channel);
+#endif
+		rtmp_set_channel(pAd, wdev, CsaInfo->ChSwAnnIE.Channel);
+	}
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s(): Exit:%d <---\n", __func__, __LINE__));
+}
+
+void RcsaRecovery(
+	IN PRTMP_ADAPTER pAd,
+	struct wifi_dev *wdev)
+{
+	struct DOT11_H *pDot11h = NULL;
+	UCHAR BandIdx;
+
+	if ((wdev == NULL) || (pAd->CommonCfg.DfsParameter.bRCSAEn == FALSE))
+		return;
+
+	pDot11h = wdev->pDot11_H;
+	BandIdx = HcGetBandByWdev(wdev);
+
+	if (pDot11h && (pDot11h->RDMode == RD_SILENCE_MODE)) {
+		if (pAd->CommonCfg.DfsParameter.fCheckRcsaTxDone == TRUE) {
+			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s::Got TxDone PAUSE ALTX0\n", __func__));
+			mtRddControl(pAd, RDD_ALTX_CTRL, BandIdx, 0, 2);
+			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s() RESUME BF RDD_MODE:%d!!!\n", __func__, pDot11h->RDMode));
+			mtRddControl(pAd, RDD_RESUME_BF, BandIdx, 0, 0);
+			pAd->CommonCfg.DfsParameter.fCheckRcsaTxDone = FALSE;
+		}
+	}
+}
+#endif
 

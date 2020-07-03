@@ -51,11 +51,12 @@ struct ht_cfg {
 	UINT32	frag_thld;
 	UCHAR	pkt_thld;
 	UINT32	len_thld;
+	UCHAR   retry_limit;
 	UCHAR	min_mpdu_start_space;
 	UCHAR	amsdu_en;
 	UCHAR	mmps;
 	/* EDCA parameters to be announced to its local BSS */
-	struct _EDCA_PARM EdcaParm; 
+	struct _EDCA_PARM EdcaParm;
 };
 
 struct vht_cfg {
@@ -96,7 +97,7 @@ UCHAR wlan_config_get_ext_cha(struct wifi_dev *wdev);
 UCHAR wlan_config_get_cen_ch_2(struct wifi_dev *wdev);
 UCHAR wlan_config_get_ack_policy(struct wifi_dev *wdev, UCHAR ac_id);
 BOOLEAN wlan_config_get_edca_valid(struct wifi_dev *wdev);
-struct _EDCA_PARM* wlan_config_get_ht_edca(struct wifi_dev *wdev);
+struct _EDCA_PARM *wlan_config_get_ht_edca(struct wifi_dev *wdev);
 UINT32 wlan_config_get_frag_thld(struct wifi_dev *wdev);
 UINT32 wlan_config_get_rts_len_thld(struct wifi_dev *wdev);
 UCHAR wlan_config_get_rts_pkt_thld(struct wifi_dev *wdev);
@@ -137,7 +138,7 @@ VOID wlan_config_set_ext_cha(struct wifi_dev *wdev, UCHAR ext_cha);
 VOID wlan_config_set_cen_ch_2(struct wifi_dev *wdev, UCHAR cen_ch_2);
 VOID wlan_config_set_cen_ch_2_all(struct wpf_ctrl *ctrl, UCHAR cen_ch_2);
 VOID wlan_config_set_ack_policy(struct wifi_dev *wdev, UCHAR *policy);
-VOID wlan_config_set_ack_policy_all(struct wpf_ctrl *ctrl,UCHAR *policy);
+VOID wlan_config_set_ack_policy_all(struct wpf_ctrl *ctrl, UCHAR *policy);
 VOID wlan_config_set_edca_valid(struct wifi_dev *wdev, BOOLEAN bValid);
 VOID wlan_config_set_edca_valid_all(struct wpf_ctrl *ctrl, BOOLEAN bValid);
 VOID wlan_config_set_frag_thld(struct wifi_dev *wdev, UINT32 frag_thld);

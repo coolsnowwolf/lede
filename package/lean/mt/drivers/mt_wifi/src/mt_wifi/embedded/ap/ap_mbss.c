@@ -87,6 +87,14 @@ VOID MBSS_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 	if (pAd->FlgMbssInit != FALSE)
 		return;
 
+#ifdef CREATE_ALL_INTERFACE_AT_INIT
+	/* Create and initialize all 8 MBSS interfaces duirng
+	* driver insmod as part of customer requirement
+	*/
+	MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Set 8 Max BSS\n"));
+	pAd->ApCfg.BssidNum = MAX_MBSS_NUM;
+#endif
+
 	MaxNumBss = pAd->ApCfg.BssidNum;
 
 	if (MaxNumBss > HW_BEACON_MAX_NUM)
@@ -128,6 +136,14 @@ VOID MBSS_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 		if (ifidx == 0)
 			autoSuffix = FALSE;
 #endif /*MULTI_PROFILE*/
+#ifdef INTELP6_SUPPORT
+#ifdef CONFIG_RT_SECOND_CARD
+		if (pAd->dev_idx == 1)
+			pDevNew = RtmpOSNetDevCreate(MC_RowID, &IoctlIF, INT_MBSSID, IdBss + MAX_MBSS_NUM,
+						 sizeof(struct mt_dev_priv), dev_name, autoSuffix);
+		else
+#endif
+#endif
 		pDevNew = RtmpOSNetDevCreate(MC_RowID, &IoctlIF, INT_MBSSID, ifidx,
 						 sizeof(struct mt_dev_priv), final_name, autoSuffix);
 #ifdef HOSTAPD_SUPPORT
@@ -168,10 +184,29 @@ VOID MBSS_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 		/* init operation functions and flags */
 		NdisCopyMemory(&netDevHook, pNetDevOps, sizeof(netDevHook));
 		netDevHook.priv_flags = INT_MBSSID;
+#ifdef CREATE_ALL_INTERFACE_AT_INIT
+		netDevHook.needProtcted = FALSE;
+#else
 		netDevHook.needProtcted = TRUE;
+#endif
 		netDevHook.wdev = wdev;
 		/* Init MAC address of virtual network interface */
 		NdisMoveMemory(&netDevHook.devAddr[0], &wdev->bssid[0], MAC_ADDR_LEN);
+
+#ifdef RT_CFG80211_SUPPORT
+	{
+		struct wireless_dev *pWdev;
+		CFG80211_CB *p80211CB = pAd->pCfg80211_CB;
+		UINT32 DevType = RT_CMD_80211_IFTYPE_AP;
+		pWdev = kzalloc(sizeof(*pWdev), GFP_KERNEL);
+		pDevNew->ieee80211_ptr = pWdev;
+		pWdev->wiphy = p80211CB->pCfg80211_Wdev->wiphy;
+		SET_NETDEV_DEV(pDevNew, wiphy_dev(pWdev->wiphy));
+		pWdev->netdev = pDevNew;
+		pWdev->iftype = DevType;
+	}
+#endif /* RT_CFG80211_SUPPORT */
+
 		/* register this device to OS */
 		status = RtmpOSNetDevAttach(pAd->OpMode, pDevNew, &netDevHook);
 	}

@@ -1286,6 +1286,9 @@ INT32 CmdExtWtblUpdate(RTMP_ADAPTER *pAd, UINT8 ucWlanIdx, UINT8 ucOperation,
 							  pCmdWtblBa->ucBaSize));
 				}
 			}
+#ifdef RT_BIG_ENDIAN
+			pCmdWtblBa->u2Sn = cpu2le16(pCmdWtblBa->u2Sn);
+#endif
 
 			break;
 		}
@@ -1889,9 +1892,19 @@ static INT32 StaRecUpdateTxProc(RTMP_ADAPTER *pAd, struct cmd_msg *msg, VOID *ar
 	STA_REC_CFG_T *pStaRecCfg = (STA_REC_CFG_T *)args;
 	MAC_TABLE_ENTRY *pEntry = pStaRecCfg->pEntry;
 #endif /* APCLI_SUPPORT */
+
+#ifdef VLAN_SUPPORT
+	STA_TR_ENTRY *tr_entry = &pAd->MacTab.tr_entry[pStaRecCfg->ucWlanIdx];
+	struct wifi_dev *bss_wdev = tr_entry->wdev;
+#endif
 	os_zero_mem(&CmdStaRecTxProc, sizeof(CMD_STAREC_TX_PROC_T));
 	CmdStaRecTxProc.u2Tag = STA_REC_TX_PROC; /* Tag = 0x08 */
 	CmdStaRecTxProc.u2Length = sizeof(CMD_STAREC_TX_PROC_T);
+#ifdef VLAN_SUPPORT
+	if ((pEntry && pEntry->wdev && pEntry->wdev->bVLAN_Tag) || (bss_wdev && bss_wdev->bVLAN_Tag))
+		CmdStaRecTxProc.u4TxProcFlag = 0;
+	else
+#endif /*VLAN_SUPPORT*/
 	CmdStaRecTxProc.u4TxProcFlag = RVLAN;
 #ifdef CONFIG_CSO_SUPPORT
 
@@ -2058,8 +2071,8 @@ static INT32 StaRecUpdateSecKey(RTMP_ADAPTER *pAd, struct cmd_msg *msg, VOID *ar
 
 	MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s:, wcid=%d, Operation=%d, Direction=%d\n",
 			 __func__, asic_sec_info->Wcid, asic_sec_info->Operation, asic_sec_info->Direction));
-	rWtblSecurityKey.u2Tag = STA_REC_INSTALL_KEY;
-	rWtblSecurityKey.u2Length = sizeof(CMD_WTBL_SECURITY_KEY_T);
+	rWtblSecurityKey.u2Tag = cpu2le16(STA_REC_INSTALL_KEY);
+	rWtblSecurityKey.u2Length = cpu2le16(sizeof(CMD_WTBL_SECURITY_KEY_T));
 	fill_wtbl_key_info_struc(asic_sec_info, &rWtblSecurityKey);
 	/* Append this feature */
 	AndesAppendCmdMsg(msg, (char *)&rWtblSecurityKey, sizeof(CMD_WTBL_SECURITY_KEY_T));
@@ -2098,7 +2111,7 @@ static INT32 StaRecUpdateWtbl(RTMP_ADAPTER *pAd, struct cmd_msg *msg, VOID *args
 	P_CMD_WTBL_UPDATE_T	pCmdWtblUpdate = NULL;
 	/* Allocate TLV msg */
 	Status = os_alloc_mem(pAd, (UCHAR **)&pStarec_wtbl, sizeof(CMD_STAREC_WTBL_T));
-
+	os_zero_mem(pStarec_wtbl, sizeof(CMD_STAREC_WTBL_T));
 	if (pStarec_wtbl == NULL)
 		return -1;
 
@@ -2873,7 +2886,13 @@ static VOID bssUpdateBmcMngRate(
 		CmdBssInfoBmcRate.ucPreambleMode =
 			OPSTATUS_TEST_FLAG(pAd, fOP_STATUS_SHORT_PREAMBLE_INUSED);
 	}
-
+#ifdef TXRX_STAT_SUPPORT
+	{
+		ULONG Multicast_Tx_Rate;
+		pAd->ApCfg.MBSSID[bss_info.ucBssIndex].stat_bss.LastMulticastTxRate.word = bss_info.McTransmit.word;
+		getRate(bss_info.McTransmit, &Multicast_Tx_Rate);
+	}
+#endif
 	CmdBssInfoBmcRate.u2Tag = BSS_INFO_BROADCAST_INFO;
 	CmdBssInfoBmcRate.u2Length = sizeof(CMD_BSSINFO_BMC_RATE_T);
 	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_OFF,
@@ -3304,7 +3323,7 @@ Error0:
 }
 
 #ifdef IGMP_SNOOP_SUPPORT
-INT32 CmdMcastCloneEnable(RTMP_ADAPTER *pAd, BOOLEAN Enable, UINT8 omac_idx)
+INT32 CmdMcastCloneEnable(RTMP_ADAPTER *pAd, UINT Enable, UINT8 omac_idx)
 {
 	struct cmd_msg *msg = NULL;
 	INT32 Ret = 0;
@@ -3451,6 +3470,107 @@ Error0:
 			 ("%s:(Ret = %d)\n", __func__, Ret));
 	return Ret;
 }
+
+#ifdef IGMP_TVM_SUPPORT
+BOOLEAN CmdSetMcastEntryAgeOut(RTMP_ADAPTER *pAd, UINT8 AgeOutTime, UINT8 ucOwnMacIdx)
+{
+	struct cmd_msg *msg = NULL;
+	INT32 Ret = 0;
+	EXT_CMD_ID_IGMP_MULTICAST_SET_GET_T ExtMcastSetAgeOut = {0};
+
+    struct _CMD_ATTRIBUTE attr = {0};
+
+	os_zero_mem(&ExtMcastSetAgeOut, sizeof(EXT_CMD_ID_IGMP_MULTICAST_SET_GET_T));
+
+	msg = AndesAllocCmdMsg(pAd, sizeof(EXT_CMD_ID_IGMP_MULTICAST_SET_GET_T));
+
+	if (!msg) {
+		Ret = NDIS_STATUS_RESOURCES;
+		goto Error0;
+	}
+
+	SET_CMD_ATTR_MCU_DEST(attr, HOST2CR4);
+	SET_CMD_ATTR_TYPE(attr, EXT_CID);
+	SET_CMD_ATTR_EXT_TYPE(attr, EXT_CMD_ID_IGMP_MULTICAST_SET_GET);
+	SET_CMD_ATTR_CTRL_FLAGS(attr, INIT_CMD_SET);
+	SET_CMD_ATTR_RSP_WAIT_MS_TIME(attr, 0);
+	SET_CMD_ATTR_RSP_EXPECT_SIZE(attr, 0);
+	SET_CMD_ATTR_RSP_WB_BUF_IN_CALBK(attr, NULL);
+	SET_CMD_ATTR_RSP_HANDLER(attr, NULL);
+
+	AndesInitCmdMsg(msg, attr);
+
+	ExtMcastSetAgeOut.ucCmdType = IGMP_MCAST_SET_AGEOUT_TIME;
+	ExtMcastSetAgeOut.ucOwnMacIdx = ucOwnMacIdx;
+	ExtMcastSetAgeOut.SetData.u4AgeOutTime = AgeOutTime;
+	AndesAppendCmdMsg(msg, (char *)&ExtMcastSetAgeOut,
+		sizeof(EXT_CMD_ID_IGMP_MULTICAST_SET_GET_T));
+
+	Ret = AndesSendCmdMsg(pAd, msg);
+
+Error0:
+	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+			 ("%s:(Ret = %d)\n", __func__, Ret));
+	return Ret;
+}
+
+BOOLEAN CmdGetMcastEntryTable(RTMP_ADAPTER *pAd, UINT8 ucOwnMacIdx, struct wifi_dev *wdev)
+{
+	struct cmd_msg *msg = NULL;
+	INT32 Ret = 0;
+	EXT_CMD_ID_IGMP_MULTICAST_SET_GET_T ExtMcastGetEntryTable = {0};
+
+    struct _CMD_ATTRIBUTE attr = {0};
+
+	os_zero_mem(&ExtMcastGetEntryTable, sizeof(EXT_CMD_ID_IGMP_MULTICAST_SET_GET_T));
+
+	msg = AndesAllocCmdMsg(pAd, sizeof(EXT_CMD_ID_IGMP_MULTICAST_SET_GET_T));
+
+	if (!msg) {
+		Ret = NDIS_STATUS_RESOURCES;
+		goto Error0;
+	}
+
+	SET_CMD_ATTR_MCU_DEST(attr, HOST2CR4);
+	SET_CMD_ATTR_TYPE(attr, EXT_CID);
+	SET_CMD_ATTR_EXT_TYPE(attr, EXT_CMD_ID_IGMP_MULTICAST_SET_GET);
+	SET_CMD_ATTR_CTRL_FLAGS(attr, INIT_CMD_QUERY_AND_WAIT_RSP);
+	SET_CMD_ATTR_RSP_WAIT_MS_TIME(attr, 0);
+	SET_CMD_ATTR_RSP_EXPECT_SIZE(attr, MT_IGNORE_PAYLOAD_LEN_CHECK);
+	SET_CMD_ATTR_RSP_WB_BUF_IN_CALBK(attr, wdev);
+	SET_CMD_ATTR_RSP_HANDLER(attr, CmdExtEventIgmpMcastTableRsp);
+
+	AndesInitCmdMsg(msg, attr);
+
+	ExtMcastGetEntryTable.ucCmdType = IGMP_MCAST_GET_ENTRY_TABLE;
+	ExtMcastGetEntryTable.ucOwnMacIdx = ucOwnMacIdx;
+	AndesAppendCmdMsg(msg, (char *)&ExtMcastGetEntryTable,
+		sizeof(EXT_CMD_ID_IGMP_MULTICAST_SET_GET_T));
+
+	Ret = AndesSendCmdMsg(pAd, msg);
+
+Error0:
+	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+			 ("%s:(Ret = %d)\n", __func__, Ret));
+	return Ret;
+}
+
+VOID CmdExtEventIgmpMcastTableRsp(struct cmd_msg *msg, char *Data, UINT16 Len)
+{
+	struct wifi_dev *wdev = NULL;
+	struct _RTMP_ADAPTER *pAd = NULL;
+
+	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s:\n", __func__));
+
+	wdev = (struct wifi_dev *)msg->attr.rsp.wb_buf_in_calbk;
+
+	if (wdev) {
+		pAd = (struct _RTMP_ADAPTER *)wdev->sys_handle;
+		IgmpSnoopingShowMulticastTable(pAd, wdev);
+	}
+}
+
+#endif /* IGMP_TVM_SUPPORT */
 #endif
 
 INT32 CmdRxHdrTransBLUpdate(RTMP_ADAPTER *pAd, UINT8 Index, UINT8 En, UINT16 EthType)

@@ -17,6 +17,16 @@
 #ifndef __AP_VOW_H_
 #define __AP_VOW_H_
 
+struct _EDCA_PARM;
+
+#define VOW_VIDEO_SET_PARAM	1
+#define VOW_VIDEO_RESTORE_PARAM	2
+#define VIDEO_RTS_PKT_THLD	6
+#define VIDEO_CWMAX		10
+#define VIDEO_RTS_RETRY_LIMIT	31
+
+/* #define CONFIG_VOW_VIDEO_PARAM	1*/
+
 #define VOW_GEN_1	0
 #define VOW_GEN_2	1
 
@@ -287,6 +297,13 @@ typedef struct _VOW_CR_OFFSET_FOR_GEN_T {
 	UINT32 VOW_STA_WMM_ID_OFFSET;
 } VOW_CR_OFFSET_FOR_GEN_T, *PVOW_CR_OFFSET_FOR_GEN_T;
 
+struct video_ctl{
+	BOOLEAN enable;
+	struct _EDCA_PARM edca_backup[WMM_NUM_OF_AC*WMM_NUM];
+	UINT32 rts_thld_pkt_len_backup[DBDC_BAND_NUM];
+	UINT16 rts_thld_pkt_num_backup[DBDC_BAND_NUM];
+	UINT16 rts_retry_limit_backup;
+};
 
 VOID vow_init(struct _RTMP_ADAPTER *pad);
 VOID vow_init_CR_offset_gen_1_gen_2(struct _RTMP_ADAPTER *pad);
@@ -308,6 +325,7 @@ VOID vow_update_om_wmm(struct _RTMP_ADAPTER *pad, struct wifi_dev *wdev, struct 
 BOOLEAN vow_is_enabled(struct _RTMP_ADAPTER *pad);
 VOID vow_atf_off_init(struct _RTMP_ADAPTER *pad);
 INT32 vow_set_sta(struct _RTMP_ADAPTER *pad, UINT8 sta_id, UINT32 subcmd);
+void set_vow_video_param(struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UINT8 opmode);
 
 INT set_vow_min_rate_token(
 	IN  struct _RTMP_ADAPTER *pAd,

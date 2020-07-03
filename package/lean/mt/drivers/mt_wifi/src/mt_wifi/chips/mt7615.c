@@ -39,13 +39,21 @@
 #endif
 
 #ifdef CONFIG_AP_SUPPORT
+#ifdef INTELP6_SUPPORT
+#define DEFAULT_BIN_FILE "/nvram/MT7615_EEPROM_2G.bin"
+#else
 #define DEFAULT_BIN_FILE "/etc_ro/wlan/MT7615E_EEPROM1.bin"
+#endif
 #else
 #define DEFAULT_BIN_FILE "/etc/MT7615E_EEPROM1.bin"
 #endif /* CONFIG_AP_SUPPORT */
 
 #ifdef CONFIG_RT_SECOND_CARD
+#ifdef INTELP6_SUPPORT
+#define SECOND_BIN_FILE "/nvram/MT7615_EEPROM_5G.bin"
+#else
 #define SECOND_BIN_FILE "/etc_ro/wlan/MT7615E_EEPROM2.bin"
+#endif
 #endif /* CONFIG_RT_SECOND_CARD */
 #ifdef CONFIG_RT_THIRD_CARD
 #define THIRD_BIN_FILE "/etc_ro/wlan/MT7615E_EEPROM3.bin"
@@ -55,6 +63,12 @@
 extern RBIST_DESC_T MT7615_SPECTRUM_DESC[];
 extern UINT8 MT7615_SpectrumBankNum;
 #endif /* WIFI_SPECTRUM_SUPPORT */
+
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+#ifdef INTELP6_SUPPORT
+INT RecoveryCount[MAX_NUM_OF_INF] = {0};
+#endif
+#endif
 
 UCHAR mt7615_ba_range[] = {4, 8, 12, 24, 36, 48, 54, 64};
 
@@ -621,15 +635,7 @@ static void mt7615_switch_channel(RTMP_ADAPTER *pAd, MT_SWITCH_CHANNEL_CFG SwChC
 #ifdef PRE_CAL_TRX_SET1_SUPPORT
 	mt7615_apply_cal_data(pAd, SwChCfg);
 #endif /* PRE_CAL_TRX_SET1_SUPPORT */
-
-	if (SwChCfg.Bw == BW_8080) {
-		if ((SwChCfg.ControlChannel2 - SwChCfg.CentralChannel) == 16 ||
-			(SwChCfg.CentralChannel - SwChCfg.ControlChannel2) == 16) {
-			SwChCfg.Bw = BW_160;
-			SwChCfg.CentralChannel = (SwChCfg.CentralChannel + SwChCfg.ControlChannel2)/2;
-			SwChCfg.ControlChannel2 = 0;
-		}
-	}
+/*In Case of BW8080 Continous/NonContinous Channels of 80+80 is allowed by ACS*/
 
 
 	MtCmdChannelSwitch(pAd, SwChCfg);
@@ -1551,9 +1557,27 @@ void mt7615_heart_beat_check(RTMP_ADAPTER *pAd)
 	UINT8 n9_detect = FALSE;
 	RTMP_STRING *str = NULL;
 	UINT32 RestoreValue;
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+#ifdef INTELP6_SUPPORT
+	UINT idx = multi_inf_get_idx(pAd);
+#endif
+#endif
+	if (((pAd->Mlme.PeriodicRound % HEART_BEAT_CHECK_PERIOD) == 0)
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+#ifdef INTELP6_SUPPORT
+		|| (pAd->ErrRecoveryCheck != RecoveryCount[idx])
+#endif
+#endif
 
-	if ((pAd->Mlme.PeriodicRound % HEART_BEAT_CHECK_PERIOD) == 0) {
-
+		) {
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+#ifdef INTELP6_SUPPORT
+		if (pAd->ErrRecoveryCheck != RecoveryCount[idx]) {
+			RecoveryCount[idx] = pAd->ErrRecoveryCheck;
+			goto  recoverycheck;
+		}
+#endif
+#endif
 		if (pAd->heart_beat_stop == TRUE)
 			return;
 
@@ -1586,6 +1610,13 @@ void mt7615_heart_beat_check(RTMP_ADAPTER *pAd)
 			str = "N9 heart beat stop!!\n";
 		else if (cr4_detect)
 			str = "CR4 heart beat stop!!\n";
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+#ifdef INTELP6_SUPPORT
+recoverycheck:
+		if (pAd->ErrRecoveryCheck > 5)
+			str = "IntelP6 PCI stop!!\n";
+#endif
+#endif
 
 		if (str != NULL) {
 			pAd->heart_beat_stop = TRUE;
@@ -2132,20 +2163,20 @@ UCHAR *mt7615_get_default_bin_image_file(RTMP_ADAPTER *pAd)
 			("Use %dst %s default bin.\n", multi_inf_get_idx(pAd), DEFAULT_BIN_FILE));
 		return DEFAULT_BIN_FILE;
 	}
-#if defined(MT_SECOND_CARD)
+#if defined(CONFIG_RT_SECOND_CARD)
 	else if (multi_inf_get_idx(pAd) == 1) {
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 			("Use %dst %s default bin.\n", multi_inf_get_idx(pAd), SECOND_BIN_FILE));
 		return SECOND_BIN_FILE;
 	}
-#endif /* MT_SECOND_CARD */
-#if defined(MT_THIRD_CARD)
+#endif /* CONFIG_RT_SECOND_CARD */
+#if defined(CONFIG_RT_THIRD_CARD)
 	else if (multi_inf_get_idx(pAd) == 2) {
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 			("Use %dst %s default bin.\n", multi_inf_get_idx(pAd), THIRD_BIN_FILE));
 		return THIRD_BIN_FILE;
 	}
-#endif /* MT_THIRD_CARD */
+#endif /* CONFIG_RT_THIRD_CARD */
 	else
 #endif /* MULTI_INF_SUPPORT */
 	{
@@ -2541,6 +2572,10 @@ static VOID mt7615_chipCap_init(RTMP_ADAPTER *pAd, BOOLEAN b11nOnly, BOOLEAN bTh
 	MT7615_ChipCap.num_of_tx_ring = 2;
 	MT7615_ChipCap.num_of_rx_ring = 2;
 
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+	MT7615_ChipCap.max_v2_bcn_num = 16;
+#endif
+
 	MT7615_ChipCap.tx_ring_size = 1024;
 	MT7615_ChipCap.rx0_ring_size = 1024;
 	MT7615_ChipCap.rx1_ring_size = 512;
@@ -2549,6 +2584,7 @@ static VOID mt7615_chipCap_init(RTMP_ADAPTER *pAd, BOOLEAN b11nOnly, BOOLEAN bTh
 #ifdef RTMP_MAC_PCI
 	MT7615_ChipCap.WPDMABurstSIZE = 3;
 #endif
+	MT7615_ChipCap.ProbeRspTimes = 2;
 	MT7615_ChipCap.SnrFormula = SNR_FORMULA4;
 	MT7615_ChipCap.FlgIsHwWapiSup = TRUE;
 	MT7615_ChipCap.FlgIsHwAntennaDiversitySup = FALSE;
@@ -2591,6 +2627,8 @@ static VOID mt7615_chipCap_init(RTMP_ADAPTER *pAd, BOOLEAN b11nOnly, BOOLEAN bTh
 #ifdef PCIE_ASPM_DYM_CTRL_SUPPORT
 	MT7615_ChipCap.asic_caps |= fASIC_CAP_PCIE_ASPM_DYM_CTRL;
 #endif /* PCIE_ASPM_DYM_CTRL_SUPPORT */
+
+	MT7615_ChipCap.asic_caps |= fASIC_CAP_ADV_SECURITY;
 
 	if (b11nOnly) {
 		MT7615_ChipCap.phy_caps = (fPHY_CAP_24G | fPHY_CAP_5G | \
@@ -2663,7 +2701,7 @@ static VOID mt7615_chipCap_init(RTMP_ADAPTER *pAd, BOOLEAN b11nOnly, BOOLEAN bTh
 	MT7615_ChipCap.max_amsdu_len = MPDU_7991_OCTETS;
 	MT7615_ChipCap.ht_max_ampdu_len_exp = 3;
 #ifdef DOT11_VHT_AC
-	MT7615_ChipCap.max_mpdu_len = MPDU_11454_OCTETS;
+	MT7615_ChipCap.max_mpdu_len = MPDU_7991_OCTETS;
 	MT7615_ChipCap.vht_max_ampdu_len_exp = 7;
 #endif /* DOT11_VHT_AC */
 	MT7615_ChipCap.default_txop = 0x60;
@@ -2900,6 +2938,16 @@ VOID mt7615_init(RTMP_ADAPTER *pAd)
 #ifdef DOT11W_PMF_SUPPORT
 	pChipCap->FlgPMFEncrtptMode = PMF_ENCRYPT_MODE_2;
 #endif /* DOT11W_PMF_SUPPORT */
+#ifdef CUSTOMER_RSG_FEATURE
+	pAd->EnableChannelStatsCheck = FALSE;
+	NdisZeroMemory(&pAd->RadioStatsCounter, sizeof(RADIO_STATS_COUNTER));
+#endif
+#ifdef CUSTOMER_DCC_FEATURE
+	pAd->ApEnableBeaconTable = FALSE;
+	pAd->CommonCfg.channelSwitch.CHSWMode = NORMAL_MODE;
+	pAd->CommonCfg.channelSwitch.CHSWCount = 0;
+	pAd->CommonCfg.channelSwitch.CHSWPeriod = 5;
+#endif
 	/* For calibration log buffer size limitation issue */
 	pAd->fgQAtoolBatchDumpSupport = TRUE;
 #ifdef RED_SUPPORT
@@ -2948,6 +2996,10 @@ INT Mt7615AsicArchOpsInit(RTMP_ADAPTER *pAd)
 #ifdef HTC_DECRYPT_IOT
 	arch_ops->archSetWcidAAD_OM = MtAsicSetWcidAAD_OMByFw;
 #endif /* HTC_DECRYPT_IOT */
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+	arch_ops->archSetWcid4Addr_HdrTrans = MtAsicSetWcid4Addr_HdrTransByFw;
+#endif
+
 	arch_ops->archAddRemoveKeyTab = MtAsicAddRemoveKeyTabByFw;
 #ifdef BCN_OFFLOAD_SUPPORT
 	arch_ops->archEnableBeacon = NULL;
@@ -3044,6 +3096,10 @@ INT Mt7615AsicArchOpsInit(RTMP_ADAPTER *pAd)
 #ifdef IGMP_SNOOP_SUPPORT
 	arch_ops->archMcastEntryInsert = CmdMcastEntryInsert;
 	arch_ops->archMcastEntryDelete = CmdMcastEntryDelete;
+#ifdef IGMP_TVM_SUPPORT
+	arch_ops->archMcastConfigAgeout = CmdSetMcastEntryAgeOut;
+	arch_ops->archMcastGetMcastTable = CmdGetMcastEntryTable;
+#endif /* IGMP_TVM_SUPPORT */
 #endif
 	arch_ops->write_txp_info = mtd_write_txp_info_by_cr4;
 	arch_ops->write_tmac_info_fixed_rate = mtd_write_tmac_info_fixed_rate;

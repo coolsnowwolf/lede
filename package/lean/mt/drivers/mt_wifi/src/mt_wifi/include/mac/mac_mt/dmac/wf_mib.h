@@ -66,6 +66,12 @@
 
 #define MIB_M0SDR36      (WF_MIB_BASE + 0x98)	/* 820FD098 */
 #define MIB_M0SDR37      (WF_MIB_BASE + 0x9c)	/* 820FD09c */
+#ifdef CUSTOMER_RSG_FEATURE
+#define MIB_M0SDR38      (WF_MIB_BASE + 0xd0)   /* 820FD0d0 */
+#define MIB_M0SDR39      (WF_MIB_BASE + 0xd4)   /* 820FD0d4 */
+#define MIB_M0SDR40      (WF_MIB_BASE + 0xd8)   /* 820FD0d8 */
+#endif
+
 #define MIB_M0SDR51      (WF_MIB_BASE + 0x1E0)	/* 820FD1E0 */
 
 #define MIB_M0DR0	(WF_MIB_BASE + 0xa0)
@@ -118,6 +124,9 @@
 #define MIB_M1SCR	(WF_MIB_BASE + 0x200)
 #define MIB_M1PBSCR	(WF_MIB_BASE + 0x204)
 #define MIB_M1SCR1	(WF_MIB_BASE + 0x208)
+#ifdef TXRX_STAT_SUPPORT
+#define MIB_M1SDR0	(WF_MIB_BASE + 0x210)
+#endif
 #define MIB_M1SDR3	(WF_MIB_BASE + 0x214)
 #define MIB_M1SDR4	(WF_MIB_BASE + 0x218)
 #define MIB_M1SDR10	(WF_MIB_BASE + 0x230)

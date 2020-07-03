@@ -67,9 +67,13 @@ void assoc_vht_info_debugshow(
 	IN VHT_CAP_IE *vht_cap,
 	IN VHT_OP_IE *vht_op);
 
+#ifdef ACS_CTCC_SUPPORT
+BOOLEAN vht40_channel_group(struct _RTMP_ADAPTER *pAd, UCHAR channel);
+#endif
 BOOLEAN vht80_channel_group(struct _RTMP_ADAPTER *pAd, UCHAR channel);
 BOOLEAN vht160_channel_group(struct _RTMP_ADAPTER *pAd, UCHAR channel);
 void print_vht_op_info(VHT_OP_INFO *vht_op);
 UINT32 starec_vht_feature_decision(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry, UINT32 *feature);
 UCHAR rf_bw_2_vht_bw(UCHAR rf_bw);
+UCHAR check_vht_op_bw(VHT_OP_INFO *vht_op_info);
 

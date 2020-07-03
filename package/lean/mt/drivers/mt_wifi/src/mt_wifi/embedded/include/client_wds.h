@@ -40,6 +40,9 @@ VOID CliWdsEntyFree(
 	IN PRTMP_ADAPTER pAd,
 	IN PCLIWDS_PROXY_ENTRY pCliWdsEntry);
 
+VOID CliWdsEnryFreeAid(
+	 IN PRTMP_ADAPTER pAd,
+	 IN SHORT Aid);
 
 UCHAR *CliWds_ProxyLookup(RTMP_ADAPTER *pAd, UCHAR *pMac);
 
@@ -52,6 +55,19 @@ VOID CliWds_ProxyTabUpdate(
 
 VOID CliWds_ProxyTabMaintain(
 	IN PRTMP_ADAPTER pAd);
+#ifndef WDS_SUPPORT
+MAC_TABLE_ENTRY *FindWdsEntry(
+	IN PRTMP_ADAPTER pAd,
+	IN RX_BLK * pRxBlk);
 
+MAC_TABLE_ENTRY *WdsTableLookupByWcid(
+	IN PRTMP_ADAPTER pAd,
+	IN UCHAR wcid,
+	IN PUCHAR pAddr,
+	IN BOOLEAN bResetIdelCount);
+
+
+MAC_TABLE_ENTRY *WdsTableLookup(RTMP_ADAPTER *pAd, UCHAR *addr, BOOLEAN bResetIdelCount);
+#endif
 #endif /* __CLIENT_WDS_H__ */
 

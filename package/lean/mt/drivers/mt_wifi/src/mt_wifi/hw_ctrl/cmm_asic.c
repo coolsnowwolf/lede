@@ -129,7 +129,8 @@ VOID AsicUpdateRtsThld(
 	struct _RTMP_ADAPTER *pAd,
 	struct wifi_dev *wdev,
 	UINT32 pkt_num,
-	UINT32 length)
+	UINT32 length,
+	UINT32 retry_limit)
 {
 
 	if (IS_HIF_TYPE(pAd, HIF_MT)) {
@@ -141,7 +142,8 @@ VOID AsicUpdateRtsThld(
 #endif /* CONFIG_ATE */
 
 		if (pAd->archOps.archUpdateRtsThld)
-			return pAd->archOps.archUpdateRtsThld(pAd, wdev, pkt_num, length);
+			return pAd->archOps.archUpdateRtsThld(pAd, wdev, pkt_num, length,
+								retry_limit);
 	}
 
 	AsicNotSupportFunc(pAd, __func__);
@@ -195,6 +197,10 @@ VOID AsicUpdateProtect(
  */
 VOID AsicSwitchChannel(RTMP_ADAPTER *pAd, UCHAR band_idx, struct freq_oper *oper, BOOLEAN bScan)
 {
+#ifdef CUSTOMER_DCC_FEATURE
+	if (!(ApScanRunning(pAd, NULL)) && pAd->ApEnableBeaconTable)
+		BssTableInit(&pAd->AvailableBSS);
+#endif
 #ifdef MT_MAC
 
 	if (IS_HIF_TYPE(pAd, HIF_MT)) {
@@ -1134,13 +1140,31 @@ VOID AsicUpdateRxWCIDTable(RTMP_ADAPTER *pAd, USHORT WCID, UCHAR *pAddr, BOOLEAN
 
 			if (IS_CIPHER_TKIP_Entry(mac_entry)) {
 				WtblInfo.DisRHTR = 1;
+#ifdef A4_CONN
+				if (IS_ENTRY_A4(mac_entry))
+					WtblInfo.DisRHTR = 0;
+#endif
 			}
 
+#ifdef A4_CONN
+			WtblInfo.a4_enable = IS_ENTRY_A4(mac_entry);
+
+			if (IS_ENTRY_A4(mac_entry))
+				MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+						("AsicUpdateRxWCIDTable: Enable A4 in WTBLinfo\n"));
+
+#endif
 #ifdef DOT11R_FT_SUPPORT
 			if (IS_FT_STA(mac_entry)) {
 				WtblInfo.SkipClearPrevSecKey = TRUE;
 			}
 #endif /* DOT11R_FT_SUPPORT */
+
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+	if (mac_entry->wdev->wds_enable)
+		WtblInfo.fg4AddrEnable = mac_entry->bEnable4Addr;
+#endif
+
 		} else
 			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s():mac_entry is NULL!\n", __func__));
 
@@ -1212,6 +1236,30 @@ VOID AsicSetWcidAAD_OM(RTMP_ADAPTER *pAd, UCHAR wcid_idx, CHAR value)
 }
 #endif /* HTC_DECRYPT_IOT */
 
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+VOID AsicSetWcid4Addr_HdrTrans(RTMP_ADAPTER *pAd, UCHAR wcid_idx, UCHAR IsEnable)
+{
+	MAC_TABLE_ENTRY *pEntry = &pAd->MacTab.Content[wcid_idx];
+	UCHAR IsApcliEntry = 0;
+	if (IS_ENTRY_APCLI(pEntry))
+		IsApcliEntry = 1;
+#ifdef MT_MAC
+	if (IS_HIF_TYPE(pAd, HIF_MT)) {
+		if (pAd->archOps.archSetWcid4Addr_HdrTrans) {
+			
+			return pAd->archOps.archSetWcid4Addr_HdrTrans(pAd, wcid_idx, IsEnable, IsApcliEntry);
+		}
+		else {
+			AsicNotSupportFunc(pAd, __FUNCTION__);
+			return;
+		}
+	}
+#endif
+
+	AsicNotSupportFunc(pAd, __FUNCTION__);
+	return;
+}
+#endif
 
 
 VOID AsicAddRemoveKeyTab(
@@ -2251,6 +2299,30 @@ BOOLEAN AsicMcastEntryDelete(RTMP_ADAPTER *pAd, PUCHAR GrpAddr, UINT8 BssIdx, PU
 
 	return Ret;
 }
+
+#ifdef IGMP_TVM_SUPPORT
+BOOLEAN AsicMcastConfigAgeOut(RTMP_ADAPTER *pAd, UINT8 AgeOutTime, UINT8 omac_idx)
+{
+	INT32 Ret = 0;
+
+	if (pAd->archOps.archMcastConfigAgeout)
+		Ret = pAd->archOps.archMcastConfigAgeout(pAd, AgeOutTime, omac_idx);
+
+	return Ret;
+}
+
+BOOLEAN AsicMcastGetMcastTable(RTMP_ADAPTER *pAd, UINT8 ucOwnMacIdx, struct wifi_dev *wdev)
+{
+	INT32 Ret = 0;
+
+	if (pAd->archOps.archMcastGetMcastTable)
+		Ret = pAd->archOps.archMcastGetMcastTable(pAd, ucOwnMacIdx, wdev);
+
+	return Ret;
+}
+
+#endif /* IGMP_TVM_SUPPORT*/
+
 #endif
 
 #ifdef DOT11_VHT_AC

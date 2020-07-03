@@ -33,13 +33,29 @@ INT BndStrg_Release(PRTMP_ADAPTER pAd);
 INT BndStrg_TableInit(PRTMP_ADAPTER pAd, INT apidx);
 INT BndStrg_TableRelease(PBND_STRG_CLI_TABLE table);
 PBND_STRG_CLI_TABLE Get_BndStrgTable(PRTMP_ADAPTER pAd, INT apidx);
+PBND_STRG_CLI_ENTRY BndStrg_TableLookup(PBND_STRG_CLI_TABLE table, PUCHAR pAddr);
+
+/* WPS_BandSteering Support */
+PWPS_WHITELIST_ENTRY FindWpsWhiteListEntry(PLIST_HEADER pWpsWhiteList, PUCHAR pMacAddr);
+VOID AddWpsWhiteList(PLIST_HEADER pWpsWhiteList, PUCHAR pMacAddr);
+VOID DelWpsWhiteListExceptMac(PLIST_HEADER pWpsWhiteList, PUCHAR pMacAddr);
+VOID ClearWpsWhiteList(PLIST_HEADER pWpsWhiteList);
+
+PBS_LIST_ENTRY FindBsListEntry(PLIST_HEADER pBsList, PUCHAR pMacAddr);
+VOID AddBsListEntry(PLIST_HEADER pBsList, PUCHAR pMacAddr);
+VOID DelBsListEntry(PLIST_HEADER pBsList, PUCHAR pMacAddr);
+VOID ClearBsList(PLIST_HEADER pBsList);
+
 
 BOOLEAN BndStrg_CheckConnectionReq(
 	PRTMP_ADAPTER	pAd,
 	struct wifi_dev *wdev,
 	PUCHAR pSrcAddr,
-	MLME_QUEUE_ELEM * Elem,
+	struct raw_rssi_info *rssi_info,
+	ULONG MsgType,
 	PEER_PROBE_REQ_PARAM * ProbeReqParam);
+
+
 
 INT BndStrg_Tb_Enable(PBND_STRG_CLI_TABLE table, BOOLEAN enable, CHAR *IfName);
 INT BndStrg_SetInfFlags(PRTMP_ADAPTER pAd, struct wifi_dev *wdev, PBND_STRG_CLI_TABLE table, BOOLEAN bInfReady);

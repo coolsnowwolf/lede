@@ -55,6 +55,7 @@ VOID Bignum_Free(
 UINT32 Bignum_getlen(
 	IN BIGNUM *pBI);
 
+INT Bignum_Get_rand_range(IN BIGNUM * range, INOUT BIGNUM * r);
 
 VOID Bignum_BI2Bin(
 	IN BIGNUM *pBI,

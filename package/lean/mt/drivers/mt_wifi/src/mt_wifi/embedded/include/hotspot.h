@@ -88,7 +88,6 @@ typedef struct _HOTSPOT_CTRL {
 	BOOLEAN DGAFDisable;
 	UINT8 L2Filter;
 	BOOLEAN ICMPv4Deny;
-	UINT32 MMPDUSize;
 	BOOLEAN QosMapEnable;
 	/* BOOLEAN bNonTX; */	/* 0:enable TX, 1:disable TX*/
 	BOOLEAN bASANEnable;		/* 1:enable ASAN IE, 1:disable ASAN IE*/
@@ -126,19 +125,6 @@ enum {
 	L2FilterDisable,
 	L2FilterBuiltIn,
 	L2FilterExternal,
-};
-
-enum {
-	PARAM_DGAF_DISABLED,
-	PARAM_PROXY_ARP,
-	PARAM_L2_FILTER,
-	PARAM_ICMPV4_DENY,
-	PARAM_MMPDU_SIZE,
-	PARAM_EXTERNAL_ANQP_SERVER_TEST,
-	PARAM_GAS_COME_BACK_DELAY,
-	PARAM_WNM_NOTIFICATION,
-	PARAM_QOSMAP,
-	PARAM_WNM_BSS_TRANSITION_MANAGEMENT,
 };
 
 BOOLEAN L2FilterInspection(
