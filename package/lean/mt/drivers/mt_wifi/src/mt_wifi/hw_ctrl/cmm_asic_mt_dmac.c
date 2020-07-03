@@ -136,6 +136,30 @@ UINT32 MtAsicGetPhyErrCnt(RTMP_ADAPTER *pAd)
 
 UINT32 MtAsicGetCCACnt(RTMP_ADAPTER *pAd)
 {
+#ifdef CUSTOMER_DCC_FEATURE
+	UINT32	PD_CNT, MDRDY_CNT, CCKFalseCCACount, OFDMFalseCCACount;
+	UINT32	False_cca_count, CrValue;
+
+	/* FALSE CCA Count */
+	HW_IO_READ32(pAd, RO_BAND0_PHYCTRL_STS0, &CrValue); /* PD count */
+	PD_CNT = CrValue;
+	HW_IO_READ32(pAd, RO_BAND0_PHYCTRL_STS5, &CrValue); /* MDRDY count */
+	MDRDY_CNT = CrValue;
+
+	CCKFalseCCACount = (PD_CNT & 0xffff) - (MDRDY_CNT & 0xffff);
+	OFDMFalseCCACount = ((PD_CNT & 0xffff0000) >> 16) - ((MDRDY_CNT & 0xffff0000) >> 16) ;
+	False_cca_count = CCKFalseCCACount + OFDMFalseCCACount;
+
+	/* reset PD and MDRDY count */
+	HW_IO_READ32(pAd, PHY_BAND0_PHYMUX_5, &CrValue);
+	CrValue &= 0xff8fffff;
+	HW_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5, CrValue); /* Reset */
+	CrValue |= 0x500000;
+	HW_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5, CrValue); /* Enable */
+
+	return False_cca_count;
+#endif
+
 	return 0;
 }
 
@@ -143,7 +167,65 @@ UINT32 MtAsicGetChBusyCnt(RTMP_ADAPTER *pAd, UCHAR BandIdx)
 {
 	UINT32	msdr16 = 0;
 #ifdef CONFIG_AP_SUPPORT
-	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s----------------->\n", __func__));
+#ifdef OFFCHANNEL_SCAN_FEATURE
+
+	if (pAd->ScanCtrl.ScanTime[pAd->ScanCtrl.CurrentGivenChan_Index] != 0) {
+
+		UINT32	OBSSAirtime, MyTxAirtime, MyRxAirtime;
+		UINT32	CrValue;
+		UINT32 ChBusytime;
+
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+						("[%d][%s]: Scan time : %u \n", __LINE__, __func__,
+						pAd->ScanCtrl.ScanTime[pAd->ScanCtrl.CurrentGivenChan_Index]));
+		if ((pAd->CommonCfg.dbdc_mode) && (pAd->ChannelInfo.bandidx == DBDC_BAND1)) {
+
+			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("[%d][%s]: Band 1\n", __LINE__, __func__));
+			HW_IO_READ32(pAd, RMAC_MIBTIME6, &CrValue);
+			OBSSAirtime = CrValue;
+
+			/*My Tx Air time*/
+			HW_IO_READ32(pAd, MIB_M1SDR36, &CrValue);
+			MyTxAirtime = (CrValue & 0xffffff);
+
+			/*My Rx Air time*/
+			HW_IO_READ32(pAd, MIB_M1SDR37, &CrValue);
+			MyRxAirtime = (CrValue & 0xffffff);
+		} else{ /*band 0*/
+			/*OBSS Air time*/
+			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("[%d][%s]: Band 0\n", __LINE__, __func__));
+			HW_IO_READ32(pAd, RMAC_MIBTIME5, &CrValue);
+			OBSSAirtime = CrValue;
+
+			/*My Tx Air time*/
+			HW_IO_READ32(pAd, MIB_M0SDR36, &CrValue);
+			MyTxAirtime = (CrValue & 0xffffff);
+
+			/*My Rx Air time*/
+			HW_IO_READ32(pAd, MIB_M0SDR37, &CrValue);
+			MyRxAirtime = (CrValue & 0xffffff);
+		}
+		pAd->ChannelInfo.ChStats.Tx_Time = MyTxAirtime;
+		pAd->ChannelInfo.ChStats.Rx_Time = MyRxAirtime;
+		pAd->ChannelInfo.ChStats.Obss_Time = OBSSAirtime;
+		/*Ch Busy time*/
+		ChBusytime = OBSSAirtime + MyTxAirtime + MyRxAirtime;
+
+		/*Reset OBSS Air time*/
+		HW_IO_READ32(pAd, RMAC_MIBTIME0, &CrValue);
+		CrValue |= 1 << RX_MIBTIME_CLR_OFFSET;
+		CrValue |= 1 << RX_MIBTIME_EN_OFFSET;
+		HW_IO_WRITE32(pAd, RMAC_MIBTIME0, CrValue);
+
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+						("[%d][%s]: ChannelBusyTime : %u\n", __LINE__, __func__, ChBusytime));
+
+		return ChBusytime;
+	}
+#endif
+
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+					("%s----------------->\n", __func__));
 
 	if (pAd->CommonCfg.dbdc_mode == 0) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: SB Band0\n", __func__));

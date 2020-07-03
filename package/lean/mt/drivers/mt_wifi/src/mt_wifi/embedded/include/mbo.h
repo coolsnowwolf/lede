@@ -104,7 +104,13 @@ typedef enum {
 	PARAM_MBO_AP_BSS_TERM,
 } MBO_PARAM;
 
-#define PER_EVENT_LIST_MAX_NUM 10
+#define PER_EVENT_LIST_MAX_NUM 5
+
+typedef struct GNU_PACKED _TBTT_INFO_SET
+{
+	UINT8 NrAPTbttOffset;
+	UINT32 ShortBssid;
+} TBTT_INFO_SET, *P_TBTT_INFO_SET;
 
 typedef struct GNU_PACKED _DAEMON_NEIGHBOR_REP_INFO
 {
@@ -119,6 +125,9 @@ typedef struct GNU_PACKED _DAEMON_NEIGHBOR_REP_INFO
 	/* extra information */
 	UINT32 akm;
 	UINT32 cipher;
+	UINT8  TbttInfoSetNum;
+	TBTT_INFO_SET TbttInfoSet;
+	UINT8 Rssi;
 } DAEMON_NEIGHBOR_REP_INFO, *P_DAEMON_NEIGHBOR_REP_INFO;
 
 typedef struct GNU_PACKED daemon_neighbor_report_list {

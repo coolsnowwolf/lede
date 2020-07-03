@@ -51,9 +51,14 @@ VOID SetWdevAuthMode(
 		SET_AKM_WPA2(AKMMap);
 	else if (rtstrcasecmp(arg, "WPA2PSK") == TRUE)
 		SET_AKM_WPA2PSK(AKMMap);
-#ifdef DOT11_SUITEB_SUPPORT
-	else if (rtstrcasecmp(arg, "WPA3") == TRUE)
+	else if (rtstrcasecmp(arg, "WPA3") == TRUE) {
+		/* WPA3 code flow is same as WPA2, the usage of SEC_AKM_WPA3 is to force pmf on */
+		SET_AKM_WPA2(AKMMap);
 		SET_AKM_WPA3(AKMMap);
+	}
+#ifdef DOT11_SUITEB_SUPPORT
+	else if (rtstrcasecmp(arg, "WPA3-192") == TRUE)
+		SET_AKM_WPA3_192BIT(AKMMap);
 #endif
 #ifdef DOT11_SAE_SUPPORT
 	else if (rtstrcasecmp(arg, "WPA3PSK") == TRUE)
@@ -127,24 +132,6 @@ VOID SetWdevEncrypMode(
 			   || (rtstrcasecmp(arg, "WPA_TKIPAES_WPA2_TKIP") == TRUE)) {
 		SET_CIPHER_TKIP(Cipher);
 		SET_CIPHER_CCMP128(Cipher);
-	} else if (rtstrcasecmp(arg, "OWE_SHA256") == TRUE)
-		SET_CIPHER_OWE_SHA256(Cipher);
-	else if (rtstrcasecmp(arg, "OWE_SHA384") == TRUE)
-		SET_CIPHER_OWE_SHA384(Cipher);
-	else if (rtstrcasecmp(arg, "OWE_SHA521") == TRUE)
-		SET_CIPHER_OWE_SHA521(Cipher);
-	/*NOTE: owe sha256 is mandatory, so we don't consider SHA384_SHA521 combination here.*/
-	else if (rtstrcasecmp(arg, "OWE_SHA256_SHA384") == TRUE) {
-		SET_CIPHER_OWE_SHA256(Cipher);
-		SET_CIPHER_OWE_SHA384(Cipher);
-		SET_CIPHER_OWE_SHA521(Cipher);
-	} else if (rtstrcasecmp(arg, "OWE_SHA256_SHA521") == TRUE) {
-		SET_CIPHER_OWE_SHA256(Cipher);
-		SET_CIPHER_OWE_SHA521(Cipher);
-	} else if (rtstrcasecmp(arg, "OWE_SHA256_SHA384_SHA521") == TRUE) {
-		SET_CIPHER_OWE_SHA256(Cipher);
-		SET_CIPHER_OWE_SHA384(Cipher);
-		SET_CIPHER_OWE_SHA521(Cipher);
 	}
 
 	else {
@@ -353,12 +340,14 @@ RTMP_STRING *GetAuthModeStr(
 		return "FT-WPA2";
 	else if (IS_AKM_FT_WPA2PSK(authMode))
 		return "FT-WPA2PSK";
+	else if (IS_AKM_WPA3(authMode)) /* WPA3 will be always accompanied by WPA2, so it should put before the WPA2 */
+		return "WPA3";
 	else if (IS_AKM_WPA2(authMode))
 		return "WPA2";
 	else if (IS_AKM_WPA2PSK(authMode))
 		return "WPA2PSK";
-	else if (IS_AKM_WPA3(authMode))
-		return "WPA3";
+	else if (IS_AKM_WPA3_192BIT(authMode))
+		return "WPA3-192";
 	else if (IS_AKM_OWE(authMode))
 		return "OWE";
 	else
@@ -1245,20 +1234,24 @@ VOID Dot1xIoctlAddWPAKey(
 	wdev = &pAd->ApCfg.MBSSID[apidx].wdev;
 
 	if (IS_AKM_1X(pSecConfig->AKMMap)) {
+		UCHAR key_len = LEN_PMK;
+
 		if ((pKey->KeyLength == 32) || (pKey->KeyLength == 64)) {
 			pEntry = MacTableLookup(pAd, pKey->addr);
 
 			if (pEntry != NULL) {
 				INT k_offset = 0;
 #ifdef DOT11R_FT_SUPPORT
-
 				/* The key shall be the second 256 bits of the MSK. */
 				if (IS_FT_RSN_STA(pEntry) && pKey->KeyLength == 64)
 					k_offset = 32;
 
 #endif /* DOT11R_FT_SUPPORT */
-				NdisMoveMemory(pSecConfig->PMK, pKey->KeyMaterial + k_offset, 32);
-				hex_dump("PMK", pSecConfig->PMK, 32);
+				if (IS_AKM_WPA3_192BIT(pSecConfig->AKMMap) && (pKey->KeyLength == 64))
+					key_len = LEN_PMK_SHA384;
+
+				NdisMoveMemory(pSecConfig->PMK, pKey->KeyMaterial + k_offset, key_len);
+				hex_dump("PMK", pSecConfig->PMK, key_len);
 			}
 		}
 	} else {	/* Old WEP stuff */
@@ -1904,11 +1897,6 @@ VOID store_pmkid_cache_in_sec_config(
 	} else {
 		if (IS_ENTRY_CLIENT(pEntry)) {
 #ifdef CONFIG_AP_SUPPORT
-#ifdef APCLI_SUPPORT
-			if (IS_ENTRY_APCLI(pEntry) || IS_ENTRY_REPEATER(pEntry))
-				; /* todo Ellis*/
-			else
-#endif
 				pEntry->SecConfig.pmkid = pAd->ApCfg.PMKIDCache.BSSIDInfo[cache_idx].PMKID;
 				pEntry->SecConfig.pmk_cache = pAd->ApCfg.PMKIDCache.BSSIDInfo[cache_idx].PMK;
 #endif

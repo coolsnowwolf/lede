@@ -1,3 +1,35 @@
+#ifdef DEFAULT_5G_PROFILE
+UCHAR l1profile_default[] = {
+"Default\n\
+INDEX0=MT7615\n\
+INDEX0_profile_path=/etc/Wireless/RT2860/RT2860_2G.dat;/etc/Wireless/RT2860/RT2860_5G.dat\n\
+INDEX0_EEPROM_offset=0x0\n\
+INDEX0_EEPROM_size=0x4000\n\
+INDEX0_EEPROM_name=e2p\n\
+INDEX0_main_ifname=ra0;rax0\n\
+INDEX0_ext_ifname=ra;rax\n\
+INDEX0_wds_ifname=wds;wdsx\n\
+INDEX0_apcli_ifname=apcli;apclix\n\
+INDEX0_mesh_ifname=mesh;meshx\n\
+INDEX0_nvram_zone=RT2860\n\
+INDEX0_single_sku_path=/etc_ro/Wireless/RT2860AP/SingleSKU.dat\n\
+INDEX0_bf_sku_path=/etc_ro/Wireless/RT2860AP/SingleSKU_BF.dat\n\
+INDEX1=MT7615\n\
+INDEX1_profile_path=/etc/Wireless/iNIC/iNIC_ap.dat\n\
+INDEX1_EEPROM_offset=0x8000\n\
+INDEX1_EEPROM_size=0x4000\n\
+INDEX1_EEPROM_name=e2p\n\
+INDEX1_main_ifname=rai0\n\
+INDEX1_ext_ifname=rai\n\
+INDEX1_wds_ifname=wdsi\n\
+INDEX1_apcli_ifname=apclii\n\
+INDEX1_mesh_ifname=meshi\n\
+INDEX1_nvram_zone=RTDEV\n\
+INDEX1_single_sku_path=/etc_ro/Wireless/RT2860AP/SingleSKU.dat\n\
+INDEX1_bf_sku_path=/etc_ro/Wireless/RT2860AP/SingleSKU_BF.dat\n"
+};
+
+#else
 UCHAR l1profile_default[] = {
 "Default\n\
 INDEX0=MT7615\n\
@@ -39,8 +71,8 @@ INDEX2_mesh_ifname=meshe\n\
 INDEX2_nvram_zone=WIFI3\n\
 INDEX2_single_sku_path=/etc_ro/Wireless/RT2860AP/SingleSKU.dat\n\
 INDEX2_bf_sku_path=/etc_ro/Wireless/RT2860AP/SingleSKU_BF.dat\n\
-INDEX3=MT7615D\n\
-INDEX3_profile_path=/etc/Wireless/RT2860/RT2860_2G.dat;/etc/Wireless/RT2860/RT2860_5G.dat\n\
+INDEX3=MT7615A\n\
+INDEX3_profile_path=/etc/Wireless/MT7615A_B0_5G.dat;/etc/Wireless/MT7615A_B1_5G.dat\n\
 INDEX3_EEPROM_offset=0x0\n\
 INDEX3_EEPROM_size=0x4000\n\
 INDEX3_EEPROM_name=e2p\n\
@@ -51,18 +83,6 @@ INDEX3_apcli_ifname=apcli;apclix\n\
 INDEX3_mesh_ifname=mesh;meshx\n\
 INDEX3_nvram_zone=RT2860\n\
 INDEX3_single_sku_path=/etc_ro/Wireless/RT2860AP/SingleSKU.dat\n\
-INDEX3_bf_sku_path=/etc_ro/Wireless/RT2860AP/SingleSKU_BF.dat\n\
-INDEX4=MT7615A\n\
-INDEX4_profile_path=/etc/Wireless/MT7615A_B0_5G.dat;/etc/Wireless/MT7615A_B1_5G.dat\n\
-INDEX4_EEPROM_offset=0x0\n\
-INDEX4_EEPROM_size=0x4000\n\
-INDEX4_EEPROM_name=e2p\n\
-INDEX4_main_ifname=ra0;rax0\n\
-INDEX4_ext_ifname=ra;rax\n\
-INDEX4_wds_ifname=wds;wdsx\n\
-INDEX4_apcli_ifname=apcli;apclix\n\
-INDEX4_mesh_ifname=mesh;meshx\n\
-INDEX4_nvram_zone=RT2860\n\
-INDEX4_single_sku_path=/etc_ro/Wireless/RT2860AP/SingleSKU.dat\n\
-INDEX4_bf_sku_path=/etc_ro/Wireless/RT2860AP/SingleSKU_BF.dat\n"
+INDEX3_bf_sku_path=/etc_ro/Wireless/RT2860AP/SingleSKU_BF.dat\n"
 };
+#endif

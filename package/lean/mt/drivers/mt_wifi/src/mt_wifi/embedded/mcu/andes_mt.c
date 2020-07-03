@@ -15,7 +15,9 @@
 */
 
 #include	"rt_config.h"
-
+#ifdef TXRX_STAT_SUPPORT
+#include "hdev/hdev_basic.h"
+#endif
 #if defined (RLM_CAL_CACHE_SUPPORT) || defined(PRE_CAL_TRX_SET2_SUPPORT)
 #include    "phy/rlm_cal_cache.h"
 #endif /* defined(RLM_CAL_CACHE_SUPPORT) || defined(PRE_CAL_TRX_SET2_SUPPORT) */
@@ -463,7 +465,23 @@ static VOID ExtEventRddReportHandler(RTMP_ADAPTER *pAd,
 	struct _EXT_EVENT_RDD_REPORT_T *pExtEventRddReport =
 		(struct _EXT_EVENT_RDD_REPORT_T *)Data;
 	UCHAR ucRddIdx = pExtEventRddReport->ucRddIdx;
-	WrapDfsRddReportHandle(pAd, ucRddIdx);
+#ifdef RDM_FALSE_ALARM_DEBUG_SUPPORT
+	BOOLEAN fgRadarDetected = FALSE;
+
+	UpdateRadarInfo(pExtEventRddReport);
+	if ((pExtEventRddReport->ucLongDetected == TRUE) || (pExtEventRddReport->ucConstantPRFDetected == TRUE) ||
+		(pExtEventRddReport->ucStaggeredPRFDetected == TRUE))
+		fgRadarDetected = TRUE;
+
+	if (pAd->CommonCfg.DfsParameter.fgSwRDDLogEnable == TRUE)
+		DumpRadarSwPulsesInfo(pAd, pExtEventRddReport);
+	if (pAd->CommonCfg.DfsParameter.fgHwRDDLogEnable == TRUE)
+		DumpRadarHwPulsesInfo(pAd, pExtEventRddReport);
+
+	if ((pAd->CommonCfg.DfsParameter.fgRadarEmulate == TRUE) ||
+		(fgRadarDetected == TRUE))
+#endif /* RDM_FALSE_ALARM_DEBUG_SUPPORT */
+		WrapDfsRddReportHandle(pAd, ucRddIdx);
 }
 
 #endif
@@ -482,6 +500,10 @@ static VOID ExtEventWifiSpectrumHandler(
 	IN UINT32 Length)
 {
 	EXT_EVENT_SPECTRUM_RESULT_T *pResult = (EXT_EVENT_SPECTRUM_RESULT_T *)pData;
+
+#ifdef RT_BIG_ENDIAN
+	pResult->u4FuncIndex = le2cpu32(pResult->u4FuncIndex);
+#endif
 
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 			("%s----------------->\n", __func__));
@@ -1090,6 +1112,18 @@ VOID ExtEventICapStatusHandler(
 	IN UINT32 Length)
 {
 	EXT_EVENT_RBIST_ADDR_T *prICapGetEvent = (EXT_EVENT_RBIST_ADDR_T *)pData;
+
+#ifdef RT_BIG_ENDIAN
+	prICapGetEvent->u4FuncIndex = le2cpu32(prICapGetEvent->u4FuncIndex);
+	prICapGetEvent->u4FuncLength = le2cpu32(prICapGetEvent->u4FuncLength);
+	prICapGetEvent->u4StartAddr1 = le2cpu32(prICapGetEvent->u4StartAddr1);
+	prICapGetEvent->u4StartAddr2 = le2cpu32(prICapGetEvent->u4StartAddr2);
+	prICapGetEvent->u4StartAddr3 = le2cpu32(prICapGetEvent->u4StartAddr3);
+	prICapGetEvent->u4EndAddr = le2cpu32(prICapGetEvent->u4EndAddr);
+	prICapGetEvent->u4StopAddr = le2cpu32(prICapGetEvent->u4StopAddr);
+	prICapGetEvent->u4Wrap = le2cpu32(prICapGetEvent->u4Wrap);
+#endif
+
 	/* save iCap result */
 	/* send iCap result to QA tool */
 #ifdef CONFIG_ATE
@@ -1120,7 +1154,7 @@ static VOID ExtEventThroughputBurst(RTMP_ADAPTER *pAd,
 	POS_COOKIE pObj = (POS_COOKIE)pAd->OS_Cookie;
 	struct wifi_dev *wdev;
 	BOOLEAN fgEnable = FALSE;
-	UCHAR pkt_num = 0;
+	UCHAR pkt_num = 0, retry_limit = 0;
 	UINT32 length = 0;
 #ifdef CONFIG_AP_SUPPORT
 	wdev = &pAd->ApCfg.MBSSID[pObj->ioctl_if].wdev;
@@ -1138,12 +1172,14 @@ static VOID ExtEventThroughputBurst(RTMP_ADAPTER *pAd,
 	if (pAd->bDisableRtsProtect) {
 		pkt_num = MAX_RTS_PKT_THRESHOLD;
 		length = MAX_RTS_THRESHOLD;
+		retry_limit = 0;
 	} else {
 		pkt_num = wlan_operate_get_rts_pkt_thld(wdev);
 		length = wlan_operate_get_rts_len_thld(wdev);
+		retry_limit = wlan_operate_get_rts_retry_limit(wdev);
 	}
 
-	HW_SET_RTS_THLD(pAd, wdev, pkt_num, length);
+	HW_SET_RTS_THLD(pAd, wdev, pkt_num, length, retry_limit);
 	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 			 ("%s::%d\n", __func__, fgEnable));
 }
@@ -1479,18 +1515,35 @@ BOOLEAN MtUpdateBcnAndTimToMcu(
 	UCHAR *buf;
 	INT len;
 	PNDIS_PACKET *pkt = NULL;
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+	CMD_BCN_OFFLOAD_T *bcn_offload = NULL;
+#else
 	CMD_BCN_OFFLOAD_T bcn_offload;
+#endif
 	struct wifi_dev *wdev = (struct wifi_dev *)wdev_void;
 	BOOLEAN bSntReq = FALSE;
 	UCHAR TimIELocation = 0, CsaIELocation = 0;
 	RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
 	UINT8 tx_hw_hdr_len = cap->tx_hw_hdr_len;
 
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+		os_alloc_mem(NULL, (PUCHAR *)&bcn_offload, sizeof(*bcn_offload));
+		if (!bcn_offload) {
+			MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+					 ("can not allocate bcn_offload\n"));
+			return FALSE;
+		}
+		os_zero_mem(bcn_offload, sizeof(*bcn_offload));
+#else
 	NdisZeroMemory(&bcn_offload, sizeof(CMD_BCN_OFFLOAD_T));
+#endif
 
 	if (!wdev) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s(): wdev is NULL!\n", __func__));
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+		os_free_mem(bcn_offload);
+#endif
 		return FALSE;
 	}
 
@@ -1499,10 +1552,17 @@ BOOLEAN MtUpdateBcnAndTimToMcu(
 	if (!bcn_buf) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s(): bcn_buf is NULL!\n", __func__));
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+		os_free_mem(bcn_offload);
+#endif
 		return FALSE;
 	}
 
-	if (UpdatePktType == PKT_BCN) {
+	if ((UpdatePktType == PKT_BCN)
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+		|| (UpdatePktType == PKT_V2_BCN)
+#endif
+	) {
 		pkt = bcn_buf->BeaconPkt;
 		bSntReq = bcn_buf->bBcnSntReq;
 		TimIELocation = bcn_buf->TimIELocationInBeacon;
@@ -1517,6 +1577,9 @@ BOOLEAN MtUpdateBcnAndTimToMcu(
 		if (!tim_buf) {
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("%s(): tim_buf is NULL!\n", __func__));
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+			os_free_mem(bcn_offload);
+#endif
 			return FALSE;
 		}
 
@@ -1531,6 +1594,21 @@ BOOLEAN MtUpdateBcnAndTimToMcu(
 	if (pkt) {
 		buf = (UCHAR *)GET_OS_PKT_DATAPTR(pkt);
 		len = FrameLen + tx_hw_hdr_len;/* TXD & pkt content. */
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+		bcn_offload->ucEnable = bSntReq;
+		bcn_offload->ucWlanIdx = 0;/* hardcode at present */
+		bcn_offload->ucOwnMacIdx = wdev->OmacIdx;
+		bcn_offload->ucBandIdx = HcGetBandByWdev(wdev);
+		bcn_offload->u2PktLength = len;
+		bcn_offload->ucPktType = UpdatePktType;
+		bcn_offload->fgNeedPretbttIntEvent = cap->fgIsNeedPretbttIntEvent;
+#ifdef CONFIG_AP_SUPPORT
+		bcn_offload->u2TimIePos = TimIELocation + tx_hw_hdr_len;
+		bcn_offload->u2CsaIePos = CsaIELocation + tx_hw_hdr_len;
+		bcn_offload->ucCsaCount = wdev->csa_count;
+#endif
+		NdisCopyMemory(bcn_offload->acPktContent, buf, len);
+#else
 		bcn_offload.ucEnable = bSntReq;
 		bcn_offload.ucWlanIdx = 0;/* hardcode at present */
 		bcn_offload.ucOwnMacIdx = wdev->OmacIdx;
@@ -1544,12 +1622,19 @@ BOOLEAN MtUpdateBcnAndTimToMcu(
 		bcn_offload.ucCsaCount = wdev->csa_count;
 #endif
 		NdisCopyMemory(bcn_offload.acPktContent, buf, len);
+#endif
 		MtCmdBcnOffloadSet(pAd, bcn_offload);
 	} else {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s(): BeaconPkt is NULL!\n", __func__));
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+		os_free_mem(bcn_offload);
+#endif
 		return FALSE;
 	}
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+	os_free_mem(bcn_offload);
+#endif
 
 	return TRUE;
 }
@@ -1690,7 +1775,7 @@ static VOID ExtEventTmrCalcuInfoHandler(
 	ptmr_calcu_info = (P_EXT_EVENT_TMR_CALCU_INFO_T)Data;
 	p_tmr_frm = (TMR_FRM_STRUC *)ptmr_calcu_info->aucTmrFrm;
 #ifdef RT_BIG_ENDIAN
-	RTMPEndianChange(p_tmr_frm, sizeof(TMR_FRM_STRUC));
+	RTMPEndianChange((UCHAR *)p_tmr_frm, sizeof(TMR_FRM_STRUC));
 #endif
 	/*Tmr pkt comes to FW event, fw already take cares of the whole calculation.*/
 	TmrReportParser(pAd, p_tmr_frm, TRUE, le2cpu32(ptmr_calcu_info->u4TOAECalibrationResult));
@@ -1711,9 +1796,11 @@ static VOID ExtEventCswNotifyHandler(
 		return;
 
 	wdev->csa_count = csa_notify_event->ucChannelSwitchCount;
+
 	pDot11h = wdev->pDot11_H;
 	if (pDot11h == NULL)
 		return;
+
 	for (Index = 0; Index < WDEV_NUM_MAX; Index++) {
 		wdevEach = pAd->wdev_list[Index];
 		if (wdevEach == NULL)
@@ -1724,6 +1811,14 @@ static VOID ExtEventCswNotifyHandler(
 			wdevEach->csa_count = wdev->csa_count;
 		}
 	}
+
+#ifdef CUSTOMER_DCC_FEATURE
+	if (pAd->CommonCfg.channelSwitch.CHSWMode == CHANNEL_SWITCHING_MODE) {
+		pAd->CommonCfg.channelSwitch.CHSWCount = pAd->CommonCfg.channelSwitch.CHSWPeriod;
+		ChannelSwitchingCountDownProcNew(pAd, wdev);
+		return;
+	}
+#endif
 
 	if ((HcIsRfSupport(pAd, RFIC_5GHZ))
 		&& (pAd->CommonCfg.bIEEE80211H == 1)
@@ -1858,8 +1953,8 @@ static VOID ext_event_get_cr4_tx_statistics(RTMP_ADAPTER *pAd, UINT8 *data, UINT
 		(P_EXT_EVENT_GET_CR4_TX_STATISTICS_T)data;
 	MAC_TABLE *table = &pAd->MacTab;
 	MAC_TABLE_ENTRY *entry = &table->Content[tx_statistics->wlan_index];
-	entry->OneSecTxBytes = tx_statistics->one_sec_tx_bytes;
-	entry->one_sec_tx_pkts = tx_statistics->one_sec_tx_cnts;
+	entry->OneSecTxBytes = le2cpu32(tx_statistics->one_sec_tx_bytes);
+	entry->one_sec_tx_pkts = le2cpu32(tx_statistics->one_sec_tx_cnts);
 	entry->AvgTxBytes = (entry->AvgTxBytes == 0) ?
 						entry->OneSecTxBytes :
 						((entry->AvgTxBytes + entry->OneSecTxBytes) >> 1);
@@ -1868,6 +1963,137 @@ static VOID ext_event_get_cr4_tx_statistics(RTMP_ADAPTER *pAd, UINT8 *data, UINT
 						 ((entry->avg_tx_pkts + entry->one_sec_tx_pkts) >> 1);
 }
 
+#ifdef IGMP_TVM_SUPPORT
+static VOID ext_event_get_igmp_multicast_table(RTMP_ADAPTER *pAd, UINT8 *data, UINT32 len)
+{
+	P_EXT_EVENT_ID_IGMP_MULTICAST_SET_GET_T IgmpMulticastGet =
+		(P_EXT_EVENT_ID_IGMP_MULTICAST_SET_GET_T)data;
+
+	if (len < sizeof(EXT_EVENT_ID_IGMP_MULTICAST_SET_GET)) {
+		MTWF_LOG(DBG_CAT_PROTO, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("%s: Cmd Event ength %u is less than required size %lu\n",
+			__func__, len, sizeof(EXT_EVENT_ID_IGMP_MULTICAST_SET_GET)));
+		return;
+	}
+
+	switch (IgmpMulticastGet->ucRspType) {
+	case MCAST_RSP_ENTRY_TABLE:
+		IgmpSnoopingGetMulticastTable(pAd, IgmpMulticastGet->ucOwnMacIdx, &IgmpMulticastGet->RspData.McastTable);
+		break;
+	default:
+		MTWF_LOG(DBG_CAT_PROTO, DBG_SUBCAT_ALL, DBG_LVL_WARN,
+					("%s: Cmd Event ID %u is not supported\n",
+					__func__, IgmpMulticastGet->ucRspType));
+	}
+}
+#endif /* IGMP_TVM_SUPPORT */
+
+#ifdef CUSTOMER_RSG_FEATURE
+static VOID ExtEventGetWtblTxCounter(RTMP_ADAPTER *pAd, UINT8 *Data, UINT32 Length)
+{
+	EXT_EVENT_WTBL_TX_COUNTER_RESULT_T *CmdWtblTxCounterResult = (EXT_EVENT_WTBL_TX_COUNTER_RESULT_T *)Data;
+
+	CmdWtblTxCounterResult->u4Field = le2cpu32(CmdWtblTxCounterResult->u4Field);
+	CmdWtblTxCounterResult->CurrentBWTxCount = le2cpu32(CmdWtblTxCounterResult->CurrentBWTxCount);
+	CmdWtblTxCounterResult->OtherBWTxCount = le2cpu32(CmdWtblTxCounterResult->OtherBWTxCount);
+	CmdWtblTxCounterResult->DataFrameRetryCnt = le2cpu32(CmdWtblTxCounterResult->DataFrameRetryCnt);
+	CmdWtblTxCounterResult->MgmtRetryCnt = le2cpu32(CmdWtblTxCounterResult->MgmtRetryCnt);
+
+	if (CmdWtblTxCounterResult->u4Field & GET_WTBL_TX_COUNT) {
+		pAd->RadioStatsCounter.TotalTxCount += CmdWtblTxCounterResult->CurrentBWTxCount +
+										CmdWtblTxCounterResult->OtherBWTxCount;
+
+		pAd->RadioStatsCounter.TxDataCount += CmdWtblTxCounterResult->CurrentBWTxCount +
+											CmdWtblTxCounterResult->OtherBWTxCount;
+
+		pAd->RadioStatsCounter.TxRetriedPktCount += CmdWtblTxCounterResult->DataFrameRetryCnt +
+												CmdWtblTxCounterResult->MgmtRetryCnt;
+	}
+#ifdef CUSTOMER_DCC_FEATURE
+	if (CmdWtblTxCounterResult->u4Field & GET_WTBL_PER_STA_TX_COUNT) {
+		UINT32 WcidIdx;
+		PMAC_TABLE_ENTRY pEntry = NULL;
+		for (WcidIdx = 0; WcidIdx < MAX_LEN_OF_MAC_TABLE; WcidIdx++) {
+			pEntry = &pAd->MacTab.Content[WcidIdx];
+			if (pEntry && IS_ENTRY_CLIENT(pEntry) && pEntry->Sst == SST_ASSOC) {
+				CmdWtblTxCounterResult->PerStaRetriedPktCnt[WcidIdx] =
+					le2cpu32(CmdWtblTxCounterResult->PerStaRetriedPktCnt[WcidIdx]);
+				pEntry->TxRetriedPktCount += CmdWtblTxCounterResult->PerStaRetriedPktCnt[WcidIdx];
+				pEntry->pMbss->TxRetriedPktCount += CmdWtblTxCounterResult->PerStaRetriedPktCnt[WcidIdx];
+			}
+		}
+	}
+#endif
+}
+#endif
+
+#ifdef TXRX_STAT_SUPPORT
+static VOID ExtEventGetStaTxStat(RTMP_ADAPTER *pAd, UINT8 *Data, UINT32 Length)
+{
+	EXT_EVENT_STA_TX_STAT_RESULT_T *CmdStaTxStatResult = (EXT_EVENT_STA_TX_STAT_RESULT_T *)Data;
+	UINT32 WcidIdx;
+#ifndef VENDOR_FEATURE11_SUPPORT
+	UINT32 i, band_idx;
+	struct hdev_ctrl *ctrl = (struct hdev_ctrl *)pAd->hdev_ctrl;
+#endif /* VENDOR_FEATURE11_SUPPORT */
+	PMAC_TABLE_ENTRY pEntry = NULL;
+
+#ifndef VENDOR_FEATURE11_SUPPORT
+	for (i = 0; i < pAd->ApCfg.BssidNum; i++) {
+		pAd->ApCfg.MBSSID[i].stat_bss.Last1TxCnt = 0;
+		pAd->ApCfg.MBSSID[i].stat_bss.Last1TxFailCnt = 0;
+	}
+	for (i = 0; i < DBDC_BAND_NUM; i++) {
+		ctrl->rdev[i].pRadioCtrl->Last1TxCnt = 0;
+		ctrl->rdev[i].pRadioCtrl->Last1TxFailCnt = 0;
+	}
+	for (WcidIdx = 0; WcidIdx < MAX_LEN_OF_MAC_TABLE; WcidIdx++) {
+		pEntry = &pAd->MacTab.Content[WcidIdx];
+		if (pEntry && pEntry->wdev &&  IS_ENTRY_CLIENT(pEntry) && pEntry->Sst == SST_ASSOC) {
+			pEntry->LastOneSecPER = 0;
+		}
+	}
+#endif /* VENDOR_FEATURE11_SUPPORT */
+	for (WcidIdx = 0; WcidIdx < MAX_LEN_OF_MAC_TABLE; WcidIdx++) {
+		pEntry = &pAd->MacTab.Content[WcidIdx];
+		if (pEntry && pEntry->wdev &&  IS_ENTRY_CLIENT(pEntry) && pEntry->Sst == SST_ASSOC) {
+#ifndef VENDOR_FEATURE11_SUPPORT
+			band_idx = HcGetBandByWdev(pEntry->wdev);
+#endif /* VENDOR_FEATURE11_SUPPORT */
+			CmdStaTxStatResult->PerStaTxPktCnt[WcidIdx] =
+				le2cpu32(CmdStaTxStatResult->PerStaTxPktCnt[WcidIdx]);
+			CmdStaTxStatResult->PerStaTxFailPktCnt[WcidIdx] =
+				le2cpu32(CmdStaTxStatResult->PerStaTxFailPktCnt[WcidIdx]);
+			pEntry->LastOneSecTxTotalCountByWtbl = CmdStaTxStatResult->PerStaTxPktCnt[WcidIdx];
+			pEntry->LastOneSecTxFailCountByWtbl = CmdStaTxStatResult->PerStaTxFailPktCnt[WcidIdx];
+#ifdef VENDOR_FEATURE11_SUPPORT
+			pEntry->mpdu_attempts.QuadPart += CmdStaTxStatResult->PerStaTxPktCnt[WcidIdx];
+			pEntry->mpdu_retries.QuadPart += CmdStaTxStatResult->PerStaTxFailPktCnt[WcidIdx];
+#endif /* VENDOR_FEATURE11_SUPPORT */
+			pEntry->TxSuccessByWtbl += CmdStaTxStatResult->PerStaTxPktCnt[WcidIdx] -
+													CmdStaTxStatResult->PerStaTxFailPktCnt[WcidIdx];
+#ifndef VENDOR_FEATURE11_SUPPORT
+			ctrl->rdev[band_idx].pRadioCtrl->TotalTxCnt += CmdStaTxStatResult->PerStaTxPktCnt[WcidIdx];
+			ctrl->rdev[band_idx].pRadioCtrl->TotalTxFailCnt +=  CmdStaTxStatResult->PerStaTxFailPktCnt[WcidIdx];
+
+			if (ctrl->rdev[band_idx].pRadioCtrl->TotalTxCnt && ctrl->rdev[band_idx].pRadioCtrl->TotalTxFailCnt)
+				ctrl->rdev[band_idx].pRadioCtrl->TotalPER = ((100 * (ctrl->rdev[band_idx].pRadioCtrl->TotalTxFailCnt))/
+													ctrl->rdev[band_idx].pRadioCtrl->TotalTxCnt);
+			ctrl->rdev[band_idx].pRadioCtrl->Last1TxCnt += CmdStaTxStatResult->PerStaTxPktCnt[WcidIdx];
+			ctrl->rdev[band_idx].pRadioCtrl->Last1TxFailCnt += CmdStaTxStatResult->PerStaTxFailPktCnt[WcidIdx];
+			pEntry->pMbss->stat_bss.Last1TxCnt += CmdStaTxStatResult->PerStaTxPktCnt[WcidIdx];
+			pEntry->pMbss->stat_bss.Last1TxFailCnt += CmdStaTxStatResult->PerStaTxFailPktCnt[WcidIdx];
+			pEntry->pMbss->stat_bss.TxRetriedPacketCount.QuadPart += CmdStaTxStatResult->PerStaTxFailPktCnt[WcidIdx];
+#endif /* VENDOR_FEATURE11_SUPPORT */
+			/*PER in percentage*/
+			if (CmdStaTxStatResult->PerStaTxPktCnt[WcidIdx] && CmdStaTxStatResult->PerStaTxFailPktCnt[WcidIdx]) {
+				pEntry->LastOneSecPER = ((100 * (CmdStaTxStatResult->PerStaTxFailPktCnt[WcidIdx]))/
+													CmdStaTxStatResult->PerStaTxPktCnt[WcidIdx]);
+			}
+		}
+	}
+}
+#endif
 static BOOLEAN IsUnsolicitedEvent(EVENT_RXD *event_rxd)
 {
 	if ((GET_EVENT_FW_RXD_SEQ_NUM(event_rxd) == 0)                          ||
@@ -2368,6 +2594,24 @@ static VOID EventExtEventHandler(RTMP_ADAPTER *pAd, UINT8 ExtEID, UINT8 *Data,
 		event_get_tx_statistic_handle(pAd, Data, Length);
 		break;
 #endif /*RACTRL_FW_OFFLOAD_SUPPORT*/
+#ifdef CUSTOMER_RSG_FEATURE
+	case EXT_EVENT_ID_GET_WTBL_TX_COUNTER:
+		ExtEventGetWtblTxCounter(pAd, Data, Length);
+		break;
+#endif
+
+#ifdef TXRX_STAT_SUPPORT
+	case EXT_EVENT_ID_GET_STA_TX_STAT:
+		ExtEventGetStaTxStat(pAd, Data, Length);
+		break;
+#endif
+
+#ifdef IGMP_TVM_SUPPORT
+	case EXT_EVENT_ID_IGMP_MULTICAST_RESP:
+		ext_event_get_igmp_multicast_table(pAd, Data, Length);
+		break;
+#endif /* IGMP_TVM_SUPPORT */
+
 	default:
 		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 				 ("%s: Unknown Ext Event(%x)\n", __func__, ExtEID));
@@ -2727,8 +2971,7 @@ VOID AndesMTRxEventHandler(RTMP_ADAPTER *pAd, UCHAR *data)
 	AndesMTRxProcessEvent(pAd, msg);
 #if defined(RTMP_PCI_SUPPORT) || defined(RTMP_RBUS_SUPPORT)
 
-	if (msg->net_pkt)
-		RTMPFreeNdisPacket(pAd, msg->net_pkt);
+	RTMPFreeNdisPacket(pAd, msg->net_pkt);
 
 #endif
 	AndesFreeCmdMsg(msg);

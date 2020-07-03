@@ -421,6 +421,10 @@ VOID FT_CfgInitial(
 		NdisZeroMemory(pFtCfg->FtR0khId, sizeof(pFtCfg->FtR0khId));
 		NdisMoveMemory(pFtCfg->FtR0khId, R0khIdBuf, strlen(R0khIdBuf));
 		pFtCfg->FtR0khIdLen = strlen(R0khIdBuf);
+#ifdef HOSTAPD_11R_SUPPORT
+		NdisZeroMemory(pFtCfg->FtR1khId, MAC_ADDR_LEN);
+		NdisMoveMemory(pFtCfg->FtR1khId, pAd->ApCfg.MBSSID[apidx].wdev.bssid, MAC_ADDR_LEN);
+#endif
 	}
 }
 
@@ -772,8 +776,13 @@ USHORT FT_AssocReqHandler(
 				ft_len += (2 + pFtInfoBuf->FtIeInfo.R0khIdLen);
 				/* Prepare in the R1KHID and its length */
 				pFtInfoBuf->FtIeInfo.R1khIdLen = MAC_ADDR_LEN;
+#ifdef HOSTAPD_11R_SUPPORT
+				NdisMoveMemory(pFtInfoBuf->FtIeInfo.R1khId,
+							pFtCfg->FtR1khId, MAC_ADDR_LEN);
+#else
 				NdisMoveMemory(pFtInfoBuf->FtIeInfo.R1khId,
 							   pAd->ApCfg.MBSSID[pEntry->func_tb_idx].wdev.bssid, MAC_ADDR_LEN);
+#endif /* HOSTAPD_11R_SUPPORT */
 				ft_len += (2 + MAC_ADDR_LEN);
 				/* Update the length of FTIE */
 				pFtInfoBuf->FtIeInfo.Len = ft_len;
@@ -1325,12 +1334,22 @@ VOID FT_RrbHandler(
 					  END_OF_ARGS);
 	/* enqueue it into FT action state machine. */
 	if (pEntry) {
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+		REPORT_MGMT_FRAME_TO_MLME(pAd, Wcid, pOutBuffer, FrameLen,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, OPMODE_AP, wdev, pEntry->HTPhyMode.field.MODE);
+#else
 		REPORT_MGMT_FRAME_TO_MLME(pAd, Wcid, pOutBuffer, FrameLen,
 			0, 0, 0, 0, 0, 0, OPMODE_AP, wdev, pEntry->HTPhyMode.field.MODE);
+#endif
 	} else {
 		/* Report basic phymode if pEntry = NULL  */
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+		REPORT_MGMT_FRAME_TO_MLME(pAd, Wcid, pOutBuffer, FrameLen,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, OPMODE_AP, wdev, WMODE_CAP_5G(wdev->PhyMode) ? MODE_OFDM : MODE_CCK);
+#else
 		REPORT_MGMT_FRAME_TO_MLME(pAd, Wcid, pOutBuffer, FrameLen,
 			0, 0, 0, 0, 0, 0, OPMODE_AP, wdev, WMODE_CAP_5G(wdev->PhyMode) ? MODE_OFDM : MODE_CCK);
+#endif
 	}
 
 	if (pOutBuffer)

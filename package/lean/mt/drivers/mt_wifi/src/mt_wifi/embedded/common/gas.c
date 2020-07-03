@@ -163,16 +163,22 @@ VOID SendGASRsp(
 	MAC_TABLE_ENTRY *pEntry = NULL;
 	UCHAR WildcardBssid[MAC_ADDR_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 	GAS_QUERY_RSP_FRAGMENT *GASQueryRspFrag, *GASQueryRspFragTmp;
+	BOOLEAN bPeerFound = FALSE;
 #ifdef CONFIG_HOTSPOT
 	PHOTSPOT_CTRL pHSCtrl = &pAd->ApCfg.MBSSID[Event->ControlIndex].HotSpotCtrl;
 #endif
 	MTWF_LOG(DBG_CAT_PROTO, CATPROTO_WNM, DBG_LVL_TRACE, ("%s\n", __func__));
 	RTMP_SEM_LOCK(&pGASCtrl->GASPeerListLock);
 	DlListForEach(GASPeerEntry, &pGASCtrl->GASPeerList, GAS_PEER_ENTRY, List) {
-		if (MAC_ADDR_EQUAL(GASPeerEntry->PeerMACAddr, Event->PeerMACAddr))
+		if (MAC_ADDR_EQUAL(GASPeerEntry->PeerMACAddr, Event->PeerMACAddr)) {
+			bPeerFound = TRUE;
 			break;
+		}
 	}
 	RTMP_SEM_UNLOCK(&pGASCtrl->GASPeerListLock);
+
+	if (bPeerFound == FALSE)
+		return;
 
 	if (Event->u.GAS_RSP_DATA.AdvertisementProID == ACCESS_NETWORK_QUERY_PROTOCOL) {
 		/* Advertisement protocol element + Query response length field */
@@ -485,10 +491,19 @@ static VOID SendGASCBRsp(
 	GAS_PEER_ENTRY *GASPeerEntry;
 	GAS_QUERY_RSP_FRAGMENT *GASQueryRspFrag = NULL, *GASQueryRspFragTmp;
 	PGAS_CTRL pGASCtrl = &pAd->ApCfg.MBSSID[Event->ControlIndex].GASCtrl;
-	BOOLEAN bGASQueryRspFragFound = FALSE;
+	BOOLEAN bGASQueryRspFragFound = FALSE, bPeerFound = FALSE;
 	BOOLEAN Cancelled;
 	MAC_TABLE_ENTRY *pEntry = NULL;
 	UCHAR WildcardBssid[MAC_ADDR_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+	/* Pre-allocate max possible length */
+	os_alloc_mem(NULL, (UCHAR **)&Buf, sizeof(*GASFrame) + 6 + pGASCtrl->MMPDUSize);
+
+	if (!Buf) {
+		MTWF_LOG(DBG_CAT_PROTO, CATPROTO_WNM, DBG_LVL_ERROR, ("%s Not available memory\n", __func__));
+		return;
+	}
+	NdisZeroMemory(Buf, sizeof(*GASFrame) + 6 + pGASCtrl->MMPDUSize);
 
 	MTWF_LOG(DBG_CAT_PROTO, CATPROTO_WNM, DBG_LVL_TRACE, ("%s\n", __func__));
 	RTMP_SEM_LOCK(&pGASCtrl->GASPeerListLock);
@@ -509,18 +524,26 @@ static VOID SendGASCBRsp(
 					break;
 				}
 			}
+			bPeerFound = TRUE;
 			break;
 		}
 	}
-	RTMP_SEM_UNLOCK(&pGASCtrl->GASPeerListLock);
-	os_alloc_mem(NULL, (UCHAR **)&Buf, sizeof(*GASFrame) + VarLen);
-
-	if (!Buf) {
-		MTWF_LOG(DBG_CAT_PROTO, CATPROTO_WNM, DBG_LVL_ERROR, ("%s Not available memory\n", __func__));
+	if ((bPeerFound == FALSE) || (bGASQueryRspFragFound == FALSE)) {
+		MTWF_LOG(DBG_CAT_PROTO, CATPROTO_WNM, DBG_LVL_TRACE,
+					("%s bPeerFound =%d bGASQueryRspFragFound=%d\n", __func__, bPeerFound, bGASQueryRspFragFound));
+		RTMP_SEM_UNLOCK(&pGASCtrl->GASPeerListLock);
+		os_free_mem(Buf);
 		return;
 	}
 
-	NdisZeroMemory(Buf, sizeof(*GASFrame) + VarLen);
+	if (!GASQueryRspFrag->FragQueryRsp) {
+		MTWF_LOG(DBG_CAT_PROTO, CATPROTO_WNM, DBG_LVL_TRACE,
+					("%s GASQueryRspFrag->FragQueryRsp is Null\n", __func__));
+		RTMP_SEM_UNLOCK(&pGASCtrl->GASPeerListLock);
+		os_free_mem(Buf);
+		return;
+	}
+
 	GASFrame = (GAS_FRAME *)Buf;
 	pEntry = MacTableLookup(pAd, GASPeerEntry->PeerMACAddr);
 
@@ -574,7 +597,6 @@ static VOID SendGASCBRsp(
 			FrameLen +=	6;
 		}
 
-		RTMP_SEM_LOCK(&pGASCtrl->GASPeerListLock);
 		DlListDel(&GASPeerEntry->List);
 		DlListForEachSafe(GASQueryRspFrag, GASQueryRspFragTmp,
 						  &GASPeerEntry->GASQueryRspFragList, GAS_QUERY_RSP_FRAGMENT, List) {
@@ -628,6 +650,7 @@ static VOID SendGASCBRsp(
 
 		/* GASSetPeerCurrentState(pAd, Elem, WAIT_GAS_CB_REQ); */
 		GASSetPeerCurrentState(pAd, Event, WAIT_GAS_CB_REQ);
+		RTMP_SEM_UNLOCK(&pGASCtrl->GASPeerListLock);
 	}
 
 	MiniportMMRequest(pAd, 0, Buf, FrameLen);

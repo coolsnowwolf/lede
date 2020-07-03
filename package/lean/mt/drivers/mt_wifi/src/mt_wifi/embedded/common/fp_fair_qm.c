@@ -239,11 +239,11 @@ VOID fp_fair_tx_pkt_deq_func(RTMP_ADAPTER *pAd)
 	PKT_TOKEN_CB *pktTokenCb = (PKT_TOKEN_CB *)pAd->PktTokenCb;
 	UINT32 idx = 0;
 	struct wifi_dev *wdev = NULL;
-	STA_TR_ENTRY *tr_entry;
+	STA_TR_ENTRY *tr_entry = NULL;
 	struct wifi_dev_ops *wdev_ops;
 	RTMP_ARCH_OP *arch_ops = &pAd->archOps;
 	BOOLEAN need_schedule = (pAd->tx_dequeue_scheduable ? TRUE : FALSE);
-	UCHAR user_prio;
+	UCHAR user_prio = 0;
 	BOOLEAN data_turn = FALSE;
 	struct dequeue_info deq_info = {0};
 #ifdef CONFIG_TP_DBG

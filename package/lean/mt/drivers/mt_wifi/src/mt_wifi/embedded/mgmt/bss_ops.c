@@ -34,7 +34,14 @@ UCHAR BROADCOM_OUI[]    = {0x00, 0x90, 0x4c};
 UCHAR MARVELL_OUI[]     = {0x00, 0x50, 0x43};
 UCHAR ATHEROS_OUI[] = {0x00, 0x03, 0x7F};
 UCHAR WPS_OUI[]         = {0x00, 0x50, 0xf2, 0x04};
+#if defined(WH_EZ_SETUP) || defined(MWDS) || defined(WAPP_SUPPORT)
+UCHAR MTK_OUI[]         = {0x00, 0x0c, 0xe7};
+#endif /* WH_EZ_SETUP || MWDS */
 
+
+#ifdef IGMP_TVM_SUPPORT
+UCHAR IGMP_TVM_OUI[] = {0x00, 0x0D, 0x02, 0x03};
+#endif /* IGMP_TVM_SUPPORT */
 
 extern UCHAR WPA_OUI[];
 extern UCHAR SES_OUI[];
@@ -671,23 +678,16 @@ static VOID update_bss_by_owe_trans(struct _RTMP_ADAPTER *ad,
 					PRINT_MAC(extracted_trans_bss->Bssid),
 					extracted_trans_bss->AKMMap));
 
-			NdisMoveMemory(extracted_trans_bss->Ssid, pair_ssid, pair_ssid_len);
-			extracted_trans_bss->SsidLen = pair_ssid_len;
-			extracted_trans_bss->Hidden = 0;
-			extracted_trans_bss->hide_open_owe_bss = FALSE;
+				extracted_trans_bss->hide_owe_bss = TRUE;
+
+				extracted_trans_bss->bhas_owe_trans_ie = TRUE;
+
+
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 					("%s : %02x-%02x-%02x-%02x-%02x-%02x, update hidden SSID:%s\n",
 					__func__,
 					PRINT_MAC(extracted_trans_bss->Bssid),
 					extracted_trans_bss->Ssid));
-		} else {
-			if (!IS_AKM_OWE(extracted_trans_bss->AKMMap) &&
-			    (extracted_trans_bss->hide_open_owe_bss == FALSE)) {
-				extracted_trans_bss->hide_open_owe_bss = TRUE;
-				MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-				("%s : %02x-%02x-%02x-%02x-%02x-%02x, mark hide_open_owe_bss to True\n",
-					__func__, PRINT_MAC(extracted_trans_bss->Bssid)));
-			}
 		}
 	}
 }
@@ -706,7 +706,14 @@ VOID BssEntrySet(
 	IN BCN_IE_LIST * ie_list,
 	IN CHAR Rssi,
 	IN USHORT LengthVIE,
-	IN PNDIS_802_11_VARIABLE_IEs pVIE)
+	IN PNDIS_802_11_VARIABLE_IEs pVIE
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+	,
+	IN UCHAR	*Snr,
+	IN CHAR 	*rssi
+#endif
+
+	)
 
 {
 	COPY_MAC_ADDR(pBss->Bssid, ie_list->Bssid);
@@ -771,12 +778,36 @@ VOID BssEntrySet(
 	pBss->Channel = ie_list->Channel;
 	pBss->CentralChannel = ie_list->Channel;
 	pBss->Rssi = Rssi;
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+	pBss->Snr[0] = Snr[0];
+	pBss->Snr[1] = Snr[1];
+	pBss->Snr[2] = Snr[2];
+	pBss->Snr[3] = Snr[3];
+
+	pBss->rssi[0] = rssi[0];
+	pBss->rssi[1] = rssi[1];
+	pBss->rssi[2] = rssi[2];
+	pBss->rssi[3] = rssi[3];
+
+	NdisMoveMemory(pBss->vendorOUI0, ie_list->VendorID0, 3);
+	NdisMoveMemory(pBss->vendorOUI1, ie_list->VendorID1, 3);
+#endif
+
 	/* Update CkipFlag. if not exists, the value is 0x0*/
 	pBss->CkipFlag = ie_list->CkipFlag;
 	/* New for microsoft Fixed IEs*/
 	NdisMoveMemory(pBss->FixIEs.Timestamp, &ie_list->TimeStamp, 8);
 	pBss->FixIEs.BeaconInterval = ie_list->BeaconPeriod;
 	pBss->FixIEs.Capabilities = ie_list->CapabilityInfo;
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+	pBss->LastBeaconRxTimeT = jiffies_to_msecs(jiffies);
+#endif
+
+#ifdef CONFIG_OWE_SUPPORT
+	NdisZeroMemory(pBss->owe_trans_ie, MAX_VIE_LEN);
+	pBss->owe_trans_ie_len = 0;
+	pBss->bhas_owe_trans_ie = FALSE;
+#endif
 
 	/* New for microsoft Variable IEs*/
 	if (LengthVIE != 0) {
@@ -784,6 +815,12 @@ VOID BssEntrySet(
 		NdisMoveMemory(pBss->VarIEs, pVIE, pBss->VarIELen);
 	} else
 		pBss->VarIELen = 0;
+
+#ifdef CONFIG_MAP_SUPPORT
+	pBss->map_vendor_ie_found = ie_list->vendor_ie.map_vendor_ie_found;
+	if (pBss->map_vendor_ie_found)
+		NdisMoveMemory(&pBss->map_info, &ie_list->vendor_ie.map_info, sizeof(struct map_vendor_ie));
+#endif
 
 	pBss->AddHtInfoLen = 0;
 	pBss->HtCapabilityLen = 0;
@@ -878,13 +915,23 @@ VOID BssEntrySet(
 					UCHAR pair_ch = 0;
 					UCHAR pair_bssid[MAC_ADDR_LEN] = {0};
 					UCHAR pair_ssid[MAX_LEN_OF_SSID] = {0};
+					UCHAR pair_band = 0;
 					UCHAR pair_ssid_len = 0;
+
+
+					NdisZeroMemory(pBss->owe_trans_ie, MAX_VIE_LEN);
+					NdisMoveMemory(pBss->owe_trans_ie, pEid->Octet + 4, pEid->Len - 4);
+					pBss->owe_trans_ie_len = pEid->Len - 4;
+
+
+					pBss->bhas_owe_trans_ie = TRUE;
 
 					extract_pair_owe_bss_info(pEid->Octet + 4,
 								  pEid->Len - 4,
 								  pair_bssid,
 								  pair_ssid,
 								  &pair_ssid_len,
+								  &pair_band,
 								  &pair_ch);
 					if (pair_ch != 0)
 						bss_idx = BssTableSearch(&pAd->ScanTab, pair_bssid, pair_ch);
@@ -937,7 +984,14 @@ ULONG BssTableSetEntry(
 	IN BCN_IE_LIST * ie_list,
 	IN CHAR Rssi,
 	IN USHORT LengthVIE,
-	IN PNDIS_802_11_VARIABLE_IEs pVIE)
+	IN PNDIS_802_11_VARIABLE_IEs pVIE
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+	,
+	IN UCHAR	*Snr,
+	IN CHAR 	*rssi
+#endif
+
+	)
 {
 	ULONG	Idx;
 #ifdef APCLI_SUPPORT
@@ -963,6 +1017,12 @@ ULONG BssTableSetEntry(
 					bInsert = TRUE;
 					break;
 				}
+				if (MAC_ADDR_EQUAL(pApCliEntry->CfgApCliBssid, ie_list->Bssid)
+					|| SSID_EQUAL(pApCliEntry->CfgSsid, pApCliEntry->CfgSsidLen, ie_list->Ssid, ie_list->SsidLen)) {
+					bInsert = TRUE;
+					break;
+				}
+
 			}
 
 #endif /* APCLI_SUPPORT */
@@ -985,7 +1045,11 @@ ULONG BssTableSetEntry(
 				   ) {
 					Idx = Tab->BssOverlapNr;
 					NdisZeroMemory(&(Tab->BssEntry[Idx]), sizeof(BSS_ENTRY));
-					BssEntrySet(pAd, &Tab->BssEntry[Idx], ie_list, Rssi, LengthVIE, pVIE);
+					BssEntrySet(pAd, &Tab->BssEntry[Idx], ie_list, Rssi, LengthVIE, pVIE
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+					, Snr, rssi
+#endif
+					);
 					Tab->BssOverlapNr += 1;
 					Tab->BssOverlapNr = Tab->BssOverlapNr % MAX_LEN_OF_BSS_TABLE;
 #ifdef RT_CFG80211_SUPPORT
@@ -1000,10 +1064,18 @@ ULONG BssTableSetEntry(
 		}
 
 		Idx = Tab->BssNr;
-		BssEntrySet(pAd, &Tab->BssEntry[Idx], ie_list, Rssi, LengthVIE, pVIE);
+		BssEntrySet(pAd, &Tab->BssEntry[Idx], ie_list, Rssi, LengthVIE, pVIE
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+		, Snr, rssi
+#endif
+		);
 		Tab->BssNr++;
 	} else if (Idx < MAX_LEN_OF_BSS_TABLE)
-		BssEntrySet(pAd, &Tab->BssEntry[Idx], ie_list, Rssi, LengthVIE, pVIE);
+		BssEntrySet(pAd, &Tab->BssEntry[Idx], ie_list, Rssi, LengthVIE, pVIE
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+		, Snr, rssi
+#endif
+		);
 	else
 		MTWF_LOG(DBG_CAT_MLME, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s(error):Idx is larger than MAX_LEN_OF_BSS_TABLE", __func__));
 
@@ -1068,7 +1140,7 @@ BOOLEAN bss_coex_insert_effected_ch_list(
 		CHANNEL_CTRL *pChCtrl;
 
 		hc_radio_query_by_channel(pAd, Channel, &oper);
-		BandIdx = HcGetBandByWdev(pwdev);
+		BandIdx = HcGetBandByChannel(pAd, Channel);
 		pChCtrl = hc_get_channel_ctrl(pAd->hdev_ctrl, BandIdx);
 
 		for (index = 0; index < pChCtrl->ChListNum; index++) {

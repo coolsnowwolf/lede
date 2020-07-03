@@ -18,7 +18,7 @@ if [ -d wifi_driver ]; then
     cp -a  wifi_driver/os/linux/Kconfig.mt_wifi_sta ./mt_wifi_sta/Kconfig
     cp -a  wifi_driver/os/linux/Makefile.mt_wifi_sta ./mt_wifi_sta/Makefile
     cp -a wifi_driver/os/linux/Kconfig.mt_wifi_4_4 wifi_driver/embedded/Kconfig
-    ln -sf  ../../../../../proprietary_driver/drivers/wifi_utility wifi_utility
+#    ln -sf  ../../../../../proprietary_driver/drivers/wifi_utility wifi_utility
     if [ -d mt_wifi ]; then
         rm -rf mt_wifi
     fi
@@ -50,7 +50,7 @@ if [ -d wifi_driver ]; then
 if grep -q CONFIG_MT_AP_SUPPORT Makefile; then
     echo "Wifi-Prebuild: Makefile already modified. Skip."
 else
-    echo "obj-y += wifi_utility/" >> Makefile
+#    echo "obj-y += wifi_utility/" >> Makefile
     echo "obj-\$(CONFIG_MT_AP_SUPPORT) += mt_wifi_ap/" >> Makefile
     echo "obj-\$(CONFIG_MT_STA_SUPPORT) += mt_wifi_sta/" >> Makefile
 fi

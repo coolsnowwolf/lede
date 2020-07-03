@@ -61,6 +61,9 @@ VOID RTMPIoctlGetMacTable(
 	IN PRTMP_ADAPTER pAd,
 	IN RTMP_IOCTL_INPUT_STRUCT * wrq);
 
+VOID RTMPIoctlGetDriverInfo(
+	IN  PRTMP_ADAPTER pAd,
+	IN  RTMP_IOCTL_INPUT_STRUCT * wrq);
 
 VOID RTMPAPIoctlE2PROM(
 	IN  PRTMP_ADAPTER   pAdapter,
@@ -181,11 +184,6 @@ INT Set_AP_Daemon_Status(
 	IN UINT8 WorkSpaceID,
 	IN BOOLEAN Status);
 
-INT Set_AP_IE(
-	IN PRTMP_ADAPTER pAd,
-	IN RTMP_STRING * IE,
-	IN UINT32 IELen);
-
 #ifdef CONFIG_HOTSPOT
 INT Send_ANQP_Rsp(
 	IN PRTMP_ADAPTER pAd,
@@ -201,10 +199,6 @@ INT	ApCfg_Set_PerMbssMaxStaNum_Proc(
 
 INT	ApCfg_Set_IdleTimeout_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 
-INT Set_AP_IE(
-	IN PRTMP_ADAPTER pAd,
-	IN RTMP_STRING *IE,
-	IN UINT32 IELen);
 
 struct apcfg_parameters {
 	LONG cfg_mode[2]; /*WirelessMode*/
@@ -274,11 +268,44 @@ struct apcfg_parameters {
 	UCHAR ext_channel;
 };
 
+#ifdef CONFIG_MAP_SUPPORT
+INT Set_Bh_Bss_Proc(
+	PRTMP_ADAPTER pAd,
+	char *arg);
+INT Set_Fh_Bss_Proc(
+	PRTMP_ADAPTER pAd,
+	char *arg);
+INT Set_Map_Proc(
+	PRTMP_ADAPTER pAd,
+	char *arg);
+INT Set_Map_Turnkey_Proc(
+	PRTMP_ADAPTER pAd,
+	char *arg);
+INT Set_Map_Channel_Proc(
+	PRTMP_ADAPTER pAd,
+	char *arg);
+INT Set_Map_Channel_En_Proc(
+	RTMP_ADAPTER *pAd,
+	RTMP_STRING *arg);
+
+void update_ch_by_wdev(RTMP_ADAPTER *pAd, struct wifi_dev *wdev);
+
+
+
+#endif /* CONFIG_MAP_SUPPORT */
 
 #ifdef APCLI_SUPPORT
 #endif /* APCLI_SUPPORT */
 
 INT set_qiscdump_proc(struct _RTMP_ADAPTER *ad, RTMP_STRING *arg);
 
+#ifdef CHANNEL_SWITCH_MONITOR_CONFIG
+INT set_ch_switch_monitor_cfg(IN PRTMP_ADAPTER pAd, struct ch_switch_cfg *ch_sw_cfg);
+VOID ch_switch_monitor_state_machine_init(struct _RTMP_ADAPTER *pAd);
+VOID ch_switch_monitor_del(struct _RTMP_ADAPTER *pAd);
+VOID ch_switch_monitor_timeout(IN PVOID system_specific1, IN PVOID function_context,
+			IN PVOID system_specific2, IN PVOID system_specific3);
+extern INT scan_ch_restore(RTMP_ADAPTER *pAd, UCHAR OpMode, struct wifi_dev *pwdev);
+#endif
 #endif /* __AP_CFG_H__ */
 

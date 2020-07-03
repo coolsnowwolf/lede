@@ -327,5 +327,10 @@ int rbus_pa_lna_set(struct _RTMP_ADAPTER *ad, UINT32 mode);
 #define TXDCIQ_CAL_SIZE (48 * sizeof(UINT32))
 #endif /*PRE_CAL_MT7622_SUPPORT*/
 
+#ifdef CAL_BIN_FILE_SUPPORT
+#define PA_TRIM_OFFSET        0
+#define PA_TRIM_SIZE          16
+#endif /* CAL_BIN_FILE_SUPPORT */
+
 #endif /* __MT7622_H__ */
 
