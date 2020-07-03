@@ -72,6 +72,7 @@ enum ASIC_CAP {
 	fASIC_CAP_RX_DLY = (1 << 15),
 	fASIC_CAP_WMM_PKTDETECT_OFFLOAD = (1 << 16),
 	fASIC_CAP_PCIE_ASPM_DYM_CTRL = (1 << 17),
+	fASIC_CAP_ADV_SECURITY = (1 << 18),
 };
 
 enum PHY_CAP {
@@ -79,6 +80,9 @@ enum PHY_CAP {
 	fPHY_CAP_5G = 0x2,
 	fPHY_CAP_HT = 0x10,
 	fPHY_CAP_VHT = 0x20,
+	fPHY_CAP_HE = 0x40, /* it might be different from the definition in trunk.
+			     * need to follow trunk's definition once merge back.
+			     */
 	fPHY_CAP_TXBF = 0x100,
 	fPHY_CAP_LDPC = 0x200,
 	fPHY_CAP_MUMIMO = 0x400,
@@ -397,6 +401,9 @@ typedef struct _RTMP_CHIP_CAP {
 	UINT8 rx_hw_hdr_len;	/* Rx Hw meta info size */
 	UINT8 num_of_tx_ring;
 	UINT8 num_of_rx_ring;
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+	UINT8 max_v2_bcn_num;
+#endif
 	UINT16 tx_ring_size;
 	UINT16 rx0_ring_size;
 	UINT16 rx1_ring_size;
@@ -539,6 +546,12 @@ typedef struct _RTMP_CHIP_CAP {
 		3 : 32 DWORD (128 bytes)
 	*/
 	UINT8 WPDMABurstSIZE;
+	/*
+	 * Define the Probe Response Times
+	 *	1: Multi-Sta Suopport better
+	 *	2: Default
+	 */
+	UINT8 ProbeRspTimes;
 
 	/*
 	 * 0: MBSSID_MODE0

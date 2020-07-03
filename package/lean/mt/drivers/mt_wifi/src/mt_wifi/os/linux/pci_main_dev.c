@@ -33,6 +33,7 @@
 #include "rt_os_util.h"
 #include "rt_os_net.h"
 #include <linux/pci.h>
+#include "rt_config.h"
 
 #if (KERNEL_VERSION(3, 8, 0) <= LINUX_VERSION_CODE)
 #define DEVEXIT
@@ -215,6 +216,11 @@ static int rt_pci_resume(struct pci_dev *pci_dev)
 /*
  *	 PCI device probe & initialization function
  */
+#ifdef INTELP6_SUPPORT
+#ifdef MULTI_INF_SUPPORT
+int g_AdapCount;
+#endif
+#endif
 static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 {
 	void *pAd = NULL, *handle;
@@ -259,11 +265,18 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 	}
 	else
 #endif
-	if ((rv = pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) != 0) {
+	if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
+		/*
+		 * pci_set_consistent_dma_mask() will always be able to set the same
+		 * or a smaller mask as pci_set_dma_mask()
+		 */
+		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+	} else {
 		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR,
 				 ("set DMA mask failed!errno=%d\n", rv));
-		return rv;
+		goto err_out;
 	}
+
 	/*msi request*/
 #ifdef CONFIG_WIFI_MSI_SUPPORT
 	if (RtmpOsPciMsiEnable(pdev) != 0) {
@@ -369,7 +382,22 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 		RtmpOSNetDevAddrSet(OpMode, net_dev, &mac_addr[0], NULL);
 	}
 #endif /* PRE_ASSIGN_MAC_ADDR */
+#ifdef INTELP6_SUPPORT
+#ifdef MULTI_INF_SUPPORT
+	g_AdapCount++;
+	MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_OFF, ("pci probe count=%d\n", g_AdapCount));
+#endif
+#endif
+#ifdef WIFI_DIAG
+	DiagCtrlAlloc(pAd);
+#endif
 	MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("<=%s()\n", __func__));
+#ifdef CREATE_ALL_INTERFACE_AT_INIT
+#ifdef MBSS_SUPPORT
+		RT28xx_MBSS_Init(pAd, (PNET_DEV)net_dev);
+		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_OFF, ("[ARRIS MOD] MT7615E MBSS Initialized\n"));
+#endif /* MBSS_SUPPORT */
+#endif
 	return 0; /* probe ok */
 	/* --------------------------- ERROR HANDLE --------------------------- */
 err_out_free_netdev:
@@ -409,38 +437,74 @@ err_out:
 
 static VOID DEVEXIT rt_pci_remove(struct pci_dev *pci_dev)
 {
-	PNET_DEV net_dev = pci_get_drvdata(pci_dev);
-	VOID *pAd = NULL;
-	ULONG csr_addr = net_dev->base_addr;
+#ifdef INTELP6_SUPPORT
+#ifdef MULTI_INF_SUPPORT
+	static UINT16 pci_dev_count = MAX_NUM_OF_INF;
 
-	GET_PAD_FROM_NET_DEV(pAd, net_dev);
-	MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("===> %s()\n", __func__));
+	while (pci_dev_count) {
+#endif
+#endif
+		PNET_DEV net_dev;
+		VOID *pAd = NULL;
+		ULONG csr_addr;
+#ifdef INTELP6_SUPPORT
+#ifdef MULTI_INF_SUPPORT
+		pci_dev_count--;
+		pAd = adapt_list[pci_dev_count];
+		if (pAd == NULL)
+			continue;
+		else
+			pci_dev = rtmp_get_pci_dev(pAd);
+#endif
+#endif
+		net_dev = pci_get_drvdata(pci_dev);
+		csr_addr = net_dev->base_addr;
+#ifndef INTELP6_SUPPORT
+		GET_PAD_FROM_NET_DEV(pAd, net_dev);
+#endif
 
-	if (pAd != NULL) {
-		/* Unregister/Free all allocated net_device. */
-		RtmpPhyNetDevExit(pAd, net_dev);
-		/* Free RTMP_ADAPTER related structures. */
-		RtmpRaDevCtrlExit(pAd);
-		/* Unmap CSR base address */
-		iounmap((char *)(csr_addr));
-		/* release memory region */
-		pci_release_regions(pci_dev);
-	} else {
-		/* Unregister network device */
-		RtmpOSNetDevDetach(net_dev);
-		/* Unmap CSR base address */
-		iounmap((char *)(net_dev->base_addr));
-		/* release memory region */
-		pci_release_regions(pci_dev);
-	}
+		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("===> %s()\n", __func__));
+
+		if (pAd != NULL) {
+#ifdef WIFI_DIAG
+			DiagCtrlFree(pAd);
+#endif
+			/* Unregister/Free all allocated net_device. */
+			RtmpPhyNetDevExit(pAd, net_dev);
+			/* Free RTMP_ADAPTER related structures. */
+			RtmpRaDevCtrlExit(pAd);
+			/* Unmap CSR base address */
+			iounmap((char *)(csr_addr));
+			/* release memory region */
+			pci_release_regions(pci_dev);
+		} else {
+			/* Unregister network device */
+			RtmpOSNetDevDetach(net_dev);
+			/* Unmap CSR base address */
+			iounmap((char *)(net_dev->base_addr));
+			/* release memory region */
+			pci_release_regions(pci_dev);
+		}
 #ifdef CONFIG_WIFI_MSI_SUPPORT
-	if (pci_dev->msi_enabled)
-		RtmpOsPciMsiDisable(pci_dev);
+		if (pci_dev->msi_enabled)
+			RtmpOsPciMsiDisable(pci_dev);
 #endif /*CONFIG_WIFI_MSI_SUPPORT*/
 
-	/* Free the root net_device */
-	RtmpOSNetDevFree(net_dev);
+		/* Free the root net_device */
+		RtmpOSNetDevFree(net_dev);
+#ifdef INTELP6_SUPPORT
+#ifdef MULTI_INF_SUPPORT
+		g_AdapCount--;
+		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_OFF, ("In remove, pci probe count=%d\n", g_AdapCount));
+	}
+#endif
+#endif
 #ifdef MEM_ALLOC_INFO_SUPPORT
+#ifdef INTELP6_SUPPORT
+#ifdef MULTI_INF_SUPPORT
+	if (g_AdapCount == 0)
+#endif
+#endif
 	{
 		UINT32 memalctotal, pktalctotal;
 

@@ -39,7 +39,7 @@
 #define BYTES_PER_SEC_TO_MBPS	17
 #define TX_MODE_RATIO_THRESHOLD	70
 #define RX_MODE_RATIO_THRESHOLD	70
-#define RX_INACTIVE_THRESHOLD 10
+#define STA_TP_IDLE_THRESHOLD 10
 #define STA_NUMBER_FOR_TRIGGER                1
 #define MULTI_CLIENT_NUMS_TH 16
 #define MULTI_CLIENT_2G_NUMS_TH 16
@@ -54,7 +54,9 @@
 #define	TRAFFIC_0	0
 #define	TRAFFIC_DL_MODE	1
 #define	TRAFFIC_UL_MODE	2
-#define TRAFFIC_UL_INACTIVE_MODE 3
+#define TRAFFIC_BIDIR_ACTIVE_MODE 3
+#define TRAFFIC_BIDIR_IDLE_MODE 4
+
 
 /* ============================================================= */
 /*      Common definition */
@@ -77,7 +79,19 @@
 		}																	\
 	}
 
+#ifdef CUSTOMER_RSG_FEATURE
+#define TIMESTAMP_GET(__pAd, __TimeStamp)			\
+	{													\
+		UINT32 tsf_l = 0, tsf_h = 0; UINT64 __Value64;				\
+		AsicGetTsfTime((__pAd), &tsf_h, &tsf_l);\
+		__TimeStamp = (UINT64)tsf_l;					\
+		__Value64 = (UINT64)tsf_h;						\
+		__TimeStamp |= (tsf_h << 32);				\
+	}
+#endif
 
+
+#ifndef HOSTAPD_11R_SUPPORT
 typedef struct _AUTH_FRAME_INFO {
 	UCHAR addr1[MAC_ADDR_LEN];
 	UCHAR addr2[MAC_ADDR_LEN];
@@ -89,6 +103,24 @@ typedef struct _AUTH_FRAME_INFO {
 	FT_INFO FtInfo;
 #endif /* DOT11R_FT_SUPPORT */
 } AUTH_FRAME_INFO;
+#endif /* HOSTAPD_11R_SUPPORT */
+
+#ifdef CONVERTER_MODE_SWITCH_SUPPORT
+typedef enum _ENUM_AP_START_STATE_T	{
+	AP_STATE_ALWAYS_START_AP_DEFAULT = 0,
+	AP_STATE_START_AFTER_APCLI_CONNECTION,
+	AP_STATE_NEVER_START_AP,
+	AP_STATE_INVALID_MAX
+} ENUM_AP_START_STATE;
+
+typedef enum _ENUM_APCLI_MODE_T	{
+	APCLI_MODE_ALWAYS_START_AP_DEFAULT = 0,
+	APCLI_MODE_START_AP_AFTER_APCLI_CONNECTION,
+	APCLI_MODE_NEVER_START_AP,
+	APCLI_MODE_INVALID_MAX
+} ENUM_APCLI_MODE;
+
+#endif /* CONVERTER_MODE_SWITCH_SUPPORT */
 
 typedef enum _ENUM_AP_BSS_OPER_T {
 	AP_BSS_OPER_ALL = 0,
@@ -172,6 +204,11 @@ VOID APAssocStateMachineInit(
 VOID MbssKickOutStas(RTMP_ADAPTER *pAd, INT apidx, USHORT Reason);
 VOID APMlmeKickOutSta(RTMP_ADAPTER *pAd, UCHAR *staAddr, UCHAR Wcid, USHORT Reason);
 
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+BOOLEAN IsClientConnected(RTMP_ADAPTER *pAd);
+#endif
+
+
 #ifdef DOT11W_PMF_SUPPORT
 VOID APMlmeKickOutAllSta(RTMP_ADAPTER *pAd, UCHAR apidx, USHORT Reason);
 #endif /* DOT11W_PMF_SUPPORT */
@@ -187,6 +224,23 @@ void APAuthStateMachineInit(
 
 VOID APCls2errAction(RTMP_ADAPTER *pAd, RX_BLK *pRxBlk);
 
+#ifdef HOSTAPD_11R_SUPPORT
+/*for ap_assoc in cfg mode*/
+BOOLEAN PeerAssocReqCmmSanity(
+	RTMP_ADAPTER *pAd,
+	BOOLEAN isReassoc,
+	VOID *Msg,
+	INT MsgLen,
+	IE_LISTS * ie_lists);
+
+USHORT APBuildAssociation(
+	IN RTMP_ADAPTER *pAd,
+	IN MAC_TABLE_ENTRY * pEntry,
+	IN IE_LISTS * ie_list,
+	IN UCHAR MaxSupportedRateIn500Kbps,
+	OUT USHORT *pAid,
+	IN BOOLEAN isReassoc);
+#endif /* HOSTAPD_11R_SUPPORT */
 /* ap_connect.c */
 
 #ifdef CONFIG_AP_SUPPORT
@@ -222,6 +276,51 @@ VOID ApSiteSurvey_by_wdev(
 	IN	BOOLEAN				ChannelSel,
 	IN  struct wifi_dev	*wdev);
 
+#ifdef TXRX_STAT_SUPPORT
+VOID Update_LastSec_TXRX_Stats(
+	IN PRTMP_ADAPTER   pAd);
+#endif
+#if defined(CUSTOMER_RSG_FEATURE) || defined (CUSTOMER_DCC_FEATURE)
+VOID Update_Wtbl_Counters(
+	IN PRTMP_ADAPTER   pAd);
+
+#endif
+#ifdef CUSTOMER_RSG_FEATURE
+VOID UpdateRadioStatCounters(
+	IN PRTMP_ADAPTER   	pAd);
+
+VOID ClearChannelStatsCr(
+	IN PRTMP_ADAPTER  	pAd);
+
+VOID ResetChannelStats(
+	IN PRTMP_ADAPTER 	pAd);
+
+#endif
+#ifdef CUSTOMER_DCC_FEATURE
+VOID GetTxRxActivityTime(
+	IN PRTMP_ADAPTER   pAd,
+	IN UINT wcid);
+VOID RemoveOldStaList(
+	IN PRTMP_ADAPTER 	pAd);
+
+VOID APResetStreamingStatus(
+	IN PRTMP_ADAPTER  	pAd);
+#endif
+
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+VOID RemoveOldBssEntry(
+	IN PRTMP_ADAPTER 	pAd);
+#endif
+
+#ifdef APCLI_CFG80211_SUPPORT
+VOID ApCliSiteSurvey(
+	IN	PRTMP_ADAPTER		pAd,
+	IN	PNDIS_802_11_SSID	pSsid,
+	IN	UCHAR			ScanType,
+	IN	BOOLEAN			ChannelSel,
+	IN	struct wifi_dev		*wdev);
+#endif /* APCLI_CFG80211_SUPPORT */
+
 VOID SupportRate(
 	IN PUCHAR SupRate,
 	IN UCHAR SupRateLen,
@@ -233,6 +332,21 @@ VOID SupportRate(
 
 
 BOOLEAN ApScanRunning(RTMP_ADAPTER *pAd, struct wifi_dev *wdev);
+
+#ifdef OFFCHANNEL_SCAN_FEATURE
+UCHAR Channel2Index(
+	IN PRTMP_ADAPTER	pAd,
+	IN UCHAR			channel);
+
+INT ApSiteSurveyNew_by_wdev(
+	IN	PRTMP_ADAPTER	pAd,
+	IN	UINT			Channel,
+	IN UINT			Timeout,
+	IN	UCHAR			ScanType,
+	IN	BOOLEAN			ChannelSel,
+	IN  struct wifi_dev *wdev);
+#endif
+
 
 #ifdef DOT11_N_SUPPORT
 VOID APUpdateOperationMode(RTMP_ADAPTER *pAd, struct wifi_dev *wdev);
@@ -271,6 +385,9 @@ VOID APAsicRxAntEvalTimeout(RTMP_ADAPTER *pAd);
 UCHAR get_apidx_by_addr(RTMP_ADAPTER *pAd, UCHAR *addr);
 
 NDIS_STATUS APOneShotSettingInitialize(RTMP_ADAPTER *pAd);
+#ifdef CONFIG_INIT_RADIO_ONOFF
+VOID APStartUpForMain(RTMP_ADAPTER *pAd);
+#endif
 
 /* INT ap_func_init(RTMP_ADAPTER *pAd); */
 
@@ -357,6 +474,8 @@ VOID rtmp_ap_exit(RTMP_ADAPTER *pAd);
 #if defined(VOW_SUPPORT) && defined(VOW_DVT)
 UINT32 vow_clone_legacy_frame(RTMP_ADAPTER *pAd, TX_BLK *pTxBlk);
 #endif
+VOID ap_over_lapping_scan(RTMP_ADAPTER *pAd, BSS_STRUCT *pMbss);
+
 
 #endif  /* __AP_H__ */
 

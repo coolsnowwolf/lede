@@ -87,6 +87,10 @@
 #define MAX_LEN_GTK					32
 #define MIN_LEN_GTK					5
 
+#ifdef HOSTAPD_OWE_SUPPORT
+#define MAX_LEN_OF_TRANS_IE			48
+#endif
+
 #define LEN_PSK						64
 #define LEN_MAX_PMK					64
 #define LEN_PMK_SHA512					64

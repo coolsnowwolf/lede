@@ -274,9 +274,30 @@ VOID RTMPInitPCIeDevice(RT_CMD_PCIE_INIT *pConfig, VOID *pAdSrc)
 #ifdef CONFIG_WIFI_MSI_SUPPORT
 	pAd->PciHif.is_msi = ((struct pci_dev *)pci_dev)->msi_enabled;
 #endif /*CONFIG_WIFI_MSI_SUPPORT*/
+#ifdef INTELP6_SUPPORT
+#ifdef MULTI_INF_SUPPORT
+	multi_inf_adapt_reg((VOID *) pAd);
+#endif /* MULTI_INF_SUPPORT */
+#endif
 	if (pAd->infType != RTMP_DEV_INF_UNKNOWN)
 		RtmpRaDevCtrlInit(pAd, pAd->infType);
 }
+
+#ifdef INTELP6_SUPPORT
+#ifdef MULTI_INF_SUPPORT
+struct pci_dev *rtmp_get_pci_dev(void *ad)
+{
+	struct pci_dev *pdev = NULL;
+#ifdef RTMP_PCI_SUPPORT
+	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *)ad;
+	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+
+	pdev = obj->pci_dev;
+#endif
+	return pdev;
+}
+#endif
+#endif
 
 struct device *rtmp_get_dev(void *ad)
 {

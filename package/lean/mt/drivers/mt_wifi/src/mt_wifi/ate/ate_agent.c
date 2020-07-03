@@ -1499,22 +1499,29 @@ INT32 SetATEAutoAlc(RTMP_ADAPTER *pAd, RTMP_STRING *Arg)
 
 INT32 SetATEIpg(RTMP_ADAPTER *pAd, RTMP_STRING *Arg)
 {
-	INT32 ret = 0;
-	UINT32 value;
 	struct _ATE_CTRL *ATECtrl = &(pAd->ATECtrl);
 	struct _ATE_OPERATION *ATEOp = ATECtrl->ATEOp;
+	INT32 ret = 0;
+	UINT32 ipg = 0;
+
+	/* Sanity check for input parameter */
+	if (Arg == NULL) {
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+				 ("%s: No parameters!!\n", __func__));
+		goto err0;
+	}
 
 	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 		("%s: IPG = %s\n", __func__, Arg));
 
-	value = simple_strtol(Arg, 0, 10);
-	ATECtrl->ipg_param.ipg = value;
-	ret = ATEOp->SetIPG(pAd);
+	ipg = simple_strtol(Arg, 0, 10);
+	ret = ATEOp->SetIPG(pAd, ipg);
 
 	if (!ret)
 		return TRUE;
-	else
-		return FALSE;
+
+err0:
+	return FALSE;
 }
 
 
@@ -5218,7 +5225,6 @@ INT32 ATEInit(RTMP_ADAPTER *pAd)
 	ATECtrl->bQAEnabled = FALSE;
 	ATECtrl->bQATxStart = FALSE;
 	ATECtrl->bQARxStart = FALSE;
-	ATECtrl->TxDoneCount = 0;
 	ATECtrl->duty_cycle = 0;
 	ATECtrl->tx_time_param.pkt_tx_time_en = FALSE;
 	ATECtrl->tx_time_param.pkt_tx_time = 0;
@@ -5235,6 +5241,7 @@ INT32 ATEInit(RTMP_ADAPTER *pAd)
 	ATECtrl->wdev_idx = 0;
 	ATECtrl->wmm_idx = 0; /* Need to modify after j mode implement done */
 #ifdef DBDC_MODE
+	ATECtrl->band_ext[0].Mode = ATE_STOP;
 	ATECtrl->band_ext[0].wdev_idx = 1;
 	ATECtrl->band_ext[0].wmm_idx = 1;
 #endif /* DBDC_MODE */
@@ -5474,8 +5481,10 @@ INT32 SetATE(
 #endif
 #ifdef PRE_CAL_MT7622_SUPPORT
 	else if (!strcmp(Arg, "TXDPD7622") && (mode & ATE_START)) {
+		if (IS_MT7622(pAd)) {
 		Ret = ATEOp->TxDPDTest7622(pAd, "0");
 		Ret = 0;
+		}
 	}
 #endif /*PRE_CAL_MT7622_SUPPORT*/
 #ifdef PRE_CAL_TRX_SET1_SUPPORT
@@ -5521,6 +5530,23 @@ INT32 SetATE(
 		Ret = 0;
 		}
 #endif /* PRE_CAL_TRX_SET2_SUPPORT */
+#if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
+	else if ((strcmp(Arg, "PATRIM") > 0) && (mode & ATE_START)) {
+		if (IS_MT7615(pAd)) {
+			INT32 i;
+			UINT32 Data[4] = {0};
+			RTMP_STRING *value = NULL;
+
+			for (i = 0, value = rstrtok(Arg + 7, "-"); value; value = rstrtok(NULL, "-"), i++) {
+				Data[i] = simple_strtol(value, 0, 16);
+				MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+						("\x1b[32m%s: WF%d = 0x%08x \x1b[m\n", __func__, i, Data[i]));
+			}
+			Ret = ATEOp->PATrim(pAd, &Data[0]);
+			Ret = 0;
+		}
+	}
+#endif /* CAL_BIN_FILE_SUPPORT */
 	else {
 		MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 				 ("%s: do nothing(param = (%s), mode = (%d))\n",
@@ -5565,6 +5591,7 @@ INT32 SetATEChannel(
 	}
 
 	TESTMODE_SET_PARAM(ATECtrl, control_band_idx, Channel, param[0]);
+	TESTMODE_SET_PARAM(ATECtrl, control_band_idx, Ch_Band, param[1]);
 #ifdef DOT11_VHT_AC
 	TESTMODE_SET_PARAM(ATECtrl, control_band_idx, Channel_2nd, param[3]);
 #endif
@@ -5618,7 +5645,7 @@ INT32 set_ate_channel_ext(PRTMP_ADAPTER pAd, RTMP_STRING *arg)
 	} else
 		return ret;
 
-	if ((param.band_idx == 0) || (param.band_idx > TESTMODE_BAND_NUM)) {
+	if ((param.band_idx == 0) || (param.band_idx >= TESTMODE_BAND_NUM)) {
 		ret = NDIS_STATUS_INVALID_DATA;
 		goto err0;
 	}
@@ -5732,7 +5759,7 @@ INT32 set_ate_start_tx_ext(PRTMP_ADAPTER pAd, RTMP_STRING *arg)
 	INT32 ret = 0;
 	INT32 len = 0;
 	UINT32 band_idx = 0;
-	UINT32 Channel = 0, Ch_Band = 0, SysBw = 0, PktBw = 0;
+	UINT32 Channel = 0, Ch_Band = 0, SysBw = 0, PktBw = 0, ipg = 0;
 	INT i = 0;
 	CHAR *value;
 	UINT32 data[ATE_START_TX_EXT_PARAM_CNT] = {0};
@@ -5790,6 +5817,7 @@ INT32 set_ate_start_tx_ext(PRTMP_ADAPTER pAd, RTMP_STRING *arg)
 	Ch_Band = TESTMODE_GET_PARAM(ate_ctrl, band_idx, Ch_Band);
 	PktBw = TESTMODE_GET_PARAM(ate_ctrl, band_idx, PerPktBW);
 	SysBw = TESTMODE_GET_PARAM(ate_ctrl, band_idx, BW);
+	ipg = TESTMODE_GET_PARAM(ate_ctrl, band_idx, ipg_param.ipg);
 
 	if (param.rate == 32 && PktBw != BAND_WIDTH_40 && SysBw != BAND_WIDTH_40) {
 		ret = -1;
@@ -5804,7 +5832,7 @@ INT32 set_ate_start_tx_ext(PRTMP_ADAPTER pAd, RTMP_STRING *arg)
 	TxPower.Dbdc_idx = band_idx;
 	TxPower.Band_idx = Ch_Band;
 	ret = ate_ops->SetTxPower0(pAd, TxPower);
-	ret = ate_ops->SetIPG(pAd);
+	ret = ate_ops->SetIPG(pAd, ipg);
 	ret = ate_ops->StartTx(pAd);
 
 	if (ret == 0)

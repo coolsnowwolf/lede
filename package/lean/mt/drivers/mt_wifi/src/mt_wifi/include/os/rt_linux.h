@@ -15,6 +15,22 @@
 #ifndef __RT_LINUX_H__
 #define __RT_LINUX_H__
 
+#ifdef VENDOR_FEATURE7_SUPPORT
+/* ADD - Start - Add our headers so that our #defines and arris_event can be used throughout the driver */
+#ifdef ARRIS_MODULE_PRESENT
+#include <linux/arris_mod_api.h>
+ARRISMOD_EXTERN(void, arris_event_send_hook, int, int, int, char *, int);
+#else
+/* ARRIS_MODULE_PRESENT is set in arris-patched config.mk, and causes us to include the proper kernel's
+  * arris_mod_api.h. If it's not defined, use MTK's patched version so MTK can compile the driver with Arris
+  * changes but without other Arris code.
+  */
+#include "arris_mod_api.h"
+#endif
+#include "event_common.h"
+/* ADD - End */
+#endif
+
 #include <linux/module.h>
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -126,8 +142,11 @@ typedef struct usb_ctrlrequest devctrlrequest;
 /***********************************************************************************
  *	Profile related sections
  ***********************************************************************************/
-
+#ifdef INTELP6_SUPPORT
+#define L1_PROFILE_PATH	"/tmp/l1profile.dat"
+#else
 #define L1_PROFILE_PATH	"/etc/wireless/l1profile.dat"
+#endif
 #define L1PROFILE_INDEX_LEN		10
 #define	L1PROFILE_ATTRNAME_LEN	30
 #define	L2PROFILE_PATH_LEN		50
@@ -138,15 +157,22 @@ typedef struct usb_ctrlrequest devctrlrequest;
 #define AP_PROFILE_PATH			"/etc/Wireless/iNIC/iNIC_ap.dat"
 #define AP_RTMP_FIRMWARE_FILE_NAME "/etc_ro/Wireless/iNIC/RT2860AP.bin"
 #else
+#ifdef BB_SOC
+#define AP_PROFILE_PATH			"/etc/Wireless/RT2860AP_AC/RT2860AP.dat"
+#else
 #define AP_PROFILE_PATH			"/etc/Wireless/RT2860AP/RT2860AP.dat"
+#endif
 #define AP_RTMP_FIRMWARE_FILE_NAME "/etc/Wireless/RT2860AP/RT2860AP.bin"
 #endif
 
 
-#define AP_DRIVER_VERSION			"5.0.2.0"
+#define AP_DRIVER_VERSION			"5.0.4.0"
 #ifdef MULTIPLE_CARD_SUPPORT
 #define CARD_INFO_PATH			"/etc/Wireless/RT2860AP/RT2860APCard.dat"
 #endif /* MULTIPLE_CARD_SUPPORT */
+#ifdef WAPP_SUPPORT
+#define WAPP_SUPPORT_VERSION		"2.0"
+#endif /* WAPP_SUPPORT */
 #endif /* RTMP_MAC_PCI */
 
 
@@ -160,8 +186,14 @@ typedef struct usb_ctrlrequest devctrlrequest;
 #endif /* RTMP_RBUS_SUPPORT */
 
 #ifdef SINGLE_SKU_V2
+#ifdef VENDOR_FEATURE7_SUPPORT
+#define SINGLE_SKU_TABLE_FILE_NAME	"/tmp/.mt7615_SingleSKU.dat"
+#define BF_GAIN_TABLE_FILE_NAME     "/tmp/.mt7615_SingleSKU_BF_Gain.dat"
+#define BF_SKU_TABLE_FILE_NAME      "/tmp/.mt7615_SingleSKU_BF.dat"
+#else
 #define SINGLE_SKU_TABLE_FILE_NAME	"/etc_ro/Wireless/RT2860AP/SingleSKU.dat"
 #define BF_SKU_TABLE_FILE_NAME      "/etc_ro/Wireless/RT2860AP/SingleSKU_BF.dat"
+#endif
 #endif /* SINGLE_SKU_V2 */
 
 #endif /* CONFIG_AP_SUPPORT */
@@ -288,6 +320,8 @@ struct iw_statistics *rt28xx_get_wireless_stats(
 #define NDIS_STATUS_INVALID_DATA		0x02
 #define NDIS_STATUS_RESOURCES                   0x03
 #define NDIS_STATUS_PKT_REQUEUE			0x04
+#define NDIS_STATUS_MORE_PROCESSING_REQUIRED             0x05
+
 
 #define NDIS_SET_PACKET_STATUS(_p, _status)			do {} while (0)
 #define NdisWriteErrorLogEntry(_a, _b, _c, _d)		do {} while (0)
@@ -475,6 +509,7 @@ typedef spinlock_t			OS_NDIS_SPIN_LOCK;
 #define OS_SEM_EVENT_UP(_pSema)			up(_pSema)
 
 #define RTCMDUp					OS_RTCMDUp
+#define RTCMDRunning				OS_RTCMDRunning
 
 #ifdef KTHREAD_SUPPORT
 #define RTMP_WAIT_EVENT_INTERRUPTIBLE(_Status, _pTask) \
@@ -544,13 +579,21 @@ typedef spinlock_t			OS_NDIS_SPIN_LOCK;
 /* TODO: Use this IOCTL carefully when linux kernel version larger than 2.6.27, because the PID only correct when the user space task do this ioctl itself. */
 /*#define RTMP_GET_OS_PID(_x, _y)    _x = get_task_pid(current, PIDTYPE_PID); */
 #ifdef OS_ABL_FUNC_SUPPORT
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))
+#define RT_GET_OS_PID(_x, _y)		do {rcu_read_lock(); _x = (ULONG)current->thread_pid; rcu_read_unlock(); } while (0)
+#else
 #define RT_GET_OS_PID(_x, _y)		do {rcu_read_lock(); _x = (ULONG)current->pids[PIDTYPE_PID].pid; rcu_read_unlock(); } while (0)
+#endif
 #define RTMP_GET_OS_PID(_a, _b)			RtmpOsGetPid(&_a, _b)
 #else
 #ifdef CONFIG_PREEMPT_RCU
 #define RT_GET_OS_PID(_x, _y)
 #else /* else CONFIG_PREEMPT_RCU */
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))
+#define RT_GET_OS_PID(_x, _y)		do {rcu_read_lock(); _x = current->thread_pid; rcu_read_unlock(); } while (0)
+#else
 #define RT_GET_OS_PID(_x, _y)		do {rcu_read_lock(); _x = current->pids[PIDTYPE_PID].pid; rcu_read_unlock(); } while (0)
+#endif
 #endif /* CONFIG_PREEMPT_RCU */
 #define RTMP_GET_OS_PID(_a, _b)			RT_GET_OS_PID(_a, _b)
 #endif /* OS_ABL_FUNC_SUPPORT */
@@ -587,9 +630,11 @@ typedef struct tasklet_struct  *POS_NET_TASK_STRUCT;
 
 typedef struct timer_list	OS_NDIS_MINIPORT_TIMER;
 typedef struct timer_list	OS_TIMER;
-
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))
+typedef void (*TIMER_FUNCTION)(struct timer_list *);
+#else
 typedef void (*TIMER_FUNCTION)(unsigned long);
-
+#endif
 
 #define OS_WAIT(_time) \
 	{	\
@@ -809,15 +854,13 @@ void linux_pci_unmap_single(void *handle, ra_dma_addr_t dma_addr, size_t size, i
 #define CONFIG_DBG_QDISC
 #endif
 
-/*only for debug usage, need to strip on MP release*/
-#define CONFIG_DBG_OOM
 
 #define SKB_BUF_HEADROOM_RSV	(NET_SKB_PAD)
 #define SKB_BUF_TAILROOM_RSV	(sizeof(struct skb_shared_info))
 
 #define SKB_BUF_HEADTAIL_RSV	(SKB_BUF_HEADROOM_RSV + SKB_BUF_TAILROOM_RSV)
 /* Need to do below miniume size protect for build_skb method, to avoid DATAABORT issue. */
-#define SKB_BUF_MINIMUN_SIZE	(2048)
+#define SKB_BUF_MINIMUN_SIZE	(1984)
 
 
 #ifdef CONFIG_WIFI_BUILD_SKB
@@ -1137,6 +1180,7 @@ do{ 																\
 #define RTMP_OS_NETDEV_STOP_QUEUE(_pNetDev)	netif_stop_queue((_pNetDev))
 #define RTMP_OS_NETDEV_WAKE_QUEUE(_pNetDev)	netif_wake_queue((_pNetDev))
 #define RTMP_OS_NETDEV_CARRIER_OFF(_pNetDev)	netif_carrier_off((_pNetDev))
+#define RTMP_OS_NETDEV_CARRIER_ON(_pNetDev)	netif_carrier_on((_pNetDev))
 
 #define QUEUE_ENTRY_TO_PACKET(pEntry) \
 	(PNDIS_PACKET)(pEntry)
@@ -1767,8 +1811,15 @@ VOID __exit wbsys_module_exit(void);
 #endif /* RTMP_RBUS_SUPPORT */
 
 int multi_inf_adapt_reg(VOID *pAd);
+
 int multi_inf_adapt_unreg(VOID *pAd);
+
+int multi_inf_get_count(void);
+
 int multi_inf_get_idx(VOID *pAd);
+#ifdef INTELP6_SUPPORT
+struct pci_dev* rtmp_get_pci_dev(void *pAd);
+#endif
 #endif /* MULTI_INF_SUPPORT */
 
 struct device *rtmp_get_dev(void *ad);
