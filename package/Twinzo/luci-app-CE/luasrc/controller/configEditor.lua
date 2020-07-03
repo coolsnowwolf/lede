@@ -64,8 +64,7 @@ end
 function alter()
 	local set = luci.http.formvalue("set")
 	local id, path = set:match("^(%S+) (%S+)")
-	local data = luci.http.formvalue("tet")
-
+	local data = data .. luci.http.formvalue(tet)
 	if path then
 		local fd = fs.realpath(path)
 		if fd then
@@ -124,24 +123,29 @@ function get_upgrade()
 		end
 	elseif id == "delete" then --删除keep.d目录下文件
 		retstring = "3"
-		if path then 
-			paths = "/lib/upgrade/keep.d/"..path
-			pathss = "/etc/keep.d/"..path
-			local fk = fs.realpath(paths)
-			if fk then
-				sys.call("mkdir -p /etc/keep.d/ 2>/dev/null")
-				fs.rename(".."..paths,pathss)
-				fks = fs.realpath(paths)
-				if not fks then				
-					ret1 = "<b><span style='color: green'>删除成功</span></b>"
+		if path == "*" then
+			sys.exec("mkdir -p /etc/keep.d 2>/dev/null && mv -f /lib/upgrade/keep.d/* mv -f /etc/keep.d/ 2>/dev/null")
+			ret1 = "<b><span style='color: green'>文件已全部删除</span></b>"
+		else
+			if path then 
+				paths = "/lib/upgrade/keep.d/"..path
+				pathss = "/etc/keep.d/"..path
+				local fk = fs.realpath(paths)
+				if fk then
+					sys.call("mkdir -p /etc/keep.d/ 2>/dev/null")
+					fs.rename(".."..paths,pathss)
+					fks = fs.realpath(paths)
+					if not fks then				
+						ret1 = "<b><span style='color: green'>删除成功</span></b>"
+					else
+						ret1 = "<b><span style='color: red'>删除失败</span></b>"
+					end
 				else
-					ret1 = "<b><span style='color: red'>删除失败</span></b>"
+					ret1 = "<b><span style='color: red'>文件不存在</span></b>"
 				end
 			else
-				ret1 = "<b><span style='color: red'>文件不存在</span></b>"
+				ret1 = "<b><span style='color: red'>输入为空</span></b>"
 			end
-		else
-			ret1 = "<b><span style='color: red'>输入为空</span></b>"
 		end
 	elseif id == "add" then --创建并修改自定义备份配置文件
 		retstring = "4"
@@ -156,23 +160,28 @@ function get_upgrade()
 		end
 	elseif id == "recover" then --恢复升级备份文件
 		retstring = "5"
-		if path then
-			paths = "/etc/keep.d/"..path
-			fr  = fs.realpath(paths)
-			if fr then
-				pathss = "/lib/upgrade/keep.d/"..path
-				fs.rename(".."..paths,pathss)
-				frs  = fs.realpath(pathss)
-				if frs then
-					ret1 = "<b><span style='color: green'>恢复成功</span></b>"
+		if path == "*" then
+			sys.exec("mkdir -p /etc/keep.d 2>/dev/null && mv -f /etc/keep.d/* /lib/upgrade/keep.d/ 2>/dev/null")
+			ret1 = "<b><span style='color: green'>文件已全部恢复</span></b>"
+		else
+			if path then
+				paths = "/etc/keep.d/"..path
+				fr  = fs.realpath(paths)
+				if fr then
+					pathss = "/lib/upgrade/keep.d/"..path
+					fs.rename(".."..paths,pathss)
+					frs  = fs.realpath(pathss)
+					if frs then
+						ret1 = "<b><span style='color: green'>恢复成功</span></b>"
+					else
+						ret1 = "<b><span style='color: red'>失败</span></b>"
+					end
 				else
-					ret1 = "<b><span style='color: red'>失败</span></b>"
+					ret1 = "<b><span style='color: red'>文件不存在，未备份或已恢复或输错文件名</span></b>"
 				end
 			else
-				ret1 = "<b><span style='color: red'>文件不存在，未备份或已恢复或输错文件名</span></b>"
+				ret1 = "<b><span style='color: red'>输入为空</span></b>"
 			end
-		else
-			ret1 = "<b><span style='color: red'>输入为空</span></b>"
 		end
 	else
 		retstring = "0"
