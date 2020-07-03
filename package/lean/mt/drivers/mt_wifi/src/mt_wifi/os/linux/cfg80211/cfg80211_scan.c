@@ -27,6 +27,20 @@
 
 #include "rt_config.h"
 
+VOID CFG80211DRV_OpsScanInLinkDownAction(
+	VOID						*pAdOrg)
+{
+}
+
+
+BOOLEAN CFG80211DRV_OpsScanRunning(
+	VOID						*pAdOrg)
+{
+	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdOrg;
+
+	return pAd->cfg80211_ctrl.FlgCfg80211Scanning;
+}
+
 
 /* Refine on 2013/04/30 for two functin into one */
 INT CFG80211DRV_OpsScanGetNextChannel(
@@ -80,8 +94,38 @@ BOOLEAN CFG80211DRV_OpsScanCheckStatus(
 	VOID						*pAdOrg,
 	UINT8						 IfType)
 {
+#if defined(CONFIG_STA_SUPPORT) || defined(APCLI_CFG80211_SUPPORT)
+	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdOrg;
+	/* do scan */
+	pAd->cfg80211_ctrl.FlgCfg80211Scanning = TRUE;
+#endif /*defined(CONFIG_STA_SUPPORT) || defined(APCLI_CFG80211_SUPPORT)*/
 	return TRUE;
 }
+
+#ifdef APCLI_CFG80211_SUPPORT
+void CFG80211DRV_ApcliSiteSurvey(
+	VOID						*pAdOrg,
+	VOID						*pData)
+{
+	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdOrg;
+	RT_CMD_STA_IOCTL_SCAN *pScan = (RT_CMD_STA_IOCTL_SCAN *)pData;
+	NDIS_802_11_SSID	Ssid;
+	UCHAR ScanType = SCAN_ACTIVE;
+
+	if (pScan->ScanType != 0)
+		ScanType = pScan->ScanType;
+	else
+		ScanType = SCAN_ACTIVE;
+
+	Ssid.SsidLength = pScan->SsidLen;
+	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+		("CFG80211DRV_ApcliSiteSurvey:: req.essid_len-%d, essid-%s\n", pScan->SsidLen, pScan->pSsid));
+	NdisZeroMemory(&Ssid.Ssid, NDIS_802_11_LENGTH_SSID);
+	if (pScan->SsidLen)
+		NdisMoveMemory(Ssid.Ssid, pScan->pSsid, Ssid.SsidLength);
+	ApCliSiteSurvey(pAd, &Ssid, ScanType, /*ChannelSel*/0,/**wdev*/ &pAd->ApCfg.ApCliTab[0].wdev);
+}
+#endif /* APCLI_CFG80211_SUPPORT */
 
 #ifdef RT_CFG80211_P2P_MULTI_CHAN_SUPPORT
 void CFG80211DRV_Set_NOA(
@@ -158,6 +202,38 @@ void CFG80211DRV_Set_NOA(
 BOOLEAN CFG80211DRV_OpsScanExtraIesSet(
 	VOID						*pAdOrg)
 {
+#if defined(CONFIG_STA_SUPPORT) || defined(APCLI_CFG80211_SUPPORT)
+	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdOrg;
+	CFG80211_CB *pCfg80211_CB = pAd->pCfg80211_CB;
+	UINT ie_len = 0;
+	PCFG80211_CTRL cfg80211_ctrl = &pAd->cfg80211_ctrl;
+
+	if (pCfg80211_CB->pCfg80211_ScanReq)
+		ie_len = pCfg80211_CB->pCfg80211_ScanReq->ie_len;
+
+	CFG80211DBG(DBG_LVL_INFO, ("80211> CFG80211DRV_OpsExtraIesSet ==> %d\n", ie_len));
+	if (ie_len == 0)
+		return FALSE;
+
+	/* Reset the ExtraIe and Len */
+	if (cfg80211_ctrl->pExtraIe) {
+		os_free_mem(cfg80211_ctrl->pExtraIe);
+		cfg80211_ctrl->pExtraIe = NULL;
+	}
+
+	cfg80211_ctrl->ExtraIeLen = 0;
+	os_alloc_mem(pAd, (UCHAR **) &(cfg80211_ctrl->pExtraIe), ie_len);
+
+	if (cfg80211_ctrl->pExtraIe) {
+		NdisCopyMemory(cfg80211_ctrl->pExtraIe, pCfg80211_CB->pCfg80211_ScanReq->ie, ie_len);
+		cfg80211_ctrl->ExtraIeLen = ie_len;
+		hex_dump("CFG8021_SCAN_EXTRAIE", cfg80211_ctrl->pExtraIe, cfg80211_ctrl->ExtraIeLen);
+	} else {
+		CFG80211DBG(DBG_LVL_ERROR, ("80211> CFG80211DRV_OpsExtraIesSet ==> allocate fail.\n"));
+		return FALSE;
+	}
+
+#endif /* defined(CONFIG_STA_SUPPORT) || defined(APCLI_CFG80211_SUPPORT) */
 	return TRUE;
 }
 
@@ -208,7 +284,11 @@ static void CFG80211_UpdateBssTableRssi(
 #endif
 		chan = ieee80211_get_channel(pWiphy, CenFreq);
 		bss = cfg80211_get_bss(pWiphy, chan, pBssEntry->Bssid, pBssEntry->Ssid, pBssEntry->SsidLen,
-							   WLAN_CAPABILITY_ESS, WLAN_CAPABILITY_ESS);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 0, 0))
+						IEEE80211_BSS_TYPE_ESS, IEEE80211_PRIVACY_ANY);
+#else
+						WLAN_CAPABILITY_ESS, WLAN_CAPABILITY_ESS);
+#endif
 
 		if (bss == NULL) {
 			/* ScanTable Entry not exist in kernel buffer */
@@ -245,6 +325,57 @@ VOID CFG80211_Scaning(
 	IN UINT32						FrameLen,
 	IN INT32						RSSI)
 {
+#if defined(CONFIG_STA_SUPPORT) || defined(APCLI_CFG80211_SUPPORT)
+	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdCB;
+	VOID *pCfg80211_CB = pAd->pCfg80211_CB;
+	BOOLEAN FlgIsNMode;
+	UINT8 BW;
+#ifdef APCLI_CFG80211_SUPPORT
+	struct wifi_dev *wdev = &pAd->ApCfg.ApCliTab[0].wdev;
+#else
+	struct wifi_dev *wdev = get_default_wdev(pAd);
+#endif
+	UCHAR cfg_ht_bw = wlan_config_get_ht_bw(wdev);
+
+	if (!RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_REGISTER_TO_OS)) {
+		MTWF_LOG(DBG_CAT_CLIENT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("80211> Network is down!\n"));
+		return;
+	}
+
+	if (!pCfg80211_CB) {
+		MTWF_LOG(DBG_CAT_CLIENT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("80211> pCfg80211_CB is invalid!\n"));
+		return;
+	}
+
+	/*
+	 *	In connect function, we also need to report BSS information to cfg80211;
+	 *	Not only scan function.
+	 */
+	if ((!CFG80211DRV_OpsScanRunning(pAd)) &&
+		(pAd->cfg80211_ctrl.FlgCfg80211Connecting == FALSE)) {
+		return; /* no scan is running from wpa_supplicant */
+	}
+
+	/* init */
+	/* Note: Can not use local variable to do pChan */
+	if (WMODE_CAP_N(wdev->PhyMode))
+		FlgIsNMode = TRUE;
+	else
+		FlgIsNMode = FALSE;
+
+	if (cfg_ht_bw == BW_20)
+		BW = 0;
+	else
+		BW = 1;
+
+	CFG80211OS_Scaning(pCfg80211_CB,
+					   ChanId,
+					   pFrame,
+					   FrameLen,
+					   RSSI,
+					   FlgIsNMode,
+					   BW);
+#endif /* defined(CONFIG_STA_SUPPORT) || defined(APCLI_CFG80211_SUPPORT) */
 }
 
 
@@ -265,6 +396,55 @@ VOID CFG80211_ScanEnd(
 	IN VOID						*pAdCB,
 	IN BOOLEAN					FlgIsAborted)
 {
+	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdCB;
+#ifdef RT_CFG80211_P2P_MULTI_CHAN_SUPPORT
+	BSS_STRUCT *pMbss = &pAd->ApCfg.MBSSID[CFG_GO_BSSID_IDX];
+	PAPCLI_STRUCT pApCliEntry = pApCliEntry = &pAd->ApCfg.ApCliTab[MAIN_MBSSID];
+	struct wifi_dev *wdev = &pMbss->wdev;
+
+	if (RTMP_CFG80211_VIF_P2P_CLI_ON(pAd))
+		wdev = &(pApCliEntry->wdev);
+
+#endif /* RT_CFG80211_P2P_MULTI_CHAN_SUPPORT */
+
+	if (!RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_REGISTER_TO_OS)) {
+		MTWF_LOG(DBG_CAT_CLIENT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("80211> Network is down!\n"));
+		return;
+	}
+
+	if (!CFG80211DRV_OpsScanRunning(pAd)) {
+		MTWF_LOG(DBG_CAT_CLIENT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("80211> No scan is running!\n"));
+		return; /* no scan is running */
+	}
+
+	if (FlgIsAborted == TRUE)
+		FlgIsAborted = 1;
+	else {
+		FlgIsAborted = 0;
+#ifdef CFG80211_SCAN_SIGNAL_AVG
+		CFG80211_UpdateBssTableRssi(pAd);
+#endif /* CFG80211_SCAN_SIGNAL_AVG */
+	}
+
+	CFG80211OS_ScanEnd(CFG80211CB, FlgIsAborted);
+#ifdef RT_CFG80211_P2P_MULTI_CHAN_SUPPORT
+	{
+		UCHAR op_ht_bw = wlan_operate_get_ht_bw(wdev);
+		UCHAR op_ht_bw2 = wlan_operate_get_ht_bw(&pAd->StaCfg[0].wdev);
+
+		if ((op_ht_bw2 == op_ht_bw) && (pAd->StaCfg[0].wdev.channel == wdev->channel))
+			MTWF_LOG(DBG_CAT_CLIENT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("Scc case , not star mcc when scan end\n"));
+		else if (wdev->channel == 0)
+			MTWF_LOG(DBG_CAT_CLIENT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("CLI still connect  , not star mcc when scan end\n"));
+		else if (INFRA_ON(pAd) && (RTMP_CFG80211_VIF_P2P_GO_ON(pAd) || (RTMP_CFG80211_VIF_P2P_CLI_ON(pAd) && (pApCliEntry->Valid == TRUE))) &&
+				 (((op_ht_bw2 == op_ht_bw) && (pAd->StaCfg[0].wdev.channel != wdev->channel))
+				  || !((op_ht_bw2  == op_ht_bw) && ((pAd->StaCfg[0].wdev.channel == wdev->channel))))
+				 /*&& (pAd->MCC_GOConnect_Protect == FALSE)*/
+				)
+			Start_MCC(pAd);
+	}
+#endif /* RT_CFG80211_P2P_MULTI_CHAN_SUPPORT */
+	pAd->cfg80211_ctrl.FlgCfg80211Scanning = FALSE;
 }
 
 VOID CFG80211_ScanStatusLockInit(

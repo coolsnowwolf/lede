@@ -113,7 +113,10 @@ static UCHAR BuildChannelListFor2G(RTMP_ADAPTER *pAd, CHANNEL_CTRL *pChCtrl, UCH
 			}
 #endif
 			pChCtrl->ChList[ChIdx].Channel = pChannelList[ChIdx];
-			pChCtrl->ChList[ChIdx].MaxTxPwr = 20;
+			if (!strncmp((RTMP_STRING *) pAd->CommonCfg.CountryCode, "CN", 2))
+				pChCtrl->ChList[ChIdx].MaxTxPwr = pAd->MaxTxPwr;/*for CN CountryCode*/
+			else
+				pChCtrl->ChList[ChIdx].MaxTxPwr = 20;
 			pChCtrl->ChList[ChIdx].Flags = pChannelListFlag[ChIdx];
 
 #ifdef RT_CFG80211_SUPPORT
@@ -151,6 +154,19 @@ static UCHAR BuildChannelListFor5G(RTMP_ADAPTER *pAd, CHANNEL_CTRL *pChCtrl, UCH
 	BOOLEAN bRegionFound = FALSE;
 	PUCHAR pChannelList;
 	PUCHAR pChannelListFlag;
+
+#ifdef RT_CFG80211_SUPPORT
+	UCHAR bw;
+	int apidx;
+
+	for (apidx = 0; apidx < pAd->ApCfg.BssidNum; apidx++) {
+		BSS_STRUCT *pMbss = &pAd->ApCfg.MBSSID[apidx];
+		struct wifi_dev *wdev = &pMbss->wdev;
+
+		bw = HcGetBw(pAd, wdev);
+	}
+	PhyMode = HcGetRadioPhyMode(pAd);
+#endif
 
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("[BuildChannelListFor5G] \n"));
 
@@ -286,7 +302,10 @@ static UCHAR BuildChannelListFor5G(RTMP_ADAPTER *pAd, CHANNEL_CTRL *pChCtrl, UCH
 				pChCtrl->ChList[ChIdx].DfsReq = TRUE;
 				}
 			}
-			pChCtrl->ChList[ChIdx].MaxTxPwr = 20;
+			if (!strncmp((RTMP_STRING *) pAd->CommonCfg.CountryCode, "CN", 2))
+				pChCtrl->ChList[ChIdx].MaxTxPwr = pAd->MaxTxPwr;/*for CN CountryCode*/
+			else
+				pChCtrl->ChList[ChIdx].MaxTxPwr = 20;
 #ifdef RT_CFG80211_SUPPORT
 			CFG80211OS_ChanInfoInit(
 				pAd->pCfg80211_CB,
@@ -445,8 +464,37 @@ UCHAR FirstChannel(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 {
 	UCHAR BandIdx = HcGetBandByWdev(wdev);
 	CHANNEL_CTRL *pChCtrl = hc_get_channel_ctrl(pAd->hdev_ctrl, BandIdx);
+#ifdef MT_DFS_SUPPORT
+	int ChnIdx, DfsChnIdx;
+	UCHAR first_channel = 0;
+	PDFS_PARAM pDfsParam = &pAd->CommonCfg.DfsParameter;
+	BOOLEAN ChannelFound = FALSE;
 
+	for (ChnIdx = 0; ChnIdx < (pChCtrl->ChListNum - 1); ChnIdx++) {
+		/* For each channel from pChCtrl->ChList[i], check if the channel is present in DFS channel list with NOP == 0 */
+		for (DfsChnIdx = 0; DfsChnIdx  < pDfsParam->ChannelListNum; DfsChnIdx++) {
+			if (pChCtrl->ChList[ChnIdx].Channel == pDfsParam->DfsChannelList[DfsChnIdx].Channel) {
+
+				if (pDfsParam->DfsChannelList[DfsChnIdx].NonOccupancy == 0)
+					ChannelFound = TRUE;
+				break;
+			}
+		}
+
+		/* If channel is found to be DFS with NOP = 0 or it is non DFS channel, then get the current channel */
+		if (ChannelFound ||
+			(DfsChnIdx == pDfsParam->ChannelListNum)) {
+			first_channel = pChCtrl->ChList[ChnIdx].Channel;
+			break;
+		}
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Skip scanning channel %u due to remaining %u sec NOP\n",
+			pChCtrl->ChList[ChnIdx].Channel, pDfsParam->DfsChannelList[DfsChnIdx].NonOccupancy));
+	}
+
+	return first_channel;
+#else
 	return pChCtrl->ChList[0].Channel;
+#endif /* MT_DFS_SUPPORT */
 }
 
 
@@ -467,9 +515,16 @@ UCHAR NextChannel(
 	struct wifi_dev *wdev)
 {
 	int i;
+#ifdef MT_DFS_SUPPORT
+	int DfsChnIdx;
+#endif /* MT_DFS_SUPPORT */
 	UCHAR next_channel = 0;
 	UCHAR BandIdx = HcGetBandByWdev(wdev);
 	CHANNEL_CTRL *pChCtrl = hc_get_channel_ctrl(pAd->hdev_ctrl, BandIdx);
+#ifdef MT_DFS_SUPPORT
+	PDFS_PARAM pDfsParam = &pAd->CommonCfg.DfsParameter;
+	BOOLEAN ChannelFound = FALSE;
+#endif /* MT_DFS_SUPPORT */
 
 	for (i = 0; i < (pChCtrl->ChListNum - 1); i++) {
 		if (channel == pChCtrl->ChList[i].Channel) {
@@ -485,9 +540,32 @@ UCHAR NextChannel(
 #endif /* DOT11N_DRAFT3 */
 #endif /* DOT11_N_SUPPORT */
 			{
+#ifdef MT_DFS_SUPPORT
+				/* For each channel from pChCtrl->ChList[i], check if the channel is present in DFS channel list with NOP == 0 */
+				for (DfsChnIdx = 0; DfsChnIdx  < pDfsParam->ChannelListNum; DfsChnIdx++) {
+					if (pChCtrl->ChList[i + 1].Channel == pDfsParam->DfsChannelList[DfsChnIdx].Channel) {
+
+						if (pDfsParam->DfsChannelList[DfsChnIdx].NonOccupancy == 0)
+							ChannelFound = TRUE;
+						break;
+					}
+				}
+
+				/* If channel is found to be DFS with NOP = 0 or it is non DFS channel, then get the current channel */
+				if (ChannelFound ||
+					(DfsChnIdx == pDfsParam->ChannelListNum)) {
+					next_channel = pChCtrl->ChList[i + 1].Channel;
+					break;
+				}
+
+				MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Skip scanning channel %u due to remaining %u sec NOP\n",
+					pChCtrl->ChList[i + 1].Channel, pDfsParam->DfsChannelList[DfsChnIdx].NonOccupancy));
+				channel = pChCtrl->ChList[i + 1].Channel;
+#else
 				/* Record this channel's idx in ChannelList array.*/
 				next_channel = pChCtrl->ChList[i + 1].Channel;
 				break;
+#endif /* MT_DFS_SUPPORT */
 			}
 		}
 	}
@@ -599,6 +677,9 @@ CHAR ConvertToRssi(RTMP_ADAPTER *pAd, struct raw_rssi_info *rssi_info, UCHAR rss
 
 CHAR ConvertToSnr(RTMP_ADAPTER *pAd, UCHAR Snr)
 {
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+	return Snr;
+#else
 	CHAR ret = 0;
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
 
@@ -612,7 +693,40 @@ CHAR ConvertToSnr(RTMP_ADAPTER *pAd, UCHAR Snr)
 		ret = ((0xeb	- Snr) * 3) /	16;
 		return ret;
 	}
+#endif
 }
+
+static UINT8 ch_offset_abs(UINT8 x, UINT8 y)
+{
+
+	if (x > y)
+		return x - y;
+	else
+		return y - x;
+}
+
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+/* BW Sync when Soft AP is Down */
+BOOLEAN CheckSoftAPSyncRequired(RTMP_ADAPTER *pAd, struct wifi_dev *wdev_ap, BCN_IE_LIST *ie_list)
+{
+	/* Soft AP must be disabled */
+	if (wlan_operate_get_state(wdev_ap) != WLAN_OPER_STATE_INVALID)
+		return FALSE;
+
+	if (WMODE_CAP_N(wdev_ap->PhyMode) && ie_list->AddHtInfoLen != 0 && wdev_ap->channel < 14) {
+		if (wlan_operate_get_ht_bw(wdev_ap) != ie_list->AddHtInfo.AddHtInfo.RecomWidth)
+			wdev_sync_ht_bw(pAd, wdev_ap, &ie_list->AddHtInfo.AddHtInfo);
+	}
+
+	if (WMODE_CAP_AC(wdev_ap->PhyMode)) {
+		if (wlan_operate_get_vht_bw(wdev_ap) != ie_list->vht_op_ie.vht_op_info.ch_width)
+			wdev_sync_vht_bw(pAd, wdev_ap, ie_list->vht_op_ie.vht_op_info.ch_width, ie_list->vht_op_ie.vht_op_info.center_freq_1);
+	}
+
+	return TRUE;
+}
+#endif
+
 
 BOOLEAN AdjustBwToSyncAp(RTMP_ADAPTER *pAd, BCN_IE_LIST *ie_list, UCHAR  Wcid, UCHAR fun_tb_idx)
 {
@@ -623,6 +737,22 @@ BOOLEAN AdjustBwToSyncAp(RTMP_ADAPTER *pAd, BCN_IE_LIST *ie_list, UCHAR  Wcid, U
 	UCHAR op_ht_bw;
 	UCHAR cfg_ht_bw;
 	UCHAR ExtCha;
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+	BOOLEAN bAdjustHTBW = FALSE, bAdjustVHTBW = FALSE;
+	UCHAR softap_op_ht_bw = 0;
+	UINT_8 i = 0;
+	BSS_STRUCT *pMbss = NULL;
+	struct wifi_dev *pwdev = NULL;
+
+	/* Soft AP wdev/mbss */
+	for (i = 0; i < pAd->ApCfg.BssidNum; i++) {
+		pMbss = &pAd->ApCfg.MBSSID[i];
+		pwdev = &pAd->ApCfg.MBSSID[i].wdev;
+		if ((pMbss) && (pwdev) && (pMbss->wdev.wdev_type == WDEV_TYPE_AP))
+			break;
+	}
+#endif
+
 	pEntry = &pAd->MacTab.Content[Wcid];
 	wdev = pEntry->wdev;
 
@@ -636,7 +766,18 @@ BOOLEAN AdjustBwToSyncAp(RTMP_ADAPTER *pAd, BCN_IE_LIST *ie_list, UCHAR  Wcid, U
 		ExtCha = wlan_operate_get_ext_cha(wdev);
 
 		/* BW 40 -> 20 */
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+		if (pwdev) {
+			softap_op_ht_bw = wlan_operate_get_ht_bw(pwdev);
+			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
+				("[%s] op_ht_bw %d softap_op_bw %d op_ht %d cfg_ht_bw %d\n",
+				__func__, op_ht_bw, wlan_operate_get_bw(pwdev), wlan_operate_get_ht_bw (pwdev), cfg_ht_bw));
+		}
+
+		if (op_ht_bw == HT_BW_40 || (pwdev && softap_op_ht_bw == HT_BW_40)) {
+#else
 		if (op_ht_bw == HT_BW_40) {
+#endif
 			/* Check if root-ap change BW to 20 */
 			if ((ie_list->AddHtInfo.AddHtInfo.ExtChanOffset == EXTCHA_NONE &&
 				 ie_list->AddHtInfo.AddHtInfo.RecomWidth == 0)
@@ -644,10 +785,22 @@ BOOLEAN AdjustBwToSyncAp(RTMP_ADAPTER *pAd, BCN_IE_LIST *ie_list, UCHAR  Wcid, U
 				bAdjust = TRUE;
 				Set_Diff_Bw(pAd, Wcid, BW_20, EXTCHA_NONE);
 				MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("FallBack APClient BW to 20MHz\n"));
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+				/* Sync new BW & Ext Channel for Soft AP */
+				if (pwdev && IS_SYNC_BW_POLICY_VALID(pAd, TRUE, HT_4020_DOWN_ENBL)) {
+					MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
+						("[%s] Enter 4020 HT Sync\n", __func__));
+					wdev_sync_ht_bw(pAd, pwdev, &ie_list->AddHtInfo.AddHtInfo);
+					bAdjustHTBW = TRUE;
+				}
+#endif
 			}
-
 			/* BW 20 -> 40 */
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+		} else if ((op_ht_bw == HT_BW_20 || (pwdev && softap_op_ht_bw == HT_BW_20)) && cfg_ht_bw != HT_BW_20) {
+#else
 		} else if (op_ht_bw == HT_BW_20 && cfg_ht_bw != HT_BW_20) {
+#endif
 			/* Check if root-ap change BW to 40 */
 			if (ie_list->AddHtInfo.AddHtInfo.ExtChanOffset != EXTCHA_NONE &&
 				ie_list->AddHtInfo.AddHtInfo.RecomWidth == 1 &&
@@ -662,6 +815,16 @@ BOOLEAN AdjustBwToSyncAp(RTMP_ADAPTER *pAd, BCN_IE_LIST *ie_list, UCHAR  Wcid, U
 					wlan_operate_set_prim_ch(wdev, wdev->channel);
 					MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("FallBack Client/APClient BW to 40MHz\n"));
 				}
+
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+				/* Sync new BW & Ext Channel for Soft AP */
+				if (pwdev && IS_SYNC_BW_POLICY_VALID(pAd, TRUE, HT_2040_UP_ENBL)) {
+					MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
+						("[%s] Enter 2040 HT Sync\n", __func__));
+					wdev_sync_ht_bw(pAd, pwdev, &ie_list->AddHtInfo.AddHtInfo);
+					bAdjustHTBW = TRUE;
+				}
+#endif
 			}
 		}
 
@@ -699,10 +862,36 @@ BOOLEAN AdjustBwToSyncAp(RTMP_ADAPTER *pAd, BCN_IE_LIST *ie_list, UCHAR  Wcid, U
 	if (WMODE_CAP_AC(wdev->PhyMode)) {
 		UCHAR current_operating_mode = 0;
 		UCHAR prev_operating_mode = 0;
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+		UCHAR softap_prev_op_mode = 0;
+#endif
 		UCHAR current_nss;
 
+		UINT8 p80ccf = ie_list->vht_op_ie.vht_op_info.center_freq_1;
+		UINT8 s80160ccf = ie_list->vht_op_ie.vht_op_info.center_freq_2;
+		UCHAR Operting_BW = wlan_operate_get_vht_bw(wdev);
+		UCHAR AP_Operting_BW = ie_list->vht_op_ie.vht_op_info.ch_width;
 		P_RA_ENTRY_INFO_T pRaEntry = &pEntry->RaEntry;
 		BOOLEAN force_ra_update = FALSE;
+
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+		if (pwdev) {
+			/* Beacon Sync Scenario */
+			if (wlan_operate_get_ht_bw(pwdev) == BW_20)
+				softap_prev_op_mode = BW_20;
+			else if (wlan_operate_get_vht_bw(pwdev) == VHT_BW_2040)
+				softap_prev_op_mode = 1; /*40Mhz*/
+			else if (wlan_operate_get_vht_bw(pwdev) == VHT_BW_80)
+				softap_prev_op_mode = 2; /*80Mhz*/
+			else if ((wlan_operate_get_vht_bw(pwdev) == VHT_BW_160) ||
+					(wlan_operate_get_vht_bw(pwdev) == VHT_BW_8080))
+				softap_prev_op_mode = 3; /*80_80,160Mhz*/
+
+			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
+				("[%s] ApCli Wdev %d AP Wdev %d AP BW %d\n",
+				__func__, wdev->wdev_idx, pwdev->wdev_idx, softap_prev_op_mode));
+		}
+#endif
 
 		if ((ie_list->AddHtInfo.AddHtInfo.ExtChanOffset == EXTCHA_NONE &&
 					ie_list->AddHtInfo.AddHtInfo.RecomWidth == 0))
@@ -711,7 +900,28 @@ BOOLEAN AdjustBwToSyncAp(RTMP_ADAPTER *pAd, BCN_IE_LIST *ie_list, UCHAR  Wcid, U
 			if (ie_list->vht_op_ie.vht_op_info.ch_width == VHT_BW_2040) {
 				current_operating_mode = 1; /*40Mhz*/
 			} else if (ie_list->vht_op_ie.vht_op_info.ch_width == VHT_BW_80) {
-				current_operating_mode = 2; /*80Mhz*/
+				if (Operting_BW == VHT_BW_80)
+					current_operating_mode = 2; /*80Mhz*/
+				else if (Operting_BW > VHT_BW_80) {
+					if (s80160ccf == 0)
+						current_operating_mode = 2; /*80Mhz*/
+					else if (ch_offset_abs(s80160ccf, p80ccf) == 8) {
+						AP_Operting_BW = VHT_BW_160;
+						current_operating_mode = 3; /*160Mhz*/
+					} else if (ch_offset_abs(s80160ccf, p80ccf) >= 16) {
+						AP_Operting_BW = VHT_BW_8080;
+						current_operating_mode = 3; /*80_80*/
+						if (wlan_operate_get_cen_ch_2(wdev) != s80160ccf) {
+							wlan_operate_set_cen_ch_2(wdev, s80160ccf);
+							force_ra_update = TRUE;
+						}
+					}
+				}
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+				/* Current Op BW = 20/40 */
+				else if (Operting_BW == VHT_BW_2040)
+					current_operating_mode = 2;
+#endif
 			} else if ((ie_list->vht_op_ie.vht_op_info.ch_width == VHT_BW_160) ||
 					(ie_list->vht_op_ie.vht_op_info.ch_width == VHT_BW_8080)) {
 				current_operating_mode = 3; /*80_80,160Mhz*/
@@ -742,27 +952,91 @@ BOOLEAN AdjustBwToSyncAp(RTMP_ADAPTER *pAd, BCN_IE_LIST *ie_list, UCHAR  Wcid, U
 					(pRaEntry->vhtOpModeRxNss != pEntry->operating_mode.rx_nss) ||
 					(pRaEntry->vhtOpModeRxNssType != pEntry->operating_mode.rx_nss_type))) {
 			force_ra_update = TRUE;
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+		} else if ((prev_operating_mode != current_operating_mode) || (pwdev && (softap_prev_op_mode != current_operating_mode))) {
+			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
+					("BW Diff (apcli previous= %d softap previous= %d current=%d)\n",
+					 prev_operating_mode, softap_prev_op_mode, current_operating_mode));
+#else
 		} else if (prev_operating_mode != current_operating_mode) {
-			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR,
-					("BW Diff (previous= %d current=%d)\n",
-					 prev_operating_mode, current_operating_mode));
+#endif
 			pEntry->operating_mode.ch_width = current_operating_mode;
 			pEntry->operating_mode.rx_nss = current_nss;
 			pEntry->force_op_mode = TRUE;
 			force_ra_update = TRUE;
+
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+			/* Sync new HT BW & Ext Channel for Soft AP */
+			if (pwdev && (current_operating_mode == 0 && (prev_operating_mode >= 1 || softap_prev_op_mode >= 1) && ie_list->AddHtInfo.AddHtInfo.RecomWidth == 0)
+				&& IS_SYNC_BW_POLICY_VALID(pAd, TRUE, HT_4020_DOWN_ENBL)) {
+				MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("[%s] Enter 4020 HT Sync\n", __func__));
+				bAdjustHTBW = TRUE;
+			} else if (pwdev && (current_operating_mode >= 1 && (prev_operating_mode == 0 || softap_prev_op_mode == 0) && ie_list->AddHtInfo.AddHtInfo.RecomWidth == 1)
+				&& IS_SYNC_BW_POLICY_VALID(pAd, TRUE, HT_2040_UP_ENBL)) {
+				MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("[%s] Enter 2040 HT Sync\n", __func__));
+				bAdjustHTBW = TRUE;
+			}
+
+			/* Sync new VHT BW & Ext Channel for Soft AP */
+			if (pwdev && ((prev_operating_mode == 2 || softap_prev_op_mode == 2) && current_operating_mode <= 1)
+				&& IS_SYNC_BW_POLICY_VALID(pAd, FALSE, VHT_80_2040_DOWN_CHK)) {
+				MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("[%s] Enter 80-2040 VHT Sync\n", __func__));
+				bAdjustVHTBW = TRUE;
+			} else if (pwdev && ((prev_operating_mode <= 1 || softap_prev_op_mode <= 1) && current_operating_mode == 2)
+				&& IS_SYNC_BW_POLICY_VALID(pAd, FALSE, VHT_2040_80_UP_CHK)) {
+				MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("[%s] Enter 2040-80 VHT Sync\n", __func__));
+				bAdjustVHTBW = TRUE;
+			}
+#endif
 		}
 		if (force_ra_update) {
 			CMD_STAREC_AUTO_RATE_UPDATE_T rRaParam;
 
 			if (current_operating_mode == 0)
 				wlan_operate_set_ht_bw(wdev, HT_BW_20, EXTCHA_NONE);
-			wlan_operate_set_vht_bw(wdev, ie_list->vht_op_ie.vht_op_info.ch_width);
-			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR,
+			wlan_operate_set_vht_bw(wdev, AP_Operting_BW);
+
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+			if (bAdjustHTBW)
+				wdev_sync_ht_bw(pAd, pwdev, &ie_list->AddHtInfo.AddHtInfo);
+
+			if (bAdjustVHTBW)
+				wdev_sync_vht_bw(pAd, pwdev, AP_Operting_BW, p80ccf);
+#endif
+			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
 					("RA Param Update:ChWidth %d,Rxnss %d\n",
 					 pEntry->operating_mode.ch_width, pEntry->operating_mode.rx_nss));
 			NdisZeroMemory(&rRaParam, sizeof(CMD_STAREC_AUTO_RATE_UPDATE_T));
 			rRaParam.u4Field = RA_PARAM_VHT_OPERATING_MODE;
 			RAParamUpdate(pAd, pEntry, &rRaParam);
+		}
+	}
+#endif
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+	/* Add check to skip sync, if already done */
+	if (!(bAdjustHTBW || bAdjustVHTBW) && IS_APCLI_BW_SYNC_FEATURE_ENBL(pAd) && pwdev)
+		/* Soft AP Interface Down Handling */
+		CheckSoftAPSyncRequired(pAd, pwdev, ie_list);
+
+	if ((bAdjustHTBW || bAdjustVHTBW) && (IS_APCLI_SYNC_PEER_DEAUTH_ENBL(pAd) == FALSE)) {
+		if (IS_APCLI_SYNC_PEER_DEAUTH_VALID(pAd) && IsClientConnected(pAd)) {
+			SET_APCLI_SYNC_PEER_DEAUTH_ENBL(pAd, TRUE);
+
+			if (IS_APCLI_SYNC_BAND_VALID(pAd, DIFF_BAND_SYNC)) {
+				/* Both 2G/5G Bands Soft AP Clients Disconnect */
+				APStop(pAd, pMbss, AP_BSS_OPER_ALL);
+				APStartUp(pAd, pMbss, AP_BSS_OPER_ALL);
+			} else if (IS_APCLI_SYNC_BAND_VALID(pAd, SAME_BAND_SYNC)) {
+				/* Same Band SoftAP Clients Disconnect */
+				APStop(pAd, pMbss, AP_BSS_OPER_BY_RF);
+				APStartUp(pAd, pMbss, AP_BSS_OPER_BY_RF);
+			}
+
+			SET_APCLI_SYNC_PEER_DEAUTH_ENBL(pAd, FALSE);
+		} else {
+			/* Soft AP Clients Disconnect Disable Case */
+			UpdateBeaconHandler(pAd, pwdev, BCN_UPDATE_IE_CHG);
+			/* Same Band Client BW Update */
 		}
 	}
 #endif

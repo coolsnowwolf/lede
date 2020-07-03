@@ -3,6 +3,56 @@
 
 #ifdef DOT11_SAE_SUPPORT
 
+#ifdef DOT11_SAE_OPENSSL_BN
+#include "security/crypt_bignum.h"
+#include "security/crypt_biginteger.h"
+#include "security/bn.h"
+
+#define SAE_BN BIGNUM
+
+#define SAE_BN_INIT(_in)			Bignum_Init(_in)
+#define SAE_BN_FREE(_in)			Bignum_Free(_in)
+#define SAE_BN_PRINT(_in)			Bignum_Print(_in)
+#define SAE_BN_RELEASE_BACK_TO_POOL(_in)	Bignum_Free(_in)
+#define SAE_BN_COPY(_in, _out)			Bignum_Copy(_in, _out)
+#define SAE_BN_BIN2BI(_ptr, _len, _out)		Bignum_Bin2BI(_ptr, _len, _out)
+#define SAE_BN_BI2BIN_WITH_PAD(_in, _ptr, _len, _padlen) \
+						Bignum_BI2Bin_with_pad(_in, _ptr, _len, _padlen)
+#define SAE_BN_GET_LEN(_in)			Bignum_getlen(_in)
+
+#define SAE_BN_UCMP(_a, _b)			Bignum_UnsignedCompare(_a, _b)
+#define SAE_BN_IS_ZERO(_in)			Bignum_is_zero(_in)
+#define SAE_BN_IS_ONE(_in)			Bignum_is_one(_in)
+#define SAE_BN_IS_ODD(_in)			Bignum_is_odd(_in)
+#define SAE_BN_RSHIFT1(_in, _out)		Bignum_Shift_Right1(_in, _out)
+#define SAE_BN_MOD_LSHIFT1(_in, _p, _out)	Bignum_Mod_Shift_Left1(_in, _p, _out)
+#define SAE_BN_MOD_LSHIFT(_in, _bit, _p, _out)	Bignum_Mod_Shift_Left(_in, _bit, _p, _out)
+#define SAE_BN_IS_QUADRATIC_RESIDE(_q, _p, _m)	Bignum_is_quadratic_residue(_q, _p)
+
+#define SAE_BN_ADD(_a, _b, _r)			Bignum_Add(_a, _b, _r) /* no use */
+#define SAE_BN_SUB(_a, _b, _r)			Bignum_Sub(_a, _b, _r)
+#define SAE_BN_ADD_DW(_inout, _v)		Bignum_Add_DW(_inout, _v)
+
+#define SAE_BN_MOD(_a, _p, _r)			Bignum_Mod(_a, _p, _r)
+#define SAE_BN_MOD_ADD(_a, _b, _p, _r)		Bignum_Mod_Add(_a, _b, _p, _r)
+#define SAE_BN_MOD_ADD_QUICK(_a, _b, _p, _r)	Bignum_Mod_Add_quick(_a, _b, _p, _r)
+#define SAE_BN_MOD_SUB(_a, _b, _p, _r)		Bignum_Mod_Sub(_a, _b, _p, _r)
+#define SAE_BN_MOD_SUB_QUICK(_a, _b, _p, _r)	Bignum_Mod_Sub_quick(_a, _b, _p, _r)
+#define SAE_BN_MOD_MUL(_a, _b, _p, _r)		Bignum_Mod_Mul(_a, _b, _p, _r)
+#define SAE_BN_MOD_DIV(_a, _b, _p, _r)		Bignum_Mod_Div(_a, _b, _p, _r)
+#define SAE_BN_MOD_SQR(_a, _p, _r)		Bignum_Mod_Square(_a, _p, _r)
+#define SAE_BN_MOD_SQRT(_a, _p, _mont, _r)	Bignum_Mod_Sqrt(_a, _p, _r)
+#define SAE_BN_MOD_MUL_INV(_a, _p, _r)		Bignum_Mod_Mul_Inverse(_a, _p, _r)
+#define SAE_BN_MOD_DW(_inout, _v, _rem)		Bignum_Mod_DW(_inout, _v, _rem)
+
+#define SAE_BN_MOD_EXP_MONT(_a, _b, _p, _r)	Bignum_Montgomery_ExpMod(_a, _b, _p, _r)
+#define SAE_LOG_TIME_BEGIN(_timerec)		BigInteger_record_time_begin(_timerec)
+#define SAE_LOG_TIME_END(_timerec)		BigInteger_record_time_end(_timerec)
+#define SAE_LOG_TIME_DUMP()			BigInteger_dump_time()
+#define SAE_GET_RAND_RANGE(_r, _range)		Bignum_Get_rand_range(_range, _r)
+
+
+#else
 #include "security/crypt_biginteger.h"
 
 #define SAE_BN BIG_INTEGER
@@ -45,8 +95,9 @@
 #define SAE_LOG_TIME_BEGIN(_timerec)		BigInteger_record_time_begin(_timerec)
 #define SAE_LOG_TIME_END(_timerec)		BigInteger_record_time_end(_timerec)
 #define SAE_LOG_TIME_DUMP()			BigInteger_dump_time()
+#define SAE_GET_RAND_RANGE(_r, _range)		BigInteger_rand_range(_range, _r)
 
-
+#endif
 
 #define SAE_ECC_3D
 #ifdef SAE_ECC_3D
@@ -58,7 +109,7 @@
 
 #endif
 
-
+#define SAE_TOKEN_KEY_LEN 6  /* this parameter is not defined in spec */
 
 #define SAE_KCK_LEN 32
 #define SAE_PMKID_LEN 16
@@ -159,6 +210,8 @@ struct __SAE_GROUP_OP {
 	UCHAR(*sae_derive_k) (
 		IN SAE_INSTANCE * pSaeIns,
 		OUT UCHAR * k);
+	USHORT(*sae_reflection_check) (
+		IN SAE_INSTANCE * pSaeIns);
 };
 
 /* NdisGetSystemUpTime */
@@ -188,10 +241,8 @@ struct __SAE_INSTANCE {
 	VOID *peer_commit_element;
 	VOID *pwe;
 	SAE_BN *sae_rand;
-	/* struct crypto_ec *ec; */
 	UINT32 prime_len; /* ellis */
 	UINT32 order_len; /* ellis */
-	/* const struct dh_group *dh; */
 	VOID *group_info;
 	VOID *group_info_bi;
 	SAE_BN *prime;
@@ -199,10 +250,12 @@ struct __SAE_INSTANCE {
 	UCHAR *anti_clogging_token;
 	UINT32 anti_clogging_token_len;
 	USHORT peer_send_confirm;
+	UCHAR need_recalculate_key;
 	const SAE_GROUP_OP *group_op;
 	SAE_TIME_INTERVAL sae_cost_time;
 
 	UCHAR valid;
+	UCHAR removable;
 	RALINK_TIMER_STRUCT sae_retry_timer;
 	/* Each instance of the protocol is identified by a tuple consisting of the local MAC address and the peer MAC address */
 	UCHAR own_mac[MAC_ADDR_LEN];
@@ -211,6 +264,7 @@ struct __SAE_INSTANCE {
 	UCHAR *psk;
 	SAE_INSTANCE *same_mac_ins;
 	SAE_CFG *pParentSaeCfg;
+	UINT16 last_rcv_auth_seq;
 };
 
 
@@ -219,6 +273,8 @@ struct __SAE_CFG {
 	UCHAR support_group[MAX_SIZE_OF_ALLOWED_GROUP];
 	UINT32 open;
 	UINT32 total_ins;
+	ULONG last_token_key_time;
+	UCHAR token_key[SAE_TOKEN_KEY_LEN];
 	UINT32 sae_anti_clogging_threshold;
 	ULONG dot11RSNASAERetransPeriod;
 	struct _RTMP_ADAPTER *pAd;

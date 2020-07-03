@@ -166,9 +166,7 @@ INT RTMP_AP_IoctlHandle(
 
 VOID RTMPDrvOpen(VOID *pAd);
 VOID RTMPDrvClose(VOID *pAd, VOID *net_dev);
-#ifdef NF_SUPPORT
 VOID enable_nf_support(VOID *pAd);
-#endif
 
 int mt_wifi_init(VOID *pAd, RTMP_STRING *pDefaultMac, RTMP_STRING *pHostName);
 
@@ -347,6 +345,11 @@ INT rt_android_private_command_entry(
 #define RTMP_DRIVER_NET_DEV_GET(__pAd, __pNetDev)							\
 	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_NETDEV_GET, 0, __pNetDev, 0)
 
+#ifdef APCLI_CFG80211_SUPPORT
+#define RTMP_DRIVER_APCLI_NET_DEV_GET(__pAd, __pNetDev)							\
+	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_APCLI_NETDEV_GET, 0, __pNetDev, 0)
+#endif /* APCLI_CFG80211_SUPPORT */
+
 #define RTMP_DRIVER_NET_DEV_SET(__pAd, __pNetDev)							\
 	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_NETDEV_SET, 0, __pNetDev, 0)
 
@@ -442,6 +445,11 @@ INT rt_android_private_command_entry(
 #define RTMP_DRIVER_80211_SCAN_CHANNEL_LIST_SET(__pAd, __pData, __Len) \
 	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_CHANNEL_LIST_SET, 0, __pData, __Len)
 
+#ifdef APCLI_CFG80211_SUPPORT
+#define RTMP_DRIVER_80211_APCLI_SCAN(__pAd, __pData) \
+	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_APCLI_SITE_SURVEY, 0, __pData, 0)
+#endif /* APCLI_CFG80211_SUPPORT */
+
 #define RTMP_DRIVER_80211_SCAN(__pAd, __IfType)									\
 	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_SCAN, 0, NULL, __IfType)
 
@@ -510,8 +518,10 @@ INT rt_android_private_command_entry(
 	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_NETDEV_EVENT, 0, __pDev, __state)
 
 /* AP Part */
-#define RTMP_DRIVER_80211_BEACON_DEL(__pAd) \
-	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_BEACON_DEL, 0, NULL, 0)
+
+#define RTMP_DRIVER_80211_BEACON_DEL(__pAd, __apidx) \
+	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_BEACON_DEL, 0, NULL, __apidx)
+
 
 #define RTMP_DRIVER_80211_BEACON_ADD(__pAd, __pBeacon) \
 	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_BEACON_ADD, 0, __pBeacon, 0)
@@ -538,6 +548,12 @@ INT rt_android_private_command_entry(
 #define RTMP_DRIVER_80211_AP_KEY_DEFAULT_SET(__pAd, __KeyId)				\
 	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_AP_KEY_DEFAULT_SET, 0, NULL, __KeyId)
 
+#ifdef DOT11W_PMF_SUPPORT
+#define RTMP_DRIVER_80211_AP_KEY_DEFAULT_MGMT_SET(__pAd, __pNdev, __KeyId)				\
+	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_AP_KEY_DEFAULT_MGMT_SET, 0, __pNdev, __KeyId)
+#endif /* DOT11W_PMF_SUPPORT */
+
+
 #define RTMP_DRIVER_80211_AP_PROBE_RSP(__pAd, __pFrame, __Len) \
 	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_AP_PROBE_RSP_EXTRA_IE, 0, __pFrame, __Len)
 
@@ -547,8 +563,21 @@ INT rt_android_private_command_entry(
 #define RTMP_DRIVER_80211_AP_MLME_PORT_SECURED(__pAd, __pMac, __Reg) \
 	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_PORT_SECURED,  0, __pMac, __Reg)
 
-#define RTMP_DRIVER_80211_AP_STA_DEL(__pAd, __pMac) \
-	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_AP_STA_DEL, 0, __pMac, 0)
+#ifdef HOSTAPD_MAP_SUPPORT /* This could be a generic fix */
+#define RTMP_DRIVER_80211_AP_STA_DEL(__pAd, __pData, __Reason) \
+	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_AP_STA_DEL, 0, __pData, __Reason)
+#else
+#define RTMP_DRIVER_80211_AP_STA_DEL(__pAd, __pMac, __Reason)  \
+	RTMP_COM_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_80211_AP_STA_DEL, 0, __pMac, __Reason)
+#endif /* HOSTAPD_MAP_SUPPORT */
+
+/* ap */
+#define RTMP_DRIVER_AP_BITRATE_GET(__pAd, __pConfig)							\
+	RTMP_AP_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_AP_SIOCGIWRATEQ, 0, __pConfig, 0)
+
+#define RTMP_DRIVER_AP_MAIN_OPEN(__pAd)										\
+	RTMP_AP_IoctlHandle(__pAd, NULL, CMD_RTPRIV_IOCTL_MAIN_OPEN, 0, NULL, 0)
+
 
 /* P2P Part */
 #define RTMP_DRIVER_80211_ACTION_FRAME_REG(__pAd, __devPtr, __Reg) \

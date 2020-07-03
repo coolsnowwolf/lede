@@ -191,6 +191,11 @@ INT TxPowerManualCtrl(PRTMP_ADAPTER pAd, BOOLEAN fgPwrManCtrl, UINT8 u1TxPwrMode
 
 #if defined(COMPOS_TESTMODE_WIN)
 #endif
+
+#if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
+INT MtATE_PA_Trim_Proc(RTMP_ADAPTER *pAd, PUINT32 pData);
+#endif /* CAL_BIN_FILE_SUPPORT */
+
 #define MT_ATEInit(_pAd) ({		\
 		UINT32 _ret;					\
 		_ret = MtTestModeInit(_pAd);	\

@@ -67,6 +67,7 @@ struct radio_dev *RcGetBandIdxByBf(struct hdev_ctrl *ctrl);
 BOOLEAN RcIsBfCapSupport(struct hdev_obj *obj);
 BOOLEAN rc_radio_equal(struct radio_dev *rdev, struct freq_oper *oper);
 BOOLEAN rc_radio_res_acquire(struct radio_dev *rdev, struct radio_res *res);
+UINT32 MAPRcGetBandIdxByChannelCheck(struct hdev_ctrl *ctrl, UCHAR Channel);
 
 
 /*WMM Control*/

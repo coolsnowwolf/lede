@@ -30,6 +30,7 @@
 #include "rt_os_util.h"
 #include "rt_os_net.h"
 #include <linux/wireless.h>
+#include "rtmp_def.h"
 
 struct iw_priv_args ap_privtab[] = {
 	{
@@ -58,6 +59,11 @@ struct iw_priv_args ap_privtab[] = {
 		RTPRIV_IOCTL_GET_MAC_TABLE,
 		IW_PRIV_TYPE_CHAR | 1024, IW_PRIV_TYPE_CHAR | 1024,
 		"get_mac_table"
+	},
+	{
+		RTPRIV_IOCTL_GET_DRIVER_INFO,
+		IW_PRIV_TYPE_CHAR | 1024, IW_PRIV_TYPE_CHAR | 1024,
+		"get_driverinfo"
 	},
 	{
 		RTPRIV_IOCTL_E2P,
@@ -187,6 +193,51 @@ INT rt28xx_ap_ioctl(struct net_device *net_dev, struct ifreq *rq, int cmd)
 	break;
 #endif
 
+#ifdef DYNAMIC_VLAN_SUPPORT
+            case RTPRIV_IOCTL_STA_VLAN:
+                {
+                    RT_CMD_AP_STA_VLAN  sta_vlan_param;
+                    struct iw_point *erq = &wrqin->u.data;
+                    if(erq->pointer) {
+                        if (copy_from_user(&sta_vlan_param, erq->pointer, erq->length)) {
+                            Status = -EFAULT;
+                        }
+                        else {
+                            printk("STA Addr %02x %02x %02x %02x %02x %02x Vlan ID %d \n",
+                                sta_vlan_param.sta_addr[0],sta_vlan_param.sta_addr[1],sta_vlan_param.sta_addr[2],
+                                sta_vlan_param.sta_addr[3],sta_vlan_param.sta_addr[4],sta_vlan_param.sta_addr[5],
+                                sta_vlan_param.vlan_id);
+                            RTMP_AP_IoctlHandle(pAd, wrq, CMD_RTPRIV_IOCTL_SET_STA_VLAN, 0, &sta_vlan_param, sizeof(RT_CMD_AP_STA_VLAN));
+                        }
+                    }
+ 
+                }
+#endif
+
+#ifdef HOSTAPD_11R_SUPPORT
+	case RTPRIV_IOCTL_SET_FT_PARAM:
+		{
+			RT_CMD_AP_11R_PARAM ap_11r_params;
+			struct iw_point *erq = &wrqin->u.data;
+
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("set ft param ioctl call: length:%d\n", erq->length));
+			if (erq->length <= 12) {
+				Status = 0;
+				MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("set ft param ioctl call failed due to length:%d\n", erq->length));
+			} else {
+				if (erq->pointer) {
+					if (copy_from_user(&ap_11r_params, erq->pointer, erq->length))
+						Status = -EFAULT;
+					else {
+						MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("call CMD_RTPRIV_IOCTL_SET_FT_PARAM\n"));
+						RTMP_AP_IoctlHandle(pAd, wrq, CMD_RTPRIV_IOCTL_SET_FT_PARAM, 0, &ap_11r_params, sizeof(RT_CMD_AP_11R_PARAM));
+					}
+				}
+			}
+		}
+		break;
+#endif /* HOSTAPD_11R_SUPPORT */
+
 	case SIOCGIFHWADDR:
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("IOCTLIOCTLIOCTL::SIOCGIFHWADDR\n"));
 		RTMP_AP_IoctlHandle(pAd, wrq, CMD_RTPRIV_IOCTL_AP_SIOCGIFHWADDR, 0, NULL, 0);
@@ -279,7 +330,10 @@ INT rt28xx_ap_ioctl(struct net_device *net_dev, struct ifreq *rq, int cmd)
 	break;
 
 	case SIOCGIWMODE:  /*get operation mode */
-		wrqin->u.mode = IW_MODE_INFRA;   /*SoftAP always on INFRA mode. */
+		if (RT_DEV_PRIV_FLAGS_GET(net_dev) == INT_APCLI)
+			wrqin->u.mode = IW_MODE_INFRA;		/* ApCli Mode. */
+		else
+			wrqin->u.mode = IW_MODE_MASTER;		/* AP Mode. */
 		break;
 
 	case SIOCSIWAP:  /*set access point MAC addresses */
@@ -344,7 +398,7 @@ INT rt28xx_ap_ioctl(struct net_device *net_dev, struct ifreq *rq, int cmd)
 
 	case SIOCGIWPRIV:
 		if (wrqin->u.data.pointer) {
-			if (access_ok(VERIFY_WRITE, wrqin->u.data.pointer, sizeof(ap_privtab)) != TRUE)
+			if (access_ok(wrqin->u.data.pointer, sizeof(ap_privtab)) != TRUE)
 				break;
 
 			if ((sizeof(ap_privtab) / sizeof(ap_privtab[0])) <= wrq->u.data.length) {
@@ -359,13 +413,13 @@ INT rt28xx_ap_ioctl(struct net_device *net_dev, struct ifreq *rq, int cmd)
 		break;
 
 	case RTPRIV_IOCTL_SET: {
-		if (access_ok(VERIFY_READ, wrqin->u.data.pointer, wrqin->u.data.length) == TRUE)
+		if(access_ok(wrqin->u.data.pointer, wrqin->u.data.length) == TRUE)
 			Status = RTMP_AP_IoctlHandle(pAd, wrq, CMD_RTPRIV_IOCTL_SET, 0, NULL, 0);
 	}
 	break;
 
 	case RTPRIV_IOCTL_SHOW: {
-		if (access_ok(VERIFY_READ, wrqin->u.data.pointer, wrqin->u.data.length) == TRUE)
+		if(access_ok(wrqin->u.data.pointer, wrqin->u.data.length) == TRUE)
 			Status = RTMP_AP_IoctlHandle(pAd, wrq, CMD_RTPRIV_IOCTL_SHOW, 0, NULL, 0);
 	}
 	break;
@@ -385,6 +439,11 @@ INT rt28xx_ap_ioctl(struct net_device *net_dev, struct ifreq *rq, int cmd)
 		RTMP_AP_IoctlHandle(pAd, wrq, CMD_RTPRIV_IOCTL_GET_MAC_TABLE_STRUCT, 0, NULL, 0);
 		break;
 		/* end of modification */
+
+	case RTPRIV_IOCTL_GET_DRIVER_INFO:
+		RTMP_AP_IoctlHandle(pAd, wrq, CMD_RTPRIV_IOCTL_GET_DRIVER_INFO, 0, NULL, 0);
+		break;
+
 #ifdef AP_SCAN_SUPPORT
 
 	case RTPRIV_IOCTL_GSITESURVEY:
@@ -435,6 +494,12 @@ INT rt28xx_ap_ioctl(struct net_device *net_dev, struct ifreq *rq, int cmd)
 		break;
 #endif /* RTMP_RF_RW_SUPPORT */
 #endif /* defined(DBG) ||(defined(BB_SOC) && defined(CONFIG_ATE)) */
+
+#ifdef WIFI_DIAG
+	case RTPRIV_IOCTL_GET_PROCESS_INFO:
+		RTMP_AP_IoctlHandle(pAd, wrq, CMD_RTPRIV_IOCTL_GET_PROCESS_INFO, 0, NULL, 0);
+		break;
+#endif
 
 	default:
 		/*			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("IOCTL::unknown IOCTL's cmd = 0x%08x\n", cmd)); */

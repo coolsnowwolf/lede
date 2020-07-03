@@ -60,7 +60,7 @@ BOOLEAN PMF_MakeRsnIeGMgmtCipher(
 	IN UCHAR ie_idx,
 	OUT UCHAR * rsn_len);
 
-NTSTATUS PMF_RsnCapableValidation(
+UINT PMF_RsnCapableValidation(
 	IN PUINT8 pRsnie,
 	IN UINT rsnie_len,
 	IN BOOLEAN self_MFPC,

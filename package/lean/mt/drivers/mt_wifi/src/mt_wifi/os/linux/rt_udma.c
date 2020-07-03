@@ -66,7 +66,14 @@ static void udma_net_rx_callback(struct sk_buff *skb, struct net_device *netdev)
 
 	if (!IS_BM_MAC_ADDR(mac_addr)) {
 		pEntry = MacTableLookup(pAd, mac_addr);
-
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+		if (!pEntry) {
+			PUCHAR pEntryAddr = CliWds_ProxyLookup(pAd, mac_addr);
+			if (pEntryAddr != NULL) {
+				pEntry = MacTableLookup(pAd, pEntryAddr);
+			}
+		}
+#endif
 		if (pEntry && (ethtype == ETH_TYPE_VLAN)) {
 			/* destination in MacTable and VLAN tagged packet -- need to send */
 			bss_vlanid = pEntry->wdev->VLAN_VID;
@@ -98,6 +105,8 @@ static void udma_net_rx_callback(struct sk_buff *skb, struct net_device *netdev)
 		}
 	} else {
 		if (ethtype == ETH_TYPE_VLAN) {
+			memmove(skb->data + 4, skb->data, 12);
+			skb_pull(skb, 4);
 			for (ap_idx = 0 ; ap_idx < pAd->ApCfg.BssidNum ; ap_idx++) {
 				bss_vlanid = pAd->ApCfg.MBSSID[ap_idx].wdev.VLAN_VID;
 				netdev1 = pAd->ApCfg.MBSSID[ap_idx].wdev.if_dev;
@@ -109,8 +118,7 @@ static void udma_net_rx_callback(struct sk_buff *skb, struct net_device *netdev)
 
 					if (bss_vlanid == 0) {
 						/* vlan not configured. Strip 4 bytes vlan-tag before send */
-						memmove(clone_skb->data + 4, clone_skb->data, 12);
-						skb_pull(clone_skb, 4);
+
 					}
 
 					rt28xx_send_packets(clone_skb, netdev1);

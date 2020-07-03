@@ -45,14 +45,11 @@ static INT build_wsc_probe_req_ie(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHA
 #endif /* WSC_V2_SUPPORT */
 #endif /* APCLI_SUPPORT */
 #ifdef CON_WPS
-		{
+		if (bHasWscIe) {
 			PWSC_CTRL pWscControl = NULL;
-			POS_COOKIE pObj = (POS_COOKIE) pAd->OS_Cookie;
-			UCHAR apidx = pObj->ioctl_if;
-
 			/* Do not include wsc ie in case concurrent WPS is running */
 			bHasWscIe = FALSE;
-			pWscControl = &pAd->ApCfg.ApCliTab[apidx].wdev.WscControl;
+			pWscControl = &wdev->WscControl;
 
 			if ((pWscControl->conWscStatus == CON_WPS_STATUS_DISABLED) ||
 			    (pAd->ApCfg.ConWpsApCliMode != CON_WPS_APCLI_BAND_AUTO))
@@ -186,6 +183,15 @@ INT build_extra_probe_req_ie(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR *bu
 {
 	INT len = 0;
 	SCAN_INFO *ScanInfo = &wdev->ScanInfo;
+#ifdef RT_CFG80211_SUPPORT
+#ifdef APCLI_CFG80211_SUPPORT
+	if ((pAd->ApCfg.ApCliTab[wdev->func_idx].wpa_supplicant_info.WpaSupplicantUP != WPA_SUPPLICANT_DISABLE) &&
+							  (pAd->cfg80211_ctrl.ExtraIeLen > 0)) {
+		MAKE_IE_TO_BUF(buf, pAd->cfg80211_ctrl.pExtraIe,
+					   pAd->cfg80211_ctrl.ExtraIeLen, len);
+	}
+#endif /* APCLI_CFG80211_SUPPORT */
+#endif /* RT_CFG80211_SUPPORT */
 
 	if (ScanInfo->ExtraIeLen && ScanInfo->ExtraIe) {
 		MAKE_IE_TO_BUF(buf, ScanInfo->ExtraIe,
@@ -256,6 +262,12 @@ INT build_ap_extended_cap_ie(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR *bu
 
 #endif /* CONFIG_HOTSPOT_R2 */
 #endif /* CONFIG_DOT11V_WNM */
+		/* interworking ie without hotspot enabled. */
+#ifdef DOT11U_INTERWORKING_IE_SUPPORT
+	if (mbss->bEnableInterworkingIe == TRUE)
+		extCapInfo.interworking = 1;
+#endif
+
 #if defined(CONFIG_HOTSPOT) || defined(FTM_SUPPORT)
 
 	if (mbss->GASCtrl.b11U_enable)

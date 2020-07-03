@@ -27,7 +27,7 @@
 #ifdef CONFIG_AP_SUPPORT
 
 #include "rt_config.h"
-
+#include <net/cfg80211.h>
 #ifdef MT_MAC
 VOID write_tmac_info_beacon(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR *tmac_buf, HTTRANSMIT_SETTING *BeaconTransmit, ULONG frmLen);
 
@@ -118,16 +118,70 @@ static INT CFG80211DRV_UpdateApSettingFromBeacon(PRTMP_ADAPTER pAd, UINT mbss_id
 	const UCHAR *ssid_ie = NULL, *wpa_ie = NULL, *rsn_ie = NULL;
 	const UCHAR *supp_rates_ie = NULL;
 	const UCHAR *ext_supp_rates_ie = NULL, *ht_cap = NULL, *ht_info = NULL;
+
+#ifdef CONFIG_AP_SUPPORT
+    INT idx;
+#endif
+
+#ifndef DISABLE_HOSTAPD_BEACON
+#ifdef HOSTAPD_AUTO_CH_SUPPORT
+	const UCHAR *dsparam_ie = NULL, *ht_operation = NULL, *vht_operation = NULL;
+	PADD_HT_INFO_IE phtinfo;
+	VHT_OP_IE	*vhtinfo;
+	UCHAR channel = 0;
+	PEID_STRUCT pEid;
+#endif
+#endif
+
+#ifdef DISABLE_HOSTAPD_BEACON
+	const UCHAR *wsc_ie = NULL;
+	const UINT WFA_OUI = 0x0050F2;
+#endif
+#ifdef HOSTAPD_11R_SUPPORT
+	const UCHAR *md_ie = NULL;
+#endif /* HOSTAPD_11R_SUPPORT */
+
+#ifdef HOSTAPD_OWE_SUPPORT
+	const UCHAR *trans_ie = NULL;
+
+	const UINT OUI_WFA = 0x506f9a;
+
+	UINT8 OWE_OUI_TYPE = 28;
+#endif
+
+#ifdef HOSTAPD_11K_SUPPORT
+    const UCHAR *rrm_caps = NULL;
+#endif
+
+
+
+
 #if (KERNEL_VERSION(3, 5, 0) <= LINUX_VERSION_CODE)
 	const UCHAR CFG_HT_OP_EID = WLAN_EID_HT_OPERATION;
 #else
 	const UCHAR CFG_HT_OP_EID = WLAN_EID_HT_INFORMATION;
 #endif /* LINUX_VERSION_CODE: 3.5.0 */
+#ifdef HOSTAPD_11K_SUPPORT
+    const UCHAR CFG_RRM_OP_EID = WLAN_EID_RRM_ENABLED_CAPABILITIES;
+#endif
+
 #if (KERNEL_VERSION(3, 8, 0) <= LINUX_VERSION_CODE)
 	const UCHAR CFG_WPA_EID = WLAN_EID_VENDOR_SPECIFIC;
 #else
 	const UCHAR CFG_WPA_EID = WLAN_EID_WPA;
 #endif /* LINUX_VERSION_CODE: 3.8.0 */
+
+#ifndef DISABLE_HOSTAPD_BEACON
+#ifdef HOSTAPD_AUTO_CH_SUPPORT
+	if (WMODE_CAP_2G(wdev->PhyMode))
+		channel = HcGetChannelByRf(pAd, RFIC_24GHZ);
+	else
+		channel = HcGetChannelByRf(pAd, RFIC_5GHZ);
+		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+			 ("Channel from Auto selection is :%d\n", channel));
+#endif
+#endif
+
 	ssid_ie = cfg80211_find_ie(WLAN_EID_SSID, pBeacon->beacon_head + 36, pBeacon->beacon_head_len - 36);
 	supp_rates_ie = cfg80211_find_ie(WLAN_EID_SUPP_RATES, pBeacon->beacon_head + 36, pBeacon->beacon_head_len - 36);
 	/* if it doesn't find WPA_IE in tail first 30 bytes. treat it as is not found */
@@ -137,6 +191,75 @@ static INT CFG80211DRV_UpdateApSettingFromBeacon(PRTMP_ADAPTER pAd, UINT mbss_id
 	ht_cap = cfg80211_find_ie(WLAN_EID_HT_CAPABILITY, pBeacon->beacon_tail, pBeacon->beacon_tail_len);
 	ht_info = cfg80211_find_ie(CFG_HT_OP_EID, pBeacon->beacon_tail, pBeacon->beacon_tail_len);
 
+#ifdef HOSTAPD_11K_SUPPORT
+	rrm_caps = cfg80211_find_ie(CFG_RRM_OP_EID, pBeacon->beacon_tail, pBeacon->beacon_tail_len);
+#endif
+#ifdef HOSTAPD_11R_SUPPORT
+	md_ie = cfg80211_find_ie(WLAN_EID_MOBILITY_DOMAIN, pBeacon->beacon_tail, pBeacon->beacon_tail_len); /* WLAN_EID_MOBILITY_DOMAIN=54 */
+#endif
+#ifndef DISABLE_HOSTAPD_BEACON
+#ifdef HOSTAPD_AUTO_CH_SUPPORT
+	dsparam_ie = cfg80211_find_ie(WLAN_EID_DS_PARAMS, pBeacon->beacon_head+36, pBeacon->beacon_head_len-36);
+	ht_operation = cfg80211_find_ie(WLAN_EID_HT_OPERATION, pBeacon->beacon_tail, pBeacon->beacon_tail_len);
+	vht_operation = cfg80211_find_ie(WLAN_EID_VHT_OPERATION, pBeacon->beacon_tail, pBeacon->beacon_tail_len);
+#endif
+#endif
+
+#ifdef HOSTAPD_11K_SUPPORT
+	if (rrm_caps != NULL) {
+
+		EID_STRUCT *eid;
+		INT loop;
+		UINT8 bit_nr, bit_lci;
+		PRRM_CONFIG pRrmCfg;
+
+		eid = (EID_STRUCT *)rrm_caps;
+
+		printk("RRM : len %d eid %d octet %d\n", eid->Len, eid->Eid, eid->Octet[0]);
+		pRrmCfg = &pAd->ApCfg.MBSSID[loop].RrmCfg;
+
+		pMbss->RrmCfg.bDot11kRRMEnable = 1;
+		pMbss->RrmCfg.bDot11kRRMEnableSet = 1;
+
+		bit_nr = (eid->Octet[0] >> 1) & 1; /*checking bit position 1:neighbor report */
+		bit_lci = (eid->Octet[1] >> 4) & 1; /*checking LCI */
+
+		printk("bit_nr bit_lci: %d %d\n", bit_nr, bit_lci);
+
+		if (bit_nr)
+			pRrmCfg->hstapd_nei_rep = TRUE;
+
+		if (bit_lci)
+			pRrmCfg->hstapd_lci = TRUE;
+
+		for (loop = 0; loop < MAX_MBSSID_NUM(pAd); loop++) {
+			init_rrm_capabilities(pRrmCfg, &pAd->ApCfg.MBSSID[loop]);
+		}
+
+		if (pRrmCfg->hstapd_nei_rep)
+			pRrmCfg->hstapd_nei_rep = FALSE;
+
+		if (pRrmCfg->hstapd_lci)
+			pRrmCfg->hstapd_lci = FALSE;
+		} else
+			printk("No RRM capabilities enabled from hostapd\n");
+#endif
+
+#ifdef HOSTAPD_OWE_SUPPORT
+		/*owe trans oui */
+	trans_ie = (UCHAR *)cfg80211_find_vendor_ie(OUI_WFA, OWE_OUI_TYPE,
+			pBeacon->beacon_tail, pBeacon->beacon_tail_len);
+	if (trans_ie != NULL) {
+		EID_STRUCT *eid;
+
+		eid = (EID_STRUCT *)trans_ie;
+		if (eid->Len + 2 <= MAX_LEN_OF_TRANS_IE) {
+			NdisCopyMemory(pMbss->TRANS_IE, trans_ie, eid->Len+2);
+			pMbss->TRANSIE_Len = eid->Len + 2;
+		}
+	}
+#endif
+
 	/* SSID */
 
 	if (ssid_ie == NULL) {
@@ -144,16 +267,117 @@ static INT CFG80211DRV_UpdateApSettingFromBeacon(PRTMP_ADAPTER pAd, UINT mbss_id
 		pMbss->SsidLen = 12;
 		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("CFG: SSID Not Found In Packet\n"));
 	} else if (pBeacon->ssid_len != 0) {
-		os_zero_mem(pMbss->Ssid, pMbss->SsidLen);
-		NdisZeroMemory(pMbss->Ssid, pMbss->SsidLen);
+		os_zero_mem(pMbss->Ssid, MAX_LEN_OF_SSID + 1);
+		NdisZeroMemory(pMbss->Ssid, MAX_LEN_OF_SSID + 1);
 		pMbss->SsidLen = pBeacon->ssid_len;
 		NdisCopyMemory(pMbss->Ssid, ssid_ie + 2, pMbss->SsidLen);
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("\nCFG : SSID: %s, %d\n", pMbss->Ssid, pMbss->SsidLen));
 	}
 
+#ifdef DISABLE_HOSTAPD_BEACON
+		else if (*(ssid_ie+1) != 0) {
+		os_zero_mem(pMbss->Ssid, pMbss->SsidLen);
+		NdisZeroMemory(pMbss->Ssid, pMbss->SsidLen);
+		pMbss->SsidLen = *(ssid_ie+1);
+		NdisCopyMemory(pMbss->Ssid, ssid_ie+2, pMbss->SsidLen);
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("\nCFG : SSID: %s, %d\n", pMbss->Ssid, pMbss->SsidLen));
+	}
+		wsc_ie = (UCHAR *)cfg80211_find_vendor_ie(WFA_OUI, 4, pBeacon->beacon_tail, pBeacon->beacon_tail_len);
+		if (pMbss->WscIEBeacon.Value) {
+			pAd->ApCfg.MBSSID[mbss_idx].WscIEBeacon.ValueLen = 0;
+			pAd->ApCfg.MBSSID[mbss_idx].WscIEProbeResp.ValueLen = 0;
+		}
+		if (wsc_ie != NULL) {
+#ifdef HOSTAPD_MAP_SUPPORT
+			if (IS_MAP_ENABLE(pAd) && wdev &&
+				(wdev->MAPCfg.DevOwnRole & BIT(MAP_ROLE_BACKHAUL_BSS)) &&
+				(!(wdev->MAPCfg.DevOwnRole & BIT(MAP_ROLE_FRONTHAUL_BSS)))) {
+					MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Strictly BH BSS: %s, donot BC WPS cap\n", pMbss->Ssid));
+			} else
+#endif
+			{
+				EID_STRUCT *eid;
+
+				eid = (EID_STRUCT *)wsc_ie;
+
+				if (eid->Len + 2 <= 500) {
+					NdisCopyMemory(pMbss->WscIEBeacon.Value, wsc_ie, eid->Len+2);
+					pMbss->WscIEBeacon.ValueLen = eid->Len + 2;
+				}
+			}
+		}
+
+#ifdef HOSTAPD_11R_SUPPORT
+		if (md_ie != NULL) {
+			PFT_CFG pFtCfg = &pAd->ApCfg.MBSSID[mbss_idx].wdev.FtCfg;
+			NdisCopyMemory(pFtCfg->FtMdId, md_ie+2, FT_MDID_LEN);
+			pFtCfg->FtCapFlag.FtOverDs = (0x01)&(*(md_ie + 4));
+			pFtCfg->FtCapFlag.RsrReqCap = (0x02)&(*(md_ie + 4));
+			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("vikas %s::MDID::%x %x FToverDS:%d RsrCap:%d\n", __func__,
+				pFtCfg->FtMdId[0], pFtCfg->FtMdId[1],
+				pFtCfg->FtCapFlag.FtOverDs, pFtCfg->FtCapFlag.RsrReqCap));
+		} else
+			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s:MDIE is NULL\n", __func__));
+
+#endif /* HOSTAPD_11R_SUPPORT */
+#endif
+
+#ifndef DISABLE_HOSTAPD_BEACON
+#ifdef HOSTAPD_AUTO_CH_SUPPORT
+	if (dsparam_ie != NULL) {
+		pEid = (PEID_STRUCT)dsparam_ie;
+		*pEid->Octet = channel;
+	}
+
+	if (ht_operation != NULL) {
+		pEid = (PEID_STRUCT)ht_operation;
+		phtinfo = (PADD_HT_INFO_IE)pEid->Octet;
+		phtinfo->ControlChan = channel;
+		phtinfo->AddHtInfo.RecomWidth = wlan_operate_get_ht_bw(&pMbss->wdev);
+		/* phtinfo->AddHtInfo.ExtChanOffset = 3; */
+		phtinfo->AddHtInfo.ExtChanOffset = HcGetExtCha(pAd, channel);
+	}
+	if (vht_operation != NULL) {
+		UCHAR bw = pAd->CommonCfg.vht_bw;
+		UCHAR cent_ch = vht_cent_ch_freq(channel, bw);
+		pEid = (PEID_STRUCT)vht_operation;
+		vhtinfo = (VHT_OP_IE *)pEid->Octet;
+
+		switch (bw) {
+		case  VHT_BW_2040:
+			vhtinfo->vht_op_info.ch_width = 0;
+			vhtinfo->vht_op_info.center_freq_1 = 0;
+			vhtinfo->vht_op_info.center_freq_2 = 0;
+			break;
+
+		case VHT_BW_80:
+			vhtinfo->vht_op_info.ch_width = 1;
+			vhtinfo->vht_op_info.center_freq_1 = cent_ch;
+			vhtinfo->vht_op_info.center_freq_2 = 0;
+			break;
+
+		case VHT_BW_160:
+			vhtinfo->vht_op_info.ch_width = 2;
+			vhtinfo->vht_op_info.center_freq_1 = cent_ch;
+			vhtinfo->vht_op_info.center_freq_2 = pAd->CommonCfg.vht_cent_ch2;
+			break;
+
+		case VHT_BW_8080:
+
+			vhtinfo->vht_op_info.ch_width = 3;
+			vhtinfo->vht_op_info.center_freq_1 = cent_ch;
+			vhtinfo->vht_op_info.center_freq_2 = pAd->CommonCfg.vht_cent_ch2;
+			break;
+		}
+	}
+
+#endif
+#endif
+
+
 #if (KERNEL_VERSION(3, 4, 0) <= LINUX_VERSION_CODE)
 
-	if (pBeacon->hidden_ssid > 0 && pBeacon->hidden_ssid < 3) {
+	if ((pBeacon->hidden_ssid > 0 && pBeacon->hidden_ssid < 3) || (pMbss->bHideSsid)) {
 		pMbss->bHideSsid = TRUE;
 
 		if ((pBeacon->ssid_len != 0)
@@ -218,13 +442,28 @@ static INT CFG80211DRV_UpdateApSettingFromBeacon(PRTMP_ADAPTER pAd, UINT mbss_id
 		CFG80211_ParseBeaconIE(pAd, pMbss, wdev, (UCHAR *)wpa_ie, (UCHAR *)rsn_ie);
 	}
 
+#ifdef CONFIG_AP_SUPPORT
+	IF_DEV_CONFIG_OPMODE_ON_AP(pAd) {
+		for (idx = 0; idx < pAd->ApCfg.BssidNum; idx++)
+			RTMPSetIndividualHT(pAd, idx);
+	}
+#endif /* CONFIG_AP_SUPPORT */
+
 	pMbss->CapabilityInfo =	CAP_GENERATE(1, 0, (!IS_CIPHER_NONE(wdev->SecConfig.PairwiseCipher)),
 										 (pAd->CommonCfg.TxPreamble == Rt802_11PreambleLong ? 0 : 1), pAd->CommonCfg.bUseShortSlotTime, /*SpectrumMgmt*/FALSE);
+
+#ifdef DOT11K_RRM_SUPPORT
+	if (IS_RRM_ENABLE(wdev))
+		pMbss->CapabilityInfo |= RRM_CAP_BIT;
+#endif /* DOT11K_RRM_SUPPORT */
+
+
 	/* Disable Driver-Internal Rekey */
 	pMbss->WPAREKEY.ReKeyInterval = 0;
 	pMbss->WPAREKEY.ReKeyMethod = DISABLE_REKEY;
 
-	if (pBeacon->interval != 0) {
+#ifndef DISABLE_HOSTAPD_BEACON
+    if (pBeacon->interval != 0) {
 		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("CFG_TIM New BI %d\n", pBeacon->interval));
 		pAd->CommonCfg.BeaconPeriod = pBeacon->interval;
 	}
@@ -233,7 +472,7 @@ static INT CFG80211DRV_UpdateApSettingFromBeacon(PRTMP_ADAPTER pAd, UINT mbss_id
 		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("CFG_TIM New DP %d\n", pBeacon->dtim_period));
 		pAd->ApCfg.DtimPeriod = pBeacon->dtim_period;
 	}
-
+#endif
 	return TRUE;
 }
 
@@ -295,7 +534,9 @@ VOID CFG80211_UpdateBeacon(
 	UINT32											beacon_head_len,
 	UCHAR										    *beacon_tail_buf,
 	UINT32											beacon_tail_len,
-	BOOLEAN											isAllUpdate)
+	BOOLEAN											isAllUpdate,
+	UINT32											apidx)
+
 {
 	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdOrg;
 	PCFG80211_CTRL pCfg80211_ctrl = &pAd->cfg80211_ctrl;
@@ -306,7 +547,6 @@ VOID CFG80211_UpdateBeacon(
 	BSS_STRUCT *pMbss;
 	struct wifi_dev *wdev;
 	COMMON_CONFIG *pComCfg;
-	UINT apidx = MAIN_MBSSID;
 #ifdef RT_CFG80211_P2P_MULTI_CHAN_SUPPORT
 	ULONG	Value;
 	ULONG	TimeTillTbtt;
@@ -466,24 +706,75 @@ VOID CFG80211_UpdateBeacon(
 	/* CFG_TODO */
 #ifdef BCN_OFFLOAD_SUPPORT
 
-	if (cap->fgBcnOffloadSupport == TRUE)
-		RT28xx_UpdateBcnAndTimToMcu(pAd, &pAd->ApCfg.MBSSID[apidx].wdev, beacon_len, pAd->ApCfg.MBSSID[apidx].wdev.bcn_buf.TimIELocationInBeacon, PKT_BCN);
+	if (cap->fgBcnOffloadSupport == TRUE) {
+#ifdef BCN_V2_SUPPORT	/* add bcn v2 support , 1.5k beacon support */
+#ifndef RT_CFG80211_SUPPORT
+	RT28xx_UpdateBcnAndTimToMcu(pAd, &pAd->ApCfg.MBSSID[apidx].wdev, beacon_len,
+		pAd->ApCfg.MBSSID[apidx].wdev.bcn_buf.TimIELocationInBeacon, PKT_V2_BCN);
+#else
+	pAd->archOps.archUpdateBeacon(pAd, &pAd->ApCfg.MBSSID[apidx].wdev, beacon_len, PKT_BCN);
+#endif
+
+#else
+#ifdef RT_CFG80211_SUPPORT
+	pAd->archOps.archUpdateBeacon(pAd, &pAd->ApCfg.MBSSID[apidx].wdev, beacon_len, PKT_BCN);
+#else
+	RT28xx_UpdateBcnAndTimToMcu(pAd, &pAd->ApCfg.MBSSID[apidx].wdev, beacon_len, pAd->ApCfg.MBSSID[apidx].wdev.bcn_buf.TimIELocationInBeacon, PKT_BCN);
+#endif /* RT_CFG80211_SUPPORT */
+#endif
+	}
 	else
 #endif /* BCN_OFFLOAD_SUPPORT */
-		RT28xx_UpdateBeaconToAsic(pAd, &pAd->ApCfg.MBSSID[apidx].wdev, beacon_len,
-								  pAd->ApCfg.MBSSID[apidx].wdev.bcn_buf.TimIELocationInBeacon, PKT_BCN);
+	{
+#ifdef BCN_V2_SUPPORT	/* add bcn v2 support , 1.5k beacon support */
+#ifndef RT_CFG80211_SUPPORT
+	RT28xx_UpdateBeaconToAsic(pAd, &pAd->ApCfg.MBSSID[apidx].wdev, beacon_len,
+	 pAd->ApCfg.MBSSID[apidx].wdev.bcn_buf.TimIELocationInBeacon,
+	 PKT_V2_BCN);
+#else
+	pAd->archOps.archUpdateBeacon(pAd, &pAd->ApCfg.MBSSID[apidx].wdev, beacon_len, PKT_BCN);
+#endif
+
+
+#else
+#ifdef RT_CFG80211_SUPPORT
+	pAd->archOps.archUpdateBeacon(pAd, &pAd->ApCfg.MBSSID[apidx].wdev, beacon_len, PKT_BCN);
+#else
+	RT28xx_UpdateBeaconToAsic(pAd, &pAd->ApCfg.MBSSID[apidx].wdev, beacon_len,
+		pAd->ApCfg.MBSSID[apidx].wdev.bcn_buf.TimIELocationInBeacon,
+		PKT_BCN);
+#endif /* RT_CFG80211_SUPPORT */
+#endif
+	}
 }
 
 BOOLEAN CFG80211DRV_OpsBeaconSet(VOID *pAdOrg, VOID *pData)
 {
 	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdOrg;
 	CMD_RTPRIV_IOCTL_80211_BEACON *pBeacon;
-	UINT apidx = MAIN_MBSSID;
+
+#ifdef DISABLE_HOSTAPD_BEACON
+    BSS_STRUCT *pMbss;
+    struct wifi_dev *wdev;
+    UINT16 Frame_Len = 0;
+#endif
 	pBeacon = (CMD_RTPRIV_IOCTL_80211_BEACON *)pData;
-	CFG80211DRV_UpdateApSettingFromBeacon(pAd, apidx, pBeacon);
+#ifdef DISABLE_HOSTAPD_BEACON
+	pMbss = &pAd->ApCfg.MBSSID[pBeacon->apidx];
+	wdev = &pMbss->wdev;
+#endif
+	CFG80211DRV_UpdateApSettingFromBeacon(pAd, pBeacon->apidx, pBeacon);
+#ifdef DISABLE_HOSTAPD_BEACON
+	MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+		("############MakeBeacon for apidx %d OpsBeaconSet \n",
+		pBeacon->apidx));
+	Frame_Len = MakeBeacon(pAd, wdev, FALSE);
+	AsicUpdateBeacon(pAd, wdev, Frame_Len, PKT_BCN);
+#else
 	CFG80211_UpdateBeacon(pAd, pBeacon->beacon_head, pBeacon->beacon_head_len,
-						  pBeacon->beacon_tail, pBeacon->beacon_tail_len,
-						  TRUE);
+		pBeacon->beacon_tail, pBeacon->beacon_tail_len,
+		TRUE, pBeacon->apidx);
+#endif
 	return TRUE;
 }
 
@@ -492,39 +783,48 @@ extern struct wifi_dev_ops ap_wdev_ops;
 BOOLEAN CFG80211DRV_OpsBeaconAdd(VOID *pAdOrg, VOID *pData)
 {
 	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdOrg;
-	CMD_RTPRIV_IOCTL_80211_BEACON *pBeacon;
 	/* BOOLEAN Cancelled; */
 	UINT i = 0;
 	INT32 Ret = 0;
 	EDCA_PARM *pEdca, *pBssEdca = NULL;
+	STA_REC_CTRL_T *sta_rec;
+
+#ifdef DISABLE_HOSTAPD_BEACON
+	UINT16 FrameLen = 0;
+#endif
+	CHAR tr_tb_idx;
+	PNET_DEV pNetDev;
+	CMD_RTPRIV_IOCTL_80211_BEACON *pBeacon =  (CMD_RTPRIV_IOCTL_80211_BEACON *)pData;
 #ifdef RT_CFG80211_P2P_MULTI_CHAN_SUPPORT
 	UCHAR ext_cha;
 	UCHAR ht_bw;
 #endif /* RT_CFG80211_P2P_MULTI_CHAN_SUPPORT */
-	UINT apidx = MAIN_MBSSID;
+	UINT apidx = pBeacon->apidx;
 	BSS_STRUCT *pMbss = &pAd->ApCfg.MBSSID[apidx];
 	struct wifi_dev *wdev = &pMbss->wdev;
 	BCN_BUF_STRUC *bcn_buf = &wdev->bcn_buf;
-	CHAR tr_tb_idx = MAX_LEN_OF_MAC_TABLE + apidx;
+	tr_tb_idx = MAX_LEN_OF_MAC_TABLE + apidx;
+	pNetDev = pBeacon->pNetDev;
 #ifdef RT_CFG80211_SUPPORT
 		wdev->Hostapd = Hostapd_CFG;
 
 #endif
 	CFG80211DBG(DBG_LVL_OFF, ("80211> %s ==>\n", __func__));
-	pBeacon = (CMD_RTPRIV_IOCTL_80211_BEACON *)pData;
 #ifdef UAPSD_SUPPORT
 	wdev->UapsdInfo.bAPSDCapable = TRUE;
 	pMbss->CapabilityInfo |= 0x0800;
 #endif /* UAPSD_SUPPORT */
-	pAd->cfg80211_ctrl.beaconIsSetFromHostapd = TRUE; /* set here to prevent MakeBeacon do further modifications about BCN */
+#ifndef DISABLE_HOSTAPD_BEACON
+    pAd->cfg80211_ctrl.beaconIsSetFromHostapd = TRUE; /* set here to prevent MakeBeacon do further modifications about BCN */
+#endif
 	CFG80211DRV_UpdateApSettingFromBeacon(pAd, apidx, pBeacon);
 #define MCAST_WCID_TO_REMOVE 0
 	MgmtTableSetMcastEntry(pAd, MCAST_WCID_TO_REMOVE);
 	APSecInit(pAd, wdev);
-	APKeyTableInit(pAd, wdev);
+	sta_rec = &pAd->MacTab.tr_entry[tr_tb_idx].StaRec;
+	APKeyTableInit(pAd, wdev, sta_rec);
 	AsicSetRxFilter(pAd);
 	/* Start from 0 & MT_MAC using HW_BSSID 1, TODO */
-	pAd->ApCfg.BssidNum = (MAIN_MBSSID + 1);
 	pAd->MacTab.MsduLifeTime = 20; /* pEntry's UAPSD Q Idle Threshold */
 	/* CFG_TODO */
 	bcn_buf->BcnBufIdx = 0;
@@ -543,15 +843,18 @@ BOOLEAN CFG80211DRV_OpsBeaconAdd(VOID *pAdOrg, VOID *pData)
 #endif /* RT_CFG80211_P2P_MULTI_CHAN_SUPPORT */
 	AsicDisableSync(pAd, HW_BSSID_0);
 
+#ifndef DISABLE_HOSTAPD_BEACON
 	if (wdev->channel > 14)
 		wdev->PhyMode = (WMODE_A | WMODE_AN);
 	else
 		wdev->PhyMode = (WMODE_B | WMODE_G | WMODE_GN);
+#endif /* DISABLE_HOSTAPD_BEACON */
 
 	{
-#ifdef MT7615
+#if defined(MT7615) || defined(MT7622)
 
-		if (IS_MT7615(pAd)) {
+
+		if (IS_MT7615(pAd) || IS_MT7622(pAd)) {
 			;  /* don't reinit wdev, for tr_tbl was acquired in previous flow */
 		} else
 #endif
@@ -559,37 +862,21 @@ BOOLEAN CFG80211DRV_OpsBeaconAdd(VOID *pAdOrg, VOID *pData)
 
 		if (!Ret) {
 			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s(): register wdev fail\n", __func__));
-			RtmpOSNetDevFree(pAd->net_dev);
-			return FALSE;
 		}
 
-		Ret = wdev_ops_register(wdev, WDEV_TYPE_AP, &ap_wdev_ops,
-								cap->wmm_detect_method);
-
-		if (!Ret) {
-			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					 ("register wdev_ops %s failed, free net device!\n",
-					  RTMP_OS_NETDEV_GET_DEVNAME(pAd->net_dev)));
-			RtmpOSNetDevFree(pAd->net_dev);
-			return FALSE;
-		}
-
-		wdev_attr_update(pAd, wdev);
-		COPY_MAC_ADDR(wdev->bssid, pAd->CurrentAddress);
-		COPY_MAC_ADDR(wdev->if_addr, pAd->CurrentAddress);
-		os_move_mem(wdev->bss_info_argument.Bssid, wdev->bssid, MAC_ADDR_LEN);
-		/* assoc to MBSSID's wdev */
-		RTMP_OS_NETDEV_SET_WDEV(pAd->net_dev, wdev);
-		RTMP_OS_NETDEV_SET_PRIV(pAd->net_dev, pAd);
+	wdev_attr_update(pAd, wdev);
+	COPY_MAC_ADDR(wdev->bssid, pNetDev->dev_addr);
+	COPY_MAC_ADDR(wdev->if_addr, pNetDev->dev_addr);
+	os_move_mem(wdev->bss_info_argument.Bssid, wdev->bssid, MAC_ADDR_LEN);
 	}
 
 	/* cfg_todo */
 	wdev->bWmmCapable = TRUE;
 	os_move_mem(wdev->bss_info_argument.Bssid, wdev->bssid, MAC_ADDR_LEN);
 	/* BC/MC Handling */
-#ifdef MT7615
+#if defined(MT7615) || defined(MT7622)
 
-	if (IS_MT7615(pAd)) {
+	if (IS_MT7615(pAd) || IS_MT7622(pAd)) {
 		if (IS_CIPHER_WEP(wdev->SecConfig.GroupCipher))
 			CFG80211DRV_ApKeyAdd(pAdOrg, &pAd->cfg80211_ctrl.WepKeyInfoBackup);
 	} else
@@ -641,26 +928,19 @@ BOOLEAN CFG80211DRV_OpsBeaconAdd(VOID *pAdOrg, VOID *pData)
 	}
 
 #ifdef DOT11_N_SUPPORT
-#ifndef RT_CFG80211_P2P_MULTI_CHAN_SUPPORT
-
-	if (WMODE_CAP_N(wdev->PhyMode))
-		wlan_config_set_ht_bw(wdev, HT_BW_20);
-
-#endif /* RT_CFG80211_P2P_MULTI_CHAN_SUPPORT */
-
 	if (pAd->CommonCfg.bRdg)
 		AsicSetRDG(pAd, WCID_ALL, 0, 0, 0);
 
 	AsicSetRalinkBurstMode(pAd, pAd->CommonCfg.bRalinkBurstMode);
 #endif /* DOT11_N_SUPPORT */
 	MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s():Reset WCID Table\n", __func__));
-#ifdef MT7615
-
-	if (IS_MT7615(pAd)) {
+#if defined(MT7615) || defined(MT7622)
+    if (IS_MT7615(pAd) || IS_MT7622(pAd))  {
 		;  /* don't reset WCID table , for 7615 has set in previous flow */
 	} else
 #endif
-		pAd->MacTab.Content[0].Addr[0] = 0x01;
+	HW_SET_DEL_ASIC_WCID(pAd, WCID_ALL);
+	pAd->MacTab.Content[0].Addr[0] = 0x01;
 
 	pAd->MacTab.Content[0].HTPhyMode.field.MODE = MODE_OFDM;
 	pAd->MacTab.Content[0].HTPhyMode.field.MCS = 3;
@@ -688,13 +968,15 @@ BOOLEAN CFG80211DRV_OpsBeaconAdd(VOID *pAdOrg, VOID *pData)
 #ifdef DOT11_N_SUPPORT
 	APUpdateOperationMode(pAd, wdev);
 #endif /* DOT11_N_SUPPORT */
-	CFG80211_UpdateBeacon(pAd, pBeacon->beacon_head, pBeacon->beacon_head_len,
-						  pBeacon->beacon_tail, pBeacon->beacon_tail_len, TRUE);
 
-	/* beacon init for USB/SDIO */
-	asic_bss_beacon_init(pAd);
-	/* beacon start for USB/SDIO */
-	asic_bss_beacon_start(pAd);
+#ifdef DISABLE_HOSTAPD_BEACON
+	FrameLen =  MakeBeacon(pAd, wdev, FALSE);
+	AsicUpdateBeacon(pAd, wdev, FrameLen, PKT_BCN);
+#else
+	CFG80211_UpdateBeacon(pAd, pBeacon->beacon_head, pBeacon->beacon_head_len,
+	pBeacon->beacon_tail, pBeacon->beacon_tail_len, TRUE, pBeacon->apidx);
+#endif /*DISABLE_HOSTAPD_BEACON */
+
 
 #ifdef RT_CFG80211_P2P_MULTI_CHAN_SUPPORT
 
@@ -741,6 +1023,9 @@ BOOLEAN CFG80211DRV_OpsBeaconAdd(VOID *pAdOrg, VOID *pData)
 	AsicSetPreTbtt(pAd, TRUE, HW_BSSID_0);
 	OPSTATUS_SET_FLAG(pAd, fOP_AP_STATUS_MEDIA_STATE_CONNECTED);
 	RTMP_IndicateMediaState(pAd, NdisMediaStateConnected);
+#if defined(RT_CFG80211_SUPPORT) || defined(MT7622)
+	WDEV_BSS_STATE(wdev) = BSS_READY;
+#endif
 	return TRUE;
 }
 
@@ -761,10 +1046,22 @@ BOOLEAN CFG80211DRV_ApKeyDel(
 	if (pKeyInfo->KeyId > 0)
 #endif
 	{
+		UINT Wcid = 0;
+		UINT apidx = CFG80211_FindMbssApIdxByNetDevice(pAd, pKeyInfo->pNetDev);
+		BSS_STRUCT *pMbss;
+		struct wifi_dev *pWdev;
+
+		if (apidx == WDEV_NOT_FOUND) {
+			MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s failed - [ERROR]can't find wdev in driver MBSS. \n", __FUNCTION__));
+			return FALSE;
+		}
+		pMbss = &pAd->ApCfg.MBSSID[apidx];
+		pWdev  = &pMbss->wdev;
+		GET_GroupKey_WCID(pWdev, Wcid);
 		/* Set key material to Asic */
 		os_zero_mem(&Info, sizeof(ASIC_SEC_INFO));
 		Info.Operation = SEC_ASIC_REMOVE_GROUP_KEY;
-		Info.Wcid = BSS0;
+		Info.Wcid = Wcid;
 		/* Set key material to Asic */
 		HW_ADDREMOVE_KEYTABLE(pAd, &Info);
 	} else {
@@ -820,10 +1117,15 @@ BOOLEAN CFG80211DRV_ApKeyAdd(
 	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdOrg;
 	CMD_RTPRIV_IOCTL_80211_KEY *pKeyInfo;
 	MAC_TABLE_ENTRY *pEntry = NULL;
+	UINT apidx;
+	BSS_STRUCT *pMbss;
+	struct wifi_dev *pWdev;
+
+	pKeyInfo = (CMD_RTPRIV_IOCTL_80211_KEY *)pData;
 	/* UINT Wcid = 0; */
-	UINT apidx = MAIN_MBSSID;
-	BSS_STRUCT *pMbss = &pAd->ApCfg.MBSSID[apidx];
-	struct wifi_dev *pWdev = &pMbss->wdev;
+	apidx = CFG80211_FindMbssApIdxByNetDevice(pAd, pKeyInfo->pNetDev);
+	pMbss = &pAd->ApCfg.MBSSID[apidx];
+	pWdev = &pMbss->wdev;
 
 	MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s =====>\n", __func__));
 	pKeyInfo = (CMD_RTPRIV_IOCTL_80211_KEY *)pData;
@@ -846,9 +1148,9 @@ BOOLEAN CFG80211DRV_ApKeyAdd(
 				pAd->SharedKey[apidx][pKeyInfo->KeyId].CipherAlg = CIPHER_WEP128;
 
 			AsicAddSharedKeyEntry(pAd, apidx, pKeyInfo->KeyId, pSharedKey);
-#ifdef MT7615
+#if defined(MT7615) || defined(MT7622)
 
-			if (IS_MT7615(pAd)) {
+			if (IS_MT7615(pAd) || IS_MT7622(pAd)) {
 				if (pKeyInfo->bPairwise == FALSE) {
 					ASIC_SEC_INFO Info = {0};
 					UINT Wcid = 0;
@@ -908,73 +1210,129 @@ BOOLEAN CFG80211DRV_ApKeyAdd(
 #endif
 		}
 	} else if (pKeyInfo->KeyType == RT_CMD_80211_KEY_WPA) {
-		if (pKeyInfo->cipher == Ndis802_11AESEnable) {
-			/* AES */
 #if (KERNEL_VERSION(2, 6, 37) <= LINUX_VERSION_CODE)
-			if (pKeyInfo->bPairwise == FALSE)
+		if (pKeyInfo->bPairwise == FALSE)
 #else
-			if (pKeyInfo->KeyId > 0)
+		if (pKeyInfo->KeyId > 0)
 #endif	/* LINUX_VERSION_CODE 2.6.37 */
+		{
+			USHORT Wcid;
+
+			/* Get a specific WCID to record this MBSS key attribute */
+			GET_GroupKey_WCID(pWdev, Wcid);
+			pAd->SharedKey[apidx][pKeyInfo->KeyId].KeyLen = LEN_TK;
+
+			switch (pKeyInfo->cipher)
 			{
-				if (IS_CIPHER_CCMP128(pWdev->SecConfig.GroupCipher)) {
-					MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("CFG: Set AES Security Set. (GROUP) %d\n", pKeyInfo->KeyLen));
-					pAd->SharedKey[apidx][pKeyInfo->KeyId].KeyLen = LEN_TK;
-					pAd->SharedKey[apidx][pKeyInfo->KeyId].CipherAlg = CIPHER_AES;
-#ifdef MT7615
-
-					if (IS_MT7615(pAd)) {
-						ASIC_SEC_INFO Info = {0};
-						USHORT Wcid;
-
-						SET_CIPHER_CCMP128(pWdev->SecConfig.GroupCipher);
-						/* Get a specific WCID to record this MBSS key attribute */
-						GET_GroupKey_WCID(pWdev, Wcid);
-						/* Set key material to Asic */
-						os_zero_mem(&Info, sizeof(ASIC_SEC_INFO));
-						Info.Operation = SEC_ASIC_ADD_GROUP_KEY;
-						Info.Direction = SEC_ASIC_KEY_TX;
-						Info.Wcid = Wcid;
-						Info.BssIndex = apidx;
-						Info.Cipher = pWdev->SecConfig.GroupCipher;
-						Info.KeyIdx = pKeyInfo->KeyId;
-						os_move_mem(&Info.PeerAddr[0], BROADCAST_ADDR, MAC_ADDR_LEN);
-						/* Install Shared key */
-						os_move_mem(pWdev->SecConfig.GTK, pKeyInfo->KeyBuf, pKeyInfo->KeyLen);
-						os_move_mem(Info.Key.Key, pWdev->SecConfig.GTK, LEN_MAX_GTK);
-						WPAInstallKey(pAd, &Info, TRUE, TRUE);
-						pWdev->SecConfig.Handshake.GTKState = REKEY_ESTABLISHED;
+				case Ndis802_11GCMP256Enable:
+					if (!IS_CIPHER_GCMP256(pWdev->SecConfig.GroupCipher)) {
+						MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+							("CFG: Wrong Group Cipher %d\n", pWdev->SecConfig.GroupCipher));
+						return FALSE;
 					}
+					SET_CIPHER_GCMP256(pWdev->SecConfig.GroupCipher);
+					break;
 
+				case Ndis802_11AESEnable:
+					if (!IS_CIPHER_CCMP128(pWdev->SecConfig.GroupCipher)) {
+						MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+							("CFG: Wrong Group Cipher %d\n", pWdev->SecConfig.GroupCipher));
+						return FALSE;
+					}
+					pAd->SharedKey[apidx][pKeyInfo->KeyId].CipherAlg = CIPHER_AES;
+					SET_CIPHER_CCMP128(pWdev->SecConfig.GroupCipher);
+					break;
+
+				case Ndis802_11TKIPEnable:
+					if (!IS_CIPHER_TKIP(pWdev->SecConfig.GroupCipher)) {
+						MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+							("CFG: Wrong Group Cipher %d\n", pWdev->SecConfig.GroupCipher));
+						return FALSE;
+					}
+					pAd->SharedKey[apidx][pKeyInfo->KeyId].CipherAlg = CIPHER_TKIP;
+					SET_CIPHER_TKIP(pWdev->SecConfig.GroupCipher);
+					break;
+
+				case Ndis802_11GCMP128Enable:
+					if (!IS_CIPHER_GCMP128(pWdev->SecConfig.GroupCipher)) {
+						MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+							("CFG: Wrong Group Cipher %d\n", pWdev->SecConfig.GroupCipher));
+						return FALSE;
+					}
+					SET_CIPHER_GCMP128(pWdev->SecConfig.GroupCipher);
+
+					break;
+
+				case Ndis802_11CCMP256Enable:
+					if (!IS_CIPHER_CCMP256(pWdev->SecConfig.GroupCipher)) {
+						MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+							("CFG: Wrong Group Cipher %d\n", pWdev->SecConfig.GroupCipher));
+						return FALSE;
+					}
+					SET_CIPHER_CCMP256(pWdev->SecConfig.GroupCipher);
+
+					break;
+			}
+#if defined(MT7615) || defined(MT7622)
+			if (IS_MT7615(pAd) || IS_MT7622(pAd)) {
+				ASIC_SEC_INFO Info = {0};
+				/* Set key material to Asic */
+				os_zero_mem(&Info, sizeof(ASIC_SEC_INFO));
+				Info.Operation = SEC_ASIC_ADD_GROUP_KEY;
+				Info.Direction = SEC_ASIC_KEY_TX;
+				Info.Wcid = Wcid;
+				Info.BssIndex = apidx;
+				Info.Cipher = pWdev->SecConfig.GroupCipher;
+				Info.KeyIdx = pKeyInfo->KeyId;
+				pWdev->SecConfig.GroupKeyId = Info.KeyIdx;
+				os_move_mem(&Info.PeerAddr[0], BROADCAST_ADDR, MAC_ADDR_LEN);
+				/* Install Shared key */
+				os_move_mem(pWdev->SecConfig.GTK, pKeyInfo->KeyBuf, pKeyInfo->KeyLen);
+				os_move_mem(Info.Key.Key, pWdev->SecConfig.GTK, LEN_MAX_GTK);
+				WPAInstallKey(pAd, &Info, TRUE, TRUE);
+				pWdev->SecConfig.Handshake.GTKState = REKEY_ESTABLISHED;
+			}
 #else
-					os_move_mem(pAd->SharedKey[apidx][pKeyInfo->KeyId].Key, pKeyInfo->KeyBuf, pKeyInfo->KeyLen);
-					AsicAddSharedKeyEntry(pAd, apidx, pKeyInfo->KeyId,
-										  &pAd->SharedKey[apidx][pKeyInfo->KeyId]);
-					GET_GroupKey_WCID(pWdev, Wcid);
-#ifdef MT_MAC
-
-					if (IS_HIF_TYPE(pAd, HIF_MT))
-						CmdProcAddRemoveKey(pAd, 0, apidx, pKeyInfo->KeyId, Wcid, SHAREDKEYTABLE,
-											&pAd->SharedKey[apidx][pKeyInfo->KeyId], BROADCAST_ADDR);
-
-#endif /* MT_MAC */
+			os_move_mem(pAd->SharedKey[apidx][pKeyInfo->KeyId].Key, pKeyInfo->KeyBuf, pKeyInfo->KeyLen);
+			AsicAddSharedKeyEntry(pAd, apidx, pKeyInfo->KeyId,
+						&pAd->SharedKey[apidx][pKeyInfo->KeyId]);
+			GET_GroupKey_WCID(pWdev, Wcid);
 #endif
-				}
 			} else {
 				if (pKeyInfo->MAC)
 					pEntry = MacTableLookup(pAd, pKeyInfo->MAC);
 
 				if (pEntry) {
-					MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("CFG: Set AES Security Set. (PAIRWISE) %d\n", pKeyInfo->KeyLen));
-#ifdef MT7615
+					switch (pKeyInfo->cipher) {
+					case Ndis802_11GCMP256Enable:
+						SET_CIPHER_GCMP256(pEntry->SecConfig.PairwiseCipher);
+						break;
 
-					if (IS_MT7615(pAd)) {
+					case Ndis802_11AESEnable:
+						SET_CIPHER_CCMP128(pEntry->SecConfig.PairwiseCipher);
+						break;
+
+					case Ndis802_11TKIPEnable:
+						SET_CIPHER_TKIP(pEntry->SecConfig.PairwiseCipher);
+						break;
+
+					case Ndis802_11GCMP128Enable:
+						SET_CIPHER_GCMP128(pEntry->SecConfig.PairwiseCipher);
+						break;
+
+					case Ndis802_11CCMP256Enable:
+						SET_CIPHER_CCMP256(pEntry->SecConfig.PairwiseCipher);
+						break;
+
+					}
+					NdisCopyMemory(&pEntry->SecConfig.PTK[OFFSET_OF_PTK_TK],
+								pKeyInfo->KeyBuf, OFFSET_OF_PTK_TK);
+#if defined(MT7615) || defined(MT7622)
+					if (IS_MT7615(pAd) || IS_MT7622(pAd)) {
 						struct _ASIC_SEC_INFO *info = NULL;
 
-						NdisCopyMemory(&pEntry->SecConfig.PTK[OFFSET_OF_PTK_TK], pKeyInfo->KeyBuf, OFFSET_OF_PTK_TK);
-						SET_CIPHER_CCMP128(pEntry->SecConfig.PairwiseCipher);
 						/* Set key material to Asic */
 						os_alloc_mem(NULL, (UCHAR **)&info, sizeof(ASIC_SEC_INFO));
-
 						if (info) {
 							os_zero_mem(info, sizeof(ASIC_SEC_INFO));
 							NdisCopyMemory(&pEntry->SecConfig.PTK[LEN_PTK_KCK + LEN_PTK_KEK], pKeyInfo->KeyBuf, LEN_MAX_PTK);
@@ -983,7 +1341,7 @@ BOOLEAN CFG80211DRV_ApKeyAdd(
 							info->Wcid = pEntry->wcid;
 							info->BssIndex = pEntry->func_tb_idx;
 							info->Cipher = pEntry->SecConfig.PairwiseCipher;
-							info->KeyIdx = (UINT8)(pKeyInfo->KeyId & 0x0fff);/* pEntry->SecConfig.PairwiseKeyId; */
+							info->KeyIdx = (UINT8)(pKeyInfo->KeyId & 0x0fff);
 							os_move_mem(&info->PeerAddr[0], pEntry->Addr, MAC_ADDR_LEN);
 							os_move_mem(info->Key.Key, &pEntry->SecConfig.PTK[LEN_PTK_KCK + LEN_PTK_KEK], (LEN_TK + LEN_TK2));
 							WPAInstallKey(pAd, info, TRUE, TRUE);
@@ -991,24 +1349,18 @@ BOOLEAN CFG80211DRV_ApKeyAdd(
 						} else {
 							MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL,
 									 DBG_LVL_ERROR, ("%s: struct alloc fail\n",
-													 __func__));
+										__func__));
 						}
 					}
-
 #else
-					PairwiseKey.KeyLen = LEN_TK;
+					pEntry->PairwiseKey.KeyLen = LEN_TK;
 					NdisCopyMemory(&pEntry->PTK[OFFSET_OF_PTK_TK], pKeyInfo->KeyBuf, OFFSET_OF_PTK_TK);
 					os_move_mem(pEntry->PairwiseKey.Key, &pEntry->PTK[OFFSET_OF_PTK_TK], pKeyInfo->KeyLen);
 					AsicAddPairwiseKeyEntry(pAd, (UCHAR)pEntry->Aid, &pEntry->PairwiseKey);
-#ifdef MT_MAC
 
-					if (IS_HIF_TYPE(pAd, HIF_MT))
-						CmdProcAddRemoveKey(pAd, 0, apidx, pKeyInfo->KeyId, pEntry->wcid, PAIRWISEKEYTABLE,
-											&pEntry->PairwiseKey, pEntry->Addr);
-
-#endif /* MT_MAC */
 #endif
 #ifdef RT_CFG80211_P2P_MULTI_CHAN_SUPPORT
+					if (pKeyInfo->cipher == Ndis802_11AESEnable)
 					{
 						UCHAR op_ht_bw1 = wlan_operate_get_ht_bw(pWdev);
 						UCHAR op_ht_bw2 = wlan_operate_get_ht_bw(&pAd->StaCfg[0].wdev);
@@ -1038,116 +1390,84 @@ BOOLEAN CFG80211DRV_ApKeyAdd(
 						}
 					}
 #endif /* RT_CFG80211_P2P_MULTI_CHAN_SUPPORT */
-				} else
-					MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("CFG: Set AES Security Set. (PAIRWISE) But pEntry NULL\n"));
-			}
-		} else if (pKeyInfo->cipher == Ndis802_11TKIPEnable) {
-			/* TKIP */
-#if (KERNEL_VERSION(2, 6, 37) <= LINUX_VERSION_CODE)
-			if (pKeyInfo->bPairwise == FALSE)
-#else
-			if (pKeyInfo->KeyId > 0)
-#endif	/* LINUX_VERSION_CODE 2.6.37 */
-			{
-				if (IS_CIPHER_TKIP(pWdev->SecConfig.GroupCipher)) {
-					MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("CFG: Set TKIP Security Set. (GROUP) %d\n", pKeyInfo->KeyLen));
-					pAd->SharedKey[apidx][pKeyInfo->KeyId].KeyLen = LEN_TK;
-					pAd->SharedKey[apidx][pKeyInfo->KeyId].CipherAlg = CIPHER_TKIP;
-#ifdef MT7615
 
-					if (IS_MT7615(pAd)) {
-						ASIC_SEC_INFO Info = {0};
-						USHORT Wcid;
-
-						SET_CIPHER_TKIP(pWdev->SecConfig.GroupCipher);
-						/* Get a specific WCID to record this MBSS key attribute */
-						GET_GroupKey_WCID(pWdev, Wcid);
-						/* Set key material to Asic */
-						os_zero_mem(&Info, sizeof(ASIC_SEC_INFO));
-						Info.Operation = SEC_ASIC_ADD_GROUP_KEY;
-						Info.Direction = SEC_ASIC_KEY_TX;
-						Info.Wcid = Wcid;
-						Info.BssIndex = apidx;
-						Info.Cipher = pWdev->SecConfig.GroupCipher;
-						Info.KeyIdx = pKeyInfo->KeyId;
-						os_move_mem(&Info.PeerAddr[0], BROADCAST_ADDR, MAC_ADDR_LEN);
-						/* Install Shared key */
-						os_move_mem(pWdev->SecConfig.GTK, pKeyInfo->KeyBuf, pKeyInfo->KeyLen);
-						os_move_mem(Info.Key.Key, pWdev->SecConfig.GTK, LEN_MAX_GTK);
-						WPAInstallKey(pAd, &Info, TRUE, TRUE);
-						pWdev->SecConfig.Handshake.GTKState = REKEY_ESTABLISHED;
-					}
-
-#else
-					os_move_mem(pAd->SharedKey[apidx][pKeyInfo->KeyId].Key, pKeyInfo->KeyBuf, pKeyInfo->KeyLen);
-					AsicAddSharedKeyEntry(pAd, apidx, pKeyInfo->KeyId,
-										  &pAd->SharedKey[apidx][pKeyInfo->KeyId]);
-					GET_GroupKey_WCID(pWdev, Wcid);
-#ifdef MT_MAC
-
-					if (IS_HIF_TYPE(pAd, HIF_MT))
-						RTMP_ADDREMOVE_KEY(pAd, 0, apidx, pKeyInfo->KeyId, Wcid, SHAREDKEYTABLE,
-										   &pAd->SharedKey[apidx][pKeyInfo->KeyId], BROADCAST_ADDR);
-
-#endif /* MT_MAC */
-#endif /* MT7615 */
-				}
-			} else {
-				if (pKeyInfo->MAC)
-					pEntry = MacTableLookup(pAd, pKeyInfo->MAC);
-
-				if (pEntry) {
-					MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("CFG: Set TKIP Security Set. (PAIRWISE) %d\n", pKeyInfo->KeyLen));
-					NdisCopyMemory(&pEntry->SecConfig.PTK[OFFSET_OF_PTK_TK], pKeyInfo->KeyBuf, OFFSET_OF_PTK_TK);
-#ifdef MT7615
-
-					if (IS_MT7615(pAd)) {
-						struct _ASIC_SEC_INFO *info = NULL;
-
-						NdisCopyMemory(&pEntry->SecConfig.PTK[OFFSET_OF_PTK_TK], pKeyInfo->KeyBuf, OFFSET_OF_PTK_TK);
-						SET_CIPHER_TKIP(pEntry->SecConfig.PairwiseCipher);
-						/* Set key material to Asic */
-						os_alloc_mem(NULL, (UCHAR **)&info, sizeof(ASIC_SEC_INFO));
-
-						if (info) {
-							os_zero_mem(info, sizeof(ASIC_SEC_INFO));
-							NdisCopyMemory(&pEntry->SecConfig.PTK[LEN_PTK_KCK + LEN_PTK_KEK], pKeyInfo->KeyBuf, LEN_MAX_PTK);
-							info->Operation = SEC_ASIC_ADD_PAIRWISE_KEY;
-							info->Direction = SEC_ASIC_KEY_BOTH;
-							info->Wcid = pEntry->wcid;
-							info->BssIndex = pEntry->func_tb_idx;
-							info->Cipher = pEntry->SecConfig.PairwiseCipher;
-							info->KeyIdx = (UINT8)(pKeyInfo->KeyId & 0x0fff);/* pEntry->SecConfig.PairwiseKeyId; */
-							os_move_mem(&info->PeerAddr[0],
-										pEntry->Addr, MAC_ADDR_LEN);
-							os_move_mem(info->Key.Key, &pEntry->SecConfig.PTK[LEN_PTK_KCK + LEN_PTK_KEK], (LEN_TK + LEN_TK2));
-							WPAInstallKey(pAd, info, TRUE, TRUE);
-							os_free_mem(info);
-						} else {
-							MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL,
-									 DBG_LVL_ERROR, ("%s: struct alloc fail\n",
-													 __func__));
-						}
-					}
-
-#else
-					pEntry->PairwiseKey.KeyLen = LEN_TK;
-					NdisCopyMemory(&pEntry->PTK[OFFSET_OF_PTK_TK], pKeyInfo->KeyBuf, OFFSET_OF_PTK_TK);
-					os_move_mem(pEntry->PairwiseKey.Key, &pEntry->PTK[OFFSET_OF_PTK_TK], pKeyInfo->KeyLen);
-					AsicAddPairwiseKeyEntry(pAd, (UCHAR)pEntry->Aid, &pEntry->PairwiseKey);
-#ifdef MT_MAC
-
-					if (IS_HIF_TYPE(pAd, HIF_MT))
-						RTMP_ADDREMOVE_KEY(pAd, 0, apidx, pKeyInfo->KeyId, pEntry->wcid, PAIRWISEKEYTABLE,
-										   &pEntry->PairwiseKey, pEntry->Addr);
-
-#endif /* MT_MAC */
-#endif /* MT7615 */
-				} else
-					MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("CFG: Set TKIP Security Set. (PAIRWISE) But pEntry NULL\n"));
-			}
+			} else
+				MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+					("CFG: Security Set. (PAIRWISE) But pEntry NULL\n"));
 		}
 	}
+#ifdef DOT11W_PMF_SUPPORT
+	else if(pKeyInfo->KeyType == RT_CMD_80211_KEY_AES_CMAC)
+	{
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,37))
+		if ((pKeyInfo->bPairwise == FALSE ) && (pKeyInfo->KeyId == 4 || pKeyInfo->KeyId == 5))
+#else
+		if (pKeyInfo->KeyId == 4 || pKeyInfo->KeyId == 5)
+#endif	/* LINUX_VERSION_CODE 2.6.37 */
+		{
+			hex_dump("PMF IGTK pKeyInfo->KeyBuf=", (UINT8 *)pKeyInfo->KeyBuf, pKeyInfo->KeyLen);
+			MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,("PMF IGTK pKeyInfo->KeyId=%d\n", pKeyInfo->KeyId));
+
+#ifdef MT7615
+			if (IS_MT7615(pAd))
+			{
+				PPMF_CFG pPmfCfg = &pWdev->SecConfig.PmfCfg;
+				ASIC_SEC_INFO Info = {0};
+				USHORT Wcid;
+				if (pKeyInfo->cipher == Ndis802_11AESEnable)
+					SET_CIPHER_CCMP128(pWdev->SecConfig.GroupCipher);
+				else if (pKeyInfo->cipher == Ndis802_11TKIPEnable)
+					SET_CIPHER_TKIP(pWdev->SecConfig.GroupCipher);
+				/* Get a specific WCID to record this MBSS key attribute */
+				GET_GroupKey_WCID(pWdev, Wcid);
+
+				/* Set key material to Asic */
+				os_zero_mem(&Info, sizeof(ASIC_SEC_INFO));
+				Info.Operation = SEC_ASIC_ADD_GROUP_KEY;
+				Info.Direction = SEC_ASIC_KEY_TX;
+				Info.Wcid = Wcid;
+				Info.BssIndex = apidx;
+				Info.Cipher = pWdev->SecConfig.GroupCipher;
+				Info.KeyIdx = pWdev->SecConfig.GroupKeyId;
+				Info.IGTKKeyLen = LEN_TK;
+				os_move_mem(&Info.PeerAddr[0], BROADCAST_ADDR, MAC_ADDR_LEN);
+				os_zero_mem(&pPmfCfg->IPN[pKeyInfo->KeyId - 4][0], LEN_WPA_TSC);
+				os_move_mem(&pPmfCfg->IGTK[pKeyInfo->KeyId - 4][0], pKeyInfo->KeyBuf, pKeyInfo->KeyLen);
+				os_move_mem(Info.Key.Key,pWdev->SecConfig.GTK,LEN_MAX_GTK);
+				os_move_mem(Info.IGTK, pKeyInfo->KeyBuf, pKeyInfo->KeyLen);
+				WPAInstallKey(pAd, &Info, TRUE, TRUE);
+				pWdev->SecConfig.Handshake.GTKState = REKEY_ESTABLISHED;
+
+			}
+
+#else
+			os_move_mem(pAd->SharedKey[apidx][pKeyInfo->KeyId].Key, pKeyInfo->KeyBuf, pKeyInfo->KeyLen);
+			AsicAddSharedKeyEntry(pAd, apidx, pKeyInfo->KeyId,
+				&pAd->SharedKey[apidx][pKeyInfo->KeyId]);
+
+			GET_GroupKey_WCID(pWdev, Wcid);
+			RTMPSetWcidSecurityInfo(pAd, apidx, (UINT8)(pKeyInfo->KeyId),
+			pAd->SharedKey[apidx][pKeyInfo->KeyId].CipherAlg, Wcid, SHAREDKEYTABLE);
+
+#ifdef MT_MAC
+			if (pAd->chipCap.hif_type == HIF_MT)
+				CmdProcAddRemoveKey(pAd, 0, apidx, pKeyInfo->KeyId, Wcid, SHAREDKEYTABLE,
+									&pAd->SharedKey[apidx][pKeyInfo->KeyId], BROADCAST_ADDR);
+#endif /* MT_MAC */
+#endif	 /* MT7615 */
+		}
+		else
+		{
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,37))
+			MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,("ERROR !! pKeyInfo->bPairwise = %d pKeyInfo->KeyId=%d \n", pKeyInfo->bPairwise,pKeyInfo->KeyId));
+#else
+			MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,("ERROR !! pKeyInfo->KeyId=%d \n", pKeyInfo->KeyId));
+#endif /* LINUX_VERSION_CODE 2.6.37 */
+		}
+
+	}
+
+#endif /* DOT11W_PMF_SUPPORT */
 
 #endif /* CONFIG_AP_SUPPORT */
 	return TRUE;
@@ -1173,9 +1493,9 @@ INT CFG80211_StaPortSecured(
 			/* Update status and set Port as Secured */
 			pEntry->PrivacyFilter = Ndis802_11PrivFilterAcceptAll;
 			tr_entry->PortSecured = WPA_802_1X_PORT_SECURED;
-#ifdef MT7615
+#if defined(MT7615) || defined(MT7622)
 
-			if (IS_MT7615(pAd)) {
+			if (IS_MT7615(pAd) || IS_MT7622(pAd)) {
 				pEntry->SecConfig.Handshake.WpaState = AS_PTKINITDONE;
 				WifiSysUpdatePortSecur(pAd, pEntry, NULL);
 			}
@@ -1194,42 +1514,189 @@ INT CFG80211_StaPortSecured(
 	return 0;
 }
 
+
+#ifdef HOSTAPD_MAP_SUPPORT
 INT CFG80211_ApStaDel(
 	IN VOID                                         *pAdCB,
-	IN UCHAR                                        *pMac)
+	IN VOID                                         *pData,
+	IN UINT						reason)
+{
+	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdCB;
+	MAC_TABLE_ENTRY *pEntry;
+	CMD_RTPRIV_IOCTL_AP_STA_DEL *pApStaDelInfo = NULL;
+	PUCHAR pMac = NULL;
+
+	pApStaDelInfo = (CMD_RTPRIV_IOCTL_AP_STA_DEL *)pData;
+
+	if (pApStaDelInfo->pSta_MAC != NULL)
+		pMac = (PUCHAR)pApStaDelInfo->pSta_MAC;
+
+	if (pMac == NULL) {
+		{
+			if (pApStaDelInfo->pWdev != NULL)
+				MacTableResetWdev(pAd, pApStaDelInfo->pWdev);
+			else
+				MacTableReset(pAd);
+			NdisZeroMemory(pAd->radius_tbl, MAX_LEN_OF_MAC_TABLE * sizeof(RADIUS_ACCOUNT_ENTRY));
+		}
+	} else {
+		int i;
+
+		pEntry = MacTableLookup(pAd, pMac);
+		if (pEntry) {
+			USHORT reason_code = REASON_NO_LONGER_VALID;
+#ifdef HOSTAPD_OWE_SUPPORT
+			if (pEntry->wdev && (pEntry->Sst == SST_AUTH)
+				&& IS_AKM_OWE(pEntry->wdev->SecConfig.AKMMap))
+				MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+					("\n OWE mode Ignore Deauth from Hostapd"));
+			else
+
+#endif
+{
+			if (reason)
+				reason_code = reason;
+			MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL,
+				DBG_LVL_OFF,
+				("%s, Deauth : 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x reason code %d\n", __func__,
+				 pMac[0], pMac[1], pMac[2], pMac[3], pMac[4], pMac[5], reason_code));
+
+				MlmeDeAuthAction(pAd, pEntry, reason_code, FALSE);
+}
+		} else
+			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+				("Can't find pEntry in ApStaDel\n"));
+
+		/* Find entry in radius tbl and delete it if found */
+
+		for (i = 0; i < MAX_LEN_OF_MAC_TABLE; i++) {
+			RADIUS_ACCOUNT_ENTRY *pRadiusEntry = &pAd->radius_tbl[i];
+
+			if (MAC_ADDR_EQUAL(pRadiusEntry->Addr, pMac))
+				NdisZeroMemory(pRadiusEntry, sizeof(RADIUS_ACCOUNT_ENTRY));
+		}
+	}
+	return 0;
+}
+
+#else
+INT CFG80211_ApStaDel(
+	IN VOID                                         *pAdCB,
+	IN UCHAR                                        *pMac,
+	IN UINT						reason)
 {
 	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdCB;
 	MAC_TABLE_ENTRY *pEntry;
 
 	if (pMac == NULL) {
+		{
 			MacTableReset(pAd);
+			NdisZeroMemory(pAd->radius_tbl, MAX_LEN_OF_MAC_TABLE * sizeof(RADIUS_ACCOUNT_ENTRY));
+		}
+
 	} else {
+		int i;
+
 		pEntry = MacTableLookup(pAd, pMac);
+		if (pEntry) {
+			USHORT reason_code = REASON_NO_LONGER_VALID;
+#ifdef HOSTAPD_OWE_SUPPORT
+			if (pEntry->wdev && (pEntry->Sst == SST_AUTH)
+				&& IS_AKM_OWE(pEntry->wdev->SecConfig.AKMMap))
+				MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+					("\n OWE mode Ignore Deauth from Hostapd"));
+			else
 
-		if (pEntry)
-			MlmeDeAuthAction(pAd, pEntry, REASON_NO_LONGER_VALID, FALSE);
-		else
-			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Can't find pEntry in ApStaDel\n"));
+#endif
+{
+			if (reason)
+				reason_code = reason;
+			MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL,
+				DBG_LVL_ERROR,
+				("%s, Deauth : 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x reason code %d\n", __func__,
+				 pMac[0], pMac[1], pMac[2], pMac[3], pMac[4], pMac[5], reason_code));
+
+				MlmeDeAuthAction(pAd, pEntry, reason_code, FALSE);
+}
+		} else
+			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+				("Can't find pEntry in ApStaDel\n"));
+
+		/* Find entry in radius tbl and delete it if found */
+
+		for (i = 0; i < MAX_LEN_OF_MAC_TABLE; i++) {
+			RADIUS_ACCOUNT_ENTRY *pRadiusEntry = &pAd->radius_tbl[i];
+
+			if (MAC_ADDR_EQUAL(pRadiusEntry->Addr, pMac))
+				NdisZeroMemory(pRadiusEntry, sizeof(RADIUS_ACCOUNT_ENTRY));
+		}
 	}
-
 	return 0;
 }
+#endif
+
 
 INT CFG80211_setApDefaultKey(
 	IN VOID                    *pAdCB,
-	IN UINT					Data
+	IN struct net_device		*pNetdev,
+	IN UINT 					Data
 )
 {
 	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdCB;
+	INT32 apidx = CFG80211_FindMbssApIdxByNetDevice(pAd, pNetdev);
+
+	if (apidx == WDEV_NOT_FOUND) {
+		MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("%s failed - [ERROR]can't find wdev in driver MBSS. \n",
+			__func__));
+		return FALSE;
+	}
 
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Set Ap Default Key: %d\n", Data));
-#ifdef MT7615
-	pAd->ApCfg.MBSSID[MAIN_MBSSID].wdev.SecConfig.PairwiseKeyId = Data;
+#if defined(MT7615) || defined(MT7622)
+
+	pAd->ApCfg.MBSSID[apidx].wdev.SecConfig.PairwiseKeyId = Data;
 #else
-	pAd->ApCfg.MBSSID[MAIN_MBSSID].wdev.DefaultKeyId = Data;
+	pAd->ApCfg.MBSSID[apidx].wdev.DefaultKeyId = Data;
 #endif
+
 	return 0;
 }
+
+#ifdef DOT11W_PMF_SUPPORT
+INT CFG80211_setApDefaultMgmtKey(
+	IN VOID                    *pAdCB,
+	IN struct net_device		*pNetdev,
+	IN UINT 					Data
+)
+{
+	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdCB;
+	INT32 apidx = CFG80211_FindMbssApIdxByNetDevice(pAd, pNetdev);
+	struct wifi_dev *pWdev = NULL;
+
+	if (apidx == WDEV_NOT_FOUND) {
+		MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("%s failed - [ERROR]can't find wdev in driver MBSS. \n", __FUNCTION__));
+		return FALSE;
+	}
+	pWdev = &pAd->ApCfg.MBSSID[apidx].wdev;
+
+#ifdef MT7615
+	if((Data == 4)||(Data == 5))
+	{
+		pWdev->SecConfig.PmfCfg.IGTK_KeyIdx = (UINT8)Data;
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Set Ap Default Mgmt KeyId: %d\n", Data));
+	}
+	else
+	{
+		MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_ERROR,("%s fail - [ERROR]Invalid Mgmt KeyId: %d\n", __FUNCTION__,Data));
+	}
+#endif
+
+	return 0;
+}
+#endif /*DOT11W_PMF_SUPPORT*/
+
 
 INT CFG80211_ApStaDelSendEvent(PRTMP_ADAPTER pAd, const PUCHAR mac_addr, IN PNET_DEV pNetDevIn)
 {
@@ -1241,5 +1708,18 @@ INT CFG80211_ApStaDelSendEvent(PRTMP_ADAPTER pAd, const PUCHAR mac_addr, IN PNET
 	return 0;
 }
 
+#ifdef APCLI_CFG80211_SUPPORT
+VOID CFG80211_ApClientConnectResultInform(
+	VOID *pAdCB, UCHAR *pBSSID, UCHAR *pReqIe, UINT32 ReqIeLen,
+	UCHAR *pRspIe, UINT32 RspIeLen, UCHAR FlgIsSuccess)
+{
+	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdCB;
+
+	CFG80211OS_P2pClientConnectResultInform(pAd->ApCfg.ApCliTab[MAIN_MBSSID].wdev.if_dev, pBSSID,
+					pReqIe, ReqIeLen, pRspIe, RspIeLen, FlgIsSuccess);
+
+	pAd->cfg80211_ctrl.FlgCfg80211Connecting = FALSE;
+}
+#endif /* APCLI_CFG80211_SUPPORT */
 #endif /* CONFIG_AP_SUPPORT */
 #endif /* RT_CFG80211_SUPPORT */

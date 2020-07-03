@@ -493,7 +493,6 @@ static INT32 ge_dump_all_sw_queue(RTMP_ADAPTER *pAd)
 	INT cnt = 0;
 	INT i, j;
 	STA_TR_ENTRY *tr_entry = NULL;
-	UINT32 ent_type = ENTRY_NONE;
 
 	/* management sw queue */
 	RTMP_SEM_LOCK(&pAd->mgmt_que_lock);
@@ -551,19 +550,9 @@ static INT32 ge_dump_all_sw_queue(RTMP_ADAPTER *pAd)
 	for (i = 0; VALID_WCID(i); i++) {
 		PMAC_TABLE_ENTRY pEntry = &pAd->MacTab.Content[i];
 
-		if ((ent_type == ENTRY_NONE)) {
-			/* dump all MacTable entries */
-			if (pEntry->EntryType == ENTRY_NONE)
-				continue;
-		} else {
-			/* dump MacTable entries which match the EntryType */
-			if (pEntry->EntryType != ent_type)
-				continue;
-
-			if ((IS_ENTRY_CLIENT(pEntry) || IS_ENTRY_APCLI(pEntry) || IS_ENTRY_REPEATER(pEntry))
-				&& (pEntry->Sst != SST_ASSOC))
-				continue;
-		}
+		/* dump all MacTable entries */
+		if (pEntry->EntryType == ENTRY_NONE)
+			continue;
 
 		tr_entry = &pAd->MacTab.tr_entry[i];
 
@@ -982,10 +971,11 @@ static INT ge_deq_report(RTMP_ADAPTER *pAd, struct dequeue_info *info)
 		/* rtmp_sta_txq_dump(pAd, &pAd->MacTab.tr_entry[info->wcid], qidx); */
 	}
 
-	MTWF_LOG(DBG_CAT_TX, DBG_SUBCAT_ALL, DBG_LVL_INFO,
-			 ("After DeqReport, tx_swq D/EQIdx=%d/%d, deq_info.q_max_cnt/pkt_cnt=%d/%d\n",
-			  pAd->tx_swq[qidx].deqIdx, pAd->tx_swq[qidx].enqIdx,
-			  info->q_max_cnt[qidx], info->pkt_cnt));
+	if (qidx < WMM_NUM_OF_AC)
+		MTWF_LOG(DBG_CAT_TX, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+				 ("After DeqReport, tx_swq D/EQIdx=%d/%d, deq_info.q_max_cnt/pkt_cnt=%d/%d\n",
+				  pAd->tx_swq[qidx].deqIdx, pAd->tx_swq[qidx].enqIdx,
+				  info->q_max_cnt[qidx], info->pkt_cnt));
 	return TRUE;
 }
 

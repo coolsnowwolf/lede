@@ -55,7 +55,9 @@ VOID APPMFInit(
 	 */
 		pSecConfig->PmfCfg.MFPC = TRUE;
 		pSecConfig->PmfCfg.MFPR = (IS_AKM_WPA2PSK(pSecConfig->AKMMap)) ? FALSE : TRUE;
-	} else if (IS_AKM_WPA3(pSecConfig->AKMMap) || IS_AKM_OWE(pSecConfig->AKMMap)) {
+	} else if (IS_AKM_WPA3_192BIT(pSecConfig->AKMMap)
+		|| IS_AKM_OWE(pSecConfig->AKMMap)
+		|| IS_AKM_WPA3(pSecConfig->AKMMap)) {
 	/* In WPA3 spec, When WPA3-Enterprise Suite B is used,
 	 * Protected Management Frame (PMF) shall be set to required (MFPR=1).
 	 */
@@ -75,16 +77,10 @@ VOID APPMFInit(
 		MTWF_LOG(DBG_CAT_SEC, CATSEC_PMF, DBG_LVL_ERROR, ("[PMF]%s:: Security is not WPA2/WPA2PSK AES\n", __func__));
 
 	if (pSecConfig->PmfCfg.MFPC) {
-		/* default IGTK cipher is BIP-CMAC-128 */
-		if (pSecConfig->PmfCfg.igtk_cipher == 0x0) {
-			if (IS_AKM_WPA3(pSecConfig->AKMMap))
-				SET_CIPHER_BIP_GMAC256(pSecConfig->PmfCfg.igtk_cipher);
-			else
-				SET_CIPHER_BIP_CMAC128(pSecConfig->PmfCfg.igtk_cipher);
-			MTWF_LOG(DBG_CAT_SEC, CATSEC_PMF, DBG_LVL_ERROR,
-				("[PMF]%s: IGTK cipher is none, initail IGTK cipher to %s\n",
-				__func__, GetEncryModeStr(pSecConfig->PmfCfg.igtk_cipher)));
-		}
+		if (IS_AKM_WPA3_192BIT(pSecConfig->AKMMap))
+			SET_CIPHER_BIP_GMAC256(pSecConfig->PmfCfg.igtk_cipher);
+		else
+			SET_CIPHER_BIP_CMAC128(pSecConfig->PmfCfg.igtk_cipher);
 	}
 
 	MTWF_LOG(DBG_CAT_SEC, CATSEC_PMF, DBG_LVL_ERROR, ("[PMF]%s:: apidx=%d, MFPC=%d, MFPR=%d, SHA256=%d\n",
@@ -320,6 +316,10 @@ VOID GroupRekeyExec(
 			if (IS_ENTRY_CLIENT(pEntry)
 				&& (pEntry->SecConfig.Handshake.WpaState == AS_PTKINITDONE)
 				&& (pEntry->func_tb_idx == apidx)) {
+#ifdef A4_CONN
+				if (IS_ENTRY_A4(pEntry))
+					continue;
+#endif /* A4_CONN */
 				entry_count++;
 				RTMPSetTimer(&pEntry->SecConfig.StartFor2WayTimer, ENQUEUE_EAPOL_2WAY_START_TIMER);
 				MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("Rekey interval excess, Update Group Key for  %02X:%02X:%02X:%02X:%02X:%02X , DefaultKeyId= %x\n",
@@ -642,6 +642,8 @@ VOID WpaSend(RTMP_ADAPTER *pAdapter, UCHAR *pPacket, ULONG Len)
 			break;
 
 		case EAP_CODE_FAILURE:
+			MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("Send Deauth, Reason : REASON_8021X_AUTH_FAIL\n"));
+			MlmeDeAuthAction(pAdapter, pEntry, REASON_8021X_AUTH_FAIL, FALSE);
 			break;
 
 		default:
@@ -652,7 +654,6 @@ VOID WpaSend(RTMP_ADAPTER *pAdapter, UCHAR *pPacket, ULONG Len)
 		MlmeDeAuthAction(pAdapter, pEntry, REASON_NO_LONGER_VALID, FALSE);
 	}
 }
-
 
 INT RTMPAddPMKIDCache(
 	IN NDIS_AP_802_11_PMKID * pPMKIDCache,
@@ -752,7 +753,6 @@ INT RTMPValidatePMKIDCache(
 		return INVALID_PMKID_IDX;
 }
 
-
 VOID RTMPDeletePMKIDCache(
 	IN NDIS_AP_802_11_PMKID * pPMKIDCache,
 	IN INT apidx,
@@ -786,5 +786,24 @@ VOID RTMPMaintainPMKIDCache(
 	}
 }
 
-#endif /* DOT1X_SUPPORT */
 
+UCHAR is_rsne_pmkid_cache_match(
+	IN UINT8 *rsnie,
+	IN UINT	rsnie_len,
+	IN NDIS_AP_802_11_PMKID * pmkid_cache,
+	IN INT apidx,
+	IN UCHAR *addr,
+	OUT INT* cacheidx)
+{
+	UINT8 *pmkid = NULL;
+	UINT8 pmkid_count;
+
+ 	pmkid = WPA_ExtractSuiteFromRSNIE(rsnie, rsnie_len, PMKID_LIST, &pmkid_count);
+
+	if (pmkid != NULL) {
+		*cacheidx = RTMPValidatePMKIDCache(pmkid_cache, apidx, addr, pmkid);
+		return TRUE;
+	}
+	return FALSE;
+}
+#endif /* DOT1X_SUPPORT */
