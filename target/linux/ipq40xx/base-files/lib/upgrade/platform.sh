@@ -198,7 +198,6 @@ platform_do_upgrade() {
 		CI_KERNPART="linux"
 		nand_do_upgrade "$1"
 		;;
-	asus,rt-acrh17|\
 	asus,rt-ac58u)
 		local magic=$(get_magic_long "$1")
 		CI_UBIPART="UBI_DEV"
@@ -214,9 +213,7 @@ platform_do_upgrade() {
 		CI_UBIPART="ubifs"
 		askey_do_upgrade "$1"
 		;;
-	compex,wpj419|\
-	p2w,r619ac-128m|\
-	p2w,r619ac)
+	compex,wpj419)
 		nand_do_upgrade "$1"
 		;;
 	linksys,ea6350v3 |\
