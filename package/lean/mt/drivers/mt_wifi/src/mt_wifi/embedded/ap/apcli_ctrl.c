@@ -244,6 +244,48 @@ VOID ApCliCtrlStateMachineInit(
 	}
 }
 
+#ifdef FAST_EAPOL_WAR
+static VOID ApCliCtrlDeleteMacEntry(
+	IN	PRTMP_ADAPTER	pAd,
+	IN  UCHAR ifIndex,
+	IN  UCHAR CliIdx)
+{
+	PAPCLI_STRUCT pApCliEntry = NULL;
+#ifdef MAC_REPEATER_SUPPORT
+	PREPEATER_CLIENT_ENTRY pReptEntry = NULL;
+
+	if (CliIdx != 0xff) {
+		pReptEntry = &pAd->ApCfg.pRepeaterCliPool[CliIdx];
+		pApCliEntry = &pAd->ApCfg.ApCliTab[ifIndex];
+	} else
+#endif
+	{
+		pApCliEntry = &pAd->ApCfg.ApCliTab[ifIndex];
+	}
+#ifdef MAC_REPEATER_SUPPORT
+	if (CliIdx != 0xFF) {
+		if ((pReptEntry->pre_entry_alloc == TRUE) &&
+			(pReptEntry->CliValid == FALSE)) {
+			UCHAR	MacTabWCID;
+			MacTabWCID = pReptEntry->MacTabWCID;
+			MacTableDeleteEntry(pAd, MacTabWCID, pAd->MacTab.Content[MacTabWCID].Addr);
+			pReptEntry->MacTabWCID = 0xFF;
+			pReptEntry->pre_entry_alloc = FALSE;
+		}
+	} else
+#endif
+	{
+		if ((pApCliEntry->pre_entry_alloc == TRUE) &&
+			(pApCliEntry->Valid == FALSE)) {
+			UCHAR	MacTabWCID;
+			MacTabWCID = pApCliEntry->MacTabWCID;
+			MacTableDeleteEntry(pAd, MacTabWCID, APCLI_ROOT_BSSID_GET(pAd, MacTabWCID));
+			pApCliEntry->MacTabWCID = 0;
+			pApCliEntry->pre_entry_alloc = FALSE;
+		}
+	}
+}
+#endif /* FAST_EAPOL_WAR */
 #ifdef APCLI_CONNECTION_TRIAL
 static VOID ApCliTrialConnectTimeout(
 	IN PVOID SystemSpecific1,
@@ -564,6 +606,12 @@ static VOID ApCliCtrlJoinReqAction(
 	NdisZeroMemory(&JoinReq, sizeof(APCLI_MLME_JOIN_REQ_STRUCT));
 
 
+#ifdef APCLI_OWE_SUPPORT
+	if (IS_AKM_OWE(wdev->SecConfig.AKMMap))
+		BssTableInit(&pApCliEntry->MlmeAux.owe_bss_tab);
+#endif
+
+
 	if (!MAC_ADDR_EQUAL(pApCliEntry->CfgApCliBssid, ZERO_MAC_ADDR))
 		COPY_MAC_ADDR(JoinReq.Bssid, pApCliEntry->CfgApCliBssid);
 
@@ -620,8 +668,16 @@ static VOID ApCliCtrlJoinReqAction(
 	} else
 #endif /* WSC_AP_SUPPORT */
 	{
+#ifdef APCLI_OWE_SUPPORT
+			/*owe_trans_ssid present then update join request with OWE ssid, bssid parameters */
+				if (pApCliEntry->owe_trans_ssid_len > 0) {
+
+					NdisMoveMemory(&(JoinReq.Ssid), pApCliEntry->owe_trans_ssid, pApCliEntry->owe_trans_ssid_len);
+					COPY_MAC_ADDR(JoinReq.Bssid, pApCliEntry->owe_trans_bssid);
+				} else
+#endif
 			if (pApCliEntry->CfgSsidLen != 0) {
-#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA)
+#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA) || defined(APCLI_CFG80211_SUPPORT)
 				ULONG bss_idx = BSS_NOT_FOUND;
 
 				bss_idx = BssSsidTableSearchBySSID(&pAd->ScanTab, (PCHAR)pApCliEntry->CfgSsid, pApCliEntry->CfgSsidLen);
@@ -642,6 +698,7 @@ static VOID ApCliCtrlJoinReqAction(
 				/* if (wdev->channel != pAd->ScanTab.BssEntry[bss_idx].Channel) */
 				{
 					pApCliEntry->MlmeAux.Channel = pAd->ScanTab.BssEntry[bss_idx].Channel;
+					pApCliEntry->wdev.channel = pApCliEntry->MlmeAux.Channel;
 #ifdef CONFIG_MULTI_CHANNEL
 					/* should be check and update in in asso to check ==> ApCliCheckHt() */
 					pApCliEntry->wdev.channel = pApCliEntry->MlmeAux.Channel;
@@ -708,9 +765,16 @@ static VOID ApCliCtrlJoinReqTimeoutAction(
 		NdisZeroMemory(pApCliEntry->MlmeAux.Ssid, MAX_LEN_OF_SSID);
 		pApCliEntry->ProbeReqCnt = 0;
 
+#ifdef APCLI_OWE_SUPPORT
+		apcli_reset_owe_parameters(pAd, ifIndex);
+#endif
 		/* Driver Trigger New Scan Mode for Sigma DUT usage */
-		if (pAd->ApCfg.ApCliAutoConnectType[apcli_ifIndex] == TRIGGER_SCAN_BY_DRIVER &&
-			pAd->ScanCtrl.PartialScan.bScanning == FALSE
+		if ((pAd->ApCfg.ApCliAutoConnectType[apcli_ifIndex] == TRIGGER_SCAN_BY_DRIVER
+#ifdef FOLLOW_HIDDEN_SSID_FEATURE
+			|| (pAd->ApCfg.ApCliAutoConnectType[apcli_ifIndex] == TRIGGER_SCAN_BY_USER
+			&& pAd->ApCfg.ApCliTab[ifIndex].AutoConnectFlag == TRUE)
+#endif
+			) && pAd->ScanCtrl.PartialScan.bScanning == FALSE
 		   ) {
 			if (pApCliEntry->CfgSsidLen) {
 				NDIS_802_11_SSID Ssid;
@@ -756,6 +820,14 @@ static VOID ApCliCtrlJoinReqTimeoutAction(
 #endif /* WSC_AP_SUPPORT */
 	{
 
+#ifdef APCLI_OWE_SUPPORT
+/*Configure OWE ssid and bssid Join request parameters */
+		if (IS_AKM_OWE(pApCliEntry->wdev.SecConfig.AKMMap) && (pApCliEntry->owe_trans_ssid_len != 0)) {
+			JoinReq.SsidLen = pApCliEntry->owe_trans_ssid_len;
+			NdisMoveMemory(&(JoinReq.Ssid), pApCliEntry->owe_trans_ssid, JoinReq.SsidLen);
+			COPY_MAC_ADDR(JoinReq.Bssid, pApCliEntry->owe_trans_bssid);
+		} else
+#endif
 		if (pApCliEntry->CfgSsidLen != 0) {
 			JoinReq.SsidLen = pApCliEntry->CfgSsidLen;
 			NdisMoveMemory(&(JoinReq.Ssid), pApCliEntry->CfgSsid, JoinReq.SsidLen);
@@ -797,6 +869,8 @@ static VOID ApCliCtrlProbeRspAction(
 #ifdef APCLI_AUTO_CONNECT_SUPPORT
 	USHORT apcli_ifIndex = (USHORT)(Elem->Priv);
 #endif /* APCLI_AUTO_CONNECT_SUPPORT */
+	struct _SECURITY_CONFIG *pProfile_SecConfig = NULL;
+
 
 	if ((ifIndex >= MAX_APCLI_NUM)
 #ifdef MAC_REPEATER_SUPPORT
@@ -831,6 +905,7 @@ static VOID ApCliCtrlProbeRspAction(
 #endif /* MAC_REPEATER_SUPPORT */
 	pApCliEntry = &pAd->ApCfg.ApCliTab[ifIndex];
 	wdev = &pApCliEntry->wdev;
+	pProfile_SecConfig = &wdev->SecConfig;
 
 
 #ifdef MAC_REPEATER_SUPPORT
@@ -854,7 +929,192 @@ static VOID ApCliCtrlProbeRspAction(
 			pApCliEntry->AuthReqCnt = 0;
 
 		COPY_MAC_ADDR(AuthReq.Addr, pApCliEntry->MlmeAux.Bssid);
+#if defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)
+#ifdef FAST_EAPOL_WAR
+/*Shifted from Fast Eapol War from assoc req phase to probe response phase as SAE and OWE update the PMK *
+per mactable entry */
+		{
+					PMAC_TABLE_ENTRY pmac_entry = NULL;
 
+#ifdef MAC_REPEATER_SUPPORT
+					if ((pAd->ApCfg.bMACRepeaterEn) &&
+						(IS_HIF_TYPE(pAd, HIF_MT)) &&
+						(CliIdx != 0xFF)
+			   ) {
+				if (pReptCliEntry->pre_entry_alloc == TRUE)
+					ApCliCtrlDeleteMacEntry(pAd, ifIndex, CliIdx);
+				{
+					pmac_entry = MacTableInsertEntry(
+									pAd,
+									(PUCHAR)(pApCliEntry->MlmeAux.Bssid),
+									pReptCliEntry->wdev,
+									ENTRY_REPEATER,
+									OPMODE_AP,
+									TRUE);
+					if (pmac_entry) {
+						pReptCliEntry->MacTabWCID = pmac_entry->wcid;
+						pReptCliEntry->pre_entry_alloc = TRUE;
+					} else {
+						MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR, ("repeater pEntry insert fail"));
+						*pCurrState = APCLI_CTRL_DISCONNECTED;
+						return;
+					}
+				}
+			} else
+#endif /* MAC_REPEATER_SUPPORT */
+				{
+					if (pApCliEntry->pre_entry_alloc == TRUE)
+						ApCliCtrlDeleteMacEntry(pAd, ifIndex, CliIdx);
+					{
+						pmac_entry = MacTableInsertEntry(
+										pAd,
+										(PUCHAR)(pApCliEntry->MlmeAux.Bssid),
+										&pApCliEntry->wdev,
+										ENTRY_APCLI,
+										OPMODE_AP,
+										TRUE);
+						if (pmac_entry) {
+							pApCliEntry->pre_entry_alloc = TRUE;
+							pApCliEntry->MacTabWCID = pmac_entry->wcid;
+						} else {
+							MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR, ("apcli pEntry insert fail"));
+							*pCurrState = APCLI_CTRL_DISCONNECTED;
+							return;
+						}
+					}
+				}
+/*With Fast Eaol War the mactable entry sec_config parameters can be updated here instead of during linkup*/
+			if (pmac_entry) {
+				struct _SECURITY_CONFIG *pProfile_SecConfig = &wdev->SecConfig;
+				struct _SECURITY_CONFIG *pEntry_SecConfig = &pmac_entry->SecConfig;
+#ifdef DOT11W_PMF_SUPPORT
+				/*fill the pmac_entry's PMF parameters*/
+				{
+					RSN_CAPABILITIES RsnCap;
+
+					NdisMoveMemory(&RsnCap, &pApCliEntry->MlmeAux.RsnCap, sizeof(RSN_CAPABILITIES));
+					RsnCap.word = cpu2le16(RsnCap.word);
+
+					/*mismatch case*/
+					if (((pProfile_SecConfig->PmfCfg.MFPR) && (RsnCap.field.MFPC == FALSE))
+						|| ((pProfile_SecConfig->PmfCfg.MFPC == FALSE) && (RsnCap.field.MFPR))) {
+						pEntry_SecConfig->PmfCfg.UsePMFConnect = FALSE;
+						pEntry_SecConfig->key_deri_alg = SEC_KEY_DERI_SHA1;
+					}
+
+					if ((pProfile_SecConfig->PmfCfg.MFPC) && (RsnCap.field.MFPC)) {
+						pEntry_SecConfig->PmfCfg.UsePMFConnect = TRUE;
+
+						if ((pApCliEntry->MlmeAux.IsSupportSHA256KeyDerivation) || (RsnCap.field.MFPR))
+							pEntry_SecConfig->key_deri_alg = SEC_KEY_DERI_SHA256;
+
+						pEntry_SecConfig->PmfCfg.MFPC = RsnCap.field.MFPC;
+						pEntry_SecConfig->PmfCfg.MFPR = RsnCap.field.MFPR;
+					}
+
+					pEntry_SecConfig->PmfCfg.igtk_cipher = pApCliEntry->MlmeAux.IntegrityGroupCipher;
+				}
+#endif /* DOT11W_PMF_SUPPORT */
+
+				if (IS_CIPHER_WEP(pEntry_SecConfig->PairwiseCipher)) {
+					os_move_mem(pEntry_SecConfig->WepKey, pProfile_SecConfig->WepKey,  sizeof(SEC_KEY_INFO)*SEC_KEY_NUM);
+					pProfile_SecConfig->GroupKeyId = pProfile_SecConfig->PairwiseKeyId;
+					pEntry_SecConfig->PairwiseKeyId = pProfile_SecConfig->PairwiseKeyId;
+				} else {
+					CHAR rsne_idx = 0;
+
+					if (!(IS_AKM_SAE_SHA256(pEntry_SecConfig->AKMMap) || IS_AKM_OWE(pEntry_SecConfig->AKMMap)
+								|| IS_AKM_OPEN(pEntry_SecConfig->AKMMap))) {
+						{
+
+						SetWPAPSKKey(pAd, pProfile_SecConfig->PSK, strlen(pProfile_SecConfig->PSK),
+							pApCliEntry->MlmeAux.Ssid, pApCliEntry->MlmeAux.SsidLen, pEntry_SecConfig->PMK);
+									DebugLevel = DBG_LVL_TRACE;
+									hex_dump("pmkfromPSK:", (char *)pEntry_SecConfig->PMK, LEN_PMK);
+									DebugLevel = DBG_LVL_ERROR;
+
+
+						}
+					}
+#ifdef MAC_REPEATER_SUPPORT
+
+					if ((pAd->ApCfg.bMACRepeaterEn) && (IS_HIF_TYPE(pAd, HIF_MT)) && (CliIdx != 0xFF)) {
+						os_move_mem(pEntry_SecConfig->Handshake.AAddr, pmac_entry->Addr, MAC_ADDR_LEN);
+						os_move_mem(pEntry_SecConfig->Handshake.SAddr, pReptCliEntry->CurrentAddress, MAC_ADDR_LEN);
+					} else
+#endif /* MAC_REPEATER_SUPPORT */
+					{
+						os_move_mem(pEntry_SecConfig->Handshake.AAddr, pmac_entry->Addr, MAC_ADDR_LEN);
+						os_move_mem(pEntry_SecConfig->Handshake.SAddr, wdev->if_addr, MAC_ADDR_LEN);
+					}
+
+					os_zero_mem(pEntry_SecConfig->Handshake.ReplayCounter, LEN_KEY_DESC_REPLAY);
+
+					for (rsne_idx = 0; rsne_idx < SEC_RSNIE_NUM; rsne_idx++) {
+						pEntry_SecConfig->RSNE_Type[rsne_idx] = pProfile_SecConfig->RSNE_Type[rsne_idx];
+
+						if (pEntry_SecConfig->RSNE_Type[rsne_idx] == SEC_RSNIE_NONE)
+							continue;
+
+						os_move_mem(pEntry_SecConfig->RSNE_EID[rsne_idx], pProfile_SecConfig->RSNE_EID[rsne_idx],  sizeof(UCHAR));
+						pEntry_SecConfig->RSNE_Len[rsne_idx] = pProfile_SecConfig->RSNE_Len[rsne_idx];
+						os_move_mem(pEntry_SecConfig->RSNE_Content[rsne_idx], pProfile_SecConfig->RSNE_Content[rsne_idx],  sizeof(UCHAR)*MAX_LEN_OF_RSNIE);
+					}
+
+					pmac_entry->SecConfig.Handshake.WpaState = AS_INITPSK;
+				}
+
+				pEntry_SecConfig->GroupKeyId = pProfile_SecConfig->GroupKeyId;
+				MTWF_LOG(DBG_CAT_CLIENT, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+						 ("%s: (apcli%d) connect AKM(0x%x)=%s, PairwiseCipher(0x%x)=%s, GroupCipher(0x%x)=%s\n",
+						  __func__, ifIndex,
+						  pEntry_SecConfig->AKMMap, GetAuthModeStr(pEntry_SecConfig->AKMMap),
+						  pEntry_SecConfig->PairwiseCipher, GetEncryModeStr(pEntry_SecConfig->PairwiseCipher),
+						  pEntry_SecConfig->GroupCipher, GetEncryModeStr(pEntry_SecConfig->GroupCipher)));
+				MTWF_LOG(DBG_CAT_CLIENT, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+						 ("%s(): PairwiseKeyId=%d, GroupKeyId=%d\n",
+						  __func__, pEntry_SecConfig->PairwiseKeyId, pEntry_SecConfig->GroupKeyId));
+			}
+
+	}
+#endif /* FAST_EAPOL_WAR */
+#endif
+
+#ifdef APCLI_SAE_SUPPORT
+	if (IS_AKM_SAE_SHA256(pApCliEntry->MlmeAux.AKMMap)) {
+		UCHAR if_addr[MAC_ADDR_LEN];
+		UCHAR pmkid[LEN_PMKID];
+		UCHAR pmk[LEN_PMK];
+		UCHAR has_pmkid = FALSE;
+
+		NdisZeroMemory(if_addr, MAC_ADDR_LEN);
+#ifdef MAC_REPEATER_SUPPORT
+			if (CliIdx != 0xFF)
+				NdisCopyMemory(if_addr, &pReptCliEntry->CurrentAddress, MAC_ADDR_LEN);
+			else
+#endif /* MAC_REPEATER_SUPPORT */
+				NdisCopyMemory(if_addr, &pApCliEntry->wdev.if_addr, MAC_ADDR_LEN);
+
+		if (sae_get_pmk_cache(&pAd->SaeCfg, if_addr, pApCliEntry->MlmeAux.Bssid, pmkid, pmk)) {
+			apcli_add_pmkid_cache(pAd, pApCliEntry->MlmeAux.Bssid, pmkid, pmk, LEN_PMK, ifIndex, CliIdx);
+				has_pmkid = TRUE;
+				}
+
+		if (has_pmkid == TRUE) {
+			COPY_MAC_ADDR(AuthReq.Addr, pApCliEntry->MlmeAux.Bssid);
+			AuthReq.Alg = AUTH_MODE_OPEN;
+			MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_OFF,
+					("(%s) - use pmkid\n", __func__));
+
+		} else {
+		COPY_MAC_ADDR(AuthReq.Addr, pApCliEntry->MlmeAux.Bssid);
+		AuthReq.Alg = AUTH_MODE_SAE;
+		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_OFF,
+				("(%s) - use SAE\n", __func__));
+		}
+	} else
+
+#endif/* APCLI_SAE_SUPPORT */
 		/* start Authentication Req. */
 		/* If AuthMode is Auto, try shared key first */
 		if (IS_AKM_SHARED(pApCliEntry->MlmeAux.AKMMap) ||
@@ -877,8 +1137,27 @@ static VOID ApCliCtrlProbeRspAction(
 		}
 
 #endif /* MAC_REPEATER_SUPPORT */
+
+#ifdef APCLI_SAE_SUPPORT
+
+		if (AuthReq.Alg == AUTH_MODE_SAE)
+			MlmeEnqueue(pAd, APCLI_AUTH_STATE_MACHINE, APCLI_MT2_MLME_SAE_AUTH_REQ,
+					sizeof(MLME_AUTH_REQ_STRUCT), &AuthReq, ifIndex);
+		else {
+#endif
+#if (!(defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)))
+/*Skip pEntry PMK update from wdev->seconfig for SAE and OWE*/
+		/* Calculate PMK */
+		if (!IS_CIPHER_WEP(pProfile_SecConfig->PairwiseCipher)) {
+			SetWPAPSKKey(pAd, pProfile_SecConfig->PSK, strlen(pProfile_SecConfig->PSK),
+				pApCliEntry->MlmeAux.Ssid, pApCliEntry->MlmeAux.SsidLen, pProfile_SecConfig->PMK);
+		}
+#endif
 		MlmeEnqueue(pAd, APCLI_AUTH_STATE_MACHINE, APCLI_MT2_MLME_AUTH_REQ,
 					sizeof(MLME_AUTH_REQ_STRUCT), &AuthReq, ifIndex);
+#ifdef APCLI_SAE_SUPPORT
+		}
+#endif
 		RTMP_MLME_HANDLER(pAd);
 	} else {
 		MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("(%s) Probe response fail.\n", __func__));
@@ -914,6 +1193,8 @@ static VOID ApCliCtrlAuthRspAction(
 	PAPCLI_STRUCT pApCliEntry;
 	USHORT ifIndex = (USHORT)(Elem->Priv);
 	PULONG pCurrState = NULL;
+	PULONG pAssocCurrState = NULL;
+	USHORT Timeout = ASSOC_TIMEOUT;
 #ifdef MAC_REPEATER_SUPPORT
 	UCHAR CliIdx = 0xFF;
 	REPEATER_CLIENT_ENTRY *pReptEntry = NULL;
@@ -949,10 +1230,13 @@ static VOID ApCliCtrlAuthRspAction(
 				 ("(%s) Repeater Cli Receive ifIndex = %d, CliIdx = %d !!!\n",
 				  __func__, ifIndex, CliIdx));
 		pCurrState = &pReptEntry->CtrlCurrState;
+		pAssocCurrState = &pReptEntry->AssocCurrState;
 	} else
 #endif /* MAC_REPEATER_SUPPORT */
+	{
 		pCurrState = &pApCliEntry->CtrlCurrState;
-
+		pAssocCurrState = &pApCliEntry->AssocCurrState;
+	}
 	if (Status == MLME_SUCCESS) {
 		MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
 				 ("(%s) Auth Rsp Success.\n",
@@ -966,6 +1250,14 @@ static VOID ApCliCtrlAuthRspAction(
 #endif /* MAC_REPEATER_SUPPORT */
 			pApCliEntry->AssocReqCnt = 0;
 
+#if defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)
+if (IS_AKM_SAE_SHA256(pApCliEntry->MlmeAux.AKMMap)
+			|| IS_AKM_OWE(pApCliEntry->MlmeAux.AKMMap)
+				|| IS_AKM_FT_SAE_SHA256(pApCliEntry->MlmeAux.AKMMap)) {
+		pAssocCurrState = ASSOC_IDLE;
+		Timeout = 5000;
+}
+#endif
 #ifdef APCLI_CONNECTION_TRIAL
 
 		/* if connection trying, wait until trialtimeout and enqueue Assoc REQ then. */
@@ -976,7 +1268,7 @@ static VOID ApCliCtrlAuthRspAction(
 						  &AssocReq,
 						  pApCliEntry->MlmeAux.Bssid,
 						  pApCliEntry->MlmeAux.CapabilityInfo,
-						  ASSOC_TIMEOUT,
+						  Timeout,
 						  5);
 #ifdef APCLI_CONNECTION_TRIAL
 		}
@@ -1026,8 +1318,18 @@ static VOID ApCliCtrlAuthRspAction(
 				NdisZeroMemory(pApCliEntry->MlmeAux.Bssid, MAC_ADDR_LEN);
 				NdisZeroMemory(pApCliEntry->MlmeAux.Ssid, MAX_LEN_OF_SSID);
 				pApCliEntry->AuthReqCnt = 0;
-			}
 
+#ifdef APCLI_OWE_SUPPORT
+				apcli_reset_owe_parameters(pAd, ifIndex);
+
+#endif
+
+			}
+#if defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)
+#ifdef FAST_EAPOL_WAR
+			ApCliCtrlDeleteMacEntry(pAd, apcli_ifIndex, CliIdx);
+#endif /* FAST_EAPOL_WAR */
+#endif
 			*pCurrState = APCLI_CTRL_DISCONNECTED;
 #ifdef APCLI_AUTO_CONNECT_SUPPORT
 
@@ -1061,6 +1363,7 @@ static VOID ApCliCtrlAuth2RspAction(
 	PAPCLI_STRUCT pApCliEntry;
 	USHORT ifIndex = (USHORT)(Elem->Priv);
 	PULONG pCurrState = NULL;
+	PULONG pAssocCurrState = NULL;
 #ifdef MAC_REPEATER_SUPPORT
 	REPEATER_CLIENT_ENTRY *pReptEntry = NULL;
 	UCHAR CliIdx = 0xFF;
@@ -1090,12 +1393,16 @@ static VOID ApCliCtrlAuth2RspAction(
 	pApCliEntry = &pAd->ApCfg.ApCliTab[ifIndex];
 #ifdef MAC_REPEATER_SUPPORT
 
-	if (CliIdx != 0xFF)
+	if (CliIdx != 0xFF) {
 		pCurrState = &pReptEntry->CtrlCurrState;
+		pAssocCurrState = &pReptEntry->AssocCurrState;
+	}
 	else
 #endif /* MAC_REPEATER_SUPPORT */
+	{
 		pCurrState = &pApCliEntry->CtrlCurrState;
-
+		pAssocCurrState = &pApCliEntry->AssocCurrState;
+	}
 	if (Status == MLME_SUCCESS) {
 		MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("(%s) Auth2 Rsp Success.\n", __func__));
 		*pCurrState = APCLI_CTRL_ASSOC;
@@ -1184,6 +1491,11 @@ static VOID ApCliCtrlAuthReqTimeoutAction(
 			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR,
 					 ("(%s) Rept CliIdx:%d Auth Req Timeout over 5 times.\n",
 					  __func__, CliIdx));
+#if defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)
+#ifdef FAST_EAPOL_WAR
+						ApCliCtrlDeleteMacEntry(pAd, apcli_ifIndex, CliIdx);
+#endif /* FAST_EAPOL_WAR */
+#endif
 			*pCurrState = APCLI_CTRL_DISCONNECTED;
 			pReptEntry->AuthReqCnt = 0;
 			return;
@@ -1194,10 +1506,21 @@ static VOID ApCliCtrlAuthReqTimeoutAction(
 		pApCliEntry->AuthReqCnt++;
 
 		if (pApCliEntry->AuthReqCnt > 5) {
+#if defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)
+#ifdef FAST_EAPOL_WAR
+			ApCliCtrlDeleteMacEntry(pAd, apcli_ifIndex, CliIdx);
+#endif /* FAST_EAPOL_WAR */
+#endif
 			*pCurrState = APCLI_CTRL_DISCONNECTED;
 			NdisZeroMemory(pApCliEntry->MlmeAux.Bssid, MAC_ADDR_LEN);
 			NdisZeroMemory(pApCliEntry->MlmeAux.Ssid, MAX_LEN_OF_SSID);
 			pApCliEntry->AuthReqCnt = 0;
+
+#ifdef APCLI_OWE_SUPPORT
+			apcli_reset_owe_parameters(pAd, ifIndex);
+
+#endif
+
 #ifdef APCLI_AUTO_CONNECT_SUPPORT
 
 			if ((pAd->ApCfg.ApCliAutoConnectRunning[apcli_ifIndex] == TRUE)
@@ -1240,52 +1563,6 @@ static VOID ApCliCtrlAuth2ReqTimeoutAction(
 {
 }
 
-#ifdef FAST_EAPOL_WAR
-static VOID ApCliCtrlDeleteMacEntry(
-	IN	PRTMP_ADAPTER	pAd,
-	IN  UCHAR ifIndex,
-	IN  UCHAR CliIdx)
-{
-	PAPCLI_STRUCT pApCliEntry = NULL;
-#ifdef MAC_REPEATER_SUPPORT
-	PREPEATER_CLIENT_ENTRY pReptEntry = NULL;
-
-	if (CliIdx != 0xff) {
-		pReptEntry = &pAd->ApCfg.pRepeaterCliPool[CliIdx];
-		pApCliEntry = &pAd->ApCfg.ApCliTab[ifIndex];
-	} else
-#endif
-	{
-		pApCliEntry = &pAd->ApCfg.ApCliTab[ifIndex];
-	}
-
-#ifdef MAC_REPEATER_SUPPORT
-
-	if (CliIdx != 0xFF) {
-		if ((pReptEntry->pre_entry_alloc == TRUE) &&
-			(pReptEntry->CliValid == FALSE)) {
-			UCHAR	MacTabWCID;
-
-			MacTabWCID = pReptEntry->MacTabWCID;
-			MacTableDeleteEntry(pAd, MacTabWCID, pAd->MacTab.Content[MacTabWCID].Addr);
-			pReptEntry->MacTabWCID = 0xFF;
-			pReptEntry->pre_entry_alloc = FALSE;
-		}
-	} else
-#endif
-	{
-		if ((pApCliEntry->pre_entry_alloc == TRUE) &&
-			(pApCliEntry->Valid == FALSE)) {
-			UCHAR	MacTabWCID;
-
-			MacTabWCID = pApCliEntry->MacTabWCID;
-			MacTableDeleteEntry(pAd, MacTabWCID, APCLI_ROOT_BSSID_GET(pAd, MacTabWCID));
-			pApCliEntry->MacTabWCID = 0;
-			pApCliEntry->pre_entry_alloc = FALSE;
-		}
-	}
-}
-#endif /* FAST_EAPOL_WAR */
 
 /*
     ==========================================================================
@@ -1348,16 +1625,16 @@ static VOID ApCliCtrlAssocRspAction(
 
 		if (ApCliLinkUp(pAd, ifIndex)) {
 			*pCurrState = APCLI_CTRL_CONNECTED;
-#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA)
+#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA) || defined(APCLI_CFG80211_SUPPORT)
 			CFG80211_checkScanTable(pAd);
 			RT_CFG80211_P2P_CLI_CONN_RESULT_INFORM(pAd, pApCliEntry->MlmeAux.Bssid,
-												   pApCliEntry->ReqVarIEs, pApCliEntry->ReqVarIELen,
-												   pApCliEntry->ResVarIEs, pApCliEntry->ResVarIELen, TRUE);
-
+					pApCliEntry->ReqVarIEs, pApCliEntry->ReqVarIELen,
+					pApCliEntry->ResVarIEs, pApCliEntry->ResVarIELen, TRUE);
+#ifndef APCLI_CFG80211_SUPPORT
 			if (pAd->cfg80211_ctrl.bP2pCliPmEnable == TRUE)
 				CmdP2pNoaOffloadCtrl(pAd, P2P_NOA_RX_ON);
-
-#endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA */
+#endif /* APCLI_CFG80211_SUPPORT */
+#endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA || APCLI_CFG80211_SUPPORT */
 		} else {
 			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("(%s) apCliIf = %d, Insert Remote AP to MacTable failed.\n", __func__,  ifIndex));
 			/* Reset the apcli interface as disconnected and Invalid. */
@@ -1383,11 +1660,11 @@ static VOID ApCliCtrlAssocRspAction(
 				ApCliSwitchCandidateAP(pAd, &pApCliEntry->wdev);
 
 #endif /* APCLI_AUTO_CONNECT_SUPPORT */
-#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA)
+#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA) || defined(APCLI_CFG80211_SUPPORT)
 			CFG80211_checkScanTable(pAd);
 			RT_CFG80211_P2P_CLI_CONN_RESULT_INFORM(pAd, pApCliEntry->MlmeAux.Bssid,
 												   NULL, 0, NULL, 0, 0);
-#endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA */
+#endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA || APCLI_CFG80211_SUPPORT */
 		}
 	} else {
 		MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR,
@@ -1405,6 +1682,49 @@ static VOID ApCliCtrlAssocRspAction(
 #ifdef FAST_EAPOL_WAR
 		ApCliCtrlDeleteMacEntry(pAd, apcli_ifIndex, CliIdx);
 #endif /* FAST_EAPOL_WAR */
+
+#ifdef APCLI_SAE_SUPPORT
+		if (Status == MLME_INVALID_PMKID) {
+#ifdef APCLI_SAE_SUPPORT
+			UCHAR if_addr[MAC_ADDR_LEN];
+#endif
+			INT CachedIdx;
+			UCHAR pmkid[LEN_PMKID];
+			UCHAR pmk[LEN_PMK];
+
+#ifdef APCLI_SAE_SUPPORT
+
+#ifdef MAC_REPEATER_SUPPORT
+			if (CliIdx != 0xFF)
+				NdisCopyMemory(if_addr, &pReptEntry->CurrentAddress, MAC_ADDR_LEN);
+			else
+#endif /* MAC_REPEATER_SUPPORT */
+				NdisCopyMemory(if_addr, &pApCliEntry->wdev.if_addr, MAC_ADDR_LEN);
+
+/*Received PMK invalid status from AP delete entry from SavedPMK and delete SAE instance*/
+
+			if (IS_AKM_SAE(pApCliEntry->MlmeAux.AKMMap) &&
+				sae_get_pmk_cache(&pAd->SaeCfg, if_addr, pApCliEntry->MlmeAux.Bssid, pmkid, pmk)
+						) {
+
+				CachedIdx = apcli_search_pmkid_cache(pAd, pApCliEntry->MlmeAux.Bssid, ifIndex, CliIdx);
+
+				if (CachedIdx != INVALID_PMKID_IDX) {
+					SAE_INSTANCE *pSaeIns = search_sae_instance(&pAd->SaeCfg, if_addr, pApCliEntry->MlmeAux.Bssid);
+
+					MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+								("[SAE]Reconnection falied with pmkid ,delete cache entry and sae instance \n"));
+					if (pSaeIns != NULL) {
+						delete_sae_instance(pSaeIns);
+					}
+
+					apcli_delete_pmkid_cache(pAd, pApCliEntry->MlmeAux.Bssid, ifIndex, CliIdx);
+				}
+			}
+#endif
+		}
+#endif/*APCLI_SAE_SUPPORT*/
+
 #ifdef APCLI_AUTO_CONNECT_SUPPORT
 
 		if ((pAd->ApCfg.ApCliAutoConnectRunning[apcli_ifIndex] == TRUE)
@@ -1415,11 +1735,10 @@ static VOID ApCliCtrlAssocRspAction(
 			ApCliSwitchCandidateAP(pAd, &pApCliEntry->wdev);
 
 #endif /* APCLI_AUTO_CONNECT_SUPPORT */
-#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA)
+#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA) || defined(APCLI_CFG80211_SUPPORT)
 		CFG80211_checkScanTable(pAd);
-		RT_CFG80211_P2P_CLI_CONN_RESULT_INFORM(pAd, pApCliEntry->MlmeAux.Bssid,
-											   NULL, 0, NULL, 0, 0);
-#endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA */
+		RT_CFG80211_P2P_CLI_CONN_RESULT_INFORM(pAd, pApCliEntry->MlmeAux.Bssid, NULL, 0, NULL, 0, 0);
+#endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA || APCLI_CFG80211_SUPPORT */
 
 
 	}
@@ -1544,6 +1863,10 @@ static VOID ApCliCtrlAssocReqTimeoutAction(
 		if (pReptEntry->AssocReqCnt > 5) {
 			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
 					 ("(%s) Rept CliIdx:%d, Assoc Req Timeout over 5 times\n", __func__, CliIdx));
+
+#ifdef FAST_EAPOL_WAR
+			ApCliCtrlDeleteMacEntry(pAd, ifIndex, CliIdx);
+#endif /* FAST_EAPOL_WAR */
 			*pCurrState = APCLI_CTRL_DISCONNECTED;
 			pReptEntry->AssocReqCnt = 0;
 			return;
@@ -1554,9 +1877,17 @@ static VOID ApCliCtrlAssocReqTimeoutAction(
 		pApCliEntry->AssocReqCnt++;
 		if (pApCliEntry->AssocReqCnt > 5) {
 			*pCurrState = APCLI_CTRL_DISCONNECTED;
+#ifdef FAST_EAPOL_WAR
+			ApCliCtrlDeleteMacEntry(pAd, ifIndex, CliIdx);
+#endif /* FAST_EAPOL_WAR */
+
 			NdisZeroMemory(pAd->ApCfg.ApCliTab[ifIndex].MlmeAux.Bssid, MAC_ADDR_LEN);
 			NdisZeroMemory(pAd->ApCfg.ApCliTab[ifIndex].MlmeAux.Ssid, MAX_LEN_OF_SSID);
 			pApCliEntry->AssocReqCnt = 0;
+#ifdef APCLI_OWE_SUPPORT
+			apcli_reset_owe_parameters(pAd, ifIndex);
+#endif
+
 #ifdef APCLI_AUTO_CONNECT_SUPPORT
 
 			if ((pAd->ApCfg.ApCliAutoConnectRunning[ifIndex] == TRUE)
@@ -1597,6 +1928,7 @@ static VOID ApCliCtrlDisconnectReqAction(
 	PAPCLI_STRUCT pApCliEntry;
 	USHORT ifIndex = (USHORT)(Elem->Priv);
 	PULONG pCurrState = NULL;
+	PULONG pAuthCurrState = NULL;
 	BOOLEAN bValid = FALSE;
 #ifdef MAC_REPEATER_SUPPORT
 	UCHAR CliIdx = 0xFF;
@@ -1619,12 +1951,14 @@ static VOID ApCliCtrlDisconnectReqAction(
 		CliIdx = ifIndex - REPT_MLME_START_IDX;
 		pReptEntry = &pAd->ApCfg.pRepeaterCliPool[CliIdx];
 		ifIndex = pReptEntry->wdev->func_idx;
+		pAuthCurrState = &pReptEntry->AuthCurrState;
 		pCurrState = &pReptEntry->CtrlCurrState;
 		pLinkDownReason = &pReptEntry->LinkDownReason;
 	} else
 #endif /* MAC_REPEATER_SUPPORT */
 	{
 		pCurrState = &pAd->ApCfg.ApCliTab[ifIndex].CtrlCurrState;
+		pAuthCurrState = &pAd->ApCfg.ApCliTab[ifIndex].AuthCurrState;
 		pLinkDownReason = &pAd->ApCfg.ApCliTab[ifIndex].LinkDownReason;
 	}
 
@@ -1649,6 +1983,10 @@ static VOID ApCliCtrlDisconnectReqAction(
 	else
 #endif
 		MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR, ("(%s) 2. Before do ApCliLinkDown. ifIndex = %d, bValid = %d\n", __func__, ifIndex, bValid));
+
+#ifdef FAST_EAPOL_WAR
+		ApCliCtrlDeleteMacEntry(pAd, ifIndex, CliIdx);
+#endif /* FAST_EAPOL_WAR */
 
 	if (bValid) {
 #ifdef MAC_REPEATER_SUPPORT
@@ -1678,6 +2016,7 @@ static VOID ApCliCtrlDisconnectReqAction(
 	}
 
 	{
+		*pAuthCurrState = AUTH_REQ_IDLE;
 		*pCurrState = APCLI_CTRL_DISCONNECTED;
 	}
 }
@@ -1793,6 +2132,10 @@ static VOID ApCliCtrlPeerDeAssocReqAction(
 		pAd->ApCfg.ApCliTab[ifIndex].MlmeAux.SsidLen = 0;
 		NdisZeroMemory(pAd->ApCfg.ApCliTab[ifIndex].MlmeAux.Ssid, MAX_LEN_OF_SSID);
 		pAd->ApCfg.ApCliTab[ifIndex].MlmeAux.Rssi = 0;
+#ifdef APCLI_OWE_SUPPORT
+		apcli_reset_owe_parameters(pAd, ifIndex);
+#endif
+
 	}
 
 	{

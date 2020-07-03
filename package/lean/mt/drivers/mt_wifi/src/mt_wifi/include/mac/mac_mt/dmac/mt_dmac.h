@@ -2165,6 +2165,10 @@ INT dump_dmac_amsdu_info(struct _RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 VOID Update_Mib_Bucket_One_Sec(struct _RTMP_ADAPTER *pAd);
 VOID Update_Mib_Bucket_500Ms(struct _RTMP_ADAPTER *pAd);
 
+#ifdef CUSTOMER_RSG_FEATURE
+VOID Read_Mib_TxRx_Counters(struct _RTMP_ADAPTER *pAd);
+#endif
+
 INT mt_wtbl_init_ByFw(struct _RTMP_ADAPTER *pAd);
 INT mt_wtbl_init_ByDriver(struct _RTMP_ADAPTER *pAd);
 INT mt_mac_init(struct _RTMP_ADAPTER *pAd);

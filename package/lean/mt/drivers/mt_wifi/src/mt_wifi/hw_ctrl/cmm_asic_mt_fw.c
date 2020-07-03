@@ -131,6 +131,40 @@ VOID MtAsicSetWcidAAD_OMByFw(
 }
 #endif /* HTC_DECRYPT_IOT */
 
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+VOID MtAsicSetWcid4Addr_HdrTransByFw(
+	IN PRTMP_ADAPTER pAd,
+	IN UCHAR wcid_idx,
+	IN UCHAR IsEnable,
+	IN UCHAR IsApcliEntry)
+{
+
+	CMD_WTBL_HDR_TRANS_T	rWtblHdrTrans = {0};
+
+	rWtblHdrTrans.u2Tag = WTBL_HDR_TRANS;
+	rWtblHdrTrans.u2Length = sizeof(CMD_WTBL_HDR_TRANS_T);
+
+	MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+						("%s: WCID %u ISenable %u\n",
+						__FUNCTION__, wcid_idx, IsEnable));
+	/*Set to 1 */
+	if (IsEnable) {
+		rWtblHdrTrans.ucTd = 1;
+		rWtblHdrTrans.ucFd = 1;
+	}
+	else if (IsApcliEntry) {
+		rWtblHdrTrans.ucTd = 1;
+		rWtblHdrTrans.ucFd = 0;
+	}
+	else {
+		rWtblHdrTrans.ucTd = 0;
+		rWtblHdrTrans.ucFd = 1;
+	}
+	rWtblHdrTrans.ucDisRhtr = 0;
+	CmdExtWtblUpdate(pAd, wcid_idx, SET_WTBL, &rWtblHdrTrans, sizeof(CMD_WTBL_HDR_TRANS_T));
+
+}
+#endif
 
 
 /* MT7615 */
@@ -260,12 +294,34 @@ VOID MtAsicUpdateRxWCIDTableByFw(
 		case MT_WCID_TYPE_CLI:
 			rWtblHdrTrans.ucFd = 1;
 			rWtblHdrTrans.ucTd = 0;
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+	if (WtblInfo.fg4AddrEnable)
+		rWtblHdrTrans.ucTd = 1;
+#endif
+#ifdef A4_CONN
+			if (WtblInfo.a4_enable) {
+				rWtblHdrTrans.ucFd = 1;
+				rWtblHdrTrans.ucTd = 1;
+				//MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,("MtAsicUpdateRxWCIDTableByFw MT_WCID_TYPE_CLI: do FdTd settings in rWtblHdrTrans\n"));
+			}
+#endif /* A4_CONN */
 			break;
 
 		case MT_WCID_TYPE_APCLI:
 		case MT_WCID_TYPE_REPEATER:
 			rWtblHdrTrans.ucFd = 0;
 			rWtblHdrTrans.ucTd = 1;
+#ifdef APCLI_AS_WDS_STA_SUPPORT
+			if (WtblInfo.fg4AddrEnable)
+				rWtblHdrTrans.ucFd = 1;
+#endif /* APCLI_AS_WDS_STA_SUPPORT */
+#ifdef A4_CONN
+			if (WtblInfo.a4_enable) {
+				rWtblHdrTrans.ucFd = 1;
+				rWtblHdrTrans.ucTd = 1;
+				//MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,("MtAsicUpdateRxWCIDTableByFw MT_WCID_TYPE_APCLI/MT_WCID_TYPE_REPEATER do FdTd settings in rWtblHdrTrans\n"));
+			}
+#endif /* A4_CONN */
 			break;
 
 		case MT_WCID_TYPE_WDS:
@@ -1020,7 +1076,7 @@ VOID MtAsicUpdateProtectByFw(
 	MT_PROTECT_CTRL_T *protect)
 {
 	struct _EXT_CMD_UPDATE_PROTECT_T fw_protect;
-
+	os_zero_mem(&fw_protect, sizeof(fw_protect));
 	fw_protect.ucProtectIdx = UPDATE_PROTECTION_CTRL;
 	fw_protect.ucDbdcIdx = protect->band_idx;
 	fw_protect.Data.rUpdateProtect.ucLongNav = protect->long_nav;
@@ -1036,22 +1092,26 @@ VOID MtAsicUpdateProtectByFw(
 
 
 VOID MtAsicUpdateRtsThldByFw(
-	struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR pkt_num, UINT32 length)
+	struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR pkt_num, UINT32 length,
+	UCHAR retry_limit)
 {
 	MT_RTS_THRESHOLD_T rts_thld = {0};
 
 	rts_thld.band_idx = HcGetBandByWdev(wdev);
 	rts_thld.pkt_num_thld = pkt_num;
 	rts_thld.pkt_len_thld = length;
+	rts_thld.retry_limit = retry_limit;
+
 	if (MTK_REV_GTE(pAd, MT7615, MT7615E1) && MTK_REV_LT(pAd, MT7615, MT7615E3) && pAd->CommonCfg.dbdc_mode) {
 		;/* DBDC does not support RTS setting */
 	} else {
 		struct _EXT_CMD_UPDATE_PROTECT_T fw_rts;
-
+		os_zero_mem(&fw_rts, sizeof(fw_rts));
 		fw_rts.ucProtectIdx = UPDATE_RTS_THRESHOLD;
 		fw_rts.ucDbdcIdx = rts_thld.band_idx;
 		fw_rts.Data.rUpdateRtsThld.u4RtsPktLenThreshold = cpu2le32(rts_thld.pkt_len_thld);
-		fw_rts.Data.rUpdateRtsThld.u4RtsPktNumThreshold = cpu2le32(rts_thld.pkt_num_thld);
+		fw_rts.Data.rUpdateRtsThld.u2RtsPktNumThreshold = cpu2le16(rts_thld.pkt_num_thld);
+		fw_rts.Data.rUpdateRtsThld.u2RtsRetryLimit = cpu2le16(rts_thld.retry_limit);
 		MtCmdUpdateProtect(pAd, &fw_rts);
 	}
 }

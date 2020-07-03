@@ -87,7 +87,7 @@
 #define TABLE_PARSE_G_A_BAND                BITS(0, 1)
 #endif /* defined(MT7615) || defined(MT7622) */
 
-#define SINGLE_SKU_TABLE_TX_OFFSET_NUM  3
+#define SINGLE_SKU_TABLE_TX_OFFSET_NUM  4
 #define SINGLE_SKU_TABLE_NSS_OFFSET_NUM 4
 
 #define SKUTABLE_1                      1
@@ -310,6 +310,13 @@ MtShowPwrLimitTable(
 CHAR
 SKUTxPwrOffsetGet(
     RTMP_ADAPTER *pAd, UINT8 ucBandIdx, UINT8 ucBW, UINT8 ucPhymode, UINT8 ucMCS, UINT8 ucNss, BOOLEAN fgSE
+    );
+
+NDIS_STATUS
+MtPowerLimitFormatTrans(
+    struct _RTMP_ADAPTER *pAd,
+    PUINT8 pu1Value,
+    PCHAR pcRawData
     );
 
 #endif /* SINGLE_SKU_V2 */

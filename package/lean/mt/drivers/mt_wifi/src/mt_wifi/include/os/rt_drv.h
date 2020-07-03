@@ -186,7 +186,7 @@ typedef VOID *			RTMP_OS_FD;
  *	OS semaphore related data structure and definitions
  ***********************************************************************************/
 #define RTCMDUp				RtmpOsCmdUp
-
+#define RTCMDRunning			RtmpOsIsCmdThreadRunning
 
 /***********************************************************************************
  *	OS Memory Access related data structure and definitions

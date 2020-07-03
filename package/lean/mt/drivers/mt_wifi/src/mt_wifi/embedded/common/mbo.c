@@ -166,6 +166,13 @@ VOID MakeMboOceIE(
 		return;
 	}
 
+	if (wdev->SecConfig.PmfCfg.MFPC == FALSE &&
+	IS_AKM_WPA_CAPABILITY(wdev->SecConfig.AKMMap)) {
+		MTWF_LOG(DBG_CAT_PROTO, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+				("%s::Security is WPA2/WPA3, please enable PMF MFPC\n", __func__));
+		return;
+	}
+
 
 	MlmeAllocateMemory(pAd, &pAttrBuf);
 
@@ -247,24 +254,25 @@ static VOID WextMboSendNeighborReportToDaemonEvent(
 	P_DAEMON_EVENT_NR_LIST NeighborRepList,
 	UINT16 report_buf_len)
 {
-	P_DAEMON_NR_MSG pNRMsg;
+	struct neighbor_list_data *neighbor_list_data;
 	UINT16 buflen = 0;
 	char *buf;
-
-	buflen = sizeof(DAEMON_NR_MSG);
+	/* 8 = sizeof(neighbor_list_data->ifindex) + sizeof(neighbor_list_data->neighbor_list_len) */
+	buflen = 8 + report_buf_len;
 	os_alloc_mem(NULL, (UCHAR **)&buf, buflen);
 	NdisZeroMemory(buf, buflen);
 
-	pNRMsg = (P_DAEMON_NR_MSG)buf;
 
-	NdisCopyMemory(&pNRMsg->evt_nr_list, NeighborRepList, report_buf_len);
-	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-				("%s - sizeof %u report_buf_len %u buflen %u\n",
-				__func__, (UINT32)sizeof(DAEMON_EVENT_NR_LIST), report_buf_len, buflen));
+	neighbor_list_data = (struct neighbor_list_data *)buf;
+	neighbor_list_data->ifindex = RtmpOsGetNetIfIndex(net_dev);
+	neighbor_list_data->neighbor_list_len   = report_buf_len;
+	NdisCopyMemory(neighbor_list_data->neighbor_list_req, NeighborRepList, report_buf_len);
+
 	RtmpOSWrielessEventSend(net_dev, RT_WLAN_EVENT_CUSTOM,
 					OID_NEIGHBOR_REPORT, NULL, (PUCHAR)buf, buflen);
 
 	os_free_mem(buf);
+
 }
 
 static VOID MboUpdateNRElement(
@@ -369,8 +377,12 @@ static VOID MboUpdateNRElement(
 		}
 
 		pNeighborEntry->BssidInfo = BssidInfo.word;
-		pNeighborEntry->RegulatoryClass = get_regulatory_class(pAd, pBssEntry->Channel,
-		pWdev->PhyMode, pWdev);/* pBssEntry->RegulatoryClass; */
+		/* If the NR is from a client, then
+		 * pBssEntry->RegulatoryClass would be already set */
+		pNeighborEntry->RegulatoryClass = (pBssEntry->RegulatoryClass ?
+				pBssEntry->RegulatoryClass :
+				get_regulatory_class(pAd, pBssEntry->Channel,
+								pWdev->PhyMode, pWdev));
 		pNeighborEntry->ChNum = pBssEntry->Channel;
 		pNeighborEntry->PhyType = pBssEntry->CondensedPhyType;
 
@@ -479,7 +491,8 @@ INT MboIndicateNeighborReportToDaemon(
 			DAEMON_NEIGHBOR_REP_INFO *pNeighborEntry = &NeighborRepList.EvtNRInfo[NeighborRepList.CurrNum];
 
 			NeighborRepList.CurrNum++;
-
+			/* Regulatory class would be determined in MboUpdateNRElement()*/
+			pBssEntry->RegulatoryClass = 0;
 			MboUpdateNRElement(pAd, pWdev, pBssEntry, pNeighborEntry);
 
 			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
@@ -518,19 +531,25 @@ INT MboIndicateNeighborReportToDaemon(
 
 			NdisZeroMemory(&NeighborRepList, sizeof(DAEMON_EVENT_NR_LIST));
 		}
-	} else {
-		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-				("%s - nothing to indicate, pAd->ScanTab.BssNr = %d\n",
-				__func__, pAd->ScanTab.BssNr));
+	} else 	{	/*cert env will really have 0 AP alive, indicate ourself anyway*/
+	   MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			   ("%s - ScanTab->BssNr=0, indicate our own bssid anyway\n", __func__));
+	   NdisZeroMemory(&NeighborRepList, sizeof(DAEMON_EVENT_NR_LIST));
+	   TotalReportNum = 1;
+	   NeighborRepList.TotalNum = TotalReportNum;
 
-		NeighborRepList.Newlist = TRUE;
-		NeighborRepList.TotalNum = 0;
+	   /* insert our own bss info into NR list first */
+	   pNeighborEntry = &NeighborRepList.EvtNRInfo[NeighborRepList.CurrNum++];
 
-		/* indicate zero to daemon */
-		WextMboSendNeighborReportToDaemonEvent(pAd->net_dev,
-							  &NeighborRepList,
-							  sizeof(DAEMON_EVENT_NR_LIST));
-	}
+	   MboUpdateNRElement(pAd, pWdev, NULL, pNeighborEntry);
+
+	   NeighborRepList.Newlist = TRUE;
+	   /* indicate our own bss to daemon */
+	   WextMboSendNeighborReportToDaemonEvent(pAd->net_dev,
+					 &NeighborRepList,
+					 sizeof(DAEMON_EVENT_NR_LIST));
+   }
+
 
 #endif /* AP_SCAN_SUPPORT */
 #endif /* DOT11K_RRM_SUPPORT */

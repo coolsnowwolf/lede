@@ -104,9 +104,7 @@ REG_CLASS reg_class_ce[] = {
 	{1,  115, FREQ_5G00,   BW_20, {36, 40, 44, 48, 0},																COMMON},
 	{2,  118, FREQ_5G00,   BW_20, {52, 56, 60, 64, 0},																NOMADICBEHAVIOR},
 	{3,  121, FREQ_5G00,   BW_20, {100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 0},						COMMON},
-#ifdef SPECIAL_FREQUENCY
 	{4,   81, FREQ_2G407,  BW_25, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0},									LICENSEEXEMPTBEHAVIOR},
-#endif /* SPECIAL_FREQUENCY */
 	{5,  116, FREQ_5G00,   BW_40, {36, 44, 0},																		PRIMARYCHANNELLOWERBEHAVIOR},
 	{6,  119, FREQ_5G00,   BW_40, {52, 60, 0},																		PRIMARYCHANNELLOWERBEHAVIOR},
 	{7,  122, FREQ_5G00,   BW_40, {100, 108, 116, 124, 132, 0},														PRIMARYCHANNELLOWERBEHAVIOR},
@@ -115,10 +113,8 @@ REG_CLASS reg_class_ce[] = {
 	{10, 123, FREQ_5G00,   BW_40, {104, 112, 120, 128, 136, 0},													PRIMARYCHANNELUPPERBEHAVIOR}, /* 10 */
 	{11,  83, FREQ_2G407,  BW_40, {1, 2, 3, 4, 5, 6, 7, 8, 9, 0},													LICENSEEXEMPTBEHAVIOR | PRIMARYCHANNELLOWERBEHAVIOR},
 	{12,  84, FREQ_2G407,  BW_40, {5, 6, 7, 8, 9, 10, 11, 12, 13, 0},												LICENSEEXEMPTBEHAVIOR | PRIMARYCHANNELUPPERBEHAVIOR},
-#ifdef SPECIAL_FREQUENCY
 	{13,   0, FREQ_5G0025, BW_5,  {171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 0},		ITS_NONMOBILE_OPERATIONS | ITS_MOBILE_OPERATIONS},
 	{14,   0, FREQ_5G00,   BW_10, {171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 0},		ITS_NONMOBILE_OPERATIONS | ITS_MOBILE_OPERATIONS},
-#endif /* SPECIAL_FREQUENCY */
 	{15,   0, FREQ_5G00,   BW_20, {172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 0},					ITS_NONMOBILE_OPERATIONS | ITS_MOBILE_OPERATIONS},
 	{16,   0, FREQ_5G00,   BW_20, {100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 0},						ITS_NONMOBILE_OPERATIONS | ITS_MOBILE_OPERATIONS},
 	{17, 125, FREQ_5G00,   BW_20, {149, 153, 157, 161, 165, 169, 0},												COMMON},
@@ -136,7 +132,6 @@ REG_CLASS reg_class_jp[] = {
 	{4,  112, FREQ_5G00,   BW_20, {8, 12, 16, 0},																	COMMON},
 	{5,  112, FREQ_5G00,   BW_20, {8, 12, 16, 0},																	COMMON},
 	{6,  112, FREQ_5G00,   BW_20, {8, 12, 16, 0},																	COMMON},
-#ifdef SPECIAL_FREQUENCY
 	{7,  109, FREQ_4G00,   BW_20, {184, 188, 192, 196, 0},														COMMON},
 	{8,  109, FREQ_4G00,   BW_20, {184, 188, 192, 196, 0},														COMMON},
 	{9,  109, FREQ_4G00,   BW_20, {184, 188, 192, 196, 0},														COMMON},
@@ -162,7 +157,6 @@ REG_CLASS reg_class_jp[] = {
 	{29, 111, FREQ_4G0025, BW_5,  {182, 183, 184, 185, 186, 187, 188, 189, 0},									COMMON},
 	{30,  81, FREQ_2G407,  BW_25, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0},									LICENSEEXEMPTBEHAVIOR},
 	{31,  82, FREQ_2G414,  BW_25, {14, 0},																			LICENSEEXEMPTBEHAVIOR},
-#endif /* SPECIAL_FREQUENCY */
 	{32, 118, FREQ_5G00,   BW_20, {52, 56, 60, 64, 0},																COMMON},
 	{33, 118, FREQ_5G00,   BW_20, {52, 56, 60, 64, 0},																COMMON},
 	{34, 121, FREQ_5G00,   BW_20, {100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 0},						DFS_50_100_BEHAVIOR},
@@ -177,7 +171,6 @@ REG_CLASS reg_class_jp[] = {
 	{43, 120, FREQ_5G00,   BW_40, {56, 64, 0},																		PRIMARYCHANNELUPPERBEHAVIOR},
 	{44, 123, FREQ_5G00,   BW_40, {104, 112, 120, 128, 136, 0},														PRIMARYCHANNELUPPERBEHAVIOR | DFS_50_100_BEHAVIOR},
 	{45, 123, FREQ_5G00,   BW_40, {104, 112, 120, 128, 136, 0},														PRIMARYCHANNELUPPERBEHAVIOR | DFS_50_100_BEHAVIOR},
-#ifdef SPECIAL_FREQUENCY
 	{46, 104, FREQ_4G00,   BW_40, {184, 192, 0},																	PRIMARYCHANNELLOWERBEHAVIOR},
 	{47, 104, FREQ_4G00,   BW_40, {184, 192, 0},																	PRIMARYCHANNELLOWERBEHAVIOR},
 	{48, 104, FREQ_4G00,   BW_40, {184, 192, 0},																	PRIMARYCHANNELLOWERBEHAVIOR},
@@ -188,7 +181,6 @@ REG_CLASS reg_class_jp[] = {
 	{53, 105, FREQ_4G00,   BW_40, {188, 196, 0},																	PRIMARYCHANNELUPPERBEHAVIOR},
 	{54, 105, FREQ_4G00,   BW_40, {188, 196, 0},																	PRIMARYCHANNELUPPERBEHAVIOR},
 	{55, 105, FREQ_4G00,   BW_40, {188, 196, 0},																	PRIMARYCHANNELUPPERBEHAVIOR},
-#endif /* SPECIAL_FREQUENCY */
 	{56,  83, FREQ_2G407,  BW_40, {1, 2, 3, 4, 5, 6, 7, 8, 9, 0},													LICENSEEXEMPTBEHAVIOR | PRIMARYCHANNELLOWERBEHAVIOR},
 	{57,  84, FREQ_2G407,  BW_40, {5, 6, 7, 8, 9, 10, 11, 12, 13, 0},												LICENSEEXEMPTBEHAVIOR | PRIMARYCHANNELUPPERBEHAVIOR},
 	{58, 121, FREQ_5G00,   BW_20, {100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 0},						NOMADICBEHAVIOR | LICENSEEXEMPTBEHAVIOR},
@@ -203,9 +195,7 @@ REG_CLASS reg_class_cn[] = {
 	{4,  116, FREQ_5G00,   BW_40, {36, 44, 0},																		PRIMARYCHANNELLOWERBEHAVIOR | USEEIRPFORVHTTXPOWENV},
 	{5,  119, FREQ_5G00,   BW_40, {52, 60, 0},																		PRIMARYCHANNELLOWERBEHAVIOR | DFS_50_100_BEHAVIOR | USEEIRPFORVHTTXPOWENV},
 	{6,  126, FREQ_5G00,   BW_40, {149, 157, 0},																	PRIMARYCHANNELLOWERBEHAVIOR | USEEIRPFORVHTTXPOWENV},
-#ifdef SPECIAL_FREQUENCY
 	{7,   81, FREQ_2G407,  BW_25, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0},									LICENSEEXEMPTBEHAVIOR},
-#endif /* SPECIAL_FREQUENCY */
 	{8,   83, FREQ_2G407,  BW_40, {1, 2, 3, 4, 5, 6, 7, 8, 9, 0},													LICENSEEXEMPTBEHAVIOR | PRIMARYCHANNELLOWERBEHAVIOR},
 	{9,   84, FREQ_2G407,  BW_40, {5, 6, 7, 8, 9, 10, 11, 12, 13, 0},												LICENSEEXEMPTBEHAVIOR | PRIMARYCHANNELUPPERBEHAVIOR},
 	{0, 0, 0, 0, {0}, 0}			/* end */
@@ -222,7 +212,6 @@ REG_CLASS_VHT reg_class_vht_fcc[] = {
 	{3,  124, FREQ_5G00,   BW_20, {149, 153, 157, 161, 0}, {0},														NOMADICBEHAVIOR},
 	{4,  121, FREQ_5G00,   BW_20, {100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 0}, {0},				NOMADICBEHAVIOR | USEEIRPFORVHTTXPOWENV},
 	{5,  125, FREQ_5G00,   BW_20, {149, 153, 157, 161, 165, 0}, {0},                                                    LICENSEEXEMPTBEHAVIOR},
-#ifdef SPECIAL_FREQUENCY
 	{6,  103, FREQ_4G9375, BW_5,  {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0}, {0},												COMMON},
 	{7,  103, FREQ_4G9375, BW_5,  {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0}, {0},												COMMON},
 	{8,  102, FREQ_4G89,   BW_10, {11, 13, 15, 17, 19, 0}, {0},															COMMON},
@@ -235,7 +224,6 @@ REG_CLASS_VHT reg_class_vht_fcc[] = {
 	{15,  96, FREQ_3G0025, BW_5,  {131, 132, 133, 134, 135, 136, 137, 138, 0}, {0},									CCA_EDBEHAVIOR},
 	{16,   0, FREQ_5G0025, BW_5,  {170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 0}, {0},	ITS_NONMOBILE_OPERATIONS | ITS_MOBILE_OPERATIONS},
 	{17,   0, FREQ_5G00,   BW_10, {171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 0}, {0},		ITS_NONMOBILE_OPERATIONS | ITS_MOBILE_OPERATIONS},
-#endif /* SPECIAL_FREQUENCY */
 	{18,   0, FREQ_5G00,   BW_20, {172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 0}, {0},				ITS_NONMOBILE_OPERATIONS | ITS_MOBILE_OPERATIONS},
 	{22, 116, FREQ_5G00,   BW_40, {36, 44, 0}, {0},																		PRIMARYCHANNELLOWERBEHAVIOR},
 	{23, 119, FREQ_5G00,   BW_40, {52, 60, 0}, {0},																		PRIMARYCHANNELLOWERBEHAVIOR},
@@ -264,9 +252,7 @@ REG_CLASS_VHT reg_class_vht_ce[] = {
 	{1,  115, FREQ_5G00,   BW_20, {36, 40, 44, 48, 0}, {0},																COMMON},
 	{2,  118, FREQ_5G00,   BW_20, {52, 56, 60, 64, 0}, {0},																NOMADICBEHAVIOR},
 	{3,  121, FREQ_5G00,   BW_20, {100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 0}, {0},						COMMON},
-#ifdef SPECIAL_FREQUENCY
 	{4,   81, FREQ_2G407,  BW_25, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0}, {0},									LICENSEEXEMPTBEHAVIOR},
-#endif /* SPECIAL_FREQUENCY */
 	{5,  116, FREQ_5G00,   BW_40, {36, 44, 0}, {0},																		PRIMARYCHANNELLOWERBEHAVIOR},
 	{6,  119, FREQ_5G00,   BW_40, {52, 60, 0}, {0},																		PRIMARYCHANNELLOWERBEHAVIOR},
 	{7,  122, FREQ_5G00,   BW_40, {100, 108, 116, 124, 132, 0}, {0},													PRIMARYCHANNELLOWERBEHAVIOR},
@@ -275,10 +261,8 @@ REG_CLASS_VHT reg_class_vht_ce[] = {
 	{10, 123, FREQ_5G00,   BW_40, {104, 112, 120, 128, 136, 0}, {0},													PRIMARYCHANNELUPPERBEHAVIOR},
 	{11,  83, FREQ_2G407,  BW_40, {1, 2, 3, 4, 5, 6, 7, 8, 9, 0}, {0},													LICENSEEXEMPTBEHAVIOR | PRIMARYCHANNELLOWERBEHAVIOR},
 	{12,  84, FREQ_2G407,  BW_40, {5, 6, 7, 8, 9, 10, 11, 12, 13, 0}, {0},												LICENSEEXEMPTBEHAVIOR | PRIMARYCHANNELUPPERBEHAVIOR},
-#ifdef SPECIAL_FREQUENCY
 	{13,   0, FREQ_5G0025, BW_5,  {171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 0}, {0},		ITS_NONMOBILE_OPERATIONS | ITS_MOBILE_OPERATIONS},
 	{14,   0, FREQ_5G00,   BW_10, {171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 0}, {0},		ITS_NONMOBILE_OPERATIONS | ITS_MOBILE_OPERATIONS},
-#endif /* SPECIAL_FREQUENCY */
 	{15,   0, FREQ_5G00,   BW_20, {172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 0}, {0},					ITS_NONMOBILE_OPERATIONS | ITS_MOBILE_OPERATIONS},
 	{16,   0, FREQ_5G00,   BW_20, {100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 0}, {0},						ITS_NONMOBILE_OPERATIONS | ITS_MOBILE_OPERATIONS},
 	{17, 125, FREQ_5G00,   BW_20, {149, 153, 157, 161, 165, 169, 0}, {0},												COMMON},
@@ -299,7 +283,6 @@ REG_CLASS_VHT reg_class_vht_jp[] = {
 	{4,  112, FREQ_5G00,   BW_20, {8, 12, 16, 0}, {0},																COMMON},
 	{5,  112, FREQ_5G00,   BW_20, {8, 12, 16, 0}, {0},																COMMON},
 	{6,  112, FREQ_5G00,   BW_20, {8, 12, 16, 0}, {0},																COMMON},
-#ifdef SPECIAL_FREQUENCY
 	{7,  109, FREQ_4G00,   BW_20, {184, 188, 192, 196, 0}, {0},														COMMON},
 	{8,  109, FREQ_4G00,   BW_20, {184, 188, 192, 196, 0}, {0},														COMMON},
 	{9,  109, FREQ_4G00,   BW_20, {184, 188, 192, 196, 0}, {0},														COMMON},
@@ -325,7 +308,6 @@ REG_CLASS_VHT reg_class_vht_jp[] = {
 	{29, 111, FREQ_4G0025, BW_5,  {182, 183, 184, 185, 186, 187, 188, 189, 0}, {0},									COMMON},
 	{30,  81, FREQ_2G407,  BW_25, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0}, {0},									LICENSEEXEMPTBEHAVIOR},
 	{31,  82, FREQ_2G414,  BW_25, {14, 0}, {0},																		LICENSEEXEMPTBEHAVIOR},
-#endif /* SPECIAL_FREQUENCY */
 	{32, 118, FREQ_5G00,   BW_20, {52, 56, 60, 64, 0}, {0},															COMMON},
 	{33, 118, FREQ_5G00,   BW_20, {52, 56, 60, 64, 0}, {0},															COMMON},
 	{34, 121, FREQ_5G00,   BW_20, {100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 0}, {0},						DFS_50_100_BEHAVIOR},
@@ -340,7 +322,6 @@ REG_CLASS_VHT reg_class_vht_jp[] = {
 	{43, 120, FREQ_5G00,   BW_40, {56, 64, 0}, {0},																		PRIMARYCHANNELUPPERBEHAVIOR},
 	{44, 123, FREQ_5G00,   BW_40, {104, 112, 120, 128, 136, 0}, {0},													PRIMARYCHANNELUPPERBEHAVIOR | DFS_50_100_BEHAVIOR},
 	{45, 123, FREQ_5G00,   BW_40, {104, 112, 120, 128, 136, 0}, {0},													PRIMARYCHANNELUPPERBEHAVIOR | DFS_50_100_BEHAVIOR},
-#ifdef SPECIAL_FREQUENCY
 	{46, 104, FREQ_4G00,   BW_40, {184, 192, 0}, {0},																	PRIMARYCHANNELLOWERBEHAVIOR},
 	{47, 104, FREQ_4G00,   BW_40, {184, 192, 0}, {0},																	PRIMARYCHANNELLOWERBEHAVIOR},
 	{48, 104, FREQ_4G00,   BW_40, {184, 192, 0}, {0},																	PRIMARYCHANNELLOWERBEHAVIOR},
@@ -351,7 +332,6 @@ REG_CLASS_VHT reg_class_vht_jp[] = {
 	{53, 105, FREQ_4G00,   BW_40, {188, 196, 0}, {0},																	PRIMARYCHANNELUPPERBEHAVIOR},
 	{54, 105, FREQ_4G00,   BW_40, {188, 196, 0}, {0},																	PRIMARYCHANNELUPPERBEHAVIOR},
 	{55, 105, FREQ_4G00,   BW_40, {188, 196, 0}, {0},																	PRIMARYCHANNELUPPERBEHAVIOR},
-#endif /* SPECIAL_FREQUENCY */
 	{56,  83, FREQ_2G407,  BW_40, {1, 2, 3, 4, 5, 6, 7, 8, 9, 0}, {0},													LICENSEEXEMPTBEHAVIOR | PRIMARYCHANNELLOWERBEHAVIOR},
 	{57,  84, FREQ_2G407,  BW_40, {5, 6, 7, 8, 9, 10, 11, 12, 13, 0}, {0},												LICENSEEXEMPTBEHAVIOR | PRIMARYCHANNELUPPERBEHAVIOR},
 	{58, 121, FREQ_5G00,   BW_20, {100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 0}, {0},						NOMADICBEHAVIOR | LICENSEEXEMPTBEHAVIOR},
@@ -369,9 +349,7 @@ REG_CLASS_VHT reg_class_vht_cn[] = {
 	{4,  116, FREQ_5G00,   BW_40, {36, 44, 0}, {0},																		PRIMARYCHANNELLOWERBEHAVIOR | USEEIRPFORVHTTXPOWENV},
 	{5,  119, FREQ_5G00,   BW_40, {52, 60, 0}, {0},																		PRIMARYCHANNELLOWERBEHAVIOR | DFS_50_100_BEHAVIOR | USEEIRPFORVHTTXPOWENV},
 	{6,  126, FREQ_5G00,   BW_40, {149, 157, 0}, {0},																	PRIMARYCHANNELLOWERBEHAVIOR | USEEIRPFORVHTTXPOWENV},
-#ifdef SPECIAL_FREQUENCY
 	{7,   81, FREQ_2G407,  BW_25, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0}, {0},									LICENSEEXEMPTBEHAVIOR},
-#endif /* SPECIAL_FREQUENCY */
 	{8,   83, FREQ_2G407,  BW_40, {1, 2, 3, 4, 5, 6, 7, 8, 9, 0}, {0},													LICENSEEXEMPTBEHAVIOR | PRIMARYCHANNELLOWERBEHAVIOR},
 	{9,   84, FREQ_2G407,  BW_40, {5, 6, 7, 8, 9, 10, 11, 12, 13, 0}, {0},												LICENSEEXEMPTBEHAVIOR | PRIMARYCHANNELUPPERBEHAVIOR},
 	{128, 128, FREQ_5G00,   BW_80, {0}, {42, 58, 155, 0},																USEEIRPFORVHTTXPOWENV},
@@ -716,6 +694,125 @@ INT Set_Reg_Domain_Proc(
 	return TRUE;
 }
 
+#ifdef CONFIG_MAP_SUPPORT
+static UCHAR ChannelPreferredSanity(
+	IN PRTMP_ADAPTER pAd,
+	struct wifi_dev *wdev,
+	IN UCHAR channel)
+{
+	int i;
+	UCHAR BandIdx = 0;
+	CHANNEL_CTRL *pChCtrl = NULL;
+
+	BandIdx = HcGetBandByWdev(wdev);
+	pChCtrl = hc_get_channel_ctrl(pAd->hdev_ctrl, BandIdx);
+	for (i = 0; i < pChCtrl->ChListNum; i++) {
+		if (channel == pChCtrl->ChList[i].Channel)
+			return 1;
+	}
+	return 0;
+}
+UCHAR map_set_op_class_info(
+	PRTMP_ADAPTER pAd,
+	struct wifi_dev *wdev,
+	wdev_op_class_info *op_class)
+{
+	UCHAR i = 0, j = 0, k = 0, op_index = 0, seen = 0;
+	UCHAR chnNum = 0;
+	UCHAR PhyMode = wdev->PhyMode;
+	PREG_CLASS reg_class = NULL;
+	PREG_CLASS_VHT reg_class_vht = NULL;
+
+	if (WMODE_CAP_AC(PhyMode)) {
+		reg_class_vht = (PREG_CLASS_VHT)get_reg_table_by_country(pAd->CommonCfg.CountryCode, PhyMode);
+	} else if (WMODE_CAP_2G(PhyMode) || WMODE_CAP_5G(PhyMode)) {
+		reg_class = (PREG_CLASS)get_reg_table_by_country(pAd->CommonCfg.CountryCode, PhyMode);
+	} else
+		return 0;
+
+	for (i = 1;; i++) {
+		chnNum = 0;
+		seen = 0;
+		if (WMODE_CAP_AC(PhyMode)) {
+			if (reg_class_vht[i].reg_class == 0) {
+				/*End of Op Class Table Reached*/
+				break;
+			}
+			for (k = 0; k < op_index; k++) {
+				if (reg_class_vht[i].global_class == op_class->opClassInfo[k].op_class) {
+					/*This is a duplicate entry in opclass list*/
+					seen = 1;
+					break;
+				}
+			}
+			if (seen) {
+				continue;
+			}
+			if ((reg_class_vht[i].global_class >= 81 &&
+				reg_class_vht[i].global_class <= 84) ||
+				(reg_class_vht[i].global_class >= 115 &&
+				reg_class_vht[i].global_class <= 130)){
+				op_class->opClassInfo[op_index].op_class = reg_class_vht[i].global_class;
+				for (j = 0; j <= 14; j++) {
+					/*Check for 20Mhz and 40Mhz classes only, otherwise channel sanity will fail*/
+					if (op_class->opClassInfo[op_index].op_class <= 127) {
+						if (reg_class_vht[i].channel_set[j] != 0) {
+							if (ChannelPreferredSanity(pAd, wdev,
+								reg_class_vht[i].channel_set[j])) {
+								op_class->opClassInfo[op_index].ch_list[chnNum] =
+									reg_class_vht[i].channel_set[j];
+								chnNum++;
+							}
+						}
+					} else {
+						/*80Mhz centre frequencies*/
+						if (reg_class_vht[i].center_freq[j] != 0) {
+								op_class->opClassInfo[op_index].ch_list[chnNum] =
+									reg_class_vht[i].center_freq[j];
+								chnNum++;
+						}
+					}
+				}
+			}
+		} else if ((WMODE_CAP_2G(PhyMode) ||
+			WMODE_CAP_5G(PhyMode))) {
+			if (reg_class[i].reg_class == 0) {
+				break;
+			}
+			for (k = 0; k < op_index; k++) {
+				if (reg_class[i].global_class == op_class->opClassInfo[k].op_class) {
+					seen = 1;
+					break;
+				}
+			}
+			if (seen) {
+				continue;
+			}
+			if ((reg_class[i].global_class >= 115 &&
+				reg_class[i].global_class <= 130) ||
+				(reg_class[i].global_class >= 81 &&
+				reg_class[i].global_class <= 84)){
+				op_class->opClassInfo[op_index].op_class = reg_class[i].global_class;
+				for (j = 0; j <= 14; j++) {
+					if (reg_class[i].channel_set[j] != 0) {
+						if (ChannelPreferredSanity(pAd, wdev,
+							reg_class[i].channel_set[j])) {
+							op_class->opClassInfo[op_index].ch_list[chnNum] =
+								reg_class[i].channel_set[j];
+							chnNum++;
+						}
+					}
+				}
+			}
+		}
+		if (chnNum) {
+			op_class->opClassInfo[op_index].num_of_ch = chnNum;
+			op_index++;
+		}
+	}
+	return op_index;
+}
+#endif
 
 #endif /* DOT11_N_SUPPORT */
 
