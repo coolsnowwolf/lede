@@ -916,7 +916,7 @@ static VOID FT_OverDs_SimReq(
 					  &FtInfoBuf);
 
 	/* enqueue it into FT action state machine. */
-#ifdef CUSTOMER_DCC_FEATURE
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
 	REPORT_MGMT_FRAME_TO_MLME(pAd, FtEntry->wcid, pOutBuffer, FrameLen, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, OPMODE_AP, &pAd->ApCfg.MBSSID[FtEntry->apidx].wdev, FtEntry->HTPhyMode.field.MODE);
 #else
 	REPORT_MGMT_FRAME_TO_MLME(pAd, FtEntry->wcid, pOutBuffer, FrameLen, 0, 0, 0, 0, 0, 0, OPMODE_AP, &pAd->ApCfg.MBSSID[FtEntry->apidx].wdev, FtEntry->HTPhyMode.field.MODE);

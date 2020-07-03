@@ -196,7 +196,11 @@ static INT tm_wq_qm_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
 
 	switch (type) {
 	case TX_DEQ_TASK:
-		if (pAd->tx_dequeue_scheduable) {
+		if (pAd->tx_dequeue_scheduable
+#ifdef INTELP6_UDMA_CPU_LOAD_OPTIMIZATION
+			&& !pAd->is_blocked
+#endif
+			) {
 			queue_work(pAd->qm_wq, &pAd->tx_deq_work);
 		}
 		break;
@@ -264,7 +268,11 @@ static INT tm_wq_qm_schedule_task_on(RTMP_ADAPTER *pAd, INT cpu, enum task_type 
 
 	switch (type) {
 	case TX_DEQ_TASK:
-		if (pAd->tx_dequeue_scheduable) {
+		if (pAd->tx_dequeue_scheduable
+#ifdef INTELP6_UDMA_CPU_LOAD_OPTIMIZATION
+			&& !pAd->is_blocked
+#endif
+		) {
 			queue_work_on(cpu, pAd->qm_wq, &pAd->tx_deq_work);
 		}
 		break;
@@ -530,7 +538,11 @@ static INT tm_tasklet_qm_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
 
 	switch (type) {
 	case TX_DEQ_TASK:
-		if (pAd->tx_dequeue_scheduable) {
+		if (pAd->tx_dequeue_scheduable
+#ifdef INTELP6_UDMA_CPU_LOAD_OPTIMIZATION
+			&& !pAd->is_blocked
+#endif
+		) {
 			RTMP_OS_TASKLET_SCHE(&pAd->tx_deque_tasklet);
 		}
 

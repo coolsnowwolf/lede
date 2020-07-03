@@ -257,9 +257,15 @@ VOID HW_SET_ASIC_WCID_AAD_OM(PRTMP_ADAPTER pAd, ULONG Wcid, UCHAR value)
 	HW_CTRL_BASIC_ENQ(pAd, HWCMD_TYPE_HT_CAP, HWCMD_ID_SET_ASIC_AAD_OM, sizeof(RT_SET_ASIC_AAD_OM), &SetAsicAAD_OM);
 }
 #endif /* HTC_DECRYPT_IOT */
-
-
-
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+VOID HW_SET_ASIC_WCID_4ADDR_HDR_TRANS(PRTMP_ADAPTER pAd, ULONG Wcid, UCHAR IsEnable)
+{
+	RT_ASIC_4ADDR_HDR_TRANS Update_4Addr_Hdr_Trans;
+	Update_4Addr_Hdr_Trans.Wcid = Wcid;
+	Update_4Addr_Hdr_Trans.Enable = IsEnable;
+	HW_CTRL_BASIC_ENQ(pAd,HWCMD_TYPE_RADIO,HWCMD_ID_UPDATE_4ADDR_HDR_TRANS,sizeof(RT_ASIC_4ADDR_HDR_TRANS), &Update_4Addr_Hdr_Trans);
+}
+#endif
 #ifdef BCN_OFFLOAD_SUPPORT
 VOID HW_SET_BCN_OFFLOAD(RTMP_ADAPTER *pAd,
 						UINT8 WdevIdx,
@@ -598,8 +604,14 @@ VOID HW_BEACON_UPDATE(
 
 	rMtUpdateBeacon.wdev = wdev;
 	rMtUpdateBeacon.UpdateReason = UpdateReason;
-	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s, OmaxIdx = 0x%x, Update reason = %x\n",
-			 __func__, (wdev ? wdev->OmacIdx : 0xff), UpdateReason));
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s, OmaxIdx = 0x%x, Update reason = %x, pAd Idx = %u\n",
+			 __func__, (wdev ? wdev->OmacIdx : 0xff), UpdateReason,
+#ifdef MULTI_INF_SUPPORT
+						multi_inf_get_idx(pAd)
+#else
+						0
+#endif /* MULTI_INF_SUPPORT */
+						));
 	ret = HW_CTRL_BASIC_ENQ(pAd,
 							HWCMD_TYPE_RADIO,
 							HWCMD_ID_UPDATE_BEACON,
@@ -627,7 +639,7 @@ VOID HW_SET_PBC_CTRL(struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev, struct _M
 VOID HW_SET_RTS_THLD(
 	struct _RTMP_ADAPTER *pAd,
 	struct wifi_dev *wdev,
-	UCHAR pkt_num, UINT32 length)
+	UCHAR pkt_num, UINT32 length, UINT8 retry_limit)
 {
 	struct rts_thld rts;
 	UINT32 ret;
@@ -635,6 +647,7 @@ VOID HW_SET_RTS_THLD(
 	rts.wdev = wdev;
 	rts.pkt_thld = pkt_num;
 	rts.len_thld = length;
+	rts.retry_limit = retry_limit;
 	ret = HW_CTRL_BASIC_ENQ(pAd, HWCMD_TYPE_PROTECT,
 							HWCMD_ID_RTS_THLD, sizeof(rts), (VOID *)&rts);
 }
@@ -831,5 +844,17 @@ VOID HW_GET_TX_STATISTIC(
 	TxStat.Field = Field;
 	TxStat.Wcid = Wcid;
 	ret = HW_CTRL_BASIC_ENQ(pAd, HWCMD_TYPE_WIFISYS, HWCMD_ID_GET_TX_STATISTIC, sizeof(TX_STAT_STRUC), (VOID *)&TxStat);
+}
+
+VOID HW_SET_EDCA(PRTMP_ADAPTER pAd, struct wifi_dev *wdev, struct _EDCA_PARM *pedca_param)
+{
+	UINT32 ret;
+
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+		("%pS, %s: cmax:%x\n", __builtin_return_address(0), __func__,
+			  pedca_param->Cwmax[WMM_AC_BE]));
+	ret = HW_CTRL_BASIC_ENQ(pAd, HWCMD_TYPE_WMM, HWCMD_ID_SET_EDCA,
+				sizeof(EDCA_PARM), (VOID *)pedca_param);
+	return;
 }
 

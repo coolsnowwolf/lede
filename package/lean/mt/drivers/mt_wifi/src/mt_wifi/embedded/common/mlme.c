@@ -27,6 +27,9 @@
 
 #include "rt_config.h"
 #include <stdarg.h>
+#ifdef TXRX_STAT_SUPPORT
+#include "hdev/hdev_basic.h"
+#endif
 #ifdef DOT11R_FT_SUPPORT
 #include "ft.h"
 #endif /* DOT11R_FT_SUPPORT */
@@ -36,7 +39,12 @@
 #include "arris_wps_gpio_handler.h"
 #endif
 #endif
-
+#ifdef CUSTOMER_DCC_FEATURE
+UCHAR   FILTER_OUI[]  = {0x00, 0x50, 0xf2};
+UINT32  TxRx_time[MAX_LEN_OF_MAC_TABLE];
+UINT32  Last_TxRx_time[MAX_LEN_OF_MAC_TABLE];
+#endif
+UCHAR APPLE_OUI[] =    {0x00, 0x17, 0xf2};  /* For IOS immediately connect */
 UCHAR OfdmRateToRxwiMCS[12] = {
 	0,  0,	0,  0,
 	0,  1,	2,  3,	/* OFDM rate 6,9,12,18 = rxwi mcs 0,1,2,3 */
@@ -592,6 +600,210 @@ end:
 	return ret;
 }
 
+#ifdef CUSTOMER_DCC_FEATURE
+VOID GetTxRxActivityTime(
+	IN PRTMP_ADAPTER   pAd,
+	IN UINT wcid)
+{
+
+	CHAR ac;
+	UINT32 wtbl_offset;
+	UINT32 tx_sum, rx_sum, tx, rx, txrx_time_diff;
+	PMAC_TABLE_ENTRY pEntry = NULL;
+/*	UINT32 count = 0, wcid_start = 0; */
+#ifdef VOW_SUPPORT
+	if (pAd->vow_dvt_en) {
+		if (wcid <= pAd->vow_monitor_sta)
+		 return;
+	}
+#endif
+
+	pEntry = &pAd->MacTab.Content[wcid];
+
+	if (IS_ENTRY_CLIENT(pEntry) && (pEntry->Sst == SST_ASSOC) && (pEntry->pMbss != NULL)) {
+		wtbl_offset = (wcid << 8) | 0x3004C;
+		tx_sum = rx_sum = 0;
+
+		for (ac = 0; ac < 4; ac++) {
+			RTMP_IO_READ32(pAd, wtbl_offset + (ac << 3), &tx);
+			tx_sum += tx;
+			RTMP_IO_READ32(pAd, wtbl_offset + (ac << 3) + 4, &rx);
+			rx_sum += rx;
+		}
+		txrx_time_diff = (tx_sum + rx_sum - Last_TxRx_time[wcid]);
+		pEntry->ChannelUseTime += txrx_time_diff;
+		pEntry->pMbss->ChannelUseTime += txrx_time_diff;
+
+		Last_TxRx_time[wcid] = tx_sum + rx_sum;
+	}
+}
+
+VOID RemoveOldStaList(
+	IN PRTMP_ADAPTER   pAd)
+{
+	INT32 i;
+
+	NdisAcquireSpinLock(&pAd->MacTabLock);
+	if (pAd->AllowedStaList.StaCount > 0) {
+		for (i = 0; i < pAd->AllowedStaList.StaCount; i++) {
+			if ((jiffies_to_msecs(jiffies) - pAd->AllowedStaList.AllowedSta[i].DissocTime) >= 30000) {
+				NdisZeroMemory(&pAd->AllowedStaList.AllowedSta[i], sizeof(ALLOWED_STA));
+				if (i != (pAd->AllowedStaList.StaCount - 1)) {
+					NdisCopyMemory(&pAd->AllowedStaList.AllowedSta[i], &pAd->AllowedStaList.AllowedSta[pAd->AllowedStaList.StaCount - 1], sizeof(ALLOWED_STA));
+					NdisZeroMemory(&pAd->AllowedStaList.AllowedSta[pAd->AllowedStaList.StaCount - 1], sizeof(ALLOWED_STA));
+				}
+				pAd->AllowedStaList.StaCount--;
+			}
+		}
+	}
+	NdisReleaseSpinLock(&pAd->MacTabLock);
+}
+
+VOID APResetStreamingStatus(
+	IN PRTMP_ADAPTER   pAd)
+{
+	UINT64 Time = jiffies_to_msecs(jiffies);
+
+	if ((Time - pAd->StreamingTypeStatus.BE_Time) > 1000)
+		pAd->StreamingTypeStatus.BE = FALSE;
+
+	if ((Time - pAd->StreamingTypeStatus.BK_Time) > 1000)
+		pAd->StreamingTypeStatus.BK = FALSE;
+
+	if ((Time - pAd->StreamingTypeStatus.VI_Time) > 1000)
+		pAd->StreamingTypeStatus.VI = FALSE;
+
+	if ((Time - pAd->StreamingTypeStatus.VO_Time) > 1000)
+		pAd->StreamingTypeStatus.VO = FALSE;
+
+}
+
+#endif
+#ifdef TXRX_STAT_SUPPORT
+VOID Update_LastSec_TXRX_Stats(
+	IN PRTMP_ADAPTER   pAd)
+{
+	MAC_TABLE_ENTRY *pEntry = NULL;
+	UINT32 i, bandidx;
+	struct hdev_ctrl *ctrl = (struct hdev_ctrl *)pAd->hdev_ctrl;
+	for (i = 0; i < DBDC_BAND_NUM; i++) {
+		ctrl->rdev[i].pRadioCtrl->LastSecTxByte.QuadPart = 0;
+		ctrl->rdev[i].pRadioCtrl->LastSecRxByte.QuadPart = 0;
+	}
+	for (i = 0; i < pAd->ApCfg.BssidNum; i++) {
+		pAd->ApCfg.MBSSID[i].stat_bss.LastSecTxBytes.QuadPart = 0;
+		pAd->ApCfg.MBSSID[i].stat_bss.LastSecRxBytes.QuadPart = 0;
+	}
+	for (i = 0 ; VALID_UCAST_ENTRY_WCID(pAd, i); i++) {
+		pEntry = &pAd->MacTab.Content[i];
+		if (pEntry && pEntry->wdev && IS_ENTRY_CLIENT(pEntry) && (pEntry->Sst == SST_ASSOC)) {
+			bandidx = HcGetBandByWdev(pEntry->wdev);
+			if (pEntry->TxDataPacketCount.QuadPart >= pEntry->LastTxDataPacketCountValue.QuadPart)
+				pEntry->TxDataPacketCount1SecValue.QuadPart = pEntry->TxDataPacketCount.QuadPart - pEntry->LastTxDataPacketCountValue.QuadPart;
+			if (pEntry->TxDataPacketByte.QuadPart >= pEntry->LastTxDataPacketByteValue.QuadPart) {
+				pEntry->TxDataPacketByte1SecValue.QuadPart = pEntry->TxDataPacketByte.QuadPart - pEntry->LastTxDataPacketByteValue.QuadPart;
+				ctrl->rdev[bandidx].pRadioCtrl->LastSecTxByte.QuadPart += pEntry->TxDataPacketByte1SecValue.QuadPart;
+				pEntry->pMbss->stat_bss.LastSecTxBytes.QuadPart += pEntry->TxDataPacketByte1SecValue.QuadPart;
+			}
+			if (pEntry->RxDataPacketCount.QuadPart >= pEntry->LastRxDataPacketCountValue.QuadPart)
+				pEntry->RxDataPacketCount1SecValue.QuadPart = pEntry->RxDataPacketCount.QuadPart - pEntry->LastRxDataPacketCountValue.QuadPart;
+			if (pEntry->RxDataPacketByte.QuadPart >= pEntry->LastRxDataPacketByteValue.QuadPart) {
+				pEntry->RxDataPacketByte1SecValue.QuadPart = pEntry->RxDataPacketByte.QuadPart - pEntry->LastRxDataPacketByteValue.QuadPart;
+				ctrl->rdev[bandidx].pRadioCtrl->LastSecRxByte.QuadPart += pEntry->RxDataPacketByte1SecValue.QuadPart;
+				pEntry->pMbss->stat_bss.LastSecRxBytes.QuadPart += pEntry->RxDataPacketByte1SecValue.QuadPart;
+			}
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+				("%s : STA : %d \n", __func__, pEntry->wcid));
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+				("1) TotalTxCount: %lld LastTxCnt: %lld TxPktCount1Sec: %lld\n", pEntry->TxDataPacketCount.QuadPart, pEntry->LastTxDataPacketCountValue.QuadPart, pEntry->TxDataPacketCount1SecValue.QuadPart));
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+				("2) TotalRxCount: %lld LastRxCnt: %lld RxPktCount1Sec: %lld\n", pEntry->RxDataPacketCount.QuadPart, pEntry->LastRxDataPacketCountValue.QuadPart, pEntry->RxDataPacketCount1SecValue.QuadPart));
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+				("3) TotalTxByte : %lld LastTxByte: %lld TxByte1secValue: %lld\n", pEntry->TxDataPacketByte.QuadPart, pEntry->LastTxDataPacketByteValue.QuadPart, pEntry->TxDataPacketByte1SecValue.QuadPart));
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+				("4) TotalRxByte : %lld LastRxByte: %lld RxByte1secValue: %lld\n", pEntry->RxDataPacketByte.QuadPart, pEntry->LastRxDataPacketByteValue.QuadPart, pEntry->RxDataPacketByte1SecValue.QuadPart));
+			pEntry->LastTxDataPacketByteValue.QuadPart = pEntry->TxDataPacketByte.QuadPart;
+			pEntry->LastTxDataPacketCountValue.QuadPart = pEntry->TxDataPacketCount.QuadPart;
+			pEntry->LastRxDataPacketByteValue.QuadPart = pEntry->RxDataPacketByte.QuadPart;
+			pEntry->LastRxDataPacketCountValue.QuadPart = pEntry->RxDataPacketCount.QuadPart;
+		}
+	}
+}
+#endif
+#if defined(CUSTOMER_RSG_FEATURE) || defined (CUSTOMER_DCC_FEATURE)
+VOID Update_Wtbl_Counters(
+	IN PRTMP_ADAPTER   pAd)
+{
+	UINT32 u4Field = GET_WTBL_TX_COUNT | GET_WTBL_PER_STA_TX_COUNT;
+	MtCmdGetWtblTxStat(pAd, u4Field, 0);
+}
+#endif
+#ifdef CUSTOMER_RSG_FEATURE
+VOID UpdateRadioStatCounters(
+	IN PRTMP_ADAPTER   pAd)
+{
+	if (pAd->ApCfg.EntryClientCount)
+		Update_Wtbl_Counters(pAd);
+	Read_Mib_TxRx_Counters(pAd);
+}
+
+VOID ClearChannelStatsCr(
+	IN PRTMP_ADAPTER   pAd)
+{
+	UINT32 	CrValue;
+	UINT32	Time;
+	ULONG TNow;
+	UCHAR CurrIdx = pAd->MsMibBucket.CurIdx;
+	NdisGetSystemUpTime(&TNow);
+	Time = jiffies_to_usecs(TNow);
+/*	TIMESTAMP_GET(pAd, Time); */
+
+	pAd->ChannelStats.LastReadTime = Time;
+	/* OBSS Air time */
+	HW_IO_READ32(pAd, RMAC_MIBTIME5, &CrValue);
+	pAd->ChannelStats.MibUpdateOBSSAirtime[CurrIdx] += CrValue;
+	/* My Tx Air time */
+	HW_IO_READ32(pAd, MIB_M0SDR36, &CrValue);
+	pAd->ChannelStats.MibUpdateMyTxAirtime[CurrIdx] += CrValue;
+	/* My Rx Air time */
+	HW_IO_READ32(pAd, MIB_M0SDR37, &CrValue);
+	pAd->ChannelStats.MibUpdateMyRxAirtime[CurrIdx] += CrValue;
+	/* EDCCA time */
+	RTMP_IO_READ32(pAd, MIB_M0SDR18, &CrValue);
+	pAd->ChannelStats.MibUpdateEDCCAtime[CurrIdx] += CrValue;
+	CrValue = (CrValue & 0xffffff);
+	/* Reset OBSS Air time */
+	HW_IO_READ32(pAd, RMAC_MIBTIME0, &CrValue);
+	CrValue |= 1 << RX_MIBTIME_CLR_OFFSET;
+	CrValue |= 1 << RX_MIBTIME_EN_OFFSET;
+	HW_IO_WRITE32(pAd, RMAC_MIBTIME0, CrValue);
+	/* FALSE CCA Count */
+	HW_IO_READ32(pAd, RO_BAND0_PHYCTRL_STS0, &CrValue); /* PD count */
+	pAd->ChannelStats.MibUpdatePdCount[CurrIdx] += CrValue;
+	HW_IO_READ32(pAd, RO_BAND0_PHYCTRL_STS5, &CrValue); /* MDRDY count */
+	pAd->ChannelStats.MibUpdateMdrdyCount[CurrIdx] += CrValue;
+	/* reset PD and MDRDY count */
+	HW_IO_READ32(pAd, PHY_BAND0_PHYMUX_5, &CrValue);
+	CrValue &= 0xff8fffff;
+	HW_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5, CrValue); /* Reset */
+	CrValue |= 0x500000;
+	HW_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5, CrValue); /* Enable */
+}
+
+VOID ResetChannelStats(
+	IN PRTMP_ADAPTER   pAd)
+{
+	pAd->ChannelStats.LastReadTime = 0;
+	pAd->ChannelStats.TotalDuration = 0;
+	pAd->ChannelStats.CCABusytime = 0;
+	pAd->ChannelStats.ChBusytime = 0;
+	pAd->ChannelStats.FalseCCACount = 0;
+	pAd->ChannelStats.ChannelApActivity = 0;
+}
+
+#endif
+
+
 /*
 	==========================================================================
 	Description:
@@ -865,6 +1077,19 @@ VOID MlmeHandler(RTMP_ADAPTER *pAd)
 										  Elem, pAd->Mlme.WdsMachine.CurrState);
 				break;
 #endif
+#ifdef CHANNEL_SWITCH_MONITOR_CONFIG
+			case CH_SWITCH_MONITOR_STATE_MACHINE:
+				StateMachinePerformAction(pAd, &pAd->ch_sw_cfg.ch_switch_sm, Elem,
+											pAd->ch_sw_cfg.ch_switch_sm.CurrState);
+				break;
+#endif
+#ifdef WIFI_DIAG
+			case WIFI_DAIG_STATE_MACHINE:
+				DiagLogFileWrite(pAd);
+				DiagConnErrorWrite(pAd);
+				break;
+#endif
+
 			default:
 				MTWF_LOG(DBG_CAT_MLME, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s(): Illegal SM %ld\n",
 						 __func__, Elem->Machine));
@@ -1073,6 +1298,13 @@ NDIS_STATUS MlmeInit(RTMP_ADAPTER *pAd)
 #ifdef CONFIG_DOT11U_INTERWORKING
 		GASStateMachineInit(pAd, &pAd->Mlme.GASMachine, pAd->Mlme.GASFunc);
 #endif /*CONFIG_DOT11U_INTERWORKING*/
+#ifdef DSCP_QOS_MAP_SUPPORT
+		DscpQosMapInit(pAd);
+#endif
+
+#ifdef CHANNEL_SWITCH_MONITOR_CONFIG
+		ch_switch_monitor_state_machine_init(pAd);
+#endif
 
 #ifdef CONFIG_11KV_API_SUPPORT
 #ifdef DOT11K_RRM_SUPPORT
@@ -1080,7 +1312,12 @@ NDIS_STATUS MlmeInit(RTMP_ADAPTER *pAd)
 		NRStateMachineInit(pAd, &pAd->Mlme.NRMachine, pAd->Mlme.NRFunc);
 #endif
 #endif /* CONFIG_11KV_API_SUPPORT */
-
+#ifdef CONFIG_STEERING_API_SUPPORT
+		BTMActionFrameListInit(pAd);
+		pAd->ApCfg.NonAssocStaEnable = FALSE;
+		pAd->ApCfg.NonAssocStaReport = TRUE;
+		pAd->ApCfg.PauseNonAssocStaReport = FALSE;
+#endif
 #ifdef CONFIG_DOT11V_WNM
 		WNMCtrlInit(pAd);
 		BTMStateMachineInit(pAd, &pAd->Mlme.BTMMachine, pAd->Mlme.BTMFunc);
@@ -1212,8 +1449,14 @@ VOID MlmeHalt(RTMP_ADAPTER *pAd)
 #ifdef CONFIG_DOT11U_INTERWORKING
 	GASCtrlExit(pAd);
 #endif
+#ifdef CONFIG_STEERING_API_SUPPORT
+	BTMActionFrameListExit(pAd);
+#endif
 #ifdef CONFIG_DOT11V_WNM
 	WNMCtrlExit(pAd);
+#endif
+#ifdef CHANNEL_SWITCH_MONITOR_CONFIG
+	ch_switch_monitor_del(pAd);
 #endif
 
 	if (!RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST)) {
@@ -1284,42 +1527,28 @@ VOID MlmePeriodicExec(
 {
 	ULONG TxTotalCnt;
 	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *)FunctionContext;
+#ifdef RATE_PRIOR_SUPPORT
+	INT idx;
+	PMAC_TABLE_ENTRY pEntry = NULL;
+	PBLACK_STA pBlackSta = NULL, tmp;
+#endif /*RATE_PRIOR_SUPPORT*/
+
 #ifdef RACTRL_FW_OFFLOAD_SUPPORT
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
 #endif /* RACTRL_FW_OFFLOAD_SUPPORT */
 struct _RTMP_CHIP_OP *ops = hc_get_chip_ops(pAd->hdev_ctrl);
 
-#ifdef NF_SUPPORT
+#ifdef VENDOR10_CUSTOM_RSSI_FEATURE
+	POS_COOKIE pObj = (POS_COOKIE) pAd->OS_Cookie;
+	INT32 ifIndex = pObj->ioctl_if;
+	struct wifi_dev *wdev;
 
-	if (IS_MT7615(pAd)) {
-		UINT8 NF_index = 0;
-		UINT32 Value = 0, value[11] = {0}, total = 0;
-		INT16 NF = 0;
-		INT16 NF_Power[] = {-92, -89, -86, -83, -80, -75, -70, -65, -60, -55, -52};
-		for (NF_index = 0; NF_index <= 10; NF_index++) {
-			 MAC_IO_READ32(pAd, (0x12250 + 4 * NF_index), &value[NF_index]);
-			 total += value[NF_index];
-		}
-		for (NF_index = 0; NF_index <= 10; NF_index++) {
-			 NF += (NF_Power[NF_index] * (INT16)value[NF_index])/(INT16)total;
-		}
-		pAd->Avg_NFx16 = (pAd->Avg_NF != 0) ? (NF - pAd->Avg_NF + pAd->Avg_NFx16) : NF << 4;
-		pAd->Avg_NF = pAd->Avg_NFx16 >> 4;
+	if ((pObj->ioctl_if_type == INT_APCLI) && (ifIndex <= MAX_APCLI_NUM)) {
+		wdev = &pAd->ApCfg.MBSSID[ifIndex].wdev;
 
-		MTWF_LOG(DBG_CAT_RX, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-				("%s(): NF %d Avg_NF = %d \t Avg_NFx16 = %d\n",  __FUNCTION__,
-				 NF, pAd->Avg_NF, pAd->Avg_NFx16));
-
-		/* Reset */
-		HW_IO_READ32(pAd, PHY_RXTD_12, &Value);
-		Value |= (1 << B0IrpiSwCtrlResetOffset);
-		Value |= (1 << B0IrpiSwCtrlOnlyOffset);
-		HW_IO_WRITE32(pAd, PHY_RXTD_12, Value);
-		HW_IO_WRITE32(pAd, PHY_RXTD_12, Value);
-		/* Enable badn0 IPI control */
-		HW_IO_READ32(pAd, PHY_BAND0_PHYMUX_5, &Value);
-		Value |= (B0IpiEnableCtrlValue << B0IpiEnableCtrlOffset);
-		HW_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5, Value);
+		/* 100msec Periodic RSSI Update from WTBL */
+		if (wdev && IS_VENDOR10_RSSI_VALID(wdev))
+			Vendor10RssiUpdate(pAd, NULL, FALSE, 0);
 	}
 #endif
 
@@ -1335,6 +1564,61 @@ struct _RTMP_CHIP_OP *ops = hc_get_chip_ops(pAd->hdev_ctrl);
 #endif /* end ETSI_RX_BLOCKER_SUPPORT */
 
 	/* CFG MCC */
+
+#ifdef OFFCHANNEL_SCAN_FEATURE
+	if (pAd->ScanCtrl.OffChScan_Band0 != TRUE) {
+		Calculate_NF(pAd, DBDC_BAND0);
+
+	} else {
+		if (pAd->ScanCtrl.OffChScan0_Ongoing != TRUE) {
+			pAd->ScanCtrl.OffChScan_Band0 = FALSE;
+			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: Scan state set to IDLE and Register reset for  Band 0  \n", __func__));
+			ResetEnable_NF_Registers(pAd, DBDC_BAND0);
+			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: Register reset for  Band 0  \n", __func__));
+		}
+	}
+#ifdef DBDC_MODE
+	if (pAd->CommonCfg.dbdc_mode) {
+		if (pAd->ScanCtrl.OffChScan_Band1 != TRUE) {
+			Calculate_NF(pAd, DBDC_BAND1);
+		} else {
+			if (pAd->ScanCtrl.OffChScan1_Ongoing != TRUE) {
+				pAd->ScanCtrl.OffChScan_Band1 = FALSE;
+				MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: Scan state set to IDLE and Register reset for  Band 1  \n", __func__));
+				ResetEnable_NF_Registers(pAd, DBDC_BAND1);
+				MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: Register reset for  Band 1  \n", __func__));
+			}
+		}
+	}
+#endif
+#elif defined(NF_SUPPORT)
+	if (!ApScanRunning(pAd, NULL)) {
+		Calculate_NF(pAd, DBDC_BAND0);
+#ifdef DBDC_MODE
+		if (pAd->CommonCfg.dbdc_mode)
+			Calculate_NF(pAd, DBDC_BAND1);
+#endif
+	}
+#endif	/*OFFCHANNEL_SCAN_FEATURE , NF_SUPPORT*/
+
+#if defined(OFFCHANNEL_SCAN_FEATURE) || defined(TR181_SUPPORT) || defined(TXRX_STAT_SUPPORT)
+	if ((!ApScanRunning(pAd, NULL))
+#ifdef OFFCHANNEL_SCAN_FEATURE
+			&& (pAd->ScanCtrl.state == OFFCHANNEL_SCAN_INVALID)
+#endif
+#ifdef CUSTOMER_RSG_FEATURE
+			&& (pAd->EnableChannelStatsCheck && (pAd->ChannelStats.LastReadTime != 0))
+#endif
+		)
+		ReadChannelStats(pAd);
+#ifdef CUSTOMER_RSG_FEATURE
+	else if (pAd->EnableChannelStatsCheck && !(ApScanRunning(pAd, NULL)) && (pAd->ChannelStats.LastReadTime == 0)) {
+		ClearChannelStatsCr(pAd);
+		ReadChannelStats(pAd);
+	}
+#endif
+#endif
+
 #ifdef MICROWAVE_OVEN_SUPPORT
 	/* update False CCA count to an array */
 	NICUpdateRxStatusCnt1(pAd, pAd->Mlme.PeriodicRound % 10);
@@ -1494,6 +1778,9 @@ struct _RTMP_CHIP_OP *ops = hc_get_chip_ops(pAd->hdev_ctrl);
 		}
 	}
 
+#ifdef CONFIG_MAP_SUPPORT
+	map_rssi_status_check(pAd);
+#endif
 
 #ifdef SMART_ANTENNA
 	IF_DEV_CONFIG_OPMODE_ON_AP(pAd) {
@@ -1517,10 +1804,54 @@ struct _RTMP_CHIP_OP *ops = hc_get_chip_ops(pAd->hdev_ctrl);
 	}
 #endif /* SMART_ANTENNA */
 
+#ifdef CUSTOMER_DCC_FEATURE
+	pAd->EnableRssiReadDataPacket = pAd->EnableRssiReadDataPacket ? FALSE : TRUE;
+#endif
+
 	/* Normal 1 second Mlme PeriodicExec.*/
 	if (pAd->Mlme.PeriodicRound % MLME_TASK_EXEC_MULTIPLE == 0) {
 		pAd->Mlme.OneSecPeriodicRound++;
 
+#ifdef CUSTOMER_RSG_FEATURE
+		UpdateRadioStatCounters(pAd);
+#else
+#ifdef CUSTOMER_DCC_FEATURE
+		if (pAd->ApCfg.EntryClientCount)
+			Update_Wtbl_Counters(pAd);
+#endif
+#endif
+
+#ifdef TXRX_STAT_SUPPORT
+		if (pAd->ApCfg.EntryClientCount
+#ifndef VENDOR_FEATURE11_SUPPORT
+			&& pAd->EnableTxRxStats
+#endif /* VENDOR_FEATURE11_SUPPORT */
+			) {
+			MtCmdGetPerStaTxStat(pAd, NULL, 0);		/*bitmap and entryCount to be used in future*/
+#ifndef VENDOR_FEATURE11_SUPPORT
+			Update_LastSec_TXRX_Stats(pAd);
+#endif /* VENDOR_FEATURE11_SUPPORT */
+		}
+#endif
+
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+		if ((pAd->tr_ctl.total_int_count == 0) || ((pAd->tr_ctl.rx_data_int_count == 0)
+			&& (pAd->tr_ctl.rx_cmd_int_count == 0))) {
+			MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_OFF, ("interrupt miss from last 1 sec\n"));
+
+			MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_OFF, ("Total %lu, rx_data %lu, rx_cmd %lu \n",
+			pAd->tr_ctl.total_int_count, pAd->tr_ctl.rx_data_int_count, pAd->tr_ctl.rx_cmd_int_count));
+			if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_ACTIVE)) {
+				MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_OFF, ("Disabling interrupt\n"));
+				RTMP_ASIC_INTERRUPT_DISABLE(pAd);
+			}
+			MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_OFF, ("Enabling interrupt\n"));
+			RTMP_ASIC_INTERRUPT_ENABLE(pAd);
+		}
+		pAd->tr_ctl.total_int_count = 0;
+		pAd->tr_ctl.rx_data_int_count = 0;
+		pAd->tr_ctl.rx_cmd_int_count = 0;
+#endif
 			if (IS_ASIC_CAP(pAd, fASIC_CAP_WMM_PKTDETECT_OFFLOAD)) {
 				MtCmdCr4QueryBssAcQPktNum(pAd, CR4_GET_BSS_ACQ_PKT_NUM_CMD_DEFAULT);
 			} else {
@@ -1595,6 +1926,9 @@ struct _RTMP_CHIP_OP *ops = hc_get_chip_ops(pAd->hdev_ctrl);
 			/* QBSS_LoadUpdate from Mib_Bucket */
 			hotspot_update_ap_qload_to_bcn(pAd);
 #endif /* AP_QLOAD_SUPPORT */
+#ifdef WAPP_SUPPORT
+			wapp_bss_load_check(pAd);
+#endif /* WAPP_SUPPORT */
 #endif /* CONFIG_HOTSPOT_R2 */
 			APMlmePeriodicExec(pAd);
 #ifdef BACKGROUND_SCAN_SUPPORT
@@ -1672,7 +2006,21 @@ struct _RTMP_CHIP_OP *ops = hc_get_chip_ops(pAd->hdev_ctrl);
 			}
 		}
 	}
+#ifdef AP_SCAN_SUPPORT
 
+    if (pAd->ScanCtrl.PartialScan.bPeriodicPartialScan == TRUE) {
+		if ((pAd->ScanCtrl.PartialScan.TriggerCount % pAd->ScanCtrl.PartialScan.TriggerPeriod) == 0) {
+
+			pAd->ScanCtrl.PartialScan.pwdev = &pAd->ApCfg.MBSSID[0].wdev;
+			pAd->ScanCtrl.PartialScan.bScanning = TRUE;
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+				("%s(): bScanning = %u\n", __func__, pAd->ScanCtrl.PartialScan.bScanning));
+
+			pAd->ScanCtrl.PartialScan.TriggerCount = 0;
+		}
+		pAd->ScanCtrl.PartialScan.TriggerCount++;
+	}
+#endif /* AP_SCAN_SUPPORT */
 #endif /* CONFIG_AP_SUPPORT */
 #ifdef WSC_INCLUDED
 	WSC_HDR_BTN_MR_HANDLE(pAd);
@@ -1684,6 +2032,54 @@ struct _RTMP_CHIP_OP *ops = hc_get_chip_ops(pAd->hdev_ctrl);
 #endif
 #endif /* WSC_INCLUDED */
 	pAd->bUpdateBcnCntDone = FALSE;
+
+#ifdef RATE_PRIOR_SUPPORT
+
+	if (pAd->Mlme.PeriodicRound % MLME_TASK_EXEC_MULTIPLE == 0 && pAd->LowRateCtrl.RatePrior == 1) {
+
+		RTMP_SEM_LOCK(&pAd->LowRateCtrl.BlackListLock);
+		DlListForEach(pBlackSta, &pAd->LowRateCtrl.BlackList, BLACK_STA, List) {
+			if (time_after(jiffies, pBlackSta->Jiff + (pAd->LowRateCtrl.BlackListTimeout)*HZ)) {
+				MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+						("Remove from blklist, %02x:%02x:%02x:%02x:%02x:%02x\n", PRINT_MAC(pBlackSta->Addr)));
+				tmp = pBlackSta;
+				pBlackSta = DlListEntry(pBlackSta->List.Prev, BLACK_STA, List);
+				DlListDel(&(tmp->List));
+				os_free_mem(tmp);
+			}
+		}
+		RTMP_SEM_UNLOCK(&pAd->LowRateCtrl.BlackListLock);
+	}
+	if (pAd->Mlme.PeriodicRound % (MLME_TASK_EXEC_MULTIPLE * pAd->LowRateCtrl.LowRateCountPeriod) == 0
+		&& pAd->LowRateCtrl.RatePrior == 1) {
+		for (idx = 1; idx < MAX_LEN_OF_MAC_TABLE; idx++) {
+			pEntry = &(pAd->MacTab.Content[idx]);
+			if (IS_ENTRY_CLIENT(pEntry)) {
+			if (pEntry->McsTotalRxCount > pAd->LowRateCtrl.TotalCntThreshold) {
+					if (pAd->LowRateCtrl.LowRateRatioThreshold * pEntry->McsTotalRxCount <
+						10 * pEntry->McsLowRateRxCount) {
+						MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+							("LowRateRatio exceed Threshold!Send DEAUTH frame!!\n"));
+						os_alloc_mem(NULL, (UCHAR **)&pBlackSta, sizeof(BLACK_STA));
+						NdisZeroMemory(pBlackSta, sizeof(BLACK_STA));
+
+						NdisCopyMemory(pBlackSta->Addr, pEntry->Addr, MAC_ADDR_LEN);
+						pBlackSta->Jiff = jiffies;
+						RTMP_SEM_LOCK(&pAd->LowRateCtrl.BlackListLock);
+						DlListAdd(&pAd->LowRateCtrl.BlackList, &(pBlackSta->List));
+						RTMP_SEM_UNLOCK(&pAd->LowRateCtrl.BlackListLock);
+						MlmeDeAuthAction(pAd, pEntry, REASON_UNSPECIFY, FALSE);
+					}
+				}
+
+				pEntry->McsTotalRxCount = 0;
+				pEntry->McsLowRateRxCount = 0;
+			}
+		}
+	}
+
+#endif /*RATE_PRIOR_SUPPORT*/
+
 }
 
 
@@ -1799,7 +2195,11 @@ VOID MlmeCalculateChannelQuality(
 
 	MaxRssi = RTMPMaxRssi(pAd, pRssiSample->LastRssi[0],
 						  pRssiSample->LastRssi[1],
-						  pRssiSample->LastRssi[2]);
+						  pRssiSample->LastRssi[2]
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+							, pRssiSample->LastRssi[3]
+#endif
+						  );
 	/*
 		calculate TX packet error ratio and TX retry ratio - if too few TX samples,
 		skip TX related statistics
@@ -2431,6 +2831,108 @@ VOID MlmeUpdateTxRates(RTMP_ADAPTER *pAd, BOOLEAN bLinkUp, UCHAR apidx)
 			wdev->rate.MlmeTransmit.field.MCS = OfdmRateToRxwiMCS[pAd->CommonCfg.MlmeRate];
 		}
 
+#ifdef MIN_PHY_RATE_SUPPORT
+		if ((wdev->PhyMode == WMODE_B) && (wdev->channel <= 14) &&
+			(wdev->rate.DisableCCKRate == FALSE)) {
+			if (wdev->rate.MinPhyDataRateTransmit.field.MODE != MODE_CCK) {
+				wdev->rate.MinPhyDataRateTransmit.field.MODE = MODE_CCK;
+				wdev->rate.MinPhyDataRateTransmit.field.MCS = RATE_1;
+			}
+
+			if (wdev->rate.MinPhyBeaconRateTransmit.field.MODE != MODE_CCK) {
+				wdev->rate.MinPhyBeaconRateTransmit.field.MODE = MODE_CCK;
+				wdev->rate.MinPhyBeaconRateTransmit.field.MCS = RATE_1;
+			}
+
+			if (wdev->rate.MinPhyMgmtRateTransmit.field.MODE != MODE_CCK) {
+				wdev->rate.MinPhyMgmtRateTransmit.field.MODE = MODE_CCK;
+				wdev->rate.MinPhyMgmtRateTransmit.field.MCS = RATE_1;
+			}
+
+			if (wdev->rate.MinPhyBcMcRateTransmit.field.MODE != MODE_CCK) {
+				wdev->rate.MinPhyBcMcRateTransmit.field.MODE = MODE_CCK;
+				wdev->rate.MinPhyBcMcRateTransmit.field.MCS = RATE_1;
+			}
+		} else if (wdev->channel <= 14) {
+			if (wdev->rate.DisableCCKRate == TRUE) {
+				if (wdev->rate.MinPhyMgmtRateTransmit.field.MODE == MODE_CCK) {
+					if (wdev->rate.MinPhyMgmtRate < PHY_RATE_6) {
+						wdev->rate.MinPhyMgmtRate                    = PHY_RATE_6;
+						wdev->rate.MinPhyMgmtRateTransmit.field.MODE = MODE_OFDM;
+						wdev->rate.MinPhyMgmtRateTransmit.field.MCS  = OfdmRateToRxwiMCS[RATE_6];
+					} else {
+						wdev->rate.MinPhyMgmtRate                    = PHY_RATE_12;
+						wdev->rate.MinPhyMgmtRateTransmit.field.MODE = MODE_OFDM;
+						wdev->rate.MinPhyMgmtRateTransmit.field.MCS  = OfdmRateToRxwiMCS[RATE_12];
+					}
+				}
+
+				if (wdev->rate.MinPhyDataRateTransmit.field.MODE == MODE_CCK) {
+					if (wdev->rate.MinPhyDataRate < PHY_RATE_6) {
+						wdev->rate.MinPhyDataRate                    = PHY_RATE_6;
+						wdev->rate.MinPhyDataRateTransmit.field.MODE = MODE_OFDM;
+						wdev->rate.MinPhyDataRateTransmit.field.MCS  = OfdmRateToRxwiMCS[RATE_6];
+					} else {
+						wdev->rate.MinPhyDataRate                    = PHY_RATE_12;
+						wdev->rate.MinPhyDataRateTransmit.field.MODE = MODE_OFDM;
+						wdev->rate.MinPhyDataRateTransmit.field.MCS  = OfdmRateToRxwiMCS[RATE_12];
+					}
+				}
+
+				if (wdev->rate.MinPhyBcMcRateTransmit.field.MODE == MODE_CCK) {
+					if (wdev->rate.MinPhyBcMcRate < PHY_RATE_6) {
+						wdev->rate.MinPhyBcMcRate                    = PHY_RATE_6;
+						wdev->rate.MinPhyBcMcRateTransmit.field.MODE = MODE_OFDM;
+						wdev->rate.MinPhyBcMcRateTransmit.field.MCS  = OfdmRateToRxwiMCS[RATE_6];
+					} else {
+						wdev->rate.MinPhyBcMcRate                    = PHY_RATE_12;
+						wdev->rate.MinPhyBcMcRateTransmit.field.MODE = MODE_OFDM;
+						wdev->rate.MinPhyBcMcRateTransmit.field.MCS  = OfdmRateToRxwiMCS[RATE_12];
+					}
+				}
+			}
+		} else if (wdev->channel > 14) {
+			if (wdev->rate.MinPhyDataRateTransmit.field.MODE != MODE_OFDM) {
+				wdev->rate.MinPhyDataRateTransmit.field.MODE = MODE_OFDM;
+				wdev->rate.MinPhyDataRateTransmit.field.MCS = OfdmRateToRxwiMCS[RATE_6];
+			}
+
+			if (wdev->rate.MinPhyBeaconRateTransmit.field.MODE != MODE_OFDM) {
+				wdev->rate.MinPhyBeaconRateTransmit.field.MODE = MODE_OFDM;
+				wdev->rate.MinPhyBeaconRateTransmit.field.MCS = OfdmRateToRxwiMCS[RATE_6];
+			}
+
+			if (wdev->rate.MinPhyMgmtRateTransmit.field.MODE != MODE_OFDM) {
+				wdev->rate.MinPhyMgmtRateTransmit.field.MODE = MODE_OFDM;
+				wdev->rate.MinPhyMgmtRateTransmit.field.MCS = OfdmRateToRxwiMCS[RATE_6];
+			}
+
+			if (wdev->rate.MinPhyBcMcRateTransmit.field.MODE != MODE_OFDM) {
+				wdev->rate.MinPhyBcMcRateTransmit.field.MODE = MODE_OFDM;
+				wdev->rate.MinPhyBcMcRateTransmit.field.MCS = OfdmRateToRxwiMCS[RATE_6];
+			}
+		}
+
+		if (wdev->rate.MinPhyMgmtRate != 0) {
+			if (wdev->rate.MinPhyMgmtRateTransmit.field.MODE == MODE_CCK) {
+				pAd->CommonCfg.MlmeRate = wdev->rate.MinPhyMgmtRateTransmit.field.MCS;
+				pAd->CommonCfg.BasicMlmeRate = wdev->rate.MinPhyMgmtRateTransmit.field.MCS;
+				pAd->CommonCfg.RtsRate = wdev->rate.MinPhyMgmtRateTransmit.field.MCS;
+				wdev->rate.TxRate = wdev->rate.MinPhyMgmtRateTransmit.field.MCS;
+				wdev->rate.MlmeTransmit = wdev->rate.MinPhyMgmtRateTransmit;
+			} else if (wdev->rate.MinPhyMgmtRateTransmit.field.MODE == MODE_OFDM) {
+				UCHAR OfdmMcs = 0;
+				OfdmMcs = wdev->rate.MinPhyMgmtRateTransmit.field.MCS;
+
+				pAd->CommonCfg.MlmeRate = RxwiMCSToOfdmRate[OfdmMcs];
+				pAd->CommonCfg.BasicMlmeRate = RxwiMCSToOfdmRate[OfdmMcs];
+				pAd->CommonCfg.RtsRate = RxwiMCSToOfdmRate[OfdmMcs];
+				wdev->rate.TxRate = RxwiMCSToOfdmRate[OfdmMcs];
+				wdev->rate.MlmeTransmit = wdev->rate.MinPhyMgmtRateTransmit;
+			}
+		}
+#endif /* MIN_PHY_RATE_SUPPORT */
+
 		/* Keep Basic Mlme Rate.*/
 		pAd->MacTab.Content[MCAST_WCID_TO_REMOVE].HTPhyMode.word = wdev->rate.MlmeTransmit.word;
 
@@ -2445,6 +2947,9 @@ VOID MlmeUpdateTxRates(RTMP_ADAPTER *pAd, BOOLEAN bLinkUp, UCHAR apidx)
 		{
 			/* set default value if MCastPhyMode is not initialized */
 			HTTRANSMIT_SETTING tPhyMode, *pTransmit;
+#ifdef MCAST_BCAST_RATE_SET_SUPPORT
+			HTTRANSMIT_SETTING *pBCastTransmit;
+#endif /* MCAST_BCAST_RATE_SET_SUPPORT */
 
 			memset(&tPhyMode, 0, sizeof(HTTRANSMIT_SETTING));
 			pTransmit  = (wdev->channel > 14) ? (&pAd->CommonCfg.MCastPhyMode_5G) : (&pAd->CommonCfg.MCastPhyMode);
@@ -2452,6 +2957,10 @@ VOID MlmeUpdateTxRates(RTMP_ADAPTER *pAd, BOOLEAN bLinkUp, UCHAR apidx)
 			if (memcmp(pTransmit, &tPhyMode, sizeof(HTTRANSMIT_SETTING)) == 0) {
 				memmove(pTransmit, &pAd->MacTab.Content[MCAST_WCID_TO_REMOVE].HTPhyMode,
 						sizeof(HTTRANSMIT_SETTING));
+#ifdef MCAST_BCAST_RATE_SET_SUPPORT
+				pBCastTransmit = (wdev->channel > 14) ? (&pAd->CommonCfg.BCastPhyMode_5G) : (&pAd->CommonCfg.BCastPhyMode);
+				NdisMoveMemory(pBCastTransmit, pTransmit, sizeof(HTTRANSMIT_SETTING));
+#endif /* MCAST_BCAST_RATE_SET_SUPPORT */
 			}
 
 			/*
@@ -2926,6 +3435,9 @@ VOID MlmeUpdateTxRatesWdev(RTMP_ADAPTER *pAd, BOOLEAN bLinkUp, struct wifi_dev *
 		{
 			/* set default value if MCastPhyMode is not initialized */
 			HTTRANSMIT_SETTING tPhyMode, *pTransmit;
+#ifdef MCAST_BCAST_RATE_SET_SUPPORT
+			HTTRANSMIT_SETTING *pBCastTransmit;
+#endif /* MCAST_BCAST_RATE_SET_SUPPORT */
 
 			memset(&tPhyMode, 0, sizeof(HTTRANSMIT_SETTING));
 			pTransmit  = (wdev->channel > 14) ? (&pAd->CommonCfg.MCastPhyMode_5G) : (&pAd->CommonCfg.MCastPhyMode);
@@ -2933,6 +3445,10 @@ VOID MlmeUpdateTxRatesWdev(RTMP_ADAPTER *pAd, BOOLEAN bLinkUp, struct wifi_dev *
 			if (memcmp(pTransmit, &tPhyMode, sizeof(HTTRANSMIT_SETTING)) == 0) {
 				memmove(pTransmit, &pAd->MacTab.Content[MCAST_WCID_TO_REMOVE].HTPhyMode,
 						sizeof(HTTRANSMIT_SETTING));
+#ifdef MCAST_BCAST_RATE_SET_SUPPORT
+				pBCastTransmit = (wdev->channel > 14) ? (&pAd->CommonCfg.BCastPhyMode_5G) : (&pAd->CommonCfg.BCastPhyMode);
+				NdisMoveMemory(pBCastTransmit, pTransmit, sizeof(HTTRANSMIT_SETTING));
+#endif /* MCAST_BCAST_RATE_SET_SUPPORT */
 			}
 
 			/*
@@ -3156,7 +3672,7 @@ VOID MlmeRadioOn(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 	wdev->fgRadioOnRequest = TRUE;
 	MTRadioOn(pAd, wdev);
 	RTMP_OS_NETDEV_START_QUEUE(wdev->if_dev);
-#ifdef NF_SUPPORT
+#if defined(NF_SUPPORT) || defined(OFFCHANNEL_SCAN_FEATURE)
 	if (IS_MT7615(pAd))
 		enable_nf_support(pAd);
 #endif
@@ -3686,12 +4202,11 @@ BOOLEAN MlmeEnqueueForRecv(
 	}
 
 #ifdef CONFIG_AP_SUPPORT
-#if defined(P2P_SUPPORT) || defined(RT_CFG80211_P2P_SUPPORT) || defined(CFG80211_MULTI_STA)
-
+#if defined(P2P_SUPPORT) || defined(RT_CFG80211_P2P_SUPPORT) || defined(CFG80211_MULTI_STA) || defined(APCLI_CFG80211_SUPPORT)
 	if (OpMode == OPMODE_AP)
 #else
 	IF_DEV_CONFIG_OPMODE_ON_AP(pAd)
-#endif /* P2P_SUPPORT || RT_CFG80211_P2P_SUPPORT */
+#endif /* P2P_SUPPORT || RT_CFG80211_P2P_SUPPORT || APCLI_CFG80211_SUPPORT */
 	{
 #ifdef APCLI_SUPPORT
 
@@ -3768,7 +4283,7 @@ BOOLEAN MlmeEnqueueForRecv(
 			}
 
 #ifdef WDS_SUPPORT
-			if (WdsMsgTypeSubst(pAd, pFrame, &Machine, &MsgType)) {
+			if (wdev->wdev_type == WDEV_TYPE_WDS && WdsMsgTypeSubst(pAd, pFrame, &Machine, &MsgType)) {
 				/* wds case */
 				break;
 			}
@@ -4305,6 +4820,10 @@ CHAR RTMPAvgRssi(RTMP_ADAPTER *pAd, RSSI_SAMPLE *pRssi)
 
 	rx_stream = pAd->Antenna.field.RxPath;
 
+/* single chip dbdc only has 2 functional antennae*/
+	if (pAd->CommonCfg.dbdc_mode == TRUE && rx_stream == 4)
+		rx_stream = 2;
+
 	if (rx_stream == 4)
 		Rssi_temp = (pRssi->AvgRssi[0] + pRssi->AvgRssi[1] + pRssi->AvgRssi[2] + pRssi->AvgRssi[3]) >> 2;
 	else if (rx_stream == 3)
@@ -4318,8 +4837,11 @@ CHAR RTMPAvgRssi(RTMP_ADAPTER *pAd, RSSI_SAMPLE *pRssi)
 	return Rssi;
 }
 
-
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+CHAR RTMPMaxRssi(RTMP_ADAPTER *pAd, CHAR Rssi0, CHAR Rssi1, CHAR Rssi2, CHAR Rssi3)
+#else
 CHAR RTMPMaxRssi(RTMP_ADAPTER *pAd, CHAR Rssi0, CHAR Rssi1, CHAR Rssi2)
+#endif
 {
 	CHAR	larger = -127;
 
@@ -4331,6 +4853,13 @@ CHAR RTMPMaxRssi(RTMP_ADAPTER *pAd, CHAR Rssi0, CHAR Rssi1, CHAR Rssi2)
 
 	if ((pAd->Antenna.field.RxPath == 3) && (Rssi2 != 0))
 		larger = max(larger, Rssi2);
+
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+	if (!pAd->CommonCfg.dbdc_mode) {
+		if ((pAd->Antenna.field.RxPath == 4) && (Rssi3 != 0))
+			larger = max(larger, Rssi3);
+	}
+#endif
 
 	if (larger == -127)
 		larger = 0;

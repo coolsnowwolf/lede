@@ -974,7 +974,7 @@ INT sa_init_train_entry(
 	offset = (unsigned int)(&(((RTMP_SA_TRAINING_PARAM *)NULL)->pMacEntry));
 	cleanLen = sizeof(RTMP_SA_TRAINING_PARAM) - offset;
 	NdisZeroMemory((PUCHAR)(&pTrainEntry->pMacEntry), cleanLen);
-	MTWF_LOG(DBG_CAT_HW, CATHW_SA, DBG_LVL_OFF, ("%s():sizeof(RTMP_SA_TRAINING_PARAM)=%d, offset=%d, cleanLen=%d!\n",
+	MTWF_LOG(DBG_CAT_HW, CATHW_SA, DBG_LVL_OFF, ("%s():sizeof(RTMP_SA_TRAINING_PARAM)=%zu, offset=%d, cleanLen=%d!\n",
 			 __func__, sizeof(RTMP_SA_TRAINING_PARAM), offset, cleanLen));
 	/* some necessary defualt setting for TrainEntry */
 	pTrainEntry->trainStage = SA_INVALID_STAGE;
@@ -1247,8 +1247,8 @@ int sa_train_db_init(
 		return FALSE;
 	}
 
-	MTWF_LOG(DBG_CAT_HW, CATHW_SA, DBG_LVL_OFF, ("AllocTrainMemDone(addr=0x%lx,entrySize=%d,totalSize=%d)\n",
-			 (ULONG)pSAParam->pTrainMem,
+	MTWF_LOG(DBG_CAT_HW, CATHW_SA, DBG_LVL_OFF, ("AllocTrainMemDone(addr=0x%lx,entrySize=%zu,totalSize=%d)\n",
+			 (ULONG) pSAParam->pTrainMem,
 			 sizeof(RTMP_SA_TRAIN_LOG_ELEMENT),
 			 memSize * SA_ENTRY_MAX_NUM));
 	/* Set new parameters */

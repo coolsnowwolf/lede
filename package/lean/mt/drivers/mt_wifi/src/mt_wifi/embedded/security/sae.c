@@ -12,7 +12,8 @@ const SAE_GROUP_OP ecc_group_op = {
 	.sae_parse_commit_element = sae_parse_commit_element_ecc,
 	.sae_derive_commit_element = sae_derive_commit_element_ecc,
 	.sae_derive_pwe = sae_derive_pwe_ecc,
-	.sae_derive_k = sae_derive_k_ecc
+	.sae_derive_k = sae_derive_k_ecc,
+	.sae_reflection_check = sae_reflection_check_ecc,
 };
 
 const SAE_GROUP_OP ffc_group_op = {
@@ -22,7 +23,8 @@ const SAE_GROUP_OP ffc_group_op = {
 	.sae_parse_commit_element = sae_parse_commit_element_ffc,
 	.sae_derive_commit_element = sae_derive_commit_element_ffc,
 	.sae_derive_pwe = sae_derive_pwe_ffc,
-	.sae_derive_k = sae_derive_k_ffc
+	.sae_derive_k = sae_derive_k_ffc,
+	.sae_reflection_check = sae_reflection_check_ffc,
 };
 
 static DH_GROUP_INFO dh_groups[] = {
@@ -63,6 +65,82 @@ int SAE_DEBUG_LEVEL = DBG_LVL_LOUD;
 int SAE_DEBUG_LEVEL2 = DBG_LVL_TRACE;
 int SAE_COST_TIME_DBG_LVL = DBG_LVL_INFO;
 
+UCHAR sae_support_group_list[] = {19, 20, 25, 26};
+
+static UCHAR delete_all_removable_sae_instance(
+	IN SAE_CFG * pSaeCfg)
+{
+	UINT32 i;
+	SAE_INSTANCE *pSaeIns = NULL;
+	UINT32 del_ins_cnt = 0;
+
+	for (i = 0; i < MAX_LEN_OF_MAC_TABLE; i++) {
+		pSaeIns = &pSaeCfg->sae_ins[i];
+
+		if (pSaeCfg->sae_ins[i].valid == FALSE)
+			continue;
+
+		if (pSaeIns->same_mac_ins) {
+			if (pSaeIns->same_mac_ins->valid == TRUE) {
+				delete_sae_instance(pSaeIns->same_mac_ins);
+				del_ins_cnt++;
+			}
+			pSaeIns->same_mac_ins = NULL;
+		}
+
+		if (pSaeIns->removable == TRUE) {
+			delete_sae_instance(pSaeIns);
+			del_ins_cnt++;
+		}
+	}
+
+	if (del_ins_cnt != 0)
+		return TRUE;
+	else
+		return FALSE;
+}
+
+
+INT show_sae_info_proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
+{
+	UINT32 i;
+	SAE_CFG * pSaeCfg = &pAd->SaeCfg;
+	SAE_INSTANCE *pSaeIns = NULL;
+	UINT32 input = 0;
+
+	if (arg != NULL)
+		input = os_str_toul(arg, 0, 10);
+
+	MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_OFF, ("total ins: %d\n", pSaeCfg->total_ins));
+
+	for (i = 0; i < MAX_LEN_OF_MAC_TABLE; i++) {
+		if (pSaeCfg->sae_ins[i].valid == FALSE && input != 1)
+			continue;
+
+		pSaeIns = &pSaeCfg->sae_ins[i];
+
+		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_OFF,
+			 ("idx:%d, v/r:%d/%d, OM=0x%02x:%02x:%02x:%02x:%02x:%02x, PM=0x%02x:%02x:%02x:%02x:%02x:%02x\n",
+			 i, pSaeIns->valid, pSaeIns->removable,
+			 PRINT_MAC(pSaeIns->own_mac), PRINT_MAC(pSaeIns->peer_mac)));
+
+		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_OFF,
+			 ("\tstate:%d, group:%d, sync:%d, sc:0x%x, last_peer_sc:0x%x, same_mac_ins=%d, timer_state=%d\n",
+			 pSaeIns->state, pSaeIns->group, pSaeIns->sync,
+			 pSaeIns->send_confirm, pSaeIns->last_peer_sc,
+			 (pSaeIns->same_mac_ins != NULL),
+			 pSaeIns->sae_retry_timer.State));
+
+		if (pSaeIns->valid && pSaeIns->pParentSaeCfg == NULL)
+			MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_OFF,
+				("\t[error]pSaeIns->pParentSaeCfg is NULL\n"));
+		if (pSaeIns->valid && pSaeIns->psk == NULL)
+			MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_OFF,
+				("\t[error]pSaeIns->psk is NULL\n"));
+	}
+
+	return TRUE;
+}
 
 VOID sae_cfg_init(
 	IN RTMP_ADAPTER * pAd,
@@ -75,26 +153,35 @@ VOID sae_cfg_init(
 #endif
 	MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_LOUD,
 			 ("==> %s()\n", __func__));
-	/* 11.3.8.5.1 When the parent SAE process starts up, Open is set to zero (0) */
+	/* 12.4.8.5.1 When the parent SAE process starts up, Open is set to zero (0) */
 	pSaeCfg->pAd = pAd;
 	pSaeCfg->open = 0;
 	pSaeCfg->dot11RSNASAERetransPeriod = 2;
 	pSaeCfg->total_ins = 0;
-	pSaeCfg->sae_anti_clogging_threshold = 10000;
+	pSaeCfg->sae_anti_clogging_threshold = 10;
+	pSaeCfg->last_token_key_time = 0;
+	NdisZeroMemory(&pSaeCfg->token_key, SAE_TOKEN_KEY_LEN);
 
-	for (i = 0; i < MAX_SIZE_OF_ALLOWED_GROUP - 1; i++)
-		pSaeCfg->support_group[i] = i + 1;
+	NdisZeroMemory(&pSaeCfg->support_group, MAX_SIZE_OF_ALLOWED_GROUP);
 
-	pSaeCfg->support_group[MAX_SIZE_OF_ALLOWED_GROUP - 1] = 0;
+	for (i = 0; i < sizeof(sae_support_group_list)/sizeof(UCHAR); i++)
+		pSaeCfg->support_group[i] = sae_support_group_list[i];
 }
 
 VOID sae_cfg_deinit(
 	IN RTMP_ADAPTER * pAd,
 	IN SAE_CFG * pSaeCfg)
 {
+	UINT32 i;
+
 #ifdef BI_POOL
 	big_integer_pool_deinit();
 #endif
+	for (i = 0; i < MAX_LEN_OF_MAC_TABLE; i++)
+		if (pSaeCfg->sae_ins[i].valid == FALSE)
+			continue;
+		else
+			delete_sae_instance(&pSaeCfg->sae_ins[i]);
 }
 
 
@@ -144,6 +231,7 @@ SAE_INSTANCE *search_sae_instance(
 	return pSaeIns;
 }
 
+
 SAE_INSTANCE *create_sae_instance(
 	IN RTMP_ADAPTER * pAd,
 	IN SAE_CFG * pSaeCfg,
@@ -154,14 +242,22 @@ SAE_INSTANCE *create_sae_instance(
 {
 	UINT32 i;
 	SAE_INSTANCE *pSaeIns = NULL;
-	MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_LOUD,
+	MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_TRACE,
 			 ("==> %s()\n", __func__));
-	NdisAcquireSpinLock(&pSaeCfg->sae_cfg_lock);
 
-	if (pSaeCfg->total_ins == MAX_LEN_OF_MAC_TABLE) {
-		NdisReleaseSpinLock(&pSaeCfg->sae_cfg_lock);
+	if (pSaeCfg == NULL || own_mac == NULL ||
+	    peer_mac == NULL || bssid == NULL || psk == NULL) {
+		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+			 ("%s():input should not be null\n", __func__));
 		return NULL;
 	}
+
+	if ((pSaeCfg->total_ins == MAX_LEN_OF_MAC_TABLE) &&
+		(delete_all_removable_sae_instance(pSaeCfg) == FALSE)) {
+		return NULL;
+	}
+
+	NdisAcquireSpinLock(&pSaeCfg->sae_cfg_lock);
 
 	for (i = 0; i < MAX_LEN_OF_MAC_TABLE; i++) {
 		if (pSaeCfg->sae_ins[i].valid == FALSE) {
@@ -183,16 +279,30 @@ VOID delete_sae_instance(
 	IN SAE_INSTANCE *pSaeIns)
 {
 	SAE_CFG *pSaeCfg = NULL;
+	BOOLEAN Cancelled;
+
 	MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_LOUD,
 			 ("==> %s()\n", __func__));
 
-	if (pSaeIns == NULL)
+	if (pSaeIns == NULL) {
+		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+			 ("%s(): pSaeIns is NULL\n", __func__));
 		return;
+	}
 
 	pSaeCfg = pSaeIns->pParentSaeCfg;
+	if (pSaeCfg == NULL) {
+		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+			 ("%s(): pSaeCfg is NULL\n", __func__));
+		return;
+	}
+
 	NdisAcquireSpinLock(&pSaeCfg->sae_cfg_lock);
+	RTMPReleaseTimer(&pSaeIns->sae_retry_timer, &Cancelled);
 	pSaeIns->valid = FALSE;
-	pSaeIns->group_op->sae_group_deinit(pSaeIns);
+	pSaeIns->removable = FALSE;
+	if (pSaeIns->group_op)
+		pSaeIns->group_op->sae_group_deinit(pSaeIns);
 
 	if (pSaeIns->anti_clogging_token) {
 		os_free_mem(pSaeIns->anti_clogging_token);
@@ -205,12 +315,30 @@ VOID delete_sae_instance(
 		pSaeIns->same_mac_ins->same_mac_ins = NULL;
 		pSaeIns->same_mac_ins = NULL;
 	}
-
+	SAE_BN_FREE(&pSaeIns->own_commit_scalar);
 	SAE_BN_FREE(&pSaeIns->peer_commit_scalar);
 	NdisZeroMemory(pSaeIns, sizeof(SAE_INSTANCE));
 	pSaeCfg->total_ins--;
 	NdisReleaseSpinLock(&pSaeCfg->sae_cfg_lock);
 	return;
+}
+
+UCHAR set_sae_instance_removable(
+	IN SAE_CFG * pSaeCfg,
+	IN UCHAR *own_mac,
+	IN UCHAR *peer_mac)
+{
+	SAE_INSTANCE *pSaeIns = search_sae_instance(pSaeCfg, own_mac, peer_mac);
+
+	MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_LOUD,
+			 ("%s:OM=%02x:%02x:%02x:%02x:%02x:%02x, PM=%02x:%02x:%02x:%02x:%02x:%02x\n",
+			 __func__, PRINT_MAC(own_mac), PRINT_MAC(peer_mac)));
+
+	if (pSaeIns == NULL)
+		return FALSE;
+
+	pSaeIns->removable = TRUE;
+	return TRUE;
 }
 
 VOID sae_ins_init(
@@ -234,7 +362,7 @@ VOID sae_ins_init(
 	pSaeIns->psk = psk;
 	SET_NOTHING_STATE(pSaeIns);
 	pSaeIns->sync = 0;
-	/* 11.3.8.5.2
+	/* 12.4.8.5.2
 	  * The number of Confirm messages that have been sent.
 	  * This is the send-confirm counter used in the construction of Confirm messages
 	  */
@@ -242,6 +370,7 @@ VOID sae_ins_init(
 	pSaeIns->last_peer_sc = 0;
 	pSaeIns->support_group_idx = 0;
 	pSaeIns->same_mac_ins = NULL;
+	pSaeIns->removable = FALSE;
 }
 
 /* partial */
@@ -262,6 +391,7 @@ VOID sae_clear_data(
 
 	SAE_BN_FREE(&pSaeIns->sae_rand);
 	SAE_BN_FREE(&pSaeIns->peer_commit_scalar);
+	SAE_BN_FREE(&pSaeIns->own_commit_scalar);
 	SET_NOTHING_STATE(pSaeIns);
 	NdisZeroMemory(pSaeIns, offsetof(SAE_INSTANCE, valid));
 	RTMPCancelTimer(&pSaeIns->sae_retry_timer, &Cancelled);
@@ -399,13 +529,73 @@ VOID sae_auth_retransmit(
 	RALINK_TIMER_STRUCT *pTimer = (RALINK_TIMER_STRUCT *) SystemSpecific3;
 	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *)pTimer->pAd;
 	UCHAR ret;
+#ifdef APCLI_SUPPORT
+#ifdef APCLI_SAE_SUPPORT
+	UCHAR idx = 0;
+	PAPCLI_STRUCT apcli_entry = NULL;
+	APCLI_CTRL_MSG_STRUCT ApCliCtrlMsg;
+	USHORT ifIndex = 0;
+#ifdef MAC_REPEATER_SUPPORT
+	REPEATER_CLIENT_ENTRY *rept_entry = NULL;
+#endif
+#endif
+#endif
 	MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_LOUD,
 			 ("==> %s()\n", __func__));
 
-	if (sae_check_big_sync(pSaeIns)) /* ellis */
-		return;
+#ifdef APCLI_SUPPORT
+#ifdef APCLI_SAE_SUPPORT
+	/*In case of  ApCli and mac repeater ,we need to reset	state machine if sync exceeds threshold*/
+	for (idx = 0; idx < pAd->ApCfg.ApCliNum; idx++) {
 
-	pSaeIns->sync++;
+		apcli_entry = &pAd->ApCfg.ApCliTab[idx];
+
+		if (MAC_ADDR_EQUAL(pSaeIns->own_mac, apcli_entry->wdev.if_addr)
+			&& pSaeIns && sae_check_big_sync(pSaeIns)) {
+
+				apcli_entry->AuthCurrState = APCLI_AUTH_REQ_IDLE;
+				ApCliCtrlMsg.Status = MLME_UNSPECIFY_FAIL;
+#ifdef MAC_REPEATER_SUPPORT
+				ApCliCtrlMsg.CliIdx = 0xFF;
+				ApCliCtrlMsg.BssIdx = apcli_entry->wdev.func_idx;
+				ifIndex = apcli_entry->wdev.func_idx;
+#endif /* MAC_REPEATER_SUPPORT */
+				MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+						 ("==> %s():reset apcli state machine\n", __func__));
+
+				MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_AUTH_RSP,
+							sizeof(APCLI_CTRL_MSG_STRUCT), &ApCliCtrlMsg, ifIndex);
+				RTMP_MLME_HANDLER(pAd);
+				return;
+		}
+	}
+#ifdef MAC_REPEATER_SUPPORT
+
+	rept_entry = lookup_rept_entry(pAd, pSaeIns->own_mac);
+
+	if ((rept_entry != NULL)
+			&& pSaeIns && sae_check_big_sync(pSaeIns)) {
+
+			rept_entry->AuthCurrState = APCLI_AUTH_REQ_IDLE;
+		/*If SAE instance has been deleted*/
+			ApCliCtrlMsg.Status = MLME_UNSPECIFY_FAIL;
+#ifdef MAC_REPEATER_SUPPORT
+			ApCliCtrlMsg.CliIdx = rept_entry->MatchLinkIdx;
+			ApCliCtrlMsg.BssIdx = rept_entry->MatchApCliIdx;
+#endif /* MAC_REPEATER_SUPPORT */
+			ifIndex = REPT_MLME_START_IDX + rept_entry->MatchLinkIdx;
+
+			MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_AUTH_RSP,
+						sizeof(APCLI_CTRL_MSG_STRUCT), &ApCliCtrlMsg, ifIndex);
+			RTMP_MLME_HANDLER(pAd);
+			return;
+	}
+#endif
+
+#endif
+#endif
+	if (pSaeIns && sae_check_big_sync(pSaeIns)) /* ellis */
+		return;
 
 	switch (pSaeIns->state) {
 	case SAE_COMMITTED:
@@ -449,7 +639,7 @@ UCHAR sae_auth_init(
 	MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_TRACE,
 			 ("==>%s(): pSaeIns = %p, pSaeIns->state = %d\n", __func__, pSaeIns, (pSaeIns) ? pSaeIns->state : -1));
 
-	/* 11.3.8.6.1 Upon receipt of an Initiate event, the parent process shall check whether there exists a protocol instance for
+	/* 12.4.8.6.1 Upon receipt of an Initiate event, the parent process shall check whether there exists a protocol instance for
 	  * the peer MAC address (from the Init event) in either Committed or Confirmed state. If there is, the Initiate
 	  * event shall be ignored. Otherwise, a protocol instance shall be created, and an Init event shall be sent to the
 	  * protocol instance.
@@ -487,14 +677,15 @@ FAIL:
 }
 
 
-UCHAR *sae_handle_auth(
+UCHAR sae_handle_auth(
 	IN RTMP_ADAPTER *pAd,
 	IN SAE_CFG *pSaeCfg,
 	IN VOID *msg,
 	IN UINT32 msg_len,
 	IN UCHAR *psk,
 	IN USHORT auth_seq,
-	IN USHORT auth_status)
+	IN USHORT auth_status,
+	OUT UCHAR** pmk)
 {
 	USHORT res = MLME_SUCCESS;
 	FRAME_802_11 *Fr = (PFRAME_802_11)msg;
@@ -502,6 +693,8 @@ UCHAR *sae_handle_auth(
 	UINT8 is_token_req = FALSE;
 	UCHAR *token = NULL;
 	UINT32 token_len = 0;
+	UCHAR data[SHA256_DIGEST_SIZE + 2];
+	UINT32 data_len = 0;
 	MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_TRACE,
 			 ("==>%s(): receive seq #%d with status code %d, instance %p, own mac addr = %02x:%02x:%02x:%02x:%02x:%02x, peer mac addr = %02x:%02x:%02x:%02x:%02x:%02x\n",
 			  __func__, auth_seq, auth_status, pSaeIns, PRINT_MAC(Fr->Hdr.Addr1), PRINT_MAC(Fr->Hdr.Addr2)));
@@ -509,47 +702,96 @@ UCHAR *sae_handle_auth(
 	/* Upon receipt of a Com event, the t0 (retransmission) timer shall be cancelled in Committed/Confirmed state */
 	/* Upon receipt of a Con event, the t0 (retransmission) timer shall be cancelled in Committed/Confirmed state */
 	if (pSaeIns) {
+		if (Fr->Hdr.FC.Retry == 0)
+			pSaeIns->last_rcv_auth_seq = Fr->Hdr.Sequence;
+		else {
+			if (pSaeIns->last_rcv_auth_seq == Fr->Hdr.Sequence) {
+				goto unfinished;
+			}
+		}
+	}
+	if (pSaeIns) {
 		sae_clear_retransmit_timer(pSaeIns); /* ellis */
 		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_TRACE,
 				 ("%s(): state = %d\n",
 				  __func__, pSaeIns->state));
 	}
 
-	if (pSaeIns
-		&& pSaeIns->state != SAE_COMMITTED
-		&& auth_status != MLME_SUCCESS) {
-		delete_sae_instance(pSaeIns);
-		return NULL;
-	}
-
 	switch (auth_seq) {
 	case SAE_COMMIT_SEQ:
 		if (auth_status != MLME_SUCCESS) {
 			if (!pSaeIns)
-				return NULL;
+				goto unfinished;
 
-			/* 11.3.8.6.3 Upon receipt of a Com event, the protocol instance shall check the Status of the Authentication frame. If the
+			/* 12.4.8.6.3 Upon receipt of a Com event, the protocol instance shall check the Status of the Authentication frame. If the
 			  * Status code is nonzero, the frame shall be silently discarded and a Del event shall be sent to the parent
 			  * process.
 			  */
 			/* comments: it's not expected to receive the rejection commit msg in NOTHING/ACCEPTED state */
 			if (pSaeIns->state == SAE_NOTHING
-				&& pSaeIns->state == SAE_ACCEPTED) {
+				|| pSaeIns->state == SAE_ACCEPTED) {
 				delete_sae_instance(pSaeIns);
-				return NULL;
+				pSaeIns = NULL;
+				goto unfinished;
 			} else if (pSaeIns->state == SAE_CONFIRMED) {
-				/* 11.3.8.6.5 Upon receipt of a Com event, if the Status is nonzero, the frame shall be silently discarded, the t0 (retransmission) timer set */
+				/* 12.4.8.6.5 Upon receipt of a Com event, if the Status is nonzero, the frame shall be silently discarded, the t0 (retransmission) timer set
+				  * If Sync is greater than dot11RSNASAESync, the protocol instance shall send the parent process a Del event and transitions back to Nothing state
+				  */
+				if (sae_check_big_sync(pSaeIns))
+					goto unfinished;
 				sae_set_retransmit_timer(pSaeIns);
-				return NULL;
+				goto unfinished;
 			}
 
 			if (auth_status == MLME_ANTI_CLOGGING_TOKEN_REQ) {
-				;
+				/*Check presence of Anti-Clogging Token*/
+				/*If Anti-Clogging Token present store the anti-clogging token content and length*/
+				is_token_req = TRUE;
+				res = sae_parse_commit(pSaeCfg, pSaeIns, msg, msg_len, &token, &token_len, is_token_req);
+
+				if (res != MLME_SUCCESS)
+					break;
+
+				if (token && (token_len > 0)) {
+					MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+								 ("%s:AntiClogging Request token found,token_len = %d\n", __func__, token_len));
+
+					os_alloc_mem(pAd, &pSaeIns->anti_clogging_token, token_len);
+
+					if (pSaeIns->anti_clogging_token == NULL) {
+						MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+									 ("%s:AntiClogging token allocation fail\n", __func__));
+
+						sae_set_retransmit_timer(pSaeIns);
+						goto unfinished;
+
+					}
+					NdisZeroMemory(pSaeIns->anti_clogging_token, token_len);
+					pSaeIns->anti_clogging_token_len = token_len;
+
+
+					NdisMoveMemory(pSaeIns->anti_clogging_token, (UCHAR *)token,
+								   pSaeIns->anti_clogging_token_len);
+
+
+					sae_send_auth_commit(pAd, pSaeIns);
+					sae_set_retransmit_timer(pSaeIns);
+					goto unfinished;
+
+				} else {
+					MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+								 ("%s:AntiClogging Request token empty fail\n", __func__));
+					sae_set_retransmit_timer(pSaeIns);
+					goto unfinished;
+				}
+
+
+
 			} else if (auth_status == MLME_FINITE_CYCLIC_GROUP_NOT_SUPPORTED) {
 				USHORT sae_group;
 				USHORT new_sae_group;
 				UCHAR *pos = &Fr->Octet[6];
-				/* 11.3.8.6.4 If the Status code is 77, the protocol instance shall check the finite cyclic group field being rejected.*/
+				/* 12.4.8.6.4 If the Status code is 77, the protocol instance shall check the finite cyclic group field being rejected.*/
 				/* Check Finite Cyclic Group */
 				NdisMoveMemory(&sae_group, pos, 2); /* ellis bigendian */
 				sae_group = cpu2le16(sae_group);
@@ -557,11 +799,11 @@ UCHAR *sae_handle_auth(
 				/* If the rejected group does not match the last offered group the protocol instance shall silently discard the message and set the t0 (retransmission) timer */
 				if (sae_group != pSaeIns->group) {
 					sae_set_retransmit_timer(pSaeIns);
-					return NULL;
+					goto unfinished;
 				} else {
 					/* If the rejected group matches the last offered group,
 					  * the protocol instance shall choose a different group and generate the PWE and the secret
-					  * values according to 11.3.5.2; it then generates and transmits a new Commit Message to the peer,
+					  * values according to 12.4.5.2; it then generates and transmits a new Commit Message to the peer,
 					  * zeros Sync, sets the t0 (retransmission) timer, and remains in Committed state.
 					  */
 					new_sae_group = pSaeCfg->support_group[++pSaeIns->support_group_idx];
@@ -569,25 +811,30 @@ UCHAR *sae_handle_auth(
 					/*If there are no other groups to choose,
 					the protocol instance shall send a Del event to the parent process and transitions back to Nothing state. */
 					if ((new_sae_group != 0)
-						&& (sae_group_allowed(pSaeIns, pSaeCfg->support_group, sae_group) != MLME_SUCCESS)
+						&& (sae_group_allowed(pSaeIns, pSaeCfg->support_group, new_sae_group) != MLME_SUCCESS)
 						&& (sae_prepare_commit(pSaeIns) != MLME_SUCCESS)) {
 						delete_sae_instance(pSaeIns);
-						return NULL;
+						pSaeIns= NULL;
+						goto unfinished;
 					}
 
 					sae_send_auth_commit(pAd, pSaeIns);
-					return NULL;
+					sae_set_retransmit_timer(pSaeIns);
+					goto unfinished;
 				}
 			} else {
-				/* 11.3.8.6.4 If the Status is some other nonzero value, the frame shall be silently discarded and the t0 (retransmission) timer shall be set. */
+				/* 12.4.8.6.4 If the Status is some other nonzero value, the frame shall be silently discarded and the t0 (retransmission) timer shall be set.
+				  * 12.4.8.6.5 Upon receipt of a Com event, the t0 (retransmission) timer shall be canceled. If the Status is nonzero,
+				  * the frame shall be silently discarded, the t0 (retransmission) timer set, and the protocol instance shall remain in the Confirmed state
+				  */
 				sae_set_retransmit_timer(pSaeIns);
-				return NULL;
+				goto unfinished;
 			}
 		}
 
 		if (!pSaeIns
 			|| pSaeIns->state == SAE_ACCEPTED) {
-			/* 11.3.8.6, the parent process checks the value of Open first.
+			/* 12.4.8.6, the parent process checks the value of Open first.
 			  * If Open is not greater than dot11RSNASAEAntiCloggingThreshold or Anti-Clogging Token exists and is correct,
 			  * the parent process shall create a protocol instance.
 			  * comment: But, parsing anti-clogging token needs group info, so always create instance first
@@ -597,27 +844,59 @@ UCHAR *sae_handle_auth(
 
 			if (!pSaeIns)
 				res = MLME_UNSPECIFY_FAIL;
-
-			pSaeIns->same_mac_ins = pPreSaeIns;
-
+			if (pSaeIns) {
+				pSaeIns->last_rcv_auth_seq = Fr->Hdr.Sequence;
+				pSaeIns->same_mac_ins = pPreSaeIns;
+			}
 			if (pPreSaeIns)
 				pPreSaeIns->same_mac_ins = pSaeIns;
 		}
 
-		if (sae_using_anti_clogging(pSaeCfg))
-			;
-
 		res = sae_parse_commit(pSaeCfg, pSaeIns, msg, msg_len, &token, &token_len, is_token_req);
 
 		if (res == MLME_FINITE_CYCLIC_GROUP_NOT_SUPPORTED) {
-			/* 11.3.8.6.4  a Commit Message with Status code equal to 77 indicating rejection,
-			  * and the Algorithm identifier set to the rejected algorithm, shall be sent to the peer
+			/* 12.4.8.6.3(NOTHING) the frame shall be processed by first checking the finite cyclic group field to see if the requested group is supported.
+			  * If not, BadGrp shall be set and the protocol instance shall construct and transmit a an Authentication frame with Status code UNSUPPORTED_FINITE_CYCLIC_GROUP
+			  * indicating rejection with the finite cyclic group field set to the rejected group, and shall send the parent process a Del event
 			  */
-		} else if (res != MLME_SUCCESS)
+			if (pSaeIns->state == SAE_NOTHING) {
+				delete_sae_instance(pSaeIns);
+				pSaeIns = NULL;
+			}
+			/* 12.4.8.6.4(COMMITTED) If the Status is zero, the finite cyclic group field is checked. If the group is not supported, BadGrp shall be set and the value of Sync shall be checked.
+			  * -If Sync is greater than dot11RSNASAESync, the protocol instance shall send a Del event to the parent process and transitions back to Nothing state.
+			  * -If Sync is not greater than dot11RSNASAESync, Sync shall be incremented, a Commit Message with Status code equal to 77 indicating rejection,
+			  * and the Algorithm identifier set to the rejected algorithm, shall be sent to the peer,
+			  * the t0 (retransmission) timer shall be set and the protocol instance shall remain in Committed state
+			  */
+			if (pSaeIns->state == SAE_COMMITTED && sae_check_big_sync(pSaeIns))
+				goto unfinished;
+
+			if (pSaeIns->state == SAE_COMMITTED)
+				sae_set_retransmit_timer(pSaeIns);
+
+			/* 12.4.8.6.5(CONFIRMED) the protocol instance shall verify that the finite cyclic group is the same as the previously received Commit frame.
+			  * If not, the frame shall be silently discarded
+			  * If so, the protocol instance shall increment Sync, increment Sc, and transmit its Commit and Confirm (with the new Sc value) messages. 
+			  * It then shall set the t0 (retransmission) timer.
+			  */
+			if (pSaeIns->state == SAE_CONFIRMED) {
+				sae_set_retransmit_timer(pSaeIns);
+				goto unfinished;
+			}
+		} else if (res == SAE_SILENTLY_DISCARDED) {
+			sae_set_retransmit_timer(pSaeIns);
+			goto unfinished;
+		} else if (res != MLME_SUCCESS) {
+			if (pSaeIns->state == SAE_NOTHING) {
+				delete_sae_instance(pSaeIns);
+				pSaeIns = NULL;
+			}
 			break;
+		}
 
 		if (is_token_req) {
-			/* 11.3.8.6.4 The protocol instance shall check the Status code of the Authentication frame.
+			/* 12.4.8.6.4 The protocol instance shall check the Status code of the Authentication frame.
 			  * If the Status code is 76, a new Commit Message shall be constructed with the Anti-Clogging Token from the received
 			  * Authentication frame, and the commit-scalar and COMMIT-ELEMENT previously sent
 			  */
@@ -626,6 +905,23 @@ UCHAR *sae_handle_auth(
 			  */
 			pSaeIns->sync = 0;
 		}
+
+		if (token && sae_check_token(pSaeIns, token, token_len) == FALSE) {
+			MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+				 ("%s(): check token fail with peer mac %02x:%02x:%02x:%02x:%02x:%02x\n",
+				  __func__, PRINT_MAC(pSaeIns->peer_mac)));
+			delete_sae_instance(pSaeIns);
+			pSaeIns = NULL;
+			res = MLME_UNSPECIFY_FAIL;
+			break;
+		}
+
+		if (!token && sae_using_anti_clogging(pSaeCfg)) {
+			sae_build_token_req(pAd, pSaeIns, data, &data_len);
+			res = MLME_ANTI_CLOGGING_TOKEN_REQ;
+			break;
+		}
+
 		res = sae_sm_step(pAd, pSaeIns, auth_seq);
 		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_INFO,
 				 ("%s(): SAE_COMMIT_SEQ, res(sae_sm_step) = %d\n",
@@ -633,21 +929,36 @@ UCHAR *sae_handle_auth(
 		break;
 
 	case SAE_CONFIRM_SEQ:
-		if (!pSaeIns)
-			return NULL;
+		if (!pSaeIns || pSaeIns->state == SAE_NOTHING)
+			goto unfinished;
 
-		/* 11.3.8.6.5 Rejection frames received in Confirmed state shall be silently discarded */
-		/* Comment: In Commited state, it's not expected to receive the Rejection confirm msg.*/
+		/* 12.4.8.6.5 Rejection frames received in Confirmed state shall be silently discarded */
+		/* Comment: It is not clear in spec about how to handle confirm message with error status. */
 		if (auth_status != MLME_SUCCESS) {
-			delete_sae_instance(pSaeIns);
-			return NULL;
-		}
-
-		res = sae_parse_confirm(pSaeIns, msg, msg_len);
-
-		if (res != MLME_SUCCESS) {
 			MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
-					 ("%s(): verify confirm fail\n",	__func__));
+					 ("%s(): receive error status auth confirm msg, so delete the instance\n", __func__));
+			delete_sae_instance(pSaeIns);
+			pSaeIns = NULL;
+			goto unfinished;
+		}
+		if (pSaeIns->state == SAE_CONFIRMED || pSaeIns->state == SAE_ACCEPTED)
+			res = sae_parse_confirm(pSaeIns, msg, msg_len);
+
+		/* Comment: It is not clear in spec about how to handle if the confirm be verified fail. */
+		if (res != MLME_SUCCESS) {
+			if (pSaeIns->state == SAE_ACCEPTED) {
+				/* 12.4.8.6.6(ACCEPTED) Upon receipt of a Con event, the Sync counter shall be checked */
+				/* the value of send-confirm shall be checked. If the value is not greater than Rc or is equal to 2^16 Â¡V 1,
+				  * the received frame shall be silently discarded. Otherwise, the Confirm portion of the frame shall be checked according to 12.4.5.6.
+				  * If the verification fails, the received frame shall be silently discarded
+				  */
+				sae_check_big_sync(pSaeIns);
+				goto unfinished;
+			}
+			MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+					 ("%s(): verify confirm fail, remove instance\n", __func__));
+			delete_sae_instance(pSaeIns);
+			pSaeIns = NULL;
 			break;
 		}
 
@@ -669,15 +980,22 @@ UCHAR *sae_handle_auth(
 
 	if (res != MLME_SUCCESS
 		&& res != SAE_SILENTLY_DISCARDED)
-		sae_send_auth(pAd, Fr->Hdr.Addr1, Fr->Hdr.Addr2, Fr->Hdr.Addr3, AUTH_MODE_SAE, auth_seq, res, "", 0);
+		sae_send_auth(pAd, Fr->Hdr.Addr1, Fr->Hdr.Addr2, Fr->Hdr.Addr3, AUTH_MODE_SAE, auth_seq, res, data, data_len);
 
 	if (pSaeIns && pSaeIns->state == SAE_ACCEPTED) {
 		sae_dump_time(&pSaeIns->sae_cost_time);
 		SAE_LOG_TIME_DUMP();
 		ecc_point_dump_time();
-		return pSaeIns->pmk;
-	} else
-		return NULL;
+		*pmk = pSaeIns->pmk;
+		return TRUE;
+	}
+unfinished:
+	*pmk = NULL;
+	if (!pSaeIns)
+		return FALSE;
+	else
+		return TRUE;
+
 }
 
 
@@ -693,9 +1011,9 @@ USHORT sae_sm_step(
 
 	switch (F(pSaeIns->state, auth_seq)) {
 	case F(SAE_NOTHING, SAE_COMMIT_SEQ):
-		/* 11.3.8.6.3 If validation of the received
+		/* 12.4.8.6.3 If validation of the received
 		  * Commit Message fails, the protocol instance shall send a Del event to the parent process; otherwise, it shall
-		  * construct and transmit a Commit Message (see 11.3.5.3) followed by a Confirm Message (see 11.3.5.5). The
+		  * construct and transmit a Commit Message (see 12.4.5.3) followed by a Confirm Message (see 12.4.5.5). The
 		  * Sync counter shall be set to zero and the t0 (retransmission) timer shall be set. The protocol instance
 		  * transitions to Confirmed state.
 		  */
@@ -720,8 +1038,8 @@ USHORT sae_sm_step(
 		break;
 
 	case F(SAE_COMMITTED, SAE_COMMIT_SEQ):
-		/* 11.3.8.6.4 If the received element and scalar differ from the element and
-		  * scalar offered, the received Commit Message shall be processed according to 11.3.5.4, the Sc
+		/* 12.4.8.6.4 If the received element and scalar differ from the element and
+		  * scalar offered, the received Commit Message shall be processed according to 12.4.5.4, the Sc
 		  * counter shall be incremented (thereby setting its value to one), the protocol instance shall then
 		  * construct a Confirm Message, transmit it to the peer, and set the t0 (retransmission) timer. It shall
 		  * then transition to Confirmed state.
@@ -737,7 +1055,7 @@ USHORT sae_sm_step(
 		break;
 
 	case F(SAE_COMMITTED, SAE_CONFIRM_SEQ):
-		/* 11.3.8.6.4 Upon receipt of a Con event, If Sync is not greater than
+		/* 12.4.8.6.4 Upon receipt of a Con event, If Sync is not greater than
 		  * dot11RSNASAESync, the protocol instance shall increment Sync, transmit the last Commit Message sent to
 		  * the peer, and set the t0 (retransmission) timer.
 		  * comments: In COMMITTED state, it's still awaiting for peer commit msg
@@ -748,17 +1066,20 @@ USHORT sae_sm_step(
 		break;
 
 	case F(SAE_CONFIRMED, SAE_COMMIT_SEQ):
-		if (sae_check_big_sync(pSaeIns))
-			return MLME_SUCCESS;
-
-		/* 11.3.8.6.5 the protocol instance shall increment Sync,
+		/* 12.4.8.6.5 the protocol instance shall verify that the finite cyclic group is the same as the previously received Commit
+		  * frame. If not, the frame shall be silently discarded. If so, the protocol instance shall increment Sync,
 		  * increment Sc, and transmit its Commit and Confirm (with the new Sc value) messages.
 		  * It then shall set the t0 (retransmission) timer.
 		  */
-		pSaeIns->sync++;
-		res = sae_process_commit(pSaeIns);
-		if (res != MLME_SUCCESS)
-			return res;
+		if (sae_check_big_sync(pSaeIns))
+			return MLME_SUCCESS;
+		if (pSaeIns->need_recalculate_key) {
+			res = sae_process_commit(pSaeIns);
+			if (res != MLME_SUCCESS)
+				return res;
+			pSaeIns->need_recalculate_key = FALSE;
+		}
+
 		if (sae_send_auth_commit(pAd, pSaeIns) == FALSE)
 			return SAE_SILENTLY_DISCARDED;
 		if (sae_send_auth_confirm(pAd, pSaeIns) == FALSE)
@@ -767,8 +1088,8 @@ USHORT sae_sm_step(
 		break;
 
 	case F(SAE_CONFIRMED, SAE_CONFIRM_SEQ):
-		/* 11.3.8.6.5 If processing is successful and the Confirm Message has been verified,
-		  * the Rc variable shall be set to the send-confirm portion of the frame, Sc shall be set to the value 2^16 ¡V 1, the
+		/* 12.4.8.6.5 If processing is successful and the Confirm Message has been verified,
+		  * the Rc variable shall be set to the send-confirm portion of the frame, Sc shall be set to the value 2^16 Â¡V 1, the
 		  * t1 (key expiry) timer shall be set, and the protocol instance shall transition to Accepted state
 		  */
 		pSaeIns->last_peer_sc = pSaeIns->peer_send_confirm;
@@ -788,12 +1109,13 @@ USHORT sae_sm_step(
 		break;
 
 	case F(SAE_ACCEPTED, SAE_CONFIRM_SEQ):
+		/* 12.4.8.6.6 Upon receipt of a Con event, the Sync counter shall be checked */
 		if (sae_check_big_sync(pSaeIns))
 			return MLME_SUCCESS;
 
-		/* 11.3.8.6.6 If the verification succeeds, the Rc variable
+		/* 12.4.8.6.6 If the verification succeeds, the Rc variable
 		  * shall be set to the send-confirm portion of the frame, the Sync shall be incremented and a new Confirm
-		  * Message shall be constructed (with Sc set to 216 ¡V 1) and sent to the peer
+		  * Message shall be constructed (with Sc set to 216 Â¡V 1) and sent to the peer
 		  */
 		pSaeIns->sync++;
 		pSaeIns->last_peer_sc = pSaeIns->peer_send_confirm;
@@ -808,6 +1130,7 @@ USHORT sae_sm_step(
 	return res;
 }
 
+/* if this api return TRUE, the instance will be removed, the caller should directly return and not access the instance */
 UCHAR sae_check_big_sync(
 	IN SAE_INSTANCE *pSaeIns)
 {
@@ -818,6 +1141,8 @@ UCHAR sae_check_big_sync(
 		delete_sae_instance(pSaeIns);
 		return TRUE;
 	}
+
+	pSaeIns->sync++;
 
 	return FALSE;
 }
@@ -865,6 +1190,92 @@ UCHAR sae_get_pmk_cache(
 	return TRUE;
 }
 
+static VOID sae_renew_token_key(
+	IN SAE_CFG * pSaeCfg)
+{
+#define TOKEN_REKEY_INTERVAL 100000 /* unit: jiffies*/
+	ULONG cur_time;
+	UINT32 i;
+
+	NdisGetSystemUpTime(&cur_time);
+
+	if (cur_time > (pSaeCfg->last_token_key_time + TOKEN_REKEY_INTERVAL) &&
+		(cur_time - TOKEN_REKEY_INTERVAL) > pSaeCfg->last_token_key_time) {
+		pSaeCfg->last_token_key_time = cur_time;
+		for (i = 0; i < SAE_TOKEN_KEY_LEN; i++)
+			pSaeCfg->token_key[i] = RandomByte(pSaeCfg->pAd);
+	}
+}
+
+UCHAR sae_build_token_req(
+	IN RTMP_ADAPTER * pAd,
+	IN SAE_INSTANCE * pSaeIns,
+	OUT UCHAR *token_req,
+	OUT UINT32 * token_req_len)
+{
+	SAE_CFG *sae_cfg = pSaeIns->pParentSaeCfg;
+
+	NdisMoveMemory(token_req, &pSaeIns->group, 2);
+	sae_renew_token_key(sae_cfg);
+	RT_HMAC_SHA256(sae_cfg->token_key, SAE_TOKEN_KEY_LEN, pSaeIns->peer_mac, MAC_ADDR_LEN, token_req + 2, SHA256_DIGEST_SIZE);
+	*token_req_len = SHA256_DIGEST_SIZE + 2;
+
+	return TRUE;
+}
+
+
+UCHAR sae_check_token(
+	IN SAE_INSTANCE * pSaeIns,
+	IN UCHAR *peer_token,
+	IN UINT32 peer_token_len)
+{
+	SAE_CFG *sae_cfg = pSaeIns->pParentSaeCfg;
+	UCHAR token[SHA256_DIGEST_SIZE];
+
+	if (peer_token_len != SHA256_DIGEST_SIZE)
+		return FALSE;
+
+	RT_HMAC_SHA256(sae_cfg->token_key, SAE_TOKEN_KEY_LEN, pSaeIns->peer_mac, MAC_ADDR_LEN, token, SHA256_DIGEST_SIZE);
+
+	if (RTMPEqualMemory(token, peer_token, SHA256_DIGEST_SIZE))
+		return TRUE;
+
+	return FALSE;
+
+}
+
+
+VOID sae_parse_commit_token_req(
+	IN SAE_INSTANCE *pSaeIns,
+	IN UCHAR **pos,
+	IN UCHAR *end,
+	IN UCHAR **token,
+	IN UINT32 *token_len)
+{
+
+	MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_LOUD,
+			 ("==> %s()\n", __func__));
+/*George:As per spec in Anticlogging request frame only group and anticlogging token expected in the commit frame*/
+	if ((end - *pos) > 0) {
+		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_TRACE,
+			("%s:add anti clogging token\n", __func__));
+
+		if (token)
+			*token = *pos;
+
+		if (token_len)
+			*token_len = (UINT32)(end - *pos);
+
+		*pos += *token_len;
+	} else {
+		if (token)
+			*token = NULL;
+
+		if (token_len)
+			*token_len = 0;
+	}
+}
+
 USHORT sae_parse_commit(
 	IN SAE_CFG *pSaeCfg,
 	IN SAE_INSTANCE *pSaeIns,
@@ -893,6 +1304,10 @@ USHORT sae_parse_commit(
 
 	if (is_token_req == TRUE) {
 		/* process the rejection with anti-clogging */
+		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+					 ("%s:Parsing AntiClogging Request token\n", __func__));
+
+		sae_parse_commit_token_req(pSaeIns, &pos, end, token, token_len);
 		return MLME_SUCCESS;
 	}
 
@@ -912,17 +1327,15 @@ USHORT sae_parse_commit(
 	if (res != MLME_SUCCESS)
 		return res;
 
-	/* 11.3.8.6.4 the protocol instance checks the peer-commit-scalar and PEER-COMMIT-ELEMENT
-	  * from the message. If they match those sent as part of the protocol instance¡¦s own Commit Message,
+	/* 12.4.8.6.4 the protocol instance checks the peer-commit-scalar and PEER-COMMIT-ELEMENT
+	  * from the message. If they match those sent as part of the protocol instanceÂ¡Â¦s own Commit Message,
 	  * the frame shall be silently discarded (because it is evidence of a reflection attack)
 	  */
-	if (!pSaeIns->own_commit_scalar
-		|| SAE_BN_UCMP(pSaeIns->own_commit_scalar, pSaeIns->peer_commit_scalar) != 0
-		|| !pSaeIns->own_commit_element
-		|| SAE_BN_UCMP(pSaeIns->own_commit_element, pSaeIns->peer_commit_element) != 0)
-		return MLME_SUCCESS;
+	if (pSaeIns->group_op)
+		return pSaeIns->group_op->sae_reflection_check(pSaeIns);
 	else
 		return MLME_UNSPECIFY_FAIL;
+
 }
 
 VOID sae_parse_commit_token(
@@ -974,7 +1387,7 @@ USHORT sae_parse_commit_scalar(
 	SAE_BN_BIN2BI(*pos, pSaeIns->prime_len, &peer_scalar);
 
 	/*
-	 * IEEE Std 802.11-2012, 11.3.8.6.1: If there is a protocol instance for
+	 * IEEE Std 802.11-2016, 12.4.8.6.1: If there is a protocol instance for
 	 * the peer and it is in Authenticated state, the new Commit Message
 	 * shall be dropped if the peer-scalar is identical to the one used in
 	 * the existing protocol instance.
@@ -988,20 +1401,17 @@ USHORT sae_parse_commit_scalar(
 				 ("%s(): do not accept re-use of previous peer-commit-scalar\n", __func__));
 		SAE_BN_FREE(&peer_scalar);
 		return MLME_UNSPECIFY_FAIL;
-	}  else if (pPreSaeIns
-		&& (pPreSaeIns->state == SAE_CONFIRMED)
-		&& (pPreSaeIns->peer_commit_scalar)
-		&& !SAE_BN_UCMP(peer_scalar, pPreSaeIns->peer_commit_scalar)) {
-		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
-				 ("%s(): this is retry msg, silient discard\n", __func__));
-		SAE_BN_FREE(&peer_scalar);
-		return SAE_SILENTLY_DISCARDED;
 	}
+
+	if (pSaeIns->state == SAE_CONFIRMED
+		&& (pSaeIns->peer_commit_scalar)
+		&& SAE_BN_UCMP(peer_scalar, pSaeIns->peer_commit_scalar))
+		pSaeIns->need_recalculate_key = TRUE;
 
 	/* If the scalar value is greater than zero (0) and less than the order, r, of the negotiated group, scalar validation succeeds */
 	/* 0 < scalar < r */
 	if (SAE_BN_IS_ZERO(peer_scalar)
-		|| SAE_BN_UCMP(peer_scalar, pSaeIns->order) >= 0) {
+		|| (SAE_BN_UCMP(peer_scalar, pSaeIns->order) >= 0)) {
 		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
 				 ("%s(): Invalid peer scalar\n", __func__));
 		SAE_BN_FREE(&peer_scalar);
@@ -1205,12 +1615,13 @@ VOID sae_send_auth(
 	IN USHORT seq,
 	IN USHORT status_code,
 	IN UCHAR *buf,
-	IN UINT32 bif_len)
+	IN UINT32 buf_len)
 {
 	HEADER_802_11 AuthHdr;
 	ULONG FrameLen = 0;
 	PUCHAR pOutBuffer = NULL;
 	NDIS_STATUS NStatus;
+
 	MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_TRACE,
 			 ("==> %s(), seq = %d, statuscode = %d, own mac addr = %02x:%02x:%02x:%02x:%02x:%02x, peer mac addr = %02x:%02x:%02x:%02x:%02x:%02x\n",
 			  __func__, seq, status_code, PRINT_MAC(own_mac), PRINT_MAC(peer_mac)));
@@ -1219,20 +1630,20 @@ VOID sae_send_auth(
 	if (NStatus != NDIS_STATUS_SUCCESS)
 		return;
 
-	MgtMacHeaderInit(pAd, &AuthHdr, SUBTYPE_AUTH, 0, peer_mac,
+	MgtMacHeaderInitExt(pAd, &AuthHdr, SUBTYPE_AUTH, 0, peer_mac,
 					 own_mac,
 					 bssid);
+
 	MakeOutgoingFrame(pOutBuffer,	&FrameLen,
 					  sizeof(HEADER_802_11), &AuthHdr,
 					  2,			&alg,
 					  2,			&seq,
 					  2,			&status_code,
-					  bif_len,		buf,
+					  buf_len,		buf,
 					  END_OF_ARGS);
 	MiniportMMRequest(pAd, 0, pOutBuffer, FrameLen);
 	MlmeFreeMemory(pOutBuffer);
 }
-
 
 UCHAR sae_send_auth_commit(
 	IN RTMP_ADAPTER *pAd,
@@ -1256,7 +1667,7 @@ UCHAR sae_send_auth_commit(
 	pos += 2;
 
 	if (pSaeIns->anti_clogging_token) {
-		NdisMoveMemory(pos, &pSaeIns->anti_clogging_token,
+		NdisMoveMemory(pos, pSaeIns->anti_clogging_token,
 					   pSaeIns->anti_clogging_token_len);
 		pos += pSaeIns->anti_clogging_token_len;
 	}
@@ -1301,9 +1712,9 @@ UCHAR sae_send_auth_confirm(
 	pos = buf;
 	end = buf + SAE_CONFIRM_MAX_LEN;
 
-	/* 11.3.8.6.4 the Sc counter shall be incremented (thereby setting its value to one), the protocol instance shall then
+	/* 12.4.8.6.4 the Sc counter shall be incremented (thereby setting its value to one), the protocol instance shall then
 	  * construct a Confirm Message, transmit it to the peer
-	  * 11.3.8.6.5 the protocol instance shall increment Sync,
+	  * 12.4.8.6.5 the protocol instance shall increment Sync,
 	  * increment Sc, and transmit its Commit and Confirm (with the new Sc value) messages
 	  * => increment send_confirm first and send comfirm msg with new sc value
 	  */
@@ -1345,8 +1756,8 @@ USHORT sae_parse_confirm(
 	NdisMoveMemory(&peer_send_confirm, pos, 2);
 	pos = pos + 2;
 
-	/*  11.3.8.6.6 Upon receipt of a Con event, the value of send-confirm shall be checked.
-	  * If the value is not greater than Rc or is equal to 2^16 ¡V 1, the received frame shall be silently discarded
+	/*  12.4.8.6.6 Upon receipt of a Con event, the value of send-confirm shall be checked.
+	  * If the value is not greater than Rc or is equal to 2^16 Â¡V 1, the received frame shall be silently discarded
 	  */
 	if (pSaeIns->state == SAE_ACCEPTED
 		&& (peer_send_confirm <= pSaeIns->last_peer_sc
@@ -1386,9 +1797,6 @@ USHORT sae_check_confirm(
 		pSaeIns->group_op->sae_cn_confirm(pSaeIns, FALSE, verifier);
 	else
 		return MLME_UNSPECIFY_FAIL;
-
-	if (is_sae_group_ecc(pSaeIns->group))
-		return MLME_SUCCESS;
 
 	if (RTMPEqualMemory(peer_confirm, verifier, SHA256_DIGEST_SIZE))
 		return MLME_SUCCESS;
@@ -1452,21 +1860,18 @@ USHORT sae_group_allowed(
 	if (allowed_groups) {
 		UINT32 i;
 
-		for (i = 0; allowed_groups[i] > 0; i++) {/* ellis */
-			MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_TRACE,
-					 ("%s(): i=%d, allowed_groups=%d, groups = %d\n", __func__, i, allowed_groups[i], group));
-
+		for (i = 0; allowed_groups[i] > 0; i++)
 			if (allowed_groups[i] == group)
 				break;
-		}
 
 		if (allowed_groups[i] != group)
 			return MLME_FINITE_CYCLIC_GROUP_NOT_SUPPORTED;
 	}
 
 	if (pSaeIns->group != group) {
-		/*the protocol instance shall verify that the finite cyclic group is the same as the previously received Commit frame.
-		If not, the frame shall be silently discarded. */
+		/* 12.4.8.6.5 the protocol instance shall verify that the finite cyclic group is the same as the previously received Commit frame.
+		  * If not, the frame shall be silently discarded.
+		  */
 		if (pSaeIns->state == SAE_CONFIRMED) {
 			delete_sae_instance(pSaeIns);
 			return SAE_SILENTLY_DISCARDED;
@@ -1618,26 +2023,14 @@ VOID sae_group_deinit_ecc(
 	peer_element = (BIG_INTEGER_EC_POINT *)pSaeIns->peer_commit_element;
 	pwe = (BIG_INTEGER_EC_POINT *)pSaeIns->pwe;
 
-	if (own_element) {
-		SAE_BN_FREE(&own_element->x);
-		SAE_BN_FREE(&own_element->y);
-		pSaeIns->own_commit_element = NULL;
-		os_free_mem(own_element);
-	}
+	if (own_element)
+		ecc_point_free(&own_element);
 
-	if (peer_element) {
-		SAE_BN_FREE(&peer_element->x);
-		SAE_BN_FREE(&peer_element->y);
-		pSaeIns->peer_commit_element = NULL;
-		os_free_mem(peer_element);
-	}
+	if (peer_element)
+		ecc_point_free(&peer_element);
 
-	if (pwe) {
-		SAE_BN_FREE(&pwe->x);
-		SAE_BN_FREE(&pwe->y);
-		pSaeIns->pwe = NULL;
-		os_free_mem(pwe);
-	}
+	if (pwe)
+		ecc_point_free(&pwe);
 }
 
 
@@ -1786,8 +2179,8 @@ VOID sae_cn_confirm_cmm(
 		return;
 
 	/*
-	  * CN(key, X, Y, Z, ¡K) = HMAC-SHA256(key, D2OS(X) || D2OS(Y) || D2OS(Z) || ¡K)
-	  * where D2OS() represents the data to octet string conversion functions in 11.3.7.2.
+	  * CN(key, X, Y, Z, Â¡K) = HMAC-SHA256(key, D2OS(X) || D2OS(Y) || D2OS(Z) || Â¡K)
+	  * where D2OS() represents the data to octet string conversion functions in 12.4.7.2.
 	  * confirm = CN(KCK, send-confirm, commit-scalar, COMMIT-ELEMENT,
 	  *              peer-commit-scalar, PEER-COMMIT-ELEMENT)
 	  * verifier = CN(KCK, peer-send-confirm, peer-commit-scalar,
@@ -1830,9 +2223,13 @@ USHORT sae_parse_commit_element_ecc(
 	MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_LOUD,
 			 ("==> %s()\n", __func__));
 
-	if (pos + 2 * pSaeIns->prime_len > end)
-		goto fail;
+	if (pos + 2 * pSaeIns->prime_len > end) {
+		MTWF_LOG(DBG_CAT_SEC, CATSEC_SAE, DBG_LVL_ERROR,
+				 ("%s(): not enough data in commit element\n", __func__));
 
+		res = MLME_UNSPECIFY_FAIL;
+		goto fail;
+	}
 	POOL_COUNTER_CHECK_BEGIN(sae_expected_cnt[2]);
 	GET_BI_INS_FROM_POOL(peer_element_x);
 	GET_BI_INS_FROM_POOL(peer_element_y);
@@ -1844,8 +2241,8 @@ USHORT sae_parse_commit_element_ecc(
 	/*
 	  * For ECC groups, both the x- and ycoordinates
 	  * of the element shall be non-negative integers less than the prime number p, and the two
-	  * coordinates shall produce a valid point on the curve satisfying the group¡¦s curve definition, not being equal
-	  * to the ¡§point at the infinity.¡¨ If either of those conditions does not hold, element validation fails; otherwise,
+	  * coordinates shall produce a valid point on the curve satisfying the groupÂ¡Â¦s curve definition, not being equal
+	  * to the Â¡Â§point at the infinity.Â¡Â¨ If either of those conditions does not hold, element validation fails; otherwise,
 	  * element validation succeeds.
 	  */
 	ecc_point_init(&peer_element);
@@ -2064,7 +2461,7 @@ USHORT sae_derive_pwe_ecc(
 
 		hex_dump_with_lvl("pwd_seed:", (char *)pwd_seed, sizeof(pwd_seed), SAE_DEBUG_LEVEL);
 		/*  z = len(p)
-		     pwd-value = KDF-z(pwd-seed, ¡§SAE Hunting and Pecking¡¨, p) */
+		     pwd-value = KDF-z(pwd-seed, Â¡Â§SAE Hunting and PeckingÂ¡Â¨, p) */
 		KDF(pwd_seed, sizeof(pwd_seed), (UINT8 *)"SAE Hunting and Pecking", 23,
 			(UINT8 *)ec_group->prime, ec_group->prime_len,
 			pwd_value, pSaeIns->prime_len);
@@ -2196,7 +2593,7 @@ USHORT sae_derive_pwe_ffc(
 		hex_dump_with_lvl("pwd_seed:", (char *)pwd_seed, SHA256_DIGEST_SIZE, SAE_DEBUG_LEVEL);
 		hex_dump_with_lvl("prime:", (char *)dh_group->prime, dh_group->prime_len, SAE_DEBUG_LEVEL);
 		/*  z = len(p)
-		     pwd-value = KDF-z(pwd-seed, ¡§SAE Hunting and Pecking¡¨, p) */
+		     pwd-value = KDF-z(pwd-seed, Â¡Â§SAE Hunting and PeckingÂ¡Â¨, p) */
 		KDF(pwd_seed, sizeof(pwd_seed), (UINT8 *)"SAE Hunting and Pecking", 23,
 			(UINT8 *)dh_group->prime, dh_group->prime_len,
 			pwd_value, pSaeIns->prime_len);
@@ -2340,5 +2737,33 @@ Free:
 	SAE_BN_RELEASE_BACK_TO_POOL(&tmp2);
 	POOL_COUNTER_CHECK_END(sae_expected_cnt[6]);
 	return TRUE;
+}
+
+USHORT sae_reflection_check_ecc(
+	IN SAE_INSTANCE *pSaeIns)
+{
+	BIG_INTEGER_EC_POINT *own_commit_element = (BIG_INTEGER_EC_POINT *)pSaeIns->own_commit_element;
+	BIG_INTEGER_EC_POINT *peer_commit_element = (BIG_INTEGER_EC_POINT *)pSaeIns->peer_commit_element;
+
+	if (!pSaeIns->own_commit_scalar
+		|| (SAE_BN_UCMP(pSaeIns->own_commit_scalar, pSaeIns->peer_commit_scalar) != 0)
+		|| !own_commit_element
+		|| (SAE_BN_UCMP(own_commit_element->x, peer_commit_element->x) != 0)
+		|| (SAE_BN_UCMP(own_commit_element->y, peer_commit_element->y) != 0))
+		return MLME_SUCCESS;
+	else
+		return SAE_SILENTLY_DISCARDED;
+}
+
+USHORT sae_reflection_check_ffc(
+	IN SAE_INSTANCE *pSaeIns)
+{
+	if (!pSaeIns->own_commit_scalar
+		|| (SAE_BN_UCMP(pSaeIns->own_commit_scalar, pSaeIns->peer_commit_scalar) != 0)
+		|| !pSaeIns->own_commit_element
+		|| (SAE_BN_UCMP(pSaeIns->own_commit_element, pSaeIns->peer_commit_element) != 0))
+		return MLME_SUCCESS;
+	else
+		return SAE_SILENTLY_DISCARDED;
 }
 #endif /* DOT11_SAE_SUPPORT */

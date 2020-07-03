@@ -47,14 +47,9 @@
 #ifdef BAND_STEERING
 #include "band_steering_def.h"
 #endif /* BAND_STEERING */
-/* #ifdef VOW_SUPPORT */
-/* VOW support */
-#include "ap_vow.h"
-/* #endif */ /* VOW_SUPPORT */
+
 #endif /* CONFIG_AP_SUPPORT */
-#ifdef WAPP_SUPPORT
-#include "wapp/wapp_cmm_type.h"
-#endif /* WAPP_SUPPORT */
+
 
 
 #ifdef MT_MAC
@@ -65,6 +60,11 @@
 
 #include "mlme.h"
 /*#include "rtmp_cmd.h" */
+
+/* #ifdef VOW_SUPPORT */
+/* VOW support */
+#include "ap_vow.h"
+/* #endif */ /* VOW_SUPPORT */
 
 #include "qm.h"
 #include "rtmp.h"
@@ -128,6 +128,9 @@
 #include "routing_tab.h"
 #endif /* ROUTING_TAB_SUPPORT */
 
+#ifdef A4_CONN
+#include "a4_conn.h"
+#endif
 
 
 
@@ -146,6 +149,12 @@
 #ifdef IGMP_SNOOP_SUPPORT
 #include "igmp_snoop.h"
 #endif /* IGMP_SNOOP_SUPPORT */
+#ifdef CONFIG_MAP_SUPPORT
+#include "map.h"
+#endif
+#ifdef WAPP_SUPPORT
+#include "wapp/wapp_cmm_type.h"
+#endif /* WAPP_SUPPORT */
 #ifdef CONFIG_ATE
 #include "ate_agent.h"
 #include "ate.h"
@@ -301,6 +310,9 @@
 #include "protocol/tmr.h"
 #endif
 
+#ifdef SNIFFER_SUPPORT
+#include "sniffer/sniffer.h"
+#endif /* SNIFFER_SUPPORT */
 
 #ifdef LINUX
 #ifdef RT_CFG80211_SUPPORT
@@ -372,4 +384,13 @@
 #endif /* RED_SUPPORT */
 #include "fq_qm.h"
 #include "cmm_rvr_dbg.h"
+#ifdef  CONFIG_STEERING_API_SUPPORT
+#include <linux/rtc.h>
+#endif
+#ifdef WIFI_DIAG
+#include "os/diag.h"
+#endif
+
+#include "misc_app.h"
+
 #endif	/* __RT_CONFIG_H__ */

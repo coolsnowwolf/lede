@@ -168,6 +168,43 @@ VOID setNonOpChnList(
 
 
 }
+int map_make_vend_ie(IN PRTMP_ADAPTER pAd, IN UCHAR ApIdx)
+{
+	struct vendor_map_element *ie = NULL;
+	char *buf;
+	int ie_len = 0;
+
+	ie_len = sizeof(struct vendor_map_element);
+
+	os_alloc_mem(NULL, (UCHAR **)&buf, sizeof(struct vendor_map_element));
+	if (!buf) {
+		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+				("memory is not available\n"));
+		return -1;
+	}
+	NdisZeroMemory(buf, ie_len);
+	ie = (struct vendor_map_element *)buf;
+
+	ie->eid = VEND_IE_TYPE;
+	ie->length = ie_len - 2;
+	NdisCopyMemory(ie->oui, MTK_OUI, OUI_LEN);
+	ie->mtk_ie_element[0] = 0;
+	ie->mtk_ie_element[1] = 1;
+	ie->type = 0;
+	ie->subtype = 0;
+	ie->root_distance = 0;
+	ie->controller_connectivity = 0;
+	ie->uplink_rate = 0;
+	NdisZeroMemory(ie->_2g_bssid, ETH_ALEN);
+	NdisZeroMemory(ie->_5g_bssid, ETH_ALEN);
+	NdisZeroMemory(ie->uplink_bssid, ETH_ALEN);
+	wapp_set_ap_ie(pAd, buf, ie_len, ApIdx);
+
+	os_free_mem(buf);
+
+	return 0;
+}
+
 
 VOID MAP_Init(
 	IN PRTMP_ADAPTER pAd,
@@ -176,12 +213,15 @@ VOID MAP_Init(
 )
 {
 	wdev->MAPCfg.DevOwnRole = MAP_CheckDevRole(pAd, wdev_type);
-	wdev->MAPCfg.bMAPEnable = TRUE;/*by default*/
+	wdev->MAPCfg.bMAPEnable = TRUE; /*by default*/
+
 	wdev->MAPCfg.bUnAssocStaLinkMetricRptOpBss = TRUE;/*by default*/
 	wdev->MAPCfg.bUnAssocStaLinkMetricRptNonOpBss = FALSE;/*by default*/
 	pAd->ApCfg.SteerPolicy.steer_policy = 0;
 	pAd->ApCfg.SteerPolicy.cu_thr = 0;
 	pAd->ApCfg.SteerPolicy.rcpi_thr = 0;
+	NdisZeroMemory(wdev->MAPCfg.vendor_ie_buf, VENDOR_SPECIFIC_LEN);
+	NdisZeroMemory(&(wdev->MAPCfg.scan_bh_ssids), sizeof(struct scan_BH_ssids));
 }
 
 INT map_send_bh_sta_wps_done_event(
@@ -201,13 +241,13 @@ INT map_send_bh_sta_wps_done_event(
 #endif
 
 		if (is_ap) {
-			if (IS_MAP_ENABLE(mac_entry->wdev) && (mac_entry->DevPeerRole & BIT(MAP_ROLE_BACKHAUL_STA)))
+			if (IS_MAP_ENABLE(adapter) && (mac_entry->DevPeerRole & BIT(MAP_ROLE_BACKHAUL_STA)))
 				send_event = TRUE;
 		}
 #ifdef APCLI_SUPPORT
 		else {
 			apcli_entry = &adapter->ApCfg.ApCliTab[mac_entry->func_tb_idx];
-			if (IS_MAP_ENABLE(&apcli_entry->wdev) &&
+			if (IS_MAP_ENABLE(adapter) &&
 				(mac_entry->DevPeerRole &
 					(BIT(MAP_ROLE_FRONTHAUL_BSS) | BIT(MAP_ROLE_BACKHAUL_BSS))))
 				COPY_MAC_ADDR(bsta_info->connected_bssid, apcli_entry->wdev.bssid);
@@ -290,4 +330,142 @@ VOID map_rssi_status_check(
 	}
 }
 
+INT ReadMapParameterFromFile(
+    PRTMP_ADAPTER pAd,
+    RTMP_STRING *tmpbuf,
+    RTMP_STRING *pBuffer)
+{
+	INT i;
+	RTMP_STRING *macptr;
 
+#ifdef CONFIG_MAP_SUPPORT
+	if (RTMPGetKeyParameter("MapEnable", tmpbuf, 25, pBuffer, TRUE)) {
+		pAd->bMAPEnable = (UCHAR) os_str_tol(tmpbuf, 0, 10);
+		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("MapEnable=%d\n", pAd->bMAPEnable));
+	}
+	if (RTMPGetKeyParameter("MAP_Turnkey", tmpbuf, 25, pBuffer, TRUE)) {
+		pAd->bMAPTurnKeyEnable = (UCHAR) os_str_tol(tmpbuf, 0, 10);
+		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("MAP_Turnkey=%d\n", pAd->bMAPTurnKeyEnable));
+#ifdef APCLI_SUPPORT
+#ifdef ROAMING_ENHANCE_SUPPORT
+		if (pAd->bMAPTurnKeyEnable == 1)
+			pAd->ApCfg.bRoamingEnhance = TRUE;
+#endif
+#endif
+		if (pAd->bMAPTurnKeyEnable) {
+			int j;
+			for (j = BSS0; j < WDEV_NUM_MAX; j++) {
+#ifdef CONFIG_MAP_SUPPORT
+			struct wifi_dev *wdev = pAd->wdev_list[j];
+			if (wdev && wdev->wdev_type == WDEV_TYPE_AP)
+				map_make_vend_ie(pAd, (UCHAR)wdev->BssIdx);
+#endif /* CONFIG_MAP_SUPPORT */
+			}
+		}
+		pAd->ApEnableBeaconTable = TRUE;
+
+	}
+	if (RTMPGetKeyParameter("MAP_Ext", tmpbuf, 25, pBuffer, TRUE)) {
+		for (i = 0, macptr = rstrtok(tmpbuf, ";");
+			(macptr && i < MAX_MBSSID_NUM(pAd));
+			macptr = rstrtok(NULL, ";"), i++) {
+			pAd->ApCfg.MBSSID[i].wdev.MAPCfg.DevOwnRole = (UCHAR)os_str_tol(macptr, 0, 10);
+			MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+					("IF(%s%d) ==> MAP_Ext=%u\n",
+					INF_MBSSID_DEV_NAME, i,
+					pAd->ApCfg.MBSSID[i].wdev.MAPCfg.DevOwnRole));
+		}
+	}
+#ifdef CONFIG_RCSA_SUPPORT
+	if (pAd->bMAPTurnKeyEnable)
+		pAd->CommonCfg.DfsParameter.bRCSAEn = FALSE;
+#endif
+#endif /* CONFIG_MAP_SUPPORT */
+	return TRUE;
+}
+
+
+#ifdef A4_CONN
+BOOLEAN map_a4_peer_enable(
+	IN PRTMP_ADAPTER adapter,
+	IN PMAC_TABLE_ENTRY entry,
+	IN BOOLEAN is_ap /*if i'm AP or not*/
+)
+{
+#ifdef APCLI_SUPPORT
+	PAPCLI_STRUCT apcli_entry;
+#endif
+
+	if (is_ap) {
+		if (IS_MAP_ENABLE(adapter) &&
+			(entry->wdev->MAPCfg.DevOwnRole & BIT(MAP_ROLE_BACKHAUL_BSS)) && 
+			(entry->DevPeerRole & BIT(MAP_ROLE_BACKHAUL_STA)))
+			return a4_ap_peer_enable(adapter, entry, A4_TYPE_MAP);
+	}
+#ifdef APCLI_SUPPORT
+	else {
+		apcli_entry = &adapter->ApCfg.ApCliTab[entry->func_tb_idx];
+		if (IS_MAP_ENABLE(adapter) &&
+			(entry->DevPeerRole & (BIT(MAP_ROLE_BACKHAUL_BSS)))) {
+			return a4_apcli_peer_enable(adapter,
+										apcli_entry,
+										entry,
+										A4_TYPE_MAP);
+		}
+	}
+#endif
+
+	return FALSE;
+}
+
+BOOLEAN map_a4_peer_disable(
+	IN PRTMP_ADAPTER adapter,
+	IN PMAC_TABLE_ENTRY entry,
+	IN BOOLEAN is_ap /*if i'm AP or not*/
+)
+{
+	if (is_ap)
+		return a4_ap_peer_disable(adapter, entry, A4_TYPE_MAP);
+#ifdef APCLI_SUPPORT
+	else
+		return a4_apcli_peer_disable(adapter, &adapter->ApCfg.ApCliTab[entry->func_tb_idx], entry, A4_TYPE_MAP);
+#else
+	return FALSE;
+#endif
+}
+
+
+BOOLEAN map_a4_init(
+	IN PRTMP_ADAPTER adapter,
+	IN UCHAR if_index,
+	IN BOOLEAN is_ap
+)
+{
+	return a4_interface_init(adapter, if_index, is_ap, A4_TYPE_MAP);
+}
+
+
+BOOLEAN map_a4_deinit(
+	IN PRTMP_ADAPTER adapter,
+	IN UCHAR if_index,
+	IN BOOLEAN is_ap
+)
+{
+	return a4_interface_deinit(adapter, if_index, is_ap, A4_TYPE_MAP);
+}
+
+BOOLEAN MapNotRequestedChannel(struct wifi_dev *wdev, unsigned char channel)
+{
+	int i = 0;
+
+	if (wdev->MAPCfg.scan_bh_ssids.scan_channel_count == 0)
+		return FALSE;
+	for (i = 0; i < wdev->MAPCfg.scan_bh_ssids.scan_channel_count; i++) {
+		if (channel == wdev->MAPCfg.scan_bh_ssids.scan_channel_list[i])
+			return FALSE;
+	}
+	return TRUE;
+}
+#endif

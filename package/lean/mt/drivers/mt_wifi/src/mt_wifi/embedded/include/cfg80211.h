@@ -35,6 +35,12 @@ typedef enum _NDIS_HOSTAPD_STATUS {
 
 typedef struct __CFG80211_CB {
 
+    #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 7, 0))
+    #define ieee80211_band nl80211_band
+    #define IEEE80211_BAND_2GHZ NL80211_BAND_2GHZ
+    #define IEEE80211_BAND_5GHZ NL80211_BAND_5GHZ
+    #define IEEE80211_NUM_BANDS NUM_NL80211_BANDS
+    #endif
 	/* we can change channel/rate information on the fly so we backup them */
 	struct ieee80211_supported_band Cfg80211_bands[IEEE80211_NUM_BANDS];
 	struct ieee80211_channel *pCfg80211_Channels;

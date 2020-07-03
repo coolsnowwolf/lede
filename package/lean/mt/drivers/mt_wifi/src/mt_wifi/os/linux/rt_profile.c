@@ -66,12 +66,17 @@ int (*wf_ra_sw_nat_hook_tx_bkup)(struct sk_buff *skb, int gmac_no);
 int (*wf_ra_sw_nat_hook_rx_bkup)(struct sk_buff *skb);
 #endif /*CONFIG_FAST_NAT_SUPPORT*/
 #endif
+#ifdef INTELP6_SUPPORT
+#define SECOND_INF_MAIN_DEV_NAME	"ra8"
+#define SECOND_INF_MBSSID_DEV_NAME	"ra"
+#else
 #if defined(RT_CFG80211_SUPPORT)
 #define SECOND_INF_MAIN_DEV_NAME		"wlani"
 #define SECOND_INF_MBSSID_DEV_NAME	"wlani"
 #else
 #define SECOND_INF_MAIN_DEV_NAME		"rai0"
 #define SECOND_INF_MBSSID_DEV_NAME	"rai"
+#endif
 #endif
 #define SECOND_INF_WDS_DEV_NAME		"wdsi"
 #define SECOND_INF_APCLI_DEV_NAME	"apclii"
@@ -99,12 +104,20 @@ int (*wf_ra_sw_nat_hook_rx_bkup)(struct sk_buff *skb);
 #define def_to_str(s)    #s
 
 #define FIRST_EEPROM_FILE_PATH	"/etc_ro/Wireless/RT2860/"
+#ifdef INTELP6_SUPPORT
+#define FIRST_AP_PROFILE_PATH	"/tmp/mt76xx_24.dat"
+#else
 #define FIRST_AP_PROFILE_PATH		"/etc/Wireless/RT2860/RT2860.dat"
+#endif
 #define FIRST_STA_PROFILE_PATH      "/etc/Wireless/RT2860/RT2860.dat"
 #define FIRST_CHIP_ID	xdef_to_str(CONFIG_RT_FIRST_CARD)
 
 #define SECOND_EEPROM_FILE_PATH	"/etc_ro/Wireless/iNIC/"
+#ifdef INTELP6_SUPPORT
+#define SECOND_AP_PROFILE_PATH	"/tmp/mt76xx_5.dat"
+#else
 #define SECOND_AP_PROFILE_PATH	"/etc/Wireless/iNIC/iNIC_ap.dat"
+#endif
 #define SECOND_STA_PROFILE_PATH "/etc/Wireless/iNIC/iNIC_sta.dat"
 
 #define SECOND_CHIP_ID	xdef_to_str(CONFIG_RT_SECOND_CARD)
@@ -195,8 +208,13 @@ static NDIS_STATUS l1set_profile_path(RTMP_ADAPTER *pAd, UINT_32 extra, RTMP_STR
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("DBDC format of profile path!\n"));
 		*pSemicolon = '\0';
 #ifdef MULTI_PROFILE
+#ifdef DEFAULT_5G_PROFILE
+		update_mtb_value(pAd, MTB_5G_PROFILE, extra, value);
+		update_mtb_value(pAd, MTB_2G_PROFILE, extra, pSemicolon+1);
+#else
 		update_mtb_value(pAd, MTB_2G_PROFILE, extra, value);
 		update_mtb_value(pAd, MTB_5G_PROFILE, extra, pSemicolon+1);
+#endif
 	} else {
 		update_mtb_value(pAd, MTB_2G_PROFILE, extra, value);	/* force update mtb[] to prevent unsynced value */
 #endif  /* MULTI_PROFILE */
@@ -204,7 +222,7 @@ static NDIS_STATUS l1set_profile_path(RTMP_ADAPTER *pAd, UINT_32 extra, RTMP_STR
 
 	if (strcmp(target, value)) {
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("profile update from %s to %s\n", target, value));
-		strncpy(target, value, L2PROFILE_PATH_LEN);
+		strncpy(target, value, L2PROFILE_PATH_LEN - 1);
 	} else
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("profile remain %s\n", target));
 
@@ -220,7 +238,7 @@ static NDIS_STATUS l1set_eeprom_bin(RTMP_ADAPTER *pAd, UINT_32 extra, RTMP_STRIN
 	if (strcmp(target, value)) {
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 			("eeprom binary update from %s to %s\n", target, value));
-		strncpy(target, value, L1PROFILE_ATTRNAME_LEN);
+		strncpy(target, value, L1PROFILE_ATTRNAME_LEN - 1);
 	} else
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("eeprom binary remain %s\n", target));
 
@@ -311,7 +329,7 @@ static NDIS_STATUS l1set_single_sku_path(RTMP_ADAPTER *pAd, UINT_32 extra, RTMP_
 	if (strcmp(target, value)) {
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 			("sku path update from %s to %s\n", target, value));
-		strncpy(target, value, L2PROFILE_PATH_LEN);
+		strncpy(target, value, L2PROFILE_PATH_LEN - 1);
 	} else
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("profile remain %s\n", target));
 
@@ -326,7 +344,7 @@ static NDIS_STATUS l1set_bf_sku_path(RTMP_ADAPTER *pAd, UINT_32 extra, RTMP_STRI
 	if (strcmp(target, value)) {
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 			("BF sku path update from %s to %s\n", target, value));
-		strncpy(target, value, L2PROFILE_PATH_LEN);
+		strncpy(target, value, L2PROFILE_PATH_LEN - 1);
 	} else
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("profile remain %s\n", target));
 
@@ -375,7 +393,7 @@ static NDIS_STATUS match_index_by_chipname(IN RTMP_STRING *l1profile_data,
 						("%s for %s occupied, next\n", key, chipName));
 				} else {
 					strncpy(l1profile[get_dev_config_idx(pAd)].profile_index,
-						key, L1PROFILE_INDEX_LEN);
+						key, L1PROFILE_INDEX_LEN - 1);
 					retVal = NDIS_STATUS_SUCCESS;
 					if_idx = MAX_L1PROFILE_INDEX;	/* found, intend to leave */
 				}
@@ -408,7 +426,7 @@ static NDIS_STATUS l1get_profile_index(IN RTMP_STRING *l1profile_data, IN RTMP_A
 	os_alloc_mem(NULL, (UCHAR **)&tmpbuf, MAX_PARAM_BUFFER_SIZE);
 
 	if (IS_MT7615(pAd) && (pAd->RfIcType == RFIC_7615A))
-		strncat(chipName, "A", 10);
+		strncat(chipName, "A", 9);
 
 	if (match_index_by_chipname(l1profile_data, pAd, chipName) == NDIS_STATUS_SUCCESS) {
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("[%d]%s found by chip\n", dev_idx, chipName));
@@ -438,6 +456,9 @@ static struct l1profile_attribute_t l1profile_attributes[] = {
 #endif	/* WDS_SUPPORT */
 #endif	/* CONFIG_AP_SUPPORT */
 	{ {"apcli_ifname"},		INT_APCLI,		l1set_ifname},
+#ifdef SNIFFER_SUPPORT
+	{ {"monitor_ifname"},	INT_MONITOR,	l1set_ifname},
+#endif	/* monitor_ifname */
 #ifdef SINGLE_SKU_V2
 	{ {"single_sku_path"},		0,			l1set_single_sku_path},
 	{ {"bf_sku_path"},		0,				l1set_bf_sku_path},
@@ -478,7 +499,7 @@ UCHAR *get_bf_sku_path(RTMP_ADAPTER *pAd)
 
 INT get_dev_config_idx(RTMP_ADAPTER *pAd)
 {
-	INT idx = -1;
+	INT idx = 0;
 #if defined(CONFIG_RT_FIRST_CARD) && defined(CONFIG_RT_SECOND_CARD)
 	INT first_card = 0, second_card = 0;
 
@@ -486,19 +507,18 @@ INT get_dev_config_idx(RTMP_ADAPTER *pAd)
 	A2Hex(second_card, SECOND_CHIP_ID);
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("chip_id1=0x%x, chip_id2=0x%x, pAd->MACVersion=0x%x\n", first_card, second_card, pAd->MACVersion));
 #endif /* defined(CONFIG_RT_FIRST_CARD) && defined(CONFIG_RT_SECOND_CARD) */
-#if defined(CONFIG_RT_SECOND_CARD)
 
-	if (IS_MT7637E(pAd))
-		idx = 1;
-
-#endif
-
-	if (idx == -1)
 #ifdef MULTI_INF_SUPPORT
-		idx = multi_inf_get_idx((VOID *) pAd);
-	else
+	idx = multi_inf_get_idx((VOID *) pAd);
 #endif /* MULTI_INF_SUPPORT */
-		idx = 0;
+
+#if defined(CONFIG_RT_SECOND_CARD)
+#if defined(CONFIG_FIRST_IF_MT7603E)
+	/* MT7603(ra0) + MT7615(rai0) combination */
+	if (IS_MT7615(pAd))
+		idx = 1;
+#endif /* defined(CONFIG_FIRST_IF_MT7603E) */
+#endif /* defined(RT_SECOND_CARD) */
 
 	pAd->dev_idx = idx;
 	return idx;
@@ -612,7 +632,7 @@ NDIS_STATUS load_dev_l1profile(IN RTMP_ADAPTER *pAd)
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_WARN, ("Open file \"%s\" failed, try embedded default!\n", L1_PROFILE_PATH));
 
 		retval = strlen(l1profile_default);
-		strcpy(buffer, l1profile_default);
+		strncpy(buffer, l1profile_default, buf_size - 1);
 	} else {
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("Open file \"%s\" Succeed!\n", L1_PROFILE_PATH));
 
@@ -651,7 +671,7 @@ NDIS_STATUS load_dev_l1profile(IN RTMP_ADAPTER *pAd)
 
 			for (attr_index = 0; attr_index < ARRAY_SIZE(l1profile_attributes); attr_index++) {
 				l1attr = &l1profile_attributes[attr_index];
-				sprintf(key, "%s_%s", profile_index, l1attr->name);
+				snprintf(key, sizeof(key), "%s_%s", profile_index, l1attr->name);
 
 				if (RTMPGetKeyParameter(key, tmpbuf, MAX_PARAM_BUFFER_SIZE, buffer, TRUE)) {
 					MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
@@ -880,7 +900,7 @@ static INT process_nbns_packet(
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 struct net_device *rlt_dev_get_by_name(const char *name)
 {
-#if (KERNEL_VERSION(2, 6, 35) < LINUX_VERSION_CODE)
+#if (KERNEL_VERSION(2, 6, 24) < LINUX_VERSION_CODE)
 	return dev_get_by_name(&init_net, name);
 #else
 	return dev_get_by_name(name);
@@ -943,7 +963,11 @@ void announce_802_3_packet(
 	ASSERT(pAd);
 	ASSERT(pPacket);
 	/* MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("=>%s(): OpMode=%d\n", __FUNCTION__, OpMode)); */
+
 	MEM_DBG_PKT_FREE_INC(pPacket);
+#ifdef APCLI_AS_WDS_STA_SUPPORT
+	if (pAd->ApCfg.ApCliTab[0].wdev.wds_enable == 0) {
+#endif /*APCLI_AS_WDS_STA_SUPPORT*/
 #ifdef CONFIG_AP_SUPPORT
 #ifdef APCLI_SUPPORT
 	IF_DEV_CONFIG_OPMODE_ON_AP(pAd)
@@ -975,6 +999,9 @@ void announce_802_3_packet(
 
 #endif /* APCLI_SUPPORT */
 #endif /* CONFIG_AP_SUPPORT */
+#ifdef APCLI_AS_WDS_STA_SUPPORT
+	}
+#endif /*APCLI_AS_WDS_STA_SUPPORT*/
 	/* Push up the protocol stack */
 #ifdef CONFIG_AP_SUPPORT
 #if defined(PLATFORM_BL2348) || defined(PLATFORM_BL23570)
@@ -1035,6 +1062,41 @@ void announce_802_3_packet(
 		}
 
 #endif /* CONFIG_RA_CLASSIFIER */
+
+#ifdef DYNAMIC_VLAN_SUPPORT
+	{
+		USHORT Wcid = RTMP_GET_PACKET_WCID(pPacket);
+		if(VALID_UCAST_ENTRY_WCID(pAd,Wcid))
+		{
+			MAC_TABLE_ENTRY *pMacEntry = &pAd->MacTab.Content[Wcid];
+			if(pMacEntry->vlan_id)
+			{
+				UCHAR VLAN_Size = LENGTH_802_1Q;
+				UCHAR *data_p;
+				UINT16 TCI;
+				UCHAR   TPID[] = {0x81, 0x00}; /* VLAN related */
+                UINT16 TypeLen;
+				data_p = GET_OS_PKT_DATAPTR(pRxPkt);
+				TypeLen = (data_p[12] << 8) | data_p[13];
+				if(TypeLen != ETH_TYPE_EAPOL) {
+                    memmove((GET_OS_PKT_DATAPTR(pRxPkt)) -4 , (GET_OS_PKT_DATAPTR(pRxPkt)), 12);
+				    data_p = skb_push(pRxPkt, VLAN_Size);
+				    /* make up TCI field keeping vlan priority to 0 currently*/
+
+				    TCI = (pMacEntry->vlan_id & 0x0fff) | ((0 & 0x7) << 13);
+
+#ifndef RT_BIG_ENDIAN
+				    TCI = SWAP16(TCI);
+#endif /* RT_BIG_ENDIAN */
+				    *(UINT16 *) (data_p + LENGTH_802_3_NO_TYPE) = *(UINT16 *) TPID;
+				    *(UINT16 *) (data_p + LENGTH_802_3_NO_TYPE + 2) = TCI;
+                }
+
+			}
+		}
+	}
+#endif
+
 #ifdef CONFIG_FAST_NAT_SUPPORT
 		/* bruce+
 		 *	ra_sw_nat_hook_rx return 1 --> continue
@@ -1180,6 +1242,237 @@ void announce_802_3_packet(
 }
 
 
+#ifdef SNIFFER_SUPPORT
+INT Monitor_VirtualIF_Open(PNET_DEV dev_p)
+{
+	VOID *pAd;
+
+	pAd = RTMP_OS_NETDEV_GET_PRIV(dev_p);
+	ASSERT(pAd);
+	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s: ===> %s\n",
+		__func__, RTMP_OS_NETDEV_GET_DEVNAME(dev_p)));
+
+	if (VIRTUAL_IF_INIT(pAd, dev_p) != 0)
+		return -1;
+
+	if (VIRTUAL_IF_UP(pAd, dev_p) != 0)
+		return -1;
+
+	/* increase MODULE use count */
+	RT_MOD_INC_USE_COUNT();
+	RT_MOD_HNAT_REG(dev_p);
+	RTMP_COM_IoctlHandle(pAd, NULL, CMD_RTPRIV_IOCTL_SNIFF_OPEN, 0, dev_p, 0);
+	/* Monitor_Open(pAd,dev_p); */
+	return 0;
+}
+
+INT Monitor_VirtualIF_Close(PNET_DEV dev_p)
+{
+	VOID *pAd;
+
+	pAd = RTMP_OS_NETDEV_GET_PRIV(dev_p);
+	ASSERT(pAd);
+	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s: ===> %s\n",
+		__func__, RTMP_OS_NETDEV_GET_DEVNAME(dev_p)));
+
+	RTMP_COM_IoctlHandle(pAd, NULL, CMD_RTPRIV_IOCTL_SNIFF_CLOSE, 0, dev_p, 0);
+	/* Monitor_Close(pAd,dev_p); */
+	VIRTUAL_IF_DOWN(pAd, dev_p);
+
+	VIRTUAL_IF_DEINIT(pAd, dev_p);
+
+	RT_MOD_HNAT_DEREG(dev_p);
+	RT_MOD_DEC_USE_COUNT();
+	return 0;
+}
+
+
+VOID RT28xx_Monitor_Init(VOID *pAd, PNET_DEV main_dev_p)
+{
+	RTMP_OS_NETDEV_OP_HOOK netDevOpHook;
+	/* init operation functions */
+	NdisZeroMemory(&netDevOpHook, sizeof(RTMP_OS_NETDEV_OP_HOOK));
+	netDevOpHook.open = Monitor_VirtualIF_Open;
+	netDevOpHook.stop = Monitor_VirtualIF_Close;
+	netDevOpHook.xmit = rt28xx_send_packets;
+	netDevOpHook.ioctl = rt28xx_ioctl;
+	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s: %d !!!!####!!!!!!\n", __func__, __LINE__));
+	RTMP_COM_IoctlHandle(pAd, NULL, CMD_RTPRIV_IOCTL_SNIFF_INIT,	0, &netDevOpHook, 0);
+}
+VOID RT28xx_Monitor_Remove(VOID *pAd)
+{
+	RTMP_COM_IoctlHandle(pAd, NULL, CMD_RTPRIV_IOCTL_SNIFF_REMOVE, 0, NULL, 0);
+}
+
+void STA_MonPktSend(RTMP_ADAPTER *pAd, RX_BLK *pRxBlk, UCHAR DevIdx)
+{
+	PNET_DEV pNetDev;
+	PNDIS_PACKET pRxPacket;
+	UCHAR *dot11_fc_field;
+	USHORT DataSize;
+	CHAR MaxRssi, RSSI1;
+	UINT32 timestamp = 0;
+	CHAR RssiForRadiotap = 0;
+	UCHAR L2PAD, PHYMODE, BW, ShortGI, MCS, LDPC, LDPC_EX_SYM, AMPDU, STBC;
+	UCHAR BssMonitorFlag11n, Channel, CentralChannel = 0;
+	UCHAR *pData, *pDevName;
+	UCHAR sniffer_type = pAd->sniffer_ctl.sniffer_type;
+	UCHAR sideband_index = 0;
+	struct wifi_dev *wdev = pAd->wdev_list[DevIdx];
+	UINT32 UP_value = 0;
+#ifdef SNIFFER_MT7615
+	UINT32 value = 0;
+	UCHAR gid = 0;
+#endif
+	ASSERT(pRxBlk->pRxPacket);
+
+	if (pRxBlk->DataSize < 10) {
+		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+				 ("%s : Size is too small! (%d)\n", __func__, pRxBlk->DataSize));
+		goto err_free_sk_buff;
+	}
+
+	if (sniffer_type == RADIOTAP_TYPE) {
+		if (pRxBlk->DataSize + sizeof(struct mtk_radiotap_header) > pAd->monitor_ctrl[DevIdx].FilterSize) {
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+					 ("%s : Size is too large! (%d)\n", __func__,
+					  pRxBlk->DataSize + sizeof(struct mtk_radiotap_header)));
+			goto err_free_sk_buff;
+		}
+	}
+
+	if (sniffer_type == PRISM_TYPE) {
+		if (pRxBlk->DataSize + sizeof(wlan_ng_prism2_header) > RX_BUFFER_AGGRESIZE) {
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+					 ("%s : Size is too large! (%d)\n", __func__,
+					  pRxBlk->DataSize + sizeof(wlan_ng_prism2_header)));
+			goto err_free_sk_buff;
+		}
+	}
+
+	MaxRssi = RTMPMaxRssi(pAd,
+						  ConvertToRssi(pAd, (struct raw_rssi_info *)(&pRxBlk->rx_signal.raw_rssi[0]), RSSI_IDX_0),
+						  ConvertToRssi(pAd, (struct raw_rssi_info *)(&pRxBlk->rx_signal.raw_rssi[0]), RSSI_IDX_1),
+						  ConvertToRssi(pAd, (struct raw_rssi_info *)(&pRxBlk->rx_signal.raw_rssi[0]), RSSI_IDX_2)
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+						, ConvertToRssi(pAd, (struct raw_rssi_info *)(&pRxBlk->rx_signal.raw_rssi[0]), RSSI_IDX_3)
+#endif
+
+	);
+
+	if (sniffer_type == RADIOTAP_TYPE) {
+		RssiForRadiotap = RTMPMaxRssi(pAd,
+									  ConvertToRssi(pAd, (struct raw_rssi_info *)(&pRxBlk->rx_signal.raw_rssi[0]), RSSI_IDX_0),
+									  ConvertToRssi(pAd, (struct raw_rssi_info *)(&pRxBlk->rx_signal.raw_rssi[0]), RSSI_IDX_1),
+									  ConvertToRssi(pAd, (struct raw_rssi_info *)(&pRxBlk->rx_signal.raw_rssi[0]), RSSI_IDX_2)
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+									, ConvertToRssi(pAd, (struct raw_rssi_info *)(&pRxBlk->rx_signal.raw_rssi[0]), RSSI_IDX_3)
+#endif
+		);
+	}
+
+#ifdef SNIFFER_MT7615
+	pNetDev = get_netdev_from_bssid(pAd, BSS0);
+#else
+	pNetDev = pAd->monitor_ctrl[DevIdx].wdev.if_dev;  /* send packet to mon0 */
+#endif
+	pRxPacket = pRxBlk->pRxPacket;
+	dot11_fc_field = pRxBlk->FC;
+	pData = pRxBlk->pData;
+	DataSize = pRxBlk->DataSize;
+	L2PAD = pRxBlk->pRxInfo->L2PAD;
+	PHYMODE = pRxBlk->rx_rate.field.MODE;
+	BW = pRxBlk->rx_rate.field.BW;
+	ShortGI = pRxBlk->rx_rate.field.ShortGI;
+	MCS = pRxBlk->rx_rate.field.MCS;
+	LDPC = pRxBlk->rx_rate.field.ldpc;
+
+	if (IS_HIF_TYPE(pAd, HIF_RLT))
+		LDPC_EX_SYM = pRxBlk->ldpc_ex_sym;
+	else
+		LDPC_EX_SYM = 0;
+
+	AMPDU = pRxBlk->pRxInfo->AMPDU;
+	STBC = pRxBlk->rx_rate.field.STBC;
+	RSSI1 = pRxBlk->rx_signal.raw_rssi[1];
+	/* if(pRxBlk->pRxWI->RXWI_N.bbp_rxinfo[12] != 0) */
+#ifdef MT_MAC
+
+	if (IS_HIF_TYPE(pAd, HIF_MT))
+		timestamp = pRxBlk->TimeStamp;
+
+#endif
+	BssMonitorFlag11n = 0;
+#ifdef MONITOR_FLAG_11N_SNIFFER_SUPPORT
+	BssMonitorFlag11n = (pAd->StaCfg[0].BssMonitorFlag & MONITOR_FLAG_11N_SNIFFER);
+#endif /* MONITOR_FLAG_11N_SNIFFER_SUPPORT */
+	pDevName = (UCHAR *)RtmpOsGetNetDevName(pAd->net_dev);
+	Channel = pAd->ApCfg.MBSSID[wdev->wdev_idx].wdev.channel;
+
+	if (BW == BW_20)
+		CentralChannel = Channel;
+	else if (BW == BW_40)
+		CentralChannel = wlan_operate_get_cen_ch_1(wdev);
+
+#ifdef DOT11_VHT_AC
+#ifdef SNIFFER_MT7615
+	else if (BW == BW_80 || BW == BW_160)
+#else
+	else if (BW == BW_80)
+#endif /* SNIFFER_MT7615 */
+		CentralChannel = wlan_operate_get_cen_ch_1(wdev);
+
+#endif /* DOT11_VHT_AC */
+#ifdef DOT11_VHT_AC
+
+	if (BW == BW_80)
+		sideband_index = vht_prim_ch_idx(CentralChannel, Channel, RF_BW_80);
+
+#ifdef SNIFFER_MT7615
+	else if (BW == BW_160)
+		sideband_index = vht_prim_ch_idx(CentralChannel, Channel, RF_BW_160);
+
+#endif /* SNIFFER_MT7615 */
+#endif /* DOT11_VHT_AC */
+
+	if (sniffer_type == RADIOTAP_TYPE) {
+#ifdef SNIFFER_MT7615
+
+		if (IS_MT7615(pAd)) {
+			gid = ((pRxBlk->rmac_info[46] >> 5) & 0x7) | ((pRxBlk->rmac_info[47] & 0x7) << 3);
+
+			if (gid < 16)
+				PHY_IO_READ32(pAd, 0x1025c, &value);
+			else if (gid < 32)
+				PHY_IO_READ32(pAd, 0x10260, &value);
+			else if (gid < 48)
+				PHY_IO_READ32(pAd, 0x10264, &value);
+			else
+				PHY_IO_READ32(pAd, 0x10268, &value);
+
+			UP_value = (value >> (2 * (gid % 16))) & 0x00000003;
+			send_radiotap_mt7615_monitor_packets(pNetDev, pRxBlk->rmac_info, pRxBlk->rxv2_cyc1, pRxPacket, pData,
+												 DataSize, pDevName, RssiForRadiotap, UP_value);
+		} else
+#endif
+			send_radiotap_monitor_packets(pNetDev, pRxBlk->AmsduState, pRxBlk->rmac_info, pRxPacket, (void *)dot11_fc_field, pData, DataSize,
+										  L2PAD, PHYMODE, BW, ShortGI, MCS, LDPC, LDPC_EX_SYM,
+										  AMPDU, STBC, RSSI1, pDevName, Channel, CentralChannel,
+										  sideband_index, RssiForRadiotap, timestamp, UP_value);
+	}
+
+	if (sniffer_type == PRISM_TYPE) {
+		send_prism_monitor_packets(pNetDev, pRxPacket, (void *)dot11_fc_field, pData, DataSize,
+								   L2PAD, PHYMODE, BW, ShortGI, MCS, AMPDU, STBC, RSSI1,
+								   BssMonitorFlag11n, pDevName, Channel, CentralChannel,
+								   MaxRssi);
+	}
+
+	return;
+err_free_sk_buff:
+	RELEASE_NDIS_PACKET(pAd, pRxBlk->pRxPacket, NDIS_STATUS_FAILURE);
+}
+#endif /* SNIFFER_SUPPORT */
 
 
 VOID RTMPFreeGlobalUtility(VOID)
@@ -1420,11 +1713,7 @@ INT RTMP_AP_IoctlPrepare(RTMP_ADAPTER *pAd, VOID *pCB)
 	pObj->pSecConfig = NULL;
 
 	/* determine this ioctl command is comming from which interface. */
-	if (pConfig->priv_flags == INT_MAIN
-#ifdef RT_CFG80211_SUPPORT
-		|| RTMP_CFG80211_HOSTAPD_ON(pAd)
-#endif
-	   ) {
+	if (pConfig->priv_flags == INT_MAIN) {
 		pObj->ioctl_if_type = INT_MAIN;
 		pObj->ioctl_if = MAIN_MBSSID;
 		pObj->pSecConfig = &pAd->ApCfg.MBSSID[pObj->ioctl_if].wdev.SecConfig;

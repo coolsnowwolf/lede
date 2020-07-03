@@ -271,82 +271,6 @@ inline INT Set_HotSpot_DGAF(
 	return 0;
 }
 
-INT Set_HotSpot_Param(
-	IN PRTMP_ADAPTER pAd,
-	UINT32 Param,
-	UINT32 Value)
-{
-	POS_COOKIE pObj = (POS_COOKIE)pAd->OS_Cookie;
-	UCHAR APIndex = pObj->ioctl_if;
-	PHOTSPOT_CTRL pHSCtrl;
-	PWNM_CTRL pWNMCtrl;
-	PGAS_CTRL pGASCtrl;
-#ifdef MBO_SUPPORT
-	P_MBO_CTRL pMboCtrl;
-#endif
-	pHSCtrl = &pAd->ApCfg.MBSSID[APIndex].HotSpotCtrl;
-	pWNMCtrl = &pAd->ApCfg.MBSSID[APIndex].WNMCtrl;
-	pGASCtrl = &pAd->ApCfg.MBSSID[APIndex].GASCtrl;
-#ifdef MBO_SUPPORT
-	pMboCtrl = &pAd->ApCfg.MBSSID[APIndex].wdev.MboCtrl;
-#endif /* MBO_SUPPORT */
-
-	switch (Param) {
-	case PARAM_DGAF_DISABLED:
-		pHSCtrl->DGAFDisable = Value;
-		hotspot_update_bssflag(pAd, fgDGAFDisable, Value, pHSCtrl);
-		break;
-
-	case PARAM_PROXY_ARP:
-		pWNMCtrl->ProxyARPEnable = Value;
-		hotspot_update_bssflag(pAd, fgProxyArpEnable, Value, pHSCtrl);
-		break;
-
-	case PARAM_L2_FILTER:
-		pHSCtrl->L2Filter = Value;
-		break;
-
-	case PARAM_ICMPV4_DENY:
-		pHSCtrl->ICMPv4Deny = Value;
-		break;
-
-	case PARAM_MMPDU_SIZE:
-		pHSCtrl->MMPDUSize = Value;
-		break;
-
-	case PARAM_EXTERNAL_ANQP_SERVER_TEST:
-		pGASCtrl->ExternalANQPServerTest = Value;
-		break;
-
-	case PARAM_GAS_COME_BACK_DELAY:
-		pGASCtrl->cb_delay = Value;
-		break;
-#ifdef CONFIG_HOTSPOT_R2
-
-	case PARAM_WNM_NOTIFICATION:
-		pWNMCtrl->WNMNotifyEnable = Value;
-		break;
-
-	case PARAM_QOSMAP:
-		pHSCtrl->QosMapEnable = Value;
-		hotspot_update_bssflag(pAd, fgQosMapEnable, Value, pHSCtrl);
-		break;
-
-	case PARAM_WNM_BSS_TRANSITION_MANAGEMENT:
-		pWNMCtrl->WNMBTMEnable = Value;
-		break;
-#endif
-
-	default:
-		MTWF_LOG(DBG_CAT_PROTO, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Unknow Parameter:%d\n", Param));
-		break;
-	}
-
-	/* for 7615 offload to CR4 */
-	hotspot_update_bss_info_to_cr4(pAd, APIndex);
-	return 0;
-}
-
 VOID Clear_Hotspot_All_IE(
 	IN PRTMP_ADAPTER pAd)
 {
@@ -991,8 +915,9 @@ VOID hotspot_update_ap_qload_to_bcn(RTMP_ADAPTER *pAd)
 		UINT BssIdx;
 		struct wifi_dev *wdev = NULL;
 		NdisGetSystemUpTime(&UpTime);
+#ifdef AP_QLOAD_SUPPORT
 		QBSS_LoadUpdate(pAd, UpTime);
-
+#endif /* AP_QLOAD_SUPPORT */
 		for (BssIdx = 0; BssIdx < pAd->ApCfg.BssidNum; BssIdx++) {
 			wdev = &pAd->ApCfg.MBSSID[BssIdx].wdev;
 

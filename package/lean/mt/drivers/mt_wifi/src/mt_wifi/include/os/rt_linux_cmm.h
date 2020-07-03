@@ -73,7 +73,11 @@ RTMP_DECLARE_DRV_OPS_FUNCTION(pci);
 
 
 #ifdef MT_MAC
+#if defined(CONFIG_SECOND_IF_MT7663E) || defined(CONFIG_FIRST_IF_MT7663E)
+#define RTMP_DRV_NAME   "mt76xx_drv"
+#else
 #define RTMP_DRV_NAME   "mt_drv"
+#endif
 #else
 #define RTMP_DRV_NAME	"rt2860"
 #endif /* MT_MAC */

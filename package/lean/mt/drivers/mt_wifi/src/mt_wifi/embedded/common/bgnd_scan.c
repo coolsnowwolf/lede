@@ -1142,6 +1142,12 @@ VOID DedicatedZeroWaitStartAction(
 	MuSwitch(pAd, 0);
 #endif /* CFG_SUPPORT_MU_MIMO */
 
+#ifdef ONDEMAND_DFS
+	/* Move to DFS 2x2 Mode */
+	if (IS_SUPPORT_ONDEMAND_ZEROWAIT_DFS(pAd))
+		SET_ONDEMAND_DFS_MODE(pAd, ONDEMAND_2x2MODE);
+#endif
+
 	BgndScanCfg.ControlChannel = OutBandCh;
 	BgndScanCfg.CentralChannel = DfsPrimToCent(OutBandCh, OutBandBw);
 	BgndScanCfg.Bw = OutBandBw;
@@ -1187,17 +1193,30 @@ VOID DedicatedZeroWaitRunningAction(
 	OutBandCh = GET_BGND_PARAM(pAd, OUTBAND_CH);
 	OutBandBw = GET_BGND_PARAM(pAd, OUTBAND_BW);
 
+	/* Switch to 4x4 on Detection of Non-Zero DFS Channel */
 	if (OutBandCh == 0) {
-		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\x1b[1;33m [%s] No available outband Channel \x1b[m \n",
-			__FUNCTION__));
+		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+			("\x1b[1;33m [%s] No available outband Channel \x1b[m \n",
+			__func__));
 		DedicatedZeroWaitStop(pAd, FALSE);
 		return;
 	}
 
+
+#ifdef ONDEMAND_DFS
+	if ((IS_SUPPORT_ONDEMAND_ZEROWAIT_DFS(pAd)) && (!RadarChannelCheck(pAd, OutBandCh))) {
+		struct wifi_dev *wdev = NULL;
+
+		wdev = pAd->wdev_list[0];
+		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+			("\x1b[1;33m [%s] Non-DFS Channel Selected Move to 4x4 \x1b[m \n", __func__));
+		DedicatedZeroWaitStop(pAd, TRUE);
+		rtmp_set_channel(pAd, wdev, OutBandCh);
+		return;
+	}
+#endif
 	pAd->BgndScanCtrl.BgndScanStatMachine.CurrState = BGND_RDD_DETEC;
-
 	os_zero_mem(&BgndScanCfg, sizeof(MT_BGND_SCAN_CFG));
-
 	BgndScanCfg.ControlChannel = OutBandCh;
 	BgndScanCfg.CentralChannel = DfsPrimToCent(OutBandCh, OutBandBw);
 	BgndScanCfg.Bw = OutBandBw;
@@ -1205,14 +1224,11 @@ VOID DedicatedZeroWaitRunningAction(
 	BgndScanCfg.RxPath = 0x0c;
 	BgndScanCfg.Reason = CH_SWITCH_BACKGROUND_SCAN_RUNNING;
 	BgndScanCfg.BandIdx = 1;
-
-
-	MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\x1b[1;33m [%s] Bandidx=%d, BW=%d, CtrlCh=%d, CenCh=%d, Reason=%d, RxPath=%d \x1b[m \n",
+	MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+			("\x1b[1;33m [%s] Bandidx=%d, BW=%d, CtrlCh=%d, CenCh=%d, Reason=%d, RxPath=%d \x1b[m \n",
 			__FUNCTION__, BgndScanCfg.BandIdx, BgndScanCfg.Bw, BgndScanCfg.ControlChannel,
 			BgndScanCfg.CentralChannel, BgndScanCfg.Reason, BgndScanCfg.RxPath));
-
 	MtCmdBgndScan(pAd, BgndScanCfg);
-
 	/*Start Band1 radar detection*/
 	DfsDedicatedOutBandRDDStart(pAd);
 }
@@ -1240,7 +1256,12 @@ VOID DedicatedZeroWaitStop(
 
 	CurrentSwChCfg = &(BgndScanCtrl->CurrentSwChCfg[0]);
 
-	if (!IS_SUPPORT_DEDICATED_ZEROWAIT_DFS(pAd))
+
+	if ((!IS_SUPPORT_DEDICATED_ZEROWAIT_DFS(pAd))
+#ifdef ONDEMAND_DFS
+		&& (!IS_SUPPORT_ONDEMAND_ZEROWAIT_DFS(pAd))
+#endif
+	)
 		return;
 
 	if (!GET_BGND_STATE(pAd, BGND_RDD_DETEC))
@@ -1249,24 +1270,26 @@ VOID DedicatedZeroWaitStop(
 	if (InBandCh == 0)
 		return;
 
-	BgndScanCtrl->BgndScanStatMachine.CurrState = BGND_SCAN_IDLE;
-
+#ifdef ONDEMAND_DFS
+	if (IS_SUPPORT_ONDEMAND_ZEROWAIT_DFS(pAd))
+		BgndScanCtrl->BgndScanStatMachine.CurrState = BGND_ONDMND_CNLSWITCH_ON;
+	else
+#endif
+		BgndScanCtrl->BgndScanStatMachine.CurrState = BGND_SCAN_IDLE;
 	DfsDedicatedOutBandRDDStop(pAd);
-
 	/* RxStream to RxPath */
 	RxStreamNums = CurrentSwChCfg->RxStream;
 	if (RxStreamNums > 4) {
 #ifdef DFS_DBG_LOG_0
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 			("\x1b[1;33m %s():illegal RxStreamNums(%d) \x1b[m \n",
-			__FUNCTION__, RxStreamNums));
+			__func__, RxStreamNums));
 #endif
 		RxStreamNums = 4;
 	}
 
 	for (i = 0; i < RxStreamNums; i++)
 		RxPath |= 1 << i;
-
 	BgndScanCfg.BandIdx = 0;
 	BgndScanCfg.Bw = InBandBw;
 	BgndScanCfg.ControlChannel = InBandCh;
@@ -1274,18 +1297,14 @@ VOID DedicatedZeroWaitStop(
 	BgndScanCfg.Reason = CH_SWITCH_BACKGROUND_SCAN_STOP;
 	BgndScanCfg.RxPath = RxPath; /* return to 4 Rx */
 	BgndScanCfg.TxStream = CurrentSwChCfg->TxStream;
-
-	MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("[%s] Bandidx=%d, BW=%d, CtrlCh=%d, CenCh=%d, Reason=%d, RxPath=%d\n",
-			__FUNCTION__, BgndScanCfg.BandIdx, BgndScanCfg.Bw, BgndScanCfg.ControlChannel,
+	MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+			("[%s] Bandidx=%d, BW=%d, CtrlCh=%d, CenCh=%d, Reason=%d, RxPath=%d\n",
+			__func__, BgndScanCfg.BandIdx, BgndScanCfg.Bw, BgndScanCfg.ControlChannel,
 			BgndScanCfg.CentralChannel, BgndScanCfg.Reason, BgndScanCfg.RxPath));
-
 	MtCmdBgndScan(pAd, BgndScanCfg);
-
 	BgScNotify.NotifyFunc =  (BgndScanCfg.TxStream << 5 | 0xf);
 	BgScNotify.BgndScanStatus = 0;/*stop*/
-
 	MtCmdBgndScanNotify(pAd, BgScNotify);
-
 	/*Enable BF, MU*/
 #if defined(MT_MAC) && (!defined(MT7636)) && defined(TXBF_SUPPORT)
 	/*BfSwitch(pAd, 1);*/
@@ -1294,7 +1313,6 @@ VOID DedicatedZeroWaitStop(
 #ifdef CFG_SUPPORT_MU_MIMO
 	MuSwitch(pAd, 1);
 #endif /* CFG_SUPPORT_MU_MIMO */
-
 }
 #endif
 

@@ -213,7 +213,7 @@ struct _ATE_OPERATION {
 	INT32 (*SetDutyCycle)(struct _RTMP_ADAPTER *pAd, UINT32 value);
 	INT32 (*SetPktTxTime)(struct _RTMP_ADAPTER *pAd, UINT32 value);
 	INT32 (*SampleRssi)(struct _RTMP_ADAPTER *pAd, struct _RX_BLK *pRxBlk);
-	INT32 (*SetIPG)(struct _RTMP_ADAPTER *pAd);
+	INT32 (*SetIPG)(struct _RTMP_ADAPTER *pAd, UINT32 value);
 	INT32 (*SetSlotTime)(struct _RTMP_ADAPTER *pAd, UINT32 SlotTime, UINT32 SifsTime);
 	INT32 (*SetAIFS)(struct _RTMP_ADAPTER *pAd, CHAR Value);
 	INT32 (*SetPowerDropLevel)(struct _RTMP_ADAPTER *pAd, UINT32 PowerDropLevel);
@@ -239,8 +239,11 @@ struct _ATE_OPERATION {
 	INT32 (*TxDPDTest)(struct _RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 #endif /* PRE_CAL_TRX_SET1_SUPPORT */
 #ifdef PRE_CAL_TRX_SET2_SUPPORT
-	INT32 (*PreCalTest)(struct _RTMP_ADAPTER *pAd, UINT8 CalId, UINT32 ChGrpId);    
+	INT32 (*PreCalTest)(struct _RTMP_ADAPTER *pAd, UINT8 CalId, UINT32 ChGrpId);
 #endif /* PRE_CAL_TRX_SET2_SUPPORT */
+#if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
+	INT32 (*PATrim)(struct _RTMP_ADAPTER *pAd, PUINT32 pData);
+#endif /* CAL_BIN_FILE_SUPPORT */
 #if defined(TXBF_SUPPORT) && defined(MT_MAC)
 	INT32 (*SetATETxSoundingProc)(struct _RTMP_ADAPTER *pAd, UCHAR SoundingMode);
 	INT32 (*StartTxSKB)(struct _RTMP_ADAPTER *pAd);
