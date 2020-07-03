@@ -48,6 +48,7 @@ typedef enum _SEC_AKM_MODE {
 	SEC_AKM_WAICERT, /* WAI certificate authentication */
 	SEC_AKM_WAIPSK, /* WAI pre-shared key */
 	SEC_AKM_OWE,
+	SEC_AKM_WPA3, /* WPA3(ent) = WPA2(ent) + PMF MFPR=1 => WPA3 code flow is same as WPA2, the usage of SEC_AKM_WPA3 is to force pmf on */
 	SEC_AKM_MAX /* Not a real mode, defined as upper bound */
 } SEC_AKM_MODE, *PSEC_AKM_MODE;
 
@@ -91,6 +92,8 @@ enum RSN_FIELD {
 #define SET_AKM_SUITEB_SHA384(_AKMMap)         (_AKMMap |= (1 << SEC_AKM_SUITEB_SHA384))
 #define SET_AKM_FT_WPA2_SHA384(_AKMMap)     (_AKMMap |= (1 << SEC_AKM_FT_WPA2_SHA384))
 #define SET_AKM_OWE(_AKMMap)     (_AKMMap |= (1 << SEC_AKM_OWE))
+#define SET_AKM_WPA3(_AKMMap)     (_AKMMap |= (1 << SEC_AKM_WPA3))
+
 
 #define IS_AKM_OPEN(_AKMMap)                           ((_AKMMap & (1 << SEC_AKM_OPEN)) > 0)
 #define IS_AKM_SHARED(_AKMMap)                       ((_AKMMap & (1 << SEC_AKM_SHARED)) > 0)
@@ -111,21 +114,30 @@ enum RSN_FIELD {
 #define IS_AKM_SUITEB_SHA384(_AKMMap)          ((_AKMMap & (1 << SEC_AKM_SUITEB_SHA384)) > 0)
 #define IS_AKM_FT_WPA2_SHA384(_AKMMap)      ((_AKMMap & (1 << SEC_AKM_FT_WPA2_SHA384)) > 0)
 #define IS_AKM_OWE(_AKMMap)      ((_AKMMap & (1 << SEC_AKM_OWE)) > 0)
+#define IS_AKM_WPA3(_AKMMap)	 ((_AKMMap & (1 << SEC_AKM_WPA3)) > 0)
 
-#ifdef DOT11_SUITEB_SUPPORT
-#define IS_AKM_WPA3(_AKMMap)	(IS_AKM_SUITEB_SHA384(_AKMMap))
-#define SET_AKM_WPA3(_AKMMap)	SET_AKM_SUITEB_SHA384(_AKMMap)
+
+
+#if defined(DOT11_SUITEB_SUPPORT) || defined(HOSTAPD_SUITEB_SUPPORT)
+#define IS_AKM_WPA3_192BIT(_AKMMap)	(IS_AKM_SUITEB_SHA384(_AKMMap))
+#define SET_AKM_WPA3_192BIT(_AKMMap)	SET_AKM_SUITEB_SHA384(_AKMMap)
 #else
-#define IS_AKM_WPA3(_AKMMap)	(FALSE)
-#define SET_AKM_WPA3(_AKMMap)
+#define IS_AKM_WPA3_192BIT(_AKMMap)	(FALSE)
+#define SET_AKM_WPA3_192BIT(_AKMMap)
 #endif
 
-#ifdef DOT11_SAE_SUPPORT
+#if defined(DOT11_SAE_SUPPORT) || defined(HOSTAPD_SAE_SUPPORT)
 #define IS_AKM_WPA3PSK(_AKMMap) (IS_AKM_SAE_SHA256(_AKMMap))
 #define SET_AKM_WPA3PSK(_AKMMap) SET_AKM_SAE_SHA256(_AKMMap)
 #else
 #define IS_AKM_WPA3PSK(_AKMMap) (FALSE)
 #define SET_AKM_WPA3PSK(_AKMMap)
+#endif
+#ifdef APCLI_SAE_SUPPORT
+
+#define IS_AKM_WPA2PSK_ONLY(_AKMMap)                          (_AKMMap == (1 << SEC_AKM_WPA2PSK))
+#define IS_AKM_WPA3PSK_ONLY(_AKMMap)                          (_AKMMap == (1 << SEC_AKM_SAE_SHA256))
+
 #endif
 
 
@@ -140,7 +152,7 @@ enum RSN_FIELD {
 
 #define IS_AKM_1X(_AKMMap)     (IS_AKM_WPA1(_AKMMap)  \
 								|| IS_AKM_WPA2(_AKMMap)\
-								|| IS_AKM_WPA3(_AKMMap))
+								|| IS_AKM_WPA3_192BIT(_AKMMap))
 
 
 #define IS_AKM_WPA_CAPABILITY(_AKMMap)     (IS_AKM_WPA1(_AKMMap)  \
@@ -150,7 +162,7 @@ enum RSN_FIELD {
 		|| IS_AKM_WPA2PSK(_AKMMap) \
 		|| IS_AKM_WPA2_SHA256(_AKMMap) \
 		|| IS_AKM_WPA2PSK_SHA256(_AKMMap)\
-		|| IS_AKM_WPA3(_AKMMap)\
+		|| IS_AKM_WPA3_192BIT(_AKMMap)\
 		|| IS_AKM_WPA3PSK(_AKMMap)\
 		|| IS_AKM_OWE(_AKMMap))
 
@@ -182,9 +194,6 @@ typedef enum _SEC_CIPHER_MODE {
 	SEC_CIPHER_BIP_GMAC128,
 	SEC_CIPHER_BIP_GMAC256,
 	SEC_CIPHER_WPI_SMS4, /* WPI SMS4 support */
-	SEC_CIPHER_OWE_SHA256, /*Group 19, ECC sha 256*/
-	SEC_CIPHER_OWE_SHA384, /*Group 20, ECC sha 384*/
-	SEC_CIPHER_OWE_SHA521, /*Group 21, ECC sha 512, integrity with HMAC-SHA-521*/
 	SEC_CIPHER_MAX /* Not a real mode, defined as upper bound */
 } SEC_CIPHER_MODE;
 
@@ -203,13 +212,10 @@ typedef enum _SEC_CIPHER_MODE {
 #define SET_CIPHER_CCMP256(_cipher)          (_cipher |= (1 << SEC_CIPHER_CCMP256))
 #define SET_CIPHER_GCMP128(_cipher)         (_cipher |= (1 << SEC_CIPHER_GCMP128))
 #define SET_CIPHER_GCMP256(_cipher)         (_cipher |= (1 << SEC_CIPHER_GCMP256))
-#define SET_CIPHER_BIP_CMAC128(_cipher)     (_cipher |= (1 << SEC_CIPHER_BIP_CMAC128))
-#define SET_CIPHER_BIP_CMAC256(_cipher)     (_cipher |= (1 << SEC_CIPHER_BIP_CMAC256))
-#define SET_CIPHER_BIP_GMAC128(_cipher)     (_cipher |= (1 << SEC_CIPHER_BIP_GMAC128))
-#define SET_CIPHER_BIP_GMAC256(_cipher)     (_cipher |= (1 << SEC_CIPHER_BIP_GMAC256))
-#define SET_CIPHER_OWE_SHA256(_cipher)     (_cipher |= (1 << SEC_CIPHER_OWE_SHA256))
-#define SET_CIPHER_OWE_SHA384(_cipher)     (_cipher |= (1 << SEC_CIPHER_OWE_SHA384))
-#define SET_CIPHER_OWE_SHA521(_cipher)     (_cipher |= (1 << SEC_CIPHER_OWE_SHA521))
+#define SET_CIPHER_BIP_CMAC128(_cipher)     (_cipher = (1 << SEC_CIPHER_BIP_CMAC128))
+#define SET_CIPHER_BIP_CMAC256(_cipher)     (_cipher = (1 << SEC_CIPHER_BIP_CMAC256))
+#define SET_CIPHER_BIP_GMAC128(_cipher)     (_cipher = (1 << SEC_CIPHER_BIP_GMAC128))
+#define SET_CIPHER_BIP_GMAC256(_cipher)     (_cipher = (1 << SEC_CIPHER_BIP_GMAC256))
 
 #define IS_CIPHER_NONE(_Cipher)          (((_Cipher) & (1 << SEC_CIPHER_NONE)) > 0)
 #define IS_CIPHER_WEP40(_Cipher)          (((_Cipher) & (1 << SEC_CIPHER_WEP40)) > 0)
@@ -226,9 +232,6 @@ typedef enum _SEC_CIPHER_MODE {
 #define IS_CIPHER_BIP_CMAC256(_Cipher)     (((_Cipher) & (1 << SEC_CIPHER_BIP_CMAC256)) > 0)
 #define IS_CIPHER_BIP_GMAC128(_Cipher)     (((_Cipher) & (1 << SEC_CIPHER_BIP_GMAC128)) > 0)
 #define IS_CIPHER_BIP_GMAC256(_Cipher)     (((_Cipher) & (1 << SEC_CIPHER_BIP_GMAC256)) > 0)
-#define IS_CIPHER_OWE_SHA256(_Cipher)     (((_Cipher) & (1 << SEC_CIPHER_OWE_SHA256)) > 0)
-#define IS_CIPHER_OWE_SHA384(_Cipher)     (((_Cipher) & (1 << SEC_CIPHER_OWE_SHA384)) > 0)
-#define IS_CIPHER_OWE_SHA521(_Cipher)     (((_Cipher) & (1 << SEC_CIPHER_OWE_SHA521)) > 0)
 
 #define IS_AKM_OPEN_ONLY(_AKMMap)		((_AKMMap) == (1 << SEC_AKM_OPEN))
 #define IS_CIPHER_NONE_ONLY(_Cipher)    ((_Cipher) == (1 << SEC_CIPHER_NONE))
@@ -247,7 +250,7 @@ typedef enum _SEC_CIPHER_MODE {
 /* Need to remove --START */
 #define IS_AKM_1X_Entry(_Entry)     (IS_AKM_WPA1((_Entry)->SecConfig.AKMMap)  \
 									 || IS_AKM_WPA2((_Entry)->SecConfig.AKMMap) \
-									 || IS_AKM_WPA3((_Entry)->SecConfig.AKMMap))
+									 || IS_AKM_WPA3_192BIT((_Entry)->SecConfig.AKMMap))
 
 #ifdef DOT1X_SUPPORT
 #define IS_IEEE8021X_Entry(_Entry)     ((_Entry)->SecConfig.IEEE8021X == TRUE)
@@ -260,7 +263,7 @@ typedef enum _SEC_CIPHER_MODE {
 		|| IS_AKM_WPA2PSK((_Entry)->SecConfig.AKMMap) \
 		|| IS_AKM_WPA2_SHA256((_Entry)->SecConfig.AKMMap) \
 		|| IS_AKM_WPA2PSK_SHA256((_Entry)->SecConfig.AKMMap) \
-		|| IS_AKM_WPA3((_Entry)->SecConfig.AKMMap) \
+		|| IS_AKM_WPA3_192BIT((_Entry)->SecConfig.AKMMap) \
 		|| IS_AKM_WPA3PSK((_Entry)->SecConfig.AKMMap) \
 		|| IS_AKM_OWE((_Entry)->SecConfig.AKMMap))
 
@@ -287,7 +290,7 @@ typedef enum _SEC_CIPHER_MODE {
 #define IS_AKM_WPA1PSK_Entry(_Entry)                          (IS_AKM_WPA1PSK((_Entry)->SecConfig.AKMMap))
 #define IS_AKM_WPA2_Entry(_Entry)                          (IS_AKM_WPA2((_Entry)->SecConfig.AKMMap))
 #define IS_AKM_WPA2PSK_Entry(_Entry)                          (IS_AKM_WPA2PSK((_Entry)->SecConfig.AKMMap))
-#define IS_AKM_WPA3_Entry(_Entry)                          (IS_AKM_WPA3((_Entry)->SecConfig.AKMMap))
+#define IS_AKM_WPA3_192BIT_Entry(_Entry)                          (IS_AKM_WPA3_192BIT((_Entry)->SecConfig.AKMMap))
 #define IS_AKM_WPA3PSK_Entry(_Entry)                          (IS_AKM_WPA3PSK((_Entry)->SecConfig.AKMMap))
 #define IS_AKM_OWE_Entry(_Entry)                          (IS_AKM_OWE((_Entry)->SecConfig.AKMMap))
 #define IS_CIPHER_WEP_Entry(_Entry)              (IS_CIPHER_WEP((_Entry)->SecConfig.PairwiseCipher))
@@ -417,6 +420,12 @@ typedef struct _SECURITY_CONFIG {
 	BOOLEAN IEEE8021X; /* Only indicate if we are running in dynamic WEP mode (WEP+802.1x) */
 #endif
 	BOOLEAN is_eapol_encrypted;
+#ifdef DISABLE_HOSTAPD_BEACON
+	UINT8   RsnCap[2];
+#endif
+#ifdef APCLI_OWE_SUPPORT
+	UCHAR last_tried_group;
+#endif
 	/* IE for WPA1/WPA2/WAPI */
 	SEC_RSNIE_TYPE RSNE_Type[SEC_RSNIE_NUM];
 	UCHAR RSNE_EID[SEC_RSNIE_NUM][1];
@@ -458,7 +467,9 @@ typedef struct _SECURITY_CONFIG {
 #ifdef APCLI_SUPPORT
 /* List apcli support AKMs and Ciphers */
 #define AKM_APCLI_MASK     ((1 << SEC_AKM_WPA1PSK) \
-							| (1 << SEC_AKM_WPA2PSK))
+							| (1 << SEC_AKM_WPA2PSK)\
+							| (1 << SEC_AKM_SAE_SHA256)\
+							| (1 << SEC_AKM_OWE))
 #endif /* APCLI_SUPPORT */
 
 #define MAX_PARAMETER_LEN  600 /* worse case: WEP128 for MBSS0~15 = (32+1)*16=528 */

@@ -530,6 +530,9 @@ typedef struct	_WSC_DEV_INFO {
 	UCHAR	NewKey[64 + 1]; /* not sure sprintf would add '\0' or not, add one byte for \0' */
 	INT     NewKeyLen;
 	UCHAR   NewKeyIndex;
+#ifdef CONFIG_MAP_SUPPORT
+	UCHAR	map_DevPeerRole;
+#endif
 }	WSC_DEV_INFO, *PWSC_DEV_INFO;
 
 /* data structure to store info of the instance of Registration protocol */
@@ -598,10 +601,10 @@ typedef struct _WSC_UPNP_NODE_INFO {
 #define MAX_PBC_STA_TABLE_SIZE	4
 #define MAX_NUM_BAND	3
 typedef struct _WSC_STA_PBC_PROBE_INFO {
-	ULONG				ReciveTime[MAX_PBC_STA_TABLE_SIZE];
+	ULONG				ReciveTime[MAX_NUM_BAND][MAX_PBC_STA_TABLE_SIZE];
 	UCHAR				WscPBCStaProbeCount[MAX_NUM_BAND];
-	UCHAR				StaMacAddr[MAX_PBC_STA_TABLE_SIZE][MAC_ADDR_LEN];
-	UCHAR				Valid[MAX_PBC_STA_TABLE_SIZE];
+	UCHAR				StaMacAddr[MAX_NUM_BAND][MAX_PBC_STA_TABLE_SIZE][MAC_ADDR_LEN];
+	UCHAR				Valid[MAX_NUM_BAND][MAX_PBC_STA_TABLE_SIZE];
 } WSC_STA_PBC_PROBE_INFO, *PWSC_STA_PBC_PROBE_INFO;
 
 
@@ -654,6 +657,7 @@ typedef	struct	_WSC_CTRL {
 	NDIS_802_11_SSID	    WscSsid;		        /* select a desired ssid to connect for PIN mode */
 	UCHAR					WscPBCBssCount;			/* Count of PBC activated APs. */
 	UCHAR				    WscBssid[MAC_ADDR_LEN];	/* select a desired bssid to connect */
+	UCHAR				    WscPeerUuid[UUID_LEN_HEX];	/* Peer AP UUID*/
 	WSC_REG_DATA	RegData;		/* Registrar pair data */
 	UCHAR           lastId;
 	UCHAR           WscUseUPnP;
@@ -664,6 +668,7 @@ typedef	struct	_WSC_CTRL {
 	BOOLEAN         Wsc2MinsTimerRunning;
 	RALINK_TIMER_STRUCT   Wsc2MinsTimer;
 	WSC_PROFILE			WscProfile;		/* Saved WSC profile after M8 */
+	WSC_PROFILE			WscBhProfiles;/* Saved Additional WSC profile after M8 */
 	WSC_UPNP_NODE_INFO	WscUPnPNodeInfo;	/*Use to save UPnP node related info. */
 
 	BOOLEAN             EapolTimerRunning;

@@ -51,7 +51,7 @@ static char link_local[] = {0xfe, 0x80};
 	(!((_addr).ipv6_addr32[0] | (_addr).ipv6_addr32[1] | (_addr).ipv6_addr32[2] | (_addr).ipv6_addr32[3]))
 #endif
 
-#ifndef CONFIG_HOTSPOT_R2/* #ifdef WNM_NEW_API */
+#ifndef WAPP_SUPPORT/* #ifdef WNM_NEW_API */
 void wext_send_btm_query_event_newapi(PNET_DEV net_dev, const char *peer_mac_addr,
 							   const char *btm_query, UINT16 btm_query_len)
 {
@@ -110,7 +110,7 @@ void SendBTMQueryEvent(PNET_DEV net_dev, const char *peer_mac_addr,
 					   const char *btm_query, UINT16 btm_query_len, UINT8 ipc_type)
 {
 	if (ipc_type == RA_WEXT) {
-#ifndef CONFIG_HOTSPOT_R2/* #ifdef WNM_NEW_API */
+#ifndef WAPP_SUPPORT/* #ifdef WNM_NEW_API */
 		if (1) {
 			wext_send_btm_query_event_newapi(net_dev,
 									  peer_mac_addr,
@@ -126,13 +126,16 @@ void SendBTMQueryEvent(PNET_DEV net_dev, const char *peer_mac_addr,
 	}
 }
 
-#ifndef CONFIG_HOTSPOT_R2/* #ifdef WNM_NEW_API */
+#ifndef WAPP_SUPPORT/* #ifdef WNM_NEW_API */
 void wext_send_btm_cfm_event_newapi(PNET_DEV net_dev, const char *peer_mac_addr,
 							 const char *btm_rsp, UINT16 btm_rsp_len)
 {
 
 	struct btm_rsp_data *rsp_data = NULL;
 	struct wnm_event *event_data = NULL;
+#ifdef CONFIG_STEERING_API_SUPPORT
+	struct timeval time;
+#endif
 	UINT16 buflen = 0;
 	char *buf;
 
@@ -149,12 +152,19 @@ void wext_send_btm_cfm_event_newapi(PNET_DEV net_dev, const char *peer_mac_addr,
 	rsp_data = (struct btm_rsp_data *)event_data->event_body;
 	rsp_data->ifindex = RtmpOsGetNetIfIndex(net_dev);
 	memcpy(rsp_data->peer_mac_addr, peer_mac_addr, 6);
+#ifdef CONFIG_STEERING_API_SUPPORT
+	do_gettimeofday(&time);
+	rsp_data->timestamp = (u32)(time.tv_sec - (sys_tz.tz_minuteswest * 60));
+#endif
 	rsp_data->btm_rsp_len	= btm_rsp_len;
 	memcpy(rsp_data->btm_rsp, btm_rsp, btm_rsp_len);
 
 	RtmpOSWrielessEventSend(net_dev, RT_WLAN_EVENT_CUSTOM,
 						OID_802_11_WNM_EVENT, NULL, (PUCHAR)buf, buflen);
-
+#ifdef CONFIG_STEERING_API_SUPPORT
+	MTWF_LOG(DBG_CAT_PROTO, CATPROTO_WNM, DBG_LVL_OFF,
+	("[wext_send_btm_cfm_event_newapi] after send btm cfm event\n"));
+#endif
 	os_free_mem(buf);
 }
 
@@ -185,7 +195,7 @@ void SendBTMConfirmEvent(PNET_DEV net_dev, const char *peer_mac_addr,
 {
 	if (ipc_type == RA_WEXT) {
 
-#ifndef CONFIG_HOTSPOT_R2/* #ifdef WNM_NEW_API */
+#ifndef WAPP_SUPPORT/* #ifdef WNM_NEW_API */
 		if (1) {
 			wext_send_btm_cfm_event_newapi(net_dev,
 									  peer_mac_addr,
@@ -2070,6 +2080,98 @@ error:
 	}
 }
 #endif /* CONFIG_11KV_API_SUPPORT */
+#ifdef CONFIG_STEERING_API_SUPPORT
+static VOID SendBTMReqFrame(
+    IN PRTMP_ADAPTER pAd,
+    IN MLME_QUEUE_ELEM  *Elem)
+{
+	PBTM_REQ_FRAME_DATA pBtmReqActionFrame = (PBTM_REQ_FRAME_DATA)Elem->Msg;
+	PBTM_PEER_ENTRY BTMPeerEntry = NULL;
+	PMAC_TABLE_ENTRY pEntry = NULL;
+	PWNM_CTRL pWNMCtrl = NULL;
+	PUCHAR pOutBuffer = NULL;
+	ULONG FrameLen = 0;
+	NDIS_STATUS NStatus = NDIS_STATUS_SUCCESS;
+	INT32 Ret;
+	BOOLEAN isfound = FALSE, Cancelled;
+	HEADER_802_11 ActHdr;
+
+	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+			("%s(): Mac Addr %02x:%02x:%02x:%02x:%02x:%02x, \n",
+			__FUNCTION__, PRINT_MAC(pBtmReqActionFrame->PeerMACAddr)));
+
+	pEntry = MacTableLookup(pAd, pBtmReqActionFrame->PeerMACAddr);
+	if (!pEntry)
+		return;
+
+	pWNMCtrl = &pAd->ApCfg.MBSSID[pEntry->func_tb_idx].WNMCtrl;
+
+	RTMP_SEM_EVENT_WAIT(&pWNMCtrl->BTMPeerListLock, Ret);
+	DlListForEach(BTMPeerEntry, &pWNMCtrl->BTMPeerList,
+						BTM_PEER_ENTRY, List) {
+		if (MAC_ADDR_EQUAL(BTMPeerEntry->PeerMACAddr, pBtmReqActionFrame->PeerMACAddr)) {
+			isfound = TRUE;
+			break;
+		}
+	}
+	RTMP_SEM_EVENT_UP(&pWNMCtrl->BTMPeerListLock);
+
+	if (!isfound) {
+		MTWF_LOG(DBG_CAT_PROTO, CATPROTO_RRM, DBG_LVL_ERROR, 
+			("%s() BTMPeerEntry is already deleted\n",
+		__FUNCTION__));
+		return;
+	}
+
+	/*allocate a buffer prepare for btm req frame*/
+	NStatus = MlmeAllocateMemory(pAd, (PVOID)&pOutBuffer);
+	if (NStatus != NDIS_STATUS_SUCCESS) {
+		MTWF_LOG(DBG_CAT_PROTO, CATPROTO_RRM, DBG_LVL_ERROR,
+		("%s() allocate memory for btm req frame failed \n",
+			__FUNCTION__));
+		return;
+	}
+	/*compose 80211 header*/
+	ActHeaderInit(pAd, &ActHdr, pBtmReqActionFrame->PeerMACAddr,
+					pAd->ApCfg.MBSSID[pEntry->func_tb_idx].wdev.bssid,
+					pAd->ApCfg.MBSSID[pEntry->func_tb_idx].wdev.bssid);
+	NdisMoveMemory(pOutBuffer, (PCHAR)&ActHdr, sizeof(ActHdr));
+	FrameLen = sizeof(ActHdr);
+
+	/*add payload */
+	NdisMoveMemory(pOutBuffer+FrameLen, pBtmReqActionFrame->Payload, pBtmReqActionFrame->Len);
+	FrameLen += pBtmReqActionFrame->Len;
+
+	/* set BTM Peer current state */
+	RTMP_SEM_EVENT_WAIT(&pWNMCtrl->BTMPeerListLock, Ret);
+	BTMPeerEntry->CurrentState = WAIT_PEER_BTM_RSP;
+	RTMP_SEM_EVENT_UP(&pWNMCtrl->BTMPeerListLock);
+
+	/*send to air */
+	MiniportMMRequest(pAd, (MGMT_USE_QUEUE_FLAG | QID_AC_BE), pOutBuffer, FrameLen);
+
+	RTMPCancelTimer(&BTMPeerEntry->WaitPeerBTMReqTimer, &Cancelled);
+	RTMPReleaseTimer(&BTMPeerEntry->WaitPeerBTMReqTimer, &Cancelled);
+	RTMPSetTimer(&BTMPeerEntry->WaitPeerBTMRspTimer, WaitPeerBTMRspTimeoutVale);
+
+	if ((pEntry = MacTableLookup(pAd, pBtmReqActionFrame->PeerMACAddr)) != NULL) {	
+		PBTM_REQ_INFO pBtmReqInfo =(PBTM_REQ_INFO)(pBtmReqActionFrame->Payload);
+		if (pBtmReqInfo->reqmode & 0x04) {
+			pEntry->BTMDisassocCount =
+				pBtmReqInfo->disassoc_timer * pAd->CommonCfg.BeaconPeriod / 1000;
+			MTWF_LOG(DBG_CAT_PROTO, CATPROTO_RRM, DBG_LVL_TRACE, 
+						("%s() bss discount sec=%d\n",
+						__FUNCTION__, pEntry->BTMDisassocCount));
+			if (pEntry->BTMDisassocCount < 1)
+				pEntry->BTMDisassocCount = 1;
+		}
+	}
+
+	os_free_mem(pOutBuffer);
+	return;
+}
+
+#endif
 
 
 static VOID SendBTMConfirm(
@@ -2335,14 +2437,34 @@ enum BTM_STATE BTMPeerCurrentState(
 {
 	PWNM_CTRL pWNMCtrl;
 	PBTM_PEER_ENTRY BTMPeerEntry;
-	PBTM_EVENT_DATA Event = (PBTM_EVENT_DATA)Elem->Msg;
 	INT32 Ret;
+	UCHAR MACAddr[MAC_ADDR_LEN];
+#ifdef CONFIG_STEERING_API_SUPPORT
+	INT32 Len;
+	Len = sizeof(BTM_REQ_FRAME_DATA);
+	if (Len == Elem->MsgLen) {
+		PMAC_TABLE_ENTRY pEntry = NULL;
+		PBTM_REQ_FRAME_DATA pBtmReqActionFrame = (PBTM_REQ_FRAME_DATA)Elem->Msg;
+		COPY_MAC_ADDR(MACAddr, pBtmReqActionFrame->PeerMACAddr);
+		pEntry = MacTableLookup(pAd, pBtmReqActionFrame->PeerMACAddr);
+		if(!pEntry)
+			return BTM_UNKNOWN;
 #ifdef CONFIG_AP_SUPPORT
-	pWNMCtrl = &pAd->ApCfg.MBSSID[Event->ControlIndex].WNMCtrl;
+		pWNMCtrl = &pAd->ApCfg.MBSSID[pEntry->func_tb_idx].WNMCtrl;
+#endif 
+		
+	} else
+#endif
+	{
+		PBTM_EVENT_DATA Event = (PBTM_EVENT_DATA)Elem->Msg;
+		COPY_MAC_ADDR(MACAddr, Event->PeerMACAddr);
+#ifdef CONFIG_AP_SUPPORT
+		pWNMCtrl = &pAd->ApCfg.MBSSID[Event->ControlIndex].WNMCtrl;
 #endif /* CONFIG_AP_SUPPORT */
+	}
 	RTMP_SEM_EVENT_WAIT(&pWNMCtrl->BTMPeerListLock, Ret);
 	DlListForEach(BTMPeerEntry, &pWNMCtrl->BTMPeerList, BTM_PEER_ENTRY, List) {
-		if (MAC_ADDR_EQUAL(BTMPeerEntry->PeerMACAddr, Event->PeerMACAddr)) {
+		if (MAC_ADDR_EQUAL(BTMPeerEntry->PeerMACAddr, MACAddr)) {
 			RTMP_SEM_EVENT_UP(&pWNMCtrl->BTMPeerListLock);
 			return BTMPeerEntry->CurrentState;
 		}
@@ -2367,12 +2489,11 @@ void PeerWNMAction(IN PRTMP_ADAPTER pAd,
 	case BSS_TRANSITION_RSP:
 		ReceiveBTMRsp(pAd, Elem);
 		break;
-#ifdef CONFIG_HOTSPOT_R2
 
 	case WNM_NOTIFICATION_RSP:
 		ReceiveWNMNotifyRsp(pAd, Elem);
 		break;
-#endif
+
 	case WNM_NOTIFICATION_REQ:
 		ReceiveWNMNotifyReq(pAd, Elem);
 		break;
@@ -2548,6 +2669,9 @@ VOID BTMStateMachineInit(
 #ifdef CONFIG_11KV_API_SUPPORT
 	StateMachineSetAction(S, WAIT_BTM_REQ, BTM_REQ_IE, (STATE_MACHINE_FUNC)SendBTMReqIE);
 	StateMachineSetAction(S, WAIT_BTM_REQ, BTM_REQ_PARAM, (STATE_MACHINE_FUNC)SendBTMReqParam);
+#ifdef CONFIG_STEERING_API_SUPPORT
+		StateMachineSetAction(S, WAIT_BTM_REQ, BTM_REQ_FRAME, (STATE_MACHINE_FUNC)SendBTMReqFrame);
+#endif
 	StateMachineSetAction(S, WAIT_BTM_REQ, BTM_REQ_TIMEOUT, (STATE_MACHINE_FUNC)BTMReqTimeout);
 	StateMachineSetAction(S, WAIT_PEER_BTM_RSP, PEER_BTM_RSP_TIMEOUT, (STATE_MACHINE_FUNC)ReceiveBTMRspTimeout);
 #endif /* CONFIG_11KV_API_SUPPORT */

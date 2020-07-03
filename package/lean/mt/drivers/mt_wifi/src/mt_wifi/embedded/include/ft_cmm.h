@@ -144,6 +144,9 @@ typedef struct GNU_PACKED _FT_CFG {
 	UINT32 AssocDeadLine; /* 100ms */
 	UINT8 FtR0khId[FT_ROKH_ID_LEN + 1]; /* Lenght of ROKHID can be 1 to 48 chars. */
 	UINT8 FtR0khIdLen;
+#ifdef HOSTAPD_11R_SUPPORT
+	UINT8 FtR1khId[ETH_ALEN];
+#endif
 	FT_CAP_CFG FtCapFlag; /* FT capability Configuration. */
 } FT_CFG, *PFT_CFG;
 

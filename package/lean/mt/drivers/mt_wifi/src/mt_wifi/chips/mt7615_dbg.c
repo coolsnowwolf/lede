@@ -244,6 +244,10 @@ static INT32 chip_dump_mib_info(struct hdev_ctrl *ctrl, RTMP_STRING *arg)
 
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("===Tx Related Counters(Generic)===\n"));
 		RTMP_IO_READ32(pAd, MIB_M0SDR0 + band_offset, &mac_val);
+#ifdef CUSTOMER_RSG_FEATURE
+		pAd->RadioStatsCounter.TotalBeaconSentCount += (mac_val & 0xffff);
+		pAd->RadioStatsCounter.TotalTxCount += (mac_val & 0xffff);
+#endif
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\tBeaconTxCnt=0x%x\n", (mac_val & 0xffff)));
 		RTMP_IO_READ32(pAd, MIB_M0DR0 + band_offset, &mac_val);
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\tTx 20MHz Cnt=0x%x\n", mac_val & 0xffff));
@@ -295,6 +299,9 @@ static INT32 chip_dump_mib_info(struct hdev_ctrl *ctrl, RTMP_STRING *arg)
 		RTMP_IO_READ32(pAd, MIB_M0SDR11 + band_offset, &mac_val);
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\tRxLenMismatch=0x%x\n", (mac_val & 0xffff)));
 		RTMP_IO_READ32(pAd, MIB_M0SDR5 + band_offset, &mac_val);
+#ifdef CUSTOMER_RSG_FEATURE
+		pAd->RadioStatsCounter.TotalRxCount += (mac_val & 0xffff);
+#endif
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\tRxMPDUCnt=0x%x\n", (mac_val & 0xffff)));
 		RTMP_IO_READ32(pAd, MIB_M0SDR29 + band_offset, &mac_val);
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\tPFDropCnt=0x%x\n", (mac_val & 0x00ff)));

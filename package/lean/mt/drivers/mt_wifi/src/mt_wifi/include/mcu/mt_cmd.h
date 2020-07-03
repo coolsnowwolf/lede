@@ -78,6 +78,13 @@ typedef VOID(*MSG_RSP_HANDLER)(struct cmd_msg *msg, char *payload, UINT16 payloa
 
 #define THERMAL_TABLE_SIZE            15
 
+#ifdef CUSTOMISE_RDD_THRESHOLD_SUPPORT
+#define PPB_SIZE					32
+#define LPB_SIZE					32
+#define PB_SIZE						32
+#define RT_NUM 						16
+#endif /* CUSTOMISE_RDD_THRESHOLD_SUPPORT */
+
 enum EEPROM_STORAGE_TYPE {
 	EEPROM_PROM = 0,
 	EEPROM_EFUSE = 1,
@@ -374,6 +381,7 @@ struct cmd_msg {
 
 	VOID                *priv;
 	VOID                *net_pkt;
+	VOID                *retry_pkt;
 	UINT32              wcid;       /* Index of MacTableEntry */
 	UINT32              cmd_tx_len;
 
@@ -650,7 +658,7 @@ enum EXT_CMD_TYPE {
 	EXT_CMD_ID_TOAE_ENABLE = 0x6D,
 	EXT_CMD_ID_BWF_LWC_ENABLE = 0x6E,
 	EXT_CMD_ID_EDCCA_CTRL = 0x70,
-#ifdef CONFIG_HOTSPOT_R2
+#if defined(CONFIG_HOTSPOT_R2)  || defined(DSCP_QOS_MAP_SUPPORT)
 	EXT_CMD_ID_HOTSPOT_INFO_UPDATE = 0x71,
 #endif /* CONFIG_HOTSPOT_R2 */
 	EXT_CMD_ID_EFUSE_ACCESS_CHECK = 0x72,
@@ -662,13 +670,28 @@ enum EXT_CMD_TYPE {
 #ifdef PRE_CAL_TRX_SET2_SUPPORT
 	EXT_CMD_ID_PRE_CAL_RESULT = 0x76,
 #endif /* PRE_CAL_TRX_SET2_SUPPORT */
-#ifdef PA_TRIM_SUPPORT
+#if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
 	EXT_CMD_ID_CAL_RESTORE_FROM_FILE = 0x77,
-#endif /* PA_TRIM_SUPPORT */
+#endif /* CAL_BIN_FILE_SUPPORT */
 
-    EXT_CMD_ID_LINK_TEST_FEATURE_CTRL = 0x78,
+	EXT_CMD_ID_LINK_TEST_FEATURE_CTRL = 0x78,
+	EXT_CMD_ID_THERMAL_RECAL_MODE = 0x79,
+#ifdef MIN_PHY_RATE_SUPPORT
+	EXT_CMD_ID_SET_MIN_PHY_RATE = 0x7A,
+#endif /* MIN_PHY_RATE_SUPPORT */
+#ifdef FAST_UP_RATE_SUPPORT
+	EXT_CMD_ID_SET_FAST_UP_RATE = 0x7B,
+#endif /* FAST_UP_RATE_SUPPORT */
+#ifdef CUSTOMISE_RDD_THRESHOLD_SUPPORT
+	EXT_CMD_ID_SET_RDM_RADAR_THRES   = 0x7C,
+#endif /* CUSTOMISE_RDD_THRESHOLD_SUPPORT */
+#ifdef RDM_FALSE_ALARM_DEBUG_SUPPORT
+	EXT_CMD_ID_SET_RDM_TEST_PATTERN = 0x7D,
+#endif /* RDM_FALSE_ALARM_DEBUG_SUPPORT */
 
-	EXT_CMD_ID_PHY_OPERATION_MODE = 0x79,
+#ifdef A4_CONN
+	EXT_CMD_ID_MWDS_SUPPORT = 0x80,
+#endif
 	EXT_CMD_ID_SER = 0x81,
 #ifdef HOST_RESUME_DONE_ACK_SUPPORT
 	EXT_CMD_ID_HOST_RESUME_DONE_ACK = 0x83,
@@ -680,10 +703,29 @@ enum EXT_CMD_TYPE {
 	EXT_CMD_ID_RFTEST_RECAL = 0x85,
 	EXT_CMD_ID_TXDPD_CAL_INFO = 0x86,
 #endif /* PRE_CAL_MT7622_SUPPORT */
+#if defined(CUSTOMER_RSG_FEATURE) || defined (CUSTOMER_DCC_FEATURE)
+	EXT_CMD_ID_GET_WTBL_TX_COUNTER = 0x91,
+#endif
 	EXT_CMD_RXV_ENABLE_CTRL = 0x93,
 	EXT_CMD_ID_FW_DBG_CTRL = 0x95,
 	EXT_CMD_ID_TX_CCK_STREAM_CTRL = 0x96,
-	EXT_CMD_ID_SHAPING_FILTER_DISABLE = 0x97
+	EXT_CMD_ID_SHAPING_FILTER_DISABLE = 0x97,
+#ifdef PS_QUEUE_INC_SUPPORT
+	EXT_CMD_ID_PS_QUEUE_INC = 0x98,
+#endif
+#ifdef TXSTAT_2040BW_24G_SUPPORT
+	EXT_CMD_ID_BW_STATS_FEATURE = 0x99,
+#endif
+#ifdef WIFI_EAP_FEATURE
+	EXT_CMD_ID_EAP_CTRL = 0xA0,
+#endif
+#ifdef IGMP_TVM_SUPPORT
+	EXT_CMD_ID_IGMP_MULTICAST_SET_GET = 0xA1,
+#endif /* IGMP_TVM_SUPPORT */
+#ifdef TXRX_STAT_SUPPORT
+	EXT_CMD_ID_GET_STA_TX_STAT = 0xA2,
+#endif
+
 };
 
 
@@ -696,6 +738,7 @@ typedef enum _LINK_TEST_ACTION_CATEGORY {
 	LINK_TEST_RCPI,
 	LINK_TEST_SEIDX,
 	LINK_TEST_RCPI_MA,
+	LINK_TEST_TX,
 	LINK_TEST_ACTION_NUM
 } LINK_TEST_ACTION_CATEGORY, *P_LINK_TEST_ACTION_CATEGORY;
 
@@ -964,6 +1007,16 @@ enum EXT_EVENT_TYPE {
 #endif /* CONFIG_HOTSPOT_R2 */
 	EXT_EVENT_ID_ACCESS_EFUSE_CHECK = 0x73,
 	EXT_EVENT_GET_CR4_TX_STATISTICS = 0x74,
+#if defined(CUSTOMER_RSG_FEATURE) || defined (CUSTOMER_DCC_FEATURE)
+	EXT_EVENT_ID_GET_WTBL_TX_COUNTER = 0x91,
+#endif
+
+#ifdef IGMP_TVM_SUPPORT
+	EXT_EVENT_ID_IGMP_MULTICAST_RESP = 0x92,
+#endif
+#ifdef TXRX_STAT_SUPPORT
+	EXT_EVENT_ID_GET_STA_TX_STAT = 0xA2,
+#endif
 
 };
 
@@ -2720,6 +2773,41 @@ typedef struct GNU_PACKED _EXT_CMD_FW_LOG_2_HOST_CTRL_T {
 	UINT8 ucReserve[3];
 } EXT_CMD_FW_LOG_2_HOST_CTRL_T;
 
+#if defined(CUSTOMER_RSG_FEATURE) || defined (CUSTOMER_DCC_FEATURE)
+/* u4Field and ucWlanIdx is included for DCC to get per bss packet count */
+typedef struct _EXT_EVENT_WTBL_TX_COUNTER_RESULT_T {
+	UINT32  u4Field;
+	UINT32	CurrentBWTxCount;
+	UINT32	OtherBWTxCount;
+	UINT32	DataFrameRetryCnt;
+	UINT32	MgmtRetryCnt;
+	UINT32	PerStaRetriedPktCnt[MAX_LEN_OF_MAC_TABLE];
+	UINT8	ucWlanIdx;
+	UINT8	aucReserved[3];
+} EXT_EVENT_WTBL_TX_COUNTER_RESULT_T;
+typedef struct _EXT_CMD_GET_WTBL_TX_COUNT_T {
+	UINT32	u4Field;
+	UINT8	ucWlanIdx;
+	UINT8	aucReserved[3];
+} EXT_CMD_GET_WTBL_TX_COUNT_T, *P_EXT_CMD_GET_WTBL_TX_COUNT_T;
+
+#endif
+
+#ifdef TXRX_STAT_SUPPORT
+typedef struct _EXT_EVENT_STA_TX_STAT_RESULT_T {
+	UINT32	PerStaTxPktCnt[MAX_LEN_OF_MAC_TABLE];
+	UINT32	PerStaTxFailPktCnt[MAX_LEN_OF_MAC_TABLE];
+	UINT8	ucEntryBitmap[16];
+	UINT8	ucEntryCount;
+	UINT8	aucReserved[3];
+} EXT_EVENT_STA_TX_STAT_RESULT_T;
+
+typedef struct _EXT_CMD_GET_STA_TX_STAT_T {
+	UINT8	ucEntryBitmap[16];
+	UINT8	ucEntryCount;
+	UINT8	aucReserved[3];
+} EXT_CMD_GET_STA_TX_STAT_T, *P_EXT_CMD_GET_STA_TX_STAT_T;
+#endif
 
 typedef struct GNU_PACKED _CMD_AP_PS_RETRIEVE_T {
 	UINT32 u4Option; /* 0: AP_PWS enable, 1: redirect disable */
@@ -2806,10 +2894,84 @@ typedef struct GNU_PACKED _EXT_EVENT_BEACON_LOSS_T {
 } EXT_EVENT_BEACON_LOSS_T, *P_EXT_EVENT_BEACON_LOSS_T;
 
 #ifdef MT_DFS_SUPPORT/* Jelly20150123 */
+#ifdef CUSTOMISE_RDD_THRESHOLD_SUPPORT
+typedef struct _PERIODIC_PULSE_BUFFER_T {
+	UINT32 u4PeriodicStartTime;
+	UINT16 u2PeriodicPulseWidth;
+	INT16 i2PeriodicPulsePower;
+} PERIODIC_PULSE_BUFFER_T, *PPERIODIC_PULSE_BUFFER_T;
+
+typedef struct _LONG_PULSE_BUFFER_T {
+	UINT32 u4LongStartTime;
+	UINT16 u2LongPulseWidth;
+	INT16 i2LongPulsePower;
+} LONG_PULSE_BUFFER_T, *PLONG_PULSE_BUFFER_T;
+
+typedef struct _HW_PULSE_CONTENT_T {
+	UINT32 u4HwStartTime;
+	UINT16 u2HwPulseWidth;
+	INT16 i2HwPulsePower;
+	UINT8 ucScPass;
+	UINT8 ucSwReset;
+} HW_PULSE_CONTENT_T, *PHW_PULSE_CONTENT_T;
+
+typedef struct _SW_RADAR_TYPE_T {
+	UINT8 ucRT_DET;
+	UINT8 ucRT_ENB;
+	UINT8 ucRT_STGR;
+	UINT8 ucRT_CRPN_MIN;
+	UINT8 ucRT_CRPN_MAX;
+	UINT8 ucRT_CRPR_MIN;
+	UINT8 ucRT_PW_MIN;
+	UINT8 ucRT_PW_MAX;
+	UINT32 u4RT_PRI_MIN;
+	UINT32 u4RT_PRI_MAX;
+	UINT8 ucRT_CRBN_MIN;
+	UINT8 ucRT_CRBN_MAX;
+	UINT8 ucRT_STGPN_MIN;
+	UINT8 ucRT_STGPN_MAX;
+	UINT8 ucRT_STGPR_MIN;
+} SW_RADAR_TYPE_T, *PSW_RADAR_TYPE_T;
+
+typedef struct _EXT_EVENT_RDD_REPORT_T {
+	UINT8 ucRddIdx;
+	UINT8 ucLongDetected;
+	UINT8 ucConstantPRFDetected;
+	UINT8 ucStaggeredPRFDetected;
+	UINT8 ucRadarTypeIdx;
+	UINT8 ucPeriodicPulseNum;
+	UINT8 ucLongPulseNum;
+	UINT8 ucHwPulseNum;
+	UINT8 ucOutLPN;
+	UINT8 ucOutSPN;
+	UINT8 ucOutCRPN;
+	UINT8 ucOutCRPW;
+	UINT8 ucOutCRBN;
+	UINT8 ucOutSTGPN;
+	UINT8 ucOutSTGPW;
+	UINT16 u2Reserve;
+	UINT32 u4OutPRI_CONST;
+	UINT32 u4OutPRI_STG1;
+	UINT32 u4OutPRI_STG2;
+	UINT32 u4OutPRI_STG3;
+	LONG_PULSE_BUFFER_T arLongPulse[LPB_SIZE];
+	PERIODIC_PULSE_BUFFER_T arPeriodicPulse[PPB_SIZE];
+	HW_PULSE_CONTENT_T arContent[PB_SIZE];
+} EXT_EVENT_RDD_REPORT_T, *P_EXT_EVENT_RDD_REPORT_T;
+#else
 typedef struct GNU_PACKED _EXT_EVENT_RDD_REPORT_T {
 	UINT8       ucRddIdx;
 	UINT8       aucReserve[3];
 } EXT_EVENT_RDD_REPORT_T, *P_EXT_EVENT_RDD_REPORT_T;
+#endif /* CUSTOMISE_RDD_THRESHOLD_SUPPORT */
+
+#ifdef RDM_FALSE_ALARM_DEBUG_SUPPORT
+typedef struct _EXT_CMD_RDM_TEST_RADAR_PATTERN_T {
+	UINT8 ucPulseNum;
+	UINT8 aucReserved[3];
+	PERIODIC_PULSE_BUFFER_T arPulseBuffer[PB_SIZE];
+} CMD_RDM_TEST_RADAR_PATTERN_T, *P_CMD_RDM_TEST_RADAR_PATTERN_T;
+#endif /* RDM_FALSE_ALARM_DEBUG_SUPPORT */
 
 typedef struct GNU_PACKED _EXT_EVENT_CAC_END_T {
 	UINT8       ucRddIdx;
@@ -2953,7 +3115,8 @@ typedef struct GNU_PACKED _EXT_CMD_TMR_CAL_T {
 
 typedef struct GNU_PACKED _UPDATE_RTS_THRESHOLD_T {
 	UINT32 u4RtsPktLenThreshold;
-	UINT32 u4RtsPktNumThreshold;
+	UINT16 u2RtsPktNumThreshold;
+	UINT16 u2RtsRetryLimit;
 } UPDATE_RTS_THRESHOLD_T, *P_UPDATE_RTS_THRESHOLD_T;
 
 
@@ -3231,6 +3394,29 @@ typedef struct GNU_PACKED _EXT_CMD_VOW_FEATURE_CTRL_T {
 	UINT16     u2Resreve2Value;
 
 	/* DW#8 */
+#ifdef RT_BIG_ENDIAN
+	UINT32	   u4Resreve1Value:1;
+	UINT32	   u4VowKeepSettingBit:5;
+	UINT32	   u4VowKeepSettingValue:1;
+	UINT32	   u4IfApplyKeepVoWSettingForSerFlag:1;
+	UINT32	   u4RxRifsModeforCckCtsValue:1;
+	UINT32	   u4IfApplyRxRifsModeforCckCtsFlag:1;
+	UINT32	   u4ApplyRxEifsToZeroValue:1;
+	UINT32	   u4IfApplyRxEifsToZeroFlag:1;
+	UINT32	   u4RtsFailedChargeDisValue:1;
+	UINT32	   u4IfApplyRtsFailedChargeDisFlag:1;
+	UINT32	   u4TxBackOffBoundValue:5;
+	UINT32	   u4TxBackOffBoundEnable:1;
+	UINT32	   u4IfApplyTxBackOffBoundFlag:1;
+	UINT32	   u4TxMeasurementModeValue:1;
+	UINT32	   u4IfApplyTxMeasurementModeFlag:1;
+	UINT32	   u4TxCountValue:4;
+	UINT32	   u4IfApplyTxCountModeFlag:1;
+	UINT32	   u4KeepQuantumValue:1;
+	UINT32	   u4IfApplyKeepQuantumFlag:1;
+	UINT32	   u4RtsStaLockValue:1;
+	UINT32	   u4IfApplyStaLockForRtsFlag:1;
+#else
 	UINT32     u4IfApplyStaLockForRtsFlag:1;
 	UINT32     u4RtsStaLockValue:1;
 	UINT32     u4IfApplyKeepQuantumFlag:1;
@@ -3252,7 +3438,7 @@ typedef struct GNU_PACKED _EXT_CMD_VOW_FEATURE_CTRL_T {
 	UINT32     u4VowKeepSettingValue:1;
 	UINT32     u4VowKeepSettingBit:5;
 	UINT32     u4Resreve1Value:1;
-
+#endif
 	/* DW#9 */
 	UINT32     u4ResreveBackupValue;
 
@@ -3924,7 +4110,12 @@ typedef struct GNU_PACKED _EXT_CMD_BCN_OFFLOAD_T {
 	UINT16 u2PktLength;
 	UINT16 u2TimIePos;/* Tim IE position in pkt. */
 
+	/* add bcn v2 support , 1.5k beacon support */
+#ifdef BCN_V2_SUPPORT
+	UINT8 acPktContent[1520];/* whole pkt template length which include TXD, max shall not exceed 1520 bytes. */
+#else
 	UINT8 acPktContent[512];/* whole pkt template length which include TXD, max shall not exceed 512 bytes. */
+#endif
 	UINT8 ucCsaCount; /* count down value of CSA IE */
 	UINT8 aucReserved[3];
 } CMD_BCN_OFFLOAD_T, *P_CMD_BCN_OFFLOAD_T;
@@ -4497,8 +4688,8 @@ typedef struct GNU_PACKED _EXT_CMD_ID_BWF_LWC_ENABLE {
 	UINT8		aucReserve[3];
 } EXT_CMD_ID_BWF_LWC_ENABLE_T, *P_EXT_CMD_ID_BWF_LWC_ENABLE_T;
 
-#ifdef CONFIG_HOTSPOT_R2
-typedef struct _EXT_CMD_ID_HOTSPOT_INFO_UPDATE {
+#if defined(CONFIG_HOTSPOT_R2) || defined(DSCP_QOS_MAP_SUPPORT)
+typedef struct GNU_PACKED _EXT_CMD_ID_HOTSPOT_INFO_UPDATE {
 	/* hs bss flag */
 	UINT8			ucUpdateType;
 	UINT8			ucHotspotBssFlags;
@@ -4510,6 +4701,7 @@ typedef struct _EXT_CMD_ID_HOTSPOT_INFO_UPDATE {
 	UINT8			ucPoolID;
 	UINT8			ucTableValid;
 	UINT8			ucPoolDscpExceptionCount;
+	UINT32			u4Ac;
 	UINT16			au2PoolDscpRange[8];
 	UINT16			au2PoolDscpException[21];
 } EXT_CMD_ID_HOTSPOT_INFO_UPDATE_T, *P_EXT_CMD_ID_HOTSPOT_INFO_UPDATE_T;
@@ -4632,12 +4824,30 @@ typedef enum _PRE_CAL_TYPE {
 } PRE_CAL_TYPE;
 #endif /* defined(RLM_CAL_CACHE_SUPPORT) || defined(PRE_CAL_TRX_SET2_SUPPORT) */
 
-typedef struct GNU_PACKED _EXT_CMD_PHY_OPERATION_CTRL_T
+
+
+typedef struct GNU_PACKED _EXT_CMD_THERMAL_RECAL_MODE_CTRL_T
 {
-	UINT8	ucSubFunc; /*0: thermal recal mode; 1: phy init process; 2: read MAC & PHY status counter*/
-	UINT8	ucMode;
-	UINT8	aucReserved[2];
-} EXT_CMD_PHY_OPERATION_CTRL_T, *P_EXT_CMD_PHY_OPERATION_CTRL_T;
+    UINT8  ucMode;
+    UINT8  aucReserved[3];
+} EXT_CMD_THERMAL_RECAL_MODE_CTRL_T, *P_EXT_CMD_THERMAL_RECAL_MODE_CTRL_T;
+
+#if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
+typedef struct GNU_PACKED _EXT_CMD_CAL_CTRL_T {
+	UINT8  ucFuncIndex;
+	UINT8  aucReserved[3];
+	UINT32 u4DataLen;
+} EXT_CMD_CAL_CTRL_T, *P_EXT_CMD_CAL_CTRL_T;
+
+typedef struct GNU_PACKED _EXT_CMD_PA_TRIM_T {
+	EXT_CMD_CAL_CTRL_T Header;
+	UINT32 u4Data[4];
+} EXT_CMD_PA_TRIM_T, *P_EXT_CMD_PA_TRIM_T;
+
+typedef enum {
+	CAL_RESTORE_PA_TRIM = 0x00
+} CAL_RESTORE_FUNC_IDX;
+#endif /* CAL_BIN_FILE_SUPPORT */
 
 enum {
 	RXHDR_TRANS = 0,
@@ -4788,7 +4998,7 @@ typedef struct GNU_PACKED _EXT_EVENT_TMR_CALCU_INFO_T {
 
 
 typedef struct GNU_PACKED _EXT_CMD_ID_MCAST_CLONE {
-	UINT8 ucMcastCloneEnable; /* 0: Disable, 1: Enable */
+	UINT8 ucMcastCloneEnable; /* 0: Disable, 1: Enable, 2:Auto */
 	UINT8 uc_omac_idx;
 	UINT8 aucReserve[2];
 } EXT_CMD_ID_MCAST_CLONE_T, *P_EXT_CMD_ID_MCAST_CLONE_T;
@@ -4814,6 +5024,24 @@ typedef struct GNU_PACKED _EXT_CMD_ID_MULTICAST_ENTRY_DELETE {
 	UINT8 ucIndex;
 	UINT8 ucReserve;
 } EXT_CMD_ID_MULTICAST_ENTRY_DELETE_T, *P_EXT_CMD_ID_MULTICAST_ENTRY_DELETE_T;
+
+#ifdef IGMP_TVM_SUPPORT
+typedef enum {
+	IGMP_MCAST_SET_AGEOUT_TIME = 0x01,
+	IGMP_MCAST_GET_ENTRY_TABLE = 0x02,
+	IGMP_MCAST_MAX_ID_INVALID = 0xFF,
+} IGMP_MCAST_SET_GET_CMD_TYPE;
+
+typedef struct GNU_PACKED _EXT_CMD_ID_MULTICAST_SET_GET {
+	UINT8 ucCmdType;
+	UINT8 ucOwnMacIdx;
+	UINT8 Rsvd[2];
+	union {
+		UINT32 u4AgeOutTime;
+	} SetData;
+} EXT_CMD_ID_IGMP_MULTICAST_SET_GET_T, *P_EXT_CMD_ID_IGMP_MULTICAST_SET_GET_T;
+#endif /* IGMP_TVM_SUPPORT */
+
 
 /* Manually setting Tx power */
 typedef struct _CMD_All_POWER_MANUAL_CTRL_T {
@@ -4890,6 +5118,152 @@ typedef struct _CMD_EDCCA_ON_OFF_CTRL {
 	UINT8   ucDbdcBandIdx;
 	UINT8   aucReserve[2];
 } CMD_EDCCA_ON_OFF_CTRL, *P_CMD_EDCCA_ON_OFF_CTRL;
+
+#ifdef WIFI_EAP_FEATURE
+typedef enum _EAP_FEATURE_CATEGORY {
+	EDCCA_CTRL = 0x0,
+	SET_EDCCA_THRESHOLD = 0x1,
+	INIT_IPI_CTRL = 0x2,
+	GET_IPI_VALUE = 0x3,
+	SET_DATA_TXPWR_OFFSET = 0x4,
+	SET_RA_TABLE_DATA = 0x5,
+	GET_RATE_INFO = 0x6,
+	EAP_FEATURE_NUM
+} EAP_FEATURE_CATEGORY, *P_EAP_FEATURE_CATEGORY;
+
+enum {
+	EAP_EVENT_IPI_VALUE,
+	EAP_EVENT_SHOW_RATE_TABLE,
+	EAP_EVENT_NUM,
+};
+
+#define EAP_FW_RA_SWITCH_TBL_PATH	         "/etc/FwRASwitchTbl.dat"
+#define EAP_FW_RA_HW_FB_TBL_PATH	         "/etc/FwRAHwFbTbl.dat"
+
+#define EAP_FW_RA_SWITCH_TBL_UPD_PATH_7615   "/etc/FwRASwitchTblUpd7615.dat"
+#define EAP_FW_RA_HW_FB_TBL_UPD_PATH_7615    "/etc/FwRAHwFbTblUpd7615.dat"
+#define EAP_FW_RA_SWITCH_TBL_UPD_PATH_7622   "/etc/FwRASwitchTblUpd7622.dat"
+#define EAP_FW_RA_HW_FB_TBL_UPD_PATH_7622    "/etc/FwRAHwFbTblUpd7622.dat"
+#define EAP_FW_RA_SWITCH_TBL_UPD_PATH_7663   "/etc/FwRASwitchTblUpd7663.dat"
+#define EAP_FW_RA_HW_FB_TBL_UPD_PATH_7663    "/etc/FwRAHwFbTblUpd7663.dat"
+
+#define NUM_OF_COL_RATE_SWITCH_TABLE  15
+#define NUM_OF_COL_RATE_HWFB_TABLE    8
+#define RA_TBL_INDEX_INVALID          0xFF
+
+typedef enum _ENUM_RA_TABLE {
+	eRateSwitchTable = 0,
+	eRateHwFbTable,
+	eRateTableMax
+} ENUM_RA_TABLE, *P_ENUM_RA_TABLE;
+
+typedef enum _ENUM_RA_SWITCH_TABLE {
+	eRateSwTbl11b = 0,
+	eRateSwTbl11g,
+	eRateSwTbl11bg,
+	eRateSwTbl11n1ss = 0x10,
+	eRateSwTbl11n2ss,
+	eRateSwTbl11n3ss,
+	eRateSwTbl11n4ss,
+	eRateSwTblvht1ss = 0x20,
+	eRateSwTblvht2ss,
+	eRateSwTblvht3ss,
+	eRateSwTblvht4ss,
+	eRateSwTblvht2ssbccbw80,
+	eRateSwTblhe1ss = 0x30,
+	eRateSwTblhe2ss,
+	eRateSwTblMax = 0xff
+} ENUM_RA_SWITCH_TABLE, *P_ENUM_RA_SWITCH_TABLE;
+
+typedef enum _ENUM_RA_HWFB_TABLE {
+	eRateHwFbTbl11b = 0,
+	eRateHwFbTbl11g,
+	eRateHwFbTbl11bg,
+	eRateHwFbTbl11n1ss = 0x10,
+	eRateHwFbTbl11n2ss,
+	eRateHwFbTbl11n3ss,
+	eRateHwFbTbl11n4ss,
+	eRateHwFbTblbgn1ss,
+	eRateHwFbTblbgn2ss,
+	eRateHwFbTblbgn3ss,
+	eRateHwFbTblbgn4ss,
+	eRateHwFbTblvht1ss = 0x20,
+	eRateHwFbTblvht2ss,
+	eRateHwFbTblvht3ss,
+	eRateHwFbTblvht4ss,
+	eRateHwFbTblvht2ssbccbw80,
+	eRateHwFbTblhe1ss = 0x30,
+	eRateHwFbTblhe2ss,
+	eRateHwFbTblMax = 0xff
+} ENUM_RA_HWFB_TABLE, *P_ENUM_RA_HWFB_TABLE;
+
+typedef struct _RATE_TABLE_UPDATE {
+	UINT8 u1RaTblType;
+	UINT8 u1RaTblIdx;
+	CHAR  acTableName[40];
+} RATE_TABLE_UPDATE, *P_RATE_TABLE_UPDATE;
+
+typedef struct _CMD_SET_EDCCA_THRESHOLD {
+	UINT32 u4EapCtrlCmdId;
+	UINT32 u4EdccaThreshold;
+} CMD_SET_EDCCA_THRESHOLD, *P_CMD_SET_EDCCA_THRESHOLD;
+
+typedef struct _CMD_INIT_IPI_CTRL_T {
+	UINT32 u4EapCtrlCmdId;
+	UINT8  u1BandIdx;
+	UINT8  au1Reserved[3];
+} CMD_INIT_IPI_CTRL_T, *P_CMD_INIT_IPI_CTRL_T;
+
+typedef struct _CMD_GET_IPI_VALUE {
+	UINT32 u4EapCtrlCmdId;
+	UINT8  u1BandIdx;
+	UINT8  au1Reserved[3];
+} CMD_GET_IPI_VALUE, *P_CMD_GET_IPI_VALUE;
+
+typedef struct _EVENT_GET_IPI_VALUE {
+	UINT32 u4EapCtrlEventId;
+	UINT32 au4IPIValue[11];
+} EVENT_GET_IPI_VALUE, *P_EVENT_GET_IPI_VALUE;
+
+typedef struct _CMD_SET_DATA_TXPWR_OFFSET {
+	UINT32 u4EapCtrlCmdId;
+	UINT8  u1WlanIdx;
+	INT8   i1TxPwrOffset;
+	UINT8  u1BandIdx;
+} CMD_SET_DATA_TXPWR_OFFSET, *P_CMD_SET_DATA_TXPWR_OFFSET;
+
+typedef struct _CMD_SET_RA_TABLE {
+	UINT32 u4EapCtrlCmdId;
+	UINT8  u1RaTblTypeIdx;
+	UINT8  u1RaTblIdx;
+	UINT8  u1BandIdx;
+	UINT8  u1Reserved1;
+	UINT16 u2RaTblLength;
+	UINT16 u2Reserved2;
+	UCHAR  ucBuf[512];
+} CMD_SET_RA_TABLE, *P_CMD_SET_RA_TABLE;
+
+typedef struct _EVENT_SHOW_RATE_TABLE {
+	UINT32 u4EapCtrlEventId;
+	UINT16 u2RaTblLength;
+	UINT8  u1RaTblTypeIdx;
+	UINT8  u1RaTblIdx;
+	UINT8  u1RW;
+	UINT8  u1Reserved[3];
+	UCHAR  ucBuf[512];
+} EVENT_SHOW_RATE_TABLE, *P_EVENT_SHOW_RATE_TABLE;
+
+typedef struct _CMD_SHOW_RATE_TABLE {
+	UINT32 u4EapCtrlCmdId;
+	UINT8  u1RaTblTypeIdx;
+	UINT8  u1RaTblIdx;
+	UINT8  u1BandIdx;
+	UINT8  u1RW;
+} CMD_SHOW_RATE_TABLE, *P_CMD_SHOW_RATE_TABLE;
+
+PCHAR getRaTableName(UINT8 TblType, UINT8 TblIdx);
+UINT8 getRaTableIndex(UINT8 TblType, CHAR *TblName);
+#endif /* WIFI_EAP_FEATURE */
 
 typedef struct _CMD_POWER_MU_CTRL_T {
 	UINT8   ucPowerCtrlFormatId;
@@ -5138,6 +5512,13 @@ typedef struct _CMD_LINK_TEST_TX_CSD_CTRL_T {
 	UINT8	ucReserved;
 } CMD_LINK_TEST_TX_CSD_CTRL_T, *P_CMD_LINK_TEST_TX_CSD_CTRL_T;
 
+typedef struct _CMD_LINK_TEST_TX_CTRL_T {
+	UINT8    ucLinkTestCtrlFormatId;
+	BOOLEAN  fgTxConfigEn;
+	UINT8    ucBandIdx;
+	UINT8    ucReserved;
+} CMD_LINK_TEST_TX_CTRL_T, *P_CMD_LINK_TEST_TX_CTRL_T;
+
 typedef struct _CMD_LINK_TEST_RX_CTRL_T {
 	UINT8	ucLinkTestCtrlFormatId;
 	UINT8	ucRxAntIdx;
@@ -5200,6 +5581,50 @@ typedef struct _INIT_CMD_WIFI_START_WITH_DECOMPRESSION {
 	DECOMPRESS_REGION_INFO aucDecompRegion[3]; /* ilm, dlm, cmdbt*/
 } INIT_CMD_WIFI_START_WITH_DECOMPRESSION, *P_INIT_CMD_WIFI_START_WITH_DECOMPRESSION;
 
+#ifdef CUSTOMISE_RDD_THRESHOLD_SUPPORT
+typedef struct _RDM_FCC5_LPN_UPDATE_T {
+	UINT16 u2Tag;                          /* Tag = 0x01 */
+	UINT16 u2FCC_LPN_MIN;
+} CMD_RDM_FCC5_LPN_UPDATE_T, *P_CMD_RDM_FCC5_LPN_UPDATE_T;
+
+typedef struct _RDM_RADAR_THRESHOLD_UPDATE_T {
+	UINT16 u2Tag;                          /* Tag = 0x02 */
+	UINT16 u2RadarType;                    /* Valid Range 0~15*/
+	UINT8  ucRT_ENB;
+	UINT8  ucRT_STGR;
+	UINT8  ucRT_CRPN_MIN;
+	UINT8  ucRT_CRPN_MAX;
+	UINT8  ucRT_CRPR_MIN;
+	UINT8  ucRT_PW_MIN;
+	UINT8  ucRT_PW_MAX;
+	UINT32 u4RT_PRI_MIN;
+	UINT32 u4RT_PRI_MAX;
+	UINT8  ucRT_CRBN_MIN;
+	UINT8  ucRT_CRBN_MAX;
+	UINT8  ucRT_STGPN_MIN;
+	UINT8  ucRT_STGPN_MAX;
+	UINT8  ucRT_STGPR_MIN;
+} CMD_RDM_RADAR_THRESHOLD_UPDATE_T, *P_CMD_RDM_RADAR_THRESHOLD_UPDATE_T;
+
+typedef struct _RDM_PULSE_THRESHOLD_UPDATE_T {
+	UINT16 u2Tag;                    /* Tag = 0x03 */
+	UINT32 u4PP_PulseWidthMAX;        /* unit us */
+	INT32 i4PulsePowerMAX;           /* unit dbm */
+	INT32 i4PulsePowerMIN;           /* unit dbm */
+	UINT32 u4PRI_MIN_STGR;			/* unit us */
+	UINT32 u4PRI_MAX_STGR;			/* unit us */
+	UINT32 u4PRI_MIN_CR;			/* unit us */
+	UINT32 u4PRI_MAX_CR;			/* unit us */
+} CMD_RDM_PULSE_THRESHOLD_UPDATE_T, *P_CMD_RDM_PULSE_THRESHOLD_UPDATE_T;
+
+typedef struct _RDM_RDD_LOG_CONFIG_UPDATE_T {
+	UINT16 u2Tag;				/* Tag = 0x04 */
+	UINT8 ucHwRDDLogEnable;		/* 0: no dump, 1: dump log */
+	UINT8 ucSwRDDLogEnable;    	/* 0: no dump, 1: dump log */
+	UINT8 ucSwRDDLogCond;		/*0: send log for every interrupt, 1: send log only when a radar is detected. */
+} CMD_RDM_RDD_LOG_CONFIG_UPDATE_T, *P_CMD_RDM_RDD_LOG_CONFIG_UPDATE_T;
+#endif /* CUSTOMISE_RDD_THRESHOLD_SUPPORT */
+
 INT32 MtCmdFwDecompressStart(struct _RTMP_ADAPTER *ad, P_INIT_CMD_WIFI_START_WITH_DECOMPRESSION decompress_info);
 
 #ifdef BCN_OFFLOAD_SUPPORT
@@ -5209,7 +5634,11 @@ BOOLEAN MtUpdateBcnAndTimToMcu(
 	IN UINT16 FrameLen,
 	IN UCHAR UpdatePktType);
 
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+INT32 MtCmdBcnOffloadSet(struct _RTMP_ADAPTER *pAd, CMD_BCN_OFFLOAD_T *bcn_offload);
+#else
 INT32 MtCmdBcnOffloadSet(struct _RTMP_ADAPTER *pAd, CMD_BCN_OFFLOAD_T bcn_offload);
+#endif
 #endif
 
 INT32 MtCmdMuarConfigSet(struct _RTMP_ADAPTER *pAd, UCHAR *pdata);
@@ -5371,6 +5800,14 @@ NTSTATUS MtCmdPowerOnWiFiSys(struct _RTMP_ADAPTER *pAd);
 VOID CmdExtEventRsp(struct cmd_msg *msg, char *Data, UINT16 Len);
 
 INT32 MtCmdSendRaw(struct _RTMP_ADAPTER *pAd, UCHAR ExtendID, UCHAR *Input, INT len, UCHAR SetQuery);
+
+#ifdef TXRX_STAT_SUPPORT
+INT32 MtCmdGetPerStaTxStat(struct _RTMP_ADAPTER *pAd, UINT8 *ucEntryBitmap, UINT8 ucEntryCount);
+#endif
+
+#if defined(CUSTOMER_RSG_FEATURE) || defined (CUSTOMER_DCC_FEATURE)
+INT32 MtCmdGetWtblTxStat(struct _RTMP_ADAPTER *pAd, UINT32 u4Field, UINT8 ucWcid);
+#endif
 
 #ifdef CONFIG_ATE
 INT32 MtCmdGetTxPower(struct _RTMP_ADAPTER *pAd, UINT8 pwrType, UINT8 centerCh, UINT8 dbdc_idx, UINT8 Ch_Band, P_EXT_EVENT_ID_GET_TX_POWER_T prTxPwrResult);
@@ -5626,6 +6063,49 @@ INT AndesCoexBSSInfo(struct _RTMP_ADAPTER *pAd, BOOLEAN Enable, UCHAR bQoS);
 #endif /* COEX_SUPPORT */
 
 
+#ifdef IGMP_TVM_SUPPORT
+#define MCAST_RSP_ENTRY_TABLE 0x01
+
+typedef struct _IGMP_MULTICAST_TABLE_MEMBER {
+	UINT8 Addr[MAC_ADDR_LEN];
+	UINT8 TVMode;
+	UINT8 Rsvd;
+} IGMP_MULTICAST_TABLE_MEMBER, *P_IGMP_MULTICAST_TABLE_MEMBER;
+
+typedef struct _IGMP_MULTICAST_TABLE_ENTRY {
+	UINT8 NumOfMember;
+	UINT8 Rsvd1;
+	UINT16 ThisGroupSize;
+	UINT32 lastTime;
+	UINT32 AgeOut;
+	UINT32 type;	/* 0: static, 1: dynamic. */
+	UINT8 GroupAddr[MAC_ADDR_LEN];
+	UINT8 Rsvd2[2];
+	IGMP_MULTICAST_TABLE_MEMBER IgmpMcastMember[1]; /* This member will be multiple of NumOfMember, shows variable structure */
+} IGMP_MULTICAST_TABLE_ENTRY, *P_IGMP_MULTICAST_TABLE_ENTRY;
+
+typedef struct _IGMP_MULTICAST_TABLE{
+	UINT8 EvtSeqNum; /* Since there will be multiple events, this will store the sequence, starting from 1 */
+	UINT8 NumOfGroup;
+	UINT8 TotalGroup;
+	UINT8 Rsvd;
+	UINT16 ThisTableSize; /* Total size in current event. Only valid for event */
+	UINT16 TotalSize;
+	IGMP_MULTICAST_TABLE_ENTRY *pNxtFreeGroupLocation; /* Used only in driver */
+	IGMP_MULTICAST_TABLE_ENTRY IgmpMcastTableEntry[1]; /* This member will be multiple of NumOfGroup, shows variable structure */
+} IGMP_MULTICAST_TABLE, *P_IGMP_MULTICAST_TABLE;
+
+typedef struct GNU_PACKED _EXT_EVENT_ID_IGMP_MULTICAST_SET_GET {
+	UINT8 ucRspType;
+	UINT8 ucOwnMacIdx;
+	UINT8 Rsvd[2];
+	union {
+		IGMP_MULTICAST_TABLE McastTable;
+	} RspData;
+}  EXT_EVENT_ID_IGMP_MULTICAST_SET_GET, *P_EXT_EVENT_ID_IGMP_MULTICAST_SET_GET_T;
+#endif /* IGMP_TVM_SUPPORT */
+
+
 #ifdef RTMP_EFUSE_SUPPORT
 
 INT32 MtCmdEfuseAccessRead(struct _RTMP_ADAPTER *pAd, USHORT offset, PUCHAR pData, PUINT isVaild);
@@ -5777,6 +6257,22 @@ INT32 CmdTxTonePower(struct _RTMP_ADAPTER *pAd, INT32 type, INT32 dec);
 #endif
 INT32 MtCmdGetThermalSensorResult(struct _RTMP_ADAPTER *pAd, UINT8 ActionIdx, UINT32 *SensorResult);
 
+#ifdef TXSTAT_2040BW_24G_SUPPORT
+extern BOOLEAN Is2040StatFeatureEnbl;
+
+#define SET_2040_FEATURE_ENABLE                 TRUE
+#define SET_2040_FEATURE_DISABLE                FALSE
+
+#define SET_STAREC_BW_STATS_SUPPORT(enable)		\
+	((Is2040StatFeatureEnbl) = enable)
+#define IF_STAREC_BW_STATS_SUPPORT()			\
+	((Is2040StatFeatureEnbl) == TRUE)
+
+
+INT32 MtCmdSetBWStatFeature(struct _RTMP_ADAPTER *pAd, UCHAR isEnable);
+INT32 MtCmdGetBWStatFeature(struct _RTMP_ADAPTER *pAd, UCHAR isEnable);
+#endif
+
 #ifdef RACTRL_FW_OFFLOAD_SUPPORT
 struct _EXT_EVENT_TX_STATISTIC_RESULT_T;
 INT32 MtCmdGetTxStatistic(struct _RTMP_ADAPTER *pAd, UINT32 u4Field, UINT8 ucBand, UINT8 ucWcid, struct _EXT_EVENT_TX_STATISTIC_RESULT_T *prTxStatResult);
@@ -5784,6 +6280,13 @@ INT32 mt_cmd_get_sta_tx_statistic(struct _RTMP_ADAPTER *ad, UINT8 wcid, UINT8 db
 #ifdef RACTRL_LIMIT_MAX_PHY_RATE
 INT32 MtCmdSetMaxPhyRate(struct _RTMP_ADAPTER *pAd, UINT16 u2MaxPhyRate);
 #endif /* RACTRL_LIMIT_MAX_PHY_RATE */
+#ifdef MIN_PHY_RATE_SUPPORT
+INT32 MtCmdSetMinPhyRate(struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev);
+#endif /* MIN_PHY_RATE_SUPPORT */
+#ifdef FAST_UP_RATE_SUPPORT
+INT32 MtCmdSetFastUpRate(struct _RTMP_ADAPTER *pAd, UCHAR isEnable);
+#endif /* MIN_PHY_RATE_SUPPORT */
+
 #endif /* RACTRL_FW_OFFLOAD_SUPPORT */
 
 INT32 MtCmdTmrCal(struct _RTMP_ADAPTER *pAd, UINT8 enable, UINT8 band, UINT8 bw, UINT8 ant, UINT8 role);
@@ -5824,6 +6327,18 @@ INT32 MtCmdRddCtrl(
 	IN UCHAR ucSetVal);
 #endif /*MT_DFS_SUPPORT*/
 
+#ifdef CUSTOMISE_RDD_THRESHOLD_SUPPORT
+INT32 MtCmdSetFcc5MinLPN(struct _RTMP_ADAPTER *pAd, UINT16 u2MinLpnUpdate);
+INT32 MtCmdSetRadarThresholdParam(struct _RTMP_ADAPTER *pAd, P_CMD_RDM_RADAR_THRESHOLD_UPDATE_T  pRadarThreshold);
+INT32 MtCmdSetPulseThresholdParam(struct _RTMP_ADAPTER *pAd, P_CMD_RDM_PULSE_THRESHOLD_UPDATE_T pPulseThreshold);
+INT32 MtCmdSetRddLogConfigUpdate(struct _RTMP_ADAPTER *pAd, UINT8 ucHwRDDLogEnable,
+	UINT8 ucSwRDDLogEnable, UINT8 ucSwRDDLogCond);
+#endif /* CUSTOMISE_RDD_THRESHOLD_SUPPORT */
+
+#ifdef RDM_FALSE_ALARM_DEBUG_SUPPORT
+INT32 MtCmdSetTestRadarPattern(struct _RTMP_ADAPTER *pAd, P_CMD_RDM_TEST_RADAR_PATTERN_T pTestPulsePattern);
+#endif
+
 INT32 MtCmdGetEdca(struct _RTMP_ADAPTER *pAd, MT_EDCA_CTRL_T *pEdcaCtrl);
 INT32 MtCmdGetTsfTime(
 	struct _RTMP_ADAPTER *pAd,
@@ -5853,7 +6368,13 @@ VOID rlmCalCacheApply(struct _RTMP_ADAPTER *pAd, VOID *rlmCache);
 INT32 MtCmdGetPreCalResult(struct _RTMP_ADAPTER *pAd, UINT8 CalId, UINT16 PreCalBitMap);
 INT32 MtCmdPreCalReStoreProc(struct _RTMP_ADAPTER *pAd, INT32 *pPreCalBuffer);
 #endif/* PRE_CAL_TRX_SET2_SUPPORT */
-INT32 MtCmdFwPhyOperation(struct _RTMP_ADAPTER *pAd, UINT8 SubFunc, UINT8 Mode);
+INT32 MtCmdThermalReCalMode(struct _RTMP_ADAPTER *pAd, UINT8 Mode);
+
+#if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
+INT32 MtCmdCalReStoreFromFileProc(struct _RTMP_ADAPTER *pAd, CAL_RESTORE_FUNC_IDX FuncIdx);
+INT32 MtCmdPATrimReStoreProc(struct _RTMP_ADAPTER *pAd);
+#endif /* CAL_BIN_FILE_SUPPORT */
+
 INT32 CmdRxHdrTransUpdate(struct _RTMP_ADAPTER *pAd, BOOLEAN En, BOOLEAN ChkBssid, BOOLEAN InSVlan, BOOLEAN RmVlan, BOOLEAN SwPcP);
 INT32 CmdRxHdrTransBLUpdate(struct _RTMP_ADAPTER *pAd, UINT8 Index, UINT8 En, UINT16 EthType);
 #ifdef VOW_SUPPORT
@@ -5899,9 +6420,14 @@ INT32 MtCmdBgndScanNotify(struct _RTMP_ADAPTER *pAd, struct _MT_BGND_SCAN_NOTIFY
 
 INT32 CmdExtGeneralTestAPPWS(struct _RTMP_ADAPTER *pAd, UINT action);
 #ifdef IGMP_SNOOP_SUPPORT
-INT32 CmdMcastCloneEnable(struct _RTMP_ADAPTER *pAd, BOOLEAN Enable, UINT8 omac_idx);
+INT32 CmdMcastCloneEnable(struct _RTMP_ADAPTER *pAd, UINT Enable, UINT8 omac_idx);
 BOOLEAN CmdMcastEntryInsert(struct _RTMP_ADAPTER *pAd, PUCHAR GrpAddr, UINT8 BssIdx, UINT8 Type, PUCHAR MemberAddr, PNET_DEV dev, UINT8 WlanIndex);
 BOOLEAN CmdMcastEntryDelete(struct _RTMP_ADAPTER *pAd, PUCHAR GrpAddr, UINT8 BssIdx, PUCHAR MemberAddr, PNET_DEV dev, UINT8 WlanIndex);
+#ifdef IGMP_TVM_SUPPORT
+BOOLEAN CmdSetMcastEntryAgeOut(struct _RTMP_ADAPTER *pAd, UINT8 AgeOutTime, UINT8 omac_idx);
+BOOLEAN CmdGetMcastEntryTable(struct _RTMP_ADAPTER *pAd, UINT8 omac_idx, struct wifi_dev *wdev);
+VOID CmdExtEventIgmpMcastTableRsp(struct cmd_msg *msg, char *Data, UINT16 Len);
+#endif /* IGMP_TVM_SUPPORT */
 #endif
 
 INT32 MtCmdTxPowerSKUCtrl(struct _RTMP_ADAPTER *pAd, BOOLEAN fgTxPowerSKUEn, UCHAR BandIdx);
@@ -5912,6 +6438,17 @@ INT32 MtCmdTxBfBackoffCtrl(struct _RTMP_ADAPTER *pAd, BOOLEAN fgTxBFBackoffEn, U
 INT32 MtCmdThermoCompCtrl(struct _RTMP_ADAPTER *pAd, BOOLEAN fgThermoCompEn, UCHAR BandIdx);
 INT32 MtCmdTxPwrRfTxAntCtrl(struct _RTMP_ADAPTER *pAd, UINT8 ucTxAntIdx);
 INT32 MtCmdTxPwrShowInfo(struct _RTMP_ADAPTER *pAd, UCHAR ucTxPowerInfoCatg, UINT8 ucBandIdx);
+#ifdef WIFI_EAP_FEATURE
+INT32 MtCmdSetEdccaThreshold(struct _RTMP_ADAPTER *pAd, UINT32 edcca_threshold);
+INT32 MtCmdInitIPICtrl(struct _RTMP_ADAPTER *pAd, UINT8 BandIdx);
+INT32 MtCmdGetIPIValue(struct _RTMP_ADAPTER *pAd, UINT8 BandIdx);
+INT32 MtCmdSetDataTxPwrOffset(struct _RTMP_ADAPTER *pAd, UINT8 WlanIdx,
+		INT8 TxPwr_Offset, UINT8 BandIdx);
+INT32 MtCmdSetRaTable(struct _RTMP_ADAPTER *pAd, UINT8 BandIdx, UINT8 TblType,
+		UINT8 TblIndex, UINT16 TblLength, PUCHAR Buffer);
+INT32 MtCmdGetRaTblInfo(struct _RTMP_ADAPTER *pAd, UINT8 BandIdx,
+		UINT8 TblType, UINT8 TblIndex, UINT8 ReadnWrite);
+#endif /* WIFI_EAP_FEATURE */
 INT32 MtCmdTOAECalCtrl(struct _RTMP_ADAPTER *pAd, UCHAR TOAECtrl);
 INT32 MtCmdEDCCACtrl(struct _RTMP_ADAPTER *pAd, UCHAR BandIdx, UCHAR EDCCACtrl);
 INT32 MtCmdMUPowerCtrl(struct _RTMP_ADAPTER *pAd, BOOLEAN MUPowerForce, UCHAR MUPowerCtrl);
@@ -5930,10 +6467,11 @@ INT32 MtCmdTxPwrUpCtrl(struct _RTMP_ADAPTER *pAd, INT8 ucBandIdx,
 
 
 INT32 MtCmdLinkTestTxCsdCtrl(struct _RTMP_ADAPTER *pAd, BOOLEAN fgTxCsdConfigEn, UINT8 ucDbdcBandIdx, UINT8 ucBandIdx);
+INT32 MtCmdLinkTestTxCtrl(struct _RTMP_ADAPTER *pAd, BOOLEAN fgTxConfigEn, UINT8 ucBandIdx);
 INT32 MtCmdLinkTestRxCtrl(struct _RTMP_ADAPTER *pAd, UINT8 ucRxAntIdx, UINT8 ucBandIdx);
 INT32 MtCmdLinkTestTxPwrCtrl(struct _RTMP_ADAPTER *pAd, BOOLEAN fgTxPwrConfigEn, UINT8 ucDbdcBandIdx, UINT8 ucBandIdx);
 INT32 MtCmdLinkTestTxPwrUpTblCtrl(struct _RTMP_ADAPTER *pAd, UINT8 ucTxPwrUpCat, PUINT8 pucTxPwrUpValue);
-INT32 MtCmdLinkTestACRCtrl(struct _RTMP_ADAPTER *pAd, BOOLEAN fgACRConfigEn, UINT8 ucDbdcBandIdx);
+INT32 MtCmdLinkTestACRCtrl(struct _RTMP_ADAPTER *pAd, BOOLEAN fgACRConfigEn, UINT8 ucDbdcBandIdx, UINT8 ucReserved);
 INT32 MtCmdLinkTestRcpiCtrl(struct _RTMP_ADAPTER *pAd, BOOLEAN fgRCPIConfigEn);
 INT32 MtCmdLinkTestSeIdxCtrl(struct _RTMP_ADAPTER *pAd, BOOLEAN fgSeIdxConfigEn);
 INT32 MtCmdLinkTestRcpiMACtrl(struct _RTMP_ADAPTER *pAd, UINT8 ucMAParameter);
@@ -5998,9 +6536,12 @@ INT32 MtCmdPktBudgetCtrl(struct _RTMP_ADAPTER *pAd, UINT8 bss_idx, UINT16 wcid, 
 #endif /*PKT_BUDGET_CTRL_SUPPORT*/
 
 INT32 MtCmdSetBWFEnable(struct _RTMP_ADAPTER *pAd, UINT8 Enable);
-#ifdef CONFIG_HOTSPOT_R2
+#if  defined(CONFIG_HOTSPOT_R2) || defined(DSCP_QOS_MAP_SUPPORT)
 INT32 MtCmdHotspotInfoUpdate(struct _RTMP_ADAPTER *pAd, EXT_CMD_ID_HOTSPOT_INFO_UPDATE_T InfoUpdateT);
 #endif /* CONFIG_HOTSPOT_R2 */
+#ifdef A4_CONN
+INT32 MtCmdSetA4Enable(struct _RTMP_ADAPTER *pAd, UINT8 McuDest, UINT8 Enable);
+#endif /* A4_CONN */
 
 #ifdef PRE_CAL_MT7622_SUPPORT
 INT32 MtCmdSetTxLpfCal_7622(struct _RTMP_ADAPTER *pAd);

@@ -292,6 +292,9 @@ static VOID ApCliMlmeAssocReqAction(
 	USHORT ifIndex = (USHORT)(Elem->Priv);
 	PULONG pCurrState = NULL;
 	struct _RTMP_CHIP_CAP *cap;
+#if defined(WPA_SUPPLICANT_SUPPORT) || defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA) || defined(APCLI_CFG80211_SUPPORT)
+	USHORT			VarIesOffset = 0;
+#endif /* WPA_SUPPLICANT_SUPPORT */
 	APCLI_STRUCT *apcli_entry;
 	struct wifi_dev *wdev;
 #ifdef MAC_REPEATER_SUPPORT
@@ -622,7 +625,7 @@ static VOID ApCliMlmeAssocReqAction(
 			FrameLen += tmp;
 		}
 
-#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA)
+#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA) || defined(APCLI_CFG80211_SUPPORT)
 		apcli_entry->ReqVarIELen = 0;
 		NdisZeroMemory(apcli_entry->ReqVarIEs, MAX_VIE_LEN);
 
@@ -651,6 +654,42 @@ static VOID ApCliMlmeAssocReqAction(
 						&& !(apcli_entry->wdev.WscControl.bWscTrigger)))
 #endif /* WSC_AP_SUPPORT */
 			   ) {
+
+#if (defined(FAST_EAPOL_WAR) && (defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)))
+				{
+						ULONG TempLen = 0;
+						CHAR rsne_idx = 0;
+						MAC_TABLE_ENTRY *pentry = (MAC_TABLE_ENTRY *)NULL;
+
+
+#ifdef MAC_REPEATER_SUPPORT
+
+					if ((pAd->ApCfg.bMACRepeaterEn) &&
+							(CliIdx != 0xFF)) {
+
+						if (pReptEntry->pre_entry_alloc == TRUE)
+							pentry = &pAd->MacTab.Content[pReptEntry->MacTabWCID];
+
+					} else
+#endif /* MAC_REPEATER_SUPPORT */
+					{
+						if (apcli_entry->pre_entry_alloc == TRUE)
+							pentry = &pAd->MacTab.Content[apcli_entry->MacTabWCID];
+					}
+					WPAMakeRSNIE(wdev->wdev_type, &pentry->SecConfig, pentry);
+
+					for (rsne_idx = 0; rsne_idx < SEC_RSNIE_NUM; rsne_idx++) {
+						if (pentry->SecConfig.RSNE_Type[rsne_idx] == SEC_RSNIE_NONE)
+							continue;
+						MakeOutgoingFrame(pOutBuffer + FrameLen, &TempLen,
+										  1, &pentry->SecConfig.RSNE_EID[rsne_idx][0],
+										  1, &pentry->SecConfig.RSNE_Len[rsne_idx],
+										  pentry->SecConfig.RSNE_Len[rsne_idx], &pentry->SecConfig.RSNE_Content[rsne_idx][0],
+										  END_OF_ARGS);
+						FrameLen += TempLen;
+					}
+				}
+#else
 				{
 					ULONG TempLen = 0;
 					CHAR rsne_idx = 0;
@@ -709,6 +748,7 @@ static VOID ApCliMlmeAssocReqAction(
 						FrameLen += TempLen;
 					}
 				}
+#endif
 			}
 
 #ifdef WSC_AP_SUPPORT
@@ -735,6 +775,8 @@ static VOID ApCliMlmeAssocReqAction(
 		}
 
 #endif /* WSC_AP_SUPPORT */
+
+#if (!(defined(APCLI_SAE_SUPPORT) || defined(APCLI_OWE_SUPPORT)))
 #ifdef FAST_EAPOL_WAR
 		/*
 		 * insert WTBL here,unicast wcid can be found after associate request sent out
@@ -800,6 +842,79 @@ static VOID ApCliMlmeAssocReqAction(
 			}
 		}
 #endif /* FAST_EAPOL_WAR */
+#endif
+
+
+#if (defined(FAST_EAPOL_WAR) && defined(APCLI_OWE_SUPPORT))
+	{
+	MAC_TABLE_ENTRY *pentry = (MAC_TABLE_ENTRY *)NULL;
+	OWE_INFO *owe = NULL;
+	UCHAR *curr_group = NULL;
+
+
+#ifdef MAC_REPEATER_SUPPORT
+
+		if ((pAd->ApCfg.bMACRepeaterEn) &&
+				(CliIdx != 0xFF)) {
+
+			if (pReptEntry->pre_entry_alloc == TRUE)
+				pentry = &pAd->MacTab.Content[pReptEntry->MacTabWCID];
+
+			curr_group = &pReptEntry->curr_owe_group;
+
+		} else
+#endif /* MAC_REPEATER_SUPPORT */
+			{
+				if (apcli_entry->pre_entry_alloc == TRUE)
+					pentry = &pAd->MacTab.Content[apcli_entry->MacTabWCID];
+
+				curr_group = &apcli_entry->curr_owe_group;
+
+			}
+
+		owe = &pentry->SecConfig.owe;
+
+		if (IS_AKM_OWE(pentry->SecConfig.AKMMap)) {
+
+
+			/* FAST_EAPOL_WAR  creates the mactable entry has already been created before Auth phase *
+			So we can use the mactable entry sec_config instead of	Apcli wdev.sec_config*/
+
+/* OWE use intialize group and add owe dh key ie to assoc request */
+			if (init_owe_group(owe, *curr_group) == 0) {
+				MTWF_LOG(DBG_CAT_SEC, CATSEC_OWE, DBG_LVL_ERROR,
+					("==> %s(), init_owe_group failed. shall not happen!\n", __func__));
+				*pCurrState = APCLI_ASSOC_IDLE;
+				ApCliCtrlMsg.Status = MLME_UNSPECIFY_FAIL;
+				MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_ASSOC_RSP,
+							sizeof(APCLI_CTRL_MSG_STRUCT), &ApCliCtrlMsg, ifIndex);
+
+				return;
+			}
+
+			if (*curr_group == ECDH_GROUP_384)
+				pentry->SecConfig.key_deri_alg = SEC_KEY_DERI_SHA384;
+			else
+				pentry->SecConfig.key_deri_alg = SEC_KEY_DERI_SHA256;
+
+
+			FrameLen +=  build_owe_dh_ie(pAd, pentry, (UCHAR *)(pOutBuffer + FrameLen), *curr_group);
+
+		}
+	}
+#endif /*CONFIG_OWE_SUPPORT*/
+
+
+
+#ifdef CONFIG_MAP_SUPPORT
+		if (IS_MAP_ENABLE(pAd))
+			MAP_InsertMapCapIE(pAd, wdev, pOutBuffer+FrameLen, &FrameLen);
+#endif /* CONFIG_MAP_SUPPORT */
+
+#ifdef IGMP_TVM_SUPPORT
+		/* ADD TV IE to this packet */
+		MakeTVMIE(pAd, wdev, pOutBuffer, &FrameLen);
+#endif /* IGMP_TVM_SUPPORT */
 
 		MiniportMMRequest(pAd, QID_AC_BE, pOutBuffer, FrameLen);
 		MlmeFreeMemory(pOutBuffer);
@@ -919,6 +1034,9 @@ static VOID ApCliMlmeDisassocReqAction(
 #if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA)
 	RT_CFG80211_LOST_GO_INFORM(pAd);
 #endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA */
+#ifdef APCLI_CFG80211_SUPPORT
+	RT_CFG80211_LOST_AP_INFORM(pAd);
+#endif /* APCLI_CFG80211_SUPPORT */
 }
 
 
@@ -995,14 +1113,14 @@ static VOID ApCliPeerAssocRspAction(
 								&EdcaParm, &CkipFlag, ie_list)) {
 		/* The frame is for me ? */
 		if (MAC_ADDR_EQUAL(Addr2, pAd->ApCfg.ApCliTab[ifIndex].MlmeAux.Bssid)) {
-#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA)
+#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA) || defined(APCLI_CFG80211_SUPPORT)
 			PFRAME_802_11 pFrame =  (PFRAME_802_11) (Elem->Msg);
 			/* Store the AssocRsp Frame to wpa_supplicant via CFG80211 */
 			NdisZeroMemory(pAd->ApCfg.ApCliTab[ifIndex].ResVarIEs, MAX_VIE_LEN);
 			pAd->ApCfg.ApCliTab[ifIndex].ResVarIELen = 0;
 			pAd->ApCfg.ApCliTab[ifIndex].ResVarIELen = Elem->MsgLen - 6 - sizeof(HEADER_802_11);
 			NdisCopyMemory(pAd->ApCfg.ApCliTab[ifIndex].ResVarIEs, &pFrame->Octet[6], pAd->ApCfg.ApCliTab[ifIndex].ResVarIELen);
-#endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA */
+#endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA || APCLI_CFG80211_SUPPORT*/
 			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("APCLI_ASSOC - receive ASSOC_RSP to me (status=%d)\n",
 					 Status));
 
@@ -1017,6 +1135,10 @@ static VOID ApCliPeerAssocRspAction(
 
 
 			if (Status == MLME_SUCCESS) {
+#ifdef CONFIG_MAP_SUPPORT
+				if (IS_MAP_ENABLE(pAd))
+					pEntry->DevPeerRole = ie_list->MAP_AttriValue;
+#endif /* CONFIG_MAP_SUPPORT */
 				/* go to procedure listed on page 376 */
 #ifdef MAC_REPEATER_SUPPORT
 				if (CliIdx == 0xFF)
@@ -1043,16 +1165,87 @@ static VOID ApCliPeerAssocRspAction(
 #endif /* DOT11_VHT_AC */
 				}
 
-
 #ifdef MAC_REPEATER_SUPPORT
 				if (CliIdx != 0xFF)
 					pEntry = &pAd->MacTab.Content[pReptEntry->MacTabWCID];
 #endif /* MAC_REPEATER_SUPPORT */
 				set_mlme_rsn_ie(pAd, &pApCliEntry->wdev, pEntry);
 
+
+#ifdef APCLI_OWE_SUPPORT
+	if (IS_AKM_OWE(pEntry->SecConfig.AKMMap)) {
+		UINT8 *pmkid = NULL;
+		UINT8 pmkid_count = 0;
+		INT idx = 0;
+
+		pmkid = WPA_ExtractSuiteFromRSNIE(ie_list->RSN_IE,
+							ie_list->RSNIE_Len,
+							PMKID_LIST,
+							&pmkid_count);
+
+		if (pmkid != NULL) {
+
+			idx = apcli_search_pmkid_cache(pAd, Addr2, ifIndex, CliIdx);
+
+			if ((idx == INVALID_PMKID_IDX) ||
+				((pEntry->SecConfig.pmkid) &&
+				((RTMPEqualMemory(pmkid,
+						  pEntry->SecConfig.pmkid,
+						  LEN_PMKID)) == 0))) {
+				MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+					("%s: no OWE PMKID, do normal ECDH procedure\n",
+						__func__));
+				ApCliCtrlMsg.Status = MLME_UNSPECIFY_FAIL;
+				MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_ASSOC_RSP,
+							sizeof(APCLI_CTRL_MSG_STRUCT), &ApCliCtrlMsg, ifIndex);
+				RTMP_MLME_HANDLER(pAd);
+
+			}
+
+		} else {
+
+			pEntry->need_process_ecdh_ie = TRUE;
+			/*Process ECDH IE as no pmkid in assoc rsp rsnie ,PMK id  sent might have been invalid at AP ,need to clear seconfig pmk cache*/
+			idx = apcli_search_pmkid_cache(pAd, Addr2, ifIndex, CliIdx);
+			if ((idx != INVALID_PMKID_IDX) && (is_pmkid_cache_in_sec_config(&pEntry->SecConfig))) {
+
+					apcli_delete_pmkid_cache(pAd, Addr2, ifIndex, CliIdx);
+					pEntry->SecConfig.pmkid = NULL;
+					pEntry->SecConfig.pmk_cache = NULL;
+			}
+
+
+		}
+		if ((pEntry->need_process_ecdh_ie == TRUE) && (ie_list->ecdh_ie.length > 0))
+			NdisMoveMemory(&pEntry->ecdh_ie, &ie_list->ecdh_ie, sizeof(EXT_ECDH_PARAMETER_IE));
+
+
+	}
+#endif /*CONFIG_OWE_SUPPORT*/
+
+
+
 				/* For Repeater get correct wmm valid setting */
 				pApCliEntry->MlmeAux.APEdcaParm.bValid = EdcaParm.bValid;
 				ApCliCtrlMsg.Status = MLME_SUCCESS;
+#ifdef APCLI_AS_WDS_STA_SUPPORT
+				{
+					PMAC_TABLE_ENTRY pEntry = &pAd->MacTab.Content[pApCliEntry->MacTabWCID];
+
+					if (!(IS_AKM_WPA_CAPABILITY_Entry(pEntry)
+#ifdef DOT1X_SUPPORT
+					|| IS_IEEE8021X(&pEntry->SecConfig)
+#endif /* DOT1X_SUPPORT */
+#ifdef RT_CFG80211_SUPPORT
+					|| pEntry->wdev->IsCFG1xWdev
+#endif /* RT_CFG80211_SUPPORT */
+					|| pEntry->bWscCapable)) {
+						pEntry->bEnable4Addr = TRUE;
+						if (pApCliEntry->wdev.wds_enable)
+							HW_SET_ASIC_WCID_4ADDR_HDR_TRANS(pAd, pApCliEntry->MacTabWCID, TRUE);
+					}
+				}
+#endif /* APCLI_AS_WDS_STA_SUPPORT */
 #ifdef MAC_REPEATER_SUPPORT
 				ApCliCtrlMsg.BssIdx = ifIndex;
 				ApCliCtrlMsg.CliIdx = CliIdx;
@@ -1063,7 +1256,6 @@ static VOID ApCliPeerAssocRspAction(
 				RTMP_MLME_HANDLER(pAd);
 			} else {
 #ifdef FAST_EAPOL_WAR
-				ApCliAssocDeleteMacEntry(pAd, ifIndex, CliIdx);
 #endif /* FAST_EAPOL_WAR */
 				ApCliCtrlMsg.Status = Status;
 				MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_ASSOC_RSP,
@@ -1184,9 +1376,6 @@ static VOID ApCliAssocTimeoutAction(
 #endif /* MAC_REPEATER_SUPPORT */
 		pCurrState = &pAd->ApCfg.ApCliTab[ifIndex].AssocCurrState;
 
-#ifdef FAST_EAPOL_WAR
-	ApCliAssocDeleteMacEntry(pAd, ifIndex, CliIdx);
-#endif /* FAST_EAPOL_WAR */
 	*pCurrState = APCLI_ASSOC_IDLE;
 #ifdef MAC_REPEATER_SUPPORT
 	ifIndex = (USHORT)(Elem->Priv);
@@ -1340,7 +1529,14 @@ static VOID set_mlme_rsn_ie(PRTMP_ADAPTER pAd, struct wifi_dev *wdev, PMAC_TABLE
 				else if ((pEid->Eid == IE_RSN)
 					 && (NdisEqualMemory(pEid->Octet + 2, RSN_OUI, 3))
 					 && (IS_AKM_WPA2(wdev->SecConfig.AKMMap)
-						 || IS_AKM_WPA2PSK(wdev->SecConfig.AKMMap))) {
+						 || IS_AKM_WPA2PSK(wdev->SecConfig.AKMMap)
+#ifdef APCLI_SAE_SUPPORT
+						 || IS_AKM_WPA3PSK(wdev->SecConfig.AKMMap)
+#endif
+#ifdef APCLI_OWE_SUPPORT
+						 || IS_AKM_OWE(wdev->SecConfig.AKMMap)
+#endif
+						 )) {
 					NdisMoveMemory(pEntry->RSN_IE, pVIE, (pEid->Len + 2));
 					pEntry->RSNIE_Len = (pEid->Len + 2);
 					MTWF_LOG(DBG_CAT_CLIENT, DBG_SUBCAT_ALL, DBG_LVL_TRACE,

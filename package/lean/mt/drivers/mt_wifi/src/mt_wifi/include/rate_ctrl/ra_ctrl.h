@@ -132,6 +132,12 @@
 
 #define G_BAND_256QAM_AMPDU_FACTOR  7
 
+#if defined(CUSTOMER_RSG_FEATURE) || defined (CUSTOMER_DCC_FEATURE)
+#define GET_WTBL_TX_COUNT		0x00000001
+#define GET_WTBL_PER_BSS_TX_COUNT	0x00000002
+#define GET_WTBL_PER_STA_TX_COUNT	0x00000004
+#endif
+
 #define LIMIT_MAX_PHY_RATE_THRESHOLD    50
 #define MAX_PHY_RATE_3SS                1300
 #define MAX_PHY_RATE_2SS                866
@@ -648,6 +654,22 @@ typedef struct _CMD_SET_MAX_PHY_RATA_T {
 	UINT_8  aucReserve[2];
 } CMD_SET_MAX_PHY_RATA, *P_CMD_SET_MAX_PHY_RATA;
 
+#ifdef MIN_PHY_RATE_SUPPORT
+typedef struct _CMD_SET_MIN_PHY_RATE_T {
+	UINT_8 ucBssidIdx;
+	UINT_8 ucMinPhyDataRate;
+	UINT_8 ucMinPhyMgmtRate;
+	BOOL fgDisableCCKRate;
+} CMD_SET_MIN_PHY_RATE, *P_CMD_SET_MIN_PHY_RATE;
+#endif /* MIN_PHY_RATE_SUPPORT */
+
+#ifdef FAST_UP_RATE_SUPPORT
+typedef struct _CMD_SET_FAST_UP_RATE_T {
+	BOOL	fgFastUPRate;
+	UINT_8	aucReserved[3];
+} CMD_SET_FAST_UP_RATE, *P_CMD_SET_FAST_UP_RATE;
+#endif /* FAST_UP_RATE_SUPPORT */
+
 typedef struct _EXT_EVENT_MAX_AMSDU_LENGTH_UPDATE_T {
 	UINT_8 ucWlanIdx;
 	UINT_8 ucAmsduLen;
@@ -669,7 +691,24 @@ typedef struct _EXT_EVENT_TX_STATISTIC_RESULT_T {
 	RA_PHY_CFG_T rLastTxRate;
 	RA_PHY_CFG_T rEntryTxRate;
 	UINT_8 aucResv2[8];
+#ifdef TXSTAT_2040BW_24G_SUPPORT
+	UINT_32 u4Total40MTxCount;
+	UINT_32 u4Total20MTxCount;
+#endif
 } EXT_EVENT_TX_STATISTIC_RESULT_T, *P_EXT_EVENT_TX_STATISTIC_RESULT_T;
+
+#ifdef TXSTAT_2040BW_24G_SUPPORT
+typedef struct _EXT_CMD_2040_BW_STATISTIC_T {
+	UINT_8 ucGetBwStat;
+	UINT_8 ucBWStatFeature;
+	UINT_8 aucResv[2];
+} EXT_CMD_2040_BW_STATISTIC_T, *P_EXT_CMD_2040_BW_STATISTIC_T;
+
+typedef struct _EXT_EVENT_2040_BW_STATISTIC_T {
+	UINT_8 ucBWStatFeature;
+	UINT_8 aucResv1[3];
+} EXT_EVENT_2040_BW_STATISTIC_T, *P_EXT_EVENT_2040_BW_STATISTIC_T;
+#endif
 
 typedef struct _EXT_EVENT_G_BAND_256QAM_PROBE_RESULT_T {
 	UINT_8 ucWlanIdx;

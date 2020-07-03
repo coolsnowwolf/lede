@@ -50,6 +50,10 @@ enum {
 INT32 HcRadioInit(struct _RTMP_ADAPTER *pAd, UCHAR RfIC, UCHAR DbdcMode);
 INT32 HcAcquireRadioForWdev(struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev);
 INT32 HcReleaseRadioForWdev(RTMP_ADAPTER *pAd, struct wifi_dev *wdev);
+#ifdef CUSTOMER_DCC_FEATURE
+INT32 HcUpdateChannel(struct _RTMP_ADAPTER *pAd, UCHAR Channel);
+UCHAR HcGetExtCha(struct _RTMP_ADAPTER *pAd, UCHAR Channel);
+#endif
 INT32 HcUpdateCsaCntByChannel(struct _RTMP_ADAPTER *pAd, UCHAR Channel);
 UCHAR HcGetBandByWdev(struct wifi_dev *wdev);
 VOID HcSetRadioCurStatByWdev(struct wifi_dev *wdev, PHY_STATUS CurStat);

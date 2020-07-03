@@ -26,6 +26,12 @@
 #ifdef DOT11_VHT_AC
 VOID vht_oper_init(struct wifi_dev *wdev, struct vht_op *obj)
 {
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+	struct _RTMP_ADAPTER *pAd = (struct _RTMP_ADAPTER *)wdev->sys_handle;
+	if (IS_APCLI_SYNC_PEER_DEAUTH_ENBL(pAd))
+		obj->vht_bw = wlan_operate_get_vht_bw(wdev);
+	else
+#endif
 	obj->vht_bw = VHT_BW_80;
 }
 

@@ -305,10 +305,15 @@ static NTSTATUS ChannelRescanHdlr(IN PRTMP_ADAPTER pAd, IN PCmdQElmt CMDQelmt)
 
 	Channel = APAutoSelectChannel(pAd, wdev, TRUE, pAutoChCtrl->pChannelInfo->IsABand);
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("cmd> Re-scan channel!\n"));
+#ifdef ACS_CTCC_SUPPORT
+	if (!pAd->ApCfg.auto_ch_score_flag)
+#endif
+	{
 	wdev->channel = Channel;
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("cmd> Switch to %d!\n", Channel));
 	APStop(pAd, pMbss, AP_BSS_OPER_BY_RF);
 	APStartUp(pAd, pMbss, AP_BSS_OPER_BY_RF);
+	}
 #ifdef AP_QLOAD_SUPPORT
 	QBSS_LoadAlarmResume(pAd);
 #endif /* AP_QLOAD_SUPPORT */

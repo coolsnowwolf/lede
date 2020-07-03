@@ -184,8 +184,11 @@ static NTSTATUS hw_ctrl_flow_v1_connt_act(struct WIFI_SYS_CTRL *wsys)
 	struct _STA_TR_ENTRY *tr_entry = (struct _STA_TR_ENTRY *)sta_rec->priv;
 
 	/*check starec is exist should not add new starec for this wcid*/
-	if (get_starec_by_wcid(ad, sta_rec->WlanIdx))
+	if (get_starec_by_wcid(ad, sta_rec->WlanIdx)) {
+		if (sta_rec->EnableFeature & STA_REC_INSTALL_KEY_FEATURE)
+			AsicAddRemoveKeyTab(ad, &sta_rec->asic_sec_info);
 		goto end;
+	}
 
 	if (sta_rec->EnableFeature & ~STA_REC_INSTALL_KEY_FEATURE) {
 		AsicUpdateRxWCIDTable(ad, sta_rec->WlanIdx, tr_entry->Addr, FALSE, FALSE); /* Haipin: Check IsReset */

@@ -1763,7 +1763,7 @@ VOID RTMPRingCleanUp(RTMP_ADAPTER *pAd, UCHAR RingType)
 
 		for (i = 0; i < CTL_RING_SIZE; i++) {
 #ifdef RT_BIG_ENDIAN
-			pDestTxD  = (TXD_STRUC *) pAd->CtrlRing.Cell[i].AllocVa;
+			pDestTxD  = (TXD_STRUC *) hif->CtrlRing.Cell[i].AllocVa;
 			TxD = *pDestTxD;
 			pTxD = &TxD;
 			RTMPDescriptorEndianChange((PUCHAR)pTxD, TYPE_TXD);

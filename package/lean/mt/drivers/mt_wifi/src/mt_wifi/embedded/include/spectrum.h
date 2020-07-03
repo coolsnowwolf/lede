@@ -231,5 +231,41 @@ VOID RguClass_BuildBcnChList(
 	OUT	PULONG pBufLen,
 	IN UCHAR PhyMode,
 	IN UCHAR RegClass);
+#ifdef CUSTOMER_DCC_FEATURE
+INT NotifyChSwAnnToConnectedSTAs(
+	IN PRTMP_ADAPTER pAd,
+	IN UINT8 		ChSwMode,
+	IN UINT8 		Channel,
+	struct wifi_dev *wdev);
+
+VOID EnqueueChSwAnnNew(
+	IN PRTMP_ADAPTER pAd,
+	IN PUCHAR pDA,
+	IN UINT8 ChSwMode,
+	IN UINT8 NewCh,
+	IN PUCHAR pSA,
+	struct wifi_dev *wdev);
+#endif
+
+#ifdef CONFIG_RCSA_SUPPORT
+INT NotifyChSwAnnToBackhaulAP(
+	IN PRTMP_ADAPTER pAd,
+	struct wifi_dev *wdev,
+	IN UINT8 Channel,
+	IN UINT8 ChSwMode);
+
+INT ApCliPeerCsaSanity(
+	IN MLME_QUEUE_ELEM * Elem,
+	OUT CSA_IE_INFO *CsaInfo);
+
+VOID ChannelSwitchAction_1(
+	IN RTMP_ADAPTER * pAd,
+	IN CSA_IE_INFO *CsaInfo);
+
+VOID RcsaRecovery(
+	IN PRTMP_ADAPTER pAd,
+	struct wifi_dev *wdev);
+
+#endif
 #endif /* __SPECTRUM_H__ */
 
