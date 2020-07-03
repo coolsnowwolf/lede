@@ -92,7 +92,8 @@ typedef struct {
 typedef struct {
 	UINT8  band_idx;
 	UINT32 pkt_len_thld;
-	UINT32 pkt_num_thld;
+	UINT16 pkt_num_thld;
+	UINT16 retry_limit;
 } MT_RTS_THRESHOLD_T;
 
 #define RDG_DISABLE     0x0
@@ -212,7 +213,13 @@ typedef struct {
 	BOOLEAN SupportQoS;
 	BOOLEAN DisRHTR;
 	BOOLEAN IsReset;
+#ifdef A4_CONN
+	BOOLEAN a4_enable;
+#endif
 	BOOLEAN SkipClearPrevSecKey;
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+    BOOLEAN fg4AddrEnable;
+#endif
 } MT_WCID_TABLE_INFO_T;
 
 typedef enum _ENUM_CIPHER_SUIT_T {

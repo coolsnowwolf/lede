@@ -64,7 +64,7 @@ MODULE_PARM_DESC(mode, "rt_wifi: wireless operation mode");
 #if !defined(CONFIG_PROPRIETARY_DRIVER) || defined(CONFIG_DBG_OOM)
 MODULE_LICENSE("GPL");
 #else
-MODULE_LICENSE("Proprietary");
+MODULE_LICENSE("GPL");
 #endif
 
 #ifdef OS_ABL_SUPPORT
@@ -120,7 +120,9 @@ int main_virtual_if_close(IN struct net_device *net_dev)
 
 	if (pAd == NULL)
 		return 0;
-
+#ifdef CONFIG_LED_ACTIVITY_ON_MAIN_MBSS
+	RTMPSetLED(pAd, LED_RADIO_OFF);
+#endif
 	RTMP_OS_NETDEV_CARRIER_OFF(net_dev);
 	RTMP_OS_NETDEV_STOP_QUEUE(net_dev);
 
@@ -176,6 +178,12 @@ int main_virtual_if_open(struct net_device *net_dev)
 	}
 
 #else
+#ifdef CONFIG_AP_SUPPORT
+#ifdef RT_CFG80211_SUPPORT
+	RTMP_DRIVER_AP_MAIN_OPEN(pAd);
+#endif
+#endif /*CONFIG_AP_SUPPORT*/
+
 	if (VIRTUAL_IF_INIT(pAd, net_dev) != 0)
 		return -1;
 
@@ -183,6 +191,11 @@ int main_virtual_if_open(struct net_device *net_dev)
 		return -1;
 
 #endif /* IFUP_IN_PROBE */
+#ifdef CONFIG_AP_SUPPORT
+#ifdef CONFIG_LED_ACTIVITY_ON_MAIN_MBSS
+	RTMPSetLED(pAd, LED_LINK_DOWN); 	/* Set solid led on */
+#endif /* CONFIG_LED_ACTIVITY_ON_MAIN_MBSS */
+#endif /* CONFIG_AP_SUPPORT */
 	RT_MOD_INC_USE_COUNT();
 	RT_MOD_HNAT_REG(net_dev);
 	netif_start_queue(net_dev);
@@ -222,6 +235,10 @@ int mt_wifi_close(VOID *dev)
 
 	if (pAd == NULL)
 		return 0;
+#ifdef CONFIG_INIT_RADIO_ONOFF
+	if(!((PRTMP_ADAPTER)pAd)->ApCfg.bRadioOn)
+		RTMP_CLEAR_FLAG(((PRTMP_ADAPTER)pAd), fRTMP_ADAPTER_DISABLE_DEQUEUEPACKET);
+#endif
 
 	RTMPDrvClose(pAd, net_dev);
 #ifdef RTMP_UDMA_SUPPORT
@@ -229,6 +246,9 @@ int mt_wifi_close(VOID *dev)
 #endif/*RTMP_UDMA_SUPPORT*/
 	/*system down hook point*/
 	WLAN_HOOK_CALL(WLAN_HOOK_SYS_DOWN, pAd, NULL);
+#ifdef WIFI_DIAG
+	DiagProcExit(pAd);
+#endif
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("<=== mt_wifi_close\n"));
 	return 0;
 }
@@ -314,7 +334,9 @@ int mt_wifi_open(VOID *dev)
 	 */
 #if defined(P2P_APCLI_SUPPORT) || defined(RT_CFG80211_P2P_SUPPORT) || defined(CFG80211_MULTI_STA)
 #else
-	RT28xx_MBSS_Init(pAd, net_dev);
+#ifndef CREATE_ALL_INTERFACE_AT_INIT
+		RT28xx_MBSS_Init(pAd, net_dev);
+#endif
 #endif /* P2P_APCLI_SUPPORT || RT_CFG80211_P2P_SUPPORT || CFG80211_MULTI_STA */
 #endif /* MBSS_SUPPORT */
 #ifdef WDS_SUPPORT
@@ -326,6 +348,9 @@ int mt_wifi_open(VOID *dev)
 	RT28xx_ApCli_Init(pAd, net_dev);
 #endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || P2P_APCLI_SUPPORT || CFG80211_MULTI_STA */
 #endif /* APCLI_SUPPORT */
+#ifdef SNIFFER_SUPPORT
+	RT28xx_Monitor_Init(pAd, net_dev);
+#endif /* SNIFFER_SUPPORT */
 #ifdef RT_CFG80211_SUPPORT
 #ifdef CFG80211_MULTI_STA
 	RTMP_CFG80211_MutliStaIf_Init(pAd);
@@ -349,6 +374,11 @@ int mt_wifi_open(VOID *dev)
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 		("Udma Registration %s\n", (retval == 0) ? "Success" : "Failed"));
 #endif/*RTMP_UDMA_SUPPORT*/
+
+#ifdef WIFI_DIAG
+	DiagProcInit(pAd);
+#endif
+
 	return retval;
 err:
 	RTMP_DRIVER_IRQ_RELEASE(pAd);
@@ -762,6 +792,9 @@ BOOLEAN RtmpPhyNetDevExit(VOID *pAd, PNET_DEV net_dev)
 	/* remove all WDS virtual interfaces. */
 	RT28xx_WDS_Remove(pAd);
 #endif /* WDS_SUPPORT */
+#ifdef SNIFFER_SUPPORT
+	RT28xx_Monitor_Remove(pAd);
+#endif	/* SNIFFER_SUPPORT */
 #ifdef MBSS_SUPPORT
 #if defined(P2P_APCLI_SUPPORT) || defined(RT_CFG80211_P2P_SUPPORT) || defined(CFG80211_MULTI_STA)
 #else

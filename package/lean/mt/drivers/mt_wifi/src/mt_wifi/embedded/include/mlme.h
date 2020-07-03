@@ -32,6 +32,10 @@
 
 #include "rtmp_dot11.h"
 
+#ifdef CONFIG_RCSA_SUPPORT
+#include "spectrum_def.h"
+#endif
+
 #ifdef DOT11R_FT_SUPPORT
 #include "common/link_list.h"
 #include "ft_cmm.h"
@@ -576,6 +580,24 @@ typedef struct  GNU_PACKED _NEW_EXT_CHAN_IE {
 	UCHAR				NewExtChanOffset;
 } NEW_EXT_CHAN_IE, *PNEW_EXT_CHAN_IE;
 
+#ifdef DOT11U_INTERWORKING_IE_SUPPORT
+typedef struct GNU_PACKED _INTERWORKING_IE {
+#ifdef RT_BIG_ENDIAN
+	UCHAR	UESA:1;
+	UCHAR	ESR:1;
+	UCHAR	ASRA:1;
+	UCHAR	Internet:1;
+	UCHAR	AccessNwType:4;
+#else
+	UCHAR	AccessNwType:4;
+	UCHAR	Internet:1;
+	UCHAR	ASRA:1;
+	UCHAR	ESR:1;
+	UCHAR	UESA:1;
+#endif
+} INTERWORKING_IE, *PINTERWORKING_IE;
+#endif /* DOT11U_INTERWORKING_IE_SUPPORT */
+
 typedef struct GNU_PACKED _FRAME_802_11 {
 	HEADER_802_11   Hdr;
 	UCHAR            Octet[1];
@@ -846,6 +868,15 @@ typedef struct GNU_PACKED _HT_EXT_CHANNEL_SWITCH_ANNOUNCEMENT_IE {
 	UCHAR		ChannelSwitchCount;
 } HT_EXT_CHANNEL_SWITCH_ANNOUNCEMENT_IE, *PHT_EXT_CHANNEL_SWITCH_ANNOUNCEMENT_IE;
 
+#ifdef CONFIG_RCSA_SUPPORT
+typedef struct _CSA_IE_INFO {
+	UCHAR wcid;
+	CH_SW_ANN_INFO ChSwAnnIE;
+	SEC_CHA_OFFSET_IE SChOffIE;
+	EXT_CH_SW_ANN_INFO	ExtChSwAnnIE;
+	WIDE_BW_CH_SWITCH_ELEMENT wb_info;
+} CSA_IE_INFO, *PCSA_IE_INFO;
+#endif
 
 /* */
 /* _Limit must be the 2**n - 1 */
@@ -877,6 +908,17 @@ typedef	struct _CIPHER_SUITE {
 	BOOLEAN							bMixMode;		/* Indicate Pair & Group cipher might be different */
 }	CIPHER_SUITE, *PCIPHER_SUITE;
 
+struct GNU_PACKED map_vendor_ie
+{
+	UCHAR type;
+	UCHAR subtype;
+	UCHAR root_distance;
+	UCHAR connectivity_to_controller;
+	USHORT uplink_rate;
+	UCHAR uplink_bssid[MAC_ADDR_LEN];
+	UCHAR bssid_5g[MAC_ADDR_LEN];
+	UCHAR bssid_2g[MAC_ADDR_LEN];
+};
 
 struct _vendor_ie_cap {
 	ULONG ra_cap;
@@ -887,6 +929,10 @@ struct _vendor_ie_cap {
 	BOOLEAN is_rlt;
 	BOOLEAN is_mtk;
 	BOOLEAN is_brcm_etxbf_2G;
+#ifdef CONFIG_MAP_SUPPORT
+	BOOLEAN map_vendor_ie_found;
+	struct map_vendor_ie map_info;
+#endif
 };
 
 /* EDCA configuration from AP's BEACON/ProbeRsp */
@@ -928,6 +974,7 @@ struct rts_thld {
 	struct wifi_dev *wdev;
 	UCHAR pkt_thld;
 	UINT32 len_thld;
+	UCHAR retry_limit;
 };
 
 enum _ac_type {
@@ -1107,13 +1154,34 @@ typedef struct _BSS_ENTRY {
 	UINT8 CondensedPhyType;
 	UINT8 RSNI;
 #endif /* DOT11K_RRM_SUPPORT */
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+	ULONG LastBeaconRxTimeT;
+	UCHAR  Snr[4];
+	CHAR   rssi[4];
+	UCHAR  vendorOUI0[3];
+	UCHAR  vendorOUI1[3];
+#endif
 #ifdef CONFIG_OWE_SUPPORT
 	/* it can find a pairing OWE bss,
 	 * hide this OPEN bss,
 	 * skip to show it in scan result and skip to connect to it.
 	 */
-	BOOLEAN		hide_open_owe_bss;
+	BOOLEAN		hide_owe_bss;
+	BOOLEAN 	bhas_owe_trans_ie;
+
+
+	UCHAR  owe_trans_ie[MAX_VIE_LEN];
+	USHORT owe_trans_ie_len;
+
+
 #endif /*CONFIG_OWE_SUPPORT*/
+#ifdef CONFIG_MAP_SUPPORT
+	BOOLEAN		map_vendor_ie_found;
+	struct map_vendor_ie map_info;
+	INT32	rssi_sum;
+	INT32 avg_rssi;
+	INT32 rx_cnt;
+#endif
 } BSS_ENTRY;
 
 typedef struct {
@@ -1125,6 +1193,9 @@ typedef struct {
 
 struct raw_rssi_info {
 	CHAR raw_rssi[4];
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+	UCHAR raw_Snr[4];
+#endif
 	UCHAR raw_snr;
 	UCHAR Channel;
 };
@@ -1197,6 +1268,9 @@ typedef struct _MLME_AUX {
 	UCHAR			Channel;
 	UCHAR				OldChannel;
 	UCHAR               CentralChannel;
+#ifdef FOLLOW_HIDDEN_SSID_FEATURE
+	UCHAR			Hidden;
+#endif
 #ifdef CONFIG_MULTI_CHANNEL
 	UCHAR               InfraChannel;
 #endif /* CONFIG_MULTI_CHANNEL */
@@ -1240,6 +1314,9 @@ typedef struct _MLME_AUX {
 	struct _vendor_ie_cap vendor_ie;
 
 	BSS_TABLE           SsidBssTab;     /* AP list for the same SSID */
+#ifdef APCLI_OWE_SUPPORT
+	BSS_TABLE           owe_bss_tab;     /* AP list for the same SSID */
+#endif
 	BSS_TABLE           RoamTab;        /* AP list eligible for roaming */
 	ULONG               BssIdx;
 	ULONG               RoamIdx;
@@ -1275,6 +1352,7 @@ typedef struct _MLME_AUX {
 	UINT32 PairwiseCipher;
 	UINT32 GroupCipher;
 	UINT32 IntegrityGroupCipher;
+	UINT32 candidate_score;
 } MLME_AUX, *PMLME_AUX;
 
 
@@ -1449,12 +1527,41 @@ struct _build_ie_info {
 	struct wifi_dev *wdev;
 };
 
+#ifdef HOSTAPD_OWE_SUPPORT
+typedef struct GNU_PACKED _EXT_ECDH_PARAMETER_IE {
+	UCHAR ext_ie_id;
+	UCHAR length;
+	UCHAR ext_id_ecdh;
+	UINT16 group;
+	UCHAR public_key[128];
+} EXT_ECDH_PARAMETER_IE, *PEXT_ECDH_PARAMETER_IE;
+#endif
 
 struct _op_info {
 	UINT8 bw;
 	UINT8 cent_ch;
 };
 
+
+#ifdef IGMP_TVM_SUPPORT
+#define IGMP_TVM_IE_LENGTH	7
+#define IGMP_TVM_IE_VERSION_1	0x01
+#define IGMP_TVM_IE_VERSION_2	0x00
+
+struct GNU_PACKED _nec_tvm_ie {
+	UCHAR eid;
+	UINT8 len;
+	UCHAR oui_oitype[4];
+	UCHAR version1;
+	UCHAR version2;
+	union {
+		struct {
+			UCHAR rsvd:7;
+			UCHAR TVMode:1;
+		} field;
+	} data;
+};
+#endif /* IGMP_TVM_SUPPORT */
 
 typedef struct _IE_lists {
 	UCHAR Addr1[MAC_ADDR_LEN];
@@ -1482,6 +1589,9 @@ typedef struct _IE_lists {
 #ifdef DOT11K_RRM_SUPPORT
 	RRM_EN_CAP_IE RrmEnCap;
 #endif /* DOT11K_RRM_SUPPORT */
+#ifdef CONFIG_MAP_SUPPORT
+	UCHAR MAP_AttriValue;
+#endif
 	UCHAR ht_cap_len;
 	HT_CAPABILITY_IE HTCapability;
 #ifdef DOT11_VHT_AC
@@ -1492,9 +1602,13 @@ typedef struct _IE_lists {
 	UCHAR operating_mode_len;
 	OPERATING_MODE operating_mode;
 #endif /* DOT11_VHT_AC */
-#ifdef CONFIG_OWE_SUPPORT
+#if defined(CONFIG_OWE_SUPPORT) || defined(HOSTAPD_OWE_SUPPORT)
 	EXT_ECDH_PARAMETER_IE ecdh_ie;
 #endif /*CONFIG_OWE_SUPPORT*/
+
+#ifdef IGMP_TVM_SUPPORT
+	struct _nec_tvm_ie tvm_ie;
+#endif /* IGMP_TVM_SUPPORT */
 } IE_LISTS;
 
 
@@ -1543,7 +1657,13 @@ typedef struct _bcn_ie_list {
 	BOOLEAN  FromBcnReport;
 	BOOLEAN is_marvell_ap;
 	BOOLEAN is_atheros_ap;
-
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+	UCHAR	VendorID0[3];
+	UCHAR	VendorID1[3];
+#endif
+#ifdef CONFIG_RCSA_SUPPORT
+	CSA_IE_INFO CsaInfo;
+#endif
 } BCN_IE_LIST;
 
 VOID MlmeHandler(struct _RTMP_ADAPTER *pAd);
@@ -1564,4 +1684,9 @@ typedef struct _MLME_QOS_ACTION_STRUCT {
 	QOSMAP_SET	QOSMap;
 } MLME_QOS_ACTION_STRUCT, *PMLME_QOS_ACTION_STRUCT;
 
+
+#ifdef CHANNEL_SWITCH_MONITOR_CONFIG
+extern VOID ch_switch_monitor_state_machine_init(struct _RTMP_ADAPTER *pAd);
+extern VOID ch_switch_monitor_del(struct _RTMP_ADAPTER *pAd);
+#endif
 #endif	/* MLME_H__ */

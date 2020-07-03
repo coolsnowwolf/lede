@@ -558,18 +558,6 @@ define Device/netgear_ex6150v2
 endef
 TARGET_DEVICES += netgear_ex6150v2
 
-define Device/netgear_ex6200v2
-	$(call Device/DniImage)
-	DEVICE_DTS_CONFIG := config@4
-	NETGEAR_HW_ID := 29765265+16+0+256+2x2+2x2
-	DEVICE_VENDOR := Netgear
-	DEVICE_MODEL := EX6200
-	DEVICE_VARIANT := v2
-	SOC := qcom-ipq4018
-	DEVICE_PACKAGES := kmod-usb-core kmod-usb-ohci kmod-usb2 kmod-usb-ledtrig-usbport
-endef
-TARGET_DEVICES += netgear_ex6200v2
-
 define Device/openmesh_a42
 	$(call Device/FitImageLzma)
 	DEVICE_VENDOR := OpenMesh
@@ -645,7 +633,7 @@ define Device/p2w_r619ac
 	PAGESIZE := 2048
 	IMAGES += nand-factory.bin
 	IMAGE/nand-factory.bin := append-ubi | qsdk-ipq-factory-nand
-	DEVICE_PACKAGES := ipq-wifi-p2w_r619ac -kmod-ath10k-ct -ath10k-firmware-qca4019-ct kmod-ath10k ath10k-firmware-qca4019 lte-modem-p2w-r619ac
+	DEVICE_PACKAGES := ipq-wifi-p2w_r619ac
 endef
 TARGET_DEVICES += p2w_r619ac
 
@@ -659,7 +647,7 @@ define Device/p2w_r619ac-128m
 	DEVICE_DTS_CONFIG := config@10
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
-	DEVICE_PACKAGES := ipq-wifi-p2w_r619ac -kmod-ath10k-ct -ath10k-firmware-qca4019-ct kmod-ath10k ath10k-firmware-qca4019 lte-modem-p2w-r619ac
+	DEVICE_PACKAGES := ipq-wifi-p2w_r619ac
 endef
 TARGET_DEVICES += p2w_r619ac-128m
 

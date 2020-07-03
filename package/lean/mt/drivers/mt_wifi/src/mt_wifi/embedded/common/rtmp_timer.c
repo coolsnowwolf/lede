@@ -131,6 +131,12 @@ BUILD_TIMER_FUNCTION(AutoChSelScanTimeout);
 #endif/* CONFIG_AP_SUPPORT */
 
 
+#ifdef CHANNEL_SWITCH_MONITOR_CONFIG
+extern VOID ch_switch_monitor_timeout(IN PVOID system_specific1, IN PVOID function_context,
+			IN PVOID system_specific2, IN PVOID system_specific3);
+BUILD_TIMER_FUNCTION(ch_switch_monitor_timeout);
+#endif
+
 #ifdef RTMP_TIMER_TASK_SUPPORT
 static void RtmpTimerQHandle(RTMP_ADAPTER *pAd)
 {

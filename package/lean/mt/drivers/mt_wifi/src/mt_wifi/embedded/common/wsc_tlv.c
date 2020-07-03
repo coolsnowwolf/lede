@@ -340,7 +340,6 @@ BOOLEAN	WscProcessCredential(
 			}
 
 			pProfile->Profile[CurrentIdx].SSID.SsidLength = Idx;
-
 			if (RTMPCheckStrPrintAble((CHAR *)pData, Idx) || (pWscControl->bCheckMultiByte == FALSE))
 				NdisMoveMemory(pProfile->Profile[CurrentIdx].SSID.Ssid, pData, pProfile->Profile[CurrentIdx].SSID.SsidLength);
 			else
@@ -562,6 +561,7 @@ int BuildMessageM1(
 	PWSC_TLV			pWscTLV = &pWscControl->WscV2Info.ExtraTlv;
 #endif /* WSC_V2_SUPPORT */
 	UCHAR				CurOpMode = 0xFF;
+
 	struct wifi_dev *wdev = NULL;
 	wdev = (struct wifi_dev *)pWscControl->wdev;
 
@@ -728,7 +728,14 @@ int BuildMessageM1(
 	}
 
 #endif /* WSC_V2_SUPPORT */
+#ifdef CONFIG_MAP_SUPPORT
+	if (IS_MAP_ENABLE(pAdapter) && wdev->MAPCfg.DevOwnRole == WDEV_TYPE_APCLI) {
+		templen = MAP_InsertMapWscAttr(pAdapter, wdev, pData);
 
+		pData += templen;
+		Len   += templen;
+	}
+#endif /* CONFIG_MAP_SUPPORT */
 #ifdef WSC_V2_SUPPORT
 
 	/* Extra attribute that is not defined in WSC Sepc. */
@@ -1875,6 +1882,29 @@ int BuildMessageM7(
 	return Len;
 }
 
+unsigned char same_band_profile(
+	PWSC_CTRL pWscControl,
+	unsigned char profile_index)
+{
+	int i = 0;
+	struct wifi_dev *wdev_entry = NULL;
+	struct wifi_dev *wdev = pWscControl->wdev;
+	PRTMP_ADAPTER ad = wdev->sys_handle;
+
+	for (i = 0; i < HW_BEACON_MAX_NUM; i++) {
+		wdev_entry = ad->wdev_list[i];
+		if (wdev_entry == NULL)
+			continue;
+		if (MAC_ADDR_EQUAL(wdev_entry->bssid,
+			pWscControl->WscBhProfiles.Profile[profile_index].MacAddr)) {
+			if (wdev_entry->channel == wdev->channel)
+				return TRUE;
+			else
+				return FALSE;
+		}
+	}
+	return FALSE;
+}
 /*
 *	========================================================================
 *
@@ -1926,7 +1956,7 @@ int BuildMessageM8(
 	if (!IV_EncrData)
 		return 0;
 
-	os_alloc_mem(NULL, (UCHAR **)&TB, 256);
+	os_alloc_mem(NULL, (UCHAR **)&TB, 1024);
 
 	if (TB == NULL) {
 		MTWF_LOG(DBG_CAT_SEC, CATSEC_WPS, DBG_LVL_ERROR, ("%s: Allocate memory fail!!!\n", __func__));
@@ -1960,6 +1990,29 @@ int BuildMessageM8(
 #ifdef CONFIG_AP_SUPPORT
 
 	if (CurOpMode == AP_MODE) {
+#ifdef CONFIG_MAP_SUPPORT
+		if (pReg->PeerInfo.map_DevPeerRole & BIT(MAP_ROLE_BACKHAUL_STA)) {
+			PWSC_CTRL			pBhWscControl = NULL;
+			UCHAR				apidx = (pWscControl->EntryIfIdx & 0x0F);
+			UCHAR				band_idx = HcGetBandByWdev(&pAdapter->ApCfg.MBSSID[apidx].wdev);
+			struct wifi_dev		*bh_wdev = NULL;
+
+			bh_wdev = pAdapter->bh_bss_wdev[band_idx];
+			if (bh_wdev) {
+				pBhWscControl = &bh_wdev->WscControl;
+				MTWF_LOG(DBG_CAT_PROTO, CATPROTO_RRM, DBG_LVL_TRACE,
+						("band_idx %d  bh_bss_wdev [%s]\n", band_idx, bh_wdev->if_dev->name));
+				pBhWscControl->WscConfStatus = WSC_SCSTATE_CONFIGURED;
+				COPY_MAC_ADDR(pBhWscControl->EntryAddr, pWscControl->EntryAddr);
+				WscCreateProfileFromCfg(pAdapter,
+										REGISTRAR_ACTION | AP_MODE,
+										pBhWscControl,
+										&pBhWscControl->WscProfile);
+				pCredential = &pBhWscControl->WscProfile.Profile[0];
+			} else
+				goto LabelErr;
+		} else
+#endif /* CONFIG_MAP_SUPPORT */
 		{
 			WscCreateProfileFromCfg(pAdapter,
 									REGISTRAR_ACTION | AP_MODE,
@@ -1970,6 +2023,63 @@ int BuildMessageM8(
 	}
 
 #endif /* CONFIG_AP_SUPPORT */
+#ifdef CONFIG_MAP_SUPPORT
+	if ((IS_MAP_TURNKEY_ENABLE(pAdapter)) && (pReg->PeerInfo.map_DevPeerRole & BIT(MAP_ROLE_BACKHAUL_STA))) {
+		int i = 0;
+		unsigned char profile_count = 0;
+
+		for (i = 0; i < pWscControl->WscBhProfiles.ProfileCnt; i++) {
+			pCredential = &pWscControl->WscBhProfiles.Profile[i];
+
+			if (pWscControl->WscBhProfiles.Profile[i].bss_role & BIT(MAP_ROLE_BACKHAUL_BSS)) {
+				if (same_band_profile(pWscControl, i) && profile_count == 0) {
+					i = -1;
+					profile_count++;
+				} else if (same_band_profile(pWscControl, i)) {
+					continue;
+				} else if (profile_count == 0) {
+					continue;
+				} else {
+					profile_count++;
+				}
+			} else {
+				continue;
+			}
+			if (profile_count == 1)
+				CerLen += AppendWSCTLV(WSC_ID_NW_INDEX, &TB[0], (PUCHAR)"1", 0);
+			else if (profile_count == 2)
+				CerLen += AppendWSCTLV(WSC_ID_NW_INDEX, &TB[CerLen], (PUCHAR)"2", 0);
+			else if (profile_count == 3)
+				CerLen += AppendWSCTLV(WSC_ID_NW_INDEX, &TB[CerLen], (PUCHAR)"3", 0);
+			if (pCredential == NULL) {
+				MTWF_LOG(DBG_CAT_SEC, CATSEC_WPS, DBG_LVL_ERROR,
+					("%s: pWscControl == NULL!\n", __func__));
+				goto LabelErr;
+			}
+			AuthType = pCredential->AuthType;
+			EncrType = pCredential->EncrType;
+			if (AuthType == (WSC_AUTHTYPE_WPAPSK | WSC_AUTHTYPE_WPA2PSK))
+				AuthType = WSC_AUTHTYPE_WPA2PSK;
+			if (EncrType == (WSC_ENCRTYPE_TKIP | WSC_ENCRTYPE_AES))
+				EncrType = WSC_ENCRTYPE_AES;
+			AuthType = cpu2be16(AuthType);
+			EncrType = cpu2be16(EncrType);
+			CerLen += AppendWSCTLV(WSC_ID_SSID, &TB[CerLen],
+				pCredential->SSID.Ssid, pCredential->SSID.SsidLength);
+			CerLen += AppendWSCTLV(WSC_ID_AUTH_TYPE, &TB[CerLen],
+				(UINT8 *)&AuthType, 0);
+			CerLen += AppendWSCTLV(WSC_ID_ENCR_TYPE, &TB[CerLen],
+				(UINT8 *)&EncrType, 0);
+			CerLen += AppendWSCTLV(WSC_ID_NW_KEY_INDEX, &TB[CerLen],
+				&pCredential->KeyIndex, 0);
+			CerLen += AppendWSCTLV(WSC_ID_NW_KEY, &TB[CerLen],
+				pCredential->Key, pCredential->KeyLength);
+			CerLen += AppendWSCTLV(WSC_ID_MAC_ADDR, &TB[CerLen], pCredential->MacAddr, 0);
+			/*	  Prepare plain text */
+		}
+	} else
+#endif
+	{
 	/* 4a. Encrypted R-S1 */
 	CerLen += AppendWSCTLV(WSC_ID_NW_INDEX, &TB[0], (PUCHAR)"1", 0);
 
@@ -2002,6 +2112,7 @@ int BuildMessageM8(
 	CerLen += AppendWSCTLV(WSC_ID_NW_KEY, &TB[CerLen], pCredential->Key, pCredential->KeyLength);
 	CerLen += AppendWSCTLV(WSC_ID_MAC_ADDR, &TB[CerLen], pCredential->MacAddr, 0);
 	/*    Prepare plain text */
+}
 		if ((CurOpMode == AP_MODE)
 		   ) {
 			/* Reguired attribute item in M8 if Enrollee is STA. */
@@ -2293,6 +2404,12 @@ int ProcessMessageM1(
 	PUCHAR				pData = NULL;
 	USHORT				WscType, WscLen, FieldCheck[7] = {0, 0, 0, 0, 0, 0, 0};
 	UCHAR				CurOpMode = 0xFF;
+#ifdef CONFIG_MAP_SUPPORT
+	UCHAR apidx = (pWscControl->EntryIfIdx & 0x0F);
+	struct wifi_dev *wdev = NULL;
+
+	wdev = &pAdapter->ApCfg.MBSSID[apidx].wdev;
+#endif /* CONFIG_MAP_SUPPORT */
 
 #ifdef CONFIG_AP_SUPPORT
 	IF_DEV_CONFIG_OPMODE_ON_AP(pAdapter)
@@ -2514,6 +2631,18 @@ int ProcessMessageM1(
 			}
 
 #endif /* WSC_V2_SUPPORT */
+#ifdef CONFIG_MAP_SUPPORT
+			if (IS_MAP_ENABLE(pAdapter)) {
+				UCHAR tmp_data_len = 0;
+
+				WscParseV2SubItem(WFA_EXT_ID_MAP_EXT_ATTRIBUTE,
+								pData, WscLen,
+								&pReg->PeerInfo.map_DevPeerRole,
+								&tmp_data_len);
+				MTWF_LOG(DBG_CAT_SEC, CATSEC_WPS, DBG_LVL_OFF,
+					("ProcessMessageM1 --> MAP PeerRole = %x\n", pReg->PeerInfo.map_DevPeerRole));
+			}
+#endif /* CONFIG_MAP_SUPPORT */
 
 			break;
 

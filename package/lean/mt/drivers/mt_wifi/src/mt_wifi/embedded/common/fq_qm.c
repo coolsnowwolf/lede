@@ -59,8 +59,8 @@ INT fq_init(RTMP_ADAPTER *pAd)
 	if ((pAd->fq_ctrl.enable & FQ_EN) == 0)
 		return 0;
 
-	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-		("Fair Queueing Scheduler Initializatio...\n"));
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+		("Fair Queueing Scheduler Initialization...\n"));
 	fq_en = pAd->fq_ctrl.enable;
 	factor = pAd->fq_ctrl.factor;
 	os_zero_mem(&pAd->fq_ctrl, sizeof(struct fq_ctrl_type));
@@ -135,20 +135,25 @@ INT fq_deinit(RTMP_ADAPTER *pAd)
 	STA_TR_ENTRY *tr_entry = NULL;
 	struct fq_stainfo_type *pfq_sta = NULL;
 	INT i, j;
+	UINT32 prev_enable;
 
-pAd->fq_ctrl.enable &= ~FQ_READY;
+	pAd->fq_ctrl.enable &= ~FQ_READY;
+	prev_enable = pAd->fq_ctrl.enable & (FQ_EN | FQ_NEED_ON);
 
 	for (j = 0; j < MAX_LEN_OF_MAC_TABLE ; j++) {
 		tr_entry = &pAd->MacTab.tr_entry[j];
 		pfq_sta = &tr_entry->fq_sta_rec;
-	for (i = 0; i < WMM_NUM_OF_AC; i++) {
+		for (i = 0; i < WMM_NUM_OF_AC; i++) {
 			NdisFreeSpinLock(&pfq_sta->lock[i]);
 			os_zero_mem(pfq_sta, sizeof(struct fq_stainfo_type));
-						}
+		}
 		fq_reset_list_entry(pAd, WMM_NUM_OF_AC, j);
-					}
+	}
 
 	os_zero_mem(&pAd->fq_ctrl, sizeof(struct fq_ctrl_type));
+
+	pAd->fq_ctrl.enable = prev_enable | FQ_NO_PKT_STA_KEEP_IN_LIST | FQ_ARRAY_SCH;
+	pAd->fq_ctrl.factor = 2;
 
 	return 0;
 }
@@ -1100,7 +1105,7 @@ INT show_fq_info(PRTMP_ADAPTER pAd, RTMP_STRING *arg)
 
 	pAd->fq_ctrl.prev_qidx = -1;
 
-	if (!pAd->fq_ctrl.enable) {
+	if ((pAd->fq_ctrl.enable & FQ_EN) == 0) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("FQ was is Disabled (qm=%d)\n", cap->qm));
 		return TRUE;
 	}

@@ -95,6 +95,18 @@
 #endif /* WSC_LED_SUPPORT */
 #endif /* WSC_INCLUDED */
 
+#ifdef VENDOR_FEATURE7_SUPPORT
+#define LED_FORCE_ON    20
+#define LED_FORCE_OFF   21
+
+enum led_force_mode_list{
+    LED_FORCE_MODE_NONE = 0,
+    LED_FORCE_MODE_ON,
+    LED_FORCE_MODE_OFF
+};
+#endif
+
+
 /* LED Index */
 enum led_id_list {
 	LED_ID_WLAN_OD = 0,

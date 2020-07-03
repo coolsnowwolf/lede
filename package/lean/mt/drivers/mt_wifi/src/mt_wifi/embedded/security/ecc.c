@@ -99,7 +99,7 @@ EC_GROUP_INFO_BI *get_ecc_group_info_bi(
 			gy_len = sizeof(ec_group21_gy);
 		}
 
-		if ((gx != NULL) && (gx != NULL)) {
+		if ((gx != NULL) && (gy != NULL)) {
 			SAE_BN_BIN2BI((UINT8 *)gx, gx_len, &ec_group_bi->gx);
 			SAE_BN_BIN2BI((UINT8 *)gy, gy_len, &ec_group_bi->gy);
 		}
@@ -124,6 +124,7 @@ EC_GROUP_INFO_BI *get_ecc_group_info_bi(
 		ec_group_bi->mont->pBI_X = NULL;
 		ec_group_bi->mont->pBI_R = NULL;
 		ec_group_bi->mont->pBI_PInverse = NULL;
+#ifndef DOT11_SAE_OPENSSL_BN
 		SAE_BN_BIN2BI((UINT8 *)ec_group->X,
 						  ec_group->X_len,
 						  &ec_group_bi->mont->pBI_X);
@@ -133,9 +134,42 @@ EC_GROUP_INFO_BI *get_ecc_group_info_bi(
 		SAE_BN_BIN2BI((UINT8 *)ec_group->PInverse,
 						  ec_group->PInverse_len,
 						  &ec_group_bi->mont->pBI_PInverse);
+#endif
 	}
 
 	return ec_group_bi;
+}
+
+VOID group_info_bi_deinit(
+	VOID)
+{
+	UINT32 i;
+	EC_GROUP_INFO_BI *ec_group_bi = NULL;
+
+	for (i = 0; i < EC_GROUP_NUM; i++)
+		if (ec_groups_bi[i].is_init == TRUE) {
+			ec_group_bi = &ec_groups_bi[i];
+
+			SAE_BN_FREE(&ec_group_bi->prime);
+			SAE_BN_FREE(&ec_group_bi->order);
+			SAE_BN_FREE(&ec_group_bi->a);
+			SAE_BN_FREE(&ec_group_bi->b);
+			SAE_BN_FREE(&ec_group_bi->gx);
+			SAE_BN_FREE(&ec_group_bi->gy);
+			ec_group_bi->cofactor = NULL;
+
+			if (ec_group_bi->mont != NULL) {
+#ifndef DOT11_SAE_OPENSSL_BN
+				SAE_BN_FREE(&ec_group_bi->mont->pBI_X);
+				SAE_BN_FREE(&ec_group_bi->mont->pBI_R);
+				SAE_BN_FREE(&ec_group_bi->mont->pBI_PInverse);
+#endif
+				os_free_mem(ec_group_bi->mont);
+				ec_group_bi->mont = NULL;
+			}
+
+			ec_group_bi->is_init = FALSE;
+		}
 }
 
 BIG_INTEGER_EC_POINT *ecc_point_add_cmm(
@@ -969,6 +1003,8 @@ UCHAR ecc_point_is_on_curve_3d(
 			 ("%s(): res = %d\n", __func__, res));
 	return res;
 }
+#ifdef DOT11_SAE_OPENSSL_BN
+#endif
 
 
 /* ec_GFp_simple_set_compressed_coordinates */
@@ -1094,4 +1130,48 @@ VOID ecc_point_dump_time(
 	}
 }
 
+INT ecc_gen_key(EC_GROUP_INFO *ec_group,
+		EC_GROUP_INFO_BI *ec_group_bi,
+		INOUT SAE_BN **priv_key,
+		BIG_INTEGER_EC_POINT *generator,
+		INOUT VOID **pub_key)
+{
+	SAE_BN *priv = NULL;
+	BIG_INTEGER_EC_POINT *pub = NULL;
+
+	if (*priv_key == NULL) {
+		SAE_BN_INIT(&priv);
+		if (priv == NULL) {
+			MTWF_LOG(DBG_CAT_SEC, CATSEC_ECC, DBG_LVL_OFF,
+				("%s, cannot alloc BN for priv\n", __func__));
+			return 0;
+		}
+		*priv_key = priv;
+	} else
+		priv = *priv_key;
+
+	do {
+		if (!SAE_GET_RAND_RANGE(priv, ec_group_bi->order)) {
+			MTWF_LOG(DBG_CAT_SEC, CATSEC_ECC, DBG_LVL_OFF,
+				("%s, derive priv_key failed\n", __func__));
+			return 0;
+		}
+	} while (SAE_BN_IS_ZERO(priv));
+
+	if (*pub_key == NULL) {
+		ecc_point_init(&pub);
+		if (pub == NULL) {
+			MTWF_LOG(DBG_CAT_SEC, CATSEC_ECC, DBG_LVL_OFF,
+				("%s, cannot alloc POINT for pub\n", __func__));
+			return 0;
+		}
+		*pub_key = pub;
+	} else
+		pub = *pub_key;
+
+	ECC_POINT_MUL(generator, priv, ec_group_bi, &pub);
+	SAE_ECC_3D_to_2D(ec_group_bi, pub);
+
+	return 1;
+}
 

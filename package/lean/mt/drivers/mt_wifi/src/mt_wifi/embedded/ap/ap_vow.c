@@ -16,6 +16,7 @@
 
 #include "rt_config.h"
 #include "mcu/mt_cmd.h"
+#include "hdev/hdev.h"
 
 #ifdef VOW_SUPPORT
 #define UMAC_DRR_TABLE_CTRL0            (0x00008388)
@@ -803,7 +804,7 @@ INT vow_set_at_estimator_group(PRTMP_ADAPTER pad, UINT32 subcmd, UINT8 group_id)
 		at_proc.rAtProcGeneralCtrl.rAtEstimateSubCtrl.u2GroupMinRatioValue[group_id] = cpu2le16(pad->vow_bss_cfg[group_id].min_airtime_ratio);
 #ifdef RT_BIG_ENDIAN
 		at_proc.rAtProcGeneralCtrl.rAtEstimateSubCtrl.u4GroupRatioBitMask =
-			cpu2le16(at_proc.rAtProcGeneralCtrl.rAtEstimateSubCtrl.u4GroupRatioBitMask);
+			cpu2le32(at_proc.rAtProcGeneralCtrl.rAtEstimateSubCtrl.u4GroupRatioBitMask);
 #endif
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s:(cmd = 0x%x, subcmd = 0x%x, group %d, val = 0x%x/0x%x)\n",
 				 __func__, at_proc.u4CtrlFieldID, at_proc.u4CtrlSubFieldID, group_id,
@@ -4148,6 +4149,18 @@ VOID vow_display_info_periodic(
 			rx_diff_time = rx_sum - vow_last_rx_time[i];
 			vow_tx_time[i] += tx_diff_time;
 			vow_rx_time[i] += rx_diff_time;
+#ifdef CUSTOMER_DCC_FEATURE
+			{
+				PMAC_TABLE_ENTRY pEntry = NULL;
+				if (VALID_UCAST_ENTRY_WCID(pAd, i))
+				pEntry = &pAd->MacTab.Content[i];
+				if (IS_ENTRY_CLIENT(pEntry) && (pEntry->Sst == SST_ASSOC) && pEntry->pMbss) {
+					pEntry->ChannelUseTime += tx_diff_time + rx_diff_time;
+					pEntry->pMbss->ChannelUseTime += tx_diff_time + rx_diff_time;
+				}
+			}
+#endif
+
 			vow_last_tx_time[i] = tx_sum;
 			vow_last_rx_time[i] = rx_sum;
 			vow_sum_tx_rx_time += tx_diff_time + rx_diff_time;
@@ -4384,6 +4397,54 @@ VOID vow_avg_pkt_len_calculate(struct _MAC_TABLE_ENTRY *entry)
 		((mctrl->pkt_avg_len * mctrl->sta_nums) + avg_pkt_len) / (mctrl->sta_nums + 1);
 	mctrl->sta_nums++;
 }
+#if defined (CONFIG_VOW_VIDEO_PARAM)
+void set_vow_video_param(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UINT8 opmode)
+{
+	struct hdev_obj *obj;
+	UINT8 pkt_num, retry_limit;
+	UINT32 length;
+	PEDCA_PARM pEdcaParm = NULL;
+	UINT8 band_idx;
+	struct video_ctl *videoctl = &pAd->vow_video_ctl;
+
+	ASSERT(wdev);
+
+	band_idx = HcGetBandByWdev(wdev);
+	obj = wdev->pHObj;
+	if (!hdev_obj_state_ready(obj))
+		return;
+
+	pEdcaParm = HcGetEdca(pAd, wdev);
+	pkt_num = wlan_operate_get_rts_pkt_thld(wdev);
+	retry_limit = wlan_operate_get_rts_retry_limit(wdev);
+	length = wlan_operate_get_rts_len_thld(wdev);
+	if (opmode == VOW_VIDEO_SET_PARAM) {
+		os_move_mem(&videoctl->edca_backup[obj->WmmIdx], pEdcaParm, sizeof(EDCA_PARM));
+		videoctl->rts_thld_pkt_num_backup[band_idx] = pkt_num;
+		pkt_num = VIDEO_RTS_PKT_THLD;
+		pEdcaParm->Cwmax[WMM_AC_VO] = VIDEO_CWMAX;
+		pEdcaParm->Cwmax[WMM_AC_VI] = VIDEO_CWMAX;
+		videoctl->rts_retry_limit_backup = retry_limit;
+		retry_limit = VIDEO_RTS_RETRY_LIMIT;
+		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+			("\n\x1b[31mCwmaxVO:%d CwmaxVI:%d rts [%d %d %d] wmm_idx:%d!\x1b[m\n",
+			pEdcaParm->Cwmax[WMM_AC_VO],
+			pEdcaParm->Cwmax[WMM_AC_VI], pkt_num, length, retry_limit, obj->WmmIdx));
+	} else {
+		/* restore parameter */
+		os_move_mem(pEdcaParm, &videoctl->edca_backup[obj->WmmIdx], sizeof(EDCA_PARM));
+		pkt_num = videoctl->rts_thld_pkt_num_backup[band_idx];
+		retry_limit = videoctl->rts_retry_limit_backup;
+		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+			("\n\x1b[32mCwmaxVO:%d CwmaxVI:%d rts [%d %d %d] wmm_idx:%d!\x1b[m\n",
+			pEdcaParm->Cwmax[WMM_AC_VO],
+			pEdcaParm->Cwmax[WMM_AC_VI], pkt_num, length, retry_limit, obj->WmmIdx));
+	}
+
+	HW_SET_RTS_THLD(pAd, wdev, pkt_num, length, retry_limit);
+	HW_SET_EDCA(pAd, wdev, pEdcaParm);
+}
+#endif
 #else
 VOID vow_atf_off_init(PRTMP_ADAPTER pad)
 {

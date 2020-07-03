@@ -539,8 +539,23 @@ UINT32 RcGetWmmIdx(struct hdev_obj *obj)
 
 	return 0;
 }
+UINT32 MAPRcGetBandIdxByChannelCheck(struct hdev_ctrl *ctrl, UCHAR Channel)
+{
+#ifdef DBDC_MODE
+	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *) ctrl->priv;
 
+	/*not enable dbdc mode band should always in band0*/
+	if (!pAd->CommonCfg.dbdc_mode)
+		return 0;
 
+	/*enable dbdc mode, chose bandIdx from channel*/
+	if (Channel > 14)
+		return BAND1;
+	else
+		return BAND0;
+#endif /*DBDC_MODE*/
+	return 0;
+}
 
 /*
 *
@@ -673,6 +688,9 @@ struct radio_dev *RcAcquiredBandForObj(
 	/*can't get hdev by phymode, use default band*/
 	if (!rdev) {
 		rdev = &ctrl->rdev[0];
+		if (WMODE_CAP_5G(PhyMode)) {
+			printk("[%s] rdev received NULL in 5G mode\n", __func__);
+		}
 		is_default = 1;
 	}
 
@@ -711,13 +729,14 @@ struct radio_dev *RcAcquiredBandForObj(
 */
 struct radio_dev *RcGetHdevByChannel(struct hdev_ctrl *ctrl, UCHAR Channel)
 {
-	struct radio_dev *rdev;
-	UCHAR i=0;
+	struct radio_dev *rdev = NULL;
+	UCHAR i = 0;
 
 	for (i = 0 ; i < ctrl->HwResourceCfg.concurrent_bands ; i++) {
 		rdev = &ctrl->rdev[i];
-		if (rdev->pRadioCtrl->Channel == Channel)
+		if (rdev != NULL && rdev->pRadioCtrl->Channel == Channel) {
 			return rdev;
+		}
 	}
 
 	MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_INFO,
@@ -750,9 +769,15 @@ struct radio_dev *RcGetHdevByPhyMode(struct hdev_ctrl *ctrl, UCHAR PhyMode, UCHA
 
 		if (rdev) {
 			pChCtrl = hc_get_channel_ctrl(ctrl, rdev->pRadioCtrl->BandIdx);
-			if ((rdev->DevNum == 0) || (rdev->pRadioCtrl->Channel == channel) ||
-					MTChGrpChannelChk(pChCtrl, channel))
+			/* if ACS Enabled channel is 0 initially */
+			if (channel) {
+				if ((rdev->DevNum == 0) || (rdev->pRadioCtrl->Channel == channel) ||
+						MTChGrpChannelChk(pChCtrl, channel))
+					break;
+			} else {
+				printk("[%s] channel 0 fix for rdev fetching\n", __func__);
 				break;
+			}
 		}
 		rdev = NULL;
 	}
@@ -768,11 +793,19 @@ struct radio_dev *RcGetHdevByPhyMode(struct hdev_ctrl *ctrl, UCHAR PhyMode, UCHA
 			rdev = &ctrl->rdev[i];
 		else if (WMODE_CAP_5G(PhyMode) && (pPhyCtrl->rf_band_cap & RFIC_5GHZ))
 			rdev = &ctrl->rdev[i];
+		if (channel) {
+			if (rdev &&
+				((rdev->DevNum == 0) || (rdev->pRadioCtrl->Channel == channel))) {
+				break;
+			}
+		} else {
+			if (rdev) {
+				printk("[%s]-- channel 0 fix for rdev fetching\n",  __func__);
+				break;
+			}
 
-		if (rdev &&
-			((rdev->DevNum == 0) || (rdev->pRadioCtrl->Channel == channel))) {
-			break;
 		}
+
 	}
 
 	if (!rdev) {
@@ -796,7 +829,16 @@ INT32 RcUpdateChannel(struct radio_dev *rdev, UCHAR Channel, BOOLEAN scan)
 {
 	INT32 ret = 0;
 	RADIO_CTRL *pRadioCtrl = rdev->pRadioCtrl;
+#ifdef TR181_SUPPORT
+	if ((pRadioCtrl->Channel != Channel) && (scan == 0)) {
+		ULONG CurJiffies;
 
+		NdisGetSystemUpTime(&CurJiffies);
+		pRadioCtrl->CurChannelUpTime = jiffies_to_usecs(CurJiffies);
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s:orig_chan=%d, new_chan=%d, CurChanUpTime=%u\n",
+						__func__, pRadioCtrl->Channel, Channel, pRadioCtrl->CurChannelUpTime));
+	}
+#endif
 	pRadioCtrl->Channel = Channel;
 	pRadioCtrl->scan_state = scan;
 	return ret;
