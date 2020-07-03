@@ -285,6 +285,11 @@
 #define RTMP_GET_TDLS_SPECIFIC_PACKET(_p)         (PACKET_CB(_p, 23))
 
 
+/* [CB_OFF + 25]  */
+#ifdef A4_CONN
+#define RTMP_SET_PACKET_A4_FWDDATA(_p, _flg)   (PACKET_CB(_p, 25) = _flg)
+#define RTMP_GET_PACKET_A4_FWDDATA(_p)         (PACKET_CB(_p, 25))
+#endif
 
 /* [CB_OFF + 26]  */
 #ifdef CONFIG_CSO_SUPPORT
@@ -294,6 +299,10 @@
 
 
 /* [CB_OFF + 27 ~ 31]  */
+#ifdef VLAN_SUPPORT
+#define RTMP_SET_VLAN_PCP(_p, _flg)	(PACKET_CB(_p, 27) = (UINT8)((_flg) & 0x00ff))
+#define RTMP_GET_VLAN_PCP(_p)		(PACKET_CB(_p, 27))
+#endif /* VLAN_SUPPORT */
 
 
 /* [CB_OFF + 32]  */

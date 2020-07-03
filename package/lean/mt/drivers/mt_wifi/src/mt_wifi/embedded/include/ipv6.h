@@ -29,6 +29,11 @@
 #define IPV6_ADDR_LEN 16
 #define IPV6_HDR_LEN  40
 
+enum IP_TYPE {
+	IP_V4,
+	IP_V6
+};
+
 /* IPv6 address definition */
 #define IPV6_LINK_LOCAL_ADDR_PREFIX		0xFE8
 #define IPV6_SITE_LOCAL_ADDR_PREFIX		0xFEC

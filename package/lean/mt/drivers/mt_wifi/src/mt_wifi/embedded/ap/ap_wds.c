@@ -256,8 +256,10 @@ BOOLEAN wds_bss_linkdown(
 		return FALSE;
 	}
 
-	MlmeEnqueueWithWdev(pAd, WDS_STATE_MACHINE, WDS_BSS_LINKDOWN, sizeof(USHORT),
-			&wcid, 0, pEntry->wdev);
+	if (wdev_do_linkdown(pEntry->wdev) != TRUE)
+		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s() linkdown fail!!!\n", __func__));
+	
+	mac_entry_delete(pAd, pEntry);
 
 	return TRUE;
 }
@@ -615,6 +617,12 @@ MAC_TABLE_ENTRY *FindWdsEntry(
 					  pRxBlk->rx_signal.raw_rssi[1],
 					  pRxBlk->rx_signal.raw_rssi[2],
 					  pRxBlk->rx_signal.raw_rssi[3],
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+					  pRxBlk->rx_signal.raw_snr[0],
+					  pRxBlk->rx_signal.raw_snr[1],
+					  pRxBlk->rx_signal.raw_snr[2],
+					  pRxBlk->rx_signal.raw_snr[3],
+#endif
 					  (rxd_base != NULL) ? rxd_base->RxD1.ChFreq : 0,
 					  0,
 					  OPMODE_AP,

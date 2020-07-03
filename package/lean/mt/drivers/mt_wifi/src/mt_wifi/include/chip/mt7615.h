@@ -125,8 +125,15 @@ extern UINT16 DPD_ALL_SIZE;
 
 #if defined(RLM_CAL_CACHE_SUPPORT) || defined(PRE_CAL_TRX_SET2_SUPPORT)
 /* Pre-Cal */
-#define PRECALPART_OFFSET    (DPDPART1_OFFSET + DPD_ALL_SIZE * TXDPD_SIZE)
-#define PRE_CAL_SIZE     (16 * 1024) 
+#define PRECALPART_OFFSET       (DPDPART1_OFFSET + DPD_ALL_SIZE * TXDPD_SIZE)
+#define PRE_CAL_SIZE_ONE_CARD   (16 * 1024)
+#define PRE_CAL_SIZE_DUAL_CARD  (12 * 1024)
 #endif /* defined(RLM_CAL_CACHE_SUPPORT) || defined(PRE_CAL_TRX_SET2_SUPPORT) */
+
+#if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
+#define PA_TRIM_OFFSET        0
+#define PA_TRIM_SIZE          16
+
+#endif /* CAL_BIN_FILE_SUPPORT */
 
 #endif /* __MT7615_H__ */

@@ -58,7 +58,10 @@ MAC_TABLE_ENTRY *PACInquiry(RTMP_ADAPTER *pAd, UCHAR Wcid)
 */
 VOID HandleCounterMeasure(RTMP_ADAPTER *pAd, MAC_TABLE_ENTRY *pEntry)
 {
+
+#ifndef RT_CFG80211_SUPPORT
 	INT i;
+#endif
 	BOOLEAN Cancelled;
 
 	if (!pEntry)
@@ -68,9 +71,11 @@ VOID HandleCounterMeasure(RTMP_ADAPTER *pAd, MAC_TABLE_ENTRY *pEntry)
 	if (IS_ENTRY_APCLI(pEntry) || IS_ENTRY_REPEATER(pEntry))
 		return;
 
-	/* if entry not set key done, ignore this RX MIC ERROR */
+#ifndef RT_CFG80211_SUPPORT
+    /* if entry not set key done, ignore this RX MIC ERROR */
 	if ((pEntry->SecConfig.Handshake.WpaState < AS_PTKINITDONE) || (pEntry->SecConfig.Handshake.GTKState != REKEY_ESTABLISHED))
 		return;
+#endif
 
 	MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("HandleCounterMeasure ===>\n"));
 	/* record which entry causes this MIC error, if this entry sends disauth/disassoc, AP doesn't need to log the CM */
@@ -78,17 +83,31 @@ VOID HandleCounterMeasure(RTMP_ADAPTER *pAd, MAC_TABLE_ENTRY *pEntry)
 	pAd->ApCfg.MICFailureCounter++;
 	/* send wireless event - for MIC error */
 	RTMPSendWirelessEvent(pAd, IW_MIC_ERROR_EVENT_FLAG, pEntry->Addr, 0, 0);
+#ifdef RT_CFG80211_SUPPORT
+	{
+		const UCHAR tsc[6] = {0, 0, 0, 0, 0, 0};
+		PNET_DEV pNetDev = pAd->ApCfg.MBSSID[pEntry->func_tb_idx].wdev.if_dev;
+		/* NL80211_KEYTYPE_PAIRWISE = 1, tsc = tsc of frame causing mic failure */
+		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("%s:calling cfg event to HandleCounterMeasure\n", __FUNCTION__));
+		cfg80211_michael_mic_failure(pNetDev, pEntry->Addr, 1, 0, tsc, GFP_KERNEL);
+	}
+#endif
 
 	if (pAd->ApCfg.CMTimerRunning == TRUE) {
 		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Receive CM Attack Twice within 60 seconds ====>>>\n"));
 		/* send wireless event - for counter measures */
 		RTMPSendWirelessEvent(pAd, IW_COUNTER_MEASURES_EVENT_FLAG, pEntry->Addr, 0, 0);
 		ApLogEvent(pAd, pEntry->Addr, EVENT_COUNTER_M);
+#ifndef RT_CFG80211_SUPPORT
 		/* renew GTK */
 		GenRandom(pAd, pAd->ApCfg.MBSSID[pEntry->func_tb_idx].wdev.bssid, pAd->ApCfg.MBSSID[pEntry->func_tb_idx].GNonce);
+#endif
 		/* Cancel CounterMeasure Timer */
 		RTMPCancelTimer(&pAd->ApCfg.CounterMeasureTimer, &Cancelled);
 		pAd->ApCfg.CMTimerRunning = FALSE;
+
+#ifndef RT_CFG80211_SUPPORT
 
 		for (i = 0; VALID_UCAST_ENTRY_WCID(pAd, i); i++) {
 			struct wifi_dev *wdev = pAd->MacTab.Content[i].wdev;
@@ -97,6 +116,7 @@ VOID HandleCounterMeasure(RTMP_ADAPTER *pAd, MAC_TABLE_ENTRY *pEntry)
 			&& wdev->channel == pEntry->wdev->channel)
 				MlmeDeAuthAction(pAd, &pAd->MacTab.Content[i], REASON_MIC_FAILURE, FALSE);
 		}
+#endif
 
 		/*
 			Further,  ban all Class 3 DATA transportation for a period 0f 60 sec
