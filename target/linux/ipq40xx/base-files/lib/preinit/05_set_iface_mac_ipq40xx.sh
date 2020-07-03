@@ -2,6 +2,7 @@
 
 preinit_set_mac_address() {
 	case $(board_name) in
+	asus,rt-acrh17|\
 	asus,map-ac2200)
 		base_mac=$(mtd_get_mac_binary_ubi Factory 0x1006)
 		ip link set dev eth0 address $(macaddr_add "$base_mac" +1)
