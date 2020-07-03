@@ -29,6 +29,8 @@
 #ifdef DOT11R_FT_SUPPORT
 #include	"ft.h"
 #endif /* DOT11R_FT_SUPPORT */
+/*enable_nf_support() uses macro from bgnd_scan_cmm.h*/
+#include "bgnd_scan_cmm.h"
 
 #define PROBE2LOAD_L1PROFILE /* Capable to be turned off if not required */
 
@@ -115,6 +117,17 @@ INT rtmp_cfg_init(RTMP_ADAPTER *pAd, RTMP_STRING *pHostName)
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s(): Invalid RfIcType, reset it first\n",
 				 __func__));
 	}
+
+#ifdef MIN_PHY_RATE_SUPPORT
+	if (pAd->OpMode == OPMODE_AP) {
+		RTMPMinPhyDataRateCfg(pAd, "0");
+		RTMPMinPhyBeaconRateCfg(pAd, "0");
+		RTMPMinPhyMgmtRateCfg(pAd, "0");
+		RTMPMinPhyBcMcRateCfg(pAd, "0");
+		RTMPLimitClientSupportRateCfg(pAd, "0");
+		RTMPDisableCCKRateCfg(pAd, "0");
+	}
+#endif
 
 	status = RTMPReadParametersHook(pAd);
 
@@ -223,6 +236,11 @@ static INT rtmp_sys_init(RTMP_ADAPTER *pAd, RTMP_STRING *pHostName)
 
 	status = tr_ctl_init(pAd);
 
+#ifdef FQ_SCH_SUPPORT
+	if (pAd->fq_ctrl.enable & FQ_NEED_ON)
+		pAd->fq_ctrl.enable = FQ_ARRAY_SCH|FQ_NO_PKT_STA_KEEP_IN_LIST|FQ_EN;
+#endif
+
 	/* QM init */
 	status = qm_init(pAd);
 
@@ -231,14 +249,6 @@ static INT rtmp_sys_init(RTMP_ADAPTER *pAd, RTMP_STRING *pHostName)
 
 	if (status)
 		goto err2;
-
-#ifdef FQ_SCH_SUPPORT
-	if (pAd->fq_ctrl.enable & FQ_NEED_ON) {
-		if (set_fq_enable(pAd, "4105-2") == FALSE)
-			goto err2;
-	}
-#endif
-
 
 	return TRUE;
 err2:
@@ -250,26 +260,6 @@ err0:
 	RtmpMgmtTaskExit(pAd);
 	return FALSE;
 }
-
-#ifdef NF_SUPPORT
-VOID enable_nf_support(VOID *pAdSrc)
-{
-	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *)pAdSrc;
-	int Value;
-
-	pAd->Avg_NF = 0;
-	pAd->Avg_NFx16 = 0;
-	HW_IO_READ32(pAd, PHY_RXTD_12, &Value);
-	Value |= (1 << B0IrpiSwCtrlResetOffset);
-	Value |= (1 << B0IrpiSwCtrlOnlyOffset);
-	HW_IO_WRITE32(pAd, PHY_RXTD_12, Value);
-	HW_IO_WRITE32(pAd, PHY_RXTD_12, Value);
-	/* Enable badn0 IPI control */
-	HW_IO_READ32(pAd, PHY_BAND0_PHYMUX_5, &Value);
-	Value |= (B0IpiEnableCtrlValue << B0IpiEnableCtrlOffset);
-	HW_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5, Value);
-}
-#endif
 
 /*
 *
@@ -285,6 +275,49 @@ static void mt_sys_ready(struct _RTMP_ADAPTER *ad)
 
 	RTMP_SET_FLAG(ad, fRTMP_ADAPTER_START_UP);
 }
+
+/*
+* Bring out of OFFCHANNEL_SCAN_FEATURE flag,
+* to make it generic function, to be used as generic requirement
+*/
+VOID enable_nf_support(VOID *pAdSrc)
+{
+	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *)pAdSrc;
+	int Value, i;
+
+	for (i = 0; i < DBDC_BAND_NUM; i++) {
+
+		pAd->Avg_NF[i] = 0;
+		pAd->Avg_NFx16[i] = 0;
+		/*band0*/
+
+		if (i == DBDC_BAND0) {
+			/*Turn on band 0 IPI*/
+			HW_IO_READ32(pAd, PHY_RXTD_12, &Value);
+			Value |= (1 << B0IrpiSwCtrlResetOffset);
+			Value |= (1 << B0IrpiSwCtrlOnlyOffset);
+			HW_IO_WRITE32(pAd, PHY_RXTD_12, Value);
+			HW_IO_WRITE32(pAd, PHY_RXTD_12, Value);
+
+			/* Enable badn0 IPI control */
+			HW_IO_READ32(pAd, PHY_BAND0_PHYMUX_5, &Value);
+			Value |= (B0IpiEnableCtrlValue << B0IpiEnableCtrlOffset);
+			HW_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5, Value);
+		} else {
+
+			HW_IO_READ32(pAd, PHY_RXTD2_10, &Value);
+			Value |= (1 << B1IrpiSwCtrlResetOffset);
+			Value |= (1 << B1IrpiSwCtrlOnlyOffset);
+			HW_IO_WRITE32(pAd, PHY_RXTD2_10, Value);
+			HW_IO_WRITE32(pAd, PHY_RXTD2_10, Value);
+
+			HW_IO_READ32(pAd, PHY_BAND1_PHYMUX_5, &Value);
+			Value |= (B1IpiEnableCtrlValue << B1IpiEnableCtrlOffset);
+			HW_IO_WRITE32(pAd, PHY_BAND1_PHYMUX_5, Value);
+		}
+	}
+}
+
 
 /*rename from rt28xx_init*/
 int mt_wifi_init(VOID *pAdSrc, RTMP_STRING *pDefaultMac, RTMP_STRING *pHostName)
@@ -310,6 +343,23 @@ int mt_wifi_init(VOID *pAdSrc, RTMP_STRING *pDefaultMac, RTMP_STRING *pHostName)
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("[mt_wifi_init] wdev == NULL\n"));
 		return FALSE;
 	}
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+#ifdef INTELP6_SUPPORT
+	/*To many continuous soft reboot on puma6 plateform makes HW to go in unstabe state and
+	  * driver fails to communicate with FW. Reset PCI funtionality at first place
+	*/
+	{
+		struct pci_dev *pdev = NULL;
+
+		POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+
+		pdev = obj->pci_dev;
+		pci_reset_function(pdev);
+		pAd->ErrRecoveryCheck = 0;
+
+	}
+#endif
+#endif
 	BandIdx = HcGetBandByWdev(wdev);
 	pChCtrl = hc_get_channel_ctrl(pAd->hdev_ctrl, BandIdx);
 	pChCtrl_hwband1 = hc_get_channel_ctrl(pAd->hdev_ctrl, 1);
@@ -358,13 +408,21 @@ int mt_wifi_init(VOID *pAdSrc, RTMP_STRING *pDefaultMac, RTMP_STRING *pHostName)
 		MtAsicSetMacTxRx(pAd, ASIC_MAC_TXRX_RXV, TRUE, 1);
 	}
 #endif
-#ifdef NF_SUPPORT
-	/* Enable Noise Histrogram */
-	if (IS_MT7615(pAd)) {
+
+#if defined(OFFCHANNEL_SCAN_FEATURE) || defined(NF_SUPPORT)
 		MAC_IO_WRITE32(pAd, 0x12234, 0x07000000);
-		MAC_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5, 0x50DC10);
-	}
+		MAC_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5, 0x50DC10); /* Enabling IPI for Band 0 */
+#ifdef DBDC_MODE
+		if (pAd->CommonCfg.dbdc_mode) {
+			MAC_IO_WRITE32(pAd, 0x12a2c, 0x00000020);
+			MAC_IO_WRITE32(pAd, PHY_BAND1_PHYMUX_5, 0x50DC10); /* Enabling IPI for Band 1 */
+		}
 #endif
+#endif
+#ifdef OFFCHANNEL_SCAN_FEATURE
+		NdisAllocateSpinLock(pAd, &pAd->ScanCtrl.NF_Lock);
+#endif
+
 	NICInitializeAsic(pAd);
 #ifdef LED_CONTROL_SUPPORT
 	/* Send LED Setting to MCU */
@@ -532,6 +590,9 @@ VOID RTMPDrvOpen(VOID *pAdSrc)
 
 #endif /* RED_SUPPORT */
 	cp_support_is_enabled(pAd);
+#ifdef PS_QUEUE_INC_SUPPORT
+	MtCmdSetPSQueueInc(pAd, HOST2CR4, TRUE);
+#endif
 
 #if defined(MT_DFS_SUPPORT) && defined(BACKGROUND_SCAN_SUPPORT)
 
@@ -573,6 +634,10 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 	struct MCU_CTRL *prCtl = NULL;
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
 	UINT8 num_of_tx_ring = GET_NUM_OF_TX_RING(cap);
+#ifdef CUSTOMER_VENDOR_IE_SUPPORT
+	INT j;
+	struct customer_vendor_ie *ap_vendor_ie;
+#endif /* CUSTOMER_VENDOR_IE_SUPPORT */
 	prCtl = &pAd->MCUCtrl;
 #ifdef CONFIG_AP_SUPPORT
 #ifdef BG_FT_SUPPORT
@@ -720,6 +785,16 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 	/* Free BA reorder resource*/
 	ba_reordering_resource_release(pAd);
 	UserCfgExit(pAd); /* must after ba_reordering_resource_release */
+#ifdef CUSTOMER_VENDOR_IE_SUPPORT
+	for (j = BSS0; j < pAd->ApCfg.BssidNum; j++) {
+		ap_vendor_ie = &pAd->ApCfg.MBSSID[j].ap_vendor_ie;
+		if (ap_vendor_ie->pointer != NULL)
+			os_free_mem(ap_vendor_ie->pointer);
+		ap_vendor_ie->pointer = NULL;
+		ap_vendor_ie->length = 0;
+	}
+#endif /* CUSTOMER_VENDOR_IE_SUPPORT */
+
 #ifdef MT_MAC
 
 	if (IS_HIF_TYPE(pAd, HIF_MT))
@@ -804,14 +879,26 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 	pAd->Avg_LQ = 0;
 	pAd->Avg_LQx16 = 0;
 #endif
-#ifdef NF_SUPPORT
-	pAd->Avg_NF = 0;
-	pAd->Avg_NFx16 = 0;
+	pAd->Avg_NF[0] = 0;
+	pAd->Avg_NFx16[0] = 0;
+#ifdef DBDC_MODE
+	if (pAd->CommonCfg.dbdc_mode) {
+		pAd->Avg_NF[1] = 0;
+		pAd->Avg_NF[1] = 0;
+	}
 #endif
 #ifdef LTF_SNR_SUPPORT
 	pAd->Avg_LTFSNR = 0;
 	pAd->Avg_LTFSNRx16 = 0;
 #endif
+
+#ifdef OFFCHANNEL_SCAN_FEATURE
+	pAd->Avg_NF[DBDC_BAND0] = pAd->Avg_NFx16[DBDC_BAND0] = 0;
+	if (pAd->CommonCfg.dbdc_mode)
+		pAd->Avg_NF[DBDC_BAND1] = pAd->Avg_NFx16[DBDC_BAND1] = 0;
+	 NdisFreeSpinLock(&pAd->ScanCtrl.NF_Lock);
+#endif
+
 
 }
 
@@ -834,6 +921,14 @@ PNET_DEV RtmpPhyNetDevMainCreate(VOID *pAdSrc)
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_WARN, ("load l1profile failed!\n"));
 #endif
 	dev_name = get_dev_name_prefix(pAd, INT_MAIN);
+#ifdef INTELP6_SUPPORT
+#ifdef CONFIG_RT_SECOND_CARD
+	if (pAd->dev_idx == 1)
+		pDevNew = RtmpOSNetDevCreate((INT32)MC_RowID, (UINT32 *)&IoctlIF,
+		 INT_MAIN, MAX_MBSS_NUM, sizeof(struct mt_dev_priv), dev_name, FALSE);
+	else
+#endif
+#endif
 	pDevNew = RtmpOSNetDevCreate((INT32)MC_RowID, (UINT32 *)&IoctlIF,
 					 INT_MAIN, 0, sizeof(struct mt_dev_priv), dev_name, FALSE);
 #ifdef HOSTAPD_SUPPORT

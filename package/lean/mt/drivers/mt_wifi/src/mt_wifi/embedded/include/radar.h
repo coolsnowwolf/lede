@@ -32,7 +32,7 @@ struct freq_cfg;
 
 #define DEFAULT_CAL_BUF_TIME	60
 #define DEFAULT_CAL_BUF_TIME_MAX	0x10000
-
+#define RDD_CHECK_NOP_BY_WDEV 0
 /* RESTRICTION_BAND_1: 5600MHz ~ 5650MHz */
 #define RESTRICTION_BAND_1(_pAd, __Channel, _BW)												\
 	(_BW >= BW_40 ?						\
@@ -72,6 +72,30 @@ struct freq_cfg;
 #define IS_SUPPORT_DEDICATED_ZEROWAIT_DFS(_pAd) \
 	(_pAd->CommonCfg.DfsParameter.bDedicatedZeroWaitSupport == TRUE)
 
+#ifdef ONDEMAND_DFS
+#define IS_SUPPORT_ONDEMAND_ZEROWAIT_DFS(_pAd) \
+	((_pAd->CommonCfg.DfsParameter.bOnDemandZeroWaitSupport == TRUE) \
+	 && (_pAd->CommonCfg.DfsParameter.bDfsEnable == TRUE) \
+	 && (_pAd->CommonCfg.bIEEE80211H == TRUE))
+
+#define IS_ONDEMAND_ACS_LIST_VALID(_pAd) \
+	(_pAd->CommonCfg.DfsParameter.bOnDemandChannelListValid == TRUE)
+#define SET_ONDEMAND_ACS_LIST_INVALID(_pAd) \
+		(_pAd->CommonCfg.DfsParameter.bOnDemandChannelListValid = FALSE)
+#endif
+
+#ifdef DFS_VENDOR10_CUSTOM_FEATURE
+#define IS_SUPPORT_V10_DFS(_pAd) \
+	((_pAd->CommonCfg.DfsParameter.bDFSV10Support == TRUE) \
+	 && (_pAd->CommonCfg.DfsParameter.bDfsEnable == TRUE) \
+	 && (_pAd->CommonCfg.bIEEE80211H == TRUE))
+
+#define IS_DFS_V10_ACS_VALID(_pAd) \
+	(_pAd->CommonCfg.DfsParameter.bV10ChannelListValid == TRUE)
+#define SET_DFS_V10_ACS_VALID(_pAd, valid) \
+		(_pAd->CommonCfg.DfsParameter.bV10ChannelListValid = valid)
+#endif
+
 #define CHK_MT_ZEROWAIT_DFS_STATE(_pAd, __STATE) \
 	((_pAd->CommonCfg.DfsParameter.ZeroWaitDfsState == __STATE))
 
@@ -103,6 +127,9 @@ struct DOT11_H {
 	ULONG InServiceMonitorCount;	/* unit: sec */
 	ULONG CalBufTime;	/* A Timing buffer for befroe calibrations which generates Tx signals */
 	UINT16 wdev_count;
+#ifdef CONFIG_MAP_SUPPORT
+	BOOLEAN cac_not_required;
+#endif
 };
 
 BOOLEAN RadarChannelCheck(
@@ -115,7 +142,8 @@ VOID RadarStateCheck(
 
 BOOLEAN CheckNonOccupancyChannel(
 	IN PRTMP_ADAPTER pAd,
-	IN struct wifi_dev *wdev);
+	IN struct wifi_dev *wdev,
+	IN UCHAR ch);
 
 ULONG JapRadarType(
 	IN PRTMP_ADAPTER pAd);
@@ -132,6 +160,12 @@ VOID ChannelSwitchingCountDownProc(
 
 NTSTATUS Dot11HCntDownTimeoutAction(RTMP_ADAPTER *pAd, PCmdQElmt CMDQelmt);
 
+#ifdef CUSTOMER_DCC_FEATURE
+VOID ChannelSwitchingCountDownProcNew(
+	IN PRTMP_ADAPTER	pAd,
+	struct wifi_dev *wdev);
+#endif
+
 #endif /* CONFIG_AP_SUPPORT */
 
 VOID RadarDetectPeriodic(
@@ -146,5 +180,19 @@ INT Set_BlockChReset_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 
 /* wdev->pDot11H Initailization */
 VOID UpdateDot11hForWdev(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, BOOLEAN attach);
+
+#ifdef CUSTOMISE_RDD_THRESHOLD_SUPPORT
+INT Set_RadarMinLPN_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
+
+INT Set_RadarThresholdParam_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
+
+INT Set_RadarPulseThresholdParam_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
+
+INT Set_RadarDbgLogConfig_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
+#endif /* CUSTOMISE_RDD_THRESHOLD_SUPPORT */
+
+#ifdef RDM_FALSE_ALARM_DEBUG_SUPPORT
+INT	Set_RadarTestPulsePattern_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
+#endif /* RDM_FALSE_ALARM_DEBUG_SUPPORT */
 
 #endif /* __RADAR_H__ */

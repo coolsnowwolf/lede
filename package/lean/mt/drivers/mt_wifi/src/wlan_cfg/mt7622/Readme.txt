@@ -1,16 +1,18 @@
 *************************************************************************
 *	Here is the files required for wireless configuration		*
 *************************************************************************
-Step 1: Select product configuration
-	- make menuconfig
-	- MTK Properties--->Drivers--->wifi-l1profile
-	- Reference l1profile_MT7622_MT7615_MT7615.dat or l1profile_MT7622D_MT7615A.dat
+l1profile.dat
+	This file locate at SDK/users/luci.
+	And it should be installed in root file system at /etc/wireless.
 
-Step 2: Select wifi default configuration
-	[MT7622+MT7615+MT7615]
-	- Copy MT7622_ap.dat, MT7615_1_ap.dat, and MT7615_2_ap.dat to openwrt/lede/package/mtk/drivers/mt_wifi/files
-	- Replace mt7622.1.dat, mt7615.1.dat, and mt7615.2.dat
-		
-	[MT7622D+MT7615A]
-	- Copy MT7622D_ap.dat, mt7615a.b0.5g.dat, and mt7615a.b1.5g.dat  to openwrt/lede/package/mtk/drivers/mt_wifi/files
-	- Replace mt7622.1.dat, mt7615a.b0.5g.dat, and mt7615a.b1.5g.dat
+RT2860.dat
+	For configuration of 7622 chip. Refer to /etc/wireless/l1profile.dat,
+	it should be generated at /etc/Wireless/RT2860/RT2860.dat due to INDEX0_profile_path.
+
+iNIC_ap.dat
+	For configuration of 1st 7615 chip. Refer to /etc/wireless/l1profile.dat,
+        it should be generated at /etc/Wireless/iNIC/iNIC_ap.dat due to INDEX1_profile_path.
+
+mt7615_3.da
+	For configuration of 2nd 7615 chip. Refer to /etc/wireless/l1profile.dat,
+        it should be generated at /etc/wireless/mt7615/mt7615_3.dat due to INDEX2_profile_path.

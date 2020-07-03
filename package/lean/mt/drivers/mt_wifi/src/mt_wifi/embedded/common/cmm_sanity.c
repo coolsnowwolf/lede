@@ -32,7 +32,7 @@
 #endif /* DOT11R_FT_SUPPORT */
 
 extern UCHAR	CISCO_OUI[];
-
+extern UCHAR	APPLE_OUI[];  /* For IOS immediately connect */
 extern UCHAR	WPA_OUI[];
 extern UCHAR	RSN_OUI[];
 extern UCHAR	WME_INFO_ELEM[];
@@ -276,6 +276,9 @@ BOOLEAN PeerBeaconAndProbeRspSanity(
 	BOOLEAN bWscCheck = TRUE;
 	UCHAR LatchRfChannel = 0;
 	UCHAR *ptr_eid = NULL;
+#ifdef CONFIG_RCSA_SUPPORT
+	CSA_IE_INFO *CsaInfo = &ie_list->CsaInfo;
+#endif
 	/*
 		For some 11a AP which didn't have DS_IE, we use two conditions to decide the channel
 		1. If the AP is 11n enabled, then check the control channel.
@@ -418,8 +421,12 @@ BOOLEAN PeerBeaconAndProbeRspSanity(
 			break;
 
 		case IE_SECONDARY_CH_OFFSET:
-			if (pEid->Len == 1)
+			if (pEid->Len == 1) {
 				ie_list->NewExtChannelOffset = pEid->Octet[0];
+#ifdef CONFIG_RCSA_SUPPORT
+				CsaInfo->SChOffIE.SecondaryChannelOffset = pEid->Octet[0];
+#endif
+			}
 			else
 				MTWF_LOG(DBG_CAT_MLME, DBG_SUBCAT_ALL, DBG_LVL_WARN, ("%s() - wrong IE_SECONDARY_CH_OFFSET.\n", __func__));
 
@@ -473,10 +480,28 @@ BOOLEAN PeerBeaconAndProbeRspSanity(
 			break;
 
 		case IE_CHANNEL_SWITCH_ANNOUNCEMENT:
-			if (pEid->Len == 3)
+			if (pEid->Len == 3) {
 				ie_list->NewChannel = pEid->Octet[1];	/*extract new channel number*/
-
+#ifdef CONFIG_RCSA_SUPPORT
+				NdisMoveMemory(&CsaInfo->ChSwAnnIE, &pEid->Octet[0], pEid->Len);
+#endif
+			}
 			break;
+
+#ifdef CONFIG_RCSA_SUPPORT
+		case IE_EXT_CHANNEL_SWITCH_ANNOUNCEMENT:
+			if (pEid->Len == 4) {
+				if (ie_list->NewChannel == 0)
+					ie_list->NewChannel = pEid->Octet[2];	/*extract new channel number*/
+				NdisMoveMemory(&CsaInfo->ExtChSwAnnIE, &pEid->Octet[0], pEid->Len);
+			}
+			break;
+
+		case IE_WIDE_BW_CH_SWITCH:
+			if (pEid->Len == 3)
+				NdisMoveMemory(&CsaInfo->wb_info, &pEid->Octet[0], pEid->Len);
+			break;
+#endif
 
 		/*
 		New for WPA
@@ -497,10 +522,115 @@ BOOLEAN PeerBeaconAndProbeRspSanity(
 
 #ifdef CONFIG_OWE_SUPPORT
 			if (NdisEqualMemory(pEid->Octet, OWE_TRANS_OUI, 4)) {
+#ifdef APCLI_SUPPORT
+#ifdef APCLI_OWE_SUPPORT
+				UCHAR pair_ch = 0;
+				UCHAR pair_bssid[MAC_ADDR_LEN] = {0};
+				UCHAR pair_ssid[MAX_LEN_OF_SSID] = {0};
+				UCHAR pair_band = 0;
+				UCHAR pair_ssid_len = 0;
+#endif
+#endif
 				/* Copy to pVIE which will report to bssid list.*/
 				Ptr = (PUCHAR) pVIE;
 				NdisMoveMemory(Ptr + *LengthVIE, ptr_eid, pEid->Len + 2);
 				*LengthVIE += (pEid->Len + 2);
+#ifdef APCLI_SUPPORT
+#ifdef APCLI_OWE_SUPPORT
+				extract_pair_owe_bss_info(pEid->Octet + 4,
+							  pEid->Len - 4,
+							  pair_bssid,
+							  pair_ssid,
+							  &pair_ssid_len,
+							  &pair_band,
+							  &pair_ch);
+
+				if (pair_ch != 0) {
+					UINT32 idx = 0;
+					UINT32 max_con_bands = HcGetAmountOfBand(pAd);
+					CHANNEL_CTRL *pchctrl = NULL;
+					BOOLEAN bchanpresent = FALSE;
+
+					if (BOARD_IS_5G_ONLY(pAd)) {
+
+						for (idx = 0; idx < max_con_bands; idx++) {
+							pchctrl = hc_get_channel_ctrl(pAd->hdev_ctrl, idx);
+
+							if (pchctrl && MTChGrpChannelChk(pchctrl, pair_ch)) {
+								bchanpresent = TRUE;
+								break;
+							}
+						}
+
+					} else {
+
+						for (idx = 0; idx < max_con_bands; idx++) {
+							UINT32 i = 0;
+							pchctrl = hc_get_channel_ctrl(pAd->hdev_ctrl, idx);
+
+							for (i = 0; i < pchctrl->ChListNum; i++) {
+								if (pair_ch == pchctrl->ChList[i].Channel) {
+									bchanpresent = TRUE;
+									break;
+								}
+							}
+						}
+					}
+
+					if (bchanpresent == FALSE) {
+
+						if (pPeerWscIe)
+							os_free_mem(pPeerWscIe);
+
+						return FALSE;
+					}
+
+				} else {
+					UINT32 idx = 0;
+					UINT32 max_con_bands = HcGetAmountOfBand(pAd);
+					CHANNEL_CTRL *pchctrl = NULL;
+					BOOLEAN bchanpresent = FALSE;
+
+					/*If pair channel is not present validate probe resp channel to handle 2g overlap case*/
+
+					if (BOARD_IS_5G_ONLY(pAd)) {
+
+						for (idx = 0; idx < max_con_bands; idx++) {
+							pchctrl = hc_get_channel_ctrl(pAd->hdev_ctrl, idx);
+
+							if (pchctrl && MTChGrpChannelChk(pchctrl, ie_list->Channel)) {
+								bchanpresent = TRUE;
+								break;
+							}
+						}
+
+					} else {
+
+						for (idx = 0; idx < max_con_bands; idx++) {
+							UINT32 i = 0;
+							pchctrl = hc_get_channel_ctrl(pAd->hdev_ctrl, idx);
+
+							for (i = 0; i < pchctrl->ChListNum; i++) {
+								if (ie_list->Channel == pchctrl->ChList[i].Channel) {
+									bchanpresent = TRUE;
+									break;
+								}
+							}
+						}
+					}
+
+					if (bchanpresent == FALSE) {
+						if (pPeerWscIe)
+							os_free_mem(pPeerWscIe);
+
+						return FALSE;
+					}
+
+
+				}
+#endif
+#endif
+
 			} else
 #endif /*CONFIG_OWE_SUPPORT*/
 			if (NdisEqualMemory(pEid->Octet, WPA_OUI, 4)) {
@@ -683,8 +813,8 @@ BOOLEAN PeerBeaconAndProbeRspSanity(
 #ifdef RT_BIG_ENDIAN
 				(*(UINT32 *)(&(ie_list->ExtCapInfo))) =
 					le2cpu32(*(UINT32 *)(&(ie_list->ExtCapInfo)));
-				(*(UINT32 *)(&(ie_list->ExtCapInfo)+4)) =
-					le2cpu32(*(UINT32 *)(&(ie_list->ExtCapInfo)+4));
+				(*(UINT32 *)((UCHAR *)&(ie_list->ExtCapInfo)+4)) =
+					le2cpu32(*(UINT32 *)((UCHAR *)&(ie_list->ExtCapInfo)+4));
 #endif
 
 			}
@@ -967,8 +1097,26 @@ UCHAR ChannelSanity(
 	return 0;
 }
 
+UCHAR ChannelSanityDBDC(
+	IN PRTMP_ADAPTER pAd,
+	IN struct wifi_dev *wdev,
+	IN UCHAR channel)
+{
+	int i;
+	UCHAR BandIdx = HcGetBandByWdev(wdev);
+	CHANNEL_CTRL *pChCtrl = hc_get_channel_ctrl(pAd->hdev_ctrl, BandIdx);
+
+	for (i = 0; i < pChCtrl->ChListNum; i++) {
+		if (channel == pChCtrl->ChList[i].Channel)
+			return 1;
+	}
+
+	return 0;
+}
+
 #ifdef CONFIG_AP_SUPPORT
 #ifdef DBDC_MODE
+#ifdef WSC_INCLUDED
 UCHAR CheckWPSTriggeredPerBand(
 	IN PRTMP_ADAPTER pAd,
 	IN MLME_QUEUE_ELEM * Elem)
@@ -992,6 +1140,7 @@ UCHAR CheckWPSTriggeredPerBand(
 
 	return bss_index;
 }
+#endif /*WSC_INCLUDED*/
 #endif /*DBDC_MODE*/
 #endif /*CONFIG_AP_SUPPORT*/
 
@@ -1274,8 +1423,10 @@ BOOLEAN PeerProbeReqSanity(
 #endif /* CONFIG_AP_SUPPORT */
 	UINT		total_ie_len = 0;
 
+#ifdef WSC_INCLUDED
 	MLME_QUEUE_ELEM *Elem = NULL;
 	UCHAR current_band = 0;
+#endif /*WSC_INCLUDED*/
 
 	/* NdisZeroMemory(ProbeReqParam, sizeof(*ProbeReqParam)); */
 	COPY_MAC_ADDR(ProbeReqParam->Addr2, &Fr->Hdr.Addr2);
@@ -1284,13 +1435,15 @@ BOOLEAN PeerProbeReqSanity(
 		MTWF_LOG(DBG_CAT_MLME, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s(): sanity fail - wrong SSID IE\n", __func__));
 		return FALSE;
 	}
-
-#if defined(CONFIG_MAP_SUPPORT) && defined(WAPP_SUPPORT)
-	if (!ApCheckAccessControlList(pAd, ProbeReqParam->Addr2, apidx)) {
-		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("ApCheckAccessControlList(): Keep silent\n"));
-		return FALSE;
-	}
-#endif
+	/*
+	 * MAP-R1 4.8.5 workaround
+	 * Test case expect auth/assoc reject after probe response therefore
+	 * dropping it here will cause test case to fail.
+	 * Impact on band steering: Client will be able to see blocked bss as
+	 * well, however connection will be rejected in auth phase.
+	 * TODO: Define a seperate ioctl for probe withholding and do not
+	 * call that in certification case. Correct apidex passed in below API.
+	 */
 
 	ProbeReqParam->SsidLen = Fr->Octet[1];
 	NdisMoveMemory(ProbeReqParam->Ssid, &Fr->Octet[2], ProbeReqParam->SsidLen);
@@ -1313,6 +1466,11 @@ BOOLEAN PeerProbeReqSanity(
 			if (eid_len <= 4)
 				break;
 
+			/* For IOS immediately connect */
+			if (!ProbeReqParam->IsFromIos && NdisEqualMemory(eid_data, APPLE_OUI, 3)) {
+				ProbeReqParam->IsFromIos = TRUE;
+			}
+
 #ifdef RSSI_FEEDBACK
 
 			if (ProbeReqParam->bRssiRequested &&
@@ -1325,6 +1483,17 @@ BOOLEAN PeerProbeReqSanity(
 
 #endif /* RSSI_FEEDBACK */
 
+#ifdef CUSTOMER_VENDOR_IE_SUPPORT
+			if ((pAd->ApCfg.ap_customer_oui.pointer != NULL) &&
+				(eid_len >= pAd->ApCfg.ap_customer_oui.length) &&
+				NdisEqualMemory(eid_data, pAd->ApCfg.ap_customer_oui.pointer,
+				pAd->ApCfg.ap_customer_oui.length)) {
+				ProbeReqParam->report_param.vendor_ie.element_id = IE_VENDOR_SPECIFIC;
+				ProbeReqParam->report_param.vendor_ie.len = eid_len;
+				NdisMoveMemory(ProbeReqParam->report_param.vendor_ie.custom_ie, eid_data, eid_len);
+				break;
+			}
+#endif /* CUSTOMER_VENDOR_IE_SUPPORT */
 
 			if (NdisEqualMemory(eid_data, WPS_OUI, 4)
 			   ) {
@@ -1431,6 +1600,10 @@ BOOLEAN PeerProbeReqSanity(
 #ifdef WSC_INCLUDED
 
 	if (pPeerWscIe && (PeerWscIeLen > 0) && (bWscCheck == TRUE)) {
+/* WPS_BandSteering Support */
+#ifdef BAND_STEERING
+		ProbeReqParam->bWpsCapable = TRUE;
+#endif
 		for (apidx = 0; apidx < pAd->ApCfg.BssidNum; apidx++) {
 			if (NdisEqualMemory(Addr1, pAd->ApCfg.MBSSID[apidx].wdev.bssid, MAC_ADDR_LEN))
 				break;

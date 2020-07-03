@@ -49,6 +49,10 @@
 
 #ifdef RTMP_MAC_PCI
 #ifdef MT7615
+#define PA_TRIM_START_ADDR1   0x338
+#define PA_TRIM_START_ADDR2   0x3B3
+#define PA_TRIM_BLOCK_SIZE        4
+
 #define MAX_EEPROM_BIN_FILE_SIZE	1024
 #else
 #define MAX_EEPROM_BIN_FILE_SIZE	512
@@ -70,6 +74,9 @@
 #if defined(PRE_CAL_TRX_SET1_SUPPORT) || defined(PRE_CAL_TRX_SET2_SUPPORT) || defined(RLM_CAL_CACHE_SUPPORT)
 #define CAL_FILE_PATH				"/etc/CALDATA_default.bin"
 #endif /* PRE_CAL_TRX_SET1_SUPPORT */
+#if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
+#define CAL_BIN_FILE_PATH           "/etc/CALIBRATION_DATA.bin"
+#endif /* CAL_BIN_FILE_SUPPORT */
 #else
 /* #define BIN_FILE_PATH				"/tmp/RT30xxEEPROM.bin" */
 #ifdef WCX_SUPPORT
@@ -79,6 +86,9 @@
 #if defined(PRE_CAL_TRX_SET1_SUPPORT) || defined(PRE_CAL_TRX_SET2_SUPPORT) || defined(RLM_CAL_CACHE_SUPPORT)
 #define CAL_FILE_PATH				"/etc/CALDATA_default.bin"
 #endif /* PRE_CAL_TRX_SET1_SUPPORT */
+#if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
+#define CAL_BIN_FILE_PATH           "/etc/CALIBRATION_DATA.bin"
+#endif /* CAL_BIN_FILE_SUPPORT */
 #endif /* WCX_SUPPORT */
 #endif /* BB_SOC */
 
@@ -810,6 +820,20 @@ NDIS_STATUS rtmp_cal_write_to_bin(
 	IN ULONG offset,
 	IN ULONG len);
 #endif /* PRE_CAL_TRX_SET1_SUPPORT */
+
+#if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
+INT Cal_Data_Write_To_Bin(
+	IN struct _RTMP_ADAPTER *pAd,
+	IN UINT8 *Buf,
+	IN UINT32 Offset,
+	IN UINT32 Len);
+
+INT Cal_Data_Load_From_Bin(
+	IN struct _RTMP_ADAPTER *pAd,
+	IN UINT8 *Buf,
+	IN UINT32 Offset,
+	IN UINT32 Len);
+#endif /* CAL_BIN_FILE_SUPPORT */
 
 #ifdef CAL_FREE_IC_SUPPORT
 INT Set_LoadCalFreeData_Proc(struct _RTMP_ADAPTER *pAd, RTMP_STRING *arg);

@@ -123,6 +123,15 @@ typedef struct GNU_PACKED _CH_SW_ANN_INFO {
 	UINT8 ChSwCnt;
 } CH_SW_ANN_INFO, *PCH_SW_ANN_INFO;
 
+#ifdef CONFIG_RCSA_SUPPORT
+typedef struct GNU_PACKED _EXT_CH_SW_ANN_INFO {
+	UINT8 ChSwMode;
+	UINT8 RegClass;
+	UINT8 Channel;
+	UINT8 ChSwCnt;
+} EXT_CH_SW_ANN_INFO, *PEXT_CH_SW_ANN_INFO;
+#endif
+
 typedef union GNU_PACKED _MEASURE_REQ_MODE {
 #ifdef RT_BIG_ENDIAN
 	struct GNU_PACKED {

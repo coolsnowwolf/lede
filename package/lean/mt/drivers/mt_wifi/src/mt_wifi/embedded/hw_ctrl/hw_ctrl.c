@@ -27,7 +27,7 @@ static NTSTATUS HwCtrlUpdateRtsThreshold(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt
 {
 	struct rts_thld *rts = (struct rts_thld *)CMDQelmt->buffer;
 
-	AsicUpdateRtsThld(pAd, rts->wdev, rts->pkt_thld, rts->len_thld);
+	AsicUpdateRtsThld(pAd, rts->wdev, rts->pkt_thld, rts->len_thld, rts->retry_limit);
 	return NDIS_STATUS_SUCCESS;
 }
 
@@ -105,7 +105,7 @@ static NTSTATUS HwCtrlUpdateProtect(RTMP_ADAPTER *pAd)
 			}
 
 			if (mode & SET_PROTECT(FORCE_RTS_PROTECT)) {
-				arch_ops->archUpdateRtsThld(pAd, wdev, 0, 1);
+				arch_ops->archUpdateRtsThld(pAd, wdev, 0, 1, wlan_operate_get_rts_retry_limit(wdev));
 				goto end;
 			}
 
@@ -158,7 +158,7 @@ static NTSTATUS HwCtrlUpdateProtect(RTMP_ADAPTER *pAd)
 			}
 
 			if (mode & SET_PROTECT(FORCE_RTS_PROTECT)) {
-				arch_ops->archUpdateRtsThld(pAd, wdev, 0, 1);
+				arch_ops->archUpdateRtsThld(pAd, wdev, 0, 1, wlan_operate_get_rts_retry_limit(wdev));
 				goto end;
 			}
 		}
@@ -271,7 +271,17 @@ static NTSTATUS HwCtrlSetAsicWcidAAD_OM(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 }
 #endif /* HTC_DECRYPT_IOT */
 
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+static NTSTATUS HwCtrlUpdate4Addr_HdrTrans(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
+{
+	RT_ASIC_4ADDR_HDR_TRANS Update_4Addr_Hdr_Trans;
+	Update_4Addr_Hdr_Trans = *((PRT_ASIC_4ADDR_HDR_TRANS)(CMDQelmt->buffer));
 
+	AsicSetWcid4Addr_HdrTrans(pAd, Update_4Addr_Hdr_Trans.Wcid, Update_4Addr_Hdr_Trans.Enable);
+
+	return NDIS_STATUS_SUCCESS;
+}
+#endif
 static void update_txop_level(UINT16 *dst, UINT16 *src,
 							  UINT32 bitmap, UINT32 len)
 {
@@ -457,7 +467,11 @@ static NTSTATUS HwCtrlSetBcnOffload(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 {
 	PMT_SET_BCN_OFFLOAD pSetBcnOffload = (PMT_SET_BCN_OFFLOAD)CMDQelmt->buffer;
 	struct wifi_dev *wdev = pAd->wdev_list[pSetBcnOffload->WdevIdx];
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+	CMD_BCN_OFFLOAD_T *bcn_offload = NULL;
+#else
 	CMD_BCN_OFFLOAD_T bcn_offload;
+#endif
 	BCN_BUF_STRUC *bcn_buf = NULL;
 #ifdef CONFIG_AP_SUPPORT
 	TIM_BUF_STRUC *tim_buf = NULL;
@@ -465,14 +479,31 @@ static NTSTATUS HwCtrlSetBcnOffload(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 	UCHAR *buf;
 	PNDIS_PACKET *pkt = NULL;
 
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+	os_alloc_mem(NULL, (PUCHAR *)&bcn_offload, sizeof(*bcn_offload));
+	if (!bcn_offload) {
+		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			 ("can not allocate bcn_offload\n"));
+			return NDIS_STATUS_FAILURE;
+	}
+	os_zero_mem(bcn_offload, sizeof(*bcn_offload));
+#else
 	NdisZeroMemory(&bcn_offload, sizeof(CMD_BCN_OFFLOAD_T));
+#endif
 
-	if (pSetBcnOffload->OffloadPktType == PKT_BCN) {
+	if ((pSetBcnOffload->OffloadPktType == PKT_BCN)
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+	|| (pSetBcnOffload->OffloadPktType == PKT_V2_BCN)
+#endif
+	) {
 		bcn_buf = &wdev->bcn_buf;
 
 		if (!bcn_buf) {
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("%s(): bcn_buf is NULL!\n", __func__));
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+			os_free_mem(bcn_offload);
+#endif
 			return NDIS_STATUS_FAILURE;
 		}
 
@@ -487,6 +518,9 @@ static NTSTATUS HwCtrlSetBcnOffload(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 		if (!tim_buf) {
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("%s(): tim_buf is NULL!\n", __func__));
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+			os_free_mem(bcn_offload);
+#endif
 			return NDIS_STATUS_FAILURE;
 		}
 
@@ -494,6 +528,21 @@ static NTSTATUS HwCtrlSetBcnOffload(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 	}
 
 #endif /* CONFIG_AP_SUPPORT */
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+	bcn_offload->ucEnable = pSetBcnOffload->Enable;
+	bcn_offload->ucWlanIdx = 0;/* hardcode at present */
+	bcn_offload->ucOwnMacIdx = wdev->OmacIdx;
+	bcn_offload->ucBandIdx = HcGetBandByWdev(wdev);
+	bcn_offload->u2PktLength = pSetBcnOffload->WholeLength;
+	bcn_offload->ucPktType = pSetBcnOffload->OffloadPktType;
+#ifdef CONFIG_AP_SUPPORT
+	bcn_offload->u2TimIePos = pSetBcnOffload->TimIePos;
+	bcn_offload->u2CsaIePos = pSetBcnOffload->CsaIePos;
+	bcn_offload->ucCsaCount = wdev->csa_count;
+#endif
+	buf = (UCHAR *)GET_OS_PKT_DATAPTR(pkt);
+	NdisCopyMemory(bcn_offload->acPktContent, buf, pSetBcnOffload->WholeLength);
+#else
 	bcn_offload.ucEnable = pSetBcnOffload->Enable;
 	bcn_offload.ucWlanIdx = 0;/* hardcode at present */
 	bcn_offload.ucOwnMacIdx = wdev->OmacIdx;
@@ -507,7 +556,13 @@ static NTSTATUS HwCtrlSetBcnOffload(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 #endif
 	buf = (UCHAR *)GET_OS_PKT_DATAPTR(pkt);
 	NdisCopyMemory(bcn_offload.acPktContent, buf, pSetBcnOffload->WholeLength);
+#endif
 	MtCmdBcnOffloadSet(pAd, bcn_offload);
+
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+	os_free_mem(bcn_offload);
+#endif
+
 	return NDIS_STATUS_SUCCESS;
 }
 #endif /*BCN_OFFLOAD_SUPPORT*/
@@ -562,13 +617,22 @@ static NTSTATUS HwCtrlHandleUpdateBeacon(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt
 	case BCN_UPDATE_IE_CHG:
 	case BCN_UPDATE_AP_RENEW: {
 		if (IS_HIF_TYPE(pAd, HIF_MT)) {
-			if (wdev != NULL)
+			if (wdev != NULL) {
+#ifdef BCN_V2_SUPPORT	/* add bcn v2 support , 1.5k beacon support */
+				UpdateBeaconProc(pAd, wdev, UpdateAfterTim, PKT_V2_BCN, TRUE);
+#else
 				UpdateBeaconProc(pAd, wdev, UpdateAfterTim, PKT_BCN, TRUE);
-			else {
+#endif
+			} else {
 				/* Update/Renew all BSS if wdev = NULL */
 				for (i = 0; i < WDEV_NUM_MAX; i++) {
-					if (pAd->wdev_list[i] != NULL)
-						UpdateBeaconProc(pAd, pAd->wdev_list[i], UpdateAfterTim, PKT_BCN, TRUE);
+					if (pAd->wdev_list[i] != NULL) {
+#ifdef BCN_V2_SUPPORT	/* add bcn v2 support , 1.5k beacon support */
+					UpdateBeaconProc(pAd, pAd->wdev_list[i], UpdateAfterTim, PKT_V2_BCN, TRUE);
+#else
+					UpdateBeaconProc(pAd, pAd->wdev_list[i], UpdateAfterTim, PKT_BCN, TRUE);
+#endif
+					}
 				}
 			}
 		}
@@ -582,7 +646,11 @@ static NTSTATUS HwCtrlHandleUpdateBeacon(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt
 			if (WDEV_WITH_BCN_ABILITY(wdev) && wdev->bAllowBeaconing) {
 				if (pbcn_buf->BcnUpdateMethod == BCN_GEN_BY_FW) {
 					wdev->bcn_buf.bBcnSntReq = TRUE;
+#ifdef BCN_V2_SUPPORT	/* add bcn v2 support , 1.5k beacon support */
+					UpdateBeaconProc(pAd, wdev, UpdateAfterTim, PKT_V2_BCN, TRUE);
+#else
 					UpdateBeaconProc(pAd, wdev, UpdateAfterTim, PKT_BCN, TRUE);
+#endif
 				} else
 					AsicEnableBeacon(pAd, wdev);
 			}
@@ -598,7 +666,11 @@ static NTSTATUS HwCtrlHandleUpdateBeacon(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt
 				if (pbcn_buf->BcnUpdateMethod == BCN_GEN_BY_FW) {
 					wdev->bcn_buf.bBcnSntReq = FALSE;
 					/* No need to make beacon */
+#ifdef BCN_V2_SUPPORT	/* add bcn v2 support , 1.5k beacon support */
+					UpdateBeaconProc(pAd, wdev, UpdateAfterTim, PKT_V2_BCN, FALSE);
+#else
 					UpdateBeaconProc(pAd, wdev, UpdateAfterTim, PKT_BCN, FALSE);
+#endif
 				} else
 					AsicDisableBeacon(pAd, wdev);
 			}
@@ -1185,6 +1257,16 @@ static NTSTATUS HwCtrlSetPbc(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 }
 #endif /*PKT_BUDGET_CTRL_SUPPORT*/
 
+static NTSTATUS HwCtrlSetEdca(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
+{
+	INT32 ret = 0;
+	PEDCA_PARM pedca_param = (PEDCA_PARM)CMDQelmt->buffer;
+	RTMP_ARCH_OP *arch_ops = &pAd->archOps;
+	ASSERT(arch_ops->archSetEdcaParm);
+	arch_ops->archSetEdcaParm(pAd, pedca_param);
+	return ret;
+}
+
 /*
 *
 */
@@ -1373,7 +1455,10 @@ static HW_CMD_TABLE_T HwCmdRadioTable[] = {
 #ifdef MBO_SUPPORT
 	{HWCMD_ID_BSS_TERMINATION, HwCtrlBssTermination, 0},
 #endif /* MBO_SUPPORT */
-	{HWCMD_ID_END, NULL, 0}
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+	{HWCMD_ID_UPDATE_4ADDR_HDR_TRANS, HwCtrlUpdate4Addr_HdrTrans, 0},
+#endif
+    {HWCMD_ID_END, NULL, 0}
 };
 
 /*HWCMD_TYPE_SECURITY*/
@@ -1438,6 +1523,7 @@ static HW_CMD_TABLE_T HwCmdWmmTable[] = {
 #ifdef PKT_BUDGET_CTRL_SUPPORT
 	{HWCMD_ID_PBC_CTRL, HwCtrlSetPbc, 0},
 #endif /*PKT_BUDGET_CTRL_SUPPORT*/
+	{HWCMD_ID_SET_EDCA, HwCtrlSetEdca, 0},
 	{HWCMD_ID_END, NULL, 0}
 };
 

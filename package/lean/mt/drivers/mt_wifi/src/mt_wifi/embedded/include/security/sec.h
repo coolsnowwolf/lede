@@ -48,6 +48,9 @@
 #include "security/owe_cmm.h"
 #endif /* DOT11_SAE_SUPPORT */
 
+#if defined(DOT11_SAE_SUPPORT) || defined(CONFIG_OWE_SUPPORT)
+#include "security/ecc.h"
+#endif
 /*========================================
 	The prototype is defined in cmm_sec.c
   ========================================*/

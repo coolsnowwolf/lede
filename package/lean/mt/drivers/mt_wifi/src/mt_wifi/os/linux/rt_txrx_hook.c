@@ -19,10 +19,13 @@ int mt_wlan_hook_call(unsigned short hook, void *ad, void *priv)
 {
 	struct mt_wlan_hook_ops *cur;
 
-	DlListForEach(cur, &wlan_hook.hook_head, struct mt_wlan_hook_ops, list)
+	cur = DlListEntry((&wlan_hook.hook_head)->Next, struct mt_wlan_hook_ops, list);
+	if (cur) {
+		DlListForEach(cur, &wlan_hook.hook_head, struct mt_wlan_hook_ops, list)
 
-	if (cur->hooks & 1 << hook)
-		cur->fun(hook, ad, priv);
+		if (cur->hooks & 1 << hook)
+			cur->fun(hook, ad, priv);
+	}
 
 	return 0;
 }
@@ -39,17 +42,20 @@ int mt_wlan_hook_register(struct mt_wlan_hook_ops *ops)
 	if (!ops)
 		return -1;
 
-	DlListForEachSafe(cur, next, &wlan_hook.hook_head,
-					  struct mt_wlan_hook_ops, list)
+	cur = DlListEntry((&wlan_hook.hook_head)->Next, struct mt_wlan_hook_ops, list);
+	if (cur) {
+		DlListForEachSafe(cur, next, &wlan_hook.hook_head,
+						  struct mt_wlan_hook_ops, list)
 
-	if (cur && ops->priority > cur->priority) {
-		(ops->list).Next = &next->list;
-		cur->list.Next = &ops->list;
-		return 0;
+		if (cur && ops->priority > cur->priority) {
+			(ops->list).Next = &next->list;
+			cur->list.Next = &ops->list;
+			return 0;
+		}
+
+		/*add first entry*/
+		DlListAdd(&wlan_hook.hook_head, &ops->list);
 	}
-
-	/*add first entry*/
-	DlListAdd(&wlan_hook.hook_head, &ops->list);
 	return 0;
 }
 EXPORT_SYMBOL(mt_wlan_hook_register);

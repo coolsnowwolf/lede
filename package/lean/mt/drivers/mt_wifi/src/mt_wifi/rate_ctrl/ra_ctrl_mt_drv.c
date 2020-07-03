@@ -301,7 +301,7 @@ BssInfoRACommCfgSet(
 	pCmdBssInfoAutoRateCfg->u4RaFastInterval = cpu2le32(pRaCfg->u4RaFastInterval);
 
 #ifdef CFG_RATE_ADJUST_PARAM_DEBUG
-	MTWF_LOG(DBG_CAT_RA, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: sizeof CMD_BSSINFO_AUTO_RATE_CFG_T = %d\n", __func__, (UINT_32)sizeof(CMD_BSSINFO_AUTO_RATE_CFG_T)));
+	MTWF_LOG(DBG_CAT_RA, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: sizeof CMD_BSSINFO_AUTO_RATE_CFG_T = %zu\n", __func__, sizeof(CMD_BSSINFO_AUTO_RATE_CFG_T)));
 	MTWF_LOG(DBG_CAT_RA, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("OpMode=%d\n", pCmdBssInfoAutoRateCfg->OpMode));
 	MTWF_LOG(DBG_CAT_RA, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("fgAdHocOn=%d\n", pCmdBssInfoAutoRateCfg->fgAdHocOn));
 	MTWF_LOG(DBG_CAT_RA, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("fgShortPreamble=%d\n", pCmdBssInfoAutoRateCfg->fgShortPreamble));
@@ -415,7 +415,7 @@ StaRecAutoRateParamSet(
 	}
 
 #ifdef CFG_RATE_ADJUST_PARAM_DEBUG
-	MTWF_LOG(DBG_CAT_RA, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: sizeof CMD_STAREC_AUTO_RATE_T = %d\n", __func__, (UINT_32)sizeof(CMD_STAREC_AUTO_RATE_T)));
+	MTWF_LOG(DBG_CAT_RA, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: sizeof CMD_STAREC_AUTO_RATE_T = %zu\n", __func__, sizeof(CMD_STAREC_AUTO_RATE_T)));
 	MTWF_LOG(DBG_CAT_RA, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("fgRaValid=%d\n", pCmdStaRecAutoRate->fgRaValid));
 	MTWF_LOG(DBG_CAT_RA, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("fgAutoTxRateSwitch=%d\n", pCmdStaRecAutoRate->fgAutoTxRateSwitch));
 	MTWF_LOG(DBG_CAT_RA, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("ucPhyMode=%d\n", pCmdStaRecAutoRate->ucPhyMode));

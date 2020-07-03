@@ -1,3 +1,4 @@
+
 /***************************************************************************
  * MediaTek Inc.
  * 4F, No. 2 Technology 5th Rd.
@@ -61,7 +62,7 @@ struct wifi_dev *get_default_wdev(struct _RTMP_ADAPTER *ad)
 }
 
 /*define local function*/
-static INT wdev_idx_unreg(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
+INT wdev_idx_unreg(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 {
 	INT idx;
 
@@ -96,7 +97,7 @@ static INT wdev_idx_unreg(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 }
 
 
-static INT32 wdev_idx_reg(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
+INT32 wdev_idx_reg(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 {
 	INT32 idx;
 
@@ -271,7 +272,11 @@ VOID BssInfoArgumentLink(struct _RTMP_ADAPTER *ad, struct wifi_dev *wdev, struct
 		bssinfo->u4ConnectionType = CONNECTION_INFRA_AP;
 #ifdef CONFIG_AP_SUPPORT
 		bssinfo->bcn_period = ad->CommonCfg.BeaconPeriod;
+#ifdef MBSS_DTIM_SUPPORT
+		bssinfo->dtim_period = ad->ApCfg.MBSSID[wdev->func_idx].DtimPeriod;
+#else
 		bssinfo->dtim_period = ad->ApCfg.DtimPeriod;
+#endif
 #endif /*CONFIG_AP_SUPPORT*/
 		break;
 	}
@@ -302,11 +307,26 @@ VOID BssInfoArgumentLink(struct _RTMP_ADAPTER *ad, struct wifi_dev *wdev, struct
 #else
 	bssinfo->McTransmit = HTPhyMode;
 #endif /* MCAST_RATE_SPECIFIC */
-	bssinfo->BcTransmit = HTPhyMode;
 
+#ifdef MCAST_BCAST_RATE_SET_SUPPORT
+	if (wdev->channel > 14)
+		bssinfo->BcTransmit = ad->CommonCfg.BCastPhyMode_5G;
+	else
+		bssinfo->BcTransmit = ad->CommonCfg.BCastPhyMode;
+#else
+	bssinfo->BcTransmit = HTPhyMode;
+#endif /* MCAST_BCAST_RATE_SET_SUPPORT */
 #ifdef RACTRL_FW_OFFLOAD_SUPPORT
 	raWrapperConfigSet(ad, wdev, &bssinfo->ra_cfg);
 #endif /*RACTRL_FW_OFFLOAD_SUPPORT*/
+
+#ifdef MIN_PHY_RATE_SUPPORT
+	if (wdev->rate.MinPhyBcMcRate != 0) {
+		bssinfo->McTransmit = wdev->rate.MinPhyBcMcRateTransmit;
+		bssinfo->BcTransmit = wdev->rate.MinPhyBcMcRateTransmit;
+	}
+#endif /* MIN_PHY_RATE_SUPPORT */
+
 	bssinfo->bss_state = BSS_INITED;
 }
 
@@ -447,6 +467,40 @@ INT32 wdev_config_init(RTMP_ADAPTER *pAd)
 	return TRUE;
 }
 
+#ifdef RT_CFG80211_SUPPORT
+
+/**
+ * @param pAd
+ * @param Address input address
+ *
+ * Search wifi_dev according to Address
+ *
+ * @return wifi_dev
+ */
+struct wifi_dev *WdevSearchByBssid(RTMP_ADAPTER *pAd, UCHAR *Address)
+{
+    UINT16 Index;
+    struct wifi_dev *wdev;
+
+    NdisAcquireSpinLock(&pAd->WdevListLock);
+	for (Index = 0; Index < WDEV_NUM_MAX; Index++) {
+		wdev = pAd->wdev_list[Index];
+
+		if (wdev) {
+			if (MAC_ADDR_EQUAL(Address, wdev->bssid)) {
+				NdisReleaseSpinLock(&pAd->WdevListLock);
+				return wdev;
+			}
+		}
+	}
+	NdisReleaseSpinLock(&pAd->WdevListLock);
+
+	MTWF_LOG(DBG_CAT_TX, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+		("%s: can not find registered wdev\n",
+			__func__));
+	return NULL;
+}
+#endif
 
 /**
  * @param pAd
@@ -668,20 +722,130 @@ void wdev_sync_prim_ch(struct _RTMP_ADAPTER *ad, struct wifi_dev *wdev)
 	UCHAR i = 0;
 	struct wifi_dev *tdev;
 	UCHAR band_idx = HcGetBandByWdev(wdev);
+
 	for (i = 0; i < WDEV_NUM_MAX; i++) {
 
 		tdev = ad->wdev_list[i];
-		if (tdev && HcIsRadioAcq(tdev) && (band_idx == HcGetBandByWdev(tdev)))
+		if (tdev && HcIsRadioAcq(tdev) && (band_idx == HcGetBandByWdev(tdev))) {
 			tdev->channel = wdev->channel;
+#ifdef CONFIG_MAP_SUPPORT
+			if (tdev->wdev_type == WDEV_TYPE_AP)
+				tdev->quick_ch_change = wdev->quick_ch_change;
+#endif
+		}
 		else if ((wdev->wdev_type == WDEV_TYPE_APCLI) &&
 				(tdev != NULL) &&
 				(tdev->wdev_type == WDEV_TYPE_AP) &&
 				(tdev->if_up_down_state == 0) &&
 				(((tdev->channel > 14) && (wdev->channel > 14)) ||
-				 ((tdev->channel <= 14) && (wdev->channel <= 14))))
+				 ((tdev->channel <= 14) && (wdev->channel <= 14)))) {
 			tdev->channel = wdev->channel;
+#ifdef CONFIG_MAP_SUPPORT
+			tdev->quick_ch_change = wdev->quick_ch_change;
+#endif
+		}
 	}
 }
+
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+#ifdef DOT11_N_SUPPORT
+void wdev_sync_ht_bw(struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev, ADD_HTINFO *add_ht_info)
+{
+	UCHAR mbss_idx = 0;
+	UCHAR band_idx = HcGetBandByWdev(wdev);
+	BOOLEAN adjustBW = FALSE;
+	struct wifi_dev *mbss_wdev = NULL;
+
+	MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
+		("[%s] Entry Bw %d Ch %d==> \n", __func__, add_ht_info->RecomWidth, add_ht_info->ExtChanOffset));
+
+	/*Moving all same band Soft AP interfaces to new BW proposed by RootAP */
+	for (mbss_idx = 0; mbss_idx < pAd->ApCfg.BssidNum; mbss_idx++) {
+		mbss_wdev = &pAd->ApCfg.MBSSID[mbss_idx].wdev;
+		if (mbss_wdev == NULL)
+			continue;
+
+		if (HcIsRadioAcq(mbss_wdev) && (band_idx == HcGetBandByWdev(mbss_wdev)))
+			/* Same Band */
+			adjustBW = TRUE;
+		else if ((mbss_wdev->wdev_type == WDEV_TYPE_AP) &&
+				(mbss_wdev->if_up_down_state == 0) &&
+				(((mbss_wdev->channel <= 14) && (wdev->channel <= 14))))
+			/* Different Band */
+			adjustBW = TRUE;
+
+		if (adjustBW) {
+			wlan_config_set_ht_bw(mbss_wdev,
+				add_ht_info->RecomWidth);
+			wlan_config_set_ext_cha(mbss_wdev,
+				add_ht_info->ExtChanOffset);
+
+			/* Reset for other wdev's */
+			adjustBW = FALSE;
+		}
+	}
+}
+#endif
+
+
+#ifdef DOT11_VHT_AC
+void wdev_sync_vht_bw(struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR bw, UINT8 channel)
+{
+	UCHAR mbss_idx = 0;
+	UCHAR band_idx = HcGetBandByWdev(wdev);
+	BOOLEAN adjustCh = FALSE, adjustBw = TRUE;
+	struct wifi_dev *mbss_wdev;
+
+	MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
+		("[%s] Entry bw %d ch %d==> \n", __func__, bw, channel));
+
+	if (bw >= VHT_BW_160)
+		adjustBw = FALSE;
+
+	/*Moving all same band Soft AP interfaces to new BW proposed by RootAP */
+	for (mbss_idx = 0; mbss_idx < pAd->ApCfg.BssidNum; mbss_idx++) {
+		mbss_wdev = &pAd->ApCfg.MBSSID[mbss_idx].wdev;
+		if (mbss_wdev == NULL)
+			continue;
+
+		if (HcIsRadioAcq(mbss_wdev) && (band_idx == HcGetBandByWdev(mbss_wdev)))
+			/* Same Band */
+			adjustCh = TRUE;
+		else if ((mbss_wdev->wdev_type == WDEV_TYPE_AP) &&
+				(mbss_wdev->if_up_down_state == 0) &&
+				(((mbss_wdev->channel > 14) && (wdev->channel > 14))))
+			/* Different Band */
+			adjustCh = TRUE;
+
+		if (adjustCh) {
+			wlan_operate_set_cen_ch_2(mbss_wdev, channel);
+
+			if (adjustBw)
+				wlan_operate_set_vht_bw(mbss_wdev, bw);
+
+			/* Reset for other wdev's */
+			adjustCh = FALSE;
+		}
+	}
+}
+#endif
+
+BOOLEAN IS_SYNC_BW_POLICY_VALID(struct _RTMP_ADAPTER *pAd, BOOLEAN isHTPolicy, UCHAR policy)
+{
+	BOOLEAN status = FALSE;
+
+	if (isHTPolicy) {
+		if (1 & (pAd->ApCfg.ApCliAutoBWRules.minorPolicy.ApCliBWSyncHTSupport >> policy))
+			status = TRUE;
+	} else {
+		if (1 & (pAd->ApCfg.ApCliAutoBWRules.minorPolicy.ApCliBWSyncVHTSupport >> policy))
+			status = TRUE;
+	}
+
+	return status;
+}
+#endif
+
 
 
 VOID wdev_if_up_down(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, BOOLEAN if_up_down_state)
