@@ -1319,7 +1319,7 @@ CH_DESP Country_US_ChDesp[] = {
 	{ 1,   11, 27, BOTH, FALSE},	/*2402~2472MHz, Ch 1~11,   Max BW: 40 */
 	{ 36,   4, 30, BOTH, FALSE},	/*5170~5250MHz, Ch 36~48, Max BW: 40 */
 	{ 52,   4, 24, BOTH, TRUE},	/*5250~5330MHz, Ch 52~64, Max BW: 40 */
-	{ 100,  5, 24, BOTH, TRUE},	/*5490~5600MHz, Ch 100~116, Max BW: 40 */
+	{ 100,  8, 24, BOTH, TRUE},	/*5490~5650MHz, Ch 100~128, Max BW: 40 */
 	{ 132,  4, 24, BOTH, TRUE},	/*5650~5710MHz, Ch 132~144, Max BW: 40 */
 	{ 149,  5, 30, BOTH, FALSE},	/*5735~5835MHz, Ch 149~165, Max BW: 40 */
 	{ 0},			/* end*/
@@ -1603,18 +1603,25 @@ static UCHAR FillChList(
 
 		/*New FCC spec restrict the used channel under DFS */
 #ifdef CONFIG_AP_SUPPORT
-
+#ifndef RT_CFG80211_SUPPORT
 		if ((pAd->CommonCfg.bIEEE80211H == 1) &&
 			(pAd->CommonCfg.RDDurRegion == FCC) &&
 			(pAd->Dot11_H.bDFSIndoor == 1)) {
 			if (RESTRICTION_BAND_1(pAd, channel, bw))
 				continue;
-		} else if ((pAd->CommonCfg.bIEEE80211H == 1) &&
+		} else
+#endif
+	if ((pAd->CommonCfg.bIEEE80211H == 1) &&
 				   (pAd->CommonCfg.RDDurRegion == FCC) &&
-				   (pAd->Dot11_H.bDFSIndoor == 0)) {
-			if ((channel >= 100) && (channel <= 140))
-				continue;
-		}
+#ifndef RT_CFG80211_SUPPORT
+			(pAd->Dot11_H.bDFSIndoor == 0))
+#else
+			(pAd->Dot11_H[BandIdx].bDFSIndoor == 0))
+#endif
+			{
+				if ((channel >= 100) && (channel <= 140))
+					continue;
+			}
 
 #endif /* CONFIG_AP_SUPPORT */
 		/* sachin - TODO */
@@ -1663,7 +1670,14 @@ static UCHAR CeateChListByRf(RTMP_ADAPTER *pAd, UCHAR RfIC, PCH_REGION pChRegion
 	UCHAR ChType;
 	UCHAR increment;
 	UCHAR regulatoryDomain;
+#ifdef RT_CFG80211_SUPPORT
+	UCHAR PhyMode;
+#endif
 	BOOLEAN IsRfSupport = HcIsRfSupport(pAd, RfIC);
+
+#ifdef RT_CFG80211_SUPPORT
+	PhyMode = HcGetRadioPhyMode(pAd);
+#endif
 
 	if (IsRfSupport) {
 		ChBandCheck(RfIC, &ChType);
@@ -1925,6 +1939,11 @@ static const UCHAR wfa_ht_ch_ext[] = {
 VOID ht_ext_cha_adjust(RTMP_ADAPTER *pAd, UCHAR prim_ch, UCHAR *ht_bw, UCHAR *ext_cha, struct wifi_dev *wdev)
 {
 	INT idx;
+#ifdef CUSTOMER_DCC_FEATURE
+#ifdef DOT11_VHT_AC
+	UCHAR cfg_vht_bw;
+#endif /* DOT11_VHT_AC */
+#endif
 
 	if (*ht_bw == HT_BW_40) {
 		if (prim_ch > 14) {
@@ -1942,6 +1961,14 @@ VOID ht_ext_cha_adjust(RTMP_ADAPTER *pAd, UCHAR prim_ch, UCHAR *ht_bw, UCHAR *ex
 			if (wfa_ht_ch_ext[idx] == 0) {
 				*ht_bw = HT_BW_20;
 				*ext_cha = EXTCHA_NONE;
+#ifdef CUSTOMER_DCC_FEATURE
+#ifdef DOT11_VHT_AC
+				cfg_vht_bw = wlan_config_get_vht_bw(wdev);
+				if (WMODE_CAP_AC(wdev->PhyMode) && (cfg_vht_bw > VHT_BW_2040))
+							wlan_config_set_vht_bw(wdev, VHT_BW_2040);
+#endif /* DOT11_VHT_AC */
+#endif
+
 			}
 		} else {
 			do {

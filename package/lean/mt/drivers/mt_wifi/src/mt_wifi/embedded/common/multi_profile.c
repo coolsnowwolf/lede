@@ -18,19 +18,30 @@
 #include "rt_config.h"
 
 /*Local definition*/
-
-#define FIRST_AP_2G_PROFILE_PATH	"/etc/wireless/mt7615/mt7615.1.2G.dat"
-#define FIRST_AP_5G_PROFILE_PATH	"/etc/wireless/mt7615/mt7615.1.5G.dat"
+#define FIRST_AP_2G_PROFILE_PATH	"/etc/Wireless/RT2860/RT2860_2G.dat"
+#define FIRST_AP_5G_PROFILE_PATH	"/etc/Wireless/RT2860/RT2860_5G.dat"
 #define FIRST_AP_MERGE_PROFILE_PATH ""
+#if defined(BB_SOC) && !defined(MULTI_INF_SUPPORT)
+#define FIRST_AP_5G_DEVNAME "rai0"
+#define FIRST_MBSSID_5G_DEVNAME "rai"
+#define FIRST_APCLI_5G_DEVNAME "apclii"
+#else
 #define FIRST_AP_5G_DEVNAME "rax0"
 #define FIRST_MBSSID_5G_DEVNAME "rax"
 #define FIRST_APCLI_5G_DEVNAME "apclix"
+#endif
 #define SECOND_AP_2G_PROFILE_PATH	"/etc/Wireless/iNIC/iNIC_ap_2G.dat"
 #define SECOND_AP_5G_PROFILE_PATH	"/etc/Wireless/iNIC/iNIC_ap_5G.dat"
 #define SECOND_AP_MERGE_PROFILE_PATH ""
+#if defined(BB_SOC) && !defined(MULTI_INF_SUPPORT)
+#define SECOND_AP_5G_DEVNAME "ra0"
+#define SECOND_MBSSID_5G_DEVNAME "ra"
+#define SECOND_APCLI_5G_DEVNAME "apcli"
+#else
 #define SECOND_AP_5G_DEVNAME "ray0"
 #define SECOND_MBSSID_5G_DEVNAME "ray"
 #define SECOND_APCLI_5G_DEVNAME "apcliiy"
+#endif
 #define THIRD_AP_2G_PROFILE_PATH	"/etc/Wireless/WIFI3/RT2870AP_2G.dat"
 #define THIRD_AP_5G_PROFILE_PATH	"/etc/Wireless/WIFI3/RT2870AP_5G.dat"
 #define THIRD_AP_MERGE_PROFILE_PATH ""
@@ -122,7 +133,7 @@ NDIS_STATUS update_mtb_value(struct _RTMP_ADAPTER *pAd, UCHAR profile_id, UINT_3
 	switch (profile_id) {
 	case MTB_2G_PROFILE:
 		if (strcmp(value, mtb[dev_idx].profile_2g)) {
-			strcpy(mtb[dev_idx].profile_2g, value);
+			strncpy(mtb[dev_idx].profile_2g, value, L2PROFILE_PATH_LEN - 1);
 			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 					("mtb[%d].profile_2g updated as %s!\n", dev_idx, mtb[dev_idx].profile_2g));
 		} else {
@@ -132,7 +143,7 @@ NDIS_STATUS update_mtb_value(struct _RTMP_ADAPTER *pAd, UCHAR profile_id, UINT_3
 		break;
 	case MTB_5G_PROFILE:
 		if (strcmp(value, mtb[dev_idx].profile_5g)) {
-			strncpy(mtb[dev_idx].profile_5g, value, L2PROFILE_PATH_LEN);
+			strncpy(mtb[dev_idx].profile_5g, value, L2PROFILE_PATH_LEN - 1);
 			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 					("mtb[%d].profile_5g updated as %s!\n", dev_idx, mtb[dev_idx].profile_5g));
 		} else {
@@ -197,7 +208,7 @@ static UCHAR *multi_profile_fname_get(struct _RTMP_ADAPTER *pAd, UCHAR profile_i
 
 		if (strlen(src) == 0) {
 			strncat(src, mtb[card_idx].profile_2g, count_depth(mtb[card_idx].profile_2g));
-			sprintf(src, "%sDBDC_card%d.dat", src, card_idx);
+			snprintf(src, L2PROFILE_PATH_LEN, "%sDBDC_card%d.dat", src, card_idx);
 		}
 
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
@@ -931,7 +942,12 @@ static INT multi_profile_merge_country_region(
 	INT Status = FALSE;
 	CHAR value[TEMP_STR_SIZE] = "";
 	CHAR tmpbuf[TEMP_STR_SIZE] = "";
+
+#ifdef DEFAULT_5G_PROFILE
+	Status = RTMPGetKeyParameter(parm, tmpbuf, TEMP_STR_SIZE, buf1, TRUE);
+#else
 	Status = RTMPGetKeyParameter(parm, tmpbuf, TEMP_STR_SIZE, buf2, TRUE);
+#endif
 
 	if (Status == TRUE) {
 		snprintf(value, sizeof(value), "%s", tmpbuf);
@@ -958,6 +974,12 @@ static INT multi_profile_merge_mbss(
 	multi_profile_merge_perband(data, "FragThreshold", buf1, buf2, final);
 	/*merge DLSCapable*/
 	multi_profile_merge_separate("DLSCapable", buf1, buf2, final);
+	/* MAP config */
+#ifdef CONFIG_MAP_SUPPORT
+	multi_profile_merge_separate("MapEnable", buf1, buf2, final);
+	multi_profile_merge_separate("MAP_Turnkey", buf1, buf2, final);
+	multi_profile_merge_separate("MAP_Ext", buf1, buf2, final);
+#endif
 	/*merge WirelessMode*/
 	multi_profile_merge_wireless_mode(data, buf1, buf2, final);
 	/*merge Channel*/
@@ -1002,6 +1024,11 @@ static INT multi_profile_merge_mbss(
 	multi_profile_merge_separate("MbssMaxStaNum", buf1, buf2, final);
 	/*merge APSDCapable*/
 	multi_profile_merge_separate("APSDCapable", buf1, buf2, final);
+	/*merge DscpQosMapping*/
+#ifdef DSCP_QOS_MAP_SUPPORT
+	multi_profile_merge_separate("DscpQosMapEnable", buf1, buf2, final);
+	multi_profile_merge_separate("DscpQosMap", buf1, buf2, final);
+#endif
 	/*merge APEdcaIdx*/
 	multi_profile_merge_apedca(data, buf1, buf2, final);
 	/*merge BSSEdcaIdx*/
@@ -1061,7 +1088,8 @@ static INT multi_profile_merge_wsc(
 		for (i = 0, macptr = rstrtok(WscConMode, ";"); macptr; macptr = rstrtok(NULL, ";"), i++)
 			;/*do nothing*/
 
-		RTMPGetKeyParameter("WscV2Support", WscConMode, sizeof(WscConMode), buf1, TRUE);
+		if (RTMPGetKeyParameter("WscV2Support", WscConMode, sizeof(WscConMode), buf1, TRUE) != TRUE)
+			goto label_wsc_v2_done;
 
 		if (data->pf1_num > i) {/* need to append default value */
 			INT append_cnt = data->pf1_num - i;
@@ -1081,7 +1109,8 @@ static INT multi_profile_merge_wsc(
 		for (i = 0, macptr = rstrtok(WscConMode2, ";"); macptr; macptr = rstrtok(NULL, ";"), i++)
 			;/*do nothing*/
 
-		RTMPGetKeyParameter("WscV2Support", WscConMode2, sizeof(WscConMode2), buf2, TRUE);
+		if (RTMPGetKeyParameter("WscV2Support", WscConMode2, sizeof(WscConMode2), buf2, TRUE) != TRUE)
+			goto label_wsc_v2_done;
 
 		if (data->pf2_num > i) {/* need to append default value */
 			INT append_cnt = data->pf2_num - i;
@@ -1109,7 +1138,8 @@ label_wsc_v2_done:
 		for (i = 0, macptr = rstrtok(WscConMode, ";"); macptr; macptr = rstrtok(NULL, ";"), i++)
 			;/*do nothing*/
 
-		RTMPGetKeyParameter("WscConfMode", WscConMode, sizeof(WscConMode), buf1, TRUE);
+		if (RTMPGetKeyParameter("WscConfMode", WscConMode, sizeof(WscConMode), buf1, TRUE) != TRUE)
+			goto label_WscConfMode_done;
 
 		if (data->pf1_num > i) {/* need to append default value */
 			INT append_cnt = data->pf1_num - i;
@@ -1129,7 +1159,8 @@ label_wsc_v2_done:
 		for (i = 0, macptr = rstrtok(WscConMode2, ";"); macptr; macptr = rstrtok(NULL, ";"), i++)
 			;/*do nothing*/
 
-		RTMPGetKeyParameter("WscConfMode", WscConMode2, sizeof(WscConMode2), buf2, TRUE);
+		if (RTMPGetKeyParameter("WscConfMode", WscConMode2, sizeof(WscConMode2), buf2, TRUE) != TRUE)
+			goto label_WscConfMode_done;
 
 		if (data->pf2_num > i) {/* need to append default value */
 			INT append_cnt = data->pf2_num - i;
@@ -1154,7 +1185,8 @@ label_WscConfMode_done:
 		for (i = 0, macptr = rstrtok(WscConMode, ";"); macptr; macptr = rstrtok(NULL, ";"), i++)
 			;/*do nothing*/
 
-		RTMPGetKeyParameter("WscConfStatus", WscConMode, sizeof(WscConMode), buf1, TRUE);
+		if (RTMPGetKeyParameter("WscConfStatus", WscConMode, sizeof(WscConMode), buf1, TRUE) != TRUE)
+			goto label_WscConfStatus_done;
 
 		if (data->pf1_num > i) {/* need to append default value */
 			INT append_cnt = data->pf1_num - i;
@@ -1590,21 +1622,25 @@ static INT multi_profile_merge_5g_only(
 	if (RTMPGetKeyParameter("MUTxRxEnable", tmpbuf, len, buf_mu, TRUE) == TRUE)
 		RTMPSetKeyParameter("MUTxRxEnable", tmpbuf, len, final, TRUE);
 
+#ifdef DEFAULT_5G_PROFILE
+	buf_mu = buf1;
+#endif
+
 	/*IEEE80211H*/
-	if (RTMPGetKeyParameter("IEEE80211H", tmpbuf, len, buf2, TRUE) == TRUE)
+	if (RTMPGetKeyParameter("IEEE80211H", tmpbuf, len, buf_mu, TRUE) == TRUE)
 		RTMPSetKeyParameter("IEEE80211H", tmpbuf, len, final, TRUE);
 
 	/*DFS related params is 5G only, use profile 2*/
 #ifdef MT_DFS_SUPPORT
 
 	/*DfsEnable*/
-	if (RTMPGetKeyParameter("DfsEnable", tmpbuf, len, buf2, TRUE) == TRUE)
+	if (RTMPGetKeyParameter("DfsEnable", tmpbuf, len, buf_mu, TRUE) == TRUE)
 		RTMPSetKeyParameter("DfsEnable", tmpbuf, len, final, TRUE);
 
 #endif
 
 	/*RDRegion*/
-	if (RTMPGetKeyParameter("RDRegion", tmpbuf, len, buf2, TRUE) == TRUE)
+	if (RTMPGetKeyParameter("RDRegion", tmpbuf, len, buf_mu, TRUE) == TRUE)
 		RTMPSetKeyParameter("RDRegion", tmpbuf, len, final, TRUE);
 
 	return NDIS_STATUS_SUCCESS;
@@ -1665,6 +1701,10 @@ static INT multi_profile_merge_global_setting_only(CHAR *buf1, CHAR *buf2, CHAR 
 	/*merge GreenAP*/
 	if (RTMPGetKeyParameter("GreenAP", tmpbuf, len, buf2, TRUE) == TRUE)
 		RTMPSetKeyParameter("GreenAP", tmpbuf, len, final, TRUE);
+
+	/*merge PcieAspm*/
+	if (RTMPGetKeyParameter("PcieAspm", tmpbuf, len, buf2, TRUE) == TRUE)
+		RTMPSetKeyParameter("PcieAspm", tmpbuf, len, final, TRUE);
 
 	/*DBDC_MODE*/
 	if (RTMPGetKeyParameter("DBDC_MODE", tmpbuf, len, buf2, TRUE) == TRUE)
@@ -1937,6 +1977,35 @@ static INT multi_profile_merge_wnm(
 #endif
 
 
+#ifdef DSCP_PRI_SUPPORT
+INT multi_profile_merge_dscp_pri(
+	struct mpf_data *data,
+	CHAR *buf1,
+	CHAR *buf2,
+	CHAR *final)
+{
+	INT8 i = 0;
+	CHAR tok_str[TEMP_STR_SIZE] = "";
+	CHAR tmpbuf[TEMP_STR_SIZE] = "";
+
+	if (!buf2)
+		return NDIS_STATUS_FAILURE;
+
+	for (i = 0; i < data->pf2_num; i++) {
+		snprintf(tok_str, sizeof(tok_str), "DscpPriMapBss%d", i);
+		if (RTMPGetKeyParameter(tok_str, tmpbuf, TEMP_STR_SIZE, buf2, TRUE)) {
+			snprintf(tok_str, sizeof(tok_str), "DscpPriMapBss%d", (data->pf1_num + i));
+			RTMPSetKeyParameter(tok_str, tmpbuf, TEMP_STR_SIZE, final, TRUE);
+		} else {
+			snprintf(tok_str, sizeof(tok_str), "DscpPriMapBss%d", (data->pf1_num + i));
+			RTMPSetKeyParameter(tok_str, "", TEMP_STR_SIZE, final, TRUE);
+		}
+	}
+
+	return NDIS_STATUS_SUCCESS;
+}
+#endif
+
 /*
 * set second profile and merge it.
 */
@@ -2005,21 +2074,15 @@ static INT multi_profile_merge(
 	if (multi_profile_merge_ht_mode(data, buf1, buf2, final) != NDIS_STATUS_SUCCESS)
 		return retval;
 
-#ifdef DEFAULT_5G_PROFILE
-
-	if (multi_profile_merge_5g_only(data, buf2, buf1, final) != NDIS_STATUS_SUCCESS)
+	if (multi_profile_merge_5g_only(data, buf1, buf2, final) != NDIS_STATUS_SUCCESS)
 		return retval;
+#ifdef DEFAULT_5G_PROFILE
 
 	if (multi_profile_merge_2g_only(buf1, buf2, final) != NDIS_STATUS_SUCCESS)
 		return retval;
 
 	/* will remove global setting from 2G profile after UI 5G default is ready */
 	if (multi_profile_merge_global_setting_only(buf1, buf2, final) != NDIS_STATUS_SUCCESS)
-		return retval;
-
-#else
-
-	if (multi_profile_merge_5g_only(data, buf1, buf2, final) != NDIS_STATUS_SUCCESS)
 		return retval;
 
 #endif
@@ -2059,6 +2122,11 @@ static INT multi_profile_merge(
 		return retval;
 #endif
 
+
+#ifdef DSCP_PRI_SUPPORT
+	if (multi_profile_merge_dscp_pri(data, buf1, buf2, final) != NDIS_STATUS_SUCCESS)
+		return retval;
+#endif
 
 	data->enable = TRUE;
 	/*adjust specific device name*/
@@ -2169,12 +2237,31 @@ INT	multi_profile_apcli_devname_req(struct _RTMP_ADAPTER *ad, UCHAR *final_name,
 
 	if (*ifidx == 1) {
 		/* apcli1 is 2.4G, name is apclix0*/
-		sprintf(final_name, "%s", get_dbdcdev_name_prefix(ad, INT_APCLI));
+		snprintf(final_name, IFNAMSIZ, "%s", get_dbdcdev_name_prefix(ad, INT_APCLI));
 	}
 
 	return NDIS_STATUS_SUCCESS;
 }
 
+#ifdef DSCP_QOS_MAP_SUPPORT
+INT multi_profile_get_bss_num(struct _RTMP_ADAPTER *ad, UINT8 profile_num)
+{
+	struct mpf_data *data;
+
+	if (!ad->multi_pf_ctrl)
+		return 0;
+
+	data = (struct mpf_data *) ad->multi_pf_ctrl;
+
+	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+	("MultiProfile profile1 BssNum %d for profile2 BssNum %d \n",
+			data->pf1_num, data->pf2_num));
+	if (profile_num == 1)
+		return data->pf1_num;
+	else
+		return data->pf2_num;
+}
+#endif
 /*
 *
 */

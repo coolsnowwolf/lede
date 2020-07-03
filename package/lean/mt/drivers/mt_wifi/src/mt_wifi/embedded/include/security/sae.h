@@ -30,6 +30,8 @@
 #define	__SAE_H__
 #ifdef DOT11_SAE_SUPPORT
 
+INT show_sae_info_proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
+
 VOID sae_cfg_init(
 	IN RTMP_ADAPTER * pAd,
 	IN SAE_CFG * pSaeCfg);
@@ -56,6 +58,10 @@ SAE_INSTANCE *create_sae_instance(
 VOID delete_sae_instance(
 	IN SAE_INSTANCE *pSaeIns);
 
+UCHAR set_sae_instance_removable(
+	IN SAE_CFG * pSaeCfg,
+	IN UCHAR *own_mac,
+	IN UCHAR *peer_mac);
 
 VOID sae_ins_init(
 	IN RTMP_ADAPTER * pAd,
@@ -107,14 +113,15 @@ UCHAR sae_auth_init(
 
 
 
-UCHAR *sae_handle_auth(
-	IN RTMP_ADAPTER * pAd,
-	IN SAE_CFG * pSaeCfg,
+UCHAR sae_handle_auth(
+	IN RTMP_ADAPTER *pAd,
+	IN SAE_CFG *pSaeCfg,
 	IN VOID *msg,
 	IN UINT32 msg_len,
 	IN UCHAR *psk,
 	IN USHORT auth_seq,
-	IN USHORT auth_status);
+	IN USHORT auth_status,
+	OUT UCHAR** pmk);
 
 
 USHORT sae_sm_step(
@@ -132,6 +139,18 @@ UCHAR sae_get_pmk_cache(
 	IN UCHAR *peer_mac,
 	OUT UCHAR *pmkid,
 	OUT UCHAR *pmk);
+
+UCHAR sae_build_token_req(
+	IN RTMP_ADAPTER * pAd,
+	IN SAE_INSTANCE * pSaeIns,
+	OUT UCHAR *token_req,
+	OUT UINT32 * token_req_len);
+
+UCHAR sae_check_token(
+	IN SAE_INSTANCE * pSaeIns,
+	IN UCHAR *peer_token,
+	IN UINT32 peer_token_len);
+
 
 USHORT sae_parse_commit(
 	IN SAE_CFG * pSaeCfg,
@@ -189,7 +208,7 @@ VOID sae_send_auth(
 	IN USHORT seq,
 	IN USHORT status_code,
 	IN UCHAR *buf,
-	IN UINT32 bif_len);
+	IN UINT32 buf_len);
 
 
 UCHAR sae_send_auth_commit(
@@ -316,6 +335,13 @@ UCHAR sae_derive_k_ecc(
 UCHAR sae_derive_k_ffc(
 	IN SAE_INSTANCE *pSaeIns,
 	OUT UCHAR *k);
+
+USHORT sae_reflection_check_ecc(
+	IN SAE_INSTANCE *pSaeIns);
+
+USHORT sae_reflection_check_ffc(
+	IN SAE_INSTANCE *pSaeIns);
+
 #endif /* DOT11_SAE_SUPPORT */
 #endif /* __SAE_H__ */
 

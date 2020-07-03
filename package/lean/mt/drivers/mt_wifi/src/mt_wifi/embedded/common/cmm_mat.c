@@ -270,11 +270,17 @@ PUCHAR MATEngineRxHandle(
 
 	/* Get the upper layer protocol type of this 802.3 pkt and dispatch to specific handler */
 	protoType = OS_NTOHS(get_unaligned((PUINT16)(pPktHdr + 12)));
+	pLayerHdr = (pPktHdr + MAT_ETHER_HDR_LEN);
+
+	if (protoType == ETH_P_VLAN) {
+		protoType = OS_NTOHS(get_unaligned((PUINT16)(pPktHdr + 12 + LENGTH_802_1Q))); /* Shift VLAN Tag Length (4 byte) */
+		pLayerHdr = (pPktHdr + MAT_VLAN_ETH_HDR_LEN);
+	}
+
 
 	for (i = 0; i < MAX_MAT_SUPPORT_PROTO_NUM; i++) {
 		if (protoType == MATProtoTb[i].protocol) {
 			pHandle = MATProtoTb[i].pHandle;	/* the pHandle must not be null! */
-			pLayerHdr = (pPktHdr + MAT_ETHER_HDR_LEN);
 
 			/*			RTMP_SEM_LOCK(&MATDBLock); */
 			if (pHandle->rx != NULL)
@@ -306,6 +312,9 @@ BOOLEAN MATPktRxNeedConvert(
 			/*BSSID match the ApCliBssid ?(from a valid AP) */
 			if ((pAd->ApCfg.ApCliTab[i].Valid == TRUE)
 				&& (net_dev == pAd->ApCfg.ApCliTab[i].wdev.if_dev)
+#ifdef A4_CONN
+				&& (IS_APCLI_A4(&pAd->ApCfg.ApCliTab[i]) == FALSE)
+#endif /* A4_CONN */
 			){
 				//MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_WARN,("MATPktRxNeedConvert TRUE for ApCliTab[%d]\n",i));
 				return TRUE;

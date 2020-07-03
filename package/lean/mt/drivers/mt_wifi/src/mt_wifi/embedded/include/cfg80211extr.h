@@ -66,17 +66,27 @@ CFG80211_Scaning((VOID *)__pAd, __BssIdx, __ChanId, __pFrame,			\
 
 #define RT_CFG80211_SCAN_END(__pAd, __FlgIsAborted)							\
 	CFG80211_ScanEnd((VOID *)__pAd, __FlgIsAborted);
-#define RT_CFG80211_REINIT(__pAd)											\
+#if defined(CONFIG_STA_SUPPORT) || defined(APCLI_CFG80211_SUPPORT)
+#define RT_CFG80211_LOST_AP_INFORM(__pAd)									\
+	CFG80211_LostApInform((VOID *)__pAd);
+#endif /*CONFIG_STA_SUPPORT || APCLI_CFG80211_SUPPORT */
+#define RT_CFG80211_REINIT(__pAd, __wdev)											\
 	CFG80211_SupBandReInit((VOID *)__pAd, (VOID *)__wdev);
 
 #define RT_CFG80211_RFKILL_STATUS_UPDATE(_pAd, _active)					\
 	CFG80211_RFKillStatusUpdate(_pAd, _active);
 
+#ifdef APCLI_CFG80211_SUPPORT
 #define RT_CFG80211_P2P_CLI_CONN_RESULT_INFORM(__pAd, __pBSSID, __pReqIe,   \
-		__ReqIeLen,	__pRspIe, __RspIeLen, __FlgIsSuccess)				\
-CFG80211_P2pClientConnectResultInform(__pAd, __pBSSID,				    \
-									  __pReqIe, __ReqIeLen, __pRspIe, __RspIeLen, __FlgIsSuccess);
-
+					__ReqIeLen, __pRspIe, __RspIeLen, __FlgIsSuccess)	\
+		CFG80211_ApClientConnectResultInform(__pAd, __pBSSID,				    \
+			__pReqIe, __ReqIeLen, __pRspIe, __RspIeLen, __FlgIsSuccess);
+#else
+#define RT_CFG80211_P2P_CLI_CONN_RESULT_INFORM(__pAd, __pBSSID, __pReqIe,   \
+			__ReqIeLen,	__pRspIe, __RspIeLen, __FlgIsSuccess)				\
+	CFG80211_P2pClientConnectResultInform(__pAd, __pBSSID,				    \
+			__pReqIe, __ReqIeLen, __pRspIe, __RspIeLen, __FlgIsSuccess);
+#endif /* APCLI_CFG80211_SUPPORT */
 #define RT_CFG80211_P2P_CLI_SEND_NULL_FRAME(_pAd, _PwrMgmt)					\
 	CFG80211_P2pClientSendNullFrame(_pAd, _PwrMgmt);
 
@@ -113,6 +123,9 @@ CFG80211_P2pClientConnectResultInform(__pAd, __pBSSID,				    \
 
 
 /* Scan Releated */
+#if defined(CONFIG_STA_SUPPORT) || defined(APCLI_CFG80211_SUPPORT)
+BOOLEAN CFG80211DRV_OpsScanRunning(VOID *pAdOrg);
+#endif /*CONFIG_STA_SUPPORT || APCLI_CFG80211_SUPPORT*/
 
 BOOLEAN CFG80211DRV_OpsScanSetSpecifyChannel(
 	VOID *pAdOrg, VOID *pData, UINT8 dataLen);
@@ -123,6 +136,15 @@ BOOLEAN CFG80211DRV_OpsScanCheckStatus(
 BOOLEAN CFG80211DRV_OpsScanExtraIesSet(VOID *pAdOrg);
 
 VOID CFG80211DRV_OpsScanInLinkDownAction(VOID *pAdOrg);
+
+#ifdef APCLI_CFG80211_SUPPORT
+VOID CFG80211DRV_ApcliSiteSurvey(VOID *pAdOrg, VOID *pData);
+
+VOID CFG80211DRV_SetApCliAssocIe(VOID *pAdOrg, VOID *pData, UINT ie_len);
+
+VOID CFG80211DRV_ApClientKeyAdd(VOID *pAdOrg, VOID *pData);
+
+#endif /* APCLI_CFG80211_SUPPORT */
 
 #ifdef CONFIG_MULTI_CHANNEL
 VOID CFG80211DRV_Set_NOA(VOID *pAdOrg, VOID *pData);
@@ -150,6 +172,16 @@ VOID CFG80211_P2pClientConnectResultInform(
 	IN UINT32                                       RspIeLen,
 	IN UCHAR                                        FlgIsSuccess);
 
+#ifdef APCLI_CFG80211_SUPPORT
+VOID CFG80211_ApClientConnectResultInform(
+	IN VOID						*pAdCB,
+	IN UCHAR					*pBSSID,
+	IN UCHAR					*pReqIe,
+	IN UINT32					ReqIeLen,
+	IN UCHAR					*pRspIe,
+	IN UINT32					RspIeLen,
+	IN UCHAR					FlgIsSuccess);
+#endif /* APCLI_CFG80211_SUPPORT */
 
 VOID CFG80211_ConnectResultInform(
 	VOID *pAdCB, UCHAR *pBSSID,	UCHAR *pReqIe, UINT32 ReqIeLen,
@@ -163,7 +195,11 @@ INT CFG80211_StaPortSecured(
 	UINT						flag);
 
 /* AP Related*/
-INT CFG80211_ApStaDel(VOID *pAdCB, UCHAR *pMac);
+#ifdef HOSTAPD_MAP_SUPPORT /* This could be a generic fix*/
+INT CFG80211_ApStaDel(VOID *pAdCB, VOID *pData, UINT reason);
+#else
+INT CFG80211_ApStaDel(VOID *pAdCB, UCHAR *pMac, UINT reason);
+#endif /* HOSTAPD_MAP_SUPPORT */
 
 VOID CFG80211_UpdateBeacon(
 	VOID                           *pAdOrg,
@@ -171,7 +207,9 @@ VOID CFG80211_UpdateBeacon(
 	UINT32                          beacon_head_len,
 	UCHAR                          *beacon_tail_buf,
 	UINT32                          beacon_tail_len,
-	BOOLEAN                         isAllUpdate);
+	BOOLEAN                         isAllUpdate,
+	UINT32							apidx);
+
 
 INT CFG80211_ApStaDelSendEvent(PRTMP_ADAPTER pAd, const PUCHAR mac_addr, IN PNET_DEV pNetDevIn);
 INT CFG80211_FindMbssApIdxByNetDevice(RTMP_ADAPTER *pAd, PNET_DEV pNetDev);
@@ -215,8 +253,18 @@ BOOLEAN CFG80211DRV_ApKeyDel(
 	VOID						*pData);
 
 INT CFG80211_setApDefaultKey(
-	VOID                        *pAdCB,
-	UINT                         Data);
+		IN VOID 				   *pAdCB,
+		IN struct net_device		*pNetdev,
+		IN UINT 					Data);
+
+#ifdef DOT11W_PMF_SUPPORT
+INT CFG80211_setApDefaultMgmtKey(
+		IN VOID 				   *pAdCB,
+		IN struct net_device		*pNetdev,
+		IN UINT 					Data);
+#endif /*DOT11W_PMF_SUPPORT*/
+
+
 INT CFG80211_setPowerMgmt(
 	VOID                     *pAdCB,
 	UINT			Enable);

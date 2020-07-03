@@ -136,6 +136,19 @@ VOID APMlmePeriodicExec(
 	USHORT ChannelMovingTime;
 #endif
 #endif /*A_BAND_SUPPORT*/
+#ifdef A4_CONN
+	UCHAR mbss_idx;
+#endif
+#ifdef CUSTOMER_DCC_FEATURE
+	if (pAd->AllowedStaList.StaCount > 0)
+		RemoveOldStaList(pAd);
+	APResetStreamingStatus(pAd);
+#endif
+#ifdef CUSTOMER_DCC_FEATURE
+	if (pAd->ApEnableBeaconTable == TRUE)
+		RemoveOldBssEntry(pAd);
+#endif
+
 	/*
 		Reqeust by David 2005/05/12
 		It make sense to disable Adjust Tx Power on AP mode, since we can't
@@ -204,6 +217,16 @@ VOID APMlmePeriodicExec(
 #ifdef CLIENT_WDS
 		CliWds_ProxyTabMaintain(pAd);
 #endif /* CLIENT_WDS */
+#ifdef A4_CONN
+		for (mbss_idx = 0; mbss_idx < pAd->ApCfg.BssidNum; mbss_idx++)
+			a4_proxy_maintain(pAd, mbss_idx);
+		pAd->a4_need_refresh = FALSE;
+#endif /* A4_CONN */
+
+#ifdef WIFI_DIAG
+		DiagApMlmeOneSecProc(pAd);
+#endif
+
 	}
 
 #ifdef AP_SCAN_SUPPORT
@@ -214,12 +237,18 @@ VOID APMlmePeriodicExec(
 	if (pAd->Mlme.OneSecPeriodicRound % 2 == 0)
 		ApCliIfMonitor(pAd);
 
-	if (pAd->Mlme.OneSecPeriodicRound % 2 == 1
+	if ((pAd->Mlme.OneSecPeriodicRound % 2 == 1
 #ifdef APCLI_AUTO_CONNECT_SUPPORT
 		&& (pAd->ApCfg.ApCliAutoConnectChannelSwitching == FALSE)
 #endif /* APCLI_AUTO_CONNECT_SUPPORT */
-	   )
+	   ) ||
+		(pAd->Mlme.OneSecPeriodicRound % 2 == 1
+#ifdef CONFIG_MAP_SUPPORT
+		&& (IS_MAP_TURNKEY_ENABLE(pAd))
+#endif /* APCLI_AUTO_CONNECT_SUPPORT */
+	   )) {
 		ApCliIfUp(pAd);
+	}
 
 	{
 		INT loop;
@@ -333,6 +362,9 @@ VOID APMlmePeriodicExec(
 #ifdef MT_DFS_SUPPORT
 	DfsNonOccupancyCountDown(pAd);
 	DfsOutBandCacCountUpdate(pAd);
+#ifdef DFS_VENDOR10_CUSTOM_FEATURE
+	DfsV10W56APDownTimeCountDown(pAd);
+#endif
 #endif
 #ifdef MBO_SUPPORT
 	MboCheckBssTermination(pAd);
@@ -457,6 +489,10 @@ BOOLEAN APMsgTypeSubst(
 #endif /* WSC_AP_SUPPORT */
 	unsigned char hdr_len = LENGTH_802_11;
 
+#ifdef A4_CONN
+	if ((pFrame->Hdr.FC.FrDs == 1) && (pFrame->Hdr.FC.ToDs == 1))
+		hdr_len = LENGTH_802_11_WITH_ADDR4;
+#endif
 	/*
 		TODO:
 		only PROBE_REQ can be broadcast, all others must be unicast-to-me && is_mybssid;

@@ -178,12 +178,23 @@ static VOID ApCliMlmeProbeReqAction(
 	NdisCopyMemory(pAd->ApCfg.ApCliTab[ifIndex].MlmeAux.Ssid, pAd->ApCfg.ApCliTab[ifIndex].CfgSsid,
 				   pAd->ApCfg.ApCliTab[ifIndex].CfgSsidLen);
 #endif /* APCLI_CONNECTION_TRIAL */
+
+
+
+#ifdef APCLI_OWE_SUPPORT
+/*OWE:clear previously selected ssid and bssid */
+	if (IS_AKM_OWE(wdev->SecConfig.AKMMap) && (pApCliEntry->owe_trans_ssid_len > 0)) {
+		NdisZeroMemory(pAd->ApCfg.ApCliTab[ifIndex].MlmeAux.Bssid, MAC_ADDR_LEN);
+		NdisZeroMemory(pAd->ApCfg.ApCliTab[ifIndex].MlmeAux.Ssid, MAX_LEN_OF_SSID);
+	}
+#endif
+
+
 	ApCliEnqueueProbeRequest(pAd, Info->SsidLen, (PCHAR) Info->Ssid, ifIndex);
 	MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("ApCli SYNC - Start Probe the SSID %s on channel =%d\n",
 			 pApCliEntry->MlmeAux.Ssid, pApCliEntry->MlmeAux.Channel));
 	*pCurrState = APCLI_JOIN_WAIT_PROBE_RSP;
 }
-
 
 /*
     ==========================================================================
@@ -206,6 +217,21 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 	USHORT ifIndex = (USHORT)(Elem->Priv);
 	ULONG *pCurrState;
 	BCN_IE_LIST *ie_list = NULL;
+
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+	UCHAR Snr[4] = {0};
+	CHAR  rssi[4] = {0};
+	Snr[0] = ConvertToSnr(pAd, Elem->rssi_info.raw_Snr[0]);
+	Snr[1] = ConvertToSnr(pAd, Elem->rssi_info.raw_Snr[1]);
+	Snr[2] = ConvertToSnr(pAd, Elem->rssi_info.raw_Snr[2]);
+	Snr[3] = ConvertToSnr(pAd, Elem->rssi_info.raw_Snr[3]);
+
+	rssi[0] = ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_0);
+	rssi[1] = ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_1);
+	rssi[2] = ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_2);
+	rssi[3] = ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_3);
+#endif
+
 
 	if (ifIndex >= MAX_APCLI_NUM)
 		return;
@@ -254,18 +280,20 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 		INT matchFlag = FALSE;
 		ULONG   Bssidx;
 		CHAR Rssi = -127;
-#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA) || defined(WH_EZ_SETUP)
+#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA) || defined(WH_EZ_SETUP) || defined(APCLI_CFG80211_SUPPORT)
 		CHAR Rssi0 = ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_0);
 		CHAR Rssi1 = ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_1);
 		CHAR Rssi2 = ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_2);
 		LONG RealRssi = (LONG)(RTMPMaxRssi(pAd, Rssi0, Rssi1, Rssi2));
 #endif
 		/* Update ScanTab */
-		Bssidx = BssTableSearch(&pAd->ScanTab, ie_list->Bssid, ie_list->Channel);
-
-		if (Bssidx == BSS_NOT_FOUND) {
+		{
 			/* discover new AP of this network, create BSS entry */
-			Bssidx = BssTableSetEntry(pAd, &pAd->ScanTab, ie_list, -Rssi, LenVIE, pVIE);
+			Bssidx = BssTableSetEntry(pAd, &pAd->ScanTab, ie_list, -Rssi, LenVIE, pVIE
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+						, Snr, rssi
+#endif
+						);
 
 			if (Bssidx == BSS_NOT_FOUND) { /* return if BSS table full */
 				MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR, ("ERROR: Driver ScanTable Full In Apcli ProbeRsp Join\n"));
@@ -283,7 +311,7 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 			NdisMoveMemory(pAd->ScanTab.BssEntry[Bssidx].MacAddr, ie_list->Addr2, MAC_ADDR_LEN);
 		}
 
-#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA)
+#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA) || defined(APCLI_CFG80211_SUPPORT)
 
 		/* Determine primary channel by IE's DSPS rather than channel of received frame */
 		if (ie_list->Channel != 0)
@@ -291,11 +319,47 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 
 		MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("Info: Update the SSID %s in Kernel Table\n", ie_list->Ssid));
 		RT_CFG80211_SCANNING_INFORM(pAd, Bssidx, ie_list->Channel, (UCHAR *)Elem->Msg, Elem->MsgLen, RealRssi);
-#endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA */
+#endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA || APCLI_CFG80211_SUPPORT */
 		pApCliEntry = &pAd->ApCfg.ApCliTab[ifIndex];
+#ifdef APCLI_OWE_SUPPORT
+		if (IS_AKM_OWE(pApCliEntry->wdev.SecConfig.AKMMap) && (pApCliEntry->owe_trans_ssid_len > 0)) {
+			BSS_ENTRY *popen_bss_entry = NULL;
 
+			popen_bss_entry = &pAd->ScanTab.BssEntry[Bssidx];
+
+			if (!MAC_ADDR_EQUAL(pApCliEntry->owe_trans_bssid, ie_list->Bssid)) {
+
+				MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR, ("ERROR: OWE Transition AP BSSID not equal\n"));
+				goto LabelErr;
+			}
+/*Validate that we are connecting wth the same OWE BSS that was mentioned in the OPEN BSS Transition IE*/
+			if (popen_bss_entry->owe_trans_ie_len > 0) {
+				UCHAR pair_ch = 0;
+				UCHAR pair_bssid[MAC_ADDR_LEN] = {0};
+				UCHAR pair_ssid[MAX_LEN_OF_SSID] = {0};
+				UCHAR pair_band = 0;
+				UCHAR pair_ssid_len = 0;
+
+				extract_pair_owe_bss_info(popen_bss_entry->owe_trans_ie,
+							 popen_bss_entry->owe_trans_ie_len,
+							  pair_bssid,
+							  pair_ssid,
+							  &pair_ssid_len,
+							  &pair_band,
+							  &pair_ch);
+
+				if (!MAC_ADDR_EQUAL(pApCliEntry->owe_trans_open_bssid, pair_bssid)
+					|| !SSID_EQUAL(pApCliEntry->owe_trans_open_ssid, pApCliEntry->owe_trans_open_ssid_len, pair_ssid, pair_ssid_len)) {
+					MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR, ("OWE:Transition AP Validation Failed\n"));
+					goto LabelErr;
+				}
+			}
+
+		} else
+#endif
 		if (!MAC_ADDR_EQUAL(pApCliEntry->CfgApCliBssid, ZERO_MAC_ADDR)) {
 			if (!MAC_ADDR_EQUAL(pApCliEntry->CfgApCliBssid, ie_list->Bssid)) {
+
 				MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR, ("ERROR: AP BSSID not equal\n"));
 				goto LabelErr;
 			}
@@ -321,6 +385,20 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 				bssidEqualFlag = MAC_ADDR_EQUAL(pApCliEntry->wdev.WscControl.WscBssid, ie_list->Bssid);
 				bssidEmptyFlag = FALSE;
 			}
+		} else
+#endif
+#ifdef APCLI_OWE_SUPPORT
+		if (pApCliEntry->owe_trans_ssid_len > 0) {
+			ssidEqualFlag = SSID_EQUAL(pApCliEntry->owe_trans_ssid, pApCliEntry->owe_trans_ssid_len, ie_list->Ssid, ie_list->SsidLen);
+
+			bssidEqualFlag = MAC_ADDR_EQUAL(pApCliEntry->owe_trans_bssid, ie_list->Bssid);
+
+
+			if (ssidEqualFlag == TRUE)
+					ssidEmptyFlag = FALSE;
+			if (bssidEqualFlag == TRUE)
+					bssidEmptyFlag = FALSE;
+
 		} else
 #endif
 		{
@@ -372,10 +450,10 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 				&& ((pApCliEntry->wdev.WscControl.WscConfMode == WSC_DISABLE) ||
 					(pApCliEntry->wdev.WscControl.bWscTrigger == FALSE))
 #endif /* WSC_AP_SUPPORT */
-#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA)
+#if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA) || defined(APCLI_CFG80211_SUPPORT)
 				/* When using CFG80211 and trigger WPS, do not check security. */
 				&& !(pApCliEntry->wpa_supplicant_info.WpaSupplicantUP & WPA_SUPPLICANT_ENABLE_WPS)
-#endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA */
+#endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA || APCLI_CFG80211_SUPPORT */
 			   ) {
 #ifdef DOT11W_PMF_SUPPORT
 				{
@@ -402,6 +480,12 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 					pApCliEntry->MlmeAux.VarIELen = 0;
 					MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR,
 							 ("ERROR: The RSN IE of this received Probe-resp is dis-match !!!!!!!!!!\n"));
+#ifdef CONFIG_MAP_SUPPORT
+					if (IS_MAP_TURNKEY_ENABLE(pAd)) {
+						pApCliEntry->Enable = 0;
+						wapp_send_apcli_association_change(WAPP_APCLI_DISASSOCIATED, pAd, pApCliEntry);
+					}
+#endif
 					goto LabelErr;
 				}
 			} else {
@@ -410,6 +494,9 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 					&& ((pApCliEntry->wdev.WscControl.WscConfMode == WSC_DISABLE) ||
 						(pApCliEntry->wdev.WscControl.bWscTrigger == FALSE))
 #endif /* WSC_AP_SUPPORT */
+#ifdef APCLI_OWE_SUPPORT
+					&& !IS_AKM_OWE(pApCliEntry->wdev.SecConfig.AKMMap)
+#endif
 				   ) {
 					/* ignore this response */
 					MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR,
@@ -451,7 +538,19 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 
 							SET_CIPHER_WEP(pApCliEntry->MlmeAux.PairwiseCipher);
 							SET_CIPHER_WEP(pApCliEntry->MlmeAux.GroupCipher);
-						} else {
+						}
+#ifdef APCLI_OWE_SUPPORT
+						else if (IS_AKM_OWE(pSecConfig->AKMMap) && (Privacy == 0)) {
+							CLEAR_SEC_AKM(pApCliEntry->MlmeAux.AKMMap);
+							CLEAR_CIPHER(pApCliEntry->MlmeAux.PairwiseCipher);
+							CLEAR_CIPHER(pApCliEntry->MlmeAux.GroupCipher);
+							SET_AKM_OPEN(pApCliEntry->MlmeAux.AKMMap);
+							SET_CIPHER_NONE(pApCliEntry->MlmeAux.PairwiseCipher);
+							SET_CIPHER_NONE(pApCliEntry->MlmeAux.GroupCipher);
+
+						}
+#endif
+						else {
 							/* Ignoring the probe response with privacy
 							 * not matching our configured Security config
 							 * No need to process further */
@@ -482,7 +581,12 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 				CHAR Rssi0 = ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_0);
 				CHAR Rssi1 = ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_1);
 				CHAR Rssi2 = ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_2);
+#if defined(CUSTOMER_DCC_FEATURE) || defined(CONFIG_MAP_SUPPORT)
+				CHAR Rssi3 = ConvertToRssi(pAd, &Elem->rssi_info, RSSI_IDX_3);
+				LONG RealRssi = (LONG)(RTMPMaxRssi(pAd, Rssi0, Rssi1, Rssi2, Rssi3));
+#else
 				LONG RealRssi = (LONG)(RTMPMaxRssi(pAd, Rssi0, Rssi1, Rssi2));
+#endif
 
 				MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("SYNC - previous Rssi = %ld current Rssi=%ld\n",
 						 pApCliEntry->MlmeAux.Rssi, (LONG)RealRssi));
@@ -491,7 +595,6 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 					goto LabelErr;
 				else
 					pApCliEntry->MlmeAux.Rssi = RealRssi;
-
 				if (ie_list->Channel != pApCliEntry->MlmeAux.Channel) {
 					MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("SYNC - current ie channel=%d, apcli channel=%d!\n",
 							 ie_list->Channel, pApCliEntry->MlmeAux.Channel));
@@ -619,7 +722,8 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 						set_extcha_for_wdev(pAd, wdev, 1);
 					else
 						set_extcha_for_wdev(pAd, wdev, 0);
-
+					*pCurrState = APCLI_SYNC_IDLE;
+					pAd->ApCfg.ApCliTab[ifIndex].CtrlCurrState = APCLI_CTRL_DISCONNECTED;
 					goto LabelErr;
 				}
 			}
@@ -633,6 +737,238 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 #endif /* APCLI_CERT_SUPPORT */
 #endif /* WSC_AP_SUPPORT */
 
+#ifdef APCLI_OWE_SUPPORT
+			if ((bssidEqualFlag == TRUE)
+				&& (pAd->ScanTab.BssEntry[Bssidx].owe_trans_ie_len > 0)
+					&& (IS_AKM_OWE(pApCliEntry->wdev.SecConfig.AKMMap)
+						&& (IS_AKM_OPEN(pApCliEntry->MlmeAux.AKMMap)
+							&& IS_CIPHER_NONE(pApCliEntry->MlmeAux.PairwiseCipher)))) {
+
+				BSS_ENTRY *popen_bss_entry = NULL;
+				BSS_TABLE *pscan_tab = NULL;
+				struct wifi_dev *papcli_wdev = NULL;
+
+
+			/*If bssidEqualFlag is set then the probe timer has been cancelled ,*
+				so we need to perform OWE trans IE parsing here in the case of Configured BSSID*/
+
+				*pCurrState = APCLI_SYNC_IDLE;
+
+				pscan_tab = &pAd->ScanTab;
+				papcli_wdev = (struct wifi_dev *)&pApCliEntry->wdev;
+
+				/*If Trans IE found then extract BSSID ,SSID ,Band and Channel*/
+				popen_bss_entry = &pscan_tab->BssEntry[Bssidx];
+
+				if (popen_bss_entry && (popen_bss_entry->owe_trans_ie_len > 0)) {
+
+
+					UCHAR pair_ch = 0;
+					UCHAR pair_bssid[MAC_ADDR_LEN] = {0};
+					UCHAR pair_ssid[MAX_LEN_OF_SSID] = {0};
+					UCHAR pair_band = 0;
+					UCHAR pair_ssid_len = 0;
+
+
+
+					extract_pair_owe_bss_info(popen_bss_entry->owe_trans_ie,
+								 popen_bss_entry->owe_trans_ie_len,
+								  pair_bssid,
+								  pair_ssid,
+								  &pair_ssid_len,
+								  &pair_band,
+								  &pair_ch);
+
+
+
+					if (pair_ch != 0) {
+						/*OWE Entry found ,update OweTransBssid and OweTranSsid*/
+
+
+						/*OWE bss is on different channel*/
+
+						if (BOARD_IS_5G_ONLY(pAd)) {
+
+							UCHAR BandIdx = HcGetBandByWdev(papcli_wdev);
+							CHANNEL_CTRL *pChCtrl = hc_get_channel_ctrl(pAd->hdev_ctrl, BandIdx);
+
+							/*Single Chip Dual band 5g only case*/
+
+							if (MTChGrpChannelChk(pChCtrl, pair_ch)) {
+								/*Channel is valid in the current channel group*/
+								if (pair_ch != popen_bss_entry->Channel) {
+
+							/*OWE send EVENT to host for OWE  indicating different channel*/
+								wext_send_owe_trans_chan_event(papcli_wdev->if_dev,
+																		OID_802_11_OWE_EVT_SAME_BAND_DIFF_CHANNEL,
+																		pair_bssid,
+																		pair_ssid,
+																		&pair_ssid_len,
+																		&pair_band,
+																		&pair_ch);
+
+								MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
+										("%s:%d Different channel same band\n", __func__, __LINE__));
+
+								NdisMoveMemory(&pApCliEntry->owe_trans_bssid, pair_bssid, MAC_ADDR_LEN);
+								NdisMoveMemory(&pApCliEntry->owe_trans_ssid, pair_ssid, pair_ssid_len);
+								pApCliEntry->owe_trans_ssid_len = pair_ssid_len;
+
+
+								CLEAR_SEC_AKM(pApCliEntry->MlmeAux.AKMMap);
+								CLEAR_CIPHER(pApCliEntry->MlmeAux.PairwiseCipher);
+								CLEAR_CIPHER(pApCliEntry->MlmeAux.GroupCipher);
+							/*Delete the Open Bss entry from Scan table because apcli does not ageout scan tab entries*/
+								BssTableDeleteEntry(pscan_tab, pApCliEntry->MlmeAux.Bssid, pApCliEntry->MlmeAux.Channel);
+
+								MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("Switch to channel :%d\n",
+										 pair_ch));
+								rtmp_set_channel(pAd, &pApCliEntry->wdev, pair_ch);
+								/* if bw adjust,timeout this time */
+								MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_JOIN_REQ_TIMEOUT, 0, NULL, ifIndex);
+								return;
+								} else {
+									/*Same Channel send directed probe request to OWE BSS*/
+									/*Update the Owe transtion Bssid and Ssid that will used for a directed probe request to OWE AP*/
+
+										NdisMoveMemory(&pApCliEntry->owe_trans_bssid, pair_bssid, MAC_ADDR_LEN);
+										NdisMoveMemory(&pApCliEntry->owe_trans_ssid, pair_ssid, pair_ssid_len);
+										pApCliEntry->owe_trans_ssid_len = pair_ssid_len;
+
+										NdisMoveMemory(&pApCliEntry->owe_trans_open_bssid, popen_bss_entry->Bssid, MAC_ADDR_LEN);
+										NdisMoveMemory(&pApCliEntry->owe_trans_open_ssid, popen_bss_entry->Ssid, popen_bss_entry->SsidLen);
+										pApCliEntry->owe_trans_open_ssid_len = popen_bss_entry->SsidLen;
+
+										CLEAR_SEC_AKM(pApCliEntry->MlmeAux.AKMMap);
+										CLEAR_CIPHER(pApCliEntry->MlmeAux.PairwiseCipher);
+										CLEAR_CIPHER(pApCliEntry->MlmeAux.GroupCipher);
+
+										/*Delete the Open Bss entry from Scan table because apcli does not ageout scan tab entries*/
+										BssTableDeleteEntry(pscan_tab, pApCliEntry->MlmeAux.Bssid, pApCliEntry->MlmeAux.Channel);
+
+										MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_JOIN_REQ_TIMEOUT, 0, NULL, ifIndex);
+										return;
+
+								}
+							} else {
+								/*Channel not in group of current band , but entry exists so send event to host to trigger connection on other band*/
+								wext_send_owe_trans_chan_event(papcli_wdev->if_dev,
+																		OID_802_11_OWE_EVT_DIFF_BAND,
+																		pair_bssid,
+																		pair_ssid,
+																		&pair_ssid_len,
+																		&pair_band,
+																		&pair_ch);
+							}
+
+						} else {
+
+							/*Check if the OWE bss is on the same band as the CLI,then check if channel change required*/
+							if ((WMODE_2G_ONLY(pApCliEntry->wdev.PhyMode) && (pair_ch <= 14))
+								|| (WMODE_5G_ONLY(pApCliEntry->wdev.PhyMode) && (pair_ch > 14))) {
+
+								if (pair_ch != popen_bss_entry->Channel) {
+								/*OWE send EVENT to host for OWE  indicating different channel*/
+									wext_send_owe_trans_chan_event(papcli_wdev->if_dev,
+																			OID_802_11_OWE_EVT_SAME_BAND_DIFF_CHANNEL,
+																			pair_bssid,
+																			pair_ssid,
+																			&pair_ssid_len,
+																			&pair_band,
+																			&pair_ch);
+
+								MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("%s:%d Different channel same band\n", __func__, __LINE__));
+
+									NdisMoveMemory(&pApCliEntry->owe_trans_bssid, pair_bssid, MAC_ADDR_LEN);
+									NdisMoveMemory(&pApCliEntry->owe_trans_ssid, pair_ssid, pair_ssid_len);
+									pApCliEntry->owe_trans_ssid_len = pair_ssid_len;
+
+									NdisMoveMemory(&pApCliEntry->owe_trans_open_bssid, popen_bss_entry->Bssid, MAC_ADDR_LEN);
+									NdisMoveMemory(&pApCliEntry->owe_trans_open_ssid, popen_bss_entry->Ssid, popen_bss_entry->SsidLen);
+									pApCliEntry->owe_trans_open_ssid_len = popen_bss_entry->SsidLen;
+
+									CLEAR_SEC_AKM(pApCliEntry->MlmeAux.AKMMap);
+									CLEAR_CIPHER(pApCliEntry->MlmeAux.PairwiseCipher);
+									CLEAR_CIPHER(pApCliEntry->MlmeAux.GroupCipher);
+
+									/*Delete the Open Bss entry from Scan table because apcli does not ageout scan tab entries*/
+									BssTableDeleteEntry(pscan_tab, pApCliEntry->MlmeAux.Bssid, pApCliEntry->MlmeAux.Channel);
+
+									MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("Switch to channel :%d\n",
+											 pair_ch));
+									rtmp_set_channel(pAd, &pApCliEntry->wdev, pair_ch);
+
+									MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_JOIN_REQ_TIMEOUT, 0, NULL, ifIndex);
+									return;
+								} else {
+									/*Same Channel send directed probe request to OWE BSS*/
+									/*Update the Owe transtion Bssid and Ssid that will used for a directed probe request to OWE AP*/
+
+										NdisMoveMemory(&pApCliEntry->owe_trans_bssid, pair_bssid, MAC_ADDR_LEN);
+										NdisMoveMemory(&pApCliEntry->owe_trans_ssid, pair_ssid, pair_ssid_len);
+										pApCliEntry->owe_trans_ssid_len = pair_ssid_len;
+
+										NdisMoveMemory(&pApCliEntry->owe_trans_open_bssid, popen_bss_entry->Bssid, MAC_ADDR_LEN);
+										NdisMoveMemory(&pApCliEntry->owe_trans_open_ssid, popen_bss_entry->Ssid, popen_bss_entry->SsidLen);
+										pApCliEntry->owe_trans_open_ssid_len = popen_bss_entry->SsidLen;
+
+
+										CLEAR_SEC_AKM(pApCliEntry->MlmeAux.AKMMap);
+										CLEAR_CIPHER(pApCliEntry->MlmeAux.PairwiseCipher);
+										CLEAR_CIPHER(pApCliEntry->MlmeAux.GroupCipher);
+
+										/*Delete the Open Bss entry from Scan table because apcli does not ageout scan tab entries*/
+										BssTableDeleteEntry(pscan_tab, pApCliEntry->MlmeAux.Bssid, pApCliEntry->MlmeAux.Channel);
+
+										MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_JOIN_REQ_TIMEOUT, 0, NULL, ifIndex);
+										return;
+
+								}
+							} else {
+								/*Channel not in group of current band , but entry exists so send event to host to trigger connection on other band*/
+								wext_send_owe_trans_chan_event(papcli_wdev->if_dev,
+																		OID_802_11_OWE_EVT_DIFF_BAND,
+																		pair_bssid,
+																		pair_ssid,
+																		&pair_ssid_len,
+																		&pair_band,
+																		&pair_ch);
+
+							}
+
+						}
+					} else {
+				/*Same Channel send directed probe request to OWE BSS*/
+				/*Update the Owe transtion Bssid and Ssid that will used for a directed probe request to OWE AP*/
+
+						NdisMoveMemory(&pApCliEntry->owe_trans_bssid, pair_bssid, MAC_ADDR_LEN);
+						NdisMoveMemory(&pApCliEntry->owe_trans_ssid, pair_ssid, pair_ssid_len);
+						pApCliEntry->owe_trans_ssid_len = pair_ssid_len;
+
+						NdisMoveMemory(&pApCliEntry->owe_trans_open_bssid, popen_bss_entry->Bssid, MAC_ADDR_LEN);
+						NdisMoveMemory(&pApCliEntry->owe_trans_open_ssid, popen_bss_entry->Ssid, popen_bss_entry->SsidLen);
+						pApCliEntry->owe_trans_open_ssid_len = popen_bss_entry->SsidLen;
+
+
+						CLEAR_SEC_AKM(pApCliEntry->MlmeAux.AKMMap);
+						CLEAR_CIPHER(pApCliEntry->MlmeAux.PairwiseCipher);
+						CLEAR_CIPHER(pApCliEntry->MlmeAux.GroupCipher);
+
+						/*Delete the Open Bss entry from Scan table because apcli does not ageout scan tab entries*/
+						BssTableDeleteEntry(pscan_tab, pApCliEntry->MlmeAux.Bssid, pApCliEntry->MlmeAux.Channel);
+
+
+						MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_JOIN_REQ_TIMEOUT, 0, NULL, ifIndex);
+						return;
+
+					}
+
+
+				}
+
+			} else
+
+#endif
 			if (bssidEqualFlag == TRUE) {
 				*pCurrState = APCLI_SYNC_IDLE;
 				ApCliCtrlMsg.Status = MLME_SUCCESS;
@@ -641,13 +977,16 @@ static VOID ApCliPeerProbeRspAtJoinAction(
 				ApCliCtrlMsg.CliIdx = 0xFF;
 #endif /* MAC_REPEATER_SUPPORT */
 #ifdef APCLI_AUTO_CONNECT_SUPPORT
+#ifndef APCLI_CFG80211_SUPPORT
 				/* follow root ap setting while ApCliAutoConnectRunning is active */
 				if (((pAd->ApCfg.ApCliAutoConnectRunning[ifIndex] == TRUE) &&
 							(pAd->ApCfg.ApCliAutoBWAdjustCnt[ifIndex] < 3))
 #ifdef BT_APCLI_SUPPORT
 						|| (pAd->ApCfg.ApCliAutoBWBTSupport == TRUE)
 #endif
-				   ) {
+				)
+#endif /*APCLI_CFG80211_SUPPORT*/
+				{
 
 					ULONG Bssidx = 0;
 
@@ -722,13 +1061,52 @@ static VOID ApCliProbeTimeoutAtJoinAction(
 	PULONG pCtrl_CurrState = &pAd->ApCfg.ApCliTab[ifIndex].CtrlCurrState;
 #endif
 	APCLI_STRUCT *pApCliEntry = NULL;
-
+#ifdef APCLI_OWE_SUPPORT
+	UCHAR		entryIdx = 0;
+	BSS_TABLE		*pscan_tab = NULL, *pssid_bss_tab = NULL;
+	struct wifi_dev *papcli_wdev = NULL;
+#endif
 	MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("APCLI_SYNC - ProbeTimeoutAtJoinAction\n"));
 
 	if (ifIndex >= MAX_APCLI_NUM)
 		return;
 
 	pApCliEntry = &pAd->ApCfg.ApCliTab[ifIndex];
+
+#ifdef APCLI_OWE_SUPPORT
+	papcli_wdev = (struct wifi_dev *)&pApCliEntry->wdev;
+	pscan_tab = &pAd->ScanTab;
+	pssid_bss_tab = &pApCliEntry->MlmeAux.owe_bss_tab;
+	pssid_bss_tab->BssNr = 0;
+
+	/*
+		Find out APs with OWE transition IE and store them in the owe_bss_tab*
+	*/
+	if (IS_AKM_OWE(pApCliEntry->wdev.SecConfig.AKMMap)) {
+
+
+
+		for (entryIdx = 0; entryIdx < pscan_tab->BssNr; entryIdx++) {
+			BSS_ENTRY *pBssEntry = &pscan_tab->BssEntry[entryIdx];
+
+			if (pBssEntry->Channel == 0)
+				continue;
+
+			if ((pBssEntry->owe_trans_ie_len > 0) &&
+				(pssid_bss_tab->BssNr < MAX_LEN_OF_BSS_TABLE)) {
+				MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_INFO, ("%s:OWE Table %d:Bssid=%02x:%02x:%02x:%02x:%02x:%02x\n", __func__, __LINE__,
+						 PRINT_MAC(pBssEntry->Bssid)));
+				NdisMoveMemory(&pssid_bss_tab->BssEntry[pssid_bss_tab->BssNr++],
+											   pBssEntry, sizeof(BSS_ENTRY));
+
+			}
+		}
+	}
+	if (pssid_bss_tab->BssNr < MAX_LEN_OF_BSS_TABLE)
+		NdisZeroMemory(&pssid_bss_tab->BssEntry[pssid_bss_tab->BssNr], sizeof(BSS_ENTRY));
+
+#endif/* APCLI_OWE_SUPPORT */
+
 	*pCurrState = SYNC_IDLE;
 #ifdef APCLI_CONNECTION_TRIAL
 
@@ -751,16 +1129,249 @@ static VOID ApCliProbeTimeoutAtJoinAction(
 		ApCliCtrlMsg.BssIdx = ifIndex;
 		ApCliCtrlMsg.CliIdx = 0xFF;
 #endif /* MAC_REPEATER_SUPPORT */
-#ifdef APCLI_AUTO_CONNECT_SUPPORT
 
+
+
+#ifdef APCLI_OWE_SUPPORT
+		/*Find Open BSS with Trans IE*/
+		if (IS_AKM_OWE(papcli_wdev->SecConfig.AKMMap)
+				&&  (IS_AKM_OPEN(pApCliEntry->MlmeAux.AKMMap)
+					&& IS_CIPHER_NONE(pApCliEntry->MlmeAux.PairwiseCipher))) {
+
+			ULONG bssidx = 0;
+			BSS_ENTRY *popen_bss_entry = NULL;
+
+			/*Find BSS entry for Open bss from owe_bss_tab*/
+			bssidx = BssTableSearch(pssid_bss_tab, pApCliEntry->MlmeAux.Bssid, pApCliEntry->MlmeAux.Channel);
+
+			if (bssidx != BSS_NOT_FOUND) {
+			/*If Trans IE found then extract BSSID ,SSID ,Band and Channel*/
+				popen_bss_entry = &pssid_bss_tab->BssEntry[bssidx];
+				if (popen_bss_entry && (popen_bss_entry->owe_trans_ie_len > 0)) {
+
+
+						UCHAR pair_ch = 0;
+						UCHAR pair_bssid[MAC_ADDR_LEN] = {0};
+						UCHAR pair_ssid[MAX_LEN_OF_SSID] = {0};
+						UCHAR pair_band = 0;
+						UCHAR pair_ssid_len = 0;
+
+
+
+						extract_pair_owe_bss_info(popen_bss_entry->owe_trans_ie,
+									 popen_bss_entry->owe_trans_ie_len,
+									  pair_bssid,
+									  pair_ssid,
+									  &pair_ssid_len,
+									  &pair_band,
+									  &pair_ch);
+
+
+
+						if (pair_ch != 0) {
+							/*OWE Entry found ,update OweTransBssid and OweTranSsid*/
+
+
+							/*OWE bss is on different channel*/
+
+							if (BOARD_IS_5G_ONLY(pAd)) {
+
+								UCHAR BandIdx = HcGetBandByWdev(papcli_wdev);
+								CHANNEL_CTRL *pChCtrl = hc_get_channel_ctrl(pAd->hdev_ctrl, BandIdx);
+
+								/*Single Chip Dual band 5g only case*/
+
+								if (MTChGrpChannelChk(pChCtrl, pair_ch)) {
+									/*Channel is valid in the current channel group*/
+								if (pair_ch != popen_bss_entry->Channel) {
+
+								/*OWE send EVENT to host for OWE  indicating different channel*/
+									wext_send_owe_trans_chan_event(papcli_wdev->if_dev,
+																			OID_802_11_OWE_EVT_SAME_BAND_DIFF_CHANNEL,
+																			pair_bssid,
+																			pair_ssid,
+																			&pair_ssid_len,
+																			&pair_band,
+																			&pair_ch);
+
+									MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
+											("%s:%d Different channel same band\n", __func__, __LINE__));
+
+									NdisMoveMemory(&pApCliEntry->owe_trans_bssid, pair_bssid, MAC_ADDR_LEN);
+									NdisMoveMemory(&pApCliEntry->owe_trans_ssid, pair_ssid, pair_ssid_len);
+									pApCliEntry->owe_trans_ssid_len = pair_ssid_len;
+
+									NdisMoveMemory(&pApCliEntry->owe_trans_open_bssid, popen_bss_entry->Bssid, MAC_ADDR_LEN);
+									NdisMoveMemory(&pApCliEntry->owe_trans_open_ssid, popen_bss_entry->Ssid, popen_bss_entry->SsidLen);
+									pApCliEntry->owe_trans_open_ssid_len = popen_bss_entry->SsidLen;
+
+
+									CLEAR_SEC_AKM(pApCliEntry->MlmeAux.AKMMap);
+									CLEAR_CIPHER(pApCliEntry->MlmeAux.PairwiseCipher);
+									CLEAR_CIPHER(pApCliEntry->MlmeAux.GroupCipher);
+								/*Delete the Open Bss entry from Scan table because apcli does not ageout scan tab entries*/
+									BssTableDeleteEntry(pscan_tab, pApCliEntry->MlmeAux.Bssid, pApCliEntry->MlmeAux.Channel);
+
+									MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("Switch to channel :%d\n",
+											 pair_ch));
+									rtmp_set_channel(pAd, &pApCliEntry->wdev, pair_ch);
+									/* if bw adjust,timeout this time */
+									MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_JOIN_REQ_TIMEOUT, 0, NULL, ifIndex);
+									return;
+								} else {
+									/*Same Channel send directed probe request to OWE BSS*/
+									/*Update the Owe transtion Bssid and Ssid that will used for a directed probe request to OWE AP*/
+
+										NdisMoveMemory(&pApCliEntry->owe_trans_bssid, pair_bssid, MAC_ADDR_LEN);
+										NdisMoveMemory(&pApCliEntry->owe_trans_ssid, pair_ssid, pair_ssid_len);
+										pApCliEntry->owe_trans_ssid_len = pair_ssid_len;
+
+										NdisMoveMemory(&pApCliEntry->owe_trans_open_bssid, popen_bss_entry->Bssid, MAC_ADDR_LEN);
+										NdisMoveMemory(&pApCliEntry->owe_trans_open_ssid, popen_bss_entry->Ssid, popen_bss_entry->SsidLen);
+										pApCliEntry->owe_trans_open_ssid_len = popen_bss_entry->SsidLen;
+
+										CLEAR_SEC_AKM(pApCliEntry->MlmeAux.AKMMap);
+										CLEAR_CIPHER(pApCliEntry->MlmeAux.PairwiseCipher);
+										CLEAR_CIPHER(pApCliEntry->MlmeAux.GroupCipher);
+
+										/*Delete the Open Bss entry from Scan table because apcli does not ageout scan tab entries*/
+										BssTableDeleteEntry(pscan_tab, pApCliEntry->MlmeAux.Bssid, pApCliEntry->MlmeAux.Channel);
+
+
+										MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_JOIN_REQ_TIMEOUT, 0, NULL, ifIndex);
+										return;
+
+									}
+								} else {
+									/*Channel not in group of current band , but entry exists so send event to host to trigger connection on other band*/
+									wext_send_owe_trans_chan_event(papcli_wdev->if_dev,
+																			OID_802_11_OWE_EVT_DIFF_BAND,
+																			pair_bssid,
+																			pair_ssid,
+																			&pair_ssid_len,
+																			&pair_band,
+																			&pair_ch);
+								}
+
+							} else {
+
+								/*Check if the OWE bss is on the same band as the CLI,then check if channel change required*/
+								if ((WMODE_2G_ONLY(pApCliEntry->wdev.PhyMode) && (pair_ch <= 14))
+									|| (WMODE_5G_ONLY(pApCliEntry->wdev.PhyMode) && (pair_ch > 14))) {
+
+								if (pair_ch != popen_bss_entry->Channel) {
+									/*OWE send EVENT to host for OWE  indicating different channel*/
+										wext_send_owe_trans_chan_event(papcli_wdev->if_dev,
+																				OID_802_11_OWE_EVT_SAME_BAND_DIFF_CHANNEL,
+																				pair_bssid,
+																				pair_ssid,
+																				&pair_ssid_len,
+																				&pair_band,
+																				&pair_ch);
+
+									MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("%s:%d Different channel same band\n", __func__, __LINE__));
+
+										NdisMoveMemory(&pApCliEntry->owe_trans_bssid, pair_bssid, MAC_ADDR_LEN);
+										NdisMoveMemory(&pApCliEntry->owe_trans_ssid, pair_ssid, pair_ssid_len);
+										pApCliEntry->owe_trans_ssid_len = pair_ssid_len;
+
+										NdisMoveMemory(&pApCliEntry->owe_trans_open_bssid, popen_bss_entry->Bssid, MAC_ADDR_LEN);
+										NdisMoveMemory(&pApCliEntry->owe_trans_open_ssid, popen_bss_entry->Ssid, popen_bss_entry->SsidLen);
+										pApCliEntry->owe_trans_open_ssid_len = popen_bss_entry->SsidLen;
+
+
+										CLEAR_SEC_AKM(pApCliEntry->MlmeAux.AKMMap);
+										CLEAR_CIPHER(pApCliEntry->MlmeAux.PairwiseCipher);
+										CLEAR_CIPHER(pApCliEntry->MlmeAux.GroupCipher);
+
+										/*Delete the Open Bss entry from Scan table because apcli does not ageout scan tab entries*/
+										BssTableDeleteEntry(pscan_tab, pApCliEntry->MlmeAux.Bssid, pApCliEntry->MlmeAux.Channel);
+
+										MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("Switch to channel :%d\n",
+												 pair_ch));
+										rtmp_set_channel(pAd, &pApCliEntry->wdev, pair_ch);
+
+										MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_JOIN_REQ_TIMEOUT, 0, NULL, ifIndex);
+										return;
+								} else {
+									/*Same Channel send directed probe request to OWE BSS*/
+									/*Update the Owe transtion Bssid and Ssid that will used for a directed probe request to OWE AP*/
+
+									NdisMoveMemory(&pApCliEntry->owe_trans_bssid, pair_bssid, MAC_ADDR_LEN);
+									NdisMoveMemory(&pApCliEntry->owe_trans_ssid, pair_ssid, pair_ssid_len);
+									pApCliEntry->owe_trans_ssid_len = pair_ssid_len;
+
+									NdisMoveMemory(&pApCliEntry->owe_trans_open_bssid, popen_bss_entry->Bssid, MAC_ADDR_LEN);
+									NdisMoveMemory(&pApCliEntry->owe_trans_open_ssid, popen_bss_entry->Ssid, popen_bss_entry->SsidLen);
+									pApCliEntry->owe_trans_open_ssid_len = popen_bss_entry->SsidLen;
+
+
+									CLEAR_SEC_AKM(pApCliEntry->MlmeAux.AKMMap);
+									CLEAR_CIPHER(pApCliEntry->MlmeAux.PairwiseCipher);
+									CLEAR_CIPHER(pApCliEntry->MlmeAux.GroupCipher);
+
+									/*Delete the Open Bss entry from Scan table because apcli does not ageout scan tab entries*/
+									BssTableDeleteEntry(pscan_tab, pApCliEntry->MlmeAux.Bssid, pApCliEntry->MlmeAux.Channel);
+									MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_JOIN_REQ_TIMEOUT, 0, NULL, ifIndex);
+									return;
+
+									}
+								} else {
+									/*Channel not in group of current band , but entry exists so send event to host to trigger connection on other band*/
+									wext_send_owe_trans_chan_event(papcli_wdev->if_dev,
+																			OID_802_11_OWE_EVT_DIFF_BAND,
+																			pair_bssid,
+																			pair_ssid,
+																			&pair_ssid_len,
+																			&pair_band,
+																			&pair_ch);
+
+								}
+
+							}
+						} else {
+					/*Same Channel send directed probe request to OWE BSS*/
+					/*Update the Owe transtion Bssid and Ssid that will used for a directed probe request to OWE AP*/
+
+						NdisMoveMemory(&pApCliEntry->owe_trans_bssid, pair_bssid, MAC_ADDR_LEN);
+						NdisMoveMemory(&pApCliEntry->owe_trans_ssid, pair_ssid, pair_ssid_len);
+						pApCliEntry->owe_trans_ssid_len = pair_ssid_len;
+
+						NdisMoveMemory(&pApCliEntry->owe_trans_open_bssid, popen_bss_entry->Bssid, MAC_ADDR_LEN);
+						NdisMoveMemory(&pApCliEntry->owe_trans_open_ssid, popen_bss_entry->Ssid, popen_bss_entry->SsidLen);
+						pApCliEntry->owe_trans_open_ssid_len = popen_bss_entry->SsidLen;
+
+						CLEAR_SEC_AKM(pApCliEntry->MlmeAux.AKMMap);
+						CLEAR_CIPHER(pApCliEntry->MlmeAux.PairwiseCipher);
+						CLEAR_CIPHER(pApCliEntry->MlmeAux.GroupCipher);
+
+						/*Delete the Open Bss entry from Scan table because apcli does not ageout scan tab entries*/
+						BssTableDeleteEntry(pscan_tab, pApCliEntry->MlmeAux.Bssid, pApCliEntry->MlmeAux.Channel);
+
+
+						MlmeEnqueue(pAd, APCLI_CTRL_STATE_MACHINE, APCLI_CTRL_JOIN_REQ_TIMEOUT, 0, NULL, ifIndex);
+						return;
+
+						}
+
+
+				}
+
+
+			}
+		}
+#endif
+#ifdef APCLI_AUTO_CONNECT_SUPPORT
+#ifndef APCLI_CFG80211_SUPPORT
 		/* follow root ap setting while ApCliAutoConnectRunning is active */
 		if (((pAd->ApCfg.ApCliAutoConnectRunning[ifIndex] == TRUE) &&
 					(pAd->ApCfg.ApCliAutoBWAdjustCnt[ifIndex] < 3))
 #ifdef BT_APCLI_SUPPORT
 				|| (pAd->ApCfg.ApCliAutoBWBTSupport == TRUE)
 #endif
-		   ) {
-
+		)
+#endif /* APCLI_CFG80211_SUPPORT */
+		    {
 			ULONG Bssidx = 0;
 
 			Bssidx = BssTableSearch(&pAd->ScanTab, pApCliEntry->MlmeAux.Bssid, pApCliEntry->wdev.channel);
@@ -865,6 +1476,12 @@ static VOID ApCliEnqueueProbeRequest(
 		return;
 	}
 
+#ifdef APCLI_OWE_SUPPORT
+	if (IS_AKM_OWE(pApCliEntry->wdev.SecConfig.AKMMap) && (pApCliEntry->owe_trans_ssid_len > 0))
+		ApCliMgtMacHeaderInit(pAd, &Hdr80211, SUBTYPE_PROBE_REQ, 0,
+							pAd->ApCfg.ApCliTab[ifIndex].owe_trans_bssid, pAd->ApCfg.ApCliTab[ifIndex].owe_trans_bssid, ifIndex);
+	else
+#endif
 	if (MAC_ADDR_EQUAL(pAd->ApCfg.ApCliTab[ifIndex].CfgApCliBssid, ZERO_MAC_ADDR))
 		ApCliMgtMacHeaderInit(pAd, &Hdr80211, SUBTYPE_PROBE_REQ, 0,
 							  BROADCAST_ADDR, BROADCAST_ADDR, ifIndex);

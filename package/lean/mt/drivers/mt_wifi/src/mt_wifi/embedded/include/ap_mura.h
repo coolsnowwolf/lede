@@ -59,6 +59,7 @@ enum {
 	MURA_PLATFORM_TYPE,
 	MURA_DISABLE_CN3_CN4,
 	MURA_PFID_STAT,
+	MURA_ENABLE_MU_HWSW_PATCH,
 	MURA_MOBILITY_CTRL,
 	MURA_MOBILITY_INTERVAL_CTRL,
 	MURA_MOBILITY_SNR_CTRL,
@@ -316,6 +317,11 @@ typedef struct _CMD_SET_DISABLE_CN3_CN4 {
 	UINT_8       ucReserved[3];
 } CMD_SET_DISABLE_CN3_CN4, *P_CMD_SET_DISABLE_CN3_CN4;
 
+typedef struct _CMD_MURGA_ENABLE_HW_SW_PATCH {
+	UINT_8       ucEnableHwSwPatch;
+	UINT_8       ucReserved[3];
+} CMD_MURGA_ENABLE_HW_SW_PATCH, *P_CMD_MURGA_ENABLE_HW_SW_PATCH;
+
 typedef struct _CMD_MURGA_SET_MOBILITY_TYPE {
 	BOOLEAN      fgMobilityType;
 	UINT_8       ucReserved[3];
@@ -482,6 +488,7 @@ INT SetMuraMobilityThresholdCtrlProc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 INT SetMuraMobilitySndCountProc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 INT SetMuraMobilityModeCtrlProc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 INT SetMuraMobilityLogCtrlProc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
+INT SetMuraEnableHwSwPatch(RTMP_ADAPTER *pAd);
 INT SetMuraMobilityTestCtrlProc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 
 #endif  /* __AP_MUMIMO_RA_H__ */

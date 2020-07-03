@@ -5,7 +5,7 @@
 
 /* OS_RTCMDUp is only used in UTIL/NETIF module */
 #define OS_RTCMDUp						RtmpOsCmdUp
-
+#define OS_RTCMDRunning						RtmpOsIsCmdThreadRunning
 
 /* RALINK command status code */
 #define RTMP_IO_EINVAL							30000
@@ -132,6 +132,11 @@ typedef enum _CMD_RTPRIV_IOCTL_AP {
 	CMD_RTPRIV_IOCTL_AP_SIOCGIWRATEQ,
 	CMD_RTPRIV_IOCTL_AP_SIOCSIWGENIE,
 
+	CMD_RTPRIV_IOCTL_GET_DRIVER_INFO,
+#ifdef WIFI_DIAG
+	CMD_RTPRIV_IOCTL_GET_PROCESS_INFO,
+#endif
+
 	/* can not exceed 0x5000 */
 } CMD_RTPRIV_IOCTL_AP;
 
@@ -251,6 +256,7 @@ typedef enum _CMD_RTPRIV_IOCTL_COMMON {
 	CMD_RTPRIV_IOCTL_80211_STA_KEY_DEFAULT_SET,
 	CMD_RTPRIV_IOCTL_80211_POWER_MGMT_SET,
 	CMD_RTPRIV_IOCTL_80211_AP_KEY_DEFAULT_SET,
+	CMD_RTPRIV_IOCTL_80211_AP_KEY_DEFAULT_MGMT_SET,
 	CMD_RTPRIV_IOCTL_80211_CONNECT_TO,
 	CMD_RTPRIV_IOCTL_80211_RFKILL,
 	CMD_RTPRIV_IOCTL_80211_REG_NOTIFY_TO,
@@ -301,6 +307,9 @@ typedef enum _CMD_RTPRIV_IOCTL_COMMON {
 	CMD_RTPRIV_IOCTL_80211_STA_TDLS_INSERT_PENTRY,
 	CMD_RTPRIV_IOCTL_80211_STA_TDLS_SET_KEY_COPY_FLAG,
 #endif
+#ifdef APCLI_CFG80211_SUPPORT
+	CMD_RTPRIV_IOCTL_APCLI_SITE_SURVEY,
+#endif /* APCLI_CFG80211_SUPPORT */
 	CMD_RTPRIV_IOCTL_80211_REGISTER,
 	CMD_RTPRIV_IOCTL_80211_END,
 #endif /* RT_CFG80211_SUPPORT */
@@ -320,6 +329,15 @@ typedef enum _CMD_RTPRIV_IOCTL_COMMON {
 #ifdef PROFILE_PATH_DYNAMIC
 	CMD_RTPRIV_IOCTL_PROFILEPATH_SET,
 #endif /* PROFILE_PATH_DYNAMIC */
+#ifdef APCLI_CFG80211_SUPPORT
+	CMD_RTPRIV_IOCTL_APCLI_NETDEV_GET,
+#endif /* APCLI_CFG80211_SUPPORT */
+#ifdef DYNAMIC_VLAN_SUPPORT
+        CMD_RTPRIV_IOCTL_SET_STA_VLAN,
+#endif
+#ifdef HOSTAPD_11R_SUPPORT
+	CMD_RTPRIV_IOCTL_SET_FT_PARAM,
+#endif /* HOSTAPD_11R_SUPPORT */
 	/* can not exceed 0xa000 */
 	CMD_RTPRIV_IOCTL_80211_COM_LATEST_ONE,
 } CMD_RTPRIV_IOCTL_COMMON;
@@ -349,6 +367,8 @@ typedef struct __CMD_RTPRIV_IOCTL_80211_BEACON {
 	UCHAR *beacon_tail;
 	UINT32 beacon_head_len; /* Before TIM IE */
 	UINT32 beacon_tail_len; /* After TIM IE */
+    UINT32 apidx;
+    PNET_DEV pNetDev;
 
 #if (KERNEL_VERSION(3, 4, 0) <= LINUX_VERSION_CODE)
 	UCHAR *beacon_ies;
@@ -443,6 +463,8 @@ typedef struct __CMD_RTPRIV_IOCTL_80211_STA {
 
 	UINT32 rx_packets;
 	UINT32 tx_packets;
+    UINT64 rx_bytes;
+    UINT64 tx_bytes;
 	UINT32 tx_retries;
 	UINT32 tx_failed;
 } CMD_RTPRIV_IOCTL_80211_STA;
@@ -450,6 +472,11 @@ typedef struct __CMD_RTPRIV_IOCTL_80211_STA {
 #define RT_CMD_80211_KEY_WEP40			0x00
 #define RT_CMD_80211_KEY_WEP104			0x01
 #define RT_CMD_80211_KEY_WPA			0x02
+
+#ifdef DOT11W_PMF_SUPPORT
+#define RT_CMD_80211_KEY_AES_CMAC		0x03
+#endif /* DOT11W_PMF_SUPPORT */
+
 
 typedef struct __CMD_RTPRIV_IOCTL_80211_KEY {
 	UINT8 KeyType;
@@ -511,6 +538,12 @@ typedef struct __CMD_RTPRIV_IOCTL_80211_SURVEY {
 	UINT64 ChannelTimeExtBusy;
 } CMD_RTPRIV_IOCTL_80211_SURVEY;
 
+#ifdef HOSTAPD_MAP_SUPPORT /* This could be a generic fix */
+typedef struct __CMD_RTPRIV_IOCTL_AP_STA_DEL {
+	IN UINT8		*pSta_MAC;
+	IN struct wifi_dev	*pWdev;
+} CMD_RTPRIV_IOCTL_AP_STA_DEL;
+#endif /* HOSTAPD_MAP_SUPPORT */
 #endif /* RT_CFG80211_SUPPORT */
 
 /* station commands */
@@ -645,6 +678,23 @@ typedef struct __RT_CMD_AP_IOCTL_SSID {
 	char *pSsidStr;
 	INT32 length;
 } RT_CMD_AP_IOCTL_SSID;
+
+#ifdef DYNAMIC_VLAN_SUPPORT
+typedef struct __RT_CMD_AP_STA_VLAN {
+	UCHAR  sta_addr[6];
+	UINT32	vlan_id;
+}RT_CMD_AP_STA_VLAN;
+#endif
+
+#ifdef HOSTAPD_11R_SUPPORT
+typedef struct __RT_CMD_AP_11R_PARAM {
+	UCHAR nas_identifier[64];
+	INT nas_id_len;
+	UCHAR r1_key_holder[ETH_ALEN];
+	UCHAR own_mac[ETH_ALEN];
+	u32 reassociation_deadline;
+} RT_CMD_AP_11R_PARAM;
+#endif /* HOSTAPD_11R_SUPPORT */
 
 typedef struct __RT_CMD_IOCTL_RATE {
 	IN ULONG priv_flags;

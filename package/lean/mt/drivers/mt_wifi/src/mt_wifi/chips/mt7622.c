@@ -651,6 +651,30 @@ void mt7622_get_tx_pwr_info(RTMP_ADAPTER *pAd)
 }
 
 
+static UCHAR get_subid(void)
+{
+	UCHAR subid = 0;
+	ULONG sysEfuseAddr = 0;
+	UINT32 sysEfuseVal = 0;
+
+	sysEfuseAddr = (ULONG)ioremap(0x1020682c, 4);
+	sysEfuseVal = (UINT32)ioread32((void *)sysEfuseAddr);
+	iounmap((void *)sysEfuseAddr);
+
+	if (((sysEfuseVal & 0xf000) >> 12) != 0)
+		subid = (sysEfuseVal & 0xf000) >> 12;
+	else if (((sysEfuseVal & 0xf00) >> 8) != 0)
+		subid = (sysEfuseVal & 0xf00) >> 8;
+	else if (((sysEfuseVal & 0xf0) >> 4) != 0)
+		subid = (sysEfuseVal & 0xf0) >> 4;
+	else
+		subid = 2;
+
+	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("read sub id = %x\n", subid));
+	return subid;
+}
+
+
 static void mt7622_antenna_default_reset(
 	struct _RTMP_ADAPTER *pAd,
 	EEPROM_ANTENNA_STRUC *pAntenna)
@@ -664,6 +688,11 @@ static void mt7622_antenna_default_reset(
 	pAntenna->field.TxPath = (pAd->EEPROMDefaultValue[EEPROM_NIC_CFG1_OFFSET] >> 4) & 0x0F;
 	pAntenna->field.RxPath = pAd->EEPROMDefaultValue[EEPROM_NIC_CFG1_OFFSET] & 0x0F;
 #endif /* TXBF_SUPPORT */
+
+	if (get_subid() == 0x4) {
+		pAntenna->field.TxPath = 2;
+		pAntenna->field.RxPath = 2;
+	}
 }
 
 
@@ -800,17 +829,6 @@ static void mt7622_host_resume_done_ack(
 #endif /* HOST_RESUME_DONE_ACK_SUPPORT */
 
 #ifdef RF_LOCKDOWN
-static UINT32 ICAL[] = {0x53, 0x54, 0x55, 0x56, 0x57, 0x5c, 0x5d, 0x62, 0x63, 0x68, 0x69,
-						0x6e, 0x6f, 0x73, 0x74, 0x78, 0x79, 0x82, 0x83, 0x87,
-						0x88, 0x8c, 0x8d, 0x91, 0x92, 0x96, 0x97, 0x9b, 0x9c, 0xa0, 0xa1,
-						0xaa, 0xab, 0xaf, 0xb0, 0xb4, 0xb5, 0xb9, 0xba, 0xf4,
-						0xf7, 0xff, 0x140, 0x141, 0x145, 0x146, 0x14a, 0x14b,
-						0x154, 0x155, 0x159, 0x15a, 0x15e, 0x15f, 0x163, 0x164, 0x168, 0x169,
-						0x16d, 0x16e, 0x172, 0x173, 0x17c, 0x17d, 0x181, 0x182,
-						0x186, 0x187, 0x18b, 0x18c
-					   }; /* check and merge */
-
-static UINT32 ICAL_NUM = (sizeof(ICAL) / sizeof(UINT32));
 static UINT32 ICAL_JUST_MERGE[] = {0x118, 0x1b5, 0x1b6, 0x1b7, 0x3ac, 0x3ad, 0x3ae, 0x3af, 0x3b0, 0x3b1, 0x3b2}; /* merge but nott check */
 static UINT32 ICAL_JUST_MERGE_NUM = (sizeof(ICAL_JUST_MERGE) / sizeof(UINT32));
 
@@ -1464,6 +1482,9 @@ static VOID mt7622_chipCap_init(void)
 	MT7622_ChipCap.g_band_256_qam = TRUE;
 #endif
 #endif /* DOT11_VHT_AC */
+#ifdef BCN_V2_SUPPORT /* add bcn v2 support , 1.5k beacon support */
+	MT7622_ChipCap.max_v2_bcn_num = 16;
+#endif
 	MT7622_ChipCap.TXWISize = sizeof(TMAC_TXD_L);
 	MT7622_ChipCap.RXWISize = 28;
 	MT7622_ChipCap.tx_hw_hdr_len = MT7622_ChipCap.TXWISize;
@@ -1520,7 +1541,12 @@ static VOID mt7622_chipCap_init(void)
 	MT7622_ChipCap.FlgHwTxBfCap = TXBF_HW_CAP;
 #endif
 	MT7622_ChipCap.SnrFormula = SNR_FORMULA4;
-	MT7622_ChipCap.max_nss = 4;
+	if (get_subid() == 0x4) {
+		MT7622_ChipCap.max_nss = 2;
+		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("7622D found!\n"));
+	} else {
+		MT7622_ChipCap.max_nss = 4;
+	}
 	/* todo Ellis */
 #ifdef RTMP_EFUSE_SUPPORT
 	MT7622_ChipCap.EFUSE_USAGE_MAP_START = 0x3c0;
@@ -1538,6 +1564,7 @@ static VOID mt7622_chipCap_init(void)
 #ifdef RTMP_MAC_PCI
 	MT7622_ChipCap.WPDMABurstSIZE = 3;
 #endif
+	MT7622_ChipCap.ProbeRspTimes = 2;
 #ifdef NEW_MBSSID_MODE
 #ifdef ENHANCE_NEW_MBSSID_MODE
 	MT7622_ChipCap.MBSSIDMode = MBSSID_MODE4;
@@ -1637,6 +1664,8 @@ static VOID mt7622_chipCap_init(void)
 	MT7622_ChipCap.ba_range = mt7622_ba_range;
 	MT7622_ChipCap.txd_type = TXD_V1;
 	MT7622_ChipCap.tx_delay_support = TRUE;
+
+	MT7622_ChipCap.asic_caps |= fASIC_CAP_ADV_SECURITY;
 }
 
 static VOID mt7622_chipOp_init(void)
@@ -2151,6 +2180,10 @@ INT Mt7622AsicArchOpsInit(RTMP_ADAPTER *pAd)
 #ifdef HTC_DECRYPT_IOT
 	arch_ops->archSetWcidAAD_OM = MtAsicSetWcidAAD_OMByFw;
 #endif /* HTC_DECRYPT_IOT */
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+	arch_ops->archSetWcid4Addr_HdrTrans = MtAsicSetWcid4Addr_HdrTransByFw;
+#endif
+
 	arch_ops->archAddRemoveKeyTab = MtAsicAddRemoveKeyTabByFw;
 #ifdef BCN_OFFLOAD_SUPPORT
 	/* sync with Carter, wilsonl */
@@ -2222,6 +2255,10 @@ INT Mt7622AsicArchOpsInit(RTMP_ADAPTER *pAd)
 #ifdef IGMP_SNOOP_SUPPORT
 	arch_ops->archMcastEntryInsert = MulticastFilterTableInsertEntry;
 	arch_ops->archMcastEntryDelete = MulticastFilterTableDeleteEntry;
+#ifdef IGMP_TVM_SUPPORT
+	arch_ops->archMcastConfigAgeout = MulticastFilterConfigAgeOut;
+	arch_ops->archMcastGetMcastTable = MulticastFilterGetMcastTable;
+#endif /* IGMP_TVM_SUPPORT */
 #endif
 	arch_ops->write_txp_info = mtd_write_txp_info_by_host;
 	arch_ops->write_tmac_info_fixed_rate = mtd_write_tmac_info_fixed_rate;

@@ -58,6 +58,7 @@ enum {
 #define ETH_TYPE_WAI	0x88b4
 #define ETHER_TYPE_TDLS_MMPDU 0x890d
 #define ETH_TYPE_FASTROAMING	0x890d
+#define ETH_TYPE_1905	0x893A
 
 #define IP_VER_CODE_V4	0x40
 #define IP_VER_CODE_V6	0x60

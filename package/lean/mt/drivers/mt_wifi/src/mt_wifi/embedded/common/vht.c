@@ -34,6 +34,23 @@ struct vht_ch_layout {
 	UCHAR cent_freq_idx;
 };
 
+#ifdef ACS_CTCC_SUPPORT
+static struct vht_ch_layout vht_ch_40M[] = {
+	{36, 40, 38},
+	{44, 48, 46},
+	{52, 56, 54},
+	{60, 64, 62},
+	{100, 104, 102},
+	{108, 112, 110},
+	{116, 120, 118},
+	{124, 128, 126},
+	{132, 136, 134},
+	{140, 144, 142},
+	{149, 153, 151},
+	{157, 161, 159},
+	{0, 0, 0},
+};
+#endif
 static struct vht_ch_layout vht_ch_80M[] = {
 	{36, 48, 42},
 	{52, 64, 58},
@@ -664,7 +681,6 @@ static UINT16 VHT_HIGH_RATE_BW80[3][4] = {
 	{390, 780, 1170, 1560},
 };
 
-
 INT build_vht_cap_ie(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR *buf)
 {
 	VHT_CAP_IE vht_cap_ie;
@@ -677,7 +693,7 @@ INT build_vht_cap_ie(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR *buf)
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
 
 	NdisZeroMemory((UCHAR *)&vht_cap_ie,  sizeof(VHT_CAP_IE));
-	vht_cap_ie.vht_cap.max_mpdu_len = cap->max_mpdu_len; /* TODO: Ask Jerry about hardware limitation. */
+	vht_cap_ie.vht_cap.max_mpdu_len = cap->max_mpdu_len;
 
 	if (cap_vht_bw == VHT_BW_160) {
 		vht_cap_ie.vht_cap.ch_width = 1;
@@ -915,7 +931,7 @@ INT build_vht_ies(RTMP_ADAPTER *pAd, struct _build_ie_info *info)
 			   and avoid the BW info not sync.
 			 */
 			if ((vht_bw == VHT_BW_2040) &&
-				(ht_bw == HT_BW_40))
+				((ht_bw == HT_BW_40) || (ht_bw == HT_BW_20)))
 				len += build_vht_op_mode_ie(pAd, info->wdev, (UCHAR *)(info->frame_buf + len));
 		}
 	}
@@ -991,6 +1007,69 @@ void update_vht_op_info(UINT8 cap_bw, VHT_OP_INFO *vht_op_info, struct _op_info 
 	return;
 }
 
+UCHAR check_vht_op_bw(VHT_OP_INFO *vht_op_info)
+{
+	UCHAR bw = 0;
+	UINT8 p80ccf = vht_op_info->center_freq_1;
+	UINT8 s80160ccf = vht_op_info->center_freq_2;
+
+	switch (vht_op_info->ch_width) {
+	case VHT_BW_2040:
+		bw = VHT_BW_2040;
+		break;
+	case VHT_BW_80:
+		if (s80160ccf == 0) {
+			bw = VHT_BW_80;
+		} else if (ch_offset_abs(s80160ccf, p80ccf) == 8) {
+			bw = VHT_BW_160;
+		} else if (ch_offset_abs(s80160ccf, p80ccf) >= 16) {
+			bw = VHT_BW_8080;
+		}
+		break;
+	case VHT_BW_160:
+		bw = VHT_BW_160;
+		break;
+	case VHT_BW_8080:
+		bw = VHT_BW_8080;
+		break;
+	default:
+		break;
+	}
+
+	return bw;
+}
+
+#ifdef ACS_CTCC_SUPPORT
+BOOLEAN vht40_channel_group(RTMP_ADAPTER *pAd, UCHAR channel)
+{
+	INT idx = 0;
+	UCHAR region = GetCountryRegionFromCountryCode(pAd->CommonCfg.CountryCode);
+	if (channel <= 14)
+		return FALSE;
+	while (vht_ch_40M[idx].ch_up_bnd != 0) {
+		if (channel >= vht_ch_40M[idx].ch_low_bnd &&
+			channel <= vht_ch_40M[idx].ch_up_bnd) {
+			if (
+				((pAd->CommonCfg.RDDurRegion == JAP ||
+				  pAd->CommonCfg.RDDurRegion == JAP_W53 ||
+				  pAd->CommonCfg.RDDurRegion == JAP_W56) &&
+				 ((vht_ch_40M[idx].cent_freq_idx == 134) ||
+				 (vht_ch_40M[idx].cent_freq_idx == 142)))
+				||
+				((region == JAP || region == CE) &&
+				 ((vht_ch_40M[idx].cent_freq_idx == 134) ||
+				 (vht_ch_40M[idx].cent_freq_idx == 142)))
+			) {
+				idx++;
+				continue;
+			}
+			return TRUE;
+		}
+		idx++;
+	}
+	return FALSE;
+}
+#endif
 BOOLEAN vht80_channel_group(RTMP_ADAPTER *pAd, UCHAR channel)
 {
 	INT idx = 0;

@@ -1738,13 +1738,15 @@ VOID ba_reorder(RTMP_ADAPTER *pAd, RX_BLK *pRxBlk, UCHAR wdev_idx)
 		ba_refresh_reordering_mpdus(pAd, pBAEntry);
 		ASSERT((pBAEntry->list.qlen == 0) && (pBAEntry->list.next == NULL));
 		MTWF_LOG(DBG_CAT_PROTO, CATPROTO_BA, DBG_LVL_INFO, ("%s:Reset Last Indicate Sequence(%d): amsdu state = %d\n", __func__, pRxBlk->SN, pRxBlk->AmsduState));
-		indicate_rx_pkt(pAd, pRxBlk, wdev_idx);
-		pBAEntry->LastIndSeq = Sequence;
+		/*
+		 * For the first reordering pkt in the BA session, initialize LastIndSeq to (Sequence - 1)
+		 * so that the ba_reorder_check will fall in the in-order SEQ_STEPONE case.
+		 */
+		pBAEntry->LastIndSeq = (Sequence - 1) & MAXSEQ;
 		pBAEntry->LastIndSeqAtTimer = Now32;
 		pBAEntry->PreviousAmsduState = pRxBlk->AmsduState;
 		pBAEntry->PreviousSN = Sequence;
 		pBAEntry->REC_BA_Status = Recipient_Established;
-		return;
 
 	case Recipient_Established:
 		break;
