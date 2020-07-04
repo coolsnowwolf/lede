@@ -9,16 +9,16 @@ include $(TOPDIR)/rules.mk
 ARCH:=mips
 BOARD:=ar71xx
 BOARDNAME:=Atheros AR7xxx/AR9xxx
-FEATURES:=usbgadget
+FEATURES:=usbgadget source-only
 CPU_TYPE:=24kc
 SUBTARGETS:=generic tiny nand mikrotik
 
-KERNEL_PATCHVER:=4.9
+KERNEL_PATCHVER:=4.14
 
 include $(INCLUDE_DIR)/target.mk
 
 DEFAULT_PACKAGES += \
 	kmod-gpio-button-hotplug swconfig \
-	kmod-ath9k wpad-openssl uboot-envtools
+	kmod-ath9k uboot-envtools
 
 $(eval $(call BuildTarget))

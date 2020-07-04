@@ -1,0 +1,169 @@
+From 07f63e91f5e81f7f36c1e646f72c394c7f60c05c Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Fri, 22 Nov 2019 13:46:34 +0200
+Subject: [PATCH] net: mscc: ocelot: introduce more focused PCS ops for PHYLINK
+
+The reason for doing this is that the 2 mainline Ocelot switches so far,
+VSC7514 and VSC9959, have radically different SoC/SerDes integration. So
+although the PHYLINK callbacks are common, the implementations will
+actually lie in device-specific function pointers.
+
+Also, there was a duplicated and unused function pointer for pcs_init in
+struct ocelot, remove that.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+---
+ drivers/net/ethernet/mscc/ocelot.c       | 36 ++++++++------------------------
+ drivers/net/ethernet/mscc/ocelot_board.c | 35 ++++++++++++++++++++++++++++++-
+ include/soc/mscc/ocelot.h                | 12 ++++++++---
+ 3 files changed, 52 insertions(+), 31 deletions(-)
+
+--- a/drivers/net/ethernet/mscc/ocelot.c
++++ b/drivers/net/ethernet/mscc/ocelot.c
+@@ -410,43 +410,25 @@ void ocelot_phylink_validate(struct ocel
+ 			     unsigned long *supported,
+ 			     struct phylink_link_state *state)
+ {
+-	__ETHTOOL_DECLARE_LINK_MODE_MASK(mask) = { 0, };
+-
+-	if (state->interface != PHY_INTERFACE_MODE_NA &&
+-	    state->interface != PHY_INTERFACE_MODE_GMII &&
+-	    state->interface != PHY_INTERFACE_MODE_SGMII &&
+-	    state->interface != PHY_INTERFACE_MODE_QSGMII) {
+-		bitmap_zero(supported, __ETHTOOL_LINK_MODE_MASK_NBITS);
+-		return;
+-	}
+-
+-	/* No half-duplex. */
+-	phylink_set_port_modes(mask);
+-	phylink_set(mask, Autoneg);
+-	phylink_set(mask, Pause);
+-	phylink_set(mask, Asym_Pause);
+-	phylink_set(mask, 10baseT_Full);
+-	phylink_set(mask, 100baseT_Full);
+-	phylink_set(mask, 1000baseT_Full);
+-	phylink_set(mask, 2500baseT_Full);
+-
+-	bitmap_and(supported, supported, mask,
+-		   __ETHTOOL_LINK_MODE_MASK_NBITS);
+-	bitmap_and(state->advertising, state->advertising, mask,
+-		   __ETHTOOL_LINK_MODE_MASK_NBITS);
++	if (ocelot->ops->pcs_validate)
++		ocelot->ops->pcs_validate(ocelot, port, supported, state);
+ }
+ EXPORT_SYMBOL(ocelot_phylink_validate);
+ 
+ void ocelot_phylink_mac_pcs_get_state(struct ocelot *ocelot, int port,
+ 				      struct phylink_link_state *state)
+ {
+-	state->link = 1;
++	if (ocelot->ops->pcs_link_state)
++		ocelot->ops->pcs_link_state(ocelot, port, state);
++	else
++		state->link = 1;
+ }
+ EXPORT_SYMBOL(ocelot_phylink_mac_pcs_get_state);
+ 
+ void ocelot_phylink_mac_an_restart(struct ocelot *ocelot, int port)
+ {
+-	/* Not supported */
++	if (ocelot->ops->pcs_an_restart)
++		ocelot->ops->pcs_an_restart(ocelot, port);
+ }
+ EXPORT_SYMBOL(ocelot_phylink_mac_an_restart);
+ 
+@@ -490,7 +472,7 @@ void ocelot_phylink_mac_config(struct oc
+ 	ocelot_port_writel(ocelot_port, mac_mode, DEV_MAC_MODE_CFG);
+ 
+ 	if (ocelot->ops->pcs_init)
+-		ocelot->ops->pcs_init(ocelot, port);
++		ocelot->ops->pcs_init(ocelot, port, link_an_mode, state);
+ 
+ 	/* Enable MAC module */
+ 	ocelot_port_writel(ocelot_port, DEV_MAC_ENA_CFG_RX_ENA |
+--- a/drivers/net/ethernet/mscc/ocelot_board.c
++++ b/drivers/net/ethernet/mscc/ocelot_board.c
+@@ -212,7 +212,9 @@ static const struct of_device_id mscc_oc
+ };
+ MODULE_DEVICE_TABLE(of, mscc_ocelot_match);
+ 
+-static void ocelot_port_pcs_init(struct ocelot *ocelot, int port)
++static void ocelot_port_pcs_init(struct ocelot *ocelot, int port,
++				 unsigned int link_an_mode,
++				 const struct phylink_link_state *state)
+ {
+ 	struct ocelot_port *ocelot_port = ocelot->ports[port];
+ 
+@@ -235,6 +237,36 @@ static void ocelot_port_pcs_init(struct
+ 	ocelot_port_writel(ocelot_port, 0, PCS1G_LB_CFG);
+ }
+ 
++void ocelot_port_pcs_validate(struct ocelot *ocelot, int port,
++			      unsigned long *supported,
++			      struct phylink_link_state *state)
++{
++	__ETHTOOL_DECLARE_LINK_MODE_MASK(mask) = { 0, };
++
++	if (state->interface != PHY_INTERFACE_MODE_NA &&
++	    state->interface != PHY_INTERFACE_MODE_GMII &&
++	    state->interface != PHY_INTERFACE_MODE_SGMII &&
++	    state->interface != PHY_INTERFACE_MODE_QSGMII) {
++		bitmap_zero(supported, __ETHTOOL_LINK_MODE_MASK_NBITS);
++		return;
++	}
++
++	/* No half-duplex. */
++	phylink_set_port_modes(mask);
++	phylink_set(mask, Autoneg);
++	phylink_set(mask, Pause);
++	phylink_set(mask, Asym_Pause);
++	phylink_set(mask, 10baseT_Full);
++	phylink_set(mask, 100baseT_Full);
++	phylink_set(mask, 1000baseT_Full);
++	phylink_set(mask, 2500baseT_Full);
++
++	bitmap_and(supported, supported, mask,
++		   __ETHTOOL_LINK_MODE_MASK_NBITS);
++	bitmap_and(state->advertising, state->advertising, mask,
++		   __ETHTOOL_LINK_MODE_MASK_NBITS);
++}
++
+ static int ocelot_reset(struct ocelot *ocelot)
+ {
+ 	int retries = 100;
+@@ -260,6 +292,7 @@ static int ocelot_reset(struct ocelot *o
+ 
+ static const struct ocelot_ops ocelot_ops = {
+ 	.pcs_init		= ocelot_port_pcs_init,
++	.pcs_validate		= ocelot_port_pcs_validate,
+ 	.reset			= ocelot_reset,
+ };
+ 
+--- a/include/soc/mscc/ocelot.h
++++ b/include/soc/mscc/ocelot.h
+@@ -412,7 +412,15 @@ enum {
+ struct ocelot;
+ 
+ struct ocelot_ops {
+-	void (*pcs_init)(struct ocelot *ocelot, int port);
++	void (*pcs_init)(struct ocelot *ocelot, int port,
++			 unsigned int link_an_mode,
++			 const struct phylink_link_state *state);
++	void (*pcs_an_restart)(struct ocelot *ocelot, int port);
++	void (*pcs_link_state)(struct ocelot *ocelot, int port,
++			       struct phylink_link_state *state);
++	void (*pcs_validate)(struct ocelot *ocelot, int port,
++			     unsigned long *supported,
++			     struct phylink_link_state *state);
+ 	int (*reset)(struct ocelot *ocelot);
+ };
+ 
+@@ -479,8 +487,6 @@ struct ocelot {
+ 	struct mutex			ptp_lock;
+ 	/* Protects the PTP clock */
+ 	spinlock_t			ptp_clock_lock;
+-
+-	void (*port_pcs_init)(struct ocelot_port *port);
+ };
+ 
+ #define ocelot_read_ix(ocelot, reg, gi, ri) __ocelot_read_ix(ocelot, reg, reg##_GSZ * (gi) + reg##_RSZ * (ri))

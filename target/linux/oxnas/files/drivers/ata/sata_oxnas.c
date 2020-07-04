@@ -2123,7 +2123,7 @@ static void sata_oxnas_port_irq(struct ata_port *ap, int force_error)
 	DPRINTK("ENTER port %d irqstatus %x\n", ap->port_no,
 		ioread32(port_base + INT_STATUS));
 
-	if (ap->qc_active & (1 << ATA_TAG_INTERNAL)) {
+	if (ap->qc_active & (1ULL << ATA_TAG_INTERNAL)) {
 			qc = ata_qc_from_tag(ap, ATA_TAG_INTERNAL);
 			DPRINTK("completing non-ncq cmd\n");
 

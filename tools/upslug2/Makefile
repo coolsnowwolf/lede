@@ -7,27 +7,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=upslug2
-PKG_VERSION:=20071227
 
-PKG_SOURCE_URL:=http://svn.nslu2-linux.org/svnroot/upslug2/trunk
-PKG_SOURCE_PROTO:=svn
-PKG_SOURCE_SUBDIR:=upslug2-$(PKG_VERSION)
-PKG_SOURCE_VERSION:=41
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
-PKG_MIRROR_HASH:=5c69eae3a2affef8f4f7194cfedfdb9175b04ca433f9ae046c85309b42bdb21e
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/fretb/upslug2
+PKG_SOURCE_DATE:=2016-05-16
+PKG_SOURCE_VERSION:=35f0b18c56368f69eef590e7d9fb688fbe624b10
+PKG_MIRROR_HASH:=646856532e5fad240b1697eb94726aafa6712294f608e24892983e6db95fb65f
+
+HOST_FIXUP:=autoreconf
 
 include $(INCLUDE_DIR)/host-build.mk
-
-unexport CFLAGS
-
-define Host/Configure
-	(cd $(HOST_BUILD_DIR); \
-		aclocal && autoconf && \
-		autoheader && \
-		automake --add-missing; \
-	)
-	$(Host/Configure/Default)
-endef
 
 ifneq ($(HOST_OS),Linux)
 	HOST_CONFIGURE_ARGS += --with-libpcap

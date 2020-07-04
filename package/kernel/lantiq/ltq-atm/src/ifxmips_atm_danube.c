@@ -40,6 +40,7 @@
 #include <linux/proc_fs.h>
 #include <linux/init.h>
 #include <linux/ioctl.h>
+#include <linux/platform_device.h>
 #include <linux/delay.h>
 
 /*
@@ -61,7 +62,7 @@
 #define EMA_WRITE_BURST      0x2
 #define EMA_READ_BURST       0x2
 
-static inline void reset_ppe(void);
+static inline void reset_ppe(struct platform_device *pdev);
 
 #define IFX_PMU_MODULE_PPE_SLL01  BIT(19)
 #define IFX_PMU_MODULE_PPE_TC     BIT(21)
@@ -70,7 +71,7 @@ static inline void reset_ppe(void);
 #define IFX_PMU_MODULE_TPE       BIT(13)
 #define IFX_PMU_MODULE_DSL_DFE    BIT(9)
 
-static inline void reset_ppe(void)
+static inline void reset_ppe(struct platform_device *pdev)
 {
 /*#ifdef MODULE
     unsigned int etop_cfg;
@@ -140,7 +141,7 @@ static void danube_fw_ver(unsigned int *major, unsigned int *minor)
 	*minor = FW_VER_ID->minor;
 }
 
-static void danube_init(void)
+static void danube_init(struct platform_device *pdev)
 {
             volatile u32 *p = SB_RAM0_ADDR(0);
     unsigned int i;
@@ -152,7 +153,7 @@ static void danube_init(void)
 		IFX_PMU_MODULE_TPE |
 		IFX_PMU_MODULE_DSL_DFE);
 
-	reset_ppe();
+	reset_ppe(pdev);
 
     /* init ema */
         IFX_REG_W32((EMA_CMD_BUF_LEN << 16) | (EMA_CMD_BASE_ADDR >> 2), EMA_CMDCFG);

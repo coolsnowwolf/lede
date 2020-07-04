@@ -316,10 +316,12 @@ int decode_image(const char *input_file_name, const char *output_file_name)
 			if (fread(pmodel, 1, cw_header.model_size, fp_input) !=
 				  cw_header.model_size) {
 				fprintf(stderr, "Incorrect header size reading model name!!");
+				free(pmodel);
 				fclose(fp_input);
 				fclose(fp_output);
 				return -1;
 			}
+			free(pmodel);
 		} else {
 			fprintf(stderr, "Incorrect header size reading model name!!");
 			fclose(fp_input);

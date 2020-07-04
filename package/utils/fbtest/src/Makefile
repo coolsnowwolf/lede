@@ -11,4 +11,4 @@ fbtest: $(OBJS)
 	$(CC) -o $@ $(OBJS)
 
 clean:
-	rm -f rbcfg *.o
+	rm -f fbtest *.o

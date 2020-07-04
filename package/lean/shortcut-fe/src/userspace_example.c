@@ -18,7 +18,7 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 
-#include "fast-classifier.h"
+#include <fast-classifier.h>
 
 static struct nl_sock *sock;
 static struct nl_sock *sock_event;

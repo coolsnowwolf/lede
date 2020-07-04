@@ -1,0 +1,174 @@
+From 9cb27801b5cbad2e1aaf45aac428cb2fac5e1372 Mon Sep 17 00:00:00 2001
+From: Christian Lamparter <chunkeey@gmail.com>
+Date: Sun, 17 Dec 2017 17:29:13 +0100
+Subject: [PATCH] hwmon: tc654: add thermal_cooling device
+
+This patch adds a thermaL_cooling device to the tc654 driver.
+This allows the chip to be used for DT-based cooling.
+
+Signed-off-by: Christian Lamparter <chunkeey@gmail.com>
+---
+ drivers/hwmon/tc654.c | 103 +++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 86 insertions(+), 17 deletions(-)
+
+--- a/drivers/hwmon/tc654.c
++++ b/drivers/hwmon/tc654.c
+@@ -15,6 +15,7 @@
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+ #include <linux/slab.h>
++#include <linux/thermal.h>
+ #include <linux/util_macros.h>
+ 
+ enum tc654_regs {
+@@ -132,6 +133,9 @@ struct tc654_data {
+ 			 * writable register used to control the duty
+ 			 * cycle of the V OUT output.
+ 			 */
++
++	/* optional cooling device */
++	struct thermal_cooling_device *cdev;
+ };
+ 
+ /* helper to grab and cache data, at most one time per second */
+@@ -367,36 +371,30 @@ static ssize_t pwm_mode_store(struct dev
+ static const int tc654_pwm_map[16] = { 77,  88, 102, 112, 124, 136, 148, 160,
+ 				      172, 184, 196, 207, 219, 231, 243, 255};
+ 
++static int get_pwm(struct tc654_data *data)
++{
++	if (data->config & TC654_REG_CONFIG_SDM)
++		return 0;
++	else
++		return tc654_pwm_map[data->duty_cycle];
++}
++
+ static ssize_t pwm_show(struct device *dev, struct device_attribute *da,
+ 			char *buf)
+ {
+ 	struct tc654_data *data = tc654_update_client(dev);
+-	int pwm;
+ 
+ 	if (IS_ERR(data))
+ 		return PTR_ERR(data);
+ 
+-	if (data->config & TC654_REG_CONFIG_SDM)
+-		pwm = 0;
+-	else
+-		pwm = tc654_pwm_map[data->duty_cycle];
+-
+-	return sprintf(buf, "%d\n", pwm);
++	return sprintf(buf, "%d\n", get_pwm(data));
+ }
+ 
+-static ssize_t pwm_store(struct device *dev, struct device_attribute *da,
+-			 const char *buf, size_t count)
++static int _set_pwm(struct tc654_data *data, unsigned long val)
+ {
+-	struct tc654_data *data = dev_get_drvdata(dev);
+ 	struct i2c_client *client = data->client;
+-	unsigned long val;
+ 	int ret;
+ 
+-	if (kstrtoul(buf, 10, &val))
+-		return -EINVAL;
+-	if (val > 255)
+-		return -EINVAL;
+-
+ 	mutex_lock(&data->update_lock);
+ 
+ 	if (val == 0)
+@@ -416,6 +414,22 @@ static ssize_t pwm_store(struct device *
+ 
+ out:
+ 	mutex_unlock(&data->update_lock);
++	return ret;
++}
++
++static ssize_t pwm_store(struct device *dev, struct device_attribute *da,
++		       const char *buf, size_t count)
++{
++	struct tc654_data *data = dev_get_drvdata(dev);
++	unsigned long val;
++	int ret;
++
++	if (kstrtoul(buf, 10, &val))
++		return -EINVAL;
++	if (val > 255)
++		return -EINVAL;
++
++	ret = _set_pwm(data, val);
+ 	return ret < 0 ? ret : count;
+ }
+ 
+@@ -447,6 +461,47 @@ static struct attribute *tc654_attrs[] =
+ 
+ ATTRIBUTE_GROUPS(tc654);
+ 
++/* cooling device */
++
++static int tc654_get_max_state(struct thermal_cooling_device *cdev,
++			       unsigned long *state)
++{
++	*state = 255;
++	return 0;
++}
++
++static int tc654_get_cur_state(struct thermal_cooling_device *cdev,
++                              unsigned long *state)
++{
++	struct tc654_data *data = tc654_update_client(cdev->devdata);
++
++	if (IS_ERR(data))
++		return PTR_ERR(data);
++
++	*state = get_pwm(data);
++	return 0;
++}
++
++static int tc654_set_cur_state(struct thermal_cooling_device *cdev,
++			       unsigned long state)
++{
++	struct tc654_data *data = tc654_update_client(cdev->devdata);
++
++	if (IS_ERR(data))
++		return PTR_ERR(data);
++
++	if (state > 255)
++		return -EINVAL;
++
++	return _set_pwm(data, state);
++}
++
++static const struct thermal_cooling_device_ops tc654_fan_cool_ops = {
++	.get_max_state = tc654_get_max_state,
++	.get_cur_state = tc654_get_cur_state,
++	.set_cur_state = tc654_set_cur_state,
++};
++
+ /*
+  * device probe and removal
+  */
+@@ -478,7 +533,21 @@ static int tc654_probe(struct i2c_client
+ 	hwmon_dev =
+ 	    devm_hwmon_device_register_with_groups(dev, client->name, data,
+ 						   tc654_groups);
+-	return PTR_ERR_OR_ZERO(hwmon_dev);
++	if (IS_ERR(hwmon_dev))
++		return PTR_ERR(hwmon_dev);
++
++#if IS_ENABLED(CONFIG_OF)
++	/* Optional cooling device register for Device tree platforms */
++	data->cdev = thermal_of_cooling_device_register(client->dev.of_node,
++							"tc654", hwmon_dev,
++							&tc654_fan_cool_ops);
++#else /* CONFIG_OF */
++	/* Optional cooling device register for non Device tree platforms */
++	data->cdev = thermal_cooling_device_register("tc654", hwmon_dev,
++						     &tc654_fan_cool_ops);
++#endif /* CONFIG_OF */
++
++	return PTR_ERR_OR_ZERO(data->cdev);
+ }
+ 
+ static const struct i2c_device_id tc654_id[] = {

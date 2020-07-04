@@ -1,0 +1,68 @@
+--- a/drivers/thermal/qcom/tsens-ipq8064.c
++++ b/drivers/thermal/qcom/tsens-ipq8064.c
+@@ -18,6 +18,7 @@
+ #include <linux/regmap.h>
+ #include <linux/thermal.h>
+ #include <linux/nvmem-consumer.h>
++#include <linux/of_platform.h>
+ #include <linux/io.h>
+ #include <linux/interrupt.h>
+ #include "tsens.h"
+@@ -320,15 +321,42 @@ static void hw_init(struct tsens_priv *p
+ 	INIT_WORK(&priv->tsens_work, tsens_scheduler_fn);
+ }
+ 
++static const struct regmap_config tsens_config = {
++	.name		= "tm",
++	.reg_bits	= 32,
++	.val_bits	= 32,
++	.reg_stride	= 4,
++};
++
+ static int init_ipq8064(struct tsens_priv *priv)
+ {
+-	int ret, i;
++	struct device *dev = priv->dev;
+ 	u32 reg_cntl, offset = 0;
++	struct resource *res;
++	resource_size_t size;
++	void __iomem *base;
++	int ret, i;
++	struct platform_device *op = of_find_device_by_node(priv->dev->of_node);
++
++	if (!op)
++		return -EINVAL;
+ 
+-	init_common(priv);
+-	if (!priv->tm_map)
+-		return -ENODEV;
++	/* old DTs where SROT and TM were in a contiguous 2K block */
++	priv->tm_offset = 0x1000;
+ 
++	res = platform_get_resource(op, IORESOURCE_MEM, 0);
++	size = resource_size(res);
++	base = devm_ioremap(&op->dev, res->start, size);
++	if (IS_ERR(base)) {
++		ret = PTR_ERR(base);
++		goto err_put_device;
++	}
++
++	priv->tm_map = devm_regmap_init_mmio(dev, base, &tsens_config);
++	if (IS_ERR(priv->tm_map)) {
++		ret = PTR_ERR(priv->tm_map);
++		goto err_put_device;
++	}
+ 	/*
+ 	 * The status registers for each sensor are discontiguous
+ 	 * because some SoCs have 5 sensors while others have more
+@@ -367,6 +395,10 @@ static int init_ipq8064(struct tsens_pri
+ 		return ret;
+ 
+ 	return 0;
++
++err_put_device:
++	put_device(&op->dev);
++	return ret;
+ }
+ 
+ static int calibrate_ipq8064(struct tsens_priv *priv)

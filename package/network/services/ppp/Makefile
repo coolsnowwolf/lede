@@ -9,18 +9,19 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=ppp
-PKG_RELEASE:=5
+PKG_RELEASE:=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/paulusmack/ppp
-PKG_SOURCE_VERSION:=78cd384ce0f48bb5edb84e4fe9a574eab4a4ad14
-PKG_MIRROR_HASH:=cf284c312b0c90974d11f8aeece173bcac8475f5b810911f4feb2c5a4db263fe
+PKG_SOURCE_DATE:=2020-05-25
+PKG_SOURCE_VERSION:=ddd57c279f467e18c4fb3a661f21a069a5a37a1f
+PKG_MIRROR_HASH:=aac65e65dd25eaf8978a7a0b3258c863d90e29e247dd33d95276c0c189bcd424
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=BSD-4-Clause
 PKG_CPE_ID:=cpe:/a:samba:ppp
 
 PKG_RELEASE_VERSION:=2.4.8
-PKG_VERSION:=$(PKG_RELEASE_VERSION)
+PKG_VERSION:=$(PKG_RELEASE_VERSION).git-$(PKG_SOURCE_DATE)
 
 PKG_BUILD_DEPENDS:=libpcap
 
@@ -38,7 +39,7 @@ endef
 
 define Package/ppp
 $(call Package/ppp/Default)
-  DEPENDS:=+kmod-ppp +libpthread +shellsync +kmod-mppe
+  DEPENDS:=+kmod-ppp
   TITLE:=PPP daemon
   VARIANT:=default
 endef
