@@ -7,12 +7,40 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mt_wifi
-P4REV:=8
+P4REV:=10
 PKG_VERSION:=5.0.4.0
 
-PKG_MAINTAINER:=MeIsReallyBa
-
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_NAME)
+
+include $(INCLUDE_DIR)/package.mk
+
+TAR_CMD=$(HOST_TAR) -C $(1)/ $(TAR_OPTIONS)
+
+define KernelPackage/mt_wifi
+  CATEGORY:=Kernel modules
+  TITLE:=MTK wifi AP driver
+ifneq ($(CONFIG_MTK_WHNAT_SUPPORT), )
+  FILES:=$(PKG_BUILD_DIR)/mt_wifi_ap/mt_wifi.ko \
+	$(PKG_BUILD_DIR)/mt_wifi/embedded/tools/plug_in/whnat/mt_whnat.ko
+  AUTOLOAD:=$(call AutoProbe,mt_wifi mt_whnat)
+else
+  FILES:=$(PKG_BUILD_DIR)/mt_wifi_ap/mt_wifi.ko
+  AUTOLOAD:=$(call AutoProbe,mt_wifi)
+endif  
+  SUBMENU:=Wireless Drivers
+  MENU:=1
+endef
+
+ifeq ($(CONFIG_7615_DBDC_MODE),y)
+	CONFIG_FILE:=dbdc
+else
+	CONFIG_FILE:=in
+endif
+
+define KernelPackage/mt_wifi/config
+	source "$(SOURCE)/config.$(CONFIG_FILE)"
+endef
+
 PKG_KCONFIG:= \
 	AP_SUPPORT \
 	RT_FIRST_CARD \
@@ -175,30 +203,6 @@ PKG_KCONFIG:= \
 
 PKG_CONFIG_DEPENDS:=$(foreach c, $(PKG_KCONFIG),$(if $(CONFIG_MTK_$c),CONFIG_$(c)))
 
-include $(INCLUDE_DIR)/package.mk
-
-TAR_CMD=$(HOST_TAR) -C $(1)/ $(TAR_OPTIONS)
-
-define KernelPackage/mt_wifi
-  CATEGORY:=Kernel modules
-  TITLE:=MTK wifi AP driver
-  DEPENDS:=@TARGET_ramips
-ifneq ($(CONFIG_MTK_WHNAT_SUPPORT), )
-  FILES:=$(PKG_BUILD_DIR)/mt_wifi_ap/mt_wifi.ko \
-	$(PKG_BUILD_DIR)/mt_wifi/embedded/tools/plug_in/whnat/mt_whnat.ko
-  AUTOLOAD:=$(call AutoProbe,mt_wifi mt_whnat)
-else
-  FILES:=$(PKG_BUILD_DIR)/mt_wifi_ap/mt_wifi.ko
-  AUTOLOAD:=$(call AutoProbe,mt_wifi)
-endif
-  SUBMENU:=Wireless Drivers
-  MENU:=1
-endef
-
-define KernelPackage/mt_wifi/config
-	source "$(SOURCE)/config.in"
-endef
-
 define Build/Compile
 	$(MAKE) -C "$(LINUX_DIR)" V=1 \
 		CROSS_COMPILE="$(TARGET_CROSS)" \
@@ -212,14 +216,25 @@ define KernelPackage/mt_wifi/install
 	$(INSTALL_DIR) $(1)/etc/init.d/
 	$(INSTALL_DIR) $(1)/lib/wifi/
 	$(INSTALL_DIR) $(1)/etc/wireless/mt7615/
+	$(INSTALL_DIR) $(1)/etc/wireless/mt7603/
 	$(INSTALL_DIR) $(1)/etc_ro/Wireless/RT2860AP/
+ifeq ($(CONFIG_7615_DBDC_MODE),y)
+	$(INSTALL_BIN) ./dbdc/l1profile.dat $(1)/etc/wireless/
+	$(INSTALL_BIN) ./dbdc/mt7615.1.2G.dat $(1)/etc/wireless/mt7615/
+	$(INSTALL_BIN) ./dbdc/mt7615.1.5G.dat $(1)/etc/wireless/mt7615/
+	$(INSTALL_BIN) ./dbdc/SingleSKU.dat $(1)/etc_ro/Wireless/RT2860AP/
+	$(INSTALL_BIN) ./dbdc/SingleSKU_BF.dat $(1)/etc_ro/Wireless/RT2860AP/
+	$(INSTALL_BIN) ./dbdc/mt7615.lua $(1)/lib/wifi
+	$(INSTALL_BIN) ./dbdc/firmware.sh $(1)/etc/init.d/
+else
 	$(INSTALL_BIN) ./files/l1profile.dat $(1)/etc/wireless/
-	$(INSTALL_BIN) ./files/mt7615.1.2G.dat $(1)/etc/wireless/mt7615/
-	$(INSTALL_BIN) ./files/mt7615.1.5G.dat $(1)/etc/wireless/mt7615/
+	$(INSTALL_BIN) ./files/mt7615.1.dat $(1)/etc/wireless/mt7615/
+	$(INSTALL_BIN) ./files/mt7615.2.dat $(1)/etc/wireless/mt7615/
 	$(INSTALL_BIN) ./files/SingleSKU.dat $(1)/etc_ro/Wireless/RT2860AP/
 	$(INSTALL_BIN) ./files/SingleSKU_BF.dat $(1)/etc_ro/Wireless/RT2860AP/
 	$(INSTALL_BIN) ./files/mt7615.lua $(1)/lib/wifi
 	$(INSTALL_BIN) ./files/firmware.sh $(1)/etc/init.d/
+endif
 endef
 
 $(eval $(call KernelPackage,mt_wifi))
