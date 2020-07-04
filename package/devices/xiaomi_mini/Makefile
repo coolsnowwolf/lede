@@ -19,7 +19,7 @@ define Package/miwifi_mini
   MAINTAINER:=Twinzo
   SECTION:=Twinzo devices
   CATEGORY:=Twinzo devices
-  DEPENDS:=+automount +autosamba +ipv6helper \
+  DEPENDS:=+automount +autosamba +ipv6helper +luci-app-CE \
 		+luci-app-devcom +RNDIS +luci-app-timecontrol +luci-app-control-timewol \
 		+luci-app-idns +luci-app-hd-idle +luci-app-minidlna \
 		+luci-app-netdata \

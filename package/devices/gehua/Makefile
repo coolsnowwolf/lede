@@ -19,7 +19,7 @@ define Package/gehua
   MAINTAINER:=Twinzo
   SECTION:=Twinzo devices
   CATEGORY:=Twinzo devices
-  DEPENDS:=+automount +autosamba +ipv6helper +luci-ssl-openssl \
+  DEPENDS:=+automount +autosamba +ipv6helper +luci-app-CE +luci-ssl-openssl \
 		+luci-app-devcom +RNDIS +luci-app-timecontrol +luci-app-control-timewol \
 		+luci-app-idns +luci-app-hd-idle +luci-app-minidlna +luci-app-adguardhome\
 		+luci-app-mwan3helper +luci-app-sqm +luci-app-netdata \

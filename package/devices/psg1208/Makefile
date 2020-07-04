@@ -19,7 +19,7 @@ define Package/psg1208
   MAINTAINER:=Twinzo
   SECTION:=Twinzo devices
   CATEGORY:=Twinzo devices
-  DEPENDS:=+ipv6helper +luci-ssl-openssl \
+  DEPENDS:=+ipv6helper +luci-app-CE +luci-ssl-openssl \
 		+luci-app-devcom +luci-app-timecontrol \
 		+luci-app-idns \
 		+luci-app-sccustom +luci-app-serverchan \

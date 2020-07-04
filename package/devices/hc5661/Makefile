@@ -19,7 +19,7 @@ define Package/hc5661
   MAINTAINER:=Twinzo
   SECTION:=Twinzo devices
   CATEGORY:=Twinzo devices
-  DEPENDS:=+automount +autosamba +ipv6helper +luci-ssl-openssl \
+  DEPENDS:=+automount +autosamba +ipv6helper +luci-app-CE +luci-ssl-openssl \
 		+luci-app-devcom +RNDIS +luci-app-timecontrol \
 		+luci-app-idns +luci-app-hd-idle +luci-app-minidlna \
 		+luci-app-netdata \
