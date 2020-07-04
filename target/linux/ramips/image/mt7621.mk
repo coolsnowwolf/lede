@@ -694,7 +694,7 @@ define Device/netgear_r6850
   SERCOMM_HWVER := A001
   SERCOMM_SWVER := 0x0052
   IMAGE_SIZE := 40960k
-  DEVICE_PACKAGES += -kmod-mt7603 -wpad-openssl kmod-mt7603e kmod-mt7615d luci-app-mtwifi
+  DEVICE_PACKAGES += -kmod-mt7603 -wpad-openssl kmod-mt7603e luci-app-mtwifi
 endef
 TARGET_DEVICES += netgear_r6850
 
@@ -1017,7 +1017,7 @@ define Device/xiaomi_mi-router-ac2100
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Mi Router AC2100
-  DEVICE_PACKAGES := -kmod-mt7603 -wpad-openssl kmod-mt7603e kmod-mt7615d luci-app-mtwifi uboot-envtools
+  DEVICE_PACKAGES := -kmod-mt7603 -wpad-openssl kmod-mt7603e luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += xiaomi_mi-router-ac2100
 
@@ -1034,7 +1034,7 @@ define Device/xiaomi_redmi-router-ac2100
   IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | check-size $$$$(IMAGE_SIZE)
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Redmi Router AC2100
-  DEVICE_PACKAGES := -kmod-mt7603 -wpad-openssl kmod-mt7603e kmod-mt7615d luci-app-mtwifi uboot-envtools
+  DEVICE_PACKAGES := -kmod-mt7603 -wpad-openssl kmod-mt7603e luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += xiaomi_redmi-router-ac2100
 
