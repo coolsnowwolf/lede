@@ -1,0 +1,1 @@
+BOARDNAME:=Generic

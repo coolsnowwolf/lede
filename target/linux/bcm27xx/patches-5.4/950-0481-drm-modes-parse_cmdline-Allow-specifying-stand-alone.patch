@@ -1,0 +1,247 @@
+From b3212eba63b541206e12c8dc31fc0d99d916b210 Mon Sep 17 00:00:00 2001
+From: Hans de Goede <hdegoede@redhat.com>
+Date: Mon, 18 Nov 2019 16:51:29 +0100
+Subject: [PATCH] drm/modes: parse_cmdline: Allow specifying
+ stand-alone options
+
+Commit 7b1cce760afe38b40f0989cdf10b2190dccf9815 upstream.
+
+Some options which can be specified on the commandline, such as
+margin_right=..., margin_left=..., etc. are applied not only to the
+specified mode, but to all modes. As such it would be nice if the user
+can simply say e.g.
+video=HDMI-1:margin_right=14,margin_left=24,margin_bottom=36,margin_top=42
+
+This commit refactors drm_mode_parse_command_line_for_connector() to
+add support for this, and as a nice side effect also cleans up the
+function a bit.
+
+Acked-by: Maxime Ripard <mripard@kernel.org>
+Signed-off-by: Hans de Goede <hdegoede@redhat.com>
+Link: https://patchwork.freedesktop.org/patch/msgid/20191118155134.30468-8-hdegoede@redhat.com
+---
+ drivers/gpu/drm/drm_modes.c                   | 92 +++++++------------
+ .../gpu/drm/selftests/drm_cmdline_selftests.h |  2 +
+ .../drm/selftests/test-drm_cmdline_parser.c   | 50 ++++++++++
+ 3 files changed, 86 insertions(+), 58 deletions(-)
+
+--- a/drivers/gpu/drm/drm_modes.c
++++ b/drivers/gpu/drm/drm_modes.c
+@@ -1684,17 +1684,6 @@ static const char * const drm_named_mode
+ 	"PAL",
+ };
+ 
+-static bool drm_named_mode_is_in_whitelist(const char *mode, unsigned int size)
+-{
+-	int i;
+-
+-	for (i = 0; i < ARRAY_SIZE(drm_named_modes_whitelist); i++)
+-		if (!strncmp(mode, drm_named_modes_whitelist[i], size))
+-			return true;
+-
+-	return false;
+-}
+-
+ /**
+  * drm_mode_parse_command_line_for_connector - parse command line modeline for connector
+  * @mode_option: optional per connector mode option
+@@ -1725,7 +1714,7 @@ bool drm_mode_parse_command_line_for_con
+ 					       struct drm_cmdline_mode *mode)
+ {
+ 	const char *name;
+-	bool named_mode = false, parse_extras = false;
++	bool freestanding = false, parse_extras = false;
+ 	unsigned int bpp_off = 0, refresh_off = 0, options_off = 0;
+ 	unsigned int mode_end = 0;
+ 	const char *bpp_ptr = NULL, *refresh_ptr = NULL, *extra_ptr = NULL;
+@@ -1745,49 +1734,14 @@ bool drm_mode_parse_command_line_for_con
+ 
+ 	name = mode_option;
+ 
+-	/*
+-	 * This is a bit convoluted. To differentiate between the
+-	 * named modes and poorly formatted resolutions, we need a
+-	 * bunch of things:
+-	 *   - We need to make sure that the first character (which
+-	 *     would be our resolution in X) is a digit.
+-	 *   - If not, then it's either a named mode or a force on/off.
+-	 *     To distinguish between the two, we need to run the
+-	 *     extra parsing function, and if not, then we consider it
+-	 *     a named mode.
+-	 *
+-	 * If this isn't enough, we should add more heuristics here,
+-	 * and matching unit-tests.
+-	 */
+-	if (!isdigit(name[0]) && name[0] != 'x') {
+-		unsigned int namelen = strlen(name);
+-
+-		/*
+-		 * Only the force on/off options can be in that case,
+-		 * and they all take a single character.
+-		 */
+-		if (namelen == 1) {
+-			ret = drm_mode_parse_cmdline_extra(name, namelen, true,
+-							   connector, mode);
+-			if (!ret)
+-				return true;
+-		}
+-
+-		named_mode = true;
+-	}
+-
+ 	/* Try to locate the bpp and refresh specifiers, if any */
+ 	bpp_ptr = strchr(name, '-');
+ 	if (bpp_ptr)
+ 		bpp_off = bpp_ptr - name;
+ 
+ 	refresh_ptr = strchr(name, '@');
+-	if (refresh_ptr) {
+-		if (named_mode)
+-			return false;
+-
++	if (refresh_ptr)
+ 		refresh_off = refresh_ptr - name;
+-	}
+ 
+ 	/* Locate the start of named options */
+ 	options_ptr = strchr(name, ',');
+@@ -1807,23 +1761,45 @@ bool drm_mode_parse_command_line_for_con
+ 		parse_extras = true;
+ 	}
+ 
+-	if (named_mode) {
+-		if (mode_end + 1 > DRM_DISPLAY_MODE_LEN)
+-			return false;
+-
+-		if (!drm_named_mode_is_in_whitelist(name, mode_end))
+-			return false;
++	/* First check for a named mode */
++	for (i = 0; i < ARRAY_SIZE(drm_named_modes_whitelist); i++) {
++		ret = str_has_prefix(name, drm_named_modes_whitelist[i]);
++		if (ret == mode_end) {
++			if (refresh_ptr)
++				return false; /* named + refresh is invalid */
++
++			strcpy(mode->name, drm_named_modes_whitelist[i]);
++			mode->specified = true;
++			break;
++		}
++	}
+ 
+-		strscpy(mode->name, name, mode_end + 1);
+-	} else {
++	/* No named mode? Check for a normal mode argument, e.g. 1024x768 */
++	if (!mode->specified && isdigit(name[0])) {
+ 		ret = drm_mode_parse_cmdline_res_mode(name, mode_end,
+ 						      parse_extras,
+ 						      connector,
+ 						      mode);
+ 		if (ret)
+ 			return false;
++
++		mode->specified = true;
++	}
++
++	/* No mode? Check for freestanding extras and/or options */
++	if (!mode->specified) {
++		unsigned int len = strlen(mode_option);
++
++		if (bpp_ptr || refresh_ptr)
++			return false; /* syntax error */
++
++		if (len == 1 || (len >= 2 && mode_option[1] == ','))
++			extra_ptr = mode_option;
++		else
++			options_ptr = mode_option - 1;
++
++		freestanding = true;
+ 	}
+-	mode->specified = true;
+ 
+ 	if (bpp_ptr) {
+ 		ret = drm_mode_parse_cmdline_bpp(bpp_ptr, &bpp_end_ptr, mode);
+@@ -1859,7 +1835,7 @@ bool drm_mode_parse_command_line_for_con
+ 		else
+ 			len = strlen(extra_ptr);
+ 
+-		ret = drm_mode_parse_cmdline_extra(extra_ptr, len, false,
++		ret = drm_mode_parse_cmdline_extra(extra_ptr, len, freestanding,
+ 						   connector, mode);
+ 		if (ret)
+ 			return false;
+@@ -1867,7 +1843,7 @@ bool drm_mode_parse_command_line_for_con
+ 
+ 	if (options_ptr) {
+ 		ret = drm_mode_parse_cmdline_options(options_ptr + 1,
+-						     false,
++						     freestanding,
+ 						     connector, mode);
+ 		if (ret)
+ 			return false;
+--- a/drivers/gpu/drm/selftests/drm_cmdline_selftests.h
++++ b/drivers/gpu/drm/selftests/drm_cmdline_selftests.h
+@@ -63,3 +63,5 @@ cmdline_test(drm_cmdline_test_multiple_o
+ cmdline_test(drm_cmdline_test_invalid_option)
+ cmdline_test(drm_cmdline_test_bpp_extra_and_option)
+ cmdline_test(drm_cmdline_test_extra_and_option)
++cmdline_test(drm_cmdline_test_freestanding_options)
++cmdline_test(drm_cmdline_test_freestanding_force_e_and_options)
+--- a/drivers/gpu/drm/selftests/test-drm_cmdline_parser.c
++++ b/drivers/gpu/drm/selftests/test-drm_cmdline_parser.c
+@@ -1053,6 +1053,56 @@ static int drm_cmdline_test_extra_and_op
+ 	return 0;
+ }
+ 
++static int drm_cmdline_test_freestanding_options(void *ignored)
++{
++	struct drm_cmdline_mode mode = { };
++
++	FAIL_ON(!drm_mode_parse_command_line_for_connector("margin_right=14,margin_left=24,margin_bottom=36,margin_top=42",
++							   &no_connector,
++							   &mode));
++	FAIL_ON(mode.specified);
++	FAIL_ON(mode.refresh_specified);
++	FAIL_ON(mode.bpp_specified);
++
++	FAIL_ON(mode.tv_margins.right != 14);
++	FAIL_ON(mode.tv_margins.left != 24);
++	FAIL_ON(mode.tv_margins.bottom != 36);
++	FAIL_ON(mode.tv_margins.top != 42);
++
++	FAIL_ON(mode.rb);
++	FAIL_ON(mode.cvt);
++	FAIL_ON(mode.interlace);
++	FAIL_ON(mode.margins);
++	FAIL_ON(mode.force != DRM_FORCE_UNSPECIFIED);
++
++	return 0;
++}
++
++static int drm_cmdline_test_freestanding_force_e_and_options(void *ignored)
++{
++	struct drm_cmdline_mode mode = { };
++
++	FAIL_ON(!drm_mode_parse_command_line_for_connector("e,margin_right=14,margin_left=24,margin_bottom=36,margin_top=42",
++							   &no_connector,
++							   &mode));
++	FAIL_ON(mode.specified);
++	FAIL_ON(mode.refresh_specified);
++	FAIL_ON(mode.bpp_specified);
++
++	FAIL_ON(mode.tv_margins.right != 14);
++	FAIL_ON(mode.tv_margins.left != 24);
++	FAIL_ON(mode.tv_margins.bottom != 36);
++	FAIL_ON(mode.tv_margins.top != 42);
++
++	FAIL_ON(mode.rb);
++	FAIL_ON(mode.cvt);
++	FAIL_ON(mode.interlace);
++	FAIL_ON(mode.margins);
++	FAIL_ON(mode.force != DRM_FORCE_ON);
++
++	return 0;
++}
++
+ #include "drm_selftest.c"
+ 
+ static int __init test_drm_cmdline_init(void)

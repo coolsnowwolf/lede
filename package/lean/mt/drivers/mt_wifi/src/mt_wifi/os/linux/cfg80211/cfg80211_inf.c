@@ -35,10 +35,10 @@
 
 #if (KERNEL_VERSION(2, 6, 28) <= LINUX_VERSION_CODE)
 #ifdef RT_CFG80211_SUPPORT
-
 extern INT apcli_tx_pkt_allowed(
-	RTMP_ADAPTER * pAd, struct wifi_dev *wdev,
-	PNDIS_PACKET pPacket, UCHAR * pWcid);
+	RTMP_ADAPTER *pAd,
+	struct wifi_dev *wdev,
+	PNDIS_PACKET pkt);
 
 BOOLEAN CFG80211DRV_OpsChgVirtualInf(RTMP_ADAPTER *pAd, VOID *pData)
 {
@@ -415,7 +415,9 @@ VOID RTMP_CFG80211_VirtualIF_Init(
 	PNET_DEV	new_dev_p;
 	APCLI_STRUCT	*pApCliEntry;
 	struct wifi_dev *wdev;
+    struct wifi_dev *wdev_main = &pAd->ApCfg.MBSSID[MAIN_MBSSID].wdev;
 	UINT apidx = MAIN_MBSSID;
+    UINT32 Inf = INT_MBSSID;
 #ifdef MT_MAC
 	INT32 Value;
 	UCHAR MacByte = 0;
@@ -546,6 +548,43 @@ VOID RTMP_CFG80211_VirtualIF_Init(
 				BSS_INFO_SYNC_MODE_FEATURE);
 		AsicBssInfoUpdate(pAd, wdev->bss_info_argument);
 		break;
+
+	case RT_CMD_80211_IFTYPE_AP:
+			pNetDevOps->priv_flags = INT_MBSSID;
+
+			pAd->cfg80211_ctrl.isCfgInApMode = RT_CMD_80211_IFTYPE_AP;
+			apidx = preIfIndex;
+			wdev = &pAd->ApCfg.MBSSID[apidx].wdev;
+
+			/* follow main wdev settings   */
+			wdev->channel = wdev_main->channel;
+			wdev->CentralChannel = wdev_main->CentralChannel;
+			wdev->PhyMode = wdev_main->PhyMode;
+			wdev->bw = wdev_main->bw;
+			wdev->extcha = wdev_main->extcha;
+			/* ================= */
+
+			wdev_init(pAd, wdev, WDEV_TYPE_AP, new_dev_p, apidx, (VOID *)&pAd->ApCfg.MBSSID[apidx], (void *)pAd);
+			wdev_attr_update(pAd, wdev);
+			wdev->bss_info_argument.OwnMacIdx = wdev->OmacIdx;
+
+			bcn_buf_init(pAd, &pAd->ApCfg.MBSSID[apidx].wdev);
+
+			RTMP_OS_NETDEV_SET_PRIV(new_dev_p, pAd);
+			RTMP_OS_NETDEV_SET_WDEV(new_dev_p, wdev);
+			if (rtmp_wdev_idx_reg(pAd, wdev) < 0) {
+				MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL,
+					DBG_LVL_ERROR, ("%s: Assign wdev idx for %s failed, free net device!\n",
+					__func__, RTMP_OS_NETDEV_GET_DEVNAME(new_dev_p)));
+				RtmpOSNetDevFree(new_dev_p);
+				break;
+			}
+
+			COPY_MAC_ADDR(pAd->ApCfg.MBSSID[apidx].wdev.if_addr, pNetDevOps->devAddr);
+			COPY_MAC_ADDR(pAd->ApCfg.MBSSID[apidx].wdev.bssid, pNetDevOps->devAddr);
+
+			wifi_sys_linkup(wdev, NULL);
+			break;
 
 	default:
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Unknown CFG80211 I/F Type (%d)\n", DevType));

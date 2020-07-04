@@ -111,11 +111,7 @@ static inline long
 ugly_hack_sleep_on_timeout(wait_queue_head_t *q, long timeout)
 {
 	unsigned long flags;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,13,0))
 	wait_queue_entry_t wait;
-#else
-	wait_queue_t wait;
-#endif
 
 	init_waitqueue_entry(&wait, current);
 
@@ -523,9 +519,7 @@ typedef struct DSL_DEV_Device
 #define IFX_DFEIR		0
 #define IFX_DYING_GASP	1
 	DSL_DEV_MeiDebug_t lop_debugwr;  /* dying gasp */
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,0))
 	struct module *owner;
-#endif
 } DSL_DEV_Device_t;			/* ifx_adsl_device_t */
 
 #define DSL_DEV_PRIVATE(dev)  ((ifx_mei_device_private_t*)(dev->pPriv))

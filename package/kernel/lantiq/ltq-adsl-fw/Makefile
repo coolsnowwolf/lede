@@ -13,7 +13,7 @@ PKG_RELEASE:=1
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/ltq-dsl-fw-$(PKG_VERSION)
 PKG_SOURCE:=ltq-dsl-fw-$(PKG_VERSION).tar.bz2
-PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources/
+PKG_SOURCE_URL:=https://sources.openwrt.org/
 PKG_HASH:=28676d41c4b76e5bf7a2c5eae106a61fb96b93eabc0cb71120575fff9997269f
 PKG_MAINTAINER:=John Crispin <john@phrozen.org>
 
@@ -45,8 +45,8 @@ endef
 
 define Package/kmod-ltq-adsl-$(BUILD_VARIANT)/install
 	$(INSTALL_DIR) $(1)/lib/firmware/
-	$(CP) $(PKG_BUILD_DIR)/$(FW_NAME)/ltq-dsl-fw-$(ANNEX)-$(SOC).bin $(1)/lib/firmware/
-	ln -s /lib/firmware/$(FW_NAME)/ltq-dsl-fw-$(ANNEX)-$(SOC).bin $(1)/lib/firmware/adsl.bin
+	$(CP) $(PKG_BUILD_DIR)/ltq-dsl-fw-$(ANNEX)-$(SOC).bin $(1)/lib/firmware/
+	ln -s /lib/firmware/ltq-dsl-fw-$(ANNEX)-$(SOC).bin $(1)/lib/firmware/adsl.bin
 endef
 
 $(eval $(call BuildPackage,kmod-ltq-adsl-danube-fw-a))

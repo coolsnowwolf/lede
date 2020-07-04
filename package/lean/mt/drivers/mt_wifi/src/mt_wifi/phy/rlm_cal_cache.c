@@ -267,13 +267,14 @@ VOID rlmCalCacheDump(VOID *rlmCalCache)
 INT TxLpfCalInfoAlloc_7622(RTMP_ADAPTER *pAd, VOID **pptr)
 {
 	P_TXLPF_CAL_INFO_MT7622_T pTxLpfCalInfo;
+	if (IS_MT7622(pAd)) {
+		if (os_alloc_mem(pAd, (UCHAR **)&pTxLpfCalInfo, sizeof(TXLPF_CAL_INFO_MT7622_T)) != NDIS_STATUS_SUCCESS)
+			return 0;
 
-	if (os_alloc_mem(pAd, (UCHAR **)&pTxLpfCalInfo, sizeof(TXLPF_CAL_INFO_MT7622_T)) != NDIS_STATUS_SUCCESS)
-		return 0;
-
-	*pptr = pTxLpfCalInfo;
-	os_zero_mem(pTxLpfCalInfo, sizeof(TXLPF_CAL_INFO_MT7622_T));
-	os_move_mem(pTxLpfCalInfo->au4Data, pAd->CalTXLPFGImage, CAL_TXLPFG_SIZE);
+		*pptr = pTxLpfCalInfo;
+		os_zero_mem(pTxLpfCalInfo, sizeof(TXLPF_CAL_INFO_MT7622_T));
+		os_move_mem(pTxLpfCalInfo->au4Data, pAd->CalTXLPFGImage, CAL_TXLPFG_SIZE);
+	}
 	return sizeof(TXLPF_CAL_INFO_MT7622_T);
 }
 
@@ -281,12 +282,14 @@ INT TxDcIqCalInfoAlloc_7622(RTMP_ADAPTER *pAd, VOID **pptr)
 {
 	P_TXDCIQ_CAL_INFO_T pTxDcIqCalInfo;
 
+	if (IS_MT7622(pAd)) {
 	if (os_alloc_mem(pAd, (UCHAR **)&pTxDcIqCalInfo, sizeof(TXDCIQ_CAL_INFO_T)) != NDIS_STATUS_SUCCESS)
 		return 0;
 
 	*pptr = pTxDcIqCalInfo;
 	os_zero_mem(pTxDcIqCalInfo, sizeof(TXDCIQ_CAL_INFO_T));
 	os_move_mem(pTxDcIqCalInfo->au4Data, pAd->CalTXDCIQImage, CAL_TXDCIQ_SIZE);
+	}
 	return sizeof(TXDCIQ_CAL_INFO_T);
 }
 
@@ -297,11 +300,13 @@ INT TxDpdCalInfoAlloc_7622(RTMP_ADAPTER *pAd, VOID **pptr, UINT32 chan)
 	if (os_alloc_mem(pAd, (UCHAR **)&pTxDpdCalInfo, sizeof(TXDPD_CAL_INFO_T)) != NDIS_STATUS_SUCCESS)
 		return 0;
 
+	if (IS_MT7622(pAd)) {
 	*pptr = pTxDpdCalInfo;
 	os_zero_mem(pTxDpdCalInfo, sizeof(TXDPD_CAL_INFO_T));
 	pTxDpdCalInfo->u4Chan = chan;
 	os_move_mem(pTxDpdCalInfo->au4Data, pAd->CalTXDPDImage + CAL_TXDPD_PERCHAN_SIZE * (chan-1),
 		CAL_TXDPD_PERCHAN_SIZE);
+	}
 	return sizeof(TXDPD_CAL_INFO_T);
 }
 #endif /* PRE_CAL_MT7622_SUPPORT */

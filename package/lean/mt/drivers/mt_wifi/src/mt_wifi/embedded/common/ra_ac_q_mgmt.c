@@ -424,7 +424,8 @@ VOID RedCalForceRateRatio(UINT8 ucWcid, UINT16 u2N9ARCnt, UINT16 u2N9FRCnt, RTMP
 		/* TotalCnt = AutoRateCnt(N9) + ForceRateCnt(N9) +  ForceRateCnt(Driver) */
 		u2TxTotalCnt = u2N9ARCnt + u2N9FRCnt + prRedSta->u2DriverFRCnt;
 		/* Ratio = [ForceRateCnt(N9) +  ForceRateCnt(Driver)]/TotalCnt */
-		ucRatio = (u2N9FRCnt + prRedSta->u2DriverFRCnt) * 100 / u2TxTotalCnt;
+		if (u2TxTotalCnt > 0)
+			ucRatio = (u2N9FRCnt + prRedSta->u2DriverFRCnt) * 100 / u2TxTotalCnt;
 
 		if (ucRatio >= FORCE_RATIO_THRESHOLD)
 			prRedSta->i4MpduTime = -1;

@@ -23,6 +23,7 @@
 
 #include "rt_config.h"
 #include "os/wbsys_res.h"
+#include <linux/dma-mapping.h>
 
 #if defined(CONFIG_RA_CLASSIFIER) && (!defined(CONFIG_RA_CLASSIFIER_MODULE))
 extern int (*ra_classifier_init_func)(void);
@@ -77,6 +78,13 @@ static int wbsys_probe(struct platform_device *pdev)
 	base_addr = (unsigned long)devm_ioremap(&pdev->dev, res->start, resource_size(res));
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 			 ("%s(): irq=%d,base_addr=%lx\n", __func__, dev_irq, base_addr));
+
+	if (dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32))) {
+		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR,
+				 ("set DMA mask failed!errno=%d\n", rv));
+		goto err_out;
+	}
+
 	/*other global resource allocation*/
 #ifdef MEM_ALLOC_INFO_SUPPORT
 	MemInfoListInital();

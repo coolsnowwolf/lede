@@ -1,0 +1,364 @@
+From d4806e4f103895387dc679fe53e1f4a5d41391bf Mon Sep 17 00:00:00 2001
+From: Peter Chen <peter.chen@nxp.com>
+Date: Thu, 18 Jan 2018 11:03:24 +0800
+Subject: [PATCH] MLK-17380-3 usb: move EH SINGLE_STEP_SET_FEATURE implement to
+ core
+
+Since other USB 2.0 host may need it, like USB2 for XHCI. We move
+this design to HCD core.
+
+Acked-by: Jun Li <jun.li@nxp.com>
+Signed-off-by: Peter Chen <peter.chen@nxp.com>
+(cherry picked from commit 035a27e1a3088261f40f77534aaccfe5825c2f96)
+---
+ drivers/usb/core/hcd.c      | 134 ++++++++++++++++++++++++++++++++++++++++++
+ drivers/usb/host/ehci-hcd.c |   4 ++
+ drivers/usb/host/ehci-hub.c | 139 --------------------------------------------
+ drivers/usb/host/ehci-q.c   |   2 +-
+ include/linux/usb/hcd.h     |  13 ++++-
+ 5 files changed, 151 insertions(+), 141 deletions(-)
+
+--- a/drivers/usb/core/hcd.c
++++ b/drivers/usb/core/hcd.c
+@@ -2104,6 +2104,140 @@ int usb_hcd_get_frame_number (struct usb
+ }
+ 
+ /*-------------------------------------------------------------------------*/
++#ifdef CONFIG_USB_HCD_TEST_MODE
++
++static void usb_ehset_completion(struct urb *urb)
++{
++	struct completion  *done = urb->context;
++
++	complete(done);
++}
++/*
++ * Allocate and initialize a control URB. This request will be used by the
++ * EHSET SINGLE_STEP_SET_FEATURE test in which the DATA and STATUS stages
++ * of the GetDescriptor request are sent 15 seconds after the SETUP stage.
++ * Return NULL if failed.
++ */
++static struct urb *request_single_step_set_feature_urb(
++	struct usb_device	*udev,
++	void			*dr,
++	void			*buf,
++	struct completion	*done
++) {
++	struct urb *urb;
++	struct usb_hcd *hcd = bus_to_hcd(udev->bus);
++	struct usb_host_endpoint *ep;
++
++	urb = usb_alloc_urb(0, GFP_KERNEL);
++	if (!urb)
++		return NULL;
++
++	urb->pipe = usb_rcvctrlpipe(udev, 0);
++	ep = (usb_pipein(urb->pipe) ? udev->ep_in : udev->ep_out)
++				[usb_pipeendpoint(urb->pipe)];
++	if (!ep) {
++		usb_free_urb(urb);
++		return NULL;
++	}
++
++	urb->ep = ep;
++	urb->dev = udev;
++	urb->setup_packet = (void *)dr;
++	urb->transfer_buffer = buf;
++	urb->transfer_buffer_length = USB_DT_DEVICE_SIZE;
++	urb->complete = usb_ehset_completion;
++	urb->status = -EINPROGRESS;
++	urb->actual_length = 0;
++	urb->transfer_flags = URB_DIR_IN;
++	usb_get_urb(urb);
++	atomic_inc(&urb->use_count);
++	atomic_inc(&urb->dev->urbnum);
++	urb->setup_dma = dma_map_single(
++			hcd->self.sysdev,
++			urb->setup_packet,
++			sizeof(struct usb_ctrlrequest),
++			DMA_TO_DEVICE);
++	urb->transfer_dma = dma_map_single(
++			hcd->self.sysdev,
++			urb->transfer_buffer,
++			urb->transfer_buffer_length,
++			DMA_FROM_DEVICE);
++	urb->context = done;
++	return urb;
++}
++
++int ehset_single_step_set_feature(struct usb_hcd *hcd, int port)
++{
++	int retval = -ENOMEM;
++	struct usb_ctrlrequest *dr;
++	struct urb *urb;
++	struct usb_device *udev;
++	struct usb_device_descriptor *buf;
++	DECLARE_COMPLETION_ONSTACK(done);
++
++	/* Obtain udev of the rhub's child port */
++	udev = usb_hub_find_child(hcd->self.root_hub, port);
++	if (!udev) {
++		dev_err(hcd->self.controller, "No device attached to the RootHub\n");
++		return -ENODEV;
++	}
++	buf = kmalloc(USB_DT_DEVICE_SIZE, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++
++	dr = kmalloc(sizeof(struct usb_ctrlrequest), GFP_KERNEL);
++	if (!dr) {
++		kfree(buf);
++		return -ENOMEM;
++	}
++
++	/* Fill Setup packet for GetDescriptor */
++	dr->bRequestType = USB_DIR_IN;
++	dr->bRequest = USB_REQ_GET_DESCRIPTOR;
++	dr->wValue = cpu_to_le16(USB_DT_DEVICE << 8);
++	dr->wIndex = 0;
++	dr->wLength = cpu_to_le16(USB_DT_DEVICE_SIZE);
++	urb = request_single_step_set_feature_urb(udev, dr, buf, &done);
++	if (!urb)
++		goto cleanup;
++
++	/* Submit just the SETUP stage */
++	retval = hcd->driver->submit_single_step_set_feature(hcd, urb, 1);
++	if (retval)
++		goto out1;
++	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(2000))) {
++		usb_kill_urb(urb);
++		retval = -ETIMEDOUT;
++		dev_err(hcd->self.controller,
++			"%s SETUP stage timed out on ep0\n", __func__);
++		goto out1;
++	}
++	msleep(15 * 1000);
++
++	/* Complete remaining DATA and STATUS stages using the same URB */
++	urb->status = -EINPROGRESS;
++	usb_get_urb(urb);
++	atomic_inc(&urb->use_count);
++	atomic_inc(&urb->dev->urbnum);
++	retval = hcd->driver->submit_single_step_set_feature(hcd, urb, 0);
++	if (!retval && !wait_for_completion_timeout(&done,
++						msecs_to_jiffies(2000))) {
++		usb_kill_urb(urb);
++		retval = -ETIMEDOUT;
++		dev_err(hcd->self.controller,
++			"%s IN stage timed out on ep0\n", __func__);
++	}
++out1:
++	usb_free_urb(urb);
++cleanup:
++	kfree(dr);
++	kfree(buf);
++	return retval;
++}
++EXPORT_SYMBOL_GPL(ehset_single_step_set_feature);
++#endif /* CONFIG_USB_HCD_TEST_MODE */
++
++/*-------------------------------------------------------------------------*/
+ 
+ #ifdef	CONFIG_PM
+ 
+--- a/drivers/usb/host/ehci-hcd.c
++++ b/drivers/usb/host/ehci-hcd.c
+@@ -1232,6 +1232,10 @@ static const struct hc_driver ehci_hc_dr
+ 	 * device support
+ 	 */
+ 	.free_dev =		ehci_remove_device,
++#ifdef CONFIG_USB_HCD_TEST_MODE
++	/* EH SINGLE_STEP_SET_FEATURE test support */
++	.submit_single_step_set_feature	= ehci_submit_single_step_set_feature,
++#endif
+ };
+ 
+ void ehci_init_driver(struct hc_driver *drv,
+--- a/drivers/usb/host/ehci-hub.c
++++ b/drivers/usb/host/ehci-hub.c
+@@ -725,145 +725,6 @@ ehci_hub_descriptor (
+ }
+ 
+ /*-------------------------------------------------------------------------*/
+-#ifdef CONFIG_USB_HCD_TEST_MODE
+-
+-#define EHSET_TEST_SINGLE_STEP_SET_FEATURE 0x06
+-
+-static void usb_ehset_completion(struct urb *urb)
+-{
+-	struct completion  *done = urb->context;
+-
+-	complete(done);
+-}
+-static int submit_single_step_set_feature(
+-	struct usb_hcd	*hcd,
+-	struct urb	*urb,
+-	int		is_setup
+-);
+-
+-/*
+- * Allocate and initialize a control URB. This request will be used by the
+- * EHSET SINGLE_STEP_SET_FEATURE test in which the DATA and STATUS stages
+- * of the GetDescriptor request are sent 15 seconds after the SETUP stage.
+- * Return NULL if failed.
+- */
+-static struct urb *request_single_step_set_feature_urb(
+-	struct usb_device	*udev,
+-	void			*dr,
+-	void			*buf,
+-	struct completion	*done
+-) {
+-	struct urb *urb;
+-	struct usb_hcd *hcd = bus_to_hcd(udev->bus);
+-	struct usb_host_endpoint *ep;
+-
+-	urb = usb_alloc_urb(0, GFP_KERNEL);
+-	if (!urb)
+-		return NULL;
+-
+-	urb->pipe = usb_rcvctrlpipe(udev, 0);
+-	ep = (usb_pipein(urb->pipe) ? udev->ep_in : udev->ep_out)
+-				[usb_pipeendpoint(urb->pipe)];
+-	if (!ep) {
+-		usb_free_urb(urb);
+-		return NULL;
+-	}
+-
+-	urb->ep = ep;
+-	urb->dev = udev;
+-	urb->setup_packet = (void *)dr;
+-	urb->transfer_buffer = buf;
+-	urb->transfer_buffer_length = USB_DT_DEVICE_SIZE;
+-	urb->complete = usb_ehset_completion;
+-	urb->status = -EINPROGRESS;
+-	urb->actual_length = 0;
+-	urb->transfer_flags = URB_DIR_IN;
+-	usb_get_urb(urb);
+-	atomic_inc(&urb->use_count);
+-	atomic_inc(&urb->dev->urbnum);
+-	urb->setup_dma = dma_map_single(
+-			hcd->self.sysdev,
+-			urb->setup_packet,
+-			sizeof(struct usb_ctrlrequest),
+-			DMA_TO_DEVICE);
+-	urb->transfer_dma = dma_map_single(
+-			hcd->self.sysdev,
+-			urb->transfer_buffer,
+-			urb->transfer_buffer_length,
+-			DMA_FROM_DEVICE);
+-	urb->context = done;
+-	return urb;
+-}
+-
+-static int ehset_single_step_set_feature(struct usb_hcd *hcd, int port)
+-{
+-	int retval = -ENOMEM;
+-	struct usb_ctrlrequest *dr;
+-	struct urb *urb;
+-	struct usb_device *udev;
+-	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
+-	struct usb_device_descriptor *buf;
+-	DECLARE_COMPLETION_ONSTACK(done);
+-
+-	/* Obtain udev of the rhub's child port */
+-	udev = usb_hub_find_child(hcd->self.root_hub, port);
+-	if (!udev) {
+-		ehci_err(ehci, "No device attached to the RootHub\n");
+-		return -ENODEV;
+-	}
+-	buf = kmalloc(USB_DT_DEVICE_SIZE, GFP_KERNEL);
+-	if (!buf)
+-		return -ENOMEM;
+-
+-	dr = kmalloc(sizeof(struct usb_ctrlrequest), GFP_KERNEL);
+-	if (!dr) {
+-		kfree(buf);
+-		return -ENOMEM;
+-	}
+-
+-	/* Fill Setup packet for GetDescriptor */
+-	dr->bRequestType = USB_DIR_IN;
+-	dr->bRequest = USB_REQ_GET_DESCRIPTOR;
+-	dr->wValue = cpu_to_le16(USB_DT_DEVICE << 8);
+-	dr->wIndex = 0;
+-	dr->wLength = cpu_to_le16(USB_DT_DEVICE_SIZE);
+-	urb = request_single_step_set_feature_urb(udev, dr, buf, &done);
+-	if (!urb)
+-		goto cleanup;
+-
+-	/* Submit just the SETUP stage */
+-	retval = submit_single_step_set_feature(hcd, urb, 1);
+-	if (retval)
+-		goto out1;
+-	if (!wait_for_completion_timeout(&done, msecs_to_jiffies(2000))) {
+-		usb_kill_urb(urb);
+-		retval = -ETIMEDOUT;
+-		ehci_err(ehci, "%s SETUP stage timed out on ep0\n", __func__);
+-		goto out1;
+-	}
+-	msleep(15 * 1000);
+-
+-	/* Complete remaining DATA and STATUS stages using the same URB */
+-	urb->status = -EINPROGRESS;
+-	usb_get_urb(urb);
+-	atomic_inc(&urb->use_count);
+-	atomic_inc(&urb->dev->urbnum);
+-	retval = submit_single_step_set_feature(hcd, urb, 0);
+-	if (!retval && !wait_for_completion_timeout(&done,
+-						msecs_to_jiffies(2000))) {
+-		usb_kill_urb(urb);
+-		retval = -ETIMEDOUT;
+-		ehci_err(ehci, "%s IN stage timed out on ep0\n", __func__);
+-	}
+-out1:
+-	usb_free_urb(urb);
+-cleanup:
+-	kfree(dr);
+-	kfree(buf);
+-	return retval;
+-}
+-#endif /* CONFIG_USB_HCD_TEST_MODE */
+-/*-------------------------------------------------------------------------*/
+ 
+ int ehci_hub_control(
+ 	struct usb_hcd	*hcd,
+--- a/drivers/usb/host/ehci-q.c
++++ b/drivers/usb/host/ehci-q.c
+@@ -1165,7 +1165,7 @@ submit_async (
+  * performed; TRUE - SETUP and FALSE - IN+STATUS
+  * Returns 0 if success
+  */
+-static int submit_single_step_set_feature(
++static int ehci_submit_single_step_set_feature(
+ 	struct usb_hcd  *hcd,
+ 	struct urb      *urb,
+ 	int             is_setup
+--- a/include/linux/usb/hcd.h
++++ b/include/linux/usb/hcd.h
+@@ -409,7 +409,10 @@ struct hc_driver {
+ 	int	(*find_raw_port_number)(struct usb_hcd *, int);
+ 	/* Call for power on/off the port if necessary */
+ 	int	(*port_power)(struct usb_hcd *hcd, int portnum, bool enable);
+-
++	/* Call for SINGLE_STEP_SET_FEATURE Test for USB2 EH certification */
++#define EHSET_TEST_SINGLE_STEP_SET_FEATURE 0x06
++	int	(*submit_single_step_set_feature)(struct usb_hcd *,
++			struct urb *, int);
+ };
+ 
+ static inline int hcd_giveback_urb_in_bh(struct usb_hcd *hcd)
+@@ -474,6 +477,14 @@ int usb_hcd_setup_local_mem(struct usb_h
+ 
+ struct platform_device;
+ extern void usb_hcd_platform_shutdown(struct platform_device *dev);
++#ifdef CONFIG_USB_HCD_TEST_MODE
++extern int ehset_single_step_set_feature(struct usb_hcd *hcd, int port);
++#else
++static inline int ehset_single_step_set_feature(struct usb_hcd *hcd, int port)
++{
++	return 0;
++}
++#endif /* CONFIG_USB_HCD_TEST_MODE */
+ 
+ #ifdef CONFIG_USB_PCI
+ struct pci_dev;

@@ -36,12 +36,14 @@
 #include "rt_os_util.h"
 #include "security/dot11i_wpa.h"
 #include <linux/rtnetlink.h>
+#include <linux/fs.h>
 #include <linux/notifier.h>
 #include <linux/oom.h>
 #include <linux/netdevice.h>
 #include <linux/mm.h>
 #include <net/sch_generic.h>
 #include "rt_os_net.h"
+#include "rt_config.h"
 #ifdef MEM_ALLOC_INFO_SUPPORT
 #include "meminfo_list.h"
 #endif /* MEM_ALLOC_INFO_SUPPORT */
@@ -49,6 +51,10 @@
 #ifdef CONFIG_FAST_NAT_SUPPORT
 #include <net/ra_nat.h>
 #endif /*CONFIG_FAST_NAT_SUPPORT*/
+
+#ifdef VLAN_SUPPORT
+#include <linux/if_vlan.h>
+#endif /*VLAN_SUPPORT*/
 
 /* TODO */
 #undef RT_CONFIG_IF_OPMODE_ON_AP
@@ -211,9 +217,13 @@ static inline VOID __RTMP_OS_Init_Timer(
 	IN PVOID data)
 {
 	if (!timer_pending(pTimer)) {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))
+		timer_setup(pTimer, function, 0);
+#else
 		init_timer(pTimer);
 		pTimer->data = (unsigned long)data;
 		pTimer->function = function;
+#endif
 	}
 }
 
@@ -346,8 +356,11 @@ NDIS_STATUS RTMPAllocateNdisPacket(
 {
 	struct sk_buff *pPacket;
 	/* Add LEN_CCMP_HDR + LEN_CCMP_MIC for PMF */
+#ifdef BB_SOC
+	pPacket = skbmgr_dev_alloc_skb4k();
+#else
 	DEV_ALLOC_SKB(pPacket, (HeaderLen + DataLen + RTMP_PKT_TAIL_PADDING + LEN_CCMP_HDR + LEN_CCMP_MIC));
-
+#endif
 	if (pPacket == NULL) {
 		*ppPacket = NULL;
 #ifdef DEBUG
@@ -414,11 +427,14 @@ void RTMP_QueryPacketInfo(
 
 
 
-PNDIS_PACKET ClonePacket(PNET_DEV ndev, PNDIS_PACKET pkt, UCHAR *buf, ULONG sz)
+PNDIS_PACKET ClonePacket(BOOLEAN moniflag, PNET_DEV ndev, PNDIS_PACKET pkt, UCHAR *buf, ULONG sz)
 {
 	struct sk_buff *pRxPkt, *pClonedPkt;
 
 	ASSERT(pkt);
+#ifdef SNIFFER_SUPPORT
+	if (moniflag == FALSE)								
+#endif
 	ASSERT(sz < 1530);
 	pRxPkt = RTPKT_TO_OSPKT(pkt);
 	/* clone the packet */
@@ -817,7 +833,11 @@ int RtmpOSFileWrite(RTMP_OS_FD osfd, char *pDataPtr, int writeLen)
 #if (KERNEL_VERSION(4, 1, 0) > LINUX_VERSION_CODE)
 	return osfd->f_op->write(osfd, pDataPtr, (size_t) writeLen, &osfd->f_pos);
 #else
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))
 	return kernel_write(osfd, pDataPtr, (size_t) writeLen, &osfd->f_pos);
+#else
+	return kernel_write(osfd, pDataPtr, (size_t) writeLen, &osfd->f_pos);
+#endif
 #endif
 }
 
@@ -914,6 +934,9 @@ static inline INT __RtmpOSTaskNotifyToExit(OS_TASK *pTask)
 	pTask->taskPID = THREAD_PID_INIT_VALUE;
 	complete_and_exit(&pTask->taskComplete, 0);
 #endif
+#ifdef WIFI_DIAG
+	DiagDelPid(pTask);
+#endif
 	return 0;
 }
 
@@ -946,6 +969,9 @@ static inline void __RtmpOSTaskCustomize(OS_TASK *pTask)
 	RTMP_GET_OS_PID(pTask->taskPID, current->pid);
 	/* signal that we've started the thread */
 	complete(&pTask->taskComplete);
+#endif
+#ifdef WIFI_DIAG
+	DiagAddPid(pTask);
 #endif
 }
 
@@ -1601,6 +1627,7 @@ void RtmpOSNetDevDetach(PNET_DEV pNetDev)
 	unregister_netdevice(pNetDev);
 #if (KERNEL_VERSION(2, 6, 31) <= LINUX_VERSION_CODE)
 	vfree(pNetDevOps);
+	pNetDev->netdev_ops = NULL;
 #endif
 }
 
@@ -1866,6 +1893,13 @@ NDIS_STATUS AdapterBlockAllocateMemory(VOID *handle, VOID **ppAd, UINT32 SizeOfp
 
 
 /* ========================================================================== */
+#ifdef VLAN_SUPPORT
+VOID* RtmpOsVLANInsertTag(PNDIS_PACKET pPacket, UINT16 tci)
+{
+	return (VOID*)vlan_insert_tag(RTPKT_TO_OSPKT(pPacket), cpu2be16(ETH_TYPE_VLAN), tci);
+}
+#endif /*VLAN_SUPPORT*/
+
 
 UINT RtmpOsWirelessExtVerGet(VOID)
 {
@@ -1917,7 +1951,12 @@ VOID RtmpDrvAllMacPrint(
 				MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("no file write method\n"));
 			}
 #else
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))
 			kernel_write(file_w, msg, strlen(msg), &file_w->f_pos);
+
+#else
+			__vfs_write(file_w, msg, strlen(msg), &file_w->f_pos);
+#endif
 #endif
 				MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s", msg));
 				macAddr += AddrStep;
@@ -1977,7 +2016,12 @@ VOID RtmpDrvAllE2PPrint(
 					MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("no file write method\n"));
 				}
 #else
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))
 				kernel_write(file_w, msg, strlen(msg), &file_w->f_pos);
+
+#else
+				__vfs_write(file_w, msg, strlen(msg), &file_w->f_pos);
+#endif
 #endif
 				MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s", msg));
 				eepAddr += AddrStep;
@@ -2025,7 +2069,12 @@ VOID RtmpDrvAllRFPrint(
 				MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("no file write method\n"));
 			}
 #else
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))
 			kernel_write(file_w, pBuf, BufLen, &file_w->f_pos);
+
+#else
+			__vfs_write(file_w, pBuf, BufLen, &file_w->f_pos);
+#endif
 #endif
 		}
 
@@ -2062,6 +2111,15 @@ VOID RtmpOsCmdUp(RTMP_OS_TASK *pCmdQTask)
 #endif /* KTHREAD_SUPPORT */
 }
 
+BOOLEAN RtmpOsIsCmdThreadRunning(RTMP_OS_TASK *pCmdQTask)
+{
+	OS_TASK *pTask = RTMP_OS_TASK_GET(pCmdQTask);
+#ifdef KTHREAD_SUPPORT
+	return pTask->kthread_running;
+#else
+	return FALSE;
+#endif /* KTHREAD_SUPPORT */
+}
 
 /*
  * ========================================================================
@@ -5029,11 +5087,14 @@ void os_system_tx_queue_dump(PNET_DEV dev)
 			if (skb->head) {
 				p = virt_to_head_page(skb->head);
 				page_size = PAGE_SIZE << compound_order(p);
-				printk("%s(): index:%d, page:%p ,rfcnt:%d, page size:%lu, order:%u, dtor:%d\n", __func__, k++, p,
+				printk("%s(): index:%d, page:%p ,rfcnt:%d, page size:%zu, order:%u, dtor:%d\n", __func__, k++, p,
 					atomic_read(&p->_count), page_size , compound_order(p), p->compound_dtor);
 			}
 			skb = skb->next;
 		}
+		printk("%s(): qdisc stats!\n", __func__);
+		printk("%s(): qlen: %d, backlog: %d\n", __func__, q->qstats.qlen, q->qstats.backlog);
+		printk("%s(): drops: %d, requeues: %d, overlimits:% d\n", __func__, q->qstats.drops, q->qstats.requeues, q->qstats.overlimits);
 	}
 }
 #endif /*CONFIG_DBG_QDISC*/

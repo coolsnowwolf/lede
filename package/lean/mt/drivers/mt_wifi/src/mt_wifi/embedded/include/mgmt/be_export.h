@@ -141,6 +141,7 @@ struct ht_op {
 	UINT32	frag_thld;
 	UCHAR	pkt_thld;
 	UINT32	len_thld;
+	UCHAR	retry_limit;
 	UCHAR	l_sig_txop;
 };
 
@@ -183,6 +184,19 @@ struct dev_rate_info {
 	UCHAR MinTxRate;
 	/* Same value to fill in TXD. TxRate is 6-bit */
 	UCHAR TxRate;
+#ifdef MIN_PHY_RATE_SUPPORT
+	UCHAR MinPhyDataRate;
+	UCHAR MinPhyBeaconRate;
+	UCHAR MinPhyMgmtRate;
+	UCHAR MinPhyBcMcRate;
+	BOOL  LimitClientSupportRate;
+	BOOL  DisableCCKRate;
+	HTTRANSMIT_SETTING MinPhyDataRateTransmit;
+	HTTRANSMIT_SETTING MinPhyBeaconRateTransmit;
+	HTTRANSMIT_SETTING MinPhyMgmtRateTransmit;
+	HTTRANSMIT_SETTING MinPhyBcMcRateTransmit;
+#endif /* MIN_PHY_RATE_SUPPORT */
+
 	/* MGMT frame PHY rate setting when operatin at Ht rate. */
 	HTTRANSMIT_SETTING MlmeTransmit;
 };
@@ -209,6 +223,7 @@ UCHAR wlan_operate_get_cen_ch_1(struct wifi_dev *wdev);
 UINT32 wlan_operate_get_frag_thld(struct wifi_dev *wdev);
 UCHAR wlan_operate_get_rts_pkt_thld(struct wifi_dev *wdev);
 UINT32 wlan_operate_get_rts_len_thld(struct wifi_dev *wdev);
+UCHAR wlan_operate_get_rts_retry_limit(struct wifi_dev *wdev);
 UINT8 wlan_operate_get_tx_stream(struct wifi_dev *wdev);
 UINT8 wlan_operate_get_rx_stream(struct wifi_dev *wdev);
 VOID *wlan_operate_get_ht_cap(struct wifi_dev *wdev);

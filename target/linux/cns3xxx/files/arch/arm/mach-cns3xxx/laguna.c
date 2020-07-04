@@ -114,16 +114,17 @@ static struct laguna_board_info laguna_info __initdata;
 static struct mtd_partition laguna_nor_partitions[] = {
 	{
 		.name		= "uboot",
-		.size		= SZ_256K,
 		.offset		= 0,
+		.size		= SZ_256K,
 		.mask_flags	= MTD_WRITEABLE,
 	}, {
 		.name		= "params",
+		.offset		= MTDPART_OFS_APPEND,
 		.size		= SZ_128K,
-		.offset		= SZ_256K,
 	}, {
 		.name		= "firmware",
-		.offset		= SZ_256K + SZ_128K,
+		.offset		= MTDPART_OFS_APPEND,
+		.size		= MTDPART_SIZ_FULL,
 	},
 };
 
@@ -155,16 +156,17 @@ static struct platform_device laguna_nor_pdev = {
 static struct mtd_partition laguna_spi_partitions[] = {
 	{
 		.name		= "uboot",
-		.size		= SZ_256K,
 		.offset		= 0,
+		.size		= SZ_256K,
 		.mask_flags	= MTD_WRITEABLE,
 	}, {
 		.name		= "params",
+		.offset		= MTDPART_OFS_APPEND,
 		.size		= SZ_256K,
-		.offset		= SZ_256K,
 	}, {
 		.name		= "firmware",
-		.offset		= SZ_512K,
+		.offset		= MTDPART_OFS_APPEND,
+		.size		= MTDPART_SIZ_FULL,
 	},
 };
 

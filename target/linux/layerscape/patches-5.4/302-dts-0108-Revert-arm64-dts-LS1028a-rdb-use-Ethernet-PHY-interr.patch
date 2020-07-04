@@ -1,0 +1,85 @@
+From c57a0efc17627d0077408544ded02674aefdecae Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Mon, 6 Jan 2020 16:59:02 +0200
+Subject: [PATCH] Revert "arm64: dts: LS1028a-rdb: use Ethernet PHY interrupt"
+
+This reverts commit 841edb98671cfc4d6f010393ac429c78082ec4bd.
+
+There are 2 separate issues with interrupts on the LS1028A-RDB board:
+
+1. The GPIO1_DAT25 interrupt line is shared, so there is a real risk of
+   race conditions if used in edge-triggered mode, as we currently do.
+   This can be illustrated in the following setup:
+   - Take 2 LS1028A-RDB boards
+   - Connect swp0 to swp0, swp1 to swp1, swp2 to swp2
+   - Plug/unplug the power to board 2, 10 times in a row. This will make
+     the PHYs lose link simultaneously.
+   - Notice that at one point, the net devices on board 1 remain in a
+     state where not all the links are down (visible in "ip link"):
+
+     5: swp0: <BROADCAST,MULTICAST,UP> mtu 1468 qdisc pfifo_fast master br0 state UP mode DEFAULT group default qlen 1000
+         link/ether be:97:36:d3:3d:70 brd ff:ff:ff:ff:ff:ff
+     6: swp1: <BROADCAST,MULTICAST,UP> mtu 1468 qdisc pfifo_fast master br0 state UP mode DEFAULT group default qlen 1000
+         link/ether be:97:36:d3:3d:71 brd ff:ff:ff:ff:ff:ff
+     7: swp2: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1468 qdisc pfifo_fast master br0 state DOWN mode DEFAULT group default qlen 1000
+         link/ether be:97:36:d3:3d:72 brd ff:ff:ff:ff:ff:ff
+
+   This cannot be solved by making the interrupts level-triggered,
+   because the gpio-mpc8xxx controller only supports generating
+   edge-triggered interrupts. So the effective reality is that we
+   cannot not use shared interrupts connected to the gpio1
+   interrupt-parent.
+
+2. The uBUS1 and uBUS2 slots that share this interrupt line with the
+   Ethernet PHYs are not pulled up by default, they are left floating on
+   current revisions of the LS1028A-RDB boards. So sufficient electrical
+   noise on these lines will make the CPLD think there's an interrupt
+   request, so it asserts the GPIO1_DAT25 signal and leaves it asserted.
+   This means that the PHYs on those boards will never have link when
+   used in interrupt mode, because their IRQ will be masked by the uBUS
+   line that is erroneously kept asserted. In poll mode this issue does
+   not occur.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+---
+ arch/arm64/boot/dts/freescale/fsl-ls1028a-rdb.dts | 10 ----------
+ 1 file changed, 10 deletions(-)
+
+--- a/arch/arm64/boot/dts/freescale/fsl-ls1028a-rdb.dts
++++ b/arch/arm64/boot/dts/freescale/fsl-ls1028a-rdb.dts
+@@ -206,8 +206,6 @@
+ 		#size-cells = <0>;
+ 		sgmii_phy0: ethernet-phy@2 {
+ 			reg = <0x2>;
+-			interrupt-parent = <&gpio1>;
+-			interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
+ 		};
+ 	};
+ };
+@@ -219,26 +217,18 @@
+ &enetc_mdio_pf3 {
+ 	qsgmii_phy1: ethernet-phy@4 {
+ 		reg = <0x10>;
+-		interrupt-parent = <&gpio1>;
+-		interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
+ 	};
+ 
+ 	qsgmii_phy2: ethernet-phy@5 {
+ 		reg = <0x11>;
+-		interrupt-parent = <&gpio1>;
+-		interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
+ 	};
+ 
+ 	qsgmii_phy3: ethernet-phy@6 {
+ 		reg = <0x12>;
+-		interrupt-parent = <&gpio1>;
+-		interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
+ 	};
+ 
+ 	qsgmii_phy4: ethernet-phy@7 {
+ 		reg = <0x13>;
+-		interrupt-parent = <&gpio1>;
+-		interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
+ 	};
+ };
+ 

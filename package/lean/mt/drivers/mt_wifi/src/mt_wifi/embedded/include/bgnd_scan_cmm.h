@@ -25,7 +25,12 @@
 #define BGND_RDD_DETEC				2
 #define BGND_CS_ANN					3
 #define BGND_SCAN_WAIT				4
+#ifdef ONDEMAND_DFS
+#define BGND_ONDMND_CNLSWITCH_ON	5
+#define BGND_SCAN_MAX_STATE			6
+#else
 #define BGND_SCAN_MAX_STATE			5
+#endif
 
 #define BGND_SCAN_REQ				0
 #define BGND_SCAN_TIMEOUT			1
@@ -54,7 +59,22 @@
 #define B0IrpiSwCtrlResetOffset		18
 #define B0IpiEnableCtrlOffset		12
 #define B0IpiEnableCtrlValue		0x5
+/*redefine for band1 for code readability*/
+#define B1IrpiSwCtrlOnlyOffset		29
+#define B1IrpiSwCtrlResetOffset		18
+#define B1IpiEnableCtrlOffset       12
+#define B1IpiEnableCtrlValue        0x5
+
+
 #define DefaultIdleTimeThreshold		80000 /*  *8us */
+
+#ifdef ONDEMAND_DFS
+enum Dynamic_OnDemand_Chnl_Update_Status_Code {
+	DFS_CHNL_UPDATE_FAIL = 0,
+	DFS_CHNL_UPDATE_PASS,
+	DFS_CHNL_UPDATE_WAIT
+};
+#endif
 
 enum {
 	TYPE_BGND_DISABLE_SCAN,

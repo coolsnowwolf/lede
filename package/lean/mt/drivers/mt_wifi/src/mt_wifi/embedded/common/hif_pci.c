@@ -381,6 +381,11 @@ USHORT mtd_pci_write_tx_resource(
 	dma_cb->pNextNdisPacket = NULL;
 	dma_cb->PacketPa = pTxBlk->SrcBufPA;
 
+if (pTxBlk->TxFrameType != TX_FRAG_FRAME)
+		dma_cb->DmaBuf.AllocSize = mt_pci_get_buf_len(pAd, pTxBlk);
+	else
+		dma_cb->DmaBuf.AllocSize = write_first_buf(pAd, pTxBlk, pDMAHeaderBufVA);
+
 #ifndef RT_BIG_ENDIAN
 	pTxD = (TXD_STRUC *)dma_cb->AllocVa;
 #else
@@ -389,13 +394,14 @@ USHORT mtd_pci_write_tx_resource(
 	pTxD = (TXD_STRUC *)&tx_hw_info[0];
 	TmacLen = (cap->tx_hw_hdr_len - pTxBlk->hw_rsv_len);
 	MTMacInfoEndianChange(pAd,  (PUCHAR)(pDMAHeaderBufVA), TYPE_TMACINFO, TmacLen);
-	RTMPFrameEndianChange(pAd, (PUCHAR)(pDMAHeaderBufVA + TmacLen), DIR_WRITE, FALSE);
-#endif
 
-	if (pTxBlk->TxFrameType != TX_FRAG_FRAME)
-		dma_cb->DmaBuf.AllocSize = mt_pci_get_buf_len(pAd, pTxBlk);
-	else
-		dma_cb->DmaBuf.AllocSize = write_first_buf(pAd, pTxBlk, pDMAHeaderBufVA);
+	if (!TX_BLK_TEST_FLAG(pTxBlk, fTX_HDR_TRANS)) {
+		ra_dma_addr_t SrcBufPA = 0;
+
+		RTMPFrameEndianChange(pAd, (PUCHAR)(pTxBlk->pSrcBufData), DIR_WRITE, FALSE);
+		SrcBufPA = PCI_MAP_SINGLE(pAd, pTxBlk, 0, 1, RTMP_PCI_DMA_TODEVICE);
+	}
+#endif
 
 	dma_cb->DmaBuf.AllocPa = PCI_MAP_SINGLE(pAd, pDMAHeaderBufVA, dma_cb->DmaBuf.AllocSize, 0, RTMP_PCI_DMA_TODEVICE);
 	pTxD->SDPtr0 = dma_cb->DmaBuf.AllocPa;
@@ -931,22 +937,11 @@ BOOLEAN mtd_free_txd(RTMP_ADAPTER *pAd, UINT8 hif_idx)
 	while (tx_ring->TxSwFreeIdx != tx_ring->TxDmaIdx) {
 		dma_cb = &tx_ring->Cell[tx_ring->TxSwFreeIdx];
 
-#ifdef RT_BIG_ENDIAN
-		pDestTxD = (TXD_STRUC *)(dma_cb->AllocVa);
-		NdisMoveMemory(&hw_hdr_info[0], pDestTxD, TXD_SIZE);
-		pTxD = (TXD_STRUC *)&hw_hdr_info[0];
-		RTMPDescriptorEndianChange((PUCHAR)pTxD, TYPE_TXD);
-#endif
-
 		PCI_UNMAP_SINGLE(pAd, dma_cb->DmaBuf.AllocPa, dma_cb->DmaBuf.AllocSize, RTMP_PCI_DMA_TODEVICE);
 
 		/* flush dcache if no consistent memory is supported */
 		RTMP_DCACHE_FLUSH(dma_cb->AllocPa, TXD_SIZE);
 		INC_RING_INDEX(tx_ring->TxSwFreeIdx, tx_ring_size);
-#ifdef RT_BIG_ENDIAN
-		RTMPDescriptorEndianChange((PUCHAR)pTxD, TYPE_TXD);
-		WriteBackToDescriptor((PUCHAR)pDestTxD, (PUCHAR)pTxD, TRUE, TYPE_TXD);
-#endif
 	}
 	RTMP_SEM_UNLOCK(lock);
 
@@ -1547,7 +1542,7 @@ static INT rx_scatter_gather(
 #ifdef CONFIG_WIFI_BUILD_SKB
 			DEV_FREE_FRAG_BUF(pCurRxCell->pNdisPacket);
 #else
-			RELEASE_NDIS_PACKET(pAd, pRxCell->pNdisPacket, NDIS_STATUS_SUCCESS);
+			RELEASE_NDIS_PACKET(pAd, pCurRxCell->pNdisPacket, NDIS_STATUS_SUCCESS);
 #endif
 
 			pCurRxCell->pNdisPacket = RTMP_AllocateRxPacketBuffer(pRxRing,
@@ -2550,6 +2545,9 @@ VOID mtd_isr(RTMP_ADAPTER *pAd)
 		mt_int_status_clear(pAd, IntSource);
 		return;
 	}
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+	pAd->tr_ctl.total_int_count++;
+#endif
 
 	if (IntSource & MT_TxCoherent)
 		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR, (">>>TxCoherent<<<\n"));
@@ -2575,6 +2573,9 @@ VOID mtd_isr(RTMP_ADAPTER *pAd)
 			IntSource &= ~MT_INT_RX_DATA;
 		else
 			 pci_hif->IntPending |= MT_INT_RX_DATA;
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+		pAd->tr_ctl.rx_data_int_count++;
+#endif
 	}
 
 	if (IntSource & MT_INT_RX_CMD) {
@@ -2582,6 +2583,10 @@ VOID mtd_isr(RTMP_ADAPTER *pAd)
 			IntSource &= ~MT_INT_RX_CMD;
 		else
 			pci_hif->IntPending |= MT_INT_RX_CMD;
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+		pAd->tr_ctl.rx_cmd_int_count++;
+#endif
+
 	}
 
 	if (IntSource & MT_INT_RX_DLY) {
@@ -2711,6 +2716,10 @@ VOID mtd_non_rx_delay_isr(RTMP_ADAPTER *pAd)
 		return;
 	}
 
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+	pAd->tr_ctl.total_int_count++;
+#endif
+
 	if (IntSource & MT_TxCoherent)
 		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR, (">>>TxCoherent<<<\n"));
 
@@ -2740,6 +2749,9 @@ VOID mtd_non_rx_delay_isr(RTMP_ADAPTER *pAd)
 #ifdef CONFIG_TP_DBG
 		tp_dbg->IsrRxCnt++;
 #endif
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+		pAd->tr_ctl.rx_data_int_count++;
+#endif
 	}
 
 	if (IntSource & MT_INT_RX_CMD) {
@@ -2751,6 +2763,9 @@ VOID mtd_non_rx_delay_isr(RTMP_ADAPTER *pAd)
 
 #ifdef CONFIG_TP_DBG
 		tp_dbg->IsrRx1Cnt++;
+#endif
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+		pAd->tr_ctl.rx_cmd_int_count++;
 #endif
 	}
 

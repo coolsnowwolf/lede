@@ -218,6 +218,5 @@ struct mt_dev_priv {
 	unsigned long priv_flags;
 	UCHAR sniffer_mode;
 };
-
 #endif /* __RTMP_TYPE_H__ */
 

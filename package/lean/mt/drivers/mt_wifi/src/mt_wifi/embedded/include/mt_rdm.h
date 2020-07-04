@@ -41,6 +41,11 @@
 #define RDD_PULSEDBG 8
 #define RDD_READPULSE 9
 #define RDD_RESUME_BF 10
+#ifdef	CONFIG_RCSA_SUPPORT
+#define RDD_DETECT_INFO	11
+#define RDD_ALTX_CTRL	12
+#endif
+
 #else
 typedef enum {
 	RDD_STOP = 0,
@@ -62,11 +67,16 @@ typedef enum {
 
 #define HW_RDD0      0
 #define HW_RDD1      1
+#define HW_RDD_NUM   2
 
 #define RESTRICTION_BAND_LOW	116
 #define RESTRICTION_BAND_HIGH	128
 #define CHAN_SWITCH_PERIOD 10
 #define CHAN_NON_OCCUPANCY 1800
+
+#if defined(OFFCHANNEL_SCAN_FEATURE) && defined(ONDEMAND_DFS)
+#define CHAN_NON_OCCUPANCY_FREE 0
+#endif
 #define CAC_NON_WETHER_BAND 65
 #define CAC_WETHER_BAND 605
 #define GROUP1_LOWER 36
@@ -92,10 +102,32 @@ typedef enum {
 #define DFS_MACHINE_BASE	0
 #define DFS_BEFORE_SWITCH    0
 #define DFS_MAX_STATE		1
-#define DFS_CAC_END 0
-#define DFS_CHAN_SWITCH_TIMEOUT 1
-#define DFS_MAX_MSG			2
+
+typedef enum _ENUM_AP_DFS_STATES {
+	DFS_CAC_END = 0,
+	DFS_CHAN_SWITCH_TIMEOUT,
+#ifdef ONDEMAND_DFS
+	DFS_ONDEMAND_CAC_FINISH,
+#endif
+#ifdef DFS_VENDOR10_CUSTOM_FEATURE
+	DFS_V10_W56_APDOWN_FINISH,
+	DFS_V10_W56_APDOWN_ENBL,
+	DFS_V10_ACS_CSA_UPDATE,
+#endif
+	DFS_MAX_MSG
+} ENUM_AP_DFS_STATES;
+
 #define DFS_FUNC_SIZE (DFS_MAX_STATE * DFS_MAX_MSG)
+
+#ifdef ONDEMAND_DFS
+#define ONDEMAND_2x2MODE    0
+#define ONDEMAND_4x4MODE    1
+
+#define IS_ONDEMAND_DFS_MODE_4x4(_pAd)	\
+		(_pAd->CommonCfg.DfsParameter.bOnDemandDFSMode == TRUE)
+#define SET_ONDEMAND_DFS_MODE(_pAd, _param)		\
+		(_pAd->CommonCfg.DfsParameter.bOnDemandDFSMode = _param)
+#endif
 
 /* DFS zero wait */
 #define ZeroWaitCacApplyDefault      0xFF  /* Apply default setting */
@@ -140,6 +172,61 @@ enum {
 	RDD_DETMODE_ON,
 };
 
+
+#ifdef DFS_VENDOR10_CUSTOM_FEATURE
+#define V10_W52_SIZE           4
+#define V10_W53_SIZE           4
+#define V10_W56_VHT80_A_SIZE   4
+#define V10_W56_VHT80_B_SIZE   4
+#define V10_W56_VHT80_SIZE     (V10_W56_VHT80_A_SIZE + V10_W56_VHT80_A_SIZE)
+#define V10_W56_VHT20_SIZE     3
+#define V10_W56_SIZE          11
+#define V10_TOTAL_CHANNEL_COUNT (V10_W52_SIZE + V10_W53_SIZE \
+				+ V10_W56_VHT80_A_SIZE + V10_W56_VHT80_B_SIZE + V10_W56_VHT20_SIZE)
+#define V10_5G_TOTAL_CHNL_COUNT (V10_TOTAL_CHANNEL_COUNT + V10_LAST_SIZE)
+
+typedef enum _V10_NEC_GRP_LIST {
+	W52 = 0,    /* CH36~48 */
+	W53,        /* CH52~64 */
+	W56_UA,     /* CH100~112 */
+	W56_UB,     /* CH116~128 */
+	W56_UC,     /* CH132~140 */
+	W56_UAB,    /* VHT80 Ch 100 ~ 128*/
+	W56,        /* All W56 */
+	NA_GRP
+} V10_NEC_GRP_LIST;
+
+#define V10_LAST_SIZE 5
+
+#define GROUP5_LOWER 132
+
+#define GROUP6_LOWER 149
+
+#define V10_WEIGH_FACTOR_W53 3
+#define V10_WEIGH_FACTOR_W52 2
+#define V10_WEIGH_FACTOR_W56 1
+
+#define V10_W56_APDOWN_TIME 1805
+#define V10_BGND_SCAN_TIME 20
+#define V10_NORMAL_SCAN_TIME 200
+
+#define IS_V10_W56_VHT80_SWITCHED(_pAd) \
+		(_pAd->CommonCfg.DfsParameter.bV10W56SwitchVHT80 == TRUE)
+#define SET_V10_W56_VHT80_SWITCH(_pAd, switch) \
+			(_pAd->CommonCfg.DfsParameter.bV10W56SwitchVHT80 = switch)
+
+#define GET_V10_OFF_CHNL_TIME(_pAd) \
+	(_pAd->CommonCfg.DfsParameter.gV10OffChnlWaitTime)
+#define SET_V10_OFF_CHNL_TIME(_pAd, waitTime) \
+		(_pAd->CommonCfg.DfsParameter.gV10OffChnlWaitTime = waitTime)
+
+#define IS_V10_W56_GRP_VALID(_pAd) \
+	 (_pAd->CommonCfg.DfsParameter.bV10W56GrpValid == TRUE)
+#define SET_V10_W56_GRP_VALID(_pAd, valid) \
+	(_pAd->CommonCfg.DfsParameter.bV10W56GrpValid = valid)
+#endif
+
+
 /*******************************************************************************
 *                                 M A C R O S
 ********************************************************************************
@@ -159,6 +246,21 @@ typedef struct _DFS_CHANNEL_LIST {
 	USHORT NOPSaveForClear;
 	UCHAR NOPSetByBw;
 } DFS_CHANNEL_LIST, *PDFS_CHANNEL_LIST;
+
+#ifdef ONDEMAND_DFS
+typedef struct _OD_CHANNEL_LIST {
+	UCHAR Channel;
+	BOOLEAN isConsumed;
+} OD_CHANNEL_LIST, *POD_CHANNEL_LIST;
+#endif
+
+#ifdef DFS_VENDOR10_CUSTOM_FEATURE
+typedef struct _V10_CHANNEL_LIST {
+	UINT_32 BusyTime;
+	UCHAR Channel;
+	BOOLEAN isConsumed;
+} V10_CHANNEL_LIST, *PV10_CHANNEL_LIST;
+#endif
 
 enum DFS_SET_NEWCH_MODE {
 	DFS_SET_NEWCH_DISABLED = 0x0,
@@ -257,6 +359,24 @@ union dfs_zero_wait_msg {
 	} target_ch_show;
 };
 
+#ifdef CUSTOMISE_RDD_THRESHOLD_SUPPORT
+typedef struct _DFS_PULSE_THRESHOLD_PARAM {
+	UINT32 u4PulseWidthMax;			/* unit us */
+	INT32 i4PulsePwrMax;			/* unit dbm */
+	INT32 i4PulsePwrMin;			/* unit dbm */
+	UINT32 u4PRI_MIN_STGR;			/* unit us */
+	UINT32 u4PRI_MAX_STGR;			/* unit us */
+	UINT32 u4PRI_MIN_CR;			/* unit us */
+	UINT32 u4PRI_MAX_CR;			/* unit us */
+} DFS_PULSE_THRESHOLD_PARAM, *PDFS_PULSE_THRESHOLD_PARAM;
+
+typedef struct _DFS_RADAR_THRESHOLD_PARAM {
+	DFS_PULSE_THRESHOLD_PARAM rPulseThresholdParam;
+	BOOLEAN afgSupportedRT[RT_NUM];
+	SW_RADAR_TYPE_T arRadarType[RT_NUM];
+} DFS_RADAR_THRESHOLD_PARAM, *PDFS_RADAR_THRESHOLD_PARAM;
+#endif /* CUSTOMISE_RDD_THRESHOLD_SUPPORT */
+
 typedef struct _DFS_PARAM {
 	UCHAR Band0Ch;/* smaller channel number */
 	UCHAR Band1Ch;/* larger channel number */
@@ -298,6 +418,27 @@ typedef struct _DFS_PARAM {
 	UCHAR   DfsZeroWaitCacTime;  /* unit is minute and Maximum Off-Channel CAC time is one hour */
 	BOOLEAN bZeroWaitCacSecondHandle;
 	BOOLEAN bDedicatedZeroWaitSupport;
+#ifdef ONDEMAND_DFS
+	BOOLEAN bOnDemandZeroWaitSupport;		/* OnDemand DFS Support */
+	BOOLEAN bOnDemandDFSMode;               /* OnDemand DFS Mode: FALSE= 2x2, TRUE= 4x4*/
+	BOOLEAN bOnDemandChannelListValid;	/* Is ACS Channel List Valid */
+	UCHAR   MaxGroupCount;					/* Max Group Count from ACS */
+	POD_CHANNEL_LIST OnDemandChannelList;   /* ACS CHannel List */
+#endif
+#ifdef DFS_VENDOR10_CUSTOM_FEATURE
+	ULONG   gV10OffChnlWaitTime;
+	ULONG	gV10W56TrgrApDownTime;
+	BOOLEAN bDFSV10Support; /* NEC DFS Support */
+	BOOLEAN	bV10ChannelListValid;
+	BOOLEAN	bV10BootACSValid;
+	BOOLEAN bV10W56GrpValid;
+	BOOLEAN bV10W56SwitchVHT80;
+	BOOLEAN bV10W56APDownEnbl;
+	BOOLEAN bV10APBcnUpdateEnbl;
+	BOOLEAN bV10APInterfaceDownEnbl;
+	UCHAR   GroupCount; /* Max Group Count from ACS */
+	V10_CHANNEL_LIST DfsV10SortedACSList[V10_TOTAL_CHANNEL_COUNT];
+#endif
 	UCHAR	OutBandCh;
 	UCHAR	OutBandBw;
 	UCHAR	OrigInBandCh;
@@ -313,14 +454,44 @@ typedef struct _DFS_PARAM {
 	/* MBSS DFS zero wait */
 	BOOLEAN bInitMbssZeroWait;
 
+#ifdef CUSTOMISE_RDD_THRESHOLD_SUPPORT
+	/*Threshold params*/
+	BOOLEAN fgHwRDDLogEnable;
+	BOOLEAN fgSwRDDLogEnable;
+	BOOLEAN fgSwRDDLogCond;
+	UINT16 u2FCC_LPN_MIN;
+	BOOLEAN fgRDRegionConfigured;
+	DFS_RADAR_THRESHOLD_PARAM rRadarThresholdParam;
+#endif /* CUSTOMISE_RDD_THRESHOLD_SUPPORT */
+
+#ifdef RDM_FALSE_ALARM_DEBUG_SUPPORT
+	BOOLEAN fgRadarEmulate;
+#endif /*RDM_FALSE_ALARM_DEBUG_SUPPORT */
+
+#ifdef CONFIG_RCSA_SUPPORT
+	BOOLEAN	bRCSAEn;
+	BOOLEAN fSendRCSA;
+	BOOLEAN fUseCsaCfg;
+	BOOLEAN	fCheckRcsaTxDone;
+	UCHAR	ChSwMode;
+#endif
+
 	STATE_MACHINE_FUNC		DfsStateFunc[DFS_FUNC_SIZE];
 	STATE_MACHINE			DfsStatMachine;
 } DFS_PARAM, *PDFS_PARAM;
+
+#ifdef MT_DFS_SUPPORT
+typedef int (*_k_ARC_ZeroWait_DFS_CAC_Time_Meet_report_callback_fun_type)(UCHAR SyncNum, UCHAR Bw, UCHAR monitored_Ch);
+#endif /* MT_DFS_SUPPORT */
 
 /*******************************************************************************
 *                    E X T E R N A L   R E F E R E N C E S
 ********************************************************************************
 */
+
+#ifdef CUSTOMISE_RDD_THRESHOLD_SUPPORT
+extern DFS_RADAR_THRESHOLD_PARAM g_arRadarThresholdParam[4];
+#endif /* CUSTOMISE_RDD_THRESHOLD_SUPPORT */
 
 
 /*******************************************************************************
@@ -366,6 +537,14 @@ VOID DfsGetSysParameters(
 
 VOID DfsParamInit(/* finish */
 	IN PRTMP_ADAPTER	pAd);
+
+#ifdef CUSTOMISE_RDD_THRESHOLD_SUPPORT
+VOID DfsThresholdParamInit(
+	IN PRTMP_ADAPTER	pAd);
+
+INT Set_DfsDefaultRDDThresholdParam(
+	IN PRTMP_ADAPTER pAd);
+#endif /* CUSTOMISE_RDD_THRESHOLD_SUPPORT */
 
 VOID DfsStateMachineInit(
 	IN RTMP_ADAPTER * pAd,
@@ -434,6 +613,15 @@ VOID DfsCacEndUpdate(
 	RTMP_ADAPTER *pAd,
 	MLME_QUEUE_ELEM *Elem);
 
+VOID DfsCacEndLoadDCOCData(
+	IN PRTMP_ADAPTER pAd);
+
+#ifdef ONDEMAND_DFS
+VOID DfsOutBandCacPass(
+	RTMP_ADAPTER *pAd,
+	MLME_QUEUE_ELEM *Elem);
+#endif
+
 NTSTATUS DfsChannelSwitchTimeoutAction(
 	PRTMP_ADAPTER pAd, PCmdQElmt CMDQelmt);
 
@@ -471,11 +659,76 @@ VOID DfsNonOccupancyUpdate(
 VOID DfsNonOccupancyCountDown(/*RemainingTimeForUse --, finish*/
 	IN PRTMP_ADAPTER pAd);
 
+#ifdef ONDEMAND_DFS
+USHORT DfsOnDemandSelectBestChannel(/*Select the Channel from Rank List by Bgnd Scan*/
+	IN PRTMP_ADAPTER pAd, BOOLEAN bSkipDfsCh);
+
+BOOLEAN CheckNonOccupancyOnDemandChannel(
+	IN PRTMP_ADAPTER pAd,
+	IN UCHAR channel);
+
+#ifdef OFFCHANNEL_SCAN_FEATURE
+VOID DfsNonOccupancyCmpltnEvent(
+	IN PRTMP_ADAPTER pAd,
+	IN UINT_8 chIndex,
+	IN BOOLEAN isNOPSaveForClear);
+#endif
+#endif
+
+#ifdef DFS_VENDOR10_CUSTOM_FEATURE
+USHORT DfsV10SelectBestChannel(/*Select the Channel from Rank List by ACS*/
+	IN PRTMP_ADAPTER pAd,
+	IN UCHAR oldChannel);
+
+UCHAR DfsV10CheckChnlGrp(
+	IN UCHAR Channel);
+
+BOOLEAN DfsV10CheckW56Grp(
+	IN UCHAR channel);
+
+VOID DfsV10AddWeighingFactor(
+	IN PRTMP_ADAPTER pAd,
+	IN struct wifi_dev *pwdev);
+
+BOOLEAN DfsV10CheckGrpChnlLeft(
+	IN PRTMP_ADAPTER pAd,
+	IN UCHAR		 chGrp,
+	IN UCHAR		 grpWidth);
+
+UINT_8 DfsV10W56FindMaxNopDuration(
+	IN PRTMP_ADAPTER pAd);
+
+UINT_8 DfsV10FindNonNopChannel(
+	IN PRTMP_ADAPTER pAd,
+	IN UCHAR		 chGrp,
+	IN UCHAR		 grpWidth);
+
+BOOLEAN DfsV10W56APDownStart(
+	IN PRTMP_ADAPTER pAd,
+	IN PAUTO_CH_CTRL pAutoChCtrl,
+	IN ULONG	     V10W56TrgrApDownTime);
+
+VOID DfsV10W56APDownTimeCountDown(/*RemainingTimeForUse --*/
+	IN PRTMP_ADAPTER pAd);
+
+VOID DfsV10W56APDownPass(
+	RTMP_ADAPTER *pAd,
+	MLME_QUEUE_ELEM *Elem);
+
+VOID DfsV10W56APDownEnbl(
+	RTMP_ADAPTER *pAd,
+	MLME_QUEUE_ELEM *Elem);
+
+VOID DfsV10APBcnUpdate(
+	RTMP_ADAPTER *pAd,
+	MLME_QUEUE_ELEM *Elem);
+#endif
+
 VOID WrapDfsRddReportHandle(/*handle the event of EXT_EVENT_ID_RDD_REPORT*/
 	IN PRTMP_ADAPTER pAd, UCHAR ucRddIdx);
 
 BOOLEAN DfsRddReportHandle(/*handle the event of EXT_EVENT_ID_RDD_REPORT*/
-	IN PDFS_PARAM pDfsParam, UCHAR ucRddIdx);
+	IN PRTMP_ADAPTER pAd, PDFS_PARAM pDfsParam, UCHAR ucRddIdx, UCHAR bandIdx);
 
 VOID WrapDfsSetNonOccupancy(/*Set Channel non-occupancy time, finish */
 	IN PRTMP_ADAPTER pAd, UCHAR bandIdx);
@@ -521,6 +774,16 @@ VOID WrapDfsRadarDetectStop(/*Start Radar Detection or not*/
 
 VOID DfsRadarDetectStop(/*Start Radar Detection or not, finish*/
 	IN PRTMP_ADAPTER pAd, PDFS_PARAM pDfsParam);
+
+#ifdef ONDEMAND_DFS
+VOID DfsOnDemandInBandRDDStart(
+	IN PRTMP_ADAPTER pAd);
+
+UCHAR DfsOnDemandDynamicChannelUpdate(
+	IN PRTMP_ADAPTER pAd,
+	IN struct wifi_dev *wdev,
+	IN UCHAR Channel);
+#endif
 
 VOID DfsDedicatedOutBandRDDStart(
 	IN PRTMP_ADAPTER pAd);
@@ -610,5 +873,22 @@ VOID ZeroWait_DFS_collision_report(
 	IN PRTMP_ADAPTER pAd, IN UCHAR SynNum, IN UCHAR Channel, UCHAR Bw);
 
 VOID DfsZeroHandOffRecovery(IN struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev);
+
+#ifdef RDM_FALSE_ALARM_DEBUG_SUPPORT
+VOID UpdateRadarInfo(
+	P_EXT_EVENT_RDD_REPORT_T prRadarReport);
+
+VOID DumpRadarHwPulsesInfo(
+	IN PRTMP_ADAPTER pAd,
+	IN P_EXT_EVENT_RDD_REPORT_T prRadarReport);
+
+VOID DumpRadarSwPulsesInfo(
+	IN PRTMP_ADAPTER pAd,
+	IN P_EXT_EVENT_RDD_REPORT_T prRadarReport);
+
+INT Show_DFS_Debug_Proc(
+	PRTMP_ADAPTER pAd,
+	RTMP_STRING *arg);
+#endif /* RDM_FALSE_ALARM_DEBUG_SUPPORT */
 #endif /*MT_DFS_SUPPORT*/
 #endif /*_MT_RDM_H_ */

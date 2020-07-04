@@ -21,6 +21,7 @@
 #include "rt_os_util.h"
 #include "rtmp_osabl.h"
 #include "oid.h"
+#include "oid_struct.h"
 #include "rtmp_iface.h"
 
 

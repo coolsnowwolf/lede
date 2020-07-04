@@ -268,6 +268,33 @@ endef
 $(eval $(call KernelPackage,sound-soc-allo-katana-codec))
 
 
+define KernelPackage/sound-soc-audioinjector-isolated-soundcard
+  TITLE:=Support for AudioInjector Isolated soundcard
+  KCONFIG:= \
+    CONFIG_SND_AUDIOINJECTOR_ISOLATED_SOUNDCARD \
+    CONFIG_SND_SOC_CS4271 \
+    CONFIG_SND_SOC_CS4271_I2C
+  FILES:= \
+    $(LINUX_DIR)/sound/soc/bcm/snd-soc-audioinjector-isolated-soundcard.ko \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-wm8731.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-cs4271.o \
+    snd-soc-cs4271-i2c \
+    snd-soc-audioinjector-isolated-soundcard)
+  DEPENDS:= \
+    kmod-sound-soc-bcm2835-i2s \
+    +kmod-i2c-bcm2835 \
+    +kmod-regmap-i2c \
+    +kmod-regmap-spi
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-audioinjector-isolated-soundcard/description
+  This package contains support for AudioInjector Isolated soundcard
+endef
+
+$(eval $(call KernelPackage,sound-soc-audioinjector-isolated-soundcard))
+
+
 define KernelPackage/sound-soc-audioinjector-octo-soundcard
   TITLE:=Support for AudioInjector Octo soundcard
   KCONFIG:= \
@@ -882,6 +909,28 @@ define KernelPackage/sound-soc-rpi-dac/description
 endef
 
 $(eval $(call KernelPackage,sound-soc-rpi-dac))
+
+
+define KernelPackage/sound-soc-merus-amp
+  TITLE:=Support for Infineon Merus Amp
+  KCONFIG:= \
+    CONFIG_SND_SOC_MA120X0P
+  FILES:= \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-ma120x0p.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-ma120x0p)
+  DEPENDS:= \
+    kmod-sound-soc-bcm2835-i2s \
+    +kmod-sound-soc-rpi-simple-soundcard \
+    +kmod-i2c-bcm2835 \
+    +kmod-regmap-i2c
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-merus-amp/description
+  This package contains support for Infineon Merus Amp
+endef
+
+$(eval $(call KernelPackage,sound-soc-merus-amp))
 
 
 define KernelPackage/sound-soc-rpi-proto

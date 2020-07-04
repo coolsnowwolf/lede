@@ -61,9 +61,20 @@ VOID write_tmac_info_beacon(
 )
 {
 #ifdef MT_MAC
+	HTTRANSMIT_SETTING *BcnTransmit = NULL;
+
+#ifdef MIN_PHY_RATE_SUPPORT
+	if (wdev->rate.MinPhyBeaconRate != 0) {
+		BcnTransmit = &(wdev->rate.MinPhyBeaconRateTransmit);
+	} else {
+		BcnTransmit = BeaconTransmit;
+	}
+#else
+	BcnTransmit = BeaconTransmit;
+#endif /* MIN_PHY_RATE_SUPPORT */
 
 	if (IS_HIF_TYPE(pAd, HIF_MT))
-		mt_write_tmac_info_beacon(pAd, wdev, tmac_buf, BeaconTransmit, frmLen);
+		mt_write_tmac_info_beacon(pAd, wdev, tmac_buf, BcnTransmit, frmLen);
 
 #endif /* MT_MAC */
 }
@@ -84,6 +95,10 @@ BOOLEAN BeaconTransmitRequired(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, BOOLEAN
 	BCN_BUF_STRUC *bcn_info = &wdev->bcn_buf;
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
 
+#ifdef CONFIG_INIT_RADIO_ONOFF
+	if (!RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_SYSEM_READY))
+		return FALSE;
+#endif
 
 	if (!WDEV_WITH_BCN_ABILITY(wdev) || ATE_ON(pAd)) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
@@ -276,6 +291,12 @@ UINT16 MakeBeacon(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, BOOLEAN UpdateRoutin
 #endif
 	BCN_BUF_STRUC *pbcn_buf = &wdev->bcn_buf;
 
+#ifdef RT_CFG80211_SUPPORT
+	if (pAd->cfg80211_ctrl.beaconIsSetFromHostapd == TRUE)
+		return -1;
+#endif
+
+
 	RTMP_SEM_LOCK(&pbcn_buf->BcnContentLock);
 	tmac_info = (UCHAR *)GET_OS_PKT_DATAPTR(pbcn_buf->BeaconPkt);
 
@@ -326,6 +347,12 @@ UINT16 MakeBeacon(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, BOOLEAN UpdateRoutin
 #endif /* CONFIG_AP_SUPPORT */
 	ComposeBcnPktTail(pAd, wdev, &UpdatePos, pBeaconFrame);
 	FrameLen = UpdatePos;/* update newest FrameLen. */
+
+#ifdef IGMP_TVM_SUPPORT
+	/* ADD TV IE to this packet */
+	MakeTVMIE(pAd, wdev, pBeaconFrame, &FrameLen);
+#endif /* IGMP_TVM_SUPPORT */
+
 	/* step 6. Since FrameLen may change, update TXWI. */
 #ifdef A_BAND_SUPPORT
 
@@ -340,6 +367,11 @@ UINT16 MakeBeacon(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, BOOLEAN UpdateRoutin
 	RTMPFrameEndianChange(pAd, pBeaconFrame, DIR_WRITE, FALSE);
 #endif
 	RTMP_SEM_UNLOCK(&pbcn_buf->BcnContentLock);
+
+#ifdef WIFI_DIAG
+	DiagBcnTx(pAd, pMbss, pBeaconFrame, FrameLen);
+#endif
+
 	return FrameLen;
 }
 
@@ -349,6 +381,22 @@ VOID ComposeRSNIE(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, ULONG *pFrameLen, UC
 	ULONG FrameLen = *pFrameLen;
 	ULONG TempLen = 0;
 	CHAR rsne_idx = 0;
+
+#ifdef DISABLE_HOSTAPD_BEACON
+	BSS_STRUCT *pMbss = &pAd->ApCfg.MBSSID[wdev->func_idx];
+
+	for (rsne_idx = 0; rsne_idx < 2; rsne_idx++) {
+		if (pMbss->RSNIE_Len[rsne_idx] != 0) {
+			MakeOutgoingFrame(pBeaconFrame+FrameLen,
+				 &TempLen, 1,
+			&pMbss->RSNIE_ID[rsne_idx], 1,
+			&pMbss->RSNIE_Len[rsne_idx],
+			pMbss->RSNIE_Len[rsne_idx], &pMbss->RSN_IE[rsne_idx][0],
+			END_OF_ARGS);
+			FrameLen += TempLen;
+		}
+	}
+#else
 	struct _SECURITY_CONFIG *pSecConfig = &wdev->SecConfig;
 #ifdef CONFIG_HOTSPOT_R2
 	extern UCHAR            OSEN_IE[];
@@ -380,8 +428,8 @@ VOID ComposeRSNIE(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, ULONG *pFrameLen, UC
 			FrameLen += TempLen;
 		}
 	}
-
-	*pFrameLen = FrameLen;
+#endif /*DISABLE_HOSTAPD_BEACON */
+    *pFrameLen = FrameLen;
 }
 
 VOID ComposeWPSIE(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, ULONG *pFrameLen, UCHAR *pBeaconFrame)
@@ -411,15 +459,24 @@ VOID ComposeWPSIE(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, ULONG *pFrameLen, UC
 #ifdef WSC_AP_SUPPORT
 
 	/* add Simple Config Information Element */
-	if (((wdev->WscControl.WscConfMode >= 1) && (wdev->WscIEBeacon.ValueLen)))
+#ifdef DISABLE_HOSTAPD_BEACON
+    if (pMbss->WscIEBeacon.ValueLen)
+#else
+    if (((wdev->WscControl.WscConfMode >= 1) && (wdev->WscIEBeacon.ValueLen)))
+#endif
 		bHasWpsIE = TRUE;
 
 	if (bHasWpsIE) {
 		ULONG WscTmpLen = 0;
-
-		MakeOutgoingFrame(pBeaconFrame + FrameLen, &WscTmpLen,
+#ifdef RT_CFG80211_SUPPORT
+	MakeOutgoingFrame(pBeaconFrame + FrameLen, &WscTmpLen,
+		pMbss->WscIEBeacon.ValueLen, pMbss->WscIEBeacon.Value,
+		END_OF_ARGS);
+#else
+	MakeOutgoingFrame(pBeaconFrame + FrameLen, &WscTmpLen,
 						  wdev->WscIEBeacon.ValueLen, wdev->WscIEBeacon.Value,
 						  END_OF_ARGS);
+#endif
 		FrameLen += WscTmpLen;
 	}
 
@@ -745,6 +802,10 @@ VOID MakeExtCapIE(RTMP_ADAPTER *pAd, BSS_STRUCT *pMbss, ULONG *pFrameLen, UCHAR 
 		extCapInfo.qosmap = 1;
 #endif /* CONFIG_HOTSPOT_R2 */
 #endif /* CONFIG_DOT11V_WNM */
+#if defined(DOT11U_INTERWORKING_IE_SUPPORT) && !defined(CONFIG_HOTSPOT)
+	if (pMbss->bEnableInterworkingIe == TRUE)
+		extCapInfo.interworking = 1;
+#endif
 #ifdef CONFIG_DOT11U_INTERWORKING
 	if (pMbss->GASCtrl.b11U_enable)
 		extCapInfo.interworking = 1;
@@ -1128,6 +1189,11 @@ VOID ComposeBcnPktTail(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, ULONG *pFrameLe
 		MakeChSwitchAnnounceIEandExtend(pAd, wdev, &FrameLen, pBeaconFrame);
 
 #endif /* A_BAND_SUPPORT */
+#ifdef CUSTOMER_DCC_FEATURE
+	else if (pComCfg->channelSwitch.CHSWMode == CHANNEL_SWITCHING_MODE)
+		MakeChSwitchAnnounceIEandExtend(pAd, wdev, &FrameLen, pBeaconFrame);
+#endif
+
 #endif /* CONFIG_AP_SUPPORT */
 #ifdef CONFIG_AP_SUPPORT
 #ifdef DOT11K_RRM_SUPPORT
@@ -1164,6 +1230,18 @@ VOID ComposeBcnPktTail(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, ULONG *pFrameLe
 	MakeExtSuppRateIe(pAd, wdev, &FrameLen, pBeaconFrame);
 	ComposeRSNIE(pAd, wdev, &FrameLen, pBeaconFrame);
 	ComposeWPSIE(pAd, wdev, &FrameLen, pBeaconFrame);
+
+#ifdef HOSTAPD_OWE_SUPPORT
+	if (pMbss->TRANSIE_Len) {
+		ULONG TmpLen;
+
+		MakeOutgoingFrame(pBeaconFrame+FrameLen, &TmpLen,
+							 pMbss->TRANSIE_Len, pMbss->TRANS_IE,
+							 END_OF_ARGS);
+		FrameLen += TmpLen;
+	}
+#endif
+
 #ifdef AP_QLOAD_SUPPORT
 	if (pAd->CommonCfg.dbdc_mode == 0)
 		pQloadCtrl = HcGetQloadCtrl(pAd);
@@ -1180,6 +1258,26 @@ VOID ComposeBcnPktTail(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, ULONG *pFrameLe
 		FrameLen += QBSS_LoadElementAppend(pAd, pBeaconFrame+FrameLen, pQloadCtrl);
 	}
 #endif /* AP_QLOAD_SUPPORT */
+
+#if defined(DOT11U_INTERWORKING_IE_SUPPORT) && !defined(CONFIG_HOTSPOT)
+	if (pMbss->bEnableInterworkingIe == TRUE) {
+		ULONG 	TmpLen;
+		UCHAR	InterworkIeLen, InterWorkIe;
+		PINTERWORKING_IE	pInterWorkInfo;
+
+		InterWorkIe = IE_INTERWORKING;
+		InterworkIeLen = sizeof(*pInterWorkInfo);
+		pInterWorkInfo = &pMbss->InterWorkingIe;
+
+		MakeOutgoingFrame(pBeaconFrame+FrameLen, &TmpLen,
+						1, &InterWorkIe,
+						1, &InterworkIeLen,
+						InterworkIeLen, pInterWorkInfo,
+						END_OF_ARGS);
+		FrameLen += TmpLen;
+	}
+#endif /* DOT11U_INTERWORKING_IE_SUPPORT */
+
 #if defined(CONFIG_HOTSPOT) || defined(FTM_SUPPORT)
 
 	if (pMbss->GASCtrl.b11U_enable)
@@ -1284,6 +1382,52 @@ VOID ComposeBcnPktTail(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, ULONG *pFrameLe
 #endif /* MBO_SUPPORT */
 
 #endif /*CONFIG_AP_SUPPORT*/
+#if defined(WAPP_SUPPORT) && defined(CONFIG_MAP_SUPPORT)
+	if (IS_MAP_ENABLE(pAd) && wdev->MAPCfg.vendor_ie_len) {
+		ULONG MAPIeTmpLen = 0;
+
+		MakeOutgoingFrame(pBeaconFrame + FrameLen, &MAPIeTmpLen,
+						wdev->MAPCfg.vendor_ie_len, wdev->MAPCfg.vendor_ie_buf,
+						END_OF_ARGS);
+		FrameLen += MAPIeTmpLen;
+	}
+#endif
+	/*Vendor IE should be final IE to be added, so we can determine the maximum length of Beacon*/
+#ifdef CUSTOMER_VENDOR_IE_SUPPORT
+	RTMP_SPIN_LOCK(&pAd->ApCfg.MBSSID[apidx].ap_vendor_ie.vendor_ie_lock);
+
+	if (pAd->ApCfg.MBSSID[apidx].ap_vendor_ie.pointer != NULL) {
+		struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+		ULONG TmpMaxBeaconLen;
+
+#ifdef BCN_V2_SUPPORT
+		if (apidx < cap->max_v2_bcn_num)
+			TmpMaxBeaconLen = 1520 - cap->tx_hw_hdr_len;/*FW limitation*/
+		else
+			TmpMaxBeaconLen = 512 - cap->tx_hw_hdr_len;
+#else
+		TmpMaxBeaconLen = 512 - cap->tx_hw_hdr_len;
+#endif
+
+		if (FrameLen + pAd->ApCfg.MBSSID[apidx].ap_vendor_ie.length > TmpMaxBeaconLen)
+			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+				("%s : BCN is too long, can't add vendor ie!\n", __func__));
+		else {
+			ULONG TmpLen;
+
+			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+				("BCN add vendor ie\n"));
+			MakeOutgoingFrame(pBeaconFrame + FrameLen,
+					  &TmpLen,
+					  pAd->ApCfg.MBSSID[apidx].ap_vendor_ie.length,
+					  pAd->ApCfg.MBSSID[apidx].ap_vendor_ie.pointer,
+					  END_OF_ARGS);
+			FrameLen += TmpLen;
+		}
+	}
+	RTMP_SPIN_UNLOCK(&pAd->ApCfg.MBSSID[apidx].ap_vendor_ie.vendor_ie_lock);
+#endif /* CUSTOMER_VENDOR_IE_SUPPORT */
+
 	*pFrameLen = FrameLen;
 }
 VOID updateBeaconRoutineCase(RTMP_ADAPTER *pAd, BOOLEAN UpdateAfterTim)
@@ -1296,6 +1440,10 @@ VOID updateBeaconRoutineCase(RTMP_ADAPTER *pAd, BOOLEAN UpdateAfterTim)
 	UCHAR cfg_ext_cha;
 	UCHAR op_ht_bw;
 	UCHAR op_ext_cha;
+#ifdef MBSS_DTIM_SUPPORT
+    UINT bssidx;
+	UCHAR minDtimCount = pAd->ApCfg.MBSSID[0].DtimCount;
+#endif
 
 	wdev = get_default_wdev(pAd);
 	cfg_ht_bw = wlan_config_get_ht_bw(wdev);
@@ -1303,19 +1451,39 @@ VOID updateBeaconRoutineCase(RTMP_ADAPTER *pAd, BOOLEAN UpdateAfterTim)
 	op_ht_bw = wlan_operate_get_ht_bw(wdev);
 	op_ext_cha = wlan_operate_get_ext_cha(wdev);
 
+#ifdef MBSS_DTIM_SUPPORT
+
+	for (bssidx = 0; bssidx < pAd->ApCfg.BssidNum; bssidx++) {
+		if (pAd->ApCfg.MBSSID[bssidx].DtimCount == 0)
+			pAd->ApCfg.MBSSID[bssidx].DtimCount = pAd->ApCfg.MBSSID[bssidx].DtimPeriod - 1;
+		else
+			pAd->ApCfg.MBSSID[bssidx].DtimCount -= 1;
+
+		if (pAd->ApCfg.MBSSID[bssidx].DtimCount < minDtimCount)
+			minDtimCount = pAd->ApCfg.MBSSID[bssidx].DtimCount;
+	}
+#else
+
+
 	if (pAd->ApCfg.DtimCount == 0)
 		pAd->ApCfg.DtimCount = pAd->ApCfg.DtimPeriod - 1;
 	else
 		pAd->ApCfg.DtimCount -= 1;
+#endif
 
 #ifdef AP_QLOAD_SUPPORT
 	FlgQloadIsAlarmIssued = QBSS_LoadIsAlarmIssued(pAd);
 #endif /* AP_QLOAD_SUPPORT */
 
-	if ((pAd->ApCfg.DtimCount == 0) &&
-		(((pAd->CommonCfg.Bss2040CoexistFlag & BSS_2040_COEXIST_INFO_SYNC) &&
+    if (
+#ifdef MBSS_DTIM_SUPPORT
+	(minDtimCount == 0)
+#else
+	(pAd->ApCfg.DtimCount == 0)
+#endif
+    && (((pAd->CommonCfg.Bss2040CoexistFlag & BSS_2040_COEXIST_INFO_SYNC) &&
 		  (pAd->CommonCfg.bForty_Mhz_Intolerant == FALSE)) ||
-		 (FlgQloadIsAlarmIssued == TRUE))) {
+		(FlgQloadIsAlarmIssued == TRUE))) {
 		UCHAR   prevBW, prevExtChOffset;
 
 		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
@@ -1380,6 +1548,24 @@ VOID UpdateBeaconHandler(
 		/* To restart period of Bcncheck, PeriodicRound is reset after bBcnSntReq is active */
 		pAd->Mlme.PeriodicRound = 0;
 	}
+
+#ifdef CONVERTER_MODE_SWITCH_SUPPORT
+	{
+		BSS_STRUCT *pMbss = &pAd->ApCfg.MBSSID[wdev->func_idx];
+
+		if (pMbss->APStartPseduState != AP_STATE_ALWAYS_START_AP_DEFAULT) {
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: StopBeaconing: pAd Idx = %u\n",
+				__func__,
+#ifdef MULTI_INF_SUPPORT
+				multi_inf_get_idx(pAd)
+#else
+				0
+#endif /* MULTI_INF_SUPPORT */
+				));
+			return;
+		}
+	}
+#endif /* CONVERTER_MODE_SWITCH_SUPPORT */
 
 	HW_BEACON_UPDATE(pAd, wdev, BCN_UPDATE_REASON);
 
@@ -1446,8 +1632,16 @@ INT BcnTimUpdate(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR *ptr)
 	/* BSS_STRUCT *pMbss = wdev->func_dev; */
 	BCN_BUF_STRUC *bcn_buf = &wdev->bcn_buf;
 	*ptr = IE_TIM;
+#ifdef MBSS_DTIM_SUPPORT
+	*(ptr + 2) = pAd->ApCfg.MBSSID[wdev->func_idx].DtimCount;
+	*(ptr + 3) = pAd->ApCfg.MBSSID[wdev->func_idx].DtimPeriod;
+#else
 	*(ptr + 2) = pAd->ApCfg.DtimCount;
 	*(ptr + 3) = pAd->ApCfg.DtimPeriod;
+#endif
+
+
+
 	/* find the smallest AID (PS mode) */
 	TimFirst = 0; /* record first TIM byte != 0x00 */
 	TimLast = 0;  /* record last  TIM byte != 0x00 */
@@ -1480,7 +1674,11 @@ INT BcnTimUpdate(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR *ptr)
 		*(ptr + 5 + i - TimFirst) = pTim[i];
 
 	/* bit0 means backlogged mcast/bcast */
+#ifdef MBSS_DTIM_SUPPORT
+    if (pAd->ApCfg.MBSSID[wdev->func_idx].DtimCount == 0)
+#else
 	if (pAd->ApCfg.DtimCount == 0)
+#endif
 		*(ptr + 4) |= (bcn_buf->TimBitmaps[WLAN_CT_TIM_BCMC_OFFSET] & 0x01);
 
 	/* adjust BEACON length according to the new TIM */
@@ -1591,10 +1789,12 @@ VOID BcnCheck(RTMP_ADAPTER *pAd)
 	UINT32 *prebcncnt;
 	UINT32 *totalbcncnt;
 	UCHAR bandidx;
-	UINT32 band_offset;
 
 	if ((pAd->Mlme.PeriodicRound % PRE_BCN_CHECK_PERIOD) == 0) {
+#ifndef CUSTOMER_RSG_FEATURE
+		UINT32 band_offset;
 		UINT32 mac_val;
+#endif
 		UINT32 bcn_cnt = 0;
 		UINT32 recoverext = 0;
 		UINT32 Index;
@@ -1602,7 +1802,9 @@ VOID BcnCheck(RTMP_ADAPTER *pAd)
 		struct wifi_dev *wdev;
 
 		for (bandidx = 0; bandidx < HcGetAmountOfBand(pAd) ; bandidx++) {
+#ifndef CUSTOMER_RSG_FEATURE
 			band_offset = 0x200 * bandidx;
+#endif
 #ifdef ERR_RECOVERY
 
 			if (IsErrRecoveryInIdleStat(pAd) == FALSE)
@@ -1670,9 +1872,14 @@ VOID BcnCheck(RTMP_ADAPTER *pAd)
 				prebcncnt = &BcnCheckInfo->prebcncnt1;
 				totalbcncnt = &BcnCheckInfo->totalbcncnt1;
 			}
+#ifdef CUSTOMER_RSG_FEATURE
+			bcn_cnt = pAd->beacon_cnt;
+			pAd->beacon_cnt = 0;
+#else
 
 			MAC_IO_READ32(pAd, MIB_M0SDR0 + band_offset, &mac_val);
 			bcn_cnt = (mac_val & 0xffff);
+#endif
 			*totalbcncnt += bcn_cnt;	/* Save total bcn count for MibInfo query */
 
 			if ((pAd->Mlme.PeriodicRound % BCN_CHECK_PERIOD) == 0) {

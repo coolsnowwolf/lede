@@ -593,7 +593,7 @@ Note:
 
 ========================================================================
 */
-NTSTATUS PMF_RsnCapableValidation(
+UINT PMF_RsnCapableValidation(
 	IN PUINT8 pRsnie,
 	IN UINT rsnie_len,
 	IN BOOLEAN self_MFPC,
@@ -614,7 +614,7 @@ NTSTATUS PMF_RsnCapableValidation(
 
 		if (self_MFPR) {
 			MTWF_LOG(DBG_CAT_SEC, CATSEC_PMF, DBG_LVL_ERROR, ("[PMF]%s : PMF policy violation.\n", __func__));
-			return PMF_POLICY_VIOLATION;
+			return MLME_ROBUST_MGMT_POLICY_VIOLATION;
 		}
 	} else {
 		RSN_CAPABILITIES RsnCap;
@@ -629,12 +629,12 @@ NTSTATUS PMF_RsnCapableValidation(
 		if ((self_MFPC == TRUE) && (peer_MFPC == FALSE)) {
 			if ((self_MFPR == TRUE) && (peer_MFPR == FALSE)) {
 				MTWF_LOG(DBG_CAT_SEC, CATSEC_PMF, DBG_LVL_ERROR, ("[PMF]%s : PMF policy violation for case 4\n", __func__));
-				return PMF_POLICY_VIOLATION;
+				return MLME_ROBUST_MGMT_POLICY_VIOLATION;
 			}
 
 			if (peer_MFPR == TRUE) {
 				MTWF_LOG(DBG_CAT_SEC, CATSEC_PMF, DBG_LVL_ERROR, ("[PMF]%s : PMF policy violation for case 7\n", __func__));
-				return PMF_POLICY_VIOLATION;
+				return MLME_ROBUST_MGMT_POLICY_VIOLATION;
 			}
 		}
 
@@ -651,7 +651,7 @@ NTSTATUS PMF_RsnCapableValidation(
 		if (IS_AKM_SAE(pSecConfigEntry->AKMMap) && (peer_MFPC == FALSE)) {
 			MTWF_LOG(DBG_CAT_SEC, CATSEC_PMF, DBG_LVL_ERROR,
 				("[PMF]%s: SAE connection fail due to not PMF connection(peer MFPR = %d, MFPC = %d)\n", __func__, peer_MFPR, peer_MFPC));
-			return PMF_POLICY_VIOLATION;
+			return MLME_ROBUST_MGMT_POLICY_VIOLATION;
 		}
 	}
 
@@ -682,11 +682,11 @@ NTSTATUS PMF_RsnCapableValidation(
 		if (end_field < RSN_FIELD_GROUP_MGMT_CIPHER
 			&& IS_CIPHER_BIP_CMAC128(self_igtk_cipher)) {
 			pSecConfigEntry->PmfCfg.igtk_cipher = self_igtk_cipher;
-			return PMF_STATUS_SUCCESS;
+			return MLME_SUCCESS;
 		} else if (end_field < RSN_FIELD_GROUP_MGMT_CIPHER) {
 			MTWF_LOG(DBG_CAT_SEC, CATSEC_PMF, DBG_LVL_ERROR,
 				("[PMF]%s : The peer Group_mgmt_cipher_suite(default) is mismatch\n", __func__));
-			return PMF_POLICY_VIOLATION;
+			return MLME_INVALID_SECURITY_POLICY;
 		}
 
 		pBuf = WPA_ExtractSuiteFromRSNIE(pRsnie, rsnie_len, G_MGMT_SUITE, &count);
@@ -694,7 +694,7 @@ NTSTATUS PMF_RsnCapableValidation(
 		if (pBuf == NULL) {
 			MTWF_LOG(DBG_CAT_SEC, CATSEC_PMF, DBG_LVL_ERROR,
 				("[PMF]%s : The peer RSNIE doesn't include Group_mgmt_cipher_suite\n", __func__));
-			return PMF_POLICY_VIOLATION;
+			return MLME_INVALID_SECURITY_POLICY;
 		}
 
 		if (RTMPEqualMemory(pBuf, OUI_PMF_BIP_CMAC_128_CIPHER, LEN_OUI_SUITE))
@@ -709,7 +709,7 @@ NTSTATUS PMF_RsnCapableValidation(
 			MTWF_LOG(DBG_CAT_SEC, CATSEC_PMF, DBG_LVL_ERROR,
 				("[PMF]%s : unknown peer Group_mgmt_cipher_suite\n", __func__));
 			hex_dump("peer Group_mgmt_cipher_suite", pBuf, LEN_OUI_SUITE);
-			return PMF_POLICY_VIOLATION;
+			return MLME_INVALID_SECURITY_POLICY;
 		}
 
 		if ((pSecConfigEntry->PmfCfg.igtk_cipher & self_igtk_cipher) == 0) {
@@ -717,11 +717,11 @@ NTSTATUS PMF_RsnCapableValidation(
 				("[PMF]%s : peer Group_mgmt_cipher_suite(%s) is mismatch\n",
 				__func__, GetEncryModeStr(pSecConfigEntry->PmfCfg.igtk_cipher)));
 			CLEAR_CIPHER(pSecConfigEntry->PmfCfg.igtk_cipher);
-			return PMF_POLICY_VIOLATION;
+			return MLME_INVALID_SECURITY_POLICY;
 		}
 	}
 
-	return PMF_STATUS_SUCCESS;
+	return MLME_SUCCESS;
 }
 
 
@@ -765,7 +765,7 @@ INT PMF_RobustFrameClassify(
 	case SUBTYPE_ACTION: {
 		if  ((IsRx == FALSE)
 			 || (IsRx && (pHdr->FC.Wep == 0))) {
-			UCHAR Category = (UCHAR) (pHdr->Octet[0]);
+			UCHAR Category = *pFrame;
 
 			switch (Category) {
 			/* Refer to IEEE 802.11w Table7-24 */
@@ -1174,6 +1174,11 @@ BOOLEAN PMF_PerformTxFrameAction(
 #ifdef CONFIG_AP_SUPPORT
 		pEntry = MacTableLookup(pAd, pHeader_802_11->Addr1);
 #endif
+		*prot = 0;
+
+		if (pEntry && pAd->MacTab.tr_entry[pEntry->wcid].PortSecured != WPA_802_1X_PORT_SECURED)
+			return TRUE;
+
 		ret = PMF_RobustFrameClassify(
 				  (PHEADER_802_11)pHeader_802_11,
 				  (PUCHAR)(((PUCHAR)pHeader_802_11)+LENGTH_802_11),
@@ -1216,7 +1221,7 @@ BOOLEAN PMF_PerformTxFrameAction(
 			PMF_AddMMIE(pPmfCfg,
 						(UCHAR *) pHeader_802_11,
 						(SrcBufLen - tx_hw_hdr_len));
-			if (IS_CIPHER_BIP_CMAC128(pPmfCfg->igtk_cipher))
+			if (pPmfCfg == NULL || IS_CIPHER_BIP_CMAC128(pPmfCfg->igtk_cipher))
 				*prot = 2;
 			else
 				*prot = 3;
