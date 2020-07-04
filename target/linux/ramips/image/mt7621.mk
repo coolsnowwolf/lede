@@ -1017,7 +1017,7 @@ define Device/xiaomi_mi-router-ac2100
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Mi Router AC2100
-  DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615e wpad-openssl uboot-envtools
+  DEVICE_PACKAGES := -kmod-mt7603 -wpad-openssl kmod-mt7603e kmod-mt7615d luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += xiaomi_mi-router-ac2100
 
@@ -1034,7 +1034,7 @@ define Device/xiaomi_redmi-router-ac2100
   IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | check-size $$$$(IMAGE_SIZE)
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Redmi Router AC2100
-  DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615e wpad-openssl uboot-envtools
+  DEVICE_PACKAGES := -kmod-mt7603 -wpad-openssl kmod-mt7603e kmod-mt7615d luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += xiaomi_redmi-router-ac2100
 
