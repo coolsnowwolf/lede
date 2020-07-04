@@ -19,19 +19,19 @@
 static VOID get_network_type_str(UINT32 Type, CHAR *str)
 {
 	if (Type & NETWORK_INFRA)
-		sprintf(str, "%s", "NETWORK_INFRA");
+		sprintf(str, "NETWORK_INFRA");
 	else if (Type & NETWORK_P2P)
-		sprintf(str, "%s", "NETWORK_P2P");
+		sprintf(str, "NETWORK_P2P");
 	else if (Type & NETWORK_IBSS)
-		sprintf(str, "%s", "NETWORK_IBSS");
+		sprintf(str, "NETWORK_IBSS");
 	else if (Type & NETWORK_MESH)
-		sprintf(str, "%s", "NETWORK_MESH");
+		sprintf(str, "NETWORK_MESH");
 	else if (Type & NETWORK_BOW)
-		sprintf(str, "%s", "NETWORK_BOW");
+		sprintf(str, "NETWORK_BOW");
 	else if (Type & NETWORK_WDS)
-		sprintf(str, "%s", "NETWORK_WDS");
+		sprintf(str, "NETWORK_WDS");
 	else
-		sprintf(str, "%s", "UND");
+		sprintf(str, "UND");
 }
 
 /*
@@ -43,14 +43,39 @@ static VOID update_igmpinfo(struct wifi_dev *wdev, BOOLEAN bActive)
 {
 	struct _DEV_INFO_CTRL_T *devinfo = &wdev->DevInfo;
 	struct _RTMP_ADAPTER *ad = wdev->sys_handle;
+	UINT Enable = FALSE;
+
+#ifdef IGMP_TVM_SUPPORT
+	if (bActive == TRUE) {
+		wdev->pIgmpMcastTable = NULL;
+		wdev->IgmpTableSize = 0;
+	}
+#endif /* IGMP_TVM_SUPPORT */
 
 	if (wdev->wdev_type == WDEV_TYPE_AP) {
 		wdev->IgmpSnoopEnable
 			= ad->ApCfg.IgmpSnoopEnable[devinfo->BandIdx];
-		if (bActive == TRUE && wdev->IgmpSnoopEnable == TRUE)
-			CmdMcastCloneEnable(ad, TRUE, devinfo->OwnMacIdx);
-		else
-			CmdMcastCloneEnable(ad, FALSE, devinfo->OwnMacIdx);
+
+		if (bActive == TRUE && wdev->IgmpSnoopEnable == TRUE) {
+			Enable = TRUE;
+
+#ifdef IGMP_TVM_SUPPORT
+			wdev->u4AgeOutTime = IGMPMAC_TB_ENTRY_AGEOUT_TIME;
+			if (IgmpSnEnableTVMode(ad,
+									wdev,
+									ad->ApCfg.IsTVModeEnable[devinfo->BandIdx],
+									ad->ApCfg.TVModeType[devinfo->BandIdx]))
+				Enable = wdev->TVModeType;
+#endif /* IGMP_TVM_SUPPORT */
+		}
+
+		if (IS_ASIC_CAP(ad, fASIC_CAP_MCU_OFFLOAD))
+		CmdMcastCloneEnable(ad, Enable, devinfo->OwnMacIdx);
+
+#ifdef IGMP_TVM_SUPPORT
+		if (IS_ASIC_CAP(ad, fASIC_CAP_MCU_OFFLOAD))
+			MulticastFilterInitMcastTable(ad, wdev, bActive);
+#endif /* IGMP_TVM_SUPPORT */
 
 	}
 }
@@ -314,6 +339,7 @@ static VOID fill_devinfo(
 	os_move_mem(devinfo->OwnMacAddr, wdev->if_addr, MAC_ADDR_LEN);
 	devinfo->EnableFeature = DEVINFO_ACTIVE_FEATURE;
 	devinfo->BandIdx = HcGetBandByWdev(wdev);
+	os_move_mem(&wdev->DevInfo, devinfo, sizeof(DEV_INFO_CTRL_T));
 
 #ifdef CONFIG_AP_SUPPORT
 #ifdef IGMP_SNOOP_SUPPORT
@@ -908,6 +934,15 @@ INT wifi_sys_linkup(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry)
 		/* Need to update ucBssIndex of wdev here immediately because
 		it could be used if invoke wifi_sys_conn_act subsequently. */
 		wdev->bss_info_argument.ucBssIndex = bss->ucBssIndex;
+#ifdef APCLI_OWE_SUPPORT
+		/*To allow OWE ApCli to connect to Open bss*/
+		if ((wdev->wdev_type == WDEV_TYPE_APCLI) && IS_AKM_OWE(wdev->SecConfig.AKMMap)) {
+			if (IS_AKM_OPEN(entry->SecConfig.AKMMap) && IS_CIPHER_NONE(entry->SecConfig.PairwiseCipher))
+				bss->CipherSuit = SecHWCipherSuitMapping(entry->SecConfig.PairwiseCipher);
+
+		}
+#endif
+
 
 		wcid = (entry) ? entry->wcid : bss->ucBcMcWlanIdx;
 		bssinfo_feature_decision(wdev, bss->u4ConnectionType, wcid, &features);
@@ -920,6 +955,13 @@ INT wifi_sys_linkup(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry)
 			/*prepare bmc starec*/
 			starec_feature_decision(wdev, CONNECTION_INFRA_BC, NULL, &features);
 			starec_security_decision(wdev, NULL, &state);
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+		if (wdev->wds_enable) {
+			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,("WDS Enable setting 4 address mode for %d entry \n",
+					wdev->bss_info_argument.ucBcMcWlanIdx));
+			HW_SET_ASIC_WCID_4ADDR_HDR_TRANS(ad, wdev->bss_info_argument.ucBcMcWlanIdx, TRUE);
+		}
+#endif
 			/*1. get tr entry here, since bss info is acquired above */
 			tr_entry = &ad->MacTab.tr_entry[wdev->tr_tb_idx];
 			sta_rec = &wsys.StaRecCtrl;
@@ -1075,6 +1117,41 @@ VOID WifiSysUpdatePortSecur(RTMP_ADAPTER *pAd, MAC_TABLE_ENTRY *pEntry, ASIC_SEC
 #ifdef CONFIG_AP_SUPPORT
 		CheckBMCPortSecured(pAd, pEntry, TRUE);
 #endif /* CONFIG_AP_SUPPORT */
+#ifdef APCLI_AS_WDS_STA_SUPPORT
+		if (IS_ENTRY_APCLI(pEntry)) {
+			pEntry->bEnable4Addr = TRUE;
+			if (wdev->wds_enable)
+				HW_SET_ASIC_WCID_4ADDR_HDR_TRANS(pAd, pEntry->wcid, TRUE);
+		}
+#endif /* APCLI_AS_WDS_STA_SUPPORT */
+
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+		if (IS_ENTRY_CLIENT(pEntry)) {
+			pEntry->bEnable4Addr = TRUE;
+			if (wdev->wds_enable)
+				HW_SET_ASIC_WCID_4ADDR_HDR_TRANS(pAd,pEntry->wcid, TRUE);
+			else if(MAC_ADDR_EQUAL(pAd->ApCfg.wds_mac, pEntry->Addr))
+				HW_SET_ASIC_WCID_4ADDR_HDR_TRANS(pAd, pEntry->wcid, TRUE);
+		}
+#endif
+
+#ifdef HOSTAPD_MAP_SUPPORT
+		if (IS_ENTRY_CLIENT(pEntry)) {
+			BOOLEAN map_a4_peer_en = FALSE;
+#if defined(MWDS) || defined(CONFIG_MAP_SUPPORT) || defined(WAPP_SUPPORT)
+#if defined(CONFIG_MAP_SUPPORT)
+			MTWF_LOG(DBG_CAT_SEC, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("MAP_ENABLE\n"));
+#if defined(A4_CONN)
+			map_a4_peer_en = map_a4_peer_enable(pAd, pEntry, TRUE);
+#endif /* A4_CONN */
+			map_send_bh_sta_wps_done_event(pAd, pEntry, TRUE);
+#endif /* CONFIG_MAP_SUPPORT */
+#ifdef WAPP_SUPPORT
+			wapp_send_cli_join_event(pAd, pEntry);
+#endif /* WAPP_SUPPORT */
+#endif /* defined(MWDS) || defined(CONFIG_MAP_SUPPORT) || defined(WAPP_SUPPORT) */
+		}
+#endif /* HOSTAPD_MAP_SUPPORT */
 	}
 }
 

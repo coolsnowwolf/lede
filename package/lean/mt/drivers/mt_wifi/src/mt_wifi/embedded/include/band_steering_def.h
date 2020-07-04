@@ -15,7 +15,7 @@
 */
 
 #ifndef _BAND_STEERING_DEF_H_
-#define __BAND_STEERING_DEF_H__
+#define _BAND_STEERING_DEF_H_
 
 #ifdef BAND_STEERING
 #ifndef DOT11_N_SUPPORT
@@ -41,6 +41,19 @@ typedef struct _BND_STRG_CLI_ENTRY {
 	UCHAR BndStrg_Sta_State;
 	struct _BND_STRG_CLI_ENTRY *pNext;
 } BND_STRG_CLI_ENTRY, *PBND_STRG_CLI_ENTRY;
+
+/* WPS_BandSteering Support */
+typedef struct _WPS_WHITELIST_ENTRY {
+	struct _WPS_WHITELIST_ENTRY *pNext;
+	UCHAR addr[MAC_ADDR_LEN];
+	UCHAR state;
+} WPS_WHITELIST_ENTRY, *PWPS_WHITELIST_ENTRY;
+
+typedef struct _BS_LIST_ENTRY {
+	struct _BS_LIST_ENTRY *pNext;
+	UCHAR addr[MAC_ADDR_LEN];
+	UCHAR state;
+} BS_LIST_ENTRY, *PBS_LIST_ENTRY;
 
 #define NVRAM_TABLE_SIZE		128
 
@@ -93,11 +106,14 @@ typedef struct _BND_STRG_CLI_TABLE {
 #ifdef DOT11K_RRM_SUPPORT
 	RRM_NEIGHBOR_REP_INFO NeighborRepInfo;
 #endif
-	UCHAR		WhiteEntryList[BND_STRG_MAX_WHITELIST_ENTRY][MAC_ADDR_LEN];
-	UINT8		WhiteEntryListSize;
-	UCHAR		BndStrgBlackList[BND_STRG_MAX_BLACKLIST_ENTRY][MAC_ADDR_LEN];
-	UINT8		BndStrgBlackListSize;
 	UINT8		BndStrgMode;
+/* WPS_BandSteering Support */
+	LIST_HEADER WpsWhiteList;	/* WPS: init in bandstearing table init */
+	NDIS_SPIN_LOCK WpsWhiteListLock;
+	LIST_HEADER WhiteList;	/* init in bandstearing table init */
+	NDIS_SPIN_LOCK WhiteListLock;
+	LIST_HEADER BlackList;	/* init in bandstearing table init */
+	NDIS_SPIN_LOCK BlackListLock;
 } BND_STRG_CLI_TABLE, *PBND_STRG_CLI_TABLE;
 
 enum BND_STRG_RETURN_CODE {
@@ -159,6 +175,7 @@ struct bnd_msg_heartbeat {
 
 struct bnd_msg_cli_probe {
 	BOOLEAN bAllowStaConnectInHt;
+	BOOLEAN bIosCapable;   /* For IOS immediately connect */
 	UINT8	bVHTCapable;
 	UINT8	Nss;
 	CHAR	Rssi[4];
@@ -173,6 +190,8 @@ struct bnd_msg_cli_assoc {
 	UINT8	bVHTCapable;
 	UINT8	Nss;
 	UINT8	BTMSupport;
+/* WPS_BandSteering Support */
+	BOOLEAN bWpsAssoc;
 };
 
 struct bnd_msg_cli_delete {

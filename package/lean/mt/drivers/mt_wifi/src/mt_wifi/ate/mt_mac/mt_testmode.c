@@ -738,12 +738,6 @@ ate_thread_dequeue:
 
 #endif /* COMPOS_TESTMODE_WIN */
 
-		if (multi_users > 0) {
-			UCHAR *pate_pkt = TESTMODE_GET_PARAM(ate_ctrl, band_idx, pate_pkt);
-
-			ate_ctrl->wcid_ref = multi_users;
-			ret = MT_ATEGenPkt(pAd, pate_pkt, band_idx);
-		}
 
 		mode = TESTMODE_GET_PARAM(ate_ctrl, band_idx, Mode);
 
@@ -906,7 +900,8 @@ err1:
 		RtmpOSTaskNotifyToExit(pTask);
 	if (pAd)
 		MtATESetMacTxRx(pAd, ASIC_MAC_TX, TRUE, band_idx);
-	cb->is_init = FALSE;
+	if (cb)
+		cb->is_init = FALSE;
 
 	if (ret)
 		MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
@@ -914,7 +909,9 @@ err1:
 
 	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_INFO,
 			("%s: leave\n", __func__));
-	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);
+	if (pAd)
+		RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);
+
 	return ret;
 }
 
@@ -1150,6 +1147,13 @@ VOID MT_ATEUpdateRxStatistic(RTMP_ADAPTER *pAd, enum _TESTMODE_STAT_TYPE type, V
 		COUNTER_802_11 *wlanCounter = (COUNTER_802_11 *)data;
 		rx_stat->RxMacFCSErrCount =
 			wlanCounter->FCSErrorCount.u.LowPart;
+
+#ifdef DBDC_MODE
+		if (pAd->CommonCfg.dbdc_mode) {
+			rx_stat->RxMacFCSErrCount_band1 =
+				(wlanCounter+1)->FCSErrorCount.u.LowPart;
+		}
+#endif
 	}
 }
 
@@ -1339,6 +1343,10 @@ static INT32 MT_ATESetTxPowerX(RTMP_ADAPTER *pAd, ATE_TXPOWER TxPower)
 
 	if (TxPower.Power <= 0)
 		return Ret;
+
+	/* Tx Power value upper bound protection */
+	if (TxPower.Power > 50)
+			TxPower.Power = 50;
 
 	switch (TxPower.Ant_idx) {
 	case 0:
@@ -1765,7 +1773,7 @@ INT32 MT_ATEInsertLog(RTMP_ADAPTER *pAd, UCHAR *log, UINT32 log_type, UINT32 len
 	}
 
 	if (!insert_func)
-		goto err0;
+		goto err1;
 
 	log_cb = &ATECtrl->log_dump[logcb_idx];
 	idx = log_cb->idx;
@@ -2241,13 +2249,16 @@ INT MT_ATERxDoneHandle(RTMP_ADAPTER *pAd, RX_BLK *pRxBlk)
 		ATEOp->SampleRssi(pAd, pRxBlk);
 
 		/* RX packet counter calculate by chfreq of RXD */
-		if (rxd_base->RxD1.ChFreq == chfreq0)
+		if (rxd_base->RxD1.ChFreq == chfreq0) {
 			ATECtrl->rx_stat.RxTotalCnt[TESTMODE_BAND0]++;
+		}
 
-#ifdef MT7615
-		else if (rxd_base->RxD1.ChFreq == chfreq1)
+#if defined(MT7615)
+#ifdef DBDC_MODE
+		else if (rxd_base->RxD1.ChFreq == chfreq1) {
 			ATECtrl->rx_stat.RxTotalCnt[TESTMODE_BAND1]++;
-
+		}
+#endif
 #endif /* MT7615 */
 		else
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
@@ -2373,8 +2384,13 @@ static INT32 MT_ATEInitBandInfo(RTMP_ADAPTER *pAd, UINT32 band_idx)
 		os_free_mem(ATECtrl->band_ext[idx].pate_pkt);
 
 	ret = os_alloc_mem(pAd, (PUCHAR *)&ATECtrl->band_ext[idx].pate_pkt, ATE_TESTPKT_LEN);
-	TESTMODE_SET_PARAM(ATECtrl, band_idx, Channel, 36);
-	TESTMODE_SET_PARAM(ATECtrl, band_idx, ControlChl, 36);
+	if (pAd->CommonCfg.eDBDC_mode == ENUM_DBDC_5G5G) {
+		TESTMODE_SET_PARAM(ATECtrl, band_idx, Channel, 100);
+		TESTMODE_SET_PARAM(ATECtrl, band_idx, ControlChl, 100);
+	} else {
+		TESTMODE_SET_PARAM(ATECtrl, band_idx, Channel, 36);
+		TESTMODE_SET_PARAM(ATECtrl, band_idx, ControlChl, 36);
+	}
 	TESTMODE_SET_PARAM(ATECtrl, band_idx, BW, 0);
 	TESTMODE_SET_PARAM(ATECtrl, band_idx, TxDoneCount, 0);
 	TESTMODE_SET_PARAM(ATECtrl, band_idx, TxedCount, 0);
@@ -2386,7 +2402,7 @@ static INT32 MT_ATEInitBandInfo(RTMP_ADAPTER *pAd, UINT32 band_idx)
 	payload[0] = 0xAA;
 	TESTMODE_SET_PARAM(ATECtrl, band_idx, HLen, LENGTH_802_11);
 	TESTMODE_SET_PARAM(ATECtrl, band_idx, FixedPayload, 1);
-	TESTMODE_SET_PARAM(ATECtrl, band_idx, TxCount, 0);
+	TESTMODE_SET_PARAM(ATECtrl, band_idx, TxCount, 0xFFFFFFFF);
 	ATECtrl->band_ext[idx].pkt_skb = NULL;
 	NdisMoveMemory(ATECtrl->band_ext[idx].TemplateFrame, ATECtrl->TemplateFrame, 32);
 	NdisMoveMemory(ATECtrl->band_ext[idx].Addr1, addr, MAC_ADDR_LEN);
@@ -2418,6 +2434,12 @@ static INT32 MT_ATEStart(RTMP_ADAPTER *pAd)
 #endif
 #ifdef DBDC_MODE
 	struct _BAND_INFO *Info = &(ATECtrl->band_ext[0]);
+#endif /* DBDC_MODE */
+
+#if defined(DBDC_MODE) && defined(DEFAULT_5G_PROFILE)
+	/* Remap wdev_idx for MP 3.3 Driver */
+	ATECtrl->wdev_idx = 1;
+	Info->wdev_idx = 0;
 #endif /* DBDC_MODE */
 
 	/* Remind FW that Enable ATE mode */
@@ -3108,10 +3130,7 @@ INT mt_ate_set_tmac_info(RTMP_ADAPTER *pAd, TMAC_INFO *tmac_info, UINT32 band_id
 
 #ifdef SINGLE_SKU_V2
 	/* Update Power offset according to Band, Phymode, MCS, BW, Nss, SPE */
-	tmac_info->PowerOffset = SKUTxPwrOffsetGet(pAd,
-							band_idx, ATECtrl->PerPktBW, ATECtrl->PhyMode,
-							ATECtrl->Mcs,
-							ATECtrl->Nss, fgSPE);
+	tmac_info->PowerOffset = SKUTxPwrOffsetGet(pAd, band_idx, TESTMODE_GET_PARAM(ATECtrl, band_idx, PerPktBW), TESTMODE_GET_PARAM(ATECtrl, band_idx, PhyMode), TESTMODE_GET_PARAM(ATECtrl, band_idx, Mcs), TESTMODE_GET_PARAM(ATECtrl, band_idx, Nss), fgSPE);
 
 	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s: tmac_info->PowerOffset = 0x%x (%d)\n",
 		__func__, tmac_info->PowerOffset, tmac_info->PowerOffset));
@@ -4018,6 +4037,12 @@ INT32 MT_ATETxPkt(RTMP_ADAPTER *pAd, UINT32 band_idx)
 #endif /* DBDC_MODE */
 	alloced = TESTMODE_GET_PARAM(ATECtrl, band_idx,	is_alloc_skb);
 
+	if (!pkt_skb) {
+		MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("%s: invalid pkt_skb\n", __func__));
+		return NDIS_STATUS_FAILURE;
+	}
+
 	if (!alloced) {
 		if (*pkt_skb)
 			RELEASE_NDIS_PACKET(pAd, *pkt_skb, NDIS_STATUS_SUCCESS);
@@ -4037,12 +4062,14 @@ INT32 MT_ATETxPkt(RTMP_ADAPTER *pAd, UINT32 band_idx)
 		TESTMODE_SET_PARAM(ATECtrl, band_idx, is_alloc_skb, 1);
 	}
 
-	skb = (struct sk_buff *)(*pkt_skb);
-	OS_PKT_CLONE(pAd, skb, skb2, GFP_ATOMIC);
+	if (*pkt_skb) {
+		skb = (struct sk_buff *)(*pkt_skb);
+		OS_PKT_CLONE(pAd, skb, skb2, GFP_ATOMIC);
+	}
 
 	if (skb2 == NULL) {
-		RELEASE_NDIS_PACKET(pAd, *pkt_skb, NDIS_STATUS_SUCCESS);
-		pkt_skb = NULL;
+		if (*pkt_skb)
+			RELEASE_NDIS_PACKET(pAd, *pkt_skb, NDIS_STATUS_SUCCESS);
 		MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s: clone pakcet fail\n", __func__));
 		goto done;
 	}
@@ -4218,7 +4245,7 @@ static INT32 mt_ate_calculate_duty_cycle(RTMP_ADAPTER *pAd, UINT32 band_idx)
 		ipg = ((pkt_tx_time * 100) / duty_cycle) - pkt_tx_time;
 		ipg_param->ipg = ipg;
 		/* If IPG value is not make sense, there's error handle when get ipg parameter */
-		ret = ATEOp->SetIPG(pAd);
+		ret = ATEOp->SetIPG(pAd, ipg);
 	} else if ((duty_cycle > 0) && (pkt_tx_time == 0) && (ipg > 0)) {
 		/* If pkt_tx_time is not make sense, there's error handle when start TX */
 		pkt_tx_time = (duty_cycle * ipg) / (100 - duty_cycle);
@@ -4434,27 +4461,27 @@ static INT32 MT_ATEStartTx(RTMP_ADAPTER *pAd)
 	struct _ATE_CTRL *ATECtrl = &pAd->ATECtrl;
 	struct _ATE_IF_OPERATION *if_ops = ATECtrl->ATEIfOps;
 	INT32 Ret = 0;
-	UCHAR cntrol_band_idx = ATECtrl->control_band_idx;
-	UCHAR *pate_pkt = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, pate_pkt);
-	UCHAR cntl_ch = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, ControlChl);
-	UCHAR ch = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, Channel);
-	UINT32 mode = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, Mode);
-	UINT32 tx_cnt = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, TxCount);
-	UCHAR bw = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, BW);
-	INT8 wdev_idx = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, wdev_idx);
-	UINT32 Rate = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, Mcs);
-	UINT32 duty_cycle = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, duty_cycle);
+	UCHAR control_band_idx = ATECtrl->control_band_idx;
+	UCHAR *pate_pkt = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, pate_pkt);
+	UCHAR cntl_ch = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, ControlChl);
+	UCHAR ch = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, Channel);
+	UINT32 mode = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, Mode);
+	UINT32 tx_cnt = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, TxCount);
+	UCHAR bw = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, BW);
+	INT8 wdev_idx = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, wdev_idx);
+	UINT32 Rate = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, Mcs);
+	UINT32 duty_cycle = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, duty_cycle);
 #ifdef ARBITRARY_CCK_OFDM_TX
-	UINT32 tx_sel = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, TxAntennaSel);
-	UINT8 phymode = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, PhyMode);
+	UINT32 tx_sel = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, TxAntennaSel);
+	UINT8 phymode = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, PhyMode);
 #endif
 #ifdef CONFIG_AP_SUPPORT
 	INT32 IdBss, MaxNumBss = pAd->ApCfg.BssidNum;
 #endif
 
 	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_OFF,
-		("%s: cntrol_band_idx:%u, ch:%x, cntl_ch:%x, wdev_idx:%x\n",
-		__func__, cntrol_band_idx, ch, cntl_ch, wdev_idx));
+		("%s: control_band_idx:%u, ch:%x, cntl_ch:%x, wdev_idx:%x\n",
+		__func__, control_band_idx, ch, cntl_ch, wdev_idx));
 
 	if (!pate_pkt)
 		goto err0;
@@ -4467,20 +4494,20 @@ static INT32 MT_ATEStartTx(RTMP_ADAPTER *pAd)
 		goto err1;
 	}
 
-	MtATESetMacTxRx(pAd, ASIC_MAC_TX, TRUE, cntrol_band_idx);
+	MtATESetMacTxRx(pAd, ASIC_MAC_TX, TRUE, control_band_idx);
 #ifdef ARBITRARY_CCK_OFDM_TX
 	if (IS_MT7615(pAd)) {
-		MtATEInitCCK_OFDM_Path(pAd, cntrol_band_idx);
+		MtATEInitCCK_OFDM_Path(pAd, control_band_idx);
 
 		if (phymode == MODE_CCK || phymode == MODE_OFDM)
-			MtATESetCCK_OFDM_Path(pAd, tx_sel, cntrol_band_idx);
+			MtATESetCCK_OFDM_Path(pAd, tx_sel, control_band_idx);
 	}
 #endif
 
 	if (Rate == 32)
 		mt_ate_mcs32_handle(pAd, ATECtrl->wcid_ref, bw);
 
-	MtATESetMacTxRx(pAd, ASIC_MAC_RX_RXV, FALSE, cntrol_band_idx);
+	MtATESetMacTxRx(pAd, ASIC_MAC_RX_RXV, FALSE, control_band_idx);
 	msleep(30);
 	/* Stop send TX packets from upper layer */
 	RTMP_OS_NETDEV_STOP_QUEUE(pAd->net_dev);
@@ -4505,7 +4532,7 @@ static INT32 MT_ATEStartTx(RTMP_ADAPTER *pAd)
 		if_ops->clean_trx_q(pAd);
 
 	if (mode & ATE_RXFRAME)
-		MtATESetMacTxRx(pAd, ASIC_MAC_RX_RXV, TRUE, cntrol_band_idx);
+		MtATESetMacTxRx(pAd, ASIC_MAC_RX_RXV, TRUE, control_band_idx);
 
 	RTMP_OS_NETDEV_START_QUEUE(pAd->net_dev);
 #ifdef CONFIG_AP_SUPPORT
@@ -4526,51 +4553,51 @@ static INT32 MT_ATEStartTx(RTMP_ADAPTER *pAd)
 
 	/* Calculate duty_cycle related parameter first */
 	if (duty_cycle > 0)
-		Ret = mt_ate_calculate_duty_cycle(pAd, cntrol_band_idx);
+		Ret = mt_ate_calculate_duty_cycle(pAd, control_band_idx);
 
 	/* Prepare Tx packet */
 	if (if_ops->setup_frame)
 		Ret = if_ops->setup_frame(pAd, QID_AC_BE);
 	else
-		Ret = MT_ATEGenPkt(pAd, pate_pkt, cntrol_band_idx);
+		Ret = MT_ATEGenPkt(pAd, pate_pkt, control_band_idx);
 
 	if (Ret)
 		goto err0;
 
 	/* Apply IPG setting to HW */
-	Ret = mt_ate_apply_ipg_param(pAd, cntrol_band_idx);
+	Ret = mt_ate_apply_ipg_param(pAd, control_band_idx);
 
 	if (tx_cnt != 0xFFFFFFFF) {
 #ifndef ATE_TXTHREAD
-		tx_cnt += TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx,	TxDoneCount);
+		tx_cnt += TESTMODE_GET_PARAM(ATECtrl, control_band_idx,	TxDoneCount);
 #endif
-		TESTMODE_SET_PARAM(ATECtrl, cntrol_band_idx, TxCount, tx_cnt);
+		TESTMODE_SET_PARAM(ATECtrl, control_band_idx, TxCount, tx_cnt);
 	}
 
 	/* Tx Frame */
 	mode |= ATE_TXFRAME;
-	TESTMODE_SET_PARAM(ATECtrl, cntrol_band_idx, Mode, mode);
+	TESTMODE_SET_PARAM(ATECtrl, control_band_idx, Mode, mode);
 
 	if (if_ops->test_frame_tx)
 		Ret = if_ops->test_frame_tx(pAd);
 	else {
-		struct _ATE_IPG_PARAM *ipg_param = TESTMODE_GET_PADDR(ATECtrl, cntrol_band_idx, ipg_param);
-		struct _ATE_TX_TIME_PARAM *tx_time_param = TESTMODE_GET_PADDR(ATECtrl, cntrol_band_idx, tx_time_param);
+		struct _ATE_IPG_PARAM *ipg_param = TESTMODE_GET_PADDR(ATECtrl, control_band_idx, ipg_param);
+		struct _ATE_TX_TIME_PARAM *tx_time_param = TESTMODE_GET_PADDR(ATECtrl, control_band_idx, tx_time_param);
 		UINT32 ipg = ipg_param->ipg;
 		UINT32 pkt_tx_time = tx_time_param->pkt_tx_time;
 
 		if ((pkt_tx_time > 0) || (ipg > 0)) {
 			PKT_TOKEN_CB *pktTokenCb = (PKT_TOKEN_CB *) pAd->PktTokenCb;
 			UINT32 pkt_cnt, input_cnt;
-			UINT32 ate_tx_cnt = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, TxCount);
-			UINT32 txed_cnt = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, TxedCount);
+			UINT32 ate_tx_cnt = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, TxCount);
+			UINT32 txed_cnt = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, TxedCount);
 			UINT32 pkt_ampdu_cnt = tx_time_param->pkt_ampdu_cnt;
 			UINT32 pkt_enqueue_cnt = pktTokenCb->pkt_tx_tkid_max / 2;
 
 			MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 				("%s: ate_tx_cnt=0x%x, pkt_ampdu_cnt=%d, pkt_enqueue_cnt=%d, pkt_tx_time=%d, ipg=%d\n",
 				__func__, ate_tx_cnt, pkt_ampdu_cnt, pkt_enqueue_cnt, pkt_tx_time, ipg));
-			MtATESetMacTxRx(pAd, ASIC_MAC_TX, FALSE, cntrol_band_idx);
+			MtATESetMacTxRx(pAd, ASIC_MAC_TX, FALSE, control_band_idx);
 
 			if (ate_tx_cnt > pkt_ampdu_cnt)
 				input_cnt = ate_tx_cnt;
@@ -4581,15 +4608,15 @@ static INT32 MT_ATEStartTx(RTMP_ADAPTER *pAd)
 
 			/* Enqueue packet in HW queue in advance */
 			for (pkt_cnt = 0; pkt_cnt < input_cnt; pkt_cnt++) {
-				MT_ATETxPkt(pAd, cntrol_band_idx);
+				MT_ATETxPkt(pAd, control_band_idx);
 				txed_cnt++;
 			}
 
-			TESTMODE_SET_PARAM(ATECtrl, cntrol_band_idx, TxedCount, txed_cnt);
-			Ret = MT_ATETxControl(pAd, cntrol_band_idx, NULL);
-			MtATESetMacTxRx(pAd, ASIC_MAC_TX, TRUE, cntrol_band_idx);
+			TESTMODE_SET_PARAM(ATECtrl, control_band_idx, TxedCount, txed_cnt);
+			Ret = MT_ATETxControl(pAd, control_band_idx, NULL);
+			MtATESetMacTxRx(pAd, ASIC_MAC_TX, TRUE, control_band_idx);
 		} else
-			Ret = MT_ATETxControl(pAd, cntrol_band_idx, NULL);
+			Ret = MT_ATETxControl(pAd, control_band_idx, NULL);
 	}
 
 	if (Ret)
@@ -4610,8 +4637,8 @@ static INT32 MT_ATEStartRx(RTMP_ADAPTER *pAd)
 	struct _ATE_CTRL *ATECtrl = &pAd->ATECtrl;
 	struct _ATE_IF_OPERATION *if_ops = ATECtrl->ATEIfOps;
 	INT32 Ret = 0;
-	UCHAR cntrol_band_idx = ATECtrl->control_band_idx;
-	UINT32 mode = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, Mode);
+	UCHAR control_band_idx = ATECtrl->control_band_idx;
+	UINT32 mode = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, Mode);
 #ifdef CONFIG_AP_SUPPORT
 	INT32 IdBss, MaxNumBss = pAd->ApCfg.BssidNum;
 #endif
@@ -4620,7 +4647,7 @@ static INT32 MT_ATEStartRx(RTMP_ADAPTER *pAd)
 		goto err0;
 
 	/* Firmware offloading CR need to msleep(30) Currently for the second NETDEV_STOP_QUEUE */
-	MtATESetMacTxRx(pAd, ASIC_MAC_RX_RXV, FALSE, cntrol_band_idx);
+	MtATESetMacTxRx(pAd, ASIC_MAC_RX_RXV, FALSE, control_band_idx);
 	msleep(30);
 	/*   Stop send TX packets */
 	RTMP_OS_NETDEV_STOP_QUEUE(pAd->net_dev);
@@ -4659,7 +4686,7 @@ static INT32 MT_ATEStartRx(RTMP_ADAPTER *pAd)
 
 	/* Turn on TX again if set before */
 	if (mode & ATE_TXFRAME)
-		MtATESetMacTxRx(pAd, ASIC_MAC_TX, TRUE, cntrol_band_idx);
+		MtATESetMacTxRx(pAd, ASIC_MAC_TX, TRUE, control_band_idx);
 
 	/* reset counter when iwpriv only */
 	if (ATECtrl->bQAEnabled != TRUE) {
@@ -4672,7 +4699,7 @@ static INT32 MT_ATEStartRx(RTMP_ADAPTER *pAd)
 	pAd->WlanCounters[0].FCSErrorCount.u.LowPart = 0;
 	/* Enable PDMA */
 	AsicSetWPDMA(pAd, PDMA_TX_RX, 1);
-	MtATESetMacTxRx(pAd, ASIC_MAC_RX_RXV, TRUE, cntrol_band_idx);
+	MtATESetMacTxRx(pAd, ASIC_MAC_RX_RXV, TRUE, control_band_idx);
 #ifdef CONFIG_HW_HAL_OFFLOAD
 	MtCmdSetPhyCounter(pAd, 0, TESTMODE_BAND0);
 	MtCmdSetPhyCounter(pAd, 1, TESTMODE_BAND0);
@@ -4685,7 +4712,7 @@ static INT32 MT_ATEStartRx(RTMP_ADAPTER *pAd)
 #endif /* CONFIG_HW_HAL_OFFLOAD */
 	msleep(30);
 	mode |= ATE_RXFRAME;
-	TESTMODE_SET_PARAM(ATECtrl, cntrol_band_idx, Mode, mode);
+	TESTMODE_SET_PARAM(ATECtrl, control_band_idx, Mode, mode);
 
 	if (if_ops->test_frame_rx)
 		if_ops->test_frame_rx(pAd);
@@ -4703,25 +4730,25 @@ static INT32 MT_ATEStopTx(RTMP_ADAPTER *pAd)
 #ifdef ATE_TXTHREAD
 	INT32 thread_idx = 0;
 #endif
-	UCHAR cntrol_band_idx = ATECtrl->control_band_idx;
-	UINT32 Mode = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, Mode);
+	UCHAR control_band_idx = ATECtrl->control_band_idx;
+	UINT32 Mode = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, Mode);
 	struct qm_ops *ops = pAd->qm_ops;
-	struct _ATE_IPG_PARAM *ipg_param = TESTMODE_GET_PADDR(ATECtrl, cntrol_band_idx, ipg_param);
-	struct _ATE_TX_TIME_PARAM *tx_time_param = TESTMODE_GET_PADDR(ATECtrl, cntrol_band_idx, tx_time_param);
+	struct _ATE_IPG_PARAM *ipg_param = TESTMODE_GET_PADDR(ATECtrl, control_band_idx, ipg_param);
+	struct _ATE_TX_TIME_PARAM *tx_time_param = TESTMODE_GET_PADDR(ATECtrl, control_band_idx, tx_time_param);
 	UINT32 ipg = ipg_param->ipg;
 	UINT32 pkt_tx_time = tx_time_param->pkt_tx_time;
 
 	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-		("%s: cntrol_band_idx=%u\n", __func__, cntrol_band_idx));
+		("%s: control_band_idx=%u\n", __func__, control_band_idx));
 
-	TESTMODE_SET_PARAM(ATECtrl, cntrol_band_idx, TxedCount, 0);
+	TESTMODE_SET_PARAM(ATECtrl, control_band_idx, TxedCount, 0);
 #ifdef ATE_TXTHREAD
 	TESTMODEThreadStopTx(pAd, thread_idx);
 #endif
 
 	if ((Mode & ATE_TXFRAME) || (Mode == ATE_STOP)) {
 		Mode &= ~ATE_TXFRAME;
-		TESTMODE_SET_PARAM(ATECtrl, cntrol_band_idx, Mode, Mode);
+		TESTMODE_SET_PARAM(ATECtrl, control_band_idx, Mode, Mode);
 
 		if ((pkt_tx_time > 0) || (ipg > 0)) {
 			/* Flush SW queue */
@@ -4733,7 +4760,7 @@ static INT32 MT_ATEStopTx(RTMP_ADAPTER *pAd)
 		}
 #ifdef ARBITRARY_CCK_OFDM_TX
 		if (IS_MT7615(pAd)) {
-			MtATEInitCCK_OFDM_Path(pAd, cntrol_band_idx);
+			MtATEInitCCK_OFDM_Path(pAd, control_band_idx);
 		}
 #endif
 	}
@@ -4747,12 +4774,12 @@ static INT32 MT_ATEStopRx(RTMP_ADAPTER *pAd)
 	struct _ATE_CTRL *ATECtrl = &pAd->ATECtrl;
 	struct _ATE_IF_OPERATION *if_ops = ATECtrl->ATEIfOps;
 	INT32 Ret = 0;
-	UCHAR cntrol_band_idx = ATECtrl->control_band_idx;
-	UINT32 Mode = TESTMODE_GET_PARAM(ATECtrl, cntrol_band_idx, Mode);
+	UCHAR control_band_idx = ATECtrl->control_band_idx;
+	UINT32 Mode = TESTMODE_GET_PARAM(ATECtrl, control_band_idx, Mode);
 
-	Ret = MtATESetMacTxRx(pAd, ASIC_MAC_RX_RXV, FALSE, cntrol_band_idx);
+	Ret = MtATESetMacTxRx(pAd, ASIC_MAC_RX_RXV, FALSE, control_band_idx);
 	Mode &= ~ATE_RXFRAME;
-	TESTMODE_SET_PARAM(ATECtrl, cntrol_band_idx, Mode, Mode);
+	TESTMODE_SET_PARAM(ATECtrl, control_band_idx, Mode, Mode);
 
 	if (if_ops->clean_trx_q)
 		if_ops->clean_trx_q(pAd);
@@ -4811,8 +4838,14 @@ static INT32 MT_ATEStopRx(RTMP_ADAPTER *pAd)
 static INT32 MT_ATESetTxAntenna(RTMP_ADAPTER *pAd, UINT32 Ant)
 {
 	struct _ATE_CTRL *ATECtrl = &pAd->ATECtrl;
-	INT32 Ret = 0;
-	UCHAR control_band_idx = ATECtrl->control_band_idx;
+	INT32 Ret = 0, ant_loop = 0;
+	UCHAR control_band_idx = ATECtrl->control_band_idx, ant_mask = 0;
+	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+
+	for (ant_loop = 0; ant_loop < cap->max_nss; ant_loop++)
+		ant_mask |= (0x1 << ant_loop);
+
+	Ant &= ant_mask;
 
 	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 		("%s: Ant = 0x%x, control_band_idx = %d\n",
@@ -4830,8 +4863,14 @@ static INT32 MT_ATESetTxAntenna(RTMP_ADAPTER *pAd, UINT32 Ant)
 static INT32 MT_ATESetRxAntenna(RTMP_ADAPTER *pAd, UINT32 Ant)
 {
 	struct _ATE_CTRL *ATECtrl = &pAd->ATECtrl;
-	INT32 Ret = 0;
-	UCHAR control_band_idx = ATECtrl->control_band_idx;
+	INT32 Ret = 0, ant_loop = 0;
+	UCHAR control_band_idx = ATECtrl->control_band_idx, ant_mask = 0;
+	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+
+	for (ant_loop = 0; ant_loop < cap->max_nss; ant_loop++)
+		ant_mask |= (0x1 << ant_loop);
+
+	Ant &= ant_mask;
 
 	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 		("%s: Ant = 0x%x, control_band_idx = %d\n",
@@ -5227,8 +5266,8 @@ static INT32 mt_ate_set_duty_cycle(RTMP_ADAPTER *pAd, UINT32 value)
 	struct _ATE_CTRL *ATECtrl = &pAd->ATECtrl;
 	INT32 ret = 0;
 	UCHAR control_band_idx = ATECtrl->control_band_idx;
-
 	UINT32 duty_cycle = value;
+
 	TESTMODE_SET_PARAM(ATECtrl, control_band_idx, duty_cycle, duty_cycle);
 	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 		("%s: Duty cycle=%d%%, control_band_idx=%d\n",
@@ -5471,11 +5510,19 @@ static INT32 mt_ate_get_ipg_param(RTMP_ADAPTER *pAd)
 }
 
 
-static INT32 mt_ate_set_ipg(RTMP_ADAPTER *pAd)
+static INT32 mt_ate_set_ipg(RTMP_ADAPTER *pAd, UINT32 value)
 {
+	struct _ATE_CTRL *ATECtrl = &pAd->ATECtrl;
 	INT32 ret = 0;
+	UCHAR control_band_idx = ATECtrl->control_band_idx;
+	UINT32 ipg = value;
 
+	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
+		("%s: IPG=%dus, control_band_idx=%d\n",
+		__func__, ipg, control_band_idx));
+	TESTMODE_SET_PARAM(ATECtrl, control_band_idx, ipg_param.ipg, ipg);
 	ret = mt_ate_get_ipg_param(pAd);
+
 	return ret;
 }
 
@@ -5595,9 +5642,6 @@ static INT32 MT_ATETxCWTone(RTMP_ADAPTER *pAd, UINT32 Control)
 	UINT32 Band = 0;
 	INT32 pwr1 = 0, pwr2 = 0;
 	INT32 DcOffset_I = 0, DcOffset_Q = 0;
-
-	if (band_idx == -1)
-		return -1;
 
 	AntMask = TESTMODE_GET_PARAM(ATECtrl, band_idx, TxAntennaSel);
 	Channel = TESTMODE_GET_PARAM(ATECtrl, band_idx, Channel);
@@ -6091,9 +6135,11 @@ INT32 MT_ATERFTestCB(RTMP_ADAPTER *pAd, UINT8 *Data, UINT32 Length)
 			struct _ATE_LOG_DUMP_CB *log_cb = NULL;
 #ifdef PRE_CAL_MT7622_SUPPORT
 			UINT32 *cal_log = NULL;
+			if (IS_MT7622(pAd)) {
 
 			if (pAd->bPreCalMode)
 				os_alloc_mem(pAd, (UCHAR **)&cal_log, CAL_LOG_SIZE);
+				}
 #endif /* PRE_CAL_MT7622_SUPPORT */
 			data->u4CalIndex = le2cpu32(data->u4CalIndex);
 			data->u4CalType = le2cpu32(data->u4CalType);
@@ -6127,8 +6173,9 @@ INT32 MT_ATERFTestCB(RTMP_ADAPTER *pAd, UINT8 *Data, UINT32 Length)
 					MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%08x\n", dump_tmp[i]));
 					re_cal.cr_val = dump_tmp[i];
 #ifdef PRE_CAL_MT7622_SUPPORT
-					if (cal_log)
+					if (IS_MT7622(pAd)) {
 						cal_log[(i-1)/2] = dump_tmp[i];
+					}
 #endif /* PRE_CAL_MT7622_SUPPORT */
 					if (pAd->ATECtrl.en_log & fATE_LOG_RE_CAL)
 						MT_ATEInsertLog(pAd, (UCHAR *)&re_cal, fATE_LOG_RE_CAL, sizeof(re_cal));
@@ -6138,6 +6185,8 @@ INT32 MT_ATERFTestCB(RTMP_ADAPTER *pAd, UINT8 *Data, UINT32 Length)
 				}
 			}
 #ifdef PRE_CAL_MT7622_SUPPORT
+			if (IS_MT7622(pAd)) {
+
 			if (pAd->bPreCalMode) {
 				if (cal_type == TX_LPFG) {
 					MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
@@ -6160,6 +6209,7 @@ INT32 MT_ATERFTestCB(RTMP_ADAPTER *pAd, UINT8 *Data, UINT32 Length)
 				}
 				os_free_mem(cal_log);
 			}
+				}
 #endif /* PRE_CAL_MT7622_SUPPORT */
 		}
 		break;
@@ -7074,7 +7124,9 @@ static UINT32 MT_TestModeOpInit(RTMP_ADAPTER *pAd)
 	AteOp->SetDutyCycle = mt_ate_set_duty_cycle;
 	AteOp->SetPktTxTime = mt_ate_set_pkt_tx_time;
 #ifdef PRE_CAL_MT7622_SUPPORT
-	AteOp->TxDPDTest7622 = MtATE_DPD_Cal_Store_Proc_7622;
+	if (IS_MT7622(pAd)) {
+		AteOp->TxDPDTest7622 = MtATE_DPD_Cal_Store_Proc_7622;
+	}
 #endif /*PRE_CAL_MT7622_SUPPORT*/
 #ifdef PRE_CAL_TRX_SET1_SUPPORT
 	AteOp->RxSelfTest = MtATE_DCOC_Cal_Store_Proc;
@@ -7083,6 +7135,9 @@ static UINT32 MT_TestModeOpInit(RTMP_ADAPTER *pAd)
 #ifdef PRE_CAL_TRX_SET2_SUPPORT
 	AteOp->PreCalTest = MtATE_Pre_Cal_Proc;
 #endif /* PRE_CAL_TRX_SET2_SUPPORT */
+#if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
+	AteOp->PATrim = MtATE_PA_Trim_Proc;
+#endif /* CAL_BIN_FILE_SUPPORT */
 #if !defined(COMPOS_TESTMODE_WIN)/* 1       todo RX_BLK */
 	AteOp->SampleRssi = MT_ATESampleRssi;
 #endif
@@ -7279,65 +7334,68 @@ INT MtATE_DPD_Cal_Store_Proc_7622(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 	USHORT doCal1 = 0;
 	MT_SWITCH_CHANNEL_CFG ch_cfg;
 
-	if (pAd->E2pAccessMode != E2P_FLASH_MODE && pAd->E2pAccessMode != E2P_BIN_MODE) {
-		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-				 ("%s: Currently not in FLASH or BIN MODE,return.\n", __func__));
-		return FALSE;
-	}
-	/* set channel command , per group calibration - set to channel 7, BW20 */
-	ch_cfg.Bw = BW_20;
-	ch_cfg.CentralChannel = 7;
-	ch_cfg.TxStream = 4;
-	ch_cfg.RxStream = 4;
-	ch_cfg.ControlChannel = 7;
-	ch_cfg.ControlChannel2 = 0;
-	ch_cfg.BandIdx = 0;
-	ch_cfg.bScan = 0;
-	MtCmdChannelSwitch(pAd, ch_cfg);
+	if (IS_MT7622(pAd)) {
 
-	pAd->bPreCalMode = TRUE;
-	/* Retest Recal - TXLPFG */
-	u4CalId = TX_LPFG;
-	MtCmdRfTestRecal(pAd, u4CalId, TX_LPFG_RESP_LEN);
-
-	/* Retest Recal - TXDCIQ */
-	u4CalId = TX_DCIQC;
-	MtCmdRfTestRecal(pAd, u4CalId, TX_DCIQ_RESP_LEN);
-
-	pAd->TxDpdCalOfst = 0;
-	RTMPZeroMemory(pAd->CalTXDPDImage, CAL_TXDPD_SIZE);
-
-	/* Retest Recal - TXDPD */
-	for (i = 1; i <= 14; i++) {
-		ch_cfg.CentralChannel = i;
-		ch_cfg.ControlChannel = i;
+		if (pAd->E2pAccessMode != E2P_FLASH_MODE && pAd->E2pAccessMode != E2P_BIN_MODE) {
+			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+					 ("%s: Currently not in FLASH or BIN MODE,return.\n", __func__));
+			return FALSE;
+		}
+		/* set channel command , per group calibration - set to channel 7, BW20 */
+		ch_cfg.Bw = BW_20;
+		ch_cfg.CentralChannel = 7;
+		ch_cfg.TxStream = 4;
+		ch_cfg.RxStream = 4;
+		ch_cfg.ControlChannel = 7;
+		ch_cfg.ControlChannel2 = 0;
+		ch_cfg.BandIdx = 0;
+		ch_cfg.bScan = 0;
 		MtCmdChannelSwitch(pAd, ch_cfg);
-		u4CalId = TX_DPD_LINK;
-		MtCmdRfTestRecal(pAd, u4CalId, TX_DPD_LINK_RESP_LEN);
-	}
 
-	/* raise DoCalibrate bits */
-	if (pAd->E2pAccessMode == E2P_BIN_MODE)
-		rtmp_ee_bin_read16(pAd, 0x52, &doCal1);
+		pAd->bPreCalMode = TRUE;
+		/* Retest Recal - TXLPFG */
+		u4CalId = TX_LPFG;
+		MtCmdRfTestRecal(pAd, u4CalId, TX_LPFG_RESP_LEN);
+
+		/* Retest Recal - TXDCIQ */
+		u4CalId = TX_DCIQC;
+		MtCmdRfTestRecal(pAd, u4CalId, TX_DCIQ_RESP_LEN);
+
+		pAd->TxDpdCalOfst = 0;
+		RTMPZeroMemory(pAd->CalTXDPDImage, CAL_TXDPD_SIZE);
+
+		/* Retest Recal - TXDPD */
+		for (i = 1; i <= 14; i++) {
+			ch_cfg.CentralChannel = i;
+			ch_cfg.ControlChannel = i;
+			MtCmdChannelSwitch(pAd, ch_cfg);
+			u4CalId = TX_DPD_LINK;
+			MtCmdRfTestRecal(pAd, u4CalId, TX_DPD_LINK_RESP_LEN);
+		}
+
+		/* raise DoCalibrate bits */
+		if (pAd->E2pAccessMode == E2P_BIN_MODE)
+			rtmp_ee_bin_read16(pAd, 0x52, &doCal1);
 
 #ifdef RTMP_FLASH_SUPPORT
-	if (pAd->E2pAccessMode == E2P_FLASH_MODE)
-		rtmp_ee_flash_read(pAd, 0x52, &doCal1);
+		if (pAd->E2pAccessMode == E2P_FLASH_MODE)
+			rtmp_ee_flash_read(pAd, 0x52, &doCal1);
 #endif
-	/* raise bit3 */
-	doCal1 |= (1 << 3);
-	if (pAd->E2pAccessMode == E2P_BIN_MODE) {
-		rtmp_ee_bin_write16(pAd, 0x52, doCal1);
-		rtmp_ee_write_to_bin(pAd);      /* writeback to eeprom file */
-	}
+		/* raise bit3 */
+		doCal1 |= (1 << 3);
+		if (pAd->E2pAccessMode == E2P_BIN_MODE) {
+			rtmp_ee_bin_write16(pAd, 0x52, doCal1);
+			rtmp_ee_write_to_bin(pAd);      /* writeback to eeprom file */
+		}
 #ifdef RTMP_FLASH_SUPPORT
-	if (pAd->E2pAccessMode == E2P_FLASH_MODE)
-		rtmp_ee_flash_write(pAd, 0x52, doCal1);
+		if (pAd->E2pAccessMode == E2P_FLASH_MODE)
+			rtmp_ee_flash_write(pAd, 0x52, doCal1);
 #endif
-	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("raised E2P 0x52 = %x\n", doCal1));
-	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
-			 ("====================\n"));
-	pAd->bPreCalMode = FALSE;
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("raised E2P 0x52 = %x\n", doCal1));
+		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+				 ("====================\n"));
+		pAd->bPreCalMode = FALSE;
+	}
 	return TRUE;
 }
 #endif /* PRE_CAL_MT7622_SUPPORT */
@@ -7807,7 +7865,7 @@ INT MtATE_Pre_Cal_Proc(RTMP_ADAPTER *pAd, UINT8 CalId, UINT32 ChGrpId)
 	if (pAd->E2pAccessMode == E2P_FLASH_MODE) {
 		pAd->PreCalStoreBuffer = pAd->EEPROMImage + PRECALPART_OFFSET;
 	} else {
-		ret = os_alloc_mem(pAd, &pAd->PreCalStoreBuffer, PRE_CAL_SIZE);
+		ret = os_alloc_mem(pAd, &pAd->PreCalStoreBuffer, PRE_CAL_SIZE_ONE_CARD);
 
 		if (ret != NDIS_STATUS_SUCCESS) {
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
@@ -7821,6 +7879,42 @@ INT MtATE_Pre_Cal_Proc(RTMP_ADAPTER *pAd, UINT8 CalId, UINT32 ChGrpId)
 	return TRUE;
 }
 #endif/* PRE_CAL_TRX_SET2_SUPPORT */
+
+#if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
+INT MtATE_PA_Trim_Proc(RTMP_ADAPTER *pAd, PUINT32 pData)
+{
+	UINT16 DoPATrim;
+	UINT16 WriteAddr;
+	UINT8 idx;
+	USHORT *pStoreData = (USHORT *)pData;
+	USHORT value;
+
+	if (IS_MT7615(pAd)) {
+		WriteAddr = PA_TRIM_START_ADDR1;
+		for (idx = 0; idx < PA_TRIM_BLOCK_SIZE; idx++) {
+			value = *pStoreData;
+			RT28xx_EEPROM_WRITE16(pAd, WriteAddr, value);
+			WriteAddr += 2;
+			pStoreData++;
+		}
+
+		WriteAddr = PA_TRIM_START_ADDR2;
+		for (idx = 0; idx < PA_TRIM_BLOCK_SIZE; idx++) {
+			value = *pStoreData;
+			RT28xx_EEPROM_WRITE16(pAd, 	WriteAddr, value);
+			WriteAddr += 2;
+			pStoreData++;
+		}
+
+		/* Raise DoPATrim bits */
+		RT28xx_EEPROM_READ16(pAd, 0x52, DoPATrim);
+		DoPATrim |= (1 << 3);
+		RT28xx_EEPROM_WRITE16(pAd, 0x52, DoPATrim);
+
+	}
+			return TRUE;
+}
+#endif/* CAL_BIN_FILE_SUPPORT */
 
 INT32 MtATETssiTrainingProc(RTMP_ADAPTER *pAd, UCHAR ucBW, UCHAR ucBandIdx)
 {

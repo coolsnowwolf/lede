@@ -21,7 +21,19 @@
 
 #ifdef RTMP_MAC_PCI
 VOID *alloc_rx_buf_1k(void *hif_resource);
+static inline void *dma_zalloc_coherent(struct device *dev, size_t size, dma_addr_t *dma_handle, gfp_t flag)
 
+{
+
+      void *ret = dma_alloc_coherent(dev, size, dma_handle, flag);
+
+      if (ret)
+
+         memset(ret, 0, size);
+
+      return ret;
+
+}
 /* Function for Tx/Rx/Mgmt Desc Memory allocation. */
 void RtmpAllocDescBuf(
 	IN VOID * pDev,
@@ -33,11 +45,7 @@ void RtmpAllocDescBuf(
 {
 	dma_addr_t DmaAddr = (dma_addr_t)(*phy_addr);
 	struct device *pdev = (struct device *)pDev;
-#if (KERNEL_VERSION(3, 18, 0) <= LINUX_VERSION_CODE)
 	*VirtualAddress = (PVOID)dma_zalloc_coherent(pdev, sizeof(char) * Length, &DmaAddr, GFP_KERNEL);
-#else
-	*VirtualAddress = (PVOID)dma_alloc_coherent(pdev, sizeof(char) * Length, &DmaAddr, GFP_KERNEL);
-#endif
 	*phy_addr = (NDIS_PHYSICAL_ADDRESS)DmaAddr;
 }
 

@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gmp
 PKG_VERSION:=6.1.2
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)$(PKG_REVISION).tar.xz
 PKG_SOURCE_URL:=@GNU/gmp/
@@ -30,6 +30,7 @@ define Package/libgmp
   CATEGORY:=Libraries
   TITLE:=GNU multiprecision arithmetic library
   URL:=http://gmplib.org/
+  ABI_VERSION:=10
 endef
 
 define Package/libgmp/description

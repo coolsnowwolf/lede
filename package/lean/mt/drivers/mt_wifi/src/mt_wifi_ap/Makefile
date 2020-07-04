@@ -4,7 +4,7 @@ else
 ifeq ($(CONFIG_DEFAULTS_KERNEL_4_4),y)
 WIFI_DRV_PATH = drivers/net/wireless/mediatek
 else
-WIFI_DRV_PATH = drivers/net/wireless
+WIFI_DRV_PATH = drivers/net/wireless/mtk/mt7615e
 endif
 endif
 
@@ -63,10 +63,44 @@ EXTRA_CFLAGS += -DCONFIG_RT_THIRD_CARD_EEPROM="\"flash\""
 endif
 endif
 endif
-obj-m += $(DRV_NAME).o
-else
-obj-$(CONFIG_MT_AP_SUPPORT) += $(DRV_NAME).o
 endif
+
+ifeq ($(CONFIG_FIRST_IF_EPAELNA),y)
+EXTRA_CFLAGS += -DCONFIG_FIRST_IF_EPAELNA
+else
+ifeq ($(CONFIG_FIRST_IF_IPAILNA),y)
+EXTRA_CFLAGS += -DCONFIG_FIRST_IF_IPAILNA
+else
+ifeq ($(CONFIG_FIRST_IF_IPAELNA),y)
+EXTRA_CFLAGS += -DCONFIG_FIRST_IF_IPAELNA
+endif
+endif
+endif
+ifeq ($(CONFIG_SECOND_IF_EPAELNA),y)
+EXTRA_CFLAGS += -DCONFIG_SECOND_IF_EPAELNA
+else
+ifeq ($(CONFIG_SECOND_IF_IPAILNA),y)
+EXTRA_CFLAGS += -DCONFIG_SECOND_IF_IPAILNA
+else
+ifeq ($(CONFIG_SECOND_IF_IPAELNA),y)
+EXTRA_CFLAGS += -DCONFIG_SECOND_IF_IPAELNA
+endif
+endif
+endif
+ifeq ($(CONFIG_THIRD_IF_EPAELNA),y)
+EXTRA_CFLAGS += -DCONFIG_THIRD_IF_EPAELNA
+else
+ifeq ($(CONFIG_THIRD_IF_IPAILNA),y)
+EXTRA_CFLAGS += -DCONFIG_THIRD_IF_IPAILNA
+else
+ifeq ($(CONFIG_THIRD_IF_IPAELNA),y)
+EXTRA_CFLAGS += -DCONFIG_THIRD_IF_IPAELNA
+endif
+endif
+endif
+
+#support built-in/ko for Openwrt/Linux SDK
+obj-m += $(DRV_NAME).o
 
 ifeq ($(CONFIG_MTK_EMI_7622),y)
 EXTRA_CFLAGS += -DCONFIG_ARCH_MT7622
@@ -155,7 +189,8 @@ cmm_objs := $(SRC_EMBEDDED_DIR)/common/action.o\
 		$(SRC_DIR)/txpwr/single_sku.o\
 		$(SRC_EMBEDDED_DIR)/common/ra_ac_q_mgmt.o\
 		$(SRC_EMBEDDED_DIR)/common/cmm_rvr_dbg.o\
-		$(SRC_DIR)/protocol/protection.o
+		$(SRC_DIR)/protocol/protection.o\
+		$(SRC_EMBEDDED_DIR)/common/misc_app.o
 
 EXTRA_CFLAGS += -DMULTI_PROFILE
 cmm_objs += $(SRC_EMBEDDED_DIR)/common/multi_profile.o
@@ -268,25 +303,38 @@ endif
 
 # WPA3
 ifeq ($(CONFIG_WPA3_SUPPORT),y)
-    EXTRA_CFLAGS += -DDOT11_SAE_SUPPORT -DDOT11_SUITEB_SUPPORT
-#    EXTRA_CFLAGS += -DDOT11_SAE_OPENSSL_BN
+    EXTRA_CFLAGS += -DDOT11_SAE_SUPPORT -DDOT11_SUITEB_SUPPORT -DDOT11W_PMF_SUPPORT
+    EXTRA_CFLAGS += -DDOT11_SAE_OPENSSL_BN
 
   spec_objs += $(SRC_EMBEDDED_DIR)/security/sae.o
   spec_objs += $(SRC_EMBEDDED_DIR)/security/crypt_bignum.o
   spec_objs += $(SRC_EMBEDDED_DIR)/security/crypt_biginteger.o
   spec_objs += $(SRC_EMBEDDED_DIR)/security/bn_lib.o
   spec_objs += $(SRC_EMBEDDED_DIR)/security/ecc.o
+  spec_objs += $(SRC_EMBEDDED_DIR)/security/pmf.o
+
+  ifeq ($(CONFIG_APCLI_SUPPORT),y)
+      EXTRA_CFLAGS += -DAPCLI_SAE_SUPPORT
+  endif
+
 endif
 
 # OWE
 ifeq ($(CONFIG_OWE_SUPPORT),y)
-    EXTRA_CFLAGS += -DCONFIG_OWE_SUPPORT
+    EXTRA_CFLAGS += -DCONFIG_OWE_SUPPORT -DDOT11W_PMF_SUPPORT
+    EXTRA_CFLAGS += -DDOT11_SAE_OPENSSL_BN
 
   spec_objs += $(SRC_EMBEDDED_DIR)/security/crypt_bignum.o
   spec_objs += $(SRC_EMBEDDED_DIR)/security/crypt_biginteger.o
   spec_objs += $(SRC_EMBEDDED_DIR)/security/bn_lib.o
   spec_objs += $(SRC_EMBEDDED_DIR)/security/ecc.o
   spec_objs += $(SRC_EMBEDDED_DIR)/security/owe.o
+  spec_objs += $(SRC_EMBEDDED_DIR)/security/pmf.o
+
+  ifeq ($(CONFIG_APCLI_SUPPORT),y)
+      EXTRA_CFLAGS += -DAPCLI_OWE_SUPPORT
+  endif
+
 endif
 
 # ACM
@@ -319,7 +367,7 @@ ifeq ($(CONFIG_DOT11K_RRM_SUPPORT),y)
 				 $(SRC_EMBEDDED_DIR)/common/rrm.o \
 				 $(SRC_EMBEDDED_DIR)/common/rrm_sanity.o
 endif
-
+#EXTRA_CFLAGS += -DHOSTAPD_11K_SUPPORT
 # TPC
 ifeq ($(CONFIG_TPC_SUPPORT),y)
     EXTRA_CFLAGS += -DTPC_SUPPORT
@@ -339,15 +387,28 @@ ifeq ($(CONFIG_FTM_SUPPORT),y)
 endif
 
 ifeq ($(CONFIG_PASSPOINT_R2),y)
-	EXTRA_CFLAGS += -DCONFIG_DOT11U_INTERWORKING -DCONFIG_DOT11V_WNM -DCONFIG_HOTSPOT -DCONFIG_HOTSPOT_R2
+	EXTRA_CFLAGS += -DCONFIG_DOT11U_INTERWORKING -DCONFIG_DOT11V_WNM -DCONFIG_HOTSPOT -DCONFIG_HOTSPOT_R2 -DWAPP_SUPPORT
 
 	spec_objs += $(SRC_EMBEDDED_DIR)/common/wnm.o\
 				$(SRC_EMBEDDED_DIR)/common/gas.o\
 				$(SRC_EMBEDDED_DIR)/common/hotspot.o
+        spec_objs += $(SRC_EMBEDDED_DIR)/wapp/wapp.o
+endif
+
+ifeq ($(CONFIG_DSCP_QOS_MAP_SUPPORT),y)
+	EXTRA_CFLAGS += -DDSCP_QOS_MAP_SUPPORT
 endif
 
 ifeq ($(CONFIG_DSCP_PRI_SUPPORT),y)
 	EXTRA_CFLAGS += -DDSCP_PRI_SUPPORT
+endif
+
+ifeq ($(CONFIG_MIN_PHY_RATE_SUPPORT),y)
+	EXTRA_CFLAGS += -DMIN_PHY_RATE_SUPPORT
+endif
+
+ifeq ($(CONFIG_FAST_UP_RATE_SUPPORT),y)
+	EXTRA_CFLAGS += -DFAST_UP_RATE_SUPPORT
 endif
 
 ifeq ($(CONFIG_WNM_SUPPORT),y)
@@ -363,9 +424,9 @@ endif
 
 # MBO
 ifeq ($(CONFIG_MBO_SUPPORT),y)
-    EXTRA_CFLAGS += -DMBO_SUPPORT
-
+    EXTRA_CFLAGS += -DMBO_SUPPORT -DWAPP_SUPPORT
     spec_objs += $(SRC_EMBEDDED_DIR)/common/mbo.o
+    spec_objs += $(SRC_EMBEDDED_DIR)/wapp/wapp.o
 endif
 
 ifeq ($(CONFIG_TRACE_TCP_PKT),y)
@@ -379,9 +440,13 @@ ifeq ($(CONFIG_BACKGROUND_SCAN_SUPPORT),y)
 endif
 
 ifeq ($(CONFIG_MT_DFS_SUPPORT),y)
-	EXTRA_CFLAGS += -DMT_DFS_SUPPORT
+	EXTRA_CFLAGS += -DMT_DFS_SUPPORT -DCUSTOMISE_RDD_THRESHOLD_SUPPORT -DRDM_FALSE_ALARM_DEBUG_SUPPORT
 
 	spec_objs += $(SRC_EMBEDDED_DIR)/common/cmm_rdm_mt.o
+endif
+
+ifeq ($(CONFIG_WIFI_EAP_FEATURE),y)
+	EXTRA_CFLAGS += -DWIFI_EAP_FEATURE
 endif
 
 # FT
@@ -392,20 +457,72 @@ dot11_ft_objs += $(SRC_EMBEDDED_DIR)/common/ft.o\
                     $(SRC_EMBEDDED_DIR)/common/ft_iocl.o\
                     $(SRC_EMBEDDED_DIR)/common/ft_rc.o\
                     $(SRC_EMBEDDED_DIR)/ap/ap_ftkd.o
+## Preserve R1KH during Radio ON/OFF
+ifeq ($(CONFIG_MBO_SUPPORT),y)
+EXTRA_CFLAGS += -DFT_R1KH_KEEP
+endif
 endif
 
 #SNIFFER
 ifeq ($(CONFIG_SNIFFER_SUPPORT),y)
-    EXTRA_CFLAGS += -DCONFIG_SNIFFER_SUPPORT
+    EXTRA_CFLAGS += -DSNIFFER_SUPPORT
 
     spec_objs += $(SRC_EMBEDDED_DIR)/common/sniffer_radiotap.o\
                  $(SRC_EMBEDDED_DIR)/common/sniffer_prism.o
 endif
 
+#EAP-TXRX Statsitics
+ifeq ($(CONFIG_TXRX_STAT_SUPPORT),y)
+EXTRA_CFLAGS += -DTXRX_STAT_SUPPORT
+endif
+
+#VENDOR_FEATURE11
+ifeq ($(CONFIG_VENDOR_FEATURE11_SUPPORT),y)
+EXTRA_CFLAGS += -DVENDOR_FEATURE11_SUPPORT -DTXRX_STAT_SUPPORT
+endif
+
+#HOSTAPD_MAP_SUPPORT
+ifeq ($(CONFIG_HOSTAPD_MAP_SUPPORT),y)
+	EXTRA_CFLAGS += -DHOSTAPD_MAP_SUPPORT
+endif
+
+#ENTERPRISE_AP
+ifeq ($(CONFIG_ENTERPRISE_AP_SUPPORT),y)
+	EXTRA_CFLAGS += -DHOSTAPD_11R_SUPPORT
+	EXTRA_CFLAGS += -DMBSS_DTIM_SUPPORT
+	ifeq ($(CONFIG_VLAN_SUPPORT),y)
+		EXTRA_CFLAGS += -DVLAN_SUPPORT
+	endif
+	ifeq ($(CONFIG_RADIUS_MAC_AUTH_SUPPORT),y)
+		EXTRA_CFLAGS += -DRADIUS_MAC_AUTH_SUPPORT
+	endif
+	ifeq ($(CONFIG_DYNAMIC_VLAN_SUPPORT),y)
+		EXTRA_CFLAGS += -DDYNAMIC_VLAN_SUPPORT
+	endif
+
+endif
+
 #CFG
 ifeq ($(CONFIG_CFG80211_SUPPORT),y)
     EXTRA_CFLAGS += -DRT_CFG80211_SUPPORT -DEXT_BUILD_CHANNEL_LIST
-
+    #WPA3 SUPPORT
+	ifneq ($(CONFIG_HOSTAPD_MAP_SUPPORT),y)
+		EXTRA_CFLAGS += -DHOSTAPD_SAE_SUPPORT -DHOSTAPD_OWE_SUPPORT -DHOSTAPD_SUITEB_SUPPORT
+	endif
+	ifeq ($(CONFIG_CUSTOMISED_HOSTAPD_SUPPORT),y)
+		EXTRA_CFLAGS += -DDISABLE_HOSTAPD_BEACON -DDISABLE_HOSTAPD_PROBE_RESP -DHOSTAPD_AUTO_CH_SUPPORT
+	endif
+	ifeq ($(CONFIG_WDS_STA_SUPPORT),y)
+		ifneq ($(CONFIG_HOSTAPD_MAP_SUPPORT),y)
+			EXTRA_CFLAGS += -DAPCLI_AS_WDS_STA_SUPPORT
+		endif
+	endif
+	ifeq ($(CONFIG_APCLI_STA_SUPPORT),y)
+		ifneq ($(CONFIG_HOSTAPD_MAP_SUPPORT),y)
+			EXTRA_CFLAGS += -DAPCLI_CFG80211_SUPPORT
+			spec_objs += $(SRC_EMBEDDED_DIR)/../os/linux/cfg80211/cfg80211_apcli.o
+		endif
+	endif
     spec_objs += $(SRC_EMBEDDED_DIR)/../os/linux/cfg80211/cfg80211_scan.o\
 		        $(SRC_EMBEDDED_DIR)/../os/linux/cfg80211/cfg80211_rx.o\
         		$(SRC_EMBEDDED_DIR)/../os/linux/cfg80211/cfg80211_tx.o\
@@ -414,17 +531,45 @@ ifeq ($(CONFIG_CFG80211_SUPPORT),y)
 		        $(SRC_EMBEDDED_DIR)/../os/linux/cfg80211/cfg80211drv.o\
                 $(SRC_EMBEDDED_DIR)/../os/linux/cfg80211/cfg80211_util.o\
                 $(SRC_EMBEDDED_DIR)/../os/linux/cfg80211/cfg80211.o
+
 endif
 
 ifeq ($(CONFIG_MAP_SUPPORT),y)
-	EXTRA_CFLAGS += -DA4_CONN -DROUTING_TAB_SUPPORT
+	EXTRA_CFLAGS += -DA4_CONN -DROUTING_TAB_SUPPORT -DWAPP_SUPPORT -DCONFIG_MAP_SUPPORT 
 	spec_objs += $(SRC_EMBEDDED_DIR)/common/map.o
 	spec_objs += $(SRC_EMBEDDED_DIR)/common/a4_conn.o
 	spec_objs += $(SRC_EMBEDDED_DIR)/common/routing_tab.o
+	spec_objs += $(SRC_EMBEDDED_DIR)/wapp/wapp.o
 endif
 
 ifeq ($(CONFIG_RALINK_TIMER_WDG),y)
     EXTRA_CFLAGS += -DSDK_TIMER_WDG
+endif
+
+ifeq ($(CONFIG_OFFCHANNEL_SCAN_FEATURE),y)
+    EXTRA_CFLAGS += -DOFFCHANNEL_SCAN_FEATURE
+endif
+
+ifeq ($(CONFIG_VENDOR_FEATURE10_SUPPORT),y)
+    EXTRA_CFLAGS += -DFOLLOW_HIDDEN_SSID_FEATURE
+    EXTRA_CFLAGS += -DCONVERTER_MODE_SWITCH_SUPPORT
+    ifeq ($(CONFIG_MT_DFS_SUPPORT),y)
+        EXTRA_CFLAGS += -DDFS_VENDOR10_CUSTOM_FEATURE
+    endif
+    ifeq ($(CONFIG_MCAST_RATE_SPECIFIC),y)
+        EXTRA_CFLAGS += -DMCAST_BCAST_RATE_SET_SUPPORT
+    endif
+    ifeq ($(CONFIG_IGMP_SNOOP_SUPPORT),y)
+        EXTRA_CFLAGS += -DIGMP_TVM_SUPPORT
+    endif
+    ifeq ($(CONFIG_APCLI_SUPPORT),y)
+        EXTRA_CFLAGS += -DVENDOR10_CUSTOM_RSSI_FEATURE
+	EXTRA_CFLAGS += -DBW_VENDOR10_CUSTOM_FEATURE
+    endif
+endif
+
+ifeq ($(CONFIG_MT_DFS_SUPPORT),y)
+    EXTRA_CFLAGS += -DONDEMAND_DFS
 endif
 
 ifeq ($(CONFIG_MTK_WD_KICKER),y)
@@ -433,6 +578,11 @@ ifeq ($(CONFIG_MTK_WD_KICKER),y)
     endif
 endif
 
+#ACL_BLK_CONUT
+#EXTRA_CFLAGS += -DACL_BLK_COUNT_SUPPORT
+
+#RATE_PRIOR_SUPPORT
+#EXTRA_CFLAGS += -DRATE_PRIOR_SUPPORT
 
 #
 # Common Feature related files
@@ -495,6 +645,12 @@ ifeq ($(CONFIG_MBSS_SUPPORT),y)
 
     ap_objs += $(SRC_EMBEDDED_DIR)/ap/ap_mbss.o\
             $(SRC_EMBEDDED_DIR)/ap/ap_mbss_inf.o
+
+ifeq ($(CONFIG_MBSS_AS_WDS_AP_SUPPORT),y)
+EXTRA_CFLAGS += -DMBSS_AS_WDS_AP_SUPPORT
+EXTRA_CFLAGS += -DCLIENT_WDS
+ap_objs += $(SRC_EMBEDDED_DIR)/common/client_wds.o
+endif
 endif
 
 
@@ -532,6 +688,7 @@ ifeq ($(CONFIG_APCLI_SUPPORT),y)
 
         ap_objs += $(SRC_EMBEDDED_DIR)/ap/ap_repeater.o
     endif
+
 endif
 
 ifeq ($(CONFIG_IDS_SUPPORT),y)
@@ -588,6 +745,10 @@ endif
 
 ifeq ($(CONFIG_PRE_CAL_TRX_SET2_SUPPORT),y)
     EXTRA_CFLAGS += -DPRE_CAL_TRX_SET2_SUPPORT
+endif
+
+ifeq ($(CONFIG_CAL_BIN_FILE_SUPPORT),y)
+    EXTRA_CFLAGS += -DCAL_BIN_FILE_SUPPORT
 endif
 
 ifeq ($(CONFIG_RF_LOCKDOWN_SUPPORT),y)
@@ -655,11 +816,6 @@ ifeq ($(CONFIG_EVENT_NOTIFIER_SUPPORT),y)
     ap_objs += $(SRC_EMBEDDED_DIR)/common/event_notifier.o
 endif
 
-#ifeq ($(CONFIG_WAPP),y)
-    EXTRA_CFLAGS += -DWAPP_SUPPORT
-    ap_objs +=  $(SRC_EMBEDDED_DIR)/wapp/wapp.o
-#endif
-
 ifeq ($(CONFIG_VOW_SUPPORT),y)
     EXTRA_CFLAGS += -DVOW_SUPPORT
 endif
@@ -672,6 +828,8 @@ ifeq ($(CONFIG_FQ_SCH_SUPPORT),y)
     EXTRA_CFLAGS += -DFQ_SCH_SUPPORT
 endif
 
+#EXTRA_CFLAGS += -DCHANNEL_SWITCH_MONITOR_CONFIG
+#ccflags-y += -DACS_CTCC_SUPPORT
 ########################################################
 # Linux system related files
 ########################################################
@@ -820,6 +978,19 @@ EXTRA_CFLAGS += -DRELEASE_EXCLUDE
 EXTRA_CFLAGS += -DPRE_CAL_TRX_SET1_SUPPORT
 EXTRA_CFLAGS += -DRLM_CAL_CACHE_SUPPORT
 EXTRA_CFLAGS += -DPRE_CAL_TRX_SET2_SUPPORT
+ifeq ($(CONFIG_SUPPORT_OPENWRT),y)
+CONFIG_PROPRIETARY_DRIVER=y
+ifeq ($(CONFIG_PROPRIETARY_DRIVER),y)
+EXTRA_CFLAGS += -DCONFIG_PROPRIETARY_DRIVER
+CONFIG_PLATFORM_DRV_SUPPORT=n
+else
+CONFIG_PLATFORM_DRV_SUPPORT=y
+endif
+endif
+
+ifeq ($(CONFIG_CUSTOMER_VENDOR_IE_SUPPORT),y)
+    EXTRA_CFLAGS += -DCUSTOMER_VENDOR_IE_SUPPORT
+endif
 ifeq ($(CONFIG_G_BAND_256QAM_SUPPORT),y)
 EXTRA_CFLAGS += -DG_BAND_256QAM
 ifeq ($(CONFIG_BRCM_256QAM_SUPPORT),y)
@@ -1025,6 +1196,7 @@ EXTRA_CFLAGS += -DRACTRL_FW_OFFLOAD_SUPPORT
 EXTRA_CFLAGS += -DCONFIG_TX_DELAY
 EXTRA_CFLAGS += -DDBG_AMSDU
 EXTRA_CFLAGS += -DPRE_CAL_MT7622_SUPPORT
+EXTRA_CFLAGS += -DTXSTAT_2040BW_24G_SUPPORT
 CONFIG_PROPRIETARY_DRIVER=y
 
 ifeq ($(CONFIG_PROPRIETARY_DRIVER),y)
@@ -1237,6 +1409,10 @@ endif
 EXTRA_CFLAGS += -DCONFIG_WIFI_PKT_FWD
 #endif
 
+#ifeq ($(CONFIG_MTFWD_SUPPORT),y)
+EXTRA_CFLAGS += -DMTFWD
+#endif
+
 ifeq ($(CONFIG_ROAMING_ENHANCE_SUPPORT),y)
 EXTRA_CFLAGS += -DROAMING_ENHANCE_SUPPORT
 endif
@@ -1257,4 +1433,4 @@ endif
 
 MODULE_FLAGS=$(EXTRA_CFLAGS)
 export MODULE_FLAGS
-obj-m+=$(SRC_EMBEDDED_DIR)/tools/plug_in/
+obj-m+=$(SRC_EMBEDDED_DIR)/plug_in/

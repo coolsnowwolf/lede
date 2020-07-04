@@ -1,0 +1,170 @@
+From 9050c0619cdf5399d19e3683d6fb1db355dda110 Mon Sep 17 00:00:00 2001
+From: Robin Gong <yibin.gong@nxp.com>
+Date: Wed, 17 Apr 2019 17:05:42 +0800
+Subject: [PATCH] MLK-22284-1 dmaengine: fsl-edma-v3: add power domains for
+ each channel
+
+Add power domains for each dma channel so that edma channel could
+know the power state of every dma channel anytime and clear easily
+unexpected interrupt which triggered before the last partition reset.
+
+Signed-off-by: Robin Gong <yibin.gong@nxp.com>
+Reviewed-by: S.j. Wang <shengjiu.wang@nxp.com>
+(cherry picked from commit 0b6da46b7bdb2284e24757d48466268b9feb5b7c)
+---
+ .../devicetree/bindings/dma/fsl-edma-v3.txt        | 11 +++-
+ drivers/dma/fsl-edma-v3.c                          | 58 +++++++++++++++++++++-
+ 2 files changed, 67 insertions(+), 2 deletions(-)
+
+--- a/Documentation/devicetree/bindings/dma/fsl-edma-v3.txt
++++ b/Documentation/devicetree/bindings/dma/fsl-edma-v3.txt
+@@ -30,6 +30,8 @@ Required properties:
+ 		0: not dual fifo case, 1: dualfifo case.
+ 	See the SoC's reference manual for all the supported request sources.
+ - dma-channels : Number of channels supported by the controller
++- power-domains: Power domains for edma channel used.
++- power-domain-names: Power domains name for edma channel used.
+ 
+ Examples:
+ edma0: dma-controller@40018000 {
+@@ -46,6 +48,12 @@ edma0: dma-controller@40018000 {
+ 		     <GIC_SPI 437 IRQ_TYPE_LEVEL_HIGH>;
+ 	interrupt-names = "edma0-chan12-rx", "edma0-chan13-tx",
+ 			  "edma0-chan14-rx", "edma0-chan15-tx";
++	power-domains = <&pd IMX_SC_R_DMA_0_CH12>,
++			<&pd IMX_SC_R_DMA_0_CH13>,
++			<&pd IMX_SC_R_DMA_0_CH14>,
++			<&pd IMX_SC_R_DMA_0_CH15>;
++	power-domain-names = "edma0-chan12", "edma0-chan13",
++			     "edma0-chan14", "edma0-chan15";
+ 	status = "okay";
+ };
+ 
+@@ -65,7 +73,8 @@ lpuart1: serial@5a070000 {
+ 	clock-names = "ipg";
+ 	assigned-clock-names = <&clk IMX8QM_UART1_CLK>;
+ 	assigned-clock-rates = <80000000>;
+-	power-domains = <&pd_dma_lpuart1>;
++	power-domains = <&pd IMX_SC_R_UART_1>,
++	power-domain-names = "uart";
+ 	dma-names = "tx","rx";
+ 	dmas = <&edma0 15 0 0>,
+ 		<&edma0 14 0 1>;
+--- a/drivers/dma/fsl-edma-v3.c
++++ b/drivers/dma/fsl-edma-v3.c
+@@ -27,6 +27,8 @@
+ #include <linux/of_address.h>
+ #include <linux/of_irq.h>
+ #include <linux/of_dma.h>
++#include <linux/pm_runtime.h>
++#include <linux/pm_domain.h>
+ 
+ #include "virt-dma.h"
+ 
+@@ -164,6 +166,7 @@ struct fsl_edma3_chan {
+ 	u32				chn_real_count;
+ 	char                            txirq_name[32];
+ 	struct platform_device		*pdev;
++	struct device			*dev;
+ };
+ 
+ struct fsl_edma3_desc {
+@@ -798,8 +801,10 @@ static int fsl_edma3_alloc_chan_resource
+ 	fsl_chan->tcd_pool = dma_pool_create("tcd_pool", chan->device->dev,
+ 				sizeof(struct fsl_edma3_hw_tcd),
+ 				32, 0);
++	pm_runtime_get_sync(fsl_chan->dev);
+ 	/* clear meaningless pending irq anyway */
+ 	writel(1, fsl_chan->membase + EDMA_CH_INT);
++
+ 	ret = devm_request_irq(&pdev->dev, fsl_chan->txirq,
+ 			fsl_edma3_tx_handler, fsl_chan->edma3->irqflag,
+ 			fsl_chan->txirq_name, fsl_chan);
+@@ -830,6 +835,7 @@ static void fsl_edma3_free_chan_resource
+ 	dma_pool_destroy(fsl_chan->tcd_pool);
+ 	fsl_chan->tcd_pool = NULL;
+ 	fsl_chan->used = false;
++	pm_runtime_put_sync(fsl_chan->dev);
+ }
+ 
+ static void fsl_edma3_synchronize(struct dma_chan *chan)
+@@ -839,6 +845,37 @@ static void fsl_edma3_synchronize(struct
+ 	vchan_synchronize(&fsl_chan->vchan);
+ }
+ 
++static struct device *fsl_edma3_attach_pd(struct device *dev,
++					  struct device_node *np, int index)
++{
++	const char *domn = "edma0-chan01";
++	struct device *pd_chan;
++	struct device_link *link;
++	int ret;
++
++	ret = of_property_read_string_index(np, "power-domain-names", index,
++						&domn);
++	if (ret) {
++		dev_err(dev, "parse power-domain-names error.(%d)\n", ret);
++		return NULL;
++	}
++
++	pd_chan = dev_pm_domain_attach_by_name(dev, domn);
++	if (!pd_chan)
++		return NULL;
++
++	link = device_link_add(dev, pd_chan, DL_FLAG_STATELESS |
++					     DL_FLAG_PM_RUNTIME |
++					     DL_FLAG_RPM_ACTIVE);
++	if (IS_ERR(link)) {
++		dev_err(dev, "Failed to add device_link to %s: %ld\n", domn,
++			PTR_ERR(link));
++		return NULL;
++	}
++
++	return pd_chan;
++}
++
+ static int fsl_edma3_probe(struct platform_device *pdev)
+ {
+ 	struct device_node *np = pdev->dev.of_node;
+@@ -962,6 +999,22 @@ static int fsl_edma3_probe(struct platfo
+ 		dev_err(&pdev->dev, "Can't register Freescale eDMA engine.\n");
+ 		return ret;
+ 	}
++	/* Attach power domains from dts for each dma chanel device */
++	for (i = 0; i < fsl_edma3->n_chans; i++) {
++		struct fsl_edma3_chan *fsl_chan = &fsl_edma3->chans[i];
++		struct device *dev;
++
++		dev = fsl_edma3_attach_pd(&pdev->dev, np, i);
++		if (!dev) {
++			dev_err(dev, "edma channel attach failed.\n");
++			return -EINVAL;
++		}
++
++		fsl_chan->dev = dev;
++		/* clear meaningless pending irq anyway */
++		writel(1, fsl_chan->membase + EDMA_CH_INT);
++		pm_runtime_put_sync(dev);
++	}
+ 
+ 	ret = of_dma_controller_register(np, fsl_edma3_xlate, fsl_edma3);
+ 	if (ret) {
+@@ -970,6 +1023,9 @@ static int fsl_edma3_probe(struct platfo
+ 		return ret;
+ 	}
+ 
++	pm_runtime_dont_use_autosuspend(&pdev->dev);
++	pm_runtime_enable(&pdev->dev);
++
+ 	return 0;
+ }
+ 
+@@ -1068,7 +1124,7 @@ static int __init fsl_edma3_init(void)
+ {
+ 	return platform_driver_register(&fsl_edma3_driver);
+ }
+-subsys_initcall(fsl_edma3_init);
++fs_initcall(fsl_edma3_init);
+ 
+ static void __exit fsl_edma3_exit(void)
+ {

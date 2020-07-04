@@ -153,6 +153,9 @@ VOID AndesFreeCmdMsg(struct cmd_msg *msg)
 	if (IS_CMD_MSG_NEED_SYNC_WITH_FW_FLAG_SET(msg))
 		RTMP_OS_EXIT_COMPLETION(&msg->ack_done);
 
+	if (msg->retry_pkt)
+		RTMPFreeNdisPacket(ad, msg->retry_pkt);
+
 	OS_SPIN_LOCK_IRQSAVE(&ctl->msg_lock, &flags);
 	ctl->free_cmd_msg++;
 	OS_SPIN_UNLOCK_IRQRESTORE(&ctl->msg_lock, &flags);
@@ -276,6 +279,7 @@ static inline UCHAR AndesGetCmdMsgSeq(RTMP_ADAPTER *ad)
 	struct MCU_CTRL *ctl = &ad->MCUCtrl;
 	struct cmd_msg *msg;
 	unsigned long flags;
+	UINT8 msg_seq;
 
 	RTMP_SPIN_LOCK_IRQSAVE(&ctl->ackq_lock, &flags);
 get_seq:
@@ -289,8 +293,9 @@ get_seq:
 			goto get_seq;
 		}
 	}
+	msg_seq = ctl->cmd_seq;
 	RTMP_SPIN_UNLOCK_IRQRESTORE(&ctl->ackq_lock, &flags);
-	return ctl->cmd_seq;
+	return msg_seq;
 }
 
 
@@ -716,6 +721,10 @@ static INT32 AndesDequeueAndKickOutCmdMsgs(RTMP_ADAPTER *ad)
 				chip_ops->andes_fill_cmd_header(msg, net_pkt);
 		}
 
+		if (msg->retry_times > 1) {
+			OS_PKT_CLONE(ad, net_pkt, msg->retry_pkt, MEM_ALLOC_FLAG);
+		}
+
 #if defined(RTMP_PCI_SUPPORT) || defined(RTMP_RBUS_SUPPORT)
 
 		if (chip_ops->pci_kick_out_cmd_msg != NULL)
@@ -740,9 +749,9 @@ static INT32 AndesDequeueAndKickOutCmdMsgs(RTMP_ADAPTER *ad)
 
 
 
-static INT32 AndesWaitForCompleteTimeout(struct cmd_msg *msg, ULONG timeout)
+static ULONG AndesWaitForCompleteTimeout(struct cmd_msg *msg, ULONG timeout)
 {
-	int ret = 0;
+	ULONG ret = 0;
 	ULONG expire = timeout ?
 				   RTMPMsecsToJiffies(timeout) : RTMPMsecsToJiffies(CMD_MSG_TIMEOUT);
 	ret = RTMP_OS_WAIT_FOR_COMPLETION_TIMEOUT(&msg->ack_done, expire);
@@ -755,6 +764,11 @@ INT32 AndesSendCmdMsg(PRTMP_ADAPTER ad, struct cmd_msg *msg)
 	struct MCU_CTRL *ctl = &ad->MCUCtrl;
 	BOOLEAN is_cmd_need_wait = IS_CMD_MSG_NEED_SYNC_WITH_FW_FLAG_SET(msg);
 	int ret = NDIS_STATUS_SUCCESS;
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+#ifdef INTELP6_SUPPORT
+	struct _RTMP_CHIP_OP *ops = hc_get_chip_ops(ad->hdev_ctrl);
+#endif
+#endif
 
 	if (in_interrupt() && IS_CMD_MSG_NEED_SYNC_WITH_FW_FLAG_SET(msg)) {
 		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
@@ -853,7 +867,26 @@ retransmit:
 
 			MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("msg->retry_times = %d\n", msg->retry_times));
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+#ifdef INTELP6_SUPPORT
+			/* To many continuous soft reboot on puma6 plateform make HW to go in unstabe state and
+			 * driver fails to communicate with FW
+			*/
+			ad->ErrRecoveryCheck++;
+			if (ops->heart_beat_check)
+				ops->heart_beat_check(ad);
+			if (RTMP_TEST_FLAG(ad, fRTMP_ADAPTER_INTERRUPT_ACTIVE)) {
+				MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_OFF, ("Disabling interrupt\n"));
+				RTMP_ASIC_INTERRUPT_DISABLE(ad);
+			}
+			MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_OFF, ("Enabling interrupt\n"));
+			RTMP_ASIC_INTERRUPT_ENABLE(ad);
+#else
 			ASSERT(FALSE);
+#endif
+#else
+			ASSERT(FALSE);
+#endif
 		} else {
 			if (msg->state == tx_kickout_fail) {
 				state = tx_kickout_fail;
@@ -872,6 +905,8 @@ retransmit:
 		if (is_cmd_need_wait && (msg->retry_times > 0)) {
 			RTMP_OS_EXIT_COMPLETION(&msg->ack_done);
 			RTMP_OS_INIT_COMPLETION(&msg->ack_done);
+			msg->net_pkt = msg->retry_pkt;
+			msg->retry_pkt = NULL;
 			state = tx_retransmit;
 			AndesQueueHeadCmdMsg(&ctl->txq, msg, state);
 			goto retransmit;
@@ -888,6 +923,12 @@ retransmit:
 			/* msg will be free after enqueuing to tx_doneq. So msg is not able to pass FW's response to caller. */
 			AndesQueueTailCmdMsg(&ctl->tx_doneq, msg, state);
 		}
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+#ifdef INTELP6_SUPPORT
+		if (IsComplete)
+			ad->ErrRecoveryCheck = 0;
+#endif
+#endif
 	}
 bailout:
 	return ret;

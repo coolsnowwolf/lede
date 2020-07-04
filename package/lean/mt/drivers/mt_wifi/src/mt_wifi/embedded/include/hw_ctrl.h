@@ -154,6 +154,11 @@ enum {
 #ifdef MBO_SUPPORT
 	HWCMD_ID_BSS_TERMINATION        = 59,
 #endif /* MBO_SUPPORT */
+	HWCMD_ID_SET_EDCA = 60,
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+    HWCMD_ID_UPDATE_4ADDR_HDR_TRANS,
+#endif
+
 	HWCMD_ID_END,
 };
 
@@ -293,6 +298,12 @@ typedef struct _RT_SET_ASIC_AAD_OM {
 } RT_SET_ASIC_AAD_OM, *PRT_SET_ASIC_AAD_OM;
 #endif /* HTC_DECRYPT_IOT */
 
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+typedef struct _RT_ASIC_4ADDR_HDR_TRANS {
+	ULONG  Wcid;
+	UCHAR  Enable;
+} RT_ASIC_4ADDR_HDR_TRANS, *PRT_ASIC_4ADDR_HDR_TRANS;
+#endif
 
 typedef struct _RT_ASIC_WCID_SEC_INFO {
 	UCHAR BssIdx;
@@ -558,6 +569,9 @@ VOID HW_SET_DEL_ASIC_WCID(struct _RTMP_ADAPTER *pAd, ULONG Wcid);
 #ifdef HTC_DECRYPT_IOT
 VOID HW_SET_ASIC_WCID_AAD_OM(struct _RTMP_ADAPTER *pAd, ULONG Wcid, UCHAR value);
 #endif /* HTC_DECRYPT_IOT */
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+VOID HW_SET_ASIC_WCID_4ADDR_HDR_TRANS(struct _RTMP_ADAPTER *pAd, ULONG Wcid, UCHAR IsEnable);
+#endif
 
 VOID RTMP_GET_TEMPERATURE(struct _RTMP_ADAPTER *pAd, UINT32 *pTemperature);
 VOID RTMP_RADIO_ON_OFF_CTRL(struct _RTMP_ADAPTER *pAd, UINT8 ucDbdcIdx, UINT8 ucRadio);
@@ -581,7 +595,9 @@ VOID HW_BEACON_UPDATE(struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR Up
 VOID HW_SET_PBC_CTRL(struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry, UCHAR type);
 #endif /*PKT_BUDGET_CTRL_SUPPORT*/
 
-VOID HW_SET_RTS_THLD(struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR pkt_num, UINT32 length);
+VOID HW_SET_EDCA(struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev, struct _EDCA_PARM *pedca_param);
+
+VOID HW_SET_RTS_THLD(struct _RTMP_ADAPTER *pAd, struct wifi_dev *wdev, UCHAR pkt_num, UINT32 length, UCHAR retry_limit);
 
 /* Insert the BA bitmap to ASIC for the Wcid entry */
 #define RTMP_ADD_BA_SESSION_TO_ASIC(_pAd, _wcid, _TID, _SN, _basize, _type)	\

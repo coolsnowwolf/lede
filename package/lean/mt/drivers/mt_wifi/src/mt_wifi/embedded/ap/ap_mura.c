@@ -401,6 +401,7 @@ INT GetMuraPFIDStatProc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 	AndesInitCmdMsg(msg, attr);
 #ifdef RT_BIG_ENDIAN
 	cmd = cpu2le32(cmd);
+	u4Index = cpu2le32(u4Index);
 #endif
 	AndesAppendCmdMsg(msg, (char *)&cmd, sizeof(cmd));
 	AndesAppendCmdMsg(msg, (char *)&u4Index, sizeof(u4Index));
@@ -932,6 +933,7 @@ INT SetMuraMobilityIntervalCtrlProc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 
 #ifdef RT_BIG_ENDIAN
 	cmd = cpu2le32(cmd);
+	param.u2MobilityInteral = cpu2le16(param.u2MobilityInteral);
 #endif
 
 	AndesAppendCmdMsg(msg, (char *)&cmd, sizeof(cmd));
@@ -1545,6 +1547,47 @@ error:
 
 	return Ret;
 
+}
+
+INT SetMuraEnableHwSwPatch(RTMP_ADAPTER *pAd)
+{
+	INT32 Ret = TRUE;
+	/* prepare command message */
+	struct _CMD_ATTRIBUTE attr = {0};
+	struct cmd_msg *msg = NULL;
+	UINT32 cmd = MURA_ENABLE_MU_HWSW_PATCH;
+	CMD_MURGA_ENABLE_HW_SW_PATCH param = {0};
+
+	msg = AndesAllocCmdMsg(pAd, sizeof(cmd) + sizeof(param));
+
+	if (!msg) {
+		Ret = FALSE;
+		goto error;
+	}
+
+	param.ucEnableHwSwPatch = pAd->MuHwSwPatch;
+	SET_CMD_ATTR_MCU_DEST(attr, HOST2N9);
+	SET_CMD_ATTR_TYPE(attr, EXT_CID);
+	SET_CMD_ATTR_EXT_TYPE(attr, EXT_CMD_ID_MU_MIMO_RA);
+	SET_CMD_ATTR_CTRL_FLAGS(attr, INIT_CMD_SET_AND_RETRY);
+	SET_CMD_ATTR_RSP_WAIT_MS_TIME(attr, 0);
+	SET_CMD_ATTR_RSP_EXPECT_SIZE(attr, 0);
+	SET_CMD_ATTR_RSP_WB_BUF_IN_CALBK(attr, NULL);
+	SET_CMD_ATTR_RSP_HANDLER(attr, NULL);
+	AndesInitCmdMsg(msg, attr);
+	#ifdef RT_BIG_ENDIAN
+	cmd = cpu2le32(cmd);
+	#endif
+
+	AndesAppendCmdMsg(msg, (char *)&cmd, sizeof(cmd));
+	AndesAppendCmdMsg(msg, (char *)&param, sizeof(param));
+	AndesSendCmdMsg(pAd, msg);
+
+error:
+	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+				("%s:(Ret = %d_\n", __func__, Ret));
+
+	return Ret;
 }
 
 /*

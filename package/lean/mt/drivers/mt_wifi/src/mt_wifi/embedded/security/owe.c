@@ -6,6 +6,10 @@
 
 UCHAR OWE_TRANS_OUI[] = {0x50, 0x6f, 0x9a, 0x1c};
 
+#ifdef APCLI_OWE_SUPPORT
+UCHAR apcli_owe_supp_groups[APCLI_MAX_SUPPORTED_OWE_GROUPS] = {19, 20};
+#endif
+
 static inline UINT16 GET_LE16(const UCHAR *a)
 {
 	return (a[1] << 8) | a[0];
@@ -79,7 +83,7 @@ static BIG_INTEGER_EC_POINT *get_owe_pub_key(OWE_INFO *owe)
 }
 
 static VOID owe_calculate_pmkid(OWE_INFO *owe,
-				BIGNUM *my_pubkey,
+				SAE_BN * my_pubkey,
 				UCHAR *peer_pub,
 				UCHAR type,
 				UCHAR peer_pub_length,
@@ -149,7 +153,8 @@ INT process_ecdh_element(
 	struct _MAC_TABLE_ENTRY *entry,
 	EXT_ECDH_PARAMETER_IE *ext_ie_ptr,
 	UCHAR ie_len,
-	UCHAR type)
+	UCHAR type,
+	BOOLEAN update_only_grp_info)
 {
 	OWE_INFO *owe = &entry->SecConfig.owe;
 	UINT16 peer_group = 0;
@@ -190,6 +195,12 @@ INT process_ecdh_element(
 		default:
 			sec_config->key_deri_alg = SEC_KEY_DERI_SHA256;
 		}
+	}
+
+	if (update_only_grp_info == TRUE) {
+		MTWF_LOG(DBG_CAT_SEC, CATSEC_OWE, DBG_LVL_TRACE,
+				 ("==> %s(), Update group info :%d\n", __func__, sec_config->key_deri_alg));
+		return MLME_SUCCESS;
 	}
 
 	MTWF_LOG(DBG_CAT_SEC, CATSEC_OWE, DBG_LVL_TRACE,
@@ -375,8 +386,6 @@ INT build_owe_dh_ie(struct _RTMP_ADAPTER *ad,
 				 ("==> %s(), ecc_gen_key failed...\n", __func__));
 		goto err;
 	}
-
-	SAE_BN_PRINT(my_pub_key->x);
 	SAE_BN_BI2BIN_WITH_PAD(my_pub_key->x, pub_buf, &pub_buf_length, ec_group->prime_len);
 
 	NdisMoveMemory(buf + extend_length, &ie, sizeof(ie));
@@ -419,7 +428,7 @@ INT deinit_owe_group(OWE_INFO *owe)
 		owe->generator = NULL;
 	}
 	if (owe->priv_key != NULL) {
-		BN_free(owe->priv_key);
+		SAE_BN_FREE(&owe->priv_key);
 		owe->priv_key = NULL;
 	}
 
@@ -441,7 +450,6 @@ INT deinit_owe_group(OWE_INFO *owe)
 #ifdef CONFIG_AP_SUPPORT
 USHORT owe_pmkid_ecdh_process(RTMP_ADAPTER *pAd,
 			      MAC_TABLE_ENTRY *pEntry,
-			      USHORT StatusCode,
 			      UCHAR *rsn_ie,
 			      UCHAR rsn_ie_len,
 			      EXT_ECDH_PARAMETER_IE *ecdh_ie,
@@ -450,40 +458,41 @@ USHORT owe_pmkid_ecdh_process(RTMP_ADAPTER *pAd,
 			      UINT8 *pmkid_count,
 			      UCHAR type)
 {
+	BOOLEAN need_update_grp_info = FALSE;
 	BOOLEAN need_process_ecdh_ie = FALSE;
 	INT CacheIdx;/* Key cache */
-	USHORT ret = StatusCode;
+	USHORT ret = MLME_SUCCESS;
 
-	if (StatusCode == MLME_SUCCESS) {
-
-		pPmkid = WPA_ExtractSuiteFromRSNIE(rsn_ie,
-						   rsn_ie_len,
-						   PMKID_LIST,
-						   pmkid_count);
-		if (pPmkid != NULL) {
-			CacheIdx = RTMPSearchPMKIDCache(&pAd->ApCfg.PMKIDCache,
-							pEntry->func_tb_idx,
-							pEntry->Addr);
-			if ((CacheIdx == -1) ||
-			   ((RTMPEqualMemory(pPmkid,
-					     &pAd->ApCfg.PMKIDCache.BSSIDInfo[CacheIdx].PMKID,
-					LEN_PMKID)) == 0)) {
-				MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					("%s: no OWE PMKID, do normal ECDH procedure\n",
-						__func__));
-				need_process_ecdh_ie = TRUE;
-			} else
-				store_pmkid_cache_in_sec_config(pAd, pEntry, CacheIdx);
-		} else
+	pPmkid = WPA_ExtractSuiteFromRSNIE(rsn_ie,
+					   rsn_ie_len,
+					   PMKID_LIST,
+					   pmkid_count);
+	if (pPmkid != NULL) {
+		CacheIdx = RTMPSearchPMKIDCache(&pAd->ApCfg.PMKIDCache,
+						pEntry->func_tb_idx,
+						pEntry->Addr);
+		if ((CacheIdx == -1) ||
+		   ((RTMPEqualMemory(pPmkid,
+				     &pAd->ApCfg.PMKIDCache.BSSIDInfo[CacheIdx].PMKID,
+				LEN_PMKID)) == 0)) {
+			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+				("%s: no OWE PMKID, do normal ECDH procedure\n",
+					__func__));
 			need_process_ecdh_ie = TRUE;
-
-		if (need_process_ecdh_ie == TRUE) {
-			ret = process_ecdh_element(pAd,
-							pEntry,
-							ecdh_ie,
-							ecdh_ie_length,
-							type);
+		} else {
+			store_pmkid_cache_in_sec_config(pAd, pEntry, CacheIdx);
+			need_update_grp_info = TRUE;
 		}
+	} else
+		need_process_ecdh_ie = TRUE;
+
+	if (need_process_ecdh_ie == TRUE || (need_update_grp_info == TRUE)) {
+		ret = process_ecdh_element(pAd,
+						pEntry,
+						ecdh_ie,
+						ecdh_ie_length,
+						type,
+						need_update_grp_info);
 	}
 	return ret;
 }
@@ -495,6 +504,7 @@ BOOLEAN extract_pair_owe_bss_info(UCHAR *owe_vendor_ie,
 				  UCHAR *pair_bssid,
 				  UCHAR *pair_ssid,
 				  UCHAR *pair_ssid_len,
+				  UCHAR *pair_band,
 				  UCHAR *pair_ch)
 {
 	BOOLEAN ret = TRUE;
@@ -518,12 +528,66 @@ BOOLEAN extract_pair_owe_bss_info(UCHAR *owe_vendor_ie,
 	*pair_ssid_len = local_ssid_len;
 
 	if (has_band_ch_info == TRUE) {
-		pos = pos + local_ssid_len + sizeof(UCHAR);/*parse ch info field*/
+		pos = pos + local_ssid_len;/*parse ch info field*/
+		*pair_band = *pos;
 		/*TODO: sanity check of Operating Class and CH???? */
+		pos = pos + sizeof(UCHAR);
 		*pair_ch = *pos;
 	}
 
 end:
 	return ret;
 }
+
+#ifdef APCLI_OWE_SUPPORT
+void wext_send_owe_trans_chan_event(PNET_DEV net_dev,
+											UCHAR event_id,
+											UCHAR *pair_bssid,
+											UCHAR *pair_ssid,
+											UCHAR *pair_ssid_len,
+											UCHAR *pair_band,
+											UCHAR *pair_ch)
+{
+	struct owe_trans_channel_change_info *owe_tran_ch_data = NULL;
+	struct owe_event *event_data = NULL;
+	UINT16 buflen = 0;
+	char *buf = NULL;
+
+
+	buflen = sizeof(struct owe_event) + sizeof(struct owe_trans_channel_change_info);
+	os_alloc_mem(NULL, (UCHAR **)&buf, buflen);
+	NdisZeroMemory(buf, buflen);
+
+	event_data = (struct owe_event *)buf;
+	event_data->event_id = event_id;
+
+	event_data->event_len = sizeof(*owe_tran_ch_data);
+	owe_tran_ch_data = (struct owe_trans_channel_change_info *)event_data->event_body;
+
+	NdisCopyMemory(owe_tran_ch_data->ifname, RtmpOsGetNetDevName(net_dev), IFNAMSIZ);
+
+	if (pair_bssid)
+		memcpy(owe_tran_ch_data->pair_bssid, pair_bssid, 6);
+	if (pair_ssid)
+		memcpy(owe_tran_ch_data->pair_ssid, pair_ssid, *pair_ssid_len);
+
+	if (pair_ssid_len)
+		owe_tran_ch_data->pair_ssid_len = *pair_ssid_len;
+
+	if (pair_band && (*pair_band != 0))
+		owe_tran_ch_data->pair_band = *pair_band;
+
+	if (pair_ch && (*pair_ch != 0))
+		owe_tran_ch_data->pair_ch = *pair_ch;
+
+
+	RtmpOSWrielessEventSend(net_dev, RT_WLAN_EVENT_CUSTOM,
+							OID_802_11_OWE_TRANS_EVENT, NULL, (PUCHAR)buf, buflen);
+	os_free_mem(buf);
+}
+
+#endif
+
+
+
 #endif /*CONFIG_OWE_SUPPORT*/

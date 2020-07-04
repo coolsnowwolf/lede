@@ -23,17 +23,22 @@ proto_qmi_init_config() {
 	proto_config_add_boolean autoconnect
 	proto_config_add_int plmn
 	proto_config_add_int timeout
+	proto_config_add_int mtu
 	proto_config_add_defaults
 }
 
 proto_qmi_setup() {
 	local interface="$1"
 	local dataformat connstat
-	local device apn auth username password pincode delay modes pdptype profile dhcpv6 autoconnect plmn timeout $PROTO_DEFAULT_OPTIONS
+	local device apn auth username password pincode delay modes pdptype
+	local profile dhcpv6 autoconnect plmn timeout mtu $PROTO_DEFAULT_OPTIONS
 	local ip4table ip6table
 	local cid_4 pdh_4 cid_6 pdh_6
 	local ip_6 ip_prefix_length gateway_6 dns1_6 dns2_6
-	json_get_vars device apn auth username password pincode delay modes pdptype profile dhcpv6 autoconnect plmn ip4table ip6table timeout $PROTO_DEFAULT_OPTIONS
+
+	json_get_vars device apn auth username password pincode delay modes
+	json_get_vars pdptype profile dhcpv6 autoconnect plmn ip4table
+	json_get_vars ip6table timeout mtu $PROTO_DEFAULT_OPTIONS
 
 	[ "$timeout" = "" ] && timeout="10"
 
@@ -68,6 +73,11 @@ proto_qmi_setup() {
 		return 1
 	}
 
+	[ -n "$mtu" ] && {
+		echo "Setting MTU to $mtu"
+		/sbin/ip link set dev $ifname mtu $mtu
+	}
+
 	echo "Waiting for SIM initialization"
 	local uninitialized_timeout=0
 	while uqmi -s -d "$device" --get-pin-status | grep '"UIM uninitialized"' > /dev/null; do
@@ -83,7 +93,7 @@ proto_qmi_setup() {
 		fi
 	done
 
-	if uqmi -s -d "$device" --get-pin-status | grep '"Not supported"' > /dev/null; then
+	if uqmi -s -d "$device" --get-pin-status | grep '"Not supported"\|"Invalid QMI command"' > /dev/null; then
 		[ -n "$pincode" ] && {
 			uqmi -s -d "$device" --verify-pin1 "$pincode" > /dev/null || uqmi -s -d "$device" --uim-verify-pin1 "$pincode" > /dev/null || {
 				echo "Unable to verify PIN"
@@ -298,6 +308,9 @@ proto_qmi_setup() {
 	}
 	proto_close_data
 	proto_send_update "$interface"
+
+	local zone="$(fw3 -q network "$interface" 2>/dev/null)"
+
 	[ -n "$pdh_6" ] && {
 		if [ -z "$dhcpv6" -o "$dhcpv6" = 0 ]; then
 			json_load "$(uqmi -s -d $device --set-client-id wds,$cid_6 --get-current-settings)"
@@ -318,6 +331,11 @@ proto_qmi_setup() {
 				proto_add_dns_server "$dns1_6"
 				proto_add_dns_server "$dns2_6"
 			}
+			[ -n "$zone" ] && {
+				proto_add_data
+				json_add_string zone "$zone"
+				proto_close_data
+			}
 			proto_send_update "$interface"
 		else
 			json_init
@@ -328,6 +346,7 @@ proto_qmi_setup() {
 			proto_add_dynamic_defaults
 			# RFC 7278: Extend an IPv6 /64 Prefix to LAN
 			json_add_string extendprefix 1
+			[ -n "$zone" ] && json_add_string zone "$zone"
 			json_close_object
 			ubus call network add_dynamic "$(json_dump)"
 		fi
@@ -340,6 +359,7 @@ proto_qmi_setup() {
 		json_add_string proto "dhcp"
 		[ -n "$ip4table" ] && json_add_string ip4table "$ip4table"
 		proto_add_dynamic_defaults
+		[ -n "$zone" ] && json_add_string zone "$zone"
 		json_close_object
 		ubus call network add_dynamic "$(json_dump)"
 	}

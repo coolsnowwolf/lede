@@ -76,7 +76,9 @@ VOID ActionStateMachineInit(
 	StateMachineSetAction(S, ACT_IDLE, MT2_MLME_REC_DELBA_CATE, (STATE_MACHINE_FUNC)MlmeDELBAAction);
 #endif /* DOT11_N_SUPPORT */
 	StateMachineSetAction(S, ACT_IDLE, MT2_PEER_PUBLIC_CATE, (STATE_MACHINE_FUNC)PeerPublicAction);
+#ifndef HOSTAPD_11K_SUPPORT
 	StateMachineSetAction(S, ACT_IDLE, MT2_PEER_RM_CATE, (STATE_MACHINE_FUNC)PeerRMAction);
+#endif
 	StateMachineSetAction(S, ACT_IDLE, MT2_MLME_QOS_CATE, (STATE_MACHINE_FUNC)MlmeQOSAction);
 	StateMachineSetAction(S, ACT_IDLE, MT2_MLME_DLS_CATE, (STATE_MACHINE_FUNC)MlmeDLSAction);
 	StateMachineSetAction(S, ACT_IDLE, MT2_ACT_INVALID, (STATE_MACHINE_FUNC)MlmeInvalidAction);
@@ -676,7 +678,7 @@ struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
 #endif /* RACTRL_FW_OFFLOAD_SUPPORT */
 #endif /* CONFIG_AP_SUPPORT */
 
-#if defined(CONFIG_HOTSPOT) && defined(CONFIG_AP_SUPPORT)
+#if defined(WAPP_SUPPORT) && defined(CONFIG_AP_SUPPORT)
 
 	if (!GasEnable(pAd, Elem))
 #endif
@@ -729,7 +731,13 @@ struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
 
 		/*hex_dump("IntolerantReport ", (PUCHAR)pIntolerantReport, sizeof(BSS_2040_INTOLERANT_CH_REPORT));*/
 
-		if (pAd->CommonCfg.bBssCoexEnable == FALSE || (pAd->CommonCfg.bForty_Mhz_Intolerant == TRUE)) {
+		/* Soft AP to follow BW of Root AP */
+		if (
+#ifdef BW_VENDOR10_CUSTOM_FEATURE
+			IS_APCLI_BW_SYNC_FEATURE_ENBL(pAd) ||
+#endif
+			pAd->CommonCfg.bBssCoexEnable == FALSE || (pAd->CommonCfg.bForty_Mhz_Intolerant == TRUE)) {
+
 			MTWF_LOG(DBG_CAT_PROTO, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("20/40 BSS CoexMgmt=%d, bForty_Mhz_Intolerant=%d, ignore this action!!\n",
 					 pAd->CommonCfg.bBssCoexEnable,
 					 pAd->CommonCfg.bForty_Mhz_Intolerant));
@@ -888,7 +896,7 @@ struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
 #endif /* DOT11N_DRAFT3 */
 #endif /* DOT11_N_SUPPORT */
 #ifdef CONFIG_AP_SUPPORT
-#if defined(CONFIG_HOTSPOT) || defined(FTM_SUPPORT)
+#if defined(WAPP_SUPPORT) || defined(FTM_SUPPORT)
 
 	case ACTION_GAS_INIT_REQ:
 		if (GasEnable(pAd, Elem))
@@ -1206,7 +1214,7 @@ VOID SendRefreshBAR(RTMP_ADAPTER *pAd, MAC_TABLE_ENTRY *pEntry)
 				return;
 			}
 
-			Sequence = pAd->MacTab.tr_entry[pEntry->wcid].TxSeq[TID];
+			Sequence = AsicGetTidSn(pAd, pEntry->wcid, TID);
 #ifdef APCLI_SUPPORT
 #ifdef MAC_REPEATER_SUPPORT
 

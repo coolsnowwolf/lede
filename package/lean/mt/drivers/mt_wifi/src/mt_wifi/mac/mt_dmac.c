@@ -25,6 +25,9 @@
 */
 
 #include "rt_config.h"
+#ifdef TXRX_STAT_SUPPORT
+#include "hdev/hdev_basic.h"
+#endif
 
 const UCHAR altx_filter_list[] = {
 	SUBTYPE_ASSOC_REQ,
@@ -622,6 +625,38 @@ INT dump_dmac_amsdu_info(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 	return TRUE;
 }
 
+#ifdef CUSTOMER_RSG_FEATURE
+VOID Read_Mib_TxRx_Counters(RTMP_ADAPTER *pAd)
+{
+	UINT32 CrValue;
+	UINT32 BeaconCount, CtrlPktCount, MgmtRetryCnt, DataFrameRetryCount, TotalRxCount;
+
+	RTMP_IO_READ32(pAd, MIB_M0SDR0, &CrValue);
+	BeaconCount = (CrValue & 0xffff);
+
+	RTMP_IO_READ32(pAd, MIB_M0SDR5, &CrValue);
+	TotalRxCount = CrValue;
+
+	RTMP_IO_READ32(pAd, MIB_M0SDR38, &CrValue);
+	CtrlPktCount = (CrValue & 0xffffff);
+
+	RTMP_IO_READ32(pAd, MIB_M0SDR39, &CrValue);
+	MgmtRetryCnt = (CrValue & 0xffffff);
+
+	RTMP_IO_READ32(pAd, MIB_M0SDR40, &CrValue);
+	DataFrameRetryCount = (CrValue & 0xffffff);
+
+	pAd->RadioStatsCounter.TotalBeaconSentCount += BeaconCount;
+	pAd->RadioStatsCounter.TotalTxCount += BeaconCount + MgmtRetryCnt + CtrlPktCount;
+	pAd->RadioStatsCounter.TxDataCount -= DataFrameRetryCount;
+	pAd->RadioStatsCounter.TotalRxCount += TotalRxCount;
+	pAd->RadioStatsCounter.TxRetryCount += DataFrameRetryCount + MgmtRetryCnt;
+	pAd->beacon_cnt += BeaconCount;
+}
+
+#endif
+
+
 VOID Update_Mib_Bucket_One_Sec(RTMP_ADAPTER *pAd)
 {
 	UCHAR   i = 0, j = 0;
@@ -648,6 +683,21 @@ VOID Update_Mib_Bucket_One_Sec(RTMP_ADAPTER *pAd)
 		}
 	}
 }
+#if defined(OFFCHANNEL_SCAN_FEATURE) || defined(TR181_SUPPORT) || defined(TXRX_STAT_SUPPORT)
+VOID Reset_MIB_Update_Counters(RTMP_ADAPTER *pAd, UCHAR Idx)
+{
+
+	pAd->ChannelStats.MibUpdateOBSSAirtime[Idx] = 0;
+	pAd->ChannelStats.MibUpdateMyTxAirtime[Idx] = 0;
+	pAd->ChannelStats.MibUpdateMyRxAirtime[Idx] = 0;
+#ifdef CUSTOMER_RSG_FEATURE
+	pAd->ChannelStats.MibUpdateEDCCAtime[Idx] = 0;
+	pAd->ChannelStats.MibUpdatePdCount[Idx] = 0;
+	pAd->ChannelStats.MibUpdateMdrdyCount[Idx] = 0;
+#endif
+}
+#endif
+
 
 VOID Update_Mib_Bucket_500Ms(RTMP_ADAPTER *pAd)
 {
@@ -665,32 +715,49 @@ VOID Update_Mib_Bucket_500Ms(RTMP_ADAPTER *pAd)
 			/* Channel Busy Time */
 			HW_IO_READ32(pAd, MIB_M0SDR16 + (i * BandOffset), &CrValue);
 			pAd->MsMibBucket.ChannelBusyTime[i][CurrIdx] = CrValue;
-			/* OBSS Air time */
-			HW_IO_READ32(pAd, RMAC_MIBTIME5 + i * 4, &CrValue);
-			pAd->MsMibBucket.OBSSAirtime[i][CurrIdx] = CrValue;
-			/* My Tx Air time */
-			HW_IO_READ32(pAd, MIB_M0SDR36 + (i * BandOffset), &CrValue);
-			pAd->MsMibBucket.MyTxAirtime[i][CurrIdx] = CrValue;
-			/* My Rx Air time */
-			HW_IO_READ32(pAd, MIB_M0SDR37 + (i * BandOffset), &CrValue);
-			pAd->MsMibBucket.MyRxAirtime[i][CurrIdx] = CrValue;
-			/* EDCCA time */
-			HW_IO_READ32(pAd, MIB_M0SDR18 + (i * BandOffset), &CrValue);
-			pAd->MsMibBucket.EDCCAtime[i][CurrIdx] = CrValue;
-			/* Reset OBSS Air time */
-			HW_IO_READ32(pAd, RMAC_MIBTIME0, &CrValue);
-			CrValue |= 1 << RX_MIBTIME_CLR_OFFSET;
-			CrValue |= 1 << RX_MIBTIME_EN_OFFSET;
-			HW_IO_WRITE32(pAd, RMAC_MIBTIME0, CrValue);
-			HW_IO_READ32(pAd, RO_BAND0_PHYCTRL_STS0 + (i * BandOffset), &CrValue); /* PD count */
-			pAd->MsMibBucket.PdCount[i][CurrIdx] = CrValue;
-			HW_IO_READ32(pAd, RO_BAND0_PHYCTRL_STS5 + (i * BandOffset), &CrValue); /* MDRDY count */
-			pAd->MsMibBucket.MdrdyCount[i][CurrIdx] = CrValue;
-			HW_IO_READ32(pAd, PHY_BAND0_PHYMUX_5 + (i * BandOffset), &CrValue);
-			CrValue &= 0xff8fffff;
-			HW_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5 + (i * BandOffset), CrValue); /* Reset */
-			CrValue |= 0x500000;
-			HW_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5 + (i * BandOffset), CrValue); /* Enable */
+
+#if defined(OFFCHANNEL_SCAN_FEATURE) || defined(TR181_SUPPORT) || defined(TXRX_STAT_SUPPORT)
+			if (!(ApScanRunning(pAd, NULL))) {
+				pAd->MsMibBucket.OBSSAirtime[i][CurrIdx] = pAd->ChannelStats.MibUpdateOBSSAirtime[i];
+				pAd->MsMibBucket.MyTxAirtime[i][CurrIdx] = pAd->ChannelStats.MibUpdateMyTxAirtime[i];
+				pAd->MsMibBucket.MyRxAirtime[i][CurrIdx] = pAd->ChannelStats.MibUpdateMyRxAirtime[i];
+#ifdef CUSTOMER_RSG_FEATURE
+				pAd->MsMibBucket.EDCCAtime[i][CurrIdx] = pAd->ChannelStats.MibUpdateEDCCAtime[i];
+				pAd->MsMibBucket.PdCount[i][CurrIdx] = pAd->ChannelStats.MibUpdatePdCount[i];
+				pAd->MsMibBucket.MdrdyCount[i][CurrIdx] = pAd->ChannelStats.MibUpdateMdrdyCount[i];
+#endif
+				Reset_MIB_Update_Counters(pAd, i);
+			} else
+#endif
+			{
+				/* OBSS Air time */
+				HW_IO_READ32(pAd, RMAC_MIBTIME5 + i * 4, &CrValue);
+				pAd->MsMibBucket.OBSSAirtime[i][CurrIdx] = CrValue;
+				/* My Tx Air time */
+				HW_IO_READ32(pAd, MIB_M0SDR36 + (i * BandOffset), &CrValue);
+				pAd->MsMibBucket.MyTxAirtime[i][CurrIdx] = CrValue;
+				/* My Rx Air time */
+				HW_IO_READ32(pAd, MIB_M0SDR37 + (i * BandOffset), &CrValue);
+				pAd->MsMibBucket.MyRxAirtime[i][CurrIdx] = CrValue;
+				/* EDCCA time */
+				HW_IO_READ32(pAd, MIB_M0SDR18 + (i * BandOffset), &CrValue);
+				pAd->MsMibBucket.EDCCAtime[i][CurrIdx] = CrValue;
+				/* Reset OBSS Air time */
+				HW_IO_READ32(pAd, RMAC_MIBTIME0, &CrValue);
+				CrValue |= 1 << RX_MIBTIME_CLR_OFFSET;
+				CrValue |= 1 << RX_MIBTIME_EN_OFFSET;
+				HW_IO_WRITE32(pAd, RMAC_MIBTIME0, CrValue);
+
+				HW_IO_READ32(pAd, RO_BAND0_PHYCTRL_STS0 + (i * BandOffset), &CrValue); /* PD count */
+				pAd->MsMibBucket.PdCount[i][CurrIdx] = CrValue;
+				HW_IO_READ32(pAd, RO_BAND0_PHYCTRL_STS5 + (i * BandOffset), &CrValue); /* MDRDY count */
+				pAd->MsMibBucket.MdrdyCount[i][CurrIdx] = CrValue;
+				HW_IO_READ32(pAd, PHY_BAND0_PHYMUX_5 + (i * BandOffset), &CrValue);
+				CrValue &= 0xff8fffff;
+				HW_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5 + (i * BandOffset), CrValue); /* Reset */
+				CrValue |= 0x500000;
+				HW_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5 + (i * BandOffset), CrValue); /* Enable */
+			}
 		}
 	}
 }
@@ -795,6 +862,9 @@ VOID NICUpdateRawCounters(RTMP_ADAPTER *pAd)
 	UINT32 OldValue, i;
 	UINT32 rx_err_cnt, fcs_err_cnt, mdrdy_cnt = 0, fcs_err_cnt_band1 = 0, mdrdy_cnt_band1 = 0;
 	/* UINT32 TxSuccessCount = 0, TxRetryCount = 0; */
+#ifdef TXRX_STAT_SUPPORT
+	struct hdev_ctrl *ctrl = (struct hdev_ctrl *)pAd->hdev_ctrl;
+#endif
 #ifdef COMPOS_WIN
 	COUNTER_MTK *pPrivCounters;
 #else
@@ -821,24 +891,32 @@ VOID NICUpdateRawCounters(RTMP_ADAPTER *pAd)
 	fcs_err_cnt = rx_err_cnt & 0xffff;
 	MAC_IO_READ32(pAd, MIB_M0SDR4, &rx_err_cnt);
 
+	MAC_IO_READ32(pAd, MIB_M1SDR3, &fcs_err_cnt_band1);
+#ifndef TXRX_STAT_SUPPORT
+	if (pAd->parse_rxv_stat_enable) {
+#endif
+#ifdef MT7615
+		if (IS_MT7615(pAd))
+			fcs_err_cnt_band1 = (fcs_err_cnt_band1 & 0xffff); /* [15:0] FCS ERR */
+#endif
+#ifndef TXRX_STAT_SUPPORT
+	}
+#endif
+
+#ifdef TXRX_STAT_SUPPORT
+	ctrl->rdev[DBDC_BAND0].pRadioCtrl->RxCRCErrorCount.QuadPart += fcs_err_cnt;
+	if (pAd->CommonCfg.dbdc_mode)
+		ctrl->rdev[DBDC_BAND1].pRadioCtrl->RxCRCErrorCount.QuadPart += fcs_err_cnt_band1;
+#endif
 	if (pAd->parse_rxv_stat_enable) {
 		MAC_IO_READ32(pAd, MIB_M0SDR10, &mdrdy_cnt);
-#ifdef MT7615
-
+#if defined(MT7615)
 		if (IS_MT7615(pAd))
 			mdrdy_cnt = (mdrdy_cnt & 0x3FFFFFF); /* [25:0] Mac Mdrdy*/
 
 #endif
-		MAC_IO_READ32(pAd, MIB_M1SDR3, &fcs_err_cnt_band1);
-#ifdef MT7615
-
-		if (IS_MT7615(pAd))
-			fcs_err_cnt_band1 = (fcs_err_cnt_band1 & 0xffff); /* [15:0] FCS ERR */
-
-#endif
 		MAC_IO_READ32(pAd, MIB_M1SDR10, &mdrdy_cnt_band1);
-#ifdef MT7615
-
+#if defined(MT7615)
 		if (IS_MT7615(pAd))
 			mdrdy_cnt_band1 = (mdrdy_cnt_band1 & 0x3FFFFFF); /* [25:0] Mac Mdrdy*/
 
@@ -861,6 +939,17 @@ VOID NICUpdateRawCounters(RTMP_ADAPTER *pAd)
 
 	if (pAd->WlanCounters[0].FCSErrorCount.u.LowPart < OldValue)
 		pAd->WlanCounters[0].FCSErrorCount.u.HighPart++;
+
+#ifdef DBDC_MODE
+	if (IS_ATE_DBDC(pAd)) {
+		/* Update FCS counters of band1 */
+		OldValue = pAd->WlanCounters[1].FCSErrorCount.u.LowPart;
+		pAd->WlanCounters[1].FCSErrorCount.u.LowPart += fcs_err_cnt_band1;
+
+		if (pAd->WlanCounters[1].FCSErrorCount.u.LowPart < OldValue)
+			pAd->WlanCounters[1].FCSErrorCount.u.HighPart++;
+	}
+#endif /* DBDC_MODE */
 
 #endif /* STATS_COUNT_SUPPORT */
 	/* Add FCS error count to private counters*/
@@ -1426,6 +1515,13 @@ VOID mtd_write_tmac_info_fixed_rate(
 				txd_2->timing_measure = 1;
 		}
 
+#ifdef WIFI_EAP_FEATURE
+		if (pAd->CommonCfg.mgmt_txpwr_force_on == TRUE) {
+			if (info->Type == FC_TYPE_MGMT)
+				txd_2->pwr_offset = pAd->CommonCfg.txd_txpwr_offset;
+		}
+#endif
+
 #ifndef FTM_SUPPORT
 
 		if ((pAd->pTmrCtrlStruct != NULL)
@@ -1615,9 +1711,6 @@ VOID mtd_write_tmac_info_by_cr4(RTMP_ADAPTER *pAd, UCHAR *buf, TX_BLK *pTxBlk)
 	if (pTxBlk->HdrPadLen)
 		txd_1->hdr_pad = (TMI_HDR_PAD_MODE_HEAD << TMI_HDR_PAD_BIT_MODE) | 0x1;
 
-#ifdef RT_BIG_ENDIAN
-	MTMacInfoEndianChange(pAd, buf, TYPE_TMACINFO, sizeof(TMAC_TXD_L));
-#endif
 }
 
 
@@ -1849,6 +1942,13 @@ VOID mtd_write_tmac_info_by_host(RTMP_ADAPTER *pAd, UCHAR *buf, TX_BLK *pTxBlk)
 
 	txd_l->TxD2.frag = pTxBlk->FragIdx;
 
+#ifdef WIFI_EAP_FEATURE
+	if (pAd->CommonCfg.mgmt_txpwr_force_on == TRUE) {
+		if (txd_2->frm_type == FC_TYPE_MGMT)
+			txd_2->pwr_offset = pAd->CommonCfg.txd_txpwr_offset;
+	}
+#endif
+
 	if (TX_BLK_TEST_FLAG(pTxBlk, fTX_bAckRequired)) {
 		txd_3->no_ack = 0;
 		txd_l->TxD3.remain_tx_cnt = MT_TX_LONG_RETRY;
@@ -2065,8 +2165,8 @@ INT32 mtd_write_txp_info_by_host_v2(RTMP_ADAPTER *pAd, UCHAR *buf, TX_BLK *tx_bl
 	txp_ptr_len = &txp->arPtrLen[tx_blk->frame_idx / 2];
 
 	if ((tx_blk->frame_idx & 0x1) == 0x0) {
-		txp_ptr_len->u4Ptr0 = cpu2le32(PCI_MAP_SINGLE(pAd, tx_blk, 0, 1, RTMP_PCI_DMA_TODEVICE));
-
+		txp_ptr_len->u4Ptr0 = PCI_MAP_SINGLE(pAd, tx_blk, 0, 1, RTMP_PCI_DMA_TODEVICE);
+		txp_ptr_len->u4Ptr0 = cpu2le32(txp_ptr_len->u4Ptr0);
 		if (RTMP_GET_PACKET_MGMT_PKT(tx_blk->pPacket)) {
 			token = cut_through_tx_enq(pktTokenCb, tx_blk->pPacket, TOKEN_TX_MGT, tx_blk->Wcid,
 									   txp_ptr_len->u4Ptr0, GET_OS_PKT_LEN(tx_blk->pPacket));
@@ -2079,8 +2179,8 @@ INT32 mtd_write_txp_info_by_host_v2(RTMP_ADAPTER *pAd, UCHAR *buf, TX_BLK *tx_bl
 
 		txp_ptr_len->u2Len0 = cpu2le16(txp_ptr_len->u2Len0);
 	} else {
-		txp_ptr_len->u4Ptr1 = cpu2le32(PCI_MAP_SINGLE(pAd, tx_blk, 0, 1, RTMP_PCI_DMA_TODEVICE));
-
+		txp_ptr_len->u4Ptr1 = PCI_MAP_SINGLE(pAd, tx_blk, 0, 1, RTMP_PCI_DMA_TODEVICE);
+		txp_ptr_len->u4Ptr1 = cpu2le32(txp_ptr_len->u4Ptr1);
 		if (RTMP_GET_PACKET_MGMT_PKT(tx_blk->pPacket)) {
 			token = cut_through_tx_enq(pktTokenCb, tx_blk->pPacket, TOKEN_TX_MGT, tx_blk->Wcid,
 									   txp_ptr_len->u4Ptr1, GET_OS_PKT_LEN(tx_blk->pPacket));
@@ -2141,11 +2241,22 @@ INT32 mtd_write_txp_info_by_cr4(RTMP_ADAPTER *pAd, UCHAR *buf, TX_BLK *pTxBlk)
 	else
 		/*TODO: WDS case.*/
 #endif
+#ifdef A4_CONN
+	if (pTxBlk->pMacEntry && IS_ENTRY_A4(pTxBlk->pMacEntry))
+		cr4_txp_msdu_info->rept_wds_wcid = pTxBlk->pMacEntry->wcid;
+	else
+#endif /* A4_CONN */
 	{
 		cr4_txp_msdu_info->rept_wds_wcid = 0xff;
 	}
 
-	BssInfoIdx = wdev->bss_info_argument.ucBssIndex;
+#ifdef MBSS_AS_WDS_AP_SUPPORT
+	if (RTMP_GET_PACKET_WCID(pTxBlk->pPacket)) {
+		cr4_txp_msdu_info->rept_wds_wcid = RTMP_GET_PACKET_WCID(pTxBlk->pPacket);
+	}
+#endif
+
+    BssInfoIdx = wdev->bss_info_argument.ucBssIndex;
 
 	if (token == pktTokenCb->pkt_tkid_invalid) {
 		RELEASE_NDIS_PACKET(pAd, pTxBlk->pPacket, NDIS_STATUS_FAILURE);
@@ -2156,16 +2267,43 @@ INT32 mtd_write_txp_info_by_cr4(RTMP_ADAPTER *pAd, UCHAR *buf, TX_BLK *pTxBlk)
 	cr4_txp_msdu_info->bss_index = BssInfoIdx;
 	cr4_txp_msdu_info->buf_num = 1; /* os get scatter. */
 	cr4_txp_msdu_info->buf_len[0] = pTxBlk->SrcBufLen;
+#ifdef VLAN_SUPPORT
+	if (RTMP_GET_PACKET_VLAN(pTxBlk->pPacket) != 0) {
+		UINT8 VlanPcp;
+		VlanPcp = RTMP_GET_VLAN_PCP(pTxBlk->pPacket);
+
+		if ((VlanPcp >= 0) && (VlanPcp <= 7))
+			cr4_txp_msdu_info->reserved = VlanPcp;
+	}
+#endif /*VLAN_SUPPORT*/
+
 #ifdef DSCP_PRI_SUPPORT
-	if (pTxBlk->DscpMappedPri != -1)
+	if ((pTxBlk->DscpMappedPri >= 0)  && (pTxBlk->DscpMappedPri <= 7))
 		cr4_txp_msdu_info->reserved = pTxBlk->DscpMappedPri;
 #endif
 	pTxBlk->txp_len = sizeof(CR4_TXP_MSDU_INFO);
 
 	if (cr4_txp_msdu_info->type_and_flags == 0) {
 		pTxBlk->dbdc_band = pTxBlk->resource_idx;
+		pTxBlk->DropPkt = FALSE;
 		WLAN_HOOK_CALL(WLAN_HOOK_TX, pAd, pTxBlk);
+
+		if (pTxBlk->DropPkt == TRUE) {
+			UINT8 Type;
+
+			cut_through_tx_deq(pktTokenCb, token, &Type);
+			RELEASE_NDIS_PACKET(pAd, pTxBlk->pPacket, NDIS_STATUS_SUCCESS);
+			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO,
+			 ("%s drop keep alive pkt\n", __func__));
+			return NDIS_STATUS_FAILURE;
+		}
 	}
+#ifdef RT_BIG_ENDIAN
+	cr4_txp_msdu_info->msdu_token = cpu2le16(cr4_txp_msdu_info->msdu_token);
+	cr4_txp_msdu_info->buf_ptr[0] = cpu2le32(cr4_txp_msdu_info->buf_ptr[0]);
+	cr4_txp_msdu_info->buf_len[0] = cpu2le16(cr4_txp_msdu_info->buf_len[0]);
+	cr4_txp_msdu_info->type_and_flags = cpu2le16(cr4_txp_msdu_info->type_and_flags);
+#endif
 
 	return NDIS_STATUS_SUCCESS;
 }
@@ -2826,7 +2964,11 @@ INT mt_nic_asic_init(RTMP_ADAPTER *pAd)
 	mt_mac_init(pAd);
 	mt_hw_tb_init(pAd, TRUE);
 #ifdef HDR_TRANS_RX_SUPPORT
+#ifdef VLAN_SUPPORT
+	AsicRxHeaderTransCtl(pAd, TRUE, FALSE, FALSE, FALSE, FALSE);
+#else
 	AsicRxHeaderTransCtl(pAd, TRUE, FALSE, FALSE, TRUE, FALSE);
+#endif /* VLAN_SUPPORT */
 	AsicRxHeaderTaranBLCtl(pAd, 0, TRUE, ETH_TYPE_EAPOL);
 	AsicRxHeaderTaranBLCtl(pAd, 1, TRUE, ETH_TYPE_WAI);
 	AsicRxHeaderTaranBLCtl(pAd, 2, TRUE, ETH_TYPE_FASTROAMING);

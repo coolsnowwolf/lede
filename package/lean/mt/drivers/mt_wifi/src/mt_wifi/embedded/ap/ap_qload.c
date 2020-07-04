@@ -585,6 +585,14 @@ VOID QBSS_LoadUpdate(
 #endif /* QLOAD_FUNC_BUSY_TIME_ALARM */
 	QLOAD_CTRL *pQloadCtrl = HcGetQloadCtrl(pAd);
 	UINT8 UpdateBands = 1, i = 0;
+#ifdef ACS_CTCC_SUPPORT
+	struct wifi_dev *wdev = NULL;
+	UCHAR band_idx = 0;
+	AUTO_CH_CTRL *auto_ch_ctrl = NULL;
+	wdev = &pAd->ApCfg.MBSSID[MAIN_MBSSID].wdev;
+	band_idx = HcGetBandByWdev(wdev);
+	auto_ch_ctrl = HcGetAutoChCtrlbyBandIdx(pAd, band_idx);
+#endif
 
 	UpdateBands = (pAd->CommonCfg.dbdc_mode == 0)?1:2;
 
@@ -631,8 +639,15 @@ VOID QBSS_LoadUpdate(
 				continue;
 
 			if ((oper.ext_cha != 0) &&
-				(oper.ht_bw != 0)) {
+				(oper.ht_bw != 0)
+#ifdef OFFCHANNEL_SCAN_FEATURE
+				&& (!ApScanRunning(pAd, NULL)) && (pAd->ScanCtrl.state == OFFCHANNEL_SCAN_INVALID)
+#endif
+				) {
 				/* in 20MHz, no need to check busy time of secondary channel */
+#ifdef ACS_CTCC_SUPPORT
+			if (auto_ch_ctrl->AutoChSelCtrl.AutoChScanStatMachine.CurrState == AUTO_CH_SEL_SCAN_IDLE)
+#endif
 				BusyTime = AsicGetChBusyCnt(pAd, 1);
 				pQloadCtrl->QloadLatestChannelBusyTimeSec = BusyTime;
 #ifdef QLOAD_FUNC_BUSY_TIME_STATS

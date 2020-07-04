@@ -259,7 +259,7 @@ static struct shash_alg ifxdeu_sha1_alg = {
                 .cra_name       =       "sha1",
                 .cra_driver_name=       "ifxdeu-sha1",
                 .cra_priority   =       300,
-                .cra_flags      =       CRYPTO_ALG_TYPE_DIGEST,
+                .cra_flags      =       CRYPTO_ALG_TYPE_HASH,
                 .cra_blocksize  =       SHA1_HMAC_BLOCK_SIZE,
                 .cra_module     =       THIS_MODULE,
         }

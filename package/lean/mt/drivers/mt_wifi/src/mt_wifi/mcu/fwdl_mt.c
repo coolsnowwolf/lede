@@ -964,7 +964,17 @@ NDIS_STATUS mt_fwdl_hook_init(struct _RTMP_ADAPTER *pAd)
 	}
 
 		op->ctrl_fw_state = ctrl_fw_state_v2;
+#ifdef CONFIG_RECOVERY_ON_INTERRUPT_MISS
+#ifdef INTELP6_SUPPORT
+		if (ret == NDIS_STATUS_FAILURE) {
+			struct _RTMP_CHIP_OP *ops = hc_get_chip_ops(pAd->hdev_ctrl);
 
+			pAd->ErrRecoveryCheck++;
+			if (ops->heart_beat_check)
+				ops->heart_beat_check(pAd);
+		}
+#endif
+#endif
 	if (ret)
 		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: FWDL hook fail\n", __func__));
 

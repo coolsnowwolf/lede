@@ -41,6 +41,49 @@ VOID UpdateChannelInfo(
 	IN ChannelSel_Alg Alg,
 	IN struct wifi_dev *pwdev);
 
+#ifdef DFS_VENDOR10_CUSTOM_FEATURE
+#define IS_V10_BOOTACS_INVALID(_pAd) \
+	 (_pAd->CommonCfg.DfsParameter.bV10BootACSValid == TRUE)
+
+#define SET_V10_BOOTACS_INVALID(_pAd, valid) \
+	(_pAd->CommonCfg.DfsParameter.bV10BootACSValid = valid)
+
+#define IS_V10_APINTF_DOWN(_pAd) \
+		 (_pAd->CommonCfg.DfsParameter.bV10APInterfaceDownEnbl == TRUE)
+
+#define SET_V10_APINTF_DOWN(_pAd, valid) \
+		(_pAd->CommonCfg.DfsParameter.bV10APInterfaceDownEnbl = valid)
+
+#define IS_V10_W56_AP_DOWN_ENBLE(_pAd) \
+	 (_pAd->CommonCfg.DfsParameter.bV10W56APDownEnbl == TRUE)
+
+#define SET_V10_W56_AP_DOWN(_pAd, valid) \
+	(_pAd->CommonCfg.DfsParameter.bV10W56APDownEnbl = valid)
+
+#define SET_V10_AP_BCN_UPDATE_ENBL(_pAd, enable) \
+	(_pAd->CommonCfg.DfsParameter.bV10APBcnUpdateEnbl = enable)
+
+#define IS_V10_AP_BCN_UPDATE_ENBL(_pAd) \
+	 (_pAd->CommonCfg.DfsParameter.bV10APBcnUpdateEnbl == TRUE)
+
+
+VOID AutoChannelSkipListAppend(
+	IN PRTMP_ADAPTER	pAd,
+	IN UCHAR			Ch);
+
+VOID AutoChannelSkipChannels(
+	IN PRTMP_ADAPTER	pAd,
+	IN UCHAR			size,
+	IN UINT16			grpStart);
+
+VOID AutoChannelSkipListClear(
+	IN PRTMP_ADAPTER	pAd);
+
+BOOLEAN DfsV10ACSMarkChnlConsumed(
+	IN PRTMP_ADAPTER pAd,
+	IN UCHAR channel);
+#endif
+
 ULONG AutoChBssInsertEntry(
 	IN PRTMP_ADAPTER pAd,
 	IN PUCHAR pBssid,
@@ -142,6 +185,22 @@ VOID AutoChSelStateMachineInit(
 
 VOID AutoChSelInit(
 	IN PRTMP_ADAPTER pAd);
+
+#ifdef DFS_VENDOR10_CUSTOM_FEATURE
+UINT8 SelectBestV10Chnl_From_List(
+	IN RTMP_ADAPTER *pAd);
+#endif
+
+#if defined(OFFCHANNEL_SCAN_FEATURE) || defined (ONDEMAND_DFS)
+VOID ChannelInfoResetNew(
+	IN PRTMP_ADAPTER pAd);
+#endif
+#if defined(OFFCHANNEL_SCAN_FEATURE) && defined (ONDEMAND_DFS)
+UINT8 SelectBestChannel_From_List(
+	IN RTMP_ADAPTER *pAd,
+	IN BOOLEAN IsABand,
+	IN BOOLEAN SkipDFS);
+#endif
 
 VOID AutoChSelRelease(
 	IN PRTMP_ADAPTER pAd);
