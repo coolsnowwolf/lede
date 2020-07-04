@@ -694,7 +694,7 @@ define Device/netgear_r6850
   SERCOMM_HWVER := A001
   SERCOMM_SWVER := 0x0052
   IMAGE_SIZE := 40960k
-  DEVICE_PACKAGES += kmod-mt7615e kmod-mt7615-firmware
+  DEVICE_PACKAGES += -kmod-mt7603 -wpad-openssl kmod-mt7603e kmod-mt7615d luci-app-mtwifi
 endef
 TARGET_DEVICES += netgear_r6850
 
@@ -769,7 +769,7 @@ define Device/phicomm_k2p
   DEVICE_VENDOR := Phicomm
   DEVICE_MODEL := K2P
   SUPPORTED_DEVICES += k2p
-  DEVICE_PACKAGES := luci-app-mtwifi
+  DEVICE_PACKAGES := mt_wifi luci-app-mtwifi
 endef
 TARGET_DEVICES += phicomm_k2p
 

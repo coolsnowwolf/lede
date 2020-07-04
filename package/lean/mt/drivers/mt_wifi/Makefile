@@ -10,8 +10,6 @@ PKG_NAME:=mt_wifi
 P4REV:=8
 PKG_VERSION:=5.0.4.0
 
-PKG_MAINTAINER:=MeIsReallyBa
-
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_NAME)
 PKG_KCONFIG:= \
 	AP_SUPPORT \
@@ -182,15 +180,12 @@ TAR_CMD=$(HOST_TAR) -C $(1)/ $(TAR_OPTIONS)
 define KernelPackage/mt_wifi
   CATEGORY:=Kernel modules
   TITLE:=MTK wifi AP driver
-  DEPENDS:=@TARGET_ramips
 ifneq ($(CONFIG_MTK_WHNAT_SUPPORT), )
   FILES:=$(PKG_BUILD_DIR)/mt_wifi_ap/mt_wifi.ko \
 	$(PKG_BUILD_DIR)/mt_wifi/embedded/tools/plug_in/whnat/mt_whnat.ko
-  AUTOLOAD:=$(call AutoProbe,mt_wifi mt_whnat)
 else
   FILES:=$(PKG_BUILD_DIR)/mt_wifi_ap/mt_wifi.ko
-  AUTOLOAD:=$(call AutoProbe,mt_wifi)
-endif
+endif  
   SUBMENU:=Wireless Drivers
   MENU:=1
 endef
@@ -198,6 +193,7 @@ endef
 define KernelPackage/mt_wifi/config
 	source "$(SOURCE)/config.in"
 endef
+
 
 define Build/Compile
 	$(MAKE) -C "$(LINUX_DIR)" V=1 \
@@ -220,6 +216,7 @@ define KernelPackage/mt_wifi/install
 	$(INSTALL_BIN) ./files/SingleSKU_BF.dat $(1)/etc_ro/Wireless/RT2860AP/
 	$(INSTALL_BIN) ./files/mt7615.lua $(1)/lib/wifi
 	$(INSTALL_BIN) ./files/firmware.sh $(1)/etc/init.d/
+
 endef
 
 $(eval $(call KernelPackage,mt_wifi))
