@@ -7,6 +7,12 @@ preinit_set_mac_address() {
 		ip link set dev eth0 address $(macaddr_add "$base_mac" +1)
 		ip link set dev eth1 address $(macaddr_add "$base_mac" +3)
 		;;
+	asus,rt-acrh17|\
+	asus,rt-ac58u)
+		CI_UBIPART=UBI_DEV
+		base_mac=$(mtd_get_mac_binary_ubi Factory 4102)
+		ip link set dev eth0 address $(macaddr_add "$base_mac" +1)
+		;;
 	ezviz,cs-w3-wd1200g-eup)
 		ip link set dev eth0 address $(mtd_get_mac_binary "ART" 0x6)
 		ip link set dev eth1 address $(mtd_get_mac_binary "ART" 0x0)
