@@ -52,6 +52,7 @@ else ifeq ($(CONFIG_MTK_CHIP_MT7603E_MT7615E),y)
 	$(INSTALL_BIN) ./files/mt7615.dat $(1)/etc/wireless/mt7615/mt7615.2.dat
 	$(INSTALL_BIN) ./files/82_load_wifi.sh $(1)/lib/preinit/
 else
+	$(INSTALL_BIN) ./files/82_load_wifi.sh $(1)/lib/preinit/
 endif
 	$(INSTALL_BIN) ./files/SingleSKU.dat $(1)/etc_ro/Wireless/RT2860AP/
 	$(INSTALL_BIN) ./files/SingleSKU_BF.dat $(1)/etc_ro/Wireless/RT2860AP/
