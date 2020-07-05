@@ -7,7 +7,7 @@ LUCI_TITLE:=LuCI support for mt wifi driver
 LUCI_DEPENDS:=@TARGET_ramips +mt_wifi
 LUCI_PKGARCH:=all
 PKG_VERSION:=1
-PKG_RELEASE:=11
+PKG_RELEASE:=12
 
 define Package/luci-app-mtwifi/conffiles
 /etc/wireless/mt7615/

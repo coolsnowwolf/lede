@@ -210,7 +210,7 @@ define KernelPackage/mt7615d/install
 	$(INSTALL_DIR) $(1)/etc/wireless/
 	$(INSTALL_DIR) $(1)/etc/wireless/mt7615/
 ifneq ($(CONFIG_MTK_DBDC_MODE), )
-	$(INSTALL_BIN) ./files/l1profile.dat.dbdc $(1)/etc/wireless/l1profile.dat
+	$(INSTALL_BIN) ./files/dbdc.l1profile.dat $(1)/etc/wireless/l1profile.dat
 	$(INSTALL_BIN) ./files/mt7615.1.2G.dat $(1)/etc/wireless/mt7615/
 	$(INSTALL_BIN) ./files/mt7615.1.5G.dat $(1)/etc/wireless/mt7615/
 else
