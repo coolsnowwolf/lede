@@ -38,7 +38,6 @@ define KernelPackage/mt7603e
   TITLE:=MTK wifi AP driver
   FILES:=$(PKG_BUILD_DIR)/mt7603_wifi_ap/mt7603e.ko
   SUBMENU:=Wireless Drivers
-  AUTOLOAD:=$(call AutoProbe,mt7603e)
   MENU:=1
 endef
 

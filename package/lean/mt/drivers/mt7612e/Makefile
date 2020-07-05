@@ -26,7 +26,6 @@ define KernelPackage/mt76x2e
   TITLE:=MTK MT76x2e wifi AP driver
   FILES:=$(PKG_BUILD_DIR)/mt76x2_ap/mt76x2_ap.ko
   SUBMENU:=Wireless Drivers
-  AUTOLOAD:=$(call AutoProbe,mt76x2_ap)
   MENU:=1
 endef
 
