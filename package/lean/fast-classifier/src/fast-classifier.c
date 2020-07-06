@@ -36,11 +36,10 @@
 #include <linux/hashtable.h>
 #include <linux/version.h>
 
-#include "sfe_backport.h"
-#include "sfe.h"
-#include "sfe_cm.h"
+#include <sfe_backport.h>
+#include <sfe.h>
+#include <sfe_cm.h>
 #include "fast-classifier.h"
-
 
 typedef enum fast_classifier_exception {
 	FAST_CL_EXCEPTION_PACKET_BROADCAST,
@@ -197,7 +196,7 @@ static atomic_t done_fail_msgs = ATOMIC_INIT(0);
  * 	only implement ingress for now, because for egress we
  * 	want to have the bridge devices qdiscs be used.
  */
-static bool skip_to_bridge_ingress=1;
+static bool skip_to_bridge_ingress;
 
 /*
  * fast_classifier_incr_exceptions()
