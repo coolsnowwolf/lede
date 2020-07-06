@@ -468,9 +468,8 @@ static int s5p_nand_probe(struct platform_device *pdev)
 static int s5p_nand_remove(struct platform_device *pdev)
 {
 	struct s5p_nand_host *host = platform_get_drvdata(pdev);
-	struct mtd_info *mtd = nand_to_mtd(&host->nand_chip);
 
-	nand_release(mtd);
+	nand_release(&host->nand_chip);
 	clk_disable_unprepare(host->clk[0]);	/* nandxl */
 	clk_disable_unprepare(host->clk[1]);	/* nand */
 
