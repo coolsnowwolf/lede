@@ -1824,7 +1824,7 @@ static int __init fast_classifier_init(void)
 		DEBUG_ERROR("failed to register genl family: %d\n", result);
 		goto exit5;
 	}
-#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0))
 	result = genl_register_family_with_ops_groups(&fast_classifier_gnl_family,
 						      fast_classifier_gnl_ops,
 						      fast_classifier_genl_mcgrp);
