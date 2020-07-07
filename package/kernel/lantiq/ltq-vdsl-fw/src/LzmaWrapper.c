@@ -153,7 +153,7 @@ int lzma_inflate(unsigned char *source, int s_len, unsigned char *dest, int *d_l
     outStream = 0;
   else
   {
-    if (outSizeFull > d_len)
+    if (outSizeFull > *d_len)
       outStream = 0;
     else
       outStream = dest;

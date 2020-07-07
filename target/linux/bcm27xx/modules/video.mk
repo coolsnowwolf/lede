@@ -33,12 +33,13 @@ define KernelPackage/drm-vc4
     +kmod-sound-soc-core
   KCONFIG:= \
     CONFIG_DRM_VC4 \
-    CONFIG_DRM_VC4_HDMI_CEC=n \
+    CONFIG_DRM_VC4_HDMI_CEC=y \
     CONFIG_DRM_V3D=n \
     CONFIG_DRM_TVE200=n
   FILES:= \
     $(LINUX_DIR)/drivers/gpu/drm/vc4/vc4.ko \
-    $(LINUX_DIR)/drivers/gpu/drm/drm_kms_helper.ko
+    $(LINUX_DIR)/drivers/gpu/drm/drm_kms_helper.ko \
+    $(LINUX_DIR)/drivers/media/cec/cec.ko
   AUTOLOAD:=$(call AutoProbe,vc4)
 endef
 

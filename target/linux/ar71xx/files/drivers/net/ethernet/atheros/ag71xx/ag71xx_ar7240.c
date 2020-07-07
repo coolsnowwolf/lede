@@ -730,6 +730,10 @@ static void ar7240sw_setup_port(struct ar7240sw *as, unsigned port, u8 portmask)
 			portmask = ar7240sw_port_mask(as, AR7240_PORT_CPU);
 	}
 
+	/* preserve mirror rx&tx flags */
+	ctrl |= ar7240sw_reg_read(mii, AR7240_REG_PORT_CTRL(port)) &
+		(AR7240_PORT_CTRL_MIRROR_RX | AR7240_PORT_CTRL_MIRROR_TX);
+
 	/* allow the port to talk to all other ports, but exclude its
 	 * own ID to prevent frames from being reflected back to the
 	 * port that they came from */

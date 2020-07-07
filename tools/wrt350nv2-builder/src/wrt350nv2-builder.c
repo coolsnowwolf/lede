@@ -556,6 +556,7 @@ int create_bin_file(char *bin_filename) {
 		}
 	}
 
+	free(buffer);
 	return exitcode;
 }
 

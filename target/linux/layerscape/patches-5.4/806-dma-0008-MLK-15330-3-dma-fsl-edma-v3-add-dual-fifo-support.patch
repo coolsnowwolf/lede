@@ -1,0 +1,106 @@
+From 6c753f83ffc3fede13582f667a15e7f6e97f972c Mon Sep 17 00:00:00 2001
+From: Robin Gong <yibin.gong@nxp.com>
+Date: Tue, 4 Jul 2017 16:04:36 +0800
+Subject: [PATCH] MLK-15330-3 dma: fsl-edma-v3: add dual fifo support
+
+There is Audio dual fifo cause that fill fifo one by one and
+loop back after every minor loop:
+  -- fill the first 32bit width fifo
+  -- fill the next 32bit width fifo
+  -- +MLOFF signed offset after the above two FIFOs filled
+  -- loop back to the first step to handle the next minor loop.
+
+Signed-off-by: Robin Gong <yibin.gong@nxp.com>
+(cherry picked from commit 5aa5e9663bb3a834444b75ea086bef8c37ecb636)
+---
+ .../devicetree/bindings/dma/fsl-edma-v3.txt        |  2 ++
+ drivers/dma/fsl-edma-v3.c                          | 29 ++++++++++++++++++++--
+ 2 files changed, 29 insertions(+), 2 deletions(-)
+
+--- a/Documentation/devicetree/bindings/dma/fsl-edma-v3.txt
++++ b/Documentation/devicetree/bindings/dma/fsl-edma-v3.txt
+@@ -22,6 +22,8 @@ Required properties:
+ 		0: transmit, 1: receive.
+ 	BIT(1): local or remote access:
+ 		0: local, 1: remote.
++	BIT(2): dualfifo case or not(only in Audio cyclic now):
++		0: not dual fifo case, 1: dualfifo case.
+ 	See the SoC's reference manual for all the supported request sources.
+ - dma-channels : Number of channels supported by the controller
+ 
+--- a/drivers/dma/fsl-edma-v3.c
++++ b/drivers/dma/fsl-edma-v3.c
+@@ -78,6 +78,9 @@
+ 
+ #define EDMA_TCD_SOFF_SOFF(x)		(x)
+ #define EDMA_TCD_NBYTES_NBYTES(x)	(x)
++#define EDMA_TCD_NBYTES_MLOFF(x)	(x << 10)
++#define EDMA_TCD_NBYTES_DMLOE		(1 << 30)
++#define EDMA_TCD_NBYTES_SMLOE		(1 << 31)
+ #define EDMA_TCD_SLAST_SLAST(x)		(x)
+ #define EDMA_TCD_DADDR_DADDR(x)		(x)
+ #define EDMA_TCD_CITER_CITER(x)		((x) & 0x7FFF)
+@@ -102,6 +105,7 @@
+ 
+ #define ARGS_RX				BIT(0)
+ #define ARGS_REMOTE			BIT(1)
++#define ARGS_DFIFO			BIT(2)
+ 
+ struct fsl_edma3_hw_tcd {
+ 	__le32	saddr;
+@@ -143,6 +147,7 @@ struct fsl_edma3_chan {
+ 	int				priority;
+ 	int				is_rxchan;
+ 	int				is_remote;
++	int				is_dfifo;
+ 	struct dma_pool			*tcd_pool;
+ 	u32				chn_real_count;
+ 	char				txirq_name[32];
+@@ -454,6 +459,19 @@ void fsl_edma3_fill_tcd(struct fsl_edma3
+ 
+ 	tcd->soff = cpu_to_le16(EDMA_TCD_SOFF_SOFF(soff));
+ 
++	if (fsl_chan->is_dfifo) {
++		/* set mloff as -8 */
++		nbytes |= EDMA_TCD_NBYTES_MLOFF(-8);
++		/* enable DMLOE/SMLOE */
++		if (fsl_chan->fsc.dir == DMA_MEM_TO_DEV) {
++			nbytes |= EDMA_TCD_NBYTES_DMLOE;
++			nbytes &= ~EDMA_TCD_NBYTES_SMLOE;
++		} else {
++			nbytes |= EDMA_TCD_NBYTES_SMLOE;
++			nbytes &= ~EDMA_TCD_NBYTES_DMLOE;
++		}
++	}
++
+ 	tcd->nbytes = cpu_to_le32(EDMA_TCD_NBYTES_NBYTES(nbytes));
+ 	tcd->slast = cpu_to_le32(EDMA_TCD_SLAST_SLAST(slast));
+ 
+@@ -540,11 +558,17 @@ static struct dma_async_tx_descriptor *f
+ 			src_addr = dma_buf_next;
+ 			dst_addr = fsl_chan->fsc.dev_addr;
+ 			soff = fsl_chan->fsc.addr_width;
+-			doff = 0;
++			if (fsl_chan->is_dfifo)
++				doff = 4;
++			else
++				doff = 0;
+ 		} else if (fsl_chan->fsc.dir == DMA_DEV_TO_MEM) {
+ 			src_addr = fsl_chan->fsc.dev_addr;
+ 			dst_addr = dma_buf_next;
+-			soff = 0;
++			if (fsl_chan->is_dfifo)
++				soff = 4;
++			else
++				soff = 0;
+ 			doff = fsl_chan->fsc.addr_width;
+ 		} else {
+ 			/* DMA_DEV_TO_DEV */
+@@ -715,6 +739,7 @@ static struct dma_chan *fsl_edma3_xlate(
+ 			fsl_chan->priority = dma_spec->args[1];
+ 			fsl_chan->is_rxchan = dma_spec->args[2] & ARGS_RX;
+ 			fsl_chan->is_remote = dma_spec->args[2] & ARGS_REMOTE;
++			fsl_chan->is_dfifo = dma_spec->args[2] & ARGS_DFIFO;
+ 			mutex_unlock(&fsl_edma3->fsl_edma3_mutex);
+ 			return chan;
+ 		}

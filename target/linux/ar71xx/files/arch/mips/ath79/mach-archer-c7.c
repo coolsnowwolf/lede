@@ -50,7 +50,7 @@
 #define ARCHER_C7_GPIO_LED_USB1		18
 #define ARCHER_C7_GPIO_LED_USB2		19
 
-#define ARCHER_C7_GPIO_BTN_RFKILL	13
+#define ARCHER_C7_GPIO_BTN_RFKILL	23
 #define ARCHER_C7_V2_GPIO_BTN_RFKILL	23
 #define ARCHER_C7_GPIO_BTN_RESET	16
 
@@ -74,6 +74,39 @@ static struct flash_platform_data archer_c7_flash_data = {
 
 static struct gpio_led archer_c7_leds_gpio[] __initdata = {
 	{
+		.name		= "tp-link:green:qss",
+		.gpio		= ARCHER_C7_GPIO_LED_QSS,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:green:system",
+		.gpio		= ARCHER_C7_GPIO_LED_SYSTEM,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:green:wlan2g",
+		.gpio		= ARCHER_C7_GPIO_LED_WLAN2G,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:green:wlan5g",
+		.gpio		= ARCHER_C7_GPIO_LED_WLAN5G,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:green:usb1",
+		.gpio		= ARCHER_C7_GPIO_LED_USB1,
+		.active_low	= 1,
+	},
+	{
+		.name		= "tp-link:green:usb2",
+		.gpio		= ARCHER_C7_GPIO_LED_USB2,
+		.active_low	= 1,
+	},
+};
+
+static struct gpio_led wdr4900_leds_gpio[] __initdata = {
+	{
 		.name		= "tp-link:blue:qss",
 		.gpio		= ARCHER_C7_GPIO_LED_QSS,
 		.active_low	= 1,
@@ -86,11 +119,6 @@ static struct gpio_led archer_c7_leds_gpio[] __initdata = {
 	{
 		.name		= "tp-link:blue:wlan2g",
 		.gpio		= ARCHER_C7_GPIO_LED_WLAN2G,
-		.active_low	= 1,
-	},
-	{
-		.name		= "tp-link:blue:wlan5g",
-		.gpio		= ARCHER_C7_GPIO_LED_WLAN5G,
 		.active_low	= 1,
 	},
 	{
@@ -141,12 +169,23 @@ static struct gpio_keys_button archer_c7_v2_gpio_keys[] __initdata = {
 	},
 };
 
+static struct gpio_keys_button wdr4900_gpio_keys[] __initdata = {
+	{
+		.desc		= "Reset button",
+		.type		= EV_KEY,
+		.code		= KEY_WPS_BUTTON,
+		.debounce_interval = ARCHER_C7_KEYS_DEBOUNCE_INTERVAL,
+		.gpio		= ARCHER_C7_GPIO_BTN_RESET,
+		.active_low	= 1,
+	},
+};
+
 static const struct ar8327_led_info archer_c7_leds_ar8327[] = {
-	AR8327_LED_INFO(PHY0_0, HW, "tp-link:blue:wan"),
-	AR8327_LED_INFO(PHY1_0, HW, "tp-link:blue:lan1"),
-	AR8327_LED_INFO(PHY2_0, HW, "tp-link:blue:lan2"),
-	AR8327_LED_INFO(PHY3_0, HW, "tp-link:blue:lan3"),
-	AR8327_LED_INFO(PHY4_0, HW, "tp-link:blue:lan4"),
+	AR8327_LED_INFO(PHY0_0, HW, "tp-link:green:wan"),
+	AR8327_LED_INFO(PHY1_0, HW, "tp-link:green:lan1"),
+	AR8327_LED_INFO(PHY2_0, HW, "tp-link:green:lan2"),
+	AR8327_LED_INFO(PHY3_0, HW, "tp-link:green:lan3"),
+	AR8327_LED_INFO(PHY4_0, HW, "tp-link:green:lan4"),
 };
 
 /* GMAC0 of the AR8327 switch is connected to the QCA9558 SoC via SGMII */
@@ -207,20 +246,20 @@ static void __init common_setup(bool pcie_slot)
 	u8 *mac = (u8 *) KSEG1ADDR(0x1f01fc00);
 	u8 *art = (u8 *) KSEG1ADDR(0x1fff0000);
 	u8 tmpmac[ETH_ALEN];
+	u8 tmpmac2[ETH_ALEN];
 
 	ath79_register_m25p80(&archer_c7_flash_data);
-	ath79_register_leds_gpio(-1, ARRAY_SIZE(archer_c7_leds_gpio),
-				 archer_c7_leds_gpio);
-
-	ath79_init_mac(tmpmac, mac, -1);
-	ath79_register_wmac(art + ARCHER_C7_WMAC_CALDATA_OFFSET, tmpmac);
 
 	if (pcie_slot) {
+		ath79_register_wmac(art + ARCHER_C7_WMAC_CALDATA_OFFSET, mac);
 		ath79_register_pci();
 	} else {
 		ath79_init_mac(tmpmac, mac, -1);
+		ath79_register_wmac(art + ARCHER_C7_WMAC_CALDATA_OFFSET, tmpmac);
+
+		ath79_init_mac(tmpmac2, mac, -2);
 		ap9x_pci_setup_wmac_led_pin(0, 0);
-		ap91_pci_init(art + ARCHER_C7_PCIE_CALDATA_OFFSET, tmpmac);
+		ap91_pci_init(art + ARCHER_C7_PCIE_CALDATA_OFFSET, tmpmac2);
 	}
 
 	mdiobus_register_board_info(archer_c7_mdio0_info,
@@ -261,6 +300,8 @@ static void __init archer_c5_setup(void)
 	ath79_register_gpio_keys_polled(-1, ARCHER_C7_KEYS_POLL_INTERVAL,
 					ARRAY_SIZE(archer_c7_gpio_keys),
 					archer_c7_gpio_keys);
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(archer_c7_leds_gpio),
+				 archer_c7_leds_gpio);
 	common_setup(true);
 }
 
@@ -272,6 +313,8 @@ static void __init archer_c7_setup(void)
 	ath79_register_gpio_keys_polled(-1, ARCHER_C7_KEYS_POLL_INTERVAL,
 					ARRAY_SIZE(archer_c7_gpio_keys),
 					archer_c7_gpio_keys);
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(archer_c7_leds_gpio),
+				 archer_c7_leds_gpio);
 	common_setup(true);
 }
 
@@ -283,6 +326,8 @@ static void __init archer_c7_v2_setup(void)
 	ath79_register_gpio_keys_polled(-1, ARCHER_C7_KEYS_POLL_INTERVAL,
 					ARRAY_SIZE(archer_c7_v2_gpio_keys),
 					archer_c7_v2_gpio_keys);
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(archer_c7_leds_gpio),
+				 archer_c7_leds_gpio);
 	common_setup(true);
 }
 
@@ -292,8 +337,10 @@ MIPS_MACHINE(ATH79_MACH_ARCHER_C7_V2, "ARCHER-C7-V2", "TP-LINK Archer C7",
 static void __init tl_wdr4900_v2_setup(void)
 {
 	ath79_register_gpio_keys_polled(-1, ARCHER_C7_KEYS_POLL_INTERVAL,
-					ARRAY_SIZE(archer_c7_gpio_keys),
-					archer_c7_gpio_keys);
+					ARRAY_SIZE(wdr4900_gpio_keys),
+					wdr4900_gpio_keys);
+	ath79_register_leds_gpio(-1, ARRAY_SIZE(wdr4900_leds_gpio),
+				 wdr4900_leds_gpio);
 	common_setup(false);
 }
 
