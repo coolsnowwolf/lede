@@ -228,6 +228,24 @@ define Device/dlink_dir-860l-b1
 endef
 TARGET_DEVICES += dlink_dir-860l-b1
 
+define Device/dlink_dir-878-a1
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := D-Link
+  DEVICE_MODEL := DIR-878
+  DEVICE_VARIANT := A1
+  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi uboot-envtools
+endef
+TARGET_DEVICES += dlink_dir-878-a1
+
+define Device/dlink_dir-882-a1
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := D-Link
+  DEVICE_MODEL := DIR-882
+  DEVICE_VARIANT := A1
+  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi uboot-envtools
+endef
+TARGET_DEVICES += dlink_dir-882-a1
+
 define Device/d-team_newifi-d2
   $(Device/uimage-lzma-loader)
   IMAGE_SIZE := 32448k
@@ -569,6 +587,14 @@ define Device/mikrotik_routerboard-m33g
   SUPPORTED_DEVICES += mikrotik,rbm33g
 endef
 TARGET_DEVICES += mikrotik_routerboard-m33g
+
+define Device/motorola_mr2600
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := Motorola
+  DEVICE_MODEL := MR2600
+  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi uboot-envtools
+endef
+TARGET_DEVICES += motorola_mr2600
 
 define Device/mqmaker_witi
   IMAGE_SIZE := 16064k
