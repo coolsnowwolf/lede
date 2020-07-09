@@ -1535,9 +1535,12 @@ static int ar934x_nfc_probe(struct platform_device *pdev)
 		goto err_free_buf;
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 130)
 	nand->dummy_controller.ops = &ar934x_nfc_controller_ops;
 	ret = nand_scan(mtd, 1);
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
+	nand->dummy_controller.ops = &ar934x_nfc_controller_ops;
+	ret = nand_scan(nand, 1);
 #else
 	nand->legacy.dummy_controller.ops = &ar934x_nfc_controller_ops;
 	ret = nand_scan(nand, 1);
@@ -1569,12 +1572,7 @@ static int ar934x_nfc_remove(struct platform_device *pdev)
 
 	nfc = platform_get_drvdata(pdev);
 	if (nfc) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-		mtd = ar934x_nfc_to_mtd(nfc);
-		nand_release(mtd);
-#else
 		nand_release(&nfc->nand_chip);
-#endif
 		ar934x_nfc_free_buf(nfc);
 	}
 
