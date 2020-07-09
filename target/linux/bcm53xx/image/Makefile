@@ -387,7 +387,7 @@ TARGET_DEVICES += smartrg-sr400ac
 define Device/phicomm-k3
   DEVICE_VENDOR := PHICOMM
   DEVICE_MODEL := K3
-  DEVICE_PACKAGES := $(IEEE8021X) kmod-brcmfmac k3-brcmfmac4366c-firmware $(USB3_PACKAGES) k3screenctrl
+  DEVICE_PACKAGES := $(IEEE8021X) kmod-brcmfmac k3wifi $(USB3_PACKAGES) k3screenctrl
   IMAGES := trx
 endef
 TARGET_DEVICES += phicomm-k3
