@@ -51,6 +51,7 @@ flac.default = "1"
 flac.rmempty = false
 flac.description = translate("目前仅支持酷我、QQ、咪咕")
 flac:depends("apptype", "nodejs")
+flac:depends("apptype", "go")
 
 force = s:option(Flag, "force_enabled", translate("强制替换为高音质歌曲"))
 force.default = "1"
