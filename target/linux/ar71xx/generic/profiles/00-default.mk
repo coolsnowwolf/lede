@@ -8,7 +8,7 @@
 define Profile/Default
 	NAME:=Default Profile (all drivers)
 	PACKAGES:= \
-		kmod-usb-core kmod-usb-ohci kmod-usb2 kmod-usb-ledtrig-usbport
+		kmod-usb-ohci kmod-usb2 kmod-usb-ledtrig-usbport
 	PRIORITY := 1
 endef
 

@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libnfnetlink
 PKG_VERSION:=1.0.1
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:= \
@@ -30,6 +30,7 @@ define Package/libnfnetlink
   CATEGORY:=Libraries
   TITLE:=A low-level library for netfilter related kernel/userspace communication
   URL:=http://netfilter.org/projects/libnfnetlink/
+  ABI_VERSION:=0
 endef
 
 define Package/libnfnetlink/description
@@ -39,11 +40,12 @@ define Package/libnfnetlink/description
  and/or management tools in userspace.
 endef
 
-TARGET_CFLAGS += $(FPIC)
-
 CONFIGURE_ARGS += \
 	--enable-static \
 	--enable-shared
+
+CONFIGURE_VARS += \
+	lt_prog_compiler_pic=$(FPIC)
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include/libnfnetlink

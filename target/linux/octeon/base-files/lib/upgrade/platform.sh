@@ -25,7 +25,7 @@ platform_copy_config() {
 	case "$(board_name)" in
 	erlite)
 		mount -t vfat /dev/sda1 /mnt
-		cp -af "$CONF_TAR" /mnt/
+		cp -af "$UPGRADE_BACKUP" "/mnt/$BACKUP_FILE"
 		umount /mnt
 		;;
 	esac
@@ -85,8 +85,8 @@ platform_check_image() {
 	er | \
 	erlite)
 		local tar_file="$1"
-		local kernel_length=`(tar xf $tar_file sysupgrade-$board/kernel -O | wc -c) 2> /dev/null`
-		local rootfs_length=`(tar xf $tar_file sysupgrade-$board/root -O | wc -c) 2> /dev/null`
+		local kernel_length=$(tar xf $tar_file sysupgrade-$board/kernel -O | wc -c 2> /dev/null)
+		local rootfs_length=$(tar xf $tar_file sysupgrade-$board/root -O | wc -c 2> /dev/null)
 		[ "$kernel_length" = 0 -o "$rootfs_length" = 0 ] && {
 			echo "The upgrade image is corrupt."
 			return 1

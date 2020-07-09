@@ -1,0 +1,94 @@
+From 1049f9202ff060e16121c74fb712daea48979e42 Mon Sep 17 00:00:00 2001
+From: Jonas Karlman <jonas@kwiboo.se>
+Date: Fri, 11 Oct 2019 08:01:37 +0000
+Subject: [PATCH] mmc: dw_mmc: add power_off callback
+
+Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+---
+ drivers/mmc/host/dw_mmc.c | 3 +++
+ drivers/mmc/host/dw_mmc.h | 1 +
+ 2 files changed, 4 insertions(+)
+
+diff --git a/drivers/mmc/host/dw_mmc.c b/drivers/mmc/host/dw_mmc.c
+index 79c55c7b4afd..84557cdecf2a 100644
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -1493,6 +1493,9 @@ static void dw_mci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
+ 			regulator_disable(mmc->supply.vqmmc);
+ 		slot->host->vqmmc_enabled = false;
+ 
++		if (drv_data && drv_data->power_off)
++			drv_data->power_off(slot->host);
++
+ 		regs = mci_readl(slot->host, PWREN);
+ 		regs &= ~(1 << slot->id);
+ 		mci_writel(slot->host, PWREN, regs);
+diff --git a/drivers/mmc/host/dw_mmc.h b/drivers/mmc/host/dw_mmc.h
+index da5923a92e60..0b5c880364c5 100644
+--- a/drivers/mmc/host/dw_mmc.h
++++ b/drivers/mmc/host/dw_mmc.h
+@@ -563,5 +563,6 @@ struct dw_mci_drv_data {
+ 						struct mmc_ios *ios);
+ 	int		(*switch_voltage)(struct mmc_host *mmc,
+ 					  struct mmc_ios *ios);
++	void		(*power_off)(struct dw_mci *host);
+ };
+ #endif /* _DW_MMC_H_ */
+
+From 7f34988c4b1477568018aefdab4554f722985c29 Mon Sep 17 00:00:00 2001
+From: Jonas Karlman <jonas@kwiboo.se>
+Date: Fri, 11 Oct 2019 08:01:37 +0000
+Subject: [PATCH] mmc: dw_mmc-rockchip: try set vqmmc regulator to 3.3V on
+ power_off
+
+Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+---
+ drivers/mmc/host/dw_mmc-rockchip.c | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/drivers/mmc/host/dw_mmc-rockchip.c b/drivers/mmc/host/dw_mmc-rockchip.c
+index d4d02134848c..05410f90ddd3 100644
+--- a/drivers/mmc/host/dw_mmc-rockchip.c
++++ b/drivers/mmc/host/dw_mmc-rockchip.c
+@@ -24,6 +24,32 @@ struct dw_mci_rockchip_priv_data {
+ 	int			num_phases;
+ };
+ 
++static void dw_mci_rk3288_power_off(struct dw_mci *host)
++{
++	struct mmc_host	*mmc = host->slot->mmc;
++	struct mmc_ios *ios = &mmc->ios;
++	int old_signal_voltage;
++
++	if (IS_ERR(mmc->supply.vqmmc))
++		return;
++
++	if (mmc_host_is_spi(mmc))
++		return;
++
++	if (ios->vdd != 0 || ios->signal_voltage == MMC_SIGNAL_VOLTAGE_330)
++		return;
++
++	old_signal_voltage = ios->signal_voltage;
++
++	ios->signal_voltage = MMC_SIGNAL_VOLTAGE_330;
++	ios->vdd = fls(mmc->ocr_avail) - 1;
++
++	if (mmc_regulator_set_vqmmc(mmc, ios))
++		ios->signal_voltage = old_signal_voltage;
++
++	ios->vdd = 0;
++}
++
+ static void dw_mci_rk3288_set_ios(struct dw_mci *host, struct mmc_ios *ios)
+ {
+ 	struct dw_mci_rockchip_priv_data *priv = host->priv;
+@@ -319,6 +345,7 @@ static const struct dw_mci_drv_data rk3288_drv_data = {
+ 	.execute_tuning		= dw_mci_rk3288_execute_tuning,
+ 	.parse_dt		= dw_mci_rk3288_parse_dt,
+ 	.init			= dw_mci_rockchip_init,
++	.power_off		= dw_mci_rk3288_power_off,
+ };
+ 
+ static const struct of_device_id dw_mci_rockchip_match[] = {
+

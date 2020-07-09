@@ -1,0 +1,79 @@
+From 5c4835e943dd31265770e7ca3c03307d5c725db6 Mon Sep 17 00:00:00 2001
+From: Viorel Suman <viorel.suman@nxp.com>
+Date: Thu, 25 Apr 2019 15:03:56 +0300
+Subject: [PATCH] MLK-21484-4: ASoC: fsl_sai: ensure clk not in use prior
+ set_mclk_rate
+
+On recent kernels clks which are marked with CLK_SET_RATE_GATE are
+"protected" against further changes at clk_prepare time, including clk
+set_parent and set_rate. See commit 9461f7b33d11 ("clk: fix
+CLK_SET_RATE_GATE with clock rate protection"). The current fsl_sai
+implementation ensures the clock is not in use prior set_parent,
+extend this for set_rate also by moving if (sai->mclk_streams == 0)
+outside fsl_sai_set_mclk_rate(). Aside of this avoid changing rate and
+parent for BUS clk.
+
+Signed-off-by: Viorel Suman <viorel.suman@nxp.com>
+---
+ sound/soc/fsl/fsl_sai.c | 30 +++++++++++++-----------------
+ 1 file changed, 13 insertions(+), 17 deletions(-)
+
+--- a/sound/soc/fsl/fsl_sai.c
++++ b/sound/soc/fsl/fsl_sai.c
+@@ -259,25 +259,19 @@ static int fsl_sai_set_mclk_rate(struct
+ 	if (pll) {
+ 		npll = (do_div(ratio, 8000) ? sai->pll11k_clk : sai->pll8k_clk);
+ 		if (!clk_is_match(pll, npll)) {
+-			if (sai->mclk_streams == 0) {
+-				ret = clk_set_parent(p, npll);
+-				if (ret < 0)
+-					dev_warn(dai->dev,
+-						"failed to set parent %s: %d\n",
+-						__clk_get_name(npll), ret);
+-			} else {
+-				dev_err(dai->dev,
+-					"PLL %s is in use by a running stream.\n",
+-					__clk_get_name(pll));
+-				return -EINVAL;
+-			}
++			ret = clk_set_parent(p, npll);
++			if (ret < 0)
++				dev_warn(dai->dev,
++					 "failed to set parent %s: %d\n",
++					 __clk_get_name(npll), ret);
+ 		}
+ 	}
+ 
+ 	ret = clk_set_rate(sai->mclk_clk[clk_id], freq);
+ 	if (ret < 0)
+ 		dev_err(dai->dev, "failed to set clock rate (%u): %d\n",
+-				freq, ret);
++			freq, ret);
++
+ 	return ret;
+ }
+ 
+@@ -298,7 +292,7 @@ static int fsl_sai_set_dai_sysclk(struct
+ 	if (dir == SND_SOC_CLOCK_IN)
+ 		return 0;
+ 
+-	if (freq > 0) {
++	if (freq > 0 && clk_id != FSL_SAI_CLK_BUS) {
+ 		if (clk_id < 0 || clk_id >= FSL_SAI_MCLK_MAX) {
+ 			dev_err(cpu_dai->dev, "Unknown clock id: %d\n", clk_id);
+ 			return -EINVAL;
+@@ -309,9 +303,11 @@ static int fsl_sai_set_dai_sysclk(struct
+ 			return -EINVAL;
+ 		}
+ 
+-		ret = fsl_sai_set_mclk_rate(cpu_dai, clk_id, freq);
+-		if (ret < 0)
+-			return ret;
++		if (sai->mclk_streams == 0) {
++			ret = fsl_sai_set_mclk_rate(cpu_dai, clk_id, freq);
++			if (ret < 0)
++				return ret;
++		}
+ 	}
+ 
+ 	ret = fsl_sai_set_dai_sysclk_tr(cpu_dai, clk_id, freq,
