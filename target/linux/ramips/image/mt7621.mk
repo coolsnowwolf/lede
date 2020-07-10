@@ -593,8 +593,7 @@ define Device/motorola_mr2600
   IMAGE_SIZE := 16064k
   DEVICE_VENDOR := Motorola
   DEVICE_MODEL := MR2600
-  DEVICE_PACKAGES := kmod-mt7615d kmod-usb3 kmod-usb-ledtrig-usbport
-	luci-app-mtwifi uboot-envtools
+  DEVICE_PACKAGES := kmod-mt7615d kmod-usb3 kmod-usb-ledtrig-usbport luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += motorola_mr2600
 
