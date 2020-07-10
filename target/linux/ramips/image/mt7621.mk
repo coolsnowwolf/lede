@@ -242,7 +242,8 @@ define Device/dlink_dir-882-a1
   DEVICE_VENDOR := D-Link
   DEVICE_MODEL := DIR-882
   DEVICE_VARIANT := A1
-  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi uboot-envtools
+  DEVICE_PACKAGES := kmod-mt7615d kmod-usb3 kmod-usb-ledtrig-usbport \
+	luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += dlink_dir-882-a1
 
@@ -592,7 +593,7 @@ define Device/motorola_mr2600
   IMAGE_SIZE := 16064k
   DEVICE_VENDOR := Motorola
   DEVICE_MODEL := MR2600
-  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi uboot-envtools
+  DEVICE_PACKAGES := kmod-mt7615d kmod-usb3 kmod-usb-ledtrig-usbport luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += motorola_mr2600
 
@@ -795,7 +796,7 @@ define Device/phicomm_k2p
   DEVICE_VENDOR := Phicomm
   DEVICE_MODEL := K2P
   SUPPORTED_DEVICES += k2p
-  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi kmod-mt_wifi
+  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi
 endef
 TARGET_DEVICES += phicomm_k2p
 
