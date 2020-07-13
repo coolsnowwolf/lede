@@ -1,0 +1,200 @@
+From bd30f19a006fb52bac80c6463c49dd2f4159f4ac Mon Sep 17 00:00:00 2001
+From: John Crispin <blogic@openwrt.org>
+Date: Sun, 28 Jul 2013 16:26:41 +0200
+Subject: [PATCH 06/53] MIPS: ralink: add cpu frequency scaling
+
+This feature will break udelay() and cause the delay loop to have longer delays
+when the frequency is scaled causing a performance hit.
+
+Signed-off-by: John Crispin <blogic@openwrt.org>
+---
+ arch/mips/ralink/cevt-rt3352.c |   38 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+--- a/arch/mips/ralink/cevt-rt3352.c
++++ b/arch/mips/ralink/cevt-rt3352.c
+@@ -29,6 +29,10 @@
+ /* enable the counter */
+ #define CFG_CNT_EN		0x1
+ 
++/* mt7620 frequency scaling defines */
++#define CLK_LUT_CFG	0x40
++#define SLEEP_EN	BIT(31)
++
+ struct systick_device {
+ 	void __iomem *membase;
+ 	struct clock_event_device dev;
+@@ -36,21 +40,53 @@ struct systick_device {
+ 	int freq_scale;
+ };
+ 
++static void (*systick_freq_scaling)(struct systick_device *sdev, int status);
++
+ static int systick_set_oneshot(struct clock_event_device *evt);
+ static int systick_shutdown(struct clock_event_device *evt);
+ 
++static inline void mt7620_freq_scaling(struct systick_device *sdev, int status)
++{
++	if (sdev->freq_scale == status)
++		return;
++
++	sdev->freq_scale = status;
++
++	pr_info("%s: %s autosleep mode\n", sdev->dev.name,
++			(status) ? ("enable") : ("disable"));
++	if (status)
++		rt_sysc_w32(rt_sysc_r32(CLK_LUT_CFG) | SLEEP_EN, CLK_LUT_CFG);
++	else
++		rt_sysc_w32(rt_sysc_r32(CLK_LUT_CFG) & ~SLEEP_EN, CLK_LUT_CFG);
++}
++
++static inline unsigned int read_count(struct systick_device *sdev)
++{
++	return ioread32(sdev->membase + SYSTICK_COUNT);
++}
++
++static inline unsigned int read_compare(struct systick_device *sdev)
++{
++	return ioread32(sdev->membase + SYSTICK_COMPARE);
++}
++
++static inline void write_compare(struct systick_device *sdev, unsigned int val)
++{
++	iowrite32(val, sdev->membase + SYSTICK_COMPARE);
++}
++
+ static int systick_next_event(unsigned long delta,
+ 				struct clock_event_device *evt)
+ {
+ 	struct systick_device *sdev;
+-	u32 count;
++	int res;
+ 
+ 	sdev = container_of(evt, struct systick_device, dev);
+-	count = ioread32(sdev->membase + SYSTICK_COUNT);
+-	count = (count + delta) % SYSTICK_FREQ;
+-	iowrite32(count, sdev->membase + SYSTICK_COMPARE);
++	delta += read_count(sdev);
++	write_compare(sdev, delta);
++	res = ((int)(read_count(sdev) - delta) >= 0) ? -ETIME : 0;
+ 
+-	return 0;
++	return res;
+ }
+ 
+ static void systick_event_handler(struct clock_event_device *dev)
+@@ -60,20 +96,25 @@ static void systick_event_handler(struct
+ 
+ static irqreturn_t systick_interrupt(int irq, void *dev_id)
+ {
+-	struct clock_event_device *dev = (struct clock_event_device *) dev_id;
++	int ret = 0;
++	struct clock_event_device *cdev;
++	struct systick_device *sdev;
+ 
+-	dev->event_handler(dev);
++	if (read_c0_cause() & STATUSF_IP7) {
++		cdev = (struct clock_event_device *) dev_id;
++		sdev = container_of(cdev, struct systick_device, dev);
++
++		/* Clear Count/Compare Interrupt */
++		write_compare(sdev, read_compare(sdev));
++		cdev->event_handler(cdev);
++		ret = 1;
++	}
+ 
+-	return IRQ_HANDLED;
++	return IRQ_RETVAL(ret);
+ }
+ 
+ static struct systick_device systick = {
+ 	.dev = {
+-		/*
+-		 * cevt-r4k uses 300, make sure systick
+-		 * gets used if available
+-		 */
+-		.rating			= 310,
+ 		.features		= CLOCK_EVT_FEAT_ONESHOT,
+ 		.set_next_event		= systick_next_event,
+ 		.set_state_shutdown	= systick_shutdown,
+@@ -95,9 +136,15 @@ static int systick_shutdown(struct clock
+ 	sdev = container_of(evt, struct systick_device, dev);
+ 
+ 	if (sdev->irq_requested)
+-		free_irq(systick.dev.irq, &systick_irqaction);
++		remove_irq(systick.dev.irq, &systick_irqaction);
+ 	sdev->irq_requested = 0;
+-	iowrite32(0, systick.membase + SYSTICK_CONFIG);
++	iowrite32(CFG_CNT_EN, systick.membase + SYSTICK_CONFIG);
++
++	if (systick_freq_scaling)
++		systick_freq_scaling(sdev, 0);
++
++	if (systick_freq_scaling)
++		systick_freq_scaling(sdev, 1);
+ 
+ 	return 0;
+ }
+@@ -117,34 +164,48 @@ static int systick_set_oneshot(struct cl
+ 	return 0;
+ }
+ 
++static const struct of_device_id systick_match[] = {
++	{ .compatible = "ralink,mt7620a-systick", .data = mt7620_freq_scaling},
++	{},
++};
++
+ static int __init ralink_systick_init(struct device_node *np)
+ {
++	const struct of_device_id *match;
++	int rating = 200;
+ 	int ret;
+ 
+ 	systick.membase = of_iomap(np, 0);
+ 	if (!systick.membase)
+ 		return -ENXIO;
+ 
+-	systick_irqaction.name = np->name;
+-	systick.dev.name = np->name;
+-	clockevents_calc_mult_shift(&systick.dev, SYSTICK_FREQ, 60);
+-	systick.dev.max_delta_ns = clockevent_delta2ns(0x7fff, &systick.dev);
+-	systick.dev.max_delta_ticks = 0x7fff;
+-	systick.dev.min_delta_ns = clockevent_delta2ns(0x3, &systick.dev);
+-	systick.dev.min_delta_ticks = 0x3;
++	match = of_match_node(systick_match, np);
++	if (match) {
++		systick_freq_scaling = match->data;
++		/*
++		 * cevt-r4k uses 300, make sure systick
++		 * gets used if available
++		 */
++		rating = 310;
++	}
++
++	/* enable counter than register clock source */
++	iowrite32(CFG_CNT_EN, systick.membase + SYSTICK_CONFIG);
++	clocksource_mmio_init(systick.membase + SYSTICK_COUNT, np->name,
++			SYSTICK_FREQ, rating, 16, clocksource_mmio_readl_up);
++
++	/* register clock event */
+ 	systick.dev.irq = irq_of_parse_and_map(np, 0);
+ 	if (!systick.dev.irq) {
+ 		pr_err("%pOFn: request_irq failed", np);
+ 		return -EINVAL;
+ 	}
+ 
+-	ret = clocksource_mmio_init(systick.membase + SYSTICK_COUNT, np->name,
+-				    SYSTICK_FREQ, 301, 16,
+-				    clocksource_mmio_readl_up);
+-	if (ret)
+-		return ret;
+-
+-	clockevents_register_device(&systick.dev);
++	systick_irqaction.name = np->name;
++	systick.dev.name = np->name;
++	systick.dev.rating = rating;
++	systick.dev.cpumask = cpumask_of(0);
++	clockevents_config_and_register(&systick.dev, SYSTICK_FREQ, 0x3, 0x7fff);
+ 
+ 	pr_info("%pOFn: running - mult: %d, shift: %d\n",
+ 			np, systick.dev.mult, systick.dev.shift);

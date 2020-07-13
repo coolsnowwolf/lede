@@ -16,6 +16,7 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/byteorder/generic.h>
+#include <linux/of.h>
 
 #include "mtdsplit.h"
 
@@ -72,6 +73,16 @@ static int mtdsplit_parse_wrgg(struct mtd_info *master,
 	/* sanity checks */
 	if (le32_to_cpu(hdr.magic1) == WRGG03_MAGIC) {
 		kernel_ent_size = hdr_len + be32_to_cpu(hdr.size);
+		/*
+		 * If this becomes silly big it's probably because the
+		 * WRGG image is little-endian.
+		 */
+		if (kernel_ent_size > master->size)
+			kernel_ent_size = hdr_len + le32_to_cpu(hdr.size);
+
+		/* Now what ?! It's neither */
+		if (kernel_ent_size > master->size)
+			return -EINVAL;
 	} else if (le32_to_cpu(hdr.magic1) == WRG_MAGIC) {
 		kernel_ent_size = sizeof(struct wrg_header) + le32_to_cpu(
 		                  ((struct wrg_header*)&hdr)->size);
@@ -107,9 +118,16 @@ static int mtdsplit_parse_wrgg(struct mtd_info *master,
 	return WRGG_NR_PARTS;
 }
 
+static const struct of_device_id mtdsplit_wrgg_of_match_table[] = {
+	{ .compatible = "wrg" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, mtdsplit_wrgg_of_match_table);
+
 static struct mtd_part_parser mtdsplit_wrgg_parser = {
 	.owner = THIS_MODULE,
 	.name = "wrgg-fw",
+	.of_match_table = mtdsplit_wrgg_of_match_table,
 	.parse_fn = mtdsplit_parse_wrgg,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };

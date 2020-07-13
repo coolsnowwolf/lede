@@ -38,7 +38,7 @@ $(eval $(call KernelPackage,ata-core))
 
 define AddDepends/ata
   SUBMENU:=$(BLOCK_MENU)
-  DEPENDS+=kmod-ata-core $(1)
+  DEPENDS+=+kmod-ata-core $(1)
 endef
 
 
@@ -117,14 +117,13 @@ $(eval $(call KernelPackage,ata-nvidia-sata))
 
 
 define KernelPackage/ata-pdc202xx-old
-  SUBMENU:=$(BLOCK_MENU)
   TITLE:=Older Promise PATA controller support
-  DEPENDS:=kmod-ata-core
   KCONFIG:= \
        CONFIG_ATA_SFF=y \
        CONFIG_PATA_PDC_OLD
   FILES:=$(LINUX_DIR)/drivers/ata/pata_pdc202xx_old.ko
   AUTOLOAD:=$(call AutoLoad,41,pata_pdc202xx_old,1)
+  $(call AddDepends/ata)
 endef
 
 define KernelPackage/ata-pdc202xx-old/description
@@ -209,7 +208,6 @@ $(eval $(call KernelPackage,block2mtd))
 define KernelPackage/dax
   SUBMENU:=$(BLOCK_MENU)
   TITLE:=DAX: direct access to differentiated memory
-  DEPENDS:=@LINUX_4_14
   KCONFIG:=CONFIG_DAX
   FILES:=$(LINUX_DIR)/drivers/dax/dax.ko
 endef
@@ -220,7 +218,7 @@ $(eval $(call KernelPackage,dax))
 define KernelPackage/dm
   SUBMENU:=$(BLOCK_MENU)
   TITLE:=Device Mapper
-  DEPENDS:=+kmod-crypto-manager +LINUX_4_14:kmod-dax
+  DEPENDS:=+kmod-crypto-manager +kmod-dax
   # All the "=n" are unnecessary, they're only there
   # to stop the config from asking the question.
   # MIRROR is M because I've needed it for pvmove.
@@ -239,7 +237,12 @@ define KernelPackage/dm
 	CONFIG_BLK_DEV_DM \
 	CONFIG_DM_CRYPT \
 	CONFIG_DM_MIRROR
-  FILES:=$(LINUX_DIR)/drivers/md/dm-*.ko
+  FILES:= \
+    $(LINUX_DIR)/drivers/md/dm-mod.ko \
+    $(LINUX_DIR)/drivers/md/dm-crypt.ko \
+    $(LINUX_DIR)/drivers/md/dm-log.ko \
+    $(LINUX_DIR)/drivers/md/dm-mirror.ko \
+    $(LINUX_DIR)/drivers/md/dm-region-hash.ko
   AUTOLOAD:=$(call AutoLoad,30,dm-mod dm-log dm-region-hash dm-mirror dm-crypt)
 endef
 
@@ -248,6 +251,23 @@ define KernelPackage/dm/description
 endef
 
 $(eval $(call KernelPackage,dm))
+
+define KernelPackage/dm-raid
+  SUBMENU:=$(BLOCK_MENU)
+  TITLE:=LVM2 raid support
+  DEPENDS:=+kmod-dm +kmod-md-mod \
+           +kmod-md-raid0 +kmod-md-raid1 +kmod-md-raid10 +kmod-md-raid456
+  KCONFIG:= \
+	CONFIG_DM_RAID
+  FILES:=$(LINUX_DIR)/drivers/md/dm-raid.ko
+  AUTOLOAD:=$(call AutoLoad,31,dm-raid)
+endef
+
+define KernelPackage/dm-raid/description
+ Kernel module necessary for LVM2 raid support
+endef
+
+$(eval $(call KernelPackage,dm-raid))
 
 
 define KernelPackage/md-mod
@@ -337,7 +357,7 @@ $(eval $(call KernelPackage,md-raid10))
 
 
 define KernelPackage/md-raid456
-$(call KernelPackage/md/Depends,+kmod-lib-raid6 +kmod-lib-xor +!LINUX_3_18:kmod-lib-crc32c)
+$(call KernelPackage/md/Depends,+kmod-lib-raid6 +kmod-lib-xor +kmod-lib-crc32c)
   TITLE:=RAID Level 456 Driver
   KCONFIG:= \
        CONFIG_ASYNC_CORE \

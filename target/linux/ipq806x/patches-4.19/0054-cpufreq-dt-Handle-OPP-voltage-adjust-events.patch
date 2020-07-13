@@ -1,0 +1,118 @@
+From 10577f74c35bd395951d1b2382c8d821089b5745 Mon Sep 17 00:00:00 2001
+From: Stephen Boyd <sboyd@codeaurora.org>
+Date: Fri, 18 Sep 2015 17:52:08 -0700
+Subject: [PATCH 54/69] cpufreq-dt: Handle OPP voltage adjust events
+
+On some SoCs the Adaptive Voltage Scaling (AVS) technique is
+employed to optimize the operating voltage of a device. At a
+given frequency, the hardware monitors dynamic factors and either
+makes a suggestion for how much to adjust a voltage for the
+current frequency, or it automatically adjusts the voltage
+without software intervention.
+
+In the former case, an AVS driver will call
+dev_pm_opp_modify_voltage() and update the voltage for the
+particular OPP the CPUs are using. Add an OPP notifier to
+cpufreq-dt so that we can adjust the voltage of the CPU when AVS
+updates the OPP.
+
+Signed-off-by: Stephen Boyd <sboyd@codeaurora.org>
+Acked-by: Viresh Kumar <viresh.kumar@linaro.org>
+Signed-off-by: Georgi Djakov <georgi.djakov@linaro.org>
+---
+ drivers/cpufreq/cpufreq-dt.c | 68 ++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 65 insertions(+), 3 deletions(-)
+
+--- a/drivers/cpufreq/cpufreq-dt.c
++++ b/drivers/cpufreq/cpufreq-dt.c
+@@ -32,6 +32,9 @@ struct private_data {
+ 	struct device *cpu_dev;
+ 	struct thermal_cooling_device *cdev;
+ 	const char *reg_name;
++	struct notifier_block opp_nb;
++	struct mutex lock;
++	unsigned long opp_freq;
+ 	bool have_static_opps;
+ };
+ 
+@@ -47,12 +50,15 @@ static int set_target(struct cpufreq_pol
+ 	unsigned long freq = policy->freq_table[index].frequency;
+ 	int ret;
+ 
++	mutex_lock(&priv->lock);
+ 	ret = dev_pm_opp_set_rate(priv->cpu_dev, freq * 1000);
+ 
+ 	if (!ret) {
++		priv->opp_freq = freq * 1000;
+ 		arch_set_freq_scale(policy->related_cpus, freq,
+ 				    policy->cpuinfo.max_freq);
+ 	}
++	mutex_unlock(&priv->lock);
+ 
+ 	return ret;
+ }
+@@ -95,6 +101,39 @@ node_put:
+ 	return name;
+ }
+ 
++static int opp_notifier(struct notifier_block *nb, unsigned long event,
++			void *data)
++{
++	struct dev_pm_opp *opp = data;
++	struct private_data *priv = container_of(nb, struct private_data,
++						 opp_nb);
++	struct device *cpu_dev = priv->cpu_dev;
++	struct regulator *cpu_reg;
++	unsigned long volt, freq;
++	int ret = 0;
++
++	if (event == OPP_EVENT_ADJUST_VOLTAGE) {
++		cpu_reg = dev_pm_opp_get_regulator(cpu_dev);
++		if (IS_ERR(cpu_reg)) {
++			ret = PTR_ERR(cpu_reg);
++			goto out;
++		}
++		volt = dev_pm_opp_get_voltage(opp);
++		freq = dev_pm_opp_get_freq(opp);
++
++		mutex_lock(&priv->lock);
++		if (freq == priv->opp_freq) {
++			ret = regulator_set_voltage_triplet(cpu_reg, volt, volt, volt);
++		}
++		mutex_unlock(&priv->lock);
++		if (ret)
++			dev_err(cpu_dev, "failed to scale voltage: %d\n", ret);
++	}
++
++out:
++	return notifier_from_errno(ret);
++}
++
+ static int resources_available(void)
+ {
+ 	struct device *cpu_dev;
+@@ -251,10 +290,14 @@ static int cpufreq_init(struct cpufreq_p
+ 				__func__, ret);
+ 	}
+ 
++	mutex_init(&priv->lock);
++	priv->opp_nb.notifier_call = opp_notifier;
++	dev_pm_opp_register_notifier(cpu_dev, &priv->opp_nb);
++
+ 	ret = dev_pm_opp_init_cpufreq_table(cpu_dev, &freq_table);
+ 	if (ret) {
+ 		dev_err(cpu_dev, "failed to init cpufreq table: %d\n", ret);
+-		goto out_free_opp;
++		goto out_unregister_nb;
+ 	}
+ 
+ 	priv->cpu_dev = cpu_dev;
+@@ -284,6 +327,8 @@ static int cpufreq_init(struct cpufreq_p
+ 
+ out_free_cpufreq_table:
+ 	dev_pm_opp_free_cpufreq_table(cpu_dev, &freq_table);
++out_unregister_nb:
++	dev_pm_opp_unregister_notifier(cpu_dev, &priv->opp_nb);
+ out_free_opp:
+ 	if (priv->have_static_opps)
+ 		dev_pm_opp_of_cpumask_remove_table(policy->cpus);

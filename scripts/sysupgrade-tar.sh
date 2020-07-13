@@ -1,5 +1,7 @@
 #!/bin/sh
 
+. $TOPDIR/scripts/functions.sh
+
 board=""
 kernel=""
 rootfs=""
@@ -53,7 +55,16 @@ fi
 
 mkdir -p "${tmpdir}/sysupgrade-${board}"
 echo "BOARD=${board}" > "${tmpdir}/sysupgrade-${board}/CONTROL"
-[ -z "${rootfs}" ] || cp "${rootfs}" "${tmpdir}/sysupgrade-${board}/root"
+if [ -n "${rootfs}" ]; then
+	case "$( get_fs_type ${rootfs} )" in
+	"squashfs")
+		dd if="${rootfs}" of="${tmpdir}/sysupgrade-${board}/root" bs=1024 conv=sync
+		;;
+	*)
+		cp "${rootfs}" "${tmpdir}/sysupgrade-${board}/root"
+		;;
+	esac
+fi
 [ -z "${kernel}" ] || cp "${kernel}" "${tmpdir}/sysupgrade-${board}/kernel"
 
 mtime=""
@@ -61,7 +72,7 @@ if [ -n "$SOURCE_DATE_EPOCH" ]; then
 	mtime="--mtime=@${SOURCE_DATE_EPOCH}"
 fi
 
-(cd "$tmpdir"; tar cvf sysupgrade.tar sysupgrade-${board} ${mtime})
+(cd "$tmpdir"; tar --sort=name --owner=0 --group=0 --numeric-owner -cvf sysupgrade.tar sysupgrade-${board} ${mtime})
 err="$?"
 if [ -e "$tmpdir/sysupgrade.tar" ]; then
 	cp "$tmpdir/sysupgrade.tar" "$outfile"

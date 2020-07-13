@@ -1,0 +1,116 @@
+From e76906e8e9dfaeeb22a37706aca493b86e4367bd Mon Sep 17 00:00:00 2001
+From: Linus Walleij <linus.walleij@linaro.org>
+Date: Fri, 21 Apr 2017 20:46:12 +0200
+Subject: [PATCH 13/18] usb: host: fotg2: add silicon clock handling
+
+When used in a system with software-controlled silicon clocks,
+the FOTG210 needs to grab, prepare and enable the clock.
+
+This is needed on for example the Cortina Gemini, where the
+platform will by default gate off the clock unless the
+peripheral (in this case the USB driver) grabs and enables
+the clock.
+
+If there is no clock available on the platform, we live
+without it. Make sure to percolate probe deferrals.
+
+Signed-off-by: Linus Walleij <linus.walleij@linaro.org>
+---
+ChangeLog v1->v2:
+- Handle probe deferrals on the clock controller, no matter
+  how unlikely they are.
+- Send the patch to get Gemini USB rolling and try to get some
+  stuff upstream, this patch should be fine on its own.
+---
+ drivers/usb/host/fotg210-hcd.c | 33 +++++++++++++++++++++++++++++----
+ drivers/usb/host/fotg210.h     |  3 +++
+ 2 files changed, 32 insertions(+), 4 deletions(-)
+
+--- a/drivers/usb/host/fotg210-hcd.c
++++ b/drivers/usb/host/fotg210-hcd.c
+@@ -31,6 +31,7 @@
+ #include <linux/uaccess.h>
+ #include <linux/platform_device.h>
+ #include <linux/io.h>
++#include <linux/clk.h>
+ 
+ #include <asm/byteorder.h>
+ #include <asm/irq.h>
+@@ -5600,7 +5601,7 @@ static int fotg210_hcd_probe(struct plat
+ 	hcd->regs = devm_ioremap_resource(&pdev->dev, res);
+ 	if (IS_ERR(hcd->regs)) {
+ 		retval = PTR_ERR(hcd->regs);
+-		goto failed;
++		goto failed_put_hcd;
+ 	}
+ 
+ 	hcd->rsrc_start = res->start;
+@@ -5610,22 +5611,42 @@ static int fotg210_hcd_probe(struct plat
+ 
+ 	fotg210->caps = hcd->regs;
+ 
++	/* It's OK not to supply this clock */
++	fotg210->pclk = clk_get(dev, "PCLK");
++	if (!IS_ERR(fotg210->pclk)) {
++		retval = clk_prepare_enable(fotg210->pclk);
++		if (retval) {
++			dev_err(dev, "failed to enable PCLK\n");
++			goto failed_put_hcd;
++		}
++	} else if (PTR_ERR(fotg210->pclk) == -EPROBE_DEFER) {
++		/*
++		 * Percolate deferrals, for anything else,
++		 * just live without the clocking.
++		 */
++		retval = PTR_ERR(fotg210->pclk);
++		goto failed_dis_clk;
++	}
++
+ 	retval = fotg210_setup(hcd);
+ 	if (retval)
+-		goto failed;
++		goto failed_dis_clk;
+ 
+ 	fotg210_init(fotg210);
+ 
+ 	retval = usb_add_hcd(hcd, irq, IRQF_SHARED);
+ 	if (retval) {
+ 		dev_err(dev, "failed to add hcd with err %d\n", retval);
+-		goto failed;
++		goto failed_dis_clk;
+ 	}
+ 	device_wakeup_enable(hcd->self.controller);
+ 
+ 	return retval;
+ 
+-failed:
++failed_dis_clk:
++	if (!IS_ERR(fotg210->pclk))
++		clk_disable_unprepare(fotg210->pclk);
++failed_put_hcd:
+ 	usb_put_hcd(hcd);
+ fail_create_hcd:
+ 	dev_err(dev, "init %s fail, %d\n", dev_name(dev), retval);
+@@ -5641,6 +5662,10 @@ static int fotg210_hcd_remove(struct pla
+ {
+ 	struct device *dev = &pdev->dev;
+ 	struct usb_hcd *hcd = dev_get_drvdata(dev);
++	struct fotg210_hcd *fotg210 = hcd_to_fotg210(hcd);
++
++	if (!IS_ERR(fotg210->pclk))
++		clk_disable_unprepare(fotg210->pclk);
+ 
+ 	if (!hcd)
+ 		return 0;
+--- a/drivers/usb/host/fotg210.h
++++ b/drivers/usb/host/fotg210.h
+@@ -182,6 +182,9 @@ struct fotg210_hcd {			/* one per contro
+ #	define COUNT(x)
+ #endif
+ 
++	/* silicon clock */
++	struct clk		*pclk;
++
+ 	/* debug files */
+ 	struct dentry		*debug_dir;
+ };

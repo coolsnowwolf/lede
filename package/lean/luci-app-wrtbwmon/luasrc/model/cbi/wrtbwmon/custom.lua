@@ -3,8 +3,8 @@ local USER_FILE_PATH = "/etc/config/wrtbwmon.user"
 local fs = require "nixio.fs"
 
 local f = SimpleForm("wrtbwmon", 
-    "自定义MAC地址对应的主机名", 
-    "每一行的格式为  00:aa:bb:cc:ee:ff,username （不支持中文主机名）")
+    translate("Usage - Custom User File"), 
+    translate("This file is used to match users with MAC addresses and it must have the following format: 00:aa:bb:cc:ee:ff,username"))
 
 local o = f:field(Value, "_custom")
 

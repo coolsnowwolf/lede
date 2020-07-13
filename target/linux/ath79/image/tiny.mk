@@ -1,32 +1,46 @@
 include ./common-buffalo.mk
 
-DEVICE_VARS += ROOTFS_SIZE
-
-define Device/buffalo_bhr-4grv2
-  ATH_SOC := qca9558
-  DEVICE_TITLE := Buffalo BHR-4GRV2
-  BOARDNAME := BHR-4GRV2
-  ROOTFS_SIZE := 14528k
-  KERNEL_SIZE := 1472k
-  IMAGE_SIZE := 16000k
-  IMAGES += factory.bin
-  IMAGE/sysupgrade.bin := \
-    append-rootfs | pad-rootfs | pad-to $$$$(ROOTFS_SIZE) | \
-    append-kernel | append-metadata | check-size $$$$(IMAGE_SIZE)
-  IMAGE/factory.bin := append-kernel | \
-    pad-to $$$$(KERNEL_SIZE) | append-rootfs | pad-rootfs | mkbuffaloimg
-  SUPPORTED_DEVICES += bhr-4grv2
-endef
-TARGET_DEVICES += buffalo_bhr-4grv2
-
 define Device/buffalo_whr-g301n
-  ATH_SOC := ar7240
-  DEVICE_TITLE := Buffalo WHR-G301N
+  SOC := ar7240
+  DEVICE_VENDOR := Buffalo
+  DEVICE_MODEL := WHR-G301N
   IMAGE_SIZE := 3712k
   IMAGES += factory.bin tftp.bin
-  IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | check-size $$$$(IMAGE_SIZE)
-  IMAGE/factory.bin := $$(IMAGE/default) | buffalo-enc WHR-G301N 1.99 | buffalo-tag WHR-G301N
+  IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | \
+	pad-rootfs | check-size
+  IMAGE/factory.bin := $$(IMAGE/default) | buffalo-enc WHR-G301N 1.99 | \
+	buffalo-tag WHR-G301N 3
   IMAGE/tftp.bin := $$(IMAGE/default) | buffalo-tftp-header
   SUPPORTED_DEVICES += whr-g301n
+  DEFAULT := n
 endef
 TARGET_DEVICES += buffalo_whr-g301n
+
+define Device/dlink_dir-615-e4
+  SOC := ar7240
+  DEVICE_VENDOR := D-Link
+  DEVICE_MODEL := DIR-615
+  DEVICE_VARIANT := E4
+  IMAGE_SIZE := 3776k
+  FACTORY_IMAGE_SIZE := 3456k
+  IMAGES += factory.bin
+  IMAGE/default := append-kernel | append-rootfs | pad-rootfs
+  IMAGE/sysupgrade.bin := $$(IMAGE/default) | append-metadata | \
+	check-size
+  IMAGE/factory.bin := $$(IMAGE/default) | \
+	check-size $$$$(FACTORY_IMAGE_SIZE) | pad-to $$$$(FACTORY_IMAGE_SIZE) | \
+	append-string "AP99-AR7240-RT-091105-05"
+  SUPPORTED_DEVICES += dir-615-e4
+  DEFAULT := n
+endef
+TARGET_DEVICES += dlink_dir-615-e4
+
+define Device/pqi_air-pen
+  SOC := ar9330
+  DEVICE_VENDOR := PQI
+  DEVICE_MODEL := Air-Pen
+  DEVICE_PACKAGES := kmod-usb2
+  IMAGE_SIZE := 7680k
+  SUPPORTED_DEVICES += pqi-air-pen
+endef
+TARGET_DEVICES += pqi_air-pen

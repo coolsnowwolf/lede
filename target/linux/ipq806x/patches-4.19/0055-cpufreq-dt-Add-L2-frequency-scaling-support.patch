@@ -1,0 +1,161 @@
+--- a/drivers/cpufreq/cpufreq-dt.c
++++ b/drivers/cpufreq/cpufreq-dt.c
+@@ -48,16 +48,71 @@ static int set_target(struct cpufreq_pol
+ {
+ 	struct private_data *priv = policy->driver_data;
+ 	unsigned long freq = policy->freq_table[index].frequency;
++	struct clk *l2_clk = policy->l2_clk;
++	struct regulator *l2_regulator = policy->l2_regulator;
++	unsigned long l2_freq, target_l2_freq;
++	unsigned long l2_vol, target_l2_vol;
++	unsigned long target_freq;
+ 	int ret;
+ 
+ 	mutex_lock(&priv->lock);
+ 	ret = dev_pm_opp_set_rate(priv->cpu_dev, freq * 1000);
+ 
+ 	if (!ret) {
++		if (policy->l2_rate_set) {
++			static unsigned long krait_l2[CONFIG_NR_CPUS] = { };
++			int cpu, l2_index, tol = 0;
++
++			target_freq = freq * 1000;
++
++			krait_l2[policy->cpu] = target_freq;
++			for_each_present_cpu(cpu)
++				target_freq = max(target_freq, krait_l2[cpu]);
++
++			for (l2_index = 2; l2_index >= 0; l2_index--)
++				if (target_freq >= policy->l2_cpufreq[l2_index])
++					break;
++
++			l2_freq = clk_get_rate(l2_clk);
++			target_l2_freq = policy->l2_rate[l2_index];
++
++			if (l2_freq != target_l2_freq) {
++
++				/*
++				 * Set to idle bin if switching from normal to high bin 
++				 * or vice versa
++				 */
++				if ( (l2_index == 2 && l2_freq == policy->l2_rate[1]) ||
++					 (l2_index == 1 && l2_freq == policy->l2_rate[2]) ) {
++					ret = clk_set_rate(l2_clk, policy->l2_rate[0]);
++					if (ret)
++						goto exit;
++				}
++				/* scale l2 with the core */
++				ret = clk_set_rate(l2_clk, target_l2_freq);
++				if (ret)
++					goto exit;
++
++				if (policy->l2_volt_set) {
++
++					l2_vol = regulator_get_voltage(l2_regulator);
++					target_l2_vol = policy->l2_volt[l2_index];
++
++					if (l2_vol != target_l2_vol) {
++						tol = target_l2_vol * policy->l2_volt_tol / 100;
++						ret = regulator_set_voltage_tol(l2_regulator,target_l2_vol,tol);
++						if (ret)
++							goto exit;
++					}
++				}
++			}
++		}
+ 		priv->opp_freq = freq * 1000;
+ 		arch_set_freq_scale(policy->related_cpus, freq,
+ 				    policy->cpuinfo.max_freq);
+ 	}
++
++exit:
+ 	mutex_unlock(&priv->lock);
+ 
+ 	return ret;
+@@ -200,6 +255,9 @@ static int cpufreq_init(struct cpufreq_p
+ 	bool fallback = false;
+ 	const char *name;
+ 	int ret;
++	struct device_node *np, *l2_np;
++	struct clk *l2_clk = NULL;
++	struct regulator *l2_regulator = NULL;
+ 
+ 	cpu_dev = get_cpu_device(policy->cpu);
+ 	if (!cpu_dev) {
+@@ -307,6 +365,57 @@ static int cpufreq_init(struct cpufreq_p
+ 
+ 	policy->suspend_freq = dev_pm_opp_get_suspend_opp_freq(cpu_dev) / 1000;
+ 
++	policy->l2_rate_set = false;
++	policy->l2_volt_set = false;
++
++	l2_clk = clk_get(cpu_dev, "l2");
++	if (!IS_ERR(l2_clk))
++		policy->l2_clk = l2_clk;
++
++	l2_np = of_find_node_by_name(NULL, "qcom,l2");
++	if (l2_np) {
++		struct device_node *vdd;
++		np = of_node_get(priv->cpu_dev->of_node);
++
++		if (np)
++			of_property_read_u32(np, "voltage-tolerance", &policy->l2_volt_tol);
++
++		of_property_read_u32_array(l2_np, "qcom,l2-rates", policy->l2_rate, 3);
++		if (policy->l2_rate[0] && policy->l2_rate[1] && policy->l2_rate[2]) {
++			policy->l2_rate_set = true;
++			of_property_read_u32_array(l2_np, "qcom,l2-cpufreq", policy->l2_cpufreq, 3);
++			of_property_read_u32_array(l2_np, "qcom,l2-volt", policy->l2_volt, 3);
++		} else
++			pr_warn("L2: failed to parse L2 rates\n");
++
++		if (!policy->l2_cpufreq[0] && !policy->l2_cpufreq[1] && 
++			!policy->l2_cpufreq[2] && policy->l2_rate_set) {
++			int i;
++
++			pr_warn("L2: failed to parse target cpu freq, using defaults\n");
++			for (i = 0; i < 3; i++)
++				policy->l2_cpufreq[i] = policy->l2_rate[i];
++		}
++
++		if (policy->l2_volt[0] && policy->l2_volt[1] && policy->l2_volt[2] &&
++			policy->l2_volt_tol && policy->l2_rate_set) {
++			vdd = of_parse_phandle(l2_np, "qcom,l2-supply", 0);
++
++			if (vdd) {
++				l2_regulator = devm_regulator_get(cpu_dev, vdd->name);
++				if (!IS_ERR(l2_regulator)) {
++					policy->l2_regulator = l2_regulator;
++					policy->l2_volt_set = true;
++				} else {
++					pr_warn("failed to get l2 supply\n");
++					l2_regulator = NULL;
++				}
++
++				of_node_put(vdd);
++			}
++		}
++	}
++
+ 	/* Support turbo/boost mode */
+ 	if (policy_has_boost_freq(policy)) {
+ 		/* This gets disabled by core on driver unregister */
+--- a/include/linux/cpufreq.h
++++ b/include/linux/cpufreq.h
+@@ -72,7 +72,15 @@ struct cpufreq_policy {
+ 						should set cpufreq */
+ 	unsigned int		cpu;    /* cpu managing this policy, must be online */
+ 
+-	struct clk		*clk;
++	struct clk			*clk;
++	struct clk			*l2_clk; /* L2 clock */
++	struct regulator	*l2_regulator; /* L2 supply */
++	unsigned int		l2_rate[3]; /* L2 bus clock rate */
++	bool				l2_rate_set;
++	unsigned int		l2_cpufreq[3]; /* L2 target CPU frequency */
++	unsigned int		l2_volt[3]; /* L2 voltage array */
++	bool				l2_volt_set;
++	unsigned int		l2_volt_tol; /* L2 voltage tolerance */
+ 	struct cpufreq_cpuinfo	cpuinfo;/* see above */
+ 
+ 	unsigned int		min;    /* in kHz */

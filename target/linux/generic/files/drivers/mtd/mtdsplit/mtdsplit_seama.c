@@ -14,6 +14,7 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/byteorder/generic.h>
+#include <linux/of.h>
 
 #include "mtdsplit.h"
 
@@ -93,9 +94,16 @@ static int mtdsplit_parse_seama(struct mtd_info *master,
 	return SEAMA_NR_PARTS;
 }
 
+static const struct of_device_id mtdsplit_seama_of_match_table[] = {
+	{ .compatible = "seama" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, mtdsplit_seama_of_match_table);
+
 static struct mtd_part_parser mtdsplit_seama_parser = {
 	.owner = THIS_MODULE,
 	.name = "seama-fw",
+	.of_match_table = mtdsplit_seama_of_match_table,
 	.parse_fn = mtdsplit_parse_seama,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };

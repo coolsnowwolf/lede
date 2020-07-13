@@ -24,11 +24,14 @@ define Device/Default
 endef
 
 define Device/marduk
+  DEVICE_VENDOR := Imagination Technologies
+  DEVICE_MODEL := Creator Ci40 (VL-62899)
+  DEVICE_ALT0_VENDOR := Imagination Technologies
+  DEVICE_ALT0_MODEL := Marduk board
   BOARD_NAME := img,pistachio-marduk
   DEVICE_DTS := img/pistachio_marduk
   BLOCKSIZE := 256KiB
   PAGESIZE := 4KiB
-  DEVICE_TITLE := Creator Ci40
   DEVICE_PACKAGES := kmod-tpm-i2c-infineon
 endef
 

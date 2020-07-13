@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=comgt
 PKG_VERSION:=0.32
-PKG_RELEASE:=30
+PKG_RELEASE:=33
 
 PKG_SOURCE:=$(PKG_NAME).$(PKG_VERSION).tgz
 PKG_SOURCE_URL:=@SF/comgt
@@ -47,7 +47,7 @@ endef
 define Package/comgt-ncm
 $(call Package/comgt/Default)
   TITLE+=NCM 3G/4G Support
-  DEPENDS:=+comgt +wwan
+  DEPENDS:=+comgt +wwan +kmod-usb-serial-option +kmod-usb-net-huawei-cdc-ncm
 endef
 
 define Package/comgt/description
@@ -80,7 +80,7 @@ define Package/comgt/install
 	$(INSTALL_DATA) ./files/getcnum.gcom $(1)/etc/gcom/getcnum.gcom
 	$(INSTALL_DATA) ./files/getimsi.gcom $(1)/etc/gcom/getimsi.gcom
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/tty
-	$(INSTALL_DATA) ./files/3g.usb $(1)/etc/hotplug.d/tty/30-3g
+	$(INSTALL_CONF) ./files/3g.usb $(1)/etc/hotplug.d/tty/30-3g
 	$(INSTALL_DIR) $(1)/lib/netifd/proto
 	$(INSTALL_BIN) ./files/3g.sh $(1)/lib/netifd/proto/3g.sh
 endef

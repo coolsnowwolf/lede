@@ -1035,14 +1035,6 @@ static int rtl8366_smi_mii_init(struct rtl8366_smi *smi)
 		 dev_name(smi->parent));
 	smi->mii_bus->parent = smi->parent;
 	smi->mii_bus->phy_mask = ~(0x1f);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,5,0)
-	{
-		int i;
-		smi->mii_bus->irq = smi->mii_irq;
-		for (i = 0; i < PHY_MAX_ADDR; i++)
-			smi->mii_irq[i] = PHY_POLL;
-	}
-#endif
 
 #ifdef CONFIG_OF
 	if (np)
@@ -1553,8 +1545,8 @@ int rtl8366_smi_probe_of(struct platform_device *pdev, struct rtl8366_smi *smi)
 
 	smi->ext_mbus = of_mdio_find_bus(mdio_node);
 	if (!smi->ext_mbus) {
-		dev_err(&pdev->dev,
-			"cannot find mdio bus from bus handle");
+		dev_info(&pdev->dev,
+			"cannot find mdio bus from bus handle (yet)");
 		goto try_gpio;
 	}
 
@@ -1562,8 +1554,12 @@ int rtl8366_smi_probe_of(struct platform_device *pdev, struct rtl8366_smi *smi)
 
 try_gpio:
 	if (!gpio_is_valid(sck) || !gpio_is_valid(sda)) {
-		dev_err(&pdev->dev, "gpios missing in devictree\n");
-		return -EINVAL;
+		if (!mdio_node) {
+			dev_err(&pdev->dev, "gpios missing in devictree\n");
+			return -EINVAL;
+		} else {
+			return -EPROBE_DEFER;
+		}
 	}
 
 	smi->gpio_sda = sda;
@@ -1619,7 +1615,7 @@ struct rtl8366_smi *rtl8366_smi_probe(struct platform_device *pdev)
 
 free_smi:
 	kfree(smi);
-	return NULL;
+	return ERR_PTR(err);
 }
 EXPORT_SYMBOL_GPL(rtl8366_smi_probe);
 

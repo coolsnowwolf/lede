@@ -60,8 +60,8 @@ mtdsplit_fit_parse(struct mtd_info *mtd,
 	hdr_len = sizeof(struct fdt_header);
 
 	/* Parse the MTD device & search for the FIT image location */
-	for(offset = 0; offset < mtd->size; offset += mtd->erasesize) {
-		ret = mtd_read(mtd, 0, hdr_len, &retlen, (void*) &hdr);
+	for(offset = 0; offset + hdr_len <= mtd->size; offset += mtd->erasesize) {
+		ret = mtd_read(mtd, offset, hdr_len, &retlen, (void*) &hdr);
 		if (ret) {
 			pr_err("read error in \"%s\" at offset 0x%llx\n",
 			       mtd->name, (unsigned long long) offset);
@@ -120,9 +120,15 @@ mtdsplit_fit_parse(struct mtd_info *mtd,
 	return 2;
 }
 
+static const struct of_device_id mtdsplit_fit_of_match_table[] = {
+	{ .compatible = "denx,fit" },
+	{},
+};
+
 static struct mtd_part_parser uimage_parser = {
 	.owner = THIS_MODULE,
 	.name = "fit-fw",
+	.of_match_table = mtdsplit_fit_of_match_table,
 	.parse_fn = mtdsplit_fit_parse,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };

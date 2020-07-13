@@ -10,6 +10,9 @@ CI_KERNPART="${CI_KERNPART:-kernel}"
 # 'ubi' partition on NAND contains UBI
 CI_UBIPART="${CI_UBIPART:-ubi}"
 
+# 'rootfs' partition on NAND contains the rootfs
+CI_ROOTPART="${CI_ROOTPART:-rootfs}"
+
 ubi_mknod() {
 	local dir="$1"
 	local dev="/dev/$(basename $dir)"
@@ -99,14 +102,14 @@ nand_restore_config() {
 	local ubidev=$( nand_find_ubi $CI_UBIPART )
 	local ubivol="$( nand_find_volume $ubidev rootfs_data )"
 	[ ! "$ubivol" ] &&
-		ubivol="$( nand_find_volume $ubidev rootfs )"
+		ubivol="$( nand_find_volume $ubidev $CI_ROOTPART )"
 	mkdir /tmp/new_root
 	if ! mount -t ubifs /dev/$ubivol /tmp/new_root; then
 		echo "mounting ubifs $ubivol failed"
 		rmdir /tmp/new_root
 		return 1
 	fi
-	mv "$1" "/tmp/new_root/sysupgrade.tgz"
+	mv "$1" "/tmp/new_root/$BACKUP_FILE"
 	umount /tmp/new_root
 	sync
 	rmdir /tmp/new_root
@@ -143,7 +146,7 @@ nand_upgrade_prepare_ubi() {
 	fi
 
 	local kern_ubivol="$( nand_find_volume $ubidev $CI_KERNPART )"
-	local root_ubivol="$( nand_find_volume $ubidev rootfs )"
+	local root_ubivol="$( nand_find_volume $ubidev $CI_ROOTPART )"
 	local data_ubivol="$( nand_find_volume $ubidev rootfs_data )"
 
 	# remove ubiblock device of rootfs
@@ -158,7 +161,7 @@ nand_upgrade_prepare_ubi() {
 
 	# kill volumes
 	[ "$kern_ubivol" ] && ubirmvol /dev/$ubidev -N $CI_KERNPART || true
-	[ "$root_ubivol" ] && ubirmvol /dev/$ubidev -N rootfs || true
+	[ "$root_ubivol" ] && ubirmvol /dev/$ubidev -N $CI_ROOTPART || true
 	[ "$data_ubivol" ] && ubirmvol /dev/$ubidev -N rootfs_data || true
 
 	# update kernel
@@ -176,7 +179,7 @@ nand_upgrade_prepare_ubi() {
 	else
 		root_size_param="-s $rootfs_length"
 	fi
-	if ! ubimkvol /dev/$ubidev -N rootfs $root_size_param; then
+	if ! ubimkvol /dev/$ubidev -N $CI_ROOTPART $root_size_param; then
 		echo "cannot create rootfs volume"
 		return 1;
 	fi
@@ -233,7 +236,7 @@ nand_upgrade_ubifs() {
 	nand_upgrade_prepare_ubi "$rootfs_length" "ubifs" "0" "0"
 
 	local ubidev="$( nand_find_ubi "$CI_UBIPART" )"
-	local root_ubivol="$(nand_find_volume $ubidev rootfs)"
+	local root_ubivol="$(nand_find_volume $ubidev $CI_ROOTPART)"
 	ubiupdatevol /dev/$root_ubivol -s $rootfs_length $1
 
 	nand_do_upgrade_success
@@ -268,7 +271,7 @@ nand_upgrade_tar() {
 			ubiupdatevol /dev/$kern_ubivol -s $kernel_length -
 	}
 
-	local root_ubivol="$(nand_find_volume $ubidev rootfs)"
+	local root_ubivol="$(nand_find_volume $ubidev $CI_ROOTPART)"
 	tar xf $tar_file ${board_dir}/root -O | \
 		ubiupdatevol /dev/$root_ubivol -s $rootfs_length -
 
@@ -277,20 +280,7 @@ nand_upgrade_tar() {
 
 # Recognize type of passed file and start the upgrade process
 nand_do_upgrade() {
-	if [ -n "$IS_PRE_UPGRADE" ]; then
-		# Previously, nand_do_upgrade was called from the platform_pre_upgrade
-		# hook; this piece of code handles scripts that haven't been
-		# updated. All scripts should gradually move to call nand_do_upgrade
-		# from platform_do_upgrade instead.
-		export do_upgrade="nand_do_upgrade '$1'"
-		return
-	fi
-
 	local file_type=$(identify $1)
-
-	if type 'platform_nand_pre_upgrade' >/dev/null 2>/dev/null; then
-		platform_nand_pre_upgrade "$1"
-	fi
 
 	[ ! "$(find_mtd_index "$CI_UBIPART")" ] && CI_UBIPART="rootfs"
 

@@ -24,8 +24,10 @@
 #define MAGIC_HEADER	"OPEN"
 #define MAGIC_PART	"PART"
 #define MAGIC_END	"END."
+#define MAGIC_ENDS	"ENDS"
 
 #define MAGIC_LENGTH	4
+#define PART_NAME_LENGTH 16
 
 typedef struct header {
 	char magic[MAGIC_LENGTH];
@@ -36,7 +38,7 @@ typedef struct header {
 
 typedef struct part {
 	char magic[MAGIC_LENGTH];
-	char name[16];
+	char name[PART_NAME_LENGTH];
 	char pad[12];
 	u_int32_t memaddr;
 	u_int32_t index;
@@ -56,6 +58,13 @@ typedef struct signature {
 	u_int32_t crc;
 	u_int32_t pad;
 } __attribute__ ((packed)) signature_t;
+
+typedef struct signature_rsa {
+	char magic[MAGIC_LENGTH];
+//	u_int32_t crc;
+	unsigned char rsa_signature[256];
+	u_int32_t pad;
+} __attribute__ ((packed)) signature_rsa_t;
 
 #define VERSION "1.2"
 

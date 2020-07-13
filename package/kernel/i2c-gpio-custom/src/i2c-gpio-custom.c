@@ -47,11 +47,16 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 
+#include <linux/version.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 18, 0)
 #include <linux/i2c-gpio.h>
+#else
+#include <linux/platform_data/i2c-gpio.h>
+#endif
 
 #define DRV_NAME	"i2c-gpio-custom"
 #define DRV_DESC	"Custom GPIO-based I2C driver"
-#define DRV_VERSION	"0.1.1"
+#define DRV_VERSION	"0.1.2"
 
 #define PFX		DRV_NAME ": "
 
@@ -96,7 +101,7 @@ static void i2c_gpio_custom_cleanup(void)
 
 	for (i = 0; i < nr_devices; i++)
 		if (devices[i])
-			platform_device_put(devices[i]);
+			platform_device_unregister(devices[i]);
 }
 
 static int __init i2c_gpio_custom_add_one(unsigned int id, unsigned int *params)

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #
 # Copyright (C) 2016 Josua Mayer
 #
@@ -18,7 +18,7 @@
 #
 
 usage() {
-	echo "$0 <outfile> [<bootloader> <type_partitionN> <sectors_partitionN> <img_partitionN>]?"
+	echo "$0 <outfile> [<bootloader> <type_partitionN> <size_partitionN> <img_partitionN>]?"
 }
 
 # always require first 2 or 3 arguments
@@ -41,12 +41,12 @@ if [ -n "$BOOTLOADER" ]; then
 fi
 
 # generate image file
-printf "Creating $OUTFILE from /dev/zero: "
+printf "Creating %s from /dev/zero: " "$OUTFILE"
 dd if=/dev/zero of="$OUTFILE" bs=512 count=1 >/dev/null
 printf "Done\n"
 
 while [ "$#" -ge 3 ]; do
-	ptgen_args="$ptgen_args -t $1 -p $(($2 / 2 + 256))"
+	ptgen_args="$ptgen_args -t $1 -p $(($2 * 1024 + 256))"
 	parts="$parts$3 "
 	shift; shift; shift
 done
@@ -56,7 +56,7 @@ sect=63
 
 # create real partition table using fdisk
 printf "Creating partition table: "
-set `ptgen -o "$OUTFILE" -h $head -s $sect -l 1024 -S 0x$SIGNATURE $ptgen_args`
+set $(ptgen -o "$OUTFILE" -h $head -s $sect -l 1024 -S 0x$SIGNATURE $ptgen_args)
 printf "Done\n"
 
 # install bootloader
@@ -79,6 +79,6 @@ while [ "$#" -ge 2 ]; do
 	) | dd of="$OUTFILE" bs=512 seek=$(($1 / 512)) conv=notrunc 2>/dev/null
 	printf "Done\n"
 
-	let i=i+1
+	i=$((i+1))
 	shift; shift
 done

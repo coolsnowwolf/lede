@@ -1,0 +1,3467 @@
+From fb0c9601f4414c39ff68e26b88681bef0bb04954 Mon Sep 17 00:00:00 2001
+From: John Crispin <blogic@openwrt.org>
+Date: Mon, 22 Oct 2012 12:22:23 +0200
+Subject: [PATCH 25/36] NET: MIPS: lantiq: adds xrx200-net
+
+---
+ drivers/net/ethernet/Kconfig            |    8 +-
+ drivers/net/ethernet/Makefile           |    1 +
+ drivers/net/ethernet/lantiq_pce.h       |  163 +++
+ drivers/net/ethernet/lantiq_xrx200.c    | 1798 +++++++++++++++++++++++++++++++
+ drivers/net/ethernet/lantiq_xrx200_sw.h | 1328 +++++++++++++++++++++++
+ 5 files changed, 3297 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/net/ethernet/lantiq_pce.h
+ create mode 100644 drivers/net/ethernet/lantiq_xrx200.c
+ create mode 100644 drivers/net/ethernet/lantiq_xrx200_sw.h
+
+--- a/drivers/net/ethernet/Kconfig
++++ b/drivers/net/ethernet/Kconfig
+@@ -106,7 +106,13 @@ config LANTIQ_ETOP
+ 	tristate "Lantiq SoC ETOP driver"
+ 	depends on SOC_TYPE_XWAY
+ 	---help---
+-	  Support for the MII0 inside the Lantiq SoC
++	  Support for the MII0 inside the Lantiq ADSL SoC
++
++config LANTIQ_XRX200
++	tristate "Lantiq SoC XRX200 driver"
++	depends on SOC_TYPE_XWAY
++	---help---
++	  Support for the MII0 inside the Lantiq VDSL SoC
+ 
+ source "drivers/net/ethernet/marvell/Kconfig"
+ source "drivers/net/ethernet/mediatek/Kconfig"
+--- a/drivers/net/ethernet/Makefile
++++ b/drivers/net/ethernet/Makefile
+@@ -49,6 +49,7 @@ obj-$(CONFIG_NET_VENDOR_XSCALE) += xscal
+ obj-$(CONFIG_JME) += jme.o
+ obj-$(CONFIG_KORINA) += korina.o
+ obj-$(CONFIG_LANTIQ_ETOP) += lantiq_etop.o
++obj-$(CONFIG_LANTIQ_XRX200) += lantiq_xrx200.o
+ obj-$(CONFIG_NET_VENDOR_MARVELL) += marvell/
+ obj-$(CONFIG_NET_VENDOR_MEDIATEK) += mediatek/
+ obj-$(CONFIG_NET_VENDOR_MELLANOX) += mellanox/
+--- /dev/null
++++ b/drivers/net/ethernet/lantiq_pce.h
+@@ -0,0 +1,163 @@
++/*
++ *   This program is free software; you can redistribute it and/or modify it
++ *   under the terms of the GNU General Public License version 2 as published
++ *   by the Free Software Foundation.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program; if not, write to the Free Software
++ *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA.
++ *
++ *   Copyright (C) 2010 Lantiq Deutschland GmbH
++ *   Copyright (C) 2012 John Crispin <blogic@openwrt.org>
++ *
++ *   PCE microcode extracted from UGW5.2 switch api
++ */
++
++/* Switch API Micro Code V0.3 */
++enum {
++	OUT_MAC0 = 0,
++	OUT_MAC1,
++	OUT_MAC2,
++	OUT_MAC3,
++	OUT_MAC4,
++	OUT_MAC5,
++	OUT_ETHTYP,
++	OUT_VTAG0,
++	OUT_VTAG1,
++	OUT_ITAG0,
++	OUT_ITAG1,	/*10 */
++	OUT_ITAG2,
++	OUT_ITAG3,
++	OUT_IP0,
++	OUT_IP1,
++	OUT_IP2,
++	OUT_IP3,
++	OUT_SIP0,
++	OUT_SIP1,
++	OUT_SIP2,
++	OUT_SIP3,	/*20*/
++	OUT_SIP4,
++	OUT_SIP5,
++	OUT_SIP6,
++	OUT_SIP7,
++	OUT_DIP0,
++	OUT_DIP1,
++	OUT_DIP2,
++	OUT_DIP3,
++	OUT_DIP4,
++	OUT_DIP5,	/*30*/
++	OUT_DIP6,
++	OUT_DIP7,
++	OUT_SESID,
++	OUT_PROT,
++	OUT_APP0,
++	OUT_APP1,
++	OUT_IGMP0,
++	OUT_IGMP1,
++	OUT_IPOFF,	/*39*/
++	OUT_NONE =  63
++};
++
++/* parser's microcode length type */
++#define INSTR		0
++#define IPV6		1
++#define LENACCU		2
++
++/* parser's microcode flag type */
++enum {
++	FLAG_ITAG =  0,
++	FLAG_VLAN,
++	FLAG_SNAP,
++	FLAG_PPPOE,
++	FLAG_IPV6,
++	FLAG_IPV6FL,
++	FLAG_IPV4,
++	FLAG_IGMP,
++	FLAG_TU,
++	FLAG_HOP,
++	FLAG_NN1,	/*10 */
++	FLAG_NN2,
++	FLAG_END,
++	FLAG_NO,	/*13*/
++};
++
++/* Micro code version V2_11 (extension for parsing IPv6 in PPPoE) */
++#define MC_ENTRY(val, msk, ns, out, len, type, flags, ipv4_len) \
++	{ {val, msk, (ns<<10 | out<<4 | len>>1), (len&1)<<15 | type<<13 | flags<<9 | ipv4_len<<8 }}
++struct pce_microcode {
++	unsigned short val[4];
++/*	unsigned short val_2;
++	unsigned short val_1;
++	unsigned short val_0;*/
++} pce_microcode[] = {
++	/*      value    mask    ns  fields      L  type     flags       ipv4_len */
++	MC_ENTRY(0x88c3, 0xFFFF,  1, OUT_ITAG0,  4, INSTR,   FLAG_ITAG,  0),
++	MC_ENTRY(0x8100, 0xFFFF,  2, OUT_VTAG0,  2, INSTR,   FLAG_VLAN,  0),
++	MC_ENTRY(0x88A8, 0xFFFF,  1, OUT_VTAG0,  2, INSTR,   FLAG_VLAN,  0),
++	MC_ENTRY(0x8100, 0xFFFF,  1, OUT_VTAG0,  2, INSTR,   FLAG_VLAN,  0),
++	MC_ENTRY(0x8864, 0xFFFF, 17, OUT_ETHTYP, 1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0800, 0xFFFF, 21, OUT_ETHTYP, 1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x86DD, 0xFFFF, 22, OUT_ETHTYP, 1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x8863, 0xFFFF, 16, OUT_ETHTYP, 1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0xF800, 10, OUT_NONE,   0, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0x0000, 38, OUT_ETHTYP, 1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0600, 0x0600, 38, OUT_ETHTYP, 1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0x0000, 12, OUT_NONE,   1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0xAAAA, 0xFFFF, 14, OUT_NONE,   1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0300, 0xFF00, 39, OUT_NONE,   0, INSTR,   FLAG_SNAP,  0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_DIP7,   3, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0x0000, 18, OUT_DIP7,   3, INSTR,   FLAG_PPPOE, 0),
++	MC_ENTRY(0x0021, 0xFFFF, 21, OUT_NONE,   1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0057, 0xFFFF, 22, OUT_NONE,   1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x4000, 0xF000, 24, OUT_IP0,    4, INSTR,   FLAG_IPV4,  1),
++	MC_ENTRY(0x6000, 0xF000, 27, OUT_IP0,    3, INSTR,   FLAG_IPV6,  0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0x0000, 25, OUT_IP3,    2, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0x0000, 26, OUT_SIP0,   4, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0x0000, 38, OUT_NONE,   0, LENACCU, FLAG_NO,    0),
++	MC_ENTRY(0x1100, 0xFF00, 37, OUT_PROT,   1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0600, 0xFF00, 37, OUT_PROT,   1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0xFF00, 33, OUT_IP3,   17, INSTR,   FLAG_HOP,   0),
++	MC_ENTRY(0x2B00, 0xFF00, 33, OUT_IP3,   17, INSTR,   FLAG_NN1,   0),
++	MC_ENTRY(0x3C00, 0xFF00, 33, OUT_IP3,   17, INSTR,   FLAG_NN2,   0),
++	MC_ENTRY(0x0000, 0x0000, 37, OUT_PROT,   1, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0xFF00, 33, OUT_NONE,   0, IPV6,    FLAG_HOP,   0),
++	MC_ENTRY(0x2B00, 0xFF00, 33, OUT_NONE,   0, IPV6,    FLAG_NN1,   0),
++	MC_ENTRY(0x3C00, 0xFF00, 33, OUT_NONE,   0, IPV6,    FLAG_NN2,   0),
++	MC_ENTRY(0x0000, 0x0000, 38, OUT_PROT,   1, IPV6,    FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0x0000, 38, OUT_SIP0,  16, INSTR,   FLAG_NO,    0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_APP0,   4, INSTR,   FLAG_IGMP,  0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++	MC_ENTRY(0x0000, 0x0000, 39, OUT_NONE,   0, INSTR,   FLAG_END,   0),
++};
+--- /dev/null
++++ b/drivers/net/ethernet/lantiq_xrx200.c
+@@ -0,0 +1,1924 @@
++/*
++ *   This program is free software; you can redistribute it and/or modify it
++ *   under the terms of the GNU General Public License version 2 as published
++ *   by the Free Software Foundation.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program; if not, write to the Free Software
++ *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA.
++ *
++ *   Copyright (C) 2010 Lantiq Deutschland
++ *   Copyright (C) 2012 John Crispin <blogic@openwrt.org>
++ */
++
++#include <linux/switch.h>
++#include <linux/etherdevice.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/interrupt.h>
++#include <linux/clk.h>
++#include <linux/if_vlan.h>
++#include <asm/delay.h>
++
++#include <linux/of_net.h>
++#include <linux/of_mdio.h>
++#include <linux/of_gpio.h>
++#include <linux/of_platform.h>
++
++#include <xway_dma.h>
++#include <lantiq_soc.h>
++
++#include "lantiq_pce.h"
++#include "lantiq_xrx200_sw.h"
++
++#define SW_POLLING
++#define SW_ROUTING
++
++#ifdef SW_ROUTING
++#define XRX200_MAX_DEV		2
++#else
++#define XRX200_MAX_DEV		1
++#endif
++
++#define XRX200_MAX_VLAN		64
++#define XRX200_PCE_ACTVLAN_IDX	0x01
++#define XRX200_PCE_VLANMAP_IDX	0x02
++
++#define XRX200_MAX_PORT		7
++#define XRX200_MAX_DMA		8
++
++#define XRX200_HEADROOM		4
++
++#define XRX200_TX_TIMEOUT	(10 * HZ)
++
++/* port type */
++#define XRX200_PORT_TYPE_PHY	1
++#define XRX200_PORT_TYPE_MAC	2
++
++/* DMA */
++#define XRX200_DMA_DATA_LEN	0x600
++#define XRX200_DMA_IRQ		INT_NUM_IM2_IRL0
++#define XRX200_DMA_RX		0
++#define XRX200_DMA_TX		1
++#define XRX200_DMA_TX_2		3
++#define XRX200_DMA_IS_TX(x)	(x%2)
++#define XRX200_DMA_IS_RX(x)	(!XRX200_DMA_IS_TX(x))
++
++/* fetch / store dma */
++#define FDMA_PCTRL0		0x2A00
++#define FDMA_PCTRLx(x)		(FDMA_PCTRL0 + (x * 0x18))
++#define SDMA_PCTRL0		0x2F00
++#define SDMA_PCTRLx(x)		(SDMA_PCTRL0 + (x * 0x18))
++
++/* buffer management */
++#define BM_PCFG0		0x200
++#define BM_PCFGx(x)		(BM_PCFG0 + (x * 8))
++
++/* MDIO */
++#define MDIO_GLOB		0x0000
++#define MDIO_CTRL		0x0020
++#define MDIO_READ		0x0024
++#define MDIO_WRITE		0x0028
++#define MDIO_PHY0		0x0054
++#define MDIO_PHY(x)		(0x0054 - (x * sizeof(unsigned)))
++#define MDIO_CLK_CFG0		0x002C
++#define MDIO_CLK_CFG1		0x0030
++
++#define MDIO_GLOB_ENABLE	0x8000
++#define MDIO_BUSY		BIT(12)
++#define MDIO_RD			BIT(11)
++#define MDIO_WR			BIT(10)
++#define MDIO_MASK		0x1f
++#define MDIO_ADDRSHIFT		5
++#define MDIO1_25MHZ		9
++
++#define MDIO_PHY_LINK_DOWN	0x4000
++#define MDIO_PHY_LINK_UP	0x2000
++
++#define MDIO_PHY_SPEED_M10	0x0000
++#define MDIO_PHY_SPEED_M100	0x0800
++#define MDIO_PHY_SPEED_G1	0x1000
++
++#define MDIO_PHY_FDUP_EN	0x0200
++#define MDIO_PHY_FDUP_DIS	0x0600
++
++#define MDIO_PHY_LINK_MASK	0x6000
++#define MDIO_PHY_SPEED_MASK	0x1800
++#define MDIO_PHY_FDUP_MASK	0x0600
++#define MDIO_PHY_ADDR_MASK	0x001f
++#define MDIO_UPDATE_MASK	MDIO_PHY_ADDR_MASK | MDIO_PHY_LINK_MASK | \
++					MDIO_PHY_SPEED_MASK | MDIO_PHY_FDUP_MASK
++
++/* MII */
++#define MII_CFG(p)		(p * 8)
++
++#define MII_CFG_EN		BIT(14)
++
++#define MII_CFG_MODE_MIIP	0x0
++#define MII_CFG_MODE_MIIM	0x1
++#define MII_CFG_MODE_RMIIP	0x2
++#define MII_CFG_MODE_RMIIM	0x3
++#define MII_CFG_MODE_RGMII	0x4
++#define MII_CFG_MODE_MASK	0xf
++
++#define MII_CFG_RATE_M2P5	0x00
++#define MII_CFG_RATE_M25	0x10
++#define MII_CFG_RATE_M125	0x20
++#define MII_CFG_RATE_M50	0x30
++#define MII_CFG_RATE_AUTO	0x40
++#define MII_CFG_RATE_MASK	0x70
++
++/* cpu port mac */
++#define PMAC_HD_CTL		0x0000
++#define PMAC_RX_IPG		0x0024
++#define PMAC_EWAN		0x002c
++
++#define PMAC_IPG_MASK		0xf
++#define PMAC_HD_CTL_AS		0x0008
++#define PMAC_HD_CTL_AC		0x0004
++#define PMAC_HD_CTL_RC		0x0010
++#define PMAC_HD_CTL_RXSH	0x0040
++#define PMAC_HD_CTL_AST		0x0080
++#define PMAC_HD_CTL_RST		0x0100
++
++/* PCE */
++#define PCE_TBL_KEY(x)		(0x1100 + ((7 - x) * 4))
++#define PCE_TBL_MASK		0x1120
++#define PCE_TBL_VAL(x)		(0x1124 + ((4 - x) * 4))
++#define PCE_TBL_ADDR		0x1138
++#define PCE_TBL_CTRL		0x113c
++#define PCE_PMAP1		0x114c
++#define PCE_PMAP2		0x1150
++#define PCE_PMAP3		0x1154
++#define PCE_GCTRL_REG(x)	(0x1158 + (x * 4))
++#define PCE_PCTRL_REG(p, x)	(0x1200 + (((p * 0xa) + x) * 4))
++
++#define PCE_TBL_BUSY		BIT(15)
++#define PCE_TBL_CFG_ADDR_MASK	0x1f
++#define PCE_TBL_CFG_ADWR	0x20
++#define PCE_TBL_CFG_ADWR_MASK	0x60
++#define PCE_INGRESS		BIT(11)
++
++/* MAC */
++#define MAC_FLEN_REG		(0x2314)
++#define MAC_CTRL_REG(p, x)	(0x240c + (((p * 0xc) + x) * 4))
++
++/* buffer management */
++#define BM_PCFG(p)		(0x200 + (p * 8))
++
++/* special tag in TX path header */
++#define SPID_SHIFT		24
++#define DPID_SHIFT		16
++#define DPID_ENABLE		1
++#define SPID_CPU_PORT		2
++#define PORT_MAP_SEL		BIT(15)
++#define PORT_MAP_EN		BIT(14)
++#define PORT_MAP_SHIFT		1
++#define PORT_MAP_MASK		0x3f
++
++#define SPPID_MASK		0x7
++#define SPPID_SHIFT		4
++
++/* MII regs not yet in linux */
++#define MDIO_DEVAD_NONE		(-1)
++#define ADVERTIZE_MPD		(1 << 10)
++
++struct xrx200_port {
++	u8 num;
++	u8 phy_addr;
++	u16 flags;
++	phy_interface_t phy_if;
++
++	int link;
++	int gpio;
++	enum of_gpio_flags gpio_flags;
++
++	struct phy_device *phydev;
++	struct device_node *phy_node;
++};
++
++struct xrx200_chan {
++	int idx;
++	int refcount;
++	int tx_free;
++
++	struct net_device dummy_dev;
++	struct net_device *devs[XRX200_MAX_DEV];
++
++	struct tasklet_struct tasklet;
++	struct napi_struct napi;
++	struct ltq_dma_channel dma;
++	struct sk_buff *skb[LTQ_DESC_NUM];
++
++	spinlock_t lock;
++};
++
++struct xrx200_hw {
++	struct clk *clk;
++	struct mii_bus *mii_bus;
++	u8 phy_addr[XRX200_MAX_PORT];
++
++	struct xrx200_chan chan[XRX200_MAX_DMA];
++	u16 vlan_vid[XRX200_MAX_VLAN];
++	u16 vlan_port_map[XRX200_MAX_VLAN];
++
++	struct net_device *devs[XRX200_MAX_DEV];
++	int num_devs;
++
++	int port_map[XRX200_MAX_PORT];
++	unsigned short wan_map;
++
++	struct switch_dev swdev;
++};
++
++struct xrx200_priv {
++	struct net_device_stats stats;
++	int id;
++
++	struct xrx200_port port[XRX200_MAX_PORT];
++	int num_port;
++	bool wan;
++	bool sw;
++	unsigned short port_map;
++	unsigned char mac[6];
++
++	struct xrx200_hw *hw;
++};
++
++static __iomem void *xrx200_switch_membase;
++static __iomem void *xrx200_mii_membase;
++static __iomem void *xrx200_mdio_membase;
++static __iomem void *xrx200_pmac_membase;
++
++#define ltq_switch_r32(x)	ltq_r32(xrx200_switch_membase + (x))
++#define ltq_switch_w32(x, y)	ltq_w32(x, xrx200_switch_membase + (y))
++#define ltq_switch_w32_mask(x, y, z) \
++			ltq_w32_mask(x, y, xrx200_switch_membase + (z))
++
++#define ltq_mdio_r32(x)		ltq_r32(xrx200_mdio_membase + (x))
++#define ltq_mdio_w32(x, y)	ltq_w32(x, xrx200_mdio_membase + (y))
++#define ltq_mdio_w32_mask(x, y, z) \
++			ltq_w32_mask(x, y, xrx200_mdio_membase + (z))
++
++#define ltq_mii_r32(x)		ltq_r32(xrx200_mii_membase + (x))
++#define ltq_mii_w32(x, y)	ltq_w32(x, xrx200_mii_membase + (y))
++#define ltq_mii_w32_mask(x, y, z) \
++			ltq_w32_mask(x, y, xrx200_mii_membase + (z))
++
++#define ltq_pmac_r32(x)		ltq_r32(xrx200_pmac_membase + (x))
++#define ltq_pmac_w32(x, y)	ltq_w32(x, xrx200_pmac_membase + (y))
++#define ltq_pmac_w32_mask(x, y, z) \
++			ltq_w32_mask(x, y, xrx200_pmac_membase + (z))
++
++#define XRX200_GLOBAL_REGATTR(reg) \
++	.id = reg, \
++	.type = SWITCH_TYPE_INT, \
++	.set = xrx200_set_global_attr, \
++	.get = xrx200_get_global_attr
++
++#define XRX200_PORT_REGATTR(reg) \
++	.id = reg, \
++	.type = SWITCH_TYPE_INT, \
++	.set = xrx200_set_port_attr, \
++	.get = xrx200_get_port_attr
++
++static int xrx200sw_read_x(int reg, int x)
++{
++	int value, mask, addr;
++
++	addr = xrx200sw_reg[reg].offset + (xrx200sw_reg[reg].mult * x);
++	value = ltq_switch_r32(addr);
++	mask = (1 << xrx200sw_reg[reg].size) - 1;
++	value = (value >> xrx200sw_reg[reg].shift);
++
++	return (value & mask);
++}
++
++static int xrx200sw_read(int reg)
++{
++	return xrx200sw_read_x(reg, 0);
++}
++
++static void xrx200sw_write_x(int value, int reg, int x)
++{
++	int mask, addr;
++
++	addr = xrx200sw_reg[reg].offset + (xrx200sw_reg[reg].mult * x);
++	mask = (1 << xrx200sw_reg[reg].size) - 1;
++	mask = (mask << xrx200sw_reg[reg].shift);
++	value = (value << xrx200sw_reg[reg].shift) & mask;
++
++	ltq_switch_w32_mask(mask, value, addr);
++}
++
++static void xrx200sw_write(int value, int reg)
++{
++	xrx200sw_write_x(value, reg, 0);
++}
++
++struct xrx200_pce_table_entry {
++	int index;	// PCE_TBL_ADDR.ADDR = pData->table_index
++	int table; 	// PCE_TBL_CTRL.ADDR = pData->table
++	unsigned short key[8];
++	unsigned short val[5];
++	unsigned short mask;
++	unsigned short type;
++	unsigned short valid;
++	unsigned short gmap;
++};
++
++static int xrx200_pce_table_entry_read(struct xrx200_pce_table_entry *tbl)
++{
++	// wait until hardware is ready
++	while (xrx200sw_read(XRX200_PCE_TBL_CTRL_BAS)) {};
++
++	// prepare the table access:
++	// PCE_TBL_ADDR.ADDR = pData->table_index
++	xrx200sw_write(tbl->index, XRX200_PCE_TBL_ADDR_ADDR);
++	// PCE_TBL_CTRL.ADDR = pData->table
++	xrx200sw_write(tbl->table, XRX200_PCE_TBL_CTRL_ADDR);
++
++	//(address-based read)
++	xrx200sw_write(0, XRX200_PCE_TBL_CTRL_OPMOD); // OPMOD_ADRD
++
++	xrx200sw_write(1, XRX200_PCE_TBL_CTRL_BAS); // start access
++
++	// wait until hardware is ready
++	while (xrx200sw_read(XRX200_PCE_TBL_CTRL_BAS)) {};
++
++	// read the keys
++	tbl->key[7] = xrx200sw_read(XRX200_PCE_TBL_KEY_7);
++	tbl->key[6] = xrx200sw_read(XRX200_PCE_TBL_KEY_6);
++	tbl->key[5] = xrx200sw_read(XRX200_PCE_TBL_KEY_5);
++	tbl->key[4] = xrx200sw_read(XRX200_PCE_TBL_KEY_4);
++	tbl->key[3] = xrx200sw_read(XRX200_PCE_TBL_KEY_3);
++	tbl->key[2] = xrx200sw_read(XRX200_PCE_TBL_KEY_2);
++	tbl->key[1] = xrx200sw_read(XRX200_PCE_TBL_KEY_1);
++	tbl->key[0] = xrx200sw_read(XRX200_PCE_TBL_KEY_0);
++
++	// read the values
++	tbl->val[4] = xrx200sw_read(XRX200_PCE_TBL_VAL_4);
++	tbl->val[3] = xrx200sw_read(XRX200_PCE_TBL_VAL_3);
++	tbl->val[2] = xrx200sw_read(XRX200_PCE_TBL_VAL_2);
++	tbl->val[1] = xrx200sw_read(XRX200_PCE_TBL_VAL_1);
++	tbl->val[0] = xrx200sw_read(XRX200_PCE_TBL_VAL_0);
++
++	// read the mask
++	tbl->mask = xrx200sw_read(XRX200_PCE_TBL_MASK_0);
++	// read the type
++	tbl->type = xrx200sw_read(XRX200_PCE_TBL_CTRL_TYPE);
++	// read the valid flag
++	tbl->valid = xrx200sw_read(XRX200_PCE_TBL_CTRL_VLD);
++	// read the group map
++	tbl->gmap = xrx200sw_read(XRX200_PCE_TBL_CTRL_GMAP);
++
++	return 0;
++}
++
++static int xrx200_pce_table_entry_write(struct xrx200_pce_table_entry *tbl)
++{
++	// wait until hardware is ready
++	while (xrx200sw_read(XRX200_PCE_TBL_CTRL_BAS)) {};
++
++	// prepare the table access:
++	// PCE_TBL_ADDR.ADDR = pData->table_index
++	xrx200sw_write(tbl->index, XRX200_PCE_TBL_ADDR_ADDR);
++	// PCE_TBL_CTRL.ADDR = pData->table
++	xrx200sw_write(tbl->table, XRX200_PCE_TBL_CTRL_ADDR);
++
++	//(address-based write)
++	xrx200sw_write(1, XRX200_PCE_TBL_CTRL_OPMOD); // OPMOD_ADRD
++
++	// read the keys
++	xrx200sw_write(tbl->key[7], XRX200_PCE_TBL_KEY_7);
++	xrx200sw_write(tbl->key[6], XRX200_PCE_TBL_KEY_6);
++	xrx200sw_write(tbl->key[5], XRX200_PCE_TBL_KEY_5);
++	xrx200sw_write(tbl->key[4], XRX200_PCE_TBL_KEY_4);
++	xrx200sw_write(tbl->key[3], XRX200_PCE_TBL_KEY_3);
++	xrx200sw_write(tbl->key[2], XRX200_PCE_TBL_KEY_2);
++	xrx200sw_write(tbl->key[1], XRX200_PCE_TBL_KEY_1);
++	xrx200sw_write(tbl->key[0], XRX200_PCE_TBL_KEY_0);
++
++	// read the values
++	xrx200sw_write(tbl->val[4], XRX200_PCE_TBL_VAL_4);
++	xrx200sw_write(tbl->val[3], XRX200_PCE_TBL_VAL_3);
++	xrx200sw_write(tbl->val[2], XRX200_PCE_TBL_VAL_2);
++	xrx200sw_write(tbl->val[1], XRX200_PCE_TBL_VAL_1);
++	xrx200sw_write(tbl->val[0], XRX200_PCE_TBL_VAL_0);
++
++	// read the mask
++	xrx200sw_write(tbl->mask, XRX200_PCE_TBL_MASK_0);
++	// read the type
++	xrx200sw_write(tbl->type, XRX200_PCE_TBL_CTRL_TYPE);
++	// read the valid flag
++	xrx200sw_write(tbl->valid, XRX200_PCE_TBL_CTRL_VLD);
++	// read the group map
++	xrx200sw_write(tbl->gmap, XRX200_PCE_TBL_CTRL_GMAP);
++
++	xrx200sw_write(1, XRX200_PCE_TBL_CTRL_BAS); // start access
++
++	// wait until hardware is ready
++	while (xrx200sw_read(XRX200_PCE_TBL_CTRL_BAS)) {};
++
++	return 0;
++}
++
++static void xrx200sw_fixup_pvids(void)
++{
++	int index, p, portmap, untagged;
++	struct xrx200_pce_table_entry tem;
++	struct xrx200_pce_table_entry tev;
++
++	portmap = 0;
++	for (p = 0; p < XRX200_MAX_PORT; p++)
++		portmap |= BIT(p);
++
++	tem.table = XRX200_PCE_VLANMAP_IDX;
++	tev.table = XRX200_PCE_ACTVLAN_IDX;
++
++	for (index = XRX200_MAX_VLAN; index-- > 0;)
++	{
++		tev.index = index;
++		xrx200_pce_table_entry_read(&tev);
++
++		if (tev.valid == 0)
++			continue;
++
++		tem.index = index;
++		xrx200_pce_table_entry_read(&tem);
++
++		if (tem.val[0] == 0)
++			continue;
++
++		untagged = portmap & (tem.val[1] ^ tem.val[2]);
++
++		for (p = 0; p < XRX200_MAX_PORT; p++)
++			if (untagged & BIT(p))
++			{
++				portmap &= ~BIT(p);
++				xrx200sw_write_x(index, XRX200_PCE_DEFPVID_PVID, p);
++			}
++
++		for (p = 0; p < XRX200_MAX_PORT; p++)
++			if (portmap & BIT(p))
++				xrx200sw_write_x(index, XRX200_PCE_DEFPVID_PVID, p);
++	}
++}
++
++// swconfig interface
++static void xrx200_hw_init(struct xrx200_hw *hw);
++
++// global
++static int xrx200sw_reset_switch(struct switch_dev *dev)
++{
++	struct xrx200_hw *hw = container_of(dev, struct xrx200_hw, swdev);
++
++	xrx200_hw_init(hw);
++
++	return 0;
++}
++
++static int xrx200_set_vlan_mode_enable(struct switch_dev *dev, const struct switch_attr *attr, struct switch_val *val)
++{
++	int p;
++
++	if ((attr->max > 0) && (val->value.i > attr->max))
++		return -EINVAL;
++
++	for (p = 0; p < XRX200_MAX_PORT; p++) {
++		xrx200sw_write_x(val->value.i, XRX200_PCE_VCTRL_VEMR, p);
++		xrx200sw_write_x(val->value.i, XRX200_PCE_VCTRL_VIMR, p);
++	}
++
++	xrx200sw_write(val->value.i, XRX200_PCE_GCTRL_0_VLAN);
++	return 0;
++}
++
++static int xrx200_get_vlan_mode_enable(struct switch_dev *dev, const struct switch_attr *attr, struct switch_val *val)
++{
++	val->value.i = xrx200sw_read(attr->id);
++	return 0;
++}
++
++static int xrx200_set_global_attr(struct switch_dev *dev, const struct switch_attr *attr, struct switch_val *val)
++{
++	if ((attr->max > 0) && (val->value.i > attr->max))
++		return -EINVAL;
++
++	xrx200sw_write(val->value.i, attr->id);
++	return 0;
++}
++
++static int xrx200_get_global_attr(struct switch_dev *dev, const struct switch_attr *attr, struct switch_val *val)
++{
++	val->value.i = xrx200sw_read(attr->id);
++	return 0;
++}
++
++// vlan
++static int xrx200sw_set_vlan_vid(struct switch_dev *dev, const struct switch_attr *attr,
++				 struct switch_val *val)
++{
++	struct xrx200_hw *hw = container_of(dev, struct xrx200_hw, swdev);
++	int i;
++	struct xrx200_pce_table_entry tev;
++	struct xrx200_pce_table_entry tem;
++
++	tev.table = XRX200_PCE_ACTVLAN_IDX;
++
++	for (i = 0; i < XRX200_MAX_VLAN; i++)
++	{
++		tev.index = i;
++		xrx200_pce_table_entry_read(&tev);
++		if (tev.key[0] == val->value.i && i != val->port_vlan)
++			return -EINVAL;
++	}
++
++	hw->vlan_vid[val->port_vlan] = val->value.i;
++
++	tev.index = val->port_vlan;
++	xrx200_pce_table_entry_read(&tev);
++	tev.key[0] = val->value.i;
++	tev.valid = val->value.i > 0;
++	xrx200_pce_table_entry_write(&tev);
++
++	tem.table = XRX200_PCE_VLANMAP_IDX;
++	tem.index = val->port_vlan;
++	xrx200_pce_table_entry_read(&tem);
++	tem.val[0] = val->value.i;
++	xrx200_pce_table_entry_write(&tem);
++
++	xrx200sw_fixup_pvids();
++	return 0;
++}
++
++static int xrx200sw_get_vlan_vid(struct switch_dev *dev, const struct switch_attr *attr,
++				 struct switch_val *val)
++{
++	struct xrx200_pce_table_entry te;
++
++	te.table = XRX200_PCE_ACTVLAN_IDX;
++	te.index = val->port_vlan;
++	xrx200_pce_table_entry_read(&te);
++	val->value.i = te.key[0];
++
++	return 0;
++}
++
++static int xrx200sw_set_vlan_ports(struct switch_dev *dev, struct switch_val *val)
++{
++	struct xrx200_hw *hw = container_of(dev, struct xrx200_hw, swdev);
++	int i, portmap, tagmap, untagged;
++	struct xrx200_pce_table_entry tem;
++
++	portmap = 0;
++	tagmap = 0;
++	for (i = 0; i < val->len; i++)
++	{
++		struct switch_port *p = &val->value.ports[i];
++
++		portmap |= (1 << p->id);
++		if (p->flags & (1 << SWITCH_PORT_FLAG_TAGGED))
++			tagmap |= (1 << p->id);
++	}
++
++	tem.table = XRX200_PCE_VLANMAP_IDX;
++
++	untagged = portmap ^ tagmap;
++	for (i = 0; i < XRX200_MAX_VLAN; i++)
++	{
++		tem.index = i;
++		xrx200_pce_table_entry_read(&tem);
++
++		if (tem.val[0] == 0)
++			continue;
++
++		if ((untagged & (tem.val[1] ^ tem.val[2])) && (val->port_vlan != i))
++			return -EINVAL;
++	}
++
++	tem.index = val->port_vlan;
++	xrx200_pce_table_entry_read(&tem);
++
++	// auto-enable this vlan if not enabled already
++	if (tem.val[0] == 0)
++	{
++		struct switch_val v;
++		v.port_vlan = val->port_vlan;
++		v.value.i = val->port_vlan;
++		if(xrx200sw_set_vlan_vid(dev, NULL, &v))
++			return -EINVAL;
++
++		//read updated tem
++		tem.index = val->port_vlan;
++		xrx200_pce_table_entry_read(&tem);
++	}
++
++	tem.val[1] = portmap;
++	tem.val[2] = tagmap;
++	xrx200_pce_table_entry_write(&tem);
++
++	ltq_switch_w32_mask(0, portmap, PCE_PMAP2);
++	ltq_switch_w32_mask(0, portmap, PCE_PMAP3);
++	hw->vlan_port_map[val->port_vlan] = portmap;
++
++	xrx200sw_fixup_pvids();
++
++	return 0;
++}
++
++static int xrx200sw_get_vlan_ports(struct switch_dev *dev, struct switch_val *val)
++{
++	int i;
++	unsigned short ports, tags;
++	struct xrx200_pce_table_entry tem;
++
++	tem.table = XRX200_PCE_VLANMAP_IDX;
++	tem.index = val->port_vlan;
++	xrx200_pce_table_entry_read(&tem);
++
++	ports = tem.val[1];
++	tags = tem.val[2];
++
++	for (i = 0; i < XRX200_MAX_PORT; i++) {
++		struct switch_port *p;
++
++		if (!(ports & (1 << i)))
++			continue;
++
++		p = &val->value.ports[val->len++];
++		p->id = i;
++		if (tags & (1 << i))
++			p->flags = (1 << SWITCH_PORT_FLAG_TAGGED);
++		else
++			p->flags = 0;
++	}
++
++	return 0;
++}
++
++static int xrx200sw_set_vlan_enable(struct switch_dev *dev, const struct switch_attr *attr,
++				 struct switch_val *val)
++{
++	struct xrx200_pce_table_entry tev;
++
++	tev.table = XRX200_PCE_ACTVLAN_IDX;
++	tev.index = val->port_vlan;
++	xrx200_pce_table_entry_read(&tev);
++
++	if (tev.key[0] == 0)
++		return -EINVAL;
++
++	tev.valid = val->value.i;
++	xrx200_pce_table_entry_write(&tev);
++
++	xrx200sw_fixup_pvids();
++	return 0;
++}
++
++static int xrx200sw_get_vlan_enable(struct switch_dev *dev, const struct switch_attr *attr,
++				 struct switch_val *val)
++{
++	struct xrx200_pce_table_entry tev;
++
++	tev.table = XRX200_PCE_ACTVLAN_IDX;
++	tev.index = val->port_vlan;
++	xrx200_pce_table_entry_read(&tev);
++	val->value.i = tev.valid;
++
++	return 0;
++}
++
++// port
++static int xrx200sw_get_port_pvid(struct switch_dev *dev, int port, int *val)
++{
++	struct xrx200_pce_table_entry tev;
++
++	if (port >= XRX200_MAX_PORT)
++		return -EINVAL;
++
++	tev.table = XRX200_PCE_ACTVLAN_IDX;
++	tev.index = xrx200sw_read_x(XRX200_PCE_DEFPVID_PVID, port);
++	xrx200_pce_table_entry_read(&tev);
++
++	*val = tev.key[0];
++	return 0;
++}
++
++static int xrx200sw_get_port_link(struct switch_dev *dev,
++				  int port,
++				  struct switch_port_link *link)
++{
++	if (port >= XRX200_MAX_PORT)
++		return -EINVAL;
++
++	link->link = xrx200sw_read_x(XRX200_MAC_PSTAT_LSTAT, port);
++	if (!link->link)
++		return 0;
++
++	link->duplex = xrx200sw_read_x(XRX200_MAC_PSTAT_FDUP, port);
++
++	link->rx_flow = !!(xrx200sw_read_x(XRX200_MAC_CTRL_0_FCON, port) && 0x0010);
++	link->tx_flow = !!(xrx200sw_read_x(XRX200_MAC_CTRL_0_FCON, port) && 0x0020);
++	link->aneg = !(xrx200sw_read_x(XRX200_MAC_CTRL_0_FCON, port));
++
++	link->speed = SWITCH_PORT_SPEED_10;
++	if (xrx200sw_read_x(XRX200_MAC_PSTAT_MBIT, port))
++		link->speed = SWITCH_PORT_SPEED_100;
++	if (xrx200sw_read_x(XRX200_MAC_PSTAT_GBIT, port))
++		link->speed = SWITCH_PORT_SPEED_1000;
++
++	return 0;
++}
++
++static int xrx200sw_set_port_link(struct switch_dev *dev, int port,
++				struct switch_port_link *link)
++{
++	if (port >= XRX200_MAX_PORT)
++		return -EINVAL;
++
++	return switch_generic_set_link(dev, port, link);
++}
++
++static int xrx200_mdio_wr(struct mii_bus *bus, int addr, int reg, u16 val);
++static int xrx200_mdio_rd(struct mii_bus *bus, int addr, int reg);
++
++static int xrx200sw_phy_read16(struct switch_dev *dev, int addr, u8 reg, u16 *value)
++{
++	struct xrx200_hw *hw = container_of(dev, struct xrx200_hw, swdev);
++
++	*value =  xrx200_mdio_rd(hw->mii_bus, hw->phy_addr[addr], reg);
++
++	return 0;
++}
++
++static int xrx200sw_phy_write16(struct switch_dev *dev, int addr, u8 reg, u16 value)
++{
++	struct xrx200_hw *hw = container_of(dev, struct xrx200_hw, swdev);
++
++	return xrx200_mdio_wr(hw->mii_bus, hw->phy_addr[addr], reg, value);
++}
++
++static int xrx200_set_port_attr(struct switch_dev *dev, const struct switch_attr *attr, struct switch_val *val)
++{
++	if (val->port_vlan >= XRX200_MAX_PORT)
++		return -EINVAL;
++
++	if ((attr->max > 0) && (val->value.i > attr->max))
++		return -EINVAL;
++
++	xrx200sw_write_x(val->value.i, attr->id, val->port_vlan);
++	return 0;
++}
++
++static int xrx200_get_port_attr(struct switch_dev *dev, const struct switch_attr *attr, struct switch_val *val)
++{
++	if (val->port_vlan >= XRX200_MAX_PORT)
++		return -EINVAL;
++
++	val->value.i = xrx200sw_read_x(attr->id, val->port_vlan);
++	return 0;
++}
++
++// attributes
++static struct switch_attr xrx200sw_globals[] = {
++	{
++		.type = SWITCH_TYPE_INT,
++		.set = xrx200_set_vlan_mode_enable,
++		.get = xrx200_get_vlan_mode_enable,
++		.name = "enable_vlan",
++		.description = "Enable VLAN mode",
++		.max = 1},
++};
++
++static struct switch_attr xrx200sw_port[] = {
++	{
++	XRX200_PORT_REGATTR(XRX200_PCE_VCTRL_UVR),
++	.name = "uvr",
++	.description = "Unknown VLAN Rule",
++	.max = 1,
++	},
++	{
++	XRX200_PORT_REGATTR(XRX200_PCE_VCTRL_VSR),
++	.name = "vsr",
++	.description = "VLAN Security Rule",
++	.max = 1,
++	},
++	{
++	XRX200_PORT_REGATTR(XRX200_PCE_VCTRL_VINR),
++	.name = "vinr",
++	.description = "VLAN Ingress Tag Rule",
++	.max = 2,
++	},
++	{
++	XRX200_PORT_REGATTR(XRX200_PCE_PCTRL_0_TVM),
++	.name = "tvm",
++	.description = "Transparent VLAN Mode",
++	.max = 1,
++	},
++};
++
++static struct switch_attr xrx200sw_vlan[] = {
++	{
++		.type = SWITCH_TYPE_INT,
++		.name = "vid",
++		.description = "VLAN ID (0-4094)",
++		.set = xrx200sw_set_vlan_vid,
++		.get = xrx200sw_get_vlan_vid,
++		.max = 4094,
++	},
++	{
++		.type = SWITCH_TYPE_INT,
++		.name = "enable",
++		.description = "Enable VLAN",
++		.set = xrx200sw_set_vlan_enable,
++		.get = xrx200sw_get_vlan_enable,
++		.max = 1,
++	},
++};
++
++static const struct switch_dev_ops xrx200sw_ops = {
++	.attr_global = {
++		.attr = xrx200sw_globals,
++		.n_attr = ARRAY_SIZE(xrx200sw_globals),
++	},
++	.attr_port = {
++		.attr = xrx200sw_port,
++		.n_attr = ARRAY_SIZE(xrx200sw_port),
++	},
++	.attr_vlan = {
++		.attr = xrx200sw_vlan,
++		.n_attr = ARRAY_SIZE(xrx200sw_vlan),
++	},
++	.get_vlan_ports = xrx200sw_get_vlan_ports,
++	.set_vlan_ports = xrx200sw_set_vlan_ports,
++	.get_port_pvid = xrx200sw_get_port_pvid,
++	.reset_switch = xrx200sw_reset_switch,
++	.get_port_link = xrx200sw_get_port_link,
++	.set_port_link = xrx200sw_set_port_link,
++//	.get_port_stats = xrx200sw_get_port_stats, //TODO
++	.phy_read16 = xrx200sw_phy_read16,
++	.phy_write16 = xrx200sw_phy_write16,
++};
++
++static int xrx200sw_init(struct xrx200_hw *hw)
++{
++	int netdev_num;
++
++	for (netdev_num = 0; netdev_num < hw->num_devs; netdev_num++)
++	{
++		struct switch_dev *swdev;
++		struct net_device *dev = hw->devs[netdev_num];
++		struct xrx200_priv *priv = netdev_priv(dev);
++		if (!priv->sw)
++			continue;
++
++		swdev = &hw->swdev;
++
++		swdev->name = "Lantiq XRX200 Switch";
++		swdev->vlans = XRX200_MAX_VLAN;
++		swdev->ports = XRX200_MAX_PORT;
++		swdev->cpu_port = 6;
++		swdev->ops = &xrx200sw_ops;
++
++		register_switch(swdev, dev);
++		return 0; // enough switches
++	}
++	return 0;
++}
++
++static int xrx200_open(struct net_device *dev)
++{
++	struct xrx200_priv *priv = netdev_priv(dev);
++	int i;
++
++	for (i = 0; i < XRX200_MAX_DMA; i++) {
++		if (!priv->hw->chan[i].dma.irq)
++			continue;
++		spin_lock_bh(&priv->hw->chan[i].lock);
++		if (!priv->hw->chan[i].refcount) {
++			if (XRX200_DMA_IS_RX(i))
++				napi_enable(&priv->hw->chan[i].napi);
++			ltq_dma_open(&priv->hw->chan[i].dma);
++		}
++		priv->hw->chan[i].refcount++;
++		spin_unlock_bh(&priv->hw->chan[i].lock);
++	}
++	for (i = 0; i < priv->num_port; i++)
++		if (priv->port[i].phydev)
++			phy_start(priv->port[i].phydev);
++	netif_wake_queue(dev);
++
++	return 0;
++}
++
++static int xrx200_close(struct net_device *dev)
++{
++	struct xrx200_priv *priv = netdev_priv(dev);
++	int i;
++
++	netif_stop_queue(dev);
++
++	for (i = 0; i < priv->num_port; i++)
++		if (priv->port[i].phydev)
++			phy_stop(priv->port[i].phydev);
++
++	for (i = 0; i < XRX200_MAX_DMA; i++) {
++		if (!priv->hw->chan[i].dma.irq)
++			continue;
++
++		priv->hw->chan[i].refcount--;
++		if (!priv->hw->chan[i].refcount) {
++			if (XRX200_DMA_IS_RX(i))
++				napi_disable(&priv->hw->chan[i].napi);
++			spin_lock_bh(&priv->hw->chan[i].lock);
++			ltq_dma_close(&priv->hw->chan[XRX200_DMA_RX].dma);
++			spin_unlock_bh(&priv->hw->chan[i].lock);
++		}
++	}
++
++	return 0;
++}
++
++static int xrx200_alloc_skb(struct xrx200_chan *ch)
++{
++#define DMA_PAD	(NET_IP_ALIGN + NET_SKB_PAD)
++	ch->skb[ch->dma.desc] = dev_alloc_skb(XRX200_DMA_DATA_LEN + DMA_PAD);
++	if (!ch->skb[ch->dma.desc])
++		goto skip;
++
++	skb_reserve(ch->skb[ch->dma.desc], NET_SKB_PAD);
++	ch->dma.desc_base[ch->dma.desc].addr = dma_map_single(ch->dma.dev,
++		ch->skb[ch->dma.desc]->data, XRX200_DMA_DATA_LEN,
++			DMA_FROM_DEVICE);
++	ch->dma.desc_base[ch->dma.desc].addr =
++		CPHYSADDR(ch->skb[ch->dma.desc]->data);
++	skb_reserve(ch->skb[ch->dma.desc], NET_IP_ALIGN);
++
++skip:
++	ch->dma.desc_base[ch->dma.desc].ctl =
++		LTQ_DMA_OWN | LTQ_DMA_RX_OFFSET(NET_IP_ALIGN) |
++		XRX200_DMA_DATA_LEN;
++
++	return 0;
++}
++
++static void xrx200_hw_receive(struct xrx200_chan *ch, int id)
++{
++	struct net_device *dev = ch->devs[id];
++	struct xrx200_priv *priv = netdev_priv(dev);
++	struct ltq_dma_desc *desc = &ch->dma.desc_base[ch->dma.desc];
++	struct sk_buff *skb = ch->skb[ch->dma.desc];
++	int len = (desc->ctl & LTQ_DMA_SIZE_MASK);
++	int ret;
++
++	ret = xrx200_alloc_skb(ch);
++
++	ch->dma.desc++;
++	ch->dma.desc %= LTQ_DESC_NUM;
++
++	if (ret) {
++		netdev_err(dev,
++			"failed to allocate new rx buffer\n");
++		return;
++	}
++
++	skb_put(skb, len);
++#ifdef SW_ROUTING
++	skb_pull(skb, 8);
++#endif
++	skb->dev = dev;
++	skb->protocol = eth_type_trans(skb, dev);
++	netif_receive_skb(skb);
++	priv->stats.rx_packets++;
++	priv->stats.rx_bytes+=len;
++}
++
++static int xrx200_poll_rx(struct napi_struct *napi, int budget)
++{
++	struct xrx200_chan *ch = container_of(napi,
++				struct xrx200_chan, napi);
++	struct xrx200_priv *priv = netdev_priv(ch->devs[0]);
++	int rx = 0;
++	int complete = 0;
++
++	while ((rx < budget) && !complete) {
++		struct ltq_dma_desc *desc = &ch->dma.desc_base[ch->dma.desc];
++		if ((desc->ctl & (LTQ_DMA_OWN | LTQ_DMA_C)) == LTQ_DMA_C) {
++#ifdef SW_ROUTING
++			struct sk_buff *skb = ch->skb[ch->dma.desc];
++			u8 *special_tag = (u8*)skb->data;
++			int port = (special_tag[7] >> SPPID_SHIFT) & SPPID_MASK;
++			xrx200_hw_receive(ch, priv->hw->port_map[port]);
++#else
++			xrx200_hw_receive(ch, 0);
++#endif
++			rx++;
++		} else {
++			complete = 1;
++		}
++	}
++
++	if (complete || !rx) {
++		napi_complete(&ch->napi);
++		ltq_dma_enable_irq(&ch->dma);
++	}
++
++	return rx;
++}
++
++static void xrx200_tx_housekeeping(unsigned long ptr)
++{
++	struct xrx200_chan *ch = (struct xrx200_chan *) ptr;
++	int pkts = 0;
++	int i;
++
++	spin_lock_bh(&ch->lock);
++	ltq_dma_ack_irq(&ch->dma);
++	while ((ch->dma.desc_base[ch->tx_free].ctl & (LTQ_DMA_OWN | LTQ_DMA_C)) == LTQ_DMA_C) {
++		struct sk_buff *skb = ch->skb[ch->tx_free];
++
++		pkts++;
++		ch->skb[ch->tx_free] = NULL;
++		dev_kfree_skb(skb);
++		memset(&ch->dma.desc_base[ch->tx_free], 0,
++			sizeof(struct ltq_dma_desc));
++		ch->tx_free++;
++		ch->tx_free %= LTQ_DESC_NUM;
++	}
++	ltq_dma_enable_irq(&ch->dma);
++	spin_unlock_bh(&ch->lock);
++
++	if (!pkts)
++		return;
++
++	for (i = 0; i < XRX200_MAX_DEV && ch->devs[i]; i++)
++		netif_wake_queue(ch->devs[i]);
++}
++
++static struct net_device_stats *xrx200_get_stats (struct net_device *dev)
++{
++	struct xrx200_priv *priv = netdev_priv(dev);
++
++	return &priv->stats;
++}
++
++static void xrx200_tx_timeout(struct net_device *dev)
++{
++	struct xrx200_priv *priv = netdev_priv(dev);
++
++	printk(KERN_ERR "%s: transmit timed out, disable the dma channel irq\n", dev->name);
++
++	priv->stats.tx_errors++;
++	netif_wake_queue(dev);
++}
++
++static int xrx200_start_xmit(struct sk_buff *skb, struct net_device *dev)
++{
++	struct xrx200_priv *priv = netdev_priv(dev);
++	struct xrx200_chan *ch;
++	struct ltq_dma_desc *desc;
++	u32 byte_offset;
++	int ret = NETDEV_TX_OK;
++	int len;
++#ifdef SW_ROUTING
++	u32 special_tag = (SPID_CPU_PORT << SPID_SHIFT) | DPID_ENABLE;
++#endif
++	if(priv->id)
++		ch = &priv->hw->chan[XRX200_DMA_TX_2];
++	else
++		ch = &priv->hw->chan[XRX200_DMA_TX];
++
++	desc = &ch->dma.desc_base[ch->dma.desc];
++
++	skb->dev = dev;
++	len = skb->len < ETH_ZLEN ? ETH_ZLEN : skb->len;
++
++#ifdef SW_ROUTING
++	if (is_multicast_ether_addr(eth_hdr(skb)->h_dest)) {
++		u16 port_map = priv->port_map;
++
++		if (priv->sw && skb->protocol == htons(ETH_P_8021Q)) {
++			u16 vid;
++			int i;
++
++			port_map = 0;
++			if (!__vlan_get_tag(skb, &vid)) {
++				for (i = 0; i < XRX200_MAX_VLAN; i++) {
++					if (priv->hw->vlan_vid[i] != vid)
++						continue;
++					port_map = priv->hw->vlan_port_map[i];
++					break;
++				}
++			}
++		}
++
++		special_tag |= (port_map << PORT_MAP_SHIFT) |
++			       PORT_MAP_SEL | PORT_MAP_EN;
++	}
++	if(priv->wan)
++		special_tag |= (1 << DPID_SHIFT);
++	if(skb_headroom(skb) < 4) {
++		struct sk_buff *tmp = skb_realloc_headroom(skb, 4);
++		dev_kfree_skb_any(skb);
++		skb = tmp;
++	}
++	skb_push(skb, 4);
++	memcpy(skb->data, &special_tag, sizeof(u32));
++	len += 4;
++#endif
++
++	/* dma needs to start on a 16 byte aligned address */
++	byte_offset = CPHYSADDR(skb->data) % 16;
++
++	spin_lock_bh(&ch->lock);
++	if ((desc->ctl & (LTQ_DMA_OWN | LTQ_DMA_C)) || ch->skb[ch->dma.desc]) {
++		netdev_err(dev, "tx ring full\n");
++		netif_stop_queue(dev);
++		ret = NETDEV_TX_BUSY;
++		goto out;
++	}
++
++	ch->skb[ch->dma.desc] = skb;
++
++	netif_trans_update(dev);
++
++	desc->addr = ((unsigned int) dma_map_single(ch->dma.dev, skb->data, len,
++						DMA_TO_DEVICE)) - byte_offset;
++	wmb();
++	desc->ctl = LTQ_DMA_OWN | LTQ_DMA_SOP | LTQ_DMA_EOP |
++		LTQ_DMA_TX_OFFSET(byte_offset) | (len & LTQ_DMA_SIZE_MASK);
++	ch->dma.desc++;
++	ch->dma.desc %= LTQ_DESC_NUM;
++	if (ch->dma.desc == ch->tx_free)
++		netif_stop_queue(dev);
++
++
++	priv->stats.tx_packets++;
++	priv->stats.tx_bytes+=len;
++
++out:
++	spin_unlock_bh(&ch->lock);
++
++	return ret;
++}
++
++static irqreturn_t xrx200_dma_irq(int irq, void *priv)
++{
++	struct xrx200_hw *hw = priv;
++	int chnr = irq - XRX200_DMA_IRQ;
++	struct xrx200_chan *ch = &hw->chan[chnr];
++
++	ltq_dma_disable_irq(&ch->dma);
++	ltq_dma_ack_irq(&ch->dma);
++
++	if (chnr % 2)
++		tasklet_schedule(&ch->tasklet);
++	else
++		napi_schedule(&ch->napi);
++
++	return IRQ_HANDLED;
++}
++
++static int xrx200_dma_init(struct device *dev, struct xrx200_hw *hw)
++{
++	int i, err = 0;
++
++	ltq_dma_init_port(DMA_PORT_ETOP);
++
++	for (i = 0; i < 8 && !err; i++) {
++		int irq = XRX200_DMA_IRQ + i;
++		struct xrx200_chan *ch = &hw->chan[i];
++
++		spin_lock_init(&ch->lock);
++
++		ch->idx = ch->dma.nr = i;
++		ch->dma.dev = dev;
++
++		if (i == XRX200_DMA_TX) {
++			ltq_dma_alloc_tx(&ch->dma);
++			err = request_irq(irq, xrx200_dma_irq, 0, "vrx200_tx", hw);
++		} else if (i == XRX200_DMA_TX_2) {
++			ltq_dma_alloc_tx(&ch->dma);
++			err = request_irq(irq, xrx200_dma_irq, 0, "vrx200_tx_2", hw);
++		} else if (i == XRX200_DMA_RX) {
++			ltq_dma_alloc_rx(&ch->dma);
++			for (ch->dma.desc = 0; ch->dma.desc < LTQ_DESC_NUM;
++					ch->dma.desc++)
++				if (xrx200_alloc_skb(ch))
++					err = -ENOMEM;
++			ch->dma.desc = 0;
++			err = request_irq(irq, xrx200_dma_irq, 0, "vrx200_rx", hw);
++		} else
++			continue;
++
++		if (!err)
++			ch->dma.irq = irq;
++		else
++			pr_err("net-xrx200: failed to request irq %d\n", irq);
++	}
++
++	return err;
++}
++
++#ifdef SW_POLLING
++static void xrx200_gmac_update(struct xrx200_port *port)
++{
++	u16 phyaddr = port->phydev->mdio.addr & MDIO_PHY_ADDR_MASK;
++	u16 miimode = ltq_mii_r32(MII_CFG(port->num)) & MII_CFG_MODE_MASK;
++	u16 miirate = 0;
++
++	switch (port->phydev->speed) {
++	case SPEED_1000:
++		phyaddr |= MDIO_PHY_SPEED_G1;
++		miirate = MII_CFG_RATE_M125;
++		break;
++
++	case SPEED_100:
++		phyaddr |= MDIO_PHY_SPEED_M100;
++		switch (miimode) {
++		case MII_CFG_MODE_RMIIM:
++		case MII_CFG_MODE_RMIIP:
++			miirate = MII_CFG_RATE_M50;
++			break;
++		default:
++			miirate = MII_CFG_RATE_M25;
++			break;
++		}
++		break;
++
++	default:
++		phyaddr |= MDIO_PHY_SPEED_M10;
++		miirate = MII_CFG_RATE_M2P5;
++		break;
++	}
++
++	if (port->phydev->link)
++		phyaddr |= MDIO_PHY_LINK_UP;
++	else
++		phyaddr |= MDIO_PHY_LINK_DOWN;
++
++	if (port->phydev->duplex == DUPLEX_FULL)
++		phyaddr |= MDIO_PHY_FDUP_EN;
++	else
++		phyaddr |= MDIO_PHY_FDUP_DIS;
++
++	ltq_mdio_w32_mask(MDIO_UPDATE_MASK, phyaddr, MDIO_PHY(port->num));
++	ltq_mii_w32_mask(MII_CFG_RATE_MASK, miirate, MII_CFG(port->num));
++	udelay(1);
++}
++#else
++static void xrx200_gmac_update(struct xrx200_port *port)
++{
++
++}
++#endif
++
++static void xrx200_mdio_link(struct net_device *dev)
++{
++	struct xrx200_priv *priv = netdev_priv(dev);
++	int i;
++
++	for (i = 0; i < priv->num_port; i++) {
++		if (!priv->port[i].phydev)
++			continue;
++
++		if (priv->port[i].link != priv->port[i].phydev->link) {
++			xrx200_gmac_update(&priv->port[i]);
++			priv->port[i].link = priv->port[i].phydev->link;
++			netdev_info(dev, "port %d %s link\n",
++				priv->port[i].num,
++				(priv->port[i].link)?("got"):("lost"));
++		}
++	}
++}
++
++static inline int xrx200_mdio_poll(struct mii_bus *bus)
++{
++	unsigned cnt = 10000;
++
++	while (likely(cnt--)) {
++		unsigned ctrl = ltq_mdio_r32(MDIO_CTRL);
++		if ((ctrl & MDIO_BUSY) == 0)
++			return 0;
++	}
++
++	return 1;
++}
++
++static int xrx200_mdio_wr(struct mii_bus *bus, int addr, int reg, u16 val)
++{
++	if (xrx200_mdio_poll(bus))
++		return 1;
++
++	ltq_mdio_w32(val, MDIO_WRITE);
++	ltq_mdio_w32(MDIO_BUSY | MDIO_WR |
++		((addr & MDIO_MASK) << MDIO_ADDRSHIFT) |
++		(reg & MDIO_MASK),
++		MDIO_CTRL);
++
++	return 0;
++}
++
++static int xrx200_mdio_rd(struct mii_bus *bus, int addr, int reg)
++{
++	if (xrx200_mdio_poll(bus))
++		return -1;
++
++	ltq_mdio_w32(MDIO_BUSY | MDIO_RD |
++		((addr & MDIO_MASK) << MDIO_ADDRSHIFT) |
++		(reg & MDIO_MASK),
++		MDIO_CTRL);
++
++	if (xrx200_mdio_poll(bus))
++		return -1;
++
++	return ltq_mdio_r32(MDIO_READ);
++}
++
++static int xrx200_phy_has_link(struct net_device *dev)
++{
++	struct xrx200_priv *priv = netdev_priv(dev);
++	int i;
++
++	for (i = 0; i < priv->num_port; i++) {
++		if (!priv->port[i].phydev)
++			continue;
++
++		if (priv->port[i].phydev->link)
++			return 1;
++	}
++
++	return 0;
++}
++
++static void xrx200_phy_link_change(struct phy_device *phydev, bool up, bool do_carrier)
++{
++	struct net_device *netdev = phydev->attached_dev;
++
++	if (do_carrier) {
++		if (up)
++			netif_carrier_on(netdev);
++		else if (!xrx200_phy_has_link(netdev))
++			netif_carrier_off(netdev);
++	}
++
++	phydev->adjust_link(netdev);
++}
++
++static int xrx200_mdio_probe(struct net_device *dev, struct xrx200_port *port)
++{
++	struct xrx200_priv *priv = netdev_priv(dev);
++	struct phy_device *phydev = NULL;
++	unsigned val;
++
++	phydev = mdiobus_get_phy(priv->hw->mii_bus, port->phy_addr);
++
++	if (!phydev) {
++		netdev_err(dev, "no PHY found\n");
++		return -ENODEV;
++	}
++
++	phydev = phy_connect(dev, phydev_name(phydev), &xrx200_mdio_link,
++				port->phy_if);
++
++	if (IS_ERR(phydev)) {
++		netdev_err(dev, "Could not attach to PHY\n");
++		return PTR_ERR(phydev);
++	}
++
++	phydev->supported &= (SUPPORTED_10baseT_Half
++			| SUPPORTED_10baseT_Full
++			| SUPPORTED_100baseT_Half
++			| SUPPORTED_100baseT_Full
++			| SUPPORTED_1000baseT_Half
++			| SUPPORTED_1000baseT_Full
++			| SUPPORTED_Autoneg
++			| SUPPORTED_MII
++			| SUPPORTED_TP);
++	phydev->advertising = phydev->supported;
++	port->phydev = phydev;
++	phydev->phy_link_change = xrx200_phy_link_change;
++
++	phy_attached_info(phydev);
++
++#ifdef SW_POLLING
++	phy_read_status(phydev);
++
++	val = xrx200_mdio_rd(priv->hw->mii_bus, MDIO_DEVAD_NONE, MII_CTRL1000);
++	val |= ADVERTIZE_MPD;
++	xrx200_mdio_wr(priv->hw->mii_bus, MDIO_DEVAD_NONE, MII_CTRL1000, val);
++	xrx200_mdio_wr(priv->hw->mii_bus, 0, 0, 0x1040);
++
++	phy_start_aneg(phydev);
++#endif
++	return 0;
++}
++
++static void xrx200_port_config(struct xrx200_priv *priv,
++		const struct xrx200_port *port)
++{
++	u16 miimode = 0;
++
++	switch (port->num) {
++	case 0: /* xMII0 */
++	case 1: /* xMII1 */
++		switch (port->phy_if) {
++		case PHY_INTERFACE_MODE_MII:
++			if (port->flags & XRX200_PORT_TYPE_PHY)
++				/* MII MAC mode, connected to external PHY */
++				miimode = MII_CFG_MODE_MIIM;
++			else
++				/* MII PHY mode, connected to external MAC */
++				miimode = MII_CFG_MODE_MIIP;
++			break;
++		case PHY_INTERFACE_MODE_RMII:
++			if (port->flags & XRX200_PORT_TYPE_PHY)
++				/* RMII MAC mode, connected to external PHY */
++				miimode = MII_CFG_MODE_RMIIM;
++			else
++				/* RMII PHY mode, connected to external MAC */
++				miimode = MII_CFG_MODE_RMIIP;
++			break;
++		case PHY_INTERFACE_MODE_RGMII:
++			/* RGMII MAC mode, connected to external PHY */
++			miimode = MII_CFG_MODE_RGMII;
++			break;
++		default:
++			break;
++		}
++		break;
++	case 2: /* internal GPHY0 */
++	case 3: /* internal GPHY0 */
++	case 4: /* internal GPHY1 */
++		switch (port->phy_if) {
++			case PHY_INTERFACE_MODE_MII:
++			case PHY_INTERFACE_MODE_GMII:
++				/* MII MAC mode, connected to internal GPHY */
++				miimode = MII_CFG_MODE_MIIM;
++				break;
++			default:
++				break;
++		}
++		break;
++	case 5: /* internal GPHY1 or xMII2 */
++		switch (port->phy_if) {
++		case PHY_INTERFACE_MODE_MII:
++			/* MII MAC mode, connected to internal GPHY */
++			miimode = MII_CFG_MODE_MIIM;
++			break;
++		case PHY_INTERFACE_MODE_RGMII:
++			/* RGMII MAC mode, connected to external PHY */
++			miimode = MII_CFG_MODE_RGMII;
++			break;
++		default:
++			break;
++		}
++		break;
++	default:
++		break;
++	}
++
++	ltq_mii_w32_mask(MII_CFG_MODE_MASK, miimode | MII_CFG_EN,
++		MII_CFG(port->num));
++}
++
++static int xrx200_init(struct net_device *dev)
++{
++	struct xrx200_priv *priv = netdev_priv(dev);
++	struct sockaddr mac;
++	int err, i;
++
++#ifndef SW_POLLING
++	unsigned int reg = 0;
++
++	/* enable auto polling */
++	for (i = 0; i < priv->num_port; i++)
++		reg |= BIT(priv->port[i].num);
++	ltq_mdio_w32(reg, MDIO_CLK_CFG0);
++	ltq_mdio_w32(MDIO1_25MHZ, MDIO_CLK_CFG1);
++#endif
++
++	/* setup each port */
++	for (i = 0; i < priv->num_port; i++)
++		xrx200_port_config(priv, &priv->port[i]);
++
++	memcpy(&mac.sa_data, priv->mac, ETH_ALEN);
++	if (!is_valid_ether_addr(mac.sa_data)) {
++		pr_warn("net-xrx200: invalid MAC, using random\n");
++		eth_random_addr(mac.sa_data);
++		dev->addr_assign_type |= NET_ADDR_RANDOM;
++	}
++
++	err = eth_mac_addr(dev, &mac);
++	if (err)
++		goto err_netdev;
++
++	for (i = 0; i < priv->num_port; i++)
++		if (xrx200_mdio_probe(dev, &priv->port[i]))
++			pr_warn("xrx200-mdio: probing phy of port %d failed\n",
++					 priv->port[i].num);
++
++	return 0;
++
++err_netdev:
++	unregister_netdev(dev);
++	free_netdev(dev);
++	return err;
++}
++
++static void xrx200_pci_microcode(void)
++{
++	int i;
++
++	ltq_switch_w32_mask(PCE_TBL_CFG_ADDR_MASK | PCE_TBL_CFG_ADWR_MASK,
++		PCE_TBL_CFG_ADWR, PCE_TBL_CTRL);
++	ltq_switch_w32(0, PCE_TBL_MASK);
++
++	for (i = 0; i < ARRAY_SIZE(pce_microcode); i++) {
++		ltq_switch_w32(i, PCE_TBL_ADDR);
++		ltq_switch_w32(pce_microcode[i].val[3], PCE_TBL_VAL(0));
++		ltq_switch_w32(pce_microcode[i].val[2], PCE_TBL_VAL(1));
++		ltq_switch_w32(pce_microcode[i].val[1], PCE_TBL_VAL(2));
++		ltq_switch_w32(pce_microcode[i].val[0], PCE_TBL_VAL(3));
++
++		// start the table access:
++		ltq_switch_w32_mask(0, PCE_TBL_BUSY, PCE_TBL_CTRL);
++		while (ltq_switch_r32(PCE_TBL_CTRL) & PCE_TBL_BUSY);
++	}
++
++	/* tell the switch that the microcode is loaded */
++	ltq_switch_w32_mask(0, BIT(3), PCE_GCTRL_REG(0));
++}
++
++static void xrx200_hw_init(struct xrx200_hw *hw)
++{
++	int i;
++
++	/* enable clock gate */
++	clk_enable(hw->clk);
++
++	ltq_switch_w32(1, 0);
++	mdelay(100);
++	ltq_switch_w32(0, 0);
++	/*
++	 * TODO: we should really disbale all phys/miis here and explicitly
++	 * enable them in the device secific init function
++	 */
++
++	/* disable port fetch/store dma */
++	for (i = 0; i < 7; i++ ) {
++		ltq_switch_w32(0, FDMA_PCTRLx(i));
++		ltq_switch_w32(0, SDMA_PCTRLx(i));
++	}
++
++	/* enable Switch */
++	ltq_mdio_w32_mask(0, MDIO_GLOB_ENABLE, MDIO_GLOB);
++
++	/* load the pce microcode */
++	xrx200_pci_microcode();
++
++	/* Default unknown Broadcat/Multicast/Unicast port maps */
++	ltq_switch_w32(0x40, PCE_PMAP1);
++	ltq_switch_w32(0x40, PCE_PMAP2);
++	ltq_switch_w32(0x40, PCE_PMAP3);
++
++	/* RMON Counter Enable for all physical ports */
++	for (i = 0; i < 7; i++)
++		ltq_switch_w32(0x1, BM_PCFG(i));
++
++	/* disable auto polling */
++	ltq_mdio_w32(0x0, MDIO_CLK_CFG0);
++
++	/* enable port statistic counters */
++	for (i = 0; i < 7; i++)
++		ltq_switch_w32(0x1, BM_PCFGx(i));
++
++	/* set IPG to 12 */
++	ltq_pmac_w32_mask(PMAC_IPG_MASK, 0xb, PMAC_RX_IPG);
++
++#ifdef SW_ROUTING
++	/* enable status header, enable CRC */
++	ltq_pmac_w32_mask(0,
++		PMAC_HD_CTL_RST | PMAC_HD_CTL_AST | PMAC_HD_CTL_RXSH | PMAC_HD_CTL_AS | PMAC_HD_CTL_AC | PMAC_HD_CTL_RC,
++		PMAC_HD_CTL);
++#else
++	/* disable status header, enable CRC */
++	ltq_pmac_w32_mask(PMAC_HD_CTL_AST | PMAC_HD_CTL_RXSH | PMAC_HD_CTL_AS,
++		PMAC_HD_CTL_AC | PMAC_HD_CTL_RC,
++		PMAC_HD_CTL);
++#endif
++
++	/* enable port fetch/store dma & VLAN Modification */
++	for (i = 0; i < 7; i++ ) {
++		ltq_switch_w32_mask(0, 0x19, FDMA_PCTRLx(i));
++		ltq_switch_w32_mask(0, 0x01, SDMA_PCTRLx(i));
++		ltq_switch_w32_mask(0, PCE_INGRESS, PCE_PCTRL_REG(i, 0));
++	}
++
++	/* enable special tag insertion on cpu port */
++	ltq_switch_w32_mask(0, 0x02, FDMA_PCTRLx(6));
++	ltq_switch_w32_mask(0, PCE_INGRESS, PCE_PCTRL_REG(6, 0));
++	ltq_switch_w32_mask(0, BIT(3), MAC_CTRL_REG(6, 2));
++	ltq_switch_w32(1518 + 8 + 4 * 2, MAC_FLEN_REG);
++	xrx200sw_write_x(1, XRX200_BM_QUEUE_GCTRL_GL_MOD, 0);
++
++	for (i = 0; i < XRX200_MAX_VLAN; i++)
++		hw->vlan_vid[i] = i;
++}
++
++static void xrx200_hw_cleanup(struct xrx200_hw *hw)
++{
++	int i;
++
++	/* disable the switch */
++	ltq_mdio_w32_mask(MDIO_GLOB_ENABLE, 0, MDIO_GLOB);
++
++	/* free the channels and IRQs */
++	for (i = 0; i < 2; i++) {
++		ltq_dma_free(&hw->chan[i].dma);
++		if (hw->chan[i].dma.irq)
++			free_irq(hw->chan[i].dma.irq, hw);
++	}
++
++	/* free the allocated RX ring */
++	for (i = 0; i < LTQ_DESC_NUM; i++)
++		dev_kfree_skb_any(hw->chan[XRX200_DMA_RX].skb[i]);
++
++	/* clear the mdio bus */
++	mdiobus_unregister(hw->mii_bus);
++	mdiobus_free(hw->mii_bus);
++
++	/* release the clock */
++	clk_disable(hw->clk);
++	clk_put(hw->clk);
++}
++
++static int xrx200_of_mdio(struct xrx200_hw *hw, struct device_node *np)
++{
++	hw->mii_bus = mdiobus_alloc();
++	if (!hw->mii_bus)
++		return -ENOMEM;
++
++	hw->mii_bus->read = xrx200_mdio_rd;
++	hw->mii_bus->write = xrx200_mdio_wr;
++	hw->mii_bus->name = "lantiq,xrx200-mdio";
++	snprintf(hw->mii_bus->id, MII_BUS_ID_SIZE, "%x", 0);
++
++	if (of_mdiobus_register(hw->mii_bus, np)) {
++		mdiobus_free(hw->mii_bus);
++		return -ENXIO;
++	}
++
++	return 0;
++}
++
++static void xrx200_of_port(struct xrx200_priv *priv, struct device_node *port)
++{
++	const __be32 *addr, *id = of_get_property(port, "reg", NULL);
++	struct xrx200_port *p = &priv->port[priv->num_port];
++
++	if (!id)
++		return;
++
++	memset(p, 0, sizeof(struct xrx200_port));
++	p->phy_node = of_parse_phandle(port, "phy-handle", 0);
++	addr = of_get_property(p->phy_node, "reg", NULL);
++	if (!addr)
++		return;
++
++	p->num = *id;
++	p->phy_addr = *addr;
++	p->phy_if = of_get_phy_mode(port);
++	if (p->phy_addr > 0x10)
++		p->flags = XRX200_PORT_TYPE_MAC;
++	else
++		p->flags = XRX200_PORT_TYPE_PHY;
++	priv->num_port++;
++
++	p->gpio = of_get_gpio_flags(port, 0, &p->gpio_flags);
++	if (gpio_is_valid(p->gpio))
++		if (!gpio_request(p->gpio, "phy-reset")) {
++			gpio_direction_output(p->gpio,
++				(p->gpio_flags & OF_GPIO_ACTIVE_LOW) ? (1) : (0));
++			udelay(100);
++			gpio_set_value(p->gpio, (p->gpio_flags & OF_GPIO_ACTIVE_LOW) ? (0) : (1));
++		}
++	/* is this port a wan port ? */
++	if (priv->wan)
++		priv->hw->wan_map |= BIT(p->num);
++
++	priv->port_map |= BIT(p->num);
++
++	/* store the port id in the hw struct so we can map ports -> devices */
++	priv->hw->port_map[p->num] = priv->hw->num_devs;
++
++	/* store the phy addr in the hw struct so we can map ports -> phys */
++	priv->hw->phy_addr[p->num] = p->phy_addr;
++}
++
++static const struct net_device_ops xrx200_netdev_ops = {
++	.ndo_init		= xrx200_init,
++	.ndo_open		= xrx200_open,
++	.ndo_stop		= xrx200_close,
++	.ndo_start_xmit		= xrx200_start_xmit,
++	.ndo_set_mac_address	= eth_mac_addr,
++	.ndo_validate_addr	= eth_validate_addr,
++	.ndo_get_stats		= xrx200_get_stats,
++	.ndo_tx_timeout		= xrx200_tx_timeout,
++};
++
++static void xrx200_of_iface(struct xrx200_hw *hw, struct device_node *iface, struct device *dev)
++{
++	struct xrx200_priv *priv;
++	struct device_node *port;
++	const __be32 *wan;
++	const u8 *mac;
++
++	/* alloc the network device */
++	hw->devs[hw->num_devs] = alloc_etherdev(sizeof(struct xrx200_priv));
++	if (!hw->devs[hw->num_devs])
++		return;
++
++	/* setup the network device */
++	strcpy(hw->devs[hw->num_devs]->name, "eth%d");
++	hw->devs[hw->num_devs]->netdev_ops = &xrx200_netdev_ops;
++	hw->devs[hw->num_devs]->watchdog_timeo = XRX200_TX_TIMEOUT;
++	hw->devs[hw->num_devs]->needed_headroom = XRX200_HEADROOM;
++	SET_NETDEV_DEV(hw->devs[hw->num_devs], dev);
++
++	/* setup our private data */
++	priv = netdev_priv(hw->devs[hw->num_devs]);
++	priv->hw = hw;
++	priv->id = hw->num_devs;
++
++	mac = of_get_mac_address(iface);
++	if (mac)
++		memcpy(priv->mac, mac, ETH_ALEN);
++
++	/* is this the wan interface ? */
++	wan = of_get_property(iface, "lantiq,wan", NULL);
++	if (wan && (*wan == 1))
++		priv->wan = 1;
++
++	/* should the switch be enabled on this interface ? */
++	if (of_find_property(iface, "lantiq,switch", NULL))
++		priv->sw = 1;
++
++	/* load the ports that are part of the interface */
++	for_each_child_of_node(iface, port)
++		if (of_device_is_compatible(port, "lantiq,xrx200-pdi-port"))
++			xrx200_of_port(priv, port);
++
++	/* register the actual device */
++	if (!register_netdev(hw->devs[hw->num_devs]))
++		hw->num_devs++;
++}
++
++static struct xrx200_hw xrx200_hw;
++
++static int xrx200_probe(struct platform_device *pdev)
++{
++	struct resource *res[4];
++	struct device_node *mdio_np, *iface_np, *phy_np;
++	struct of_phandle_iterator it;
++	int err;
++	int i;
++
++	/* load the memory ranges */
++	for (i = 0; i < 4; i++) {
++		res[i] = platform_get_resource(pdev, IORESOURCE_MEM, i);
++		if (!res[i]) {
++			dev_err(&pdev->dev, "failed to get resources\n");
++			return -ENOENT;
++		}
++	}
++	xrx200_switch_membase = devm_ioremap_resource(&pdev->dev, res[0]);
++	xrx200_mdio_membase = devm_ioremap_resource(&pdev->dev, res[1]);
++	xrx200_mii_membase = devm_ioremap_resource(&pdev->dev, res[2]);
++	xrx200_pmac_membase = devm_ioremap_resource(&pdev->dev, res[3]);
++	if (!xrx200_switch_membase || !xrx200_mdio_membase ||
++			!xrx200_mii_membase || !xrx200_pmac_membase) {
++		dev_err(&pdev->dev, "failed to request and remap io ranges \n");
++		return -ENOMEM;
++	}
++
++	of_for_each_phandle(&it, err, pdev->dev.of_node, "lantiq,phys", NULL, 0) {
++		phy_np = it.node;
++		if (phy_np) {
++			struct platform_device *phy = of_find_device_by_node(phy_np);
++	
++			of_node_put(phy_np);
++			if (!platform_get_drvdata(phy))
++				return -EPROBE_DEFER;
++		}
++	}
++
++	/* get the clock */
++	xrx200_hw.clk = clk_get(&pdev->dev, NULL);
++	if (IS_ERR(xrx200_hw.clk)) {
++		dev_err(&pdev->dev, "failed to get clock\n");
++		return PTR_ERR(xrx200_hw.clk);
++	}
++
++	/* bring up the dma engine and IP core */
++	xrx200_dma_init(&pdev->dev, &xrx200_hw);
++	xrx200_hw_init(&xrx200_hw);
++	tasklet_init(&xrx200_hw.chan[XRX200_DMA_TX].tasklet, xrx200_tx_housekeeping, (u32) &xrx200_hw.chan[XRX200_DMA_TX]);
++	tasklet_init(&xrx200_hw.chan[XRX200_DMA_TX_2].tasklet, xrx200_tx_housekeeping, (u32) &xrx200_hw.chan[XRX200_DMA_TX_2]);
++
++	/* bring up the mdio bus */
++	mdio_np = of_find_compatible_node(pdev->dev.of_node, NULL,
++				"lantiq,xrx200-mdio");
++	if (mdio_np)
++		if (xrx200_of_mdio(&xrx200_hw, mdio_np))
++			dev_err(&pdev->dev, "mdio probe failed\n");
++
++	/* load the interfaces */
++	for_each_child_of_node(pdev->dev.of_node, iface_np)
++		if (of_device_is_compatible(iface_np, "lantiq,xrx200-pdi")) {
++			if (xrx200_hw.num_devs < XRX200_MAX_DEV)
++				xrx200_of_iface(&xrx200_hw, iface_np, &pdev->dev);
++			else
++				dev_err(&pdev->dev,
++					"only %d interfaces allowed\n",
++					XRX200_MAX_DEV);
++		}
++
++	if (!xrx200_hw.num_devs) {
++		xrx200_hw_cleanup(&xrx200_hw);
++		dev_err(&pdev->dev, "failed to load interfaces\n");
++		return -ENOENT;
++	}
++
++	xrx200sw_init(&xrx200_hw);
++
++	/* set wan port mask */
++	ltq_pmac_w32(xrx200_hw.wan_map, PMAC_EWAN);
++
++	for (i = 0; i < xrx200_hw.num_devs; i++) {
++		xrx200_hw.chan[XRX200_DMA_RX].devs[i] = xrx200_hw.devs[i];
++		xrx200_hw.chan[XRX200_DMA_TX].devs[i] = xrx200_hw.devs[i];
++		xrx200_hw.chan[XRX200_DMA_TX_2].devs[i] = xrx200_hw.devs[i];
++	}
++
++	/* setup NAPI */
++	init_dummy_netdev(&xrx200_hw.chan[XRX200_DMA_RX].dummy_dev);
++	netif_napi_add(&xrx200_hw.chan[XRX200_DMA_RX].dummy_dev,
++			&xrx200_hw.chan[XRX200_DMA_RX].napi, xrx200_poll_rx, 32);
++
++	platform_set_drvdata(pdev, &xrx200_hw);
++
++	return 0;
++}
++
++static int xrx200_remove(struct platform_device *pdev)
++{
++	struct net_device *dev = platform_get_drvdata(pdev);
++	struct xrx200_priv *priv;
++
++	if (!dev)
++		return 0;
++
++	priv = netdev_priv(dev);
++
++	/* free stack related instances */
++	netif_stop_queue(dev);
++	netif_napi_del(&xrx200_hw.chan[XRX200_DMA_RX].napi);
++
++	/* shut down hardware */
++	xrx200_hw_cleanup(&xrx200_hw);
++
++	/* remove the actual device */
++	unregister_netdev(dev);
++	free_netdev(dev);
++
++	return 0;
++}
++
++static const struct of_device_id xrx200_match[] = {
++	{ .compatible = "lantiq,xrx200-net" },
++	{},
++};
++MODULE_DEVICE_TABLE(of, xrx200_match);
++
++static struct platform_driver xrx200_driver = {
++	.probe = xrx200_probe,
++	.remove = xrx200_remove,
++	.driver = {
++		.name = "lantiq,xrx200-net",
++		.of_match_table = xrx200_match,
++		.owner = THIS_MODULE,
++	},
++};
++
++module_platform_driver(xrx200_driver);
++
++MODULE_AUTHOR("John Crispin <blogic@openwrt.org>");
++MODULE_DESCRIPTION("Lantiq SoC XRX200 ethernet");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/net/ethernet/lantiq_xrx200_sw.h
+@@ -0,0 +1,1328 @@
++/*
++ *   This program is free software; you can redistribute it and/or modify it
++ *   under the terms of the GNU General Public License version 2 as published
++ *   by the Free Software Foundation.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program; if not, write to the Free Software
++ *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA.
++ *
++ *   Copyright (C) 2010 Lantiq Deutschland GmbH
++ *   Copyright (C) 2013 Antonios Vamporakis <vamporakis@yahoo.com>
++ *
++ *   VR9 switch registers extracted from 310TUJ0 switch api
++ *   WARNING mult values of 0x00 may not be correct
++ *
++ */
++
++enum {
++//	XRX200_ETHSW_SWRES,            /* Ethernet Switch ResetControl Register */
++//	XRX200_ETHSW_SWRES_R1,         /* Hardware Reset */
++//	XRX200_ETHSW_SWRES_R0,         /* Register Configuration */
++//	XRX200_ETHSW_CLK_MAC_GAT,      /* Ethernet Switch Clock ControlRegister  */
++//	XRX200_ETHSW_CLK_EXP_SLEEP,    /* Exponent to put system into sleep */
++//	XRX200_ETHSW_CLK_EXP_WAKE,     /* Exponent to wake up system */
++//	XRX200_ETHSW_CLK_CLK2_EN,      /* CLK2 Input for MAC */
++//	XRX200_ETHSW_CLK_EXT_DIV_EN,   /* External Clock Divider Enable */
++//	XRX200_ETHSW_CLK_RAM_DBG_EN,   /* Clock Gating Enable */
++//	XRX200_ETHSW_CLK_REG_GAT_EN,   /* Clock Gating Enable */
++//	XRX200_ETHSW_CLK_GAT_EN,       /* Clock Gating Enable */
++//	XRX200_ETHSW_CLK_MAC_GAT_EN,   /* Clock Gating Enable */
++//	XRX200_ETHSW_DBG_STEP,         /* Ethernet Switch Debug ControlRegister */
++//	XRX200_ETHSW_DBG_CLK_SEL,      /* Trigger Enable */
++//	XRX200_ETHSW_DBG_MON_EN,       /* Monitoring Enable */
++//	XRX200_ETHSW_DBG_TRIG_EN,      /* Trigger Enable */
++//	XRX200_ETHSW_DBG_MODE,         /* Debug Mode */
++//	XRX200_ETHSW_DBG_STEP_TIME,    /* Clock Step Size */
++//	XRX200_ETHSW_SSB_MODE,         /* Ethernet Switch SharedSegment Buffer Mode Register */
++//	XRX200_ETHSW_SSB_MODE_ADDE,    /* Memory Address */
++//	XRX200_ETHSW_SSB_MODE_MODE,    /* Memory Access Mode */
++//	XRX200_ETHSW_SSB_ADDR,         /* Ethernet Switch SharedSegment Buffer Address Register */
++//	XRX200_ETHSW_SSB_ADDR_ADDE,    /* Memory Address */
++//	XRX200_ETHSW_SSB_DATA,         /* Ethernet Switch SharedSegment Buffer Data Register */
++//	XRX200_ETHSW_SSB_DATA_DATA,    /* Data Value */
++//	XRX200_ETHSW_CAP_0,            /* Ethernet Switch CapabilityRegister 0 */
++//	XRX200_ETHSW_CAP_0_SPEED,      /* Clock frequency */
++//	XRX200_ETHSW_CAP_1,            /* Ethernet Switch CapabilityRegister 1 */
++//	XRX200_ETHSW_CAP_1_GMAC,       /* MAC operation mode */
++//	XRX200_ETHSW_CAP_1_QUEUE,      /* Number of queues */
++//	XRX200_ETHSW_CAP_1_VPORTS,     /* Number of virtual ports */
++//	XRX200_ETHSW_CAP_1_PPORTS,     /* Number of physical ports */
++//	XRX200_ETHSW_CAP_2,            /* Ethernet Switch CapabilityRegister 2 */
++//	XRX200_ETHSW_CAP_2_PACKETS,    /* Number of packets */
++//	XRX200_ETHSW_CAP_3,            /* Ethernet Switch CapabilityRegister 3 */
++//	XRX200_ETHSW_CAP_3_METERS,     /* Number of traffic meters */
++//	XRX200_ETHSW_CAP_3_SHAPERS,    /* Number of traffic shapers */
++//	XRX200_ETHSW_CAP_4,            /* Ethernet Switch CapabilityRegister 4 */
++//	XRX200_ETHSW_CAP_4_PPPOE,      /* PPPoE table size */
++//	XRX200_ETHSW_CAP_4_VLAN,       /* Active VLAN table size */
++//	XRX200_ETHSW_CAP_5,            /* Ethernet Switch CapabilityRegister 5 */
++//	XRX200_ETHSW_CAP_5_IPPLEN,     /* IP packet length table size */
++//	XRX200_ETHSW_CAP_5_PROT,       /* Protocol table size */
++//	XRX200_ETHSW_CAP_6,            /* Ethernet Switch CapabilityRegister 6 */
++//	XRX200_ETHSW_CAP_6_MACDASA,    /* MAC DA/SA table size */
++//	XRX200_ETHSW_CAP_6_APPL,       /* Application table size */
++//	XRX200_ETHSW_CAP_7,            /* Ethernet Switch CapabilityRegister 7 */
++//	XRX200_ETHSW_CAP_7_IPDASAM,    /* IP DA/SA MSB table size */
++//	XRX200_ETHSW_CAP_7_IPDASAL,    /* IP DA/SA LSB table size */
++//	XRX200_ETHSW_CAP_8,            /* Ethernet Switch CapabilityRegister 8 */
++//	XRX200_ETHSW_CAP_8_MCAST,      /* Multicast table size */
++//	XRX200_ETHSW_CAP_9,            /* Ethernet Switch CapabilityRegister 9 */
++//	XRX200_ETHSW_CAP_9_FLAGG,      /* Flow Aggregation table size */
++//	XRX200_ETHSW_CAP_10,           /* Ethernet Switch CapabilityRegister 10 */
++//	XRX200_ETHSW_CAP_10_MACBT,     /* MAC bridging table size */
++//	XRX200_ETHSW_CAP_11,           /* Ethernet Switch CapabilityRegister 11 */
++//	XRX200_ETHSW_CAP_11_BSIZEL,    /* Packet buffer size (lower part, in byte) */
++//	XRX200_ETHSW_CAP_12,           /* Ethernet Switch CapabilityRegister 12 */
++//	XRX200_ETHSW_CAP_12_BSIZEH,    /* Packet buffer size (higher part, in byte) */
++//	XRX200_ETHSW_VERSION_REV,      /* Ethernet Switch VersionRegister */
++//	XRX200_ETHSW_VERSION_MOD_ID,   /* Module Identification */
++//	XRX200_ETHSW_VERSION_REV_ID,   /* Hardware Revision Identification */
++//	XRX200_ETHSW_IER,              /* Interrupt Enable Register */
++//	XRX200_ETHSW_IER_FDMAIE,       /* Fetch DMA Interrupt Enable */
++//	XRX200_ETHSW_IER_SDMAIE,       /* Store DMA Interrupt Enable */
++//	XRX200_ETHSW_IER_MACIE,        /* Ethernet MAC Interrupt Enable */
++//	XRX200_ETHSW_IER_PCEIE,        /* Parser and Classification Engine Interrupt Enable */
++//	XRX200_ETHSW_IER_BMIE,         /* Buffer Manager Interrupt Enable */
++//	XRX200_ETHSW_ISR,              /* Interrupt Status Register */
++//	XRX200_ETHSW_ISR_FDMAINT,      /* Fetch DMA Interrupt */
++//	XRX200_ETHSW_ISR_SDMAINT,      /* Store DMA Interrupt */
++//	XRX200_ETHSW_ISR_MACINT,       /* Ethernet MAC Interrupt */
++//	XRX200_ETHSW_ISR_PCEINT,       /* Parser and Classification Engine Interrupt */
++//	XRX200_ETHSW_ISR_BMINT,        /* Buffer Manager Interrupt */
++//	XRX200_ETHSW_SPARE_0,          /* Ethernet Switch SpareCells 0 */
++//	XRX200_ETHSW_SPARE_0_SPARE,    /* SPARE0  */
++//	XRX200_ETHSW_SPARE_1,          /* Ethernet Switch SpareCells 1 */
++//	XRX200_ETHSW_SPARE_1_SPARE,    /* SPARE1  */
++//	XRX200_ETHSW_SPARE_2,          /* Ethernet Switch SpareCells 2 */
++//	XRX200_ETHSW_SPARE_2_SPARE,    /* SPARE2  */
++//	XRX200_ETHSW_SPARE_3,          /* Ethernet Switch SpareCells 3 */
++//	XRX200_ETHSW_SPARE_3_SPARE,    /* SPARE3  */
++//	XRX200_ETHSW_SPARE_4,          /* Ethernet Switch SpareCells 4 */
++//	XRX200_ETHSW_SPARE_4_SPARE,    /* SPARE4  */
++//	XRX200_ETHSW_SPARE_5,          /* Ethernet Switch SpareCells 5 */
++//	XRX200_ETHSW_SPARE_5_SPARE,    /* SPARE5  */
++//	XRX200_ETHSW_SPARE_6,          /* Ethernet Switch SpareCells 6 */
++//	XRX200_ETHSW_SPARE_6_SPARE,    /* SPARE6  */
++//	XRX200_ETHSW_SPARE_7,          /* Ethernet Switch SpareCells 7 */
++//	XRX200_ETHSW_SPARE_7_SPARE,    /* SPARE7  */
++//	XRX200_ETHSW_SPARE_8,          /* Ethernet Switch SpareCells 8 */
++//	XRX200_ETHSW_SPARE_8_SPARE,    /* SPARE8  */
++//	XRX200_ETHSW_SPARE_9,          /* Ethernet Switch SpareCells 9 */
++//	XRX200_ETHSW_SPARE_9_SPARE,    /* SPARE9  */
++//	XRX200_ETHSW_SPARE_10,         /* Ethernet Switch SpareCells 10 */
++//	XRX200_ETHSW_SPARE_10_SPARE,   /* SPARE10  */
++//	XRX200_ETHSW_SPARE_11,         /* Ethernet Switch SpareCells 11 */
++//	XRX200_ETHSW_SPARE_11_SPARE,   /* SPARE11  */
++//	XRX200_ETHSW_SPARE_12,         /* Ethernet Switch SpareCells 12 */
++//	XRX200_ETHSW_SPARE_12_SPARE,   /* SPARE12  */
++//	XRX200_ETHSW_SPARE_13,         /* Ethernet Switch SpareCells 13 */
++//	XRX200_ETHSW_SPARE_13_SPARE,   /* SPARE13  */
++//	XRX200_ETHSW_SPARE_14,         /* Ethernet Switch SpareCells 14 */
++//	XRX200_ETHSW_SPARE_14_SPARE,   /* SPARE14  */
++//	XRX200_ETHSW_SPARE_15,         /* Ethernet Switch SpareCells 15 */
++//	XRX200_ETHSW_SPARE_15_SPARE,   /* SPARE15  */
++//	XRX200_BM_RAM_VAL_3,           /* RAM Value Register 3 */
++//	XRX200_BM_RAM_VAL_3_VAL3,      /* Data value [15:0] */
++//	XRX200_BM_RAM_VAL_2,           /* RAM Value Register 2 */
++//	XRX200_BM_RAM_VAL_2_VAL2,      /* Data value [15:0] */
++//	XRX200_BM_RAM_VAL_1,           /* RAM Value Register 1 */
++//	XRX200_BM_RAM_VAL_1_VAL1,      /* Data value [15:0] */
++//	XRX200_BM_RAM_VAL_0,           /* RAM Value Register 0 */
++//	XRX200_BM_RAM_VAL_0_VAL0,      /* Data value [15:0] */
++//	XRX200_BM_RAM_ADDR,            /* RAM Address Register */
++//	XRX200_BM_RAM_ADDR_ADDR,       /* RAM Address */
++//	XRX200_BM_RAM_CTRL,            /* RAM Access Control Register */
++//	XRX200_BM_RAM_CTRL_BAS,        /* Access Busy/Access Start */
++//	XRX200_BM_RAM_CTRL_OPMOD,      /* Lookup Table Access Operation Mode */
++//	XRX200_BM_RAM_CTRL_ADDR,       /* Address for RAM selection */
++//	XRX200_BM_FSQM_GCTRL,          /* Free Segment Queue ManagerGlobal Control Register */
++//	XRX200_BM_FSQM_GCTRL_SEGNUM,   /* Maximum Segment Number */
++//	XRX200_BM_CONS_SEG,            /* Number of Consumed SegmentsRegister */
++//	XRX200_BM_CONS_SEG_FSEG,       /* Number of Consumed Segments */
++//	XRX200_BM_CONS_PKT,            /* Number of Consumed PacketPointers Register */
++//	XRX200_BM_CONS_PKT_FQP,        /* Number of Consumed Packet Pointers */
++//	XRX200_BM_GCTRL_F,             /* Buffer Manager Global ControlRegister 0 */
++//	XRX200_BM_GCTRL_BM_STA,        /* Buffer Manager Initialization Status Bit */
++//	XRX200_BM_GCTRL_SAT,           /* RMON Counter Update Mode */
++//	XRX200_BM_GCTRL_FR_RBC,        /* Freeze RMON RX Bad Byte 64 Bit Counter */
++//	XRX200_BM_GCTRL_FR_RGC,        /* Freeze RMON RX Good Byte 64 Bit Counter */
++//	XRX200_BM_GCTRL_FR_TGC,        /* Freeze RMON TX Good Byte 64 Bit Counter */
++//	XRX200_BM_GCTRL_I_FIN,         /* RAM initialization finished */
++//	XRX200_BM_GCTRL_CX_INI,        /* PQM Context RAM initialization */
++//	XRX200_BM_GCTRL_FP_INI,        /* FPQM RAM initialization */
++//	XRX200_BM_GCTRL_FS_INI,        /* FSQM RAM initialization */
++//	XRX200_BM_GCTRL_R_SRES,        /* Software Reset for RMON */
++//	XRX200_BM_GCTRL_S_SRES,        /* Software Reset for Scheduler */
++//	XRX200_BM_GCTRL_A_SRES,        /* Software Reset for AVG */
++//	XRX200_BM_GCTRL_P_SRES,        /* Software Reset for PQM */
++//	XRX200_BM_GCTRL_F_SRES,        /* Software Reset for FSQM */
++//	XRX200_BM_QUEUE_GCTRL,         /* Queue Manager GlobalControl Register 0 */
++	XRX200_BM_QUEUE_GCTRL_GL_MOD,  /* WRED Mode Signal */
++//	XRX200_BM_QUEUE_GCTRL_AQUI,    /* Average Queue Update Interval */
++//	XRX200_BM_QUEUE_GCTRL_AQWF,    /* Average Queue Weight Factor */
++//	XRX200_BM_QUEUE_GCTRL_QAVGEN,  /* Queue Average Calculation Enable */
++//	XRX200_BM_QUEUE_GCTRL_DPROB,   /* Drop Probability Profile */
++//	XRX200_BM_WRED_RTH_0,          /* WRED Red Threshold Register0 */
++//	XRX200_BM_WRED_RTH_0_MINTH,    /* Minimum Threshold */
++//	XRX200_BM_WRED_RTH_1,          /* WRED Red Threshold Register1 */
++//	XRX200_BM_WRED_RTH_1_MAXTH,    /* Maximum Threshold */
++//	XRX200_BM_WRED_YTH_0,          /* WRED Yellow ThresholdRegister 0 */
++//	XRX200_BM_WRED_YTH_0_MINTH,    /* Minimum Threshold */
++//	XRX200_BM_WRED_YTH_1,          /* WRED Yellow ThresholdRegister 1 */
++//	XRX200_BM_WRED_YTH_1_MAXTH,    /* Maximum Threshold */
++//	XRX200_BM_WRED_GTH_0,          /* WRED Green ThresholdRegister 0 */
++//	XRX200_BM_WRED_GTH_0_MINTH,    /* Minimum Threshold */
++//	XRX200_BM_WRED_GTH_1,          /* WRED Green ThresholdRegister 1 */
++//	XRX200_BM_WRED_GTH_1_MAXTH,    /* Maximum Threshold */
++//	XRX200_BM_DROP_GTH_0_THR,      /* Drop Threshold ConfigurationRegister 0 */
++//	XRX200_BM_DROP_GTH_0_THR_FQ,   /* Threshold for frames marked red */
++//	XRX200_BM_DROP_GTH_1_THY,      /* Drop Threshold ConfigurationRegister 1 */
++//	XRX200_BM_DROP_GTH_1_THY_FQ,   /* Threshold for frames marked yellow */
++//	XRX200_BM_DROP_GTH_2_THG,      /* Drop Threshold ConfigurationRegister 2 */
++//	XRX200_BM_DROP_GTH_2_THG_FQ,   /* Threshold for frames marked green */
++//	XRX200_BM_IER,                 /* Buffer Manager Global InterruptEnable Register */
++//	XRX200_BM_IER_CNT4,            /* Counter Group 4 (RMON-CLASSIFICATION) Interrupt Enable */
++//	XRX200_BM_IER_CNT3,            /* Counter Group 3 (RMON-PQM) Interrupt Enable */
++//	XRX200_BM_IER_CNT2,            /* Counter Group 2 (RMON-SCHEDULER) Interrupt Enable */
++//	XRX200_BM_IER_CNT1,            /* Counter Group 1 (RMON-QFETCH) Interrupt Enable */
++//	XRX200_BM_IER_CNT0,            /* Counter Group 0 (RMON-QSTOR) Interrupt Enable */
++//	XRX200_BM_IER_DEQ,             /* PQM dequeue Interrupt Enable */
++//	XRX200_BM_IER_ENQ,             /* PQM Enqueue Interrupt Enable */
++//	XRX200_BM_IER_FSQM,            /* Buffer Empty Interrupt Enable */
++//	XRX200_BM_ISR,                 /* Buffer Manager Global InterruptStatus Register */
++//	XRX200_BM_ISR_CNT4,            /* Counter Group 4 Interrupt */
++//	XRX200_BM_ISR_CNT3,            /* Counter Group 3 Interrupt */
++//	XRX200_BM_ISR_CNT2,            /* Counter Group 2 Interrupt */
++//	XRX200_BM_ISR_CNT1,            /* Counter Group 1 Interrupt */
++//	XRX200_BM_ISR_CNT0,            /* Counter Group 0 Interrupt */
++//	XRX200_BM_ISR_DEQ,             /* PQM dequeue Interrupt Enable */
++//	XRX200_BM_ISR_ENQ,             /* PQM Enqueue Interrupt */
++//	XRX200_BM_ISR_FSQM,            /* Buffer Empty Interrupt */
++//	XRX200_BM_CISEL,               /* Buffer Manager RMON CounterInterrupt Select Register */
++//	XRX200_BM_CISEL_PORT,          /* Port Number */
++//	XRX200_BM_DEBUG_CTRL_DBG,      /* Debug Control Register */
++//	XRX200_BM_DEBUG_CTRL_DBG_SEL,  /* Select Signal for Debug Multiplexer */
++//	XRX200_BM_DEBUG_VAL_DBG,       /* Debug Value Register */
++//	XRX200_BM_DEBUG_VAL_DBG_DAT,   /* Debug Data Value */
++//	XRX200_BM_PCFG,                /* Buffer Manager PortConfiguration Register */
++//	XRX200_BM_PCFG_CNTEN,          /* RMON Counter Enable */
++//	XRX200_BM_RMON_CTRL_RAM1,      /* Buffer ManagerRMON Control Register */
++//	XRX200_BM_RMON_CTRL_RAM2_RES,  /* Software Reset for RMON RAM2 */
++//	XRX200_BM_RMON_CTRL_RAM1_RES,  /* Software Reset for RMON RAM1 */
++//	XRX200_PQM_DP,                 /* Packet Queue ManagerDrop Probability Register */
++//	XRX200_PQM_DP_DPROB,           /* Drop Probability Profile */
++//	XRX200_PQM_RS,                 /* Packet Queue ManagerRate Shaper Assignment Register */
++//	XRX200_PQM_RS_EN2,             /* Rate Shaper 2 Enable */
++//	XRX200_PQM_RS_RS2,             /* Rate Shaper 2 */
++//	XRX200_PQM_RS_EN1,             /* Rate Shaper 1 Enable */
++//	XRX200_PQM_RS_RS1,             /* Rate Shaper 1 */
++//	XRX200_RS_CTRL,                /* Rate Shaper ControlRegister */
++//	XRX200_RS_CTRL_RSEN,           /* Rate Shaper Enable */
++//	XRX200_RS_CBS,                 /* Rate Shaper CommittedBurst Size Register */
++//	XRX200_RS_CBS_CBS,             /* Committed Burst Size */
++//	XRX200_RS_IBS,                 /* Rate Shaper InstantaneousBurst Size Register */
++//	XRX200_RS_IBS_IBS,             /* Instantaneous Burst Size */
++//	XRX200_RS_CIR_EXP,             /* Rate Shaper RateExponent Register */
++//	XRX200_RS_CIR_EXP_EXP,         /* Exponent */
++//	XRX200_RS_CIR_MANT,            /* Rate Shaper RateMantissa Register */
++//	XRX200_RS_CIR_MANT_MANT,       /* Mantissa */
++	XRX200_PCE_TBL_KEY_7,          /* Table Key Data 7 */
++//	XRX200_PCE_TBL_KEY_7_KEY7,     /* Key Value[15:0] */
++	XRX200_PCE_TBL_KEY_6,          /* Table Key Data 6 */
++//	XRX200_PCE_TBL_KEY_6_KEY6,     /* Key Value[15:0] */
++	XRX200_PCE_TBL_KEY_5,          /* Table Key Data 5 */
++//	XRX200_PCE_TBL_KEY_5_KEY5,     /* Key Value[15:0] */
++	XRX200_PCE_TBL_KEY_4,          /* Table Key Data 4 */
++//	XRX200_PCE_TBL_KEY_4_KEY4,     /* Key Value[15:0] */
++	XRX200_PCE_TBL_KEY_3,          /* Table Key Data 3 */
++//	XRX200_PCE_TBL_KEY_3_KEY3,     /* Key Value[15:0] */
++	XRX200_PCE_TBL_KEY_2,          /* Table Key Data 2 */
++//	XRX200_PCE_TBL_KEY_2_KEY2,     /* Key Value[15:0] */
++	XRX200_PCE_TBL_KEY_1,          /* Table Key Data 1 */
++//	XRX200_PCE_TBL_KEY_1_KEY1,     /* Key Value[31:16] */
++	XRX200_PCE_TBL_KEY_0,          /* Table Key Data 0 */
++//	XRX200_PCE_TBL_KEY_0_KEY0,     /* Key Value[15:0] */
++	XRX200_PCE_TBL_MASK_0,         /* Table Mask Write Register0 */
++//	XRX200_PCE_TBL_MASK_0_MASK0,   /* Mask Pattern [15:0] */
++	XRX200_PCE_TBL_VAL_4,          /* Table Value Register4 */
++//	XRX200_PCE_TBL_VAL_4_VAL4,     /* Data value [15:0] */
++	XRX200_PCE_TBL_VAL_3,          /* Table Value Register3 */
++//	XRX200_PCE_TBL_VAL_3_VAL3,     /* Data value [15:0] */
++	XRX200_PCE_TBL_VAL_2,          /* Table Value Register2 */
++//	XRX200_PCE_TBL_VAL_2_VAL2,     /* Data value [15:0] */
++	XRX200_PCE_TBL_VAL_1,          /* Table Value Register1 */
++//	XRX200_PCE_TBL_VAL_1_VAL1,     /* Data value [15:0] */
++	XRX200_PCE_TBL_VAL_0,          /* Table Value Register0 */
++//	XRX200_PCE_TBL_VAL_0_VAL0,     /* Data value [15:0] */
++//	XRX200_PCE_TBL_ADDR,           /* Table Entry AddressRegister */
++	XRX200_PCE_TBL_ADDR_ADDR,      /* Table Address */
++//	XRX200_PCE_TBL_CTRL,           /* Table Access ControlRegister */
++	XRX200_PCE_TBL_CTRL_BAS,       /* Access Busy/Access Start */
++	XRX200_PCE_TBL_CTRL_TYPE,      /* Lookup Entry Type */
++	XRX200_PCE_TBL_CTRL_VLD,       /* Lookup Entry Valid */
++	XRX200_PCE_TBL_CTRL_GMAP,      /* Group Map */
++	XRX200_PCE_TBL_CTRL_OPMOD,     /* Lookup Table Access Operation Mode */
++	XRX200_PCE_TBL_CTRL_ADDR,      /* Lookup Table Address */
++//	XRX200_PCE_TBL_STAT,           /* Table General StatusRegister */
++//	XRX200_PCE_TBL_STAT_TBUSY,     /* Table Access Busy */
++//	XRX200_PCE_TBL_STAT_TEMPT,     /* Table Empty */
++//	XRX200_PCE_TBL_STAT_TFUL,      /* Table Full */
++//	XRX200_PCE_AGE_0,              /* Aging Counter ConfigurationRegister 0 */
++//	XRX200_PCE_AGE_0_EXP,          /* Aging Counter Exponent Value  */
++//	XRX200_PCE_AGE_1,              /* Aging Counter ConfigurationRegister 1 */
++//	XRX200_PCE_AGE_1_MANT,         /* Aging Counter Mantissa Value  */
++//	XRX200_PCE_PMAP_1,             /* Port Map Register 1 */
++//	XRX200_PCE_PMAP_1_MPMAP,       /* Monitoring Port Map */
++//	XRX200_PCE_PMAP_2,             /* Port Map Register 2 */
++//	XRX200_PCE_PMAP_2_DMCPMAP,     /* Default Multicast Port Map */
++//	XRX200_PCE_PMAP_3,             /* Port Map Register 3 */
++//	XRX200_PCE_PMAP_3_UUCMAP,      /* Default Unknown Unicast Port Map */
++//	XRX200_PCE_GCTRL_0,            /* PCE Global Control Register0 */
++//	XRX200_PCE_GCTRL_0_IGMP,       /* IGMP Mode Selection */
++	XRX200_PCE_GCTRL_0_VLAN,       /* VLAN-aware Switching */
++//	XRX200_PCE_GCTRL_0_NOPM,       /* No Port Map Forwarding */
++//	XRX200_PCE_GCTRL_0_SCONUC,     /* Unknown Unicast Storm Control */
++//	XRX200_PCE_GCTRL_0_SCONMC,     /* Multicast Storm Control */
++//	XRX200_PCE_GCTRL_0_SCONBC,     /* Broadcast Storm Control */
++//	XRX200_PCE_GCTRL_0_SCONMOD,    /* Storm Control Mode */
++//	XRX200_PCE_GCTRL_0_SCONMET,    /* Storm Control Metering Instance */
++//	XRX200_PCE_GCTRL_0_MC_VALID,   /* Access Request */
++//	XRX200_PCE_GCTRL_0_PLCKMOD,    /* Port Lock Mode */
++//	XRX200_PCE_GCTRL_0_PLIMMOD,    /* MAC Address Learning Limitation Mode */
++//	XRX200_PCE_GCTRL_0_MTFL,       /* MAC Table Flushing */
++//	XRX200_PCE_GCTRL_1,            /* PCE Global Control Register1 */
++//	XRX200_PCE_GCTRL_1_PCE_DIS,    /* PCE Disable after currently processed packet */
++//	XRX200_PCE_GCTRL_1_LRNMOD,     /* MAC Address Learning Mode */
++//	XRX200_PCE_TCM_GLOB_CTRL,      /* Three-color MarkerGlobal Control Register */
++//	XRX200_PCE_TCM_GLOB_CTRL_DPRED, /* Re-marking Drop Precedence Red Encoding */
++//	XRX200_PCE_TCM_GLOB_CTRL_DPYEL, /* Re-marking Drop Precedence Yellow Encoding */
++//	XRX200_PCE_TCM_GLOB_CTRL_DPGRN, /* Re-marking Drop Precedence Green Encoding */
++//	XRX200_PCE_IGMP_CTRL,          /* IGMP Control Register */
++//	XRX200_PCE_IGMP_CTRL_FAGEEN,   /* Force Aging of Table Entries Enable */
++//	XRX200_PCE_IGMP_CTRL_FLEAVE,   /* Fast Leave Enable */
++//	XRX200_PCE_IGMP_CTRL_DMRTEN,   /* Default Maximum Response Time Enable */
++//	XRX200_PCE_IGMP_CTRL_JASUP,    /* Join Aggregation Suppression Enable */
++//	XRX200_PCE_IGMP_CTRL_REPSUP,   /* Report Suppression Enable */
++//	XRX200_PCE_IGMP_CTRL_SRPEN,    /* Snooping of Router Port Enable */
++//	XRX200_PCE_IGMP_CTRL_ROB,      /* Robustness Variable */
++//	XRX200_PCE_IGMP_CTRL_DMRT,     /* IGMP Default Maximum Response Time */
++//	XRX200_PCE_IGMP_DRPM,          /* IGMP Default RouterPort Map Register */
++//	XRX200_PCE_IGMP_DRPM_DRPM,     /* IGMP Default Router Port Map */
++//	XRX200_PCE_IGMP_AGE_0,         /* IGMP Aging Register0 */
++//	XRX200_PCE_IGMP_AGE_0_MANT,    /* IGMP Group Aging Time Mantissa */
++//	XRX200_PCE_IGMP_AGE_0_EXP,     /* IGMP Group Aging Time Exponent */
++//	XRX200_PCE_IGMP_AGE_1,         /* IGMP Aging Register1 */
++//	XRX200_PCE_IGMP_AGE_1_MANT,    /* IGMP Router Port Aging Time Mantissa */
++//	XRX200_PCE_IGMP_STAT,          /* IGMP Status Register */
++//	XRX200_PCE_IGMP_STAT_IGPM,     /* IGMP Port Map */
++//	XRX200_WOL_GLB_CTRL,           /* Wake-on-LAN ControlRegister */
++//	XRX200_WOL_GLB_CTRL_PASSEN,    /* WoL Password Enable */
++//	XRX200_WOL_DA_0,               /* Wake-on-LAN DestinationAddress Register 0 */
++//	XRX200_WOL_DA_0_DA0,           /* WoL Destination Address [15:0] */
++//	XRX200_WOL_DA_1,               /* Wake-on-LAN DestinationAddress Register 1 */
++//	XRX200_WOL_DA_1_DA1,           /* WoL Destination Address [31:16] */
++//	XRX200_WOL_DA_2,               /* Wake-on-LAN DestinationAddress Register 2 */
++//	XRX200_WOL_DA_2_DA2,           /* WoL Destination Address [47:32] */
++//	XRX200_WOL_PW_0,               /* Wake-on-LAN Password Register0 */
++//	XRX200_WOL_PW_0_PW0,           /* WoL Password [15:0] */
++//	XRX200_WOL_PW_1,               /* Wake-on-LAN Password Register1 */
++//	XRX200_WOL_PW_1_PW1,           /* WoL Password [31:16] */
++//	XRX200_WOL_PW_2,               /* Wake-on-LAN Password Register2 */
++//	XRX200_WOL_PW_2_PW2,           /* WoL Password [47:32] */
++//	XRX200_PCE_IER_0_PINT,         /* Parser and ClassificationEngine Global Interrupt Enable Register 0 */
++//	XRX200_PCE_IER_0_PINT_15,      /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_14,      /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_13,      /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_12,      /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_11,      /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_10,      /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_9,       /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_8,       /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_7,       /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_6,       /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_5,       /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_4,       /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_3,       /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_2,       /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_1,       /* Port Interrupt Enable */
++//	XRX200_PCE_IER_0_PINT_0,       /* Port Interrupt Enable */
++//	XRX200_PCE_IER_1,              /* Parser and ClassificationEngine Global Interrupt Enable Register 1 */
++//	XRX200_PCE_IER_1_FLOWINT,      /* Traffic Flow Table Interrupt Rule matched Interrupt Enable */
++//	XRX200_PCE_IER_1_CPH2,         /* Classification Phase 2 Ready Interrupt Enable */
++//	XRX200_PCE_IER_1_CPH1,         /* Classification Phase 1 Ready Interrupt Enable */
++//	XRX200_PCE_IER_1_CPH0,         /* Classification Phase 0 Ready Interrupt Enable */
++//	XRX200_PCE_IER_1_PRDY,         /* Parser Ready Interrupt Enable */
++//	XRX200_PCE_IER_1_IGTF,         /* IGMP Table Full Interrupt Enable */
++//	XRX200_PCE_IER_1_MTF,          /* MAC Table Full Interrupt Enable */
++//	XRX200_PCE_ISR_0_PINT,         /* Parser and ClassificationEngine Global Interrupt Status Register 0 */
++//	XRX200_PCE_ISR_0_PINT_15,      /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_14,      /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_13,      /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_12,      /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_11,      /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_10,      /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_9,       /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_8,       /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_7,       /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_6,       /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_5,       /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_4,       /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_3,       /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_2,       /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_1,       /* Port Interrupt */
++//	XRX200_PCE_ISR_0_PINT_0,       /* Port Interrupt */
++//	XRX200_PCE_ISR_1,              /* Parser and ClassificationEngine Global Interrupt Status Register 1 */
++//	XRX200_PCE_ISR_1_FLOWINT,      /* Traffic Flow Table Interrupt Rule matched */
++//	XRX200_PCE_ISR_1_CPH2,         /* Classification Phase 2 Ready Interrupt */
++//	XRX200_PCE_ISR_1_CPH1,         /* Classification Phase 1 Ready Interrupt */
++//	XRX200_PCE_ISR_1_CPH0,         /* Classification Phase 0 Ready Interrupt */
++//	XRX200_PCE_ISR_1_PRDY,         /* Parser Ready Interrupt */
++//	XRX200_PCE_ISR_1_IGTF,         /* IGMP Table Full Interrupt */
++//	XRX200_PCE_ISR_1_MTF,          /* MAC Table Full Interrupt */
++//	XRX200_PARSER_STAT_FIFO,       /* Parser Status Register */
++//	XRX200_PARSER_STAT_FSM_DAT_CNT, /* Parser FSM Data Counter */
++//	XRX200_PARSER_STAT_FSM_STATE,  /* Parser FSM State */
++//	XRX200_PARSER_STAT_PKT_ERR,    /* Packet error detected */
++//	XRX200_PARSER_STAT_FSM_FIN,    /* Parser FSM finished */
++//	XRX200_PARSER_STAT_FSM_START,  /* Parser FSM start */
++//	XRX200_PARSER_STAT_FIFO_RDY,   /* Parser FIFO ready for read. */
++//	XRX200_PARSER_STAT_FIFO_FULL,  /* Parser */
++//	XRX200_PCE_PCTRL_0,            /* PCE Port ControlRegister 0 */
++//	XRX200_PCE_PCTRL_0_MCST,       /* Multicast Forwarding Mode Selection */
++//	XRX200_PCE_PCTRL_0_EGSTEN,     /* Table-based Egress Special Tag Enable */
++//	XRX200_PCE_PCTRL_0_IGSTEN,     /* Ingress Special Tag Enable */
++//	XRX200_PCE_PCTRL_0_PCPEN,      /* PCP Remarking Mode */
++//	XRX200_PCE_PCTRL_0_CLPEN,      /* Class Remarking Mode */
++//	XRX200_PCE_PCTRL_0_DPEN,       /* Drop Precedence Remarking Mode */
++//	XRX200_PCE_PCTRL_0_CMOD,       /* Three-color Marker Color Mode */
++//	XRX200_PCE_PCTRL_0_VREP,       /* VLAN Replacement Mode */
++	XRX200_PCE_PCTRL_0_TVM,        /* Transparent VLAN Mode */
++//	XRX200_PCE_PCTRL_0_PLOCK,      /* Port Locking Enable */
++//	XRX200_PCE_PCTRL_0_AGEDIS,     /* Aging Disable */
++//	XRX200_PCE_PCTRL_0_PSTATE,     /* Port State */
++//	XRX200_PCE_PCTRL_1,            /* PCE Port ControlRegister 1 */
++//	XRX200_PCE_PCTRL_1_LRNLIM,     /* MAC Address Learning Limit */
++//	XRX200_PCE_PCTRL_2,            /* PCE Port ControlRegister 2 */
++//	XRX200_PCE_PCTRL_2_DSCPMOD,    /* DSCP Mode Selection */
++//	XRX200_PCE_PCTRL_2_DSCP,       /* Enable DSCP to select the Class of Service */
++//	XRX200_PCE_PCTRL_2_PCP,        /* Enable VLAN PCP to select the Class of Service */
++//	XRX200_PCE_PCTRL_2_PCLASS,     /* Port-based Traffic Class */
++//	XRX200_PCE_PCTRL_3_VIO,        /* PCE Port ControlRegister 3 */
++//	XRX200_PCE_PCTRL_3_EDIR,       /* Egress Redirection Mode */
++//	XRX200_PCE_PCTRL_3_RXDMIR,     /* Receive Mirroring Enable for dropped frames */
++//	XRX200_PCE_PCTRL_3_RXVMIR,     /* Receive Mirroring Enable for valid frames */
++//	XRX200_PCE_PCTRL_3_TXMIR,      /* Transmit Mirroring Enable */
++//	XRX200_PCE_PCTRL_3_VIO_7,      /* Violation Type 7 Mirroring Enable */
++//	XRX200_PCE_PCTRL_3_VIO_6,      /* Violation Type 6 Mirroring Enable */
++//	XRX200_PCE_PCTRL_3_VIO_5,      /* Violation Type 5 Mirroring Enable */
++//	XRX200_PCE_PCTRL_3_VIO_4,      /* Violation Type 4 Mirroring Enable */
++//	XRX200_PCE_PCTRL_3_VIO_3,      /* Violation Type 3 Mirroring Enable */
++//	XRX200_PCE_PCTRL_3_VIO_2,      /* Violation Type 2 Mirroring Enable */
++//	XRX200_PCE_PCTRL_3_VIO_1,      /* Violation Type 1 Mirroring Enable */
++//	XRX200_PCE_PCTRL_3_VIO_0,      /* Violation Type 0 Mirroring Enable */
++//	XRX200_WOL_CTRL,               /* Wake-on-LAN ControlRegister */
++//	XRX200_WOL_CTRL_PORT,          /* WoL Enable */
++//	XRX200_PCE_VCTRL,              /* PCE VLAN ControlRegister */
++	XRX200_PCE_VCTRL_VSR,          /* VLAN Security Rule */
++	XRX200_PCE_VCTRL_VEMR,         /* VLAN Egress Member Violation Rule */
++	XRX200_PCE_VCTRL_VIMR,         /* VLAN Ingress Member Violation Rule */
++	XRX200_PCE_VCTRL_VINR,         /* VLAN Ingress Tag Rule */
++	XRX200_PCE_VCTRL_UVR,          /* Unknown VLAN Rule */
++//	XRX200_PCE_DEFPVID,            /* PCE Default PortVID Register */
++	XRX200_PCE_DEFPVID_PVID,       /* Default Port VID Index */
++//	XRX200_PCE_PSTAT,              /* PCE Port StatusRegister */
++//	XRX200_PCE_PSTAT_LRNCNT,       /* Learning Count */
++//	XRX200_PCE_PIER,               /* Parser and ClassificationEngine Port Interrupt Enable Register */
++//	XRX200_PCE_PIER_CLDRP,         /* Classification Drop Interrupt Enable */
++//	XRX200_PCE_PIER_PTDRP,         /* Port Drop Interrupt Enable */
++//	XRX200_PCE_PIER_VLAN,          /* VLAN Violation Interrupt Enable */
++//	XRX200_PCE_PIER_WOL,           /* Wake-on-LAN Interrupt Enable */
++//	XRX200_PCE_PIER_LOCK,          /* Port Limit Alert Interrupt Enable */
++//	XRX200_PCE_PIER_LIM,           /* Port Lock Alert Interrupt Enable */
++//	XRX200_PCE_PISR,               /* Parser and ClassificationEngine Port Interrupt Status Register */
++//	XRX200_PCE_PISR_CLDRP,         /* Classification Drop Interrupt */
++//	XRX200_PCE_PISR_PTDRP,         /* Port Drop Interrupt */
++//	XRX200_PCE_PISR_VLAN,          /* VLAN Violation Interrupt */
++//	XRX200_PCE_PISR_WOL,           /* Wake-on-LAN Interrupt */
++//	XRX200_PCE_PISR_LOCK,          /* Port Lock Alert Interrupt */
++//	XRX200_PCE_PISR_LIMIT,         /* Port Limitation Alert Interrupt */
++//	XRX200_PCE_TCM_CTRL,           /* Three-colorMarker Control Register */
++//	XRX200_PCE_TCM_CTRL_TCMEN,     /* Three-color Marker metering instance enable */
++//	XRX200_PCE_TCM_STAT,           /* Three-colorMarker Status Register */
++//	XRX200_PCE_TCM_STAT_AL1,       /* Three-color Marker Alert 1 Status */
++//	XRX200_PCE_TCM_STAT_AL0,       /* Three-color Marker Alert 0 Status */
++//	XRX200_PCE_TCM_CBS,            /* Three-color MarkerCommitted Burst Size Register */
++//	XRX200_PCE_TCM_CBS_CBS,        /* Committed Burst Size */
++//	XRX200_PCE_TCM_EBS,            /* Three-color MarkerExcess Burst Size Register */
++//	XRX200_PCE_TCM_EBS_EBS,        /* Excess Burst Size */
++//	XRX200_PCE_TCM_IBS,            /* Three-color MarkerInstantaneous Burst Size Register */
++//	XRX200_PCE_TCM_IBS_IBS,        /* Instantaneous Burst Size */
++//	XRX200_PCE_TCM_CIR_MANT,       /* Three-colorMarker Constant Information Rate Mantissa Register */
++//	XRX200_PCE_TCM_CIR_MANT_MANT,  /* Rate Counter Mantissa */
++//	XRX200_PCE_TCM_CIR_EXP,        /* Three-colorMarker Constant Information Rate Exponent Register */
++//	XRX200_PCE_TCM_CIR_EXP_EXP,    /* Rate Counter Exponent */
++//	XRX200_MAC_TEST,               /* MAC Test Register */
++//	XRX200_MAC_TEST_JTP,           /* Jitter Test Pattern */
++//	XRX200_MAC_PFAD_CFG,           /* MAC Pause FrameSource Address Configuration Register */
++//	XRX200_MAC_PFAD_CFG_SAMOD,     /* Source Address Mode */
++//	XRX200_MAC_PFSA_0,             /* Pause Frame SourceAddress Part 0  */
++//	XRX200_MAC_PFSA_0_PFAD,        /* Pause Frame Source Address Part 0 */
++//	XRX200_MAC_PFSA_1,             /* Pause Frame SourceAddress Part 1  */
++//	XRX200_MAC_PFSA_1_PFAD,        /* Pause Frame Source Address Part 1 */
++//	XRX200_MAC_PFSA_2,             /* Pause Frame SourceAddress Part 2  */
++//	XRX200_MAC_PFSA_2_PFAD,        /* Pause Frame Source Address Part 2 */
++//	XRX200_MAC_FLEN,               /* MAC Frame Length Register */
++//	XRX200_MAC_FLEN_LEN,           /* Maximum Frame Length */
++//	XRX200_MAC_VLAN_ETYPE_0,       /* MAC VLAN EthertypeRegister 0 */
++//	XRX200_MAC_VLAN_ETYPE_0_OUTER, /* Ethertype */
++//	XRX200_MAC_VLAN_ETYPE_1,       /* MAC VLAN EthertypeRegister 1 */
++//	XRX200_MAC_VLAN_ETYPE_1_INNER, /* Ethertype */
++//	XRX200_MAC_IER,                /* MAC Interrupt EnableRegister */
++//	XRX200_MAC_IER_MACIEN,         /* MAC Interrupt Enable */
++//	XRX200_MAC_ISR,                /* MAC Interrupt StatusRegister */
++//	XRX200_MAC_ISR_MACINT,         /* MAC Interrupt */
++//	XRX200_MAC_PSTAT,              /* MAC Port Status Register */
++//	XRX200_MAC_PSTAT_PACT,         /* PHY Active Status */
++	XRX200_MAC_PSTAT_GBIT,         /* Gigabit Speed Status */
++	XRX200_MAC_PSTAT_MBIT,         /* Megabit Speed Status */
++	XRX200_MAC_PSTAT_FDUP,         /* Full Duplex Status */
++//	XRX200_MAC_PSTAT_RXPAU,        /* Receive Pause Status */
++//	XRX200_MAC_PSTAT_TXPAU,        /* Transmit Pause Status */
++//	XRX200_MAC_PSTAT_RXPAUEN,      /* Receive Pause Enable Status */
++//	XRX200_MAC_PSTAT_TXPAUEN,      /* Transmit Pause Enable Status */
++	XRX200_MAC_PSTAT_LSTAT,        /* Link Status */
++//	XRX200_MAC_PSTAT_CRS,          /* Carrier Sense Status */
++//	XRX200_MAC_PSTAT_TXLPI,        /* Transmit Low-power Idle Status */
++//	XRX200_MAC_PSTAT_RXLPI,        /* Receive Low-power Idle Status */
++//	XRX200_MAC_PISR,               /* MAC Interrupt Status Register */
++//	XRX200_MAC_PISR_PACT,          /* PHY Active Status */
++//	XRX200_MAC_PISR_SPEED,         /* Megabit Speed Status */
++//	XRX200_MAC_PISR_FDUP,          /* Full Duplex Status */
++//	XRX200_MAC_PISR_RXPAUEN,       /* Receive Pause Enable Status */
++//	XRX200_MAC_PISR_TXPAUEN,       /* Transmit Pause Enable Status */
++//	XRX200_MAC_PISR_LPIOFF,        /* Receive Low-power Idle Mode is left */
++//	XRX200_MAC_PISR_LPION,         /* Receive Low-power Idle Mode is entered */
++//	XRX200_MAC_PISR_JAM,           /* Jam Status Detected */
++//	XRX200_MAC_PISR_TOOSHORT,      /* Too Short Frame Error Detected */
++//	XRX200_MAC_PISR_TOOLONG,       /* Too Long Frame Error Detected */
++//	XRX200_MAC_PISR_LENERR,        /* Length Mismatch Error Detected */
++//	XRX200_MAC_PISR_FCSERR,        /* Frame Checksum Error Detected */
++//	XRX200_MAC_PISR_TXPAUSE,       /* Pause Frame Transmitted */
++//	XRX200_MAC_PISR_RXPAUSE,       /* Pause Frame Received */
++//	XRX200_MAC_PIER,               /* MAC Interrupt Enable Register */
++//	XRX200_MAC_PIER_PACT,          /* PHY Active Status */
++//	XRX200_MAC_PIER_SPEED,         /* Megabit Speed Status */
++//	XRX200_MAC_PIER_FDUP,          /* Full Duplex Status */
++//	XRX200_MAC_PIER_RXPAUEN,       /* Receive Pause Enable Status */
++//	XRX200_MAC_PIER_TXPAUEN,       /* Transmit Pause Enable Status */
++//	XRX200_MAC_PIER_LPIOFF,        /* Low-power Idle Off Interrupt Mask */
++//	XRX200_MAC_PIER_LPION,         /* Low-power Idle On Interrupt Mask */
++//	XRX200_MAC_PIER_JAM,           /* Jam Status Interrupt Mask */
++//	XRX200_MAC_PIER_TOOSHORT,      /* Too Short Frame Error Interrupt Mask */
++//	XRX200_MAC_PIER_TOOLONG,       /* Too Long Frame Error Interrupt Mask */
++//	XRX200_MAC_PIER_LENERR,        /* Length Mismatch Error Interrupt Mask */
++//	XRX200_MAC_PIER_FCSERR,        /* Frame Checksum Error Interrupt Mask */
++//	XRX200_MAC_PIER_TXPAUSE,       /* Transmit Pause Frame Interrupt Mask */
++//	XRX200_MAC_PIER_RXPAUSE,       /* Receive Pause Frame Interrupt Mask */
++//	XRX200_MAC_CTRL_0,             /* MAC Control Register0 */
++//	XRX200_MAC_CTRL_0_LCOL,        /* Late Collision Control */
++//	XRX200_MAC_CTRL_0_BM,          /* Burst Mode Control */
++//	XRX200_MAC_CTRL_0_APADEN,      /* Automatic VLAN Padding Enable */
++//	XRX200_MAC_CTRL_0_VPAD2EN,     /* Stacked VLAN Padding Enable */
++//	XRX200_MAC_CTRL_0_VPADEN,      /* VLAN Padding Enable */
++//	XRX200_MAC_CTRL_0_PADEN,       /* Padding Enable */
++//	XRX200_MAC_CTRL_0_FCS,         /* Transmit FCS Control */
++	XRX200_MAC_CTRL_0_FCON,        /* Flow Control Mode */
++//	XRX200_MAC_CTRL_0_FDUP,        /* Full Duplex Control */
++//	XRX200_MAC_CTRL_0_GMII,        /* GMII/MII interface mode selection */
++//	XRX200_MAC_CTRL_1,             /* MAC Control Register1 */
++//	XRX200_MAC_CTRL_1_SHORTPRE,    /* Short Preamble Control */
++//	XRX200_MAC_CTRL_1_IPG,         /* Minimum Inter Packet Gap Size */
++//	XRX200_MAC_CTRL_2,             /* MAC Control Register2 */
++//	XRX200_MAC_CTRL_2_MLEN,        /* Maximum Untagged Frame Length */
++//	XRX200_MAC_CTRL_2_LCHKL,       /* Frame Length Check Long Enable */
++//	XRX200_MAC_CTRL_2_LCHKS,       /* Frame Length Check Short Enable */
++//	XRX200_MAC_CTRL_3,             /* MAC Control Register3 */
++//	XRX200_MAC_CTRL_3_RCNT,        /* Retry Count */
++//	XRX200_MAC_CTRL_4,             /* MAC Control Register4 */
++//	XRX200_MAC_CTRL_4_LPIEN,       /* LPI Mode Enable */
++//	XRX200_MAC_CTRL_4_WAIT,        /* LPI Wait Time */
++//	XRX200_MAC_CTRL_5_PJPS,        /* MAC Control Register5 */
++//	XRX200_MAC_CTRL_5_PJPS_NOBP,   /* Prolonged Jam pattern size during no-backpressure state */
++//	XRX200_MAC_CTRL_5_PJPS_BP,     /* Prolonged Jam pattern size during backpressure state */
++//	XRX200_MAC_CTRL_6_XBUF,        /* Transmit and ReceiveBuffer Control Register */
++//	XRX200_MAC_CTRL_6_RBUF_DLY_WP, /* Delay */
++//	XRX200_MAC_CTRL_6_RBUF_INIT,   /* Receive Buffer Initialization */
++//	XRX200_MAC_CTRL_6_RBUF_BYPASS, /* Bypass the Receive Buffer */
++//	XRX200_MAC_CTRL_6_XBUF_DLY_WP, /* Delay */
++//	XRX200_MAC_CTRL_6_XBUF_INIT,   /* Initialize the Transmit Buffer */
++//	XRX200_MAC_CTRL_6_XBUF_BYPASS, /* Bypass the Transmit Buffer */
++//	XRX200_MAC_BUFST_XBUF,         /* MAC Receive and TransmitBuffer Status Register */
++//	XRX200_MAC_BUFST_RBUF_UFL,     /* Receive Buffer Underflow Indicator */
++//	XRX200_MAC_BUFST_RBUF_OFL,     /* Receive Buffer Overflow Indicator */
++//	XRX200_MAC_BUFST_XBUF_UFL,     /* Transmit Buffer Underflow Indicator */
++//	XRX200_MAC_BUFST_XBUF_OFL,     /* Transmit Buffer Overflow Indicator */
++//	XRX200_MAC_TESTEN,             /* MAC Test Enable Register */
++//	XRX200_MAC_TESTEN_JTEN,        /* Jitter Test Enable */
++//	XRX200_MAC_TESTEN_TXER,        /* Transmit Error Insertion */
++//	XRX200_MAC_TESTEN_LOOP,        /* MAC Loopback Enable */
++//	XRX200_FDMA_CTRL,              /* Ethernet Switch FetchDMA Control Register */
++//	XRX200_FDMA_CTRL_LPI_THRESHOLD, /* Low Power Idle Threshold */
++//	XRX200_FDMA_CTRL_LPI_MODE,     /* Low Power Idle Mode */
++//	XRX200_FDMA_CTRL_EGSTAG,       /* Egress Special Tag Size */
++//	XRX200_FDMA_CTRL_IGSTAG,       /* Ingress Special Tag Size */
++//	XRX200_FDMA_CTRL_EXCOL,        /* Excessive Collision Handling */
++//	XRX200_FDMA_STETYPE,           /* Special Tag EthertypeControl Register */
++//	XRX200_FDMA_STETYPE_ETYPE,     /* Special Tag Ethertype */
++//	XRX200_FDMA_VTETYPE,           /* VLAN Tag EthertypeControl Register */
++//	XRX200_FDMA_VTETYPE_ETYPE,     /* VLAN Tag Ethertype */
++//	XRX200_FDMA_STAT_0,            /* FDMA Status Register0 */
++//	XRX200_FDMA_STAT_0_FSMS,       /* FSM states status */
++//	XRX200_FDMA_IER,               /* Fetch DMA Global InterruptEnable Register */
++//	XRX200_FDMA_IER_PCKD,          /* Packet Drop Interrupt Enable */
++//	XRX200_FDMA_IER_PCKR,          /* Packet Ready Interrupt Enable */
++//	XRX200_FDMA_IER_PCKT,          /* Packet Sent Interrupt Enable */
++//	XRX200_FDMA_ISR,               /* Fetch DMA Global InterruptStatus Register */
++//	XRX200_FDMA_ISR_PCKTD,         /* Packet Drop */
++//	XRX200_FDMA_ISR_PCKR,          /* Packet is Ready for Transmission */
++//	XRX200_FDMA_ISR_PCKT,          /* Packet Sent Event */
++//	XRX200_FDMA_PCTRL,             /* Ethernet SwitchFetch DMA Port Control Register */
++//	XRX200_FDMA_PCTRL_VLANMOD,     /* VLAN Modification Enable */
++//	XRX200_FDMA_PCTRL_DSCPRM,      /* DSCP Re-marking Enable */
++//	XRX200_FDMA_PCTRL_STEN,        /* Special Tag Insertion Enable */
++//	XRX200_FDMA_PCTRL_EN,          /* FDMA Port Enable */
++//	XRX200_FDMA_PRIO,              /* Ethernet SwitchFetch DMA Port Priority Register */
++//	XRX200_FDMA_PRIO_PRIO,         /* FDMA PRIO */
++//	XRX200_FDMA_PSTAT0,            /* Ethernet SwitchFetch DMA Port Status Register 0 */
++//	XRX200_FDMA_PSTAT0_PKT_AVAIL,  /* Port Egress Packet Available */
++//	XRX200_FDMA_PSTAT0_POK,        /* Port Status OK */
++//	XRX200_FDMA_PSTAT0_PSEG,       /* Port Egress Segment Count */
++//	XRX200_FDMA_PSTAT1_HDR,        /* Ethernet SwitchFetch DMA Port Status Register 1 */
++//	XRX200_FDMA_PSTAT1_HDR_PTR,    /* Header Pointer */
++//	XRX200_FDMA_TSTAMP0,           /* Egress TimeStamp Register 0 */
++//	XRX200_FDMA_TSTAMP0_TSTL,      /* Time Stamp [15:0] */
++//	XRX200_FDMA_TSTAMP1,           /* Egress TimeStamp Register 1 */
++//	XRX200_FDMA_TSTAMP1_TSTH,      /* Time Stamp [31:16] */
++//	XRX200_SDMA_CTRL,              /* Ethernet Switch StoreDMA Control Register */
++//	XRX200_SDMA_CTRL_TSTEN,        /* Time Stamp Enable */
++//	XRX200_SDMA_FCTHR1,            /* SDMA Flow Control Threshold1 Register */
++//	XRX200_SDMA_FCTHR1_THR1,       /* Threshold 1 */
++//	XRX200_SDMA_FCTHR2,            /* SDMA Flow Control Threshold2 Register */
++//	XRX200_SDMA_FCTHR2_THR2,       /* Threshold 2 */
++//	XRX200_SDMA_FCTHR3,            /* SDMA Flow Control Threshold3 Register */
++//	XRX200_SDMA_FCTHR3_THR3,       /* Threshold 3 */
++//	XRX200_SDMA_FCTHR4,            /* SDMA Flow Control Threshold4 Register */
++//	XRX200_SDMA_FCTHR4_THR4,       /* Threshold 4 */
++//	XRX200_SDMA_FCTHR5,            /* SDMA Flow Control Threshold5 Register */
++//	XRX200_SDMA_FCTHR5_THR5,       /* Threshold 5 */
++//	XRX200_SDMA_FCTHR6,            /* SDMA Flow Control Threshold6 Register */
++//	XRX200_SDMA_FCTHR6_THR6,       /* Threshold 6 */
++//	XRX200_SDMA_FCTHR7,            /* SDMA Flow Control Threshold7 Register */
++//	XRX200_SDMA_FCTHR7_THR7,       /* Threshold 7 */
++//	XRX200_SDMA_STAT_0,            /* SDMA Status Register0 */
++//	XRX200_SDMA_STAT_0_BPS_FILL,   /* Back Pressure Status */
++//	XRX200_SDMA_STAT_0_BPS_PNT,    /* Back Pressure Status */
++//	XRX200_SDMA_STAT_0_DROP,       /* Back Pressure Status */
++//	XRX200_SDMA_STAT_1,            /* SDMA Status Register1 */
++//	XRX200_SDMA_STAT_1_FILL,       /* Buffer Filling Level */
++//	XRX200_SDMA_STAT_2,            /* SDMA Status Register2 */
++//	XRX200_SDMA_STAT_2_FSMS,       /* FSM states status */
++//	XRX200_SDMA_IER,               /* SDMA Interrupt Enable Register */
++//	XRX200_SDMA_IER_BPEX,          /* Buffer Pointers Exceeded */
++//	XRX200_SDMA_IER_BFULL,         /* Buffer Full */
++//	XRX200_SDMA_IER_FERR,          /* Frame Error */
++//	XRX200_SDMA_IER_FRX,           /* Frame Received Successfully */
++//	XRX200_SDMA_ISR,               /* SDMA Interrupt Status Register */
++//	XRX200_SDMA_ISR_BPEX,          /* Packet Descriptors Exceeded */
++//	XRX200_SDMA_ISR_BFULL,         /* Buffer Full */
++//	XRX200_SDMA_ISR_FERR,          /* Frame Error */
++//	XRX200_SDMA_ISR_FRX,           /* Frame Received Successfully */
++//	XRX200_SDMA_PCTRL,             /* Ethernet SwitchStore DMA Port Control Register */
++//	XRX200_SDMA_PCTRL_DTHR,        /* Drop Threshold Selection */
++//	XRX200_SDMA_PCTRL_PTHR,        /* Pause Threshold Selection */
++//	XRX200_SDMA_PCTRL_PHYEFWD,     /* Forward PHY Error Frames */
++//	XRX200_SDMA_PCTRL_ALGFWD,      /* Forward Alignment Error Frames */
++//	XRX200_SDMA_PCTRL_LENFWD,      /* Forward Length Errored Frames */
++//	XRX200_SDMA_PCTRL_OSFWD,       /* Forward Oversized Frames */
++//	XRX200_SDMA_PCTRL_USFWD,       /* Forward Undersized Frames */
++//	XRX200_SDMA_PCTRL_FCSIGN,      /* Ignore FCS Errors */
++//	XRX200_SDMA_PCTRL_FCSFWD,      /* Forward FCS Errored Frames */
++//	XRX200_SDMA_PCTRL_PAUFWD,      /* Pause Frame Forwarding */
++//	XRX200_SDMA_PCTRL_MFCEN,       /* Metering Flow Control Enable */
++//	XRX200_SDMA_PCTRL_FCEN,        /* Flow Control Enable */
++//	XRX200_SDMA_PCTRL_PEN,         /* Port Enable */
++//	XRX200_SDMA_PRIO,              /* Ethernet SwitchStore DMA Port Priority Register */
++//	XRX200_SDMA_PRIO_PRIO,         /* SDMA PRIO */
++//	XRX200_SDMA_PSTAT0_HDR,        /* Ethernet SwitchStore DMA Port Status Register 0 */
++//	XRX200_SDMA_PSTAT0_HDR_PTR,    /* Port Ingress Queue Header Pointer */
++//	XRX200_SDMA_PSTAT1,            /* Ethernet SwitchStore DMA Port Status Register 1 */
++//	XRX200_SDMA_PSTAT1_PPKT,       /* Port Ingress Packet Count */
++//	XRX200_SDMA_TSTAMP0,           /* Ingress TimeStamp Register 0 */
++//	XRX200_SDMA_TSTAMP0_TSTL,      /* Time Stamp [15:0] */
++//	XRX200_SDMA_TSTAMP1,           /* Ingress TimeStamp Register 1 */
++//	XRX200_SDMA_TSTAMP1_TSTH,      /* Time Stamp [31:16] */
++};
++
++
++struct xrx200sw_reg {
++	int offset;
++	int shift;
++	int size;
++	int mult;
++} xrx200sw_reg[] = {
++//	offeset	     shift    size	mult
++//	{0x0000,	 0,	16,	0x00}, /* XRX200_ETHSW_SWRES             Ethernet Switch ResetControl Register */
++//	{0x0000,	 1,	 1,	0x00}, /* XRX200_ETHSW_SWRES_R1          Hardware Reset */
++//	{0x0000,	 0,	 1,	0x00}, /* XRX200_ETHSW_SWRES_R0          Register Configuration */
++//	{0x0004,	 0,	16,	0x00}, /* XRX200_ETHSW_CLK_MAC_GAT       Ethernet Switch Clock ControlRegister  */
++//	{0x0004,	12,	 4,	0x00}, /* XRX200_ETHSW_CLK_EXP_SLEEP     Exponent to put system into sleep */
++//	{0x0004,	 8,	 4,	0x00}, /* XRX200_ETHSW_CLK_EXP_WAKE      Exponent to wake up system */
++//	{0x0004,	 7,	 1,	0x00}, /* XRX200_ETHSW_CLK_CLK2_EN       CLK2 Input for MAC */
++//	{0x0004,	 6,	 1,	0x00}, /* XRX200_ETHSW_CLK_EXT_DIV_EN    External Clock Divider Enable */
++//	{0x0004,	 5,	 1,	0x00}, /* XRX200_ETHSW_CLK_RAM_DBG_EN    Clock Gating Enable */
++//	{0x0004,	 4,	 1,	0x00}, /* XRX200_ETHSW_CLK_REG_GAT_EN    Clock Gating Enable */
++//	{0x0004,	 3,	 1,	0x00}, /* XRX200_ETHSW_CLK_GAT_EN        Clock Gating Enable */
++//	{0x0004,	 2,	 1,	0x00}, /* XRX200_ETHSW_CLK_MAC_GAT_EN    Clock Gating Enable */
++//	{0x0008,	 0,	16,	0x00}, /* XRX200_ETHSW_DBG_STEP          Ethernet Switch Debug ControlRegister */
++//	{0x0008,	12,	 4,	0x00}, /* XRX200_ETHSW_DBG_CLK_SEL       Trigger Enable */
++//	{0x0008,	11,	 1,	0x00}, /* XRX200_ETHSW_DBG_MON_EN        Monitoring Enable */
++//	{0x0008,	 9,	 2,	0x00}, /* XRX200_ETHSW_DBG_TRIG_EN       Trigger Enable */
++//	{0x0008,	 8,	 1,	0x00}, /* XRX200_ETHSW_DBG_MODE          Debug Mode */
++//	{0x0008,	 0,	 8,	0x00}, /* XRX200_ETHSW_DBG_STEP_TIME     Clock Step Size */
++//	{0x000C,	 0,	16,	0x00}, /* XRX200_ETHSW_SSB_MODE          Ethernet Switch SharedSegment Buffer Mode Register */
++//	{0x000C,	 2,	 4,	0x00}, /* XRX200_ETHSW_SSB_MODE_ADDE     Memory Address */
++//	{0x000C,	 0,	 2,	0x00}, /* XRX200_ETHSW_SSB_MODE_MODE     Memory Access Mode */
++//	{0x0010,	 0,	16,	0x00}, /* XRX200_ETHSW_SSB_ADDR          Ethernet Switch SharedSegment Buffer Address Register */
++//	{0x0010,	 0,	16,	0x00}, /* XRX200_ETHSW_SSB_ADDR_ADDE     Memory Address */
++//	{0x0014,	 0,	16,	0x00}, /* XRX200_ETHSW_SSB_DATA          Ethernet Switch SharedSegment Buffer Data Register */
++//	{0x0014,	 0,	16,	0x00}, /* XRX200_ETHSW_SSB_DATA_DATA     Data Value */
++//	{0x0018,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_0             Ethernet Switch CapabilityRegister 0 */
++//	{0x0018,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_0_SPEED       Clock frequency */
++//	{0x001C,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_1             Ethernet Switch CapabilityRegister 1 */
++//	{0x001C,	15,	 1,	0x00}, /* XRX200_ETHSW_CAP_1_GMAC        MAC operation mode */
++//	{0x001C,	 8,	 7,	0x00}, /* XRX200_ETHSW_CAP_1_QUEUE       Number of queues */
++//	{0x001C,	 4,	 4,	0x00}, /* XRX200_ETHSW_CAP_1_VPORTS      Number of virtual ports */
++//	{0x001C,	 0,	 4,	0x00}, /* XRX200_ETHSW_CAP_1_PPORTS      Number of physical ports */
++//	{0x0020,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_2             Ethernet Switch CapabilityRegister 2 */
++//	{0x0020,	 0,	11,	0x00}, /* XRX200_ETHSW_CAP_2_PACKETS     Number of packets */
++//	{0x0024,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_3             Ethernet Switch CapabilityRegister 3 */
++//	{0x0024,	 8,	 8,	0x00}, /* XRX200_ETHSW_CAP_3_METERS      Number of traffic meters */
++//	{0x0024,	 0,	 8,	0x00}, /* XRX200_ETHSW_CAP_3_SHAPERS     Number of traffic shapers */
++//	{0x0028,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_4             Ethernet Switch CapabilityRegister 4 */
++//	{0x0028,	 8,	 8,	0x00}, /* XRX200_ETHSW_CAP_4_PPPOE       PPPoE table size */
++//	{0x0028,	 0,	 8,	0x00}, /* XRX200_ETHSW_CAP_4_VLAN        Active VLAN table size */
++//	{0x002C,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_5             Ethernet Switch CapabilityRegister 5 */
++//	{0x002C,	 8,	 8,	0x00}, /* XRX200_ETHSW_CAP_5_IPPLEN      IP packet length table size */
++//	{0x002C,	 0,	 8,	0x00}, /* XRX200_ETHSW_CAP_5_PROT        Protocol table size */
++//	{0x0030,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_6             Ethernet Switch CapabilityRegister 6 */
++//	{0x0030,	 8,	 8,	0x00}, /* XRX200_ETHSW_CAP_6_MACDASA     MAC DA/SA table size */
++//	{0x0030,	 0,	 8,	0x00}, /* XRX200_ETHSW_CAP_6_APPL        Application table size */
++//	{0x0034,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_7             Ethernet Switch CapabilityRegister 7 */
++//	{0x0034,	 8,	 8,	0x00}, /* XRX200_ETHSW_CAP_7_IPDASAM     IP DA/SA MSB table size */
++//	{0x0034,	 0,	 8,	0x00}, /* XRX200_ETHSW_CAP_7_IPDASAL     IP DA/SA LSB table size */
++//	{0x0038,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_8             Ethernet Switch CapabilityRegister 8 */
++//	{0x0038,	 0,	 8,	0x00}, /* XRX200_ETHSW_CAP_8_MCAST       Multicast table size */
++//	{0x003C,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_9             Ethernet Switch CapabilityRegister 9 */
++//	{0x003C,	 0,	 8,	0x00}, /* XRX200_ETHSW_CAP_9_FLAGG       Flow Aggregation table size */
++//	{0x0040,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_10            Ethernet Switch CapabilityRegister 10 */
++//	{0x0040,	 0,	13,	0x00}, /* XRX200_ETHSW_CAP_10_MACBT      MAC bridging table size */
++//	{0x0044,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_11            Ethernet Switch CapabilityRegister 11 */
++//	{0x0044,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_11_BSIZEL     Packet buffer size (lower part, in byte) */
++//	{0x0048,	 0,	16,	0x00}, /* XRX200_ETHSW_CAP_12            Ethernet Switch CapabilityRegister 12 */
++//	{0x0048,	 0,	 3,	0x00}, /* XRX200_ETHSW_CAP_12_BSIZEH     Packet buffer size (higher part, in byte) */
++//	{0x004C,	 0,	16,	0x00}, /* XRX200_ETHSW_VERSION_REV       Ethernet Switch VersionRegister */
++//	{0x004C,	 8,	 8,	0x00}, /* XRX200_ETHSW_VERSION_MOD_ID    Module Identification */
++//	{0x004C,	 0,	 8,	0x00}, /* XRX200_ETHSW_VERSION_REV_ID    Hardware Revision Identification */
++//	{0x0050,	 0,	16,	0x00}, /* XRX200_ETHSW_IER               Interrupt Enable Register */
++//	{0x0050,	 4,	 1,	0x00}, /* XRX200_ETHSW_IER_FDMAIE        Fetch DMA Interrupt Enable */
++//	{0x0050,	 3,	 1,	0x00}, /* XRX200_ETHSW_IER_SDMAIE        Store DMA Interrupt Enable */
++//	{0x0050,	 2,	 1,	0x00}, /* XRX200_ETHSW_IER_MACIE         Ethernet MAC Interrupt Enable */
++//	{0x0050,	 1,	 1,	0x00}, /* XRX200_ETHSW_IER_PCEIE         Parser and Classification Engine Interrupt Enable */
++//	{0x0050,	 0,	 1,	0x00}, /* XRX200_ETHSW_IER_BMIE          Buffer Manager Interrupt Enable */
++//	{0x0054,	 0,	16,	0x00}, /* XRX200_ETHSW_ISR               Interrupt Status Register */
++//	{0x0054,	 4,	 1,	0x00}, /* XRX200_ETHSW_ISR_FDMAINT       Fetch DMA Interrupt */
++//	{0x0054,	 3,	 1,	0x00}, /* XRX200_ETHSW_ISR_SDMAINT       Store DMA Interrupt */
++//	{0x0054,	 2,	 1,	0x00}, /* XRX200_ETHSW_ISR_MACINT        Ethernet MAC Interrupt */
++//	{0x0054,	 1,	 1,	0x00}, /* XRX200_ETHSW_ISR_PCEINT        Parser and Classification Engine Interrupt */
++//	{0x0054,	 0,	 1,	0x00}, /* XRX200_ETHSW_ISR_BMINT         Buffer Manager Interrupt */
++//	{0x0058,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_0           Ethernet Switch SpareCells 0 */
++//	{0x0058,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_0_SPARE     SPARE0  */
++//	{0x005C,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_1           Ethernet Switch SpareCells 1 */
++//	{0x005C,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_1_SPARE     SPARE1  */
++//	{0x0060,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_2           Ethernet Switch SpareCells 2 */
++//	{0x0060,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_2_SPARE     SPARE2  */
++//	{0x0064,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_3           Ethernet Switch SpareCells 3 */
++//	{0x0064,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_3_SPARE     SPARE3  */
++//	{0x0068,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_4           Ethernet Switch SpareCells 4 */
++//	{0x0068,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_4_SPARE     SPARE4  */
++//	{0x006C,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_5           Ethernet Switch SpareCells 5 */
++//	{0x006C,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_5_SPARE     SPARE5  */
++//	{0x0070,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_6           Ethernet Switch SpareCells 6 */
++//	{0x0070,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_6_SPARE     SPARE6  */
++//	{0x0074,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_7           Ethernet Switch SpareCells 7 */
++//	{0x0074,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_7_SPARE     SPARE7  */
++//	{0x0078,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_8           Ethernet Switch SpareCells 8 */
++//	{0x0078,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_8_SPARE     SPARE8  */
++//	{0x007C,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_9           Ethernet Switch SpareCells 9 */
++//	{0x007C,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_9_SPARE     SPARE9  */
++//	{0x0080,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_10          Ethernet Switch SpareCells 10 */
++//	{0x0080,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_10_SPARE    SPARE10  */
++//	{0x0084,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_11          Ethernet Switch SpareCells 11 */
++//	{0x0084,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_11_SPARE    SPARE11  */
++//	{0x0088,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_12          Ethernet Switch SpareCells 12 */
++//	{0x0088,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_12_SPARE    SPARE12  */
++//	{0x008C,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_13          Ethernet Switch SpareCells 13 */
++//	{0x008C,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_13_SPARE    SPARE13  */
++//	{0x0090,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_14          Ethernet Switch SpareCells 14 */
++//	{0x0090,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_14_SPARE    SPARE14  */
++//	{0x0094,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_15          Ethernet Switch SpareCells 15 */
++//	{0x0094,	 0,	16,	0x00}, /* XRX200_ETHSW_SPARE_15_SPARE    SPARE15  */
++//	{0x0100,	 0,	16,	0x00}, /* XRX200_BM_RAM_VAL_3            RAM Value Register 3 */
++//	{0x0100,	 0,	16,	0x00}, /* XRX200_BM_RAM_VAL_3_VAL3       Data value [15:0] */
++//	{0x0104,	 0,	16,	0x00}, /* XRX200_BM_RAM_VAL_2            RAM Value Register 2 */
++//	{0x0104,	 0,	16,	0x00}, /* XRX200_BM_RAM_VAL_2_VAL2       Data value [15:0] */
++//	{0x0108,	 0,	16,	0x00}, /* XRX200_BM_RAM_VAL_1            RAM Value Register 1 */
++//	{0x0108,	 0,	16,	0x00}, /* XRX200_BM_RAM_VAL_1_VAL1       Data value [15:0] */
++//	{0x010C,	 0,	16,	0x00}, /* XRX200_BM_RAM_VAL_0            RAM Value Register 0 */
++//	{0x010C,	 0,	16,	0x00}, /* XRX200_BM_RAM_VAL_0_VAL0       Data value [15:0] */
++//	{0x0110,	 0,	16,	0x00}, /* XRX200_BM_RAM_ADDR             RAM Address Register */
++//	{0x0110,	 0,	11,	0x00}, /* XRX200_BM_RAM_ADDR_ADDR        RAM Address */
++//	{0x0114,	 0,	16,	0x00}, /* XRX200_BM_RAM_CTRL             RAM Access Control Register */
++//	{0x0114,	15,	 1,	0x00}, /* XRX200_BM_RAM_CTRL_BAS         Access Busy/Access Start */
++//	{0x0114,	 5,	 1,	0x00}, /* XRX200_BM_RAM_CTRL_OPMOD       Lookup Table Access Operation Mode */
++//	{0x0114,	 0,	 5,	0x00}, /* XRX200_BM_RAM_CTRL_ADDR        Address for RAM selection */
++//	{0x0118,	 0,	16,	0x00}, /* XRX200_BM_FSQM_GCTRL           Free Segment Queue ManagerGlobal Control Register */
++//	{0x0118,	 0,	10,	0x00}, /* XRX200_BM_FSQM_GCTRL_SEGNUM    Maximum Segment Number */
++//	{0x011C,	 0,	16,	0x00}, /* XRX200_BM_CONS_SEG             Number of Consumed SegmentsRegister */
++//	{0x011C,	 0,	10,	0x00}, /* XRX200_BM_CONS_SEG_FSEG        Number of Consumed Segments */
++//	{0x0120,	 0,	16,	0x00}, /* XRX200_BM_CONS_PKT             Number of Consumed PacketPointers Register */
++//	{0x0120,	 0,	11,	0x00}, /* XRX200_BM_CONS_PKT_FQP         Number of Consumed Packet Pointers */
++//	{0x0124,	 0,	16,	0x00}, /* XRX200_BM_GCTRL_F              Buffer Manager Global ControlRegister 0 */
++//	{0x0124,	13,	 1,	0x00}, /* XRX200_BM_GCTRL_BM_STA         Buffer Manager Initialization Status Bit */
++//	{0x0124,	12,	 1,	0x00}, /* XRX200_BM_GCTRL_SAT            RMON Counter Update Mode */
++//	{0x0124,	11,	 1,	0x00}, /* XRX200_BM_GCTRL_FR_RBC         Freeze RMON RX Bad Byte 64 Bit Counter */
++//	{0x0124,	10,	 1,	0x00}, /* XRX200_BM_GCTRL_FR_RGC         Freeze RMON RX Good Byte 64 Bit Counter */
++//	{0x0124,	 9,	 1,	0x00}, /* XRX200_BM_GCTRL_FR_TGC         Freeze RMON TX Good Byte 64 Bit Counter */
++//	{0x0124,	 8,	 1,	0x00}, /* XRX200_BM_GCTRL_I_FIN          RAM initialization finished */
++//	{0x0124,	 7,	 1,	0x00}, /* XRX200_BM_GCTRL_CX_INI         PQM Context RAM initialization */
++//	{0x0124,	 6,	 1,	0x00}, /* XRX200_BM_GCTRL_FP_INI         FPQM RAM initialization */
++//	{0x0124,	 5,	 1,	0x00}, /* XRX200_BM_GCTRL_FS_INI         FSQM RAM initialization */
++//	{0x0124,	 4,	 1,	0x00}, /* XRX200_BM_GCTRL_R_SRES         Software Reset for RMON */
++//	{0x0124,	 3,	 1,	0x00}, /* XRX200_BM_GCTRL_S_SRES         Software Reset for Scheduler */
++//	{0x0124,	 2,	 1,	0x00}, /* XRX200_BM_GCTRL_A_SRES         Software Reset for AVG */
++//	{0x0124,	 1,	 1,	0x00}, /* XRX200_BM_GCTRL_P_SRES         Software Reset for PQM */
++//	{0x0124,	 0,	 1,	0x00}, /* XRX200_BM_GCTRL_F_SRES         Software Reset for FSQM */
++//	{0x0128,	 0,	16,	0x00}, /* XRX200_BM_QUEUE_GCTRL          Queue Manager GlobalControl Register 0 */
++	{0x0128,	10,	 1,	0x00}, /* XRX200_BM_QUEUE_GCTRL_GL_MOD   WRED Mode Signal */
++//	{0x0128,	 7,	 3,	0x00}, /* XRX200_BM_QUEUE_GCTRL_AQUI     Average Queue Update Interval */
++//	{0x0128,	 3,	 4,	0x00}, /* XRX200_BM_QUEUE_GCTRL_AQWF     Average Queue Weight Factor */
++//	{0x0128,	 2,	 1,	0x00}, /* XRX200_BM_QUEUE_GCTRL_QAVGEN   Queue Average Calculation Enable */
++//	{0x0128,	 0,	 2,	0x00}, /* XRX200_BM_QUEUE_GCTRL_DPROB    Drop Probability Profile */
++//	{0x012C,	 0,	16,	0x00}, /* XRX200_BM_WRED_RTH_0           WRED Red Threshold Register0 */
++//	{0x012C,	 0,	10,	0x00}, /* XRX200_BM_WRED_RTH_0_MINTH     Minimum Threshold */
++//	{0x0130,	 0,	16,	0x00}, /* XRX200_BM_WRED_RTH_1           WRED Red Threshold Register1 */
++//	{0x0130,	 0,	10,	0x00}, /* XRX200_BM_WRED_RTH_1_MAXTH     Maximum Threshold */
++//	{0x0134,	 0,	16,	0x00}, /* XRX200_BM_WRED_YTH_0           WRED Yellow ThresholdRegister 0 */
++//	{0x0134,	 0,	10,	0x00}, /* XRX200_BM_WRED_YTH_0_MINTH     Minimum Threshold */
++//	{0x0138,	 0,	16,	0x00}, /* XRX200_BM_WRED_YTH_1           WRED Yellow ThresholdRegister 1 */
++//	{0x0138,	 0,	10,	0x00}, /* XRX200_BM_WRED_YTH_1_MAXTH     Maximum Threshold */
++//	{0x013C,	 0,	16,	0x00}, /* XRX200_BM_WRED_GTH_0           WRED Green ThresholdRegister 0 */
++//	{0x013C,	 0,	10,	0x00}, /* XRX200_BM_WRED_GTH_0_MINTH     Minimum Threshold */
++//	{0x0140,	 0,	16,	0x00}, /* XRX200_BM_WRED_GTH_1           WRED Green ThresholdRegister 1 */
++//	{0x0140,	 0,	10,	0x00}, /* XRX200_BM_WRED_GTH_1_MAXTH     Maximum Threshold */
++//	{0x0144,	 0,	16,	0x00}, /* XRX200_BM_DROP_GTH_0_THR       Drop Threshold ConfigurationRegister 0 */
++//	{0x0144,	 0,	11,	0x00}, /* XRX200_BM_DROP_GTH_0_THR_FQ    Threshold for frames marked red */
++//	{0x0148,	 0,	16,	0x00}, /* XRX200_BM_DROP_GTH_1_THY       Drop Threshold ConfigurationRegister 1 */
++//	{0x0148,	 0,	11,	0x00}, /* XRX200_BM_DROP_GTH_1_THY_FQ    Threshold for frames marked yellow */
++//	{0x014C,	 0,	16,	0x00}, /* XRX200_BM_DROP_GTH_2_THG       Drop Threshold ConfigurationRegister 2 */
++//	{0x014C,	 0,	11,	0x00}, /* XRX200_BM_DROP_GTH_2_THG_FQ    Threshold for frames marked green */
++//	{0x0150,	 0,	16,	0x00}, /* XRX200_BM_IER                  Buffer Manager Global InterruptEnable Register */
++//	{0x0150,	 7,	 1,	0x00}, /* XRX200_BM_IER_CNT4             Counter Group 4 (RMON-CLASSIFICATION) Interrupt Enable */
++//	{0x0150,	 6,	 1,	0x00}, /* XRX200_BM_IER_CNT3             Counter Group 3 (RMON-PQM) Interrupt Enable */
++//	{0x0150,	 5,	 1,	0x00}, /* XRX200_BM_IER_CNT2             Counter Group 2 (RMON-SCHEDULER) Interrupt Enable */
++//	{0x0150,	 4,	 1,	0x00}, /* XRX200_BM_IER_CNT1             Counter Group 1 (RMON-QFETCH) Interrupt Enable */
++//	{0x0150,	 3,	 1,	0x00}, /* XRX200_BM_IER_CNT0             Counter Group 0 (RMON-QSTOR) Interrupt Enable */
++//	{0x0150,	 2,	 1,	0x00}, /* XRX200_BM_IER_DEQ              PQM dequeue Interrupt Enable */
++//	{0x0150,	 1,	 1,	0x00}, /* XRX200_BM_IER_ENQ              PQM Enqueue Interrupt Enable */
++//	{0x0150,	 0,	 1,	0x00}, /* XRX200_BM_IER_FSQM             Buffer Empty Interrupt Enable */
++//	{0x0154,	 0,	16,	0x00}, /* XRX200_BM_ISR                  Buffer Manager Global InterruptStatus Register */
++//	{0x0154,	 7,	 1,	0x00}, /* XRX200_BM_ISR_CNT4             Counter Group 4 Interrupt */
++//	{0x0154,	 6,	 1,	0x00}, /* XRX200_BM_ISR_CNT3             Counter Group 3 Interrupt */
++//	{0x0154,	 5,	 1,	0x00}, /* XRX200_BM_ISR_CNT2             Counter Group 2 Interrupt */
++//	{0x0154,	 4,	 1,	0x00}, /* XRX200_BM_ISR_CNT1             Counter Group 1 Interrupt */
++//	{0x0154,	 3,	 1,	0x00}, /* XRX200_BM_ISR_CNT0             Counter Group 0 Interrupt */
++//	{0x0154,	 2,	 1,	0x00}, /* XRX200_BM_ISR_DEQ              PQM dequeue Interrupt Enable */
++//	{0x0154,	 1,	 1,	0x00}, /* XRX200_BM_ISR_ENQ              PQM Enqueue Interrupt */
++//	{0x0154,	 0,	 1,	0x00}, /* XRX200_BM_ISR_FSQM             Buffer Empty Interrupt */
++//	{0x0158,	 0,	16,	0x00}, /* XRX200_BM_CISEL                Buffer Manager RMON CounterInterrupt Select Register */
++//	{0x0158,	 0,	 3,	0x00}, /* XRX200_BM_CISEL_PORT           Port Number */
++//	{0x015C,	 0,	16,	0x00}, /* XRX200_BM_DEBUG_CTRL_DBG       Debug Control Register */
++//	{0x015C,	 0,	 8,	0x00}, /* XRX200_BM_DEBUG_CTRL_DBG_SEL   Select Signal for Debug Multiplexer */
++//	{0x0160,	 0,	16,	0x00}, /* XRX200_BM_DEBUG_VAL_DBG        Debug Value Register */
++//	{0x0160,	 0,	16,	0x00}, /* XRX200_BM_DEBUG_VAL_DBG_DAT    Debug Data Value */
++//	{0x0200,	 0,	16,	0x08}, /* XRX200_BM_PCFG                 Buffer Manager PortConfiguration Register */
++//	{0x0200,	 0,	 1,	0x08}, /* XRX200_BM_PCFG_CNTEN           RMON Counter Enable */
++//	{0x0204,	 0,	16,	0x08}, /* XRX200_BM_RMON_CTRL_RAM1       Buffer ManagerRMON Control Register */
++//	{0x0204,	 1,	 1,	0x08}, /* XRX200_BM_RMON_CTRL_RAM2_RES   Software Reset for RMON RAM2 */
++//	{0x0204,	 0,	 1,	0x08}, /* XRX200_BM_RMON_CTRL_RAM1_RES   Software Reset for RMON RAM1 */
++//	{0x0400,	 0,	16,	0x08}, /* XRX200_PQM_DP                  Packet Queue ManagerDrop Probability Register */
++//	{0x0400,	 0,	 2,	0x08}, /* XRX200_PQM_DP_DPROB            Drop Probability Profile */
++//	{0x0404,	 0,	16,	0x08}, /* XRX200_PQM_RS                  Packet Queue ManagerRate Shaper Assignment Register */
++//	{0x0404,	15,	 1,	0x08}, /* XRX200_PQM_RS_EN2              Rate Shaper 2 Enable */
++//	{0x0404,	 8,	 6,	0x08}, /* XRX200_PQM_RS_RS2              Rate Shaper 2 */
++//	{0x0404,	 7,	 1,	0x08}, /* XRX200_PQM_RS_EN1              Rate Shaper 1 Enable */
++//	{0x0404,	 0,	 6,	0x08}, /* XRX200_PQM_RS_RS1              Rate Shaper 1 */
++//	{0x0500,	 0,	16,	0x14}, /* XRX200_RS_CTRL                 Rate Shaper ControlRegister */
++//	{0x0500,	 0,	 1,	0x14}, /* XRX200_RS_CTRL_RSEN            Rate Shaper Enable */
++//	{0x0504,	 0,	16,	0x14}, /* XRX200_RS_CBS                  Rate Shaper CommittedBurst Size Register */
++//	{0x0504,	 0,	10,	0x14}, /* XRX200_RS_CBS_CBS              Committed Burst Size */
++//	{0x0508,	 0,	16,	0x14}, /* XRX200_RS_IBS                  Rate Shaper InstantaneousBurst Size Register */
++//	{0x0508,	 0,	 2,	0x14}, /* XRX200_RS_IBS_IBS              Instantaneous Burst Size */
++//	{0x050C,	 0,	16,	0x14}, /* XRX200_RS_CIR_EXP              Rate Shaper RateExponent Register */
++//	{0x050C,	 0,	 4,	0x14}, /* XRX200_RS_CIR_EXP_EXP          Exponent */
++//	{0x0510,	 0,	16,	0x14}, /* XRX200_RS_CIR_MANT             Rate Shaper RateMantissa Register */
++//	{0x0510,	 0,	10,	0x14}, /* XRX200_RS_CIR_MANT_MANT        Mantissa */
++	{0x1100,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_7           Table Key Data 7 */
++//	{0x1100,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_7_KEY7      Key Value[15:0] */
++	{0x1104,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_6           Table Key Data 6 */
++//	{0x1104,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_6_KEY6      Key Value[15:0] */
++	{0x1108,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_5           Table Key Data 5 */
++//	{0x1108,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_5_KEY5      Key Value[15:0] */
++	{0x110C,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_4           Table Key Data 4 */
++//	{0x110C,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_4_KEY4      Key Value[15:0] */
++	{0x1110,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_3           Table Key Data 3 */
++//	{0x1110,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_3_KEY3      Key Value[15:0] */
++	{0x1114,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_2           Table Key Data 2 */
++//	{0x1114,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_2_KEY2      Key Value[15:0] */
++	{0x1118,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_1           Table Key Data 1 */
++//	{0x1118,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_1_KEY1      Key Value[31:16] */
++	{0x111C,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_0           Table Key Data 0 */
++//	{0x111C,	 0,	16,	0x00}, /* XRX200_PCE_TBL_KEY_0_KEY0      Key Value[15:0] */
++	{0x1120,	 0,	16,	0x00}, /* XRX200_PCE_TBL_MASK_0          Table Mask Write Register0 */
++//	{0x1120,	 0,	16,	0x00}, /* XRX200_PCE_TBL_MASK_0_MASK0    Mask Pattern [15:0] */
++	{0x1124,	 0,	16,	0x00}, /* XRX200_PCE_TBL_VAL_4           Table Value Register4 */
++//	{0x1124,	 0,	16,	0x00}, /* XRX200_PCE_TBL_VAL_4_VAL4      Data value [15:0] */
++	{0x1128,	 0,	16,	0x00}, /* XRX200_PCE_TBL_VAL_3           Table Value Register3 */
++//	{0x1128,	 0,	16,	0x00}, /* XRX200_PCE_TBL_VAL_3_VAL3      Data value [15:0] */
++	{0x112C,	 0,	16,	0x00}, /* XRX200_PCE_TBL_VAL_2           Table Value Register2 */
++//	{0x112C,	 0,	16,	0x00}, /* XRX200_PCE_TBL_VAL_2_VAL2      Data value [15:0] */
++	{0x1130,	 0,	16,	0x00}, /* XRX200_PCE_TBL_VAL_1           Table Value Register1 */
++//	{0x1130,	 0,	16,	0x00}, /* XRX200_PCE_TBL_VAL_1_VAL1      Data value [15:0] */
++	{0x1134,	 0,	16,	0x00}, /* XRX200_PCE_TBL_VAL_0           Table Value Register0 */
++//	{0x1134,	 0,	16,	0x00}, /* XRX200_PCE_TBL_VAL_0_VAL0      Data value [15:0] */
++//	{0x1138,	 0,	16,	0x00}, /* XRX200_PCE_TBL_ADDR            Table Entry AddressRegister */
++	{0x1138,	 0,	11,	0x00}, /* XRX200_PCE_TBL_ADDR_ADDR       Table Address */
++//	{0x113C,	 0,	16,	0x00}, /* XRX200_PCE_TBL_CTRL            Table Access ControlRegister */
++	{0x113C,	15,	 1,	0x00}, /* XRX200_PCE_TBL_CTRL_BAS        Access Busy/Access Start */
++	{0x113C,	13,	 1,	0x00}, /* XRX200_PCE_TBL_CTRL_TYPE       Lookup Entry Type */
++	{0x113C,	12,	 1,	0x00}, /* XRX200_PCE_TBL_CTRL_VLD        Lookup Entry Valid */
++	{0x113C,	 7,	 4,	0x00}, /* XRX200_PCE_TBL_CTRL_GMAP       Group Map */
++	{0x113C,	 5,	 2,	0x00}, /* XRX200_PCE_TBL_CTRL_OPMOD      Lookup Table Access Operation Mode */
++	{0x113C,	 0,	 5,	0x00}, /* XRX200_PCE_TBL_CTRL_ADDR       Lookup Table Address */
++//	{0x1140,	 0,	16,	0x00}, /* XRX200_PCE_TBL_STAT            Table General StatusRegister */
++//	{0x1140,	 2,	 1,	0x00}, /* XRX200_PCE_TBL_STAT_TBUSY      Table Access Busy */
++//	{0x1140,	 1,	 1,	0x00}, /* XRX200_PCE_TBL_STAT_TEMPT      Table Empty */
++//	{0x1140,	 0,	 1,	0x00}, /* XRX200_PCE_TBL_STAT_TFUL       Table Full */
++//	{0x1144,	 0,	16,	0x00}, /* XRX200_PCE_AGE_0               Aging Counter ConfigurationRegister 0 */
++//	{0x1144,	 0,	 4,	0x00}, /* XRX200_PCE_AGE_0_EXP           Aging Counter Exponent Value  */
++//	{0x1148,	 0,	16,	0x00}, /* XRX200_PCE_AGE_1               Aging Counter ConfigurationRegister 1 */
++//	{0x1148,	 0,	16,	0x00}, /* XRX200_PCE_AGE_1_MANT          Aging Counter Mantissa Value  */
++//	{0x114C,	 0,	16,	0x00}, /* XRX200_PCE_PMAP_1              Port Map Register 1 */
++//	{0x114C,	 0,	16,	0x00}, /* XRX200_PCE_PMAP_1_MPMAP        Monitoring Port Map */
++//	{0x1150,	 0,	16,	0x00}, /* XRX200_PCE_PMAP_2              Port Map Register 2 */
++//	{0x1150,	 0,	16,	0x00}, /* XRX200_PCE_PMAP_2_DMCPMAP      Default Multicast Port Map */
++//	{0x1154,	 0,	16,	0x00}, /* XRX200_PCE_PMAP_3              Port Map Register 3 */
++//	{0x1154,	 0,	16,	0x00}, /* XRX200_PCE_PMAP_3_UUCMAP       Default Unknown Unicast Port Map */
++//	{0x1158,	 0,	16,	0x00}, /* XRX200_PCE_GCTRL_0             PCE Global Control Register0 */
++//	{0x1158,	15,	 1,	0x00}, /* XRX200_PCE_GCTRL_0_IGMP        IGMP Mode Selection */
++	{0x1158,	14,	 1,	0x00}, /* XRX200_PCE_GCTRL_0_VLAN        VLAN-aware Switching */
++//	{0x1158,	13,	 1,	0x00}, /* XRX200_PCE_GCTRL_0_NOPM        No Port Map Forwarding */
++//	{0x1158,	12,	 1,	0x00}, /* XRX200_PCE_GCTRL_0_SCONUC      Unknown Unicast Storm Control */
++//	{0x1158,	11,	 1,	0x00}, /* XRX200_PCE_GCTRL_0_SCONMC      Multicast Storm Control */
++//	{0x1158,	10,	 1,	0x00}, /* XRX200_PCE_GCTRL_0_SCONBC      Broadcast Storm Control */
++//	{0x1158,	 8,	 2,	0x00}, /* XRX200_PCE_GCTRL_0_SCONMOD     Storm Control Mode */
++//	{0x1158,	 4,	 4,	0x00}, /* XRX200_PCE_GCTRL_0_SCONMET     Storm Control Metering Instance */
++//	{0x1158,	 3,	 1,	0x00}, /* XRX200_PCE_GCTRL_0_MC_VALID    Access Request */
++//	{0x1158,	 2,	 1,	0x00}, /* XRX200_PCE_GCTRL_0_PLCKMOD     Port Lock Mode */
++//	{0x1158,	 1,	 1,	0x00}, /* XRX200_PCE_GCTRL_0_PLIMMOD     MAC Address Learning Limitation Mode */
++//	{0x1158,	 0,	 1,	0x00}, /* XRX200_PCE_GCTRL_0_MTFL        MAC Table Flushing */
++//	{0x115C,	 0,	16,	0x00}, /* XRX200_PCE_GCTRL_1             PCE Global Control Register1 */
++//	{0x115C,	 1,	 1,	0x00}, /* XRX200_PCE_GCTRL_1_PCE_DIS     PCE Disable after currently processed packet */
++//	{0x115C,	 0,	 1,	0x00}, /* XRX200_PCE_GCTRL_1_LRNMOD      MAC Address Learning Mode */
++//	{0x1160,	 0,	16,	0x00}, /* XRX200_PCE_TCM_GLOB_CTRL       Three-color MarkerGlobal Control Register */
++//	{0x1160,	 6,	 3,	0x00}, /* XRX200_PCE_TCM_GLOB_CTRL_DPRED Re-marking Drop Precedence Red Encoding */
++//	{0x1160,	 3,	 3,	0x00}, /* XRX200_PCE_TCM_GLOB_CTRL_DPYEL Re-marking Drop Precedence Yellow Encoding */
++//	{0x1160,	 0,	 3,	0x00}, /* XRX200_PCE_TCM_GLOB_CTRL_DPGRN Re-marking Drop Precedence Green Encoding */
++//	{0x1164,	 0,	16,	0x00}, /* XRX200_PCE_IGMP_CTRL           IGMP Control Register */
++//	{0x1164,	15,	 1,	0x00}, /* XRX200_PCE_IGMP_CTRL_FAGEEN    Force Aging of Table Entries Enable */
++//	{0x1164,	14,	 1,	0x00}, /* XRX200_PCE_IGMP_CTRL_FLEAVE    Fast Leave Enable */
++//	{0x1164,	13,	 1,	0x00}, /* XRX200_PCE_IGMP_CTRL_DMRTEN    Default Maximum Response Time Enable */
++//	{0x1164,	12,	 1,	0x00}, /* XRX200_PCE_IGMP_CTRL_JASUP     Join Aggregation Suppression Enable */
++//	{0x1164,	11,	 1,	0x00}, /* XRX200_PCE_IGMP_CTRL_REPSUP    Report Suppression Enable */
++//	{0x1164,	10,	 1,	0x00}, /* XRX200_PCE_IGMP_CTRL_SRPEN     Snooping of Router Port Enable */
++//	{0x1164,	 8,	 2,	0x00}, /* XRX200_PCE_IGMP_CTRL_ROB       Robustness Variable */
++//	{0x1164,	 0,	 8,	0x00}, /* XRX200_PCE_IGMP_CTRL_DMRT      IGMP Default Maximum Response Time */
++//	{0x1168,	 0,	16,	0x00}, /* XRX200_PCE_IGMP_DRPM           IGMP Default RouterPort Map Register */
++//	{0x1168,	 0,	16,	0x00}, /* XRX200_PCE_IGMP_DRPM_DRPM      IGMP Default Router Port Map */
++//	{0x116C,	 0,	16,	0x00}, /* XRX200_PCE_IGMP_AGE_0          IGMP Aging Register0 */
++//	{0x116C,	 3,	 8,	0x00}, /* XRX200_PCE_IGMP_AGE_0_MANT     IGMP Group Aging Time Mantissa */
++//	{0x116C,	 0,	 3,	0x00}, /* XRX200_PCE_IGMP_AGE_0_EXP      IGMP Group Aging Time Exponent */
++//	{0x1170,	 0,	16,	0x00}, /* XRX200_PCE_IGMP_AGE_1          IGMP Aging Register1 */
++//	{0x1170,	 0,	12,	0x00}, /* XRX200_PCE_IGMP_AGE_1_MANT     IGMP Router Port Aging Time Mantissa */
++//	{0x1174,	 0,	16,	0x00}, /* XRX200_PCE_IGMP_STAT           IGMP Status Register */
++//	{0x1174,	 0,	16,	0x00}, /* XRX200_PCE_IGMP_STAT_IGPM      IGMP Port Map */
++//	{0x1178,	 0,	16,	0x00}, /* XRX200_WOL_GLB_CTRL            Wake-on-LAN ControlRegister */
++//	{0x1178,	 0,	 1,	0x00}, /* XRX200_WOL_GLB_CTRL_PASSEN     WoL Password Enable */
++//	{0x117C,	 0,	16,	0x00}, /* XRX200_WOL_DA_0                Wake-on-LAN DestinationAddress Register 0 */
++//	{0x117C,	 0,	16,	0x00}, /* XRX200_WOL_DA_0_DA0            WoL Destination Address [15:0] */
++//	{0x1180,	 0,	16,	0x00}, /* XRX200_WOL_DA_1                Wake-on-LAN DestinationAddress Register 1 */
++//	{0x1180,	 0,	16,	0x00}, /* XRX200_WOL_DA_1_DA1            WoL Destination Address [31:16] */
++//	{0x1184,	 0,	16,	0x00}, /* XRX200_WOL_DA_2                Wake-on-LAN DestinationAddress Register 2 */
++//	{0x1184,	 0,	16,	0x00}, /* XRX200_WOL_DA_2_DA2            WoL Destination Address [47:32] */
++//	{0x1188,	 0,	16,	0x00}, /* XRX200_WOL_PW_0                Wake-on-LAN Password Register0 */
++//	{0x1188,	 0,	16,	0x00}, /* XRX200_WOL_PW_0_PW0            WoL Password [15:0] */
++//	{0x118C,	 0,	16,	0x00}, /* XRX200_WOL_PW_1                Wake-on-LAN Password Register1 */
++//	{0x118C,	 0,	16,	0x00}, /* XRX200_WOL_PW_1_PW1            WoL Password [31:16] */
++//	{0x1190,	 0,	16,	0x00}, /* XRX200_WOL_PW_2                Wake-on-LAN Password Register2 */
++//	{0x1190,	 0,	16,	0x00}, /* XRX200_WOL_PW_2_PW2            WoL Password [47:32] */
++//	{0x1194,	 0,	16,	0x00}, /* XRX200_PCE_IER_0_PINT          Parser and ClassificationEngine Global Interrupt Enable Register 0 */
++//	{0x1194,	15,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_15       Port Interrupt Enable */
++//	{0x1194,	14,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_14       Port Interrupt Enable */
++//	{0x1194,	13,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_13       Port Interrupt Enable */
++//	{0x1194,	12,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_12       Port Interrupt Enable */
++//	{0x1194,	11,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_11       Port Interrupt Enable */
++//	{0x1194,	10,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_10       Port Interrupt Enable */
++//	{0x1194,	 9,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_9        Port Interrupt Enable */
++//	{0x1194,	 8,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_8        Port Interrupt Enable */
++//	{0x1194,	 7,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_7        Port Interrupt Enable */
++//	{0x1194,	 6,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_6        Port Interrupt Enable */
++//	{0x1194,	 5,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_5        Port Interrupt Enable */
++//	{0x1194,	 4,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_4        Port Interrupt Enable */
++//	{0x1194,	 3,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_3        Port Interrupt Enable */
++//	{0x1194,	 2,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_2        Port Interrupt Enable */
++//	{0x1194,	 1,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_1        Port Interrupt Enable */
++//	{0x1194,	 0,	 1,	0x00}, /* XRX200_PCE_IER_0_PINT_0        Port Interrupt Enable */
++//	{0x1198,	 0,	16,	0x00}, /* XRX200_PCE_IER_1               Parser and ClassificationEngine Global Interrupt Enable Register 1 */
++//	{0x1198,	 6,	 1,	0x00}, /* XRX200_PCE_IER_1_FLOWINT       Traffic Flow Table Interrupt Rule matched Interrupt Enable */
++//	{0x1198,	 5,	 1,	0x00}, /* XRX200_PCE_IER_1_CPH2          Classification Phase 2 Ready Interrupt Enable */
++//	{0x1198,	 4,	 1,	0x00}, /* XRX200_PCE_IER_1_CPH1          Classification Phase 1 Ready Interrupt Enable */
++//	{0x1198,	 3,	 1,	0x00}, /* XRX200_PCE_IER_1_CPH0          Classification Phase 0 Ready Interrupt Enable */
++//	{0x1198,	 2,	 1,	0x00}, /* XRX200_PCE_IER_1_PRDY          Parser Ready Interrupt Enable */
++//	{0x1198,	 1,	 1,	0x00}, /* XRX200_PCE_IER_1_IGTF          IGMP Table Full Interrupt Enable */
++//	{0x1198,	 0,	 1,	0x00}, /* XRX200_PCE_IER_1_MTF           MAC Table Full Interrupt Enable */
++//	{0x119C,	 0,	16,	0x00}, /* XRX200_PCE_ISR_0_PINT          Parser and ClassificationEngine Global Interrupt Status Register 0 */
++//	{0x119C,	15,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_15       Port Interrupt */
++//	{0x119C,	14,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_14       Port Interrupt */
++//	{0x119C,	13,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_13       Port Interrupt */
++//	{0x119C,	12,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_12       Port Interrupt */
++//	{0x119C,	11,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_11       Port Interrupt */
++//	{0x119C,	10,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_10       Port Interrupt */
++//	{0x119C,	 9,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_9        Port Interrupt */
++//	{0x119C,	 8,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_8        Port Interrupt */
++//	{0x119C,	 7,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_7        Port Interrupt */
++//	{0x119C,	 6,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_6        Port Interrupt */
++//	{0x119C,	 5,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_5        Port Interrupt */
++//	{0x119C,	 4,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_4        Port Interrupt */
++//	{0x119C,	 3,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_3        Port Interrupt */
++//	{0x119C,	 2,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_2        Port Interrupt */
++//	{0x119C,	 1,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_1        Port Interrupt */
++//	{0x119C,	 0,	 1,	0x00}, /* XRX200_PCE_ISR_0_PINT_0        Port Interrupt */
++//	{0x11A0,	 0,	16,	0x00}, /* XRX200_PCE_ISR_1               Parser and ClassificationEngine Global Interrupt Status Register 1 */
++//	{0x11A0,	 6,	 1,	0x00}, /* XRX200_PCE_ISR_1_FLOWINT       Traffic Flow Table Interrupt Rule matched */
++//	{0x11A0,	 5,	 1,	0x00}, /* XRX200_PCE_ISR_1_CPH2          Classification Phase 2 Ready Interrupt */
++//	{0x11A0,	 4,	 1,	0x00}, /* XRX200_PCE_ISR_1_CPH1          Classification Phase 1 Ready Interrupt */
++//	{0x11A0,	 3,	 1,	0x00}, /* XRX200_PCE_ISR_1_CPH0          Classification Phase 0 Ready Interrupt */
++//	{0x11A0,	 2,	 1,	0x00}, /* XRX200_PCE_ISR_1_PRDY          Parser Ready Interrupt */
++//	{0x11A0,	 1,	 1,	0x00}, /* XRX200_PCE_ISR_1_IGTF          IGMP Table Full Interrupt */
++//	{0x11A0,	 0,	 1,	0x00}, /* XRX200_PCE_ISR_1_MTF           MAC Table Full Interrupt */
++//	{0x11A4,	 0,	16,	0x00}, /* XRX200_PARSER_STAT_FIFO        Parser Status Register */
++//	{0x11A4,	 8,	 8,	0x00}, /* XRX200_PARSER_STAT_FSM_DAT_CNT Parser FSM Data Counter */
++//	{0x11A4,	 5,	 3,	0x00}, /* XRX200_PARSER_STAT_FSM_STATE   Parser FSM State */
++//	{0x11A4,	 4,	 1,	0x00}, /* XRX200_PARSER_STAT_PKT_ERR     Packet error detected */
++//	{0x11A4,	 3,	 1,	0x00}, /* XRX200_PARSER_STAT_FSM_FIN     Parser FSM finished */
++//	{0x11A4,	 2,	 1,	0x00}, /* XRX200_PARSER_STAT_FSM_START   Parser FSM start */
++//	{0x11A4,	 1,	 1,	0x00}, /* XRX200_PARSER_STAT_FIFO_RDY    Parser FIFO ready for read. */
++//	{0x11A4,	 0,	 1,	0x00}, /* XRX200_PARSER_STAT_FIFO_FULL   Parser */
++//	{0x1200,	 0,	16,	0x28}, /* XRX200_PCE_PCTRL_0             PCE Port ControlRegister 0 */
++//	{0x1200,	13,	 1,	0x28}, /* XRX200_PCE_PCTRL_0_MCST        Multicast Forwarding Mode Selection */
++//	{0x1200,	12,	 1,	0x28}, /* XRX200_PCE_PCTRL_0_EGSTEN      Table-based Egress Special Tag Enable */
++//	{0x1200,	11,	 1,	0x28}, /* XRX200_PCE_PCTRL_0_IGSTEN      Ingress Special Tag Enable */
++//	{0x1200,	10,	 1,	0x28}, /* XRX200_PCE_PCTRL_0_PCPEN       PCP Remarking Mode */
++//	{0x1200,	 9,	 1,	0x28}, /* XRX200_PCE_PCTRL_0_CLPEN       Class Remarking Mode */
++//	{0x1200,	 8,	 1,	0x28}, /* XRX200_PCE_PCTRL_0_DPEN        Drop Precedence Remarking Mode */
++//	{0x1200,	 7,	 1,	0x28}, /* XRX200_PCE_PCTRL_0_CMOD        Three-color Marker Color Mode */
++//	{0x1200,	 6,	 1,	0x28}, /* XRX200_PCE_PCTRL_0_VREP        VLAN Replacement Mode */
++	{0x1200,	 5,	 1,	0x28}, /* XRX200_PCE_PCTRL_0_TVM         Transparent VLAN Mode */
++//	{0x1200,	 4,	 1,	0x28}, /* XRX200_PCE_PCTRL_0_PLOCK       Port Locking Enable */
++//	{0x1200,	 3,	 1,	0x28}, /* XRX200_PCE_PCTRL_0_AGEDIS      Aging Disable */
++//	{0x1200,	 0,	 3,	0x28}, /* XRX200_PCE_PCTRL_0_PSTATE      Port State */
++//	{0x1204,	 0,	16,	0x28}, /* XRX200_PCE_PCTRL_1             PCE Port ControlRegister 1 */
++//	{0x1204,	 0,	 8,	0x28}, /* XRX200_PCE_PCTRL_1_LRNLIM      MAC Address Learning Limit */
++//	{0x1208,	 0,	16,	0x28}, /* XRX200_PCE_PCTRL_2             PCE Port ControlRegister 2 */
++//	{0x1208,	 7,	 1,	0x28}, /* XRX200_PCE_PCTRL_2_DSCPMOD     DSCP Mode Selection */
++//	{0x1208,	 5,	 2,	0x28}, /* XRX200_PCE_PCTRL_2_DSCP        Enable DSCP to select the Class of Service */
++//	{0x1208,	 4,	 1,	0x28}, /* XRX200_PCE_PCTRL_2_PCP         Enable VLAN PCP to select the Class of Service */
++//	{0x1208,	 0,	 4,	0x28}, /* XRX200_PCE_PCTRL_2_PCLASS      Port-based Traffic Class */
++//	{0x120C,	 0,	16,	0x28}, /* XRX200_PCE_PCTRL_3_VIO         PCE Port ControlRegister 3 */
++//	{0x120C,	11,	 1,	0x28}, /* XRX200_PCE_PCTRL_3_EDIR        Egress Redirection Mode */
++//	{0x120C,	10,	 1,	0x28}, /* XRX200_PCE_PCTRL_3_RXDMIR      Receive Mirroring Enable for dropped frames */
++//	{0x120C,	 9,	 1,	0x28}, /* XRX200_PCE_PCTRL_3_RXVMIR      Receive Mirroring Enable for valid frames */
++//	{0x120C,	 8,	 1,	0x28}, /* XRX200_PCE_PCTRL_3_TXMIR       Transmit Mirroring Enable */
++//	{0x120C,	 7,	 1,	0x28}, /* XRX200_PCE_PCTRL_3_VIO_7       Violation Type 7 Mirroring Enable */
++//	{0x120C,	 6,	 1,	0x28}, /* XRX200_PCE_PCTRL_3_VIO_6       Violation Type 6 Mirroring Enable */
++//	{0x120C,	 5,	 1,	0x28}, /* XRX200_PCE_PCTRL_3_VIO_5       Violation Type 5 Mirroring Enable */
++//	{0x120C,	 4,	 1,	0x28}, /* XRX200_PCE_PCTRL_3_VIO_4       Violation Type 4 Mirroring Enable */
++//	{0x120C,	 3,	 1,	0x28}, /* XRX200_PCE_PCTRL_3_VIO_3       Violation Type 3 Mirroring Enable */
++//	{0x120C,	 2,	 1,	0x28}, /* XRX200_PCE_PCTRL_3_VIO_2       Violation Type 2 Mirroring Enable */
++//	{0x120C,	 1,	 1,	0x28}, /* XRX200_PCE_PCTRL_3_VIO_1       Violation Type 1 Mirroring Enable */
++//	{0x120C,	 0,	 1,	0x28}, /* XRX200_PCE_PCTRL_3_VIO_0       Violation Type 0 Mirroring Enable */
++//	{0x1210,	 0,	16,	0x28}, /* XRX200_WOL_CTRL                Wake-on-LAN ControlRegister */
++//	{0x1210,	 0,	 1,	0x28}, /* XRX200_WOL_CTRL_PORT           WoL Enable */
++//	{0x1214,	 0,	16,	0x28}, /* XRX200_PCE_VCTRL               PCE VLAN ControlRegister */
++	{0x1214,	 5,	 1,	0x28}, /* XRX200_PCE_VCTRL_VSR           VLAN Security Rule */
++	{0x1214,	 4,	 1,	0x28}, /* XRX200_PCE_VCTRL_VEMR          VLAN Egress Member Violation Rule */
++	{0x1214,	 3,	 1,	0x28}, /* XRX200_PCE_VCTRL_VIMR          VLAN Ingress Member Violation Rule */
++	{0x1214,	 1,	 2,	0x28}, /* XRX200_PCE_VCTRL_VINR          VLAN Ingress Tag Rule */
++	{0x1214,	 0,	 1,	0x28}, /* XRX200_PCE_VCTRL_UVR           Unknown VLAN Rule */
++//	{0x1218,	 0,	16,	0x28}, /* XRX200_PCE_DEFPVID             PCE Default PortVID Register */
++	{0x1218,	 0,	 6,	0x28}, /* XRX200_PCE_DEFPVID_PVID        Default Port VID Index */
++//	{0x121C,	 0,	16,	0x28}, /* XRX200_PCE_PSTAT               PCE Port StatusRegister */
++//	{0x121C,	 0,	16,	0x28}, /* XRX200_PCE_PSTAT_LRNCNT        Learning Count */
++//	{0x1220,	 0,	16,	0x28}, /* XRX200_PCE_PIER                Parser and ClassificationEngine Port Interrupt Enable Register */
++//	{0x1220,	 5,	 1,	0x28}, /* XRX200_PCE_PIER_CLDRP          Classification Drop Interrupt Enable */
++//	{0x1220,	 4,	 1,	0x28}, /* XRX200_PCE_PIER_PTDRP          Port Drop Interrupt Enable */
++//	{0x1220,	 3,	 1,	0x28}, /* XRX200_PCE_PIER_VLAN           VLAN Violation Interrupt Enable */
++//	{0x1220,	 2,	 1,	0x28}, /* XRX200_PCE_PIER_WOL            Wake-on-LAN Interrupt Enable */
++//	{0x1220,	 1,	 1,	0x28}, /* XRX200_PCE_PIER_LOCK           Port Limit Alert Interrupt Enable */
++//	{0x1220,	 0,	 1,	0x28}, /* XRX200_PCE_PIER_LIM            Port Lock Alert Interrupt Enable */
++//	{0x1224,	 0,	16,	0x28}, /* XRX200_PCE_PISR                Parser and ClassificationEngine Port Interrupt Status Register */
++//	{0x1224,	 5,	 1,	0x28}, /* XRX200_PCE_PISR_CLDRP          Classification Drop Interrupt */
++//	{0x1224,	 4,	 1,	0x28}, /* XRX200_PCE_PISR_PTDRP          Port Drop Interrupt */
++//	{0x1224,	 3,	 1,	0x28}, /* XRX200_PCE_PISR_VLAN           VLAN Violation Interrupt */
++//	{0x1224,	 2,	 1,	0x28}, /* XRX200_PCE_PISR_WOL            Wake-on-LAN Interrupt */
++//	{0x1224,	 1,	 1,	0x28}, /* XRX200_PCE_PISR_LOCK           Port Lock Alert Interrupt */
++//	{0x1224,	 0,	 1,	0x28}, /* XRX200_PCE_PISR_LIMIT          Port Limitation Alert Interrupt */
++//	{0x1600,	 0,	16,	0x1c}, /* XRX200_PCE_TCM_CTRL            Three-colorMarker Control Register */
++//	{0x1600,	 0,	 1,	0x1c}, /* XRX200_PCE_TCM_CTRL_TCMEN      Three-color Marker metering instance enable */
++//	{0x1604,	 0,	16,	0x1c}, /* XRX200_PCE_TCM_STAT            Three-colorMarker Status Register */
++//	{0x1604,	 1,	 1,	0x1c}, /* XRX200_PCE_TCM_STAT_AL1        Three-color Marker Alert 1 Status */
++//	{0x1604,	 0,	 1,	0x1c}, /* XRX200_PCE_TCM_STAT_AL0        Three-color Marker Alert 0 Status */
++//	{0x1608,	 0,	16,	0x1c}, /* XRX200_PCE_TCM_CBS             Three-color MarkerCommitted Burst Size Register */
++//	{0x1608,	 0,	10,	0x1c}, /* XRX200_PCE_TCM_CBS_CBS         Committed Burst Size */
++//	{0x160C,	 0,	16,	0x1c}, /* XRX200_PCE_TCM_EBS             Three-color MarkerExcess Burst Size Register */
++//	{0x160C,	 0,	10,	0x1c}, /* XRX200_PCE_TCM_EBS_EBS         Excess Burst Size */
++//	{0x1610,	 0,	16,	0x1c}, /* XRX200_PCE_TCM_IBS             Three-color MarkerInstantaneous Burst Size Register */
++//	{0x1610,	 0,	 2,	0x1c}, /* XRX200_PCE_TCM_IBS_IBS         Instantaneous Burst Size */
++//	{0x1614,	 0,	16,	0x1c}, /* XRX200_PCE_TCM_CIR_MANT        Three-colorMarker Constant Information Rate Mantissa Register */
++//	{0x1614,	 0,	10,	0x1c}, /* XRX200_PCE_TCM_CIR_MANT_MANT   Rate Counter Mantissa */
++//	{0x1618,	 0,	16,	0x1c}, /* XRX200_PCE_TCM_CIR_EXP         Three-colorMarker Constant Information Rate Exponent Register */
++//	{0x1618,	 0,	 4,	0x1c}, /* XRX200_PCE_TCM_CIR_EXP_EXP     Rate Counter Exponent */
++//	{0x2300,	 0,	16,	0x00}, /* XRX200_MAC_TEST                MAC Test Register */
++//	{0x2300,	 0,	16,	0x00}, /* XRX200_MAC_TEST_JTP            Jitter Test Pattern */
++//	{0x2304,	 0,	16,	0x00}, /* XRX200_MAC_PFAD_CFG            MAC Pause FrameSource Address Configuration Register */
++//	{0x2304,	 0,	 1,	0x00}, /* XRX200_MAC_PFAD_CFG_SAMOD      Source Address Mode */
++//	{0x2308,	 0,	16,	0x00}, /* XRX200_MAC_PFSA_0              Pause Frame SourceAddress Part 0  */
++//	{0x2308,	 0,	16,	0x00}, /* XRX200_MAC_PFSA_0_PFAD         Pause Frame Source Address Part 0 */
++//	{0x230C,	 0,	16,	0x00}, /* XRX200_MAC_PFSA_1              Pause Frame SourceAddress Part 1  */
++//	{0x230C,	 0,	16,	0x00}, /* XRX200_MAC_PFSA_1_PFAD         Pause Frame Source Address Part 1 */
++//	{0x2310,	 0,	16,	0x00}, /* XRX200_MAC_PFSA_2              Pause Frame SourceAddress Part 2  */
++//	{0x2310,	 0,	16,	0x00}, /* XRX200_MAC_PFSA_2_PFAD         Pause Frame Source Address Part 2 */
++//	{0x2314,	 0,	16,	0x00}, /* XRX200_MAC_FLEN                MAC Frame Length Register */
++//	{0x2314,	 0,	14,	0x00}, /* XRX200_MAC_FLEN_LEN            Maximum Frame Length */
++//	{0x2318,	 0,	16,	0x00}, /* XRX200_MAC_VLAN_ETYPE_0        MAC VLAN EthertypeRegister 0 */
++//	{0x2318,	 0,	16,	0x00}, /* XRX200_MAC_VLAN_ETYPE_0_OUTER  Ethertype */
++//	{0x231C,	 0,	16,	0x00}, /* XRX200_MAC_VLAN_ETYPE_1        MAC VLAN EthertypeRegister 1 */
++//	{0x231C,	 0,	16,	0x00}, /* XRX200_MAC_VLAN_ETYPE_1_INNER  Ethertype */
++//	{0x2320,	 0,	16,	0x00}, /* XRX200_MAC_IER                 MAC Interrupt EnableRegister */
++//	{0x2320,	 0,	 8,	0x00}, /* XRX200_MAC_IER_MACIEN          MAC Interrupt Enable */
++//	{0x2324,	 0,	16,	0x00}, /* XRX200_MAC_ISR                 MAC Interrupt StatusRegister */
++//	{0x2324,	 0,	 8,	0x00}, /* XRX200_MAC_ISR_MACINT          MAC Interrupt */
++//	{0x2400,	 0,	16,	0x30}, /* XRX200_MAC_PSTAT               MAC Port Status Register */
++//	{0x2400,	11,	 1,	0x30}, /* XRX200_MAC_PSTAT_PACT          PHY Active Status */
++	{0x2400,	10,	 1,	0x30}, /* XRX200_MAC_PSTAT_GBIT          Gigabit Speed Status */
++	{0x2400,	 9,	 1,	0x30}, /* XRX200_MAC_PSTAT_MBIT          Megabit Speed Status */
++	{0x2400,	 8,	 1,	0x30}, /* XRX200_MAC_PSTAT_FDUP          Full Duplex Status */
++//	{0x2400,	 7,	 1,	0x30}, /* XRX200_MAC_PSTAT_RXPAU         Receive Pause Status */
++//	{0x2400,	 6,	 1,	0x30}, /* XRX200_MAC_PSTAT_TXPAU         Transmit Pause Status */
++//	{0x2400,	 5,	 1,	0x30}, /* XRX200_MAC_PSTAT_RXPAUEN       Receive Pause Enable Status */
++//	{0x2400,	 4,	 1,	0x30}, /* XRX200_MAC_PSTAT_TXPAUEN       Transmit Pause Enable Status */
++	{0x2400,	 3,	 1,	0x30}, /* XRX200_MAC_PSTAT_LSTAT         Link Status */
++//	{0x2400,	 2,	 1,	0x30}, /* XRX200_MAC_PSTAT_CRS           Carrier Sense Status */
++//	{0x2400,	 1,	 1,	0x30}, /* XRX200_MAC_PSTAT_TXLPI         Transmit Low-power Idle Status */
++//	{0x2400,	 0,	 1,	0x30}, /* XRX200_MAC_PSTAT_RXLPI         Receive Low-power Idle Status */
++//	{0x2404,	 0,	16,	0x30}, /* XRX200_MAC_PISR                MAC Interrupt Status Register */
++//	{0x2404,	13,	 1,	0x30}, /* XRX200_MAC_PISR_PACT           PHY Active Status */
++//	{0x2404,	12,	 1,	0x30}, /* XRX200_MAC_PISR_SPEED          Megabit Speed Status */
++//	{0x2404,	11,	 1,	0x30}, /* XRX200_MAC_PISR_FDUP           Full Duplex Status */
++//	{0x2404,	10,	 1,	0x30}, /* XRX200_MAC_PISR_RXPAUEN        Receive Pause Enable Status */
++//	{0x2404,	 9,	 1,	0x30}, /* XRX200_MAC_PISR_TXPAUEN        Transmit Pause Enable Status */
++//	{0x2404,	 8,	 1,	0x30}, /* XRX200_MAC_PISR_LPIOFF         Receive Low-power Idle Mode is left */
++//	{0x2404,	 7,	 1,	0x30}, /* XRX200_MAC_PISR_LPION          Receive Low-power Idle Mode is entered */
++//	{0x2404,	 6,	 1,	0x30}, /* XRX200_MAC_PISR_JAM            Jam Status Detected */
++//	{0x2404,	 5,	 1,	0x30}, /* XRX200_MAC_PISR_TOOSHORT       Too Short Frame Error Detected */
++//	{0x2404,	 4,	 1,	0x30}, /* XRX200_MAC_PISR_TOOLONG        Too Long Frame Error Detected */
++//	{0x2404,	 3,	 1,	0x30}, /* XRX200_MAC_PISR_LENERR         Length Mismatch Error Detected */
++//	{0x2404,	 2,	 1,	0x30}, /* XRX200_MAC_PISR_FCSERR         Frame Checksum Error Detected */
++//	{0x2404,	 1,	 1,	0x30}, /* XRX200_MAC_PISR_TXPAUSE        Pause Frame Transmitted */
++//	{0x2404,	 0,	 1,	0x30}, /* XRX200_MAC_PISR_RXPAUSE        Pause Frame Received */
++//	{0x2408,	 0,	16,	0x30}, /* XRX200_MAC_PIER                MAC Interrupt Enable Register */
++//	{0x2408,	13,	 1,	0x30}, /* XRX200_MAC_PIER_PACT           PHY Active Status */
++//	{0x2408,	12,	 1,	0x30}, /* XRX200_MAC_PIER_SPEED          Megabit Speed Status */
++//	{0x2408,	11,	 1,	0x30}, /* XRX200_MAC_PIER_FDUP           Full Duplex Status */
++//	{0x2408,	10,	 1,	0x30}, /* XRX200_MAC_PIER_RXPAUEN        Receive Pause Enable Status */
++//	{0x2408,	 9,	 1,	0x30}, /* XRX200_MAC_PIER_TXPAUEN        Transmit Pause Enable Status */
++//	{0x2408,	 8,	 1,	0x30}, /* XRX200_MAC_PIER_LPIOFF         Low-power Idle Off Interrupt Mask */
++//	{0x2408,	 7,	 1,	0x30}, /* XRX200_MAC_PIER_LPION          Low-power Idle On Interrupt Mask */
++//	{0x2408,	 6,	 1,	0x30}, /* XRX200_MAC_PIER_JAM            Jam Status Interrupt Mask */
++//	{0x2408,	 5,	 1,	0x30}, /* XRX200_MAC_PIER_TOOSHORT       Too Short Frame Error Interrupt Mask */
++//	{0x2408,	 4,	 1,	0x30}, /* XRX200_MAC_PIER_TOOLONG        Too Long Frame Error Interrupt Mask */
++//	{0x2408,	 3,	 1,	0x30}, /* XRX200_MAC_PIER_LENERR         Length Mismatch Error Interrupt Mask */
++//	{0x2408,	 2,	 1,	0x30}, /* XRX200_MAC_PIER_FCSERR         Frame Checksum Error Interrupt Mask */
++//	{0x2408,	 1,	 1,	0x30}, /* XRX200_MAC_PIER_TXPAUSE        Transmit Pause Frame Interrupt Mask */
++//	{0x2408,	 0,	 1,	0x30}, /* XRX200_MAC_PIER_RXPAUSE        Receive Pause Frame Interrupt Mask */
++//	{0x240C,	 0,	16,	0x30}, /* XRX200_MAC_CTRL_0              MAC Control Register0 */
++//	{0x240C,	13,	 2,	0x30}, /* XRX200_MAC_CTRL_0_LCOL         Late Collision Control */
++//	{0x240C,	12,	 1,	0x30}, /* XRX200_MAC_CTRL_0_BM           Burst Mode Control */
++//	{0x240C,	11,	 1,	0x30}, /* XRX200_MAC_CTRL_0_APADEN       Automatic VLAN Padding Enable */
++//	{0x240C,	10,	 1,	0x30}, /* XRX200_MAC_CTRL_0_VPAD2EN      Stacked VLAN Padding Enable */
++//	{0x240C,	 9,	 1,	0x30}, /* XRX200_MAC_CTRL_0_VPADEN       VLAN Padding Enable */
++//	{0x240C,	 8,	 1,	0x30}, /* XRX200_MAC_CTRL_0_PADEN        Padding Enable */
++//	{0x240C,	 7,	 1,	0x30}, /* XRX200_MAC_CTRL_0_FCS          Transmit FCS Control */
++	{0x240C,	 4,	 3,	0x30}, /* XRX200_MAC_CTRL_0_FCON         Flow Control Mode */
++//	{0x240C,	 2,	 2,	0x30}, /* XRX200_MAC_CTRL_0_FDUP         Full Duplex Control */
++//	{0x240C,	 0,	 2,	0x30}, /* XRX200_MAC_CTRL_0_GMII         GMII/MII interface mode selection */
++//	{0x2410,	 0,	16,	0x30}, /* XRX200_MAC_CTRL_1              MAC Control Register1 */
++//	{0x2410,	 8,	 1,	0x30}, /* XRX200_MAC_CTRL_1_SHORTPRE     Short Preamble Control */
++//	{0x2410,	 0,	 4,	0x30}, /* XRX200_MAC_CTRL_1_IPG          Minimum Inter Packet Gap Size */
++//	{0x2414,	 0,	16,	0x30}, /* XRX200_MAC_CTRL_2              MAC Control Register2 */
++//	{0x2414,	 3,	 1,	0x30}, /* XRX200_MAC_CTRL_2_MLEN         Maximum Untagged Frame Length */
++//	{0x2414,	 2,	 1,	0x30}, /* XRX200_MAC_CTRL_2_LCHKL        Frame Length Check Long Enable */
++//	{0x2414,	 0,	 2,	0x30}, /* XRX200_MAC_CTRL_2_LCHKS        Frame Length Check Short Enable */
++//	{0x2418,	 0,	16,	0x30}, /* XRX200_MAC_CTRL_3              MAC Control Register3 */
++//	{0x2418,	 0,	 4,	0x30}, /* XRX200_MAC_CTRL_3_RCNT         Retry Count */
++//	{0x241C,	 0,	16,	0x30}, /* XRX200_MAC_CTRL_4              MAC Control Register4 */
++//	{0x241C,	 7,	 1,	0x30}, /* XRX200_MAC_CTRL_4_LPIEN        LPI Mode Enable */
++//	{0x241C,	 0,	 7,	0x30}, /* XRX200_MAC_CTRL_4_WAIT         LPI Wait Time */
++//	{0x2420,	 0,	16,	0x30}, /* XRX200_MAC_CTRL_5_PJPS         MAC Control Register5 */
++//	{0x2420,	 1,	 1,	0x30}, /* XRX200_MAC_CTRL_5_PJPS_NOBP    Prolonged Jam pattern size during no-backpressure state */
++//	{0x2420,	 0,	 1,	0x30}, /* XRX200_MAC_CTRL_5_PJPS_BP      Prolonged Jam pattern size during backpressure state */
++//	{0x2424,	 0,	16,	0x30}, /* XRX200_MAC_CTRL_6_XBUF         Transmit and ReceiveBuffer Control Register */
++//	{0x2424,	 9,	 3,	0x30}, /* XRX200_MAC_CTRL_6_RBUF_DLY_WP  Delay */
++//	{0x2424,	 8,	 1,	0x30}, /* XRX200_MAC_CTRL_6_RBUF_INIT    Receive Buffer Initialization */
++//	{0x2424,	 6,	 1,	0x30}, /* XRX200_MAC_CTRL_6_RBUF_BYPASS  Bypass the Receive Buffer */
++//	{0x2424,	 3,	 3,	0x30}, /* XRX200_MAC_CTRL_6_XBUF_DLY_WP  Delay */
++//	{0x2424,	 2,	 1,	0x30}, /* XRX200_MAC_CTRL_6_XBUF_INIT    Initialize the Transmit Buffer */
++//	{0x2424,	 0,	 1,	0x30}, /* XRX200_MAC_CTRL_6_XBUF_BYPASS  Bypass the Transmit Buffer */
++//	{0x2428,	 0,	16,	0x30}, /* XRX200_MAC_BUFST_XBUF          MAC Receive and TransmitBuffer Status Register */
++//	{0x2428,	 3,	 1,	0x30}, /* XRX200_MAC_BUFST_RBUF_UFL      Receive Buffer Underflow Indicator */
++//	{0x2428,	 2,	 1,	0x30}, /* XRX200_MAC_BUFST_RBUF_OFL      Receive Buffer Overflow Indicator */
++//	{0x2428,	 1,	 1,	0x30}, /* XRX200_MAC_BUFST_XBUF_UFL      Transmit Buffer Underflow Indicator */
++//	{0x2428,	 0,	 1,	0x30}, /* XRX200_MAC_BUFST_XBUF_OFL      Transmit Buffer Overflow Indicator */
++//	{0x242C,	 0,	16,	0x30}, /* XRX200_MAC_TESTEN              MAC Test Enable Register */
++//	{0x242C,	 2,	 1,	0x30}, /* XRX200_MAC_TESTEN_JTEN         Jitter Test Enable */
++//	{0x242C,	 1,	 1,	0x30}, /* XRX200_MAC_TESTEN_TXER         Transmit Error Insertion */
++//	{0x242C,	 0,	 1,	0x30}, /* XRX200_MAC_TESTEN_LOOP         MAC Loopback Enable */
++//	{0x2900,	 0,	16,	0x00}, /* XRX200_FDMA_CTRL               Ethernet Switch FetchDMA Control Register */
++//	{0x2900,	 7,	 5,	0x00}, /* XRX200_FDMA_CTRL_LPI_THRESHOLD Low Power Idle Threshold */
++//	{0x2900,	 4,	 3,	0x00}, /* XRX200_FDMA_CTRL_LPI_MODE      Low Power Idle Mode */
++//	{0x2900,	 2,	 2,	0x00}, /* XRX200_FDMA_CTRL_EGSTAG        Egress Special Tag Size */
++//	{0x2900,	 1,	 1,	0x00}, /* XRX200_FDMA_CTRL_IGSTAG        Ingress Special Tag Size */
++//	{0x2900,	 0,	 1,	0x00}, /* XRX200_FDMA_CTRL_EXCOL         Excessive Collision Handling */
++//	{0x2904,	 0,	16,	0x00}, /* XRX200_FDMA_STETYPE            Special Tag EthertypeControl Register */
++//	{0x2904,	 0,	16,	0x00}, /* XRX200_FDMA_STETYPE_ETYPE      Special Tag Ethertype */
++//	{0x2908,	 0,	16,	0x00}, /* XRX200_FDMA_VTETYPE            VLAN Tag EthertypeControl Register */
++//	{0x2908,	 0,	16,	0x00}, /* XRX200_FDMA_VTETYPE_ETYPE      VLAN Tag Ethertype */
++//	{0x290C,	 0,	16,	0x00}, /* XRX200_FDMA_STAT_0             FDMA Status Register0 */
++//	{0x290C,	 0,	16,	0x00}, /* XRX200_FDMA_STAT_0_FSMS        FSM states status */
++//	{0x2910,	 0,	16,	0x00}, /* XRX200_FDMA_IER                Fetch DMA Global InterruptEnable Register */
++//	{0x2910,	14,	 1,	0x00}, /* XRX200_FDMA_IER_PCKD           Packet Drop Interrupt Enable */
++//	{0x2910,	13,	 1,	0x00}, /* XRX200_FDMA_IER_PCKR           Packet Ready Interrupt Enable */
++//	{0x2910,	 0,	 8,	0x00}, /* XRX200_FDMA_IER_PCKT           Packet Sent Interrupt Enable */
++//	{0x2914,	 0,	16,	0x00}, /* XRX200_FDMA_ISR                Fetch DMA Global InterruptStatus Register */
++//	{0x2914,	14,	 1,	0x00}, /* XRX200_FDMA_ISR_PCKTD          Packet Drop */
++//	{0x2914,	13,	 1,	0x00}, /* XRX200_FDMA_ISR_PCKR           Packet is Ready for Transmission */
++//	{0x2914,	 0,	 8,	0x00}, /* XRX200_FDMA_ISR_PCKT           Packet Sent Event */
++//	{0x2A00,	 0,	16,	0x18}, /* XRX200_FDMA_PCTRL              Ethernet SwitchFetch DMA Port Control Register */
++//	{0x2A00,	 3,	 2,	0x18}, /* XRX200_FDMA_PCTRL_VLANMOD      VLAN Modification Enable */
++//	{0x2A00,	 2,	 1,	0x18}, /* XRX200_FDMA_PCTRL_DSCPRM       DSCP Re-marking Enable */
++//	{0x2A00,	 1,	 1,	0x18}, /* XRX200_FDMA_PCTRL_STEN         Special Tag Insertion Enable */
++//	{0x2A00,	 0,	 1,	0x18}, /* XRX200_FDMA_PCTRL_EN           FDMA Port Enable */
++//	{0x2A04,	 0,	16,	0x18}, /* XRX200_FDMA_PRIO               Ethernet SwitchFetch DMA Port Priority Register */
++//	{0x2A04,	 0,	 2,	0x18}, /* XRX200_FDMA_PRIO_PRIO          FDMA PRIO */
++//	{0x2A08,	 0,	16,	0x18}, /* XRX200_FDMA_PSTAT0             Ethernet SwitchFetch DMA Port Status Register 0 */
++//	{0x2A08,	15,	 1,	0x18}, /* XRX200_FDMA_PSTAT0_PKT_AVAIL   Port Egress Packet Available */
++//	{0x2A08,	14,	 1,	0x18}, /* XRX200_FDMA_PSTAT0_POK         Port Status OK */
++//	{0x2A08,	 0,	 6,	0x18}, /* XRX200_FDMA_PSTAT0_PSEG        Port Egress Segment Count */
++//	{0x2A0C,	 0,	16,	0x18}, /* XRX200_FDMA_PSTAT1_HDR         Ethernet SwitchFetch DMA Port Status Register 1 */
++//	{0x2A0C,	 0,	10,	0x18}, /* XRX200_FDMA_PSTAT1_HDR_PTR     Header Pointer */
++//	{0x2A10,	 0,	16,	0x18}, /* XRX200_FDMA_TSTAMP0            Egress TimeStamp Register 0 */
++//	{0x2A10,	 0,	16,	0x18}, /* XRX200_FDMA_TSTAMP0_TSTL       Time Stamp [15:0] */
++//	{0x2A14,	 0,	16,	0x18}, /* XRX200_FDMA_TSTAMP1            Egress TimeStamp Register 1 */
++//	{0x2A14,	 0,	16,	0x18}, /* XRX200_FDMA_TSTAMP1_TSTH       Time Stamp [31:16] */
++//	{0x2D00,	 0,	16,	0x00}, /* XRX200_SDMA_CTRL               Ethernet Switch StoreDMA Control Register */
++//	{0x2D00,	 0,	 1,	0x00}, /* XRX200_SDMA_CTRL_TSTEN         Time Stamp Enable */
++//	{0x2D04,	 0,	16,	0x00}, /* XRX200_SDMA_FCTHR1             SDMA Flow Control Threshold1 Register */
++//	{0x2D04,	 0,	10,	0x00}, /* XRX200_SDMA_FCTHR1_THR1        Threshold 1 */
++//	{0x2D08,	 0,	16,	0x00}, /* XRX200_SDMA_FCTHR2             SDMA Flow Control Threshold2 Register */
++//	{0x2D08,	 0,	10,	0x00}, /* XRX200_SDMA_FCTHR2_THR2        Threshold 2 */
++//	{0x2D0C,	 0,	16,	0x00}, /* XRX200_SDMA_FCTHR3             SDMA Flow Control Threshold3 Register */
++//	{0x2D0C,	 0,	10,	0x00}, /* XRX200_SDMA_FCTHR3_THR3        Threshold 3 */
++//	{0x2D10,	 0,	16,	0x00}, /* XRX200_SDMA_FCTHR4             SDMA Flow Control Threshold4 Register */
++//	{0x2D10,	 0,	10,	0x00}, /* XRX200_SDMA_FCTHR4_THR4        Threshold 4 */
++//	{0x2D14,	 0,	16,	0x00}, /* XRX200_SDMA_FCTHR5             SDMA Flow Control Threshold5 Register */
++//	{0x2D14,	 0,	10,	0x00}, /* XRX200_SDMA_FCTHR5_THR5        Threshold 5 */
++//	{0x2D18,	 0,	16,	0x00}, /* XRX200_SDMA_FCTHR6             SDMA Flow Control Threshold6 Register */
++//	{0x2D18,	 0,	10,	0x00}, /* XRX200_SDMA_FCTHR6_THR6        Threshold 6 */
++//	{0x2D1C,	 0,	16,	0x00}, /* XRX200_SDMA_FCTHR7             SDMA Flow Control Threshold7 Register */
++//	{0x2D1C,	 0,	11,	0x00}, /* XRX200_SDMA_FCTHR7_THR7        Threshold 7 */
++//	{0x2D20,	 0,	16,	0x00}, /* XRX200_SDMA_STAT_0             SDMA Status Register0 */
++//	{0x2D20,	 4,	 3,	0x00}, /* XRX200_SDMA_STAT_0_BPS_FILL    Back Pressure Status */
++//	{0x2D20,	 2,	 2,	0x00}, /* XRX200_SDMA_STAT_0_BPS_PNT     Back Pressure Status */
++//	{0x2D20,	 0,	 2,	0x00}, /* XRX200_SDMA_STAT_0_DROP        Back Pressure Status */
++//	{0x2D24,	 0,	16,	0x00}, /* XRX200_SDMA_STAT_1             SDMA Status Register1 */
++//	{0x2D24,	 0,	10,	0x00}, /* XRX200_SDMA_STAT_1_FILL        Buffer Filling Level */
++//	{0x2D28,	 0,	16,	0x00}, /* XRX200_SDMA_STAT_2             SDMA Status Register2 */
++//	{0x2D28,	 0,	16,	0x00}, /* XRX200_SDMA_STAT_2_FSMS        FSM states status */
++//	{0x2D2C,	 0,	16,	0x00}, /* XRX200_SDMA_IER                SDMA Interrupt Enable Register */
++//	{0x2D2C,	15,	 1,	0x00}, /* XRX200_SDMA_IER_BPEX           Buffer Pointers Exceeded */
++//	{0x2D2C,	14,	 1,	0x00}, /* XRX200_SDMA_IER_BFULL          Buffer Full */
++//	{0x2D2C,	13,	 1,	0x00}, /* XRX200_SDMA_IER_FERR           Frame Error */
++//	{0x2D2C,	 0,	 8,	0x00}, /* XRX200_SDMA_IER_FRX            Frame Received Successfully */
++//	{0x2D30,	 0,	16,	0x00}, /* XRX200_SDMA_ISR                SDMA Interrupt Status Register */
++//	{0x2D30,	15,	 1,	0x00}, /* XRX200_SDMA_ISR_BPEX           Packet Descriptors Exceeded */
++//	{0x2D30,	14,	 1,	0x00}, /* XRX200_SDMA_ISR_BFULL          Buffer Full */
++//	{0x2D30,	13,	 1,	0x00}, /* XRX200_SDMA_ISR_FERR           Frame Error */
++//	{0x2D30,	 0,	 8,	0x00}, /* XRX200_SDMA_ISR_FRX            Frame Received Successfully */
++//	{0x2F00,	 0,	16,	0x18}, /* XRX200_SDMA_PCTRL              Ethernet SwitchStore DMA Port Control Register */
++//	{0x2F00,	13,	 2,	0x18}, /* XRX200_SDMA_PCTRL_DTHR         Drop Threshold Selection */
++//	{0x2F00,	11,	 2,	0x18}, /* XRX200_SDMA_PCTRL_PTHR         Pause Threshold Selection */
++//	{0x2F00,	10,	 1,	0x18}, /* XRX200_SDMA_PCTRL_PHYEFWD      Forward PHY Error Frames */
++//	{0x2F00,	 9,	 1,	0x18}, /* XRX200_SDMA_PCTRL_ALGFWD       Forward Alignment Error Frames */
++//	{0x2F00,	 8,	 1,	0x18}, /* XRX200_SDMA_PCTRL_LENFWD       Forward Length Errored Frames */
++//	{0x2F00,	 7,	 1,	0x18}, /* XRX200_SDMA_PCTRL_OSFWD        Forward Oversized Frames */
++//	{0x2F00,	 6,	 1,	0x18}, /* XRX200_SDMA_PCTRL_USFWD        Forward Undersized Frames */
++//	{0x2F00,	 5,	 1,	0x18}, /* XRX200_SDMA_PCTRL_FCSIGN       Ignore FCS Errors */
++//	{0x2F00,	 4,	 1,	0x18}, /* XRX200_SDMA_PCTRL_FCSFWD       Forward FCS Errored Frames */
++//	{0x2F00,	 3,	 1,	0x18}, /* XRX200_SDMA_PCTRL_PAUFWD       Pause Frame Forwarding */
++//	{0x2F00,	 2,	 1,	0x18}, /* XRX200_SDMA_PCTRL_MFCEN        Metering Flow Control Enable */
++//	{0x2F00,	 1,	 1,	0x18}, /* XRX200_SDMA_PCTRL_FCEN         Flow Control Enable */
++//	{0x2F00,	 0,	 1,	0x18}, /* XRX200_SDMA_PCTRL_PEN          Port Enable */
++//	{0x2F04,	 0,	16,	0x18}, /* XRX200_SDMA_PRIO               Ethernet SwitchStore DMA Port Priority Register */
++//	{0x2F04,	 0,	 2,	0x18}, /* XRX200_SDMA_PRIO_PRIO          SDMA PRIO */
++//	{0x2F08,	 0,	16,	0x18}, /* XRX200_SDMA_PSTAT0_HDR         Ethernet SwitchStore DMA Port Status Register 0 */
++//	{0x2F08,	 0,	10,	0x18}, /* XRX200_SDMA_PSTAT0_HDR_PTR     Port Ingress Queue Header Pointer */
++//	{0x2F0C,	 0,	16,	0x18}, /* XRX200_SDMA_PSTAT1             Ethernet SwitchStore DMA Port Status Register 1 */
++//	{0x2F0C,	 0,	10,	0x18}, /* XRX200_SDMA_PSTAT1_PPKT        Port Ingress Packet Count */
++//	{0x2F10,	 0,	16,	0x18}, /* XRX200_SDMA_TSTAMP0            Ingress TimeStamp Register 0 */
++//	{0x2F10,	 0,	16,	0x18}, /* XRX200_SDMA_TSTAMP0_TSTL       Time Stamp [15:0] */
++//	{0x2F14,	 0,	16,	0x18}, /* XRX200_SDMA_TSTAMP1            Ingress TimeStamp Register 1 */
++//	{0x2F14,	 0,	16,	0x18}, /* XRX200_SDMA_TSTAMP1_TSTH       Time Stamp [31:16] */
++};
++
++

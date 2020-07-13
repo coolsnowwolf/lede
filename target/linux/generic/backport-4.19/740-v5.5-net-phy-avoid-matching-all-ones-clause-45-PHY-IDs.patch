@@ -1,0 +1,63 @@
+From 1be8018db381200c24854e0c299206c557f76fe0 Mon Sep 17 00:00:00 2001
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Mon, 11 Nov 2019 11:58:09 +0000
+Subject: [PATCH 638/660] net: phy: avoid matching all-ones clause 45 PHY IDs
+
+We currently match clause 45 PHYs using any ID read from a MMD marked
+as present in the "Devices in package" registers 5 and 6.  However,
+this is incorrect.  45.2 says:
+
+  "The definition of the term package is vendor specific and could be
+   a chip, module, or other similar entity."
+
+so a package could be more or less than the whole PHY - a PHY could be
+made up of several modules instantiated onto a single chip such as the
+Marvell 88x3310, or some of the MMDs could be disabled according to
+chip configuration, such as the Broadcom 84881.
+
+In the case of Broadcom 84881, the "Devices in package" registers
+contain 0xc000009b, meaning that there is a PHYXS present in the
+package, but all registers in MMD 4 return 0xffff.  This leads to our
+matching code incorrectly binding this PHY to one of our generic PHY
+drivers.
+
+This patch changes the way we determine whether to attempt to match a
+MMD identifier, or use it to request a module - if the identifier is
+all-ones, then we skip over it. When reading the identifiers, we
+initialise phydev->c45_ids.device_ids to all-ones, only reading the
+device ID if the "Devices in package" registers indicates we should.
+
+This avoids the generic drivers incorrectly matching on a PHY ID of
+0xffffffff.
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+ drivers/net/phy/phy_device.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -339,7 +339,7 @@ static int phy_bus_match(struct device *
+ 
+ 	if (phydev->is_c45) {
+ 		for (i = 1; i < num_ids; i++) {
+-			if (!(phydev->c45_ids.devices_in_package & (1 << i)))
++			if (phydev->c45_ids.device_ids[i] == 0xffffffff)
+ 				continue;
+ 
+ 			if ((phydrv->phy_id & phydrv->phy_id_mask) ==
+@@ -629,10 +629,13 @@ static int get_phy_id(struct mii_bus *bu
+  */
+ struct phy_device *get_phy_device(struct mii_bus *bus, int addr, bool is_c45)
+ {
+-	struct phy_c45_device_ids c45_ids = {0};
++	struct phy_c45_device_ids c45_ids;
+ 	u32 phy_id = 0;
+ 	int r;
+ 
++	c45_ids.devices_in_package = 0;
++	memset(c45_ids.device_ids, 0xff, sizeof(c45_ids.device_ids));
++
+ 	r = get_phy_id(bus, addr, &phy_id, is_c45, &c45_ids);
+ 	if (r)
+ 		return ERR_PTR(r);

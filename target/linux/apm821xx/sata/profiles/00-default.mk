@@ -8,7 +8,7 @@
 define Profile/Default
   NAME:=Default Profile
   PRIORITY:=1
-  PACKAGES := kmod-usb-dwc2 kmod-usb-ledtrig-usbport kmod-usb-storage kmod-fs-vfat wpad-mini
+  PACKAGES := kmod-usb-dwc2 kmod-usb-ledtrig-usbport kmod-usb-storage kmod-fs-vfat wpad-basic
 endef
 
 define Profile/Default/Description

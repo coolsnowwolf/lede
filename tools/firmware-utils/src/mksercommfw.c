@@ -2,254 +2,260 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/types.h>
+#include <unistd.h>
+#include <byteswap.h>
+#include <endian.h>
+#include <getopt.h>
+
+#if !defined(__BYTE_ORDER)
+#error "Unknown byte order"
+#endif
+
+#if __BYTE_ORDER == __BIG_ENDIAN
+#define cpu_to_be32(x)  (x)
+#elif __BYTE_ORDER == __LITTLE_ENDIAN
+#define cpu_to_be32(x)  bswap_32(x)
+#else
+#error "Unsupported endianness"
+#endif
 
 /* #define DEBUG 1 */
 
+#ifdef DEBUG
+#define DBG(...) {printf(__VA_ARGS__); }
+#else
+#define DBG(...) {}
+#endif
+
+#define ERR(...) {printf(__VA_ARGS__); }
+
 /*
- * Fw Header Layout for Netgear / Sercomm devices
- * */
-static const char *magic = "sErCoMm"; /* 7 */
-/* 7-11: version control/download control ? */
-unsigned char version[4] = {0x00, 0x01, 0x00, 0x00};
-char *hwID = ""; /* 11-43 , ASCII/HEX */
-char *hwVer = ""; /* 44-57 , ASCII/HEX */
-char *swVer = ""; /* 58-62 , ASCII/HEX */
-/* magic again. */
+ * Fw Header Layout for Netgear / Sercomm devices (bytes)
+ *
+ * Size : 512 bytes + zipped image size
+ *
+ * Locations:
+ * magic  : 0-6    ASCII
+ * version: 7-11   fixed
+ * hwID   : 11-44  ASCII
+ * hwVer  : 45-54  ASCII
+ * swVer  : 55-62  uint32_t in BE
+ * magic  : 63-69  ASCII
+ * ChkSum : 511    Inverse value of the full image checksum while this location is 0x00
+ */
+static const char* magic = "sErCoMm"; /* 7 */
+static const unsigned char version[4] = { 0x00, 0x01, 0x00, 0x00 };
+static const int header_sz = 512;
+static const int footer_sz = 71;
 
-#define HEADER_SIZE 71
-
-/* null bytes until 511 */
-u_int32_t checksum = 0xFF; /* checksum */
-/* 512 onwards -> ZIP containing rootfs with the same Header */
-
-
-/* appended on rootfs for the Header. */
-const int footer_size = 128;
+static int is_header = 1;
 
 struct file_info {
-	char		*file_name;	/* name of the file */
-	char		*file_data;	/* data of the file in memory */
-	u_int32_t	 file_size;	/* length of the file */
+	char* file_name; /* name of the file */
+	char* file_data; /* data of the file in memory */
+	u_int32_t file_size; /* length of the file */
 };
 
-u_int8_t getCheckSum(char *data, int len)
-{
+static u_int8_t getCheckSum(char* data, int len) {
+	u_int8_t new = 0;
+	int i;
 
-	int32_t previous = 0;
-	u_int32_t new = 0;
-
-	for (u_int32_t i = 0; i < len; i++) {
-		new = (data[i] + previous) % 256;
-		previous = new | previous & -256;
-	}
-	return (u_int8_t) new;
-}
-
-void *bufferFile(struct file_info *finfo, int dontload)
-{
-	int fs = 0;
-	FILE *f = NULL;
-
-#ifdef DEBUG
-	printf("Opening file: %s\n", finfo->file_name);
-#endif
-	f = fopen(finfo->file_name, "rb");
-	if (f == NULL) {
-		perror("Error");
-		exit(1);
-	}
-
-	fseek(f, 0L, SEEK_END);
-	fs = ftell(f);
-	rewind(f);
-
-#ifdef DEBUG
-	printf("Filesize: %i .\n", fs);
-#endif
-
-	finfo->file_size = fs;
-
-	if (dontload) {
+	if (!data) {
+		ERR("Invalid pointer provided!\n");
 		return 0;
 	}
 
-	char *data = malloc(fs);
-	finfo->file_data = data;
-
-	int read = fread(data, fs, 1, f);
-
-	if (read != 1) {
-		printf("Error reading file %s.", finfo->file_name);
-		exit(1);
+	for (i = 0; i < len; i++) {
+		new += data[i];
 	}
 
-#ifdef DEBUG
-	printf("File: read successfully %i bytes.\n", read*fs);
-#endif
-	fclose(f);
+	return new;
 }
 
-void *writeFile(struct file_info *finfo)
-{
+/*
+ * read file into buffer
+ * add space for header/footer
+ */
+static int copyToOutputBuf(struct file_info* finfo) {
+	FILE* fp = NULL;
 
-#ifdef DEBUG
-	printf("Writing file: %s.\n", finfo->file_name);
-#endif
+	int file_sz = 0;
+	int extra_sz;
+	int hdr_pos;
+	int img_pos;
 
-	FILE *fout = fopen(finfo->file_name, "w");
-
-	if (!fwrite(finfo->file_data, finfo->file_size, 1, fout)) {
-		printf("Wanted to write, but something went wrong.\n");
-		fclose(fout);
-		exit(1);
-	}
-	fclose(fout);
-}
-
-void *rmFile(struct file_info *finfo)
-{
-	remove(finfo->file_name);
-	free(finfo->file_data);
-	finfo->file_size = 0;
-}
-
-void *usage(char *argv[])
-{
-	printf("Usage: %s <sysupgradefile> <kernel_offset> <HWID> <HWVER> <SWID>\n"
-		"All are positional arguments ...	\n"
-		"	sysupgradefile:		File with the kernel uimage at 0\n"
-		"	kernel_offset:		Offset in Hex where the kernel is located\n"
-		"	HWID:			Hardware ID, ASCII\n"
-		"	HWVER:			Hardware Version, ASCII\n"
-		"	SWID:			Software Version, Hex\n"
-		"	\n"
-		"	", argv[0]);
-}
-
-int main(int argc, char *argv[])
-{
-	printf("Building fw image for sercomm devices.\n");
-
-	if (argc == 2) {
-		struct file_info myfile = {argv[1], 0, 0};
-		bufferFile(&myfile, 0);
-		char chksum = getCheckSum(myfile.file_data, myfile.file_size);
-		printf("Checksum for File: %X.\n", chksum);
-		return 0;
+	if (!finfo || !finfo->file_name) {
+		ERR("Invalid pointer provided!\n");
+		return -1;
 	}
 
-	if (argc != 6) {
-		usage(argv);
-		return 1;
+	DBG("Opening file: %s\n", finfo->file_name);
+
+	if (!(fp = fopen(finfo->file_name, "rb"))) {
+		ERR("Error opening file: %s\n", finfo->file_name);
+		return -1;
 	}
 
-	/* Args */
+	/* Get filesize */
+	rewind(fp);
+	fseek(fp, 0L, SEEK_END);
+	file_sz = ftell(fp);
+	rewind(fp);
 
-	struct file_info sysupgrade = {argv[1], 0, 0};
-	bufferFile(&sysupgrade, 0);
+	if (file_sz < 1) {
+		ERR("Error getting filesize: %s\n", finfo->file_name);
+		fclose(fp);
+		return -1;
+	}
 
-	int kernel_offset = 0x90000; /* offset for the kernel inside the rootfs, default val */
-	sscanf(argv[2], "%X", &kernel_offset);
-#ifdef DEBUG
-	printf("Kernel_offset: at %X/%i bytes.\n", kernel_offset, kernel_offset);
-#endif
-	char *hwID = argv[3];
-	char *hwVer = argv[4];
-	u_int32_t swVer = 0;
-	sscanf(argv[5],"%4X",&swVer);
-	swVer = bswap_32(swVer);
+	if (is_header) {
+		extra_sz = header_sz;
+		hdr_pos = 0;
+		img_pos = header_sz;
+	} else {
+		extra_sz = footer_sz;
+		hdr_pos = file_sz;
+		img_pos = 0;
+	}
 
-	char *rootfsname = malloc(2*strlen(sysupgrade.file_name) + 8);
-	sprintf(rootfsname, "%s.rootfs", sysupgrade.file_name);
+	DBG("Filesize: %i\n", file_sz);
+	finfo->file_size = file_sz + extra_sz;
 
-	char *zipfsname = malloc(2*strlen(rootfsname) + 5);
-	sprintf(zipfsname, "%s.zip", rootfsname);
-	/* / Args */
+	if (!(finfo->file_data = malloc(finfo->file_size))) {
+		ERR("Out of memory!\n");
+		fclose(fp);
+		return -1;
+	}
 
-#ifdef DEBUG
-	printf("Building header: %s %s %2X %s.\n", hwID , hwVer, swVer, magic);
-#endif
-	/* Construct the firmware header/magic */
-	struct file_info header = {0, 0, 0};
-	header.file_size = HEADER_SIZE;
-	header.file_data = malloc(HEADER_SIZE);
-	bzero(header.file_data, header.file_size);
+	/* init header/footer bytes */
+	memset(finfo->file_data + hdr_pos, 0, extra_sz);
 
-	char *tg = header.file_data;
-	strcpy(tg, magic);
-	memcpy(tg+7, version, 4*sizeof(char));
-	strcpy(tg+11, hwID);
-	strcpy(tg+45, hwVer);
-	memcpy(tg+55, &swVer,sizeof(u_int32_t));
-	strcpy(tg+63, magic);
+	/* read file and take care of leading header if exists */
+	if (fread(finfo->file_data + img_pos, 1, file_sz, fp) != file_sz) {
+		ERR("Error reading file %s\n", finfo->file_name);
+		fclose(fp);
+		return -1;
+	}
 
-#ifdef DEBUG
-	printf("Header done, now creating rootfs.");
-#endif
-	/* Construct a rootfs */
-	struct file_info rootfs = {0, 0, 0};
-	rootfs.file_size = sysupgrade.file_size + kernel_offset + footer_size;
-	rootfs.file_data =  malloc(rootfs.file_size);
-	bzero(rootfs.file_data, rootfs.file_size);
-	rootfs.file_name = rootfsname;
+	DBG("File: read successful\n");
+	fclose(fp);
 
-	/* copy Owrt image to Kernel location */
-	memcpy(rootfs.file_data+kernel_offset, sysupgrade.file_data, sysupgrade.file_size);
+	return hdr_pos;
+}
 
-	/* 22 added to get away from sysup image, no other reason.
-	 *  updater searches for magic anyway */
-	tg = rootfs.file_data + kernel_offset + sysupgrade.file_size+22;
+static int writeFile(struct file_info* finfo) {
+	FILE* fp;
 
-	memcpy(tg, header.file_data, header.file_size);
-	writeFile(&rootfs);
+	if (!finfo || !finfo->file_name) {
+		ERR("Invalid pointer provided!\n");
+		return -1;
+	}
 
-#ifdef DEBUG
-	printf("Preparing to zip.\n");
-#endif
-	/* now that we got the rootfs, repeat the whole thing again(sorta):
-	 * 1. zip the rootfs */
-	char *zipper = malloc(5 + 2*strlen(rootfs.file_name) + 4);
-	sprintf(zipper, "%s %s %s", "zip ", zipfsname, rootfs.file_name);
-	int ret = system(zipper);
+	DBG("Opening file: %s\n", finfo->file_name);
 
-	/* clear rootfs file */
-	rmFile(&rootfs);
+	if (!(fp = fopen(finfo->file_name, "w"))) {
+		ERR("Error opening file: %s\n", finfo->file_name);
+		return -1;
+	}
 
-	/* and load zipped fs */
-	struct file_info zippedfs = {zipfsname, 0, 0};
-	bufferFile(&zippedfs, 0);
+	DBG("Writing file: %s\n", finfo->file_name);
 
-#ifdef DEBUG
-	printf("Creating Image.\n");
-#endif
+	if (fwrite(finfo->file_data, 1, finfo->file_size, fp) != finfo->file_size) {
+		ERR("Wanted to write, but something went wrong!\n");
+		fclose(fp);
+		return -1;
+	}
 
-	/* 2. create new file 512+rootfs size */
-	struct file_info image = {argv[1], 0, 0};
-	image.file_data = malloc(zippedfs.file_size + 512);
-	image.file_size = zippedfs.file_size + 512;
-
-	/* 3. copy zipfile at loc 512 */
-	memcpy(image.file_data+512, zippedfs.file_data, zippedfs.file_size);
-	rmFile(&zippedfs);
-
-	/* 4. add header to file */
-	memcpy(image.file_data, header.file_data, header.file_size);
-
-	/* 5. do a checksum run, and compute checksum */
-	char chksum = getCheckSum(image.file_data, image.file_size);
-#ifdef DEBUG
-	printf("Checksum for Image: %X.\n", chksum);
-#endif
-
-	/* 6. write the checksum invert into byte 511 to bring it to 0 */
-	chksum = (chksum ^ 0xFF) + 1;
-	memcpy(image.file_data+511, &chksum, 1);
-
-	chksum = getCheckSum(image.file_data, image.file_size);
-#ifdef DEBUG
-	printf("Checksum for after fix: %X.\n", chksum);
-#endif
-	/* 7. pray that the updater will accept the file */
-	writeFile(&image);
+	fclose(fp);
 	return 0;
+}
+
+static void usage(char* argv[]) {
+	printf("Usage: %s [OPTIONS...]\n"
+	       "\n"
+	       "Options:\n"
+	       "  -f            add sercom footer (if absent, header)\n"
+	       "  -b <hwid>     use hardware id specified with <hwid> (ASCII)\n"
+	       "  -r <hwrev>    use hardware revision specified with <hwrev> (ASCII)\n"
+	       "  -v <version>  set image version to <version> (decimal, hex or octal notation)\n"
+	       "  -i <file>     input file\n"
+	       , argv[0]);
+}
+
+int main(int argc, char* argv[]) {
+	struct file_info image = { 0 };
+
+	char* hwID = NULL;
+	char* hwVer = NULL;
+	u_int32_t swVer = 0;
+	u_int8_t chkSum;
+	int hdr_offset;
+
+	while ( 1 ) {
+		int c;
+
+		c = getopt(argc, argv, "b:i:r:v:f");
+		if (c == -1)
+			break;
+
+		switch (c) {
+		case 'b':
+			hwID = optarg;
+			break;
+		case 'f':
+			is_header = 0;
+			break;
+		case 'i':
+			image.file_name = optarg;
+			break;
+		case 'r':
+			hwVer = optarg;
+			break;
+		case 'v':
+			swVer = (u_int32_t) strtol(optarg, NULL, 0);
+			swVer = cpu_to_be32(swVer);
+			break;
+		default:
+			usage(argv);
+			return EXIT_FAILURE;
+		}
+	}
+
+	if (!hwID || !hwVer || !image.file_name) {
+			usage(argv);
+			return EXIT_FAILURE;
+	}
+
+	/*
+	 * copy input to buffer, add extra space for header/footer and return
+	 * header position
+	 */
+	hdr_offset = copyToOutputBuf(&image);
+	if (hdr_offset < 0)
+		return EXIT_FAILURE;
+
+	DBG("Filling header: %s %s %2X %s\n", hwID, hwVer, swVer, magic);
+
+	strncpy(image.file_data + hdr_offset + 0, magic, 7);
+	memcpy(image.file_data + hdr_offset + 7, version, sizeof(version));
+	strncpy(image.file_data + hdr_offset + 11, hwID, 34);
+	strncpy(image.file_data + hdr_offset + 45, hwVer, 10);
+	memcpy(image.file_data + hdr_offset + 55, &swVer, sizeof(swVer));
+	strncpy(image.file_data + hdr_offset + 63, magic, 7);
+
+	/* calculate checksum and invert checksum */
+	if (is_header) {
+		chkSum = getCheckSum(image.file_data, image.file_size);
+		chkSum = (chkSum ^ 0xFF) + 1;
+		DBG("Checksum for Image: %hhX\n", chkSum);
+
+		/* write checksum to header */
+		image.file_data[511] = (char) chkSum;
+	}
+
+	/* overwrite input file */
+	if (writeFile(&image))
+		return EXIT_FAILURE;
+
+	return EXIT_SUCCESS;
 }

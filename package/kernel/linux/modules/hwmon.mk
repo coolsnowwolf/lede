@@ -26,8 +26,36 @@ $(eval $(call KernelPackage,hwmon-core))
 
 define AddDepends/hwmon
   SUBMENU:=$(HWMON_MENU)
-  DEPENDS:=kmod-hwmon-core $(1)
+  DEPENDS:=+kmod-hwmon-core $(1)
 endef
+
+define KernelPackage/hwmon-ad7418
+  TITLE:=AD741x monitoring support
+  KCONFIG:=CONFIG_SENSORS_AD7418
+  FILES:=$(LINUX_DIR)/drivers/hwmon/ad7418.ko
+  AUTOLOAD:=$(call AutoLoad,60,ad7418 ad7418)
+  $(call AddDepends/hwmon,+kmod-i2c-core)
+endef
+
+define KernelPackage/hwmon-ad7418/description
+ Kernel module for Analog Devices AD7416, AD7417 and AD7418 temperature monitor chip
+endef
+
+$(eval $(call KernelPackage,hwmon-ad7418))
+
+define KernelPackage/hwmon-ads1015
+  TITLE:=Texas Instruments ADS1015
+  KCONFIG:= CONFIG_SENSORS_ADS1015
+  FILES:= $(LINUX_DIR)/drivers/hwmon/ads1015.ko
+  AUTOLOAD:=$(call AutoLoad,60,ads1015)
+  $(call AddDepends/hwmon,+kmod-i2c-core)
+endef
+
+define KernelPackage/hwmon-ads1015/description
+ Kernel module for Texas Instruments ADS1015 Analog-to-Digital converter
+endef
+
+$(eval $(call KernelPackage,hwmon-ads1015))
 
 define KernelPackage/hwmon-adt7410
   TITLE:=ADT7410 monitoring support
@@ -63,6 +91,37 @@ endef
 $(eval $(call KernelPackage,hwmon-adt7475))
 
 
+define KernelPackage/hwmon-dme1737
+  TITLE:=SMSC DME1737 and compatible monitoring support
+  KCONFIG:=CONFIG_SENSORS_DME1737
+  FILES:= \
+	$(LINUX_DIR)/drivers/hwmon/dme1737.ko
+  AUTOLOAD:=$(call AutoProbe,dme1737)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-hwmon-vid)
+endef
+
+define KernelPackage/hwmon-dme1737/description
+ SMSC DME1737, SCH3112, SCH3114, SCH3116, SCH5027 monitoring support
+endef
+
+$(eval $(call KernelPackage,hwmon-dme1737))
+
+
+define KernelPackage/hwmon-drivetemp
+  TITLE:=Hard disk drives with temperature sensor
+  KCONFIG:=CONFIG_SENSORS_DRIVETEMP
+  FILES:=$(LINUX_DIR)/drivers/hwmon/drivetemp.ko
+  AUTOLOAD:=$(call AutoLoad,60,drivetemp)
+  $(call AddDepends/hwmon,+kmod-ata-core +kmod-scsi-core)
+endef
+
+define KernelPackage/hwmon-drivetemp/description
+ Kernel module for Hard disk drives with temperature sensor
+endef
+
+$(eval $(call KernelPackage,hwmon-drivetemp))
+
+
 define KernelPackage/hwmon-gpiofan
   TITLE:=Generic GPIO FAN support
   KCONFIG:=CONFIG_SENSORS_GPIO_FAN
@@ -76,6 +135,21 @@ define KernelPackage/hwmon-gpiofan/description
 endef
 
 $(eval $(call KernelPackage,hwmon-gpiofan))
+
+
+define KernelPackage/hwmon-f71882fg
+  TITLE:=F71882FG compatible monitoring support
+  KCONFIG:=CONFIG_SENSORS_F71882FG
+  FILES:=$(LINUX_DIR)/drivers/hwmon/f71882fg.ko
+  AUTOLOAD:=$(call AutoProbe,f71882fg)
+  $(call AddDepends/hwmon,@TARGET_x86)
+endef
+
+define KernelPackage/hwmon-f71882fg/description
+ Kernel module for hardware monitoring via many Fintek Super-IO chips.
+endef
+
+$(eval $(call KernelPackage,hwmon-f71882fg))
 
 
 define KernelPackage/hwmon-ina209
@@ -98,7 +172,7 @@ define KernelPackage/hwmon-ina2xx
   KCONFIG:=CONFIG_SENSORS_INA2XX
   FILES:=$(LINUX_DIR)/drivers/hwmon/ina2xx.ko
   AUTOLOAD:=$(call AutoProbe,ina2xx)
-  $(call AddDepends/hwmon,+kmod-i2c-core +!LINUX_3_18:kmod-regmap)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-i2c)
 endef
 
 define KernelPackage/hwmon-ina2xx/description
@@ -128,7 +202,7 @@ define KernelPackage/hwmon-lm63
   KCONFIG:=CONFIG_SENSORS_LM63
   FILES:=$(LINUX_DIR)/drivers/hwmon/lm63.ko
   AUTOLOAD:=$(call AutoProbe,lm63)
-  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-i2c)
 endef
 
 define KernelPackage/hwmon-lm63/description
@@ -143,7 +217,7 @@ define KernelPackage/hwmon-lm75
   KCONFIG:=CONFIG_SENSORS_LM75
   FILES:=$(LINUX_DIR)/drivers/hwmon/lm75.ko
   AUTOLOAD:=$(call AutoProbe,lm75)
-  $(call AddDepends/hwmon,+kmod-i2c-core +PACKAGE_kmod-thermal:kmod-thermal +kmod-regmap)
+  $(call AddDepends/hwmon,+kmod-i2c-core +PACKAGE_kmod-thermal:kmod-thermal +kmod-regmap-i2c)
 endef
 
 define KernelPackage/hwmon-lm75/description
@@ -243,6 +317,21 @@ endef
 $(eval $(call KernelPackage,hwmon-ltc4151))
 
 
+define KernelPackage/hwmon-mcp3021
+  TITLE:=MCP3021/3221 monitoring support
+  KCONFIG:=CONFIG_SENSORS_MCP3021
+  FILES:=$(LINUX_DIR)/drivers/hwmon/mcp3021.ko
+  AUTOLOAD:=$(call AutoProbe,mcp3021)
+  $(call AddDepends/hwmon,+kmod-i2c-core)
+endef
+
+define KernelPackage/hwmon-mcp3021/description
+ Kernel module for Linear Technology MCP3021/3221 current and voltage monitor chip
+endef
+
+$(eval $(call KernelPackage,hwmon-mcp3021))
+
+
 define KernelPackage/hwmon-nct6775
   TITLE:=NCT6106D/6775F/6776F/6779D/6791D/6792D/6793D and compatibles monitoring support
   KCONFIG:=CONFIG_SENSORS_NCT6775
@@ -271,6 +360,36 @@ define KernelPackage/hwmon-pc87360/description
 endef
 
 $(eval $(call KernelPackage,hwmon-pc87360))
+
+
+define KernelPackage/pmbus-core
+  TITLE:=PMBus support
+  KCONFIG:= CONFIG_PMBUS
+  FILES:=$(LINUX_DIR)/drivers/hwmon/pmbus/pmbus_core.ko
+  $(call AddDepends/hwmon,+kmod-i2c-core)
+endef
+
+define KernelPackage/pmbus-core/description
+ Kernel modules for Power Management Bus
+endef
+
+$(eval $(call KernelPackage,pmbus-core))
+
+
+define KernelPackage/pmbus-zl6100
+  TITLE:=Intersil / Zilker Labs ZL6100 hardware monitoring
+  KCONFIG:=CONFIG_SENSORS_ZL6100
+  FILES:=$(LINUX_DIR)/drivers/hwmon/pmbus/zl6100.ko
+  AUTOLOAD:=$(call AutoProbe,zl6100)
+  $(call AddDepends/hwmon, +kmod-pmbus-core)
+endef
+
+define KernelPackage/pmbus-zl6100/description
+ Kernel module for Intersil / Zilker Labs ZL6100 and
+compatible digital DC-DC controllers
+endef
+
+$(eval $(call KernelPackage,pmbus-zl6100))
 
 
 define KernelPackage/hwmon-pwmfan
@@ -325,7 +444,7 @@ define KernelPackage/hwmon-tmp102
   KCONFIG:=CONFIG_SENSORS_TMP102
   FILES:=$(LINUX_DIR)/drivers/hwmon/tmp102.ko
   AUTOLOAD:=$(call AutoProbe,tmp102)
-  $(call AddDepends/hwmon,+kmod-i2c-core +PACKAGE_kmod-thermal:kmod-thermal +kmod-regmap)
+  $(call AddDepends/hwmon,+kmod-i2c-core +PACKAGE_kmod-thermal:kmod-thermal +kmod-regmap-i2c)
 endef
 
 define KernelPackage/hwmon-tmp102/description
@@ -340,7 +459,7 @@ define KernelPackage/hwmon-tmp103
   KCONFIG:=CONFIG_SENSORS_TMP103
   FILES:=$(LINUX_DIR)/drivers/hwmon/tmp103.ko
   AUTOLOAD:=$(call AutoProbe,tmp103)
-  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-i2c)
 endef
 
 define KernelPackage/hwmon-tmp103/description

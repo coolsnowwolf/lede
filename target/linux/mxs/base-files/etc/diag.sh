@@ -6,10 +6,10 @@
 
 get_status_led() {
 	case $(board_name) in
-	duckbill)
+	i2se,duckbill*)
 		status_led="duckbill:green:status"
 		;;
-	olinuxino)
+	olimex,imx23-olinuxino)
 		status_led="green"
 		;;
 	*)

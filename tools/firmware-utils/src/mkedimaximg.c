@@ -17,12 +17,19 @@
 #include <sys/stat.h>
 #include <endian.h>	/* for __BYTE_ORDER */
 
+#define FALSE 0
+#define TRUE 1
+
 #if (__BYTE_ORDER == __LITTLE_ENDIAN)
 #  define HOST_TO_LE16(x)	(x)
 #  define HOST_TO_LE32(x)	(x)
+#  define HOST_TO_BE16(x)	bswap_16(x)
+#  define HOST_TO_BE32(x)	bswap_32(x)
 #else
 #  define HOST_TO_LE16(x)	bswap_16(x)
 #  define HOST_TO_LE32(x)	bswap_32(x)
+#  define HOST_TO_BE16(x)	(x)
+#  define HOST_TO_BE32(x)	(x)
 #endif
 
 struct header
@@ -47,6 +54,7 @@ struct buf
 };
 
 static char *progname;
+static int force_be = FALSE;
 
 static void usage(int status)
 {
@@ -61,7 +69,8 @@ static void usage(int status)
 	    "  -i <file>       read input from file <file>\n"
 	    "  -o <file>       write output to file <file>\n"
 	    "  -f <flash>      set flash address to <flash>\n"
-	    "  -S <start>      set start address to <start>\n");
+	    "  -S <start>      set start address to <start>\n"
+	    "  -b              big-endianness mode\n");
 
     exit(status);
 }
@@ -83,8 +92,12 @@ static unsigned short fwcsum (struct buf *buf) {
     int i;
     unsigned short ret = 0;
 
-    for (i = 0; i < buf->size / 2; i++)
-	ret -= ((unsigned short *) buf->start)[i];
+    for (i = 0; i < buf->size / 2; i++) {
+	if (force_be == FALSE)
+	    ret -= ((unsigned short *) buf->start)[i];
+	else
+	    ret -= HOST_TO_BE16(((unsigned short *) buf->start)[i]);
+    }
     
     return ret;
 }
@@ -144,7 +157,7 @@ int main(int argc, char **argv)
     header.flash = header.size = header.start = 0;
     progname = basename(argv[0]);
 
-    while((c = getopt(argc, argv, "i:o:m:s:f:S:h")) != -1) {
+    while((c = getopt(argc, argv, "i:o:m:s:f:S:h:b")) != -1) {
 	switch (c) {
 	case 'i':
 	    ifinfo.name = optarg;
@@ -180,6 +193,9 @@ int main(int argc, char **argv)
 		fprintf(stderr, "invalid start address specified\n");
 		usage(EXIT_FAILURE);
 	    }
+	    break;
+	case 'b':
+	    force_be = TRUE;
 	    break;
 	default:
 	    usage(EXIT_FAILURE);
@@ -241,12 +257,23 @@ int main(int argc, char **argv)
     if (fwread(&ifinfo, &ibuf))
 	usage(EXIT_FAILURE);
 
-    header.flash = HOST_TO_LE32(header.flash);
-    header.size = HOST_TO_LE32(obuf.size - sizeof(struct header));
-    header.start = HOST_TO_LE32(header.start);
+    if (force_be == FALSE) {
+	header.flash = HOST_TO_LE32(header.flash);
+	header.size = HOST_TO_LE32(obuf.size - sizeof(struct header));
+	header.start = HOST_TO_LE32(header.start);
+    } else {
+	header.flash = HOST_TO_BE32(header.flash);
+	header.size = HOST_TO_BE32(obuf.size - sizeof(struct header));
+	header.start = HOST_TO_BE32(header.start);
+    }
+
     memcpy (obuf.start, &header, sizeof(struct header));
 
-    csum = HOST_TO_LE16(fwcsum(&ibuf));
+    if (force_be == FALSE)
+	csum = HOST_TO_LE16(fwcsum(&ibuf));
+    else
+	csum = HOST_TO_BE16(fwcsum(&ibuf));
+
     memcpy(obuf.start + obuf.size - sizeof(unsigned short),
 	   &csum, sizeof(unsigned short));
 

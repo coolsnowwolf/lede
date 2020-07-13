@@ -49,8 +49,12 @@ $(eval $(call KernelPackage,fs-afs))
 define KernelPackage/fs-autofs4
   SUBMENU:=$(FS_MENU)
   TITLE:=AUTOFS4 filesystem support
-  KCONFIG:=CONFIG_AUTOFS4_FS
-  FILES:=$(LINUX_DIR)/fs/autofs4/autofs4.ko
+  KCONFIG:= \
+	CONFIG_AUTOFS4_FS \
+	CONFIG_AUTOFS_FS
+  FILES:= \
+	$(LINUX_DIR)/fs/autofs4/autofs4.ko@lt4.18 \
+	$(LINUX_DIR)/fs/autofs/autofs4.ko@ge4.18
   AUTOLOAD:=$(call AutoLoad,30,autofs4)
 endef
 
@@ -64,7 +68,7 @@ $(eval $(call KernelPackage,fs-autofs4))
 define KernelPackage/fs-btrfs
   SUBMENU:=$(FS_MENU)
   TITLE:=BTRFS filesystem support
-  DEPENDS:=+kmod-lib-crc32c +kmod-lib-lzo +kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +kmod-lib-raid6 +kmod-lib-xor +LINUX_4_14:kmod-lib-zstd
+  DEPENDS:=+kmod-lib-crc32c +kmod-lib-lzo +kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +kmod-lib-raid6 +kmod-lib-xor +kmod-lib-zstd
   KCONFIG:=\
 	CONFIG_BTRFS_FS \
 	CONFIG_BTRFS_FS_POSIX_ACL=n \
@@ -94,6 +98,7 @@ define KernelPackage/fs-cifs
   AUTOLOAD:=$(call AutoLoad,30,cifs)
   $(call AddDepends/nls)
   DEPENDS+= \
+    +kmod-crypto-arc4 \
     +kmod-crypto-hmac \
     +kmod-crypto-md5 \
     +kmod-crypto-md4 \
@@ -158,6 +163,30 @@ endef
 $(eval $(call KernelPackage,fs-efivarfs))
 
 
+define KernelPackage/fs-exfat
+  SUBMENU:=$(FS_MENU)
+  TITLE:=exFAT filesystem support
+  KCONFIG:= \
+	CONFIG_EXFAT_FS \
+	CONFIG_EXFAT_DONT_MOUNT_VFAT=y \
+	CONFIG_EXFAT_DISCARD=y \
+	CONFIG_EXFAT_DELAYED_SYNC=n \
+	CONFIG_EXFAT_KERNEL_DEBUG=n \
+	CONFIG_EXFAT_DEBUG_MSG=n \
+	CONFIG_EXFAT_DEFAULT_CODEPAGE=437 \
+	CONFIG_EXFAT_DEFAULT_IOCHARSET="utf8"
+  FILES:=$(LINUX_DIR)/drivers/staging/exfat/exfat.ko
+  AUTOLOAD:=$(call AutoLoad,30,exfat,1)
+  DEPENDS:=@!(LINUX_4_14||LINUX_4_19) +kmod-nls-base
+endef
+
+define KernelPackage/fs-exfat/description
+ Kernel module for exFAT filesystem support
+endef
+
+$(eval $(call KernelPackage,fs-exfat))
+
+
 define KernelPackage/fs-exportfs
   SUBMENU:=$(FS_MENU)
   TITLE:=exportfs kernel server support
@@ -201,7 +230,7 @@ $(eval $(call KernelPackage,fs-ext4))
 define KernelPackage/fs-f2fs
   SUBMENU:=$(FS_MENU)
   TITLE:=F2FS filesystem support
-  DEPENDS:= +kmod-crypto-hash +kmod-crypto-crc32
+  DEPENDS:= +kmod-crypto-hash +kmod-crypto-crc32 +LINUX_5_4:kmod-nls-base
   KCONFIG:= \
 	CONFIG_F2FS_FS \
 	CONFIG_F2FS_STAT_FS=y \
@@ -384,7 +413,8 @@ define KernelPackage/fs-nfs-common-rpcsec
 	+kmod-crypto-md5 \
 	+kmod-crypto-sha1 \
 	+kmod-crypto-hmac \
-	+kmod-crypto-ecb
+	+kmod-crypto-ecb \
+	+kmod-crypto-arc4
   KCONFIG:= \
 	CONFIG_SUNRPC_GSS \
 	CONFIG_RPCSEC_GSS_KRB5

@@ -190,7 +190,7 @@ static int ag71xx_mdio_probe(struct platform_device *pdev)
 	if (!mii_bus)
 		return -ENOMEM;
 
-	am->mdio_reset = of_reset_control_get_exclusive(np, "mdio");
+	am->mdio_reset = devm_reset_control_get_exclusive(amdev, "mdio");
 	builtin_switch = of_property_read_bool(np, "builtin-switch");
 
 	mii_bus->name = "ag71xx_mdio";

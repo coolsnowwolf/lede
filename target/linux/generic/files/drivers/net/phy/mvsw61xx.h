@@ -165,6 +165,7 @@ enum {
 	MV_GLOBAL_VTU_DATA1		= 0x07,
 	MV_GLOBAL_VTU_DATA2		= 0x08,
 	MV_GLOBAL_VTU_DATA3		= 0x09,
+	MV_GLOBAL_MONITOR_CTRL		= 0x1a,
 	MV_GLOBAL_CONTROL2		= 0x1c,
 };
 #define MV_GLOBALREG(_type) MV_SWITCH_GLOBAL, MV_GLOBAL_##_type
@@ -242,6 +243,16 @@ enum {
 #define MV_FDB_HI_SHIFT			4
 #define MV_FDB_LO_SHIFT			12
 
+#define MV_MIRROR_RX_DEST_MASK		0xf000
+#define MV_MIRROR_TX_DEST_MASK		0x0f00
+#define MV_MIRROR_RX_DEST_SHIFT		12
+#define MV_MIRROR_TX_DEST_SHIFT		8
+
+#define MV_MIRROR_RX_SRC_SHIFT		4
+#define MV_MIRROR_RX_SRC_MASK		(1 << MV_MIRROR_RX_SRC_SHIFT)
+#define MV_MIRROR_TX_SRC_SHIFT		5
+#define MV_MIRROR_TX_SRC_MASK		(1 << MV_MIRROR_TX_SRC_SHIFT)
+
 /* Marvell Specific PHY register */
 #define MII_MV_SPEC_CTRL		16
 enum {
@@ -283,6 +294,12 @@ struct mvsw61xx_state {
 		u32 port_mode;
 		u32 port_sstate;
 	} vlans[MV_VLANS];
+
+	/* mirroring */
+	bool mirror_rx;
+	bool mirror_tx;
+	int source_port;
+	int monitor_port;
 
 	char buf[128];
 };

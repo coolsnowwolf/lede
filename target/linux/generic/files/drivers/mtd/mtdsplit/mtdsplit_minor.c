@@ -27,6 +27,7 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/string.h>
+#include <linux/of.h>
 
 #include "mtdsplit.h"
 
@@ -100,9 +101,16 @@ static int mtdsplit_parse_minor(struct mtd_info *master,
 	return MINOR_NR_PARTS;
 }
 
+static const struct of_device_id mtdsplit_minor_of_match_table[] = {
+	{ .compatible = "mikrotik,minor" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, mtdsplit_minor_of_match_table);
+
 static struct mtd_part_parser mtdsplit_minor_parser = {
 	.owner = THIS_MODULE,
 	.name = "minor-fw",
+	.of_match_table = mtdsplit_minor_of_match_table,
 	.parse_fn = mtdsplit_parse_minor,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };

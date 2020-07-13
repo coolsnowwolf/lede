@@ -8,14 +8,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=f2fs-tools
-PKG_VERSION:=1.11.0
+PKG_VERSION:=1.13.0
 PKG_RELEASE:=1
 
-PKG_LICENSE:=GPLv2
+PKG_LICENSE:=GPL-2.0
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://git.kernel.org/pub/scm/linux/kernel/git/jaegeuk/f2fs-tools.git/snapshot/
-PKG_HASH:=b916ac7cda902502cf18de98da94921f71edbab40fb0437d757f0716191c79e3
+PKG_HASH:=b39d3ae9224267aab0070b5f17d91d0c5143f6d960166a27f6b11c8c87072c7d
 
 PKG_FIXUP:=autoreconf
 PKG_BUILD_PARALLEL:=1
@@ -54,9 +54,11 @@ define Package/libf2fs
   CATEGORY:=Libraries
   TITLE:=Library for Flash-Friendly File System (F2FS) tools
   DEPENDS:=+libuuid
+  ABI_VERSION:=6
 endef
 
 CONFIGURE_ARGS += \
+	--disable-static \
 	--without-selinux \
 	--without-blkid
 
@@ -66,7 +68,7 @@ CONFIGURE_VARS += \
 define Package/libf2fs/install
 	$(INSTALL_DIR) $(1)/usr/lib
 	$(CP) \
-		$(PKG_INSTALL_DIR)/usr/lib/libf2fs.so* $(1)/usr/lib/
+		$(PKG_INSTALL_DIR)/usr/lib/libf2fs.so.* $(1)/usr/lib/
 endef
 
 define Package/mkf2fs/install
@@ -76,7 +78,6 @@ endef
 
 define Package/f2fsck/install
 	$(INSTALL_DIR) $(1)/usr/sbin
-
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/fsck.f2fs $(1)/usr/sbin
 	ln -s /usr/sbin/fsck.f2fs $(1)/usr/sbin/defrag.f2fs
 	ln -s /usr/sbin/fsck.f2fs $(1)/usr/sbin/dump.f2fs

@@ -1,0 +1,117 @@
+--- a/arch/mips/include/asm/mach-bcm63xx/bcm63xx_regs.h
++++ b/arch/mips/include/asm/mach-bcm63xx/bcm63xx_regs.h
+@@ -1034,11 +1034,18 @@
+ #define USBH_PRIV_SETUP_6368_REG	0x28
+ #define USBH_PRIV_SETUP_IOC_SHIFT	4
+ #define USBH_PRIV_SETUP_IOC_MASK	(1 << USBH_PRIV_SETUP_IOC_SHIFT)
++#define USBH_PRIV_SETUP_IPP_SHIFT	5
++#define USBH_PRIV_SETUP_IPP_MASK	(1 << USBH_PRIV_SETUP_IPP_SHIFT)
+ 
+ #define USBH_PRIV_SETUP_6318_REG	0x00
++#define USBH_PRIV_PLL_CTRL1_6368_REG	0x18
+ #define USBH_PRIV_PLL_CTRL1_6318_REG	0x04
+-#define USBH_PRIV_PLL_CTRL1_SUSP_EN	(1 << 27)
+-#define USBH_PRIV_PLL_CTRL1_IDDQ_PWRDN	(1 << 31)
++
++#define USBH_PRIV_PLL_CTRL1_6318_SUSP_EN	(1 << 27)
++#define USBH_PRIV_PLL_CTRL1_6318_IDDQ_PWRDN	(1 << 31)
++#define USBH_PRIV_PLL_CTRL1_63268_IDDQ_PWRDN	(1 << 9)
++#define USBH_PRIV_PLL_CTRL1_63268_PWRDN_DELAY	(1 << 10)
++
+ #define USBH_PRIV_SIM_CTRL_6318_REG	0x20
+ #define USBH_PRIV_SIM_CTRL_LADDR_SEL	(1 << 5)
+ 
+--- a/arch/mips/bcm63xx/Kconfig
++++ b/arch/mips/bcm63xx/Kconfig
+@@ -73,6 +73,8 @@ config BCM63XX_CPU_63268
+ 	bool "support 63268 CPU"
+ 	select SYS_HAS_CPU_BMIPS4350
+ 	select HAVE_PCI
++	select BCM63XX_OHCI
++	select BCM63XX_EHCI
+ endmenu
+ 
+ source "arch/mips/bcm63xx/boards/Kconfig"
+--- a/arch/mips/bcm63xx/dev-usb-ehci.c
++++ b/arch/mips/bcm63xx/dev-usb-ehci.c
+@@ -82,7 +82,7 @@ static struct platform_device bcm63xx_eh
+ int __init bcm63xx_ehci_register(void)
+ {
+ 	if (!BCMCPU_IS_6318() && !BCMCPU_IS_6328() && !BCMCPU_IS_6358() &&
+-		!BCMCPU_IS_6362() && !BCMCPU_IS_6368())
++		!BCMCPU_IS_6362() && !BCMCPU_IS_6368() && !BCMCPU_IS_63268())
+ 		return 0;
+ 
+ 	ehci_resources[0].start = bcm63xx_regset_address(RSET_EHCI0);
+--- a/arch/mips/bcm63xx/usb-common.c
++++ b/arch/mips/bcm63xx/usb-common.c
+@@ -109,9 +109,24 @@ void bcm63xx_usb_priv_ohci_cfg_set(void)
+ 		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_SETUP_6368_REG);
+ 		reg |= USBH_PRIV_SETUP_IOC_MASK;
+ 		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_SETUP_6368_REG);
++	} else if (BCMCPU_IS_63268()) {
++		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_SWAP_6368_REG);
++		reg &= ~USBH_PRIV_SWAP_OHCI_ENDN_MASK;
++		reg |= USBH_PRIV_SWAP_OHCI_DATA_MASK;
++		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_SWAP_6368_REG);
++
++		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_SETUP_6368_REG);
++		reg |= USBH_PRIV_SETUP_IOC_MASK;
++		reg &= ~USBH_PRIV_SETUP_IPP_MASK;
++		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_SETUP_6368_REG);
++
++		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_PLL_CTRL1_6368_REG);
++		reg &= ~(USBH_PRIV_PLL_CTRL1_63268_IDDQ_PWRDN |
++			 USBH_PRIV_PLL_CTRL1_63268_PWRDN_DELAY);
++		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_PLL_CTRL1_6368_REG);
+ 	} else if (BCMCPU_IS_6318()) {
+ 		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_PLL_CTRL1_6318_REG);
+-		reg |= USBH_PRIV_PLL_CTRL1_SUSP_EN;
++		reg |= USBH_PRIV_PLL_CTRL1_6318_SUSP_EN;
+ 		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_PLL_CTRL1_6318_REG);
+ 
+ 		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_SWAP_6318_REG);
+@@ -124,7 +139,7 @@ void bcm63xx_usb_priv_ohci_cfg_set(void)
+ 		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_SETUP_6318_REG);
+ 
+ 		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_PLL_CTRL1_6318_REG);
+-		reg &= ~USBH_PRIV_PLL_CTRL1_IDDQ_PWRDN;
++		reg &= ~USBH_PRIV_PLL_CTRL1_6318_IDDQ_PWRDN;
+ 		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_PLL_CTRL1_6318_REG);
+ 
+ 		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_SIM_CTRL_6318_REG);
+@@ -165,9 +180,24 @@ void bcm63xx_usb_priv_ehci_cfg_set(void)
+ 		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_SETUP_6368_REG);
+ 		reg |= USBH_PRIV_SETUP_IOC_MASK;
+ 		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_SETUP_6368_REG);
++	} else if (BCMCPU_IS_63268()) {
++		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_SWAP_6368_REG);
++		reg &= ~USBH_PRIV_SWAP_EHCI_ENDN_MASK;
++		reg |= USBH_PRIV_SWAP_EHCI_DATA_MASK;
++		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_SWAP_6368_REG);
++
++		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_SETUP_6368_REG);
++		reg |= USBH_PRIV_SETUP_IOC_MASK;
++		reg &= ~USBH_PRIV_SETUP_IPP_MASK;
++		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_SETUP_6368_REG);
++
++		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_PLL_CTRL1_6368_REG);
++		reg &= ~(USBH_PRIV_PLL_CTRL1_63268_IDDQ_PWRDN |
++			 USBH_PRIV_PLL_CTRL1_63268_PWRDN_DELAY);
++		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_PLL_CTRL1_6368_REG);
+ 	} else if (BCMCPU_IS_6318()) {
+ 		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_PLL_CTRL1_6318_REG);
+-		reg |= USBH_PRIV_PLL_CTRL1_SUSP_EN;
++		reg |= USBH_PRIV_PLL_CTRL1_6318_SUSP_EN;
+ 		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_PLL_CTRL1_6318_REG);
+ 
+ 		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_SWAP_6318_REG);
+@@ -180,7 +210,7 @@ void bcm63xx_usb_priv_ehci_cfg_set(void)
+ 		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_SETUP_6318_REG);
+ 
+ 		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_PLL_CTRL1_6318_REG);
+-		reg &= ~USBH_PRIV_PLL_CTRL1_IDDQ_PWRDN;
++		reg &= ~USBH_PRIV_PLL_CTRL1_6318_IDDQ_PWRDN;
+ 		bcm_rset_writel(RSET_USBH_PRIV, reg, USBH_PRIV_PLL_CTRL1_6318_REG);
+ 
+ 		reg = bcm_rset_readl(RSET_USBH_PRIV, USBH_PRIV_SIM_CTRL_6318_REG);
