@@ -98,6 +98,23 @@ end
 o.remove = function(self, section, value)
 	nixio.fs.writefile(blockconf, "")
 end
+
+s:tab("denydomain", translate("Deny Domain List"))
+local denydomainconf = "/etc/ssr/deny.list"
+o = s:taboption("denydomain", TextValue, "denydomainconf")
+o.rows = 13
+o.wrap = "off"
+o.rmempty = true
+o.cfgvalue = function(self, section)
+	return nixio.fs.readfile(denydomainconf) or " "
+end
+o.write = function(self, section, value)
+	nixio.fs.writefile(denydomainconf, value:gsub("\r\n", "\n"))
+end
+o.remove = function(self, section, value)
+	nixio.fs.writefile(denydomainconf, "")
+end
+
 s:tab("netflix", translate("Netflix Domain List"))
 local netflixconf = "/etc/ssr/netflix.list"
 o = s:taboption("netflix", TextValue, "netflixconf")
@@ -112,22 +129,6 @@ o.write = function(self, section, value)
 end
 o.remove = function(self, section, value)
 	nixio.fs.writefile(netflixconf, "")
-end
-
-s:tab("netflixip", translate("Netflix IP List"))
-local netflixipconf = "/etc/ssr/netflixip.list"
-o = s:taboption("netflixip", TextValue, "netflixipconf")
-o.rows = 13
-o.wrap = "off"
-o.rmempty = true
-o.cfgvalue = function(self, section)
-	return nixio.fs.readfile(netflixipconf) or " "
-end
-o.write = function(self, section, value)
-	nixio.fs.writefile(netflixipconf, value:gsub("\r\n", "\n"))
-end
-o.remove = function(self, section, value)
-	nixio.fs.writefile(netflixipconf, "")
 end
 
 return m
