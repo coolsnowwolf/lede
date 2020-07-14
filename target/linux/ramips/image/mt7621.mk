@@ -228,13 +228,32 @@ define Device/dlink_dir-860l-b1
 endef
 TARGET_DEVICES += dlink_dir-860l-b1
 
+define Device/dlink_dir-878-a1
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := D-Link
+  DEVICE_MODEL := DIR-878
+  DEVICE_VARIANT := A1
+  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi uboot-envtools
+endef
+TARGET_DEVICES += dlink_dir-878-a1
+
+define Device/dlink_dir-882-a1
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := D-Link
+  DEVICE_MODEL := DIR-882
+  DEVICE_VARIANT := A1
+  DEVICE_PACKAGES := kmod-mt7615d kmod-usb3 kmod-usb-ledtrig-usbport \
+	luci-app-mtwifi uboot-envtools
+endef
+TARGET_DEVICES += dlink_dir-882-a1
+
 define Device/d-team_newifi-d2
   $(Device/uimage-lzma-loader)
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := Newifi
   DEVICE_MODEL := D2
-  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 \
-	kmod-usb-ledtrig-usbport wpad-openssl
+  DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
+	kmod-usb-ledtrig-usbport luci-app-mtwifi
 endef
 TARGET_DEVICES += d-team_newifi-d2
 
@@ -570,6 +589,14 @@ define Device/mikrotik_routerboard-m33g
 endef
 TARGET_DEVICES += mikrotik_routerboard-m33g
 
+define Device/motorola_mr2600
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := Motorola
+  DEVICE_MODEL := MR2600
+  DEVICE_PACKAGES := kmod-mt7615d kmod-usb3 kmod-usb-ledtrig-usbport luci-app-mtwifi uboot-envtools
+endef
+TARGET_DEVICES += motorola_mr2600
+
 define Device/mqmaker_witi
   IMAGE_SIZE := 16064k
   DEVICE_VENDOR := MQmaker
@@ -694,7 +721,7 @@ define Device/netgear_r6850
   SERCOMM_HWVER := A001
   SERCOMM_SWVER := 0x0052
   IMAGE_SIZE := 40960k
-  DEVICE_PACKAGES += -kmod-mt7603 -wpad-openssl kmod-mt7603e luci-app-mtwifi kmod-mt_wifi
+  DEVICE_PACKAGES += -kmod-mt7603 -wpad-openssl kmod-mt7603e kmod-mt7615d luci-app-mtwifi
 endef
 TARGET_DEVICES += netgear_r6850
 
@@ -769,7 +796,7 @@ define Device/phicomm_k2p
   DEVICE_VENDOR := Phicomm
   DEVICE_MODEL := K2P
   SUPPORTED_DEVICES += k2p
-  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi kmod-mt_wifi
+  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi
 endef
 TARGET_DEVICES += phicomm_k2p
 
@@ -1017,7 +1044,7 @@ define Device/xiaomi_mi-router-ac2100
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Mi Router AC2100
-  DEVICE_PACKAGES := -kmod-mt7603 -wpad-openssl kmod-mt7603e luci-app-mtwifi kmod-mt_wifi uboot-envtools
+  DEVICE_PACKAGES := kmod-mt7603e kmod-mt7615d luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += xiaomi_mi-router-ac2100
 
@@ -1034,7 +1061,7 @@ define Device/xiaomi_redmi-router-ac2100
   IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | check-size $$$$(IMAGE_SIZE)
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Redmi Router AC2100
-  DEVICE_PACKAGES := -kmod-mt7603 -wpad-openssl kmod-mt7603e luci-app-mtwifi kmod-mt_wifi uboot-envtools
+  DEVICE_PACKAGES := kmod-mt7603e kmod-mt7615d luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += xiaomi_redmi-router-ac2100
 

@@ -232,7 +232,11 @@ static int rb4xx_nand_probe(struct platform_device *pdev)
 	nand->chip.dev_ready	= rb4xx_nand_dev_ready;
 	nand->chip.chip_delay	= 25;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,130)
 	ret = nand_scan(mtd, 1);
+#else
+	ret = nand_scan(&nand->chip, 1);
+#endif
 #else
 	nand->chip.legacy.read_byte	= rb4xx_nand_read_byte;
 	nand->chip.legacy.write_buf	= rb4xx_nand_write_buf;
@@ -248,11 +252,7 @@ static int rb4xx_nand_probe(struct platform_device *pdev)
 
 	ret = mtd_device_register(mtd, NULL, 0);
 	if (ret) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,20,0)
-		nand_release(mtd);
-#else
 		nand_release(&nand->chip);
-#endif
 		return ret;
 	}
 
@@ -263,11 +263,7 @@ static int rb4xx_nand_remove(struct platform_device *pdev)
 {
 	struct rb4xx_nand *nand = platform_get_drvdata(pdev);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,20,0)
-	nand_release(nand_to_mtd(&nand->chip));
-#else
 	nand_release(&nand->chip);
-#endif
 
 	return 0;
 }
