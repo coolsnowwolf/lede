@@ -195,7 +195,7 @@ static void mt7621_hw_init(struct mt7620_gsw *gsw, struct device_node *np)
 }
 
 static const struct of_device_id mediatek_gsw_match[] = {
-	{ .compatible = "mediatek,mt7621-gsw" },
+	{ .compatible = "mediatek,ralink-mt7621-gsw" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, mediatek_gsw_match);
@@ -261,7 +261,7 @@ static struct platform_driver gsw_driver = {
 	.probe = mt7621_gsw_probe,
 	.remove = mt7621_gsw_remove,
 	.driver = {
-		.name = "mt7621-gsw",
+		.name = "ralink-mt7621-gsw",
 		.owner = THIS_MODULE,
 		.of_match_table = mediatek_gsw_match,
 	},
