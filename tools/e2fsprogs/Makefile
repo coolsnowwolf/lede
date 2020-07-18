@@ -34,7 +34,7 @@ HOST_CONFIGURE_ARGS += \
 
 define Host/Prepare
 	$(call Host/Prepare/Default)
-	rm -rf $(HOST_BUILD_DIR)/doc
+	# rm -rf $(HOST_BUILD_DIR)/doc
 endef
 
 define Host/Install
