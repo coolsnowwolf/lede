@@ -1,0 +1,77 @@
+From 13d8031dd480b23620923c39400831f7edc68276 Mon Sep 17 00:00:00 2001
+From: Robin Gong <yibin.gong@nxp.com>
+Date: Thu, 10 May 2018 01:02:01 +0800
+Subject: [PATCH] MLK-18248: dma: fsl-edma-v3: avoid touch unused edma channel
+
+Avoid touch unused edma channel register in susped/resume, otherwise,
+kernel crash if XRDC enabled in scfw.
+
+Signed-off-by: Robin Gong <yibin.gong@nxp.com>
+Acked-by: Fugang Duan <fugang.duan@nxp.com>
+(cherry picked from commit aa221c4aba34c6ce1ce5f561fa073bb8297cc0ff)
+---
+ drivers/dma/fsl-edma-v3.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+--- a/drivers/dma/fsl-edma-v3.c
++++ b/drivers/dma/fsl-edma-v3.c
+@@ -149,6 +149,7 @@ struct fsl_edma3_chan {
+ 	enum dma_status			status;
+ 	enum fsl_edma3_pm_state		pm_state;
+ 	bool				idle;
++	bool				used;
+ 	struct fsl_edma3_engine		*edma3;
+ 	struct fsl_edma3_desc		*edesc;
+ 	struct fsl_edma3_slave_config	fsc;
+@@ -226,6 +227,8 @@ static void fsl_edma3_enable_request(str
+ 
+ 	val |= EDMA_CH_CSR_ERQ;
+ 	writel(val, addr + EDMA_CH_CSR);
++
++	fsl_chan->used = true;
+ }
+ 
+ static void fsl_edma3_disable_request(struct fsl_edma3_chan *fsl_chan)
+@@ -281,6 +284,7 @@ static int fsl_edma3_terminate_all(struc
+ 	fsl_edma3_disable_request(fsl_chan);
+ 	fsl_chan->edesc = NULL;
+ 	fsl_chan->idle = true;
++	fsl_chan->used = false;
+ 	vchan_get_all_descriptors(&fsl_chan->vchan, &head);
+ 	spin_unlock_irqrestore(&fsl_chan->vchan.lock, flags);
+ 	vchan_dma_desc_free_list(&fsl_chan->vchan, &head);
+@@ -805,6 +809,7 @@ static void fsl_edma3_free_chan_resource
+ 	vchan_dma_desc_free_list(&fsl_chan->vchan, &head);
+ 	dma_pool_destroy(fsl_chan->tcd_pool);
+ 	fsl_chan->tcd_pool = NULL;
++	fsl_chan->used = false;
+ }
+ 
+ static int fsl_edma3_probe(struct platform_device *pdev)
+@@ -900,6 +905,7 @@ static int fsl_edma3_probe(struct platfo
+ 
+ 		fsl_chan->vchan.desc_free = fsl_edma3_free_desc;
+ 		vchan_init(&fsl_chan->vchan, &fsl_edma3->dma_dev);
++		fsl_chan->used = false;
+ 	}
+ 
+ 	mutex_init(&fsl_edma3->fsl_edma3_mutex);
+@@ -969,6 +975,8 @@ static int fsl_edma3_suspend_late(struct
+ 		fsl_chan = &fsl_edma->chans[i];
+ 		addr = fsl_chan->membase;
+ 
++		if (!fsl_chan->used)
++			continue;
+ 		spin_lock_irqsave(&fsl_chan->vchan.lock, flags);
+ 		fsl_edma->edma_regs[i].csr = readl(addr + EDMA_CH_CSR);
+ 		fsl_edma->edma_regs[i].sbr = readl(addr + EDMA_CH_SBR);
+@@ -996,6 +1004,9 @@ static int fsl_edma3_resume_early(struct
+ 		fsl_chan = &fsl_edma->chans[i];
+ 		addr = fsl_chan->membase;
+ 
++		if (!fsl_chan->used)
++			continue;
++
+ 		spin_lock_irqsave(&fsl_chan->vchan.lock, flags);
+ 		writel(fsl_edma->edma_regs[i].csr, addr + EDMA_CH_CSR);
+ 		writel(fsl_edma->edma_regs[i].sbr, addr + EDMA_CH_SBR);

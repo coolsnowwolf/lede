@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # 2009 (C) Copyright Industrie Dial Face S.p.A.
 #          Luigi 'Comio' Mantellini <luigi.mantellini@idf-hit.com>
@@ -15,10 +15,10 @@
 #
 
 PROGNAME=$0
-REALNAME=`readlink -f $0`
+REALNAME=$(readlink -f $0)
 
-REALNAME_BASE=`basename $REALNAME`
-REALNAME_DIR=`dirname $REALNAME`
+REALNAME_BASE=$(basename $REALNAME)
+REALNAME_DIR=$(dirname $REALNAME)
 
 TARGET_FUNDAMENTAL_ASFLAGS=''
 TARGET_FUNDAMENTAL_CFLAGS=''
@@ -48,30 +48,22 @@ export GCC_HONOUR_COPTS
 
 TOOLCHAIN_SYSROOT="$TOOLCHAIN_BIN_DIR/../.."
 if [ ! -d "$TOOLCHAIN_SYSROOT" ]; then
-  echo "Error: Unable to determine sysroot (looking for $TOOLCHAIN_SYSROOT)!" >&2
-  exit 1
+	echo "Error: Unable to determine sysroot (looking for $TOOLCHAIN_SYSROOT)!" >&2
+	exit 1
 fi
 
 # -Wl,--dynamic-linker=$TOOLCHAIN_SYSROOT/lib/ld-uClibc.so.0 
 # --dynamic-linker=$TOOLCHAIN_SYSROOT/lib/ld-uClibc.so.0 
 
 case $TOOLCHAIN_PLATFORM in
-   gnu|glibc|eglibc)
-	GCC_SYSROOT_FLAGS="--sysroot=$TOOLCHAIN_SYSROOT -Wl,-rpath=$TOOLCHAIN_SYSROOT/lib:$TOOLCHAIN_SYSROOT/usr/lib"
-	LD_SYSROOT_FLAGS="-rpath=$TOOLCHAIN_SYSROOT/lib:$TOOLCHAIN_SYSROOT/usr/lib"
-       ;;
-   uclibc)
-	GCC_SYSROOT_FLAGS="--sysroot=$TOOLCHAIN_SYSROOT -Wl,-rpath=$TOOLCHAIN_SYSROOT/lib:$TOOLCHAIN_SYSROOT/usr/lib"
-	LD_SYSROOT_FLAGS="-rpath=$TOOLCHAIN_SYSROOT/lib:$TOOLCHAIN_SYSROOT/usr/lib"
-       ;;
-   musl)
-	GCC_SYSROOT_FLAGS="--sysroot=$TOOLCHAIN_SYSROOT -Wl,-rpath=$TOOLCHAIN_SYSROOT/lib:$TOOLCHAIN_SYSROOT/usr/lib"
-	LD_SYSROOT_FLAGS="-rpath=$TOOLCHAIN_SYSROOT/lib:$TOOLCHAIN_SYSROOT/usr/lib"
-       ;;
-   *)
-	GCC_SYSROOT_FLAGS=""
-	LD_SYSROOT_FLAGS=""
-       ;;
+	gnu|glibc|uclibc|musl)
+		GCC_SYSROOT_FLAGS="--sysroot=$TOOLCHAIN_SYSROOT -Wl,-rpath=$TOOLCHAIN_SYSROOT/lib:$TOOLCHAIN_SYSROOT/usr/lib"
+		LD_SYSROOT_FLAGS="-rpath=$TOOLCHAIN_SYSROOT/lib:$TOOLCHAIN_SYSROOT/usr/lib"
+		;;
+	*)
+		GCC_SYSROOT_FLAGS=""
+		LD_SYSROOT_FLAGS=""
+		;;
 esac
 
 #

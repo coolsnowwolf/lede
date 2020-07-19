@@ -120,9 +120,9 @@ function dev_cfg(devname)
     if mimo == "0" then
         cfgs.ETxBfEnCond=1
         cfgs.MUTxRxEnable=0
-        cfgs.ITxBfEn=0
+        cfgs.ITxBfEn=1
     elseif mimo == "1" then
-        cfgs.ETxBfEnCond=0
+        cfgs.ETxBfEnCond=1
         cfgs.MUTxRxEnable=0
         cfgs.ITxBfEn=1
     elseif mimo == "2" then
@@ -131,24 +131,16 @@ function dev_cfg(devname)
         cfgs.ITxBfEn=1
     elseif mimo == "3" then
         cfgs.ETxBfEnCond=1
-        if tonumber(cfgs.ApCliEnable) == 1 then
-            cfgs.MUTxRxEnable=3
-        else
-            cfgs.MUTxRxEnable=1
-        end
-        cfgs.ITxBfEn=0
+        cfgs.MUTxRxEnable=0
+        cfgs.ITxBfEn=1
     elseif mimo == "4" then
         cfgs.ETxBfEnCond=1
-        if tonumber(cfgs.ApCliEnable) == 1 then
-            cfgs.MUTxRxEnable=3
-        else
-            cfgs.MUTxRxEnable=1
-        end
+        cfgs.MUTxRxEnable=0
         cfgs.ITxBfEn=1
     else
-        cfgs.ETxBfEnCond=0
-        cfgs.MUTxRxEnable=0
-        cfgs.ITxBfEn=0
+       cfgs.ETxBfEnCond=1
+       cfgs.MUTxRxEnable=0
+       cfgs.ITxBfEn=1
     end
 
 --    if cfgs.ApCliEnable == "1" then

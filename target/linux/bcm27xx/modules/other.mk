@@ -23,23 +23,6 @@ endef
 $(eval $(call KernelPackage,pwm-bcm2835))
 
 
-define KernelPackage/random-bcm2835
-  SUBMENU:=$(OTHER_MENU)
-  TITLE:=BCM2835 HW Random Number Generator
-  KCONFIG:= \
-    CONFIG_HW_RANDOM_BCM2835
-  FILES:=$(LINUX_DIR)/drivers/char/hw_random/bcm2835-rng.ko
-  AUTOLOAD:=$(call AutoLoad,11,bcm2835-rng)
-  DEPENDS:=@TARGET_bcm27xx +kmod-random-core
-endef
-
-define KernelPackage/random-bcm2835/description
-  This package contains the Broadcom 2835 HW random number generator driver
-endef
-
-$(eval $(call KernelPackage,random-bcm2835))
-
-
 define KernelPackage/smi-bcm2835
   SUBMENU:=$(OTHER_MENU)
   TITLE:=BCM2835 SMI driver

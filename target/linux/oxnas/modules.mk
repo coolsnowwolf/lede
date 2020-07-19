@@ -1,11 +1,9 @@
 define KernelPackage/ata-oxnas-sata
-  SUBMENU:=$(BLOCK_MENU)
   TITLE:=oxnas Serial ATA support
   KCONFIG:=CONFIG_SATA_OXNAS
-  DEPENDS:=@TARGET_oxnas
   FILES:=$(LINUX_DIR)/drivers/ata/sata_oxnas.ko
   AUTOLOAD:=$(call AutoLoad,41,sata_oxnas,1)
-  $(call AddDepends/ata)
+  $(call AddDepends/ata,@TARGET_oxnas)
 endef
 
 define KernelPackage/ata-oxnas-sata/description
@@ -16,13 +14,11 @@ $(eval $(call KernelPackage,ata-oxnas-sata))
 
 
 define KernelPackage/usb2-oxnas
-  SUBMENU:=$(BLOCK_MENU)
   TITLE:=OX820 EHCI driver
-  DEPENDS:=@TARGET_oxnas_ox820 +kmod-usb2
   KCONFIG:=CONFIG_USB_EHCI_OXNAS
   FILES:=$(LINUX_DIR)/drivers/usb/host/ehci-oxnas.ko
   AUTOLOAD:=$(call AutoLoad,55,ehci-oxnas,1)
-  $(call AddDepends/usb)
+  $(call AddDepends/usb,@TARGET_oxnas_ox820 +kmod-usb2)
 endef
 
 define KernelPackage/usb2-oxnas/description

@@ -7,6 +7,11 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
+define Build/strip-kernel
+	# Workaround pre-SDK-1.9.0 u-boot versions not handling the .notes section
+	$(TARGET_CROSS)strip -R .notes $@ -o $@.stripped && mv $@.stripped $@
+endef
+
 define Device/Default
   PROFILES = Default $$(DEVICE_NAME)
   KERNEL_NAME := vmlinux.elf
@@ -17,29 +22,29 @@ define Device/Default
   IMAGE/sysupgrade.tar := sysupgrade-tar
 endef
 
-define Build/strip-kernel
-	# Workaround pre-SDK-1.9.0 u-boot versions not handling the .notes section
-	$(TARGET_CROSS)strip -R .notes $@ -o $@.stripped && mv $@.stripped $@
-endef
-
 define Device/generic
+  DEVICE_VENDOR := Generic
+  DEVICE_MODEL := Octeon
   FILESYSTEMS := ext4
-  DEVICE_TITLE := Generic
 endef
 TARGET_DEVICES += generic
 
 ER_CMDLINE:=-mtdparts=phys_mapped_flash:640k(boot0)ro,640k(boot1)ro,64k(eeprom)ro root=/dev/mmcblk0p2 rootfstype=squashfs,ext4 rootwait
-define Device/er
-  CMDLINE := $(ER_CMDLINE) 
-  DEVICE_TITLE := Ubiquiti EdgeRouter
+define Device/ubnt_edgerouter
+  DEVICE_VENDOR := Ubiquiti
+  DEVICE_MODEL := EdgeRouter
+  BOARD_NAME := er
+  CMDLINE := $(ER_CMDLINE)
 endef
-TARGET_DEVICES += er
+TARGET_DEVICES += ubnt_edgerouter
 
 ERLITE_CMDLINE:=-mtdparts=phys_mapped_flash:512k(boot0)ro,512k(boot1)ro,64k(eeprom)ro root=/dev/sda2 rootfstype=squashfs,ext4 rootwait
-define Device/erlite
-  CMDLINE := $(ERLITE_CMDLINE) 
-  DEVICE_TITLE := Ubiquiti EdgeRouter Lite
+define Device/ubnt_edgerouter-lite
+  DEVICE_VENDOR := Ubiquiti
+  DEVICE_MODEL := EdgeRouter Lite
+  BOARD_NAME := erlite
+  CMDLINE := $(ERLITE_CMDLINE)
 endef
-TARGET_DEVICES += erlite
+TARGET_DEVICES += ubnt_edgerouter-lite
 
 $(eval $(call BuildImage))

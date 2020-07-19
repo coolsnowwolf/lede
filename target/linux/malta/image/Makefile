@@ -34,18 +34,21 @@ define Image/BuildKernel
 	cp $(KDIR)/uImage.gz $(BIN_DIR)/$(IMG_PREFIX)-uImage-gzip
 endef
 
-define Image/Build/squashfs
-    $(call prepare_generic_squashfs,$(KDIR)/root.squashfs)
-endef
-
 define Image/Build/Initramfs
 	cp $(KDIR)/vmlinux-initramfs.elf $(BIN_DIR)/$(IMG_PREFIX)-vmlinux-initramfs.elf
 	cp $(KDIR)/vmlinux-initramfs $(BIN_DIR)/$(IMG_PREFIX)-vmlinux-initramfs.bin
 endef
 
+define Image/Build/gzip
+	gzip -f9n $(BIN_DIR)/$(IMG_ROOTFS)-$(1).img
+endef
+
+$(eval $(call Image/gzip-ext4-padded-squashfs))
+
 define Image/Build
 	$(call Image/Build/$(1))
-	dd if=$(KDIR)/root.$(1) of=$(BIN_DIR)/$(IMG_PREFIX)-root.$(1) bs=128k conv=sync
+	$(CP) $(KDIR)/root.$(1) $(BIN_DIR)/$(IMG_ROOTFS)-$(1).img
+	$(call Image/Build/gzip/$(1))
 endef
 
 $(eval $(call BuildImage))

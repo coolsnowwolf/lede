@@ -20,7 +20,6 @@ ARCH:=$(shell uname -m | sed \
 BOARD:=uml
 BOARDNAME:=User Mode Linux
 FEATURES:=squashfs ext4 audio source-only
-MAINTAINER:=Florian Fainelli <florian@openwrt.org>
 
 KERNEL_PATCHVER:=4.14
 

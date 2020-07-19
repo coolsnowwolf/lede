@@ -34,7 +34,7 @@
 #define SET_BITS(x, msb, lsb, value)    (((x) & ~(((1 << ((msb) + 1)) - 1) ^ ((1 << (lsb)) - 1))) | (((value) & ((1 << (1 + (msb) - (lsb))) - 1)) << (lsb)))
 
 struct ltq_atm_ops {
-	void (*init)(void);
+	void (*init)(struct platform_device *pdev);
 	void (*shutdown)(void);
 
 	int (*start)(int pp32);

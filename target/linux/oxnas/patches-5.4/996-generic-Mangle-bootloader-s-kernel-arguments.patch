@@ -1,0 +1,189 @@
+From 71270226b14733a4b1f2cde58ea9265caa50b38d Mon Sep 17 00:00:00 2001
+From: Adrian Panella <ianchi74@outlook.com>
+Date: Thu, 9 Mar 2017 09:37:17 +0100
+Subject: [PATCH 67/69] generic: Mangle bootloader's kernel arguments
+
+The command-line arguments provided by the boot loader will be
+appended to a new device tree property: bootloader-args.
+If there is a property "append-rootblock" in DT under /chosen
+and a root= option in bootloaders command line it will be parsed
+and added to DT bootargs with the form: <append-rootblock>XX.
+Only command line ATAG will be processed, the rest of the ATAGs
+sent by bootloader will be ignored.
+This is usefull in dual boot systems, to get the current root partition
+without afecting the rest of the system.
+
+Signed-off-by: Adrian Panella <ianchi74@outlook.com>
+---
+ arch/arm/Kconfig                        | 11 +++++
+ arch/arm/boot/compressed/atags_to_fdt.c | 72 ++++++++++++++++++++++++++++++++-
+ init/main.c                             | 16 ++++++++
+ 3 files changed, 98 insertions(+), 1 deletion(-)
+
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -1825,6 +1825,17 @@ config ARM_ATAG_DTB_COMPAT_CMDLINE_EXTEN
+ 	  The command-line arguments provided by the boot loader will be
+ 	  appended to the the device tree bootargs property.
+ 
++config ARM_ATAG_DTB_COMPAT_CMDLINE_MANGLE
++	bool "Append rootblock parsing bootloader's kernel arguments"
++	help
++	  The command-line arguments provided by the boot loader will be
++	  appended to a new device tree property: bootloader-args.
++	  If there is a property "append-rootblock" in DT under /chosen 
++	  and a root= option in bootloaders command line it will be parsed 
++	  and added to DT bootargs with the form: <append-rootblock>XX.
++	  Only command line ATAG will be processed, the rest of the ATAGs
++	  sent by bootloader will be ignored.
++
+ endchoice
+ 
+ config CMDLINE
+--- a/arch/arm/boot/compressed/atags_to_fdt.c
++++ b/arch/arm/boot/compressed/atags_to_fdt.c
+@@ -4,6 +4,8 @@
+ 
+ #if defined(CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_EXTEND)
+ #define do_extend_cmdline 1
++#elif defined(CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_MANGLE)
++#define do_extend_cmdline 1
+ #else
+ #define do_extend_cmdline 0
+ #endif
+@@ -67,6 +69,59 @@ static uint32_t get_cell_size(const void
+ 	return cell_size;
+ }
+ 
++#if defined(CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_MANGLE)
++
++static char *append_rootblock(char *dest, const char *str, int len, void *fdt)
++{
++	char *ptr, *end;
++	char *root="root=";
++	int i, l;
++	const char *rootblock;
++
++	//ARM doesn't have __HAVE_ARCH_STRSTR, so search manually
++	ptr = str - 1;
++
++	do {
++		//first find an 'r' at the begining or after a space
++		do {
++			ptr++;
++			ptr = strchr(ptr, 'r');
++			if(!ptr) return dest;
++
++		} while (ptr != str && *(ptr-1) != ' ');
++
++		//then check for the rest
++		for(i = 1; i <= 4; i++)
++			if(*(ptr+i) != *(root+i)) break;
++
++	} while (i != 5);
++
++	end = strchr(ptr, ' ');
++	end = end ? (end - 1) : (strchr(ptr, 0) - 1);
++
++	//find partition number (assumes format root=/dev/mtdXX | /dev/mtdblockXX | yy:XX )
++	for( i = 0; end >= ptr && *end >= '0' && *end <= '9'; end--, i++);
++	ptr = end + 1;
++
++	/* if append-rootblock property is set use it to append to command line */
++	rootblock = getprop(fdt, "/chosen", "append-rootblock", &l);
++	if(rootblock != NULL) {
++		if(*dest != ' ') {
++			*dest = ' ';
++			dest++;
++			len++;
++		}
++		if (len + l + i <= COMMAND_LINE_SIZE) {
++			memcpy(dest, rootblock, l);
++			dest += l - 1;
++			memcpy(dest, ptr, i);
++			dest += i;
++		}
++	}
++	return dest;
++}
++#endif
++
+ static void merge_fdt_bootargs(void *fdt, const char *fdt_cmdline)
+ {
+ 	char cmdline[COMMAND_LINE_SIZE];
+@@ -86,12 +141,21 @@ static void merge_fdt_bootargs(void *fdt
+ 
+ 	/* and append the ATAG_CMDLINE */
+ 	if (fdt_cmdline) {
++
++#if defined(CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_MANGLE)
++		//save original bootloader args
++		//and append ubi.mtd with root partition number to current cmdline
++		setprop_string(fdt, "/chosen", "bootloader-args", fdt_cmdline);
++		ptr = append_rootblock(ptr, fdt_cmdline, len, fdt);
++
++#else
+ 		len = strlen(fdt_cmdline);
+ 		if (ptr - cmdline + len + 2 < COMMAND_LINE_SIZE) {
+ 			*ptr++ = ' ';
+ 			memcpy(ptr, fdt_cmdline, len);
+ 			ptr += len;
+ 		}
++#endif
+ 	}
+ 	*ptr = '\0';
+ 
+@@ -166,7 +230,9 @@ int atags_to_fdt(void *atag_list, void *
+ 			else
+ 				setprop_string(fdt, "/chosen", "bootargs",
+ 					       atag->u.cmdline.cmdline);
+-		} else if (atag->hdr.tag == ATAG_MEM) {
++		}
++#ifndef CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_MANGLE
++		else if (atag->hdr.tag == ATAG_MEM) {
+ 			if (memcount >= sizeof(mem_reg_property)/4)
+ 				continue;
+ 			if (!atag->u.mem.size)
+@@ -210,6 +276,10 @@ int atags_to_fdt(void *atag_list, void *
+ 		setprop(fdt, "/memory", "reg", mem_reg_property,
+ 			4 * memcount * memsize);
+ 	}
++#else
++
++	}
++#endif
+ 
+ 	return fdt_pack(fdt);
+ }
+--- a/init/main.c
++++ b/init/main.c
+@@ -103,6 +103,10 @@
+ #define CREATE_TRACE_POINTS
+ #include <trace/events/initcall.h>
+ 
++#if defined(CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_MANGLE)
++#include <linux/of.h>
++#endif
++
+ static int kernel_init(void *);
+ 
+ extern void init_IRQ(void);
+@@ -630,6 +634,18 @@ asmlinkage __visible void __init start_k
+ 	page_alloc_init();
+ 
+ 	pr_notice("Kernel command line: %s\n", boot_command_line);
++
++#if defined(CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_MANGLE)
++	//Show bootloader's original command line for reference
++	if(of_chosen) {
++		const char *prop = of_get_property(of_chosen, "bootloader-args", NULL);
++		if(prop)
++			pr_notice("Bootloader command line (ignored): %s\n", prop);
++		else
++			pr_notice("Bootloader command line not present\n");
++	}
++#endif
++
+ 	/* parameters may set static keys */
+ 	jump_label_init();
+ 	parse_early_param();

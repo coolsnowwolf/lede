@@ -56,7 +56,7 @@ define Device/netgear_wnr2000-v3
 	append-rootfs | pad-rootfs
   IMAGES += factory-NA.img
   IMAGE/factory-NA.img := $$(IMAGE/default) | netgear-dni NA | \
-	check-size $$$$(IMAGE_SIZE)
+	check-size
   SUPPORTED_DEVICES += wnr2000-v3
   $(Device/netgear_ath79)
 endef
