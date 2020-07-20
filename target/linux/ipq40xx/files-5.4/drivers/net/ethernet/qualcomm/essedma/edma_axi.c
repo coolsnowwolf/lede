@@ -968,7 +968,6 @@ static int edma_axi_probe(struct platform_device *pdev)
 		edma_netdev[i]->netdev_ops = &edma_axi_netdev_ops;
 		edma_netdev[i]->max_mtu = 9000;
 		edma_netdev[i]->features = NETIF_F_HW_CSUM | NETIF_F_RXCSUM
-				      | NETIF_F_HW_VLAN_CTAG_TX
 				      | NETIF_F_HW_VLAN_CTAG_RX | NETIF_F_SG |
 				      NETIF_F_TSO | NETIF_F_GRO;
 		edma_netdev[i]->hw_features = NETIF_F_HW_CSUM | NETIF_F_RXCSUM |
@@ -980,10 +979,10 @@ static int edma_axi_probe(struct platform_device *pdev)
 					     NETIF_F_TSO | NETIF_F_GRO;
 
 #ifdef CONFIG_RFS_ACCEL
-		edma_netdev[i]->features |=  NETIF_F_RXHASH | NETIF_F_NTUPLE;
-		edma_netdev[i]->hw_features |=  NETIF_F_RXHASH | NETIF_F_NTUPLE;
-		edma_netdev[i]->vlan_features |= NETIF_F_RXHASH | NETIF_F_NTUPLE;
-		edma_netdev[i]->wanted_features |= NETIF_F_RXHASH | NETIF_F_NTUPLE;
+		edma_netdev[i]->features |=  NETIF_F_NTUPLE;
+		edma_netdev[i]->hw_features |=  NETIF_F_NTUPLE;
+		edma_netdev[i]->vlan_features |= NETIF_F_NTUPLE;
+		edma_netdev[i]->wanted_features |= NETIF_F_NTUPLE;
 #endif
 		edma_set_ethtool_ops(edma_netdev[i]);
 
