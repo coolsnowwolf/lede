@@ -140,7 +140,7 @@ update() {
     if [ $? -ne 0 ]; then
         cancel "501"
     fi
-    if [ $(echo "$local_ver < $remote_ver" | bc) -eq 1 ]; then
+    if [ $(expr $local_ver \< $remote_ver) -eq 1 ]; then
         cp -r $TEMP_SCRIPT $JD_SCRIPT
         fill_cookie
         uci set jd-dailybonus.@global[0].version=$remote_ver

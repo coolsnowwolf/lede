@@ -2,14 +2,12 @@ local fs = require "nixio.fs"
 local jd = "jd-dailybonus"
 local conffile = "/www/JD_DailyBonus.htm"
 
-f = SimpleForm("logview")
-m = Map(jd)
--- [[ 基本设置 ]]--
+log = SimpleForm("logview")
+log.submit = false
+log.reset = false
 
-s = m:section(TypedSection, "global")
-s.anonymous = true
-
-t = s:option(TextValue, "1", nil)
+-- [[ 日志显示 ]]--
+t = log:field(TextValue, "1", nil)
 t.rmempty = true
 t.rows = 30
 function t.cfgvalue()
@@ -17,4 +15,4 @@ function t.cfgvalue()
 end
 t.readonly="readonly"
 
-return m
+return log

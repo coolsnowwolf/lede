@@ -38,20 +38,21 @@ make -j1 V=s #编译固件
 
 🛑 [点击这里去下载最新的版本](https://github.com/jerrykuku/luci-app-jd-dailybonus/releases)
 
-🛑 [node-request下载](https://github.com/jerrykuku/luci-app-jd-dailybonus/releases/tag/0.7.6) 
-
 ⚠️安装步骤[重要]⚠️  
 
 1.自行安装Node [命令: opkg update && opkg install node]
-  (如果已经安装node版本的网易云插件则可以跳过)
+  (如果已经安装node版本的网易云插件则可以跳过)   
+  
 2.一些必要的依赖 wget 和 coreutils-nohup [命令：opkg install wget coreutils-nohup]
   
-3.根据自己的系统架构选择合适的node-request.ipk进行安装。
+3.根据自己的系统架构选择合适的node-request.ipk进行安装。  
+  [node-request下载](https://github.com/jerrykuku/luci-app-jd-dailybonus/releases/tag/0.7.6) 
   - Pi[H5] 系列  : aarch64_cortex-a53
   - N1 贝壳云    : aarch64_generic
   - 树莓派4      : aarch64_cortex-a72
   - MT7621       : mipsel_24kc
   - x86          : x86_64
+  - 全志 H3       : arm_cortex-a7_neon-vfpv4.ipk
   - 其他         : 参照上面方法自行编译
   - 如果找不到合适的,也可以通过ssh: opkg install node-npm  然后 npm install request -g 进行安装
 
