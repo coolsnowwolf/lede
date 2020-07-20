@@ -212,6 +212,12 @@ define Device/buffalo_wsr-600dhp
 endef
 TARGET_DEVICES += buffalo_wsr-600dhp
 
+define Device/dlink_dir-8xx-a1
+  IMAGE_SIZE := 16000k
+  DEVICE_VENDOR := D-Link
+  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi uboot-envtools
+endef
+
 define Device/dlink_dir-860l-b1
   $(Device/seama)
   BLOCKSIZE := 64k
@@ -228,22 +234,25 @@ define Device/dlink_dir-860l-b1
 endef
 TARGET_DEVICES += dlink_dir-860l-b1
 
+define Device/dlink_dir-867-a1
+  $(Device/dlink_dir-8xx-a1)
+  DEVICE_MODEL := DIR-867
+  DEVICE_VARIANT := A1
+endef
+TARGET_DEVICES += dlink_dir-867-a1
+
 define Device/dlink_dir-878-a1
-  IMAGE_SIZE := 16064k
-  DEVICE_VENDOR := D-Link
+  $(Device/dlink_dir-8xx-a1)
   DEVICE_MODEL := DIR-878
   DEVICE_VARIANT := A1
-  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += dlink_dir-878-a1
 
 define Device/dlink_dir-882-a1
-  IMAGE_SIZE := 16064k
-  DEVICE_VENDOR := D-Link
+  $(Device/dlink_dir-8xx-a1)
   DEVICE_MODEL := DIR-882
   DEVICE_VARIANT := A1
-  DEVICE_PACKAGES := kmod-mt7615d kmod-usb3 kmod-usb-ledtrig-usbport \
-	luci-app-mtwifi uboot-envtools
+  DEVICE_PACKAGES += kmod-usb3 kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += dlink_dir-882-a1
 
@@ -351,8 +360,8 @@ define Device/gehua_ghl-r-001
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := GeHua
   DEVICE_MODEL := GHL-R-001
-  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 \
-	kmod-usb-ledtrig-usbport wpad-openssl
+  DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
+	kmod-usb-ledtrig-usbport luci-app-mtwifi
 endef
 TARGET_DEVICES += gehua_ghl-r-001
 
@@ -1032,23 +1041,8 @@ define Device/xiaomi_mir4
 endef
 TARGET_DEVICES += xiaomi_mir4
 
-define Device/xiaomi_mi-router-ac2100
-  BLOCKSIZE := 128k
-  PAGESIZE := 2048
-  KERNEL_SIZE := 4096k
-  IMAGE_SIZE := 120320k
-  UBINIZE_OPTS := -E 5
-  IMAGES += kernel1.bin rootfs0.bin
-  IMAGE/kernel1.bin := append-kernel
-  IMAGE/rootfs0.bin := append-ubi | check-size
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  DEVICE_VENDOR := Xiaomi
-  DEVICE_MODEL := Mi Router AC2100
-  DEVICE_PACKAGES := kmod-mt7603e kmod-mt7615d luci-app-mtwifi uboot-envtools
-endef
-TARGET_DEVICES += xiaomi_mi-router-ac2100
-
-define Device/xiaomi_redmi-router-ac2100
+define Device/xiaomi-ac2100
+  $(Device/uimage-lzma-loader)
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL_SIZE := 4096k
@@ -1058,10 +1052,20 @@ define Device/xiaomi_redmi-router-ac2100
   IMAGE/kernel1.bin := append-kernel
   IMAGE/rootfs0.bin := append-ubi | check-size
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | check-size
   DEVICE_VENDOR := Xiaomi
-  DEVICE_MODEL := Redmi Router AC2100
   DEVICE_PACKAGES := kmod-mt7603e kmod-mt7615d luci-app-mtwifi uboot-envtools
+endef
+
+define Device/xiaomi_mi-router-ac2100
+  $(Device/xiaomi-ac2100)
+  DEVICE_MODEL := Mi Router AC2100
+endef
+TARGET_DEVICES += xiaomi_mi-router-ac2100
+
+define Device/xiaomi_redmi-router-ac2100
+  $(Device/xiaomi-ac2100)
+  DEVICE_MODEL := Redmi Router AC2100
 endef
 TARGET_DEVICES += xiaomi_redmi-router-ac2100
 
