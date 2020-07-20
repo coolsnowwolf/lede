@@ -2,19 +2,17 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=urandom-seed
 PKG_VERSION:=1.0
-PKG_RELEASE:=1
-PKG_LICENSE:=GPL-2.0
-
-PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
+PKG_RELEASE:=2
+PKG_LICENSE:=GPL-2.0-only
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/$(PKG_NAME)
+define Package/urandom-seed
   SECTION:=base
   CATEGORY:=Base system
   DEPENDS:=+getrandom
   TITLE:=/etc/urandom.seed handling for OpenWrt
-  URL:=http://openwrt.org/
+  URL:=https://openwrt.org/
 endef
 
 define Build/Prepare
@@ -25,7 +23,7 @@ define Build/Compile/Default
 endef
 Build/Compile = $(Build/Compile/Default)
 
-define Package/$(PKG_NAME)/install
+define Package/urandom-seed/install
 	$(CP) ./files/* $(1)/
 endef
 

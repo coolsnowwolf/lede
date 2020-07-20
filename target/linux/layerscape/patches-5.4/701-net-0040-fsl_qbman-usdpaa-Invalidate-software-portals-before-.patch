@@ -1,0 +1,64 @@
+From 6506f95ad4d47500275c2f3a48abb7f3de11c54b Mon Sep 17 00:00:00 2001
+From: Roy Pledge <roy.pledge@nxp.com>
+Date: Thu, 25 May 2017 16:59:08 -0400
+Subject: [PATCH] fsl_qbman/usdpaa: Invalidate software portals before use
+
+Invalidate the cache for the software portals before using them
+since the portals are non coherent. This ensures that the core
+using the portal is seeing the most up to date information in
+case the cache contained older data. This is important during
+the cleanup phase if cleanup occurs on a differnt core than
+what the application was using.
+
+Signed-off-by: Roy Pledge <roy.pledge@nxp.com>
+---
+ drivers/staging/fsl_qbman/fsl_usdpaa.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+--- a/drivers/staging/fsl_qbman/fsl_usdpaa.c
++++ b/drivers/staging/fsl_qbman/fsl_usdpaa.c
+@@ -371,6 +371,16 @@ static int usdpaa_open(struct inode *ino
+ 
+ #define DQRR_MAXFILL 15
+ 
++
++/* Invalidate a portal */
++void dbci_portal(void *addr)
++{
++	int i;
++
++	for (i = 0; i < 0x4000; i += 64)
++		dcbi(addr + i);
++}
++
+ /* Reset a QMan portal to its default state */
+ static int init_qm_portal(struct qm_portal_config *config,
+ 			  struct qm_portal *portal)
+@@ -384,6 +394,13 @@ static int init_qm_portal(struct qm_port
+ 	/* Make sure interrupts are inhibited */
+ 	qm_out(IIR, 1);
+ 
++	/*
++	 * Invalidate the entire CE portal are to ensure no stale
++	 * cachelines are present.  This should be done on all
++	 * cores as the portal is mapped as M=0 (non-coherent).
++	 */
++	on_each_cpu(dbci_portal, portal->addr.addr_ce, 1);
++
+ 	/* Initialize the DQRR.  This will stop any dequeue
+ 	   commands that are in progress */
+ 	if (qm_dqrr_init(portal, config, qm_dqrr_dpush, qm_dqrr_pvb,
+@@ -435,6 +452,13 @@ static int init_bm_portal(struct bm_port
+ 	portal->addr.addr_ce = config->addr_virt[DPA_PORTAL_CE];
+ 	portal->addr.addr_ci = config->addr_virt[DPA_PORTAL_CI];
+ 
++	/*
++	 * Invalidate the entire CE portal are to ensure no stale
++	 * cachelines are present.  This should be done on all
++	 * cores as the portal is mapped as M=0 (non-coherent).
++	 */
++	on_each_cpu(dbci_portal, portal->addr.addr_ce, 1);
++
+ 	if (bm_rcr_init(portal, bm_rcr_pvb, bm_rcr_cce)) {
+ 		pr_err("Bman RCR initialisation failed\n");
+ 	return 1;

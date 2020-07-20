@@ -1,4 +1,3 @@
-#!/bin/sh
 #
 # Copyright (C) 2010-2013 OpenWrt.org
 #
@@ -79,6 +78,26 @@ imx6_board_detect() {
 	"Gateworks Ventana i.MX6 DualLite/Solo GW5904" |\
 	"Gateworks Ventana i.MX6 Dual/Quad GW5904")
 		name="gw5904"
+		;;
+
+	"Gateworks Ventana i.MX6 DualLite/Solo GW5907" |\
+	"Gateworks Ventana i.MX6 Dual/Quad GW5907")
+		name="gw5907"
+		;;
+
+	"Gateworks Ventana i.MX6 DualLite/Solo GW5910" |\
+	"Gateworks Ventana i.MX6 Dual/Quad GW5910")
+		name="gw5910"
+		;;
+
+	"Gateworks Ventana i.MX6 DualLite/Solo GW5912" |\
+	"Gateworks Ventana i.MX6 Dual/Quad GW5912")
+		name="gw5912"
+		;;
+
+	"Gateworks Ventana i.MX6 DualLite/Solo GW5913" |\
+	"Gateworks Ventana i.MX6 Dual/Quad GW5913")
+		name="gw5913"
 		;;
 
 	"SolidRun Cubox-i Solo/DualLite" |\

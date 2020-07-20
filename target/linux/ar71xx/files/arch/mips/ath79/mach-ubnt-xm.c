@@ -656,6 +656,9 @@ MIPS_MACHINE(ATH79_MACH_UBNT_LOCO_M_XW, "UBNT-LOCO-XW", "Ubiquiti Loco M XW",
 MIPS_MACHINE(ATH79_MACH_UBNT_ROCKET_M_XW, "UBNT-RM-XW", "Ubiquiti Rocket M XW",
 	     ubnt_rocket_m_xw_setup);
 
+MIPS_MACHINE(ATH79_MACH_UBNT_BULLET_M_XW, "UBNT-BM-XW", "Ubiquiti Bullet M XW",
+	     ubnt_rocket_m_xw_setup);
+
 MIPS_MACHINE(ATH79_MACH_UBNT_ROCKET_M_TI, "UBNT-RM-TI", "Ubiquiti Rocket M TI",
 	     ubnt_rocket_m_ti_setup);
 

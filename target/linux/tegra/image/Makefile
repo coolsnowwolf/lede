@@ -34,6 +34,7 @@ define Build/tegra-sdcard
 endef
 
 DEVICE_VARS += BOOT_SCRIPT UBOOT
+
 define Device/Default
   BOOT_SCRIPT := generic-bootscript
   IMAGES := sdcard.img.gz

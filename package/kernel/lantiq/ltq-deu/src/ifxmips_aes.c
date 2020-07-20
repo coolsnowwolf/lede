@@ -895,18 +895,6 @@ int ifxdeu_init_aes (void)
     int ret = -ENOSYS;
 
 
- 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20))
-    if (!disable_multiblock) {
-        ifxdeu_aes_alg.cra_u.cipher.cia_max_nbytes = AES_BLOCK_SIZE;    //(size_t)-1;
-        ifxdeu_aes_alg.cra_u.cipher.cia_req_align = 16;
-        ifxdeu_aes_alg.cra_u.cipher.cia_ecb = ifx_deu_aes_ecb;
-        ifxdeu_aes_alg.cra_u.cipher.cia_cbc = ifx_deu_aes_cbc;
-        ifxdeu_aes_alg.cra_u.cipher.cia_cfb = ifx_deu_aes_cfb;
-        ifxdeu_aes_alg.cra_u.cipher.cia_ofb = ifx_deu_aes_ofb;
-    }
-#endif
-
     if ((ret = crypto_register_alg(&ifxdeu_aes_alg)))
         goto aes_err;
 

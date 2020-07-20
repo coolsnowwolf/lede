@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # b43 firmware file squasher
 # Removes unnecessary firmware files
@@ -37,7 +37,7 @@ fwpath = sys.argv[3]
 
 phytypes = phytypes.split(',')
 try:
-	corerevs = map(lambda r: int(r), corerevs.split(','))
+	corerevs = [int(r) for r in corerevs.split(',')]
 except ValueError:
 	print("ERROR: \"%s\" is not a valid COREREVS string\n" % corerevs)
 	usage()
@@ -45,7 +45,7 @@ except ValueError:
 
 
 fwfiles = os.listdir(fwpath)
-fwfiles = filter(lambda str: str.endswith(".fw"), fwfiles)
+fwfiles = [str for str in fwfiles if str.endswith(".fw")]
 if not fwfiles:
 	print("ERROR: No firmware files found in %s" % fwpath)
 	sys.exit(1)

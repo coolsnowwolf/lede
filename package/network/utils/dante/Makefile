@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=dante
 PKG_VERSION:=1.4.1
-PKG_RELEASE:=2
+PKG_RELEASE:=4
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=http://www.inet.no/dante/files/
@@ -58,6 +58,7 @@ define Package/libsocks
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE+= Library
+  ABI_VERSION:=0
 endef
 
 define Package/libsocks/description
@@ -67,7 +68,7 @@ endef
 
 define Package/libsocks/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libsocks.so* $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libsocks.so.* $(1)/usr/lib/
 endef
 
 

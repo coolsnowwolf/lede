@@ -5,7 +5,7 @@ local a=(luci.sys.call("pidof qbittorrent-nox > /dev/null")==0)
 
 local t=""
 if a then
-t="<br /><br /><input class=\"cbi-button cbi-button-apply\" type=\"button\" value=\" "..translate("Open Web Interface").." \" onclick=\"window.open('http://'+window.location.hostname+':"..o.."')\"/>"
+t="<br /><br /><input class=\"cbi-button cbi-button-apply\" type=\"button\" value=\" "..translate("Open Web Interface").." \" onclick=\"window.open('//'+window.location.hostname+':"..o.."')\"/>"
 end
 
 function titlesplit(Value)

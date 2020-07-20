@@ -1,0 +1,333 @@
+From 01a1601512893ce9a3353e1686a95a9861f3d685 Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Fri, 1 May 2020 14:15:24 +0100
+Subject: [PATCH] staging: vc04_services: ISP: Add enum_framesizes
+ ioctl
+
+This is used to enumerate available frame sizes on all nodes
+apart from statistics output.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ .../bcm2835-isp/bcm2835-v4l2-isp.c            | 48 +++++++++++++++++--
+ .../bcm2835-isp/bcm2835_isp_fmts.h            | 29 +++++++++++
+ 2 files changed, 72 insertions(+), 5 deletions(-)
+
+--- a/drivers/staging/vc04_services/bcm2835-isp/bcm2835-v4l2-isp.c
++++ b/drivers/staging/vc04_services/bcm2835-isp/bcm2835-v4l2-isp.c
+@@ -227,8 +227,9 @@ static const struct bcm2835_isp_fmt *get
+ 	return NULL;
+ }
+ 
+-static struct bcm2835_isp_fmt *find_format(struct v4l2_format *f,
+-					   struct bcm2835_isp_node *node)
++static const
++struct bcm2835_isp_fmt *find_format_by_fourcc(unsigned int fourcc,
++					      struct bcm2835_isp_node *node)
+ {
+ 	struct bcm2835_isp_fmt_list *fmts = &node->supported_fmts;
+ 	struct bcm2835_isp_fmt *fmt;
+@@ -236,15 +237,22 @@ static struct bcm2835_isp_fmt *find_form
+ 
+ 	for (i = 0; i < fmts->num_entries; i++) {
+ 		fmt = &fmts->list[i];
+-		if (fmt->fourcc == (node_is_stats(node) ?
+-					    f->fmt.meta.dataformat :
+-					    f->fmt.pix.pixelformat))
++		if (fmt->fourcc == fourcc)
+ 			return fmt;
+ 	}
+ 
+ 	return NULL;
+ }
+ 
++static struct bcm2835_isp_fmt *find_format(struct v4l2_format *f,
++					   struct bcm2835_isp_node *node)
++{
++	return find_format_by_fourcc(node_is_stats(node) ?
++				     f->fmt.meta.dataformat :
++				     f->fmt.pix.pixelformat,
++				     node);
++}
++
+ /* vb2_to_mmal_buffer() - converts vb2 buffer header to MMAL
+  *
+  * Copies all the required fields from a VB2 buffer to the MMAL buffer header,
+@@ -892,6 +900,35 @@ static int bcm2835_isp_node_enum_fmt(str
+ 	return -EINVAL;
+ }
+ 
++static int bcm2835_isp_enum_framesizes(struct file *file, void *priv,
++				       struct v4l2_frmsizeenum *fsize)
++{
++	struct bcm2835_isp_node *node = video_drvdata(file);
++	struct bcm2835_isp_dev *dev = node_get_dev(node);
++	struct bcm2835_isp_fmt *fmt;
++
++	if (node_is_stats(node) || fsize->index)
++		return -EINVAL;
++
++	fmt = find_format_by_fourcc(fsize->pixel_format, node);
++	if (!fmt) {
++		v4l2_err(&dev->v4l2_dev, "Invalid pixel code: %x\n",
++			 fsize->pixel_format);
++		return -EINVAL;
++	}
++
++	fsize->type = V4L2_FRMSIZE_TYPE_STEPWISE;
++	fsize->stepwise.min_width = MIN_DIM;
++	fsize->stepwise.max_width = MAX_DIM;
++	fsize->stepwise.step_width = fmt->step_size;
++
++	fsize->stepwise.min_height = MIN_DIM;
++	fsize->stepwise.max_height = MAX_DIM;
++	fsize->stepwise.step_height = fmt->step_size;
++
++	return 0;
++}
++
+ static int bcm2835_isp_node_try_fmt(struct file *file, void *priv,
+ 				    struct v4l2_format *f)
+ {
+@@ -1046,6 +1083,7 @@ static const struct v4l2_ioctl_ops bcm28
+ 	.vidioc_enum_fmt_vid_cap	= bcm2835_isp_node_enum_fmt,
+ 	.vidioc_enum_fmt_vid_out	= bcm2835_isp_node_enum_fmt,
+ 	.vidioc_enum_fmt_meta_cap	= bcm2835_isp_node_enum_fmt,
++	.vidioc_enum_framesizes		= bcm2835_isp_enum_framesizes,
+ 
+ 	.vidioc_reqbufs			= vb2_ioctl_reqbufs,
+ 	.vidioc_querybuf		= vb2_ioctl_querybuf,
+--- a/drivers/staging/vc04_services/bcm2835-isp/bcm2835_isp_fmts.h
++++ b/drivers/staging/vc04_services/bcm2835-isp/bcm2835_isp_fmts.h
+@@ -22,6 +22,7 @@ struct bcm2835_isp_fmt {
+ 	u32 mmal_fmt;
+ 	int size_multiplier_x2;
+ 	enum v4l2_colorspace colorspace;
++	unsigned int step_size;
+ };
+ 
+ struct bcm2835_isp_fmt_list {
+@@ -39,6 +40,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_I420,
+ 		.size_multiplier_x2 = 3,
+ 		.colorspace	    = V4L2_COLORSPACE_SMPTE170M,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_YVU420,
+ 		.depth		    = 8,
+@@ -47,6 +49,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_YV12,
+ 		.size_multiplier_x2 = 3,
+ 		.colorspace	    = V4L2_COLORSPACE_SMPTE170M,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_NV12,
+ 		.depth		    = 8,
+@@ -55,6 +58,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_NV12,
+ 		.size_multiplier_x2 = 3,
+ 		.colorspace	    = V4L2_COLORSPACE_SMPTE170M,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_NV21,
+ 		.depth		    = 8,
+@@ -63,6 +67,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_NV21,
+ 		.size_multiplier_x2 = 3,
+ 		.colorspace	    = V4L2_COLORSPACE_SMPTE170M,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_YUYV,
+ 		.depth		    = 16,
+@@ -71,6 +76,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_YUYV,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_SMPTE170M,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_UYVY,
+ 		.depth		    = 16,
+@@ -79,6 +85,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_UYVY,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_SMPTE170M,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_YVYU,
+ 		.depth		    = 16,
+@@ -87,6 +94,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_YVYU,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_SMPTE170M,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_VYUY,
+ 		.depth		    = 16,
+@@ -95,6 +103,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_VYUY,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_SMPTE170M,
++		.step_size	    = 2,
+ 	}, {
+ 		/* RGB formats */
+ 		.fourcc		    = V4L2_PIX_FMT_RGB24,
+@@ -104,6 +113,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_RGB24,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_SRGB,
++		.step_size	    = 1,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_RGB565,
+ 		.depth		    = 16,
+@@ -112,6 +122,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_RGB16,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_SRGB,
++		.step_size	    = 1,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_BGR24,
+ 		.depth		    = 24,
+@@ -120,6 +131,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BGR24,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_SRGB,
++		.step_size	    = 1,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_ABGR32,
+ 		.depth		    = 32,
+@@ -128,6 +140,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BGRA,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_SRGB,
++		.step_size	    = 1,
+ 	}, {
+ 		/* Bayer formats */
+ 		/* 8 bit */
+@@ -138,6 +151,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SRGGB8,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_SBGGR8,
+ 		.depth		    = 8,
+@@ -146,6 +160,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SBGGR8,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_SGRBG8,
+ 		.depth		    = 8,
+@@ -154,6 +169,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SGRBG8,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_SGBRG8,
+ 		.depth		    = 8,
+@@ -162,6 +178,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SGBRG8,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		/* 10 bit */
+ 		.fourcc		    = V4L2_PIX_FMT_SRGGB10P,
+@@ -171,6 +188,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SRGGB10P,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_SBGGR10P,
+ 		.depth		    = 10,
+@@ -179,6 +197,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SBGGR10P,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_SGRBG10P,
+ 		.depth		    = 10,
+@@ -187,6 +206,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SGRBG10P,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_SGBRG10P,
+ 		.depth		    = 10,
+@@ -195,6 +215,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SGBRG10P,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		/* 12 bit */
+ 		.fourcc		    = V4L2_PIX_FMT_SRGGB12P,
+@@ -204,6 +225,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SRGGB12P,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_SBGGR12P,
+ 		.depth		    = 12,
+@@ -212,6 +234,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SBGGR12P,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_SGRBG12P,
+ 		.depth		    = 12,
+@@ -220,6 +243,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SGRBG12P,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_SGBRG12P,
+ 		.depth		    = 12,
+@@ -228,6 +252,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SGBRG12P,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		/* 16 bit */
+ 		.fourcc		    = V4L2_PIX_FMT_SRGGB16,
+@@ -237,6 +262,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SRGGB16,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_SBGGR16,
+ 		.depth		    = 16,
+@@ -245,6 +271,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SBGGR16,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_SGRBG16,
+ 		.depth		    = 16,
+@@ -253,6 +280,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SGRBG16,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		.fourcc		    = V4L2_PIX_FMT_SGBRG16,
+ 		.depth		    = 16,
+@@ -261,6 +289,7 @@ static const struct bcm2835_isp_fmt supp
+ 		.mmal_fmt	    = MMAL_ENCODING_BAYER_SGBRG16,
+ 		.size_multiplier_x2 = 2,
+ 		.colorspace	    = V4L2_COLORSPACE_RAW,
++		.step_size	    = 2,
+ 	}, {
+ 		/* ISP statistics format */
+ 		.fourcc		    = V4L2_META_FMT_BCM2835_ISP_STATS,

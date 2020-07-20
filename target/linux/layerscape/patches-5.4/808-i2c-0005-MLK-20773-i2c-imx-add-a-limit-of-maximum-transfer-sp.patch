@@ -1,0 +1,94 @@
+From ede2da5ea630fa2431145992c43aef51fc9c5c5a Mon Sep 17 00:00:00 2001
+From: Clark Wang <xiaoning.wang@nxp.com>
+Date: Fri, 18 Jan 2019 12:00:16 +0800
+Subject: [PATCH] MLK-20773 i2c-imx: add a limit of maximum transfer speed for
+ imx7d
+
+According the e7805 in Errata, the SCK low level period should be less
+than 1.3us.
+
+The other series platform use this same IP can match the errata, and
+ensure the low level period longer than 1.3us when the speed set to
+400KHz. However, only at imx7d platform, the low level period is less
+than 1.3us in the same situation.
+
+Therefore, limit the maximum transfer speed to 384KHz when probe at
+imx7d platform.
+
+Signed-off-by: Clark Wang <xiaoning.wang@nxp.com>
+(cherry picked from commit 19f553846e872b5c379b37ed029132b79566cab0)
+(cherry picked from commit 5d355407812025e5157f82b7763580e7295a40fd)
+---
+ drivers/i2c/busses/i2c-imx.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+--- a/drivers/i2c/busses/i2c-imx.c
++++ b/drivers/i2c/busses/i2c-imx.c
+@@ -51,6 +51,7 @@
+ 
+ /* Default value */
+ #define IMX_I2C_BIT_RATE	100000	/* 100kHz */
++#define IMX_I2C_MAX_E_BIT_RATE	384000	/* 384kHz from e7805 errata*/
+ 
+ /*
+  * Enable DMA if transfer byte size is bigger than this threshold.
+@@ -161,6 +162,7 @@ enum imx_i2c_type {
+ 	IMX1_I2C,
+ 	IMX21_I2C,
+ 	VF610_I2C,
++	IMX7D_I2C,
+ };
+ 
+ struct imx_i2c_hwdata {
+@@ -235,6 +237,16 @@ static struct imx_i2c_hwdata vf610_i2c_h
+ 
+ };
+ 
++static const struct imx_i2c_hwdata imx7d_i2c_hwdata = {
++	.devtype		= IMX7D_I2C,
++	.regshift		= IMX_I2C_REGSHIFT,
++	.clk_div		= imx_i2c_clk_div,
++	.ndivs			= ARRAY_SIZE(imx_i2c_clk_div),
++	.i2sr_clr_opcode	= I2SR_CLR_OPCODE_W0C,
++	.i2cr_ien_opcode	= I2CR_IEN_OPCODE_1,
++
++};
++
+ static const struct platform_device_id imx_i2c_devtype[] = {
+ 	{
+ 		.name = "imx1-i2c",
+@@ -252,6 +264,7 @@ static const struct of_device_id i2c_imx
+ 	{ .compatible = "fsl,imx1-i2c", .data = &imx1_i2c_hwdata, },
+ 	{ .compatible = "fsl,imx21-i2c", .data = &imx21_i2c_hwdata, },
+ 	{ .compatible = "fsl,vf610-i2c", .data = &vf610_i2c_hwdata, },
++	{ .compatible = "fsl,imx7d-i2c", .data = &imx7d_i2c_hwdata, },
+ 	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(of, i2c_imx_dt_ids);
+@@ -267,6 +280,11 @@ static inline int is_imx1_i2c(struct imx
+ 	return i2c_imx->hwdata->devtype == IMX1_I2C;
+ }
+ 
++static inline int is_imx7d_i2c(struct imx_i2c_struct *i2c_imx)
++{
++	return i2c_imx->hwdata->devtype == IMX7D_I2C;
++}
++
+ static inline void imx_i2c_write_reg(unsigned int val,
+ 		struct imx_i2c_struct *i2c_imx, unsigned int reg)
+ {
+@@ -1159,6 +1177,14 @@ static int i2c_imx_probe(struct platform
+ 	clk_notifier_register(i2c_imx->clk, &i2c_imx->clk_change_nb);
+ 	i2c_imx_set_clk(i2c_imx, clk_get_rate(i2c_imx->clk));
+ 
++	/*
++	 * This limit caused by an i.MX7D hardware issue(e7805 in Errata).
++	 * If there is no limit, when the bitrate set up to 400KHz, it will
++	 * cause the SCK low level period less than 1.3us.
++	 */
++	if (is_imx7d_i2c(i2c_imx) && i2c_imx->bitrate > IMX_I2C_MAX_E_BIT_RATE)
++		i2c_imx->bitrate = IMX_I2C_MAX_E_BIT_RATE;
++
+ 	/* Set up chip registers to defaults */
+ 	imx_i2c_write_reg(i2c_imx->hwdata->i2cr_ien_opcode ^ I2CR_IEN,
+ 			i2c_imx, IMX_I2C_I2CR);
