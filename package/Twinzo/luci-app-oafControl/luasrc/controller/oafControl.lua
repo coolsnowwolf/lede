@@ -13,6 +13,6 @@ function index()
 
 	local page
 	
-	page = entry({"admin", "appControl", "oafControl"}, cbi("oafControl"), _("应用过滤控制器"), 45)
+	page = entry({"admin", "control", "oafControl"}, cbi("oafControl"), _("应用过滤控制器"), 45)
 	page.dependent = true
 end
