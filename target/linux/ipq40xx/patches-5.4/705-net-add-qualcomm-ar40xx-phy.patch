@@ -1,5 +1,7 @@
---- a/drivers/net/phy/Kconfig
-+++ b/drivers/net/phy/Kconfig
+Index: linux-5.4.51/drivers/net/phy/Kconfig
+===================================================================
+--- linux-5.4.51.orig/drivers/net/phy/Kconfig
++++ linux-5.4.51/drivers/net/phy/Kconfig
 @@ -587,6 +587,13 @@ config MDIO_IPQ40XX
  	  This driver supports the MDIO interface found in Qualcomm
  	  Atheros ipq40xx Soc chip.
@@ -14,8 +16,10 @@
  endif # PHYLIB
  
  config MICREL_KS8995MA
---- a/drivers/net/phy/Makefile
-+++ b/drivers/net/phy/Makefile
+Index: linux-5.4.51/drivers/net/phy/Makefile
+===================================================================
+--- linux-5.4.51.orig/drivers/net/phy/Makefile
++++ linux-5.4.51/drivers/net/phy/Makefile
 @@ -70,6 +70,7 @@ ifdef CONFIG_HWMON
  aquantia-objs			+= aquantia_hwmon.o
  endif
@@ -24,9 +28,11 @@
  obj-$(CONFIG_AX88796B_PHY)	+= ax88796b.o
  obj-$(CONFIG_AT803X_PHY)	+= at803x.o
  obj-$(CONFIG_BCM63XX_PHY)	+= bcm63xx.o
+Index: linux-5.4.51/drivers/net/phy/ar40xx.c
+===================================================================
 --- /dev/null
-+++ b/drivers/net/phy/ar40xx.c
-@@ -0,0 +1,2123 @@
++++ linux-5.4.51/drivers/net/phy/ar40xx.c
+@@ -0,0 +1,2118 @@
 +/*
 + * Copyright (c) 2016, The Linux Foundation. All rights reserved.
 + *
@@ -799,37 +805,6 @@
 +	return 0;
 +}
 +
-+static int
-+ar40xx_sw_get_port_stats(struct switch_dev *dev, int port,
-+			struct switch_port_stats *stats)
-+{
-+	struct ar40xx_priv *priv = swdev_to_ar40xx(dev);
-+	u32 num_mibs = ARRAY_SIZE(ar40xx_mibs);
-+	u64 *mib_stats;
-+	int ret = 0;
-+	static int last_port = AR40XX_NUM_PORTS - 1;
-+
-+	mutex_lock(&priv->mib_lock);
-+
-+	/* Avoid unnecessary capture */
-+	if (last_port >= port) {
-+		ret = ar40xx_mib_capture(priv);
-+		if (ret)
-+			goto unlock;
-+	}
-+	last_port = port;
-+
-+	ar40xx_mib_fetch_port_stat(priv, port, false);
-+
-+	mib_stats = &priv->mib_stats[port * num_mibs];
-+	/* 15: TXBYTE, 31: RXGOODBYTE */
-+	stats->tx_bytes = mib_stats[15];
-+	stats->rx_bytes = mib_stats[31];
-+unlock:
-+	mutex_unlock(&priv->mib_lock);
-+	return ret;
-+}
-+
 +static const struct switch_attr ar40xx_sw_attr_globals[] = {
 +	{
 +		.type = SWITCH_TYPE_INT,
@@ -1208,7 +1183,6 @@
 +	/* disable phy internal loopback */
 +	mdiobus_write(bus, 0x1f, 0x10, 0x6860);
 +	mdiobus_write(bus, 0x1f, 0x0, 0x9040);
-+	ar40xx_phy_mmd_write(priv, 0x1f, 7, 0x8076, 0x0670); /* 1000_LED_n */
 +
 +	for (phy = 0; phy < AR40XX_NUM_PORTS - 1; phy++) {
 +		/* disable mac loop back */
@@ -1261,7 +1235,11 @@
 +	ar40xx_rmw(priv, AR40XX_REG_PORT_STATUS(port),
 +			AR40XX_PORT_AUTO_LINK_EN, 0);
 +
-+	ar40xx_write(priv, AR40XX_REG_PORT_HEADER(port), 0);
++	/* CPU port is setting headers to limit output ports */
++	if (port == 0)
++		ar40xx_write(priv, AR40XX_REG_PORT_HEADER(port), 0x8);
++	else
++		ar40xx_write(priv, AR40XX_REG_PORT_HEADER(port), 0);
 +
 +	ar40xx_write(priv, AR40XX_REG_PORT_VLAN0(port), 0);
 +
@@ -1304,6 +1282,10 @@
 +	t = (AR40XX_PORT0_FC_THRESH_ON_DFLT << 16) |
 +	      AR40XX_PORT0_FC_THRESH_OFF_DFLT;
 +	ar40xx_write(priv, AR40XX_REG_PORT_FLOWCTRL_THRESH(0), t);
++
++	/* set service tag to 802.1q */
++	t = ETH_P_8021Q | AR40XX_ESS_SERVICE_TAG_STAG;
++	ar40xx_write(priv, AR40XX_ESS_SERVICE_TAG, t);
 +}
 +
 +static void
@@ -1629,7 +1611,11 @@
 +	u32 pvid = priv->vlan_id[priv->pvid[port]];
 +
 +	if (priv->vlan) {
-+		egress = AR40XX_PORT_VLAN1_OUT_MODE_UNMOD;
++		if (priv->vlan_tagged & BIT(port))
++			egress = AR40XX_PORT_VLAN1_OUT_MODE_TAG;
++		else
++			egress = AR40XX_PORT_VLAN1_OUT_MODE_UNMOD;
++
 +		ingress = AR40XX_IN_SECURE;
 +	} else {
 +		egress = AR40XX_PORT_VLAN1_OUT_MODE_UNTOUCH;
@@ -1640,8 +1626,17 @@
 +	t |= pvid << AR40XX_PORT_VLAN0_DEF_CVID_S;
 +	ar40xx_write(priv, AR40XX_REG_PORT_VLAN0(port), t);
 +
-+	t = AR40XX_PORT_VLAN1_PORT_VLAN_PROP;
-+	t |= egress << AR40XX_PORT_VLAN1_OUT_MODE_S;
++	t = egress << AR40XX_PORT_VLAN1_OUT_MODE_S;
++
++	/* set CPU port to core port */
++	if (port == 0)
++		t |= AR40XX_PORT_VLAN1_CORE_PORT;
++
++	if (priv->vlan_tagged & BIT(port))
++		t |= AR40XX_PORT_VLAN1_PORT_VLAN_PROP;
++	else
++		t |= AR40XX_PORT_VLAN1_PORT_TLS_MODE;
++
 +	ar40xx_write(priv, AR40XX_REG_PORT_VLAN1(port), t);
 +
 +	t = members;
@@ -1820,7 +1815,6 @@
 +	.apply_config = ar40xx_sw_hw_apply,
 +	.reset_switch = ar40xx_sw_reset_switch,
 +	.get_port_link = ar40xx_sw_get_port_link,
-+	.get_port_stats = ar40xx_sw_get_port_stats,
 +};
 +
 +/* Start of phy driver support */
@@ -2083,6 +2077,12 @@
 +	/* register switch */
 +	swdev = &priv->dev;
 +
++	if (priv->mii_bus == NULL) {
++		dev_err(&pdev->dev, "Probe failed - Missing PHYs!\n");
++		ret = -ENODEV;
++		goto err_missing_phy;
++	}
++
 +	swdev->alias = dev_name(&priv->mii_bus->dev);
 +
 +	swdev->cpu_port = AR40XX_PORT_CPU;
@@ -2114,6 +2114,7 @@
 +	unregister_switch(&priv->dev);
 +err_unregister_phy:
 +	phy_driver_unregister(&ar40xx_phy_driver);
++err_missing_phy:
 +	platform_set_drvdata(pdev, NULL);
 +	return ret;
 +}
@@ -2150,9 +2151,11 @@
 +
 +MODULE_DESCRIPTION("IPQ40XX ESS driver");
 +MODULE_LICENSE("Dual BSD/GPL");
+Index: linux-5.4.51/drivers/net/phy/ar40xx.h
+===================================================================
 --- /dev/null
-+++ b/drivers/net/phy/ar40xx.h
-@@ -0,0 +1,337 @@
++++ linux-5.4.51/drivers/net/phy/ar40xx.h
+@@ -0,0 +1,342 @@
 +/*
 + * Copyright (c) 2016, The Linux Foundation. All rights reserved.
 + *
@@ -2306,6 +2309,9 @@
 +#define   AR40XX_MIB_FUNC_NO_OP		0x0
 +#define   AR40XX_MIB_FUNC_FLUSH		0x1
 +
++#define AR40XX_ESS_SERVICE_TAG		0x48
++#define AR40XX_ESS_SERVICE_TAG_STAG	BIT(17)
++
 +#define AR40XX_REG_PORT_STATUS(_i)		(0x07c + (_i) * 4)
 +#define   AR40XX_PORT_SPEED			BITS(0, 2)
 +#define   AR40XX_PORT_STATUS_SPEED_S	0
@@ -2334,6 +2340,8 @@
 +#define   AR40XX_PORT_VLAN0_DEF_CVID_S		16
 +
 +#define AR40XX_REG_PORT_VLAN1(_i)		(0x424 + (_i) * 0x8)
++#define   AR40XX_PORT_VLAN1_CORE_PORT		BIT(9)
++#define   AR40XX_PORT_VLAN1_PORT_TLS_MODE	BIT(7)
 +#define   AR40XX_PORT_VLAN1_PORT_VLAN_PROP	BIT(6)
 +#define   AR40XX_PORT_VLAN1_OUT_MODE		BITS(12, 2)
 +#define   AR40XX_PORT_VLAN1_OUT_MODE_S		12
