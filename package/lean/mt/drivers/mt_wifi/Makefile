@@ -21,7 +21,7 @@ define Package/mt_wifi
   SECTION:=net
   CATEGORY:=Network
   TITLE:=MTK wifi AP config
-  DEPENDS:=@TARGET_ramips
+  DEPENDS:=@TARGET_ramips +wireless-tools
   SUBMENU:=Wireless
 endef
 
