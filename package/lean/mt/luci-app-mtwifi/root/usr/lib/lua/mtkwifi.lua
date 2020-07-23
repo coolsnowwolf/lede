@@ -856,7 +856,9 @@ function mtkwifi.scan_ap(vifname)
             tmp.rssi = mtkwifi.__trim(string.sub(line, xx.Signal[1], xx.Signal[1]+xx.Signal[2]))
             tmp.extch = mtkwifi.__trim(string.sub(line, xx.ExtCh[1], xx.ExtCh[1]+xx.ExtCh[2]))
             tmp.mode = mtkwifi.__trim(string.sub(line, xx.Mode[1], xx.Mode[1]+xx.Mode[2]))
-            tmp.wps = mtkwifi.__trim(string.sub(line, xx.WPS[1], xx.WPS[1]+xx.WPS[2]))
+            if (xx.WPS[1] ~= nil and xx.WPS[2] ~= nil) then
+                tmp.wps = mtkwifi.__trim(string.sub(line, xx.WPS[1], xx.WPS[1]+xx.WPS[2]))
+            end
             tmp.nt = mtkwifi.__trim(string.sub(line, xx.NT[1], xx.NT[1]+xx.NT[2]))
             table.insert(aplist, tmp)
         end
