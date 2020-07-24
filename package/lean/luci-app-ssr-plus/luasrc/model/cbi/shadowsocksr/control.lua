@@ -2,7 +2,7 @@ require "luci.ip"
 require "nixio.fs"
 local m, s, o
 
-m = Map("shadowsocksr", translate("IP black-and-white list"))
+m = Map("shadowsocksr", translate("Block and Allow List"))
 
 s = m:section(TypedSection, "access_control")
 s.anonymous = true
