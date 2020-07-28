@@ -9,7 +9,7 @@ fwtool_check_signature() {
 		fi
 	}
 
-	if ! fwtool -q -t -s /tmp/sysupgrade.ucert "$1"; then
+	if ! fwtool -q -s /tmp/sysupgrade.ucert "$1"; then
 		echo "Image signature not found"
 		[ "$REQUIRE_IMAGE_SIGNATURE" = 1 -a "$FORCE" != 1 ] && {
 			echo "Use sysupgrade -F to override this check when downgrading or flashing to vendor firmware"
@@ -18,7 +18,8 @@ fwtool_check_signature() {
 		return 0
 	fi
 
-	ucert -V -m "$1" -c "/tmp/sysupgrade.ucert" -P /etc/opkg/keys
+	fwtool -q -T -s /dev/null "$1" | \
+		ucert -V -m - -c "/tmp/sysupgrade.ucert" -P /etc/opkg/keys
 
 	return $?
 }

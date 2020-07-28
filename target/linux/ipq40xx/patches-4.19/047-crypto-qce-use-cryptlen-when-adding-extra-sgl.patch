@@ -1,0 +1,83 @@
+From 686aa4db696270dadc5e8b2971769e1676251ff1 Mon Sep 17 00:00:00 2001
+From: Eneas U de Queiroz <cotequeiroz@gmail.com>
+Date: Fri, 31 Jan 2020 17:43:16 -0300
+Subject: [PATCH] crypto: qce - use cryptlen when adding extra sgl
+
+The qce crypto driver appends an extra entry to the dst sgl, to maintain
+private state information.
+
+When the gcm driver sends requests to the ctr skcipher, it passes the
+authentication tag after the actual crypto payload, but it must not be
+touched.
+
+Commit 1336c2221bee ("crypto: qce - save a sg table slot for result
+buf") limited the destination sgl to avoid overwriting the
+authentication tag but it assumed the tag would be in a separate sgl
+entry.
+
+This is not always the case, so it is better to limit the length of the
+destination buffer to req->cryptlen before appending the result buf.
+
+Signed-off-by: Eneas U de Queiroz <cotequeiroz@gmail.com>
+
+--- a/drivers/crypto/qce/dma.c
++++ b/drivers/crypto/qce/dma.c
+@@ -56,9 +56,10 @@ void qce_dma_release(struct qce_dma_data
+ 
+ struct scatterlist *
+ qce_sgtable_add(struct sg_table *sgt, struct scatterlist *new_sgl,
+-		int max_ents)
++		unsigned int max_len)
+ {
+ 	struct scatterlist *sg = sgt->sgl, *sg_last = NULL;
++	unsigned int new_len;
+ 
+ 	while (sg) {
+ 		if (!sg_page(sg))
+@@ -69,13 +70,13 @@ qce_sgtable_add(struct sg_table *sgt, st
+ 	if (!sg)
+ 		return ERR_PTR(-EINVAL);
+ 
+-	while (new_sgl && sg && max_ents) {
+-		sg_set_page(sg, sg_page(new_sgl), new_sgl->length,
+-			    new_sgl->offset);
++	while (new_sgl && sg && max_len) {
++		new_len = new_sgl->length > max_len ? max_len : new_sgl->length;
++		sg_set_page(sg, sg_page(new_sgl), new_len, new_sgl->offset);
+ 		sg_last = sg;
+ 		sg = sg_next(sg);
+ 		new_sgl = sg_next(new_sgl);
+-		max_ents--;
++		max_len -= new_len;
+ 	}
+ 
+ 	return sg_last;
+--- a/drivers/crypto/qce/dma.h
++++ b/drivers/crypto/qce/dma.h
+@@ -51,6 +51,6 @@ void qce_dma_issue_pending(struct qce_dm
+ int qce_dma_terminate_all(struct qce_dma_data *dma);
+ struct scatterlist *
+ qce_sgtable_add(struct sg_table *sgt, struct scatterlist *sg_add,
+-		int max_ents);
++		unsigned int max_len);
+ 
+ #endif /* _DMA_H_ */
+--- a/drivers/crypto/qce/skcipher.c
++++ b/drivers/crypto/qce/skcipher.c
+@@ -105,13 +105,14 @@ qce_skcipher_async_req_handle(struct cry
+ 
+ 	sg_init_one(&rctx->result_sg, qce->dma.result_buf, QCE_RESULT_BUF_SZ);
+ 
+-	sg = qce_sgtable_add(&rctx->dst_tbl, req->dst, rctx->dst_nents - 1);
++	sg = qce_sgtable_add(&rctx->dst_tbl, req->dst, req->cryptlen);
+ 	if (IS_ERR(sg)) {
+ 		ret = PTR_ERR(sg);
+ 		goto error_free;
+ 	}
+ 
+-	sg = qce_sgtable_add(&rctx->dst_tbl, &rctx->result_sg, 1);
++	sg = qce_sgtable_add(&rctx->dst_tbl, &rctx->result_sg,
++			     QCE_RESULT_BUF_SZ);
+ 	if (IS_ERR(sg)) {
+ 		ret = PTR_ERR(sg);
+ 		goto error_free;

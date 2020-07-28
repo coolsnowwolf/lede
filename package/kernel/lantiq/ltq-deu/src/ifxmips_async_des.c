@@ -117,11 +117,7 @@ struct des_ctx {
 
 
 static int disable_multiblock = 0;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,0)
 module_param(disable_multiblock, int, 0);
-#else
-MODULE_PARM_DESC(disable_multiblock, "Disable encryption of whole multiblock buffers");
-#endif
 
 static int disable_deudma = 1;
 
@@ -893,16 +889,6 @@ int __init lqdeu_async_des_init (void)
 {
     int i, j, ret = -EINVAL;
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20))
-     if (!disable_multiblock) {
-                ifxdeu_des_alg.cra_u.cipher.cia_max_nbytes = DES_BLOCK_SIZE;    //(size_t)-1;
-                ifxdeu_des_alg.cra_u.cipher.cia_req_align = 16;
-                ifxdeu_des_alg.cra_u.cipher.cia_ecb = ifx_deu_des_ecb;
-                ifxdeu_des_alg.cra_u.cipher.cia_cbc = ifx_deu_des_cbc;
-                ifxdeu_des_alg.cra_u.cipher.cia_cfb = ifx_deu_des_cfb;
-                ifxdeu_des_alg.cra_u.cipher.cia_ofb = ifx_deu_des_ofb;
-        }
-#endif
      for (i = 0; i < ARRAY_SIZE(des_drivers_alg); i++) {
          ret = crypto_register_alg(&des_drivers_alg[i].alg);
 	 //printk("driver: %s\n", des_drivers_alg[i].alg.cra_name);

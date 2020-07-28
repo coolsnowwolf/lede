@@ -8,49 +8,17 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=tfa-layerscape
-PKG_VERSION:=lsdk-1903
+PKG_VERSION:=LSDK-20.04
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://source.codeaurora.org/external/qoriq/qoriq-components/atf
-PKG_SOURCE_VERSION:=7e34aebe658c7c3439d2d68b0ce6b9776e8e6996
-PKG_MIRROR_HASH:=9cf0bc32fa589a0ee7c48c87898679e645341f29da1253d0ba5d2e82c6ea074d
-PKG_BUILD_DEPENDS:=uboot-layerscape tfa-layerscape/host
+PKG_SOURCE_VERSION:=4a82c939a0211196e2b80a495f966383803753bb
+PKG_MIRROR_HASH:=31c264551ce800b646d7dcc5baa62cfbb4c8fa3299a93931c7ef71dc3e88380d
+PKG_BUILD_DEPENDS:=tfa-layerscape/host
 
 include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/package.mk
-
-define Package/tfa-layerscape/Config
-  define Package/tfa-$(1)
-    SECTION:=boot
-    CATEGORY:=Boot Loaders
-    TITLE:=$(2)
-    DEPENDS:=@TARGET_layerscape_armv8_64b +layerscape-rcw-$(1)
-    HIDDEN:=1
-    VARIANT:=$(1)
-    BIN_BL2:=$(3)
-    BIN_FIP:=$(4)
-  endef
-endef
-
-define Package/tfa-layerscape/Install
-  define Package/tfa-$(1)/install
-	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)
-	$(CP) $(PKG_BUILD_DIR)/$(BIN_BL2) $(STAGING_DIR_IMAGE)/$(1)-bl2.pbl
-	$(CP) $(PKG_BUILD_DIR)/$(BIN_FIP) $(STAGING_DIR_IMAGE)/$(1)-fip.bin
-  endef
-endef
-
-define Build/Compile
-	$(eval $(Package/tfa-layerscape/$(BUILD_VARIANT))) \
-	$(MAKE) -C $(PKG_BUILD_DIR) CROSS_COMPILE=$(TARGET_CROSS) \
-		fip pbl PLAT=$(PLAT) BOOT_MODE=$(BOOT_MODE) \
-		RCW=$(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-rcw.bin \
-		BL33=$(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-uboot.bin \
-		FIPTOOL=$(STAGING_DIR_HOST)/bin/tfa-fiptool \
-		CREATE_PBL=$(STAGING_DIR_HOST)/bin/tfa-create-pbl \
-		BYTE_SWAP=$(STAGING_DIR_HOST)/bin/tfa-byte-swap
-endef
 
 HOST_CFLAGS += -Wall -Werror -pedantic -std=c99
 define Host/Compile
@@ -67,6 +35,14 @@ define Host/Install
 	$(INSTALL_BIN) $(HOST_BUILD_DIR)/tools/fiptool/fiptool $(STAGING_DIR_HOST)/bin/tfa-fiptool
 	$(INSTALL_BIN) $(HOST_BUILD_DIR)/plat/nxp/tools/create_pbl $(STAGING_DIR_HOST)/bin/tfa-create-pbl
 	$(INSTALL_BIN) $(HOST_BUILD_DIR)/plat/nxp/tools/byte_swap $(STAGING_DIR_HOST)/bin/tfa-byte-swap
+endef
+
+define Package/tfa-layerscape/ls1012afrdm
+  TITLE:=NXP LS1012AFRDM Trusted Firmware
+  PLAT:=ls1012afrdm
+  BOOT_MODE:=qspi
+  BIN_BL2:=build/ls1012afrdm/release/bl2_qspi.pbl
+  BIN_FIP:=build/ls1012afrdm/release/fip.bin
 endef
 
 define Package/tfa-layerscape/ls1012ardb
@@ -141,7 +117,37 @@ define Package/tfa-layerscape/ls2088ardb
   BIN_FIP:=build/ls2088ardb/release/fip.bin
 endef
 
+define Package/tfa-layerscape/Config
+  define Package/tfa-$(1)
+    SECTION:=boot
+    CATEGORY:=Boot Loaders
+    TITLE:=$(2)
+    DEPENDS:=@TARGET_layerscape_armv8_64b +layerscape-rcw +u-boot-$(1)
+    VARIANT:=$(1)
+    BIN_BL2:=$(3)
+    BIN_FIP:=$(4)
+  endef
+endef
+
+define Build/InstallDev
+	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)
+	$(CP) $(PKG_BUILD_DIR)/$(BIN_BL2) $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-bl2.pbl
+	$(CP) $(PKG_BUILD_DIR)/$(BIN_FIP) $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-fip.bin
+endef
+
+define Build/Compile
+	$(eval $(Package/tfa-layerscape/$(BUILD_VARIANT))) \
+	$(MAKE) -C $(PKG_BUILD_DIR) CROSS_COMPILE=$(TARGET_CROSS) \
+		fip pbl PLAT=$(PLAT) BOOT_MODE=$(BOOT_MODE) \
+		RCW=$(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-rcw.bin \
+		BL33=$(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-uboot.bin \
+		FIPTOOL=$(STAGING_DIR_HOST)/bin/tfa-fiptool \
+		CREATE_PBL=$(STAGING_DIR_HOST)/bin/tfa-create-pbl \
+		BYTE_SWAP=$(STAGING_DIR_HOST)/bin/tfa-byte-swap
+endef
+
 TFAS := \
+  ls1012afrdm \
   ls1012ardb \
   ls1012afrwy \
   ls1043ardb \
@@ -154,8 +160,7 @@ TFAS := \
 
 $(eval $(call HostBuild))
 $(foreach tfa,$(TFAS), \
-	$(eval $(Package/tfa-layerscape/$(tfa))) \
-	$(eval $(call Package/tfa-layerscape/Config,$(tfa),$(TITLE),$(BIN_BL2),$(BIN_FIP))) \
-	$(eval $(call Package/tfa-layerscape/Install,$(tfa))) \
-	$(eval $(call BuildPackage,tfa-$(tfa))) \
+  $(eval $(Package/tfa-layerscape/$(tfa))) \
+  $(eval $(call Package/tfa-layerscape/Config,$(tfa),$(TITLE),$(BIN_BL2),$(BIN_FIP))) \
+  $(eval $(call BuildPackage,tfa-$(tfa))) \
 )

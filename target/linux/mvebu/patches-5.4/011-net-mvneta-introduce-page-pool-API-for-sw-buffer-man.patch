@@ -1,0 +1,181 @@
+From 160f006a6fe904177cbca867c48dfb6d27262dd5 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sat, 19 Oct 2019 10:13:22 +0200
+Subject: [PATCH 2/7] net: mvneta: introduce page pool API for sw buffer
+ manager
+
+Use the page_pool api for allocations and DMA handling instead of
+__dev_alloc_page()/dma_map_page() and free_page()/dma_unmap_page().
+Pages are unmapped using page_pool_release_page before packets
+go into the network stack.
+
+The page_pool API offers buffer recycling capabilities for XDP but
+allocates one page per packet, unless the driver splits and manages
+the allocated page.
+This is a preliminary patch to add XDP support to mvneta driver
+
+Signed-off-by: Ilias Apalodimas <ilias.apalodimas@linaro.org>
+Signed-off-by: Jesper Dangaard Brouer <brouer@redhat.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/ethernet/marvell/Kconfig  |  1 +
+ drivers/net/ethernet/marvell/mvneta.c | 83 +++++++++++++++++++++------
+ 2 files changed, 65 insertions(+), 19 deletions(-)
+
+--- a/drivers/net/ethernet/marvell/Kconfig
++++ b/drivers/net/ethernet/marvell/Kconfig
+@@ -61,6 +61,7 @@ config MVNETA
+ 	depends on ARCH_MVEBU || COMPILE_TEST
+ 	select MVMDIO
+ 	select PHYLINK
++	select PAGE_POOL
+ 	---help---
+ 	  This driver supports the network interface units in the
+ 	  Marvell ARMADA XP, ARMADA 370, ARMADA 38x and
+--- a/drivers/net/ethernet/marvell/mvneta.c
++++ b/drivers/net/ethernet/marvell/mvneta.c
+@@ -37,6 +37,7 @@
+ #include <net/ip.h>
+ #include <net/ipv6.h>
+ #include <net/tso.h>
++#include <net/page_pool.h>
+ 
+ /* Registers */
+ #define MVNETA_RXQ_CONFIG_REG(q)                (0x1400 + ((q) << 2))
+@@ -605,6 +606,10 @@ struct mvneta_rx_queue {
+ 	u32 pkts_coal;
+ 	u32 time_coal;
+ 
++	/* page_pool */
++	struct page_pool *page_pool;
++	struct xdp_rxq_info xdp_rxq;
++
+ 	/* Virtual address of the RX buffer */
+ 	void  **buf_virt_addr;
+ 
+@@ -1823,23 +1828,21 @@ static int mvneta_rx_refill(struct mvnet
+ 			    struct mvneta_rx_queue *rxq,
+ 			    gfp_t gfp_mask)
+ {
++	enum dma_data_direction dma_dir;
+ 	dma_addr_t phys_addr;
+ 	struct page *page;
+ 
+-	page = __dev_alloc_page(gfp_mask);
++	page = page_pool_alloc_pages(rxq->page_pool,
++				     gfp_mask | __GFP_NOWARN);
+ 	if (!page)
+ 		return -ENOMEM;
+ 
+-	/* map page for use */
+-	phys_addr = dma_map_page(pp->dev->dev.parent, page, 0, PAGE_SIZE,
+-				 DMA_FROM_DEVICE);
+-	if (unlikely(dma_mapping_error(pp->dev->dev.parent, phys_addr))) {
+-		__free_page(page);
+-		return -ENOMEM;
+-	}
+-
+-	phys_addr += pp->rx_offset_correction;
++	phys_addr = page_pool_get_dma_addr(page) + pp->rx_offset_correction;
++	dma_dir = page_pool_get_dma_dir(rxq->page_pool);
++	dma_sync_single_for_device(pp->dev->dev.parent, phys_addr,
++				   PAGE_SIZE, dma_dir);
+ 	mvneta_rx_desc_fill(rx_desc, phys_addr, page, rxq);
++
+ 	return 0;
+ }
+ 
+@@ -1905,10 +1908,12 @@ static void mvneta_rxq_drop_pkts(struct
+ 		if (!data || !(rx_desc->buf_phys_addr))
+ 			continue;
+ 
+-		dma_unmap_page(pp->dev->dev.parent, rx_desc->buf_phys_addr,
+-			       PAGE_SIZE, DMA_FROM_DEVICE);
+-		__free_page(data);
++		page_pool_put_page(rxq->page_pool, data, false);
+ 	}
++	if (xdp_rxq_info_is_reg(&rxq->xdp_rxq))
++		xdp_rxq_info_unreg(&rxq->xdp_rxq);
++	page_pool_destroy(rxq->page_pool);
++	rxq->page_pool = NULL;
+ }
+ 
+ static void
+@@ -2045,8 +2050,7 @@ static int mvneta_rx_swbm(struct napi_st
+ 				skb_add_rx_frag(rxq->skb, frag_num, page,
+ 						frag_offset, frag_size,
+ 						PAGE_SIZE);
+-				dma_unmap_page(dev->dev.parent, phys_addr,
+-					       PAGE_SIZE, DMA_FROM_DEVICE);
++				page_pool_release_page(rxq->page_pool, page);
+ 				rxq->left_size -= frag_size;
+ 			}
+ 		} else {
+@@ -2076,9 +2080,7 @@ static int mvneta_rx_swbm(struct napi_st
+ 						frag_offset, frag_size,
+ 						PAGE_SIZE);
+ 
+-				dma_unmap_page(dev->dev.parent, phys_addr,
+-					       PAGE_SIZE, DMA_FROM_DEVICE);
+-
++				page_pool_release_page(rxq->page_pool, page);
+ 				rxq->left_size -= frag_size;
+ 			}
+ 		} /* Middle or Last descriptor */
+@@ -2845,11 +2847,54 @@ static int mvneta_poll(struct napi_struc
+ 	return rx_done;
+ }
+ 
++static int mvneta_create_page_pool(struct mvneta_port *pp,
++				   struct mvneta_rx_queue *rxq, int size)
++{
++	struct page_pool_params pp_params = {
++		.order = 0,
++		.flags = PP_FLAG_DMA_MAP,
++		.pool_size = size,
++		.nid = cpu_to_node(0),
++		.dev = pp->dev->dev.parent,
++		.dma_dir = DMA_FROM_DEVICE,
++	};
++	int err;
++
++	rxq->page_pool = page_pool_create(&pp_params);
++	if (IS_ERR(rxq->page_pool)) {
++		err = PTR_ERR(rxq->page_pool);
++		rxq->page_pool = NULL;
++		return err;
++	}
++
++	err = xdp_rxq_info_reg(&rxq->xdp_rxq, pp->dev, rxq->id);
++	if (err < 0)
++		goto err_free_pp;
++
++	err = xdp_rxq_info_reg_mem_model(&rxq->xdp_rxq, MEM_TYPE_PAGE_POOL,
++					 rxq->page_pool);
++	if (err)
++		goto err_unregister_rxq;
++
++	return 0;
++
++err_unregister_rxq:
++	xdp_rxq_info_unreg(&rxq->xdp_rxq);
++err_free_pp:
++	page_pool_destroy(rxq->page_pool);
++	rxq->page_pool = NULL;
++	return err;
++}
++
+ /* Handle rxq fill: allocates rxq skbs; called when initializing a port */
+ static int mvneta_rxq_fill(struct mvneta_port *pp, struct mvneta_rx_queue *rxq,
+ 			   int num)
+ {
+-	int i;
++	int i, err;
++
++	err = mvneta_create_page_pool(pp, rxq, num);
++	if (err < 0)
++		return err;
+ 
+ 	for (i = 0; i < num; i++) {
+ 		memset(rxq->descs + i, 0, sizeof(struct mvneta_rx_desc));

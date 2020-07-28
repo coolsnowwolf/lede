@@ -122,7 +122,7 @@ extern unsigned int ifx_ptm_dbg_enable;
 
 extern void ifx_ptm_get_fw_ver(unsigned int *major, unsigned int *minor);
 
-extern void ifx_ptm_init_chip(void);
+extern void ifx_ptm_init_chip(struct platform_device *pdev);
 extern void ifx_ptm_uninit_chip(void);
 
 extern int ifx_pp32_start(int pp32);
