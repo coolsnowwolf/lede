@@ -791,6 +791,9 @@ function apcli_connect(dev, vif)
         or cfgs.ApCliAuthMode == "WPA1PSKWPA2PSK" then
         os.execute("iwpriv "..vifname.." set ApCliWPAPSK="..cfgs.ApCliWPAPSK)
     end
+    if cfgs.ApCliBssid ~= nil then
+        os.execute("iwpriv "..vifname.." set ApCliBssid="..cfgs.ApCliBssid)
+    end
     os.execute("iwpriv "..vifname.." set ApCliSsid=\""..cfgs.ApCliSsid.."\"")
     os.execute("iwpriv "..vifname.." set ApCliEnable=1")
     luci.http.redirect(luci.dispatcher.build_url("admin", "network", "wifi"))

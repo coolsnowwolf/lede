@@ -851,6 +851,10 @@ function mtkwifi.scan_ap(vifname)
             tmp.ssid = mtkwifi.__trim(string.sub(line, xx.SSID[1], xx.SSID[1]+xx.SSID[2]))
             tmp.bssid = string.upper(mtkwifi.__trim(string.sub(line, xx.BSSID[1], xx.BSSID[1]+xx.BSSID[2])))
             tmp.security = mtkwifi.__trim(string.sub(line, xx.Security[1], xx.Security[1]+xx.Security[2]))
+            tmp.security = string.gsub(tmp.security, "WPA1PSKWPA2PSK", "WPAPSKWPA2PSK")
+            if (string.find(tmp.security, "/") == nil) then
+                tmp.security = "OPEN" .. "/" .. tmp.security
+            end
             tmp.authmode = mtkwifi.__trim(string.split(tmp.security, "/")[1])
             tmp.encrypttype = mtkwifi.__trim(string.split(tmp.security, "/")[2] or "NONE")
             tmp.rssi = mtkwifi.__trim(string.sub(line, xx.Signal[1], xx.Signal[1]+xx.Signal[2]))
