@@ -24,10 +24,10 @@ endef
 
 define Build/boot-script
 	# Make an U-boot image and copy it to the boot partition
-	mkimage -A arm -O linux -T script -C lzma -a 0 -e 0 -d mmc.bootscript $@.boot/boot.scr
+	mkimage -A arm -O linux -T script -C none -a 0 -e 0 -d $(if $(1),$(1),mmc).bootscript $@.boot/boot.scr
 endef
 
-define Build/sdcard-img
+define Build/pine64-img
 	# Creates the final SD/eMMC images, 
 	# combining boot partition, root partition as well as the u-boot bootloader
 
@@ -50,7 +50,7 @@ endef
 ### Devices ###
 define Device/Default
   PROFILES := Default
-  KERNEL := kernel-bin | lzma
+  KERNEL := kernel-bin
   IMAGES := sysupgrade.img.gz
   SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
   DEVICE_DTS = rockchip/$$(SOC)-$(lastword $(subst _, ,$(1)))
