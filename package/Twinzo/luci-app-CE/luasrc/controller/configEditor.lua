@@ -8,7 +8,7 @@ local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local util = require "luci.util"
 function index()
-	entry({"admin", "system", "configEditor"}, cbi("configEditor"), _("configEditor"), 45).dependent = true
+	entry({"admin", "system", "configEditor"}, cbi("configEditor"), _("ConfigEditor"), 45).dependent = true
 	entry({"admin","system","configEditor","readfile"},call("readfile")).leaf=true
 	entry({"admin","system","configEditor","makedir"},call("makedir")).leaf=true
 	entry({"admin","system","configEditor","alter"},call("alter")).leaf=true
