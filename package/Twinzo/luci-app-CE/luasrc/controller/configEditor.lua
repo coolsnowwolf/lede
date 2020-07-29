@@ -64,7 +64,7 @@ end
 function alter()
 	local set = luci.http.formvalue("set")
 	local id, path = set:match("^(%S+) (%S+)")
-	local data = data .. luci.http.formvalue(tet)
+	local data = luci.http.formvalue(tet)
 	if path then
 		local fd = fs.realpath(path)
 		if fd then
