@@ -64,7 +64,7 @@ end
 function alter()
 	local set = luci.http.formvalue("set")
 	local id, path = set:match("^(%S+) (%S+)")
-	local data = luci.http.formvalue(tet)
+	local data = luci.http.formvalue("tet")
 	if path then
 		local fd = fs.realpath(path)
 		if fd then
@@ -98,7 +98,7 @@ function get_upgrade()
 	if id == "read" then
 		retstring = "1"
 		keep_d = sys.exec("ls /lib/upgrade/keep.d")
-		ETC_keep_d = sys.exec("ls /lib/upgrade/keep.d")
+		ETC_keep_d = sys.exec("ls /etc/keep.d")
 		list = sys.exec(
 				"( find $(sed -ne '/^[[:space:]]*$/d; /^#/d; p' /etc/sysupgrade.conf " ..
 				"/lib/upgrade/keep.d/* 2>/dev/null) -type f 2>/dev/null; " ..
