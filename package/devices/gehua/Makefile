@@ -25,7 +25,7 @@ define Package/gehua
 		+luci-app-mwan3helper +luci-app-sqm +luci-app-netdata \
 		+luci-app-oafclog +luci-app-sccustom +luci-app-serverchan +luci-app-smartdns \
 		+luci-app-uhttpd +luci-app-usb-printer +luci-app-watchpig +luci-app-wrtbwmon \
-		+luci-app-xlnetacc +luci-app-zerotier
+		+luci-app-xlnetacc +luci-app-zerotier +luci-theme-argon
 		
 endef
 
