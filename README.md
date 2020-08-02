@@ -12,7 +12,7 @@ Welcome to Lean's  git source of OpenWrt and packages
 
 编译命令如下:
 -
-1. 首先装好 Ubuntu 64bit，推荐  Ubuntu  18 LTS x64
+1. 首先装好 Ubuntu 64bit，推荐  Ubuntu  20 LTS x64
 
 2. 命令行输入 `sudo apt-get update` ，然后输入
 `
@@ -96,7 +96,7 @@ Note:
 
 Let's start!
 ---
-First, you need a computer with a linux system. It's better to use Ubuntu 18 LTS 64-bit.
+First, you need a computer with a linux system. It's better to use Ubuntu 20 LTS 64-bit.
 
 Next you need gcc, binutils, bzip2, flex, python3.5+, perl, make, find, grep, diff, unzip, gawk, getopt, subversion, libz-dev and libc headers installed.
 
