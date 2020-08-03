@@ -6,7 +6,7 @@
 [4]: https://github.com/jerrykuku/luci-theme-argon/pulls
 [5]: https://img.shields.io/badge/Issues-welcome-brightgreen.svg
 [6]: https://github.com/jerrykuku/luci-theme-argon/issues/new
-[7]: https://img.shields.io/badge/release-v2.2.1-blue.svg?
+[7]: https://img.shields.io/badge/release-v1.6.3-blue.svg?
 [8]: https://github.com/jerrykuku/luci-theme-argon/releases
 [9]: https://img.shields.io/github/downloads/jerrykuku/luci-theme-argon/total
 [10]: https://img.shields.io/badge/Contact-telegram-blue
@@ -18,17 +18,13 @@
 [![Release Count][9]][8]
 [![Contact Me][10]][11]
 
-![](/Screenshots/pc/light1.jpg)
-![](/Screenshots/pc/dark1.jpg)
-![](/Screenshots/phone/light1.jpg)
-![](/Screenshots/phone/dark1.jpg)
 
 A new Luci theme for LEDE/OpenWRT  
 Argon is a clean HTML5 theme for LuCI. It is based on luci-theme-material and Argon Template  
 
-## Notice 
-v2.2 Adapt to official mainline snapshot.  
-You can checkout branch 18.06 for  OpenWRT 18.06 or lean 19.07.
+## Notice
+
+This branch only matches lean openwrt LuCI 18.06.
 
 ## How to build
 
@@ -42,47 +38,37 @@ make menuconfig #choose LUCI->Theme->Luci-theme-argon
 make -j1 V=s  
 ```
 
-####Openwrt official SnapShots
-```
-cd openwrt/package
-git clone https://github.com/jerrykuku/luci-theme-argon.git  
-make menuconfig #choose LUCI->Theme->Luci-theme-argon  
-make -j1 V=s  
-```
-
 ## Install 
+
 ### For Lean openwrt 18.06 LuCI
 ```
-wget --no-check-certificate https://github.com/jerrykuku/luci-theme-argon/releases/download/v1.6.3/luci-theme-argon_1.6.3-20200725_all.ipk
+wget --no-check-certificate https://github.com/jerrykuku/luci-theme-argon/releases/download/v1.6.4/luci-theme-argon_1.6.4-20200727_all.ipk
 opkg install luci-theme-argon*.ipk
 ```
 
-### For openwrt official 19.07 Snapshots LuCI master 
-```
-wget --no-check-certificate https://github.com/jerrykuku/luci-theme-argon/releases/download/v2.2.1/luci-theme-argon_2.2.1-20200725_all.ipk
-opkg install luci-theme-argon*.ipk
-```
+## Update log 2020.07.27 [18.06] V1.6.5 
 
-## Update log 2020.07.25 v2.2.1 
+- New: login background image can be customized now, upload image to /www/luci-static/argon/background/ (only jpg, png and gif are allowed). Uploaded images will be displayed if they are present. If you have multiple images in /www/luci-static/argon/background/, they will be displayed randomly upon each login.【v1.6.4】
+- New: force dark mode. Dark mode can now be enabled without client being in "dark mode". To enable: ssh into your router and enter "touch /etc/dark", to disable enter "rm -rf touch /etc/dark" (automatic dark mode).【v1.6.4】
+- New: Argon Version displayed in footer will match ipk version from now on.【v1.6.4】
+- Fix: Font colors. 【v1.6.4】
 
-- New login theme, Request background imge from bing.com, Auto change everyday. 
-- New theme icon 
-- Add more menu category  icon 
-- Fix font-size and padding margin 
-- Restructure css file 
-- Auto adapt to dark mode
-- Add blur effect for login form 【v2.2.1】
+- Add blur effect for login form 【v1.6.3】
 
-## More Screenshots
+- New login theme, Request background imge from bing.com, Auto change everyday. 【v1.6.1】
+- New theme icon 【v1.6.1】
+- Add more menu category  icon 【v1.6.1】
+- Fix font-size and padding margin 【v1.6.1】
+- Restructure css file 【v1.6.1】
+- Auto adapt to dark mode 【v1.6.1】
 
-![](/Screenshots/pc/light2.jpg)
-![](/Screenshots/pc/light3.jpg)
-![](/Screenshots/pc/dark2.jpg)
-![](/Screenshots/pc/dark3.jpg)
-![](/Screenshots/phone/light2.jpg)
-![](/Screenshots/phone/light3.jpg)
-![](/Screenshots/phone/dark2.jpg)
-![](/Screenshots/phone/dark3.jpg)
+
+## Screenshots 
+![](/Screenshots/pc/screenshot1.jpg)
+![](/Screenshots/pc/screenshot2.jpg)
+![](/Screenshots/pc/screenshot3.jpg)
+![](/Screenshots/phone/Screenshot_1.jpg)
+![](/Screenshots/phone/Screenshot_2.jpg)
 
 ## Thanks to 
 luci-theme-material: https://github.com/LuttyYang/luci-theme-material/
