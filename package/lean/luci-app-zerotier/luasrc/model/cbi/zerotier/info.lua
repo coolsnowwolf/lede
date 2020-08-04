@@ -7,7 +7,7 @@ t = f:field(TextValue, "conf")
 t.rmempty = true
 t.rows = 15
 function t.cfgvalue()
-  luci.sys.exec("ifconfig $(ifconfig | grep zt | awk '{print $1}') > /tmp/zero.info")
+  luci.sys.exec("for i in $(ifconfig | grep 'zt' | awk '{print $1}'); do ifconfig $i; done > /tmp/zero.info")
 	return fs.readfile(conffile) or ""
 end
 t.readonly="readonly"
