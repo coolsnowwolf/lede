@@ -1,0 +1,220 @@
+--- a/drivers/mtd/maps/lantiq-flash.c
++++ b/drivers/mtd/maps/lantiq-flash.c
+@@ -17,6 +17,7 @@
+ #include <linux/mtd/cfi.h>
+ #include <linux/platform_device.h>
+ #include <linux/mtd/physmap.h>
++#include <linux/mtd/concat.h>
+ #include <linux/of.h>
+ 
+ #include <lantiq_soc.h>
+@@ -36,13 +37,16 @@ enum {
+ 	LTQ_NOR_NORMAL
+ };
+ 
++#define MAX_RESOURCES		4
++
+ struct ltq_mtd {
+-	struct resource *res;
+-	struct mtd_info *mtd;
+-	struct map_info *map;
++	struct mtd_info *mtd[MAX_RESOURCES];
++	struct mtd_info	*cmtd;
++	struct map_info map[MAX_RESOURCES];
+ };
+ 
+ static const char ltq_map_name[] = "ltq_nor";
++static const char * const ltq_probe_types[] = { "cmdlinepart", "ofpart", NULL };
+ 
+ static map_word
+ ltq_read16(struct map_info *map, unsigned long adr)
+@@ -106,11 +110,43 @@ ltq_copy_to(struct map_info *map, unsign
+ }
+ 
+ static int
++ltq_mtd_remove(struct platform_device *pdev)
++{
++	struct ltq_mtd *ltq_mtd = platform_get_drvdata(pdev);
++	int i;
++
++	if (ltq_mtd == NULL)
++		return 0;
++
++	if (ltq_mtd->cmtd) {
++		mtd_device_unregister(ltq_mtd->cmtd);
++		if (ltq_mtd->cmtd != ltq_mtd->mtd[0])
++			mtd_concat_destroy(ltq_mtd->cmtd);
++	}
++
++	for (i = 0; i < MAX_RESOURCES; i++) {
++		if (ltq_mtd->mtd[i] != NULL)
++			map_destroy(ltq_mtd->mtd[i]);
++	}
++
++	kfree(ltq_mtd);
++
++	return 0;
++}
++
++static int
+ ltq_mtd_probe(struct platform_device *pdev)
+ {
+ 	struct ltq_mtd *ltq_mtd;
+ 	struct cfi_private *cfi;
+-	int err;
++	int err = 0;
++	int i;
++	int devices_found = 0;
++
++	static const char *rom_probe_types[] = {
++		"cfi_probe", "jedec_probe", NULL
++	};
++	const char **type;
+ 
+ 	ltq_mtd = devm_kzalloc(&pdev->dev, sizeof(struct ltq_mtd), GFP_KERNEL);
+ 	if (!ltq_mtd)
+@@ -118,75 +154,89 @@ ltq_mtd_probe(struct platform_device *pd
+ 
+ 	platform_set_drvdata(pdev, ltq_mtd);
+ 
+-	ltq_mtd->res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+-	if (!ltq_mtd->res) {
+-		dev_err(&pdev->dev, "failed to get memory resource\n");
+-		return -ENOENT;
++	for (i = 0; i < pdev->num_resources; i++) {
++		printk(KERN_NOTICE "lantiq nor flash device: %.8llx at %.8llx\n",
++		       (unsigned long long)resource_size(&pdev->resource[i]),
++		       (unsigned long long)pdev->resource[i].start);
++	
++		if (!devm_request_mem_region(&pdev->dev,
++			pdev->resource[i].start,
++			resource_size(&pdev->resource[i]),
++			dev_name(&pdev->dev))) {
++			dev_err(&pdev->dev, "Could not reserve memory region\n");
++			return -ENOMEM;
++		}
++
++		ltq_mtd->map[i].name = ltq_map_name;
++		ltq_mtd->map[i].bankwidth = 2;
++		ltq_mtd->map[i].read = ltq_read16;
++		ltq_mtd->map[i].write = ltq_write16;
++		ltq_mtd->map[i].copy_from = ltq_copy_from;
++		ltq_mtd->map[i].copy_to = ltq_copy_to;
++
++		if (of_find_property(pdev->dev.of_node, "lantiq,noxip", NULL))
++			ltq_mtd->map[i].phys = NO_XIP;
++		else
++			ltq_mtd->map[i].phys = pdev->resource[i].start;
++		ltq_mtd->map[i].size = resource_size(&pdev->resource[i]);
++		ltq_mtd->map[i].virt = devm_ioremap(&pdev->dev, pdev->resource[i].start,
++						 ltq_mtd->map[i].size);
++		if (IS_ERR(ltq_mtd->map[i].virt))
++			return PTR_ERR(ltq_mtd->map[i].virt);
++
++		if (ltq_mtd->map[i].virt == NULL) {
++			dev_err(&pdev->dev, "Failed to ioremap flash region\n");
++			err = PTR_ERR(ltq_mtd->map[i].virt);
++			goto err_out;
++		}
++
++		ltq_mtd->map[i].map_priv_1 = LTQ_NOR_PROBING;
++		for (type = rom_probe_types; !ltq_mtd->mtd[i] && *type; type++)
++			ltq_mtd->mtd[i] = do_map_probe(*type, &ltq_mtd->map[i]);
++		ltq_mtd->map[i].map_priv_1 = LTQ_NOR_NORMAL;
++
++		if (!ltq_mtd->mtd[i]) {
++			dev_err(&pdev->dev, "probing failed\n");
++			return -ENXIO;
++		} else {
++			devices_found++;
++		}
++
++		ltq_mtd->mtd[i]->owner = THIS_MODULE;
++		ltq_mtd->mtd[i]->dev.parent = &pdev->dev;
++
++		cfi = ltq_mtd->map[i].fldrv_priv;
++		cfi->addr_unlock1 ^= 1;
++		cfi->addr_unlock2 ^= 1;
+ 	}
+ 
+-	ltq_mtd->map = devm_kzalloc(&pdev->dev, sizeof(struct map_info),
+-				    GFP_KERNEL);
+-	if (!ltq_mtd->map)
+-		return -ENOMEM;
+-
+-	if (of_find_property(pdev->dev.of_node, "lantiq,noxip", NULL))
+-		ltq_mtd->map->phys = NO_XIP;
+-	else
+-		ltq_mtd->map->phys = ltq_mtd->res->start;
+-	ltq_mtd->res->start;
+-	ltq_mtd->map->size = resource_size(ltq_mtd->res);
+-	ltq_mtd->map->virt = devm_ioremap_resource(&pdev->dev, ltq_mtd->res);
+-	if (IS_ERR(ltq_mtd->map->virt))
+-		return PTR_ERR(ltq_mtd->map->virt);
+-
+-	ltq_mtd->map->name = ltq_map_name;
+-	ltq_mtd->map->bankwidth = 2;
+-	ltq_mtd->map->read = ltq_read16;
+-	ltq_mtd->map->write = ltq_write16;
+-	ltq_mtd->map->copy_from = ltq_copy_from;
+-	ltq_mtd->map->copy_to = ltq_copy_to;
+-
+-	ltq_mtd->map->map_priv_1 = LTQ_NOR_PROBING;
+-	ltq_mtd->mtd = do_map_probe("cfi_probe", ltq_mtd->map);
+-	ltq_mtd->map->map_priv_1 = LTQ_NOR_NORMAL;
+-
+-	if (!ltq_mtd->mtd) {
+-		dev_err(&pdev->dev, "probing failed\n");
+-		return -ENXIO;
++	if (devices_found == 1) {
++		ltq_mtd->cmtd = ltq_mtd->mtd[0];
++	} else if (devices_found > 1) {
++		/*
++		 * We detected multiple devices. Concatenate them together.
++		 */
++		ltq_mtd->cmtd = mtd_concat_create(ltq_mtd->mtd, devices_found, dev_name(&pdev->dev));
++		if (ltq_mtd->cmtd == NULL)
++			err = -ENXIO;
+ 	}
+ 
+-	ltq_mtd->mtd->dev.parent = &pdev->dev;
+-	mtd_set_of_node(ltq_mtd->mtd, pdev->dev.of_node);
+-
+-	cfi = ltq_mtd->map->fldrv_priv;
+-	cfi->addr_unlock1 ^= 1;
+-	cfi->addr_unlock2 ^= 1;
++	ltq_mtd->cmtd->dev.parent = &pdev->dev;
++	mtd_set_of_node(ltq_mtd->cmtd, pdev->dev.of_node);
+ 
+-	err = mtd_device_register(ltq_mtd->mtd, NULL, 0);
++	err = mtd_device_register(ltq_mtd->cmtd, NULL, 0);
+ 	if (err) {
+ 		dev_err(&pdev->dev, "failed to add partitions\n");
+-		goto err_destroy;
++		goto err_out;
+ 	}
+ 
+ 	return 0;
+ 
+-err_destroy:
+-	map_destroy(ltq_mtd->mtd);
++err_out:
++	ltq_mtd_remove(pdev);
+ 	return err;
+ }
+ 
+-static int
+-ltq_mtd_remove(struct platform_device *pdev)
+-{
+-	struct ltq_mtd *ltq_mtd = platform_get_drvdata(pdev);
+-
+-	if (ltq_mtd && ltq_mtd->mtd) {
+-		mtd_device_unregister(ltq_mtd->mtd);
+-		map_destroy(ltq_mtd->mtd);
+-	}
+-	return 0;
+-}
+-
+ static const struct of_device_id ltq_mtd_match[] = {
+ 	{ .compatible = "lantiq,nor" },
+ 	{},

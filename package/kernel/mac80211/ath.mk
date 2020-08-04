@@ -7,6 +7,7 @@ PKG_CONFIG_DEPENDS += \
 	CONFIG_PACKAGE_ATH_DFS \
 	CONFIG_PACKAGE_ATH_SPECTRAL \
 	CONFIG_PACKAGE_ATH_DYNACK \
+	CONFIG_ATH9K_HWRNG \
 	CONFIG_ATH9K_SUPPORT_PCOEM \
 	CONFIG_ATH9K_TX99 \
 	CONFIG_ATH10K_LEDS \
@@ -44,6 +45,7 @@ config-$(CONFIG_TARGET_ath79) += ATH9K_AHB
 config-$(CONFIG_TARGET_ipq40xx) += ATH10K_AHB
 config-$(CONFIG_PCI) += ATH9K_PCI
 config-$(CONFIG_ATH_USER_REGD) += ATH_USER_REGD
+config-$(CONFIG_ATH9K_HWRNG) += ATH9K_HWRNG
 config-$(CONFIG_ATH9K_SUPPORT_PCOEM) += ATH9K_PCOEM
 config-$(CONFIG_ATH9K_TX99) += ATH9K_TX99
 config-$(CONFIG_ATH9K_UBNTHSR) += ATH9K_UBNTHSR
@@ -206,6 +208,12 @@ Atheros IEEE 802.11n AR5008 and AR9001 family of chipsets.
 endef
 
 define KernelPackage/ath9k/config
+
+	config ATH9K_HWRNG
+		bool "Add wireless noise as source of randomness to kernel entropy pool"
+		depends on PACKAGE_kmod-ath9k
+		select PACKAGE_kmod-random-core
+		default n
 
 	config ATH9K_SUPPORT_PCOEM
 		bool "Support chips used in PC OEM cards"

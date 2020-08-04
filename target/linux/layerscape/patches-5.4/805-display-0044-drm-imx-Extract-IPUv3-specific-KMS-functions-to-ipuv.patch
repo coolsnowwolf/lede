@@ -1,0 +1,142 @@
+From 6b1bc8ad2bdcfa0cbda91a0963aed746c424465d Mon Sep 17 00:00:00 2001
+From: Liu Ying <victor.liu@nxp.com>
+Date: Thu, 24 Jan 2019 17:06:30 +0800
+Subject: [PATCH] drm/imx: Extract IPUv3 specific KMS functions to ipuv3-kms.c
+ (part 1)
+
+Since we want to add i.MX DPU support into imx-drm, the imx-drm core
+driver should be no more IPUv3 specific.  Let's make imx-drm more generic
+and extract IPUv3 specific KMS functions to ipuv3-kms.c.
+
+Signed-off-by: Liu Ying <victor.liu@nxp.com>
+[ Aisheng: update to new kernel version accordingly ]
+[ Aisheng: split IPU changes out of imx-drm-core change ]
+Signed-off-by: Dong Aisheng <aisheng.dong@nxp.com>
+---
+ drivers/gpu/drm/imx/imx-drm-core.c | 81 --------------------------------------
+ drivers/gpu/drm/imx/imx-drm.h      |  5 +--
+ 2 files changed, 2 insertions(+), 84 deletions(-)
+
+--- a/drivers/gpu/drm/imx/imx-drm-core.c
++++ b/drivers/gpu/drm/imx/imx-drm-core.c
+@@ -26,9 +26,6 @@
+ #include <drm/drm_vblank.h>
+ 
+ #include "imx-drm.h"
+-#include "ipuv3-plane.h"
+-
+-#define MAX_CRTC	4
+ 
+ static int legacyfb_depth = 16;
+ module_param(legacyfb_depth, int, 0444);
+@@ -48,81 +45,6 @@ void imx_drm_encoder_destroy(struct drm_
+ }
+ EXPORT_SYMBOL_GPL(imx_drm_encoder_destroy);
+ 
+-static int imx_drm_atomic_check(struct drm_device *dev,
+-				struct drm_atomic_state *state)
+-{
+-	int ret;
+-
+-	ret = drm_atomic_helper_check(dev, state);
+-	if (ret)
+-		return ret;
+-
+-	/*
+-	 * Check modeset again in case crtc_state->mode_changed is
+-	 * updated in plane's ->atomic_check callback.
+-	 */
+-	ret = drm_atomic_helper_check_modeset(dev, state);
+-	if (ret)
+-		return ret;
+-
+-	/* Assign PRG/PRE channels and check if all constrains are satisfied. */
+-	ret = ipu_planes_assign_pre(dev, state);
+-	if (ret)
+-		return ret;
+-
+-	return ret;
+-}
+-
+-static const struct drm_mode_config_funcs imx_drm_mode_config_funcs = {
+-	.fb_create = drm_gem_fb_create,
+-	.atomic_check = imx_drm_atomic_check,
+-	.atomic_commit = drm_atomic_helper_commit,
+-};
+-
+-static void imx_drm_atomic_commit_tail(struct drm_atomic_state *state)
+-{
+-	struct drm_device *dev = state->dev;
+-	struct drm_plane *plane;
+-	struct drm_plane_state *old_plane_state, *new_plane_state;
+-	bool plane_disabling = false;
+-	int i;
+-
+-	drm_atomic_helper_commit_modeset_disables(dev, state);
+-
+-	drm_atomic_helper_commit_planes(dev, state,
+-				DRM_PLANE_COMMIT_ACTIVE_ONLY |
+-				DRM_PLANE_COMMIT_NO_DISABLE_AFTER_MODESET);
+-
+-	drm_atomic_helper_commit_modeset_enables(dev, state);
+-
+-	for_each_oldnew_plane_in_state(state, plane, old_plane_state, new_plane_state, i) {
+-		if (drm_atomic_plane_disabling(old_plane_state, new_plane_state))
+-			plane_disabling = true;
+-	}
+-
+-	/*
+-	 * The flip done wait is only strictly required by imx-drm if a deferred
+-	 * plane disable is in-flight. As the core requires blocking commits
+-	 * to wait for the flip it is done here unconditionally. This keeps the
+-	 * workitem around a bit longer than required for the majority of
+-	 * non-blocking commits, but we accept that for the sake of simplicity.
+-	 */
+-	drm_atomic_helper_wait_for_flip_done(dev, state);
+-
+-	if (plane_disabling) {
+-		for_each_old_plane_in_state(state, plane, old_plane_state, i)
+-			ipu_plane_disable_deferred(plane);
+-
+-	}
+-
+-	drm_atomic_helper_commit_hw_done(state);
+-}
+-
+-static const struct drm_mode_config_helper_funcs imx_drm_mode_config_helpers = {
+-	.atomic_commit_tail = imx_drm_atomic_commit_tail,
+-};
+-
+-
+ int imx_drm_encoder_parse_of(struct drm_device *drm,
+ 	struct drm_encoder *encoder, struct device_node *np)
+ {
+@@ -223,9 +145,6 @@ static int imx_drm_bind(struct device *d
+ 	drm->mode_config.min_height = 1;
+ 	drm->mode_config.max_width = 4096;
+ 	drm->mode_config.max_height = 4096;
+-	drm->mode_config.funcs = &imx_drm_mode_config_funcs;
+-	drm->mode_config.helper_private = &imx_drm_mode_config_helpers;
+-	drm->mode_config.allow_fb_modifiers = true;
+ 	drm->mode_config.normalize_zpos = true;
+ 
+ 	drm_mode_config_init(drm);
+--- a/drivers/gpu/drm/imx/imx-drm.h
++++ b/drivers/gpu/drm/imx/imx-drm.h
+@@ -2,6 +2,8 @@
+ #ifndef _IMX_DRM_H_
+ #define _IMX_DRM_H_
+ 
++#define MAX_CRTC	4
++
+ struct device_node;
+ struct drm_crtc;
+ struct drm_connector;
+@@ -38,7 +40,4 @@ int imx_drm_encoder_parse_of(struct drm_
+ void imx_drm_connector_destroy(struct drm_connector *connector);
+ void imx_drm_encoder_destroy(struct drm_encoder *encoder);
+ 
+-int ipu_planes_assign_pre(struct drm_device *dev,
+-			  struct drm_atomic_state *state);
+-
+ #endif /* _IMX_DRM_H_ */

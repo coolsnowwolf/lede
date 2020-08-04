@@ -1,0 +1,101 @@
+From 01c0da9c8cd3ff6cbe0ced8e28505d4195f60db4 Mon Sep 17 00:00:00 2001
+From: Claudiu Manoil <claudiu.manoil@nxp.com>
+Date: Thu, 14 Nov 2019 17:03:20 +0200
+Subject: [PATCH] net: mscc: ocelot: move resource ioremap and regmap init to
+ common code
+
+Let's make this ioremap and regmap init code common.  It should not
+be platform dependent as it should be usable by PCI devices too.
+Use better names where necessary to avoid clashes.
+
+Signed-off-by: Claudiu Manoil <claudiu.manoil@nxp.com>
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/ethernet/mscc/ocelot.h       |  4 +---
+ drivers/net/ethernet/mscc/ocelot_board.c | 17 ++++++++++-------
+ drivers/net/ethernet/mscc/ocelot_io.c    | 14 +++++---------
+ 3 files changed, 16 insertions(+), 19 deletions(-)
+
+--- a/drivers/net/ethernet/mscc/ocelot.h
++++ b/drivers/net/ethernet/mscc/ocelot.h
+@@ -546,9 +546,7 @@ void ocelot_port_writel(struct ocelot_po
+ 
+ int ocelot_regfields_init(struct ocelot *ocelot,
+ 			  const struct reg_field *const regfields);
+-struct regmap *ocelot_io_platform_init(struct ocelot *ocelot,
+-				       struct platform_device *pdev,
+-				       const char *name);
++struct regmap *ocelot_regmap_init(struct ocelot *ocelot, struct resource *res);
+ 
+ #define ocelot_field_write(ocelot, reg, val) regmap_field_write((ocelot)->regfields[(reg)], (val))
+ #define ocelot_field_read(ocelot, reg, val) regmap_field_read((ocelot)->regfields[(reg)], (val))
+--- a/drivers/net/ethernet/mscc/ocelot_board.c
++++ b/drivers/net/ethernet/mscc/ocelot_board.c
+@@ -276,7 +276,7 @@ static int mscc_ocelot_probe(struct plat
+ 		enum ocelot_target id;
+ 		char *name;
+ 		u8 optional:1;
+-	} res[] = {
++	} io_target[] = {
+ 		{ SYS, "sys" },
+ 		{ REW, "rew" },
+ 		{ QSYS, "qsys" },
+@@ -296,20 +296,23 @@ static int mscc_ocelot_probe(struct plat
+ 	platform_set_drvdata(pdev, ocelot);
+ 	ocelot->dev = &pdev->dev;
+ 
+-	for (i = 0; i < ARRAY_SIZE(res); i++) {
++	for (i = 0; i < ARRAY_SIZE(io_target); i++) {
+ 		struct regmap *target;
++		struct resource *res;
+ 
+-		target = ocelot_io_platform_init(ocelot, pdev, res[i].name);
++		res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
++						   io_target[i].name);
++
++		target = ocelot_regmap_init(ocelot, res);
+ 		if (IS_ERR(target)) {
+-			if (res[i].optional) {
+-				ocelot->targets[res[i].id] = NULL;
++			if (io_target[i].optional) {
++				ocelot->targets[io_target[i].id] = NULL;
+ 				continue;
+ 			}
+-
+ 			return PTR_ERR(target);
+ 		}
+ 
+-		ocelot->targets[res[i].id] = target;
++		ocelot->targets[io_target[i].id] = target;
+ 	}
+ 
+ 	hsio = syscon_regmap_lookup_by_compatible("mscc,ocelot-hsio");
+--- a/drivers/net/ethernet/mscc/ocelot_io.c
++++ b/drivers/net/ethernet/mscc/ocelot_io.c
+@@ -97,20 +97,16 @@ static struct regmap_config ocelot_regma
+ 	.reg_stride	= 4,
+ };
+ 
+-struct regmap *ocelot_io_platform_init(struct ocelot *ocelot,
+-				       struct platform_device *pdev,
+-				       const char *name)
++struct regmap *ocelot_regmap_init(struct ocelot *ocelot, struct resource *res)
+ {
+-	struct resource *res;
+ 	void __iomem *regs;
+ 
+-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
+ 	regs = devm_ioremap_resource(ocelot->dev, res);
+ 	if (IS_ERR(regs))
+ 		return ERR_CAST(regs);
+ 
+-	ocelot_regmap_config.name = name;
+-	return devm_regmap_init_mmio(ocelot->dev, regs,
+-				     &ocelot_regmap_config);
++	ocelot_regmap_config.name = res->name;
++
++	return devm_regmap_init_mmio(ocelot->dev, regs, &ocelot_regmap_config);
+ }
+-EXPORT_SYMBOL(ocelot_io_platform_init);
++EXPORT_SYMBOL(ocelot_regmap_init);

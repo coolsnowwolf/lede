@@ -4,7 +4,7 @@
 
 . /lib/imx6.sh
 
-RAMFS_COPY_BIN='blkid'
+RAMFS_COPY_BIN='blkid jffs2reset'
 
 enable_image_metadata_check() {
 	case "$(board_name)" in
@@ -17,18 +17,15 @@ enable_image_metadata_check
 
 apalis_copy_config() {
 	apalis_mount_boot
-	cp -af "$CONF_TAR" /boot/
+	cp -af "$UPGRADE_BACKUP" "/boot/$BACKUP_FILE"
 	sync
 	umount /boot
 }
 
 apalis_do_upgrade() {
-	local board_name=$(board_name)
-	board_name=${board_name/,/_}
-
 	apalis_mount_boot
-	get_image "$1" | tar Oxf - sysupgrade-${board_name}/kernel > /boot/uImage
-	get_image "$1" | tar Oxf - sysupgrade-${board_name}/root > $(rootpart_from_uuid)
+	get_image "$1" | tar Oxf - sysupgrade-apalis/kernel > /boot/uImage
+	get_image "$1" | tar Oxf - sysupgrade-apalis/root > $(rootpart_from_uuid)
 	sync
 	umount /boot
 }
@@ -69,6 +66,19 @@ platform_copy_config() {
 	case "$board" in
 	apalis*)
 		apalis_copy_config
+		;;
+	esac
+}
+
+platform_pre_upgrade() {
+	local board=$(board_name)
+
+	case "$board" in
+	apalis*)
+		[ -z "$UPGRADE_BACKUP" ] && {
+			jffs2reset -y
+			umount /overlay
+		}
 		;;
 	esac
 }
