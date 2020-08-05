@@ -2,11 +2,11 @@
 Luci for JD dailybonus Script for Openwrt  
 一个运行在openwrt下的京东签到插件。
 
-### Update Log 2020-07-16  
+### Update Log 2020-08-04  
 
 #### Updates
 
-- UPDATE: 修正部分cookie无法更新到脚本的问题。
+- FIX: 修正获取远端脚本版本错误的问题，同时更新默认脚本到最新（感谢 abcaad 提供）。
 
 
 详情见[具体日志](./relnotes.txt)。 
@@ -47,14 +47,7 @@ make -j1 V=s #编译固件
   
 3.根据自己的系统架构选择合适的node-request.ipk进行安装。  
   [node-request下载](https://github.com/jerrykuku/luci-app-jd-dailybonus/releases/tag/0.7.6) 
-  - Pi[H5] 系列  : aarch64_cortex-a53
-  - N1 贝壳云    : aarch64_generic
-  - 树莓派4      : aarch64_cortex-a72
-  - MT7621       : mipsel_24kc
-  - x86          : x86_64
-  - 全志 H3       : arm_cortex-a7_neon-vfpv4.ipk
-  - 其他         : 参照上面方法自行编译
-  - 如果找不到合适的,也可以通过ssh: opkg install node-npm  然后 npm install request -g 进行安装
+  目前的node-request 已经不再区分系统架构 请直接安装 node-request_2.88.2-1-all.ipk
 
 4.安装luci-app-jd-dailybonus
 

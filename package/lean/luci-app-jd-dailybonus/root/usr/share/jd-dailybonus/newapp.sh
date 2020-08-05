@@ -77,7 +77,7 @@ fill_cookie() {
     fi
 }
 
-remote_ver=$(cat $TEMP_SCRIPT | sed -n '/更新时间/p' | awk '{print $NF}' | sed 's/v//')
+remote_ver=$(cat $TEMP_SCRIPT | sed -n '/更新时间/p' | awk '{for (i=1;i<=NF;i++){if ($i ~/v/) {print $i}}}' | sed 's/v//')
 local_ver=$(uci_get_by_type global version)
 
 add_cron() {
