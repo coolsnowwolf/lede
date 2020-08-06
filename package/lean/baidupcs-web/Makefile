@@ -30,7 +30,7 @@ endef
 STRIP:=true
 
 ifeq ($(ARCH),i386)
-	PKG_ARCH_BAIDUPCS-WEB:=86
+	PKG_ARCH_BAIDUPCS-WEB:=386
 endif
 
 ifeq ($(ARCH),x86_64)
