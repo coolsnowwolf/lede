@@ -1,0 +1,64 @@
+#!/bin/sh /etc/rc.common
+
+START=80
+NAME=aliddns
+
+NE_TIPS='AliDDNS NOT ENABLED'
+
+restart() {
+	start
+}
+
+uci_get_by_name() {
+	local ret=$(uci get $NAME.$1.$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+uci_bool_by_name() {
+	case "$(uci_get_by_name $1 $2)" in
+		1|on|true|yes|enabled) return 0;;
+	esac
+	return 1
+}
+
+add_hotplug() {
+	cat <<EOF > "/etc/hotplug.d/iface/${START}-${NAME}"
+#!/bin/sh /etc/rc.common
+
+[ "Z\$ACTION" = "Zifup" -a "Z\$INTERFACE" = "Zwan" ] || exit 0
+
+DATE=\$(date +'%Y-%m-%d %H:%M:%S')
+( sleep 10 && ( echo "\$DATE IFUP-WAN" && /usr/sbin/aliddns ) >> /var/log/aliddns.log 2>&1 ) &
+
+exit 0
+EOF
+	chmod +x "/etc/hotplug.d/iface/${START}-${NAME}"
+}
+
+start() {
+	$(uci_bool_by_name base enable) || {
+		stop
+		return 0
+	}
+
+	add_hotplug
+
+	sed -i "/${NE_TIPS}/d" /var/log/aliddns.log
+
+	time=$(uci_get_by_name base time 10)
+	[ 0 -lt $time -a $time -lt 60 ] || time=10
+
+	[ -f /etc/crontabs/root ] || mkdir -p /etc/crontabs && touch /etc/crontabs/root
+	sed -i '/aliddns/d' /etc/crontabs/root
+	echo "*/$time * * * * /usr/sbin/aliddns >> /var/log/aliddns.log 2>&1" >> /etc/crontabs/root
+	/etc/init.d/cron restart
+
+	( /usr/sbin/aliddns >> /var/log/aliddns.log 2>&1 ) &
+}
+
+stop() {
+	rm -rf "/etc/hotplug.d/iface/${START}-${NAME}"
+	sed -i '/aliddns/d' /etc/crontabs/root >/dev/null 2>&1
+	/etc/init.d/cron restart
+	echo "${NE_TIPS}" > /var/log/aliddns.log
+}
