@@ -1,3 +1,4 @@
+![LEDE Logo](https://i.loli.net/2020/08/07/GURt1EBXAilZey8.png)
 欢迎来到Lean的Openwrt源码仓库！
 =
 Welcome to Lean's  git source of OpenWrt and packages
