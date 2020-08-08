@@ -95,6 +95,7 @@ hostapd_common_add_device_config() {
 	config_add_int local_pwr_constraint
 	config_add_string require_mode
 	config_add_boolean legacy_rates
+	config_add_boolean vendor_vht
 
 	config_add_string acs_chan_bias
 	config_add_array hostapd_options
@@ -110,7 +111,7 @@ hostapd_prepare_device_config() {
 	local base_cfg=
 
 	json_get_vars country country_ie beacon_int:100 dtim_period:2 doth require_mode legacy_rates \
-		acs_chan_bias local_pwr_constraint spectrum_mgmt_required
+		acs_chan_bias local_pwr_constraint spectrum_mgmt_required vendor_vht
 
 	hostapd_set_log_options base_cfg
 
@@ -145,6 +146,7 @@ hostapd_prepare_device_config() {
 	[ "$hwmode" = "g" ] && {
 		[ "$legacy_rates" -eq 0 ] && set_default rate_list "6000 9000 12000 18000 24000 36000 48000 54000"
 		[ -n "$require_mode" ] && set_default basic_rate_list "6000 12000 24000"
+		[ -n "$vendor_vht" ] && append base_cfg "vendor_vht=$vendor_vht" "$N"
 	}
 
 	case "$require_mode" in
@@ -1125,7 +1127,7 @@ wpa_supplicant_run() {
 
 	[ "$ret" != 0 ] && wireless_setup_vif_failed WPA_SUPPLICANT_FAILED
 
-	local supplicant_pid=$(ubus call service list '{"name": "hostapd"}' | jsonfilter -l 1 -e "@['hostapd'].instances['supplicant'].pid")
+	local supplicant_pid=$(ubus call service list '{"name": "wpad"}' | jsonfilter -l 1 -e "@['wpad'].instances['supplicant'].pid")
 	wireless_add_process "$supplicant_pid" "/usr/sbin/wpa_supplicant" 1
 
 	return $ret
