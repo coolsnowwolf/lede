@@ -1,0 +1,158 @@
+From 30bdefd7559d57eae8c3c7e6f721ecf7be929bf2 Mon Sep 17 00:00:00 2001
+From: Markus Theil <markus.theil@tu-ilmenau.de>
+Date: Tue, 30 Jun 2020 14:19:02 +0200
+Subject: [PATCH 14/19] mesh: fixes for mesh init/deinit
+
+Send mesh group started notification after join completion
+callback is called.
+
+Implement outstanding TODO, to leave the mesh network on deinit.
+
+Signed-off-by: Markus Theil <markus.theil@tu-ilmenau.de>
+---
+ wpa_supplicant/mesh.c           | 32 ++++++++++++++++++++------------
+ wpa_supplicant/mesh.h           |  6 ++++--
+ wpa_supplicant/wpa_supplicant.c |  8 ++------
+ 3 files changed, 26 insertions(+), 20 deletions(-)
+
+--- a/wpa_supplicant/mesh.c
++++ b/wpa_supplicant/mesh.c
+@@ -30,20 +30,20 @@
+ 
+ static void wpa_supplicant_mesh_deinit(struct wpa_supplicant *wpa_s)
+ {
+-	wpa_supplicant_mesh_iface_deinit(wpa_s, wpa_s->ifmsh);
++	wpa_supplicant_mesh_iface_deinit(wpa_s, wpa_s->ifmsh, true);
+ 	wpa_s->ifmsh = NULL;
+ 	wpa_s->current_ssid = NULL;
+ 	os_free(wpa_s->mesh_rsn);
+ 	wpa_s->mesh_rsn = NULL;
+ 	os_free(wpa_s->mesh_params);
+ 	wpa_s->mesh_params = NULL;
+-	/* TODO: leave mesh (stop beacon). This will happen on link down
+-	 * anyway, so it's not urgent */
++	wpa_supplicant_leave_mesh(wpa_s, false);
+ }
+ 
+ 
+ void wpa_supplicant_mesh_iface_deinit(struct wpa_supplicant *wpa_s,
+-				      struct hostapd_iface *ifmsh)
++				      struct hostapd_iface *ifmsh,
++				      bool also_clear_hostapd)
+ {
+ 	if (!ifmsh)
+ 		return;
+@@ -64,8 +64,10 @@ void wpa_supplicant_mesh_iface_deinit(st
+ 	}
+ 
+ 	/* take care of shared data */
+-	hostapd_interface_deinit(ifmsh);
+-	hostapd_interface_free(ifmsh);
++	if (also_clear_hostapd) {
++		hostapd_interface_deinit(ifmsh);
++		hostapd_interface_free(ifmsh);
++	}
+ }
+ 
+ 
+@@ -244,8 +246,7 @@ static int wpas_mesh_complete(struct wpa
+ 	    wpas_mesh_init_rsn(wpa_s)) {
+ 		wpa_printf(MSG_ERROR,
+ 			   "mesh: RSN initialization failed - deinit mesh");
+-		wpa_supplicant_mesh_deinit(wpa_s);
+-		wpa_drv_leave_mesh(wpa_s);
++		wpa_supplicant_mesh_iface_deinit(wpa_s, wpa_s->ifmsh, false);
+ 		return -1;
+ 	}
+ 
+@@ -270,9 +271,15 @@ static int wpas_mesh_complete(struct wpa
+ 	/* hostapd sets the interface down until we associate */
+ 	wpa_drv_set_operstate(wpa_s, 1);
+ 
+-	if (!ret)
++	if (!ret) {
+ 		wpa_supplicant_set_state(wpa_s, WPA_COMPLETED);
+ 
++		wpa_msg(wpa_s, MSG_INFO, MESH_GROUP_STARTED "ssid=\"%s\" id=%d",
++			wpa_ssid_txt(ssid->ssid, ssid->ssid_len),
++			ssid->id);
++		wpas_notify_mesh_group_started(wpa_s, ssid);
++	}
++
+ 	return ret;
+ }
+ 
+@@ -563,7 +570,7 @@ int wpa_supplicant_join_mesh(struct wpa_
+ 	wpa_s->mesh_params = params;
+ 	if (wpa_supplicant_mesh_init(wpa_s, ssid, &params->freq)) {
+ 		wpa_msg(wpa_s, MSG_ERROR, "Failed to init mesh");
+-		wpa_drv_leave_mesh(wpa_s);
++		wpa_supplicant_leave_mesh(wpa_s, true);
+ 		ret = -1;
+ 		goto out;
+ 	}
+@@ -573,14 +580,15 @@ out:
+ }
+ 
+ 
+-int wpa_supplicant_leave_mesh(struct wpa_supplicant *wpa_s)
++int wpa_supplicant_leave_mesh(struct wpa_supplicant *wpa_s, bool need_deinit)
+ {
+ 	int ret = 0;
+ 
+ 	wpa_msg(wpa_s, MSG_INFO, "leaving mesh");
+ 
+ 	/* Need to send peering close messages first */
+-	wpa_supplicant_mesh_deinit(wpa_s);
++	if (need_deinit)
++		wpa_supplicant_mesh_deinit(wpa_s);
+ 
+ 	ret = wpa_drv_leave_mesh(wpa_s);
+ 	if (ret)
+--- a/wpa_supplicant/mesh.h
++++ b/wpa_supplicant/mesh.h
+@@ -11,9 +11,11 @@
+ 
+ int wpa_supplicant_join_mesh(struct wpa_supplicant *wpa_s,
+ 			     struct wpa_ssid *ssid);
+-int wpa_supplicant_leave_mesh(struct wpa_supplicant *wpa_s);
++int wpa_supplicant_leave_mesh(struct wpa_supplicant *wpa_s,
++			      bool need_deinit);
+ void wpa_supplicant_mesh_iface_deinit(struct wpa_supplicant *wpa_s,
+-				      struct hostapd_iface *ifmsh);
++				      struct hostapd_iface *ifmsh,
++				      bool also_clear_hostapd);
+ int wpas_mesh_scan_result_text(const u8 *ies, size_t ies_len, char *buf,
+ 			       char *end);
+ int wpas_mesh_add_interface(struct wpa_supplicant *wpa_s, char *ifname,
+--- a/wpa_supplicant/wpa_supplicant.c
++++ b/wpa_supplicant/wpa_supplicant.c
+@@ -2225,10 +2225,6 @@ void wpa_supplicant_associate(struct wpa
+ 			return;
+ 		}
+ 		wpa_s->current_bss = bss;
+-		wpa_msg(wpa_s, MSG_INFO, MESH_GROUP_STARTED "ssid=\"%s\" id=%d",
+-			wpa_ssid_txt(ssid->ssid, ssid->ssid_len),
+-			ssid->id);
+-		wpas_notify_mesh_group_started(wpa_s, ssid);
+ #else /* CONFIG_MESH */
+ 		wpa_msg(wpa_s, MSG_ERROR,
+ 			"mesh mode support not included in the build");
+@@ -3938,7 +3934,7 @@ void wpa_supplicant_deauthenticate(struc
+ 			wpa_s->ifname);
+ 		wpas_notify_mesh_group_removed(wpa_s, mconf->meshid,
+ 					       mconf->meshid_len, reason_code);
+-		wpa_supplicant_leave_mesh(wpa_s);
++		wpa_supplicant_leave_mesh(wpa_s, true);
+ 	}
+ #endif /* CONFIG_MESH */
+ 
+@@ -6551,7 +6547,7 @@ static void wpa_supplicant_deinit_iface(
+ 
+ #ifdef CONFIG_MESH
+ 	if (wpa_s->ifmsh) {
+-		wpa_supplicant_mesh_iface_deinit(wpa_s, wpa_s->ifmsh);
++		wpa_supplicant_mesh_iface_deinit(wpa_s, wpa_s->ifmsh, true);
+ 		wpa_s->ifmsh = NULL;
+ 	}
+ #endif /* CONFIG_MESH */
