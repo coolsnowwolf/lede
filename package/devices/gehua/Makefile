@@ -22,7 +22,7 @@ define Package/gehua
   DEPENDS:=+automount +autosamba +ipv6helper +luci-app-CE +luci-ssl-openssl \
 		+luci-app-devcom +RNDIS +luci-app-timecontrol +luci-app-control-timewol \
 		+luci-app-idns +luci-app-hd-idle +luci-app-minidlna +luci-app-adguardhome\
-		+luci-app-mwan3helper +luci-app-sqm +luci-app-netdata \
+		+luci-app-mwan3helper +luci-app-sqm +luci-app-netdata +luci-app-ttyd\
 		+luci-app-oafclog +luci-app-sccustom +luci-app-serverchan +luci-app-smartdns \
 		+luci-app-uhttpd +luci-app-usb-printer +luci-app-watchpig +luci-app-wrtbwmon \
 		+luci-app-xlnetacc +luci-app-zerotier +luci-theme-argon
