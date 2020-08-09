@@ -198,7 +198,7 @@ hostapd_common_add_bss_config() {
 	config_add_int eapol_version
 
 	config_add_string 'auth_server:host' 'server:host'
-	config_add_string auth_secret
+	config_add_string auth_secret key
 	config_add_int 'auth_port:port' 'port:port'
 
 	config_add_string acct_server
@@ -404,13 +404,13 @@ hostapd_set_bss_options() {
 		;;
 		psk|sae|psk-sae)
 			json_get_vars key wpa_psk_file
-			if [ ${#key} -lt 8 ]; then
+			if [ ${#key} -eq 64 ]; then
+				append bss_conf "wpa_psk=$key" "$N"
+			elif [ ${#key} -ge 8 ] && [ ${#key} -le 63 ]; then
+				append bss_conf "wpa_passphrase=$key" "$N"
+			elif [ -n "$key" ] || [ -z "$wpa_psk_file" ]; then
 				wireless_setup_vif_failed INVALID_WPA_PSK
 				return 1
-			elif [ ${#key} -eq 64 ]; then
-				append bss_conf "wpa_psk=$key" "$N"
-			else
-				append bss_conf "wpa_passphrase=$key" "$N"
 			fi
 			[ -z "$wpa_psk_file" ] && set_default wpa_psk_file /var/run/hostapd-$ifname.psk
 			[ -n "$wpa_psk_file" ] && {
