@@ -13,7 +13,7 @@ cfg_update_interval=$(uci get openclash.config.config_update_interval 2>/dev/nul
 CRASH_NUM=0
 CFG_UPDATE_INT=0
 
-if [ "$en_mode" = "fake-ip-tun" ] || [ "$en_mode" = "redir-host-tun" ]; then
+if [ "$en_mode" = "fake-ip-tun" ] || [ "$en_mode" = "redir-host-tun" ] || [ "$en_mode" = "redir-host-mix" ] || [ "$en_mode" = "fake-ip-mix" ]; then
    core_type="Tun"
 fi
 

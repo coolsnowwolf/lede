@@ -111,6 +111,8 @@
        uci set openclash.config.config_reload=0
     elif [ -n "$(grep "^ \{0,\}device-url:" "$7")" ] && [ "$15" -eq 1 ]; then
        uci set openclash.config.config_reload=0
+    elif [ -n "$(grep "^ \{0,\}device-url:" "$7")" ] && [ "$15" -eq 3 ]; then
+       uci set openclash.config.config_reload=0
     fi
     
     uci commit openclash
@@ -170,7 +172,7 @@
     fi
 
 #TUN
-    if [ "$15" -eq 1 ]; then
+    if [ "$15" -eq 1 ] || [ "$15" -eq 3 ]; then
        sed -i "/^dns:/i\tun:" "$7"
        sed -i "/^dns:/i\  enable: true" "$7"
        if [ -n "$16" ]; then

@@ -42,11 +42,13 @@ if op_mode == "redir-host" then
 o:value("redir-host", translate("redir-host"))
 o:value("redir-host-tun", translate("redir-host(tun mode)"))
 o:value("redir-host-vpn", translate("redir-host-vpn(game mode)"))
+o:value("redir-host-mix", translate("redir-host-mix(tun mix mode)"))
 o.default = "redir-host"
 else
 o:value("fake-ip", translate("fake-ip"))
 o:value("fake-ip-tun", translate("fake-ip(tun mode)"))
 o:value("fake-ip-vpn", translate("fake-ip-vpn(game mode)"))
+o:value("fake-ip-mix", translate("fake-ip-mix(tun mix mode)"))
 o.default = "fake-ip"
 end
 
@@ -62,6 +64,8 @@ o = s:taboption("op_mode", ListValue, "stack_type", font_red..bold_on..translate
 o.description = translate("Select Stack Type For Tun Mode, According To The Running Speed on Your Machine")
 o:depends("en_mode", "redir-host-tun")
 o:depends("en_mode", "fake-ip-tun")
+o:depends("en_mode", "redir-host-mix")
+o:depends("en_mode", "fake-ip-mix")
 o:value("system", translate("System　"))
 o:value("gvisor", translate("Gvisor"))
 o.default = "system"
@@ -82,7 +86,7 @@ o.default = "0"
 o:depends("en_mode", "redir-host")
 o:depends("en_mode", "redir-host-tun")
 o:depends("en_mode", "redir-host-vpn")
-
+o:depends("en_mode", "redir-host-mix")
 
 ---- Operation Mode
 switch_mode = s:taboption("op_mode", DummyValue, "", nil)

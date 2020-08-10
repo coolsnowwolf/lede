@@ -743,7 +743,7 @@ yml_gen_rule_provider_file()
 	RULE_PROVIDER_FILE_PATH="/etc/openclash/rule_provider/$RULE_PROVIDER_FILE_NAME"
 	RULE_PROVIDER_FILE_URL="https://raw.githubusercontent.com/$(grep -F "$RULE_PROVIDER_FILE_NAME" /etc/openclash/rule_providers.list |awk -F ',' '{print $4$5}' 2>/dev/null)"
 
-	if [ -n "$(grep "$RULE_PROVIDER_FILE_URL" $RULE_PROVIDER_FILE)" ]; then
+	if [ -n "$(grep "$RULE_PROVIDER_FILE_URL" $RULE_PROVIDER_FILE 2>/dev/null)" ]; then
 		return
 	fi
 	
@@ -819,7 +819,7 @@ yml_set_custom_rule_provider()
 		return
 	fi
 	
-	if [ -n "$(grep "$url" "$RULE_PROVIDER_FILE")" ] && [ -n "$url" ]; then
+	if [ -n "$(grep "$url" "$RULE_PROVIDER_FILE" 2>/dev/null)" ] && [ -n "$url" ]; then
 		return
 	fi
    
@@ -841,7 +841,7 @@ yml_set_custom_rule_provider()
       return
   fi
   
-  if [ -n "$(grep "$path" "$RULE_PROVIDER_FILE")" ]; then
+  if [ -n "$(grep "$path" "$RULE_PROVIDER_FILE" 2>/dev/null)" ]; then
 		return
 	fi
 	
@@ -885,7 +885,7 @@ yml_custom_rule_provider()
 		sed -i '/OpenClash-Rule-Set-Priority/,/OpenClash-Rule-Set-Priority-End/d' "$RULE_FILE" 2>/dev/null
 	fi
 	
-	if [ -n "$(grep "OpenClash-Rule-Providers-Set" "$RULE_PROVIDER_FILE")" ]; then
+	if [ -n "$(grep "OpenClash-Rule-Providers-Set" "$RULE_PROVIDER_FILE" 2>/dev/null)" ]; then
 		sed -i '/OpenClash-Rule-Providers-Set/,/OpenClash-Rule-Providers-Set-End/d' "$RULE_PROVIDER_FILE" 2>/dev/null
 	fi
 	
@@ -937,8 +937,10 @@ firewall_redirect_exclude()
    
    if [ -z "$en_mode_tun" ]; then
       iptables -t mangle -A openclash -p udp --dport "$src_dport" -j RETURN >/dev/null 2>&1
-   else
+   elif [ "$en_mode_tun" -ne 3 ]; then
       iptables -t mangle -A openclash -p tcp --dport "$src_dport" -j RETURN >/dev/null 2>&1
+      iptables -t mangle -A openclash -p udp --dport "$src_dport" -j RETURN >/dev/null 2>&1
+   else
       iptables -t mangle -A openclash -p udp --dport "$src_dport" -j RETURN >/dev/null 2>&1
    fi
 }
@@ -986,6 +988,11 @@ do_run_mode()
        en_mode="redir-host"
     fi
     
+    if [ "$en_mode" = "redir-host-mix" ]; then
+       en_mode_tun="3"
+       en_mode="redir-host"
+    fi
+    
     if [ "$en_mode" = "redir-host-vpn" ]; then
        en_mode_tun="2"
        en_mode="redir-host"
@@ -993,6 +1000,11 @@ do_run_mode()
     
     if [ "$en_mode" = "fake-ip-vpn" ]; then
        en_mode_tun="2"
+       en_mode="fake-ip"
+    fi
+    
+    if [ "$en_mode" = "fake-ip-mix" ]; then
+       en_mode_tun="3"
        en_mode="fake-ip"
     fi
 }
@@ -1006,19 +1018,9 @@ do_run_core()
     
     rm -rf "/etc/openclash/clash" 2>/dev/null
     
-    if [ "$en_mode_tun" = "1" ]; then
+    if [ "$en_mode_tun" = "1" ] || [ "$en_mode_tun" = "3" ]; then
        ln -s /etc/openclash/core/clash_tun /etc/openclash/clash 2>/dev/null
        core_type="Tun"
-    fi
-    
-    if [ "$en_mode_tun" = "1" ]; then
-       ln -s /etc/openclash/core/clash_tun /etc/openclash/clash 2>/dev/null
-       core_type="Tun"
-    fi
-    
-    if [ "$en_mode_tun" = "2" ]; then
-       ln -s /etc/openclash/core/clash_game /etc/openclash/clash 2>/dev/null
-       core_type="Game"
     fi
     
     if [ "$en_mode_tun" = "2" ]; then
@@ -1126,7 +1128,7 @@ fi
       done
    fi
 
-if [ -z "$en_mode_tun" ]; then
+if [ "$en_mode_tun" -ne 1 ] && [ "$en_mode_tun" -ne 2 ]; then
    #tcp
    iptables -t nat -N openclash
    iptables -t nat -F openclash
@@ -1137,27 +1139,30 @@ if [ -z "$en_mode_tun" ]; then
       iptables -t nat -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
    fi
    iptables -t nat -A openclash -p tcp -j REDIRECT --to-ports "$proxy_port"
-   iptables -t nat -I PREROUTING -p tcp -d 8.8.8.8 -j REDIRECT --to-ports "$proxy_port"
-   iptables -t nat -I PREROUTING -p tcp -d 8.8.4.4 -j REDIRECT --to-ports "$proxy_port"
+   if [ "$en_mode_tun" -ne 3 ]; then
+      iptables -t nat -I PREROUTING -p tcp -d 8.8.8.8 -j REDIRECT --to-ports "$proxy_port"
+      iptables -t nat -I PREROUTING -p tcp -d 8.8.4.4 -j REDIRECT --to-ports "$proxy_port"
+   fi
    iptables -t nat -A PREROUTING -p tcp -j openclash
-
-   #udp
-   if [ "$enable_udp_proxy" -eq 1 ]; then
-      ip rule add fwmark "$PROXY_FWMARK" table "$PROXY_ROUTE_TABLE"
-      ip route add local 0.0.0.0/0 dev lo table "$PROXY_ROUTE_TABLE"
-      iptables -t mangle -N openclash
-      iptables -t mangle -A openclash -m set --match-set localnetwork dst -j RETURN
-      iptables -t mangle -A openclash -m set --match-set lan_ac_black_ips src -j RETURN >/dev/null 2>&1
-      iptables -t mangle -A openclash -m set ! --match-set lan_ac_white_ips src -j RETURN >/dev/null 2>&1
-      if [ "$en_mode" = "redir-host" ]; then
-   	     iptables -t mangle -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
+   if [ -z "$en_mode_tun" ]; then
+      #udp
+      if [ "$enable_udp_proxy" -eq 1 ]; then
+         ip rule add fwmark "$PROXY_FWMARK" table "$PROXY_ROUTE_TABLE"
+         ip route add local 0.0.0.0/0 dev lo table "$PROXY_ROUTE_TABLE"
+         iptables -t mangle -N openclash
+         iptables -t mangle -A openclash -m set --match-set localnetwork dst -j RETURN
+         iptables -t mangle -A openclash -m set --match-set lan_ac_black_ips src -j RETURN >/dev/null 2>&1
+         iptables -t mangle -A openclash -m set ! --match-set lan_ac_white_ips src -j RETURN >/dev/null 2>&1
+         if [ "$en_mode" = "redir-host" ]; then
+   	        iptables -t mangle -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
+         fi
+         iptables -t mangle -A openclash -p udp --dport 53 -j RETURN >/dev/null 2>&1
+         #端口转发
+         config_load "firewall"
+         config_foreach firewall_redirect_exclude "redirect"
+         iptables -t mangle -A openclash -p udp -j TPROXY --on-port "$proxy_port" --on-ip 0.0.0.0 --tproxy-mark "$PROXY_FWMARK"
+         iptables -t mangle -A PREROUTING -p udp -j openclash
       fi
-      iptables -t mangle -A openclash -p udp --dport 53 -j RETURN >/dev/null 2>&1
-      #端口转发
-      config_load "firewall"
-      config_foreach firewall_redirect_exclude "redirect"
-      iptables -t mangle -A openclash -p udp -j TPROXY --on-port "$proxy_port" --on-ip 0.0.0.0 --tproxy-mark "$PROXY_FWMARK"
-      iptables -t mangle -A PREROUTING -p udp -j openclash
    fi
 
    if [ "$en_mode" = "fake-ip" ]; then
@@ -1193,14 +1198,15 @@ if [ -z "$en_mode_tun" ]; then
       #   ip6tables -t mangle -A PREROUTING -p udp -j openclash
       #fi
    fi 2>/dev/null
-else
+fi
+if [ -n "$en_mode_tun" ]; then
    #TUN模式
    #启动TUN
-   if [ "$en_mode_tun" = "2" ]; then
+   if [ "$en_mode_tun" -eq 2 ]; then
       ip tuntap add user root mode tun clash0
       ip link set clash0 up
       ip route replace default dev clash0 table "$PROXY_ROUTE_TABLE"
-   elif [ "$en_mode_tun" = "1" ]; then
+   elif [ "$en_mode_tun" -eq 1 ] || [ "$en_mode_tun" -eq 3 ]; then
       TUN_WAIT=0
       while ( [ -n "$(pidof clash)" ] && [ -z "$(ip route list |grep utun)" ] && [ "$TUN_WAIT" -le 3 ] )
       do
@@ -1210,27 +1216,46 @@ else
       ip route replace default dev utun table "$PROXY_ROUTE_TABLE"
    fi
    ip rule add fwmark "$PROXY_FWMARK" table "$PROXY_ROUTE_TABLE"
-   #设置防火墙
-   iptables -t mangle -N openclash_output
-   iptables -t mangle -F openclash_output
-   iptables -t mangle -A openclash_output -m set --match-set localnetwork dst -j RETURN
-   if [ "$en_mode" = "fake-ip" ]; then
-      iptables -t mangle -A openclash_output -d 198.18.0.0/16 -j MARK --set-mark "$PROXY_FWMARK"
+   
+   if [ "$en_mode_tun" -ne 3 ]; then
+      #设置防火墙
+      iptables -t mangle -N openclash_output
+      iptables -t mangle -F openclash_output
+      iptables -t mangle -A openclash_output -m set --match-set localnetwork dst -j RETURN
+      if [ "$en_mode" = "fake-ip" ]; then
+         iptables -t mangle -A openclash_output -d 198.18.0.0/16 -j MARK --set-mark "$PROXY_FWMARK"
+      fi
+      iptables -t mangle -I OUTPUT -j openclash_output
    fi
-   iptables -t mangle -I OUTPUT -j openclash_output
+   
    iptables -t mangle -N openclash
    iptables -t mangle -F openclash
+   iptables -t mangle -N openclash_dns_hijack
+   iptables -t mangle -F openclash_dns_hijack
    #端口转发
    config_load "firewall"
    config_foreach firewall_redirect_exclude "redirect"
    #其他流量
    iptables -t mangle -A openclash -m set --match-set lan_ac_black_ips src -j RETURN >/dev/null 2>&1
    iptables -t mangle -A openclash -m set ! --match-set lan_ac_white_ips src -j RETURN >/dev/null 2>&1
-   iptables -t mangle -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
+   if [ "$en_mode" = "redir-host" ]; then
+      iptables -t mangle -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
+   fi
    iptables -t mangle -A openclash -m set ! --match-set localnetwork dst -j MARK --set-mark "$PROXY_FWMARK"
-   iptables -t mangle -I PREROUTING -j openclash
-   iptables -t nat -I PREROUTING -p tcp --dport 53 -j ACCEPT
-
+   
+   if [ "$en_mode_tun" -ne 3 ]; then
+      iptables -t mangle -I PREROUTING -j openclash
+      iptables -t nat -I PREROUTING -p tcp --dport 53 -j ACCEPT
+   else
+      iptables -t mangle -I PREROUTING -p tcp --dport 53 -j openclash_dns_hijack
+      iptables -t mangle -A openclash_dns_hijack -d 8.8.8.8 -j MARK --set-mark "$PROXY_FWMARK"
+      iptables -t mangle -A openclash_dns_hijack -d 8.8.4.4 -j MARK --set-mark "$PROXY_FWMARK"
+      iptables -t mangle -I PREROUTING -p udp -j openclash
+      iptables -t nat -I PREROUTING -p tcp -d 8.8.8.8 -j ACCEPT
+      iptables -t nat -I PREROUTING -p tcp -d 8.8.4.4 -j ACCEPT
+   fi
+   
+   
    #ipv6
    #    if [ "$ipv6_enable" -eq 1 ]; then
    #        ip6tables -t mangle -I PREROUTING -j MARK --set-mark "$PROXY_FWMARK"
@@ -1264,7 +1289,6 @@ revert_firewall()
    for pre_line in $pre_lines; do
       iptables -t mangle -D PREROUTING "$pre_line" >/dev/null 2>&1
    done >/dev/null 2>&1
-   iptables -t mangle -D PREROUTING -p udp -j openclash >/dev/null 2>&1
 
    pre_lines=$(iptables -nvL PREROUTING -t nat |sed 1,2d |sed -n '/openclash/=' 2>/dev/null |sort -rn)
    for pre_line in $pre_lines; do
@@ -1279,7 +1303,7 @@ revert_firewall()
 
    iptables -t nat -F openclash >/dev/null 2>&1
    iptables -t nat -X openclash >/dev/null 2>&1
-
+   
    iptables -t nat -F openclash_output >/dev/null 2>&1
    iptables -t nat -X openclash_output >/dev/null 2>&1
 
@@ -1296,8 +1320,12 @@ revert_firewall()
 
    iptables -t mangle -D OUTPUT -j openclash_output >/dev/null 2>&1
    iptables -t mangle -D PREROUTING -j openclash >/dev/null 2>&1
+   iptables -t mangle -D PREROUTING -p udp -j openclash >/dev/null 2>&1
+   iptables -t mangle -D PREROUTING -p tcp --dport 53 -j openclash_dns_hijack >/dev/null 2>&1
    iptables -t mangle -F openclash >/dev/null 2>&1
    iptables -t mangle -X openclash >/dev/null 2>&1
+   iptables -t mangle -F openclash_dns_hijack >/dev/null 2>&1
+   iptables -t mangle -X openclash_dns_hijack >/dev/null 2>&1
    iptables -t mangle -F openclash_output >/dev/null 2>&1
    iptables -t mangle -X openclash_output >/dev/null 2>&1
 
