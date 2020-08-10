@@ -43,7 +43,7 @@ PKG_CONFIG_DEPENDS:= \
 LUCI_TITLE:=SS/SSR/V2Ray/Trojan/Socks5/Tun LuCI interface
 LUCI_PKGARCH:=all
 LUCI_DEPENDS:=+shadowsocksr-libev-alt +ipset +ip-full +iptables-mod-tproxy +dnsmasq-full +coreutils +coreutils-base64 +pdnsd-alt +wget +lua +libuci-lua \
-	+microsocks +dns2socks +shadowsocks-libev-ss-local +shadowsocksr-libev-ssr-local +shadowsocks-libev-ss-redir +simple-obfs +tcpping +resolveip\
+	+microsocks +dns2socks +shadowsocks-libev-ss-local +shadowsocksr-libev-ssr-local +shadowsocks-libev-ss-redir +simple-obfs +tcping +resolveip\
 	+PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_plugin:v2ray-plugin \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_V2ray:v2ray \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_Trojan:trojan \
