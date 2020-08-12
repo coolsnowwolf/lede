@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=hostapd
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 
 PKG_SOURCE_URL:=http://w1.fi/hostap.git
 PKG_SOURCE_PROTO:=git
@@ -248,6 +248,17 @@ endef
 
 define Package/wpad-basic/description
  This package contains a basic IEEE 802.1x/WPA Authenticator and Supplicant with WPA-PSK, 802.11r and 802.11w support.
+endef
+
+define Package/wpad-basic-wolfssl
+$(call Package/wpad/Default,$(1))
+  TITLE+= (wolfSSL, 11r, 11w)
+  VARIANT:=wpad-basic-wolfssl
+  DEPENDS+=+libwolfssl
+endef
+
+define Package/wpad-basic-wolfssl/description
+ This package contains a basic IEEE 802.1x/WPA Authenticator and Supplicant with WPA-PSK, SAE (WPA3-Personal), 802.11r and 802.11w support.
 endef
 
 define Package/wpad-mini
@@ -575,6 +586,7 @@ define Package/wpad/install
 	$(LN) wpad $(1)/usr/sbin/wpa_supplicant
 endef
 Package/wpad-basic/install = $(Package/wpad/install)
+Package/wpad-basic-wolfssl/install = $(Package/wpad/install)
 Package/wpad-mini/install = $(Package/wpad/install)
 Package/wpad-openssl/install = $(Package/wpad/install)
 Package/wpad-wolfssl/install = $(Package/wpad/install)
@@ -630,6 +642,7 @@ $(eval $(call BuildPackage,wpad))
 $(eval $(call BuildPackage,wpad-mesh-openssl))
 $(eval $(call BuildPackage,wpad-mesh-wolfssl))
 $(eval $(call BuildPackage,wpad-basic))
+$(eval $(call BuildPackage,wpad-basic-wolfssl))
 $(eval $(call BuildPackage,wpad-mini))
 $(eval $(call BuildPackage,wpad-openssl))
 $(eval $(call BuildPackage,wpad-wolfssl))
