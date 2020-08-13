@@ -23,7 +23,7 @@ case $CORE_TYPE in
 	"Tun")
    CORE_CV=$(/etc/openclash/core/clash_tun -v 2>/dev/null |awk -F ' ' '{print $2}')
    CORE_LV=$(sed -n 2p /tmp/clash_last_version 2>/dev/null)
-   if [ "$en_mode" = "fake-ip-tun" ] || [ "$en_mode" = "redir-host-tun" ]; then
+   if [ "$en_mode" = "fake-ip-tun" ] || [ "$en_mode" = "redir-host-tun" ] || [ "$en_mode" = "redir-host-mix" ] || [ "$en_mode" = "fake-ip-mix" ]; then
       if_restart=1
    fi
    ;;

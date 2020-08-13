@@ -16,6 +16,7 @@ UPDATE_CONFIG_NAME=$(echo "$UPDATE_CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/
 UCI_DEL_LIST="uci del_list openclash.config.new_servers_group"
 UCI_ADD_LIST="uci add_list openclash.config.new_servers_group"
 UCI_SET="uci set openclash.config."
+MIX_PROXY=$(uci get openclash.config.mix_proxies 2>/dev/null)
 
 if [ ! -z "$UPDATE_CONFIG_FILE" ]; then
    CONFIG_FILE="$UPDATE_CONFIG_FILE"
@@ -51,7 +52,7 @@ yml_proxy_provider_set()
       return
    fi
    
-   if [ ! -z "$config" ] && [ "$config" != "$CONFIG_NAME" ] && [ "$config" != "all" ]; then
+   if [ "$MIX_PROXY" != "1" ] && [ ! -z "$config" ] && [ "$config" != "$CONFIG_NAME" ] && [ "$config" != "all" ]; then
       return
    fi
    
@@ -165,7 +166,7 @@ yml_servers_set()
       return
    fi
    
-   if [ ! -z "$config" ] && [ "$config" != "$CONFIG_NAME" ] && [ "$config" != "all" ]; then
+   if [ "$MIX_PROXY" != "1" ] && [ ! -z "$config" ] && [ "$config" != "$CONFIG_NAME" ] && [ "$config" != "all" ]; then
       return
    fi
    
