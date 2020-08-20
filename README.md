@@ -38,6 +38,7 @@ sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git
 ```bash
 bash <(curl -Lsk https://cdn.jsdelivr.net/gh/chenaidairong/lede/start.sh)
 ```
+该脚本适用于服务器编译，服务器系统为Ubuntu & Debian
 你可以自由使用，但源码编译二次发布请注明我的 GitHub 仓库链接。谢谢合作！
 =
 
