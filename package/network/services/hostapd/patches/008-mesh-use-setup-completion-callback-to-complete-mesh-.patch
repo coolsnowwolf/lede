@@ -1,0 +1,108 @@
+From 11e5bbe58eebdb10793eec374b6c8ccc7daf7ec8 Mon Sep 17 00:00:00 2001
+From: Peter Oh <peter.oh@bowerswilkins.com>
+Date: Tue, 30 Jun 2020 14:18:56 +0200
+Subject: [PATCH 08/19] mesh: use setup completion callback to complete mesh
+ join
+
+mesh join function is the last function to be called during
+mesh join process, but it's been called a bit earlier than
+it's supposed to be, so that some mesh parameter values
+such as VHT capabilities not applied correct when mesh join
+is in process.
+Moreover current design of mesh join that is called directly
+after mesh initialization isn't suitable for DFS channels to use,
+since mesh join process should be paused until DFS CAC is
+done and resumed after it's done.
+The callback will be called by hostapd_setup_interface_complete_sync.
+There is possiblity that completing mesh init fails, so add error
+handle codes.
+
+Signed-off-by: Peter Oh <peter.oh@bowerswilkins.com>
+---
+ src/ap/hostapd.c      | 11 ++++++++++-
+ wpa_supplicant/mesh.c | 12 ++++++++++--
+ 2 files changed, 20 insertions(+), 3 deletions(-)
+
+--- a/src/ap/hostapd.c
++++ b/src/ap/hostapd.c
+@@ -434,6 +434,8 @@ static void hostapd_free_hapd_data(struc
+ #ifdef CONFIG_MESH
+ 	wpabuf_free(hapd->mesh_pending_auth);
+ 	hapd->mesh_pending_auth = NULL;
++	/* handling setup failure is already done */
++	hapd->setup_complete_cb = NULL;
+ #endif /* CONFIG_MESH */
+ 
+ 	hostapd_clean_rrm(hapd);
+@@ -2156,6 +2158,13 @@ dfs_offload:
+ 	if (hapd->setup_complete_cb)
+ 		hapd->setup_complete_cb(hapd->setup_complete_cb_ctx);
+ 
++#ifdef CONFIG_MESH
++	if (delay_apply_cfg && iface->mconf == NULL) {
++		wpa_printf(MSG_ERROR, "Error while completing mesh init");
++		goto fail;
++	}
++#endif /* CONFIG_MESH */
++
+ 	wpa_printf(MSG_DEBUG, "%s: Setup of interface done.",
+ 		   iface->bss[0]->conf->iface);
+ 	if (iface->interfaces && iface->interfaces->terminate_on_error > 0)
+@@ -2299,7 +2308,7 @@ int hostapd_setup_interface(struct hosta
+ 	ret = setup_interface(iface);
+ 	if (ret) {
+ 		wpa_printf(MSG_ERROR, "%s: Unable to setup interface.",
+-			   iface->bss[0]->conf->iface);
++			iface->conf ? iface->conf->bss[0]->iface : "N/A");
+ 		return -1;
+ 	}
+ 
+--- a/wpa_supplicant/mesh.c
++++ b/wpa_supplicant/mesh.c
+@@ -193,7 +193,6 @@ static int wpas_mesh_init_rsn(struct wpa
+ 	return !wpa_s->mesh_rsn ? -1 : 0;
+ }
+ 
+-
+ static int wpas_mesh_complete(struct wpa_supplicant *wpa_s)
+ {
+ 	struct hostapd_iface *ifmsh = wpa_s->ifmsh;
+@@ -244,6 +243,13 @@ static int wpas_mesh_complete(struct wpa
+ }
+ 
+ 
++static void wpas_mesh_complete_cb(void *arg)
++{
++	struct wpa_supplicant *wpa_s = arg;
++	wpas_mesh_complete(wpa_s);
++}
++
++
+ static int wpa_supplicant_mesh_init(struct wpa_supplicant *wpa_s,
+ 				    struct wpa_ssid *ssid,
+ 				    struct hostapd_freq_params *freq)
+@@ -267,6 +273,7 @@ static int wpa_supplicant_mesh_init(stru
+ 	if (!ifmsh)
+ 		return -ENOMEM;
+ 
++	ifmsh->owner = wpa_s;
+ 	ifmsh->drv_flags = wpa_s->drv_flags;
+ 	ifmsh->drv_flags2 = wpa_s->drv_flags2;
+ 	ifmsh->num_bss = 1;
+@@ -285,6 +292,8 @@ static int wpa_supplicant_mesh_init(stru
+ 	bss->drv_priv = wpa_s->drv_priv;
+ 	bss->iface = ifmsh;
+ 	bss->mesh_sta_free_cb = mesh_mpm_free_sta;
++	bss->setup_complete_cb = wpas_mesh_complete_cb;
++	bss->setup_complete_cb_ctx = wpa_s;
+ 	frequency = ssid->frequency;
+ 	if (frequency != freq->freq &&
+ 	    frequency == freq->freq + freq->sec_channel_offset * 20) {
+@@ -523,7 +532,6 @@ int wpa_supplicant_join_mesh(struct wpa_
+ 		goto out;
+ 	}
+ 
+-	ret = wpas_mesh_complete(wpa_s);
+ out:
+ 	return ret;
+ }
