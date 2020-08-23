@@ -1,6 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ravpower-mcu
+PKG_RELEASE:=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=https://github.com/blocktrron/ravpower-mcu.git
@@ -16,7 +17,6 @@ define Package/ravpower-mcu
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Utility to control the RAVPower RP-WD009 PMIC
-  DEPENDS:=@TARGET_ramips_mt76x8
   URL:=https://github.com/blocktrron/ravpower-mcu/
 endef
 
