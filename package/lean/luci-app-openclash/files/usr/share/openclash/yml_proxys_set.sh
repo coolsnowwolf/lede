@@ -614,7 +614,7 @@ EOF
 fi
 cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
 cat >> "$SERVER_FILE" <<-EOF
-  url: http://www.gstatic.com/generate_204
+  url: https://cp.cloudflare.com/generate_204
   interval: "600"
 - name: Proxy
   type: select
@@ -702,7 +702,7 @@ EOF
 fi
 cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
 cat >> "$SERVER_FILE" <<-EOF
-  url: http://www.gstatic.com/generate_204
+  url: https://cp.cloudflare.com/generate_204
   interval: "600"
 - name: Proxy
   type: select
@@ -936,7 +936,7 @@ EOF
 fi
 cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
 cat >> "$SERVER_FILE" <<-EOF
-  url: http://www.gstatic.com/generate_204
+  url: https://cp.cloudflare.com/generate_204
   interval: "600"
 - name: Proxy
   type: select

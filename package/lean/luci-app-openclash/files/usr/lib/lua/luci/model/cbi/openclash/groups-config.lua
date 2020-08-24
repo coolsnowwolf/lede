@@ -62,7 +62,8 @@ o = s:option(Value, "name", translate("Group Name"))
 o.rmempty = false
 
 o = s:option(Value, "test_url", translate("Test URL"))
-o.default = "http://www.gstatic.com/generate_204"
+o:value("http://www.gstatic.com/generate_204")
+o:value("https://cp.cloudflare.com/generate_204")
 o.rmempty = false
 o:depends("type", "url-test")
 o:depends("type", "fallback")

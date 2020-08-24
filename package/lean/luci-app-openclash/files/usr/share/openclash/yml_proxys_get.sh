@@ -235,7 +235,7 @@ do
    echo "正在读取【$CONFIG_NAME】-【$provider_name】代理集配置..." >$START_LOG
    
    #代理集存在时获取代理集编号
-   provider_nums=$(grep -Fw "$provider_name" "$match_provider" |awk -F '.' '{print $1}')
+   provider_nums=$(grep -Fw "$provider_name" "$match_provider" 2>/dev/null|awk -F '.' '{print $1}')
    if [ "$servers_update" -eq 1 ] && [ ! -z "$provider_nums" ]; then
       sed -i "/^${provider_nums}\./c\#match#" "$match_provider" 2>/dev/null
       uci_set="uci -q set openclash.@proxy-provider["$provider_nums"]."
@@ -321,7 +321,7 @@ done
 if [ "$servers_if_update" = "1" ]; then
      echo "删除【$CONFIG_NAME】订阅中已不存在的代理集..." >$START_LOG
      sed -i '/#match#/d' "$match_provider" 2>/dev/null
-     cat $match_provider |awk -F '.' '{print $1}' |sort -rn |while read line
+     cat $match_provider 2>/dev/null|awk -F '.' '{print $1}' |sort -rn |while read line
      do
         if [ -z "$line" ]; then
            continue
@@ -504,7 +504,7 @@ do
    fi
    
 #节点存在时获取节点编号
-   server_num=$(grep -Fw "$server_name" "$match_servers" |awk -F '.' '{print $1}')
+   server_num=$(grep -Fw "$server_name" "$match_servers" 2>/dev/null|awk -F '.' '{print $1}')
    if [ "$servers_update" -eq 1 ] && [ ! -z "$server_num" ]; then
       sed -i "/^${server_num}\./c\#match#" "$match_servers" 2>/dev/null
    fi

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 . /lib/functions.sh
 
 CFG_FILE=$(uci get openclash.config.config_path 2>/dev/null)
@@ -11,8 +11,7 @@ get_nextlen()
 	    return
 	 fi
 
-   for i in $@
-   do
+   for i in $@; do
       if [ -z "$group_len" ]; then
          break
       fi
