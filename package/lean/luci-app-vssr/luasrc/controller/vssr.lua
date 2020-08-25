@@ -7,7 +7,7 @@ function index()
 
     if nixio.fs.access("/usr/bin/ssr-redir") then
         entry({"admin", "services", "vssr"},
-              alias("admin", "services", "vssr", "client"), _("Hello World"), 10).dependent =
+              alias("admin", "services", "vssr", "client"), _("Hello World"), 0).dependent =
             true -- 首页
         entry({"admin", "services", "vssr", "client"}, cbi("vssr/client"),
               _("SSR Client"), 10).leaf = true -- 基本设置
@@ -47,7 +47,7 @@ function index()
     entry({"admin", "services", "vssr", "checkport"}, call("check_port")) -- 检测单个端口并返回Ping
     entry({"admin", "services", "vssr", "run"}, call("act_status")) -- 检测全局服务器状态
     entry({"admin", "services", "vssr", "change"}, call("change_node")) -- 切换节点
-    entry({"admin", "services", "vssr", "allserver"}, call("get_servers")) -- 获取所有节点Json
+    --entry({"admin", "services", "vssr", "allserver"}, call("get_servers")) -- 获取所有节点Json
     entry({"admin", "services", "vssr", "subscribe"}, call("get_subscribe")) -- 执行订阅
     entry({"admin", "services", "vssr", "flag"}, call("get_flag")) -- 获取节点国旗 iso code
     entry({"admin", "services", "vssr", "ip"}, call("check_ip")) -- 获取ip情况
@@ -57,7 +57,7 @@ end
 -- 执行订阅
 function get_subscribe()
 
-    local cjson = require "cjson"
+    local cjson = require "luci.jsonc"
     local e = {}
     local uci = luci.model.uci.cursor()
     local auto_update = luci.http.formvalue("auto_update")
@@ -74,7 +74,7 @@ function get_subscribe()
         luci.sys.call(cmd1)
         luci.sys.call(cmd2)
         luci.sys.call(cmd3)
-        for k, v in ipairs(cjson.decode(subscribe_url)) do
+        for k, v in ipairs(cjson.parse(subscribe_url)) do
             luci.sys.call(
                 'uci add_list vssr.@server_subscribe[0].subscribe_url="' .. v ..
                     '"')
@@ -99,10 +99,6 @@ function get_servers()
     uci:foreach("vssr", "servers", function(s)
         local e = {}
         e["name"] = s[".name"]
-        local t1 = luci.sys.exec(
-                       "ping -c 1 -W 1 %q 2>&1 | grep -o 'time=[0-9]*.[0-9]' | awk -F '=' '{print$2}'" %
-                           s["server"])
-        e["t1"] = t1
         table.insert(server_table, e)
     end)
     luci.http.prepare_content("application/json")
@@ -114,14 +110,12 @@ function change_node()
     local e = {}
     local uci = luci.model.uci.cursor()
     local sid = luci.http.formvalue("set")
-    local name = ""
-    uci:foreach("vssr", "global", function(s) name = s[".name"] end)
     e.status = false
     e.sid = sid
     if sid ~= "" then
-        uci:set("vssr", name, "global_server", sid)
+		uci:set("vssr", '@global[0]', 'global_server', sid)
         uci:commit("vssr")
-        luci.sys.call("/etc/init.d/vssr restart")
+        luci.sys.exec("/etc/init.d/vssr reload")
         e.status = true
     end
     luci.http.prepare_content("application/json")
@@ -292,46 +286,6 @@ function check_port()
 
 end
 
-function JudgeIPString(ipStr)
-    if type(ipStr) ~= "string" then return false end
-
-    -- 判断长度
-    local len = string.len(ipStr)
-    if len < 7 or len > 15 then -- 长度不对
-        return false
-    end
-
-    -- 判断出现的非数字字符
-    local point = string.find(ipStr, "%p", 1) -- 字符"."出现的位置
-    local pointNum = 0 -- 字符"."出现的次数 正常ip有3个"."
-    while point ~= nil do
-        if string.sub(ipStr, point, point) ~= "." then -- 得到非数字符号不是字符"."
-            return false
-        end
-        pointNum = pointNum + 1
-        point = string.find(ipStr, "%p", point + 1)
-        if pointNum > 3 then return false end
-    end
-    if pointNum ~= 3 then -- 不是正确的ip格式
-        return false
-    end
-
-    -- 判断数字对不对
-    local num = {}
-    for w in string.gmatch(ipStr, "%d+") do
-        num[#num + 1] = w
-        local kk = tonumber(w)
-        if kk == nil or kk > 255 then -- 不是数字或超过ip正常取值范围了
-            return false
-        end
-    end
-
-    if #num ~= 4 then -- 不是4段数字
-        return false
-    end
-
-    return ipStr
-end
 
 -- 检测 当前节点ip 和 网站访问情况
 function check_ip()
@@ -341,7 +295,8 @@ function check_ip()
     local d = {}
     local mm = require 'maxminddb'
     local db = mm.open('/usr/share/vssr/GeoLite2-Country.mmdb')
-    local ip = string.gsub(luci.sys.exec("content=`wget --no-check-certificate -q -O - https://api.ip.sb/ip`;echo $content"), "\n", "")
+    local http = require "luci.sys"
+    local ip = string.gsub(http.httpget("https://api.ip.sb/ip"), "\n", "")
     local res = db:lookup(ip)
     d.flag = string.lower(res:get("country", "iso_code"))
     d.country = res:get("country", "names", "zh-CN")

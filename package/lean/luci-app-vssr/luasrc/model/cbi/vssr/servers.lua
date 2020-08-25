@@ -1,7 +1,7 @@
 -- Licensed to the public under the GNU General Public License v3.
 local m, s, o
 local vssr = "vssr"
-local cjson = require("cjson")
+local json = require "luci.jsonc"
 
 local uci = luci.model.uci.cursor()
 local server_count = 0
@@ -27,7 +27,7 @@ s.sortable = false
 
 s.des = server_count
 s.current = uci:get("vssr", name, "global_server")
-s.servers = cjson.encode(server_table)
+s.servers = json.stringify(server_table)
 s.template = "vssr/tblsection"
 s.extedit = luci.dispatcher.build_url("admin/services/vssr/servers/%s")
 function s.create(...)

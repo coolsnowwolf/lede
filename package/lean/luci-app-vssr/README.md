@@ -1,6 +1,6 @@
 ## luci-app-vssr [Hello World]
 A new SSR SS V2ray Trojan luci app bese luci-app-ssr-plus  
-<b>支持V2ray分流</b>  
+<b>支持全部类型的节点分流</b>  
 目前只适配最新版 argon主题 （其他主题下应该也可以用 但显示应该不会很完美）
 目前Lean最新版本的openwrt 已经可以直接拉取源码到package/lean 下直接进行勾选并编译，由于有部分文件和ssr+ 同文件名所以不能同时编译。  
 
@@ -13,12 +13,11 @@ A new SSR SS V2ray Trojan luci app bese luci-app-ssr-plus
 稳定性的差异来自于你固件的内核，还有ss ssr v2ray 这几个核心插件的稳定性，当然你的节点才是影响稳定性的最大因素。  
 Luci 能决定的只有操作起来是否便利、顺手，还有对几个核心应用功能的适配挖掘而已。
 
-### Update Log 2020-07-19  
+### Update Log 2020-08-24  v1.14
 
 #### Updates
 
-- UPD: 弃用curl 改用 wget 来获取远端ip
-- UPD: 修复了不能自动更新gfw list的问题
+- UPD: 增加一个自定义分流的选项，可在访问控制中定义自己需要分流的域名(只限于被墙或者非cn ip域名)。
 
 详情见[具体日志](./relnotes.txt)。 
 
@@ -28,7 +27,6 @@ Luci 能决定的只有操作起来是否便利、顺手，还有对几个核心
 1. 节点列表支持国旗显示 TW节点为五星红旗， 节点列表页面 打开自动ping.  
 1. 优化了在节点列表页面点击应用后节点切换的速度。同时也优化了自动切换的速度。  
 1. 将节点订阅转移至 高级设置 请悉知 由于需要获取ip的国家code 新的订阅速度可能会比原来慢一点点 x86无影响。  
-1. 去掉了ss插件，ss节点将通过v2ray进行代理，支持ss的v2ray plugin，可能会遇到老的加密方式不兼容的情况。  
 1. 给Hello World 增加了IP状态显示，在页面底部 左边显示当前节点国旗 ip 和中文国家 右边 是四个网站的访问状态  可以访问是彩色不能访问是灰色。  
 1. 优化了国旗匹配方法，在部分带有emoji counrty code的节点名称中 优先使用 emoji code 匹配国旗。  
 1. 建议搭配argon theme，能有最好的显示体验。  

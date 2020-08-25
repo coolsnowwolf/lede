@@ -18,34 +18,85 @@ end
 
 local server_table = {}
 local encrypt_methods = {
-    "none", "table", "rc4", "rc4-md5-6", "rc4-md5", "aes-128-cfb",
-    "aes-192-cfb", "aes-256-cfb", "aes-128-ctr", "aes-192-ctr", "aes-256-ctr",
-    "bf-cfb", "camellia-128-cfb", "camellia-192-cfb", "camellia-256-cfb",
-    "cast5-cfb", "des-cfb", "idea-cfb", "rc2-cfb", "seed-cfb", "salsa20",
-    "chacha20", "chacha20-ietf"
+"none",
+"table",
+"rc4",
+"rc4-md5-6",
+"rc4-md5",
+"aes-128-cfb",
+"aes-192-cfb",
+"aes-256-cfb",
+"aes-128-ctr",
+"aes-192-ctr",
+"aes-256-ctr",
+"bf-cfb",
+"camellia-128-cfb",
+"camellia-192-cfb",
+"camellia-256-cfb",
+"cast5-cfb",
+"des-cfb",
+"idea-cfb",
+"rc2-cfb",
+"seed-cfb",
+"salsa20",
+"chacha20",
+"chacha20-ietf",
 }
 
 local encrypt_methods_ss = {
-    -- aead
-    "aes-128-gcm", "aes-192-gcm", "aes-256-gcm", "chacha20-ietf-poly1305",
-    "xchacha20-ietf-poly1305", -- stream
-    "table", "rc4", "rc4-md5", "aes-128-cfb", "aes-192-cfb", "aes-256-cfb",
-    "aes-128-ctr", "aes-192-ctr", "aes-256-ctr", "bf-cfb", "camellia-128-cfb",
-    "camellia-192-cfb", "camellia-256-cfb", "salsa20", "chacha20",
-    "chacha20-ietf"
+-- aead
+"aes-128-gcm",
+"aes-192-gcm",
+"aes-256-gcm",
+"chacha20-ietf-poly1305",
+"xchacha20-ietf-poly1305",
+-- stream
+"table",
+"rc4",
+"rc4-md5",
+"aes-128-cfb",
+"aes-192-cfb",
+"aes-256-cfb",
+"aes-128-ctr",
+"aes-192-ctr",
+"aes-256-ctr",
+"bf-cfb",
+"camellia-128-cfb",
+"camellia-192-cfb",
+"camellia-256-cfb",
+"salsa20",
+"chacha20",
+"chacha20-ietf",
 }
 
 local protocol = {
-    "origin", "verify_deflate", "auth_sha1_v4", "auth_aes128_sha1",
-    "auth_aes128_md5", "auth_chain_a", "auth_chain_b", "auth_chain_c",
-    "auth_chain_d", "auth_chain_e", "auth_chain_f"
+"origin",
+"verify_deflate",
+"auth_sha1_v4",
+"auth_aes128_sha1",
+"auth_aes128_md5",
+"auth_chain_a",
+"auth_chain_b",
+"auth_chain_c",
+"auth_chain_d",
+"auth_chain_e",
+"auth_chain_f",
 }
 
 obfs = {
-    "plain", "http_simple", "http_post", "random_head", "tls1.2_ticket_auth"
+"plain",
+"http_simple",
+"http_post",
+"random_head",
+"tls1.2_ticket_auth",
+}
+local securitys = {
+"auto",
+"none",
+"aes-128-gcm",
+"chacha20-poly1305"
 }
 
-local securitys = {"auto", "none", "aes-128-gcm", "chacha20-poly1305"}
 
 m = Map(vssr, translate("Edit vssr Server"))
 m.redirect = luci.dispatcher.build_url("admin/services/vssr/servers")
@@ -120,6 +171,16 @@ for _, v in ipairs(encrypt_methods_ss) do o:value(v) end
 o.rmempty = true
 o:depends("type", "ss")
 
+-- Shadowsocks Plugin
+o = s:option(Value, "plugin", translate("Plugin"))
+o.rmempty = true
+o:depends("type", "ss")
+
+o = s:option(Value, "plugin_opts", translate("Plugin Opts"))
+o.rmempty = true
+o:depends("type", "ss")
+
+
 o = s:option(ListValue, "protocol", translate("Protocol"))
 for _, v in ipairs(protocol) do o:value(v) end
 o.rmempty = true
@@ -133,26 +194,7 @@ for _, v in ipairs(obfs) do o:value(v) end
 o.rmempty = true
 o:depends("type", "ssr")
 
-o = s:option(Flag, "v2ray_plugin", translate("V2ray-plugin"))
-o.rmempty = false
-o:depends("type", "ss")
 
-o = s:option(Value, "obfs_transport", translate("V2ray-plugin-transport"))
-o.rmempty = true
-o.default = "ws"
-o:depends("v2ray_plugin", "1")
-
-o = s:option(Value, "obfs_host", translate("V2ray-plugin-host"))
-o.rmempty = true
-o:depends("v2ray_plugin", "1")
-
-o = s:option(Value, "obfs_path", translate("V2ray-plugin-path"))
-o.rmempty = true
-o:depends("v2ray_plugin", "1")
-
-o = s:option(Flag, "obfs_opts", translate("TLS"))
-o.rmempty = false
-o:depends("v2ray_plugin", "1")
 
 o = s:option(Value, "obfs_param", translate("Obfs param(optional)"))
 o:depends("type", "ssr")
@@ -321,7 +363,6 @@ o = s:option(Flag, "mux", translate("Mux"))
 o.rmempty = true
 o.default = "0"
 o:depends("type", "v2ray")
-o:depends("v2ray_plugin", "1")
 
 o = s:option(Value, "concurrency", translate("Concurrency"))
 o.datatype = "uinteger"

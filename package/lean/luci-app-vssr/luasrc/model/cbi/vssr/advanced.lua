@@ -103,7 +103,7 @@ o.inputstyle = "reset"
 o.write = function()
     uci:delete_all("vssr", "servers", function(s) return true end)
     uci:commit("vssr")
-    luci.sys.call("/etc/init.d/vssr stop")
+    luci.sys.exec("/etc/init.d/vssr stop")
     luci.http.redirect(luci.dispatcher.build_url("admin", "services", "vssr",
                                                  "advanced"))
 end

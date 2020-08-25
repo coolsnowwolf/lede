@@ -85,4 +85,9 @@ o.remove = function(self, section, value)
 	NXFS.writefile(blockconf, "")
 end
 
+s:tab("proxy",  translate("Custom Proxy Domain Name"))
+
+o = s:taboption("proxy", DynamicList, "proxy_domain_name", translate("Proxy Domain Name"))
+o.datatype = "hostname"
+
 return m

@@ -224,6 +224,7 @@ local function processData(szType, content)
         result.alias = UrlDecode(alias)
         result.type = "trojan"
         result.server = host[1]
+        result.insecure = "0"
         if host[2]:find("?") then
             local query = split(host[2], "?")
             result.server_port = query[1]
