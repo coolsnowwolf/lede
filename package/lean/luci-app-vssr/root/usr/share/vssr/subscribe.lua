@@ -9,6 +9,7 @@ require 'luci.util'
 require 'luci.jsonc'
 require 'luci.sys'
 
+
 -- these global functions are accessed all the time by the event handler
 -- so caching them is worth the effort
 local luci = luci
@@ -261,19 +262,15 @@ local function processData(szType, content)
     result.hashkey = md5(jsonStringify(result))
     result.alias = alias
     result.switch_enable = switch_enable
-
-    local flag = luci.sys.exec('/usr/share/' .. name .. '/getflag.sh "' ..
-                                   result.alias .. '" ' .. result.server)
-    result.flag = string.gsub(flag, '\n', '')
+    local vssrutil = require "vssrutil"
+    result.flag = vssrutil.get_flag(result.alias,result.server)
 
     return result
 end
 -- wget
 local function wget(url)
-    local stdout = luci.sys.exec(
-                       'wget-ssl --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.90 Safari/537.36" --no-check-certificate -t 3 -T 10 -O- "' ..
-                           url .. '"')
-    return trim(stdout)
+	local stdout = luci.sys.exec('wget-ssl -q --user-agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36" --no-check-certificate -t 3 -T 10 -O- "' .. url .. '"')
+	return trim(stdout)
 end
 
 local execute = function()

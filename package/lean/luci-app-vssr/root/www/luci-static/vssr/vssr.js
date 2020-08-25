@@ -8,7 +8,7 @@ var Vssr = {
 
 
 $(document).ready(function () {
-    Royal.init();
+    Vssr.init();
 });
 
 $(window).load(function () {
