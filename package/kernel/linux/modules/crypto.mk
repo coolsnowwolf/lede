@@ -377,7 +377,7 @@ $(eval $(call KernelPackage,crypto-hw-padlock))
 
 define KernelPackage/crypto-hw-safexcel
   TITLE:= MVEBU SafeXcel Crypto Engine module
-  DEPENDS:=@!LINUX_4_14 @(TARGET_mvebu_cortexa53||TARGET_mvebu_cortexa72) \
+  DEPENDS:=@!LINUX_4_14 @(TARGET_mvebu_cortexa53||TARGET_mvebu_cortexa72) +eip197-mini-firmware \
 	+kmod-crypto-authenc +kmod-crypto-md5 +kmod-crypto-hmac +kmod-crypto-sha256 +kmod-crypto-sha512
   KCONFIG:= \
 	CONFIG_CRYPTO_HW=y \
@@ -392,9 +392,11 @@ MVEBU's EIP97 and EIP197 Cryptographic Engine driver designed by
 Inside Secure. This is found on Marvell Armada 37xx/7k/8k SoCs.
 
 Particular version of these IP (EIP197B and EIP197D) require firmware.
-Unfortunately it's not freely available and needs signed Non-Disclosure
-Agreement (NDA) with Marvell. For those who have signed NDA the firmware can be
-obtained at https://extranet.marvell.com.
+The mini firmware package provides limited functionality, for most operations
+a full-featured firmware is required. Unfortunately the "full" firmware is not
+freely available and needs signed Non-Disclosure Agreement (NDA) with Marvell.
+For those who have signed NDA the firmware can be obtained at
+https://extranet.marvell.com.
 endef
 
 $(eval $(call KernelPackage,crypto-hw-safexcel))

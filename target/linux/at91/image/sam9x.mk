@@ -173,8 +173,9 @@ define Device/at91-q5xr5
   DEVICE_VENDOR := Exegin
   DEVICE_MODEL := Q5XR5
   KERNEL_SIZE := 2048k
+  DEFAULT := n
 endef
-#TARGET_DEVICES += at91-q5xr5
+TARGET_DEVICES += at91-q5xr5
 
 define Device/wb45n
   $(Device/evaluation-fit)

@@ -223,7 +223,7 @@ enable_broadcom() {
 	}
 
 	local _c=0
-	local nas="$(which nas)"
+	local nas="$(command -v nas)"
 	local if_pre_up if_up nas_cmd
 	local vif vif_pre_up vif_post_up vif_do_up vif_txpower
 	local bssmax=$(wlc ifname "$device" bssmax)
