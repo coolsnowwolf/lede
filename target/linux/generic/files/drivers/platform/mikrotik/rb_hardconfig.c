@@ -39,7 +39,7 @@
 
 #include "routerboot.h"
 
-#define RB_HARDCONFIG_VER		"0.04"
+#define RB_HARDCONFIG_VER		"0.05"
 #define RB_HC_PR_PFX			"[rb_hardconfig] "
 
 /* ID values for hardware settings */
@@ -58,6 +58,7 @@
 #define RB_ID_BOARD_IDENTIFIER		0x17
 #define RB_ID_PRODUCT_NAME		0x21
 #define RB_ID_DEFCONF			0x26
+#define RB_ID_BOARD_REVISION		0x27
 
 /* Bit definitions for hardware options */
 #define RB_HW_OPT_NO_UART		BIT(0)
@@ -415,6 +416,10 @@ static struct hc_attr {
 		.tag_id = RB_ID_DEFCONF,
 		.tshow = routerboot_tag_show_string,
 		.kattr = __ATTR(defconf, S_IRUSR, hc_attr_show, NULL),
+	}, {
+		.tag_id = RB_ID_BOARD_REVISION,
+		.tshow = routerboot_tag_show_string,
+		.kattr = __ATTR(board_revision, S_IRUSR, hc_attr_show, NULL),
 	}
 };
 
@@ -475,7 +480,7 @@ static int hc_wlan_data_unpack_lzor(const u8 *inbuf, size_t inlen,
 	/* Temporary buffer same size as the outbuf */
 	templen = *outlen;
 	tempbuf = kmalloc(templen, GFP_KERNEL);
-	if (!outbuf)
+	if (!tempbuf)
 		return -ENOMEM;
 
 	/* Concatenate into the outbuf */

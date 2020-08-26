@@ -88,6 +88,7 @@ define KernelPackage/at86rf230
 	CONFIG_SPI=y \
 	CONFIG_SPI_MASTER=y
   FILES:=$(LINUX_DIR)/drivers/net/ieee802154/at86rf230.ko
+  AUTOLOAD:=$(call AutoProbe,at86rf230)
 endef
 
 $(eval $(call KernelPackage,at86rf230))
@@ -100,6 +101,7 @@ define KernelPackage/mrf24j40
 	CONFIG_SPI=y \
 	CONFIG_SPI_MASTER=y
   FILES:=$(LINUX_DIR)/drivers/net/ieee802154/mrf24j40.ko
+  AUTOLOAD:=$(call AutoProbe,mrf24j40)
 endef
 
 $(eval $(call KernelPackage,mrf24j40))
@@ -112,9 +114,26 @@ define KernelPackage/cc2520
 	CONFIG_SPI=y \
 	CONFIG_SPI_MASTER=y
   FILES:=$(LINUX_DIR)/drivers/net/ieee802154/cc2520.ko
+  AUTOLOAD:=$(call AutoProbe,cc2520)
 endef
 
 $(eval $(call KernelPackage,cc2520))
+
+
+define KernelPackage/ca8210
+  SUBMENU:=$(WPAN_MENU)
+  TITLE:=CA8210 transceiver driver
+  DEPENDS:=+kmod-mac802154
+  KCONFIG:=CONFIG_IEEE802154_CA8210 \
+	CONFIG_SPI=y \
+	CONFIG_SPI_MASTER=y \
+	CONFIG_IEEE802154_CA8210_DEBUGFS=n
+  FILES:=$(LINUX_DIR)/drivers/net/ieee802154/ca8210.ko
+  AUTOLOAD:=$(call AutoProbe,ca8210)
+endef
+
+$(eval $(call KernelPackage,ca8210))
+
 
 define KernelPackage/ieee802154-6lowpan
   SUBMENU:=$(WPAN_MENU)

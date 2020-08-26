@@ -147,7 +147,6 @@ define KernelPackage/lib-lz4
   SUBMENU:=$(LIB_MENU)
   TITLE:=LZ4 support
   DEPENDS:=+kmod-crypto-acompress
-  HIDDEN:=1
   KCONFIG:= \
 	CONFIG_CRYPTO_LZ4 \
 	CONFIG_LZ4_COMPRESS \
