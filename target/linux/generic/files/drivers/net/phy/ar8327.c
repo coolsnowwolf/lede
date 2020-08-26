@@ -553,15 +553,15 @@ ar8327_hw_config_pdata(struct ar8xxx_priv *priv,
 	t = ar8327_get_pad_cfg(pdata->pad6_cfg);
 	ar8xxx_write(priv, AR8327_REG_PAD6_MODE, t);
 
-	pos = ar8xxx_read(priv, AR8327_REG_POWER_ON_STRIP);
+	pos = ar8xxx_read(priv, AR8327_REG_POWER_ON_STRAP);
 	new_pos = pos;
 
 	led_cfg = pdata->led_cfg;
 	if (led_cfg) {
 		if (led_cfg->open_drain)
-			new_pos |= AR8327_POWER_ON_STRIP_LED_OPEN_EN;
+			new_pos |= AR8327_POWER_ON_STRAP_LED_OPEN_EN;
 		else
-			new_pos &= ~AR8327_POWER_ON_STRIP_LED_OPEN_EN;
+			new_pos &= ~AR8327_POWER_ON_STRAP_LED_OPEN_EN;
 
 		ar8xxx_write(priv, AR8327_REG_LED_CTRL0, led_cfg->led_ctrl0);
 		ar8xxx_write(priv, AR8327_REG_LED_CTRL1, led_cfg->led_ctrl1);
@@ -569,7 +569,7 @@ ar8327_hw_config_pdata(struct ar8xxx_priv *priv,
 		ar8xxx_write(priv, AR8327_REG_LED_CTRL3, led_cfg->led_ctrl3);
 
 		if (new_pos != pos)
-			new_pos |= AR8327_POWER_ON_STRIP_POWER_ON_SEL;
+			new_pos |= AR8327_POWER_ON_STRAP_POWER_ON_SEL;
 	}
 
 	if (pdata->sgmii_cfg) {
@@ -586,12 +586,12 @@ ar8327_hw_config_pdata(struct ar8xxx_priv *priv,
 		ar8xxx_write(priv, AR8327_REG_SGMII_CTRL, t);
 
 		if (pdata->sgmii_cfg->serdes_aen)
-			new_pos &= ~AR8327_POWER_ON_STRIP_SERDES_AEN;
+			new_pos &= ~AR8327_POWER_ON_STRAP_SERDES_AEN;
 		else
-			new_pos |= AR8327_POWER_ON_STRIP_SERDES_AEN;
+			new_pos |= AR8327_POWER_ON_STRAP_SERDES_AEN;
 	}
 
-	ar8xxx_write(priv, AR8327_REG_POWER_ON_STRIP, new_pos);
+	ar8xxx_write(priv, AR8327_REG_POWER_ON_STRAP, new_pos);
 
 	if (pdata->leds && pdata->num_leds) {
 		int i;

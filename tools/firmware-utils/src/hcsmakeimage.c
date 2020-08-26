@@ -183,6 +183,7 @@ int main ( int argc, char** argv )
 	char* filebuffer = malloc ( buf.st_size+10 );
 	FILE* fd = fopen ( input,"r" );
 	fread ( filebuffer, 1, buf.st_size,fd );
+	fclose (fd);
 	if (!output)
 		{
 		output = malloc(strlen(input+5));
@@ -194,10 +195,13 @@ int main ( int argc, char** argv )
 	if (!fd_out)
 		{
 		fprintf(stderr, "Failed to open output file: %s\n", output);
+		free(filebuffer);
 		exit(1);
 		}
 	fwrite ( head,1,sizeof ( ldr_header_t ),fd_out );
 	fwrite ( filebuffer,1,buf.st_size,fd_out );
 	printf("Firmware image %s is ready\n", output);
+	free(filebuffer);
+	fclose(fd_out);
 	return 0;
 }
