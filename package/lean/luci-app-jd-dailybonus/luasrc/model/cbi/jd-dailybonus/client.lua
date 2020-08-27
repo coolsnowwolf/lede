@@ -13,6 +13,13 @@ o = s:option(DummyValue, "", "")
 o.rawhtml = true
 o.template = "jd-dailybonus/cookie_tools"
 
+o = s:option(ListValue, "remote_url", translate("Source Update Url"))
+o:value("https://raw.githubusercontent.com/NobyDa/Script/master/JD-DailyBonus/JD_DailyBonus.js", translate("GitHub"))
+o:value("https://gitee.com/jerrykuku/staff/raw/master/JD_DailyBonus.js", translate("Gitee"))
+o.default = "nil"
+o.rmempty = false
+o.description = translate('当GitHub源无法更新时,可以选择使用国内Gitee源')
+
 o = s:option(Value, "cookie", translate("First Cookie"))
 o.rmempty = false
 

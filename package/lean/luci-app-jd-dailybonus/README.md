@@ -2,11 +2,11 @@
 Luci for JD dailybonus Script for Openwrt  
 一个运行在openwrt下的京东签到插件。
 
-### Update Log 2020-08-04  
+### Update Log 2020-08-26  
 
 #### Updates
 
-- FIX: 修正获取远端脚本版本错误的问题，同时更新默认脚本到最新（感谢 abcaad 提供）。
+- FIX: 增加一个可选的更新源，如果github源无法更新，请选择gitee。
 
 
 详情见[具体日志](./relnotes.txt)。 

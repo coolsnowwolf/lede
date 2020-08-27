@@ -10,7 +10,6 @@
 # 0   更新成功
 
 NAME=jd-dailybonus
-REMOTE_SCRIPT=https://raw.githubusercontent.com/NobyDa/Script/master/JD-DailyBonus/JD_DailyBonus.js
 TEMP_SCRIPT=/tmp/JD_DailyBonus.js
 JD_SCRIPT=/usr/share/jd-dailybonus/JD_DailyBonus.js
 LOG_HTM=/www/JD_DailyBonus.htm
@@ -18,7 +17,6 @@ CRON_FILE=/etc/crontabs/root
 usage() {
     cat <<-EOF
 		Usage: app.sh [options]
-
 		Valid options are:
 
 		    -a                      Add Cron
@@ -51,6 +49,8 @@ cancel() {
     exit 1
 }
 
+REMOTE_SCRIPT=$(uci_get_by_type global remote_url)
+
 fill_cookie() {
     cookie1=$(uci_get_by_type global cookie)
     if [ ! "$cookie1" = "" ]; then
@@ -77,7 +77,11 @@ fill_cookie() {
     fi
 }
 
-remote_ver=$(cat $TEMP_SCRIPT | sed -n '/更新时间/p' | awk '{for (i=1;i<=NF;i++){if ($i ~/v/) {print $i}}}' | sed 's/v//')
+if [ -e $TEMP_SCRIPT ]; then
+    remote_ver=$(cat $TEMP_SCRIPT | sed -n '/更新时间/p' | awk '{for (i=1;i<=NF;i++){if ($i ~/v/) {print $i}}}' | sed 's/v//')
+else
+    remote_ver=$(cat $JD_SCRIPT | sed -n '/更新时间/p' | awk '{for (i=1;i<=NF;i++){if ($i ~/v/) {print $i}}}' | sed 's/v//')
+fi
 local_ver=$(uci_get_by_type global version)
 
 add_cron() {
@@ -97,11 +101,11 @@ serverchan() {
         grep "Cookie失效" /www/JD_DailyBonus.htm > /dev/null
         if [ $? -eq 0 ]; then
             title="$(date '+%Y年%m月%d日') 京东签到 Cookie 失效"
-            wget-ssl -q --post-data="text=$title~&desp=$desc" https://sc.ftqq.com/$sckey.send
+            wget-ssl -q --output-document=/dev/null --post-data="text=$title~&desp=$desc" https://sc.ftqq.com/$sckey.send
         fi
     else
         title="$(date '+%Y年%m月%d日') 京东签到"
-        wget-ssl -q --post-data="text=$title~&desp=$desc" https://sc.ftqq.com/$sckey.send
+        wget-ssl -q --output-document=/dev/null --post-data="text=$title~&desp=$desc" https://sc.ftqq.com/$sckey.send
     fi
 
 }
