@@ -428,7 +428,7 @@ define Device/tplink_tl-mr6400-v1
   DEVICE_MODEL := TL-MR6400
   DEVICE_VARIANT := v1
   TPLINK_HWID := 0x64000001
-  DEVICE_PACKAGES := kmod-usb2 kmod-usb-net kmod-usb-net-rndis kmod-usb-serial \
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-net-rndis kmod-usb-serial \
 	kmod-usb-serial-option adb-enablemodem
   SUPPORTED_DEVICES += tl-mr6400
 endef
@@ -499,6 +499,39 @@ define Device/tplink_tl-wdr4900-v2
   SUPPORTED_DEVICES += tl-wdr4900-v2
 endef
 TARGET_DEVICES += tplink_tl-wdr4900-v2
+
+define Device/tplink_tl-wpa8630-v1
+  $(Device/tplink-8mlzma)
+  SOC := qca9563
+  DEVICE_MODEL := TL-WPA8630
+  DEVICE_VARIANT := v1
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  TPLINK_HWID := 0x86300001
+  SUPPORTED_DEVICES += tl-wpa8630
+endef
+TARGET_DEVICES += tplink_tl-wpa8630-v1
+
+define Device/tplink_tl-wpa8630p-v2
+  $(Device/tplink-safeloader)
+  SOC := qca9563
+  DEVICE_MODEL := TL-WPA8630P
+  IMAGE_SIZE := 6016k
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca9888-ct
+endef
+
+define Device/tplink_tl-wpa8630p-v2-eu
+  $(Device/tplink_tl-wpa8630p-v2)
+  DEVICE_VARIANT := v2 (EU)
+  TPLINK_BOARD_ID := TL-WPA8630P-V2-EU
+endef
+TARGET_DEVICES += tplink_tl-wpa8630p-v2-eu
+
+define Device/tplink_tl-wpa8630p-v2-int
+  $(Device/tplink_tl-wpa8630p-v2)
+  DEVICE_VARIANT := v2 (Int.)
+  TPLINK_BOARD_ID := TL-WPA8630P-V2-INT
+endef
+TARGET_DEVICES += tplink_tl-wpa8630p-v2-int
 
 define Device/tplink_tl-wr1043nd-v1
   $(Device/tplink-8m)
@@ -591,6 +624,18 @@ define Device/tplink_tl-wr710n-v1
   SUPPORTED_DEVICES += tl-wr710n
 endef
 TARGET_DEVICES += tplink_tl-wr710n-v1
+
+define Device/tplink_tl-wr710n-v2.1
+  $(Device/tplink-8mlzma)
+  SOC := ar9331
+  DEVICE_MODEL := TL-WR710N
+  DEVICE_VARIANT := v2.1
+  DEVICE_PACKAGES := kmod-usb-chipidea2 kmod-usb-ledtrig-usbport
+  TPLINK_HWID := 0x07100002
+  TPLINK_HWREV := 0x2
+  SUPPORTED_DEVICES += tl-wr710n
+endef
+TARGET_DEVICES += tplink_tl-wr710n-v2.1
 
 define Device/tplink_tl-wr810n-v1
   $(Device/tplink-8mlzma)
