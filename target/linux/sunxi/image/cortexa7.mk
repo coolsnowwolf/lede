@@ -26,7 +26,7 @@ define Device/friendlyarm_nanopi-m1-plus
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi M1 Plus
   DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-leds-gpio kmod-ledtrig-heartbeat \
-	kmod-brcmfmac brcmfmac-firmware-43430-sdio wpad-basic
+	kmod-brcmfmac brcmfmac-firmware-43430-sdio wpad-basic-wolfssl
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += friendlyarm_nanopi-m1-plus
@@ -42,7 +42,7 @@ define Device/friendlyarm_nanopi-neo-air
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi NEO Air
   DEVICE_PACKAGES := kmod-rtc-sunxi kmod-leds-gpio kmod-ledtrig-heartbeat \
-	kmod-brcmfmac brcmfmac-firmware-43430-sdio wpad-basic
+	kmod-brcmfmac brcmfmac-firmware-43430-sdio wpad-basic-wolfssl
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += friendlyarm_nanopi-neo-air
@@ -50,7 +50,7 @@ TARGET_DEVICES += friendlyarm_nanopi-neo-air
 define Device/lamobo_lamobo-r1
   DEVICE_VENDOR := Lamobo
   DEVICE_MODEL := Lamobo R1
-  DEVICE_PACKAGES:=kmod-ata-sunxi kmod-rtl8192cu swconfig wpad-basic
+  DEVICE_PACKAGES:=kmod-ata-sunxi kmod-rtl8192cu swconfig wpad-basic-wolfssl
   SOC := sun7i-a20
 endef
 TARGET_DEVICES += lamobo_lamobo-r1
@@ -133,7 +133,7 @@ define Device/sinovoip_bananapi-m2-plus
   DEVICE_VENDOR := Sinovoip
   DEVICE_MODEL := Banana Pi M2+
   DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-leds-gpio kmod-ledtrig-heartbeat \
-	kmod-brcmfmac brcmfmac-firmware-43430a0-sdio wpad-basic
+	kmod-brcmfmac brcmfmac-firmware-43430a0-sdio wpad-basic-wolfssl
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += sinovoip_bananapi-m2-plus
@@ -173,7 +173,7 @@ TARGET_DEVICES += xunlong_orangepi-plus
 define Device/xunlong_orangepi-r1
   DEVICE_VENDOR := Xunlong
   DEVICE_MODEL := Orange Pi R1
-  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-usb-net kmod-usb-net-rtl8152
+  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-usb-net-rtl8152
   SOC := sun8i-h2-plus
 endef
 TARGET_DEVICES += xunlong_orangepi-r1
