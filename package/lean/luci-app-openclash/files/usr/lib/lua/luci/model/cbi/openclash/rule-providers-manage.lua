@@ -107,7 +107,7 @@ Button.render(e,t,a)
 end
 btnrm.write=function(a,t)
 fs.unlink("/etc/openclash/rule_provider/"..e[t].filename)
-HTTP.redirect(DISP.build_url("admin", "services", "openclash", "game-rules-manage"))
+HTTP.redirect(DISP.build_url("admin", "services", "openclash", "rule-providers-manage"))
 end
 
 return m, form
