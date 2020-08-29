@@ -7,7 +7,7 @@
 
 define Profile/Broadcom-wl
   NAME:=Broadcom SoC, all Ethernet, BCM43xx WiFi (wl, proprietary)
-  PACKAGES:=-wpad-mini kmod-brcm-wl-mini wlc nas
+  PACKAGES:=-wpad-basic-wolfssl kmod-brcm-wl-mini wlc nas
 endef
 
 define Profile/Broadcom-wl/Description

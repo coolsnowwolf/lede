@@ -769,14 +769,14 @@ function apcli_connect(dev, vif)
     mtkwifi.save_profile(cfgs, profiles[devname])
 
     os.execute("ifconfig "..vifname.." up")
-    local brvifs = mtkwifi.__trim(mtkwifi.read_pipe("uci get network.lan.ifname"))
-    if not string.match(brvifs, vifname) then
-        brvifs = brvifs.." "..vifname
-        nixio.syslog("debug", "add "..vifname.." into lan")
-        os.execute("uci set network.lan.ifname=\""..brvifs.."\"")
-        os.execute("uci commit")
-        os.execute("ubus call network.interface.lan add_device \"{\\\"name\\\":\\\""..vifname.."\\\"}\"")
-    end
+--    local brvifs = mtkwifi.__trim(mtkwifi.read_pipe("uci get network.lan.ifname"))
+--    if not string.match(brvifs, vifname) then
+--        brvifs = brvifs.." "..vifname
+--        nixio.syslog("debug", "add "..vifname.." into lan")
+--        os.execute("uci set network.lan.ifname=\""..brvifs.."\"")
+--        os.execute("uci commit")
+--        os.execute("ubus call network.interface.lan add_device \"{\\\"name\\\":\\\""..vifname.."\\\"}\"")
+--    end
 
     os.execute("iwpriv "..vifname.." set MACRepeaterEn="..cfgs.MACRepeaterEn)
     os.execute("iwpriv "..vifname.." set ApCliEnable=0")
@@ -790,6 +790,9 @@ function apcli_connect(dev, vif)
         or cfgs.ApCliAuthMode == "WPA2PSK"
         or cfgs.ApCliAuthMode == "WPA1PSKWPA2PSK" then
         os.execute("iwpriv "..vifname.." set ApCliWPAPSK="..cfgs.ApCliWPAPSK)
+    end
+    if cfgs.ApCliBssid ~= nil then
+        os.execute("iwpriv "..vifname.." set ApCliBssid="..cfgs.ApCliBssid)
     end
     os.execute("iwpriv "..vifname.." set ApCliSsid=\""..cfgs.ApCliSsid.."\"")
     os.execute("iwpriv "..vifname.." set ApCliEnable=1")
@@ -815,14 +818,14 @@ function apcli_disconnect(dev, vif)
 
     os.execute("iwpriv "..vifname.." set ApCliEnable=0")
 
-    local brvifs = mtkwifi.__trim(mtkwifi.read_pipe("uci get network.lan.ifname"))
-    if string.match(brvifs, vifname) then
-        brvifs = mtkwifi.__trim(string.gsub(brvifs, vifname, ""))
-        nixio.syslog("debug", "add "..vifname.." into lan")
-        os.execute("uci set network.lan.ifname=\""..brvifs.."\"")
-        os.execute("uci commit")
-        os.execute("ubus call network.interface.lan remove_device \"{\\\"name\\\":\\\""..vifname.."\\\"}\"")
-    end
+--    local brvifs = mtkwifi.__trim(mtkwifi.read_pipe("uci get network.lan.ifname"))
+--    if string.match(brvifs, vifname) then
+--        brvifs = mtkwifi.__trim(string.gsub(brvifs, vifname, ""))
+--        nixio.syslog("debug", "add "..vifname.." into lan")
+--        os.execute("uci set network.lan.ifname=\""..brvifs.."\"")
+--        os.execute("uci commit")
+--        os.execute("ubus call network.interface.lan remove_device \"{\\\"name\\\":\\\""..vifname.."\\\"}\"")
+--    end
     os.execute("ifconfig "..vifname.." down")
 
     luci.http.redirect(luci.dispatcher.build_url("admin", "network", "wifi"))
