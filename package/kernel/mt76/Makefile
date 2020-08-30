@@ -8,9 +8,9 @@ PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/openwrt/mt76
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2020-05-30
-PKG_SOURCE_VERSION:=85c516081338d3d1454fb53b5741321c2adefbef
-PKG_MIRROR_HASH:=a3e110700843ecfee10eba274ab6fe63b9d78a00eb96ee1634b145e0a9ae9a69
+PKG_SOURCE_DATE:=2020-08-22
+PKG_SOURCE_VERSION:=8c7c1a207d25cd880c7f54d3fe86e82f14d6ecda
+PKG_MIRROR_HASH:=0411bc634cb4065f748754e02758c172a4c65298696667f198c41d580d165d69
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_BUILD_PARALLEL:=1
@@ -23,12 +23,17 @@ PKG_CONFIG_DEPENDS += \
 	CONFIG_PACKAGE_kmod-mt76x2-common \
 	CONFIG_PACKAGE_kmod-mt76x2 \
 	CONFIG_PACKAGE_kmod-mt76x2u \
-	CONFIG_PACKAGE_kmod-mt7603
+	CONFIG_PACKAGE_kmod-mt7603 \
+	CONFIG_PACKAGE_CFG80211_TESTMODE
 
 STAMP_CONFIGURED_DEPENDS := $(STAGING_DIR)/usr/include/mac80211-backport/backport/autoconf.h
 
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/cmake.mk
+
+CMAKE_SOURCE_DIR:=$(PKG_BUILD_DIR)/tools
+CMAKE_BINARY_DIR:=$(PKG_BUILD_DIR)/tools
 
 define KernelPackage/mt76-default
   SUBMENU:=Wireless Drivers
@@ -170,10 +175,29 @@ define KernelPackage/mt7663-firmware-sta
   TITLE:=MediaTek MT7663e firmware (client mode offload)
 endef
 
+define KernelPackage/mt7663-usb-sdio
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT7663 USB/SDIO shared code
+  DEPENDS+=+kmod-mt7615-common
+  HIDDEN:=1
+  FILES:= \
+	$(PKG_BUILD_DIR)/mt7615/mt7663-usb-sdio-common.ko
+endef
+
+define KernelPackage/mt7663s
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT7663s wireless driver
+  DEPENDS+=+kmod-mmc +kmod-mt7615-common +kmod-mt7663-usb-sdio
+  FILES:= \
+	$(PKG_BUILD_DIR)/mt76-sdio.ko \
+	$(PKG_BUILD_DIR)/mt7615/mt7663s.ko
+  AUTOLOAD:=$(call AutoProbe,mt7663s)
+endef
+
 define KernelPackage/mt7663u
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT7663u wireless driver
-  DEPENDS+=+kmod-mt76-usb +kmod-mt7615-common
+  DEPENDS+=+kmod-mt76-usb +kmod-mt7615-common +kmod-mt7663-usb-sdio
   FILES:= $(PKG_BUILD_DIR)/mt7615/mt7663u.ko
   AUTOLOAD:=$(call AutoProbe,mt7663u)
 endef
@@ -186,6 +210,15 @@ define KernelPackage/mt7915e
   AUTOLOAD:=$(call AutoProbe,mt7915e)
 endef
 
+define Package/mt76-test
+  SECTION:=devel
+  CATEGORY:=Development
+  TITLE:=mt76 testmode CLI
+  DEPENDS:=kmod-mt76-core +libnl-tiny
+endef
+
+TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include/libnl-tiny
+
 NOSTDINC_FLAGS = \
 	-I$(PKG_BUILD_DIR) \
 	-I$(STAGING_DIR)/usr/include/mac80211-backport/uapi \
@@ -197,6 +230,11 @@ NOSTDINC_FLAGS = \
 
 ifdef CONFIG_PACKAGE_MAC80211_MESH
   NOSTDINC_FLAGS += -DCONFIG_MAC80211_MESH
+endif
+
+ifdef CONFIG_PACKAGE_CFG80211_TESTMODE
+  NOSTDINC_FLAGS += -DCONFIG_NL80211_TESTMODE
+  PKG_MAKE_FLAGS += CONFIG_NL80211_TESTMODE=y
 endif
 
 ifdef CONFIG_PACKAGE_kmod-mt76-usb
@@ -239,6 +277,13 @@ ifdef CONFIG_PACKAGE_kmod-mt7615e
     NOSTDINC_FLAGS += -DCONFIG_MT7622_WMAC
   endif
 endif
+ifdef CONFIG_PACKAGE_kmod-mt7663-usb-sdio
+  PKG_MAKE_FLAGS += CONFIG_MT7663_USB_SDIO_COMMON=m
+endif
+ifdef CONFIG_PACKAGE_kmod-mt7663s
+  PKG_MAKE_FLAGS += CONFIG_MT76_SDIO=m
+  PKG_MAKE_FLAGS += CONFIG_MT7663S=m
+endif
 ifdef CONFIG_PACKAGE_kmod-mt7663u
   PKG_MAKE_FLAGS += CONFIG_MT7663U=m
 endif
@@ -253,6 +298,11 @@ define Build/Compile
 		M="$(PKG_BUILD_DIR)" \
 		NOSTDINC_FLAGS="$(NOSTDINC_FLAGS)" \
 		modules
+	$(MAKE) -C $(PKG_BUILD_DIR)/tools
+endef
+
+define Build/Install
+	:
 endef
 
 define Package/kmod-mt76/install
@@ -334,6 +384,11 @@ define KernelPackage/mt7915e/install
 		$(1)/lib/firmware/mediatek
 endef
 
+define Package/mt76-test/install
+	mkdir -p $(1)/usr/sbin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/tools/mt76-test $(1)/usr/sbin
+endef
+
 $(eval $(call KernelPackage,mt76-core))
 $(eval $(call KernelPackage,mt76-usb))
 $(eval $(call KernelPackage,mt76x02-usb))
@@ -350,6 +405,9 @@ $(eval $(call KernelPackage,mt7615-firmware))
 $(eval $(call KernelPackage,mt7615e))
 $(eval $(call KernelPackage,mt7663-firmware-ap))
 $(eval $(call KernelPackage,mt7663-firmware-sta))
+$(eval $(call KernelPackage,mt7663-usb-sdio))
 $(eval $(call KernelPackage,mt7663u))
+$(eval $(call KernelPackage,mt7663s))
 $(eval $(call KernelPackage,mt7915e))
 $(eval $(call KernelPackage,mt76))
+$(eval $(call BuildPackage,mt76-test))

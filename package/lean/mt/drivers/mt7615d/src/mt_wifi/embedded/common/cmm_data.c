@@ -7077,7 +7077,6 @@ BOOLEAN rtmp_rx_done_handle(RTMP_ADAPTER *pAd)
 		}
 
 #endif /* RTMP_MAC_PCI */
-		os_zero_mem(&rxblk, sizeof(RX_BLK));
 		pRxBlk = &rxblk;
 		pRxPacket = op->get_pkt_from_rx_resource(pAd, &bReschedule, &RxPending, HIF_RX_IDX0);
 

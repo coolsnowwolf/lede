@@ -70,24 +70,6 @@ endef
 $(eval $(call KernelPackage,usb-phy-nop))
 
 
-define KernelPackage/usb-phy-qcom-dwc3
-  TITLE:=DWC3 USB QCOM PHY driver
-  DEPENDS:=@(TARGET_ipq40xx||TARGET_ipq806x)
-  KCONFIG:= CONFIG_PHY_QCOM_DWC3
-  FILES:= \
-    $(LINUX_DIR)/drivers/phy/qualcomm/phy-qcom-dwc3.ko
-  AUTOLOAD:=$(call AutoLoad,45,phy-qcom-dwc3,1)
-  $(call AddDepends/usb)
-endef
-
-define KernelPackage/usb-phy-qcom-dwc3/description
- This driver provides support for the integrated DesignWare
- USB3 IP Core within the QCOM SoCs.
-endef
-
-$(eval $(call KernelPackage,usb-phy-qcom-dwc3))
-
-
 define KernelPackage/phy-ath79-usb
   TITLE:=Support for ATH79 USB PHY
   KCONFIG:=CONFIG_PHY_AR7100_USB \
@@ -1136,7 +1118,7 @@ $(eval $(call KernelPackage,usb-net))
 
 define AddDepends/usb-net
   SUBMENU:=$(USB_MENU)
-  DEPENDS+=kmod-usb-net $(1)
+  DEPENDS+=+kmod-usb-net $(1)
 endef
 
 

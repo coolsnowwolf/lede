@@ -1,0 +1,186 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Sat, 25 Jul 2020 20:53:23 +0200
+Subject: [PATCH] mac80211: add a function for running rx without passing skbs
+ to the stack
+
+This can be used to run mac80211 rx processing on a batch of frames in NAPI
+poll before passing them to the network stack in a large batch.
+This can improve icache footprint, or it can be used to pass frames via
+netif_receive_skb_list.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -4358,6 +4358,31 @@ void ieee80211_free_hw(struct ieee80211_
+ void ieee80211_restart_hw(struct ieee80211_hw *hw);
+ 
+ /**
++ * ieee80211_rx_list - receive frame and store processed skbs in a list
++ *
++ * Use this function to hand received frames to mac80211. The receive
++ * buffer in @skb must start with an IEEE 802.11 header. In case of a
++ * paged @skb is used, the driver is recommended to put the ieee80211
++ * header of the frame on the linear part of the @skb to avoid memory
++ * allocation and/or memcpy by the stack.
++ *
++ * This function may not be called in IRQ context. Calls to this function
++ * for a single hardware must be synchronized against each other. Calls to
++ * this function, ieee80211_rx_ni() and ieee80211_rx_irqsafe() may not be
++ * mixed for a single hardware. Must not run concurrently with
++ * ieee80211_tx_status() or ieee80211_tx_status_ni().
++ *
++ * This function must be called with BHs disabled and RCU read lock
++ *
++ * @hw: the hardware this frame came in on
++ * @sta: the station the frame was received from, or %NULL
++ * @skb: the buffer to receive, owned by mac80211 after this call
++ * @list: the destination list
++ */
++void ieee80211_rx_list(struct ieee80211_hw *hw, struct ieee80211_sta *sta,
++		       struct sk_buff *skb, struct list_head *list);
++
++/**
+  * ieee80211_rx_napi - receive frame from NAPI context
+  *
+  * Use this function to hand received frames to mac80211. The receive
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -218,7 +218,7 @@ enum ieee80211_rx_flags {
+ };
+ 
+ struct ieee80211_rx_data {
+-	struct napi_struct *napi;
++	struct list_head *list;
+ 	struct sk_buff *skb;
+ 	struct ieee80211_local *local;
+ 	struct ieee80211_sub_if_data *sdata;
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -2578,8 +2578,8 @@ static void ieee80211_deliver_skb_to_loc
+ 		memset(skb->cb, 0, sizeof(skb->cb));
+ 
+ 		/* deliver to local stack */
+-		if (rx->napi)
+-			napi_gro_receive(rx->napi, skb);
++		if (rx->list)
++			list_add_tail(&skb->list, rx->list);
+ 		else
+ 			netif_receive_skb(skb);
+ 	}
+@@ -3869,7 +3869,6 @@ void ieee80211_release_reorder_timeout(s
+ 		/* This is OK -- must be QoS data frame */
+ 		.security_idx = tid,
+ 		.seqno_idx = tid,
+-		.napi = NULL, /* must be NULL to not have races */
+ 	};
+ 	struct tid_ampdu_rx *tid_agg_rx;
+ 
+@@ -4479,8 +4478,8 @@ static bool ieee80211_invoke_fast_rx(str
+ 	/* deliver to local stack */
+ 	skb->protocol = eth_type_trans(skb, fast_rx->dev);
+ 	memset(skb->cb, 0, sizeof(skb->cb));
+-	if (rx->napi)
+-		napi_gro_receive(rx->napi, skb);
++	if (rx->list)
++		list_add_tail(&skb->list, rx->list);
+ 	else
+ 		netif_receive_skb(skb);
+ 
+@@ -4547,7 +4546,7 @@ static bool ieee80211_prepare_and_rx_han
+ static void __ieee80211_rx_handle_packet(struct ieee80211_hw *hw,
+ 					 struct ieee80211_sta *pubsta,
+ 					 struct sk_buff *skb,
+-					 struct napi_struct *napi)
++					 struct list_head *list)
+ {
+ 	struct ieee80211_local *local = hw_to_local(hw);
+ 	struct ieee80211_sub_if_data *sdata;
+@@ -4562,7 +4561,7 @@ static void __ieee80211_rx_handle_packet
+ 	memset(&rx, 0, sizeof(rx));
+ 	rx.skb = skb;
+ 	rx.local = local;
+-	rx.napi = napi;
++	rx.list = list;
+ 
+ 	if (ieee80211_is_data(fc) || ieee80211_is_mgmt(fc))
+ 		I802_DEBUG_INC(local->dot11ReceivedFragmentCount);
+@@ -4670,8 +4669,8 @@ static void __ieee80211_rx_handle_packet
+  * This is the receive path handler. It is called by a low level driver when an
+  * 802.11 MPDU is received from the hardware.
+  */
+-void ieee80211_rx_napi(struct ieee80211_hw *hw, struct ieee80211_sta *pubsta,
+-		       struct sk_buff *skb, struct napi_struct *napi)
++void ieee80211_rx_list(struct ieee80211_hw *hw, struct ieee80211_sta *pubsta,
++		       struct sk_buff *skb, struct list_head *list)
+ {
+ 	struct ieee80211_local *local = hw_to_local(hw);
+ 	struct ieee80211_rate *rate = NULL;
+@@ -4763,36 +4762,53 @@ void ieee80211_rx_napi(struct ieee80211_
+ 	status->rx_flags = 0;
+ 
+ 	/*
+-	 * key references and virtual interfaces are protected using RCU
+-	 * and this requires that we are in a read-side RCU section during
+-	 * receive processing
+-	 */
+-	rcu_read_lock();
+-
+-	/*
+ 	 * Frames with failed FCS/PLCP checksum are not returned,
+ 	 * all other frames are returned without radiotap header
+ 	 * if it was previously present.
+ 	 * Also, frames with less than 16 bytes are dropped.
+ 	 */
+ 	skb = ieee80211_rx_monitor(local, skb, rate);
+-	if (!skb) {
+-		rcu_read_unlock();
++	if (!skb)
+ 		return;
+-	}
+ 
+ 	ieee80211_tpt_led_trig_rx(local,
+ 			((struct ieee80211_hdr *)skb->data)->frame_control,
+ 			skb->len);
+ 
+-	__ieee80211_rx_handle_packet(hw, pubsta, skb, napi);
+-
+-	rcu_read_unlock();
++	__ieee80211_rx_handle_packet(hw, pubsta, skb, list);
+ 
+ 	return;
+  drop:
+ 	kfree_skb(skb);
+ }
++EXPORT_SYMBOL(ieee80211_rx_list);
++
++void ieee80211_rx_napi(struct ieee80211_hw *hw, struct ieee80211_sta *pubsta,
++		       struct sk_buff *skb, struct napi_struct *napi)
++{
++	struct sk_buff *tmp;
++	LIST_HEAD(list);
++
++
++	/*
++	 * key references and virtual interfaces are protected using RCU
++	 * and this requires that we are in a read-side RCU section during
++	 * receive processing
++	 */
++	rcu_read_lock();
++	ieee80211_rx_list(hw, pubsta, skb, &list);
++	rcu_read_unlock();
++
++	if (!napi) {
++		netif_receive_skb_list(&list);
++		return;
++	}
++
++	list_for_each_entry_safe(skb, tmp, &list, list) {
++		skb_list_del_init(skb);
++		napi_gro_receive(napi, skb);
++	}
++}
+ EXPORT_SYMBOL(ieee80211_rx_napi);
+ 
+ /* This is a version of the rx handler that can be called from hard irq

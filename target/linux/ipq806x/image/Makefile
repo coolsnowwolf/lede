@@ -109,6 +109,23 @@ define Device/compex_wpq864
 endef
 TARGET_DEVICES += compex_wpq864
 
+define Device/linksys_ea7500-v1
+	$(call Device/LegacyImage)
+	DEVICE_VENDOR := Linksys
+	DEVICE_MODEL := EA7500
+	DEVICE_VARIANT := v1
+	SOC := qcom-ipq8064
+	PAGESIZE := 2048
+	BLOCKSIZE := 128k
+	KERNEL_SIZE := 3072k
+	KERNEL = kernel-bin | append-dtb | uImage none | append-uImage-fakehdr filesystem
+	UBINIZE_OPTS := -E 5
+	IMAGES := factory.bin sysupgrade.bin
+	IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | pad-to $$$$(PAGESIZE)
+	DEVICE_PACKAGES := ath10k-firmware-qca99x0-ct
+endef
+TARGET_DEVICES += linksys_ea7500-v1
+
 define Device/linksys_ea8500
 	$(call Device/LegacyImage)
 	DEVICE_VENDOR := Linksys
@@ -264,6 +281,26 @@ define Device/qcom_ipq8064-db149
 	DEVICE_PACKAGES := ath10k-firmware-qca99x0-ct
 endef
 TARGET_DEVICES += qcom_ipq8064-db149
+
+define Device/ruijie_rg-mtfi-m520
+	DEVICE_VENDOR := Ruijie
+	DEVICE_MODEL := RG-MTFi-M520
+	SOC := qcom-ipq8064
+	KERNEL_SIZE := 4096k
+	BLOCKSIZE := 64k
+	BOARD_NAME := rg-mtfi-m520
+	KERNEL_SUFFIX := -uImage
+	KERNEL = kernel-bin | append-dtb | uImage none | pad-to $${KERNEL_SIZE}
+	KERNEL_NAME := zImage
+	IMAGES := factory.bin sysupgrade.bin mmcblk0p2-kernel.bin mmcblk0p3-rootfs.bin
+	IMAGE/factory.bin := qsdk-ipq-factory-mmc
+	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to $$$${BLOCKSIZE} | sysupgrade-tar rootfs=$$$$@ | append-metadata
+	IMAGE/mmcblk0p2-kernel.bin := append-kernel | pad-to $$$${KERNEL_SIZE}
+	IMAGE/mmcblk0p3-rootfs.bin := append-rootfs | pad-rootfs
+	DEVICE_PACKAGES := ath10k-firmware-qca988x-ct e2fsprogs f2fs-tools \
+	kmod-gpio-pca953x kmod-hwmon-lm75 kmod-fs-ext4 kmod-fs-f2fs kmod-rtc-pcf8563 losetup
+endef
+TARGET_DEVICES += ruijie_rg-mtfi-m520
 
 define Device/tplink_c2600
 	$(call Device/TpSafeImage)
