@@ -1,4 +1,4 @@
-KERNEL_LOADADDR := 0x41080000
+KERNEL_LOADADDR := 0x44080000
 
 define Device/bpi_bananapi-r64
   DEVICE_VENDOR := Bpi
@@ -40,3 +40,21 @@ define Device/mediatek_mt7622-rfb1
   DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-usb3 kmod-ata-ahci-mtk
 endef
 TARGET_DEVICES += mediatek_mt7622-rfb1
+
+define Device/mediatek_mt7622-ubi
+  DEVICE_VENDOR := MediaTek
+  DEVICE_MODEL := MTK7622 AP (UBI)
+  DEVICE_DTS := mt7622-rfb1-ubi
+  DEVICE_DTS_DIR := $(DTS_DIR)/mediatek
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_SIZE := 4194304
+  IMAGE_SIZE := 32768k
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
+                check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-usb3 kmod-ata-ahci-mtk
+endef
+TARGET_DEVICES += mediatek_mt7622-ubi

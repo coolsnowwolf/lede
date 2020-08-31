@@ -29,6 +29,15 @@ define Device/generic
 endef
 TARGET_DEVICES += generic
 
+ITUSROUTER_CMDLINE:=console=ttyS0,115200 root=/dev/mmcblk1p2 rootfstype=squashfs,ext4,f2fs rootwait
+define Device/itus_shield-router
+  DEVICE_VENDOR := Itus Networks
+  DEVICE_MODEL := Shield Router
+  CMDLINE := $(ITUSROUTER_CMDLINE)
+  IMAGE/sysupgrade.tar/squashfs += | append-metadata
+endef
+TARGET_DEVICES += itus_shield-router
+
 ER_CMDLINE:=-mtdparts=phys_mapped_flash:640k(boot0)ro,640k(boot1)ro,64k(eeprom)ro root=/dev/mmcblk0p2 rootfstype=squashfs,ext4 rootwait
 define Device/ubnt_edgerouter
   DEVICE_VENDOR := Ubiquiti

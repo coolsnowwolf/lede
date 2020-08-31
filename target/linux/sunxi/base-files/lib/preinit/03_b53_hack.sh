@@ -4,7 +4,7 @@ do_b53_hack() {
 	# hack: enable switch on Lamobo R1 and reset counters
 	case $(board_name) in
 	lamobo,lamobo-r1)
-		ifconfig eth0 up
+		ip link set eth0 up
 		sleep 1
 		swconfig dev switch0 set reset 1
 		swconfig dev switch0 set reset_mib 1

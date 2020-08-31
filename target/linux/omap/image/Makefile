@@ -35,6 +35,7 @@ define Device/Default
   PROFILES := Default
   KERNEL_NAME := zImage
   KERNEL := kernel-bin
+  DEVICE_DTS = $(lastword $(subst _, ,$(1)))
   IMAGES := sdcard.img.gz
   IMAGE/sdcard.img.gz := omap-sdcard | append-metadata | gzip
   SUPPORTED_DEVICES = $(subst _,$(comma),$(1))
@@ -45,7 +46,6 @@ endef
 define Device/ti_am335x-evm
   DEVICE_VENDOR := Texas Instruments
   DEVICE_MODEL := AM335x EVM
-  DEVICE_DTS := am335x-evm
 endef
 
 TARGET_DEVICES += ti_am335x-evm
@@ -61,7 +61,6 @@ TARGET_DEVICES += ti_am335x-bone-black
 define Device/ti_omap4-panda
   DEVICE_VENDOR := PandaBoard.org
   DEVICE_MODEL := OMAP4 TI pandaboard
-  DEVICE_DTS := omap4-panda
   DEVICE_PACKAGES := kmod-usb-net-smsc95xx
 endef
 
@@ -70,9 +69,8 @@ TARGET_DEVICES += ti_omap4-panda
 define Device/ti_omap3-beagle
   DEVICE_VENDOR := BeagleBoard.org
   DEVICE_MODEL := OMAP3 TI beagleboard
-  DEVICE_DTS := omap3-beagle
   # beagleboard doesn't have a network interface, support most common usb net
-  DEVICE_PACKAGES := kmod-usb-net \
+  DEVICE_PACKAGES := \
 	kmod-usb-net-asix kmod-usb-net-asix-ax88179 kmod-usb-net-hso \
 	kmod-usb-net-kaweth kmod-usb-net-pegasus kmod-usb-net-mcs7830 \
 	kmod-usb-net-smsc95xx kmod-usb-net-dm9601-ether
