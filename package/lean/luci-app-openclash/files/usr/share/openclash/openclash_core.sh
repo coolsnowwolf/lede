@@ -75,7 +75,7 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
 			case $CORE_TYPE in
       	"Tun")
 				[ -s "/tmp/clash_tun.gz" ] && {
-					gzip -d /tmp/clash_tun.gz >/dev/null 2>&1 && mv /tmp/clash /tmp/clash_tun >/dev/null 2>&1
+					gzip -d /tmp/clash_tun.gz >/dev/null 2>&1
 					rm -rf /tmp/clash_tun.gz >/dev/null 2>&1
 					rm -rf /etc/openclash/core/clash_tun >/dev/null 2>&1
 					chmod 4755 /tmp/clash_tun >/dev/null 2>&1
