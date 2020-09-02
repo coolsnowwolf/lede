@@ -87,7 +87,7 @@ for t,f in ipairs(fs.glob("/etc/openclash/game_rules/*"))do
     e[t]={}
     e[t].filename=fs.basename(f)
     if IsRuleFile(e[t].filename) then
-       e[t].name=luci.sys.exec(string.format("grep -F '%s' /etc/openclash/game_rules.list |awk -F ',' '{print $1}' 2>/dev/null",e[t].filename))
+       e[t].name=string.gsub(luci.sys.exec(string.format("grep -F '%s' /etc/openclash/game_rules.list |awk -F ',' '{print $1}' 2>/dev/null",e[t].filename)), "[\r\n]", "")
        o:value(e[t].name)
     end
   end
@@ -147,7 +147,7 @@ for t,f in ipairs(fs.glob("/etc/openclash/rule_provider/*"))do
     e[t]={}
     e[t].filename=fs.basename(f)
     if IsYamlFile(e[t].filename) or IsYmlFile(e[t].filename) then
-       e[t].name=luci.sys.exec(string.format("grep -F ',%s' /etc/openclash/rule_providers.list |awk -F ',' '{print $1}' 2>/dev/null",e[t].filename))
+       e[t].name=string.gsub(luci.sys.exec(string.format("grep -F ',%s' /etc/openclash/rule_providers.list |awk -F ',' '{print $1}' 2>/dev/null",e[t].filename)), "[\r\n]", "")
        if e[t].name ~= "" and e[t].name ~= nil then
           o:value(e[t].name)
        end
