@@ -97,7 +97,7 @@ function refresh_data()
 				if file2 then luci.sys.exec("cp -f /tmp/ssr-update." .. type .. " " .. file2) end
 				retstring = tostring(tonumber(icount)/Num)
 				if type == "gfw_data" or type == "ad_data" then
-					luci.sys.exec("/usr/share/shadowsocksr/gfw2ipset.sh gfw_data")
+					luci.sys.exec("/usr/share/shadowsocksr/gfw2ipset.sh")
 				else
 					luci.sys.exec("/etc/init.d/shadowsocksr restart &")
 				end

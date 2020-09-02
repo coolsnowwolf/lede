@@ -50,6 +50,7 @@ o.rmempty = false
 
 o = s:option(Value, "adblock_url", translate("adblock_url"))
 o:value("https://anti-ad.net/anti-ad-for-dnsmasq.conf", translate("anti-AD"))
+o:value("https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt", translate("Easylist China"))
 o.default = "https://anti-ad.net/anti-ad-for-dnsmasq.conf"
 o:depends("adblock", "1")
 o.description = translate("Support AdGuardHome and DNSMASQ format list")

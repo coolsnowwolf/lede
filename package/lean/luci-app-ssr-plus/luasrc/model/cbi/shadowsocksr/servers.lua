@@ -92,7 +92,7 @@ end
 
 o = s:option(DummyValue, "type", translate("Type"))
 function o.cfgvalue(...)
-	return Value.cfgvalue(...) or ""
+	return (Value.cfgvalue(...) == "vless") and "VLESS" or Value.cfgvalue(...)
 end
 
 o = s:option(DummyValue, "alias", translate("Alias"))
