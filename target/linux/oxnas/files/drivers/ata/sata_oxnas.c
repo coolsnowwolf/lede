@@ -70,7 +70,7 @@ struct sgdma_request {
 
 /* Controller information */
 enum {
-	SATA_OXNAS_MAX_PRD = 254,
+	SATA_OXNAS_MAX_PRD = 63,
 	SATA_OXNAS_DMA_SIZE = SATA_OXNAS_MAX_PRD *
 				sizeof(struct ata_bmdma_prd) +
 				sizeof(struct sgdma_request),
