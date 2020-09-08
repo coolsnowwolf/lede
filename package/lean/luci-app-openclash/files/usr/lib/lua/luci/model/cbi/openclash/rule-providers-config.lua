@@ -113,7 +113,7 @@ o.inputtitle = translate("Commit Configurations")
 o.inputstyle = "apply"
 o.write = function()
    m.uci:commit(openclash)
-   sys.call("/usr/share/openclash/yml_groups_name_ch.sh start")
+   sys.call("/usr/share/openclash/yml_groups_name_ch.sh")
    luci.http.redirect(m.redirect)
 end
 

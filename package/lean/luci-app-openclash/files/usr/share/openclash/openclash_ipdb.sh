@@ -12,9 +12,9 @@
    fi
    echo "开始下载 GEOIP 数据库..." >$START_LOG
    if pidof clash >/dev/null; then
-      curl -sL --connect-timeout 10 --retry 2 -x http://$PROXY_ADDR:$HTTP_PORT -U "$PROXY_AUTH" https://geolite.clash.dev/Country.mmdb -o /tmp/Country.mmdb >/dev/null 2>&1
+      curl -sL --connect-timeout 10 --retry 2 -x http://$PROXY_ADDR:$HTTP_PORT -U "$PROXY_AUTH" https://raw.githubusercontent.com/alecthw/mmdb_china_ip_list/release/Country.mmdb -o /tmp/Country.mmdb >/dev/null 2>&1
    else
-      curl -sL --connect-timeout 10 --retry 2 https://geolite.clash.dev/Country.mmdb -o /tmp/Country.mmdb >/dev/null 2>&1
+      curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/alecthw/mmdb_china_ip_list/release/Country.mmdb -o /tmp/Country.mmdb >/dev/null 2>&1
    fi
    if [ "$?" -eq "0" ] && [ -s "/tmp/Country.mmdb" ]; then
       echo "GEOIP 数据库下载成功，检查数据库版本是否更新..." >$START_LOG

@@ -1,4 +1,5 @@
-#!/bin/bash
+#!/bin/sh
+. /lib/functions.sh
 
 CONFIG_FILE=$(uci get openclash.config.config_path 2>/dev/null)
 CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
