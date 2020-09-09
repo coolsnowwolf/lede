@@ -70,7 +70,7 @@ o.write = function()
 	end)
 	uci:save("shadowsocksr")
 	uci:commit("shadowsocksr")
-	luci.sys.exec("/etc/init.d/shadowsocksr restart")
+	luci.sys.exec("/etc/init.d/shadowsocksr restart &")
 	luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "servers"))
 	return
 end
@@ -119,7 +119,7 @@ node.write = function(self, section)
 	uci:set("shadowsocksr", '@global[0]', 'global_server', section)
 	uci:save("shadowsocksr")
 	uci:commit("shadowsocksr")
-	luci.sys.exec("/etc/init.d/shadowsocksr restart")
+	luci.sys.exec("/etc/init.d/shadowsocksr restart &")
 	luci.http.redirect(luci.dispatcher.build_url("admin", "services", "shadowsocksr", "client"))
 end
 

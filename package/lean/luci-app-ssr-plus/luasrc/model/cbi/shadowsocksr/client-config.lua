@@ -128,6 +128,9 @@ end
 if nixio.fs.access("/usr/sbin/trojan") then
 o:value("trojan", translate("Trojan"))
 end
+if nixio.fs.access("/usr/bin/naive") then
+o:value("naiveproxy", translate("NaiveProxy"))
+end
 if nixio.fs.access("/usr/sbin/redsocks2") then
 o:value("socks5", translate("Socks5"))
 o:value("tun", translate("Network Tunnel"))
@@ -151,6 +154,7 @@ o:depends("type", "ss")
 o:depends("type", "v2ray")
 o:depends("type", "vless")
 o:depends("type", "trojan")
+o:depends("type", "naiveproxy")
 o:depends("type", "socks5")
 
 o = s:option(Value, "server_port", translate("Server Port"))
@@ -161,6 +165,7 @@ o:depends("type", "ss")
 o:depends("type", "v2ray")
 o:depends("type", "vless")
 o:depends("type", "trojan")
+o:depends("type", "naiveproxy")
 o:depends("type", "socks5")
 
 o = s:option(Flag, "auth_enable", translate("Enable Authentication"))
@@ -170,6 +175,7 @@ o:depends("type", "socks5")
 
 o = s:option(Value, "username", translate("Username"))
 o.rmempty = true
+o:depends("type", "naiveproxy")
 o:depends("type", "socks5")
 
 o = s:option(Value, "password", translate("Password"))
@@ -178,6 +184,7 @@ o.rmempty = true
 o:depends("type", "ssr")
 o:depends("type", "ss")
 o:depends("type", "trojan")
+o:depends("type", "naiveproxy")
 o:depends("type", "socks5")
 
 o = s:option(ListValue, "encrypt_method", translate("Encrypt Method"))

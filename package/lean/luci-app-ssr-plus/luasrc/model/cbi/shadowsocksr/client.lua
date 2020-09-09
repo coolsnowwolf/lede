@@ -5,7 +5,8 @@
 local m, s, sec, o, kcp_enable
 local shadowsocksr = "shadowsocksr"
 local uci = luci.model.uci.cursor()
-m = Map(shadowsocksr, translate("ShadowSocksR Plus+ Settings"))
+m = Map(shadowsocksr, translate("ShadowSocksR Plus+ Settings"),
+	translate("<h3>Support SS/SSR/V2RAY/TROJAN/NAIVEPROXY/SOCKS5/TUN etc.</h3>"))
 
 m:section(SimpleSection).template = "shadowsocksr/status"
 
