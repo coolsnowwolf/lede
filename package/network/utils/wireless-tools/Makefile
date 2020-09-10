@@ -10,7 +10,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=wireless-tools
 PKG_VERSION:=29
 PKG_MINOR:=
-PKG_RELEASE:=5
+PKG_RELEASE:=6
 
 PKG_SOURCE:=wireless_tools.$(PKG_VERSION)$(PKG_MINOR).tar.gz
 PKG_SOURCE_URL:=https://hewlettpackard.github.io/wireless-tools
@@ -45,6 +45,7 @@ $(call Package/wireless-tools/Default)
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=Library for manipulating Linux Wireless Extensions
+  ABI_VERSION:=29
 endef
 
 define Package/libiw/description

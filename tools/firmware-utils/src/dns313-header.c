@@ -168,11 +168,14 @@ int main(int argc, char **argv)
 	fdin = open(pathin, O_RDONLY);
 	if (!fdin) {
 		printf("ERROR: could not open input file\n");
+		free(buffer);
 		return 0;
 	}
 	bytes = read(fdin, buffer + HEADER_SIZE, filesize);
 	if (bytes < filesize) {
 		printf("ERROR: could not read entire file\n");
+		free(buffer);
+		close(fdin);
 		return 0;
 	}
 	close(fdin);

@@ -84,7 +84,8 @@ define KernelPackage/dma-ralink
 	CONFIG_DMA_RALINK
   FILES:= \
 	$(LINUX_DIR)/drivers/dma/virt-dma.ko \
-	$(LINUX_DIR)/drivers/dma/ralink-gdma.ko
+	$(LINUX_DIR)/drivers/dma/ralink-gdma.ko@lt5.4 \
+	$(LINUX_DIR)/drivers/staging/ralink-gdma/ralink-gdma.ko@ge5.4
   AUTOLOAD:=$(call AutoLoad,52,ralink-gdma)
 endef
 
@@ -104,7 +105,8 @@ define KernelPackage/hsdma-mtk
 	CONFIG_MTK_HSDMA
   FILES:= \
 	$(LINUX_DIR)/drivers/dma/virt-dma.ko \
-	$(LINUX_DIR)/drivers/dma/mtk-hsdma.ko
+	$(LINUX_DIR)/drivers/dma/mtk-hsdma.ko@lt5.4 \
+	$(LINUX_DIR)/drivers/staging/mt7621-dma/mtk-hsdma.ko@ge5.4
   AUTOLOAD:=$(call AutoLoad,53,mtk-hsdma)
 endef
 

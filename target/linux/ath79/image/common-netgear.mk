@@ -33,12 +33,15 @@ define Build/netgear-uImage
 	$(call Build/uImage,$(1) -M $(NETGEAR_KERNEL_MAGIC))
 endef
 
-define Device/netgear_ath79
+define Device/netgear_generic
   DEVICE_VENDOR := NETGEAR
   KERNEL := kernel-bin | append-dtb | lzma -d20 | netgear-uImage lzma
+  KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma -d20 | netgear-uImage lzma
   IMAGES += factory.img
+  IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE) | netgear-squashfs | \
+	append-rootfs | pad-rootfs
   IMAGE/sysupgrade.bin := $$(IMAGE/default) | append-metadata | \
-	check-size $$$$(IMAGE_SIZE)
+	check-size
   IMAGE/factory.img := $$(IMAGE/default) | netgear-dni | \
-	check-size $$$$(IMAGE_SIZE)
+	check-size
 endef

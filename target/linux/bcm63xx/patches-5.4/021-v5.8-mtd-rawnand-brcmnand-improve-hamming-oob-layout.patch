@@ -1,0 +1,92 @@
+From d00358d7a1c50718232799e1ee10955bcd73795a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C3=81lvaro=20Fern=C3=A1ndez=20Rojas?= <noltari@gmail.com>
+Date: Tue, 12 May 2020 09:57:33 +0200
+Subject: [PATCH] mtd: rawnand: brcmnand: improve hamming oob layout
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The current code generates 8 oob sections:
+S1	1-5
+ECC	6-8
+S2	9-15
+S3	16-21
+ECC	22-24
+S4	25-31
+S5	32-37
+ECC	38-40
+S6	41-47
+S7	48-53
+ECC	54-56
+S8	57-63
+
+Change it by merging continuous sections:
+S1	1-5
+ECC	6-8
+S2	9-21
+ECC	22-24
+S3	25-37
+ECC	38-40
+S4	41-53
+ECC	54-56
+S5	57-63
+
+Signed-off-by: Álvaro Fernández Rojas <noltari@gmail.com>
+Signed-off-by: Miquel Raynal <miquel.raynal@bootlin.com>
+Link: https://lore.kernel.org/linux-mtd/20200512075733.745374-3-noltari@gmail.com
+---
+ drivers/mtd/nand/raw/brcmnand/brcmnand.c | 35 +++++++++++-------------
+ 1 file changed, 16 insertions(+), 19 deletions(-)
+
+--- a/drivers/mtd/nand/raw/brcmnand/brcmnand.c
++++ b/drivers/mtd/nand/raw/brcmnand/brcmnand.c
+@@ -1004,33 +1004,30 @@ static int brcmnand_hamming_ooblayout_fr
+ 	struct brcmnand_cfg *cfg = &host->hwcfg;
+ 	int sas = cfg->spare_area_size << cfg->sector_size_1k;
+ 	int sectors = cfg->page_size / (512 << cfg->sector_size_1k);
++	u32 next;
+ 
+-	if (section >= sectors * 2)
++	if (section > sectors)
+ 		return -ERANGE;
+ 
+-	oobregion->offset = (section / 2) * sas;
++	next = (section * sas);
++	if (section < sectors)
++		next += 6;
+ 
+-	if (section & 1) {
+-		oobregion->offset += 9;
+-		oobregion->length = 7;
++	if (section) {
++		oobregion->offset = ((section - 1) * sas) + 9;
+ 	} else {
+-		oobregion->length = 6;
+-
+-		/* First sector of each page may have BBI */
+-		if (!section) {
+-			/*
+-			 * Small-page NAND use byte 6 for BBI while large-page
+-			 * NAND use bytes 0 and 1.
+-			 */
+-			if (cfg->page_size > 512) {
+-				oobregion->offset += 2;
+-				oobregion->length -= 2;
+-			} else {
+-				oobregion->length--;
+-			}
++		if (cfg->page_size > 512) {
++			/* Large page NAND uses first 2 bytes for BBI */
++			oobregion->offset = 2;
++		} else {
++			/* Small page NAND uses last byte before ECC for BBI */
++			oobregion->offset = 0;
++			next--;
+ 		}
+ 	}
+ 
++	oobregion->length = next - oobregion->offset;
++
+ 	return 0;
+ }
+ 

@@ -1,0 +1,304 @@
+From df1b397d7c5e79052fa56d1b256ededcd301a27a Mon Sep 17 00:00:00 2001
+From: Franck LENORMAND <franck.lenormand@nxp.com>
+Date: Fri, 5 Oct 2018 16:41:54 +0200
+Subject: [PATCH] MLK-19801-2 crypto: caam - add support of tagged keys in
+ caamalg
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A tagged key is a key which has been tagged with metadata
+using tag_object.h API.
+
+We add the support for these keys to caamalg.
+
+For each algo of caamalg which supports tagged keys , it is done by:
+ - Creating a modified version of the algo
+ - Registering the modified version
+ - When the modified transform is used, it gets
+   the load parameter of the key.
+
+Signed-off-by: Franck LENORMAND <franck.lenormand@nxp.com>
+(cherry picked from commit 88dee97d985890dbf37cafa7934c476d0ecfd0b3)
+(Vipul: Fixed merge conflicts)
+Conflicts:
+	drivers/crypto/caam/caamalg.c
+Signed-off-by: Vipul Kumar <vipul_kumar@mentor.com>
+(cherry picked from commit 5adebac40a7a8065c074f4a69f4ad760c67233f5)
+
+-port from ablkcipher to current skcipher implementation
+-since in linux-imx true key_inline was always true: a. simplify
+the descriptors and b. use key_cmd_opt to differentiate b/w tk and non-tk
+cases
+-change commit headline prefix
+
+Signed-off-by: Horia Geantă <horia.geanta@nxp.com>
+---
+ drivers/crypto/caam/Makefile       |  3 +-
+ drivers/crypto/caam/caamalg.c      | 91 +++++++++++++++++++++++++++++++++++++-
+ drivers/crypto/caam/caamalg_desc.c | 20 +++++++--
+ drivers/crypto/caam/desc_constr.h  |  4 ++
+ drivers/crypto/caam/tag_object.c   |  6 +--
+ drivers/crypto/caam/tag_object.h   |  6 +--
+ 6 files changed, 118 insertions(+), 12 deletions(-)
+
+--- a/drivers/crypto/caam/Makefile
++++ b/drivers/crypto/caam/Makefile
+@@ -15,6 +15,7 @@ obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_CRYPTO_
+ obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_AHASH_API_DESC) += caamhash_desc.o
+ 
+ caam-y := ctrl.o
++caam-$(CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API) += tag_object.o
+ caam_jr-y := jr.o key_gen.o
+ caam_jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_CRYPTO_API) += caamalg.o
+ caam_jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_CRYPTO_API_QI) += caamalg_qi.o
+@@ -24,7 +25,7 @@ caam_jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_PKC
+ caam_jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SM) += sm_store.o
+ caam_jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SM_TEST) += sm_test.o
+ caam_jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SECVIO) += secvio.o
+-caam-jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API) += tag_object.o
++#caam-jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API) += tag_object.o
+ 
+ caam-$(CONFIG_CRYPTO_DEV_FSL_CAAM_CRYPTO_API_QI) += qi.o
+ ifneq ($(CONFIG_CRYPTO_DEV_FSL_CAAM_CRYPTO_API_QI),)
+--- a/drivers/crypto/caam/caamalg.c
++++ b/drivers/crypto/caam/caamalg.c
+@@ -57,6 +57,10 @@
+ #include "key_gen.h"
+ #include "caamalg_desc.h"
+ 
++#ifdef CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API
++#include "tag_object.h"
++#endif /* CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API */
++
+ /*
+  * crypto alg
+  */
+@@ -83,6 +87,7 @@ struct caam_alg_entry {
+ 	bool rfc3686;
+ 	bool geniv;
+ 	bool nodkp;
++	bool support_tagged_key;
+ };
+ 
+ struct caam_aead_alg {
+@@ -739,6 +744,44 @@ static int skcipher_setkey(struct crypto
+ 	ctx->cdata.key_virt = key;
+ 	ctx->cdata.key_inline = true;
+ 
++#ifdef CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API
++	/*
++	 * Check if the key is not in plaintext format
++	 */
++	if (alg->caam.support_tagged_key) {
++		struct tag_object_conf *tagged_key_conf;
++		int ret;
++
++		/* Get the configuration */
++		ret = get_tag_object_conf(ctx->cdata.key_virt,
++					  ctx->cdata.keylen, &tagged_key_conf);
++		if (ret) {
++			dev_err(jrdev,
++				"caam algorithms can't process tagged key\n");
++			return ret;
++		}
++
++		/* Only support black key */
++		if (!is_bk_conf(tagged_key_conf)) {
++			dev_err(jrdev,
++				"The tagged key provided is not a black key\n");
++			return -EINVAL;
++		}
++
++		get_blackey_conf(&tagged_key_conf->conf.bk_conf,
++				 &ctx->cdata.key_real_len,
++				 &ctx->cdata.key_cmd_opt);
++
++		ret = get_tagged_data(ctx->cdata.key_virt, ctx->cdata.keylen,
++				      &ctx->cdata.key_virt, &ctx->cdata.keylen);
++		if (ret) {
++			dev_err(jrdev,
++				"caam algorithms wrong data from tagged key\n");
++			return ret;
++		}
++	}
++#endif /* CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API */
++
+ 	/* skcipher_encrypt shared descriptor */
+ 	desc = ctx->sh_desc_enc;
+ 	cnstr_shdsc_skcipher_encap(desc, &ctx->cdata, ivsize, is_rfc3686,
+@@ -818,6 +861,14 @@ static int ctr_skcipher_setkey(struct cr
+ 	return skcipher_setkey(skcipher, key, keylen, ctx1_iv_off);
+ }
+ 
++#ifdef CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API
++static int tk_skcipher_setkey(struct crypto_skcipher *skcipher,
++				const u8 *key, unsigned int keylen)
++{
++	return skcipher_setkey(skcipher, key, keylen, 0);
++}
++#endif /* CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API */
++
+ static int des_skcipher_setkey(struct crypto_skcipher *skcipher,
+ 			       const u8 *key, unsigned int keylen)
+ {
+@@ -1918,6 +1969,25 @@ static struct caam_skcipher_alg driver_a
+ 		},
+ 		.caam.class1_alg_type = OP_ALG_ALGSEL_AES | OP_ALG_AAI_CBC,
+ 	},
++#ifdef CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API
++	{
++		.skcipher = {
++			.base = {
++				.cra_name = "tk(cbc(aes))",
++				.cra_driver_name = "tk-cbc-aes-caam",
++				.cra_blocksize = AES_BLOCK_SIZE,
++			},
++			.setkey = tk_skcipher_setkey,
++			.encrypt = skcipher_encrypt,
++			.decrypt = skcipher_decrypt,
++			.min_keysize = TAG_MIN_SIZE,
++			.max_keysize = CAAM_MAX_KEY_SIZE,
++			.ivsize = AES_BLOCK_SIZE,
++		},
++		.caam.class1_alg_type = OP_ALG_ALGSEL_AES | OP_ALG_AAI_CBC,
++		.caam.support_tagged_key = true,
++	},
++#endif /* CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API */
+ 	{
+ 		.skcipher = {
+ 			.base = {
+@@ -2037,6 +2107,24 @@ static struct caam_skcipher_alg driver_a
+ 		},
+ 		.caam.class1_alg_type = OP_ALG_ALGSEL_AES | OP_ALG_AAI_ECB,
+ 	},
++#ifdef CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API
++	{
++		.skcipher = {
++			.base = {
++				.cra_name = "tk(ecb(aes))",
++				.cra_driver_name = "tk-ecb-aes-caam",
++				.cra_blocksize = AES_BLOCK_SIZE,
++			},
++			.setkey = tk_skcipher_setkey,
++			.encrypt = skcipher_encrypt,
++			.decrypt = skcipher_decrypt,
++			.min_keysize = TAG_MIN_SIZE,
++			.max_keysize = CAAM_MAX_KEY_SIZE,
++		},
++		.caam.class1_alg_type = OP_ALG_ALGSEL_AES | OP_ALG_AAI_ECB,
++		.caam.support_tagged_key = true,
++	},
++#endif /* CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API */
+ 	{
+ 		.skcipher = {
+ 			.base = {
+@@ -3486,7 +3574,8 @@ static void caam_skcipher_alg_init(struc
+ 	struct skcipher_alg *alg = &t_alg->skcipher;
+ 
+ 	alg->base.cra_module = THIS_MODULE;
+-	alg->base.cra_priority = CAAM_CRA_PRIORITY;
++	alg->base.cra_priority =
++		t_alg->caam.support_tagged_key ? 1 : CAAM_CRA_PRIORITY;
+ 	alg->base.cra_ctxsize = sizeof(struct caam_ctx);
+ 	alg->base.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY;
+ 
+--- a/drivers/crypto/caam/caamalg_desc.c
++++ b/drivers/crypto/caam/caamalg_desc.c
+@@ -1389,8 +1389,14 @@ void cnstr_shdsc_skcipher_encap(u32 * co
+ 				   JUMP_COND_SHRD);
+ 
+ 	/* Load class1 key only */
+-	append_key_as_imm(desc, cdata->key_virt, cdata->keylen,
+-			  cdata->keylen, CLASS_1 | KEY_DEST_CLASS_REG);
++	if (IS_ENABLED(CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API) &&
++	    cdata->key_cmd_opt)
++		append_key_as_imm(desc, cdata->key_virt, cdata->keylen,
++				  cdata->key_real_len, CLASS_1 |
++				  KEY_DEST_CLASS_REG | cdata->key_cmd_opt);
++	else
++		append_key_as_imm(desc, cdata->key_virt, cdata->keylen,
++				  cdata->keylen, CLASS_1 | KEY_DEST_CLASS_REG);
+ 
+ 	/* Load nonce into CONTEXT1 reg */
+ 	if (is_rfc3686) {
+@@ -1464,8 +1470,14 @@ void cnstr_shdsc_skcipher_decap(u32 * co
+ 				   JUMP_COND_SHRD);
+ 
+ 	/* Load class1 key only */
+-	append_key_as_imm(desc, cdata->key_virt, cdata->keylen,
+-			  cdata->keylen, CLASS_1 | KEY_DEST_CLASS_REG);
++	if (IS_ENABLED(CONFIG_CRYPTO_DEV_FSL_CAAM_TK_API) &&
++	    cdata->key_cmd_opt)
++		append_key_as_imm(desc, cdata->key_virt, cdata->keylen,
++				  cdata->key_real_len, CLASS_1 |
++				  KEY_DEST_CLASS_REG | cdata->key_cmd_opt);
++	else
++		append_key_as_imm(desc, cdata->key_virt, cdata->keylen,
++				  cdata->keylen, CLASS_1 | KEY_DEST_CLASS_REG);
+ 
+ 	/* Load nonce into CONTEXT1 reg */
+ 	if (is_rfc3686) {
+--- a/drivers/crypto/caam/desc_constr.h
++++ b/drivers/crypto/caam/desc_constr.h
+@@ -500,6 +500,8 @@ do { \
+  * @key_virt: virtual address where algorithm key resides
+  * @key_inline: true - key can be inlined in the descriptor; false - key is
+  *              referenced by the descriptor
++ * @key_real_len: size of the key to be loaded by the CAAM
++ * @key_cmd_opt: optional parameters for KEY command
+  */
+ struct alginfo {
+ 	u32 algtype;
+@@ -508,6 +510,8 @@ struct alginfo {
+ 	dma_addr_t key_dma;
+ 	const void *key_virt;
+ 	bool key_inline;
++	u32 key_real_len;
++	u32 key_cmd_opt;
+ };
+ 
+ /**
+--- a/drivers/crypto/caam/tag_object.c
++++ b/drivers/crypto/caam/tag_object.c
+@@ -128,7 +128,7 @@ EXPORT_SYMBOL(is_valid_tag_object_conf);
+  *
+  * Return: 0 if success, else error code
+  */
+-int get_tag_object_conf(void *buffer, size_t size,
++int get_tag_object_conf(const void *buffer, size_t size,
+ 			struct tag_object_conf **tag_obj_conf)
+ {
+ 	bool is_valid;
+@@ -240,8 +240,8 @@ EXPORT_SYMBOL(get_blackey_conf);
+  *
+  * Return: 0 if success, else error code
+  */
+-int get_tagged_data(void *tagged_object, size_t tagged_object_size,
+-		    void **data, u32 *data_size)
++int get_tagged_data(const void *tagged_object, size_t tagged_object_size,
++		    const void **data, u32 *data_size)
+ {
+ 	struct tagged_object *tago =
+ 		(struct tagged_object *)tagged_object;
+--- a/drivers/crypto/caam/tag_object.h
++++ b/drivers/crypto/caam/tag_object.h
+@@ -80,7 +80,7 @@ bool is_valid_tag_object_conf(const stru
+ void init_tag_object_header(struct conf_header *conf_header,
+ 			    enum tag_type type);
+ 
+-int get_tag_object_conf(void *buffer, size_t buffer_size,
++int get_tag_object_conf(const void *buffer, size_t buffer_size,
+ 			struct tag_object_conf **tag_obj_conf);
+ 
+ int set_tag_object_conf(const struct tag_object_conf *tag_obj_conf,
+@@ -94,7 +94,7 @@ void get_blackey_conf(const struct black
+ void init_blackey_conf(struct blackey_conf *blackey_conf,
+ 		       size_t len, bool ccm, bool tk);
+ 
+-int get_tagged_data(void *buffer, size_t buffer_size,
+-		    void **data, u32 *data_size);
++int get_tagged_data(const void *buffer, size_t buffer_size,
++		    const void **data, u32 *data_size);
+ 
+ #endif /* _TAG_OBJECT_H_ */

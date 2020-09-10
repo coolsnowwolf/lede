@@ -11,6 +11,9 @@ LS_SD_ROOTFSPART_OFFSET = 64
 LS_SD_IMAGE_SIZE = $(shell echo $$((($(LS_SD_ROOTFSPART_OFFSET) + \
 	$(CONFIG_TARGET_ROOTFS_PARTSIZE)) * 1024 * 1024)))
 
+# The limitation of flash sysupgrade.bin is 16MB kernel + 32MB rootfs
+LS_SYSUPGRADE_IMAGE_SIZE = 48m
+
 define Build/ls-clean
 	rm -f $@
 endef
@@ -43,12 +46,6 @@ define Build/traverse-fit
 	@mv -f $@.new $@
 endef
 
-ifeq ($(SUBTARGET),armv8_64b)
-include armv8_64b.mk
-endif
-
-ifeq ($(SUBTARGET),armv7)
-include armv7.mk
-endif
+include $(SUBTARGET).mk
 
 $(eval $(call BuildImage))

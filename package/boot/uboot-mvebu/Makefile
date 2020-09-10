@@ -29,6 +29,13 @@ define U-Boot/clearfog
   UBOOT_IMAGE:=u-boot-spl.kwb
 endef
 
+define U-Boot/helios4
+  NAME:=Kobol Helios 4
+  BUILD_DEVICES:=kobol_helios4
+  BUILD_SUBTARGET:=cortexa9
+  UBOOT_IMAGE:=u-boot-spl.kwb
+endef
+
 define U-Boot/uDPU
   NAME:=Methode uDPU
   BUILD_DEVICES:=methode_udpu
@@ -37,16 +44,17 @@ endef
 
 UBOOT_TARGETS:= \
 	clearfog \
+	helios4 \
 	uDPU
 
 Build/Exports:=$(Host/Exports)
 
 define Build/Configure
-	# enable additional options beyond clearfog_defconfig
-	echo CONFIG_NET_RANDOM_ETHADDR=y >> $(PKG_BUILD_DIR)/configs/$(BUILD_VARIANT)_defconfig
-	echo CONFIG_CMD_SETEXPR=y >> $(PKG_BUILD_DIR)/configs/$(BUILD_VARIANT)_defconfig
+	# enable additional options beyond <device>_defconfig
+	echo CONFIG_NET_RANDOM_ETHADDR=y >> $(PKG_BUILD_DIR)/configs/$(UBOOT_CONFIG)_defconfig
+	echo CONFIG_CMD_SETEXPR=y >> $(PKG_BUILD_DIR)/configs/$(UBOOT_CONFIG)_defconfig
 
-	+$(MAKE) $(PKG_JOBS) -C $(PKG_BUILD_DIR) $(UBOOT_CONFIGURE_VARS) $(UBOOT_CONFIG)_config
+	$(call Build/Configure/U-Boot)
 endef
 
 define Build/InstallDev

@@ -1,0 +1,114 @@
+From a00590d570212c3c633bd463cef8ec7377cc7993 Mon Sep 17 00:00:00 2001
+From: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
+Date: Tue, 30 Jun 2020 12:07:44 +0100
+Subject: [PATCH] sch_cake: fix IP protocol handling in the presence of VLAN
+ tags
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+From: Ilya Ponetayev <i.ponetaev@ndmsystems.com>
+
+CAKE was using the return value of tc_skb_protocol() and expecting it to be
+the IP protocol type. This can fail in the presence of QinQ VLAN tags,
+making CAKE unable to handle ECN marking and diffserv parsing in this case.
+Fix this by implementing our own version of tc_skb_protocol(), which will
+use skb->protocol directly, but also parse and skip over any VLAN tags and
+return the inner protocol number instead.
+
+Also fix CE marking by implementing a version of INET_ECN_set_ce() that
+uses the same parsing routine.
+
+Fixes: ea82511518f4 ("sch_cake: Add NAT awareness to packet classifier")
+Fixes: b2100cc56fca ("sch_cake: Use tc_skb_protocol() helper for getting packet protocol")
+Fixes: 046f6fd5daef ("sched: Add Common Applications Kept Enhanced (cake) qdisc")
+Signed-off-by: Ilya Ponetayev <i.ponetaev@ndmsystems.com>
+[ squash original two patches, rewrite commit message ]
+Signed-off-by: Toke Høiland-Jørgensen <toke@redhat.com>
+Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
+---
+ net/sched/sch_cake.c | 52 +++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 49 insertions(+), 3 deletions(-)
+
+--- a/net/sched/sch_cake.c
++++ b/net/sched/sch_cake.c
+@@ -497,6 +497,52 @@ static bool cobalt_queue_empty(struct co
+ 	return down;
+ }
+ 
++static __be16 cake_skb_proto(const struct sk_buff *skb)
++{
++	unsigned int offset = skb_mac_offset(skb) + sizeof(struct ethhdr);
++	__be16 proto = skb->protocol;
++	struct vlan_hdr vhdr, *vh;
++
++	while (proto == htons(ETH_P_8021Q) || proto == htons(ETH_P_8021AD)) {
++		vh = skb_header_pointer(skb, offset, sizeof(vhdr), &vhdr);
++		if (!vh)
++			break;
++
++		proto = vh->h_vlan_encapsulated_proto;
++		offset += sizeof(vhdr);
++	}
++
++	return proto;
++}
++
++static int cake_set_ce(struct sk_buff *skb)
++{
++	int wlen = skb_network_offset(skb);
++
++	switch (cake_skb_proto(skb)) {
++	case htons(ETH_P_IP):
++		wlen += sizeof(struct iphdr);
++		if (!pskb_may_pull(skb, wlen) ||
++		    skb_try_make_writable(skb, wlen))
++			return 0;
++
++		return IP_ECN_set_ce(ip_hdr(skb));
++
++	case htons(ETH_P_IPV6):
++		wlen += sizeof(struct ipv6hdr);
++		if (!pskb_may_pull(skb, wlen) ||
++		    skb_try_make_writable(skb, wlen))
++			return 0;
++
++		return IP6_ECN_set_ce(skb, ipv6_hdr(skb));
++
++	default:
++		return 0;
++	}
++
++	return 0;
++}
++
+ /* Call this with a freshly dequeued packet for possible congestion marking.
+  * Returns true as an instruction to drop the packet, false for delivery.
+  */
+@@ -549,7 +595,7 @@ static bool cobalt_should_drop(struct co
+ 
+ 	if (next_due && vars->dropping) {
+ 		/* Use ECN mark if possible, otherwise drop */
+-		drop = !(vars->ecn_marked = INET_ECN_set_ce(skb));
++		drop = !(vars->ecn_marked = cake_set_ce(skb));
+ 
+ 		vars->count++;
+ 		if (!vars->count)
+@@ -592,7 +638,7 @@ static bool cake_update_flowkeys(struct
+ 	bool rev = !skb->_nfct, upd = false;
+ 	__be32 ip;
+ 
+-	if (skb_protocol(skb, true) != htons(ETH_P_IP))
++	if (cake_skb_proto(skb) != htons(ETH_P_IP))
+ 		return false;
+ 
+ 	if (!nf_ct_get_tuple_skb(&tuple, skb))
+@@ -1557,7 +1603,7 @@ static u8 cake_handle_diffserv(struct sk
+ 	u16 *buf, buf_;
+ 	u8 dscp;
+ 
+-	switch (skb_protocol(skb, true)) {
++	switch (cake_skb_proto(skb)) {
+ 	case htons(ETH_P_IP):
+ 		buf = skb_header_pointer(skb, offset, sizeof(buf_), &buf_);
+ 		if (unlikely(!buf))

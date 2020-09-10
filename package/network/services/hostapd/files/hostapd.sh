@@ -198,7 +198,7 @@ hostapd_common_add_bss_config() {
 	config_add_int eapol_version
 
 	config_add_string 'auth_server:host' 'server:host'
-	config_add_string auth_secret
+	config_add_string auth_secret key
 	config_add_int 'auth_port:port' 'port:port'
 
 	config_add_string acct_server
@@ -262,6 +262,39 @@ hostapd_common_add_bss_config() {
 	config_add_boolean sae_require_mfp
 	
 	config_add_string 'owe_transition_bssid:macaddr' 'owe_transition_ssid:string'
+}
+
+hostapd_set_vlan_file() {
+	local ifname="$1"
+	local vlan="$2"
+	json_get_vars name vid
+	echo "${vid} ${ifname}-${name}" >> /var/run/hostapd-${ifname}.vlan
+	wireless_add_vlan "${vlan}" "${ifname}-${name}"
+}
+
+hostapd_set_vlan() {
+	local ifname="$1"
+
+	rm -f /var/run/hostapd-${ifname}.vlan
+	for_each_vlan hostapd_set_vlan_file ${ifname}
+}
+
+hostapd_set_psk_file() {
+	local ifname="$1"
+	local vlan="$2"
+	local vlan_id=""
+
+	json_get_vars mac vid key
+	set_default mac "00:00:00:00:00:00"
+	[ -n "$vid" ] && vlan_id="vlanid=$vid "
+	echo "${vlan_id} ${mac} ${key}" >> /var/run/hostapd-${ifname}.psk
+}
+
+hostapd_set_psk() {
+	local ifname="$1"
+
+	rm -f /var/run/hostapd-${ifname}.psk
+	for_each_station hostapd_set_psk_file ${ifname}
 }
 
 hostapd_set_bss_options() {
@@ -371,20 +404,23 @@ hostapd_set_bss_options() {
 		;;
 		psk|sae|psk-sae)
 			json_get_vars key wpa_psk_file
-			if [ ${#key} -lt 8 ]; then
+			if [ ${#key} -eq 64 ]; then
+				append bss_conf "wpa_psk=$key" "$N"
+			elif [ ${#key} -ge 8 ] && [ ${#key} -le 63 ]; then
+				append bss_conf "wpa_passphrase=$key" "$N"
+			elif [ -n "$key" ] || [ -z "$wpa_psk_file" ]; then
 				wireless_setup_vif_failed INVALID_WPA_PSK
 				return 1
-			elif [ ${#key} -eq 64 ]; then
-				append bss_conf "wpa_psk=$key" "$N"
-			else
-				append bss_conf "wpa_passphrase=$key" "$N"
 			fi
+			[ -z "$wpa_psk_file" ] && set_default wpa_psk_file /var/run/hostapd-$ifname.psk
 			[ -n "$wpa_psk_file" ] && {
 				[ -e "$wpa_psk_file" ] || touch "$wpa_psk_file"
 				append bss_conf "wpa_psk_file=$wpa_psk_file" "$N"
 			}
 			[ "$eapol_version" -ge "1" -a "$eapol_version" -le "2" ] && append bss_conf "eapol_version=$eapol_version" "$N"
 
+			set_default dynamic_vlan 0
+			vlan_possible=1
 			wps_possible=1
 		;;
 		eap|eap192|eap-eap192)
@@ -641,6 +677,7 @@ hostapd_set_bss_options() {
 	[ -n "$vlan_possible" -a -n "$dynamic_vlan" ] && {
 		json_get_vars vlan_naming vlan_tagged_interface vlan_bridge vlan_file
 		set_default vlan_naming 1
+		[ -z "$vlan_file" ] && set_default vlan_file /var/run/hostapd-$ifname.vlan
 		append bss_conf "dynamic_vlan=$dynamic_vlan" "$N"
 		append bss_conf "vlan_naming=$vlan_naming" "$N"
 		[ -n "$vlan_bridge" ] && \
@@ -774,7 +811,8 @@ wpa_supplicant_set_fixed_freq() {
 	case "$htmode" in
 		VHT80) append network_data "max_oper_chwidth=1" "$N$T";;
 		VHT160) append network_data "max_oper_chwidth=2" "$N$T";;
-		*) append network_data "max_oper_chwidth=0" "$N$T";;
+		VHT20|VHT40) append network_data "max_oper_chwidth=0" "$N$T";;
+		*) append network_data "disable_vht=1" "$N$T";;
 	esac
 }
 
@@ -1089,7 +1127,7 @@ wpa_supplicant_run() {
 
 	[ "$ret" != 0 ] && wireless_setup_vif_failed WPA_SUPPLICANT_FAILED
 
-	local supplicant_pid=$(ubus call service list '{"name": "hostapd"}' | jsonfilter -l 1 -e "@['hostapd'].instances['supplicant'].pid")
+	local supplicant_pid=$(ubus call service list '{"name": "wpad"}' | jsonfilter -l 1 -e "@['wpad'].instances['supplicant'].pid")
 	wireless_add_process "$supplicant_pid" "/usr/sbin/wpa_supplicant" 1
 
 	return $ret

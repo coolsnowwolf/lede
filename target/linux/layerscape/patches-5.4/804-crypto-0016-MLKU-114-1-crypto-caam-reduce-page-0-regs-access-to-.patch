@@ -1,0 +1,294 @@
+From 3d21ebe0b870b9b65b3be0c1473e7148256c4d16 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Horia=20Geant=C4=83?= <horia.geanta@nxp.com>
+Date: Tue, 24 Sep 2019 14:56:48 +0300
+Subject: [PATCH] MLKU-114-1 crypto: caam - reduce page 0 regs access to
+ minimum
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TODO:
+
+1. if of_property_read_u32_index(,,index=0,) is to be used,
+DT bindings (fsl-sec4.txt) should be updated to mandate for
+-checked that all existing DTs are configured like this
+-this might create problems in the future, if DTs are needed where
+JR DT nodes would exist without the controller DT node
+(directly on simple bus etc.)
+
+2. MCFGR (ctrl->mcr)
+How to determine caam_ptr_sz if MCFGR is not accesible?
+
+Signed-off-by: Horia Geantă <horia.geanta@nxp.com>
+---
+ drivers/crypto/caam/caamalg.c  | 21 ++++++------
+ drivers/crypto/caam/caamhash.c |  8 +++--
+ drivers/crypto/caam/caampkc.c  |  4 +--
+ drivers/crypto/caam/caamrng.c  |  4 +--
+ drivers/crypto/caam/ctrl.c     | 78 ++++++++++++++++++++++++++----------------
+ 5 files changed, 68 insertions(+), 47 deletions(-)
+
+--- a/drivers/crypto/caam/caamalg.c
++++ b/drivers/crypto/caam/caamalg.c
+@@ -3520,13 +3520,14 @@ int caam_algapi_init(struct device *ctrl
+ 	 * First, detect presence and attributes of DES, AES, and MD blocks.
+ 	 */
+ 	if (priv->era < 10) {
++		struct caam_perfmon __iomem *perfmon = &priv->jr[0]->perfmon;
+ 		u32 cha_vid, cha_inst, aes_rn;
+ 
+-		cha_vid = rd_reg32(&priv->ctrl->perfmon.cha_id_ls);
++		cha_vid = rd_reg32(&perfmon->cha_id_ls);
+ 		aes_vid = cha_vid & CHA_ID_LS_AES_MASK;
+ 		md_vid = (cha_vid & CHA_ID_LS_MD_MASK) >> CHA_ID_LS_MD_SHIFT;
+ 
+-		cha_inst = rd_reg32(&priv->ctrl->perfmon.cha_num_ls);
++		cha_inst = rd_reg32(&perfmon->cha_num_ls);
+ 		des_inst = (cha_inst & CHA_ID_LS_DES_MASK) >>
+ 			   CHA_ID_LS_DES_SHIFT;
+ 		aes_inst = cha_inst & CHA_ID_LS_AES_MASK;
+@@ -3534,23 +3535,23 @@ int caam_algapi_init(struct device *ctrl
+ 		ccha_inst = 0;
+ 		ptha_inst = 0;
+ 
+-		aes_rn = rd_reg32(&priv->ctrl->perfmon.cha_rev_ls) &
+-			 CHA_ID_LS_AES_MASK;
++		aes_rn = rd_reg32(&perfmon->cha_rev_ls) & CHA_ID_LS_AES_MASK;
+ 		gcm_support = !(aes_vid == CHA_VER_VID_AES_LP && aes_rn < 8);
+ 	} else {
++		struct version_regs __iomem *vreg = &priv->jr[0]->vreg;
+ 		u32 aesa, mdha;
+ 
+-		aesa = rd_reg32(&priv->ctrl->vreg.aesa);
+-		mdha = rd_reg32(&priv->ctrl->vreg.mdha);
++		aesa = rd_reg32(&vreg->aesa);
++		mdha = rd_reg32(&vreg->mdha);
+ 
+ 		aes_vid = (aesa & CHA_VER_VID_MASK) >> CHA_VER_VID_SHIFT;
+ 		md_vid = (mdha & CHA_VER_VID_MASK) >> CHA_VER_VID_SHIFT;
+ 
+-		des_inst = rd_reg32(&priv->ctrl->vreg.desa) & CHA_VER_NUM_MASK;
++		des_inst = rd_reg32(&vreg->desa) & CHA_VER_NUM_MASK;
+ 		aes_inst = aesa & CHA_VER_NUM_MASK;
+ 		md_inst = mdha & CHA_VER_NUM_MASK;
+-		ccha_inst = rd_reg32(&priv->ctrl->vreg.ccha) & CHA_VER_NUM_MASK;
+-		ptha_inst = rd_reg32(&priv->ctrl->vreg.ptha) & CHA_VER_NUM_MASK;
++		ccha_inst = rd_reg32(&vreg->ccha) & CHA_VER_NUM_MASK;
++		ptha_inst = rd_reg32(&vreg->ptha) & CHA_VER_NUM_MASK;
+ 
+ 		gcm_support = aesa & CHA_VER_MISC_AES_GCM;
+ 	}
+--- a/drivers/crypto/caam/caamhash.c
++++ b/drivers/crypto/caam/caamhash.c
+@@ -1991,12 +1991,14 @@ int caam_algapi_hash_init(struct device
+ 	 * presence and attributes of MD block.
+ 	 */
+ 	if (priv->era < 10) {
+-		md_vid = (rd_reg32(&priv->ctrl->perfmon.cha_id_ls) &
++		struct caam_perfmon __iomem *perfmon = &priv->jr[0]->perfmon;
++
++		md_vid = (rd_reg32(&perfmon->cha_id_ls) &
+ 			  CHA_ID_LS_MD_MASK) >> CHA_ID_LS_MD_SHIFT;
+-		md_inst = (rd_reg32(&priv->ctrl->perfmon.cha_num_ls) &
++		md_inst = (rd_reg32(&perfmon->cha_num_ls) &
+ 			   CHA_ID_LS_MD_MASK) >> CHA_ID_LS_MD_SHIFT;
+ 	} else {
+-		u32 mdha = rd_reg32(&priv->ctrl->vreg.mdha);
++		u32 mdha = rd_reg32(&priv->jr[0]->vreg.mdha);
+ 
+ 		md_vid = (mdha & CHA_VER_VID_MASK) >> CHA_VER_VID_SHIFT;
+ 		md_inst = mdha & CHA_VER_NUM_MASK;
+--- a/drivers/crypto/caam/caampkc.c
++++ b/drivers/crypto/caam/caampkc.c
+@@ -1099,10 +1099,10 @@ int caam_pkc_init(struct device *ctrldev
+ 
+ 	/* Determine public key hardware accelerator presence. */
+ 	if (priv->era < 10)
+-		pk_inst = (rd_reg32(&priv->ctrl->perfmon.cha_num_ls) &
++		pk_inst = (rd_reg32(&priv->jr[0]->perfmon.cha_num_ls) &
+ 			   CHA_ID_LS_PK_MASK) >> CHA_ID_LS_PK_SHIFT;
+ 	else
+-		pk_inst = rd_reg32(&priv->ctrl->vreg.pkha) & CHA_VER_NUM_MASK;
++		pk_inst = rd_reg32(&priv->jr[0]->vreg.pkha) & CHA_VER_NUM_MASK;
+ 
+ 	/* Do not register algorithms if PKHA is not present. */
+ 	if (!pk_inst)
+--- a/drivers/crypto/caam/caamrng.c
++++ b/drivers/crypto/caam/caamrng.c
+@@ -363,10 +363,10 @@ int caam_rng_init(struct device *ctrldev
+ 
+ 	/* Check for an instantiated RNG before registration */
+ 	if (priv->era < 10)
+-		rng_inst = (rd_reg32(&priv->ctrl->perfmon.cha_num_ls) &
++		rng_inst = (rd_reg32(&priv->jr[0]->perfmon.cha_num_ls) &
+ 			    CHA_ID_LS_RNG_MASK) >> CHA_ID_LS_RNG_SHIFT;
+ 	else
+-		rng_inst = rd_reg32(&priv->ctrl->vreg.rng) & CHA_VER_NUM_MASK;
++		rng_inst = rd_reg32(&priv->jr[0]->vreg.rng) & CHA_VER_NUM_MASK;
+ 
+ 	if (!rng_inst)
+ 		return 0;
+--- a/drivers/crypto/caam/ctrl.c
++++ b/drivers/crypto/caam/ctrl.c
+@@ -379,7 +379,7 @@ start_rng:
+ 		      RTMCTL_SAMP_MODE_RAW_ES_SC);
+ }
+ 
+-static int caam_get_era_from_hw(struct caam_ctrl __iomem *ctrl)
++static int caam_get_era_from_hw(struct caam_perfmon __iomem *perfmon)
+ {
+ 	static const struct {
+ 		u16 ip_id;
+@@ -405,12 +405,12 @@ static int caam_get_era_from_hw(struct c
+ 	u16 ip_id;
+ 	int i;
+ 
+-	ccbvid = rd_reg32(&ctrl->perfmon.ccb_id);
++	ccbvid = rd_reg32(&perfmon->ccb_id);
+ 	era = (ccbvid & CCBVID_ERA_MASK) >> CCBVID_ERA_SHIFT;
+ 	if (era)	/* This is '0' prior to CAAM ERA-6 */
+ 		return era;
+ 
+-	id_ms = rd_reg32(&ctrl->perfmon.caam_id_ms);
++	id_ms = rd_reg32(&perfmon->caam_id_ms);
+ 	ip_id = (id_ms & SECVID_MS_IPID_MASK) >> SECVID_MS_IPID_SHIFT;
+ 	maj_rev = (id_ms & SECVID_MS_MAJ_REV_MASK) >> SECVID_MS_MAJ_REV_SHIFT;
+ 
+@@ -428,7 +428,7 @@ static int caam_get_era_from_hw(struct c
+  * In case this property is not passed an attempt to retrieve the CAAM
+  * era via register reads will be made.
+  **/
+-static int caam_get_era(struct caam_ctrl __iomem *ctrl)
++static int caam_get_era(struct caam_perfmon __iomem *perfmon)
+ {
+ 	struct device_node *caam_node;
+ 	int ret;
+@@ -441,7 +441,7 @@ static int caam_get_era(struct caam_ctrl
+ 	if (!ret)
+ 		return prop;
+ 	else
+-		return caam_get_era_from_hw(ctrl);
++		return caam_get_era_from_hw(perfmon);
+ }
+ 
+ /*
+@@ -575,8 +575,8 @@ static int caam_probe(struct platform_de
+ 	struct device_node *nprop, *np;
+ 	struct caam_ctrl __iomem *ctrl;
+ 	struct caam_drv_private *ctrlpriv;
++	struct caam_perfmon __iomem *perfmon;
+ #ifdef CONFIG_DEBUG_FS
+-	struct caam_perfmon *perfmon;
+ 	struct dentry *dfs_root;
+ #endif
+ 	u32 scfgr, comp_params;
+@@ -616,9 +616,36 @@ static int caam_probe(struct platform_de
+ 		return ret;
+ 	}
+ 
+-	caam_little_end = !(bool)(rd_reg32(&ctrl->perfmon.status) &
++	ring = 0;
++	for_each_available_child_of_node(nprop, np)
++		if (of_device_is_compatible(np, "fsl,sec-v4.0-job-ring") ||
++		    of_device_is_compatible(np, "fsl,sec4.0-job-ring")) {
++			u32 reg;
++
++			if (of_property_read_u32_index(np, "reg", 0, &reg)) {
++				dev_err(dev, "%s read reg property error\n",
++					np->full_name);
++				continue;
++			}
++
++			ctrlpriv->jr[ring] = (struct caam_job_ring __iomem __force *)
++					     ((__force uint8_t *)ctrl + reg);
++
++			ctrlpriv->total_jobrs++;
++			ring++;
++		}
++
++	/*
++	 * Wherever possible, instead of accessing registers from the global page,
++	 * use the alias registers in the first (cf. DT nodes order)
++	 * job ring's page.
++	 */
++	perfmon = ring ? (struct caam_perfmon *)&ctrlpriv->jr[0]->perfmon :
++			 (struct caam_perfmon *)&ctrl->perfmon;
++
++	caam_little_end = !(bool)(rd_reg32(&perfmon->status) &
+ 				  (CSTA_PLEND | CSTA_ALT_PLEND));
+-	comp_params = rd_reg32(&ctrl->perfmon.comp_parms_ms);
++	comp_params = rd_reg32(&perfmon->comp_parms_ms);
+ 	if (comp_params & CTPR_MS_PS && rd_reg32(&ctrl->mcr) & MCFGR_LONG_PTR)
+ 		caam_ptr_sz = sizeof(u64);
+ 	else
+@@ -718,7 +745,7 @@ static int caam_probe(struct platform_de
+ 		return ret;
+ 	}
+ 
+-	ctrlpriv->era = caam_get_era(ctrl);
++	ctrlpriv->era = caam_get_era(perfmon);
+ 	ctrlpriv->domain = iommu_get_domain_for_dev(dev);
+ 
+ #ifdef CONFIG_DEBUG_FS
+@@ -727,8 +754,6 @@ static int caam_probe(struct platform_de
+ 	 * "caam" and nprop->full_name. The OF name isn't distinctive,
+ 	 * but does separate instances
+ 	 */
+-	perfmon = (struct caam_perfmon __force *)&ctrl->perfmon;
+-
+ 	dfs_root = debugfs_create_dir(dev_name(dev), NULL);
+ 	ret = devm_add_action_or_reset(dev, caam_remove_debugfs, dfs_root);
+ 	if (ret)
+@@ -754,31 +779,24 @@ static int caam_probe(struct platform_de
+ #endif
+ 	}
+ 
+-	ring = 0;
+-	for_each_available_child_of_node(nprop, np)
+-		if (of_device_is_compatible(np, "fsl,sec-v4.0-job-ring") ||
+-		    of_device_is_compatible(np, "fsl,sec4.0-job-ring")) {
+-			ctrlpriv->jr[ring] = (struct caam_job_ring __iomem __force *)
+-					     ((__force uint8_t *)ctrl +
+-					     (ring + JR_BLOCK_NUMBER) *
+-					      BLOCK_OFFSET
+-					     );
+-			ctrlpriv->total_jobrs++;
+-			ring++;
+-		}
+-
+ 	/* If no QI and no rings specified, quit and go home */
+ 	if ((!ctrlpriv->qi_present) && (!ctrlpriv->total_jobrs)) {
+ 		dev_err(dev, "no queues configured, terminating\n");
+ 		return -ENOMEM;
+ 	}
+ 
+-	if (ctrlpriv->era < 10)
+-		rng_vid = (rd_reg32(&ctrl->perfmon.cha_id_ls) &
++	if (ctrlpriv->era < 10) {
++		rng_vid = (rd_reg32(&perfmon->cha_id_ls) &
+ 			   CHA_ID_LS_RNG_MASK) >> CHA_ID_LS_RNG_SHIFT;
+-	else
+-		rng_vid = (rd_reg32(&ctrl->vreg.rng) & CHA_VER_VID_MASK) >>
++	} else {
++		struct version_regs __iomem *vreg;
++
++		vreg = ring ? (struct version_regs *)&ctrlpriv->jr[0]->vreg :
++			      (struct version_regs *)&ctrl->vreg;
++
++		rng_vid = (rd_reg32(&vreg->rng) & CHA_VER_VID_MASK) >>
+ 			   CHA_VER_VID_SHIFT;
++	}
+ 
+ 	/*
+ 	 * If SEC has RNG version >= 4 and RNG state handle has not been
+@@ -847,8 +865,8 @@ static int caam_probe(struct platform_de
+ 
+ 	/* NOTE: RTIC detection ought to go here, around Si time */
+ 
+-	caam_id = (u64)rd_reg32(&ctrl->perfmon.caam_id_ms) << 32 |
+-		  (u64)rd_reg32(&ctrl->perfmon.caam_id_ls);
++	caam_id = (u64)rd_reg32(&perfmon->caam_id_ms) << 32 |
++		  (u64)rd_reg32(&perfmon->caam_id_ls);
+ 
+ 	/* Report "alive" for developer to see */
+ 	dev_info(dev, "device ID = 0x%016llx (Era %d)\n", caam_id,

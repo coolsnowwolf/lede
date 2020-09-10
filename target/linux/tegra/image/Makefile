@@ -34,6 +34,7 @@ define Build/tegra-sdcard
 endef
 
 DEVICE_VARS += BOOT_SCRIPT UBOOT
+
 define Device/Default
   BOOT_SCRIPT := generic-bootscript
   IMAGES := sdcard.img.gz
@@ -49,7 +50,7 @@ define Device/compulab_trimslice
   DEVICE_MODEL := TrimSlice
   DEVICE_DTS := tegra20-trimslice
   DEVICE_PACKAGES := kmod-r8169 kmod-rt2800-usb kmod-rtc-em3027 \
-	kmod-usb-storage wpad-mini
+	kmod-usb-storage wpad-basic-wolfssl
   UBOOT := trimslice-mmc
 endef
 TARGET_DEVICES += compulab_trimslice

@@ -139,7 +139,7 @@ ar8327_phy_rgmii_set(struct ar8xxx_priv *priv, struct phy_device *phydev)
 
 	if (!of_property_read_bool(np, "qca,phy-rgmii-en")) {
 		pr_err("ar8327: qca,phy-rgmii-en is not specified\n");
-		return -EINVAL;
+		return;
 	}
 	ar8xxx_phy_dbg_read(priv, phyaddr,
 				AR8327_PHY_MODE_SEL, &phy_val);
@@ -150,7 +150,7 @@ ar8327_phy_rgmii_set(struct ar8xxx_priv *priv, struct phy_device *phydev)
 	/* set rgmii tx clock delay if needed */
 	if (!of_property_read_bool(np, "qca,txclk-delay-en")) {
 		pr_err("ar8327: qca,txclk-delay-en is not specified\n");
-		return -EINVAL;
+		return;
 	}
 	ar8xxx_phy_dbg_read(priv, phyaddr,
 				AR8327_PHY_SYS_CTRL, &phy_val);
@@ -161,7 +161,7 @@ ar8327_phy_rgmii_set(struct ar8xxx_priv *priv, struct phy_device *phydev)
 	/* set rgmii rx clock delay if needed */
 	if (!of_property_read_bool(np, "qca,rxclk-delay-en")) {
 		pr_err("ar8327: qca,rxclk-delay-en is not specified\n");
-		return -EINVAL;
+		return;
 	}
 	ar8xxx_phy_dbg_read(priv, phyaddr,
 				AR8327_PHY_TEST_CTRL, &phy_val);
@@ -553,15 +553,15 @@ ar8327_hw_config_pdata(struct ar8xxx_priv *priv,
 	t = ar8327_get_pad_cfg(pdata->pad6_cfg);
 	ar8xxx_write(priv, AR8327_REG_PAD6_MODE, t);
 
-	pos = ar8xxx_read(priv, AR8327_REG_POWER_ON_STRIP);
+	pos = ar8xxx_read(priv, AR8327_REG_POWER_ON_STRAP);
 	new_pos = pos;
 
 	led_cfg = pdata->led_cfg;
 	if (led_cfg) {
 		if (led_cfg->open_drain)
-			new_pos |= AR8327_POWER_ON_STRIP_LED_OPEN_EN;
+			new_pos |= AR8327_POWER_ON_STRAP_LED_OPEN_EN;
 		else
-			new_pos &= ~AR8327_POWER_ON_STRIP_LED_OPEN_EN;
+			new_pos &= ~AR8327_POWER_ON_STRAP_LED_OPEN_EN;
 
 		ar8xxx_write(priv, AR8327_REG_LED_CTRL0, led_cfg->led_ctrl0);
 		ar8xxx_write(priv, AR8327_REG_LED_CTRL1, led_cfg->led_ctrl1);
@@ -569,7 +569,7 @@ ar8327_hw_config_pdata(struct ar8xxx_priv *priv,
 		ar8xxx_write(priv, AR8327_REG_LED_CTRL3, led_cfg->led_ctrl3);
 
 		if (new_pos != pos)
-			new_pos |= AR8327_POWER_ON_STRIP_POWER_ON_SEL;
+			new_pos |= AR8327_POWER_ON_STRAP_POWER_ON_SEL;
 	}
 
 	if (pdata->sgmii_cfg) {
@@ -586,12 +586,12 @@ ar8327_hw_config_pdata(struct ar8xxx_priv *priv,
 		ar8xxx_write(priv, AR8327_REG_SGMII_CTRL, t);
 
 		if (pdata->sgmii_cfg->serdes_aen)
-			new_pos &= ~AR8327_POWER_ON_STRIP_SERDES_AEN;
+			new_pos &= ~AR8327_POWER_ON_STRAP_SERDES_AEN;
 		else
-			new_pos |= AR8327_POWER_ON_STRIP_SERDES_AEN;
+			new_pos |= AR8327_POWER_ON_STRAP_SERDES_AEN;
 	}
 
-	ar8xxx_write(priv, AR8327_REG_POWER_ON_STRIP, new_pos);
+	ar8xxx_write(priv, AR8327_REG_POWER_ON_STRAP, new_pos);
 
 	if (pdata->leds && pdata->num_leds) {
 		int i;
@@ -662,8 +662,8 @@ ar8327_hw_init(struct ar8xxx_priv *priv)
 	if (!priv->chip_data)
 		return -ENOMEM;
 
-	if (priv->phy->mdio.dev.of_node)
-		ret = ar8327_hw_config_of(priv, priv->phy->mdio.dev.of_node);
+	if (priv->pdev->of_node)
+		ret = ar8327_hw_config_of(priv, priv->pdev->of_node);
 	else
 		ret = ar8327_hw_config_pdata(priv,
 					     priv->phy->mdio.dev.platform_data);
@@ -1323,6 +1323,20 @@ static const struct switch_attr ar8327_sw_attr_globals[] = {
 	},
 	{
 		.type = SWITCH_TYPE_INT,
+		.name = "ar8xxx_mib_poll_interval",
+		.description = "MIB polling interval in msecs (0 to disable)",
+		.set = ar8xxx_sw_set_mib_poll_interval,
+		.get = ar8xxx_sw_get_mib_poll_interval
+	},
+	{
+		.type = SWITCH_TYPE_INT,
+		.name = "ar8xxx_mib_type",
+		.description = "MIB type (0=basic 1=extended)",
+		.set = ar8xxx_sw_set_mib_type,
+		.get = ar8xxx_sw_get_mib_type
+	},
+	{
+		.type = SWITCH_TYPE_INT,
 		.name = "enable_mirror_rx",
 		.description = "Enable mirroring of RX packets",
 		.set = ar8xxx_sw_set_mirror_rx_enable,
@@ -1457,16 +1471,7 @@ static const struct switch_dev_ops ar8327_sw_ops = {
 	.apply_config = ar8327_sw_hw_apply,
 	.reset_switch = ar8xxx_sw_reset_switch,
 	.get_port_link = ar8xxx_sw_get_port_link,
-/* The following op is disabled as it hogs the CPU and degrades performance.
-   An implementation has been attempted in 4d8a66d but reading MIB data is slow
-   on ar8xxx switches.
-
-   The high CPU load has been traced down to the ar8xxx_reg_wait() call in
-   ar8xxx_mib_op(), which has to usleep_range() till the MIB busy flag set by
-   the request to update the MIB counter is cleared. */
-#if 0
 	.get_port_stats = ar8xxx_sw_get_port_stats,
-#endif
 };
 
 const struct ar8xxx_chip ar8327_chip = {
@@ -1501,7 +1506,9 @@ const struct ar8xxx_chip ar8327_chip = {
 
 	.num_mibs = ARRAY_SIZE(ar8236_mibs),
 	.mib_decs = ar8236_mibs,
-	.mib_func = AR8327_REG_MIB_FUNC
+	.mib_func = AR8327_REG_MIB_FUNC,
+	.mib_rxb_id = AR8236_MIB_RXB_ID,
+	.mib_txb_id = AR8236_MIB_TXB_ID,
 };
 
 const struct ar8xxx_chip ar8337_chip = {
@@ -1537,5 +1544,7 @@ const struct ar8xxx_chip ar8337_chip = {
 
 	.num_mibs = ARRAY_SIZE(ar8236_mibs),
 	.mib_decs = ar8236_mibs,
-	.mib_func = AR8327_REG_MIB_FUNC
+	.mib_func = AR8327_REG_MIB_FUNC,
+	.mib_rxb_id = AR8236_MIB_RXB_ID,
+	.mib_txb_id = AR8236_MIB_TXB_ID,
 };

@@ -1,0 +1,180 @@
+--- a/arch/mips/Kconfig
++++ b/arch/mips/Kconfig
+@@ -2376,6 +2376,12 @@ config MIPS_VPE_LOADER
+ 	  Includes a loader for loading an elf relocatable object
+ 	  onto another VPE and running it.
+ 
++config IFX_VPE_EXT
++	bool "IFX APRP Extensions"
++	depends on MIPS_VPE_LOADER
++	help
++	  IFX included extensions in APRP
++
+ config MIPS_VPE_LOADER_CMP
+ 	bool
+ 	default "y"
+--- a/arch/mips/include/asm/vpe.h
++++ b/arch/mips/include/asm/vpe.h
+@@ -127,4 +127,13 @@ void cleanup_tc(struct tc *tc);
+ 
+ int __init vpe_module_init(void);
+ void __exit vpe_module_exit(void);
++
++/* For the explanation of the APIs please refer the section "MT APRP Kernel
++ * Programming" in AR9 SW Architecture Specification
++ */
++int32_t vpe1_sw_start(void *sw_start_addr, uint32_t tcmask, uint32_t flags);
++int32_t vpe1_sw_stop(uint32_t flags);
++uint32_t vpe1_get_load_addr(uint32_t flags);
++uint32_t vpe1_get_max_mem(uint32_t flags);
++
+ #endif /* _ASM_VPE_H */
+--- a/arch/mips/kernel/vpe-mt.c
++++ b/arch/mips/kernel/vpe-mt.c
+@@ -29,6 +29,7 @@ int vpe_run(struct vpe *v)
+ 	struct vpe_notifications *notifier;
+ 	unsigned int vpeflags;
+ 	struct tc *t;
++	unsigned long physical_memsize = 0L;
+ 
+ 	/* check we are the Master VPE */
+ 	local_irq_save(flags);
+@@ -417,6 +418,8 @@ int __init vpe_module_init(void)
+ 			}
+ 
+ 			v->ntcs = hw_tcs - aprp_cpu_index();
++			write_tc_c0_tcbind((read_tc_c0_tcbind() &
++						~TCBIND_CURVPE) | 1);
+ 
+ 			/* add the tc to the list of this vpe's tc's. */
+ 			list_add(&t->tc, &v->tc);
+@@ -519,3 +522,47 @@ void __exit vpe_module_exit(void)
+ 			release_vpe(v);
+ 	}
+ }
++
++#ifdef CONFIG_IFX_VPE_EXT
++int32_t vpe1_sw_start(void *sw_start_addr, uint32_t tcmask, uint32_t flags)
++{
++	enum vpe_state state;
++	struct vpe *v = get_vpe(tclimit);
++	struct vpe_notifications *not;
++
++	if (tcmask || flags) {
++		pr_warn("Currently tcmask and flags should be 0. Other values are not supported\n");
++		return -1;
++	}
++
++	state = xchg(&v->state, VPE_STATE_INUSE);
++	if (state != VPE_STATE_UNUSED) {
++		vpe_stop(v);
++
++		list_for_each_entry(not, &v->notify, list) {
++			not->stop(tclimit);
++		}
++	}
++
++	v->__start = (unsigned long)sw_start_addr;
++
++	if (!vpe_run(v)) {
++		pr_debug("VPE loader: VPE1 running successfully\n");
++		return 0;
++	}
++	return -1;
++}
++EXPORT_SYMBOL(vpe1_sw_start);
++
++int32_t vpe1_sw_stop(uint32_t flags)
++{
++	struct vpe *v = get_vpe(tclimit);
++
++	if (!vpe_free(v)) {
++		pr_debug("RP Stopped\n");
++		return 0;
++	} else
++		return -1;
++}
++EXPORT_SYMBOL(vpe1_sw_stop);
++#endif
+--- a/arch/mips/kernel/vpe.c
++++ b/arch/mips/kernel/vpe.c
+@@ -49,6 +49,41 @@ struct vpe_control vpecontrol = {
+ 	.tc_list	= LIST_HEAD_INIT(vpecontrol.tc_list)
+ };
+ 
++#ifdef CONFIG_IFX_VPE_EXT
++unsigned int vpe1_load_addr;
++
++static int __init load_address(char *str)
++{
++	get_option(&str, &vpe1_load_addr);
++	return 1;
++}
++__setup("vpe1_load_addr=", load_address);
++
++static unsigned int vpe1_mem;
++static int __init vpe1mem(char *str)
++{
++	vpe1_mem = memparse(str, &str);
++	return 1;
++}
++__setup("vpe1_mem=", vpe1mem);
++
++uint32_t vpe1_get_load_addr(uint32_t flags)
++{
++	return vpe1_load_addr;
++}
++EXPORT_SYMBOL(vpe1_get_load_addr);
++
++uint32_t vpe1_get_max_mem(uint32_t flags)
++{
++	if (!vpe1_mem)
++		return P_SIZE;
++	else
++		return vpe1_mem;
++}
++EXPORT_SYMBOL(vpe1_get_max_mem);
++
++#endif
++
+ /* get the vpe associated with this minor */
+ struct vpe *get_vpe(int minor)
+ {
+--- a/arch/mips/lantiq/prom.c
++++ b/arch/mips/lantiq/prom.c
+@@ -34,10 +34,14 @@ unsigned long physical_memsize = 0L;
+  */
+ static struct ltq_soc_info soc_info;
+ 
++/* for Multithreading (APRP), vpe.c will use it */
++unsigned long cp0_memsize;
++
+ const char *get_system_type(void)
+ {
+ 	return soc_info.sys_type;
+ }
++EXPORT_SYMBOL(ltq_soc_type);
+ 
+ int ltq_soc_type(void)
+ {
+--- a/arch/mips/include/asm/mipsmtregs.h
++++ b/arch/mips/include/asm/mipsmtregs.h
+@@ -32,6 +32,9 @@
+ #define read_c0_vpeconf1()		__read_32bit_c0_register($1, 3)
+ #define write_c0_vpeconf1(val)		__write_32bit_c0_register($1, 3, val)
+ 
++#define read_c0_vpeopt()		__read_32bit_c0_register($1, 7)
++#define write_c0_vpeopt(val)		__write_32bit_c0_register($1, 7, val)
++
+ #define read_c0_tcstatus()		__read_32bit_c0_register($2, 1)
+ #define write_c0_tcstatus(val)		__write_32bit_c0_register($2, 1, val)
+ 
+@@ -378,6 +381,8 @@ do {									\
+ #define write_vpe_c0_vpeconf0(val)	mttc0(1, 2, val)
+ #define read_vpe_c0_vpeconf1()		mftc0(1, 3)
+ #define write_vpe_c0_vpeconf1(val)	mttc0(1, 3, val)
++#define read_vpe_c0_vpeopt()		mftc0(1, 7)
++#define write_vpe_c0_vpeopt(val)	mttc0(1, 7, val)
+ #define read_vpe_c0_count()		mftc0(9, 0)
+ #define write_vpe_c0_count(val)		mttc0(9, 0, val)
+ #define read_vpe_c0_status()		mftc0(12, 0)

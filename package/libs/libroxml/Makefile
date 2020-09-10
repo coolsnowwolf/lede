@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libroxml
-PKG_VERSION:=2.3.0
-PKG_RELEASE:=2
+PKG_VERSION:=3.0.2
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=http://download.libroxml.net/pool/v2.x
-PKG_HASH:=1da8f20b530eba4409f2b217587d2f1281ff5d9ba45b24aeac71b94c6c621b78
+PKG_SOURCE_URL:=http://download.libroxml.net/pool/v3.x
+PKG_HASH:=ed6d68d1bceabf98e5e76907411e2e4d93b2dbd48479ab41dede851f59dad6a3
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
 PKG_INSTALL:=1
@@ -27,6 +27,7 @@ define Package/libroxml
   CATEGORY:=Libraries
   TITLE:=Minimum, easy-to-use, C implementation for xml file parsing
   URL:=http://www.libroxml.net/
+  ABI_VERSION:=3.0.2
 endef
 
 CONFIGURE_ARGS += \
