@@ -1,9 +1,10 @@
 #!/bin/sh
+. /usr/share/openclash/openclash_ps.sh
 
 CURL_GROUP_CACHE="/tmp/openclash_history_gorup.json"
 CURL_NOW_CACHE="/tmp/openclash_history_now.json"
 CURL_CACHE="/tmp/openclash_history_curl.json"
-CONFIG_FILE=$(ps -w|grep /etc/openclash/clash 2>/dev/null |grep -v grep |awk -F '-f ' '{print $2}' 2>/dev/null)
+CONFIG_FILE=$(unify_ps_cfgname)
 CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
 HISTORY_PATH="/etc/openclash/history/$CONFIG_NAME"
 SECRET=$(uci get openclash.config.dashboard_password 2>/dev/null)

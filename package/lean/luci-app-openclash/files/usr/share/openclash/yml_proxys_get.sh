@@ -1,6 +1,8 @@
 #!/bin/bash
 . /lib/functions.sh
-status=$(ps|grep -c /usr/share/openclash/yml_proxys_get.sh)
+. /usr/share/openclash/openclash_ps.sh
+
+status=$(unify_ps_status "yml_proxys_get.sh")
 [ "$status" -gt "3" ] && exit 0
 
 START_LOG="/tmp/openclash_start.log"

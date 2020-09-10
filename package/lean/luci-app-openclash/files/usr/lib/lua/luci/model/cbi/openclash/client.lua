@@ -45,6 +45,9 @@ function config_check(CONFIG_FILE)
      rule = luci.sys.call(string.format('egrep "^ {0,}Rule:" "%s" >/dev/null 2>&1',CONFIG_FILE))
      if (rule ~= 0) then
         rule = luci.sys.call(string.format('egrep "^ {0,}rules:" "%s" >/dev/null 2>&1',CONFIG_FILE))
+        if (rule ~= 0) then
+           rule = luci.sys.call(string.format('egrep "^ {0,}script:" "%s" >/dev/null 2>&1',CONFIG_FILE))
+        end
      end
   end
   if yaml then

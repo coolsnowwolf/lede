@@ -1,7 +1,8 @@
 #!/bin/bash
 . /lib/functions.sh
+. /usr/share/openclash/openclash_ps.sh
 
-status=$(ps|grep -c /usr/share/openclash/yml_groups_name_ch.sh)
+status=$(unify_ps_status "yml_groups_name_ch.sh")
 [ "$status" -gt "3" ] && exit 0
 
 cfg_groups_set()

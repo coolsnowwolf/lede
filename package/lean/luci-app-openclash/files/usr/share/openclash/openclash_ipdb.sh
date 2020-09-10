@@ -1,5 +1,7 @@
 #!/bin/sh
-   status=$(ps|grep -c /usr/share/openclash/openclash_ipdb.sh)
+. /usr/share/openclash/openclash_ps.sh
+
+   status=$(unify_ps_status "openclash_ipdb.sh")
    [ "$status" -gt 3 ] && exit 0
 
    START_LOG="/tmp/openclash_start.log"
@@ -20,11 +22,11 @@
       echo "GEOIP 数据库下载成功，检查数据库版本是否更新..." >$START_LOG
       cmp -s /tmp/Country.mmdb /etc/openclash/Country.mmdb
          if [ "$?" -ne "0" ]; then
-         	  status=$(ps |grep -v openclash_watchdog |grep -c openclash.sh)
+         	  status=$(unify_ps_prevent)
             while ( [ "$status" -gt 1 ] )
             do
                sleep 5
-               status=$(ps |grep -v openclash_watchdog |grep -c openclash.sh)
+               status=$(unify_ps_prevent)
             done
             /etc/init.d/openclash stop
             echo "数据库版本有更新，开始替换数据库版本..." >$START_LOG\

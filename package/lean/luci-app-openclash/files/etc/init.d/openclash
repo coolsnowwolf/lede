@@ -1,4 +1,5 @@
 #!/bin/sh /etc/rc.common
+. /usr/share/openclash/openclash_ps.sh
 # Copyright (c) 2019 vernesong
 
 START=99
@@ -15,8 +16,11 @@ BACKUP_FILE="/etc/openclash/backup/$(uci get openclash.config.config_path 2>/dev
 START_BACKUP="/tmp/config.sbak"
 CHANGE_FILE="/tmp/yaml_change.yaml"
 SCRIPT_FILE="/tmp/yaml_script.yaml"
+SCRIPT_BAK_FILE="/tmp/yaml_script_bak.yaml"
 RULE_PROVIDER_FILE="/tmp/yaml_rule_provider.yaml"
+RULE_PROVIDER_BAK_FILE="/tmp/yaml_rule_provider_bak.yaml"
 RULE_FILE="/tmp/yaml_rules.yaml"
+RULE_BAK_FILE="/tmp/yaml_rules_bak.yaml"
 DNS_FILE="/tmp/yaml_dns.yaml"
 PROXY_FILE="/tmp/yaml_proxy.yaml"
 PROXY_PROVIDER_FILE="/tmp/yaml_proxy_provider.yaml"
@@ -37,6 +41,9 @@ add_cron()
   [ -z "$(grep "openclash_ipdb.sh" "$CRON_FILE" 2>/dev/null)" ] && {
   [ "$(uci get openclash.config.geo_auto_update 2>/dev/null)" -eq 1 ] && echo "0 $(uci get openclash.config.geo_update_day_time 2>/dev/null) * * $(uci get openclash.config.geo_update_week_time 2>/dev/null) /usr/share/openclash/openclash_ipdb.sh" >> $CRON_FILE
   }
+  [ -z "$(grep "openclash_chnroute.sh" "$CRON_FILE" 2>/dev/null)" ] && {
+  [ "$(uci get openclash.config.chnr_auto_update 2>/dev/null)" -eq 1 ] && echo "0 $(uci get openclash.config.chnr_update_day_time 2>/dev/null) * * $(uci get openclash.config.chnr_update_week_time 2>/dev/null) /usr/share/openclash/openclash_chnroute.sh" >> $CRON_FILE
+  }
   crontab $CRON_FILE
   nohup /usr/share/openclash/openclash_watchdog.sh &
 }
@@ -46,6 +53,7 @@ del_cron()
    sed -i '/openclash.sh/d' $CRON_FILE 2>/dev/null
    sed -i '/openclash_rule.sh/d' $CRON_FILE 2>/dev/null
    sed -i '/openclash_ipdb.sh/d' $CRON_FILE 2>/dev/null
+   sed -i '/openclash_chnroute.sh/d' $CRON_FILE 2>/dev/null
    /etc/init.d/cron restart
 }
 
@@ -138,8 +146,24 @@ field_cut()
    elif [ -n "$end_len" ]; then
       end_len=$(expr "$end_len" - 1)
    fi
+   
    sed -n "${1},${end_len}p" "$3" > "$2" 2>/dev/null
-   sed -i "${1},${end_len}d" "$3" 2>/dev/null
+   
+   if [ -z "$4" ]; then
+      sed -i "${1},${end_len}d" "$3" 2>/dev/null
+   fi
+}
+
+yml_merge()
+{
+#合并文件
+cat "$CHANGE_FILE" "$DNS_FILE" "$PROXY_PROVIDER_FILE" "$PROXY_FILE" "$GROUP_FILE" "$RULE_PROVIDER_FILE" "$SCRIPT_FILE" "$RULE_FILE" > "$CONFIG_FILE" 2>/dev/null
+}
+
+yml_rule_bak_merge()
+{
+#合并文件
+cat "$CHANGE_FILE" "$DNS_FILE" "$PROXY_PROVIDER_FILE" "$PROXY_FILE" "$GROUP_FILE" "$RULE_PROVIDER_BAK_FILE" "$SCRIPT_BAK_FILE" "$RULE_BAK_FILE" > "$CONFIG_FILE" 2>/dev/null
 }
 
 yml_check()
@@ -147,6 +171,8 @@ yml_check()
    #格式替换
    sed -i 's/\t/ /g' "$3" 2>/dev/null
    sed -i "s/- \{2,\}/- /g" "$3" 2>/dev/null
+   sed -i "s/^...$//g" "$3" 2>/dev/null
+   sed -i "s/^---$//g" "$3" 2>/dev/null
 
    #检查关键字避免后续操作出错
    /usr/share/openclash/yml_field_name_ch.sh "$3" 2>/dev/null
@@ -218,10 +244,28 @@ yml_check()
    	  field_cut "$rule_provider_len" "$RULE_PROVIDER_FILE" "$3"
    fi 2>/dev/null
    
+   #处理备份rule_provider位置
+   rule_provider_bak_len=$(sed -n '/^rule-providers:/=' "$4" 2>/dev/null)
+   if [ -n "$rule_provider_bak_len" ]; then
+   	  field_cut "$rule_provider_bak_len" "$RULE_PROVIDER_BAK_FILE" "$4" "backups"
+   fi 2>/dev/null
+   
    #处理script位置
    script_len=$(sed -n '/^script:/=' "$3" 2>/dev/null)
    if [ -n "$script_len" ]; then
    	  field_cut "$script_len" "$SCRIPT_FILE" "$3"
+   fi 2>/dev/null
+   
+   #处理备份script位置
+   script_bak_len=$(sed -n '/^script:/=' "$4" 2>/dev/null)
+   if [ -n "$script_bak_len" ]; then
+   	  field_cut "$script_bak_len" "$SCRIPT_BAK_FILE" "$4" "backups"
+   fi 2>/dev/null
+   
+   #处理备份rule位置
+   rule_bak_len=$(sed -n '/^rules:/=' "$4" 2>/dev/null)
+   if [ -n "$rule_bak_len" ]; then
+   	  field_cut "$rule_bak_len" "$RULE_BAK_FILE" "$4" "backups"
    fi 2>/dev/null
 
    if [ -n "$provider_len" ]; then
@@ -689,8 +733,7 @@ sed -i '/OpenClash-Game-Rules-End/d' "$RULE_FILE" 2>/dev/null
    sed -i '/OpenClash-Game-Rules/r/tmp/yaml_game_rule_group.yaml' "$RULE_FILE" 2>/dev/null
 }
 
-#合并文件
-cat "$CHANGE_FILE" "$DNS_FILE" "$PROXY_PROVIDER_FILE" "$PROXY_FILE" "$GROUP_FILE" "$RULE_PROVIDER_FILE" "$SCRIPT_FILE" "$RULE_FILE" > "$CONFIG_FILE" 2>/dev/null
+yml_merge
 
 #处理游戏节点与策略组
 config_load "openclash"
@@ -997,6 +1040,7 @@ CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
 do_run_mode()
 {
 	  en_mode=$(uci get openclash.config.en_mode 2>/dev/null)
+	  proxy_mode=$(uci get openclash.config.proxy_mode 2>/dev/null)
 	  
     if [ "$en_mode" = "fake-ip-tun" ]; then
        en_mode_tun="1"
@@ -1048,7 +1092,7 @@ do_run_core()
        core_type="Game"
     fi
     
-    if [ "$proxy_mode" = "script" ] || [ "$rule_source" = "ConnersHua" ]; then
+    if [ "$proxy_mode" = "script" ] || [ "$rule_source" = "ConnersHua" ] || [ "$rule_source" = "lhie1" ]; then
        ln -s /etc/openclash/core/clash_tun /etc/openclash/clash 2>/dev/null
        core_type="Tun"
     fi
@@ -1367,7 +1411,6 @@ revert_firewall()
 
 get_config()
 {
-   proxy_mode=$(uci get openclash.config.proxy_mode 2>/dev/null)
    rule_source=$(uci get openclash.config.rule_source 2>/dev/null)
    enable_custom_dns=$(uci get openclash.config.enable_custom_dns 2>/dev/null)
    enable_custom_clash_rules=$(uci get openclash.config.enable_custom_clash_rules 2>/dev/null) 
@@ -1395,7 +1438,7 @@ get_config()
 start()
 {
 #禁止多个实例
-status=$(ps|grep -c /etc/init.d/openclash)
+status=$(unify_ps_status "/etc/init.d/openclash")
 [ "$status" -gt "3" ] && exit 0
 
 config_choose
@@ -1417,7 +1460,7 @@ if [ "$enable" -eq 1 ] && [ -f "$CONFIG_FILE" ]; then
           mv "$START_BACKUP" "$CONFIG_FILE"
           sleep 5
           echo "" >$START_LOG
-       elif [ -z "$(grep "^ \{0,\}rules:" "$CONFIG_FILE" 2>/dev/null)" ] && [ -z "$(grep "^ \{0,\}script:" "$CONFIG_FILE" 2>/dev/null)" ]; then
+       elif [ -z "$(grep "^ \{0,\}rules:" "$CONFIG_FILE" 2>/dev/null)" ] && [ -z "$(grep "^ \{0,\}script:" "$SCRIPT_FILE" 2>/dev/null)" ]; then
           kill_clash
           stop
           echo "错误: 配置文件完整性检查不通过，已自动还原配置文件，请对照模板格式检查修改配置文件！" >$START_LOG
@@ -1504,14 +1547,7 @@ if [ "$enable" -eq 1 ] && [ -f "$CONFIG_FILE" ]; then
                 if [ "$rule_source" != 0 ] || [ "$enable_custom_clash_rules" != 0 ]; then
                    echo "错误: OpenClash 启动失败，尝试还原第三方规则并重新启动 Clash 主程序..." >$START_LOG
                    echo "${LOGTIME} OpenClash Can Not Start, Try Use Backup Rules Start Again" >> $LOG_FILE
-                   mv "$START_BACKUP" /tmp/configrules.bak
-                   sed -i -n '/^rules:/,$p' /tmp/configrules.bak
-                   sed -i '/^rules:/,$d' "$CONFIG_FILE" 2>/dev/null
-                   if [ -z "$(grep "##source:" /tmp/configrules.bak 2>/dev/null)" ]; then
-                      sed -i '/##Other-rule-providers##/,/##Other-rule-providers-end##/d' "$CONFIG_FILE" 2>/dev/null
-                   fi
-                   cat /tmp/configrules.bak >> "$CONFIG_FILE"
-                   rm -rf /tmp/configrules.bak
+                   yml_rule_bak_merge
                    nohup "$CLASH" -d "$CLASH_CONFIG" -f "$CONFIG_FILE" >> $LOG_FILE 2>&1 &
                    sleep 3
                    if pidof clash >/dev/null; then
@@ -1593,7 +1629,7 @@ stop()
    revert_firewall
 
    echo "第三步: 关闭 OpenClash 守护程序..." >$START_LOG
-   watchdog_pids=$(ps |grep openclash_watchdog.sh |grep -v grep |awk '{print $1}' 2>/dev/null)
+   watchdog_pids=$(unify_ps_pids "openclash_watchdog.sh")
    for watchdog_pid in $watchdog_pids; do
       kill -9 "$watchdog_pid" >/dev/null 2>&1
    done

@@ -32,15 +32,19 @@ cfg_server_address()
    config_get "server" "$section" "server" ""
    
    IFIP=$(echo $server |grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$")
-   if [ -z "$IFIP" ] && [ ! -z "$server" ]; then
-      echo "server=/$server/114.114.114.114" >> "$SER_FAKE_FILTER_FILE"
+   if [ -z "$IFIP" ] && [ ! -z "$server" ] && [ -z "$(grep "/$server/" "$SER_FAKE_FILTER_FILE" 2>/dev/null)" ]; then
+      echo "server=/$server/$custom_domain_dns_server" >> "$SER_FAKE_FILTER_FILE"
    else
       return
    fi
 }
 
-#Fake下正确检测节点延迟
+#Fake下正确检测节点延迟及获取真实地址
 
 rm -rf "$SER_FAKE_FILTER_FILE" 2>/dev/null
+custom_domain_dns_server=$(uci get openclash.config.custom_domain_dns_server 2>/dev/null)
+   [ -z "$custom_domain_dns_server" ] && {
+	   custom_domain_dns_server="114.114.114.114"
+	 }
 config_load "openclash"
 config_foreach cfg_server_address "servers"

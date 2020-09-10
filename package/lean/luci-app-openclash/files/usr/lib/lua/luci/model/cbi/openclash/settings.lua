@@ -33,6 +33,7 @@ end
 s:tab("dashboard", translate("Dashboard Settings"))
 s:tab("rules_update", translate("Rules Update"))
 s:tab("geo_update", translate("GEOIP Update"))
+s:tab("chnr_update", translate("Chnroute Update"))
 s:tab("version_update", translate("Version Update"))
 s:tab("debug", translate("Debug Logs"))
 
@@ -218,7 +219,7 @@ end
 end
 
 o = s:taboption("dns", Value, "custom_domain_dns_server", translate("Specify DNS Server"))
-o.description = translate("Specify DNS Server For List, Only One IP Server Address Support")
+o.description = translate("Specify DNS Server For List and Server Nodes With Fake-IP Mode, Only One IP Server Address Support")
 o.default="114.114.114.114"
 o.placeholder = translate("114.114.114.114 or 127.0.0.1#5300")
 o:depends("dns_advanced_setting", "1")
@@ -366,12 +367,6 @@ o:depends("rule_source", "lhie1")
    o:value(l)
    end
    file:seek("set")
-o = s:taboption("rules", ListValue, "Netease_Music", translate("Netease Music"))
-o:depends("rule_source", "lhie1")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
 o = s:taboption("rules", ListValue, "AdBlock", translate("AdBlock"))
 o:depends("rule_source", "lhie1")
  for l in file:lines() do
@@ -463,6 +458,42 @@ o.write = function()
   m.uci:commit("openclash")
   SYS.call("/usr/share/openclash/openclash_ipdb.sh >/dev/null 2>&1 &")
   HTTP.redirect(DISP.build_url("admin", "services", "openclash"))
+end
+
+if op_mode == "redir-host" then
+o = s:taboption("chnr_update", ListValue, "chnr_auto_update", translate("Auto Update"))
+o.description = translate("Auto Update Chnroute Lists")
+o:value("0", translate("Disable"))
+o:value("1", translate("Enable"))
+o.default=0
+
+o = s:taboption("chnr_update", ListValue, "chnr_update_week_time", translate("Update Time (Every Week)"))
+o:value("*", translate("Every Day"))
+o:value("1", translate("Every Monday"))
+o:value("2", translate("Every Tuesday"))
+o:value("3", translate("Every Wednesday"))
+o:value("4", translate("Every Thursday"))
+o:value("5", translate("Every Friday"))
+o:value("6", translate("Every Saturday"))
+o:value("0", translate("Every Sunday"))
+o.default=1
+
+o = s:taboption("chnr_update", ListValue, "chnr_update_day_time", translate("Update time (every day)"))
+for t = 0,23 do
+o:value(t, t..":00")
+end
+o.default=0
+
+o = s:taboption("chnr_update", Button, translate("Chnroute Lists Update")) 
+o.title = translate("Update Chnroute Lists")
+o.inputtitle = translate("Check And Update")
+o.inputstyle = "reload"
+o.write = function()
+  m.uci:set("openclash", "config", "enable", 1)
+  m.uci:commit("openclash")
+  SYS.call("/usr/share/openclash/openclash_chnroute.sh >/dev/null 2>&1 &")
+  HTTP.redirect(DISP.build_url("admin", "services", "openclash"))
+end
 end
 
 ---- Dashboard Settings

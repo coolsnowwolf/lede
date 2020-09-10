@@ -14,6 +14,8 @@ function index()
 	entry({"admin", "services", "openclash", "status"},call("action_status")).leaf=true
 	entry({"admin", "services", "openclash", "state"},call("action_state")).leaf=true
 	entry({"admin", "services", "openclash", "startlog"},call("action_start")).leaf=true
+	entry({"admin", "services", "openclash", "close_all_connection"},call("action_close_all_connection"))
+	entry({"admin", "services", "openclash", "restore_history"},call("action_restore_history"))
 	entry({"admin", "services", "openclash", "currentversion"},call("action_currentversion"))
 	entry({"admin", "services", "openclash", "lastversion"},call("action_lastversion"))
 	entry({"admin", "services", "openclash", "update"},call("action_update"))
@@ -52,7 +54,12 @@ local function is_web()
 end
 
 local function is_watchdog()
-	return luci.sys.call("ps |grep openclash_watchdog.sh |grep -v grep >/dev/null") == 0
+	local ps_version = luci.sys.exec("ps --version 2>&1 |grep -c procps-ng |tr -d '\n'")
+	if ps_version == "0" then
+		return luci.sys.call("ps |grep openclash_watchdog.sh |grep -v grep >/dev/null") == 0
+	else
+		return luci.sys.call("ps -ef |grep openclash_watchdog.sh |grep -v grep >/dev/null") == 0
+	end
 end
 
 local function cn_port()
@@ -77,6 +84,10 @@ end
 
 local function ConnersHua_return()
 	return os.date("%Y-%m-%d %H:%M:%S",fs.mtime("/etc/openclash/ConnersHua_return.yaml"))
+end
+
+local function chnroute()
+	return os.date("%Y-%m-%d %H:%M:%S",fs.mtime("/etc/openclash/rule_provider/ChinaIP.yaml"))
 end
 
 local function daip()
@@ -202,6 +213,17 @@ local function upchecktime()
    end
 end
 
+local function historychecktime()
+	local CONFIG_FILE = string.sub(luci.sys.exec("uci get openclash.config.config_path 2>/dev/null"), 1, -2)
+	local CONFIG_NAME = fs.basename(CONFIG_FILE)
+  local HISTORY_PATH = "/etc/openclash/history/" .. CONFIG_NAME
+	if not nixio.fs.access(HISTORY_PATH) then
+  	return "0"
+	else
+		return os.date("%Y-%m-%d %H:%M:%S",fs.mtime(HISTORY_PATH))
+	end
+end
+
 function download_rule()
 	local filename = luci.http.formvalue("filename")
   local state = luci.sys.call(string.format('/usr/share/openclash/openclash_download_rule_list.sh "%s" >/dev/null 2>&1',filename))
@@ -259,7 +281,9 @@ function action_state()
 		lhie1 = lhie1(),
 		ConnersHua = ConnersHua(),
 		ConnersHua_return = ConnersHua_return(),
-		ipdb = ipdb();
+		ipdb = ipdb(),
+		historychecktime = historychecktime(),
+		chnroute = chnroute();
 	})
 end
 
@@ -334,6 +358,14 @@ function action_core_game_update()
 	luci.http.write_json({
 			coregameup = coregameup();
 	})
+end
+
+function action_close_all_connection()
+	return luci.sys.call("sh /usr/share/openclash/openclash_history_set.sh close_all_conection")
+end
+
+function action_restore_history()
+	return luci.sys.call("sh /usr/share/openclash/openclash_history_set.sh")
 end
 
 function act_ping()

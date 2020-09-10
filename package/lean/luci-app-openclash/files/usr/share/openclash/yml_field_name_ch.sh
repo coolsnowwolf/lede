@@ -21,9 +21,6 @@ YML_FILE="$1"
    
    #proxies
    [ -z "$(grep "^Proxy:" "$YML_FILE")" ] && {
-      sed -i "s/^ \{1,\}Proxy:/Proxy:/g" "$YML_FILE" 2>/dev/null
-   }
-   [ -z "$(grep "^Proxy:" "$YML_FILE")" ] && {
       sed -i "s/^proxies:/Proxy:/g" "$YML_FILE" 2>/dev/null
    }
    [ -z "$(grep "^Proxy:" "$YML_FILE")" ] && {

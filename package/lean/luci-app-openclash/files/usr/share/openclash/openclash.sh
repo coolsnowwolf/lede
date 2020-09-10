@@ -1,7 +1,8 @@
 #!/bin/bash
 . /lib/functions.sh
+. /usr/share/openclash/openclash_ps.sh
 
-status=$(ps|grep -c /usr/share/openclash/openclash.sh)
+status=$(unify_ps_status "openclash.sh")
 [ "$status" -gt 3 ] && exit 0
 
 START_LOG="/tmp/openclash_start.log"
@@ -27,10 +28,11 @@ urlencode() {
 }
 
 kill_watchdog() {
-   watchdog_pids=$(ps |grep openclash_watchdog.sh |grep -v grep |awk '{print $1}' 2>/dev/null)
-      for watchdog_pid in $watchdog_pids; do
-         kill -9 "$watchdog_pid" >/dev/null 2>&1
-      done
+
+   watchdog_pids=$(unify_ps_pids "openclash_watchdog.sh")
+   for watchdog_pid in $watchdog_pids; do
+      kill -9 "$watchdog_pid" >/dev/null 2>&1
+   done
 }
 
 config_download()

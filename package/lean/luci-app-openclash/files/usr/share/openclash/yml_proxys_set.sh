@@ -1,7 +1,8 @@
 #!/bin/sh
 . /lib/functions.sh
+. /usr/share/openclash/openclash_ps.sh
 
-status=$(ps|grep -c /usr/share/openclash/yml_proxys_set.sh)
+status=$(unify_ps_status "yml_proxys_set.sh")
 [ "$status" -gt "3" ] && exit 0
 
 START_LOG="/tmp/openclash_start.log"
@@ -872,20 +873,6 @@ cat >> "$SERVER_FILE" <<-EOF
 EOF
 fi
 cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
-cat >> "$SERVER_FILE" <<-EOF
-- name: Netease Music
-  type: select
-  proxies:
-  - DIRECT
-  - Proxy
-EOF
-cat /tmp/Proxy_Server >> $SERVER_FILE 2>/dev/null
-if [ -f "/tmp/Proxy_Provider" ]; then
-cat >> "$SERVER_FILE" <<-EOF
-  use:
-EOF
-fi
-cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
 ${UCI_SET}rule_source="lhie1"
 ${UCI_SET}GlobalTV="GlobalTV"
 ${UCI_SET}AsianTV="AsianTV"
@@ -897,7 +884,6 @@ ${UCI_SET}Netflix="Netflix"
 ${UCI_SET}Spotify="Spotify"
 ${UCI_SET}Steam="Steam"
 ${UCI_SET}AdBlock="AdBlock"
-${UCI_SET}Netease_Music="Netease Music"
 ${UCI_SET}Speedtest="Speedtest"
 ${UCI_SET}Telegram="Telegram"
 ${UCI_SET}PayPal="PayPal"
@@ -916,7 +902,6 @@ ${UCI_SET}Others="Others"
 	${UCI_DEL_LIST}="Telegram" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Telegram" >/dev/null 2>&1
 	${UCI_DEL_LIST}="PayPal" >/dev/null 2>&1 && ${UCI_ADD_LIST}="PayPal" >/dev/null 2>&1
 	${UCI_DEL_LIST}="Speedtest" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Speedtest" >/dev/null 2>&1
-	${UCI_DEL_LIST}="Netease Music" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Netease Music" >/dev/null 2>&1
 }
 elif [ "$rule_sources" = "ConnersHua_return" ] && [ "$servers_if_update" != "1" ] && [ -z "$if_game_proxy" ]; then
 echo "使用ConnersHua回国规则创建中..." >$START_LOG

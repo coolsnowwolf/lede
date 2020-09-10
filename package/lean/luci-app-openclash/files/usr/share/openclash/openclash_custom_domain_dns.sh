@@ -1,6 +1,7 @@
 #!/bin/sh
+. /usr/share/openclash/openclash_ps.sh
 
-status=$(ps|grep -c /usr/share/openclash/openclash_custom_domain_dns.sh)
+status=$(unify_ps_status "openclash_custom_domain_dns.sh")
 [ "$status" -gt "3" ] && exit 0
 
 START_LOG="/tmp/openclash_start.log"

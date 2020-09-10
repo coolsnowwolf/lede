@@ -1,6 +1,7 @@
 #!/bin/sh
+. /usr/share/openclash/openclash_ps.sh
 
-status=$(ps|grep -c /usr/share/openclash/cfg_servers_address_fake_filter.sh)
+status=$(unify_ps_status "cfg_servers_address_fake_filter.sh")
 [ "$status" -gt "3" ] && exit 0
 
 START_LOG="/tmp/openclash_start.log"

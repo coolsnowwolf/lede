@@ -1,7 +1,8 @@
 #!/bin/bash
 . /lib/functions.sh
+. /usr/share/openclash/openclash_ps.sh
 
-status=$(ps|grep -c /usr/share/openclash/openclash_debug.sh)
+status=$(unify_ps_status "openclash_debug.sh")
 [ "$status" -gt "3" ] && exit 0
 
 DEBUG_LOG="/tmp/openclash_debug.log"
