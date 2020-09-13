@@ -1,0 +1,92 @@
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -2210,6 +2210,31 @@ static int mtk_start_dma(struct mtk_eth
+ 	return 0;
+ }
+ 
++static void mtk_gdm_config(struct mtk_eth *eth, u32 config)
++{
++	int i;
++
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_SOC_MT7628))
++		return;
++
++	for (i = 0; i < MTK_MAC_COUNT; i++) {
++		u32 val = mtk_r32(eth, MTK_GDMA_FWD_CFG(i));
++
++		/* default setup the forward port to send frame to PDMA */
++		val &= ~0xffff;
++
++		/* Enable RX checksum */
++		val |= MTK_GDMA_ICS_EN | MTK_GDMA_TCS_EN | MTK_GDMA_UCS_EN;
++
++		val |= config;
++
++		mtk_w32(eth, val, MTK_GDMA_FWD_CFG(i));
++	}
++	/* Reset and enable PSE */
++	mtk_w32(eth, RST_GL_PSE, MTK_RST_GL);
++	mtk_w32(eth, 0, MTK_RST_GL);
++}
++
+ static int mtk_open(struct net_device *dev)
+ {
+ 	struct mtk_mac *mac = netdev_priv(dev);
+@@ -2230,6 +2255,8 @@ static int mtk_open(struct net_device *d
+ 		if (err)
+ 			return err;
+ 
++		mtk_gdm_config(eth, MTK_GDMA_TO_PDMA);
++
+ 		napi_enable(&eth->tx_napi);
+ 		napi_enable(&eth->rx_napi);
+ 		mtk_tx_irq_enable(eth, MTK_TX_DONE_INT);
+@@ -2285,6 +2312,8 @@ static int mtk_stop(struct net_device *d
+ 	if (!refcount_dec_and_test(&eth->dma_refcnt))
+ 		return 0;
+ 
++	mtk_gdm_config(eth, MTK_GDMA_DROP_ALL);
++
+ 	mtk_tx_irq_disable(eth, MTK_TX_DONE_INT);
+ 	mtk_rx_irq_disable(eth, MTK_RX_DONE_INT);
+ 	napi_disable(&eth->tx_napi);
+@@ -2411,8 +2440,6 @@ static int mtk_hw_init(struct mtk_eth *e
+ 	mtk_w32(eth, 0, MTK_QDMA_DELAY_INT);
+ 	mtk_tx_irq_disable(eth, ~0);
+ 	mtk_rx_irq_disable(eth, ~0);
+-	mtk_w32(eth, RST_GL_PSE, MTK_RST_GL);
+-	mtk_w32(eth, 0, MTK_RST_GL);
+ 
+ 	/* FE int grouping */
+ 	mtk_w32(eth, MTK_TX_DONE_INT, MTK_PDMA_INT_GRP1);
+@@ -2421,19 +2448,6 @@ static int mtk_hw_init(struct mtk_eth *e
+ 	mtk_w32(eth, MTK_RX_DONE_INT, MTK_QDMA_INT_GRP2);
+ 	mtk_w32(eth, 0x21021000, MTK_FE_INT_GRP);
+ 
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
+-		u32 val = mtk_r32(eth, MTK_GDMA_FWD_CFG(i));
+-
+-		/* setup the forward port to send frame to PDMA */
+-		val &= ~0xffff;
+-
+-		/* Enable RX checksum */
+-		val |= MTK_GDMA_ICS_EN | MTK_GDMA_TCS_EN | MTK_GDMA_UCS_EN;
+-
+-		/* setup the mac dma */
+-		mtk_w32(eth, val, MTK_GDMA_FWD_CFG(i));
+-	}
+-
+ 	return 0;
+ 
+ err_disable_pm:
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -84,6 +84,8 @@
+ #define MTK_GDMA_ICS_EN		BIT(22)
+ #define MTK_GDMA_TCS_EN		BIT(21)
+ #define MTK_GDMA_UCS_EN		BIT(20)
++#define MTK_GDMA_TO_PDMA	0x0
++#define MTK_GDMA_DROP_ALL	0x7777
+ 
+ /* Unicast Filter MAC Address Register - Low */
+ #define MTK_GDMA_MAC_ADRL(x)	(0x508 + (x * 0x1000))

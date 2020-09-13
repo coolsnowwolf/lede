@@ -10,10 +10,13 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI support for Rclone
-LUCI_DEPENDS:=+rclone +rclone-webui-react +fuse-utils +rclone-ng
+LUCI_DEPENDS:=+rclone \
+              +PACKAGE_luci-app-rclone_INCLUDE_rclone-webui:rclone-webui-react \
+              +PACKAGE_luci-app-rclone_INCLUDE_rclone-ng:rclone-ng \
+              +PACKAGE_luci-app-rclone_INCLUDE_fuse-utils:fuse-utils
 LUCI_PKGARCH:=all
 PKG_NAME:=luci-app-rclone
-PKG_VERSION:=1.4.0
+PKG_VERSION:=1.4.1
 PKG_RELEASE:=1
 PKG_LICENSE:=GPLv3.0+
 PKG_MAINTAINER:=ElonH <elonhhuang@gmail.com>
@@ -30,6 +33,24 @@ define Package/luci-app-rclone/description
 		Oracle Cloud Storage, ownCloud, pCloud, premiumize.me, put.io, QingStor, 
 		Rackspace Cloud root/usr/bin, rsync.net, Scaleway, SFTP, Wasabi, WebDAV, 
 		Yandex Disk, The local root/usr/binystem.
+endef
+
+define Package/luci-app-rclone/conffiles
+/etc/config/rclone
+endef
+
+define Package/luci-app-rclone/config
+config PACKAGE_luci-app-rclone_INCLUDE_rclone-webui
+	bool "Include rclone-webui"
+	default y
+
+config PACKAGE_luci-app-rclone_INCLUDE_rclone-ng
+	bool "Include rclone-ng (another webui)"
+	default y
+
+config PACKAGE_luci-app-rclone_INCLUDE_fuse-utils
+	bool "Include fuse-utils (mount cloud storage)"
+	default y
 endef
 
 include $(TOPDIR)/feeds/luci/luci.mk

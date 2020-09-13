@@ -39,13 +39,10 @@
 #include "wrgg.h"
 #include "md5.h"
 
-#if __BYTE_ORDER == __BIG_ENDIAN
-#define STORE32_LE(X)           ((((X) & 0x000000FF) << 24) | (((X) & 0x0000FF00) << 8) | (((X) & 0x00FF0000) >> 8) | (((X) & 0xFF000000) >> 24))
-#elif __BYTE_ORDER == __LITTLE_ENDIAN
-#define STORE32_LE(X)           (X)
-#else
-#error unknown endianness!
-#endif
+static inline uint32_t le32_to_cpu(uint8_t *buf)
+{
+	return buf[0] | buf[1] << 8 | buf[2] << 16 | buf[3] << 24;
+}
 
 ssize_t pread(int fd, void *buf, size_t count, off_t offset);
 ssize_t pwrite(int fd, const void *buf, size_t count, off_t offset);
@@ -94,7 +91,7 @@ wrgg_fix_md5(struct wrgg03_header *shdr, int fd, size_t data_offset, size_t data
 	}
 
 	/* update the size in the image */
-	shdr->size = htonl(data_size);
+	shdr->size = data_size;
 
 	/* update the checksum in the image */
 	memcpy(shdr->digest, digest, sizeof(digest));
@@ -147,12 +144,14 @@ mtd_fixwrgg(const char *mtd, size_t offset, size_t data_size)
 	}
 
 	shdr = (struct wrgg03_header *)(first_block + offset);
-	if (shdr->magic1 != htonl(STORE32_LE(WRGG03_MAGIC))) {
-		fprintf(stderr, "magic1 %x\n", shdr->magic1);
-		fprintf(stderr, "htonl(WRGG03_MAGIC) %x\n", WRGG03_MAGIC);
+
+	/* The magic is always stored in little-endian byte order */
+	if (le32_to_cpu((uint8_t *)&shdr->magic1) != WRGG03_MAGIC) {
+		fprintf(stderr, "magic1 = %x\n", shdr->magic1);
+		fprintf(stderr, "WRGG03_MAGIC = %x\n", WRGG03_MAGIC);
 		fprintf(stderr, "No WRGG header found\n");
 		exit(1);
-	} else if (!ntohl(shdr->size)) {
+	} else if (!shdr->size) {
 		fprintf(stderr, "WRGG entity with empty image\n");
 		exit(1);
 	}
@@ -160,8 +159,8 @@ mtd_fixwrgg(const char *mtd, size_t offset, size_t data_size)
 	data_offset = offset + sizeof(struct wrgg03_header);
 	if (!data_size)
 		data_size = mtdsize - data_offset;
-	if (data_size > ntohl(shdr->size))
-		data_size = ntohl(shdr->size);
+	if (data_size > shdr->size)
+		data_size = shdr->size;
 	if (wrgg_fix_md5(shdr, fd, data_offset, data_size))
 		goto out;
 

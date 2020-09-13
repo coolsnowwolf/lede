@@ -1,0 +1,109 @@
+From 76087c548649ea0fae04a0538f9de12546c5c680 Mon Sep 17 00:00:00 2001
+From: Andrey Smirnov <andrew.smirnov@gmail.com>
+Date: Tue, 22 Oct 2019 08:30:08 -0700
+Subject: [PATCH] crypto: caam - use devres to unmap memory
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Use devres to unmap memory and drop corresponding iounmap() call.
+
+Signed-off-by: Andrey Smirnov <andrew.smirnov@gmail.com>
+Reviewed-by: Horia Geantă <horia.geanta@nxp.com>
+Cc: Chris Healy <cphealy@gmail.com>
+Cc: Lucas Stach <l.stach@pengutronix.de>
+Cc: Horia Geantă <horia.geanta@nxp.com>
+Cc: Herbert Xu <herbert@gondor.apana.org.au>
+Cc: Iuliana Prodan <iuliana.prodan@nxp.com>
+Cc: linux-crypto@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+(cherry picked from commit 66e93b28075d3cae568ed97ef78789afa5a6eb36)
+---
+ drivers/crypto/caam/ctrl.c | 28 +++++++++-------------------
+ 1 file changed, 9 insertions(+), 19 deletions(-)
+
+--- a/drivers/crypto/caam/ctrl.c
++++ b/drivers/crypto/caam/ctrl.c
+@@ -308,11 +308,9 @@ static int caam_remove(struct platform_d
+ {
+ 	struct device *ctrldev;
+ 	struct caam_drv_private *ctrlpriv;
+-	struct caam_ctrl __iomem *ctrl;
+ 
+ 	ctrldev = &pdev->dev;
+ 	ctrlpriv = dev_get_drvdata(ctrldev);
+-	ctrl = (struct caam_ctrl __iomem *)ctrlpriv->ctrl;
+ 
+ 	/* Remove platform devices under the crypto node */
+ 	of_platform_depopulate(ctrldev);
+@@ -334,9 +332,6 @@ static int caam_remove(struct platform_d
+ 	debugfs_remove_recursive(ctrlpriv->dfs_root);
+ #endif
+ 
+-	/* Unmap controller region */
+-	iounmap(ctrl);
+-
+ 	return 0;
+ }
+ 
+@@ -611,10 +606,11 @@ static int caam_probe(struct platform_de
+ 
+ 	/* Get configuration properties from device tree */
+ 	/* First, get register page */
+-	ctrl = of_iomap(nprop, 0);
+-	if (!ctrl) {
++	ctrl = devm_of_iomap(dev, nprop, 0, NULL);
++	ret = PTR_ERR_OR_ZERO(ctrl);
++	if (ret) {
+ 		dev_err(dev, "caam: of_iomap() failed\n");
+-		return -ENOMEM;
++		return ret;
+ 	}
+ 
+ 	caam_little_end = !(bool)(rd_reg32(&ctrl->perfmon.status) &
+@@ -632,22 +628,18 @@ static int caam_probe(struct platform_de
+ 	if (ctrlpriv->qi_present && !caam_dpaa2) {
+ 		ret = qman_is_probed();
+ 		if (!ret) {
+-			ret = -EPROBE_DEFER;
+-			goto iounmap_ctrl;
++			return -EPROBE_DEFER;
+ 		} else if (ret < 0) {
+ 			dev_err(dev, "failing probe due to qman probe error\n");
+-			ret = -ENODEV;
+-			goto iounmap_ctrl;
++			return -ENODEV;
+ 		}
+ 
+ 		ret = qman_portals_probed();
+ 		if (!ret) {
+-			ret = -EPROBE_DEFER;
+-			goto iounmap_ctrl;
++			return -EPROBE_DEFER;
+ 		} else if (ret < 0) {
+ 			dev_err(dev, "failing probe due to qman portals probe error\n");
+-			ret = -ENODEV;
+-			goto iounmap_ctrl;
++			return -ENODEV;
+ 		}
+ 	}
+ #endif
+@@ -720,7 +712,7 @@ static int caam_probe(struct platform_de
+ 	ret = dma_set_mask_and_coherent(dev, caam_get_dma_mask(dev));
+ 	if (ret) {
+ 		dev_err(dev, "dma_set_mask_and_coherent failed (%d)\n", ret);
+-		goto iounmap_ctrl;
++		return ret;
+ 	}
+ 
+ 	ctrlpriv->era = caam_get_era(ctrl);
+@@ -925,8 +917,6 @@ shutdown_qi:
+ 	if (ctrlpriv->qi_init)
+ 		caam_qi_shutdown(dev);
+ #endif
+-iounmap_ctrl:
+-	iounmap(ctrl);
+ 	return ret;
+ }
+ 

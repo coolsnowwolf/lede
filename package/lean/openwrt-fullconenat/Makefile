@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=fullconenat
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE_DATE:=2019-10-21
 PKG_SOURCE_PROTO:=git
@@ -55,7 +55,7 @@ define Build/Compile
 	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
         CROSS_COMPILE="$(TARGET_CROSS)" \
         ARCH="$(LINUX_KARCH)" \
-        SUBDIRS="$(PKG_BUILD_DIR)" \
+        M="$(PKG_BUILD_DIR)" \
         EXTRA_CFLAGS="$(BUILDFLAGS)" \
         modules
 	$(call Build/Compile/Default)

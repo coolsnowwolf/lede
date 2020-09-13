@@ -1,0 +1,121 @@
+From b2dd96ec88b7eb4288ca39a1fc78176872c0683b Mon Sep 17 00:00:00 2001
+From: Viorel Suman <viorel.suman@nxp.com>
+Date: Wed, 27 Jun 2018 10:59:12 +0300
+Subject: [PATCH] MLK-18682-2: ASoC: fsl: sai: allow dynamic pll switching
+
+Currently SAI master clock derives from an audio pll that cannot be
+changed at runtime. iMX8 SoC has 2 audio plls usually configured to support
+either 8000Hz (8k,16k,32k,48k,etc) or 11025Hz (11k,22k,44.1k,88.2k,etc)
+ranges of rates - thus at runtime a SAI interface is able to play only one
+range of rates. The patch allows dynamic SAI master clock reparenting to
+the appropriate audio pll as function of the audio stream rate to be
+played/recorded.
+
+Signed-off-by: Viorel Suman <viorel.suman@nxp.com>
+---
+ sound/soc/fsl/fsl_sai.c | 60 ++++++++++++++++++++++++++++++++++++++++++++-----
+ sound/soc/fsl/fsl_sai.h |  2 ++
+ 2 files changed, 57 insertions(+), 5 deletions(-)
+
+--- a/sound/soc/fsl/fsl_sai.c
++++ b/sound/soc/fsl/fsl_sai.c
+@@ -5,6 +5,7 @@
+ // Copyright 2012-2016 Freescale Semiconductor, Inc.
+ 
+ #include <linux/clk.h>
++#include <linux/clk-provider.h>
+ #include <linux/delay.h>
+ #include <linux/dmaengine.h>
+ #include <linux/module.h>
+@@ -234,6 +235,50 @@ static int fsl_sai_set_dai_sysclk_tr(str
+ 	return 0;
+ }
+ 
++static int fsl_sai_set_mclk_rate(struct snd_soc_dai *dai, int clk_id,
++		unsigned int freq)
++{
++	struct fsl_sai *sai = snd_soc_dai_get_drvdata(dai);
++	struct clk *p = sai->mclk_clk[clk_id], *pll = 0, *npll = 0;
++	u64 ratio = freq;
++	int ret;
++
++	while (p && sai->pll8k_clk && sai->pll11k_clk) {
++		struct clk *pp = clk_get_parent(p);
++
++		if (clk_is_match(pp, sai->pll8k_clk) ||
++		    clk_is_match(pp, sai->pll11k_clk)) {
++			pll = pp;
++			break;
++		}
++		p = pp;
++	}
++
++	if (pll) {
++		npll = (do_div(ratio, 8000) ? sai->pll11k_clk : sai->pll8k_clk);
++		if (!clk_is_match(pll, npll)) {
++			if (sai->mclk_streams == 0) {
++				ret = clk_set_parent(p, npll);
++				if (ret < 0)
++					dev_warn(dai->dev,
++						"failed to set parent %s: %d\n",
++						__clk_get_name(npll), ret);
++			} else {
++				dev_err(dai->dev,
++					"PLL %s is in use by a running stream.\n",
++					__clk_get_name(pll));
++				return -EINVAL;
++			}
++		}
++	}
++
++	ret = clk_set_rate(sai->mclk_clk[clk_id], freq);
++	if (ret < 0)
++		dev_err(dai->dev, "failed to set clock rate (%u): %d\n",
++				freq, ret);
++	return ret;
++}
++
+ static int fsl_sai_set_dai_bclk_ratio(struct snd_soc_dai *dai, unsigned int ratio)
+ {
+ 	struct fsl_sai *sai = snd_soc_dai_get_drvdata(dai);
+@@ -262,12 +307,9 @@ static int fsl_sai_set_dai_sysclk(struct
+ 			return -EINVAL;
+ 		}
+ 
+-		ret = clk_set_rate(sai->mclk_clk[clk_id], freq);
+-		if (ret < 0) {
+-			dev_err(cpu_dai->dev, "failed to set clock rate (%u): %d\n",
+-					freq, ret);
++		ret = fsl_sai_set_mclk_rate(cpu_dai, clk_id, freq);
++		if (ret < 0)
+ 			return ret;
+-		}
+ 	}
+ 
+ 	ret = fsl_sai_set_dai_sysclk_tr(cpu_dai, clk_id, freq,
+@@ -1288,6 +1330,14 @@ static int fsl_sai_probe(struct platform
+ 		}
+ 	}
+ 
++	sai->pll8k_clk = devm_clk_get(&pdev->dev, "pll8k");
++	if (IS_ERR(sai->pll8k_clk))
++		sai->pll8k_clk = NULL;
++
++	sai->pll11k_clk = devm_clk_get(&pdev->dev, "pll11k");
++	if (IS_ERR(sai->pll11k_clk))
++		sai->pll11k_clk = NULL;
++
+ 	if (of_find_property(np, "fsl,sai-multi-lane", NULL))
+ 		sai->is_multi_lane = true;
+ 
+--- a/sound/soc/fsl/fsl_sai.h
++++ b/sound/soc/fsl/fsl_sai.h
+@@ -239,6 +239,8 @@ struct fsl_sai {
+ 	struct regmap *regmap;
+ 	struct clk *bus_clk;
+ 	struct clk *mclk_clk[FSL_SAI_MCLK_MAX];
++	struct clk *pll8k_clk;
++	struct clk *pll11k_clk;
+ 
+ 	bool slave_mode[2];
+ 	bool is_lsb_first;

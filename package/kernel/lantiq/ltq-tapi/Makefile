@@ -17,7 +17,6 @@ PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources
 PKG_HASH:=109374d52872716570fca3fef3b93c9a93159a804dfd42484b19152b825af5c0
 PKG_MAINTAINER:=John Crispin <john@phrozen.org>
 
-PKG_ASLR_PIE:=0
 PKG_CHECK_FORMAT_SECURITY:=0
 PKG_FIXUP:=autoreconf
 

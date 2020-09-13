@@ -15,7 +15,7 @@ PKG_LICENSE_FILES:=
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
-PKG_DATA_VERSION:=20170806
+PKG_DATA_VERSION:=20191128
 PKG_DATA_URL:=http://www.draisberghof.de/usb_modeswitch
 PKG_DATA_PATH:=usb-modeswitch-data-$(PKG_DATA_VERSION)
 PKG_DATA_FILENAME:=$(PKG_DATA_PATH).tar.bz2
@@ -26,7 +26,7 @@ include $(INCLUDE_DIR)/cmake.mk
 define Download/data
   FILE:=$(PKG_DATA_FILENAME)
   URL:=$(PKG_DATA_URL)
-  HASH:=ce413ef2a50e648e9c81bc3ea6110e7324a8bf981034fc9ec4467d3562563c2c
+  HASH:=3f039b60791c21c7cb15c7986cac89650f076dc274798fa242231b910785eaf9
 endef
 $(eval $(call Download,data))
 

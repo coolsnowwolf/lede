@@ -11,7 +11,7 @@ I2C_LANTIQ_MODULES:= \
 define KernelPackage/i2c-lantiq
   TITLE:=Lantiq I2C controller
   $(call i2c_defaults,$(I2C_LANTIQ_MODULES),52)
-  DEPENDS:=kmod-i2c-core @TARGET_lantiq_falcon
+  DEPENDS:=+kmod-i2c-core @TARGET_lantiq_falcon
 endef
 
 define KernelPackage/i2c-lantiq/description

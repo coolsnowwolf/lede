@@ -1,0 +1,85 @@
+From 79eacb8b197f7459a75c7d3ec33ceef88475d5a1 Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Fri, 4 May 2018 19:23:59 +0300
+Subject: [PATCH] memac_init_phy: RGMII fixed-link: pass adjust_link callback
+ to of_phy_connect
+
+* The mEMAC configuration for RGMII is held in the IF_MODE register
+* In the driver, IF_MODE is configured in 2 places (both in fman_memac.c):
+    - fman_memac_init: sets the IF_MODE bit macro IF_MODE_RGMII_AUTO
+      (this translates to setting ENA = 1 - Enable automatic speed selection
+      - RGMII PHY in-band status information is used to select the speed
+      of operation).
+    - fman_memac_adjust_link: brings the RGMII port in ENA = 0 mode
+      (link speed not determined autonomously by the MAC, but set according
+      to SSP).
+* The issue with the current code is that in the case of RGMII fixed-link,
+  the of_phy_attach function is being called, instead of of_phy_connect
+  with a callback that calls fman_memac_adjust_link.
+* For this reason, the RGMII port is left in a state with ENA = 1. In
+  most (if not all) RGMII fixed-link setups, the link partner will not
+  send any in-bank link speed information that is expected by the mEMAC.
+* The effect is that the link speed setting will probably not be correct
+  (and will definitely not be according to the "fixed-link" property in
+  the DTS).
+* The adjust_link callback seems to be called by the PHY state machine,
+  even for fixed links, exactly once: on "link up". Therefore, this
+  patch ensures that on link up, RGMII fixed links are configured to the
+  link speed that is set in the DTS, and not left with IF_MODE[ENA] = 1.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+---
+ drivers/net/ethernet/freescale/sdk_dpaa/mac-api.c | 38 ++++++++++++++++++-----
+ 1 file changed, 31 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/mac-api.c
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/mac-api.c
+@@ -502,17 +502,41 @@ static int memac_init_phy(struct net_dev
+ 			  struct mac_device *mac_dev)
+ {
+ 	struct phy_device       *phy_dev;
++	void (*adjust_link_handler)(struct net_device *);
+ 
+ 	if ((macdev2enetinterface(mac_dev) == e_ENET_MODE_XGMII_10000) ||
+-	    (macdev2enetinterface(mac_dev) == e_ENET_MODE_SGMII_2500) ||
+-	    of_phy_is_fixed_link(mac_dev->phy_node)) {
+-		phy_dev = of_phy_connect(net_dev, mac_dev->phy_node,
+-					 &adjust_link_void, 0,
+-					 mac_dev->phy_if);
++	    (macdev2enetinterface(mac_dev) == e_ENET_MODE_SGMII_2500)) {
++		/* Pass a void link state handler to the PHY state machine
++		 * for XGMII (10G) and SGMII 2.5G, as the hardware does not
++		 * permit dynamic link speed adjustments. */
++		adjust_link_handler = adjust_link_void;
++	} else if (macdev2enetinterface(mac_dev) & e_ENET_IF_RGMII) {
++		/* Regular RGMII ports connected to a PHY, as well as
++		 * ports that are marked as "fixed-link" in the DTS,
++		 * will have the adjust_link callback. This calls
++		 * fman_memac_adjust_link in order to configure the
++		 * IF_MODE register, which is needed in both cases.
++		 */
++		adjust_link_handler = adjust_link;
++	} else if (of_phy_is_fixed_link(mac_dev->phy_node)) {
++		/* Pass a void link state handler for fixed-link
++		 * interfaces that are not RGMII. Only RGMII has been
++		 * tested and confirmed to work with fixed-link. Other
++		 * MII interfaces may need further work.
++		 * TODO: Change this as needed.
++		 */
++		adjust_link_handler = adjust_link_void;
+ 	} else {
+-		phy_dev = of_phy_connect(net_dev, mac_dev->phy_node,
+-					 &adjust_link, 0, mac_dev->phy_if);
++		/* MII, RMII, SMII, GMII, SGMII, BASEX ports,
++		 * that are NOT fixed-link.
++		 * TODO: May not be needed for interfaces that
++		 * pass through the SerDes block (*SGMII, XFI).
++		 */
++		adjust_link_handler = adjust_link;
+ 	}
++	phy_dev = of_phy_connect(net_dev, mac_dev->phy_node,
++	                         adjust_link_handler, 0,
++	                         mac_dev->phy_if);
+ 
+ 	if (unlikely(phy_dev == NULL) || IS_ERR(phy_dev)) {
+ 		netdev_err(net_dev, "Could not connect to PHY %s\n",

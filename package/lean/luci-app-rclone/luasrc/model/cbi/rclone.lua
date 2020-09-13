@@ -1,6 +1,8 @@
 require('luci.sys')
 require('luci.util')
 
+local ipkg = require('luci.model.ipkg')
+
 local fs = require 'nixio.fs'
 
 local uci = require 'luci.model.uci'.cursor()
@@ -31,6 +33,7 @@ else
     address_msg = ''
 end
 
+if ipkg.installed("rclone-webui-react") and ipkg.installed("rclone-ng") then
 m =
     Map(
     'rclone',
@@ -46,6 +49,44 @@ m =
         translate('RcloneNg') ..                                                                                                                                    
         " \" onclick=\"window.open('http://'+window.location.hostname+'/RcloneNg')\"/> <br/><br/>"  
 )
+elseif ipkg.installed("rclone-webui-react") then
+m =
+    Map(
+    'rclone',
+    translate('Rclone'),
+    translate('Rclone ("rsync for cloud storage") is a command line program to sync root/usr/bin and directories to and from different cloud storage providers.') ..
+        ' <br/> <br/> ' .. translate('rclone state') .. ' : ' .. state_msg .. '<br/> <br/>'
+        .. address_msg ..
+        translate('Installed Web Interface') ..   
+	
+        '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<input type="button" class="cbi-button" style="margin: 0 5px;" value=" ' ..                                            
+        translate('Webui React') ..                                                                                                                                 
+        " \" onclick=\"window.open('http://'+window.location.hostname+'/rclone-webui-react')\"/>" 
+)
+elseif ipkg.installed("rclone-ng") then
+m =
+    Map(
+    'rclone',
+    translate('Rclone'),
+    translate('Rclone ("rsync for cloud storage") is a command line program to sync root/usr/bin and directories to and from different cloud storage providers.') ..
+        ' <br/> <br/> ' .. translate('rclone state') .. ' : ' .. state_msg .. '<br/> <br/>'
+        .. address_msg ..
+        translate('Installed Web Interface') ..     
+	
+        '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<input type="button" class="cbi-button" style="margin: 0 5px;" value=" ' ..                                            
+        translate('RcloneNg') ..                                                                                                                                    
+        " \" onclick=\"window.open('http://'+window.location.hostname+'/RcloneNg')\"/> <br/><br/>"  
+)
+else
+m =
+    Map(
+    'rclone',
+    translate('Rclone'),
+    translate('Rclone ("rsync for cloud storage") is a command line program to sync root/usr/bin and directories to and from different cloud storage providers.') ..
+        ' <br/> <br/> ' .. translate('rclone state') .. ' : ' .. state_msg .. '<br/> <br/>'
+        .. address_msg
+)
+end
 
 s = m:section(TypedSection, 'global', translate('global'))
 s.addremove = false

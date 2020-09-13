@@ -4,7 +4,7 @@
 # r8125 is the Linux device driver released for Realtek 2.5Gigabit Ethernet
 # controllers with PCI-Express interface.
 #
-# Copyright(c) 2019 Realtek Semiconductor Corp. All rights reserved.
+# Copyright(c) 2020 Realtek Semiconductor Corp. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the Free
@@ -241,12 +241,12 @@ RX_DASH_BUFFER_TYPE_2, *PRX_DASH_BUFFER_TYPE_2;
 #define CMAC_TXDESC_OFFSET 0x98    //TX: 0x98 - 0x9F
 
 /* cmac write/read MMIO register */
-#define RTL_CMAC_W8(reg, val8)   writeb ((val8), tp->cmac_ioaddr + (reg))
-#define RTL_CMAC_W16(reg, val16) writew ((val16), tp->cmac_ioaddr + (reg))
-#define RTL_CMAC_W32(reg, val32) writel ((val32), tp->cmac_ioaddr + (reg))
-#define RTL_CMAC_R8(reg)     readb (tp->cmac_ioaddr + (reg))
-#define RTL_CMAC_R16(reg)        readw (tp->cmac_ioaddr + (reg))
-#define RTL_CMAC_R32(reg)        ((unsigned long) readl (tp->cmac_ioaddr + (reg)))
+#define RTL_CMAC_W8(tp, reg, val8)   writeb ((val8), tp->cmac_ioaddr + (reg))
+#define RTL_CMAC_W16(tp, reg, val16) writew ((val16), tp->cmac_ioaddr + (reg))
+#define RTL_CMAC_W32(tp, reg, val32) writel ((val32), tp->cmac_ioaddr + (reg))
+#define RTL_CMAC_R8(tp, reg)     readb (tp->cmac_ioaddr + (reg))
+#define RTL_CMAC_R16(tp, reg)        readw (tp->cmac_ioaddr + (reg))
+#define RTL_CMAC_R32(tp, reg)        ((unsigned long) readl (tp->cmac_ioaddr + (reg)))
 
 int rtl8125_dash_ioctl(struct net_device *dev, struct ifreq *ifr);
 void HandleDashInterrupt(struct net_device *dev);

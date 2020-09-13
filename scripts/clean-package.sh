@@ -12,7 +12,7 @@ cat "$1" | (
 	cd "$2"
 	while read entry; do
 		[ -n "$entry" ] || break
-		[ -f "$entry" ] && rm -f $entry
+		[ ! -d "$entry" ] || [ -L "$entry" ] && rm -f "$entry"
 	done
 )
 sort -r "$1" | (

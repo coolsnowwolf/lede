@@ -1,0 +1,87 @@
+From 7a291e75b7793f1fbd0ad9ad39ae35a2b091d84b Mon Sep 17 00:00:00 2001
+From: Laurentiu Tudor <laurentiu.tudor@nxp.com>
+Date: Tue, 26 Jul 2016 16:12:30 +0300
+Subject: [PATCH] arm/arm64 KVM: allow specifying s2 prot bits when mapping i/o
+
+Add parameter allowing to specify s2 page table
+protection and type bits and update the callers
+accordingly.
+The parameter will be used in a forthcoming patch.
+
+Signed-off-by: Laurentiu Tudor <laurentiu.tudor@nxp.com>
+---
+ arch/arm/include/asm/kvm_mmu.h   | 3 ++-
+ arch/arm64/include/asm/kvm_mmu.h | 3 ++-
+ virt/kvm/arm/mmu.c               | 8 +++++---
+ virt/kvm/arm/vgic/vgic-v2.c      | 3 ++-
+ 4 files changed, 11 insertions(+), 6 deletions(-)
+
+--- a/arch/arm/include/asm/kvm_mmu.h
++++ b/arch/arm/include/asm/kvm_mmu.h
+@@ -55,7 +55,8 @@ void stage2_unmap_vm(struct kvm *kvm);
+ int kvm_alloc_stage2_pgd(struct kvm *kvm);
+ void kvm_free_stage2_pgd(struct kvm *kvm);
+ int kvm_phys_addr_ioremap(struct kvm *kvm, phys_addr_t guest_ipa,
+-			  phys_addr_t pa, unsigned long size, bool writable);
++			  phys_addr_t pa, unsigned long size, bool writable,
++			  pgprot_t prot);
+ 
+ int kvm_handle_guest_abort(struct kvm_vcpu *vcpu, struct kvm_run *run);
+ 
+--- a/arch/arm64/include/asm/kvm_mmu.h
++++ b/arch/arm64/include/asm/kvm_mmu.h
+@@ -156,7 +156,8 @@ void stage2_unmap_vm(struct kvm *kvm);
+ int kvm_alloc_stage2_pgd(struct kvm *kvm);
+ void kvm_free_stage2_pgd(struct kvm *kvm);
+ int kvm_phys_addr_ioremap(struct kvm *kvm, phys_addr_t guest_ipa,
+-			  phys_addr_t pa, unsigned long size, bool writable);
++			  phys_addr_t pa, unsigned long size, bool writable,
++			  pgprot_t prot);
+ 
+ int kvm_handle_guest_abort(struct kvm_vcpu *vcpu, struct kvm_run *run);
+ 
+--- a/virt/kvm/arm/mmu.c
++++ b/virt/kvm/arm/mmu.c
+@@ -1341,9 +1341,11 @@ static int stage2_pudp_test_and_clear_yo
+  * @guest_ipa:	The IPA at which to insert the mapping
+  * @pa:		The physical address of the device
+  * @size:	The size of the mapping
++ * @prot:	S2 page translation bits
+  */
+ int kvm_phys_addr_ioremap(struct kvm *kvm, phys_addr_t guest_ipa,
+-			  phys_addr_t pa, unsigned long size, bool writable)
++			  phys_addr_t pa, unsigned long size, bool writable,
++			  pgprot_t prot)
+ {
+ 	phys_addr_t addr, end;
+ 	int ret = 0;
+@@ -1354,7 +1356,7 @@ int kvm_phys_addr_ioremap(struct kvm *kv
+ 	pfn = __phys_to_pfn(pa);
+ 
+ 	for (addr = guest_ipa; addr < end; addr += PAGE_SIZE) {
+-		pte_t pte = kvm_pfn_pte(pfn, PAGE_S2_DEVICE);
++		pte_t pte = kvm_pfn_pte(pfn, prot);
+ 
+ 		if (writable)
+ 			pte = kvm_s2pte_mkwrite(pte);
+@@ -2356,7 +2358,7 @@ int kvm_arch_prepare_memory_region(struc
+ 
+ 			ret = kvm_phys_addr_ioremap(kvm, gpa, pa,
+ 						    vm_end - vm_start,
+-						    writable);
++						    writable, PAGE_S2_DEVICE);
+ 			if (ret)
+ 				break;
+ 		}
+--- a/virt/kvm/arm/vgic/vgic-v2.c
++++ b/virt/kvm/arm/vgic/vgic-v2.c
+@@ -341,7 +341,8 @@ int vgic_v2_map_resources(struct kvm *kv
+ 	if (!static_branch_unlikely(&vgic_v2_cpuif_trap)) {
+ 		ret = kvm_phys_addr_ioremap(kvm, dist->vgic_cpu_base,
+ 					    kvm_vgic_global_state.vcpu_base,
+-					    KVM_VGIC_V2_CPU_SIZE, true);
++					    KVM_VGIC_V2_CPU_SIZE, true,
++					    PAGE_S2_DEVICE);
+ 		if (ret) {
+ 			kvm_err("Unable to remap VGIC CPU to VCPU\n");
+ 			goto out;

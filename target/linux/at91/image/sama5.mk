@@ -1,3 +1,4 @@
+
 define Device/default-nand
   BLOCKSIZE := 128k
   PAGESIZE := 2048
@@ -108,6 +109,7 @@ ifeq ($(strip $(CONFIG_EXTERNAL_KERNEL_TREE)),"")
   TARGET_DEVICES += wb50n
  endif
 endif
+
 
 define Device/at91-sama5d4_xplained
   $(Device/evaluation-dtb)

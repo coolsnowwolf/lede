@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libnetfilter_cttimeout
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:= \
@@ -30,6 +30,7 @@ define Package/libnetfilter-cttimeout
   DEPENDS:=+libmnl
   TITLE:=API to the in-kernel connection tracking timeout infrastructure
   URL:=http://www.netfilter.org/projects/libnetfilter_cttimeout/
+  ABI_VERSION:=1
 endef
 
 define Package/libnetfilter-cttimeout/description

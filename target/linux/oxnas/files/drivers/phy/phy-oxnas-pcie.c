@@ -43,25 +43,19 @@ struct oxnas_pcie_phy {
 	void __iomem *membase;
 	const struct phy_ops *ops;
 	struct regmap *sys_ctrl;
+	struct reset_control *rstc;
 };
 
 static int oxnas_pcie_phy_init(struct phy *phy)
 {
 	struct oxnas_pcie_phy *pciephy = phy_get_drvdata(phy);
-	struct reset_control *rstc;
 	int ret;
 
 	/* generate clocks from HCSL buffers, shared parts */
 	regmap_write(pciephy->sys_ctrl, SYS_CTRL_HCSL_CTRL_REGOFFSET, HCSL_BIAS_ON|HCSL_PCIE_EN);
 
 	/* Ensure PCIe PHY is properly reset */
-	rstc = reset_control_get(pciephy->dev, "phy");
-	if (IS_ERR(rstc)) {
-		ret = PTR_ERR(rstc);
-	} else {
-		ret = reset_control_reset(rstc);
-		reset_control_put(rstc);
-	}
+	ret = reset_control_reset(pciephy->rstc);
 
 	if (ret) {
 		dev_err(pciephy->dev, "phy reset failed %d\n", ret);
@@ -101,6 +95,7 @@ static int oxnas_pcie_phy_probe(struct platform_device *pdev)
 	struct phy_provider *phy_provider;
 	struct oxnas_pcie_phy *pciephy;
 	struct regmap *sys_ctrl;
+	struct reset_control *rstc;
 	void __iomem *membase;
 
 	membase = of_iomap(np, 0);
@@ -108,16 +103,19 @@ static int oxnas_pcie_phy_probe(struct platform_device *pdev)
 		return PTR_ERR(membase);
 
 	sys_ctrl = syscon_regmap_lookup_by_compatible("oxsemi,ox820-sys-ctrl");
-	if (IS_ERR(sys_ctrl)) {
-		dev_err(dev, "Cannot find OX820 SYSCRTL\n");
+	if (IS_ERR(sys_ctrl))
 		return PTR_ERR(sys_ctrl);
-	}
+
+	rstc = devm_reset_control_get_shared(dev, "phy");
+	if (IS_ERR(rstc))
+		return PTR_ERR(rstc);
 
 	pciephy = devm_kzalloc(dev, sizeof(*pciephy), GFP_KERNEL);
 	if (!pciephy)
 		return -ENOMEM;
 
 	pciephy->sys_ctrl = sys_ctrl;
+	pciephy->rstc = rstc;
 	pciephy->membase = membase;
 	pciephy->dev = dev;
 	pciephy->ops = &ops;

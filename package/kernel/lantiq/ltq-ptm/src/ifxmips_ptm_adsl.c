@@ -44,6 +44,8 @@
 #include <linux/etherdevice.h>
 #include <linux/interrupt.h>
 #include <linux/netdevice.h>
+#include <linux/platform_device.h>
+#include <linux/of_device.h>
 #include <asm/io.h>
 
 /*
@@ -59,12 +61,8 @@
  *        Kernel Version Adaption
  * ####################################
  */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11)
   #define MODULE_PARM_ARRAY(a, b)   module_param_array(a, int, NULL, 0)
   #define MODULE_PARM(a, b)         module_param(a, int, 0)
-#else
-  #define MODULE_PARM_ARRAY(a, b)   MODULE_PARM(a, b)
-#endif
 
 
 
@@ -128,9 +126,6 @@ static int ptm_stop(struct net_device *);
   static unsigned int ptm_poll(int, unsigned int);
   static int ptm_napi_poll(struct napi_struct *, int);
 static int ptm_hard_start_xmit(struct sk_buff *, struct net_device *);
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0))
-static int ptm_change_mtu(struct net_device *, int);
-#endif
 static int ptm_ioctl(struct net_device *, struct ifreq *, int);
 static void ptm_tx_timeout(struct net_device *);
 
@@ -241,7 +236,6 @@ static INLINE void init_tables(void);
 
 static struct ptm_priv_data g_ptm_priv_data;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32)
 static struct net_device_ops g_ptm_netdev_ops = {
     .ndo_get_stats       = ptm_get_stats,
     .ndo_open            = ptm_open,
@@ -249,13 +243,9 @@ static struct net_device_ops g_ptm_netdev_ops = {
     .ndo_start_xmit      = ptm_hard_start_xmit,
     .ndo_validate_addr   = eth_validate_addr,
     .ndo_set_mac_address = eth_mac_addr,
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0))
-    .ndo_change_mtu      = ptm_change_mtu,
-#endif
     .ndo_do_ioctl        = ptm_ioctl,
     .ndo_tx_timeout      = ptm_tx_timeout,
 };
-#endif
 
 static struct net_device *g_net_dev[2] = {0};
 static char *g_net_dev_name[2] = {"dsl0", "dslfast0"};
@@ -289,10 +279,8 @@ static void ptm_setup(struct net_device *dev, int ndev)
 
     /*  hook network operations */
     dev->netdev_ops      = &g_ptm_netdev_ops;
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0))
     /* Allow up to 1508 bytes, for RFC4638 */
     dev->max_mtu         = ETH_DATA_LEN + 8;
-#endif
     netif_napi_add(dev, &g_ptm_priv_data.itf[ndev].napi, ptm_napi_poll, 25);
     dev->watchdog_timeo  = ETH_WATCHDOG_TIMEOUT;
 
@@ -413,11 +401,7 @@ static int ptm_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
     /*  allocate descriptor */
     desc_base = get_tx_desc(ndev, &f_full);
     if ( f_full ) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,7,0)
         netif_trans_update(dev);
-#else
-        dev->trans_start = jiffies;
-#endif
         netif_stop_queue(dev);
 
         IFX_REG_W32_MASK(0, 1 << (ndev + 16), MBOX_IGU1_ISRC);
@@ -451,11 +435,7 @@ static int ptm_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
     g_ptm_priv_data.itf[ndev].stats.tx_packets++;
     g_ptm_priv_data.itf[ndev].stats.tx_bytes += reg_desc.datalen;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,7,0)
     netif_trans_update(dev);
-#else
-    dev->trans_start = jiffies;
-#endif
     mailbox_signal(ndev, 1);
 
     adsl_led_flash();
@@ -467,16 +447,6 @@ PTM_HARD_START_XMIT_FAIL:
     g_ptm_priv_data.itf[ndev].stats.tx_dropped++;
     return NETDEV_TX_OK;
 }
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0))
-static int ptm_change_mtu(struct net_device *dev, int mtu)
-{
-	/* Allow up to 1508 bytes, for RFC4638 */
-        if (mtu < 68 || mtu > ETH_DATA_LEN + 8)
-                return -EINVAL;
-        dev->mtu = mtu;
-        return 0;
-}
-#endif
 
 static int ptm_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
@@ -662,10 +632,6 @@ static INLINE int mailbox_rx_irq_handler(unsigned int ch)   //  return: < 0 - de
             //  parse protocol header
             skb->dev = g_net_dev[ndev];
             skb->protocol = eth_type_trans(skb, skb->dev);
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0))
-            g_net_dev[ndev]->last_rx = jiffies;
-#endif
 
             netif_rx_ret = netif_receive_skb(skb);
 
@@ -1448,6 +1414,19 @@ static int ptm_showtime_exit(void)
 }
 
 
+static const struct of_device_id ltq_ptm_match[] = {
+#ifdef CONFIG_DANUBE
+       { .compatible = "lantiq,ppe-danube", .data = NULL },
+#elif defined CONFIG_AMAZON_SE
+       { .compatible = "lantiq,ppe-ase", .data = NULL },
+#elif defined CONFIG_AR9
+       { .compatible = "lantiq,ppe-arx100", .data = NULL },
+#elif defined CONFIG_VR9
+       { .compatible = "lantiq,ppe-xrx200", .data = NULL },
+#endif
+       {},
+};
+MODULE_DEVICE_TABLE(of, ltq_ptm_match);
 
 /*
  * ####################################
@@ -1465,7 +1444,7 @@ static int ptm_showtime_exit(void)
  *    0    --- successful
  *    else --- failure, usually it is negative value of error code
  */
-static int ifx_ptm_init(void)
+static int ltq_ptm_probe(struct platform_device *pdev)
 {
     int ret;
     struct port_cell_info port_cell = {0};
@@ -1481,7 +1460,7 @@ static int ifx_ptm_init(void)
         goto INIT_PRIV_DATA_FAIL;
     }
 
-    ifx_ptm_init_chip();
+    ifx_ptm_init_chip(pdev);
     init_tables();
 
     for ( i = 0; i < ARRAY_SIZE(g_net_dev); i++ ) {
@@ -1498,11 +1477,7 @@ static int ifx_ptm_init(void)
     }
 
     /*  register interrupt handler  */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,0)
     ret = request_irq(PPE_MAILBOX_IGU1_INT, mailbox_irq_handler, 0, "ptm_mailbox_isr", &g_ptm_priv_data);
-#else
-    ret = request_irq(PPE_MAILBOX_IGU1_INT, mailbox_irq_handler, IRQF_DISABLED, "ptm_mailbox_isr", &g_ptm_priv_data);
-#endif
     if ( ret ) {
         if ( ret == -EBUSY ) {
             err("IRQ may be occupied by other driver, please reconfig to disable it.");
@@ -1570,7 +1545,7 @@ INIT_PRIV_DATA_FAIL:
  *  Output:
  *   none
  */
-static void __exit ifx_ptm_exit(void)
+static int ltq_ptm_remove(struct platform_device *pdev)
 {
     int i;
 
@@ -1595,7 +1570,20 @@ static void __exit ifx_ptm_exit(void)
     ifx_ptm_uninit_chip();
 
     clear_priv_data();
+
+    return 0;
 }
 
-module_init(ifx_ptm_init);
-module_exit(ifx_ptm_exit);
+static struct platform_driver ltq_ptm_driver = {
+       .probe = ltq_ptm_probe,
+       .remove = ltq_ptm_remove,
+       .driver = {
+               .name = "ptm",
+               .owner = THIS_MODULE,
+               .of_match_table = ltq_ptm_match,
+       },
+};
+
+module_platform_driver(ltq_ptm_driver);
+
+MODULE_LICENSE("GPL");

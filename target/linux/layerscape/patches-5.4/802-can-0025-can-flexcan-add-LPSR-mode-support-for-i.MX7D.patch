@@ -1,0 +1,93 @@
+From 211c20a459a0fd4868ed22ecfc2b2186d9df6da0 Mon Sep 17 00:00:00 2001
+From: Joakim Zhang <qiangqing.zhang@nxp.com>
+Date: Tue, 30 Jul 2019 14:43:25 +0800
+Subject: [PATCH] can: flexcan: add LPSR mode support for i.MX7D
+
+For i.MX7D LPSR mode, the controller will lost power and got the
+configuration state lost after system resume back.
+So we need to set pinctrl state again and re-start chip to do
+re-configuration after resume.
+
+For wakeup case, it should not set pinctrl to sleep state by
+pinctrl_pm_select_sleep_state.
+For interface is not up before suspend case, we don't need
+re-configure as it will be configured by user later by interface up.
+
+Signed-off-by: Joakim Zhang <qiangqing.zhang@nxp.com>
+---
+ drivers/net/can/flexcan.c | 21 ++++++++++++++-------
+ 1 file changed, 14 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/can/flexcan.c
++++ b/drivers/net/can/flexcan.c
+@@ -26,6 +26,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/regulator/consumer.h>
++#include <linux/pinctrl/consumer.h>
+ #include <linux/regmap.h>
+ 
+ #define DRV_NAME			"flexcan"
+@@ -1920,7 +1921,7 @@ static int __maybe_unused flexcan_suspen
+ {
+ 	struct net_device *dev = dev_get_drvdata(device);
+ 	struct flexcan_priv *priv = netdev_priv(dev);
+-	int err = 0;
++	int err;
+ 
+ 	if (netif_running(dev)) {
+ 		/* if wakeup is enabled, enter stop mode
+@@ -1932,25 +1933,27 @@ static int __maybe_unused flexcan_suspen
+ 			if (err)
+ 				return err;
+ 		} else {
+-			err = flexcan_chip_disable(priv);
++			flexcan_chip_stop(dev);
++
++			err = pm_runtime_force_suspend(device);
+ 			if (err)
+ 				return err;
+ 
+-			err = pm_runtime_force_suspend(device);
++			pinctrl_pm_select_sleep_state(device);
+ 		}
+ 		netif_stop_queue(dev);
+ 		netif_device_detach(dev);
+ 	}
+ 	priv->can.state = CAN_STATE_SLEEPING;
+ 
+-	return err;
++	return 0;
+ }
+ 
+ static int __maybe_unused flexcan_resume(struct device *device)
+ {
+ 	struct net_device *dev = dev_get_drvdata(device);
+ 	struct flexcan_priv *priv = netdev_priv(dev);
+-	int err = 0;
++	int err;
+ 
+ 	priv->can.state = CAN_STATE_ERROR_ACTIVE;
+ 	if (netif_running(dev)) {
+@@ -1962,15 +1965,19 @@ static int __maybe_unused flexcan_resume
+ 			if (err)
+ 				return err;
+ 		} else {
++			pinctrl_pm_select_default_state(device);
++
+ 			err = pm_runtime_force_resume(device);
+ 			if (err)
+ 				return err;
+ 
+-			err = flexcan_chip_enable(priv);
++			err = flexcan_chip_start(dev);
++			if (err)
++				return err;
+ 		}
+ 	}
+ 
+-	return err;
++	return 0;
+ }
+ 
+ static int __maybe_unused flexcan_runtime_suspend(struct device *device)

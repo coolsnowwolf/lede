@@ -30,6 +30,7 @@ get_status_led() {
 	e750g-v8|\
 	eap120|\
 	minibox-v1|\
+	minibox-v3.2|\
 	packet-squirrel|\
 	som9331|\
 	sr3200|\
@@ -74,6 +75,7 @@ get_status_led() {
 	fritz300e|\
 	fritz4020|\
 	fritz450e|\
+	gl-ar750s|\
 	gl-usb150|\
 	mr12|\
 	mr16|\
@@ -84,14 +86,11 @@ get_status_led() {
 	tl-wr902ac-v1)
 		status_led="$board:green:power"
 		;;
-	archer-c5|\
-	archer-c7|\
 	tl-mr10u|\
 	tl-mr12u|\
 	tl-mr13u|\
 	tl-wdr4300|\
 	tl-wdr4900-v2|\
-	tl-wdr8500-v1|\
 	tl-wr703n|\
 	tl-wr710n|\
 	tl-wr720n-v3|\
@@ -129,6 +128,7 @@ get_status_led() {
 		status_led="$board:red:sys"
 		;;
 	bullet-m|\
+	bullet-m-xw|\
 	loco-m-xw|\
 	nano-m|\
 	nanostation-m|\
@@ -211,7 +211,6 @@ get_status_led() {
 		status_led="$board:red:system"
 		;;
 	dw33d|\
-	sbr-ac1750|\
 	r36a)
 		status_led="$board:blue:status"
 		;;
@@ -269,9 +268,6 @@ get_status_led() {
 	jwap230)
 		status_led="$board:green:led1"
 		;;
-	k2t)
-		status_led="$board:red:lan"
-		;;
 	koala)
 		status_led="$board:blue:sys"
 		;;
@@ -285,9 +281,6 @@ get_status_led() {
 		status_led="ubnt:green:d22"
 		;;
 	mc-mac1200r)
-		status_led="mercury:green:system"
-		;;
-	mc-mw4530r)
 		status_led="mercury:green:system"
 		;;
 	mr18|\
@@ -388,6 +381,7 @@ get_status_led() {
 	rb-lhg-5nd|\
 	rb-map-2nd|\
 	rb-mapl-2nd|\
+	rb-sxt-2nd-r3|\
 	rb-wap-2nd|\
 	rb-wapr-2nd)
 		status_led="rb:green:user"
@@ -419,9 +413,6 @@ get_status_led() {
 		;;
 	smart-300)
 		status_led="nc-link:green:system"
-		;;
-	sgr-w500-n85b-v2)
-		status_led="grentech:green:status"
 		;;
 	qihoo-c301)
 		status_led="qihoo:green:status"
@@ -458,6 +449,8 @@ get_status_led() {
 	tl-mr6400)
 		status_led="tp-link:white:power"
 		;;
+	archer-c5|\
+	archer-c7|\
 	tl-mr3220|\
 	tl-mr3220-v2|\
 	tl-mr3420|\
@@ -471,7 +464,6 @@ get_status_led() {
 	tl-wa901nd-v3|\
 	tl-wa901nd-v4|\
 	tl-wa901nd-v5|\
-	tl-wdr3227-v2|\
 	tl-wdr3320-v2|\
 	tl-wdr3500|\
 	tl-wr1041n-v2|\
@@ -479,8 +471,6 @@ get_status_led() {
 	tl-wr1043nd|\
 	tl-wr1043nd-v2|\
 	tl-wr1043nd-v4|\
-	tl-wr2041n-v1|\
-	tl-wr2041n-v2|\
 	tl-wr740n-v6|\
 	tl-wr741nd|\
 	tl-wr741nd-v4|\
@@ -492,11 +482,7 @@ get_status_led() {
 	tl-wr841n-v11|\
 	tl-wr842n-v2|\
 	tl-wr842n-v3|\
-	tl-wr880n-v1|\
-	tl-wr881n-v1|\
-	tl-wr885n-v1|\
 	tl-wr941nd|\
-	tl-wr941n-v7|\
 	tl-wr941nd-v5)
 		status_led="tp-link:green:system"
 		;;
@@ -506,8 +492,7 @@ get_status_led() {
 	tl-wr940n-v6)
 		status_led="tp-link:orange:diag"
 		;;
-	tl-wdr6500-v2|\
-	tl-wdr6500-v6)
+	tl-wdr6500-v2)
 		status_led="tp-link:white:system"
 		;;
 	tube2h)

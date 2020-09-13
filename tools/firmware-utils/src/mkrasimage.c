@@ -317,6 +317,16 @@ int build_image()
         map_file(&kernel);
     map_file(&rootfs);
 
+    /* As ZyXEL Web-GUI only accept images with a rootfs equal or larger than the first firmware shipped
+     * for the device, we need to pad rootfs partition to this size. To perform further calculations, we
+     * decide the size of this part here. In case the rootfs we want to integrate in our image is larger,
+     * take it's size, otherwise the supplied size.
+     *
+     * Be careful! We rely on assertion of correct size to be performed beforehand. It is unknown if images
+     * with a to large rootfs are accepted or not.
+     */
+    rootfs_out.size = rootfs_size < rootfs.size ? rootfs.size : rootfs_size;
+
     /*
      * Allocate memory and copy input rootfs for temporary output rootfs.
      * This is important as we have to generate the rootfs checksum over the
@@ -451,14 +461,5 @@ int main(int argc, char *argv[])
     if (ret)
         usage(EXIT_FAILURE);
 
-    /* As ZyXEL Web-GUI only accept images with a rootfs equal or larger than the first firmware shipped
-     * for the device, we need to pad rootfs partition to this size. To perform further calculations, we
-     * decide the size of this part here. In case the rootfs we want to integrate in our image is larger,
-     * take it's size, otherwise the supplied size.
-     *
-     * Be careful! We rely on assertion of correct size to be performed beforehand. It is unknown if images
-     * with a to large rootfs are accepted or not.
-     */
-    rootfs_out.size = rootfs_size < rootfs.size ? rootfs.size : rootfs_size;
     return build_image();
 }

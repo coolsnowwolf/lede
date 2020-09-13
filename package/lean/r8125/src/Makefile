@@ -37,8 +37,9 @@ CONFIG_DOWN_SPEED_100 = n
 CONFIG_ASPM = y
 ENABLE_S5WOL = y
 ENABLE_S5_KEEP_CURR_MAC = n
-ENABLE_EEE = n
+ENABLE_EEE = y
 ENABLE_S0_MAGIC_PACKET = n
+ENABLE_TX_NO_CLOSE = y
 
 ifneq ($(KERNELRELEASE),)
 	obj-m := r8125.o
@@ -77,6 +78,9 @@ ifneq ($(KERNELRELEASE),)
 	endif
 	ifeq ($(ENABLE_S0_MAGIC_PACKET), y)
 		EXTRA_CFLAGS += -DENABLE_S0_MAGIC_PACKET
+	endif
+	ifeq ($(ENABLE_TX_NO_CLOSE), y)
+		EXTRA_CFLAGS += -DENABLE_TX_NO_CLOSE
 	endif
 else
 	BASEDIR := /lib/modules/$(shell uname -r)

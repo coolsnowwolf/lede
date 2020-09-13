@@ -1,0 +1,192 @@
+From 411a2f6ad13bd58646de34a340553232044f0951 Mon Sep 17 00:00:00 2001
+From: Robin Gong <yibin.gong@nxp.com>
+Date: Mon, 4 Dec 2017 15:35:09 +0800
+Subject: [PATCH] MLK-17094 dma: fsl-edma-v3: add suspend/resume to restore
+ back channel registers
+
+Add suspend to save channel registers and resume to restore them back since
+edmav3 may powered off in suspend.
+
+Signed-off-by: Robin Gong <yibin.gong@nxp.com>
+(cherry picked from commit 7eda1ae538ec7e7c0f993b3ea91805459f3dedd3)
+---
+ drivers/dma/fsl-edma-v3.c | 86 +++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 86 insertions(+)
+
+--- a/drivers/dma/fsl-edma-v3.c
++++ b/drivers/dma/fsl-edma-v3.c
+@@ -111,6 +111,11 @@
+ #define CHAN_PREFIX			"edma0-chan"
+ #define CHAN_POSFIX			"-tx"
+ 
++enum fsl_edma3_pm_state {
++	RUNNING = 0,
++	SUSPENDED,
++};
++
+ struct fsl_edma3_hw_tcd {
+ 	__le32	saddr;
+ 	__le16	soff;
+@@ -142,6 +147,8 @@ struct fsl_edma3_slave_config {
+ struct fsl_edma3_chan {
+ 	struct virt_dma_chan		vchan;
+ 	enum dma_status			status;
++	enum fsl_edma3_pm_state		pm_state;
++	bool				idle;
+ 	struct fsl_edma3_engine		*edma3;
+ 	struct fsl_edma3_desc		*edesc;
+ 	struct fsl_edma3_slave_config	fsc;
+@@ -165,11 +172,18 @@ struct fsl_edma3_desc {
+ 	struct fsl_edma3_sw_tcd		tcd[];
+ };
+ 
++struct fsl_edma3_reg_save {
++	u32 csr;
++	u32 sbr;
++};
++
+ struct fsl_edma3_engine {
+ 	struct dma_device	dma_dev;
+ 	struct mutex		fsl_edma3_mutex;
+ 	u32			n_chans;
+ 	int			errirq;
++	#define MAX_CHAN_NUM	32
++	struct fsl_edma3_reg_save edma_regs[MAX_CHAN_NUM];
+ 	bool			swap;	/* remote/local swapped on Audio edma */
+ 	struct fsl_edma3_chan	chans[];
+ };
+@@ -266,6 +280,7 @@ static int fsl_edma3_terminate_all(struc
+ 	spin_lock_irqsave(&fsl_chan->vchan.lock, flags);
+ 	fsl_edma3_disable_request(fsl_chan);
+ 	fsl_chan->edesc = NULL;
++	fsl_chan->idle = true;
+ 	vchan_get_all_descriptors(&fsl_chan->vchan, &head);
+ 	spin_unlock_irqrestore(&fsl_chan->vchan.lock, flags);
+ 	vchan_dma_desc_free_list(&fsl_chan->vchan, &head);
+@@ -281,6 +296,7 @@ static int fsl_edma3_pause(struct dma_ch
+ 	if (fsl_chan->edesc) {
+ 		fsl_edma3_disable_request(fsl_chan);
+ 		fsl_chan->status = DMA_PAUSED;
++		fsl_chan->idle = true;
+ 	}
+ 	spin_unlock_irqrestore(&fsl_chan->vchan.lock, flags);
+ 	return 0;
+@@ -295,6 +311,7 @@ static int fsl_edma3_resume(struct dma_c
+ 	if (fsl_chan->edesc) {
+ 		fsl_edma3_enable_request(fsl_chan);
+ 		fsl_chan->status = DMA_IN_PROGRESS;
++		fsl_chan->idle = false;
+ 	}
+ 	spin_unlock_irqrestore(&fsl_chan->vchan.lock, flags);
+ 	return 0;
+@@ -664,6 +681,7 @@ static void fsl_edma3_xfer_desc(struct f
+ 	fsl_edma3_set_tcd_regs(fsl_chan, fsl_chan->edesc->tcd[0].vtcd);
+ 	fsl_edma3_enable_request(fsl_chan);
+ 	fsl_chan->status = DMA_IN_PROGRESS;
++	fsl_chan->idle = false;
+ }
+ 
+ static size_t fsl_edma3_desc_residue(struct fsl_edma3_chan *fsl_chan,
+@@ -700,6 +718,7 @@ static irqreturn_t fsl_edma3_tx_handler(
+ 		vchan_cookie_complete(&fsl_chan->edesc->vdesc);
+ 		fsl_chan->edesc = NULL;
+ 		fsl_chan->status = DMA_COMPLETE;
++		fsl_chan->idle = true;
+ 	} else {
+ 		vchan_cyclic_callback(&fsl_chan->edesc->vdesc);
+ 	}
+@@ -719,6 +738,12 @@ static void fsl_edma3_issue_pending(stru
+ 
+ 	spin_lock_irqsave(&fsl_chan->vchan.lock, flags);
+ 
++	if (unlikely(fsl_chan->pm_state != RUNNING)) {
++		spin_unlock_irqrestore(&fsl_chan->vchan.lock, flags);
++		/* cannot submit due to suspend */
++		return;
++	}
++
+ 	if (vchan_issue_pending(&fsl_chan->vchan) && !fsl_chan->edesc)
+ 		fsl_edma3_xfer_desc(fsl_chan);
+ 
+@@ -821,6 +846,8 @@ static int fsl_edma3_probe(struct platfo
+ 		unsigned long val;
+ 
+ 		fsl_chan->edma3 = fsl_edma3;
++		fsl_chan->pm_state = RUNNING;
++		fsl_chan->idle = true;
+ 		/* Get per channel membase */
+ 		res = platform_get_resource(pdev, IORESOURCE_MEM, i);
+ 		fsl_chan->membase = devm_ioremap_resource(&pdev->dev, res);
+@@ -932,6 +959,64 @@ static int fsl_edma3_remove(struct platf
+ 	return 0;
+ }
+ 
++static int fsl_edma3_suspend_late(struct device *dev)
++{
++	struct fsl_edma3_engine *fsl_edma = dev_get_drvdata(dev);
++	struct fsl_edma3_chan *fsl_chan;
++	unsigned long flags;
++	void __iomem *addr;
++	int i;
++
++	for (i = 0; i < fsl_edma->n_chans; i++) {
++		fsl_chan = &fsl_edma->chans[i];
++		addr = fsl_chan->membase;
++
++		spin_lock_irqsave(&fsl_chan->vchan.lock, flags);
++		fsl_edma->edma_regs[i].csr = readl(addr + EDMA_CH_CSR);
++		fsl_edma->edma_regs[i].sbr = readl(addr + EDMA_CH_SBR);
++		/* Make sure chan is idle or will force disable. */
++		if (unlikely(!fsl_chan->idle)) {
++			dev_warn(dev, "WARN: There is non-idle channel.");
++			fsl_edma3_disable_request(fsl_chan);
++		}
++		fsl_chan->pm_state = SUSPENDED;
++		spin_unlock_irqrestore(&fsl_chan->vchan.lock, flags);
++	}
++
++	return 0;
++}
++
++static int fsl_edma3_resume_early(struct device *dev)
++{
++	struct fsl_edma3_engine *fsl_edma = dev_get_drvdata(dev);
++	struct fsl_edma3_chan *fsl_chan;
++	void __iomem *addr;
++	unsigned long flags;
++	int i;
++
++	for (i = 0; i < fsl_edma->n_chans; i++) {
++		fsl_chan = &fsl_edma->chans[i];
++		addr = fsl_chan->membase;
++
++		spin_lock_irqsave(&fsl_chan->vchan.lock, flags);
++		writel(fsl_edma->edma_regs[i].csr, addr + EDMA_CH_CSR);
++		writel(fsl_edma->edma_regs[i].sbr, addr + EDMA_CH_SBR);
++		/* restore tcd if this channel not terminated before suspend */
++		if (fsl_chan->edesc)
++			fsl_edma3_set_tcd_regs(fsl_chan,
++						fsl_chan->edesc->tcd[0].vtcd);
++		fsl_chan->pm_state = RUNNING;
++		spin_unlock_irqrestore(&fsl_chan->vchan.lock, flags);
++	}
++
++	return 0;
++}
++
++static const struct dev_pm_ops fsl_edma3_pm_ops = {
++	.suspend_late   = fsl_edma3_suspend_late,
++	.resume_early   = fsl_edma3_resume_early,
++};
++
+ static const struct of_device_id fsl_edma3_dt_ids[] = {
+ 	{ .compatible = "fsl,imx8qm-edma", },
+ 	{ .compatible = "fsl,imx8qm-adma", },
+@@ -943,6 +1028,7 @@ static struct platform_driver fsl_edma3_
+ 	.driver		= {
+ 		.name	= "fsl-edma-v3",
+ 		.of_match_table = fsl_edma3_dt_ids,
++		.pm     = &fsl_edma3_pm_ops,
+ 	},
+ 	.probe          = fsl_edma3_probe,
+ 	.remove		= fsl_edma3_remove,

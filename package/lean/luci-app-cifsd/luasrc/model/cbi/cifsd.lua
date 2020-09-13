@@ -1,6 +1,6 @@
 -- Licensed to the public under the Apache License 2.0.
 
-m = Map("ksmbd", translate("Network Shares (CIFSD)"))
+m = Map("ksmbd", translate("Network Shares"))
 
 s = m:section(TypedSection, "globals", translate("CIFSD is an opensource In-kernel SMB1/2/3 server"))
 s.anonymous = true
@@ -8,10 +8,17 @@ s.anonymous = true
 s:tab("general",  translate("General Settings"))
 s:tab("template", translate("Edit Template"))
 
+s:taboption("general", Value, "name", translate("Hostname"))
+
 s:taboption("general", Value, "description", translate("Description"))
 
 o = s:taboption("general", Value, "workgroup", translate("Workgroup"))
 o.placeholder = 'WORKGROUP'
+
+a = s:taboption("general", Flag, "autoshare", translate("Auto Share"),
+        translate("Auto share local disk which connected"))
+a.rmempty = false
+a.default = "0"
 
 tmpl = s:taboption("template", Value, "_tmpl",
 	translate("Edit the template that is used for generating the cifsd configuration."), 
@@ -68,9 +75,9 @@ go.enabled = "yes"
 go.disabled = "no"
 go.default = "yes"
 
-io = s:option(Flag, "inherit_owner", translate("Inherit owner"))
+-- io = s:option(Flag, "inherit_owner", translate("Inherit owner"))
 
-hd = s:option(Flag, "hide_dot_files", translate("Hide dot files"))
+-- hd = s:option(Flag, "hide_dot_files", translate("Hide dot files"))
 
 cm = s:option(Value, "create_mask", translate("Create mask"),
         translate("Mask for new files"))
