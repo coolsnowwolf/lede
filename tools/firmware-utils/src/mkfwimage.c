@@ -32,6 +32,7 @@
 #include <limits.h>
 #include <stdbool.h>
 #include "fw.h"
+#include "utils.h"
 
 typedef struct fw_layout_data {
 	u_int32_t	kern_start;
@@ -204,13 +205,12 @@ static void write_header(void* mem, const char *magic, const char* version)
 	header_t* header = mem;
 	memset(header, 0, sizeof(header_t));
 
-	memcpy(header->magic, magic, MAGIC_LENGTH);
-	strncpy(header->version, version, sizeof(header->version));
-	header->crc = htonl(crc32(0L, (unsigned char *)header,
-				sizeof(header_t) - 2 * sizeof(u_int32_t)));
+	FW_MEMCPY_STR(header->magic, magic);
+	FW_MEMCPY_STR(header->version, version);
+	header->crc = htonl(crc32(0L, (uint8_t*) header,
+			    sizeof(header_t) - 2 * sizeof(u_int32_t)));
 	header->pad = 0L;
 }
-
 
 static void write_signature(void* mem, u_int32_t sig_offset)
 {
@@ -218,7 +218,7 @@ static void write_signature(void* mem, u_int32_t sig_offset)
 	signature_t* sign = (signature_t*)(mem + sig_offset);
 	memset(sign, 0, sizeof(signature_t));
 
-	memcpy(sign->magic, MAGIC_END, MAGIC_LENGTH);
+	FW_MEMCPY_STR(sign->magic, MAGIC_END);
 	sign->crc = htonl(crc32(0L,(unsigned char *)mem, sig_offset));
 	sign->pad = 0L;
 }
@@ -229,7 +229,7 @@ static void write_signature_rsa(void* mem, u_int32_t sig_offset)
 	signature_rsa_t* sign = (signature_rsa_t*)(mem + sig_offset);
 	memset(sign, 0, sizeof(signature_rsa_t));
 
-	memcpy(sign->magic, MAGIC_ENDS, MAGIC_LENGTH);
+	FW_MEMCPY_STR(sign->magic, MAGIC_ENDS);
 //	sign->crc = htonl(crc32(0L,(unsigned char *)mem, sig_offset));
 	sign->pad = 0L;
 }
@@ -259,8 +259,8 @@ static int write_part(void* mem, part_data_t* d)
 	munmap(addr, d->stats.st_size);
 
 	memset(p->name, 0, PART_NAME_LENGTH);
-	memcpy(p->magic, MAGIC_PART, MAGIC_LENGTH);
-	memcpy(p->name, d->partition_name, PART_NAME_LENGTH);
+	FW_MEMCPY_STR(p->magic, MAGIC_PART);
+	FW_MEMCPY_STR(p->name, d->partition_name);
 
 	p->index = htonl(d->partition_index);
 	p->data_size = htonl(d->stats.st_size);

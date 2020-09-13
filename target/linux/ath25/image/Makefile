@@ -99,15 +99,17 @@ define Device/np25g
   DEVICE_MODEL := NP25G
   KERNEL := kernel-bin | gzip-kernel
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to 128k | mkmylofw np25g
+  BROKEN := y
 endef
-#TARGET_DEVICES += np25g
+TARGET_DEVICES += np25g
 
 define Device/wpe53g
   DEVICE_VENDOR := Compex
   DEVICE_MODEL := WPE53G
   KERNEL := kernel-bin | gzip-kernel
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to 128k | mkmylofw wpe53g
+  BROKEN := y
 endef
-#TARGET_DEVICES += wpe53g
+TARGET_DEVICES += wpe53g
 
 $(eval $(call BuildImage))

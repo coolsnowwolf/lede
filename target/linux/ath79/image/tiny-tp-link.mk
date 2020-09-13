@@ -191,6 +191,16 @@ define Device/tplink_tl-wa901nd-v2
 endef
 TARGET_DEVICES += tplink_tl-wa901nd-v2
 
+define Device/tplink_tl-wa901nd-v3
+  $(Device/tplink-4mlzma)
+  SOC := ar9341
+  DEVICE_MODEL := TL-WA901ND
+  DEVICE_VARIANT := v3
+  TPLINK_HWID := 0x09010003
+  SUPPORTED_DEVICES += tl-wa901nd-v3
+endef
+TARGET_DEVICES += tplink_tl-wa901nd-v3
+
 define Device/tplink_tl-wa901nd-v4
   $(Device/tplink-4mlzma)
   SOC := tp9343

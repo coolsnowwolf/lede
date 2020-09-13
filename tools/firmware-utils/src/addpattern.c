@@ -296,7 +296,7 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	ptm = localtime(&t);
+	ptm = gmtime(&t);
 
 	if (3 != sscanf(version, "v%d.%d.%d", &v0, &v1, &v2)) {
 		fprintf(stderr, "bad version string \"%s\"\n", version);

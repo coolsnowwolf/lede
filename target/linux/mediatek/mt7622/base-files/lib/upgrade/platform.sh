@@ -7,6 +7,9 @@ platform_do_upgrade() {
 		#of eMMC and to the location of the kernel
 		get_image "$1" | dd of=/dev/mmcblk0 bs=2097152 seek=1 conv=fsync
 		;;
+	mediatek,mt7622,ubi)
+		nand_do_upgrade "$1"
+		;;
 	*)
 		default_do_upgrade "$1"
 		;;

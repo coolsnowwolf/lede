@@ -29,7 +29,6 @@ define Device/meraki_mr24
   DEVICE_MODEL := MR24
   DEVICE_PACKAGES := kmod-spi-gpio -swconfig
   BOARD_NAME := mr24
-  DEVICE_DTS := meraki-mr24
   IMAGES := sysupgrade.bin
   DTB_SIZE := 64512
   IMAGE_SIZE := 8191k
@@ -47,7 +46,6 @@ define Device/meraki_mx60
   DEVICE_PACKAGES := kmod-spi-gpio kmod-usb-ledtrig-usbport kmod-usb-dwc2 \
 		     kmod-usb-storage block-mount
   BOARD_NAME := mx60
-  DEVICE_DTS := meraki-mx60
   BLOCKSIZE := 63k
   IMAGES := sysupgrade.bin
   DTB_SIZE := 64512
@@ -80,14 +78,12 @@ endef
 define Device/netgear_wndap620
   $(Device/netgear_wndap6x0)
   DEVICE_MODEL := WNDAP620 (Premium Wireless-N)
-  DEVICE_DTS := netgear-wndap620
 endef
 TARGET_DEVICES += netgear_wndap620
 
 define Device/netgear_wndap660
   $(Device/netgear_wndap6x0)
   DEVICE_MODEL := WNDAP660 (Dual Radio Dual Band Wireless-N)
-  DEVICE_DTS := netgear-wndap660
 endef
 TARGET_DEVICES += netgear_wndap660
 
@@ -100,7 +96,6 @@ define Device/netgear_wndr4700
 	kmod-nls-utf8 kmod-usb3 kmod-usb-dwc2 kmod-usb-storage \
 	partx-utils
   BOARD_NAME := wndr4700
-  DEVICE_DTS := netgear-wndr4700
   PAGESIZE := 2048
   SUBPAGESIZE := 512
   BLOCKSIZE := 128k
@@ -122,5 +117,6 @@ define Device/netgear_wndr4700
   NETGEAR_HW_ID := 29763875+128+256
   UBINIZE_OPTS := -E 5
   SUPPORTED_DEVICES += wndr4700
+  DEFAULT := n
 endef
 TARGET_DEVICES += netgear_wndr4700

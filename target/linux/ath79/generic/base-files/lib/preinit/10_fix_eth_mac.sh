@@ -17,6 +17,11 @@ preinit_set_mac_address() {
 	siemens,ws-ap3610)
 		ip link set dev eth0 address $(mtd_get_mac_ascii cfg1 ethaddr)
 		;;
+	zyxel,nbg6616)
+		ethaddr=$(mtd_get_mac_ascii u-boot-env ethaddr)
+		ip link set dev eth0 address $(macaddr_add $ethaddr 2)
+		ip link set dev eth1 address $(macaddr_add $ethaddr 3)
+		;;
 	esac
 }
 

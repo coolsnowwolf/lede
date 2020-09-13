@@ -29,6 +29,13 @@ define U-Boot/clearfog
   UBOOT_IMAGE:=u-boot-spl.kwb
 endef
 
+define U-Boot/helios4
+  NAME:=Kobol Helios 4
+  BUILD_DEVICES:=kobol_helios4
+  BUILD_SUBTARGET:=cortexa9
+  UBOOT_IMAGE:=u-boot-spl.kwb
+endef
+
 define U-Boot/uDPU
   NAME:=Methode uDPU
   BUILD_DEVICES:=methode_udpu
@@ -37,6 +44,7 @@ endef
 
 UBOOT_TARGETS:= \
 	clearfog \
+	helios4 \
 	uDPU
 
 Build/Exports:=$(Host/Exports)

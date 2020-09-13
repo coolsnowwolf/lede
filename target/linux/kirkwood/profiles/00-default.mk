@@ -7,7 +7,7 @@
 
 define Profile/Default
 	NAME:=Default Profile
-	PACKAGES:=kmod-mwl8k wpad-basic
+	PACKAGES:=kmod-mwl8k wpad-basic-wolfssl
 	PRIORITY:=1
 endef
 
