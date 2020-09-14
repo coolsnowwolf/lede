@@ -41,8 +41,7 @@ endif
 PKG_RELEASE:=1
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 PKG_SOURCE:=$(PKG_NAME)-linux-$(PKG_ARCH_VERYSYNC)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=http://releases-cdn.verysync.com/releases/$(PKG_VERSION)/ \
-	http://dl.verysync.net/$(PKG_VERSION)/
+PKG_SOURCE_URL:=http://dl.verysync.com/releases/$(PKG_VERSION)/
 PKG_HASH:=skip
 
 include $(INCLUDE_DIR)/package.mk
