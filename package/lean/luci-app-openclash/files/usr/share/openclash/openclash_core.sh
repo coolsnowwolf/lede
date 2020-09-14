@@ -5,11 +5,12 @@ START_LOG="/tmp/openclash_start.log"
 LOGTIME=$(date "+%Y-%m-%d %H:%M:%S")
 LOG_FILE="/tmp/openclash.log"
 CORE_TYPE="$1"
-[ -z "$CORE_TYPE" ] && CORE_TYPE="Dev"
+[ -z "$CORE_TYPE" ] || [ "$1" = "one_key_update" ] && CORE_TYPE="Dev"
 en_mode=$(uci get openclash.config.en_mode 2>/dev/null)
 CPU_MODEL=$(uci get openclash.config.core_version 2>/dev/null)
 HTTP_PORT=$(uci get openclash.config.http_port 2>/dev/null)
 PROXY_ADDR=$(uci get network.lan.ipaddr 2>/dev/null |awk -F '/' '{print $1}' 2>/dev/null)
+mkdir -p /etc/openclash/core
 
 [ -s "/tmp/openclash.auth" ] && {
    PROXY_AUTH=$(cat /tmp/openclash.auth |awk -F '- ' '{print $2}' |sed -n '1p' 2>/dev/null)
@@ -19,6 +20,13 @@ case $CORE_TYPE in
 	"Tun")
    CORE_CV=$(/etc/openclash/core/clash_tun -v 2>/dev/null |awk -F ' ' '{print $2}')
    CORE_LV=$(sed -n 2p /tmp/clash_last_version 2>/dev/null)
+   if [ -z "$CORE_LV" ]; then
+      echo "获取【Tun】内核最新版本信息失败，请稍后再试..." >$START_LOG
+      echo "${LOGTIME} 【Tun】Core Version Check Error, Please Try Again After A few seconds" >>$LOG_FILE
+      sleep 5
+      echo "" >$START_LOG
+      exit 0
+   fi
    if [ "$en_mode" = "fake-ip-tun" ] || [ "$en_mode" = "redir-host-tun" ] || [ "$en_mode" = "redir-host-mix" ] || [ "$en_mode" = "fake-ip-mix" ]; then
       if_restart=1
    fi
@@ -39,6 +47,7 @@ case $CORE_TYPE in
 esac
 
 [ -z "$(pidof clash)" ] && if_restart=0
+[ -n "$2" ] || [ "$1" = "one_key_update" ] && if_restart=0
 
 if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
    if [ "$CPU_MODEL" != 0 ]; then
@@ -72,6 +81,7 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
 			esac
    fi
    if [ "$?" -eq "0" ]; then
+   	  echo "【"$CORE_TYPE"】版本内核下载成功，开始更新..." >$START_LOG
 			case $CORE_TYPE in
       	"Tun")
 				[ -s "/tmp/clash_tun.gz" ] && {
@@ -84,7 +94,8 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
 				;;
 				"Game")
 				[ -s "/tmp/clash_game.tar.gz" ] && {
-					tar zxvf /tmp/clash_game.tar.gz -C /tmp >/dev/null 2>&1 && mv /tmp/clash /tmp/clash_game >/dev/null 2>&1
+					tar zxvf /tmp/clash_game.tar.gz -C /tmp >/dev/null 2>&1
+					mv /tmp/clash /tmp/clash_game >/dev/null 2>&1
           rm -rf /tmp/clash_game.tar.gz >/dev/null 2>&1
 					rm -rf /etc/openclash/core/clash_game >/dev/null 2>&1
 					chmod 4755 /tmp/clash_game >/dev/null 2>&1
@@ -93,19 +104,36 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
 				;;
 				*)
 				[ -s "/tmp/clash.tar.gz" ] && {
-					tar zxvf /tmp/clash.tar.gz -C /tmp
-					rm -rf /tmp/clash.tar.gz >/dev/null 2>&1
 					rm -rf /etc/openclash/core/clash >/dev/null 2>&1
-					chmod 4755 /tmp/clash >/dev/null 2>&1
-					chown root:root /tmp/clash >/dev/null 2>&1
+					tar zxvf /tmp/clash.tar.gz -C /etc/openclash/core
+					rm -rf /tmp/clash.tar.gz >/dev/null 2>&1
+					chmod 4755 /etc/openclash/core/clash >/dev/null 2>&1
+					chown root:root /etc/openclash/core/clash >/dev/null 2>&1
 				}
 			esac
-      mkdir -p /etc/openclash/core
+      
+      if [ "$?" -ne "0" ]; then
+      	echo "【"$CORE_TYPE"】版本内核更新失败，请检查网络或稍后再试！" >$START_LOG
+        echo "${LOGTIME} OpenClash 【"$CORE_TYPE"】 Core Update Error" >>$LOG_FILE
+        case $CORE_TYPE in
+            "Tun")
+				    rm -rf /tmp/clash_tun >/dev/null 2>&1
+				    ;;
+				    "Game")
+				    rm -rf /tmp/clash_game >/dev/null 2>&1
+				    ;;
+				    *)
+			   esac
+         sleep 5
+         echo "" >$START_LOG
+         exit 0
+      fi
+      
       if [ "$if_restart" -eq 1 ]; then
       	 kill -9 "$(pidof clash|sed 's/$//g')" 2>/dev/null
       	 /etc/init.d/openclash stop
       fi
-      echo "【"$CORE_TYPE"】版本内核下载成功，开始更新..." >$START_LOG
+      
 			case $CORE_TYPE in
       	"Tun")
 				mv /tmp/clash_tun /etc/openclash/core/clash_tun >/dev/null 2>&1
@@ -114,12 +142,15 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
 				mv /tmp/clash_game /etc/openclash/core/clash_game >/dev/null 2>&1
 				;;
 				*)
-				mv /tmp/clash /etc/openclash/core/clash >/dev/null 2>&1
 			esac
       if [ "$?" -eq "0" ]; then
          echo "【"$CORE_TYPE"】版本内核更新成功！" >$START_LOG
          echo "${LOGTIME} OpenClash 【"$CORE_TYPE"】 Core Update Successful" >>$LOG_FILE
          sleep 3
+         if [ -n "$2" ] || [ "$1" = "one_key_update" ]; then
+         	 uci set openclash.config.config_reload=0
+         	 uci commit openclash
+         fi
          [ "$if_restart" -eq 1 ] && /etc/init.d/openclash start
          echo "" >$START_LOG
       else
@@ -133,7 +164,6 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
 				    rm -rf /tmp/clash_game >/dev/null 2>&1
 				    ;;
 				    *)
-				    rm -rf /tmp/clash >/dev/null 2>&1
 			   esac
          sleep 5
          echo "" >$START_LOG

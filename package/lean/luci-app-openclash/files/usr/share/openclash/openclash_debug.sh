@@ -28,6 +28,7 @@ core_tun_version=$(/etc/openclash/core/clash_tun -v 2>/dev/null |awk -F ' ' '{pr
 core_game_version=$(/etc/openclash/core/clash_game -v 2>/dev/null |awk -F ' ' '{print $2}' 2>/dev/null)
 servers_update=$(uci get openclash.config.servers_update 2>/dev/null)
 op_version=$(sed -n 1p /etc/openclash/openclash_version 2>/dev/null)
+china_ip_route=$(uci get openclash.config.china_ip_route 2>/dev/null)
 
 if [ -z "$CONFIG_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
 	CONFIG_NAME=$(ls -lt /etc/openclash/config/ | grep -E '.yaml|.yml' | head -n 1 |awk '{print $9}')
@@ -203,6 +204,7 @@ IPV6-DNS解析: $(ts_cf "$ipv6_enable")
 自定义规则: $(ts_cf "$enable_custom_clash_rules")
 仅允许内网: $(ts_cf "$intranet_allowed")
 仅代理命中规则流量: $(ts_cf "$enable_rule_proxy")
+绕过中国大陆IP: $(ts_cf "$china_ip_route")
 
 #启动异常时建议关闭此项后重试
 保留配置: $(ts_cf "$servers_update")

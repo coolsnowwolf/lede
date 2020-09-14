@@ -35,7 +35,7 @@ o.write = function()
 end
 
 if not NXFS.access("/tmp/rule_providers_name") then
-   SYS.call("awk -F ',' '{print $5}' /etc/openclash/rule_providers.list > /tmp/rule_providers_name 2>/dev/null")
+   SYS.call("awk -v d=',' -F ',' '{print $4d$5}' /etc/openclash/rule_providers.list > /tmp/rule_providers_name 2>/dev/null")
 end
 file = io.open("/tmp/rule_providers_name", "r");
 
@@ -58,14 +58,15 @@ end
 for t,o in ipairs(e) do
 e[t]={}
 e[t].num=string.format(t)
-e[t].name=string.sub(luci.sys.exec(string.format("grep -F ',%s' /etc/openclash/rule_providers.list |awk -F ',' '{print $1}' 2>/dev/null",o)),1,-2)
-e[t].filename=string.sub(luci.sys.exec(string.format("grep -F ',%s' /etc/openclash/rule_providers.list |awk -F ',' '{print $6}' 2>/dev/null",o)),1,-2)
-if e[t].filename == "" then
-e[t].filename=o
+e[t].name=string.sub(luci.sys.exec(string.format("grep -F '%s' /etc/openclash/rule_providers.list |awk -F ',' '{print $1}' 2>/dev/null",o)),1,-2)
+e[t].lfilename=string.sub(luci.sys.exec(string.format("grep -F '%s' /etc/openclash/rule_providers.list |awk -F ',' '{print $6}' 2>/dev/null",o)),1,-2)
+if e[t].lfilename == "" then
+e[t].lfilename=string.sub(luci.sys.exec(string.format("grep -F '%s' /etc/openclash/rule_providers.list |awk -F ',' '{print $5}' 2>/dev/null",o)),1,-2)
 end
-e[t].author=string.sub(luci.sys.exec(string.format("grep -F ',%s' /etc/openclash/rule_providers.list |awk -F ',' '{print $2}' 2>/dev/null",o)),1,-2)
-e[t].rule_type=string.sub(luci.sys.exec(string.format("grep -F ',%s' /etc/openclash/rule_providers.list |awk -F ',' '{print $3}' 2>/dev/null",o)),1,-2)
-RULE_FILE="/etc/openclash/rule_provider/".. e[t].filename
+e[t].filename=o
+e[t].author=string.sub(luci.sys.exec(string.format("grep -F '%s' /etc/openclash/rule_providers.list |awk -F ',' '{print $2}' 2>/dev/null",o)),1,-2)
+e[t].rule_type=string.sub(luci.sys.exec(string.format("grep -F '%s' /etc/openclash/rule_providers.list |awk -F ',' '{print $3}' 2>/dev/null",o)),1,-2)
+RULE_FILE="/etc/openclash/rule_provider/".. e[t].lfilename
 if fs.mtime(RULE_FILE) then
 e[t].size=i(fs.stat(RULE_FILE).size)
 e[t].mtime=os.date("%Y-%m-%d %H:%M:%S",fs.mtime(RULE_FILE))
@@ -93,7 +94,7 @@ st.template="openclash/cfg_check"
 tp=tb:option(DummyValue,"rule_type",translate("Rule Type"))
 nm=tb:option(DummyValue,"name",translate("Rule Name"))
 au=tb:option(DummyValue,"author",translate("Rule Author"))
-fm=tb:option(DummyValue,"filename",translate("File Name"))
+fm=tb:option(DummyValue,"lfilename",translate("File Name"))
 sz=tb:option(DummyValue,"size",translate("Size"))
 mt=tb:option(DummyValue,"mtime",translate("Update Time"))
 
@@ -106,7 +107,7 @@ e.inputstyle="reset"
 Button.render(e,t,a)
 end
 btnrm.write=function(a,t)
-fs.unlink("/etc/openclash/rule_provider/"..e[t].filename)
+fs.unlink("/etc/openclash/rule_provider/"..e[t].lfilename)
 HTTP.redirect(DISP.build_url("admin", "services", "openclash", "rule-providers-manage"))
 end
 

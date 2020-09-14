@@ -9,6 +9,8 @@
    LOG_FILE="/tmp/openclash.log"
    HTTP_PORT=$(uci get openclash.config.http_port 2>/dev/null)
    PROXY_ADDR=$(uci get network.lan.ipaddr 2>/dev/null |awk -F '/' '{print $1}' 2>/dev/null)
+   china_ip_route=$(uci get openclash.config.china_ip_route 2>/dev/null)
+   
    if [ -s "/tmp/openclash.auth" ]; then
       PROXY_AUTH=$(cat /tmp/openclash.auth |awk -F '- ' '{print $2}' |sed -n '1p' 2>/dev/null)
    fi
@@ -28,13 +30,13 @@
                sleep 5
                status=$(unify_ps_prevent)
             done
-            /etc/init.d/openclash stop
+            [ "$china_ip_route" -eq 1 ] && /etc/init.d/openclash stop
             echo "大陆IP白名单有更新，开始替换旧版本..." >$START_LOG\
             && mv /tmp/ChinaIP.yaml /etc/openclash/rule_provider/ChinaIP.yaml >/dev/null 2>&1\
             && echo "删除下载缓存..." >$START_LOG\
             && rm -rf /tmp/ChinaIP.yaml >/dev/null 2>&1\
-            && rm -rf /tmp/china_ip_route.ipset >/dev/null 2>&1\
-            && /etc/init.d/openclash start
+            && rm -rf /etc/openclash/china_ip_route.ipset >/dev/null 2>&1
+            [ "$china_ip_route" -eq 1 ] && /etc/init.d/openclash start
             echo "大陆IP白名单更新成功！" >$START_LOG
             echo "${LOGTIME} Chnroute Lists Update Successful" >>$LOG_FILE
             sleep 10

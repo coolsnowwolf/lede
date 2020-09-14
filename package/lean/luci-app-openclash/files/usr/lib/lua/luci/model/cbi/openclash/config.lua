@@ -266,137 +266,31 @@ if a then table.remove(e,t)end
 return a
 end
 
-local p,r={}
-for x,y in ipairs(fs.glob("/etc/openclash/proxy_provider/*"))do
-r=fs.stat(y)
-if r then
-p[x]={}
-p[x].name=fs.basename(y)
-p[x].mtime=os.date("%Y-%m-%d %H:%M:%S",r.mtime)
-p[x].size=i(r.size)
-p[x].remove=0
-p[x].enable=false
-end
+p = SimpleForm("provider_file_manage",translate("Provider File Manage"))
+p.reset = false
+p.submit = false
+
+local provider_manage = {
+    {proxy_mg, rule_mg}
+}
+
+promg = p:section(Table, provider_manage)
+
+o = promg:option(Button, "proxy_mg")
+o.inputtitle = translate("Proxy Provider File List")
+o.inputstyle = "reload"
+o.write = function()
+  HTTP.redirect(DISP.build_url("admin", "services", "openclash", "proxy-provider-file-manage"))
 end
 
-proxy_form=SimpleForm("proxy_provider_file_list",translate("Proxy Provider File List"))
-proxy_form.reset=false
-proxy_form.submit=false
-tb1=proxy_form:section(Table,p)
-nm1=tb1:option(DummyValue,"name",translate("File Name"))
-mt1=tb1:option(DummyValue,"mtime",translate("Update Time"))
-sz1=tb1:option(DummyValue,"size",translate("Size"))
-
-btndl1 = tb1:option(Button,"download1",translate("Download Configurations")) 
-btndl1.template="openclash/other_button"
-btndl1.render=function(y,x,r)
-y.inputstyle="remove"
-Button.render(y,x,r)
-end
-btndl1.write = function (r,x)
-	local sPath, sFile, fd, block
-	sPath = "/etc/openclash/proxy_provider/"..p[x].name
-	sFile = NXFS.basename(sPath)
-	if fs.isdirectory(sPath) then
-		fd = io.popen('tar -C "%s" -cz .' % {sPath}, "r")
-		sFile = sFile .. ".tar.gz"
-	else
-		fd = nixio.open(sPath, "r")
-	end
-	if not fd then
-		return
-	end
-	HTTP.header('Content-Disposition', 'attachment; filename="%s"' % {sFile})
-	HTTP.prepare_content("application/octet-stream")
-	while true do
-		block = fd:read(nixio.const.buffersize)
-		if (not block) or (#block ==0) then
-			break
-		else
-			HTTP.write(block)
-		end
-	end
-	fd:close()
-	HTTP.close()
+o = promg:option(Button, "rule_mg")
+o.inputtitle = translate("Rule Providers File List")
+o.inputstyle = "reload"
+o.write = function()
+  HTTP.redirect(DISP.build_url("admin", "services", "openclash", "rule-providers-file-manage"))
 end
 
-btnrm1=tb1:option(Button,"remove1",translate("Remove"))
-btnrm1.render=function(p,x,r)
-p.inputstyle="reset"
-Button.render(p,x,r)
-end
-btnrm1.write=function(r,x)
-local r=fs.unlink("/etc/openclash/proxy_provider/"..luci.openclash.basename(p[x].name))
-if r then table.remove(p,x)end
-return r
-end
-
-local g,h={}
-for n,m in ipairs(fs.glob("/etc/openclash/rule_provider/*"))do
-h=fs.stat(m)
-if h then
-g[n]={}
-g[n].name=fs.basename(m)
-g[n].mtime=os.date("%Y-%m-%d %H:%M:%S",h.mtime)
-g[n].size=i(h.size)
-g[n].remove=0
-g[n].enable=false
-end
-end
-
-rule_form=SimpleForm("rule_provider_file_list",translate("Rule Providers File List"))
-rule_form.reset=false
-rule_form.submit=false
-tb2=rule_form:section(Table,g)
-nm2=tb2:option(DummyValue,"name",translate("File Name"))
-mt2=tb2:option(DummyValue,"mtime",translate("Update Time"))
-sz2=tb2:option(DummyValue,"size",translate("Size"))
-
-btndl2 = tb2:option(Button,"download2",translate("Download Configurations")) 
-btndl2.template="openclash/other_button"
-btndl2.render=function(m,n,h)
-m.inputstyle="remove"
-Button.render(m,n,h)
-end
-btndl2.write = function (h,n)
-	local sPath, sFile, fd, block
-	sPath = "/etc/openclash/rule_provider/"..g[n].name
-	sFile = NXFS.basename(sPath)
-	if fs.isdirectory(sPath) then
-		fd = io.popen('tar -C "%s" -cz .' % {sPath}, "r")
-		sFile = sFile .. ".tar.gz"
-	else
-		fd = nixio.open(sPath, "r")
-	end
-	if not fd then
-		return
-	end
-	HTTP.header('Content-Disposition', 'attachment; filename="%s"' % {sFile})
-	HTTP.prepare_content("application/octet-stream")
-	while true do
-		block = fd:read(nixio.const.buffersize)
-		if (not block) or (#block ==0) then
-			break
-		else
-			HTTP.write(block)
-		end
-	end
-	fd:close()
-	HTTP.close()
-end
-
-btnrm2=tb2:option(Button,"remove2",translate("Remove"))
-btnrm2.render=function(g,n,h)
-g.inputstyle="reset"
-Button.render(g,n,h)
-end
-btnrm2.write=function(h,n)
-local h=fs.unlink("/etc/openclash/rule_provider/"..luci.openclash.basename(g[n].name))
-if h then table.remove(g,n)end
-return h
-end
-
-m = SimpleForm("openclash")
+m = SimpleForm("config_file_edit",translate("Config File Edit"))
 m.reset = false
 m.submit = false
 
@@ -464,4 +358,4 @@ o.write = function()
   HTTP.redirect(DISP.build_url("admin", "services", "openclash"))
 end
 
-return ful , form , proxy_form , rule_form , m
+return ful , form , p , m

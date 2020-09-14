@@ -1,13 +1,19 @@
 #!/bin/sh
    RULE_FILE_NAME="$1"
-   if [ -z "$(grep ",$RULE_FILE_NAME" /etc/openclash/rule_providers.list 2>/dev/null)" ]; then
-      DOWNLOAD_PATH=$(grep -F $RULE_FILE_NAME /etc/openclash/game_rules.list |awk -F ',' '{print $2}' 2>/dev/null)
+   if [ -z "$(grep "$RULE_FILE_NAME" /etc/openclash/rule_providers.list 2>/dev/null)" ]; then
+      DOWNLOAD_PATH=$(grep -F "$RULE_FILE_NAME" /etc/openclash/game_rules.list |awk -F ',' '{print $2}' 2>/dev/null)
       RULE_FILE_DIR="/etc/openclash/game_rules/$RULE_FILE_NAME"
       RULE_TYPE="game"
    else
-      DOWNLOAD_PATH=$(grep -F ",$RULE_FILE_NAME" /etc/openclash/rule_providers.list |awk -F ',' '{print $4$5}' 2>/dev/null)
+      DOWNLOAD_PATH=$(echo "$RULE_FILE_NAME" |awk -F ',' '{print $1$2}' 2>/dev/null)
+      RULE_FILE_NAME=$(grep -F "$RULE_FILE_NAME" /etc/openclash/rule_providers.list |awk -F ',' '{print $NF}' 2>/dev/null)
       RULE_FILE_DIR="/etc/openclash/rule_provider/$RULE_FILE_NAME"
       RULE_TYPE="provider"
+   fi
+
+   if [ -z "$DOWNLOAD_PATH" ]; then
+      echo "${LOGTIME} Rule File【$RULE_FILE_NAME】 Download Error" >>$LOG_FILE
+      return 0
    fi
 
    TMP_RULE_DIR="/tmp/$RULE_FILE_NAME"
@@ -33,19 +39,19 @@
    fi
 
    if [ "$?" -eq "0" ] && [ -s "$TMP_RULE_DIR" ] && [ -z "$(grep "404: Not Found" "$TMP_RULE_DIR")" ]; then
-      cmp -s $TMP_RULE_DIR $RULE_FILE_DIR
+      cmp -s "$TMP_RULE_DIR" "$RULE_FILE_DIR"
          if [ "$?" -ne "0" ]; then
-            mv $TMP_RULE_DIR $RULE_FILE_DIR >/dev/null 2>&1\
-            && rm -rf $TMP_RULE_DIR >/dev/null 2>&1
+            mv "$TMP_RULE_DIR" "$RULE_FILE_DIR" >/dev/null 2>&1\
+            && rm -rf "$TMP_RULE_DIR" >/dev/null 2>&1
             echo "${LOGTIME} Rule File【$RULE_FILE_NAME】 Download Successful" >>$LOG_FILE
             return 1
          else
             echo "${LOGTIME} Updated Rule File【$RULE_FILE_NAME】 No Change, Do Nothing" >>$LOG_FILE
-            rm -rf $TMP_RULE_DIR >/dev/null 2>&1
+            rm -rf "$TMP_RULE_DIR" >/dev/null 2>&1
             return 2
          fi
    else
-      rm -rf $TMP_RULE_DIR >/dev/null 2>&1
+      rm -rf "$TMP_RULE_DIR" >/dev/null 2>&1
       echo "${LOGTIME} Rule File【$RULE_FILE_NAME】 Download Error" >>$LOG_FILE
       return 0
    fi

@@ -11,18 +11,18 @@ local uci = require "luci.model.uci".cursor()
 
 m = Map(openclash,  translate("Rule Providers and Groups"))
 m.pageaction = false
-m.description=translate("注意事项：<br/>游戏代理为测试功能，不保证可用性 \
+m.description=translate("注意事项：<br/>游戏代理为测试功能，不保证规则可用性 \
 <br/>准备步骤：\
-<br/>1、在《服务器与策略组管理》页面创建您准备使用的游戏策略组和游戏节点，并应用配置（节点添加时必须选择要加入的策略组），策略组类型建议:FallBack，游戏节点必须支持UDP \
-<br/>2、点击《游戏规则管理》按钮进入游戏规则列表下载您要使用的游戏规则 \
-<br/>3、在此页面上方设置您已下载的游戏规则的对应策略组并保存设置 \
+<br/>1、在《服务器与策略组管理》页面创建您准备使用的策略组和节点，并应用配置（节点添加时必须选择要加入的策略组），策略组类型建议:FallBack，游戏节点必须支持UDP \
+<br/>2、点击《管理第三方游戏规则》或者《管理第三方规则集》按钮进入规则列表下载您要使用的规则 \
+<br/>3、在此页面设置您已下载的规则的对应配置文件、策略组并保存设置 \
 <br/> \
-<br/>在普通模式下使用： \
+<br/>在普通模式下使用（仅游戏规则）： \
 <br/>1、在《全局设置》-《模式设置》-《运行模式》中选择普通模式并启用UDP流量代理，然后重新启动 \
 <br/> \
 <br/>在TUN模式下使用： \
-<br/>1、在全局设置-版本更新标签先下载对应模式内核 \
-<br/>2、在《全局设置》-《模式设置》-《运行模式》中选择TUN模式或者游戏模式并重新启动 \
+<br/>1、在全局设置-版本更新标签先下载、安装对应模式内核 \
+<br/>2、在《全局设置》-《模式设置》-《运行模式》中选择混合模式、TUN模式或者游戏模式并重新启动 \
 <br/> \
 <br/>本页设置时如策略组为空，请先到《服务器与策略组管理》页面进行添加 \
 <br/> \
@@ -87,8 +87,10 @@ for t,f in ipairs(fs.glob("/etc/openclash/game_rules/*"))do
     e[t]={}
     e[t].filename=fs.basename(f)
     if IsRuleFile(e[t].filename) then
-       e[t].name=string.gsub(luci.sys.exec(string.format("grep -F '%s' /etc/openclash/game_rules.list |awk -F ',' '{print $1}' 2>/dev/null",e[t].filename)), "[\r\n]", "")
-       o:value(e[t].name)
+       e[t].name=string.gsub(luci.sys.exec(string.format("grep ',%s$' /etc/openclash/game_rules.list |awk -F ',' '{print $1}' 2>/dev/null",e[t].filename)), "[\r\n]", "")
+       if e[t].name ~= "" and e[t].name ~= nil then
+          o:value(e[t].name)
+       end
     end
   end
 end
@@ -147,7 +149,7 @@ for t,f in ipairs(fs.glob("/etc/openclash/rule_provider/*"))do
     e[t]={}
     e[t].filename=fs.basename(f)
     if IsYamlFile(e[t].filename) or IsYmlFile(e[t].filename) then
-       e[t].name=string.gsub(luci.sys.exec(string.format("grep -F ',%s' /etc/openclash/rule_providers.list |awk -F ',' '{print $1}' 2>/dev/null",e[t].filename)), "[\r\n]", "")
+       e[t].name=string.gsub(luci.sys.exec(string.format("grep ',%s$' /etc/openclash/rule_providers.list |awk -F ',' '{print $1}' 2>/dev/null",e[t].filename)), "[\r\n]", "")
        if e[t].name ~= "" and e[t].name ~= nil then
           o:value(e[t].name)
        end

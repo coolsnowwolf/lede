@@ -72,7 +72,7 @@ o:value("gvisor", translate("Gvisor"))
 o.default = "system"
 
 o = s:taboption("op_mode", ListValue, "proxy_mode", font_red..bold_on..translate("Proxy Mode")..bold_off..font_off)
-o.description = translate("Select Proxy Mode")
+o.description = translate("Select Proxy Mode, Use Script Mode Could Prevent Proxy BT traffics If Rules Support, eg.lhie1's")
 o:value("rule", translate("Rule Proxy Mode"))
 o:value("global", translate("Global Proxy Mode"))
 o:value("direct", translate("Direct Proxy Mode"))
@@ -171,7 +171,6 @@ o = s:taboption("dns", ListValue, "ipv6_enable", translate("Enable ipv6 Resolve"
 o.description = font_red..bold_on..translate("Enable Clash to Resolve ipv6 DNS Requests")..bold_off..font_off
 o:value("0", translate("Disable"))
 o:value("1", translate("Enable"))
-o:depends("en_mode", "redir-host")
 o.default=0
 
 o = s:taboption("dns", ListValue, "disable_masq_cache", translate("Disable Dnsmasq's DNS Cache"))
@@ -244,7 +243,7 @@ end
 
 ---- Access Control
 if op_mode == "redir-host" then
-o = s:taboption("lan_ac", ListValue, "lan_ac_mode", translate("Access Control Mode"))
+o = s:taboption("lan_ac", ListValue, "lan_ac_mode", translate("LAN Access Control Mode"))
 o:value("0", translate("Black List Mode"))
 o:value("1", translate("White List Mode"))
 o.default=0
@@ -267,6 +266,10 @@ luci.ip.neighbors({ family = 4 }, function(entry)
 		end
 end)
 end
+
+o = s:taboption("lan_ac", DynamicList, "wan_ac_black_ips", translate("WAN Bypassed Host List"))
+o.datatype = "ipaddr"
+o.description = translate("In The Fake-IP Mode, Only Pure IP Requests Are Supported")
 
 ---- Rules Settings
 if op_mode == "fake-ip" then

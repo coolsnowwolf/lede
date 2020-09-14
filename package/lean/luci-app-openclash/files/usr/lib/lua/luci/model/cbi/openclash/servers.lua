@@ -167,7 +167,13 @@ end
 
 o = s:option(DummyValue, "udp", translate("UDP Support"))
 function o.cfgvalue(...)
-	return Value.cfgvalue(...) or translate("None")
+	if Value.cfgvalue(...) == "true" then
+		return translate("支持")
+	elseif Value.cfgvalue(...) == "false" then
+		return translate("不支持")
+	else
+		return translate("None")
+	end
 end
 
 o = s:option(DummyValue,"server",translate("Ping Latency"))

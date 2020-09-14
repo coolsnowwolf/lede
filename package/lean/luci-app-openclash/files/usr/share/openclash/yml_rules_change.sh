@@ -1,6 +1,14 @@
 #!/bin/bash
 
+SCRIPT_FILE="/tmp/yaml_script.yaml"
+RULE_PROVIDER_FILE="/tmp/yaml_rule_provider.yaml"
+OTHER_RULE_PROVIDER_FILE="/tmp/other_rule_provider.yaml"
+OTHER_RULE_FILE="/tmp/other_rule.yaml"
+RULE_PROVIDER_BAK_FILE="/tmp/yaml_rule_provider_bak.yaml"
+RULE_BAK_FILE="/tmp/yaml_rules_bak.yaml"
+SCRIPT_BAK_FILE="/tmp/yaml_script_bak.yaml"
 check_def=0
+
 /usr/share/openclash/yml_groups_name_get.sh
 
 yml_other_set()
@@ -209,82 +217,83 @@ if [ "$2" != 0 ]; then
        sed -i '/##Other-rule-providers##/,/##Other-rule-providers-end##/d' "$9" 2>/dev/null
        if [ "$2" = "lhie1" ]; then
        	    #删除原有的script部分，防止冲突
-       	    rm -rf /tmp/yaml_script.yaml 2>/dev/null
-       	    cp /etc/openclash/lhie1.yaml /tmp/other_rule_provider.yaml
-       	    sed -n '/^ \{0,\}rules:/,$p' /tmp/other_rule_provider.yaml > /tmp/other_rule.yaml 2>/dev/null
-       	    sed -i '/^ \{0,\}rules:/,$d' /tmp/other_rule_provider.yaml 2>/dev/null
-       	    sed -n '/^ \{0,\}script:/,$p' /tmp/other_rule_provider.yaml > /tmp/yaml_script.yaml 2>/dev/null
-       	    sed -i '/^ \{0,\}script:/,$d' /tmp/other_rule_provider.yaml 2>/dev/null
-       	    sed -i "/^ \{0,\}script:/c\script:" /tmp/other_rule.yaml 2>/dev/null
-       	    sed -i "/^ \{0,\}rules:/c\rules:" /tmp/other_rule.yaml 2>/dev/null
-       	    sed -i "/^ \{0,\}rule-providers:/c\rule-providers:" /tmp/other_rule_provider.yaml 2>/dev/null
-            echo "##Other-rule-providers-end##" >> /tmp/other_rule_provider.yaml
+       	    rm -rf "$SCRIPT_FILE" 2>/dev/null
+       	    cp /etc/openclash/lhie1.yaml "$OTHER_RULE_PROVIDER_FILE"
+       	    sed -n '/^ \{0,\}rules:/,$p' "$OTHER_RULE_PROVIDER_FILE" > "$OTHER_RULE_FILE" 2>/dev/null
+       	    sed -i '/^ \{0,\}rules:/,$d' "$OTHER_RULE_PROVIDER_FILE" 2>/dev/null
+       	    sed -n '/^ \{0,\}script:/,$p' "$OTHER_RULE_PROVIDER_FILE" > "$SCRIPT_FILE" 2>/dev/null
+       	    sed -i '/^ \{0,\}script:/,$d' "$OTHER_RULE_PROVIDER_FILE" 2>/dev/null
+       	    sed -i "/^ \{0,\}script:/c\script:" "$SCRIPT_FILE" 2>/dev/null
+       	    sed -i "/^ \{0,\}rules:/c\rules:" "$OTHER_RULE_FILE" 2>/dev/null
+       	    sed -i "/^ \{0,\}rule-providers:/c\rule-providers:" "$OTHER_RULE_PROVIDER_FILE" 2>/dev/null
+            echo "##Other-rule-providers-end##" >> "$OTHER_RULE_PROVIDER_FILE"
             if [ -z "$(sed -n '/^ \{0,\}rule-providers:/=' "$9" 2>/dev/null)" ]; then
-               sed -i "s/,GlobalTV$/,${GlobalTV}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"GlobalTV\"/: \"${GlobalTV}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,GlobalTV,no-resolve$/,${GlobalTV},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##GlobalTV:${GlobalTV}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,AsianTV$/,${AsianTV}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"AsianTV\"/: \"${AsianTV}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,AsianTV,no-resolve$/,${AsianTV},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##AsianTV:${AsianTV}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Proxy$/,${Proxy}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"Proxy\"/: \"${Proxy}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Proxy,no-resolve$/,${Proxy},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Proxy:${Proxy}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,YouTube$/,${Youtube}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"YouTube\"/: \"${Youtube}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,YouTube,no-resolve$/,${Youtube},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Youtube:${Youtube}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Apple$/,${Apple}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"Apple\"/: \"${Apple}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Apple,no-resolve$/,${Apple},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Apple:${Apple}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Netflix$/,${Netflix}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"Netflix\"/: \"${Netflix}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Netflix,no-resolve$/,${Netflix},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Netflix:${Netflix}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Spotify$/,${Spotify}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"Spotify\"/: \"${Spotify}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Spotify,no-resolve$/,${Spotify},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Spotify:${Spotify}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Steam$/,${Steam}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"Steam\"/: \"${Steam}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Steam,no-resolve$/,${Steam},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Steam:${Steam}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,AdBlock$/,${AdBlock}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"AdBlock\"/: \"${AdBlock}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,AdBlock,no-resolve$/,${AdBlock},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##AdBlock:${AdBlock}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Speedtest$/,${Speedtest}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"Speedtest\"/: \"${Speedtest}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Speedtest$/,${Speedtest},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Speedtest:${Speedtest}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Telegram$/,${Telegram}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"Telegram\"/: \"${Telegram}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Telegram$/,${Telegram},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Telegram:${Telegram}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Microsoft$/,${Microsoft}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"Microsoft\"/: \"${Microsoft}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Microsoft$/,${Microsoft},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Microsoft:${Microsoft}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,PayPal$/,${PayPal}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"PayPal\"/: \"${PayPal}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,PayPal$/,${PayPal},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##PayPal:${PayPal}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Domestic$/,${Domestic}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"Domestic\"/: \"${Domestic}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/return \"Domestic\"$/return \"${Domestic}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Domestic$/,${Domestic},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Domestic:${Domestic}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Others$/,${Others}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/: \"Others\"/: \"${Others}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/return \"Others\"$/return \"${Others}\"#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Others$/,${Others},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Others:${Others}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/#d//g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/^rule-providers:/c\rule-providers: ##Other-rule-providers##" /tmp/other_rule_provider.yaml 2>/dev/null
-               cat /tmp/other_rule_provider.yaml >> "$9" 2>/dev/null
+               sed -i "s/,GlobalTV$/,${GlobalTV}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"GlobalTV\"/: \"${GlobalTV}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,GlobalTV,no-resolve$/,${GlobalTV},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##GlobalTV:${GlobalTV}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,AsianTV$/,${AsianTV}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"AsianTV\"/: \"${AsianTV}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,AsianTV,no-resolve$/,${AsianTV},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##AsianTV:${AsianTV}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,Proxy$/,${Proxy}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"Proxy\"/: \"${Proxy}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,Proxy,no-resolve$/,${Proxy},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Proxy:${Proxy}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,YouTube$/,${Youtube}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"YouTube\"/: \"${Youtube}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,YouTube,no-resolve$/,${Youtube},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Youtube:${Youtube}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,Apple$/,${Apple}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"Apple\"/: \"${Apple}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,Apple,no-resolve$/,${Apple},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Apple:${Apple}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,Netflix$/,${Netflix}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"Netflix\"/: \"${Netflix}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,Netflix,no-resolve$/,${Netflix},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Netflix:${Netflix}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,Spotify$/,${Spotify}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"Spotify\"/: \"${Spotify}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,Spotify,no-resolve$/,${Spotify},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Spotify:${Spotify}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,Steam$/,${Steam}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"Steam\"/: \"${Steam}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,Steam,no-resolve$/,${Steam},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Steam:${Steam}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,AdBlock$/,${AdBlock}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"AdBlock\"/: \"${AdBlock}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,AdBlock,no-resolve$/,${AdBlock},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##AdBlock:${AdBlock}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,Speedtest$/,${Speedtest}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"Speedtest\"/: \"${Speedtest}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,Speedtest$/,${Speedtest},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Speedtest:${Speedtest}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,Telegram$/,${Telegram}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"Telegram\"/: \"${Telegram}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,Telegram$/,${Telegram},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Telegram:${Telegram}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,Microsoft$/,${Microsoft}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"Microsoft\"/: \"${Microsoft}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,Microsoft$/,${Microsoft},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Microsoft:${Microsoft}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,PayPal$/,${PayPal}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"PayPal\"/: \"${PayPal}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,PayPal$/,${PayPal},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##PayPal:${PayPal}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,Domestic$/,${Domestic}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"Domestic\"/: \"${Domestic}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/return \"Domestic\"$/return \"${Domestic}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,Domestic$/,${Domestic},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Domestic:${Domestic}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,Others$/,${Others}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/: \"Others\"/: \"${Others}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/return \"Others\"$/return \"${Others}#d\"/g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "s/,Others$/,${Others},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Others:${Others}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/#d//g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/#d//g" "$SCRIPT_FILE" 2>/dev/null
+               sed -i "/^rule-providers:/c\rule-providers: ##Other-rule-providers##" "$OTHER_RULE_PROVIDER_FILE" 2>/dev/null
+               cat "$OTHER_RULE_PROVIDER_FILE" >> "$9" 2>/dev/null
             else
             #处理缩进
                sed -i '/^ *$/d' "$9" 2>/dev/null
@@ -298,41 +307,41 @@ if [ "$2" != 0 ]; then
                sed -i 's/^ \{1,\}interval:/    interval:/g' "$9" 2>/dev/null
                sed -i 's/^ \{1,\}rule-providers:/rule-providers:/g' "$9" 2>/dev/null
                
-               sed -i '/^ \{0,\}rule-providers:/a\##Other-rule-providers##' /tmp/other_rule_provider.yaml 2>/dev/null
-               sed -i '/^ \{0,\}rule-providers:/d' "/tmp/other_rule_provider.yaml" 2>/dev/null
+               sed -i '/^ \{0,\}rule-providers:/a\##Other-rule-providers##' "$OTHER_RULE_PROVIDER_FILE" 2>/dev/null
+               sed -i '/^ \{0,\}rule-providers:/d' "$OTHER_RULE_PROVIDER_FILE" 2>/dev/null
                sed -i '/rule-providers:/r/tmp/other_rule_provider.yaml' "$9" 2>/dev/null
             fi
        elif [ "$2" = "ConnersHua" ]; then
-            cp /etc/openclash/ConnersHua.yaml /tmp/other_rule_provider.yaml
-            sed -n '/^rules:/,$p' /tmp/other_rule_provider.yaml > /tmp/other_rule.yaml 2>/dev/null
-            sed -i '/^rules:/,$d' /tmp/other_rule_provider.yaml 2>/dev/null
-            sed -i "/^ \{0,\}rule-providers:/c\rule-providers:" /tmp/other_rule_provider.yaml 2>/dev/null
-            echo "##Other-rule-providers-end##" >> /tmp/other_rule_provider.yaml
+            cp /etc/openclash/ConnersHua.yaml "$OTHER_RULE_PROVIDER_FILE"
+            sed -n '/^rules:/,$p' "$OTHER_RULE_PROVIDER_FILE" > "$OTHER_RULE_FILE" 2>/dev/null
+            sed -i '/^rules:/,$d' "$OTHER_RULE_PROVIDER_FILE" 2>/dev/null
+            sed -i "/^ \{0,\}rule-providers:/c\rule-providers:" "$OTHER_RULE_PROVIDER_FILE" 2>/dev/null
+            echo "##Other-rule-providers-end##" >> "$OTHER_RULE_PROVIDER_FILE"
             if [ -z "$(sed -n '/^ \{0,\}rule-providers:/=' "$9" 2>/dev/null)" ]; then
-               sed -i "s/,Streaming$/,${GlobalTV}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,Streaming,no-resolve$/,${GlobalTV},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##GlobalTV:${GlobalTV}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,StreamingSE$/,${AsianTV}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,StreamingSE,no-resolve$/,${AsianTV},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##AsianTV:${AsianTV}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,PROXY$/,${Proxy}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,PROXY,no-resolve$/,${Proxy},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,IP-Blackhole$/,${Proxy}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,IP-Blackhole,no-resolve$/,${Proxy},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Proxy:${Proxy}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,China,DIRECT$/,China,${Domestic}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,China,DIRECT,no-resolve$/,China,${Domestic},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,ChinaIP,DIRECT$/,ChinaIP,${Domestic}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,ChinaIP,DIRECT,no-resolve$/,ChinaIP,${Domestic},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,CN,DIRECT$/,CN,${Domestic}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,CN,DIRECT,no-resolve$/,CN,${Domestic},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Domestic:${Domestic}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,MATCH$/,${Others}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/,MATCH,no-resolve$/,${Others},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/rules:/a\##Others:${Others}" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "s/#d//g" "/tmp/other_rule.yaml" 2>/dev/null
-               sed -i "/^rule-providers:/c\rule-providers: ##Other-rule-providers##" /tmp/other_rule_provider.yaml 2>/dev/null
-               cat /tmp/other_rule_provider.yaml >> "$9" 2>/dev/null
+               sed -i "s/,Streaming$/,${GlobalTV}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,Streaming,no-resolve$/,${GlobalTV},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##GlobalTV:${GlobalTV}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,StreamingSE$/,${AsianTV}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,StreamingSE,no-resolve$/,${AsianTV},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##AsianTV:${AsianTV}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,PROXY$/,${Proxy}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,PROXY,no-resolve$/,${Proxy},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,IP-Blackhole$/,${Proxy}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,IP-Blackhole,no-resolve$/,${Proxy},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Proxy:${Proxy}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,China,DIRECT$/,China,${Domestic}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,China,DIRECT,no-resolve$/,China,${Domestic},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,ChinaIP,DIRECT$/,ChinaIP,${Domestic}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,ChinaIP,DIRECT,no-resolve$/,ChinaIP,${Domestic},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,CN,DIRECT$/,CN,${Domestic}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,CN,DIRECT,no-resolve$/,CN,${Domestic},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Domestic:${Domestic}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,MATCH$/,${Others}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/,MATCH,no-resolve$/,${Others},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/rules:/a\##Others:${Others}" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "s/#d//g" "$OTHER_RULE_FILE" 2>/dev/null
+               sed -i "/^rule-providers:/c\rule-providers: ##Other-rule-providers##" "$OTHER_RULE_PROVIDER_FILE" 2>/dev/null
+               cat "$OTHER_RULE_PROVIDER_FILE" >> "$9" 2>/dev/null
             else
             #处理缩进
                sed -i '/^ *$/d' "$9" 2>/dev/null
@@ -346,21 +355,21 @@ if [ "$2" != 0 ]; then
                sed -i 's/^ \{1,\}interval:/    interval:/g' "$9" 2>/dev/null
                sed -i 's/^ \{1,\}rule-providers:/rule-providers:/g' "$9" 2>/dev/null
                
-               sed -i '/^ \{0,\}rule-providers:/a\##Other-rule-providers##' /tmp/other_rule_provider.yaml 2>/dev/null
-               sed -i '/^ \{0,\}rule-providers:/d' "/tmp/other_rule_provider.yaml" 2>/dev/null
+               sed -i '/^ \{0,\}rule-providers:/a\##Other-rule-providers##' "$OTHER_RULE_PROVIDER_FILE" 2>/dev/null
+               sed -i '/^ \{0,\}rule-providers:/d' "$OTHER_RULE_PROVIDER_FILE" 2>/dev/null
                sed -i '/rule-providers:/r/tmp/other_rule_provider.yaml' "$9" 2>/dev/null
             fi
        else
-            cp /etc/openclash/ConnersHua_return.yaml /tmp/other_rule.yaml
-            sed -i "s/,PROXY$/,${Proxy}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-            sed -i "s/,PROXY,no-resolve$/,${Proxy},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-            sed -i "/rules:/a\##Proxy:${Proxy}" "/tmp/other_rule.yaml" 2>/dev/null
-            sed -i "s/,DIRECT$/,${Others}#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-            sed -i "s/,DIRECT,no-resolve$/,${Others},no-resolve#d/g" "/tmp/other_rule.yaml" 2>/dev/null
-            sed -i "/rules:/a\##Others:${Others}" "/tmp/other_rule.yaml" 2>/dev/null
-            sed -i "s/#d//g" "/tmp/other_rule.yaml" 2>/dev/null
+            cp /etc/openclash/ConnersHua_return.yaml "$OTHER_RULE_FILE"
+            sed -i "s/,PROXY$/,${Proxy}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+            sed -i "s/,PROXY,no-resolve$/,${Proxy},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+            sed -i "/rules:/a\##Proxy:${Proxy}" "$OTHER_RULE_FILE" 2>/dev/null
+            sed -i "s/,DIRECT$/,${Others}#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+            sed -i "s/,DIRECT,no-resolve$/,${Others},no-resolve#d/g" "$OTHER_RULE_FILE" 2>/dev/null
+            sed -i "/rules:/a\##Others:${Others}" "$OTHER_RULE_FILE" 2>/dev/null
+            sed -i "s/#d//g" "$OTHER_RULE_FILE" 2>/dev/null
        fi
-       cat /tmp/other_rule.yaml >> "$4" 2>/dev/null
+       cat "$OTHER_RULE_FILE" >> "$4" 2>/dev/null
        rm -rf /tmp/other_rule* 2>/dev/null
     fi
    fi
@@ -368,12 +377,9 @@ elif [ "$2" = 0 ]; then
    [ -f "$8" ] && {
       grep '##source:' "$4" 1>/dev/null
       if [ "$?" -eq "0" ]; then
-         sed -i '/^rules:/,$d' "$4" 2>/dev/null
-         rm -rf /tmp/yaml_rule_provider.yaml 2>/dev/null
-         rm -rf /tmp/yaml_script.yaml 2>/dev/null
-         cat "/tmp/yaml_rule_provider_bak.yaml" >> "$4" 2>/dev/null
-         cat "/tmp/yaml_script_bak.yaml" >> "$4" 2>/dev/null
-         cat "/tmp/yaml_rules_bak.yaml" >> "$4" 2>/dev/null
+         cp -f "$RULE_PROVIDER_BAK_FILE" "$RULE_PROVIDER_FILE" 2>/dev/null
+         cp -f "SCRIPT_BAK_FILE" "$SCRIPT_FILE" 2>/dev/null
+         cp -f "$RULE_BAK_FILE" "$4" 2>/dev/null
       fi
     	}
 fi

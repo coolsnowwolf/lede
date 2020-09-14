@@ -27,6 +27,8 @@ function index()
 	entry({"admin", "services", "openclash", "ping"}, call("act_ping"))
 	entry({"admin", "services", "openclash", "download_rule"}, call("action_download_rule"))
 	entry({"admin", "services", "openclash", "restore"}, call("action_restore_config"))
+	entry({"admin", "services", "openclash", "one_key_update"}, call("action_one_key_update"))
+	entry({"admin", "services", "openclash", "one_key_update_check"}, call("action_one_key_update_check"))
 	entry({"admin", "services", "openclash", "switch_mode"}, call("action_switch_mode"))
 	entry({"admin", "services", "openclash", "op_mode"}, call("action_op_mode"))
 	entry({"admin", "services", "openclash", "settings"},cbi("openclash/settings"),_("Global Settings"), 30).leaf = true
@@ -34,6 +36,8 @@ function index()
 	entry({"admin", "services", "openclash", "rule-providers-settings"},cbi("openclash/rule-providers-settings"),_("Rule Providers and Groups"), 50).leaf = true
 	entry({"admin", "services", "openclash", "game-rules-manage"},form("openclash/game-rules-manage"), nil).leaf = true
 	entry({"admin", "services", "openclash", "rule-providers-manage"},form("openclash/rule-providers-manage"), nil).leaf = true
+	entry({"admin", "services", "openclash", "proxy-provider-file-manage"},form("openclash/proxy-provider-file-manage"), nil).leaf = true
+	entry({"admin", "services", "openclash", "rule-providers-file-manage"},form("openclash/rule-providers-file-manage"), nil).leaf = true
 	entry({"admin", "services", "openclash", "config-subscribe"},cbi("openclash/config-subscribe"),_("Config Update"), 60).leaf = true
 	entry({"admin", "services", "openclash", "servers-config"},cbi("openclash/servers-config"), nil).leaf = true
 	entry({"admin", "services", "openclash", "groups-config"},cbi("openclash/groups-config"), nil).leaf = true
@@ -238,6 +242,20 @@ function action_restore_config()
 	luci.sys.call("cp '/usr/share/openclash/backup/openclash_custom_fake_black.conf' '/etc/openclash/custom/openclash_custom_fake_black.conf' >/dev/null 2>&1 &")
 	luci.sys.call("cp '/usr/share/openclash/backup/openclash_custom_hosts.list' '/etc/openclash/custom/openclash_custom_hosts.list' >/dev/null 2>&1 &")
 	luci.sys.call("cp '/usr/share/openclash/backup/openclash_custom_domain_dns.list' '/etc/openclash/custom/openclash_custom_domain_dns.list' >/dev/null 2>&1 &")
+end
+
+function action_one_key_update()
+  return luci.sys.call("sh /usr/share/openclash/openclash_update.sh 'one_key_update' >/dev/null 2>&1 &")
+end
+
+function action_one_key_update_check()
+	luci.sys.call("rm -rf /tmp/*_last_version 2>/dev/null")
+	luci.http.prepare_content("application/json")
+	luci.http.write_json({
+		corever = corever(),
+		corelv = corelv(),
+		oplv = oplv();
+	})
 end
 
 function action_op_mode()

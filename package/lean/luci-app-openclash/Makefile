@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-openclash
-PKG_VERSION:=0.40.1
+PKG_VERSION:=0.40.4
 PKG_RELEASE:=beta
 PKG_MAINTAINER:=vernesong <https://github.com/vernesong/OpenClash>
 
@@ -20,9 +20,6 @@ endef
 
 define Package/$(PKG_NAME)/description
     A LuCI support for clash
-endef
-
-define Package/$(PKG_NAME)/postinst
 endef
 
 define Build/Prepare
@@ -192,10 +189,12 @@ fi
 	rm -rf /tmp/openclash_start.log >/dev/null 2>&1
 	rm -rf /tmp/Proxy_Group >/dev/null 2>&1
 	rm -rf /tmp/rules_name >/dev/null 2>&1
+	rm -rf /tmp/rule_providers_name >/dev/null 2>&1
 	rm -rf /tmp/openclash_last_version >/dev/null 2>&1
 	rm -rf /tmp/clash_last_version >/dev/null 2>&1
 	rm -rf /etc/openclash/dnsmasq_fake_block.conf >/dev/null 2>&1
 	rm -rf /etc/openclash/clash >/dev/null 2>&1
+	rm -rf /usr/share/openclash/backup >/dev/null 2>&1
 	uci delete firewall.openclash >/dev/null 2>&1
 	uci commit firewall >/dev/null 2>&1
 	uci delete ucitrack.@openclash[-1] >/dev/null 2>&1

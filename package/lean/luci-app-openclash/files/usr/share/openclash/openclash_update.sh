@@ -5,6 +5,16 @@
 status=$(unify_ps_status "openclash_update.sh")
 [ "$status" -gt "3" ] && exit 0
 
+#一键更新
+if [ "$1" = "one_key_update" ]; then
+   uci set openclash.config.enable=1
+   uci commit openclash
+   /usr/share/openclash/openclash_core.sh "$1" >/dev/null 2>&1 &
+   /usr/share/openclash/openclash_core.sh "Tun" "$1" >/dev/null 2>&1 &
+   /usr/share/openclash/openclash_core.sh "Game" "$1" >/dev/null 2>&1 &
+   wait
+fi
+
 START_LOG="/tmp/openclash_start.log"
 LOGTIME=$(date "+%Y-%m-%d %H:%M:%S")
 LOG_FILE="/tmp/openclash.log"
@@ -61,17 +71,29 @@ EOF
       echo "OpenClash-$LAST_VER 下载失败，请检查网络或稍后再试！" >$START_LOG
       rm -rf /tmp/openclash.ipk >/dev/null 2>&1
       echo "${LOGTIME} OpenClash Update Error" >>$LOG_FILE
-      sleep 10
+      sleep 5
       echo "" >$START_LOG
+      if [ "$(uci get openclash.config.config_reload 2>/dev/null)" -eq 0 ]; then
+         uci set openclash.config.config_reload=1
+         uci commit openclash
+      	 /etc/init.d/openclash restart 2>/dev/null
+      fi
    fi
-elif [ ! -f "$LAST_OPVER" ]; then
+else
+   if [ ! -f "$LAST_OPVER" ]; then
       echo "获取版本信息失败，请稍后再试..." >$START_LOG
       echo "${LOGTIME} OpenClash Version Check Error, Please Try Again After A few seconds" >>$LOG_FILE
       sleep 5
       echo "" >$START_LOG
-else
+   else
       echo "OpenClash 没有更新，停止继续操作！" >$START_LOG
       echo "${LOGTIME} OpenClash Version No Change, Do Nothing" >>$LOG_FILE
       sleep 5
       echo "" >$START_LOG
+   fi
+   if [ "$(uci get openclash.config.config_reload 2>/dev/null)" -eq 0 ]; then
+      uci set openclash.config.config_reload=1
+      uci commit openclash
+      /etc/init.d/openclash restart 2>/dev/null
+   fi
 fi
