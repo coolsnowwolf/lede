@@ -76,10 +76,10 @@ define Package/snapshot-tool
 endef
 
 define Package/block-mount
-  SECTION:=base
-  CATEGORY:=Base system
-  TITLE:=Block device mounting and checking
-  DEPENDS:=+ubox +libubox +libuci +libblobmsg-json +libjson-c
+	SECTION:=base
+	CATEGORY:=Base system
+	TITLE:=Block device mounting and checking
+	DEPENDS:=+fstools +ubox +libubox +libuci +libblobmsg-json +libjson-c
 endef
 
 define Package/blockd
