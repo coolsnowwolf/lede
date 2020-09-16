@@ -122,7 +122,7 @@ Use `make menuconfig` to configure your image.
 
 Simply running `make` will build your firmware.
 It will download all sources, build the cross-compile toolchain,
-the kernel and all choosen applications.
+the kernel and all chosen applications.
 
 To build your own firmware you need to have access to a Linux, BSD or MacOSX system
 (case-sensitive filesystem required). Cygwin will not be supported because of
