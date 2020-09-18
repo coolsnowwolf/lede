@@ -1,0 +1,57 @@
+--- a/drivers/ata/libata-core.c
++++ b/drivers/ata/libata-core.c
+@@ -1583,6 +1583,14 @@ unsigned ata_exec_internal_sg(struct ata
+ 		return AC_ERR_SYSTEM;
+ 	}
+ 
++	if (ap->ops->acquire_hw && !ap->ops->acquire_hw(ap, 0, 0)) {
++		spin_unlock_irqrestore(ap->lock, flags);
++		if (!ap->ops->acquire_hw(ap, 1, (2*HZ))) {
++			return AC_ERR_TIMEOUT;
++		}
++		spin_lock_irqsave(ap->lock, flags);
++	}
++
+ 	/* initialize internal qc */
+ 	qc = __ata_qc_from_tag(ap, ATA_TAG_INTERNAL);
+ 
+@@ -5122,6 +5130,9 @@ struct ata_queued_cmd *ata_qc_new_init(s
+ 	if (unlikely(ap->pflags & ATA_PFLAG_FROZEN))
+ 		return NULL;
+ 
++	if (ap->ops->qc_new && ap->ops->qc_new(ap))
++		return NULL;
++
+ 	/* libsas case */
+ 	if (ap->flags & ATA_FLAG_SAS_HOST) {
+ 		tag = ata_sas_allocate_tag(ap);
+@@ -5167,6 +5178,8 @@ void ata_qc_free(struct ata_queued_cmd *
+ 		qc->tag = ATA_TAG_POISON;
+ 		if (ap->flags & ATA_FLAG_SAS_HOST)
+ 			ata_sas_free_tag(tag, ap);
++		if (ap->ops->qc_free)
++			ap->ops->qc_free(qc);
+ 	}
+ }
+ 
+--- a/include/linux/libata.h
++++ b/include/linux/libata.h
+@@ -908,6 +908,8 @@ struct ata_port_operations {
+ 	void (*qc_prep)(struct ata_queued_cmd *qc);
+ 	unsigned int (*qc_issue)(struct ata_queued_cmd *qc);
+ 	bool (*qc_fill_rtf)(struct ata_queued_cmd *qc);
++	int (*qc_new)(struct ata_port *ap);
++	void (*qc_free)(struct ata_queued_cmd *qc);
+ 
+ 	/*
+ 	 * Configuration and exception handling
+@@ -998,6 +1000,9 @@ struct ata_port_operations {
+ 	void (*phy_reset)(struct ata_port *ap);
+ 	void (*eng_timeout)(struct ata_port *ap);
+ 
++	int (*acquire_hw)(struct ata_port *ap, int may_sleep,
++			  int timeout_jiffies);
++
+ 	/*
+ 	 * ->inherits must be the last field and all the preceding
+ 	 * fields must be pointers.

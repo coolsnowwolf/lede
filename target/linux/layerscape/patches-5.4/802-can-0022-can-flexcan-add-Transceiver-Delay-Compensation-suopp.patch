@@ -1,0 +1,70 @@
+From 7b294e0cd2f7fbfb548a17b8d68d161da19e6592 Mon Sep 17 00:00:00 2001
+From: Joakim Zhang <qiangqing.zhang@nxp.com>
+Date: Fri, 12 Jul 2019 08:02:56 +0000
+Subject: [PATCH] can: flexcan: add Transceiver Delay Compensation suopport
+
+The CAN FD protocol allows the transmission and reception of data at a higher
+bit rate than the nominal rate used in the arbitration phase when the message's
+BRS bit is set.
+
+The TDC mechanism is effective only during the data phase of FD frames
+having BRS bit set. It has no effect either on non-FD frames, or on FD
+frames transmitted at normal bit rate.
+
+Signed-off-by: Joakim Zhang <qiangqing.zhang@nxp.com>
+Signed-off-by: Marc Kleine-Budde <mkl@pengutronix.de>
+---
+ drivers/net/can/flexcan.c | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/can/flexcan.c
++++ b/drivers/net/can/flexcan.c
+@@ -149,8 +149,11 @@
+ 
+ /* FLEXCAN FD control register (FDCTRL) bits */
+ #define FLEXCAN_FDCTRL_FDRATE		BIT(31)
++#define FLEXCAN_FDCTRL_TDCEN		BIT(15)
++#define FLEXCAN_FDCTRL_TDCFAIL		BIT(14)
+ #define FLEXCAN_FDCTRL_MBDSR1(x)	(((x) & 0x3) << 19)
+ #define FLEXCAN_FDCTRL_MBDSR0(x)	(((x) & 0x3) << 16)
++#define FLEXCAN_FDCTRL_TDCOFF(x)	(((x) & 0x1f) << 8)
+ 
+ /* FLEXCAN FD Bit Timing register (FDCBT) bits */
+ #define FLEXCAN_FDCBT_FPRESDIV(x)	(((x) & 0x3ff) << 20)
+@@ -1101,7 +1104,7 @@ static void flexcan_set_bittiming(struct
+ 	struct can_bittiming *bt = &priv->can.bittiming;
+ 	struct can_bittiming *dbt = &priv->can.data_bittiming;
+ 	struct flexcan_regs __iomem *regs = priv->regs;
+-	u32 reg, reg_cbt, reg_fdcbt;
++	u32 reg, reg_cbt, reg_fdcbt, reg_fdctrl;
+ 
+ 	reg = priv->read(&regs->ctrl);
+ 	reg &= ~(FLEXCAN_CTRL_LPB | FLEXCAN_CTRL_SMP | FLEXCAN_CTRL_LOM);
+@@ -1173,6 +1176,19 @@ static void flexcan_set_bittiming(struct
+ 					FLEXCAN_FDCBT_FPROPSEG(dbt->prop_seg);
+ 			priv->write(reg_fdcbt, &regs->fdcbt);
+ 
++			/* enable transceiver delay compensation(TDC) for fd frame.
++			 * TDC must be disabled when Loop Back mode is enabled.
++			 */
++			reg_fdctrl = priv->read(&regs->fdctrl);
++			if (!(reg & FLEXCAN_CTRL_LPB)) {
++				reg_fdctrl |= FLEXCAN_FDCTRL_TDCEN;
++				reg_fdctrl &= ~FLEXCAN_FDCTRL_TDCOFF(0x1f);
++				/* for the TDC to work reliably, the offset has to use optimal settings */
++				reg_fdctrl |= FLEXCAN_FDCTRL_TDCOFF(((dbt->phase_seg1 - 1) + dbt->prop_seg + 2) *
++								    ((dbt->brp -1) + 1));
++			}
++			priv->write(reg_fdctrl, &regs->fdctrl);
++
+ 			if (bt->brp != dbt->brp)
+ 				netdev_warn(dev, "Warning!! data brp = %d and brp = %d don't match.\n"
+ 					    "flexcan may not work. consider using different bitrate or data bitrate\n",
+@@ -1322,6 +1338,7 @@ static int flexcan_chip_start(struct net
+ 	/* FDCTRL */
+ 	if (priv->can.ctrlmode_supported & CAN_CTRLMODE_FD) {
+ 		reg_fdctrl = priv->read(&regs->fdctrl) & ~FLEXCAN_FDCTRL_FDRATE;
++		reg_fdctrl &= ~FLEXCAN_FDCTRL_TDCEN;
+ 		reg_fdctrl &= ~(FLEXCAN_FDCTRL_MBDSR1(0x3) | FLEXCAN_FDCTRL_MBDSR0(0x3));
+ 		reg_mcr = priv->read(&regs->mcr) & ~FLEXCAN_MCR_FDEN;
+ 		reg_ctrl2 = priv->read(&regs->ctrl2) & ~FLEXCAN_CTRL2_ISOCANFDEN;

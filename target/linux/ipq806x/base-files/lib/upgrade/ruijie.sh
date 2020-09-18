@@ -1,6 +1,5 @@
 #
 # Copyright (C) 2016 lede-project.org
-# Copyright (C) 2020 AnYun
 #
 
 ruijie_do_flash() {
@@ -48,6 +47,8 @@ ruijie_do_upgrade() {
 	esac
 
 	ruijie_do_flash $tar_file $kernel $rootfs
+
+	nand_do_upgrade "$1"
 
 	return 0
 }

@@ -1,5 +1,3 @@
-#!/bin/sh
-
 do_at91() {
 	. /lib/at91.sh
 

@@ -233,8 +233,8 @@ proto_pppoe_setup() {
 
 #By 蝈蝈：并发拨号同步的前期准备
 	syncppp_option=""
-	[ "$(uci get syncdial.config.enabled)" == "1" ] && {
-		ppp_if_cnt=$(cat /etc/config/network | grep -E -c "proto\s+?'pppoe'")
+	[ "$(uci get syncdial.config.enabled)" -eq "1" ] && {
+		ppp_if_cnt=$(uci show network | grep -c "\.proto=\'pppoe\'$")
 		syncppp_option="syncppp $ppp_if_cnt"
 		shellsync $ppp_if_cnt 10
 	}

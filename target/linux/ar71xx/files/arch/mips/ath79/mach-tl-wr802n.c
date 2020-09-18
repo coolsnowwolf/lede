@@ -24,7 +24,7 @@
 #include "machtypes.h"
 
 #define TL_WR802N_GPIO_LED_SYSTEM	13
-#define TL_WR802N_GPIO_BTN_RESET	11
+#define TL_WR802N_GPIO_BTN_RESET	12
 
 #define TL_WR802N_KEYS_POLL_INTERVAL		20 /* msecs */
 #define TL_WR802N_KEYS_DEBOUNCE_INTERVAL	(3 * TL_WR802N_KEYS_POLL_INTERVAL)
@@ -61,7 +61,7 @@ static struct gpio_keys_button tl_wr802n_gpio_keys[] __initdata = {
 		.code		= KEY_RESTART,
 		.debounce_interval = TL_WR802N_KEYS_DEBOUNCE_INTERVAL,
 		.gpio		= TL_WR802N_GPIO_BTN_RESET,
-		.active_low	= 0,
+		.active_low	= 1,
 	}
 };
 

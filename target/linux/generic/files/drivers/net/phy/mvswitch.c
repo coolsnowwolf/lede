@@ -24,6 +24,7 @@
 #include <linux/ethtool.h>
 #include <linux/phy.h>
 #include <linux/if_vlan.h>
+#include <linux/version.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -207,8 +208,14 @@ mvswitch_config_init(struct phy_device *pdev)
 		return -EINVAL;
 
 	printk("%s: Marvell 88E6060 PHY driver attached.\n", dev->name);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
+	linkmode_zero(pdev->supported);
+	linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT, pdev->supported);
+	linkmode_copy(pdev->advertising, pdev->supported);
+#else
 	pdev->supported = ADVERTISED_100baseT_Full;
 	pdev->advertising = ADVERTISED_100baseT_Full;
+#endif
 	dev->phy_ptr = priv;
 	pdev->irq = PHY_POLL;
 #ifdef HEADER_MODE

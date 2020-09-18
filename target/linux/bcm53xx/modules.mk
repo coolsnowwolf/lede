@@ -9,9 +9,7 @@ define KernelPackage/phy-bcm-ns-usb2
   KCONFIG:=CONFIG_PHY_BCM_NS_USB2
   DEPENDS:=@TARGET_bcm53xx
   SUBMENU:=$(USB_MENU)
-  FILES:=\
-	$(LINUX_DIR)/drivers/phy/phy-bcm-ns-usb2.ko@lt4.13 \
-	$(LINUX_DIR)/drivers/phy/broadcom/phy-bcm-ns-usb2.ko@gt4.13
+  FILES:=$(LINUX_DIR)/drivers/phy/broadcom/phy-bcm-ns-usb2.ko
   AUTOLOAD:=$(call AutoLoad,45,phy-bcm-ns-usb2,1)
 endef
 
@@ -27,9 +25,7 @@ define KernelPackage/phy-bcm-ns-usb3
   KCONFIG:=CONFIG_PHY_BCM_NS_USB3
   DEPENDS:=@TARGET_bcm53xx
   SUBMENU:=$(USB_MENU)
-  FILES:=\
-	$(LINUX_DIR)/drivers/phy/phy-bcm-ns-usb3.ko@lt4.13 \
-	$(LINUX_DIR)/drivers/phy/broadcom/phy-bcm-ns-usb3.ko@ge4.13
+  FILES:=$(LINUX_DIR)/drivers/phy/broadcom/phy-bcm-ns-usb3.ko
   AUTOLOAD:=$(call AutoLoad,45,phy-bcm-ns-usb3,1)
 endef
 

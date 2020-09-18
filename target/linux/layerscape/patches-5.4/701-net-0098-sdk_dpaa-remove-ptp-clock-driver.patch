@@ -1,0 +1,392 @@
+From 0738b02f733717693226db401784e884a0714d41 Mon Sep 17 00:00:00 2001
+From: Yangbo Lu <yangbo.lu@nxp.com>
+Date: Wed, 31 Oct 2018 16:59:01 +0800
+Subject: [PATCH] sdk_dpaa: remove ptp clock driver
+
+Removed dpaa_ptp driver since we could use common
+ptp_qoriq driver in drivers/ptp/ instead.
+
+Signed-off-by: Yangbo Lu <yangbo.lu@nxp.com>
+---
+ drivers/net/ethernet/freescale/sdk_dpaa/Makefile   |   1 -
+ drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.h |  10 -
+ .../ethernet/freescale/sdk_dpaa/dpaa_eth_common.c  |  21 --
+ drivers/net/ethernet/freescale/sdk_dpaa/dpaa_ptp.c | 291 ---------------------
+ drivers/net/ethernet/freescale/sdk_dpaa/mac.h      |   3 +-
+ 5 files changed, 1 insertion(+), 325 deletions(-)
+ delete mode 100644 drivers/net/ethernet/freescale/sdk_dpaa/dpaa_ptp.c
+
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/Makefile
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/Makefile
+@@ -9,7 +9,6 @@ include $(srctree)/drivers/net/ethernet/
+ ccflags-y += -I$(NET_DPA)
+ 
+ obj-$(CONFIG_FSL_SDK_DPAA_ETH) += fsl_mac.o fsl_dpa.o
+-obj-$(CONFIG_PTP_1588_CLOCK_DPAA) += dpaa_ptp.o
+ 
+ fsl_dpa-objs += dpaa_ethtool.o dpaa_eth_sysfs.o dpaa_eth.o dpaa_eth_sg.o dpaa_eth_common.o
+ ifeq ($(CONFIG_FSL_DPAA_DBG_LOOP),y)
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.h
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.h
+@@ -646,16 +646,6 @@ static inline void _dpa_assign_wq(struct
+ #define dpa_get_queue_mapping(skb) skb_get_queue_mapping(skb)
+ #endif
+ 
+-#ifdef CONFIG_PTP_1588_CLOCK_DPAA
+-struct ptp_priv_s {
+-	struct device_node *node;
+-	struct platform_device *of_dev;
+-	struct ptp_clock *clock;
+-	struct mac_device *mac_dev;
+-};
+-extern struct ptp_priv_s ptp_priv;
+-#endif
+-
+ static inline void _dpa_bp_free_pf(void *addr)
+ {
+ 	put_page(virt_to_head_page(addr));
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.c
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.c
+@@ -55,10 +55,6 @@
+ /* Size in bytes of the FQ taildrop threshold */
+ #define DPA_FQ_TD		0x200000
+ 
+-#ifdef CONFIG_PTP_1588_CLOCK_DPAA
+-struct ptp_priv_s ptp_priv;
+-#endif
+-
+ static struct dpa_bp *dpa_bp_array[64];
+ 
+ int dpa_max_frm;
+@@ -579,23 +575,6 @@ dpa_mac_probe(struct platform_device *_o
+ 	}
+ #endif
+ 
+-#ifdef CONFIG_PTP_1588_CLOCK_DPAA
+-	if ((mac_dev->phy_if != PHY_INTERFACE_MODE_SGMII) ||
+-	    ((mac_dev->phy_if == PHY_INTERFACE_MODE_SGMII) &&
+-			 (mac_dev->speed == SPEED_1000))) {
+-		ptp_priv.node = of_parse_phandle(mac_node, "ptp-timer", 0);
+-		if (ptp_priv.node) {
+-			ptp_priv.of_dev = of_find_device_by_node(ptp_priv.node);
+-			if (unlikely(ptp_priv.of_dev == NULL)) {
+-				dev_err(dpa_dev,
+-			"Cannot find device represented by timer_node\n");
+-				of_node_put(ptp_priv.node);
+-				return ERR_PTR(-EINVAL);
+-			}
+-			ptp_priv.mac_dev = mac_dev;
+-		}
+-	}
+-#endif
+ 	return mac_dev;
+ }
+ EXPORT_SYMBOL(dpa_mac_probe);
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_ptp.c
++++ /dev/null
+@@ -1,291 +0,0 @@
+-/*
+- * DPAA Ethernet Driver -- PTP 1588 clock using the dTSEC
+- *
+- * Author: Yangbo Lu <yangbo.lu@freescale.com>
+- *
+- * Copyright 2014 Freescale Semiconductor, Inc.
+- *
+- * This program is free software; you can redistribute it and/or modify it
+- * under the terms of the GNU General Public License as published by the
+- * Free Software Foundation; either version 2 of the License, or (at your
+- * option) any later version.
+-*/
+-
+-#include <linux/device.h>
+-#include <linux/hrtimer.h>
+-#include <linux/init.h>
+-#include <linux/interrupt.h>
+-#include <linux/kernel.h>
+-#include <linux/module.h>
+-#include <linux/of.h>
+-#include <linux/of_platform.h>
+-#include <linux/timex.h>
+-#include <linux/io.h>
+-
+-#include <linux/ptp_clock_kernel.h>
+-
+-#include "dpaa_eth.h"
+-#include "mac.h"
+-
+-static struct mac_device *mac_dev;
+-static u32 freqCompensation;
+-
+-/* Bit definitions for the TMR_CTRL register */
+-#define ALM1P                 (1<<31) /* Alarm1 output polarity */
+-#define ALM2P                 (1<<30) /* Alarm2 output polarity */
+-#define FS                    (1<<28) /* FIPER start indication */
+-#define PP1L                  (1<<27) /* Fiper1 pulse loopback mode enabled. */
+-#define PP2L                  (1<<26) /* Fiper2 pulse loopback mode enabled. */
+-#define TCLK_PERIOD_SHIFT     (16) /* 1588 timer reference clock period. */
+-#define TCLK_PERIOD_MASK      (0x3ff)
+-#define RTPE                  (1<<15) /* Record Tx Timestamp to PAL Enable. */
+-#define FRD                   (1<<14) /* FIPER Realignment Disable */
+-#define ESFDP                 (1<<11) /* External Tx/Rx SFD Polarity. */
+-#define ESFDE                 (1<<10) /* External Tx/Rx SFD Enable. */
+-#define ETEP2                 (1<<9) /* External trigger 2 edge polarity */
+-#define ETEP1                 (1<<8) /* External trigger 1 edge polarity */
+-#define COPH                  (1<<7) /* Generated clock output phase. */
+-#define CIPH                  (1<<6) /* External oscillator input clock phase */
+-#define TMSR                  (1<<5) /* Timer soft reset. */
+-#define BYP                   (1<<3) /* Bypass drift compensated clock */
+-#define TE                    (1<<2) /* 1588 timer enable. */
+-#define CKSEL_SHIFT           (0)    /* 1588 Timer reference clock source */
+-#define CKSEL_MASK            (0x3)
+-
+-/* Bit definitions for the TMR_TEVENT register */
+-#define ETS2                  (1<<25) /* External trigger 2 timestamp sampled */
+-#define ETS1                  (1<<24) /* External trigger 1 timestamp sampled */
+-#define ALM2                  (1<<17) /* Current time = alarm time register 2 */
+-#define ALM1                  (1<<16) /* Current time = alarm time register 1 */
+-#define PP1                   (1<<7)  /* periodic pulse generated on FIPER1 */
+-#define PP2                   (1<<6)  /* periodic pulse generated on FIPER2 */
+-#define PP3                   (1<<5)  /* periodic pulse generated on FIPER3 */
+-
+-/* Bit definitions for the TMR_TEMASK register */
+-#define ETS2EN                (1<<25) /* External trigger 2 timestamp enable */
+-#define ETS1EN                (1<<24) /* External trigger 1 timestamp enable */
+-#define ALM2EN                (1<<17) /* Timer ALM2 event enable */
+-#define ALM1EN                (1<<16) /* Timer ALM1 event enable */
+-#define PP1EN                 (1<<7) /* Periodic pulse event 1 enable */
+-#define PP2EN                 (1<<6) /* Periodic pulse event 2 enable */
+-
+-/* Bit definitions for the TMR_PEVENT register */
+-#define TXP2                  (1<<9) /* PTP transmitted timestamp im TXTS2 */
+-#define TXP1                  (1<<8) /* PTP transmitted timestamp in TXTS1 */
+-#define RXP                   (1<<0) /* PTP frame has been received */
+-
+-/* Bit definitions for the TMR_PEMASK register */
+-#define TXP2EN                (1<<9) /* Transmit PTP packet event 2 enable */
+-#define TXP1EN                (1<<8) /* Transmit PTP packet event 1 enable */
+-#define RXPEN                 (1<<0) /* Receive PTP packet event enable */
+-
+-/* Bit definitions for the TMR_STAT register */
+-#define STAT_VEC_SHIFT        (0) /* Timer general purpose status vector */
+-#define STAT_VEC_MASK         (0x3f)
+-
+-/* Bit definitions for the TMR_PRSC register */
+-#define PRSC_OCK_SHIFT        (0) /* Output clock division/prescale factor. */
+-#define PRSC_OCK_MASK         (0xffff)
+-
+-
+-#define N_EXT_TS	2
+-
+-static void set_alarm(void)
+-{
+-	u64 ns;
+-
+-	if (mac_dev->fm_rtc_get_cnt)
+-		mac_dev->fm_rtc_get_cnt(mac_dev->fm_dev, &ns);
+-	ns += 1500000000ULL;
+-	ns = div_u64(ns, 1000000000UL) * 1000000000ULL;
+-	ns -= DPA_PTP_NOMINAL_FREQ_PERIOD_NS;
+-	if (mac_dev->fm_rtc_set_alarm)
+-		mac_dev->fm_rtc_set_alarm(mac_dev->fm_dev, 0, ns);
+-}
+-
+-static void set_fipers(void)
+-{
+-	u64 fiper;
+-
+-	if (mac_dev->fm_rtc_disable)
+-		mac_dev->fm_rtc_disable(mac_dev->fm_dev);
+-
+-	set_alarm();
+-	fiper = 1000000000ULL - DPA_PTP_NOMINAL_FREQ_PERIOD_NS;
+-	if (mac_dev->fm_rtc_set_fiper)
+-		mac_dev->fm_rtc_set_fiper(mac_dev->fm_dev, 0, fiper);
+-
+-	if (mac_dev->fm_rtc_enable)
+-		mac_dev->fm_rtc_enable(mac_dev->fm_dev);
+-}
+-
+-/* PTP clock operations */
+-
+-static int ptp_dpa_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
+-{
+-	u64 adj;
+-	u32 diff, tmr_add;
+-	int neg_adj = 0;
+-
+-	if (ppb < 0) {
+-		neg_adj = 1;
+-		ppb = -ppb;
+-	}
+-
+-	tmr_add = freqCompensation;
+-	adj = tmr_add;
+-	adj *= ppb;
+-	diff = div_u64(adj, 1000000000ULL);
+-
+-	tmr_add = neg_adj ? tmr_add - diff : tmr_add + diff;
+-
+-	if (mac_dev->fm_rtc_set_drift)
+-		mac_dev->fm_rtc_set_drift(mac_dev->fm_dev, tmr_add);
+-
+-	return 0;
+-}
+-
+-static int ptp_dpa_adjtime(struct ptp_clock_info *ptp, s64 delta)
+-{
+-	s64 now;
+-
+-	if (mac_dev->fm_rtc_get_cnt)
+-		mac_dev->fm_rtc_get_cnt(mac_dev->fm_dev, &now);
+-
+-	now += delta;
+-
+-	if (mac_dev->fm_rtc_set_cnt)
+-		mac_dev->fm_rtc_set_cnt(mac_dev->fm_dev, now);
+-	set_fipers();
+-
+-	return 0;
+-}
+-
+-static int ptp_dpa_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
+-{
+-	u64 ns;
+-	u32 remainder;
+-
+-	if (mac_dev->fm_rtc_get_cnt)
+-		mac_dev->fm_rtc_get_cnt(mac_dev->fm_dev, &ns);
+-
+-	ts->tv_sec = div_u64_rem(ns, 1000000000, &remainder);
+-	ts->tv_nsec = remainder;
+-	return 0;
+-}
+-
+-static int ptp_dpa_settime(struct ptp_clock_info *ptp,
+-			       const struct timespec64 *ts)
+-{
+-	u64 ns;
+-
+-	ns = ts->tv_sec * 1000000000ULL;
+-	ns += ts->tv_nsec;
+-
+-	if (mac_dev->fm_rtc_set_cnt)
+-		mac_dev->fm_rtc_set_cnt(mac_dev->fm_dev, ns);
+-	set_fipers();
+-	return 0;
+-}
+-
+-static int ptp_dpa_enable(struct ptp_clock_info *ptp,
+-			      struct ptp_clock_request *rq, int on)
+-{
+-	u32 bit;
+-
+-	switch (rq->type) {
+-	case PTP_CLK_REQ_EXTTS:
+-		switch (rq->extts.index) {
+-		case 0:
+-			bit = ETS1EN;
+-			break;
+-		case 1:
+-			bit = ETS2EN;
+-			break;
+-		default:
+-			return -EINVAL;
+-		}
+-		if (on) {
+-			if (mac_dev->fm_rtc_enable_interrupt)
+-				mac_dev->fm_rtc_enable_interrupt(
+-					mac_dev->fm_dev, bit);
+-		} else {
+-			if (mac_dev->fm_rtc_disable_interrupt)
+-				mac_dev->fm_rtc_disable_interrupt(
+-					mac_dev->fm_dev, bit);
+-		}
+-		return 0;
+-
+-	case PTP_CLK_REQ_PPS:
+-		if (on) {
+-			if (mac_dev->fm_rtc_enable_interrupt)
+-				mac_dev->fm_rtc_enable_interrupt(
+-					mac_dev->fm_dev, PP1EN);
+-		} else {
+-			if (mac_dev->fm_rtc_disable_interrupt)
+-				mac_dev->fm_rtc_disable_interrupt(
+-					mac_dev->fm_dev, PP1EN);
+-		}
+-		return 0;
+-
+-	default:
+-		break;
+-	}
+-
+-	return -EOPNOTSUPP;
+-}
+-
+-static struct ptp_clock_info ptp_dpa_caps = {
+-	.owner		= THIS_MODULE,
+-	.name		= "dpaa clock",
+-	.max_adj	= 512000,
+-	.n_alarm	= 0,
+-	.n_ext_ts	= N_EXT_TS,
+-	.n_per_out	= 0,
+-	.pps		= 1,
+-	.adjfreq	= ptp_dpa_adjfreq,
+-	.adjtime	= ptp_dpa_adjtime,
+-	.gettime64	= ptp_dpa_gettime,
+-	.settime64	= ptp_dpa_settime,
+-	.enable		= ptp_dpa_enable,
+-};
+-
+-static int __init __cold dpa_ptp_load(void)
+-{
+-	struct device *ptp_dev;
+-	struct timespec64 now;
+-	struct ptp_clock *clock = ptp_priv.clock;
+-	int dpa_phc_index;
+-	int err;
+-
+-	if (!(ptp_priv.of_dev && ptp_priv.mac_dev))
+-		return -ENODEV;
+-
+-	ptp_dev = &ptp_priv.of_dev->dev;
+-	mac_dev = ptp_priv.mac_dev;
+-
+-	if (mac_dev->fm_rtc_get_drift)
+-		mac_dev->fm_rtc_get_drift(mac_dev->fm_dev, &freqCompensation);
+-
+-	getnstimeofday64(&now);
+-	ptp_dpa_settime(&ptp_dpa_caps, &now);
+-
+-	clock = ptp_clock_register(&ptp_dpa_caps, ptp_dev);
+-	if (IS_ERR(clock)) {
+-		err = PTR_ERR(clock);
+-		return err;
+-	}
+-	dpa_phc_index = ptp_clock_index(clock);
+-	return 0;
+-}
+-module_init(dpa_ptp_load);
+-
+-static void __exit __cold dpa_ptp_unload(void)
+-{
+-	struct ptp_clock *clock = ptp_priv.clock;
+-
+-	if (mac_dev->fm_rtc_disable_interrupt)
+-		mac_dev->fm_rtc_disable_interrupt(mac_dev->fm_dev, 0xffffffff);
+-	ptp_clock_unregister(clock);
+-}
+-module_exit(dpa_ptp_unload);
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/mac.h
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/mac.h
+@@ -97,10 +97,9 @@ struct mac_device {
+ 	int (*fm_rtc_set_alarm)(struct fm *fm_dev, uint32_t id, uint64_t time);
+ 	int (*fm_rtc_set_fiper)(struct fm *fm_dev, uint32_t id,
+ 				uint64_t fiper);
+-#ifdef CONFIG_PTP_1588_CLOCK_DPAA
+ 	int (*fm_rtc_enable_interrupt)(struct fm *fm_dev, uint32_t events);
+ 	int (*fm_rtc_disable_interrupt)(struct fm *fm_dev, uint32_t events);
+-#endif
++
+ 	int (*set_wol)(struct fm_port *port, struct fm_mac_dev *fm_mac_dev,
+ 			bool en);
+ 	int (*dump_mac_regs)(struct mac_device *h_mac, char *buf, int nn);

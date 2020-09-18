@@ -6,7 +6,7 @@ define KernelPackage/ata-ahci-mtk
 	$(LINUX_DIR)/drivers/ata/libahci_platform.ko
   AUTOLOAD:=$(call AutoLoad,40,libahci libahci_platform ahci_mtk,1)
   $(call AddDepends/ata)
-  DEPENDS+=@TARGET_mediatek_mt7622
+  DEPENDS+=@(TARGET_mediatek_mt7622||TARGET_mediatek_mt7623)
 endef
 
 define KernelPackage/ata-ahci-mtk/description

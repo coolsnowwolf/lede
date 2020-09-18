@@ -1,0 +1,85 @@
+From 1737de8045838dcf3c7713c940eb1582810a319f Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Mon, 16 Dec 2019 15:07:20 +0200
+Subject: [PATCH] net: mscc: ocelot: make phy_mode a member of the common
+ struct ocelot_port
+
+The Ocelot switchdev driver and the Felix DSA one need it for different
+reasons. Felix (or at least the VSC9959 instantiation in NXP LS1028A) is
+integrated with the traditional NXP Layerscape PCS design which does not
+support runtime configuration of SerDes protocol. So it needs to
+pre-validate the phy-mode from the device tree and prevent PHYLINK from
+attempting to change it. For this, it needs to cache it in a private
+variable.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+---
+ drivers/net/ethernet/mscc/ocelot.c       | 7 ++++---
+ drivers/net/ethernet/mscc/ocelot.h       | 1 -
+ drivers/net/ethernet/mscc/ocelot_board.c | 4 ++--
+ include/soc/mscc/ocelot.h                | 2 ++
+ 4 files changed, 8 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/ethernet/mscc/ocelot.c
++++ b/drivers/net/ethernet/mscc/ocelot.c
+@@ -500,13 +500,14 @@ EXPORT_SYMBOL(ocelot_port_enable);
+ static int ocelot_port_open(struct net_device *dev)
+ {
+ 	struct ocelot_port_private *priv = netdev_priv(dev);
+-	struct ocelot *ocelot = priv->port.ocelot;
++	struct ocelot_port *ocelot_port = &priv->port;
++	struct ocelot *ocelot = ocelot_port->ocelot;
+ 	int port = priv->chip_port;
+ 	int err;
+ 
+ 	if (priv->serdes) {
+ 		err = phy_set_mode_ext(priv->serdes, PHY_MODE_ETHERNET,
+-				       priv->phy_mode);
++				       ocelot_port->phy_mode);
+ 		if (err) {
+ 			netdev_err(dev, "Could not set mode of SerDes\n");
+ 			return err;
+@@ -514,7 +515,7 @@ static int ocelot_port_open(struct net_d
+ 	}
+ 
+ 	err = phy_connect_direct(dev, priv->phy, &ocelot_port_adjust_link,
+-				 priv->phy_mode);
++				 ocelot_port->phy_mode);
+ 	if (err) {
+ 		netdev_err(dev, "Could not attach to PHY\n");
+ 		return err;
+--- a/drivers/net/ethernet/mscc/ocelot.h
++++ b/drivers/net/ethernet/mscc/ocelot.h
+@@ -70,7 +70,6 @@ struct ocelot_port_private {
+ 
+ 	u8 vlan_aware;
+ 
+-	phy_interface_t phy_mode;
+ 	struct phy *serdes;
+ 
+ 	struct ocelot_port_tc tc;
+--- a/drivers/net/ethernet/mscc/ocelot_board.c
++++ b/drivers/net/ethernet/mscc/ocelot_board.c
+@@ -412,9 +412,9 @@ static int mscc_ocelot_probe(struct plat
+ 		if (phy_mode < 0)
+ 			phy_mode = PHY_INTERFACE_MODE_NA;
+ 
+-		priv->phy_mode = phy_mode;
++		ocelot_port->phy_mode = phy_mode;
+ 
+-		switch (priv->phy_mode) {
++		switch (ocelot_port->phy_mode) {
+ 		case PHY_INTERFACE_MODE_NA:
+ 			continue;
+ 		case PHY_INTERFACE_MODE_SGMII:
+--- a/include/soc/mscc/ocelot.h
++++ b/include/soc/mscc/ocelot.h
+@@ -425,6 +425,8 @@ struct ocelot_port {
+ 	u8				ptp_cmd;
+ 	struct sk_buff_head		tx_skbs;
+ 	u8				ts_id;
++
++	phy_interface_t			phy_mode;
+ };
+ 
+ struct ocelot {

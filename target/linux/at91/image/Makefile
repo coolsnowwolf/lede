@@ -13,12 +13,7 @@ define Build/at91-install-zImage
     $(CP) $(KDIR)/zImage $@
 endef
 
-ifeq ($(SUBTARGET),sam9x)
-include ./sam9x.mk
-endif
-ifeq ($(SUBTARGET),sama5)
-include ./sama5.mk
-endif
+include $(SUBTARGET).mk
 
 AT91_SD_BOOT_PARTSIZE:=64
 FAT32_BLOCK_SIZE:=1024

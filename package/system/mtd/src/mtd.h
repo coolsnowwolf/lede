@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 
-#if defined(target_brcm47xx) || defined(target_bcm53xx)
+#if defined(target_bcm47xx) || defined(target_bcm53xx)
 #define target_brcm 1
 #endif
 
@@ -30,4 +30,5 @@ extern int mtd_fixseama(const char *mtd, size_t offset, size_t data_size) __attr
 extern int mtd_fixwrg(const char *mtd, size_t offset, size_t data_size) __attribute__ ((weak));
 extern int mtd_fixwrgg(const char *mtd, size_t offset, size_t data_size) __attribute__ ((weak));
 extern int mtd_resetbc(const char *mtd) __attribute__ ((weak));
+extern int mtd_tpl_recoverflag_write(const char *mtd, const bool recovery_active) __attribute__ ((weak));
 #endif /* __mtd_h */

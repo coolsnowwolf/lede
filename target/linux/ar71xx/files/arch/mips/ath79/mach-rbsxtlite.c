@@ -115,7 +115,7 @@ static struct gpio_led rbsxtlite_leds_gpio[] __initdata = {
 	{
 		.name		=	"rb:green:power",
 		.gpio		=	SXTLITE_GPIO_LED_POWER,
-		.default_state	=	LEDS_GPIO_DEFSTATE_KEEP,
+		.default_state	=	LEDS_GPIO_DEFSTATE_ON,
 	},
 };
 

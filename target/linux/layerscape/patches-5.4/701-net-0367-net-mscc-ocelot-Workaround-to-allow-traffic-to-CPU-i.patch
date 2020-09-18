@@ -1,0 +1,149 @@
+From 937bf9496489cb4b491e75fe4436348bf3454dcd Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Sat, 21 Dec 2019 23:19:20 +0200
+Subject: [PATCH] net: mscc: ocelot: Workaround to allow traffic to CPU in
+ standalone mode
+
+The Ocelot switches have what is, in my opinion, a design flaw: their
+DSA header is in front of the Ethernet header, which means that they
+subvert the DSA master's RX filter, which for all practical purposes,
+either needs to be in promiscuous mode, or the OCELOT_TAG_PREFIX_LONG
+needs to be used for extraction, which makes the switch add a fake DMAC
+of ff:ff:ff:ff:ff:ff so that the DSA master accepts the frame.
+
+The issue with this design, of course, is that the CPU will be spammed
+with frames that it doesn't want to respond to, and there isn't any
+hardware offload in place by default to drop them.
+
+What is being done in the VSC7514 Ocelot driver is a process of
+selective whitelisting. The "MAC address" of each Ocelot switch net
+device, with all VLANs installed on that port, is being added as a FDB
+entry towards PGID_CPU.
+
+Some background first: Port Group IDs (PGIDs) are masks of destination
+ports. The switch performs 3 lookups in the PGID table for each frame,
+and forwards the frame to the ports that are present in the logical AND
+of all 3 PGIDs (for the most part, see below).
+
+The first PGID lookup is for the destination masks and the PGID table is
+indexed by the DEST_IDX field from the MAC table (FDB).
+The PGID can be an unicast set: PGIDs 0-11 are the per-port PGIDs, and
+by convention PGID i has only BIT(i) set, aka only this port is set in
+the destination mask.
+Or the PGID can be a multicast set: PGIDs 12-63 can (again, still by
+convention) hold a richer destination mask comprised of multiple ports.
+
+[ Ignoring the second PGID lookup, for aggregation, since it doesn't
+  interfere. ]
+
+The third PGID lookup is for source masks: PGID entries 80-91 answer the
+question: is port i allowed to forward traffic to port j? If yes, then
+BIT(j) of PGID 80+i will be found set.
+
+What is interesting about the CPU port in this whole story is that, in
+the way the driver sets up the PGIDs, its bit isn't set in any source
+mask PGID of any other port (therefore, the third lookup would always
+decide to exclude the CPU port from this list). So frames are never
+_forwarded_ to the CPU.
+
+There is a loophole in this PGID mechanism which is described in the
+VSC7514 manual:
+
+	If an entry is found in the MAC table entry of ENTRY_TYPE 0 or 1
+	and the CPU port is set in the PGID pointed to by the MAC table
+	entry, CPU extraction queue PGID.DST_PGID is added to the CPUQ.
+
+In other words, the CPU port is special, and frames are "copied" to the
+CPU, disregarding the source masks (third PGID lookup), if BIT(cpu) is
+found to be set in the destination masks (first PGID lookup).
+
+Now back to the story: what is PGID_CPU? It is a multicast set
+containing only BIT(cpu). I don't know why it was chosen to be a
+multicast PGID (59) and not simply the unicast one of this port, but it
+doesn't matter.
+
+The point is that frames that match the FDB will go to PGID_CPU by
+virtue of the DEST_IDX from the respective MAC table entry, and frames
+that don't will go to PGID_UC or PGID_MC, by virtue of the FLD_UNICAST,
+FLD_BROADCAST etc settings for flooding. And that is where the
+distinction is made: flooded frames will be subject to the third PGID
+lookup, while frames that are whitelisted to the PGID_CPU by the MAC
+table aren't.
+
+So we can use this mechanism to simulate an RX filter, given that we are
+subverting the DSA master's implicit one, as mentioned in the first
+paragraph. But this has some limitations:
+
+- In Ocelot each net device has its own MAC address. When simulating
+  this with MAC table entries, it will practically result in having N
+  MAC addresses for each of the N front-panel ports (because FDB entries
+  are not per source port). A bit strange, I think.
+
+- In DSA we don't have the infrastructure in place to support this
+  whitelisting mechanism. Calling .port_fdb_add on the CPU port for each
+  slave net device dev_addr isn't, in itself, hard. The problem is with
+  the VLANs that this port is part of. We would need to keep a duplicate
+  list of the VLANs from the bridge, plus the ones added from 8021q, for
+  each port. And we would need reference counting on each MAC address,
+  such that when a front-panel port changes its MAC address and we need
+  to delete the old FDB entry, we don't actually delete it if the other
+  front-panel ports are still using it. Not to mention that this FDB
+  entry would have to be added on the whole net of upstream DSA switches.
+
+So... it's complicated. What this patch does is to simply allow frames
+to be flooded to the CPU, which is anyway what the Ocelot driver is
+doing after removing the bridge from the net devices, see this snippet
+from ocelot_bridge_stp_state_set:
+
+	/* Apply FWD mask. The loop is needed to add/remove the current port as
+	 * a source for the other ports.
+	 */
+	for (p = 0; p < ocelot->num_phys_ports; p++) {
+		if (p == ocelot->cpu || (ocelot->bridge_fwd_mask & BIT(p))) {
+			(...)
+		} else {
+			/* Only the CPU port, this is compatible with link
+			 * aggregation.
+			 */
+			ocelot_write_rix(ocelot,
+					 BIT(ocelot->cpu),
+					 ANA_PGID_PGID, PGID_SRC + p);
+		}
+
+Otherwise said, the ocelot driver itself is already not self-coherent,
+since immediately after probe time, and immediately after removal from a
+bridge, it behaves in different ways, although the front panel ports are
+standalone in both cases.
+
+While standalone traffic _does_ work for the Felix DSA wrapper after
+enslaving and removing the ports from a bridge, this patch makes
+standalone traffic work at probe time too, with the caveat that even
+irrelevant frames will get processed by software, making it more
+susceptible to denial of service.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+---
+ drivers/net/ethernet/mscc/ocelot.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+--- a/drivers/net/ethernet/mscc/ocelot.c
++++ b/drivers/net/ethernet/mscc/ocelot.c
+@@ -2296,6 +2296,18 @@ void ocelot_set_cpu_port(struct ocelot *
+ 			 enum ocelot_tag_prefix injection,
+ 			 enum ocelot_tag_prefix extraction)
+ {
++	int port;
++
++	for (port = 0; port < ocelot->num_phys_ports; port++) {
++		/* Disable old CPU port and enable new one */
++		ocelot_rmw_rix(ocelot, 0, BIT(ocelot->cpu),
++			       ANA_PGID_PGID, PGID_SRC + port);
++		if (port == cpu)
++			continue;
++		ocelot_rmw_rix(ocelot, BIT(cpu), BIT(cpu),
++			       ANA_PGID_PGID, PGID_SRC + port);
++	}
++
+ 	/* Configure and enable the CPU port. */
+ 	ocelot_write_rix(ocelot, 0, ANA_PGID_PGID, cpu);
+ 	ocelot_write_rix(ocelot, BIT(cpu), ANA_PGID_PGID, PGID_CPU);

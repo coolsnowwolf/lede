@@ -1,0 +1,109 @@
+From d52f29a5e0ee9882f6f734c057224686b9820152 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Thu, 6 Feb 2020 15:40:34 +0100
+Subject: [PATCH] drm/vc4: drv: Support BCM2711
+
+The BCM2711 has a reworked display pipeline, and the load tracker needs
+some adjustement to operate properly. Let's add a compatible for BCM2711
+and disable the load tracker until properly supported.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_drv.c   |  1 +
+ drivers/gpu/drm/vc4/vc4_drv.h   |  3 +++
+ drivers/gpu/drm/vc4/vc4_kms.c   | 32 +++++++++++++++++++++-----------
+ drivers/gpu/drm/vc4/vc4_plane.c |  5 +++++
+ 4 files changed, 30 insertions(+), 11 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_drv.c
++++ b/drivers/gpu/drm/vc4/vc4_drv.c
+@@ -368,6 +368,7 @@ static int vc4_platform_drm_remove(struc
+ }
+ 
+ static const struct of_device_id vc4_of_match[] = {
++	{ .compatible = "brcm,bcm2711-vc5", },
+ 	{ .compatible = "brcm,bcm2835-vc4", },
+ 	{ .compatible = "brcm,cygnus-vc4", },
+ 	{},
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -205,6 +205,9 @@ struct vc4_dev {
+ 
+ 	int power_refcount;
+ 
++	/* Set to true when the load tracker is supported. */
++	bool load_tracker_available;
++
+ 	/* Set to true when the load tracker is active. */
+ 	bool load_tracker_enabled;
+ 
+--- a/drivers/gpu/drm/vc4/vc4_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_kms.c
+@@ -421,6 +421,9 @@ static int vc4_load_tracker_atomic_check
+ 	struct drm_plane *plane;
+ 	int i;
+ 
++	if (!vc4->load_tracker_available)
++		return 0;
++
+ 	priv_state = drm_atomic_get_private_obj_state(state,
+ 						      &vc4->load_tracker);
+ 	if (IS_ERR(priv_state))
+@@ -520,10 +523,14 @@ int vc4_kms_load(struct drm_device *dev)
+ 	struct vc4_load_tracker_state *load_state;
+ 	int ret;
+ 
+-	/* Start with the load tracker enabled. Can be disabled through the
+-	 * debugfs load_tracker file.
+-	 */
+-	vc4->load_tracker_enabled = true;
++	if (!of_device_is_compatible(dev->dev->of_node, "brcm,bcm2711-vc5")) {
++		vc4->load_tracker_available = true;
++
++		/* Start with the load tracker enabled. Can be
++		 * disabled through the debugfs load_tracker file.
++		 */
++		vc4->load_tracker_enabled = true;
++	}
+ 
+ 	sema_init(&vc4->async_modeset, 1);
+ 
+@@ -560,14 +567,17 @@ int vc4_kms_load(struct drm_device *dev)
+ 	drm_atomic_private_obj_init(dev, &vc4->ctm_manager, &ctm_state->base,
+ 				    &vc4_ctm_state_funcs);
+ 
+-	load_state = kzalloc(sizeof(*load_state), GFP_KERNEL);
+-	if (!load_state) {
+-		drm_atomic_private_obj_fini(&vc4->ctm_manager);
+-		return -ENOMEM;
+-	}
++	if (vc4->load_tracker_available) {
++		load_state = kzalloc(sizeof(*load_state), GFP_KERNEL);
++		if (!load_state) {
++			drm_atomic_private_obj_fini(&vc4->ctm_manager);
++			return -ENOMEM;
++		}
+ 
+-	drm_atomic_private_obj_init(dev, &vc4->load_tracker, &load_state->base,
+-				    &vc4_load_tracker_state_funcs);
++		drm_atomic_private_obj_init(dev, &vc4->load_tracker,
++					    &load_state->base,
++					    &vc4_load_tracker_state_funcs);
++	}
+ 
+ 	drm_mode_config_reset(dev);
+ 
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -492,6 +492,11 @@ static void vc4_plane_calc_load(struct d
+ 	struct vc4_plane_state *vc4_state;
+ 	struct drm_crtc_state *crtc_state;
+ 	unsigned int vscale_factor;
++	struct vc4_dev *vc4;
++
++	vc4 = to_vc4_dev(state->plane->dev);
++	if (!vc4->load_tracker_available)
++		return;
+ 
+ 	vc4_state = to_vc4_plane_state(state);
+ 	crtc_state = drm_atomic_get_existing_crtc_state(state->state,

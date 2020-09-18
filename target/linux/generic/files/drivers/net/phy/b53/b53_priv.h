@@ -314,9 +314,8 @@ static inline int b53_write64(struct b53_device *dev, u8 page, u8 reg,
 #endif
 
 #include <linux/version.h>
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0))
 #include <linux/bcm47xx_nvram.h>
-#endif
+
 static inline int b53_switch_get_reset_gpio(struct b53_device *dev)
 {
 #ifdef CONFIG_BCM47XX
@@ -331,11 +330,7 @@ static inline int b53_switch_get_reset_gpio(struct b53_device *dev)
 	}
 #endif
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0))
 	return bcm47xx_nvram_gpio_pin("robo_reset");
-#else
-	return -ENOENT;
-#endif
 }
 
 #endif

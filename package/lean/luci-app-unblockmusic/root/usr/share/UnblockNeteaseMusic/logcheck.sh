@@ -11,7 +11,6 @@ while true
 do
   icount=`busybox ps -w | grep UnblockNeteaseMusic | grep -v grep | grep -v logcheck.sh`
 	if [ -z "$icount" ]; then
-      /usr/share/UnblockNeteaseMusic/getmusicip.sh
       /etc/init.d/unblockmusic restart 
   fi
 	log_size=$(expr $(ls -l $log_file | awk '{print $5}') / 1024)
