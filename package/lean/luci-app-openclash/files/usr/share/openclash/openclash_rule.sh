@@ -2,41 +2,6 @@
 . /usr/share/openclash/openclash_ps.sh
 . /lib/functions.sh
 
-field_cut()
-{
-   local i lines end_len
-   rule_len=$(sed -n '/^ \{0,\}rules:/=' "$3" 2>/dev/null)
-   rule_provider_len=$(sed -n '/^ \{0,\}rule-providers:/=' "$3" 2>/dev/null)
-   script_len=$(sed -n '/^ \{0,\}script:/=' "$3" 2>/dev/null)
-   lines="$rule_len $rule_provider_len $script_len"
-   
-   for i in $lines; do
-      if [ -z "$1" ]; then
-         break
-      fi
-      
-      if [ "$1" -ge "$i" ]; then
-         continue
-      fi
-	    
-      if [ "$end_len" -gt "$i" ] || [ -z "$end_len" ]; then
-	       end_len="$i"
-      fi
-   done 2>/dev/null
-   
-   if [ -n "$1" ] && [ -z "$end_len" ]; then
-      end_len=$(sed -n '$=' "$3")
-   elif [ -n "$end_len" ]; then
-      end_len=$(expr "$end_len" - 1)
-   fi
-   
-   sed -n "${1},${end_len}p" "$3" > "$2" 2>/dev/null
-   
-   if [ -z "$4" ]; then
-      sed -i "${1},${end_len}d" "$3" 2>/dev/null
-   fi
-}
-
    status=$(unify_ps_status "openclash_rule.sh")
    [ "$status" -gt 3 ] && exit 0
    
@@ -86,17 +51,17 @@ field_cut()
       #处理rule_provider位置
       rule_provider_len=$(sed -n '/^ \{0,\}rule-providers:/=' "/tmp/rules.yaml" 2>/dev/null)
       if [ -n "$rule_provider_len" ]; then
-   	     field_cut "$rule_provider_len" "$OTHER_RULE_PROVIDER_FILE" "/tmp/rules.yaml"
+   	     /usr/share/openclash/yml_field_cut.sh "$rule_provider_len" "$OTHER_RULE_PROVIDER_FILE" "/tmp/rules.yaml"
       fi 2>/dev/null
       #处理script位置
       script_len=$(sed -n '/^ \{0,\}script:/=' "/tmp/rules.yaml" 2>/dev/null)
       if [ -n "$script_len" ]; then
-   	     field_cut "$script_len" "$OTHER_SCRIPT_FILE" "/tmp/rules.yaml"
+   	     /usr/share/openclash/yml_field_cut.sh "$script_len" "$OTHER_SCRIPT_FILE" "/tmp/rules.yaml"
       fi 2>/dev/null
       #处理备份rule位置
       rule_bak_len=$(sed -n '/^ \{0,\}rules:/=' "/tmp/rules.yaml" 2>/dev/null)
       if [ -n "$rule_bak_len" ]; then
-   	     field_cut "$rule_bak_len" "$OTHER_RULE_FILE" "/tmp/rules.yaml"
+   	     /usr/share/openclash/yml_field_cut.sh "$rule_bak_len" "$OTHER_RULE_FILE" "/tmp/rules.yaml"
       fi 2>/dev/null
       #合并
       cat "$OTHER_RULE_PROVIDER_FILE" "$OTHER_SCRIPT_FILE" "$OTHER_RULE_FILE" > "/tmp/rules.yaml" 2>/dev/null

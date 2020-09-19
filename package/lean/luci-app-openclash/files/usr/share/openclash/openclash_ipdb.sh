@@ -28,12 +28,11 @@
                sleep 5
                status=$(unify_ps_prevent)
             done
-            /etc/init.d/openclash stop
-            echo "数据库版本有更新，开始替换数据库版本..." >$START_LOG\
-            && mv /tmp/Country.mmdb /etc/openclash/Country.mmdb >/dev/null 2>&1\
-            && /etc/init.d/openclash start\
-            && echo "删除下载缓存..." >$START_LOG\
-            && rm -rf /tmp/Country.mmdb >/dev/null 2>&1
+            echo "数据库版本有更新，开始替换数据库版本..." >$START_LOG
+            mv /tmp/Country.mmdb /etc/openclash/Country.mmdb >/dev/null 2>&1
+            /etc/init.d/openclash restart
+            echo "删除下载缓存..." >$START_LOG
+            rm -rf /tmp/Country.mmdb >/dev/null 2>&1
             echo "GEOIP 数据库更新成功！" >$START_LOG
             echo "${LOGTIME} GEOIP Database Update Successful" >>$LOG_FILE
             sleep 10

@@ -30,13 +30,12 @@
                sleep 5
                status=$(unify_ps_prevent)
             done
-            [ "$china_ip_route" -eq 1 ] && /etc/init.d/openclash stop
-            echo "大陆IP白名单有更新，开始替换旧版本..." >$START_LOG\
-            && mv /tmp/ChinaIP.yaml /etc/openclash/rule_provider/ChinaIP.yaml >/dev/null 2>&1\
-            && echo "删除下载缓存..." >$START_LOG\
-            && rm -rf /tmp/ChinaIP.yaml >/dev/null 2>&1\
-            && rm -rf /etc/openclash/china_ip_route.ipset >/dev/null 2>&1
-            [ "$china_ip_route" -eq 1 ] && /etc/init.d/openclash start
+            echo "大陆IP白名单有更新，开始替换旧版本..." >$START_LOG
+            mv /tmp/ChinaIP.yaml /etc/openclash/rule_provider/ChinaIP.yaml >/dev/null 2>&1
+            echo "删除下载缓存..." >$START_LOG
+            rm -rf /tmp/ChinaIP.yaml >/dev/null 2>&1
+            rm -rf /etc/openclash/china_ip_route.ipset >/dev/null 2>&1
+            [ "$china_ip_route" -eq 1 ] && /etc/init.d/openclash restart
             echo "大陆IP白名单更新成功！" >$START_LOG
             echo "${LOGTIME} Chnroute Lists Update Successful" >>$LOG_FILE
             sleep 10

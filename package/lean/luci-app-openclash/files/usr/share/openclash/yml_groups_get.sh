@@ -48,42 +48,9 @@ echo "开始更新【$CONFIG_NAME】的策略组配置..." >$START_LOG
 	exit 0
 }
 
-field_cut()
-{
-   local i lines end_len
-   proxy_len=$(sed -n '/^Proxy:/=' "$3" 2>/dev/null |sed -n 1p)
-   provider_len=$(sed -n '/^proxy-providers:/=' "$3" 2>/dev/null)
-   group_len=$(sed -n '/^proxy-groups:/=' "$3" 2>/dev/null)
-   rule_len=$(sed -n '/^rules:/=' "$3" 2>/dev/null)
-   rule_provider_len=$(sed -n '/^rule-providers:/=' "$3" 2>/dev/null)
-   script_len=$(sed -n '/^script:/=' "$3" 2>/dev/null)
-   lines="$proxy_len $provider_len $group_len $rule_len $rule_provider_len $script_len"
-   
-   for i in $lines; do
-      if [ -z "$1" ]; then
-         break
-      fi
-      
-      if [ "$1" -ge "$i" ]; then
-         continue
-      fi
-	    
-      if [ "$end_len" -gt "$i" ] || [ -z "$end_len" ]; then
-	       end_len="$i"
-      fi
-   done 2>/dev/null
-   
-   if [ -n "$1" ] && [ -z "$end_len" ]; then
-      end_len=$(sed -n '$=' "$3")
-   elif [ -n "$end_len" ]; then
-      end_len=$(expr "$end_len" - 1)
-   fi
-   sed -n "${1},${end_len}p" "$3" |sed 's/\"//g' 2>/dev/null |sed "s/\'//g" 2>/dev/null |sed 's/\t/ /g' 2>/dev/null > "$2" 2>/dev/null
-}
-
 #判断各个区位置
 group_len=$(sed -n '/^ \{0,\}proxy-groups:/=' "$CONFIG_FILE" 2>/dev/null)
-field_cut "$group_len" "/tmp/yaml_group.yaml" "$CONFIG_FILE"
+/usr/share/openclash/yml_field_cut.sh "$group_len" "/tmp/yaml_group.yaml" "$CONFIG_FILE" "yaml_get"
 
 #判断当前配置文件是否有策略组信息
 cfg_group_name()

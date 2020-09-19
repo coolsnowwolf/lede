@@ -116,23 +116,6 @@
     fi
     
     uci commit openclash
-    
-    dns_hijack_len=$(sed -n '/dns-hijack:/=' "$7" 2>/dev/null)
-    if [ -n "$dns_hijack_len" ]; then
-       dns_hijack_end_len=$dns_hijack_len
-       while ( [ -n "$(echo "$hijack_line" |grep "^ \{0,\}-")" ] || [ -n "$(echo "$hijack_line" |grep "^ \{0,\}$")" ] || [ -z "$hijack_line" ] )
-       do
-    	   dns_hijack_end_len=$(expr "$dns_hijack_end_len" + 1)
-    	   hijack_line=$(sed -n "${dns_hijack_end_len}p" "$7")
-       done 2>/dev/null
-       dns_hijack_end_len=$(expr "$dns_hijack_end_len" - 1)
-       sed -i "${dns_hijack_len},${dns_hijack_end_len}d" "$7" 2>/dev/null
-    fi
-    sed -i '/^ \{0,\}tun:/,/^ \{0,\}enable:/d' "$7" 2>/dev/null
-    sed -i '/^ \{0,\}dns-hijack:/d' "$7" 2>/dev/null
-    sed -i '/^ \{0,\}stack:/d' "$7" 2>/dev/null
-    sed -i '/^ \{0,\}device-url:/d' "$7" 2>/dev/null
-    sed -i '/^ \{0,\}dns-listen:/d' "$7" 2>/dev/null
 
     if [ -z "$(grep "^   enable: true" "$7")" ]; then
        if [ ! -z "$(grep "^ \{0,\}enable:" "$7")" ]; then
