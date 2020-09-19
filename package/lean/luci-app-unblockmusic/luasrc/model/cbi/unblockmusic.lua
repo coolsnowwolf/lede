@@ -44,6 +44,11 @@ cloudserver.default = "cdn-shanghai.service.project-openwrt.eu.org:30000:30001"
 cloudserver.rmempty = true
 cloudserver:depends("apptype", "cloud")
 
+search_limit = s:option(Value, "search_limit", translate("搜索结果限制"))
+search_limit.description = translate("在搜索页面显示其他平台搜索结果个数，可填（0-3）")
+search_limit.default = "0"
+search_limit:depends("apptype", "go")
+
 flac = s:option(Flag, "flac_enabled", translate("启用无损音质"))
 flac.default = "1"
 flac.rmempty = false
