@@ -39,12 +39,15 @@ speedtype:depends("apptype", "go")
 
 cloudserver = s:option(Value, "cloudserver", translate("服务器位置"))
 cloudserver:value("cdn-shanghai.service.project-openwrt.eu.org:30000:30001", translate("[CTCGFW] 腾讯云上海（高音质）"))
-cloudserver:value("hyird.xyz:30000:30001", translate("[hyird] 阿里云北京（高音质）"))
-cloudserver:value("39.96.56.58:30000:30000", translate("[Sunsky] 阿里云北京（高音质）"))
 cloudserver.description = translate("自定义服务器格式为 IP[域名]:HTTP端口:HTTPS端口<br />如果服务器为LAN内网IP，需要将这个服务器IP放入例外客户端 (不代理HTTP和HTTPS)")
 cloudserver.default = "cdn-shanghai.service.project-openwrt.eu.org:30000:30001"
 cloudserver.rmempty = true
 cloudserver:depends("apptype", "cloud")
+
+search_limit = s:option(Value, "search_limit", translate("搜索结果限制"))
+search_limit.description = translate("在搜索页面显示其他平台搜索结果个数，可填（0-3）")
+search_limit.default = "0"
+search_limit:depends("apptype", "go")
 
 flac = s:option(Flag, "flac_enabled", translate("启用无损音质"))
 flac.default = "1"
