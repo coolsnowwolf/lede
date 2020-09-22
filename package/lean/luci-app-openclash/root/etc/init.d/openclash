@@ -1,6 +1,6 @@
 #!/bin/sh /etc/rc.common
-. /usr/share/openclash/openclash_ps.sh
 # Copyright (c) 2019 vernesong
+. /usr/share/openclash/openclash_ps.sh
 
 START=99
 STOP=15
@@ -117,6 +117,13 @@ kill_clash()
       kill -9 "$clash_pid" 2>/dev/null
    done
    sleep 1
+}
+
+start_fail()
+{
+	kill_clash
+  stop
+  exit 0
 }
 
 yml_merge()
@@ -955,6 +962,20 @@ else
    fi
 fi 2>/dev/null
 CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
+
+if [ ! -f "$CONFIG_FILE" ]; then
+   subscribe_info=$(uci get openclash.@config_subscribe[0].address 2>/dev/null)
+   if [ ! -f "$CONFIG_FILE" ] && [ -n "$subscribe_info" ]; then
+      echo "OpenClash 配置文件不存在，开始下载..." >$START_LOG
+      nohup /usr/share/openclash/openclash.sh &
+      start_fail
+   elif [ ! -f "$CONFIG_FILE" ]; then
+      echo "错误: OpenClash 缺少配置文件，请上传或更新配置文件！" >$START_LOG
+      echo "${LOGTIME} Config Not Found" >> $LOG_FILE
+      sleep 5
+      start_fail
+   fi
+fi
 }
 
 #运行模式处理
@@ -1052,6 +1073,22 @@ do_run_core()
     [ ! -x "/etc/openclash/core/clash_tun" ] && chmod 4755 /etc/openclash/core/clash_tun 2>/dev/null
     [ ! -x "/etc/openclash/core/clash_game" ] && chmod 4755 /etc/openclash/core/clash_game 2>/dev/null
     [ ! -x "/etc/openclash/core/clash" ] && chmod 4755 /etc/openclash/core/clash 2>/dev/null
+    
+    [ ! -f "$CLASH" ] && {
+      echo "内核文件不存在，开始下载..." >$START_LOG
+      nohup /usr/share/openclash/openclash_core.sh "$core_type" &
+      start_fail
+    }
+    ulimit -SHn 65535 2>/dev/null
+    config_reload=$(uci get openclash.config.config_reload 2>/dev/null)
+    if [ -n "$(pidof clash)" ] && [ "$core_type" != "Tun" ] && [ "$config_reload" != "0" ]; then
+       curl -s --connect-timeout 5 -m 5 -H 'Content-Type: application/json' -H "Authorization: Bearer ${da_password}" -XPUT http://"$lan_ip":"$cn_port"/configs -d "{\"path\": \"$CONFIG_FILE\"}" 2>/dev/null
+    else
+       kill_clash
+       nohup "$CLASH" -d "$CLASH_CONFIG" -f "$CONFIG_FILE" >> $LOG_FILE 2>&1 &
+    fi
+    uci set openclash.config.config_reload=1 2>/dev/null
+    uci commit openclash
 }
 
 set_firewall()
@@ -1271,7 +1308,6 @@ if [ -n "$en_mode_tun" ]; then
       iptables -t nat -I PREROUTING -p tcp -d 8.8.4.4 -j ACCEPT
    fi
    
-   
    #ipv6
    #    if [ "$ipv6_enable" -eq 1 ]; then
    #        ip6tables -t mangle -I PREROUTING -j MARK --set-mark "$PROXY_FWMARK"
@@ -1381,198 +1417,154 @@ get_config()
    china_ip_route=$(uci get openclash.config.china_ip_route 2>/dev/null)
 }
 
-start()
+config_field_check()
 {
-#禁止多个实例
-status=$(unify_ps_status "/etc/init.d/openclash")
-[ "$status" -gt "3" ] && exit 0
-
-config_choose
-
-enable=$(uci get openclash.config.enable 2>/dev/null)
-
-if [ "$enable" -eq 1 ] && [ -f "$CONFIG_FILE" ]; then
-	  do_run_mode
-    echo "OpenClash 开始启动..." >$START_LOG
-    echo "第一步: 获取配置..." >$START_LOG
-    get_config
-    echo "第二步: 配置文件检查..." >$START_LOG
-    yml_check "$en_mode" "$enable_custom_dns" "$CONFIG_FILE" "$BACKUP_FILE" "$START_BACKUP"
-    if [ -f "$GROUP_FILE" ]; then
-       if [ ! -f "$PROXY_FILE" ] && [ ! -f "$PROXY_PROVIDER_FILE" ]; then
-          kill_clash
-          stop
-          echo "错误: 配置文件完整性检查不通过，已自动还原配置文件，请对照模板格式检查修改配置文件！" >$START_LOG
-          mv "$START_BACKUP" "$CONFIG_FILE"
-          sleep 5
-          echo "" >$START_LOG
-       elif [ ! -f "$RULE_FILE" ] && [ ! -f "$SCRIPT_FILE" ]; then
-          kill_clash
-          stop
-          echo "错误: 配置文件完整性检查不通过，已自动还原配置文件，请对照模板格式检查修改配置文件！" >$START_LOG
-          mv "$START_BACKUP" "$CONFIG_FILE"
-          sleep 5
-          echo "" >$START_LOG
-       else
-          echo "第三步: 修改配置文件..." >$START_LOG
-          config_load "openclash"
-          config_foreach yml_auth_get "authentication"
-          yml_auth_custom "$CHANGE_FILE"
-          yml_dns_custom "$enable_custom_dns" "$DNS_FILE" "$FALLBACK_FILTER_FILE"
-          /usr/share/openclash/yml_change.sh >/dev/null 2>&1 "$LOGTIME" "$en_mode" "$enable_custom_dns" "$da_password" "$cn_port" "$proxy_port" "$CHANGE_FILE" "$ipv6_enable" "$http_port" "$socks_port" "$lan_ip" "$log_level" "$proxy_mode" "$intranet_allowed" "$en_mode_tun" "$stack_type" &
-          /usr/share/openclash/yml_rules_change.sh >/dev/null 2>&1 "$LOGTIME" "$rule_source" "$enable_custom_clash_rules" "$RULE_FILE" "$set_rule_file" "$en_mode" "$enable_rule_proxy" "$BACKUP_FILE" "$RULE_PROVIDER_FILE" &
-          wait
-          yml_provider_path "$PROXY_PROVIDER_FILE" "proxy_provider"
-          yml_provider_path "$RULE_PROVIDER_FILE" "rule_provider"
-          yml_custom_rule_provider
-          yml_game_custom
-          echo "第四步: DNS设置检查..." >$START_LOG
-          if [ -n "$(sed -n '/^ \{0,\}nameserver:/{n;p}' "$CONFIG_FILE" |grep '^ \{0,\}fallback:')" ] || [ -n "$(sed -n '/^ \{0,\}nameserver:/{n;p}' "$CONFIG_FILE" |grep 'OpenClash-General')" ]; then
-          	 kill_clash
-          	 stop
-             echo "错误: 配置文件DNS选项下的Nameserver必须设置服务器，已自动还原配置文件，请重新设置！" >$START_LOG
-             echo "${LOGTIME} Nameserver Must Be Set, Please Change Your Configrations In Config.yaml" >>$LOG_FILE
-             mv "$START_BACKUP" "$CONFIG_FILE"
-             sleep 10
-             echo "" >$START_LOG
-          else
-             echo "第五步: 启动主程序..." >$START_LOG
-             #检查是否存在核心文件
-             do_run_core
-             [ ! -f "$CLASH" ] && {
-                kill_clash
-                stop
-                echo "内核文件不存在，开始下载..." >$START_LOG
-                nohup /usr/share/openclash/openclash_core.sh "$core_type" &
-                exit 0
-             }
-             ulimit -SHn 65535 2>/dev/null
-             config_reload=$(uci get openclash.config.config_reload 2>/dev/null)
-             if [ -n "$(pidof clash)" ] && [ "$core_type" != "Tun" ] && [ "$config_reload" != "0" ]; then
-                curl -s --connect-timeout 5 -m 5 -H 'Content-Type: application/json' -H "Authorization: Bearer ${da_password}" -XPUT http://"$lan_ip":"$cn_port"/configs -d "{\"path\": \"$CONFIG_FILE\"}" 2>/dev/null
-             else
-                kill_clash
-                nohup "$CLASH" -d "$CLASH_CONFIG" -f "$CONFIG_FILE" >> $LOG_FILE 2>&1 &
-             fi
-             uci set openclash.config.config_reload=1 2>/dev/null
-             uci commit openclash
-             
-             #检测proxy_provider配置文件状态
-             echo "第六步: 等待主程序下载外部文件..." >$START_LOG
-             yml_provider_check "$PROXY_PROVIDER_FILE" "proxy_provider"
-             yml_provider_check "$RULE_PROVIDER_FILE" "rule_provider"
-
-             echo "第七步: 设置控制面板..." >$START_LOG
-             ln -s /usr/share/openclash/yacd /www/luci-static/openclash 2>/dev/null
-       
-             echo "第八步: 设置防火墙规则..." >$START_LOG
-             set_firewall
-
-             echo "第九步: 重启 Dnsmasq 程序..." >$START_LOG
-             change_dns "$enable_redirect_dns" "$disable_masq_cache"
-             /etc/init.d/dnsmasq restart >/dev/null 2>&1
-             if pidof clash >/dev/null; then
-                echo "第十步: 还原策略组节点状态..." >$START_LOG
-                /usr/share/openclash/openclash_history_set.sh
-                echo "第十一步: 添加计划任务,启动进程守护程序..." >$START_LOG
-                add_cron
-                if [ -z "$(uci get dhcp.lan.dhcpv6 2>/dev/null)" ]; then
-                   echo "OpenClash 启动成功，请等待服务器上线！" >$START_LOG
-                   echo "${LOGTIME} OpenClash Start Successful" >> $LOG_FILE
-                   sleep 5
-                else
-                   echo "OpenClash 启动成功，检测到您启用了IPV6的DHCP服务，可能会造成连接异常！" >$START_LOG
-                   echo "${LOGTIME} OpenClash Start Successful, Please Note That Network May Abnormal With IPV6's DHCP Server" >> $LOG_FILE
-                   sleep 10
-                fi
-                echo "OpenClash Already Start"
-                echo "" >$START_LOG
-             else
-                if [ "$rule_source" != 0 ] || [ "$enable_custom_clash_rules" != 0 ]; then
-                   echo "错误: OpenClash 启动失败，尝试还原第三方规则并重新启动 Clash 主程序..." >$START_LOG
-                   echo "${LOGTIME} OpenClash Can Not Start, Try Use Backup Rules Start Again" >> $LOG_FILE
-                   #获取备份rule_provider
-                   rule_provider_bak_len=$(sed -n '/^rule-providers:/=' "$START_BACKUP" 2>/dev/null)
-                   if [ -n "$rule_provider_bak_len" ]; then
-                      /usr/share/openclash/yml_field_cut.sh "$rule_provider_bak_len" "$RULE_PROVIDER_BAK_FILE" "$START_BACKUP"
-                   fi 2>/dev/null
-                   #获取备份script
-                   script_bak_len=$(sed -n '/^script:/=' "$START_BACKUP" 2>/dev/null)
-                   if [ -n "$script_bak_len" ]; then
-                      /usr/share/openclash/yml_field_cut.sh "$script_bak_len" "$SCRIPT_BAK_FILE" "$START_BACKUP"
-                   fi 2>/dev/null
-                   #获取备份rule
-                   rule_bak_len=$(sed -n '/^rules:/=' "$START_BACKUP" 2>/dev/null)
-                   if [ -n "$rule_bak_len" ]; then
-                      /usr/share/openclash/yml_field_cut.sh "$rule_bak_len" "$RULE_BAK_FILE" "$START_BACKUP"
-                   fi 2>/dev/null
-                   yml_rule_bak_merge
-                   nohup "$CLASH" -d "$CLASH_CONFIG" -f "$CONFIG_FILE" >> $LOG_FILE 2>&1 &
-                   sleep 3
-                   if pidof clash >/dev/null; then
-                   	  /usr/share/openclash/openclash_history_set.sh
-                      add_cron
-                      if [ -z "$(uci get dhcp.lan.dhcpv6 2>/dev/null)" ]; then
-                         echo "OpenClash 使用备份规则启动成功，请更新、检查变动的规则后重试！" >$START_LOG
-                         echo "${LOGTIME} OpenClash Start Successful With Backup Rules Config, Please Check Or Update Other Rules And Retry" >> $LOG_FILE
-                         sleep 10
-                      else
-                         echo "OpenClash 使用备份规则启动成功，请更新、检查变动的规则后重试！" >$START_LOG
-                         echo "${LOGTIME} OpenClash Start Successful With Backup Rules Config, Please Check Or Update Other Rules And Retry" >> $LOG_FILE
-                         sleep 5
-                         echo "检测到您启用了IPV6的DHCP服务，可能会造成连接异常！" >$START_LOG
-                         echo "${LOGTIME} OpenClash Start Successful, Please Note That Network May Abnormal With IPV6's DHCP Server" >> $LOG_FILE
-                         sleep 10
-                      fi
-                      echo "OpenClash Already Start"
-                      echo "" >$START_LOG
-                   else
-                      kill_clash
-                      stop
-                      echo "错误: OpenClash 启动失败，请到日志页面查看详细错误信息！" >$START_LOG
-                      echo "${LOGTIME} OpenClash Can Not Start, Please Check The Error Info And Try Again" >> $LOG_FILE
-                      sleep 10
-                      echo "" >$START_LOG
-                   fi
-                else
-                   kill_clash
-                   stop
-                   echo "错误: OpenClash 启动失败，请到日志页面查看详细错误信息！" >$START_LOG
-                   echo "${LOGTIME} OpenClash Can Not Start, Please Check The Error Info And Try Again" >> $LOG_FILE
-                   sleep 10
-                   echo "" >$START_LOG
-                fi
-             fi
-          fi
-       fi
-    else
-       nohup "$CLASH" -d "$CLASH_CONFIG" -f "$CONFIG_FILE" >> $LOG_FILE 2>&1 &
-       kill_clash
-       stop
-       echo "错误: 配置文件完整性检查不通过，已自动还原配置文件，请根据日志信息对照模板格式检查修改配置文件！" >$START_LOG
-       mv "$START_BACKUP" "$CONFIG_FILE"
-       sleep 5
-       echo "" >$START_LOG
-    fi
-    rm -rf $START_BACKUP 2>/dev/null
-    rm -rf /tmp/yaml_* 2>/dev/null
-else
-   subscribe_info=$(uci get openclash.@config_subscribe[0].address 2>/dev/null)
-   if [ ! -f "$CONFIG_FILE" ] && [ -n "$subscribe_info" ]; then
+   if [ -f "$GROUP_FILE" ]; then
+      if [ ! -f "$PROXY_FILE" ] && [ ! -f "$PROXY_PROVIDER_FILE" ]; then
+         kill_clash
+         stop
+         echo "错误: 配置文件完整性检查不通过，已自动还原配置文件，请对照模板格式检查修改配置文件！" >$START_LOG
+         mv "$START_BACKUP" "$CONFIG_FILE"
+         sleep 5
+         echo "" >$START_LOG
+         exit 0
+      elif [ ! -f "$RULE_FILE" ] && [ ! -f "$SCRIPT_FILE" ]; then
+         kill_clash
+         stop
+         echo "错误: 配置文件完整性检查不通过，已自动还原配置文件，请对照模板格式检查修改配置文件！" >$START_LOG
+         mv "$START_BACKUP" "$CONFIG_FILE"
+         sleep 5
+         echo "" >$START_LOG
+         exit 0
+      fi
+   else
+      nohup "$CLASH" -d "$CLASH_CONFIG" -f "$CONFIG_FILE" >> $LOG_FILE 2>&1 &
       kill_clash
       stop
-      echo "OpenClash 配置文件不存在，开始下载..." >$START_LOG
-      nohup /usr/share/openclash/openclash.sh &
-      exit 0
-   elif [ ! -f "$CONFIG_FILE" ]; then
-   	  kill_clash
-   	  stop
-      echo "错误: OpenClash 缺少配置文件，请上传或更新配置文件！" >$START_LOG
-      echo "${LOGTIME} Config Not Found" >> $LOG_FILE
+      echo "错误: 配置文件完整性检查不通过，已自动还原配置文件，请根据日志信息对照模板格式检查修改配置文件！" >$START_LOG
+      mv "$START_BACKUP" "$CONFIG_FILE"
       sleep 5
       echo "" >$START_LOG
+      exit 0
    fi
-fi
+}
+
+start()
+{
+   #禁止多个实例
+   status=$(unify_ps_status "/etc/init.d/openclash")
+   [ "$status" -gt "3" ] && echo "Multiple Start Scripts Running, Exit" >> $LOG_FILE && exit 0
+   
+   enable=$(uci get openclash.config.enable 2>/dev/null)
+   [ "$enable" != "1" ] && echo "OpenClash Now Disabled, Need Start From Luci Page, Exit" >> $LOG_FILE && exit 0
+
+   config_choose
+
+   echo "OpenClash 开始启动..." >$START_LOG
+   do_run_mode
+   
+   echo "第一步: 获取配置..." >$START_LOG
+   get_config
+   
+   echo "第二步: 配置文件检查..." >$START_LOG
+   yml_check "$en_mode" "$enable_custom_dns" "$CONFIG_FILE" "$BACKUP_FILE" "$START_BACKUP"
+   config_field_check
+   
+   echo "第三步: 修改配置文件..." >$START_LOG
+   config_load "openclash"
+   config_foreach yml_auth_get "authentication"
+   yml_auth_custom "$CHANGE_FILE"
+   yml_dns_custom "$enable_custom_dns" "$DNS_FILE" "$FALLBACK_FILTER_FILE"
+   /usr/share/openclash/yml_change.sh >/dev/null 2>&1 "$LOGTIME" "$en_mode" "$enable_custom_dns" "$da_password" "$cn_port" "$proxy_port" "$CHANGE_FILE" "$ipv6_enable" "$http_port" "$socks_port" "$lan_ip" "$log_level" "$proxy_mode" "$intranet_allowed" "$en_mode_tun" "$stack_type" &
+   /usr/share/openclash/yml_rules_change.sh >/dev/null 2>&1 "$LOGTIME" "$rule_source" "$enable_custom_clash_rules" "$RULE_FILE" "$set_rule_file" "$en_mode" "$enable_rule_proxy" "$BACKUP_FILE" "$RULE_PROVIDER_FILE" &
+   wait
+   yml_provider_path "$PROXY_PROVIDER_FILE" "proxy_provider"
+   yml_provider_path "$RULE_PROVIDER_FILE" "rule_provider"
+   yml_custom_rule_provider
+   yml_game_custom
+   
+   echo "第四步: DNS设置检查..." >$START_LOG
+   if [ -n "$(sed -n '/^ \{0,\}nameserver:/{n;p}' "$CONFIG_FILE" |grep '^ \{0,\}fallback:')" ] || [ -n "$(sed -n '/^ \{0,\}nameserver:/{n;p}' "$CONFIG_FILE" |grep 'OpenClash-General')" ]; then
+      echo "错误: 配置文件DNS选项下的Nameserver必须设置服务器，已自动还原配置文件，请重新设置！" >$START_LOG
+      echo "${LOGTIME} Nameserver Must Be Set, Please Change Your Configrations In Config.yaml" >>$LOG_FILE
+      mv "$START_BACKUP" "$CONFIG_FILE"
+      sleep 5
+      start_fail
+   fi
+   
+   echo "第五步: 启动主程序..." >$START_LOG
+   #检查是否存在核心文件
+   do_run_core
+             
+   #检测proxy_provider配置文件状态
+   echo "第六步: 等待主程序下载外部文件..." >$START_LOG
+   yml_provider_check "$PROXY_PROVIDER_FILE" "proxy_provider"
+   yml_provider_check "$RULE_PROVIDER_FILE" "rule_provider"
+
+   echo "第七步: 设置控制面板..." >$START_LOG
+   ln -s /usr/share/openclash/yacd /www/luci-static/openclash 2>/dev/null
+       
+   echo "第八步: 设置防火墙规则..." >$START_LOG
+   set_firewall
+
+   echo "第九步: 重启 Dnsmasq 程序..." >$START_LOG
+   change_dns "$enable_redirect_dns" "$disable_masq_cache"
+   /etc/init.d/dnsmasq restart >/dev/null 2>&1
+   
+   echo "第十步: 检查内核启动状态..." >$START_LOG
+   if [ -z "$(pidof clash)" ] && [ "$rule_source" = 0 ] && [ "$enable_custom_clash_rules" = 0 ]; then
+      echo "错误: OpenClash 启动失败，请到日志页面查看详细错误信息！" >$START_LOG
+      echo "${LOGTIME} OpenClash Can Not Start, Please Check The Error Info And Try Again" >> $LOG_FILE
+      sleep 5
+      start_fail
+   fi
+   if ! pidof clash >/dev/null; then
+      echo "错误: OpenClash 启动失败，尝试还原第三方规则并重新启动 Clash 主程序..." >$START_LOG
+      echo "${LOGTIME} OpenClash Can Not Start, Try Use Backup Rules Start Again" >> $LOG_FILE
+      #获取备份rule_provider
+      rule_provider_bak_len=$(sed -n '/^rule-providers:/=' "$START_BACKUP" 2>/dev/null)
+      if [ -n "$rule_provider_bak_len" ]; then
+         /usr/share/openclash/yml_field_cut.sh "$rule_provider_bak_len" "$RULE_PROVIDER_BAK_FILE" "$START_BACKUP"
+      fi 2>/dev/null
+      #获取备份script
+      script_bak_len=$(sed -n '/^script:/=' "$START_BACKUP" 2>/dev/null)
+      if [ -n "$script_bak_len" ]; then
+         /usr/share/openclash/yml_field_cut.sh "$script_bak_len" "$SCRIPT_BAK_FILE" "$START_BACKUP"
+      fi 2>/dev/null
+      #获取备份rule
+      rule_bak_len=$(sed -n '/^rules:/=' "$START_BACKUP" 2>/dev/null)
+      if [ -n "$rule_bak_len" ]; then
+         /usr/share/openclash/yml_field_cut.sh "$rule_bak_len" "$RULE_BAK_FILE" "$START_BACKUP"
+      fi 2>/dev/null
+      yml_rule_bak_merge
+      nohup "$CLASH" -d "$CLASH_CONFIG" -f "$CONFIG_FILE" >> $LOG_FILE 2>&1 &
+      sleep 3
+      if ! pidof clash >/dev/null; then
+         echo "错误: OpenClash 启动失败，请到日志页面查看详细错误信息！" >$START_LOG
+         echo "${LOGTIME} OpenClash Can Not Start, Please Check The Error Info And Try Again" >> $LOG_FILE
+         sleep 5
+         start_fail
+      fi
+   fi
+            
+   echo "第十一步: 还原策略组节点状态..." >$START_LOG
+   /usr/share/openclash/openclash_history_set.sh
+   
+   echo "第十二步: 添加计划任务,启动进程守护程序..." >$START_LOG
+   add_cron
+   if [ -z "$(uci get dhcp.lan.dhcpv6 2>/dev/null)" ]; then
+      echo "OpenClash 启动成功，请等待服务器上线！" >$START_LOG
+      echo "${LOGTIME} OpenClash Start Successful" >> $LOG_FILE
+      sleep 5
+   else
+      echo "OpenClash 启动成功，检测到您启用了IPV6的DHCP服务，可能会造成连接异常！" >$START_LOG
+      echo "${LOGTIME} OpenClash Start Successful, Please Note That Network May Abnormal With IPV6's DHCP Server" >> $LOG_FILE
+      sleep 5
+   fi
+   echo "OpenClash Already Start"
+   echo "" >$START_LOG
+   rm -rf $START_BACKUP 2>/dev/null
+   rm -rf /tmp/yaml_* 2>/dev/null
 }
 
 stop()
@@ -1594,7 +1586,7 @@ stop()
    done
 
    echo "第四步: 关闭 Clash 主程序..." >$START_LOG
-   if [ "$enable" -eq 0 ]; then
+   if [ "$enable" != "1" ]; then
       kill_clash
    fi
 
@@ -1606,7 +1598,7 @@ stop()
    /etc/init.d/dnsmasq restart >/dev/null 2>&1
 
    echo "第六步：删除 OpenClash 残留文件..." >$START_LOG
-   if [ "$enable" -eq 0 ]; then
+   if [ "$enable" != "1" ]; then
       rm -rf $LOG_FILE 2>/dev/null
       rm -rf /tmp/openclash_debug.log 2>/dev/null
       rm -rf /www/luci-static/openclash 2>/dev/null
@@ -1614,6 +1606,7 @@ stop()
       rm -rf /tmp/clash_last_version 2>/dev/null
       rm -rf /tmp/Proxy_Group 2>/dev/null
       rm -rf /tmp/rules_name 2>/dev/null
+      rm -rf /tmp/rule_providers_name 2>/dev/null
       echo "OpenClash 关闭成功！" >$START_LOG
       sleep 5
    fi
@@ -1638,6 +1631,6 @@ reload()
       do_run_mode 2>/dev/null
       get_config 2>/dev/null
       set_firewall 2>/dev/null
-      echo "${LOGTIME} OpenClash Reload After Firewall Restart" >> $LOG_FILE
+      echo "${LOGTIME} Reload OpenClash Firewall Rules" >> $LOG_FILE
    fi
 }

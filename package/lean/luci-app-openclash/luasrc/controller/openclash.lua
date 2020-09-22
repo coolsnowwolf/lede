@@ -16,6 +16,9 @@ function index()
 	entry({"admin", "services", "openclash", "startlog"},call("action_start")).leaf=true
 	entry({"admin", "services", "openclash", "close_all_connection"},call("action_close_all_connection"))
 	entry({"admin", "services", "openclash", "restore_history"},call("action_restore_history"))
+	entry({"admin", "services", "openclash", "get_history"},call("action_get_history"))
+	entry({"admin", "services", "openclash", "reload_firewall"},call("action_reload_firewall"))
+	entry({"admin", "services", "openclash", "update_subscribe"},call("action_update_subscribe"))
 	entry({"admin", "services", "openclash", "currentversion"},call("action_currentversion"))
 	entry({"admin", "services", "openclash", "lastversion"},call("action_lastversion"))
 	entry({"admin", "services", "openclash", "update"},call("action_update"))
@@ -385,6 +388,19 @@ end
 
 function action_restore_history()
 	return luci.sys.call("sh /usr/share/openclash/openclash_history_set.sh")
+end
+
+function action_get_history()
+	return luci.sys.call("sh /usr/share/openclash/openclash_history_get.sh")
+end
+
+function action_reload_firewall()
+	return luci.sys.call("/etc/init.d/openclash reload")
+end
+
+function action_update_subscribe()
+	fs.unlink("/tmp/Proxy_Group")
+	return luci.sys.call("/usr/share/openclash/openclash.sh >/dev/null 2>&1")
 end
 
 function act_ping()

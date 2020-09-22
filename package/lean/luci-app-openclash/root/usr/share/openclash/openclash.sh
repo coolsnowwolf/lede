@@ -280,14 +280,14 @@ sub_info_get()
    if [ "$sub_convert" -eq 0 ]; then
       subscribe_url="$address"
    elif [ "$sub_convert" -eq 1 ] && [ -n "$template" ]; then
-      subscribe_url=$(rawurlencode "$address")
+      subscribe_url=$(urlencode "$address")
       if [ "$template" != "0" ]; then
          template_path=$(grep "^$template," /usr/share/openclash/res/sub_ini.list |awk -F ',' '{print $3}' 2>/dev/null)
       else
          template_path=$custom_template_url
       fi
       if [ -n "$template_path" ]; then
-         template_path_encode=$(rawurlencode "$template_path")
+         template_path_encode=$(urlencode "$template_path")
          if [ ! -z "$keyword" ] || [ ! -z "$ex_keyword" ]; then
       	   config_list_foreach "$section" "keyword" server_key_match "keyword"
       	   config_list_foreach "$section" "ex_keyword" server_key_match "ex_keyword"

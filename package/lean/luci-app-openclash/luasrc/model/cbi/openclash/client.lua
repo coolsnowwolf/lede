@@ -13,7 +13,6 @@ m.description = translate("A Clash Client For OpenWrt")
 m.pageaction = false
 
 m:section(SimpleSection).template  = "openclash/status"
-m:section(SimpleSection).template  = "openclash/state"
 
 function IsYamlFile(e)
    e=e or""
