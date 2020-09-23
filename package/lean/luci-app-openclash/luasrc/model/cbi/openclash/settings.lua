@@ -248,22 +248,31 @@ o:value("0", translate("Black List Mode"))
 o:value("1", translate("White List Mode"))
 o.default=0
 
-o = s:taboption("lan_ac", DynamicList, "lan_ac_black_ips", translate("LAN Bypassed Host List"))
-o:depends("lan_ac_mode", "0")
-o.datatype = "ipaddr"
-luci.ip.neighbors({ family = 4 }, function(entry)
-		if entry.reachable then
-			o:value(entry.dest:string())
-		end
-end)
+ip_b = s:taboption("lan_ac", DynamicList, "lan_ac_black_ips", translate("LAN Bypassed Host List"))
+ip_b:depends("lan_ac_mode", "0")
+ip_b.datatype = "ipaddr"
 
-o = s:taboption("lan_ac", DynamicList, "lan_ac_white_ips", translate("LAN Proxied Host List"))
-o:depends("lan_ac_mode", "1")
-o.datatype = "ipaddr"
-luci.ip.neighbors({ family = 4 }, function(entry)
-		if entry.reachable then
-			o:value(entry.dest:string())
-		end
+mac_b = s:taboption("lan_ac", DynamicList, "lan_ac_black_macs", translate("LAN Bypassed Mac List"))
+mac_b.datatype = "list(macaddr)"
+mac_b.rmempty  = true
+mac_b:depends("lan_ac_mode", "0")
+
+ip_w = s:taboption("lan_ac", DynamicList, "lan_ac_white_ips", translate("LAN Proxied Host List"))
+ip_w:depends("lan_ac_mode", "1")
+ip_w.datatype = "ipaddr"
+
+mac_w = s:taboption("lan_ac", DynamicList, "lan_ac_white_macs", translate("LAN Proxied Mac List"))
+mac_w.datatype = "list(macaddr)"
+mac_w.rmempty  = true
+mac_w:depends("lan_ac_mode", "1")
+
+luci.ip.neighbors({ family = 4 }, function(n)
+	if n.mac and n.dest then
+		ip_b:value(n.dest:string())
+		ip_w:value(n.dest:string())
+		mac_b:value(n.mac, "%s (%s)" %{ n.mac, n.dest:string() })
+		mac_w:value(n.mac, "%s (%s)" %{ n.mac, n.dest:string() })
+	end
 end)
 end
 

@@ -10,6 +10,7 @@ en_mode=$(uci get openclash.config.en_mode 2>/dev/null)
 CPU_MODEL=$(uci get openclash.config.core_version 2>/dev/null)
 HTTP_PORT=$(uci get openclash.config.http_port 2>/dev/null)
 PROXY_ADDR=$(uci get network.lan.ipaddr 2>/dev/null |awk -F '/' '{print $1}' 2>/dev/null)
+[ ! -f "/tmp/clash_last_version" ] && /usr/share/openclash/clash_version.sh 2>/dev/null
 mkdir -p /etc/openclash/core
 
 [ -s "/tmp/openclash.auth" ] && {
@@ -46,7 +47,6 @@ case $CORE_TYPE in
    fi
 esac
 
-[ -z "$(pidof clash)" ] && if_restart=0
 [ -n "$2" ] || [ "$1" = "one_key_update" ] && if_restart=0
 
 if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
@@ -69,15 +69,15 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
 			case $CORE_TYPE in
       	"Tun")
       	echo "正在下载【Tun】版本内核，如下载失败请尝试手动下载并上传..." >$START_LOG
-				curl -sL -m 30 --retry 2 https://github.com/vernesong/OpenClash/releases/download/TUN-Premium/clash-"$CPU_MODEL"-"$CORE_LV".gz -o /tmp/clash_tun.gz >/dev/null 2>&1
+				curl -sL -m 30 --retry 2 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/core-lateset/premium/clash-"$CPU_MODEL"-"$CORE_LV".gz -o /tmp/clash_tun.gz >/dev/null 2>&1
 				;;
 				"Game")
 				echo "正在下载【Game】版本内核，如下载失败请尝试手动下载并上传..." >$START_LOG
-				curl -sL -m 30 --retry 2 https://github.com/vernesong/OpenClash/releases/download/TUN/clash-"$CPU_MODEL".tar.gz -o /tmp/clash_game.tar.gz >/dev/null 2>&1
+				curl -sL -m 30 --retry 2 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/core-lateset/game/clash-"$CPU_MODEL".tar.gz -o /tmp/clash_game.tar.gz >/dev/null 2>&1
 				;;
 				*)
 				echo "正在下载【Dev】版本内核，如下载失败请尝试手动下载并上传..." >$START_LOG
-				curl -sL -m 30 --retry 2 https://github.com/vernesong/OpenClash/releases/download/Clash/clash-"$CPU_MODEL".tar.gz -o /tmp/clash.tar.gz >/dev/null 2>&1
+				curl -sL -m 30 --retry 2 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/core-lateset/dev/clash-"$CPU_MODEL".tar.gz -o /tmp/clash.tar.gz >/dev/null 2>&1
 			esac
    fi
    if [ "$?" -eq "0" ]; then
@@ -130,8 +130,10 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
       fi
       
       if [ "$if_restart" -eq 1 ]; then
-      	 kill -9 "$(pidof clash|sed 's/$//g')" 2>/dev/null
-      	 /etc/init.d/openclash stop
+      	 clash_pids=$(pidof clash|sed 's/$//g')
+         for clash_pid in $clash_pids; do
+            kill -9 "$clash_pid" 2>/dev/null
+         done
       fi
       
 			case $CORE_TYPE in
@@ -151,7 +153,7 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
          	 uci set openclash.config.config_reload=0
          	 uci commit openclash
          fi
-         [ "$if_restart" -eq 1 ] && /etc/init.d/openclash start
+         [ "$if_restart" -eq 1 ] && /etc/init.d/openclash restart
          echo "" >$START_LOG
       else
          echo "【"$CORE_TYPE"】版本内核更新失败，请确认设备闪存空间足够后再试！" >$START_LOG

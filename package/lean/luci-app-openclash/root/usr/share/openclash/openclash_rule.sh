@@ -24,14 +24,14 @@
       	 if pidof clash >/dev/null; then
             curl -sL --connect-timeout 10 --retry 2 -x http://$PROXY_ADDR:$HTTP_PORT -U "$PROXY_AUTH" https://raw.githubusercontent.com/lhie1/Rules/master/Clash/Rule.yaml -o /tmp/rules.yaml >/dev/null 2>&1
       	 else
-            curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/lhie1/Rules/master/Clash/Rule.yaml -o /tmp/rules.yaml >/dev/null 2>&1
+            curl -sL --connect-timeout 10 --retry 2 https://cdn.jsdelivr.net/gh/lhie1/Rules@master/Clash/Rule.yaml -o /tmp/rules.yaml >/dev/null 2>&1
          fi
          sed -i '1i rules:' /tmp/rules.yaml
       elif [ "$RUlE_SOURCE" = "ConnersHua" ]; then
       	 if pidof clash >/dev/null; then
             curl -sL --connect-timeout 10 --retry 2 -x http://$PROXY_ADDR:$HTTP_PORT -U "$PROXY_AUTH" https://raw.githubusercontent.com/DivineEngine/Profiles/master/Clash/Global.yaml -o /tmp/rules.yaml >/dev/null 2>&1
       	 else
-            curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/DivineEngine/Profiles/master/Clash/Global.yaml -o /tmp/rules.yaml >/dev/null 2>&1
+            curl -sL --connect-timeout 10 --retry 2 https://cdn.jsdelivr.net/gh/DivineEngine/Profiles@master/Clash/Global.yaml -o /tmp/rules.yaml >/dev/null 2>&1
          fi
          sed -i -n '/^rule-providers:/,$p' /tmp/rules.yaml 2>/dev/null
          sed -i "s/# - RULE-SET,ChinaIP,DIRECT/- RULE-SET,ChinaIP,DIRECT/g" /tmp/rules.yaml 2>/dev/null
@@ -40,7 +40,7 @@
       	 if pidof clash >/dev/null; then
             curl -sL --connect-timeout 10 --retry 2 -x http://$PROXY_ADDR:$HTTP_PORT -U "$PROXY_AUTH" https://raw.githubusercontent.com/ConnersHua/Profiles/master/Clash/China.yaml -o /tmp/rules.yaml >/dev/null 2>&1
       	 else
-            curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/ConnersHua/Profiles/master/Clash/China.yaml -o /tmp/rules.yaml >/dev/null 2>&1
+            curl -sL --connect-timeout 10 --retry 2 https://cdn.jsdelivr.net/gh/DivineEngine/Profiles@master/Clash/China.yaml -o /tmp/rules.yaml >/dev/null 2>&1
          fi
          sed -i -n '/^rules:/,$p' /tmp/rules.yaml 2>/dev/null
       fi

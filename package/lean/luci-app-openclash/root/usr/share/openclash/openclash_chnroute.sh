@@ -18,7 +18,7 @@
    if pidof clash >/dev/null; then
       curl -sL --connect-timeout 10 --retry 2 -x http://$PROXY_ADDR:$HTTP_PORT -U "$PROXY_AUTH" https://raw.githubusercontent.com/DivineEngine/Profiles/master/Clash/RuleSet/Extra/ChinaIP.yaml -o /tmp/ChinaIP.yaml >/dev/null 2>&1
    else
-      curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/DivineEngine/Profiles/master/Clash/RuleSet/Extra/ChinaIP.yaml -o /tmp/ChinaIP.yaml >/dev/null 2>&1
+      curl -sL --connect-timeout 10 --retry 2 https://cdn.jsdelivr.net/gh/DivineEngine/Profiles@master/Clash/RuleSet/Extra/ChinaIP.yaml -o /tmp/ChinaIP.yaml >/dev/null 2>&1
    fi
    if [ "$?" -eq "0" ] && [ -s "/tmp/ChinaIP.yaml" ]; then
       echo "大陆IP白名单下载成功，检查版本是否更新..." >$START_LOG

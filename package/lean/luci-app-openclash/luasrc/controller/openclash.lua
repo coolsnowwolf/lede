@@ -19,6 +19,8 @@ function index()
 	entry({"admin", "services", "openclash", "get_history"},call("action_get_history"))
 	entry({"admin", "services", "openclash", "reload_firewall"},call("action_reload_firewall"))
 	entry({"admin", "services", "openclash", "update_subscribe"},call("action_update_subscribe"))
+	entry({"admin", "services", "openclash", "update_other_rules"},call("action_update_other_rules"))
+	entry({"admin", "services", "openclash", "update_geoip"},call("action_update_geoip"))
 	entry({"admin", "services", "openclash", "currentversion"},call("action_currentversion"))
 	entry({"admin", "services", "openclash", "lastversion"},call("action_lastversion"))
 	entry({"admin", "services", "openclash", "update"},call("action_update"))
@@ -401,6 +403,14 @@ end
 function action_update_subscribe()
 	fs.unlink("/tmp/Proxy_Group")
 	return luci.sys.call("/usr/share/openclash/openclash.sh >/dev/null 2>&1")
+end
+
+function action_update_other_rules()
+	return luci.sys.call("/usr/share/openclash/openclash_rule.sh >/dev/null 2>&1")
+end
+
+function action_update_geoip()
+	return luci.sys.call("/usr/share/openclash/openclash_ipdb.sh >/dev/null 2>&1")
 end
 
 function act_ping()
