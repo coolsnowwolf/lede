@@ -20,6 +20,7 @@ if [ -f "$CFG_FILE" ]; then
    group_len=$(sed -n '/^proxy-groups:/=' "$CFG_FILE" 2>/dev/null)
    if [ -n "$group_len" ]; then
    	  /usr/share/openclash/yml_field_cut.sh "$group_len" "$GROUP_FILE" "$CFG_FILE"
+   	  rm -rf /tmp/yaml_general 2>/dev/null
    fi 2>/dev/null
    
    cat "$GROUP_FILE" |sed "s/\'//g" 2>/dev/null |sed 's/\"//g' 2>/dev/null |sed 's/\t/ /g' 2>/dev/null |grep name: |awk -F 'name:' '{print $2}' |sed 's/,.*//' |sed 's/^ \{0,\}//' 2>/dev/null |sed 's/ \{0,\}$//' 2>/dev/null |sed 's/ \{0,\}\}\{0,\}$//g' 2>/dev/null >/tmp/Proxy_Group 2>&1

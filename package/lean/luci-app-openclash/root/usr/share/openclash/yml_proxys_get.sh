@@ -36,11 +36,21 @@ elif [ ! -s "$CONFIG_FILE" ] && [ -s "$BACKUP_FILE" ]; then
 fi
 
 #判断各个区位置
-proxy_len=$(sed -n '/^ \{0,\}Proxy:/=' "$CONFIG_FILE" 2>/dev/null)
-/usr/share/openclash/yml_field_cut.sh "$proxy_len" "/tmp/yaml_proxy.yaml" "$CONFIG_FILE" "yaml_get"
+proxy_lens=$(sed -n '/^ \{0,\}Proxy:/=' "$CONFIG_FILE" 2>/dev/null)
+proxy_len_num=1
+for proxy_len in $proxy_lens; do
+   if [ -n "$proxy_len" ]; then
+      /usr/share/openclash/yml_field_cut.sh "$proxy_len" "/tmp/yaml_proxy_$proxy_len_num.yaml" "$CONFIG_FILE" "yaml_get"
+   fi 2>/dev/null
+   proxy_len_num=$(expr "$proxy_len_num" + 1)
+done 2>/dev/null
+for i in $(seq "$proxy_len_num"); do
+   cat "/tmp/yaml_proxy_$i.yaml" >> /tmp/yaml_proxy.yaml
+done 2>/dev/null
+rm -rf /tmp/yaml_proxy_*.yaml 2>/dev/null
 provider_len=$(sed -n '/^ \{0,\}proxy-providers:/=' "$CONFIG_FILE" 2>/dev/null)
 /usr/share/openclash/yml_field_cut.sh "$provider_len" "/tmp/yaml_provider.yaml" "$CONFIG_FILE" "yaml_get"
-
+rm -rf /tmp/yaml_general 2>/dev/null
 
 CFG_FILE="/etc/config/openclash"
 server_file="/tmp/yaml_proxy.yaml"

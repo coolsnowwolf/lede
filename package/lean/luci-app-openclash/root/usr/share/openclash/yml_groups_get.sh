@@ -51,6 +51,7 @@ echo "开始更新【$CONFIG_NAME】的策略组配置..." >$START_LOG
 #判断各个区位置
 group_len=$(sed -n '/^ \{0,\}proxy-groups:/=' "$CONFIG_FILE" 2>/dev/null)
 /usr/share/openclash/yml_field_cut.sh "$group_len" "/tmp/yaml_group.yaml" "$CONFIG_FILE" "yaml_get"
+rm -rf /tmp/yaml_general 2>/dev/null
 
 #判断当前配置文件是否有策略组信息
 cfg_group_name()

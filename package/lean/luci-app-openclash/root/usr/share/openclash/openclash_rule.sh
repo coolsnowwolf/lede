@@ -66,6 +66,7 @@
       #合并
       cat "$OTHER_RULE_PROVIDER_FILE" "$OTHER_SCRIPT_FILE" "$OTHER_RULE_FILE" > "/tmp/rules.yaml" 2>/dev/null
       rm -rf /tmp/other_rule* 2>/dev/null
+      rm -rf /tmp/yaml_general 2>/dev/null
       
       echo "检查下载的规则文件是否有更新..." >$START_LOG
       cmp -s /usr/share/openclash/res/"$RUlE_SOURCE".yaml /tmp/rules.yaml

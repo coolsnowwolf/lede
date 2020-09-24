@@ -5,7 +5,7 @@ field_cut()
 {
    local i lines end_len
    if [ "$4" != "dns" ]; then
-      proxy_len=$(sed -n '/^Proxy:/=' "$3" 2>/dev/null |sed -n 1p)
+      proxy_len=$(sed -n '/^Proxy:/=' "$3" 2>/dev/null)
       provider_len=$(sed -n '/^proxy-providers:/=' "$3" 2>/dev/null)
       group_len=$(sed -n '/^proxy-groups:/=' "$3" 2>/dev/null)
       rule_len=$(sed -n '/^rules:/=' "$3" 2>/dev/null)
@@ -40,15 +40,19 @@ field_cut()
    elif [ -n "$end_len" ]; then
       end_len=$(expr "$end_len" - 1)
    fi
-   
-   if [ "$4" != "yaml_get" ]; then
-      sed -n "${1},${end_len}p" "$3" > "$2" 2>/dev/null
-   else
+      
+   if [ "$4" = "yaml_get" ]; then
       sed -n "${1},${end_len}p" "$3" |sed 's/\"//g' 2>/dev/null |sed "s/\'//g" 2>/dev/null |sed 's/\t/ /g' 2>/dev/null > "$2" 2>/dev/null
+   elif [ "$4" = "dns" ]; then
+   	  sed -n "${1},${end_len}p" "$3" > "$2" 2>/dev/null
+   	  sed -i "${1},${end_len}d" "$3" 2>/dev/null
+   else
+      sed -n "${1},${end_len}p" "$3" > "$2" 2>/dev/null
    fi
 
 }
 
+if [ ! -f "/tmp/yaml_general" ]; then
    #识别general部分
    space_num=$(grep "^ \{0,\}socks-port:" "$3" 2>/dev/null |awk -F ':' '{print $1}' |grep -c " ")
    if [ -z "$space_num" ]; then
@@ -76,9 +80,10 @@ field_cut()
          general_len=$line_len
          echo $general_len >/tmp/yaml_general
       fi
-   done
-   
-   general_len=$(cat /tmp/yaml_general)
+   done 2>/dev/null
+fi
+
+   general_len=$(cat /tmp/yaml_general 2>/dev/null)
    if [ "$1" = "general" ]; then
       field_cut "$general_len" "$2" "$3"
    else
@@ -101,4 +106,3 @@ field_cut()
    sed -i '/^ \{0,\}stack:/d' "$2" 2>/dev/null
    sed -i '/^ \{0,\}device-url:/d' "$2" 2>/dev/null
    sed -i '/^ \{0,\}dns-listen:/d' "$2" 2>/dev/null
-   rm -rf /tmp/yaml_general 2>/dev/null

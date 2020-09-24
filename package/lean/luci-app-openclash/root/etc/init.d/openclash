@@ -61,16 +61,16 @@ del_cron()
 }
 
 change_dns() {
-   if [ "$1" -eq "1" ]; then
+   if [ "$1" -eq 1 ]; then
       uci del dhcp.@dnsmasq[-1].server >/dev/null 2>&1
       uci add_list dhcp.@dnsmasq[0].server=127.0.0.1#"$dns_port"
       uci delete dhcp.@dnsmasq[0].resolvfile 2>/dev/null
       uci set dhcp.@dnsmasq[0].noresolv=1 2>/dev/null
       uci set openclash.config.redirect_dns=1
    else
-      uci delete openclash.config.redirect_dns 2>/dev/null
+      uci set openclash.config.redirect_dns=0 2>/dev/null
    fi
-   if [ "$2" -eq "1" ]; then
+   if [ "$2" -eq 1 ]; then
       uci set dhcp.@dnsmasq[0].cachesize=0 2>/dev/null
    fi
    
@@ -81,16 +81,13 @@ change_dns() {
 }
 
 revert_dns() {
-   [ "$1" -eq "0" ] && {
-      if [ "$(uci get openclash.config.dns_revert 2>/dev/null)" != "1" ]; then
-         uci del_list dhcp.@dnsmasq[0].server=127.0.0.1#"$3" >/dev/null 2>&1
-         uci set openclash.config.dns_revert=1 2>/dev/null
-      fi
+
+   [ "$1" -eq 1 ] && {
+   	  uci del_list dhcp.@dnsmasq[0].server=127.0.0.1#"$3" >/dev/null 2>&1
    }
    
-   [ "$1" -eq "1" ] && {
-   	  uci del_list dhcp.@dnsmasq[0].server=127.0.0.1#"$3" >/dev/null 2>&1
-   	  uci set openclash.config.dns_revert=0 2>/dev/null
+   [ "$1" -eq 1 ] && [ "$4" -eq 0 ] && {
+      uci set openclash.config.redirect_dns=0 2>/dev/nulls
    }
 
    [ "$(uci get dhcp.@dnsmasq[0].cachesize 2>/dev/null)" = "0" ] && {
@@ -112,10 +109,10 @@ revert_dns() {
 
 kill_clash()
 {
-   clash_pids=$(pidof clash|sed 's/$//g')
+   clash_pids=$(pidof clash |sed 's/$//g')
    for clash_pid in $clash_pids; do
       kill -9 "$clash_pid" 2>/dev/null
-   done
+   done >/dev/null 2>&1
    sleep 1
 }
 
@@ -129,7 +126,11 @@ start_fail()
 yml_merge()
 {
 #合并文件
-sed -i "s/^ \{0,\}Proxy:/proxies:/g" "$PROXY_FILE" 2>/dev/null
+if [ -z "$(grep "^Proxy:#d" "$PROXY_FILE")" ]; then
+   sed -i "s/^Proxy:/proxies:/g" "$PROXY_FILE" 2>/dev/null
+else
+   sed -i "s/^Proxy:#d/proxies:/g" "$PROXY_FILE" 2>/dev/null
+fi
 cat "$CHANGE_FILE" "$DNS_FILE" "$PROXY_PROVIDER_FILE" "$PROXY_FILE" "$GROUP_FILE" "$RULE_PROVIDER_FILE" "$SCRIPT_FILE" "$RULE_FILE" > "$CONFIG_FILE" 2>/dev/null
 }
 
@@ -169,10 +170,17 @@ yml_check()
    fi 2>/dev/null
    
    #取出proxy部分
-   proxy_len=$(sed -n '/^Proxy:/=' "$3" 2>/dev/null)
-   if [ -n "$proxy_len" ]; then
-   	  /usr/share/openclash/yml_field_cut.sh "$proxy_len" "$PROXY_FILE" "$3"
-   fi 2>/dev/null
+   proxy_lens=$(sed -n '/^Proxy:/=' "$3" 2>/dev/null)
+   proxy_len_num=1
+   for proxy_len in $proxy_lens; do
+      if [ -n "$proxy_len" ]; then
+   	     /usr/share/openclash/yml_field_cut.sh "$proxy_len" "/tmp/yaml_proxy_$proxy_len_num.yaml" "$3"
+      fi 2>/dev/null
+      proxy_len_num=$(expr "$proxy_len_num" + 1)
+   done 2>/dev/null
+   for i in $(seq "$proxy_len_num"); do
+      cat "/tmp/yaml_proxy_$i.yaml" >> $PROXY_FILE
+   done 2>/dev/null
    
    #取出proxy-providers部分
    provider_len=$(sed -n '/^proxy-providers:/=' "$3" 2>/dev/null)
@@ -899,7 +907,6 @@ lan_ac()
    fi
   
    ipset add "$2" "$1" 2>/dev/null
-  
 }
 
 wan_ac()
@@ -909,7 +916,6 @@ wan_ac()
    fi
   
    ipset add "$2" "$1" 2>/dev/null
-  
 }
 
 lan_ac_mac()
@@ -918,35 +924,7 @@ lan_ac_mac()
       return
    fi
 
-   if [ "$2" = "lan_ac_black_macs" ]; then
-   	  lan_ac_black_macs="$lan_ac_black_macs $1"
-   fi
-   
-   if [ "$2" = "lan_ac_white_macs" ]; then
-   	  lan_ac_white_macs="$lan_ac_white_macs $1"
-   fi
-}
-
-lan_ac_mac_nat()
-{
-   for mac in $lan_ac_black_macs; do
-      iptables -t nat -A openclash -m mac --mac-source $mac -j RETURN >/dev/null 2>&1
-   done 2>/dev/null
-   
-   for mac in $lan_ac_white_macs; do
-      iptables -t nat -A openclash -m mac ! --mac-source $mac -j RETURN >/dev/null 2>&1
-   done 2>/dev/null
-}
-
-lan_ac_mac_mangle()
-{
-   for mac in $lan_ac_black_macs; do
-      iptables -t mangle -A openclash -m mac --mac-source $mac -j RETURN >/dev/null 2>&1
-   done 2>/dev/null
-   	
-   for mac in $lan_ac_white_macs; do
-      iptables -t mangle -A openclash -m mac ! --mac-source $mac -j RETURN >/dev/null 2>&1
-   done 2>/dev/null
+   ipset add "$2" "$1" 2>/dev/null
 }
 
 firewall_redirect_exclude()
@@ -999,11 +977,13 @@ CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
 if [ ! -f "$CONFIG_FILE" ]; then
    subscribe_info=$(uci get openclash.@config_subscribe[0].address 2>/dev/null)
    if [ ! -f "$CONFIG_FILE" ] && [ -n "$subscribe_info" ]; then
-      echo "OpenClash 配置文件不存在，开始下载..." >$START_LOG
+      echo "配置文件不存在，您已设置订阅信息，准备开始下载..." >$START_LOG
+      sleep 3
+      kill_clash
+      stop
       nohup /usr/share/openclash/openclash.sh &
-      start_fail
    elif [ ! -f "$CONFIG_FILE" ]; then
-      echo "错误: OpenClash 缺少配置文件，请上传或更新配置文件！" >$START_LOG
+      echo "错误: 缺少配置文件，请上传或更新配置文件！" >$START_LOG
       echo "${LOGTIME} Config Not Found" >> $LOG_FILE
       sleep 5
       start_fail
@@ -1108,10 +1088,12 @@ do_run_core()
     [ ! -x "/etc/openclash/core/clash" ] && chmod 4755 /etc/openclash/core/clash 2>/dev/null
     
     [ ! -f "$CLASH" ] && {
-      echo "内核文件不存在，开始下载..." >$START_LOG
+      echo "检测到内核文件不存在，准备开始下载..." >$START_LOG
+      sleep 3
       rm -rf "/tmp/clash_last_version" 2>/dev/null
+      kill_clash
+      stop
       nohup /usr/share/openclash/openclash_core.sh "$core_type" &
-      start_fail
     }
     ulimit -SHn 65535 2>/dev/null
     config_reload=$(uci get openclash.config.config_reload 2>/dev/null)
@@ -1184,6 +1166,7 @@ if [ "$operation_mode" = "redir-host" ] && [ "$en_mode" = "redir-host" ]; then
          config_list_foreach "config" "lan_ac_black_ips" lan_ac "lan_ac_black_ips"
       fi
       if [ -n "$(uci get openclash.config.lan_ac_black_macs 2>/dev/null)" ]; then
+      	 ipset create lan_ac_black_macs hash:mac
          config_load "openclash"
          config_list_foreach "config" "lan_ac_black_macs" lan_ac_mac "lan_ac_black_macs"
       fi
@@ -1194,6 +1177,7 @@ if [ "$operation_mode" = "redir-host" ] && [ "$en_mode" = "redir-host" ]; then
          config_list_foreach "config" "lan_ac_white_ips" lan_ac "lan_ac_white_ips"
       fi
       if [ -n "$(uci get openclash.config.lan_ac_white_macs 2>/dev/null)" ]; then
+      	 ipset create lan_ac_white_macs hash:mac
          config_load "openclash"
          config_list_foreach "config" "lan_ac_white_macs" lan_ac_mac "lan_ac_white_macs"
       fi
@@ -1228,9 +1212,10 @@ if [ -z "$en_mode_tun" ] || [ "$en_mode_tun" -eq 3 ]; then
    iptables -t nat -N openclash
    iptables -t nat -F openclash
    iptables -t nat -A openclash -m set --match-set localnetwork dst -j RETURN
-   lan_ac_mac_nat
    iptables -t nat -A openclash -m set --match-set wan_ac_black_ips dst -j RETURN >/dev/null 2>&1
    iptables -t nat -A openclash -m set --match-set lan_ac_black_ips src -j RETURN >/dev/null 2>&1
+   iptables -t nat -A openclash -m set --match-set lan_ac_black_macs src -j RETURN >/dev/null 2>&1
+   iptables -t nat -A openclash -m set ! --match-set lan_ac_white_macs src -j RETURN >/dev/null 2>&1
    iptables -t nat -A openclash -m set ! --match-set lan_ac_white_ips src -j RETURN >/dev/null 2>&1
    if [ "$en_mode" = "redir-host" ]; then
       iptables -t nat -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
@@ -1249,10 +1234,11 @@ if [ -z "$en_mode_tun" ] || [ "$en_mode_tun" -eq 3 ]; then
          ip route add local 0.0.0.0/0 dev lo table "$PROXY_ROUTE_TABLE"
          iptables -t mangle -N openclash
          iptables -t mangle -A openclash -m set --match-set localnetwork dst -j RETURN
-         lan_ac_mac_mangle
          iptables -t mangle -A openclash -m set --match-set wan_ac_black_ips dst -j RETURN >/dev/null 2>&1
+         iptables -t mangle -A openclash -m set --match-set lan_ac_black_macs src -j RETURN >/dev/null 2>&1
          iptables -t mangle -A openclash -m set --match-set lan_ac_black_ips src -j RETURN >/dev/null 2>&1
          iptables -t mangle -A openclash -m set ! --match-set lan_ac_white_ips src -j RETURN >/dev/null 2>&1
+         iptables -t mangle -A openclash -m set ! --match-set lan_ac_white_macs src -j RETURN >/dev/null 2>&1
          if [ "$en_mode" = "redir-host" ]; then
    	        iptables -t mangle -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
          fi
@@ -1336,14 +1322,16 @@ if [ -n "$en_mode_tun" ]; then
    config_load "firewall"
    config_foreach firewall_redirect_exclude "redirect"
    #其他流量
-   lan_ac_mac_mangle
+   iptables -t mangle -A openclash -m set --match-set localnetwork dst -j RETURN >/dev/null 2>&1
    iptables -t mangle -A openclash -m set --match-set wan_ac_black_ips dst -j RETURN >/dev/null 2>&1
    iptables -t mangle -A openclash -m set --match-set lan_ac_black_ips src -j RETURN >/dev/null 2>&1
+   iptables -t mangle -A openclash -m set --match-set lan_ac_black_macs src -j RETURN >/dev/null 2>&1
    iptables -t mangle -A openclash -m set ! --match-set lan_ac_white_ips src -j RETURN >/dev/null 2>&1
+   iptables -t mangle -A openclash -m set ! --match-set lan_ac_white_macs src -j RETURN >/dev/null 2>&1
    if [ "$en_mode" = "redir-host" ]; then
       iptables -t mangle -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
    fi
-   iptables -t mangle -A openclash -m set ! --match-set localnetwork dst -j MARK --set-mark "$PROXY_FWMARK"
+   iptables -t mangle -A openclash -j MARK --set-mark "$PROXY_FWMARK"
    
    if [ "$en_mode_tun" -ne 3 ]; then
       iptables -t mangle -I PREROUTING -j openclash
@@ -1436,6 +1424,8 @@ revert_firewall()
    ipset destroy china_ip_route >/dev/null 2>&1
    ipset destroy lan_ac_white_ips >/dev/null 2>&1
    ipset destroy lan_ac_black_ips >/dev/null 2>&1
+   ipset destroy lan_ac_white_macs >/dev/null 2>&1
+   ipset destroy lan_ac_black_macs >/dev/null 2>&1
    ipset destroy wan_ac_black_ips >/dev/null 2>&1
 }
 
@@ -1562,6 +1552,7 @@ start()
    if ! pidof clash >/dev/null; then
       echo "错误: OpenClash 启动失败，尝试还原第三方规则并重新启动 Clash 主程序..." >$START_LOG
       echo "${LOGTIME} OpenClash Can Not Start, Try Use Backup Rules Start Again" >> $LOG_FILE
+      rm -rf /tmp/yaml_general 2>/dev/null
       #获取备份rule_provider
       rule_provider_bak_len=$(sed -n '/^rule-providers:/=' "$START_BACKUP" 2>/dev/null)
       if [ -n "$rule_provider_bak_len" ]; then
@@ -1624,7 +1615,7 @@ stop()
    watchdog_pids=$(unify_ps_pids "openclash_watchdog.sh")
    for watchdog_pid in $watchdog_pids; do
       kill -9 "$watchdog_pid" >/dev/null 2>&1
-   done
+   done >/dev/null 2>&1
 
    echo "第四步: 关闭 Clash 主程序..." >$START_LOG
    if [ "$enable" != "1" ]; then
@@ -1635,7 +1626,7 @@ stop()
    dns_port=$(uci get openclash.config.dns_port 2>/dev/null)
    redirect_dns=$(uci get openclash.config.redirect_dns 2>/dev/null)
    masq_cache=$(uci get openclash.config.masq_cache 2>/dev/null)
-   revert_dns "$redirect_dns" "$masq_cache" "$dns_port"
+   revert_dns "$redirect_dns" "$masq_cache" "$dns_port" "$enable"
    /etc/init.d/dnsmasq restart >/dev/null 2>&1
 
    echo "第六步：删除 OpenClash 残留文件..." >$START_LOG

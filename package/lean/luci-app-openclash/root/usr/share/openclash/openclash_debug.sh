@@ -275,7 +275,8 @@ else
       /usr/share/openclash/yml_field_cut.sh "$nameserver_len" "$DNS_FILE" "$CONFIG_FILE"
    fi 2>/dev/null
    
-   cat "$CONFIG_FILE" "$DNS_FILE" >> "$DEBUG_LOG"
+   rm -rf /tmp/yaml_general 2>/dev/null
+   cat "$CHANGE_FILE" "$DNS_FILE" >> "$DEBUG_LOG"
 fi
 
 #firewall

@@ -20,9 +20,11 @@ YML_FILE="$1"
    }
    
    #proxies
-   [ -z "$(grep "^Proxy:" "$YML_FILE")" ] && {
+   if [ -n "$(grep "^Proxy:" "$YML_FILE")" ] && [ -n "$(grep "^proxies:" "$YML_FILE")" ]; then
+      sed -i "s/^proxies:/Proxy:#d/g" "$YML_FILE" 2>/dev/null
+   else
       sed -i "s/^proxies:/Proxy:/g" "$YML_FILE" 2>/dev/null
-   }
+   fi
    [ -z "$(grep "^Proxy:" "$YML_FILE")" ] && {
    	  group_len=$(sed -n '/^Proxy Group:/=' "$YML_FILE" 2>/dev/null)
    	  proxies_len=$(sed -n '/proxies:/=' "$YML_FILE" 2>/dev/null |sed -n 1p)
