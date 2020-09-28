@@ -3,7 +3,7 @@ var wrt = {
     scheduleTimeout: undefined,
     updateTimeout: undefined,
     isScheduled: true,
-    interval: 5,
+    interval: 1,
     // option on whether to show per host sub-totals
     perHostTotals: false,
     // variables for sorting
