@@ -1,16 +1,11 @@
 include ./common-buffalo.mk
 
 define Device/buffalo_whr-g301n
+  $(Device/buffalo_common)
   SOC := ar7240
-  DEVICE_VENDOR := Buffalo
   DEVICE_MODEL := WHR-G301N
+  BUFFALO_PRODUCT := WHR-G301N
   IMAGE_SIZE := 3712k
-  IMAGES += factory.bin tftp.bin
-  IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | \
-	pad-rootfs | check-size
-  IMAGE/factory.bin := $$(IMAGE/default) | buffalo-enc WHR-G301N 1.99 | \
-	buffalo-tag WHR-G301N 3
-  IMAGE/tftp.bin := $$(IMAGE/default) | buffalo-tftp-header
   SUPPORTED_DEVICES += whr-g301n
   DEFAULT := n
 endef
