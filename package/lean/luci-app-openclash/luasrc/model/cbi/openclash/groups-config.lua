@@ -95,6 +95,15 @@ o:depends("type", "select")
 o:depends("type", "relay")
 o.rmempty = true
 
+o = s:option(DynamicList, "other_group_dr", translate("Other Group"))
+o.description = font_red..bold_on..translate("The Added Proxy Groups Must Exist Except 'DIRECT' & 'REJECT'")..bold_off..font_off
+o:value("DIRECT")
+o:value("REJECT")
+o:depends("type", "url-test")
+o:depends("type", "fallback")
+o:depends("type", "load-balance")
+o.rmempty = true
+
 local t = {
     {Commit, Back}
 }

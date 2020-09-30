@@ -175,7 +175,6 @@ do
    ${uci_set}tolerance="$group_test_tolerance"
    
    #other_group
-   if [ "$group_type" = "select" ]; then
    cat $single_group |while read -r line
    do 
       if [ -z "$line" ]; then
@@ -193,21 +192,39 @@ do
          continue
       fi
       
+      if [ "$group_type" != "select" ] && [ "$group_type" != "relay" ]; then
+         if [ "$group_name1" != "DIRECT" ] && [ "$group_name2" != "DIRECT" ] && [ "$group_name1" != "REJECT" ] && [ "$group_name2" != "REJECT" ]; then
+            continue
+         fi
+      fi
+      
       if [ ! -z "$group_name1" ] && [ -z "$group_name2" ]; then
          if [ "$proxies_len" -le "$use_len" ]; then
             if [ "$name1_len" -le "$use_len" ] && [ ! -z "$(grep -F "$group_name1" $match_group_file)" ] && [ "$group_name1" != "$group_name" ]; then
-               ${uci_add}other_group="$group_name1"
+               if [ "$group_type" = "select" ] || [ "$group_type" = "relay" ]; then
+                  ${uci_add}other_group="$group_name1"
+               elif [ "$group_name1" = "DIRECT" ] || [ "$group_name1" = "REJECT" ]; then
+                  ${uci_add}other_group_dr="$group_name1"
+               fi
             fi
          else
             if [ "$name1_len" -ge "$proxies_len" ] && [ ! -z "$(grep -F "$group_name1" $match_group_file)" ] && [ "$group_name1" != "$group_name" ]; then
-               ${uci_add}other_group="$group_name1"
+               if [ "$group_type" = "select" ] || [ "$group_type" = "relay" ]; then
+                  ${uci_add}other_group="$group_name1"
+               elif [ "$group_name1" = "DIRECT" ] || [ "$group_name1" = "REJECT" ]; then
+                  ${uci_add}other_group_dr="$group_name1"
+               fi
             fi
          fi 2>/dev/null
       elif [ -z "$group_name1" ] && [ ! -z "$group_name2" ]; then
          group_num=$(expr $(echo "$group_name2" |grep -c "#,#") + 1)
          if [ "$group_num" -le 1 ]; then
             if [ ! -z "$(grep -F "$group_name2" $match_group_file)" ] && [ "$group_name2" != "$group_name" ]; then
-               ${uci_add}other_group="$group_name2"
+               if [ "$group_type" = "select" ] || [ "$group_type" = "relay" ]; then
+                  ${uci_add}other_group="$group_name2"
+               elif [ "$group_name2" = "DIRECT" ] || [ "$group_name2" = "REJECT" ]; then
+                  ${uci_add}other_group_dr="$group_name2"
+               fi
             fi
          else
             group_nums=1
@@ -215,7 +232,11 @@ do
             do
                other_group_name=$(echo "$group_name2" |awk -v t="${group_nums}" -F '#,#' '{print $t}' 2>/dev/null)
                if [ ! -z "$(grep -F "$other_group_name" $match_group_file 2>/dev/null)" ] && [ "$other_group_name" != "$group_name" ]; then
-                  ${uci_add}other_group="$other_group_name"
+                  if [ "$group_type" = "select" ] || [ "$group_type" = "relay" ]; then
+                     ${uci_add}other_group="$other_group_name"
+                  elif [ "$other_group_name" = "DIRECT" ] || [ "$other_group_name" = "REJECT" ]; then
+                     ${uci_add}other_group_dr="$other_group_name"
+                  fi   
                fi
                group_nums=$(expr "$group_nums" + 1)
             done
@@ -223,7 +244,6 @@ do
       fi
       
    done
-   fi
    file_count=$(expr "$file_count" + 1)
     
 done
