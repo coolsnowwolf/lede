@@ -6,7 +6,7 @@ include ./common-yuncore.mk
 DEVICE_VARS += ADDPATTERN_ID ADDPATTERN_VERSION
 DEVICE_VARS += SEAMA_SIGNATURE SEAMA_MTDBLOCK
 DEVICE_VARS += KERNEL_INITRAMFS_PREFIX
-DEVICE_VARS += DAP_SIGNATURE
+DEVICE_VARS += DAP_SIGNATURE ENGENIUS_IMGNAME
 
 define Build/add-elecom-factory-initramfs
   $(eval edimax_model=$(word 1,$(1)))
@@ -48,6 +48,23 @@ define Build/cybertan-trx
 		-x 32 -a 0x10000 -x -32 -f $@
 	-mv "$@.new" "$@"
 	-rm $@-empty.bin
+endef
+
+# This needs to make /tmp/_sys/sysupgrade.tgz an empty file prior to
+# sysupgrade, as otherwise it will implant the old configuration from
+# OEM firmware when writing rootfs from factory.bin
+define Build/engenius-tar-gz
+	-[ -f "$@" ] && \
+	mkdir -p $@.tmp && \
+	echo '#!/bin/sh' > $@.tmp/before-upgrade.sh && \
+	echo ': > /tmp/_sys/sysupgrade.tgz' >> $@.tmp/before-upgrade.sh && \
+	$(CP) $(KDIR)/loader-$(DEVICE_NAME).uImage \
+		$@.tmp/openwrt-$(word 1,$(1))-uImage-lzma.bin && \
+	$(CP) $@ $@.tmp/openwrt-$(word 1,$(1))-root.squashfs && \
+	$(TAR) -cp --numeric-owner --owner=0 --group=0 --mode=a-s --sort=name \
+		$(if $(SOURCE_DATE_EPOCH),--mtime="@$(SOURCE_DATE_EPOCH)") \
+		-C $@.tmp . | gzip -9n > $@ && \
+	rm -rf $@.tmp
 endef
 
 define Build/mkdapimg2
@@ -134,6 +151,7 @@ endef
 define Build/wrgg-pad-rootfs
 	$(STAGING_DIR_HOST)/bin/padjffs2 $(IMAGE_ROOTFS) -c 64 >>$@
 endef
+
 
 define Device/seama
   KERNEL := kernel-bin | append-dtb | relocate-kernel | lzma
@@ -298,17 +316,12 @@ endef
 TARGET_DEVICES += avm_fritzdvbc
 
 define Device/buffalo_bhr-4grv
+  $(Device/buffalo_common)
   SOC := ar7242
-  DEVICE_VENDOR := Buffalo
   DEVICE_MODEL := BHR-4GRV
+  BUFFALO_PRODUCT := BHR-4GRV
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport
   IMAGE_SIZE := 32256k
-  IMAGES += factory.bin tftp.bin
-  IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | \
-	pad-rootfs | check-size
-  IMAGE/factory.bin := $$(IMAGE/default) | buffalo-enc BHR-4GRV 1.99 | \
-	buffalo-tag BHR-4GRV 3
-  IMAGE/tftp.bin := $$(IMAGE/default) | buffalo-tftp-header
   SUPPORTED_DEVICES += wzr-hp-g450h
 endef
 TARGET_DEVICES += buffalo_bhr-4grv
@@ -321,52 +334,48 @@ define Device/buffalo_bhr-4grv2
 endef
 TARGET_DEVICES += buffalo_bhr-4grv2
 
-define Device/buffalo_wzr-hp-ag300h
+define Device/buffalo_wzr_ar7161
+  $(Device/buffalo_common)
   SOC := ar7161
-  DEVICE_VENDOR := Buffalo
-  DEVICE_MODEL := WZR-HP-AG300H
-  IMAGE_SIZE := 32320k
-  IMAGES += factory.bin tftp.bin
-  IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | \
-	pad-rootfs | check-size
-  IMAGE/factory.bin := $$(IMAGE/default) | buffalo-enc WZR-HP-AG300H 1.99 | \
-	buffalo-tag WZR-HP-AG300H 3
-  IMAGE/tftp.bin := $$(IMAGE/default) | buffalo-tftp-header
+  BUFFALO_PRODUCT := WZR-HP-AG300H
   DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-usb-ledtrig-usbport \
 	kmod-leds-reset kmod-owl-loader
+  IMAGE_SIZE := 32320k
   SUPPORTED_DEVICES += wzr-hp-ag300h
+endef
+
+define Device/buffalo_wzr-600dhp
+  $(Device/buffalo_wzr_ar7161)
+  DEVICE_MODEL := WZR-600DHP
+endef
+TARGET_DEVICES += buffalo_wzr-600dhp
+
+define Device/buffalo_wzr-hp-ag300h
+  $(Device/buffalo_wzr_ar7161)
+  DEVICE_MODEL := WZR-HP-AG300H
 endef
 TARGET_DEVICES += buffalo_wzr-hp-ag300h
 
 define Device/buffalo_wzr-hp-g302h-a1a0
+  $(Device/buffalo_common)
   SOC := ar7242
-  DEVICE_VENDOR := Buffalo
   DEVICE_MODEL := WZR-HP-G302H
   DEVICE_VARIANT := A1A0
+  BUFFALO_PRODUCT := WZR-HP-G302H
+  BUFFALO_HWVER := 4
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport
   IMAGE_SIZE := 32128k
-  IMAGES += factory.bin tftp.bin
-  IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | \
-	pad-rootfs | check-size
-  IMAGE/factory.bin := $$(IMAGE/default) | buffalo-enc WZR-HP-G302H 1.99 | \
-	buffalo-tag WZR-HP-G302H 4
-  IMAGE/tftp.bin := $$(IMAGE/default) | buffalo-tftp-header
   SUPPORTED_DEVICES += wzr-hp-g300nh2
 endef
 TARGET_DEVICES += buffalo_wzr-hp-g302h-a1a0
 
 define Device/buffalo_wzr-hp-g450h
+  $(Device/buffalo_common)
   SOC := ar7242
-  DEVICE_VENDOR := Buffalo
   DEVICE_MODEL := WZR-HP-G450H/WZR-450HP
+  BUFFALO_PRODUCT := WZR-HP-G450H
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport
   IMAGE_SIZE := 32256k
-  IMAGES += factory.bin tftp.bin
-  IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | \
-	pad-rootfs | check-size
-  IMAGE/factory.bin := $$(IMAGE/default) | buffalo-enc WZR-HP-G450H 1.99 | \
-	buffalo-tag WZR-HP-G450H 3
-  IMAGE/tftp.bin := $$(IMAGE/default) | buffalo-tftp-header
   SUPPORTED_DEVICES += wzr-hp-g450h
 endef
 TARGET_DEVICES += buffalo_wzr-hp-g450h
@@ -791,6 +800,20 @@ define Device/embeddedwireless_dorin
 endef
 TARGET_DEVICES += embeddedwireless_dorin
 
+define Device/engenius_loader_okli
+  DEVICE_VENDOR := EnGenius
+  KERNEL := kernel-bin | append-dtb | lzma | uImage lzma -M 0x4f4b4c49
+  LOADER_TYPE := bin
+  COMPILE := loader-$(1).bin loader-$(1).uImage
+  COMPILE/loader-$(1).bin := loader-okli-compile
+  COMPILE/loader-$(1).uImage := append-loader-okli $(1) | pad-to 64k | lzma | \
+	uImage lzma
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-squashfs-fakeroot-be | pad-to $$$$(BLOCKSIZE) | \
+	append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | \
+	check-size | engenius-tar-gz $$$$(ENGENIUS_IMGNAME)
+endef
+
 define Device/engenius_ecb1750
   SOC := qca9558
   DEVICE_VENDOR := EnGenius
@@ -804,6 +827,30 @@ define Device/engenius_ecb1750
 	append-metadata | check-size
 endef
 TARGET_DEVICES += engenius_ecb1750
+
+define Device/engenius_enh202-v1
+  $(Device/engenius_loader_okli)
+  SOC := ar7240
+  DEVICE_MODEL := ENH202
+  DEVICE_VARIANT := v1
+  DEVICE_PACKAGES := rssileds
+  IMAGE_SIZE := 4864k
+  LOADER_FLASH_OFFS := 0x1b0000
+  ENGENIUS_IMGNAME := senao-enh202
+endef
+TARGET_DEVICES += engenius_enh202-v1
+
+define Device/engenius_ens202ext-v1
+  $(Device/engenius_loader_okli)
+  SOC := ar9341
+  DEVICE_MODEL := ENS202EXT
+  DEVICE_VARIANT := v1
+  DEVICE_PACKAGES := rssileds
+  IMAGE_SIZE := 12032k
+  LOADER_FLASH_OFFS := 0x230000
+  ENGENIUS_IMGNAME := senao-ens202ext
+endef
+TARGET_DEVICES += engenius_ens202ext-v1
 
 define Device/engenius_epg5000
   SOC := qca9558
@@ -1018,6 +1065,34 @@ define Device/librerouter_librerouter-v1
   DEVICE_PACKAGES := kmod-usb2
 endef
 TARGET_DEVICES += librerouter_librerouter-v1
+
+define Device/meraki_mr16
+  SOC := ar7161
+  DEVICE_VENDOR := Meraki
+  DEVICE_MODEL := MR16
+  IMAGE_SIZE := 15616k
+  DEVICE_PACKAGES := kmod-owl-loader
+  SUPPORTED_DEVICES += mr16
+  DEVICE_COMPAT_VERSION := 2.0
+  DEVICE_COMPAT_MESSAGE := Partitions differ from ar71xx version of MR16. Image format is incompatible. \
+	To use sysupgrade, you must change /lib/update/common.sh::get_image to prepend 128K zeroes to this image, \
+	and change the bootcmd in u-boot to "bootm 0xbf0a0000". After that, you can use "sysupgrade -F". \
+	For more details, see the OpenWrt Wiki: https://openwrt.org/toh/meraki/mr16, \
+	or the commit message of the MR16 ath79 port on git.openwrt.org.
+endef
+TARGET_DEVICES += meraki_mr16
+
+define Device/mercury_mw4530r-v1
+  $(Device/tplink-8mlzma)
+  SOC := ar9344
+  DEVICE_VENDOR := Mercury
+  DEVICE_MODEL := MW4530R
+  DEVICE_VARIANT := v1
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport
+  TPLINK_HWID := 0x45300001
+  SUPPORTED_DEVICES += tl-wdr4300
+endef
+TARGET_DEVICES += mercury_mw4530r-v1
 
 define Device/nec_wg1200cr
   SOC := qca9563
