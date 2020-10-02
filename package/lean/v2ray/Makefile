@@ -69,7 +69,7 @@ include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
 define Package/$(PKG_NAME)
   TITLE:=A platform for building proxies
-  URL:=https://www.v2ray.com
+  URL:=https://www.v2fly.org
   SECTION:=net
   CATEGORY:=Network
   SUBMENU:=Project V
@@ -231,7 +231,7 @@ GEOIP_VER:=latest
 GEOIP_FILE:=geoip-$(GEOIP_VER).dat
 
 define Download/geoip.dat
-  URL:=https://github.com/v2ray/geoip/releases/$(GEOIP_VER)/download
+  URL:=https://github.com/v2fly/geoip/releases/$(GEOIP_VER)/download
   URL_FILE:=geoip.dat
   FILE:=$(GEOIP_FILE)
   HASH:=skip
@@ -241,7 +241,7 @@ GEOSITE_VER:=latest
 GEOSITE_FILE:=geosite-$(GEOSITE_VER).dat
 
 define Download/geosite.dat
-  URL:=https://github.com/v2ray/domain-list-community/releases/$(GEOSITE_VER)/download
+  URL:=https://github.com/v2fly/domain-list-community/releases/$(GEOSITE_VER)/download
   URL_FILE:=dlc.dat
   FILE:=$(GEOSITE_FILE)
   HASH:=skip
