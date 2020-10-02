@@ -5,7 +5,7 @@ PKG_FLAGS:=nonshared
 export GCC_HONOUR_COPTS=s
 
 define Package/at91bootstrap/install/default
-  $(CP) -avL $(PKG_BUILD_DIR)/binaries/at91bootstrap.bin $(1)/
+	$(CP) -avL $(PKG_BUILD_DIR)/binaries/at91bootstrap.bin $(1)/
 endef
 
 Package/at91bootstrap/install = $(Package/at91bootstrap/install/default)
@@ -34,7 +34,7 @@ define Build/AT91Bootstrap/Target
   $(eval $(call AT91Bootstrap/Default,$(1)))
   $(eval $(call AT91Bootstrap/$(1),$(1)))
 
- define Package/at91bootstrap-$(1)
+  define Package/at91bootstrap-$(1)
     SECTION:=boot
     CATEGORY:=Boot Loaders
     TITLE:= .$(NAME)
@@ -45,9 +45,9 @@ define Build/AT91Bootstrap/Target
       DEPENDS += @$(TARGET_DEP)
       ifneq ($(BUILD_DEVICES),)
         DEFAULT := y if ($(TARGET_DEP)_Default \
-		$(patsubst %,|| $(TARGET_DEP)_DEVICE_%,$(BUILD_DEVICES)) \
-		$(patsubst %,|| $(patsubst TARGET_%,TARGET_DEVICE_%, \
-           $(TARGET_DEP))_DEVICE_%,$(BUILD_DEVICES)))
+          $(patsubst %,|| $(TARGET_DEP)_DEVICE_%,$(BUILD_DEVICES)) \
+          $(patsubst %,|| $(patsubst TARGET_%,TARGET_DEVICE_%, \
+          $(TARGET_DEP))_DEVICE_%,$(BUILD_DEVICES)))
       endif
     endif
     $(if $(DEFAULT),DEFAULT:=$(DEFAULT))
@@ -61,28 +61,28 @@ endef
 
 define Build/Configure/AT91Bootstrap
 	+$(MAKE) $(PKG_JOBS) -C $(PKG_BUILD_DIR) \
-        $(AT91BOOTSTRAP_CONFIG)_defconfig
+		$(AT91BOOTSTRAP_CONFIG)_defconfig
 endef
 
 
 define Build/Compile/AT91Bootstrap
 	+$(MAKE) $(PKG_JOBS) -C $(PKG_BUILD_DIR) \
-       CROSS_COMPILE=$(TARGET_CROSS) \
-       $(AT91BOOTSTRAP_MAKE_FLAGS)
+		CROSS_COMPILE=$(TARGET_CROSS) \
+		$(AT91BOOTSTRAP_MAKE_FLAGS)
 endef
 
 define BuildPackage/AT91Bootstrap/Defaults
-  Build/Configure/Default = $$$$(Build/Configure/AT91Bootstrap)
-  Build/Compile/Default = $$$$(Build/Compile/AT91Bootstrap)
+	Build/Configure/Default = $$$$(Build/Configure/AT91Bootstrap)
+	Build/Compile/Default = $$$$(Build/Compile/AT91Bootstrap)
 endef
 
 define BuildPackage/AT91Bootstrap
-  $(eval $(call BuildPackage/AT91Bootstrap/Defaults))
-  $(foreach type,$(if $(DUMP),$(AT91BOOTSTRAP_TARGETS),$(BUILD_VARIANT)), \
-    $(eval $(call Build/AT91Bootstrap/Target,$(type)))
-  )
-  $(eval $(call Build/DefaultTargets))
-  $(foreach type,$(if $(DUMP),$(AT91BOOTSTRAP_TARGETS),$(BUILD_VARIANT)), \
-    $(call BuildPackage,at91bootstrap-$(type))
-  )
+	$(eval $(call BuildPackage/AT91Bootstrap/Defaults))
+	$(foreach type,$(if $(DUMP),$(AT91BOOTSTRAP_TARGETS),$(BUILD_VARIANT)), \
+		$(eval $(call Build/AT91Bootstrap/Target,$(type)))
+	)
+	$(eval $(call Build/DefaultTargets))
+	$(foreach type,$(if $(DUMP),$(AT91BOOTSTRAP_TARGETS),$(BUILD_VARIANT)), \
+		$(call BuildPackage,at91bootstrap-$(type))
+	)
 endef
