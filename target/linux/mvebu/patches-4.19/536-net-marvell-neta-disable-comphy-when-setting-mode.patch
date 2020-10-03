@@ -1,0 +1,78 @@
+From 031b922bfd60c771588911112f8632783de08e5c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marek=20Beh=C3=BAn?= <marek.behun@nic.cz>
+Date: Mon, 25 Feb 2019 17:43:03 +0100
+Subject: [PATCH] net: marvell: neta: disable comphy when setting mode
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The comphy driver for Armada 3700 by Miquèl Raynal (which is currently
+in linux-next) does not actually set comphy mode when phy_set_mode_ext
+is called. The mode is set at next call of phy_power_on.
+
+Update the driver to semantics similar to mvpp2: helper
+mvneta_comphy_init sets comphy mode and powers it on.
+When mode is to be changed in mvneta_mac_config, first power the comphy
+off, then call mvneta_comphy_init (which sets the mode to new one).
+
+Only do this when new mode is different from old mode.
+
+This should also work for Armada 38x, since in that comphy driver
+methods power_on and power_off are unimplemented.
+
+Signed-off-by: Marek Behún <marek.behun@nic.cz>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/ethernet/marvell/mvneta.c | 28 +++++++++++++++++++++++-----
+ 1 file changed, 23 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/ethernet/marvell/mvneta.c
++++ b/drivers/net/ethernet/marvell/mvneta.c
+@@ -3165,11 +3165,26 @@ static int mvneta_setup_txqs(struct mvne
+ 	return 0;
+ }
+ 
++static int mvneta_comphy_init(struct mvneta_port *pp)
++{
++	int ret;
++
++	if (!pp->comphy)
++		return 0;
++
++	ret = phy_set_mode_ext(pp->comphy, PHY_MODE_ETHERNET,
++			       pp->phy_interface);
++	if (ret)
++		return ret;
++
++	return phy_power_on(pp->comphy);
++}
++
+ static void mvneta_start_dev(struct mvneta_port *pp)
+ {
+ 	int cpu;
+ 
+-	WARN_ON(phy_power_on(pp->comphy));
++	WARN_ON(mvneta_comphy_init(pp));
+ 
+ 	mvneta_max_rx_size_set(pp, pp->pkt_size);
+ 	mvneta_txq_max_tx_size_set(pp, pp->pkt_size);
+@@ -3541,12 +3556,15 @@ static void mvneta_mac_config(struct net
+ 	if (state->speed == SPEED_2500)
+ 		new_ctrl4 |= MVNETA_GMAC4_SHORT_PREAMBLE_ENABLE;
+ 
+-	if (pp->comphy &&
++	if (pp->comphy && pp->phy_interface != state->interface &&
+ 	    (state->interface == PHY_INTERFACE_MODE_SGMII ||
+ 	     state->interface == PHY_INTERFACE_MODE_1000BASEX ||
+-	     state->interface == PHY_INTERFACE_MODE_2500BASEX))
+-		WARN_ON(phy_set_mode_ext(pp->comphy, PHY_MODE_ETHERNET,
+-					 state->interface));
++	     state->interface == PHY_INTERFACE_MODE_2500BASEX)) {
++		pp->phy_interface = state->interface;
++
++		WARN_ON(phy_power_off(pp->comphy));
++		WARN_ON(mvneta_comphy_init(pp));
++	}
+ 
+ 	if (new_ctrl0 != gmac_ctrl0)
+ 		mvreg_write(pp, MVNETA_GMAC_CTRL_0, new_ctrl0);

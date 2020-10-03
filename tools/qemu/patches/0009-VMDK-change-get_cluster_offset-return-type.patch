@@ -1,0 +1,198 @@
+From 9e1ddc6967e8739f4fa47fa4f6a767ebe319f6ff Mon Sep 17 00:00:00 2001
+From: Fam Zheng <famcool@gmail.com>
+Date: Tue, 12 Jul 2011 19:56:35 +0800
+Subject: [PATCH 09/12] VMDK: change get_cluster_offset return type
+
+The return type of get_cluster_offset was an offset that use 0 to denote
+'not allocated', this will be no longer true for flat extents, as we see
+flat extent file as a single huge cluster whose offset is 0 and length
+is the whole file length.
+So now we use int return value, 0 means success and otherwise offset
+invalid.
+
+Signed-off-by: Fam Zheng <famcool@gmail.com>
+Reviewed-by: Stefan Hajnoczi <stefanha@linux.vnet.ibm.com>
+Signed-off-by: Kevin Wolf <kwolf@redhat.com>
+---
+ block/vmdk.c | 79 ++++++++++++++++++++++++++++++++----------------------------
+ 1 file changed, 42 insertions(+), 37 deletions(-)
+
+--- a/block/vmdk.c
++++ b/block/vmdk.c
+@@ -665,26 +665,31 @@ static int vmdk_L2update(VmdkExtent *ext
+     return 0;
+ }
+ 
+-static uint64_t get_cluster_offset(BlockDriverState *bs,
++static int get_cluster_offset(BlockDriverState *bs,
+                                     VmdkExtent *extent,
+                                     VmdkMetaData *m_data,
+-                                    uint64_t offset, int allocate)
++                                    uint64_t offset,
++                                    int allocate,
++                                    uint64_t *cluster_offset)
+ {
+     unsigned int l1_index, l2_offset, l2_index;
+     int min_index, i, j;
+     uint32_t min_count, *l2_table, tmp = 0;
+-    uint64_t cluster_offset;
+ 
+     if (m_data)
+         m_data->valid = 0;
++    if (extent->flat) {
++        *cluster_offset = 0;
++        return 0;
++    }
+ 
+     l1_index = (offset >> 9) / extent->l1_entry_sectors;
+     if (l1_index >= extent->l1_size) {
+-        return 0;
++        return -1;
+     }
+     l2_offset = extent->l1_table[l1_index];
+     if (!l2_offset) {
+-        return 0;
++        return -1;
+     }
+     for (i = 0; i < L2_CACHE_SIZE; i++) {
+         if (l2_offset == extent->l2_cache_offsets[i]) {
+@@ -714,28 +719,29 @@ static uint64_t get_cluster_offset(Block
+                 l2_table,
+                 extent->l2_size * sizeof(uint32_t)
+             ) != extent->l2_size * sizeof(uint32_t)) {
+-        return 0;
++        return -1;
+     }
+ 
+     extent->l2_cache_offsets[min_index] = l2_offset;
+     extent->l2_cache_counts[min_index] = 1;
+  found:
+     l2_index = ((offset >> 9) / extent->cluster_sectors) % extent->l2_size;
+-    cluster_offset = le32_to_cpu(l2_table[l2_index]);
++    *cluster_offset = le32_to_cpu(l2_table[l2_index]);
+ 
+-    if (!cluster_offset) {
+-        if (!allocate)
+-            return 0;
++    if (!*cluster_offset) {
++        if (!allocate) {
++            return -1;
++        }
+ 
+         // Avoid the L2 tables update for the images that have snapshots.
+-        cluster_offset = bdrv_getlength(extent->file);
++        *cluster_offset = bdrv_getlength(extent->file);
+         bdrv_truncate(
+             extent->file,
+-            cluster_offset + (extent->cluster_sectors << 9)
++            *cluster_offset + (extent->cluster_sectors << 9)
+         );
+ 
+-        cluster_offset >>= 9;
+-        tmp = cpu_to_le32(cluster_offset);
++        *cluster_offset >>= 9;
++        tmp = cpu_to_le32(*cluster_offset);
+         l2_table[l2_index] = tmp;
+ 
+         /* First of all we write grain itself, to avoid race condition
+@@ -744,8 +750,8 @@ static uint64_t get_cluster_offset(Block
+          * or inappropriate VM shutdown.
+          */
+         if (get_whole_cluster(
+-                bs, extent, cluster_offset, offset, allocate) == -1)
+-            return 0;
++                bs, extent, *cluster_offset, offset, allocate) == -1)
++            return -1;
+ 
+         if (m_data) {
+             m_data->offset = tmp;
+@@ -755,8 +761,8 @@ static uint64_t get_cluster_offset(Block
+             m_data->valid = 1;
+         }
+     }
+-    cluster_offset <<= 9;
+-    return cluster_offset;
++    *cluster_offset <<= 9;
++    return 0;
+ }
+ 
+ static VmdkExtent *find_extent(BDRVVmdkState *s,
+@@ -780,7 +786,6 @@ static int vmdk_is_allocated(BlockDriver
+                              int nb_sectors, int *pnum)
+ {
+     BDRVVmdkState *s = bs->opaque;
+-
+     int64_t index_in_cluster, n, ret;
+     uint64_t offset;
+     VmdkExtent *extent;
+@@ -789,15 +794,13 @@ static int vmdk_is_allocated(BlockDriver
+     if (!extent) {
+         return 0;
+     }
+-    if (extent->flat) {
+-        n = extent->end_sector - sector_num;
+-        ret = 1;
+-    } else {
+-        offset = get_cluster_offset(bs, extent, NULL, sector_num * 512, 0);
+-        index_in_cluster = sector_num % extent->cluster_sectors;
+-        n = extent->cluster_sectors - index_in_cluster;
+-        ret = offset ? 1 : 0;
+-    }
++    ret = get_cluster_offset(bs, extent, NULL,
++                            sector_num * 512, 0, &offset);
++    /* get_cluster_offset returning 0 means success */
++    ret = !ret;
++
++    index_in_cluster = sector_num % extent->cluster_sectors;
++    n = extent->cluster_sectors - index_in_cluster;
+     if (n > nb_sectors)
+         n = nb_sectors;
+     *pnum = n;
+@@ -818,14 +821,15 @@ static int vmdk_read(BlockDriverState *b
+         if (!extent) {
+             return -EIO;
+         }
+-        cluster_offset = get_cluster_offset(
+-                            bs, extent, NULL, sector_num << 9, 0);
++        ret = get_cluster_offset(
++                            bs, extent, NULL,
++                            sector_num << 9, 0, &cluster_offset);
+         index_in_cluster = sector_num % extent->cluster_sectors;
+         n = extent->cluster_sectors - index_in_cluster;
+         if (n > nb_sectors)
+             n = nb_sectors;
+-        if (!cluster_offset) {
+-            // try to read from parent image, if exist
++        if (ret) {
++            /* if not allocated, try to read from parent image, if exist */
+             if (bs->backing_hd) {
+                 if (!vmdk_is_cid_valid(bs))
+                     return -1;
+@@ -851,7 +855,7 @@ static int vmdk_write(BlockDriverState *
+ {
+     BDRVVmdkState *s = bs->opaque;
+     VmdkExtent *extent = NULL;
+-    int n;
++    int n, ret;
+     int64_t index_in_cluster;
+     uint64_t cluster_offset;
+     VmdkMetaData m_data;
+@@ -869,13 +873,14 @@ static int vmdk_write(BlockDriverState *
+         if (!extent) {
+             return -EIO;
+         }
+-        cluster_offset = get_cluster_offset(
++        ret = get_cluster_offset(
+                                 bs,
+                                 extent,
+                                 &m_data,
+-                                sector_num << 9, 1);
+-        if (!cluster_offset) {
+-            return -1;
++                                sector_num << 9, 1,
++                                &cluster_offset);
++        if (ret) {
++            return -EINVAL;
+         }
+         index_in_cluster = sector_num % extent->cluster_sectors;
+         n = extent->cluster_sectors - index_in_cluster;

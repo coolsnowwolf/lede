@@ -1,5 +1,3 @@
-#!/bin/sh
-
 PART_NAME=firmware
 REQUIRE_IMAGE_METADATA=1
 
@@ -44,9 +42,6 @@ platform_copy_config() {
 	wd,mybooklive|\
 	wd,mybooklive-duo)
 		mbl_copy_config
-		;;
-
-	*)
 		;;
 	esac
 }

@@ -1,0 +1,53 @@
+From bbf2b1cf22dc98f3df33b6666df046dfb9564d91 Mon Sep 17 00:00:00 2001
+From: Eneas U de Queiroz <cotequeiroz@gmail.com>
+Date: Wed, 5 Feb 2020 13:42:25 -0300
+Subject: [PATCH] crypto: qce - handle AES-XTS cases that qce fails
+
+QCE hangs when presented with an AES-XTS request whose length is larger
+than QCE_SECTOR_SIZE (512-bytes), and is not a multiple of it.  Let the
+fallback cipher handle them.
+
+Signed-off-by: Eneas U de Queiroz <cotequeiroz@gmail.com>
+
+--- a/drivers/crypto/qce/common.c
++++ b/drivers/crypto/qce/common.c
+@@ -23,8 +23,6 @@
+ #include "regs-v5.h"
+ #include "sha.h"
+ 
+-#define QCE_SECTOR_SIZE		512
+-
+ static inline u32 qce_read(struct qce_device *qce, u32 offset)
+ {
+ 	return readl(qce->base + offset);
+--- a/drivers/crypto/qce/common.h
++++ b/drivers/crypto/qce/common.h
+@@ -20,6 +20,9 @@
+ #include <crypto/hash.h>
+ #include <crypto/internal/skcipher.h>
+ 
++/* xts du size */
++#define QCE_SECTOR_SIZE			512
++
+ /* key size in bytes */
+ #define QCE_SHA_HMAC_KEY_SIZE		64
+ #define QCE_MAX_CIPHER_KEY_SIZE		AES_KEYSIZE_256
+--- a/drivers/crypto/qce/skcipher.c
++++ b/drivers/crypto/qce/skcipher.c
+@@ -213,9 +213,14 @@ static int qce_skcipher_crypt(struct skc
+ 	rctx->flags |= encrypt ? QCE_ENCRYPT : QCE_DECRYPT;
+ 	keylen = IS_XTS(rctx->flags) ? ctx->enc_keylen >> 1 : ctx->enc_keylen;
+ 
++	/* qce is hanging when AES-XTS request len > QCE_SECTOR_SIZE and
++	 * is not a multiple of it; pass such requests to the fallback
++	 */
+ 	if (IS_AES(rctx->flags) &&
+-	    ((keylen != AES_KEYSIZE_128 && keylen != AES_KEYSIZE_256) ||
+-	     req->cryptlen <= aes_sw_max_len)) {
++	    (((keylen != AES_KEYSIZE_128 && keylen != AES_KEYSIZE_256) ||
++	      req->cryptlen <= aes_sw_max_len) ||
++	     (IS_XTS(rctx->flags) && req->cryptlen > QCE_SECTOR_SIZE &&
++	      req->cryptlen % QCE_SECTOR_SIZE))) {
+ 		SKCIPHER_REQUEST_ON_STACK(subreq, ctx->fallback);
+ 
+ 		skcipher_request_set_tfm(subreq, ctx->fallback);

@@ -40,6 +40,7 @@
 #include <linux/proc_fs.h>
 #include <linux/init.h>
 #include <linux/ioctl.h>
+#include <linux/platform_device.h>
 #include <asm/delay.h>
 
 /*
@@ -83,7 +84,7 @@
  */
 static inline void init_pmu(void);
 static inline void uninit_pmu(void);
-static inline void reset_ppe(void);
+static inline void reset_ppe(struct platform_device *pdev);
 static inline void init_ema(void);
 static inline void init_mailbox(void);
 static inline void clear_share_buffer(void);
@@ -125,7 +126,7 @@ static inline void uninit_pmu(void)
 {
 }
 
-static inline void reset_ppe(void)
+static inline void reset_ppe(struct platform_device *pdev)
 {
 #ifdef MODULE
     //  reset PPE
@@ -193,10 +194,10 @@ void ar9_fw_ver(unsigned int *major, unsigned int *minor)
     *minor = FW_VER_ID->minor;
 }
 
-void ar9_init(void)
+void ar9_init(struct platform_device *pdev)
 {
 	init_pmu();
-	reset_ppe();
+	reset_ppe(pdev);
 	init_ema();
 	init_mailbox();
 	clear_share_buffer();

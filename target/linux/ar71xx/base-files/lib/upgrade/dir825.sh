@@ -75,7 +75,7 @@ dir825b_do_upgrade_combined() {
 
 	if [ -n "$fw_mtd" ] &&  [ ${fw_blocks:-0} -gt 0 ]; then
 		local append=""
-		[ -f "$CONF_TAR" -a "$SAVE_CONFIG" -eq 1 ] && append="-j $CONF_TAR"
+		[ -f "$UPGRADE_BACKUP" ] && append="-j $UPGRADE_BACKUP"
 
 		sync
 		dd if="$fw_file" bs=64k skip=1 count=$fw_blocks 2>/dev/null | \
@@ -148,7 +148,7 @@ platform_do_upgrade_dir825b() {
 		else
 			PART_NAME="firmware"
 		fi
-		default_do_upgrade "$ARGV"
+		default_do_upgrade "$1"
 		;;
 	"43493030")
 		if [ -z "$fw_mtd" ]; then
@@ -159,7 +159,7 @@ platform_do_upgrade_dir825b() {
 				exit 1
 			}
 		fi
-		dir825b_do_upgrade_combined "firmware" "$ARGV"
+		dir825b_do_upgrade_combined "firmware" "$1"
 		;;
 	esac
 }

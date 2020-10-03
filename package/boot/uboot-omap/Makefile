@@ -8,10 +8,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2017.01
-PKG_RELEASE:=3
+PKG_VERSION:=2019.10
+PKG_RELEASE:=1
 
-PKG_HASH:=6c425175f93a4bcf2ec9faf5658ef279633dbd7856a293d95bd1ff516528ecf2
+PKG_HASH:=8d6d6070739522dd236cba7055b8736bfe92b4fac0ea18ad809829ca79667014
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
@@ -19,7 +19,6 @@ include $(INCLUDE_DIR)/package.mk
 define U-Boot/Default
   BUILD_TARGET:=omap
   UBOOT_IMAGE:=u-boot.img MLO
-  UENV:=default
 endef
 
 define U-Boot/omap4_panda
@@ -27,14 +26,9 @@ define U-Boot/omap4_panda
   BUILD_DEVICES:=ti_omap4-panda
 endef
 
-define U-Boot/am335x_boneblack
-  NAME:=TI AM335x BeagleBone Black
-  BUILD_DEVICES:=ti_am335x-bone-black
-endef
-
 define U-Boot/am335x_evm
   NAME:=AM335x EVM
-  BUILD_DEVICES:=ti_am335x-evm
+  BUILD_DEVICES:=ti_am335x-evm ti_am335x-bone-black
 endef
 
 define U-Boot/omap3_overo
@@ -46,12 +40,19 @@ define U-Boot/omap3_beagle
   BUILD_DEVICES:=ti_omap3-beagle
 endef
 
-UBOOT_TARGETS:=omap4_panda am335x_evm omap3_overo omap3_beagle am335x_boneblack
+UBOOT_TARGETS:=omap4_panda am335x_evm omap3_overo omap3_beagle
 
 define Build/InstallDev
-	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)/$(BUILD_DEVICES)
-	$(CP) $(patsubst %,$(PKG_BUILD_DIR)/%,$(UBOOT_IMAGE)) $(STAGING_DIR_IMAGE)/$(BUILD_DEVICES)/
-	$(CP) ./files/uEnv-$(UENV).txt $(STAGING_DIR_IMAGE)/$(BUILD_DEVICES)/uEnv.txt
+	$(foreach device,$(BUILD_DEVICES), \
+		$(INSTALL_DIR) $(STAGING_DIR_IMAGE)/$(device)
+	)
+	$(foreach device,$(BUILD_DEVICES), \
+		$(CP) $(patsubst %,$(PKG_BUILD_DIR)/%,$(UBOOT_IMAGE)) $(STAGING_DIR_IMAGE)/$(device)/
+	)
+	$(foreach device,$(BUILD_DEVICES), \
+		mkimage -C none -A arm -T script -d ./files/boot.scr.txt \
+			$(STAGING_DIR_IMAGE)/$(device)/boot.scr
+	)
 endef
 
 $(eval $(call BuildPackage/U-Boot))

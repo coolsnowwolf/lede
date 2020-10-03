@@ -1,0 +1,54 @@
+From f2a33ce18232919d3831d1c61a06b6067209282d Mon Sep 17 00:00:00 2001
+From: Eneas U de Queiroz <cotequeiroz@gmail.com>
+Date: Fri, 22 Nov 2019 09:34:29 -0300
+Subject: [PATCH] crypto: qce - initialize fallback only for AES
+
+Adjust cra_flags to add CRYPTO_NEED_FALLBACK only for AES ciphers, where
+AES-192 is not handled by the qce hardware, and don't allocate & free
+the fallback skcipher for anything other than AES.
+
+The rest of the code is unchanged, as the use of the fallback is already
+restricted to AES.
+
+Signed-off-by: Eneas U de Queiroz <cotequeiroz@gmail.com>
+
+--- a/drivers/crypto/qce/skcipher.c
++++ b/drivers/crypto/qce/skcipher.c
+@@ -246,7 +246,15 @@ static int qce_skcipher_init(struct cryp
+ 
+ 	memset(ctx, 0, sizeof(*ctx));
+ 	crypto_skcipher_set_reqsize(tfm, sizeof(struct qce_cipher_reqctx));
++	return 0;
++}
++
++static int qce_skcipher_init_fallback(struct crypto_skcipher *tfm)
++{
++	struct qce_cipher_ctx *ctx = crypto_skcipher_ctx(tfm);
++	int ret;
+ 
++	qce_skcipher_init(tfm);
+ 	ctx->fallback = crypto_alloc_skcipher(crypto_tfm_alg_name(&tfm->base),
+ 					      0, CRYPTO_ALG_ASYNC |
+ 						 CRYPTO_ALG_NEED_FALLBACK);
+@@ -375,14 +383,18 @@ static int qce_skcipher_register_one(con
+ 
+ 	alg->base.cra_priority		= 300;
+ 	alg->base.cra_flags		= CRYPTO_ALG_ASYNC |
+-					  CRYPTO_ALG_NEED_FALLBACK |
+ 					  CRYPTO_ALG_KERN_DRIVER_ONLY;
+ 	alg->base.cra_ctxsize		= sizeof(struct qce_cipher_ctx);
+ 	alg->base.cra_alignmask		= 0;
+ 	alg->base.cra_module		= THIS_MODULE;
+ 
+-	alg->init			= qce_skcipher_init;
+-	alg->exit			= qce_skcipher_exit;
++	if (IS_AES(def->flags)) {
++		alg->base.cra_flags    |= CRYPTO_ALG_NEED_FALLBACK;
++		alg->init               = qce_skcipher_init_fallback;
++		alg->exit               = qce_skcipher_exit;
++	} else {
++		alg->init               = qce_skcipher_init;
++	}
+ 
+ 	INIT_LIST_HEAD(&tmpl->entry);
+ 	tmpl->crypto_alg_type = CRYPTO_ALG_TYPE_SKCIPHER;

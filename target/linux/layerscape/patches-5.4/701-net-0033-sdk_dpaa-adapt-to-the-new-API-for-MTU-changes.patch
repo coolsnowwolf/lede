@@ -1,0 +1,86 @@
+From 828ec34f1fade88f1e751b7000959aaddfe44e5c Mon Sep 17 00:00:00 2001
+From: Camelia Groza <camelia.groza@nxp.com>
+Date: Thu, 21 Sep 2017 10:50:57 +0300
+Subject: [PATCH] sdk_dpaa: adapt to the new API for MTU changes
+
+Signed-off-by: Camelia Groza <camelia.groza@nxp.com>
+---
+ drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c | 14 +++++++++++-
+ .../ethernet/freescale/sdk_dpaa/dpaa_eth_common.c  | 25 ----------------------
+ .../ethernet/freescale/sdk_dpaa/dpaa_eth_common.h  |  1 -
+ 3 files changed, 13 insertions(+), 27 deletions(-)
+
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c
+@@ -681,7 +681,6 @@ static const struct net_device_ops dpa_p
+ #ifdef CONFIG_FSL_DPAA_ETH_USE_NDO_SELECT_QUEUE
+ 	.ndo_select_queue = dpa_select_queue,
+ #endif
+-	.ndo_change_mtu = dpa_change_mtu,
+ 	.ndo_set_rx_mode = dpa_set_rx_mode,
+ 	.ndo_init = dpa_ndo_init,
+ 	.ndo_set_features = dpa_set_features,
+@@ -758,6 +757,19 @@ static int dpa_private_netdev_init(struc
+ 	net_dev->mem_start = priv->mac_dev->res->start;
+ 	net_dev->mem_end = priv->mac_dev->res->end;
+ 
++	/* Configure the maximum MTU according to the FMan's MAXFRM */
++	net_dev->min_mtu = ETH_MIN_MTU;
++	net_dev->max_mtu = dpa_get_max_mtu();
++
++#ifndef CONFIG_PPC
++	/* Due to the A010022 FMan errata, we can not use contig frames larger
++	 * than 4K, nor S/G frames. We need to prevent the user from setting a
++	 * large MTU.
++	 */
++	if (unlikely(dpaa_errata_a010022))
++		net_dev->max_mtu = DPA_BP_RAW_SIZE;
++#endif
++
+ 	net_dev->hw_features |= (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
+ 		NETIF_F_LLTX);
+ 
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.c
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.c
+@@ -261,31 +261,6 @@ dpa_get_stats64(struct net_device *net_d
+ }
+ EXPORT_SYMBOL(dpa_get_stats64);
+ 
+-int dpa_change_mtu(struct net_device *net_dev, int new_mtu)
+-{
+-	int max_mtu = dpa_get_max_mtu();
+-
+-#ifndef CONFIG_PPC
+-	/* Due to the A010022 FMan errata, we can not use contig frames larger
+-	 * than 4K, nor S/G frames. We need to prevent the user from setting a
+-	 * large MTU.
+-	 */
+-	if (unlikely(dpaa_errata_a010022))
+-		max_mtu = DPA_BP_RAW_SIZE;
+-#endif
+-
+-	/* Make sure we don't exceed the Ethernet controller's MAXFRM */
+-	if (new_mtu < 68 || new_mtu > max_mtu) {
+-		netdev_err(net_dev, "Invalid L3 mtu %d (must be between %d and %d).\n",
+-				new_mtu, 68, max_mtu);
+-		return -EINVAL;
+-	}
+-	net_dev->mtu = new_mtu;
+-
+-	return 0;
+-}
+-EXPORT_SYMBOL(dpa_change_mtu);
+-
+ /* .ndo_init callback */
+ int dpa_ndo_init(struct net_device *net_dev)
+ {
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.h
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_common.h
+@@ -143,7 +143,6 @@ void __cold dpa_timeout(struct net_devic
+ void __cold
+ dpa_get_stats64(struct net_device *net_dev,
+ 		struct rtnl_link_stats64 *stats);
+-int dpa_change_mtu(struct net_device *net_dev, int new_mtu);
+ int dpa_ndo_init(struct net_device *net_dev);
+ int dpa_set_features(struct net_device *dev, netdev_features_t features);
+ netdev_features_t dpa_fix_features(struct net_device *dev,

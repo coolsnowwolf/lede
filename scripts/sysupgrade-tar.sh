@@ -1,5 +1,7 @@
 #!/bin/sh
 
+. $TOPDIR/scripts/functions.sh
+
 board=""
 kernel=""
 rootfs=""
@@ -53,7 +55,16 @@ fi
 
 mkdir -p "${tmpdir}/sysupgrade-${board}"
 echo "BOARD=${board}" > "${tmpdir}/sysupgrade-${board}/CONTROL"
-[ -z "${rootfs}" ] || cp "${rootfs}" "${tmpdir}/sysupgrade-${board}/root"
+if [ -n "${rootfs}" ]; then
+	case "$( get_fs_type ${rootfs} )" in
+	"squashfs")
+		dd if="${rootfs}" of="${tmpdir}/sysupgrade-${board}/root" bs=1024 conv=sync
+		;;
+	*)
+		cp "${rootfs}" "${tmpdir}/sysupgrade-${board}/root"
+		;;
+	esac
+fi
 [ -z "${kernel}" ] || cp "${kernel}" "${tmpdir}/sysupgrade-${board}/kernel"
 
 mtime=""

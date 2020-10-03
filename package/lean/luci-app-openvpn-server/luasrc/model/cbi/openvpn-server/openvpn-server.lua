@@ -14,8 +14,10 @@ s:tab("basic",  translate("Base Setting"))
 o = s:taboption("basic", Flag, "enabled", translate("Enable"))
 
 proto = s:taboption("basic",Value,"proto", translate("Proto"))
-proto:value("tcp-server", translate("TCP Server"))
-proto:value("udp", translate("UDP Server"))
+proto:value("tcp4", translate("TCP Server IPv4"))
+proto:value("udp4", translate("UDP Server IPv4"))
+proto:value("tcp6", translate("TCP Server IPv6"))
+proto:value("udp6", translate("UDP Server IPv6"))
 
 port = s:taboption("basic", Value, "port", translate("Port"))
 port.datatype = "range(1,65535)"

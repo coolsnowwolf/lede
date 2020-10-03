@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #
 # Copyright 2018 NXP
 #
@@ -19,4 +19,4 @@ ROOTFSSIZE="$3"
 head=4
 sect=16
 
-set `ptgen -o $OUTPUT -h $head -s $sect -l $ROOTFSOFFSET -t 83 -p ${ROOTFSSIZE}M`
+set $(ptgen -o $OUTPUT -h $head -s $sect -l $ROOTFSOFFSET -t 83 -p ${ROOTFSSIZE}M)

@@ -30,13 +30,6 @@ define Package/fconfig/description
 	displays and (if writable) also edits the RedBoot configuration.
 endef
 
-define Build/Configure
-endef
-
-define Build/Compile
-	$(call Build/Compile/Default)
-endef
-
 define Package/fconfig/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/fconfig $(1)/usr/sbin/

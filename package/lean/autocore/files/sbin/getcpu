@@ -1,0 +1,8 @@
+#!/bin/sh
+
+if [ $(busybox ps -w | grep getcpu | grep -v grep | wc -l) -le 2 ]; then
+  AT=$(cat /proc/stat | grep "^cpu " | awk '{print $2+$3+$4+$5+$6+$7+$8 " " $2+$3+$4+$7+$8}')
+  sleep 1
+  BT=$(cat /proc/stat | grep "^cpu " | awk '{print $2+$3+$4+$5+$6+$7+$8 " " $2+$3+$4+$7+$8}')
+  printf "%.01f%%" $(echo $AT $BT | awk '{print (($4-$2)/($3-$1))*100}') >/tmp/cpuusage
+fi

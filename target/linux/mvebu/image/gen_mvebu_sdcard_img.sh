@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #
 # Copyright (C) 2016 Josua Mayer
 #
@@ -41,7 +41,7 @@ if [ -n "$BOOTLOADER" ]; then
 fi
 
 # generate image file
-printf "Creating $OUTFILE from /dev/zero: "
+printf "Creating %s from /dev/zero: " "$OUTFILE"
 dd if=/dev/zero of="$OUTFILE" bs=512 count=1 >/dev/null
 printf "Done\n"
 
@@ -56,7 +56,7 @@ sect=63
 
 # create real partition table using fdisk
 printf "Creating partition table: "
-set `ptgen -o "$OUTFILE" -h $head -s $sect -l 1024 -S 0x$SIGNATURE $ptgen_args`
+set $(ptgen -o "$OUTFILE" -h $head -s $sect -l 1024 -S 0x$SIGNATURE $ptgen_args)
 printf "Done\n"
 
 # install bootloader
@@ -79,6 +79,6 @@ while [ "$#" -ge 2 ]; do
 	) | dd of="$OUTFILE" bs=512 seek=$(($1 / 512)) conv=notrunc 2>/dev/null
 	printf "Done\n"
 
-	let i=i+1
+	i=$((i+1))
 	shift; shift
 done

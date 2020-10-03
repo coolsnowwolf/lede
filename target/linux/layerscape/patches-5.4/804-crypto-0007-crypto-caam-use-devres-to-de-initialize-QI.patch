@@ -1,0 +1,114 @@
+From 5a359d189f9938d30046aedfc94c9cd7fe383e34 Mon Sep 17 00:00:00 2001
+From: Andrey Smirnov <andrew.smirnov@gmail.com>
+Date: Tue, 22 Oct 2019 08:30:11 -0700
+Subject: [PATCH] crypto: caam - use devres to de-initialize QI
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Use devres to de-initialize the QI and drop explicit de-initialization
+code in caam_remove().
+
+Signed-off-by: Andrey Smirnov <andrew.smirnov@gmail.com>
+Reviewed-by: Horia Geantă <horia.geanta@nxp.com>
+Cc: Chris Healy <cphealy@gmail.com>
+Cc: Lucas Stach <l.stach@pengutronix.de>
+Cc: Horia Geantă <horia.geanta@nxp.com>
+Cc: Herbert Xu <herbert@gondor.apana.org.au>
+Cc: Iuliana Prodan <iuliana.prodan@nxp.com>
+Cc: linux-crypto@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+(cherry picked from commit f414de2e2fffd89c8a4e5b5e06b0eba5f9d8b1eb)
+---
+ drivers/crypto/caam/ctrl.c   | 14 +-------------
+ drivers/crypto/caam/intern.h |  3 ---
+ drivers/crypto/caam/qi.c     |  8 ++++++--
+ drivers/crypto/caam/qi.h     |  1 -
+ 4 files changed, 7 insertions(+), 19 deletions(-)
+
+--- a/drivers/crypto/caam/ctrl.c
++++ b/drivers/crypto/caam/ctrl.c
+@@ -332,11 +332,6 @@ static int caam_remove(struct platform_d
+ 	/* Remove platform devices under the crypto node */
+ 	of_platform_depopulate(ctrldev);
+ 
+-#ifdef CONFIG_CAAM_QI
+-	if (ctrlpriv->qi_init)
+-		caam_qi_shutdown(ctrldev);
+-#endif
+-
+ 	return 0;
+ }
+ 
+@@ -767,7 +762,7 @@ static int caam_probe(struct platform_de
+ 	ret = of_platform_populate(nprop, caam_match, NULL, dev);
+ 	if (ret) {
+ 		dev_err(dev, "JR platform devices creation error\n");
+-		goto shutdown_qi;
++		return ret;
+ 	}
+ 
+ 	ring = 0;
+@@ -928,13 +923,6 @@ static int caam_probe(struct platform_de
+ caam_remove:
+ 	caam_remove(pdev);
+ 	return ret;
+-
+-shutdown_qi:
+-#ifdef CONFIG_CAAM_QI
+-	if (ctrlpriv->qi_init)
+-		caam_qi_shutdown(dev);
+-#endif
+-	return ret;
+ }
+ 
+ static struct platform_driver caam_driver = {
+--- a/drivers/crypto/caam/intern.h
++++ b/drivers/crypto/caam/intern.h
+@@ -81,9 +81,6 @@ struct caam_drv_private {
+ 	 */
+ 	u8 total_jobrs;		/* Total Job Rings in device */
+ 	u8 qi_present;		/* Nonzero if QI present in device */
+-#ifdef CONFIG_CAAM_QI
+-	u8 qi_init;		/* Nonzero if QI has been initialized */
+-#endif
+ 	u8 mc_en;		/* Nonzero if MC f/w is active */
+ 	int secvio_irq;		/* Security violation interrupt number */
+ 	int virt_en;		/* Virtualization enabled in CAAM */
+--- a/drivers/crypto/caam/qi.c
++++ b/drivers/crypto/caam/qi.c
+@@ -500,9 +500,10 @@ void caam_drv_ctx_rel(struct caam_drv_ct
+ }
+ EXPORT_SYMBOL(caam_drv_ctx_rel);
+ 
+-void caam_qi_shutdown(struct device *qidev)
++static void caam_qi_shutdown(void *data)
+ {
+ 	int i;
++	struct device *qidev = data;
+ 	struct caam_qi_priv *priv = &qipriv;
+ 	const cpumask_t *cpus = qman_affine_cpus();
+ 
+@@ -761,7 +762,10 @@ int caam_qi_init(struct platform_device
+ 			    &times_congested, &caam_fops_u64_ro);
+ #endif
+ 
+-	ctrlpriv->qi_init = 1;
++	err = devm_add_action_or_reset(qidev, caam_qi_shutdown, ctrlpriv);
++	if (err)
++		return err;
++
+ 	dev_info(qidev, "Linux CAAM Queue I/F driver initialised\n");
+ 	return 0;
+ }
+--- a/drivers/crypto/caam/qi.h
++++ b/drivers/crypto/caam/qi.h
+@@ -147,7 +147,6 @@ int caam_drv_ctx_update(struct caam_drv_
+ void caam_drv_ctx_rel(struct caam_drv_ctx *drv_ctx);
+ 
+ int caam_qi_init(struct platform_device *pdev);
+-void caam_qi_shutdown(struct device *dev);
+ 
+ /**
+  * qi_cache_alloc - Allocate buffers from CAAM-QI cache

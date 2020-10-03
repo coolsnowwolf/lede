@@ -1,0 +1,864 @@
+From ae4d4a1aa913eaafe72b252cfe93f6fad68b39f2 Mon Sep 17 00:00:00 2001
+From: Sandor Yu <Sandor.yu@nxp.com>
+Date: Fri, 30 Aug 2019 15:02:13 +0800
+Subject: [PATCH] drm: bridge: cadence: Add new api functions
+
+Add variable lane_mapping for hdmi.
+Add new API function cdns_mhdp_bus_read/cdns_mhdp_bus_write,
+cdns_mhdp_get_fw_clk and cdns_mhdp_infoframe_set.
+Adjust some API function interface.
+
+Signed-off-by: Sandor Yu <Sandor.yu@nxp.com>
+---
+ drivers/gpu/drm/bridge/cadence/cdns-dp-core.c     |  34 ++---
+ drivers/gpu/drm/bridge/cadence/cdns-hdmi-core.c   | 131 +++++------------
+ drivers/gpu/drm/bridge/cadence/cdns-mhdp-common.c | 167 +++++++++++++++-------
+ drivers/gpu/drm/bridge/cadence/cdns-mhdp-hdmi.c   |  36 +++++
+ include/drm/bridge/cdns-mhdp-common.h             |  16 ++-
+ 5 files changed, 219 insertions(+), 165 deletions(-)
+ mode change 100644 => 100755 drivers/gpu/drm/bridge/cadence/cdns-dp-core.c
+ mode change 100644 => 100755 drivers/gpu/drm/bridge/cadence/cdns-hdmi-core.c
+ mode change 100644 => 100755 drivers/gpu/drm/bridge/cadence/cdns-mhdp-common.c
+ mode change 100644 => 100755 drivers/gpu/drm/bridge/cadence/cdns-mhdp-hdmi.c
+ mode change 100644 => 100755 include/drm/bridge/cdns-mhdp-common.h
+
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dp-core.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dp-core.c
+@@ -116,7 +116,7 @@ static void cdns_dp_mode_set(struct imx_
+ {
+ 	struct drm_dp_link link;
+ 	struct cdns_mhdp_device *mhdp = &dp->mhdp;
+-	u32 lane_mapping = mhdp->dp.lane_mapping;
++	u32 lane_mapping = mhdp->lane_mapping;
+ 	int ret;
+ 	char linkid[6];
+ 
+@@ -405,12 +405,12 @@ static void cdns_dp_parse_dt(struct cdns
+ 	int ret;
+ 
+ 	ret = of_property_read_u32(of_node, "lane-mapping",
+-						&mhdp->dp.lane_mapping);
++						&mhdp->lane_mapping);
+ 	if (ret) {
+-		mhdp->dp.lane_mapping = 0xc6;
++		mhdp->lane_mapping = 0xc6;
+ 		dev_warn(mhdp->dev, "Failed to get lane_mapping - using default 0xc6\n");
+ 	}
+-	dev_info(mhdp->dev, "lane-mapping 0x%02x\n", mhdp->dp.lane_mapping);
++	dev_info(mhdp->dev, "lane-mapping 0x%02x\n", mhdp->lane_mapping);
+ 
+ 	ret = of_property_read_u32(of_node, "link-rate", &mhdp->dp.link_rate);
+ 	if (ret) {
+@@ -470,11 +470,11 @@ __cdns_dp_probe(struct platform_device *
+ 
+ 	dp->irq[IRQ_IN] = platform_get_irq_byname(pdev, "plug_in");
+ 	if (dp->irq[IRQ_IN] < 0)
+-		dev_info(&pdev->dev, "No plug_in irq number\n");
++		dev_info(dev, "No plug_in irq number\n");
+ 
+ 	dp->irq[IRQ_OUT] = platform_get_irq_byname(pdev, "plug_out");
+ 	if (dp->irq[IRQ_OUT] < 0)
+-		dev_info(&pdev->dev, "No plug_out irq number\n");
++		dev_info(dev, "No plug_out irq number\n");
+ 
+ 	cdns_dp_parse_dt(&dp->mhdp);
+ 
+@@ -498,7 +498,7 @@ __cdns_dp_probe(struct platform_device *
+ 					IRQF_ONESHOT, dev_name(dev),
+ 					dp);
+ 	if (ret) {
+-		dev_err(&pdev->dev, "can't claim irq %d\n",
++		dev_err(dev, "can't claim irq %d\n",
+ 						dp->irq[IRQ_IN]);
+ 		goto err_out;
+ 	}
+@@ -509,7 +509,7 @@ __cdns_dp_probe(struct platform_device *
+ 					IRQF_ONESHOT, dev_name(dev),
+ 					dp);
+ 	if (ret) {
+-		dev_err(&pdev->dev, "can't claim irq %d\n",
++		dev_err(dev, "can't claim irq %d\n",
+ 						dp->irq[IRQ_OUT]);
+ 		goto err_out;
+ 	}
+@@ -521,10 +521,10 @@ __cdns_dp_probe(struct platform_device *
+ 	dp->mhdp.bridge.base.driver_private = dp;
+ 	dp->mhdp.bridge.base.funcs = &cdns_dp_bridge_funcs;
+ #ifdef CONFIG_OF
+-	dp->mhdp.bridge.base.of_node = pdev->dev.of_node;
++	dp->mhdp.bridge.base.of_node = dev->of_node;
+ #endif
+ 
+-	platform_set_drvdata(pdev, dp);
++	dev_set_drvdata(dev, &dp->mhdp);
+ 	
+ 	dp_aux_init(&dp->mhdp, dev);
+ 
+@@ -534,9 +534,9 @@ err_out:
+ 	return ERR_PTR(ret);
+ }
+ 
+-static void __cdns_dp_remove(struct imx_mhdp_device *dp)
++static void __cdns_dp_remove(struct cdns_mhdp_device *mhdp)
+ {
+-	dp_aux_destroy(&dp->mhdp);
++	dp_aux_destroy(mhdp);
+ }
+ 
+ /* -----------------------------------------------------------------------------
+@@ -559,11 +559,11 @@ EXPORT_SYMBOL_GPL(cdns_dp_probe);
+ 
+ void cdns_dp_remove(struct platform_device *pdev)
+ {
+-	struct imx_mhdp_device *dp = platform_get_drvdata(pdev);
++	struct cdns_mhdp_device *mhdp = platform_get_drvdata(pdev);
+ 
+-	drm_bridge_remove(&dp->mhdp.bridge.base);
++	drm_bridge_remove(&mhdp->bridge.base);
+ 
+-	__cdns_dp_remove(dp);
++	__cdns_dp_remove(mhdp);
+ }
+ EXPORT_SYMBOL_GPL(cdns_dp_remove);
+ 
+@@ -593,9 +593,9 @@ EXPORT_SYMBOL_GPL(cdns_dp_bind);
+ 
+ void cdns_dp_unbind(struct device *dev)
+ {
+-	struct imx_mhdp_device *dp = dev_get_drvdata(dev);
++	struct cdns_mhdp_device *mhdp = dev_get_drvdata(dev);
+ 
+-	__cdns_dp_remove(dp);
++	__cdns_dp_remove(mhdp);
+ }
+ EXPORT_SYMBOL_GPL(cdns_dp_unbind);
+ 
+--- a/drivers/gpu/drm/bridge/cadence/cdns-hdmi-core.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-hdmi-core.c
+@@ -25,25 +25,8 @@
+ #include <linux/module.h>
+ #include <linux/mfd/syscon.h>
+ #include <linux/mutex.h>
+-#include <linux/regmap.h>
+ #include <linux/of_device.h>
+ 
+-static void hdmi_writel(struct cdns_mhdp_device *mhdp, u32 val, u32 offset)
+-{
+-	struct imx_mhdp_device *hdmi = container_of(mhdp, struct imx_mhdp_device, mhdp);
+-
+-	/* TODO */
+-	if (offset >= 0x1000 && hdmi->regmap_csr) {
+-		/* Remap address to low 4K memory */
+-		regmap_write(hdmi->regmap_csr, hdmi->csr_ctrl0_reg, offset >> 12);
+-		writel(val, (offset & 0xfff) + mhdp->regs);
+-		/* Restore address mapping */
+-		regmap_write(hdmi->regmap_csr, hdmi->csr_ctrl0_reg, 0);
+-
+-	} else
+-		writel(val, mhdp->regs + offset);
+-}
+-
+ static int hdmi_sink_config(struct cdns_mhdp_device *mhdp)
+ {
+ 	struct drm_scdc *scdc = &mhdp->connector.base.display_info.hdmi.scdc;
+@@ -75,65 +58,12 @@ static int hdmi_sink_config(struct cdns_
+ 	return ret;
+ }
+ 
+-static int hdmi_lanes_config(struct cdns_mhdp_device *mhdp)
+-{
+-	int ret;
+-
+-	/* TODO */
+-	/* Set the lane swapping */
+-//	if (cpu_is_imx8qm())
+-		ret = cdns_mhdp_reg_write(mhdp, LANES_CONFIG,
+-						    F_SOURCE_PHY_LANE0_SWAP(3) |
+-						    F_SOURCE_PHY_LANE1_SWAP(0) |
+-						    F_SOURCE_PHY_LANE2_SWAP(1) |
+-						    F_SOURCE_PHY_LANE3_SWAP(2) |
+-						    F_SOURCE_PHY_COMB_BYPASS(0) |
+-							F_SOURCE_PHY_20_10(1));
+-#if 0
+-	else
+-		ret = cdns_mhdp_reg_write(mhdp, LANES_CONFIG,
+-						    F_SOURCE_PHY_LANE0_SWAP(0) |
+-						    F_SOURCE_PHY_LANE1_SWAP(1) |
+-						    F_SOURCE_PHY_LANE2_SWAP(2) |
+-						    F_SOURCE_PHY_LANE3_SWAP(3) |
+-						    F_SOURCE_PHY_COMB_BYPASS(0) |
+-							F_SOURCE_PHY_20_10(1));
+-#endif
+-	return ret;
+-}
+-
+-static void hdmi_info_frame_set(struct cdns_mhdp_device *mhdp,
+-					u8 entry_id, u8 packet_len, u8 *packet, u8 packet_type)
++static void hdmi_lanes_config(struct cdns_mhdp_device *mhdp)
+ {
+-	u32 *packet32, len32;
+-	u32 val, i;
+-
+-	/* invalidate entry */
+-	val = F_ACTIVE_IDLE_TYPE(1) | F_PKT_ALLOC_ADDRESS(entry_id);
+-	hdmi_writel(mhdp, val, SOURCE_PIF_PKT_ALLOC_REG);
+-	hdmi_writel(mhdp, F_PKT_ALLOC_WR_EN(1), SOURCE_PIF_PKT_ALLOC_WR_EN);
+-
+-	/* flush fifo 1 */
+-	hdmi_writel(mhdp, F_FIFO1_FLUSH(1), SOURCE_PIF_FIFO1_FLUSH);
+-
+-	/* write packet into memory */
+-	packet32 = (u32 *)packet;
+-	len32 = packet_len / 4;
+-	for (i = 0; i < len32; i++)
+-		hdmi_writel(mhdp, F_DATA_WR(packet32[i]), SOURCE_PIF_DATA_WR);
+-
+-	/* write entry id */
+-	hdmi_writel(mhdp, F_WR_ADDR(entry_id), SOURCE_PIF_WR_ADDR);
+-
+-	/* write request */
+-	hdmi_writel(mhdp, F_HOST_WR(1), SOURCE_PIF_WR_REQ);
+-
+-	/* update entry */
+-	val =  F_ACTIVE_IDLE_TYPE(1) | F_TYPE_VALID(1) |
+-			F_PACKET_TYPE(packet_type) | F_PKT_ALLOC_ADDRESS(entry_id);
+-	hdmi_writel(mhdp, val, SOURCE_PIF_PKT_ALLOC_REG);
+-
+-	hdmi_writel(mhdp, F_PKT_ALLOC_WR_EN(1), SOURCE_PIF_PKT_ALLOC_WR_EN);
++	/* Line swaping */
++	/* For imx8qm lane_mapping = 0x93
++	 * For imx8mq lane_mapping = 0xe4*/
++	cdns_mhdp_reg_write(mhdp, LANES_CONFIG, 0x00400000 | mhdp->lane_mapping);
+ }
+ 
+ #define RGB_ALLOWED_COLORIMETRY (BIT(HDMI_EXTENDED_COLORIMETRY_BT2020) |\
+@@ -148,9 +78,11 @@ static int hdmi_avi_info_set(struct cdns
+ 				struct drm_display_mode *mode)
+ {
+ 	struct hdmi_avi_infoframe frame;
+-//	struct drm_display_info *di = &mhdp->connector.base.display_info;
+-//	enum hdmi_extended_colorimetry ext_col;
+-//	u32 sink_col, allowed_col;
++#if 0
++	struct drm_display_info *di = &mhdp->connector.base.display_info;
++	enum hdmi_extended_colorimetry ext_col;
++	u32 sink_col, allowed_col;
++#endif
+ 	int format = mhdp->video_info.color_fmt;
+ 	u8 buf[32];
+ 	int ret;
+@@ -209,7 +141,7 @@ static int hdmi_avi_info_set(struct cdns
+ 	}
+ 
+ 	buf[0] = 0;
+-	hdmi_info_frame_set(mhdp, 0, sizeof(buf), buf, HDMI_INFOFRAME_TYPE_AVI);
++	cdns_mhdp_infoframe_set(mhdp, 0, sizeof(buf), buf, HDMI_INFOFRAME_TYPE_AVI);
+ 	return 0;
+ }
+ 
+@@ -234,7 +166,7 @@ static int hdmi_vendor_info_set(struct c
+ 	}
+ 
+ 	buf[0] = 0;
+-	hdmi_info_frame_set(mhdp, 3, sizeof(buf), buf, HDMI_INFOFRAME_TYPE_VENDOR);
++	cdns_mhdp_infoframe_set(mhdp, 3, sizeof(buf), buf, HDMI_INFOFRAME_TYPE_VENDOR);
+ 	return 0;
+ }
+ 
+@@ -464,6 +396,19 @@ static irqreturn_t cdns_hdmi_irq_thread(
+ 	return IRQ_HANDLED;
+ }
+ 
++static void cdns_hdmi_parse_dt(struct cdns_mhdp_device *mhdp)
++{
++	struct device_node *of_node = mhdp->dev->of_node;
++	int ret;
++
++	ret = of_property_read_u32(of_node, "lane-mapping", &mhdp->lane_mapping);
++	if (ret) {
++		mhdp->lane_mapping = 0xc6;
++		dev_warn(mhdp->dev, "Failed to get lane_mapping - using default 0xc6\n");
++	}
++	dev_info(mhdp->dev, "lane-mapping 0x%02x\n", mhdp->lane_mapping);
++}
++
+ static struct imx_mhdp_device *
+ __cdns_hdmi_probe(struct platform_device *pdev,
+ 			const struct cdn_plat_data *plat_data)
+@@ -503,13 +448,13 @@ __cdns_hdmi_probe(struct platform_device
+ 
+ 	hdmi->irq[IRQ_IN] = platform_get_irq_byname(pdev, "plug_in");
+ 	if (hdmi->irq[IRQ_IN] < 0) {
+-		dev_info(&pdev->dev, "No plug_in irq number\n");
++		dev_info(dev, "No plug_in irq number\n");
+ 		return ERR_PTR(-EPROBE_DEFER);
+ 	}
+ 
+ 	hdmi->irq[IRQ_OUT] = platform_get_irq_byname(pdev, "plug_out");
+ 	if (hdmi->irq[IRQ_OUT] < 0) {
+-		dev_info(&pdev->dev, "No plug_out irq number\n");
++		dev_info(dev, "No plug_out irq number\n");
+ 		return ERR_PTR(-EPROBE_DEFER);
+ 	}
+ 
+@@ -533,7 +478,7 @@ __cdns_hdmi_probe(struct platform_device
+ 					IRQF_ONESHOT, dev_name(dev),
+ 					hdmi);
+ 	if (ret) {
+-		dev_err(&pdev->dev, "can't claim irq %d\n",
++		dev_err(dev, "can't claim irq %d\n",
+ 						hdmi->irq[IRQ_IN]);
+ 		goto err_out;
+ 	}
+@@ -544,11 +489,13 @@ __cdns_hdmi_probe(struct platform_device
+ 					IRQF_ONESHOT, dev_name(dev),
+ 					hdmi);
+ 	if (ret) {
+-		dev_err(&pdev->dev, "can't claim irq %d\n",
++		dev_err(dev, "can't claim irq %d\n",
+ 						hdmi->irq[IRQ_OUT]);
+ 		goto err_out;
+ 	}
+ 
++	cdns_hdmi_parse_dt(&hdmi->mhdp);
++
+ 	if (cdns_mhdp_read_hpd(&hdmi->mhdp))
+ 		enable_irq(hdmi->irq[IRQ_OUT]);
+ 	else
+@@ -557,14 +504,14 @@ __cdns_hdmi_probe(struct platform_device
+ 	hdmi->mhdp.bridge.base.driver_private = hdmi;
+ 	hdmi->mhdp.bridge.base.funcs = &cdns_hdmi_bridge_funcs;
+ #ifdef CONFIG_OF
+-	hdmi->mhdp.bridge.base.of_node = pdev->dev.of_node;
++	hdmi->mhdp.bridge.base.of_node = dev->of_node;
+ #endif
+ 
+ 	memset(&pdevinfo, 0, sizeof(pdevinfo));
+ 	pdevinfo.parent = dev;
+ 	pdevinfo.id = PLATFORM_DEVID_AUTO;
+ 
+-	platform_set_drvdata(pdev, hdmi);
++	dev_set_drvdata(dev, &hdmi->mhdp);
+ 
+ 	return hdmi;
+ 
+@@ -573,7 +520,7 @@ err_out:
+ 	return ERR_PTR(ret);
+ }
+ 
+-static void __cdns_hdmi_remove(struct imx_mhdp_device *hdmi)
++static void __cdns_hdmi_remove(struct cdns_mhdp_device *mhdp)
+ {
+ }
+ 
+@@ -597,11 +544,11 @@ EXPORT_SYMBOL_GPL(cdns_hdmi_probe);
+ 
+ void cdns_hdmi_remove(struct platform_device *pdev)
+ {
+-	struct imx_mhdp_device *hdmi = platform_get_drvdata(pdev);
++	struct cdns_mhdp_device *mhdp = platform_get_drvdata(pdev);
+ 
+-	drm_bridge_remove(&hdmi->mhdp.bridge.base);
++	drm_bridge_remove(&mhdp->bridge.base);
+ 
+-	__cdns_hdmi_remove(hdmi);
++	__cdns_hdmi_remove(mhdp);
+ }
+ EXPORT_SYMBOL_GPL(cdns_hdmi_remove);
+ 
+@@ -631,9 +578,9 @@ EXPORT_SYMBOL_GPL(cdns_hdmi_bind);
+ 
+ void cdns_hdmi_unbind(struct device *dev)
+ {
+-	struct imx_mhdp_device *hdmi = dev_get_drvdata(dev);
++	struct cdns_mhdp_device *mhdp = dev_get_drvdata(dev);
+ 
+-	__cdns_hdmi_remove(hdmi);
++	__cdns_hdmi_remove(mhdp);
+ }
+ EXPORT_SYMBOL_GPL(cdns_hdmi_unbind);
+ 
+--- a/drivers/gpu/drm/bridge/cadence/cdns-mhdp-common.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-mhdp-common.c
+@@ -23,8 +23,10 @@
+ #include <asm/unaligned.h>
+ 
+ #include <drm/bridge/cdns-mhdp-common.h>
++#include <drm/bridge/cdns-mhdp-imx.h>
+ #include <drm/drm_modes.h>
+ #include <drm/drm_print.h>
++#include <linux/regmap.h>
+ 
+ #define CDNS_DP_SPDIF_CLK		200000000
+ #define FW_ALIVE_TIMEOUT_US		1000000
+@@ -33,6 +35,27 @@
+ #define LINK_TRAINING_RETRY_MS		20
+ #define LINK_TRAINING_TIMEOUT_MS	500
+ 
++#define mhdp_readx_poll_timeout(op, addr, offset, val, cond, sleep_us, timeout_us)	\
++({ \
++	u64 __timeout_us = (timeout_us); \
++	unsigned long __sleep_us = (sleep_us); \
++	ktime_t __timeout = ktime_add_us(ktime_get(), __timeout_us); \
++	might_sleep_if((__sleep_us) != 0); \
++	for (;;) { \
++		(val) = op(addr, offset); \
++		if (cond) \
++			break; \
++		if (__timeout_us && \
++		    ktime_compare(ktime_get(), __timeout) > 0) { \
++			(val) = op(addr, offset); \
++			break; \
++		} \
++		if (__sleep_us) \
++			usleep_range((__sleep_us >> 2) + 1, __sleep_us); \
++	} \
++	(cond) ? 0 : -ETIMEDOUT; \
++})
++
+ static inline u32 get_unaligned_be24(const void *p)
+ {
+ 	const u8 *_p = p;
+@@ -49,9 +72,51 @@ static inline void put_unaligned_be24(u3
+ 	_p[2] = val;
+ }
+ 
++u32 cdns_mhdp_bus_read(struct cdns_mhdp_device *mhdp, u32 offset)
++{
++	struct imx_mhdp_device *hdmi = container_of(mhdp, struct imx_mhdp_device, mhdp);
++	u32 val;
++
++	/* TODO */
++	if (offset >= 0x1000 && hdmi->regmap_csr) {
++		/* Remap address to low 4K memory */
++		regmap_write(hdmi->regmap_csr, hdmi->csr_ctrl0_reg, offset >> 12);
++		val = readl((offset & 0xfff) + mhdp->regs);
++		/* Restore address mapping */
++		regmap_write(hdmi->regmap_csr, hdmi->csr_ctrl0_reg, 0);
++	} else
++		val = readl(mhdp->regs + offset);
++
++	return val;
++}
++EXPORT_SYMBOL(cdns_mhdp_bus_read);
++
++void cdns_mhdp_bus_write(u32 val, struct cdns_mhdp_device *mhdp, u32 offset)
++{
++	struct imx_mhdp_device *hdmi = container_of(mhdp, struct imx_mhdp_device, mhdp);
++
++	/* TODO */
++	if (offset >= 0x1000 && hdmi->regmap_csr) {
++		/* Remap address to low 4K memory */
++		regmap_write(hdmi->regmap_csr, hdmi->csr_ctrl0_reg, offset >> 12);
++		writel(val, (offset & 0xfff) + mhdp->regs);
++		/* Restore address mapping */
++		regmap_write(hdmi->regmap_csr, hdmi->csr_ctrl0_reg, 0);
++
++	} else
++		writel(val, mhdp->regs + offset);
++}
++EXPORT_SYMBOL(cdns_mhdp_bus_write);
++
++u32 cdns_mhdp_get_fw_clk(struct cdns_mhdp_device *mhdp)
++{
++	return cdns_mhdp_bus_read(mhdp, SW_CLK_H);
++}
++EXPORT_SYMBOL(cdns_mhdp_get_fw_clk);
++
+ void cdns_mhdp_set_fw_clk(struct cdns_mhdp_device *mhdp, unsigned long clk)
+ {
+-	writel(clk / 1000000, mhdp->regs + SW_CLK_H);
++	cdns_mhdp_bus_write(clk / 1000000, mhdp, SW_CLK_H);
+ }
+ EXPORT_SYMBOL(cdns_mhdp_set_fw_clk);
+ 
+@@ -71,16 +136,16 @@ void cdns_mhdp_clock_reset(struct cdns_m
+ 	      DPTX_SYS_CLK_EN |
+ 	      CFG_DPTX_VIF_CLK_RSTN_EN |
+ 	      CFG_DPTX_VIF_CLK_EN;
+-	writel(val, mhdp->regs + SOURCE_DPTX_CAR);
++	cdns_mhdp_bus_write(val, mhdp, SOURCE_DPTX_CAR);
+ 
+ 	val = SOURCE_PHY_RSTN_EN | SOURCE_PHY_CLK_EN;
+-	writel(val, mhdp->regs + SOURCE_PHY_CAR);
++	cdns_mhdp_bus_write(val, mhdp, SOURCE_PHY_CAR);
+ 
+ 	val = SOURCE_PKT_SYS_RSTN_EN |
+ 	      SOURCE_PKT_SYS_CLK_EN |
+ 	      SOURCE_PKT_DATA_RSTN_EN |
+ 	      SOURCE_PKT_DATA_CLK_EN;
+-	writel(val, mhdp->regs + SOURCE_PKT_CAR);
++	cdns_mhdp_bus_write(val, mhdp, SOURCE_PKT_CAR);
+ 
+ 	val = SPDIF_CDR_CLK_RSTN_EN |
+ 	      SPDIF_CDR_CLK_EN |
+@@ -88,20 +153,20 @@ void cdns_mhdp_clock_reset(struct cdns_m
+ 	      SOURCE_AIF_SYS_CLK_EN |
+ 	      SOURCE_AIF_CLK_RSTN_EN |
+ 	      SOURCE_AIF_CLK_EN;
+-	writel(val, mhdp->regs + SOURCE_AIF_CAR);
++	cdns_mhdp_bus_write(val, mhdp, SOURCE_AIF_CAR);
+ 
+ 	val = SOURCE_CIPHER_SYSTEM_CLK_RSTN_EN |
+ 	      SOURCE_CIPHER_SYS_CLK_EN |
+ 	      SOURCE_CIPHER_CHAR_CLK_RSTN_EN |
+ 	      SOURCE_CIPHER_CHAR_CLK_EN;
+-	writel(val, mhdp->regs + SOURCE_CIPHER_CAR);
++	cdns_mhdp_bus_write(val, mhdp, SOURCE_CIPHER_CAR);
+ 
+ 	val = SOURCE_CRYPTO_SYS_CLK_RSTN_EN |
+ 	      SOURCE_CRYPTO_SYS_CLK_EN;
+-	writel(val, mhdp->regs + SOURCE_CRYPTO_CAR);
++	cdns_mhdp_bus_write(val, mhdp, SOURCE_CRYPTO_CAR);
+ 
+ 	/* enable Mailbox and PIF interrupt */
+-	writel(0, mhdp->regs + APB_INT_MASK);
++	cdns_mhdp_bus_write(0, mhdp, APB_INT_MASK);
+ }
+ EXPORT_SYMBOL(cdns_mhdp_clock_reset);
+ 
+@@ -109,13 +174,13 @@ int cdns_mhdp_mailbox_read(struct cdns_m
+ {
+ 	int val, ret;
+ 
+-	ret = readx_poll_timeout(readl, mhdp->regs + MAILBOX_EMPTY_ADDR,
++	ret = mhdp_readx_poll_timeout(cdns_mhdp_bus_read, mhdp, MAILBOX_EMPTY_ADDR,
+ 				 val, !val, MAILBOX_RETRY_US,
+ 				 MAILBOX_TIMEOUT_US);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	return readl(mhdp->regs + MAILBOX0_RD_DATA) & 0xff;
++	return cdns_mhdp_bus_read(mhdp, MAILBOX0_RD_DATA) & 0xff;
+ }
+ EXPORT_SYMBOL(cdns_mhdp_mailbox_read);
+ 
+@@ -123,13 +188,13 @@ static int cdp_dp_mailbox_write(struct c
+ {
+ 	int ret, full;
+ 
+-	ret = readx_poll_timeout(readl, mhdp->regs + MAILBOX_FULL_ADDR,
++	ret = mhdp_readx_poll_timeout(cdns_mhdp_bus_read, mhdp, MAILBOX_FULL_ADDR,
+ 				 full, !full, MAILBOX_RETRY_US,
+ 				 MAILBOX_TIMEOUT_US);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	writel(val, mhdp->regs + MAILBOX0_WR_DATA);
++	cdns_mhdp_bus_write(val, mhdp, MAILBOX0_WR_DATA);
+ 
+ 	return 0;
+ }
+@@ -357,20 +422,20 @@ int cdns_mhdp_load_firmware(struct cdns_
+ 	int i, ret;
+ 
+ 	/* reset ucpu before load firmware*/
+-	writel(APB_IRAM_PATH | APB_DRAM_PATH | APB_XT_RESET,
+-	       mhdp->regs + APB_CTRL);
++	cdns_mhdp_bus_write(APB_IRAM_PATH | APB_DRAM_PATH | APB_XT_RESET,
++	       mhdp, APB_CTRL);
+ 
+ 	for (i = 0; i < i_size; i += 4)
+-		writel(*i_mem++, mhdp->regs + ADDR_IMEM + i);
++		cdns_mhdp_bus_write(*i_mem++, mhdp, ADDR_IMEM + i);
+ 
+ 	for (i = 0; i < d_size; i += 4)
+-		writel(*d_mem++, mhdp->regs + ADDR_DMEM + i);
++		cdns_mhdp_bus_write(*d_mem++, mhdp, ADDR_DMEM + i);
+ 
+ 	/* un-reset ucpu */
+-	writel(0, mhdp->regs + APB_CTRL);
++	cdns_mhdp_bus_write(0, mhdp, APB_CTRL);
+ 
+ 	/* check the keep alive register to make sure fw working */
+-	ret = readx_poll_timeout(readl, mhdp->regs + KEEP_ALIVE,
++	ret = mhdp_readx_poll_timeout(cdns_mhdp_bus_read, mhdp, KEEP_ALIVE,
+ 				 reg, reg, 2000, FW_ALIVE_TIMEOUT_US);
+ 	if (ret < 0) {
+ 		DRM_DEV_ERROR(mhdp->dev, "failed to loaded the FW reg = %x\n",
+@@ -378,13 +443,13 @@ int cdns_mhdp_load_firmware(struct cdns_
+ 		return -EINVAL;
+ 	}
+ 
+-	reg = readl(mhdp->regs + VER_L) & 0xff;
++	reg = cdns_mhdp_bus_read(mhdp, VER_L) & 0xff;
+ 	mhdp->fw_version = reg;
+-	reg = readl(mhdp->regs + VER_H) & 0xff;
++	reg = cdns_mhdp_bus_read(mhdp, VER_H) & 0xff;
+ 	mhdp->fw_version |= reg << 8;
+-	reg = readl(mhdp->regs + VER_LIB_L_ADDR) & 0xff;
++	reg = cdns_mhdp_bus_read(mhdp, VER_LIB_L_ADDR) & 0xff;
+ 	mhdp->fw_version |= reg << 16;
+-	reg = readl(mhdp->regs + VER_LIB_H_ADDR) & 0xff;
++	reg = cdns_mhdp_bus_read(mhdp, VER_LIB_H_ADDR) & 0xff;
+ 	mhdp->fw_version |= reg << 24;
+ 
+ 	DRM_DEV_DEBUG(mhdp->dev, "firmware version: %x\n", mhdp->fw_version);
+@@ -466,7 +531,7 @@ int cdns_mhdp_event_config(struct cdns_m
+ 
+ 	memset(msg, 0, sizeof(msg));
+ 
+-	msg[0] = DPTX_EVENT_ENABLE_HPD | DPTX_EVENT_ENABLE_TRAINING;
++	msg[0] = MHDP_EVENT_ENABLE_HPD | MHDP_EVENT_ENABLE_TRAINING;
+ 
+ 	ret = cdns_mhdp_mailbox_send(mhdp, MB_MODULE_ID_DP_TX,
+ 				     DPTX_ENABLE_EVENT, sizeof(msg), msg);
+@@ -479,7 +544,7 @@ EXPORT_SYMBOL(cdns_mhdp_event_config);
+ 
+ u32 cdns_mhdp_get_event(struct cdns_mhdp_device *mhdp)
+ {
+-	return readl(mhdp->regs + SW_EVENTS0);
++	return cdns_mhdp_bus_read(mhdp, SW_EVENTS0);
+ }
+ EXPORT_SYMBOL(cdns_mhdp_get_event);
+ 
+@@ -883,24 +948,24 @@ int cdns_mhdp_audio_stop(struct cdns_mhd
+ 		return ret;
+ 	}
+ 
+-	writel(0, mhdp->regs + SPDIF_CTRL_ADDR);
++	cdns_mhdp_bus_write(0, mhdp, SPDIF_CTRL_ADDR);
+ 
+ 	/* clearn the audio config and reset */
+-	writel(0, mhdp->regs + AUDIO_SRC_CNTL);
+-	writel(0, mhdp->regs + AUDIO_SRC_CNFG);
+-	writel(AUDIO_SW_RST, mhdp->regs + AUDIO_SRC_CNTL);
+-	writel(0, mhdp->regs + AUDIO_SRC_CNTL);
++	cdns_mhdp_bus_write(0, mhdp, AUDIO_SRC_CNTL);
++	cdns_mhdp_bus_write(0, mhdp, AUDIO_SRC_CNFG);
++	cdns_mhdp_bus_write(AUDIO_SW_RST, mhdp, AUDIO_SRC_CNTL);
++	cdns_mhdp_bus_write(0, mhdp, AUDIO_SRC_CNTL);
+ 
+ 	/* reset smpl2pckt component  */
+-	writel(0, mhdp->regs + SMPL2PKT_CNTL);
+-	writel(AUDIO_SW_RST, mhdp->regs + SMPL2PKT_CNTL);
+-	writel(0, mhdp->regs + SMPL2PKT_CNTL);
++	cdns_mhdp_bus_write(0, mhdp, SMPL2PKT_CNTL);
++	cdns_mhdp_bus_write(AUDIO_SW_RST, mhdp, SMPL2PKT_CNTL);
++	cdns_mhdp_bus_write(0, mhdp, SMPL2PKT_CNTL);
+ 
+ 	/* reset FIFO */
+-	writel(AUDIO_SW_RST, mhdp->regs + FIFO_CNTL);
+-	writel(0, mhdp->regs + FIFO_CNTL);
++	cdns_mhdp_bus_write(AUDIO_SW_RST, mhdp, FIFO_CNTL);
++	cdns_mhdp_bus_write(0, mhdp, FIFO_CNTL);
+ 
+-	if (audio->format == AFMT_SPDIF)
++	if (audio->format == AFMT_SPDIF_INT)
+ 		clk_disable_unprepare(mhdp->spdif_clk);
+ 
+ 	return 0;
+@@ -936,15 +1001,15 @@ static void cdns_mhdp_audio_config_i2s(s
+ 		i2s_port_en_val = 3;
+ 	}
+ 
+-	writel(0x0, mhdp->regs + SPDIF_CTRL_ADDR);
++	cdns_mhdp_bus_write(0x0, mhdp, SPDIF_CTRL_ADDR);
+ 
+-	writel(SYNC_WR_TO_CH_ZERO, mhdp->regs + FIFO_CNTL);
++	cdns_mhdp_bus_write(SYNC_WR_TO_CH_ZERO, mhdp, FIFO_CNTL);
+ 
+ 	val = MAX_NUM_CH(audio->channels);
+ 	val |= NUM_OF_I2S_PORTS(audio->channels);
+ 	val |= AUDIO_TYPE_LPCM;
+ 	val |= CFG_SUB_PCKT_NUM(sub_pckt_num);
+-	writel(val, mhdp->regs + SMPL2PKT_CNFG);
++	cdns_mhdp_bus_write(val, mhdp, SMPL2PKT_CNFG);
+ 
+ 	if (audio->sample_width == 16)
+ 		val = 0;
+@@ -956,7 +1021,7 @@ static void cdns_mhdp_audio_config_i2s(s
+ 	val |= AUDIO_CH_NUM(audio->channels);
+ 	val |= I2S_DEC_PORT_EN(i2s_port_en_val);
+ 	val |= TRANS_SMPL_WIDTH_32;
+-	writel(val, mhdp->regs + AUDIO_SRC_CNFG);
++	cdns_mhdp_bus_write(val, mhdp, AUDIO_SRC_CNFG);
+ 
+ 	for (i = 0; i < (audio->channels + 1) / 2; i++) {
+ 		if (audio->sample_width == 16)
+@@ -965,7 +1030,7 @@ static void cdns_mhdp_audio_config_i2s(s
+ 			val = (0x0b << 8) | (0x0b << 20);
+ 
+ 		val |= ((2 * i) << 4) | ((2 * i + 1) << 16);
+-		writel(val, mhdp->regs + STTS_BIT_CH(i));
++		cdns_mhdp_bus_write(val, mhdp, STTS_BIT_CH(i));
+ 	}
+ 
+ 	switch (audio->sample_rate) {
+@@ -999,24 +1064,24 @@ static void cdns_mhdp_audio_config_i2s(s
+ 		break;
+ 	}
+ 	val |= 4;
+-	writel(val, mhdp->regs + COM_CH_STTS_BITS);
++	cdns_mhdp_bus_write(val, mhdp, COM_CH_STTS_BITS);
+ 
+-	writel(SMPL2PKT_EN, mhdp->regs + SMPL2PKT_CNTL);
+-	writel(I2S_DEC_START, mhdp->regs + AUDIO_SRC_CNTL);
++	cdns_mhdp_bus_write(SMPL2PKT_EN, mhdp, SMPL2PKT_CNTL);
++	cdns_mhdp_bus_write(I2S_DEC_START, mhdp, AUDIO_SRC_CNTL);
+ }
+ 
+ static void cdns_mhdp_audio_config_spdif(struct cdns_mhdp_device *mhdp)
+ {
+ 	u32 val;
+ 
+-	writel(SYNC_WR_TO_CH_ZERO, mhdp->regs + FIFO_CNTL);
++	cdns_mhdp_bus_write(SYNC_WR_TO_CH_ZERO, mhdp, FIFO_CNTL);
+ 
+ 	val = MAX_NUM_CH(2) | AUDIO_TYPE_LPCM | CFG_SUB_PCKT_NUM(4);
+-	writel(val, mhdp->regs + SMPL2PKT_CNFG);
+-	writel(SMPL2PKT_EN, mhdp->regs + SMPL2PKT_CNTL);
++	cdns_mhdp_bus_write(val, mhdp, SMPL2PKT_CNFG);
++	cdns_mhdp_bus_write(SMPL2PKT_EN, mhdp, SMPL2PKT_CNTL);
+ 
+ 	val = SPDIF_ENABLE | SPDIF_AVG_SEL | SPDIF_JITTER_BYPASS;
+-	writel(val, mhdp->regs + SPDIF_CTRL_ADDR);
++	cdns_mhdp_bus_write(val, mhdp, SPDIF_CTRL_ADDR);
+ 
+ 	clk_prepare_enable(mhdp->spdif_clk);
+ 	clk_set_rate(mhdp->spdif_clk, CDNS_DP_SPDIF_CLK);
+@@ -1028,7 +1093,7 @@ int cdns_mhdp_audio_config(struct cdns_m
+ 	int ret;
+ 
+ 	/* reset the spdif clk before config */
+-	if (audio->format == AFMT_SPDIF) {
++	if (audio->format == AFMT_SPDIF_INT) {
+ 		reset_control_assert(mhdp->spdif_rst);
+ 		reset_control_deassert(mhdp->spdif_rst);
+ 	}
+@@ -1043,7 +1108,7 @@ int cdns_mhdp_audio_config(struct cdns_m
+ 
+ 	if (audio->format == AFMT_I2S)
+ 		cdns_mhdp_audio_config_i2s(mhdp, audio);
+-	else if (audio->format == AFMT_SPDIF)
++	else if (audio->format == AFMT_SPDIF_INT)
+ 		cdns_mhdp_audio_config_spdif(mhdp);
+ 
+ 	ret = cdns_mhdp_reg_write(mhdp, AUDIO_PACK_CONTROL, AUDIO_PACK_EN);
+@@ -1150,12 +1215,12 @@ bool cdns_mhdp_check_alive(struct cdns_m
+ 	u32  alive, newalive;
+ 	u8 retries_left = 10;
+ 
+-	alive = readl(mhdp->regs + KEEP_ALIVE);
++	alive = cdns_mhdp_bus_read(mhdp, KEEP_ALIVE);
+ 
+ 	while (retries_left--) {
+ 		udelay(2);
+ 
+-		newalive = readl(mhdp->regs + KEEP_ALIVE);
++		newalive = cdns_mhdp_bus_read(mhdp, KEEP_ALIVE);
+ 		if (alive == newalive)
+ 			continue;
+ 		return true;
+--- a/drivers/gpu/drm/bridge/cadence/cdns-mhdp-hdmi.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-mhdp-hdmi.c
+@@ -10,6 +10,42 @@
+ #include <drm/drmP.h>
+ #include <linux/io.h>
+ #include <drm/bridge/cdns-mhdp-common.h>
++#include <drm/bridge/cdns-mhdp-imx.h>
++#include <linux/regmap.h>
++
++void cdns_mhdp_infoframe_set(struct cdns_mhdp_device *mhdp,
++					u8 entry_id, u8 packet_len, u8 *packet, u8 packet_type)
++{
++	u32 *packet32, len32;
++	u32 val, i;
++
++	/* invalidate entry */
++	val = F_ACTIVE_IDLE_TYPE(1) | F_PKT_ALLOC_ADDRESS(entry_id);
++	cdns_mhdp_bus_write(val, mhdp, SOURCE_PIF_PKT_ALLOC_REG);
++	cdns_mhdp_bus_write(F_PKT_ALLOC_WR_EN(1), mhdp, SOURCE_PIF_PKT_ALLOC_WR_EN);
++
++	/* flush fifo 1 */
++	cdns_mhdp_bus_write(F_FIFO1_FLUSH(1), mhdp, SOURCE_PIF_FIFO1_FLUSH);
++
++	/* write packet into memory */
++	packet32 = (u32 *)packet;
++	len32 = packet_len / 4;
++	for (i = 0; i < len32; i++)
++		cdns_mhdp_bus_write(F_DATA_WR(packet32[i]), mhdp, SOURCE_PIF_DATA_WR);
++
++	/* write entry id */
++	cdns_mhdp_bus_write(F_WR_ADDR(entry_id), mhdp, SOURCE_PIF_WR_ADDR);
++
++	/* write request */
++	cdns_mhdp_bus_write(F_HOST_WR(1), mhdp, SOURCE_PIF_WR_REQ);
++
++	/* update entry */
++	val =  F_ACTIVE_IDLE_TYPE(1) | F_TYPE_VALID(1) |
++			F_PACKET_TYPE(packet_type) | F_PKT_ALLOC_ADDRESS(entry_id);
++	cdns_mhdp_bus_write(val, mhdp, SOURCE_PIF_PKT_ALLOC_REG);
++
++	cdns_mhdp_bus_write(F_PKT_ALLOC_WR_EN(1), mhdp, SOURCE_PIF_PKT_ALLOC_WR_EN);
++}
+ 
+ int cdns_hdmi_get_edid_block(void *data, u8 *edid,
+ 			  u32 block, size_t length)
+--- a/include/drm/bridge/cdns-mhdp-common.h
++++ b/include/drm/bridge/cdns-mhdp-common.h
+@@ -391,8 +391,8 @@
+ #define FW_STANDBY				0
+ #define FW_ACTIVE				1
+ 
+-#define DPTX_EVENT_ENABLE_HPD			BIT(0)
+-#define DPTX_EVENT_ENABLE_TRAINING		BIT(1)
++#define MHDP_EVENT_ENABLE_HPD			BIT(0)
++#define MHDP_EVENT_ENABLE_TRAINING		BIT(1)
+ 
+ #define LINK_TRAINING_NOT_ACTIVE		0
+ #define LINK_TRAINING_RUN			1
+@@ -532,7 +532,8 @@ enum vic_bt_type {
+ 
+ enum audio_format {
+ 	AFMT_I2S = 0,
+-	AFMT_SPDIF = 1,
++	AFMT_SPDIF_INT = 1,
++	AFMT_SPDIF_EXT = 2,
+ 	AFMT_UNUSED,
+ };
+ 
+@@ -625,12 +626,13 @@ struct cdns_mhdp_device {
+ 	struct drm_dp_mst_topology_mgr mst_mgr;
+ 	struct delayed_work hotplug_work;
+ 
++	u32 lane_mapping;
+ 	bool link_up;
+ 	bool power_up;
+ 	bool plugged;
+ 
+ 	union {
+-		struct _dp_data {
++		struct cdn_dp_data {
+ 			struct drm_dp_link	link;
+ 			struct drm_dp_aux	aux;
+ 			struct cdns_mhdp_host	host;
+@@ -638,7 +640,6 @@ struct cdns_mhdp_device {
+ 			struct cdns_mhdp_mst_cbs cbs;
+ 			bool is_mst;
+ 			bool can_mst;
+-			u32 lane_mapping;
+ 			u32 link_rate;
+ 			u32 num_lanes;
+ 		} dp;
+@@ -649,8 +650,11 @@ struct cdns_mhdp_device {
+ 	};
+ };
+ 
++u32 cdns_mhdp_bus_read(struct cdns_mhdp_device *mhdp, u32 offset);
++void cdns_mhdp_bus_write(u32 val, struct cdns_mhdp_device *mhdp, u32 offset);
+ void cdns_mhdp_clock_reset(struct cdns_mhdp_device *mhdp);
+ void cdns_mhdp_set_fw_clk(struct cdns_mhdp_device *mhdp, unsigned long clk);
++u32 cdns_mhdp_get_fw_clk(struct cdns_mhdp_device *mhdp);
+ int cdns_mhdp_load_firmware(struct cdns_mhdp_device *mhdp, const u32 *i_mem,
+ 			    u32 i_size, const u32 *d_mem, u32 d_size);
+ int cdns_mhdp_set_firmware_active(struct cdns_mhdp_device *mhdp, bool enable);
+@@ -691,6 +695,8 @@ int cdns_mhdp_mailbox_validate_receive(s
+ 					      u16 req_size);
+ int cdns_mhdp_mailbox_read(struct cdns_mhdp_device *mhdp);
+ 
++void cdns_mhdp_infoframe_set(struct cdns_mhdp_device *mhdp,
++					u8 entry_id, u8 packet_len, u8 *packet, u8 packet_type);
+ int cdns_hdmi_get_edid_block(void *data, u8 *edid, u32 block, size_t length);
+ int cdns_hdmi_scdc_read(struct cdns_mhdp_device *mhdp, u8 addr, u8 *data);
+ int cdns_hdmi_scdc_write(struct cdns_mhdp_device *mhdp, u8 addr, u8 value);

@@ -12,7 +12,7 @@ esac
 #echo "Call dsl_pipe with $*"
 lock /var/lock/dsl_pipe
 echo $* > /tmp/pipe/dsl_cpe${pipe_no}_cmd
-result=`cat /tmp/pipe/dsl_cpe${pipe_no}_ack`
+result=$(cat /tmp/pipe/dsl_cpe${pipe_no}_ack)
 lock -u /var/lock/dsl_pipe
 
 echo "$result"

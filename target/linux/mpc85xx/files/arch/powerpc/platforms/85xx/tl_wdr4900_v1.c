@@ -115,7 +115,6 @@ static void __init tl_wdr4900_v1_setup_arch(void)
 }
 
 machine_arch_initcall(tl_wdr4900_v1, mpc85xx_common_publish_devices);
-machine_arch_initcall(tl_wdr4900_v1, swiotlb_setup_bus_notifier);
 
 /*
  * Called very early, device-tree isn't unflattened

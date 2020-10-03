@@ -9,7 +9,7 @@ LUCI_TITLE:=LuCI support for MWAN3 Helper
 LUCI_DEPENDS:=+luci-app-mwan3 +pdnsd-alt +dnsmasq-full +ipset
 LUCI_PKGARCH:=all
 PKG_VERSION:=1
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 include $(TOPDIR)/feeds/luci/luci.mk
 

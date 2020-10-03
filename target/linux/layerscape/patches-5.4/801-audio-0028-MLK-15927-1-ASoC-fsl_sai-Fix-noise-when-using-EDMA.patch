@@ -1,0 +1,107 @@
+From 3b671c297cff1ba5f5c3e089ffa82523eca3c598 Mon Sep 17 00:00:00 2001
+From: Mihai Serban <mihai.serban@nxp.com>
+Date: Fri, 7 Jul 2017 15:09:51 +0300
+Subject: [PATCH] MLK-15927-1: ASoC: fsl_sai: Fix noise when using EDMA
+
+EDMA requires the period size to be multiple of maxburst. Otherwise the
+remaining bytes are not transferred and thus noise is produced.
+
+We can handle this issue by adding a constraint on
+SNDRV_PCM_HW_PARAM_PERIOD_SIZE to be multiple of tx/rx maxburst value.
+
+This is based on a similar patch we have for ESAI:
+commit bd3f3eb2a37c
+("MLK-15109-2: ASoC: fsl_esai: add constrain_period_size")
+
+Signed-off-by: Mihai Serban <mihai.serban@nxp.com>
+Reviewed-by: Shengjiu Wang <shengjiu.wang@nxp.com>
+---
+ sound/soc/fsl/fsl_sai.c | 23 +++++++++++++++++++++++
+ sound/soc/fsl/fsl_sai.h |  2 ++
+ 2 files changed, 25 insertions(+)
+
+--- a/sound/soc/fsl/fsl_sai.c
++++ b/sound/soc/fsl/fsl_sai.c
+@@ -35,6 +35,7 @@ static struct fsl_sai_soc_data fsl_sai_v
+ 	.fifos = 1,
+ 	.fifo_depth = 32,
+ 	.flags = 0,
++	.constrain_period_size = false,
+ };
+ 
+ static struct fsl_sai_soc_data fsl_sai_imx6sx = {
+@@ -44,6 +45,7 @@ static struct fsl_sai_soc_data fsl_sai_i
+ 	.fifo_depth = 32,
+ 	.flags = 0,
+ 	.reg_offset = 0,
++	.constrain_period_size = false,
+ };
+ 
+ static struct fsl_sai_soc_data fsl_sai_imx6ul = {
+@@ -53,6 +55,7 @@ static struct fsl_sai_soc_data fsl_sai_i
+ 	.fifo_depth = 32,
+ 	.flags = 0,
+ 	.reg_offset = 0,
++	.constrain_period_size = false,
+ };
+ 
+ static struct fsl_sai_soc_data fsl_sai_imx7ulp = {
+@@ -62,6 +65,7 @@ static struct fsl_sai_soc_data fsl_sai_i
+ 	.fifo_depth = 16,
+ 	.flags = SAI_FLAG_PMQOS,
+ 	.reg_offset = 0,
++	.constrain_period_size = false,
+ };
+ 
+ static struct fsl_sai_soc_data fsl_sai_imx8mq = {
+@@ -71,6 +75,17 @@ static struct fsl_sai_soc_data fsl_sai_i
+ 	.fifo_depth = 32,
+ 	.flags = 0,
+ 	.reg_offset = 8,
++	.constrain_period_size = false,
++};
++
++static struct fsl_sai_soc_data fsl_sai_imx8qm = {
++	.imx = true,
++	.dataline = 0x3,
++	.fifos = 1,
++	.fifo_depth = 32,
++	.flags = 0,
++	.reg_offset = 0,
++	.constrain_period_size = true,
+ };
+ 
+ static const unsigned int fsl_sai_rates[] = {
+@@ -692,6 +707,13 @@ static int fsl_sai_startup(struct snd_pc
+ 			   FSL_SAI_CR3_TRCE_MASK,
+ 			   FSL_SAI_CR3_TRCE(sai->dataline[tx]));
+ 
++	/* EDMA engine needs periods of size multiple of tx/rx maxburst */
++	if (sai->soc->constrain_period_size)
++		snd_pcm_hw_constraint_step(substream->runtime, 0,
++					   SNDRV_PCM_HW_PARAM_PERIOD_SIZE,
++					   tx ? sai->dma_params_tx.maxburst :
++					   sai->dma_params_rx.maxburst);
++
+ 	ret = snd_pcm_hw_constraint_list(substream->runtime, 0,
+ 			SNDRV_PCM_HW_PARAM_RATE, &fsl_sai_rate_constraints);
+ 
+@@ -914,6 +936,7 @@ static const struct of_device_id fsl_sai
+ 	{ .compatible = "fsl,imx6ul-sai", .data = &fsl_sai_imx6ul },
+ 	{ .compatible = "fsl,imx7ulp-sai", .data = &fsl_sai_imx7ulp },
+ 	{ .compatible = "fsl,imx8mq-sai", .data = &fsl_sai_imx8mq },
++	{ .compatible = "fsl,imx8qm-sai", .data = &fsl_sai_imx8qm },
+ 	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(of, fsl_sai_ids);
+--- a/sound/soc/fsl/fsl_sai.h
++++ b/sound/soc/fsl/fsl_sai.h
+@@ -147,6 +147,8 @@ struct fsl_sai_soc_data {
+ 	unsigned int flags;
+ 	unsigned char reg_offset;
+ 	bool imx;
++	/* True for EDMA because it needs period size multiple of maxburst */
++	bool constrain_period_size;
+ };
+ 
+ struct fsl_sai {

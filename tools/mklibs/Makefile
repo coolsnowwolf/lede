@@ -7,17 +7,18 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mklibs
-PKG_VERSION:=0.1.35
+PKG_VERSION:=0.1.44
 
-PKG_SOURCE:=$(PKG_NAME)_$(PKG_VERSION).tar.gz
+PKG_SOURCE:=$(PKG_NAME)_$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=http://ftp.de.debian.org/debian/pool/main/m/mklibs/
-PKG_HASH:=ccb1023dc1729c5a37ca6c3eca8e4bac3491116763c8820dfce8eea4845c8567
+PKG_HASH:=3af0b6bd35e5b6fc58d8b68827fbae2ff6b7e20dd2b238ccb9b49d84722066c2
 
 HOST_FIXUP:=autoreconf
 
 include $(INCLUDE_DIR)/host-build.mk
 
 HOST_CFLAGS += -I$(CURDIR)/include
+HOST_CPPFLAGS += -std=gnu++98
 
 define Host/Install
        $(INSTALL_BIN) \

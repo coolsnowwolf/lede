@@ -182,6 +182,19 @@ _ucidef_finish_switch_roles() {
 	done
 }
 
+ucidef_set_ar8xxx_switch_mib() {
+	local name="$1"
+	local type="$2"
+	local interval="$3"
+
+	json_select_object switch
+		json_select_object "$name"
+			json_add_int ar8xxx_mib_type $type
+			json_add_int ar8xxx_mib_poll_interval $interval
+		json_select ..
+	json_select ..
+}
+
 ucidef_add_switch() {
 	local name="$1"; shift
 	local port num role device index need_tag prev_role
@@ -294,6 +307,14 @@ ucidef_set_interface_macaddr() {
 	ucidef_set_interface "$network" macaddr "$macaddr"
 }
 
+ucidef_set_label_macaddr() {
+	local macaddr="$1"
+
+	json_select_object system
+		json_add_string label_macaddr "$macaddr"
+	json_select ..
+}
+
 ucidef_add_atm_bridge() {
 	local vpi="$1"
 	local vci="$2"
@@ -383,7 +404,7 @@ ucidef_set_led_gpio() {
 }
 
 ucidef_set_led_ide() {
-	_ucidef_set_led_trigger "$1" "$2" "$3" ide-disk
+	_ucidef_set_led_trigger "$1" "$2" "$3" disk-activity
 }
 
 ucidef_set_led_netdev() {
@@ -463,6 +484,7 @@ _ucidef_set_led_timer() {
 
 	_ucidef_set_led_common "$1" "$2" "$3"
 
+	json_add_string type "$trigger_name"
 	json_add_string trigger "$trigger_name"
 	json_add_int delayon "$delayon"
 	json_add_int delayoff "$delayoff"
@@ -551,7 +573,7 @@ ucidef_add_gpio_switch() {
 	json_select_object gpioswitch
 		json_select_object "$cfg"
 			json_add_string name "$name"
-			json_add_int pin "$pin"
+			json_add_string pin "$pin"
 			json_add_int default "$default"
 		json_select ..
 	json_select ..
@@ -593,6 +615,5 @@ board_config_update() {
 }
 
 board_config_flush() {
-	json_dump -i > /tmp/.board.json
-	mv /tmp/.board.json ${CFG}
+	json_dump -i -o ${CFG}
 }

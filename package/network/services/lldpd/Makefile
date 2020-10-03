@@ -8,17 +8,18 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=lldpd
-PKG_VERSION:=1.0.1
+PKG_VERSION:=1.0.5
 PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://media.luffy.cx/files/lldpd
-PKG_HASH:=450b622aac7ae1758f1ef82f3b7b94ec47f2ff33abfb0e6ac82555b9ee55f151
+PKG_HASH:=2dd3b212f4dbabfcbb2794c0010b245f9f8e74b387984e757be6243a74c6cb99
 
 PKG_MAINTAINER:=Stijn Tintel <stijn@linux-ipv6.be>
 PKG_LICENSE:=ISC
 
 PKG_FIXUP:=autoreconf
+PKG_BUILD_PARALLEL:=1
 PKG_INSTALL:=1
 
 include $(INCLUDE_DIR)/package.mk
@@ -95,6 +96,7 @@ CONFIGURE_ARGS += \
 	--with-embedded-libevent=no \
 	--disable-hardening \
 	--without-xml \
+	--disable-doxygen-doc \
 	--sysconfdir=/tmp \
 	$(if $(CONFIG_LLDPD_WITH_CDP),,--disable-cdp) \
 	$(if $(CONFIG_LLDPD_WITH_FDP),,--disable-fdp) \
@@ -104,13 +106,8 @@ CONFIGURE_ARGS += \
 	$(if $(CONFIG_LLDPD_WITH_DOT3),,--disable-dot3) \
 	$(if $(CONFIG_LLDPD_WITH_CUSTOM),,--disable-custom) \
 	$(if $(CONFIG_LLDPD_WITH_SONMP),,--disable-sonmp) \
-	$(if $(CONFIG_LLDPD_WITH_JSON),--with-json=json-c,--with-json=no) \
-	$(if $(CONFIG_LLDPD_WITH_SNMP),--with-snmp,)
-
-# there is no flag to disable libbsd
-CONFIGURE_VARS += \
-	$(if $(CONFIG_USE_GLIBC),,libbsd_CFLAGS=-ldo-not-link-bsd) \
-	$(if $(CONFIG_USE_GLIBC),,libbsd_LDFLAGS=-ldo-not-link-bsd) \
-	$(if $(CONFIG_USE_GLIBC),,libbsd_LIBS="-lNONexistent")
+	$(if $(CONFIG_LLDPD_WITH_JSON),--enable-json0,) \
+	$(if $(CONFIG_LLDPD_WITH_SNMP),--with-snmp,) \
+	$(if $(CONFIG_USE_GLIBC),,--without-libbsd)
 
 $(eval $(call BuildPackage,lldpd))

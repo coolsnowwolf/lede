@@ -1,0 +1,152 @@
+From d1ced662ff5ed90a489b6610144d480bfd7a64e9 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Mon, 6 Jan 2020 18:21:44 +0100
+Subject: [PATCH] drm/vc4: hdmi: Move accessors to vc4_hdmi
+
+The current driver only supports a single HDMI controller, and part of
+the issue is that the main vc4_dev structure holds a pointer to its
+(only) HDMI controller, and the HDMI registers accessors will use it to
+retrieve the mapped addresses.
+
+Let's modify those accessors to use directly the vc4_hdmi structure so
+that we can eventually get rid of that single global pointer.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 22 ++++++++--------------
+ drivers/gpu/drm/vc4/vc4_hdmi.h |  8 ++++----
+ 2 files changed, 12 insertions(+), 18 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -122,6 +122,7 @@ vc4_hdmi_connector_detect(struct drm_con
+ {
+ 	struct drm_device *dev = connector->dev;
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
++	struct vc4_hdmi *vc4_hdmi = vc4->hdmi;
+ 
+ 	if (vc4->hdmi->hpd_gpio) {
+ 		if (gpio_get_value_cansleep(vc4->hdmi->hpd_gpio) ^
+@@ -236,6 +237,7 @@ static int vc4_hdmi_stop_packet(struct d
+ {
+ 	struct drm_device *dev = encoder->dev;
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
++	struct vc4_hdmi *vc4_hdmi = vc4->hdmi;
+ 	u32 packet_id = type - 0x80;
+ 
+ 	HDMI_WRITE(VC4_HDMI_RAM_PACKET_CONFIG,
+@@ -250,6 +252,7 @@ static void vc4_hdmi_write_infoframe(str
+ {
+ 	struct drm_device *dev = encoder->dev;
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
++	struct vc4_hdmi *vc4_hdmi = vc4->hdmi;
+ 	u32 packet_id = frame->any.type - 0x80;
+ 	u32 packet_reg = VC4_HDMI_RAM_PACKET(packet_id);
+ 	uint8_t buffer[VC4_HDMI_PACKET_STRIDE];
+@@ -632,9 +635,6 @@ static const struct drm_encoder_helper_f
+ /* HDMI audio codec callbacks */
+ static void vc4_hdmi_audio_set_mai_clock(struct vc4_hdmi *vc4_hdmi)
+ {
+-	struct drm_encoder *encoder = &vc4_hdmi->encoder.base.base;
+-	struct drm_device *drm = encoder->dev;
+-	struct vc4_dev *vc4 = to_vc4_dev(drm);
+ 	u32 hsm_clock = clk_get_rate(vc4_hdmi->hsm_clock);
+ 	unsigned long n, m;
+ 
+@@ -654,8 +654,6 @@ static void vc4_hdmi_set_n_cts(struct vc
+ {
+ 	struct drm_encoder *encoder = &vc4_hdmi->encoder.base.base;
+ 	struct drm_crtc *crtc = encoder->crtc;
+-	struct drm_device *drm = encoder->dev;
+-	struct vc4_dev *vc4 = to_vc4_dev(drm);
+ 	const struct drm_display_mode *mode = &crtc->state->adjusted_mode;
+ 	u32 samplerate = vc4_hdmi->audio.samplerate;
+ 	u32 n, cts;
+@@ -692,7 +690,6 @@ static int vc4_hdmi_audio_startup(struct
+ 	struct vc4_hdmi *vc4_hdmi = dai_to_hdmi(dai);
+ 	struct drm_encoder *encoder = &vc4_hdmi->encoder.base.base;
+ 	struct drm_connector *connector = &vc4_hdmi->connector.base;
+-	struct vc4_dev *vc4 = to_vc4_dev(encoder->dev);
+ 	int ret;
+ 
+ 	if (vc4_hdmi->audio.substream && vc4_hdmi->audio.substream != substream)
+@@ -723,9 +720,7 @@ static int vc4_hdmi_audio_set_fmt(struct
+ static void vc4_hdmi_audio_reset(struct vc4_hdmi *vc4_hdmi)
+ {
+ 	struct drm_encoder *encoder = &vc4_hdmi->encoder.base.base;
+-	struct drm_device *drm = encoder->dev;
+ 	struct device *dev = &vc4_hdmi->pdev->dev;
+-	struct vc4_dev *vc4 = to_vc4_dev(drm);
+ 	int ret;
+ 
+ 	ret = vc4_hdmi_stop_packet(encoder, HDMI_INFOFRAME_TYPE_AUDIO);
+@@ -756,10 +751,7 @@ static int vc4_hdmi_audio_hw_params(stru
+ 				    struct snd_soc_dai *dai)
+ {
+ 	struct vc4_hdmi *vc4_hdmi = dai_to_hdmi(dai);
+-	struct drm_encoder *encoder = &vc4_hdmi->encoder.base.base;
+-	struct drm_device *drm = encoder->dev;
+ 	struct device *dev = &vc4_hdmi->pdev->dev;
+-	struct vc4_dev *vc4 = to_vc4_dev(drm);
+ 	u32 audio_packet_config, channel_mask;
+ 	u32 channel_map, i;
+ 
+@@ -830,8 +822,6 @@ static int vc4_hdmi_audio_trigger(struct
+ {
+ 	struct vc4_hdmi *vc4_hdmi = dai_to_hdmi(dai);
+ 	struct drm_encoder *encoder = &vc4_hdmi->encoder.base.base;
+-	struct drm_device *drm = encoder->dev;
+-	struct vc4_dev *vc4 = to_vc4_dev(drm);
+ 
+ 	switch (cmd) {
+ 	case SNDRV_PCM_TRIGGER_START:
+@@ -1093,7 +1083,8 @@ static irqreturn_t vc4_cec_irq_handler_t
+ 
+ static void vc4_cec_read_msg(struct vc4_dev *vc4, u32 cntrl1)
+ {
+-	struct cec_msg *msg = &vc4->hdmi->cec_rx_msg;
++	struct vc4_hdmi *vc4_hdmi = vc4->hdmi;
++	struct cec_msg *msg = &vc4_hdmi->cec_rx_msg;
+ 	unsigned int i;
+ 
+ 	msg->len = 1 + ((cntrl1 & VC4_HDMI_CEC_REC_WRD_CNT_MASK) >>
+@@ -1139,6 +1130,7 @@ static irqreturn_t vc4_cec_irq_handler(i
+ static int vc4_hdmi_cec_adap_enable(struct cec_adapter *adap, bool enable)
+ {
+ 	struct vc4_dev *vc4 = cec_get_drvdata(adap);
++	struct vc4_hdmi *vc4_hdmi = vc4->hdmi;
+ 	/* clock period in microseconds */
+ 	const u32 usecs = 1000000 / CEC_CLOCK_FREQ;
+ 	u32 val = HDMI_READ(VC4_HDMI_CEC_CNTRL_5);
+@@ -1182,6 +1174,7 @@ static int vc4_hdmi_cec_adap_enable(stru
+ static int vc4_hdmi_cec_adap_log_addr(struct cec_adapter *adap, u8 log_addr)
+ {
+ 	struct vc4_dev *vc4 = cec_get_drvdata(adap);
++	struct vc4_hdmi *vc4_hdmi = vc4->hdmi;
+ 
+ 	HDMI_WRITE(VC4_HDMI_CEC_CNTRL_1,
+ 		   (HDMI_READ(VC4_HDMI_CEC_CNTRL_1) & ~VC4_HDMI_CEC_ADDR_MASK) |
+@@ -1193,6 +1186,7 @@ static int vc4_hdmi_cec_adap_transmit(st
+ 				      u32 signal_free_time, struct cec_msg *msg)
+ {
+ 	struct vc4_dev *vc4 = cec_get_drvdata(adap);
++	struct vc4_hdmi *vc4_hdmi = vc4->hdmi;
+ 	u32 val;
+ 	unsigned int i;
+ 
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -78,9 +78,9 @@ struct vc4_hdmi {
+ 	struct debugfs_regset32 hd_regset;
+ };
+ 
+-#define HDMI_READ(offset) readl(vc4->hdmi->hdmicore_regs + offset)
+-#define HDMI_WRITE(offset, val) writel(val, vc4->hdmi->hdmicore_regs + offset)
+-#define HD_READ(offset) readl(vc4->hdmi->hd_regs + offset)
+-#define HD_WRITE(offset, val) writel(val, vc4->hdmi->hd_regs + offset)
++#define HDMI_READ(offset) readl(vc4_hdmi->hdmicore_regs + offset)
++#define HDMI_WRITE(offset, val) writel(val, vc4_hdmi->hdmicore_regs + offset)
++#define HD_READ(offset) readl(vc4_hdmi->hd_regs + offset)
++#define HD_WRITE(offset, val) writel(val, vc4_hdmi->hd_regs + offset)
+ 
+ #endif /* _VC4_HDMI_H_ */

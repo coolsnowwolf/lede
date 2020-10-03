@@ -1,0 +1,275 @@
+From 78e7b1cc7119622645bc5a8542c55b6c95dc7868 Mon Sep 17 00:00:00 2001
+From: Eneas U de Queiroz <cote2004-github@yahoo.com>
+Date: Tue, 6 Nov 2018 22:54:07 -0200
+Subject: eng_devcrypto: add command to dump driver info
+
+This is useful to determine the kernel driver running each algorithm.
+
+Signed-off-by: Eneas U de Queiroz <cote2004-github@yahoo.com>
+
+Reviewed-by: Matthias St. Pierre <Matthias.St.Pierre@ncp-e.com>
+Reviewed-by: Richard Levitte <levitte@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/7585)
+
+diff --git a/crypto/engine/eng_devcrypto.c b/crypto/engine/eng_devcrypto.c
+index 5ec38ca8f3..64dc6b891d 100644
+--- a/crypto/engine/eng_devcrypto.c
++++ b/crypto/engine/eng_devcrypto.c
+@@ -50,16 +50,20 @@ static int use_softdrivers = DEVCRYPTO_DEFAULT_USE_SOFDTRIVERS;
+  */
+ struct driver_info_st {
+     enum devcrypto_status_t {
+-        DEVCRYPTO_STATUS_UNUSABLE       = -1, /* session open failed */
+-        DEVCRYPTO_STATUS_UNKNOWN        =  0, /* not tested yet */
+-        DEVCRYPTO_STATUS_USABLE         =  1  /* algo can be used */
++        DEVCRYPTO_STATUS_FAILURE         = -3, /* unusable for other reason */
++        DEVCRYPTO_STATUS_NO_CIOCCPHASH   = -2, /* hash state copy not supported */
++        DEVCRYPTO_STATUS_NO_CIOCGSESSION = -1, /* session open failed */
++        DEVCRYPTO_STATUS_UNKNOWN         =  0, /* not tested yet */
++        DEVCRYPTO_STATUS_USABLE          =  1  /* algo can be used */
+     } status;
+ 
+     enum devcrypto_accelerated_t {
+-        DEVCRYPTO_NOT_ACCELERATED       = -1, /* software implemented */
+-        DEVCRYPTO_ACCELERATION_UNKNOWN  =  0, /* acceleration support unkown */
+-        DEVCRYPTO_ACCELERATED           =  1  /* hardware accelerated */
++        DEVCRYPTO_NOT_ACCELERATED        = -1, /* software implemented */
++        DEVCRYPTO_ACCELERATION_UNKNOWN   =  0, /* acceleration support unkown */
++        DEVCRYPTO_ACCELERATED            =  1  /* hardware accelerated */
+     } accelerated;
++
++    char *driver_name;
+ };
+ 
+ static int clean_devcrypto_session(struct session_op *sess) {
+@@ -415,7 +419,7 @@ static void prepare_cipher_methods(void)
+         sess.cipher = cipher_data[i].devcryptoid;
+         sess.keylen = cipher_data[i].keylen;
+         if (ioctl(cfd, CIOCGSESSION, &sess) < 0) {
+-            cipher_driver_info[i].status = DEVCRYPTO_STATUS_UNUSABLE;
++            cipher_driver_info[i].status = DEVCRYPTO_STATUS_NO_CIOCGSESSION;
+             continue;
+         }
+ 
+@@ -443,19 +447,24 @@ static void prepare_cipher_methods(void)
+                                             cipher_cleanup)
+             || !EVP_CIPHER_meth_set_impl_ctx_size(known_cipher_methods[i],
+                                                   sizeof(struct cipher_ctx))) {
+-            cipher_driver_info[i].status = DEVCRYPTO_STATUS_UNUSABLE;
++            cipher_driver_info[i].status = DEVCRYPTO_STATUS_FAILURE;
+             EVP_CIPHER_meth_free(known_cipher_methods[i]);
+             known_cipher_methods[i] = NULL;
+         } else {
+             cipher_driver_info[i].status = DEVCRYPTO_STATUS_USABLE;
+ #ifdef CIOCGSESSINFO
+             siop.ses = sess.ses;
+-            if (ioctl(cfd, CIOCGSESSINFO, &siop) < 0)
++            if (ioctl(cfd, CIOCGSESSINFO, &siop) < 0) {
+                 cipher_driver_info[i].accelerated = DEVCRYPTO_ACCELERATION_UNKNOWN;
+-            else if (!(siop.flags & SIOP_FLAG_KERNEL_DRIVER_ONLY))
+-                cipher_driver_info[i].accelerated = DEVCRYPTO_NOT_ACCELERATED;
+-            else
+-                cipher_driver_info[i].accelerated = DEVCRYPTO_ACCELERATED;
++            } else {
++                cipher_driver_info[i].driver_name =
++                    OPENSSL_strndup(siop.cipher_info.cra_driver_name,
++                                    CRYPTODEV_MAX_ALG_NAME);
++                if (!(siop.flags & SIOP_FLAG_KERNEL_DRIVER_ONLY))
++                    cipher_driver_info[i].accelerated = DEVCRYPTO_NOT_ACCELERATED;
++                else
++                    cipher_driver_info[i].accelerated = DEVCRYPTO_ACCELERATED;
++            }
+ #endif /* CIOCGSESSINFO */
+         }
+         ioctl(cfd, CIOCFSESSION, &sess.ses);
+@@ -505,8 +514,11 @@ static void destroy_all_cipher_methods(void)
+ {
+     size_t i;
+ 
+-    for (i = 0; i < OSSL_NELEM(cipher_data); i++)
++    for (i = 0; i < OSSL_NELEM(cipher_data); i++) {
+         destroy_cipher_method(cipher_data[i].nid);
++        OPENSSL_free(cipher_driver_info[i].driver_name);
++        cipher_driver_info[i].driver_name = NULL;
++    }
+ }
+ 
+ static int devcrypto_ciphers(ENGINE *e, const EVP_CIPHER **cipher,
+@@ -550,6 +562,40 @@ static int cryptodev_select_cipher_cb(const char *str, int len, void *usr)
+     return 1;
+ }
+ 
++static void dump_cipher_info(void)
++{
++    size_t i;
++    const char *name;
++
++    fprintf (stderr, "Information about ciphers supported by the /dev/crypto"
++             " engine:\n");
++#ifndef CIOCGSESSINFO
++    fprintf(stderr, "CIOCGSESSINFO (session info call) unavailable\n");
++#endif
++    for (i = 0; i < OSSL_NELEM(cipher_data); i++) {
++        name = OBJ_nid2sn(cipher_data[i].nid);
++        fprintf (stderr, "Cipher %s, NID=%d, /dev/crypto info: id=%d, ",
++                 name ? name : "unknown", cipher_data[i].nid,
++                 cipher_data[i].devcryptoid);
++        if (cipher_driver_info[i].status == DEVCRYPTO_STATUS_NO_CIOCGSESSION ) {
++            fprintf (stderr, "CIOCGSESSION (session open call) failed\n");
++            continue;
++        }
++        fprintf (stderr, "driver=%s ", cipher_driver_info[i].driver_name ?
++                 cipher_driver_info[i].driver_name : "unknown");
++        if (cipher_driver_info[i].accelerated == DEVCRYPTO_ACCELERATED)
++            fprintf(stderr, "(hw accelerated)");
++        else if (cipher_driver_info[i].accelerated == DEVCRYPTO_NOT_ACCELERATED)
++            fprintf(stderr, "(software)");
++        else
++            fprintf(stderr, "(acceleration status unknown)");
++        if (cipher_driver_info[i].status == DEVCRYPTO_STATUS_FAILURE)
++            fprintf (stderr, ". Cipher setup failed");
++        fprintf(stderr, "\n");
++    }
++    fprintf(stderr, "\n");
++}
++
+ /*
+  * We only support digests if the cryptodev implementation supports multiple
+  * data updates and session copying.  Otherwise, we would be forced to maintain
+@@ -812,31 +858,36 @@ static void prepare_digest_methods(void)
+         sess1.mac = digest_data[i].devcryptoid;
+         sess2.ses = 0;
+         if (ioctl(cfd, CIOCGSESSION, &sess1) < 0) {
+-            digest_driver_info[i].status = DEVCRYPTO_STATUS_UNUSABLE;
++            digest_driver_info[i].status = DEVCRYPTO_STATUS_NO_CIOCGSESSION;
+             goto finish;
+         }
+ 
+ #ifdef CIOCGSESSINFO
+         /* gather hardware acceleration info from the driver */
+         siop.ses = sess1.ses;
+-        if (ioctl(cfd, CIOCGSESSINFO, &siop) < 0)
++        if (ioctl(cfd, CIOCGSESSINFO, &siop) < 0) {
+             digest_driver_info[i].accelerated = DEVCRYPTO_ACCELERATION_UNKNOWN;
+-        else if (siop.flags & SIOP_FLAG_KERNEL_DRIVER_ONLY)
+-            digest_driver_info[i].accelerated = DEVCRYPTO_ACCELERATED;
+-        else
+-            digest_driver_info[i].accelerated = DEVCRYPTO_NOT_ACCELERATED;
++        } else {
++            digest_driver_info[i].driver_name =
++                OPENSSL_strndup(siop.hash_info.cra_driver_name,
++                                CRYPTODEV_MAX_ALG_NAME);
++            if (siop.flags & SIOP_FLAG_KERNEL_DRIVER_ONLY)
++                digest_driver_info[i].accelerated = DEVCRYPTO_ACCELERATED;
++            else
++                digest_driver_info[i].accelerated = DEVCRYPTO_NOT_ACCELERATED;
++        }
+ #endif
+ 
+         /* digest must be capable of hash state copy */
+         sess2.mac = sess1.mac;
+         if (ioctl(cfd, CIOCGSESSION, &sess2) < 0) {
+-            digest_driver_info[i].status = DEVCRYPTO_STATUS_UNUSABLE;
++            digest_driver_info[i].status = DEVCRYPTO_STATUS_FAILURE;
+             goto finish;
+         }
+         cphash.src_ses = sess1.ses;
+         cphash.dst_ses = sess2.ses;
+         if (ioctl(cfd, CIOCCPHASH, &cphash) < 0) {
+-            digest_driver_info[i].status = DEVCRYPTO_STATUS_UNUSABLE;
++            digest_driver_info[i].status = DEVCRYPTO_STATUS_NO_CIOCCPHASH;
+             goto finish;
+         }
+         if ((known_digest_methods[i] = EVP_MD_meth_new(digest_data[i].nid,
+@@ -852,7 +903,7 @@ static void prepare_digest_methods(void)
+             || !EVP_MD_meth_set_cleanup(known_digest_methods[i], digest_cleanup)
+             || !EVP_MD_meth_set_app_datasize(known_digest_methods[i],
+                                              sizeof(struct digest_ctx))) {
+-            digest_driver_info[i].status = DEVCRYPTO_STATUS_UNUSABLE;
++            digest_driver_info[i].status = DEVCRYPTO_STATUS_FAILURE;
+             EVP_MD_meth_free(known_digest_methods[i]);
+             known_digest_methods[i] = NULL;
+             goto finish;
+@@ -894,8 +945,11 @@ static void destroy_all_digest_methods(void)
+ {
+     size_t i;
+ 
+-    for (i = 0; i < OSSL_NELEM(digest_data); i++)
++    for (i = 0; i < OSSL_NELEM(digest_data); i++) {
+         destroy_digest_method(digest_data[i].nid);
++        OPENSSL_free(digest_driver_info[i].driver_name);
++        digest_driver_info[i].driver_name = NULL;
++    }
+ }
+ 
+ static int devcrypto_digests(ENGINE *e, const EVP_MD **digest,
+@@ -939,6 +993,43 @@ static int cryptodev_select_digest_cb(const char *str, int len, void *usr)
+     return 1;
+ }
+ 
++static void dump_digest_info(void)
++{
++    size_t i;
++    const char *name;
++
++    fprintf (stderr, "Information about digests supported by the /dev/crypto"
++             " engine:\n");
++#ifndef CIOCGSESSINFO
++    fprintf(stderr, "CIOCGSESSINFO (session info call) unavailable\n");
++#endif
++
++    for (i = 0; i < OSSL_NELEM(digest_data); i++) {
++        name = OBJ_nid2sn(digest_data[i].nid);
++        fprintf (stderr, "Digest %s, NID=%d, /dev/crypto info: id=%d, driver=%s",
++                 name ? name : "unknown", digest_data[i].nid,
++                 digest_data[i].devcryptoid,
++                 digest_driver_info[i].driver_name ? digest_driver_info[i].driver_name : "unknown");
++        if (digest_driver_info[i].status == DEVCRYPTO_STATUS_NO_CIOCGSESSION) {
++            fprintf (stderr, ". CIOCGSESSION (session open) failed\n");
++            continue;
++        }
++        if (digest_driver_info[i].accelerated == DEVCRYPTO_ACCELERATED)
++            fprintf(stderr, " (hw accelerated)");
++        else if (digest_driver_info[i].accelerated == DEVCRYPTO_NOT_ACCELERATED)
++            fprintf(stderr, " (software)");
++        else
++            fprintf(stderr, " (acceleration status unknown)");
++        if (cipher_driver_info[i].status == DEVCRYPTO_STATUS_FAILURE)
++            fprintf (stderr, ". Cipher setup failed\n");
++        else if (digest_driver_info[i].status == DEVCRYPTO_STATUS_NO_CIOCCPHASH)
++            fprintf(stderr, ", CIOCCPHASH failed\n");
++        else
++            fprintf(stderr, ", CIOCCPHASH capable\n");
++    }
++    fprintf(stderr, "\n");
++}
++
+ #endif
+ 
+ /******************************************************************************
+@@ -983,6 +1074,11 @@ static const ENGINE_CMD_DEFN devcrypto_cmds[] = {
+     ENGINE_CMD_FLAG_STRING},
+ #endif
+ 
++   {DEVCRYPTO_CMD_DUMP_INFO,
++    "DUMP_INFO",
++    "dump info about each algorithm to stderr; use 'openssl engine -pre DUMP_INFO devcrypto'",
++    ENGINE_CMD_FLAG_NO_INPUT},
++
+    {0, NULL, NULL, 0}
+ };
+ 
+@@ -1051,6 +1147,13 @@ static int devcrypto_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f) (void))
+         return 1;
+ #endif /* IMPLEMENT_DIGEST */
+ 
++    case DEVCRYPTO_CMD_DUMP_INFO:
++        dump_cipher_info();
++#ifdef IMPLEMENT_DIGEST
++        dump_digest_info();
++#endif
++        return 1;
++
+     default:
+         break;
+     }

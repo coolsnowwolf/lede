@@ -41,3 +41,12 @@ define Package/rt73-usb-firmware/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/rt73.bin $(1)/lib/firmware/
 endef
 $(eval $(call BuildPackage,rt73-usb-firmware))
+
+Package/mt7622bt-firmware = $(call Package/firmware-default,mt7622bt firmware)
+define Package/mt7622bt-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mediatek/mt7622pr2h.bin \
+		$(1)/lib/firmware/mediatek
+endef
+$(eval $(call BuildPackage,mt7622bt-firmware))
