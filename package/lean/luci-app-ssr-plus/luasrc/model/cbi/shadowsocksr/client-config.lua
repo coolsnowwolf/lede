@@ -398,6 +398,12 @@ o = s:option(Value, "tls_host", translate("TLS Host"))
 o:depends("tls", "1")
 o.rmempty = true
 
+-- XTLS
+o = s:option(Flag, "xtls", translate("XTLS"))
+o.rmempty = true
+o.default = "0"
+o:depends({type="vless", tls="1"})
+
 -- [[ Mux ]]--
 o = s:option(Flag, "mux", translate("Mux"))
 o.rmempty = true
