@@ -12,7 +12,7 @@ BOARDNAME:=Microchip (Atmel AT91)
 FEATURES:=ext4 squashfs targz usb usbgadget ubifs
 SUBTARGETS:=sama5 sam9x
 
-KERNEL_PATCHVER:=4.14
+KERNEL_PATCHVER:=5.4
 
 include $(INCLUDE_DIR)/target.mk
 

@@ -19,7 +19,7 @@ U_BOOT_DEVICE(syscon_at_ff100000) = {
 
 static const struct dtd_rockchip_rk3328_cru dtv_clock_controller_at_ff440000 = {
 	.reg			= {0xff440000, 0x1000},
-	.rockchip_grf		= 0x3a,
+	.rockchip_grf		= 0x3b,
 };
 U_BOOT_DEVICE(clock_controller_at_ff440000) = {
 	.name		= "rockchip_rk3328_cru",
@@ -49,7 +49,6 @@ U_BOOT_DEVICE(serial_at_ff130000) = {
 
 static const struct dtd_rockchip_rk3328_dw_mshc dtv_mmc_at_ff500000 = {
 	.bus_width		= 0x4,
-	.cap_mmc_highspeed	= true,
 	.cap_sd_highspeed	= true,
 	.clocks			= {
 			{&dtv_clock_controller_at_ff440000, {317}},
@@ -60,11 +59,15 @@ static const struct dtd_rockchip_rk3328_dw_mshc dtv_mmc_at_ff500000 = {
 	.fifo_depth		= 0x100,
 	.interrupts		= {0x0, 0xc, 0x4},
 	.max_frequency		= 0x8f0d180,
-	.pinctrl_0		= {0x47, 0x48, 0x49, 0x4a},
+	.pinctrl_0		= {0x48, 0x49, 0x4a, 0x4b},
 	.pinctrl_names		= "default",
 	.reg			= {0xff500000, 0x4000},
+	.sd_uhs_sdr104		= true,
+	.sd_uhs_sdr12		= true,
+	.sd_uhs_sdr25		= true,
+	.sd_uhs_sdr50		= true,
 	.u_boot_spl_fifo_mode	= true,
-	.vmmc_supply		= 0x4b,
+	.vmmc_supply		= 0x4c,
 	.vqmmc_supply		= 0x1e,
 };
 U_BOOT_DEVICE(mmc_at_ff500000) = {
@@ -75,7 +78,7 @@ U_BOOT_DEVICE(mmc_at_ff500000) = {
 
 static const struct dtd_rockchip_rk3328_pinctrl dtv_pinctrl = {
 	.ranges			= true,
-	.rockchip_grf		= 0x3a,
+	.rockchip_grf		= 0x3b,
 };
 U_BOOT_DEVICE(pinctrl) = {
 	.name		= "rockchip_rk3328_pinctrl",
@@ -98,9 +101,10 @@ U_BOOT_DEVICE(gpio0_at_ff210000) = {
 };
 
 static const struct dtd_regulator_fixed dtv_sdmmc_regulator = {
-	.gpio			= {0x60, 0x1e, 0x1},
-	.pinctrl_0		= 0x61,
+	.gpio			= {0x61, 0x1e, 0x1},
+	.pinctrl_0		= 0x68,
 	.pinctrl_names		= "default",
+	.regulator_boot_on	= true,
 	.regulator_max_microvolt = 0x325aa0,
 	.regulator_min_microvolt = 0x325aa0,
 	.regulator_name		= "vcc_sd",

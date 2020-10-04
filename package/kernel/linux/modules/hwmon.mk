@@ -409,7 +409,9 @@ $(eval $(call KernelPackage,hwmon-pwmfan))
 
 define KernelPackage/hwmon-sch5627
   TITLE:=SMSC SCH5627 monitoring support
-  KCONFIG:=CONFIG_SENSORS_SCH5627
+  KCONFIG:= \
+	CONFIG_SENSORS_SCH5627 \
+	CONFIG_WATCHDOG_CORE=y
   FILES:= \
 	$(LINUX_DIR)/drivers/hwmon/sch5627.ko \
 	$(LINUX_DIR)/drivers/hwmon/sch56xx-common.ko
