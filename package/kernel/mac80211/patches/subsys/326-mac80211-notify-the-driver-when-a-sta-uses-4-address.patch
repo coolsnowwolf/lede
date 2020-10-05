@@ -1,0 +1,109 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Fri, 21 Aug 2020 05:51:58 +0200
+Subject: [PATCH] mac80211: notify the driver when a sta uses 4-address
+ mode
+
+This is needed for encapsulation offload of 4-address mode packets
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -3840,6 +3840,8 @@ enum ieee80211_reconfig_type {
+  *	This callback may sleep.
+  * @update_vif_config: Update virtual interface offload flags
+  *	This callback may sleep.
++ * @sta_set_4addr: Called to notify the driver when a station starts/stops using
++ *	4-address mode
+  */
+ struct ieee80211_ops {
+ 	void (*tx)(struct ieee80211_hw *hw,
+@@ -4153,6 +4155,8 @@ struct ieee80211_ops {
+ 				struct ieee80211_sta *sta, u8 tids);
+ 	void (*update_vif_offload)(struct ieee80211_hw *hw,
+ 				   struct ieee80211_vif *vif);
++	void (*sta_set_4addr)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
++			      struct ieee80211_sta *sta, bool enabled);
+ };
+ 
+ /**
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -1693,6 +1693,7 @@ static int ieee80211_change_station(stru
+ 
+ 			rcu_assign_pointer(vlansdata->u.vlan.sta, sta);
+ 			__ieee80211_check_fast_rx_iface(vlansdata);
++			drv_sta_set_4addr(local, sta->sdata, &sta->sta, true);
+ 		}
+ 
+ 		if (sta->sdata->vif.type == NL80211_IFTYPE_AP_VLAN &&
+--- a/net/mac80211/driver-ops.h
++++ b/net/mac80211/driver-ops.h
+@@ -1400,4 +1400,18 @@ static inline void drv_update_vif_offloa
+ 	trace_drv_return_void(local);
+ }
+ 
++static inline void drv_sta_set_4addr(struct ieee80211_local *local,
++				     struct ieee80211_sub_if_data *sdata,
++				     struct ieee80211_sta *sta, bool enabled)
++{
++	sdata = get_bss_sdata(sdata);
++	if (!check_sdata_in_driver(sdata))
++		return;
++
++	trace_drv_sta_set_4addr(local, sdata, sta, enabled);
++	if (local->ops->sta_set_4addr)
++		local->ops->sta_set_4addr(&local->hw, &sdata->vif, sta, enabled);
++	trace_drv_return_void(local);
++}
++
+ #endif /* __MAC80211_DRIVER_OPS */
+--- a/net/mac80211/mlme.c
++++ b/net/mac80211/mlme.c
+@@ -3518,6 +3518,9 @@ static bool ieee80211_assoc_success(stru
+ 		goto out;
+ 	}
+ 
++	if (sdata->wdev.use_4addr)
++		drv_sta_set_4addr(local, sdata, &sta->sta, true);
++
+ 	mutex_unlock(&sdata->local->sta_mtx);
+ 
+ 	/*
+--- a/net/mac80211/trace.h
++++ b/net/mac80211/trace.h
+@@ -2739,6 +2739,33 @@ DEFINE_EVENT(local_sdata_addr_evt, drv_u
+ 	TP_ARGS(local, sdata)
+ );
+ 
++TRACE_EVENT(drv_sta_set_4addr,
++	TP_PROTO(struct ieee80211_local *local,
++		 struct ieee80211_sub_if_data *sdata,
++		 struct ieee80211_sta *sta, bool enabled),
++
++	TP_ARGS(local, sdata, sta, enabled),
++
++	TP_STRUCT__entry(
++		LOCAL_ENTRY
++		VIF_ENTRY
++		STA_ENTRY
++		__field(bool, enabled)
++	),
++
++	TP_fast_assign(
++		LOCAL_ASSIGN;
++		VIF_ASSIGN;
++		STA_ASSIGN;
++		__entry->enabled = enabled;
++	),
++
++	TP_printk(
++		LOCAL_PR_FMT  VIF_PR_FMT  STA_PR_FMT " enabled:%d",
++		LOCAL_PR_ARG, VIF_PR_ARG, STA_PR_ARG, __entry->enabled
++	)
++);
++
+ #endif /* !__MAC80211_DRIVER_TRACE || TRACE_HEADER_MULTI_READ */
+ 
+ #undef TRACE_INCLUDE_PATH
