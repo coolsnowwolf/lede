@@ -10,7 +10,6 @@ struct dtd_regulator_fixed {
 	fdt32_t		gpio[3];
 	fdt32_t		pinctrl_0;
 	const char *	pinctrl_names;
-	bool		regulator_boot_on;
 	fdt32_t		regulator_max_microvolt;
 	fdt32_t		regulator_min_microvolt;
 	const char *	regulator_name;
@@ -33,6 +32,7 @@ struct dtd_rockchip_rk3328_dmc {
 };
 struct dtd_rockchip_rk3328_dw_mshc {
 	fdt32_t		bus_width;
+	bool		cap_mmc_highspeed;
 	bool		cap_sd_highspeed;
 	struct phandle_1_arg clocks[4];
 	bool		disable_wp;
@@ -42,10 +42,6 @@ struct dtd_rockchip_rk3328_dw_mshc {
 	fdt32_t		pinctrl_0[4];
 	const char *	pinctrl_names;
 	fdt64_t		reg[2];
-	bool		sd_uhs_sdr104;
-	bool		sd_uhs_sdr12;
-	bool		sd_uhs_sdr25;
-	bool		sd_uhs_sdr50;
 	bool		u_boot_spl_fifo_mode;
 	fdt32_t		vmmc_supply;
 	fdt32_t		vqmmc_supply;
