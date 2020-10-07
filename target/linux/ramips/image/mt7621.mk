@@ -1164,21 +1164,18 @@ define Device/zio_freezio
 endef
 TARGET_DEVICES += zio_freezio
 
-define Device/zte_e8820s
-  $(Device/uimage-lzma-loader)
+ define Device/zte_e8820s
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL_SIZE := 4096k
-  IMAGE_SIZE := 124416k
   UBINIZE_OPTS := -E 5
-  IMAGES += kernel1.bin rootfs0.bin
-  IMAGE/kernel1.bin := append-kernel
-  IMAGE/rootfs0.bin := append-ubi | check-size
+  IMAGE_SIZE := 32768k
+  IMAGES += factory.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
+	check-size
   DEVICE_VENDOR := ZTE
   DEVICE_MODEL := ZTE E8820S
-  SUPPORTED_DEVICES += E8820S
-  SUPPORTED_DEVICES += e8820s
   DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
 	kmod-usb-ledtrig-usbport luci-app-mtwifi uboot-envtools
 endef
