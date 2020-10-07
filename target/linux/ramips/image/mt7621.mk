@@ -1164,7 +1164,7 @@ define Device/zio_freezio
 endef
 TARGET_DEVICES += zio_freezio
 
- define Device/zte_e8820s
+define Device/zte_e8820s
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL_SIZE := 4096k
