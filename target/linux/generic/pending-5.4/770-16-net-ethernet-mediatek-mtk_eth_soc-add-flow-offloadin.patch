@@ -1,0 +1,401 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Sun, 11 Oct 2020 22:28:32 +0200
+Subject: [PATCH] net: ethernet: mediatek: mtk_eth_soc: add flow offloading
+ support
+
+Only supports IPv4 for now
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_offload.c
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_ppe_debugfs.c
+
+--- a/drivers/net/ethernet/mediatek/Makefile
++++ b/drivers/net/ethernet/mediatek/Makefile
+@@ -4,4 +4,4 @@
+ #
+ 
+ obj-$(CONFIG_NET_MEDIATEK_SOC)                 += mtk_eth.o
+-mtk_eth-y := mtk_eth_soc.o mtk_sgmii.o mtk_eth_path.o mtk_ppe.o
++mtk_eth-y := mtk_eth_soc.o mtk_sgmii.o mtk_eth_path.o mtk_ppe.o mtk_ppe_debugfs.o mtk_offload.o
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -19,6 +19,8 @@
+ #include <linux/interrupt.h>
+ #include <linux/pinctrl/devinfo.h>
+ #include <linux/phylink.h>
++#include <linux/netfilter.h>
++#include <net/netfilter/nf_flow_table.h>
+ #include <net/dsa.h>
+ 
+ #include "mtk_eth_soc.h"
+@@ -1324,8 +1326,12 @@ static int mtk_poll_rx(struct napi_struc
+ 		    (trxd.rxd2 & RX_DMA_VTAG))
+ 			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
+ 					       RX_DMA_VID(trxd.rxd3));
+-		skb_record_rx_queue(skb, 0);
+-		napi_gro_receive(napi, skb);
++		if (mtk_offload_check_rx(eth, skb, trxd.rxd4) == 0) {
++			skb_record_rx_queue(skb, 0);
++			napi_gro_receive(napi, skb);
++		} else {
++			dev_kfree_skb(skb);
++		}
+ 
+ skip_rx:
+ 		ring->data[idx] = new_data;
+@@ -2858,6 +2864,25 @@ static int mtk_set_rxnfc(struct net_devi
+ 	return ret;
+ }
+ 
++static int
++mtk_flow_offload(enum flow_offload_type type, struct flow_offload *flow,
++		struct flow_offload_hw_path *src,
++		struct flow_offload_hw_path *dest)
++{
++	struct mtk_mac *mac = netdev_priv(src->dev);
++	struct mtk_eth *eth = mac->hw;
++
++	if (!eth->soc->offload_version)
++		return -EINVAL;
++
++	if (src->dev->base_addr != dest->dev->base_addr)
++		return -EINVAL;
++
++	mac = netdev_priv(src->dev);
++
++	return mtk_flow_offload_add(eth, type, flow, src, dest);
++}
++
+ static const struct ethtool_ops mtk_ethtool_ops = {
+ 	.get_link_ksettings	= mtk_get_link_ksettings,
+ 	.set_link_ksettings	= mtk_set_link_ksettings,
+@@ -2889,6 +2914,7 @@ static const struct net_device_ops mtk_n
+ #ifdef CONFIG_NET_POLL_CONTROLLER
+ 	.ndo_poll_controller	= mtk_poll_controller,
+ #endif
++	.ndo_flow_offload       = mtk_flow_offload,
+ };
+ 
+ static int mtk_add_mac(struct mtk_eth *eth, struct device_node *np)
+@@ -3154,6 +3180,10 @@ static int mtk_probe(struct platform_dev
+ 				   eth->base + MTK_ETH_PPE_BASE, 2);
+ 		if (err)
+ 			goto err_free_dev;
++
++		err = mtk_flow_offload_init(eth);
++		if (err)
++			goto err_free_dev;
+ 	}
+ 
+ 	for (i = 0; i < MTK_MAX_DEVS; i++) {
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -929,6 +929,7 @@ struct mtk_eth {
+ 	int				ip_align;
+ 
+ 	struct mtk_ppe			ppe;
++	struct flow_offload __rcu       **foe_flow_table;
+ };
+ 
+ /* struct mtk_mac -	the structure that holds the info about the MACs of the
+@@ -973,4 +974,12 @@ int mtk_gmac_sgmii_path_setup(struct mtk
+ int mtk_gmac_gephy_path_setup(struct mtk_eth *eth, int mac_id);
+ int mtk_gmac_rgmii_path_setup(struct mtk_eth *eth, int mac_id);
+ 
++int mtk_flow_offload_init(struct mtk_eth *eth);
++int mtk_flow_offload_add(struct mtk_eth *eth,
++			 enum flow_offload_type type,
++			 struct flow_offload *flow,
++			 struct flow_offload_hw_path *src,
++			 struct flow_offload_hw_path *dest);
++int mtk_offload_check_rx(struct mtk_eth *eth, struct sk_buff *skb, u32 rxd4);
++
+ #endif /* MTK_ETH_H */
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_offload.c
+@@ -0,0 +1,146 @@
++/*   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; version 2 of the License
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   Copyright (C) 2018 John Crispin <john@phrozen.org>
++ */
++
++#include <net/netfilter/nf_flow_table.h>
++#include "mtk_eth_soc.h"
++
++static int
++mtk_offload_prepare_v4(struct mtk_eth *eth, struct mtk_foe_entry *entry,
++		       struct flow_offload_tuple *s_tuple,
++		       struct flow_offload_tuple *d_tuple,
++		       struct flow_offload_hw_path *src,
++		       struct flow_offload_hw_path *dest)
++{
++	int dest_port = 1;
++
++	if (dest->dev == eth->netdev[1])
++	    dest_port = 2;
++
++	mtk_foe_entry_prepare(entry, MTK_PPE_PKT_TYPE_IPV4_HNAPT, s_tuple->l4proto,
++			      dest_port, dest->eth_src, dest->eth_dest);
++	mtk_foe_entry_set_ipv4_tuple(entry, false,
++				     s_tuple->src_v4.s_addr, s_tuple->src_port,
++				     s_tuple->dst_v4.s_addr, s_tuple->dst_port);
++	mtk_foe_entry_set_ipv4_tuple(entry, true,
++				     d_tuple->dst_v4.s_addr, d_tuple->dst_port,
++				     d_tuple->src_v4.s_addr, d_tuple->src_port);
++
++	if (dest->flags & FLOW_OFFLOAD_PATH_PPPOE)
++		mtk_foe_entry_set_pppoe(entry, dest->pppoe_sid);
++
++	if (dest->flags & FLOW_OFFLOAD_PATH_VLAN)
++		mtk_foe_entry_set_vlan(entry, dest->vlan_id);
++
++	if (dest->flags & FLOW_OFFLOAD_PATH_DSA)
++		mtk_foe_entry_set_dsa(entry, dest->dsa_port);
++
++	return 0;
++}
++
++int mtk_flow_offload_add(struct mtk_eth *eth,
++			 enum flow_offload_type type,
++			 struct flow_offload *flow,
++			 struct flow_offload_hw_path *src,
++			 struct flow_offload_hw_path *dest)
++{
++	struct flow_offload_tuple *otuple = &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple;
++	struct flow_offload_tuple *rtuple = &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple;
++	struct mtk_foe_entry orig, reply;
++	u32 ohash, rhash, timestamp;
++
++	if (otuple->l4proto != IPPROTO_TCP && otuple->l4proto != IPPROTO_UDP)
++		return -EINVAL;
++
++	if (type == FLOW_OFFLOAD_DEL) {
++		ohash = (unsigned long)flow->priv;
++		rhash = ohash >> 16;
++		ohash &= 0xffff;
++		mtk_foe_entry_clear(&eth->ppe, ohash);
++		mtk_foe_entry_clear(&eth->ppe, rhash);
++		rcu_assign_pointer(eth->foe_flow_table[ohash], NULL);
++		rcu_assign_pointer(eth->foe_flow_table[rhash], NULL);
++		synchronize_rcu();
++
++		return 0;
++	}
++
++	switch (otuple->l3proto) {
++	case AF_INET:
++		if (mtk_offload_prepare_v4(eth, &orig, otuple, rtuple, src, dest) ||
++		    mtk_offload_prepare_v4(eth, &reply, rtuple, otuple, dest, src))
++			return -EINVAL;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	timestamp = mtk_r32(eth, 0x0010);
++
++	ohash = mtk_foe_entry_commit(&eth->ppe, &orig, timestamp);
++	if (ohash < 0)
++		return -EINVAL;
++
++	rhash = mtk_foe_entry_commit(&eth->ppe, &reply, timestamp);
++	if (rhash < 0) {
++		mtk_foe_entry_clear(&eth->ppe, ohash);
++		return -EINVAL;
++	}
++
++	rcu_assign_pointer(eth->foe_flow_table[ohash], flow);
++	rcu_assign_pointer(eth->foe_flow_table[rhash], flow);
++
++	ohash |= rhash << 16;
++	flow->priv = (void *)(unsigned long)ohash;
++
++	return 0;
++}
++
++static void mtk_offload_keepalive(struct mtk_eth *eth, unsigned int hash)
++{
++	struct flow_offload *flow;
++
++	rcu_read_lock();
++	flow = rcu_dereference(eth->foe_flow_table[hash]);
++	if (flow)
++		flow->timeout = jiffies + 30 * HZ;
++	rcu_read_unlock();
++}
++
++int mtk_offload_check_rx(struct mtk_eth *eth, struct sk_buff *skb, u32 rxd4)
++{
++	unsigned int hash;
++
++	switch (FIELD_GET(MTK_RXD4_PPE_CPU_REASON, rxd4)) {
++	case MTK_PPE_CPU_REASON_KEEPALIVE_UC_OLD_HDR:
++	case MTK_PPE_CPU_REASON_KEEPALIVE_MC_NEW_HDR:
++	case MTK_PPE_CPU_REASON_KEEPALIVE_DUP_OLD_HDR:
++		hash = FIELD_GET(MTK_RXD4_FOE_ENTRY, rxd4);
++		mtk_offload_keepalive(eth, hash);
++		return -1;
++	case MTK_PPE_CPU_REASON_PACKET_SAMPLING:
++		return -1;
++	default:
++		return 0;
++	}
++}
++
++int mtk_flow_offload_init(struct mtk_eth *eth)
++{
++	eth->foe_flow_table = devm_kcalloc(eth->dev, MTK_PPE_ENTRIES,
++					   sizeof(*eth->foe_flow_table),
++					   GFP_KERNEL);
++
++	if (!eth->foe_flow_table)
++		return -ENOMEM;
++
++	return 0;
++}
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.c
+@@ -375,6 +375,8 @@ int mtk_ppe_init(struct mtk_ppe *ppe, st
+ 
+ 	ppe->foe_table = foe;
+ 
++	mtk_ppe_debugfs_init(ppe);
++
+ 	return 0;
+ }
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.h
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.h
+@@ -271,4 +271,7 @@ int mtk_foe_entry_set_pppoe(struct mtk_f
+ int mtk_foe_entry_commit(struct mtk_ppe *ppe, struct mtk_foe_entry *entry,
+ 			 u16 timestamp);
+ 
++/* internal */
++int mtk_ppe_debugfs_init(struct mtk_ppe *ppe);
++
+ #endif
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_debugfs.c
+@@ -0,0 +1,114 @@
++/*   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; version 2 of the License
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   Copyright (C) 2014-2016 Sean Wang <sean.wang@mediatek.com>
++ *   Copyright (C) 2016-2017 John Crispin <blogic@openwrt.org>
++ *   Copyright (C) 2020 Felix Fietkau <nbd@nbd.name>
++ */
++
++#include <linux/kernel.h>
++#include <linux/debugfs.h>
++#include "mtk_eth_soc.h"
++
++static const char *mtk_foe_entry_state_str[] = {
++	"INVALID",
++	"UNBIND",
++	"BIND",
++	"FIN"
++};
++
++static const char *mtk_foe_packet_type_str[] = {
++	"IPV4_HNAPT",
++	"IPV4_HNAT",
++	"IPV6_1T_ROUTE",
++	"IPV4_DSLITE",
++	"IPV6_3T_ROUTE",
++	"IPV6_5T_ROUTE",
++	"IPV6_6RD",
++};
++
++#define es(entry)		(mtk_foe_entry_state_str[FIELD_GET(MTK_FOE_IB1_STATE, entry->ib1)])
++//#define ei(entry, end)		(MTK_PPE_TBL_SZ - (int)(end - entry))
++#define pt(entry)		(mtk_foe_packet_type_str[FIELD_GET(MTK_FOE_IB1_PACKET_TYPE, entry->ib1)])
++
++static int mtk_ppe_debugfs_foe_show(struct seq_file *m, void *private)
++{
++	struct mtk_ppe *ppe = m->private;
++	int i, count;
++
++	for (i = 0, count = 0; i < MTK_PPE_ENTRIES; i++) {
++		struct mtk_foe_entry *entry = &ppe->foe_table[i];
++
++		if (!FIELD_GET(MTK_FOE_IB1_STATE, entry->ib1))
++			continue;
++
++		if (FIELD_GET(MTK_FOE_IB1_PACKET_TYPE, entry->ib1) ==
++		    MTK_PPE_PKT_TYPE_IPV4_HNAPT) {
++			struct mtk_foe_ipv4 *ip4 = &entry->ipv4;
++			struct mtk_foe_mac_info *l2 = &ip4->l2;
++
++			__be32 saddr = htonl(ip4->orig.src_ip);
++			__be32 daddr = htonl(ip4->orig.dest_ip);
++			__be32 nsaddr = htonl(ip4->new.src_ip);
++			__be32 ndaddr = htonl(ip4->new.dest_ip);
++			unsigned char h_dest[ETH_ALEN];
++			unsigned char h_source[ETH_ALEN];
++
++			*((__be32 *) h_source) = htonl(l2->src_mac_hi);
++			*((__be16*) &h_source[4]) = htons(l2->src_mac_lo);
++			*((__be32*) h_dest) = htonl(l2->dest_mac_hi);
++			*((__be16*) &h_dest[4]) = htons(l2->dest_mac_lo);
++			seq_printf(m,
++				   "(%x)0x%05x|state=%s|type=%s|"
++				   "%pI4:%d->%pI4:%d=>%pI4:%d->%pI4:%d|%pM=>%pM|"
++				   "etype=0x%04x|info1=0x%x|info2=0x%x|"
++				   "vlan1=%d|vlan2=%d\n",
++				   count, i, es(entry), pt(entry),
++				   &saddr, ip4->orig.src_port,
++				   &daddr, ip4->orig.dest_port,
++				   &nsaddr, ip4->new.src_port,
++				   &ndaddr, ip4->new.dest_port,
++				   h_source, h_dest,
++				   ntohs(l2->etype),
++				   entry->ib1,
++				   ip4->ib2,
++				   l2->vlan1,
++				   l2->vlan2);
++			count++;
++		} else
++			seq_printf(m, "0x%05x state=%s\n", count, es(entry));
++	}
++
++	return 0;
++}
++
++static int mtk_ppe_debugfs_foe_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, mtk_ppe_debugfs_foe_show, inode->i_private);
++}
++
++static const struct file_operations mtk_ppe_debugfs_foe_fops = {
++	.open = mtk_ppe_debugfs_foe_open,
++	.read = seq_read,
++	.llseek = seq_lseek,
++	.release = single_release,
++};
++
++int mtk_ppe_debugfs_init(struct mtk_ppe *ppe)
++{
++	struct dentry *root;
++
++	root = debugfs_create_dir("mtk_ppe", NULL);
++	if (!root)
++		return -ENOMEM;
++
++	debugfs_create_file("entries", S_IRUGO, root, ppe, &mtk_ppe_debugfs_foe_fops);
++
++	return 0;
++}
