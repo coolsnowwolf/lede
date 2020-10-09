@@ -7,11 +7,23 @@ LOG_FILE="/tmp/openclash.log"
 CORE_TYPE="$1"
 [ -z "$CORE_TYPE" ] || [ "$1" = "one_key_update" ] && CORE_TYPE="Dev"
 en_mode=$(uci get openclash.config.en_mode 2>/dev/null)
+small_flash_memory=$(uci get openclash.config.small_flash_memory 2>/dev/null)
 CPU_MODEL=$(uci get openclash.config.core_version 2>/dev/null)
 HTTP_PORT=$(uci get openclash.config.http_port 2>/dev/null)
 PROXY_ADDR=$(uci get network.lan.ipaddr 2>/dev/null |awk -F '/' '{print $1}' 2>/dev/null)
 [ ! -f "/tmp/clash_last_version" ] && /usr/share/openclash/clash_version.sh 2>/dev/null
-mkdir -p /etc/openclash/core
+if [ "$small_flash_memory" != "1" ]; then
+   dev_core_path="/etc/openclash/core/clash"
+   tun_core_path="/etc/openclash/core/clash_tun"
+   game_core_path="/etc/openclash/core/clash_game"
+   mkdir -p /etc/openclash/core
+else
+   dev_core_path="/tmp/etc/openclash/core/clash"
+   tun_core_path="/tmp/etc/openclash/core/clash_tun"
+   game_core_path="/tmp/etc/openclash/core/clash_game"
+   mkdir -p /tmp/etc/openclash/core
+fi
+
 
 [ -s "/tmp/openclash.auth" ] && {
    PROXY_AUTH=$(cat /tmp/openclash.auth |awk -F '- ' '{print $2}' |sed -n '1p' 2>/dev/null)
@@ -19,8 +31,9 @@ mkdir -p /etc/openclash/core
 
 case $CORE_TYPE in
 	"Tun")
-   CORE_CV=$(/etc/openclash/core/clash_tun -v 2>/dev/null |awk -F ' ' '{print $2}')
+   CORE_CV=$($tun_core_path -v 2>/dev/null |awk -F ' ' '{print $2}')
    CORE_LV=$(sed -n 2p /tmp/clash_last_version 2>/dev/null)
+   echo $CORE_CV >>/tmp/1
    if [ -z "$CORE_LV" ]; then
       echo "获取【Tun】内核最新版本信息失败，请稍后再试..." >$START_LOG
       echo "${LOGTIME} 【Tun】Core Version Check Error, Please Try Again After A few seconds" >>$LOG_FILE
@@ -33,14 +46,14 @@ case $CORE_TYPE in
    fi
    ;;
 	"Game")
-   CORE_CV=$(/etc/openclash/core/clash_game -v 2>/dev/null |awk -F ' ' '{print $2}')
+   CORE_CV=$($game_core_path -v 2>/dev/null |awk -F ' ' '{print $2}')
    CORE_LV=$(sed -n 3p /tmp/clash_last_version 2>/dev/null)
    if [ "$en_mode" = "fake-ip-vpn" ] || [ "$en_mode" = "redir-host-vpn" ]; then
       if_restart=1
    fi
    ;;
    *)
-   CORE_CV=$(/etc/openclash/core/clash -v 2>/dev/null |awk -F ' ' '{print $2}')
+   CORE_CV=$($dev_core_path -v 2>/dev/null |awk -F ' ' '{print $2}')
    CORE_LV=$(sed -n 1p /tmp/clash_last_version 2>/dev/null)
    if [ "$en_mode" = "fake-ip" ] || [ "$en_mode" = "redir-host" ]; then
       if_restart=1
@@ -87,7 +100,7 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
 				[ -s "/tmp/clash_tun.gz" ] && {
 					gzip -d /tmp/clash_tun.gz >/dev/null 2>&1
 					rm -rf /tmp/clash_tun.gz >/dev/null 2>&1
-					rm -rf /etc/openclash/core/clash_tun >/dev/null 2>&1
+					rm -rf "$tun_core_path" >/dev/null 2>&1
 					chmod 4755 /tmp/clash_tun >/dev/null 2>&1
 					chown root:root /tmp/clash_tun >/dev/null 2>&1
 				}
@@ -97,18 +110,22 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
 					tar zxvf /tmp/clash_game.tar.gz -C /tmp >/dev/null 2>&1
 					mv /tmp/clash /tmp/clash_game >/dev/null 2>&1
           rm -rf /tmp/clash_game.tar.gz >/dev/null 2>&1
-					rm -rf /etc/openclash/core/clash_game >/dev/null 2>&1
+					rm -rf "$game_core_path" >/dev/null 2>&1
 					chmod 4755 /tmp/clash_game >/dev/null 2>&1
 					chown root:root /tmp/clash_game >/dev/null 2>&1
 				}
 				;;
 				*)
 				[ -s "/tmp/clash.tar.gz" ] && {
-					rm -rf /etc/openclash/core/clash >/dev/null 2>&1
-					tar zxvf /tmp/clash.tar.gz -C /etc/openclash/core
+					rm -rf "$dev_core_path" >/dev/null 2>&1
+					if [ "$small_flash_memory" != "1" ]; then
+					   tar zxvf /tmp/clash.tar.gz -C /etc/openclash/core
+					else
+					   tar zxvf /tmp/clash.tar.gz -C /tmp/etc/openclash/core
+				  fi
 					rm -rf /tmp/clash.tar.gz >/dev/null 2>&1
-					chmod 4755 /etc/openclash/core/clash >/dev/null 2>&1
-					chown root:root /etc/openclash/core/clash >/dev/null 2>&1
+					chmod 4755 "$dev_core_path" >/dev/null 2>&1
+					chown root:root "$dev_core_path" >/dev/null 2>&1
 				}
 			esac
       
@@ -138,10 +155,10 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
       
 			case $CORE_TYPE in
       	"Tun")
-				mv /tmp/clash_tun /etc/openclash/core/clash_tun >/dev/null 2>&1
+				mv /tmp/clash_tun "$tun_core_path" >/dev/null 2>&1
 				;;
 				"Game")
-				mv /tmp/clash_game /etc/openclash/core/clash_game >/dev/null 2>&1
+				mv /tmp/clash_game "$game_core_path" >/dev/null 2>&1
 				;;
 				*)
 			esac

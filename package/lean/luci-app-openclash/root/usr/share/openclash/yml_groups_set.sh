@@ -173,7 +173,7 @@ yml_groups_set()
    fi
    
    #游戏策略组存在时判断节点是否存在
-   if [ ! -z "$if_game_group" ] && [ ! -z "$(grep "^ \{0,\}- name: $if_game_group" "$CONFIG_GROUP_FILE")" ]; then
+   if [ -n "$if_game_group" ] && [ -n "$(grep "^$if_game_group$" /tmp/Proxy_Group)" ]; then
       config_foreach yml_servers_add "servers" "$name" "$type" "check" #加入服务器节点
       config_foreach set_proxy_provider "proxy-provider" "$group_name" "check" #加入代理集
       return

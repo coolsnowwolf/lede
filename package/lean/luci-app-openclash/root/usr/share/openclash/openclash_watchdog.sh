@@ -30,6 +30,14 @@ do
    enable=$(uci get openclash.config.enable)
 
 if [ "$enable" -eq 1 ]; then
+	clash_pids=$(pidof clash |sed 's/$//g' |wc -l)
+	if [ "$clash_pids" -gt 1 ]; then
+		 echo "${LOGTIME} Watchdog: Multiple Clash Processes, Kill All..." >> $LOG_FILE
+		 for clash_pid in $clash_pids; do
+	      kill -9 "$clash_pid" 2>/dev/null
+		 done >/dev/null 2>&1
+		 sleep 1
+	fi 2>/dev/null
 	if ! pidof clash >/dev/null; then
 		 CRASH_NUM=$(expr "$CRASH_NUM" + 1)
 		 if [ "$CRASH_NUM" -le 3 ]; then

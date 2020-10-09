@@ -18,9 +18,9 @@ unify_ps_pids() {
 
 unify_ps_prevent() {
 	if [ "$(ps --version 2>&1 |grep -c procps-ng)" -eq 1 ];then
-		echo "$(ps -ef |grep -v openclash_watchdog |grep -c openclash.sh 2>/dev/null)"
+		echo "$(ps -ef |grep -v grep |grep -c "/etc/init.d/openclash")"
 	else
-		echo "$(ps |grep -v openclash_watchdog |grep -c openclash.sh 2>/dev/null)"
+		echo "$(ps |grep -v grep |grep -c "/etc/init.d/openclash")"
 	fi
 }
 

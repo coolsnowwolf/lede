@@ -89,6 +89,12 @@ o:depends("en_mode", "redir-host-tun")
 o:depends("en_mode", "redir-host-vpn")
 o:depends("en_mode", "redir-host-mix")
 
+o = s:taboption("op_mode", ListValue, "small_flash_memory", font_red..bold_on..translate("Small Flash Memory")..bold_off..font_off)
+o.description = translate("Move Core And GEOIP Data File To /tmp/etc/openclash For Small Flash Memory Device")
+o:value("0", translate("Disable"))
+o:value("1", translate("Enable"))
+o.default = "0"
+
 ---- Operation Mode
 switch_mode = s:taboption("op_mode", DummyValue, "", nil)
 switch_mode.template = "openclash/switch_mode"

@@ -62,6 +62,8 @@ cat >> "$DEBUG_LOG" <<-EOF
 
 生成时间: $LOGTIME
 插件版本: $op_version
+
+\`\`\`
 EOF
 
 cat >> "$DEBUG_LOG" <<-EOF
@@ -278,6 +280,7 @@ else
    rm -rf /tmp/yaml_general 2>/dev/null
    cat "$CHANGE_FILE" "$DNS_FILE" >> "$DEBUG_LOG"
 fi
+sed -i '/^ \{0,\}secret:/d' "$DEBUG_LOG" 2>/dev/null
 
 #firewall
 cat >> "$DEBUG_LOG" <<-EOF
@@ -371,4 +374,9 @@ cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== 最近运行日志 =====================#
 EOF
-tail -n 30 "/tmp/openclash.log" >> "$DEBUG_LOG" 2>/dev/null
+tail -n 50 "/tmp/openclash.log" >> "$DEBUG_LOG" 2>/dev/null
+
+cat >> "$DEBUG_LOG" <<-EOF
+
+\`\`\`
+EOF

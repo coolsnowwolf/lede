@@ -24,18 +24,12 @@
       echo "大陆IP白名单下载成功，检查版本是否更新..." >$START_LOG
       cmp -s /tmp/ChinaIP.yaml /etc/openclash/rule_provider/ChinaIP.yaml
          if [ "$?" -ne "0" ]; then
-         	  status=$(unify_ps_prevent)
-            while ( [ "$status" -gt 1 ] )
-            do
-               sleep 5
-               status=$(unify_ps_prevent)
-            done
             echo "大陆IP白名单有更新，开始替换旧版本..." >$START_LOG
             mv /tmp/ChinaIP.yaml /etc/openclash/rule_provider/ChinaIP.yaml >/dev/null 2>&1
             echo "删除下载缓存..." >$START_LOG
             rm -rf /tmp/ChinaIP.yaml >/dev/null 2>&1
             rm -rf /usr/share/openclash/res/china_ip_route.ipset >/dev/null 2>&1
-            [ "$china_ip_route" -eq 1 ] && /etc/init.d/openclash restart
+            [ "$china_ip_route" -eq 1 ] && [ "$(unify_ps_prevent)" -eq 0 ] && /etc/init.d/openclash restart
             echo "大陆IP白名单更新成功！" >$START_LOG
             echo "${LOGTIME} Chnroute Lists Update Successful" >>$LOG_FILE
             sleep 10
