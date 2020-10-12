@@ -31,7 +31,7 @@ speedtype:value("xiami", translate("虾米音乐"))
 speedtype:value("baidu", translate("百度音乐"))
 speedtype:value("kugou", translate("酷狗音乐"))
 speedtype:value("kuwo", translate("酷我音乐"))
-speedtype:value("migu", translate("咕咪音乐"))
+speedtype:value("migu", translate("咪咕音乐"))
 speedtype:value("joox", translate("JOOX音乐"))
 speedtype.default = "kuwo"
 speedtype:depends("apptype", "nodejs")
