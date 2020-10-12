@@ -176,8 +176,8 @@ function mt7615_restart(devname)
     local nixio = require("nixio")
     nixio.syslog("debug", "mt7615_restart called!")
     mt7615_down(devname)
-    os.execute("rmmod mt7615")
-    os.execute("modprobe mt7615")
+    os.execute("rmmod mt_wifi")
+    os.execute("modprobe mt_wifi")
     mt7615_up(devname)
 end
 
