@@ -1,4 +1,4 @@
-IP 10.10.10.1  密码 password
+IP 10.10.10.10  密码 password
 
 首次编译：
 -
