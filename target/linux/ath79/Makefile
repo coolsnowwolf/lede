@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 ARCH:=mips
 BOARD:=ath79
-BOARDNAME:=Atheros ATH79 (DTS)
+BOARDNAME:=Atheros ATH79
 CPU_TYPE:=24kc
 SUBTARGETS:=generic mikrotik nand tiny
 

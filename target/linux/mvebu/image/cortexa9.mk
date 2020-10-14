@@ -6,12 +6,6 @@
 # See /LICENSE for more information.
 #
 
-define Device/dsa-migration
-  DEVICE_COMPAT_VERSION := 1.1
-  DEVICE_COMPAT_MESSAGE := Config cannot be migrated from swconfig to DSA \
-	(early adopters with DSA already set up may just force-flash keeping existing config)
-endef
-
 define Device/buffalo_ls421de
   $(Device/NAND-128K)
   DEVICE_VENDOR := Buffalo
@@ -24,8 +18,8 @@ define Device/buffalo_ls421de
   DEVICE_DTS := armada-370-buffalo-ls421de
   DEVICE_PACKAGES :=  \
     kmod-rtc-rs5c372a kmod-hwmon-gpiofan kmod-hwmon-drivetemp kmod-usb3 \
-    kmod-md-raid0 kmod-md-raid1 kmod-md-mod kmod-fs-xfs mkf2fs e2fsprogs \
-    partx-utils
+    kmod-linkstation-poweroff kmod-md-raid0 kmod-md-raid1 kmod-md-mod \
+    kmod-fs-xfs mkf2fs e2fsprogs partx-utils
 endef
 TARGET_DEVICES += buffalo_ls421de
 
@@ -83,7 +77,6 @@ endef
 
 define Device/linksys_wrt1200ac
   $(call Device/linksys)
-  $(Device/dsa-migration)
   DEVICE_MODEL := WRT1200AC
   DEVICE_ALT0_VENDOR := Linksys
   DEVICE_ALT0_MODEL := Caiman
@@ -95,7 +88,6 @@ TARGET_DEVICES += linksys_wrt1200ac
 
 define Device/linksys_wrt1900acs
   $(call Device/linksys)
-  $(Device/dsa-migration)
   DEVICE_MODEL := WRT1900ACS
   DEVICE_VARIANT := v1
   DEVICE_ALT0_VENDOR := Linksys
@@ -111,7 +103,6 @@ TARGET_DEVICES += linksys_wrt1900acs
 
 define Device/linksys_wrt1900ac-v1
   $(call Device/linksys)
-  $(Device/dsa-migration)
   DEVICE_MODEL := WRT1900AC
   DEVICE_VARIANT := v1
   DEVICE_ALT0_VENDOR := Linksys
@@ -126,7 +117,6 @@ TARGET_DEVICES += linksys_wrt1900ac-v1
 
 define Device/linksys_wrt1900ac-v2
   $(call Device/linksys)
-  $(Device/dsa-migration)
   DEVICE_MODEL := WRT1900AC
   DEVICE_VARIANT := v2
   DEVICE_ALT0_VENDOR := Linksys
@@ -139,7 +129,6 @@ TARGET_DEVICES += linksys_wrt1900ac-v2
 
 define Device/linksys_wrt3200acm
   $(call Device/linksys)
-  $(Device/dsa-migration)
   DEVICE_MODEL := WRT3200ACM
   DEVICE_ALT0_VENDOR := Linksys
   DEVICE_ALT0_MODEL := Rango
@@ -151,7 +140,6 @@ TARGET_DEVICES += linksys_wrt3200acm
 
 define Device/linksys_wrt32x
   $(call Device/linksys)
-  $(Device/dsa-migration)
   DEVICE_MODEL := WRT32X
   DEVICE_ALT0_VENDOR := Linksys
   DEVICE_ALT0_MODEL := Venom
@@ -248,13 +236,10 @@ define Device/solidrun_clearfog-base-a1
   UBOOT := clearfog-u-boot-spl.kwb
   BOOT_SCRIPT := clearfog
   SUPPORTED_DEVICES += armada-388-clearfog-base
-  DEVICE_COMPAT_VERSION := 1.1
-  DEVICE_COMPAT_MESSAGE := Ethernet interface rename has been dropped
 endef
 TARGET_DEVICES += solidrun_clearfog-base-a1
 
 define Device/solidrun_clearfog-pro-a1
-  $(Device/dsa-migration)
   DEVICE_VENDOR := SolidRun
   DEVICE_MODEL := ClearFog Pro
   KERNEL_INSTALL := 1
