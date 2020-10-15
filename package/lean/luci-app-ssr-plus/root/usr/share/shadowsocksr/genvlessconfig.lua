@@ -55,7 +55,7 @@ outbound = {
 				users = {
 					{
 						id = server.vmess_id,
-						flow = (server.xtls == '1') and "xtls-rprx-origin" or nil,
+						flow = (server.xtls == '1') and (server.vless_flow and server.vless_flow or "xtls-rprx-origin") or nil,
 						encryption = server.vless_encryption
 					}
 				}
