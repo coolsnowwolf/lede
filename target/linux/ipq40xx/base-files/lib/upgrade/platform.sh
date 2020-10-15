@@ -177,6 +177,7 @@ platform_do_upgrade() {
 	avm,fritzbox-7530 |\
 	avm,fritzrepeater-1200 |\
 	avm,fritzrepeater-3000 |\
+	century,wr142ac-nand |\
 	cilab,meshpoint-one |\
 	engenius,eap2200 |\
 	mobipromo,cm520-79f |\
@@ -215,8 +216,8 @@ platform_do_upgrade() {
 		askey_do_upgrade "$1"
 		;;
 	compex,wpj419|\
-	p2w,r619ac-128m|\
-	p2w,r619ac)
+	p2w,r619ac|\
+	p2w,r619ac-128m)
 		nand_do_upgrade "$1"
 		;;
 	linksys,ea6350v3 |\
