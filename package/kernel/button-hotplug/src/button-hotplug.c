@@ -88,7 +88,6 @@ static struct bh_map button_map[] = {
 	BH_MAP(KEY_POWER2,	"reboot"),
 	BH_MAP(KEY_RFKILL,	"rfkill"),
 	BH_MAP(KEY_WPS_BUTTON,	"wps"),
-	BH_MAP(KEY_WIFI_BUTTON,	"wifi"),
 	BH_MAP(KEY_WIMAX,	"wwan"),
 };
 
