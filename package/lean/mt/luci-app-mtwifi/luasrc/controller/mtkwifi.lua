@@ -45,14 +45,14 @@ function index()
     entry({"admin", "network", "wifi", "vif_del"}, call("vif_del")).leaf = true
     entry({"admin", "network", "wifi", "vif_disable"}, call("vif_disable")).leaf = true
     entry({"admin", "network", "wifi", "vif_enable"}, call("vif_enable")).leaf = true
-    entry({"admin", "network", "wifi", "get_station_list"}, call("get_station_list"))
+    entry({"admin", "network", "wifi", "get_station_list"}, call("get_station_list")).leaf = true
     entry({"admin", "network", "wifi", "get_country_region_list"}, call("get_country_region_list")).leaf = true
-    entry({"admin", "network", "wifi", "get_channel_list"}, call("get_channel_list"))
-    entry({"admin", "network", "wifi", "get_HT_ext_channel_list"}, call("get_HT_ext_channel_list"))
-    entry({"admin", "network", "wifi", "get_5G_2nd_80Mhz_channel_list"}, call("get_5G_2nd_80Mhz_channel_list"))
+    entry({"admin", "network", "wifi", "get_channel_list"}, call("get_channel_list")).leaf = true
+    entry({"admin", "network", "wifi", "get_HT_ext_channel_list"}, call("get_HT_ext_channel_list")).leaf = true
+    entry({"admin", "network", "wifi", "get_5G_2nd_80Mhz_channel_list"}, call("get_5G_2nd_80Mhz_channel_list")).leaf = true
     entry({"admin", "network", "wifi", "reset"}, call("reset_wifi")).leaf = true
     entry({"admin", "network", "wifi", "reload"}, call("reload_wifi")).leaf = true
-    entry({"admin", "network", "wifi", "get_raw_profile"}, call("get_raw_profile"))
+    entry({"admin", "network", "wifi", "get_raw_profile"}, call("get_raw_profile")).leaf = true
     entry({"admin", "network", "wifi", "apcli_cfg_view"}, template("admin_mtk/mtk_wifi_apcli")).leaf = true
     entry({"admin", "network", "wifi", "apcli_cfg"}, call("apcli_cfg")).leaf = true
     entry({"admin", "network", "wifi", "apcli_disconnect"}, call("apcli_disconnect")).leaf = true
