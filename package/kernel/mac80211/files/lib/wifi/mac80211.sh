@@ -75,12 +75,12 @@ detect_mac80211() {
 		config_foreach check_mac80211_device wifi-device
 		[ "$found" -gt 0 ] && continue
 
-		mode_band="g"
+		mode_band="n"
 		channel="11"
 		htmode=""
 		ht_capab=""
 
-		iw phy "$dev" info | grep -q 'Capabilities:' && htmode=HT20
+		iw phy "$dev" info | grep -q 'Capabilities:' && htmode=HT40
 
 		iw phy "$dev" info | grep -q '\* 5... MHz \[' && {
 			mode_band="a"
