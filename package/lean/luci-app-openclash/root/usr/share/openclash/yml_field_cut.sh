@@ -12,13 +12,24 @@ field_cut()
       rule_provider_len=$(sed -n '/^rule-providers:/=' "$3" 2>/dev/null)
       script_len=$(sed -n '/^script:/=' "$3" 2>/dev/null)
       nameserver_len=$(sed -n '/^ \{0,\}nameserver:/=' "$3" 2>/dev/null)
-      lines="$general_len $nameserver_len $proxy_len $provider_len $group_len $rule_len $rule_provider_len $script_len"
+      if [ -z "$nameserver_len" ]; then
+         fallback_len=$(sed -n '/^ \{0,\}fallback:/=' "$3" 2>/dev/null)
+         lines="$general_len $fallback_len $proxy_len $provider_len $group_len $rule_len $rule_provider_len $script_len"
+      else
+         lines="$general_len $nameserver_len $proxy_len $provider_len $group_len $rule_len $rule_provider_len $script_len"
+      fi
    else
       fallback_filter_len=$(sed -n '/^ \{0,\}fallback-filter:/=' "$3" 2>/dev/null)
       cfw_bypass_len=$(sed -n '/^ \{0,\}cfw-bypass:/=' "$3" 2>/dev/null)
       cfw_latency_timeout_len=$(sed -n '/^ \{0,\}cfw-latency-timeout:/=' "$3" 2>/dev/null)
       nameserver_len=$(sed -n '/^ \{0,\}nameserver:/=' "$3" 2>/dev/null)
-      lines="$nameserver_len $fallback_filter_len $cfw_bypass_len $cfw_latency_timeout_len"
+      if [ -z "$nameserver_len" ]; then
+         fallback_len=$(sed -n '/^ \{0,\}fallback:/=' "$3" 2>/dev/null)
+         lines="$fallback_len $fallback_filter_len $cfw_bypass_len $cfw_latency_timeout_len"
+      else
+         lines="$nameserver_len $fallback_filter_len $cfw_bypass_len $cfw_latency_timeout_len"
+      fi
+      
    fi
    
    for i in $lines; do
@@ -103,6 +114,8 @@ fi
    fi
    sed -i '/^ \{0,\}tun:/,/^ \{0,\}enable:/d' "$2" 2>/dev/null
    sed -i '/^ \{0,\}dns-hijack:/d' "$2" 2>/dev/null
+   sed -i '/^ \{0,\}macOS-auto-route:/d' "$2" 2>/dev/null
+   sed -i '/^ \{0,\}macOS-auto-detect-interface:/d' "$2" 2>/dev/null
    sed -i '/^ \{0,\}stack:/d' "$2" 2>/dev/null
    sed -i '/^ \{0,\}device-url:/d' "$2" 2>/dev/null
    sed -i '/^ \{0,\}dns-listen:/d' "$2" 2>/dev/null

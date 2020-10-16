@@ -10,26 +10,21 @@
    LOG_FILE="/tmp/openclash.log"
    echo "开始获取使用中的第三方规则名称..." >$START_LOG
    RUlE_SOURCE=$(uci get openclash.config.rule_source 2>/dev/null)
-   HTTP_PORT=$(uci get openclash.config.http_port 2>/dev/null)
-   PROXY_ADDR=$(uci get network.lan.ipaddr 2>/dev/null |awk -F '/' '{print $1}' 2>/dev/null)
    OTHER_RULE_PROVIDER_FILE="/tmp/other_rule_provider.yaml"
    OTHER_SCRIPT_FILE="/tmp/other_rule_script.yaml"
    OTHER_RULE_FILE="/tmp/other_rule.yaml"
 
-   if [ -s "/tmp/openclash.auth" ]; then
-	    PROXY_AUTH=$(cat /tmp/openclash.auth |awk -F '- ' '{print $2}' |sed -n '1p' 2>/dev/null)
-   fi
    echo "开始下载使用中的第三方规则..." >$START_LOG
       if [ "$RUlE_SOURCE" = "lhie1" ]; then
       	 if pidof clash >/dev/null; then
-            curl -sL --connect-timeout 10 --retry 2 -x http://$PROXY_ADDR:$HTTP_PORT -U "$PROXY_AUTH" https://raw.githubusercontent.com/lhie1/Rules/master/Clash/Rule.yaml -o /tmp/rules.yaml >/dev/null 2>&1
+            curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/lhie1/Rules/master/Clash/Rule.yaml -o /tmp/rules.yaml >/dev/null 2>&1
       	 else
             curl -sL --connect-timeout 10 --retry 2 https://cdn.jsdelivr.net/gh/lhie1/Rules@master/Clash/Rule.yaml -o /tmp/rules.yaml >/dev/null 2>&1
          fi
          sed -i '1i rules:' /tmp/rules.yaml
       elif [ "$RUlE_SOURCE" = "ConnersHua" ]; then
       	 if pidof clash >/dev/null; then
-            curl -sL --connect-timeout 10 --retry 2 -x http://$PROXY_ADDR:$HTTP_PORT -U "$PROXY_AUTH" https://raw.githubusercontent.com/DivineEngine/Profiles/master/Clash/Global.yaml -o /tmp/rules.yaml >/dev/null 2>&1
+            curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/DivineEngine/Profiles/master/Clash/Global.yaml -o /tmp/rules.yaml >/dev/null 2>&1
       	 else
             curl -sL --connect-timeout 10 --retry 2 https://cdn.jsdelivr.net/gh/DivineEngine/Profiles@master/Clash/Global.yaml -o /tmp/rules.yaml >/dev/null 2>&1
          fi
@@ -38,7 +33,7 @@
          sed -i "s/- GEOIP,/#- GEOIP,/g" /tmp/rules.yaml 2>/dev/null
       elif [ "$RUlE_SOURCE" = "ConnersHua_return" ]; then
       	 if pidof clash >/dev/null; then
-            curl -sL --connect-timeout 10 --retry 2 -x http://$PROXY_ADDR:$HTTP_PORT -U "$PROXY_AUTH" https://raw.githubusercontent.com/ConnersHua/Profiles/master/Clash/China.yaml -o /tmp/rules.yaml >/dev/null 2>&1
+            curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/ConnersHua/Profiles/master/Clash/China.yaml -o /tmp/rules.yaml >/dev/null 2>&1
       	 else
             curl -sL --connect-timeout 10 --retry 2 https://cdn.jsdelivr.net/gh/DivineEngine/Profiles@master/Clash/China.yaml -o /tmp/rules.yaml >/dev/null 2>&1
          fi

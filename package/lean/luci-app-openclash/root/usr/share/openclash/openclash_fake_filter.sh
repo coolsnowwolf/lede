@@ -13,7 +13,7 @@ if [ -s "$CUSTOM_FILE" ]; then
    cat "$CUSTOM_FILE" |while read -r line || [[ -n ${line} ]];
    do
       if [ -z "$(echo $line |grep '^ \{0,\}#' 2>/dev/null)" ]; then
-         echo "  - '$line'" >> "$FAKE_FILTER_FILE"
+         echo "    - '$line'" >> "$FAKE_FILTER_FILE"
       else
          continue
 	    fi

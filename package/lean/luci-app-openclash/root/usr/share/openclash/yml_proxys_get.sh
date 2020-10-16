@@ -559,6 +559,11 @@ do
       password="$(cfg_get "password:" "$single_server")"
    fi
    
+   if [ "$server_type" = "http" ]; then
+      #sni:
+      sni="$(cfg_get "sni:" "$single_server")"
+   fi
+   
    if [ "$server_type" = "snell" ]; then
       #psk:
       psk="$(cfg_get "psk:" "$single_server")"
@@ -660,13 +665,17 @@ do
       else
          ${uci_set}password="$password"
 	    fi
+	    
+      if [ "$server_type" = "http" ]; then
+         ${uci_set}sni="$sni"
+      fi
 	   
 	    if [ "$server_type" = "trojan" ]; then
-        ${uci_set}sni="$sni"
-        ${uci_del}alpn >/dev/null 2>&1
-        for alpn in $alpns; do
-           ${uci_add}alpn="$alpn" >/dev/null 2>&1
-        done
+         ${uci_set}sni="$sni"
+         ${uci_del}alpn >/dev/null 2>&1
+         for alpn in $alpns; do
+            ${uci_add}alpn="$alpn" >/dev/null 2>&1
+         done
 	    fi
    else
 #添加新节点
@@ -755,6 +764,10 @@ do
       else
          ${uci_set}password="$password"
 	    fi
+	    
+	    if [ "$server_type" = "http" ]; then
+         ${uci_set}sni="$sni"
+      fi
 	   
 	    if [ "$server_type" = "trojan" ]; then
          ${uci_set}sni="$sni"

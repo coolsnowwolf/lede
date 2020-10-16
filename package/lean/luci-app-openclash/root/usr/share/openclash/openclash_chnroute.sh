@@ -7,16 +7,11 @@
    START_LOG="/tmp/openclash_start.log"
    LOGTIME=$(date "+%Y-%m-%d %H:%M:%S")
    LOG_FILE="/tmp/openclash.log"
-   HTTP_PORT=$(uci get openclash.config.http_port 2>/dev/null)
-   PROXY_ADDR=$(uci get network.lan.ipaddr 2>/dev/null |awk -F '/' '{print $1}' 2>/dev/null)
    china_ip_route=$(uci get openclash.config.china_ip_route 2>/dev/null)
-   
-   if [ -s "/tmp/openclash.auth" ]; then
-      PROXY_AUTH=$(cat /tmp/openclash.auth |awk -F '- ' '{print $2}' |sed -n '1p' 2>/dev/null)
-   fi
+
    echo "开始下载大陆IP白名单..." >$START_LOG
    if pidof clash >/dev/null; then
-      curl -sL --connect-timeout 10 --retry 2 -x http://$PROXY_ADDR:$HTTP_PORT -U "$PROXY_AUTH" https://raw.githubusercontent.com/DivineEngine/Profiles/master/Clash/RuleSet/Extra/ChinaIP.yaml -o /tmp/ChinaIP.yaml >/dev/null 2>&1
+      curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/DivineEngine/Profiles/master/Clash/RuleSet/Extra/ChinaIP.yaml -o /tmp/ChinaIP.yaml >/dev/null 2>&1
    else
       curl -sL --connect-timeout 10 --retry 2 https://cdn.jsdelivr.net/gh/DivineEngine/Profiles@master/Clash/RuleSet/Extra/ChinaIP.yaml -o /tmp/ChinaIP.yaml >/dev/null 2>&1
    fi

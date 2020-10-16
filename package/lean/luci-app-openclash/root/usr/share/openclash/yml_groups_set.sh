@@ -38,7 +38,7 @@ set_groups()
 
 	if [ "$1" = "$3" ]; then
 	   set_group=1
-	   echo "  - \"${2}\"" >>$GROUP_FILE
+	   echo "      - \"${2}\"" >>$GROUP_FILE
 	fi
 
 }
@@ -56,7 +56,7 @@ set_relay_groups()
 
   if [ ! -z "$server_relay_num" ] && [ "$server_group_name" = "$3" ]; then
      set_group=1
-     echo "$server_relay_num #  - \"${2}\"" >>/tmp/relay_server
+     echo "$server_relay_num #      - \"${2}\"" >>/tmp/relay_server
 	fi
 }
 
@@ -97,7 +97,7 @@ set_other_groups()
       return
    fi
    set_group=1
-   echo "  - ${1}" >>$GROUP_FILE
+   echo "      - ${1}" >>$GROUP_FILE
 
 }
 
@@ -134,7 +134,7 @@ set_provider_groups()
 
 	if [ "$1" = "$3" ]; then
 	   set_proxy_provider=1
-	   echo "  - ${2}" >>$GROUP_FILE
+	   echo "      - ${2}" >>$GROUP_FILE
 	fi
 
 }
@@ -181,10 +181,10 @@ yml_groups_set()
    
    echo "正在写入【$type】-【$name】策略组到配置文件【$CONFIG_NAME】..." >$START_LOG
    
-   echo "- name: $name" >>$GROUP_FILE
-   echo "  type: $type" >>$GROUP_FILE
+   echo "  - name: $name" >>$GROUP_FILE
+   echo "    type: $type" >>$GROUP_FILE
    group_name="$name"
-   echo "  proxies: $group_name" >>$GROUP_FILE
+   echo "    proxies: $group_name" >>$GROUP_FILE
    
    #名字变化时处理规则部分
    if [ "$name" != "$old_name" ] && [ ! -z "$old_name" ]; then
@@ -211,30 +211,30 @@ yml_groups_set()
 	    rm -rf /tmp/relay_server 2>/dev/null
 	 fi
 
-   echo "  use: $group_name" >>$GROUP_FILE
+   echo "    use: $group_name" >>$GROUP_FILE
    
    config_foreach set_proxy_provider "proxy-provider" "$group_name" #加入代理集
 
    if [ "$set_group" -eq 1 ]; then
-      sed -i "/^ \{0,\}proxies: ${group_name}/c\  proxies:" $GROUP_FILE
+      sed -i "/^ \{0,\}proxies: ${group_name}/c\    proxies:" $GROUP_FILE
    else
       sed -i "/proxies: ${group_name}/d" $GROUP_FILE 2>/dev/null
    fi
    
    if [ "$set_proxy_provider" -eq 1 ]; then
-      sed -i "/^ \{0,\}use: ${group_name}/c\  use:" $GROUP_FILE
+      sed -i "/^ \{0,\}use: ${group_name}/c\    use:" $GROUP_FILE
    else
       sed -i "/use: ${group_name}/d" $GROUP_FILE 2>/dev/null
    fi
    
    [ ! -z "$test_url" ] && {
-   	  echo "  url: $test_url" >>$GROUP_FILE
+   	  echo "    url: $test_url" >>$GROUP_FILE
    }
    [ ! -z "$test_interval" ] && {
-      echo "  interval: \"$test_interval\"" >>$GROUP_FILE
+      echo "    interval: \"$test_interval\"" >>$GROUP_FILE
    }
    [ ! -z "$tolerance" ] && {
-      echo "  tolerance: \"$tolerance\"" >>$GROUP_FILE
+      echo "    tolerance: \"$tolerance\"" >>$GROUP_FILE
    }
 }
 

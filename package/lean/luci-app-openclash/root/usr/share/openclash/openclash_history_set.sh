@@ -27,7 +27,7 @@ restore_history() {
    NOW_NAME=$(echo $line |awk -F '#*#' '{print $3}')
    GROUP_STATE=$(GROUP_STATE "$GROUP_NAME")
    GROUP_STATE_NUM=0
-   while ( [ ! -z "$(pidof clash)" ] && [ "$GROUP_STATE" != "200" ] && [ "$GROUP_STATE_NUM" -le 1 ] )
+   while ( [ ! -z "$(pidof clash)" ] && [ "$GROUP_STATE" != "200" ] && [ "$GROUP_STATE_NUM" -le 3 ] )
    do
       sleep 3
       GROUP_STATE_NUM=$(expr "$GROUP_STATE_NUM" + 1)
@@ -41,7 +41,7 @@ close_all_conection() {
 }
 
 if [ -s "$HISTORY_PATH" ]; then
-   cat "$HISTORY_PATH" |while read line
+   cat "$HISTORY_PATH" |while read -r line
    do
       GROUP_NAME=$(echo $line |awk -F '#*#' '{print $1}')
       if [ "$GROUP_NAME" != "GLOBAL" ]; then
