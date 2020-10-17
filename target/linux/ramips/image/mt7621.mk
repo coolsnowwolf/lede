@@ -1165,6 +1165,7 @@ endef
 TARGET_DEVICES += zio_freezio
 
 define Device/zte_e8820s
+  $(Device/uimage-lzma-loader)
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL_SIZE := 4096k
@@ -1177,6 +1178,6 @@ define Device/zte_e8820s
   DEVICE_VENDOR := ZTE
   DEVICE_MODEL := ZTE E8820S
   DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
-	kmod-usb-ledtrig-usbport luci-app-mtwifi uboot-envtools
+	luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += zte_e8820s
