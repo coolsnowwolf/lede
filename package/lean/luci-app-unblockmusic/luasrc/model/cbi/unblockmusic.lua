@@ -1,7 +1,7 @@
 local fs = require "nixio.fs"
 
 mp = Map("unblockmusic", translate("解锁网易云灰色歌曲"))
-mp.description = translate("采用 [QQ/虾米/百度/酷狗/酷我/咕咪/JOOX]等音源，替换网易云变灰歌曲链接")
+mp.description = translate("采用 [QQ/虾米/百度/酷狗/酷我/咪咕/JOOX]等音源，替换网易云变灰歌曲链接")
 
 mp:section(SimpleSection).template  = "unblockmusic/unblockmusic_status"
 
@@ -31,7 +31,7 @@ speedtype:value("xiami", translate("虾米音乐"))
 speedtype:value("baidu", translate("百度音乐"))
 speedtype:value("kugou", translate("酷狗音乐"))
 speedtype:value("kuwo", translate("酷我音乐"))
-speedtype:value("migu", translate("咕咪音乐"))
+speedtype:value("migu", translate("咪咕音乐"))
 speedtype:value("joox", translate("JOOX音乐"))
 speedtype.default = "kuwo"
 speedtype:depends("apptype", "nodejs")
