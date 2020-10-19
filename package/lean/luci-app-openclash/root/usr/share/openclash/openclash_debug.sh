@@ -113,6 +113,9 @@ EOF
 if pidof clash >/dev/null; then
 cat >> "$DEBUG_LOG" <<-EOF
 运行状态: 运行中
+进程pid: $(pidof clash)
+运行权限: `getpcaps $(pidof clash)`
+运行用户: $(ps |grep "/etc/openclash/clash" |grep -v grep |awk '{print $2}' 2>/dev/null)
 EOF
 else
 cat >> "$DEBUG_LOG" <<-EOF

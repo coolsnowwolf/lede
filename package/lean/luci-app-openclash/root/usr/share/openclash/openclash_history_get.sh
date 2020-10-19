@@ -11,7 +11,7 @@ SECRET=$(uci get openclash.config.dashboard_password 2>/dev/null)
 LAN_IP=$(uci get network.lan.ipaddr 2>/dev/null |awk -F '/' '{print $1}' 2>/dev/null)
 PORT=$(uci get openclash.config.cn_port 2>/dev/null)
 
-if pidof clash >/dev/null; then
+if [ -n "$(pidof clash)" ] && [ -f "$CONFIG_FILE" ]; then
    curl -m 5 --retry 2 -w %{http_code}"\n" -H "Authorization: Bearer ${SECRET}" -H "Content-Type:application/json" -X GET http://"$LAN_IP":"$PORT"/proxies > "$CURL_CACHE" 2>/dev/null
    if [ "$(sed -n '$p' "$CURL_CACHE" 2>/dev/null)" = "200" ]; then
       mkdir -p /etc/openclash/history 2>/dev/null

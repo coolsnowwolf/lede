@@ -1,5 +1,8 @@
 #!/bin/sh
 
+LOG_FILE="/tmp/openclash.log"
+START_LOG="/tmp/openclash_start.log"
+
     #删除旧hosts配置
     hostlen=$(sed -n '/hosts:/=' "$7" 2>/dev/null)
     dnslen=$(sed -n '/dns:/=' "$7" 2>/dev/null)
@@ -80,9 +83,15 @@
     if [ "$14" -ne 1 ]; then
        controller_address="0.0.0.0"
        bind_address="*"
-    else
+    elif [ "$18" != "Tun" ]; then
        controller_address=$11
        bind_address=$11
+    elif [ "$18" = "Tun" ]; then
+       echo "Warning: Stop Set The Bind Address Option In TUN Mode, Because The Router Will Not Be Able To Connect To The Internet" >> $LOG_FILE
+       echo "警告: 在TUN模式下启用仅允许内网会导致路由器无法联网，已忽略此项修改！" >$START_LOG
+       controller_address="0.0.0.0"
+       bind_address="*"
+       sleep 3
     fi
     
     if [ -z "$(grep "^external-controller: $controller_address:$5" "$7")" ]; then

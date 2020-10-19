@@ -1024,7 +1024,7 @@ do_run_file()
       core_start_log="检测到配置了【Tun】内核专属功能，调用【Tun】内核启动..."
    fi
 
-   if [ -n "$(grep "^ \{0,\}rule-providers:" "$CONFIG_FILE" 2>/dev/null)" ] && [ -n "$(grep "^ \{0,\}behavior" "$CONFIG_FILE" 2>/dev/null |grep -v "^ \{0,\}#")" ]; then
+   if [ -n "$(grep "^ \{0,\}- RULE-SET," "$CONFIG_FILE" 2>/dev/null)" ]; then
       ln -s "$tun_core_path" /etc/openclash/clash 2>/dev/null
       core_type="Tun"
       core_start_log="检测到配置了【Tun】内核专属功能，调用【Tun】内核启动..."
@@ -1088,16 +1088,21 @@ do_run_file()
 start_run_core()
 {
    echo "$core_start_log" >$START_LOG
-   sleep 1
+   sleep 2
    ulimit -SHn 65535 2>/dev/null
    config_reload=$(uci get openclash.config.config_reload 2>/dev/null)
    if [ -n "$(pidof clash)" ] && [ "$core_type" != "Tun" ] && [ "$config_reload" != "0" ]; then
       curl -s --connect-timeout 5 -m 5 -H 'Content-Type: application/json' -H "Authorization: Bearer ${da_password}" -XPUT http://"$lan_ip":"$cn_port"/configs -d "{\"path\": \"$CONFIG_FILE\"}" 2>/dev/null
    else
       kill_clash
+      #防止赋权失败
+      chmod o+w /etc/openclash/proxy_provider/* 2>/dev/null
+      chmod o+w /etc/openclash/rule_provider/* 2>/dev/null
+      chmod o+w /tmp/openclash.log 2>/dev/null
+      chown nobody:nogroup /etc/openclash/core/* 2>/dev/null
       #使用nobody启动内核方便代理路由自身流量
       capabilties="cap_sys_resource,cap_dac_override,cap_net_raw,cap_net_bind_service,cap_net_admin"
-      capsh --caps="${capabilties}+eip" -- -c "capsh --user=nobody --addamb='${capabilties}' -- -c 'nohup $CLASH -d $CLASH_CONFIG -f \"$CONFIG_FILE\" >> $LOG_FILE 2>&1 &'" >> $LOG_FILE 2>&1
+      capsh --caps="${capabilties}+eip" -- -c "capsh --user=nobody --addamb='${capabilties}' -- -c 'nohup $CLASH -d $CLASH_CONFIG -f \"$CONFIG_FILE\" >> $LOG_FILE 2>&1 &'"
    fi
    uci set openclash.config.config_reload=1 2>/dev/null
    uci commit openclash
@@ -1650,7 +1655,7 @@ start()
    config_foreach yml_auth_get "authentication"
    yml_auth_custom "$CHANGE_FILE"
    yml_dns_custom "$enable_custom_dns" "$DNS_FILE" "$FALLBACK_FILTER_FILE"
-   /usr/share/openclash/yml_change.sh >/dev/null 2>&1 "$LOGTIME" "$en_mode" "$enable_custom_dns" "$da_password" "$cn_port" "$proxy_port" "$CHANGE_FILE" "$ipv6_enable" "$http_port" "$socks_port" "$lan_ip" "$log_level" "$proxy_mode" "$intranet_allowed" "$en_mode_tun" "$stack_type" "$dns_port" &
+   /usr/share/openclash/yml_change.sh >/dev/null 2>&1 "$LOGTIME" "$en_mode" "$enable_custom_dns" "$da_password" "$cn_port" "$proxy_port" "$CHANGE_FILE" "$ipv6_enable" "$http_port" "$socks_port" "$lan_ip" "$log_level" "$proxy_mode" "$intranet_allowed" "$en_mode_tun" "$stack_type" "$dns_port" "$core_type" &
    /usr/share/openclash/yml_rules_change.sh >/dev/null 2>&1 "$LOGTIME" "$rule_source" "$enable_custom_clash_rules" "$RULE_FILE" "$set_rule_file" "$en_mode" "$enable_rule_proxy" "$BACKUP_FILE" "$RULE_PROVIDER_FILE" &
    wait
    yml_provider_path "$PROXY_PROVIDER_FILE" "proxy_provider"
@@ -1662,7 +1667,6 @@ start()
    yml_merge
    
    echo "第五步: 启动主程序..." >$START_LOG
-   sleep 1
    start_run_core
              
    #检测proxy_provider配置文件状态

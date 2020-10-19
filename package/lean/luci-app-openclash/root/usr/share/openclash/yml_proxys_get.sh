@@ -91,7 +91,12 @@ cfg_get()
 
 cfg_get_dynamic()
 {
-	echo "$(grep "^ \{0,\}$1" "$2" 2>/dev/null |grep -v "^ \{0,\}- name:"  |grep -v "^ \{0,\}- keep-alive" |awk -v tag=$1 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/,.*//' 2>/dev/null |sed 's/\}.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null)"
+	echo "$(grep "^ \{0,\}$1" "$2" 2>/dev/null |grep -v "^ \{0,\}- name:" 2>/dev/null |grep -v "^ \{0,\}- keep-alive" 2>/dev/null |grep -v "{" 2>/dev/null |awk -v tag=$1 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/,.*//' 2>/dev/null |sed 's/\}.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null)"
+}
+
+cfg_get_dynamic_json()
+{
+	echo "$(grep "$1" "$2" 2>/dev/null |grep -v "^ \{0,\}ws-path:" 2>/dev/null |awk -v tag='$1 \\[' 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/],.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null |sed 's/,/ /g' 2>/dev/null)"
 }
 
 cfg_new_servers_groups_check()
@@ -550,6 +555,9 @@ do
       Host="$(cfg_get "Host:" "$single_server")"
       #http_paths:
       http_paths="$(cfg_get_dynamic "-" "$single_server")"
+      if [ -z "$http_paths" ]; then
+         http_paths="$(cfg_get_dynamic_json "path:" "$single_server")"
+      fi
    fi
    
    if [ "$server_type" = "socks5" ] || [ "$server_type" = "http" ]; then
@@ -580,6 +588,9 @@ do
       sni="$(cfg_get "sni:" "$single_server")"
       #alpn:
       alpns="$(cfg_get_dynamic "-" "$single_server")"
+      if [ -z "$alpns" ]; then
+         alpns="$(cfg_get_dynamic_json "alpn:" "$single_server")"
+      fi
    fi
    
    #udp
@@ -787,20 +798,23 @@ do
 	      do
 	         single_group="/tmp/group_$i.yaml"
 	         group_type="$(cfg_get "type:" "$single_group")"
-	         if [ ! -z "$(grep -F "$server_name" "$single_group")" ] && [ "$group_type" = "relay" ]; then
+	         if [ -n "$(grep -F "$server_name" "$single_group")" ] && [ "$group_type" = "relay" ]; then
 	         	  group_name=$(cfg_get "name:" "$single_group")
-	            grep "^ \{0,\}-" "$single_group" 2>/dev/null |grep -v "^ \{0,\}- name:" 2>/dev/null > $SERVER_RELAY
+	         	  server_relays="$(cfg_get_dynamic "-" "$single_group")"
+	         	  if [ -z "$server_relays" ]; then
+         	       server_relays="$(cfg_get_dynamic_json "proxies:" "$single_group")"
+	         	  fi
 	            s=1
-	            cat $SERVER_RELAY |while read -r line
+	            for server_relay in $server_relays; do
 	            do
-	               if [ ! -z "$(echo "$line" |grep -F "$server_name" 2>/dev/null)" ]; then
+	               if [ "$server_relay" = "$server_name" ]; then
                     ${uci_add}groups="$group_name"
                     ${uci_add}relay_groups="$group_name#relay#$s"
                  else
                     s=$(expr "$s" + 1)
                  fi
               done
-           elif [ ! -z "$(grep -F "$server_name" "$single_group")" ]; then
+           elif [ -n "$(grep -F "$server_name" "$single_group")" ]; then
               group_name=$(cfg_get "name:" "$single_group")
               ${uci_add}groups="$group_name"
            fi

@@ -134,9 +134,13 @@ o:value("silent", translate("Silent Mode"))
 o.default = "silent"
 
 o = s:taboption("settings", ListValue, "intranet_allowed", translate("Only intranet allowed"))
-o.description = translate("When enabled, the control panel and the connection broker port will not be accessible from the public network")
+o.description = translate("When Enabled, The Control Panel And The Connection Broker Port Will Not Be Accessible From The Public Network, TUN Not Support Yet")
 o:value("0", translate("Disable"))
 o:value("1", translate("Enable"))
+o:depends("en_mode", "redir-host")
+o:depends("en_mode", "fake-ip")
+o:depends("en_mode", "redir-host-vpn")
+o:depends("en_mode", "fake-ip-vpn")
 o.default = 0
 
 o = s:taboption("settings", Value, "proxy_port")
