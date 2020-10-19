@@ -287,6 +287,34 @@ define Device/cellc_rtl30vw
 endef
 TARGET_DEVICES += cellc_rtl30vw
 
+define Device/century_wr142ac
+	$(call Device/FitzImage)
+	DEVICE_VENDOR := Century
+	DEVICE_MODEL := WR142AC
+	SOC := qcom-ipq4019
+	KERNEL_SIZE := 4096k
+	IMAGE_SIZE := 31232k
+	IMAGES += factory.bin
+	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
+	IMAGE/factory.bin := qsdk-ipq-factory-nor | check-size
+	DEVICE_PACKAGES := ipq-wifi-century_wr142ac kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += century_wr142ac
+
+define Device/century_wr142ac-nand
+	$(call Device/FitzImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Century
+	DEVICE_MODEL := WR142AC
+	DEVICE_VARIANT := NAND
+	SOC := qcom-ipq4019
+	DEVICE_DTS_CONFIG := config@10
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_PACKAGES := ipq-wifi-century_wr142ac kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += century_wr142ac-nand
+
 define Device/cilab_meshpoint-one
 	$(call Device/8dev_jalapeno-common)
 	DEVICE_VENDOR := Crisis Innovation Lab
@@ -588,8 +616,36 @@ define Device/openmesh_a62
 	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-rootfs | sysupgrade-tar rootfs=$$$$@ | append-metadata
 	DEVICE_PACKAGES := ath10k-firmware-qca9888-ct uboot-envtools
 endef
-
 TARGET_DEVICES += openmesh_a62
+
+define Device/p2w_r619ac
+	$(call Device/FitzImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := P&W
+	DEVICE_MODEL := R619AC
+	SOC := qcom-ipq4019
+	DEVICE_DTS_CONFIG := config@10
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	IMAGES += nand-factory.bin
+	IMAGE/nand-factory.bin := append-ubi | qsdk-ipq-factory-nand
+	DEVICE_PACKAGES := ipq-wifi-p2w_r619ac
+endef
+TARGET_DEVICES += p2w_r619ac
+
+define Device/p2w_r619ac-128m
+	$(call Device/FitzImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := P&W
+	DEVICE_MODEL := R619AC
+	DEVICE_VARIANT := 128M
+	SOC := qcom-ipq4019
+	DEVICE_DTS_CONFIG := config@10
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_PACKAGES := ipq-wifi-p2w_r619ac
+endef
+TARGET_DEVICES += p2w_r619ac-128m
 
 define Device/qcom_ap-dk01.1-c1
 	DEVICE_VENDOR := Qualcomm Atheros
@@ -621,35 +677,6 @@ define Device/qcom_ap-dk04.1-c1
 	BOARD_NAME := ap-dk04.1-c1
 endef
 TARGET_DEVICES += qcom_ap-dk04.1-c1
-
-define Device/p2w_r619ac
-	$(call Device/FitzImage)
-	$(call Device/UbiFit)
-	DEVICE_VENDOR := P&W
-	DEVICE_MODEL := R619AC
-	SOC := qcom-ipq4019
-	DEVICE_DTS_CONFIG := config@10
-	BLOCKSIZE := 128k
-	PAGESIZE := 2048
-	IMAGES += nand-factory.bin
-	IMAGE/nand-factory.bin := append-ubi | qsdk-ipq-factory-nand
-	DEVICE_PACKAGES := ipq-wifi-p2w_r619ac
-endef
-TARGET_DEVICES += p2w_r619ac
-
-define Device/p2w_r619ac-128m
-	$(call Device/FitzImage)
-	$(call Device/UbiFit)
-	DEVICE_VENDOR := P&W
-	DEVICE_MODEL := R619AC
-	DEVICE_VARIANT := 128M
-	SOC := qcom-ipq4019
-	DEVICE_DTS_CONFIG := config@10
-	BLOCKSIZE := 128k
-	PAGESIZE := 2048
-	DEVICE_PACKAGES := ipq-wifi-p2w_r619ac
-endef
-TARGET_DEVICES += p2w_r619ac-128m
 
 define Device/qxwlan_e2600ac-c1
 	$(call Device/FitImage)
