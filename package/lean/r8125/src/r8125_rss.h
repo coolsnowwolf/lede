@@ -32,22 +32,35 @@
  *  US6,570,884, US6,115,776, and US6,327,625.
  ***********************************************************************************/
 
-//EEPROM opcodes
-#define RTL_EEPROM_READ_OPCODE      06
-#define RTL_EEPROM_WRITE_OPCODE     05
-#define RTL_EEPROM_ERASE_OPCODE     07
-#define RTL_EEPROM_EWEN_OPCODE      19
-#define RTL_EEPROM_EWDS_OPCODE      16
+#ifndef _LINUX_rtl8125_RSS_H
+#define _LINUX_rtl8125_RSS_H
 
-#define RTL_CLOCK_RATE  3
+#include <linux/netdevice.h>
+#include <linux/types.h>
 
-void rtl8125_eeprom_type(struct rtl8125_private *tp);
-void rtl8125_eeprom_cleanup(struct rtl8125_private *tp);
-u16 rtl8125_eeprom_read_sc(struct rtl8125_private *tp, u16 reg);
-void rtl8125_eeprom_write_sc(struct rtl8125_private *tp, u16 reg, u16 data);
-void rtl8125_shift_out_bits(struct rtl8125_private *tp, int data, int count);
-u16 rtl8125_shift_in_bits(struct rtl8125_private *tp);
-void rtl8125_raise_clock(struct rtl8125_private *tp, u8 *x);
-void rtl8125_lower_clock(struct rtl8125_private *tp, u8 *x);
-void rtl8125_stand_by(struct rtl8125_private *tp);
-void rtl8125_set_eeprom_sel_low(struct rtl8125_private *tp);
+enum rtl8125_rss_flag {
+        RTL_8125_RSS_FLAG_HASH_UDP_IPV4  = (1 << 0),
+        RTL_8125_RSS_FLAG_HASH_UDP_IPV6  = (1 << 1),
+};
+
+struct rtl8125_private;
+
+int rtl8125_get_rxnfc(struct net_device *dev, struct ethtool_rxnfc *cmd,
+                      u32 *rule_locs);
+int rtl8125_set_rxnfc(struct net_device *dev, struct ethtool_rxnfc *cmd);
+u32 rtl8125_get_rxfh_key_size(struct net_device *netdev);
+u32 rtl8125_rss_indir_size(struct net_device *netdev);
+int rtl8125_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
+                     u8 *hfunc);
+int rtl8125_set_rxfh(struct net_device *netdev, const u32 *indir,
+                     const u8 *key, const u8 hfunc);
+void rtl8125_rx_hash(struct rtl8125_private *tp,
+                     struct RxDescV3 *descv3,
+                     struct sk_buff *skb);
+void _rtl8125_config_rss(struct rtl8125_private *tp);
+void rtl8125_config_rss(struct rtl8125_private *tp);
+void rtl8125_init_rss(struct rtl8125_private *tp);
+u32 rtl8125_rss_indir_tbl_entries(struct rtl8125_private *tp);
+void rtl8125_disable_rss(struct rtl8125_private *tp);
+
+#endif /* _LINUX_rtl8125_RSS_H */
