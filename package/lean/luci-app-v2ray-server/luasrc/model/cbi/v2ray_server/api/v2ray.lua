@@ -8,7 +8,7 @@ local ipkg = require "luci.model.ipkg"
 
 local appname = "v2ray_server"
 local v2ray_api =
-    "https://api.github.com/repos/v2ray/v2ray-core/releases/latest"
+    "https://api.github.com/repos/v2fly/v2ray-core/releases/latest"
 local wget = "/usr/bin/wget"
 local wget_args = {
     "--no-check-certificate", "--quiet", "--timeout=100", "--tries=3"
