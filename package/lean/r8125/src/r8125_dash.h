@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
 ################################################################################
 #
@@ -33,6 +34,8 @@
 
 #ifndef _LINUX_R8125_DASH_H
 #define _LINUX_R8125_DASH_H
+
+#include <linux/if.h>
 
 #define SIOCDEVPRIVATE_RTLDASH   SIOCDEVPRIVATE+2
 
