@@ -2,12 +2,11 @@
 Luci for JD dailybonus Script for Openwrt  
 一个运行在openwrt下的京东签到插件。
 
-### Update Log 2020-09-16  
+### Update Log 2020-10-21  
 
 #### Updates
 
-- FIX: 去除node-request 的单独编译依赖，改为内置集成。
-- FIX: 去除coreutils-nohup 的依赖。
+- UPD: 精简微信推送内容，更加直观。
 
 
 详情见[具体日志](./relnotes.txt)。 
