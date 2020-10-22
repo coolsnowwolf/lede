@@ -80,13 +80,13 @@ START_LOG="/tmp/openclash_start.log"
        fi
     fi
     
-    if [ "$14" -ne 1 ]; then
+    if [ "$14" != "1" ]; then
        controller_address="0.0.0.0"
        bind_address="*"
-    elif [ "$18" != "Tun" ]; then
+    elif [ "$18" != "Tun" ] && [ "$14" = "1" ]; then
        controller_address=$11
        bind_address=$11
-    elif [ "$18" = "Tun" ]; then
+    elif [ "$18" = "Tun" ] && [ "$14" = "1" ]; then
        echo "Warning: Stop Set The Bind Address Option In TUN Mode, Because The Router Will Not Be Able To Connect To The Internet" >> $LOG_FILE
        echo "警告: 在TUN模式下启用仅允许内网会导致路由器无法联网，已忽略此项修改！" >$START_LOG
        controller_address="0.0.0.0"

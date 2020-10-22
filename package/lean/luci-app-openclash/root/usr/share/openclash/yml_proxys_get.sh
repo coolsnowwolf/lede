@@ -806,7 +806,6 @@ do
 	         	  fi
 	            s=1
 	            for server_relay in $server_relays; do
-	            do
 	               if [ "$server_relay" = "$server_name" ]; then
                     ${uci_add}groups="$group_name"
                     ${uci_add}relay_groups="$group_name#relay#$s"

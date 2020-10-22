@@ -95,14 +95,16 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
 					gzip -d /tmp/clash_tun.gz >/dev/null 2>&1
 					rm -rf /tmp/clash_tun.gz >/dev/null 2>&1
 					rm -rf "$tun_core_path" >/dev/null 2>&1
+					chmod 4755 /tmp/clash_tun >/dev/null 2>&1
 				}
 				;;
 				"Game")
 				[ -s "/tmp/clash_game.tar.gz" ] && {
 					tar zxvf /tmp/clash_game.tar.gz -C /tmp >/dev/null 2>&1
 					mv /tmp/clash /tmp/clash_game >/dev/null 2>&1
-          rm -rf /tmp/clash_game.tar.gz >/dev/null 2>&1
+					rm -rf /tmp/clash_game.tar.gz >/dev/null 2>&1
 					rm -rf "$game_core_path" >/dev/null 2>&1
+					chmod 4755 /tmp/clash_game >/dev/null 2>&1
 				}
 				;;
 				*)
@@ -114,6 +116,7 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
 					   tar zxvf /tmp/clash.tar.gz -C /tmp/etc/openclash/core
 				  fi
 					rm -rf /tmp/clash.tar.gz >/dev/null 2>&1
+					chmod 4755 "$dev_core_path" >/dev/null 2>&1
 				}
 			esac
       

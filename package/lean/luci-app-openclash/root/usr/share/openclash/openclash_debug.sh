@@ -275,16 +275,21 @@ if [ -n "$(grep OpenClash-General-Settings "$CONFIG_FILE")" ]; then
 else
    /usr/share/openclash/yml_field_name_ch.sh "$CONFIG_FILE" 2>/dev/null
    #取出general部分
-   /usr/share/openclash/yml_field_cut.sh "general" "$CHANGE_FILE" "$CONFIG_FILE"
+   /usr/share/openclash/yml_field_cut.sh "general" "$CHANGE_FILE" "$CONFIG_FILE" 2>/dev/null
    
    #取出dns部分
    nameserver_len=$(sed -n '/^ \{0,\}nameserver:/=' "$CONFIG_FILE" 2>/dev/null)
    if [ -n "$nameserver_len" ]; then
-      /usr/share/openclash/yml_field_cut.sh "$nameserver_len" "$DNS_FILE" "$CONFIG_FILE"
+      /usr/share/openclash/yml_field_cut.sh "$nameserver_len" "$DNS_FILE" "$CONFIG_FILE" 2>/dev/null
+   else
+      fallback_len=$(sed -n '/^ \{0,\}fallback:/=' "$CONFIG_FILE" 2>/dev/null)
+      if [ -n "$fallback_len" ]; then
+   	     /usr/share/openclash/yml_field_cut.sh "$fallback_len" "$DNS_FILE" "$CONFIG_FILE" 2>/dev/null
+   	  fi
    fi 2>/dev/null
    
    rm -rf /tmp/yaml_general 2>/dev/null
-   cat "$CHANGE_FILE" "$DNS_FILE" >> "$DEBUG_LOG"
+   cat "$CHANGE_FILE" "$DNS_FILE" >> "$DEBUG_LOG" 2>/dev/null
 fi
 sed -i '/^ \{0,\}secret:/d' "$DEBUG_LOG" 2>/dev/null
 
@@ -296,16 +301,16 @@ cat >> "$DEBUG_LOG" <<-EOF
 #NAT chain
 
 EOF
-iptables -t nat -nL PREROUTING --line-number >> "$DEBUG_LOG"
-iptables -t nat -nL OUTPUT --line-number >> "$DEBUG_LOG"
+iptables -t nat -nL PREROUTING --line-number >> "$DEBUG_LOG" 2>/dev/null
+iptables -t nat -nL OUTPUT --line-number >> "$DEBUG_LOG" 2>/dev/null
 
 cat >> "$DEBUG_LOG" <<-EOF
 
 #Mangle chain
 
 EOF
-iptables -t mangle -nL PREROUTING --line-number >> "$DEBUG_LOG"
-iptables -t mangle -nL OUTPUT --line-number >> "$DEBUG_LOG"
+iptables -t mangle -nL PREROUTING --line-number >> "$DEBUG_LOG" 2>/dev/null
+iptables -t mangle -nL OUTPUT --line-number >> "$DEBUG_LOG" 2>/dev/null
 
 cat >> "$DEBUG_LOG" <<-EOF
 
@@ -366,14 +371,9 @@ cat >> "$DEBUG_LOG" <<-EOF
 EOF
 VERSION_URL="https://raw.githubusercontent.com/vernesong/OpenClash/master/version"
 if pidof clash >/dev/null; then
-   HTTP_PORT=$(uci get openclash.config.http_port 2>/dev/null)
-   PROXY_ADDR=$(uci get network.lan.ipaddr 2>/dev/null |awk -F '/' '{print $1}' 2>/dev/null)
-   if [ -s "/tmp/openclash.auth" ]; then
-      PROXY_AUTH=$(cat /tmp/openclash.auth |awk -F '- ' '{print $2}' |sed -n '1p' 2>/dev/null)
-   fi
-   curl -IL -m 3 --retry 2 -x http://$PROXY_ADDR:$HTTP_PORT -U "$PROXY_AUTH" "$VERSION_URL" >> "$DEBUG_LOG"
+   curl -IL -m 3 --retry 2 "$VERSION_URL" >> "$DEBUG_LOG" 2>/dev/null
 else
-   curl -IL -m 3 --retry 2 "$VERSION_URL" >> "$DEBUG_LOG"
+   curl -IL -m 3 --retry 2 "$VERSION_URL" >> "$DEBUG_LOG" 2>/dev/null
 fi
 
 cat >> "$DEBUG_LOG" <<-EOF

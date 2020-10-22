@@ -103,6 +103,12 @@ config_su_check()
 {
    echo "配置文件下载成功，检查是否有更新..." >$START_LOG
    sed -i 's/!<str> //g' "$CFG_FILE" >/dev/null 2>&1
+   #关键字还原
+   if [ -z "$(grep "^Proxy:#d" "$CFG_FILE")" ]; then
+      sed -i "s/^Proxy:/proxies:/g" "$CFG_FILE" 2>/dev/null
+   else
+      sed -i "s/^Proxy:#d/proxies:/g" "$CFG_FILE" 2>/dev/null
+   fi
    if [ -f "$CONFIG_FILE" ]; then
       cmp -s "$BACKPACK_FILE" "$CFG_FILE"
       if [ "$?" -ne 0 ]; then
