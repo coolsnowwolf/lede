@@ -36,6 +36,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/simple-obfs
 	SECTION:=net
 	CATEGORY:=Network
+	SUBMENU:=Web Servers/Proxies
 	TITLE:=Simple-obfs
 	URL:=https://github.com/shadowsocks/simple-obfs
 	DEPENDS:=+libpthread +!SIMPLE_OBFS_STATIC_LINK:libev
