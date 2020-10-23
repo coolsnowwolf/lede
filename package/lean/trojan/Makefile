@@ -54,6 +54,7 @@ CMAKE_OPTIONS += \
 define Package/trojan
 	SECTION:=net
 	CATEGORY:=Network
+	SUBMENU:=Web Servers/Proxies
 	TITLE:=An unidentifiable mechanism that helps you bypass GFW
 	URL:=https://github.com/trojan-gfw/trojan
 	DEPENDS:=+libpthread +libstdcpp +libopenssl \
