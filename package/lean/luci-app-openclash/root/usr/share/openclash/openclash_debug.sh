@@ -301,16 +301,14 @@ cat >> "$DEBUG_LOG" <<-EOF
 #NAT chain
 
 EOF
-iptables -t nat -nL PREROUTING --line-number >> "$DEBUG_LOG" 2>/dev/null
-iptables -t nat -nL OUTPUT --line-number >> "$DEBUG_LOG" 2>/dev/null
+iptables-save -t nat >> "$DEBUG_LOG" 2>/dev/null
 
 cat >> "$DEBUG_LOG" <<-EOF
 
 #Mangle chain
 
 EOF
-iptables -t mangle -nL PREROUTING --line-number >> "$DEBUG_LOG" 2>/dev/null
-iptables -t mangle -nL OUTPUT --line-number >> "$DEBUG_LOG" 2>/dev/null
+iptables-save -t mangle >> "$DEBUG_LOG" 2>/dev/null
 
 cat >> "$DEBUG_LOG" <<-EOF
 

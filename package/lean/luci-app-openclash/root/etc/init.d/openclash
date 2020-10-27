@@ -1085,12 +1085,27 @@ do_run_file()
 
 }
 
+#绑定interface防止回环
+check_interface_name()
+{
+	interface_name=$(ip route |grep "default" |awk '{print $5}' 2>/dev/null)
+	if [ -z "$(grep "^interface-name: $interface_name" "$CONFIG_FILE" 2>/dev/null)" ] && [ -n "$interface_name" ]; then
+    if [ ! -z "$(grep "^ \{0,\}interface-name:" "$CONFIG_FILE" 2>/dev/null)" ]; then
+       sed -i "/^ \{0,\}interface-name:/c\interface-name: ${interface_name}" "$CONFIG_FILE" 2>/dev/null
+    else
+       sed -i "/^redir-port:/a\interface-name: ${interface_name}" "$CONFIG_FILE" 2>/dev/null
+    fi
+  fi
+}
+
 start_run_core()
 {
    echo "$core_start_log" >$START_LOG
    sleep 2
    ulimit -SHn 65535 2>/dev/null
    ulimit -v unlimited 2>/dev/null
+   modprobe tun >/dev/null 2>&1
+   check_interface_name
    config_reload=$(uci get openclash.config.config_reload 2>/dev/null)
    if [ -n "$(pidof clash)" ] && [ "$core_type" != "Tun" ] && [ "$config_reload" != "0" ]; then
       curl -s --connect-timeout 5 -m 5 -H 'Content-Type: application/json' -H "Authorization: Bearer ${da_password}" -XPUT http://"$lan_ip":"$cn_port"/configs -d "{\"path\": \"$CONFIG_FILE\"}" 2>/dev/null
@@ -1192,6 +1207,7 @@ raw_config_start()
    cn_port=$(grep "^ \{0,\}external-controller:" "$CONFIG_FILE" |awk -F ':' '{print $3}' |awk -F '#' '{print $1}' |tr -cd "[0-9]" 2>/dev/null)
    uci set openclash.config.dashboard_password="$cn_port" 2>/dev/null
    
+   uci set openclash.config.proxy_port="$proxy_port"
    uci set openclash.config.restricted_mode=1
    
    uci commit openclash
@@ -1468,7 +1484,9 @@ if [ -z "$en_mode_tun" ] || [ "$en_mode_tun" -eq 3 ]; then
       iptables -t nat -A openclash_output -m set --match-set localnetwork dst -j RETURN
       #iptables -t nat -A openclash_output -p tcp -d 198.18.0.0/16 -j REDIRECT --to-ports "$proxy_port"
       iptables -t nat -A openclash_output -m owner ! --uid-owner 65534 -p tcp -m multiport --dport 80,443 -j REDIRECT --to-ports "$proxy_port"
-      iptables -t nat -A openclash_output -m owner ! --uid-owner 65534 -p tcp -d 198.18.0.0/16 -j REDIRECT --to-ports "$proxy_port"
+      if [ "$en_mode" = "fake-ip" ]; then
+         iptables -t nat -A openclash_output -m owner ! --uid-owner 65534 -p tcp -d 198.18.0.0/16 -j REDIRECT --to-ports "$proxy_port"
+      fi
       iptables -t nat -I OUTPUT -j openclash_output
    #fi
 
@@ -1517,16 +1535,24 @@ if [ -n "$en_mode_tun" ]; then
    ip rule add fwmark "$PROXY_FWMARK" table "$PROXY_ROUTE_TABLE"
    
    #设置防火墙
-   iptables -t mangle -N openclash_output
-   iptables -t mangle -F openclash_output
-   iptables -t mangle -A openclash_output -m set --match-set localnetwork dst -j RETURN
-   if [ "$en_mode_tun" -ne 3 ]; then
+   if [ "$en_mode" = "fake-ip" ]; then
+      iptables -t mangle -N openclash_output
+      iptables -t mangle -F openclash_output
+      iptables -t mangle -A openclash_output -m set --match-set localnetwork dst -j RETURN
+      if [ "$en_mode_tun" -ne 3 ]; then
+         iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -p tcp -m multiport --dport 80,443 -j MARK --set-mark "$PROXY_FWMARK"
+         iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -d 198.18.0.0/16 -j MARK --set-mark "$PROXY_FWMARK"
+      else
+         iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -p udp -d 198.18.0.0/16 -j MARK --set-mark "$PROXY_FWMARK"
+      fi  
+      iptables -t mangle -I OUTPUT -j openclash_output
+   elif [ "$en_mode" = "redir-host" ] && [ "$en_mode_tun" -ne 3 ]; then
+      iptables -t mangle -N openclash_output
+      iptables -t mangle -F openclash_output
+      iptables -t mangle -A openclash_output -m set --match-set localnetwork dst -j RETURN
       iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -p tcp -m multiport --dport 80,443 -j MARK --set-mark "$PROXY_FWMARK"
-      iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -d 198.18.0.0/16 -j MARK --set-mark "$PROXY_FWMARK"
-   else
-      iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -p udp -d 198.18.0.0/16 -j MARK --set-mark "$PROXY_FWMARK"
+      iptables -t mangle -I OUTPUT -j openclash_output
    fi
-   iptables -t mangle -I OUTPUT -j openclash_output
    
    iptables -t mangle -N openclash
    iptables -t mangle -F openclash

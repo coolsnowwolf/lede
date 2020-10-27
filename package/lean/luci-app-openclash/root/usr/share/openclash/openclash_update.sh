@@ -24,14 +24,23 @@ OP_CV=$(sed -n 1p /usr/share/openclash/res/openclash_version 2>/dev/null |awk -F
 OP_LV=$(sed -n 1p $LAST_OPVER 2>/dev/null |awk -F '-' '{print $1}' |awk -F 'v' '{print $2}' |awk -F '.' '{print $2$3}' 2>/dev/null)
 
 if [ "$(expr "$OP_LV" \> "$OP_CV")" -eq 1 ] && [ -f "$LAST_OPVER" ]; then
-   echo "开始下载 OpenClash-$LAST_VER ..." >$START_LOG
+   echo "开始下载 OpenClash-v$LAST_VER ..." >$START_LOG
    if pidof clash >/dev/null; then
       curl -sL -m 30 --retry 5 https://github.com/vernesong/OpenClash/releases/download/v"$LAST_VER"/luci-app-openclash_"$LAST_VER"_all.ipk -o /tmp/openclash.ipk >/dev/null 2>&1
    else
       curl -sL -m 30 --retry 5 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/luci-app-openclash_"$LAST_VER"_all.ipk -o /tmp/openclash.ipk >/dev/null 2>&1
    fi
    if [ "$?" -eq "0" ] && [ -s "/tmp/openclash.ipk" ]; then
-      echo "OpenClash-$LAST_VER 下载成功，开始更新，更新过程请不要刷新页面和进行其他操作..." >$START_LOG
+      echo "OpenClash-$LAST_VER 下载成功，开始进行更新前测试 ..." >$START_LOG
+      opkg install /tmp/openclash.ipk --noaction >>$LOG_FILE
+      if [ "$?" -ne "0" ]; then
+         echo "OpenClash-v$LAST_VER 更新前测试失败，文件保存在/tmp/openclash.ipk，请尝试手动更新！" >$START_LOG
+         echo "${LOGTIME} OpenClash-v$LAST_VER Update Test Fail" >>$LOG_FILE
+         sleep 10
+         echo "" >$START_LOG
+         exit 0
+      fi
+      echo "OpenClash-$LAST_VER 更新前测试通过，准备开始更新，更新过程请不要刷新页面和进行其他操作 ..." >$START_LOG
       cat > /tmp/openclash_update.sh <<"EOF"
 #!/bin/sh
 LOGTIME=$(date "+%Y-%m-%d %H:%M:%S")
@@ -40,7 +49,7 @@ LOG_FILE="/tmp/openclash.log"
 echo "正在卸载旧版本，更新过程请不要刷新页面和进行其他操作 ..." >$START_LOG
 uci set openclash.config.enable=0
 uci commit openclash
-opkg remove luci-app-openclash
+opkg remove --force-depends --force-remove luci-app-openclash
 echo "正在安装新版本，更新过程请不要刷新页面和进行其他操作 ..." >$START_LOG
 opkg install /tmp/openclash.ipk
 if [ "$?" -eq "0" ]; then
@@ -63,9 +72,9 @@ EOF
    wait
    rm -rf /tmp/openclash_update.sh
    else
-      echo "OpenClash-$LAST_VER 下载失败，请检查网络或稍后再试！" >$START_LOG
+      echo "OpenClash-v$LAST_VER 下载失败，请检查网络或稍后再试！" >$START_LOG
       rm -rf /tmp/openclash.ipk >/dev/null 2>&1
-      echo "${LOGTIME} OpenClash Update Error" >>$LOG_FILE
+      echo "${LOGTIME} OpenClash-v$LAST_VER Update Error" >>$LOG_FILE
       sleep 5
       echo "" >$START_LOG
       if [ "$(uci get openclash.config.config_reload 2>/dev/null)" -eq 0 ]; then
