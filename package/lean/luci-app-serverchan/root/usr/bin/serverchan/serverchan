@@ -10,14 +10,16 @@ function get_config(){
 
 # 初始化设置信息
 function read_config(){
-	get_config "serverchan_enable" "sckey" "serverchan_ipv4" "ipv4_interface" "ipv4_URL" "serverchan_ipv6" "ipv6_interface" "ipv6_URL" "serverchan_up" "serverchan_down" "serverchan_sheep" "serverchan_whitelist" "serverchan_blacklist" "serverchan_interface" "starttime" "endtime" "cpuload_enable" "cpuload" "temperature_enable" "temperature" "device_name" "err_enable" "network_err_event" "err_sheep_enable" "system_time_event" "autoreboot_time" "network_restart_time" "public_ip_event" "public_ip_retry_count" "soc_code" "sleeptime" "up_timeout" "down_timeout" "device_aliases" "debuglevel" "cpuload" "temperature" "send_mode" "regular_time" "regular_time_2" "regular_time_3" "interval_time" "thread_num" "timeout_retry_count" "send_tg" "tgtoken" "err_device_aliases"
+	get_config "serverchan_enable" "sckey" "serverchan_ipv4" "ipv4_interface" "ipv4_URL" "serverchan_ipv6" "ipv6_interface" "ipv6_URL" "serverchan_up" "serverchan_down" "serverchan_sheep" "serverchan_whitelist" "serverchan_blacklist" "serverchan_interface" "starttime" "endtime" "cpuload_enable" "cpuload" "temperature_enable" "temperature" "device_name" "err_enable" "network_err_event" "err_sheep_enable" "system_time_event" "autoreboot_time" "network_restart_time" "public_ip_event" "public_ip_retry_count" "soc_code" "sleeptime" "up_timeout" "down_timeout" "device_aliases" "debuglevel" "cpuload" "temperature" "send_mode" "regular_time" "regular_time_2" "regular_time_3" "interval_time" "thread_num" "timeout_retry_count" "send_tg" "tgtoken" "err_device_aliases" "sctkey" "oui_dir" "oui_data" "client_usage" "client_usage_max" "client_usage_disturb" "client_usage_whitelist"
 	for str_version in "wrtbwmon" "iputils-arping" "curl" "iw"; do
 		eval `echo ${str_version:0:2}"_version"`=`opkg list-installed|grep -w ^${str_version}|awk '{print $3}'` 2>/dev/null
 	done
 	dir="/tmp/serverchan/" && mkdir -p ${dir}
+	[ ! -z "$oui_dir" ] && [ "$oui_dir" -eq "1" ] && oui_base="${dir}oui_base.txt" || oui_base="/usr/bin/serverchan/oui_base.txt"
 	debuglevel=`echo "$debuglevel"` && [ -z "$debuglevel" ] && logfile="/dev/null" || logfile="${dir}serverchan.log"
 	device_aliases=`echo "$device_aliases"|sed 's/ /\n/g'|sed 's/-/ /'` 2>/dev/null
 	err_device_aliases=`echo "$err_device_aliases"|sed 's/ /\n/g'` 2>/dev/null
+	client_usage_whitelist=`echo "$client_usage_whitelist"|sed 's/ /\n/g'` 2>/dev/null
 	[ "$iw_version" ] && wlan_interface=`iw dev|grep Interface|awk '{print $2}'` >/dev/null 2>&1
 	[ -z "$up_timeout" ] || [ "$up_timeout" -eq "0" ] && up_timeout="2"
 	[ -z "$down_timeout" ] || [ "$down_timeout" -eq "0" ] && down_timeout="20";down_timeout=`expr ${down_timeout} / 2 + 1`
@@ -28,19 +30,41 @@ function read_config(){
 
 # 初始化
 function serverchan_init(){
+	enable_detection
 	if [ -f "/usr/bin/serverchan/errlog" ]; then
 		cat /usr/bin/serverchan/errlog > ${logfile}
 		echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】载入上次重启前日志" >> ${logfile}
 		echo "--------------------------------------------------------" >> ${logfile}
 	fi
+	down_oui &
 	deltemp
-	rm -f ${dir}fd1 ${dir}sheep_usage ${dir}old_sheep_usage /usr/bin/serverchan/errlog >/dev/null 2>&1
+	rm -f ${dir}fd1 ${dir}sheep_usage ${dir}old_sheep_usage ${dir}client_usage_aliases ${dir}old_client_usage_aliases /usr/bin/serverchan/errlog >/dev/null 2>&1
 	[ ! -f "/usr/sbin/wrtbwmon" ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】未安装 wrtbwmon ，流量统计不可用" >> ${logfile}
 	for read_str in "ip_version" "cu_version"; do
-		[ -z `eval echo '$'$read_str` ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】依赖项未安装" >> ${logfile} && return 1
+		[ -z `eval echo '$'$read_str` ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】依赖项 iputils-arping、curl 未安装，请确认插件是否正常运行" >> ${logfile}
 	done
-	[ -z "$sckey" ] && [ -z "$tgtoken" ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】请填写正确的 sckey " >> ${logfile} && return 1
+	[ -z "$sckey" ] && [ -z "$sctkey" ] && [ -z "$tgtoken" ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】请填写正确的 sckey " >> ${logfile} && return 1
 	return 0
+}
+
+# 下载设备MAC厂商信息
+function down_oui(){
+	[ -f ${oui_base} ] && local logrow=$(grep -c "" ${oui_base}) || local logrow="0"
+	[ $logrow -lt "10" ] && rm -f ${oui_base} >/dev/null 2>&1
+	if [ ! -z "$oui_data" ] && [ "$oui_data" -ne "3" ] && [ ! -f ${oui_base} ]; then
+		echo "`date "+%Y-%m-%d %H:%M:%S"` 【初始化】设备MAC厂商信息不存在，重新下载" >> ${logfile}
+		wget --no-check-certificate -t 3 -T 15 -O ${dir}oui.txt https://linuxnet.ca/ieee/oui.txt >/dev/null 2>&1
+		if [ -f ${dir}oui.txt ] && [ "$oui_data" -eq "1" ]; then
+			cat ${dir}oui.txt|grep "base 16"|grep -i "apple\|aruba\|asus\|autelan\|belkin\|bhu\|buffalo\|cctf\|cisco\|comba\|datang\|dell\|dlink\|dowell\|ericsson\|fast\|feixun\|\
+fiberhome\|fujitsu\|grentech\|h3c\|hisense\|hiwifi\|honghai\|honghao\|hp\|htc\|huawei\|intel\|jinli\|jse\|lenovo\|lg\|liteon\|malata\|meizu\|mercury\|meru\|moto\|netcore\|\
+netgear\|nokia\|omron\|oneplus\|oppo\|philips\|router_unkown\|samsung\|shanzhai\|sony\|start_net\|sunyuanda\|tcl\|tenda\|texas\|tianyu\|tp-link\|ubq\|undefine\|VMware\|\
+utstarcom\|volans\|xerox\|xiaomi\|zdc\|zhongxing\|smartisan" > ${oui_base} && echo "`date "+%Y-%m-%d %H:%M:%S"` 【初始化】设备MAC厂商信息下载成功" >> ${logfile} || echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】设备MAC厂商信息下载失败" >> ${logfile} 
+		fi
+		if [ -f ${dir}oui.txt ] && [ "$oui_data" -eq "2" ]; then
+			cat ${dir}oui.txt|grep "base 16" > ${oui_base} && echo "`date "+%Y-%m-%d %H:%M:%S"` 【初始化】设备MAC厂商信息下载成功" >> ${logfile} || echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】设备MAC厂商信息下载失败" >> ${logfile}
+		fi
+		rm -f ${dir}oui.txt >/dev/null 2>&1
+	fi
 }
 
 # 清理临时文件
@@ -82,7 +106,7 @@ function getip(){
 
 # 查询 mac 地址
 function getmac(){
-	#( echo "$tmp_mac"|grep -q "unknown" ) && unset tmp_mac # 为unknown时重新读取
+	( echo "$tmp_mac"|grep -q "unknown" ) && unset tmp_mac # 为unknown时重新读取
 	[ -f "${dir}ipAddress" ] && [ -z "$tmp_mac" ] && local tmp_mac=`cat ${dir}ipAddress|grep -w ${1}|awk '{print $2}'|grep -v "^$"|sort -u`
 	[ -f "${dir}tmp_downlist" ] && [ -z "$tmp_mac" ] && local tmp_mac=`cat ${dir}tmp_downlist|grep -w ${1}|awk '{print $2}'|grep -v "^$"|sort -u`
 	[ -f "/var/dhcp.leases" ] && [ -z "$tmp_mac" ] && local tmp_mac=`cat /var/dhcp.leases|grep -w ${1}|awk '{print $2}'|grep -v "^$"|sort -u`
@@ -93,11 +117,12 @@ function getmac(){
 
 # 查询主机名
 function getname(){
-	#( echo "$tmp_name"|grep -q "unknown" ) && unset tmp_name # 为unknown时重新读取
+	[ -z "$tmp_name" ] && local tmp_name=`echo "$device_aliases"|grep -i $2|awk '{print $2}'|grep -v "^$"|sort -u`
 	[ -f "${dir}ipAddress" ] && [ -z "$tmp_name" ] && local tmp_name=`cat ${dir}ipAddress|grep -w ${1}|awk '{print $3}'|grep -v "^$"|sort -u`
 	[ -f "${dir}tmp_downlist" ] && [ -z "$tmp_name" ] && local tmp_name=`cat ${dir}tmp_downlist|grep -w ${1}|awk '{print $3}'|grep -v "^$"|sort -u`
-	[ -z "$tmp_name" ] && local tmp_name=`echo "$device_aliases"|grep -i $2|awk '{print $2}'|grep -v "^$"|sort -u`
-	[ ! -z "$tmp_name" ] && echo "$tmp_name" && return
+	( ! echo "$tmp_name"|grep -q -w "unknown\|*" ) && [ ! -z "$tmp_name" ] && echo "$tmp_name" && return || unset tmp_name # 为unknown时重新读取
+	[ -f "/var/dhcp.leases" ] && [ -z "$tmp_name" ] && local tmp_name=`cat /var/dhcp.leases|grep -w ${1}|awk '{print $4}'|grep -v "^$"|sort -u`
+	( ! echo "$tmp_name"|grep -q -w "unknown\|*" ) && [ ! -z "$tmp_name" ] && echo "$tmp_name" && return || unset tmp_name # 为unknown时重新读取
 	[ -z "$dhcp_config" ] && dhcp_config=`uci show dhcp|grep "ip\|mac\|name"`
 	for dhcp_config_str in "host" "domain"; do
 		local dhcp_ip_n=`echo "$dhcp_config"|grep -w ^dhcp.@${dhcp_config_str}.*ip=.${1}|sed -nr 's#^dhcp.(.*).ip.*#\1#gp'` 2>/dev/null
@@ -106,7 +131,9 @@ function getname(){
 		[ ! -z "$dhcp_mac_n" ] && [ -z "$tmp_name" ] && local tmp_name=`uci get dhcp.${dhcp_ip_n}.name` 2>/dev/null
 		[ ! -z "$tmp_name" ] && break
 	done
-	[ -f "/var/dhcp.leases" ] && [ -z "$tmp_name" ] && local tmp_name=`cat /var/dhcp.leases|grep -w ${1}|awk '{print $4}'|grep -v "^$"|sort -u`
+	( ! echo "$tmp_name"|grep -q -w "unknown\|*" ) && [ ! -z "$tmp_name" ] && echo "$tmp_name" && return || unset tmp_name # 为unknown时重新读取
+	[ -f "$oui_base" ] && local tmp_name=$(cat $oui_base|grep -i $(echo "$2"|cut -c 1,2,4,5,7,8)|sed -nr 's#^.*16)..(.*)#\1#gp'|sed 's/ /_/g')
+	[ "$oui_data" -eq "4" ] && local tmp_name=$(curl -sS "http://standards-oui.ieee.org/oui.txt"|grep -i $(echo "$2"|cut -c 1,2,4,5,7,8)|sed -nr 's#^.*16)..(.*)#\1#gp'|sed 's/ /_/g')
 	[ -z "$tmp_name" ] && local tmp_name="unknown"
 	echo "$tmp_name"
 }
@@ -166,7 +193,7 @@ function usage(){
 		[ -z "$total_n" ] && total_n="6"
 		[ "$2" ] && local tmptotal=`cat ${dir}usage.db|sed 's/,,,/,0,0,/g'|sed 's/,,/,0,/g'|sed 's/,/ /g'|grep -i -w ${2}|awk "{print "'$'$total_n"}"|grep -v "^$"|sort -u` 2>/dev/null
 		[ -z "$tmptotal" ] && local tmptotal="0"
-		[ ! "$3" ] && echo `bytes_for_humans ${tmptotal}` || echo $tmptotal
+		[ ! "$3" ] && echo `bytes_for_humans ${tmptotal}` || echo "$tmptotal"
 	elif [ $1 == "down" ] ;then
 		[ "$2" ] && sed -i "/${2}/d" ${dir}usage.db 2>/dev/null
 	fi
@@ -176,9 +203,54 @@ function usage(){
 function bytes_for_humans {
 	[ ! "$1" ] && return
 	[ "$1" -gt 1073741824 ] && echo "`awk 'BEGIN{printf "%.2f\n",'$1'/'1073741824'}'` GB" && return
-	[ "$1" -lt 1073741824 ] && echo "`awk 'BEGIN{printf "%.2f\n",'$1'/'1048576'}'` MB" && return
-	[ "$1" -lt 1048576 ] && echo "`awk 'BEGIN{printf "%.2f\n",'$1'/'1024'}'` KB" && return
-	[ "$1" -lt 1024 ] && echo "${1} bytes"
+	[ "$1" -gt 1048576 ] && echo "`awk 'BEGIN{printf "%.2f\n",'$1'/'1048576'}'` MB" && return
+	[ "$1" -gt 1024 ] && echo "`awk 'BEGIN{printf "%.2f\n",'$1'/'1024'}'` KB" && return
+	echo "${1} bytes"
+}
+
+# 设备异常流量检测
+function get_client_usage(){
+	[ -z "$client_usage" ] && return
+	[ "$client_usage" -ne "1" ] && return
+	[ -z "$client_usage_max" ] && return
+	[ -z "$get_client_usage_time" ] && get_client_usage_time=`date +%s`
+	( echo $client_usage_max|sed -r 's/.*(.)$/\1/'|grep -q "K\|k" ) && client_usage_max=`expr ${client_usage_max%?} \* 1024`
+	( echo $client_usage_max|sed -r 's/.*(.)$/\1/'|grep -q "M\|m" ) && client_usage_max=`expr ${client_usage_max%?} \* 1048576`
+	( echo $client_usage_max|sed -r 's/.*(.)$/\1/'|grep -q "G\|g" ) && client_usage_max=`expr ${client_usage_max%?} \* 1073741824`	
+	[ "$client_usage_disturb" -eq "0" ] || [ -z "$client_usage_disturb" ] && [ -f "${dir}ipAddress" ] && local MACLIST=`cat ${dir}ipAddress|awk '{print $2}'|grep -v "^$"|sort -u`
+	[ ! -z "$client_usage_disturb" ] && [ "$client_usage_disturb" -eq "1" ] && [ ! -z "$client_usage_whitelist" ] && local MACLIST=`echo "$client_usage_whitelist"`
+	[ -z "$MACLIST" ] && return
+		
+	if [ "$((`date +%s`-$get_client_usage_time))" -ge "60" ]; then
+		> ${dir}client_usage_aliases
+		for mac in $MACLIST; do
+			( ! cat ${dir}ipAddress|grep -q -i -w $mac|grep -v "^$"|sort -u ) && continue
+			echo "$mac" `usage get ${mac} bytes` >> ${dir}client_usage_aliases
+			[ -f "${dir}old_client_usage_aliases" ] && get_client_usage_bytes=`cat ${dir}old_client_usage_aliases|grep -i -w $mac|awk '{print $2}'|grep -v "^$"|sort -u` || continue
+			[ -z "$get_client_usage_bytes" ] && get_client_usage_bytes="0"
+			if [ "$((`usage get ${mac} bytes`-$get_client_usage_bytes))" -ge "$client_usage_max" ]; then
+				local ip=`cat ${dir}ipAddress|grep -i -w $mac|awk '{print $1}'|grep -v "^$"|sort -u`
+				local ip_name=`getname ${ip} ${mac}`
+				local tmp_usage=$(bytes_for_humans $(expr `usage get ${mac} bytes` - ${get_client_usage_bytes}))
+				local time_up=`cat ${dir}ipAddress|grep -w ${ip}|awk '{print $4}'|grep -v "^$"|sort -u`
+				local ip_total=`usage get $mac` && [ ! -z "$ip_total" ] && local ip_total="${markdown_linefeed}${markdown_tab}总计流量： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_total}"
+				local time1=`date +%s`
+				local time1=$(time_for_humans `expr ${time1} - ${time_up}`)
+				if [ -z "$title" ]; then
+					title="${ip_name} 流量异常"
+					content="${content}${markdown_splitline}#### 设备流量异常${markdown_linefeed}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${mac}$ip_total${markdown_linefeed}${markdown_tab}一分钟内流量： ${markdown_space}${markdown_space}${tmp_usage}${markdown_linefeed}${markdown_tab}在线时间： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${time1}"
+				elif ( echo "$title"|grep -q "流量异常" ); then
+					title="${ip_name} ${title}"
+					content="${content}${markdown_splitline}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${mac}$ip_total${markdown_linefeed}${markdown_tab}一分钟内流量： ${markdown_space}${markdown_space}${markdown_space}${tmp_usage}${markdown_linefeed}${markdown_tab}在线时间： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${time1}"
+				else
+					title="设备状态变化"
+					content="${content}${markdown_splitline}#### 设备流量异常${markdown_linefeed}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${mac}$ip_total${markdown_linefeed}${markdown_tab}一分钟内流量： ${markdown_space}${markdown_space}${markdown_space}${tmp_usage}${markdown_linefeed}${markdown_tab}在线时间： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${time1}"
+				fi
+			fi
+		done
+		cat ${dir}client_usage_aliases > ${dir}old_client_usage_aliases
+		get_client_usage_time=`date +%s`
+	fi
 }
 
 # 时间单位换算
@@ -212,6 +284,18 @@ function length_str {
 	local length_zh=`echo "$1"|awk '{print gensub(/[\u4e00-\u9fa5]/,"","g",$0)}'|awk -F "" '{print NF}'`
 	local length_en=`echo "$1"|awk '{print gensub(/[^\u4e00-\u9fa5]/,"","g",$0)}'|awk -F "" '{print NF}'`
 	echo `expr $length_zh / 3 \* 2 + $length_en`
+}
+
+# 截取字符，避免中文乱码
+function cut_str {
+	[ ! "$1" ] && return
+	[ ! "$2" ] && return
+	local temp_length=$2
+	while [ $(printf "%d" \'`echo "$1"|cut -c $temp_length`) -ge "128" ] && [ $(printf "%d" \'`echo "$1"|cut -c $temp_length`) -lt "224" ] ; do
+		temp_length=`expr $temp_length + 1`
+	done
+	temp_length=`expr $temp_length - 1`
+	echo "$1"|cut -c -$temp_length
 }
 
 # 在线设备列表
@@ -306,8 +390,8 @@ function LockFile(){
 function blackwhitelist(){
 	[ ! "$1" ] && return 1
 	[ -z "$serverchan_whitelist" ] && [ -z "$serverchan_blacklist" ] && [ -z "$serverchan_interface" ] && return
-	[ ! -z "$serverchan_whitelist" ] && ( ! echo $serverchan_whitelist|grep -q -i -w $1) && return
-	[ ! -z "$serverchan_blacklist" ] && ( echo $serverchan_blacklist|grep -q -i -w $1) && return
+	[ ! -z "$serverchan_whitelist" ] && ( ! echo "$serverchan_whitelist"|grep -q -i -w $1) && return
+	[ ! -z "$serverchan_blacklist" ] && ( echo "$serverchan_blacklist"|grep -q -i -w $1) && return
 	[ ! -z "$serverchan_interface" ] && ( echo `getinterface ${1}`|grep -q -i -w $serverchan_interface ) && return
 }
 
@@ -315,13 +399,13 @@ function get_client(){
 	if [ -f "${dir}ipAddress" ]; then
 	while read line; do
 		local js_str="${js_str}<div class='tr placeholder'>"
-		local js_str="${js_str}<div class='th'><%:`echo $line|awk '{print $3}'`%></div>"
-		local tmp_mac=`echo $line|awk '{print $2}'`
+		local js_str="${js_str}<div class='th'><%:`echo "$line"|awk '{print $3}'`%></div>"
+		local tmp_mac=`echo "$line"|awk '{print $2}'`
 		local js_str="${js_str}<div class='th'><%:${tmp_mac}%></div>"
-		local js_str="${js_str}<div class='th'><%:`echo $line|awk '{print $1}'`%></div>"
+		local js_str="${js_str}<div class='th'><%:`echo "$line"|awk '{print $1}'`%></div>"
 		local tmp_usage=`usage get ${tmp_mac}`
 		local js_str="${js_str}<div class='th'><%:${tmp_usage}%></div>"
-		local tmp_uptime=`echo $line|awk '{print $4}'`
+		local tmp_uptime=`echo "$line"|awk '{print $4}'`
 		local tmp_timenow=`date +%s`
 		local tmp_uptime=$(time_for_humans `expr ${tmp_timenow} - ${tmp_uptime}`)
 		local js_str="${js_str}<div class='th'><%:${tmp_uptime}%></div></div>"
@@ -519,7 +603,7 @@ function ip_changes(){
 			echo "`date "+%Y-%m-%d %H:%M:%S"` ${disturb_text}当前IP：${IPv4}" >> ${logfile}
 			echo IPv4 $IPv4 > ${dir}ip && echo -e IPv6 $last_IPv6 >> ${dir}ip
 			title="IP 地址变化"
-			content="${content}${markdown_splitline}####IP 地址变化${markdown_linefeed}${markdown_tab}当前 IP：${IPv4}"
+			content="${content}${markdown_splitline}#### IP 地址变化${markdown_linefeed}${markdown_tab}当前 IP：${IPv4}"
 		elif [ ! -z "$serverchan_ipv4" ] && [ "$serverchan_ipv4" -ne "0" ] && [ -z "$IPv4" ]; then
 			echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】获取 IPv4 地址失败" >> ${logfile}
 		fi
@@ -529,7 +613,7 @@ function ip_changes(){
 			echo IPv4 $IPv4 > ${dir}ip && echo -e IPv6 $IPv6 >> ${dir}ip
 			[ -z "$title" ] && title="IPv6 地址变化"
 			[ ! -z "$title" ] && title="IP 地址变化"
-			content="${content}${markdown_splitline}####IPv6 地址变化${markdown_linefeed}${markdown_tab}当前 IPv6：${IPv6}"				
+			content="${content}${markdown_splitline}#### IPv6 地址变化${markdown_linefeed}${markdown_tab}当前 IPv6：${IPv6}"				
 		elif [ ! -z "$serverchan_ipv6" ] && [ "$serverchan_ipv6" -ne "0" ] && [ -z "$IPv6" ]; then
 			echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】获取 IPv6 地址失败" >> ${logfile}
 		fi
@@ -540,7 +624,7 @@ function ip_changes(){
 		[ ! -z "$serverchan_ipv6" ] && [ "$serverchan_ipv6" -ne "0" ] && echo "`date "+%Y-%m-%d %H:%M:%S"`  当前IPv6: ${IPv6}" >> ${logfile}
 		echo IPv4 $IPv4 > ${dir}ip && echo -e IPv6 $IPv6 >> ${dir}ip	
 		title="路由器重新启动"
-		content="${content}${markdown_splitline}####路由器重新启动"
+		content="${content}${markdown_splitline}#### 路由器重新启动"
 		[ ! -z "$serverchan_ipv4" ] && [ "$serverchan_ipv4" -ne "0" ] && content="${content}${markdown_linefeed}${markdown_tab}当前IP：${IPv4}"
 		[ ! -z "$serverchan_ipv6" ] && [ "$serverchan_ipv6" -ne "0" ] && content="${content}${markdown_linefeed}${markdown_tab}当前IPv6：${IPv6}"
 	fi
@@ -569,8 +653,8 @@ function up(){
 			cat ${dir}tmp_downlist|grep -w ${1}|grep -v "^$"|sort -u >> ${dir}ipAddress
 			sed -i "/$1/d" ${dir}tmp_downlist
 		else
-			usage down $1
-			local ip_name=`getname $1 ${ip_mac}`
+			usage down $ip_mac
+			local ip_name=`getname ${1} ${ip_mac}`
 			blackwhitelist ${ip_mac};local ip_blackwhite=$?
 			echo "$1 ${ip_mac} ${ip_name} `date +%s` ${ip_interface}" >> ${dir}ipAddress
 			[ -f "${dir}send_enable.lock" ] || [ -z "$serverchan_up" ] || [ "$serverchan_up" -ne "1" ] || [ -z "$ip_blackwhite" ] || [ "$ip_blackwhite" -ne 0 ] && LockFile unlock && return
@@ -578,13 +662,13 @@ function up(){
 			[ -f "${dir}content" ] && local content=`cat ${dir}content`	
 			if [ -z "$title" ]; then
 				local title="$ip_name 连接了你的路由器"
-				local content="${markdown_splitline}####新设备连接${markdown_linefeed}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${1}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_mac}"
+				local content="${markdown_splitline}#### 新设备连接${markdown_linefeed}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${1}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_mac}${markdown_linefeed}${markdown_tab}网络接口：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_interface}"
 			elif ( echo ${title}|grep -q "连接了你的路由器" ); then
 				local title="${ip_name} ${title}"
-				local content="${markdown_splitline}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${1}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_mac}"
+				local content="${markdown_splitline}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${1}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_mac}${markdown_linefeed}${markdown_tab}网络接口：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_interface}"
 			else
 				local title="设备状态变化"
-				local content="${markdown_splitline}####新设备连接${markdown_linefeed}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${1}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_mac}"
+				local content="${markdown_splitline}#### 新设备连接${markdown_linefeed}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${1}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_mac}${markdown_linefeed}${markdown_tab}网络接口：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_interface}"
 			fi				
 			echo "`date "+%Y-%m-%d %H:%M:%S"` ${disturb_text}新设备 ${ip_name} ${1} 连接了">> ${logfile}
 			[ ! -z "$serverchan_blacklist" ] && local title="你偷偷关注的设备上线了"
@@ -598,13 +682,23 @@ function up(){
 # 检测设备离线
 function down(){
 	local ip_mac=`getmac $1`
+	local ip_name=`getname ${1} ${ip_mac}`
 	local ip_interface=`getinterface ${ip_mac}`
 	getping ${1} ${down_timeout} ${timeout_retry_count};local ping_online=$?
 	if [ "$ping_online" -eq "1" ]; then
 		LockFile lock
 		[ ! -f "${dir}send_enable.lock" ] && cat ${dir}ipAddress|grep -w ${1}|grep -v "^$"|sort -u >> ${dir}tmp_downlist
-		sed -i "/$1/d" ${dir}ipAddress	
+		sed -i "/$1/d" ${dir}ipAddress
 		LockFile unlock
+	else
+		local tmp_name=`cat ${dir}ipAddress|grep -w ${1}|awk '{print $3}'|grep -v "^$"|sort -u`
+		if [ "$ip_name" != "$tmp_name" ]; then
+			LockFile lock
+			local tmp_str=$(echo "$1 ${ip_mac} ${ip_name} `cat ${dir}ipAddress|grep -w ${1}|awk '{print $4}'|grep -v "^$"|sort -u` ${ip_interface}")
+			sed -i "/$1/d" ${dir}ipAddress
+			echo "$tmp_str" >> ${dir}ipAddress
+			LockFile unlock
+		fi
 	fi
 }
 
@@ -618,18 +712,18 @@ function down_send(){
 		[ -z "$serverchan_down" ] || [ "$serverchan_down" -ne "1" ] || [ -z "$ip_blackwhite" ] || [ "$ip_blackwhite" -ne 0 ] && continue
 		local ip_name=`getname ${ip} ${ip_mac}`
 		local time_up=`cat ${dir}tmp_downlist|grep -w ${ip}|awk '{print $4}'|grep -v "^$"|sort -u`
-		local ip_total=`usage get $ip` && [ ! -z "$ip_total" ] && local ip_total="${markdown_linefeed}${markdown_tab}总计流量： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_total}"
+		local ip_total=`usage get $ip_mac` && [ ! -z "$ip_total" ] && local ip_total="${markdown_linefeed}${markdown_tab}总计流量： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_total}"
 		local time1=`date +%s`
 		local time1=$(time_for_humans `expr ${time1} - ${time_up}`)
 		if [ -z "$title" ]; then
 			title="${ip_name} 断开连接"
-			content="${content}${markdown_splitline}####设备断开连接${markdown_linefeed}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_mac}$ip_total${markdown_linefeed}${markdown_tab}在线时间： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${time1}"
+			content="${content}${markdown_splitline}#### 设备断开连接${markdown_linefeed}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_mac}$ip_total${markdown_linefeed}${markdown_tab}在线时间： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${time1}"
 		elif ( echo "$title"|grep -q "断开连接" ); then
 			title="${ip_name} ${title}"
 			content="${content}${markdown_splitline}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_mac}$ip_total${markdown_linefeed}${markdown_tab}在线时间： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${time1}"
 		else
 			title="设备状态变化"
-			content="${content}${markdown_splitline}####设备断开连接${markdown_linefeed}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_mac}$ip_total${markdown_linefeed}${markdown_tab}在线时间： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${time1}"
+			content="${content}${markdown_splitline}#### 设备断开连接${markdown_linefeed}${markdown_tab}客户端名：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_name}${markdown_linefeed}${markdown_tab}客户端IP： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip}${markdown_linefeed}${markdown_tab}客户端MAC：${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_mac}$ip_total${markdown_linefeed}${markdown_tab}在线时间： ${markdown_space}${markdown_space}${markdown_space}${markdown_space}${time1}"
 		fi
 		echo "`date "+%Y-%m-%d %H:%M:%S"` ${disturb_text}设备 ${ip_name} ${ip} 断开连接 " >> ${logfile}
 	done
@@ -640,13 +734,13 @@ function down_send(){
 function current_device(){
 	[ -f ${dir}ipAddress ] && local logrow=$(grep -c "" ${dir}ipAddress) || local logrow="0";[ $logrow -eq "0" ] && return
 	[ -f ${dir}usage.db ] && local ip_total_db="总计流量${markdown_space}${markdown_space}${markdown_space}${markdown_space}"
-	content="${content}${markdown_splitline}####现有在线设备 ${logrow} 台，具体如下${markdown_linefeed}${markdown_tab}IP 地址${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_total_db}客户端名"
+	content="${content}${markdown_splitline}#### 现有在线设备 ${logrow} 台，具体如下${markdown_linefeed}${markdown_tab}IP 地址${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${markdown_space}${ip_total_db}客户端名"
 	local IPLIST=`cat ${dir}ipAddress|awk '{print $1}'`
 	for ip in $IPLIST; do
-		local ip_total=`usage get ${ip}`
 		local ip_mac=`getmac ${ip}`
+		local ip_total=`usage get ${ip_mac}`
 		local ip_name=`getname ${ip} ${ip_mac}`
-		[ `length_str "$ip_name"` -gt "15" ] && local ip_name=`echo ${ip_name:0:15}"*"`
+		[ `length_str "$ip_name"` -gt "15" ] && local ip_name=`cut_str $ip_name 15`"*"
 		if [ "${#ip}" -lt "15" ]; then 
 			local n=`expr 15 - ${#ip}`
 			for i in `seq 1 $n`; do
@@ -682,7 +776,7 @@ function cpu_load(){
 			title="CPU 温度过高！"
 			temperaturecd_time=`date +%s`
 			echo "`date "+%Y-%m-%d %H:%M:%S"` ${disturb_text} CPU 温 度过高: ${cpu_wendu}" >> ${logfile}
-			content="${content}${markdown_splitline}####CPU 温度过高${markdown_linefeed}${markdown_tab}CPU 温度已连续五分钟超过预设${markdown_linefeed}${markdown_tab}接下来一小时不再提示${markdown_linefeed}${markdown_tab}当前温度：${cpu_wendu}"
+			content="${content}${markdown_splitline}#### CPU 温度过高${markdown_linefeed}${markdown_tab}CPU 温度已连续五分钟超过预设${markdown_linefeed}${markdown_tab}接下来一小时不再提示${markdown_linefeed}${markdown_tab}当前温度：${cpu_wendu}"
 		elif [ ! -z "$temperaturecd_time" ] && [ "$((`date +%s`-$temperaturecd_time))" -ge "3300" ] ;then
 			unset temperaturecd_time
 		fi
@@ -709,7 +803,7 @@ function cpu_load(){
 			fi
 			cpucd_time=`date +%s`
 			echo "`date "+%Y-%m-%d %H:%M:%S"` ${disturb_text} CPU 负 载过高: ${cpu_fuzai}" >> ${logfile}
-			content="${content}${markdown_splitline}####CPU 负载过高${markdown_linefeed}${markdown_tab}CPU 负载已连续五分钟超过预设${markdown_linefeed}${markdown_tab}接下来一小时不再提示${markdown_linefeed}${markdown_tab}当前负载：${cpu_fuzai}"
+			content="${content}${markdown_splitline}#### CPU 负载过高${markdown_linefeed}${markdown_tab}CPU 负载已连续五分钟超过预设${markdown_linefeed}${markdown_tab}接下来一小时不再提示${markdown_linefeed}${markdown_tab}当前负载：${cpu_fuzai}"
 			cputop
 		elif [ ! -z "$cpucd_time" ] && [ "$((`date +%s`-$cpucd_time))" -ge "3300" ] ;then
 			unset cpucd_time
@@ -718,7 +812,7 @@ function cpu_load(){
 }
 
 function cputop(){
-	[ -z "$1" ] && content="${content}${markdown_splitline}####当前 CPU 占用前三的进程"
+	[ -z "$1" ] && content="${content}${markdown_splitline}#### 当前 CPU 占用前三的进程"
 	local i=1 && local top_i=5 && `top -bn 1 > ${dir}top` >/dev/null 2>&1
 	while [ $i -le 3 ]; do
 		if ( ! cat ${dir}top|awk 'NR=='${top_i}|grep -q "top -bn 1" ); then
@@ -778,13 +872,13 @@ function send(){
 		local IPLIST=`cat ${dir}ipAddress 2>/dev/null|awk '{print $1}'`
 		[ -z "$IPLIST" ] && local send_content="${send_content}${markdown_splitline}#### 当前无在线设备" || local send_content="${send_content}${markdown_splitline}#### 在线设备"
 		for ip in $IPLIST; do
-			local ip_total=`usage get ${ip}`;[ ! -z "$ip_total" ] && local ip_total="总计流量：${ip_total}  "
 			local time_up=`cat ${dir}ipAddress|grep -w ${ip}|awk '{print $4}'|grep -v "^$"|sort -u`
 			local time1=`date +%s`
 			local time1=$(time_for_humans `expr ${time1} - ${time_up}`)
 			local ip_mac=`getmac ${ip}`
 			local ip_name=`getname ${ip} ${ip_mac}`
-			[ `length_str "$ip_name"` -gt "18" ] && local ip_name=`echo ${ip_name:0:18}"*"`
+			local ip_total=`usage get ${ip_mac}`;[ ! -z "$ip_total" ] && local ip_total="总计流量：${ip_total}  "
+			[ `length_str "$ip_name"` -gt "18" ] && local ip_name=`cut_str $ip_name 18`"*"
 			local send_content="${send_content}${markdown_linefeed}${markdown_tab}【${ip_name}】  ${ip}${markdown_linefeed}${markdown_tab}${ip_total}在线 ${time1}"
 			unset ip_total time_down time_up time1 ip_mac ip_name
 		done
@@ -860,12 +954,16 @@ while [ "$serverchan_enable" -eq "1" ]; do
 
 	# CPU 检测
 	[ ! -f "${dir}send_enable.lock" ] && cpu_load
+	
+	# 异常流量检测
+	[ ! -f "${dir}send_enable.lock" ] && get_client_usage
 
 	if [ ! -f "${dir}send_enable.lock" ] && [ ! -z "$title" ] && [ ! -z "$content" ]; then
 		nowtime=`date "+%Y-%m-%d %H:%M:%S"`
 		[ ! -z "$device_name" ] && title="【$device_name】$title"
 		title=`echo "$title"|sed $'s/\ /%20/g'|sed $'s/\"/%22/g'|sed $'s/\#/%23/g'|sed $'s/\&/%26/g'|sed $'s/\,/%2C/g'|sed $'s/\//%2F/g'|sed $'s/\:/%3A/g'|sed $'s/\;/%3B/g'|sed $'s/\=/%3D/g'|sed $'s/\@/%40/g'`
 		[ "$disturb" -eq "0" ] && [ -z "$send_tg" ] && curl -s "http://sc.ftqq.com/${sckey}.send?text=${title}" -d "desp=${nowtime}${markdown_linefeed}${content}" >/dev/null 2>&1
+		[ "$disturb" -eq "0" ] && [ ! -z "$send_tg" ] && [ "$send_tg" -eq "2" ] && curl -s "http://sctapi.ftqq.com/${sctkey}.send?text=${title}" -d "desp=${nowtime}${markdown_linefeed}${content}" >/dev/null 2>&1
 		[ "$disturb" -eq "0" ] && [ ! -z "$send_tg" ] && [ "$send_tg" -eq "1" ] && curl -d "text=${title}${markdown_linefeed}${nowtime}${markdown_linefeed}${content}" -X POST "${tgtoken}" >/dev/null 2>&1
 	fi
 	
