@@ -13,8 +13,7 @@ FEATURES:=fpu usb usbgadget squashfs targz nand
 CPU_TYPE:=24kc
 CPU_SUBTYPE:=24kf
 
-KERNEL_PATCHVER:=4.14
-KERNEL_TESTING_PATCHVER:=5.4
+KERNEL_PATCHVER:=5.4
 
 include $(INCLUDE_DIR)/target.mk
 
