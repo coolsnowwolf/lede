@@ -118,12 +118,14 @@ serverchan() {
 run() {
     fill_cookie
     echo -e $(date '+%Y-%m-%d %H:%M:%S %A') >$LOG_HTM 2>/dev/null
+    [ ! -f "/usr/bin/node" ] && echo "未安装node,请安装后再试!">>$LOG_HTM && return 1
     node $JD_SCRIPT >>$LOG_HTM 2>&1 &
 }
 
 back_run() {
     fill_cookie
     echo -e $(date '+%Y-%m-%d %H:%M:%S %A') >$LOG_HTM 2>/dev/null
+    [ ! -f "/usr/bin/node" ] && echo "未安装node,请安装后再试!">>$LOG_HTM && return 1
     node $JD_SCRIPT >>$LOG_HTM 2>/dev/null
     serverchan
 }

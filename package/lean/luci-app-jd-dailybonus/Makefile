@@ -7,8 +7,8 @@
 include $(TOPDIR)/rules.mk
 PKG_NAME:=luci-app-jd-dailybonus
 LUCI_PKGARCH:=all
-PKG_VERSION:=0.8.6
-PKG_RELEASE:=20201021
+PKG_VERSION:=0.8.7
+PKG_RELEASE:=20201031
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -27,36 +27,44 @@ endef
 define Build/Compile
 endef
 
+define Package/$(PKG_NAME)/conffiles
+/etc/config/jd-dailybonus
+endef
 
 define Package/luci-app-jd-dailybonus/install
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci
-	cp -pR ./luasrc/* $(1)/usr/lib/lua/luci
-	$(INSTALL_DIR) $(1)/
-	cp -pR ./root/* $(1)/
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_CONF) ./root/etc/config/jd-dailybonus $(1)/etc/config/jd-dailybonus
+
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./root/etc/init.d/* $(1)/etc/init.d/
+
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./root/etc/uci-defaults/* $(1)/etc/uci-defaults/
+
+	$(INSTALL_DIR) $(1)/usr/share/jd-dailybonus
+	$(INSTALL_BIN) ./root/usr/share/jd-dailybonus/*.sh $(1)/usr/share/jd-dailybonus/
+	$(INSTALL_DATA) ./root/usr/share/jd-dailybonus/*.js $(1)/usr/share/jd-dailybonus/
+
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/* $(1)/usr/share/rpcd/acl.d
+
+	$(INSTALL_DIR) $(1)/usr/lib/node
+	cp -pR ./root/usr/lib/node/* $(1)/usr/lib/node
+
+	$(INSTALL_DIR) $(1)/www/jd-dailybonus
+	$(INSTALL_DATA) ./root//www/jd-dailybonus/* $(1)/www/jd-dailybonus
+
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
+	$(INSTALL_DATA) ./luasrc/controller/* $(1)/usr/lib/lua/luci/controller/
+
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi/jd-dailybonus
+	$(INSTALL_DATA) ./luasrc/model/cbi/jd-dailybonus/* $(1)/usr/lib/lua/luci/model/cbi/jd-dailybonus/
+
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/jd-dailybonus
+	$(INSTALL_DATA) ./luasrc/view/jd-dailybonus/* $(1)/usr/lib/lua/luci/view/jd-dailybonus/
+
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
 	po2lmo ./po/zh-cn/jd-dailybonus.po $(1)/usr/lib/lua/luci/i18n/jd-dailybonus.zh-cn.lmo
-endef
-
-define Package/luci-app-jd-dailybonus/postinst
-#!/bin/sh
-if [ -z "$${IPKG_INSTROOT}" ]; then
-	( . /etc/uci-defaults/luci-jd-dailybonus ) && rm -f /etc/uci-defaults/luci-jd-dailybonus
-	rm -rf /tmp/luci-indexcache
-	rm -rf /tmp/luci-modulecache/*
-	chmod +x /etc/init.d/jd-dailybonus >/dev/null 2>&1
-	chmod +x /usr/share/jd-dailybonus/newapp.sh >/dev/null 2>&1
-	/etc/init.d/jd-dailybonus enable >/dev/null 2>&1
-fi
-exit 0
-endef
-
-define Package/luci-app-jd-dailybonus/prerm
-#!/bin/sh
-if [ -z "$${IPKG_INSTROOT}" ]; then
-     /etc/init.d/jd-dailybonus disable
-     /etc/init.d/jd-dailybonus stop
-fi
-exit 0
 endef
 
 $(eval $(call BuildPackage,luci-app-jd-dailybonus))
