@@ -64,12 +64,13 @@ a:value("",translate("关闭"))
 a:value("1",translate("简化版"))
 a:value("2",translate("完整版"))
 a:value("3",translate("网络查询"))
-a.description = translate("原始数据大小为 4.36m，处理后的完整版约 1.2M，简化版约 250kb <br/>若无梯子，请勿使用网络查询")
+a.description = translate("需下载 4.36m 原始数据，处理后完整版约 1.2M，简化版约 250kb <br/>若无梯子，请勿使用网络查询")
 
 a=s:taboption("basic", Flag,"oui_dir",translate("下载到内存"))
 a.rmempty = true
 a:depends("oui_data","1")
 a:depends("oui_data","2")
+a.description = translate("懒得做自动更新了，下载到内存中，重启会重新下载 <br/>若无梯子，还是下到机身吧")
 
 a=s:taboption("basic", Flag,"debuglevel",translate("开启日志"))
 a.rmempty = true

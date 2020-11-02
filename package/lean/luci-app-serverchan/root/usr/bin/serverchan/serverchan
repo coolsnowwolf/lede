@@ -44,6 +44,7 @@ function serverchan_init(){
 		[ -z `eval echo '$'$read_str` ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】依赖项 iputils-arping、curl 未安装，请确认插件是否正常运行" >> ${logfile}
 	done
 	[ -z "$sckey" ] && [ -z "$sctkey" ] && [ -z "$tgtoken" ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】请填写正确的 sckey " >> ${logfile} && return 1
+	local interfacelist=`getinterfacelist` && [ -z "$interfacelist" ] && echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！！】无法正确获取接口信息，请确认插件是否正常运行" >> ${logfile}
 	return 0
 }
 
@@ -88,20 +89,33 @@ function enable_detection(){
 function getip(){
 	[ ! "$1" ] && return
 	if [ $1 == "wanipv4" ] ;then
-		[ ! -z "$ipv4_interface" ] && local wanIP=$(/sbin/ifconfig ${ipv4_interface}|awk '/inet addr/ {print $2}'|awk -F: '{print $2}'|grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}') || local wanIP=$(ubus call network.interface.wan status|grep '\"address\"'|grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}')
+		[ ! -z "$ipv4_interface" ] && local wanIP=$(/sbin/ifconfig ${ipv4_interface}|awk '/inet addr/ {print $2}'|awk -F: '{print $2}'|grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}')
+		[ -z "$ipv4_interface" ] && local wanIP=$(getinterfacelist|grep '\"address\"'|grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}')
 		echo "$wanIP"
 	elif [ $1 == "hostipv4" ] ;then
 		[ -z "$ipv4_URL" ] && local ipv4_URL="members.3322.org/dyndns/getip"
 		[ ! -z "$ipv4_interface" ] && local hostIP=$(curl -k -s -4 --interface ${ipv4_interface} ${ipv4_URL}) || local hostIP=$(curl -k -s -4 ${ipv4_URL})
 		echo "$hostIP"
 	elif [ $1 == "wanipv6" ] ;then
-		[ ! -z "$ipv6_interface" ] && local wanIPv6=$(ip addr show ${ipv6_interface}|grep -v deprecated|grep -A1 'inet6 [^f:]'|sed -nr ':a;N;s#^ +inet6 ([a-f0-9:]+)/.+? scope global .*? valid_lft ([0-9]+sec) .*#\2 \1#p;ta'|sort -nr|head -n1|awk '{print $2}') || local wanIPv6=$(ip addr show|grep -v deprecated|grep -A1 'inet6 [^f:]'|sed -nr ':a;N;s#^ +inet6 ([a-f0-9:]+)/.+? scope global .*? valid_lft ([0-9]+sec) .*#\2 \1#p;ta'|sort -nr|head -n1|awk '{print $2}')
+		[ ! -z "$ipv6_interface" ] && local wanIPv6=$(ip addr show ${ipv6_interface}|grep -v deprecated|grep -A1 'inet6 [^f:]'|sed -nr ':a;N;s#^ +inet6 ([a-f0-9:]+)/.+? scope global .*? valid_lft ([0-9]+sec) .*#\2 \1#p;ta'|sort -nr|head -n1|awk '{print $2}')
+		[ -z "$ipv6_interface" ] && local wanIPv6=$(ip addr show|grep -v deprecated|grep -A1 'inet6 [^f:]'|sed -nr ':a;N;s#^ +inet6 ([a-f0-9:]+)/.+? scope global .*? valid_lft ([0-9]+sec) .*#\2 \1#p;ta'|sort -nr|head -n1|awk '{print $2}')
 		echo "$wanIPv6"
 	elif [ $1 == "hostipv6" ] ;then
 		[ -z "$ipv6_URL" ] && local ipv6_URL="v6.ip.zxinc.org/getip"
 		[ ! -z "$ipv6_interface" ] && local hostIPv6=$(curl -k -s -6 --interface ${ipv6_interface} ${ipv6_URL}) || local hostIPv6=$(curl -k -s -6 ${ipv6_URL})
 		echo "$hostIPv6"
 	fi
+}
+
+# 获取接口信息
+function getinterfacelist(){
+	[ `ubus list|grep -w -i "network.interface.wan"|wc -l` -ge "1" ] && ubus call network.interface.wan status && return
+	[ `ubus list|grep -i "network.interface."|grep -v "loopback"|grep -v "wan6"|wc -l` -eq "1" ] && ubus call `ubus list|grep "network.interface."|grep -v "loopback"` status && return
+}
+
+# 获取接口在线时间
+function getinterfaceuptime(){
+	getinterfacelist|grep \"uptime\"|sed $'s/\"uptime": //g'|sed $'s/\,//g'
 }
 
 # 查询 mac 地址
@@ -195,7 +209,7 @@ function usage(){
 		[ -z "$tmptotal" ] && local tmptotal="0"
 		[ ! "$3" ] && echo `bytes_for_humans ${tmptotal}` || echo "$tmptotal"
 	elif [ $1 == "down" ] ;then
-		[ "$2" ] && sed -i "/${2}/d" ${dir}usage.db 2>/dev/null
+		[ "$2" ] && sed -i "/,${2},/d" ${dir}usage.db 2>/dev/null
 	fi
 }
 
@@ -281,8 +295,8 @@ function time_for_humans {
 # 计算字符真实长度
 function length_str {
 	[ ! "$1" ] && return
-	local length_zh=`echo "$1"|awk '{print gensub(/[\u4e00-\u9fa5]/,"","g",$0)}'|awk -F "" '{print NF}'`
-	local length_en=`echo "$1"|awk '{print gensub(/[^\u4e00-\u9fa5]/,"","g",$0)}'|awk -F "" '{print NF}'`
+	local length_zh=`echo "$1"|awk '{print gensub(/[\u4e00-\u9FA5A-Za-z0-9_]/,"","g",$0)}'|awk -F "" '{print NF}'`
+	local length_en=`echo "$1"|awk '{print gensub(/[^\u4e00-\u9FA5A-Za-z0-9_]/,"","g",$0)}'|awk -F "" '{print NF}'`
 	echo `expr $length_zh / 3 \* 2 + $length_en`
 }
 
@@ -290,12 +304,16 @@ function length_str {
 function cut_str {
 	[ ! "$1" ] && return
 	[ ! "$2" ] && return
+	[ `length_str $1` -le "$2" ] && echo "$1" && return
 	local temp_length=$2
-	while [ $(printf "%d" \'`echo "$1"|cut -c $temp_length`) -ge "128" ] && [ $(printf "%d" \'`echo "$1"|cut -c $temp_length`) -lt "224" ] ; do
+	while [ $(length_str `echo "$1"|cut -c -$temp_length`) -lt "$2" ]; do
+		temp_length=`expr $temp_length + 1`
+	done
+	while [ $(printf "%d" \'`echo "$1"|cut -c $temp_length`) -ge "128" ] && [ $(printf "%d" \'`echo "$1"|cut -c $temp_length`) -lt "224" ]; do
 		temp_length=`expr $temp_length + 1`
 	done
 	temp_length=`expr $temp_length - 1`
-	echo "$1"|cut -c -$temp_length
+	echo $(echo "$1"|cut -c -$temp_length)"*"
 }
 
 # 在线设备列表
@@ -310,7 +328,7 @@ function serverchan_first(){
 	done
 	wait
 	unset ip IPLIST
-	local IPLIST=`cat /proc/net/arp|grep "0x2\|0x6"|awk '{print $1}'|grep -v "^$"|sort -u`
+	local IPLIST=`cat /proc/net/arp|grep "0x2\|0x6"|awk '{print $1}'|grep -v "^169.254."|grep -v "^$"|sort -u`
 	for ip in $IPLIST; do
 		read -u 5
 		{
@@ -462,11 +480,12 @@ function unattended(){
 	geterrdevicealiases;[ $? -eq "1" ] && return
 	
 	if [ ! -z "$system_time_event" ]; then
+		local interfaceuptime=`getinterfaceuptime`
 		if [ ! -z "$autoreboot_time" ] && [ `cat /proc/uptime|awk -F. '{run_hour=$1/3600;printf("%d",run_hour)}'` -ge "$autoreboot_time" ] && [ "$system_time_event" -eq "1" ]; then
 			echo "`date "+%Y-%m-%d %H:%M:%S"` 【无人值守任务】重启路由器咯" >> ${logfile}
 			cat ${logfile} > /usr/bin/serverchan/errlog
 			sleep 2 && reboot && exit
-		elif [ ! -z "$network_restart_time" ] && [ `ubus call network.interface.wan status|grep \"uptime\"|sed $'s/\"uptime": //g'|sed $'s/\,//g'|awk -F. '{run_hour=$1/3600;printf("%d",run_hour)}'` -ge "$network_restart_time" ] && [ "$system_time_event" -eq "2" ]; then
+		elif [ ! -z "$network_restart_time" ] && [ ! -z "$interfaceuptime" ] && [ `echo "$interfaceuptime"|awk -F. '{run_hour=$1/3600;printf("%d",run_hour)}'` -ge "$network_restart_time" ] && [ "$system_time_event" -eq "2" ]; then
 			echo "`date "+%Y-%m-%d %H:%M:%S"` 【无人值守任务】重新拨号咯" >> ${logfile}
 			ifup wan >/dev/null 2>&1
 			sleep 60
@@ -648,12 +667,12 @@ function up(){
 	getping ${1} ${up_timeout} "1";local ping_online=$?
 	if [ "$ping_online" -eq "0" ]; then
 		LockFile lock
-		[ -f "${dir}tmp_downlist" ] && local tmp_downip=`cat ${dir}tmp_downlist|grep -w ${1}|awk '{print $2}'|grep -v "^$"|sort -u`
+		[ -f "${dir}tmp_downlist" ] && local tmp_downip=`cat ${dir}tmp_downlist|grep -w ${1}|grep -v "^$"|sort -u`
 		if [ ! -z "$tmp_downip" ]; then
 			cat ${dir}tmp_downlist|grep -w ${1}|grep -v "^$"|sort -u >> ${dir}ipAddress
-			sed -i "/$1/d" ${dir}tmp_downlist
+			sed -i "/^${1} /d" ${dir}tmp_downlist
 		else
-			usage down $ip_mac
+			usage down $1
 			local ip_name=`getname ${1} ${ip_mac}`
 			blackwhitelist ${ip_mac};local ip_blackwhite=$?
 			echo "$1 ${ip_mac} ${ip_name} `date +%s` ${ip_interface}" >> ${dir}ipAddress
@@ -688,14 +707,14 @@ function down(){
 	if [ "$ping_online" -eq "1" ]; then
 		LockFile lock
 		[ ! -f "${dir}send_enable.lock" ] && cat ${dir}ipAddress|grep -w ${1}|grep -v "^$"|sort -u >> ${dir}tmp_downlist
-		sed -i "/$1/d" ${dir}ipAddress
+		sed -i "/^${1} /d" ${dir}ipAddress
 		LockFile unlock
 	else
 		local tmp_name=`cat ${dir}ipAddress|grep -w ${1}|awk '{print $3}'|grep -v "^$"|sort -u`
 		if [ "$ip_name" != "$tmp_name" ]; then
 			LockFile lock
 			local tmp_str=$(echo "$1 ${ip_mac} ${ip_name} `cat ${dir}ipAddress|grep -w ${1}|awk '{print $4}'|grep -v "^$"|sort -u` ${ip_interface}")
-			sed -i "/$1/d" ${dir}ipAddress
+			sed -i "/^${1} /d" ${dir}ipAddress
 			echo "$tmp_str" >> ${dir}ipAddress
 			LockFile unlock
 		fi
@@ -740,7 +759,7 @@ function current_device(){
 		local ip_mac=`getmac ${ip}`
 		local ip_total=`usage get ${ip_mac}`
 		local ip_name=`getname ${ip} ${ip_mac}`
-		[ `length_str "$ip_name"` -gt "15" ] && local ip_name=`cut_str $ip_name 15`"*"
+		local ip_name=`cut_str $ip_name 15`
 		if [ "${#ip}" -lt "15" ]; then 
 			local n=`expr 15 - ${#ip}`
 			for i in `seq 1 $n`; do
@@ -862,13 +881,13 @@ function send(){
 			local send_content="${send_content}${markdown_linefeed}${markdown_tab}外网v6:${send_hostIPv6}"
 		fi
 		( ! echo "$send_wanIP"|grep -q -w ${send_hostIP} ) && local send_content="${send_content}${markdown_linefeed}${markdown_tab}外网 ip 与接口 ip 不一致，你的 ip 不是公网 ip"
-		local wanstatustime=`ubus call network.interface.wan status|grep \"uptime\"|sed $'s/\"uptime": //g'|sed $'s/\,//g'|awk -F. '{run_days=$1 / 86400;run_hour=($1 % 86400)/3600;run_minute=($1 % 3600)/60;run_second=$1 % 60;printf("在线时间：%d天%d时%d分%d秒",run_days,run_hour,run_minute,run_second)}'`;unset run_days run_hour run_minute run_second
+		local interfaceuptime=`getinterfaceuptime`
+		[ ! -z "$interfaceuptime" ] && local wanstatustime=`getinterfaceuptime|awk -F. '{run_days=$1 / 86400;run_hour=($1 % 86400)/3600;run_minute=($1 % 3600)/60;run_second=$1 % 60;printf("在线时间：%d天%d时%d分%d秒",run_days,run_hour,run_minute,run_second)}'` && unset run_days run_hour run_minute run_second
 		local send_content="${send_content}${markdown_linefeed}${markdown_tab}${wanstatustime}"
 	fi
 
 	if [ ! -z "$client_list" ] && [ "$client_list" -eq "1" ]; then
 		wait
-		
 		local IPLIST=`cat ${dir}ipAddress 2>/dev/null|awk '{print $1}'`
 		[ -z "$IPLIST" ] && local send_content="${send_content}${markdown_splitline}#### 当前无在线设备" || local send_content="${send_content}${markdown_splitline}#### 在线设备"
 		for ip in $IPLIST; do
@@ -878,7 +897,7 @@ function send(){
 			local ip_mac=`getmac ${ip}`
 			local ip_name=`getname ${ip} ${ip_mac}`
 			local ip_total=`usage get ${ip_mac}`;[ ! -z "$ip_total" ] && local ip_total="总计流量：${ip_total}  "
-			[ `length_str "$ip_name"` -gt "18" ] && local ip_name=`cut_str $ip_name 18`"*"
+			local ip_name=`cut_str $ip_name 18`
 			local send_content="${send_content}${markdown_linefeed}${markdown_tab}【${ip_name}】  ${ip}${markdown_linefeed}${markdown_tab}${ip_total}在线 ${time1}"
 			unset ip_total time_down time_up time1 ip_mac ip_name
 		done
@@ -972,3 +991,4 @@ while [ "$serverchan_enable" -eq "1" ]; do
 	done
 	sleep $sleeptime
 done
+
