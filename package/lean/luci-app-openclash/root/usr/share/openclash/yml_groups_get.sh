@@ -126,7 +126,7 @@ num=$(grep -c "name:" $group_file 2>/dev/null)
    
 cfg_get()
 {
-	echo "$(grep "$1" "$2" 2>/dev/null |awk -v tag=$1 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/,.*//' 2>/dev/null |sed 's/\}.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null)"
+	echo "$(grep "$1" "$2" 2>/dev/null |awk -v tag=$1 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/#.*//' 2>/dev/null |sed 's/,.*//' 2>/dev/null |sed 's/\}.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null)"
 }
 
 for n in $line
@@ -149,6 +149,8 @@ do
    
    #type
    group_type="$(cfg_get "type:" "$single_group")"
+   #strategy
+   group_strategy="$(cfg_get "strategy:" "$single_group")"
    #name
    group_name="$(cfg_get "name:" "$single_group")"
    #test_url
@@ -170,6 +172,7 @@ do
    ${uci_set}old_name="$group_name"
    ${uci_set}old_name_cfg="$group_name"
    ${uci_set}type="$group_type"
+   ${uci_set}strategy="$group_strategy"
    ${uci_set}test_url="$group_test_url"
    ${uci_set}test_interval="$group_test_interval"
    ${uci_set}tolerance="$group_test_tolerance"

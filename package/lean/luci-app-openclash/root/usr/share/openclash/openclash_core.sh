@@ -62,29 +62,30 @@ if [ "$CORE_CV" != "$CORE_LV" ] || [ -z "$CORE_CV" ]; then
 			case $CORE_TYPE in
       	"Tun")
       	echo "正在下载【Tun】版本内核，如下载失败请尝试手动下载并上传..." >$START_LOG
-				curl -sL -m 30 --retry 2 https://github.com/vernesong/OpenClash/releases/download/TUN-Premium/clash-"$CPU_MODEL"-"$CORE_LV".gz -o /tmp/clash_tun.gz >/dev/null 2>&1
+				curl -sL -m 10 --retry 2 https://github.com/vernesong/OpenClash/releases/download/TUN-Premium/clash-"$CPU_MODEL"-"$CORE_LV".gz -o /tmp/clash_tun.gz >/dev/null 2>&1
 				;;
 				"Game")
 				echo "正在下载【Game】版本内核，如下载失败请尝试手动下载并上传..." >$START_LOG
-				curl -sL -m 30 --retry 2 https://github.com/vernesong/OpenClash/releases/download/TUN/clash-"$CPU_MODEL".tar.gz -o /tmp/clash_game.tar.gz >/dev/null 2>&1
+				curl -sL -m 10 --retry 2 https://github.com/vernesong/OpenClash/releases/download/TUN/clash-"$CPU_MODEL".tar.gz -o /tmp/clash_game.tar.gz >/dev/null 2>&1
 				;;
 				*)
 				echo "正在下载【Dev】版本内核，如下载失败请尝试手动下载并上传..." >$START_LOG
-				curl -sL -m 30 --retry 2 https://github.com/vernesong/OpenClash/releases/download/Clash/clash-"$CPU_MODEL".tar.gz -o /tmp/clash.tar.gz >/dev/null 2>&1
+				curl -sL -m 10 --retry 2 https://github.com/vernesong/OpenClash/releases/download/Clash/clash-"$CPU_MODEL".tar.gz -o /tmp/clash.tar.gz >/dev/null 2>&1
 			esac
-   else
+   fi
+   if [ "$?" -ne "0" ] || ! pidof clash >/dev/null; then
 			case $CORE_TYPE in
       	"Tun")
       	echo "正在下载【Tun】版本内核，如下载失败请尝试手动下载并上传..." >$START_LOG
-				curl -sL -m 30 --retry 2 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/core-lateset/premium/clash-"$CPU_MODEL"-"$CORE_LV".gz -o /tmp/clash_tun.gz >/dev/null 2>&1
+				curl -sL -m 10 --retry 2 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/core-lateset/premium/clash-"$CPU_MODEL"-"$CORE_LV".gz -o /tmp/clash_tun.gz >/dev/null 2>&1
 				;;
 				"Game")
 				echo "正在下载【Game】版本内核，如下载失败请尝试手动下载并上传..." >$START_LOG
-				curl -sL -m 30 --retry 2 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/core-lateset/game/clash-"$CPU_MODEL".tar.gz -o /tmp/clash_game.tar.gz >/dev/null 2>&1
+				curl -sL -m 10 --retry 2 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/core-lateset/game/clash-"$CPU_MODEL".tar.gz -o /tmp/clash_game.tar.gz >/dev/null 2>&1
 				;;
 				*)
 				echo "正在下载【Dev】版本内核，如下载失败请尝试手动下载并上传..." >$START_LOG
-				curl -sL -m 30 --retry 2 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/core-lateset/dev/clash-"$CPU_MODEL".tar.gz -o /tmp/clash.tar.gz >/dev/null 2>&1
+				curl -sL -m 10 --retry 2 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/core-lateset/dev/clash-"$CPU_MODEL".tar.gz -o /tmp/clash.tar.gz >/dev/null 2>&1
 			esac
    fi
    if [ "$?" -eq "0" ]; then

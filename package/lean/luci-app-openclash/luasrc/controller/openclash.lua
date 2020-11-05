@@ -14,6 +14,8 @@ function index()
 	entry({"admin", "services", "openclash", "status"},call("action_status")).leaf=true
 	entry({"admin", "services", "openclash", "state"},call("action_state")).leaf=true
 	entry({"admin", "services", "openclash", "startlog"},call("action_start")).leaf=true
+	entry({"admin", "services", "openclash", "refresh_log"},call("action_refresh_log"))
+	entry({"admin", "services", "openclash", "del_log"},call("action_del_log"))
 	entry({"admin", "services", "openclash", "close_all_connection"},call("action_close_all_connection"))
 	entry({"admin", "services", "openclash", "restore_history"},call("action_restore_history"))
 	entry({"admin", "services", "openclash", "get_history"},call("action_get_history"))
@@ -442,4 +444,23 @@ function action_download_rule()
 	luci.http.write_json({
 		rule_download_status = download_rule();
 	})
+end
+
+function action_refresh_log()
+	local logfile="/tmp/openclash.log"
+	if not fs.access(logfile) then
+		luci.http.write("")
+		return
+	end
+	luci.http.prepare_content("text/plain; charset=utf-8")
+	local f=io.open(logfile, "r+")
+	f:seek("set")
+	local a=f:read(2048000) or ""
+	f:close()
+	luci.http.write(a)
+end
+
+function action_del_log()
+	luci.sys.exec("echo '' > /tmp/openclash.log")
+	return
 end

@@ -147,6 +147,7 @@ yml_groups_set()
    config_get "config" "$section" "config" ""
    config_get "type" "$section" "type" ""
    config_get "name" "$section" "name" ""
+   config_get "strategy" "$section" "strategy" ""
    config_get "old_name" "$section" "old_name" ""
    config_get "test_url" "$section" "test_url" ""
    config_get "test_interval" "$section" "test_interval" ""
@@ -183,6 +184,11 @@ yml_groups_set()
    
    echo "  - name: $name" >>$GROUP_FILE
    echo "    type: $type" >>$GROUP_FILE
+   if [ "$type" = "load-balance" ]; then
+      [ ! -z "$strategy" ] && {
+   	     echo "    strategy: $strategy" >>$GROUP_FILE
+      }
+   fi
    group_name="$name"
    echo "    proxies: $group_name" >>$GROUP_FILE
    

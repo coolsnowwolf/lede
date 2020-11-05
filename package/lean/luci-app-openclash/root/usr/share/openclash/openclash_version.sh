@@ -7,7 +7,8 @@ OP_LV=$(sed -n 1p $LAST_OPVER 2>/dev/null |awk -F '-' '{print $1}' |awk -F 'v' '
 if [ "$CKTIME" != "$(grep "CheckTime" $LAST_OPVER 2>/dev/null |awk -F ':' '{print $2}')" ]; then
    if pidof clash >/dev/null; then
       curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/vernesong/OpenClash/master/version -o $LAST_OPVER >/dev/null 2>&1
-   else
+   fi
+   if [ "$?" -ne "0" ] || ! pidof clash >/dev/null; then
       curl -sL --connect-timeout 10 --retry 2 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/version -o $LAST_OPVER >/dev/null 2>&1
    fi
    if [ "$?" -eq "0" ] && [ -s "$LAST_OPVER" ]; then

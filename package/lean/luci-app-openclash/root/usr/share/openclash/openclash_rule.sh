@@ -18,14 +18,16 @@
       if [ "$RUlE_SOURCE" = "lhie1" ]; then
       	 if pidof clash >/dev/null; then
             curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/lhie1/Rules/master/Clash/Rule.yaml -o /tmp/rules.yaml >/dev/null 2>&1
-      	 else
+      	 fi
+      	 if [ "$?" -ne "0" ] || ! pidof clash >/dev/null; then
             curl -sL --connect-timeout 10 --retry 2 https://cdn.jsdelivr.net/gh/lhie1/Rules@master/Clash/Rule.yaml -o /tmp/rules.yaml >/dev/null 2>&1
          fi
          sed -i '1i rules:' /tmp/rules.yaml
       elif [ "$RUlE_SOURCE" = "ConnersHua" ]; then
       	 if pidof clash >/dev/null; then
             curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/DivineEngine/Profiles/master/Clash/Global.yaml -o /tmp/rules.yaml >/dev/null 2>&1
-      	 else
+      	 fi
+      	 if [ "$?" -ne "0" ] || ! pidof clash >/dev/null; then
             curl -sL --connect-timeout 10 --retry 2 https://cdn.jsdelivr.net/gh/DivineEngine/Profiles@master/Clash/Global.yaml -o /tmp/rules.yaml >/dev/null 2>&1
          fi
          sed -i -n '/^rule-providers:/,$p' /tmp/rules.yaml 2>/dev/null
@@ -34,7 +36,8 @@
       elif [ "$RUlE_SOURCE" = "ConnersHua_return" ]; then
       	 if pidof clash >/dev/null; then
             curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/ConnersHua/Profiles/master/Clash/China.yaml -o /tmp/rules.yaml >/dev/null 2>&1
-      	 else
+      	 fi
+      	 if [ "$?" -ne "0" ] || ! pidof clash >/dev/null; then
             curl -sL --connect-timeout 10 --retry 2 https://cdn.jsdelivr.net/gh/DivineEngine/Profiles@master/Clash/China.yaml -o /tmp/rules.yaml >/dev/null 2>&1
          fi
          sed -i -n '/^rules:/,$p' /tmp/rules.yaml 2>/dev/null
@@ -76,19 +79,17 @@
          echo "检测到下载的规则文件没有更新，停止继续操作..." >$START_LOG
          rm -rf /tmp/rules.yaml >/dev/null 2>&1
          echo "${LOGTIME} Updated Other Rules 【$RUlE_SOURCE】 No Change, Do Nothing" >>$LOG_FILE
-         sleep 10
-         echo "" >$START_LOG
+         sleep 5
       fi
    elif [ "$RUlE_SOURCE" = 0 ]; then
       echo "未启用第三方规则，更新程序终止！" >$START_LOG
       rm -rf /tmp/rules.yaml >/dev/null 2>&1
       echo "${LOGTIME} Other Rules Not Enable, Update Stop" >>$LOG_FILE
-      sleep 10
-      echo "" >$START_LOG
+      sleep 5
    else
       echo "第三方规则下载失败，请检查网络或稍后再试！" >$START_LOG
       rm -rf /tmp/rules.yaml >/dev/null 2>&1
       echo "${LOGTIME} Other Rules 【$RUlE_SOURCE】 Update Error" >>$LOG_FILE
-      sleep 10
-      echo "" >$START_LOG
+      sleep 5
    fi
+   echo "" >$START_LOG

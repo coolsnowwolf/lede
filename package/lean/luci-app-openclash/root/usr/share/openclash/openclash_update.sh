@@ -26,9 +26,10 @@ OP_LV=$(sed -n 1p $LAST_OPVER 2>/dev/null |awk -F '-' '{print $1}' |awk -F 'v' '
 if [ "$(expr "$OP_LV" \> "$OP_CV")" -eq 1 ] && [ -f "$LAST_OPVER" ]; then
    echo "开始下载 OpenClash-v$LAST_VER ..." >$START_LOG
    if pidof clash >/dev/null; then
-      curl -sL -m 30 --retry 5 https://github.com/vernesong/OpenClash/releases/download/v"$LAST_VER"/luci-app-openclash_"$LAST_VER"_all.ipk -o /tmp/openclash.ipk >/dev/null 2>&1
-   else
-      curl -sL -m 30 --retry 5 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/luci-app-openclash_"$LAST_VER"_all.ipk -o /tmp/openclash.ipk >/dev/null 2>&1
+      curl -sL -m 10 --retry 2 https://github.com/vernesong/OpenClash/releases/download/v"$LAST_VER"/luci-app-openclash_"$LAST_VER"_all.ipk -o /tmp/openclash.ipk >/dev/null 2>&1
+   fi
+   if [ "$?" -ne "0" ] || ! pidof clash >/dev/null; then
+      curl -sL -m 10 --retry 2 https://cdn.jsdelivr.net/gh/vernesong/OpenClash@master/luci-app-openclash_"$LAST_VER"_all.ipk -o /tmp/openclash.ipk >/dev/null 2>&1
    fi
    if [ "$?" -eq "0" ] && [ -s "/tmp/openclash.ipk" ]; then
       echo "OpenClash-$LAST_VER 下载成功，开始进行更新前测试 ..." >$START_LOG

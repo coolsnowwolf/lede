@@ -58,6 +58,13 @@ o:value("fallback", translate("Fallback"))
 o:value("load-balance", translate("Load-Balance"))
 o:value("relay", translate("Relay Traffic"))
 
+o = s:option(ListValue, "strategy", translate("Strategy Type"))
+o.rmempty = true
+o.description = translate("Choose The Load-Balance's Strategy Type")
+o:value("consistent-hashing", translate("Consistent-hashing"))
+o:value("round-robin", translate("Round-robin"))
+o:depends("type", "load-balance")
+
 o = s:option(Value, "name", translate("Group Name"))
 o.rmempty = false
 

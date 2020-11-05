@@ -86,17 +86,17 @@ provider_count=1
 
 cfg_get()
 {
-	echo "$(grep "$1" "$2" 2>/dev/null |awk -v tag=$1 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/,.*//' 2>/dev/null |sed 's/\}.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null)"
+	echo "$(grep "$1" "$2" 2>/dev/null |awk -v tag=$1 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/#.*//' 2>/dev/null |sed 's/,.*//' 2>/dev/null |sed 's/\}.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null)"
 }
 
 cfg_get_dynamic()
 {
-	echo "$(grep "^ \{0,\}$1" "$2" 2>/dev/null |grep -v "^ \{0,\}- name:" 2>/dev/null |grep -v "^ \{0,\}- keep-alive" 2>/dev/null |grep -v "{" 2>/dev/null |awk -v tag=$1 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/,.*//' 2>/dev/null |sed 's/\}.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null)"
+	echo "$(grep "^ \{0,\}$1" "$2" 2>/dev/null |grep -v "^ \{0,\}- name:" 2>/dev/null |grep -v "^ \{0,\}- keep-alive" 2>/dev/null |grep -v "{" 2>/dev/null |awk -v tag=$1 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/#.*//' 2>/dev/null |sed 's/,.*//' 2>/dev/null |sed 's/\}.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null)"
 }
 
 cfg_get_dynamic_json()
 {
-	echo "$(grep "$1" "$2" 2>/dev/null |grep -v "^ \{0,\}ws-path:" 2>/dev/null |awk -v tag='$1 \\[' 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/],.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null |sed 's/,/ /g' 2>/dev/null)"
+	echo "$(grep "$1" "$2" 2>/dev/null |grep -v "^ \{0,\}ws-path:" 2>/dev/null |awk -v tag='$1 \\[' 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/#.*//' 2>/dev/null |sed 's/],.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null |sed 's/,/ /g' 2>/dev/null)"
 }
 
 cfg_new_servers_groups_check()

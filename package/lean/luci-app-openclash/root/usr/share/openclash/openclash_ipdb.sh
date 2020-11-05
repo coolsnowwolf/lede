@@ -19,7 +19,8 @@
    echo "开始下载 GEOIP 数据库..." >$START_LOG
    if pidof clash >/dev/null; then
       curl -sL --connect-timeout 10 --retry 2 https://raw.githubusercontent.com/alecthw/mmdb_china_ip_list/release/Country.mmdb -o /tmp/Country.mmdb >/dev/null 2>&1
-   else
+   fi
+   if [ "$?" -ne "0" ] || ! pidof clash >/dev/null; then
       curl -sL --connect-timeout 10 --retry 2 http://www.ideame.top/mmdb/Country.mmdb -o /tmp/Country.mmdb >/dev/null 2>&1
    fi
    if [ "$?" -eq "0" ] && [ -s "/tmp/Country.mmdb" ]; then
@@ -34,18 +35,16 @@
             echo "${LOGTIME} GEOIP Database Update Successful" >>$LOG_FILE
             sleep 5
             [ "$(unify_ps_prevent)" -eq 0 ] && /etc/init.d/openclash restart
-            echo "" >$START_LOG
          else
             echo "数据库版本没有更新，停止继续操作..." >$START_LOG
             echo "${LOGTIME} Updated GEOIP Database No Change, Do Nothing" >>$LOG_FILE
             rm -rf /tmp/Country.mmdb >/dev/null 2>&1
             sleep 5
-            echo "" >$START_LOG
          fi
    else
       echo "GEOIP 数据库下载失败，请检查网络或稍后再试！" >$START_LOG
       rm -rf /tmp/Country.mmdb >/dev/null 2>&1
       echo "${LOGTIME} GEOIP Database Update Error" >>$LOG_FILE
       sleep 10
-      echo "" >$START_LOG
    fi
+   echo "" >$START_LOG

@@ -62,6 +62,7 @@ cat >> "$DEBUG_LOG" <<-EOF
 
 生成时间: $LOGTIME
 插件版本: $op_version
+隐私提示: 上传此日志前请注意检查、屏蔽公网IP、节点、密码等相关敏感信息
 
 \`\`\`
 EOF
