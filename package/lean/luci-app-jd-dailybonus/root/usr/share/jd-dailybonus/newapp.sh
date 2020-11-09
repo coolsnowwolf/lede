@@ -86,7 +86,7 @@ local_ver=$(uci_get_by_type global version)
 
 add_cron() {
     sed -i '/jd-dailybonus/d' $CRON_FILE
-    [ $(uci_get_by_type global auto_run 0) -eq 1 ] && echo '5 '$(uci_get_by_type global auto_run_time)' * * * /bin/bash -c "sleep $[RANDOM % 180]s"; /usr/share/jd-dailybonus/newapp.sh -w' >>$CRON_FILE
+    [ $(uci_get_by_type global auto_run 0) -eq 1 ] && echo '5 '$(uci_get_by_type global auto_run_time)' * * * sleep '$(expr $(head -n 128 /dev/urandom | tr -dc "0123456789" | head -c4) % 180)'s; /usr/share/jd-dailybonus/newapp.sh -w' >>$CRON_FILE
     [ $(uci_get_by_type global auto_update 0) -eq 1 ] && echo '1 '$(uci_get_by_type global auto_update_time)' * * * /usr/share/jd-dailybonus/newapp.sh -u' >>$CRON_FILE
     crontab $CRON_FILE
 }
@@ -118,14 +118,14 @@ serverchan() {
 run() {
     fill_cookie
     echo -e $(date '+%Y-%m-%d %H:%M:%S %A') >$LOG_HTM 2>/dev/null
-    [ ! -f "/usr/bin/node" ] && echo "未安装node,请安装后再试!">>$LOG_HTM && return 1
+    [ ! -f "/usr/bin/node" ] && echo "未安装node,请安装后再试!">>$LOG_HTM && exit 1
     node $JD_SCRIPT >>$LOG_HTM 2>&1 &
 }
 
 back_run() {
     fill_cookie
     echo -e $(date '+%Y-%m-%d %H:%M:%S %A') >$LOG_HTM 2>/dev/null
-    [ ! -f "/usr/bin/node" ] && echo "未安装node,请安装后再试!">>$LOG_HTM && return 1
+    [ ! -f "/usr/bin/node" ] && echo "未安装node,请安装后再试!">>$LOG_HTM && exit 1
     node $JD_SCRIPT >>$LOG_HTM 2>/dev/null
     serverchan
 }
