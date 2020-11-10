@@ -1049,7 +1049,7 @@ static int __init sfe_cm_init(void)
 	 */
 #ifdef CONFIG_NF_CONNTRACK_EVENTS
 #ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
-	(void)nf_conntrack_register_notifier(&init_net, &sfe_cm_conntrack_notifier);
+	(void)nf_conntrack_register_chain_notifier(&init_net, &sfe_cm_conntrack_notifier);
 #else
 	result = nf_conntrack_register_notifier(&init_net, &sfe_cm_conntrack_notifier);
 	if (result < 0) {
@@ -1123,8 +1123,11 @@ static void __exit sfe_cm_exit(void)
 	sfe_ipv6_destroy_all_rules_for_dev(NULL);
 
 #ifdef CONFIG_NF_CONNTRACK_EVENTS
+#ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
+	nf_conntrack_unregister_chain_notifier(&init_net, &sfe_cm_conntrack_notifier);
+#else
 	nf_conntrack_unregister_notifier(&init_net, &sfe_cm_conntrack_notifier);
-
+#endif
 #endif
 	nf_unregister_net_hooks(&init_net, sfe_cm_ops_post_routing, ARRAY_SIZE(sfe_cm_ops_post_routing));
 
