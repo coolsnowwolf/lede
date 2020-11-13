@@ -15,6 +15,7 @@ define Device/globalscale_espressobin
   DEVICE_ALT0_MODEL := Armada 3700 Community Board
   DEVICE_ALT0_VARIANT := Non-eMMC
   SOC := armada-3720
+  BOOT_SCRIPT := espressobin
 endef
 TARGET_DEVICES += globalscale_espressobin
 
@@ -27,6 +28,7 @@ define Device/globalscale_espressobin-emmc
   DEVICE_ALT0_MODEL := Armada 3700 Community Board
   DEVICE_ALT0_VARIANT := eMMC
   SOC := armada-3720
+  BOOT_SCRIPT := espressobin
 endef
 TARGET_DEVICES += globalscale_espressobin-emmc
 
@@ -39,6 +41,7 @@ define Device/globalscale_espressobin-v7
   DEVICE_ALT0_MODEL := Armada 3700 Community Board
   DEVICE_ALT0_VARIANT := V7 Non-eMMC
   SOC := armada-3720
+  BOOT_SCRIPT := espressobin
 endef
 TARGET_DEVICES += globalscale_espressobin-v7
 
@@ -51,6 +54,7 @@ define Device/globalscale_espressobin-v7-emmc
   DEVICE_ALT0_MODEL := Armada 3700 Community Board
   DEVICE_ALT0_VARIANT := V7 eMMC
   SOC := armada-3720
+  BOOT_SCRIPT := espressobin
 endef
 TARGET_DEVICES += globalscale_espressobin-v7-emmc
 

@@ -898,6 +898,7 @@ wpa_supplicant_prepare_interface() {
 	fi
 	wpa_supplicant_teardown_interface "$ifname"
 	cat > "$_config" <<EOF
+${scan_list:+freq_list=$scan_list}
 $ap_scan
 $country_str
 EOF
