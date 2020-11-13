@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=tfa-layerscape
-PKG_VERSION:=LSDK-20.04
-PKG_RELEASE:=2
+PKG_VERSION:=LSDK-20.04-update-290520
+PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://source.codeaurora.org/external/qoriq/qoriq-components/atf
-PKG_SOURCE_VERSION:=4a82c939a0211196e2b80a495f966383803753bb
-PKG_MIRROR_HASH:=31c264551ce800b646d7dcc5baa62cfbb4c8fa3299a93931c7ef71dc3e88380d
+PKG_SOURCE_VERSION:=7d748e6f0ec652ba7c43733dc67a3d0b0217390a
+PKG_MIRROR_HASH:=d209c9ad18aac9f18375450b98b8dab00f0382ccb485df14623bf9b72ea1dd9b
 PKG_BUILD_DEPENDS:=tfa-layerscape/host
 
 include $(INCLUDE_DIR)/host-build.mk
