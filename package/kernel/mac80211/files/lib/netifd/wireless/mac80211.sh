@@ -34,6 +34,7 @@ drv_mac80211_init_device_config() {
 	config_add_boolean noscan ht_coex acs_exclude_dfs
 	config_add_array ht_capab
 	config_add_array channels
+	config_add_array scan_list
 	config_add_boolean \
 		rxldpc \
 		short_gi_80 \
@@ -897,6 +898,7 @@ drv_mac80211_setup() {
 		rxantenna txantenna \
 		frag rts beacon_int:100 htmode
 	json_get_values basic_rate_list basic_rate
+	json_get_values scan_list scan_list
 	json_select ..
 
 	find_phy || {
