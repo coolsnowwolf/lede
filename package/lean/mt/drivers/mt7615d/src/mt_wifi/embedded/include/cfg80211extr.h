@@ -70,6 +70,10 @@ CFG80211_Scaning((VOID *)__pAd, __BssIdx, __ChanId, __pFrame,			\
 #define RT_CFG80211_LOST_AP_INFORM(__pAd)									\
 	CFG80211_LostApInform((VOID *)__pAd);
 #endif /*CONFIG_STA_SUPPORT || APCLI_CFG80211_SUPPORT */
+#ifdef RT_CFG80211_P2P_CONCURRENT_DEVICE
+#define RT_CFG80211_LOST_GO_INFORM(__pAd) 									\
+	CFG80211_LostP2pGoInform((VOID *)__pAd);
+#endif /*RT_CFG80211_P2P_CONCURRENT_DEVICE*/
 #define RT_CFG80211_REINIT(__pAd, __wdev)											\
 	CFG80211_SupBandReInit((VOID *)__pAd, (VOID *)__wdev);
 
@@ -188,6 +192,7 @@ VOID CFG80211_ConnectResultInform(
 	UCHAR *pRspIe, UINT32 RspIeLen,	UCHAR FlgIsSuccess);
 VOID CFG80211DRV_PmkidConfig(VOID *pAdOrg, VOID *pData);
 VOID CFG80211_LostApInform(VOID *pAdCB);
+VOID CFG80211_LostP2pGoInform(VOID *pAdCB);
 
 INT CFG80211_StaPortSecured(
 	VOID                         *pAdCB,
