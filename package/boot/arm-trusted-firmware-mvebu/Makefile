@@ -45,7 +45,7 @@ define Package/arm-trusted-firmware-mvebu-espressobin-v3-v5-1gb-1cs
   TITLE:=ARM Trusted Firmware for Marvell ESPRESSObin V3-V5 (1GB 1CS)
   DEPENDS:=+u-boot-espressobin
   UBOOT:=espressobin
-  DDR_TOPOLOGY:=2
+  DDR_TOPOLOGY:=4
   CLOCKSPRESET:=CPU_800_DDR_800
   PLAT:=a3700
 endef

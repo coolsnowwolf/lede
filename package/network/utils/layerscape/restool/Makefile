@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=restool
 PKG_VERSION:=LSDK-20.04
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://source.codeaurora.org/external/qoriq/qoriq-components/restool
@@ -22,7 +22,7 @@ define Package/restool
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Layerscape DPAA2 dynamical management tool
-  DEPENDS:=@TARGET_layerscape
+  DEPENDS:=@TARGET_layerscape_armv8_64b
 endef
 
 MAKE_FLAGS += \
