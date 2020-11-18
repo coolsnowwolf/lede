@@ -1,7 +1,5 @@
 #!/bin/sh /etc/rc.common
-
 chmod 0755 /sbin/mtkwifi
-
 START=15
 STOP=15
 
@@ -14,3 +12,5 @@ start_service() {
 stop_service() {
     echo 'do nothing' > /dev/null
 }
+
+
