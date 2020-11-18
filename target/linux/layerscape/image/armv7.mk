@@ -16,22 +16,12 @@ define Device/Default
   DEVICE_DTS = $(lastword $(subst _, ,$(1)))
   SUPPORTED_DEVICES = $(subst _,$(comma),$(1))
   IMAGE_SIZE := 64m
-  IMAGE/sysupgrade.bin = \
-    ls-append-dtb $$(DEVICE_DTS) | pad-to 1M | \
-    append-kernel | pad-to 17M | \
+  IMAGE/sysupgrade.bin := append-kernel | pad-to 16M | \
     append-rootfs | pad-rootfs | \
     check-size $(LS_SYSUPGRADE_IMAGE_SIZE) | append-metadata
 endef
 
-define Device/fsl-sdboot
-  $(Device/rework-sdcard-images)
-  KERNEL = kernel-bin | gzip | fit gzip $$(DTS_DIR)/$$(DEVICE_DTS).dtb
-  IMAGES := sdcard.img.gz sysupgrade.bin
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-endef
-
 define Device/fsl_ls1021a-twr
-  $(Device/fix-sysupgrade)
   DEVICE_VENDOR := NXP
   DEVICE_MODEL := TWR-LS1021A
   DEVICE_VARIANT := Default
@@ -48,34 +38,43 @@ endef
 TARGET_DEVICES += fsl_ls1021a-twr
 
 define Device/fsl_ls1021a-twr-sdboot
-  $(Device/fsl-sdboot)
   DEVICE_VENDOR := NXP
   DEVICE_MODEL := TWR-LS1021A
   DEVICE_VARIANT := SD Card Boot
   DEVICE_DTS := ls1021a-twr
-  IMAGE/sdcard.img.gz := \
+  FILESYSTEMS := ext4
+  IMAGES := sdcard.img sysupgrade.bin
+  IMAGE/sdcard.img := \
     ls-clean | \
     ls-append-sdhead $(1) | pad-to 4K | \
     ls-append $(1)-uboot.bin | pad-to 3M | \
-    ls-append $(1)-uboot-env.bin | pad-to 16M | \
-    ls-append-kernel | pad-to $(LS_SD_ROOTFSPART_OFFSET)M | \
-    append-rootfs | pad-to $(LS_SD_IMAGE_SIZE)M | gzip
+    ls-append $(1)-uboot-env.bin | pad-to 15M | \
+    ls-append-dtb $$(DEVICE_DTS) | pad-to 16M | \
+    append-kernel | pad-to $(LS_SD_ROOTFSPART_OFFSET)M | \
+    append-rootfs | check-size $(LS_SD_IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := \
+    ls-clean | \
+    ls-append-sdhead $(1) | pad-to 16M | \
+    append-kernel | pad-to $(LS_SD_ROOTFSPART_OFFSET)M | \
+    append-rootfs | check-size $(LS_SD_IMAGE_SIZE) | append-metadata
 endef
 TARGET_DEVICES += fsl_ls1021a-twr-sdboot
 
 define Device/fsl_ls1021a-iot-sdboot
-  $(Device/fsl-sdboot)
   DEVICE_VENDOR := NXP
   DEVICE_MODEL := LS1021A-IoT
   DEVICE_VARIANT := SD Card Boot
   DEVICE_DTS := ls1021a-iot
+  FILESYSTEMS := ext4
   SUPPORTED_DEVICES :=
-  IMAGE/sdcard.img.gz := \
+  IMAGES := sdcard.img
+  IMAGE/sdcard.img := \
     ls-clean | \
     ls-append-sdhead $(1) | pad-to 4K | \
     ls-append $(1)-uboot.bin | pad-to 1M | \
-    ls-append $(1)-uboot-env.bin | pad-to 16M | \
-    ls-append-kernel | pad-to $(LS_SD_ROOTFSPART_OFFSET)M | \
-    append-rootfs | pad-to $(LS_SD_IMAGE_SIZE)M | gzip
+    ls-append $(1)-uboot-env.bin | pad-to 15M | \
+    ls-append-dtb $$(DEVICE_DTS) | pad-to 16M | \
+    append-kernel | pad-to $(LS_SD_ROOTFSPART_OFFSET)M | \
+    append-rootfs | check-size $(LS_SD_IMAGE_SIZE)
 endef
 TARGET_DEVICES += fsl_ls1021a-iot-sdboot

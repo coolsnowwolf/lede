@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 BOARD:=layerscape
 BOARDNAME:=NXP Layerscape
 KERNEL_PATCHVER:=5.4
-FEATURES:=squashfs nand usb pcie gpio fpu ubifs ext4 rootfs-part boot-part
+FEATURES:=squashfs nand usb pcie gpio fpu ubifs ext4
 SUBTARGETS:=armv8_64b armv7
 
 define Target/Description
@@ -19,6 +19,6 @@ endef
 include $(INCLUDE_DIR)/target.mk
 
 DEFAULT_PACKAGES += kmod-usb3 kmod-usb-dwc3 kmod-usb-storage \
-  mkf2fs e2fsprogs partx-utils
+  partx-utils
 
 $(eval $(call BuildTarget))
