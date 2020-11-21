@@ -1,12 +1,14 @@
 #!/bin/bash
 . /lib/functions.sh
 . /usr/share/openclash/openclash_ps.sh
+. /usr/share/openclash/ruby.sh
 
 status=$(unify_ps_status "yml_groups_get.sh")
 [ "$status" -gt "3" ] && exit 0
 
 START_LOG="/tmp/openclash_start.log"
 CFG_FILE="/etc/config/openclash"
+other_group_file="/tmp/yaml_other_group.yaml"
 servers_update=$(uci get openclash.config.servers_update 2>/dev/null)
 servers_if_update=$(uci get openclash.config.servers_if_update 2>/dev/null)
 CONFIG_FILE=$(uci get openclash.config.config_path 2>/dev/null)
@@ -47,11 +49,6 @@ echo "开始更新【$CONFIG_NAME】的策略组配置..." >$START_LOG
 	echo "" >$START_LOG
 	exit 0
 }
-
-#判断各个区位置
-group_len=$(sed -n '/^ \{0,\}proxy-groups:/=' "$CONFIG_FILE" 2>/dev/null)
-/usr/share/openclash/yml_field_cut.sh "$group_len" "/tmp/yaml_group.yaml" "$CONFIG_FILE" "yaml_get"
-rm -rf /tmp/yaml_general 2>/dev/null
 
 #判断当前配置文件是否有策略组信息
 cfg_group_name()
@@ -115,52 +112,42 @@ else
    cfg_delete
 fi
 
-count=1
-file_count=1
+count=0
 match_group_file="/tmp/Proxy_Group"
-group_file="/tmp/yaml_group.yaml"
-sed -i "s/\'//g" $group_file 2>/dev/null
-sed -i 's/\"//g' $group_file 2>/dev/null
-line=$(sed -n '/name:/=' $group_file 2>/dev/null)
-num=$(grep -c "name:" $group_file 2>/dev/null)
-   
-cfg_get()
-{
-	echo "$(grep "$1" "$2" 2>/dev/null |awk -v tag=$1 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/#.*//' 2>/dev/null |sed 's/,.*//' 2>/dev/null |sed 's/\}.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null)"
-}
+#提取策略组部分
+group_hash=$(ruby_read "YAML.load_file('$CONFIG_FILE')" ".select {|x| 'proxy-groups' == x}")
+num=$(ruby_read "$group_hash" "['proxy-groups'].count")
+if [ -z "$num" ]; then
+   echo "配置文件校验失败，请检查配置文件后重试！" >$START_LOG
+   echo "${LOGTIME} Error: Unable To Parse Config File, Please Check And Try Again!" >> $LOG_FILE
+   sleep 3
+   exit 0
+fi
 
-for n in $line
+while [ "$count" -lt "$num" ]
 do
-   single_group="/tmp/group_$file_count.yaml"
-   
-   [ "$count" -eq 1 ] && {
-      startLine="$n"
-  }
-
-   count=$(expr "$count" + 1)
-   if [ "$count" -gt "$num" ]; then
-      endLine=$(sed -n '$=' $group_file)
-   else
-      endLine=$(expr $(echo "$line" | sed -n "${count}p") - 1)
-   fi
-  
-   sed -n "${startLine},${endLine}p" $group_file >$single_group
-   startLine=$(expr "$endLine" + 1)
-   
+	
    #type
-   group_type="$(cfg_get "type:" "$single_group")"
+   group_type=$(ruby_read "$group_hash" "['proxy-groups'][$count]['type']")
    #strategy
-   group_strategy="$(cfg_get "strategy:" "$single_group")"
+   group_strategy=$(ruby_read "$group_hash" "['proxy-groups'][$count]['strategy']")
    #name
-   group_name="$(cfg_get "name:" "$single_group")"
+   group_name=$(ruby_read "$group_hash" "['proxy-groups'][$count]['name']")
+   #disable-udp
+   group_disable_udp=$(ruby_read "$group_hash" "['proxy-groups'][$count]['disable-udp']")
    #test_url
-   group_test_url="$(cfg_get "url:" "$single_group")"
+   group_test_url=$(ruby_read "$group_hash" "['proxy-groups'][$count]['url']")
    #test_interval
-   group_test_interval="$(cfg_get "interval:" "$single_group")"
+   group_test_interval=$(ruby_read "$group_hash" "['proxy-groups'][$count]['interval']")
    #test_tolerance
-   group_test_tolerance="$(cfg_get "tolerance:" "$single_group")"
+   group_test_tolerance=$(ruby_read "$group_hash" "['proxy-groups'][$count]['tolerance']")
+   
+   if [ -z "$group_type" ] || [ -z "$group_name" ]; then
+      let count++
+      continue
+   fi
 
-   echo "正在读取【$CONFIG_NAME】-【$group_type】-【$group_name】策略组配置..." >$START_LOG
+   echo "正在读取【$CONFIG_NAME】-【$group_type】-【$group_name】策略组配置..." > $START_LOG
    
    name=openclash
    uci_name_tmp=$(uci add $name groups)
@@ -172,83 +159,36 @@ do
    ${uci_set}old_name="$group_name"
    ${uci_set}old_name_cfg="$group_name"
    ${uci_set}type="$group_type"
+   ${uci_set}disable_udp="$group_disable_udp"
    ${uci_set}strategy="$group_strategy"
    ${uci_set}test_url="$group_test_url"
    ${uci_set}test_interval="$group_test_interval"
    ${uci_set}tolerance="$group_test_tolerance"
-   
-   #other_group
-   cat $single_group |while read -r line
-   do 
+	 
+	 #other_group
+	 ruby_read "$group_hash" "['proxy-groups'][$count]['proxies']" > $other_group_file
+	 
+	 cat $other_group_file |while read -r line
+   do
       if [ -z "$line" ]; then
-        continue
-      fi
-      
-      group_name1=$(echo "$line" |grep -v "name:" 2>/dev/null |grep "^ \{0,\}-" 2>/dev/null |awk -F '^ \{0,\}-' '{print $2}' 2>/dev/null |sed 's/^ \{0,\}//' 2>/dev/null |sed 's/ \{0,\}$//' 2>/dev/null |sed "s/^\'//g" 2>/dev/null |sed "s/\'$//g" 2>/dev/null)
-      group_name2=$(echo "$line" |awk -F 'proxies: \\[' '{print $2}' 2>/dev/null |sed 's/].*//' 2>/dev/null |sed 's/^ \{0,\}//' 2>/dev/null |sed 's/ \{0,\}$//' 2>/dev/null |sed "s/^\'//g" 2>/dev/null |sed "s/\'$//g" 2>/dev/null |sed 's/ \{0,\}, \{0,\}/#,#/g' 2>/dev/null)
-      proxies_len=$(sed -n '/proxies:/=' $single_group 2>/dev/null)
-      use_len=$(sed -n '/use:/=' $single_group 2>/dev/null)
-      name1_len=$(sed -n "/${group_name1}/=" $single_group 2>/dev/null)
-      name2_len=$(sed -n "/${group_name2}/=" $single_group 2>/dev/null)
-
-      if [ -z "$group_name1" ] && [ -z "$group_name2" ]; then
          continue
       fi
       
       if [ "$group_type" != "select" ] && [ "$group_type" != "relay" ]; then
-         if [ "$group_name1" != "DIRECT" ] && [ "$group_name2" != "DIRECT" ] && [ "$group_name1" != "REJECT" ] && [ "$group_name2" != "REJECT" ]; then
+         if [ "$line" != "DIRECT" ] && [ "$line" != "REJECT" ]; then
             continue
          fi
       fi
       
-      if [ ! -z "$group_name1" ] && [ -z "$group_name2" ]; then
-         if [ "$proxies_len" -le "$use_len" ]; then
-            if [ "$name1_len" -le "$use_len" ] && [ ! -z "$(grep -F "$group_name1" $match_group_file)" ] && [ "$group_name1" != "$group_name" ]; then
-               if [ "$group_type" = "select" ] || [ "$group_type" = "relay" ]; then
-                  ${uci_add}other_group="$group_name1"
-               elif [ "$group_name1" = "DIRECT" ] || [ "$group_name1" = "REJECT" ]; then
-                  ${uci_add}other_group_dr="$group_name1"
-               fi
-            fi
-         else
-            if [ "$name1_len" -ge "$proxies_len" ] && [ ! -z "$(grep -F "$group_name1" $match_group_file)" ] && [ "$group_name1" != "$group_name" ]; then
-               if [ "$group_type" = "select" ] || [ "$group_type" = "relay" ]; then
-                  ${uci_add}other_group="$group_name1"
-               elif [ "$group_name1" = "DIRECT" ] || [ "$group_name1" = "REJECT" ]; then
-                  ${uci_add}other_group_dr="$group_name1"
-               fi
-            fi
-         fi 2>/dev/null
-      elif [ -z "$group_name1" ] && [ ! -z "$group_name2" ]; then
-         group_num=$(expr $(echo "$group_name2" |grep -c "#,#") + 1)
-         if [ "$group_num" -le 1 ]; then
-            if [ ! -z "$(grep -F "$group_name2" $match_group_file)" ] && [ "$group_name2" != "$group_name" ]; then
-               if [ "$group_type" = "select" ] || [ "$group_type" = "relay" ]; then
-                  ${uci_add}other_group="$group_name2"
-               elif [ "$group_name2" = "DIRECT" ] || [ "$group_name2" = "REJECT" ]; then
-                  ${uci_add}other_group_dr="$group_name2"
-               fi
-            fi
-         else
-            group_nums=1
-            while [[ "$group_nums" -le "$group_num" ]]
-            do
-               other_group_name=$(echo "$group_name2" |awk -v t="${group_nums}" -F '#,#' '{print $t}' 2>/dev/null)
-               if [ ! -z "$(grep -F "$other_group_name" $match_group_file 2>/dev/null)" ] && [ "$other_group_name" != "$group_name" ]; then
-                  if [ "$group_type" = "select" ] || [ "$group_type" = "relay" ]; then
-                     ${uci_add}other_group="$other_group_name"
-                  elif [ "$other_group_name" = "DIRECT" ] || [ "$other_group_name" = "REJECT" ]; then
-                     ${uci_add}other_group_dr="$other_group_name"
-                  fi   
-               fi
-               group_nums=$(expr "$group_nums" + 1)
-            done
+      if [ -n "$(grep -F "$line" "$match_group_file")" ]; then
+         if [ "$group_type" = "select" ] || [ "$group_type" = "relay" ]; then
+            ${uci_add}other_group="$line"
+         elif [ "$line" = "DIRECT" ] || [ "$line" = "REJECT" ]; then
+            ${uci_add}other_group_dr="$line"
          fi
       fi
-      
-   done
-   file_count=$(expr "$file_count" + 1)
-    
+	 done
+   let count++
 done
 
 uci commit openclash

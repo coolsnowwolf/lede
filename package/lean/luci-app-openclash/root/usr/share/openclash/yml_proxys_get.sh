@@ -1,13 +1,13 @@
 #!/bin/bash
 . /lib/functions.sh
 . /usr/share/openclash/openclash_ps.sh
+. /usr/share/openclash/ruby.sh
 
 status=$(unify_ps_status "yml_proxys_get.sh")
 [ "$status" -gt "3" ] && exit 0
 
 START_LOG="/tmp/openclash_start.log"
 CONFIG_FILE=$(uci get openclash.config.config_path 2>/dev/null)
-SERVER_RELAY="/tmp/relay_server"
 CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
 UPDATE_CONFIG_FILE=$(uci get openclash.config.config_update_path 2>/dev/null)
 UPDATE_CONFIG_NAME=$(echo "$UPDATE_CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
@@ -35,69 +35,34 @@ elif [ ! -s "$CONFIG_FILE" ] && [ -s "$BACKUP_FILE" ]; then
    mv "$BACKUP_FILE" "$CONFIG_FILE"
 fi
 
-#判断各个区位置
-proxy_lens=$(sed -n '/^ \{0,\}Proxy:/=' "$CONFIG_FILE" 2>/dev/null)
-proxy_len_num=1
-for proxy_len in $proxy_lens; do
-   if [ -n "$proxy_len" ]; then
-      /usr/share/openclash/yml_field_cut.sh "$proxy_len" "/tmp/yaml_proxy_$proxy_len_num.yaml" "$CONFIG_FILE" "yaml_get"
-   fi 2>/dev/null
-   proxy_len_num=$(expr "$proxy_len_num" + 1)
-done 2>/dev/null
-for i in $(seq "$proxy_len_num"); do
-   cat "/tmp/yaml_proxy_$i.yaml" >> /tmp/yaml_proxy.yaml
-done 2>/dev/null
-rm -rf /tmp/yaml_proxy_*.yaml 2>/dev/null
-provider_len=$(sed -n '/^ \{0,\}proxy-providers:/=' "$CONFIG_FILE" 2>/dev/null)
-/usr/share/openclash/yml_field_cut.sh "$provider_len" "/tmp/yaml_provider.yaml" "$CONFIG_FILE" "yaml_get"
-rm -rf /tmp/yaml_general 2>/dev/null
+#提取节点部分
+proxy_hash=$(ruby_read "YAML.load_file('$CONFIG_FILE')" ".select {|x| 'proxies' == x or 'proxy-providers' == x}")
 
 CFG_FILE="/etc/config/openclash"
-server_file="/tmp/yaml_proxy.yaml"
-provider_file="/tmp/yaml_provider.yaml"
-single_server="/tmp/servers.yaml"
-single_provider="/tmp/provider.yaml"
-single_provider_gen="/tmp/provider_gen.yaml"
-single_provider_che="/tmp/provider_che.yaml"
 match_servers="/tmp/match_servers.list"
 match_provider="/tmp/match_provider.list"
-group_num=$(grep -c "name:" /tmp/yaml_group.yaml 2>/dev/null)
 servers_update=$(uci get openclash.config.servers_update 2>/dev/null)
 servers_if_update=$(uci get openclash.config.servers_if_update 2>/dev/null)
 new_servers_group=$(uci get openclash.config.new_servers_group 2>/dev/null)
 
 #proxy
-sed -i "s/\'//g" $server_file 2>/dev/null
-sed -i 's/\"//g' $server_file 2>/dev/null
-sed -i 's/servername:/servername#/g' $server_file 2>/dev/null
-line=$(sed -n '/name:/=' $server_file 2>/dev/null)
-num=$(grep -c "name:" $server_file 2>/dev/null)
-count=1
+num=$(ruby_read "$proxy_hash" "['proxies'].count")
+count=0
 
 #provider
-sed -i "s/\'//g" $provider_file 2>/dev/null
-sed -i 's/\"//g' $provider_file 2>/dev/null
-sed -i '/^ *$/d' $provider_file 2>/dev/null
-sed -i '/^ \{0,\}#/d' $provider_file 2>/dev/null
-sed -i 's/\t/ /g' $provider_file 2>/dev/null
-provider_line=$(awk '{print $0"#*#"FNR}' $provider_file 2>/dev/null |grep -v '^ \{0,\}proxy-providers:\|^ \{0,\}Proxy:\|^ \{0,\}proxy-groups:\|^ \{0,\}rules:\|^ \{0,\}rule-providers:\|^ \{0,\}script:\|^ \{0,\}type:\|^ \{0,\}path:\|^ \{0,\}url:\|^ \{0,\}interval:\|^ \{0,\}health-check:\|^ \{0,\}enable:' |awk -F '#*#' '{print $3}')
-provider_num=$(grep -c "type:" $provider_file 2>/dev/null)
-provider_count=1
+provider_num=$(ruby_read "$proxy_hash" "['proxy-providers'].count")
+provider_count=0
 
-cfg_get()
-{
-	echo "$(grep "$1" "$2" 2>/dev/null |awk -v tag=$1 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/#.*//' 2>/dev/null |sed 's/,.*//' 2>/dev/null |sed 's/\}.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null)"
-}
+#group
+group_hash=$(ruby_read "YAML.load_file('$CONFIG_FILE')" ".select {|x| 'proxy-groups' == x}")
+group_count=$(ruby_read "$group_hash" "['proxy-groups'].count")
 
-cfg_get_dynamic()
-{
-	echo "$(grep "^ \{0,\}$1" "$2" 2>/dev/null |grep -v "^ \{0,\}- name:" 2>/dev/null |grep -v "^ \{0,\}- keep-alive" 2>/dev/null |grep -v "{" 2>/dev/null |awk -v tag=$1 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/#.*//' 2>/dev/null |sed 's/,.*//' 2>/dev/null |sed 's/\}.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null)"
-}
-
-cfg_get_dynamic_json()
-{
-	echo "$(grep "$1" "$2" 2>/dev/null |grep -v "^ \{0,\}ws-path:" 2>/dev/null |awk -v tag='$1 \\[' 'BEGIN{FS=tag} {print $2}' 2>/dev/null |sed 's/#.*//' 2>/dev/null |sed 's/],.*//' 2>/dev/null |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null |sed 's/,/ /g' 2>/dev/null)"
-}
+if [ -z "$num" ] && [ -z "$provider_num" ]; then
+   echo "配置文件校验失败，请检查配置文件后重试！" >$START_LOG
+   echo "${LOGTIME} Error: Unable To Parse Config File, Please Check And Try Again!" >> $LOG_FILE
+   sleep 3
+   exit 0
+fi
 
 cfg_new_servers_groups_check()
 {
@@ -172,55 +137,36 @@ config_load "openclash"
 config_foreach yml_provider_name_get "proxy-provider"
 }
 
-for n in $provider_line
+#获取代理集信息
+while [ "$provider_count" -lt "$provider_num" ]
 do
-   [ "$provider_count" -eq 1 ] && {
-      startLine="$n"
-   }
-   
-   provider_count=$(expr "$provider_count" + 1)
-   if [ "$provider_count" -gt "$provider_num" ]; then
-      endLine=$(sed -n '$=' $provider_file)
-   else
-      endLine=$(expr $(echo "$provider_line" | sed -n "${provider_count}p") - 1)
-   fi
-
-   sed -n "${startLine},${endLine}p" $provider_file >$single_provider
-   health_check_line=$(sed -n '/^ \{0,\}health-check:/=' $single_provider)
-   sed -n "1,${health_check_line}p" $single_provider >$single_provider_gen
-   sed -n "${health_check_line},\$p" $single_provider >$single_provider_che
-   
-   startLine=$(expr "$endLine" + 1)
-
    #name
-   provider_name="$(sed -n "${n}p" $provider_file |awk -F ':' '{print $1}' |sed 's/^ \{0,\}//g' 2>/dev/null |sed 's/ \{0,\}$//g' 2>/dev/null)"
-   
+   provider_name=$(ruby_read "$proxy_hash" "['proxy-providers'].keys[$provider_count]")
    #type
-   provider_type="$(cfg_get "type:" "$single_provider_gen")"
-   
+   provider_type=$(ruby_read "$proxy_hash" "['proxy-providers'].values[$provider_count]['type']")
    #path
-   provider_path="$(cfg_get "path:" "$single_provider_gen")"
-   
+   provider_path=$(ruby_read "$proxy_hash" "['proxy-providers'].values[$provider_count]['path']")
    #gen_url
-   provider_gen_url="$(cfg_get "url:" "$single_provider_gen")"
-   
+   provider_gen_url=$(ruby_read "$proxy_hash" "['proxy-providers'].values[$provider_count]['url']")
    #gen_interval
-   provider_gen_interval="$(cfg_get "interval:" "$single_provider_gen")"
-   
+   provider_gen_interval=$(ruby_read "$proxy_hash" "['proxy-providers'].values[$provider_count]['interval']")
    #che_enable
-   provider_che_enable="$(cfg_get "enable:" "$single_provider_che")"
-   
+   provider_che_enable=$(ruby_read "$proxy_hash" "['proxy-providers'].values[$provider_count]['health-check']['enable']")
    #che_url
-   provider_che_url="$(cfg_get "url:" "$single_provider_che")"
-   
+   provider_che_url=$(ruby_read "$proxy_hash" "['proxy-providers'].values[$provider_count]['health-check']['url']")
    #che_interval
-   provider_che_interval="$(cfg_get "interval:" "$single_provider_che")"
+   provider_che_interval=$(ruby_read "$proxy_hash" "['proxy-providers'].values[$provider_count]['health-check']['interval']")
+   
+   if [ -z "$provider_name" ] || [ -z "$provider_type" ]; then
+      let provider_count++
+      continue
+   fi
    
    echo "正在读取【$CONFIG_NAME】-【$provider_name】代理集配置..." >$START_LOG
    
    #代理集存在时获取代理集编号
    provider_nums=$(grep -Fw "$provider_name" "$match_provider" 2>/dev/null|awk -F '.' '{print $1}')
-   if [ "$servers_update" -eq 1 ] && [ ! -z "$provider_nums" ]; then
+   if [ "$servers_update" -eq 1 ] && [ -n "$provider_nums" ]; then
       sed -i "/^${provider_nums}\./c\#match#" "$match_provider" 2>/dev/null
       uci_set="uci -q set openclash.@proxy-provider["$provider_nums"]."
       ${uci_set}manual="0"
@@ -274,32 +220,18 @@ do
          config_load "openclash"
          config_list_foreach "config" "new_servers_group" cfg_new_provider_groups_get
       else
-         for ((i=1;i<=$group_num;i++))
+         for ((i=0;i<$group_count;i++))
          do
-            single_group="/tmp/group_$i.yaml"
-            use_line=$(sed -n '/^ \{0,\}use:/=' $single_group)
-            proxies_line=$(sed -n '/^ \{0,\}proxies:/=' $single_group)
-            if [ "$use_line" -le "$proxies_line" ]; then
-               if [ ! -z "$(sed -n "${use_line},${proxies_line}p" "$single_group" |grep -F "$provider_name")" ]; then
-                  group_name=$(cfg_get "name:" "$single_group")
-                  ${uci_add}groups="$group_name"
-               fi
-            elif [ "$use_line" -ge "$proxies_line" ]; then
-               if [ ! -z "$(sed -n "${use_line},\$p" "$single_group" |grep -F "$provider_name")" ]; then
-                  group_name=$(cfg_get "name:" "$single_group")
-                  ${uci_add}groups="$group_name"
-               fi
-            elif [ ! -z "$use_line" ] && [ -z "$proxies_line" ]; then
-         	     if [ ! -z "$(grep -F "$provider_name" $single_group)" ]; then
-                  group_name=$(cfg_get "name:" "$single_group")
-                  ${uci_add}groups="$group_name"
-               fi
-            fi 2>/dev/null
-	       done
+            if "$(ruby_read "$group_hash" "['proxy-groups'][$i]['use'].include?('$provider_name')")"; then
+               ${uci_add}groups="$(ruby_read "$group_hash" "['proxy-groups'][$i]['name']")"
+            fi
+	       done 2>/dev/null
 	    fi
    fi
    uci commit openclash
-done
+   let provider_count++
+done 2>/dev/null
+
 
 #删除订阅中已不存在的代理集
 if [ "$servers_if_update" = "1" ]; then
@@ -442,33 +374,23 @@ config_load "openclash"
 config_foreach yml_servers_name_get "servers"
 }
 
-for n in $line
+while [ "$count" -lt "$num" ]
 do
-
-   [ "$count" -eq 1 ] && {
-      startLine="$n"
-   }
-
-   count=$(expr "$count" + 1)
-   if [ "$count" -gt "$num" ]; then
-      endLine=$(sed -n '$=' $server_file)
-   else
-      endLine=$(expr $(echo "$line" | sed -n "${count}p") - 1)
-   fi
-
-   sed -n "${startLine},${endLine}p" $server_file >$single_server
-   startLine=$(expr "$endLine" + 1)
-   
    #name
-   server_name="$(cfg_get "name:" "$single_server")"
-
+   server_name=$(ruby_read "$proxy_hash" "['proxies'][$count]['name']")
+   
+   if [ -z "$server_name" ]; then
+      let count++
+      continue
+   fi
+   
    config_load "openclash"
    config_foreach server_key_get "config_subscribe"
    
-#匹配关键字订阅节点
+   #匹配关键字订阅节点
    if [ "$servers_if_update" = "1" ]; then
-      if [ ! -z "$config_keyword" ] || [ ! -z "$config_ex_keyword" ]; then
-         if [ ! -z "$config_keyword" ] && [ -z "$config_ex_keyword" ]; then
+      if [ -n "$config_keyword" ] || [ --n "$config_ex_keyword" ]; then
+         if [ -n "$config_keyword" ] && [ -z "$config_ex_keyword" ]; then
             match="false"
             config_list_foreach "$key_section" "keyword" server_key_match "$server_name"
          elif [ -z "$config_keyword" ] && [ ! -z "$config_ex_keyword" ]; then
@@ -482,6 +404,7 @@ do
 
          if [ "$match" = "false" ]; then
             echo "跳过【$server_name】服务器节点..." >$START_LOG
+            let count++
             continue
          fi
       fi
@@ -489,118 +412,123 @@ do
    
 #节点存在时获取节点编号
    server_num=$(grep -Fw "$server_name" "$match_servers" 2>/dev/null|awk -F '.' '{print $1}')
-   if [ "$servers_update" -eq 1 ] && [ ! -z "$server_num" ]; then
+   if [ "$servers_update" -eq 1 ] && [ -n "$server_num" ]; then
       sed -i "/^${server_num}\./c\#match#" "$match_servers" 2>/dev/null
    fi
    
    #type
-   server_type="$(cfg_get "type:" "$single_server")"
+   server_type=$(ruby_read "$proxy_hash" "['proxies'][$count]['type']")
    #server
-   server="$(cfg_get "server:" "$single_server")"
+   server=$(ruby_read "$proxy_hash" "['proxies'][$count]['server']")
    #port
-   port="$(cfg_get "port:" "$single_server")"
+   port=$(ruby_read "$proxy_hash" "['proxies'][$count]['port']")
+   #udp
+   udp=$(ruby_read "$proxy_hash" "['proxies'][$count]['udp']")
    
    if [ "$server_type" = "ss" ]; then
       #cipher
-      cipher="$(cfg_get "cipher:" "$single_server")"
+      cipher=$(ruby_read "$proxy_hash" "['proxies'][$count]['cipher']")
       #password
-      password="$(cfg_get "password:" "$single_server")"
+      password=$(ruby_read "$proxy_hash" "['proxies'][$count]['password']")
       #plugin:
-      plugin="$(cfg_get "plugin:" "$single_server")"
+      plugin=$(ruby_read "$proxy_hash" "['proxies'][$count]['plugin']")
       #path:
-      path="$(cfg_get "path:" "$single_server")"
+      path=$(ruby_read "$proxy_hash" "['proxies'][$count]['plugin-opts']['path']")
       #mode:
-      mode="$(cfg_get "mode:" "$single_server")"
+      mode=$(ruby_read "$proxy_hash" "['proxies'][$count]['plugin-opts']['mode']")
       #host:
-      host="$(cfg_get "host:" "$single_server")"
+      host=$(ruby_read "$proxy_hash" "['proxies'][$count]['plugin-opts']['host']")
       #mux:
-      mux="$(cfg_get "mux:" "$single_server")"
+      mux=$(ruby_read "$proxy_hash" "['proxies'][$count]['plugin-opts']['mux']")
       #headers_custom:
-      headers="$(cfg_get "custom:" "$single_server")"
+      headers=$(ruby_read "$proxy_hash" "['proxies'][$count]['plugin-opts']['headers']['custom']")
       #obfs:
-      obfs="$(cfg_get "obfs:" "$single_server")"
+      obfs=$(ruby_read "$proxy_hash" "['proxies'][$count]['obfs']")
       #obfs-host:
-      obfs_host="$(cfg_get "obfs-host:" "$single_server")"
+      obfs_host=$(ruby_read "$proxy_hash" "['proxies'][$count]['obfs-host']")
+      #tls:
+      tls=$(ruby_read "$proxy_hash" "['proxies'][$count]['plugin-opts']['tls']")
+      #skip-cert-verify:
+      verify=$(ruby_read "$proxy_hash" "['proxies'][$count]['plugin-opts']['skip-cert-verify']")
    fi
    
    if [ "$server_type" = "ssr" ]; then
       #cipher
-      cipher="$(cfg_get "cipher:" "$single_server")"
+      cipher=$(ruby_read "$proxy_hash" "['proxies'][$count]['cipher']")
       #password
-      password="$(cfg_get "password:" "$single_server")"
+      password=$(ruby_read "$proxy_hash" "['proxies'][$count]['password']")
       #obfs:
-      obfs="$(cfg_get "obfs:" "$single_server")"
+      obfs=$(ruby_read "$proxy_hash" "['proxies'][$count]['obfs']")
       #protocol:
-      protocol="$(cfg_get "protocol:" "$single_server")"
+      protocol=$(ruby_read "$proxy_hash" "['proxies'][$count]['protocol']")
       #obfs-param:
-      obfs_param="$(cfg_get "obfs-param:" "$single_server")"
+      obfs_param=$(ruby_read "$proxy_hash" "['proxies'][$count]['obfs-param']")
       #protocol-param:
-      protocol_param="$(cfg_get "protocol-param:" "$single_server")"
+      protocol_param=$(ruby_read "$proxy_hash" "['proxies'][$count]['protocol-param']")
    fi
    
    if [ "$server_type" = "vmess" ]; then
       #uuid:
-      uuid="$(cfg_get "uuid:" "$single_server")"
+      uuid=$(ruby_read "$proxy_hash" "['proxies'][$count]['uuid']")
       #alterId:
-      alterId="$(cfg_get "alterId:" "$single_server")"
+      alterId=$(ruby_read "$proxy_hash" "['proxies'][$count]['alterId']")
       #cipher
-      cipher="$(cfg_get "cipher:" "$single_server")"
+      cipher=$(ruby_read "$proxy_hash" "['proxies'][$count]['cipher']")
       #servername
-      servername="$(cfg_get "servername#" "$single_server")"
+      servername=$(ruby_read "$proxy_hash" "['proxies'][$count]['servername']")
       #network:
-      network="$(cfg_get "network:" "$single_server")"
+      network=$(ruby_read "$proxy_hash" "['proxies'][$count]['network']")
       #ws-path:
-      ws_path="$(cfg_get "ws-path:" "$single_server")"
+      ws_path=$(ruby_read "$proxy_hash" "['proxies'][$count]['ws-path']")
       #Host:
-      Host="$(cfg_get "Host:" "$single_server")"
+      Host=$(ruby_read "$proxy_hash" "['proxies'][$count]['ws-headers']['Host']")
       #http_paths:
-      http_paths="$(cfg_get_dynamic "-" "$single_server")"
-      if [ -z "$http_paths" ]; then
-         http_paths="$(cfg_get_dynamic_json "path:" "$single_server")"
-      fi
+      http_paths=$(ruby_read "$proxy_hash" "['proxies'][$count]['http-opts']['path']")
+      #tls:
+      tls=$(ruby_read "$proxy_hash" "['proxies'][$count]['tls']")
+      #skip-cert-verify:
+      verify=$(ruby_read "$proxy_hash" "['proxies'][$count]['skip-cert-verify']")
+      #keep-alive
+      keep_alive=$(ruby_read "$proxy_hash" "['proxies'][$count]['http-opts']['headers']['Connection']")
    fi
    
    if [ "$server_type" = "socks5" ] || [ "$server_type" = "http" ]; then
       #username:
-      username="$(cfg_get "username:" "$single_server")"
+      username=$(ruby_read "$proxy_hash" "['proxies'][$count]['username']")
       #password
-      password="$(cfg_get "password:" "$single_server")"
+      password=$(ruby_read "$proxy_hash" "['proxies'][$count]['password']")
+      #tls:
+      tls=$(ruby_read "$proxy_hash" "['proxies'][$count]['tls']")
+      #skip-cert-verify:
+      verify=$(ruby_read "$proxy_hash" "['proxies'][$count]['skip-cert-verify']")
    fi
    
    if [ "$server_type" = "http" ]; then
       #sni:
-      sni="$(cfg_get "sni:" "$single_server")"
+      sni=$(ruby_read "$proxy_hash" "['proxies'][$count]['sni']")
    fi
    
    if [ "$server_type" = "snell" ]; then
       #psk:
-      psk="$(cfg_get "psk:" "$single_server")"
+      psk=$(ruby_read "$proxy_hash" "['proxies'][$count]['psk']")
       #mode:
-      mode="$(cfg_get "mode:" "$single_server")"
+      mode=$(ruby_read "$proxy_hash" "['proxies'][$count]['obfs-opts']['mode']")
       #host:
-      host="$(cfg_get "host:" "$single_server")"
+      host=$(ruby_read "$proxy_hash" "['proxies'][$count]['obfs-opts']['host']")
    fi
    
    if [ "$server_type" = "trojan" ]; then
       #password
-      password="$(cfg_get "password:" "$single_server")"
+      password=$(ruby_read "$proxy_hash" "['proxies'][$count]['password']")
       #sni:
-      sni="$(cfg_get "sni:" "$single_server")"
+      sni=$(ruby_read "$proxy_hash" "['proxies'][$count]['sni']")
       #alpn:
-      alpns="$(cfg_get_dynamic "-" "$single_server")"
-      if [ -z "$alpns" ]; then
-         alpns="$(cfg_get_dynamic_json "alpn:" "$single_server")"
-      fi
+      alpns=$(ruby_read "$proxy_hash" "['proxies'][$count]['alpn']")
+      #skip-cert-verify:
+      verify=$(ruby_read "$proxy_hash" "['proxies'][$count]['skip-cert-verify']")
    fi
-   
-   #udp
-   udp="$(cfg_get "udp:" "$single_server")"
-   #tls:
-   tls="$(cfg_get "tls:" "$single_server")"
-   #skip-cert-verify:
-   verify="$(cfg_get "skip-cert-verify:" "$single_server")"
-   
-   echo "正在读取【$CONFIG_NAME】-【$server_type】-【$server_name】服务器节点配置..." >$START_LOG
+
+   echo "正在读取【$CONFIG_NAME】-【$server_type】-【$server_name】服务器节点配置..." > "$START_LOG"
    
    if [ "$servers_update" -eq 1 ] && [ ! -z "$server_num" ]; then
 #更新已有节点
@@ -660,7 +588,7 @@ do
             for http_path in $http_paths; do
                ${uci_add}http_path="$http_path" >/dev/null 2>&1
             done
-            if [ ! -z "$(grep "^ \{0,\}- keep-alive" "$single_server")" ]; then
+            if [ "$keep_alive" = "keep-alive" ]; then
                ${uci_set}keep_alive="true"
             else
                ${uci_set}keep_alive="false"
@@ -759,7 +687,7 @@ do
             for http_path in $http_paths; do
                ${uci_add}http_path="$http_path" >/dev/null 2>&1
             done
-            if [ ! -z "$(grep "^ \{0,\}- keep-alive" "$single_server")" ]; then
+            if [ "$keep_alive" = "keep-alive" ]; then
                ${uci_set}keep_alive="true"
             else
                ${uci_set}keep_alive="false"
@@ -789,39 +717,37 @@ do
 	    fi
 
 #加入策略组
-     if [ "$servers_if_update" = "1" ] && [ ! -z "$new_servers_group" ] && [ "$config_group_exist" -eq 1 ]; then
+     if [ "$servers_if_update" = "1" ] && [ -n "$new_servers_group" ] && [ "$config_group_exist" -eq 1 ]; then
 #新节点且设置默认策略组时加入指定策略组
         config_load "openclash"
         config_list_foreach "config" "new_servers_group" cfg_new_servers_groups_get
      else
-	      for ((i=1;i<=$group_num;i++))
-	      do
-	         single_group="/tmp/group_$i.yaml"
-	         group_type="$(cfg_get "type:" "$single_group")"
-	         if [ -n "$(grep -F "$server_name" "$single_group")" ] && [ "$group_type" = "relay" ]; then
-	         	  group_name=$(cfg_get "name:" "$single_group")
-	         	  server_relays="$(cfg_get_dynamic "-" "$single_group")"
-	         	  if [ -z "$server_relays" ]; then
-         	       server_relays="$(cfg_get_dynamic_json "proxies:" "$single_group")"
-	         	  fi
-	            s=1
-	            for server_relay in $server_relays; do
-	               if [ "$server_relay" = "$server_name" ]; then
-                    ${uci_add}groups="$group_name"
-                    ${uci_add}relay_groups="$group_name#relay#$s"
-                 else
-                    s=$(expr "$s" + 1)
-                 fi
-              done
-           elif [ -n "$(grep -F "$server_name" "$single_group")" ]; then
-              group_name=$(cfg_get "name:" "$single_group")
-              ${uci_add}groups="$group_name"
+        for ((i=0;i<$group_count;i++))
+        do
+           group_type=$(ruby_read "$group_hash" "['proxy-groups'][$i]['type']")
+           proxies=$(ruby_read "$group_hash" "['proxy-groups'][$i]['proxies']")
+           if "$(ruby_read "$group_hash" "['proxy-groups'][$i]['proxies'].include?('$server_name')")"; then
+           	  group_name=$(ruby_read "$group_hash" "['proxy-groups'][$i]['name']")
+              if [ "$group_type" = "relay" ]; then
+                 s=1
+                 for server_relay in $proxies; do
+                    if [ "$server_relay" = "$server_name" ]; then
+                       ${uci_add}groups="$group_name"
+                       ${uci_add}relay_groups="$group_name#relay#$s"
+                    else
+                       let s++
+                    fi
+                 done 2>/dev/null
+              else
+                 ${uci_add}groups="$group_name"
+              fi
            fi
-	      done
+	      done 2>/dev/null
      fi
    fi
    uci commit openclash
-done
+   let count++
+done 2>/dev/null
 
 #删除订阅中已不存在的节点
 if [ "$servers_if_update" = "1" ]; then
@@ -835,7 +761,7 @@ if [ "$servers_if_update" = "1" ]; then
         if [ "$(uci get openclash.@servers["$line"].manual 2>/dev/null)" = "0" ] && [ "$(uci get openclash.@servers["$line"].config 2>/dev/null)" = "$CONFIG_NAME" ]; then
            uci delete openclash.@servers["$line"] 2>/dev/null
         fi
-     done
+     done 2>/dev/null
 fi
 
 uci set openclash.config.servers_if_update=0
@@ -844,14 +770,6 @@ uci commit openclash
 echo "配置文件【$CONFIG_NAME】读取完成！" >$START_LOG
 sleep 3
 echo "" >$START_LOG
-rm -rf /tmp/servers.yaml 2>/dev/null
-rm -rf /tmp/yaml_proxy.yaml 2>/dev/null
-rm -rf /tmp/group_*.yaml 2>/dev/null
-rm -rf /tmp/yaml_group.yaml 2>/dev/null
 rm -rf /tmp/match_servers.list 2>/dev/null
-rm -rf /tmp/yaml_provider.yaml 2>/dev/null
-rm -rf /tmp/provider.yaml 2>/dev/null
-rm -rf /tmp/provider_gen.yaml 2>/dev/null
-rm -rf /tmp/provider_che.yaml 2>/dev/null
 rm -rf /tmp/match_provider.list 2>/dev/null
-rm -rf /tmp/relay_server 2>/dev/null
+rm -rf /tmp/yaml_other_group.yaml 2>/dev/null

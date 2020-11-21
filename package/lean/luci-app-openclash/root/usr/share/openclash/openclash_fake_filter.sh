@@ -3,8 +3,8 @@
 
 START_LOG="/tmp/openclash_start.log"
 CUSTOM_FILE="/etc/openclash/custom/openclash_custom_fake_filter.list"
-FAKE_FILTER_FILE="/etc/openclash/fake_filter.list"
-SER_FAKE_FILTER_FILE="/etc/openclash/servers_fake_filter.conf"
+FAKE_FILTER_FILE="/tmp/openclash_fake_filter.list"
+SER_FAKE_FILTER_FILE="/tmp/openclash_servers_fake_filter.conf"
 
 echo "正在设置Fake-IP黑名单..." >$START_LOG
 
@@ -13,14 +13,13 @@ if [ -s "$CUSTOM_FILE" ]; then
    cat "$CUSTOM_FILE" |while read -r line || [[ -n ${line} ]];
    do
       if [ -z "$(echo $line |grep '^ \{0,\}#' 2>/dev/null)" ]; then
-         echo "    - '$line'" >> "$FAKE_FILTER_FILE"
+         echo "  - '$line'" >> "$FAKE_FILTER_FILE"
       else
          continue
 	    fi
    done 2>/dev/null
    if [ -s "$FAKE_FILTER_FILE" ]; then
-      sed -i '1i\##Custom fake-ip-filter##' "$FAKE_FILTER_FILE"
-      echo "##Custom fake-ip-filter END##" >> "$FAKE_FILTER_FILE"
+      sed -i '1i\fake-ip-filter:' "$FAKE_FILTER_FILE"
    else
       rm -rf "$FAKE_FILTER_FILE" 2>/dev/null
    fi

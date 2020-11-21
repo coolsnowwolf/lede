@@ -41,7 +41,8 @@ if [ "$enable" -eq 1 ]; then
 	if ! pidof clash >/dev/null; then
 	   CRASH_NUM=$(expr "$CRASH_NUM" + 1)
 	   if [ "$CRASH_NUM" -le 3 ]; then
-	      CONFIG_FILE=$(uci get openclash.config.config_path 2>/dev/null)
+	      RAW_CONFIG_FILE=$(uci get openclash.config.config_path 2>/dev/null)
+	      CONFIG_FILE="/etc/openclash/$(uci get openclash.config.config_path 2>/dev/null |awk -F '/' '{print $5}' 2>/dev/null)"
 	      echo "${LOGTIME} Watchdog: Clash Core Problem, Restart." >> $LOG_FILE
 	      touch /tmp/openclash.log 2>/dev/null
         chmod o+w /etc/openclash/proxy_provider/* 2>/dev/null

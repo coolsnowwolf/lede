@@ -1,6 +1,7 @@
 #!/bin/bash
 . /lib/functions.sh
 . /usr/share/openclash/openclash_ps.sh
+. /usr/share/openclash/ruby.sh
 
 status=$(unify_ps_status "openclash.sh")
 [ "$status" -gt 3 ] && exit 0
@@ -103,12 +104,6 @@ config_su_check()
 {
    echo "配置文件下载成功，检查是否有更新..." >$START_LOG
    sed -i 's/!<str> //g' "$CFG_FILE" >/dev/null 2>&1
-   #关键字还原
-   if [ -z "$(grep "^Proxy:#d" "$CFG_FILE")" ]; then
-      sed -i "s/^Proxy:/proxies:/g" "$CFG_FILE" 2>/dev/null
-   else
-      sed -i "s/^Proxy:#d/proxies:/g" "$CFG_FILE" 2>/dev/null
-   fi
    if [ -f "$CONFIG_FILE" ]; then
       cmp -s "$BACKPACK_FILE" "$CFG_FILE"
       if [ "$?" -ne 0 ]; then
@@ -129,11 +124,6 @@ config_su_check()
       cp "$CONFIG_FILE" "$BACKPACK_FILE"
       config_cus_up
    fi
-}
-
-config_encode()
-{
-   /usr/share/openclash/yml_field_name_ch.sh "$CFG_FILE"
 }
 
 config_error()
@@ -300,21 +290,8 @@ sub_info_get()
 
    config_download
 
-   if [ "$?" -eq 0 ] && [ -s "$CFG_FILE" ]; then
-   	  config_encode
-   	  if [ -n "$(grep "^ \{0,\}proxy-groups:" "$CFG_FILE")" ]; then
-         if [ -n "$(grep "^ \{0,\}Proxy:" "$CFG_FILE" 2>/dev/null)" ] || [ -n "$(grep "^ \{0,\}proxy-providers:" "$CFG_FILE" 2>/dev/null)" ]; then
-            if [ -n "$(grep "^ \{0,\}rules:" "$CFG_FILE" 2>/dev/null)" ] || [ -n "$(grep "^ \{0,\}script:" "$CFG_FILE" 2>/dev/null)" ]; then
-               config_su_check
-            else
-               config_download_direct
-            fi
-         else
-            config_download_direct
-         fi
-      else
-         config_download_direct
-      fi
+   if [ "$?" -eq 0 ] && [ -s "$CFG_FILE" ] && [ -n "$(ruby -ryaml -E UTF-8 -e "Value = YAML.load_file('$CFG_FILE'); puts Value")" ]; then
+   	  config_su_check
    else
       config_download_direct
    fi

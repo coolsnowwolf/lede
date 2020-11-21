@@ -48,55 +48,15 @@ end
 
 function config_check(CONFIG_FILE)
   local yaml = fs.isfile(CONFIG_FILE)
-  local proxy,group,rule
   if yaml then
-  	 proxy_provier = luci.sys.call(string.format('egrep "^ {0,}proxy-provider:" "%s" >/dev/null 2>&1',CONFIG_FILE))
-  	 if (proxy_provier ~= 0) then
-  	    proxy_provier = luci.sys.call(string.format('egrep "^ {0,}proxy-providers:" "%s" >/dev/null 2>&1',CONFIG_FILE))
-  	 end
-     proxy = luci.sys.call(string.format('egrep "^ {0,}Proxy:" "%s" >/dev/null 2>&1',CONFIG_FILE))
-     if (proxy ~= 0) then
-        proxy = luci.sys.call(string.format('egrep "^proxies:" "%s" >/dev/null 2>&1',CONFIG_FILE))
-     end
-     group = luci.sys.call(string.format('egrep " {0,}Proxy Group" "%s" >/dev/null 2>&1',CONFIG_FILE))
-     if (group ~= 0) then
-     	  group = luci.sys.call(string.format('egrep "^ {0,}proxy-groups:" "%s" >/dev/null 2>&1',CONFIG_FILE))
-     end
-     rule = luci.sys.call(string.format('egrep "^ {0,}Rule:" "%s" >/dev/null 2>&1',CONFIG_FILE))
-     if (rule ~= 0) then
-        rule = luci.sys.call(string.format('egrep "^ {0,}rules:" "%s" >/dev/null 2>&1',CONFIG_FILE))
-        if (rule ~= 0) then
-           rule = luci.sys.call(string.format('egrep "^ {0,}script:" "%s" >/dev/null 2>&1',CONFIG_FILE))
-        end
-     end
-  end
-  if yaml then
-     if (proxy == 0) then
-        proxy = ""
-     else
-        if (proxy_provier == 0) then
-           proxy = ""
-        else
-           proxy = " - 代理服务器"
-        end
-     end
-     if (group == 0) then
-        group = ""
-     else
-        group = " - 策略组"
-     end
-     if (rule == 0) then
-        rule = ""
-     else
-        rule = " - 规则"
-     end
-     if (proxy=="") and (group=="") and (rule=="") then
+  	 yaml = luci.sys.call(string.format('ruby -ryaml -E UTF-8 -e "Value = YAML.load_file(\'%s\')" 2>/dev/null',CONFIG_FILE))
+     if (yaml == 0) then
         return "Config Normal"
      else
-	      return proxy..group..rule.." - 部分异常"
-	   end
+        return "Config Abnormal"
+     end
 	elseif (yaml ~= 0) then
-	   return "配置文件不存在"
+	   return "File Not Exist"
 	end
 end
     
@@ -222,7 +182,7 @@ st.template="openclash/cfg_check"
 nm=tb:option(DummyValue,"name",translate("Config Alias"))
 mt=tb:option(DummyValue,"mtime",translate("Update Time"))
 sz=tb:option(DummyValue,"size",translate("Size"))
-ck=tb:option(DummyValue,"check",translate("Parameter Check"))
+ck=tb:option(DummyValue,"check",translate("Grammar Check"))
 ck.template="openclash/cfg_check"
 
 btnis=tb:option(Button,"switch",translate("Switch Config"))
@@ -286,6 +246,7 @@ btnrm.write=function(a,t)
 	fs.unlink("/tmp/Proxy_Group")
 	fs.unlink("/etc/openclash/backup/"..fs.basename(e[t].name))
 	fs.unlink("/etc/openclash/history/"..fs.basename(e[t].name))
+	fs.unlink("/etc/openclash/"..fs.basename(e[t].name))
 	local a=fs.unlink("/etc/openclash/config/"..fs.basename(e[t].name))
 	default_config_set(fs.basename(e[t].name))
 	if a then table.remove(e,t)end
@@ -332,7 +293,8 @@ s.addremove = false
 local conf = string.sub(luci.sys.exec("uci get openclash.config.config_path 2>/dev/null"), 1, -2)
 local dconf = "/usr/share/openclash/res/default.yaml"
 local conf_name = fs.basename(conf)
-if not conf_name or conf == "" then conf_name = "config.yaml" end
+if not conf_name or conf == "" then conf_name = "config.yaml" conf = "/etc/openclash/config/config.yaml" end
+local sconf = "/etc/openclash/"..conf_name
 
 sev = s:option(TextValue, "user")
 sev.description = translate("Modify Your Config file:").." "..font_green..bold_on..conf_name..bold_off..font_off.." "..translate("Here, Except The Settings That Were Taken Over")
@@ -344,17 +306,24 @@ end
 sev.write = function(self, section, value)
 if (CHIF == "0") then
     value = value:gsub("\r\n?", "\n")
-    NXFS.writefile(conf, value)
+    local old_value = NXFS.readfile(conf)
+	  if value ~= old_value then
+       NXFS.writefile(conf, value)
+    end
 end
 end
 
 def = s:option(TextValue, "default")
-def.description = translate("Default Config File With Correct General-Settings")
+if fs.isfile(sconf) then
+	def.description = translate("Config File Edited By OpenClash For Running")
+else
+	def.description = translate("Default Config File With Correct Template")
+end
 def.rows = 40
 def.wrap = "off"
 def.readonly = true
 def.cfgvalue = function(self, section)
-	return NXFS.readfile(dconf) or ""
+	return NXFS.readfile(sconf) or NXFS.readfile(dconf) or ""
 end
 def.write = function(self, section, value)
 end

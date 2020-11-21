@@ -68,6 +68,12 @@ o:depends("type", "load-balance")
 o = s:option(Value, "name", translate("Group Name"))
 o.rmempty = false
 
+o = s:option(ListValue, "disable_udp", translate("Disable UDP"))
+o:value("false", translate("Disable"))
+o:value("true", translate("Enable"))
+o.default = "false"
+o.rmempty = false
+
 o = s:option(Value, "test_url", translate("Test URL"))
 o:value("http://www.gstatic.com/generate_204")
 o:value("https://cp.cloudflare.com/generate_204")

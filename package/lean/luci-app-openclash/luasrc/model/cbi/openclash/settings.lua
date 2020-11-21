@@ -164,6 +164,13 @@ o.datatype = "port"
 o.rmempty = false
 o.description = translate("Please Make Sure Ports Available")
 
+o = s:taboption("settings", Value, "mixed_port")
+o.title = translate("Mixed Port")
+o.default = 7893
+o.datatype = "port"
+o.rmempty = false
+o.description = translate("Please Make Sure Ports Available")
+
 ---- DNS Settings
 o = s:taboption("dns", ListValue, "enable_redirect_dns", font_red..bold_on..translate("Redirect Local DNS Setting")..bold_off..font_off)
 o.description = translate("Set Local DNS Redirect")
@@ -204,7 +211,7 @@ o.inputstyle = "reload"
 o.write = function()
   m.uci:set("openclash", "config", "enable", 1)
   m.uci:commit("openclash")
-  SYS.call("rm -rf /etc/openclash/fake_filter.list >/dev/null 2>&1 && /etc/init.d/openclash restart >/dev/null 2>&1 &")
+  SYS.call("rm -rf /tmp/openclash_fake_filter.list >/dev/null 2>&1 && /etc/init.d/openclash restart >/dev/null 2>&1 &")
   HTTP.redirect(DISP.build_url("admin", "services", "openclash"))
 end
 
@@ -222,7 +229,10 @@ function custom_fake_black.write(self, section, value)
 
 	if value then
 		value = value:gsub("\r\n?", "\n")
-		NXFS.writefile("/etc/openclash/custom/openclash_custom_fake_filter.list", value)
+		local old_value = NXFS.readfile("/etc/openclash/custom/openclash_custom_fake_filter.list")
+	  if value ~= old_value then
+			NXFS.writefile("/etc/openclash/custom/openclash_custom_fake_filter.list", value)
+		end
 	end
 end
 end
@@ -247,7 +257,10 @@ function custom_domain_dns.write(self, section, value)
 
 	if value then
 		value = value:gsub("\r\n?", "\n")
-		NXFS.writefile("/etc/openclash/custom/openclash_custom_domain_dns.list", value)
+		local old_value = NXFS.readfile("/etc/openclash/custom/openclash_custom_domain_dns.list")
+	  if value ~= old_value then
+			NXFS.writefile("/etc/openclash/custom/openclash_custom_domain_dns.list", value)
+		end
 	end
 end
 
@@ -643,7 +656,10 @@ end
 function custom_rules.write(self, section, value)
 	if value then
 		value = value:gsub("\r\n?", "\n")
-		NXFS.writefile("/etc/openclash/custom/openclash_custom_rules.list", value)
+		local old_value = NXFS.readfile("/etc/openclash/custom/openclash_custom_rules.list")
+	  if value ~= old_value then
+			NXFS.writefile("/etc/openclash/custom/openclash_custom_rules.list", value)
+		end
 	end
 end
 
@@ -659,7 +675,10 @@ end
 function custom_rules_2.write(self, section, value)
 	if value then
 		value = value:gsub("\r\n?", "\n")
-		NXFS.writefile("/etc/openclash/custom/openclash_custom_rules_2.list", value)
+		local old_value = NXFS.readfile("/etc/openclash/custom/openclash_custom_rules_2.list")
+	  if value ~= old_value then
+			NXFS.writefile("/etc/openclash/custom/openclash_custom_rules_2.list", value)
+		end
 	end
 end
 
@@ -679,7 +698,10 @@ end
 function custom_hosts.write(self, section, value)
 	if value then
 		value = value:gsub("\r\n?", "\n")
-		NXFS.writefile("/etc/openclash/custom/openclash_custom_hosts.list", value)
+		local old_value = NXFS.readfile("/etc/openclash/custom/openclash_custom_hosts.list")
+	  if value ~= old_value then
+			NXFS.writefile("/etc/openclash/custom/openclash_custom_hosts.list", value)
+		end
 	end
 end
 end

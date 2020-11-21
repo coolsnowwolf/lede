@@ -1,8 +1,9 @@
 #!/bin/sh
 . /lib/functions.sh
+. /usr/share/openclash/openclash_ps.sh
 
-CONFIG_FILE=$(uci get openclash.config.config_path 2>/dev/null)
-CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
+CONFIG_FILE=$(unify_ps_cfgname)
+CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $4}' 2>/dev/null)
 HISTORY_PATH="/etc/openclash/history/$CONFIG_NAME"
 SECRET=$(uci get openclash.config.dashboard_password 2>/dev/null)
 LAN_IP=$(uci get network.lan.ipaddr 2>/dev/null |awk -F '/' '{print $1}' 2>/dev/null)
