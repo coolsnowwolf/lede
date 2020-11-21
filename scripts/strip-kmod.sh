@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 [ -n "$CROSS" ] || {
 	echo "The variable CROSS must be set to point to the cross-compiler prefix"
 	exit 1
@@ -19,7 +19,7 @@ else
 fi
 
 if [ -z "$KEEP_BUILD_ID" ]; then
-    ARGS="$ARGS -R .note.gnu.build-id"
+	ARGS="$ARGS -R .note.gnu.build-id"
 fi
 
 ${CROSS}objcopy \
@@ -50,6 +50,6 @@ $3 && $2 ~ /[brtd]/ && $3 !~ /\$LC/ && !def[$3] {
 }
 ' > "$MODULE.tmp1"
 
-${CROSS}objcopy `cat ${MODULE}.tmp1` ${MODULE}.tmp ${MODULE}.out
+${CROSS}objcopy $(cat ${MODULE}.tmp1) ${MODULE}.tmp ${MODULE}.out
 mv "${MODULE}.out" "${MODULE}"
 rm -f "${MODULE}".t*

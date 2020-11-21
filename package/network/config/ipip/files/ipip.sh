@@ -47,8 +47,6 @@ proto_ipip_setup() {
 		fi
 	}
 
-	[ -z "$zone" ] && zone="wan"
-
 	proto_init_update "ipip-$cfg" 1
 
 	proto_add_tunnel

@@ -1,0 +1,251 @@
+From 79d32025a54899fe7d82c88906c1e3ad911c498d Mon Sep 17 00:00:00 2001
+From: Sandor Yu <Sandor.yu@nxp.com>
+Date: Thu, 26 Sep 2019 15:46:43 +0800
+Subject: [PATCH] drm: bridge: cdns dp: Remove link rate/lanes set by device
+ tree
+
+Get the link rate and lanes from sink device.
+Remove user specific set by device tree.
+
+Signed-off-by: Sandor Yu <Sandor.yu@nxp.com>
+---
+ drivers/gpu/drm/bridge/cadence/cdns-dp-core.c     | 56 ++++++-----------------
+ drivers/gpu/drm/bridge/cadence/cdns-mhdp-common.c |  6 +--
+ drivers/gpu/drm/rockchip/cdn-dp-core.c            | 27 ++++++-----
+ drivers/gpu/drm/rockchip/cdn-dp-core.h            |  1 -
+ include/drm/bridge/cdns-mhdp-common.h             |  6 +--
+ 5 files changed, 35 insertions(+), 61 deletions(-)
+
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dp-core.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dp-core.c
+@@ -111,10 +111,10 @@ static void dp_pixel_clk_reset(struct cd
+ static void cdns_dp_mode_set(struct cdns_mhdp_device *mhdp,
+ 			const struct drm_display_mode *mode)
+ {
+-	struct drm_dp_link link;
+ 	u32 lane_mapping = mhdp->lane_mapping;
+-	int ret;
++	struct drm_dp_link *link = &mhdp->dp.link;
+ 	char linkid[6];
++	int ret;
+ 
+ 	memcpy(&mhdp->mode, mode, sizeof(struct drm_display_mode));
+ 
+@@ -125,8 +125,6 @@ static void cdns_dp_mode_set(struct cdns
+ 
+ 	cdns_mhdp_plat_call(mhdp, pclk_rate);
+ 
+-	cdns_mhdp_plat_call(mhdp, phy_set);
+-
+ 	ret = drm_dp_downstream_id(&mhdp->dp.aux, linkid);
+ 	if (ret < 0) {
+ 		DRM_INFO("Failed to Get DP link ID: %d\n", ret);
+@@ -137,35 +135,28 @@ static void cdns_dp_mode_set(struct cdns
+ 		 linkid[5]);
+ 
+ 	/* Check dp link */
+-	ret = drm_dp_link_probe(&mhdp->dp.aux, &link);
++	ret = drm_dp_link_probe(&mhdp->dp.aux, link);
+ 	if (ret < 0) {
+ 		DRM_INFO("Failed to probe DP link: %d\n", ret);
+ 		return;
+ 	}
+-	DRM_INFO("DP revision: 0x%x\n", link.revision);
+-	DRM_INFO("DP rate: %d Mbps\n", link.rate);
+-	DRM_INFO("DP number of lanes: %d\n", link.num_lanes);
+-	DRM_INFO("DP capabilities: 0x%lx\n", link.capabilities);
++	DRM_INFO("DP revision: 0x%x\n", link->revision);
++	DRM_INFO("DP rate: %d Mbps\n", link->rate);
++	DRM_INFO("DP number of lanes: %d\n", link->num_lanes);
++	DRM_INFO("DP capabilities: 0x%lx\n", link->capabilities);
++
++	/* check the max link rate */
++	if (link->rate > CDNS_DP_MAX_LINK_RATE)
++		link->rate = CDNS_DP_MAX_LINK_RATE;
+ 
+-	drm_dp_link_power_up(&mhdp->dp.aux, &mhdp->dp.link);
++	drm_dp_link_power_up(&mhdp->dp.aux, link);
+ 	if (ret < 0) {
+ 		DRM_INFO("Failed to power DP link: %d\n", ret);
+ 		return;
+ 	}
+ 
+-	/* always use the number of lanes from the display*/
+-	mhdp->dp.link.num_lanes = link.num_lanes;
+-
+-	/* Use the lower link rate */
+-	if (mhdp->dp.link_rate != 0) {
+-		mhdp->dp.link.rate = min(mhdp->dp.link_rate, (u32)link.rate);
+-		DRM_DEBUG("DP actual link rate:  0x%x\n", link.rate);
+-	}
+-
+-	/* initialize phy if lanes or link rate differnt */
+-	if (mhdp->dp.link.num_lanes != mhdp->dp.num_lanes ||
+-			mhdp->dp.link.rate != mhdp->dp.link_rate)
+-		cdns_mhdp_plat_call(mhdp, phy_set);
++	/* Initialize link rate/num_lanes as panel max link rate/max_num_lanes */
++	cdns_mhdp_plat_call(mhdp, phy_set);
+ 
+ 	/* Video off */
+ 	ret = cdns_mhdp_set_video_status(mhdp, CONTROL_VIDEO_IDLE);
+@@ -178,7 +169,7 @@ static void cdns_dp_mode_set(struct cdns
+ 	cdns_mhdp_reg_write(mhdp, LANES_CONFIG, 0x00400000 | lane_mapping);
+ 
+ 	/* Set DP host capability */
+-	ret = cdns_mhdp_set_host_cap(mhdp, mhdp->dp.link.num_lanes, false);
++	ret = cdns_mhdp_set_host_cap(mhdp, false);
+ 	if (ret) {
+ 		DRM_DEV_ERROR(mhdp->dev, "Failed to set host cap %d\n", ret);
+ 		return;
+@@ -412,23 +403,6 @@ static void cdns_dp_parse_dt(struct cdns
+ 		dev_warn(mhdp->dev, "Failed to get lane_mapping - using default 0xc6\n");
+ 	}
+ 	dev_info(mhdp->dev, "lane-mapping 0x%02x\n", mhdp->lane_mapping);
+-
+-	ret = of_property_read_u32(of_node, "link-rate", &mhdp->dp.link_rate);
+-	if (ret) {
+-		mhdp->dp.link_rate = 162000 ;
+-		dev_warn(mhdp->dev, "Failed to get link-rate, use default 1620MHz\n");
+-	}
+-	dev_info(mhdp->dev, "link-rate %d\n", mhdp->dp.link_rate);
+-	
+-	ret = of_property_read_u32(of_node, "num-lanes", &mhdp->dp.num_lanes);
+-	if (ret) {
+-		mhdp->dp.num_lanes = 4;
+-		dev_warn(mhdp->dev, "Failed to get num_lanes - using default\n");
+-	}
+-	dev_info(mhdp->dev, "dp_num_lanes 0x%02x\n", mhdp->dp.num_lanes);
+-
+-	mhdp->dp.link.num_lanes = mhdp->dp.num_lanes;
+-	mhdp->dp.link.rate= mhdp->dp.link_rate;
+ }
+ 
+ static int __cdns_dp_probe(struct platform_device *pdev,
+--- a/drivers/gpu/drm/bridge/cadence/cdns-mhdp-common.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-mhdp-common.c
+@@ -494,13 +494,13 @@ err_set_firmware_active:
+ }
+ EXPORT_SYMBOL(cdns_mhdp_set_firmware_active);
+ 
+-int cdns_mhdp_set_host_cap(struct cdns_mhdp_device *mhdp, u8 lanes, bool flip)
++int cdns_mhdp_set_host_cap(struct cdns_mhdp_device *mhdp, bool flip)
+ {
+ 	u8 msg[8];
+ 	int ret;
+ 
+-	msg[0] = CDNS_DP_MAX_LINK_RATE;
+-	msg[1] = lanes | SCRAMBLER_EN;
++	msg[0] = drm_dp_link_rate_to_bw_code(mhdp->dp.link.rate);
++	msg[1] = mhdp->dp.link.num_lanes | SCRAMBLER_EN;
+ 	msg[2] = VOLTAGE_LEVEL_2;
+ 	msg[3] = PRE_EMPHASIS_LEVEL_3;
+ 	msg[4] = PTS1 | PTS2 | PTS3 | PTS4;
+--- a/drivers/gpu/drm/rockchip/cdn-dp-core.c
++++ b/drivers/gpu/drm/rockchip/cdn-dp-core.c
+@@ -305,12 +305,10 @@ static int cdn_dp_connector_mode_valid(s
+ 	requested = mode->clock * bpc * 3 / 1000;
+ 
+ 	source_max = dp->lanes;
+-	sink_max = drm_dp_max_lane_count(dp->dpcd);
++	sink_max = dp->mhdp.dp.link.num_lanes;
+ 	lanes = min(source_max, sink_max);
+ 
+-	source_max = drm_dp_bw_code_to_link_rate(CDNS_DP_MAX_LINK_RATE);
+-	sink_max = drm_dp_max_link_rate(dp->dpcd);
+-	rate = min(source_max, sink_max);
++	rate = dp->mhdp.dp.link.rate;
+ 
+ 	actual = rate * lanes / 100;
+ 
+@@ -365,21 +363,25 @@ static int cdn_dp_firmware_init(struct c
+ 
+ static int cdn_dp_get_sink_capability(struct cdn_dp_device *dp)
+ {
++	struct cdns_mhdp_device *mhdp = &dp->mhdp;
++	struct drm_dp_link *link = &mhdp->dp.link;
+ 	int ret;
+ 
+ 	if (!cdn_dp_check_sink_connection(dp))
+ 		return -ENODEV;
+ 
+-	ret = cdns_mhdp_dpcd_read(&dp->mhdp, DP_DPCD_REV, dp->dpcd,
+-				  DP_RECEIVER_CAP_SIZE);
++	ret = drm_dp_link_probe(&mhdp->dp.aux, link);
+ 	if (ret) {
+-		DRM_DEV_ERROR(dp->mhdp.dev, "Failed to get caps %d\n", ret);
++		DRM_DEV_ERROR(mhdp->dev, "Failed to get caps %d\n", ret);
+ 		return ret;
+ 	}
+ 
++	if (link->rate > CDNS_DP_MAX_LINK_RATE)
++		link->rate = CDNS_DP_MAX_LINK_RATE;
++
+ 	kfree(dp->edid);
+-	dp->edid = drm_do_get_edid(&dp->mhdp.connector.base,
+-				   cdns_mhdp_get_edid_block, &dp->mhdp);
++	dp->edid = drm_do_get_edid(&mhdp->connector.base,
++				   cdns_mhdp_get_edid_block, mhdp);
+ 	return 0;
+ }
+ 
+@@ -421,7 +423,8 @@ static int cdn_dp_enable_phy(struct cdn_
+ 	}
+ 
+ 	port->lanes = cdn_dp_get_port_lanes(port);
+-	ret = cdns_mhdp_set_host_cap(&dp->mhdp, port->lanes, property.intval);
++	dp->mhdp.dp.link.num_lanes = port->lanes;
++	ret = cdns_mhdp_set_host_cap(&dp->mhdp, property.intval);
+ 	if (ret) {
+ 		DRM_DEV_ERROR(dev, "set host capabilities failed: %d\n",
+ 			      ret);
+@@ -576,9 +579,9 @@ static bool cdn_dp_check_link_status(str
+ {
+ 	u8 link_status[DP_LINK_STATUS_SIZE];
+ 	struct cdn_dp_port *port = cdn_dp_connected_port(dp);
+-	u8 sink_lanes = drm_dp_max_lane_count(dp->dpcd);
++	u8 sink_lanes = dp->mhdp.dp.link.num_lanes;
+ 
+-	if (!port || !dp->mhdp.dp.link.rate || !dp->mhdp.dp.link.num_lanes)
++	if (!port || !dp->mhdp.dp.link.rate || !sink_lanes)
+ 		return false;
+ 
+ 	if (cdns_mhdp_dpcd_read(&dp->mhdp, DP_LANE0_1_STATUS, link_status,
+--- a/drivers/gpu/drm/rockchip/cdn-dp-core.h
++++ b/drivers/gpu/drm/rockchip/cdn-dp-core.h
+@@ -61,7 +61,6 @@ struct cdn_dp_device {
+ 	u8 lanes;
+ 	int active_port;
+ 
+-	u8 dpcd[DP_RECEIVER_CAP_SIZE];
+ 	bool sink_has_audio;
+ };
+ #endif  /* _CDN_DP_CORE_H */
+--- a/include/drm/bridge/cdns-mhdp-common.h
++++ b/include/drm/bridge/cdns-mhdp-common.h
+@@ -436,7 +436,7 @@
+ #define HDCP_TX_IS_RECEIVER_ID_VALID_EVENT	BIT(7)
+ 
+ #define TU_SIZE					30
+-#define CDNS_DP_MAX_LINK_RATE			DP_LINK_BW_5_4
++#define CDNS_DP_MAX_LINK_RATE	540000
+ 
+ #define F_HDMI_ENCODING(x) (((x) & ((1 << 2) - 1)) << 16)
+ #define F_VIF_DATA_WIDTH(x) (((x) & ((1 << 2) - 1)) << 2)
+@@ -697,8 +697,6 @@ struct cdns_mhdp_device {
+ 			struct cdns_mhdp_mst_cbs cbs;
+ 			bool is_mst;
+ 			bool can_mst;
+-			u32 link_rate;
+-			u32 num_lanes;
+ 		} dp;
+ 		struct _hdmi_data {
+ #ifdef CONFIG_DRM_CDNS_HDMI_CEC
+@@ -720,7 +718,7 @@ u32 cdns_mhdp_get_fw_clk(struct cdns_mhd
+ int cdns_mhdp_load_firmware(struct cdns_mhdp_device *mhdp, const u32 *i_mem,
+ 			    u32 i_size, const u32 *d_mem, u32 d_size);
+ int cdns_mhdp_set_firmware_active(struct cdns_mhdp_device *mhdp, bool enable);
+-int cdns_mhdp_set_host_cap(struct cdns_mhdp_device *mhdp, u8 lanes, bool flip);
++int cdns_mhdp_set_host_cap(struct cdns_mhdp_device *mhdp, bool flip);
+ int cdns_mhdp_event_config(struct cdns_mhdp_device *mhdp);
+ u32 cdns_mhdp_get_event(struct cdns_mhdp_device *mhdp);
+ int cdns_mhdp_get_hpd_status(struct cdns_mhdp_device *mhdp);

@@ -31,6 +31,7 @@ endef
 
 define Device/Default
 	PROFILES := Default
+	DEVICE_DTS := $(lastword $(subst _, ,$(1)))
 	KERNEL_DEPENDS = $$(wildcard $(DTS_DIR)/$$(DEVICE_DTS).dts)
 	KERNEL_INITRAMFS_PREFIX := $$(IMG_PREFIX)-$(1)-initramfs
 	KERNEL_PREFIX := $$(IMAGE_PREFIX)
@@ -51,29 +52,30 @@ endef
 
 define Device/avnet_zynq-zed
 	$(call Device/FitImageGzip)
-	DEVICE_TITLE := Avnet ZedBoard board
-	DEVICE_DTS := zynq-zed
+	DEVICE_VENDOR := Avnet
+	DEVICE_MODEL := ZedBoard
 endef
 TARGET_DEVICES += avnet_zynq-zed
 
 define Device/digilent_zynq-zybo
 	$(call Device/FitImageGzip)
-	DEVICE_TITLE := ZYBO Development Board
-	DEVICE_DTS := zynq-zybo
+	DEVICE_VENDOR := Digilent
+	DEVICE_MODEL := Zybo
 endef
 TARGET_DEVICES += digilent_zynq-zybo
 
 define Device/digilent_zynq-zybo-z7
 	$(call Device/FitImageGzip)
-	DEVICE_TITLE := Digilent Zybo Z7 board
-	DEVICE_DTS := zynq-zybo-z7
+	DEVICE_VENDOR := Digilent
+	DEVICE_MODEL := Zybo Z7
 endef
 TARGET_DEVICES += digilent_zynq-zybo-z7
 
 define Device/xlnx_zynq-zc702
 	$(call Device/FitImageGzip)
-	DEVICE_TITLE := ZC702 Development Board
-	DEVICE_DTS := zynq-zc702
+	DEVICE_VENDOR := Xilinx
+	DEVICE_MODEL := ZC702
+	DEVICE_PACKAGES:=kmod-can kmod-can-xilinx-can
 endef
 TARGET_DEVICES += xlnx_zynq-zc702
 

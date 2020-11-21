@@ -31,6 +31,6 @@ ubootenv_add_app_config() {
 	config_get envsize "$1" envsize
 	config_get secsize "$1" secsize
 	config_get numsec "$1" numsec
-	echo "$dev $offset $envsize $secsize $numsec" >>/etc/fw_env.config
+	grep -q "^[[:space:]]*${dev}[[:space:]]*${offset}" /etc/fw_env.config || echo "$dev $offset $envsize $secsize $numsec" >>/etc/fw_env.config
 }
 

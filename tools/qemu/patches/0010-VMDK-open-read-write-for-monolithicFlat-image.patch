@@ -1,0 +1,257 @@
+From e6b783a12f7ff491a1a2147d9fe55b4535aa046e Mon Sep 17 00:00:00 2001
+From: Fam Zheng <famcool@gmail.com>
+Date: Tue, 19 Jul 2011 08:38:22 +0800
+Subject: [PATCH 10/12] VMDK: open/read/write for monolithicFlat image
+
+Parse vmdk decriptor file and open mono flat image.
+Read/write the flat extent.
+
+Signed-off-by: Fam Zheng <famcool@gmail.com>
+Reviewed-by: Stefan Hajnoczi <stefanha@linux.vnet.ibm.com>
+Signed-off-by: Kevin Wolf <kwolf@redhat.com>
+---
+ block/vmdk.c | 171 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 158 insertions(+), 13 deletions(-)
+
+--- a/block/vmdk.c
++++ b/block/vmdk.c
+@@ -65,6 +65,7 @@ typedef struct VmdkExtent {
+     bool flat;
+     int64_t sectors;
+     int64_t end_sector;
++    int64_t flat_start_offset;
+     int64_t l1_table_offset;
+     int64_t l1_backup_table_offset;
+     uint32_t *l1_table;
+@@ -407,9 +408,10 @@ fail:
+ static int vmdk_parent_open(BlockDriverState *bs)
+ {
+     char *p_name;
+-    char desc[DESC_SIZE];
++    char desc[DESC_SIZE + 1];
+     BDRVVmdkState *s = bs->opaque;
+ 
++    desc[DESC_SIZE] = '\0';
+     if (bdrv_pread(bs->file, s->desc_offset, desc, DESC_SIZE) != DESC_SIZE) {
+         return -1;
+     }
+@@ -584,6 +586,144 @@ static int vmdk_open_vmdk4(BlockDriverSt
+     return ret;
+ }
+ 
++/* find an option value out of descriptor file */
++static int vmdk_parse_description(const char *desc, const char *opt_name,
++        char *buf, int buf_size)
++{
++    char *opt_pos, *opt_end;
++    const char *end = desc + strlen(desc);
++
++    opt_pos = strstr(desc, opt_name);
++    if (!opt_pos) {
++        return -1;
++    }
++    /* Skip "=\"" following opt_name */
++    opt_pos += strlen(opt_name) + 2;
++    if (opt_pos >= end) {
++        return -1;
++    }
++    opt_end = opt_pos;
++    while (opt_end < end && *opt_end != '"') {
++        opt_end++;
++    }
++    if (opt_end == end || buf_size < opt_end - opt_pos + 1) {
++        return -1;
++    }
++    pstrcpy(buf, opt_end - opt_pos + 1, opt_pos);
++    return 0;
++}
++
++static int vmdk_parse_extents(const char *desc, BlockDriverState *bs,
++        const char *desc_file_path)
++{
++    int ret;
++    char access[11];
++    char type[11];
++    char fname[512];
++    const char *p = desc;
++    int64_t sectors = 0;
++    int64_t flat_offset;
++
++    while (*p) {
++        /* parse extent line:
++         * RW [size in sectors] FLAT "file-name.vmdk" OFFSET
++         * or
++         * RW [size in sectors] SPARSE "file-name.vmdk"
++         */
++        flat_offset = -1;
++        ret = sscanf(p, "%10s %" SCNd64 " %10s %511s %" SCNd64,
++                access, &sectors, type, fname, &flat_offset);
++        if (ret < 4 || strcmp(access, "RW")) {
++            goto next_line;
++        } else if (!strcmp(type, "FLAT")) {
++            if (ret != 5 || flat_offset < 0) {
++                return -EINVAL;
++            }
++        } else if (ret != 4) {
++            return -EINVAL;
++        }
++
++        /* trim the quotation marks around */
++        if (fname[0] == '"') {
++            memmove(fname, fname + 1, strlen(fname));
++            if (strlen(fname) <= 1 || fname[strlen(fname) - 1] != '"') {
++                return -EINVAL;
++            }
++            fname[strlen(fname) - 1] = '\0';
++        }
++        if (sectors <= 0 ||
++            (strcmp(type, "FLAT") && strcmp(type, "SPARSE")) ||
++            (strcmp(access, "RW"))) {
++            goto next_line;
++        }
++
++        /* save to extents array */
++        if (!strcmp(type, "FLAT")) {
++            /* FLAT extent */
++            char extent_path[PATH_MAX];
++            BlockDriverState *extent_file;
++            VmdkExtent *extent;
++
++            path_combine(extent_path, sizeof(extent_path),
++                    desc_file_path, fname);
++            ret = bdrv_file_open(&extent_file, extent_path, bs->open_flags);
++            if (ret) {
++                return ret;
++            }
++            extent = vmdk_add_extent(bs, extent_file, true, sectors,
++                            0, 0, 0, 0, sectors);
++            extent->flat_start_offset = flat_offset;
++        } else {
++            /* SPARSE extent, not supported for now */
++            fprintf(stderr,
++                "VMDK: Not supported extent type \"%s\""".\n", type);
++            return -ENOTSUP;
++        }
++next_line:
++        /* move to next line */
++        while (*p && *p != '\n') {
++            p++;
++        }
++        p++;
++    }
++    return 0;
++}
++
++static int vmdk_open_desc_file(BlockDriverState *bs, int flags)
++{
++    int ret;
++    char buf[2048];
++    char ct[128];
++    BDRVVmdkState *s = bs->opaque;
++
++    ret = bdrv_pread(bs->file, 0, buf, sizeof(buf));
++    if (ret < 0) {
++        return ret;
++    }
++    buf[2047] = '\0';
++    if (vmdk_parse_description(buf, "createType", ct, sizeof(ct))) {
++        return -EINVAL;
++    }
++    if (strcmp(ct, "monolithicFlat")) {
++        fprintf(stderr,
++                "VMDK: Not supported image type \"%s\""".\n", ct);
++        return -ENOTSUP;
++    }
++    s->desc_offset = 0;
++    ret = vmdk_parse_extents(buf, bs, bs->file->filename);
++    if (ret) {
++        return ret;
++    }
++
++    /* try to open parent images, if exist */
++    if (vmdk_parent_open(bs)) {
++        qemu_free(s->extents);
++        return -EINVAL;
++    }
++    s->parent_cid = vmdk_read_cid(bs, 1);
++    return 0;
++}
++
+ static int vmdk_open(BlockDriverState *bs, int flags)
+ {
+     uint32_t magic;
+@@ -598,7 +738,7 @@ static int vmdk_open(BlockDriverState *b
+     } else if (magic == VMDK4_MAGIC) {
+         return vmdk_open_vmdk4(bs, flags);
+     } else {
+-        return -EINVAL;
++        return vmdk_open_desc_file(bs, flags);
+     }
+ }
+ 
+@@ -679,7 +819,7 @@ static int get_cluster_offset(BlockDrive
+     if (m_data)
+         m_data->valid = 0;
+     if (extent->flat) {
+-        *cluster_offset = 0;
++        *cluster_offset = extent->flat_start_offset;
+         return 0;
+     }
+ 
+@@ -832,16 +972,20 @@ static int vmdk_read(BlockDriverState *b
+             /* if not allocated, try to read from parent image, if exist */
+             if (bs->backing_hd) {
+                 if (!vmdk_is_cid_valid(bs))
+-                    return -1;
++                    return -EINVAL;
+                 ret = bdrv_read(bs->backing_hd, sector_num, buf, n);
+                 if (ret < 0)
+-                    return -1;
++                    return ret;
+             } else {
+                 memset(buf, 0, 512 * n);
+             }
+         } else {
+-            if(bdrv_pread(bs->file, cluster_offset + index_in_cluster * 512, buf, n * 512) != n * 512)
+-                return -1;
++            ret = bdrv_pread(extent->file,
++                            cluster_offset + index_in_cluster * 512,
++                            buf, n * 512);
++            if (ret < 0) {
++                return ret;
++            }
+         }
+         nb_sectors -= n;
+         sector_num += n;
+@@ -865,7 +1009,7 @@ static int vmdk_write(BlockDriverState *
+                 "(VMDK) Wrong offset: sector_num=0x%" PRIx64
+                 " total_sectors=0x%" PRIx64 "\n",
+                 sector_num, bs->total_sectors);
+-        return -1;
++        return -EIO;
+     }
+ 
+     while (nb_sectors > 0) {
+@@ -888,16 +1032,17 @@ static int vmdk_write(BlockDriverState *
+             n = nb_sectors;
+         }
+ 
+-        if (bdrv_pwrite(bs->file,
++        ret = bdrv_pwrite(extent->file,
+                         cluster_offset + index_in_cluster * 512,
+-                        buf, n * 512)
+-                != n * 512) {
+-            return -1;
++                        buf,
++                        n * 512);
++        if (ret < 0) {
++            return ret;
+         }
+         if (m_data.valid) {
+             /* update L2 tables */
+             if (vmdk_L2update(extent, &m_data) == -1) {
+-                return -1;
++                return -EIO;
+             }
+         }
+         nb_sectors -= n;

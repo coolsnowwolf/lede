@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 ################################################################################
 #
 # r8125 is the Linux device driver released for Realtek 2.5Gigabit Ethernet

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 OUTPUT="$1"
 KERNELSIZE="$2"
 KERNELIMAGE="$3"
@@ -9,7 +9,7 @@ ALIGN="$6"
 rm -f "$OUTPUT"
 
 # create partition table
-set `ptgen -o "$OUTPUT" -h 16 -s 32 -l ${ALIGN} -t 0x27 -p ${KERNELSIZE}m -t 0x83 -p ${ROOTFSSIZE}m`
+set $(ptgen -o "$OUTPUT" -h 16 -s 32 -l ${ALIGN} -t 0x27 -p ${KERNELSIZE}m -t 0x83 -p ${ROOTFSSIZE}m)
 
 KERNELOFFSET="$(($1 / 512))"
 ROOTFSOFFSET="$(($3 / 512))"

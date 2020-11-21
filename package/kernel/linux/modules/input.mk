@@ -119,7 +119,7 @@ define KernelPackage/input-gpio-encoder
   AUTOLOAD:=$(call AutoProbe,rotary_encoder)
 endef
 
-define KernelPackage/gpio-encoder/description
+define KernelPackage/input-gpio-encoder/description
  Kernel module to use rotary encoders connected to GPIO pins
 endef
 
@@ -166,7 +166,7 @@ define KernelPackage/input-matrixkmap
   AUTOLOAD:=$(call AutoProbe,matrix-keymap)
 endef
 
-define KernelPackage/input-matrix/description
+define KernelPackage/input-matrixkmap/description
  Kernel module support for input matrix devices
 endef
 
@@ -181,7 +181,8 @@ define KernelPackage/input-touchscreen-ads7846
 	CONFIG_INPUT_TOUCHSCREEN=y \
 	CONFIG_TOUCHSCREEN_PROPERTIES=y \
 	CONFIG_TOUCHSCREEN_ADS7846
-  FILES:=$(LINUX_DIR)/drivers/input/touchscreen/ads7846.ko
+  FILES:=$(LINUX_DIR)/drivers/input/touchscreen/ads7846.ko \
+	$(LINUX_DIR)/drivers/input/touchscreen/of_touchscreen.ko@ge5.4
   AUTOLOAD:=$(call AutoProbe,ads7846)
 endef
 

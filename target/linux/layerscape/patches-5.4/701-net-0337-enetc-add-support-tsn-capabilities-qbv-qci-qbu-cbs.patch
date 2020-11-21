@@ -1,0 +1,2911 @@
+From bf3f81f3773cc9f6b273d769aca96512780c6189 Mon Sep 17 00:00:00 2001
+From: Po Liu <Po.Liu@nxp.com>
+Date: Tue, 3 Dec 2019 16:52:57 +0800
+Subject: [PATCH] enetc: add support tsn capabilities qbv/qci/qbu/cbs
+
+Support Qbv/Qci/Qbu/Credit Base Shaper etc.
+This patch using the generic netlink adapt layer driver net/tsn/*
+and include/net/tsn.h interface load by user space. The user space
+refer the include/uapi/linux/tsn.h.
+
+Signed-off-by: Po Liu <Po.Liu@nxp.com>
+---
+ drivers/net/ethernet/freescale/enetc/Kconfig       |   10 +
+ drivers/net/ethernet/freescale/enetc/Makefile      |    1 +
+ drivers/net/ethernet/freescale/enetc/enetc.c       |   13 +-
+ drivers/net/ethernet/freescale/enetc/enetc.h       |   38 +
+ .../net/ethernet/freescale/enetc/enetc_ethtool.c   |   59 +
+ drivers/net/ethernet/freescale/enetc/enetc_hw.h    |  438 ++++-
+ drivers/net/ethernet/freescale/enetc/enetc_pf.c    |   15 +-
+ drivers/net/ethernet/freescale/enetc/enetc_tsn.c   | 2049 ++++++++++++++++++++
+ 8 files changed, 2614 insertions(+), 9 deletions(-)
+ create mode 100644 drivers/net/ethernet/freescale/enetc/enetc_tsn.c
+
+--- a/drivers/net/ethernet/freescale/enetc/Kconfig
++++ b/drivers/net/ethernet/freescale/enetc/Kconfig
+@@ -60,3 +60,13 @@ config FSL_ENETC_QOS
+ 	  enable/disable from user space via Qos commands(tc). In the kernel
+ 	  side, it can be loaded by Qos driver. Currently, it is only support
+ 	  taprio(802.1Qbv) and Credit Based Shaper(802.1Qbu).
++
++config ENETC_TSN
++	bool "TSN Support for NXP ENETC driver"
++	default n
++	depends on TSN && FSL_ENETC
++	help
++	  This driver supports TSN on Freescale ENETC driver. Provide
++	  interface to config the tsn capabilities of ENETC. The interface link
++	  to the /net/tsn/* and include/net/tsn.h. User space refer the
++	  include/uapi/linux/tsn.h.
+--- a/drivers/net/ethernet/freescale/enetc/Makefile
++++ b/drivers/net/ethernet/freescale/enetc/Makefile
+@@ -6,6 +6,7 @@ obj-$(CONFIG_FSL_ENETC) += fsl-enetc.o
+ fsl-enetc-y := enetc_pf.o enetc_mdio.o $(common-objs)
+ fsl-enetc-$(CONFIG_PCI_IOV) += enetc_msg.o
+ fsl-enetc-$(CONFIG_FSL_ENETC_QOS) += enetc_qos.o
++fsl-enetc-$(CONFIG_ENETC_TSN) += enetc_tsn.o
+ 
+ obj-$(CONFIG_FSL_ENETC_VF) += fsl-enetc-vf.o
+ fsl-enetc-vf-y := enetc_vf.o $(common-objs)
+--- a/drivers/net/ethernet/freescale/enetc/enetc.c
++++ b/drivers/net/ethernet/freescale/enetc/enetc.c
+@@ -145,7 +145,8 @@ static int enetc_map_tx_buffs(struct ene
+ 	do_tstamp = (active_offloads & ENETC_F_TX_TSTAMP) &&
+ 		    (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP);
+ 	tx_swbd->do_tstamp = do_tstamp;
+-	tx_swbd->check_wb = tx_swbd->do_tstamp;
++	tx_swbd->qbv_en = !!(active_offloads & ENETC_F_QBV);
++	tx_swbd->check_wb = tx_swbd->do_tstamp || tx_swbd->qbv_en;
+ 
+ 	if (do_vlan || do_tstamp)
+ 		flags |= ENETC_TXBD_FLAGS_EX;
+@@ -342,7 +343,7 @@ static void enetc_tstamp_tx(struct sk_bu
+ static bool enetc_clean_tx_ring(struct enetc_bdr *tx_ring, int napi_budget)
+ {
+ 	struct net_device *ndev = tx_ring->ndev;
+-	int tx_frm_cnt = 0, tx_byte_cnt = 0;
++	int tx_frm_cnt = 0, tx_byte_cnt = 0, tx_win_drop = 0;
+ 	struct enetc_tx_swbd *tx_swbd;
+ 	int i, bds_to_clean;
+ 	bool do_tstamp;
+@@ -372,6 +373,10 @@ static bool enetc_clean_tx_ring(struct e
+ 						    &tstamp);
+ 				do_tstamp = true;
+ 			}
++
++			if (tx_swbd->qbv_en &&
++			    txbd->wb.status & ENETC_TXBD_STATS_WIN)
++				tx_win_drop++;
+ 		}
+ 
+ 		if (likely(tx_swbd->dma))
+@@ -415,6 +420,7 @@ static bool enetc_clean_tx_ring(struct e
+ 	tx_ring->next_to_clean = i;
+ 	tx_ring->stats.packets += tx_frm_cnt;
+ 	tx_ring->stats.bytes += tx_byte_cnt;
++	tx_ring->stats.win_drop += tx_win_drop;
+ 
+ 	if (unlikely(tx_frm_cnt && netif_carrier_ok(ndev) &&
+ 		     __netif_subqueue_stopped(ndev, tx_ring->index) &&
+@@ -778,6 +784,9 @@ void enetc_get_si_caps(struct enetc_si *
+ 
+ 	if (val & ENETC_SIPCAPR0_QBV)
+ 		si->hw_features |= ENETC_SI_F_QBV;
++
++	if (val & ENETC_SIPCAPR0_QBU)
++		si->hw_features |= ENETC_SI_F_QBU;
+ }
+ 
+ static int enetc_dma_alloc_bdr(struct enetc_bdr *r, size_t bd_size)
+--- a/drivers/net/ethernet/freescale/enetc/enetc.h
++++ b/drivers/net/ethernet/freescale/enetc/enetc.h
+@@ -10,6 +10,7 @@
+ #include <linux/ethtool.h>
+ #include <linux/if_vlan.h>
+ #include <linux/phy.h>
++#include <net/tsn.h>
+ 
+ #include "enetc_hw.h"
+ 
+@@ -24,6 +25,7 @@ struct enetc_tx_swbd {
+ 	u8 is_dma_page:1;
+ 	u8 check_wb:1;
+ 	u8 do_tstamp:1;
++	u8 qbv_en:1;
+ };
+ 
+ #define ENETC_RX_MAXFRM_SIZE	ENETC_MAC_MAXFRM_SIZE
+@@ -42,6 +44,7 @@ struct enetc_ring_stats {
+ 	unsigned int packets;
+ 	unsigned int bytes;
+ 	unsigned int rx_alloc_errs;
++	unsigned int win_drop;
+ };
+ 
+ #define ENETC_BDR_DEFAULT_SIZE	1024
+@@ -111,6 +114,28 @@ struct enetc_msg_swbd {
+ 	int size;
+ };
+ 
++#ifdef CONFIG_ENETC_TSN
++/* Credit-Based Shaper parameters */
++struct cbs {
++	u8 tc;
++	bool enable;
++	u8 bw;
++	u32 hi_credit;
++	u32 lo_credit;
++	u32 idle_slope;
++	u32 send_slope;
++	u32 tc_max_sized_frame;
++	u32 max_interfrence_size;
++};
++
++struct enetc_cbs {
++	u32 port_transmit_rate;
++	u32 port_max_size_frame;
++	u8 tc_nums;
++	struct cbs cbs[0];
++};
++#endif
++
+ #define ENETC_REV1	0x1
+ enum enetc_errata {
+ 	ENETC_ERR_TXCSUM	= BIT(0),
+@@ -119,6 +144,7 @@ enum enetc_errata {
+ };
+ 
+ #define ENETC_SI_F_QBV BIT(0)
++#define ENETC_SI_F_QBU BIT(1)
+ 
+ /* PCI IEP device data */
+ struct enetc_si {
+@@ -136,6 +162,10 @@ struct enetc_si {
+ 	int num_rss; /* number of RSS buckets */
+ 	unsigned short pad;
+ 	int hw_features;
++#ifdef CONFIG_ENETC_TSN
++	struct enetc_cbs *ecbs;
++#endif
++
+ };
+ 
+ #define ENETC_SI_ALIGN	32
+@@ -177,6 +207,7 @@ enum enetc_active_offloads {
+ 	ENETC_F_RX_TSTAMP	= BIT(0),
+ 	ENETC_F_TX_TSTAMP	= BIT(1),
+ 	ENETC_F_QBV             = BIT(2),
++	ENETC_F_QBU             = BIT(3),
+ };
+ 
+ struct enetc_ndev_priv {
+@@ -261,3 +292,10 @@ int enetc_setup_tc_cbs(struct net_device
+ #define enetc_sched_speed_set(ndev) (void)0
+ #define enetc_setup_tc_cbs(ndev, type_data) -EOPNOTSUPP
+ #endif
++#ifdef CONFIG_ENETC_TSN
++void enetc_tsn_pf_init(struct net_device *netdev, struct pci_dev *pdev);
++void enetc_tsn_pf_deinit(struct net_device *netdev);
++#else
++#define enetc_tsn_pf_init(netdev, pdev) (void)0
++#define enetc_tsn_pf_deinit(netdev) (void)0
++#endif
+--- a/drivers/net/ethernet/freescale/enetc/enetc_ethtool.c
++++ b/drivers/net/ethernet/freescale/enetc/enetc_ethtool.c
+@@ -183,6 +183,21 @@ static const struct {
+ 	{ ENETC_PICDR(3),   "ICM DR3 discarded frames" },
+ };
+ 
++static const struct {
++	int reg;
++	char name[ETH_GSTRING_LEN];
++} enetc_pmac_counters[] = {
++	{ ENETC_PM1_RFRM,   "PMAC rx frames" },
++	{ ENETC_PM1_RPKT,   "PMAC rx packets" },
++	{ ENETC_PM1_RDRP,   "PMAC rx dropped packets" },
++	{ ENETC_PM1_RFRG,   "PMAC rx fragment packets" },
++	{ ENETC_PM1_TFRM,   "PMAC tx frames" },
++	{ ENETC_PM1_TERR,   "PMAC tx error frames" },
++	{ ENETC_PM1_TPKT,   "PMAC tx packets" },
++	{ ENETC_MAC_MERGE_MMFCRXR,   "MAC merge fragment rx counter" },
++	{ ENETC_MAC_MERGE_MMFCTXR,   "MAC merge fragment tx counter"},
++};
++
+ static const char rx_ring_stats[][ETH_GSTRING_LEN] = {
+ 	"Rx ring %2d frames",
+ 	"Rx ring %2d alloc errors",
+@@ -192,6 +207,10 @@ static const char tx_ring_stats[][ETH_GS
+ 	"Tx ring %2d frames",
+ };
+ 
++static const char tx_windrop_stats[][ETH_GSTRING_LEN] = {
++	"Tx window drop %2d frames",
++};
++
+ static int enetc_get_sset_count(struct net_device *ndev, int sset)
+ {
+ 	struct enetc_ndev_priv *priv = netdev_priv(ndev);
+@@ -209,6 +228,12 @@ static int enetc_get_sset_count(struct n
+ 
+ 	len += ARRAY_SIZE(enetc_port_counters);
+ 
++	if (priv->active_offloads & ENETC_F_QBU)
++		len += ARRAY_SIZE(enetc_pmac_counters);
++
++	if (priv->active_offloads & ENETC_F_QBV)
++		len += ARRAY_SIZE(tx_windrop_stats) * priv->num_tx_rings;
++
+ 	return len;
+ }
+ 
+@@ -247,6 +272,28 @@ static void enetc_get_strings(struct net
+ 				ETH_GSTRING_LEN);
+ 			p += ETH_GSTRING_LEN;
+ 		}
++
++		if (!(priv->active_offloads & ENETC_F_QBU))
++			break;
++
++		for (i = 0; i < ARRAY_SIZE(enetc_pmac_counters); i++) {
++			strlcpy(p, enetc_pmac_counters[i].name,
++				ETH_GSTRING_LEN);
++			p += ETH_GSTRING_LEN;
++		}
++
++		if (!((priv->active_offloads & ENETC_F_QBV)))
++			break;
++
++		for (i = 0; i < priv->num_tx_rings; i++) {
++			for (j = 0; j < ARRAY_SIZE(tx_windrop_stats); j++) {
++				snprintf(p, ETH_GSTRING_LEN,
++					 tx_windrop_stats[j],
++					 i);
++				p += ETH_GSTRING_LEN;
++			}
++		}
++
+ 		break;
+ 	}
+ }
+@@ -274,6 +321,18 @@ static void enetc_get_ethtool_stats(stru
+ 
+ 	for (i = 0; i < ARRAY_SIZE(enetc_port_counters); i++)
+ 		data[o++] = enetc_port_rd(hw, enetc_port_counters[i].reg);
++
++	if (!(priv->active_offloads & ENETC_F_QBU))
++		return;
++
++	for (i = 0; i < ARRAY_SIZE(enetc_pmac_counters); i++)
++		data[o++] = enetc_port_rd(hw, enetc_pmac_counters[i].reg);
++
++	if (!((priv->active_offloads & ENETC_F_QBV)))
++		return;
++
++	for (i = 0; i < priv->num_tx_rings; i++)
++		data[o++] = priv->tx_ring[i]->stats.win_drop;
+ }
+ 
+ #define ENETC_RSSHASH_L3 (RXH_L2DA | RXH_VLAN | RXH_L3_PROTO | RXH_IP_SRC | \
+--- a/drivers/net/ethernet/freescale/enetc/enetc_hw.h
++++ b/drivers/net/ethernet/freescale/enetc/enetc_hw.h
+@@ -19,6 +19,7 @@
+ #define ENETC_SICTR1	0x1c
+ #define ENETC_SIPCAPR0	0x20
+ #define ENETC_SIPCAPR0_QBV	BIT(4)
++#define ENETC_SIPCAPR0_QBU	BIT(3)
+ #define ENETC_SIPCAPR0_RSS	BIT(8)
+ #define ENETC_SIPCAPR1	0x24
+ #define ENETC_SITGTGR	0x30
+@@ -241,10 +242,20 @@ enum enetc_bdr_type {TX, RX};
+ #define ENETC_PCS_IF_MODE_SGMII_AN	0x0003
+ 
+ #define ENETC_PM0_IF_MODE	0x8300
++#define ENETC_PM1_IF_MODE       0x9300
+ #define ENETC_PMO_IFM_RG	BIT(2)
+ #define ENETC_PM0_IFM_RLP	(BIT(5) | BIT(11))
+ #define ENETC_PM0_IFM_RGAUTO	(BIT(15) | ENETC_PMO_IFM_RG | BIT(1))
+ #define ENETC_PM0_IFM_XGMII	BIT(12)
++#define ENETC_PSIDCAPR		0x1b08
++#define ENETC_PSIDCAPR_MSK	GENMASK(15, 0)
++#define ENETC_PSFCAPR		0x1b18
++#define ENETC_PSFCAPR_MSK	GENMASK(15, 0)
++#define ENETC_PSGCAPR		0x1b28
++#define ENETC_PSGCAPR_GCL_MSK	GENMASK(18, 16)
++#define ENETC_PSGCAPR_SGIT_MSK	GENMASK(15, 0)
++#define ENETC_PFMCAPR		0x1b38
++#define ENETC_PFMCAPR_MSK	GENMASK(15, 0)
+ 
+ /* MAC counters */
+ #define ENETC_PM0_REOCT		0x8100
+@@ -294,6 +305,15 @@ enum enetc_bdr_type {TX, RX};
+ #define ENETC_PM0_TSCOL		0x82E0
+ #define ENETC_PM0_TLCOL		0x82E8
+ #define ENETC_PM0_TECOL		0x82F0
++#define ENETC_PM1_RFRM		0x9120
++#define ENETC_PM1_RDRP		0x9158
++#define ENETC_PM1_RPKT		0x9160
++#define ENETC_PM1_RFRG		0x91B8
++#define ENETC_PM1_TFRM		0x9220
++#define ENETC_PM1_TERR		0x9238
++#define ENETC_PM1_TPKT		0x9260
++#define ENETC_MAC_MERGE_MMFCRXR	0x1f14
++#define ENETC_MAC_MERGE_MMFCTXR	0x1f18
+ 
+ /* Port counters */
+ #define ENETC_PICDR(n)		(0x0700 + (n) * 8) /* n = [0..3] */
+@@ -452,6 +472,7 @@ union enetc_tx_bd {
+ #define ENETC_TXBD_FLAGS_CSUM	BIT(3)
+ #define ENETC_TXBD_FLAGS_EX	BIT(6)
+ #define ENETC_TXBD_FLAGS_F	BIT(7)
++#define ENETC_TXBD_STATS_WIN	BIT(7)
+ 
+ static inline void enetc_clear_tx_bd(union enetc_tx_bd *txbd)
+ {
+@@ -479,6 +500,8 @@ static inline __le16 enetc_txbd_l3_csoff
+ #define ENETC_TXBD_L4_UDP	BIT(5)
+ #define ENETC_TXBD_L4_TCP	BIT(6)
+ 
++#define enetc_tsn_is_enabled() IS_ENABLED(CONFIG_ENETC_TSN)
++
+ union enetc_rx_bd {
+ 	struct {
+ 		__le64 addr;
+@@ -625,21 +648,307 @@ enum bdcr_cmd_class {
+ 	BDCR_CMD_RFS,
+ 	BDCR_CMD_PORT_GCL,
+ 	BDCR_CMD_RECV_CLASSIFIER,
++	BDCR_CMD_STREAM_IDENTIFY,
++	BDCR_CMD_STREAM_FILTER,
++	BDCR_CMD_STREAM_GCL,
++	BDCR_CMD_FLOW_METER,
+ 	__BDCR_CMD_MAX_LEN,
+ 	BDCR_CMD_MAX_LEN = __BDCR_CMD_MAX_LEN - 1,
+ };
+ 
++/* class 7, command 0, Stream Identity Entry Configuration */
++struct streamid_conf {
++	__le32	stream_handle;	/* init gate value */
++	__le32	iports;
++		u8	id_type;
++		u8	oui[3];
++		u8	res[3];
++		u8	en;
++};
++
++#define ENETC_CBDR_SID_VID_MASK 0xfff
++#define ENETC_CBDR_SID_VIDM BIT(12)
++#define ENETC_CBDR_SID_TG_MASK 0xc000
++/* streamid_conf address point to this data space */
++struct null_streamid_data {
++	u8	dmac[6];
++	u16	vid_vidm_tg;
++};
++
++struct smac_streamid_data {
++	u8	smac[6];
++	u16	vid_vidm_tg;
++};
++
++/* class 7, command 1, query config , long format */
++/* No need structure define */
++
++#define ENETC_CDBR_SID_ENABLE	BIT(7)
++/*  Stream ID Query Response Data Buffer */
++struct streamid_query_resp {
++	u32	stream_handle;
++	u32	input_ports;
++	u8	id_type;
++	u8	oui[3];
++	u8	mac[6];
++	u16	vid_vidm_tg;
++	u8	res[3];
++	u8  en;
++};
++
++/* class 7, command 2, qeury status count, Stream ID query long format */
++struct streamid_stat_query {
++	u8	res[12];
++	__le32 input_ports;
++};
++
++/* Stream Identity Statistics Query */
++struct streamid_stat_query_resp {
++	u32	psinl;
++	u32	psinh;
++	u64	pspi[32];
++};
++
++#define ENETC_CBDR_SFI_PRI_MASK 0x7
++#define ENETC_CBDR_SFI_PRIM		BIT(3)
++#define ENETC_CBDR_SFI_BLOV		BIT(4)
++#define ENETC_CBDR_SFI_BLEN		BIT(5)
++#define ENETC_CBDR_SFI_MSDUEN	BIT(6)
++#define ENETC_CBDR_SFI_FMITEN	BIT(7)
++#define ENETC_CBDR_SFI_ENABLE	BIT(7)
++/* class 8, command 0, Stream Filter Instance, Short Format */
++struct sfi_conf {
++	__le32	stream_handle;
++		u8	multi;
++		u8	res[2];
++		u8	sthm;
++	/* Max Service Data Unit or Flow Meter Instance Table index.
++	 * Depending on the value of FLT this represents either Max
++	 * Service Data Unit (max frame size) allowed by the filter
++	 * entry or is an index into the Flow Meter Instance table
++	 * index identifying the policer which will be used to police
++	 * it.
++	 */
++	__le16	fm_inst_table_index;
++	__le16	msdu;
++	__le16	sg_inst_table_index;
++		u8	res1[2];
++	__le32	input_ports;
++		u8	res2[3];
++		u8	en;
++};
++
++/* class 8, command 1, Stream Filter Instance, write back, short Format */
++struct sfi_query {
++		u32	stream_handle;
++		u8	multi;
++		u8	res[2];
++		u8	sthm;
++		u16	fm_inst_table_index;
++		u16	msdu;
++		u16	sg_inst_table_index;
++		u8	res1[2];
++		u32	input_ports;
++		u8	res2[3];
++		u8	en;
++};
++
++/* class 8, command 2 stream Filter Instance status query short format
++ * command no need structure define
++ * Stream Filter Instance Query Statistics Response data
++ */
++struct sfi_counter_data {
++	u32 matchl;
++	u32 matchh;
++	u32 msdu_dropl;
++	u32 msdu_droph;
++	u32 stream_gate_dropl;
++	u32 stream_gate_droph;
++	u32 flow_meter_dropl;
++	u32 flow_meter_droph;
++};
++
++#define ENETC_CBDR_SGI_OIPV_MASK 0x7
++#define ENETC_CBDR_SGI_OIPV_EN	BIT(3)
++#define ENETC_CBDR_SGI_CGTST	BIT(6)
++#define ENETC_CBDR_SGI_OGTST	BIT(7)
++#define ENETC_CBDR_SGI_CFG_CHG  BIT(1)
++#define ENETC_CBDR_SGI_CFG_PND  BIT(2)
++#define ENETC_CBDR_SGI_OEX		BIT(4)
++#define ENETC_CBDR_SGI_OEXEN	BIT(5)
++#define ENETC_CBDR_SGI_IRX		BIT(6)
++#define ENETC_CBDR_SGI_IRXEN	BIT(7)
++#define ENETC_CBDR_SGI_ACLLEN_MASK 0x3
++#define ENETC_CBDR_SGI_OCLLEN_MASK 0xc
++#define	ENETC_CBDR_SGI_EN		BIT(7)
++/* class 9, command 0, Stream Gate Instance Table, Short Format
++ * class 9, command 2, Stream Gate Instance Table entry query write back
++ * Short Format
++ */
++struct sgi_table {
++	u8	res[8];
++	u8	oipv;
++	u8	res0[2];
++	u8	ocgtst;
++	u8	res1[7];
++	u8	gset;
++	u8	oacl_len;
++	u8	res2[2];
++	u8	en;
++};
++
++#define ENETC_CBDR_SGI_AIPV_MASK 0x7
++#define ENETC_CBDR_SGI_AIPV_EN	BIT(3)
++#define ENETC_CBDR_SGI_AGTST	BIT(7)
++
++/* class 9, command 1, Stream Gate Control List, Long Format */
++struct sgcl_conf {
++	u8	aipv;
++	u8	res[2];
++	u8	agtst;
++	u8	res1[4];
++	union {
++		struct {
++			u8 res2[4];
++			u8 acl_len;
++			u8 res3[3];
++		};
++		u8 cct[8]; /* Config change time */
++	};
++};
++
++/* stream control list class 9 , cmd 1 data buffer */
++struct sgcl_data {
++	u32	btl;
++	u32 bth;
++	u32	ct;
++	u32	cte;
++	/*struct sgce	*sgcl;*/
++};
++
++/* class 9, command 2, stream gate instant table enery query, short format
++ * write back see struct sgi_table. Do not need define.
++ * class 9, command 3 Stream Gate Control List Query Descriptor - Long Format
++ * ocl_len or acl_len to be 0, oper or admin would not show in the data space
++ * true len will be write back in the space.
++ */
++struct sgcl_query {
++	u8 res[12];
++	u8 oacl_len;
++	u8 res1[3];
++};
++
++/* define for 'stat' */
++#define ENETC_CBDR_SGIQ_AIPV_MASK 0x7
++#define ENETC_CBDR_SGIQ_AIPV_EN	BIT(3)
++#define ENETC_CBDR_SGIQ_AGTST	BIT(4)
++#define ENETC_CBDR_SGIQ_ACL_LEN_MASK 0x60
++#define ENETC_CBDR_SGIQ_OIPV_MASK 0x380
++#define ENETC_CBDR_SGIQ_OIPV_EN	BIT(10)
++#define ENETC_CBDR_SGIQ_OGTST	BIT(11)
++#define ENETC_CBDR_SGIQ_OCL_LEN_MASK 0x3000
++/* class 9, command 3 data space */
++struct sgcl_query_resp {
++	u16 stat;
++	u16 res;
++	u32	abtl;
++	u32 abth;
++	u32	act;
++	u32	acte;
++	u32	cctl;
++	u32 ccth;
++	u32	obtl;
++	u32 obth;
++	u32	oct;
++	u32	octe;
++};
++
++/* class 9, command 4 Stream Gate Instance Table Query Statistics Response
++ * short command, write back, no command define
++ */
++struct sgi_query_stat_resp {
++	u32	pgcl;
++	u32 pgch;
++	u32 dgcl;
++	u32 dgch;
++	u16	msdu_avail;
++	u8 res[6];
++};
++
++#define ENETC_CBDR_FMI_MR	BIT(0)
++#define ENETC_CBDR_FMI_MREN BIT(1)
++#define ENETC_CBDR_FMI_DOY	BIT(2)
++#define	ENETC_CBDR_FMI_CM	BIT(3)
++#define ENETC_CBDR_FMI_CF	BIT(4)
++#define ENETC_CBDR_FMI_NDOR BIT(5)
++#define ENETC_CBDR_FMI_OALEN BIT(6)
++#define ENETC_CBDR_FMI_IRFPP_MASK 0x1f
++/* class 10: command 0/1, Flow Meter Instance Set, short Format */
++struct fmi_conf {
++	__le32	cir;
++	__le32	cbs;
++	__le32	eir;
++	__le32	ebs;
++		u8	conf;
++		u8	res1;
++		u8	ir_fpp;
++		u8	res2[4];
++		u8	en;
++};
++
++/* class:10, command:2, Flow Meter Instance Statistics Query Response */
++struct fmi_query_stat_resp {
++	u32	bcl;
++	u32 bch;
++	u32 dfl;
++	u32 dfh;
++	u32 d0gfl;
++	u32 d0gfh;
++	u32 d1gfl;
++	u32 d1gfh;
++	u32 dyfl;
++	u32 dyfh;
++	u32 ryfl;
++	u32 ryfh;
++	u32 drfl;
++	u32 drfh;
++	u32 rrfl;
++	u32 rrfh;
++	u32 lts;
++	u32 bci;
++	u32 bcf;
++	u32 bei;
++	u32 bef;
++};
++
+ /* class 5, command 0 */
+ struct tgs_gcl_conf {
+ 	u8	atc;	/* init gate value */
+ 	u8	res[7];
+-	struct {
+-		u8	res1[4];
+-		__le16	acl_len;
+-		u8	res2[2];
++	union {
++		struct {
++			u8	res1[4];
++			__le16	acl_len;
++			u8	res2[2];
++		};
++		struct {
++			u32 cctl;
++			u32 ccth;
++		};
+ 	};
+ };
+ 
++#define ENETC_CBDR_SGL_IOMEN	BIT(0)
++#define ENETC_CBDR_SGL_IPVEN	BIT(3)
++#define ENETC_CBDR_SGL_GTST		BIT(4)
++#define ENETC_CBDR_SGL_IPV_MASK 0xe
++/* Stream Gate Control List Entry */
++struct sgce {
++	u32	interval;
++	u8	msdu[3];
++	u8	multi;
++};
++
+ /* gate control list entry */
+ struct gce {
+ 	__le32	period;
+@@ -656,13 +965,55 @@ struct tgs_gcl_data {
+ 	struct gce	entry[0];
+ };
+ 
++/* class 5, command 1 */
++struct tgs_gcl_query {
++		u8	res[12];
++		union {
++			struct {
++				__le16	acl_len; /* admin list length */
++				__le16	ocl_len; /* operation list length */
++			};
++			struct {
++				u16 admin_list_len;
++				u16 oper_list_len;
++			};
++		};
++
++};
++
++/* tgs_gcl_query command response data format */
++struct tgs_gcl_resp {
++	u32	abtl;	/* base time */
++	u32 abth;
++	u32	act;	/* cycle time */
++	u32	acte;	/* cycle time extend */
++	u32	cctl;	/* config change time */
++	u32 ccth;
++	u32 obtl;	/* operation base time */
++	u32 obth;
++	u32	oct;	/* operation cycle time */
++	u32	octe;	/* operation cycle time extend */
++	u32	ccel;	/* config change error */
++	u32 cceh;
++	/*struct gce	*gcl;*/
++};
++
+ struct enetc_cbd {
+ 	union{
++		struct sfi_conf sfi_conf;
++		struct sgi_table sgi_table;
++		struct sgi_query_stat_resp sgi_query_stat_resp;
++		struct fmi_conf fmi_conf;
+ 		struct {
+ 			__le32	addr[2];
+ 			union {
+ 				__le32	opt[4];
+-				struct tgs_gcl_conf	gcl_conf;
++				struct tgs_gcl_conf		gcl_conf;
++				struct tgs_gcl_query	gcl_query;
++				struct streamid_conf		sid_set;
++				struct streamid_stat_query	sid_stat;
++				struct sgcl_conf		sgcl_conf;
++				struct sgcl_query		sgcl_query;
+ 			};
+ 		};	/* Long format */
+ 		__le32 data[6];
+@@ -677,11 +1028,88 @@ struct enetc_cbd {
+ 
+ #define ENETC_CLK  400000000ULL
+ 
++#define ENETC_PTCFPR(n)		(0x1910 + (n) * 4) /* n = [0 ..7] */
++#define ENETC_FPE		BIT(31)
++
++/* Port capability register 0 */
++#define ENETC_PCAPR0_PSFPM	BIT(10)
++#define ENETC_PCAPR0_PSFP	BIT(9)
++#define ENETC_PCAPR0_TSN	BIT(4)
++#define ENETC_PCAPR0_QBU	BIT(3)
++
+ /* port time gating control register */
+ #define ENETC_QBV_PTGCR_OFFSET		0x11a00
+ #define ENETC_QBV_TGE			BIT(31)
+ #define ENETC_QBV_TGPE			BIT(30)
++#define ENETC_QBV_TGDROP_DISABLE	BIT(29)
+ 
+ /* Port time gating capability register */
+ #define ENETC_QBV_PTGCAPR_OFFSET	0x11a08
+ #define ENETC_QBV_MAX_GCL_LEN_MASK	GENMASK(15, 0)
++
++/* Port time gating tick granularity register */
++#define ENETC_QBV_PTGTGR_OFFSET 0x11a0c
++#define ENETC_QBV_TICK_GRAN_MASK 0xffffffff
++
++/* Port time gating admin gate list status register */
++#define ENETC_QBV_PTGAGLSR_OFFSET 0x11a10
++
++#define ENETC_QBV_CFG_PEND_MASK 0x00000002
++
++/* Port time gating admin gate list length register */
++#define ENETC_QBV_PTGAGLLR_OFFSET 0x11a14
++#define ENETC_QBV_ADMIN_GATE_LIST_LENGTH_MASK 0xffff
++
++/* Port time gating operational gate list status register */
++#define ENETC_QBV_PTGOGLSR_OFFSET 0x11a18
++#define ENETC_QBV_HTA_POS_MASK 0xffff0000
++
++#define ENETC_QBV_CURR_POS_MASK 0x0000ffff
++
++/* Port time gating operational gate list length register */
++#define ENETC_QBV_PTGOGLLR_OFFSET 0x11a1c
++#define ENETC_QBV_OPER_GATE_LIST_LENGTH_MASK 0xffff
++
++/* Port time gating current time register */
++#define ENETC_QBV_PTGCTR_OFFSET 0x11a20
++#define ENETC_QBV_CURR_TIME_MASK 0xffffffffffffffff
++
++/* Port traffic class a time gating control register */
++#define ENETC_QBV_PTC0TGCR_OFFSET  0x11a40
++#define ENETC_QBV_PTC1TGCR_OFFSET  0x11a50
++#define ENETC_QBV_PTC2TGCR_OFFSET  0x11a60
++#define ENETC_QBV_PTC3TGCR_OFFSET  0x11a70
++#define ENETC_QBV_PTC4TGCR_OFFSET  0x11a80
++#define ENETC_QBV_PTC5TGCR_OFFSET  0x11a90
++#define ENETC_QBV_PTC6TGCR_OFFSET  0x11aa0
++#define ENETC_QBV_PTC7TGCR_OFFSET  0x11ab0
++
++/* Maximum Service Data Unit. */
++#define ENETC_PTC0MSDUR 0x12020
++#define ENETC_PTC1MSDUR 0x12024
++#define ENETC_PTC2MSDUR 0x12028
++#define ENETC_PTC3MSDUR 0x1202c
++#define ENETC_PTC4MSDUR 0x12030
++#define ENETC_PTC5MSDUR 0x12034
++#define ENETC_PTC6MSDUR 0x12038
++#define ENETC_PTC7MSDUR 0x1203c
++
++#define ENETC_QBV_MAXSDU_MASK 0xffff
++
++/* Port traffic class a time gating status register */
++#define ENETC_QBV_PTC0TGSR_OFFSET  0x11a44
++#define ENETC_QBV_HTA_STATE_MASK  0x10000
++#define ENETC_QBV_CURR_STATE_MASK 0x1
++
++/* Port traffic class a time gating transmission overrun counter register*/
++#define ENETC_QBV_PTC0TGTOCR_OFFSET 0x11a48
++#define ENETC_QBV_TX_OVERRUN_MASK 0xffffffffffffffff
++#define ENETC_TGLSTR 0xa200
++#define ENETC_TGS_MIN_DIS_MASK 0x80000000
++#define ENETC_MIN_LOOKAHEAD_MASK 0xffff
++
++#define ENETC_PPSFPMR 0x11b00
++#define ENETC_PPSFPMR_PSFPEN BIT(0)
++#define ENETC_PPSFPMR_VS BIT(1)
++#define ENETC_PPSFPMR_PVC BIT(2)
++#define ENETC_PPSFPMR_PVZC BIT(3)
+--- a/drivers/net/ethernet/freescale/enetc/enetc_pf.c
++++ b/drivers/net/ethernet/freescale/enetc/enetc_pf.c
+@@ -525,12 +525,16 @@ static void enetc_configure_port_mac(str
+ 		      ENETC_PM0_TX_EN | ENETC_PM0_RX_EN);
+ 	/* set auto-speed for RGMII */
+ 	if (enetc_port_rd(hw, ENETC_PM0_IF_MODE) & ENETC_PMO_IFM_RG ||
+-	    phy_mode == PHY_INTERFACE_MODE_RGMII)
++	    phy_mode == PHY_INTERFACE_MODE_RGMII) {
+ 		enetc_port_wr(hw, ENETC_PM0_IF_MODE, ENETC_PM0_IFM_RGAUTO);
++		enetc_port_wr(hw, ENETC_PM1_IF_MODE, ENETC_PM0_IFM_RGAUTO);
++	}
+ 
+ 	if (phy_mode == PHY_INTERFACE_MODE_XGMII ||
+-	    phy_mode == PHY_INTERFACE_MODE_USXGMII)
++	    phy_mode == PHY_INTERFACE_MODE_USXGMII) {
+ 		enetc_port_wr(hw, ENETC_PM0_IF_MODE, ENETC_PM0_IFM_XGMII);
++		enetc_port_wr(hw, ENETC_PM1_IF_MODE, ENETC_PM0_IFM_XGMII);
++	}
+ }
+ 
+ static void enetc_configure_port_pmac(struct enetc_hw *hw)
+@@ -749,6 +753,9 @@ static void enetc_pf_netdev_setup(struct
+ 	if (si->hw_features & ENETC_SI_F_QBV)
+ 		priv->active_offloads |= ENETC_F_QBV;
+ 
++	if (enetc_tsn_is_enabled() && (si->hw_features & ENETC_SI_F_QBU))
++		priv->active_offloads |= ENETC_F_QBU;
++
+ 	/* pick up primary MAC address from SI */
+ 	enetc_get_primary_mac_addr(&si->hw, ndev->dev_addr);
+ }
+@@ -942,6 +949,8 @@ static int enetc_pf_probe(struct pci_dev
+ 	netif_info(priv, probe, ndev, "%s v%s\n",
+ 		   enetc_drv_name, enetc_drv_ver);
+ 
++	enetc_tsn_pf_init(ndev, pdev);
++
+ 	return 0;
+ 
+ err_reg_netdev:
+@@ -974,6 +983,8 @@ static void enetc_pf_remove(struct pci_d
+ 	netif_info(priv, drv, si->ndev, "%s v%s remove\n",
+ 		   enetc_drv_name, enetc_drv_ver);
+ 
++	enetc_tsn_pf_deinit(si->ndev);
++
+ 	unregister_netdev(si->ndev);
+ 
+ 	enetc_mdio_remove(pf);
+--- /dev/null
++++ b/drivers/net/ethernet/freescale/enetc/enetc_tsn.c
+@@ -0,0 +1,2049 @@
++// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
++/* Copyright 2017-2019 NXP */
++
++#ifdef CONFIG_ENETC_TSN
++#include "enetc.h"
++
++#include <net/tsn.h>
++#include <linux/module.h>
++#include <linux/irqflags.h>
++#include <linux/preempt.h>
++
++static u32 get_ndev_speed(struct net_device *netdev);
++
++static int alloc_cbdr(struct enetc_si *si, struct enetc_cbd **curr_cbd)
++{
++	struct enetc_cbdr *ring = &si->cbd_ring;
++	int i;
++
++	i = ring->next_to_use;
++	*curr_cbd = ENETC_CBD(*ring, i);
++
++	memset(*curr_cbd, 0, sizeof(struct enetc_cbd));
++	return i;
++}
++
++/* Transmit the BD control ring by writing the pir register.
++ * Update the counters maintained by software.
++ */
++static int xmit_cbdr(struct enetc_si *si, int i)
++{
++	struct enetc_cbdr *ring = &si->cbd_ring;
++	struct enetc_cbd *dest_cbd;
++	int nc, timeout;
++
++	i = (i + 1) % ring->bd_count;
++
++	ring->next_to_use = i;
++	/* let H/W know BD ring has been updated */
++	enetc_wr_reg(ring->pir, i);
++
++	timeout = ENETC_CBDR_TIMEOUT;
++
++	do {
++		if (enetc_rd_reg(ring->cir) == i)
++			break;
++		usleep_range(10, 20);
++		timeout -= 10;
++	} while (timeout);
++
++	if (!timeout)
++		return -EBUSY;
++
++	nc = ring->next_to_clean;
++
++	while (enetc_rd_reg(ring->cir) != nc) {
++		dest_cbd = ENETC_CBD(*ring, nc);
++		if (dest_cbd->status_flags & ENETC_CBD_STATUS_MASK)
++			WARN_ON(1);
++
++		nc = (nc + 1) % ring->bd_count;
++	}
++
++	ring->next_to_clean = nc;
++
++	return 0;
++}
++
++static inline u64 get_current_time(struct enetc_si *si)
++{
++	u64 tmp = 0;
++
++	tmp = (u64)enetc_rd(&si->hw, ENETC_SICTR0);
++	return ((u64)enetc_rd(&si->hw, ENETC_SICTR1) << 32) + tmp;
++}
++
++/* Class 10: Flow Meter Instance Statistics Query Descriptor - Long Format */
++int enetc_qci_fmi_counters_get(struct net_device *ndev, u32 index,
++			       struct fmi_query_stat_resp *counters)
++{
++	struct enetc_cbd *cbdr;
++	struct fmi_query_stat_resp *fmi_data;
++	dma_addr_t dma;
++	u16 data_size, dma_size;
++	int curr_cbd;
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	cbdr->index = cpu_to_le16((u16)index);
++	cbdr->cmd = 2;
++	cbdr->cls = BDCR_CMD_FLOW_METER;
++	cbdr->status_flags = 0;
++
++	data_size = sizeof(struct fmi_query_stat_resp);
++
++	fmi_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	if (!fmi_data)
++		return -ENOMEM;
++
++	dma_size = cpu_to_le16(data_size);
++	cbdr->length = dma_size;
++
++	dma = dma_map_single(&priv->si->pdev->dev, fmi_data,
++			     data_size, DMA_FROM_DEVICE);
++	if (dma_mapping_error(&priv->si->pdev->dev, dma)) {
++		netdev_err(priv->si->ndev, "DMA mapping failed!\n");
++		kfree(fmi_data);
++		return -ENOMEM;
++	}
++	cbdr->addr[0] = lower_32_bits(dma);
++	cbdr->addr[1] = upper_32_bits(dma);
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	memcpy(counters, fmi_data, sizeof(struct fmi_query_stat_resp));
++
++	memset(cbdr, 0, sizeof(*cbdr));
++	kfree(fmi_data);
++	return 0;
++}
++
++u16 enetc_get_max_gcl_len(struct enetc_hw *hw)
++{
++	return (enetc_rd(hw, ENETC_QBV_PTGCAPR_OFFSET)
++		& ENETC_QBV_MAX_GCL_LEN_MASK);
++}
++
++void enetc_pspeed_set(struct net_device *ndev)
++{
++	u32 speed, pspeed;
++	u32 difflag = 0;
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++
++	speed = get_ndev_speed(ndev);
++	pspeed = enetc_port_rd(&priv->si->hw, ENETC_PMR)
++		& ENETC_PMR_PSPEED_MASK;
++	switch (speed) {
++	case SPEED_1000:
++		if (pspeed != ENETC_PMR_PSPEED_1000M) {
++			difflag = 1;
++			pspeed = ENETC_PMR_PSPEED_1000M;
++		}
++		break;
++	case SPEED_2500:
++		if (pspeed != ENETC_PMR_PSPEED_2500M) {
++			difflag = 1;
++			pspeed = ENETC_PMR_PSPEED_2500M;
++		}
++
++		break;
++	case SPEED_100:
++		if (pspeed != ENETC_PMR_PSPEED_100M) {
++			difflag = 1;
++			pspeed = ENETC_PMR_PSPEED_100M;
++		}
++		break;
++	case SPEED_10:
++		if (pspeed != ENETC_PMR_PSPEED_10M) {
++			difflag = 1;
++			pspeed = ENETC_PMR_PSPEED_10M;
++		}
++		break;
++	default:
++		netdev_err(ndev, "not support speed\n");
++	}
++
++	if (difflag) {
++		enetc_port_wr(&priv->si->hw, ENETC_PMR,
++			      (enetc_port_rd(&priv->si->hw, ENETC_PMR)
++			      & (~ENETC_PMR_PSPEED_MASK))
++			      | pspeed);
++	}
++}
++
++/* CBD Class 5: Time Gated Scheduling Gate Control List configuration
++ * Descriptor - Long Format
++ */
++int enetc_qbv_set(struct net_device *ndev, struct tsn_qbv_conf *admin_conf)
++{
++	struct enetc_cbd *cbdr;
++	struct tgs_gcl_data *gcl_data;
++	struct tgs_gcl_conf *gcl_config;
++	struct gce *gce;
++	u16 gcl_len;
++	u16 data_size;
++	int i;
++	dma_addr_t dma;
++	int curr_cbd;
++	struct tsn_qbv_basic *admin_basic = &admin_conf->admin;
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	u32 temp;
++	u64 tempclock;
++	struct tsn_port *port;
++
++	port = tsn_get_port(ndev);
++	if (!port) {
++		netdev_err(priv->si->ndev, "TSN device not registered!\n");
++		return -ENODEV;
++	}
++
++	enetc_pspeed_set(ndev);
++
++	gcl_len = admin_basic->control_list_length;
++	if (gcl_len > enetc_get_max_gcl_len(&priv->si->hw))
++		return -EINVAL;
++
++	temp = enetc_rd(&priv->si->hw, ENETC_QBV_PTGCR_OFFSET);
++	if (admin_conf->gate_enabled && !(temp & ENETC_QBV_TGE)) {
++		enetc_wr(&priv->si->hw, ENETC_QBV_PTGCR_OFFSET,
++			 temp & (~ENETC_QBV_TGE));
++		usleep_range(10, 20);
++		enetc_wr(&priv->si->hw, ENETC_QBV_PTGCR_OFFSET,
++			 temp | ENETC_QBV_TGE);
++	} else if (!admin_conf->gate_enabled) {
++		enetc_wr(&priv->si->hw, ENETC_QBV_PTGCR_OFFSET,
++			 temp & (~ENETC_QBV_TGE));
++		memcpy(&port->nd.ntdata, admin_conf, sizeof(*admin_conf));
++		call_tsn_notifiers(TSN_QBV_CONFIGCHANGETIME_ARRIVE,
++				   ndev, &port->nd);
++		return 0;
++	}
++
++	/* Set the maximum frame size for each traffic class index
++	 * PTCaMSDUR[MAXSDU]. The maximum frame size cannot exceed
++	 * 9,600 bytes (0x2580). Frames that exceed the limit are
++	 * discarded.
++	 */
++	if (admin_conf->maxsdu) {
++		enetc_wr(&priv->si->hw, ENETC_PTC0MSDUR, admin_conf->maxsdu);
++		enetc_wr(&priv->si->hw, ENETC_PTC1MSDUR, admin_conf->maxsdu);
++		enetc_wr(&priv->si->hw, ENETC_PTC2MSDUR, admin_conf->maxsdu);
++		enetc_wr(&priv->si->hw, ENETC_PTC3MSDUR, admin_conf->maxsdu);
++		enetc_wr(&priv->si->hw, ENETC_PTC4MSDUR, admin_conf->maxsdu);
++		enetc_wr(&priv->si->hw, ENETC_PTC5MSDUR, admin_conf->maxsdu);
++		enetc_wr(&priv->si->hw, ENETC_PTC6MSDUR, admin_conf->maxsdu);
++		enetc_wr(&priv->si->hw, ENETC_PTC7MSDUR, admin_conf->maxsdu);
++	}
++
++	/* Configure the (administrative) gate control list using the
++	 * control BD descriptor.
++	 */
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	gcl_config = &cbdr->gcl_conf;
++
++	data_size = struct_size(gcl_data, entry, gcl_len);
++
++	gcl_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	if (!gcl_data)
++		return -ENOMEM;
++
++	gce = &gcl_data->entry[0];
++
++	gcl_config->atc = admin_basic->gate_states;
++	gcl_config->acl_len = cpu_to_le16(gcl_len);
++
++	if (!admin_basic->base_time) {
++		gcl_data->btl =
++			cpu_to_le32(enetc_rd(&priv->si->hw, ENETC_SICTR0));
++		gcl_data->bth =
++			cpu_to_le32(enetc_rd(&priv->si->hw, ENETC_SICTR1));
++	} else {
++		gcl_data->btl =
++			cpu_to_le32(lower_32_bits(admin_basic->base_time));
++		gcl_data->bth =
++			cpu_to_le32(upper_32_bits(admin_basic->base_time));
++	}
++
++	gcl_data->ct = cpu_to_le32(admin_basic->cycle_time);
++	gcl_data->cte = cpu_to_le32(admin_basic->cycle_time_extension);
++
++	for (i = 0; i < gcl_len; i++) {
++		struct gce *temp_gce = gce + i;
++		struct tsn_qbv_entry *temp_entry;
++
++		temp_entry = admin_basic->control_list + i;
++
++		temp_gce->gate = temp_entry->gate_state;
++		temp_gce->period = cpu_to_le32(temp_entry->time_interval);
++	}
++
++	cbdr->length = cpu_to_le16(data_size);
++	cbdr->status_flags = 0;
++
++	dma = dma_map_single(&priv->si->pdev->dev, gcl_data,
++			     data_size, DMA_TO_DEVICE);
++	if (dma_mapping_error(&priv->si->pdev->dev, dma)) {
++		netdev_err(priv->si->ndev, "DMA mapping failed!\n");
++		kfree(gcl_data);
++		return -ENOMEM;
++	}
++
++	cbdr->addr[0] = lower_32_bits(dma);
++	cbdr->addr[1] = upper_32_bits(dma);
++	cbdr->cmd = 0;
++	cbdr->cls = BDCR_CMD_PORT_GCL;
++
++	/* Updated by ENETC on completion of the configuration
++	 * command. A zero value indicates success.
++	 */
++	cbdr->status_flags = 0;
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	memcpy(&port->nd.ntdata, admin_conf, sizeof(*admin_conf));
++
++	tempclock = ((u64)le32_to_cpu(gcl_config->ccth)) << 32;
++	port->nd.ntdata.qbv_notify.admin.base_time =
++		le32_to_cpu(gcl_config->cctl) + tempclock;
++
++	memset(cbdr, 0, sizeof(struct enetc_cbd));
++	dma_unmap_single(&priv->si->pdev->dev, dma, data_size, DMA_TO_DEVICE);
++	kfree(gcl_data);
++
++	call_tsn_notifiers(TSN_QBV_CONFIGCHANGETIME_ARRIVE,
++			   ndev, &port->nd);
++
++	return 0;
++}
++
++/* CBD Class 5: Time Gated Scheduling Gate Control List query
++ * Descriptor - Long Format
++ */
++int enetc_qbv_get(struct net_device *ndev, struct tsn_qbv_conf *admin_conf)
++{
++	struct enetc_cbd *cbdr;
++	struct tgs_gcl_resp *gcl_data;
++	struct tgs_gcl_query *gcl_query;
++	struct gce *gce;
++	struct tsn_qbv_basic *admin_basic = &admin_conf->admin;
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	dma_addr_t dma;
++	int curr_cbd;
++	u16 maxlen;
++	u16 data_size, dma_size;
++	u16 admin_len;
++	u16 oper_len;
++	u64 temp;
++	int i;
++
++	if (enetc_rd(&priv->si->hw, ENETC_QBV_PTGCR_OFFSET) & ENETC_QBV_TGE) {
++		admin_conf->gate_enabled = true;
++	} else {
++		admin_conf->gate_enabled = false;
++		return 0;
++	}
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	gcl_query =  &cbdr->gcl_query;
++
++	maxlen = enetc_get_max_gcl_len(&priv->si->hw);
++
++	data_size = sizeof(struct tgs_gcl_resp)
++			+ sizeof(struct gce) * 2 * maxlen;
++
++	gcl_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	if (!gcl_data)
++		return -ENOMEM;
++
++	gce = (struct gce *)(gcl_data + 1);
++
++	gcl_query->acl_len = cpu_to_le16(maxlen);
++
++	dma_size = cpu_to_le16(data_size);
++	cbdr->length = dma_size;
++	cbdr->status_flags = 0;
++
++	dma = dma_map_single(&priv->si->pdev->dev, gcl_data,
++			     data_size, DMA_FROM_DEVICE);
++	if (dma_mapping_error(&priv->si->pdev->dev, dma)) {
++		netdev_err(priv->si->ndev, "DMA mapping failed!\n");
++		kfree(gcl_data);
++		return -ENOMEM;
++	}
++
++	cbdr->addr[0] = lower_32_bits(dma);
++	cbdr->addr[1] = upper_32_bits(dma);
++	cbdr->cmd = 1;
++	cbdr->cls = BDCR_CMD_PORT_GCL;
++	xmit_cbdr(priv->si, curr_cbd);
++	dma_unmap_single(&priv->si->pdev->dev, dma, data_size, DMA_FROM_DEVICE);
++
++	/* since cbdr already passed to free, below could be get wrong */
++	admin_len = le16_to_cpu(gcl_query->admin_list_len);
++	oper_len = le16_to_cpu(gcl_query->oper_list_len);
++
++	admin_basic->control_list_length = admin_len;
++
++	temp = ((u64)le32_to_cpu(gcl_data->abth)) << 32;
++	admin_basic->base_time = le32_to_cpu(gcl_data->abtl) + temp;
++
++	admin_basic->cycle_time = le32_to_cpu(gcl_data->act);
++	admin_basic->cycle_time_extension = le32_to_cpu(gcl_data->acte);
++
++	admin_basic->control_list = kcalloc(admin_len,
++					    sizeof(admin_basic->control_list),
++					    GFP_KERNEL);
++	if (!admin_basic->control_list) {
++		memset(cbdr, 0, sizeof(*cbdr));
++		kfree(gcl_data);
++		return -ENOMEM;
++	}
++
++	for (i = 0; i < admin_len; i++) {
++		struct gce *temp_gce = gce + i;
++		struct tsn_qbv_entry *temp_entry;
++
++		temp_entry = admin_basic->control_list + i;
++
++		temp_entry->gate_state = temp_gce->gate;
++		temp_entry->time_interval = le32_to_cpu(temp_gce->period);
++	}
++
++	/* Updated by ENETC on completion of the configuration
++	 * command. A zero value indicates success.
++	 */
++	admin_conf->config_change = true;
++
++	memset(cbdr, 0, sizeof(*cbdr));
++	kfree(gcl_data);
++
++	return 0;
++}
++
++int enetc_qbv_get_status(struct net_device *ndev,
++			 struct tsn_qbv_status *status)
++{
++	struct enetc_cbd *cbdr;
++	struct tgs_gcl_resp *gcl_data;
++	struct tgs_gcl_query *gcl_query;
++	struct gce *gce;
++	struct tsn_qbv_basic *oper_basic;
++	struct enetc_ndev_priv *priv;
++	dma_addr_t dma;
++	int curr_cbd;
++	u16 maxlen;
++	u16 data_size, dma_size;
++	u16 admin_len;
++	u16 oper_len;
++	u64 temp;
++	int i;
++
++	if (!ndev)
++		return -EINVAL;
++
++	if (!status)
++		return -EINVAL;
++
++	oper_basic = &status->oper;
++	priv = netdev_priv(ndev);
++
++	if (!(enetc_rd(&priv->si->hw, ENETC_QBV_PTGCR_OFFSET) & ENETC_QBV_TGE))
++		return -EINVAL;
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	gcl_query = &cbdr->gcl_query;
++
++	maxlen = enetc_get_max_gcl_len(&priv->si->hw);
++
++	data_size = sizeof(struct tgs_gcl_resp) +
++			sizeof(struct gce) * 2 * maxlen;
++
++	gcl_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	if (!gcl_data)
++		return -ENOMEM;
++
++	gce = (struct gce *)(gcl_data + 1);
++
++	gcl_query->acl_len = cpu_to_le16(maxlen);
++	gcl_query->ocl_len = cpu_to_le16(maxlen);
++
++	dma_size = cpu_to_le16(data_size);
++	cbdr->length = dma_size;
++	cbdr->status_flags = 0; /* long format command no ie */
++
++	dma = dma_map_single(&priv->si->pdev->dev, gcl_data,
++			     data_size, DMA_FROM_DEVICE);
++	if (dma_mapping_error(&priv->si->pdev->dev, dma)) {
++		netdev_err(priv->si->ndev, "DMA mapping failed!\n");
++		kfree(gcl_data);
++		return -ENOMEM;
++	}
++
++	cbdr->addr[0] = lower_32_bits(dma);
++	cbdr->addr[1] = upper_32_bits(dma);
++	cbdr->cmd = 1;
++	cbdr->cls = BDCR_CMD_PORT_GCL;
++	xmit_cbdr(priv->si, curr_cbd);
++	dma_unmap_single(&priv->si->pdev->dev, dma, data_size, DMA_FROM_DEVICE);
++
++	/* since cbdr already passed to free, below could be get wrong */
++	admin_len = le16_to_cpu(gcl_query->admin_list_len);
++	oper_len = le16_to_cpu(gcl_query->oper_list_len);
++
++	if (enetc_rd(&priv->si->hw, ENETC_QBV_PTGAGLSR_OFFSET) &
++						ENETC_QBV_CFG_PEND_MASK) {
++		status->config_pending = true;
++		goto exit;
++	}
++
++	/* The Oper and Admin timing fields exist in the response buffer even
++	 * if no valid corresponding lists exists. These fields are considered
++	 * invalid if the corresponding list does not exist.
++	 */
++	status->config_pending = false;
++	temp = ((u64)le32_to_cpu(gcl_data->ccth)) << 32;
++	status->config_change_time = le32_to_cpu(gcl_data->cctl) + temp;
++
++	temp = ((u64)le32_to_cpu(gcl_data->cceh)) << 32;
++	status->config_change_error = le32_to_cpu(gcl_data->ccel) + temp;
++
++	/* changed to SITGTGR */
++	status->tick_granularity = enetc_rd(&priv->si->hw, ENETC_SITGTGR);
++
++	/* current time */
++	status->current_time = get_current_time(priv->si);
++
++	status->supported_list_max = maxlen;
++
++	/* status->oper.gate_states , no init oper/admin gate state */
++	status->oper.control_list_length = oper_len;
++	temp = ((u64)le32_to_cpu(gcl_data->obth)) << 32;
++	status->oper.base_time = le32_to_cpu(gcl_data->obtl) + temp;
++	status->oper.cycle_time = le32_to_cpu(gcl_data->oct);
++	status->oper.cycle_time_extension = le32_to_cpu(gcl_data->octe);
++
++	oper_basic->control_list =
++		kcalloc(oper_len, sizeof(oper_basic->control_list), GFP_KERNEL);
++	if (!oper_basic->control_list) {
++		memset(cbdr, 0, sizeof(*cbdr));
++		kfree(gcl_data);
++		return -ENOMEM;
++	}
++
++	for (i = 0; i < oper_len; i++) {
++		struct gce *temp_gce = gce + maxlen + i;
++		struct tsn_qbv_entry *temp_entry = oper_basic->control_list + i;
++
++		temp_entry->gate_state = temp_gce->gate;
++		temp_entry->time_interval = le32_to_cpu(temp_gce->period);
++	}
++
++exit:
++	memset(cbdr, 0, sizeof(*cbdr));
++	kfree(gcl_data);
++	return 0;
++}
++
++/* CBD Class 7: Stream Identity Entry Set Descriptor - Long Format */
++int enetc_cb_streamid_set(struct net_device *ndev, u32 index,
++			  bool en, struct tsn_cb_streamid *streamid)
++{
++	struct enetc_cbd *cbdr;
++	void *si_data;
++	struct null_streamid_data *si_data1;
++	struct smac_streamid_data *si_data2;
++	struct streamid_conf *si_conf;
++	struct enetc_ndev_priv *priv;
++	dma_addr_t dma;
++	u16 data_size, dma_size;
++	int curr_cbd;
++
++	if (!ndev)
++		return -EINVAL;
++
++	priv = netdev_priv(ndev);
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	cbdr->index = cpu_to_le16((u16)index);
++	cbdr->cmd = 0;
++	cbdr->cls = BDCR_CMD_STREAM_IDENTIFY;
++	cbdr->status_flags = 0;
++
++	data_size = sizeof(struct null_streamid_data);
++	si_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	cbdr->length = cpu_to_le16(data_size);
++
++	dma = dma_map_single(&priv->si->pdev->dev, si_data,
++			     data_size, DMA_FROM_DEVICE);
++	if (dma_mapping_error(&priv->si->pdev->dev, dma)) {
++		netdev_err(priv->si->ndev, "DMA mapping failed!\n");
++		kfree(si_data);
++		return -ENOMEM;
++	}
++
++	cbdr->addr[0] = lower_32_bits(dma);
++	cbdr->addr[1] = upper_32_bits(dma);
++	si_data1 = (struct null_streamid_data *)si_data;
++	si_data1->dmac[0] = 0xFF;
++	si_data1->dmac[1] = 0xFF;
++	si_data1->dmac[2] = 0xFF;
++	si_data1->dmac[3] = 0xFF;
++	si_data1->dmac[4] = 0xFF;
++	si_data1->dmac[5] = 0xFF;
++	si_data1->vid_vidm_tg =
++		cpu_to_le16(ENETC_CBDR_SID_VID_MASK
++			    + ((0x3 << 14) | ENETC_CBDR_SID_VIDM));
++
++	si_conf = &cbdr->sid_set;
++	/* Only one port supported for one entry, set itself */
++	si_conf->iports = 1 << (priv->si->pdev->devfn & 0x7);
++	si_conf->id_type = 1;
++	si_conf->oui[2] = 0x0;
++	si_conf->oui[1] = 0x80;
++	si_conf->oui[0] = 0xC2;
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	memset(cbdr, 0, sizeof(*cbdr));
++	kfree(si_data);
++
++	if (!en)
++		return 0;
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	cbdr->index = cpu_to_le16((u16)index);
++	cbdr->cmd = 0;
++	cbdr->cls = BDCR_CMD_STREAM_IDENTIFY;
++	cbdr->status_flags = 0;
++
++	si_conf = &cbdr->sid_set;
++	si_conf->en = 0x80;
++	si_conf->stream_handle = cpu_to_le32(streamid->handle);
++	si_conf->iports = 1 << (priv->si->pdev->devfn & 0x7);
++	si_conf->id_type = streamid->type;
++	si_conf->oui[2] = 0x0;
++	si_conf->oui[1] = 0x80;
++	si_conf->oui[0] = 0xC2;
++
++	if (si_conf->id_type == 1) {
++		data_size = sizeof(struct null_streamid_data);
++		si_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	} else if (si_conf->id_type == 2) {
++		data_size = sizeof(struct smac_streamid_data);
++		si_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	} else {
++		return -EINVAL;
++	}
++
++	if (!si_data)
++		return -ENOMEM;
++
++	dma_size = cpu_to_le16(data_size);
++	cbdr->length = dma_size;
++	cbdr->status_flags = 0;
++
++	dma = dma_map_single(&priv->si->pdev->dev, si_data,
++			     data_size, DMA_FROM_DEVICE);
++	if (dma_mapping_error(&priv->si->pdev->dev, dma)) {
++		netdev_err(priv->si->ndev, "DMA mapping failed!\n");
++		memset(cbdr, 0, sizeof(*cbdr));
++		kfree(si_data);
++		return -ENOMEM;
++	}
++	cbdr->addr[0] = lower_32_bits(dma);
++	cbdr->addr[1] = upper_32_bits(dma);
++
++	/* VIDM default to be 1.
++	 * VID Match. If set (b1) then the VID must match, otherwise
++	 * any VID is considered a match. VIDM setting is only used
++	 * when TG is set to b01.
++	 */
++	if (si_conf->id_type == 1) {
++		si_data1 = (struct null_streamid_data *)si_data;
++		si_data1->dmac[0] = streamid->para.nid.dmac & 0xFF;
++		si_data1->dmac[1] = (streamid->para.nid.dmac >> 8) & 0xFF;
++		si_data1->dmac[2] = (streamid->para.nid.dmac >> 16) & 0xFF;
++		si_data1->dmac[3] = (streamid->para.nid.dmac >> 24) & 0xFF;
++		si_data1->dmac[4] = (streamid->para.nid.dmac >> 32) & 0xFF;
++		si_data1->dmac[5] = (streamid->para.nid.dmac >> 40) & 0xFF;
++		si_data1->vid_vidm_tg =
++		cpu_to_le16((streamid->para.nid.vid & ENETC_CBDR_SID_VID_MASK) +
++			    ((((u16)(streamid->para.nid.tagged) & 0x3) << 14)
++			     | ENETC_CBDR_SID_VIDM));
++	} else if (si_conf->id_type == 2) {
++		si_data2 = (struct smac_streamid_data *)si_data;
++		si_data2->smac[0] = streamid->para.sid.smac & 0xFF;
++		si_data2->smac[1] = (streamid->para.sid.smac >> 8) & 0xFF;
++		si_data2->smac[2] = (streamid->para.sid.smac >> 16) & 0xFF;
++		si_data2->smac[3] = (streamid->para.sid.smac >> 24) & 0xFF;
++		si_data2->smac[4] = (streamid->para.sid.smac >> 32) & 0xFF;
++		si_data2->smac[5] = (streamid->para.sid.smac >> 40) & 0xFF;
++		si_data2->vid_vidm_tg =
++		cpu_to_le16((streamid->para.sid.vid & ENETC_CBDR_SID_VID_MASK) +
++			    ((((u16)(streamid->para.sid.tagged) & 0x3) << 14)
++			     | ENETC_CBDR_SID_VIDM));
++	}
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	memset(cbdr, 0, sizeof(*cbdr));
++	kfree(si_data);
++
++	return 0;
++}
++
++/* CBD Class 7: Stream Identity Entry Query Descriptor - Long Format */
++int enetc_cb_streamid_get(struct net_device *ndev, u32 index,
++			  struct tsn_cb_streamid *streamid)
++{
++	struct enetc_cbd *cbdr;
++	struct streamid_query_resp *si_data;
++	struct enetc_ndev_priv *priv;
++	dma_addr_t dma;
++	u16 data_size, dma_size;
++	int curr_cbd;
++	int valid;
++
++	if (!ndev)
++		return -EINVAL;
++
++	priv = netdev_priv(ndev);
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	cbdr->index = cpu_to_le32(index);
++	cbdr->cmd = 1;
++	cbdr->cls = BDCR_CMD_STREAM_IDENTIFY;
++	cbdr->status_flags = 0;
++
++	data_size = sizeof(struct streamid_query_resp);
++	si_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	if (!si_data)
++		return -ENOMEM;
++
++	dma_size = cpu_to_le16(data_size);
++	cbdr->length = dma_size;
++	cbdr->status_flags = 0; /* long format command no ie */
++
++	dma = dma_map_single(&priv->si->pdev->dev, si_data,
++			     data_size, DMA_FROM_DEVICE);
++	if (dma_mapping_error(&priv->si->pdev->dev, dma)) {
++		netdev_err(priv->si->ndev, "DMA mapping failed!\n");
++		kfree(si_data);
++		return -ENOMEM;
++	}
++	cbdr->addr[0] = lower_32_bits(dma);
++	cbdr->addr[1] = upper_32_bits(dma);
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	streamid->type = si_data->id_type;
++
++	if (streamid->type == 1) {
++		streamid->para.nid.dmac = si_data->mac[0]
++			+ ((u64)si_data->mac[1] << 8)
++			+ ((u64)si_data->mac[2] << 16)
++			+ ((u64)si_data->mac[3] << 24)
++			+ ((u64)si_data->mac[4] << 32)
++			+ ((u64)si_data->mac[5] << 40);
++		/* VID Match. If set (b1) then the VID must match, otherwise
++		 * any VID is considered a match.
++		 */
++		streamid->para.nid.vid =
++				le16_to_cpu(si_data->vid_vidm_tg
++					    & ENETC_CBDR_SID_VID_MASK);
++		streamid->para.nid.tagged =
++				le16_to_cpu(si_data->vid_vidm_tg >> 14 & 0x3);
++	} else if (streamid->type == 2) {
++		streamid->para.sid.smac = si_data->mac[0]
++			+ ((u64)si_data->mac[1] << 8)
++			+ ((u64)si_data->mac[2] << 16)
++			+ ((u64)si_data->mac[3] << 24)
++			+ ((u64)si_data->mac[4] << 32)
++			+ ((u64)si_data->mac[5] << 40);
++		/* VID Match. If set (b1) then the VID must match, otherwise
++		 * any VID is considered a match.
++		 */
++		streamid->para.sid.vid =
++				le16_to_cpu(si_data->vid_vidm_tg
++					    & ENETC_CBDR_SID_VID_MASK);
++		streamid->para.sid.tagged =
++				le16_to_cpu(si_data->vid_vidm_tg >> 14 & 0x3);
++	}
++
++	streamid->handle = le32_to_cpu(si_data->stream_handle);
++	streamid->ifac_iport = le32_to_cpu(si_data->input_ports);
++	valid = si_data->en ? 1 : 0;
++
++	memset(cbdr, 0, sizeof(*cbdr));
++	kfree(si_data);
++
++	return valid;
++}
++
++/*  CBD Class 7: Stream Identity Statistics Query Descriptor - Long Format */
++int enetc_cb_streamid_counters_get(struct net_device *ndev, u32 index,
++				   struct tsn_cb_streamid_counters *counters)
++{
++	return 0;
++}
++
++void enetc_qci_enable(struct enetc_hw *hw)
++{
++	enetc_wr(hw, ENETC_PPSFPMR, enetc_rd(hw, ENETC_PPSFPMR)
++		 | ENETC_PPSFPMR_PSFPEN | ENETC_PPSFPMR_VS
++		 | ENETC_PPSFPMR_PVC | ENETC_PPSFPMR_PVZC);
++}
++
++void enetc_qci_disable(struct enetc_hw *hw)
++{
++	enetc_wr(hw, ENETC_PPSFPMR, enetc_rd(hw, ENETC_PPSFPMR)
++		 & ~ENETC_PPSFPMR_PSFPEN & ~ENETC_PPSFPMR_VS
++		 & ~ENETC_PPSFPMR_PVC & ~ENETC_PPSFPMR_PVZC);
++}
++
++/* CBD Class 8: Stream Filter Instance Set Descriptor - Short Format */
++int enetc_qci_sfi_set(struct net_device *ndev, u32 index, bool en,
++		      struct tsn_qci_psfp_sfi_conf *tsn_qci_sfi)
++{
++	struct enetc_cbd *cbdr;
++	struct sfi_conf *sfi_config;
++
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	int curr_cbd;
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	cbdr->index = cpu_to_le16(index);
++	cbdr->cmd = 0;
++	cbdr->cls = BDCR_CMD_STREAM_FILTER;
++	cbdr->status_flags = 0x80;
++	cbdr->length = cpu_to_le16(1);
++
++	sfi_config = &cbdr->sfi_conf;
++	if (en)
++		sfi_config->en = 0x80;
++
++	if (tsn_qci_sfi->stream_handle_spec >= 0) {
++		sfi_config->stream_handle =
++			cpu_to_le32(tsn_qci_sfi->stream_handle_spec);
++		sfi_config->sthm |= 0x80;
++	}
++
++	sfi_config->sg_inst_table_index =
++		cpu_to_le16(tsn_qci_sfi->stream_gate_instance_id);
++	sfi_config->input_ports = 1 << (priv->si->pdev->devfn & 0x7);
++
++	/* The priority value which may be matched against the
++	 * frame’s priority value to determine a match for this entry.
++	 */
++	if (tsn_qci_sfi->priority_spec >= 0)
++		sfi_config->multi |= (tsn_qci_sfi->priority_spec & 0x7) | 0x8;
++
++	/* Filter Type. Identifies the contents of the MSDU/FM_INST_INDEX
++	 * field as being either an MSDU value or an index into the Flow
++	 * Meter Instance table.
++	 */
++	if (tsn_qci_sfi->stream_filter.maximum_sdu_size != 0) {
++		sfi_config->msdu =
++		cpu_to_le16(tsn_qci_sfi->stream_filter.maximum_sdu_size);
++		sfi_config->multi |= 0x40;
++	}
++
++	if (tsn_qci_sfi->stream_filter.flow_meter_instance_id >= 0) {
++		sfi_config->fm_inst_table_index =
++		cpu_to_le16(tsn_qci_sfi->stream_filter.flow_meter_instance_id);
++		sfi_config->multi |= 0x80;
++	}
++
++	/* Stream blocked due to oversized frame enable. TRUE or FALSE */
++	if (tsn_qci_sfi->block_oversize_enable)
++		sfi_config->multi |= 0x20;
++
++	/* Stream blocked due to oversized frame. TRUE or FALSE */
++	if (tsn_qci_sfi->block_oversize)
++		sfi_config->multi |= 0x10;
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	memset(cbdr, 0, sizeof(*cbdr));
++	return 0;
++}
++
++/* CBD Class 8: Stream Filter Instance Query Descriptor - Short Format */
++int enetc_qci_sfi_get(struct net_device *ndev, u32 index,
++		      struct tsn_qci_psfp_sfi_conf *tsn_qci_sfi)
++{
++	struct enetc_cbd *cbdr;
++	struct sfi_conf *sfi_config;
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	int curr_cbd;
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	cbdr->index = cpu_to_le16(index);
++	cbdr->cmd = 1;
++	cbdr->cls = BDCR_CMD_STREAM_FILTER;
++	cbdr->status_flags = 0x80;
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	sfi_config = &cbdr->sfi_conf;
++	if (sfi_config->sthm & 0x80)
++		tsn_qci_sfi->stream_handle_spec =
++			le32_to_cpu(sfi_config->stream_handle);
++	else
++		tsn_qci_sfi->stream_handle_spec = -1;
++
++	tsn_qci_sfi->stream_gate_instance_id =
++		le16_to_cpu(sfi_config->sg_inst_table_index);
++
++	if (sfi_config->multi & 0x8)
++		tsn_qci_sfi->priority_spec =
++			le16_to_cpu(sfi_config->multi & 0x7);
++	else
++		tsn_qci_sfi->priority_spec = -1;
++
++	/* Filter Type. Identifies the contents of the MSDU/FM_INST_INDEX
++	 * field as being either an MSDU value or an index into the Flow
++	 * Meter Instance table.
++	 */
++	if (sfi_config->multi & 0x80)
++		tsn_qci_sfi->stream_filter.flow_meter_instance_id =
++			le16_to_cpu(sfi_config->fm_inst_table_index);
++	else
++		tsn_qci_sfi->stream_filter.flow_meter_instance_id = -1;
++
++	if (sfi_config->multi & 0x40)
++		tsn_qci_sfi->stream_filter.maximum_sdu_size =
++			le16_to_cpu(sfi_config->msdu);
++
++	/* Stream blocked due to oversized frame enable. TRUE or FALSE */
++	if (sfi_config->multi & 0x20)
++		tsn_qci_sfi->block_oversize_enable = true;
++	/* Stream blocked due to oversized frame. TRUE or FALSE */
++	if (sfi_config->multi & 0x10)
++		tsn_qci_sfi->block_oversize = true;
++
++	if (sfi_config->en & 0x80) {
++		memset(cbdr, 0, sizeof(*cbdr));
++		return 1;
++	}
++
++	memset(cbdr, 0, sizeof(*cbdr));
++	return 0;
++}
++
++/* CBD Class 8: Stream Filter Instance Query Statistics
++ * Descriptor - Long Format
++ */
++int enetc_qci_sfi_counters_get(struct net_device *ndev, u32 index,
++			       struct tsn_qci_psfp_sfi_counters *counters)
++{
++	struct enetc_cbd *cbdr;
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	int curr_cbd;
++	struct sfi_counter_data *sfi_counter_data;
++	dma_addr_t dma;
++	u16 data_size, dma_size;
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	cbdr->index = cpu_to_le16((u16)index);
++	cbdr->cmd = 2;
++	cbdr->cls = BDCR_CMD_STREAM_FILTER;
++	cbdr->status_flags = 0;
++
++	data_size = sizeof(struct sfi_counter_data);
++	sfi_counter_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	if (!sfi_counter_data)
++		return -ENOMEM;
++
++	dma = dma_map_single(&priv->si->pdev->dev, sfi_counter_data,
++			     data_size, DMA_FROM_DEVICE);
++	if (dma_mapping_error(&priv->si->pdev->dev, dma)) {
++		netdev_err(priv->si->ndev, "DMA mapping failed!\n");
++		kfree(sfi_counter_data);
++		return -ENOMEM;
++	}
++	cbdr->addr[0] = lower_32_bits(dma);
++	cbdr->addr[1] = upper_32_bits(dma);
++
++	dma_size = cpu_to_le16(data_size);
++	cbdr->length = dma_size;
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	counters->matching_frames_count =
++			((u64)le32_to_cpu(sfi_counter_data->matchh) << 32)
++			+ sfi_counter_data->matchl;
++
++	counters->not_passing_sdu_count =
++			((u64)le32_to_cpu(sfi_counter_data->msdu_droph) << 32)
++			+ sfi_counter_data->msdu_dropl;
++
++	counters->passing_sdu_count = counters->matching_frames_count
++				- counters->not_passing_sdu_count;
++
++	counters->not_passing_frames_count =
++		((u64)le32_to_cpu(sfi_counter_data->stream_gate_droph) << 32)
++		+ le32_to_cpu(sfi_counter_data->stream_gate_dropl);
++
++	counters->passing_frames_count = counters->matching_frames_count
++				- counters->not_passing_sdu_count
++				- counters->not_passing_frames_count;
++
++	counters->red_frames_count =
++		((u64)le32_to_cpu(sfi_counter_data->flow_meter_droph) << 32)
++		+ le32_to_cpu(sfi_counter_data->flow_meter_dropl);
++
++	memset(cbdr, 0, sizeof(*cbdr));
++	return 0;
++}
++
++/* CBD Class 9: Stream Gate Instance Table Entry Set
++ * Descriptor - Short Format
++ */
++int enetc_qci_sgi_set(struct net_device *ndev, u32 index,
++		      struct tsn_qci_psfp_sgi_conf *tsn_qci_sgi)
++{
++	struct enetc_cbd *cbdr, *cbdr_sgcl;
++	struct sgi_table *sgi_config;
++	struct sgcl_conf *sgcl_config;
++	struct sgcl_data *sgcl_data;
++	struct sgce *sgce;
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++
++	dma_addr_t dma;
++	u16 data_size, dma_size;
++	int curr_cbd, i;
++
++	/* disable first */
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++	memset(cbdr, 0, sizeof(*cbdr));
++
++	cbdr->index = cpu_to_le16(index);
++	cbdr->cmd = 0;
++	cbdr->cls = BDCR_CMD_STREAM_GCL;
++	cbdr->status_flags = 0x80;
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	if (!tsn_qci_sgi->gate_enabled) {
++		memset(cbdr, 0, sizeof(*cbdr));
++		return 0;
++	}
++
++	/* Re-enable */
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++	memset(cbdr, 0, sizeof(*cbdr));
++
++	cbdr->index = cpu_to_le16(index);
++	cbdr->cmd = 0;
++	cbdr->cls = BDCR_CMD_STREAM_GCL;
++	cbdr->status_flags = 0x80;
++
++	sgi_config = &cbdr->sgi_table;
++
++	sgi_config->ocgtst = tsn_qci_sgi->admin.control_list_length ?
++			0x80 : (tsn_qci_sgi->admin.gate_states ? 0x80 : 0x0);
++
++	sgi_config->oipv =
++		tsn_qci_sgi->admin.control_list_length ?
++		0x0 : ((tsn_qci_sgi->admin.init_ipv < 0) ?
++		       0x0 : ((tsn_qci_sgi->admin.init_ipv & 0x7) | 0x8));
++
++	sgi_config->en = 0x80;
++
++	if (tsn_qci_sgi->block_invalid_rx_enable)
++		sgi_config->gset |= 0x80;
++	if (tsn_qci_sgi->block_invalid_rx)
++		sgi_config->gset |= 0x40;
++	if (tsn_qci_sgi->block_octets_exceeded)
++		sgi_config->gset |= 0x10;
++	if (tsn_qci_sgi->block_octets_exceeded_enable)
++		sgi_config->gset |= 0x20;
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	if (tsn_qci_sgi->admin.control_list_length == 0)
++		goto exit;
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr_sgcl);
++	memset(cbdr, 0, sizeof(*cbdr));
++
++	cbdr_sgcl->index = cpu_to_le16(index);
++	cbdr_sgcl->cmd = 1;
++	cbdr_sgcl->cls = BDCR_CMD_STREAM_GCL;
++	cbdr_sgcl->status_flags = 0;
++
++	sgcl_config = &cbdr_sgcl->sgcl_conf;
++
++	/* tsn_qci_sgi->admin.control_list_length is not zero now */
++	if (tsn_qci_sgi->admin.control_list_length > 4)
++		return -EINVAL;
++
++	sgcl_config->acl_len =
++		(tsn_qci_sgi->admin.control_list_length - 1) & 0x3;
++
++	data_size = sizeof(struct sgcl_data) +
++		(sgcl_config->acl_len + 1) * sizeof(struct sgce);
++
++	sgcl_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	if (!sgcl_data)
++		return -ENOMEM;
++
++	dma_size = cpu_to_le16(data_size);
++	cbdr_sgcl->length = dma_size;
++
++	dma = dma_map_single(&priv->si->pdev->dev,
++			     sgcl_data, data_size,
++			     DMA_FROM_DEVICE);
++	if (dma_mapping_error(&priv->si->pdev->dev, dma)) {
++		netdev_err(priv->si->ndev, "DMA mapping failed!\n");
++		memset(cbdr, 0, sizeof(*cbdr));
++		memset(cbdr_sgcl, 0, sizeof(*cbdr_sgcl));
++		kfree(sgcl_data);
++		return -ENOMEM;
++	}
++	cbdr_sgcl->addr[0] = lower_32_bits(dma);
++	cbdr_sgcl->addr[1] = upper_32_bits(dma);
++
++	sgce = (struct sgce *)(sgcl_data + 1);
++
++	if (tsn_qci_sgi->admin.gate_states)
++		sgcl_config->agtst = 0x80;
++
++	sgcl_data->ct = cpu_to_le32(tsn_qci_sgi->admin.cycle_time);
++	sgcl_data->cte = cpu_to_le32(tsn_qci_sgi->admin.cycle_time_extension);
++
++	if (tsn_qci_sgi->admin.init_ipv >= 0)
++		sgcl_config->aipv = (tsn_qci_sgi->admin.init_ipv & 0x7) | 0x8;
++
++	for (i = 0; i < tsn_qci_sgi->admin.control_list_length; i++) {
++		struct tsn_qci_psfp_gcl *temp_sgcl = tsn_qci_sgi->admin.gcl + i;
++		struct sgce *temp_entry = (struct sgce *)(sgce + i);
++
++		if (temp_sgcl->gate_state)
++			temp_entry->multi |= 0x10;
++
++		if (temp_sgcl->ipv >= 0)
++			temp_entry->multi |= ((temp_sgcl->ipv & 0x7) << 5)
++						| 0x08;
++
++		if (temp_sgcl->octet_max)
++			temp_entry->multi |= 0x01;
++
++		temp_entry->interval = cpu_to_le32(temp_sgcl->time_interval);
++		temp_entry->msdu[0] = temp_sgcl->octet_max & 0xFF;
++		temp_entry->msdu[1] = (temp_sgcl->octet_max >> 8) & 0xFF;
++		temp_entry->msdu[2] = (temp_sgcl->octet_max >> 16) & 0xFF;
++	}
++
++	if (!tsn_qci_sgi->admin.base_time) {
++		sgcl_data->btl =
++			cpu_to_le32(enetc_rd(&priv->si->hw, ENETC_SICTR0));
++		sgcl_data->bth =
++			cpu_to_le32(enetc_rd(&priv->si->hw, ENETC_SICTR1));
++	} else {
++		u32 tempu, templ;
++
++		tempu = upper_32_bits(tsn_qci_sgi->admin.base_time);
++		templ = lower_32_bits(tsn_qci_sgi->admin.base_time);
++		sgcl_data->bth = cpu_to_le32(tempu);
++		sgcl_data->btl = cpu_to_le32(templ);
++	}
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	memset(cbdr_sgcl, 0, sizeof(*cbdr_sgcl));
++	kfree(sgcl_data);
++
++exit:
++	memset(cbdr, 0, sizeof(*cbdr));
++	return 0;
++}
++
++/* CBD Class 9: Stream Gate Instance Table Entry Query
++ * Descriptor - Short Format
++ */
++int enetc_qci_sgi_get(struct net_device *ndev, u32 index,
++		      struct tsn_qci_psfp_sgi_conf *tsn_qci_sgi)
++{
++	struct enetc_cbd *cbdr, *cbdr_sgcl;
++	struct sgi_table *sgi_config;
++	struct sgcl_query *sgcl_query;
++	struct sgcl_query_resp *sgcl_data;
++	struct sgce *sgce;
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	dma_addr_t dma;
++	u16 data_size, dma_size, gcl_data_stat = 0;
++	u8 admin_len = 0;
++	int curr_cbd, i;
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	cbdr->index = cpu_to_le16(index);
++	cbdr->cmd = 2;
++	cbdr->cls = BDCR_CMD_STREAM_GCL;
++	cbdr->status_flags = 0x80;
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	sgi_config = &cbdr->sgi_table;
++
++	tsn_qci_sgi->admin.gate_states = (sgi_config->ocgtst & 0x80) ?
++						true : false;
++	if (sgi_config->oipv & 0x08)
++		tsn_qci_sgi->admin.init_ipv = sgi_config->oipv & 0x7;
++	else
++		tsn_qci_sgi->admin.init_ipv = -1;
++
++	if (sgi_config->en & 0x80)
++		tsn_qci_sgi->gate_enabled = true;
++	if (sgi_config->gset & 0x80)
++		tsn_qci_sgi->block_invalid_rx_enable = true;
++	if (sgi_config->gset & 0x40)
++		tsn_qci_sgi->block_invalid_rx = true;
++	if (sgi_config->gset & 0x20)
++		tsn_qci_sgi->block_octets_exceeded_enable = true;
++	if (sgi_config->gset & 0x10)
++		tsn_qci_sgi->block_octets_exceeded = true;
++
++	/* Check gate list length is zero? */
++	if (!(sgi_config->oacl_len & 0x30)) {
++		tsn_qci_sgi->admin.control_list_length = 0;
++		goto exit;
++	}
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr_sgcl);
++
++	cbdr_sgcl->index = cpu_to_le16(index);
++	cbdr_sgcl->cmd = 3;
++	cbdr_sgcl->cls = BDCR_CMD_STREAM_GCL;
++	cbdr_sgcl->status_flags = 0;
++
++	data_size = sizeof(struct sgcl_query_resp) + 4 * sizeof(struct sgce);
++
++	sgcl_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	if (!sgcl_data)
++		return -ENOMEM;
++
++	dma_size = cpu_to_le16(data_size);
++	cbdr_sgcl->length = dma_size;
++	cbdr_sgcl->status_flags = 0;
++
++	sgcl_query = &cbdr_sgcl->sgcl_query;
++
++	sgcl_query->oacl_len = 0x10;
++
++	dma = dma_map_single(&priv->si->pdev->dev, sgcl_data,
++			     data_size, DMA_FROM_DEVICE);
++	if (dma_mapping_error(&priv->si->pdev->dev, dma)) {
++		netdev_err(priv->si->ndev, "DMA mapping failed!\n");
++		memset(cbdr, 0, sizeof(*cbdr));
++		memset(cbdr_sgcl, 0, sizeof(*cbdr_sgcl));
++		kfree(sgcl_data);
++		return -ENOMEM;
++	}
++	cbdr_sgcl->addr[0] = lower_32_bits(dma);
++	cbdr_sgcl->addr[1] = upper_32_bits(dma);
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	sgce = (struct sgce *)(sgcl_data + 1);
++
++	gcl_data_stat = le16_to_cpu(sgcl_data->stat);
++	if (gcl_data_stat & 0x10)
++		tsn_qci_sgi->admin.gate_states = true;
++
++	if (gcl_data_stat & 0x80)
++		tsn_qci_sgi->admin.init_ipv = gcl_data_stat & 0x7;
++	else
++		tsn_qci_sgi->admin.init_ipv = -1;
++
++	/* admin_len can also get from gcl_data_stat bit 5,6
++	 * OR sgi_config->oacl_len
++	 */
++	admin_len = (sgcl_query->oacl_len & 0x3) + 1;
++	tsn_qci_sgi->admin.control_list_length = admin_len;
++	tsn_qci_sgi->admin.cycle_time = le32_to_cpu(sgcl_data->act);
++	tsn_qci_sgi->admin.cycle_time_extension = le32_to_cpu(sgcl_data->acte);
++	tsn_qci_sgi->admin.base_time = ((u64)(le32_to_cpu(sgcl_data->abth))
++					      << 32)
++					+ le32_to_cpu(sgcl_data->abtl);
++
++	tsn_qci_sgi->admin.gcl = kcalloc(admin_len,
++					 sizeof(struct tsn_qci_psfp_gcl),
++					 GFP_KERNEL);
++	if (!tsn_qci_sgi->admin.gcl) {
++		kfree(sgcl_data);
++		return -ENOMEM;
++	}
++
++	for (i = 0; i < admin_len; i++) {
++		struct tsn_qci_psfp_gcl *temp_sgcl = tsn_qci_sgi->admin.gcl + i;
++		struct sgce *temp_entry = (struct sgce *)(sgce + i);
++
++		if (temp_entry->multi & 0x10)
++			temp_sgcl->gate_state = true;
++
++		if (temp_entry->multi & 0x08)
++			temp_sgcl->ipv = temp_entry->multi >> 5;
++		else
++			temp_sgcl->ipv = -1;
++
++		temp_sgcl->time_interval = le32_to_cpu(temp_entry->interval);
++
++		if (temp_entry->multi & 0x01)
++			temp_sgcl->octet_max = (temp_entry->msdu[0] & 0xff)
++				| (((u32)temp_entry->msdu[1] << 8) & 0xff00)
++				| (((u32)temp_entry->msdu[1] << 16) & 0xff0000);
++		else
++			temp_sgcl->octet_max = 0;
++	}
++
++	memset(cbdr_sgcl, 0, sizeof(*cbdr_sgcl));
++	kfree(sgcl_data);
++
++exit:
++	memset(cbdr, 0, sizeof(*cbdr));
++	return 0;
++}
++
++/* CBD Class 9: Stream Gate Instance Table Entry Query Descriptor
++ * CBD Class 9: Stream Gate Control List Query Descriptor
++ */
++int enetc_qci_sgi_status_get(struct net_device *ndev, u16 index,
++			     struct tsn_psfp_sgi_status *status)
++{
++	struct enetc_cbd *cbdr_sgi, *cbdr_sgcl;
++	struct sgi_table *sgi_config;
++	struct sgcl_query *sgcl_query;
++	struct sgcl_query_resp *sgcl_data;
++	struct sgce *sgce;
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	dma_addr_t dma;
++	u16 data_size, dma_size, gcl_data_stat = 0;
++	u8 oper_len = 0;
++	int curr_cbd, i;
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr_sgi);
++
++	cbdr_sgi->index = cpu_to_le16(index);
++	cbdr_sgi->cmd = 2;
++	cbdr_sgi->cls = BDCR_CMD_STREAM_GCL;
++	cbdr_sgi->status_flags = 0x80;
++
++	sgi_config = &cbdr_sgi->sgi_table;
++
++	if (sgi_config->gset & 0x4)
++		status->config_pending = true;
++
++	status->oper.gate_states = ((sgi_config->ocgtst & 0x80) ? true : false);
++
++	/* Check gate list length is zero */
++	if (!(sgi_config->oacl_len & 0x30)) {
++		status->oper.control_list_length = 0;
++		goto cmd2quit;
++	}
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr_sgcl);
++
++	cbdr_sgcl->index = cpu_to_le16(index);
++	cbdr_sgcl->cmd = 3;
++	cbdr_sgcl->cls = BDCR_CMD_STREAM_GCL;
++	cbdr_sgcl->status_flags = 0;
++
++	/* Max size */
++	data_size = sizeof(struct sgcl_query_resp) + 4 * sizeof(struct sgce);
++
++	sgcl_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	if (!sgcl_data)
++		return -ENOMEM;
++
++	dma_size = cpu_to_le16(data_size);
++	cbdr_sgcl->length = dma_size;
++	cbdr_sgcl->status_flags = 0;
++
++	sgcl_query = &cbdr_sgcl->sgcl_query;
++
++	sgcl_query->oacl_len = 0x20;
++
++	dma = dma_map_single(&priv->si->pdev->dev, sgcl_data,
++			     data_size, DMA_FROM_DEVICE);
++	if (dma_mapping_error(&priv->si->pdev->dev, dma)) {
++		netdev_err(priv->si->ndev, "DMA mapping failed!\n");
++		memset(cbdr_sgi, 0, sizeof(*cbdr_sgi));
++		memset(cbdr_sgcl, 0, sizeof(*cbdr_sgcl));
++		kfree(sgcl_data);
++		return -ENOMEM;
++	}
++	cbdr_sgcl->addr[0] = lower_32_bits(dma);
++	cbdr_sgcl->addr[1] = upper_32_bits(dma);
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	sgce = (struct sgce *)(sgcl_data + 1);
++
++	/* oper_len can also get from gcl_data_stat bit 5,6
++	 * OR sgi_config->oacl_len
++	 */
++	oper_len = ((sgcl_query->oacl_len & 0x0c) >> 2) + 1;
++
++	/* Get Stream Gate Control List */
++	status->oper.cycle_time = le32_to_cpu(sgcl_data->oct);
++	status->oper.cycle_time_extension = le32_to_cpu(sgcl_data->octe);
++	status->oper.base_time = le32_to_cpu(sgcl_data->obtl)
++				+ ((u64)le32_to_cpu(sgcl_data->obth) << 32);
++	status->oper.control_list_length = oper_len;
++
++	gcl_data_stat = le16_to_cpu(sgcl_data->stat);
++	if (gcl_data_stat & 0x400)
++		status->oper.init_ipv = gcl_data_stat & 0x38 >> 7;
++	else
++		status->oper.init_ipv = -1;
++
++	if (gcl_data_stat & 0x800)
++		status->oper.gate_states = true;
++
++	status->oper.gcl = kcalloc(oper_len,
++				   sizeof(struct tsn_qci_psfp_gcl),
++				   GFP_KERNEL);
++	if (!status->oper.gcl) {
++		memset(cbdr_sgi, 0, sizeof(*cbdr_sgi));
++		memset(cbdr_sgcl, 0, sizeof(*cbdr_sgcl));
++		kfree(sgcl_data);
++		return -ENOMEM;
++	}
++
++	for (i = 0; i < oper_len; i++) {
++		struct tsn_qci_psfp_gcl *temp_sgcl = status->oper.gcl + i;
++		struct sgce *temp_entry = (struct sgce *)(sgce + i);
++
++		if (temp_entry->multi & 0x10)
++			temp_sgcl->gate_state = true;
++
++		if (temp_entry->multi & 0x08)
++			temp_sgcl->ipv = temp_entry->multi >> 5;
++		else
++			temp_sgcl->ipv = -1;
++
++		temp_sgcl->time_interval = le32_to_cpu(temp_entry->interval);
++
++		if (temp_entry->multi & 0x01)
++			temp_sgcl->octet_max = temp_entry->msdu[0]
++					| ((((u32)temp_entry->msdu[1]) << 8)
++					   & 0xff00)
++					| ((((u32)temp_entry->msdu[2]) << 16)
++					   & 0xff0000);
++		else
++			temp_sgcl->octet_max = 0;
++	}
++
++	status->config_change_time = le32_to_cpu(sgcl_data->cctl)
++				+ ((u64)le32_to_cpu(sgcl_data->ccth) << 32);
++
++	memset(cbdr_sgcl, 0, sizeof(*cbdr_sgcl));
++	kfree(sgcl_data);
++
++cmd2quit:
++	/* changed to SITGTGR */
++	status->tick_granularity = enetc_rd(&priv->si->hw, ENETC_SITGTGR);
++
++	/* current time */
++	status->current_time = get_current_time(priv->si);
++
++	memset(cbdr_sgi, 0, sizeof(*cbdr_sgi));
++
++	return 0;
++}
++
++/* CBD Class 10: Flow Meter Instance Set Descriptor - Short Format */
++int enetc_qci_fmi_set(struct net_device *ndev, u32 index, bool enable,
++		      struct tsn_qci_psfp_fmi *tsn_qci_fmi)
++{
++	struct enetc_cbd *cbdr;
++	struct fmi_conf *fmi_config;
++
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	int curr_cbd;
++	u64 temp = 0;
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	cbdr->index = cpu_to_le16((u16)index);
++	cbdr->cmd = 0;
++	cbdr->cls = BDCR_CMD_FLOW_METER;
++	cbdr->status_flags = 0x80;
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	if (!enable) {
++		memset(cbdr, 0, sizeof(*cbdr));
++		return 0;
++	}
++
++	/* Re-enable */
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++	memset(cbdr, 0, sizeof(*cbdr));
++	cbdr->index = cpu_to_le16((u16)index);
++	cbdr->cmd = 0;
++	cbdr->cls = BDCR_CMD_FLOW_METER;
++	cbdr->status_flags = 0x80;
++
++	fmi_config = &cbdr->fmi_conf;
++	fmi_config->en = 0x80;
++	if (tsn_qci_fmi->cir) {
++		temp = (u64)1000 * tsn_qci_fmi->cir;
++		temp = temp / 3725;
++	}
++	fmi_config->cir = cpu_to_le32((u32)temp);
++	fmi_config->cbs = cpu_to_le32(tsn_qci_fmi->cbs);
++	temp = 0;
++	if (tsn_qci_fmi->eir) {
++		temp = (u64)1000 * tsn_qci_fmi->eir;
++		temp = temp / 3725;
++	}
++	fmi_config->eir = cpu_to_le32((u32)temp);
++	fmi_config->ebs = cpu_to_le32(tsn_qci_fmi->ebs);
++
++	if (tsn_qci_fmi->mark_red)
++		fmi_config->conf |= 0x1;
++
++	if (tsn_qci_fmi->mark_red_enable)
++		fmi_config->conf |= 0x2;
++
++	if (tsn_qci_fmi->drop_on_yellow)
++		fmi_config->conf |= 0x4;
++
++	if (tsn_qci_fmi->cm)
++		fmi_config->conf |= 0x8;
++
++	if (tsn_qci_fmi->cf)
++		fmi_config->conf |= 0x10;
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	memset(cbdr, 0, sizeof(*cbdr));
++	return 0;
++}
++
++/* CBD Class 10: Flow Meter Instance Query Descriptor - Short Format */
++int enetc_qci_fmi_get(struct net_device *ndev, u32 index,
++		      struct tsn_qci_psfp_fmi *tsn_qci_fmi,
++		      struct tsn_qci_psfp_fmi_counters *counters)
++{
++	struct enetc_cbd *cbdr;
++	struct fmi_conf *fmi_config;
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	int curr_cbd;
++	u16 data_size, dma_size;
++	dma_addr_t dma;
++	struct fmi_query_stat_resp *fmi_counter_data;
++	u64 temp = 0;
++
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	cbdr->index = cpu_to_le16(index);
++	cbdr->cmd = 1;
++	cbdr->cls = BDCR_CMD_FLOW_METER;
++	cbdr->status_flags = 0x80;
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	fmi_config = &cbdr->fmi_conf;
++	if (fmi_config->cir) {
++		temp = (u64)3725 * fmi_config->cir;
++		temp = temp / 1000;
++	}
++	tsn_qci_fmi->cir = le32_to_cpu((u32)temp);
++	tsn_qci_fmi->cbs = le32_to_cpu(fmi_config->cbs);
++	temp = 0;
++	if (fmi_config->eir) {
++		temp = (u64)3725 * fmi_config->eir;
++		temp = temp / 1000;
++	}
++	tsn_qci_fmi->eir = le32_to_cpu((u32)temp);
++	tsn_qci_fmi->ebs = le32_to_cpu(fmi_config->ebs);
++
++	if (fmi_config->conf & 0x1)
++		tsn_qci_fmi->mark_red = true;
++
++	if (fmi_config->conf & 0x2)
++		tsn_qci_fmi->mark_red_enable = true;
++
++	if (fmi_config->conf & 0x4)
++		tsn_qci_fmi->drop_on_yellow = true;
++
++	if (fmi_config->conf & 0x8)
++		tsn_qci_fmi->cm = true;
++
++	if (fmi_config->conf & 0x10)
++		tsn_qci_fmi->cf = true;
++
++	memset(cbdr, 0, sizeof(*cbdr));
++
++	/* Get counters */
++	curr_cbd = alloc_cbdr(priv->si, &cbdr);
++
++	cbdr->index = cpu_to_le16(index);
++	cbdr->cmd = 2;
++	cbdr->cls = BDCR_CMD_FLOW_METER;
++	cbdr->status_flags = 0x0;
++
++	data_size = sizeof(struct fmi_query_stat_resp);
++	fmi_counter_data = kzalloc(data_size, __GFP_DMA | GFP_KERNEL);
++	if (!fmi_counter_data)
++		return -ENOMEM;
++
++	dma = dma_map_single(&priv->si->pdev->dev, fmi_counter_data,
++			     data_size, DMA_FROM_DEVICE);
++	if (dma_mapping_error(&priv->si->pdev->dev, dma)) {
++		netdev_err(priv->si->ndev, "DMA mapping failed!\n");
++		kfree(fmi_counter_data);
++		return -ENOMEM;
++	}
++	cbdr->addr[0] = lower_32_bits(dma);
++	cbdr->addr[1] = upper_32_bits(dma);
++
++	dma_size = cpu_to_le16(data_size);
++	cbdr->length = dma_size;
++
++	xmit_cbdr(priv->si, curr_cbd);
++
++	memcpy(counters, fmi_counter_data, sizeof(*counters));
++
++	return 0;
++}
++
++int enetc_qbu_set(struct net_device *ndev, u8 ptvector)
++{
++	u32 temp;
++	int i;
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++
++	temp = enetc_rd(&priv->si->hw, ENETC_QBV_PTGCR_OFFSET);
++	if (temp & ENETC_QBV_TGE)
++		enetc_wr(&priv->si->hw, ENETC_QBV_PTGCR_OFFSET,
++			 temp & (~ENETC_QBV_TGPE));
++
++	for (i = 0; i < 8; i++) {
++		/* 1 Enabled. Traffic is transmitted on the preemptive MAC. */
++		temp = enetc_port_rd(&priv->si->hw, ENETC_PTCFPR(i));
++
++		if ((ptvector >> i) & 0x1)
++			enetc_port_wr(&priv->si->hw,
++				      ENETC_PTCFPR(i),
++				      temp | ENETC_FPE);
++		else
++			enetc_port_wr(&priv->si->hw,
++				      ENETC_PTCFPR(i),
++				      temp & ~ENETC_FPE);
++	}
++
++	return 0;
++}
++
++int enetc_qbu_get(struct net_device *ndev,
++		  struct tsn_preempt_status *preemptstat)
++{
++	int i;
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++
++	if (enetc_port_rd(&priv->si->hw, ENETC_PFPMR) & ENETC_PFPMR_PMACE) {
++		preemptstat->preemption_active = true;
++		if (enetc_rd(&priv->si->hw, ENETC_QBV_PTGCR_OFFSET)
++							& ENETC_QBV_TGE)
++			preemptstat->hold_request = 1;
++		else
++			preemptstat->hold_request = 2;
++	} else {
++		preemptstat->preemption_active = false;
++		return 0;
++	}
++
++	for (i = 0; i < 8; i++)
++		if (enetc_port_rd(&priv->si->hw, ENETC_PTCFPR(i)) & 0x80000000)
++			preemptstat->admin_state |= 1 << i;
++
++	preemptstat->hold_advance =
++		enetc_rd(&priv->si->hw, ENETC_QBV_PTGCR_OFFSET) & 0xFFFF;
++	preemptstat->release_advance =
++		enetc_rd(&priv->si->hw, ENETC_QBV_PTGCR_OFFSET) & 0xFFFF;
++
++	return 0;
++}
++
++u32 __enetc_tsn_get_cap(struct enetc_si *si)
++{
++	u32 reg = 0;
++	u32 cap = 0;
++
++	reg = enetc_port_rd(&si->hw, ENETC_PCAPR0);
++
++	if (reg & ENETC_PCAPR0_PSFP)
++		cap |= TSN_CAP_QCI;
++
++	if (reg & ENETC_PCAPR0_TSN)
++		cap |= TSN_CAP_QBV;
++
++	if (reg & ENETC_PCAPR0_QBU)
++		cap |= TSN_CAP_QBU;
++
++	cap |= TSN_CAP_CBS;
++	cap |= TSN_CAP_TBS;
++
++	return cap;
++}
++
++u32 enetc_tsn_get_capability(struct net_device *ndev)
++{
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++
++	return __enetc_tsn_get_cap(priv->si);
++}
++
++static int  __enetc_get_max_cap(struct enetc_si *si,
++				struct tsn_qci_psfp_stream_param *stream_para)
++{
++	u32 reg = 0;
++
++	/* Port stream filter capability */
++	reg = enetc_port_rd(&si->hw, ENETC_PSFCAPR);
++	stream_para->max_sf_instance = reg & ENETC_PSFCAPR_MSK;
++	/* Port stream filter capability */
++	reg = enetc_port_rd(&si->hw, ENETC_PSGCAPR);
++	stream_para->max_sg_instance = (reg & ENETC_PSGCAPR_SGIT_MSK);
++	stream_para->supported_list_max = (reg & ENETC_PSGCAPR_GCL_MSK) >> 16;
++	/* Port flow meter capability */
++	reg = enetc_port_rd(&si->hw, ENETC_PFMCAPR);
++	stream_para->max_fm_instance = reg & ENETC_PFMCAPR_MSK;
++
++	return 0;
++}
++
++int enetc_get_max_cap(struct net_device *ndev,
++		      struct tsn_qci_psfp_stream_param *stream_para)
++{
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++
++	return __enetc_get_max_cap(priv->si, stream_para);
++}
++
++static int enetc_set_cbs(struct net_device *ndev, u8 tc, u8 bw)
++{
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	struct enetc_si *si = priv->si;
++	struct enetc_cbs *ecbs = si->ecbs;
++	struct cbs *cbs;
++
++	int bw_sum = 0;
++	u32 port_transmit_rate;
++	u32 port_frame_max_size;
++	u8 tc_nums;
++	int i;
++
++	u32 max_interfrence_size;
++	u32 send_slope;
++	u32 hi_credit;
++
++	if (!ecbs)
++		return -ENOMEM;
++
++	port_transmit_rate = get_ndev_speed(si->ndev);
++	if (port_transmit_rate != ecbs->port_transmit_rate)
++		ecbs->port_transmit_rate = port_transmit_rate;
++	port_frame_max_size = ecbs->port_max_size_frame;
++	tc_nums = ecbs->tc_nums;
++	cbs = ecbs->cbs;
++
++	if (tc >= tc_nums) {
++		dev_err(&ndev->dev, "Make sure the TC less than %d\n", tc_nums);
++		return -EINVAL;
++	}
++
++	if (!bw) {
++		if (cbs[tc].enable) {
++			/* Make sure the other TC that are numerically
++			 * lower than this TC have been disabled.
++			 */
++			for (i = 0; i < tc; i++) {
++				if (cbs[i].enable)
++					break;
++			}
++			if (i < tc) {
++				dev_err(&ndev->dev,
++					"TC%d has been disabled first\n", i);
++				return -EINVAL;
++			}
++			memset(&cbs[tc], 0, sizeof(*cbs));
++			cbs[tc].enable = false;
++			enetc_port_wr(&si->hw, ENETC_PTCCBSR1(tc), 0);
++			enetc_port_wr(&si->hw, ENETC_PTCCBSR0(tc), 0);
++		}
++		return 0;
++	}
++
++	/* Make sure the other TC that are numerically
++	 * higher than this TC have been enabled.
++	 */
++	for (i = tc_nums - 1; i > tc; i--) {
++		if (!cbs[i].enable) {
++			dev_err(&ndev->dev,
++				"TC%d has been enabled first\n", i);
++			return -EINVAL;
++		}
++		bw_sum += cbs[i].bw;
++	}
++
++	if (bw_sum + bw >= 100) {
++		dev_err(&ndev->dev,
++			"The sum of all CBS Bandwidth cann't exceed 100\n");
++		return -EINVAL;
++	}
++
++	cbs[tc].bw = bw;
++	cbs[tc].tc_max_sized_frame = enetc_port_rd(&si->hw, ENETC_PTCMSDUR(tc));
++	cbs[tc].idle_slope = port_transmit_rate / 100 * bw;
++	cbs[tc].send_slope = port_transmit_rate - cbs[tc].idle_slope;
++
++	/* For TC7, the max_interfrence_size is ENETC_MAC_MAXFRM_SIZE.
++	 * For TC6, the max_interfrence_size is calculated as below:
++	 *
++	 *      max_interfrence_size = (M0 + Ma + Ra * M0 / (R0 - Ra))
++	 *
++	 * For other traffic class, for example SR class Q:
++	 *
++	 *                            R0 * (M0 + Ma + ... + Mp)
++	 *      max_interfrence_size =  ------------------------------
++	 *                            (R0 - Ra) + ... + (R0 - Rp)
++	 *
++	 */
++
++	if (tc == tc_nums - 1) {
++		cbs[tc].max_interfrence_size = port_frame_max_size * 8;
++
++	} else if (tc == tc_nums - 2) {
++		cbs[tc].max_interfrence_size = (port_frame_max_size
++				+ cbs[tc + 1].tc_max_sized_frame
++				+ port_frame_max_size * (cbs[tc + 1].idle_slope
++				/ cbs[tc + 1].send_slope)) * 8;
++	} else {
++		max_interfrence_size = port_frame_max_size;
++		send_slope = 0;
++		for (i = tc + 1; i < tc_nums; i++) {
++			send_slope += cbs[i].send_slope;
++			max_interfrence_size += cbs[i].tc_max_sized_frame;
++		}
++		max_interfrence_size = ((u64)port_transmit_rate
++				* max_interfrence_size) / send_slope;
++		cbs[tc].max_interfrence_size = max_interfrence_size * 8;
++	}
++
++	cbs[tc].hi_credit = cbs[tc].max_interfrence_size * cbs[tc].bw / 100;
++	cbs[tc].lo_credit = cbs[tc].tc_max_sized_frame * (cbs[tc].send_slope
++			/ port_transmit_rate);
++	cbs[tc].tc = tc;
++
++	hi_credit = (ENETC_CLK * 100L) * (u64)cbs[tc].hi_credit
++			/ port_transmit_rate;
++	enetc_port_wr(&si->hw, ENETC_PTCCBSR1(tc), hi_credit);
++
++	/* Set bw register and enable this traffic class*/
++	enetc_port_wr(&si->hw, ENETC_PTCCBSR0(tc),
++		      (cbs[tc].bw & 0x7F) | (1 << 31));
++	cbs[tc].enable = true;
++
++	return 0;
++}
++
++static int enetc_get_cbs(struct net_device *ndev, u8 tc)
++{
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	struct enetc_si *si = priv->si;
++	struct enetc_cbs *ecbs = si->ecbs;
++	struct cbs *cbs;
++
++	if (!ecbs)
++		return -ENOMEM;
++	cbs = ecbs->cbs;
++	if (tc >= ecbs->tc_nums) {
++		dev_err(&ndev->dev, "The maximum of TC is %d\n", ecbs->tc_nums);
++		return -EINVAL;
++	}
++
++	return cbs[tc].bw;
++}
++
++static int enetc_set_tsd(struct net_device *ndev, struct tsn_tsd *ttsd)
++{
++	return 0;
++}
++
++static int enetc_get_tsd(struct net_device *ndev, struct tsn_tsd_status *tts)
++{
++	return 0;
++}
++
++static u32 get_ndev_speed(struct net_device *netdev)
++{
++	struct ethtool_link_ksettings ksettings;
++	int rc = -1;
++
++	if (netdev->ethtool_ops->get_link_ksettings) {
++		if (netdev->ethtool_ops->begin) {
++			rc = netdev->ethtool_ops->begin(netdev);
++			if (rc < 0)
++				return 0;
++		}
++
++		memset(&ksettings, 0, sizeof(ksettings));
++
++		if (!netdev->ethtool_ops->get_link_ksettings)
++			return 0;
++
++		rc = netdev->ethtool_ops->get_link_ksettings(netdev,
++							     &ksettings);
++
++		if (netdev->ethtool_ops->complete)
++			netdev->ethtool_ops->complete(netdev);
++	}
++
++	return (rc < 0) ? 0 : ksettings.base.speed;
++}
++
++static void enetc_cbs_init(struct enetc_si *si)
++{
++	struct enetc_ndev_priv *priv = netdev_priv(si->ndev);
++	u8 tc_nums;
++
++	tc_nums = priv->num_tx_rings;
++	si->ecbs = kzalloc(sizeof(*si->ecbs) +
++			   sizeof(struct cbs) * tc_nums, GFP_KERNEL);
++	if (!si->ecbs)
++		return;
++
++	si->ecbs->port_max_size_frame = si->ndev->mtu + ETH_HLEN
++						+ VLAN_HLEN + ETH_FCS_LEN;
++	si->ecbs->tc_nums = tc_nums;
++	si->ecbs->port_transmit_rate = get_ndev_speed(si->ndev);
++
++	/*This trick is used only for CFP*/
++	if (!si->ecbs->port_transmit_rate)
++		si->ecbs->port_transmit_rate = 1000000000;
++
++	if (!si->ecbs->port_transmit_rate) {
++		dev_err(&si->pdev->dev, "Failure to get port speed for CBS\n");
++		kfree(si->ecbs);
++		si->ecbs = NULL;
++	}
++}
++
++static void enetc_qbv_init(struct enetc_hw *hw)
++{
++	/* Set PSPEED to be 1Gbps */
++	enetc_port_wr(hw, ENETC_PMR,
++		      (enetc_port_rd(hw, ENETC_PMR)
++		      & (~ENETC_PMR_PSPEED_MASK))
++		      | ENETC_PMR_PSPEED_1000M);
++}
++
++void enetc_tsn_init(struct net_device *ndev)
++{
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	struct enetc_si *si = priv->si;
++	u32 capability = 0;
++
++	capability = __enetc_tsn_get_cap(si);
++
++	if (capability & TSN_CAP_CBS)
++		enetc_cbs_init(si);
++
++	if (capability & TSN_CAP_QBV)
++		enetc_qbv_init(&si->hw);
++
++	if (capability & TSN_CAP_QCI)
++		enetc_qci_enable(&si->hw);
++
++	dev_info(&si->pdev->dev, "%s: setup done\n", __func__);
++}
++
++void enetc_tsn_deinit(struct net_device *ndev)
++{
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	struct enetc_si *si = priv->si;
++
++	dev_info(&si->pdev->dev, "%s: release\n", __func__);
++}
++
++static struct tsn_ops enetc_tsn_ops_full = {
++	.device_init = enetc_tsn_init,
++	.device_deinit = enetc_tsn_deinit,
++	.get_capability = enetc_tsn_get_capability,
++	.qbv_set = enetc_qbv_set,
++	.qbv_get = enetc_qbv_get,
++	.qbv_get_status = enetc_qbv_get_status,
++	.cb_streamid_set = enetc_cb_streamid_set,
++	.cb_streamid_get = enetc_cb_streamid_get,
++	.cb_streamid_counters_get = enetc_cb_streamid_counters_get,
++	.qci_get_maxcap = enetc_get_max_cap,
++	.qci_sfi_set = enetc_qci_sfi_set,
++	.qci_sfi_get = enetc_qci_sfi_get,
++	.qci_sfi_counters_get = enetc_qci_sfi_counters_get,
++	.qci_sgi_set = enetc_qci_sgi_set,
++	.qci_sgi_get = enetc_qci_sgi_get,
++	.qci_sgi_status_get = enetc_qci_sgi_status_get,
++	.qci_fmi_set = enetc_qci_fmi_set,
++	.qci_fmi_get = enetc_qci_fmi_get,
++	.qbu_set = enetc_qbu_set,
++	.qbu_get = enetc_qbu_get,
++	.cbs_set = enetc_set_cbs,
++	.cbs_get = enetc_get_cbs,
++	.tsd_set = enetc_set_tsd,
++	.tsd_get = enetc_get_tsd,
++};
++
++static struct tsn_ops enetc_tsn_ops_part = {
++	.device_init = enetc_tsn_init,
++	.device_deinit = enetc_tsn_deinit,
++	.get_capability = enetc_tsn_get_capability,
++	.cb_streamid_set = enetc_cb_streamid_set,
++	.cb_streamid_get = enetc_cb_streamid_get,
++	.cb_streamid_counters_get = enetc_cb_streamid_counters_get,
++	.qci_get_maxcap = enetc_get_max_cap,
++	.qci_sfi_set = enetc_qci_sfi_set,
++	.qci_sfi_get = enetc_qci_sfi_get,
++	.qci_sfi_counters_get = enetc_qci_sfi_counters_get,
++	.qci_sgi_set = enetc_qci_sgi_set,
++	.qci_sgi_get = enetc_qci_sgi_get,
++	.qci_sgi_status_get = enetc_qci_sgi_status_get,
++	.qci_fmi_set = enetc_qci_fmi_set,
++	.qci_fmi_get = enetc_qci_fmi_get,
++};
++
++void enetc_tsn_pf_init(struct net_device *netdev, struct pci_dev *pdev)
++{
++	int port = pdev->devfn & 0x7;
++
++	if (port == 1 || port == 3)
++		tsn_port_register(netdev, &enetc_tsn_ops_part,
++				  (u16)pdev->bus->number);
++	else
++		tsn_port_register(netdev, &enetc_tsn_ops_full,
++				  (u16)pdev->bus->number);
++}
++
++void enetc_tsn_pf_deinit(struct net_device *netdev)
++{
++	tsn_port_unregister(netdev);
++}
++#endif	/* #if IS_ENABLED(CONFIG_ENETC_TSN) */

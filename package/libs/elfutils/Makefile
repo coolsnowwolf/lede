@@ -1,6 +1,5 @@
 #
-# Copyright (C) 2010-2014 OpenWrt.org
-# Copyright (C) 2016-2017 Luiz Angelo Daros de Luca <luizluca@gmail.com>
+# Copyright (C) 2010-2019 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -8,24 +7,25 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=elfutils
-PKG_VERSION:=0.175
-PKG_RELEASE:=4
+PKG_VERSION:=0.179
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=https://sourceware.org/$(PKG_NAME)/ftp/$(PKG_VERSION)
-PKG_HASH:=f7ef925541ee32c6d15ae5cb27da5f119e01a5ccdbe9fe57bf836730d7b7a65b
+PKG_HASH:=25a545566cbacaa37ae6222e58f1c48ea4570f53ba991886e2f5ce96e22a23a2
+
 PKG_MAINTAINER:=Luiz Angelo Daros de Luca <luizluca@gmail.com>
-PKG_LICENSE:=GPL-3.0+
+PKG_LICENSE:=GPL-3.0-or-later
 PKG_LICENSE_FILES:=COPYING COPYING-GPLV2 COPYING-LGPLV3
 PKG_CPE_ID:=cpe:/a:elfutils_project:elfutils
-PKG_FIXUP:=autoreconf
 
+PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
 PKG_USE_MIPS16:=0
-
-PKG_BUILD_DEPENDS:=USE_UCLIBC:argp-standalone USE_MUSL:argp-standalone
+PKG_BUILD_DEPENDS:=!USE_GLIBC:argp-standalone
 
 include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/nls.mk
 
 define Package/elfutils/Default
@@ -63,6 +63,7 @@ endif
 
 CONFIGURE_ARGS += \
 	--program-prefix=eu- \
+	--disable-debuginfod \
 	--without-lzma
 
 TARGET_CFLAGS += -D_GNU_SOURCE -Wno-unused-result -Wno-format-nonliteral
@@ -97,3 +98,4 @@ endef
 $(eval $(call BuildPackage,libasm))
 $(eval $(call BuildPackage,libdw))
 $(eval $(call BuildPackage,libelf))
+$(eval $(call HostBuild))

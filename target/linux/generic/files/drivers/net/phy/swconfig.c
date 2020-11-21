@@ -591,9 +591,9 @@ swconfig_parse_ports(struct sk_buff *msg, struct nlattr *head,
 
 		port = &val->value.ports[val->len];
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,12,0)
-		if (nla_parse_nested(tb, SWITCH_PORT_ATTR_MAX, nla,
-				port_policy))
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+		if (nla_parse_nested_deprecated(tb, SWITCH_PORT_ATTR_MAX, nla,
+				port_policy, NULL))
 #else
 		if (nla_parse_nested(tb, SWITCH_PORT_ATTR_MAX, nla,
 				port_policy, NULL))
@@ -618,8 +618,8 @@ swconfig_parse_link(struct sk_buff *msg, struct nlattr *nla,
 {
 	struct nlattr *tb[SWITCH_LINK_ATTR_MAX + 1];
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,12,0)
-	if (nla_parse_nested(tb, SWITCH_LINK_ATTR_MAX, nla, link_policy))
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+	if (nla_parse_nested_deprecated(tb, SWITCH_LINK_ATTR_MAX, nla, link_policy, NULL))
 #else
 	if (nla_parse_nested(tb, SWITCH_LINK_ATTR_MAX, nla, link_policy, NULL))
 #endif
@@ -1000,6 +1000,9 @@ swconfig_done(struct netlink_callback *cb)
 static struct genl_ops swconfig_ops[] = {
 	{
 		.cmd = SWITCH_CMD_LIST_GLOBAL,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+#endif
 		.doit = swconfig_list_attrs,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
@@ -1007,6 +1010,9 @@ static struct genl_ops swconfig_ops[] = {
 	},
 	{
 		.cmd = SWITCH_CMD_LIST_VLAN,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+#endif
 		.doit = swconfig_list_attrs,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
@@ -1014,6 +1020,9 @@ static struct genl_ops swconfig_ops[] = {
 	},
 	{
 		.cmd = SWITCH_CMD_LIST_PORT,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+#endif
 		.doit = swconfig_list_attrs,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
@@ -1021,6 +1030,9 @@ static struct genl_ops swconfig_ops[] = {
 	},
 	{
 		.cmd = SWITCH_CMD_GET_GLOBAL,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+#endif
 		.doit = swconfig_get_attr,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
@@ -1028,6 +1040,9 @@ static struct genl_ops swconfig_ops[] = {
 	},
 	{
 		.cmd = SWITCH_CMD_GET_VLAN,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+#endif
 		.doit = swconfig_get_attr,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
@@ -1035,6 +1050,9 @@ static struct genl_ops swconfig_ops[] = {
 	},
 	{
 		.cmd = SWITCH_CMD_GET_PORT,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+#endif
 		.doit = swconfig_get_attr,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
@@ -1042,6 +1060,9 @@ static struct genl_ops swconfig_ops[] = {
 	},
 	{
 		.cmd = SWITCH_CMD_SET_GLOBAL,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+#endif
 		.flags = GENL_ADMIN_PERM,
 		.doit = swconfig_set_attr,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
@@ -1050,6 +1071,9 @@ static struct genl_ops swconfig_ops[] = {
 	},
 	{
 		.cmd = SWITCH_CMD_SET_VLAN,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+#endif
 		.flags = GENL_ADMIN_PERM,
 		.doit = swconfig_set_attr,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
@@ -1058,6 +1082,9 @@ static struct genl_ops swconfig_ops[] = {
 	},
 	{
 		.cmd = SWITCH_CMD_SET_PORT,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+#endif
 		.flags = GENL_ADMIN_PERM,
 		.doit = swconfig_set_attr,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
@@ -1066,6 +1093,9 @@ static struct genl_ops swconfig_ops[] = {
 	},
 	{
 		.cmd = SWITCH_CMD_GET_SWITCH,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+#endif
 		.dumpit = swconfig_dump_switches,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 		.policy = switch_policy,
@@ -1075,9 +1105,6 @@ static struct genl_ops swconfig_ops[] = {
 };
 
 static struct genl_family switch_fam = {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
-	.id = GENL_ID_GENERATE,
-#endif
 	.name = "switch",
 	.hdrsize = 0,
 	.version = 1,
@@ -1256,17 +1283,14 @@ switch_generic_set_link(struct switch_dev *dev, int port,
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(switch_generic_set_link);
 
 static int __init
 swconfig_init(void)
 {
 	INIT_LIST_HEAD(&swdevs);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
-	return genl_register_family_with_ops(&switch_fam, swconfig_ops);
-#else
 	return genl_register_family(&switch_fam);
-#endif
 }
 
 static void __exit

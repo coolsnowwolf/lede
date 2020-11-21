@@ -1,7 +1,7 @@
 BOARDNAME:=Mikrotik devices with NAND/NOR flash
 FEATURES += squashfs ramdisk minor nand
 
-DEFAULT_PACKAGES += nand-utils
+DEFAULT_PACKAGES += nand-utils wpad-basic
 
 define Target/Description
 	Build firmware images for Atheros AR71xx/AR913x based Mikrotik boards.

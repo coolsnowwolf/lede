@@ -1,0 +1,89 @@
+From 12b60ef71cc005ee7290f692169d46a7e78df01a Mon Sep 17 00:00:00 2001
+From: Yukimasa Sugizaki <4298265+Terminus-IMRC@users.noreply.github.com>
+Date: Fri, 20 Mar 2020 19:01:23 +0900
+Subject: [PATCH] drm/v3d: Replace wait_for macros to remove use of
+ msleep (#3510)
+
+commit 9daee6141cc9c75b09659b02b1cb9eeb2f5e16cc upstream.
+
+The wait_for macro's for Broadcom V3D driver used msleep, which is
+inappropriate due to its inaccuracy at low values (minimum wait time
+is about 30ms on the Raspberry Pi).  This sleep was triggering in
+v3d_clean_caches(), causing us to only be able to dispatch ~33 compute
+jobs per second.
+
+This patch replaces the macro with the one from the Intel i915 version
+which uses usleep_range to provide more accurate waits.
+
+v2: Split from the vc4 patch so that we can confidently apply to
+    stable (by anholt)
+
+Signed-off-by: James Hughes <james.hughes@raspberrypi.com>
+Signed-off-by: Eric Anholt <eric@anholt.net>
+Link: https://patchwork.freedesktop.org/patch/msgid/20200217153145.13780-1-james.hughes@raspberrypi.com
+Link: https://github.com/raspberrypi/linux/issues/3460
+Fixes: 57692c94dcbe ("drm/v3d: Introduce a new DRM driver for Broadcom V3D V3.x+")
+
+Co-authored-by: James Hughes <james.hughes@raspberrypi.com>
+---
+ drivers/gpu/drm/v3d/v3d_drv.h | 41 ++++++++++++++++++++++++-----------
+ 1 file changed, 28 insertions(+), 13 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_drv.h
++++ b/drivers/gpu/drm/v3d/v3d_drv.h
+@@ -260,27 +260,42 @@ struct v3d_csd_job {
+ };
+ 
+ /**
+- * _wait_for - magic (register) wait macro
++ * __wait_for - magic wait macro
+  *
+- * Does the right thing for modeset paths when run under kdgb or similar atomic
+- * contexts. Note that it's important that we check the condition again after
+- * having timed out, since the timeout could be due to preemption or similar and
+- * we've never had a chance to check the condition before the timeout.
++ * Macro to help avoid open coding check/wait/timeout patterns. Note that it's
++ * important that we check the condition again after having timed out, since the
++ * timeout could be due to preemption or similar and we've never had a chance to
++ * check the condition before the timeout.
+  */
+-#define wait_for(COND, MS) ({ \
+-	unsigned long timeout__ = jiffies + msecs_to_jiffies(MS) + 1;	\
+-	int ret__ = 0;							\
+-	while (!(COND)) {						\
+-		if (time_after(jiffies, timeout__)) {			\
+-			if (!(COND))					\
+-				ret__ = -ETIMEDOUT;			\
++#define __wait_for(OP, COND, US, Wmin, Wmax) ({ \
++	const ktime_t end__ = ktime_add_ns(ktime_get_raw(), 1000ll * (US)); \
++	long wait__ = (Wmin); /* recommended min for usleep is 10 us */	\
++	int ret__;							\
++	might_sleep();							\
++	for (;;) {							\
++		const bool expired__ = ktime_after(ktime_get_raw(), end__); \
++		OP;							\
++		/* Guarantee COND check prior to timeout */		\
++		barrier();						\
++		if (COND) {						\
++			ret__ = 0;					\
+ 			break;						\
+ 		}							\
+-		msleep(1);					\
++		if (expired__) {					\
++			ret__ = -ETIMEDOUT;				\
++			break;						\
++		}							\
++		usleep_range(wait__, wait__ * 2);			\
++		if (wait__ < (Wmax))					\
++			wait__ <<= 1;					\
+ 	}								\
+ 	ret__;								\
+ })
+ 
++#define _wait_for(COND, US, Wmin, Wmax)	__wait_for(, (COND), (US), (Wmin), \
++						   (Wmax))
++#define wait_for(COND, MS)		_wait_for((COND), (MS) * 1000, 10, 1000)
++
+ static inline unsigned long nsecs_to_jiffies_timeout(const u64 n)
+ {
+ 	/* nsecs_to_jiffies64() does not guard against overflow */

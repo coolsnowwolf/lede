@@ -1,0 +1,99 @@
+From 4a84eacedc55e78c8f64a5a4f9ade6e285844b85 Mon Sep 17 00:00:00 2001
+From: Ioana Ciornei <ioana.ciornei@nxp.com>
+Date: Mon, 25 Jun 2018 13:19:53 +0300
+Subject: [PATCH] drivers/base: add sysfs entries for suppliers and consumers
+
+Instead of scraping dmesg for messages such as 'Linked as a consumer to'
+or 'Dropping the link to' export two new sysfs entries in the device
+folder that list the consumer and supplier devices.
+
+Signed-off-by: Ioana Ciornei <ioana.ciornei@nxp.com>
+---
+ Documentation/ABI/testing/sysfs-devices-links | 13 +++++++++
+ drivers/base/core.c                           | 42 +++++++++++++++++++++++++++
+ 2 files changed, 55 insertions(+)
+ create mode 100644 Documentation/ABI/testing/sysfs-devices-links
+
+--- /dev/null
++++ b/Documentation/ABI/testing/sysfs-devices-links
+@@ -0,0 +1,13 @@
++What:		/sys/devices/.../consumers
++Date:		October 2018
++Contact:	Ioana Ciornei <ioana.ciornei@nxp.com>
++Description:
++		Read-only attribute that lists the current "consumers" of
++		a specific device.
++
++What:		/sys/devices/.../suppliers
++Date:		October 2018
++Contact:	Ioana Ciornei <ioana.ciornei@nxp.com>
++Description:
++		Read-only attribute that lists the current "suppliers" of
++		a specific device.
+--- a/drivers/base/core.c
++++ b/drivers/base/core.c
+@@ -1320,6 +1320,34 @@ static ssize_t online_store(struct devic
+ }
+ static DEVICE_ATTR_RW(online);
+ 
++static ssize_t suppliers_show(struct device *dev, struct device_attribute *attr,
++			      char *buf)
++{
++	struct device_link *link;
++	size_t count = 0;
++
++	list_for_each_entry(link, &dev->links.suppliers, c_node)
++		count += scnprintf(buf + count, PAGE_SIZE - count, "%s\n",
++				   dev_name(link->supplier));
++
++	return count;
++}
++static DEVICE_ATTR_RO(suppliers);
++
++static ssize_t consumers_show(struct device *dev, struct device_attribute *attr,
++			      char *buf)
++{
++	struct device_link *link;
++	size_t count = 0;
++
++	list_for_each_entry(link, &dev->links.consumers, s_node)
++		count += scnprintf(buf + count, PAGE_SIZE - count, "%s\n",
++				   dev_name(link->consumer));
++
++	return count;
++}
++static DEVICE_ATTR_RO(consumers);
++
+ int device_add_groups(struct device *dev, const struct attribute_group **groups)
+ {
+ 	return sysfs_create_groups(&dev->kobj, groups);
+@@ -1491,8 +1519,20 @@ static int device_add_attrs(struct devic
+ 			goto err_remove_dev_groups;
+ 	}
+ 
++	error = device_create_file(dev, &dev_attr_suppliers);
++	if (error)
++		goto err_remove_online;
++
++	error = device_create_file(dev, &dev_attr_consumers);
++	if (error)
++		goto err_remove_suppliers;
++
+ 	return 0;
+ 
++ err_remove_suppliers:
++	device_remove_file(dev, &dev_attr_suppliers);
++ err_remove_online:
++	device_remove_file(dev, &dev_attr_online);
+  err_remove_dev_groups:
+ 	device_remove_groups(dev, dev->groups);
+  err_remove_type_groups:
+@@ -1510,6 +1550,8 @@ static void device_remove_attrs(struct d
+ 	struct class *class = dev->class;
+ 	const struct device_type *type = dev->type;
+ 
++	device_remove_file(dev, &dev_attr_consumers);
++	device_remove_file(dev, &dev_attr_suppliers);
+ 	device_remove_file(dev, &dev_attr_online);
+ 	device_remove_groups(dev, dev->groups);
+ 

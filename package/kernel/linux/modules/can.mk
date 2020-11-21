@@ -146,6 +146,23 @@ endef
 $(eval $(call KernelPackage,can-gw))
 
 
+define KernelPackage/can-mcp251x
+  TITLE:=MCP251x SPI CAN controller
+  KCONFIG:=\
+	CONFIG_SPI=y \
+	CONFIG_CAN_MCP251X
+  FILES:=$(LINUX_DIR)/drivers/net/can/spi/mcp251x.ko
+  AUTOLOAD:=$(call AutoProbe,can-mcp251x)
+  $(call AddDepends/can)
+endef
+
+define KernelPackage/can-mcp251x/description
+ Microchip MCP251x SPI CAN controller
+endef
+
+$(eval $(call KernelPackage,can-mcp251x))
+
+
 define KernelPackage/can-raw
   TITLE:=Raw CAN Protcol
   KCONFIG:=CONFIG_CAN_RAW

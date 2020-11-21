@@ -50,6 +50,10 @@ listen admin_stats
   stats realm Haproxy             #统计页面密码框上提示文本
   stats auth admin:root           #设置监控页面的用户和密码:admin,可以设置多个用户名
   stats  admin if TRUE            #设置手工启动/禁用，后端服务器(haproxy-1.4.9以后版本)
+resolvers mydns
+  nameserver dns1 114.114.114.114:53
+  nameserver dns2 223.5.5.5:53
+
 frontend ss-in
 	bind 127.0.0.1:2222
 	default_backend ss-out
@@ -77,7 +81,7 @@ EOF
 		fi
 		echo the main server $COUNTER $server_ip $server_name $server_port $server_weight
 		[ "$validate" = 1 ] && {
-			echo server $server_name $server_ip:$server_port weight $server_weight maxconn 1024 check inter 1500 rise 3 fall 3 >> $CFG_FILE
+			echo server $server_name $server_ip:$server_port weight $server_weight maxconn 1024 check resolvers mydns inter 1500 rise 3 fall 3 >> $CFG_FILE
 		}
 		iptables -t nat -A HAPROXY -p tcp -d $server_ip -j ACCEPT
 		COUNTER=$(($COUNTER+1))
@@ -96,7 +100,7 @@ EOF
 		fi
 		echo the backup server $COUNTER $server_ip $server_name $server_port
 		[ "$validate" = 1 ] && {
-			echo server $server_name $server_ip:$server_port weight 10 check backup inter 1500 rise 3 fall 3 >> $CFG_FILE
+			echo server $server_name $server_ip:$server_port weight 10 check resolvers mydns backup inter 1500 rise 3 fall 3 >> $CFG_FILE
 		}
 		iptables -t nat -A HAPROXY -p tcp -d $server_ip -j ACCEPT
 		COUNTER=$(($COUNTER+1))

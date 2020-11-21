@@ -2,14 +2,14 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=shellsync
 PKG_VERSION:=0.2
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/shellsync
   CATEGORY:=Utilities
   TITLE:=shellsync
-  DEPENDS:=+libpthread
+  DEPENDS:=+libpthread +kmod-macvlan
 endef
 
 define Build/Prepare

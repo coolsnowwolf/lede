@@ -45,6 +45,7 @@ Building images:
 	make image FILES="<path>" # include extra files from <path>
 	make image BIN_DIR="<path>" # alternative output directory for the images
 	make image EXTRA_IMAGE_NAME="<string>" # Add this to the output image filename (sanitized)
+	make image DISABLED_SERVICES="<svc1> [<svc2> [<svc3> ..]]" # Which services in /etc/init.d/ should be disabled
 
 Print manifest:
 	List "all" packages which get installed into the image.
@@ -73,15 +74,17 @@ include $(INCLUDE_DIR)/target.mk
 
 USER_PROFILE ?= $(firstword $(PROFILE_NAMES))
 PROFILE_LIST = $(foreach p,$(PROFILE_NAMES), \
-	echo '$(patsubst DEVICE_%,%,$(p)):'; $(if $($(p)_NAME),echo '    $(subst ','"'"',$($(p)_NAME))'; ) echo '    Packages: $($(p)_PACKAGES)'; \
-)
+	echo '$(patsubst DEVICE_%,%,$(p)):'; $(if $($(p)_NAME),echo '    $(subst ','"'"',$($(p)_NAME))'; ) \
+	echo '    Packages: $($(p)_PACKAGES)'; echo '    hasImageMetadata: $($(p)_HAS_IMAGE_METADATA)'; \
+	$(if $($(p)_SUPPORTED_DEVICES),echo '    SupportedDevices: $($(p)_SUPPORTED_DEVICES)';) )
+
 
 .profiles.mk: .targetinfo
 	@$(SCRIPT_DIR)/target-metadata.pl profile_mk $< '$(BOARD)$(if $(SUBTARGET),/$(SUBTARGET))' > $@
 
 staging_dir/host/.prereq-build: include/prereq-build.mk
 	mkdir -p tmp
-	@$(_SINGLE)$(NO_TRACE_MAKE) -j1 -r -s -f $(TOPDIR)/include/prereq-build.mk prereq 2>/dev/null || { \
+	@$(_SINGLE)$(NO_TRACE_MAKE) -j1 -r -s -f $(TOPDIR)/include/prereq-build.mk prereq IB=1 2>/dev/null || { \
 		echo "Prerequisite check failed. Use FORCE=1 to override."; \
 		false; \
 	}
@@ -94,7 +97,8 @@ staging_dir/host/.prereq-build: include/prereq-build.mk
 	touch $@
 
 _call_info: FORCE
-	echo 'Current Target: "$(BOARD)$(if $(SUBTARGET), ($(BOARDNAME)))"'
+	echo 'Current Target: "$(TARGETID)"'
+	echo 'Current Revision: "$(REVISION)"'
 	echo 'Default Packages: $(DEFAULT_PACKAGES)'
 	echo 'Available Profiles:'
 	echo; $(PROFILE_LIST)
@@ -114,6 +118,7 @@ _call_image: staging_dir/host/.prereq-build
 	$(MAKE) package_install
 	$(MAKE) -s prepare_rootfs
 	$(MAKE) -s build_image
+	$(MAKE) -s json_overview_image_info
 	$(MAKE) -s checksum
 
 _call_manifest: FORCE
@@ -157,13 +162,23 @@ prepare_rootfs: FORCE
 	@echo Finalizing root filesystem...
 
 	$(CP) $(TARGET_DIR) $(TARGET_DIR_ORIG)
-	$(call prepare_rootfs,$(TARGET_DIR),$(USER_FILES))
+	$(call prepare_rootfs,$(TARGET_DIR),$(USER_FILES),$(DISABLED_SERVICES))
+
 
 build_image: FORCE
 	@echo
 	@echo Building images...
+	rm -rf $(BUILD_DIR)/json_info_files/
 	$(NO_TRACE_MAKE) -C target/linux/$(BOARD)/image install TARGET_BUILD=1 IB=1 EXTRA_IMAGE_NAME="$(EXTRA_IMAGE_NAME)" \
 		$(if $(USER_PROFILE),PROFILE="$(USER_PROFILE)")
+
+$(BIN_DIR)/profiles.json: FORCE
+	$(if $(CONFIG_JSON_OVERVIEW_IMAGE_INFO), \
+		WORK_DIR=$(BUILD_DIR)/json_info_files \
+			$(SCRIPT_DIR)/json_overview_image_info.py $@ \
+	)
+
+json_overview_image_info: $(BIN_DIR)/profiles.json
 
 checksum: FORCE
 	@echo
@@ -195,7 +210,8 @@ image:
 		$(if $(PROFILE),USER_PROFILE="$(PROFILE_FILTER)") \
 		$(if $(FILES),USER_FILES="$(FILES)") \
 		$(if $(PACKAGES),USER_PACKAGES="$(PACKAGES)") \
-		$(if $(BIN_DIR),BIN_DIR="$(BIN_DIR)"))
+		$(if $(BIN_DIR),BIN_DIR="$(BIN_DIR)") \
+		$(if $(DISABLED_SERVICES),DISABLED_SERVICES="$(DISABLED_SERVICES)"))
 
 manifest: FORCE
 	$(MAKE) -s _check_profile

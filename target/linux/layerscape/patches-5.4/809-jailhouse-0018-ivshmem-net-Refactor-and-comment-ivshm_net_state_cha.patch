@@ -1,0 +1,63 @@
+From 5192fa99f0d267eb7bd1c79e556430ea8911ae38 Mon Sep 17 00:00:00 2001
+From: Jan Kiszka <jan.kiszka@siemens.com>
+Date: Sun, 4 Mar 2018 13:50:24 +0100
+Subject: [PATCH] ivshmem-net: Refactor and comment ivshm_net_state_change
+
+This should make the state transitioning logic clearer. Also avoid the
+harmless but redundant netif_carrier_on/ivshm_net_run in RUN state.
+
+Signed-off-by: Jan Kiszka <jan.kiszka@siemens.com>
+(cherry picked from commit 8539efe70fbdf4a0bea75a97c1628fbb38b6590b)
+---
+ drivers/net/ivshmem-net.c | 23 ++++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/ivshmem-net.c
++++ b/drivers/net/ivshmem-net.c
+@@ -575,14 +575,21 @@ static void ivshm_net_state_change(struc
+ 	struct net_device *ndev = in->napi.dev;
+ 	u32 rstate = readl(&in->ivshm_regs->rstate);
+ 
+-
+ 	switch (in->lstate) {
+ 	case IVSHM_NET_STATE_RESET:
++		/*
++		 * Wait for the remote to leave READY/RUN before transitioning
++		 * to INIT.
++		 */
+ 		if (rstate < IVSHM_NET_STATE_READY)
+ 			ivshm_net_set_state(in, IVSHM_NET_STATE_INIT);
+ 		break;
+ 
+ 	case IVSHM_NET_STATE_INIT:
++		/*
++		 * Wait for the remote to leave RESET before performing the
++		 * initialization and moving to READY.
++		 */
+ 		if (rstate > IVSHM_NET_STATE_RESET) {
+ 			ivshm_net_init_queues(ndev);
+ 			ivshm_net_set_state(in, IVSHM_NET_STATE_READY);
+@@ -594,11 +601,21 @@ static void ivshm_net_state_change(struc
+ 		break;
+ 
+ 	case IVSHM_NET_STATE_READY:
+-	case IVSHM_NET_STATE_RUN:
++		/*
++		 * Link is up and we are running once the remote is in READY or
++		 * RUN.
++		 */
+ 		if (rstate >= IVSHM_NET_STATE_READY) {
+ 			netif_carrier_on(ndev);
+ 			ivshm_net_run(ndev);
+-		} else if (rstate == IVSHM_NET_STATE_RESET) {
++			break;
++		}
++		/* fall through */
++	case IVSHM_NET_STATE_RUN:
++		/*
++		 * If the remote goes to RESET, we need to follow immediately.
++		 */
++		if (rstate == IVSHM_NET_STATE_RESET) {
+ 			netif_carrier_off(ndev);
+ 			ivshm_net_do_stop(ndev);
+ 		}

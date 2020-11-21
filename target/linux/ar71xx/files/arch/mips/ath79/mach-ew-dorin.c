@@ -47,7 +47,7 @@ static struct gpio_keys_button dorin_gpio_keys[] __initdata = {
 		.code		= KEY_WPS_BUTTON,
 		.debounce_interval = DORIN_KEYS_DEBOUNCE_INTERVAL,
 		.gpio		= DORIN_GPIO_BTN_JUMPSTART,
-		.active_low	= 1,
+		.active_low	= 0,
 	},
 	{
 		.desc		= "reset button",

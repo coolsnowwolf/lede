@@ -1,0 +1,114 @@
+From 5483df4df2729a5d1e4888a48039b1cd90438480 Mon Sep 17 00:00:00 2001
+From: Othmar Pasteka <pasteka@kabsi.at>
+Date: Wed, 30 Jan 2013 00:26:52 +0100
+Subject: [PATCH 12/12] vmdk: Allow selecting SCSI adapter in image creation
+
+Introduce a new option "adapter_type" when converting to vmdk images.
+It can be one of the following: ide (default), buslogic, lsilogic
+or legacyESX (according to the vmdk spec from vmware).
+
+In case of a non-ide adapter, heads is set to 255 instead of the 16.
+The latter is used for "ide".
+
+Also see LP#545089
+
+Signed-off-by: Othmar Pasteka <pasteka@kabsi.at>
+Signed-off-by: Stefan Hajnoczi <stefanha@redhat.com>
+---
+ block/vmdk.c | 31 ++++++++++++++++++++++++++++---
+ block_int.h  |  1 +
+ 2 files changed, 29 insertions(+), 3 deletions(-)
+
+--- a/block/vmdk.c
++++ b/block/vmdk.c
+@@ -1089,6 +1089,7 @@ static int vmdk_create(const char *filen
+     int fd, idx = 0;
+     char desc[BUF_SIZE];
+     int64_t total_size = 0, filesize;
++    const char *adapter_type = NULL;
+     const char *backing_file = NULL;
+     const char *fmt = NULL;
+     int flags = 0;
+@@ -1100,6 +1101,7 @@ static int vmdk_create(const char *filen
+     const char *desc_extent_line;
+     char parent_desc_line[BUF_SIZE] = "";
+     uint32_t parent_cid = 0xffffffff;
++    uint32_t number_heads = 16;
+     const char desc_template[] =
+         "# Disk DescriptorFile\n"
+         "version=1\n"
+@@ -1116,9 +1118,9 @@ static int vmdk_create(const char *filen
+         "\n"
+         "ddb.virtualHWVersion = \"%d\"\n"
+         "ddb.geometry.cylinders = \"%" PRId64 "\"\n"
+-        "ddb.geometry.heads = \"16\"\n"
++        "ddb.geometry.heads = \"%d\"\n"
+         "ddb.geometry.sectors = \"63\"\n"
+-        "ddb.adapterType = \"ide\"\n";
++        "ddb.adapterType = \"%s\"\n";
+ 
+     if (filename_decompose(filename, path, prefix, postfix, PATH_MAX)) {
+         return -EINVAL;
+@@ -1127,6 +1129,8 @@ static int vmdk_create(const char *filen
+     while (options && options->name) {
+         if (!strcmp(options->name, BLOCK_OPT_SIZE)) {
+             total_size = options->value.n;
++        } else if (!strcmp(options->name, BLOCK_OPT_ADAPTER_TYPE)) {
++            adapter_type = options->value.s;
+         } else if (!strcmp(options->name, BLOCK_OPT_BACKING_FILE)) {
+             backing_file = options->value.s;
+         } else if (!strcmp(options->name, BLOCK_OPT_COMPAT6)) {
+@@ -1136,6 +1140,20 @@ static int vmdk_create(const char *filen
+         }
+         options++;
+     }
++    if (!adapter_type) {
++        adapter_type = "ide";
++    } else if (strcmp(adapter_type, "ide") &&
++               strcmp(adapter_type, "buslogic") &&
++               strcmp(adapter_type, "lsilogic") &&
++               strcmp(adapter_type, "legacyESX")) {
++        fprintf(stderr, "VMDK: Unknown adapter type: '%s'.\n", adapter_type);
++        return -EINVAL;
++    }
++    if (strcmp(adapter_type, "ide") != 0) {
++        /* that's the number of heads with which vmware operates when
++           creating, exporting, etc. vmdk files with a non-ide adapter type */
++        number_heads = 255;
++    }
+     if (!fmt) {
+         /* Default format to monolithicSparse */
+         fmt = "monolithicSparse";
+@@ -1222,7 +1240,8 @@ static int vmdk_create(const char *filen
+             parent_desc_line,
+             ext_desc_lines,
+             (flags & BLOCK_FLAG_COMPAT6 ? 6 : 4),
+-            total_size / (int64_t)(63 * 16 * 512));
++            total_size / (int64_t)(63 * number_heads * 512), number_heads,
++                adapter_type);
+     if (split || flat) {
+         fd = open(
+                 filename,
+@@ -1281,6 +1300,12 @@ static QEMUOptionParameter vmdk_create_o
+         .help = "Virtual disk size"
+     },
+     {
++        .name = BLOCK_OPT_ADAPTER_TYPE,
++        .type = OPT_STRING,
++        .help = "Virtual adapter type, can be one of "
++                "ide (default), lsilogic, buslogic or legacyESX"
++    },
++    {
+         .name = BLOCK_OPT_BACKING_FILE,
+         .type = OPT_STRING,
+         .help = "File name of a base image"
+--- a/block_int.h
++++ b/block_int.h
+@@ -40,6 +40,7 @@
+ #define BLOCK_OPT_TABLE_SIZE    "table_size"
+ #define BLOCK_OPT_PREALLOC      "preallocation"
+ #define BLOCK_OPT_SUBFMT        "subformat"
++#define BLOCK_OPT_ADAPTER_TYPE      "adapter_type"
+ 
+ typedef struct AIOPool {
+     void (*cancel)(BlockDriverAIOCB *acb);

@@ -1,0 +1,206 @@
+From 42abc4a8a97a87734c759c02c5ba255ed5124a2c Mon Sep 17 00:00:00 2001
+From: Joakim Zhang <qiangqing.zhang@nxp.com>
+Date: Fri, 12 Jul 2019 08:02:38 +0000
+Subject: [PATCH] can: rx-offload: Prepare for CAN FD support
+
+The skbs for classic CAN and CAN FD frames are allocated with seperate
+functions: alloc_can_skb() and alloc_canfd_skb().
+
+In order to support CAN FD frames via the rx-offload helper, the driver
+itself has to allocate the skb (depending whether it received a classic
+CAN or CAN FD frame), as the rx-offload helper cannot know which kind of
+CAN frame the driver has received.
+
+This patch moves the allocation of the skb into the struct
+can_rx_offload::mailbox_read callbacks of the the flexcan and ti_hecc
+driver and adjusts the rx-offload helper accordingly.
+
+Signed-off-by: Joakim Zhang <qiangqing.zhang@nxp.com>
+Signed-off-by: Marc Kleine-Budde <mkl@pengutronix.de>
+---
+ drivers/net/can/flexcan.c      | 27 +++++++++++-----
+ drivers/net/can/rx-offload.c   | 70 ++++++++++--------------------------------
+ include/linux/can/rx-offload.h |  6 ++--
+ 3 files changed, 40 insertions(+), 63 deletions(-)
+
+--- a/drivers/net/can/flexcan.c
++++ b/drivers/net/can/flexcan.c
+@@ -784,16 +784,23 @@ static inline struct flexcan_priv *rx_of
+ 	return container_of(offload, struct flexcan_priv, offload);
+ }
+ 
+-static unsigned int flexcan_mailbox_read(struct can_rx_offload *offload,
+-					 struct can_frame *cf,
+-					 u32 *timestamp, unsigned int n)
++static struct sk_buff *flexcan_mailbox_read(struct can_rx_offload *offload,
++					    unsigned int n, u32 *timestamp,
++					    bool drop)
+ {
+ 	struct flexcan_priv *priv = rx_offload_to_priv(offload);
+ 	struct flexcan_regs __iomem *regs = priv->regs;
+ 	struct flexcan_mb __iomem *mb;
++	struct sk_buff *skb;
++	struct can_frame *cf;
+ 	u32 reg_ctrl, reg_id, reg_iflag1;
+ 	int i;
+ 
++	if (unlikely(drop)) {
++		skb = ERR_PTR(-ENOBUFS);
++		goto mark_as_read;
++	}
++
+ 	mb = flexcan_get_mb(priv, n);
+ 
+ 	if (priv->devtype_data->quirks & FLEXCAN_QUIRK_USE_OFF_TIMESTAMP) {
+@@ -807,7 +814,7 @@ static unsigned int flexcan_mailbox_read
+ 		code = reg_ctrl & FLEXCAN_MB_CODE_MASK;
+ 		if ((code != FLEXCAN_MB_CODE_RX_FULL) &&
+ 		    (code != FLEXCAN_MB_CODE_RX_OVERRUN))
+-			return 0;
++			return NULL;
+ 
+ 		if (code == FLEXCAN_MB_CODE_RX_OVERRUN) {
+ 			/* This MB was overrun, we lost data */
+@@ -817,11 +824,17 @@ static unsigned int flexcan_mailbox_read
+ 	} else {
+ 		reg_iflag1 = priv->read(&regs->iflag1);
+ 		if (!(reg_iflag1 & FLEXCAN_IFLAG_RX_FIFO_AVAILABLE))
+-			return 0;
++			return NULL;
+ 
+ 		reg_ctrl = priv->read(&mb->can_ctrl);
+ 	}
+ 
++	skb = alloc_can_skb(offload->dev, &cf);
++	if (!skb) {
++		skb = ERR_PTR(-ENOMEM);
++		goto mark_as_read;
++	}
++
+ 	/* increase timstamp to full 32 bit */
+ 	*timestamp = reg_ctrl << 16;
+ 
+@@ -840,7 +853,7 @@ static unsigned int flexcan_mailbox_read
+ 		*(__be32 *)(cf->data + i) = data;
+ 	}
+ 
+-	/* mark as read */
++ mark_as_read:
+ 	if (priv->devtype_data->quirks & FLEXCAN_QUIRK_USE_OFF_TIMESTAMP) {
+ 		/* Clear IRQ */
+ 		if (n < 32)
+@@ -857,7 +870,7 @@ static unsigned int flexcan_mailbox_read
+ 	 */
+ 	priv->read(&regs->timer);
+ 
+-	return 1;
++	return skb;
+ }
+ 
+ 
+--- a/drivers/net/can/rx-offload.c
++++ b/drivers/net/can/rx-offload.c
+@@ -139,71 +139,35 @@ static int can_rx_offload_compare(struct
+ static struct sk_buff *
+ can_rx_offload_offload_one(struct can_rx_offload *offload, unsigned int n)
+ {
+-	struct sk_buff *skb = NULL, *skb_error = NULL;
++	struct sk_buff *skb;
+ 	struct can_rx_offload_cb *cb;
+-	struct can_frame *cf;
+-	int ret;
++	bool drop = false;
++	u32 timestamp;
+ 
+-	if (likely(skb_queue_len(&offload->skb_queue) <
+-		   offload->skb_queue_len_max)) {
+-		skb = alloc_can_skb(offload->dev, &cf);
+-		if (unlikely(!skb))
+-			skb_error = ERR_PTR(-ENOMEM);	/* skb alloc failed */
+-	} else {
+-		skb_error = ERR_PTR(-ENOBUFS);		/* skb_queue is full */
+-	}
+-
+-	/* If queue is full or skb not available, drop by reading into
+-	 * overflow buffer.
+-	 */
+-	if (unlikely(skb_error)) {
+-		struct can_frame cf_overflow;
+-		u32 timestamp;
+-
+-		ret = offload->mailbox_read(offload, &cf_overflow,
+-					    &timestamp, n);
+-
+-		/* Mailbox was empty. */
+-		if (unlikely(!ret))
+-			return NULL;
+-
+-		/* Mailbox has been read and we're dropping it or
+-		 * there was a problem reading the mailbox.
+-		 *
+-		 * Increment error counters in any case.
+-		 */
+-		offload->dev->stats.rx_dropped++;
+-		offload->dev->stats.rx_fifo_errors++;
+-
+-		/* There was a problem reading the mailbox, propagate
+-		 * error value.
+-		 */
+-		if (unlikely(ret < 0))
+-			return ERR_PTR(ret);
+-
+-		return skb_error;
+-	}
+-
+-	cb = can_rx_offload_get_cb(skb);
+-	ret = offload->mailbox_read(offload, cf, &cb->timestamp, n);
++	/* If queue is full drop frame */
++	if (unlikely(skb_queue_len(&offload->skb_queue) >
++		     offload->skb_queue_len_max))
++		drop = true;
+ 
++	skb = offload->mailbox_read(offload, n, &timestamp, drop);
+ 	/* Mailbox was empty. */
+-	if (unlikely(!ret)) {
+-		kfree_skb(skb);
++	if (unlikely(!skb))
+ 		return NULL;
+-	}
+-
+-	/* There was a problem reading the mailbox, propagate error value. */
+-	if (unlikely(ret < 0)) {
+-		kfree_skb(skb);
+ 
++	/* There was a problem reading the mailbox, propagate
++	 * error value.
++	 */
++	if (unlikely(IS_ERR(skb))) {
+ 		offload->dev->stats.rx_dropped++;
+ 		offload->dev->stats.rx_fifo_errors++;
+ 
+-		return ERR_PTR(ret);
++		return skb;
+ 	}
+ 
+ 	/* Mailbox was read. */
++	cb = can_rx_offload_get_cb(skb);
++	cb->timestamp = timestamp;
++
+ 	return skb;
+ }
+ 
+--- a/include/linux/can/rx-offload.h
++++ b/include/linux/can/rx-offload.h
+@@ -15,9 +15,9 @@
+ struct can_rx_offload {
+ 	struct net_device *dev;
+ 
+-	unsigned int (*mailbox_read)(struct can_rx_offload *offload,
+-				     struct can_frame *cf,
+-				     u32 *timestamp, unsigned int mb);
++	struct sk_buff *(*mailbox_read)(struct can_rx_offload *offload,
++					unsigned int mb, u32 *timestamp,
++					bool drop);
+ 
+ 	struct sk_buff_head skb_queue;
+ 	u32 skb_queue_len_max;

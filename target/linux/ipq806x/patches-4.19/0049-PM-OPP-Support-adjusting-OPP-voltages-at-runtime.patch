@@ -1,7 +1,17 @@
-From c949f08cf20fe82971fbdb4015daa38210da492e Mon Sep 17 00:00:00 2001
+From: Sylwester Nawrocki <s.nawrocki@samsung.com>
+To: krzk@kernel.org, vireshk@kernel.org, robh+dt@kernel.org
+Cc: sboyd@kernel.org, roger.lu@mediatek.com,
+	linux-pm@vger.kernel.org, linux-arm-kernel@lists.infradead.org,
+	linux-samsung-soc@vger.kernel.org, devicetree@vger.kernel.org,
+	b.zolnierkie@samsung.com, m.szyprowski@samsung.com,
+	Stephen Boyd <sboyd@codeaurora.org>,
+	Sylwester Nawrocki <s.nawrocki@samsung.com>
+Subject: [PATCH v5 1/4] PM / OPP: Support adjusting OPP voltages at runtime
+Date: Wed, 16 Oct 2019 16:57:53 +0200
+Message-ID: <20191016145756.16004-2-s.nawrocki@samsung.com> (raw)
+In-Reply-To: <20191016145756.16004-1-s.nawrocki@samsung.com>
+
 From: Stephen Boyd <sboyd@codeaurora.org>
-Date: Fri, 18 Sep 2015 17:52:06 -0700
-Subject: [PATCH 49/69] PM / OPP: Support adjusting OPP voltages at runtime
 
 On some SoCs the Adaptive Voltage Scaling (AVS) technique is
 employed to optimize the operating voltage of a device. At a
@@ -15,60 +25,53 @@ change. The assumption is that drivers like CPUfreq or devfreq
 will register for the OPP notifiers and adjust the voltage
 according to suggestions that AVS makes.
 
-Cc: Nishanth Menon <nm@ti.com>
-Acked-by: Viresh Kumar <viresh.kumar@linaro.org>
+This patch is derived from [1] submitted by Stephen.
+[1] https://lore.kernel.org/patchwork/patch/599279/
+
 Signed-off-by: Stephen Boyd <sboyd@codeaurora.org>
-Acked-by: Viresh Kumar <viresh.kumar@linaro.org>
-Signed-off-by: Georgi Djakov <georgi.djakov@linaro.org>
+Signed-off-by: Roger Lu <roger.lu@mediatek.com>
+[s.nawrocki@samsung.com: added handling of OPP min/max voltage]
+Signed-off-by: Sylwester Nawrocki <s.nawrocki@samsung.com>
 ---
- drivers/opp/core.c | 77 +++++++++++++++++++++++++++++++++++++++++++
- include/linux/pm_opp.h        | 11 +++++++
- 2 files changed, 88 insertions(+)
+ drivers/opp/core.c     | 69 ++++++++++++++++++++++++++++++++++++++++++
+ include/linux/pm_opp.h | 13 ++++++++
+ 2 files changed, 82 insertions(+)
 
 --- a/drivers/opp/core.c
 +++ b/drivers/opp/core.c
-@@ -1605,6 +1605,83 @@ put_table:
+@@ -1629,6 +1629,75 @@ put_table:
  }
  
  /**
 + * dev_pm_opp_adjust_voltage() - helper to change the voltage of an OPP
 + * @dev:		device for which we do this operation
 + * @freq:		OPP frequency to adjust voltage of
-+ * @u_volt:		new OPP voltage
-+ *
-+ * Change the voltage of an OPP with an RCU operation.
++ * @u_volt:		new OPP target voltage
++ * @u_volt_min:		new OPP min voltage
++ * @u_volt_max:		new OPP max voltage
 + *
 + * Return: -EINVAL for bad pointers, -ENOMEM if no memory available for the
 + * copy operation, returns 0 if no modifcation was done OR modification was
 + * successful.
-+ *
-+ * Locking: The internal device_opp and opp structures are RCU protected.
-+ * Hence this function internally uses RCU updater strategy with mutex locks to
-+ * keep the integrity of the internal data structures. Callers should ensure
-+ * that this function is *NOT* called under RCU protection or in contexts where
-+ * mutex locking or synchronize_rcu() blocking calls cannot be used.
 + */
 +int dev_pm_opp_adjust_voltage(struct device *dev, unsigned long freq,
-+			      unsigned long u_volt)
++			      unsigned long u_volt, unsigned long u_volt_min,
++			      unsigned long u_volt_max)
++
 +{
 +	struct opp_table *opp_table;
-+	struct dev_pm_opp *new_opp, *tmp_opp, *opp = ERR_PTR(-ENODEV);
++	struct dev_pm_opp *tmp_opp, *opp = ERR_PTR(-ENODEV);
 +	int r = 0;
-+
-+	/* keep the node allocated */
-+	new_opp = kmalloc(sizeof(*new_opp), GFP_KERNEL);
-+	if (!new_opp)
-+		return -ENOMEM;
-+
-+	mutex_lock(&opp_table_lock);
 +
 +	/* Find the opp_table */
 +	opp_table = _find_opp_table(dev);
 +	if (IS_ERR(opp_table)) {
 +		r = PTR_ERR(opp_table);
 +		dev_warn(dev, "%s: Device OPP not found (%d)\n", __func__, r);
-+		goto unlock;
++		return r;
 +	}
++
++	mutex_lock(&opp_table->lock);
 +
 +	/* Do we have the frequency? */
 +	list_for_each_entry(tmp_opp, &opp_table->opp_list, node) {
@@ -77,33 +80,34 @@ Signed-off-by: Georgi Djakov <georgi.djakov@linaro.org>
 +			break;
 +		}
 +	}
++
 +	if (IS_ERR(opp)) {
 +		r = PTR_ERR(opp);
-+		goto unlock;
++		goto adjust_unlock;
 +	}
 +
 +	/* Is update really needed? */
-+	if (opp->supplies[0].u_volt == u_volt)
-+		goto unlock;
-+	/* copy the old data over */
-+	*new_opp = *opp;
++	if (opp->supplies->u_volt == u_volt)
++		goto adjust_unlock;
 +
-+	/* plug in new node */
-+	new_opp->supplies[0].u_volt = u_volt;
++	opp->supplies->u_volt = u_volt;
++	opp->supplies->u_volt_min = u_volt_min;
++	opp->supplies->u_volt_max = u_volt_max;
 +
-+	list_replace(&opp->node, &new_opp->node);
-+	mutex_unlock(&opp_table_lock);
-+	kfree(opp);
++	dev_pm_opp_get(opp);
++	mutex_unlock(&opp_table->lock);
 +
-+	/* Notify the change of the OPP */
++	/* Notify the voltage change of the OPP */
 +	blocking_notifier_call_chain(&opp_table->head, OPP_EVENT_ADJUST_VOLTAGE,
-+				 new_opp);
++				     opp);
 +
-+	return 0;
++	dev_pm_opp_put(opp);
++	goto adjust_put_table;
 +
-+unlock:
-+	mutex_unlock(&opp_table_lock);
-+	kfree(new_opp);
++adjust_unlock:
++	mutex_unlock(&opp_table->lock);
++adjust_put_table:
++	dev_pm_opp_put_opp_table(opp_table);
 +	return r;
 +}
 +
@@ -121,23 +125,25 @@ Signed-off-by: Georgi Djakov <georgi.djakov@linaro.org>
  };
  
  /**
-@@ -108,6 +109,9 @@ int dev_pm_opp_add(struct device *dev, u
+@@ -108,6 +109,10 @@ int dev_pm_opp_add(struct device *dev, u
  		   unsigned long u_volt);
  void dev_pm_opp_remove(struct device *dev, unsigned long freq);
  
 +int dev_pm_opp_adjust_voltage(struct device *dev, unsigned long freq,
-+			      unsigned long u_volt);
++			      unsigned long u_volt, unsigned long u_volt_min,
++			      unsigned long u_volt_max);
 +
  int dev_pm_opp_enable(struct device *dev, unsigned long freq);
  
  int dev_pm_opp_disable(struct device *dev, unsigned long freq);
-@@ -208,6 +212,13 @@ static inline void dev_pm_opp_remove(str
+@@ -208,6 +213,14 @@ static inline void dev_pm_opp_remove(str
  {
  }
  
 +static inline int
 +dev_pm_opp_adjust_voltage(struct device *dev, unsigned long freq,
-+			  unsigned long u_volt)
++			  unsigned long u_volt, unsigned long u_volt_min,
++			  unsigned long u_volt_max)
 +{
 +	return 0;
 +}

@@ -1,0 +1,241 @@
+From 97cf5df76657bab81d6b8669607f6f13215201c1 Mon Sep 17 00:00:00 2001
+From: Fam Zheng <famcool@gmail.com>
+Date: Tue, 12 Jul 2011 19:56:31 +0800
+Subject: [PATCH 05/12] VMDK: separate vmdk_open by format version
+
+Separate vmdk_open by subformats to:
+* vmdk_open_vmdk3
+* vmdk_open_vmdk4
+
+Signed-off-by: Fam Zheng <famcool@gmail.com>
+Reviewed-by: Stefan Hajnoczi <stefanha@linux.vnet.ibm.com>
+Signed-off-by: Kevin Wolf <kwolf@redhat.com>
+---
+ block/vmdk.c | 178 +++++++++++++++++++++++++++++++++++++----------------------
+ 1 file changed, 112 insertions(+), 66 deletions(-)
+
+--- a/block/vmdk.c
++++ b/block/vmdk.c
+@@ -458,67 +458,20 @@ static VmdkExtent *vmdk_add_extent(Block
+     return extent;
+ }
+ 
+-
+-static int vmdk_open(BlockDriverState *bs, int flags)
++static int vmdk_init_tables(BlockDriverState *bs, VmdkExtent *extent)
+ {
+-    BDRVVmdkState *s = bs->opaque;
+-    uint32_t magic;
+-    int i;
+-    uint32_t l1_size, l1_entry_sectors;
+-    VmdkExtent *extent = NULL;
+-
+-    if (bdrv_pread(bs->file, 0, &magic, sizeof(magic)) != sizeof(magic))
+-        goto fail;
+-
+-    magic = be32_to_cpu(magic);
+-    if (magic == VMDK3_MAGIC) {
+-        VMDK3Header header;
+-        if (bdrv_pread(bs->file, sizeof(magic), &header, sizeof(header))
+-                != sizeof(header)) {
+-            goto fail;
+-        }
+-        extent = vmdk_add_extent(bs, bs->file, false,
+-                              le32_to_cpu(header.disk_sectors),
+-                              le32_to_cpu(header.l1dir_offset) << 9, 0,
+-                              1 << 6, 1 << 9, le32_to_cpu(header.granularity));
+-    } else if (magic == VMDK4_MAGIC) {
+-        VMDK4Header header;
+-        if (bdrv_pread(bs->file, sizeof(magic), &header, sizeof(header))
+-                != sizeof(header)) {
+-            goto fail;
+-        }
+-        l1_entry_sectors = le32_to_cpu(header.num_gtes_per_gte)
+-                            * le64_to_cpu(header.granularity);
+-        l1_size = (le64_to_cpu(header.capacity) + l1_entry_sectors - 1)
+-                    / l1_entry_sectors;
+-        extent = vmdk_add_extent(bs, bs->file, false,
+-                              le64_to_cpu(header.capacity),
+-                              le64_to_cpu(header.gd_offset) << 9,
+-                              le64_to_cpu(header.rgd_offset) << 9,
+-                              l1_size,
+-                              le32_to_cpu(header.num_gtes_per_gte),
+-                              le64_to_cpu(header.granularity));
+-        if (extent->l1_entry_sectors <= 0) {
+-            goto fail;
+-        }
+-        // try to open parent images, if exist
+-        if (vmdk_parent_open(bs) != 0)
+-            goto fail;
+-        // write the CID once after the image creation
+-        s->parent_cid = vmdk_read_cid(bs,1);
+-    } else {
+-        goto fail;
+-    }
++    int ret;
++    int l1_size, i;
+ 
+     /* read the L1 table */
+     l1_size = extent->l1_size * sizeof(uint32_t);
+     extent->l1_table = qemu_malloc(l1_size);
+-    if (bdrv_pread(bs->file,
+-            extent->l1_table_offset,
+-            extent->l1_table,
+-            l1_size)
+-        != l1_size) {
+-        goto fail;
++    ret = bdrv_pread(extent->file,
++                    extent->l1_table_offset,
++                    extent->l1_table,
++                    l1_size);
++    if (ret < 0) {
++        goto fail_l1;
+     }
+     for (i = 0; i < extent->l1_size; i++) {
+         le32_to_cpus(&extent->l1_table[i]);
+@@ -526,12 +479,12 @@ static int vmdk_open(BlockDriverState *b
+ 
+     if (extent->l1_backup_table_offset) {
+         extent->l1_backup_table = qemu_malloc(l1_size);
+-        if (bdrv_pread(bs->file,
+-                    extent->l1_backup_table_offset,
+-                    extent->l1_backup_table,
+-                    l1_size)
+-                != l1_size) {
+-            goto fail;
++        ret = bdrv_pread(extent->file,
++                        extent->l1_backup_table_offset,
++                        extent->l1_backup_table,
++                        l1_size);
++        if (ret < 0) {
++            goto fail_l1b;
+         }
+         for (i = 0; i < extent->l1_size; i++) {
+             le32_to_cpus(&extent->l1_backup_table[i]);
+@@ -541,9 +494,102 @@ static int vmdk_open(BlockDriverState *b
+     extent->l2_cache =
+         qemu_malloc(extent->l2_size * L2_CACHE_SIZE * sizeof(uint32_t));
+     return 0;
++ fail_l1b:
++    qemu_free(extent->l1_backup_table);
++ fail_l1:
++    qemu_free(extent->l1_table);
++    return ret;
++}
++
++static int vmdk_open_vmdk3(BlockDriverState *bs, int flags)
++{
++    int ret;
++    uint32_t magic;
++    VMDK3Header header;
++    VmdkExtent *extent;
++
++    ret = bdrv_pread(bs->file, sizeof(magic), &header, sizeof(header));
++    if (ret < 0) {
++        goto fail;
++    }
++    extent = vmdk_add_extent(bs,
++                             bs->file, false,
++                             le32_to_cpu(header.disk_sectors),
++                             le32_to_cpu(header.l1dir_offset) << 9,
++                             0, 1 << 6, 1 << 9,
++                             le32_to_cpu(header.granularity));
++    ret = vmdk_init_tables(bs, extent);
++    if (ret) {
++        /* vmdk_init_tables cleans up on fail, so only free allocation of
++         * vmdk_add_extent here. */
++        goto fail;
++    }
++    return 0;
+  fail:
+     vmdk_free_extents(bs);
+-    return -1;
++    return ret;
++}
++
++static int vmdk_open_vmdk4(BlockDriverState *bs, int flags)
++{
++    int ret;
++    uint32_t magic;
++    uint32_t l1_size, l1_entry_sectors;
++    VMDK4Header header;
++    BDRVVmdkState *s = bs->opaque;
++    VmdkExtent *extent;
++
++    ret = bdrv_pread(bs->file, sizeof(magic), &header, sizeof(header));
++    if (ret < 0) {
++        goto fail;
++    }
++    l1_entry_sectors = le32_to_cpu(header.num_gtes_per_gte)
++                        * le64_to_cpu(header.granularity);
++    l1_size = (le64_to_cpu(header.capacity) + l1_entry_sectors - 1)
++                / l1_entry_sectors;
++    extent = vmdk_add_extent(bs, bs->file, false,
++                          le64_to_cpu(header.capacity),
++                          le64_to_cpu(header.gd_offset) << 9,
++                          le64_to_cpu(header.rgd_offset) << 9,
++                          l1_size,
++                          le32_to_cpu(header.num_gtes_per_gte),
++                          le64_to_cpu(header.granularity));
++    if (extent->l1_entry_sectors <= 0) {
++        ret = -EINVAL;
++        goto fail;
++    }
++    /* try to open parent images, if exist */
++    ret = vmdk_parent_open(bs);
++    if (ret) {
++        goto fail;
++    }
++    s->parent_cid = vmdk_read_cid(bs, 1);
++    ret = vmdk_init_tables(bs, extent);
++    if (ret) {
++        goto fail;
++    }
++    return 0;
++ fail:
++    vmdk_free_extents(bs);
++    return ret;
++}
++
++static int vmdk_open(BlockDriverState *bs, int flags)
++{
++    uint32_t magic;
++
++    if (bdrv_pread(bs->file, 0, &magic, sizeof(magic)) != sizeof(magic)) {
++        return -EIO;
++    }
++
++    magic = be32_to_cpu(magic);
++    if (magic == VMDK3_MAGIC) {
++        return vmdk_open_vmdk3(bs, flags);
++    } else if (magic == VMDK4_MAGIC) {
++        return vmdk_open_vmdk4(bs, flags);
++    } else {
++        return -EINVAL;
++    }
+ }
+ 
+ static int get_whole_cluster(BlockDriverState *bs,
+@@ -630,11 +676,11 @@ static uint64_t get_cluster_offset(Block
+     if (!l2_offset) {
+         return 0;
+     }
+-    for(i = 0; i < L2_CACHE_SIZE; i++) {
++    for (i = 0; i < L2_CACHE_SIZE; i++) {
+         if (l2_offset == extent->l2_cache_offsets[i]) {
+             /* increment the hit count */
+             if (++extent->l2_cache_counts[i] == 0xffffffff) {
+-                for(j = 0; j < L2_CACHE_SIZE; j++) {
++                for (j = 0; j < L2_CACHE_SIZE; j++) {
+                     extent->l2_cache_counts[j] >>= 1;
+                 }
+             }
+@@ -645,7 +691,7 @@ static uint64_t get_cluster_offset(Block
+     /* not found: load a new entry in the least used one */
+     min_index = 0;
+     min_count = 0xffffffff;
+-    for(i = 0; i < L2_CACHE_SIZE; i++) {
++    for (i = 0; i < L2_CACHE_SIZE; i++) {
+         if (extent->l2_cache_counts[i] < min_count) {
+             min_count = extent->l2_cache_counts[i];
+             min_index = i;

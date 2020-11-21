@@ -1,16 +1,24 @@
 #!/bin/sh
 # Copyright (C) 2013 OpenWrt.org
 
-get_dt_led() {
-	local label
+get_dt_led_path() {
 	local ledpath
 	local basepath="/proc/device-tree"
 	local nodepath="$basepath/aliases/led-$1"
 
 	[ -f "$nodepath" ] && ledpath=$(cat "$nodepath")
+	[ -n "$ledpath" ] && ledpath="$basepath$ledpath"
+
+	echo "$ledpath"
+}
+
+get_dt_led() {
+	local label
+	local ledpath=$(get_dt_led_path $1)
+
 	[ -n "$ledpath" ] && \
-		label=$(cat "$basepath$ledpath/label" 2>/dev/null) || \
-		label=$(cat "$basepath$ledpath/chan-name" 2>/dev/null)
+		label=$(cat "$ledpath/label" 2>/dev/null) || \
+		label=$(cat "$ledpath/chan-name" 2>/dev/null)
 
 	echo "$label"
 }
@@ -33,6 +41,17 @@ led_on() {
 led_off() {
 	led_set_attr $1 "trigger" "none"
 	led_set_attr $1 "brightness" 0
+}
+
+status_led_restore_trigger() {
+	local trigger
+	local ledpath=$(get_dt_led_path $1)
+
+	[ -n "$ledpath" ] && \
+		trigger=$(cat "$ledpath/linux,default-trigger" 2>/dev/null)
+
+	[ -n "$trigger" ] && \
+		led_set_attr "$(get_dt_led $1)" "trigger" "$trigger"
 }
 
 status_led_set_timer() {

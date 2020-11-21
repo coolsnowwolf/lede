@@ -1,0 +1,107 @@
+From 71dd6c0dff51b5f1fef2e9dfa6f6a948aac975f3 Mon Sep 17 00:00:00 2001
+From: David Bauer <mail@david-bauer.net>
+Date: Wed, 17 Apr 2019 23:59:21 +0200
+Subject: [PATCH] net: phy: add support for reset-controller
+
+This commit adds support for PHY reset pins handled by a reset controller.
+
+Signed-off-by: David Bauer <mail@david-bauer.net>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/mdio_bus.c    | 27 +++++++++++++++++++++++++--
+ drivers/net/phy/mdio_device.c | 13 +++++++++++--
+ include/linux/mdio.h          |  1 +
+ 3 files changed, 37 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/phy/mdio_bus.c
++++ b/drivers/net/phy/mdio_bus.c
+@@ -29,6 +29,7 @@
+ #include <linux/of_gpio.h>
+ #include <linux/netdevice.h>
+ #include <linux/etherdevice.h>
++#include <linux/reset.h>
+ #include <linux/skbuff.h>
+ #include <linux/spinlock.h>
+ #include <linux/mm.h>
+@@ -65,8 +66,23 @@ static int mdiobus_register_gpiod(struct
+ 
+ 	mdiodev->reset = gpiod;
+ 
+-	/* Assert the reset signal again */
+-	mdio_device_reset(mdiodev, 1);
++	return 0;
++}
++
++static int mdiobus_register_reset(struct mdio_device *mdiodev)
++{
++	struct reset_control *reset = NULL;
++
++	if (mdiodev->dev.of_node)
++		reset = devm_reset_control_get_exclusive(&mdiodev->dev,
++							 "phy");
++	if (PTR_ERR(reset) == -ENOENT ||
++	    PTR_ERR(reset) == -ENOTSUPP)
++		reset = NULL;
++	else if (IS_ERR(reset))
++		return PTR_ERR(reset);
++
++	mdiodev->reset_ctrl = reset;
+ 
+ 	return 0;
+ }
+@@ -82,6 +98,13 @@ int mdiobus_register_device(struct mdio_
+ 		err = mdiobus_register_gpiod(mdiodev);
+ 		if (err)
+ 			return err;
++
++		err = mdiobus_register_reset(mdiodev);
++		if (err)
++			return err;
++
++		/* Assert the reset signal */
++		mdio_device_reset(mdiodev, 1);
+ 	}
+ 
+ 	mdiodev->bus->mdio_map[mdiodev->addr] = mdiodev;
+--- a/drivers/net/phy/mdio_device.c
++++ b/drivers/net/phy/mdio_device.c
+@@ -21,6 +21,7 @@
+ #include <linux/mii.h>
+ #include <linux/module.h>
+ #include <linux/phy.h>
++#include <linux/reset.h>
+ #include <linux/slab.h>
+ #include <linux/string.h>
+ #include <linux/unistd.h>
+@@ -121,10 +122,18 @@ void mdio_device_reset(struct mdio_devic
+ {
+ 	unsigned int d;
+ 
+-	if (!mdiodev->reset)
++	if (!mdiodev->reset && !mdiodev->reset_ctrl)
+ 		return;
+ 
+-	gpiod_set_value(mdiodev->reset, value);
++	if (mdiodev->reset)
++		gpiod_set_value(mdiodev->reset, value);
++
++	if (mdiodev->reset_ctrl) {
++		if (value)
++			reset_control_assert(mdiodev->reset_ctrl);
++		else
++			reset_control_deassert(mdiodev->reset_ctrl);
++	}
+ 
+ 	d = value ? mdiodev->reset_assert_delay : mdiodev->reset_deassert_delay;
+ 	if (d)
+--- a/include/linux/mdio.h
++++ b/include/linux/mdio.h
+@@ -40,6 +40,7 @@ struct mdio_device {
+ 	int addr;
+ 	int flags;
+ 	struct gpio_desc *reset;
++	struct reset_control *reset_ctrl;
+ 	unsigned int reset_assert_delay;
+ 	unsigned int reset_deassert_delay;
+ };

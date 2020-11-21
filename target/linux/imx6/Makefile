@@ -12,9 +12,9 @@ BOARDNAME:=Freescale i.MX 6
 FEATURES:=audio display fpu gpio pcie rtc usb usbgadget squashfs targz nand ubifs boot-part rootfs-part
 CPU_TYPE:=cortex-a9
 CPU_SUBTYPE:=neon
-MAINTAINER:=Luka Perkov <luka@openwrt.org>
 
-KERNEL_PATCHVER:=4.14
+KERNEL_PATCHVER:=5.4
+KERNEL_TESTING_PATCHVER:=5.4
 
 include $(INCLUDE_DIR)/target.mk
 

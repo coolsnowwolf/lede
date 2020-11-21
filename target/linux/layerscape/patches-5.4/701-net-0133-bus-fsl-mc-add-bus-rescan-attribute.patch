@@ -1,0 +1,115 @@
+From 4eba1e0209a52798e1b6a233840a28fc5132cd9c Mon Sep 17 00:00:00 2001
+From: Ioana Ciornei <ioana.ciornei@nxp.com>
+Date: Mon, 5 Mar 2018 18:38:46 +0200
+Subject: [PATCH] bus: fsl-mc: add bus rescan attribute
+
+Introduce the rescan attribute as a bus attribute to
+synchronize the fsl-mc bus objects and the MC firmware.
+
+To rescan the fsl-mc bus, e.g.,
+echo 1 > /sys/bus/fsl-mc/rescan
+
+Signed-off-by: Ioana Ciornei <ioana.ciornei@nxp.com>
+---
+ Documentation/ABI/stable/sysfs-bus-fsl-mc | 10 ++++++++
+ drivers/bus/fsl-mc/dprc-driver.c          |  4 +--
+ drivers/bus/fsl-mc/fsl-mc-bus.c           | 41 +++++++++++++++++++++++++++++++
+ drivers/bus/fsl-mc/fsl-mc-private.h       |  2 ++
+ 4 files changed, 55 insertions(+), 2 deletions(-)
+
+--- a/Documentation/ABI/stable/sysfs-bus-fsl-mc
++++ b/Documentation/ABI/stable/sysfs-bus-fsl-mc
+@@ -7,3 +7,13 @@ Description:	Writing a non-zero value to
+ 		synchronize the objects under dprc.X and the
+ 		Management Complex firmware.
+ Users:		Userspace drivers and management tools
++
++What:		/sys/bus/fsl-mc/rescan
++Date:		November 2018
++KernelVersion:	5.0
++Contact:	Ioana Ciornei <ioana.ciornei@nxp.com>
++Description:	Writing a non-zero value to this attribute will
++		force a rescan of fsl-mc bus in the system and
++		synchronize the objects under fsl-mc bus and the
++		Management Complex firmware.
++Users:		Userspace drivers and management tools
+--- a/drivers/bus/fsl-mc/dprc-driver.c
++++ b/drivers/bus/fsl-mc/dprc-driver.c
+@@ -214,8 +214,8 @@ static void dprc_add_new_devices(struct
+  * populated before they can get allocation requests from probe callbacks
+  * of the device drivers for the non-allocatable devices.
+  */
+-static int dprc_scan_objects(struct fsl_mc_device *mc_bus_dev,
+-			     unsigned int *total_irq_count)
++int dprc_scan_objects(struct fsl_mc_device *mc_bus_dev,
++		      unsigned int *total_irq_count)
+ {
+ 	int num_child_objects;
+ 	int dprc_get_obj_failures;
+--- a/drivers/bus/fsl-mc/fsl-mc-bus.c
++++ b/drivers/bus/fsl-mc/fsl-mc-bus.c
+@@ -154,12 +154,53 @@ static struct attribute *fsl_mc_dev_attr
+ 
+ ATTRIBUTE_GROUPS(fsl_mc_dev);
+ 
++static int scan_fsl_mc_bus(struct device *dev, void *data)
++{
++	struct fsl_mc_device *root_mc_dev;
++	struct fsl_mc_bus *root_mc_bus;
++
++	if (!fsl_mc_is_root_dprc(dev))
++		goto exit;
++
++	root_mc_dev = to_fsl_mc_device(dev);
++	root_mc_bus = to_fsl_mc_bus(root_mc_dev);
++	mutex_lock(&root_mc_bus->scan_mutex);
++	dprc_scan_objects(root_mc_dev, NULL);
++	mutex_unlock(&root_mc_bus->scan_mutex);
++
++exit:
++	return 0;
++}
++
++static ssize_t rescan_store(struct bus_type *bus,
++			    const char *buf, size_t count)
++{
++	unsigned long val;
++
++	if (kstrtoul(buf, 0, &val) < 0)
++		return -EINVAL;
++
++	if (val)
++		bus_for_each_dev(bus, NULL, NULL, scan_fsl_mc_bus);
++
++	return count;
++}
++static BUS_ATTR_WO(rescan);
++
++static struct attribute *fsl_mc_bus_attrs[] = {
++	&bus_attr_rescan.attr,
++	NULL,
++};
++
++ATTRIBUTE_GROUPS(fsl_mc_bus);
++
+ struct bus_type fsl_mc_bus_type = {
+ 	.name = "fsl-mc",
+ 	.match = fsl_mc_bus_match,
+ 	.uevent = fsl_mc_bus_uevent,
+ 	.dma_configure  = fsl_mc_dma_configure,
+ 	.dev_groups = fsl_mc_dev_groups,
++	.bus_groups = fsl_mc_bus_groups,
+ };
+ EXPORT_SYMBOL_GPL(fsl_mc_bus_type);
+ 
+--- a/drivers/bus/fsl-mc/fsl-mc-private.h
++++ b/drivers/bus/fsl-mc/fsl-mc-private.h
+@@ -556,6 +556,8 @@ int __init dprc_driver_init(void);
+ 
+ void dprc_driver_exit(void);
+ 
++int dprc_scan_objects(struct fsl_mc_device *mc_bus_dev,
++		      unsigned int *total_irq_count);
+ int __init fsl_mc_allocator_driver_init(void);
+ 
+ void fsl_mc_allocator_driver_exit(void);

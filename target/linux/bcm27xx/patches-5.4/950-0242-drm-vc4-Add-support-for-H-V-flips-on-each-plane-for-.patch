@@ -1,0 +1,86 @@
+From 495fd0373ad234c8547697e3a7de1f1724c8498d Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Tue, 9 Apr 2019 17:19:51 +0100
+Subject: [PATCH] drm: vc4: Add support for H & V flips on each plane
+ for FKMS
+
+They are near zero cost options for the HVS, therefore they
+may as well be implemented, and it allows us to invert the
+DSI display.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/gpu/drm/vc4/vc4_firmware_kms.c | 36 ++++++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+--- a/drivers/gpu/drm/vc4/vc4_firmware_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_firmware_kms.c
+@@ -64,8 +64,21 @@ struct set_plane {
+ 	u8 padding;
+ 
+ 	u32 planes[4];  /* DMA address of each plane */
++
++	u32 transform;
+ };
+ 
++/* Values for the transform field */
++#define TRANSFORM_NO_ROTATE	0
++#define TRANSFORM_ROTATE_180	BIT(1)
++#define TRANSFORM_FLIP_HRIZ	BIT(16)
++#define TRANSFORM_FLIP_VERT	BIT(17)
++
++#define SUPPORTED_ROTATIONS	(DRM_MODE_ROTATE_0 | \
++				 DRM_MODE_ROTATE_180 | \
++				 DRM_MODE_REFLECT_X | \
++				 DRM_MODE_REFLECT_Y)
++
+ struct mailbox_set_plane {
+ 	struct rpi_firmware_property_tag_header tag;
+ 	struct set_plane plane;
+@@ -277,6 +290,7 @@ static void vc4_plane_atomic_update(stru
+ 	struct vc4_crtc *vc4_crtc = to_vc4_crtc(state->crtc);
+ 	int num_planes = fb->format->num_planes;
+ 	struct drm_display_mode *mode = &state->crtc->mode;
++	unsigned int rotation = SUPPORTED_ROTATIONS;
+ 
+ 	mb->plane.vc_image_type = vc_fmt->vc_image;
+ 	mb->plane.width = fb->width;
+@@ -297,6 +311,24 @@ static void vc4_plane_atomic_update(stru
+ 	mb->plane.is_vu = vc_fmt->is_vu;
+ 	mb->plane.planes[0] = bo->paddr + fb->offsets[0];
+ 
++	rotation = drm_rotation_simplify(state->rotation, rotation);
++
++	switch (rotation) {
++	default:
++	case DRM_MODE_ROTATE_0:
++		mb->plane.transform = TRANSFORM_NO_ROTATE;
++		break;
++	case DRM_MODE_ROTATE_180:
++		mb->plane.transform = TRANSFORM_ROTATE_180;
++		break;
++	case DRM_MODE_REFLECT_X:
++		mb->plane.transform = TRANSFORM_FLIP_HRIZ;
++		break;
++	case DRM_MODE_REFLECT_Y:
++		mb->plane.transform = TRANSFORM_FLIP_VERT;
++		break;
++	}
++
+ 	/* FIXME: If the dest rect goes off screen then clip the src rect so we
+ 	 * don't have off-screen pixels.
+ 	 */
+@@ -516,9 +548,13 @@ static struct drm_plane *vc4_fkms_plane_
+ 				       formats, num_formats, modifiers,
+ 				       type, NULL);
+ 
++	/* FIXME: Do we need to be checking return values from all these calls?
++	 */
+ 	drm_plane_helper_add(plane, &vc4_plane_helper_funcs);
+ 
+ 	drm_plane_create_alpha_property(plane);
++	drm_plane_create_rotation_property(plane, DRM_MODE_ROTATE_0,
++					   SUPPORTED_ROTATIONS);
+ 
+ 	/*
+ 	 * Default frame buffer setup is with FB on -127, and raspistill etc

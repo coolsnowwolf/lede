@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uboot-layerscape
-PKG_VERSION:=lsdk-1806
+PKG_VERSION:=LSDK-20.04-update-290520
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://source.codeaurora.org/external/qoriq/qoriq-components/u-boot
-PKG_SOURCE_VERSION:=b3f98d438eefd1b355efdec0b50af5813ff8d0e1
-PKG_MIRROR_HASH:=59e35957055658e7fdefb16b92f954356985a8191942d93f254861c75c47b32b
+PKG_SOURCE_VERSION:=1e55b2f9e7f56b76569089b9e950f49c1579580e
+PKG_MIRROR_HASH:=46aace27e1367f40b424a64215d524a99c3bd62f49057550039e72d5a1ab7edb
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
@@ -27,64 +27,67 @@ define U-Boot/Default
   ENV_SIZE:=0x2000
 endef
 
-define U-Boot/ls1012ardb
-  NAME:=NXP LS1012ARDB
-  UBOOT_CONFIG:=ls1012ardb_qspi
+define U-Boot/fsl_ls1012a-frdm
+  NAME:=NXP LS1012AFRDM
+  UBOOT_CONFIG:=ls1012afrdm_tfa
   ENV_SIZE:=0x40000
 endef
 
-define U-Boot/ls1012afrwy
+define U-Boot/fsl_ls1012a-rdb
+  NAME:=NXP LS1012ARDB
+  UBOOT_CONFIG:=ls1012ardb_tfa
+  ENV_SIZE:=0x40000
+endef
+
+define U-Boot/fsl_ls1012a-frwy-sdboot
   NAME:=NXP LS1012AFRWY
-  UBOOT_CONFIG:=ls1012afrwy_qspi
+  UBOOT_CONFIG:=ls1012afrwy_tfa
   ENV_SIZE:=0x10000
 endef
 
-define U-Boot/ls1043ardb
+define U-Boot/fsl_ls1043a-rdb
   NAME:=NXP LS1043ARDB
-  ENV_SIZE:=0x20000
+  UBOOT_CONFIG:=ls1043ardb_tfa
 endef
 
-define U-Boot/ls1043ardb-sdboot
+define U-Boot/fsl_ls1043a-rdb-sdboot
   NAME:=NXP LS1043ARDB SD Card Boot
-  UBOOT_CONFIG:=ls1043ardb_sdcard
-  UBOOT_IMAGE:=u-boot-with-spl-pbl.bin
+  UBOOT_CONFIG:=ls1043ardb_tfa
 endef
 
-define U-Boot/ls1046ardb
+define U-Boot/fsl_ls1046a-rdb
   NAME:=NXP LS1046ARDB
-  UBOOT_CONFIG:=ls1046ardb_qspi
+  UBOOT_CONFIG:=ls1046ardb_tfa
 endef
 
-define U-Boot/ls1046ardb-sdboot
+define U-Boot/fsl_ls1046a-rdb-sdboot
   NAME:=NXP LS1046ARDB SD Card Boot
-  UBOOT_CONFIG:=ls1046ardb_sdcard
-  UBOOT_IMAGE:=u-boot-with-spl-pbl.bin
+  UBOOT_CONFIG:=ls1046ardb_tfa
 endef
 
-define U-Boot/ls1088ardb
+define U-Boot/fsl_ls1088a-rdb
   NAME:=NXP LS1088ARDB
-  UBOOT_CONFIG:=ls1088ardb_qspi
+  UBOOT_CONFIG:=ls1088ardb_tfa
 endef
 
-define U-Boot/ls1088ardb-sdboot
+define U-Boot/fsl_ls1088a-rdb-sdboot
   NAME:=NXP LS1088ARDB SD Card Boot
-  UBOOT_CONFIG:=ls1088ardb_sdcard_qspi
-  UBOOT_IMAGE:=u-boot-with-spl.bin
+  UBOOT_CONFIG:=ls1088ardb_tfa
 endef
 
-define U-Boot/ls2088ardb
+define U-Boot/fsl_ls2088a-rdb
   NAME:=NXP LS2088ARDB
-  UBOOT_CONFIG:=ls2080ardb
+  UBOOT_CONFIG:=ls2088ardb_tfa
 endef
 
-define U-Boot/ls1021atwr
+define U-Boot/fsl_ls1021a-twr
   NAME:=NXP LS1021ATWR
   BUILD_SUBTARGET:=armv7
   UBOOT_CONFIG:=ls1021atwr_nor
   ENV_SIZE:=0x20000
 endef
 
-define U-Boot/ls1021atwr-sdboot
+define U-Boot/fsl_ls1021a-twr-sdboot
   NAME:=NXP LS1021ATWR SD Card Boot
   BUILD_SUBTARGET:=armv7
   UBOOT_CONFIG:=ls1021atwr_sdcard_ifc
@@ -92,7 +95,7 @@ define U-Boot/ls1021atwr-sdboot
   ENV_SIZE:=0x20000
 endef
 
-define U-Boot/ls1021aiot-sdboot
+define U-Boot/fsl_ls1021a-iot-sdboot
   NAME:=NXP LS1021AIOT SD Card Boot
   BUILD_SUBTARGET:=armv7
   UBOOT_CONFIG:=ls1021aiot_sdcard
@@ -100,20 +103,20 @@ define U-Boot/ls1021aiot-sdboot
   ENV_SIZE:=0x2000
 endef
 
-
 UBOOT_TARGETS := \
-  ls1012ardb \
-  ls1012afrwy \
-  ls1043ardb \
-  ls1043ardb-sdboot \
-  ls1046ardb \
-  ls1046ardb-sdboot \
-  ls1088ardb \
-  ls1088ardb-sdboot \
-  ls2088ardb \
-  ls1021atwr \
-  ls1021atwr-sdboot \
-  ls1021aiot-sdboot
+  fsl_ls1012a-frdm \
+  fsl_ls1012a-rdb \
+  fsl_ls1012a-frwy-sdboot \
+  fsl_ls1043a-rdb \
+  fsl_ls1043a-rdb-sdboot \
+  fsl_ls1046a-rdb \
+  fsl_ls1046a-rdb-sdboot \
+  fsl_ls1088a-rdb \
+  fsl_ls1088a-rdb-sdboot \
+  fsl_ls2088a-rdb \
+  fsl_ls1021a-twr \
+  fsl_ls1021a-twr-sdboot \
+  fsl_ls1021a-iot-sdboot
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)

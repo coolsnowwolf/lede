@@ -38,7 +38,7 @@ config OPENSSL_WITH_ASM
 
 config OPENSSL_WITH_SSE2
 	bool
-	default y if !TARGET_x86_legacy && !TARGET_x86_geode
+	default y if x86_64 || i386 && !TARGET_x86_legacy
 	prompt "Enable use of x86 SSE2 instructions"
 	depends on OPENSSL_WITH_ASM && x86_64 || i386
 	help
@@ -54,7 +54,9 @@ config OPENSSL_WITH_DEPRECATED
 	default y
 	prompt "Include deprecated APIs (See help for a list of packages that need this)"
 	help
-		Squid currently requires this.
+		Since openssl 1.1.x is still new to openwrt, some packages
+		requiring this option do not list it as a requirement yet:
+		 * freeswitch-stable, freeswitch, python, python3, squid.
 
 config OPENSSL_NO_DEPRECATED
 	bool
@@ -62,12 +64,27 @@ config OPENSSL_NO_DEPRECATED
 
 config OPENSSL_WITH_ERROR_MESSAGES
 	bool
+	default y if !SMALL_FLASH && !LOW_MEMORY_FOOTPRINT
 	prompt "Include error messages"
 	help
 		This option aids debugging, but increases package size and
 		memory usage.
 
 comment "Protocol Support"
+
+config OPENSSL_WITH_TLS13
+	bool
+	default y
+	prompt "Enable support for TLS 1.3"
+	help
+		TLS 1.3 is the newest version of the TLS specification.
+		It aims:
+		 * to increase the overall security of the protocol,
+		   removing outdated algorithms, and encrypting more of the
+		   protocol;
+		 * to increase performance by reducing the number of round-trips
+		   when performing a full handshake.
+		It increases package size by ~4KB.
 
 config OPENSSL_WITH_DTLS
 	bool
@@ -78,7 +95,6 @@ config OPENSSL_WITH_DTLS
 
 config OPENSSL_WITH_NPN
 	bool
-	default y
 	prompt "Enable NPN support"
 	help
 		NPN is a TLS extension, obsoleted and replaced with ALPN,
@@ -103,23 +119,34 @@ config OPENSSL_WITH_CMS
 
 comment "Algorithm Selection"
 
-config OPENSSL_WITH_EC
-	bool
-	default y
-	prompt "Enable elliptic curve support"
-	help
-		Elliptic-curve cryptography (ECC) is an approach to public-key
-		cryptography based on the algebraic structure of elliptic curves
-		over finite fields. ECC requires smaller keys compared to non-ECC
-		cryptography to provide equivalent security.
-
 config OPENSSL_WITH_EC2M
 	bool
-	depends on OPENSSL_WITH_EC
 	prompt "Enable ec2m support"
 	help
 		This option enables the more efficient, yet less common, binary
 		field elliptic curves.
+
+config OPENSSL_WITH_CHACHA_POLY1305
+	bool
+	default y
+	prompt "Enable ChaCha20-Poly1305 ciphersuite support"
+	help
+		ChaCha20-Poly1305 is an AEAD ciphersuite with 256-bit keys,
+		combining ChaCha stream cipher with Poly1305 MAC.
+		It is 3x faster than AES, when not using a CPU with AES-specific
+		instructions, as is the case of most embedded devices.
+
+config OPENSSL_PREFER_CHACHA_OVER_GCM
+	bool
+	default y if !x86_64 && !aarch64
+	prompt "Prefer ChaCha20-Poly1305 over AES-GCM by default"
+	depends on OPENSSL_WITH_CHACHA_POLY1305
+	help
+		The default openssl preference is for AES-GCM before ChaCha, but
+		that takes into account AES-NI capable chips.  It is not the
+		case with most embedded chips, so it may be better to invert
+		that preference.  This is just for the default case. The
+		application can always override this.
 
 config OPENSSL_WITH_PSK
 	bool
@@ -129,6 +156,12 @@ config OPENSSL_WITH_PSK
 		Build support for Pre-Shared Key based cipher suites.
 
 comment "Less commonly used build options"
+
+config OPENSSL_WITH_ARIA
+	bool
+	prompt "Enable ARIA support"
+	help
+		ARIA is a block cipher developed in South Korea, based on AES.
 
 config OPENSSL_WITH_CAMELLIA
 	bool
@@ -149,6 +182,23 @@ config OPENSSL_WITH_SEED
 	help
 		SEED is a block cipher with 128-bit keys broadly used in
 		South Korea, but seldom found elsewhere.
+
+config OPENSSL_WITH_SM234
+	bool
+	prompt "Enable SM2/3/4 algorithms support"
+	help
+		These algorithms are a set of "Commercial Cryptography"
+		algorithms approved for use in China.
+		  * SM2 is an EC algorithm equivalent to ECDSA P-256
+		  * SM3 is a hash function equivalent to SHA-256
+		  * SM4 is a 128-block cipher equivalent to AES-128
+
+config OPENSSL_WITH_BLAKE2
+	bool
+	prompt "Enable BLAKE2 digest support"
+	help
+		BLAKE2 is a cryptographic hash function based on the ChaCha
+		stream cipher.
 
 config OPENSSL_WITH_MDC2
 	bool
@@ -184,27 +234,68 @@ comment "Engine/Hardware Support"
 config OPENSSL_ENGINE
 	bool "Enable engine support"
 	default y
+	select PACKAGE_libopenssl-devcrypto
 	help
 		This enables alternative cryptography implementations,
 		most commonly for interfacing with external crypto devices,
 		or supporting new/alternative ciphers and digests.
+		If you compile the library with this option disabled, packages built
+		using an engine-enabled library (i.e. from the official repo) may
+		fail to run.  Compile and install the packages with engine support
+		disabled, and you should be fine.
+		Note that you need to enable KERNEL_AIO to be able to build the
+		afalg engine package.
 
-config OPENSSL_ENGINE_CRYPTO
+config OPENSSL_ENGINE_BUILTIN
+	bool "Build chosen engines into libcrypto"
+	default y
+	depends on OPENSSL_ENGINE
+	help
+		This builds all chosen engines into libcrypto.so, instead of building
+		them as dynamic engines in separate packages.
+		The benefit of building the engines into libcrypto is that they won't
+		require any configuration to be used by default.
+
+config OPENSSL_ENGINE_BUILTIN_AFALG
 	bool
-	select OPENSSL_ENGINE
-	select PACKAGE_kmod-cryptodev
+	default y
+	prompt "Acceleration support through AF_ALG sockets engine"
+	depends on OPENSSL_ENGINE_BUILTIN && KERNEL_AIO
+	select PACKAGE_libopenssl-conf
+	help
+		This enables use of hardware acceleration through the
+		AF_ALG kernel interface.
+
+config OPENSSL_ENGINE_BUILTIN_DEVCRYPTO
+	bool
+	default y
 	prompt "Acceleration support through /dev/crypto"
+	depends on OPENSSL_ENGINE_BUILTIN
+	select PACKAGE_libopenssl-conf
 	help
 		This enables use of hardware acceleration through OpenBSD
 		Cryptodev API (/dev/crypto) interface.
-		You must install kmod-cryptodev (under Kernel modules, Cryptographic
-		API modules) for /dev/crypto to show up and use hardware
-		acceleration; otherwise it falls back to software.
+		Even though configuration is not strictly needed, it is worth seeing
+		https://openwrt.org/docs/techref/hardware/cryptographic.hardware.accelerators
+		for information on how to configure the engine.
 
-config OPENSSL_ENGINE_DIGEST
+config OPENSSL_ENGINE_BUILTIN_PADLOCK
 	bool
-	depends on OPENSSL_ENGINE_CRYPTO
-	prompt "/dev/crypto digest (md5/sha1) acceleration support"
+	prompt "VIA Padlock Acceleration support engine"
+	depends on OPENSSL_ENGINE_BUILTIN && TARGET_x86
+	select PACKAGE_libopenssl-conf
+	help
+		This enables use of hardware acceleration through the
+		VIA Padlock module.
+
+config OPENSSL_WITH_ASYNC
+	bool
+	prompt "Enable asynchronous jobs support"
+	depends on OPENSSL_ENGINE && USE_GLIBC
+	help
+		Enables async-aware applications to be able to use OpenSSL to
+		initiate crypto operations asynchronously. In order to work
+		this will require the presence of an async capable engine.
 
 config OPENSSL_WITH_GOST
 	bool
@@ -213,6 +304,8 @@ config OPENSSL_WITH_GOST
 	help
 		This option prepares the library to accept engine support
 		for Russian GOST crypto algorithms.
+		The gost engine is not included in standard openwrt feeds.
+		To build such engine yourself, see:
+		https://github.com/gost-engine/engine
 
 endif
-

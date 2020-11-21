@@ -15,6 +15,7 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/byteorder/generic.h>
+#include <linux/of.h>
 
 #include "mtdsplit.h"
 
@@ -152,21 +153,15 @@ static int mtdsplit_parse_tplink(struct mtd_info *master,
 	return TPLINK_NR_PARTS;
 }
 
-#include <linux/version.h>
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 static const struct of_device_id mtdsplit_tplink_of_match_table[] = {
 	{ .compatible = "tplink,firmware" },
 	{},
 };
-#endif
 
 static struct mtd_part_parser mtdsplit_tplink_parser = {
 	.owner = THIS_MODULE,
 	.name = "tplink-fw",
-	#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 	.of_match_table = mtdsplit_tplink_of_match_table,
-	#endif
 	.parse_fn = mtdsplit_parse_tplink,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };
