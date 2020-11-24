@@ -85,7 +85,9 @@ endif
 ifeq ($(HOST_OS),Darwin)
   tools-y += bash
 else
+  $(curdir)/dwarves/compile += $(curdir)/elfutils/compile
   $(curdir)/elfutils/compile := $(curdir)/zlib/compile
+  tools-$(CONFIG_DWARVES) += dwarves
   tools-y += elfutils
 endif
 
