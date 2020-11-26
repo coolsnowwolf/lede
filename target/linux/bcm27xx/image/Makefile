@@ -86,7 +86,14 @@ ifeq ($(SUBTARGET),bcm2708)
 endif
 
 define Device/rpi-2
-  DEVICE_MODEL := 2B/3B/3B+/3CM/4B
+  DEVICE_MODEL := 2B/2B 1.2
+  DEVICE_VARIANT := (32bit)
+  DEVICE_ALT0_VENDOR := Raspberry Pi
+  DEVICE_ALT0_MODEL := 3B/3B+/3CM
+  DEVICE_ALT0_VARIANT := (32bit)
+  DEVICE_ALT1_VENDOR := Raspberry Pi
+  DEVICE_ALT1_MODEL := 4B
+  DEVICE_ALT1_VARIANT := (32bit)
   DEVICE_DTS := \
 	bcm2709-rpi-2-b bcm2710-rpi-2-b \
 	bcm2710-rpi-3-b bcm2710-rpi-3-b-plus \
@@ -112,7 +119,11 @@ ifeq ($(SUBTARGET),bcm2709)
 endif
 
 define Device/rpi-3
-  DEVICE_MODEL := 2B-1.2/3B/3B+/3CM
+  DEVICE_MODEL := 3B/3B+/3CM
+  DEVICE_VARIANT := (64bit)
+  DEVICE_ALT0_VENDOR := Raspberry Pi
+  DEVICE_ALT0_MODEL := 2B-1.2
+  DEVICE_ALT0_VARIANT := (64bit)
   KERNEL_IMG := kernel8.img
   DEVICE_DTS := \
 	broadcom/bcm2710-rpi-2-b \
@@ -136,6 +147,7 @@ endif
 
 define Device/rpi-4
   DEVICE_MODEL := 4B
+  DEVICE_VARIANT := (64bit)
   KERNEL_IMG := kernel8.img
   DEVICE_DTS := broadcom/bcm2711-rpi-4-b
   SUPPORTED_DEVICES := \
