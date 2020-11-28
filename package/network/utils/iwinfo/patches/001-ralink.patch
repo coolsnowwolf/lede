@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/api/ralink.h
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,207 @@
 +#ifndef _RALINK_H
 +#define _RALINK_H
 +
@@ -173,12 +173,14 @@
 +
 +typedef union _MACHTTRANSMIT_SETTING {
 +	struct  {
-+		unsigned short	MCS:7;  // MCS
-+		unsigned short	BW:1;   //channel bandwidth 20MHz or 40 MHz
++		unsigned short	MCS:6;  // MCS
++		unsigned short	ldpc:1;
++		unsigned short	BW:2;   //channel bandwidth 20MHz or 40 MHz
 +		unsigned short	ShortGI:1;
-+		unsigned short	STBC:2; //SPACE
-+		unsigned short	rsv:3;
-+		unsigned short	MODE:2; // Use definition MODE_xxx.
++		unsigned short	STBC:1; //SPACE
++		unsigned short	eTxBF:1;
++		unsigned short	iTxBF:1;
++		unsigned short	MODE:3; // Use definition MODE_xxx.
 +	} field;
 +	unsigned short	word;
 +} MACHTTRANSMIT_SETTING;
@@ -339,7 +341,7 @@
  	luaL_register(L, NULL, R_common);
 --- /dev/null
 +++ b/iwinfo_ra.c
-@@ -0,0 +1,1023 @@
+@@ -0,0 +1,982 @@
 +#include "iwinfo.h"
 +#include "iwinfo_ra.h"
 +#include "iwinfo_wext.h"
@@ -530,14 +532,6 @@
 +	return 0;
 +}
 +
-+int is_rausb(const char *ifname)
-+{
-+	if (!strncmp(ifname, "rausb", 5))
-+		return 1;
-+
-+	return 0;
-+}
-+
 +static int ra_ioctl(const char *ifname, int cmd, struct iwreq *wrq)
 +{
 +	if (!strncmp(ifname, "mon.", 4))
@@ -603,12 +597,6 @@
 +
 +int ra_get_mode(const char *ifname, int *buf)
 +{
-+	if (is_rausb(ifname))
-+	{
-+		*buf = IWINFO_OPMODE_CLIENT;
-+		return 0;
-+	}
-+
 +	if (strncmp(ifname, "ra", 2) == 0)
 +		*buf = IWINFO_OPMODE_MASTER;
 +	else if (strncmp(ifname, "apcli", 5) == 0)
@@ -687,9 +675,6 @@
 +{
 +	struct iwreq wrq;
 +
-+	if (is_rausb(ifname))
-+		return wext_get_frequency(ifname, buf);
-+
 +	if (ra_ioctl(ifname, SIOCGIWFREQ, &wrq) >= 0)
 +	{
 +		*buf = ra_freq2mhz(&wrq.u.freq);
@@ -755,8 +740,6 @@
 +int ra_get_quality(const char *ifname, int *buf)
 +{
 +	int tmp;
-+	if (is_rausb(ifname))
-+		return wext_get_quality(ifname, buf);
 +
 +	if (ra_get_signal(ifname, &tmp) == 0)
 +		*buf = 100 - (tmp / -95 * 100);
@@ -768,9 +751,6 @@
 +
 +int ra_get_quality_max(const char *ifname, int *buf)
 +{
-+	if (is_rausb(ifname))
-+		return wext_get_quality_max(ifname, buf);
-+
 +	*buf = 100;
 +	return 0;
 +}
@@ -964,24 +944,20 @@
 +	if (!strncmp(ifname, "apcli", 5))
 +		return -1;
 +
-+	if (is_rausb(ifname))
-+		return -1;
-+
 +	char table[8192];
 +
++	strcpy(wrq.ifr_ifrn.ifrn_name, ifname);
 +	wrq.u.data.pointer = (caddr_t)&table;
 +	wrq.u.data.flags = 0;
 +
 +	ret = ra_ioctl(ifname, RTPRIV_IOCTL_GET_MAC_TABLE_STRUCT, &wrq);
 +	if (ret < 0)
 +	{
-+		printf("assoclist ioctl fails\n");
++		fprintf(stderr, "assoclist ioctl fails\n");
 +		return -1;
 +	}
 +
 +	RT_802_11_MAC_TABLE *a = &table;
-+
-+	char iface[4];
 +
 +	*len = a->Num * sizeof(struct iwinfo_assoclist_entry);
 +
@@ -989,35 +965,27 @@
 +	{
 +		RT_802_11_MAC_ENTRY *pe = &(a->Entry[i]);
 +		memset(&entry, 0, sizeof(entry));
-+		memset(&iface, 0, sizeof(iface));
-+		if (is_5g(ifname))
-+			sprintf(iface, "ra"MIDFIX5G"%d", pe->ApIdx);
-+		else
-+			sprintf(iface, "ra%d", pe->ApIdx);
 +
-+		if (strncmp(iface, ifname, sizeof(iface)) == 0)
-+		{
-+			entry.signal = ((int)(pe->AvgRssi0) + (int)(pe->AvgRssi1)) / 2;
++		entry.signal = ((int)(pe->AvgRssi0) + (int)(pe->AvgRssi1)) / 2;
 +
-+			entry.noise = -95;
-+			entry.inactive = pe->ConnectedTime * 1000;
++		entry.noise = -95;
++		entry.inactive = pe->ConnectedTime * 1000;
 +
-+			memcpy(&entry.mac, &pe->Addr, sizeof(entry.mac));
++		memcpy(&entry.mac, &pe->Addr, sizeof(entry.mac));
 +
-+			entry.tx_packets = 0;
-+			entry.rx_packets = 0;
++		entry.tx_packets = 0;
++		entry.rx_packets = 0;
 +
-+			entry.tx_rate.rate = getRate(pe->TxRate);
-+			entry.tx_rate.mcs = pe->TxRate.field.MCS;
-+			entry.tx_rate.is_40mhz = pe->TxRate.field.BW;
-+			entry.tx_rate.is_short_gi = pe->TxRate.field.ShortGI;
++		entry.tx_rate.rate = getRate(pe->TxRate);
++		entry.tx_rate.mcs = pe->TxRate.field.MCS;
++		entry.tx_rate.is_40mhz = pe->TxRate.field.BW;
++		entry.tx_rate.is_short_gi = pe->TxRate.field.ShortGI;
 +
-+			entry.rx_rate = entry.tx_rate;
++		entry.rx_rate = entry.tx_rate;
 +
-+			memcpy(&buf[bl], &entry, sizeof(struct iwinfo_assoclist_entry));
++		memcpy(&buf[bl], &entry, sizeof(struct iwinfo_assoclist_entry));
 +
-+			bl += sizeof(struct iwinfo_assoclist_entry);
-+		}
++		bl += sizeof(struct iwinfo_assoclist_entry);
 +
 +		*len = bl;
 +	}
@@ -1158,9 +1126,6 @@
 +
 +	int len_a, line_len;
 +
-+	if (is_rausb(ifname))
-+		return wext_get_scanlist(ifname, buf, len);
-+
 +	iwpriv_set(ifname, "SiteSurvey", "1");
 +	sleep(3);
 +
@@ -1213,9 +1178,6 @@
 +	struct iwinfo_freqlist_entry entry;
 +	int i, bl;
 +	bl = 0;
-+
-+	if (is_rausb(ifname))
-+		return wext_get_freqlist(ifname, buf, len);
 +
 +	if (is_5g(ifname)) {
 +		for (i=0; i<ARRAY_SIZE(CH5G); ++i) {
@@ -1285,8 +1247,6 @@
 +int ra_get_hwmodelist(const char *ifname, int *buf)
 +{
 +	char data[10];
-+	if (is_rausb(ifname))
-+		return wext_get_hwmodelist(ifname, buf);
 +
 +	if (ra_oid_ioctl(ifname, RT_OID_VERSION_INFO, data, sizeof(data)) < 0)
 +		return -1;
@@ -1294,6 +1254,7 @@
 +	{
 +		*buf |= IWINFO_80211_A;
 +		*buf |= IWINFO_80211_N;
++		*buf |= IWINFO_80211_AC;
 +	}
 +	else
 +	{
@@ -1314,11 +1275,6 @@
 +int ra_get_mbssid_support(const char *ifname, int *buf)
 +{
 +	char data[10];
-+	if (is_rausb(ifname))
-+	{
-+		*buf = 0;
-+		return 0;
-+	}
 +
 +	if (ra_oid_ioctl(ifname, RT_OID_VERSION_INFO, data, sizeof(data)) < 0)
 +		return -1;
@@ -1326,28 +1282,33 @@
 +	return 0;
 +}
 +
++int iwinfo_hardware_id_from_mtd(struct iwinfo_hardware_id *id);
++
 +int ra_get_hardware_id(const char *ifname, char *buf)
 +{
 +	struct iwinfo_hardware_id *id = (struct iwinfo_hardware_id *)buf;
 +	memset(id, 0, sizeof(struct iwinfo_hardware_id));
 +	char data[10];
-+	if (ra_oid_ioctl(ifname, RT_OID_VERSION_INFO, data, sizeof(data)) < 0 && !is_rausb(ifname))
++	if (ra_oid_ioctl(ifname, RT_OID_VERSION_INFO, data, sizeof(data)) < 0)
 +		return -1;
-+	id->vendor_id = 0x1814;
-+	id->device_id = 0x7615;
-+	id->subsystem_device_id = 0x0;
-+	id->subsystem_vendor_id = 0x1814;
-+
-+	return (id->vendor_id > 0 && id->device_id > 0) ? 0 : -1;
++	return iwinfo_hardware_id_from_mtd(id);
 +}
++
++struct iwinfo_hardware_entry * iwinfo_hardware(struct iwinfo_hardware_id *id);
 +
 +int ra_get_hardware_name(const char *ifname, char *buf)
 +{
-+	char data[10];
++	struct iwinfo_hardware_id id;
++	struct iwinfo_hardware_entry *e;
 +
-+	if (ra_oid_ioctl(ifname, RT_OID_VERSION_INFO, data, sizeof(data)) < 0)
++	if (ra_get_hardware_id(ifname, (char *)&id))
 +		return -1;
-+	sprintf(buf, "MT7615");
++
++	e = iwinfo_hardware(&id);
++	if (!e)
++		return -1;
++
++	strcpy(buf, e->device_name);
 +
 +	return 0;
 +}
@@ -1507,7 +1468,7 @@
  	$(CC) $(IWINFO_CFLAGS) $(FPIC) -c -o $@ $<
 --- a/hardware.txt
 +++ b/hardware.txt
-@@ -173,6 +173,34 @@
+@@ -173,6 +173,36 @@
  0x1814 0x3662 0x1814 0x000d    0      0  "Ralink"   "Rt3662"
  0x1814 0x3883 0x1814 0x000d    0      0  "Ralink"   "Rt3883"
  0x1814 0x5350 0x1814 0x000f    0      0  "Ralink"   "Rt5350"
@@ -1539,6 +1500,20 @@
 +0x1814 0x7615 0x1814 0xffff    0      0  "Mediatek" "MT7615"
 +0x1814 0x7615 0x1814 0x7615    0      0  "Mediatek" "MT7615"
 +
++0x14c3 0x7615 0x14c3 0x0000    0      0  "MediaTek" "MT7615E"
++
  0x11ab 0x2a55 0x11ab 0x0000    0      0  "Marvell"  "88W8864"
  0x02df 0x9135 0x0000 0x0000    0      0  "Marvell"  "88W8887"
  0x11ab 0x2b40 0x11ab 0x0000    0      0  "Marvell"  "88W8964"
+--- a/iwinfo_utils.c
++++ b/iwinfo_utils.c
+@@ -259,7 +259,8 @@ int iwinfo_hardware_id_from_mtd(struct i
+ 
+ 				/* subsystem from EEPROM_NIC_CONF0_RF_TYPE */
+ 				id->subsystem_device_id = (bc[off + 0x1a] & 0x0f00) >> 8;
+-			} else if ((bc[off] == 0x7620) || (bc[off] == 0x2076) ||
++			} else if ((bc[off] == 0x7615) || (bc[off] == 0x1576) ||
++			           (bc[off] == 0x7620) || (bc[off] == 0x2076) ||
+ 			           (bc[off] == 0x7628) || (bc[off] == 0x2876) ||
+ 			           (bc[off] == 0x7688) || (bc[off] == 0x8876)) {
+ 				/* vendor: MediaTek */
