@@ -68,17 +68,17 @@ drv_mt_dbdc_init_device_config() {
 drv_mt_dbdc_init_iface_config() { 
 	config_add_boolean disabled
 	config_add_string mode bssid ssid encryption
-	config_add_boolean hidden isolated doth ieee80211r
+	config_add_boolean hidden isolate doth ieee80211r
 	config_add_string key key1 key2 key3 key4
 	config_add_string wps
 	config_add_string pin
-	config_add_string macpolicy
+	config_add_string macfilter
 	config_add_array maclist
 	
 	config_add_boolean wds
 	config_add_int max_listen_int
 	config_add_int dtim_period
-	config_add_int rssikick rssiassoc
+	config_add_int disassoc_low_ack rssiassoc
 	config_add_string wdsenctype wdskey wdsphymode
 	config_add_int wdswepid wdstxmcs
 }
@@ -97,7 +97,7 @@ mt_dbdc_ap_vif_pre_config() {
 	local name="$1"
 
 	json_select config
-	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin hidden macpolicy
+	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin hidden macfilter
 	json_get_values maclist maclist
 	json_select ..
 	[ "$disabled" == "1" ] && return
@@ -106,7 +106,7 @@ mt_dbdc_ap_vif_pre_config() {
 
 	#MAC过滤方式相关设定 由于编号问题......我扔在这了......
 	ra_maclist="${maclist// /;};"
-	case "$macpolicy" in
+	case "$macfilter" in
 	allow)
 		echo "Interface ${ifname} has MAC Policy.Allow list:${ra_maclist}"
 		echo "AccessPolicy${ApBssidNum}=1" >> $RTWIFI_PROFILE_PATH
@@ -231,7 +231,7 @@ mt_dbdc_ap_vif_post_config() {
 	local name="$1"
 
 	json_select config
-	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin isolated doth hidden rssikick rssiassoc ieee80211r
+	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin isolate doth hidden disassoc_low_ack rssiassoc ieee80211r
 	json_select ..
 
 	[ "$disabled" == "1" ] && return
@@ -243,7 +243,7 @@ mt_dbdc_ap_vif_post_config() {
 
 	ifconfig $ifname up
 	echo "Interface $ifname now up."
-	mt_cmd iwpriv $ifname set NoForwarding=${isolated:-0}
+	mt_cmd iwpriv $ifname set NoForwarding=${isolate:-0}
 	mt_cmd iwpriv $ifname set IEEE80211H=${doth:-0}
 	if [ "$wps" == "pbc" ]  && [ "$encryption" != "none" ]; then
 		echo "Enable WPS for ${ifname}."
@@ -254,7 +254,7 @@ mt_dbdc_ap_vif_post_config() {
 	else
 		mt_cmd iwpriv $ifname set WscConfMode=0
 	fi
-	[ -n "$rssikick" ]  && [ "$rssikick" != "0" ] && mt_cmd iwpriv $ifname set KickStaRssiLow=$rssikick
+	[ -n "$disassoc_low_ack" ]  && [ "$disassoc_low_ack" != "0" ] && mt_cmd iwpriv $ifname set KickStaRssiLow=$disassoc_low_ack
 	[ -n "$rssiassoc" ]  && [ "$rssiassoc" != "0" ] && mt_cmd iwpriv $ifname set AssocReqRssiThres=$rssiassoc
 	[ -n "$ieee80211r" ]  && [ "$ieee80211r" != "0" ] && mt_cmd iwpriv $ifname set ftenable=1
 	wireless_add_vif "$name" "$ifname"
@@ -298,12 +298,12 @@ mt_dbdc_vif_down() {
 	killall -9 -q apcli_2g
 	killall -9 -q apcli_5g
 	case "$phy_name" in
-		rax)
+		rax0)
 			for vif in ra0 ra1 ra2 ra3 ra4 ra5 ra6 ra7 wds0 wds1 wds2 wds3 apcli0; do
 				[ "$(get_if_stat $vif)" != "down" ] && ifconfig $vif down && echo $vif
 			done
 		;;
-		ra)
+		ra0)
 			for vif in rax0 rax1 rax2 rax3 rax4 rax5 rax6 rax7 wdsx0 wdsx1 wdsx2 wdsx3 apclix0; do
 				[ "$(get_if_stat $vif)" != "down" ] && ifconfig $vif down && echo $vif
 			done
@@ -318,14 +318,14 @@ drv_mt_dbdc_cleanup() {
 drv_mt_dbdc_teardown() {
 	phy_name=${1}
 	case "$phy_name" in
-		ra)
+		ra0)
 			killall -9 -q apcli_2g
 			for vif in ra0 ra1 ra2 ra3 ra4 ra5 ra6 ra7 wds0 wds1 wds2 wds3 apcli0; do
 				iwpriv $vif set DisConnectAllSta=1
 				[ -d "/sys/class/net/$vif" ] && ifconfig $vif down
 			done
 		;;
-		rax)
+		rax0)
 			killall -9 -q apcli_5g
 			for vif in rax0 rax1 rax2 rax3 rax4 rax5 rax6 rax7 wdsx0 wdsx1 wdsx2 wdsx3 apclix0; do
 				iwpriv $vif set DisConnectAllSta=1
@@ -339,9 +339,9 @@ drv_mt_dbdc_teardown() {
 drv_mt_dbdc_setup() {
 	json_select config
 	json_get_vars main_if macaddr channel mode hwmode wmm htmode \
-		txpower country macpolicy maclist greenap \
+		txpower country macfilter maclist greenap \
 		diversity frag rts txburst distance hidden \
-		disabled maxassoc macpolicy maclist noscan ht_coex smart #device所有配置项
+		disabled maxassoc noscan ht_coex smart #device所有配置项
 		
 	json_get_vars \
 			ldpc:1 \
@@ -376,7 +376,7 @@ drv_mt_dbdc_setup() {
 	phy_name=${1}
 	wireless_set_data phy=${phy_name}
 	case "$phy_name" in
-		ra)
+		ra0)
 			WirelessMode=9
 			APCLI_IF="apcli0"
 			APCLI_APCTRL="apcli_2g"
@@ -386,7 +386,7 @@ drv_mt_dbdc_setup() {
 			RTWIFI_CMD_PATH="${RTWIFI_PROFILE_DIR}mt_dbdc_cmd_2g.sh"
 			RTWIFI_CMD_OPATH="${RTWIFI_PROFILE_DIR}mt_dbdc_cmd_5g.sh"
 		;;
-		rax)
+		rax0)
 			WirelessMode=14
 			APCLI_IF="apclix0"
 			APCLI_APCTRL="apcli_5g"
@@ -846,7 +846,7 @@ EOF
 	sleep 1
 
 #Start root device
-	[ "$phy_name" == "rax" ] && ifconfig ra0 up
+	[ "$phy_name" == "rax0" ] && ifconfig ra0 up
 #restore interfaces
 	[ -z "$RESET_IF" ] || {
 		for i in $RESET_IF
@@ -865,7 +865,7 @@ EOF
 	stacount=0
 	for_each_interface "sta" mt_dbdc_sta_vif_connect
 
-	[ "$phy_name" == "rax" ] && [ "$RA_MAIN_UP" == "down" ] && ifconfig ra0 down
+	[ "$phy_name" == "rax0" ] && [ "$RA_MAIN_UP" == "down" ] && ifconfig ra0 down
 
 #重启HWNAT
 	[ -d /sys/module/hw_nat ] && {
