@@ -11,7 +11,7 @@ PKG_NAME:=cypress-nvram
 PKG_SOURCE_DATE:=2019-09-03
 PKG_SOURCE_VERSION:=e7b78df22f2a0c5f56abb7b5880661611de35e5f
 PKG_MIRROR_HASH:=1cb20a749696852be0a512d51961365dd9c031362af0af1a2b9f5a3fb894885f
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/openwrt/cypress-nvram.git
@@ -35,6 +35,8 @@ define Package/cypress-nvram-43430-sdio-rpi-3b
   $(Package/cypress-nvram-default)
   TITLE:=CYW43430 NVRAM for Raspberry Pi 3B
   DEPENDS:=@TARGET_bcm27xx
+  PROVIDES:=brcmfmac-firmware-43430-sdio-rpi-3b
+  CONFLICTS:=brcmfmac-firmware-43430-sdio-rpi-3b
 endef
 
 define Package/cypress-nvram-43430-sdio-rpi-3b/install
@@ -51,6 +53,8 @@ define Package/cypress-nvram-43430-sdio-rpi-zero-w
   $(Package/cypress-nvram-default)
   TITLE:=CYW43430 NVRAM for Raspberry Pi Zero W
   DEPENDS:=@TARGET_bcm27xx
+  PROVIDES:=brcmfmac-firmware-43430-sdio-rpi-zero-w
+  CONFLICTS:=brcmfmac-firmware-43430-sdio-rpi-zero-w
 endef
 
 define Package/cypress-nvram-43430-sdio-rpi-zero-w/install
@@ -67,6 +71,8 @@ define Package/cypress-nvram-43455-sdio-rpi-3b-plus
   $(Package/cypress-nvram-default)
   TITLE:=CYW43455 NVRAM for Raspberry Pi 3B+
   DEPENDS:=@TARGET_bcm27xx
+  PROVIDES:=brcmfmac-firmware-43455-sdio-rpi-3b-plus
+  CONFLICTS:=brcmfmac-firmware-43455-sdio-rpi-3b-plus
 endef
 
 define Package/cypress-nvram-43455-sdio-rpi-3b-plus/install
@@ -83,6 +89,8 @@ define Package/cypress-nvram-43455-sdio-rpi-4b
   $(Package/cypress-nvram-default)
   TITLE:=CYW43455 NVRAM for Raspberry Pi 4B
   DEPENDS:=@TARGET_bcm27xx
+  PROVIDES:=brcmfmac-firmware-43455-sdio-rpi-4b
+  CONFLICTS:=brcmfmac-firmware-43455-sdio-rpi-4b
 endef
 
 define Package/cypress-nvram-43455-sdio-rpi-4b/install
