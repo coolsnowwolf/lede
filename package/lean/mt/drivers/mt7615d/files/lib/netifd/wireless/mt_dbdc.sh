@@ -28,7 +28,6 @@ RTWIFI_DEF_MAX_BSSID=4
 
 mt_cmd() {
 	echo "$@" >> $RTWIFI_CMD_PATH
-	eval $@
 }
 
 #读取device相关设置项并写入json
