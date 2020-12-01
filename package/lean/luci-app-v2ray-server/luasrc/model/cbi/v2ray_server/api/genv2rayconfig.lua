@@ -92,6 +92,17 @@ local v2ray = {
                     }
                 }
             } or nil,
+            tcpSettings = (server.transport == "tcp") and {
+                header = {
+                    type = server.tcp_guise,
+                    request = {
+                        path = server.tcp_guise_http_path,
+                        headers = {
+                            Host = server.tcp_guise_http_host
+                        }
+                    }
+			    }
+            } or nil,
             kcpSettings = (server.transport == "mkcp") and {
                 mtu = tonumber(server.mkcp_mtu),
                 tti = tonumber(server.mkcp_tti),

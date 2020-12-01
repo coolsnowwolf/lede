@@ -1,6 +1,6 @@
-From 60ae82b0ea56c279be384b99cd2a42ae5ba7c5c7 Mon Sep 17 00:00:00 2001
+From 924453aa9d2324e5611f8e2b71df746d8f0c79f1 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Ren=C3=A9=20van=20Dorst?= <opensource@vdorst.com>
-Date: Mon, 4 Nov 2019 22:22:17 +0100
+Date: Fri, 13 Nov 2020 16:11:32 +0100
 Subject: [PATCH] net: phy: at803x: add support for SFP module in
  RGMII-to-x-base mode
 MIME-Version: 1.0
@@ -9,20 +9,21 @@ Content-Transfer-Encoding: 8bit
 
 Signed-off-by: René van Dorst <opensource@vdorst.com>
 ---
- drivers/net/phy/at803x.c | 74 ++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 74 insertions(+)
+ drivers/net/phy/at803x.c | 91 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 91 insertions(+)
 
 --- a/drivers/net/phy/at803x.c
 +++ b/drivers/net/phy/at803x.c
-@@ -14,6 +14,7 @@
+@@ -14,6 +14,8 @@
  #include <linux/etherdevice.h>
  #include <linux/of_gpio.h>
  #include <linux/gpio/consumer.h>
 +#include <linux/sfp.h>
++#include <linux/phylink.h>
  
  #define AT803X_SPECIFIC_STATUS			0x11
  #define AT803X_SS_SPEED_MASK			(3 << 14)
-@@ -53,9 +54,18 @@
+@@ -53,9 +55,18 @@
  
  #define AT803X_MODE_CFG_MASK			0x0F
  #define AT803X_MODE_CFG_SGMII			0x01
@@ -41,7 +42,7 @@ Signed-off-by: René van Dorst <opensource@vdorst.com>
  
  #define AT803X_DEBUG_REG_0			0x00
  #define AT803X_DEBUG_RX_CLK_DLY_EN		BIT(15)
-@@ -243,10 +253,56 @@ static int at803x_resume(struct phy_devi
+@@ -243,10 +254,72 @@ static int at803x_resume(struct phy_devi
  	return phy_modify(phydev, MII_BMCR, BMCR_PDOWN | BMCR_ISOLATE, 0);
  }
  
@@ -59,23 +60,39 @@ Signed-off-by: René van Dorst <opensource@vdorst.com>
 +
 +static int at803x_sfp_insert(void *upstream, const struct sfp_eeprom_id *id)
 +{
-+	struct phy_device *phydev = upstream;
++	__ETHTOOL_DECLARE_LINK_MODE_MASK(at803x_support) = { 0, };
 +	__ETHTOOL_DECLARE_LINK_MODE_MASK(support) = { 0, };
++	struct phy_device *phydev = upstream;
 +	phy_interface_t iface;
 +
++	phylink_set(at803x_support, 1000baseX_Full);
++	/* AT803x only support 1000baseX but SGMII works fine when module runs
++	 * at 1Gbit.
++	 */
++	phylink_set(at803x_support, 1000baseT_Full);
++
 +	sfp_parse_support(phydev->sfp_bus, id, support);
++
++	// Limit to interfaces that both sides support
++	linkmode_and(support, support, at803x_support);
++
++	if (linkmode_empty(support))
++		goto unsupported_mode;
++
 +	iface = sfp_select_interface(phydev->sfp_bus, support);
 +
 +	if (iface != PHY_INTERFACE_MODE_SGMII &&
-+	    iface != PHY_INTERFACE_MODE_1000BASEX) {
-+		dev_info(&phydev->mdio.dev, "incompatible SFP module inserted;"
-+			 "Only SGMII/1000BASEX are supported!\n");
-+		return -EINVAL;
-+	}
++	    iface != PHY_INTERFACE_MODE_1000BASEX)
++		goto unsupported_mode;
 +
 +	dev_info(&phydev->mdio.dev, "SFP interface %s", phy_modes(iface));
 +
 +	return 0;
++
++unsupported_mode:
++	dev_info(&phydev->mdio.dev, "incompatible SFP module inserted;"
++		 "Only SGMII at 1Gbit/1000BASEX are supported!\n");
++	return -EINVAL;
 +}
 +
 +static const struct sfp_upstream_ops at803x_sfp_ops = {
@@ -98,7 +115,7 @@ Signed-off-by: René van Dorst <opensource@vdorst.com>
  
  	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
  	if (!priv)
-@@ -394,6 +450,10 @@ static int at803x_read_status(struct phy
+@@ -394,6 +467,10 @@ static int at803x_read_status(struct phy
  {
  	int ss, err, old_link = phydev->link;
  
@@ -109,7 +126,7 @@ Signed-off-by: René van Dorst <opensource@vdorst.com>
  	/* Update the link, but return if there was an error */
  	err = genphy_update_link(phydev);
  	if (err)
-@@ -448,6 +508,19 @@ static int at803x_read_status(struct phy
+@@ -448,6 +525,19 @@ static int at803x_read_status(struct phy
  	return 0;
  }
  
@@ -129,7 +146,7 @@ Signed-off-by: René van Dorst <opensource@vdorst.com>
  static struct phy_driver at803x_driver[] = {
  {
  	/* ATHEROS 8035 */
-@@ -491,6 +564,7 @@ static struct phy_driver at803x_driver[]
+@@ -491,6 +581,7 @@ static struct phy_driver at803x_driver[]
  	.suspend		= at803x_suspend,
  	.resume			= at803x_resume,
  	/* PHY_GBIT_FEATURES */
