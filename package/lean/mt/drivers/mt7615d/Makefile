@@ -210,7 +210,7 @@ define Build/Compile
 		$(KERNEL_MAKE_FLAGS) \
 		$(foreach c, $(PKG_KCONFIG),$(if $(CONFIG_MTK_$c),CONFIG_$(c)=$(CONFIG_MTK_$(c)))) \
 		M="$(PKG_BUILD_DIR)/mt_wifi_ap" \
-		NOSTDINC_FLAGS="$(NOSTDINC_FLAGS)" \
+		$(if $(CONFIG_MTK_CFG80211_SUPPORT),NOSTDINC_FLAGS="$(NOSTDINC_FLAGS)") \
 		V=1 \
 		modules
 endef
