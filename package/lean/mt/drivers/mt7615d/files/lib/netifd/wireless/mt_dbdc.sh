@@ -97,7 +97,7 @@ mt_dbdc_ap_vif_pre_config() {
 	local name="$1"
 
 	json_select config
-	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin hidden macfilter
+	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin isolate doth hidden disassoc_low_ack rssiassoc ieee80211r macfilter
 	json_get_values maclist maclist
 	json_select ..
 	[ "$disabled" == "1" ] && return
@@ -187,62 +187,9 @@ mt_dbdc_ap_vif_pre_config() {
 	ApK2Tp="${ApK2Tp}${K2Tp:-0};"
 	ApK3Tp="${ApK3Tp}${K3Tp:-0};"
 	ApK4Tp="${ApK4Tp}${K4Tp:-0};"
-}
 
-mt_dbdc_wds_vif_pre_config() {
-	local name="$1"
-
-	json_select config
-	json_get_vars disabled bssid wdsenctype wdskey wdswepid wdsphymode wdstxmcs
-	set_default wdswepid 1
-	set_default wdstxmcs 33
-	set_default wdsphymode "GREENFIELD"
-	json_select ..
-	[ "$disabled" == "1" ] && return
-	[ $WDSBssidNum -gt 3 ] && return
-	echo "Generating WDS config for interface wds${RTWIFI_IFPREFIX}${WDSBssidNum}"
-	WDSEN=1
-	WDSList="${WDSList}${bssid};"
-	WDSEncType="${WDSEncType}${wdsenctype};"
-	WDSDefKeyID="${WDSDefKeyID}${wdswepid};"
-	WDSPhyMode="${WDSPhyMode}${wdsphymode};"
-	WDSTxMCS="${WDSTxMCS}${wdstxmcs};"
-	echo "Wds${ApBssidNum}Key=${wdskey}" >> $RTWIFI_PROFILE_PATH #WDS Key
-	let WDSBssidNum+=1
-}
-
-mt_dbdc_wds_vif_post_config() {
-	local name="$1"
-	json_select config
-	json_get_vars disabled
-	json_select ..
-
-	[ "$disabled" == "1" ] && return
-	[ $WDSBssidNum -gt 3 ] && return
-
-	ifname="wds${RTWIFI_IFPREFIX}${WDSBssidNum}"
-	ifconfig $ifname up
-	echo "WDS interface wds${RTWIFI_IFPREFIX}${WDSBssidNum} now up."
-	wireless_add_vif "$name" "$ifname"
-	let WDSBssidNum+=1
-}
-
-mt_dbdc_ap_vif_post_config() {
-	local name="$1"
-
-	json_select config
-	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin isolate doth hidden disassoc_low_ack rssiassoc ieee80211r
-	json_select ..
-
-	[ "$disabled" == "1" ] && return
-	
-	[ $ApIfCNT -gt $RTWIFI_DEF_MAX_BSSID ] && return 
-	
-	ifname="ra${RTWIFI_IFPREFIX}${ApIfCNT}"
-	let ApIfCNT+=1
-
-	ifconfig $ifname up
-	echo "Interface $ifname now up."
+	mt_cmd ifconfig $ifname up
+	mt_cmd echo "Interface $ifname now up."
 	mt_cmd iwpriv $ifname set NoForwarding=${isolate:-0}
 	mt_cmd iwpriv $ifname set IEEE80211H=${doth:-0}
 	if [ "$wps" == "pbc" ]  && [ "$encryption" != "none" ]; then
@@ -257,10 +204,35 @@ mt_dbdc_ap_vif_post_config() {
 	[ -n "$disassoc_low_ack" ]  && [ "$disassoc_low_ack" != "0" ] && mt_cmd iwpriv $ifname set KickStaRssiLow=$disassoc_low_ack
 	[ -n "$rssiassoc" ]  && [ "$rssiassoc" != "0" ] && mt_cmd iwpriv $ifname set AssocReqRssiThres=$rssiassoc
 	[ -n "$ieee80211r" ]  && [ "$ieee80211r" != "0" ] && mt_cmd iwpriv $ifname set ftenable=1
-	wireless_add_vif "$name" "$ifname"
 }
 
-mt_dbdc_sta_vif_connect() {
+mt_dbdc_wds_vif_pre_config() {
+	local name="$1"
+
+	json_select config
+	json_get_vars disabled bssid wdsenctype wdskey wdswepid wdsphymode wdstxmcs
+	set_default wdswepid 1
+	set_default wdstxmcs 33
+	set_default wdsphymode "GREENFIELD"
+	json_select ..
+	[ "$disabled" == "1" ] && return
+	[ $WDSBssidNum -gt 3 ] && return
+	ifname="wds${RTWIFI_IFPREFIX}${WDSBssidNum}"
+	echo "Generating WDS config for interface $ifname"
+	WDSEN=1
+	WDSList="${WDSList}${bssid};"
+	WDSEncType="${WDSEncType}${wdsenctype};"
+	WDSDefKeyID="${WDSDefKeyID}${wdswepid};"
+	WDSPhyMode="${WDSPhyMode}${wdsphymode};"
+	WDSTxMCS="${WDSTxMCS}${wdstxmcs};"
+	echo "Wds${ApBssidNum}Key=${wdskey}" >> $RTWIFI_PROFILE_PATH #WDS Key
+	let WDSBssidNum+=1
+
+	mt_cmd ifconfig $ifname up
+	mt_cmd echo "WDS interface $ifname now up."
+}
+
+mt_dbdc_sta_vif_pre_config() {
 	local name="$1"
 
 	json_select config
@@ -272,19 +244,60 @@ mt_dbdc_sta_vif_connect() {
 	}
 
 	[ "$disabled" == "1" ] && return
-	[ -z "${RTWIFI_IFPREFIX}" ] && [ "$ApIfCNT" == "0" ] && {
-		#FIXME: need ra0 up before apcli0 start
-		ifconfig ra${RTWIFI_IFPREFIX}0 up
-		ifconfig $APCLI_IF up
-		iwpriv ra${RTWIFI_IFPREFIX}0 set DisConnectAllSta=1 2>/dev/null
-		ifconfig ra${RTWIFI_IFPREFIX}0 down
-	}
 	let stacount+=1
 
+	mt_cmd ifconfig $APCLI_IF up
 	killall  $APCLI_APCTRL
 	[ ! -z "$key" ] && APCTRL_KEY_ARG="-k"
 	[ ! -z "$bssid" ] && APCTRL_BSS_ARG="-b $(echo $bssid | tr 'A-Z' 'a-z')"
 	mt_cmd $APCLI_APCTRL ra${RTWIFI_IFPREFIX}0 connect -s "$ssid" $APCTRL_BSS_ARG $APCTRL_KEY_ARG "$key"
+}
+
+mt_dbdc_wds_vif_post_config() {
+	local name="$1"
+	json_select config
+	json_get_vars disabled
+	json_select ..
+
+	[ "$disabled" == "1" ] && return
+	[ $WDSBssidNum -gt 3 ] && return
+
+	ifname="wds${RTWIFI_IFPREFIX}${WDSBssidNum}"
+	let WDSBssidNum+=1
+
+	wireless_add_vif "$name" "$ifname"
+}
+
+mt_dbdc_ap_vif_post_config() {
+	local name="$1"
+
+	json_select config
+	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin isolate doth hidden disassoc_low_ack rssiassoc ieee80211r
+	json_select ..
+
+	[ "$disabled" == "1" ] && return
+
+	[ $ApIfCNT -gt $RTWIFI_DEF_MAX_BSSID ] && return 
+
+	ifname="ra${RTWIFI_IFPREFIX}${ApIfCNT}"
+	let ApIfCNT+=1
+
+	wireless_add_vif "$name" "$ifname"
+}
+
+mt_dbdc_sta_vif_post_config() {
+	local name="$1"
+
+	json_select config
+	json_get_vars disabled
+	json_select ..
+
+	[ $stacount -gt 1 ] && {
+		return
+	}
+
+	[ "$disabled" == "1" ] && return
+	let stacount+=1
 
 	wireless_add_vif "$name" "$APCLI_IF"
 }
@@ -321,14 +334,14 @@ drv_mt_dbdc_teardown() {
 		ra0)
 			killall -9 -q apcli_2g
 			for vif in ra0 ra1 ra2 ra3 ra4 ra5 ra6 ra7 wds0 wds1 wds2 wds3 apcli0; do
-				iwpriv $vif set DisConnectAllSta=1
+				# iwpriv $vif set DisConnectAllSta=1
 				[ -d "/sys/class/net/$vif" ] && ifconfig $vif down
 			done
 		;;
 		rax0)
 			killall -9 -q apcli_5g
 			for vif in rax0 rax1 rax2 rax3 rax4 rax5 rax6 rax7 wdsx0 wdsx1 wdsx2 wdsx3 apclix0; do
-				iwpriv $vif set DisConnectAllSta=1
+				# iwpriv $vif set DisConnectAllSta=1
 				[ -d "/sys/class/net/$vif" ] && ifconfig $vif down
 			done
 		;;
@@ -781,6 +794,10 @@ VideoTxLifeTimeMode=1
 EOF
 
 #接口配置生成
+#	STA模式
+	stacount=0
+	for_each_interface "sta" mt_dbdc_sta_vif_pre_config
+
 #	AP模式
 #	统一设置的内容:
 	ApEncrypType=""
@@ -795,6 +812,7 @@ EOF
 
 	for_each_interface "ap" mt_dbdc_ap_vif_pre_config
 
+	[ "$phy_name" == "ra0" ] && [ "$ApBssidNum" == "0" ] && mt_cmd ifconfig ra0 down
 #For DBDC profile merging......
 	while [ $ApBssidNum -lt $RTWIFI_DEF_MAX_BSSID ]
 	do
@@ -837,24 +855,28 @@ EOF
 #接口上线
 #加锁
 	echo "Pending..."
-	lock $WIFI_OP_LOCK
-	sleep 3
-	RA_MAIN_UP=$(get_if_stat ra0)
-	drv_mt_dbdc_teardown $phy_name
-	RESET_IF=$(mt_dbdc_vif_down $phy_name)
-	echo "MT_DBDC:ra0:$RA_MAIN_UP.Later we'll restart $(echo ${RESET_IF} | tr '\n' ' ')"
-	sleep 1
+	if lock -n $WIFI_OP_LOCK; then
+		sleep 3
+		RA_MAIN_UP=$(get_if_stat ra0)
+		drv_mt_dbdc_teardown $phy_name
+		RESET_IF=$(mt_dbdc_vif_down $phy_name)
+		echo "MT_DBDC:ra0:$RA_MAIN_UP.Later we'll restart $(echo ${RESET_IF} | tr '\n' ' ')"
+		sleep 1
 
 #Start root device
-	[ "$phy_name" == "rax0" ] && ifconfig ra0 up
+		ifconfig ra0 up
 #restore interfaces
-	[ -z "$RESET_IF" ] || {
-		for i in $RESET_IF
-		do
-			ifconfig $i up
-		done
 		sh $RTWIFI_CMD_OPATH
-	}
+
+		sh $RTWIFI_CMD_PATH
+#重启HWNAT
+		[ -d /sys/module/hw_nat ] && {
+			/etc/init.d/hwacc restart
+		}
+	else
+		echo "Wait other process"
+		lock $WIFI_OP_LOCK
+	fi
 #AP模式
 	ApIfCNT=0
 	for_each_interface "ap" mt_dbdc_ap_vif_post_config
@@ -863,14 +885,8 @@ EOF
 	for_each_interface "wds" mt_dbdc_wds_vif_post_config
 #STA模式
 	stacount=0
-	for_each_interface "sta" mt_dbdc_sta_vif_connect
+	for_each_interface "sta" mt_dbdc_sta_vif_post_config
 
-	[ "$phy_name" == "rax0" ] && [ "$RA_MAIN_UP" == "down" ] && ifconfig ra0 down
-
-#重启HWNAT
-	[ -d /sys/module/hw_nat ] && {
-		/etc/init.d/hwacc restart
-	}
 #设置无线上线
 	wireless_set_up
 #解锁
