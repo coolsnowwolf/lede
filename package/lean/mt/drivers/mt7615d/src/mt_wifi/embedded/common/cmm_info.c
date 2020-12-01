@@ -4661,6 +4661,11 @@ max_len += OWETRANSIE_LINE_LEN;
 
 	memset(msg, 0, TotalLen);
 
+	WaitCnt = 0;
+
+	while ((ScanRunning(pAdapter) == TRUE) && (WaitCnt++ < 200))
+		OS_WAIT(500);
+
 	if (pAdapter->ScanTab.BssNr == 0) {
 		sprintf(msg, "No BssInfo\n");
 		wrq->u.data.length = strlen(msg);
@@ -4696,11 +4701,6 @@ max_len += OWETRANSIE_LINE_LEN;
 #ifdef APCLI_OWE_SUPPORT
 		sprintf(msg + strlen(msg) - 1, "%-10s\n", " OWETranIe");
 #endif /* APCLI_OWE_SUPPORT */
-
-	WaitCnt = 0;
-
-	while ((ScanRunning(pAdapter) == TRUE) && (WaitCnt++ < 200))
-		OS_WAIT(500);
 
 
 	for (i = bss_start_idx; i < pAdapter->ScanTab.BssNr; i++) {
