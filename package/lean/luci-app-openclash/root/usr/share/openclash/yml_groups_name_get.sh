@@ -14,7 +14,7 @@ fi
 
 if [ -f "$CFG_FILE" ]; then
    rm -rf "/tmp/Proxy_Group" 2>/dev/null
-   ruby_read_hash_arr "Value = YAML.load_file('$CFG_FILE')" "['proxy-groups']" "['name']" >/tmp/Proxy_Group 2>&1
+   ruby_read_hash_arr "$CFG_FILE" "['proxy-groups']" "['name']" >/tmp/Proxy_Group 2>&1
 
    if [ -f "/tmp/Proxy_Group" ]; then
       echo 'DIRECT' >>/tmp/Proxy_Group

@@ -67,7 +67,7 @@ o:depends("en_mode", "redir-host-tun")
 o:depends("en_mode", "fake-ip-tun")
 o:depends("en_mode", "redir-host-mix")
 o:depends("en_mode", "fake-ip-mix")
-o:value("system", translate("System　"))
+o:value("system", translate("System"))
 o:value("gvisor", translate("Gvisor"))
 o.default = "system"
 
@@ -122,6 +122,16 @@ o = s:taboption("settings", ListValue, "enable_rule_proxy", font_red..bold_on..t
 o.description = translate("Only Proxy Rules Match, Prevent BT Passing")
 o:value("0", translate("Disable"))
 o:value("1", translate("Enable"))
+o.default=0
+
+o = s:taboption("settings", ListValue, "interface_name", font_red..bold_on..translate("Bind Network Interface")..bold_off..font_off)
+local de_int = SYS.exec("ip route |grep 'default' |awk '{print $5}' 2>/dev/null")
+o.description = translate("Default Interface Name:").." "..font_green..bold_on..de_int..bold_off..font_off..translate(",Try Enable If Network Loopback")
+local interfaces = SYS.exec("ls -l /sys/class/net/ 2>/dev/null |awk '{print $9}' 2>/dev/null")
+for interface in string.gmatch(interfaces, "%S+") do
+   o:value(interface)
+end
+o:value("0", translate("Disable"))
 o.default=0
 
 o = s:taboption("settings", ListValue, "log_level", translate("Log Level"))

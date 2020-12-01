@@ -25,7 +25,7 @@
             echo "删除下载缓存..." >$START_LOG
             rm -rf /tmp/ChinaIP.yaml >/dev/null 2>&1
             rm -rf /usr/share/openclash/res/china_ip_route.ipset >/dev/null 2>&1
-            [ "$china_ip_route" -eq 1 ] && [ "$(unify_ps_prevent)" -eq 0 ] && /etc/init.d/openclash restart
+            [ "$china_ip_route" -eq 1 ] && [ "$(unify_ps_prevent)" -eq 0 ] && /etc/init.d/openclash restart >/dev/null 2>&1 &
             echo "大陆IP白名单更新成功！" >$START_LOG
             echo "${LOGTIME} Chnroute Lists Update Successful" >>$LOG_FILE
             sleep 5

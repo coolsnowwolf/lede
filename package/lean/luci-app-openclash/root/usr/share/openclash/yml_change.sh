@@ -3,6 +3,7 @@
 
 LOG_FILE="/tmp/openclash.log"
 START_LOG="/tmp/openclash_start.log"
+LOGTIME=$(date "+%Y-%m-%d %H:%M:%S")
 
 if [ "$14" != "1" ]; then
    controller_address="0.0.0.0"
@@ -15,7 +16,6 @@ elif [ "$18" = "Tun" ] && [ "$14" = "1" ]; then
    echo "警告: 在TUN内核下启用仅允许内网会导致路由器无法联网，已忽略此项修改！" >$START_LOG
    controller_address="0.0.0.0"
    bind_address="*"
-   sleep 3
 fi
 
 if [ -n "$(ruby_read "$7" "['tun']")" ]; then
@@ -30,6 +30,18 @@ else
    if [ -n "$15" ]; then
       uci set openclash.config.config_reload=0
    fi
+fi
+
+if [ -z "$15" ]; then
+   en_mode_tun=0
+else
+   en_mode_tun=$15
+fi
+
+if [ -z "$16" ]; then
+   stack_type=system
+else
+   stack_type=$16
 fi
 
 if [ "$(ruby_read "$7" "['external-controller']")" != "$controller_address:$5" ]; then
@@ -51,30 +63,30 @@ if [ "$2" = "fake-ip" ]; then
    fi
 fi
 
-ruby -ryaml -E UTF-8 -e "Value = $7;
-Value['dns']['enhanced-mode']='$2';
-if '$2' == 'fake-ip' then
-   Value['dns']['fake-ip-range']='198.18.0.1/16'
-else
-   Value['dns'].delete('fake-ip-range')
-end;
+ruby -ryaml -E UTF-8 -e "
+begin
+   Value = YAML.load_file('$7');
+rescue Exception => e
+puts '${LOGTIME} Load File Error: ' + e.message
+end
+begin
 Value['redir-port']=$6;
 Value['port']=$9;
 Value['socks-port']=$10;
-Value['mixed-port']=$20;
+Value['mixed-port']=$19;
 Value['mode']='$13';
 Value['log-level']='$12';
 Value['allow-lan']=true;
-Value['bind-address']='$bind_address';
-Value['secret']='$4';
 Value['external-controller']='$controller_address:$5';
-Value['dns']['enable']=true;
-if $8 != 1 then
-   Value['dns']['listen']='127.0.0.1:$17'
-else
-   Value['dns']['listen']='0.0.0.0:$17'
-end;
+Value['secret']='$4';
+Value['bind-address']='$bind_address';
 Value['external-ui']='/usr/share/openclash/dashboard';
+if not Value.key?('dns') then
+   Value_1={'dns'=>{'enable'=>true}}
+   Value['dns']=Value_1['dns']
+else
+   Value['dns']['enable']=true
+end;
 if $8 == 1 then
    Value['dns']['ipv6']=true
    Value['ipv6']=true
@@ -82,21 +94,36 @@ else
    Value['dns']['ipv6']=false
    Value['ipv6']=false
 end;
-Value_1={'tun'=>{'enable'=>true}};
-if $15 == 1 or $15 == 3 then
-   Value['tun']=Value_1['tun']
-   unless '$16'.empty? then
-      Value['tun']['stack']='$16'
-   else
-      Value['tun']['stack']='system'
-   end
+Value['dns']['enhanced-mode']='$2';
+if '$2' == 'fake-ip' then
+   Value['dns']['fake-ip-range']='198.18.0.1/16'
+else
+   Value['dns'].delete('fake-ip-range')
+end;
+if $8 != 1 then
+   Value['dns']['listen']='127.0.0.1:$17'
+else
+   Value['dns']['listen']='0.0.0.0:$17'
+end;
+Value_2={'tun'=>{'enable'=>true}};
+if $en_mode_tun == 1 or $en_mode_tun == 3 then
+   Value['tun']=Value_2['tun']
+   Value['tun']['stack']='$stack_type'
    Value_2={'dns-hijack'=>['tcp://8.8.8.8:53','tcp://8.8.4.4:53']}
    Value['tun'].merge!(Value_2)
-elsif $15 == 2
-   Value['tun']=Value_1['tun']
+elsif $en_mode_tun == 2
+   Value['tun']=Value_2['tun']
    Value['tun']['device-url']='dev://clash0'
    Value['tun']['dns-listen']='0.0.0.0:53'
+elsif $en_mode_tun == 0
+   if Value.key?('tun') then
+      Value['tun'].clear
+   end
 end;
+rescue Exception => e
+puts '${LOGTIME} Set General Error: ' + e.message
+end
+begin
 #添加自定义Hosts设置
 if '$2' == 'redir-host' then
    if File::exist?('/etc/openclash/custom/openclash_custom_hosts.list') then
@@ -111,8 +138,11 @@ if '$2' == 'redir-host' then
          end
       end
    end
+end;
+rescue Exception => e
+puts '${LOGTIME} Set Hosts Rules Error: ' + e.message
 end
-
+begin
 #fake-ip-filter
 if '$2' == 'fake-ip' then
    if File::exist?('/tmp/openclash_fake_filter.list') then
@@ -128,4 +158,8 @@ if '$2' == 'fake-ip' then
      end
   end
 end;
-File.open('$19','w') {|f| YAML.dump(Value, f)}" 2>/dev/null || ruby -ryaml -E UTF-8 -e "Value = $7; File.open('$19','w') {|f| YAML.dump(Value, f)}"
+rescue Exception => e
+puts '${LOGTIME} Set Fake IP Filter Error: ' + e.message
+ensure
+File.open('$7','w') {|f| YAML.dump(Value, f)}
+end" 2>/dev/null >> $LOG_FILE

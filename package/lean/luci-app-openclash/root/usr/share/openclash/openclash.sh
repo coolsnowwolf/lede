@@ -158,7 +158,7 @@ change_dns()
 config_download_direct()
 {
    if pidof clash >/dev/null; then
-      echo "配置文件【$name】下载失败，尝试不使用代理下载配置文件..." >$START_LOG
+      echo "配置文件【$name】订阅失败，尝试不使用代理下载配置文件..." >$START_LOG
       
       kill_watchdog
 
@@ -290,9 +290,15 @@ sub_info_get()
 
    config_download
 
-   if [ "$?" -eq 0 ] && [ -s "$CFG_FILE" ] && [ -n "$(ruby -ryaml -E UTF-8 -e "Value = YAML.load_file('$CFG_FILE'); puts Value")" ]; then
-   	  config_su_check
+   if [ "$?" -eq 0 ] && [ -s "$CFG_FILE" ]; then
+      if [ -n "$(ruby_read "$CFG_FILE" "['proxy-groups']")" ]; then
+   	     config_su_check
+   	  else
+         echo "${LOGTIME} Config 【$name】 Grammar Check Faild" >>$LOG_FILE
+         config_download_direct
+   	  fi
    else
+      echo "${LOGTIME} Config 【$name】 Download Faild" >>$LOG_FILE
       config_download_direct
    fi
 }
@@ -304,7 +310,7 @@ uci delete openclash.config.config_update_path >/dev/null 2>&1
 uci commit openclash
 
 if [ "$if_restart" -eq 1 ]; then
-   /etc/init.d/openclash restart >/dev/null 2>&1
+   /etc/init.d/openclash restart >/dev/null 2>&1 &
 else
    sed -i '/openclash.sh/d' $CRON_FILE 2>/dev/null
    [ "$(uci get openclash.config.auto_update 2>/dev/null)" -eq 1 ] && [ "$(uci get openclash.config.config_auto_update_mode 2>/dev/null)" -ne 1 ] && echo "0 $(uci get openclash.config.auto_update_time 2>/dev/null) * * $(uci get openclash.config.config_update_week_time 2>/dev/null) /usr/share/openclash/openclash.sh" >> $CRON_FILE

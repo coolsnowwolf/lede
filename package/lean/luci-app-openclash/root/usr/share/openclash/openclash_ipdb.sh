@@ -34,7 +34,7 @@
             echo "GEOIP 数据库更新成功！" >$START_LOG
             echo "${LOGTIME} GEOIP Database Update Successful" >>$LOG_FILE
             sleep 5
-            [ "$(unify_ps_prevent)" -eq 0 ] && /etc/init.d/openclash restart
+            [ "$(unify_ps_prevent)" -eq 0 ] && /etc/init.d/openclash restart >/dev/null 2>&1 &
          else
             echo "数据库版本没有更新，停止继续操作..." >$START_LOG
             echo "${LOGTIME} Updated GEOIP Database No Change, Do Nothing" >>$LOG_FILE

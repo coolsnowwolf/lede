@@ -11,6 +11,8 @@ HISTORY_TMP="/tmp/openclash_history_tmp.yaml"
 SECRET=$(uci get openclash.config.dashboard_password 2>/dev/null)
 LAN_IP=$(uci get network.lan.ipaddr 2>/dev/null |awk -F '/' '{print $1}' 2>/dev/null)
 PORT=$(uci get openclash.config.cn_port 2>/dev/null)
+LOG_FILE="/tmp/openclash.log"
+LOGTIME=$(date "+%Y-%m-%d %H:%M:%S")
 
 if [ -n "$(pidof clash)" ] && [ -f "$CONFIG_FILE" ]; then
    curl -m 5 --retry 2 -w %{http_code}"\n" -H "Authorization: Bearer ${SECRET}" -H "Content-Type:application/json" -X GET http://"$LAN_IP":"$PORT"/proxies > "$CURL_CACHE" 2>/dev/null
@@ -20,7 +22,12 @@ if [ -n "$(pidof clash)" ] && [ -f "$CONFIG_FILE" ]; then
       cat "$CURL_CACHE" |jsonfilter -e '@["proxies"][@.type="Selector"]["now"]' > "$CURL_NOW_CACHE" 2>/dev/null
       awk 'NR==FNR{a[i]=$0;i++}NR>FNR{print a[j]"#*#"$0;j++}' "$CURL_GROUP_CACHE" "$CURL_NOW_CACHE" > "$HISTORY_TMP" 2>/dev/null
       cmp -s "$HISTORY_TMP" "$HISTORY_PATH"
-      [ "$?" -ne "0" ] && mv "$HISTORY_TMP" "$HISTORY_PATH" 2>/dev/null
+      if [ "$?" -ne "0" ] && [ -s "$HISTORY_TMP" ]; then
+         mv "$HISTORY_TMP" "$HISTORY_PATH" 2>/dev/null
+         echo "${LOGTIME} History:【${CONFIG_NAME}】 Update Successful" >> $LOG_FILE
+      fi
+   else
+      echo "${LOGTIME} History:【${CONFIG_NAME}】 Update Faild" >> $LOG_FILE
    fi
 fi
 rm -rf /tmp/openclash_history_*  2>/dev/null

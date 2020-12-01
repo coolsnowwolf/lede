@@ -27,7 +27,7 @@ function IsYmlFile(e)
 end
 
 function default_config_set(f)
-	local cf=string.sub(luci.sys.exec("uci get openclash.config.config_path 2>/dev/null"), 1, -2)
+	local cf=string.sub(SYS.exec("uci get openclash.config.config_path 2>/dev/null"), 1, -2)
 	if cf == "/etc/openclash/config/"..f or not cf or cf == "" or not fs.isfile(cf) then
 		if CHIF == "1" and cf == "/etc/openclash/config/"..f then
 			return
@@ -36,11 +36,11 @@ function default_config_set(f)
 		if fis ~= nil then
 			fcf = fs.basename(fis)
 			if fcf then
-				luci.sys.exec(string.format('uci set openclash.config.config_path="/etc/openclash/config/%s"',fcf))
+				SYS.exec(string.format('uci set openclash.config.config_path="/etc/openclash/config/%s"',fcf))
 				uci:commit("openclash")
 			end
 		else
-			luci.sys.exec("uci set openclash.config.config_path=/etc/openclash/config/config.yaml")
+			SYS.exec("uci set openclash.config.config_path=/etc/openclash/config/config.yaml")
 			uci:commit("openclash")
 		end
 	end
@@ -49,8 +49,8 @@ end
 function config_check(CONFIG_FILE)
   local yaml = fs.isfile(CONFIG_FILE)
   if yaml then
-  	 yaml = luci.sys.call(string.format('ruby -ryaml -E UTF-8 -e "Value = YAML.load_file(\'%s\')" 2>/dev/null',CONFIG_FILE))
-     if (yaml == 0) then
+  	 yaml = SYS.exec(string.format('ruby -ryaml -E UTF-8 -e "puts YAML.load_file(\'%s\')" 2>/dev/null',CONFIG_FILE))
+     if yaml ~= "false\n" and yaml ~= "" then
         return "Config Normal"
      else
         return "Config Abnormal"
@@ -162,7 +162,7 @@ if fs.mtime(BACKUP_FILE) then
 else
    e[t].mtime=os.date("%Y-%m-%d %H:%M:%S",a.mtime)
 end
-if string.sub(luci.sys.exec("uci get openclash.config.config_path 2>/dev/null"), 23, -2) == e[t].name then
+if string.sub(SYS.exec("uci get openclash.config.config_path 2>/dev/null"), 23, -2) == e[t].name then
    e[t].state=translate("Enable")
 else
    e[t].state=translate("Disable")
@@ -199,7 +199,7 @@ Button.render(o,t,a)
 end
 btnis.write=function(a,t)
 fs.unlink("/tmp/Proxy_Group")
-luci.sys.exec(string.format('uci set openclash.config.config_path="/etc/openclash/config/%s"',e[t].name))
+SYS.exec(string.format('uci set openclash.config.config_path="/etc/openclash/config/%s"',e[t].name))
 uci:commit("openclash")
 HTTP.redirect(luci.dispatcher.build_url("admin", "services", "openclash", "config"))
 end
@@ -290,7 +290,7 @@ s.description = align_mid..translate("Support syntax check, press").." "..font_g
 s.anonymous = true
 s.addremove = false
 
-local conf = string.sub(luci.sys.exec("uci get openclash.config.config_path 2>/dev/null"), 1, -2)
+local conf = string.sub(SYS.exec("uci get openclash.config.config_path 2>/dev/null"), 1, -2)
 local dconf = "/usr/share/openclash/res/default.yaml"
 local conf_name = fs.basename(conf)
 if not conf_name or conf == "" then conf_name = "config.yaml" conf = "/etc/openclash/config/config.yaml" end

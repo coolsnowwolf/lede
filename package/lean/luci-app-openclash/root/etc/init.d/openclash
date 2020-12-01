@@ -19,8 +19,19 @@ RULE_PROVIDER_FILE="/tmp/yaml_rule_provider.yaml"
 DNS_FILE="/tmp/yaml_dns.yaml"
 GAME_RULE_FILE="/tmp/yaml_game_rule.yaml"
 FALLBACK_FILTER_FILE="/tmp/yaml_fallback_filter_file.yaml"
+LOCK_FILE=/tmp/lock/openclash.lock
 PROXY_FWMARK="0x162"
 PROXY_ROUTE_TABLE="0x162"
+
+set_lock() {
+	exec 888>"$LOCK_FILE" 2>/dev/null
+	flock -x 888 2>/dev/null
+}
+
+del_lock() {
+	flock -u 888 2>/dev/null
+	rm -rf "$LOCK_FILE" 2>/dev/null
+}
 
 add_cron()
 {
@@ -112,27 +123,31 @@ start_fail()
 {
    kill_clash
    stop
+   del_lock
    exit 0
-}
-
-yml_trans()
-{
-	ruby -ryaml -E UTF-8 -e "Value = $1; File.open('$CONFIG_FILE','w') {|f| YAML.dump(Value, f)}" 2>/dev/null
-}
-
-yml_load()
-{
-	ruby -ryaml -E UTF-8 -e "Value = YAML.load_file('$1'); puts Value" 2>/dev/null
 }
 
 yml_check()
 {
+   
    #创建原始备份
-   if [ ! -f "$3" ]; then
-      cp "$2" "$3"
+   if [ ! -f "$2" ]; then
+      cp "$1" "$2"
    fi
    
-   #检查DNS服务
+   dns_port="$(ruby_read "$1" "['dns']['listen'].split(':')[1]")"
+   if [ -z "$dns_port" ] || [ "$dns_port" -eq 53 ]; then
+      dns_port=7874
+   fi
+
+   #保存DNS端口方便后续调用
+   uci set openclash.config.dns_port="$dns_port" && uci commit openclash
+
+}
+
+yml_dns_check()
+{
+	#检查DNS服务
    if [ -z "$(ruby_read "$1" "['dns']['nameserver']")" ]; then
       echo "检测到DNS选项下的Nameserver未设置服务器，开始补全..." >$START_LOG
       echo "  nameserver:" > "$DNS_FILE" 2>/dev/null
@@ -146,20 +161,37 @@ yml_check()
     - tls://8.8.8.8:853
 EOF
       if [ -z "$(ruby_read "$1" "['dns']")" ]; then
-         CONFIG_HASH=$(ruby_cover "$1" "['dns']" "$DNS_FILE")
+         ruby_cover "$1" "['dns']" "$DNS_FILE"
       else
-         CONFIG_HASH=$(ruby_merge "$1" "['dns']" "$DNS_FILE")
+         ruby_merge "$1" "['dns']" "$DNS_FILE"
       fi
    fi
-  
-   dns_port="$(ruby_read "$1" "['dns']['listen'].split(':')[1]")"
-   if [ -z "$dns_port" ] || [ "$dns_port" -eq 53 ]; then
-      dns_port=7874
+   
+   #fallback-filter
+   if [ -n "$(ruby_read "$CONFIG_FILE" "['dns']['fallback']")" ] && [ -z "$(ruby_read "$CONFIG_FILE" "['dns']['fallback-filter']")" ]; then
+cat >> "$2" <<-EOF
+  fallback-filter:
+    geoip: true
+    ipcidr:
+      - 0.0.0.0/8
+      - 10.0.0.0/8
+      - 100.64.0.0/10
+      - 127.0.0.0/8
+      - 169.254.0.0/16
+      - 172.16.0.0/12
+      - 192.0.0.0/24
+      - 192.0.2.0/24
+      - 192.88.99.0/24
+      - 192.168.0.0/16
+      - 198.18.0.0/15
+      - 198.51.100.0/24
+      - 203.0.113.0/24
+      - 224.0.0.0/4
+      - 240.0.0.0/4
+      - 255.255.255.255/32
+EOF
    fi
-
-   #保存DNS端口方便后续调用
-   uci set openclash.config.dns_port="$dns_port" && uci commit openclash
-
+   ruby_merge "$CONFIG_FILE" "['dns']" "$2"
 }
 
 #修改集路径
@@ -179,24 +211,32 @@ yml_provider_path()
    #  fi
    #  let i++
    #done
-   CONFIG_HASH=$(ruby -ryaml -E UTF-8 -e "Value = $1;
-   Value['$2'].values.each{|x,v|
-   unless x['path'].include? '$3'
-   then v=File.basename(x['path']); x['path']='./$3/'+v; end}; puts Value
-   " 2>/dev/null || echo "$1")
+   ruby -ryaml -E UTF-8 -e "
+   begin
+   Value = YAML.load_file('$1');
+   if Value.key?('$2') then
+      Value['$2'].values.each{|x,v|
+         unless x['path'].include? '$3' then
+         v=File.basename(x['path']);
+         x['path']='./$3/'+v; end};
+         File.open('$1','w') {|f| YAML.dump(Value, f)}
+   end
+   rescue Exception => e
+   puts '${LOGTIME} Edit Provider Path Error: ' + e.message
+   end
+   " 2>/dev/null >> $LOG_FILE
 }
 
 #检查集文件防止启动失败
 yml_provider_check()
 {
-CONFIG_HASH=$(yml_load "$1")
-provider_path_line=$(ruby_read "$CONFIG_HASH" ".key?('$2')")
+provider_path_line=$(ruby_read "$CONFIG_FILE" ".key?('$2')")
 local provider_path_check provider_path_check_num=0
 if "$provider_path_line"; then
    while ( [ -n "$(pidof clash)" ] && [ "$provider_path_check_num" -le 5 ] )
    do
       provider_path_check=$(ruby -ryaml -E UTF-8 -e "
-      Value = $CONFIG_HASH;
+      Value = YAML.load_file('$CONFIG_FILE');
       Value['$2'].values.each{|x,v|
       if not x['path'].empty? then
          if x['path'].split('/')[0] == '.' then
@@ -304,48 +344,21 @@ yml_dns_custom()
       config_load "openclash"
       config_foreach yml_dns_get "dns_servers"
       if [ -f "/tmp/yaml_config.namedns.yaml" ]; then
-      	 if [ -n "$(ruby_read "$CONFIG_HASH" "['rules']['nameserver']")" ]; then
-            CONFIG_HASH=$(ruby_edit "$CONFIG_HASH" "['dns']['nameserver'].clear")
-      	 fi
-      	 if [ -n "$(ruby_read "$CONFIG_HASH" "['rules']['nameserver']")" ]; then
-      	    CONFIG_HASH=$(ruby_edit "$CONFIG_HASH" "['dns']['fallback'].clear")
-      	 fi
-      	 CONFIG_HASH=$(ruby_merge "$CONFIG_HASH" "['dns']" "/tmp/yaml_config.namedns.yaml")
-      	 if [ -f "/tmp/yaml_config.falldns.yaml" ]; then
-      	    CONFIG_HASH=$(ruby_merge "$CONFIG_HASH" "['dns']" "/tmp/yaml_config.falldns.yaml")
-      	 fi
+         if [ -z "$(ruby_read "$CONFIG_FILE" "['dns']")" ]; then
+            ruby_cover "$CONFIG_FILE" "['dns']" "/tmp/yaml_config.namedns.yaml"
+            ruby_merge "$CONFIG_FILE" "['dns']" "/tmp/yaml_config.falldns.yaml"
+         else
+            ruby_edit "$CONFIG_FILE" "['dns']['nameserver'].clear"
+      	    ruby_edit "$CONFIG_FILE" "['dns']['fallback'].clear"
+            ruby_merge "$CONFIG_FILE" "['dns']" "/tmp/yaml_config.namedns.yaml"
+            ruby_merge "$CONFIG_FILE" "['dns']" "/tmp/yaml_config.falldns.yaml"
+         fi
       else
          echo "错误: 配置文件DNS选项下的Nameserver必须设置服务器，已停止设置自定义DNS服务器！" >$START_LOG
          echo "${LOGTIME} Error: Nameserver Option Must Be Setted, Stop Customing DNS Servers" >>$LOG_FILE
-         sleep 3
+         sleep 2
       fi
    fi
-
-#fallback-filter
-   if [ -n "$(ruby_read "$CONFIG_HASH" "['dns']['fallback']")" ] && [ -z "$(ruby_read "$CONFIG_HASH" "['dns']['fallback-filter']")" ]; then
-cat >> "$3" <<-EOF
-  fallback-filter:
-    geoip: true
-    ipcidr:
-      - 0.0.0.0/8
-      - 10.0.0.0/8
-      - 100.64.0.0/10
-      - 127.0.0.0/8
-      - 169.254.0.0/16
-      - 172.16.0.0/12
-      - 192.0.0.0/24
-      - 192.0.2.0/24
-      - 192.88.99.0/24
-      - 192.168.0.0/16
-      - 198.18.0.0/15
-      - 198.51.100.0/24
-      - 203.0.113.0/24
-      - 224.0.0.0/4
-      - 240.0.0.0/4
-      - 255.255.255.255/32
-EOF
-   fi
-   CONFIG_HASH=$(ruby_merge "$CONFIG_HASH" "['dns']" "$3")
 }
 
 #获取认证信息
@@ -372,11 +385,11 @@ yml_auth_get()
 yml_auth_custom()
 {
    if [ -n "$(ruby_read "$1" "['authentication']")" ]; then
-      CONFIG_HASH=$(ruby_edit "$1" "['authentication'].clear")
+      ruby_edit "$1" "['authentication'].clear"
    fi
    if [ -f /tmp/config.auth ]; then
       sed -i '/^dns:/i\authentication:' "$1" 2>/dev/null
-      CONFIG_HASH=$(ruby_cover "$1" "['authentication']" "$3")
+      ruby_cover "$1" "['authentication']" "/tmp/config.auth"
       rm -rf /tmp/config.auth 2>/dev/null
    fi
 }
@@ -451,8 +464,9 @@ yml_game_custom()
 config_load "openclash"
 config_foreach yml_game_rule_get "game_config"
 [ "$set_rule_file" = 1 ] && {
-CONFIG_HASH=$(ruby -ryaml -E UTF-8 -e "
-Value = $CONFIG_HASH;
+ruby -ryaml -E UTF-8 -e "
+begin
+Value = YAML.load_file('$CONFIG_FILE');
 Value_1 = YAML.load_file('$GAME_RULE_FILE');
 if Value.has_key?('rules') and not Value['rules'].to_a.empty? then
    ruby_add_index = Value['rules'].index(Value['rules'].grep(/(GEOIP|MATCH|FINAL)/).first)
@@ -463,20 +477,24 @@ if Value.has_key?('rules') and not Value['rules'].to_a.empty? then
 else
    Value['rules'] = Value_1
 end;
-puts Value
-" 2>/dev/null || echo "$CONFIG_HASH")
+File.open('$CONFIG_FILE','w') {|f| YAML.dump(Value, f)}
+rescue Exception => e
+puts '${LOGTIME} Game Rule Merge Error: ' + e.message
+end
+" 2>/dev/null >> $LOG_FILE
 }
 
 #处理游戏节点与策略组
 config_load "openclash"
 config_foreach yml_rule_group_get "rule_provider_config"
 config_foreach yml_rule_group_get "game_config"
-CONFIG_HASH=$(ruby -ryaml -E UTF-8 -e "
-Value = $CONFIG_HASH;
+ruby -ryaml -E UTF-8 -e "
+begin
+Value = YAML.load_file('$CONFIG_FILE');
 if File::exist?('/tmp/yaml_groups.yaml') then
    Value_1 = YAML.load_file('/tmp/yaml_groups.yaml');
    if Value.has_key?('proxy-groups') and not Value['proxy-groups'].to_a.empty? then
-      Value['proxy-groups'].merge!(Value_1)
+      Value['proxy-groups'] = Value['proxy-groups']+Value_1
       Value['proxy-groups'].uniq
    else
       Value['proxy-groups']=Value_1
@@ -485,7 +503,7 @@ end;
 if File::exist?('/tmp/yaml_servers.yaml') then
    Value_2 = YAML.load_file('/tmp/yaml_servers.yaml');
    if Value.has_key?('proxies') and not Value['proxies'].to_a.empty? then
-      Value['proxies'].merge!(Value_2['proxies'])
+      Value['proxies'] = Value['proxies']+Value_2['proxies']
       Value['proxies'].uniq
    else
       Value['proxies']=Value_2['proxies']
@@ -500,14 +518,17 @@ if File::exist?('/tmp/yaml_provider.yaml') then
       Value['proxy-providers']=Value_3['proxy-providers']
    end
 end;
-puts Value
-" 2>/dev/null || echo "$CONFIG_HASH")
+File.open('$CONFIG_FILE','w') {|f| YAML.dump(Value, f)}
+rescue Exception => e
+puts '${LOGTIME} Game Proxy Merge Error: ' + e.message
+end" 2>/dev/null >> $LOG_FILE
 }
 
 yml_rule_set_add()
 {
-CONFIG_HASH=$(ruby -ryaml -E UTF-8 -e "
-Value = $CONFIG_HASH;
+ruby -ryaml -E UTF-8 -e "
+begin
+Value = YAML.load_file('$CONFIG_FILE');
 if Value.has_key?('rules') and not Value['rules'].to_a.empty? then
    if $3 == 1 then
       ruby_add_index = Value['rules'].index(Value['rules'].grep(/(GEOIP|MATCH|FINAL)/).first)
@@ -520,8 +541,11 @@ else
    Value_1 = {'rules'=>['RULE-SET,$1,$2']}
    Value.merge!(Value_1);
 end;
-puts Value
-" 2>/dev/null || echo "$CONFIG_HASH")
+File.open('$CONFIG_FILE','w') {|f| YAML.dump(Value, f)}
+rescue Exception => e
+puts '${LOGTIME} Rule Set Add Error: ' + e.message
+end
+" 2>/dev/null >> $LOG_FILE
 }
 
 yml_gen_rule_provider_file()
@@ -659,16 +683,20 @@ yml_custom_rule_provider()
    config_foreach yml_get_rule_provider "rule_provider_config"
    config_foreach yml_set_custom_rule_provider "rule_providers"
    if [ -f "$RULE_PROVIDER_FILE" ]; then
-      CONFIG_HASH=$(ruby -ryaml -E UTF-8 -e "
-      Value = $CONFIG_HASH;
+      ruby -ryaml -E UTF-8 -e "
+      begin
+      Value = YAML.load_file('$CONFIG_FILE');
       Value_1 = YAML.load_file('$RULE_PROVIDER_FILE');
       if Value.has_key?('rule-providers') and not Value['rule-providers'].to_a.empty? then
          Value['rule-providers'].merge!(Value_1)
       else
          Value['rule-providers']=Value_1
       end;
-      puts Value
-      " 2>/dev/null || echo "$CONFIG_HASH")
+      File.open('$CONFIG_FILE','w') {|f| YAML.dump(Value, f)}
+      rescue Exception => e
+      puts '${LOGTIME} Custom Rule Provider Merge Error: ' + e.message
+      end
+      " 2>/dev/null >> $LOG_FILE
    fi
 }
 
@@ -681,6 +709,7 @@ if [ -z "$RAW_CONFIG_FILE" ] || [ ! -f "$RAW_CONFIG_FILE" ]; then
       uci set openclash.config.config_path="/etc/openclash/config/$CONFIG_NAME"
       uci commit openclash
       RAW_CONFIG_FILE="/etc/openclash/config/$CONFIG_NAME"
+      CONFIG_FILE="/etc/openclash/$CONFIG_NAME"
    fi
 fi 2>/dev/null
 CONFIG_NAME=$(echo "$RAW_CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
@@ -692,11 +721,13 @@ if [ ! -f "$RAW_CONFIG_FILE" ]; then
       sleep 3
       kill_clash
       nohup /usr/share/openclash/openclash.sh &
+      del_lock
       exit 0
    else
       echo "错误: 缺少配置文件，请上传或更新配置文件！" >$START_LOG
       echo "${LOGTIME} Error: Config Not Found" >> $LOG_FILE
       sleep 5
+      del_lock
       exit 0
    fi
 fi
@@ -704,10 +735,14 @@ fi
 #创建启动配置
 #rm -rf "/etc/openclash/*.y*" 2>/dev/null
 cp "$RAW_CONFIG_FILE" "$CONFIG_FILE"
-CONFIG_HASH=$(yml_load "$CONFIG_FILE")
+CONFIG_HASH=$(ruby -ryaml -E UTF-8 -e "puts YAML.load_file('$CONFIG_FILE')" 2>/dev/null)
 if [ -z "$CONFIG_HASH" ] || [ "$CONFIG_HASH" = "false" ]; then
+   if [ -z "$CONFIG_HASH" ]; then
+      ruby -ryaml -E UTF-8 -e "puts YAML.load_file('$CONFIG_FILE')" >> $LOG_FILE
+   fi
    echo "配置文件校验失败，请检查配置文件后重试！" >$START_LOG
    echo "${LOGTIME} Error: Unable To Parse Config File, Please Check And Try Again!" >> $LOG_FILE
+   rm -rf $CONFIG_FILE 2>/dev/null
    sleep 3
    start_fail
 fi
@@ -778,7 +813,7 @@ do_run_file()
       core_start_log="检测到配置了【Game】内核专属功能，调用【Game】内核启动..."
    fi
 
-   if [ "$proxy_mode" = "script" ] || [ "$rule_source" = "ConnersHua" ] || [ "$rule_source" = "lhie1" ] || [ -n "$(ruby_read "$CONFIG_HASH" "['rules'].grep(/RULE-SET/)")" ]; then
+   if [ "$proxy_mode" = "script" ] || [ "$rule_source" = "ConnersHua" ] || [ "$rule_source" = "lhie1" ] || [ -n "$(ruby_read "$CONFIG_FILE" "['rules'].grep(/^RULE-SET,/)")" ]; then
       rm -rf "/etc/openclash/clash" 2>/dev/null
       ln -s "$tun_core_path" /etc/openclash/clash 2>/dev/null
       core_type="Tun"
@@ -817,6 +852,7 @@ do_run_file()
      sleep 3
      kill_clash
      nohup /usr/share/openclash/openclash_ipdb.sh &
+     del_lock
      exit 0
    }
    
@@ -826,6 +862,7 @@ do_run_file()
      rm -rf "/tmp/clash_last_version" 2>/dev/null
      kill_clash
      nohup /usr/share/openclash/openclash_core.sh "$core_type" &
+     del_lock
      exit 0
    }
    
@@ -845,13 +882,10 @@ do_run_file()
 #绑定interface防止回环
 check_interface_name()
 {
-	interface_name=$(ip route |grep "default" |awk '{print $5}' 2>/dev/null)
-	if [ -z "$(grep "^interface-name: $interface_name" "$CONFIG_FILE" 2>/dev/null)" ] && [ -n "$interface_name" ]; then
-    if [ ! -z "$(grep "^ \{0,\}interface-name:" "$CONFIG_FILE" 2>/dev/null)" ]; then
-       sed -i "/^ \{0,\}interface-name:/c\interface-name: ${interface_name}" "$CONFIG_FILE" 2>/dev/null
-    else
-       sed -i "/^redir-port:/a\interface-name: ${interface_name}" "$CONFIG_FILE" 2>/dev/null
-    fi
+	if [ -n "$interface_name" ] && [ "$interface_name" != "0" ]; then
+	   ruby_edit "$CONFIG_FILE" "['interface-name']='$interface_name'"
+  else
+     sed -i "/^interface-name:/d" "$CONFIG_FILE" 2>/dev/null
   fi
 }
 
@@ -896,10 +930,9 @@ check_core_status()
 raw_config_start()
 {
    cp "$RAW_CONFIG_FILE" "$CONFIG_FILE"
-   CONFIG_HASH=$(ruby -ryaml -E UTF-8 -e "Value = YAML.load_file('$CONFIG_FILE'); puts Value" 2>/dev/null)
-   dns_port=$(ruby_read "$CONFIG_HASH" "['dns']['listen'].split(':')[1]")
-   en_mode=$(ruby_read "$CONFIG_HASH" "['dns']['enhanced-mode']")
-   proxy_port=$(ruby_read "$CONFIG_HASH" "['redir-port']")
+   dns_port=$(ruby_read "$CONFIG_FILE" "['dns']['listen'].split(':')[1]")
+   en_mode=$(ruby_read "$CONFIG_FILE" "['dns']['enhanced-mode']")
+   proxy_port=$(ruby_read "$CONFIG_FILE" "['redir-port']")
    
    if [ -z "$dns_port" ] || [ -z "$en_mode" ] || [ -z "$proxy_port" ]; then
       if [ -z "$dns_port" ]; then
@@ -960,10 +993,10 @@ raw_config_start()
       esac
    fi
    
-   dase=$(ruby_read "$CONFIG_HASH" "['secret']")
+   dase=$(ruby_read "$CONFIG_FILE" "['secret']")
    uci set openclash.config.dashboard_password="$dase" 2>/dev/null
    
-   cn_port=$(ruby_read "$CONFIG_HASH" "['external-controller'].split(':')[1]")
+   cn_port=$(ruby_read "$CONFIG_FILE" "['external-controller'].split(':')[1]")
    uci set openclash.config.cn_port="$cn_port" 2>/dev/null
    
    uci set openclash.config.proxy_port="$proxy_port"
@@ -983,18 +1016,24 @@ try_restore_start()
       else
          echo "错误: OpenClash 启动失败，尝试还原第三方规则并重新启动 Clash 主程序..." >$START_LOG
          echo "${LOGTIME} Error: OpenClash Can Not Start, Try Use Backup Rules Start Again" >> $LOG_FILE
-         ruby -ryaml -E UTF-8 -e "Value = YAML.load_file('$RAW_CONFIG_FILE');
+         ruby -ryaml -E UTF-8 -e "
+         begin
+         Value = YAML.load_file('$RAW_CONFIG_FILE');
          Value_1 = YAML.load_file('$CONFIG_FILE');
          if Value.has_key?('rule-providers') then
-            Value_1['rule-providers'] = Value.select {|x| 'rule-providers' == x}
+            Value_1['rule-providers'] = Value.select {|x| 'rule-providers' == x}['rule-providers']
          end;
          if Value.has_key?('script') then
-            Value_1['script'] = Value.select {|x| 'script' == x}
+            Value_1['script'] = Value.select {|x| 'script' == x}['script']
          end;
          if Value.has_key?('rules') then
-            Value_1['rules'] = Value.select {|x| 'rules' == x}
+            Value_1['rules'] = Value.select {|x| 'rules' == x}['rules']
          end;
-         File.open('$CONFIG_FILE','w') {|f| YAML.dump(Value_1, f)}" 2>/dev/null
+         File.open('$CONFIG_FILE','w') {|f| YAML.dump(Value_1, f)}
+         rescue Exception => e
+         puts '${LOGTIME} Restore Backup Rules Error: ' + e.message
+         end
+         " 2>/dev/null >> $LOG_FILE
          start_run_core
          check_core_status
          if ! pidof clash >/dev/null; then
@@ -1458,17 +1497,15 @@ get_config()
    china_ip_route=$(uci get openclash.config.china_ip_route 2>/dev/null)
    small_flash_memory=$(uci get openclash.config.small_flash_memory 2>/dev/null)
    mixed_port=$(uci get openclash.config.mixed_port 2>/dev/null)
+   interface_name=$(uci get openclash.config.interface_name 2>/dev/null)
    uci set openclash.config.restricted_mode=0 && uci commit openclash
 }
 
 start()
 {
-   #禁止多个实例
-   status=$(unify_ps_status "/etc/init.d/openclash")
-   [ "$status" -gt "3" ] && echo "${LOGTIME} Warning: Multiple Start Scripts Running, Exit..." >> $LOG_FILE && exit 0
-   
+
    enable=$(uci get openclash.config.enable 2>/dev/null)
-   [ "$enable" != "1" ] && echo "${LOGTIME} Warning: OpenClash Now Disabled, Need Start From Luci Page, Exit..." >> $LOG_FILE && exit 0
+   [ "$enable" != "1" ] && echo "${LOGTIME} Warning: OpenClash Now Disabled, Need Start From Luci Page, Exit..." >> $LOG_FILE && del_lock && exit 0
 
    config_choose
 
@@ -1482,50 +1519,47 @@ start()
    do_run_file
 
    echo "第二步: 配置文件检查..." >$START_LOG
-   yml_check "$CONFIG_HASH" "$CONFIG_FILE" "$BACKUP_FILE"
+   yml_check "$CONFIG_FILE" "$BACKUP_FILE"
+
    echo "第三步: 修改配置文件..." >$START_LOG
    config_load "openclash"
    config_foreach yml_auth_get "authentication"
-   yml_auth_custom "$CONFIG_HASH"
-   yml_dns_custom "$enable_custom_dns" "$CONFIG_HASH" "$FALLBACK_FILTER_FILE"
-   /usr/share/openclash/yml_change.sh 2>/dev/null "$LOGTIME" "$en_mode" "$enable_custom_dns" "$da_password" "$cn_port" "$proxy_port" "$CONFIG_HASH" "$ipv6_enable" "$http_port" "$socks_port" "$lan_ip" "$log_level" "$proxy_mode" "$intranet_allowed" "$en_mode_tun" "$stack_type" "$dns_port" "$core_type" "$CONFIG_FILE" "$mixed_port"
-   CONFIG_HASH=$(yml_load "$CONFIG_FILE")
-   /usr/share/openclash/yml_rules_change.sh 2>/dev/null "$LOGTIME" "$rule_source" "$enable_custom_clash_rules" "$CONFIG_HASH" "$set_rule_file" "$en_mode" "$enable_rule_proxy" "$RAW_CONFIG_FILE" "$RULE_PROVIDER_FILE" "$CONFIG_FILE"
-   CONFIG_HASH=$(yml_load "$CONFIG_FILE")
+   yml_auth_custom "$CONFIG_FILE"
+   yml_dns_custom "$enable_custom_dns" "$CONFIG_FILE"
+   /usr/share/openclash/yml_change.sh 2>/dev/null "$LOGTIME" "$en_mode" "$enable_custom_dns" "$da_password" "$cn_port" "$proxy_port" "$CONFIG_FILE" "$ipv6_enable" "$http_port" "$socks_port" "$lan_ip" "$log_level" "$proxy_mode" "$intranet_allowed" "$en_mode_tun" "$stack_type" "$dns_port" "$core_type" "$mixed_port"
+   /usr/share/openclash/yml_rules_change.sh 2>/dev/null "$LOGTIME" "$rule_source" "$enable_custom_clash_rules" "$CONFIG_FILE" "$set_rule_file" "$en_mode" "$enable_rule_proxy" "$RAW_CONFIG_FILE" "$RULE_PROVIDER_FILE"
    yml_custom_rule_provider
    yml_game_custom
-   yml_provider_path "$CONFIG_HASH" "proxy-providers" "proxy_provider"
-   yml_provider_path "$CONFIG_HASH" "rule-providers" "rule_provider"
-   
-   echo "第四步: 应用配置文件修改..." >$START_LOG
-   yml_trans "$CONFIG_HASH"
+   yml_provider_path "$CONFIG_FILE" "proxy-providers" "proxy_provider"
+   yml_provider_path "$CONFIG_FILE" "rule-providers" "rule_provider"
+   yml_dns_check "$CONFIG_FILE"  "$FALLBACK_FILTER_FILE"
 
-   echo "第五步: 启动主程序..." >$START_LOG
+   echo "第四步: 启动主程序..." >$START_LOG
    start_run_core
    
-   echo "第六步: 检查内核启动状态..." >$START_LOG
+   echo "第五步: 检查内核启动状态..." >$START_LOG
    check_core_status
 
    #检测proxy_provider配置文件状态
-   echo "第七步: 等待主程序下载外部文件..." >$START_LOG
+   echo "第六步: 等待主程序下载外部文件..." >$START_LOG
    yml_provider_check "$CONFIG_FILE" "proxy-providers" "proxies"
    yml_provider_check "$CONFIG_FILE" "rule-providers" "payload"
    try_restore_start
 
-   echo "第八步: 设置控制面板..." >$START_LOG
+   echo "第七步: 设置控制面板..." >$START_LOG
    ln -s /usr/share/openclash/yacd /www/luci-static/openclash 2>/dev/null
        
-   echo "第九步: 设置防火墙规则..." >$START_LOG
+   echo "第八步: 设置防火墙规则..." >$START_LOG
    set_firewall
 
-   echo "第十步: 重启 Dnsmasq 程序..." >$START_LOG
+   echo "第九步: 重启 Dnsmasq 程序..." >$START_LOG
    change_dns "$enable_redirect_dns" "$disable_masq_cache"
    /etc/init.d/dnsmasq restart >/dev/null 2>&1
             
-   echo "第十一步: 还原策略组节点状态..." >$START_LOG
+   echo "第十步: 还原策略组节点状态..." >$START_LOG
    /usr/share/openclash/openclash_history_set.sh
    
-   echo "第十二步: 添加计划任务,启动进程守护程序..." >$START_LOG
+   echo "第十一步: 添加计划任务,启动进程守护程序..." >$START_LOG
    add_cron
    if [ -z "$(uci get dhcp.lan.dhcpv6 2>/dev/null)" ] && [ "$(uci get openclash.config.restricted_mode 2>/dev/null)" != "1" ]; then
       echo "OpenClash 启动成功，请等待服务器上线！" >$START_LOG
@@ -1548,7 +1582,7 @@ start()
 
 stop()
 {
-   
+
    enable=$(uci get openclash.config.enable 2>/dev/null)
 
    echo "OpenClash 开始关闭..." >$START_LOG
@@ -1588,21 +1622,27 @@ stop()
       rm -rf /tmp/rule_providers_name 2>/dev/null
       rm -rf /tmp/openclash_fake_filter.list 2>/dev/null
       rm -rf /tmp/openclash_servers_fake_filter.conf 2>/dev/null
+      del_lock
       echo "OpenClash 关闭成功！" >$START_LOG
       sleep 5
    fi
-
-   rm -rf /tmp/yaml_* 2>/dev/null
+   
    del_cron
-   echo "" >$START_LOG
+   rm -rf /tmp/yaml_* 2>/dev/null
+   rm -rf $START_LOG 2>/dev/null
    echo "OpenClash Already Stop"
 }
 
 
 restart()
 {
+   [ -f "$LOCK_FILE" ] && echo "${LOGTIME} Warning: Multiple Restart Scripts Running, Exit..." >> $LOG_FILE && exit 0
+   mkdir -p /tmp/lock
+   touch $LOCK_FILE
+	 set_lock
    stop
    start
+   del_lock
 }
 
 reload()

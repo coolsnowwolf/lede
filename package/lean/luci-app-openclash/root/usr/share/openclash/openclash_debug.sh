@@ -277,9 +277,9 @@ cat >> "$DEBUG_LOG" <<-EOF
 
 EOF
 if [ -f "$CONFIG_FILE" ]; then
-   ruby_read "YAML.load_file('$CONFIG_FILE')" ".select {|x| 'proxies' != x and 'proxy-providers' != x }.to_yaml" 2>/dev/null >> "$DEBUG_LOG"
+   ruby_read "$CONFIG_FILE" ".select {|x| 'proxies' != x and 'proxy-providers' != x }.to_yaml" 2>/dev/null >> "$DEBUG_LOG"
 else
-   ruby_read "YAML.load_file('$RAW_CONFIG_FILE')" ".select {|x| 'proxies' != x and 'proxy-providers' != x }.to_yaml" 2>/dev/null >> "$DEBUG_LOG"
+   ruby_read "$RAW_CONFIG_FILE" ".select {|x| 'proxies' != x and 'proxy-providers' != x }.to_yaml" 2>/dev/null >> "$DEBUG_LOG"
 fi
 
 sed -i '/^ \{0,\}secret:/d' "$DEBUG_LOG" 2>/dev/null

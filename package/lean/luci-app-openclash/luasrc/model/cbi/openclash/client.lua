@@ -28,8 +28,8 @@ end
 function config_check(CONFIG_FILE)
   local yaml = fs.isfile(CONFIG_FILE)
   if yaml then
-  	 yaml = luci.sys.call(string.format('ruby -ryaml -E UTF-8 -e "Value = YAML.load_file(\'%s\')" 2>/dev/null',CONFIG_FILE))
-     if (yaml == 0) then
+  	 yaml = SYS.exec(string.format('ruby -ryaml -E UTF-8 -e "puts YAML.load_file(\'%s\')" 2>/dev/null',CONFIG_FILE))
+     if yaml ~= "false\n" and yaml ~= "" then
         return "Config Normal"
      else
         return "Config Abnormal"
@@ -53,7 +53,7 @@ if fs.mtime(BACKUP_FILE) then
 else
    e[t].mtime=os.date("%Y-%m-%d %H:%M:%S",a.mtime)
 end
-if string.sub(luci.sys.exec("uci get openclash.config.config_path 2>/dev/null"), 23, -2) == e[t].name then
+if string.sub(SYS.exec("uci get openclash.config.config_path 2>/dev/null"), 23, -2) == e[t].name then
    e[t].state=translate("Enable")
 else
    e[t].state=translate("Disable")
@@ -86,7 +86,7 @@ Button.render(o,t,a)
 end
 btnis.write=function(a,t)
 fs.unlink("/tmp/Proxy_Group")
-luci.sys.exec(string.format('uci set openclash.config.config_path="/etc/openclash/config/%s"',e[t].name))
+SYS.exec(string.format('uci set openclash.config.config_path="/etc/openclash/config/%s"',e[t].name))
 uci:set("openclash", "config", "enable", 1)
 uci:commit("openclash")
 SYS.call("/etc/init.d/openclash restart >/dev/null 2>&1 &")

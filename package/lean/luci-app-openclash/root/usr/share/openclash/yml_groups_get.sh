@@ -15,6 +15,8 @@ CONFIG_FILE=$(uci get openclash.config.config_path 2>/dev/null)
 CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
 UPDATE_CONFIG_FILE=$(uci get openclash.config.config_update_path 2>/dev/null)
 UPDATE_CONFIG_NAME=$(echo "$UPDATE_CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
+LOGTIME=$(date "+%Y-%m-%d %H:%M:%S")
+LOG_FILE="/tmp/openclash.log"
 
 if [ ! -z "$UPDATE_CONFIG_FILE" ]; then
    CONFIG_FILE="$UPDATE_CONFIG_FILE"
@@ -115,8 +117,9 @@ fi
 count=0
 match_group_file="/tmp/Proxy_Group"
 #提取策略组部分
-group_hash=$(ruby_read "YAML.load_file('$CONFIG_FILE')" ".select {|x| 'proxy-groups' == x}")
-num=$(ruby_read "$group_hash" "['proxy-groups'].count")
+group_hash=$(ruby_read "$CONFIG_FILE" ".select {|x| 'proxy-groups' == x}")
+num=$(ruby_read_hash "$group_hash" "['proxy-groups'].count")
+
 if [ -z "$num" ]; then
    echo "配置文件校验失败，请检查配置文件后重试！" >$START_LOG
    echo "${LOGTIME} Error: Unable To Parse Config File, Please Check And Try Again!" >> $LOG_FILE
@@ -126,70 +129,99 @@ fi
 
 while [ "$count" -lt "$num" ]
 do
-	
+
    #type
-   group_type=$(ruby_read "$group_hash" "['proxy-groups'][$count]['type']")
-   #strategy
-   group_strategy=$(ruby_read "$group_hash" "['proxy-groups'][$count]['strategy']")
+   group_type=$(ruby_read_hash "$group_hash" "['proxy-groups'][$count]['type']")
    #name
-   group_name=$(ruby_read "$group_hash" "['proxy-groups'][$count]['name']")
-   #disable-udp
-   group_disable_udp=$(ruby_read "$group_hash" "['proxy-groups'][$count]['disable-udp']")
-   #test_url
-   group_test_url=$(ruby_read "$group_hash" "['proxy-groups'][$count]['url']")
-   #test_interval
-   group_test_interval=$(ruby_read "$group_hash" "['proxy-groups'][$count]['interval']")
-   #test_tolerance
-   group_test_tolerance=$(ruby_read "$group_hash" "['proxy-groups'][$count]['tolerance']")
-   
+   group_name=$(ruby_read_hash "$group_hash" "['proxy-groups'][$count]['name']")
+
    if [ -z "$group_type" ] || [ -z "$group_name" ]; then
       let count++
       continue
    fi
-
+   
    echo "正在读取【$CONFIG_NAME】-【$group_type】-【$group_name】策略组配置..." > $START_LOG
    
    name=openclash
    uci_name_tmp=$(uci add $name groups)
    uci_set="uci -q set $name.$uci_name_tmp."
    uci_add="uci -q add_list $name.$uci_name_tmp."
-
+   
    ${uci_set}config="$CONFIG_NAME"
    ${uci_set}name="$group_name"
    ${uci_set}old_name="$group_name"
    ${uci_set}old_name_cfg="$group_name"
    ${uci_set}type="$group_type"
-   ${uci_set}disable_udp="$group_disable_udp"
-   ${uci_set}strategy="$group_strategy"
-   ${uci_set}test_url="$group_test_url"
-   ${uci_set}test_interval="$group_test_interval"
-   ${uci_set}tolerance="$group_test_tolerance"
-	 
-	 #other_group
-	 ruby_read "$group_hash" "['proxy-groups'][$count]['proxies']" > $other_group_file
-	 
-	 cat $other_group_file |while read -r line
-   do
-      if [ -z "$line" ]; then
-         continue
-      fi
-      
-      if [ "$group_type" != "select" ] && [ "$group_type" != "relay" ]; then
-         if [ "$line" != "DIRECT" ] && [ "$line" != "REJECT" ]; then
-            continue
-         fi
-      fi
-      
-      if [ -n "$(grep -F "$line" "$match_group_file")" ]; then
-         if [ "$group_type" = "select" ] || [ "$group_type" = "relay" ]; then
-            ${uci_add}other_group="$line"
-         elif [ "$line" = "DIRECT" ] || [ "$line" = "REJECT" ]; then
-            ${uci_add}other_group_dr="$line"
-         fi
-      fi
-	 done
+
+   ruby -ryaml -E UTF-8 -e "
+   begin
+   Value = $group_hash;
+   Thread.new{
+   #strategy
+   if Value['proxy-groups'][$count].key?('strategy') then
+      group_strategy = '${uci_set}strategy=' + Value['proxy-groups'][$count]['strategy'].to_s
+      system(group_strategy)
+   end
+   }.join;
+   
+   Thread.new{
+   #disable-udp
+   if Value['proxy-groups'][$count].key?('disable-udp') then
+      group_disable_udp = '${uci_set}disable_udp=' + Value['proxy-groups'][$count]['disable-udp'].to_s
+      system(group_disable_udp)
+   end
+   }.join;
+   
+   Thread.new{
+   #test_url
+   if Value['proxy-groups'][$count].key?('url') then
+      group_test_url = '${uci_set}test_url=' + Value['proxy-groups'][$count]['url'].to_s
+      system(group_test_url)
+   end
+   }.join;
+   
+   Thread.new{
+   #test_interval
+   if Value['proxy-groups'][$count].key?('interval') then
+      group_test_interval = '${uci_set}test_interval=' + Value['proxy-groups'][$count]['interval'].to_s
+      system(group_test_interval)
+   end
+   }.join;
+   
+   Thread.new{
+   #test_tolerance
+   if Value['proxy-groups'][$count].key?('tolerance') then
+      group_test_tolerance = '${uci_set}tolerance=' + Value['proxy-groups'][$count]['tolerance'].to_s
+      system(group_test_tolerance)
+   end
+   }.join;
+   
+   Thread.new{
+   #other_group
+   Value_1=YAML.load_file('/tmp/Proxy_Group'); 
+	 if Value['proxy-groups'][$count].key?('proxies') then 
+	    Value['proxy-groups'][$count]['proxies'].each{
+	    |x|
+	       if Value_1.include?(x) then
+	          if '$group_type' == 'select' or '$group_type' == 'relay' then
+	             uci = '${uci_add}other_group=\"' + x.to_s + '\"'
+	             system(uci)
+	          elsif x == 'DIRECT' or x == 'REJECT' then
+	             uci = '${uci_add}other_group_dr=' + x.to_s
+	             system(uci)
+	          end
+	       end
+	    }
+	 end
+	 }.join;
+   rescue Exception => e
+   puts '${LOGTIME} Resolve Proxy-group【${CONFIG_NAME} - ${group_type} - ${group_name}】 Error: ' + e.message
+   end
+   " 2>/dev/null >> $LOG_FILE &
+   
    let count++
 done
 
+wait
 uci commit openclash
 /usr/share/openclash/yml_proxys_get.sh
