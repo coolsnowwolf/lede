@@ -220,9 +220,10 @@ define Build/Install
 endef
 
 define KernelPackage/mt7615d/install
-	$(INSTALL_DIR) $(1)/lib/wifi $(1)/lib/netifd/wireless
+	$(INSTALL_DIR) $(1)/lib/wifi $(1)/lib/netifd/wireless $(1)/etc/uci-defaults
 	$(INSTALL_DATA) ./files/lib/wifi/mt_dbdc.sh $(1)/lib/wifi
 	$(INSTALL_BIN) ./files/lib/netifd/wireless/mt_dbdc.sh $(1)/lib/netifd/wireless
+	$(INSTALL_DATA) ./files/etc/uci-defaults/mt7615-fix-isolate $(1)/etc/uci-defaults/mt7615-fix-isolate
 endef
 
 $(eval $(call KernelPackage,mt7615d))
