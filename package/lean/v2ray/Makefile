@@ -1,6 +1,6 @@
 #
 # Copyright (C) 2019-2020 Xingwang Liao
-# Copyright (C) 2019-2020 Mattraks
+# Copyright (C) 2019-2021 Mattraks
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -62,7 +62,6 @@ GO_PKG:=v2ray.com/core
 GO_PKG_LDFLAGS:=-s -w
 GO_PKG_LDFLAGS_X:= \
 	v2ray.com/core.version=$(PKG_VERSION) \
-	v2ray.com/core.build=Lean \
 	v2ray.com/core.codename=OpenWrt
 
 include $(INCLUDE_DIR)/package.mk
@@ -263,8 +262,8 @@ define Build/Prepare
 
 ifneq ($(CONFIG_V2RAY_EXCLUDE_ASSETS),y)
 	# move file to make sure download new file every build
-	mv -f $(DL_DIR)/$(GEOIP_FILE) $(PKG_BUILD_DIR)/release/config/geoip.dat
-	mv -f $(DL_DIR)/$(GEOSITE_FILE) $(PKG_BUILD_DIR)/release/config/geosite.dat
+	mv -f $(DL_DIR)/$(GEOIP_FILE) $(PKG_BUILD_DIR)/geoip.dat
+	mv -f $(DL_DIR)/$(GEOSITE_FILE) $(PKG_BUILD_DIR)/geosite.dat
 endif
 
 ifneq ($(V2RAY_SED_ARGS),)
@@ -297,16 +296,17 @@ endif
 endef
 
 define Package/$(PKG_NAME)/install
-	$(INSTALL_DIR) $(1)/usr/bin/v2ray
+	$(INSTALL_DIR) $(1)/usr/bin/
 
-	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/v2ray $(1)/usr/bin/v2ray
+	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/v2ray $(1)/usr/bin
 
 ifneq ($(CONFIG_V2RAY_EXCLUDE_V2CTL),y)
-	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/v2ctl $(1)/usr/bin/v2ray
+	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/v2ctl $(1)/usr/bin
 endif
 
 ifneq ($(CONFIG_V2RAY_EXCLUDE_ASSETS),y)
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/release/config/{geoip,geosite}.dat $(1)/usr/bin/v2ray
+	$(INSTALL_DIR) $(1)/usr/share/v2ray
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/{geoip,geosite}.dat $(1)/usr/share/v2ray
 endif
 endef
 
