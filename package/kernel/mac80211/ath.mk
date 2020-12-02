@@ -1,6 +1,6 @@
 PKG_DRIVERS += \
 	ath ath5k ath6kl ath6kl-sdio ath6kl-usb ath9k ath9k-common ath9k-htc ath10k \
-	ath11k carl9170 owl-loader
+	ath11k ar5523 carl9170 owl-loader
 
 PKG_CONFIG_DEPENDS += \
 	CONFIG_PACKAGE_ATH_DEBUG \
@@ -70,6 +70,7 @@ config-$(call config_package,ath6kl-sdio) += ATH6KL_SDIO
 config-$(call config_package,ath6kl-usb) += ATH6KL_USB
 
 config-$(call config_package,carl9170) += CARL9170
+config-$(call config_package,ar5523) += AR5523
 
 define KernelPackage/ath/config
   if PACKAGE_kmod-ath

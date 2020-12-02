@@ -11,7 +11,7 @@ UNPACK_CMD=unzip -q -p $(DL_DIR)/$(PKG_SOURCE) $(PKG_SOURCE_UNZIP) | gzip -dc | 
 
 PKG_NAME:=cypress-firmware
 PKG_VERSION:=v5.4.18-2020_0402
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE_UNZIP:=cypress-firmware-$(PKG_VERSION).tar.gz
 PKG_SOURCE:=cypress-fmac-$(PKG_VERSION).zip
@@ -70,6 +70,7 @@ define Package/cypress-firmware-43362-sdio
   $(Package/cypress-firmware-default)
   TITLE:=CYW43362 FullMac SDIO firmware
   PROVIDES:=brcmfmac-firmware-43362-sdio
+  CONFLICTS:=brcmfmac-firmware-43362-sdio
 endef
 
 define Package/cypress-firmware-43362-sdio/install
@@ -101,6 +102,7 @@ define Package/cypress-firmware-43430-sdio
   $(Package/cypress-firmware-default)
   TITLE:=CYW43430 FullMac SDIO firmware
   PROVIDES:=brcmfmac-firmware-43430-sdio
+  CONFLICTS:=brcmfmac-firmware-43430-sdio
 endef
 
 define Package/cypress-firmware-43430-sdio/install
@@ -120,6 +122,7 @@ define Package/cypress-firmware-43455-sdio
   $(Package/cypress-firmware-default)
   TITLE:=CYW43455 FullMac SDIO firmware
   PROVIDES:=brcmfmac-firmware-43455-sdio
+  CONFLICTS:=brcmfmac-firmware-43455-sdio
 endef
 
 define Package/cypress-firmware-43455-sdio/install
