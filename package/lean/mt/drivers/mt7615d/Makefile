@@ -181,7 +181,7 @@ include $(INCLUDE_DIR)/package.mk
 define KernelPackage/mt7615d
   CATEGORY:=Kernel modules
   TITLE:=MTK wifi AP driver
-  DEPENDS:=@TARGET_ramips +maccalc +MTK_CFG80211_SUPPORT:kmod-cfg80211 +@DRIVER_11AC_SUPPORT +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT
+  DEPENDS:=@TARGET_ramips +MTK_CFG80211_SUPPORT:kmod-cfg80211 +@DRIVER_11AC_SUPPORT +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT
 ifneq ($(CONFIG_MTK_WHNAT_SUPPORT), )
   FILES:=$(PKG_BUILD_DIR)/mt_wifi_ap/mt_wifi.ko \
 	$(PKG_BUILD_DIR)/mt_wifi/embedded/tools/plug_in/whnat/mt_whnat.ko
@@ -200,7 +200,7 @@ endef
 define KernelPackage/mt7615d_dbdc
   CATEGORY:=Kernel modules
   TITLE:=MTK wifi AP driver
-  DEPENDS:=@TARGET_ramips +kmod-mt7615d
+  DEPENDS:=@TARGET_ramips +kmod-mt7615d +maccalc
   SUBMENU:=Wireless Drivers
   MENU:=1
 endef
