@@ -197,6 +197,23 @@ define KernelPackage/mt7615d/config
 	source "$(SOURCE)/config.in"
 endef
 
+define KernelPackage/mt7615d_dbdc
+  CATEGORY:=Kernel modules
+  TITLE:=MTK wifi AP driver
+  DEPENDS:=@TARGET_ramips +kmod-mt7615d
+  SUBMENU:=Wireless Drivers
+  MENU:=1
+endef
+
+define KernelPackage/mt7615d_dbdc/config
+	select MTK_WIFI_DRIVER
+	select MTK_FIRST_IF_MT7615E
+	select MTK_MT_WIFI
+	select MTK_WIFI_MT_MAC
+	select MTK_CHIP_MT7615E
+	select MTK_DBDC_MODE
+endef
+
 NOSTDINC_FLAGS = \
 	-I$(STAGING_DIR)/usr/include/mac80211-backport/uapi \
 	-I$(STAGING_DIR)/usr/include/mac80211-backport \
@@ -220,6 +237,10 @@ define Build/Install
 endef
 
 define KernelPackage/mt7615d/install
+	:
+endef
+
+define KernelPackage/mt7615d_dbdc/install
 	$(INSTALL_DIR) $(1)/lib/wifi $(1)/lib/netifd/wireless $(1)/etc/uci-defaults
 	$(INSTALL_DATA) ./files/lib/wifi/mt_dbdc.sh $(1)/lib/wifi
 	$(INSTALL_BIN) ./files/lib/netifd/wireless/mt_dbdc.sh $(1)/lib/netifd/wireless
@@ -227,3 +248,4 @@ define KernelPackage/mt7615d/install
 endef
 
 $(eval $(call KernelPackage,mt7615d))
+$(eval $(call KernelPackage,mt7615d_dbdc))

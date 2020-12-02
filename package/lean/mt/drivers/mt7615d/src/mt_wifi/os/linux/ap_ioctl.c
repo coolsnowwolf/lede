@@ -63,7 +63,7 @@ struct iw_priv_args ap_privtab[] = {
 	},
 	{
 		RTPRIV_IOCTL_GSITESURVEY,
-		IW_PRIV_TYPE_CHAR | 1024, IW_PRIV_TYPE_CHAR | 1024,
+		IW_PRIV_TYPE_CHAR | 1024, IW_PRIV_TYPE_CHAR | IW_PRIV_SIZE_MASK,
 		"get_site_survey"
 	},
 	{
@@ -83,7 +83,7 @@ struct iw_priv_args ap_privtab[] = {
 	},
 	{
 		RTPRIV_IOCTL_E2P,
-		IW_PRIV_TYPE_CHAR | 1024, IW_PRIV_TYPE_CHAR | 1024,
+		IW_PRIV_TYPE_CHAR | 1024, IW_PRIV_TYPE_CHAR | IW_PRIV_SIZE_MASK,
 		"e2p"
 	},
 #if defined(DBG) || (defined(BB_SOC) && defined(CONFIG_ATE))
