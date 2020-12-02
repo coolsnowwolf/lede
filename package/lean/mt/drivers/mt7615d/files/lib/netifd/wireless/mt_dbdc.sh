@@ -4,6 +4,7 @@
 # Copyright (c) 2005-2015, lintel <lintel.huang@gmail.com>
 # Copyright (c) 2013, Hoowa <hoowa.sun@gmail.com>
 # Copyright (c) 2015-2017, GuoGuo <gch981213@gmail.com>
+# Copyright (c) 2020, jjm2473 <jjm2473@gmail.com>
 #
 # 	netifd config script for MT7615 DBDC mode.
 #
