@@ -206,12 +206,82 @@ hostapd_bss_reload(struct ubus_context *ctx, struct ubus_object *obj,
 	return ret;
 }
 
+
+static void
+hostapd_parse_vht_map_blobmsg(uint16_t map)
+{
+	char label[4];
+	int16_t val;
+	int i;
+
+	for (i = 0; i < 8; i++) {
+		snprintf(label, 4, "%dss", i + 1);
+
+		val = (map & (BIT(1) | BIT(0))) + 7;
+		blobmsg_add_u16(&b, label, val == 10 ? -1 : val);
+		map = map >> 2;
+	}
+}
+
+static void
+hostapd_parse_vht_capab_blobmsg(struct ieee80211_vht_capabilities *vhtc)
+{
+	void *supported_mcs;
+	void *map;
+	int i;
+
+	static const struct {
+		const char *name;
+		uint32_t flag;
+	} vht_capas[] = {
+		{ "su_beamformee", VHT_CAP_SU_BEAMFORMEE_CAPABLE },
+		{ "mu_beamformee", VHT_CAP_MU_BEAMFORMEE_CAPABLE },
+	};
+
+	for (i = 0; i < ARRAY_SIZE(vht_capas); i++)
+		blobmsg_add_u8(&b, vht_capas[i].name,
+				!!(vhtc->vht_capabilities_info & vht_capas[i].flag));
+
+	supported_mcs = blobmsg_open_table(&b, "mcs_map");
+
+	/* RX map */
+	map = blobmsg_open_table(&b, "rx");
+	hostapd_parse_vht_map_blobmsg(le_to_host16(vhtc->vht_supported_mcs_set.rx_map));
+	blobmsg_close_table(&b, map);
+
+	/* TX map */
+	map = blobmsg_open_table(&b, "tx");
+	hostapd_parse_vht_map_blobmsg(le_to_host16(vhtc->vht_supported_mcs_set.tx_map));
+	blobmsg_close_table(&b, map);
+
+	blobmsg_close_table(&b, supported_mcs);
+}
+
+static void
+hostapd_parse_capab_blobmsg(struct sta_info *sta)
+{
+	void *r, *v;
+
+	v = blobmsg_open_table(&b, "capabilities");
+
+	if (sta->vht_capabilities) {
+		r = blobmsg_open_table(&b, "vht");
+		hostapd_parse_vht_capab_blobmsg(sta->vht_capabilities);
+		blobmsg_close_table(&b, r);
+	}
+
+	/* ToDo: Add HT / HE capability parsing */
+
+	blobmsg_close_table(&b, v);
+}
+
 static int
 hostapd_bss_get_clients(struct ubus_context *ctx, struct ubus_object *obj,
 			struct ubus_request_data *req, const char *method,
 			struct blob_attr *msg)
 {
 	struct hostapd_data *hapd = container_of(obj, struct hostapd_data, ubus.obj);
+	struct hostap_sta_driver_data sta_driver_data;
 	struct sta_info *sta;
 	void *list, *c;
 	char mac_buf[20];
@@ -254,6 +324,31 @@ hostapd_bss_get_clients(struct ubus_context *ctx, struct ubus_object *obj,
 		if (retrieve_sta_taxonomy(hapd, sta, r, 1024) > 0)
 			blobmsg_add_string_buffer(&b);
 #endif
+
+		/* Driver information */
+		if (hostapd_drv_read_sta_data(hapd, &sta_driver_data, sta->addr) >= 0) {
+			r = blobmsg_open_table(&b, "bytes");
+			blobmsg_add_u64(&b, "rx", sta_driver_data.rx_bytes);
+			blobmsg_add_u64(&b, "tx", sta_driver_data.tx_bytes);
+			blobmsg_close_table(&b, r);
+			r = blobmsg_open_table(&b, "airtime");
+			blobmsg_add_u64(&b, "rx", sta_driver_data.rx_airtime);
+			blobmsg_add_u64(&b, "tx", sta_driver_data.tx_airtime);
+			blobmsg_close_table(&b, r);
+			r = blobmsg_open_table(&b, "packets");
+			blobmsg_add_u32(&b, "rx", sta_driver_data.rx_packets);
+			blobmsg_add_u32(&b, "tx", sta_driver_data.tx_packets);
+			blobmsg_close_table(&b, r);
+			r = blobmsg_open_table(&b, "rate");
+			/* Rate in kbits */
+			blobmsg_add_u32(&b, "rx", sta_driver_data.current_rx_rate * 100);
+			blobmsg_add_u32(&b, "tx", sta_driver_data.current_tx_rate * 100);
+			blobmsg_close_table(&b, r);
+			blobmsg_add_u32(&b, "signal", sta_driver_data.signal);
+		}
+
+		hostapd_parse_capab_blobmsg(sta);
+
 		blobmsg_close_table(&b, c);
 	}
 	blobmsg_close_array(&b, list);
@@ -272,6 +367,45 @@ hostapd_bss_get_features(struct ubus_context *ctx, struct ubus_object *obj,
 	blob_buf_init(&b, 0);
 	blobmsg_add_u8(&b, "ht_supported", ht_supported(hapd->iface->hw_features));
 	blobmsg_add_u8(&b, "vht_supported", vht_supported(hapd->iface->hw_features));
+	ubus_send_reply(ctx, req, b.head);
+
+	return 0;
+}
+
+static int
+hostapd_bss_get_status(struct ubus_context *ctx, struct ubus_object *obj,
+		       struct ubus_request_data *req, const char *method,
+		       struct blob_attr *msg)
+{
+	struct hostapd_data *hapd = container_of(obj, struct hostapd_data, ubus.obj);
+	void *airtime_table, *dfs_table;
+	struct os_reltime now;
+	char phy_name[17];
+	char mac_buf[20];
+
+	blob_buf_init(&b, 0);
+	blobmsg_add_string(&b, "status", hostapd_state_text(hapd->iface->state));
+	blobmsg_add_u32(&b, "freq", hapd->iface->freq);
+
+	snprintf(phy_name, 17, "%s", hapd->iface->phy);
+	blobmsg_add_string(&b, "phy", phy_name);
+
+	/* Airtime */
+	airtime_table = blobmsg_open_table(&b, "airtime");
+	blobmsg_add_u64(&b, "time", hapd->iface->last_channel_time);
+	blobmsg_add_u64(&b, "time_busy", hapd->iface->last_channel_time_busy);
+	blobmsg_add_u16(&b, "utilization", hapd->iface->channel_utilization);
+	blobmsg_close_table(&b, airtime_table);
+
+	/* DFS */
+	dfs_table = blobmsg_open_table(&b, "dfs");
+	blobmsg_add_u32(&b, "cac_seconds", hapd->iface->dfs_cac_ms / 1000);
+	blobmsg_add_u8(&b, "cac_active", !!(hapd->iface->cac_started));
+	os_reltime_age(&hapd->iface->dfs_cac_start, &now);
+	blobmsg_add_u32(&b, "cac_seconds_left",
+			hapd->iface->cac_started ? hapd->iface->dfs_cac_ms / 1000 - now.sec : 0);
+	blobmsg_close_table(&b, dfs_table);
+
 	ubus_send_reply(ctx, req, b.head);
 
 	return 0;
@@ -395,6 +529,7 @@ hostapd_bss_list_bans(struct ubus_context *ctx, struct ubus_object *obj,
 	return 0;
 }
 
+#ifdef CONFIG_WPS
 static int
 hostapd_bss_wps_start(struct ubus_context *ctx, struct ubus_object *obj,
 			struct ubus_request_data *req, const char *method,
@@ -407,6 +542,53 @@ hostapd_bss_wps_start(struct ubus_context *ctx, struct ubus_object *obj,
 
 	if (rc != 0)
 		return UBUS_STATUS_NOT_SUPPORTED;
+
+	return 0;
+}
+
+
+static const char * pbc_status_enum_str(enum pbc_status status)
+{
+	switch (status) {
+	case WPS_PBC_STATUS_DISABLE:
+		return "Disabled";
+	case WPS_PBC_STATUS_ACTIVE:
+		return "Active";
+	case WPS_PBC_STATUS_TIMEOUT:
+		return "Timed-out";
+	case WPS_PBC_STATUS_OVERLAP:
+		return "Overlap";
+	default:
+		return "Unknown";
+	}
+}
+
+static int
+hostapd_bss_wps_status(struct ubus_context *ctx, struct ubus_object *obj,
+			struct ubus_request_data *req, const char *method,
+			struct blob_attr *msg)
+{
+	int rc;
+	struct hostapd_data *hapd = container_of(obj, struct hostapd_data, ubus.obj);
+
+	blob_buf_init(&b, 0);
+
+	blobmsg_add_string(&b, "pbc_status", pbc_status_enum_str(hapd->wps_stats.pbc_status));
+	blobmsg_add_string(&b, "last_wps_result",
+			   (hapd->wps_stats.status == WPS_STATUS_SUCCESS ?
+			    "Success":
+			    (hapd->wps_stats.status == WPS_STATUS_FAILURE ?
+			     "Failed" : "None")));
+
+	/* If status == Failure - Add possible Reasons */
+	if(hapd->wps_stats.status == WPS_STATUS_FAILURE &&
+	   hapd->wps_stats.failure_reason > 0)
+		blobmsg_add_string(&b, "reason", wps_ei_str(hapd->wps_stats.failure_reason));
+
+	if (hapd->wps_stats.status)
+		blobmsg_printf(&b, "peer_address", MACSTR, MAC2STR(hapd->wps_stats.peer_addr));
+
+	ubus_send_reply(ctx, req, b.head);
 
 	return 0;
 }
@@ -426,6 +608,7 @@ hostapd_bss_wps_cancel(struct ubus_context *ctx, struct ubus_object *obj,
 
 	return 0;
 }
+#endif /* CONFIG_WPS */
 
 static int
 hostapd_bss_update_beacon(struct ubus_context *ctx, struct ubus_object *obj,
@@ -1087,7 +1270,7 @@ hostapd_wnm_disassoc_imminent(struct ubus_context *ctx, struct ubus_object *obj,
 	if (tb[WNM_DISASSOC_ABRIDGED] && blobmsg_get_bool(tb[WNM_DISASSOC_ABRIDGED]))
 		req_mode |= WNM_BSS_TM_REQ_ABRIDGED;
 
-	if (wnm_send_bss_tm_req(hapd, sta, req_mode, duration, 0, NULL,
+	if (wnm_send_bss_tm_req(hapd, sta, req_mode, duration, duration, NULL,
 				NULL, nr, nr_len, NULL, 0))
 		return UBUS_STATUS_UNKNOWN_ERROR;
 
@@ -1098,10 +1281,14 @@ hostapd_wnm_disassoc_imminent(struct ubus_context *ctx, struct ubus_object *obj,
 static const struct ubus_method bss_methods[] = {
 	UBUS_METHOD_NOARG("reload", hostapd_bss_reload),
 	UBUS_METHOD_NOARG("get_clients", hostapd_bss_get_clients),
+	UBUS_METHOD_NOARG("get_status", hostapd_bss_get_status),
 	UBUS_METHOD("del_client", hostapd_bss_del_client, del_policy),
 	UBUS_METHOD_NOARG("list_bans", hostapd_bss_list_bans),
+#ifdef CONFIG_WPS
 	UBUS_METHOD_NOARG("wps_start", hostapd_bss_wps_start),
+	UBUS_METHOD_NOARG("wps_status", hostapd_bss_wps_status),
 	UBUS_METHOD_NOARG("wps_cancel", hostapd_bss_wps_cancel),
+#endif
 	UBUS_METHOD_NOARG("update_beacon", hostapd_bss_update_beacon),
 	UBUS_METHOD_NOARG("get_features", hostapd_bss_get_features),
 #ifdef NEED_AP_MLME

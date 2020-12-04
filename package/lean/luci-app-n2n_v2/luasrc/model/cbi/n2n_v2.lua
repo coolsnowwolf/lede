@@ -43,6 +43,7 @@ m = Map("n2n_v2", translate("N2N v2 VPN"), translatef(
             "n2n is a layer-two peer-to-peer virtual private network (VPN) which allows users to exploit features typical of P2P applications at network instead of application level."))
 
 -- Basic config
+-- edge
 m:section(SimpleSection).template = "n2n_v2/status"
 
 s = m:section(TypedSection, "edge", translate("N2N Edge Settings"))
@@ -89,14 +90,15 @@ s:option(Value, "key", translate("Encryption key"))
 route = s:option(Flag, "route", translate("Enable packet forwarding"))
 route.rmempty = false
 
-s2 = m:section(TypedSection, "supernode", translate("N2N Supernode Settings"))
-s2.anonymous = true
-s2.addremove = true
+-- supernode
+s = m:section(TypedSection, "supernode", translate("N2N Supernode Settings"))
+s.anonymous = true
+s.addremove = true
 
-switch = s2:option(Flag, "enabled", translate("Enable"))
+switch = s:option(Flag, "enabled", translate("Enable"))
 switch.rmempty = false
 
-port = s2:option(Value, "port", translate("Port"))
+port = s:option(Value, "port", translate("Port"))
 port.datatype = "port"
 port.optional = false
 
@@ -106,6 +108,10 @@ s = m:section(TypedSection, "route", translate("N2N routes"),
 s.anonymous = true
 s.addremove = true
 s.template = "cbi/tblsection"
+
+---- enable
+switch = s:option(Flag, "enabled", translate("Enable"))
+switch.rmempty = false
 
 ---- IP address
 o = s:option(Value, "ip", translate("IP"))

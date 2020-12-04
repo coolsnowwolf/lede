@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=linux-firmware
 PKG_VERSION:=20201118
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE_URL:=@KERNEL/linux/kernel/firmware
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
@@ -26,6 +26,7 @@ define Package/firmware-default
   CATEGORY:=Firmware
   URL:=http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
   TITLE:=$(1)
+  DEPENDS:=$(2)
 endef
 
 define Build/Compile

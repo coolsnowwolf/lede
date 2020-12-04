@@ -372,7 +372,7 @@ mac80211_hostapd_setup_bss() {
 	hostapd_cfg=
 	append hostapd_cfg "$type=$ifname" "$N"
 
-	hostapd_set_bss_options hostapd_cfg "$vif" || return 1
+	hostapd_set_bss_options hostapd_cfg "$phy" "$vif" || return 1
 	json_get_vars wds wds_bridge dtim_period max_listen_int start_disabled
 
 	set_default wds 0
@@ -627,7 +627,7 @@ mac80211_setup_supplicant() {
 	local spobj="$(ubus -S list | grep wpa_supplicant.${ifname})"
 
 	[ "$enable" = 0 ] && {
-		ubus call wpa_supplicant.${phy} config_del "{\"iface\":\"$ifname\"}"
+		ubus call wpa_supplicant.${phy} config_remove "{\"iface\":\"$ifname\"}"
 		ip link set dev "$ifname" down
 		iw dev "$ifname" del
 		return 0
