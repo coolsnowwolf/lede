@@ -49,7 +49,7 @@ Example user space program that communicates with fast
 classifier kernel module
 endef
 
-SFE_MAKE_OPTS:=SFE_SUPPORT_IPV6=n
+SFE_MAKE_OPTS:=SFE_SUPPORT_IPV6=y
 
 define Build/Compile/kmod
 	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" $(strip $(SFE_MAKE_OPTS)) \
