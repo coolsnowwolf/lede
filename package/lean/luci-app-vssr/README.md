@@ -1,39 +1,65 @@
-## luci-app-vssr [Hello World]
-A new SSR SS V2ray Trojan luci app bese luci-app-ssr-plus  
-<b>支持全部类型的节点分流</b>  
-目前只适配最新版 argon主题 （其他主题下应该也可以用 但显示应该不会很完美）
-目前Lean最新版本的openwrt 已经可以直接拉取源码到package/lean 下直接进行勾选并编译，由于有部分文件和ssr+ 同文件名所以不能同时编译。  
 
-### 写在前面：
-插件的初衷是优化操作体验和提升视觉感受，所以插件体积会比较大，并不适合小ROM机器使用。
+<div align="center">
+  <img src="https://raw.githubusercontent.com/jerrykuku/staff/master/Helloworld_title.png"  >
+  <h1 align="center">
+    An openwrt Internet surfing plug-in
+  </h1>
+    <h3 align="center">
+    HelloWorld是一个以用户最佳主观体验为导向的插件，它支持多种主流协议和多种自定义视频分流服务，拥有精美的操作界面，并配上直观的节点信息。
+  </h3>
 
-还有些个人的想法，首先这只是个Luci app，说白了就是个GUI控制界面而已,本身并不能决定你设备的性能和节点的速度。  
-决定你性能的东西是你的硬件方案 如cpu性能，是否支持硬件aes加速，还有就是几个主核心应用程序的版本。  
-另外关于插件稳定性的问题，Luci除非自身有逻辑性的BUG，一般情况下是不会有稳定性差异的，  
-稳定性的差异来自于你固件的内核，还有ss ssr v2ray 这几个核心插件的稳定性，当然你的节点才是影响稳定性的最大因素。  
-Luci 能决定的只有操作起来是否便利、顺手，还有对几个核心应用功能的适配挖掘而已。
+  <a href="/LICENSE">
+    <img src="https://img.shields.io/badge/license-MIT-brightgreen.svg" alt="">
+  </a>
 
-### Update Log 2020-08-30  v1.17-1
+  <a href="https://github.com/jerrykuku/luci-app-vssr/pulls">
+    <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="">
+  </a>
+  
+  <a href="https://github.com/jerrykuku/luci-app-vssr/issues/new">
+    <img src="https://img.shields.io/badge/Issues-welcome-brightgreen.svg">
+  </a>
+  
+  <a href="https://github.com/jerrykuku/luci-app-vssr/releases">
+    <img src="https://img.shields.io/badge/release-v1.20-blue.svg?">
+  </a>
+  
+  <a href="https://github.com/jerrykuku/luci-app-vssr/releases">
+    <img src="https://img.shields.io/github/downloads/jerrykuku/luci-app-vssr/total">
+  </a>
+  
+  <a href="https://t.me/PIN1Group">
+    <img src="https://img.shields.io/badge/Contact-telegram-blue">
+  </a>
+</div>
 
-#### Updates
 
-- FIX: 修复台台湾视频分流不起作用的问题。
+<b><br>支持全部类型的节点分流</b>  
+目前只适配最新版 argon主题 （其他主题下应该也可以用 但显示应该不会很完美）  
+目前Lean最新版本的openwrt 已经可以直接拉取源码到 package/lean 下直接进行勾选并编译。  
+
+
+### 更新日志 2020-12-06  v1.20
+- NEW：局域网访问控制增加列表内或列表外代理的选项。
+- NEW：现在所有的分流域名都可以自定义了，具体参见新的功能菜单 分流设置。
+- FIX：修复了在导入trojan链接时，不能导入密码的错误。
+- FIX：修复一些应用程序路径检测错误。
 
 详情见[具体日志](./relnotes.txt)。 
 
-### Intro
+### 插件介绍
 
-1. 基于lean ssr+ 全新修改的Vssr（更名为Hello World） 主要做了很多的修改，同时感谢插件原作者所做出的的努力和贡献！ 
-1. 节点列表支持国旗显示 TW节点为五星红旗， 节点列表页面 打开自动ping.  
-1. 优化了在节点列表页面点击应用后节点切换的速度。同时也优化了自动切换的速度。  
-1. 将节点订阅转移至 高级设置 请悉知 由于需要获取ip的国家code 新的订阅速度可能会比原来慢一点点 x86无影响。  
-1. 给Hello World 增加了IP状态显示，在页面底部 左边显示当前节点国旗 ip 和中文国家 右边 是四个网站的访问状态  可以访问是彩色不能访问是灰色。  
-1. 优化了国旗匹配方法，在部分带有emoji counrty code的节点名称中 优先使用 emoji code 匹配国旗。  
+1. 基于lean ssr+ 全新修改的Vssr（更名为Hello World）主要做了很多的修改，同时感谢插件原作者所做出的的努力和贡献！ 
+1. 节点列表支持国旗显示并且页面打开自动ping。  
+1. 支持各种分流组合，并且可以自己编辑所有分流的域名，相当于七组自定义分流。  
+1. 将节点订阅转移至[高级设置]请悉知。  
+1. 底部状态栏：左边显示国旗地区以及IP,右边为四个站点的可访问状态，彩色为可访问，灰色为不能访问。 
+1. 优化了国旗匹配方法，在部分带有emoji counrty code的节点名称中优先使用 emoji code 匹配国旗。  
 1. 建议搭配argon theme，能有最好的显示体验。  
 
 新修改插件难免有bug 请不要大惊小怪。欢迎提交bug。
 
-### How to use
+### 如何编译
 假设你的lean openwrt（最新版本19.07） 在 lede 目录下
 ```
 cd lede/package/lean/  
@@ -50,7 +76,7 @@ make -j1 V=s
 ### 感谢
 https://github.com/coolsnowwolf/lede
 
-### My other project
-Argon theme ：https://github.com/jerrykuku/luci-theme-argon
-
+### 我的其它项目
+Argon theme ：https://github.com/jerrykuku/luci-app-vssr  
+京东签到插件 ：https://github.com/jerrykuku/luci-app-jd-dailybonus  
 openwrt-nanopi-r1s-h5 ： https://github.com/jerrykuku/openwrt-nanopi-r1s-h5

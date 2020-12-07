@@ -7,30 +7,33 @@ local local_port = arg[3]
 local outbounds_table = {}
 local rules_table = {}
 
+function read_conf(file)
+    local rfile = io.open(file, "r")
+    local ltable = {}
+    for line in rfile:lines() do
+        local re = string.gsub(line, "\r", "")
+        table.insert(ltable,re)
+    end
+    return ltable
+end
+
 local v2ray_flow = ucursor:get_first(name, 'global', 'v2ray_flow', '0')
-local proxy_domain_name = ucursor:get_list(name, '@access_control[0]', 'proxy_domain_name')
+
+local custom_domain = read_conf("/etc/vssr/custom_domain.list")
+local youtube_domain = read_conf("/etc/vssr/youtube_domain.list")
+local tw_video_domain = read_conf("/etc/vssr/tw_video_domain.list")
+local netflix_domain = read_conf("/etc/vssr/netflix_domain.list")
+local disney_domain = read_conf("/etc/vssr/disney_domain.list")
+local prime_domain = read_conf("/etc/vssr/prime_domain.list")
+local tvb_domain = read_conf("/etc/vssr/tvb_domain.list")
+
 local flow_table = {
     yotube = {
         name = 'youtube',
         port = 2081,
         rules = {
             type = 'field',
-            domain = {
-                'youtube',
-                'ggpht.com',
-                'googlevideo.com',
-                'withyoutube.com',
-                'youtu.be',
-                'youtube-nocookie.com',
-                'youtube.com',
-                'youtubeeducation.com',
-                'youtubegaming.com',
-                'youtubei.googleapis.com',
-                'youtubekids.com',
-                'youtubemobilesupport.com',
-                'yt.be',
-                'ytimg.com'
-            },
+            domain = youtube_domain,
             outboundTag = 'youtube'
         }
     },
@@ -39,19 +42,7 @@ local flow_table = {
         port = 2082,
         rules = {
             type = 'field',
-            domain = {
-                'vidol.tv',
-                'hinet.net',
-                'books.com',
-                'litv.tv',
-                'pstatic.net',
-                'app-measurement.com',
-                'kktv.com.tw',
-                'gamer.com.tw',
-                'wetv.vip',
-                'kktv.me',
-                'myvideo.net.tw'
-            },
+            domain = tw_video_domain,
             outboundTag = 'tw_video'
         }
     },
@@ -60,30 +51,7 @@ local flow_table = {
         port = 2083,
         rules = {
             type = 'field',
-            domain = {
-                'fast.com',
-                'netflix.ca',
-                'netflix.com',
-                'netflix.net',
-                'netflixinvestor.com',
-                'netflixtechblog.com',
-                'nflxext.com',
-                'nflximg.com',
-                'nflximg.net',
-                'nflxsearch.net',
-                'nflxso.net',
-                'nflxvideo.net',
-                'netflixdnstest0.com',
-                'netflixdnstest1.com',
-                'netflixdnstest2.com',
-                'netflixdnstest3.com',
-                'netflixdnstest4.com',
-                'netflixdnstest5.com',
-                'netflixdnstest6.com',
-                'netflixdnstest7.com',
-                'netflixdnstest8.com',
-                'netflixdnstest9.com'
-            },
+            domain = netflix_domain,
             outboundTag = 'netflix'
         }
     },
@@ -92,14 +60,7 @@ local flow_table = {
         port = 2084,
         rules = {
             type = 'field',
-            domain = {
-                'cdn.registerdisney.go.com',
-                'disneyplus.com',
-                'disney-plus.net',
-                'dssott.com',
-                'bamgrid.com',
-                'execute-api.us-east-1.amazonaws.com'
-            },
+            domain = disney_domain,
             outboundTag = 'disney'
         }
     },
@@ -108,20 +69,7 @@ local flow_table = {
         port = 2085,
         rules = {
             type = 'field',
-            domain = {
-                'aiv-cdn.net',
-                'amazonaws.com',
-                'amazonvideo.com',
-                'llnwd.net',
-                'amazonprimevideos.com',
-                'amazonvideo.cc',
-                'prime-video.com',
-                'primevideo.cc',
-                'primevideo.com',
-                'primevideo.info',
-                'primevideo.org',
-                'primevideo.tv'
-            },
+            domain = prime_domain,
             outboundTag = 'prime'
         }
     },
@@ -130,7 +78,7 @@ local flow_table = {
         port = 2086,
         rules = {
             type = 'field',
-            domain = {'tvsuper.com', 'tvb.com'},
+            domain = tvb_domain,
             outboundTag = 'tvb'
         }
     },
@@ -139,10 +87,32 @@ local flow_table = {
         port = 2087,
         rules = {
             type = 'field',
-            domain = proxy_domain_name,
+            domain = custom_domain,
             outboundTag = 'custom'
         }
     }
+}
+
+local bt_rules = {
+    type = 'field',
+    outboundTag = 'bt',
+    protocol = {
+        'bittorrent'
+    }
+}
+local bt_rules1 = {
+    type = 'field',
+    outboundTag = 'bt',
+    domain = {
+        'torrent',
+        'peer_id=',
+        'info_hash',
+        'get_peers',
+        'find_node',
+        'BitTorrent',
+        'announce_peer',
+        'announce.php?passkey='
+    },
 }
 
 function gen_outbound(server_node, tags, local_ports)
@@ -151,7 +121,17 @@ function gen_outbound(server_node, tags, local_ports)
         bound = nil
     else
         local server = ucursor:get_all(name, server_node)
-        if server.type ~= 'v2ray' then
+        local outbound_security = "none"
+        if (server.xtls == '1') then
+            outbound_security = "xtls"
+        elseif (server.tls == '1') then
+            outbound_security = "tls"
+        elseif (server.tls == "0") then
+            outbound_security = "none"
+        end
+        local node_type = server.type == "vless" and "vless" or "vmess"
+
+        if server.type ~= 'v2ray' and server.type ~= 'vless' then
             bound = {
                 tag = tags,
                 protocol = 'socks',
@@ -164,7 +144,7 @@ function gen_outbound(server_node, tags, local_ports)
         else
             bound = {
                 tag = tags,
-                protocol = 'vmess',
+                protocol = node_type,
                 settings = {
                     vnext = {
                         {
@@ -173,8 +153,10 @@ function gen_outbound(server_node, tags, local_ports)
                             users = {
                                 {
                                     id = server.vmess_id,
-                                    alterId = tonumber(server.alter_id),
-                                    security = server.security
+                                    alterId = server.type == "v2ray" and tonumber(server.alter_id) or nil,
+                                    security =  server.type == "v2ray" and server.security or nil,
+                                    flow = (server.xtls == '1') and (server.vless_flow and server.vless_flow or "xtls-rprx-origin") or nil,
+                                    encryption = server.type == "vless" and server.vless_encryption or nil
                                 }
                             }
                         }
@@ -183,11 +165,9 @@ function gen_outbound(server_node, tags, local_ports)
                 -- 底层传输配置
                 streamSettings = {
                     network = server.transport,
-                    security = (server.tls == '1') and 'tls' or 'none',
-                    tlsSettings = {
-                        allowInsecure = (server.insecure == '1') and true or false,
-                        serverName = server.ws_host
-                    },
+                    security = outbound_security,
+                    tlsSettings = (outbound_security == "tls") and {allowInsecure = (server.insecure ~= "0") and true or false,serverName=server.tls_host,} or nil,
+                    xtlsSettings = (outbound_security == "xtls") and {allowInsecure = (server.insecure ~= "0") and true or false,serverName=server.tls_host,} or nil,
                     kcpSettings = (server.transport == 'kcp') and
                         {
                             mtu = tonumber(server.mtu),
@@ -225,6 +205,17 @@ function gen_outbound(server_node, tags, local_ports)
     return bound
 end
 
+function gen_bt_outbounds()
+    local bound = {
+        tag = 'bt',
+        protocol = 'freedom',
+        settings = {
+            a = 1
+        }
+    }
+    return bound
+end
+
 if v2ray_flow == '1' then
     table.insert(outbounds_table, gen_outbound(server_section, 'global', 2080))
     for i, v in pairs(flow_table) do
@@ -235,6 +226,10 @@ if v2ray_flow == '1' then
 else
     table.insert(outbounds_table, gen_outbound(server_section, 'main', local_port))
 end
+
+table.insert(outbounds_table, gen_bt_outbounds())
+table.insert(rules_table, bt_rules)
+table.insert(rules_table, bt_rules1)
 
 local v2ray = {
     log = {

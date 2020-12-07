@@ -91,7 +91,21 @@ obfs = {
     'random_head',
     'tls1.2_ticket_auth'
 }
-local securitys = {'auto', 'none', 'aes-128-gcm', 'chacha20-poly1305'}
+local securitys = {
+    'auto',
+    'none',
+    'aes-128-gcm',
+    'chacha20-poly1305'
+}
+
+local flows = {
+    'xtls-rprx-origin',
+    'xtls-rprx-origin-udp443',
+    'xtls-rprx-direct',
+    'xtls-rprx-direct-udp443',
+    'xtls-rprx-splice',
+    'xtls-rprx-splice-udp443'
+}
 
 m = Map(vssr, translate('Edit vssr Server'))
 m.redirect = luci.dispatcher.build_url('admin/services/vssr/servers')
@@ -112,10 +126,12 @@ o.value = sid
 
 o = s:option(ListValue, 'type', translate('Server Node Type'))
 o:value('ssr', translate('ShadowsocksR'))
-
-if nixio.fs.access('/usr/bin/v2ray/v2ray') or nixio.fs.access('/usr/bin/v2ray') then
+if nixio.fs.access('/usr/bin/ss-redir') then
     o:value('ss', translate('Shadowsocks New Version'))
+end
+if nixio.fs.access('/usr/bin/v2ray/v2ray') or nixio.fs.access('/usr/bin/v2ray') or nixio.fs.access('/usr/bin/xray') or nixio.fs.access('/usr/bin/xray/xray') then
     o:value('v2ray', translate('V2Ray'))
+    o:value('vless', translate('VLESS'))
 end
 
 if nixio.fs.access('/usr/sbin/trojan') then
@@ -137,11 +153,6 @@ o.rmempty = false
 o = s:option(Value, 'server_port', translate('Server Port'))
 o.datatype = 'port'
 o.rmempty = false
-
--- o = s:option(Value, "timeout", translate("Connection Timeout"))
--- o.datatype = "uinteger"
--- o.default = 60
--- o.rmempty = false
 
 o = s:option(Value, 'password', translate('Password'))
 o.password = true
@@ -206,10 +217,19 @@ o.rmempty = true
 o:depends('type', 'v2ray')
 
 -- VmessId
-o = s:option(Value, 'vmess_id', translate('VmessId (UUID)'))
+o = s:option(Value, 'vmess_id', translate('VMESS/VLESS ID (UUID)'))
 o.rmempty = true
 o.default = uuid
 o:depends('type', 'v2ray')
+o:depends('type', 'vless')
+o:depends('type', 'xray')
+
+-- VLESS 加密方式
+o = s:option(Value, 'vless_encryption', translate('VLESS Encryption'))
+o.rmempty = true
+o.default = 'none'
+o:depends('type', 'vless')
+o:depends('type', 'xray')
 
 -- 加密方式
 o = s:option(ListValue, 'security', translate('Encrypt Method'))
@@ -228,6 +248,8 @@ o:value('h2', 'HTTP/2')
 o:value('quic', 'QUIC')
 o.rmempty = true
 o:depends('type', 'v2ray')
+o:depends('type', 'vless')
+o:depends('type', 'xray')
 
 -- [[ TCP部分 ]]--
 
@@ -342,15 +364,22 @@ o:depends('transport', 'kcp')
 o.default = 2
 o.rmempty = true
 
+o = s:option(Value, 'seed', translate('Seed'))
+o:depends('transport', 'kcp')
+o.default = ''
+o.rmempty = true
+
 o = s:option(Flag, 'congestion', translate('Congestion'))
 o:depends('transport', 'kcp')
 o.rmempty = true
 
 -- [[ allowInsecure ]]--
 o = s:option(Flag, 'insecure', translate('allowInsecure'))
-o.rmempty = true
+o.rmempty = false
 o:depends('type', 'v2ray')
 o:depends('type', 'trojan')
+o:depends('type', 'vless')
+o:depends('type', 'xray')
 
 -- [[ TLS ]]--
 o = s:option(Flag, 'tls', translate('TLS'))
@@ -358,18 +387,45 @@ o.rmempty = true
 o.default = '0'
 o:depends('type', 'v2ray')
 o:depends('type', 'trojan')
+o:depends('type', 'vless')
+o:depends('type', 'xray')
+
+o = s:option(Value, 'tls_host', translate('TLS Host'))
+--o:depends("type", "trojan")
+o:depends('tls', '1')
+o.rmempty = true
+
+-- XTLS
+o = s:option(Flag, 'xtls', translate('XTLS'))
+o.rmempty = true
+o.default = '0'
+o:depends({type = 'vless', tls = '1'})
+o:depends({type = 'xray', tls = '1'})
+
+-- Flow
+o = s:option(Value, 'vless_flow', translate('Flow'))
+for _, v in ipairs(flows) do
+    o:value(v, v)
+end
+o.rmempty = true
+o.default = 'xtls-rprx-origin'
+o:depends('xtls', '1')
 
 -- [[ Mux ]]--
 o = s:option(Flag, 'mux', translate('Mux'))
 o.rmempty = true
 o.default = '0'
 o:depends('type', 'v2ray')
+o:depends('type', 'vless')
 
 o = s:option(Value, 'concurrency', translate('Concurrency'))
 o.datatype = 'uinteger'
 o.rmempty = true
 o.default = '8'
 o:depends('mux', '1')
+
+-- [[NO self cert]]
+
 o = s:option(Flag, 'fast_open', translate('TCP Fast Open'))
 o.rmempty = true
 o.default = '0'

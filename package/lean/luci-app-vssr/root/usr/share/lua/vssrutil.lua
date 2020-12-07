@@ -5,7 +5,7 @@
 -- @author Jerryk <jerrykuku@qq.com>
 ------------------------------------------------
 local _M = {}
-
+local icount = 0
 -- Get country iso code with remark or host
 -- Return String:iso_code
 function _M.get_flag(remark, host)
@@ -157,6 +157,7 @@ function _M.wget(url)
                            url .. '"')
     return _M.trim(stdout)
 end
+
 
 return _M
 

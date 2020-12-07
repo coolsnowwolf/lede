@@ -31,6 +31,7 @@ local ucic = luci.model.uci.cursor()
 local proxy = ucic:get_first(name, 'server_subscribe', 'proxy', '0')
 local switch = '0'
 local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
+local filter_words = ucic:get_first(name, 'server_subscribe', 'filter_words', '过期时间/剩余流量')
 
 local log = function(...)
     print(os.date('%Y-%m-%d %H:%M:%S ') .. table.concat({...}, ' '))
@@ -104,7 +105,7 @@ local function base64Decode(text)
     end
 end
 -- 处理数据
-local function processData(szType, content)
+local function processData(szType, content, groupName)
     local result = {
         -- 		auth_enable = '0',
         -- 		switch_enable = '1',
@@ -145,7 +146,7 @@ local function processData(szType, content)
         result.transport = info.net
         result.alter_id = info.aid
         result.vmess_id = info.id
-        result.alias = info.ps
+        result.alias = groupName .. info.ps
         -- 		result.mux = 1
         -- 		result.concurrency = 8
         if info.net == 'ws' then
@@ -197,7 +198,7 @@ local function processData(szType, content)
         local userinfo = base64Decode(hostInfo[1])
         local method = userinfo:sub(1, userinfo:find(':') - 1)
         local password = userinfo:sub(userinfo:find(':') + 1, #userinfo)
-        result.alias = UrlDecode(alias)
+        result.alias = groupName .. UrlDecode(alias)
         result.type = 'ss'
         result.server = host[1]
         if host[2]:find('/%?') then
@@ -234,7 +235,7 @@ local function processData(szType, content)
         local hostInfo = split(info, '@')
         local host = split(hostInfo[2], ':')
         local password = hostInfo[1]
-        result.alias = UrlDecode(alias)
+        result.alias = groupName .. UrlDecode(alias)
         result.type = 'trojan'
         result.server = host[1]
         result.insecure = '0'
@@ -264,7 +265,11 @@ local function processData(szType, content)
         result.alias = '[' .. content.airport .. '] ' .. content.remarks
     end
     if not result.alias then
-        result.alias = result.server .. ':' .. result.server_port
+        if result.server and result.server_port then
+            result.alias = result.server .. ':' .. result.server_port
+        else
+            result.alias = "NULL"
+        end
     end
     -- alias 不参与 hashkey 计算
     local alias = result.alias
@@ -289,6 +294,18 @@ local function wget(url)
     return trim(stdout)
 end
 
+local function check_filer(result)
+	do
+		local filter_word = split(filter_words, "/")
+		for i, v in pairs(filter_word) do
+			if result.alias:find(v) then
+				log('订阅节点关键字过滤:“' .. v ..'” ，该节点被丢弃')
+				return true
+			end
+		end
+	end
+end
+
 local execute = function()
     -- exec
     do
@@ -297,6 +314,10 @@ local execute = function()
             luci.sys.init.stop(name)
         end
         for k, url in ipairs(subscribe_url) do
+            local groupName = ""
+            urlTable = split(url, ",")
+            groupName = table.getn(urlTable) > 1 and '[' .. urlTable[1] .. '] ' or ""
+            url = table.getn(urlTable) > 1 and urlTable[2] or url
             local raw = wget(url)
             if #raw > 0 then
                 local nodes, szType
@@ -330,15 +351,15 @@ local execute = function()
                     if v then
                         local result
                         if szType == 'ssd' then
-                            result = processData(szType, v)
+                            result = processData(szType, v, groupName)
                         elseif not szType then
                             local node = trim(v)
                             local dat = split(node, '://')
                             if dat and dat[1] and dat[2] then
                                 if dat[1] == 'ss' then
-                                    result = processData(dat[1], dat[2])
+                                    result = processData(dat[1], dat[2], groupName)
                                 else
-                                    result = processData(dat[1], base64Decode(dat[2]))
+                                    result = processData(dat[1], base64Decode(dat[2]), groupName)
                                 end
                             end
                         else
@@ -347,10 +368,11 @@ local execute = function()
                         -- log(result)
                         if result then
                             if
-                                result.alias:find('过期时间') or result.alias:find('剩余流量') or result.alias:find('QQ群') or
-                                    result.alias:find('不支持') or
-                                    result.alias:find('官网') or
-                                    not result.server
+                                not result.server or
+                                not result.server_port or
+                                result.alias == "NULL" or
+                                check_filer(result) or
+                                result.server:match("[^0-9a-zA-Z%-%.%s]") -- 中文做地址的 也没有人拿中文域名搞，就算中文域也有Puny Code SB 机场
                              then
                                 log('丢弃无效节点: ' .. result.type .. ' 节点, ' .. result.alias)
                             else

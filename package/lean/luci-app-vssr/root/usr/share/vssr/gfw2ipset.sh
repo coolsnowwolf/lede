@@ -1,15 +1,42 @@
 #!/bin/sh
 . /lib/functions.sh
 
+uci_get_by_type() {
+    local ret=$(uci get vssr.@$1[0].$2 2>/dev/null)
+    echo ${ret:=$3}
+}
+v2ray_flow=$(uci_get_by_type global v2ray_flow)
+
 mkdir -p /tmp/dnsmasq.ssr
 
-awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"gfwlist"'\n",$0)}' /etc/config/gfw.list >/tmp/dnsmasq.ssr/custom_forward.conf
-awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5335"'\n",$0)}' /etc/config/gfw.list >>/tmp/dnsmasq.ssr/custom_forward.conf
+awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"gfwlist"'\n",$0)}' /etc/vssr/gfw.list >/tmp/dnsmasq.ssr/custom_forward.conf
+awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5335"'\n",$0)}' /etc/vssr/gfw.list >>/tmp/dnsmasq.ssr/custom_forward.conf
 
-awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"blacklist"'\n",$0)}' /etc/config/black.list >/tmp/dnsmasq.ssr/blacklist_forward.conf
-awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5335"'\n",$0)}' /etc/config/black.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"blacklist"'\n",$0)}' /etc/vssr/black.list >/tmp/dnsmasq.ssr/blacklist_forward.conf
+awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5335"'\n",$0)}' /etc/vssr/black.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
 
-awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"whitelist"'\n",$0)}' /etc/config/white.list >/tmp/dnsmasq.ssr/whitelist_forward.conf
+awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"whitelist"'\n",$0)}' /etc/vssr/white.list >/tmp/dnsmasq.ssr/whitelist_forward.conf
+
+if [ "$v2ray_flow" = "1" ]; then
+
+    awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"blacklist"'\n",$0)}' /etc/vssr/tw_video_domain.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+    awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5335"'\n",$0)}' /etc/vssr/tw_video_domain.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+    
+    awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"blacklist"'\n",$0)}' /etc/vssr/netflix_domain.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+    awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5335"'\n",$0)}' /etc/vssr/netflix_domain.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+    
+    awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"blacklist"'\n",$0)}' /etc/vssr/disney_domain.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+    awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5335"'\n",$0)}' /etc/vssr/disney_domain.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+    
+    awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"blacklist"'\n",$0)}' /etc/vssr/prime_domain.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+    awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5335"'\n",$0)}' /etc/vssr/prime_domain.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+    
+    awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"blacklist"'\n",$0)}' /etc/vssr/tvb_domain.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+    awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5335"'\n",$0)}' /etc/vssr/tvb_domain.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+    
+    awk '!/^$/&&!/^#/{printf("ipset=/.%s/'"blacklist"'\n",$0)}' /etc/vssr/custom_domain.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+    awk '!/^$/&&!/^#/{printf("server=/.%s/'"127.0.0.1#5335"'\n",$0)}' /etc/vssr/custom_domain.list >>/tmp/dnsmasq.ssr/blacklist_forward.conf
+fi
 
 function valid_ip() {
   ip=$1

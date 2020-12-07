@@ -5,7 +5,8 @@ local m, s, sec, o, kcp_enable
 local vssr = 'vssr'
 local gfwmode = 0
 
-if nixio.fs.access('/etc/dnsmasq.ssr/gfw_list.conf') then
+
+if nixio.fs.access('/etc/vssr/gfw_list.conf') then 
     gfwmode = 1
 end
 
@@ -18,70 +19,28 @@ m:section(SimpleSection).template = 'vssr/status_top'
 local server_table = {}
 local tw_table = {}
 local tvb_table = {}
+
+
+local server_table = {}
 uci:foreach(
-    vssr,
+    'vssr',
     'servers',
     function(s)
-        if s.alias then
-            server_table[s['.name']] = '[%s]:%s' % {string.upper(s.type), s.alias}
-        elseif s.server and s.server_port then
-            server_table[s['.name']] =
-                '[%s]:%s:%s' %
-                {
-                    string.upper(s.type),
-                    s.server,
-                    s.server_port
-                }
-        end
-
-        if s.flag == 'tw' then
-            if s.alias then
-                tw_table[s['.name']] = '[%s]:%s' % {string.upper(s.type), s.alias}
-            elseif s.server and s.server_port then
-                tw_table[s['.name']] =
-                    '[%s]:%s:%s' %
-                    {
-                        string.upper(s.type),
-                        s.server,
-                        s.server_port
-                    }
-            end
-        end
-
-        if s.flag == 'hk' then
-            if s.alias then
-                tvb_table[s['.name']] = '[%s]:%s' % {string.upper(s.type), s.alias}
-            elseif s.server and s.server_port then
-                tvb_table[s['.name']] =
-                    '[%s]:%s:%s' %
-                    {
-                        string.upper(s.type),
-                        s.server,
-                        s.server_port
-                    }
-            end
+        if s.type ~= nil then
+            s['name'] = s['.name']
+            s['gname'] = '[%s]:%s' % {string.upper(s.type), s.alias}
+            table.insert(server_table, s)
         end
     end
 )
-
-local key_table = {}
-for key, _ in pairs(server_table) do
-    table.insert(key_table, key)
+function my_sort(a,b)
+    if(a.alias ~= nil and b.alias ~= nil) then
+        return  a.alias < b.alias
+    end
 end
+table.sort(server_table, my_sort)
 
-local key_table_tw = {}
-for key, _ in pairs(tw_table) do
-    table.insert(key_table_tw, key)
-end
 
-local key_table_tvb = {}
-for key, _ in pairs(tvb_table) do
-    table.insert(key_table_tvb, key)
-end
-
-table.sort(key_table)
-table.sort(key_table_tw)
-table.sort(key_table_tvb)
 local route_name = {
     'youtube_server',
     'tw_video_server',
@@ -95,20 +54,20 @@ local route_label = {
     'Youtube Proxy',
     'TaiWan Video Proxy',
     'Netflix Proxy',
-    'Diseny+ Proxy',
+    'Disney+ Proxy',
     'Prime Video Proxy',
     'TVB Video Proxy',
     'Custom Proxy'
 }
 
 -- [[ Global Setting ]]--
-s = m:section(TypedSection, 'global', translate('Basic Settings [SS|SSR|V2ray|Trojan]'))
+s = m:section(TypedSection, 'global', translate('Basic Settings [SS|SSR|V2ray|Xray|Trojan]'))
 s.anonymous = true
 
 o = s:option(ListValue, 'global_server', translate('Main Server'))
 o:value('nil', translate('Disable'))
-for _, key in pairs(key_table) do
-    o:value(key, server_table[key])
+for _, key in pairs(server_table) do
+    o:value(key.name, key.gname)
 end
 o.default = 'nil'
 o.rmempty = false
@@ -116,9 +75,14 @@ o.rmempty = false
 o = s:option(ListValue, 'udp_relay_server', translate('Game Mode UDP Server'))
 o:value('', translate('Disable'))
 o:value('same', translate('Same as Main Server'))
-for _, key in pairs(key_table) do
-    o:value(key, server_table[key])
+for _, key in pairs(server_table) do
+    o:value(key.name, key.gname)
 end
+if nixio.fs.access('/usr/bin/xray') or nixio.fs.access('/usr/bin/xray/xray') then
+    o = s:option(Flag, 'use_xray', translate('Use Xray instead of V2ray'))
+    o.rmempty = false
+end
+
 
 o = s:option(Flag, 'v2ray_flow', translate('Open v2ray route'))
 o.rmempty = false
@@ -127,17 +91,15 @@ o.description = translate('When open v2ray routed,Apply may take more time.')
 for i, v in pairs(route_name) do
     o = s:option(ListValue, v, translate(route_label[i]))
     o:value('nil', translate('Same as Main Server'))
-    if (v == 'tw_video_server') then
-        for _, key in pairs(key_table_tw) do
-            o:value(key, tw_table[key])
+    for _, key in pairs(server_table) do
+        if(v == 'tw_video_server' and key.flag == "tw") then
+            o:value(key.name, key.gname)
         end
-    elseif (v == 'tvb_server') then
-        for _, key in pairs(key_table_tvb) do
-            o:value(key, tvb_table[key])
+        if(v == 'tvb_server' and key.flag == "hk") then
+            o:value(key.name, key.gname)
         end
-    else
-        for _, key in pairs(key_table) do
-            o:value(key, server_table[key])
+        if(v ~= 'tvb_server' and v ~= 'tw_video_server') then
+            o:value(key.name, key.gname)
         end
     end
     o:depends('v2ray_flow', '1')

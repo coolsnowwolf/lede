@@ -8,21 +8,21 @@ local ip_count = 0
 local ad_count = 0
 local server_count = 0
 
-if nixio.fs.access('/etc/dnsmasq.ssr/gfw_list.conf') then
+if nixio.fs.access('/etc/vssr/gfw_list.conf') then
     gfwmode = 1
 end
 
 local sys = require 'luci.sys'
 
 if gfwmode == 1 then
-    gfw_count = tonumber(sys.exec('cat /etc/dnsmasq.ssr/gfw_list.conf | wc -l')) / 2
-    if nixio.fs.access('/etc/dnsmasq.ssr/ad.conf') then
-        ad_count = tonumber(sys.exec('cat /etc/dnsmasq.ssr/ad.conf | wc -l'))
+    gfw_count = tonumber(sys.exec('cat /etc/vssr/gfw_list.conf | wc -l')) / 2
+    if nixio.fs.access('/etc/vssr/ad.conf') then
+        ad_count = tonumber(sys.exec('cat /etc/vssr/ad.conf | wc -l'))
     end
 end
 
-if nixio.fs.access('/etc/china_ssr.txt') then
-    ip_count = sys.exec('cat /etc/china_ssr.txt | wc -l')
+if nixio.fs.access('/etc/vssr/china_ssr.txt') then
+    ip_count = sys.exec('cat /etc/vssr/china_ssr.txt | wc -l')
 end
 
 uci:foreach(
@@ -79,6 +79,11 @@ o.rmempty = false
 
 o = s:option(DynamicList, 'subscribe_url', translate('Subscribe URL'))
 o.rmempty = true
+o.description = translate('You can manually add group names in front of the URL, splited by ,')
+
+o = s:option(Value, "filter_words", translate("Subscribe Filter Words"))
+o.rmempty = true
+o.description = translate("Filter Words splited by /")
 
 o = s:option(Flag, 'proxy', translate('Through proxy update'))
 o.rmempty = false

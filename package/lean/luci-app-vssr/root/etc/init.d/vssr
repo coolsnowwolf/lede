@@ -1,4 +1,4 @@
-#!/bin/bash /etc/rc.common
+#!/bin/sh /etc/rc.common
 #
 # Copyright (C) 2017 openwrt-ssr
 # Copyright (C) 2017 yushi studio <ywb94@qq.com>
@@ -8,7 +8,7 @@
 # See /LICENSE for more information.
 #
 
-START=90
+START=99
 STOP=15
 
 SERVICE_DAEMONIZE=1
@@ -34,9 +34,6 @@ switch_server=$1
 MAXFD=32768
 CRON_FILE=/etc/crontabs/root
 threads=1
-shunt_type=("global" "youtube" "tw_video" "netflix" "disney" "prime" "tvb" "custom")
-shunt_port=(2080 2081 2082 2083 2084 2085 2086 2087)
-shunt_array=("youtube" "tw_video" "netflix" "disney" "prime" "tvb" "custom")
 scount=0
 uci_get_by_name() {
     local ret=$(uci get $NAME.$1.$2 2>/dev/null)
@@ -62,17 +59,26 @@ del_cron() {
 }
 count_shunt() {
     scount=0
-    for ((i = 0; i < ${#shunt_array[@]}; i++)); do
-        local server_index=$(uci_get_by_type global ${shunt_array[i]}_server)
+    eval shunt_array1="youtube"
+    eval shunt_array2="tw_video"
+    eval shunt_array3="netflix"
+    eval shunt_array4="disney"
+    eval shunt_array5="prime"
+    eval shunt_array6="tvb"
+    eval shunt_array7="custom"
+    for i in 1 2 3 4 5 6 7; do
+        a=$(eval echo "\$shunt_array$i")
+        local server_index=$(uci_get_by_type global ${a}_server)
         local server_type=$(uci_get_by_name $server_index type)
         if [ "$server_type" != "" ]; then
             scount=$(($scount + 1))
         fi
     done
 }
+
 count_shunt
 run_mode=$(uci_get_by_type global run_mode)
-
+is_xray=$(uci_get_by_type global use_xray)
 gen_config_file() {
     local hostip=$(uci_get_by_name $1 server)
 
@@ -95,6 +101,9 @@ gen_config_file() {
 
     local stype=$(uci_get_by_name $1 type)
     local port=$(uci_get_by_name $1 local_port)
+    if [ "$stype" == "vless" ]; then
+        stype="v2ray"
+    fi
     if [ "$stype" == "trojan" ]; then
         if [ "$re_type" == "udp" ]; then
             re_type="client"
@@ -145,7 +154,7 @@ start_rules() {
 
     local local_port=$(uci_get_by_name $GLOBAL_SERVER local_port)
     local lan_ac_ips=$(uci_get_by_type access_control lan_ac_ips)
-    local lan_ac_mode="b"
+    local lan_ac_mode=$(uci_get_by_type access_control lan_ac_mode)
     local router_proxy=$(uci_get_by_type access_control router_proxy)
     if [ "$GLOBAL_SERVER" == "$UDP_RELAY_SERVER" -a $kcp_flag == 0 ]; then
         ARG_UDP="-u"
@@ -193,18 +202,18 @@ start_rules() {
     fi
 
     /usr/bin/vssr-rules \
-        -s "$server" \
-        -l "$local_port" \
-        -S "$udp_server" \
-        -L "$udp_local_port" \
-        -a "$ac_ips" \
-        -i "$(uci_get_by_type access_control wan_bp_list)" \
-        -b "$(uci_get_by_type access_control wan_bp_ips)" \
-        -w "$(uci_get_by_type access_control wan_fw_ips)" \
-        -p "$(uci_get_by_type access_control lan_fp_ips)" \
-        -G "$(uci_get_by_type access_control lan_gm_ips)" \
-        -D "$proxyport" \
-        $(get_arg_out) $gfwmode $ARG_UDP
+    -s "$server" \
+    -l "$local_port" \
+    -S "$udp_server" \
+    -L "$udp_local_port" \
+    -a "$ac_ips" \
+    -i "$(uci_get_by_type access_control wan_bp_list)" \
+    -b "$(uci_get_by_type access_control wan_bp_ips)" \
+    -w "$(uci_get_by_type access_control wan_fw_ips)" \
+    -p "$(uci_get_by_type access_control lan_fp_ips)" \
+    -G "$(uci_get_by_type access_control lan_gm_ips)" \
+    -D "$proxyport" \
+    $(get_arg_out) $gfwmode $ARG_UDP
     return $?
 }
 
@@ -271,7 +280,12 @@ find_bin() {
     ssr) ret="/usr/bin/ssr-redir" ;;
     ssr-local) ret="/usr/bin/ssr-local" ;;
     ssr-server) ret="/usr/bin/ssr-server" ;;
-    v2ray) ret="/usr/bin/v2ray/v2ray" && [ ! -f "$ret" ] && ret="/usr/bin/v2ray" ;;
+    v2ray | vless) 
+        ret="/usr/bin/v2ray/v2ray" && [ ! -f "$ret" ] && ret="/usr/bin/v2ray" 
+        if [ $is_xray = "1" ]; then
+            ret="/usr/bin/xray" && [ ! -f "$ret" ] && ret="/usr/bin/xray/xray" 
+        fi
+        ;;
     trojan) ret="/usr/sbin/trojan" ;;
     socks5 | tun) ret="/usr/sbin/redsocks2" ;;
     esac
@@ -279,14 +293,35 @@ find_bin() {
 }
 #分流节点
 start_shunt() {
-    for ((i = 0; i < ${#shunt_type[@]}; i++)); do
-        local server_index=$(uci_get_by_type global ${shunt_type[i]}_server)
-        local server_port=${shunt_port[i]}
+    eval shunt_type1="global"
+    eval shunt_type2="youtube"
+    eval shunt_type3="tw_video"
+    eval shunt_type4="netflix"
+    eval shunt_type5="disney"
+    eval shunt_type6="prime"
+    eval shunt_type7="tvb"
+    eval shunt_type8="custom"
+    eval shunt_port1=2080
+    eval shunt_port2=2081
+    eval shunt_port3=2082
+    eval shunt_port4=2083
+    eval shunt_port5=2084
+    eval shunt_port6=2085
+    eval shunt_port7=2086
+    eval shunt_port8=2087
+    for i in 1 2 3 4 5 6 7 8; do
+        shunt_type=$(eval echo "\$shunt_type$i")
+        shunt_port=$(eval echo "\$shunt_port$i")
+        local server_index=$(uci_get_by_type global ${shunt_type}_server)
+        local server_port=${shunt_port}
         local server_type=$(uci_get_by_name $server_index type)
         local server_ip=$(uci_get_by_name $server_index server)
-        [ "$server_type" == "trojan" ] && re_type="client" || re_type="tcp"
+        if [ "$server_type" = "vless" ]; then
+          server_type="v2ray"
+        fi
+        [ "$server_type" = "trojan" ] && re_type="client" || re_type="tcp"
         if [ "$server_type" != "v2ray" -a "$server_type" != "" ]; then
-            local config_file=/var/etc/${NAME}_${shunt_type[i]}.json
+            local config_file=/var/etc/${NAME}_${shunt_type}.json
             local bin=$(find_bin $server_type)
             lua /usr/share/vssr/genconfig_${server_type}.lua ${server_index} ${re_type} ${server_port} ${server_ip} >${config_file}
             sed -i 's/\\//g' $config_file
@@ -294,13 +329,13 @@ start_shunt() {
             ss | ssr)
                 bin=$(find_bin "ss-local")
                 [ "$server_type" == "ssr" ] && bin=$(find_bin "ssr-local")
-                $bin -c $config_file $ARG_OTA -f /var/run/vssr-${shunt_type[i]}.pid1 >/dev/null 2>&1
+                $bin -c $config_file $ARG_OTA -f /var/run/vssr-${shunt_type}.pid1 >/dev/null 2>&1
                 ;;
             trojan)
                 $bin --config $config_file >/dev/null 2>&1 &
                 ;;
             esac
-            echo "$(date "+%Y-%m-%d %H:%M:%S") ${shunt_type[i]}: $server_type 分流服务已启动!" >>/tmp/vssr.log
+            echo "$(date "+%Y-%m-%d %H:%M:%S") ${shunt_type}: $server_type 分流服务已启动!" >>/tmp/vssr.log
         fi
     done
     return $?
@@ -325,8 +360,8 @@ start_redir() {
         local kcp_param=$(uci_get_by_name $GLOBAL_SERVER kcp_param)
         [ "$password" != "" ] && password="--key "${password}
         service_start /usr/bin/kcptun-client \
-            -r $kcp_server:$kcp_port \
-            -l :$server_port $password $kcp_param
+        -r $kcp_server:$kcp_port \
+        -l :$server_port $password $kcp_param
         kcp_enable_flag=1
     fi
 
@@ -356,7 +391,7 @@ start_redir() {
             done
             echo "$(date "+%Y-%m-%d %H:%M:%S") $name $threads 线程 已启动!" >>/tmp/vssr.log
             ;;
-        v2ray)
+        v2ray | vless)
             $sscmd -config $last_config_file >/dev/null 2>&1 &
             echo $sscmd
             echo "$(date "+%Y-%m-%d %H:%M:%S") $($sscmd -version | head -1) 已启动!" >>/tmp/vssr.log
@@ -397,7 +432,7 @@ start_redir() {
             $ucmd -c $last_config_file $ARG_OTA -U -f /var/run/ssr-reudp.pid >/dev/null 2>&1
             echo "$(date "+%Y-%m-%d %H:%M:%S") UDP TPROXY Relay: $name 已启动!" >>/tmp/vssr.log
             ;;
-        v2ray)
+        v2ray | vless)
             $ucmd -config $last_config_file >/dev/null 2>&1 &
             echo "$(date "+%Y-%m-%d %H:%M:%S") UDP TPROXY Relay: V2ray 已启动!" >>/tmp/vssr.log
             ;;
@@ -515,8 +550,8 @@ start_local() {
 
     lua /usr/share/vssr/genconfig_v2ray_s.lua >$CONFIG_SOCK5_FILE
     sed -i 's/\\//g' $config_file
-
-    /usr/bin/v2ray/v2ray -config $CONFIG_SOCK5_FILE >/dev/null 2>&1 &
+    socksbin=$(find_bin "v2ray")
+    $socksbin -config $CONFIG_SOCK5_FILE >/dev/null 2>&1 &
     local_enable=1
 }
 
@@ -543,7 +578,11 @@ start() {
     if rules; then
         start_redir
 
-        mkdir -p /tmp/dnsmasq.d && cp -a /etc/dnsmasq.ssr /tmp/ && cp -a /etc/dnsmasq.oversea /tmp/
+        mkdir -p /tmp/dnsmasq.d \
+        && cp -a /etc/vssr/gfw_list.conf /tmp/dnsmasq.ssr \
+        && cp -a /etc/vssr/gfw_base.conf /tmp/dnsmasq.ssr \
+        && cp -a /etc/vssr/ad.conf /tmp/dnsmasq.ssr \
+        && cp -a /etc/vssr/oversea_list.conf /tmp/dnsmasq.oversea
         if ! [ "$run_mode" = "oversea" ]; then
             cat >/tmp/dnsmasq.d/dnsmasq-ssr.conf <<EOF
 conf-dir=/tmp/dnsmasq.ssr
@@ -598,7 +637,7 @@ stop() {
     if [ $(uci_get_by_type global monitor_enable) = 1 ]; then
         kill -9 $(busybox ps -w | grep vssr-monitor | grep -v grep | awk '{print $1}') >/dev/null 2>&1
     fi
-    killall -q -9 ss-redir ss-local obfs-local ssr-redir ssr-local ssr-server v2ray v2ray-plugin trojan microsocks ipt2socks dns2socks redsocks2 pdnsd
+    killall -q -9 ss-redir ss-local obfs-local ssr-redir ssr-local ssr-server v2ray v2ray-plugin trojan microsocks ipt2socks dns2socks redsocks2 pdnsd xray
 
     if [ -f "/tmp/dnsmasq.d/dnsmasq-ssr.conf" ]; then
         rm -f /tmp/dnsmasq.d/dnsmasq-ssr.conf
