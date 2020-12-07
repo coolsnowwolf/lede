@@ -23,6 +23,7 @@ PKG_CONFIG_DEPENDS := \
 	CONFIG_PACKAGE_kmod-brcm-wl \
 	CONFIG_PACKAGE_kmod-brcm-wl-mini \
 	CONFIG_PACKAGE_kmod-brcm-wl-mimo \
+	CONFIG_PACKAGE_kmod-mt7615d_dbdc \
 	CONFIG_PACKAGE_kmod-cfg80211
 
 include $(INCLUDE_DIR)/package.mk
@@ -75,6 +76,7 @@ IWINFO_BACKENDS := \
 	$(if $(CONFIG_PACKAGE_kmod-brcm-wl),wl) \
 	$(if $(CONFIG_PACKAGE_kmod-brcm-wl-mini),wl) \
 	$(if $(CONFIG_PACKAGE_kmod-brcm-wl-mimo),wl) \
+	$(if $(CONFIG_PACKAGE_kmod-mt7615d_dbdc),ra) \
 	$(if $(CONFIG_PACKAGE_kmod-cfg80211),nl80211)
 
 TARGET_CFLAGS += \
