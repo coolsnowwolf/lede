@@ -87,7 +87,7 @@ add_cron() {
 serverchan() {
     sckey=$(uci_get_by_type global serverchan)
     failed=$(uci_get_by_type global failed)
-    desc=$(cat /www/JD_DailyBonus.htm | grep -E '签到号|签到概览|签到总计|账号总计|其他总计' | sed 's/$/&\n/g')
+    desc=$(cat /www/JD_DailyBonus.htm | grep -E '签到号|签到概览|签到奖励|其他奖励|账号总计|其他总计' | sed 's/$/&\n/g')
     serverurlflag=$(uci_get_by_type global serverurl)
     serverurl=https://sc.ftqq.com/
     if [ "$serverurlflag" = "sct" ]; then
@@ -115,6 +115,7 @@ run() {
 
 back_run() {
     run
+    sleep 1s
     serverchan
 }
 
