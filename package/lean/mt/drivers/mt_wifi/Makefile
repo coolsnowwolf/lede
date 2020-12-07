@@ -22,6 +22,7 @@ define Package/mt_wifi
   CATEGORY:=Network
   TITLE:=MTK wifi AP config
   DEPENDS:=@TARGET_ramips +wireless-tools
+  CONFLICTS:=kmod-mt7615d_dbdc
   SUBMENU:=Wireless
 endef
 

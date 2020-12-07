@@ -437,6 +437,6 @@ typedef struct  _PACKET_INFO    {
 extern VOID *adapt_list[MAX_NUM_OF_INF];
 #endif /* MULTI_INF_SUPPORT */
 #ifdef CREATE_ALL_INTERFACE_AT_INIT
-#define MAX_MBSS_NUM 8	
+#define MAX_MBSS_NUM 4
 #endif
 #endif /* __RT_COMM_H__ */

@@ -508,7 +508,7 @@ define Device/jcg_y2
   JCG_MAXSIZE := 16064k
   DEVICE_VENDOR := JCG
   DEVICE_MODEL := Y2
-  DEVICE_PACKAGES := kmod-mt7615d kmod-usb3 luci-app-mtwifi
+  DEVICE_PACKAGES := kmod-mt7615d_dbdc kmod-usb3
 endef
 TARGET_DEVICES += jcg_y2
 
@@ -817,7 +817,7 @@ define Device/phicomm_k2p
   DEVICE_VENDOR := Phicomm
   DEVICE_MODEL := K2P
   SUPPORTED_DEVICES += k2p
-  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi
+  DEVICE_PACKAGES := kmod-mt7615d_dbdc
 endef
 TARGET_DEVICES += phicomm_k2p
 

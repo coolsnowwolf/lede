@@ -4661,6 +4661,11 @@ max_len += OWETRANSIE_LINE_LEN;
 
 	memset(msg, 0, TotalLen);
 
+	WaitCnt = 0;
+
+	while ((ScanRunning(pAdapter) == TRUE) && (WaitCnt++ < 200))
+		OS_WAIT(500);
+
 	if (pAdapter->ScanTab.BssNr == 0) {
 		sprintf(msg, "No BssInfo\n");
 		wrq->u.data.length = strlen(msg);
@@ -4696,11 +4701,6 @@ max_len += OWETRANSIE_LINE_LEN;
 #ifdef APCLI_OWE_SUPPORT
 		sprintf(msg + strlen(msg) - 1, "%-10s\n", " OWETranIe");
 #endif /* APCLI_OWE_SUPPORT */
-
-	WaitCnt = 0;
-
-	while ((ScanRunning(pAdapter) == TRUE) && (WaitCnt++ < 200))
-		OS_WAIT(500);
 
 
 	for (i = bss_start_idx; i < pAdapter->ScanTab.BssNr; i++) {
@@ -4948,7 +4948,7 @@ VOID RTMPIoctlGetMacTableStaInfo(
 	IN RTMP_IOCTL_INPUT_STRUCT *wrq)
 {
 	INT i;
-	BOOLEAN need_send = FALSE;
+	BOOLEAN need_send;
 	RT_802_11_MAC_TABLE *pMacTab = NULL;
 	PRT_802_11_MAC_ENTRY pDst;
 	MAC_TABLE_ENTRY *pEntry;
@@ -4965,12 +4965,11 @@ VOID RTMPIoctlGetMacTableStaInfo(
 	for (i = 0; VALID_UCAST_ENTRY_WCID(pAd, i); i++) {
 		pEntry = &(pAd->MacTab.Content[i]);
 
+		need_send = FALSE;
 		if (pEntry->wdev != NULL) {
 			/* As per new GUI design ifname with index as ra0/ra1/rai0/rai1/... (may not work with older GUI)*/
 			if (!strcmp(wrq->ifr_ifrn.ifrn_name, pEntry->wdev->if_dev->name))
 				need_send = TRUE;
-			else
-				need_send = FALSE;
 		}
 		if (IS_ENTRY_CLIENT(pEntry) && (pEntry->Sst == SST_ASSOC) && (need_send == TRUE)) {
 			pDst = &pMacTab->Entry[pMacTab->Num];
