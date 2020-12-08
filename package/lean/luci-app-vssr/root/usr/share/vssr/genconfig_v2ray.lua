@@ -14,7 +14,8 @@ function read_conf(file)
         local re = string.gsub(line, "\r", "")
         table.insert(ltable,re)
     end
-    return ltable
+    local rtable = next(ltable) ~= nil and ltable or nil
+    return rtable
 end
 
 local v2ray_flow = ucursor:get_first(name, 'global', 'v2ray_flow', '0')
@@ -218,10 +219,12 @@ end
 
 if v2ray_flow == '1' then
     table.insert(outbounds_table, gen_outbound(server_section, 'global', 2080))
-    for i, v in pairs(flow_table) do
-        local server = ucursor:get_first(name, 'global', v.name .. '_server')
-        table.insert(outbounds_table, gen_outbound(server, v.name, v.port))
-        table.insert(rules_table, (server ~= nil and server ~= 'nil') and v.rules or nil)
+    for _, v in pairs(flow_table) do
+        if(v.rules.domain ~= nil) then
+            local server = ucursor:get_first(name, 'global', v.name .. '_server')
+            table.insert(outbounds_table, gen_outbound(server, v.name, v.port))
+            table.insert(rules_table, (server ~= nil and server ~= 'nil' ) and v.rules or nil)
+        end
     end
 else
     table.insert(outbounds_table, gen_outbound(server_section, 'main', local_port))

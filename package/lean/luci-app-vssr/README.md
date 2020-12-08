@@ -5,7 +5,7 @@
     An openwrt Internet surfing plug-in
   </h1>
     <h3 align="center">
-    HelloWorld是一个以用户最佳主观体验为导向的插件，它支持多种主流协议和多种自定义视频分流服务，拥有精美的操作界面，并配上直观的节点信息。
+    HelloWorld是一个以用户最佳主观体验为导向的插件，它支持多种主流协议和多种自定义视频分流服务，拥有精美的操作界面，并配上直观的节点信息。<br><br>
   </h3>
 
   <a href="/LICENSE">
