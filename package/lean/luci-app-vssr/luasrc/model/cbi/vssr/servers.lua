@@ -12,6 +12,9 @@ uci:foreach(
     function(s)
         server_count = server_count + 1
         s['name'] = s['.name']
+        if(s.alias == nil) then
+            s.alias = "未命名节点"
+        end
         table.insert(server_table, s)
     end
 )

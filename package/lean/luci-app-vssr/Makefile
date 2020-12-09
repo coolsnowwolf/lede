@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-vssr
 PKG_VERSION:=1.20
-PKG_RELEASE:=20201206
+PKG_RELEASE:=20201209
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -17,7 +17,7 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_Xray
 	bool "Include Xray"
-	default y if i386||x86_64||arm||aarch64
+	default n
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_Trojan
 	bool "Include Trojan"

@@ -28,7 +28,8 @@ uci:foreach(
     function(s)
         if s.type ~= nil then
             s['name'] = s['.name']
-            s['gname'] = '[%s]:%s' % {string.upper(s.type), s.alias}
+            local alias = (s.alias ~= nil) and s.alias or "未命名节点"
+            s['gname'] = '[%s]:%s' % {string.upper(s.type), alias}
             table.insert(server_table, s)
         end
     end

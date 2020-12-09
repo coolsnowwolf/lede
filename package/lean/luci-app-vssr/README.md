@@ -49,18 +49,18 @@
 
 ### 插件介绍
 
-1. 基于lean ssr+ 全新修改的Vssr（更名为Hello World）主要做了很多的修改，同时感谢插件原作者所做出的的努力和贡献！ 
-1. 节点列表支持国旗显示并且页面打开自动ping。  
+1. 基于 Lean ssrp 全新MOD的 Hello World ,在原插件的基础上做了一些优化用户操作体验的修改，感谢插件原作者所做出的的努力和贡献！ 
+1. 节点列表支持国旗显示并且页面打开自动检测节点的连接时间。  
 1. 支持各种分流组合，并且可以自己编辑所有分流的域名，相当于七组自定义分流。  
 1. 将节点订阅转移至[高级设置]请悉知。  
 1. 底部状态栏：左边显示国旗地区以及IP,右边为四个站点的可访问状态，彩色为可访问，灰色为不能访问。 
-1. 优化了国旗匹配方法，在部分带有emoji counrty code的节点名称中优先使用 emoji code 匹配国旗。  
-1. 建议搭配argon theme，能有最好的显示体验。  
+1. 优化了国旗匹配方法。  
+1. 建议搭配Argon主题，以达到最佳的显示效果。  
 
-新修改插件难免有bug 请不要大惊小怪。欢迎提交bug。
+欢迎提交bug。
 
 ### 如何编译
-假设你的lean openwrt（最新版本19.07） 在 lede 目录下
+假设你的Lean openwrt（最新版本19.07） 在 lede 目录下
 ```
 cd lede/package/lean/  
 
@@ -77,6 +77,6 @@ make -j1 V=s
 https://github.com/coolsnowwolf/lede
 
 ### 我的其它项目
-Argon theme ：https://github.com/jerrykuku/luci-app-vssr  
+Argon theme ：https://github.com/jerrykuku/luci-theme-argon  
 京东签到插件 ：https://github.com/jerrykuku/luci-app-jd-dailybonus  
 openwrt-nanopi-r1s-h5 ： https://github.com/jerrykuku/openwrt-nanopi-r1s-h5

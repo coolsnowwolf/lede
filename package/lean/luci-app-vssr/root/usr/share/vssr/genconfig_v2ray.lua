@@ -122,14 +122,6 @@ function gen_outbound(server_node, tags, local_ports)
         bound = nil
     else
         local server = ucursor:get_all(name, server_node)
-        local outbound_security = "none"
-        if (server.xtls == '1') then
-            outbound_security = "xtls"
-        elseif (server.tls == '1') then
-            outbound_security = "tls"
-        elseif (server.tls == "0") then
-            outbound_security = "none"
-        end
         local node_type = server.type == "vless" and "vless" or "vmess"
 
         if server.type ~= 'v2ray' and server.type ~= 'vless' then
@@ -166,9 +158,9 @@ function gen_outbound(server_node, tags, local_ports)
                 -- 底层传输配置
                 streamSettings = {
                     network = server.transport,
-                    security = outbound_security,
-                    tlsSettings = (outbound_security == "tls") and {allowInsecure = (server.insecure ~= "0") and true or false,serverName=server.tls_host,} or nil,
-                    xtlsSettings = (outbound_security == "xtls") and {allowInsecure = (server.insecure ~= "0") and true or false,serverName=server.tls_host,} or nil,
+                    security = (server.tls == '1') and ((server.xtls == '1') and "xtls" or "tls") or "none",
+                    tlsSettings = (server.tls == '1' and server.xtls ~= '1') and {allowInsecure = (server.insecure ~= "0") and true or false,serverName=server.tls_host,} or nil,
+                    xtlsSettings = (server.xtls == '1') and {allowInsecure = (server.insecure ~= "0") and true or false,serverName=server.tls_host,} or nil,
                     kcpSettings = (server.transport == 'kcp') and
                         {
                             mtu = tonumber(server.mtu),
