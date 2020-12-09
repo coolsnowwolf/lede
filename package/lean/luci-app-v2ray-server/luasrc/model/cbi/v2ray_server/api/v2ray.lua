@@ -7,12 +7,9 @@ local i18n = require "luci.i18n"
 local ipkg = require "luci.model.ipkg"
 
 local appname = "v2ray_server"
-local v2ray_api =
-    "https://api.github.com/repos/v2fly/v2ray-core/releases/latest"
+local v2ray_api ="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 local wget = "/usr/bin/wget"
-local wget_args = {
-    "--no-check-certificate", "--quiet", "--timeout=100", "--tries=3"
-}
+local wget_args = {"--no-check-certificate", "--quiet", "--timeout=100", "--tries=3"}
 local command_timeout = 300
 
 local LEDE_BOARD = nil
@@ -95,12 +92,10 @@ end
 local function auto_get_arch()
     local arch = nixio.uname().machine or ""
     if fs.access("/usr/lib/os-release") then
-        LEDE_BOARD = sys.exec(
-                         "echo -n `grep 'LEDE_BOARD' /usr/lib/os-release | awk -F '[\\042\\047]' '{print $2}'`")
+        LEDE_BOARD = sys.exec("echo -n `grep 'LEDE_BOARD' /usr/lib/os-release | awk -F '[\\042\\047]' '{print $2}'`")
     end
     if fs.access("/etc/openwrt_release") then
-        DISTRIB_TARGET = sys.exec(
-                             "echo -n `grep 'DISTRIB_TARGET' /etc/openwrt_release | awk -F '[\\042\\047]' '{print $2}'`")
+        DISTRIB_TARGET = sys.exec("echo -n `grep 'DISTRIB_TARGET' /etc/openwrt_release | awk -F '[\\042\\047]' '{print $2}'`")
     end
 
     if arch == "mips" then
@@ -108,15 +103,13 @@ local function auto_get_arch()
             if string.match(LEDE_BOARD, "ramips") == "ramips" then
                 arch = "ramips"
             else
-                arch = sys.exec("echo '" .. LEDE_BOARD ..
-                                    "' | grep -oE 'ramips|ar71xx'")
+                arch = sys.exec("echo '" .. LEDE_BOARD .. "' | grep -oE 'ramips|ar71xx'")
             end
         elseif DISTRIB_TARGET and DISTRIB_TARGET ~= "" then
             if string.match(DISTRIB_TARGET, "ramips") == "ramips" then
                 arch = "ramips"
             else
-                arch = sys.exec("echo '" .. DISTRIB_TARGET ..
-                                    "' | grep -oE 'ramips|ar71xx'")
+                arch = sys.exec("echo '" .. DISTRIB_TARGET .. "' | grep -oE 'ramips|ar71xx'")
             end
         end
     end
@@ -162,23 +155,19 @@ local function get_api_json(url)
     --	function(chunk) output[#output + 1] = chunk end)
     -- local json_content = util.trim(table.concat(output))
 
-    local json_content = luci.sys.exec(wget ..
-                                           " --no-check-certificate --timeout=10 -t 1 -O- " ..
-                                           url)
+    local json_content = luci.sys.exec(wget .. " --no-check-certificate --timeout=10 -t 1 -O- " .. url)
 
     if json_content == "" then return {} end
 
     return jsonc.parse(json_content) or {}
 end
 
-function get_v2ray_file_path() return "/usr/bin/v2ray" end
+function get_v2ray_file_path() return "/usr/bin" end
 
 function get_v2ray_version()
     if get_v2ray_file_path() and get_v2ray_file_path() ~= "" then
-        if fs.access(get_v2ray_file_path() .. "/v2ray") then
-            return luci.sys.exec("echo -n `" .. get_v2ray_file_path() ..
-                                     "/v2ray -version | awk '{print $2}' | sed -n 1P" ..
-                                     "`")
+        if fs.access(get_v2ray_file_path() .. "/xray") then
+            return luci.sys.exec("echo -n `" .. get_v2ray_file_path() .. "/xray -version | awk '{print $2}' | sed -n 1P" .. "`")
         end
     end
     return ""
@@ -192,8 +181,7 @@ function to_check(arch)
     if file_tree == "" then
         return {
             code = 1,
-            error = i18n.translate(
-                "Can't determine ARCH, or ARCH not supported.")
+            error = i18n.translate("Can't determine ARCH, or ARCH not supported.")
         }
     end
 
@@ -207,8 +195,7 @@ function to_check(arch)
     end
 
     local remote_version = json.tag_name:match("[^v]+")
-    local needs_update = compare_versions(get_v2ray_version(), "<",
-                                          remote_version)
+    local needs_update = compare_versions(get_v2ray_version(), "<",remote_version)
     local html_url, download_url
 
     if needs_update then
@@ -227,8 +214,7 @@ function to_check(arch)
             now_version = get_v2ray_version(),
             version = remote_version,
             html_url = html_url,
-            error = i18n.translate(
-                "New version found, but failed to get new version download url.")
+            error = i18n.translate("New version found, but failed to get new version download url.")
         }
     end
 
@@ -250,8 +236,7 @@ function to_download(url)
 
     local tmp_file = util.trim(util.exec("mktemp -u -t v2ray_download.XXXXXX"))
 
-    local result = exec(wget, {"-O", tmp_file, url, _unpack(wget_args)}, nil,
-                        command_timeout) == 0
+    local result = exec(wget, {"-O", tmp_file, url, _unpack(wget_args)}, nil, command_timeout) == 0
 
     if not result then
         exec("/bin/rm", {"-f", tmp_file})
@@ -302,25 +287,16 @@ function to_move(file)
     if not arch or arch == "" then arch = auto_get_arch() end
     local file_tree, sub_version = get_file_info(arch)
     local result = nil
-    if is_armv7 and is_armv7 == true then
-        result = exec("/bin/mv", {
-            "-f", file .. "/v2ray_armv7", file .. "/v2ctl_armv7", client_file
-        }, nil, command_timeout) == 0
-    else
-        result = exec("/bin/mv",
-                      {"-f", file .. "/v2ray", file .. "/v2ctl", client_file},
-                      nil, command_timeout) == 0
-    end
+        result = exec("/bin/mv", {"-f", file .. "/xray", client_file}, nil, command_timeout) == 0
     if not result or not fs.access(client_file) then
         sys.call("/bin/rm -rf /tmp/v2ray_extract.*")
         return {
             code = 1,
-            error = i18n.translatef("Can't move new file to path: %s",
-                                    client_file)
+            error = i18n.translatef("Can't move new file to path: %s", client_file)
         }
     end
 
-    exec("/bin/chmod", {"-R", "755", client_file})
+    exec("/bin/chmod", {"-R", "755", client_file .. "/xray"})
 
     sys.call("/bin/rm -rf /tmp/v2ray_extract.*")
 
