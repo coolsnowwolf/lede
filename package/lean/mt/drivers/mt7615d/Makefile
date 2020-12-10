@@ -185,10 +185,11 @@ define KernelPackage/mt7615d
 ifneq ($(CONFIG_MTK_WHNAT_SUPPORT), )
   FILES:=$(PKG_BUILD_DIR)/mt_wifi_ap/mt_wifi.ko \
 	$(PKG_BUILD_DIR)/mt_wifi/embedded/tools/plug_in/whnat/mt_whnat.ko
+  AUTOLOAD:=$(call AutoProbe,mt_wifi mt_whnat)
 else
   FILES:=$(PKG_BUILD_DIR)/mt_wifi_ap/mt_wifi.ko
+  AUTOLOAD:=$(call AutoLoad,90,mt_wifi)
 endif
-  AUTOLOAD:=$(call AutoProbe,mt_wifi)
   SUBMENU:=Wireless Drivers
   MENU:=1
 endef
