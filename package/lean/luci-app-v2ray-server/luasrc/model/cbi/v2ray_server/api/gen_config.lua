@@ -125,9 +125,9 @@ function gen_config(user)
                         header = {
                             type = user.tcp_guise,
                             request = (user.tcp_guise == "http") and {
-                                path = {user.tcp_guise_http_path} or {"/"},
+                                path = user.tcp_guise_http_path or {"/"},
                                 headers = {
-                                    Host = {user.tcp_guise_http_host} or {}
+                                    Host = user.tcp_guise_http_host or {}
                                 }
                             } or nil
                         }
