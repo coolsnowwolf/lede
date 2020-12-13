@@ -5,10 +5,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2020.10
-PKG_RELEASE:=1
+PKG_VERSION:=2020.07
+PKG_RELEASE:=3
 
-PKG_HASH:=0d481bbdc05c0ee74908ec2f56a6daa53166cc6a78a0e4fac2ac5d025770a622
+PKG_HASH:=c1f5bf9ee6bb6e648edbf19ce2ca9452f614b08a9f886f1a566aa42e8cf05f6a
 
 PKG_MAINTAINER:=Tobias Maedel <openwrt@tbspace.de>
 
@@ -38,26 +38,6 @@ endef
 
 # RK3399 boards
 
-define U-Boot/nanopi-r4s-rk3399
-  BUILD_SUBTARGET:=armv8
-  NAME:=NanoPi R4S
-  BUILD_DEVICES:= \
-    friendlyarm_nanopi-r4s
-  DEPENDS:=+PACKAGE_u-boot-nanopi-r4s-rk3399:arm-trusted-firmware-rockchip
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
-  ATF:=rk3399_bl31.elf
-endef
-
-define U-Boot/rock-pi-4-rk3399
-  BUILD_SUBTARGET:=armv8
-  NAME:=Rock Pi 4
-  BUILD_DEVICES:= \
-    radxa_rock-pi-4
-  DEPENDS:=+PACKAGE_u-boot-rock-pi-4-rk3399:arm-trusted-firmware-rockchip
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
-  ATF:=rk3399_bl31.elf
-endef
-
 define U-Boot/rockpro64-rk3399
   BUILD_SUBTARGET:=armv8
   NAME:=RockPro64
@@ -69,9 +49,7 @@ define U-Boot/rockpro64-rk3399
 endef
 
 UBOOT_TARGETS := \
-  rock-pi-4-rk3399 \
   rockpro64-rk3399 \
-  nanopi-r4s-rk3399 \
   nanopi-r2s-rk3328
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
