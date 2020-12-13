@@ -33,6 +33,11 @@ platform_copy_config() {
 		cp -af "$UPGRADE_BACKUP" "/mnt/$BACKUP_FILE"
 		umount /mnt
 		;;
+	ubnt,edgerouter-4)
+		mount -t vfat /dev/mmcblk0p1 /mnt
+		cp -af "$UPGRADE_BACKUP" "/mnt/$BACKUP_FILE"
+		umount /mnt
+		;;
 	esac
 }
 
@@ -82,7 +87,8 @@ platform_do_upgrade() {
 
 	[ -b "${rootfs}" ] || return 1
 	case "$board" in
-	er)
+	er | \
+	ubnt,edgerouter-4)
 		kernel=mmcblk0p1
 		;;
 	erlite)
@@ -111,7 +117,8 @@ platform_check_image() {
 	case "$board" in
 	er | \
 	erlite | \
-	itus,shield-router)
+	itus,shield-router | \
+	ubnt,edgerouter-4)
 		local kernel_length=$(tar xf $tar_file $board_dir/kernel -O | wc -c 2> /dev/null)
 		local rootfs_length=$(tar xf $tar_file $board_dir/root -O | wc -c 2> /dev/null)
 		[ "$kernel_length" = 0 -o "$rootfs_length" = 0 ] && {

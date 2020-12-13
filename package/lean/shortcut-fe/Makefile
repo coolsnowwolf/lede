@@ -19,18 +19,13 @@ PKG_RELEASE:=2
 
 include $(INCLUDE_DIR)/package.mk
 
-SFE_SUPPORT_IPV6=n
 define KernelPackage/shortcut-fe
   SECTION:=kernel
   CATEGORY:=Kernel modules
   SUBMENU:=Network Support
   DEPENDS:=
   TITLE:=Kernel driver for SFE
-ifeq (${SFE_SUPPORT_IPV6},y)
   FILES:=$(PKG_BUILD_DIR)/shortcut-fe.ko $(PKG_BUILD_DIR)/shortcut-fe-ipv6.ko
-else
-  FILES:=$(PKG_BUILD_DIR)/shortcut-fe.ko
-endif
   KCONFIG:=CONFIG_NF_CONNTRACK_EVENTS=y \
 	   CONFIG_NF_CONNTRACK_TIMEOUT=y \
 	   CONFIG_SHORTCUT_FE=y \
@@ -43,8 +38,6 @@ Shortcut is an in-Linux-kernel IP packet forwarding engine.
 endef
 
 define KernelPackage/shortcut-fe/install
-	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) ./files/etc/init.d/shortcut-fe $(1)/etc/init.d
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./files/usr/bin/sfe_dump $(1)/usr/bin
 endef
@@ -63,15 +56,7 @@ define KernelPackage/shortcut-fe-cm/Description
 Simple connection manager for the Shortcut forwarding engine.
 endef
 
-
-ifeq (${SFE_SUPPORT_IPV6},y)
-	EXTRA_CFLAGS+=-DSFE_SUPPORT_IPV6
-        ISV6=SFE_SUPPORT_IPV6=1
-else
-	ISV6=SFE_SUPPORT_IPV6=""
-endif
-
-
+EXTRA_CFLAGS+=-DSFE_SUPPORT_IPV6
 
 define Build/Compile
 	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
@@ -79,7 +64,7 @@ define Build/Compile
 		$(PKG_MAKE_FLAGS) \
 		M="$(PKG_BUILD_DIR)" \
 		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
-		${ISV6}	\
+		SFE_SUPPORT_IPV6=1 \
 		modules
 endef
 

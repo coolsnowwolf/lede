@@ -58,6 +58,12 @@ define Package/qt5-network
 	DEPENDS+=+qt5-core +libopenssl
 endef
 
+define Package/qt5-sql
+	$(call Package/qt5/Default)
+	TITLE+=sql
+	DEPENDS+=+qt5-core
+endef
+
 define Package/qt5-xml
 	$(call Package/qt5/Default)
 	TITLE+=xml
@@ -174,6 +180,11 @@ define Package/qt5-network/install
 	$(CP) $(PKG_BUILD_DIR)/qtbase/lib/libQt5Network.so* $(1)/usr/lib
 endef
 
+define Package/qt5-sql/install
+	$(INSTALL_DIR) $(1)/usr/lib/
+	$(CP) $(PKG_BUILD_DIR)/qtbase/lib/libQt5Sql.so* $(1)/usr/lib/
+endef
+
 define Package/qt5-xml/install
 	$(INSTALL_DIR) $(1)/usr/lib
 	$(CP) $(PKG_BUILD_DIR)/qtbase/lib/libQt5Xml.so* $(1)/usr/lib
@@ -181,4 +192,5 @@ endef
 
 $(eval $(call BuildPackage,qt5-core,+zlib,+libpcre2-16,+libdouble-conversion))
 $(eval $(call BuildPackage,qt5-network))
+$(eval $(call BuildPackage,qt5-sql))
 $(eval $(call BuildPackage,qt5-xml))
