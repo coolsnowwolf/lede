@@ -13,16 +13,15 @@ index 12d967b..c2b98b6 100644
  struct nf_ct_event_notifier {
  	int (*fcn)(unsigned int events, struct nf_ct_event *item);
  };
-@@ -80,7 +84,7 @@ int nf_conntrack_register_notifier(struc
+@@ -80,6 +84,7 @@ int nf_conntrack_register_notifier(struc
  				   struct nf_ct_event_notifier *nb);
  void nf_conntrack_unregister_notifier(struct net *net,
  				      struct nf_ct_event_notifier *nb);
--
 +#endif
+ 
  void nf_ct_deliver_cached_events(struct nf_conn *ct);
  int nf_conntrack_eventmask_report(unsigned int eventmask, struct nf_conn *ct,
- 				  u32 portid, int report);
-@@ -105,12 +109,15 @@ int nf_conntrack_eventmask_report(unsign
+@@ -105,11 +110,13 @@ int nf_conntrack_eventmask_report(unsign
  nf_conntrack_event_cache(enum ip_conntrack_events event, struct nf_conn *ct)
  {
  #ifdef CONFIG_NF_CONNTRACK_EVENTS
@@ -33,12 +32,10 @@ index 12d967b..c2b98b6 100644
  
  	if (!rcu_access_pointer(net->ct.nf_conntrack_event_cb))
  		return;
- 
 +#endif
-+
+ 
  	e = nf_ct_ecache_find(ct);
  	if (e == NULL)
- 		return;
 @@ -124,10 +131,12 @@ static inline int
  			  u32 portid, int report)
  {
@@ -51,8 +48,8 @@ index 12d967b..c2b98b6 100644
 +#endif
  
  	return nf_conntrack_eventmask_report(1 << event, ct, portid, report);
- }
-@@ -139,11 +148,14 @@ nf_conntrack_event_report(enum ip_conntr
+ #else
+@@ -139,10 +148,12 @@ nf_conntrack_event_report(enum ip_conntr
  nf_conntrack_event(enum ip_conntrack_events event, struct nf_conn *ct)
  {
  #ifdef CONFIG_NF_CONNTRACK_EVENTS
@@ -61,12 +58,10 @@ index 12d967b..c2b98b6 100644
  
  	if (!rcu_access_pointer(net->ct.nf_conntrack_event_cb))
  		return 0;
- 
 +#endif
-+
- 	return nf_conntrack_eventmask_report(1 << event, ct, 0, 0);
- }
  
+ 	return nf_conntrack_eventmask_report(1 << event, ct, 0, 0);
+ #else
 diff --git a/include/net/netns/conntrack.h b/include/net/netns/conntrack.h
 index e469e85..1d31db8 100644
 --- a/include/net/netns/conntrack.h
@@ -87,9 +82,9 @@ diff --git a/net/netfilter/Kconfig b/net/netfilter/Kconfig
 index 63073be..08d7aab 100644
 --- a/net/netfilter/Kconfig
 +++ b/net/netfilter/Kconfig
-@@ -148,6 +148,14 @@ config NF_CONNTRACK_EVENTS
- 
- 	  If unsure, say `N'.
+@@ -148,6 +148,14 @@ config NF_CONNTRACK_RTCACHE
+ 	  To compile it as a module, choose M here.  If unsure, say N.
+ 	  The module will be called nf_conntrack_rtcache.
  
 +config NF_CONNTRACK_CHAIN_EVENTS
 +	bool "Register multiple callbacks to ct events"
@@ -106,19 +101,16 @@ diff --git a/net/netfilter/nf_conntrack_core.c b/net/netfilter/nf_conntrack_core
 index 6bd1508..9b81c7c 100644
 --- a/net/netfilter/nf_conntrack_core.c
 +++ b/net/netfilter/nf_conntrack_core.c
-@@ -2590,7 +2590,10 @@
- 	nf_conntrack_ecache_pernet_init(net);
+@@ -2591,6 +2591,9 @@ int nf_conntrack_init_net(struct net *ne
  	nf_conntrack_helper_pernet_init(net);
  	nf_conntrack_proto_pernet_init(net);
--
-+	
+ 
 +#ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
 +	ATOMIC_INIT_NOTIFIER_HEAD(&net->ct.nf_conntrack_chain);
 +#endif
  	return 0;
  
  err_expect:
-
 diff --git a/net/netfilter/nf_conntrack_ecache.c b/net/netfilter/nf_conntrack_ecache.c
 index da9df2d..e0e2a8f 100644
 --- a/net/netfilter/nf_conntrack_ecache.c
@@ -274,18 +266,18 @@ diff --git a/net/netfilter/nf_conntrack_netlink.c b/net/netfilter/nf_conntrack_n
 index 04111c1..8c741f7 100644
 --- a/net/netfilter/nf_conntrack_netlink.c
 +++ b/net/netfilter/nf_conntrack_netlink.c
-@@ -28,6 +28,11 @@
- #include <linux/netlink.h>
- #include <linux/spinlock.h>
- #include <linux/interrupt.h>
+@@ -32,6 +32,11 @@
+ #include <linux/siphash.h>
+ 
+ #include <linux/netfilter.h>
 +
 +#ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
 +#include <linux/notifier.h>
 +#endif
 +
- #include <linux/slab.h>
- 
- #include <linux/netfilter.h>
+ #include <net/netlink.h>
+ #include <net/sock.h>
+ #include <net/netfilter/nf_conntrack.h>
 @@ -676,14 +681,22 @@ static size_t ctnetlink_nlmsg_size(const
  	       ;
  }
