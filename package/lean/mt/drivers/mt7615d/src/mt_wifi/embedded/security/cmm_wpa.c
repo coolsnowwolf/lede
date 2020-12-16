@@ -5397,9 +5397,9 @@ VOID PeerPairMsg4Action(
 			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("PTK:"));
 
 			for (i = 0; i < 64; i++)
-				MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%02x", pSecConfig->PTK[i]));
+				MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, (KERN_CONT"%02x", pSecConfig->PTK[i]));
 
-			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\n"));
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, (KERN_CONT"\n"));
 		}
 	} else {
 		/* 5. init Group 2-way handshake if necessary.*/
