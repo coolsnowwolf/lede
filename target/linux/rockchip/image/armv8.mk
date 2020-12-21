@@ -15,6 +15,28 @@ define Device/friendlyarm_nanopi-r2s
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r2s
 
+define Device/friendlyarm_nanopi-r4s
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R4S
+  SOC := rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8169
+endef
+
+define Device/friendlyarm_nanopi-r4s-1gb
+  $(Device/friendlyarm_nanopi-r4s)
+  DEVICE_MODEL += 1GB
+  UBOOT_DEVICE_NAME := nanopi-r4s-1gb-rk3399
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r4s-1gb
+
+define Device/friendlyarm_nanopi-r4s-4gb
+  $(Device/friendlyarm_nanopi-r4s)
+  DEVICE_MODEL += 4GB
+  UBOOT_DEVICE_NAME := nanopi-r4s-4gb-rk3399
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r4s-4gb
+
 define Device/pine64_rockpro64
   DEVICE_VENDOR := Pine64
   DEVICE_MODEL := RockPro64

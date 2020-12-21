@@ -188,7 +188,7 @@ ifneq ($(CONFIG_MTK_WHNAT_SUPPORT), )
   AUTOLOAD:=$(call AutoProbe,mt_wifi mt_whnat)
 else
   FILES:=$(PKG_BUILD_DIR)/mt_wifi_ap/mt_wifi.ko
-  AUTOLOAD:=$(call AutoLoad,90,mt_wifi)
+  AUTOLOAD:=$(call AutoProbe,mt_wifi)
 endif
   SUBMENU:=Wireless Drivers
   MENU:=1
