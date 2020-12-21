@@ -205,12 +205,7 @@ yml_groups_set()
    set_group=0
    set_proxy_provider=0
    
-   if [ "$type" = "select" ] || [ "$type" = "relay" ]; then
-      config_list_foreach "$section" "other_group" set_other_groups #加入其他策略组
-   else
-      config_list_foreach "$section" "other_group_dr" set_other_groups #仅加入direct/reject其他策略组
-   fi
-   
+   config_list_foreach "$section" "other_group" set_other_groups #加入其他策略组
    config_foreach yml_servers_add "servers" "$name" "$type" #加入服务器节点
    
    if [ "$type" = "relay" ] && [ -s "/tmp/relay_server" ]; then

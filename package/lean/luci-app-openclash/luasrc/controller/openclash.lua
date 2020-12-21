@@ -39,7 +39,8 @@ function index()
 	entry({"admin", "services", "openclash", "switch_mode"}, call("action_switch_mode"))
 	entry({"admin", "services", "openclash", "op_mode"}, call("action_op_mode"))
 	entry({"admin", "services", "openclash", "settings"},cbi("openclash/settings"),_("Global Settings"), 30).leaf = true
-	entry({"admin", "services", "openclash", "servers"},cbi("openclash/servers"),_("Severs and Groups"), 40).leaf = true
+	entry({"admin", "services", "openclash", "servers"},cbi("openclash/servers"),_("Servers and Groups"), 40).leaf = true
+	entry({"admin", "services", "openclash", "other-rules-edit"},cbi("openclash/other-rules-edit"), nil).leaf = true
 	entry({"admin", "services", "openclash", "rule-providers-settings"},cbi("openclash/rule-providers-settings"),_("Rule Providers and Groups"), 50).leaf = true
 	entry({"admin", "services", "openclash", "game-rules-manage"},form("openclash/game-rules-manage"), nil).leaf = true
 	entry({"admin", "services", "openclash", "rule-providers-manage"},form("openclash/rule-providers-manage"), nil).leaf = true

@@ -219,6 +219,7 @@ o.default = "none"
 o:value("none")
 o:value("websocket", translate("websocket (ws)"))
 o:value("http", translate("http"))
+o:value("h2", translate("h2"))
 o:depends("type", "vmess")
 
 o = s:option(Value, "host", translate("obfs-hosts"))
@@ -235,6 +236,16 @@ o = s:option(Value, "path", translate("path"))
 o.rmempty = true
 o:depends("obfs", "websocket")
 o:depends("obfs_vmess", "websocket")
+
+o = s:option(DynamicList, "h2_host", translate("host"))
+o.rmempty = true
+o.datatype = "host"
+o:depends("obfs_vmess", "h2")
+
+o = s:option(Value, "h2_path", translate("path"))
+o.rmempty = true
+o.default = "/"
+o:depends("obfs_vmess", "h2")
 
 o = s:option(DynamicList, "http_path", translate("path"))
 o.rmempty = true

@@ -30,7 +30,7 @@ restore_history() {
    NOW_NAME=$(echo $line |awk -F '#*#' '{print $3}')
    GROUP_STATE=$(GROUP_STATE "$GROUP_NAME")
    GROUP_STATE_NUM=0
-   while ( [ "$GROUP_STATE" != "200" ] && [ "$GROUP_STATE_NUM" -le 3 ] )
+   while ( [ "$GROUP_STATE" != "200" ] && [ "$GROUP_STATE_NUM" -le 2 ] )
    do
       sleep 1
       GROUP_STATE_NUM=$(expr "$GROUP_STATE_NUM" + 1)

@@ -53,21 +53,19 @@ o:value("fake-ip-mix", translate("fake-ip-mix(tun mix mode)"))
 o.default = "fake-ip"
 end
 
-o = s:taboption("op_mode", ListValue, "enable_udp_proxy", font_red..bold_on..translate("Proxy UDP Traffics")..bold_off..font_off)
+o = s:taboption("op_mode", Flag, "enable_udp_proxy", font_red..bold_on..translate("Proxy UDP Traffics")..bold_off..font_off)
 o.description = translate("Select Mode For UDP Traffics, The Servers Must Support UDP while Choose Proxy")
 o:depends("en_mode", "redir-host")
 o:depends("en_mode", "fake-ip")
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
 o.default = "1"
 
-o = s:taboption("op_mode", ListValue, "stack_type", font_red..bold_on..translate("Select Stack Type")..bold_off..font_off)
+o = s:taboption("op_mode", ListValue, "stack_type", translate("Select Stack Type"))
 o.description = translate("Select Stack Type For Tun Mode, According To The Running Speed on Your Machine")
 o:depends("en_mode", "redir-host-tun")
 o:depends("en_mode", "fake-ip-tun")
 o:depends("en_mode", "redir-host-mix")
 o:depends("en_mode", "fake-ip-mix")
-o:value("system", translate("System"))
+o:value("system", translate("System　"))
 o:value("gvisor", translate("Gvisor"))
 o.default = "system"
 
@@ -79,20 +77,28 @@ o:value("direct", translate("Direct Proxy Mode"))
 o:value("script", translate("Script Proxy Mode (Tun Core Only)"))
 o.default = "rule"
 
-o = s:taboption("op_mode", ListValue, "china_ip_route", font_red..bold_on..translate("China IP Route")..bold_off..font_off)
-o.description = translate("Bypass The China Network Flows, Improve Performance")
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
+o = s:taboption("op_mode", Flag, "enable_rule_proxy", font_red..bold_on..translate("Rule Match Proxy Mode")..bold_off..font_off)
+o.description = translate("Only Proxy Rules Match, Prevent BT/P2P Passing")
+o.default=0
+
+o = s:taboption("op_mode", Flag, "common_ports", font_red..bold_on..translate("Common Ports Proxy Mode")..bold_off..font_off)
+o.description = translate("Only Common Ports, Prevent BT/P2P Passing")
 o.default = "0"
 o:depends("en_mode", "redir-host")
 o:depends("en_mode", "redir-host-tun")
 o:depends("en_mode", "redir-host-vpn")
 o:depends("en_mode", "redir-host-mix")
 
-o = s:taboption("op_mode", ListValue, "small_flash_memory", font_red..bold_on..translate("Small Flash Memory")..bold_off..font_off)
+o = s:taboption("op_mode", Flag, "china_ip_route", translate("China IP Route"))
+o.description = translate("Bypass The China Network Flows, Improve Performance")
+o.default = "0"
+o:depends("en_mode", "redir-host")
+o:depends("en_mode", "redir-host-tun")
+o:depends("en_mode", "redir-host-vpn")
+o:depends("en_mode", "redir-host-mix")
+
+o = s:taboption("op_mode", Flag, "small_flash_memory", translate("Small Flash Memory"))
 o.description = translate("Move Core And GEOIP Data File To /tmp/etc/openclash For Small Flash Memory Device")
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
 o.default = "0"
 
 ---- Operation Mode
@@ -118,12 +124,6 @@ o:value("linux-mipsle-hardfloat")
 o:value("0", translate("Not Set"))
 o.default=0
 
-o = s:taboption("settings", ListValue, "enable_rule_proxy", font_red..bold_on..translate("Rule Match Proxy Mode")..bold_off..font_off)
-o.description = translate("Only Proxy Rules Match, Prevent BT Passing")
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
-o.default=0
-
 o = s:taboption("settings", ListValue, "interface_name", font_red..bold_on..translate("Bind Network Interface")..bold_off..font_off)
 local de_int = SYS.exec("ip route |grep 'default' |awk '{print $5}' 2>/dev/null")
 o.description = translate("Default Interface Name:").." "..font_green..bold_on..de_int..bold_off..font_off..translate(",Try Enable If Network Loopback")
@@ -143,14 +143,8 @@ o:value("debug", translate("Debug Mode"))
 o:value("silent", translate("Silent Mode"))
 o.default = "silent"
 
-o = s:taboption("settings", ListValue, "intranet_allowed", translate("Only intranet allowed"))
-o.description = translate("When Enabled, The Control Panel And The Connection Broker Port Will Not Be Accessible From The Public Network, TUN Not Support Yet")
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
-o:depends("en_mode", "redir-host")
-o:depends("en_mode", "fake-ip")
-o:depends("en_mode", "redir-host-vpn")
-o:depends("en_mode", "fake-ip-vpn")
+o = s:taboption("settings", Flag, "intranet_allowed", translate("Only intranet allowed"))
+o.description = translate("When Enabled, The Control Panel And The Connection Broker Port Will Not Be Accessible From The Public Network")
 o.default = 0
 
 o = s:taboption("settings", Value, "proxy_port")
@@ -182,34 +176,24 @@ o.rmempty = false
 o.description = translate("Please Make Sure Ports Available")
 
 ---- DNS Settings
-o = s:taboption("dns", ListValue, "enable_redirect_dns", font_red..bold_on..translate("Redirect Local DNS Setting")..bold_off..font_off)
+o = s:taboption("dns", Flag, "enable_redirect_dns", font_red..bold_on..translate("Redirect Local DNS Setting")..bold_off..font_off)
 o.description = translate("Set Local DNS Redirect")
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
 o.default = 1
 
-o = s:taboption("dns", ListValue, "enable_custom_dns", font_red..bold_on..translate("Custom DNS Setting")..bold_off..font_off)
+o = s:taboption("dns", Flag, "enable_custom_dns", font_red..bold_on..translate("Custom DNS Setting")..bold_off..font_off)
 o.description = font_red..bold_on..translate("Set OpenClash Upstream DNS Resolve Server")..bold_off..font_off
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
 o.default = 0
 
-o = s:taboption("dns", ListValue, "ipv6_enable", translate("Enable ipv6 Resolve"))
+o = s:taboption("dns", Flag, "ipv6_enable", translate("Enable ipv6 Resolve"))
 o.description = font_red..bold_on..translate("Enable Clash to Resolve ipv6 DNS Requests")..bold_off..font_off
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
 o.default=0
 
-o = s:taboption("dns", ListValue, "disable_masq_cache", translate("Disable Dnsmasq's DNS Cache"))
+o = s:taboption("dns", Flag, "disable_masq_cache", translate("Disable Dnsmasq's DNS Cache"))
 o.description = translate("Recommended Enabled For Avoiding Some Connection Errors")..font_red..bold_on..translate("(Maybe Incompatible For Your Firmware)")..bold_off..font_off
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
 o.default=0
 
-o = s:taboption("dns", ListValue, "dns_advanced_setting", translate("Advanced Setting"))
+o = s:taboption("dns", Flag, "dns_advanced_setting", translate("Advanced Setting"))
 o.description = translate("DNS Advanced Settings")..font_red..bold_on..translate("(Please Don't Modify it at Will)")..bold_off..font_off
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
 o.default=0
 
 if op_mode == "fake-ip" then
@@ -314,132 +298,61 @@ o.datatype = "ipaddr"
 o.description = translate("In The Fake-IP Mode, Only Pure IP Requests Are Supported")
 
 ---- Rules Settings
-if op_mode == "fake-ip" then
-o = s:taboption("rules", ListValue, "enable_custom_clash_rules", font_red..bold_on..translate("Custom Clash Rules(Access Control)")..bold_off..font_off)
-else
-o = s:taboption("rules", ListValue, "enable_custom_clash_rules", font_red..bold_on..translate("Custom Clash Rules")..bold_off..font_off)
-end
-o.description = translate("Use Custom Rules")
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
+o = s:taboption("rules", Flag, "rule_source", translate("Enable Other Rules"))
+o.description = translate("Use Other Rules")
 o.default = 0
 
-o = s:taboption("rules", ListValue, "rule_source", translate("Enable Other Rules"))
-o.description = translate("Use Other Rules")
-o:value("0", translate("Disable Other Rules"))
-o:value("lhie1", translate("lhie1 Rules"))
-o:value("ConnersHua", translate("ConnersHua(Provider-type) Rules"))
-o:value("ConnersHua_return", translate("ConnersHua Return Rules"))
-
-if not fs.isfile("/tmp/Proxy_Group") then
-SYS.call("/usr/share/openclash/yml_groups_name_get.sh 2>/dev/null")
+if op_mode == "fake-ip" then
+o = s:taboption("rules", Flag, "enable_custom_clash_rules", font_red..bold_on..translate("Custom Clash Rules(Access Control)")..bold_off..font_off)
+else
+o = s:taboption("rules", Flag, "enable_custom_clash_rules", font_red..bold_on..translate("Custom Clash Rules")..bold_off..font_off)
 end
-file = io.open("/tmp/Proxy_Group", "r");
+o.description = translate("Use Custom Rules")
+o.default = 0
 
-o = s:taboption("rules", ListValue, "GlobalTV", translate("GlobalTV"))
-o:depends("rule_source", "lhie1")
-o:depends("rule_source", "ConnersHua")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "AsianTV", translate("AsianTV"))
-o:depends("rule_source", "lhie1")
-o:depends("rule_source", "ConnersHua")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "Proxy", translate("Proxy"))
-o:depends("rule_source", "lhie1")
-o:depends("rule_source", "ConnersHua")
-o:depends("rule_source", "ConnersHua_return")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "Youtube", translate("Youtube"))
-o:depends("rule_source", "lhie1")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "Apple", translate("Apple"))
-o:depends("rule_source", "lhie1")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "Microsoft", translate("Microsoft"))
-o:depends("rule_source", "lhie1")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "Netflix", translate("Netflix"))
-o:depends("rule_source", "lhie1")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "Spotify", translate("Spotify"))
-o:depends("rule_source", "lhie1")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "Steam", translate("Steam"))
-o:depends("rule_source", "lhie1")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "Speedtest", translate("Speedtest"))
-o:depends("rule_source", "lhie1")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "Telegram", translate("Telegram"))
-o:depends("rule_source", "lhie1")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "PayPal", translate("PayPal"))
-o:depends("rule_source", "lhie1")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "AdBlock", translate("AdBlock"))
-o:depends("rule_source", "lhie1")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "Domestic", translate("Domestic"))
-o:depends("rule_source", "lhie1")
-o:depends("rule_source", "ConnersHua")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:seek("set")
-o = s:taboption("rules", ListValue, "Others", translate("Others"))
-o:depends("rule_source", "lhie1")
-o:depends("rule_source", "ConnersHua")
-o:depends("rule_source", "ConnersHua_return")
-o.description = translate("Choose Proxy Group, Base On Your Servers Group in config.yaml")
- for l in file:lines() do
-   o:value(l)
-   end
-   file:close()
+custom_rules = s:taboption("rules", Value, "custom_rules")
+custom_rules:depends("enable_custom_clash_rules", 1)
+custom_rules.template = "cbi/tvalue"
+custom_rules.description = translate("Custom Rules Here, For More Go Github:https://github.com/Dreamacro/clash/blob/master/README.md, IP To CIDR: http://ip2cidr.com")
+custom_rules.rows = 20
+custom_rules.wrap = "off"
+
+function custom_rules.cfgvalue(self, section)
+	return NXFS.readfile("/etc/openclash/custom/openclash_custom_rules.list") or ""
+end
+function custom_rules.write(self, section, value)
+	if value then
+		value = value:gsub("\r\n?", "\n")
+		local old_value = NXFS.readfile("/etc/openclash/custom/openclash_custom_rules.list")
+	  if value ~= old_value then
+			NXFS.writefile("/etc/openclash/custom/openclash_custom_rules.list", value)
+		end
+	end
+end
+
+custom_rules_2 = s:taboption("rules", Value, "custom_rules_2")
+custom_rules_2:depends("enable_custom_clash_rules", 1)
+custom_rules_2.template = "cbi/tvalue"
+custom_rules_2.description = translate("Custom Rules 2 Here, For More Go Github:https://github.com/Dreamacro/clash/blob/master/README.md, IP To CIDR: http://ip2cidr.com")
+custom_rules_2.rows = 20
+custom_rules_2.wrap = "off"
+
+function custom_rules_2.cfgvalue(self, section)
+	return NXFS.readfile("/etc/openclash/custom/openclash_custom_rules_2.list") or ""
+end
+function custom_rules_2.write(self, section, value)
+	if value then
+		value = value:gsub("\r\n?", "\n")
+		local old_value = NXFS.readfile("/etc/openclash/custom/openclash_custom_rules_2.list")
+	  if value ~= old_value then
+			NXFS.writefile("/etc/openclash/custom/openclash_custom_rules_2.list", value)
+		end
+	end
+end
 
 ---- update Settings
-o = s:taboption("rules_update", ListValue, "other_rule_auto_update", translate("Auto Update"))
+o = s:taboption("rules_update", Flag, "other_rule_auto_update", translate("Auto Update"))
 o.description = font_red..bold_on..translate("Auto Update Other Rules")..bold_off..font_off
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
 o.default=0
 
 o = s:taboption("rules_update", ListValue, "other_rule_update_week_time", translate("Update Time (Every Week)"))
@@ -471,10 +384,8 @@ o.write = function()
   HTTP.redirect(DISP.build_url("admin", "services", "openclash"))
 end
 
-o = s:taboption("geo_update", ListValue, "geo_auto_update", translate("Auto Update"))
+o = s:taboption("geo_update", Flag, "geo_auto_update", translate("Auto Update"))
 o.description = translate("Auto Update GEOIP Database")
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
 o.default=0
 
 o = s:taboption("geo_update", ListValue, "geo_update_week_time", translate("Update Time (Every Week)"))
@@ -494,6 +405,16 @@ o:value(t, t..":00")
 end
 o.default=0
 
+o = s:taboption("geo_update", Value, "geo_custom_url")
+o.title = translate("Custom GEOIP URL")
+o.rmempty = false
+o.description = translate("Custom GEOIP Data URL, Click Button Below To Refresh After Edit")
+o:value("http://www.ideame.top/mmdb/Country.mmdb", translate("Alecthw-Version")..translate("(Default)"))
+o:value("https://cdn.jsdelivr.net/gh/Hackl0us/GeoIP2-CN@release/Country.mmdb", translate("Hackl0us-Version")..translate("(Only CN)"))
+o:value("https://static.clash.to/GeoIP2/GeoIP2-Country.mmdb", translate("Static.clash.to"))
+o:value("https://geolite.clash.dev/Country.mmdb", translate("Geolite.clash.dev"))
+o.default = "http://www.ideame.top/mmdb/Country.mmdb"
+
 o = s:taboption("geo_update", Button, translate("GEOIP Update")) 
 o.title = translate("Update GEOIP Database")
 o.inputtitle = translate("Check And Update")
@@ -506,10 +427,8 @@ o.write = function()
 end
 
 if op_mode == "redir-host" then
-o = s:taboption("chnr_update", ListValue, "chnr_auto_update", translate("Auto Update"))
+o = s:taboption("chnr_update", Flag, "chnr_auto_update", translate("Auto Update"))
 o.description = translate("Auto Update Chnroute Lists")
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
 o.default=0
 
 o = s:taboption("chnr_update", ListValue, "chnr_update_week_time", translate("Update Time (Every Week)"))
@@ -528,6 +447,15 @@ for t = 0,23 do
 o:value(t, t..":00")
 end
 o.default=0
+
+o = s:taboption("chnr_update", Value, "chnr_custom_url")
+o.title = translate("Custom Chnroute Lists URL")
+o.rmempty = false
+o.description = translate("Custom Chnroute Lists URL, Click Button Below To Refresh After Edit")
+o:value("https://ispip.clang.cn/all_cn.txt", translate("Clang-CN")..translate("(Default)"))
+o:value("https://ispip.clang.cn/all_cn_cidr.txt", translate("Clang-CN-CIDR"))
+o:value("https://cdn.jsdelivr.net/gh/Hackl0us/GeoIP2-CN@release/CN-ip-cidr.txt", translate("Hackl0us-CN-CIDR")..translate("(Large Size)"))
+o.default = "https://ispip.clang.cn/all_cn.txt"
 
 o = s:taboption("chnr_update", Button, translate("Chnroute Lists Update")) 
 o.title = translate("Update Chnroute Lists")
@@ -625,6 +553,46 @@ o:value("https", translate("HTTPS"))
 o.default     = "udp"
 o.rempty      = false
 
+-- [[ Other Rules Manage ]]--
+ss = m:section(TypedSection, "other_rules", translate("Other Rules Edit")..translate("(Take Effect After Choose Above)"))
+ss.anonymous = true
+ss.addremove = true
+ss.sortable = true
+ss.template = "cbi/tblsection"
+ss.extedit = luci.dispatcher.build_url("admin/services/openclash/other-rules-edit/%s")
+function ss.create(...)
+	local sid = TypedSection.create(...)
+	if sid then
+		luci.http.redirect(ss.extedit % sid)
+		return
+	end
+end
+
+o = ss:option(Flag, "enabled", translate("Enable"))
+o.rmempty     = false
+o.default     = o.enabled
+o.cfgvalue    = function(...)
+    return Flag.cfgvalue(...) or "1"
+end
+
+o = ss:option(DummyValue, "config", translate("Config File"))
+function o.cfgvalue(...)
+	return Value.cfgvalue(...) or translate("None")
+end
+
+o = ss:option(DummyValue, "rule_name", translate("Other Rules Name"))
+function o.cfgvalue(...)
+	if Value.cfgvalue(...) == "lhie1" then
+		return translate("lhie1 Rules")
+	elseif Value.cfgvalue(...) == "ConnersHua" then
+		return translate("ConnersHua(Provider-type) Rules")
+	elseif Value.cfgvalue(...) == "ConnersHua_return" then
+		return translate("ConnersHua Return Rules")
+	else
+		return translate("None")
+	end
+end
+
 -- [[ Edit Authentication ]] --
 s = m:section(TypedSection, "authentication", translate("Set Authentication of SOCKS5/HTTP(S)"))
 s.anonymous = true
@@ -650,47 +618,6 @@ o.rempty      = true
 o = s:option(Value, "password", translate("Password"))
 o.placeholder = translate("Not Null")
 o.rmempty = true
-
-s = m:section(TypedSection, "openclash", translate("Set Custom Rules"))
-s.anonymous = true
-
-custom_rules = s:option(Value, "custom_rules")
-custom_rules.template = "cbi/tvalue"
-custom_rules.description = translate("Custom Rules Here, For More Go Github:https://github.com/Dreamacro/clash/blob/master/README.md, IP To CIDR: http://ip2cidr.com")
-custom_rules.rows = 20
-custom_rules.wrap = "off"
-
-function custom_rules.cfgvalue(self, section)
-	return NXFS.readfile("/etc/openclash/custom/openclash_custom_rules.list") or ""
-end
-function custom_rules.write(self, section, value)
-	if value then
-		value = value:gsub("\r\n?", "\n")
-		local old_value = NXFS.readfile("/etc/openclash/custom/openclash_custom_rules.list")
-	  if value ~= old_value then
-			NXFS.writefile("/etc/openclash/custom/openclash_custom_rules.list", value)
-		end
-	end
-end
-
-custom_rules_2 = s:option(Value, "custom_rules_2")
-custom_rules_2.template = "cbi/tvalue"
-custom_rules_2.description = translate("Custom Rules 2 Here, For More Go Github:https://github.com/Dreamacro/clash/blob/master/README.md, IP To CIDR: http://ip2cidr.com")
-custom_rules_2.rows = 20
-custom_rules_2.wrap = "off"
-
-function custom_rules_2.cfgvalue(self, section)
-	return NXFS.readfile("/etc/openclash/custom/openclash_custom_rules_2.list") or ""
-end
-function custom_rules_2.write(self, section, value)
-	if value then
-		value = value:gsub("\r\n?", "\n")
-		local old_value = NXFS.readfile("/etc/openclash/custom/openclash_custom_rules_2.list")
-	  if value ~= old_value then
-			NXFS.writefile("/etc/openclash/custom/openclash_custom_rules_2.list", value)
-		end
-	end
-end
 
 if op_mode == "redir-host" then
 s = m:section(TypedSection, "openclash", translate("Set Custom Hosts, Only Work with Redir-Host Mode"))

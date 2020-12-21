@@ -21,10 +21,8 @@ s = m:section(TypedSection, "openclash")
 s.anonymous = true
 
 ---- update Settings
-o = s:option(ListValue, "auto_update", translate("Auto Update"))
+o = s:option(Flag, "auto_update", translate("Auto Update"))
 o.description = translate("Auto Update Server subscription")
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
 o.default=0
 
 o = s:option(ListValue, "config_auto_update_mode", translate("Update Mode"))
@@ -131,7 +129,7 @@ o.write = function()
 		function(s)
 		  if s.name ~= "" and s.name ~= nil and s.enabled == "1" then
 			   local back_cfg_path_yaml="/etc/openclash/backup/" .. s.name .. ".yaml"
-			   local back_cfg_path_yml="/etc/openclash/backup/" .. s.name .. ".yaml"
+			   local back_cfg_path_yml="/etc/openclash/backup/" .. s.name .. ".yml"
 			   fs.unlink(back_cfg_path_yaml)
 			   fs.unlink(back_cfg_path_yml)
 			end

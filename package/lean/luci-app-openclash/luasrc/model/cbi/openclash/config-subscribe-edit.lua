@@ -47,10 +47,8 @@ o.datatype = "or(host, string)"
 o.rmempty = false
 
 ---- subconverter
-o = s:option(ListValue, "sub_convert", translate("Subscribe Convert Online"))
+o = s:option(Flag, "sub_convert", translate("Subscribe Convert Online"))
 o.description = translate("Convert Subscribe Online With Template, Mix Proxies and Keep Settings options Will Not Effect")
-o:value("0", translate("Disable"))
-o:value("1", translate("Enable"))
 o.default=0
 
 ---- Template

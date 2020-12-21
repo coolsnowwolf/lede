@@ -175,7 +175,7 @@ do
    Thread.new{
    #test_url
    if Value['proxy-groups'][$count].key?('url') then
-      group_test_url = '${uci_set}test_url=' + Value['proxy-groups'][$count]['url'].to_s
+      group_test_url = '${uci_set}test_url=\"' + Value['proxy-groups'][$count]['url'].to_s + '\"'
       system(group_test_url)
    end
    }.join;
@@ -203,13 +203,8 @@ do
 	    Value['proxy-groups'][$count]['proxies'].each{
 	    |x|
 	       if Value_1.include?(x) then
-	          if '$group_type' == 'select' or '$group_type' == 'relay' then
-	             uci = '${uci_add}other_group=\"' + x.to_s + '\"'
-	             system(uci)
-	          elsif x == 'DIRECT' or x == 'REJECT' then
-	             uci = '${uci_add}other_group_dr=' + x.to_s
-	             system(uci)
-	          end
+	          uci = '${uci_add}other_group=\"' + x.to_s + '\"'
+	          system(uci)
 	       end
 	    }
 	 end

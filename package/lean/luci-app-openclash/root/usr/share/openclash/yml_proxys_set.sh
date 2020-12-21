@@ -37,6 +37,20 @@ if [ -z "$CONFIG_NAME" ]; then
    CONFIG_NAME="config.yaml"
 fi
 
+yml_other_rules_del()
+{
+	 local section="$1"
+   local enabled config
+   config_get_bool "enabled" "$section" "enabled" "1"
+   config_get "config" "$section" "config" ""
+   config_get "rule_name" "$section" "rule_name" ""
+   
+   if [ "$enabled" = "0" ] || [ "$config" != "$2" ] || [ "$rule_name" != "$3" ]; then
+      return
+   else
+      uci delete openclash."$section" 2>/dev/null
+   fi
+}
 #写入代理集到配置文件
 yml_proxy_provider_set()
 {
@@ -135,6 +149,15 @@ cat >> "$SERVER_FILE" <<-EOF
 EOF
 }
 
+set_h2_host()
+{
+   if [ -z "$1" ]; then
+      return
+   fi
+cat >> "$SERVER_FILE" <<-EOF
+        - '$1'
+EOF
+}
 
 #写入服务器节点到配置文件
 yml_servers_set()
@@ -175,6 +198,8 @@ yml_servers_set()
    config_get "http_path" "$section" "http_path" ""
    config_get "keep_alive" "$section" "keep_alive" ""
    config_get "servername" "$section" "servername" ""
+   config_get "h2_path" "$section" "h2_path" ""
+   config_get "h2_host" "$section" "h2_host" ""
 
    if [ "$enabled" = "0" ]; then
       return
@@ -243,6 +268,10 @@ yml_servers_set()
    
    if [ "$obfs_vmess" = "http" ]; then
       obfs_vmess="network: http"
+   fi
+   
+   if [ "$obfs_vmess" = "h2" ]; then
+      obfs_vmess="network: h2"
    fi
    
    if [ ! -z "$custom" ] && [ "$type" = "vmess" ]; then
@@ -402,6 +431,20 @@ cat >> "$SERVER_FILE" <<-EOF
       headers:
         Connection:
           - keep-alive
+EOF
+         fi
+         
+         #h2
+         if [ ! -z "$h2_host" ] && [ "$obfs_vmess" = "network: h2" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+    h2-opts:
+      host:
+EOF
+            config_list_foreach "$section" "h2_host" set_h2_host
+         fi
+         if [ ! -z "$h2_path" ] && [ "$obfs_vmess" = "network: h2" ]; then
+cat >> "$SERVER_FILE" <<-EOF
+      path: $h2_path
 EOF
          fi
       fi
@@ -677,13 +720,21 @@ cat >> "$SERVER_FILE" <<-EOF
 EOF
 fi
 cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
-${UCI_SET}rule_source="ConnersHua"
-${UCI_SET}GlobalTV="GlobalTV"
-${UCI_SET}AsianTV="AsianTV"
-${UCI_SET}Proxy="Proxy"
-${UCI_SET}AdBlock="AdBlock"
-${UCI_SET}Domestic="Domestic"
-${UCI_SET}Others="Others"
+config_load "openclash"
+config_foreach yml_other_rules_del "other_rules" "$CONFIG_NAME" "ConnersHua"
+uci_name_tmp=$(uci add openclash other_rules)
+uci_set="uci -q set openclash.$uci_name_tmp."
+${UCI_SET}rule_source="1"
+${uci_set}enable="1"
+${uci_set}rule_name="ConnersHua"
+${uci_set}config="$CONFIG_NAME"
+${uci_set}GlobalTV="GlobalTV"
+${uci_set}AsianTV="AsianTV"
+${uci_set}Proxy="Proxy"
+${uci_set}AdBlock="AdBlock"
+${uci_set}Domestic="Domestic"
+${uci_set}Others="Others"
+
 [ "$config_auto_update" -eq 1 ] && [ "$new_servers_group_set" -eq 1 ] && {
 	${UCI_SET}servers_update="1"
 	${UCI_DEL_LIST}="Auto - UrlTest" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Auto - UrlTest" >/dev/null 2>&1
@@ -881,22 +932,30 @@ cat >> "$SERVER_FILE" <<-EOF
 EOF
 fi
 cat /tmp/Proxy_Provider >> $SERVER_FILE 2>/dev/null
-${UCI_SET}rule_source="lhie1"
-${UCI_SET}GlobalTV="GlobalTV"
-${UCI_SET}AsianTV="AsianTV"
-${UCI_SET}Proxy="Proxy"
-${UCI_SET}Youtube="Youtube"
-${UCI_SET}Apple="Apple"
-${UCI_SET}Microsoft="Microsoft"
-${UCI_SET}Netflix="Netflix"
-${UCI_SET}Spotify="Spotify"
-${UCI_SET}Steam="Steam"
-${UCI_SET}AdBlock="AdBlock"
-${UCI_SET}Speedtest="Speedtest"
-${UCI_SET}Telegram="Telegram"
-${UCI_SET}PayPal="PayPal"
-${UCI_SET}Domestic="Domestic"
-${UCI_SET}Others="Others"
+config_load "openclash"
+config_foreach yml_other_rules_del "other_rules" "$CONFIG_NAME" "lhie1"
+uci_name_tmp=$(uci add openclash other_rules)
+uci_set="uci -q set openclash.$uci_name_tmp."
+${UCI_SET}rule_source="1"
+${uci_set}enable="1"
+${uci_set}rule_name="lhie1"
+${uci_set}config="$CONFIG_NAME"
+${uci_set}GlobalTV="GlobalTV"
+${uci_set}AsianTV="AsianTV"
+${uci_set}Proxy="Proxy"
+${uci_set}Youtube="Youtube"
+${uci_set}Apple="Apple"
+${uci_set}Microsoft="Microsoft"
+${uci_set}Netflix="Netflix"
+${uci_set}Spotify="Spotify"
+${uci_set}Steam="Steam"
+${uci_set}AdBlock="AdBlock"
+${uci_set}Speedtest="Speedtest"
+${uci_set}Telegram="Telegram"
+${uci_set}PayPal="PayPal"
+${uci_set}Domestic="Domestic"
+${uci_set}Others="Others"
+
 [ "$config_auto_update" -eq 1 ] && [ "$new_servers_group_set" -eq 1 ] && {
 	${UCI_SET}servers_update="1"
 	${UCI_DEL_LIST}="Auto - UrlTest" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Auto - UrlTest" >/dev/null 2>&1
@@ -954,9 +1013,16 @@ cat >> "$SERVER_FILE" <<-EOF
       - Proxy
       - DIRECT
 EOF
-${UCI_SET}rule_source="ConnersHua_return"
-${UCI_SET}Proxy="Proxy"
-${UCI_SET}Others="Others"
+config_load "openclash"
+config_foreach yml_other_rules_del "other_rules" "$CONFIG_NAME" "ConnersHua_return"
+uci_name_tmp=$(uci add openclash other_rules)
+uci_set="uci -q set openclash.$uci_name_tmp."
+${UCI_SET}rule_source="1"
+${uci_set}enable="1"
+${uci_set}rule_name="ConnersHua_return"
+${uci_set}config="$CONFIG_NAME"
+${uci_set}Proxy="Proxy"
+${uci_set}Others="Others"
 [ "$config_auto_update" -eq 1 ] && [ "$new_servers_group_set" -eq 1 ] && {
 	${UCI_SET}servers_update="1"
 	${UCI_DEL_LIST}="Auto - UrlTest" >/dev/null 2>&1 && ${UCI_ADD_LIST}="Auto - UrlTest" >/dev/null 2>&1

@@ -190,7 +190,7 @@ do
       if '$provider_type' == 'http' then
          provider_path = '${uci_set}path=./proxy_provider/${provider_name}.yaml'
       else
-         provider_path = '${uci_set}path=' + Value['proxy-providers'].values[$provider_count]['path'].to_s
+         provider_path = '${uci_set}path=\"' + Value['proxy-providers'].values[$provider_count]['path'].to_s + '\"'
       end
       system(provider_path)
    end
@@ -199,7 +199,7 @@ do
    Thread.new{
    #gen_url
    if Value['proxy-providers'].values[$provider_count].key?('url') then
-      provider_gen_url = '${uci_set}provider_url=' + Value['proxy-providers'].values[$provider_count]['url'].to_s
+      provider_gen_url = '${uci_set}provider_url=\"' + Value['proxy-providers'].values[$provider_count]['url'].to_s + '\"'
       system(provider_gen_url)
    end
    }.join;
@@ -226,7 +226,7 @@ do
    #che_url
    if Value['proxy-providers'].values[$provider_count].key?('health-check') then
       if Value['proxy-providers'].values[$provider_count]['health-check'].key?('url') then
-         provider_che_url = '${uci_set}health_check_url=' + Value['proxy-providers'].values[$provider_count]['health-check']['url'].to_s
+         provider_che_url = '${uci_set}health_check_url=\"' + Value['proxy-providers'].values[$provider_count]['health-check']['url'].to_s + '\"'
          system(provider_che_url)
       end
    end
@@ -504,7 +504,7 @@ do
    Thread.new{
    #server
    if Value['proxies'][$count].key?('server') then
-      server = '${uci_set}server=' + Value['proxies'][$count]['server'].to_s
+      server = '${uci_set}server=\"' + Value['proxies'][$count]['server'].to_s + '\"'
       system(server)
    end
    }.join;
@@ -547,13 +547,13 @@ do
          end
          #host:
          if Value['proxies'][$count]['plugin-opts'].key?('host') then
-            host = '${uci_set}host=' + Value['proxies'][$count]['plugin-opts']['host'].to_s
+            host = '${uci_set}host=\"' + Value['proxies'][$count]['plugin-opts']['host'].to_s + '\"'
             system(host)
          end
          if Value['proxies'][$count]['plugin'].to_s == 'v2ray-plugin' then
             #path
             if Value['proxies'][$count]['plugin-opts'].key?('path') then
-               path = '${uci_set}path=' + Value['proxies'][$count]['plugin-opts']['path'].to_s
+               path = '${uci_set}path=\"' + Value['proxies'][$count]['plugin-opts']['path'].to_s + '\"'
                system(path)
             end
             #mux
@@ -564,7 +564,7 @@ do
             #headers
             if Value['proxies'][$count]['plugin-opts'].key?('headers') then
                if Value['proxies'][$count]['plugin-opts']['headers'].key?('custom') then
-                  custom = '${uci_set}custom=' + Value['proxies'][$count]['plugin-opts']['headers']['custom'].to_s
+                  custom = '${uci_set}custom=\"' + Value['proxies'][$count]['plugin-opts']['headers']['custom'].to_s + '\"'
                   system(custom)
                end
             end
@@ -610,7 +610,7 @@ do
       Thread.new{
       #obfs-param
       if Value['proxies'][$count].key?('obfs-param') then
-         obfs_param = '${uci_set}obfs_param=' + Value['proxies'][$count]['obfs-param'].to_s
+         obfs_param = '${uci_set}obfs_param=\"' + Value['proxies'][$count]['obfs-param'].to_s + '\"'
          system(obfs_param)
       end
       }.join
@@ -618,7 +618,7 @@ do
       Thread.new{
       #protocol-param
       if Value['proxies'][$count].key?('protocol-param') then
-         protocol_param = '${uci_set}protocol_param=' + Value['proxies'][$count]['protocol-param'].to_s
+         protocol_param = '${uci_set}protocol_param=\"' + Value['proxies'][$count]['protocol-param'].to_s + '\"'
          system(protocol_param)
       end
       }.join
@@ -667,7 +667,7 @@ do
       Thread.new{
       #servername
       if Value['proxies'][$count].key?('servername') then
-         servername = '${uci_set}servername=' + Value['proxies'][$count]['servername'].to_s
+         servername = '${uci_set}servername=\"' + Value['proxies'][$count]['servername'].to_s + '\"'
          system(servername)
       end
       }.join
@@ -679,26 +679,26 @@ do
             system '${uci_set}obfs_vmess=websocket'
             #ws-path:
             if Value['proxies'][$count].key?('ws-path') then
-               path = '${uci_set}path=' + Value['proxies'][$count]['ws-path'].to_s
+               path = '${uci_set}path=\"' + Value['proxies'][$count]['ws-path'].to_s + '\"'
                system(path)
             end
             #Host:
             if Value['proxies'][$count].key?('ws-headers') then
                if Value['proxies'][$count]['ws-headers'].key?('Host') then
-                  custom = '${uci_set}custom=' + Value['proxies'][$count]['ws-headers']['Host'].to_s
+                  custom = '${uci_set}custom=\"' + Value['proxies'][$count]['ws-headers']['Host'].to_s + '\"'
                   system(custom)
                end
             end
-      elsif Value['proxies'][$count]['network'].to_s == 'http'
-         system '${uci_set}obfs_vmess=http'
-         if Value['proxies'][$count].key?('http-opts') then
-            if Value['proxies'][$count]['http-opts'].key?('path') then
-               system '${uci_del}http_path >/dev/null 2>&1'
-               Value['proxies'][$count]['http-opts']['path'].each{
-               |x|
-               http_path = '${uci_add}http_path=' + x.to_s
-               system(http_path)
-               }
+         elsif Value['proxies'][$count]['network'].to_s == 'http'
+            system '${uci_set}obfs_vmess=http'
+            if Value['proxies'][$count].key?('http-opts') then
+               if Value['proxies'][$count]['http-opts'].key?('path') then
+                  system '${uci_del}http_path >/dev/null 2>&1'
+                  Value['proxies'][$count]['http-opts']['path'].each{
+                  |x|
+                  http_path = '${uci_add}http_path=\"' + x.to_s + '\"'
+                  system(http_path)
+                  }
                end
                if Value['proxies'][$count]['http-opts'].key?('headers') then
                   if Value['proxies'][$count]['http-opts']['headers'].key?('Connection') then
@@ -711,9 +711,25 @@ do
                   end
                end
             end
-      else
-         system '${uci_set}obfs_vmess=none'
-      end
+         elsif Value['proxies'][$count]['network'].to_s == 'h2'
+            system '${uci_set}obfs_vmess=h2'
+            if Value['proxies'][$count].key?('h2-opts') then
+               if Value['proxies'][$count]['h2-opts'].key?('host') then
+                  system '${uci_del}h2_host >/dev/null 2>&1'
+                  Value['proxies'][$count]['h2-opts']['host'].each{
+                  |x|
+                  h2_host = '${uci_add}h2_host=\"' + x.to_s + '\"'
+                  system(h2_host)
+                  }
+               end
+               if Value['proxies'][$count]['h2-opts'].key?('path') then
+                  h2_path = '${uci_set}h2_path=\"' + Value['proxies'][$count]['h2-opts']['host'].to_s + '\"'
+                  system(h2_path)
+               end
+            end
+         else
+            system '${uci_set}obfs_vmess=none'
+         end
       end
       }.join
    end;
@@ -727,7 +743,7 @@ do
             system '${uci_set}obfs_snell=none'
          end
          if Value['proxies'][$count]['obfs-opts'].key?('host') then
-            host = '${uci_set}host=' + Value['proxies'][$count]['obfs-opts']['host'].to_s
+            host = '${uci_set}host=\"' + Value['proxies'][$count]['obfs-opts']['host'].to_s + '\"'
             system(host)
          end
       end
@@ -781,7 +797,7 @@ do
    if '$server_type' == 'http' or '$server_type' == 'trojan' then
       Thread.new{
       if Value['proxies'][$count].key?('sni') then
-         sni = '${uci_set}sni=' + Value['proxies'][$count]['sni'].to_s
+         sni = '${uci_set}sni=\"' + Value['proxies'][$count]['sni'].to_s + '\"'
          system(sni)
       end
       }.join
@@ -793,7 +809,7 @@ do
       system '${uci_del}alpn >/dev/null 2>&1'
       Value['proxies'][$count]['alpn'].each{
       |x|
-      alpn = '${uci_add}alpn=' + x.to_s
+      alpn = '${uci_add}alpn=\"' + x.to_s + '\"'
       system(alpn)
       }
       end

@@ -96,9 +96,18 @@ revert_dns() {
    }
    
    [ "$1" -eq 1 ] && {
-      if [ -s "/tmp/resolv.conf.d/resolv.conf.auto" ]; then
+      if [ -s "/tmp/resolv.conf.d/resolv.conf.auto" ] && [ -n "$(grep "nameserver" /tmp/resolv.conf.d/resolv.conf.auto)" ]; then
          uci set dhcp.@dnsmasq[0].resolvfile=/tmp/resolv.conf.d/resolv.conf.auto >/dev/null 2>&1
-      elif [ -s "/tmp/resolv.conf.auto" ]; then
+      elif [ -s "/tmp/resolv.conf.auto" ] && [ -n "$(grep "nameserver" /tmp/resolv.conf.auto)" ]; then
+         uci set dhcp.@dnsmasq[0].resolvfile=/tmp/resolv.conf.auto >/dev/null 2>&1
+      else
+         rm -rf /tmp/resolv.conf.auto 2>/dev/null
+         touch /tmp/resolv.conf.auto 2>/dev/null
+         cat >> "/tmp/resolv.conf.auto" <<-EOF
+# Interface lan
+nameserver 114.114.114.114
+nameserver 119.29.29.29
+EOF
          uci set dhcp.@dnsmasq[0].resolvfile=/tmp/resolv.conf.auto >/dev/null 2>&1
       fi
       uci set dhcp.@dnsmasq[0].noresolv=0 >/dev/null 2>&1
@@ -171,7 +180,7 @@ EOF
    if [ -n "$(ruby_read "$CONFIG_FILE" "['dns']['fallback']")" ] && [ -z "$(ruby_read "$CONFIG_FILE" "['dns']['fallback-filter']")" ]; then
 cat >> "$2" <<-EOF
   fallback-filter:
-    geoip: true
+    geoip: false
     ipcidr:
       - 0.0.0.0/8
       - 10.0.0.0/8
@@ -189,9 +198,14 @@ cat >> "$2" <<-EOF
       - 224.0.0.0/4
       - 240.0.0.0/4
       - 255.255.255.255/32
+    domain:
+      - '+.google.com'
+      - '+.facebook.com'
+      - '+.youtube.com'
+      - '+.githubusercontent.com'
 EOF
-   fi
    ruby_merge "$CONFIG_FILE" "['dns']" "$2"
+   fi
 }
 
 #修改集路径
@@ -215,12 +229,18 @@ yml_provider_path()
    begin
    Value = YAML.load_file('$1');
    if Value.key?('$2') then
-      Value['$2'].values.each{|x,v|
-         unless x['path'].include? '$3' then
-         v=File.basename(x['path']);
-         x['path']='./$3/'+v; end};
+      Value_1 = Marshal.load(Marshal.dump(Value['$2']));
+      Value['$2'].values.each{
+      |x,v|
+      unless x['path'].include? '$3' then
+         v=File.basename(x['path'])
+         x['path']='./$3/'+v
+      end
+      };
+      if not Value_1.eql?(Value['$2']) then
          File.open('$1','w') {|f| YAML.dump(Value, f)}
-   end
+      end
+   end;
    rescue Exception => e
    puts '${LOGTIME} Edit Provider Path Error: ' + e.message
    end
@@ -409,7 +429,6 @@ get_rule_file()
    GAME_RULE_PATH="/etc/openclash/game_rules/$GAME_RULE_FILE_NAME"
    
    sed '/^#/d' "$GAME_RULE_PATH" 2>/dev/null |sed '/^ *$/d' |awk '{print "- IP-CIDR,"$0}' |awk -v tag="$2" '{print $0","'tag'""}' >> $GAME_RULE_FILE 2>/dev/null
-   set_rule_file=1
 }
 
 yml_game_rule_get()
@@ -463,7 +482,7 @@ yml_game_custom()
 #处理游戏规则
 config_load "openclash"
 config_foreach yml_game_rule_get "game_config"
-[ "$set_rule_file" = 1 ] && {
+[ -f "$GAME_RULE_FILE" ] && {
 ruby -ryaml -E UTF-8 -e "
 begin
 Value = YAML.load_file('$CONFIG_FILE');
@@ -488,6 +507,7 @@ end
 config_load "openclash"
 config_foreach yml_rule_group_get "rule_provider_config"
 config_foreach yml_rule_group_get "game_config"
+if [ -f "/tmp/yaml_groups.yaml" ] || [ -f "/tmp/yaml_servers.yaml" ] || [ -f "/tmp/yaml_provider.yaml" ]; then
 ruby -ryaml -E UTF-8 -e "
 begin
 Value = YAML.load_file('$CONFIG_FILE');
@@ -522,6 +542,7 @@ File.open('$CONFIG_FILE','w') {|f| YAML.dump(Value, f)}
 rescue Exception => e
 puts '${LOGTIME} Game Proxy Merge Error: ' + e.message
 end" 2>/dev/null >> $LOG_FILE
+fi
 }
 
 yml_rule_set_add()
@@ -719,7 +740,6 @@ if [ ! -f "$RAW_CONFIG_FILE" ]; then
    if [ -n "$subscribe_info" ]; then
       echo "配置文件不存在，您已设置订阅信息，准备开始下载..." >$START_LOG
       sleep 3
-      kill_clash
       nohup /usr/share/openclash/openclash.sh &
       del_lock
       exit 0
@@ -735,17 +755,42 @@ fi
 #创建启动配置
 #rm -rf "/etc/openclash/*.y*" 2>/dev/null
 cp "$RAW_CONFIG_FILE" "$CONFIG_FILE"
-CONFIG_HASH=$(ruby -ryaml -E UTF-8 -e "puts YAML.load_file('$CONFIG_FILE')" 2>/dev/null)
-if [ -z "$CONFIG_HASH" ] || [ "$CONFIG_HASH" = "false" ]; then
-   if [ -z "$CONFIG_HASH" ]; then
-      ruby -ryaml -E UTF-8 -e "puts YAML.load_file('$CONFIG_FILE')" >> $LOG_FILE
-   fi
-   echo "配置文件校验失败，请检查配置文件后重试！" >$START_LOG
-   echo "${LOGTIME} Error: Unable To Parse Config File, Please Check And Try Again!" >> $LOG_FILE
-   rm -rf $CONFIG_FILE 2>/dev/null
+ruby -ryaml -E UTF-8 -e "
+begin
+YAML.load_file('$RAW_CONFIG_FILE');
+rescue Exception => e
+puts '${LOGTIME} Error: Unable To Parse Config File ' + e.message
+system 'rm -rf ${CONFIG_FILE} 2>/dev/null'
+end
+" 2>/dev/null >> $LOG_FILE
+if [ $? -ne 0 ]; then
+   echo "${LOGTIME} Error: Ruby Works Abnormally, Please Check The Ruby Library Depends And Try Again!" >> $LOG_FILE
+   echo "Ruby依赖异常，请确认ruby依赖工作正常后重试！" > $START_LOG
+   sleep 3
+   start_fail
+elif [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
+   echo "配置文件校验失败，请检查配置文件后重试！" > $START_LOG
    sleep 3
    start_fail
 fi
+}
+
+yml_other_rules_get()
+{
+   local section="$1"
+   local enabled config
+   config_get_bool "enabled" "$section" "enabled" "1"
+   config_get "config" "$section" "config" ""
+   
+   if [ "$enabled" = "0" ] || [ "$config" != "$2" ]; then
+      return
+   fi
+   
+   if [ -n "$rule_name" ]; then
+      return
+   fi
+   
+   config_get "rule_name" "$section" "rule_name" ""
 }
 
 #运行模式处理
@@ -792,11 +837,17 @@ do_run_file()
       tun_core_path="/etc/openclash/core/clash_tun"
       game_core_path="/etc/openclash/core/clash_game"
       geoip_path="/etc/openclash/Country.mmdb"
+      chnr_path="/etc/openclash/china_ip_route.ipset"
+      rm -rf "/tmp/etc/openclash" 2>/dev/null
    else
       dev_core_path="/tmp/etc/openclash/core/clash"
       tun_core_path="/tmp/etc/openclash/core/clash_tun"
       game_core_path="/tmp/etc/openclash/core/clash_game"
       geoip_path="/tmp/etc/openclash/Country.mmdb"
+      chnr_path="/tmp/etc/openclash/china_ip_route.ipset"
+      rm -rf "/etc/openclash/Country.mmdb" 2>/dev/null
+      rm -rf "/etc/openclash/china_ip_route.ipset" 2>/dev/null
+      rm -rf "/etc/openclash/core" 2>/dev/null
    fi
     
    rm -rf "/etc/openclash/clash" 2>/dev/null
@@ -812,12 +863,19 @@ do_run_file()
       core_type="Game"
       core_start_log="检测到配置了【Game】内核专属功能，调用【Game】内核启动..."
    fi
+   
+   if [ "$rule_source" != "0" ]; then
+      config_load "openclash"
+      config_foreach yml_other_rules_get "other_rules" "$CONFIG_NAME"
+   fi
 
-   if [ "$proxy_mode" = "script" ] || [ "$rule_source" = "ConnersHua" ] || [ "$rule_source" = "lhie1" ] || [ -n "$(ruby_read "$CONFIG_FILE" "['rules'].grep(/^RULE-SET,/)")" ]; then
-      rm -rf "/etc/openclash/clash" 2>/dev/null
-      ln -s "$tun_core_path" /etc/openclash/clash 2>/dev/null
-      core_type="Tun"
-      core_start_log="检测到配置了【Tun】内核专属功能，调用【Tun】内核启动..."
+   if [ "$proxy_mode" = "script" ] || [ "$rule_name" = "ConnersHua" ] || [ "$rule_name" = "lhie1" ] || [ -n "$(ruby_read "$CONFIG_FILE" "['rules'].grep(/^RULE-SET,/)")" ]; then
+      if [ "$en_mode_tun" != "2" ]; then
+         rm -rf "/etc/openclash/clash" 2>/dev/null
+         ln -s "$tun_core_path" /etc/openclash/clash 2>/dev/null
+         core_type="Tun"
+         core_start_log="检测到配置了【Tun】内核专属功能，调用【Tun】内核启动..."
+      fi
    fi
     
    if [ ! -f "/etc/openclash/clash" ] && [ -f "$dev_core_path" ] && [ -z "$core_type" ]; then
@@ -841,30 +899,44 @@ do_run_file()
    [ ! -x "$tun_core_path" ] && chmod 4755 "$tun_core_path" 2>/dev/null
    [ ! -x "$game_core_path" ] && chmod 4755 "$game_core_path" 2>/dev/null
    [ ! -x "$dev_core_path" ] && chmod 4755 "$dev_core_path" 2>/dev/null
-   
+
+#文件检查
    [ -f "$geoip_path" ] && [ "$small_flash_memory" = "1" ] && {
-      rm -rf "/etc/openclash/Country.mmdb" 2>/dev/null
       ln -s "$geoip_path" /etc/openclash/Country.mmdb 2>/dev/null
+   }
+
+   [ -f "$chnr_path" ] && [ "$small_flash_memory" = "1" ] && {
+      ln -s "$chnr_path" /etc/openclash/china_ip_route.ipset 2>/dev/null
    }
    
    [ ! -f "$geoip_path" ] && {
      echo "检测到GEOIP数据库文件不存在，准备开始下载..." >$START_LOG
-     sleep 3
-     kill_clash
+     nofile=1
      nohup /usr/share/openclash/openclash_ipdb.sh &
-     del_lock
-     exit 0
    }
    
    [ ! -f "$CLASH" ] && {
      echo "检测到内核文件不存在，准备开始下载..." >$START_LOG
-     sleep 3
+     nofile=1
      rm -rf "/tmp/clash_last_version" 2>/dev/null
-     kill_clash
      nohup /usr/share/openclash/openclash_core.sh "$core_type" &
-     del_lock
-     exit 0
    }
+   
+   if [ "$china_ip_route" = "1" ]; then
+      if [ ! -f "$chnr_path" ]; then
+         echo "检测到大陆白名单列表不存在，准备开始下载..." >$START_LOG
+         nofile=1
+         nohup /usr/share/openclash/openclash_chnroute.sh &
+      else
+         ipset -! flush china_ip_route 2>/dev/null
+         ipset -! restore </etc/openclash/china_ip_route.ipset 2>/dev/null
+      fi
+   fi
+   
+   if [ "$nofile" = "1" ]; then
+      del_lock
+      exit 0
+   fi
    
    if ! capsh --is-uid=0 >/dev/null || ! capsh --has-ambient >/dev/null; then
      echo "错误：Capsh异常，请尝试重新安装依赖【libcap】和相应的Capsh库，终止启动..." >$START_LOG
@@ -1130,7 +1202,7 @@ firewall_redirect_exclude()
 
 set_firewall()
 {
-if [ "$(iptables -t nat -nL PREROUTING --line-number |grep "udp dpt:53" |grep "0.0.0.0/0 \{0,\}0.0.0.0/0" |wc -l)" -gt 1 ] && [ "$enable_redirect_dns" -eq "1" ]; then
+if [ "$(iptables -t nat -nL PREROUTING --line-number |grep "udp dpt:53" |grep "0.0.0.0/0 \{0,\}0.0.0.0/0" |wc -l)" -gt 1 ] && [ "$enable_redirect_dns" -eq 1 ]; then
    echo "发现53端口被劫持，清理防火墙规则..." >$START_LOG
    pre_lines=$(iptables -nvL PREROUTING -t nat |sed 1,2d |sed -n '/0.0.0.0\/0 \{0,\}0.0.0.0\/0 \{0,\}udp dpt:53/=' 2>/dev/null |sort -rn)
    for pre_line in $pre_lines; do
@@ -1138,6 +1210,9 @@ if [ "$(iptables -t nat -nL PREROUTING --line-number |grep "udp dpt:53" |grep "0
    done
    iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 >/dev/null 2>&1
    sleep 2
+elif [ "$enable_redirect_dns" -eq 1 ] && [ -z "$(iptables -t nat -nL PREROUTING --line-number |grep "redir ports 53$")"]; then
+   iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53
+   iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53
 fi
 
 if [ -z "$(uci get firewall.openclash 2>/dev/null)" ] || [ -z "$(uci get ucitrack.@openclash[-1].init 2>/dev/null)" ]; then
@@ -1162,21 +1237,6 @@ mkdir -p /var/etc
 cat > "/var/etc/openclash.include" <<-EOF
 /etc/init.d/openclash reload >/dev/null 2>&1
 EOF
-
-if [ "$china_ip_route" = "1" ]; then
-   if [ ! -f "/usr/share/openclash/res/china_ip_route.ipset" ]; then
-      cp /etc/openclash/rule_provider/ChinaIP.yaml /tmp/china_ip_route.list 2>/dev/null
-      sed -i "s/'//g" /tmp/china_ip_route.list 2>/dev/null
-      sed -i "s/^ \{0,\}- //g" /tmp/china_ip_route.list 2>/dev/null
-      sed -i '/payload:/d' /tmp/china_ip_route.list 2>/dev/null
-      sed -i '/^ \{0,\}#/d' /tmp/china_ip_route.list 2>/dev/null
-      echo "create china_ip_route hash:net family inet hashsize 1024 maxelem 65536" >/usr/share/openclash/res/china_ip_route.ipset
-      awk '!/^$/&&!/^#/{printf("add china_ip_route %s'" "'\n",$0)}' /tmp/china_ip_route.list >>/usr/share/openclash/res/china_ip_route.ipset
-      rm -rf /tmp/china_ip_route.list 2>/dev/null
-   fi
-   ipset -! flush china_ip_route 2>/dev/null
-   ipset -! restore </usr/share/openclash/res/china_ip_route.ipset 2>/dev/null
-fi
 
 #lan_ac
 if [ "$operation_mode" = "redir-host" ] && [ "$en_mode" = "redir-host" ]; then
@@ -1229,6 +1289,13 @@ fi
       done
    fi
 
+#common ports
+common_port="21 22 23 53 80 123 143 194 443 465 587 853 993 995 998 2052 2053 2082 2083 2086 2095 2096 5222 5228 5229 5230 8080 8443 8880 8888 8889"
+ipset create common_ports bitmap:port range 0-65535
+for i in $common_port; do
+   ipset add common_ports $i
+done
+
 if [ -z "$en_mode_tun" ] || [ "$en_mode_tun" -eq 3 ]; then
    #tcp
    iptables -t nat -N openclash
@@ -1240,12 +1307,15 @@ if [ -z "$en_mode_tun" ] || [ "$en_mode_tun" -eq 3 ]; then
    iptables -t nat -A openclash -m set ! --match-set lan_ac_white_macs src -j RETURN >/dev/null 2>&1
    iptables -t nat -A openclash -m set ! --match-set lan_ac_white_ips src -j RETURN >/dev/null 2>&1
    if [ "$en_mode" = "redir-host" ]; then
+      if [ "$common_ports" = "1" ]; then
+         iptables -t nat -A openclash -m set ! --match-set common_ports dst -j RETURN >/dev/null 2>&1
+      fi
       iptables -t nat -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
    fi
    iptables -t nat -A openclash -p tcp -j REDIRECT --to-ports "$proxy_port"
    if [ -z "$en_mode_tun" ]; then
-      iptables -t nat -I PREROUTING -p tcp -d 8.8.8.8 -j REDIRECT --to-ports "$proxy_port"
-      iptables -t nat -I PREROUTING -p tcp -d 8.8.4.4 -j REDIRECT --to-ports "$proxy_port"
+      iptables -t nat -I PREROUTING -p tcp -d 8.8.8.8 --dport 53 -j REDIRECT --to-ports "$proxy_port"
+      iptables -t nat -I PREROUTING -p tcp -d 8.8.4.4 --dport 53 -j REDIRECT --to-ports "$proxy_port"
    fi
    iptables -t nat -A PREROUTING -p tcp -j openclash
    if [ -z "$en_mode_tun" ]; then
@@ -1263,6 +1333,9 @@ if [ -z "$en_mode_tun" ] || [ "$en_mode_tun" -eq 3 ]; then
          iptables -t mangle -A openclash -m set ! --match-set lan_ac_white_ips src -j RETURN >/dev/null 2>&1
          iptables -t mangle -A openclash -m set ! --match-set lan_ac_white_macs src -j RETURN >/dev/null 2>&1
          if [ "$en_mode" = "redir-host" ]; then
+            if [ "$common_ports" = "1" ]; then
+               iptables -t mangle -A openclash -m set ! --match-set common_ports dst -j RETURN >/dev/null 2>&1
+            fi
             iptables -t mangle -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
          fi
          iptables -t mangle -A openclash -p udp --dport 53 -j RETURN >/dev/null 2>&1
@@ -1271,17 +1344,26 @@ if [ -z "$en_mode_tun" ] || [ "$en_mode_tun" -eq 3 ]; then
       fi
    fi
 
-   #if [ "$en_mode" = "fake-ip" ]; then
-      iptables -t nat -N openclash_output
-      iptables -t nat -F openclash_output
-      iptables -t nat -A openclash_output -m set --match-set localnetwork dst -j RETURN
-      #iptables -t nat -A openclash_output -p tcp -d 198.18.0.0/16 -j REDIRECT --to-ports "$proxy_port"
-      iptables -t nat -A openclash_output -m owner ! --uid-owner 65534 -p tcp -m multiport --dport 80,443 -j REDIRECT --to-ports "$proxy_port"
-      if [ "$en_mode" = "fake-ip" ]; then
+   iptables -t nat -N openclash_output
+   iptables -t nat -F openclash_output
+   iptables -t nat -A openclash_output -m set --match-set localnetwork dst -j RETURN
+   if [ "$en_mode" = "fake-ip" ]; then
+      if [ "$intranet_allowed" -eq 1 ]; then
+         iptables -t nat -A openclash_output -m owner ! --uid-owner 65534 -p tcp -d 198.18.0.0/16 -j DNAT --to-destination "$lan_ip:$proxy_port"
+      else
          iptables -t nat -A openclash_output -m owner ! --uid-owner 65534 -p tcp -d 198.18.0.0/16 -j REDIRECT --to-ports "$proxy_port"
       fi
-      iptables -t nat -I OUTPUT -j openclash_output
-   #fi
+   fi
+   iptables -t nat -A openclash_output -m owner ! --uid-owner 65534 -m set ! --match-set common_ports dst -j RETURN >/dev/null 2>&1
+   if [ "$en_mode" = "redir-host" ]; then
+      iptables -t mangle -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
+   fi
+   if [ "$intranet_allowed" -eq 1 ]; then
+      iptables -t nat -A openclash_output -m owner ! --uid-owner 65534 -p tcp -j DNAT --to-destination "$lan_ip:$proxy_port"
+   else
+      iptables -t nat -A openclash_output -m owner ! --uid-owner 65534 -p tcp -j REDIRECT --to-ports "$proxy_port"
+   fi
+   iptables -t nat -I OUTPUT -j openclash_output
 
    #if [ "$ipv6_enable" -eq 1 ]; then
    #   #tcp
@@ -1333,17 +1415,20 @@ if [ -n "$en_mode_tun" ]; then
       iptables -t mangle -F openclash_output
       iptables -t mangle -A openclash_output -m set --match-set localnetwork dst -j RETURN
       if [ "$en_mode_tun" -ne 3 ]; then
-         iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -p tcp -m multiport --dport 80,443 -j MARK --set-mark "$PROXY_FWMARK"
          iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -d 198.18.0.0/16 -j MARK --set-mark "$PROXY_FWMARK"
+         iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -m set ! --match-set common_ports dst -j RETURN >/dev/null 2>&1
+         iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -p tcp -j MARK --set-mark "$PROXY_FWMARK"
       else
          iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -p udp -d 198.18.0.0/16 -j MARK --set-mark "$PROXY_FWMARK"
-      fi  
+      fi
       iptables -t mangle -I OUTPUT -j openclash_output
    elif [ "$en_mode" = "redir-host" ] && [ "$en_mode_tun" -ne 3 ]; then
       iptables -t mangle -N openclash_output
       iptables -t mangle -F openclash_output
       iptables -t mangle -A openclash_output -m set --match-set localnetwork dst -j RETURN
-      iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -p tcp -m multiport --dport 80,443 -j MARK --set-mark "$PROXY_FWMARK"
+      iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -m set ! --match-set common_ports dst -j RETURN >/dev/null 2>&1
+      iptables -t mangle -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
+      iptables -t mangle -A openclash_output -m owner ! --uid-owner 65534 -p tcp -j MARK --set-mark "$PROXY_FWMARK"
       iptables -t mangle -I OUTPUT -j openclash_output
    fi
    
@@ -1359,6 +1444,9 @@ if [ -n "$en_mode_tun" ]; then
    iptables -t mangle -A openclash -m set ! --match-set lan_ac_white_ips src -j RETURN >/dev/null 2>&1
    iptables -t mangle -A openclash -m set ! --match-set lan_ac_white_macs src -j RETURN >/dev/null 2>&1
    if [ "$en_mode" = "redir-host" ]; then
+      if [ "$common_ports" = "1" ]; then
+         iptables -t mangle -A openclash -m set ! --match-set common_ports dst -j RETURN >/dev/null 2>&1
+      fi
       iptables -t mangle -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
    fi
    iptables -t mangle -A openclash -j MARK --set-mark "$PROXY_FWMARK"
@@ -1371,14 +1459,22 @@ if [ -n "$en_mode_tun" ]; then
       iptables -t mangle -A openclash_dns_hijack -d 8.8.8.8 -j MARK --set-mark "$PROXY_FWMARK"
       iptables -t mangle -A openclash_dns_hijack -d 8.8.4.4 -j MARK --set-mark "$PROXY_FWMARK"
       iptables -t mangle -I PREROUTING -p udp -j openclash
-      iptables -t nat -I PREROUTING -p tcp -d 8.8.8.8 -j ACCEPT
-      iptables -t nat -I PREROUTING -p tcp -d 8.8.4.4 -j ACCEPT
+      iptables -t nat -I PREROUTING -p tcp --dport 53 -d 8.8.8.8 -j ACCEPT
+      iptables -t nat -I PREROUTING -p tcp --dport 53 -d 8.8.4.4 -j ACCEPT
    fi
    
    #ipv6
    #    if [ "$ipv6_enable" -eq 1 ]; then
    #        ip6tables -t mangle -I PREROUTING -j MARK --set-mark "$PROXY_FWMARK"
    #    fi
+   
+   #snat routerself for tun while bindaddress enable
+   if [ "$en_mode_tun" -ne 3 ] && [ "$intranet_allowed" -eq 1 ]; then
+      iptables -t nat -N openclash_post
+      iptables -t nat -F openclash_post
+      iptables -t nat -A openclash_post -m owner ! --uid-owner 65534 -i lo -d 127.0.0.1 -j SNAT --to-source "$lan_ip"
+      iptables -t nat -A POSTROUTING -j openclash_post
+   fi
 fi
 
 #端口转发
@@ -1436,6 +1532,10 @@ revert_firewall()
    
    iptables -t nat -F openclash_output >/dev/null 2>&1
    iptables -t nat -X openclash_output >/dev/null 2>&1
+   
+   iptables -t nat -F openclash_post >/dev/null 2>&1
+   iptables -t nat -X openclash_post >/dev/null 2>&1
+   iptables -t nat -D POSTROUTING -j openclash_post >/dev/null 2>&1
 
    ip6tables -t nat -F openclash >/dev/null 2>&1
    ip6tables -t nat -D PREROUTING -p tcp -j openclash >/dev/null 2>&1
@@ -1468,6 +1568,7 @@ revert_firewall()
    ipset destroy lan_ac_white_macs >/dev/null 2>&1
    ipset destroy lan_ac_black_macs >/dev/null 2>&1
    ipset destroy wan_ac_black_ips >/dev/null 2>&1
+   ipset destroy common_ports >/dev/null 2>&1
 }
 
 get_config()
@@ -1498,6 +1599,7 @@ get_config()
    small_flash_memory=$(uci get openclash.config.small_flash_memory 2>/dev/null)
    mixed_port=$(uci get openclash.config.mixed_port 2>/dev/null)
    interface_name=$(uci get openclash.config.interface_name 2>/dev/null)
+   common_ports=$(uci get openclash.config.common_ports 2>/dev/null)
    uci set openclash.config.restricted_mode=0 && uci commit openclash
 }
 
@@ -1527,7 +1629,7 @@ start()
    yml_auth_custom "$CONFIG_FILE"
    yml_dns_custom "$enable_custom_dns" "$CONFIG_FILE"
    /usr/share/openclash/yml_change.sh 2>/dev/null "$LOGTIME" "$en_mode" "$enable_custom_dns" "$da_password" "$cn_port" "$proxy_port" "$CONFIG_FILE" "$ipv6_enable" "$http_port" "$socks_port" "$lan_ip" "$log_level" "$proxy_mode" "$intranet_allowed" "$en_mode_tun" "$stack_type" "$dns_port" "$core_type" "$mixed_port"
-   /usr/share/openclash/yml_rules_change.sh 2>/dev/null "$LOGTIME" "$rule_source" "$enable_custom_clash_rules" "$CONFIG_FILE" "$set_rule_file" "$en_mode" "$enable_rule_proxy" "$RAW_CONFIG_FILE" "$RULE_PROVIDER_FILE"
+   /usr/share/openclash/yml_rules_change.sh 2>/dev/null "$LOGTIME" "$rule_source" "$enable_custom_clash_rules" "$CONFIG_FILE" "$enable_rule_proxy" "$CONFIG_NAME"
    yml_custom_rule_provider
    yml_game_custom
    yml_provider_path "$CONFIG_FILE" "proxy-providers" "proxy_provider"
