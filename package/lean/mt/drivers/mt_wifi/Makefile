@@ -42,6 +42,7 @@ define Package/mt_wifi/install
 	$(INSTALL_DIR) $(1)/lib/wifi/
 	$(INSTALL_DIR) $(1)/etc/wireless/mt7615/
 	$(INSTALL_DIR) $(1)/etc_ro/Wireless/RT2860AP/
+	$(INSTALL_DIR) $(1)/lib/preinit/
 ifeq ($(CONFIG_MTK_CHIP_MT7603E_MT7612E),y)
 	$(INSTALL_BIN) ./files/7603_7612-l1profile.dat $(1)/etc/wireless/l1profile.dat
 	$(INSTALL_BIN) ./files/mt7603.dat $(1)/etc/wireless/mt7615/mt7615.1.dat
@@ -65,6 +66,7 @@ endif
 	$(INSTALL_BIN) ./files/SingleSKU_BF.dat $(1)/etc_ro/Wireless/RT2860AP/
 	$(INSTALL_BIN) ./files/mt7615.lua $(1)/lib/wifi
 	$(INSTALL_BIN) ./files/firmware.sh $(1)/etc/init.d/
+	$(INSTALL_BIN) ./files/91_load_wifi.sh $(1)/lib/preinit/
 endef
 
 $(eval $(call BuildPackage,mt_wifi))
