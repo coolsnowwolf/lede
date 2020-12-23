@@ -57,7 +57,7 @@ o = s:taboption("op_mode", Flag, "enable_udp_proxy", font_red..bold_on..translat
 o.description = translate("Select Mode For UDP Traffics, The Servers Must Support UDP while Choose Proxy")
 o:depends("en_mode", "redir-host")
 o:depends("en_mode", "fake-ip")
-o.default = "1"
+o.default=1
 
 o = s:taboption("op_mode", ListValue, "stack_type", translate("Select Stack Type"))
 o.description = translate("Select Stack Type For Tun Mode, According To The Running Speed on Your Machine")
@@ -83,7 +83,7 @@ o.default=0
 
 o = s:taboption("op_mode", Flag, "common_ports", font_red..bold_on..translate("Common Ports Proxy Mode")..bold_off..font_off)
 o.description = translate("Only Common Ports, Prevent BT/P2P Passing")
-o.default = "0"
+o.default=0
 o:depends("en_mode", "redir-host")
 o:depends("en_mode", "redir-host-tun")
 o:depends("en_mode", "redir-host-vpn")
@@ -91,7 +91,7 @@ o:depends("en_mode", "redir-host-mix")
 
 o = s:taboption("op_mode", Flag, "china_ip_route", translate("China IP Route"))
 o.description = translate("Bypass The China Network Flows, Improve Performance")
-o.default = "0"
+o.default=0
 o:depends("en_mode", "redir-host")
 o:depends("en_mode", "redir-host-tun")
 o:depends("en_mode", "redir-host-vpn")
@@ -99,7 +99,7 @@ o:depends("en_mode", "redir-host-mix")
 
 o = s:taboption("op_mode", Flag, "small_flash_memory", translate("Small Flash Memory"))
 o.description = translate("Move Core And GEOIP Data File To /tmp/etc/openclash For Small Flash Memory Device")
-o.default = "0"
+o.default=0
 
 ---- Operation Mode
 switch_mode = s:taboption("op_mode", DummyValue, "", nil)
@@ -145,7 +145,7 @@ o.default = "silent"
 
 o = s:taboption("settings", Flag, "intranet_allowed", translate("Only intranet allowed"))
 o.description = translate("When Enabled, The Control Panel And The Connection Broker Port Will Not Be Accessible From The Public Network")
-o.default = 0
+o.default=0
 
 o = s:taboption("settings", Value, "proxy_port")
 o.title = translate("Redir Port")
@@ -178,11 +178,11 @@ o.description = translate("Please Make Sure Ports Available")
 ---- DNS Settings
 o = s:taboption("dns", Flag, "enable_redirect_dns", font_red..bold_on..translate("Redirect Local DNS Setting")..bold_off..font_off)
 o.description = translate("Set Local DNS Redirect")
-o.default = 1
+o.default=1
 
 o = s:taboption("dns", Flag, "enable_custom_dns", font_red..bold_on..translate("Custom DNS Setting")..bold_off..font_off)
 o.description = font_red..bold_on..translate("Set OpenClash Upstream DNS Resolve Server")..bold_off..font_off
-o.default = 0
+o.default=0
 
 o = s:taboption("dns", Flag, "ipv6_enable", translate("Enable ipv6 Resolve"))
 o.description = font_red..bold_on..translate("Enable Clash to Resolve ipv6 DNS Requests")..bold_off..font_off
@@ -300,7 +300,7 @@ o.description = translate("In The Fake-IP Mode, Only Pure IP Requests Are Suppor
 ---- Rules Settings
 o = s:taboption("rules", Flag, "rule_source", translate("Enable Other Rules"))
 o.description = translate("Use Other Rules")
-o.default = 0
+o.default=0
 
 if op_mode == "fake-ip" then
 o = s:taboption("rules", Flag, "enable_custom_clash_rules", font_red..bold_on..translate("Custom Clash Rules(Access Control)")..bold_off..font_off)
@@ -308,7 +308,7 @@ else
 o = s:taboption("rules", Flag, "enable_custom_clash_rules", font_red..bold_on..translate("Custom Clash Rules")..bold_off..font_off)
 end
 o.description = translate("Use Custom Rules")
-o.default = 0
+o.default=0
 
 custom_rules = s:taboption("rules", Value, "custom_rules")
 custom_rules:depends("enable_custom_clash_rules", 1)

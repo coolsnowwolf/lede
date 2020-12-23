@@ -73,6 +73,7 @@ EOF
 cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== 系统信息 =====================#
+
 主机型号: $(cat /tmp/sysinfo/model 2>/dev/null)
 固件版本: $(cat /usr/lib/os-release 2>/dev/null |grep OPENWRT_RELEASE 2>/dev/null |awk -F '"' '{print $2}' 2>/dev/null)
 LuCI版本: $(opkg status luci 2>/dev/null |grep 'Version' |awk -F ': ' '{print $2}' 2>/dev/null)
@@ -92,6 +93,7 @@ EOF
 cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== 依赖检查 =====================#
+
 dnsmasq-full: $(ts_re "$(opkg status dnsmasq-full 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
 coreutils: $(ts_re "$(opkg status coreutils 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
 coreutils-nohup: $(ts_re "$(opkg status coreutils-nohup 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
@@ -102,11 +104,16 @@ ca-certificates: $(ts_re "$(opkg status ca-certificates 2>/dev/null |grep 'Statu
 ipset: $(ts_re "$(opkg status ipset 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
 ip-full: $(ts_re "$(opkg status ip-full 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
 iptables-mod-tproxy: $(ts_re "$(opkg status iptables-mod-tproxy 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
+kmod-ipt-tproxy: $(ts_re "$(opkg status kmod-ipt-tproxy 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
 iptables-mod-extra: $(ts_re "$(opkg status iptables-mod-extra 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
+kmod-ipt-extra: $(ts_re "$(opkg status kmod-ipt-extra 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
 libcap: $(ts_re "$(opkg status libcap 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
 libcap-bin: $(ts_re "$(opkg status libcap-bin 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
 ruby: $(ts_re "$(opkg status ruby 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
 ruby-yaml: $(ts_re "$(opkg status ruby-yaml 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
+ruby-psych: $(ts_re "$(opkg status ruby-psych 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
+ruby-pstore: $(ts_re "$(opkg status ruby-pstore 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
+ruby-dbm: $(ts_re "$(opkg status ruby-dbm 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
 kmod-tun(TUN模式): $(ts_re "$(opkg status kmod-tun 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
 luci-compat(Luci-19.07): $(ts_re "$(opkg status luci-compat 2>/dev/null |grep 'Status' |awk -F ': ' '{print $2}' 2>/dev/null)")
 EOF
@@ -115,6 +122,7 @@ EOF
 cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== 内核检查 =====================#
+
 EOF
 if pidof clash >/dev/null; then
 cat >> "$DEBUG_LOG" <<-EOF
@@ -209,6 +217,7 @@ fi
 cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== 插件设置 =====================#
+
 当前配置文件: $RAW_CONFIG_FILE
 启动配置文件: $CONFIG_FILE
 运行模式: $en_mode
@@ -282,7 +291,15 @@ iptables-save -t mangle >> "$DEBUG_LOG" 2>/dev/null
 
 cat >> "$DEBUG_LOG" <<-EOF
 
+#===================== IPSET状态 =====================#
+
+EOF
+ipset list |grep "Name:" >> "$DEBUG_LOG"
+
+cat >> "$DEBUG_LOG" <<-EOF
+
 #===================== 路由表状态 =====================#
+
 EOF
 echo "#route -n" >> "$DEBUG_LOG"
 route -n >> "$DEBUG_LOG" 2>/dev/null
@@ -295,6 +312,7 @@ if [ "$en_mode" != "fake-ip" ] && [ "$en_mode" != "redir-host" ]; then
 cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== Tun设备状态 =====================#
+
 EOF
 ip tuntap list >> "$DEBUG_LOG" 2>/dev/null
 fi
@@ -302,12 +320,14 @@ fi
 cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== 端口占用状态 =====================#
+
 EOF
 netstat -nlp |grep clash >> "$DEBUG_LOG" 2>/dev/null
 
 cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== 测试本机DNS查询 =====================#
+
 EOF
 nslookup www.baidu.com >> "$DEBUG_LOG" 2>/dev/null
 
@@ -315,6 +335,7 @@ if [ -s "/tmp/resolv.conf.auto" ]; then
 cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== resolv.conf.auto =====================#
+
 EOF
 cat /tmp/resolv.conf.auto >> "$DEBUG_LOG"
 fi
@@ -323,6 +344,7 @@ if [ -s "/tmp/resolv.conf.d/resolv.conf.auto" ]; then
 cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== resolv.conf.d =====================#
+
 EOF
 cat /tmp/resolv.conf.d/resolv.conf.auto >> "$DEBUG_LOG"
 fi
@@ -330,12 +352,14 @@ fi
 cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== 测试本机网络连接 =====================#
+
 EOF
 curl -I -m 5 www.baidu.com >> "$DEBUG_LOG" 2>/dev/null
 
 cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== 测试本机网络下载 =====================#
+
 EOF
 VERSION_URL="https://raw.githubusercontent.com/vernesong/OpenClash/master/version"
 if pidof clash >/dev/null; then
@@ -347,6 +371,7 @@ fi
 cat >> "$DEBUG_LOG" <<-EOF
 
 #===================== 最近运行日志 =====================#
+
 EOF
 tail -n 50 "/tmp/openclash.log" >> "$DEBUG_LOG" 2>/dev/null
 

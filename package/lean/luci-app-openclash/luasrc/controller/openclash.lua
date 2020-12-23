@@ -462,6 +462,6 @@ function action_refresh_log()
 end
 
 function action_del_log()
-	luci.sys.exec("echo '' > /tmp/openclash.log")
+	luci.sys.exec(": > /tmp/openclash.log")
 	return
 end
