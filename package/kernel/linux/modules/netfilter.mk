@@ -1168,3 +1168,15 @@ define KernelPackage/nft-fib
 endef
 
 $(eval $(call KernelPackage,nft-fib))
+
+
+define KernelPackage/nft-queue
+  SUBMENU:=$(NF_MENU)
+  TITLE:=Netfilter nf_tables queue support
+  DEPENDS:=+kmod-nft-core +kmod-nfnetlink-queue
+  FILES:=$(foreach mod,$(NFT_QUEUE-m),$(LINUX_DIR)/net/$(mod).ko)
+  AUTOLOAD:=$(call AutoProbe,$(notdir $(NFT_QUEUE-m)))
+  KCONFIG:=$(KCONFIG_NFT_QUEUE)
+endef
+
+$(eval $(call KernelPackage,nft-queue))
