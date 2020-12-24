@@ -180,6 +180,22 @@ define Device/asus_rt-ac85p
 endef
 TARGET_DEVICES += asus_rt-ac85p
 
+define Device/bell_a-040w-q
+  DEVICE_VENDOR := BELL
+  DEVICE_MODEL :=A-040W-Q
+  IMAGE_SIZE := 51200k
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_SIZE := 4096k
+  IMAGES += factory.bin
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
+	check-size
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7615e kmod-mt7615-firmware wpad-openssl uboot-envtools
+endef
+TARGET_DEVICES += bell_a-040w-q
+
 define Device/buffalo_wsr-1166dhp
   $(Device/uimage-lzma-loader)
   IMAGE/sysupgrade.bin := trx | pad-rootfs | append-metadata
