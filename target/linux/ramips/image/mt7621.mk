@@ -825,7 +825,7 @@ define Device/phicomm_k2p-32m
   $(Device/phicomm_k2p)
   IMAGE_SIZE := 32128k
   DEVICE_VARIANT := 32M
-  SUPPORTED_DEVICES += k2p-32M
+  SUPPORTED_DEVICES += k2p-32m
 endef
 TARGET_DEVICES += phicomm_k2p-32m
 
