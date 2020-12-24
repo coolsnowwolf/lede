@@ -8,7 +8,7 @@ WIFI_DRV_PATH = drivers/net/wireless/mtk/mt7615e
 endif
 endif
 
-EXTRA_CFLAGS = -I$(WIFI_DRV_PATH)/mt_wifi/include \
+EXTRA_CFLAGS += -I$(WIFI_DRV_PATH)/mt_wifi/include \
 				-I$(WIFI_DRV_PATH)/mt_wifi/embedded/include \
 				-I$(WIFI_DRV_PATH)/mt_wifi/ate/include \
 				-I$(WIFI_DRV_PATH)/mt_wifi/include/mcu
@@ -487,7 +487,8 @@ ifeq ($(CONFIG_HOSTAPD_MAP_SUPPORT),y)
 endif
 
 #ENTERPRISE_AP
-ifeq ($(CONFIG_ENTERPRISE_AP_SUPPORT),y)
+ifeq ($(CONFIG_CFG80211_SUPPORT),y)
+ifneq ($(CONFIG_HOSTAPD_MAP_SUPPORT),y)
 	EXTRA_CFLAGS += -DHOSTAPD_11R_SUPPORT
 	EXTRA_CFLAGS += -DMBSS_DTIM_SUPPORT
 	ifeq ($(CONFIG_VLAN_SUPPORT),y)
@@ -500,6 +501,7 @@ ifeq ($(CONFIG_ENTERPRISE_AP_SUPPORT),y)
 		EXTRA_CFLAGS += -DDYNAMIC_VLAN_SUPPORT
 	endif
 
+endif
 endif
 
 #CFG
@@ -803,7 +805,7 @@ ifeq ($(CONFIG_AIR_MONITOR),y)
 endif
 
 ifeq ($(CONFIG_EASY_SETUP_SUPPORT),y)
-$(DRV_NAME)-objs += $(SRC_EMBEDDED_DIR)/easy_setup/ez_cmm.o
+$(DRV_NAME)-y += $(SRC_EMBEDDED_DIR)/easy_setup/ez_cmm.o
 endif
 
 ifeq ($(CONFIG_MWDS),y)
@@ -1297,23 +1299,23 @@ endif
 # Root
 #
 
-$(DRV_NAME)-objs += $(ap_objs) $(cmm_objs) $(asic_objs) $(chip_objs) $(rate_objs)\
+$(DRV_NAME)-y += $(ap_objs) $(cmm_objs) $(asic_objs) $(chip_objs) $(rate_objs)\
                     $(spec_objs) $(func_objs) $(os_objs) $(dot11_ft_objs)
 
-$(DRV_NAME)-objs += $(SRC_EMBEDDED_DIR)/common/eeprom.o\
+$(DRV_NAME)-y += $(SRC_EMBEDDED_DIR)/common/eeprom.o\
 					$(SRC_EMBEDDED_DIR)/common/ee_flash.o\
 					$(SRC_EMBEDDED_DIR)/common/ee_efuse.o
 
-$(DRV_NAME)-objs += $(SRC_EMBEDDED_DIR)/common/cmm_mac_pci.o
-$(DRV_NAME)-objs += $(SRC_EMBEDDED_DIR)/common/hif_pci.o
+$(DRV_NAME)-y += $(SRC_EMBEDDED_DIR)/common/cmm_mac_pci.o
+$(DRV_NAME)-y += $(SRC_EMBEDDED_DIR)/common/hif_pci.o
 
-$(DRV_NAME)-objs += $(SRC_DIR)/os/linux/rt_pci_rbus.o\
+$(DRV_NAME)-y += $(SRC_DIR)/os/linux/rt_pci_rbus.o\
                     $(SRC_DIR)/os/linux/rt_rbus_pci_drv.o\
                     $(SRC_DIR)/os/linux/rt_rbus_pci_util.o\
                     #$(SRC_DIR)/os/linux/rbus_main_dev.o
 
 ifeq ($(CONFIG_ATE_SUPPORT),y)
-$(DRV_NAME)-objs += $(SRC_DIR)/ate/ate_agent.o\
+$(DRV_NAME)-y += $(SRC_DIR)/ate/ate_agent.o\
                     $(SRC_DIR)/ate/testmode_ioctl.o\
 		    $(SRC_DIR)/ate/mt_mac/mt_testmode.o\
  		    $(SRC_DIR)/ate/LoopBack.o
@@ -1321,7 +1323,7 @@ endif
 
 
 ifeq ($(CONFIG_TCP_RACK_SUPPORT),y)
-$(DRV_NAME)-objs += $(SRC_EMBEDDED_DIR)/common/cmm_tcprack.o
+$(DRV_NAME)-y += $(SRC_EMBEDDED_DIR)/common/cmm_tcprack.o
 endif
 
 ifeq ($(CONFIG_LED_CONTROL_SUPPORT),y)
@@ -1433,4 +1435,6 @@ endif
 
 MODULE_FLAGS=$(EXTRA_CFLAGS)
 export MODULE_FLAGS
+ifeq ($(CONFIG_WHNAT_SUPPORT),y)
 obj-m+=$(SRC_EMBEDDED_DIR)/plug_in/
+endif
