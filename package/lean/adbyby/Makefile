@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=adbyby
 PKG_VERSION:=2.7
-PKG_RELEASE:=20200310
+PKG_RELEASE:=20200315
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -16,7 +16,7 @@ define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=Powerful adblock module to block ad.
-	DEPENDS:=@(x86||x86_64||arm||mipsel||mips||aarch64)
+	DEPENDS:=@(i386||x86_64||arm||mipsel||mips||aarch64)
 	URL:=http://www.adbyby.com/
 endef
 

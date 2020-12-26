@@ -1,5 +1,6 @@
 /*
  *  TP-LINK TL-WA801ND v3 adapted from TP-LINK TL-WR841N/ND v9
+ *  TP-LINK TL-WA801ND v4
  *
  *  Copyright (C) 2014 Matthias Schiffer <mschiffer@universe-factory.net>
  *  Copyright (C) 2016 Tiziano Bacocco <tizbac2@gmail.com>

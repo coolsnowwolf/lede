@@ -92,8 +92,8 @@ platform_copy_config() {
 		mkdir -p /boot
 		[ -f /boot/kernel.img ] || mount -t vfat -o rw,noatime "/dev/$partdev" /boot
 		cp -af "$UPGRADE_BACKUP" "/boot/$BACKUP_FILE"
-		tar -C / -zxvf "$UPGRADE_BACKUP" boot/config.txt
+		tar -C / -zxvf "$UPGRADE_BACKUP" boot/cmdline.txt boot/config.txt
 		sync
-		unmount /boot
+		umount /boot
 	fi
 }

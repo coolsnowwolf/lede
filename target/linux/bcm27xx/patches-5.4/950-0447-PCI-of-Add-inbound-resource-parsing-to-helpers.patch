@@ -1,0 +1,427 @@
+From 125a18144253e3a3f4bcad24484ee9b590dc47c6 Mon Sep 17 00:00:00 2001
+From: Rob Herring <robh@kernel.org>
+Date: Wed, 30 Oct 2019 17:30:57 -0500
+Subject: [PATCH] PCI: of: Add inbound resource parsing to helpers
+
+Extend devm_of_pci_get_host_bridge_resources() and
+pci_parse_request_of_pci_ranges() helpers to also parse the inbound
+addresses from DT 'dma-ranges' and populate a resource list with the
+translated addresses. This will help ensure 'dma-ranges' is always
+parsed in a consistent way.
+
+Tested-by: Srinath Mannam <srinath.mannam@broadcom.com>
+Tested-by: Thomas Petazzoni <thomas.petazzoni@bootlin.com> # for AArdvark
+Signed-off-by: Rob Herring <robh@kernel.org>
+Signed-off-by: Lorenzo Pieralisi <lorenzo.pieralisi@arm.com>
+Reviewed-by: Srinath Mannam <srinath.mannam@broadcom.com>
+Reviewed-by: Andrew Murray <andrew.murray@arm.com>
+Acked-by: Gustavo Pimentel <gustavo.pimentel@synopsys.com>
+Cc: Jingoo Han <jingoohan1@gmail.com>
+Cc: Gustavo Pimentel <gustavo.pimentel@synopsys.com>
+Cc: Lorenzo Pieralisi <lorenzo.pieralisi@arm.com>
+Cc: Bjorn Helgaas <bhelgaas@google.com>
+Cc: Thomas Petazzoni <thomas.petazzoni@bootlin.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Linus Walleij <linus.walleij@linaro.org>
+Cc: Toan Le <toan@os.amperecomputing.com>
+Cc: Ley Foon Tan <lftan@altera.com>
+Cc: Tom Joseph <tjoseph@cadence.com>
+Cc: Ray Jui <rjui@broadcom.com>
+Cc: Scott Branden <sbranden@broadcom.com>
+Cc: bcm-kernel-feedback-list@broadcom.com
+Cc: Ryder Lee <ryder.lee@mediatek.com>
+Cc: Karthikeyan Mitran <m.karthikeyan@mobiveil.co.in>
+Cc: Hou Zhiqiang <Zhiqiang.Hou@nxp.com>
+Cc: Simon Horman <horms@verge.net.au>
+Cc: Shawn Lin <shawn.lin@rock-chips.com>
+Cc: Heiko Stuebner <heiko@sntech.de>
+Cc: Michal Simek <michal.simek@xilinx.com>
+Cc: rfi@lists.rocketboards.org
+Cc: linux-mediatek@lists.infradead.org
+Cc: linux-renesas-soc@vger.kernel.org
+Cc: linux-rockchip@lists.infradead.org
+(cherry picked from commit 331f63457165a30c708280de2c77f1742c6351dc)
+---
+ .../pci/controller/dwc/pcie-designware-host.c |  8 +--
+ drivers/pci/controller/pci-aardvark.c         |  3 +-
+ drivers/pci/controller/pci-ftpci100.c         |  4 +-
+ drivers/pci/controller/pci-host-common.c      |  2 +-
+ drivers/pci/controller/pci-v3-semi.c          |  8 +--
+ drivers/pci/controller/pci-versatile.c        |  3 +-
+ drivers/pci/controller/pci-xgene.c            |  4 +-
+ drivers/pci/controller/pcie-altera.c          |  5 +-
+ drivers/pci/controller/pcie-cadence-host.c    |  2 +-
+ drivers/pci/controller/pcie-iproc-platform.c  |  4 +-
+ drivers/pci/controller/pcie-mediatek.c        |  4 +-
+ drivers/pci/controller/pcie-mobiveil.c        |  4 +-
+ drivers/pci/controller/pcie-rcar.c            |  3 +-
+ drivers/pci/controller/pcie-rockchip-host.c   |  4 +-
+ drivers/pci/controller/pcie-xilinx-nwl.c      |  4 +-
+ drivers/pci/controller/pcie-xilinx.c          |  4 +-
+ drivers/pci/of.c                              | 61 ++++++++++++++++---
+ drivers/pci/pci.h                             |  8 ++-
+ include/linux/pci.h                           |  9 ++-
+ 19 files changed, 96 insertions(+), 48 deletions(-)
+
+--- a/drivers/pci/controller/dwc/pcie-designware-host.c
++++ b/drivers/pci/controller/dwc/pcie-designware-host.c
+@@ -345,12 +345,8 @@ int dw_pcie_host_init(struct pcie_port *
+ 	if (!bridge)
+ 		return -ENOMEM;
+ 
+-	ret = devm_of_pci_get_host_bridge_resources(dev, 0, 0xff,
+-					&bridge->windows, &pp->io_base);
+-	if (ret)
+-		return ret;
+-
+-	ret = devm_request_pci_bus_resources(dev, &bridge->windows);
++	ret = pci_parse_request_of_pci_ranges(dev, &bridge->windows,
++					      &bridge->dma_ranges, NULL);
+ 	if (ret)
+ 		return ret;
+ 
+--- a/drivers/pci/controller/pci-aardvark.c
++++ b/drivers/pci/controller/pci-aardvark.c
+@@ -1018,7 +1018,8 @@ static int advk_pcie_probe(struct platfo
+ 		return ret;
+ 	}
+ 
+-	ret = advk_pcie_parse_request_of_pci_ranges(pcie);
++	ret = pci_parse_request_of_pci_ranges(dev, &bridge->windows,
++					      &bridge->dma_ranges, &bus);
+ 	if (ret) {
+ 		dev_err(dev, "Failed to parse resources\n");
+ 		return ret;
+--- a/drivers/pci/controller/pci-ftpci100.c
++++ b/drivers/pci/controller/pci-ftpci100.c
+@@ -480,8 +480,8 @@ static int faraday_pci_probe(struct plat
+ 	if (IS_ERR(p->base))
+ 		return PTR_ERR(p->base);
+ 
+-	ret = devm_of_pci_get_host_bridge_resources(dev, 0, 0xff,
+-						    &res, &io_base);
++	ret = pci_parse_request_of_pci_ranges(dev, &host->windows,
++					      &host->dma_ranges, NULL);
+ 	if (ret)
+ 		return ret;
+ 
+--- a/drivers/pci/controller/pci-host-common.c
++++ b/drivers/pci/controller/pci-host-common.c
+@@ -27,7 +27,7 @@ static struct pci_config_window *gen_pci
+ 	struct pci_config_window *cfg;
+ 
+ 	/* Parse our PCI ranges and request their resources */
+-	err = pci_parse_request_of_pci_ranges(dev, resources, &bus_range);
++	err = pci_parse_request_of_pci_ranges(dev, resources, NULL, &bus_range);
+ 	if (err)
+ 		return ERR_PTR(err);
+ 
+--- a/drivers/pci/controller/pci-v3-semi.c
++++ b/drivers/pci/controller/pci-v3-semi.c
+@@ -793,12 +793,8 @@ static int v3_pci_probe(struct platform_
+ 	if (IS_ERR(v3->config_base))
+ 		return PTR_ERR(v3->config_base);
+ 
+-	ret = devm_of_pci_get_host_bridge_resources(dev, 0, 0xff, &res,
+-						    &io_base);
+-	if (ret)
+-		return ret;
+-
+-	ret = devm_request_pci_bus_resources(dev, &res);
++	ret = pci_parse_request_of_pci_ranges(dev, &host->windows,
++					      &host->dma_ranges, NULL);
+ 	if (ret)
+ 		return ret;
+ 
+--- a/drivers/pci/controller/pci-versatile.c
++++ b/drivers/pci/controller/pci-versatile.c
+@@ -141,7 +141,8 @@ static int versatile_pci_probe(struct pl
+ 	if (IS_ERR(versatile_cfg_base[1]))
+ 		return PTR_ERR(versatile_cfg_base[1]);
+ 
+-	ret = versatile_pci_parse_request_of_pci_ranges(dev, &pci_res);
++	ret = pci_parse_request_of_pci_ranges(dev, &bridge->windows,
++					      NULL, NULL);
+ 	if (ret)
+ 		return ret;
+ 
+--- a/drivers/pci/controller/pci-xgene.c
++++ b/drivers/pci/controller/pci-xgene.c
+@@ -634,8 +634,8 @@ static int xgene_pcie_probe(struct platf
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = devm_of_pci_get_host_bridge_resources(dev, 0, 0xff, &res,
+-						    &iobase);
++	ret = pci_parse_request_of_pci_ranges(dev, &bridge->windows,
++					      &bridge->dma_ranges, NULL);
+ 	if (ret)
+ 		return ret;
+ 
+--- a/drivers/pci/controller/pcie-altera.c
++++ b/drivers/pci/controller/pcie-altera.c
+@@ -833,9 +833,8 @@ static int altera_pcie_probe(struct plat
+ 		return ret;
+ 	}
+ 
+-	INIT_LIST_HEAD(&pcie->resources);
+-
+-	ret = altera_pcie_parse_request_of_pci_ranges(pcie);
++	ret = pci_parse_request_of_pci_ranges(dev, &bridge->windows,
++					      &bridge->dma_ranges, NULL);
+ 	if (ret) {
+ 		dev_err(dev, "Failed add resources\n");
+ 		return ret;
+--- a/drivers/pci/controller/pcie-cadence-host.c
++++ b/drivers/pci/controller/pcie-cadence-host.c
+@@ -216,7 +216,7 @@ static int cdns_pcie_host_init(struct de
+ 	int err;
+ 
+ 	/* Parse our PCI ranges and request their resources */
+-	err = pci_parse_request_of_pci_ranges(dev, resources, &bus_range);
++	err = pci_parse_request_of_pci_ranges(dev, resources, NULL, &bus_range);
+ 	if (err)
+ 		return err;
+ 
+--- a/drivers/pci/controller/pcie-iproc-platform.c
++++ b/drivers/pci/controller/pcie-iproc-platform.c
+@@ -97,8 +97,8 @@ static int iproc_pcie_pltfm_probe(struct
+ 	if (IS_ERR(pcie->phy))
+ 		return PTR_ERR(pcie->phy);
+ 
+-	ret = devm_of_pci_get_host_bridge_resources(dev, 0, 0xff, &resources,
+-						    &iobase);
++	ret = pci_parse_request_of_pci_ranges(dev, &bridge->windows,
++					      &bridge->dma_ranges, NULL);
+ 	if (ret) {
+ 		dev_err(dev, "unable to get PCI host bridge resources\n");
+ 		return ret;
+--- a/drivers/pci/controller/pcie-mediatek.c
++++ b/drivers/pci/controller/pcie-mediatek.c
+@@ -1027,8 +1027,8 @@ static int mtk_pcie_setup(struct mtk_pci
+ 	resource_size_t io_base;
+ 	int err;
+ 
+-	err = devm_of_pci_get_host_bridge_resources(dev, 0, 0xff,
+-						    windows, &io_base);
++	err = pci_parse_request_of_pci_ranges(dev, windows,
++					      &host->dma_ranges, &bus);
+ 	if (err)
+ 		return err;
+ 
+--- a/drivers/pci/controller/pcie-mobiveil.c
++++ b/drivers/pci/controller/pcie-mobiveil.c
+@@ -883,8 +883,8 @@ static int mobiveil_pcie_probe(struct pl
+ 	INIT_LIST_HEAD(&pcie->resources);
+ 
+ 	/* parse the host bridge base addresses from the device tree file */
+-	ret = devm_of_pci_get_host_bridge_resources(dev, 0, 0xff,
+-						    &pcie->resources, &iobase);
++	ret = pci_parse_request_of_pci_ranges(dev, &bridge->windows,
++					      &bridge->dma_ranges, NULL);
+ 	if (ret) {
+ 		dev_err(dev, "Getting bridge resources failed\n");
+ 		return ret;
+--- a/drivers/pci/controller/pcie-rcar.c
++++ b/drivers/pci/controller/pcie-rcar.c
+@@ -1144,7 +1144,8 @@ static int rcar_pcie_probe(struct platfo
+ 	pcie->dev = dev;
+ 	platform_set_drvdata(pdev, pcie);
+ 
+-	err = pci_parse_request_of_pci_ranges(dev, &pcie->resources, NULL);
++	err = pci_parse_request_of_pci_ranges(dev, &pcie->resources,
++					      &bridge->dma_ranges, NULL);
+ 	if (err)
+ 		goto err_free_bridge;
+ 
+--- a/drivers/pci/controller/pcie-rockchip-host.c
++++ b/drivers/pci/controller/pcie-rockchip-host.c
+@@ -995,8 +995,8 @@ static int rockchip_pcie_probe(struct pl
+ 	if (err < 0)
+ 		goto err_deinit_port;
+ 
+-	err = devm_of_pci_get_host_bridge_resources(dev, 0, 0xff,
+-						    &res, &io_base);
++	err = pci_parse_request_of_pci_ranges(dev, &bridge->windows,
++					      &bridge->dma_ranges, &bus_res);
+ 	if (err)
+ 		goto err_remove_irq_domain;
+ 
+--- a/drivers/pci/controller/pcie-xilinx-nwl.c
++++ b/drivers/pci/controller/pcie-xilinx-nwl.c
+@@ -845,8 +845,8 @@ static int nwl_pcie_probe(struct platfor
+ 		return err;
+ 	}
+ 
+-	err = devm_of_pci_get_host_bridge_resources(dev, 0, 0xff, &res,
+-						    &iobase);
++	err = pci_parse_request_of_pci_ranges(dev, &bridge->windows,
++					      &bridge->dma_ranges, NULL);
+ 	if (err) {
+ 		dev_err(dev, "Getting bridge resources failed\n");
+ 		return err;
+--- a/drivers/pci/controller/pcie-xilinx.c
++++ b/drivers/pci/controller/pcie-xilinx.c
+@@ -647,8 +647,8 @@ static int xilinx_pcie_probe(struct plat
+ 		return err;
+ 	}
+ 
+-	err = devm_of_pci_get_host_bridge_resources(dev, 0, 0xff, &res,
+-						    &iobase);
++	err = pci_parse_request_of_pci_ranges(dev, &bridge->windows,
++					      &bridge->dma_ranges, NULL);
+ 	if (err) {
+ 		dev_err(dev, "Getting bridge resources failed\n");
+ 		return err;
+--- a/drivers/pci/of.c
++++ b/drivers/pci/of.c
+@@ -257,14 +257,16 @@ EXPORT_SYMBOL_GPL(of_pci_check_probe_onl
+  */
+ int devm_of_pci_get_host_bridge_resources(struct device *dev,
+ 			unsigned char busno, unsigned char bus_max,
+-			struct list_head *resources, resource_size_t *io_base)
++			struct list_head *resources,
++			struct list_head *ib_resources,
++			resource_size_t *io_base)
+ {
+ 	struct device_node *dev_node = dev->of_node;
+ 	struct resource *res, tmp_res;
+ 	struct resource *bus_range;
+ 	struct of_pci_range range;
+ 	struct of_pci_range_parser parser;
+-	char range_type[4];
++	const char *range_type;
+ 	int err;
+ 
+ 	if (io_base)
+@@ -298,12 +300,12 @@ int devm_of_pci_get_host_bridge_resource
+ 	for_each_of_pci_range(&parser, &range) {
+ 		/* Read next ranges element */
+ 		if ((range.flags & IORESOURCE_TYPE_BITS) == IORESOURCE_IO)
+-			snprintf(range_type, 4, " IO");
++			range_type = "IO";
+ 		else if ((range.flags & IORESOURCE_TYPE_BITS) == IORESOURCE_MEM)
+-			snprintf(range_type, 4, "MEM");
++			range_type = "MEM";
+ 		else
+-			snprintf(range_type, 4, "err");
+-		dev_info(dev, "  %s %#010llx..%#010llx -> %#010llx\n",
++			range_type = "err";
++		dev_info(dev, "  %6s %#012llx..%#012llx -> %#012llx\n",
+ 			 range_type, range.cpu_addr,
+ 			 range.cpu_addr + range.size - 1, range.pci_addr);
+ 
+@@ -340,6 +342,48 @@ int devm_of_pci_get_host_bridge_resource
+ 		pci_add_resource_offset(resources, res,	res->start - range.pci_addr);
+ 	}
+ 
++	/* Check for dma-ranges property */
++	if (!ib_resources)
++		return 0;
++	err = of_pci_dma_range_parser_init(&parser, dev_node);
++	if (err)
++		return 0;
++
++	dev_dbg(dev, "Parsing dma-ranges property...\n");
++	for_each_of_pci_range(&parser, &range) {
++		struct resource_entry *entry;
++		/*
++		 * If we failed translation or got a zero-sized region
++		 * then skip this range
++		 */
++		if (((range.flags & IORESOURCE_TYPE_BITS) != IORESOURCE_MEM) ||
++		    range.cpu_addr == OF_BAD_ADDR || range.size == 0)
++			continue;
++
++		dev_info(dev, "  %6s %#012llx..%#012llx -> %#012llx\n",
++			 "IB MEM", range.cpu_addr,
++			 range.cpu_addr + range.size - 1, range.pci_addr);
++
++
++		err = of_pci_range_to_resource(&range, dev_node, &tmp_res);
++		if (err)
++			continue;
++
++		res = devm_kmemdup(dev, &tmp_res, sizeof(tmp_res), GFP_KERNEL);
++		if (!res) {
++			err = -ENOMEM;
++			goto failed;
++		}
++
++		/* Keep the resource list sorted */
++		resource_list_for_each_entry(entry, ib_resources)
++			if (entry->res->start > res->start)
++				break;
++
++		pci_add_resource_offset(&entry->node, res,
++					res->start - range.pci_addr);
++	}
++
+ 	return 0;
+ 
+ failed:
+@@ -482,6 +526,7 @@ EXPORT_SYMBOL_GPL(of_irq_parse_and_map_p
+ 
+ int pci_parse_request_of_pci_ranges(struct device *dev,
+ 				    struct list_head *resources,
++				    struct list_head *ib_resources,
+ 				    struct resource **bus_range)
+ {
+ 	int err, res_valid = 0;
+@@ -489,8 +534,10 @@ int pci_parse_request_of_pci_ranges(stru
+ 	struct resource_entry *win, *tmp;
+ 
+ 	INIT_LIST_HEAD(resources);
++	if (ib_resources)
++		INIT_LIST_HEAD(ib_resources);
+ 	err = devm_of_pci_get_host_bridge_resources(dev, 0, 0xff, resources,
+-						    &iobase);
++						    ib_resources, &iobase);
+ 	if (err)
+ 		return err;
+ 
+--- a/drivers/pci/pci.h
++++ b/drivers/pci/pci.h
+@@ -637,11 +637,15 @@ static inline void pci_release_bus_of_no
+ #if defined(CONFIG_OF_ADDRESS)
+ int devm_of_pci_get_host_bridge_resources(struct device *dev,
+ 			unsigned char busno, unsigned char bus_max,
+-			struct list_head *resources, resource_size_t *io_base);
++			struct list_head *resources,
++			struct list_head *ib_resources,
++			resource_size_t *io_base);
+ #else
+ static inline int devm_of_pci_get_host_bridge_resources(struct device *dev,
+ 			unsigned char busno, unsigned char bus_max,
+-			struct list_head *resources, resource_size_t *io_base)
++			struct list_head *resources,
++			struct list_head *ib_resources,
++			resource_size_t *io_base)
+ {
+ 	return -EINVAL;
+ }
+--- a/include/linux/pci.h
++++ b/include/linux/pci.h
+@@ -2278,6 +2278,7 @@ struct irq_domain;
+ struct irq_domain *pci_host_bridge_of_msi_domain(struct pci_bus *bus);
+ int pci_parse_request_of_pci_ranges(struct device *dev,
+ 				    struct list_head *resources,
++				    struct list_head *ib_resources,
+ 				    struct resource **bus_range);
+ 
+ /* Arch may override this (weak) */
+@@ -2286,9 +2287,11 @@ struct device_node *pcibios_get_phb_of_n
+ #else	/* CONFIG_OF */
+ static inline struct irq_domain *
+ pci_host_bridge_of_msi_domain(struct pci_bus *bus) { return NULL; }
+-static inline int pci_parse_request_of_pci_ranges(struct device *dev,
+-						  struct list_head *resources,
+-						  struct resource **bus_range)
++static inline int
++pci_parse_request_of_pci_ranges(struct device *dev,
++				struct list_head *resources,
++				struct list_head *ib_resources,
++				struct resource **bus_range)
+ {
+ 	return -EINVAL;
+ }

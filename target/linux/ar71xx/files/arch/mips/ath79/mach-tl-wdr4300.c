@@ -183,7 +183,7 @@ static void __init wdr4300_setup(void)
 
 	ath79_register_mdio(0, 0x0);
 
-	ath79_init_mac(ath79_eth0_data.mac_addr, mac, -2);
+	ath79_init_mac(ath79_eth0_data.mac_addr, mac, 0);
 
 	/* GMAC0 is connected to an AR8327N switch */
 	ath79_eth0_data.phy_if_mode = PHY_INTERFACE_MODE_RGMII;

@@ -223,7 +223,7 @@ enable_broadcom() {
 	}
 
 	local _c=0
-	local nas="$(which nas)"
+	local nas="$(command -v nas)"
 	local if_pre_up if_up nas_cmd
 	local vif vif_pre_up vif_post_up vif_do_up vif_txpower
 	local bssmax=$(wlc ifname "$device" bssmax)
@@ -443,7 +443,10 @@ EOF
 	txpower=${txpower:-$vif_txpower}
 	[ -z "$txpower" ] || iwconfig $device txpower ${txpower}dBm
 
-	eval "$nas_cmd"
+	# fd 1000 is an inherited lock file descriptor for preventing concurrent
+	# init script executions. Close it here to prevent the nas daemon from
+	# inheriting it further to avoid holding the lock indefinitely.
+	eval "$nas_cmd 1000>&-"
 }
 
 

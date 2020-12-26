@@ -1,4 +1,4 @@
-BOARDNAME:=Legacy x86 (i586)
+BOARDNAME:=Legacy
 
 define Target/Description
 	Build firmware images for legacy x86 based boards

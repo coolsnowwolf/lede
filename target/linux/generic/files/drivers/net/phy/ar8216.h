@@ -26,6 +26,7 @@
 #define AR8216_PORT_CPU	0
 #define AR8216_NUM_PORTS	6
 #define AR8216_NUM_VLANS	16
+#define AR7240SW_NUM_PORTS	5
 #define AR8316_NUM_VLANS	4096
 
 /* size of the vlan table */
@@ -55,8 +56,10 @@
 #define AR8216_REG_FLOOD_MASK		0x002C
 #define   AR8216_FM_UNI_DEST_PORTS	BITS(0, 6)
 #define   AR8216_FM_MULTI_DEST_PORTS	BITS(16, 6)
-#define   AR8236_FM_CPU_BROADCAST_EN	BIT(26)
-#define   AR8236_FM_CPU_BCAST_FWD_EN	BIT(25)
+#define   AR8216_FM_CPU_BROADCAST_EN	BIT(26)
+#define   AR8229_FLOOD_MASK_UC_DP(_p)	BIT(_p)
+#define   AR8229_FLOOD_MASK_MC_DP(_p)	BIT(16 + (_p))
+#define   AR8229_FLOOD_MASK_BC_DP(_p)	BIT(25 + (_p))
 
 #define AR8216_REG_GLOBAL_CTRL		0x0030
 #define   AR8216_GCTRL_MTU		BITS(0, 11)
@@ -130,6 +133,14 @@
 #define   AR8216_ATU_CTRL_AGE_TIME	BITS(0, 16)
 #define   AR8216_ATU_CTRL_AGE_TIME_S	0
 #define   AR8236_ATU_CTRL_RES		BIT(20)
+#define   AR8216_ATU_CTRL_LEARN_CHANGE	BIT(18)
+#define   AR8216_ATU_CTRL_RESERVED	BIT(19)
+#define   AR8216_ATU_CTRL_ARP_EN	BIT(20)
+
+#define AR8216_REG_TAG_PRIORITY	0x0070
+
+#define AR8216_REG_SERVICE_TAG		0x0074
+#define  AR8216_SERVICE_TAG_M		BITS(0, 16)
 
 #define AR8216_REG_MIB_FUNC		0x0080
 #define   AR8216_MIB_TIMER		BITS(0, 16)
@@ -145,6 +156,16 @@
 #define AR8216_REG_GLOBAL_CPUPORT		0x0078
 #define   AR8216_GLOBAL_CPUPORT_MIRROR_PORT	BITS(4, 4)
 #define   AR8216_GLOBAL_CPUPORT_MIRROR_PORT_S	4
+#define   AR8216_GLOBAL_CPUPORT_EN		BIT(8)
+
+#define AR8216_REG_MDIO_CTRL		0x98
+#define   AR8216_MDIO_CTRL_DATA_M	BITS(0, 16)
+#define   AR8216_MDIO_CTRL_REG_ADDR_S	16
+#define   AR8216_MDIO_CTRL_PHY_ADDR_S	21
+#define   AR8216_MDIO_CTRL_CMD_WRITE	0
+#define   AR8216_MDIO_CTRL_CMD_READ	BIT(27)
+#define   AR8216_MDIO_CTRL_MASTER_EN	BIT(30)
+#define   AR8216_MDIO_CTRL_BUSY	BIT(31)
 
 #define AR8216_PORT_OFFSET(_i)		(0x0100 * (_i + 1))
 #define AR8216_REG_PORT_STATUS(_i)	(AR8216_PORT_OFFSET(_i) + 0x0000)
@@ -240,6 +261,19 @@
 #define AR8216_STATS_TXDEFER		0x98
 #define AR8216_STATS_TXLATECOL		0x9c
 
+#define AR8216_MIB_RXB_ID		14	/* RxGoodByte */
+#define AR8216_MIB_TXB_ID		29	/* TxByte */
+
+#define AR8229_REG_OPER_MODE0		0x04
+#define   AR8229_OPER_MODE0_MAC_GMII_EN	BIT(6)
+#define   AR8229_OPER_MODE0_PHY_MII_EN	BIT(10)
+
+#define AR8229_REG_OPER_MODE1		0x08
+#define   AR8229_REG_OPER_MODE1_PHY4_MII_EN	BIT(28)
+
+#define AR8229_REG_QM_CTRL		0x3c
+#define   AR8229_QM_CTRL_ARP_EN		BIT(15)
+
 #define AR8236_REG_PORT_VLAN(_i)	(AR8216_PORT_OFFSET((_i)) + 0x0008)
 #define   AR8236_PORT_VLAN_DEFAULT_ID	BITS(16, 12)
 #define   AR8236_PORT_VLAN_DEFAULT_ID_S	16
@@ -292,6 +326,9 @@
 #define AR8236_STATS_TXEXCDEFER		0x9c
 #define AR8236_STATS_TXDEFER		0xa0
 #define AR8236_STATS_TXLATECOL		0xa4
+
+#define AR8236_MIB_RXB_ID		15	/* RxGoodByte */
+#define AR8236_MIB_TXB_ID		31	/* TxByte */
 
 #define AR8316_REG_POSTRIP			0x0008
 #define   AR8316_POSTRIP_MAC0_GMII_EN		BIT(0)
@@ -355,6 +392,12 @@ enum {
 	AR8216_PORT_STATE_FORWARD = 4
 };
 
+/* mib counter type */
+enum {
+	AR8XXX_MIB_BASIC = 0,
+	AR8XXX_MIB_EXTENDED = 1
+};
+
 enum {
 	AR8XXX_VER_AR8216 = 0x01,
 	AR8XXX_VER_AR8236 = 0x03,
@@ -381,6 +424,7 @@ struct ar8xxx_mib_desc {
 	unsigned int size;
 	unsigned int offset;
 	const char *name;
+	u8 type;
 };
 
 struct ar8xxx_chip {
@@ -417,16 +461,22 @@ struct ar8xxx_chip {
 			      u32 *status, enum arl_op op);
 	int (*sw_hw_apply)(struct switch_dev *dev);
 	void (*phy_rgmii_set)(struct ar8xxx_priv *priv, struct phy_device *phydev);
+	int (*phy_read)(struct ar8xxx_priv *priv, int addr, int regnum);
+	int (*phy_write)(struct ar8xxx_priv *priv, int addr, int regnum, u16 val);
 
 	const struct ar8xxx_mib_desc *mib_decs;
 	unsigned num_mibs;
 	unsigned mib_func;
+	int mib_rxb_id;
+	int mib_txb_id;
 };
 
 struct ar8xxx_priv {
 	struct switch_dev dev;
 	struct mii_bus *mii_bus;
+	struct mii_bus *sw_mii_bus;
 	struct phy_device *phy;
+	struct device *pdev;
 
 	int (*get_port_link)(unsigned port);
 
@@ -448,8 +498,9 @@ struct ar8xxx_priv {
 
 	struct mutex mib_lock;
 	struct delayed_work mib_work;
-	int mib_next_port;
 	u64 *mib_stats;
+	u32 mib_poll_interval;
+	u8 mib_type;
 
 	struct list_head list;
 	unsigned int use_count;
@@ -504,6 +555,22 @@ int
 ar8xxx_sw_set_reset_mibs(struct switch_dev *dev,
 			 const struct switch_attr *attr,
 			 struct switch_val *val);
+int
+ar8xxx_sw_set_mib_poll_interval(struct switch_dev *dev,
+			       const struct switch_attr *attr,
+			       struct switch_val *val);
+int
+ar8xxx_sw_get_mib_poll_interval(struct switch_dev *dev,
+			       const struct switch_attr *attr,
+			       struct switch_val *val);
+int
+ar8xxx_sw_set_mib_type(struct switch_dev *dev,
+			       const struct switch_attr *attr,
+			       struct switch_val *val);
+int
+ar8xxx_sw_get_mib_type(struct switch_dev *dev,
+			       const struct switch_attr *attr,
+			       struct switch_val *val);
 int
 ar8xxx_sw_set_mirror_rx_enable(struct switch_dev *dev,
 			       const struct switch_attr *attr,
@@ -575,6 +642,9 @@ int
 ar8xxx_sw_set_flush_port_arl_table(struct switch_dev *dev,
 				   const struct switch_attr *attr,
 				   struct switch_val *val);
+int
+ar8xxx_sw_get_port_stats(struct switch_dev *dev, int port,
+			struct switch_port_stats *stats);
 int
 ar8216_wait_bit(struct ar8xxx_priv *priv, int reg, u32 mask, u32 val);
 

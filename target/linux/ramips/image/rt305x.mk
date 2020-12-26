@@ -2,13 +2,13 @@
 # RT305X Profiles
 #
 define Build/buffalo-tftp-header
-  ( \
-    echo -n -e "# Airstation FirmWare\nrun u_fw\nreset\n\n" | \
-      dd bs=512 count=1 conv=sync; \
-    dd if=$@; \
-  ) > $@.tmp && \
-  $(STAGING_DIR_HOST)/bin/buffalo-tftp -i $@.tmp -o $@.new
-  mv $@.new $@
+	( \
+		echo -n -e "# Airstation FirmWare\nrun u_fw\nreset\n\n" | \
+			dd bs=512 count=1 conv=sync; \
+		dd if=$@; \
+	) > $@.tmp && \
+	$(STAGING_DIR_HOST)/bin/buffalo-tftp -i $@.tmp -o $@.new
+	mv $@.new $@
 endef
 
 define Build/dap-header
@@ -30,6 +30,7 @@ define Device/7links_px-4885-4m
   DEVICE_PACKAGES := kmod-usb-dwc2 kmod-usb2 kmod-usb-ohci \
 	kmod-usb-ledtrig-usbport kmod-leds-gpio
   SUPPORTED_DEVICES += px-4885-4M
+  DEFAULT := n
 endef
 TARGET_DEVICES += 7links_px-4885-4m
 
@@ -71,6 +72,7 @@ define Device/airlive_air3gii
   DEVICE_VENDOR := AirLive
   DEVICE_MODEL := Air3GII
   SUPPORTED_DEVICES += air3gii
+  DEFAULT := n
 endef
 TARGET_DEVICES += airlive_air3gii
 
@@ -91,6 +93,7 @@ define Device/allnet_all0256n-4m
   DEVICE_VARIANT := 4M
   DEVICE_PACKAGES := rssileds
   SUPPORTED_DEVICES += all0256n-4M
+  DEFAULT := n
 endef
 TARGET_DEVICES += allnet_all0256n-4m
 
@@ -111,7 +114,7 @@ define Device/allnet_all5002
   DEVICE_VENDOR := Allnet
   DEVICE_MODEL := ALL5002
   DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-usb-ledtrig-usbport \
-	kmod-i2c-core kmod-i2c-gpio kmod-hwmon-lm92 kmod-gpio-pcf857x
+	kmod-i2c-gpio kmod-hwmon-lm92 kmod-gpio-pcf857x
   SUPPORTED_DEVICES += all5002
 endef
 TARGET_DEVICES += allnet_all5002
@@ -122,7 +125,7 @@ define Device/allnet_all5003
   DEVICE_VENDOR := Allnet
   DEVICE_MODEL := ALL5003
   DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-usb-ledtrig-usbport \
-	kmod-i2c-core kmod-i2c-gpio kmod-hwmon-lm92 kmod-gpio-pcf857x
+	kmod-i2c-gpio kmod-hwmon-lm92 kmod-gpio-pcf857x
   SUPPORTED_DEVICES += all5003
 endef
 TARGET_DEVICES += allnet_all5003
@@ -175,6 +178,7 @@ define Device/asiarf_awapn2403
   DEVICE_VENDOR := AsiaRF
   DEVICE_MODEL := AWAPN2403
   SUPPORTED_DEVICES += awapn2403
+  DEFAULT := n
 endef
 TARGET_DEVICES += asiarf_awapn2403
 
@@ -184,8 +188,9 @@ define Device/asiarf_awm002-evb-4m
   DEVICE_VENDOR := AsiaRF
   DEVICE_MODEL := AWM002-EVB
   DEVICE_VARIANT := 4M
-  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-core kmod-i2c-gpio
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-gpio
   SUPPORTED_DEVICES += awm002-evb-4M
+  DEFAULT := n
 endef
 TARGET_DEVICES += asiarf_awm002-evb-4m
 
@@ -195,7 +200,7 @@ define Device/asiarf_awm002-evb-8m
   DEVICE_VENDOR := AsiaRF
   DEVICE_MODEL := AWM002-EVB/AWM003-EVB
   DEVICE_VARIANT := 8M
-  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-core kmod-i2c-gpio
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-gpio
   SUPPORTED_DEVICES += awm002-evb-8M
 endef
 TARGET_DEVICES += asiarf_awm002-evb-8m
@@ -208,6 +213,7 @@ define Device/asus_rt-g32-b1
   DEVICE_MODEL := RT-G32
   DEVICE_VARIANT := B1
   SUPPORTED_DEVICES += rt-g32-b1
+  DEFAULT := n
 endef
 TARGET_DEVICES += asus_rt-g32-b1
 
@@ -218,6 +224,7 @@ define Device/asus_rt-n10-plus
   DEVICE_VENDOR := Asus
   DEVICE_MODEL := RT-N10+
   SUPPORTED_DEVICES += rt-n10-plus
+  DEFAULT := n
 endef
 TARGET_DEVICES += asus_rt-n10-plus
 
@@ -238,6 +245,7 @@ define Device/asus_wl-330n
   DEVICE_VENDOR := Asus
   DEVICE_MODEL := WL-330N
   SUPPORTED_DEVICES += wl-330n
+  DEFAULT := n
 endef
 TARGET_DEVICES += asus_wl-330n
 
@@ -249,6 +257,7 @@ define Device/asus_wl-330n3g
   DEVICE_MODEL := WL-330N3G
   DEVICE_PACKAGES :=
   SUPPORTED_DEVICES += wl-330n3g
+  DEFAULT := n
 endef
 TARGET_DEVICES += asus_wl-330n3g
 
@@ -289,7 +298,6 @@ define Device/belkin_f7c027
   IMAGE_SIZE := 7616k
   DEVICE_VENDOR := Belkin
   DEVICE_MODEL := F7C027
-  DEVICE_PACKAGES := --kmod-usb-dwc2 -kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += f7c027
 endef
 TARGET_DEVICES += belkin_f7c027
@@ -301,9 +309,9 @@ define Device/buffalo_whr-g300n
   DEVICE_VENDOR := Buffalo
   DEVICE_MODEL := WHR-G300N
   IMAGES += tftp.bin
-  IMAGE/tftp.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
-	buffalo-tftp-header
+  IMAGE/tftp.bin := $$(sysupgrade_bin) | check-size | buffalo-tftp-header
   SUPPORTED_DEVICES += whr-g300n
+  DEFAULT := n
 endef
 TARGET_DEVICES += buffalo_whr-g300n
 
@@ -311,9 +319,9 @@ define Device/dlink_dap-1350
   SOC := rt3052
   IMAGES += factory.bin factory-NA.bin
   IMAGE_SIZE := 7488k
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	dap-header -s RT3052-AP-DAP1350WW-3
-  IMAGE/factory-NA.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory-NA.bin := $$(sysupgrade_bin) | check-size | \
 	dap-header -s RT3052-AP-DAP1350-3
   DEVICE_VENDOR := D-Link
   DEVICE_MODEL := DAP-1350
@@ -329,6 +337,7 @@ define Device/dlink_dcs-930
   DEVICE_PACKAGES := kmod-video-core kmod-video-uvc kmod-sound-core \
 	kmod-usb-audio kmod-usb-dwc2
   SUPPORTED_DEVICES += dcs-930
+  DEFAULT := n
 endef
 TARGET_DEVICES += dlink_dcs-930
 
@@ -341,6 +350,7 @@ define Device/dlink_dcs-930l-b1
   DEVICE_PACKAGES := kmod-video-core kmod-video-uvc kmod-sound-core \
 	kmod-usb-audio kmod-usb-ohci kmod-usb2
   SUPPORTED_DEVICES += dcs-930l-b1
+  DEFAULT := n
 endef
 TARGET_DEVICES += dlink_dcs-930l-b1
 
@@ -348,12 +358,13 @@ define Device/dlink_dir-300-b1
   SOC := rt3050
   IMAGE_SIZE := 3776k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	wrg-header wrgn23_dlwbr_dir300b
   DEVICE_VENDOR := D-Link
   DEVICE_MODEL := DIR-300
   DEVICE_VARIANT := B1
   SUPPORTED_DEVICES += dir-300-b1
+  DEFAULT := n
 endef
 TARGET_DEVICES += dlink_dir-300-b1
 
@@ -382,12 +393,13 @@ define Device/dlink_dir-600-b1
   SOC := rt3050
   IMAGE_SIZE := 3776k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	wrg-header wrgn23_dlwbr_dir600b
   DEVICE_VENDOR := D-Link
   DEVICE_MODEL := DIR-600
   DEVICE_VARIANT := B1/B2
   SUPPORTED_DEVICES += dir-600-b1 dir-600-b2
+  DEFAULT := n
 endef
 TARGET_DEVICES += dlink_dir-600-b1
 
@@ -403,6 +415,7 @@ define Device/dlink_dir-610-a1
   DEVICE_VARIANT := A1
   DEVICE_PACKAGES := kmod-ledtrig-netdev kmod-ledtrig-timer
   SUPPORTED_DEVICES += dir-610-a1
+  DEFAULT := n
 endef
 TARGET_DEVICES += dlink_dir-610-a1
 
@@ -410,12 +423,13 @@ define Device/dlink_dir-615-d
   SOC := rt3050
   IMAGE_SIZE := 3776k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	wrg-header wrgn23_dlwbr_dir615d
   DEVICE_VENDOR := D-Link
   DEVICE_MODEL := DIR-615
   DEVICE_VARIANT := D
   SUPPORTED_DEVICES += dir-615-d
+  DEFAULT := n
 endef
 TARGET_DEVICES += dlink_dir-615-d
 
@@ -429,6 +443,7 @@ define Device/dlink_dir-615-h1
   DEVICE_MODEL := DIR-615
   DEVICE_VARIANT := H1
   SUPPORTED_DEVICES += dir-615-h1
+  DEFAULT := n
 endef
 TARGET_DEVICES += dlink_dir-615-h1
 
@@ -486,10 +501,11 @@ define Device/edimax_3g-6200n
   IMAGE_SIZE := 3648k
   IMAGE/sysupgrade.bin := append-kernel | append-rootfs | \
 	edimax-header -s CSYS -m 3G62 -f 0x50000 -S 0x01100000 | pad-rootfs | \
-	append-metadata | check-size $$$$(IMAGE_SIZE)
+	append-metadata | check-size
   DEVICE_VENDOR := Edimax
   DEVICE_MODEL := 3g-6200n
   SUPPORTED_DEVICES += 3g-6200n
+  DEFAULT := n
 endef
 TARGET_DEVICES += edimax_3g-6200n
 
@@ -498,10 +514,11 @@ define Device/edimax_3g-6200nl
   IMAGE_SIZE := 3648k
   IMAGE/sysupgrade.bin := append-kernel | append-rootfs | \
 	edimax-header -s CSYS -m 3G62 -f 0x50000 -S 0x01100000 | pad-rootfs | \
-	append-metadata | check-size $$$$(IMAGE_SIZE)
+	append-metadata | check-size
   DEVICE_VENDOR := Edimax
   DEVICE_MODEL := 3g-6200nl
   SUPPORTED_DEVICES += 3g-6200nl
+  DEFAULT := n
 endef
 TARGET_DEVICES += edimax_3g-6200nl
 
@@ -512,6 +529,7 @@ define Device/engenius_esr-9753
   DEVICE_VENDOR := EnGenius
   DEVICE_MODEL := ESR-9753
   SUPPORTED_DEVICES += esr-9753
+  DEFAULT := n
 endef
 TARGET_DEVICES += engenius_esr-9753
 
@@ -538,6 +556,7 @@ define Device/hame_mpr-a1
   DEVICE_VARIANT := A1
   DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-ledtrig-netdev
   SUPPORTED_DEVICES += mpr-a1
+  DEFAULT := n
 endef
 TARGET_DEVICES += hame_mpr-a1
 
@@ -568,11 +587,11 @@ define Device/hilink_hlk-rm04
   SOC := rt5350
   IMAGE_SIZE := 3776k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
-	hilink-header
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | hilink-header
   DEVICE_VENDOR := Hi-Link
   DEVICE_MODEL := HLK-RM04
   SUPPORTED_DEVICES += hlk-rm04
+  DEFAULT := n
 endef
 TARGET_DEVICES += hilink_hlk-rm04
 
@@ -593,6 +612,7 @@ define Device/huawei_d105
   DEVICE_VENDOR := Huawei
   DEVICE_MODEL := D105
   SUPPORTED_DEVICES += d105
+  DEFAULT := n
 endef
 TARGET_DEVICES += huawei_d105
 
@@ -621,11 +641,11 @@ define Device/jcg_jhr-n805r
   SOC := rt3050
   IMAGE_SIZE := 3776k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
-	jcg-header 29.24
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | jcg-header 29.24
   DEVICE_VENDOR := JCG
   DEVICE_MODEL := JHR-N805R
   SUPPORTED_DEVICES += jhr-n805r
+  DEFAULT := n
 endef
 TARGET_DEVICES += jcg_jhr-n805r
 
@@ -633,11 +653,11 @@ define Device/jcg_jhr-n825r
   SOC := rt3052
   IMAGE_SIZE := 3776k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
-	jcg-header 23.24
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | jcg-header 23.24
   DEVICE_VENDOR := JCG
   DEVICE_MODEL := JHR-N825R
   SUPPORTED_DEVICES += jhr-n825r
+  DEFAULT := n
 endef
 TARGET_DEVICES += jcg_jhr-n825r
 
@@ -645,11 +665,11 @@ define Device/jcg_jhr-n926r
   SOC := rt3052
   IMAGE_SIZE := 3776k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
-	jcg-header 25.24
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | jcg-header 25.24
   DEVICE_VENDOR := JCG
   DEVICE_MODEL := JHR-N926R
   SUPPORTED_DEVICES += jhr-n926r
+  DEFAULT := n
 endef
 TARGET_DEVICES += jcg_jhr-n926r
 
@@ -669,6 +689,7 @@ define Device/netcore_nw718
   DEVICE_VENDOR := Netcore
   DEVICE_MODEL := NW718
   SUPPORTED_DEVICES += nw718
+  DEFAULT := n
 endef
 TARGET_DEVICES += netcore_nw718
 
@@ -676,13 +697,14 @@ define Device/netgear_wnce2001
   SOC := rt3052
   IMAGE_SIZE := 3392k
   IMAGES += factory.bin factory-NA.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	dap-header -s RT3052-AP-WNCE2001-3 -r WW -v 1.0.0.99
-  IMAGE/factory-NA.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory-NA.bin := $$(sysupgrade_bin) | check-size | \
 	dap-header -s RT3052-AP-WNCE2001-3 -r NA -v 1.0.0.99
   DEVICE_VENDOR := NETGEAR
   DEVICE_MODEL := WNCE2001
   SUPPORTED_DEVICES += wnce2001
+  DEFAULT := n
 endef
 TARGET_DEVICES += netgear_wnce2001
 
@@ -699,12 +721,13 @@ define Device/nexx_wt1520-4m
   SOC := rt5350
   IMAGE_SIZE := 3776k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	poray-header -B WT1520 -F 4M
   DEVICE_VENDOR := Nexx
   DEVICE_MODEL := WT1520
   DEVICE_VARIANT := 4M
   SUPPORTED_DEVICES += wt1520-4M
+  DEFAULT := n
 endef
 TARGET_DEVICES += nexx_wt1520-4m
 
@@ -712,7 +735,7 @@ define Device/nexx_wt1520-8m
   SOC := rt5350
   IMAGE_SIZE := 7872k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	poray-header -B WT1520 -F 8M
   DEVICE_VENDOR := Nexx
   DEVICE_MODEL := WT1520
@@ -727,8 +750,7 @@ define Device/nixcore_x1-16m
   DEVICE_VENDOR := Nixcore
   DEVICE_MODEL := X1
   DEVICE_VARIANT := 16M
-  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-core kmod-i2c-ralink \
-	kmod-spi-dev
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-ralink kmod-spi-dev
   SUPPORTED_DEVICES += nixcore-x1 nixcore-x1-16M
 endef
 TARGET_DEVICES += nixcore_x1-16m
@@ -739,8 +761,7 @@ define Device/nixcore_x1-8m
   DEVICE_VENDOR := Nixcore
   DEVICE_MODEL := X1
   DEVICE_VARIANT := 8M
-  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-core kmod-i2c-ralink \
-	kmod-spi-dev
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-ralink kmod-spi-dev
   SUPPORTED_DEVICES += nixcore-x1 nixcore-x1-8M
 endef
 TARGET_DEVICES += nixcore_x1-8m
@@ -750,8 +771,7 @@ define Device/olimex_rt5350f-olinuxino
   IMAGE_SIZE := 7872k
   DEVICE_VENDOR := OLIMEX
   DEVICE_MODEL := RT5350F-OLinuXino
-  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-core kmod-i2c-ralink \
-	kmod-spi-dev
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-ralink kmod-spi-dev
   SUPPORTED_DEVICES += rt5350f-olinuxino
 endef
 TARGET_DEVICES += olimex_rt5350f-olinuxino
@@ -761,8 +781,7 @@ define Device/olimex_rt5350f-olinuxino-evb
   IMAGE_SIZE := 7872k
   DEVICE_VENDOR := OLIMEX
   DEVICE_MODEL := RT5350F-OLinuXino-EVB
-  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-core kmod-i2c-ralink \
-	kmod-spi-dev
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-ralink kmod-spi-dev
   SUPPORTED_DEVICES += rt5350f-olinuxino-evb
 endef
 TARGET_DEVICES += olimex_rt5350f-olinuxino-evb
@@ -792,6 +811,7 @@ define Device/petatel_psr-680w
   DEVICE_VENDOR := Petatel
   DEVICE_MODEL := PSR-680W Wireless 3G Router
   SUPPORTED_DEVICES += psr-680w
+  DEFAULT := n
 endef
 TARGET_DEVICES += petatel_psr-680w
 
@@ -803,6 +823,7 @@ define Device/planex_mzk-dp150n
   DEVICE_MODEL := MZK-DP150N
   DEVICE_PACKAGES := kmod-spi-dev
   SUPPORTED_DEVICES += mzk-dp150n
+  DEFAULT := n
 endef
 TARGET_DEVICES += planex_mzk-dp150n
 
@@ -815,6 +836,7 @@ define Device/planex_mzk-w300nh2
   DEVICE_VENDOR := Planex
   DEVICE_MODEL := MZK-W300NH2
   SUPPORTED_DEVICES += mzk-w300nh2
+  DEFAULT := n
 endef
 TARGET_DEVICES += planex_mzk-w300nh2
 
@@ -840,12 +862,13 @@ define Device/poray_m3
   SOC := rt5350
   IMAGE_SIZE := 3776k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	poray-header -B M3 -F 4M
   DEVICE_VENDOR := Poray
   DEVICE_MODEL := M3
   DEVICE_PACKAGES := kmod-usb2 kmod-ledtrig-netdev kmod-ledtrig-timer
   SUPPORTED_DEVICES += m3
+  DEFAULT := n
 endef
 TARGET_DEVICES += poray_m3
 
@@ -853,13 +876,14 @@ define Device/poray_m4-4m
   SOC := rt5350
   IMAGE_SIZE := 3776k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	poray-header -B M4 -F 4M
   DEVICE_VENDOR := Poray
   DEVICE_MODEL := M4
   DEVICE_VARIANT := 4M
   DEVICE_PACKAGES := kmod-usb2 kmod-ledtrig-netdev kmod-ledtrig-timer
   SUPPORTED_DEVICES += m4-4M
+  DEFAULT := n
 endef
 TARGET_DEVICES += poray_m4-4m
 
@@ -867,7 +891,7 @@ define Device/poray_m4-8m
   SOC := rt5350
   IMAGE_SIZE := 7872k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	poray-header -B M4 -F 8M
   DEVICE_VENDOR := Poray
   DEVICE_MODEL := M4
@@ -881,7 +905,7 @@ define Device/poray_x5
   SOC := rt5350
   IMAGE_SIZE := 7872k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	poray-header -B X5 -F 8M
   DEVICE_VENDOR := Poray
   DEVICE_MODEL := X5/X6
@@ -894,7 +918,7 @@ define Device/poray_x8
   SOC := rt5350
   IMAGE_SIZE := 7872k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	poray-header -B X8 -F 8M
   DEVICE_VENDOR := Poray
   DEVICE_MODEL := X8
@@ -920,6 +944,7 @@ define Device/ralink_v22rw-2x2
   DEVICE_VENDOR := Ralink
   DEVICE_MODEL := AP-RT3052-V22RW-2X2
   SUPPORTED_DEVICES += v22rw-2x2
+  DEFAULT := n
 endef
 TARGET_DEVICES += ralink_v22rw-2x2
 
@@ -929,8 +954,9 @@ define Device/sitecom_wl-351
   IMAGE_SIZE := 3776k
   DEVICE_VENDOR := Sitecom
   DEVICE_MODEL := WL-351 v1
-  DEVICE_PACKAGES := kmod-switch-rtl8366rb kmod-swconfig swconfig
+  DEVICE_PACKAGES := kmod-switch-rtl8366rb
   SUPPORTED_DEVICES += wl-351
+  DEFAULT := n
 endef
 TARGET_DEVICES += sitecom_wl-351
 
@@ -941,6 +967,7 @@ define Device/skyline_sl-r7205
   DEVICE_VENDOR := Skyline
   DEVICE_MODEL := SL-R7205 Wireless 3G Router
   SUPPORTED_DEVICES += sl-r7205
+  DEFAULT := n
 endef
 TARGET_DEVICES += skyline_sl-r7205
 
@@ -951,6 +978,7 @@ define Device/sparklan_wcr-150gn
   DEVICE_VENDOR := Sparklan
   DEVICE_MODEL := WCR-150GN
   SUPPORTED_DEVICES += wcr-150gn
+  DEFAULT := n
 endef
 TARGET_DEVICES += sparklan_wcr-150gn
 
@@ -973,6 +1001,7 @@ define Device/tenda_3g150b
   DEVICE_MODEL := 3G150B
   DEVICE_PACKAGES := kmod-usb-dwc2 kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += 3g150b
+  DEFAULT := n
 endef
 TARGET_DEVICES += tenda_3g150b
 
@@ -984,6 +1013,7 @@ define Device/tenda_3g300m
   DEVICE_MODEL := 3G300M
   DEVICE_PACKAGES := kmod-usb-dwc2 kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += 3g300m
+  DEFAULT := n
 endef
 TARGET_DEVICES += tenda_3g300m
 
@@ -994,6 +1024,7 @@ define Device/tenda_w150m
   DEVICE_VENDOR := Tenda
   DEVICE_MODEL := W150M
   SUPPORTED_DEVICES += w150m
+  DEFAULT := n
 endef
 TARGET_DEVICES += tenda_w150m
 
@@ -1005,6 +1036,7 @@ define Device/tenda_w306r-v2
   DEVICE_MODEL := W306R
   DEVICE_VARIANT := V2.0
   SUPPORTED_DEVICES += w306r-v20
+  DEFAULT := n
 endef
 TARGET_DEVICES += tenda_w306r-v2
 
@@ -1013,11 +1045,12 @@ define Device/trendnet_tew-638apb-v2
   BLOCKSIZE := 64k
   IMAGE_SIZE := 3776k
   IMAGE/sysupgrade.bin := $$(sysupgrade_bin) | umedia-header 0x026382 | \
-	append-metadata | check-size $$$$(IMAGE_SIZE)
+	append-metadata | check-size
   DEVICE_VENDOR := TRENDnet
   DEVICE_MODEL := TEW-638APB
   DEVICE_VARIANT := v2
   SUPPORTED_DEVICES += tew-638apb-v2
+  DEFAULT := n
 endef
 TARGET_DEVICES += trendnet_tew-638apb-v2
 
@@ -1034,12 +1067,13 @@ define Device/unbranded_a5-v11
   SOC := rt5350
   IMAGE_SIZE := 3776k
   IMAGES += factory.bin
-  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size $$$$(IMAGE_SIZE) | \
+  IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	poray-header -B A5-V11 -F 4M
   DEVICE_VENDOR := 
   DEVICE_MODEL := A5-V11
   DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2
   SUPPORTED_DEVICES += a5-v11
+  DEFAULT := n
 endef
 TARGET_DEVICES += unbranded_a5-v11
 
@@ -1050,6 +1084,7 @@ define Device/unbranded_wr512-3gn-4m
   DEVICE_MODEL := WR512-3GN
   DEVICE_VARIANT := 4M
   SUPPORTED_DEVICES += wr512-3gn-4M
+  DEFAULT := n
 endef
 TARGET_DEVICES += unbranded_wr512-3gn-4m
 
@@ -1070,6 +1105,7 @@ define Device/unbranded_xdx-rn502j
   DEVICE_VENDOR := XDX
   DEVICE_MODEL := RN502J
   SUPPORTED_DEVICES += xdxrn502j
+  DEFAULT := n
 endef
 TARGET_DEVICES += unbranded_xdx-rn502j
 
@@ -1081,6 +1117,7 @@ define Device/upvel_ur-326n4g
   DEVICE_MODEL := UR-326N4G
   DEVICE_PACKAGES := kmod-usb-dwc2 kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += ur-326n4g
+  DEFAULT := n
 endef
 TARGET_DEVICES += upvel_ur-326n4g
 
@@ -1100,8 +1137,7 @@ define Device/vocore_vocore-16m
   DEVICE_VENDOR := VoCore
   DEVICE_MODEL := VoCore
   DEVICE_VARIANT := 16M
-  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-core kmod-i2c-ralink \
-	kmod-spi-dev
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-ralink kmod-spi-dev
   SUPPORTED_DEVICES += vocore vocore-16M
 endef
 TARGET_DEVICES += vocore_vocore-16m
@@ -1112,8 +1148,7 @@ define Device/vocore_vocore-8m
   DEVICE_VENDOR := VoCore
   DEVICE_MODEL := VoCore
   DEVICE_VARIANT := 8M
-  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-core kmod-i2c-ralink \
-	kmod-spi-dev
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-i2c-ralink kmod-spi-dev
   SUPPORTED_DEVICES += vocore vocore-8M
 endef
 TARGET_DEVICES += vocore_vocore-8m
@@ -1149,10 +1184,11 @@ TARGET_DEVICES += zorlik_zl5900v2
 define Device/zyxel_keenetic
   SOC := rt3052
   BLOCKSIZE := 64k
-  IMAGE_SIZE := 3776k
+  IMAGE_SIZE := 7872k
   DEVICE_VENDOR := ZyXEL
   DEVICE_MODEL := Keenetic
-  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ehci kmod-usb-ledtrig-usbport
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ehci kmod-usb-ledtrig-usbport \
+	kmod-usb-dwc2
   SUPPORTED_DEVICES += kn
 endef
 TARGET_DEVICES += zyxel_keenetic
@@ -1162,6 +1198,7 @@ define Device/zyxel_keenetic-start
   IMAGE_SIZE := 3776k
   DEVICE_VENDOR := ZyXEL
   DEVICE_MODEL := Keenetic Start
+  DEFAULT := n
 endef
 TARGET_DEVICES += zyxel_keenetic-start
 
@@ -1172,6 +1209,7 @@ define Device/zyxel_nbg-419n
   DEVICE_VENDOR := ZyXEL
   DEVICE_MODEL := NBG-419N
   SUPPORTED_DEVICES += nbg-419n
+  DEFAULT := n
 endef
 TARGET_DEVICES += zyxel_nbg-419n
 

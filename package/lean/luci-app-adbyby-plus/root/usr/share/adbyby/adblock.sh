@@ -5,4 +5,6 @@ if [ -s "/tmp/adnew.conf" ];then
   /usr/share/adbyby/ad-update
 fi
 
-rm -f /tmp/adbyby.updated && /etc/init.d/adbyby restart
+rm -f /tmp/adbyby.updated 
+sleep 10
+/etc/init.d/adbyby restart

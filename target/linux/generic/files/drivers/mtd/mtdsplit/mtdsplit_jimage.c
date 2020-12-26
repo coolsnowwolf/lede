@@ -20,6 +20,7 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/byteorder/generic.h>
+#include <linux/of.h>
 
 #include "mtdsplit.h"
 
@@ -256,21 +257,15 @@ mtdsplit_jimage_parse_generic(struct mtd_info *master,
 				      jimage_verify_default);
 }
 
-#include <linux/version.h>
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 static const struct of_device_id mtdsplit_jimage_of_match_table[] = {
 	{ .compatible = "amit,jimage" },
 	{},
 };
-#endif
 
 static struct mtd_part_parser jimage_generic_parser = {
 	.owner = THIS_MODULE,
 	.name = "jimage-fw",
-	#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 	.of_match_table = mtdsplit_jimage_of_match_table,
-	#endif
 	.parse_fn = mtdsplit_jimage_parse_generic,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
 };

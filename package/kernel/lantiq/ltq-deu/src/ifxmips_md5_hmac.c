@@ -346,7 +346,7 @@ static struct shash_alg ifxdeu_md5_hmac_alg = {
         .cra_driver_name=       "ifxdeu-md5_hmac",
         .cra_priority   =       400,
         .cra_ctxsize    =	sizeof(struct md5_hmac_ctx),
-        .cra_flags      =       CRYPTO_ALG_TYPE_DIGEST,
+        .cra_flags      =       CRYPTO_ALG_TYPE_HASH,
         .cra_blocksize  =       MD5_HMAC_BLOCK_SIZE,
         .cra_module     =       THIS_MODULE,
         }

@@ -24,10 +24,6 @@ define Package/wpan-tools
   DEPENDS:= +libnl
 endef
 
-define Build/Configure
-  $(call Build/Configure/Default)
-endef
-
 define Package/wpan-tools/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/iwpan $(1)/usr/sbin/

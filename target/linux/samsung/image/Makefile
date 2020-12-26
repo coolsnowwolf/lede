@@ -13,13 +13,19 @@ define Device/Default
   PROFILES = Default
   KERNEL_NAME := zImage
   KERNEL := kernel-bin | append-dtb | uImage none
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_DTS = $$(SOC)_$(1)
 endef
 
-define Device/tq210
-  DEVICE_DTS_DIR := ../dts
-  DEVICE_DTS := TQ210
-  DEVICE_TITLE := TQ210
+ifeq ($(SUBTARGET),s5pv210)
+
+define Device/embedsky_tq210
+  DEVICE_VENDOR := EmbedSky
+  DEVICE_MODEL := TQ210
+  SOC := s5pv210
 endef
-TARGET_DEVICES += tq210
+TARGET_DEVICES += embedsky_tq210
+
+endif
 
 $(eval $(call BuildImage))

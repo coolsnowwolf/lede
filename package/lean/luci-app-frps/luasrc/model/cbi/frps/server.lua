@@ -1,4 +1,4 @@
--- Copyright 2020 Weizheng Li <lwz322@qq.com>
+-- Copyright 2020 lwz322 <lwz322@qq.com>
 -- Licensed to the public under the MIT License.
 
 local dsp = require "luci.dispatcher"
@@ -24,6 +24,13 @@ o.disabled = "false"
 o.defalut = o.enabled
 o.rmempty = false
 
+o = s:option(Flag, "tls_only", translate("Enforce frps only accept TLS connection"),
+    translatef("Requirements: frpc v0.25.0+, frps v0.32.0+"))
+o.enabled = "true"
+o.disabled = "false"
+o.default = o.disabled
+o.rmempty = false
+
 o = s:option(Value, "bind_udp_port", translate("UDP bind port"), 
     translatef("Optional: udp port to help make udp hole to penetrate nat"))
 o.datatype = "port"
@@ -39,5 +46,9 @@ o.datatype = "port"
 o = s:option(Value, "vhost_https_port", translate("vhost https port"), 
     translatef("Optional:  Note: http port and https port can be same with bind_port"))
 o.datatype = "port"
+
+o = s:option(DynamicList, "extra_setting", translate("Extra Settings"),
+	translatef("List of extra settings will be added to config file. Format: option=value, eg. <code>detailed_errors_to_client=false</code>.(NO SPACE!)"))
+o.placeholder = "option=value"
 
 return m

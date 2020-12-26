@@ -1,0 +1,91 @@
+From 3b07b109823a593f43e794cbf44ba3a84ceefbdb Mon Sep 17 00:00:00 2001
+From: Florin Chiculita <florinlaurentiu.chiculita@nxp.com>
+Date: Fri, 23 Aug 2019 18:02:27 +0300
+Subject: [PATCH] staging: dpaa2-mac: add link up/down events for dpmac
+
+Fix a limitation that affects the networking behavior when the user
+issues ifconfig down/up on a DPNI and the link remains down.
+The actual problem was that the mac driver was not aware of the
+dpni link change event. Now, the event is sent by firmware and
+phylib state machine is manipulated conveniently.
+
+Signed-off-by: Florin Chiculita <florinlaurentiu.chiculita@nxp.com>
+Signed-off-by: Ioana Ciornei <ioana.ciornei@nxp.com>
+---
+ drivers/staging/fsl-dpaa2/mac/dpmac.h |  5 +++++
+ drivers/staging/fsl-dpaa2/mac/mac.c   | 15 ++++++++++++---
+ 2 files changed, 17 insertions(+), 3 deletions(-)
+
+--- a/drivers/staging/fsl-dpaa2/mac/dpmac.h
++++ b/drivers/staging/fsl-dpaa2/mac/dpmac.h
+@@ -124,6 +124,11 @@ int dpmac_destroy(struct fsl_mc_io *mc_i
+  * IRQ event - Indicates that the link state changed
+  */
+ #define DPMAC_IRQ_EVENT_LINK_CHANGED		0x00000002
++/**
++ * IRQ event - Indicate if the phy needs to suspend or resume
++ */
++#define DPMAC_IRQ_EVENT_LINK_UP_REQ		0x00000004
++#define DPMAC_IRQ_EVENT_LINK_DOWN_REQ		0x00000008
+ 
+ int dpmac_set_irq_enable(struct fsl_mc_io *mc_io,
+ 			 u32 cmd_flags,
+--- a/drivers/staging/fsl-dpaa2/mac/mac.c
++++ b/drivers/staging/fsl-dpaa2/mac/mac.c
+@@ -181,6 +181,7 @@ static void dpaa2_mac_link_changed(struc
+ 		dev_err(&priv->mc_dev->dev, "dpmac_set_link_state: %d\n", err);
+ }
+ 
++#ifdef CONFIG_FSL_DPAA2_MAC_NETDEVS
+ static int dpaa2_mac_open(struct net_device *netdev)
+ {
+ 	/* start PHY state machine */
+@@ -188,6 +189,7 @@ static int dpaa2_mac_open(struct net_dev
+ 
+ 	return 0;
+ }
++#endif
+ 
+ static int dpaa2_mac_stop(struct net_device *netdev)
+ {
+@@ -450,6 +452,7 @@ static irqreturn_t dpaa2_mac_irq_handler
+ 	struct device *dev = (struct device *)arg;
+ 	struct fsl_mc_device *mc_dev = to_fsl_mc_device(dev);
+ 	struct dpaa2_mac_priv *priv = dev_get_drvdata(dev);
++	struct net_device *ndev = priv->netdev;
+ 	struct dpmac_link_cfg link_cfg = { 0 };
+ 	u32 status;
+ 	int err;
+@@ -475,6 +478,12 @@ static irqreturn_t dpaa2_mac_irq_handler
+ 		configure_link(priv, &link_cfg);
+ 	}
+ 
++	if (status & DPMAC_IRQ_EVENT_LINK_UP_REQ)
++		phy_start(ndev->phydev);
++
++	if (status & DPMAC_IRQ_EVENT_LINK_DOWN_REQ)
++		phy_stop(ndev->phydev);
++
+ out:
+ 	dpmac_clear_irq_status(mc_dev->mc_io, 0, mc_dev->mc_handle,
+ 			       DPMAC_IRQ_INDEX, status);
+@@ -505,7 +514,9 @@ static int setup_irqs(struct fsl_mc_devi
+ 	}
+ 
+ 	err = dpmac_set_irq_mask(mc_dev->mc_io, 0, mc_dev->mc_handle,
+-				 DPMAC_IRQ_INDEX, DPMAC_IRQ_EVENT_LINK_CFG_REQ);
++				 DPMAC_IRQ_INDEX, DPMAC_IRQ_EVENT_LINK_CFG_REQ |
++				 DPMAC_IRQ_EVENT_LINK_UP_REQ |
++				 DPMAC_IRQ_EVENT_LINK_DOWN_REQ);
+ 	if (err) {
+ 		dev_err(&mc_dev->dev, "dpmac_set_irq_mask err %d\n", err);
+ 		goto free_irq;
+@@ -734,8 +745,6 @@ probe_fixed_link:
+ 		dev_info(dev, "Registered fixed PHY.\n");
+ 	}
+ 
+-	dpaa2_mac_open(netdev);
+-
+ 	return 0;
+ 
+ err_no_if_mode:

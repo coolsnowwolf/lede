@@ -53,13 +53,14 @@ append_list() {
 	local p; local v; local s="$1"; shift
 
 	list_cb_append() {
-		v="$1:${v}"
+		v="${v}:$1"
 	}
 
 	for p in $*; do
+		unset v
 		config_list_foreach "$s" "$p" list_cb_append
+		[ -n "$v" ] && append_param "$s" "$p" && echo " ${v:1}" >> "/var/etc/openvpn-$s.conf"
 	done
-	[ -n "$v" ] && append_param "$s" "$p" && echo " ${v%*:}" >> "/var/etc/openvpn-$s.conf"
 }
 
 section_enabled() {
@@ -72,13 +73,17 @@ openvpn_add_instance() {
 	local name="$1"
 	local dir="$2"
 	local conf="$3"
+	local security="$4"
 
 	procd_open_instance "$name"
 	procd_set_param command "$PROG"	\
 		--syslog "openvpn($name)" \
 		--status "/var/run/openvpn.$name.status" \
 		--cd "$dir" \
-		--config "$conf"
+		--config "$conf" \
+		--up "/usr/libexec/openvpn-hotplug up $name" \
+		--down "/usr/libexec/openvpn-hotplug down $name" \
+		--script-security "${security:-2}"
 	procd_set_param file "$dir/$conf"
 	procd_set_param term_timeout 15
 	procd_set_param respawn
@@ -99,11 +104,14 @@ start_instance() {
 		return 1
 	}
 
+	local script_security
+	config_get script_security "$s" script_security
+
 	[ ! -d "/var/run" ] && mkdir -p "/var/run"
 
 	if [ ! -z "$config" ]; then
 		append UCI_STARTED "$config" "$LIST_SEP"
-		openvpn_add_instance "$s" "${config%/*}" "$config"
+		openvpn_add_instance "$s" "${config%/*}" "$config" "$script_security"
 		return
 	fi
 
@@ -114,7 +122,7 @@ start_instance() {
 	append_params "$s" $OPENVPN_PARAMS
 	append_list "$s" $OPENVPN_LIST
 
-	openvpn_add_instance "$s" "/var/etc" "openvpn-$s.conf"
+	openvpn_add_instance "$s" "/var/etc" "openvpn-$s.conf" "$script_security"
 }
 
 start_service() {

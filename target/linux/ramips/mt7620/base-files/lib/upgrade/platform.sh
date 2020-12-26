@@ -30,6 +30,10 @@ platform_do_upgrade() {
 		}
 		default_do_upgrade "$1"
 		;;
+	xiaomi,miwifi-r3)
+		dd if=/dev/mtd0 bs=64 count=1 2>/dev/null | grep -qi breed && CI_KERNPART_EXT="kernel_stock"
+		nand_do_upgrade "$1"
+		;;
 	*)
 		default_do_upgrade "$1"
 		;;

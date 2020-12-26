@@ -1,17 +1,13 @@
 include ./common-buffalo.mk
 
 define Device/buffalo_whr-g301n
+  $(Device/buffalo_common)
   SOC := ar7240
-  DEVICE_VENDOR := Buffalo
   DEVICE_MODEL := WHR-G301N
+  BUFFALO_PRODUCT := WHR-G301N
   IMAGE_SIZE := 3712k
-  IMAGES += factory.bin tftp.bin
-  IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | \
-	pad-rootfs | check-size $$$$(IMAGE_SIZE)
-  IMAGE/factory.bin := $$(IMAGE/default) | buffalo-enc WHR-G301N 1.99 | \
-	buffalo-tag WHR-G301N 3
-  IMAGE/tftp.bin := $$(IMAGE/default) | buffalo-tftp-header
   SUPPORTED_DEVICES += whr-g301n
+  DEFAULT := n
 endef
 TARGET_DEVICES += buffalo_whr-g301n
 
@@ -25,7 +21,7 @@ define Device/dlink_dir-615-e4
   IMAGES += factory.bin
   IMAGE/default := append-kernel | append-rootfs | pad-rootfs
   IMAGE/sysupgrade.bin := $$(IMAGE/default) | append-metadata | \
-	check-size $$$$(IMAGE_SIZE)
+	check-size
   IMAGE/factory.bin := $$(IMAGE/default) | \
 	check-size $$$$(FACTORY_IMAGE_SIZE) | pad-to $$$$(FACTORY_IMAGE_SIZE) | \
 	append-string "AP99-AR7240-RT-091105-05"

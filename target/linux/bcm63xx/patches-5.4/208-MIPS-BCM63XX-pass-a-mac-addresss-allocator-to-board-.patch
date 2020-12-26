@@ -1,0 +1,100 @@
+From 4e9c34a37bd3442b286ba55441bfe22c1ac5b65f Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jogo@openwrt.org>
+Date: Sun, 9 Mar 2014 04:08:06 +0100
+Subject: [PATCH 41/44] MIPS: BCM63XX: pass a mac addresss allocator to board
+ setup
+
+Pass a mac address allocator to board setup code to allow board
+implementations to work with third party bootloaders not using nvram
+for configuration storage.
+
+Signed-off-by: Jonas Gorski <jogo@openwrt.org>
+---
+ arch/mips/bcm63xx/boards/board_bcm963xx.c |  3 ++-
+ arch/mips/bcm63xx/boards/board_common.c   | 16 ++++++++++------
+ arch/mips/bcm63xx/boards/board_common.h   |  3 ++-
+ 3 files changed, 14 insertions(+), 8 deletions(-)
+
+--- a/arch/mips/bcm63xx/boards/board_bcm963xx.c
++++ b/arch/mips/bcm63xx/boards/board_bcm963xx.c
+@@ -738,7 +738,8 @@ void __init board_prom_init(void)
+ 		if (strncmp(board_name, bcm963xx_boards[i]->name, 16))
+ 			continue;
+ 		/* copy, board desc array is marked initdata */
+-		board_early_setup(bcm963xx_boards[i]);
++		board_early_setup(bcm963xx_boards[i],
++				  bcm63xx_nvram_get_mac_address);
+ 		break;
+ 	}
+ 
+--- a/arch/mips/bcm63xx/boards/board_common.c
++++ b/arch/mips/bcm63xx/boards/board_common.c
+@@ -18,7 +18,6 @@
+ #include <bcm63xx_dev_uart.h>
+ #include <bcm63xx_regs.h>
+ #include <bcm63xx_io.h>
+-#include <bcm63xx_nvram.h>
+ #include <bcm63xx_gpio.h>
+ #include <bcm63xx_dev_pci.h>
+ #include <bcm63xx_dev_enet.h>
+@@ -81,15 +80,20 @@ const char *board_get_name(void)
+ 	return board.name;
+ }
+ 
++static int (*board_get_mac_address)(u8 mac[ETH_ALEN]);
++
+ /*
+  * setup board for device registration
+  */
+-void __init board_early_setup(const struct board_info *target)
++void __init board_early_setup(const struct board_info *target,
++			      int (*get_mac_address)(u8 mac[ETH_ALEN]))
+ {
+ 	u32 val;
+ 
+ 	memcpy(&board, target, sizeof(board));
+ 
++	board_get_mac_address = get_mac_address;
++
+ 	/* setup pin multiplexing depending on board enabled device,
+ 	 * this has to be done this early since PCI init is done
+ 	 * inside arch_initcall */
+@@ -162,15 +166,15 @@ int __init board_register_devices(void)
+ 		bcm63xx_pcmcia_register();
+ 
+ 	if (board.has_enet0 &&
+-	    !bcm63xx_nvram_get_mac_address(board.enet0.mac_addr))
++	    !board_get_mac_address(board.enet0.mac_addr))
+ 		bcm63xx_enet_register(0, &board.enet0);
+ 
+ 	if (board.has_enet1 &&
+-	    !bcm63xx_nvram_get_mac_address(board.enet1.mac_addr))
++	    !board_get_mac_address(board.enet1.mac_addr))
+ 		bcm63xx_enet_register(1, &board.enet1);
+ 
+ 	if (board.has_enetsw &&
+-	    !bcm63xx_nvram_get_mac_address(board.enetsw.mac_addr))
++	    !board_get_mac_address(board.enetsw.mac_addr))
+ 		bcm63xx_enetsw_register(&board.enetsw);
+ 
+ 	if (board.has_usbd)
+@@ -186,7 +190,7 @@ int __init board_register_devices(void)
+ 	 * do this after registering enet devices
+ 	 */
+ #ifdef CONFIG_SSB_PCIHOST
+-	if (!bcm63xx_nvram_get_mac_address(bcm63xx_sprom.il0mac)) {
++	if (!board_get_mac_address(bcm63xx_sprom.il0mac)) {
+ 		memcpy(bcm63xx_sprom.et0mac, bcm63xx_sprom.il0mac, ETH_ALEN);
+ 		memcpy(bcm63xx_sprom.et1mac, bcm63xx_sprom.il0mac, ETH_ALEN);
+ 		if (ssb_arch_register_fallback_sprom(
+--- a/arch/mips/bcm63xx/boards/board_common.h
++++ b/arch/mips/bcm63xx/boards/board_common.h
+@@ -3,6 +3,7 @@
+ 
+ #include <board_bcm963xx.h>
+ 
+-void board_early_setup(const struct board_info *board);
++void board_early_setup(const struct board_info *board,
++		       int (*get_mac_address)(u8 mac[ETH_ALEN]));
+ 
+ #endif /* __BOARD_COMMON_H */

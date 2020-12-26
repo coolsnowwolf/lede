@@ -1566,7 +1566,7 @@ ar934x_nfc_remove(struct platform_device *pdev)
 	nfc = platform_get_drvdata(pdev);
 	if (nfc) {
 		mtd = ar934x_nfc_to_mtd(nfc);
-		nand_release(mtd);
+		nand_release(&nfc->nand_chip);
 		ar934x_nfc_free_buf(nfc);
 		free_irq(nfc->irq, nfc);
 	}

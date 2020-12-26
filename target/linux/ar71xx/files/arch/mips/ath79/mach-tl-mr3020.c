@@ -79,7 +79,7 @@ static struct gpio_keys_button tl_mr3020_gpio_keys[] __initdata = {
 	},
 	{
 		.desc		= "sw1",
-		.type		= EV_KEY,
+		.type		= EV_SW,
 		.code		= BTN_0,
 		.debounce_interval = TL_MR3020_KEYS_DEBOUNCE_INTERVAL,
 		.gpio		= TL_MR3020_GPIO_BTN_SW1,
@@ -87,7 +87,7 @@ static struct gpio_keys_button tl_mr3020_gpio_keys[] __initdata = {
 	},
 	{
 		.desc		= "sw2",
-		.type		= EV_KEY,
+		.type		= EV_SW,
 		.code		= BTN_1,
 		.debounce_interval = TL_MR3020_KEYS_DEBOUNCE_INTERVAL,
 		.gpio		= TL_MR3020_GPIO_BTN_SW2,

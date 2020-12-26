@@ -1,0 +1,83 @@
+From ef8be75663178c0720d0944d9305f624776fc91c Mon Sep 17 00:00:00 2001
+From: Sandor Yu <Sandor.yu@nxp.com>
+Date: Thu, 17 Oct 2019 16:29:49 +0800
+Subject: [PATCH] drm: mhdp: add mutex lock to mhdp register access function
+
+Add muxtex lock to mhdp registers access functions
+that could avoid race condition between cec thread and hdmi video.
+
+Signed-off-by: Sandor Yu <Sandor.yu@nxp.com>
+---
+ drivers/gpu/drm/bridge/cadence/cdns-dp-core.c     | 1 +
+ drivers/gpu/drm/bridge/cadence/cdns-hdmi-core.c   | 1 +
+ drivers/gpu/drm/bridge/cadence/cdns-mhdp-common.c | 8 ++++++++
+ include/drm/bridge/cdns-mhdp-common.h             | 1 +
+ 4 files changed, 11 insertions(+)
+
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dp-core.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dp-core.c
+@@ -410,6 +410,7 @@ static int __cdns_dp_probe(struct platfo
+ 	int ret;
+ 
+ 	mutex_init(&mhdp->lock);
++	mutex_init(&mhdp->iolock);
+ 
+ 	INIT_DELAYED_WORK(&mhdp->hotplug_work, hotplug_work_func);
+ 
+--- a/drivers/gpu/drm/bridge/cadence/cdns-hdmi-core.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-hdmi-core.c
+@@ -411,6 +411,7 @@ static int __cdns_hdmi_probe(struct plat
+ 	int ret;
+ 
+ 	mutex_init(&mhdp->lock);
++	mutex_init(&mhdp->iolock);
+ 
+ 	INIT_DELAYED_WORK(&mhdp->hotplug_work, hotplug_work_func);
+ 
+--- a/drivers/gpu/drm/bridge/cadence/cdns-mhdp-common.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-mhdp-common.c
+@@ -75,6 +75,8 @@ u32 cdns_mhdp_bus_read(struct cdns_mhdp_
+ {
+ 	u32 val;
+ 
++	mutex_lock(&mhdp->iolock);
++
+ 	if (mhdp->bus_type == BUS_TYPE_LOW4K_SAPB) {
+ 		/* Remap address to low 4K SAPB bus */
+ 		writel(offset >> 12, mhdp->regs_sec + 0xc);
+@@ -88,12 +90,16 @@ u32 cdns_mhdp_bus_read(struct cdns_mhdp_
+ 	else
+ 		val = readl(mhdp->regs_base + offset);
+ 
++	mutex_unlock(&mhdp->iolock);
++
+ 	return val;
+ }
+ EXPORT_SYMBOL(cdns_mhdp_bus_read);
+ 
+ void cdns_mhdp_bus_write(u32 val, struct cdns_mhdp_device *mhdp, u32 offset)
+ {
++	mutex_lock(&mhdp->iolock);
++
+ 	if (mhdp->bus_type == BUS_TYPE_LOW4K_SAPB) {
+ 		/* Remap address to low 4K SAPB bus */
+ 		writel(offset >> 12, mhdp->regs_sec + 0xc);
+@@ -106,6 +112,8 @@ void cdns_mhdp_bus_write(u32 val, struct
+ 		writel(val, mhdp->regs_sec + offset);
+ 	else
+ 		writel(val, mhdp->regs_base + offset);
++
++	mutex_unlock(&mhdp->iolock);
+ }
+ EXPORT_SYMBOL(cdns_mhdp_bus_write);
+ 
+--- a/include/drm/bridge/cdns-mhdp-common.h
++++ b/include/drm/bridge/cdns-mhdp-common.h
+@@ -685,6 +685,7 @@ struct cdns_mhdp_device {
+ 	bool plugged;
+ 	bool is_hpd;
+ 	struct mutex lock;
++	struct mutex iolock;
+ 
+ 	int irq[IRQ_NUM];
+ 

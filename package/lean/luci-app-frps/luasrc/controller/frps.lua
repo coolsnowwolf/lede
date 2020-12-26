@@ -1,4 +1,4 @@
--- Copyright 2020 Weizheng Li <lwz322@qq.com>
+-- Copyright 2020 lwz322 <lwz322@qq.com>
 -- Licensed to the public under the MIT License.
 
 local http = require "luci.http"

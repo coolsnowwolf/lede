@@ -1,14 +1,6 @@
 DEVICE_VARS += TPLINK_HWID TPLINK_HWREV TPLINK_FLASHLAYOUT TPLINK_HEADER_VERSION
 DEVICE_VARS += TPLINK_BOARD_ID TPLINK_HWREVADD TPLINK_HVERSION
 
-define Build/uImageArcher
-	mkimage -A $(LINUX_KARCH) \
-		-O linux -T kernel -C $(1) -a $(KERNEL_LOADADDR) \
-		-e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
-		-n '$(call toupper,$(LINUX_KARCH)) OpenWrt Linux-$(LINUX_VERSION)' -d $@ $@.new
-	@mv $@.new $@
-endef
-
 define Device/tplink-v1
   DEVICE_VENDOR := TP-Link
   TPLINK_HWID := 0x0
@@ -31,7 +23,7 @@ define Device/tplink-v2
   KERNEL := kernel-bin | append-dtb | lzma
   KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | tplink-v2-header
   IMAGE/sysupgrade.bin := tplink-v2-image -s | append-metadata | \
-	check-size $$$$(IMAGE_SIZE)
+	check-size
 endef
 
 define Device/tplink-nolzma
@@ -48,12 +40,14 @@ define Device/tplink-4m
   $(Device/tplink-nolzma)
   TPLINK_FLASHLAYOUT := 4M
   IMAGE_SIZE := 3904k
+  DEFAULT := n
 endef
 
 define Device/tplink-4mlzma
   $(Device/tplink-v1)
   TPLINK_FLASHLAYOUT := 4Mlzma
   IMAGE_SIZE := 3904k
+  DEFAULT := n
 endef
 
 define Device/tplink-8m
@@ -78,14 +72,16 @@ define Device/tplink-safeloader
   $(Device/tplink-v1)
   TPLINK_HWREV := 0x0
   KERNEL := kernel-bin | append-dtb | lzma | tplink-v1-header -O
+  KERNEL_INITRAMFS := $$(KERNEL)
   IMAGE/sysupgrade.bin := append-rootfs | tplink-safeloader sysupgrade | \
-	append-metadata | check-size $$$$(IMAGE_SIZE)
+	append-metadata | check-size
   IMAGE/factory.bin := append-rootfs | tplink-safeloader factory
 endef
 
 define Device/tplink-safeloader-uimage
   $(Device/tplink-safeloader)
-  KERNEL := kernel-bin | append-dtb | lzma | uImageArcher lzma
+  KERNEL := kernel-bin | append-dtb | lzma | uImage lzma
+  KERNEL_INITRAMFS := $$(KERNEL)
 endef
 
 define Device/tplink-safeloader-okli
@@ -96,4 +92,5 @@ define Device/tplink-safeloader-okli
   COMPILE/loader-$(1).elf := loader-okli-compile
   KERNEL := kernel-bin | append-dtb | lzma | uImage lzma -M 0x4f4b4c49 | \
 	loader-okli $(1) 12288
+  KERNEL_INITRAMFS := $$(KERNEL)
 endef

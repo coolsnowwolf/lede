@@ -18,7 +18,7 @@ endef
 ### Image scripts ###
 define Build/boot-common
 	rm -f $@.boot
-	mkfs.fat -C $@.boot $(FAT32_BLOCKS)
+	mkfs.fat -n boot -C $@.boot $(FAT32_BLOCKS)
 	mcopy -i $@.boot $(KDIR)/COPYING.linux ::
 	mcopy -i $@.boot $(KDIR)/LICENCE.broadcom ::
 	mcopy -i $@.boot cmdline.txt ::
@@ -79,14 +79,21 @@ define Device/rpi
   DEVICE_PACKAGES := \
 	cypress-firmware-43430-sdio \
 	cypress-nvram-43430-sdio-rpi-zero-w \
-	kmod-brcmfmac wpad-basic
+	kmod-brcmfmac wpad-basic-wolfssl
 endef
 ifeq ($(SUBTARGET),bcm2708)
   TARGET_DEVICES += rpi
 endif
 
 define Device/rpi-2
-  DEVICE_MODEL := 2B/3B/3B+/3CM/4B
+  DEVICE_MODEL := 2B/2B 1.2
+  DEVICE_VARIANT := (32bit)
+  DEVICE_ALT0_VENDOR := Raspberry Pi
+  DEVICE_ALT0_MODEL := 3B/3B+/3CM
+  DEVICE_ALT0_VARIANT := (32bit)
+  DEVICE_ALT1_VENDOR := Raspberry Pi
+  DEVICE_ALT1_MODEL := 4B
+  DEVICE_ALT1_VARIANT := (32bit)
   DEVICE_DTS := \
 	bcm2709-rpi-2-b bcm2710-rpi-2-b \
 	bcm2710-rpi-3-b bcm2710-rpi-3-b-plus \
@@ -103,7 +110,7 @@ define Device/rpi-2
 	cypress-nvram-43430-sdio-rpi-3b \
 	cypress-firmware-43455-sdio \
 	cypress-nvram-43455-sdio-rpi-3b-plus cypress-nvram-43455-sdio-rpi-4b \
-	kmod-brcmfmac wpad-basic
+	kmod-brcmfmac wpad-basic-wolfssl
   IMAGE/sysupgrade.img.gz := boot-common | boot-2708 | boot-2711 | sdcard-img | gzip | append-metadata
   IMAGE/factory.img.gz := boot-common | boot-2708 | boot-2711 | sdcard-img | gzip
 endef
@@ -112,7 +119,11 @@ ifeq ($(SUBTARGET),bcm2709)
 endif
 
 define Device/rpi-3
-  DEVICE_MODEL := 2B-1.2/3B/3B+/3CM
+  DEVICE_MODEL := 3B/3B+/3CM
+  DEVICE_VARIANT := (64bit)
+  DEVICE_ALT0_VENDOR := Raspberry Pi
+  DEVICE_ALT0_MODEL := 2B-1.2
+  DEVICE_ALT0_VARIANT := (64bit)
   KERNEL_IMG := kernel8.img
   DEVICE_DTS := \
 	broadcom/bcm2710-rpi-2-b \
@@ -128,7 +139,7 @@ define Device/rpi-3
 	cypress-nvram-43430-sdio-rpi-3b \
 	cypress-firmware-43455-sdio \
 	cypress-nvram-43455-sdio-rpi-3b-plus \
-	kmod-brcmfmac wpad-basic
+	kmod-brcmfmac wpad-basic-wolfssl
 endef
 ifeq ($(SUBTARGET),bcm2710)
   TARGET_DEVICES += rpi-3
@@ -136,6 +147,7 @@ endif
 
 define Device/rpi-4
   DEVICE_MODEL := 4B
+  DEVICE_VARIANT := (64bit)
   KERNEL_IMG := kernel8.img
   DEVICE_DTS := broadcom/bcm2711-rpi-4-b
   SUPPORTED_DEVICES := \
@@ -143,7 +155,7 @@ define Device/rpi-4
   DEVICE_PACKAGES := \
 	cypress-firmware-43455-sdio \
 	cypress-nvram-43455-sdio-rpi-4b \
-	kmod-brcmfmac wpad-basic
+	kmod-brcmfmac wpad-basic-wolfssl
   IMAGE/sysupgrade.img.gz := boot-common | boot-2711 | sdcard-img | gzip | append-metadata
   IMAGE/factory.img.gz := boot-common | boot-2711 | sdcard-img | gzip
 endef

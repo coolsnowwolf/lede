@@ -1,0 +1,103 @@
+From fddd729bd2150e83365528cefb9f1fef581e04c5 Mon Sep 17 00:00:00 2001
+From: Vakul Garg <vakul.garg@nxp.com>
+Date: Sun, 6 Jan 2019 19:05:37 +0530
+Subject: [PATCH] fsl_qbman: Adjust platform device creation for QMan portals
+
+Fix the platform device creation in QMan portals such that
+dma mappings are done properly.
+
+Signed-off-by: Vakul Garg <vakul.garg@nxp.com>
+Signed-off-by: Roy Pledge <roy.pledge@nxp.com>
+---
+ drivers/staging/fsl_qbman/qman_high.c | 47 +++++++++++++++++++----------------
+ 1 file changed, 25 insertions(+), 22 deletions(-)
+
+--- a/drivers/staging/fsl_qbman/qman_high.c
++++ b/drivers/staging/fsl_qbman/qman_high.c
+@@ -575,6 +575,7 @@ struct qman_portal *qman_create_portal(
+ 	char buf[16];
+ 	int ret;
+ 	u32 isdr;
++	struct platform_device_info pdev_info;
+ 
+ 	if (!portal) {
+ 		portal = kmalloc(sizeof(*portal), GFP_KERNEL);
+@@ -671,27 +672,22 @@ struct qman_portal *qman_create_portal(
+ 	portal->dqrr_disable_ref = 0;
+ 	portal->cb_dc_ern = NULL;
+ 	sprintf(buf, "qportal-%d", config->public_cfg.channel);
+-	portal->pdev = platform_device_alloc(buf, -1);
++
++	memset(&pdev_info, 0, sizeof(pdev_info));
++	pdev_info.name = buf;
++	pdev_info.id = PLATFORM_DEVID_NONE;
++	pdev_info.dma_mask = DMA_BIT_MASK(40);
++
++	portal->pdev = platform_device_register_full(&pdev_info);
+ 	if (!portal->pdev) {
+ 		pr_err("qman_portal - platform_device_alloc() failed\n");
+-		goto fail_devalloc;
+-	}
+-#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+-	portal->pdev->dev.coherent_dma_mask = DMA_BIT_MASK(40);
+-	portal->pdev->dev.dma_mask = &portal->pdev->dev.coherent_dma_mask;
+-#else
+-	if (dma_set_mask(&portal->pdev->dev, DMA_BIT_MASK(40))) {
+-		pr_err("qman_portal - dma_set_mask() failed\n");
+-		goto fail_devadd;
++		goto fail_devregister;
+ 	}
+-#endif
++
++	arch_setup_dma_ops(&portal->pdev->dev, 0, 0, NULL, true);
++
+ 	portal->pdev->dev.pm_domain = &qman_portal_device_pm_domain;
+ 	portal->pdev->dev.platform_data = portal;
+-	ret = platform_device_add(portal->pdev);
+-	if (ret) {
+-		pr_err("qman_portal - platform_device_add() failed\n");
+-		goto fail_devadd;
+-	}
+ 	dpa_rbtree_init(&portal->retire_table);
+ 	isdr = 0xffffffff;
+ 	qm_isr_disable_write(__p, isdr);
+@@ -751,10 +747,8 @@ fail_eqcr_empty:
+ fail_affinity:
+ 	free_irq(config->public_cfg.irq, portal);
+ fail_irq:
+-	platform_device_del(portal->pdev);
+-fail_devadd:
+-	platform_device_put(portal->pdev);
+-fail_devalloc:
++	platform_device_unregister(portal->pdev);
++fail_devregister:
+ 	if (num_ceetms)
+ 		for (ret = 0; ret < num_ceetms; ret++)
+ 			kfree(portal->ccgrs[ret]);
+@@ -852,8 +846,7 @@ void qman_destroy_portal(struct qman_por
+ 	qm_dqrr_finish(&qm->p);
+ 	qm_eqcr_finish(&qm->p);
+ 
+-	platform_device_del(qm->pdev);
+-	platform_device_put(qm->pdev);
++	platform_device_unregister(qm->pdev);
+ 
+ 	qm->config = NULL;
+ 	if (qm->alloced)
+@@ -1809,6 +1802,16 @@ int qman_init_fq(struct qman_fq *fq, u32
+ 		} else {
+ 			phys_fq = dma_map_single(&p->pdev->dev, fq, sizeof(*fq),
+ 						DMA_TO_DEVICE);
++			if (dma_mapping_error(&p->pdev->dev, phys_fq)) {
++				dev_err(&p->pdev->dev,
++					"dma_map_single failed for fqid: %u\n",
++					fq->fqid);
++				FQUNLOCK(fq);
++				PORTAL_IRQ_UNLOCK(p, irqflags);
++				put_affine_portal();
++				return -EIO;
++			}
++
+ 			qm_fqd_stashing_set64(&mcc->initfq.fqd, phys_fq);
+ 		}
+ 	}

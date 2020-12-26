@@ -1,0 +1,60 @@
+From a16c129c9dfae01921faaed98587d318459d5cfc Mon Sep 17 00:00:00 2001
+From: Zhao Qiang <qiang.zhao@nxp.com>
+Date: Wed, 30 May 2018 17:09:02 +0800
+Subject: [PATCH] sdk/qbman: fix issue in qman_delete_cgr_safe()
+
+The wait_for_completion() call in qman_delete_cgr_safe()
+was triggering a scheduling while atomic bug, replacing the
+kthread with a smp_call_function_single() call to fix it.
+
+Signed-off-by: Madalin Bucur <madalin.bucur@nxp.com>
+Signed-off-by: Zhao Qiang <qiang.zhao@nxp.com>
+---
+ drivers/staging/fsl_qbman/qman_high.c | 29 ++++++-----------------------
+ 1 file changed, 6 insertions(+), 23 deletions(-)
+
+--- a/drivers/staging/fsl_qbman/qman_high.c
++++ b/drivers/staging/fsl_qbman/qman_high.c
+@@ -3075,36 +3075,19 @@ struct cgr_comp {
+ 	struct completion completion;
+ };
+ 
+-static int qman_delete_cgr_thread(void *p)
++static void qman_delete_cgr_smp_call(void *p)
+ {
+-	struct cgr_comp *cgr_comp = (struct cgr_comp *)p;
+-	int res;
+-
+-	res = qman_delete_cgr((struct qman_cgr *)cgr_comp->cgr);
+-	complete(&cgr_comp->completion);
+-
+-	return res;
++	qman_delete_cgr((struct qman_cgr *)p);
+ }
+ 
+ void qman_delete_cgr_safe(struct qman_cgr *cgr)
+ {
+-	struct task_struct *thread;
+-	struct cgr_comp cgr_comp;
+-
+ 	preempt_disable();
+ 	if (qman_cgr_cpus[cgr->cgrid] != smp_processor_id()) {
+-		init_completion(&cgr_comp.completion);
+-		cgr_comp.cgr = cgr;
+-		thread = kthread_create(qman_delete_cgr_thread, &cgr_comp,
+-					"cgr_del");
+-
+-		if (likely(!IS_ERR(thread))) {
+-			kthread_bind(thread, qman_cgr_cpus[cgr->cgrid]);
+-			wake_up_process(thread);
+-			wait_for_completion(&cgr_comp.completion);
+-			preempt_enable();
+-			return;
+-		}
++		smp_call_function_single(qman_cgr_cpus[cgr->cgrid],
++					 qman_delete_cgr_smp_call, cgr, true);
++		preempt_enable();
++		return;
+ 	}
+ 	qman_delete_cgr(cgr);
+ 	preempt_enable();

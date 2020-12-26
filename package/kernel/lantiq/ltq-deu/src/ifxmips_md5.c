@@ -270,7 +270,7 @@ static struct shash_alg ifxdeu_md5_alg = {
                 .cra_name       =       "md5",
                 .cra_driver_name=       "ifxdeu-md5",
                 .cra_priority   =       300,
-                .cra_flags      =       CRYPTO_ALG_TYPE_DIGEST,
+                .cra_flags      =       CRYPTO_ALG_TYPE_HASH,
                 .cra_blocksize  =       MD5_HMAC_BLOCK_SIZE,
                 .cra_module     =       THIS_MODULE,
     }

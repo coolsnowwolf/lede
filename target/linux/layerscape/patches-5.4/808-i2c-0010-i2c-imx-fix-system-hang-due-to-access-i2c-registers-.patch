@@ -1,0 +1,52 @@
+From 97db2ca4485dc7b10b8382832befe607ade59a6b Mon Sep 17 00:00:00 2001
+From: Dong Aisheng <aisheng.dong@nxp.com>
+Date: Sat, 26 Jan 2019 17:51:59 +0800
+Subject: [PATCH] i2c: imx: fix system hang due to access i2c registers without
+ clock
+
+Currently, i2c_imx_bus_busy in i2c_imx_xfer is called before
+pm_runtime_get which means the clocks are still not enabled.
+This will cause a hang on IMX as IMX requires accessing registers
+with clocks.
+
+So let's change the order to ensure the clocks are enabled before
+accessing registers. This is also a more safe way to access registers,
+suppose shouldn't affect other platforms.
+
+Fixes: 4a6ebf1c125c ("i2c: imx: add workaround for erratum ERR010027")
+Reviewed-by: Biwen Li <biwen.li@nxp.com>
+Signed-off-by: Dong Aisheng <aisheng.dong@nxp.com>
+---
+ drivers/i2c/busses/i2c-imx.c | 9 ++++-----
+ 1 file changed, 4 insertions(+), 5 deletions(-)
+
+--- a/drivers/i2c/busses/i2c-imx.c
++++ b/drivers/i2c/busses/i2c-imx.c
+@@ -1094,12 +1094,15 @@ static int i2c_imx_xfer(struct i2c_adapt
+ 
+ 	dev_dbg(&i2c_imx->adapter.dev, "<%s>\n", __func__);
+ 
+-
+ 	if (!pm_runtime_enabled(i2c_imx->adapter.dev.parent)) {
+ 		pm_runtime_enable(i2c_imx->adapter.dev.parent);
+ 		enable_runtime_pm = true;
+ 	}
+ 
++	result = pm_runtime_get_sync(i2c_imx->adapter.dev.parent);
++	if (result < 0)
++		goto out;
++
+ 	/*
+ 	 * workround for ERR010027: ensure that the I2C BUS is idle
+ 	 * before switching to master mode and attempting a Start cycle
+@@ -1113,10 +1116,6 @@ static int i2c_imx_xfer(struct i2c_adapt
+ 			goto out;
+ 	}
+ 
+-	result = pm_runtime_get_sync(i2c_imx->adapter.dev.parent);
+-	if (result < 0)
+-		goto out;
+-
+ 	/* Start I2C transfer */
+ 	result = i2c_imx_start(i2c_imx);
+ 	if (result) {

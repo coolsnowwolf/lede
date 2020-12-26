@@ -20,7 +20,7 @@ adjust_edma_smp_affinity() {
 	local tx_irq_num
 
 	for tx_num in `seq 0 1 15` ; do
-		cpu=`printf "%x" $((1<<((tx_num/4+3)%nr)))`
+		cpu=`printf "%x" $((1<<((tx_num/4+0)%nr)))`
 		tx_irq_num=`grep -m1 edma_eth_tx$tx_num /proc/interrupts | cut -d ':' -f 1 | tail -n1 | tr -d ' '`
 		[ -n "$tx_irq_num" ] && echo $cpu > /proc/irq/$tx_irq_num/smp_affinity
 	done
@@ -68,14 +68,17 @@ adjust_radio_smp_affinity() {
 ################################################
 adjust_eth_queue() {
 	local nr=`cat /proc/cpuinfo | grep processor | wc -l`
-	local cpu=`printf "%x" $(((1<<nr)-1))`
+	local idx=0
 
 	for epath in /sys/class/net/eth[0-9]*; do
 		test -e $epath || break
 		echo $epath | grep -q "\." && continue
 		eth=`basename $epath`
+		idx=0
 		for exps in /sys/class/net/$eth/queues/rx-[0-9]*/rps_cpus; do
 			test -e $exps || break
+			cpu=`printf "%x" $((1<<((idx+1)%nr)))`
+			idx=$((idx+1))
 			echo $cpu > $exps
 			echo 256 > `dirname $exps`/rps_flow_cnt
 		done

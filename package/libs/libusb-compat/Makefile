@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libusb-compat
 PKG_VERSION:=0.1.5
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=@SF/libusb
@@ -29,6 +29,7 @@ define Package/libusb-compat
   TITLE:=libusb-0.1 compatibility library
   DEPENDS:=+libusb-1.0
   URL:=http://libusb.wiki.sourceforge.net/
+  ABI_VERSION:=4
 endef
 
 define Package/libusb-compat/description

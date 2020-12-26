@@ -15,12 +15,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=coremark
-PKG_RELEASE:=13
+PKG_RELEASE:=15
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/eembc/coremark.git
-PKG_SOURCE_VERSION:=21d473aae1f11d52ea592a8685734be2209aa66f
-PKG_SOURCE_DATE:=2019-09-30
+PKG_SOURCE_VERSION:=7685fd32bd7919581bfff2881a6dac6320581400
+PKG_SOURCE_DATE:=2020-05-28
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -37,10 +37,9 @@ endef
 
 DIR_ARCH:=linux
 
-ifeq ($(ARCH),x86_64)
+ifeq ($(CONFIG_ARCH_64BIT),y)
 	DIR_ARCH:=linux64
-endif
-ifeq ($(ARCH),aarch64)
+else ifeq ($(CONFIG_64BIT),y)
 	DIR_ARCH:=linux64
 endif
 

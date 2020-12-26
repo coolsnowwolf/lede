@@ -1,0 +1,85 @@
+From 6973ab95b9e0b0ce7b878c70c301bc5b3d11eca4 Mon Sep 17 00:00:00 2001
+From: Jason Liu <jason.hui.liu@nxp.com>
+Date: Mon, 11 Nov 2019 17:51:13 +0800
+Subject: [PATCH] of: of_reserved_mem: Ensure cma reserved region not cross the
+ low/high memory
+
+Need ensure the cma reserved region not cross the low/high memory boundary
+when using the dynamic allocation methond through device-tree, otherwise,
+kernel will fail to boot up when cma reserved region cross how/high mem.
+
+Signed-off-by: Jason Liu <jason.hui.liu@nxp.com>
+Cc: Laura Abbott <labbott@redhat.com>
+Cc: Frank Rowand <frowand.list@gmail.com>
+Cc: Rob Herring <robh+dt@kernel.org>
+Cc: stable@vger.kernel.org
+Signed-off-by: Arulpandiyan Vadivel <arulpandiyan_vadivel@mentor.com>
+---
+ drivers/of/of_reserved_mem.c | 33 ++++++++++++++++++++++++++-------
+ 1 file changed, 26 insertions(+), 7 deletions(-)
+
+--- a/drivers/of/of_reserved_mem.c
++++ b/drivers/of/of_reserved_mem.c
+@@ -26,11 +26,12 @@
+ static struct reserved_mem reserved_mem[MAX_RESERVED_REGIONS];
+ static int reserved_mem_count;
+ 
+-static int __init early_init_dt_alloc_reserved_memory_arch(phys_addr_t size,
+-	phys_addr_t align, phys_addr_t start, phys_addr_t end, bool nomap,
+-	phys_addr_t *res_base)
++static int __init early_init_dt_alloc_reserved_memory_arch(unsigned long node,
++	phys_addr_t size, phys_addr_t align, phys_addr_t start,
++	phys_addr_t end, bool nomap, phys_addr_t *res_base)
+ {
+ 	phys_addr_t base;
++	phys_addr_t highmem_start = __pa(high_memory - 1) + 1;
+ 
+ 	end = !end ? MEMBLOCK_ALLOC_ANYWHERE : end;
+ 	align = !align ? SMP_CACHE_BYTES : align;
+@@ -38,6 +39,24 @@ static int __init early_init_dt_alloc_re
+ 	if (!base)
+ 		return -ENOMEM;
+ 
++
++	/*
++	 * Sanity check for the cma reserved region:If the reserved region
++	 * crosses the low/high memory boundary, try to fix it up and then
++	 * fall back to allocate the cma region from the low mememory space.
++	 */
++
++	if (IS_ENABLED(CONFIG_CMA)
++	    && of_flat_dt_is_compatible(node, "shared-dma-pool")
++	    && of_get_flat_dt_prop(node, "reusable", NULL) && !nomap) {
++		if (base < highmem_start && (base + size) > highmem_start) {
++			base = memblock_find_in_range(start, highmem_start,
++						      size, align);
++			if (!base)
++				return -ENOMEM;
++		}
++	}
++
+ 	*res_base = base;
+ 	if (nomap)
+ 		return memblock_remove(base, size);
+@@ -131,8 +150,8 @@ static int __init __reserved_mem_alloc_s
+ 			end = start + dt_mem_next_cell(dt_root_size_cells,
+ 						       &prop);
+ 
+-			ret = early_init_dt_alloc_reserved_memory_arch(size,
+-					align, start, end, nomap, &base);
++			ret = early_init_dt_alloc_reserved_memory_arch(node,
++					size, align, start, end, nomap, &base);
+ 			if (ret == 0) {
+ 				pr_debug("allocated memory for '%s' node: base %pa, size %ld MiB\n",
+ 					uname, &base,
+@@ -143,8 +162,8 @@ static int __init __reserved_mem_alloc_s
+ 		}
+ 
+ 	} else {
+-		ret = early_init_dt_alloc_reserved_memory_arch(size, align,
+-							0, 0, nomap, &base);
++		ret = early_init_dt_alloc_reserved_memory_arch(node,
++					size, align, 0, 0, nomap, &base);
+ 		if (ret == 0)
+ 			pr_debug("allocated memory for '%s' node: base %pa, size %ld MiB\n",
+ 				uname, &base, (unsigned long)size / SZ_1M);

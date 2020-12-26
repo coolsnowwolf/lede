@@ -141,7 +141,7 @@ static void __init ds_setup(void)
 
 	// enable OE of level shifter
 	if (gpio_request_one(DS_GPIO_OE,
-	    GPIOF_OUT_INIT_LOW | GPIOF_EXPORT_DIR_FIXED, "OE-1") != 0)
+	    GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT_DIR_FIXED, "OE-1") != 0)
 		printk("Error setting GPIO OE\n");
 
 	if (gpio_request_one(DS_GPIO_UART_ENA,
@@ -150,7 +150,7 @@ static void __init ds_setup(void)
 
 	// enable OE of level shifter
 	if (gpio_request_one(DS_GPIO_OE2,
-	    GPIOF_OUT_INIT_LOW | GPIOF_EXPORT_DIR_FIXED, "OE-2") != 0)
+	    GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT_DIR_FIXED, "OE-2") != 0)
 		printk("Error setting GPIO OE2\n");
 }
 

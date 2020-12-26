@@ -1,7 +1,7 @@
 define LegacyDevice/F9K1115V2
   DEVICE_TITLE := Belkin AC1750DB (F9K1115V2)
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb3 kmod-usb-ledtrig-usbport \
-        kmod-ath10k ath10k-firmware-qca988x
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb3 kmod-usb-ledtrig-usbport \
+        kmod-ath10k-ct ath10k-firmware-qca988x-ct
 endef
 LEGACY_DEVICES += F9K1115V2
 
@@ -82,13 +82,13 @@ LEGACY_DEVICES += DIR601B1
 
 define LegacyDevice/WP543_4M
   DEVICE_TITLE := Compex WP543/WPJ543 (4MB flash)
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb-ohci kmod-usb2
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2
 endef
 LEGACY_DEVICES += WP543_4M
 
 define LegacyDevice/WPE72_4M
   DEVICE_TITLE := Compex WPE72/WPE72NX (4MB flash)
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb-ohci kmod-usb2
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2
 endef
 LEGACY_DEVICES += WPE72_4M
 
@@ -104,7 +104,7 @@ LEGACY_DEVICES += WNR2000V3
 
 define LegacyDevice/WNR2000V4
   DEVICE_TITLE := NETGEAR WNR2000V4
-  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-ledtrig-usbport
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport
 endef
 LEGACY_DEVICES += WNR2000V4
 

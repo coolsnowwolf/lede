@@ -1,0 +1,90 @@
+From 8d81ba8c0bc6fe31136cb15c9c82ef4c24965040 Mon Sep 17 00:00:00 2001
+From: Rich Felker <dalias@aerifal.cx>
+Date: Fri, 22 May 2020 17:45:47 -0400
+Subject: [PATCH 4/4] restore lock-skipping for processes that return to
+ single-threaded state
+
+the design used here relies on the barrier provided by the first lock
+operation after the process returns to single-threaded state to
+synchronize with actions by the last thread that exited. by storing
+the intent to change modes in the same object used to detect whether
+locking is needed, it's possible to avoid an extra (possibly costly)
+memory load after the lock is taken.
+---
+ src/internal/libc.h         | 1 +
+ src/malloc/malloc.c         | 5 ++++-
+ src/thread/__lock.c         | 4 +++-
+ src/thread/pthread_create.c | 8 ++++----
+ 4 files changed, 12 insertions(+), 6 deletions(-)
+
+--- a/src/internal/libc.h
++++ b/src/internal/libc.h
+@@ -21,6 +21,7 @@ struct __libc {
+ 	char can_do_threads;
+ 	char threaded;
+ 	char secure;
++	volatile signed char need_locks;
+ 	int threads_minus_1;
+ 	size_t *auxv;
+ 	struct tls_module *tls_head;
+--- a/src/malloc/malloc.c
++++ b/src/malloc/malloc.c
+@@ -26,8 +26,11 @@ int __malloc_replaced;
+ 
+ static inline void lock(volatile int *lk)
+ {
+-	if (libc.threaded)
++	int need_locks = libc.need_locks;
++	if (need_locks) {
+ 		while(a_swap(lk, 1)) __wait(lk, lk+1, 1, 1);
++		if (need_locks < 0) libc.need_locks = 0;
++	}
+ }
+ 
+ static inline void unlock(volatile int *lk)
+--- a/src/thread/__lock.c
++++ b/src/thread/__lock.c
+@@ -18,9 +18,11 @@
+ 
+ void __lock(volatile int *l)
+ {
+-	if (!libc.threaded) return;
++	int need_locks = libc.need_locks;
++	if (!need_locks) return;
+ 	/* fast path: INT_MIN for the lock, +1 for the congestion */
+ 	int current = a_cas(l, 0, INT_MIN + 1);
++	if (need_locks < 0) libc.need_locks = 0;
+ 	if (!current) return;
+ 	/* A first spin loop, for medium congestion. */
+ 	for (unsigned i = 0; i < 10; ++i) {
+--- a/src/thread/pthread_create.c
++++ b/src/thread/pthread_create.c
+@@ -118,8 +118,8 @@ _Noreturn void __pthread_exit(void *resu
+ 	 * until the lock is released, which only happens after SYS_exit
+ 	 * has been called, via the exit futex address pointing at the lock.
+ 	 * This needs to happen after any possible calls to LOCK() that might
+-	 * skip locking if libc.threads_minus_1 is zero. */
+-	libc.threads_minus_1--;
++	 * skip locking if process appears single-threaded. */
++	if (!--libc.threads_minus_1) libc.need_locks = -1;
+ 	self->next->prev = self->prev;
+ 	self->prev->next = self->next;
+ 	self->prev = self->next = self;
+@@ -339,7 +339,7 @@ int __pthread_create(pthread_t *restrict
+ 		~(1UL<<((SIGCANCEL-1)%(8*sizeof(long))));
+ 
+ 	__tl_lock();
+-	libc.threads_minus_1++;
++	if (!libc.threads_minus_1++) libc.need_locks = 1;
+ 	ret = __clone((c11 ? start_c11 : start), stack, flags, args, &new->tid, TP_ADJ(new), &__thread_list_lock);
+ 
+ 	/* All clone failures translate to EAGAIN. If explicit scheduling
+@@ -363,7 +363,7 @@ int __pthread_create(pthread_t *restrict
+ 		new->next->prev = new;
+ 		new->prev->next = new;
+ 	} else {
+-		libc.threads_minus_1--;
++		if (!--libc.threads_minus_1) libc.need_locks = 0;
+ 	}
+ 	__tl_unlock();
+ 	__restore_sigs(&set);
