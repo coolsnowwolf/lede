@@ -158,6 +158,18 @@ macaddr_setbit_la() {
 	printf "%02x:%s" $((0x${mac%%:*} | 0x02)) ${mac#*:}
 }
 
+macaddr_unsetbit_mc() {
+	local mac=$1
+
+	printf "%02x:%s" $((0x${mac%%:*} & ~0x01)) ${mac#*:}
+}
+
+macaddr_random() {
+	local randsrc=$(get_mac_binary /dev/urandom 0)
+
+	echo "$(macaddr_unsetbit_mc "$(macaddr_setbit_la "${randsrc}")")"
+}
+
 macaddr_2bin() {
 	local mac=$1
 

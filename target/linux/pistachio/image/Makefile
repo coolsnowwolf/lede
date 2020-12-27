@@ -23,7 +23,7 @@ define Device/Default
   IMAGE/sysupgrade.tar := sysupgrade-tar
 endef
 
-define Device/marduk
+define Device/img_creator-ci40
   DEVICE_VENDOR := Imagination Technologies
   DEVICE_MODEL := Creator Ci40 (VL-62899)
   DEVICE_ALT0_VENDOR := Imagination Technologies
@@ -32,10 +32,10 @@ define Device/marduk
   DEVICE_DTS := img/pistachio_marduk
   BLOCKSIZE := 256KiB
   PAGESIZE := 4KiB
-  DEVICE_PACKAGES := kmod-tpm-i2c-infineon
+  DEVICE_PACKAGES := kmod-tpm-i2c-infineon kmod-ca8210 wpan-tools
 endef
 
-TARGET_DEVICES += marduk
+TARGET_DEVICES += img_creator-ci40
 
 
 $(eval $(call BuildImage))

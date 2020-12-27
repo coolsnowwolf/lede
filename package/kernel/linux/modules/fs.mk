@@ -436,7 +436,7 @@ define KernelPackage/fs-nfs-v4
 endef
 
 define KernelPackage/fs-nfs-v4/description
- Kernel module for NFS v4 support
+ Kernel module for NFS v4 client support
 endef
 
 $(eval $(call KernelPackage,fs-nfs-v4))

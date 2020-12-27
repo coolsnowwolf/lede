@@ -106,6 +106,7 @@ struct pte {
 };
 
 struct partinfo {
+	unsigned long start;
 	unsigned long size;
 	int type;
 };
@@ -290,8 +291,16 @@ static int gen_ptable(uint32_t signature, int nr)
 		pte[i].type = parts[i].type;
 
 		start = sect + sectors;
-		if (kb_align != 0)
+		if (parts[i].start != 0) {
+			if (parts[i].start * 2 < start) {
+				fprintf(stderr, "Invalid start %ld for partition %d!\n",
+					parts[i].start, i);
+				return ret;
+			}
+			start = parts[i].start * 2;
+		} else if (kb_align != 0) {
 			start = round_to_kb(start);
+		}
 		pte[i].start = cpu_to_le32(start);
 
 		sect = start + parts[i].size * 2;
@@ -369,8 +378,16 @@ static int gen_gptable(uint32_t signature, guid_t guid, unsigned nr)
 			return ret;
 		}
 		start = sect + sectors;
-		if (kb_align != 0)
+		if (parts[i].start != 0) {
+			if (parts[i].start * 2 < start) {
+				fprintf(stderr, "Invalid start %ld for partition %d!\n",
+					parts[i].start, i);
+				return ret;
+			}
+			start = parts[i].start * 2;
+		} else if (kb_align != 0) {
 			start = round_to_kb(start);
+		}
 		gpte[i].start = cpu_to_le64(start);
 
 		sect = start + parts[i].size * 2;
@@ -481,13 +498,14 @@ fail:
 
 static void usage(char *prog)
 {
-	fprintf(stderr, "Usage: %s [-v] [-n] [-g] -h <heads> -s <sectors> -o <outputfile> [-a 0..4] [-l <align kB>] [-G <guid>] [[-t <type>] -p <size>...] \n", prog);
+	fprintf(stderr, "Usage: %s [-v] [-n] [-g] -h <heads> -s <sectors> -o <outputfile> [-a 0..4] [-l <align kB>] [-G <guid>] [[-t <type>] -p <size>[@<start>]...] \n", prog);
 	exit(EXIT_FAILURE);
 }
 
 int main (int argc, char **argv)
 {
 	unsigned char type = 0x83;
+	char *p;
 	int ch;
 	int part = 0;
 	uint32_t signature = 0x5452574F; /* 'OWRT' */
@@ -519,7 +537,13 @@ int main (int argc, char **argv)
 				fputs("Too many partitions\n", stderr);
 				exit(EXIT_FAILURE);
 			}
+			p = strchr(optarg, '@');
+			if (p) {
+				*(p++) = 0;
+				parts[part].start = to_kbytes(p);
+			}
 			parts[part].size = to_kbytes(optarg);
+			fprintf(stderr, "part %ld %ld\n", parts[part].start, parts[part].size);
 			parts[part++].type = type;
 			break;
 		case 't':

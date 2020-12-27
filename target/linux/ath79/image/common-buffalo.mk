@@ -1,3 +1,5 @@
+DEVICE_VARS += BUFFALO_PRODUCT BUFFALO_HWVER
+
 define Build/buffalo-tag
 	$(eval product=$(word 1,$(1)))
 	$(eval hwver=$(word 2,$(1)))
@@ -16,4 +18,17 @@ define Build/buffalo-tftp-header
 		dd if=$@; \
 	) > $@.new
 	mv $@.new $@
+endef
+
+
+define Device/buffalo_common
+  DEVICE_VENDOR := Buffalo
+  BUFFALO_PRODUCT :=
+  BUFFALO_HWVER := 3
+  IMAGES += factory.bin tftp.bin
+  IMAGE/default := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | \
+	pad-rootfs | check-size
+  IMAGE/factory.bin := $$(IMAGE/default) | buffalo-enc $$$$(BUFFALO_PRODUCT) 1.99 | \
+	buffalo-tag $$$$(BUFFALO_PRODUCT) $$$$(BUFFALO_HWVER)
+  IMAGE/tftp.bin := $$(IMAGE/default) | buffalo-tftp-header
 endef

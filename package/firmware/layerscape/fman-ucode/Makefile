@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fman-ucode
 PKG_VERSION:=LSDK-20.04
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/NXP/qoriq-fm-ucode.git
@@ -31,9 +31,9 @@ endef
 define Build/InstallDev
 	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)
 	$(CP) $(PKG_BUILD_DIR)/fsl_fman_ucode_ls1043_r1.1_106_4_18.bin \
-		$(STAGING_DIR_IMAGE)/ls1043ardb-fman.bin
+		$(STAGING_DIR_IMAGE)/fsl_ls1043a-rdb-fman.bin
 	$(CP) $(PKG_BUILD_DIR)/fsl_fman_ucode_ls1046_r1.0_106_4_18.bin \
-		$(STAGING_DIR_IMAGE)/ls1046ardb-fman.bin
+		$(STAGING_DIR_IMAGE)/fsl_ls1046a-rdb-fman.bin
 endef
 
 $(eval $(call BuildPackage,layerscape-fman))

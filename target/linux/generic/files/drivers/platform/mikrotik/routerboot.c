@@ -194,18 +194,18 @@ ssize_t routerboot_tag_show_string(const u8 *pld, u16 pld_len, char *buf)
 ssize_t routerboot_tag_show_u32s(const u8 *pld, u16 pld_len, char *buf)
 {
 	char *out = buf;
-	u32 data;	// cpu-endian
+	u32 *data;	// cpu-endian
 
 	/* Caller ensures pld_len > 0 */
-	if (pld_len % sizeof(data))
+	if (pld_len % sizeof(*data))
 		return -EINVAL;
 
-	data = *(u32 *)pld;
+	data = (u32 *)pld;
 
 	do {
-		out += sprintf(out, "0x%08x\n", data);
+		out += sprintf(out, "0x%08x\n", *data);
 		data++;
-	} while ((pld_len -= sizeof(data)));
+	} while ((pld_len -= sizeof(*data)));
 
 	return out - buf;
 }

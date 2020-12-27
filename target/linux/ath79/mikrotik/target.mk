@@ -1,7 +1,7 @@
 BOARDNAME := MikroTik devices
 FEATURES += minor nand squashfs
 
-DEFAULT_PACKAGES += wpad-basic
+DEFAULT_PACKAGES += wpad-basic-wolfssl
 
 define Target/Description
 	Build firmware images for MikroTik devices based on Qualcomm Atheros

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2017-2019 Tomasz Maciej Nowak <tomek_n@o2.pl>
+# Copyright (C) 2017-2019 Tomasz Maciej Nowak <tmn505@gmail.com>
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -50,7 +50,7 @@ define Device/compulab_trimslice
   DEVICE_MODEL := TrimSlice
   DEVICE_DTS := tegra20-trimslice
   DEVICE_PACKAGES := kmod-r8169 kmod-rt2800-usb kmod-rtc-em3027 \
-	kmod-usb-storage wpad-mini
+	kmod-usb-storage wpad-basic-wolfssl
   UBOOT := trimslice-mmc
 endef
 TARGET_DEVICES += compulab_trimslice

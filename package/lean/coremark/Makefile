@@ -37,10 +37,9 @@ endef
 
 DIR_ARCH:=linux
 
-ifeq ($(ARCH),x86_64)
+ifeq ($(CONFIG_ARCH_64BIT),y)
 	DIR_ARCH:=linux64
-endif
-ifeq ($(ARCH),aarch64)
+else ifeq ($(CONFIG_64BIT),y)
 	DIR_ARCH:=linux64
 endif
 

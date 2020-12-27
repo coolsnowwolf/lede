@@ -1,7 +1,7 @@
 local fs = require "nixio.fs"
 
 mp = Map("unblockmusic", translate("解锁网易云灰色歌曲"))
-mp.description = translate("采用 [QQ/虾米/百度/酷狗/酷我/咕咪/JOOX]等音源，替换网易云变灰歌曲链接")
+mp.description = translate("采用 [QQ/虾米/百度/酷狗/酷我/咪咕/JOOX]等音源，替换网易云变灰歌曲链接")
 
 mp:section(SimpleSection).template  = "unblockmusic/unblockmusic_status"
 
@@ -31,7 +31,7 @@ speedtype:value("xiami", translate("虾米音乐"))
 speedtype:value("baidu", translate("百度音乐"))
 speedtype:value("kugou", translate("酷狗音乐"))
 speedtype:value("kuwo", translate("酷我音乐"))
-speedtype:value("migu", translate("咕咪音乐"))
+speedtype:value("migu", translate("咪咕音乐"))
 speedtype:value("joox", translate("JOOX音乐"))
 speedtype.default = "kuwo"
 speedtype:depends("apptype", "nodejs")
@@ -39,12 +39,15 @@ speedtype:depends("apptype", "go")
 
 cloudserver = s:option(Value, "cloudserver", translate("服务器位置"))
 cloudserver:value("cdn-shanghai.service.project-openwrt.eu.org:30000:30001", translate("[CTCGFW] 腾讯云上海（高音质）"))
-cloudserver:value("hyird.xyz:30000:30001", translate("[hyird] 阿里云北京（高音质）"))
-cloudserver:value("39.96.56.58:30000:30000", translate("[Sunsky] 阿里云北京（高音质）"))
 cloudserver.description = translate("自定义服务器格式为 IP[域名]:HTTP端口:HTTPS端口<br />如果服务器为LAN内网IP，需要将这个服务器IP放入例外客户端 (不代理HTTP和HTTPS)")
 cloudserver.default = "cdn-shanghai.service.project-openwrt.eu.org:30000:30001"
 cloudserver.rmempty = true
 cloudserver:depends("apptype", "cloud")
+
+search_limit = s:option(Value, "search_limit", translate("搜索结果限制"))
+search_limit.description = translate("在搜索页面显示其他平台搜索结果个数，可填（0-3）")
+search_limit.default = "0"
+search_limit:depends("apptype", "go")
 
 flac = s:option(Flag, "flac_enabled", translate("启用无损音质"))
 flac.default = "1"

@@ -7,7 +7,7 @@
 
 define Profile/Broadcom-mips74k-none
   NAME:=Broadcom SoC, No WiFi
-  PACKAGES:=-wpad-basic
+  PACKAGES:=-wpad-basic-wolfssl
 endef
 
 define Profile/Broadcom-mips74k-none/Description

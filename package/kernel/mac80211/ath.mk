@@ -1,6 +1,6 @@
 PKG_DRIVERS += \
 	ath ath5k ath6kl ath6kl-sdio ath6kl-usb ath9k ath9k-common ath9k-htc ath10k \
-	ath11k carl9170 owl-loader
+	ath11k ar5523 carl9170 owl-loader
 
 PKG_CONFIG_DEPENDS += \
 	CONFIG_PACKAGE_ATH_DEBUG \
@@ -70,6 +70,7 @@ config-$(call config_package,ath6kl-sdio) += ATH6KL_SDIO
 config-$(call config_package,ath6kl-usb) += ATH6KL_USB
 
 config-$(call config_package,carl9170) += CARL9170
+config-$(call config_package,ar5523) += AR5523
 
 define KernelPackage/ath/config
   if PACKAGE_kmod-ath
@@ -275,6 +276,7 @@ define KernelPackage/ath10k/config
 
        config ATH10K_THERMAL
                bool "Enable thermal sensors and throttling support"
+               default y
                depends on PACKAGE_kmod-ath10k
 
 endef
@@ -316,4 +318,12 @@ define KernelPackage/owl-loader/description
   together with the calibration data in the file system.
 
   This is necessary for devices like the Cisco Meraki Z1.
+endef
+
+define KernelPackage/ar5523
+  $(call KernelPackage/mac80211/Default)
+  TITLE:=Driver for Atheros AR5523 USB sticks
+  DEPENDS:=@USB_SUPPORT +kmod-mac80211 +kmod-ath +kmod-usb-core +kmod-input-core 
+  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ar5523/ar5523.ko
+  AUTOLOAD:=$(call AutoProbe,ar5523)
 endef

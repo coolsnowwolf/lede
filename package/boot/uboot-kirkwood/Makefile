@@ -54,9 +54,19 @@ define U-Boot/iconnect_second_stage
   BUILD_DEVICES:=iom_iconnect-1.1
 endef
 
+define U-Boot/l-50
+  NAME:=CheckPoint L-50
+  BUILD_DEVICES:=checkpoint_l-50
+endef
+
 define U-Boot/nsa310
   NAME:=Zyxel NSA310
   BUILD_DEVICES:=zyxel_nsa310b
+endef
+
+define U-Boot/nsa310s
+  NAME:=Zyxel NSA310S
+  BUILD_DEVICES:=zyxel_nsa310s
 endef
 
 define U-Boot/nsa325
@@ -84,7 +94,9 @@ UBOOT_TARGETS := \
 	goflexhome \
 	ib62x0 ib62x0_second_stage \
 	iconnect iconnect_second_stage \
+	l-50 \
 	nsa310 \
+	nsa310s \
 	nsa325 \
 	pogo_e02 pogo_e02_second_stage \
 	pogoplugv4
