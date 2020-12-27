@@ -1,0 +1,289 @@
+#!/bin/bash /etc/rc.common
+
+START=99
+STOP=99
+
+module_list="
+  ipt2socks
+  tcproute2
+  smartdns
+"
+ipv4_lan="
+  0.0.0.0/8
+  10.0.0.0/8
+  100.64.0.0/10
+  127.0.0.0/8
+  169.254.0.0/16
+  172.16.0.0/12
+  192.0.0.0/24
+  192.0.2.0/24
+  192.88.99.0/24
+  192.168.0.0/16
+  198.18.0.0/15
+  198.51.100.0/24
+  203.0.113.0/24
+  224.0.0.0/4
+  240.0.0.0/4
+  255.255.255.255/32
+"
+
+revert_dns()(
+  uci del dhcp.@dnsmasq[0].server
+  uci del dhcp.@dnsmasq[0].noresolv
+  uci del dhcp.@dnsmasq[0].cachesize
+  uci commit dhcp
+)
+
+dns_change()(
+  uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#1053'
+  uci set dhcp.@dnsmasq[0].noresolv='1'
+  uci set dhcp.@dnsmasq[0].cachesize='0'
+  uci commit dhcp
+)
+
+tcp2_w()(
+  cat >/tmp/TcpRoute2.toml<<EOF
+addr="127.0.0.1:1025"
+PreHttpPorts=[${port//\ /,}]
+PreHttpsPorts=[${ports//\ /,}]
+EOF
+  i=0
+  while true; do
+    uci get passwall.@proxy[$i] >/dev/null 2>&1||break
+    name=$(uci get passwall.@proxy[$i].name)
+    proxyurl=$(uci get passwall.@proxy[$i].proxy)
+    address=$(uci get passwall.@proxy[$i].address)
+    port=$(uci get passwall.@proxy[$i].port)
+    user=$(uci get passwall.@proxy[$i].user)
+    pass=$(uci get passwall.@proxy[$i].password)
+    dns=$(uci get passwall.@proxy[$i].resolve)
+    sleep=$(uci get passwall.@proxy[$i].sleep)
+    delay=$(uci get passwall.@proxy[$i].delay)
+    white=$(uci get passwall.@proxy[$i].white)
+    filename=$(date +%s) #date +%s | sha256sum | base64 | head -c 32 ; echo
+    if [ "$proxyurl" -a "$address" -a "$port" ]; then
+      if [ "$user" -a "$pass" ]; then
+        server="$user:$pass@$address:$port"
+      else
+        server="$address:$port"
+      fi
+      [ "$dns" ]&&dns="true"||dns="false"
+      [ "$name" ]&&filename="$name"
+      [ -z "$sleep" ]&&sleep=0
+      [ -z "$delay" ]&&delay=0
+      cat >>/tmp/TcpRoute2.toml<<EOF
+[[UpStreams]]
+Name="$name"
+ProxyUrl="$proxyurl://$server"
+DnsResolve=$dns
+Sleep=$sleep
+CorrectDelay=$delay
+EOF
+      if [ "$white" ]; then
+        cat >>/tmp/TcpRoute2.toml<<EOF
+[[UpStreams.Whitelist]]
+Path="/tmp/$filename.txt"
+UpdateInterval="24h"
+Type="suffix"
+EOF
+        if [ -s /tmp/$filename.txt ]; then
+          rm -f /tmp/$filename.txt
+        fi
+        for j in $white ; do
+          echo $j >>/tmp/$filename.txt
+        done
+      fi
+    fi
+    unset -v name proxyurl address port user pass server dns sleep delay white filename
+    ((i++))
+  done
+)
+
+dns_w()(
+  cache=$(uci get passwall.@global[0].cache)
+  ipv6=$(uci get passwall.@global[0].ipv6)
+  dns=$(uci get passwall.@global[0].server)
+  bogus=$(uci get passwall.@global[0].bogus)
+  if [ "$dns" ]; then
+    [ -z "$cache" ]&&cache=0
+    [ -z "$ipv6" ]&&ipv6="yes"||ipv6="no"
+    cat >/tmp/smartdns.conf<<EOF
+server-name smartdns
+bind 127.0.0.1:1053
+bind [::1]:1053
+tcp-idle-time 15
+cache-size $cache
+serve-expired yes
+serve-expired-ttl 10
+speed-check-mode tcp:443,tcp:80,ping
+force-AAAA-SOA $ipv6
+log-level error
+EOF
+    for i in $dns ; do
+      echo "server $i" >>/tmp/smartdns.conf
+    done
+    for i in $bogus ; do
+      echo "bogus-nxdomain $i" >>/tmp/smartdns.conf
+    done
+    echo -e "$(cat /etc/black.list)\n"|while IFS= read -r line; do
+      [ "$line" ]&&echo "address $line" >>/tmp/smartdns.conf
+    done
+  fi
+)
+
+clear_rules()(
+  iptables -t nat -D PREROUTING -j passwall
+  iptables -t nat -F passwall
+  iptables -t nat -X passwall
+) 2> /dev/null
+
+start_up()(
+  if [ -n "$switch" ]; then
+    (ipt2socks -p 1025 -b 0.0.0.0 -B ::0 -l 1024 -j ${cores:=1} -T -4 -R > /dev/null 2>&1 &)
+    tcp2_w
+    (tcproute2 -config /tmp/TcpRoute2.toml -daemon > /dev/null 2>&1 &)
+    dns_w
+    smartdns -c /tmp/smartdns.conf
+    revert_dns
+    dns_change
+  else
+    shut_down
+    revert_dns
+  fi
+  /etc/init.d/dnsmasq restart >/dev/null 2>&1
+)
+
+fast_check()(
+  for i in $module_list; do
+    pidof $i >/dev/null
+    if [ $? -ne 0 ]; then
+      echo -n "$i 未运行！"
+      exit $?
+    fi
+  done
+  iptables -w -t nat -C PREROUTING -j passwall 2>/dev/null
+  if [ $? -ne 0 ]; then
+    echo -n "没有规则引入表!"
+    exit $?
+  fi
+  num=$(iptables -n -t nat -L passwall --line-number|grep 'redir ports 1024\|match-set lan dst'|wc -l 2>/dev/null)
+  if [ ${num:=0} -lt 2 ]; then
+    echo -n "表规则数量异常!"
+    exit $?
+  fi
+)
+
+link_check()(
+  data=$(curl -o /dev/null -x socks5://127.0.0.1:1025 -s -m 10 -L -w '%{time_total};%{http_code}' $1)
+  if [ $? -eq 0 -a "$data" ]; then
+    code=${data#*;}
+    if [ ${code:=127} -eq 200 ]; then
+      echo -n ${data%;*}
+    fi
+  fi
+)
+
+from_address()(
+  if [ "$1" == "china" ]; then
+    url='https://myip.ipip.net'
+  elif [ "$1" == "foreign" ]; then
+    url='https://api.myip.la/cn?json'
+  else
+    exit $?
+  fi
+  data=$(curl -x socks5://127.0.0.1:1025 -s -m 10 -L -w ';%{http_code}' $url|sed ':a;N;s/\n/ /g;ta')
+  if [ $? -eq 0 -a "$data" ]; then
+    code=${data#*;}
+    if [ ${code:=127} -eq 200 ]; then
+      if [ "$1" == "china" ]; then
+        ip=$(echo $data|grep -oE '([0-9]+\.){3}[0-9]+?')
+        addr=${data#*\来\自\于\：}
+        if [[ "$addr" == *"台湾"* ]]; then
+          addr=${addr/中国/中华民国};
+         #addr=${addr/台湾省/台湾};
+        fi
+        echo -n "$ip,${addr%;*}"
+      elif [ "$1" == "foreign" ]; then
+        ip=$(jsonfilter -s $data -e '@.ip');
+        code=$(jsonfilter -s $data -e '@.location.country_code');
+        location=$(jsonfilter -s $data -e '@.location.city');
+        country=$(jsonfilter -s $data -e '@.location.country_name');
+        province=$(jsonfilter -s $data -e '@.location.province');
+        [ "$code" == "TW" ]&&country="中华民国"
+        echo -n "$ip,$country $province $location"
+      fi
+    fi
+  fi
+)
+
+
+shut_down()(
+  for i in $module_list; do
+    kill $(pidof $i) 2> /dev/null
+  done
+)
+
+ss_nat()(
+  [ -z "$port" ]&&pport=${ports//\ /,}
+  [ -z "$ports" ]&&pport=${port//\ /,}
+  [ "$port" -a "$ports" ]&&pport="${port//\ /,},${ports//\ /,}"
+  if [ -n "$switch" -a -n "$pport" ]; then
+    ipset create lan hash:net
+    if [ $? -eq 0 ]; then
+      for i in $ipv4_lan; do
+        ipset add lan $i
+      done
+    fi
+    iptables -t nat -N passwall
+    iptables -w -t nat -A passwall -m set --match-set lan dst -j ACCEPT
+    iptables -w -t nat -A passwall -p tcp -m multiport --dport $pport -j REDIRECT --to-ports 1024
+    iptables -w -t nat -A PREROUTING -j passwall
+  else
+    clear_rules
+  fi
+);
+
+case $1 in
+  check)
+    fast_check
+  ;;
+  link)
+    link_check $2
+  ;;
+  from)
+    from_address $2
+  ;;
+esac
+
+if [ -s /etc/config/passwall ]; then
+  switch=$(uci get passwall.@global[0].switch 2>/dev/null)
+  port=$(uci get passwall.@global[0].port)
+  ports=$(uci get passwall.@global[0].ports)
+  cores=$(cat /proc/cpuinfo|grep processor|wc -l)
+fi
+
+for i in $module_list; do
+  type $i >/dev/null 2>&1
+  [ $? -eq 127 ]&&exit $?
+  [ ! -x /usr/bin/$i ]&&chmod +x /usr/bin/$i 2>/dev/null
+done
+
+stop()
+{
+  clear_rules
+  shut_down
+} 2>/dev/null
+
+start()
+{
+  start_up
+  ss_nat
+} 2>/dev/null
+
+restart()
+{
+  clear_rules
+  shut_down
+  start_up
+  ss_nat
+} 2>/dev/null
