@@ -137,6 +137,18 @@ define Device/raidsonic_ib-nas62x0
 endef
 TARGET_DEVICES += raidsonic_ib-nas62x0
 
+define Device/seagate_blackarmor-nas220
+  DEVICE_VENDOR := Seagate
+  DEVICE_MODEL := Blackarmor NAS220
+  DEVICE_PACKAGES := kmod-hwmon-adt7475 kmod-fs-ext4 kmod-ata-marvell-sata \
+	mdadm kmod-gpio-button-hotplug
+  PAGESIZE := 512
+  SUBPAGESIZE := 256
+  BLOCKSIZE := 16k
+  UBINIZE_OPTS := -e 1
+endef
+TARGET_DEVICES += seagate_blackarmor-nas220
+
 define Device/seagate_dockstar
   DEVICE_VENDOR := Seagate
   DEVICE_MODEL := FreeAgent Dockstar
