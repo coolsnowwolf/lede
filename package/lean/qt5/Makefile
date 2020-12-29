@@ -105,16 +105,6 @@ CONFIGURE_ARGS = \
 		-no-tslib \
 		-no-libpng \
 		-no-libjpeg \
-		-no-sql-db2 \
-		-no-sql-ibase \
-		-no-sql-mysql \
-		-no-sql-oci \
-		-no-sql-odbc \
-		-no-sql-psql \
-		-no-sql-sqlite \
-		-no-sql-sqlite2 \
-		-no-sqlite \
-		-no-sql-tds \
 		-no-strip \
 		-no-xcb \
 		-no-gui \
@@ -182,7 +172,9 @@ endef
 
 define Package/qt5-sql/install
 	$(INSTALL_DIR) $(1)/usr/lib/
+	$(INSTALL_DIR) $(1)/usr/lib/Qt/plugins/sqldrivers/
 	$(CP) $(PKG_BUILD_DIR)/qtbase/lib/libQt5Sql.so* $(1)/usr/lib/
+	$(CP) $(PKG_BUILD_DIR)/qtbase/plugins/sqldrivers/*.so $(1)/usr/lib/Qt/plugins/sqldrivers/
 endef
 
 define Package/qt5-xml/install
