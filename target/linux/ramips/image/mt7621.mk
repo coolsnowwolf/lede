@@ -357,7 +357,6 @@ endef
 TARGET_DEVICES += firefly_firewrt
 
 define Device/glinet_gl-mt1300
-  $(Device/dsa-migration)
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := GL.iNet
   DEVICE_MODEL := GL-MT1300
