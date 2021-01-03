@@ -27,8 +27,8 @@ define Package/x86
 		+luci-app-uhttpd +luci-app-usb-printer +luci-app-watchpig +luci-app-wrtbwmon \
 		+luci-app-xlnetacc +luci-app-zerotier +luci-theme-argon-18.06 +luci-app-cifs-mount \
 		+luci-app-cifsd +youtube-dl +4G +luci-app-jd-dailybonus +luci-app-kodexplorer \
-		+luci-app-kcptun +luci-app-music-remote-center +luci-app-nfs +luci-app-openvpn \
-		+luci-app-passwall +luci-app-passwall_INCLUDE_simple-obfs +luci-app-privoxy \
+		+luci-app-music-remote-center +luci-app-nfs +luci-app-openvpn \
+		+luci-app-passwall +PACKAGE_luci-app-passwall_INCLUDE_simple-obfs +luci-app-privoxy \
 		+luci-app-rclone +luci-app-unblockmusic +luci-app-wireguard
 		
 endef
