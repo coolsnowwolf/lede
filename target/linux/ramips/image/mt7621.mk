@@ -356,6 +356,14 @@ define Device/firefly_firewrt
 endef
 TARGET_DEVICES += firefly_firewrt
 
+define Device/glinet_gl-mt1300
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := GL.iNet
+  DEVICE_MODEL := GL-MT1300
+  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7615-firmware kmod-usb3
+endef
+TARGET_DEVICES += glinet_gl-mt1300
+
 define Device/gehua_ghl-r-001
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := GeHua
