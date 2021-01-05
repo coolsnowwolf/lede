@@ -2,11 +2,14 @@
 Luci for JD dailybonus Script for Openwrt  
 一个运行在openwrt下的京东签到插件。
 
-### Update Log 2020-10-21  
+### Update Log 2020-12-30  
 
 #### Updates
 
-- UPD: 精简微信推送内容，更加直观。
+- UPD: 取消已经无法使用的crx工具，请使用压缩包手动安装扩展。
+- UPD: 修改了获取京东cookie的插件，只获取必要的cookie信息，信息更加简短。
+- UPD: 后台更新取消了版本大小检测，每次更新将会直接拉取源脚本。
+- UPD: 前端手动更新脚本，点击后如果确认有新版本将自动更新到新版本。
 
 
 详情见[具体日志](./relnotes.txt)。 
@@ -36,6 +39,8 @@ make -j1 V=s #编译固件
 
 ⚠️安装步骤[重要]⚠️  
 
+目前插件已经不再需要node-request 依赖，如果之前有安装的，请到软件包进行卸载。
+但是node 是必要依赖，请必须确认已经安装Node。
 1.自行安装Node [命令: opkg update && opkg install node]
   (如果已经安装node版本的网易云插件则可以跳过)   
   

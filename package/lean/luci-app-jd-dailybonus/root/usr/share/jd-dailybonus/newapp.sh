@@ -155,15 +155,11 @@ update() {
         local_ver=0
     fi
     remote_ver=$(get_ver $TEMP_SCRIPT)
-    if [ $(expr "$local_ver" \< "$remote_ver") -eq 1 ]; then
-        cp -r $TEMP_SCRIPT $JD_SCRIPT
-        fill_cookie
-        uci set jd-dailybonus.@global[0].version=$remote_ver
-        uci commit jd-dailybonus
-        cancel "0"
-    else
-        cancel "101"
-    fi
+    cp -r $TEMP_SCRIPT $JD_SCRIPT
+    fill_cookie
+    uci set jd-dailybonus.@global[0].version=$remote_ver
+    uci commit jd-dailybonus
+    cancel "0"
 }
 
 while getopts ":alnruswh" arg; do
