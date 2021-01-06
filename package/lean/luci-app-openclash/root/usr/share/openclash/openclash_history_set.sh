@@ -43,6 +43,12 @@ close_all_conection() {
 	curl -m 5 --retry 2 -H "Authorization: Bearer ${SECRET}" -H "Content-Type:application/json" -X DELETE http://"$LAN_IP":"$PORT"/connections >/dev/null 2>&1
 }
 
+if [ -z "$CONFIG_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
+   CONFIG_FILE=$(uci get openclash.config.config_path 2>/dev/null)
+   CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
+   HISTORY_PATH="/etc/openclash/history/$CONFIG_NAME"
+fi
+
 if [ -s "$HISTORY_PATH" ] && [ ! -z "$(pidof clash)" ]; then
    cat "$HISTORY_PATH" |while read -r line
    do

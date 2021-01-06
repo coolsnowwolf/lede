@@ -85,7 +85,10 @@ fi
    last_line=$(iptables -t nat -nL PREROUTING --line-number |awk '{print $1}' 2>/dev/null |awk 'END {print}' |sed -n '$p')
    op_line=$(iptables -t nat -nL PREROUTING --line-number |grep "openclash" 2>/dev/null |awk '{print $1}' 2>/dev/null |head -1)
    if [ "$last_line" != "$op_line" ] && [ -z "$core_type" ]; then
-      iptables -t nat -D PREROUTING -p tcp -j openclash
+      pre_lines=$(iptables -nvL PREROUTING -t nat |sed 1,2d |sed -n '/openclash/=' 2>/dev/null |sort -rn)
+      for pre_line in $pre_lines; do
+         iptables -t nat -D PREROUTING "$pre_line" >/dev/null 2>&1
+      done >/dev/null 2>&1
       iptables -t nat -A PREROUTING -p tcp -j openclash
       echo "$LOGTIME Watchdog: Reset Firewall For Enabling Redirect." >>$LOG_FILE
    fi

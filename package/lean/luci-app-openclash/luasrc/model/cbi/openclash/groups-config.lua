@@ -52,7 +52,7 @@ end
 o = s:option(ListValue, "type", translate("Group Type"))
 o.rmempty = true
 o.description = translate("Choose The Operation Mode")
-o:value("select", translate("Select"))
+o:value("select", translate("Select　"))
 o:value("url-test", translate("URL-Test"))
 o:value("fallback", translate("Fallback"))
 o:value("load-balance", translate("Load-Balance"))

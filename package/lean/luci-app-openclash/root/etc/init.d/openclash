@@ -1197,17 +1197,18 @@ firewall_redirect_exclude()
 
 set_firewall()
 {
-if [ "$(iptables -t nat -nL PREROUTING --line-number |grep "udp dpt:53" |grep "0.0.0.0/0 \{0,\}0.0.0.0/0" |wc -l)" -gt 1 ] && [ "$enable_redirect_dns" -eq 1 ]; then
+	
+if [ "$enable_redirect_dns" -eq 1 ] && [ -z "$(iptables -t nat -nL PREROUTING --line-number |grep "redir ports 53$")"]; then
+   iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53
+   iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53
+fi
+
+if [ "$(iptables -t nat -nL PREROUTING --line-number |grep "redir ports 53" |wc -l)" -gt 2 ] && [ "$enable_redirect_dns" -eq 1 ]; then
    echo "发现53端口被劫持，清理防火墙规则..." >$START_LOG
-   pre_lines=$(iptables -nvL PREROUTING -t nat |sed 1,2d |sed -n '/0.0.0.0\/0 \{0,\}0.0.0.0\/0 \{0,\}udp dpt:53/=' 2>/dev/null |sort -rn)
+   pre_lines=$(iptables -nvL PREROUTING -t nat |sed 1,2d |sed -n '/redir ports 53/=' 2>/dev/null |sort -rn)
    for pre_line in $pre_lines; do
       iptables -t nat -D PREROUTING "$pre_line" >/dev/null 2>&1
    done
-   iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53 >/dev/null 2>&1
-   sleep 2
-elif [ "$enable_redirect_dns" -eq 1 ] && [ -z "$(iptables -t nat -nL PREROUTING --line-number |grep "redir ports 53$")"]; then
-   iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53
-   iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53
 fi
 
 if [ -z "$(uci get firewall.openclash 2>/dev/null)" ] || [ -z "$(uci get ucitrack.@openclash[-1].init 2>/dev/null)" ]; then
@@ -1313,12 +1314,11 @@ if [ -z "$en_mode_tun" ] || [ "$en_mode_tun" -eq 3 ]; then
       iptables -t nat -A openclash -m set --match-set china_ip_route dst -j RETURN >/dev/null 2>&1
    fi
    iptables -t nat -A openclash -p tcp -j REDIRECT --to-ports "$proxy_port"
-   if [ -z "$en_mode_tun" ]; then
-      iptables -t nat -I PREROUTING -p tcp -d 8.8.8.8 --dport 53 -j REDIRECT --to-ports "$proxy_port"
-      iptables -t nat -I PREROUTING -p tcp -d 8.8.4.4 --dport 53 -j REDIRECT --to-ports "$proxy_port"
-   fi
    iptables -t nat -A PREROUTING -p tcp -j openclash
    if [ -z "$en_mode_tun" ]; then
+      #Google dns
+      iptables -t nat -I PREROUTING -p tcp -d 8.8.8.8 --dport 53 -j REDIRECT --to-ports "$proxy_port"
+      iptables -t nat -I PREROUTING -p tcp -d 8.8.4.4 --dport 53 -j REDIRECT --to-ports "$proxy_port"
       #udp
       if [ "$enable_udp_proxy" -eq 1 ]; then
          modprobe xt_TPROXY >/dev/null 2>&1
@@ -1754,6 +1754,8 @@ reload()
       do_run_mode 2>/dev/null
       get_config 2>/dev/null
       set_firewall 2>/dev/null
+      /etc/init.d/dnsmasq restart >/dev/null 2>&1
       echo "${LOGTIME} Reload OpenClash Firewall Rules" >> $LOG_FILE
+      echo "" >$START_LOG
    fi
 }

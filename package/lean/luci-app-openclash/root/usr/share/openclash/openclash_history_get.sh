@@ -14,6 +14,12 @@ PORT=$(uci get openclash.config.cn_port 2>/dev/null)
 LOG_FILE="/tmp/openclash.log"
 LOGTIME=$(date "+%Y-%m-%d %H:%M:%S")
 
+if [ -z "$CONFIG_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
+   CONFIG_FILE=$(uci get openclash.config.config_path 2>/dev/null)
+   CONFIG_NAME=$(echo "$CONFIG_FILE" |awk -F '/' '{print $5}' 2>/dev/null)
+   HISTORY_PATH="/etc/openclash/history/$CONFIG_NAME"
+fi
+
 if [ -n "$(pidof clash)" ] && [ -f "$CONFIG_FILE" ]; then
    curl -m 5 --retry 2 -w %{http_code}"\n" -H "Authorization: Bearer ${SECRET}" -H "Content-Type:application/json" -X GET http://"$LAN_IP":"$PORT"/proxies > "$CURL_CACHE" 2>/dev/null
    if [ "$(sed -n '$p' "$CURL_CACHE" 2>/dev/null)" = "200" ]; then
