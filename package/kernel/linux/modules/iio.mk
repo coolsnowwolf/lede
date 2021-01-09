@@ -446,6 +446,56 @@ endef
 $(eval $(call KernelPackage,iio-tsl4531))
 
 
+define KernelPackage/iio-fxas21002c
+  SUBMENU:=$(IIO_MENU)
+  TITLE:=Freescale FXAS21002C 3-axis gyro driver
+  DEPENDS:=+kmod-iio-core +kmod-regmap-core +kmod-industrialio-triggered-buffer
+  KCONFIG:= CONFIG_FXAS21002C
+  FILES:=$(LINUX_DIR)/drivers/iio/gyro/fxas21002c_core.ko
+  AUTOLOAD:=$(call AutoLoad,56,fxas21002c)
+endef
+
+define KernelPackage/iio-fxas21002c/description
+ Support for Freescale FXAS21002C 3-axis gyro.
+endef
+
+$(eval $(call KernelPackage,iio-fxas21002c))
+
+
+define KernelPackage/iio-fxas21002c-i2c
+  SUBMENU:=$(IIO_MENU)
+  TITLE:=Freescale FXAS21002C 3-axis gyro driver (I2C)
+  DEPENDS:=+kmod-iio-fxas21002c +kmod-i2c-core +kmod-regmap-i2c
+  KCONFIG:= CONFIG_FXAS21002C_I2C
+  FILES:=$(LINUX_DIR)/drivers/iio/gyro/fxas21002c_i2c.ko
+  AUTOLOAD:=$(call AutoLoad,56,fxas21002c_i2c)
+endef
+
+define KernelPackage/iio-fxas21002c-i2c/description
+ Support for Freescale FXAS21002C 3-axis gyro
+ connected via I2C.
+endef
+
+
+$(eval $(call KernelPackage,iio-fxas21002c-i2c))
+
+define KernelPackage/iio-fxas21002c-spi
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-iio-fxas21002c +kmod-regmap-spi
+  TITLE:=Freescale FXAS21002C 3-axis gyro driver (SPI)
+  KCONFIG:= CONFIG_FXAS21002C_SPI
+  FILES:=$(LINUX_DIR)/drivers/iio/gyro/fxas21002c_spi.ko
+  AUTOLOAD:=$(call AutoLoad,56,fxas21002c_spi)
+endef
+
+define KernelPackage/iio-fxas21002c-spi/description
+ Support for Freescale FXAS21002C 3-axis gyro
+ connected via SPI.
+endef
+
+$(eval $(call KernelPackage,iio-fxas21002c-spi))
+
+
 define KernelPackage/iio-fxos8700
   SUBMENU:=$(IIO_MENU)
   TITLE:=Freescale FXOS8700 3-axis accelerometer driver
