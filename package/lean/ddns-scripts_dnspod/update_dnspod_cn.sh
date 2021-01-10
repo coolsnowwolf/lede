@@ -5,6 +5,7 @@
 [ -z "$password" ] && write_log 14 "Configuration error! [Password] cannot be empty"
 
 #检查外部调用工具
+WGET_SSL='wget'
 [ -n "$WGET_SSL" ] || write_log 13 "GNU Wget support is required to use Alibaba Cloud API. Please install first"
 
 # 变量声明
