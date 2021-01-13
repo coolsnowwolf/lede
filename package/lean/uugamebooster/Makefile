@@ -6,21 +6,21 @@
 
 # 
 # to get the latest version & md5 checksum:
-# curl -L -s -k -H "Accept:text/plain" "http://router.uu.163.com/api/plugin?type=openwrt-$(PKG_ARCH_UU)"
+# curl -L -s -k -H "Accept:text/plain" "http://router.uu.163.com/api/plugin?type=openwrt-$(UU_ARCH)"
 # 
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uugamebooster
-DEPENDS:=@(aarch64||arm||mips||mipsel||x86_64)
 PKG_VERSION:=v2.7.2
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
+	DEPENDS:=@(aarch64||arm||mips||mipsel||x86_64) +kmod-tun
 	TITLE:=NetEase UU Game Booster
 	URL:=https://uu.163.com
 endef
@@ -33,41 +33,45 @@ endef
 STRIP:=true
 
 ifeq ($(ARCH),x86_64)
-	PKG_ARCH_UU:=x86_64
+	UU_ARCH:=x86_64
 	PKG_MD5SUM:=07bf06131528276e7d4b8e3992fa2e8d
 endif
 
 ifeq ($(ARCH),mipsel)
-	PKG_ARCH_UU:=mipsel
+	UU_ARCH:=mipsel
 	PKG_MD5SUM:=3f11af92eb7abf2af2cce8102fea7499
 endif
 
 ifeq ($(ARCH),mips)
-	PKG_ARCH_UU:=mipsel
+	UU_ARCH:=mipsel
 	PKG_MD5SUM:=3f11af92eb7abf2af2cce8102fea7499
 endif
 
 ifeq ($(ARCH),arm)
-	PKG_ARCH_UU:=arm
+	UU_ARCH:=arm
 	PKG_MD5SUM:=5fce2b60df66ea8a8db4ddd55da3c6b4
 endif
 
 ifeq ($(ARCH),aarch64)
-	PKG_ARCH_UU:=aarch64
+	UU_ARCH:=aarch64
 	PKG_MD5SUM:=bc0e513cfce113c69b068e198e936100
 endif
 
-PKG_SOURCE:=uu.tar.gz
-PKG_SOURCE_URL:=http://uu.gdl.netease.com/openwrt-$(PKG_ARCH_UU)/$(PKG_VERSION)/
+PKG_URL:=http://uu.gdl.netease.com/openwrt-$(UU_ARCH)/$(PKG_VERSION)/uu.tar.gz
+PKG_FILE:=uugamebooster_$(UU_ARCH)-$(PKG_VERSION).tar.gz
 
 UNZIP_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)/$(PKG_NAME)-unzip
 
-define Build/Prepare
-	mkdir -vp $(UNZIP_DIR)
-	tar -zxvf $(DL_DIR)/$(PKG_SOURCE) -C $(UNZIP_DIR)
+define Build/Download
+	if [ ! -f $(DL_DIR)/$(PKG_FILE) ] ; then \
+		wget -c -t 10 -O $(DL_DIR)/$(PKG_FILE) $(PKG_URL); \
+	fi
 endef
 
-define Build/Configure
+define Build/Prepare
+	$(Build/Download)
+	mkdir -vp $(UNZIP_DIR)
+	tar -zxvf $(DL_DIR)/$(PKG_FILE) -C $(UNZIP_DIR)
 endef
 
 define Build/Compile
