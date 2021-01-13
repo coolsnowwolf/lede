@@ -30,8 +30,6 @@ define Package/$(PKG_NAME)/description
 NetEase's UU Game Booster Accelerates Triple-A Gameplay and Market
 endef
 
-STRIP:=true
-
 ifeq ($(ARCH),x86_64)
 	UU_ARCH:=x86_64
 	PKG_MD5SUM:=07bf06131528276e7d4b8e3992fa2e8d
@@ -57,21 +55,16 @@ ifeq ($(ARCH),aarch64)
 	PKG_MD5SUM:=bc0e513cfce113c69b068e198e936100
 endif
 
-PKG_URL:=http://uu.gdl.netease.com/openwrt-$(UU_ARCH)/$(PKG_VERSION)/uu.tar.gz
-PKG_FILE:=uugamebooster_$(UU_ARCH)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=http://uu.gdl.netease.com/openwrt-$(UU_ARCH)/$(PKG_VERSION)/uu.tar.gz?
+PKG_SOURCE:=$(PKG_NAME)-$(UU_ARCH)-$(PKG_VERSION).tar.gz
 
-UNZIP_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)/$(PKG_NAME)-unzip
+STRIP:=true
 
-define Build/Download
-	if [ ! -f $(DL_DIR)/$(PKG_FILE) ] ; then \
-		wget -c -t 10 -O $(DL_DIR)/$(PKG_FILE) $(PKG_URL); \
-	fi
-endef
+UNTAR_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)/$(PKG_NAME)-$(UU_ARCH)-bin
 
 define Build/Prepare
-	$(Build/Download)
-	mkdir -vp $(UNZIP_DIR)
-	tar -zxvf $(DL_DIR)/$(PKG_FILE) -C $(UNZIP_DIR)
+	mkdir -vp $(UNTAR_DIR)
+	tar -zxvf $(DL_DIR)/$(PKG_SOURCE) -C $(UNTAR_DIR)
 endef
 
 define Build/Compile
@@ -82,8 +75,8 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_BIN) ./files/uugamebooster.init $(1)/etc/init.d/uugamebooster
 
 	$(INSTALL_DIR) $(1)/usr/share/$(PKG_NAME)
-	$(INSTALL_BIN) $(UNZIP_DIR)/uuplugin $(1)/usr/share/$(PKG_NAME)/uuplugin
-	$(INSTALL_CONF) $(UNZIP_DIR)/uu.conf $(1)/usr/share/$(PKG_NAME)/uu.conf
+	$(INSTALL_BIN) $(UNTAR_DIR)/uuplugin $(1)/usr/share/$(PKG_NAME)/uuplugin
+	$(INSTALL_CONF) $(UNTAR_DIR)/uu.conf $(1)/usr/share/$(PKG_NAME)/uu.conf
 
 	# not finish yet:
 	# $(INSTALL_DIR) $(1)/usr/bin
