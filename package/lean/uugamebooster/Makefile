@@ -25,7 +25,6 @@ define Package/$(PKG_NAME)
 	URL:=https://uu.163.com
 endef
 
-
 define Package/$(PKG_NAME)/description
 NetEase's UU Game Booster Accelerates Triple-A Gameplay and Market
 endef
