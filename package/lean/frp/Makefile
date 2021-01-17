@@ -55,7 +55,7 @@ define frp/templates
 	$$(INSTALL_DIR) $$(1)/usr/bin
 	$$(INSTALL_BIN) $$(PKG_INSTALL_DIR)/usr/bin/$(1) $$(1)/usr/bin/
 	
-	$(STAGING_DIR_HOST)/bin/upx --lzma --best $$(1)/usr/bin/$(1)
+	$(STAGING_DIR_HOST)/bin/upx --lzma --best $$(1)/usr/bin/$(1) || true
   endef
 endef
 
