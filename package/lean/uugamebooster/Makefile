@@ -13,7 +13,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uugamebooster
 PKG_VERSION:=v2.7.2
-PKG_RELEASE:=2
+PKG_RELEASE:=5
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -70,8 +70,8 @@ define Build/Compile
 endef
 
 define Package/$(PKG_NAME)/install
-	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) ./files/uugamebooster.init $(1)/etc/init.d/uugamebooster
+	# $(INSTALL_DIR) $(1)/etc/init.d
+	# $(INSTALL_BIN) ./files/uugamebooster.init $(1)/etc/init.d/uuplugin
 
 	$(INSTALL_DIR) $(1)/usr/share/$(PKG_NAME)
 	$(INSTALL_BIN) $(UNTAR_DIR)/uuplugin $(1)/usr/share/$(PKG_NAME)/uuplugin
