@@ -12,4 +12,6 @@ o = s:option(Flag, "enabled", translate("Enable"))
 o.default = 0
 o.optional = false
 
+mp:section(SimpleSection).template  = "uuplugin/uuplugin_qcode"
+
 return mp
