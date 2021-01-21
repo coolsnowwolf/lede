@@ -107,6 +107,7 @@ obj-$(CONFIG_ATH79_MACH_DLAN_HOTSPOT)		+= mach-dlan-hotspot.o
 obj-$(CONFIG_ATH79_MACH_DLAN_PRO_1200_AC)	+= mach-dlan-pro-1200-ac.o
 obj-$(CONFIG_ATH79_MACH_DLAN_PRO_500_WP)	+= mach-dlan-pro-500-wp.o
 obj-$(CONFIG_ATH79_MACH_DOMYWIFI_DW33D)		+= mach-domywifi-dw33d.o
+obj-$(CONFIG_ATH79_MACH_ARRIS_SBR_AC1750)		+= mach-sbr-ac1750.o
 obj-$(CONFIG_ATH79_MACH_DR342)			+= mach-dr344.o
 obj-$(CONFIG_ATH79_MACH_DR344)			+= mach-dr344.o
 obj-$(CONFIG_ATH79_MACH_DR531)			+= mach-dr531.o
