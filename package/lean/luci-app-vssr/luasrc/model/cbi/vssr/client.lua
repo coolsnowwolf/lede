@@ -93,15 +93,7 @@ for i, v in pairs(route_name) do
     o = s:option(ListValue, v, translate(route_label[i]))
     o:value('nil', translate('Same as Main Server'))
     for _, key in pairs(server_table) do
-        if(v == 'tw_video_server' and key.flag == "tw") then
-            o:value(key.name, key.gname)
-        end
-        if(v == 'tvb_server' and key.flag == "hk") then
-            o:value(key.name, key.gname)
-        end
-        if(v ~= 'tvb_server' and v ~= 'tw_video_server') then
-            o:value(key.name, key.gname)
-        end
+        o:value(key.name, key.gname)
     end
     o:depends('v2ray_flow', '1')
     o.default = 'nil'

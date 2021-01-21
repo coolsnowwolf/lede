@@ -1,31 +1,31 @@
 local m, s, o
 local NXFS = require 'nixio.fs'
 local router_table = {
-    yotube = {
+    a1 = {
         name = 'youtube',
         des = 'Youtube Domain'
     },
-    tw_video = {
+    a2 = {
         name = 'tw_video',
         des = 'Tw Video Domain'
     },
-    netflix = {
+    a3 = {
         name = 'netflix',
         des = 'Netflix Domain'
     },
-    disney = {
+    a4 = {
         name = 'disney',
         des = 'Disney+ Domain'
     },
-    prime = {
+    a5 = {
         name = 'prime',
         des = 'Prime Video Domain'
     },
-    tvb = {
+    a6 = {
         name = 'tvb',
         des = 'TVB Domain'
     },
-    custom = {
+    a7 = {
         name = 'custom',
         des = 'Custom Domain'
     }
@@ -39,6 +39,7 @@ for _, v in pairs(router_table) do
     local conf = '/etc/vssr/'.. v.name ..'_domain.list'
     o = s:taboption(v.name, TextValue, v.name ..'conf')
     o.rows = 13
+    o.description = translate('↑ Put your domain list here')
     o.wrap = 'off'
     o.rmempty = true
     o.cfgvalue = function(self, section)
@@ -49,6 +50,23 @@ for _, v in pairs(router_table) do
     end
     o.remove = function(self, section, value)
         NXFS.writefile(conf, '')
+    end
+    
+    
+    local conf1 = '/etc/vssr/'.. v.name ..'_ip.list'
+    o = s:taboption(v.name, TextValue, v.name ..'conf1')
+    o.rows = 13
+    o.wrap = 'off'
+    o.description = translate('↑ Put your IP list here')
+    o.rmempty = true
+    o.cfgvalue = function(self, section)
+        return NXFS.readfile(conf1) or ' '
+    end
+    o.write = function(self, section, value)
+        NXFS.writefile(conf1, value:gsub('\r\n', '\n'))
+    end
+    o.remove = function(self, section, value)
+        NXFS.writefile(conf1, '')
     end
 end
 

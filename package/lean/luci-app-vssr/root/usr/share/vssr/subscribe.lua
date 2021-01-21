@@ -33,6 +33,40 @@ local switch = '0'
 local subscribe_url = ucic:get_first(name, 'server_subscribe', 'subscribe_url', {})
 local filter_words = ucic:get_first(name, 'server_subscribe', 'filter_words', '过期时间/剩余流量')
 
+function print_r ( t )  
+    local print_r_cache={}
+    local function sub_print_r(t,indent)
+        if (print_r_cache[tostring(t)]) then
+            print(indent.."*"..tostring(t))
+        else
+            print_r_cache[tostring(t)]=true
+            if (type(t)=="table") then
+                for pos,val in pairs(t) do
+                    if (type(val)=="table") then
+                        print(indent.."["..pos.."] => "..tostring(t).." {")
+                        sub_print_r(val,indent..string.rep(" ",string.len(pos)+8))
+                        print(indent..string.rep(" ",string.len(pos)+6).."}")
+                    elseif (type(val)=="string") then
+                        print(indent.."["..pos..'] => "'..val..'"')
+                    else
+                        print(indent.."["..pos.."] => "..tostring(val))
+                    end
+                end
+            else
+                print(indent..tostring(t))
+            end
+        end
+    end
+    if (type(t)=="table") then
+        print(tostring(t).." {")
+        sub_print_r(t,"  ")
+        print("}")
+    else
+        sub_print_r(t,"  ")
+    end
+    print()
+end
+
 local log = function(...)
     print(os.date('%Y-%m-%d %H:%M:%S ') .. table.concat({...}, ' '))
 end
@@ -55,6 +89,43 @@ local function split(full, sep)
     end
     return result
 end
+
+--table去重
+
+local function clone( object )
+    local lookup_table = {}
+    local function copyObj( object )
+        if type( object ) ~= "table" then
+            return object
+        elseif lookup_table[object] then
+            return lookup_table[object]
+        end
+       
+        local new_table = {}
+        lookup_table[object] = new_table
+        for key, value in pairs( object ) do
+            new_table[copyObj( key )] = copyObj( value )
+        end
+        return setmetatable( new_table, getmetatable( object ) )
+    end
+    return copyObj( object )
+end
+
+local function table_unique(list)
+    local temp1 = clone(list)
+    local temp2 = clone(list)
+    for k1, v1 in ipairs(temp1) do
+        for k2, v2 in ipairs(temp2) do
+            if v1.alias ~= v2.alias and v1.hashkey == v2.hashkey then
+                table.remove(temp1, k1)
+                table.remove(temp2, k1)
+                
+            end
+        end
+    end
+    return temp1
+end
+
 -- urlencode
 local function get_urlencode(c)
     return sformat('%%%02X', sbyte(c))
@@ -385,12 +456,21 @@ local execute = function()
                     end
                 end
                 log('成功解析节点数量: ' .. #nodes)
-            end
+            else
+				log(url .. ': 获取内容为空')
+			end
         end
     end
     -- diff
     do
-        assert(next(nodeResult), 'node result is empty')
+        if next(nodeResult) == nil then
+			log("更新失败，没有可用的节点信息")
+			if proxy == '0' then
+				luci.sys.init.start(name)
+				log('订阅失败, 恢复服务')
+			end
+			return
+		end
         local add, del = 0, 0
         ucic:foreach(
             name,
@@ -407,17 +487,24 @@ local execute = function()
                         setmetatable(nodeResult[old.grouphashkey][old.hashkey], {__index = {_ignore = true}})
                     end
                 else
-                    if (old.alias ~= nil) then
-                        log('忽略手动添加的节点: ' .. old.alias)
+                    if not old.alias then
+                        if not old.server or old.server_port then
+                            ucic:delete(name, old['.name'])
+                        else
+                            old.alias = old.server .. ':' .. old.server_port
+                            log('忽略手动添加的节点: ' .. old.alias)
+                        end
                     else
-                        log('忽略手动添加的无效节点')
+                        log('忽略手动添加的节点: ' .. old.alias)
                     end
                 end
             end
         )
-
+        
         for k, v in ipairs(nodeResult) do
-            for kk, vv in ipairs(v) do
+            -- 如果订阅节点中有相同的节点信息 需要先去重。
+            new_nodes = table_unique(v)
+            for kk, vv in ipairs(new_nodes) do
                 if not vv._ignore then
                     local section = ucic:add(name, uciType)
                     ucic:tset(name, section, vv)
@@ -453,7 +540,7 @@ if subscribe_url and #subscribe_url > 0 then
         execute,
         function(e)
             log(e)
-            log(debug.traceback())
+            -- log(debug.traceback())
             log('发生错误, 正在恢复服务')
             log('END SUBSCRIBE')
             local firstServer = ucic:get_first(name, uciType)

@@ -1,6 +1,7 @@
 local ucursor = require 'luci.model.uci'.cursor()
 local name = 'vssr'
 local json = require 'luci.jsonc'
+local nixio = require 'nixio'
 local server_section = arg[1]
 local proto = arg[2]
 local local_port = arg[3]
@@ -8,6 +9,9 @@ local outbounds_table = {}
 local rules_table = {}
 
 function read_conf(file)
+    if not nixio.fs.access(file) then
+        return nil
+    end
     local rfile = io.open(file, "r")
     local ltable = {}
     for line in rfile:lines() do
@@ -18,15 +22,30 @@ function read_conf(file)
     return rtable
 end
 
+
 local v2ray_flow = ucursor:get_first(name, 'global', 'v2ray_flow', '0')
 
 local custom_domain = read_conf("/etc/vssr/custom_domain.list")
+local custom_ip = read_conf("/etc/vssr/custom_ip.list")
+
 local youtube_domain = read_conf("/etc/vssr/youtube_domain.list")
+local youtube_ip = read_conf("/etc/vssr/youtube_ip.list")
+
 local tw_video_domain = read_conf("/etc/vssr/tw_video_domain.list")
+local tw_video_ip = read_conf("/etc/vssr/tw_video_ip.list")
+
 local netflix_domain = read_conf("/etc/vssr/netflix_domain.list")
+local netflix_ip = read_conf("/etc/vssr/netflix_ip.list")
+
 local disney_domain = read_conf("/etc/vssr/disney_domain.list")
+local disney_ip = read_conf("/etc/vssr/disney_ip.list")
+
 local prime_domain = read_conf("/etc/vssr/prime_domain.list")
+local prime_ip = read_conf("/etc/vssr/prime_ip.list")
+
 local tvb_domain = read_conf("/etc/vssr/tvb_domain.list")
+local tvb_ip = read_conf("/etc/vssr/tvb_ip.list")
+
 
 local flow_table = {
     yotube = {
@@ -35,6 +54,7 @@ local flow_table = {
         rules = {
             type = 'field',
             domain = youtube_domain,
+            ip = youtube_ip,
             outboundTag = 'youtube'
         }
     },
@@ -44,6 +64,7 @@ local flow_table = {
         rules = {
             type = 'field',
             domain = tw_video_domain,
+            ip = tw_video_ip,
             outboundTag = 'tw_video'
         }
     },
@@ -53,6 +74,7 @@ local flow_table = {
         rules = {
             type = 'field',
             domain = netflix_domain,
+            ip = netflix_ip,
             outboundTag = 'netflix'
         }
     },
@@ -62,6 +84,7 @@ local flow_table = {
         rules = {
             type = 'field',
             domain = disney_domain,
+            ip = disney_ip,
             outboundTag = 'disney'
         }
     },
@@ -71,6 +94,7 @@ local flow_table = {
         rules = {
             type = 'field',
             domain = prime_domain,
+            ip = prime_ip,
             outboundTag = 'prime'
         }
     },
@@ -80,6 +104,7 @@ local flow_table = {
         rules = {
             type = 'field',
             domain = tvb_domain,
+            ip = tvb_ip,
             outboundTag = 'tvb'
         }
     },
@@ -89,6 +114,7 @@ local flow_table = {
         rules = {
             type = 'field',
             domain = custom_domain,
+            ip = custom_ip,
             outboundTag = 'custom'
         }
     }
@@ -113,7 +139,7 @@ local bt_rules1 = {
         'BitTorrent',
         'announce_peer',
         'announce.php?passkey='
-    },
+    }
 }
 
 function gen_outbound(server_node, tags, local_ports)
@@ -210,12 +236,30 @@ function gen_bt_outbounds()
 end
 
 if v2ray_flow == '1' then
+    
     table.insert(outbounds_table, gen_outbound(server_section, 'global', 2080))
     for _, v in pairs(flow_table) do
-        if(v.rules.domain ~= nil) then
+        if(v.rules.domain ~= nil or v.rules.ip ~= nil) then
             local server = ucursor:get_first(name, 'global', v.name .. '_server')
             table.insert(outbounds_table, gen_outbound(server, v.name, v.port))
-            table.insert(rules_table, (server ~= nil and server ~= 'nil' ) and v.rules or nil)
+
+            if(v.rules.domain ~= nil) then
+                domain_rules = {
+                    type = 'field',
+                    domain = v.rules.domain,
+                    outboundTag = v.rules.outboundTag
+                }
+                table.insert(rules_table, (server ~= nil and server ~= 'nil' ) and domain_rules or nil)
+            end
+            
+            if(v.rules.ip ~= nil) then
+                ip_rules = {
+                    type = 'field',
+                    ip = v.rules.ip,
+                    outboundTag = v.rules.outboundTag
+                }
+                table.insert(rules_table, (server ~= nil and server ~= 'nil' ) and ip_rules or nil)
+            end
         end
     end
 else
@@ -246,6 +290,6 @@ local v2ray = {
     },
     -- 传出连接
     outbounds = outbounds_table,
-    routing = {domainStrategy = 'AsIs', rules = rules_table}
+    routing = {domainStrategy = 'IPIfNonMatch', rules = rules_table}
 }
 print(json.stringify(v2ray, 1))

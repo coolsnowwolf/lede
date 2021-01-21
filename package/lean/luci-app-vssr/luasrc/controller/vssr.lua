@@ -12,12 +12,13 @@ function index()
         entry({'admin', 'services', 'vssr', 'client'}, cbi('vssr/client'), _('SSR Client'), 10).leaf = true -- 基本设置
         entry({'admin', 'services', 'vssr', 'servers'}, cbi('vssr/servers'), _('Severs Nodes'), 11).leaf = true -- 服务器节点
         entry({'admin', 'services', 'vssr', 'servers'}, arcombine(cbi('vssr/servers'), cbi('vssr/client-config')), _('Severs Nodes'), 11).leaf = true -- 编辑节点
-        entry({'admin', 'services', 'vssr', 'control'}, cbi('vssr/control'), _('Access Control'), 12).leaf = true -- 访问控制
-        entry({'admin', 'services', 'vssr', 'router'}, cbi('vssr/router'), _('Router Config'), 13).leaf = true -- 访问控制
+        entry({'admin', 'services', 'vssr', 'subscribe_config'}, cbi('vssr/subscribe-config', {hideapplybtn = true, hidesavebtn = true, hideresetbtn = true}), _('Subscribe'), 12).leaf = true -- 订阅设置
+        entry({'admin', 'services', 'vssr', 'control'}, cbi('vssr/control'), _('Access Control'), 13).leaf = true -- 访问控制
+        entry({'admin', 'services', 'vssr', 'router'}, cbi('vssr/router'), _('Router Config'), 14).leaf = true -- 访问控制
         if nixio.fs.access('/usr/bin/v2ray/v2ray') or nixio.fs.access('/usr/bin/v2ray') or nixio.fs.access('/usr/bin/xray') or nixio.fs.access('/usr/bin/xray/xray') then
-            entry({'admin', 'services', 'vssr', 'socks5'}, cbi('vssr/socks5'), _('Socks5'), 14).leaf = true -- Socks5代理
+            entry({'admin', 'services', 'vssr', 'socks5'}, cbi('vssr/socks5'), _('Local Proxy'), 15).leaf = true -- Socks5代理
         end
-        entry({'admin', 'services', 'vssr', 'advanced'}, cbi('vssr/advanced'), _('Advanced Settings'), 15).leaf = true -- 高级设置
+        entry({'admin', 'services', 'vssr', 'advanced'}, cbi('vssr/advanced'), _('Advanced Settings'), 16).leaf = true -- 高级设置
     elseif nixio.fs.access('/usr/bin/ssr-server') then
         entry({'admin', 'services', 'vssr'}, alias('admin', 'services', 'vssr', 'server'), _('vssr'), 10).dependent = true
     else
@@ -240,11 +241,7 @@ function refresh_data()
     local icount = 0
 
     if set == 'gfw_data' then
-        if nixio.fs.access('/usr/bin/wget-ssl') then
-            refresh_cmd = 'wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt -O /tmp/gfw.b64'
-        else
-            refresh_cmd = 'wget -O /tmp/gfw.b64 http://iytc.net/tools/list.b64'
-        end
+        refresh_cmd = 'wget-ssl --no-check-certificate https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt -O /tmp/gfw.b64'
         sret = luci.sys.call(refresh_cmd .. ' 2>/dev/null')
         if sret == 0 then
             luci.sys.call('/usr/bin/vssr-gfw')
@@ -265,7 +262,7 @@ function refresh_data()
             retstring = '-1'
         end
     elseif set == 'ip_data' then
-        refresh_cmd ="wget -O- 'https://ispip.clang.cn/all_cn.txt' > /tmp/china_ssr.txt 2>/dev/null"
+        refresh_cmd = "wget-ssl -O- 'https://ispip.clang.cn/all_cn.txt' > /tmp/china_ssr.txt 2>/dev/null"
         sret = luci.sys.call(refresh_cmd)
         icount = luci.sys.exec('cat /tmp/china_ssr.txt | wc -l')
         if sret == 0 and tonumber(icount) > 1000 then
@@ -282,12 +279,8 @@ function refresh_data()
         luci.sys.exec('rm -f /tmp/china_ssr.txt ')
     else
         local need_process = 0
-        if nixio.fs.access('/usr/bin/wget-ssl') then
-            refresh_cmd = 'wget-ssl --no-check-certificate -O - https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt > /tmp/adnew.conf'
-            need_process = 1
-        else
-            refresh_cmd = 'wget -O /tmp/ad.conf http://iytc.net/tools/ad.conf'
-        end
+        refresh_cmd = 'wget-ssl --no-check-certificate -O - https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt > /tmp/adnew.conf'
+        need_process = 1
         sret = luci.sys.call(refresh_cmd .. ' 2>/dev/null')
         if sret == 0 then
             if need_process == 1 then

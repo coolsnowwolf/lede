@@ -2,7 +2,8 @@ local fs = require 'nixio.fs'
 local conffile = '/tmp/ssrpro.log'
 
 f = SimpleForm('logview')
-
+f.submit = false
+f.reset = false
 t = f:field(TextValue, 'conf')
 t.rmempty = true
 t.rows = 20

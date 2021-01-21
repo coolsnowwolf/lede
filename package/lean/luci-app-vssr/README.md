@@ -1,4 +1,3 @@
-
 <div align="center">
   <img src="https://raw.githubusercontent.com/jerrykuku/staff/master/Helloworld_title.png"  >
   <h1 align="center">
@@ -21,7 +20,7 @@
   </a>
   
   <a href="https://github.com/jerrykuku/luci-app-vssr/releases">
-    <img src="https://img.shields.io/badge/release-v1.20-blue.svg?">
+    <img src="https://img.shields.io/badge/release-v1.22-blue.svg?">
   </a>
   
   <a href="https://github.com/jerrykuku/luci-app-vssr/releases">
@@ -39,11 +38,15 @@
 目前Lean最新版本的openwrt 已经可以直接拉取源码到 package/lean 下直接进行勾选并编译。  
 
 
-### 更新日志 2020-12-06  v1.20
-- NEW：局域网访问控制增加列表内或列表外代理的选项。
-- NEW：现在所有的分流域名都可以自定义了，具体参见新的功能菜单 分流设置。
-- FIX：修复了在导入trojan链接时，不能导入密码的错误。
-- FIX：修复一些应用程序路径检测错误。
+### 更新日志 2021-01-19  v1.22
+- FIX: 修复在bootstrap或者其他主题下不能订阅或者其他前端显示出错的Bug。
+- FIX: 修复一个导入ss(SIP002) 时带有obfs参数出错的bug。
+- FIX: 修复了某些订阅链接中含有相同的节点信息时，重新订阅会增加重复节点的bug。
+- UPDATE：更新多个语言翻译。
+- UPDATE：将订阅设置从高级设置中拆分到单独的菜单。
+- UPDATE：去除分流节点对节点区域的限制。
+- UPDATE：增加基于IP的分流规则，请到分流设置中自行添加，IP分流规则使用“IPIfNonMatch” 具体参考[这里](https://www.v2fly.org/config/routing.html#routingobject)【试验功能可能有坑，请谨慎设置】。
+
 
 详情见[具体日志](./relnotes.txt)。 
 
