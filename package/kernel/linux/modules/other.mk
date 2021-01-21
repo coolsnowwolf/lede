@@ -1087,11 +1087,11 @@ $(eval $(call KernelPackage,random-tpm))
 
 define KernelPackage/thermal
   SUBMENU:=$(OTHER_MENU)
-  TITLE:=Generic Thermal sysfs driver
+  TITLE:=Thermal driver
   DEPENDS:=+kmod-hwmon-core
   HIDDEN:=1
   KCONFIG:= \
-	CONFIG_THERMAL \
+	CONFIG_THERMAL=y \
 	CONFIG_THERMAL_OF=y \
 	CONFIG_CPU_THERMAL=y \
 	CONFIG_THERMAL_DEFAULT_GOV_STEP_WISE=y \
@@ -1103,14 +1103,11 @@ define KernelPackage/thermal
 	CONFIG_THERMAL_GOV_USER_SPACE=n \
 	CONFIG_THERMAL_HWMON=y \
 	CONFIG_THERMAL_EMULATION=n
-  FILES:=$(LINUX_DIR)/drivers/thermal/thermal_sys.ko
-  AUTOLOAD:=$(call AutoProbe,thermal_sys)
 endef
 
 define KernelPackage/thermal/description
- Generic Thermal Sysfs driver offers a generic mechanism for thermal
- management. Usually it's made up of one or more thermal zone and cooling
- device.
+ Thermal driver offers a generic mechanism for thermal management.
+ Usually it's made up of one or more thermal zone and cooling device.
 endef
 
 $(eval $(call KernelPackage,thermal))
