@@ -49,78 +49,58 @@ cancel() {
     exit 1
 }
 
-fill_cookie() {
-    cookie1=$(uci_get_by_type global cookie)
-    if [ ! "$cookie1" = "" ]; then
-        varb="var Key = '$cookie1';"
-        a=$(sed -n '/var Key =/=' $JD_SCRIPT)
-        b=$((a-1))
-        sed -i "${a}d" $JD_SCRIPT
-        sed -i "${b}a ${varb}" $JD_SCRIPT
-    fi
-
-    cookie2=$(uci_get_by_type global cookie2)
-    if [ ! "$cookie2" = "" ]; then
-        varb2="var DualKey = '$cookie2';"
-        aa=$(sed -n '/var DualKey =/=' $JD_SCRIPT)
-        bb=$((aa-1))
-        sed -i "${aa}d" $JD_SCRIPT
-        sed -i "${bb}a ${varb2}" $JD_SCRIPT
-    fi
-
-    stop=$(uci_get_by_type global stop)
-    if [ ! "$stop" = "" ]; then
-        varb3="var stop = $stop;"
-        sed -i "s/^var stop =.*/$varb3/g" $JD_SCRIPT
-    fi
-}
-
 add_cron() {
     sed -i '/jd-dailybonus/d' $CRON_FILE
-    [ $(uci_get_by_type global auto_run 0) -eq 1 ] && echo '5 '$(uci_get_by_type global auto_run_time)' * * * sleep '$(expr $(head -n 128 /dev/urandom | tr -dc "0123456789" | head -c4) % 180)'s; /usr/share/jd-dailybonus/newapp.sh -w' >>$CRON_FILE
+    [ $(uci_get_by_type global auto_run 0) -eq 1 ] && echo $(uci_get_by_type global auto_run_time_m)' '$(uci_get_by_type global auto_run_time_h)' * * * /usr/share/jd-dailybonus/newapp.sh -w' >>$CRON_FILE
     [ $(uci_get_by_type global auto_update 0) -eq 1 ] && echo '1 '$(uci_get_by_type global auto_update_time)' * * * /usr/share/jd-dailybonus/newapp.sh -u' >>$CRON_FILE
     crontab $CRON_FILE
+    /etc/init.d/cron restart
 }
 
 # Run Script
 
-serverchan() {
-    sckey=$(uci_get_by_type global serverchan)
-    failed=$(uci_get_by_type global failed)
-    desc=$(cat /www/JD_DailyBonus.htm | grep -E '签到号|签到概览|签到奖励|其他奖励|账号总计|其他总计' | sed 's/$/&\n/g')
-    serverurlflag=$(uci_get_by_type global serverurl)
-    serverurl=https://sc.ftqq.com/
-    if [ "$serverurlflag" = "sct" ]; then
-        serverurl=https://sctapi.ftqq.com/
-    fi
-    if [ $failed -eq 1 ]; then
-        grep "Cookie失效" /www/JD_DailyBonus.htm > /dev/null
-        if [ $? -eq 0 ]; then
-            title="$(date '+%Y年%m月%d日') 京东签到 Cookie 失效"
-            wget-ssl -q --output-document=/dev/null --post-data="text=$title~&desp=$desc" $serverurl$sckey.send
-        fi
+notify() {
+    grep "Cookie失效" /www/JD_DailyBonus.htm >/dev/null
+    if [ $? -eq 0 ]; then
+        title="$(date '+%Y年%m月%d日') 京东签到 Cookie 失效"
     else
         title="$(date '+%Y年%m月%d日') 京东签到"
+    fi
+    desc=$(cat /www/JD_DailyBonus.htm | grep -E '签到号|签到概览|签到奖励|其他奖励|账号总计|其他总计' | sed 's/$/&\n/g')
+    #serverchan
+    sckey=$(uci_get_by_type global serverchan)
+    if [ ! -z $sckey ]; then
+        serverurlflag=$(uci_get_by_type global serverurl)
+        serverurl=https://sc.ftqq.com/
+        if [ "$serverurlflag" = "sct" ]; then
+            serverurl=https://sctapi.ftqq.com/
+        fi
         wget-ssl -q --output-document=/dev/null --post-data="text=$title~&desp=$desc" $serverurl$sckey.send
     fi
 
+    #telegram
+    TG_BOT_TOKEN=$(uci_get_by_type global tg_token)
+    TG_USER_ID=$(uci_get_by_type global tg_userid)
+    API_URL="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
+    if [ ! -z $TG_BOT_TOKEN ] && [ ! -z $TG_USER_ID ]; then
+        text="*$title*
+        
+\`\`\`
+"$desc"
+====================================
+本消息来自京东签到插件 jd-dailybonus
+\`\`\`"
+        wget-ssl -q --output-document=/dev/null --post-data="chat_id=$TG_USER_ID&text=$text&parse_mode=markdownv2" $API_URL
+    fi
 }
 
 run() {
-    fill_cookie
     echo -e $(date '+%Y-%m-%d %H:%M:%S %A') >$LOG_HTM 2>/dev/null
-    [ ! -f "/usr/bin/node" ] && echo -e "未安装node.js,请安装后再试!\nNode.js is not installed, please try again after installation!">>$LOG_HTM && exit 1
-    node $JD_SCRIPT >>$LOG_HTM 2>/dev/null
-}
-
-back_run() {
-    run
-    sleep 1s
-    serverchan
+    [ ! -f "/usr/bin/node" ] && echo -e "未安装node.js,请安装后再试!\nNode.js is not installed, please try again after installation!" >>$LOG_HTM && exit 1
+    node $JD_SCRIPT >>$LOG_HTM 2>/dev/null && notify &
 }
 
 save() {
-    fill_cookie
     add_cron
 }
 
@@ -156,7 +136,6 @@ update() {
     fi
     remote_ver=$(get_ver $TEMP_SCRIPT)
     cp -r $TEMP_SCRIPT $JD_SCRIPT
-    fill_cookie
     uci set jd-dailybonus.@global[0].version=$remote_ver
     uci commit jd-dailybonus
     cancel "0"
@@ -169,7 +148,7 @@ while getopts ":alnruswh" arg; do
         exit 0
         ;;
     l)
-        serverchan
+        notify
         exit 0
         ;;
     n)
@@ -189,7 +168,7 @@ while getopts ":alnruswh" arg; do
         exit 0
         ;;
     w)
-        back_run
+        run
         exit 0
         ;;
     h)
