@@ -7,8 +7,8 @@
 include $(TOPDIR)/rules.mk
 PKG_NAME:=luci-app-jd-dailybonus
 LUCI_PKGARCH:=all
-PKG_VERSION:=0.8.9
-PKG_RELEASE:=20201230
+PKG_VERSION:=1.0.0
+PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
 
