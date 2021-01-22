@@ -85,7 +85,7 @@ o.default = 1
 o.rmempty = true
 o:depends('auto_update', '1')
 
-o = s:option(ListValue, 'remote_url', translate('Source Update Url'))
+o = s:option(ListValue, 'remote_url', translate('更新源地址'))
 o:value('https://raw.githubusercontent.com/NobyDa/Script/master/JD-DailyBonus/JD_DailyBonus.js', translate('GitHub'))
 o:value('https://gitee.com/jerrykuku/staff/raw/master/JD_DailyBonus.js', translate('Gitee'))
 o.default = 'nil'
