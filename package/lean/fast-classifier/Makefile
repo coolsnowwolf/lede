@@ -3,6 +3,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=fast-classifier
 PKG_RELEASE:=1
+PKG_CONFIG_DEPENDS := CONFIG_IPV6
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -49,10 +50,10 @@ Example user space program that communicates with fast
 classifier kernel module
 endef
 
-SFE_MAKE_OPTS:=SFE_SUPPORT_IPV6=y
+SFE_MAKE_OPTS:=SFE_SUPPORT_IPV6=$(if $(CONFIG_IPV6),y,n)
 
 define Build/Compile/kmod
-	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" $(strip $(SFE_MAKE_OPTS)) \
+	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" $(SFE_MAKE_OPTS) \
 		$(KERNEL_MAKE_FLAGS) \
 		$(PKG_MAKE_FLAGS) \
 		M="$(PKG_BUILD_DIR)" \

@@ -37,3 +37,11 @@ define Package/carl9170-firmware/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/carl9170-1.fw $(1)/lib/firmware
 endef
 $(eval $(call BuildPackage,carl9170-firmware))
+
+Package/wil6210-firmware = $(call Package/firmware-default,wil6210 firmware)
+define Package/wil6210-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/wil6210.fw $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/wil6210.brd $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,wil6210-firmware))
