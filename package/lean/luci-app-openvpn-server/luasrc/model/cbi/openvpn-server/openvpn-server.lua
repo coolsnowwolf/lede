@@ -98,6 +98,7 @@ end
 
 function mp.on_after_commit(self)
   os.execute("uci set firewall.openvpn.dest_port=$(uci get openvpn.myvpn.port) && uci commit firewall &&  /etc/init.d/firewall restart")
+  os.execute("/etc/openvpncert.sh > /dev/null")
   os.execute("/etc/init.d/openvpn restart")
 end
 
