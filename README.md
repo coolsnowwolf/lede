@@ -10,6 +10,10 @@ Welcome to Lean's  git source of OpenWrt and packages
 2. 国内用户编译前最好准备好梯子
 3. 默认登陆IP 192.168.1.1, 密码 password
 
+
+4.免责声明：本人不欢迎例如 nobk 这种傻逼使用或者访问本源代码哪怕一个字节，否则一旦他家里因此而发生各种全家富贵的情况，与本人一律无关
+
+
 编译命令如下:
 -
 1. 首先装好 Ubuntu 64bit，推荐  Ubuntu  18 LTS x64
