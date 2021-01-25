@@ -85,12 +85,13 @@ o.default = 1
 o.rmempty = true
 o:depends('auto_update', '1')
 
-o = s:option(ListValue, 'remote_url', translate('更新源地址'))
+o = s:option(Value, 'remote_url', translate('更新源地址'))
 o:value('https://raw.githubusercontent.com/NobyDa/Script/master/JD-DailyBonus/JD_DailyBonus.js', translate('GitHub'))
+o:value('https://cdn.jsdelivr.net/gh/NobyDa/Script/JD-DailyBonus/JD_DailyBonus.js', translate('GitHub CDN'))
 o:value('https://gitee.com/jerrykuku/staff/raw/master/JD_DailyBonus.js', translate('Gitee'))
 o.default = 'nil'
 o.rmempty = false
-o.description = translate('当GitHub源无法更新时,可以选择使用国内Gitee源')
+o.description = translate('当GitHub源无法更新时,可以选择使用国内Gitee源,GitHub CDN可能比原地址更晚更新，但速度快')
 
 o = s:option(DummyValue, '', '')
 o.rawhtml = true
