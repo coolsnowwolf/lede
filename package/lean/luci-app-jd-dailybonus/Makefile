@@ -7,8 +7,8 @@
 include $(TOPDIR)/rules.mk
 PKG_NAME:=luci-app-jd-dailybonus
 LUCI_PKGARCH:=all
-PKG_VERSION:=0.8.9
-PKG_RELEASE:=20201230
+PKG_VERSION:=1.0.2
+PKG_RELEASE:=20210124
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -18,7 +18,7 @@ define Package/luci-app-jd-dailybonus
 	SUBMENU:=3. Applications
 	TITLE:=Luci for JD dailybonus Script 
 	PKGARCH:=all
-	DEPENDS:=+node +wget
+	DEPENDS:=+node +wget +lua
 endef
 
 define Build/Prepare
@@ -63,8 +63,6 @@ define Package/luci-app-jd-dailybonus/install
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/jd-dailybonus
 	$(INSTALL_DATA) ./luasrc/view/jd-dailybonus/* $(1)/usr/lib/lua/luci/view/jd-dailybonus/
 
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
-	po2lmo ./po/zh-cn/jd-dailybonus.po $(1)/usr/lib/lua/luci/i18n/jd-dailybonus.zh-cn.lmo
 endef
 
 $(eval $(call BuildPackage,luci-app-jd-dailybonus))
