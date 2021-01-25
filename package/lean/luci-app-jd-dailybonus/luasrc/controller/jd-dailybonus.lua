@@ -37,8 +37,7 @@ function run()
         JD_DailyBonusDelay = data.stop,
         JD_DailyBonusTimeOut = data.out
     }
-    write_json('/root/CookieSet.json', json_data)
-    write_json('/www/CookieSet.json', json_data)
+    write_json('/usr/share/jd-dailybonus/CookieSet.json', json_data)
     luci.sys.call('/usr/share/jd-dailybonus/newapp.sh -r')
     luci.sys.call('/usr/share/jd-dailybonus/newapp.sh -a')
     e.error = 0
@@ -135,8 +134,7 @@ function check_login()
             JD_DailyBonusDelay = uci:get('jd-dailybonus', '@global[0]', 'stop'),
             JD_DailyBonusTimeOut = uci:get('jd-dailybonus', '@global[0]', 'out')
         }
-        write_json('/root/CookieSet.json', json_data)
-        write_json('/www/CookieSet.json', json_data)
+        write_json('/usr/share/jd-dailybonus/CookieSet.json', json_data)
         uci:commit('jd-dailybonus')
         return_json.cookie = cookieStr
     end
