@@ -44,15 +44,13 @@ define Package/luci-app-jd-dailybonus/install
 	$(INSTALL_DIR) $(1)/usr/share/jd-dailybonus
 	$(INSTALL_BIN) ./root/usr/share/jd-dailybonus/*.sh $(1)/usr/share/jd-dailybonus/
 	$(INSTALL_DATA) ./root/usr/share/jd-dailybonus/*.js $(1)/usr/share/jd-dailybonus/
+	$(INSTALL_DATA) ./root/usr/share/jd-dailybonus/*.lua $(1)/usr/share/jd-dailybonus/
 
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/* $(1)/usr/share/rpcd/acl.d
 
 	$(INSTALL_DIR) $(1)/usr/lib/node
 	cp -pR ./root/usr/lib/node/* $(1)/usr/lib/node
-
-	$(INSTALL_DIR) $(1)/www/jd-dailybonus
-	$(INSTALL_DATA) ./root//www/jd-dailybonus/* $(1)/www/jd-dailybonus
 
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
 	$(INSTALL_DATA) ./luasrc/controller/* $(1)/usr/lib/lua/luci/controller/
@@ -62,6 +60,9 @@ define Package/luci-app-jd-dailybonus/install
 
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/jd-dailybonus
 	$(INSTALL_DATA) ./luasrc/view/jd-dailybonus/* $(1)/usr/lib/lua/luci/view/jd-dailybonus/
+
+	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
+	$(INSTALL_DATA) ./root/lib/upgrade/keep.d/* $(1)/lib/upgrade/keep.d/
 
 endef
 
