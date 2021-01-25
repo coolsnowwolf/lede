@@ -101,6 +101,7 @@ run() {
 }
 
 save() {
+    lua /usr/share/jd-dailybonus/gen_cookieset.lua
     add_cron
 }
 

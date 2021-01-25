@@ -44,6 +44,7 @@ define Package/luci-app-jd-dailybonus/install
 	$(INSTALL_DIR) $(1)/usr/share/jd-dailybonus
 	$(INSTALL_BIN) ./root/usr/share/jd-dailybonus/*.sh $(1)/usr/share/jd-dailybonus/
 	$(INSTALL_DATA) ./root/usr/share/jd-dailybonus/*.js $(1)/usr/share/jd-dailybonus/
+	$(INSTALL_DATA) ./root/usr/share/jd-dailybonus/*.lua $(1)/usr/share/jd-dailybonus/
 
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/* $(1)/usr/share/rpcd/acl.d
