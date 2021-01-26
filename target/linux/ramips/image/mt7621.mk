@@ -1193,3 +1193,10 @@ define Device/zio_freezio
 	kmod-usb-ledtrig-usbport wpad-openssl
 endef
 TARGET_DEVICES += zio_freezio
+
+define Device/hlk_mt7621a-module
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := HLK
+  DEVICE_MODEL := HLK MT7621A MODULE
+endef
+TARGET_DEVICES += hlk_mt7621a-module
