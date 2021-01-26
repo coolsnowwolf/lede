@@ -12,7 +12,7 @@
 NAME=jd-dailybonus
 TEMP_SCRIPT=/tmp/JD_DailyBonus.js
 JD_SCRIPT=/usr/share/jd-dailybonus/JD_DailyBonus.js
-LOG_HTM=/www/JD_DailyBonus.htm
+LOG_FILE=/var/log/jd_dailybonus.log
 CRON_FILE=/etc/crontabs/root
 usage() {
     cat <<-EOF
@@ -60,13 +60,13 @@ add_cron() {
 # Run Script
 
 notify() {
-    grep "Cookie失效" /www/JD_DailyBonus.htm >/dev/null
+    grep "Cookie失效" ${LOG_FILE} >/dev/null
     if [ $? -eq 0 ]; then
         title="$(date '+%Y年%m月%d日') 京东签到 Cookie 失效"
     else
         title="$(date '+%Y年%m月%d日') 京东签到"
     fi
-    desc=$(cat /www/JD_DailyBonus.htm | grep -E '签到号|签到概览|签到奖励|其他奖励|账号总计|其他总计' | sed 's/$/&\n/g')
+    desc=$(cat ${LOG_FILE} | grep -E '签到号|签到概览|签到奖励|其他奖励|账号总计|其他总计' | sed 's/$/&\n/g')
     #serverchan
     sckey=$(uci_get_by_type global serverchan)
     if [ ! -z $sckey ]; then
@@ -95,9 +95,9 @@ notify() {
 }
 
 run() {
-    echo -e $(date '+%Y-%m-%d %H:%M:%S %A') >$LOG_HTM 2>/dev/null
-    [ ! -f "/usr/bin/node" ] && echo -e "未安装node.js,请安装后再试!\nNode.js is not installed, please try again after installation!" >>$LOG_HTM && exit 1
-    (cd /usr/share/jd-dailybonus/ && node $JD_SCRIPT >>$LOG_HTM 2>/dev/null && notify &)
+    echo -e $(date '+%Y-%m-%d %H:%M:%S %A') >$LOG_FILE 2>/dev/null
+    [ ! -f "/usr/bin/node" ] && echo -e "未安装node.js,请安装后再试!\nNode.js is not installed, please try again after installation!" >>$LOG_FILE && exit 1
+    (cd /usr/share/jd-dailybonus/ && node $JD_SCRIPT >>$LOG_FILE 2>/dev/null && notify &)
 }
 
 save() {

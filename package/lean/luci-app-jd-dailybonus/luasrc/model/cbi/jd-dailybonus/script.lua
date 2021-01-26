@@ -1,5 +1,4 @@
 local fs = require "nixio.fs"
-local jd = "jd-dailybonus"
 
 s = SimpleForm("scriptview")
 
