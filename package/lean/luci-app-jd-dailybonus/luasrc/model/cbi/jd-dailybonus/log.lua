@@ -1,6 +1,4 @@
 local fs = require "nixio.fs"
-local jd = "jd-dailybonus"
-local conffile = "/www/JD_DailyBonus.htm"
 
 log = SimpleForm("logview")
 log.submit = false
@@ -11,7 +9,7 @@ t = log:field(TextValue, "1", nil)
 t.rmempty = true
 t.rows = 30
 function t.cfgvalue()
-	return fs.readfile(conffile) or ""
+	return fs.readfile("/var/log/jd_dailybonus.log") or ""
 end
 t.readonly="readonly"
 
