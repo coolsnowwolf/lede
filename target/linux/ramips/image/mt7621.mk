@@ -356,6 +356,14 @@ define Device/firefly_firewrt
 endef
 TARGET_DEVICES += firefly_firewrt
 
+define Device/glinet_gl-mt1300
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := GL.iNet
+  DEVICE_MODEL := GL-MT1300
+  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7615-firmware kmod-usb3
+endef
+TARGET_DEVICES += glinet_gl-mt1300
+
 define Device/gehua_ghl-r-001
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := GeHua
@@ -822,10 +830,12 @@ endef
 TARGET_DEVICES += phicomm_k2p
 
 define Device/phicomm_k2p-32m
-  $(Device/phicomm_k2p)
   IMAGE_SIZE := 32128k
+  DEVICE_VENDOR := Phicomm
+  DEVICE_MODEL := K2P
   DEVICE_VARIANT := 32M
-  SUPPORTED_DEVICES += k2p-32m
+  SUPPORTED_DEVICES += k2p-32M
+  DEVICE_PACKAGES := kmod-mt7615d_dbdc
 endef
 TARGET_DEVICES += phicomm_k2p-32m
 
