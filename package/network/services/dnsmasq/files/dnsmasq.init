@@ -42,9 +42,14 @@ dnsmasq_ignore_opt() {
 		bootp-*|\
 		pxe-*)
 			[ -z "$dnsmasq_has_dhcp" ] ;;
-		dnssec-*|\
+		dnssec*|\
 		trust-anchor)
-			[ -z "$dnsmasq_has_dnssec" ] ;;
+			if [ -z "$dnsmasq_has_dnssec" ]; then
+				echo "dnsmasq: \"$opt\" requested, but dnssec support is not available" >&2
+				exit 1
+			fi
+			return 1
+			;;
 		tftp-*)
 			[ -z "$dnsmasq_has_tftp" ] ;;
 		ipset)
@@ -764,6 +769,29 @@ dhcp_relay_add() {
 	fi
 }
 
+dnsmasq_ipset_add() {
+	local cfg="$1"
+	local ipsets domains
+
+	add_ipset() {
+		ipsets="${ipsets:+$ipsets,}$1"
+	}
+
+	add_domain() {
+		# leading '/' is expected
+		domains="$domains/$1"
+	}
+
+	config_list_foreach "$cfg" "name" add_ipset
+	config_list_foreach "$cfg" "domain" add_domain
+
+	if [ -z "$ipsets" ] || [ -z "$domains" ]; then
+		return 0
+	fi
+
+	xappend "--ipset=$domains/$ipsets"
+}
+
 dnsmasq_start()
 {
 	local cfg="$1"
@@ -868,8 +896,6 @@ dnsmasq_start()
 	append_bool "$cfg" rapidcommit "--dhcp-rapid-commit"
 	append_bool "$cfg" scriptarp "--script-arp"
 
-	append_bool "$cfg" filter_aaaa "--filter-aaaa"
-
 	append_parm "$cfg" logfacility "--log-facility"
 
 	append_parm "$cfg" cachesize "--cache-size"
@@ -902,6 +928,7 @@ dnsmasq_start()
 	append_parm "$cfg" "min_cache_ttl" "--min-cache-ttl"
 	append_parm "$cfg" "max_cache_ttl" "--max-cache-ttl"
 	append_parm "$cfg" "pxe_prompt" "--pxe-prompt"
+	append_parm "$cfg" "tftp_unique_root" "--tftp-unique-root"
 	config_list_foreach "$cfg" "pxe_service" append_pxe_service
 	config_get DOMAIN "$cfg" domain
 
@@ -1053,6 +1080,10 @@ dnsmasq_start()
 	echo >> $CONFIGFILE_TMP
 
 	echo >> $CONFIGFILE_TMP
+	config_foreach filter_dnsmasq ipset dnsmasq_ipset_add "$cfg"
+	echo >> $CONFIGFILE_TMP
+
+	echo >> $CONFIGFILE_TMP
 	mv -f $CONFIGFILE_TMP $CONFIGFILE
 	mv -f $HOSTFILE_TMP $HOSTFILE
 
@@ -1062,6 +1093,7 @@ dnsmasq_start()
 			echo "search $DOMAIN" >> /tmp/resolv.conf
 		}
 		DNS_SERVERS="$DNS_SERVERS 127.0.0.1"
+		[ -e /proc/sys/net/ipv6 ] && DNS_SERVERS="$DNS_SERVERS ::1"
 		for DNS_SERVER in $DNS_SERVERS ; do
 			echo "nameserver $DNS_SERVER" >> /tmp/resolv.conf
 		done

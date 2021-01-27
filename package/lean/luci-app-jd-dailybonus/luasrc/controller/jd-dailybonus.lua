@@ -15,6 +15,7 @@ function index()
     entry({'admin', 'services', 'jd-dailybonus', 'check_update'}, call('check_update')) -- 检查更新
     entry({'admin', 'services', 'jd-dailybonus', 'qrcode'}, call('qrcode')) -- 获取二维码
     entry({'admin', 'services', 'jd-dailybonus', 'check_login'}, call('check_login')) -- 获取二维码
+    entry({'admin', 'services', 'jd-dailybonus', 'realtime_log'}, call('get_log')) -- 获取实时日志
 end
 
 -- 执行程序
@@ -122,4 +123,10 @@ function check_login()
 
     luci.http.prepare_content('application/json')
     luci.http.write_json(return_json)
+end
+
+function get_log()
+    local fs = require "nixio.fs"
+    local log = fs.readfile("/var/log/jd_dailybonus.log") or ""
+    luci.http.write(log)
 end
