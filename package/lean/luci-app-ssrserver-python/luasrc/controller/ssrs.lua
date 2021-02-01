@@ -15,7 +15,7 @@ end
 
 function act_status()
   local e={}
-  e.running=luci.sys.call("ps | grep server.py |grep -v grep >/dev/null") == 0
+  e.running=luci.sys.call("ps -w | grep ssrs.json |grep -v grep >/dev/null") == 0
   luci.http.prepare_content("application/json")
   luci.http.write_json(e)
 end

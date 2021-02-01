@@ -830,10 +830,12 @@ endef
 TARGET_DEVICES += phicomm_k2p
 
 define Device/phicomm_k2p-32m
-  $(Device/phicomm_k2p)
   IMAGE_SIZE := 32128k
+  DEVICE_VENDOR := Phicomm
+  DEVICE_MODEL := K2P
   DEVICE_VARIANT := 32M
-  SUPPORTED_DEVICES += k2p-32m
+  SUPPORTED_DEVICES += k2p-32M
+  DEVICE_PACKAGES := kmod-mt7615d_dbdc
 endef
 TARGET_DEVICES += phicomm_k2p-32m
 
