@@ -352,6 +352,7 @@ platform_check_image() {
 	db120|\
 	dr344|\
 	dw33d|\
+	sbr-ac1750|\
 	f9k1115v2|\
 	hornet-ub|\
 	mr12|\
