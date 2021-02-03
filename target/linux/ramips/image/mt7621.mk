@@ -360,7 +360,7 @@ define Device/glinet_gl-mt1300
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := GL.iNet
   DEVICE_MODEL := GL-MT1300
-  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7615-firmware kmod-usb3
+  DEVICE_PACKAGES := kmod-usb3  kmod-mt7615d_dbdc
 endef
 TARGET_DEVICES += glinet_gl-mt1300
 
