@@ -7,7 +7,7 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=x86
+PKG_NAME:=x86_generic
 PKG_VERSION:=1
 PKG_RELEASE:=1
 PKG_ARCH:=all
