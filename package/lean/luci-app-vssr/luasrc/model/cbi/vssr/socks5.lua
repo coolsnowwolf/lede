@@ -15,8 +15,8 @@ local sys = require 'luci.sys'
 m = Map(vssr)
 
 -- [[ SOCKS5 Proxy ]]--
-if nixio.fs.access('/usr/bin/v2ray/v2ray') or nixio.fs.access('/usr/bin/v2ray') or nixio.fs.access('/usr/bin/xray') or nixio.fs.access('/usr/bin/xray/xray') then
-    s = m:section(TypedSection, 'socks5_proxy', translate('V2ray SOCKS5 Proxy'))
+if nixio.fs.access('/usr/bin/xray') or nixio.fs.access('/usr/bin/xray/xray') then
+    s = m:section(TypedSection, 'socks5_proxy', translate('Xray SOCKS5 Proxy'))
     s.anonymous = true
 
     o = s:option(Flag, 'enable_server', translate('Enable Servers'))
@@ -43,8 +43,8 @@ if nixio.fs.access('/usr/bin/v2ray/v2ray') or nixio.fs.access('/usr/bin/v2ray') 
 end
 
 -- [[ Http Proxy ]]--
-if nixio.fs.access('/usr/bin/v2ray/v2ray') or nixio.fs.access('/usr/bin/v2ray') or nixio.fs.access('/usr/bin/xray') or nixio.fs.access('/usr/bin/xray/xray') then
-    s = m:section(TypedSection, 'http_proxy', translate('V2ray HTTP Proxy'))
+if nixio.fs.access('/usr/bin/xray') or nixio.fs.access('/usr/bin/xray/xray') then
+    s = m:section(TypedSection, 'http_proxy', translate('Xray HTTP Proxy'))
     s.anonymous = true
 
     o = s:option(Flag, 'enable_server', translate('Enable Servers'))

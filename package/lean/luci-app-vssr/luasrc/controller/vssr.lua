@@ -15,7 +15,7 @@ function index()
         entry({'admin', 'services', 'vssr', 'subscribe_config'}, cbi('vssr/subscribe-config', {hideapplybtn = true, hidesavebtn = true, hideresetbtn = true}), _('Subscribe'), 12).leaf = true -- 订阅设置
         entry({'admin', 'services', 'vssr', 'control'}, cbi('vssr/control'), _('Access Control'), 13).leaf = true -- 访问控制
         entry({'admin', 'services', 'vssr', 'router'}, cbi('vssr/router'), _('Router Config'), 14).leaf = true -- 访问控制
-        if nixio.fs.access('/usr/bin/v2ray/v2ray') or nixio.fs.access('/usr/bin/v2ray') or nixio.fs.access('/usr/bin/xray') or nixio.fs.access('/usr/bin/xray/xray') then
+        if nixio.fs.access('/usr/bin/xray') or nixio.fs.access('/usr/bin/xray/xray') then
             entry({'admin', 'services', 'vssr', 'socks5'}, cbi('vssr/socks5'), _('Local Proxy'), 15).leaf = true -- Socks5代理
         end
         entry({'admin', 'services', 'vssr', 'advanced'}, cbi('vssr/advanced'), _('Advanced Settings'), 16).leaf = true -- 高级设置
