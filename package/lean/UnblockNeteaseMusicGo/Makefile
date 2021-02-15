@@ -34,8 +34,7 @@ endef
 
 ifeq ($(CONFIG_$(PKG_NAME)_INCLUDE_GOPROXY),y)
 export GO111MODULE=on
-export GOPROXY=https://goproxy.io
-#export GOPROXY=https://mirrors.aliyun.com/goproxy/
+export GOPROXY=https://goproxy.cn
 endif
 
 define Package/$(PKG_NAME)
@@ -73,5 +72,6 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/share/UnblockNeteaseMusicGo
 	$(CP) ./files/* $(1)/usr/share/UnblockNeteaseMusicGo/
 endef
+
 $(eval $(call GoBinPackage,$(PKG_NAME)))
 $(eval $(call BuildPackage,$(PKG_NAME)))
