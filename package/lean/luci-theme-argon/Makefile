@@ -8,8 +8,8 @@ include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=Argon Theme
 LUCI_DEPENDS:=
-PKG_VERSION:=1.7.0
-PKG_RELEASE:=20200909
+PKG_VERSION:=1.7.1
+PKG_RELEASE:=20210215
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
