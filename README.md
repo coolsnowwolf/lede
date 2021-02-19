@@ -22,6 +22,7 @@ sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git
 `
 
 3. 使用 `git clone https://github.com/coolsnowwolf/lede` 命令下载好源代码，然后 `cd lede` 进入目录
+恢复默认`Make distclean`
 
 4. ```bash
    ./scripts/feeds update -a
