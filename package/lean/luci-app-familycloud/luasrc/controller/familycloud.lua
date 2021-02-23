@@ -8,8 +8,8 @@ function index()
 
 	entry({"admin", "services", "familycloud"},firstchild(), _("天翼家庭云/云盘提速"), 80).dependent = false
 	
-	entry({"admin", "services", "familycloud", "general"},cbi("familycloud"), _("Base Setting"), 1)
-  entry({"admin", "services", "familycloud", "log"},form("familycloudlog"), _("Log"), 2)
+	entry({"admin", "services", "familycloud", "general"},cbi("familycloud/familycloud"), _("Base Setting"), 1)
+        entry({"admin", "services", "familycloud", "log"},form("familycloud/familycloudlog"), _("Log"), 2)
   
 	entry({"admin","services","familycloud","status"},call("act_status")).leaf=true
 end
