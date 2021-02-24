@@ -7,18 +7,18 @@ ful.submit = false
 
 sul = ful:section(SimpleSection, "", translate("Upload file to '/tmp/upload/'"))
 fu = sul:option(FileUpload, "")
-fu.template = "cbi/other_upload"
+fu.template = "filetransfer/other_upload"
 um = sul:option(DummyValue, "", nil)
-um.template = "cbi/other_dvalue"
+um.template = "filetransfer/other_dvalue"
 
 fdl = SimpleForm("download", translate("Download"), nil)
 fdl.reset = false
 fdl.submit = false
 sdl = fdl:section(SimpleSection, "", translate("Download file"))
 fd = sdl:option(FileUpload, "")
-fd.template = "cbi/other_download"
+fd.template = "filetransfer/other_download"
 dm = sdl:option(DummyValue, "", nil)
-dm.template = "cbi/other_dvalue"
+dm.template = "filetransfer/other_dvalue"
 
 function Download()
 	local sPath, sFile, fd, block
@@ -138,7 +138,7 @@ function IsIpkFile(name)
 end
 
 btnis = tb:option(Button, "install", translate("Install"))
-btnis.template = "cbi/other_button"
+btnis.template = "filetransfer/other_button"
 btnis.render = function(self, section, scope)
 	if not inits[section] then return false end
 	if IsIpkFile(inits[section].name) then
