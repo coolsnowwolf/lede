@@ -1,0 +1,93 @@
+From d6c85afca764dc32c3d7981867471fc820e07388 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 11 Jun 2020 18:19:13 +0100
+Subject: [PATCH] media: i2c: imx290: Add exposure control to the
+ driver.
+
+Adds support for V4L2_CID_EXPOSURE so that userspace can control
+the sensor exposure time.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/imx290.c | 35 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+--- a/drivers/media/i2c/imx290.c
++++ b/drivers/media/i2c/imx290.c
+@@ -45,6 +45,10 @@ enum imx290_clk_index {
+ #define IMX290_HMAX_MIN_2LANE 4400 /* Min of 4400 pixels = 30fps */
+ #define IMX290_HMAX_MIN_4LANE 2200 /* Min of 2200 pixels = 60fps */
+ #define IMX290_HMAX_MAX 0xffff
++
++#define IMX290_EXPOSURE_MIN 2
++#define IMX290_EXPOSURE_STEP 1
++#define IMX290_EXPOSURE_LOW 0x3020
+ #define IMX290_PGCTRL 0x308c
+ #define IMX290_PHY_LANE_NUM 0x3407
+ #define IMX290_CSI_LANE_MODE 0x3443
+@@ -103,6 +107,7 @@ struct imx290 {
+ 	struct v4l2_ctrl *pixel_rate;
+ 	struct v4l2_ctrl *hblank;
+ 	struct v4l2_ctrl *vblank;
++	struct v4l2_ctrl *exposure;
+ 
+ 	struct mutex lock;
+ };
+@@ -529,6 +534,20 @@ static int imx290_set_gain(struct imx290
+ 	return ret;
+ }
+ 
++static int imx290_set_exposure(struct imx290 *imx290, u32 value)
++{
++	u32 exposure = (imx290->current_mode->height + imx290->vblank->val) -
++						value;
++	int ret;
++
++	ret = imx290_write_buffered_reg(imx290, IMX290_EXPOSURE_LOW, 3,
++					exposure);
++	if (ret)
++		dev_err(imx290->dev, "Unable to write exposure\n");
++
++	return ret;
++}
++
+ static int imx290_set_hmax(struct imx290 *imx290, u32 val)
+ {
+ 	u32 hmax = val + imx290->current_mode->width;
+@@ -590,6 +609,9 @@ static int imx290_set_ctrl(struct v4l2_c
+ 	case V4L2_CID_GAIN:
+ 		ret = imx290_set_gain(imx290, ctrl->val);
+ 		break;
++	case V4L2_CID_EXPOSURE:
++		ret = imx290_set_exposure(imx290, ctrl->val);
++		break;
+ 	case V4L2_CID_HBLANK:
+ 		ret = imx290_set_hmax(imx290, ctrl->val);
+ 		break;
+@@ -764,6 +786,12 @@ static int imx290_set_fmt(struct v4l2_su
+ 						 IMX290_VMAX_MAX - mode->height,
+ 						 1,
+ 						 mode->vmax - mode->height);
++		if (imx290->exposure)
++			__v4l2_ctrl_modify_range(imx290->exposure,
++						 mode->vmax - mode->height,
++						 mode->vmax - 4,
++						 IMX290_EXPOSURE_STEP,
++						 mode->vmax - 4);
+ 	}
+ 
+ 	*format = fmt->format;
+@@ -1182,6 +1210,13 @@ static int imx290_probe(struct i2c_clien
+ 					   IMX290_VMAX_MAX - mode->height, 1,
+ 					   mode->vmax - mode->height);
+ 
++	imx290->exposure = v4l2_ctrl_new_std(&imx290->ctrls, &imx290_ctrl_ops,
++					     V4L2_CID_EXPOSURE,
++					     IMX290_EXPOSURE_MIN,
++					     mode->vmax - 4,
++					     IMX290_EXPOSURE_STEP,
++					     mode->vmax - 4);
++
+ 	imx290->link_freq =
+ 		v4l2_ctrl_new_int_menu(&imx290->ctrls, &imx290_ctrl_ops,
+ 				       V4L2_CID_LINK_FREQ,
