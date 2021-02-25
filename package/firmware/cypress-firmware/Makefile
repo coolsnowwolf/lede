@@ -15,7 +15,7 @@ PKG_RELEASE:=3
 
 PKG_SOURCE_UNZIP:=cypress-firmware-$(PKG_VERSION).tar.gz
 PKG_SOURCE:=cypress-fmac-$(PKG_VERSION).zip
-PKG_SOURCE_URL:=https://community.cypress.com/servlet/JiveServlet/download/19375-1-53475/
+PKG_SOURCE_URL:=https://community.cypress.com/gfawx74859/attachments/gfawx74859/resourcelibrary/1016/1/
 PKG_HASH:=b12b0570f462c2f3c26dde98b10235a845a7109037def1e7e51af728bcc1a958
 
 PKG_MAINTAINER:=Álvaro Fernández Rojas <noltari@gmail.com>

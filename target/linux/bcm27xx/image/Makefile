@@ -1,4 +1,4 @@
-# 
+#
 # Copyright (C) 2012-2019 OpenWrt.org
 # Copyright (C) 2016-2017 LEDE project
 #
@@ -68,7 +68,7 @@ endef
 define Device/rpi
   DEVICE_MODEL := B/B+/CM/Zero/ZeroW
   DEVICE_DTS := \
-	bcm2708-rpi-b bcm2708-rpi-b-plus \
+	bcm2708-rpi-b bcm2708-rpi-b-rev1 bcm2708-rpi-b-plus \
 	bcm2708-rpi-cm \
 	bcm2708-rpi-zero bcm2708-rpi-zero-w
   SUPPORTED_DEVICES := \
@@ -92,19 +92,19 @@ define Device/rpi-2
   DEVICE_ALT0_MODEL := 3B/3B+/3CM
   DEVICE_ALT0_VARIANT := (32bit)
   DEVICE_ALT1_VENDOR := Raspberry Pi
-  DEVICE_ALT1_MODEL := 4B
+  DEVICE_ALT1_MODEL := 4B/400/4CM
   DEVICE_ALT1_VARIANT := (32bit)
   DEVICE_DTS := \
 	bcm2709-rpi-2-b bcm2710-rpi-2-b \
 	bcm2710-rpi-3-b bcm2710-rpi-3-b-plus \
-	bcm2711-rpi-4-b \
-	bcm2710-rpi-cm3
+	bcm2711-rpi-4-b bcm2711-rpi-400 \
+	bcm2710-rpi-cm3 bcm2711-rpi-cm4
   SUPPORTED_DEVICES := \
 	rpi-2-b rpi-3-b rpi-3-b-plus rpi-cm \
 	raspberrypi,2-model-b raspberrypi,2-model-b-rev2 \
 	raspberrypi,3-model-b raspberrypi,3-model-b-plus \
 	raspberrypi,3-compute-module raspberrypi,compute-module-3 \
-	raspberrypi,4-model-b
+	raspberrypi,400 raspberrypi,4-compute-module raspberrypi,4-model-b
   DEVICE_PACKAGES := \
 	cypress-firmware-43430-sdio \
 	cypress-nvram-43430-sdio-rpi-3b \
@@ -146,11 +146,16 @@ ifeq ($(SUBTARGET),bcm2710)
 endif
 
 define Device/rpi-4
-  DEVICE_MODEL := 4B
+  DEVICE_MODEL := 4B/400/4CM
   DEVICE_VARIANT := (64bit)
   KERNEL_IMG := kernel8.img
-  DEVICE_DTS := broadcom/bcm2711-rpi-4-b
+  DEVICE_DTS := \
+	broadcom/bcm2711-rpi-400 \
+	broadcom/bcm2711-rpi-4-b \
+	broadcom/bcm2711-rpi-cm4
   SUPPORTED_DEVICES := \
+	raspberrypi,400 \
+	raspberrypi,4-compute-module \
 	raspberrypi,4-model-b
   DEVICE_PACKAGES := \
 	cypress-firmware-43455-sdio \
