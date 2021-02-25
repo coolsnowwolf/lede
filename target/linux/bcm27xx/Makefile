@@ -21,13 +21,14 @@ define Target/Description
 endef
 
 include $(INCLUDE_DIR)/target.mk
+
+DEFAULT_PACKAGES := $(filter-out urngd,$(DEFAULT_PACKAGES))
 DEFAULT_PACKAGES += \
 	bcm27xx-gpu-fw \
 	kmod-usb-hid \
 	kmod-sound-core kmod-sound-arm-bcm2835 \
 	kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1 \
-	partx-utils mkf2fs e2fsprogs \
-	autocore-arm
+	partx-utils mkf2fs e2fsprogs autocore-arm
 
 KERNELNAME:=Image dtbs
 
