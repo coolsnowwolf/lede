@@ -26,7 +26,7 @@ include $(INCLUDE_DIR)/package.mk
 
 define Package/e2guardian
   SECTION:=net
-  DEPENDS:=+libpthread +zlib +libpcre
+  DEPENDS:=+libstdcpp +libpthread +zlib +libpcre
   CATEGORY:=Network
   SUBMENU:=Web Servers/Proxies
   TITLE:=E2Guardian
