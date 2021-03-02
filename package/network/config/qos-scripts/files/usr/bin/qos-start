@@ -1,4 +1,0 @@
-#!/bin/sh
-
-qos-stop 
-/usr/lib/qos/generate.sh all | sh
