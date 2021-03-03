@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ethtool
 PKG_VERSION:=5.12
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
@@ -23,8 +23,6 @@ PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
 PKG_BUILD_PARALLEL:=1
 
-PKG_CONFIG_DEPENDS:=CONFIG_ETHTOOL_PRETTY_DUMP
-
 include $(INCLUDE_DIR)/package.mk
 
 define Package/ethtool
@@ -32,6 +30,16 @@ define Package/ethtool
   CATEGORY:=Network
   TITLE:=Display or change ethernet card settings
   URL:=http://www.kernel.org/pub/software/network/ethtool/
+  VARIANT:=tiny
+endef
+
+define Package/ethtool-full
+  $(Package/ethtool)
+  TITLE += (full)
+  VARIANT:=full
+  PROVIDES:=ethtool
+  CONFLICTS:=ethtool
+  DEPENDS:=+libmnl
 endef
 
 define Package/ethtool/description
@@ -39,18 +47,12 @@ define Package/ethtool/description
  network interface
 endef
 
-define Package/ethtool/config
-	config ETHTOOL_PRETTY_DUMP
-		depends on PACKAGE_ethtool
-		bool "Enable pretty printing"
-endef
+Package/ethtool-full/description:=$(Package/ethtool/description)
 
-CONFIGURE_ARGS += --disable-netlink
-
-ifeq ($(CONFIG_ETHTOOL_PRETTY_DUMP),y)
-CONFIGURE_ARGS += --enable-pretty-dump
+ifeq ($(BUILD_VARIANT),full)
+CONFIGURE_ARGS += --enable-netlink --enable-pretty-dump
 else
-CONFIGURE_ARGS += --disable-pretty-dump
+CONFIGURE_ARGS += --disable-netlink --disable-pretty-dump
 endif
 
 define Package/ethtool/install
@@ -58,4 +60,7 @@ define Package/ethtool/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/ethtool $(1)/usr/sbin
 endef
 
+Package/ethtool-full/install=$(Package/ethtool/install)
+
 $(eval $(call BuildPackage,ethtool))
+$(eval $(call BuildPackage,ethtool-full))
