@@ -5,7 +5,7 @@
 # r8125 is the Linux device driver released for Realtek 2.5Gigabit Ethernet
 # controllers with PCI-Express interface.
 #
-# Copyright(c) 2020 Realtek Semiconductor Corp. All rights reserved.
+# Copyright(c) 2021 Realtek Semiconductor Corp. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the Free
@@ -45,6 +45,10 @@
 #include "r8125_rss.h"
 #ifdef ENABLE_LIB_SUPPORT
 #include "r8125_lib.h"
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,12,0)&& !defined(ENABLE_LIB_SUPPORT)
+#define RTL_USE_NEW_INTR_API
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
@@ -353,12 +357,12 @@ do { \
 #define RSS_SUFFIX ""
 #endif
 
-#define RTL8125_VERSION "9.004.01" NAPI_SUFFIX DASH_SUFFIX REALWOW_SUFFIX PTP_SUFFIX RSS_SUFFIX
+#define RTL8125_VERSION "9.005.01" NAPI_SUFFIX DASH_SUFFIX REALWOW_SUFFIX PTP_SUFFIX RSS_SUFFIX
 #define MODULENAME "r8125"
 #define PFX MODULENAME ": "
 
 #define GPL_CLAIM "\
-r8125  Copyright (C) 2020  Realtek NIC software team <nicfae@realtek.com> \n \
+r8125  Copyright (C) 2021  Realtek NIC software team <nicfae@realtek.com> \n \
 This program comes with ABSOLUTELY NO WARRANTY; for details, please see <http://www.gnu.org/licenses/>. \n \
 This is free software, and you are welcome to redistribute it under certain conditions; see <http://www.gnu.org/licenses/>. \n"
 
@@ -538,6 +542,17 @@ This is free software, and you are welcome to redistribute it under certain cond
 #define ETH_MIN_MTU  68
 #endif
 
+#define D0_SPEED_UP_SPEED_DISABLE    0
+#define D0_SPEED_UP_SPEED_1000       1
+#define D0_SPEED_UP_SPEED_2500       2
+
+#ifndef WRITE_ONCE
+#define WRITE_ONCE(var, val) (*((volatile typeof(val) *)(&(var))) = (val))
+#endif
+#ifndef READ_ONCE
+#define READ_ONCE(var) (*((volatile typeof(var) *)(&(var))))
+#endif
+
 /*****************************************************************************/
 
 //#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,3)
@@ -623,6 +638,23 @@ typedef int napi_budget;
 #else
 #define RTL_NAPI_DEL(priv)   netif_napi_del(&priv->napi)
 #endif //LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
+
+/*****************************************************************************/
+#ifdef CONFIG_R8125_NAPI
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
+#define RTL_NAPI_CONSUME_SKB_ANY(skb, budget)          napi_consume_skb(skb, budget)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)
+#define RTL_NAPI_CONSUME_SKB_ANY(skb, budget)          dev_consume_skb_any(skb);
+#else
+#define RTL_NAPI_CONSUME_SKB_ANY(skb, budget)          dev_kfree_skb_any(skb);
+#endif  //LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
+#else   //CONFIG_R8125_NAPI
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)
+#define RTL_NAPI_CONSUME_SKB_ANY(skb, budget)          dev_consume_skb_any(skb);
+#else
+#define RTL_NAPI_CONSUME_SKB_ANY(skb, budget)          dev_kfree_skb_any(skb);
+#endif
+#endif  //CONFIG_R8125_NAPI
 
 /*****************************************************************************/
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9)
@@ -1420,6 +1452,7 @@ enum RTL8125_register_content {
         ISRIMR_V2_ROK_Q0     = (1 << 0),
         ISRIMR_TOK_Q0        = (1 << 16),
         ISRIMR_TOK_Q1        = (1 << 18),
+        ISRIMR_V2_LINKCHG    = (1 << 21),
 
         /* Magic Number */
         RTL8125_MAGIC_NUMBER = 0x0badbadbadbadbadull,
@@ -1725,6 +1758,14 @@ struct r8125_irq {
         char		name[IFNAMSIZ + 10];
 };
 
+/* Flow Control Settings */
+enum rtl8125_fc_mode {
+        rtl8125_fc_none = 0,
+        rtl8125_fc_rx_pause,
+        rtl8125_fc_tx_pause,
+        rtl8125_fc_full,
+        rtl8125_fc_default
+};
 
 struct rtl8125_private {
         void __iomem *mmio_addr;    /* memory map physical address */
@@ -1797,6 +1838,7 @@ struct rtl8125_private {
         u8  duplex;
         u32 speed;
         u32 advertising;
+        enum rtl8125_fc_mode fcpause;
         u16 eeprom_len;
         u16 cur_page;
         u32 bios_setting;
@@ -1840,10 +1882,6 @@ struct rtl8125_private {
         u8 ShortPacketSwChecksum;
 
         u8 UseSwPaddingShortPkt;
-        u16 SwPaddingShortPktLen;
-
-        void *ShortPacketEmptyBuffer;
-        dma_addr_t ShortPacketEmptyBufferPhy;
 
         u8 RequireAdcBiasPatch;
         u16 AdcBiasPatchIoffset;
@@ -1867,6 +1905,8 @@ struct rtl8125_private {
 
         u8 HwSuppMagicPktVer;
 
+        u8 HwSuppLinkChgWakeUpVer;
+
         u8 HwSuppCheckPhyDisableModeVer;
 
         u8 random_mac;
@@ -1884,6 +1924,12 @@ struct rtl8125_private {
         u8 HwCurrIsrVer;
 
         u8 HwSuppIntMitiVer;
+
+        u8 check_keep_link_speed;
+        u8 resume_not_chg_speed;
+
+        u8 HwSuppD0SpeedUpVer;
+        u8 D0SpeedUpSpeed;
 
         //Dash+++++++++++++++++
         u8 HwSuppDashVer;
@@ -1987,6 +2033,7 @@ struct rtl8125_private {
 
         u8 HwSuppPtpVer;
         u8 EnablePtp;
+        u8 ptp_master_mode;
         s64 ptp_adjust;
 #ifdef ENABLE_PTP_SUPPORT
         u32 tx_hwtstamp_timeouts;
@@ -2109,7 +2156,7 @@ enum mcfg {
 #define NIC_RAMCODE_VERSION_CFG_METHOD_2 (0x0b11)
 #define NIC_RAMCODE_VERSION_CFG_METHOD_3 (0x0b33)
 #define NIC_RAMCODE_VERSION_CFG_METHOD_4 (0x0b17)
-#define NIC_RAMCODE_VERSION_CFG_METHOD_5 (0x0b36)
+#define NIC_RAMCODE_VERSION_CFG_METHOD_5 (0x0b55)
 
 //hwoptimize
 #define HW_PATCH_SOC_LAN (BIT_0)
@@ -2206,6 +2253,7 @@ static inline void rtl8125_lib_reset_complete(struct rtl8125_private *tp) { }
 
 #define HW_SUPPORT_CHECK_PHY_DISABLE_MODE(_M)        ((_M)->HwSuppCheckPhyDisableModeVer > 0 )
 #define HW_HAS_WRITE_PHY_MCU_RAM_CODE(_M)        (((_M)->HwHasWrRamCodeToMicroP == TRUE) ? 1 : 0)
+#define HW_SUPPORT_D0_SPEED_UP(_M)        ((_M)->HwSuppD0SpeedUpVer > 0)
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,34)
 #define netdev_mc_count(dev) ((dev)->mc_count)
