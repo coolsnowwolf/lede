@@ -60,9 +60,11 @@ Special tips:
 ------
 1. This source code doesn't contain any backdoors or close source applications that can monitor/capture your HTTPS traffic, SSL is the final castle of cyber security. Safe is what a firmware should archive.
 
-2. If you have any technical problem, you may join the QQ discussion group: 297253733, link: click [here](https://jq.qq.com/?_wv=1027&k=5yCRuXL)
+2. QQ group number: 297253733, click [here](https://jq.qq.com/?_wv=1027&k=5yCRuXL) to join.
 
-3. Want to learn OpenWrt development but don't know how? Can't hold long for self-learning? Not enough fundamental knowledge? Learn OpenWrt development with Mr. Zuo through his Beginner OpenWrt Training Course. Click [here](http://forgotfun.org/2018/04/openwrt-training-2018.html) to register.
+3. Telegram channel link: https://t.me/owrt_fans, click [here](https://t.me/owrt_fans) to enter. (Group link can be found in the description of the channel)
+
+4. Want to learn OpenWrt development but don't know how? Can't hold long for self-learning? Not enough fundamental knowledge? Learn OpenWrt development with Mr. Zuo through his Beginner OpenWrt Training Course. Click [here](http://forgotfun.org/2018/04/openwrt-training-2018.html) to register.
 
 ## Router Recommendation
 Not Sponsored: If you are finding a low power consumption, small and performance promising x86/x64 router, I personally recommend the 
