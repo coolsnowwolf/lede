@@ -64,7 +64,7 @@ make -j$(($(nproc) + 1)) V=s
 
 2. QQ 群号码： 297253733 [点击加入](https://jq.qq.com/?_wv=1027&k=5yCRuXL "OP共享技术交流群")
 
-3. TG 频道连结: https://t.me/owrt_fans [点击进入](https://t.me/owrt_fans)（群组连结可在頻道簡介中找到）
+3. TG 频道连结: https://t.me/owrt_fans （群组连结可在頻道簡介中找到）
 
 4. 想学习 OpenWrt 开发，但是摸不着门道？自学没毅力？基础太差？怕太难学不会？跟着佐大学 OpenWrt 开发入门培训班助你能学有所成
 报名地址：[点击报名](http://forgotfun.org/2018/04/openwrt-training-2018.html "报名")

@@ -62,7 +62,7 @@ Special tips:
 
 2. QQ group number: 297253733, click [here](https://jq.qq.com/?_wv=1027&k=5yCRuXL) to join.
 
-3. Telegram channel link: https://t.me/owrt_fans, click [here](https://t.me/owrt_fans) to enter. (Group link can be found in the description of the channel)
+3. Telegram channel link: https://t.me/owrt_fans (Group link can be found in the description of the channel)
 
 4. Want to learn OpenWrt development but don't know how? Can't hold long for self-learning? Not enough fundamental knowledge? Learn OpenWrt development with Mr. Zuo through his Beginner OpenWrt Training Course. Click [here](http://forgotfun.org/2018/04/openwrt-training-2018.html) to register.
 
