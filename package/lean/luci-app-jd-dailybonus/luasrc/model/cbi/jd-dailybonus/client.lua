@@ -87,7 +87,9 @@ o:depends('auto_update', '1')
 
 o = s:option(Value, 'remote_url', translate('更新源地址'))
 o:value('https://raw.githubusercontent.com/NobyDa/Script/master/JD-DailyBonus/JD_DailyBonus.js', translate('GitHub'))
-o:value('https://cdn.jsdelivr.net/gh/NobyDa/Script/JD-DailyBonus/JD_DailyBonus.js', translate('GitHub CDN'))
+o:value('https://raw.sevencdn.com/NobyDa/Script/master/JD-DailyBonus/JD_DailyBonus.js', translate('GitHub CDN 01'))
+o:value('https://cdn.jsdelivr.net/gh/NobyDa/Script/JD-DailyBonus/JD_DailyBonus.js', translate('GitHub CDN 02'))
+o:value('https://ghproxy.com/https://raw.githubusercontent.com/NobyDa/Script/master/JD-DailyBonus/JD_DailyBonus.js', translate('韩国首尔'))
 o:value('https://gitee.com/jerrykuku/staff/raw/master/JD_DailyBonus.js', translate('Gitee'))
 o.default = 'nil'
 o.rmempty = false
