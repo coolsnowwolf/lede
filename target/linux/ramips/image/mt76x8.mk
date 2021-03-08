@@ -650,6 +650,15 @@ define Device/xiaomi_miwifi-nano
 endef
 TARGET_DEVICES += xiaomi_miwifi-nano
 
+define Device/xiaomi_miwifi-4C
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := MiWiFi 4C
+  DEVICE_PACKAGES := uboot-envtools
+  SUPPORTED_DEVICES += miwifi-4C
+endef
+TARGET_DEVICES += xiaomi_miwifi-4C
+
 define Device/zbtlink_zbt-we1226
   IMAGE_SIZE := 7872k
   DEVICE_VENDOR := Zbtlink
