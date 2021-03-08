@@ -58,32 +58,38 @@ make -j$(($(nproc) + 1)) V=s
 文件清理
 清除旧的编译产物（可选）
 
+
  `make clean`
 
 在源码有大规模更新或者内核更新后执行，以保证编译质量。此操作会删除/bin和/build_dir目录中的文件。
 清除旧的编译产物、交叉编译工具及工具链等目录（可选）
 
- `make dirclean`
+
+`make dirclean`
 
 更换架构编译前必须执行。此操作会删除/bin和/build_dir目录的中的文件(make clean)以及/staging_dir、/toolchain、/tmp和/logs中的文件。
 清除 Open­Wrt 源码以外的文件（可选）
 
- `make distclean`
+
+`make distclean`
 
 除非是做开发，并打算 push 到 GitHub 这样的远程仓库，否则几乎用不到。此操作相当于make dirclean外加删除/dl、/feeds目录和.config文件。
 还原 Open­Wrt 源码到初始状态（可选）
 
- `git clean -xdf`
+
+`git clean -xdf`
 
 如果把源码改坏了，或者长时间没有进行编译时使用。
 清除临时文件
 
- `rm -rf tmp`
+
+`rm -rf tmp`
 
 删除执行make menuconfig后产生的一些临时文件，包括一些软件包的检索信息，删除后会重新加载package目录下的软件包。若不删除会导致一些新加入的软件包不显示。
 删除编译配置文件
 
- `rm -f .config`
+
+`rm -f .config`
 
 在不删除的情况下如果取消选择某些组件它的依赖组件不会自动取消，所以对于需要调整组件的情况下建议删除。
 编译完成后输出路径：bin/targets
