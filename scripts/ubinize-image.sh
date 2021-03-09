@@ -1,5 +1,7 @@
 #!/bin/sh
 
+. $TOPDIR/scripts/functions.sh
+
 part=""
 ubootenv=""
 ubinize_param=""
@@ -7,16 +9,7 @@ kernel=""
 rootfs=""
 outfile=""
 err=""
-
-get_magic_word() {
-	dd if=$1 bs=2 count=1 2>/dev/null | hexdump -v -n 2 -e '1/1 "%02x"'
-}
-
-is_ubifs() {
-	if [ "$( get_magic_word $1 )" = "3118" ]; then
-		echo "1"
-	fi
-}
+ubinize_seq=""
 
 ubivol() {
 	volid=$1
@@ -31,7 +24,7 @@ ubivol() {
 	echo "vol_name=$name"
 	if [ "$image" ]; then
 		echo "image=$image"
-		[ -n "$size" ] && echo "vol_size=${size}MiB"
+		[ -n "$size" ] && echo "vol_size=${size}"
 	else
 		echo "vol_size=1MiB"
 	fi
@@ -42,7 +35,10 @@ ubivol() {
 
 ubilayout() {
 	local vol_id=0
-	local root_is_ubifs="$( is_ubifs "$2" )"
+	local rootsize=
+	local autoresize=
+	local rootfs_type="$( get_fs_type "$2" )"
+
 	if [ "$1" = "ubootenv" ]; then
 		ubivol $vol_id ubootenv
 		vol_id=$(( $vol_id + 1 ))
@@ -62,16 +58,34 @@ ubilayout() {
 
 		size="$part"
 
-		ubivol $vol_id "$name" "$image" "" "$size"
+		ubivol $vol_id "$name" "$image" "" "${size}MiB"
 		vol_id=$(( $vol_id + 1 ))
 	done
 	if [ "$3" ]; then
 		ubivol $vol_id kernel "$3"
 		vol_id=$(( $vol_id + 1 ))
 	fi
-	ubivol $vol_id rootfs "$2" $root_is_ubifs
+
+	case "$rootfs_type" in
+	"ubifs")
+		autoresize=1
+		;;
+	"squashfs")
+		# squashfs uses 1k block size, ensure we do not
+		# violate that
+		rootsize="$( round_up "$( stat -c%s "$2" )" 1024 )"
+		;;
+	esac
+	ubivol $vol_id rootfs "$2" "$autoresize" "$rootsize"
+
 	vol_id=$(( $vol_id + 1 ))
-	[ "$root_is_ubifs" ] || ubivol $vol_id rootfs_data "" 1
+	[ "$rootfs_type" = "ubifs" ] || ubivol $vol_id rootfs_data "" 1
+}
+
+set_ubinize_seq() {
+	if [ -n "$SOURCE_DATE_EPOCH" ] ; then
+		ubinize_seq="-Q $SOURCE_DATE_EPOCH"
+	fi
 }
 
 while [ "$1" ]; do
@@ -130,8 +144,9 @@ if [ -z "$ubinizecfg" ]; then
 fi
 ubilayout "$ubootenv" "$rootfs" "$kernel" > "$ubinizecfg"
 
+set_ubinize_seq
 cat "$ubinizecfg"
-ubinize -o "$outfile" $ubinize_param "$ubinizecfg"
+ubinize $ubinize_seq -o "$outfile" $ubinize_param "$ubinizecfg"
 err="$?"
 [ ! -e "$outfile" ] && err=2
 rm "$ubinizecfg"

@@ -1,0 +1,784 @@
+From 03ec635be0eb1c1b63b1f631938d41b379dad637 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Horia=20Geant=C4=83?= <horia.geanta@nxp.com>
+Date: Mon, 30 Sep 2019 00:22:09 +0300
+Subject: [PATCH] MLKU-38-3 crypto: caam - add SNVS / SECVIO support
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This is a squash of the following i.MX BSP commits
+(rel_imx_4.19.35_1.1.0_rc2)
+
+1. 8f6a17b41917 ("ENGR00289885 [iMX6Q] Add Secure Memory and SECVIO support.")
+2. 8433c811e97a ("MLK-9710-18 snvs - make SECVIO module device tree correct")
+3. 35bbc34e996b ("MLK-9769-23 Replace SECVIO of_irq_to_resource() with irq_of_parse_and_map()")
+4. 3ac6edcd92d4 ("MLK-11360-01 crypto: caam_snvs: add snvs clock management")
+5. 9d9ca7a03e3b ("MLK-11922 i.mx6: Linux 3.14.28 CAAM & SNVS enabled by default. JTAG, DS-5 attachment causes exceptions")
+6. fcdaabf1bba2 ("MLK-17412-01: Fix secvio driver to have same driver name as DTS")
+
+Signed-off-by: Dan Douglass <dan.douglass@nxp.com>
+Signed-off-by: Victoria Milhoan <vicki.milhoan@freescale.com>
+Signed-off-by: Steve Cornelius <steve.cornelius@nxp.com>
+Signed-off-by: Fugang Duan <andy.duan@nxp.com>
+Signed-off-by: Franck LENORMAND <franck.lenormand@nxp.com>
+
+that have been reworked:
+
+1.
+-make SM depend on JR
+-enable SM, SECVIO only on i.MX SoCs
+-fix resource leak - add off_node_put() where needed
+
+Split commit in three:
+- SNVS/SECVIO driver
+- Secure Memory driver
+- DT changes
+
+3.
+JR changes dropped - no longer needed, already upstream in
+commit 549077d7d86a1 ("crypto: caam - check irq_of_parse_and_map for errors")
+
+4.
+Split the patch in two:
+-DT bindings changes
+-driver changes
+
+5.
+Fixed conflicts in imx7d.dtsi - added caam_sm and irq_sec_vio nodes.
+
+Split commit in 3:
+-SECVIO/SNVS driver changes
+-SECVIO/SNVS DT changes
+-Secure Memory DT changes
+
+Signed-off-by: Horia Geantă <horia.geanta@nxp.com>
+---
+ drivers/crypto/caam/Kconfig    |   7 +
+ drivers/crypto/caam/Makefile   |   1 +
+ drivers/crypto/caam/ctrl.c     |   3 -
+ drivers/crypto/caam/intern.h   |   4 +-
+ drivers/crypto/caam/secvio.c   | 342 +++++++++++++++++++++++++++++++++++++++++
+ drivers/crypto/caam/secvio.h   |  69 +++++++++
+ drivers/crypto/caam/snvsregs.h | 239 ++++++++++++++++++++++++++++
+ 7 files changed, 660 insertions(+), 5 deletions(-)
+ create mode 100644 drivers/crypto/caam/secvio.c
+ create mode 100644 drivers/crypto/caam/secvio.h
+ create mode 100644 drivers/crypto/caam/snvsregs.h
+
+--- a/drivers/crypto/caam/Kconfig
++++ b/drivers/crypto/caam/Kconfig
+@@ -156,6 +156,13 @@ config CRYPTO_DEV_FSL_CAAM_RNG_TEST
+ 	  caam RNG. This test is several minutes long and executes
+ 	  just before the RNG is registered with the hw_random API.
+ 
++config CRYPTO_DEV_FSL_CAAM_SECVIO
++	tristate "CAAM/SNVS Security Violation Handler (EXPERIMENTAL)"
++	help
++	  Enables installation of an interrupt handler with registrable
++          handler functions which can be specified to act on the consequences
++          of a security violation.
++
+ endif # CRYPTO_DEV_FSL_CAAM_JR
+ 
+ endif # CRYPTO_DEV_FSL_CAAM
+--- a/drivers/crypto/caam/Makefile
++++ b/drivers/crypto/caam/Makefile
+@@ -21,6 +21,7 @@ caam_jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_CRY
+ caam_jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_AHASH_API) += caamhash.o
+ caam_jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_RNG_API) += caamrng.o
+ caam_jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_PKC_API) += caampkc.o pkc_desc.o
++caam_jr-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SECVIO) += secvio.o
+ 
+ caam-$(CONFIG_CRYPTO_DEV_FSL_CAAM_CRYPTO_API_QI) += qi.o
+ ifneq ($(CONFIG_CRYPTO_DEV_FSL_CAAM_CRYPTO_API_QI),)
+--- a/drivers/crypto/caam/ctrl.c
++++ b/drivers/crypto/caam/ctrl.c
+@@ -719,9 +719,6 @@ iomap_ctrl:
+ 			 BLOCK_OFFSET * DECO_BLOCK_NUMBER
+ 			 );
+ 
+-	/* Get the IRQ of the controller (for security violations only) */
+-	ctrlpriv->secvio_irq = irq_of_parse_and_map(nprop, 0);
+-
+ 	if (!reg_access)
+ 		goto set_dma_mask;
+ 
+--- a/drivers/crypto/caam/intern.h
++++ b/drivers/crypto/caam/intern.h
+@@ -66,6 +66,7 @@ struct caam_drv_private_jr {
+  * Driver-private storage for a single CAAM block instance
+  */
+ struct caam_drv_private {
++
+ 	/* Physical-presence section */
+ 	struct caam_ctrl __iomem *ctrl; /* controller region */
+ 	struct caam_deco __iomem *deco; /* DECO/CCB views */
+@@ -83,8 +84,7 @@ struct caam_drv_private {
+ 	u8 qi_present;		/* Nonzero if QI present in device */
+ 	u8 mc_en;		/* Nonzero if MC f/w is active */
+ 	u8 scu_en;		/* Nonzero if SCU f/w is active */
+-+	u8 optee_en;		/* Nonzero if OP-TEE f/w is active */
+-	int secvio_irq;		/* Security violation interrupt number */
++	u8 optee_en;		/* Nonzero if OP-TEE f/w is active */
+ 	int virt_en;		/* Virtualization enabled in CAAM */
+ 	int era;		/* CAAM Era (internal HW revision) */
+ 
+--- /dev/null
++++ b/drivers/crypto/caam/secvio.c
+@@ -0,0 +1,342 @@
++// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
++/*
++ * SNVS Security Violation Handler
++ *
++ * Copyright 2012-2016 Freescale Semiconductor, Inc.
++ * Copyright 2017-2019 NXP
++ */
++
++#include "compat.h"
++#include "secvio.h"
++#include "regs.h"
++#include "intern.h"
++#include <linux/of.h>
++#include <linux/of_irq.h>
++#include <linux/of_address.h>
++
++/* The driver is matched with node caam_snvs to get regmap
++ * It will then retrieve interruption and tamper alarm configuration from
++ * node caam-secvio searching for the compat string "fsl,imx6q-caam-secvio"
++ */
++#define DRIVER_NAME "caam-snvs"
++
++/*
++ * These names are associated with each violation handler.
++ * The source names were taken from MX6, and are based on recommendations
++ * for most common SoCs.
++ */
++static const u8 *violation_src_name[] = {
++	"CAAM Internal Security Violation",
++	"JTAG Alarm",
++	"Watchdog",
++	"(reserved)",
++	"External Boot",
++	"External Tamper Detect",
++};
++
++/* These names help describe security monitor state for the console */
++static const u8 *snvs_ssm_state_name[] = {
++	"init",
++	"hard fail",
++	"(undef:2)",
++	"soft fail",
++	"(undef:4)",
++	"(undef:5)",
++	"(undef:6)",
++	"(undef:7)",
++	"transition",
++	"check",
++	"(undef:10)",
++	"non-secure",
++	"(undef:12)",
++	"trusted",
++	"(undef:14)",
++	"secure",
++};
++
++/* Top-level security violation interrupt */
++static irqreturn_t snvs_secvio_interrupt(int irq, void *snvsdev)
++{
++	struct device *dev = snvsdev;
++	struct snvs_secvio_drv_private *svpriv = dev_get_drvdata(dev);
++
++	clk_enable(svpriv->clk);
++	/* Check the HP secvio status register */
++	svpriv->irqcause = rd_reg32(&svpriv->svregs->hp.secvio_status) &
++				    HP_SECVIOST_SECVIOMASK;
++
++	if (!svpriv->irqcause) {
++		clk_disable(svpriv->clk);
++		return IRQ_NONE;
++	}
++
++	/* Now ACK cause */
++	clrsetbits_32(&svpriv->svregs->hp.secvio_status, 0, svpriv->irqcause);
++
++	/* And run deferred service */
++	preempt_disable();
++	tasklet_schedule(&svpriv->irqtask[smp_processor_id()]);
++	preempt_enable();
++
++	clk_disable(svpriv->clk);
++
++	return IRQ_HANDLED;
++}
++
++/* Deferred service handler. Tasklet arg is simply the SNVS dev */
++static void snvs_secvio_dispatch(unsigned long indev)
++{
++	struct device *dev = (struct device *)indev;
++	struct snvs_secvio_drv_private *svpriv = dev_get_drvdata(dev);
++	unsigned long flags;
++	int i;
++
++
++	/* Look through stored causes, call each handler if exists */
++	for (i = 0; i < MAX_SECVIO_SOURCES; i++)
++		if (svpriv->irqcause & (1 << i)) {
++			spin_lock_irqsave(&svpriv->svlock, flags);
++			svpriv->intsrc[i].handler(dev, i,
++						  svpriv->intsrc[i].ext);
++			spin_unlock_irqrestore(&svpriv->svlock, flags);
++		};
++
++	/* Re-enable now-serviced interrupts */
++	clrsetbits_32(&svpriv->svregs->hp.secvio_intcfg, 0, svpriv->irqcause);
++}
++
++/*
++ * Default cause handler, used in lieu of an application-defined handler.
++ * All it does at this time is print a console message. It could force a halt.
++ */
++static void snvs_secvio_default(struct device *dev, u32 cause, void *ext)
++{
++	struct snvs_secvio_drv_private *svpriv = dev_get_drvdata(dev);
++
++	dev_err(dev, "Unhandled Security Violation Interrupt %d = %s\n",
++		cause, svpriv->intsrc[cause].intname);
++}
++
++/*
++ * Install an application-defined handler for a specified cause
++ * Arguments:
++ * - dev        points to SNVS-owning device
++ * - cause      interrupt source cause
++ * - handler    application-defined handler, gets called with dev
++ *              source cause, and locally-defined handler argument
++ * - cause_description   points to a string to override the default cause
++ *                       name, this can be used as an alternate for error
++ *                       messages and such. If left NULL, the default
++ *                       description string is used.
++ * - ext        pointer to any extra data needed by the handler.
++ */
++int snvs_secvio_install_handler(struct device *dev, enum secvio_cause cause,
++				void (*handler)(struct device *dev, u32 cause,
++						void *ext),
++				u8 *cause_description, void *ext)
++{
++	unsigned long flags;
++	struct snvs_secvio_drv_private *svpriv;
++
++	svpriv = dev_get_drvdata(dev);
++
++	if ((handler == NULL) || (cause > SECVIO_CAUSE_SOURCE_5))
++		return -EINVAL;
++
++	spin_lock_irqsave(&svpriv->svlock, flags);
++	svpriv->intsrc[cause].handler = handler;
++	if (cause_description != NULL)
++		svpriv->intsrc[cause].intname = cause_description;
++	if (ext != NULL)
++		svpriv->intsrc[cause].ext = ext;
++	spin_unlock_irqrestore(&svpriv->svlock, flags);
++
++	return 0;
++}
++EXPORT_SYMBOL(snvs_secvio_install_handler);
++
++/*
++ * Remove an application-defined handler for a specified cause (and, by
++ * implication, restore the "default".
++ * Arguments:
++ * - dev	points to SNVS-owning device
++ * - cause	interrupt source cause
++ */
++int snvs_secvio_remove_handler(struct device *dev, enum secvio_cause cause)
++{
++	unsigned long flags;
++	struct snvs_secvio_drv_private *svpriv;
++
++	svpriv = dev_get_drvdata(dev);
++
++	if (cause > SECVIO_CAUSE_SOURCE_5)
++		return -EINVAL;
++
++	spin_lock_irqsave(&svpriv->svlock, flags);
++	svpriv->intsrc[cause].intname = violation_src_name[cause];
++	svpriv->intsrc[cause].handler = snvs_secvio_default;
++	svpriv->intsrc[cause].ext = NULL;
++	spin_unlock_irqrestore(&svpriv->svlock, flags);
++	return 0;
++}
++EXPORT_SYMBOL(snvs_secvio_remove_handler);
++
++static int snvs_secvio_remove(struct platform_device *pdev)
++{
++	struct device *svdev;
++	struct snvs_secvio_drv_private *svpriv;
++	int i;
++
++	svdev = &pdev->dev;
++	svpriv = dev_get_drvdata(svdev);
++
++	clk_enable(svpriv->clk);
++	/* Set all sources to nonfatal */
++	wr_reg32(&svpriv->svregs->hp.secvio_intcfg, 0);
++
++	/* Remove tasklets and release interrupt */
++	for_each_possible_cpu(i)
++		tasklet_kill(&svpriv->irqtask[i]);
++
++	clk_disable_unprepare(svpriv->clk);
++	free_irq(svpriv->irq, svdev);
++	iounmap(svpriv->svregs);
++	kfree(svpriv);
++
++	return 0;
++}
++
++static int snvs_secvio_probe(struct platform_device *pdev)
++{
++	struct device *svdev;
++	struct snvs_secvio_drv_private *svpriv;
++	struct device_node *np, *npirq;
++	struct snvs_full __iomem *snvsregs;
++	int i, error;
++	u32 hpstate;
++	const void *jtd, *wtd, *itd, *etd;
++	u32 td_en;
++
++	svpriv = kzalloc(sizeof(struct snvs_secvio_drv_private), GFP_KERNEL);
++	if (!svpriv)
++		return -ENOMEM;
++
++	svdev = &pdev->dev;
++	dev_set_drvdata(svdev, svpriv);
++	svpriv->pdev = pdev;
++	np = pdev->dev.of_node;
++
++	npirq = of_find_compatible_node(NULL, NULL, "fsl,imx6q-caam-secvio");
++	if (!npirq) {
++		dev_err(svdev, "can't find secvio node\n");
++		kfree(svpriv);
++		return -EINVAL;
++	}
++	svpriv->irq = irq_of_parse_and_map(npirq, 0);
++	if (svpriv->irq <= 0) {
++		dev_err(svdev, "can't identify secvio interrupt\n");
++		kfree(svpriv);
++		return -EINVAL;
++	}
++
++	jtd = of_get_property(npirq, "jtag-tamper", NULL);
++	wtd = of_get_property(npirq, "watchdog-tamper", NULL);
++	itd = of_get_property(npirq, "internal-boot-tamper", NULL);
++	etd = of_get_property(npirq, "external-pin-tamper", NULL);
++	if (!jtd | !wtd | !itd | !etd ) {
++		dev_err(svdev, "can't identify all tamper alarm configuration\n");
++		kfree(svpriv);
++		return -EINVAL;
++	}
++
++	/*
++	 * Configure all sources  according to device tree property.
++	 * If the property is enabled then the source is ser as
++	 * fatal violations except LP section,
++	 * source #5 (typically used as an external tamper detect), and
++	 * source #3 (typically unused). Whenever the transition to
++	 * secure mode has occurred, these will now be "fatal" violations
++	 */
++	td_en = HP_SECVIO_INTEN_SRC0;
++	if (!strcmp(jtd, "enabled"))
++		td_en |= HP_SECVIO_INTEN_SRC1;
++	if (!strcmp(wtd, "enabled"))
++		td_en |= HP_SECVIO_INTEN_SRC2;
++	if (!strcmp(itd, "enabled"))
++		td_en |= HP_SECVIO_INTEN_SRC4;
++	if (!strcmp(etd, "enabled"))
++		td_en |= HP_SECVIO_INTEN_SRC5;
++
++	snvsregs = of_iomap(np, 0);
++	if (!snvsregs) {
++		dev_err(svdev, "register mapping failed\n");
++		return -ENOMEM;
++	}
++	svpriv->svregs = (struct snvs_full __force *)snvsregs;
++
++	svpriv->clk = devm_clk_get(&pdev->dev, NULL);
++	if (IS_ERR(svpriv->clk)) {
++		dev_err(&pdev->dev, "can't get snvs clock\n");
++		svpriv->clk = NULL;
++	}
++
++	/* Write the Secvio Enable Config the SVCR */
++	wr_reg32(&svpriv->svregs->hp.secvio_ctl, td_en);
++	wr_reg32(&svpriv->svregs->hp.secvio_intcfg, td_en);
++
++	 /* Device data set up. Now init interrupt source descriptions */
++	for (i = 0; i < MAX_SECVIO_SOURCES; i++) {
++		svpriv->intsrc[i].intname = violation_src_name[i];
++		svpriv->intsrc[i].handler = snvs_secvio_default;
++	}
++	/* Connect main handler */
++	for_each_possible_cpu(i)
++		tasklet_init(&svpriv->irqtask[i], snvs_secvio_dispatch,
++			     (unsigned long)svdev);
++
++	error = request_irq(svpriv->irq, snvs_secvio_interrupt,
++			    IRQF_SHARED, DRIVER_NAME, svdev);
++	if (error) {
++		dev_err(svdev, "can't connect secvio interrupt\n");
++		irq_dispose_mapping(svpriv->irq);
++		svpriv->irq = 0;
++		iounmap(svpriv->svregs);
++		kfree(svpriv);
++		return -EINVAL;
++	}
++
++	clk_prepare_enable(svpriv->clk);
++
++	hpstate = (rd_reg32(&svpriv->svregs->hp.status) &
++			    HP_STATUS_SSM_ST_MASK) >> HP_STATUS_SSM_ST_SHIFT;
++	dev_info(svdev, "violation handlers armed - %s state\n",
++		 snvs_ssm_state_name[hpstate]);
++
++	clk_disable(svpriv->clk);
++
++	return 0;
++}
++
++static struct of_device_id snvs_secvio_match[] = {
++	{
++		.compatible = "fsl,imx6q-caam-snvs",
++	},
++	{},
++};
++MODULE_DEVICE_TABLE(of, snvs_secvio_match);
++
++static struct platform_driver snvs_secvio_driver = {
++	.driver = {
++		.name = DRIVER_NAME,
++		.owner = THIS_MODULE,
++		.of_match_table = snvs_secvio_match,
++	},
++	.probe       = snvs_secvio_probe,
++	.remove      = snvs_secvio_remove,
++};
++
++module_platform_driver(snvs_secvio_driver);
++
++MODULE_LICENSE("Dual BSD/GPL");
++MODULE_DESCRIPTION("FSL SNVS Security Violation Handler");
++MODULE_AUTHOR("Freescale Semiconductor - MCU");
+--- /dev/null
++++ b/drivers/crypto/caam/secvio.h
+@@ -0,0 +1,69 @@
++/* SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause) */
++/*
++ * CAAM Security Violation Handler
++ *
++ * Copyright 2012-2015 Freescale Semiconductor, Inc.
++ * Copyright 2016-2019 NXP
++ */
++
++#ifndef SECVIO_H
++#define SECVIO_H
++
++#include "snvsregs.h"
++
++
++/*
++ * Defines the published interfaces to install/remove application-specified
++ * handlers for catching violations
++ */
++
++#define MAX_SECVIO_SOURCES 6
++
++/* these are the untranslated causes */
++enum secvio_cause {
++	SECVIO_CAUSE_SOURCE_0,
++	SECVIO_CAUSE_SOURCE_1,
++	SECVIO_CAUSE_SOURCE_2,
++	SECVIO_CAUSE_SOURCE_3,
++	SECVIO_CAUSE_SOURCE_4,
++	SECVIO_CAUSE_SOURCE_5
++};
++
++/* These are common "recommended" cause definitions for most devices */
++#define SECVIO_CAUSE_CAAM_VIOLATION	SECVIO_CAUSE_SOURCE_0
++#define SECVIO_CAUSE_JTAG_ALARM		SECVIO_CAUSE_SOURCE_1
++#define SECVIO_CAUSE_WATCHDOG		SECVIO_CAUSE_SOURCE_2
++#define SECVIO_CAUSE_EXTERNAL_BOOT	SECVIO_CAUSE_SOURCE_4
++#define SECVIO_CAUSE_TAMPER_DETECT	SECVIO_CAUSE_SOURCE_5
++
++int snvs_secvio_install_handler(struct device *dev, enum secvio_cause cause,
++				void (*handler)(struct device *dev, u32 cause,
++						void *ext),
++				u8 *cause_description, void *ext);
++int snvs_secvio_remove_handler(struct device *dev, enum  secvio_cause cause);
++
++/*
++ * Private data definitions for the secvio "driver"
++ */
++
++struct secvio_int_src {
++	const u8 *intname;	/* Points to a descriptive name for source */
++	void *ext;		/* Extended data to pass to the handler */
++	void (*handler)(struct device *dev, u32 cause, void *ext);
++};
++
++struct snvs_secvio_drv_private {
++	struct platform_device *pdev;
++	spinlock_t svlock ____cacheline_aligned;
++	struct tasklet_struct irqtask[NR_CPUS];
++	struct snvs_full __iomem *svregs;	/* both HP and LP domains */
++	struct clk *clk;
++	int irq;
++	u32 irqcause; /* stashed cause of violation interrupt */
++
++	/* Registered handlers for each violation */
++	struct secvio_int_src intsrc[MAX_SECVIO_SOURCES];
++
++};
++
++#endif /* SECVIO_H */
+--- /dev/null
++++ b/drivers/crypto/caam/snvsregs.h
+@@ -0,0 +1,239 @@
++/* SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause) */
++/*
++ * SNVS hardware register-level view
++ *
++ * Copyright 2012-2015 Freescale Semiconductor, Inc.
++ * Copyright 2016-2019 NXP
++ */
++
++#ifndef SNVSREGS_H
++#define SNVSREGS_H
++
++#include <linux/types.h>
++#include <linux/io.h>
++
++/*
++ * SNVS High Power Domain
++ * Includes security violations, HA counter, RTC, alarm
++ */
++struct snvs_hp {
++	u32 lock;		/* HPLR - HP Lock */
++	u32 cmd;		/* HPCOMR - HP Command */
++	u32 ctl;		/* HPCR - HP Control */
++	u32 secvio_intcfg;	/* HPSICR - Security Violation Int Config */
++	u32 secvio_ctl;		/* HPSVCR - Security Violation Control */
++	u32 status;		/* HPSR - HP Status */
++	u32 secvio_status;	/* HPSVSR - Security Violation Status */
++	u32 ha_counteriv;	/* High Assurance Counter IV */
++	u32 ha_counter;		/* High Assurance Counter */
++	u32 rtc_msb;		/* Real Time Clock/Counter MSB */
++	u32 rtc_lsb;		/* Real Time Counter LSB */
++	u32 time_alarm_msb;	/* Time Alarm MSB */
++	u32 time_alarm_lsb;	/* Time Alarm LSB */
++};
++
++#define HP_LOCK_HAC_LCK		0x00040000
++#define HP_LOCK_HPSICR_LCK	0x00020000
++#define HP_LOCK_HPSVCR_LCK	0x00010000
++#define HP_LOCK_MKEYSEL_LCK	0x00000200
++#define HP_LOCK_TAMPCFG_LCK	0x00000100
++#define HP_LOCK_TAMPFLT_LCK	0x00000080
++#define HP_LOCK_SECVIO_LCK	0x00000040
++#define HP_LOCK_GENP_LCK	0x00000020
++#define HP_LOCK_MONOCTR_LCK	0x00000010
++#define HP_LOCK_CALIB_LCK	0x00000008
++#define HP_LOCK_SRTC_LCK	0x00000004
++#define HP_LOCK_ZMK_RD_LCK	0x00000002
++#define HP_LOCK_ZMK_WT_LCK	0x00000001
++
++#define HP_CMD_NONPRIV_AXS	0x80000000
++#define HP_CMD_HAC_STOP		0x00080000
++#define HP_CMD_HAC_CLEAR	0x00040000
++#define HP_CMD_HAC_LOAD		0x00020000
++#define HP_CMD_HAC_CFG_EN	0x00010000
++#define HP_CMD_SNVS_MSTR_KEY	0x00002000
++#define HP_CMD_PROG_ZMK		0x00001000
++#define HP_CMD_SW_LPSV		0x00000400
++#define HP_CMD_SW_FSV		0x00000200
++#define HP_CMD_SW_SV		0x00000100
++#define HP_CMD_LP_SWR_DIS	0x00000020
++#define HP_CMD_LP_SWR		0x00000010
++#define HP_CMD_SSM_SFNS_DIS	0x00000004
++#define HP_CMD_SSM_ST_DIS	0x00000002
++#define HP_CMD_SMM_ST		0x00000001
++
++#define HP_CTL_TIME_SYNC	0x00010000
++#define HP_CTL_CAL_VAL_SHIFT	10
++#define HP_CTL_CAL_VAL_MASK	(0x1f << HP_CTL_CALIB_SHIFT)
++#define HP_CTL_CALIB_EN		0x00000100
++#define HP_CTL_PI_FREQ_SHIFT	4
++#define HP_CTL_PI_FREQ_MASK	(0xf << HP_CTL_PI_FREQ_SHIFT)
++#define HP_CTL_PI_EN		0x00000008
++#define HP_CTL_TIMEALARM_EN	0x00000002
++#define HP_CTL_RTC_EN		0x00000001
++
++#define HP_SECVIO_INTEN_EN	0x10000000
++#define HP_SECVIO_INTEN_SRC5	0x00000020
++#define HP_SECVIO_INTEN_SRC4	0x00000010
++#define HP_SECVIO_INTEN_SRC3	0x00000008
++#define HP_SECVIO_INTEN_SRC2	0x00000004
++#define HP_SECVIO_INTEN_SRC1	0x00000002
++#define HP_SECVIO_INTEN_SRC0	0x00000001
++#define HP_SECVIO_INTEN_ALL	0x8000003f
++
++#define HP_SECVIO_ICTL_CFG_SHIFT	30
++#define HP_SECVIO_ICTL_CFG_MASK		(0x3 << HP_SECVIO_ICTL_CFG_SHIFT)
++#define HP_SECVIO_ICTL_CFG5_SHIFT	5
++#define HP_SECVIO_ICTL_CFG5_MASK	(0x3 << HP_SECVIO_ICTL_CFG5_SHIFT)
++#define HP_SECVIO_ICTL_CFG_DISABLE	0
++#define HP_SECVIO_ICTL_CFG_NONFATAL	1
++#define HP_SECVIO_ICTL_CFG_FATAL	2
++#define HP_SECVIO_ICTL_CFG4_FATAL	0x00000010
++#define HP_SECVIO_ICTL_CFG3_FATAL	0x00000008
++#define HP_SECVIO_ICTL_CFG2_FATAL	0x00000004
++#define HP_SECVIO_ICTL_CFG1_FATAL	0x00000002
++#define HP_SECVIO_ICTL_CFG0_FATAL	0x00000001
++
++#define HP_STATUS_ZMK_ZERO		0x80000000
++#define HP_STATUS_OTPMK_ZERO		0x08000000
++#define HP_STATUS_OTPMK_SYN_SHIFT	16
++#define HP_STATUS_OTPMK_SYN_MASK	(0x1ff << HP_STATUS_OTPMK_SYN_SHIFT)
++#define HP_STATUS_SSM_ST_SHIFT		8
++#define HP_STATUS_SSM_ST_MASK		(0xf << HP_STATUS_SSM_ST_SHIFT)
++#define HP_STATUS_SSM_ST_INIT		0
++#define HP_STATUS_SSM_ST_HARDFAIL	1
++#define HP_STATUS_SSM_ST_SOFTFAIL	3
++#define HP_STATUS_SSM_ST_INITINT	8
++#define HP_STATUS_SSM_ST_CHECK		9
++#define HP_STATUS_SSM_ST_NONSECURE	11
++#define HP_STATUS_SSM_ST_TRUSTED	13
++#define HP_STATUS_SSM_ST_SECURE		15
++
++#define HP_SECVIOST_ZMK_ECC_FAIL	0x08000000	/* write to clear */
++#define HP_SECVIOST_ZMK_SYN_SHIFT	16
++#define HP_SECVIOST_ZMK_SYN_MASK	(0x1ff << HP_SECVIOST_ZMK_SYN_SHIFT)
++#define HP_SECVIOST_SECVIO5		0x00000020
++#define HP_SECVIOST_SECVIO4		0x00000010
++#define HP_SECVIOST_SECVIO3		0x00000008
++#define HP_SECVIOST_SECVIO2		0x00000004
++#define HP_SECVIOST_SECVIO1		0x00000002
++#define HP_SECVIOST_SECVIO0		0x00000001
++#define HP_SECVIOST_SECVIOMASK		0x0000003f
++
++/*
++ * SNVS Low Power Domain
++ * Includes glitch detector, SRTC, alarm, monotonic counter, ZMK
++ */
++struct snvs_lp {
++	u32 lock;
++	u32 ctl;
++	u32 mstr_key_ctl;	/* Master Key Control */
++	u32 secvio_ctl;		/* Security Violation Control */
++	u32 tamper_filt_cfg;	/* Tamper Glitch Filters Configuration */
++	u32 tamper_det_cfg;	/* Tamper Detectors Configuration */
++	u32 status;
++	u32 srtc_msb;		/* Secure Real Time Clock/Counter MSB */
++	u32 srtc_lsb;		/* Secure Real Time Clock/Counter LSB */
++	u32 time_alarm;		/* Time Alarm */
++	u32 smc_msb;		/* Secure Monotonic Counter MSB */
++	u32 smc_lsb;		/* Secure Monotonic Counter LSB */
++	u32 pwr_glitch_det;	/* Power Glitch Detector */
++	u32 gen_purpose;
++	u32 zmk[8];		/* Zeroizable Master Key */
++};
++
++#define LP_LOCK_MKEYSEL_LCK	0x00000200
++#define LP_LOCK_TAMPDET_LCK	0x00000100
++#define LP_LOCK_TAMPFLT_LCK	0x00000080
++#define LP_LOCK_SECVIO_LCK	0x00000040
++#define LP_LOCK_GENP_LCK	0x00000020
++#define LP_LOCK_MONOCTR_LCK	0x00000010
++#define LP_LOCK_CALIB_LCK	0x00000008
++#define LP_LOCK_SRTC_LCK	0x00000004
++#define LP_LOCK_ZMK_RD_LCK	0x00000002
++#define LP_LOCK_ZMK_WT_LCK	0x00000001
++
++#define LP_CTL_CAL_VAL_SHIFT	10
++#define LP_CTL_CAL_VAL_MASK	(0x1f << LP_CTL_CAL_VAL_SHIFT)
++#define LP_CTL_CALIB_EN		0x00000100
++#define LP_CTL_SRTC_INVAL_EN	0x00000010
++#define LP_CTL_WAKE_INT_EN	0x00000008
++#define LP_CTL_MONOCTR_EN	0x00000004
++#define LP_CTL_TIMEALARM_EN	0x00000002
++#define LP_CTL_SRTC_EN		0x00000001
++
++#define LP_MKEYCTL_ZMKECC_SHIFT	8
++#define LP_MKEYCTL_ZMKECC_MASK	(0xff << LP_MKEYCTL_ZMKECC_SHIFT)
++#define LP_MKEYCTL_ZMKECC_EN	0x00000010
++#define LP_MKEYCTL_ZMKECC_VAL	0x00000008
++#define LP_MKEYCTL_ZMKECC_PROG	0x00000004
++#define LP_MKEYCTL_MKSEL_SHIFT	0
++#define LP_MKEYCTL_MKSEL_MASK	(3 << LP_MKEYCTL_MKSEL_SHIFT)
++#define LP_MKEYCTL_MK_OTP	0
++#define LP_MKEYCTL_MK_ZMK	2
++#define LP_MKEYCTL_MK_COMB	3
++
++#define LP_SECVIO_CTL_SRC5	0x20
++#define LP_SECVIO_CTL_SRC4	0x10
++#define LP_SECVIO_CTL_SRC3	0x08
++#define LP_SECVIO_CTL_SRC2	0x04
++#define LP_SECVIO_CTL_SRC1	0x02
++#define LP_SECVIO_CTL_SRC0	0x01
++
++#define LP_TAMPFILT_EXT2_EN	0x80000000
++#define LP_TAMPFILT_EXT2_SHIFT	24
++#define LP_TAMPFILT_EXT2_MASK	(0x1f << LP_TAMPFILT_EXT2_SHIFT)
++#define LP_TAMPFILT_EXT1_EN	0x00800000
++#define LP_TAMPFILT_EXT1_SHIFT	16
++#define LP_TAMPFILT_EXT1_MASK	(0x1f << LP_TAMPFILT_EXT1_SHIFT)
++#define LP_TAMPFILT_WM_EN	0x00000080
++#define LP_TAMPFILT_WM_SHIFT	0
++#define LP_TAMPFILT_WM_MASK	(0x1f << LP_TAMPFILT_WM_SHIFT)
++
++#define LP_TAMPDET_OSC_BPS	0x10000000
++#define LP_TAMPDET_VRC_SHIFT	24
++#define LP_TAMPDET_VRC_MASK	(3 << LP_TAMPFILT_VRC_SHIFT)
++#define LP_TAMPDET_HTDC_SHIFT	20
++#define LP_TAMPDET_HTDC_MASK	(3 << LP_TAMPFILT_HTDC_SHIFT)
++#define LP_TAMPDET_LTDC_SHIFT	16
++#define LP_TAMPDET_LTDC_MASK	(3 << LP_TAMPFILT_LTDC_SHIFT)
++#define LP_TAMPDET_POR_OBS	0x00008000
++#define LP_TAMPDET_PFD_OBS	0x00004000
++#define LP_TAMPDET_ET2_EN	0x00000400
++#define LP_TAMPDET_ET1_EN	0x00000200
++#define LP_TAMPDET_WMT2_EN	0x00000100
++#define LP_TAMPDET_WMT1_EN	0x00000080
++#define LP_TAMPDET_VT_EN	0x00000040
++#define LP_TAMPDET_TT_EN	0x00000020
++#define LP_TAMPDET_CT_EN	0x00000010
++#define LP_TAMPDET_MCR_EN	0x00000004
++#define LP_TAMPDET_SRTCR_EN	0x00000002
++
++#define LP_STATUS_SECURE
++#define LP_STATUS_NONSECURE
++#define LP_STATUS_SCANEXIT	0x00100000	/* all write 1 clear here on */
++#define LP_STATUS_EXT_SECVIO	0x00010000
++#define LP_STATUS_ET2		0x00000400
++#define LP_STATUS_ET1		0x00000200
++#define LP_STATUS_WMT2		0x00000100
++#define LP_STATUS_WMT1		0x00000080
++#define LP_STATUS_VTD		0x00000040
++#define LP_STATUS_TTD		0x00000020
++#define LP_STATUS_CTD		0x00000010
++#define LP_STATUS_PGD		0x00000008
++#define LP_STATUS_MCR		0x00000004
++#define LP_STATUS_SRTCR		0x00000002
++#define LP_STATUS_LPTA		0x00000001
++
++/* Full SNVS register page, including version/options */
++struct snvs_full {
++	struct snvs_hp hp;
++	struct snvs_lp lp;
++	u32 rsvd[731];		/* deadspace 0x08c-0xbf7 */
++
++	/* Version / Revision / Option ID space - end of register page */
++	u32 vid;		/* 0xbf8 HP Version ID (VID 1) */
++	u32 opt_rev;		/* 0xbfc HP Options / Revision (VID 2) */
++};
++
++#endif /* SNVSREGS_H */

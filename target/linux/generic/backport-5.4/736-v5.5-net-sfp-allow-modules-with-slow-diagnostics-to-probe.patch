@@ -1,0 +1,198 @@
+From 559391fc20fae506adcb311b904cc544c76436c0 Mon Sep 17 00:00:00 2001
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Thu, 7 Nov 2019 18:52:07 +0000
+Subject: [PATCH 634/660] net: sfp: allow modules with slow diagnostics to
+ probe
+
+When a module is inserted, we attempt to read read the ID from address
+0x50.  Once we are able to read the ID, we immediately attempt to
+initialise the hwmon support by reading from address 0x51.  If this
+fails, then we fall into error state, and assume that the module is
+not usable.
+
+Modules such as the ALCATELLUCENT 3FE46541AA use a real EEPROM for
+I2C address 0x50, which responds immediately.  However, address 0x51
+is an emulated, which only becomes available once the on-board firmware
+has booted.  This prompts us to fall into the error state.
+
+Since the module may be usable without diagnostics, arrange for the
+hwmon probe independent of the rest of the SFP itself, retrying every
+5s for up to about 60s for the monitoring to become available, and
+print an error message if it doesn't become available.
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+---
+ drivers/net/phy/sfp.c | 96 +++++++++++++++++++++++++++++++++----------
+ 1 file changed, 74 insertions(+), 22 deletions(-)
+
+--- a/drivers/net/phy/sfp.c
++++ b/drivers/net/phy/sfp.c
+@@ -218,6 +218,8 @@ struct sfp {
+ 
+ #if IS_ENABLED(CONFIG_HWMON)
+ 	struct sfp_diag diag;
++	struct delayed_work hwmon_probe;
++	unsigned int hwmon_tries;
+ 	struct device *hwmon_dev;
+ 	char *hwmon_name;
+ #endif
+@@ -1159,29 +1161,27 @@ static const struct hwmon_chip_info sfp_
+ 	.info = sfp_hwmon_info,
+ };
+ 
+-static int sfp_hwmon_insert(struct sfp *sfp)
++static void sfp_hwmon_probe(struct work_struct *work)
+ {
++	struct sfp *sfp = container_of(work, struct sfp, hwmon_probe.work);
+ 	int err, i;
+ 
+-	if (sfp->id.ext.sff8472_compliance == SFP_SFF8472_COMPLIANCE_NONE)
+-		return 0;
+-
+-	if (!(sfp->id.ext.diagmon & SFP_DIAGMON_DDM))
+-		return 0;
+-
+-	if (sfp->id.ext.diagmon & SFP_DIAGMON_ADDRMODE)
+-		/* This driver in general does not support address
+-		 * change.
+-		 */
+-		return 0;
+-
+ 	err = sfp_read(sfp, true, 0, &sfp->diag, sizeof(sfp->diag));
+-	if (err < 0)
+-		return err;
++	if (err < 0) {
++		if (sfp->hwmon_tries--) {
++			mod_delayed_work(system_wq, &sfp->hwmon_probe,
++					 T_PROBE_RETRY_SLOW);
++		} else {
++			dev_warn(sfp->dev, "hwmon probe failed: %d\n", err);
++		}
++		return;
++	}
+ 
+ 	sfp->hwmon_name = kstrdup(dev_name(sfp->dev), GFP_KERNEL);
+-	if (!sfp->hwmon_name)
+-		return -ENODEV;
++	if (!sfp->hwmon_name) {
++		dev_err(sfp->dev, "out of memory for hwmon name\n");
++		return;
++	}
+ 
+ 	for (i = 0; sfp->hwmon_name[i]; i++)
+ 		if (hwmon_is_bad_char(sfp->hwmon_name[i]))
+@@ -1191,18 +1191,52 @@ static int sfp_hwmon_insert(struct sfp *
+ 							 sfp->hwmon_name, sfp,
+ 							 &sfp_hwmon_chip_info,
+ 							 NULL);
++	if (IS_ERR(sfp->hwmon_dev))
++		dev_err(sfp->dev, "failed to register hwmon device: %ld\n",
++			PTR_ERR(sfp->hwmon_dev));
++}
++
++static int sfp_hwmon_insert(struct sfp *sfp)
++{
++	if (sfp->id.ext.sff8472_compliance == SFP_SFF8472_COMPLIANCE_NONE)
++		return 0;
++
++	if (!(sfp->id.ext.diagmon & SFP_DIAGMON_DDM))
++		return 0;
++
++	if (sfp->id.ext.diagmon & SFP_DIAGMON_ADDRMODE)
++		/* This driver in general does not support address
++		 * change.
++		 */
++		return 0;
++
++	mod_delayed_work(system_wq, &sfp->hwmon_probe, 1);
++	sfp->hwmon_tries = R_PROBE_RETRY_SLOW;
+ 
+-	return PTR_ERR_OR_ZERO(sfp->hwmon_dev);
++	return 0;
+ }
+ 
+ static void sfp_hwmon_remove(struct sfp *sfp)
+ {
++	cancel_delayed_work_sync(&sfp->hwmon_probe);
+ 	if (!IS_ERR_OR_NULL(sfp->hwmon_dev)) {
+ 		hwmon_device_unregister(sfp->hwmon_dev);
+ 		sfp->hwmon_dev = NULL;
+ 		kfree(sfp->hwmon_name);
+ 	}
+ }
++
++static int sfp_hwmon_init(struct sfp *sfp)
++{
++	INIT_DELAYED_WORK(&sfp->hwmon_probe, sfp_hwmon_probe);
++
++	return 0;
++}
++
++static void sfp_hwmon_exit(struct sfp *sfp)
++{
++	cancel_delayed_work_sync(&sfp->hwmon_probe);
++}
+ #else
+ static int sfp_hwmon_insert(struct sfp *sfp)
+ {
+@@ -1212,6 +1246,15 @@ static int sfp_hwmon_insert(struct sfp *
+ static void sfp_hwmon_remove(struct sfp *sfp)
+ {
+ }
++
++static int sfp_hwmon_init(struct sfp *sfp)
++{
++	return 0;
++}
++
++static void sfp_hwmon_exit(struct sfp *sfp)
++{
++}
+ #endif
+ 
+ /* Helpers */
+@@ -1548,10 +1591,6 @@ static int sfp_sm_mod_probe(struct sfp *
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	ret = sfp_hwmon_insert(sfp);
+-	if (ret < 0)
+-		return ret;
+-
+ 	return 0;
+ }
+ 
+@@ -1700,6 +1739,15 @@ static void sfp_sm_module(struct sfp *sf
+ 	case SFP_MOD_ERROR:
+ 		break;
+ 	}
++
++#if IS_ENABLED(CONFIG_HWMON)
++	if (sfp->sm_mod_state >= SFP_MOD_WAITDEV &&
++	    IS_ERR_OR_NULL(sfp->hwmon_dev)) {
++		err = sfp_hwmon_insert(sfp);
++		if (err)
++			dev_warn(sfp->dev, "hwmon probe failed: %d\n", err);
++	}
++#endif
+ }
+ 
+ static void sfp_sm_main(struct sfp *sfp, unsigned int event)
+@@ -2001,6 +2049,8 @@ static struct sfp *sfp_alloc(struct devi
+ 	INIT_DELAYED_WORK(&sfp->poll, sfp_poll);
+ 	INIT_DELAYED_WORK(&sfp->timeout, sfp_timeout);
+ 
++	sfp_hwmon_init(sfp);
++
+ 	return sfp;
+ }
+ 
+@@ -2008,6 +2058,8 @@ static void sfp_cleanup(void *data)
+ {
+ 	struct sfp *sfp = data;
+ 
++	sfp_hwmon_exit(sfp);
++
+ 	cancel_delayed_work_sync(&sfp->poll);
+ 	cancel_delayed_work_sync(&sfp->timeout);
+ 	if (sfp->i2c_mii) {

@@ -88,7 +88,7 @@ static struct platform_device rb4xx_nand_device = {
 	.id	= -1,
 };
 
-static struct ath79_pci_irq rb4xx_pci_irqs[] __initdata = {
+static struct ath79_pci_irq rb4xx_pci_irqs[] = {
 	{
 		.slot	= 17,
 		.pin	= 1,

@@ -1,0 +1,154 @@
+From fcf41cba6f3ac0f33a5e9e0c7d79dbbbff586271 Mon Sep 17 00:00:00 2001
+From: Camelia Groza <camelia.groza@nxp.com>
+Date: Tue, 15 May 2018 11:48:42 +0300
+Subject: [PATCH] sdk_dpaa: enable Jumbo frame support on LS1043A
+
+Due to the A010022 errata restrictions, Jumbo frames on LS1043A require two
+conditions to be met:
+- on TX, the data is stored in a contiguous buffer of up to 9600 bytes
+- the data is aligned to 256 bytes
+
+The conditions are met by realigning all outgoing frames to 256 bytes.
+Also, compound pages of varying orders are allocated to accommodate the
+outgoing contiguous buffers.
+
+Signed-off-by: Camelia Groza <camelia.groza@nxp.com>
+---
+ drivers/net/ethernet/freescale/sdk_dpaa/Kconfig    |  1 -
+ drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c |  9 ++---
+ drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.h |  5 +--
+ .../net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c  | 40 ++++++++--------------
+ 4 files changed, 20 insertions(+), 35 deletions(-)
+
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/Kconfig
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/Kconfig
+@@ -80,7 +80,6 @@ config FSL_DPAA_ETH_JUMBO_FRAME
+ 	  significantly the driver's memory footprint and may even deplete
+ 	  the system memory. Also, the skb truesize is altered and messages
+ 	  from the stack that warn against this are bypassed.
+-	  This option is not available on LS1043.
+ 
+ config FSL_DPAA_TS
+ 	bool "Linux compliant timestamping"
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c
+@@ -779,12 +779,10 @@ static int dpa_private_netdev_init(struc
+ 	net_dev->features |= NETIF_F_HW_ACCEL_MQ;
+ 
+ #ifndef CONFIG_PPC
+-	/* Due to the A010022 FMan errata, we can not use contig frames larger
+-	 * than 4K, nor S/G frames. We need to prevent the user from setting a
+-	 * large MTU. We also stop advertising S/G and GSO support.
++	/* Due to the A010022 FMan errata, we can not use S/G frames. We need
++	 * to stop advertising S/G and GSO support.
+ 	 */
+ 	if (unlikely(dpaa_errata_a010022)) {
+-		net_dev->max_mtu = DPA_BP_RAW_SIZE;
+ 		net_dev->hw_features &= ~NETIF_F_SG;
+ 		net_dev->features &= ~NETIF_F_GSO;
+ 	}
+@@ -985,9 +983,6 @@ dpaa_eth_priv_probe(struct platform_devi
+ 	/* We only want to use jumbo frame optimization if we actually have
+ 	 * L2 MAX FRM set for jumbo frames as well.
+ 	 */
+-#ifndef CONFIG_PPC
+-	if (likely(!dpaa_errata_a010022))
+-#endif
+ 	if(fm_get_max_frm() < 9600)
+ 		dev_warn(dev,
+ 			"Invalid configuration: if jumbo frames support is on, FSL_FM_MAX_FRAME_SIZE should be set to 9600\n");
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.h
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.h
+@@ -672,8 +672,8 @@ static inline void _dpa_bp_free_pf(void
+ /* LS1043A SoC has a HW issue regarding FMan DMA transactions; The issue
+  * manifests itself at high traffic rates when frames cross 4K memory
+  * boundaries or when they are not aligned to 16 bytes; For the moment, we
+- * use a SW workaround to avoid frames larger than 4K or that exceed 4K
+- * alignments and to realign the frames to 16 bytes.
++ * use a SW workaround that realigns frames to 256 bytes. Scatter/Gather
++ * frames aren't supported on egress.
+  */
+ 
+ #ifndef CONFIG_PPC
+@@ -682,6 +682,7 @@ extern bool dpaa_errata_a010022; /* SoC
+ #define HAS_DMA_ISSUE(start, size) \
+ 	(((uintptr_t)(start) + (size)) > \
+ 	 (((uintptr_t)(start) + 0x1000) & ~0xFFF))
++#define DPAA_A010022_HEADROOM	256
+ #endif  /* !CONFIG_PPC */
+ 
+ #endif	/* __DPA_H */
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
+@@ -407,12 +407,6 @@ static struct sk_buff *__hot contig_fd_t
+ 	 * warn us that the frame length is larger than the truesize. We
+ 	 * bypass the warning.
+ 	 */
+-#ifndef CONFIG_PPC
+-	/* We do not support Jumbo frames on LS1043 and thus we edit
+-	 * the skb truesize only when the 4k errata is not present.
+-	 */
+-	if (likely(!dpaa_errata_a010022))
+-#endif
+ 	skb->truesize = SKB_TRUESIZE(dpa_fd_length(fd));
+ #endif
+ 
+@@ -809,35 +803,31 @@ static struct sk_buff *a010022_realign_s
+ {
+ 	int trans_offset = skb_transport_offset(skb);
+ 	int net_offset = skb_network_offset(skb);
++	int nsize, headroom, npage_order;
+ 	struct sk_buff *nskb = NULL;
+-	int nsize, headroom;
+ 	struct page *npage;
+ 	void *npage_addr;
+ 
+-	/* Guarantee the minimum required headroom */
+-	if (skb_headroom(skb) >= priv->tx_headroom)
+-		headroom = skb_headroom(skb);
+-	else
+-		headroom = priv->tx_headroom;
++	/* The headroom needs to accommodate our private data (64 bytes) but
++	 * we reserve 256 bytes instead to guarantee 256 data alignment.
++	 */
++	headroom = DPAA_A010022_HEADROOM;
++
++	/* For the new skb we only need the old one's data (both non-paged and
++	 * paged). We can skip the old tailroom.
++	 */
++	nsize = headroom + skb->len +
++		SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+ 
+-	npage = alloc_page(GFP_ATOMIC);
++	/* Reserve enough memory to accommodate Jumbo frames */
++	npage_order = (nsize - 1) / PAGE_SIZE;
++	npage = alloc_pages(GFP_ATOMIC | __GFP_COMP, npage_order);
+ 	if (unlikely(!npage)) {
+ 		WARN_ONCE(1, "Memory allocation failure\n");
+ 		return NULL;
+ 	}
+ 	npage_addr = page_address(npage);
+ 
+-	/* For the new skb we only need the old one's data (both non-paged and
+-	 * paged) and a headroom large enough to fit our private info. We can
+-	 * skip the old tailroom.
+-	 *
+-	 * Make sure the new linearized buffer will not exceed a page's size.
+-	 */
+-	nsize = headroom + skb->len +
+-		SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+-	if (unlikely(nsize > 4096))
+-		goto err;
+-
+ 	nskb = build_skb(npage_addr, nsize);
+ 	if (unlikely(!nskb))
+ 		goto err;
+@@ -846,7 +836,7 @@ static struct sk_buff *a010022_realign_s
+ 	 * alignment.
+ 	 * Code borrowed and adapted from skb_copy().
+ 	 */
+-	skb_reserve(nskb, priv->tx_headroom);
++	skb_reserve(nskb, headroom);
+ 	skb_put(nskb, skb->len);
+ 	if (skb_copy_bits(skb, 0, nskb->data, skb->len)) {
+ 		WARN_ONCE(1, "skb parsing failure\n");

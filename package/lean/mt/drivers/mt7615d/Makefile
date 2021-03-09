@@ -1,0 +1,252 @@
+# All rights reserved.
+#
+# This is free software, licensed under the GNU General Public License v2.
+# See /LICENSE for more information.
+
+include $(TOPDIR)/rules.mk
+include $(INCLUDE_DIR)/kernel.mk
+
+PKG_NAME:=mt7615d
+P4REV:=8
+PKG_VERSION:=5.0.4.0
+
+PKG_BUILD_PARALLEL:=1
+
+# PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_NAME)
+PKG_KCONFIG:= \
+	AP_SUPPORT \
+	RT_FIRST_CARD \
+	RT_SECOND_CARD \
+	RT_FIRST_IF_RF_OFFSET \
+	RT_SECOND_IF_RF_OFFSET \
+	MT_WIFI \
+	WIFI_BASIC_FUNC \
+	MT_WIFI_PATH \
+	FIRST_IF_NONE \
+	FIRST_IF_EEPROM_FLASH \
+	FIRST_IF_EEPROM_EFUSE \
+	RT_FIRST_CARD_EEPROM \
+	SECOND_IF_NONE \
+	SECOND_IF_EEPROM_FLASH \
+	SECOND_IF_EEPROM_PROM \
+	SECOND_IF_EEPROM_EFUSE \
+	RT_SECOND_CARD_EEPROM \
+	MULTI_INF_SUPPORT \
+	WIFI_BASIC_FUNC \
+	WIRELESS_EXT \
+	WEXT_SPY \
+	WEXT_PRIV \
+	DOT11_N_SUPPORT \
+	DOT11_VHT_AC \
+	WIFI_DRIVER \
+	G_BAND_256QAM_SUPPORT \
+	BRCM_256QAM_SUPPORT \
+	ICAP_SUPPORT \
+	MT_AP_SUPPORT \
+	BACKGROUND_SCAN_SUPPORT \
+	SMART_CARRIER_SENSE_SUPPORT \
+	MT_DFS_SUPPORT \
+	HDR_TRANS_TX_SUPPORT \
+	CHIP_MT7615E \
+	HDR_TRANS_RX_SUPPORT \
+	DBDC_MODE \
+	MULTI_PROFILE_SUPPORT \
+	DEFAULT_5G_PROFILE \
+	SUPPORT_DYNAMIC_TXOP \
+	WSC_INCLUDED \
+	MT_STA_SUPPORT \
+	WSC_V2_SUPPORT \
+	DOT11W_PMF_SUPPORT \
+	PASSPOINT_R2 \
+	TXBF_SUPPORT \
+	IGMP_SNOOP_SUPPORT \
+	RATE_ADAPTION \
+	RATE_ADAPT_AGBS_SUPPORT \
+	RTMP_FLASH_SUPPORT \
+	ATE_SUPPORT \
+	UAPSD \
+	RLT_MAC \
+	RLT_BBP \
+	RLT_RF \
+	RTMP_MAC \
+	RTMP_BBP \
+	RTMP_RF \
+	RTMP_PCI_SUPPORT \
+	RTMP_USB_SUPPORT \
+	RTMP_RBUS_SUPPORT \
+	WIFI_MODE_AP \
+	WIFI_MODE_STA \
+	WIRELESS_EXT \
+	WEXT_SPY \
+	WEXT_PRIV \
+	WDS_SUPPORT \
+	MBSS_SUPPORT \
+	APCLI_SUPPORT \
+	APCLI_CERT_SUPPORT \
+	MAC_REPEATER_SUPPORT \
+	RALINK_RT6352 \
+	RALINK_MT7620 \
+	RALINK_MT7603E \
+	CON_WPS_SUPPORT \
+	VOW_SUPPORT \
+	BAND_STEERING \
+	TXOP_ARBITER \
+	CFG_SUPPORT_DYNAMIC_TXOP \
+	WIFI_MODE_BOTH \
+	WIFI_RLT_MAC \
+	RLT_MAC \
+	WIFI_RTMP_MAC \
+	RTMP_MAC \
+	WIFI_MT_MAC \
+	CHIP_MT7603E \
+	CHIP_MT7615E \
+	MT_MAC \
+	RATE_ADAPTION \
+	SUPPORT_OPENWRT \
+	SDK_USER_LIGHTY \
+	MUMIMO_SUPPORT \
+	MU_RA_SUPPORT \
+	LED_CONTROL_SUPPORT \
+	RA_HW_NAT \
+	RA_HW_NAT_WIFI_NEW_ARCH \
+	CFG80211_SUPPORT \
+	SER_SUPPORT \
+	GREENAP_SUPPORT \
+	RADIUS_ACCOUNTING_SUPPORT \
+	TPC_SUPPORT \
+	RLM_CAL_CACHE_SUPPORT \
+	RF_LOCKDOWN_SUPPORT \
+	PASSPOINT_R2 \
+	RED_SUPPORT \
+	FIRST_IF_EPAELNA \
+	FIRST_IF_IPAILNA \
+	FIRST_IF_IPAELNA \
+	FIRST_IF_EPAILNA \
+	SECOND_IF_EPAELNA \
+	SECOND_IF_IPAILNA \
+	SECOND_IF_IPAELNA \
+	SECOND_IF_EPAILNA \
+	THIRD_IF_EPAELNA \
+	THIRD_IF_IPAILNA \
+	THIRD_IF_IPAELNA \
+	THIRD_IF_EPAILNA \
+	WIFI_PKT_FWD \
+	DOT11K_RRM_SUPPORT \
+	DOT11R_FT_SUPPORT \
+	MBO_SUPPORT \
+	WIFI_PKT_FWD_V1 \
+	FIRST_IF_MT7615E \
+	FIRST_IF_MT7622 \
+	FIRST_IF_MT7626 \
+	SECOND_IF_MT7615E \
+	THIRD_IF_NONE \
+	THIRD_IF_MT7615E \
+	RT_THIRD_CARD \
+	RT_THIRD_IF_RF_OFFSET \
+	THIRD_IF_EEPROM_FLASH \
+	THIRD_IF_EEPROM_PROM \
+	THIRD_IF_EEPROM_EFUSE \
+	RT_THIRD_CARD_EEPROM \
+	SPECTRUM_SUPPORT \
+	PRE_CAL_TRX_SET1_SUPPORT \
+	MWDS \
+	MCAST_RATE_SPECIFIC \
+	WLAN_HOOK \
+	COEX_SUPPORT \
+	EASY_SETUP_SUPPORT \
+	EVENT_NOTIFIER_SUPPORT \
+	AIR_MONITOR \
+	WNM_SUPPORT \
+	INTERWORKING \
+	LINUX_NET_TXQ_SUPPORT \
+	CHIP_MT7622 \
+	CHIP_MT7626 \
+	WHNAT_SUPPORT \
+	FAST_NAT_SUPPORT \
+	PRE_CAL_TRX_SET2_SUPPORT \
+	LINK_TEST_SUPPORT \
+	TCP_RACK_SUPPORT \
+	FQ_SCH_SUPPORT \
+	BRCM_256QAM_SUPPORT \
+	VHT_TXBF_2G_EPIGRAM_IE_SUPPORT \
+	DSCP_PRI_SUPPORT \
+	PCIE_ASPM_DYM_CTRL_SUPPORT \
+
+PKG_CONFIG_DEPENDS:=$(foreach c, $(PKG_KCONFIG), CONFIG_MTK_$(c) )
+
+include $(INCLUDE_DIR)/package.mk
+
+# TAR_CMD=$(HOST_TAR) -C $(1)/ $(TAR_OPTIONS)
+
+define KernelPackage/mt7615d
+  CATEGORY:=Kernel modules
+  TITLE:=MTK wifi AP driver
+  DEPENDS:=@TARGET_ramips +MTK_CFG80211_SUPPORT:kmod-cfg80211 +@DRIVER_11AC_SUPPORT +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT
+ifneq ($(CONFIG_MTK_WHNAT_SUPPORT), )
+  FILES:=$(PKG_BUILD_DIR)/mt_wifi_ap/mt_wifi.ko \
+	$(PKG_BUILD_DIR)/mt_wifi/embedded/tools/plug_in/whnat/mt_whnat.ko
+  AUTOLOAD:=$(call AutoProbe,mt_wifi mt_whnat)
+else
+  FILES:=$(PKG_BUILD_DIR)/mt_wifi_ap/mt_wifi.ko
+  AUTOLOAD:=$(call AutoProbe,mt_wifi)
+endif
+  SUBMENU:=Wireless Drivers
+  MENU:=1
+endef
+
+define KernelPackage/mt7615d/config
+	source "$(SOURCE)/config.in"
+endef
+
+define KernelPackage/mt7615d_dbdc
+  CATEGORY:=Kernel modules
+  TITLE:=MTK wifi AP driver
+  DEPENDS:=@TARGET_ramips +kmod-mt7615d +maccalc
+  SUBMENU:=Wireless Drivers
+  MENU:=1
+endef
+
+define KernelPackage/mt7615d_dbdc/config
+	select MTK_WIFI_DRIVER
+	select MTK_FIRST_IF_MT7615E
+	select MTK_MT_WIFI
+	select MTK_WIFI_MT_MAC
+	select MTK_CHIP_MT7615E
+	select MTK_DBDC_MODE
+endef
+
+NOSTDINC_FLAGS = \
+	-I$(STAGING_DIR)/usr/include/mac80211-backport/uapi \
+	-I$(STAGING_DIR)/usr/include/mac80211-backport \
+	-I$(STAGING_DIR)/usr/include/mac80211/uapi \
+	-I$(STAGING_DIR)/usr/include/mac80211 \
+	-include backport/autoconf.h \
+	-include backport/backport.h
+
+define Build/Compile
+	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
+		$(KERNEL_MAKE_FLAGS) \
+		$(foreach c, $(PKG_KCONFIG),$(if $(CONFIG_MTK_$c),CONFIG_$(c)=$(CONFIG_MTK_$(c)))) \
+		M="$(PKG_BUILD_DIR)/mt_wifi_ap" \
+		$(if $(CONFIG_MTK_CFG80211_SUPPORT),NOSTDINC_FLAGS="$(NOSTDINC_FLAGS)") \
+		V=1 \
+		modules
+endef
+
+define Build/Install
+        :
+endef
+
+define KernelPackage/mt7615d/install
+	:
+endef
+
+define KernelPackage/mt7615d_dbdc/install
+	$(INSTALL_DIR) $(1)/lib/wifi $(1)/lib/netifd/wireless $(1)/etc/uci-defaults
+	$(INSTALL_DATA) ./files/lib/wifi/mt_dbdc.sh $(1)/lib/wifi
+	$(INSTALL_BIN) ./files/lib/netifd/wireless/mt_dbdc.sh $(1)/lib/netifd/wireless
+	$(INSTALL_DATA) ./files/etc/uci-defaults/10_mt7615_dbdc $(1)/etc/uci-defaults/10_mt7615_dbdc
+endef
+
+$(eval $(call KernelPackage,mt7615d))
+$(eval $(call KernelPackage,mt7615d_dbdc))

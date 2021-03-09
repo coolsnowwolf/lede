@@ -1,0 +1,152 @@
+From 68e332146b6f0a1d2a4514810986a7cf3c3117e3 Mon Sep 17 00:00:00 2001
+From: Pankaj Bansal <pankaj.bansal@nxp.com>
+Date: Thu, 28 Feb 2019 17:22:28 +0530
+Subject: [PATCH] drivers: soc: fsl: add qixis driver
+
+FPGA on LX2160AQDS/LX2160ARDB connected on I2C bus, so add qixis driver
+which is basically an i2c client driver to control FPGA.
+
+Signed-off-by: Pankaj Bansal <pankaj.bansal@nxp.com>
+---
+ drivers/soc/fsl/Kconfig      |  11 +++++
+ drivers/soc/fsl/Makefile     |   1 +
+ drivers/soc/fsl/qixis_ctrl.c | 105 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 117 insertions(+)
+ create mode 100644 drivers/soc/fsl/qixis_ctrl.c
+
+--- a/drivers/soc/fsl/Kconfig
++++ b/drivers/soc/fsl/Kconfig
+@@ -40,4 +40,15 @@ config DPAA2_CONSOLE
+ 	  /dev/dpaa2_mc_console and /dev/dpaa2_aiop_console,
+ 	  which can be used to dump the Management Complex and AIOP
+ 	  firmware logs.
++
++config FSL_QIXIS
++	tristate "QIXIS system controller driver"
++	depends on OF
++	select REGMAP_I2C
++	select REGMAP_MMIO
++	default n
++	help
++	  Say y here to enable QIXIS system controller api. The qixis driver
++	  provides FPGA functions to control system.
++
+ endmenu
+--- a/drivers/soc/fsl/Makefile
++++ b/drivers/soc/fsl/Makefile
+@@ -6,6 +6,7 @@
+ obj-$(CONFIG_FSL_DPAA)                 += qbman/
+ obj-$(CONFIG_QUICC_ENGINE)		+= qe/
+ obj-$(CONFIG_CPM)			+= qe/
++obj-$(CONFIG_FSL_QIXIS) 		+= qixis_ctrl.o
+ obj-$(CONFIG_FSL_GUTS)			+= guts.o
+ obj-$(CONFIG_FSL_MC_DPIO) 		+= dpio/
+ obj-$(CONFIG_DPAA2_CONSOLE)		+= dpaa2-console.o
+--- /dev/null
++++ b/drivers/soc/fsl/qixis_ctrl.c
+@@ -0,0 +1,105 @@
++// SPDX-License-Identifier: GPL-2.0+
++
++/* Freescale QIXIS system controller driver.
++ *
++ * Copyright 2015 Freescale Semiconductor, Inc.
++ * Copyright 2018-2019 NXP
++ */
++
++#include <linux/err.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/mfd/core.h>
++#include <linux/of.h>
++#include <linux/regmap.h>
++
++/* QIXIS MAP */
++struct fsl_qixis_regs {
++	u8		id;		/* Identification Registers */
++	u8		version;	/* Version Register */
++	u8		qixis_ver;	/* QIXIS Version Register */
++	u8		reserved1[0x1f];
++};
++
++struct qixis_priv {
++	struct regmap		*regmap;
++};
++
++static struct regmap_config qixis_regmap_config = {
++	.reg_bits = 8,
++	.val_bits = 8,
++};
++
++static const struct mfd_cell fsl_qixis_devs[] = {
++	{
++		.name = "reg-mux",
++		.of_compatible = "reg-mux",
++	},
++};
++
++static int fsl_qixis_i2c_probe(struct i2c_client *client)
++{
++	struct qixis_priv *priv;
++	int ret = 0;
++	u32 qver;
++
++	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
++		return -EOPNOTSUPP;
++
++	priv = devm_kzalloc(&client->dev, sizeof(struct qixis_priv),
++			    GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	priv->regmap = regmap_init_i2c(client, &qixis_regmap_config);
++	regmap_read(priv->regmap, offsetof(struct fsl_qixis_regs, qixis_ver),
++		    &qver);
++	pr_info("Freescale QIXIS Version: 0x%08x\n", qver);
++
++	i2c_set_clientdata(client, priv);
++
++	if (of_device_is_compatible(client->dev.of_node, "simple-mfd"))
++		ret = devm_mfd_add_devices(&client->dev, -1, fsl_qixis_devs,
++					   ARRAY_SIZE(fsl_qixis_devs), NULL, 0,
++					   NULL);
++	if (ret)
++		goto error;
++
++	return ret;
++error:
++	regmap_exit(priv->regmap);
++
++	return ret;
++}
++
++static int fsl_qixis_i2c_remove(struct i2c_client *client)
++{
++	struct qixis_priv *priv;
++
++	priv = i2c_get_clientdata(client);
++	regmap_exit(priv->regmap);
++
++	return 0;
++}
++
++static const struct of_device_id fsl_qixis_i2c_of_match[] = {
++	{ .compatible = "fsl,fpga-qixis-i2c" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, fsl_qixis_i2c_of_match);
++
++static struct i2c_driver fsl_qixis_i2c_driver = {
++	.driver = {
++		.name	= "qixis_ctrl_i2c",
++		.owner	= THIS_MODULE,
++		.of_match_table = of_match_ptr(fsl_qixis_i2c_of_match),
++	},
++	.probe_new	= fsl_qixis_i2c_probe,
++	.remove		= fsl_qixis_i2c_remove,
++};
++module_i2c_driver(fsl_qixis_i2c_driver);
++
++MODULE_AUTHOR("Wang Dongsheng <dongsheng.wang@freescale.com>");
++MODULE_DESCRIPTION("Freescale QIXIS system controller driver");
++MODULE_LICENSE("GPL");
++

@@ -9,14 +9,13 @@ WPAN_MENU:=WPAN 802.15.4 Support
 define KernelPackage/ieee802154
   SUBMENU:=$(WPAN_MENU)
   TITLE:=IEEE-802.15.4 support
-  DEPENDS:=@!LINUX_3_18
   KCONFIG:= \
 	CONFIG_IEEE802154 \
 	CONFIG_IEEE802154_SOCKET=y \
 	CONFIG_IEEE802154_NL802154_EXPERIMENTAL=n
   FILES:= \
 	$(LINUX_DIR)/net/ieee802154/ieee802154.ko \
-	$(LINUX_DIR)/net/ieee802154/ieee802154_socket.ko@ge4.0
+	$(LINUX_DIR)/net/ieee802154/ieee802154_socket.ko
   AUTOLOAD:=$(call AutoLoad,90,ieee802154 ieee802154_socket)
 endef
 
@@ -33,7 +32,7 @@ $(eval $(call KernelPackage,ieee802154))
 define KernelPackage/mac802154
   SUBMENU:=$(WPAN_MENU)
   TITLE:=MAC-802.15.4 support
-  DEPENDS:=+kmod-ieee802154 +kmod-crypto-aead +kmod-lib-crc-ccitt @!LINUX_3_18
+  DEPENDS:=+kmod-ieee802154 +kmod-crypto-aead +kmod-lib-crc-ccitt
   KCONFIG:= \
 	CONFIG_MAC802154 \
 	CONFIG_IEEE802154_DRIVERS=y
@@ -56,7 +55,7 @@ $(eval $(call KernelPackage,mac802154))
 define KernelPackage/fakelb
   SUBMENU:=$(WPAN_MENU)
   TITLE:=Fake LR-WPAN driver
-  DEPENDS:=+kmod-mac802154 @!LINUX_3_18
+  DEPENDS:=+kmod-mac802154
   KCONFIG:=CONFIG_IEEE802154_FAKELB
   FILES:=$(LINUX_DIR)/drivers/net/ieee802154/fakelb.ko
   AUTOLOAD:=$(call AutoLoad,92,fakelb)
@@ -69,6 +68,17 @@ endef
 
 $(eval $(call KernelPackage,fakelb))
 
+define KernelPackage/atusb
+  SUBMENU:=$(WPAN_MENU)
+  TITLE:=ATUSB transceiver driver
+  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-mac802154
+  KCONFIG:=CONFIG_IEEE802154_ATUSB
+  FILES:=$(LINUX_DIR)/drivers/net/ieee802154/atusb.ko
+  AUTOLOAD:=$(call AutoProbe,atusb)
+endef
+
+$(eval $(call KernelPackage,atusb))
+
 define KernelPackage/at86rf230
   SUBMENU:=$(WPAN_MENU)
   TITLE:=AT86RF230 transceiver driver
@@ -78,6 +88,7 @@ define KernelPackage/at86rf230
 	CONFIG_SPI=y \
 	CONFIG_SPI_MASTER=y
   FILES:=$(LINUX_DIR)/drivers/net/ieee802154/at86rf230.ko
+  AUTOLOAD:=$(call AutoProbe,at86rf230)
 endef
 
 $(eval $(call KernelPackage,at86rf230))
@@ -90,6 +101,7 @@ define KernelPackage/mrf24j40
 	CONFIG_SPI=y \
 	CONFIG_SPI_MASTER=y
   FILES:=$(LINUX_DIR)/drivers/net/ieee802154/mrf24j40.ko
+  AUTOLOAD:=$(call AutoProbe,mrf24j40)
 endef
 
 $(eval $(call KernelPackage,mrf24j40))
@@ -102,23 +114,39 @@ define KernelPackage/cc2520
 	CONFIG_SPI=y \
 	CONFIG_SPI_MASTER=y
   FILES:=$(LINUX_DIR)/drivers/net/ieee802154/cc2520.ko
+  AUTOLOAD:=$(call AutoProbe,cc2520)
 endef
 
 $(eval $(call KernelPackage,cc2520))
 
-define KernelPackage/ieee802154_6lowpan
+
+define KernelPackage/ca8210
+  SUBMENU:=$(WPAN_MENU)
+  TITLE:=CA8210 transceiver driver
+  DEPENDS:=+kmod-mac802154
+  KCONFIG:=CONFIG_IEEE802154_CA8210 \
+	CONFIG_SPI=y \
+	CONFIG_SPI_MASTER=y \
+	CONFIG_IEEE802154_CA8210_DEBUGFS=n
+  FILES:=$(LINUX_DIR)/drivers/net/ieee802154/ca8210.ko
+  AUTOLOAD:=$(call AutoProbe,ca8210)
+endef
+
+$(eval $(call KernelPackage,ca8210))
+
+
+define KernelPackage/ieee802154-6lowpan
   SUBMENU:=$(WPAN_MENU)
   TITLE:= 6LoWPAN support over IEEE-802.15.4
-  DEPENDS:=@!LINUX_3_18 +kmod-6lowpan +kmod-ieee802154
+  DEPENDS:=+kmod-6lowpan +kmod-ieee802154
   KCONFIG:=CONFIG_IEEE802154_6LOWPAN
   FILES:= \
-	$(LINUX_DIR)/net/ieee802154/6lowpan/ieee802154_6lowpan.ko@ge4.0 \
-	$(LINUX_DIR)/net/ieee802154/ieee802154_6lowpan.ko@lt4.0
+	$(LINUX_DIR)/net/ieee802154/6lowpan/ieee802154_6lowpan.ko
   AUTOLOAD:=$(call AutoLoad,91,ieee802154_6lowpan)
 endef
 
-define KernelPackage/ieee802154_6lowpan/description
+define KernelPackage/ieee802154-6lowpan/description
  IPv6 compression over IEEE 802.15.4
 endef
 
-$(eval $(call KernelPackage,ieee802154_6lowpan))
+$(eval $(call KernelPackage,ieee802154-6lowpan))

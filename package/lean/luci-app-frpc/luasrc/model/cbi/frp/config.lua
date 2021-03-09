@@ -38,7 +38,7 @@ e:depends("domain_type","both_dtype")
 e = t:taboption("base",ListValue, "stcp_role", translate("STCP Role"))
 e.default = "server"
 e:value("server",translate("STCP Server"))
-e:value("vistor",translate("STCP Vistor"))
+e:value("visitor",translate("STCP Vistor"))
 e:depends("type","stcp")
 e = t:taboption("base",Value, "remote_port", translate("Remote Port"))
 e.datatype = "port"
@@ -67,7 +67,7 @@ e.default = "abcdefg"
 e:depends("type","stcp")
 e = t:taboption("base",Value, "stcp_servername", translate("STCP Server Name"), translate("STCP Server Name is Service Remark Name of STCP Server"))
 e.default = "secret_tcp"
-e:depends("stcp_role","vistor")
+e:depends("stcp_role","visitor")
 e = t:taboption("other",Flag, "enable_locations", translate("Enable URL routing"), translate("Frp support forward http requests to different backward web services by url routing."))
 e:depends("type","http")
 e = t:taboption("other",Value, "locations ", translate("URL routing"), translate("Http requests with url prefix /news will be forwarded to this service."))
@@ -105,6 +105,36 @@ e:depends("type","http")
 e = t:taboption("other",Value, "host_header_rewrite", translate("Host Header"), translate("The Host header will be rewritten to match the hostname portion of the forwarding address."))
 e.default = "dev.yourdomain.com"
 e:depends("enable_host_header_rewrite",1)
+e=t:taboption("other",Flag,"enable_https_plugin",translate("Use Plugin"))
+e.default="0"
+e:depends("type","https")
+e=t:taboption("other",ListValue,"https_plugin",translate("Choose Plugin"),translate("If plugin is defined, local_ip and local_port is useless, plugin will handle connections got from frps."))
+e:value("https2http",translate("https2http"))
+e:depends("enable_https_plugin",1)
+e=t:taboption("other",Value,"plugin_local_addr",translate("Plugin_Local_Addr"))
+e.default="127.0.0.1:80"
+e:depends("https_plugin","https2http")
+e=t:taboption("other",Value,"plugin_crt_path",translate("plugin_crt_path"))
+e.default="./server.crt"
+e:depends("https_plugin","https2http")
+e=t:taboption("other",Value,"plugin_key_path",translate("plugin_key_path"))
+e.default="./server.key"
+e:depends("https_plugin","https2http")
+e=t:taboption("other",Value,"plugin_host_header_rewrite",translate("plugin_host_header_rewrite"))
+e.default="127.0.0.1"
+e:depends("https_plugin","https2http")
+e=t:taboption("other",Value,"plugin_header_X_From_Where",translate("plugin_header_X-From-Where"))
+e.default="frp"
+e:depends("https_plugin","https2http")
+e = t:taboption("base",ListValue, "proxy_protocol_version", translate("Proxy-Protocol Version"), translate("Proxy Protocol to send user's real IP to local services."))
+e.default = "disable"
+e:value("disable",translate("Disable"))
+e:value("v1",translate("V1"))
+e:value("v2",translate("V2"))
+e:depends("type","tcp")
+e:depends("type","stcp")
+e:depends("type","http")
+e:depends("type","https")
 e = t:taboption("base",Flag, "use_encryption", translate("Use Encryption"), translate("Encrypted the communication between frpc and frps, will effectively prevent the traffic intercepted."))
 e.default = "1"
 e.rmempty = false

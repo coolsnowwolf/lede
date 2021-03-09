@@ -60,7 +60,7 @@ zyxel_do_flash() {
 	mkdir /tmp/new_root
 	mount -t ext4 $loopdev /tmp/new_root && {
 		echo "Saving config to rootfs_data at position ${offset}."
-		cp -v /tmp/sysupgrade.tgz /tmp/new_root/
+		cp -v "$UPGRADE_BACKUP" "/tmp/new_root/$BACKUP_FILE"
 		umount /tmp/new_root
 	}
 
@@ -117,6 +117,8 @@ zyxel_do_upgrade() {
 	esac
 
 	zyxel_do_flash $tar_file $kernel $rootfs $dualflagmtd
+
+	nand_do_upgrade "$1"
 
 	return 0
 }

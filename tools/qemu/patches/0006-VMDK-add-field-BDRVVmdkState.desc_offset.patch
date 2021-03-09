@@ -1,0 +1,102 @@
+From 1c1781fa1c45a7c012f7b2c4be1be372f19e3cc6 Mon Sep 17 00:00:00 2001
+From: Fam Zheng <famcool@gmail.com>
+Date: Tue, 12 Jul 2011 19:56:32 +0800
+Subject: [PATCH 06/12] VMDK: add field BDRVVmdkState.desc_offset
+
+There are several occurrence of magic number 0x200 as the descriptor
+offset within mono sparse image file. This is not the case for images
+with separate descriptor file. So a field is added to BDRVVmdkState to
+hold the correct value.
+
+Signed-off-by: Fam Zheng <famcool@gmail.com>
+Reviewed-by: Stefan Hajnoczi <stefanha@linux.vnet.ibm.com>
+Signed-off-by: Kevin Wolf <kwolf@redhat.com>
+---
+ block/vmdk.c | 27 ++++++++++++++++++---------
+ 1 file changed, 18 insertions(+), 9 deletions(-)
+
+--- a/block/vmdk.c
++++ b/block/vmdk.c
+@@ -81,6 +81,7 @@ typedef struct VmdkExtent {
+ } VmdkExtent;
+ 
+ typedef struct BDRVVmdkState {
++    int desc_offset;
+     uint32_t parent_cid;
+     int num_extents;
+     /* Extent array with num_extents entries, ascend ordered by address */
+@@ -175,10 +176,11 @@ static uint32_t vmdk_read_cid(BlockDrive
+     uint32_t cid;
+     const char *p_name, *cid_str;
+     size_t cid_str_size;
++    BDRVVmdkState *s = bs->opaque;
+ 
+-    /* the descriptor offset = 0x200 */
+-    if (bdrv_pread(bs->file, 0x200, desc, DESC_SIZE) != DESC_SIZE)
++    if (bdrv_pread(bs->file, s->desc_offset, desc, DESC_SIZE) != DESC_SIZE) {
+         return 0;
++    }
+ 
+     if (parent) {
+         cid_str = "parentCID";
+@@ -200,10 +202,12 @@ static int vmdk_write_cid(BlockDriverSta
+ {
+     char desc[DESC_SIZE], tmp_desc[DESC_SIZE];
+     char *p_name, *tmp_str;
++    BDRVVmdkState *s = bs->opaque;
+ 
+-    /* the descriptor offset = 0x200 */
+-    if (bdrv_pread(bs->file, 0x200, desc, DESC_SIZE) != DESC_SIZE)
+-        return -1;
++    memset(desc, 0, sizeof(desc));
++    if (bdrv_pread(bs->file, s->desc_offset, desc, DESC_SIZE) != DESC_SIZE) {
++        return -EIO;
++    }
+ 
+     tmp_str = strstr(desc,"parentCID");
+     pstrcpy(tmp_desc, sizeof(tmp_desc), tmp_str);
+@@ -213,8 +217,9 @@ static int vmdk_write_cid(BlockDriverSta
+         pstrcat(desc, sizeof(desc), tmp_desc);
+     }
+ 
+-    if (bdrv_pwrite_sync(bs->file, 0x200, desc, DESC_SIZE) < 0)
+-        return -1;
++    if (bdrv_pwrite_sync(bs->file, s->desc_offset, desc, DESC_SIZE) < 0) {
++        return -EIO;
++    }
+     return 0;
+ }
+ 
+@@ -402,10 +407,11 @@ static int vmdk_parent_open(BlockDriverS
+ {
+     char *p_name;
+     char desc[DESC_SIZE];
++    BDRVVmdkState *s = bs->opaque;
+ 
+-    /* the descriptor offset = 0x200 */
+-    if (bdrv_pread(bs->file, 0x200, desc, DESC_SIZE) != DESC_SIZE)
++    if (bdrv_pread(bs->file, s->desc_offset, desc, DESC_SIZE) != DESC_SIZE) {
+         return -1;
++    }
+ 
+     if ((p_name = strstr(desc,"parentFileNameHint")) != NULL) {
+         char *end_name;
+@@ -506,8 +512,10 @@ static int vmdk_open_vmdk3(BlockDriverSt
+     int ret;
+     uint32_t magic;
+     VMDK3Header header;
++    BDRVVmdkState *s = bs->opaque;
+     VmdkExtent *extent;
+ 
++    s->desc_offset = 0x200;
+     ret = bdrv_pread(bs->file, sizeof(magic), &header, sizeof(header));
+     if (ret < 0) {
+         goto fail;
+@@ -539,6 +547,7 @@ static int vmdk_open_vmdk4(BlockDriverSt
+     BDRVVmdkState *s = bs->opaque;
+     VmdkExtent *extent;
+ 
++    s->desc_offset = 0x200;
+     ret = bdrv_pread(bs->file, sizeof(magic), &header, sizeof(header));
+     if (ret < 0) {
+         goto fail;

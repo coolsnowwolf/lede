@@ -1,0 +1,474 @@
+From ed9e7a6b3346b186a7bd22d9b62072e55ff7b9c5 Mon Sep 17 00:00:00 2001
+From: Sandor Yu <Sandor.yu@nxp.com>
+Date: Mon, 2 Sep 2019 14:57:05 +0800
+Subject: [PATCH] drm: bridge: cadence: Add CEC driver for cdns mhdp hdmi
+
+Add cec driver for cdns mhdp hdmi.
+
+Signed-off-by: Sandor Yu <Sandor.yu@nxp.com>
+---
+ drivers/gpu/drm/bridge/cadence/Kconfig            |   3 +
+ drivers/gpu/drm/bridge/cadence/Makefile           |   1 +
+ drivers/gpu/drm/bridge/cadence/cdns-dp-core.c     |   0
+ drivers/gpu/drm/bridge/cadence/cdns-hdmi-core.c   |   9 +
+ drivers/gpu/drm/bridge/cadence/cdns-mhdp-cec.c    | 347 ++++++++++++++++++++++
+ drivers/gpu/drm/bridge/cadence/cdns-mhdp-common.c |   0
+ drivers/gpu/drm/bridge/cadence/cdns-mhdp-hdmi.c   |   0
+ include/drm/bridge/cdns-mhdp-common.h             |  24 +-
+ 8 files changed, 382 insertions(+), 2 deletions(-)
+ mode change 100755 => 100644 drivers/gpu/drm/bridge/cadence/cdns-dp-core.c
+ mode change 100755 => 100644 drivers/gpu/drm/bridge/cadence/cdns-hdmi-core.c
+ create mode 100644 drivers/gpu/drm/bridge/cadence/cdns-mhdp-cec.c
+ mode change 100755 => 100644 drivers/gpu/drm/bridge/cadence/cdns-mhdp-common.c
+ mode change 100755 => 100644 drivers/gpu/drm/bridge/cadence/cdns-mhdp-hdmi.c
+
+--- a/drivers/gpu/drm/bridge/cadence/Kconfig
++++ b/drivers/gpu/drm/bridge/cadence/Kconfig
+@@ -14,3 +14,6 @@ config DRM_CDNS_DP
+ 
+ config DRM_CDNS_AUDIO
+ 	tristate "Cadence MHDP Audio driver"
++
++config DRM_CDNS_HDMI_CEC
++	tristate "Cadence MHDP HDMI CEC driver"
+--- a/drivers/gpu/drm/bridge/cadence/Makefile
++++ b/drivers/gpu/drm/bridge/cadence/Makefile
+@@ -2,3 +2,4 @@ obj-$(CONFIG_DRM_CDNS_MHDP) += cdns-mhdp
+ obj-$(CONFIG_DRM_CDNS_HDMI) += cdns-hdmi-core.o
+ obj-$(CONFIG_DRM_CDNS_DP) += cdns-dp-core.o
+ obj-$(CONFIG_DRM_CDNS_AUDIO) += cdns-mhdp-audio.o
++obj-$(CONFIG_DRM_CDNS_HDMI_CEC) += cdns-mhdp-cec.o
+--- a/drivers/gpu/drm/bridge/cadence/cdns-hdmi-core.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-hdmi-core.c
+@@ -515,6 +515,11 @@ __cdns_hdmi_probe(struct platform_device
+ 	/* register audio driver */
+ 	cdns_mhdp_register_audio_driver(dev);
+ 
++	/* register cec driver */
++#ifdef CONFIG_DRM_CDNS_HDMI_CEC
++	cdns_mhdp_register_cec_driver(dev);
++#endif
++
+ 	return hdmi;
+ 
+ err_out:
+@@ -524,6 +529,10 @@ err_out:
+ 
+ static void __cdns_hdmi_remove(struct cdns_mhdp_device *mhdp)
+ {
++	/* unregister cec driver */
++#ifdef CONFIG_DRM_CDNS_HDMI_CEC
++	cdns_mhdp_unregister_cec_driver(mhdp->dev);
++#endif
+ 	cdns_mhdp_unregister_audio_driver(mhdp->dev);
+ }
+ 
+--- /dev/null
++++ b/drivers/gpu/drm/bridge/cadence/cdns-mhdp-cec.c
+@@ -0,0 +1,347 @@
++/*
++ * Copyright 2019 NXP
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++#include <linux/module.h>
++#include <linux/workqueue.h>
++#include <linux/kthread.h>
++#include <linux/freezer.h>
++#include <drm/bridge/cdns-mhdp-common.h>
++
++#define CEC_NAME	"cdns-mhdp-cec"
++
++#define REG_ADDR_OFF 4
++#define MAX_LA_IDX 4
++#define MAX_LA_VAL 15
++
++/* regsiter define */
++#define TX_MSG_HEADER 0x33800
++#define TX_MSG_LENGTH 0x33840
++#define TX_MSG_CMD 0x33844
++#define RX_MSG_CMD 0x33850
++#define RX_CLEAR_BUF 0x33854
++#define LOGICAL_ADDRESS_LA0 0x33858
++
++#define CLK_DIV_MSB 0x3386c
++#define CLK_DIV_LSB 0x33870
++#define RX_MSG_DATA1 0x33900
++#define RX_MSG_LENGTH 0x33940
++#define RX_MSG_STATUS 0x33944
++#define NUM_OF_MSG_RX_BUF 0x33948
++#define TX_MSG_STATUS 0x3394c
++#define DB_L_TIMER 0x33980
++
++/**
++ * CEC Transceiver operation.
++ */
++enum {
++	CEC_TX_STOP,
++	CEC_TX_TRANSMIT,
++	CEC_TX_ABORT,
++	CEC_TX_ABORT_AND_TRANSMIT
++};
++
++/**
++ * CEC Transceiver status.
++ */
++enum {
++	CEC_STS_IDLE,
++	CEC_STS_BUSY,
++	CEC_STS_SUCCESS,
++	CEC_STS_ERROR
++};
++
++/**
++ * CEC Receiver operation.
++ */
++enum {
++	CEC_RX_STOP,
++	CEC_RX_READ,
++	CEC_RX_DISABLE,
++	CEC_RX_ABORT_AND_CLR_FIFO
++};
++/**
++ * Maximum number of Messages in the RX Buffers.
++ */
++#define CEC_MAX_RX_MSGS 2
++
++static u32 mhdp_cec_read(struct cdns_mhdp_cec *cec, u32 offset)
++{
++	struct cdns_mhdp_device *mhdp =
++			container_of(cec, struct cdns_mhdp_device, hdmi.cec);
++	return cdns_mhdp_bus_read(mhdp, offset);
++}
++
++static void mhdp_cec_write(struct cdns_mhdp_cec *cec, u32 offset, u32 val)
++{
++	struct cdns_mhdp_device *mhdp =
++			container_of(cec, struct cdns_mhdp_device, hdmi.cec);
++	cdns_mhdp_bus_write(val, mhdp, offset);
++}
++
++static void mhdp_cec_clear_rx_buffer(struct cdns_mhdp_cec *cec)
++{
++	mhdp_cec_write(cec, RX_CLEAR_BUF, 1);
++	mhdp_cec_write(cec, RX_CLEAR_BUF, 0);
++}
++
++static void mhdp_cec_set_divider(struct cdns_mhdp_cec *cec)
++{
++	struct cdns_mhdp_device *mhdp =
++			container_of(cec, struct cdns_mhdp_device, hdmi.cec);
++	u32 clk_div;
++
++	/* Set clock divider */
++	clk_div = cdns_mhdp_get_fw_clk(mhdp) * 10;
++
++	mhdp_cec_write(cec, CLK_DIV_MSB,
++			  (clk_div >> 8) & 0xFF);
++	mhdp_cec_write(cec, CLK_DIV_LSB, clk_div & 0xFF);
++}
++
++static u32 mhdp_cec_read_message(struct cdns_mhdp_cec *cec)
++{
++	struct cec_msg *msg = &cec->msg;
++	int len;
++	int i;
++
++	mhdp_cec_write(cec, RX_MSG_CMD, CEC_RX_READ);
++
++	len = mhdp_cec_read(cec, RX_MSG_LENGTH);
++	msg->len = len + 1;
++	dev_dbg(cec->dev, "RX MSG len =%d\n", len);
++
++	/* Read RX MSG bytes */
++	for (i = 0; i < msg->len; ++i) {
++		msg->msg[i] = (u8) mhdp_cec_read(cec, RX_MSG_DATA1 + (i * REG_ADDR_OFF));
++		dev_dbg(cec->dev, "RX MSG[%d]=0x%x\n", i, msg->msg[i]);
++	}
++
++	mhdp_cec_write(cec, RX_MSG_CMD, CEC_RX_STOP);
++
++	return true;
++}
++
++static u32 mhdp_cec_write_message(struct cdns_mhdp_cec *cec, struct cec_msg *msg)
++{
++	u8 i;
++
++	mhdp_cec_write(cec, TX_MSG_CMD, CEC_TX_STOP);
++
++	if (msg->len > CEC_MAX_MSG_SIZE) {
++		dev_err(cec->dev, "Invalid MSG size!\n");
++		return -EINVAL;
++	}
++
++	for (i = 0; i < msg->len; ++i)
++		printk("msg[%d]=0x%x\n",i, msg->msg[i]);
++
++	/* Write Message to register */
++	for (i = 0; i < msg->len; ++i) {
++		mhdp_cec_write(cec, TX_MSG_HEADER + (i * REG_ADDR_OFF),
++			  msg->msg[i]);
++	}
++	/* Write Message Length (payload + opcode) */
++	mhdp_cec_write(cec, TX_MSG_LENGTH, msg->len - 1);
++
++	mhdp_cec_write(cec, TX_MSG_CMD, CEC_TX_TRANSMIT);
++
++	return true;
++}
++
++//static void cec_abort_tx_transfer(struct cdns_mhdp_cec *cec)
++//{
++//	cec_write(cec, TX_MSG_CMD, CEC_TX_ABORT);
++//	cec_write(cec, TX_MSG_CMD, CEC_TX_STOP);
++//}
++
++static int mhdp_cec_set_logical_addr(struct cdns_mhdp_cec *cec, u32 la)
++{
++	u8 i;
++	u8 la_reg;
++
++	if (la >= MAX_LA_VAL) {
++		dev_err(cec->dev, "Error logical Addr\n");
++		return -EINVAL;
++	}
++
++	for (i = 0; i < MAX_LA_IDX; ++i) {
++		la_reg =
++		    mhdp_cec_read(cec, LOGICAL_ADDRESS_LA0 + (i * REG_ADDR_OFF));
++
++		if (la_reg & 0x10)
++			continue;
++
++		if ((la_reg & 0xF) == la) {
++			dev_warn(cec->dev, "Warning. LA already in use.\n");
++			return true;
++		}
++
++		la = (la & 0xF) | (1 << 4);
++
++		mhdp_cec_write(cec, LOGICAL_ADDRESS_LA0 + (i * REG_ADDR_OFF), la);
++		return true;
++	}
++
++	dev_warn(cec->dev, "All LA in use\n");
++
++	return false;
++}
++
++static int mhdp_cec_poll_worker(void *_cec)
++{
++	struct cdns_mhdp_cec *cec = (struct cdns_mhdp_cec *)_cec;
++	int num_rx_msgs, i;
++	int sts;
++
++	set_freezable();
++
++	for (;;) {
++		if (kthread_freezable_should_stop(NULL))
++			break;
++
++		/* Check TX State */
++		sts = mhdp_cec_read(cec, TX_MSG_STATUS);
++		switch (sts) {
++		case CEC_STS_SUCCESS:
++			cec_transmit_done(cec->adap, CEC_TX_STATUS_OK, 0, 0, 0,
++					  0);
++			mhdp_cec_write(cec, TX_MSG_CMD, CEC_TX_STOP);
++			break;
++		case CEC_STS_ERROR:
++			mhdp_cec_write(cec, TX_MSG_CMD, CEC_TX_STOP);
++			cec_transmit_done(cec->adap,
++					  CEC_TX_STATUS_MAX_RETRIES |
++					  CEC_TX_STATUS_NACK, 0, 1, 0, 0);
++			break;
++		case CEC_STS_BUSY:
++		default:
++			break;
++		}
++
++		/* Check RX State */
++		sts = mhdp_cec_read(cec, RX_MSG_STATUS);
++		num_rx_msgs = mhdp_cec_read(cec, NUM_OF_MSG_RX_BUF);
++		switch (sts) {
++		case CEC_STS_SUCCESS:
++			if (num_rx_msgs == 0xf)
++				num_rx_msgs = CEC_MAX_RX_MSGS;
++
++			if (num_rx_msgs > CEC_MAX_RX_MSGS) {
++				dev_err(cec->dev, "Error rx msg num %d\n",
++					num_rx_msgs);
++				mhdp_cec_clear_rx_buffer(cec);
++				break;
++			}
++
++			/* Rx FIFO Depth 2 RX MSG */
++			for (i = 0; i < num_rx_msgs; i++) {
++				mhdp_cec_read_message(cec);
++				cec->msg.rx_status = CEC_RX_STATUS_OK;
++				cec_received_msg(cec->adap, &cec->msg);
++			}
++			break;
++		default:
++			break;
++		}
++
++		if (!kthread_should_stop())
++			schedule_timeout_idle(20);
++	}
++
++	return 0;
++}
++
++static int mhdp_cec_adap_enable(struct cec_adapter *adap, bool enable)
++{
++	struct cdns_mhdp_cec *cec = adap->priv;
++
++	if (enable) {
++		mhdp_cec_write(cec, DB_L_TIMER, 0x10);
++		mhdp_cec_set_divider(cec);
++	} else
++		mhdp_cec_set_divider(cec);
++
++	return 0;
++}
++
++static int mhdp_cec_adap_log_addr(struct cec_adapter *adap, u8 addr)
++{
++	struct cdns_mhdp_cec *cec = adap->priv;
++
++	return mhdp_cec_set_logical_addr(cec, addr);
++}
++
++static int mhdp_cec_adap_transmit(struct cec_adapter *adap, u8 attempts,
++				 u32 signal_free_time, struct cec_msg *msg)
++{
++	struct cdns_mhdp_cec *cec = adap->priv;
++
++	mhdp_cec_write_message(cec, msg);
++
++	return 0;
++}
++
++static const struct cec_adap_ops cdns_mhdp_cec_adap_ops = {
++	.adap_enable = mhdp_cec_adap_enable,
++	.adap_log_addr = mhdp_cec_adap_log_addr,
++	.adap_transmit = mhdp_cec_adap_transmit,
++};
++
++int cdns_mhdp_register_cec_driver(struct device *dev)
++{
++	struct cdns_mhdp_device *mhdp = dev_get_drvdata(dev);
++	struct cdns_mhdp_cec *cec = &mhdp->hdmi.cec;
++	int ret;
++
++	cec->adap = cec_allocate_adapter(&cdns_mhdp_cec_adap_ops, cec,
++					 CEC_NAME,
++					 CEC_CAP_PHYS_ADDR | CEC_CAP_LOG_ADDRS |
++					 CEC_CAP_TRANSMIT | CEC_CAP_PASSTHROUGH
++					 | CEC_CAP_RC, 1);
++	ret = PTR_ERR_OR_ZERO(cec->adap);
++	if (ret)
++		return ret;
++	ret = cec_register_adapter(cec->adap, dev);
++	if (ret) {
++		cec_delete_adapter(cec->adap);
++		return ret;
++	}
++
++	cec->dev = dev;
++
++	cec->cec_worker = kthread_create(mhdp_cec_poll_worker, cec, "cdns-mhdp-cec");
++	if (IS_ERR(cec->cec_worker))
++		dev_err(cec->dev, "failed  create hdp cec thread\n");
++
++	wake_up_process(cec->cec_worker);
++
++	dev_dbg(dev, "CEC successfuly probed\n");
++	return 0;
++}
++
++int cdns_mhdp_unregister_cec_driver(struct device *dev)
++{
++	struct cdns_mhdp_device *mhdp = dev_get_drvdata(dev);
++	struct cdns_mhdp_cec *cec = &mhdp->hdmi.cec;
++
++	if (cec->cec_worker) {
++		kthread_stop(cec->cec_worker);
++		cec->cec_worker = NULL;
++	}
++	cec_unregister_adapter(cec->adap);
++	return 0;
++}
++
++MODULE_AUTHOR("Sandor.Yu@NXP.com");
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("NXP CDNS MHDP CEC driver");
+--- a/include/drm/bridge/cdns-mhdp-common.h
++++ b/include/drm/bridge/cdns-mhdp-common.h
+@@ -21,7 +21,7 @@
+ #include <drm/drm_connector.h>
+ #include <drm/drm_dp_helper.h>
+ #include <drm/drm_dp_mst_helper.h>
+-
++#include <media/cec.h>
+ #include <linux/bitops.h>
+ 
+ #define ADDR_IMEM		0x10000
+@@ -605,6 +605,17 @@ struct cdns_mhdp_connector {
+ 	struct cdns_mhdp_bridge *bridge;
+ };
+ 
++#ifdef CONFIG_DRM_CDNS_HDMI_CEC
++struct cdns_mhdp_cec {
++       struct cec_adapter *adap;
++       struct device *dev;
++       struct mutex lock;
++
++       struct cec_msg msg;
++       struct task_struct *cec_worker;
++};
++#endif
++
+ struct cdns_mhdp_device {
+ 	void __iomem		*regs;
+ 
+@@ -633,7 +644,7 @@ struct cdns_mhdp_device {
+ 	bool plugged;
+ 
+ 	union {
+-		struct cdn_dp_data {
++		struct _dp_data {
+ 			struct drm_dp_link	link;
+ 			struct drm_dp_aux	aux;
+ 			struct cdns_mhdp_host	host;
+@@ -645,6 +656,9 @@ struct cdns_mhdp_device {
+ 			u32 num_lanes;
+ 		} dp;
+ 		struct _hdmi_data {
++#ifdef CONFIG_DRM_CDNS_HDMI_CEC
++			struct cdns_mhdp_cec cec;
++#endif
+ 			u32 char_rate;
+ 			u32 hdmi_type;
+ 		} hdmi;
+@@ -713,4 +727,10 @@ int cdns_hdmi_disable_gcp(struct cdns_mh
+ int cdns_hdmi_enable_gcp(struct cdns_mhdp_device *mhdp);
+ 
+ bool cdns_mhdp_check_alive(struct cdns_mhdp_device *mhdp);
++/* CEC */
++#ifdef CONFIG_DRM_CDNS_HDMI_CEC
++int cdns_mhdp_register_cec_driver(struct device *dev);
++int cdns_mhdp_unregister_cec_driver(struct device *dev);
++#endif
++
+ #endif /* CDNS_MHDP_COMMON_H_ */

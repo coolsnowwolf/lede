@@ -1,0 +1,199 @@
+#!/usr/bin/env lua
+-- Alternative for OpenWrt's /sbin/wifi.
+-- Copyright Not Reserved.
+-- Hua Shao <nossiac@163.com>
+
+package.path = '/lib/wifi/?.lua;'..package.path
+
+local mtkwifi = require("mtkwifi")
+local nixio = require("nixio")
+
+function usage()
+	print("wifi <up|down|reset|reload|status> [devname]")
+end
+
+
+function wifi_common_up(devname)
+	nixio.syslog("debug", "wifi_common_up "..tostring(devname))
+
+	-- need to find out the vif prefix for this device
+	for _,vif in ipairs(string.split(mtkwifi.read_pipe("ls /sys/class/net"), "\n"))
+	do
+		if string.match(vif, "ra%a-%d+") then
+			os.execute("ifconfig "..vif.." up")
+		end
+	end
+	for _,vif in ipairs(string.split(mtkwifi.read_pipe("ls /sys/class/net"), "\n"))
+	do
+		if string.match(vif, "apcli%a-%d+") then
+			os.execute("ifconfig "..vif.." up")
+		end
+	end
+end
+
+
+function wifi_common_down(devname)
+	nixio.syslog("debug", "wifi_common_down "..tostring(devname))
+
+	-- need to find out the vif prefix for this device
+	for _,vif in ipairs(string.split(mtkwifi.read_pipe("ls /sys/class/net"), "\n"))
+	do
+		if string.match(vif, "apcli%d+")
+		or string.match(vif, "apclii%d+") then
+			os.execute("ifconfig "..vif.." down")
+		end
+	end
+	for _,vif in ipairs(string.split(mtkwifi.read_pipe("ls /sys/class/net"), "\n"))
+	do
+		if string.match(vif, "ra%d+")
+		or string.match(vif, "rai%d+")
+		or string.match(vif, "rae%d+")
+		or string.match(vif, "rax%d+") then
+			os.execute("ifconfig "..vif.." down")
+		end
+	end
+end
+
+function wifi_common_reload(devname)
+	nixio.syslog("debug", "wifi_common_reload "..tostring(devname))
+	wifi_common_up()
+	wifi_common_down()
+end
+
+function wifi_common_restart(devname)
+	nixio.syslog("debug", "wifi_common_restart "..tostring(devname))
+	wifi_common_reload()
+end
+
+function wifi_common_reset(devname)
+	nixio.syslog("debug", "wifi_common_reset called!")
+	local curpath = "/etc/wireless/"
+	if devname then
+		curpath = curpath..devname.."/"
+	end
+	local defpath = "/rom"..defpath
+	if mtkwifi.exists(defpath) then
+		os.execute("rm -rf "..curpath)
+		os.execute("cp -rf "..defpath.." "..curpath)
+		wifi_common_reload()
+	else
+		nixio.syslog("debug", defpath.." missing, unable to reset!")
+	end
+end
+
+function wifi_common_status(devname)
+	nixio.syslog("debug", "wifi_common_status "..tostring(devname))
+	print(mtkwifi.read_pipe("iwconfig"))
+	print(mtkwifi.read_pipe("ifconfig -a"))
+end
+
+function wifi_common_detect(devname)
+	nixio.syslog("debug", "wifi_common_detect "..tostring(devname))
+	local devs = mtkwifi.getdevs()
+	for _,dev in ipairs(devs) do
+		print("config wifi-device "..dev.devname..
+			"\n\toption type "..dev.devname..
+			"\n\toption vendor ralink"..
+			"\n\toption channel "..dev.Channel)
+		for _,vif in ipairs(dev.vifs) do
+			print("\nconfig wifi-iface"..
+				"\n\toption device"..dev.devname..
+				"\n\toption ifname"..vif.vifname..
+				"\n\toption network lan"..
+				"\n\toption mode ap")
+		end
+	end
+end
+
+for _,f in ipairs(string.split(mtkwifi.read_pipe("find /lib/wifi/ -name \"*.lua\" 2>/dev/null"), "\n")) do
+	dofile(f)
+end
+
+function wifi(cmd, devname)
+	local mtkwifi = require("mtkwifi")
+	local devs, l1parser = mtkwifi.__get_l1dat()
+	if not devs or not l1parser then
+		return wifi_orig(cmd, devname)
+	end
+
+	if devname then
+		local dev = devs.devname_ridx[devname]
+		assert(mtkwifi.exists(dev.init_script))
+		local compatname = dev.init_compatible
+		assert(compatname)
+
+		if _G[compatname.."_"..cmd] then
+			nixio.syslog("info", "call "..compatname.."_"..cmd.."("..devname..")")
+			_G[compatname.."_"..cmd](devname)
+		end
+		return
+	end
+
+	-- if devname not not specified
+	for devname, dev in pairs(devs.devname_ridx) do
+		local compatname = dev.init_compatible
+		nixio.syslog("info", "call "..compatname.."_"..cmd.."("..devname..")")
+		_G[compatname.."_"..cmd](devname)
+	end
+end
+
+function wifi_orig(cmd,devname)
+	local relname = nil
+	if devname then
+		relname = string.split(devname,".")[1]
+	end
+
+	if relname then
+		if _G[relname.."_"..cmd] then
+			nixio.syslog("info", "call "..relname.."_"..cmd.."("..devname..")")
+			_G[relname.."_"..cmd](devname)
+		end
+	else
+		local devinfo = mtkwifi.search_dev_and_profile()
+		local done = {}
+		for __devname in pairs(devinfo) do
+			local __relname = string.split(__devname,".")[1]
+			repeat
+				-- common case
+				if done[__relname] then break else done[__relname] = true end
+				if _G[__relname.."_"..cmd] then
+					nixio.syslog("info", "call "..__relname.."_"..cmd.."("..__devname..")")
+					_G[__relname.."_"..cmd](__devname)
+					break
+				end
+				-- try shell
+				local dev_shell = "/lib/wifi/"..__relname..".sh"
+				if mtkwifi.exists(dev_shell) then
+					local cmd = "source "..dev_shell.."; "..__relname.."_"..cmd.." > /dev/null"
+					nixio.syslog("info", cmd)
+					if os.execute(cmd) ~= 0 then
+						nixio.syslog("err", cmd)
+					end
+					break
+				end
+				-- fall back on common api
+				nixio.syslog("info", "no scripts for "..__relname.." found, fall back on common api!")
+				_G["wifi_common_"..cmd](__devname)
+			until true
+		end
+	end
+end
+
+cmd = arg[1]
+dev = arg[2]
+
+if cmd == "up"
+or cmd == "down"
+or cmd == "status"
+or cmd == "detect"
+or cmd == "reload"
+or cmd == "restart"
+or cmd == "reset" then
+	wifi(cmd, dev)
+elseif cmd == "reload_legacy" then
+	nixio.syslog("info", "legacy command "..cmd)
+	wifi("up", dev)
+else
+	usage()
+end
+

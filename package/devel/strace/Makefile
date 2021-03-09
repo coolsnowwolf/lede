@@ -9,22 +9,24 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=strace
-PKG_VERSION:=4.25
+PKG_VERSION:=5.5
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://strace.io/files/$(PKG_VERSION)
-PKG_HASH:=d685f8e65470b7832c3aff60c57ab4459f26ff89f07c10f92bd70ee89efac701
-
-PKG_LICENSE:=BSD-3c
-PKG_LICENSE_FILES:=COPYRIGHT
-PKG_CPE_ID:=cpe:/a:paul_kranenburg:strace
+PKG_HASH:=9f58958c8e59ea62293d907d10572e352b582bd7948ed21aa28ebb47e5bf30ff
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
+PKG_LICENSE:=LGPL-2.1-or-later
+PKG_LICENSE_FILES:=COPYING
+PKG_CPE_ID:=cpe:/a:paul_kranenburg:strace
 
 PKG_FIXUP:=autoreconf
-PKG_CONFIG_DEPENDS:=CONFIG_PACKAGE_strace_libunwind
 PKG_INSTALL:=1
+
+PKG_CONFIG_DEPENDS := \
+	CONFIG_STRACE_LIBDW \
+	CONFIG_STRACE_LIBUNWIND
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -44,27 +46,34 @@ define Package/strace
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=System call tracer
-  DEPENDS:=+PACKAGE_strace_libunwind:libunwind
-  URL:=http://strace.sourceforge.net/
+  URL:=https://strace.io/
+  DEPENDS:=+STRACE_LIBDW:libdw +STRACE_LIBUNWIND:libunwind
 endef
 
 define Package/strace/description
-A useful diagnostic, instructional, and debugging tool. Allows you to track what
-system calls a program makes while it is running.
+  A useful diagnostic, instructional, and debugging tool. Allows you to track what
+  system calls a program makes while it is running.
 endef
 
 define Package/strace/config
-config PACKAGE_strace_libdw
-	bool "Enable stack tracing support using libdw"
-	default n
-config PACKAGE_strace_libunwind
-	bool "Enable stack tracing support using libunwind (experimental)"
-	default n
+choice
+	prompt "stack tracing support"
+	default STRACE_NONE
+
+	config STRACE_NONE
+		bool "None"
+
+	config STRACE_LIBDW
+		bool "libdw"
+
+	config STRACE_LIBUNWIND
+		bool "libunwind (experimental)"
+endchoice
 endef
 
 CONFIGURE_ARGS += \
-	--with-libdw=$(if $(CONFIG_PACKAGE_strace_libdw),yes,no) \
-	--with-libunwind=$(if $(CONFIG_PACKAGE_strace_libunwind),yes,no)
+	--with-libdw=$(if $(CONFIG_STRACE_LIBDW),yes,no) \
+	--with-libunwind=$(if $(CONFIG_STRACE_LIBUNWIND),yes,no)
 
 MAKE_FLAGS := \
 	CCOPT="$(TARGET_CFLAGS)"

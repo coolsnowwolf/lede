@@ -15,7 +15,7 @@
 #
 
 usage() {
-	echo "Usage: `basename $0` -A arch -C comp -a addr -e entry" \
+	echo "Usage: $(basename $0) -A arch -C comp -a addr -e entry" \
 		"-v version -k kernel [-D name -d dtb] -o its_file"
 	echo -e "\t-A ==> set architecture to 'arch'"
 	echo -e "\t-C ==> set compression type 'comp'"
@@ -55,11 +55,11 @@ if [ -z "${ARCH}" ] || [ -z "${COMPRESS}" ] || [ -z "${LOAD_ADDR}" ] || \
 	usage
 fi
 
-ARCH_UPPER=`echo $ARCH | tr '[:lower:]' '[:upper:]'`
+ARCH_UPPER=$(echo $ARCH | tr '[:lower:]' '[:upper:]')
 
 # Conditionally create fdt information
 if [ -n "${DTB}" ]; then
-	FDT="
+	FDT_NODE="
 		fdt@1 {
 			description = \"${ARCH_UPPER} OpenWrt ${DEVICE} device tree blob\";
 			data = /incbin/(\"${DTB}\");
@@ -74,6 +74,7 @@ if [ -n "${DTB}" ]; then
 			};
 		};
 "
+	FDT_PROP="fdt = \"fdt@1\";"
 fi
 
 # Create a default, fully populated DTS file
@@ -100,9 +101,7 @@ DATA="/dts-v1/;
 				algo = \"sha1\";
 			};
 		};
-
-${FDT}
-
+${FDT_NODE}
 	};
 
 	configurations {
@@ -110,7 +109,7 @@ ${FDT}
 		${CONFIG} {
 			description = \"OpenWrt\";
 			kernel = \"kernel@1\";
-			fdt = \"fdt@1\";
+			${FDT_PROP}
 		};
 	};
 };"

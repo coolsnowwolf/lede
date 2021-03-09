@@ -1,0 +1,107 @@
+--- a/drivers/thermal/qcom/tsens-ipq8064.c
++++ b/drivers/thermal/qcom/tsens-ipq8064.c
+@@ -13,10 +13,12 @@
+  */
+ 
+ #include <linux/platform_device.h>
++#include <linux/err.h>
+ #include <linux/delay.h>
+ #include <linux/bitops.h>
+ #include <linux/regmap.h>
+ #include <linux/thermal.h>
++#include <linux/slab.h>
+ #include <linux/nvmem-consumer.h>
+ #include <linux/io.h>
+ #include <linux/interrupt.h>
+@@ -210,9 +212,8 @@ static void tsens_scheduler_fn(struct wo
+ 	struct tsens_device *tmdev = container_of(work, struct tsens_device,
+ 					tsens_work);
+ 	unsigned int threshold, threshold_low, code, reg, sensor, mask;
+-	unsigned int sensor_addr;
+ 	bool upper_th_x, lower_th_x;
+-	int adc_code, ret;
++	int ret;
+ 
+ 	ret = regmap_read(tmdev->map, STATUS_CNTL_8064, &reg);
+ 	if (ret)
+@@ -261,9 +262,8 @@ static void tsens_scheduler_fn(struct wo
+ 		if (upper_th_x || lower_th_x) {
+ 			/* Notify user space */
+ 			schedule_work(&tmdev->sensor[0].notify_work);
+-			regmap_read(tmdev->map, sensor_addr, &adc_code);
+ 			pr_debug("Trigger (%d degrees) for sensor %d\n",
+-				code_to_degC(adc_code, &tmdev->sensor[0]), 0);
++				code_to_degC(code, &tmdev->sensor[0]), 0);
+ 		}
+ 	}
+ 	regmap_write(tmdev->map, STATUS_CNTL_8064, reg & mask);
+@@ -372,40 +372,55 @@ static int init_ipq8064(struct tsens_dev
+ static int calibrate_ipq8064(struct tsens_device *tmdev)
+ {
+ 	int i;
+-	char *data, *data_backup;
+-
++	int ret = 0;
++	u8 *data, *data_backup;
++	struct device *dev = tmdev->dev;
+ 	ssize_t num_read = tmdev->num_sensors;
+ 	struct tsens_sensor *s = tmdev->sensor;
+ 
+-	data = qfprom_read(tmdev->dev, "calib");
++	data = qfprom_read(dev, "calib");
+ 	if (IS_ERR(data)) {
+-		pr_err("Calibration not found.\n");
+-		return PTR_ERR(data);
++		ret = PTR_ERR(data);
++		if (ret != -EPROBE_DEFER)
++			dev_err(dev, "Calibration not found.");
++		goto exit;
+ 	}
+ 
+-	data_backup = qfprom_read(tmdev->dev, "calib_backup");
++	data_backup = qfprom_read(dev, "calib_backup");
+ 	if (IS_ERR(data_backup)) {
+-		pr_err("Backup calibration not found.\n");
+-		return PTR_ERR(data_backup);
++		ret = PTR_ERR(data_backup);
++		if (ret != -EPROBE_DEFER)
++			dev_err(dev, "Backup Calibration not found.");
++		goto free_data;
+ 	}
+ 
+ 	for (i = 0; i < num_read; i++) {
+ 		s[i].calib_data = readb_relaxed(data + i);
+-		s[i].calib_data_backup = readb_relaxed(data_backup + i);
++		
++		if (!s[i].calib_data) {
++			s[i].calib_data_backup = readb_relaxed(data_backup + i);
++
++			if (!s[i].calib_data_backup) {
++				dev_err(dev, "QFPROM TSENS calibration data not present");
++				ret = -ENODEV;
++				goto free_backup;
++			}
+ 
+-		if (s[i].calib_data_backup)
+ 			s[i].calib_data = s[i].calib_data_backup;
+-		if (!s[i].calib_data) {
+-			pr_err("QFPROM TSENS calibration data not present\n");
+-			return -ENODEV;
+ 		}
++
+ 		s[i].slope = tsens_8064_slope[i];
+ 		s[i].offset = CAL_MDEGC - (s[i].calib_data * s[i].slope);
+ 	}
+ 
+ 	hw_init(tmdev);
+ 
+-	return 0;
++free_backup:
++	kfree(data_backup);
++free_data:
++	kfree(data);
++exit:
++	return ret;
+ }
+ 
+ static int get_temp_ipq8064(struct tsens_device *tmdev, int id, int *temp)

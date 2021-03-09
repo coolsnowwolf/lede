@@ -1,0 +1,1026 @@
+Subject: [PATCH v2 1/5] usb: xhci: add firmware loader for uPD720201 and uPD720202 w/o ROM
+Date: Fri, 21 Jun 2019 14:29:09 +0530
+Message-Id: <20190621085913.8722-2-vkoul@kernel.org>
+From: Christian Lamparter <chunkeey@googlemail.com>
+
+This patch adds a firmware loader for the uPD720201K8-711-BAC-A
+and uPD720202K8-711-BAA-A variant. Both of these chips are listed
+in Renesas' R19UH0078EJ0500 Rev.5.00 "User's Manual: Hardware" as
+devices which need the firmware loader on page 2 in order to
+work as they "do not support the External ROM".
+
+The "Firmware Download Sequence" is describe in chapter
+"7.1 FW Download Interface" R19UH0078EJ0500 Rev.5.00 page 131.
+
+The firmware "K2013080.mem" is available from a USB3.0 Host to
+PCIe Adapter (PP2U-E card) "Firmware download" archive. An
+alternative version can be sourced from Netgear's WNDR4700 GPL
+archives.
+
+The release notes of the PP2U-E's "Firmware Download" ver 2.0.1.3
+(2012-06-15) state that the firmware is for the following devices:
+ - uPD720201 ES 2.0 sample whose revision ID is 2.
+ - uPD720201 ES 2.1 sample & CS sample & Mass product, ID is 3.
+ - uPD720202 ES 2.0 sample & CS sample & Mass product, ID is 2.
+
+Cc: Yoshihiro Shimoda <yoshihiro.shimoda.uh@renesas.com>
+Signed-off-by: Christian Lamparter <chunkeey@googlemail.com>
+Signed-off-by: Bjorn Andersson <bjorn.andersson@linaro.org>
+[vkoul: fixed comments:
+	used macros for timeout count and delay
+	removed renesas_fw_alive_check
+	cleaned renesas_fw_callback
+	removed recurion for renesas_fw_download
+	added MODULE_FIRMWARE]
+Signed-off-by: Vinod Koul <vkoul@kernel.org>
+---
+ drivers/usb/host/xhci-pci.c | 458 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 458 insertions(+)
+
+--- a/drivers/usb/host/xhci-pci.c
++++ b/drivers/usb/host/xhci-pci.c
+@@ -12,6 +12,8 @@
+ #include <linux/slab.h>
+ #include <linux/module.h>
+ #include <linux/acpi.h>
++#include <linux/firmware.h>
++#include <linux/unaligned/access_ok.h>
+ 
+ #include "xhci.h"
+ #include "xhci-trace.h"
+@@ -63,6 +65,44 @@
+ #define PCI_DEVICE_ID_ASMEDIA_1142_XHCI			0x1242
+ #define PCI_DEVICE_ID_ASMEDIA_2142_XHCI			0x2142
+ 
++#define RENESAS_FW_VERSION				0x6C
++#define RENESAS_ROM_CONFIG				0xF0
++#define RENESAS_FW_STATUS				0xF4
++#define RENESAS_FW_STATUS_MSB				0xF5
++#define RENESAS_ROM_STATUS				0xF6
++#define RENESAS_ROM_STATUS_MSB				0xF7
++#define RENESAS_DATA0					0xF8
++#define RENESAS_DATA1					0xFC
++
++#define RENESAS_FW_VERSION_FIELD			GENMASK(23, 7)
++#define RENESAS_FW_VERSION_OFFSET			8
++
++#define RENESAS_FW_STATUS_DOWNLOAD_ENABLE		BIT(0)
++#define RENESAS_FW_STATUS_LOCK				BIT(1)
++#define RENESAS_FW_STATUS_RESULT			GENMASK(6, 4)
++  #define RENESAS_FW_STATUS_INVALID			0
++  #define RENESAS_FW_STATUS_SUCCESS			BIT(4)
++  #define RENESAS_FW_STATUS_ERROR			BIT(5)
++#define RENESAS_FW_STATUS_SET_DATA0			BIT(8)
++#define RENESAS_FW_STATUS_SET_DATA1			BIT(9)
++
++#define RENESAS_ROM_STATUS_ACCESS			BIT(0)
++#define RENESAS_ROM_STATUS_ERASE			BIT(1)
++#define RENESAS_ROM_STATUS_RELOAD			BIT(2)
++#define RENESAS_ROM_STATUS_RESULT			GENMASK(6, 4)
++  #define RENESAS_ROM_STATUS_INVALID			0
++  #define RENESAS_ROM_STATUS_SUCCESS			BIT(4)
++  #define RENESAS_ROM_STATUS_ERROR			BIT(5)
++#define RENESAS_ROM_STATUS_SET_DATA0			BIT(8)
++#define RENESAS_ROM_STATUS_SET_DATA1			BIT(9)
++#define RENESAS_ROM_STATUS_ROM_EXISTS			BIT(15)
++
++#define RENESAS_ROM_ERASE_MAGIC				0x5A65726F
++#define RENESAS_ROM_WRITE_MAGIC				0x53524F4D
++
++#define RENESAS_RETRY	1000
++#define RENESAS_DELAY	10
++
+ static const char hcd_name[] = "xhci_hcd";
+ 
+ static struct hc_driver __read_mostly xhci_pci_hc_driver;
+@@ -298,6 +338,873 @@ static void xhci_pme_acpi_rtd3_enable(st
+ static void xhci_pme_acpi_rtd3_enable(struct pci_dev *dev) { }
+ #endif /* CONFIG_ACPI */
+ 
++static const struct renesas_fw_entry {
++	const char *firmware_name;
++	u16 device;
++	u8 revision;
++	u16 expected_version;
++} renesas_fw_table[] = {
++	/*
++	 * Only the uPD720201K8-711-BAC-A or uPD720202K8-711-BAA-A
++	 * are listed in R19UH0078EJ0500 Rev.5.00 as devices which
++	 * need the software loader.
++	 *
++	 * PP2U/ReleaseNote_USB3-201-202-FW.txt:
++	 *
++	 * Note: This firmware is for the following devices.
++	 *  - uPD720201 ES 2.0 sample whose revision ID is 2.
++	 *  - uPD720201 ES 2.1 sample & CS sample & Mass product, ID is 3.
++	 *  - uPD720202 ES 2.0 sample & CS sample & Mass product, ID is 2.
++	 *
++	 *  Entry expected_version should be kept in increasing order for a
++	 *  chip, so that driver will pick first version and if that fails
++	 *  then next one will be picked
++	 */
++	{ "K2013080.mem", 0x0014, 0x02, 0x2013 },
++	{ "K2013080.mem", 0x0014, 0x03, 0x2013 },
++	{ "K2026090.mem", 0x0014, 0x03, 0x2026 },
++	{ "K2013080.mem", 0x0015, 0x02, 0x2013 },
++	{ "K2026090.mem", 0x0015, 0x02, 0x2026 },
++};
++
++MODULE_FIRMWARE("K2013080.mem");
++MODULE_FIRMWARE("K2026090.mem");
++
++static const struct renesas_fw_entry *renesas_needs_fw_dl(struct pci_dev *dev)
++{
++	const struct renesas_fw_entry *entry;
++	size_t i;
++
++	/* This loader will only work with a RENESAS device. */
++	if (!(dev->vendor == PCI_VENDOR_ID_RENESAS))
++		return NULL;
++
++	for (i = 0; i < ARRAY_SIZE(renesas_fw_table); i++) {
++		entry = &renesas_fw_table[i];
++		if (entry->device == dev->device &&
++		    entry->revision == dev->revision)
++			return entry;
++	}
++
++	return NULL;
++}
++
++static const struct
++renesas_fw_entry *renesas_get_next_entry(struct pci_dev *dev,
++					 const struct renesas_fw_entry *entry)
++{
++	const struct renesas_fw_entry *next_entry;
++	size_t i;
++
++	for (i = 0; i < ARRAY_SIZE(renesas_fw_table); i++) {
++		next_entry = &renesas_fw_table[i];
++		if (next_entry->device == dev->device &&
++		    next_entry->revision == dev->revision &&
++		    next_entry->expected_version > entry->expected_version)
++			return next_entry;
++	}
++
++	return NULL;
++}
++
++static int renesas_fw_download_image(struct pci_dev *dev,
++				     const u32 *fw,
++				     size_t step)
++{
++	size_t i;
++	int err;
++	u8 fw_status;
++	bool data0_or_data1;
++
++	/*
++	 * The hardware does alternate between two 32-bit pages.
++	 * (This is because each row of the firmware is 8 bytes).
++	 *
++	 * for even steps we use DATA0, for odd steps DATA1.
++	 */
++	data0_or_data1 = (step & 1) == 1;
++
++	/* step+1. Read "Set DATAX" and confirm it is cleared. */
++	for (i = 0; i < RENESAS_RETRY; i++) {
++		err = pci_read_config_byte(dev, RENESAS_FW_STATUS_MSB,
++					   &fw_status);
++		if (err)
++			return pcibios_err_to_errno(err);
++		if (!(fw_status & BIT(data0_or_data1)))
++			break;
++
++		udelay(RENESAS_DELAY);
++	}
++	if (i == RENESAS_RETRY)
++		return -ETIMEDOUT;
++
++	/*
++	 * step+2. Write FW data to "DATAX".
++	 * "LSB is left" => force little endian
++	 */
++	err = pci_write_config_dword(dev, data0_or_data1 ?
++				     RENESAS_DATA1 : RENESAS_DATA0,
++				     (__force u32)cpu_to_le32(fw[step]));
++	if (err)
++		return pcibios_err_to_errno(err);
++
++	udelay(100);
++
++	/* step+3. Set "Set DATAX". */
++	err = pci_write_config_byte(dev, RENESAS_FW_STATUS_MSB,
++				    BIT(data0_or_data1));
++	if (err)
++		return pcibios_err_to_errno(err);
++
++	return 0;
++}
++
++static int renesas_fw_verify(struct pci_dev *dev,
++			     const void *fw_data,
++			     size_t length)
++{
++	const struct renesas_fw_entry *entry = renesas_needs_fw_dl(dev);
++	u16 fw_version_pointer;
++	u16 fw_version;
++
++	if (!entry)
++		return -EINVAL;
++
++	/*
++	 * The Firmware's Data Format is describe in
++	 * "6.3 Data Format" R19UH0078EJ0500 Rev.5.00 page 124
++	 */
++
++	/* "Each row is 8 bytes". => firmware size must be a multiple of 8. */
++	if (length % 8 != 0)
++		dev_warn(&dev->dev, "firmware size is not a multiple of 8.");
++
++	/*
++	 * The bootrom chips of the big brother have sizes up to 64k, let's
++	 * assume that's the biggest the firmware can get.
++	 */
++	if (length < 0x1000 || length >= 0x10000) {
++		dev_err(&dev->dev, "firmware is size %zd is not (4k - 64k).",
++			length);
++		return -EINVAL;
++	}
++
++	/* The First 2 bytes are fixed value (55aa). "LSB on Left" */
++	if (get_unaligned_le16(fw_data) != 0x55aa) {
++		dev_err(&dev->dev, "no valid firmware header found.");
++		return -EINVAL;
++	}
++
++	/* verify the firmware version position and print it. */
++	fw_version_pointer = get_unaligned_le16(fw_data + 4);
++	if (fw_version_pointer + 2 >= length) {
++		dev_err(&dev->dev,
++			"firmware version pointer is outside of the firmware image.");
++		return -EINVAL;
++	}
++
++	fw_version = get_unaligned_le16(fw_data + fw_version_pointer);
++	dev_dbg(&dev->dev, "got firmware version: %02x.", fw_version);
++
++	if (fw_version != entry->expected_version) {
++		dev_err(&dev->dev,
++			"firmware version mismatch, expected version: %02x.",
++			entry->expected_version);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int renesas_check_rom_state(struct pci_dev *pdev)
++{
++	const struct renesas_fw_entry *entry;
++	u16 rom_state;
++	u32 version;
++	bool valid_version = false;
++	int err, i;
++
++	/* check FW version */
++	err = pci_read_config_dword(pdev, RENESAS_FW_VERSION, &version);
++	if (err)
++		return pcibios_err_to_errno(err);
++
++	version &= RENESAS_FW_VERSION_FIELD;
++	version = version >> RENESAS_FW_VERSION_OFFSET;
++	dev_dbg(&pdev->dev, "Found FW version loaded is %x\n", version);
++
++	/* treat version in renesas_fw_table as correct ones */
++	for (i = 0; i < ARRAY_SIZE(renesas_fw_table); i++) {
++		entry = &renesas_fw_table[i];
++		if (version == entry->expected_version) {
++			dev_dbg(&pdev->dev, "Detected valid ROM version..\n");
++			valid_version = true;
++		}
++	}
++
++	/*
++	 * Test if ROM is present and loaded, if so we can skip everything
++	 */
++	err = pci_read_config_word(pdev, RENESAS_ROM_STATUS, &rom_state);
++	if (err)
++		return pcibios_err_to_errno(err);
++
++	if (rom_state & BIT(15)) {
++		/* ROM exists */
++		dev_dbg(&pdev->dev, "ROM exists\n");
++
++		/* Check the "Result Code" Bits (6:4) and act accordingly */
++		switch (rom_state & RENESAS_ROM_STATUS_RESULT) {
++		case RENESAS_ROM_STATUS_SUCCESS:
++			dev_dbg(&pdev->dev, "Success ROM load...");
++			/* we have valid version and status so success */
++			if (valid_version)
++				return 0;
++			break;
++
++		case RENESAS_ROM_STATUS_INVALID: /* No result yet */
++			dev_dbg(&pdev->dev, "No result as it is ROM...");
++			/* we have valid version and status so success */
++			if (valid_version)
++				return 0;
++			break;
++
++		case RENESAS_ROM_STATUS_ERROR: /* Error State */
++		default: /* All other states are marked as "Reserved states" */
++			dev_err(&pdev->dev, "Invalid ROM..");
++			break;
++		}
++	}
++
++	return -EIO;
++}
++
++static int renesas_fw_check_running(struct pci_dev *pdev)
++{
++	int err;
++	u8 fw_state;
++
++	/* Check if device has ROM and loaded, if so skip everything */
++	err = renesas_check_rom_state(pdev);
++	if (!err)
++		return err;
++
++	/*
++	 * Test if the device is actually needing the firmware. As most
++	 * BIOSes will initialize the device for us. If the device is
++	 * initialized.
++	 */
++	err = pci_read_config_byte(pdev, RENESAS_FW_STATUS, &fw_state);
++	if (err)
++		return pcibios_err_to_errno(err);
++
++	/*
++	 * Check if "FW Download Lock" is locked. If it is and the FW is
++	 * ready we can simply continue. If the FW is not ready, we have
++	 * to give up.
++	 */
++	if (fw_state & RENESAS_FW_STATUS_LOCK) {
++		dev_dbg(&pdev->dev, "FW Download Lock is engaged.");
++
++		if (fw_state & RENESAS_FW_STATUS_SUCCESS)
++			return 0;
++
++		dev_err(&pdev->dev,
++			"FW Download Lock is set and FW is not ready. Giving Up.");
++		return -EIO;
++	}
++
++	/*
++	 * Check if "FW Download Enable" is set. If someone (us?) tampered
++	 * with it and it can't be resetted, we have to give up too... and
++	 * ask for a forgiveness and a reboot.
++	 */
++	if (fw_state & RENESAS_FW_STATUS_DOWNLOAD_ENABLE) {
++		dev_err(&pdev->dev,
++			"FW Download Enable is stale. Giving Up (poweroff/reboot needed).");
++		return -EIO;
++	}
++
++	/* Otherwise, Check the "Result Code" Bits (6:4) and act accordingly */
++	switch (fw_state & RENESAS_FW_STATUS_RESULT) {
++	case 0: /* No result yet */
++		dev_dbg(&pdev->dev, "FW is not ready/loaded yet.");
++
++		/* tell the caller, that this device needs the firmware. */
++		return 1;
++
++	case RENESAS_FW_STATUS_SUCCESS: /* Success, device should be working. */
++		dev_dbg(&pdev->dev, "FW is ready.");
++		return 0;
++
++	case RENESAS_FW_STATUS_ERROR: /* Error State */
++		dev_err(&pdev->dev,
++			"hardware is in an error state. Giving up (poweroff/reboot needed).");
++		return -ENODEV;
++
++	default: /* All other states are marked as "Reserved states" */
++		dev_err(&pdev->dev,
++			"hardware is in an invalid state %lx. Giving up (poweroff/reboot needed).",
++			(fw_state & RENESAS_FW_STATUS_RESULT) >> 4);
++		return -EINVAL;
++	}
++}
++
++static int renesas_fw_download(struct pci_dev *pdev,
++			       const struct firmware *fw)
++{
++	const u32 *fw_data = (const u32 *)fw->data;
++	size_t i;
++	int err;
++	u8 fw_status;
++
++	/*
++	 * For more information and the big picture: please look at the
++	 * "Firmware Download Sequence" in "7.1 FW Download Interface"
++	 * of R19UH0078EJ0500 Rev.5.00 page 131
++	 */
++
++	/*
++	 * 0. Set "FW Download Enable" bit in the
++	 * "FW Download Control & Status Register" at 0xF4
++	 */
++	err = pci_write_config_byte(pdev, RENESAS_FW_STATUS,
++				    RENESAS_FW_STATUS_DOWNLOAD_ENABLE);
++	if (err)
++		return pcibios_err_to_errno(err);
++
++	/* 1 - 10 follow one step after the other. */
++	for (i = 0; i < fw->size / 4; i++) {
++		err = renesas_fw_download_image(pdev, fw_data, i);
++		if (err) {
++			dev_err(&pdev->dev,
++				"Firmware Download Step %zd failed at position %zd bytes with (%d).",
++				i, i * 4, err);
++			return err;
++		}
++	}
++
++	/*
++	 * This sequence continues until the last data is written to
++	 * "DATA0" or "DATA1". Naturally, we wait until "SET DATA0/1"
++	 * is cleared by the hardware beforehand.
++	 */
++	for (i = 0; i < RENESAS_RETRY; i++) {
++		err = pci_read_config_byte(pdev, RENESAS_FW_STATUS_MSB,
++					   &fw_status);
++		if (err)
++			return pcibios_err_to_errno(err);
++		if (!(fw_status & (BIT(0) | BIT(1))))
++			break;
++
++		udelay(RENESAS_DELAY);
++	}
++	if (i == RENESAS_RETRY)
++		dev_warn(&pdev->dev, "Final Firmware Download step timed out.");
++
++	/*
++	 * 11. After finishing writing the last data of FW, the
++	 * System Software must clear "FW Download Enable"
++	 */
++	err = pci_write_config_byte(pdev, RENESAS_FW_STATUS, 0);
++	if (err)
++		return pcibios_err_to_errno(err);
++
++	/* 12. Read "Result Code" and confirm it is good. */
++	for (i = 0; i < RENESAS_RETRY; i++) {
++		err = pci_read_config_byte(pdev, RENESAS_FW_STATUS, &fw_status);
++		if (err)
++			return pcibios_err_to_errno(err);
++		if (fw_status & RENESAS_FW_STATUS_SUCCESS)
++			break;
++
++		udelay(RENESAS_DELAY);
++	}
++	if (i == RENESAS_RETRY) {
++		/* Timed out / Error - let's see if we can fix this */
++		err = renesas_fw_check_running(pdev);
++		switch (err) {
++		case 0: /*
++			 * we shouldn't end up here.
++			 * maybe it took a little bit longer.
++			 * But all should be well?
++			 */
++			break;
++
++		case 1: /* (No result yet! */
++			return -ETIMEDOUT;
++
++		default:
++			return err;
++		}
++	}
++	/*
++	 * Optional last step: Engage Firmware Lock
++	 *
++	 * err = pci_write_config_byte(pdev, 0xF4, BIT(2));
++	 * if (err)
++	 *	return pcibios_err_to_errno(err);
++	 */
++
++	return 0;
++}
++
++struct renesas_fw_ctx {
++	struct pci_dev *pdev;
++	const struct pci_device_id *id;
++	bool resume;
++	const struct renesas_fw_entry *entry;
++};
++
++static int xhci_pci_probe(struct pci_dev *pdev,
++			  const struct pci_device_id *id);
++
++static bool renesas_check_rom(struct pci_dev *pdev)
++{
++	u16 rom_status;
++	int retval;
++
++	/* 1. Check if external ROM exists */
++	retval = pci_read_config_word(pdev, RENESAS_ROM_STATUS, &rom_status);
++	if (retval)
++		return false;
++
++	rom_status &= RENESAS_ROM_STATUS_ROM_EXISTS;
++	if (rom_status) {
++		dev_dbg(&pdev->dev, "External ROM exists\n");
++		return true; /* External ROM exists */
++	}
++
++	return false;
++}
++
++static void renesas_rom_erase(struct pci_dev *pdev)
++{
++	int retval, i;
++	u8 status;
++
++	dev_dbg(&pdev->dev, "Performing ROM Erase...\n");
++	retval = pci_write_config_dword(pdev, RENESAS_DATA0,
++					RENESAS_ROM_ERASE_MAGIC);
++	if (retval) {
++		dev_err(&pdev->dev, "ROM erase, magic word write failed: %d\n",
++			pcibios_err_to_errno(retval));
++		return;
++	}
++
++	retval = pci_read_config_byte(pdev, RENESAS_ROM_STATUS, &status);
++	if (retval) {
++		dev_err(&pdev->dev, "ROM status read failed: %d\n",
++			pcibios_err_to_errno(retval));
++		return;
++	}
++	status |= RENESAS_ROM_STATUS_ERASE;
++	retval = pci_write_config_byte(pdev, RENESAS_ROM_STATUS, status);
++	if (retval) {
++		dev_err(&pdev->dev, "ROM erase set word write failed\n");
++		return;
++	}
++
++	/* sleep a bit while ROM is erased */
++	msleep(20);
++
++	for (i = 0; i < RENESAS_RETRY; i++) {
++		retval = pci_read_config_byte(pdev, RENESAS_ROM_STATUS,
++					      &status);
++		status &= RENESAS_ROM_STATUS_ERASE;
++		if (!status)
++			break;
++
++		mdelay(RENESAS_DELAY);
++	}
++
++	if (i == RENESAS_RETRY)
++		dev_dbg(&pdev->dev, "Chip erase timedout: %x\n", status);
++
++	dev_dbg(&pdev->dev, "ROM Erase... Done success\n");
++}
++
++static bool renesas_download_rom(struct pci_dev *pdev,
++				 const u32 *fw, size_t step)
++{
++	bool data0_or_data1;
++	u8 fw_status;
++	size_t i;
++	int err;
++
++	/*
++	 * The hardware does alternate between two 32-bit pages.
++	 * (This is because each row of the firmware is 8 bytes).
++	 *
++	 * for even steps we use DATA0, for odd steps DATA1.
++	 */
++	data0_or_data1 = (step & 1) == 1;
++
++	/* Read "Set DATAX" and confirm it is cleared. */
++	for (i = 0; i < RENESAS_RETRY; i++) {
++		err = pci_read_config_byte(pdev, RENESAS_ROM_STATUS_MSB,
++					   &fw_status);
++		if (err) {
++			dev_err(&pdev->dev, "Read ROM Status failed: %d\n",
++				pcibios_err_to_errno(err));
++			return false;
++		}
++		if (!(fw_status & BIT(data0_or_data1)))
++			break;
++
++		udelay(RENESAS_DELAY);
++	}
++	if (i == RENESAS_RETRY) {
++		dev_err(&pdev->dev, "Timeout for Set DATAX step: %zd\n", step);
++		return false;
++	}
++
++	/*
++	 * Write FW data to "DATAX".
++	 * "LSB is left" => force little endian
++	 */
++	err = pci_write_config_dword(pdev, data0_or_data1 ?
++				     RENESAS_DATA1 : RENESAS_DATA0,
++				     (__force u32)cpu_to_le32(fw[step]));
++	if (err) {
++		dev_err(&pdev->dev, "Write to DATAX failed: %d\n",
++			pcibios_err_to_errno(err));
++		return false;
++	}
++
++	udelay(100);
++
++	/* Set "Set DATAX". */
++	err = pci_write_config_byte(pdev, RENESAS_ROM_STATUS_MSB,
++				    BIT(data0_or_data1));
++	if (err) {
++		dev_err(&pdev->dev, "Write config for DATAX failed: %d\n",
++			pcibios_err_to_errno(err));
++		return false;
++	}
++
++	return true;
++}
++
++static bool renesas_setup_rom(struct pci_dev *pdev, const struct firmware *fw)
++{
++	const u32 *fw_data = (const u32 *)fw->data;
++	int err, i;
++	u8 status;
++
++	/* 2. Write magic word to Data0 */
++	err = pci_write_config_dword(pdev, RENESAS_DATA0,
++				     RENESAS_ROM_WRITE_MAGIC);
++	if (err)
++		return false;
++
++	/* 3. Set External ROM access */
++	err = pci_write_config_byte(pdev, RENESAS_ROM_STATUS,
++				    RENESAS_ROM_STATUS_ACCESS);
++	if (err)
++		goto remove_bypass;
++
++	/* 4. Check the result */
++	err = pci_read_config_byte(pdev, RENESAS_ROM_STATUS, &status);
++	if (err)
++		goto remove_bypass;
++	status &= GENMASK(6, 4);
++	if (status) {
++		dev_err(&pdev->dev,
++			"setting external rom failed: %x\n", status);
++		goto remove_bypass;
++	}
++
++	/* 5 to 16 Write FW to DATA0/1 while checking SetData0/1 */
++	for (i = 0; i < fw->size / 4; i++) {
++		err = renesas_download_rom(pdev, fw_data, i);
++		if (!err) {
++			dev_err(&pdev->dev,
++				"ROM Download Step %d failed at position %d bytes\n",
++				 i, i * 4);
++			goto remove_bypass;
++		}
++	}
++
++	/*
++	 * wait till DATA0/1 is cleared
++	 */
++	for (i = 0; i < RENESAS_RETRY; i++) {
++		err = pci_read_config_byte(pdev, RENESAS_ROM_STATUS_MSB,
++					   &status);
++		if (err)
++			goto remove_bypass;
++		if (!(status & (BIT(0) | BIT(1))))
++			break;
++
++		udelay(RENESAS_DELAY);
++	}
++	if (i == RENESAS_RETRY) {
++		dev_err(&pdev->dev, "Final Firmware ROM Download step timed out\n");
++		goto remove_bypass;
++	}
++
++	/* 17. Remove bypass */
++	err = pci_write_config_byte(pdev, RENESAS_ROM_STATUS, 0);
++	if (err)
++		return false;
++
++	udelay(10);
++
++	/* 18. check result */
++	for (i = 0; i < RENESAS_RETRY; i++) {
++		err = pci_read_config_byte(pdev, RENESAS_ROM_STATUS, &status);
++		if (err) {
++			dev_err(&pdev->dev, "Read ROM status failed:%d\n",
++				pcibios_err_to_errno(err));
++			return false;
++		}
++		status &= RENESAS_ROM_STATUS_RESULT;
++		if (status ==  RENESAS_ROM_STATUS_SUCCESS) {
++			dev_dbg(&pdev->dev, "Download ROM success\n");
++			break;
++		}
++		udelay(RENESAS_DELAY);
++	}
++	if (i == RENESAS_RETRY) { /* Timed out */
++		dev_err(&pdev->dev,
++			"Download to external ROM TO: %x\n", status);
++		return false;
++	}
++
++	dev_dbg(&pdev->dev, "Download to external ROM scuceeded\n");
++
++	/* Last step set Reload */
++	err = pci_write_config_byte(pdev, RENESAS_ROM_STATUS,
++				    RENESAS_ROM_STATUS_RELOAD);
++	if (err) {
++		dev_err(&pdev->dev, "Set ROM execute failed: %d\n",
++			pcibios_err_to_errno(err));
++		return false;
++	}
++
++	/*
++	 * wait till Reload is cleared
++	 */
++	for (i = 0; i < RENESAS_RETRY; i++) {
++		err = pci_read_config_byte(pdev, RENESAS_ROM_STATUS, &status);
++		if (err)
++			return false;
++		if (!(status & RENESAS_ROM_STATUS_RELOAD))
++			break;
++
++		udelay(RENESAS_DELAY);
++	}
++	if (i == RENESAS_RETRY) {
++		dev_err(&pdev->dev, "ROM Exec timed out: %x\n", status);
++		return false;
++	}
++
++	return true;
++
++remove_bypass:
++	pci_write_config_byte(pdev, RENESAS_ROM_STATUS, 0);
++	return false;
++}
++
++static void renesas_fw_callback(const struct firmware *fw,
++				void *context)
++{
++	struct renesas_fw_ctx *ctx = context;
++	struct pci_dev *pdev = ctx->pdev;
++	struct device *parent = pdev->dev.parent;
++	const struct renesas_fw_entry *next_entry;
++	bool rom;
++	int err;
++
++	if (!fw) {
++		dev_err(&pdev->dev, "firmware failed to load\n");
++		/*
++		 * we didn't find firmware, check if we have another
++		 * entry for this device
++		 */
++		next_entry = renesas_get_next_entry(ctx->pdev, ctx->entry);
++		if (next_entry) {
++			ctx->entry = next_entry;
++			dev_dbg(&pdev->dev, "Found next entry, requesting: %s\n",
++				next_entry->firmware_name);
++			request_firmware_nowait(THIS_MODULE, 1,
++						next_entry->firmware_name,
++						&pdev->dev, GFP_KERNEL,
++						ctx, renesas_fw_callback);
++			return;
++		} else {
++			goto cleanup;
++		}
++	}
++
++	err = renesas_fw_verify(pdev, fw->data, fw->size);
++	if (err)
++		goto cleanup;
++
++	/* Check if the device has external ROM */
++	rom = renesas_check_rom(pdev);
++	if (rom) {
++		/* perfrom chip erase first */
++		renesas_rom_erase(pdev);
++
++		/* lets try loading fw on ROM first */
++		rom = renesas_setup_rom(pdev, fw);
++		if (!rom) {
++			dev_err(&pdev->dev,
++				"ROM load failed, falling back on FW load\n");
++		} else {
++			dev_dbg(&pdev->dev, "ROM load done..\n");
++
++			release_firmware(fw);
++			goto do_probe;
++		}
++	}
++
++	err = renesas_fw_download(pdev, fw);
++	release_firmware(fw);
++	if (err) {
++		dev_err(&pdev->dev, "firmware failed to download (%d).", err);
++		goto cleanup;
++	}
++
++do_probe:
++	if (ctx->resume)
++		return;
++
++	err = xhci_pci_probe(pdev, ctx->id);
++	if (!err) {
++		/* everything worked */
++		devm_kfree(&pdev->dev, ctx);
++		return;
++	}
++
++cleanup:
++	/* in case of an error - fall through */
++	dev_info(&pdev->dev, "Unloading driver");
++
++	if (parent)
++		device_lock(parent);
++
++	device_release_driver(&pdev->dev);
++
++	if (parent)
++		device_unlock(parent);
++
++	pci_dev_put(pdev);
++}
++
++static int renesas_fw_alive_check(struct pci_dev *pdev)
++{
++	const struct renesas_fw_entry *entry;
++
++	/* check if we have a eligible RENESAS' uPD720201/2 w/o FW. */
++	entry = renesas_needs_fw_dl(pdev);
++	if (!entry)
++		return 0;
++
++	return renesas_fw_check_running(pdev);
++}
++
++static int renesas_fw_download_to_hw(struct pci_dev *pdev,
++				     const struct pci_device_id *id,
++				     bool do_resume)
++{
++	const struct renesas_fw_entry *entry;
++	struct renesas_fw_ctx *ctx;
++	int err;
++
++	/* check if we have a eligible RENESAS' uPD720201/2 w/o FW. */
++	entry = renesas_needs_fw_dl(pdev);
++	if (!entry)
++		return 0;
++
++	err = renesas_fw_check_running(pdev);
++	/* Continue ahead, if the firmware is already running. */
++	if (err == 0)
++		return 0;
++
++	if (err != 1)
++		return err;
++
++	ctx = devm_kzalloc(&pdev->dev, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	ctx->pdev = pdev;
++	ctx->resume = do_resume;
++	ctx->id = id;
++	ctx->entry = entry;
++
++	pci_dev_get(pdev);
++	err = request_firmware_nowait(THIS_MODULE, 1, entry->firmware_name,
++				      &pdev->dev, GFP_KERNEL,
++				      ctx, renesas_fw_callback);
++	if (err) {
++		pci_dev_put(pdev);
++		return err;
++	}
++
++	/*
++	 * The renesas_fw_callback() callback will continue the probe
++	 * process, once it aquires the firmware.
++	 */
++	return 1;
++}
++
++static int renesas_check_if_fw_dl_is_needed(struct pci_dev *pdev)
++{
++	int err;
++	u8 fw_state;
++
++	/*
++	 * Only the uPD720201K8-711-BAC-A or uPD720202K8-711-BAA-A
++	 * are listed in R19UH0078EJ0500 Rev.5.00 as devices which
++	 * need a firmware in order to work.
++	 *
++	 *  - uPD720202 ES 2.0 sample & CS sample & Mass product, ID is 2.
++	 *  - uPD720201 ES 2.0 sample whose revision ID is 2.
++	 *  - uPD720201 ES 2.1 sample & CS sample & Mass product, ID is 3.
++	 */
++	if (!((pdev->vendor == PCI_VENDOR_ID_RENESAS) &&
++	    ((pdev->device == 0x0015 && pdev->revision == 0x02) ||
++	    (pdev->device == 0x0014 &&
++	    (pdev->revision == 0x02 || pdev->revision == 0x03)))))
++		return 0;
++
++	/* Check if device has ROM and loaded, if so skip everything */
++	err = renesas_check_rom_state(pdev);
++	if (!err)
++		return err;
++
++	/*
++	 * Test if the firmware was uploaded and is running.
++	 * As most BIOSes will initialize the device for us.
++	 */
++	err = pci_read_config_byte(pdev, RENESAS_FW_STATUS, &fw_state);
++	if (err)
++		return pcibios_err_to_errno(err);
++
++	/* Check the "Result Code" Bits (6:4) and act accordingly */
++	switch (fw_state & RENESAS_FW_STATUS_RESULT) {
++	case 0: /* No result yet */
++		dev_err(&pdev->dev, "FW is not ready/loaded yet.");
++		return -ENODEV;
++
++	case RENESAS_FW_STATUS_SUCCESS:
++		dev_dbg(&pdev->dev, "FW is ready.");
++		return 0;
++
++	case RENESAS_FW_STATUS_ERROR:
++		dev_err(&pdev->dev, "HW is in an error state.");
++		return -ENODEV;
++
++	default: /* All other states are marked as "Reserved states" */
++		dev_err(&pdev->dev, "HW is in an invalid state (%x).",
++			(fw_state & 0x70) >> 4);
++		return -EINVAL;
++	}
++}
++
+ /* called during probe() after chip reset completes */
+ static int xhci_pci_setup(struct usb_hcd *hcd)
+ {
+@@ -339,6 +1246,27 @@ static int xhci_pci_probe(struct pci_dev
+ 	struct hc_driver *driver;
+ 	struct usb_hcd *hcd;
+ 
++	/*
++	 * Check if this device is a RENESAS uPD720201/2 device.
++	 * Otherwise, we can continue with xhci_pci_probe as usual.
++	 */
++	retval = renesas_fw_download_to_hw(dev, id, false);
++	switch (retval) {
++	case 0:
++		break;
++
++	case 1: /* let it load the firmware and recontinue the probe. */
++		return 0;
++
++	default:
++		return retval;
++	};
++
++	/* Check if this device is a RENESAS uPD720201/2 device. */
++	retval = renesas_check_if_fw_dl_is_needed(dev);
++	if (retval)
++		return retval;
++
+ 	driver = (struct hc_driver *)id->driver_data;
+ 
+ 	/* Prevent runtime suspending between USB-2 and USB-3 initialization */
+@@ -400,6 +1328,16 @@ static void xhci_pci_remove(struct pci_d
+ {
+ 	struct xhci_hcd *xhci;
+ 
++	if (renesas_fw_alive_check(dev)) {
++		/*
++		 * bail out early, if this was a renesas device w/o FW.
++		 * Else we might hit the NMI watchdog in xhci_handsake
++		 * during xhci_reset as part of the driver's unloading.
++		 * which we forced in the renesas_fw_callback().
++		 */
++		return;
++	}
++
+ 	xhci = hcd_to_xhci(pci_get_drvdata(dev));
+ 	xhci->xhc_state |= XHCI_STATE_REMOVING;
+ 
+@@ -539,6 +1477,11 @@ static int xhci_pci_resume(struct usb_hc
+ 	if (pdev->vendor == PCI_VENDOR_ID_INTEL)
+ 		usb_enable_intel_xhci_ports(pdev);
+ 
++	/* Check if this device is a RENESAS uPD720201/2 device. */
++	retval = renesas_check_if_fw_dl_is_needed(pdev);
++	if (retval)
++		return retval;
++
+ 	if (xhci->quirks & XHCI_SSIC_PORT_UNUSED)
+ 		xhci_ssic_port_unused_quirk(hcd, false);
+ 

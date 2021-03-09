@@ -1,0 +1,154 @@
+From a893019278e8030fbe251cdaa9d93b8257d1c083 Mon Sep 17 00:00:00 2001
+From: Ioana Radulescu <ruxandra.radulescu@nxp.com>
+Date: Thu, 5 Sep 2019 19:31:32 +0300
+Subject: [PATCH] dpaa2-eth: Add DCB ops
+
+Add a skeleton implementation of DCB PFC ops. Actual hardware
+configuration to be added in further commits.
+
+Signed-off-by: Ioana Radulescu <ruxandra.radulescu@nxp.com>
+---
+ drivers/net/ethernet/freescale/dpaa2/Kconfig     |  9 +++
+ drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.c | 84 ++++++++++++++++++++++++
+ drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.h |  5 ++
+ 3 files changed, 98 insertions(+)
+
+--- a/drivers/net/ethernet/freescale/dpaa2/Kconfig
++++ b/drivers/net/ethernet/freescale/dpaa2/Kconfig
+@@ -8,6 +8,15 @@ config FSL_DPAA2_ETH
+ 	  The driver manages network objects discovered on the Freescale
+ 	  MC bus.
+ 
++if FSL_DPAA2_ETH
++config FSL_DPAA2_ETH_DCB
++	bool "Data Center Bridging (DCB) Support"
++	default n
++	depends on DCB
++	help
++	  Enable Priority-Based Flow Control (PFC) support in the driver
++endif
++
+ config FSL_DPAA2_PTP_CLOCK
+ 	tristate "Freescale DPAA2 PTP Clock"
+ 	depends on FSL_DPAA2_ETH && PTP_1588_CLOCK_QORIQ
+--- a/drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.c
++++ b/drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.c
+@@ -3614,6 +3614,81 @@ static void del_ch_napi(struct dpaa2_eth
+ 	}
+ }
+ 
++#ifdef CONFIG_FSL_DPAA2_ETH_DCB
++static int dpaa2_eth_dcbnl_ieee_getpfc(struct net_device *net_dev,
++				       struct ieee_pfc *pfc)
++{
++	struct dpaa2_eth_priv *priv = netdev_priv(net_dev);
++
++	memcpy(pfc, &priv->pfc, sizeof(priv->pfc));
++	pfc->pfc_cap = dpaa2_eth_tc_count(priv);
++
++	return 0;
++}
++
++static int dpaa2_eth_dcbnl_ieee_setpfc(struct net_device *net_dev,
++				       struct ieee_pfc *pfc)
++{
++	struct dpaa2_eth_priv *priv = netdev_priv(net_dev);
++
++	if (pfc->mbc || pfc->delay)
++		return -EOPNOTSUPP;
++
++	/* If same PFC enabled mask, nothing to do */
++	if (priv->pfc.pfc_en == pfc->pfc_en)
++		return 0;
++
++	memcpy(&priv->pfc, pfc, sizeof(priv->pfc));
++
++	return 0;
++}
++
++static u8 dpaa2_eth_dcbnl_getdcbx(struct net_device *net_dev)
++{
++	struct dpaa2_eth_priv *priv = netdev_priv(net_dev);
++
++	return priv->dcbx_mode;
++}
++
++static u8 dpaa2_eth_dcbnl_setdcbx(struct net_device *net_dev, u8 mode)
++{
++	struct dpaa2_eth_priv *priv = netdev_priv(net_dev);
++
++	priv->dcbx_mode = mode;
++	return 0;
++}
++
++static u8 dpaa2_eth_dcbnl_getcap(struct net_device *net_dev, int capid, u8 *cap)
++{
++	struct dpaa2_eth_priv *priv = netdev_priv(net_dev);
++
++	switch (capid) {
++	case DCB_CAP_ATTR_PFC:
++		*cap = true;
++		break;
++	case DCB_CAP_ATTR_PFC_TCS:
++		*cap = 1 << (dpaa2_eth_tc_count(priv) - 1);
++		break;
++	case DCB_CAP_ATTR_DCBX:
++		*cap = priv->dcbx_mode;
++		break;
++	default:
++		*cap = false;
++		break;
++	}
++
++	return 0;
++}
++
++const struct dcbnl_rtnl_ops dpaa2_eth_dcbnl_ops = {
++	.ieee_getpfc	= dpaa2_eth_dcbnl_ieee_getpfc,
++	.ieee_setpfc	= dpaa2_eth_dcbnl_ieee_setpfc,
++	.getdcbx	= dpaa2_eth_dcbnl_getdcbx,
++	.setdcbx	= dpaa2_eth_dcbnl_setdcbx,
++	.getcap		= dpaa2_eth_dcbnl_getcap,
++};
++#endif
++
+ static int dpaa2_eth_probe(struct fsl_mc_device *dpni_dev)
+ {
+ 	struct device *dev;
+@@ -3703,6 +3778,15 @@ static int dpaa2_eth_probe(struct fsl_mc
+ 	if (err)
+ 		goto err_alloc_rings;
+ 
++#ifdef CONFIG_FSL_DPAA2_ETH_DCB
++	if (dpaa2_eth_has_pause_support(priv) && priv->vlan_cls_enabled) {
++		priv->dcbx_mode = DCB_CAP_DCBX_HOST | DCB_CAP_DCBX_VER_IEEE;
++		net_dev->dcbnl_ops = &dpaa2_eth_dcbnl_ops;
++	} else {
++		dev_dbg(dev, "PFC not supported\n");
++	}
++#endif
++
+ 	err = setup_irqs(dpni_dev);
+ 	if (err) {
+ 		netdev_warn(net_dev, "Failed to set link interrupt, fall back to polling\n");
+--- a/drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.h
++++ b/drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.h
+@@ -6,6 +6,7 @@
+ #ifndef __DPAA2_ETH_H
+ #define __DPAA2_ETH_H
+ 
++#include <linux/dcbnl.h>
+ #include <linux/netdevice.h>
+ #include <linux/if_vlan.h>
+ #include <linux/fsl/mc.h>
+@@ -423,6 +424,10 @@ struct dpaa2_eth_priv {
+ 	struct dpaa2_eth_cls_rule *cls_rules;
+ 	u8 rx_cls_enabled;
+ 	u8 vlan_cls_enabled;
++#ifdef CONFIG_FSL_DPAA2_ETH_DCB
++	u8 dcbx_mode;
++	struct ieee_pfc pfc;
++#endif
+ 	struct bpf_prog *xdp_prog;
+ #ifdef CONFIG_DEBUG_FS
+ 	struct dpaa2_debugfs dbg;

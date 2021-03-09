@@ -1,0 +1,100 @@
+From c546d49656143855093c7b7fde60866e6e23a69d Mon Sep 17 00:00:00 2001
+From: Tomasz Duszynski <tduszyns@gmail.com>
+Date: Tue, 18 Dec 2018 21:28:09 +0100
+Subject: [PATCH] iio: chemical: sps30: add support for self cleaning
+
+Self cleaning is especially useful in cases where sensor undergoes
+frequent power on/off cycles. In such scenarios it is recommended to
+turn self cleaning at least once per week in order to maintain reliable
+measurements.
+
+Self cleaning is activated by writing 1 to a dedicated attribute.
+Internal fan accelerates to its maximum speed and keeps spinning
+for about 10 seconds blowing out accumulated dust.
+
+Signed-off-by: Tomasz Duszynski <tduszyns@gmail.com>
+Tested-by: Andreas Brauchli <andreas.brauchli@sensirion.com>
+Signed-off-by: Jonathan Cameron <Jonathan.Cameron@huawei.com>
+---
+ Documentation/ABI/testing/sysfs-bus-iio-sps30 |  8 +++++
+ drivers/iio/chemical/sps30.c                  | 35 ++++++++++++++++++-
+ 2 files changed, 42 insertions(+), 1 deletion(-)
+ create mode 100644 Documentation/ABI/testing/sysfs-bus-iio-sps30
+
+--- /dev/null
++++ b/Documentation/ABI/testing/sysfs-bus-iio-sps30
+@@ -0,0 +1,8 @@
++What:		/sys/bus/iio/devices/iio:deviceX/start_cleaning
++Date:		December 2018
++KernelVersion:	4.22
++Contact:	linux-iio@vger.kernel.org
++Description:
++		Writing 1 starts sensor self cleaning. Internal fan accelerates
++		to its maximum speed and keeps spinning for about 10 seconds in
++		order to blow out accumulated dust.
+--- a/drivers/iio/chemical/sps30.c
++++ b/drivers/iio/chemical/sps30.c
+@@ -7,7 +7,6 @@
+  * I2C slave address: 0x69
+  *
+  * TODO:
+- *  - support for turning on fan cleaning
+  *  - support for reading/setting auto cleaning interval
+  */
+ 
+@@ -37,6 +36,7 @@
+ #define SPS30_READ_DATA_READY_FLAG 0x0202
+ #define SPS30_READ_DATA 0x0300
+ #define SPS30_READ_SERIAL 0xd033
++#define SPS30_START_FAN_CLEANING 0x5607
+ 
+ enum {
+ 	PM1,
+@@ -104,6 +104,7 @@ static int sps30_do_cmd(struct sps30_sta
+ 		break;
+ 	case SPS30_STOP_MEAS:
+ 	case SPS30_RESET:
++	case SPS30_START_FAN_CLEANING:
+ 		ret = sps30_write_then_read(state, buf, 2, NULL, 0);
+ 		break;
+ 	case SPS30_READ_DATA_READY_FLAG:
+@@ -275,7 +276,39 @@ static int sps30_read_raw(struct iio_dev
+ 	return -EINVAL;
+ }
+ 
++static ssize_t start_cleaning_store(struct device *dev,
++				    struct device_attribute *attr,
++				    const char *buf, size_t len)
++{
++	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
++	struct sps30_state *state = iio_priv(indio_dev);
++	int val, ret;
++
++	if (kstrtoint(buf, 0, &val) || val != 1)
++		return -EINVAL;
++
++	mutex_lock(&state->lock);
++	ret = sps30_do_cmd(state, SPS30_START_FAN_CLEANING, NULL, 0);
++	mutex_unlock(&state->lock);
++	if (ret)
++		return ret;
++
++	return len;
++}
++
++static IIO_DEVICE_ATTR_WO(start_cleaning, 0);
++
++static struct attribute *sps30_attrs[] = {
++	&iio_dev_attr_start_cleaning.dev_attr.attr,
++	NULL
++};
++
++static const struct attribute_group sps30_attr_group = {
++	.attrs = sps30_attrs,
++};
++
+ static const struct iio_info sps30_info = {
++	.attrs = &sps30_attr_group,
+ 	.read_raw = sps30_read_raw,
+ };
+ 

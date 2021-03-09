@@ -19,6 +19,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <inttypes.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
@@ -31,6 +32,7 @@
 #include <limits.h>
 #include <stdbool.h>
 #include "fw.h"
+#include "utils.h"
 
 typedef struct fw_layout_data {
 	u_int32_t	kern_start;
@@ -110,6 +112,15 @@ struct fw_info fw_info[] = {
 		.sign = false,
 	},
 	{
+		.name = "SW",
+		.fw_layout = {
+			.kern_start	=	0x9f050000,
+			.kern_entry	=	0x80002000,
+			.firmware_max_length=	0x00760000,
+		},
+		.sign = false,
+	},
+	{
 		.name = "UBDEV01",
 		.fw_layout = {
 			.kern_start	=	0x9f050000,
@@ -120,6 +131,24 @@ struct fw_info fw_info[] = {
 	},
 	{
 		.name = "WA",
+		.fw_layout = {
+			.kern_start	=	0x9f050000,
+			.kern_entry	=	0x80002000,
+			.firmware_max_length=	0x00F60000,
+		},
+		.sign = true,
+	},
+	{
+		.name = "XC",
+		.fw_layout = {
+			.kern_start	=	0x9f050000,
+			.kern_entry	=	0x80002000,
+			.firmware_max_length=	0x00F60000,
+		},
+		.sign = true,
+	},
+	{
+		.name = "ACB-ISP",
 		.fw_layout = {
 			.kern_start	=	0x9f050000,
 			.kern_entry	=	0x80002000,
@@ -176,13 +205,12 @@ static void write_header(void* mem, const char *magic, const char* version)
 	header_t* header = mem;
 	memset(header, 0, sizeof(header_t));
 
-	memcpy(header->magic, magic, MAGIC_LENGTH);
-	strncpy(header->version, version, sizeof(header->version));
-	header->crc = htonl(crc32(0L, (unsigned char *)header,
-				sizeof(header_t) - 2 * sizeof(u_int32_t)));
+	FW_MEMCPY_STR(header->magic, magic);
+	FW_MEMCPY_STR(header->version, version);
+	header->crc = htonl(crc32(0L, (uint8_t*) header,
+			    sizeof(header_t) - 2 * sizeof(u_int32_t)));
 	header->pad = 0L;
 }
-
 
 static void write_signature(void* mem, u_int32_t sig_offset)
 {
@@ -190,7 +218,7 @@ static void write_signature(void* mem, u_int32_t sig_offset)
 	signature_t* sign = (signature_t*)(mem + sig_offset);
 	memset(sign, 0, sizeof(signature_t));
 
-	memcpy(sign->magic, MAGIC_END, MAGIC_LENGTH);
+	FW_MEMCPY_STR(sign->magic, MAGIC_END);
 	sign->crc = htonl(crc32(0L,(unsigned char *)mem, sig_offset));
 	sign->pad = 0L;
 }
@@ -201,7 +229,7 @@ static void write_signature_rsa(void* mem, u_int32_t sig_offset)
 	signature_rsa_t* sign = (signature_rsa_t*)(mem + sig_offset);
 	memset(sign, 0, sizeof(signature_rsa_t));
 
-	memcpy(sign->magic, MAGIC_ENDS, MAGIC_LENGTH);
+	FW_MEMCPY_STR(sign->magic, MAGIC_ENDS);
 //	sign->crc = htonl(crc32(0L,(unsigned char *)mem, sig_offset));
 	sign->pad = 0L;
 }
@@ -230,9 +258,10 @@ static int write_part(void* mem, part_data_t* d)
 	memcpy(mem + sizeof(part_t), addr, d->stats.st_size);
 	munmap(addr, d->stats.st_size);
 
-	memset(p->name, 0, sizeof(p->name));
-	strncpy(p->magic, MAGIC_PART, MAGIC_LENGTH);
-	strncpy(p->name, d->partition_name, sizeof(p->name));
+	memset(p->name, 0, PART_NAME_LENGTH);
+	FW_MEMCPY_STR(p->magic, MAGIC_PART);
+	FW_MEMCPY_STR(p->name, d->partition_name);
+
 	p->index = htonl(d->partition_index);
 	p->data_size = htonl(d->stats.st_size);
 	p->part_size = htonl(d->partition_length);
@@ -262,7 +291,8 @@ static void usage(const char* progname)
 
 static void print_image_info(const image_info_t* im)
 {
-	int i = 0;
+	unsigned int i = 0;
+
 	INFO("Firmware version: '%s'\n"
 	     "Output file: '%s'\n"
 	     "Part count: %u\n",
@@ -272,14 +302,12 @@ static void print_image_info(const image_info_t* im)
 	for (i = 0; i < im->part_count; ++i)
 	{
 		const part_data_t* d = &im->parts[i];
-		INFO(" %10s: %8ld bytes (free: %8ld)\n",
+		INFO(" %10s: %8" PRId64 " bytes (free: %8" PRId64 ")\n",
 		     d->partition_name,
 		     d->stats.st_size,
 		     d->partition_length - d->stats.st_size);
 	}
 }
-
-
 
 static u_int32_t filelength(const char* file)
 {
@@ -296,8 +324,9 @@ static u_int32_t filelength(const char* file)
 	return (ret);
 }
 
-static int create_image_layout(const char* kernelfile, const char* rootfsfile, char* board_name, image_info_t* im)
+static int create_image_layout(const char* kernelfile, const char* rootfsfile, image_info_t* im)
 {
+	uint32_t rootfs_len = 0;
 	part_data_t* kernel = &im->parts[0];
 	part_data_t* rootfs = &im->parts[1];
 
@@ -312,8 +341,13 @@ static int create_image_layout(const char* kernelfile, const char* rootfsfile, c
 	kernel->partition_entryaddr = p->kern_entry;
 	strncpy(kernel->filename, kernelfile, sizeof(kernel->filename));
 
-	if (filelength(rootfsfile) + kernel->partition_length > p->firmware_max_length)
+	rootfs_len = filelength(rootfsfile);
+	if (rootfs_len + kernel->partition_length > p->firmware_max_length) {
+		ERROR("File '%s' too big (0x%08X) - max size: 0x%08X (exceeds %u bytes)\n",
+		       rootfsfile, rootfs_len, p->firmware_max_length,
+		       (rootfs_len + kernel->partition_length) - p->firmware_max_length);
 		return (-2);
+	}
 
 	strcpy(rootfs->partition_name, "rootfs");
 	rootfs->partition_index = 2;
@@ -336,7 +370,7 @@ static int create_image_layout(const char* kernelfile, const char* rootfsfile, c
  */
 static int validate_image_layout(image_info_t* im)
 {
-	int i;
+	unsigned int i;
 
 	if (im->part_count == 0 || im->part_count > MAX_SECTIONS)
 	{
@@ -367,7 +401,7 @@ static int validate_image_layout(image_info_t* im)
 			return -3;
 		}
 		if (d->stats.st_size > d->partition_length) {
-			ERROR("File '%s' too big (%d) - max size: 0x%08X (exceeds %lu bytes)\n",
+			ERROR("File '%s' too big (%d) - max size: 0x%08X (exceeds %" PRId64 " bytes)\n",
 				       	d->filename, i, d->partition_length,
 					d->stats.st_size - d->partition_length);
 			return -4;
@@ -383,7 +417,7 @@ static int build_image(image_info_t* im)
 	char* ptr;
 	u_int32_t mem_size;
 	FILE* f;
-	int i;
+	unsigned int i;
 
 	// build in-memory buffer
 	mem_size = sizeof(header_t);
@@ -430,6 +464,7 @@ static int build_image(image_info_t* im)
 	if ((f = fopen(im->outputfile, "w")) == NULL)
 	{
 		ERROR("Can not create output file: '%s'\n", im->outputfile);
+		free(mem);
 		return -10;
 	}
 
@@ -437,6 +472,8 @@ static int build_image(image_info_t* im)
 	{
 		ERROR("Could not write %d bytes into file: '%s'\n",
 				mem_size, im->outputfile);
+		free(mem);
+		fclose(f);
 		return -11;
 	}
 
@@ -469,30 +506,30 @@ int main(int argc, char* argv[])
 		switch (o) {
 		case 'v':
 			if (optarg)
-				strncpy(im.version, optarg, sizeof(im.version));
+				strncpy(im.version, optarg, sizeof(im.version) - 1);
 			break;
 		case 'o':
 			if (optarg)
-				strncpy(im.outputfile, optarg, sizeof(im.outputfile));
+				strncpy(im.outputfile, optarg, sizeof(im.outputfile) - 1);
 			break;
 		case 'm':
 			if (optarg)
-				strncpy(im.magic, optarg, sizeof(im.magic));
+				strncpy(im.magic, optarg, sizeof(im.magic) - 1);
 			break;
 		case 'h':
 			usage(argv[0]);
 			return -1;
 		case 'k':
 			if (optarg)
-				strncpy(kernelfile, optarg, sizeof(kernelfile));
+				strncpy(kernelfile, optarg, sizeof(kernelfile) - 1);
 			break;
 		case 'r':
 			if (optarg)
-				strncpy(rootfsfile, optarg, sizeof(rootfsfile));
+				strncpy(rootfsfile, optarg, sizeof(rootfsfile) - 1);
 			break;
 		case 'B':
 			if (optarg)
-				strncpy(board_name, optarg, sizeof(board_name));
+				strncpy(board_name, optarg, sizeof(board_name) - 1);
 			break;
 		}
 	}
@@ -521,7 +558,7 @@ int main(int argc, char* argv[])
 
 	im.fwinfo = fwinfo;
 
-	if ((rc = create_image_layout(kernelfile, rootfsfile, board_name, &im)) != 0)
+	if ((rc = create_image_layout(kernelfile, rootfsfile, &im)) != 0)
 	{
 		ERROR("Failed creating firmware layout description - error code: %d\n", rc);
 		return -3;

@@ -1,0 +1,111 @@
+From 650cd61348897bbf19addafe37b8559aa4e75710 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Thu, 10 Jan 2019 17:58:06 +0000
+Subject: [PATCH] firmware: raspberrypi: Report the fw variant during
+ probe
+
+The driver already reported the firmware build date during probe.
+The mailbox calls have been extended to also report the variant
+ 1 = standard start.elf
+ 2 = start_x.elf (includes camera stack)
+ 3 = start_db.elf (includes assert logging)
+ 4 = start_cd.elf (cutdown version for smallest memory footprint).
+Log the variant during probe.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+
+firmware: raspberrypi: Report the fw git hash during probe
+
+The firmware can now report the git hash from which it was built
+via the mailbox, so report it during probe.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/firmware/raspberrypi.c             | 49 ++++++++++++++++++----
+ include/soc/bcm2835/raspberrypi-firmware.h |  2 +
+ 2 files changed, 44 insertions(+), 7 deletions(-)
+
+--- a/drivers/firmware/raspberrypi.c
++++ b/drivers/firmware/raspberrypi.c
+@@ -229,21 +229,55 @@ static const struct attribute_group rpi_
+ static void
+ rpi_firmware_print_firmware_revision(struct rpi_firmware *fw)
+ {
++	static const char * const variant_strs[] = {
++		"unknown",
++		"start",
++		"start_x",
++		"start_db",
++		"start_cd",
++	};
++	const char *variant_str = "cmd unsupported";
+ 	u32 packet;
++	u32 variant;
++	struct tm tm;
+ 	int ret = rpi_firmware_property(fw,
+ 					RPI_FIRMWARE_GET_FIRMWARE_REVISION,
+ 					&packet, sizeof(packet));
+ 
+-	if (ret == 0) {
+-		struct tm tm;
++	if (ret)
++		return;
+ 
+-		time64_to_tm(packet, 0, &tm);
++	ret = rpi_firmware_property(fw, RPI_FIRMWARE_GET_FIRMWARE_VARIANT,
++				    &variant, sizeof(variant));
+ 
+-		dev_info(fw->cl.dev,
+-			 "Attached to firmware from %04ld-%02d-%02d %02d:%02d\n",
+-			 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+-			 tm.tm_hour, tm.tm_min);
++	if (!ret) {
++		if (variant >= ARRAY_SIZE(variant_strs))
++			variant = 0;
++		variant_str = variant_strs[variant];
+ 	}
++
++	time64_to_tm(packet, 0, &tm);
++
++	dev_info(fw->cl.dev,
++		 "Attached to firmware from %04ld-%02d-%02d %02d:%02d, variant %s\n",
++		 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
++		 tm.tm_min, variant_str);
++}
++
++static void
++rpi_firmware_print_firmware_hash(struct rpi_firmware *fw)
++{
++	u32 hash[5];
++	int ret = rpi_firmware_property(fw,
++					RPI_FIRMWARE_GET_FIRMWARE_HASH,
++					hash, sizeof(hash));
++
++	if (ret)
++		return;
++
++	dev_info(fw->cl.dev,
++		 "Firmware hash is %08x%08x%08x%08x%08x\n",
++		 hash[0], hash[1], hash[2], hash[3], hash[4]);
+ }
+ 
+ static void
+@@ -298,6 +332,7 @@ static int rpi_firmware_probe(struct pla
+ 	g_pdev = pdev;
+ 
+ 	rpi_firmware_print_firmware_revision(fw);
++	rpi_firmware_print_firmware_hash(fw);
+ 	rpi_register_hwmon_driver(dev, fw);
+ 	rpi_register_clk_driver(dev);
+ 
+--- a/include/soc/bcm2835/raspberrypi-firmware.h
++++ b/include/soc/bcm2835/raspberrypi-firmware.h
+@@ -38,6 +38,8 @@ struct rpi_firmware_property_tag_header
+ enum rpi_firmware_property_tag {
+ 	RPI_FIRMWARE_PROPERTY_END =                           0,
+ 	RPI_FIRMWARE_GET_FIRMWARE_REVISION =                  0x00000001,
++	RPI_FIRMWARE_GET_FIRMWARE_VARIANT =                   0x00000002,
++	RPI_FIRMWARE_GET_FIRMWARE_HASH =                      0x00000003,
+ 
+ 	RPI_FIRMWARE_SET_CURSOR_INFO =                        0x00008010,
+ 	RPI_FIRMWARE_SET_CURSOR_STATE =                       0x00008011,

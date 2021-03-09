@@ -49,7 +49,7 @@ platform_do_upgrade_sdcard() {
 
 	sync
 
-	if [ "$SAVE_PARTITIONS" = "1" ]; then
+	if [ "$UPGRADE_OPT_SAVE_PARTITIONS" = "1" ]; then
 		get_partitions "/dev/$diskdev" bootdisk
 
 		#extract the boot sector from the image
@@ -70,25 +70,23 @@ platform_do_upgrade_sdcard() {
 		# will be missing if it overlaps with the old partition 2
 		partx -d - "/dev/$diskdev"
 		partx -a - "/dev/$diskdev"
+	else
+		#write uboot image
+		get_image "$@" | dd of="$diskdev" bs=512 skip=1 seek=1 count=2048 conv=fsync
+		#iterate over each partition from the image and write it to the boot disk
+		while read part start size; do
+			if export_partdevice partdev $part; then
+				echo "Writing image to /dev/$partdev..."
+				get_image "$@" | dd of="/dev/$partdev" ibs="512" obs=1M skip="$start" count="$size" conv=fsync
+			else
+				echo "Unable to find partition $part device, skipped."
+			fi
+		done < /tmp/partmap.image
 
-		return 0
+		#copy partition uuid
+		echo "Writing new UUID to /dev/$diskdev..."
+		get_image "$@" | dd of="/dev/$diskdev" bs=1 skip=440 count=4 seek=440 conv=fsync
 	fi
-
-	#write uboot image
-	get_image "$@" | dd of="$diskdev" bs=512 skip=1 seek=1 count=2048 conv=fsync
-	#iterate over each partition from the image and write it to the boot disk
-	while read part start size; do
-		if export_partdevice partdev $part; then
-			echo "Writing image to /dev/$partdev..."
-			get_image "$@" | dd of="/dev/$partdev" ibs="512" obs=1M skip="$start" count="$size" conv=fsync
-		else
-			echo "Unable to find partition $part device, skipped."
-		fi
-	done < /tmp/partmap.image
-
-	#copy partition uuid
-	echo "Writing new UUID to /dev/$diskdev..."
-	get_image "$@" | dd of="/dev/$diskdev" bs=1 skip=440 count=4 seek=440 conv=fsync
 
 	case "$board" in
 	cznic,turris-omnia)
@@ -108,7 +106,7 @@ platform_copy_config_sdcard() {
 	if export_partdevice partdev 1; then
 		mkdir -p /boot
 		[ -f /boot/kernel.img ] || mount -o rw,noatime /dev/$partdev /boot
-		cp -af "$CONF_TAR" /boot/
+		cp -af "$UPGRADE_BACKUP" "/boot/$BACKUP_FILE"
 		sync
 		umount /boot
 	fi
