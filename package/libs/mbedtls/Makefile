@@ -122,7 +122,7 @@ PKG_INSTALL:=1
 
 TARGET_CFLAGS += -ffunction-sections -fdata-sections
 TARGET_CFLAGS := $(filter-out -O%,$(TARGET_CFLAGS))
-ifneq ($(CONFIG_LIBMBEDTILS_HAVE_ARMV8CE_AES),)
+ifneq ($(CONFIG_LIBMBEDTLS_HAVE_ARMV8CE_AES),)
   TARGET_CFLAGS := $(filter-out -march=%,$(TARGET_CFLAGS)) -march=armv8-a+crypto
 endif
 
