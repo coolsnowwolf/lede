@@ -240,7 +240,7 @@
     $(".cbi-section-table-titles, .cbi-section-table-descr, .cbi-section-descr").each(function () {
         var that = $(this);
         if (that.text().trim() == "") {
-            that.css("display", "none");
+            that.css("padding", "0px");
         }
     });
 
