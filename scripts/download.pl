@@ -229,7 +229,6 @@ foreach my $mirror (@ARGV) {
 		push @mirrors, "http://ftp.acc.umu.se/mirror/gnu.org/savannah/$1";
 		push @mirrors, "http://nongnu.uib.no/$1";
 		push @mirrors, "http://ftp.igh.cnrs.fr/pub/nongnu/$1";
-		push @mirrors, "http://public.p-knowledge.co.jp/Savannah-nongnu-mirror/$1";
 		push @mirrors, "ftp://cdimage.debian.org/mirror/gnu.org/savannah/$1";
 		push @mirrors, "ftp://ftp.acc.umu.se/mirror/gnu.org/savannah/$1";
 	} elsif ($mirror =~ /^\@KERNEL\/(.+)$/) {
@@ -242,7 +241,6 @@ foreach my $mirror (@ARGV) {
 		foreach my $dir (@extra) {
 			push @mirrors, "https://mirrors.ustc.edu.cn/kernel.org/$dir";
 			push @mirrors, "https://cdn.kernel.org/pub/$dir";
-			push @mirrors, "https://mirror.rackspace.com/kernel.org/pub/$dir";
 			push @mirrors, "https://download.xs4all.nl/ftp.kernel.org/pub/$dir";
 			push @mirrors, "https://mirrors.mit.edu/kernel/$dir";
 			push @mirrors, "http://ftp.nara.wide.ad.jp/pub/kernel.org/$dir";
@@ -251,6 +249,7 @@ foreach my $mirror (@ARGV) {
 			push @mirrors, "ftp://www.mirrorservice.org/sites/ftp.kernel.org/pub/$dir";
 		}
 	} elsif ($mirror =~ /^\@GNOME\/(.+)$/) {
+		push @mirrors, "https://download.gnome.org/sources/$1";
 		push @mirrors, "https://mirrors.ustc.edu.cn/gnome/sources/$1";
 		push @mirrors, "https://mirror.csclub.uwaterloo.ca/gnome/sources/$1";
 		push @mirrors, "http://ftp.acc.umu.se/pub/GNOME/sources/$1";
@@ -265,7 +264,7 @@ foreach my $mirror (@ARGV) {
 	}
 }
 
-#push @mirrors, 'https://mirror1.openwrt.org';
+push @mirrors, 'https://sources.cdn.openwrt.org';
 push @mirrors, 'https://sources.openwrt.org';
 push @mirrors, 'https://mirror2.openwrt.org/sources';
 
