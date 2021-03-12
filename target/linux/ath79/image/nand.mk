@@ -2,6 +2,17 @@ include ./common-netgear.mk	# for netgear-uImage
 
 DEVICE_VARS += RAS_ROOTFS_SIZE RAS_BOARD RAS_VERSION
 
+define Build/append-okli-kernel
+	dd if="$(KDIR)/loader-$(word 1,$(1)).uImage" >> "$@"
+endef
+
+define Build/prepad-okli-kernel
+  -[ -f "$@" ] && \
+  dd if="$(KDIR)/loader-$(word 1,$(1)).uImage" of="$@".tmp bs=64k conv=sync && \
+  cat "$@" >>"$@".tmp && \
+  mv "$@".tmp "$@"
+endef
+
 # attention: only zlib compression is allowed for the boot fs
 define Build/zyxel-buildkerneljffs
 	rm -rf  $(KDIR_TMP)/zyxelnbg6716
@@ -69,15 +80,19 @@ define Device/domywifi_dw33d
   DEVICE_MODEL := DW33D
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-storage kmod-usb-ledtrig-usbport \
 	kmod-ath10k-ct ath10k-firmware-qca988x-ct
-  KERNEL_SIZE := 5120k
-  IMAGE_SIZE := 98304k
-  BLOCKSIZE := 128k
-  PAGESIZE := 2048
-  UBINIZE_OPTS := -E 5
+  IMAGE_SIZE := 14464k
+  BLOCKSIZE := 64k
+  LOADER_TYPE := bin
+  LOADER_FLASH_OFFS := 0x60000
+  COMPILE := loader-$(1).bin loader-$(1).uImage
+  COMPILE/loader-$(1).bin := loader-okli-compile
+  COMPILE/loader-$(1).uImage := append-loader-okli $(1) | pad-to 64k | lzma | uImage lzma
+  KERNEL := kernel-bin | append-dtb | lzma | uImage lzma -M 0x4f4b4c49
   IMAGES += factory.bin
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | \
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | append-metadata | \
 	check-size
+  IMAGE/factory.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | \
+	prepad-okli-kernel $(1) | pad-to 14528k | append-okli-kernel $(1)
 endef
 TARGET_DEVICES += domywifi_dw33d
 
