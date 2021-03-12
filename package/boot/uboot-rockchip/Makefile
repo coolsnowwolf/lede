@@ -5,10 +5,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2020.07
-PKG_RELEASE:=3
+PKG_VERSION:=2021.01
+PKG_RELEASE:=1
 
-PKG_HASH:=c1f5bf9ee6bb6e648edbf19ce2ca9452f614b08a9f886f1a566aa42e8cf05f6a
+PKG_HASH:=b407e1510a74e863b8b5cb42a24625344f0e0c2fc7582d8c866bd899367d0454
 
 PKG_MAINTAINER:=Tobias Maedel <openwrt@tbspace.de>
 
@@ -38,22 +38,12 @@ endef
 
 # RK3399 boards
 
-define U-Boot/nanopi-r4s-1gb-rk3399
+define U-Boot/nanopi-r4s-rk3399
   BUILD_SUBTARGET:=armv8
-  NAME:=NanoPi R4S 1GB
+  NAME:=NanoPi R4S
   BUILD_DEVICES:= \
-    friendlyarm_nanopi-r4s-1gb
-  DEPENDS:=+PACKAGE_u-boot-nanopi-r4s-1gb-rk3399:arm-trusted-firmware-rockchip
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
-  ATF:=rk3399_bl31.elf
-endef
-
-define U-Boot/nanopi-r4s-4gb-rk3399
-  BUILD_SUBTARGET:=armv8
-  NAME:=NanoPi R4S 4GB
-  BUILD_DEVICES:= \
-    friendlyarm_nanopi-r4s-4gb
-  DEPENDS:=+PACKAGE_u-boot-nanopi-r4s-4gb-rk3399:arm-trusted-firmware-rockchip
+    friendlyarm_nanopi-r4s
+  DEPENDS:=+PACKAGE_u-boot-nanopi-r4s-rk3399:arm-trusted-firmware-rockchip
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
   ATF:=rk3399_bl31.elf
 endef
@@ -79,8 +69,7 @@ define U-Boot/rockpro64-rk3399
 endef
 
 UBOOT_TARGETS := \
-  nanopi-r4s-1gb-rk3399 \
-  nanopi-r4s-4gb-rk3399 \
+  nanopi-r4s-rk3399 \
   rock-pi-4-rk3399 \
   rockpro64-rk3399 \
   nanopi-r2s-rk3328
