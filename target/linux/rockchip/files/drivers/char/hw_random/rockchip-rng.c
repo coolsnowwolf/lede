@@ -257,7 +257,7 @@ static int rk_rng_probe(struct platform_device *pdev)
 	rk_rng->rng.cleanup = rk_rng_cleanup,
 #endif
 	rk_rng->rng.read    = rk_rng->soc_data->rk_rng_read;
-	rk_rng->rng.quality = 999;
+	rk_rng->rng.quality = 1000;
 
 	rk_rng->clk_bulks =
 		devm_kzalloc(&pdev->dev, sizeof(*rk_rng->clk_bulks) *
