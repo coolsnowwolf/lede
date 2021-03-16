@@ -8,13 +8,13 @@ m = Map(jd)
 s = m:section(TypedSection, 'global', translate('基本设置'))
 s.anonymous = true
 
-o = s:option(DummyValue, '', '')
-o.rawhtml = true
-o.template = 'jd-dailybonus/cookie_tools'
-
 o = s:option(DynamicList, "Cookies", translate("账号 Cookie 列表"))
 o.rmempty = false
 o.description = translate('双击输入框即可调出二维码，扫描后自动填入。')
+
+o = s:option(DummyValue, '', '')
+o.rawhtml = true
+o.template = 'jd-dailybonus/cookie_tools'
 
 o = s:option(Value, 'stop', translate('延迟签到'))
 o.rmempty = false
