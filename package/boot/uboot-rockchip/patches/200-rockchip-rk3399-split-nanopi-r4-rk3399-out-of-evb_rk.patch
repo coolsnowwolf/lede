@@ -1,0 +1,509 @@
+From a765bb2678b6d1666caafef0fcf88fba88b5b26f Mon Sep 17 00:00:00 2001
+From: hmz007 <hmz007@gmail.com>
+Date: Fri, 18 Dec 2020 17:10:35 +0800
+Subject: [PATCH] rockchip: rk3399: split nanopi-r4-rk3399 out of evb_rk3399
+
+nanopi-r4-rk3399 board has multiple DDR types. Currently we don't have any code
+are compatible with these devices. Since multiple DDR types is specific to
+nanopi-r4-rk3399 board, split it into its own board file and add code
+support here.
+
+Signed-off-by: hmz007 <hmz007@gmail.com>
+[Improved commit message and Kconfig description]
+Signed-off-by: Tianling Shen <cnsztl@gmail.com>
+---
+ arch/arm/mach-rockchip/rk3399/Kconfig |  15 +++
+ board/friendlyarm/nanopi4/Kconfig     |  15 +++
+ board/friendlyarm/nanopi4/MAINTAINERS |   5 +
+ board/friendlyarm/nanopi4/Makefile    |   8 ++
+ board/friendlyarm/nanopi4/hwrev.c     | 185 ++++++++++++++++++++++++++
+ board/friendlyarm/nanopi4/hwrev.h     |  27 ++++
+ board/friendlyarm/nanopi4/nanopi4.c   | 148 +++++++++++++++++++++
+ drivers/clk/rockchip/clk_rk3399.c     |   2 +
+ include/configs/nanopi4.h             |  24 ++++
+ 9 files changed, 429 insertions(+)
+ create mode 100644 board/friendlyarm/nanopi4/Kconfig
+ create mode 100644 board/friendlyarm/nanopi4/MAINTAINERS
+ create mode 100644 board/friendlyarm/nanopi4/Makefile
+ create mode 100644 board/friendlyarm/nanopi4/hwrev.c
+ create mode 100644 board/friendlyarm/nanopi4/hwrev.h
+ create mode 100644 board/friendlyarm/nanopi4/nanopi4.c
+ create mode 100644 include/configs/nanopi4.h
+
+--- a/arch/arm/mach-rockchip/rk3399/Kconfig
++++ b/arch/arm/mach-rockchip/rk3399/Kconfig
+@@ -109,6 +109,20 @@ config TARGET_ROC_PC_RK3399
+ 	   * wide voltage input(5V-15V), dual cell battery
+ 	   * Wifi/BT accessible via expansion board M.2
+ 
++config TARGET_NANOPI4_RK3399
++	bool "FriendlyElec NanoPi4 board"
++	help
++	  NanoPi4 is SBC produced by FriendlyElec. Key features:
++
++	   * Rockchip RK3399
++	   * 1/2/4GB Dual-Channel DDR3/LPDDR4
++	   * SD card slot
++	   * Gigabit ethernet
++	   * PCIe
++	   * USB 3.0, 2.0
++	   * USB Type C power
++	   * GPIO expansion ports
++
+ endchoice
+ 
+ config ROCKCHIP_BOOT_MODE_REG
+@@ -152,6 +166,7 @@ config SYS_BOOTCOUNT_ADDR
+ endif # BOOTCOUNT_LIMIT
+ 
+ source "board/firefly/roc-pc-rk3399/Kconfig"
++source "board/friendlyarm/nanopi4/Kconfig"
+ source "board/google/gru/Kconfig"
+ source "board/pine64/pinebook-pro-rk3399/Kconfig"
+ source "board/pine64/rockpro64_rk3399/Kconfig"
+--- /dev/null
++++ b/board/friendlyarm/nanopi4/Kconfig
+@@ -0,0 +1,15 @@
++if TARGET_NANOPI4_RK3399
++
++config SYS_BOARD
++	default "nanopi4"
++
++config SYS_VENDOR
++	default "friendlyarm"
++
++config SYS_CONFIG_NAME
++	default "nanopi4"
++
++config BOARD_SPECIFIC_OPTIONS
++	def_bool y
++
++endif
+--- /dev/null
++++ b/board/friendlyarm/nanopi4/MAINTAINERS
+@@ -0,0 +1,5 @@
++NanoPi 4 Series
++M:      FriendlyElec <support@friendlyarm.com>
++S:      Maintained
++F:      board/friendlyarm/nanopi4/
++F:      include/configs/nanopi4.h
+--- /dev/null
++++ b/board/friendlyarm/nanopi4/Makefile
+@@ -0,0 +1,8 @@
++#
++# Copyright (C) Guangzhou FriendlyELEC Computer Tech. Co., Ltd.
++# (http://www.friendlyarm.com)
++#
++# SPDX-License-Identifier:     GPL-2.0+
++#
++
++obj-y	+= nanopi4.o hwrev.o
+--- /dev/null
++++ b/board/friendlyarm/nanopi4/hwrev.c
+@@ -0,0 +1,185 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (c) 2020 FriendlyElec Computer Tech. Co., Ltd.
++ * (http://www.friendlyarm.com)
++ */
++
++#include <common.h>
++#include <dm.h>
++#include <linux/delay.h>
++#include <log.h>
++#include <asm/io.h>
++#include <asm/gpio.h>
++#include <asm/arch-rockchip/gpio.h>
++
++/*
++ * ID info:
++ *  ID : Volts : ADC value :   Bucket
++ *  ==   =====   =========   ===========
++ *   0 : 0.102V:        58 :    0 -   81
++ *   1 : 0.211V:       120 :   82 -  150
++ *   2 : 0.319V:       181 :  151 -  211
++ *   3 : 0.427V:       242 :  212 -  274
++ *   4 : 0.542V:       307 :  275 -  342
++ *   5 : 0.666V:       378 :  343 -  411
++ *   6 : 0.781V:       444 :  412 -  477
++ *   7 : 0.900V:       511 :  478 -  545
++ *   8 : 1.023V:       581 :  546 -  613
++ *   9 : 1.137V:       646 :  614 -  675
++ *  10 : 1.240V:       704 :  676 -  733
++ *  11 : 1.343V:       763 :  734 -  795
++ *  12 : 1.457V:       828 :  796 -  861
++ *  13 : 1.576V:       895 :  862 -  925
++ *  14 : 1.684V:       956 :  926 -  989
++ *  15 : 1.800V:      1023 :  990 - 1023
++ */
++static const int id_readings[] = {
++	 81, 150, 211, 274, 342, 411, 477, 545,
++	613, 675, 733, 795, 861, 925, 989, 1023
++};
++
++static int cached_board_id = -1;
++
++#define SARADC_BASE		0xFF100000
++#define SARADC_DATA		(SARADC_BASE + 0)
++#define SARADC_CTRL		(SARADC_BASE + 8)
++
++static u32 get_saradc_value(int chn)
++{
++	int timeout = 0;
++	u32 adc_value = 0;
++
++	writel(0, SARADC_CTRL);
++	udelay(2);
++
++	writel(0x28 | chn, SARADC_CTRL);
++	udelay(50);
++
++	timeout = 0;
++	do {
++		if (readl(SARADC_CTRL) & 0x40) {
++			adc_value = readl(SARADC_DATA) & 0x3FF;
++			goto stop_adc;
++		}
++
++		udelay(10);
++	} while (timeout++ < 100);
++
++stop_adc:
++	writel(0, SARADC_CTRL);
++
++	return adc_value;
++}
++
++static uint32_t get_adc_index(int chn)
++{
++	int i;
++	int adc_reading;
++
++	if (cached_board_id != -1)
++		return cached_board_id;
++
++	adc_reading = get_saradc_value(chn);
++	for (i = 0; i < ARRAY_SIZE(id_readings); i++) {
++		if (adc_reading <= id_readings[i]) {
++			debug("ADC reading %d, ID %d\n", adc_reading, i);
++			cached_board_id = i;
++			return i;
++		}
++	}
++
++	/* should die for impossible value */
++	return 0;
++}
++
++/*
++ * Board revision list: <GPIO4_D1 | GPIO4_D0>
++ *  0b00 - NanoPC-T4
++ *  0b01 - NanoPi M4
++ *
++ * Extended by ADC_IN4
++ * Group A:
++ *  0x04 - NanoPi NEO4
++ *  0x06 - SOC-RK3399
++ *  0x07 - SOC-RK3399 V2
++ *  0x09 - NanoPi R4S 1GB
++ *  0x0A - NanoPi R4S 4GB
++ *
++ * Group B:
++ *  0x21 - NanoPi M4 Ver2.0
++ *  0x22 - NanoPi M4B
++ */
++static int pcb_rev = -1;
++
++void bd_hwrev_init(void)
++{
++#define GPIO4_BASE	0xff790000
++	struct rockchip_gpio_regs *regs = (void *)GPIO4_BASE;
++
++#ifdef CONFIG_SPL_BUILD
++	struct udevice *dev;
++
++	if (uclass_get_device_by_driver(UCLASS_CLK,
++				DM_GET_DRIVER(clk_rk3399), &dev))
++		return;
++#endif
++
++	if (pcb_rev >= 0)
++		return;
++
++	/* D1, D0: input mode */
++	clrbits_le32(&regs->swport_ddr, (0x3 << 24));
++	pcb_rev = (readl(&regs->ext_port) >> 24) & 0x3;
++
++	if (pcb_rev == 0x3) {
++		/* Revision group A: 0x04 ~ 0x13 */
++		pcb_rev = 0x4 + get_adc_index(4);
++
++	} else if (pcb_rev == 0x1) {
++		int idx = get_adc_index(4);
++
++		/* Revision group B: 0x21 ~ 0x2f */
++		if (idx > 0) {
++			pcb_rev = 0x20 + idx;
++		}
++	}
++}
++
++#ifdef CONFIG_SPL_BUILD
++static struct board_ddrtype {
++	int rev;
++	const char *type;
++} ddrtypes[] = {
++	{ 0x00, "lpddr3-samsung-4GB-1866" },
++	{ 0x01, "lpddr3-samsung-4GB-1866" },
++	{ 0x04,   "ddr3-1866" },
++	{ 0x06,   "ddr3-1866" },
++	{ 0x07, "lpddr4-100"  },
++	{ 0x09,   "ddr3-1866" },
++	{ 0x0a, "lpddr4-100"  },
++	{ 0x21, "lpddr4-100"  },
++	{ 0x22,   "ddr3-1866" },
++};
++
++const char *rk3399_get_ddrtype(void) {
++	int i;
++
++	bd_hwrev_init();
++	printf("Board: rev%02x\n", pcb_rev);
++
++	for (i = 0; i < ARRAY_SIZE(ddrtypes); i++) {
++		if (ddrtypes[i].rev == pcb_rev)
++			return ddrtypes[i].type;
++	}
++
++	/* fallback to first subnode (ie, first included dtsi) */
++	return NULL;
++}
++#endif
++
++/* To override __weak symbols */
++u32 get_board_rev(void)
++{
++	return pcb_rev;
++}
++
+--- /dev/null
++++ b/board/friendlyarm/nanopi4/hwrev.h
+@@ -0,0 +1,27 @@
++/*
++ * Copyright (C) Guangzhou FriendlyARM Computer Tech. Co., Ltd.
++ * (http://www.friendlyarm.com)
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, you can access it online at
++ * http://www.gnu.org/licenses/gpl-2.0.html.
++ */
++
++#ifndef __BD_HW_REV_H__
++#define __BD_HW_REV_H__
++
++extern void bd_hwrev_config_gpio(void);
++extern void bd_hwrev_init(void);
++extern u32 get_board_rev(void);
++
++#endif /* __BD_HW_REV_H__ */
+--- /dev/null
++++ b/board/friendlyarm/nanopi4/nanopi4.c
+@@ -0,0 +1,148 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (c) 2020 FriendlyElec Computer Tech. Co., Ltd.
++ * (http://www.friendlyarm.com)
++ */
++
++#include <common.h>
++#include <dm.h>
++#include <env.h>
++#include <hash.h>
++#include <linux/bitops.h>
++#include <i2c.h>
++#include <init.h>
++#include <net.h>
++#include <netdev.h>
++#include <syscon.h>
++#include <asm/arch-rockchip/bootrom.h>
++#include <asm/arch-rockchip/clock.h>
++#include <asm/arch-rockchip/grf_rk3399.h>
++#include <asm/arch-rockchip/hardware.h>
++#include <asm/arch-rockchip/misc.h>
++#include <asm/io.h>
++#include <asm/setup.h>
++#include <u-boot/sha256.h>
++
++#ifdef CONFIG_MISC_INIT_R
++static void setup_iodomain(void)
++{
++	struct rk3399_grf_regs *grf =
++	    syscon_get_first_range(ROCKCHIP_SYSCON_GRF);
++
++	/* BT565 and AUDIO is in 1.8v domain */
++	rk_setreg(&grf->io_vsel, BIT(0) | BIT(1));
++}
++
++static int __maybe_unused mac_read_from_generic_eeprom(u8 *addr)
++{
++	struct udevice *i2c_dev;
++	int ret;
++
++	/* Microchip 24AA02xxx EEPROMs with EUI-48 Node Identity */
++	ret = i2c_get_chip_for_busnum(2, 0x51, 1, &i2c_dev);
++	if (!ret)
++		ret = dm_i2c_read(i2c_dev, 0xfa, addr, 6);
++
++	return ret;
++}
++
++static void setup_macaddr(void)
++{
++#if CONFIG_IS_ENABLED(CMD_NET)
++	int ret;
++	const char *cpuid = env_get("cpuid#");
++	u8 hash[SHA256_SUM_LEN];
++	int size = sizeof(hash);
++	u8 mac_addr[6];
++	int from_eeprom = 0;
++	int lockdown = 0;
++
++#ifndef CONFIG_ENV_IS_NOWHERE
++	lockdown = env_get_yesno("lockdown") == 1;
++#endif
++	if (lockdown && env_get("ethaddr"))
++		return;
++
++	ret = mac_read_from_generic_eeprom(mac_addr);
++	if (!ret && is_valid_ethaddr(mac_addr)) {
++		eth_env_set_enetaddr("ethaddr", mac_addr);
++		from_eeprom = 1;
++	}
++
++	if (!cpuid) {
++		debug("%s: could not retrieve 'cpuid#'\n", __func__);
++		return;
++	}
++
++	ret = hash_block("sha256", (void *)cpuid, strlen(cpuid), hash, &size);
++	if (ret) {
++		debug("%s: failed to calculate SHA256\n", __func__);
++		return;
++	}
++
++	/* Copy 6 bytes of the hash to base the MAC address on */
++	memcpy(mac_addr, hash, 6);
++
++	/* Make this a valid MAC address and set it */
++	mac_addr[0] &= 0xfe;  /* clear multicast bit */
++	mac_addr[0] |= 0x02;  /* set local assignment bit (IEEE802) */
++
++	if (from_eeprom) {
++		eth_env_set_enetaddr("eth1addr", mac_addr);
++	} else {
++		eth_env_set_enetaddr("ethaddr", mac_addr);
++
++		if (lockdown && env_get("eth1addr"))
++			return;
++
++		/* Ugly, copy another 4 bytes to generate a similar address */
++		memcpy(mac_addr + 2, hash + 8, 4);
++		if (!memcmp(hash + 2, hash + 8, 4))
++			mac_addr[5] ^= 0xff;
++
++		eth_env_set_enetaddr("eth1addr", mac_addr);
++	}
++#endif
++
++	return;
++}
++
++int misc_init_r(void)
++{
++	const u32 cpuid_offset = 0x7;
++	const u32 cpuid_length = 0x10;
++	u8 cpuid[cpuid_length];
++	int ret;
++
++	setup_iodomain();
++
++	ret = rockchip_cpuid_from_efuse(cpuid_offset, cpuid_length, cpuid);
++	if (ret)
++		return ret;
++
++	ret = rockchip_cpuid_set(cpuid, cpuid_length);
++	if (ret)
++		return ret;
++
++	setup_macaddr();
++	bd_hwrev_init();
++
++	return 0;
++}
++#endif
++
++#ifdef CONFIG_SERIAL_TAG
++void get_board_serial(struct tag_serialnr *serialnr)
++{
++	char *serial_string;
++	u64 serial = 0;
++
++	serial_string = env_get("serial#");
++
++	if (serial_string)
++		serial = simple_strtoull(serial_string, NULL, 16);
++
++	serialnr->high = (u32)(serial >> 32);
++	serialnr->low = (u32)(serial & 0xffffffff);
++}
++#endif
+diff --git a/drivers/clk/rockchip/clk_rk3399.c b/drivers/clk/rockchip/clk_rk3399.c
+index 22c373a623..38975c0c65 100644
+--- a/drivers/clk/rockchip/clk_rk3399.c
++++ b/drivers/clk/rockchip/clk_rk3399.c
+@@ -1351,6 +1351,8 @@ static void rkclk_init(struct rockchip_cru *cru)
+ 		     pclk_div << PCLK_PERILP1_DIV_CON_SHIFT |
+ 		     hclk_div << HCLK_PERILP1_DIV_CON_SHIFT |
+ 		     HCLK_PERILP1_PLL_SEL_GPLL << HCLK_PERILP1_PLL_SEL_SHIFT);
++
++	rk3399_saradc_set_clk(cru, 1000000);
+ }
+ #endif
+ 
+--- /dev/null
++++ b/include/configs/nanopi4.h
+@@ -0,0 +1,24 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Copyright (C) Guangzhou FriendlyELEC Computer Tech. Co., Ltd.
++ * (http://www.friendlyarm.com)
++ *
++ * (C) Copyright 2016 Rockchip Electronics Co., Ltd
++ */
++
++#ifndef __CONFIG_NANOPI4_H__
++#define __CONFIG_NANOPI4_H__
++
++#define ROCKCHIP_DEVICE_SETTINGS \
++		"stdin=serial,usbkbd\0" \
++		"stdout=serial,vidconsole\0" \
++		"stderr=serial,vidconsole\0"
++
++#include <configs/rk3399_common.h>
++
++#define SDRAM_BANK_SIZE			(2UL << 30)
++
++#define CONFIG_SERIAL_TAG
++#define CONFIG_REVISION_TAG
++
++#endif
