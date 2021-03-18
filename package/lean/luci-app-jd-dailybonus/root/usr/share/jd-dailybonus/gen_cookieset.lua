@@ -15,7 +15,7 @@ local data = {
     JD_DailyBonusTimeOut = uci:get('jd-dailybonus', '@global[0]', 'out')
 }
 
-for i, v in pairs( uci:get('jd-dailybonus', '@global[0]', 'Cookies') ) do
+for i, v in pairs( uci:get('jd-dailybonus', '@global[0]', 'Cookies') or {} ) do
     table.insert(data.CookiesJD, {["cookie"]=v})
 end
 
