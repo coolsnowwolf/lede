@@ -10,7 +10,7 @@ endef
 
 LUCI_TITLE:=Luci for JD dailybonus Script
 LUCI_PKGARCH:=all
-LUCI_DEPENDS:=+node +wget +lua +libuci-lua
+LUCI_DEPENDS:=+node +wget +lua +curl +libuci-lua
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
