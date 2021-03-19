@@ -1,7 +1,6 @@
 local ucursor = require 'luci.model.uci'.cursor()
 local name = 'vssr'
 local json = require 'luci.jsonc'
-local proto = 'socks'
 local socks_switch = ucursor:get_first(name, 'socks5_proxy', 'enable_server')
 local auth_type = ucursor:get_first(name, 'socks5_proxy', 'enable_auth')
 local local_port = ucursor:get_first(name, 'socks5_proxy', 'local_port')
@@ -15,7 +14,7 @@ local http_user = ucursor:get_first(name, 'http_proxy', 'http_user')
 local http_pass = ucursor:get_first(name, 'http_proxy', 'http_pass')
 
 function gen_inbound(sw, auth_type, local_port, user, pass, proto)
-    local bound = {}
+    local bound
     if sw == 0 then
         bound = nil
     else
