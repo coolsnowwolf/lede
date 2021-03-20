@@ -39,6 +39,6 @@ define Device/radxa_rock-pi-4
   SUPPORTED_DEVICES := radxa,rockpi4
   UBOOT_DEVICE_NAME := rock-pi-4-rk3399
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES:= -urngd
+  DEVICE_PACKAGES := -urngd
 endef
 TARGET_DEVICES += radxa_rock-pi-4
