@@ -191,10 +191,10 @@ define KernelPackage/sound-soc-core
   KCONFIG:= \
 	CONFIG_SND_SOC \
 	CONFIG_SND_SOC_ADI=n \
-	CONFIG_SND_SOC_DMAENGINE_PCM=y \
+	CONFIG_SND_SOC_GENERIC_DMAENGINE_PCM=y \
 	CONFIG_SND_SOC_ALL_CODECS=n
   FILES:=$(LINUX_DIR)/sound/soc/snd-soc-core.ko
-  AUTOLOAD:=$(call AutoLoad,55, snd-soc-core)
+  AUTOLOAD:=$(call AutoLoad,55,snd-soc-core)
   $(call AddDepends/sound)
 endef
 
@@ -252,6 +252,20 @@ define KernelPackage/sound-soc-imx-sgtl5000/description
 endef
 
 $(eval $(call KernelPackage,sound-soc-imx-sgtl5000))
+
+
+define KernelPackage/sound-soc-spdif
+  TITLE:=SoC S/PDIF codec support
+  KCONFIG:=CONFIG_SND_SOC_SPDIF
+  FILES:= \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-spdif-tx.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-spdif-rx.ko
+  DEPENDS:=+kmod-sound-soc-core
+  AUTOLOAD:=$(call AutoProbe,snd-soc-spdif-tx snd-soc-spdif-rx)
+  $(call AddDepends/sound)
+endef
+
+$(eval $(call KernelPackage,sound-soc-spdif))
 
 
 define KernelPackage/pcspkr

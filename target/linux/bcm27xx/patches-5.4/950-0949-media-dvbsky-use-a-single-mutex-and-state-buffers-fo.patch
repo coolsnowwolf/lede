@@ -1,0 +1,64 @@
+From 08ccbb8e0667e90e5c7334057965c6205a3855fb Mon Sep 17 00:00:00 2001
+From: Andrei Koshkosh <andreykosh000@mail.ru>
+Date: Sun, 29 Sep 2019 05:04:05 -0300
+Subject: [PATCH] media: dvbsky: use a single mutex and state buffers
+ for all R/W ops
+
+commit cecf0bbbcb6f035a5ca2197f3e11ec2b7fb3da83 upstream.
+
+Re-use usb_mutex from dvb_usb_device for this.
+
+See: https://github.com/raspberrypi/linux/issues/3809
+
+Tested-by: Jan Pieter van Woerkom <jp@jpvw.nl>
+Signed-off-by: Andrei Koshkosh <andreykosh000@mail.ru>
+Signed-off-by: Sean Young <sean@mess.org>
+Signed-off-by: Mauro Carvalho Chehab <mchehab+samsung@kernel.org>
+---
+ drivers/media/usb/dvb-usb-v2/dvbsky.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+--- a/drivers/media/usb/dvb-usb-v2/dvbsky.c
++++ b/drivers/media/usb/dvb-usb-v2/dvbsky.c
+@@ -22,7 +22,6 @@ MODULE_PARM_DESC(disable_rc, "Disable in
+ DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
+ 
+ struct dvbsky_state {
+-	struct mutex stream_mutex;
+ 	u8 ibuf[DVBSKY_BUF_LEN];
+ 	u8 obuf[DVBSKY_BUF_LEN];
+ 	u8 last_lock;
+@@ -60,17 +59,19 @@ static int dvbsky_usb_generic_rw(struct
+ static int dvbsky_stream_ctrl(struct dvb_usb_device *d, u8 onoff)
+ {
+ 	struct dvbsky_state *state = d_to_priv(d);
++	static const u8 obuf_pre[3] = { 0x37, 0, 0 };
++	static const u8 obuf_post[3] = { 0x36, 3, 0 };
+ 	int ret;
+-	u8 obuf_pre[3] = { 0x37, 0, 0 };
+-	u8 obuf_post[3] = { 0x36, 3, 0 };
+ 
+-	mutex_lock(&state->stream_mutex);
+-	ret = dvbsky_usb_generic_rw(d, obuf_pre, 3, NULL, 0);
++	mutex_lock(&d->usb_mutex);
++	memcpy(state->obuf, obuf_pre, 3);
++	ret = dvb_usbv2_generic_write_locked(d, state->obuf, 3);
+ 	if (!ret && onoff) {
+ 		msleep(20);
+-		ret = dvbsky_usb_generic_rw(d, obuf_post, 3, NULL, 0);
++		memcpy(state->obuf, obuf_post, 3);
++		ret = dvb_usbv2_generic_write_locked(d, state->obuf, 3);
+ 	}
+-	mutex_unlock(&state->stream_mutex);
++	mutex_unlock(&d->usb_mutex);
+ 	return ret;
+ }
+ 
+@@ -598,7 +599,6 @@ static int dvbsky_init(struct dvb_usb_de
+ 	if (ret)
+ 		return ret;
+ 	*/
+-	mutex_init(&state->stream_mutex);
+ 
+ 	state->last_lock = 0;
+ 

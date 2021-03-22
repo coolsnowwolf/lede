@@ -758,14 +758,14 @@ NDIS_STATUS	RTMPReadParametersHook(RTMP_ADAPTER *pAd)
 					buf_size = srcf.fsize  + 1;
 				}
 #endif /* OS_ABL_SUPPORT */
-					retval =os_file_read(srcf, buffer, buf_size - 1);
-					if (retval > 0)
-					{
-						RTMPSetProfileParameters(pAd, buffer);
-						retval = NDIS_STATUS_SUCCESS;
-					}
-					else
-						MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Read file \"%s\" failed(errCode=%d)!\n", src, retval));
+				retval =os_file_read(srcf, buffer, buf_size - 1);
+				if (retval > 0)
+				{
+					RTMPSetProfileParameters(pAd, buffer);
+					retval = NDIS_STATUS_SUCCESS;
+				}
+				else
+					MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Read file \"%s\" failed(errCode=%d)!\n", src, retval));
 
 				if (os_file_close(srcf) != 0)
 				{

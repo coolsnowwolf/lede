@@ -34,6 +34,7 @@ drv_mac80211_init_device_config() {
 	config_add_boolean noscan ht_coex acs_exclude_dfs
 	config_add_array ht_capab
 	config_add_array channels
+	config_add_array scan_list
 	config_add_boolean \
 		rxldpc \
 		short_gi_80 \
@@ -371,7 +372,7 @@ mac80211_hostapd_setup_bss() {
 	hostapd_cfg=
 	append hostapd_cfg "$type=$ifname" "$N"
 
-	hostapd_set_bss_options hostapd_cfg "$vif" || return 1
+	hostapd_set_bss_options hostapd_cfg "$phy" "$vif" || return 1
 	json_get_vars wds wds_bridge dtim_period max_listen_int start_disabled
 
 	set_default wds 0
@@ -408,7 +409,7 @@ mac80211_generate_mac() {
 	[ "$mask" = "00:00:00:00:00:00" ] && {
 		mask="ff:ff:ff:ff:ff:ff";
 
-		[ "$(wc -l < /sys/class/ieee80211/${phy}/addresses)" -gt 1 ] && {
+		[ "$(wc -l < /sys/class/ieee80211/${phy}/addresses)" -gt $id ] && {
 			addr="$(mac80211_get_addr "$phy" "$id")"
 			[ -n "$addr" ] && {
 				echo "$addr"
@@ -428,7 +429,7 @@ mac80211_generate_mac() {
 	[ "$((0x$mask1))" -gt 0 ] && {
 		b1="0x$1"
 		[ "$id" -gt 0 ] && \
-			b1=$(($b1 ^ ((($id - !($b1 & 2)) << 2) | 0x2)))
+			b1=$(($b1 ^ ((($id - !($b1 & 2)) << 2)) | 0x2))
 		printf "%02x:%s:%s:%s:%s:%s" $b1 $2 $3 $4 $5 $6
 		return
 	}
@@ -626,7 +627,7 @@ mac80211_setup_supplicant() {
 	local spobj="$(ubus -S list | grep wpa_supplicant.${ifname})"
 
 	[ "$enable" = 0 ] && {
-		ubus call wpa_supplicant.${phy} config_del "{\"iface\":\"$ifname\"}"
+		ubus call wpa_supplicant.${phy} config_remove "{\"iface\":\"$ifname\"}"
 		ip link set dev "$ifname" down
 		iw dev "$ifname" del
 		return 0
@@ -897,6 +898,7 @@ drv_mac80211_setup() {
 		rxantenna txantenna \
 		frag rts beacon_int:100 htmode
 	json_get_values basic_rate_list basic_rate
+	json_get_values scan_list scan_list
 	json_select ..
 
 	find_phy || {
@@ -1017,9 +1019,8 @@ drv_mac80211_setup() {
 		if [ "$no_reload" != "0" ]; then
 			add_ap=1
 			ubus wait_for hostapd
-			ubus call hostapd config_add "{\"iface\":\"$primary_ap\", \"config\":\"${hostapd_conf_file}\"}"
-			local hostapd_pid=$(ubus call service list '{"name": "wpad"}' | jsonfilter -l 1 -e "@['wpad'].instances['hostapd'].pid")
-			wireless_add_process "$hostapd_pid" "/usr/sbin/hostapd" 1
+			local hostapd_pid=$(ubus call hostapd config_add "{\"iface\":\"$primary_ap\", \"config\":\"${hostapd_conf_file}\"}" | jsonfilter -l 1 -e @.pid)
+			wireless_add_process "$hostapd_pid" "/usr/sbin/hostapd" 1 1
 		fi
 		ret="$?"
 		[ "$ret" != 0 ] && {
