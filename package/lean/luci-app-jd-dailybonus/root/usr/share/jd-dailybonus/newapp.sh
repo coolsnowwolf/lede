@@ -77,6 +77,14 @@ notify() {
         fi
         wget-ssl -q --output-document=/dev/null --post-data="text=$title~&desp=$desc" $serverurl$sckey.send
     fi
+    
+    #Dingding
+    dtoken=$(uci_get_by_type global dd_token)
+    if [ ! -z $dtoken ]; then
+    	DTJ_FILE=/tmp/jd-djson.json
+	echo "{\"msgtype\": \"markdown\",\"markdown\": {\"title\":\"${title}\",\"text\":\"${title} <br/> ${desc}\"}}" > ${DTJ_FILE}
+    	wget-ssl -q --output-document=/dev/null --header="Content-Type: application/json" --post-file=/tmp/jd-djson.json "https://oapi.dingtalk.com/robot/send?access_token=${dtoken}"
+    fi
 
     #telegram
     TG_BOT_TOKEN=$(uci_get_by_type global tg_token)
