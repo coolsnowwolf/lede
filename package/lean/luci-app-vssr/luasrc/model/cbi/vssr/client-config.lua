@@ -403,7 +403,7 @@ o:depends({type = 'vless', tls = '1'})
 o:depends({type = 'xray', tls = '1'})
 
 -- Flow
-o = s:option(Value, 'vless_flow', translate('Flow'))
+o = s:option(ListValue, 'vless_flow', translate('Flow'))
 for _, v in ipairs(flows) do
     o:value(v, v)
 end

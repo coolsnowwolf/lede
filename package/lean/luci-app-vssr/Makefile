@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-vssr
-PKG_VERSION:=1.22
-PKG_RELEASE:=20210227
+PKG_VERSION:=1.22-1
+PKG_RELEASE:=20210322
 
 include $(INCLUDE_DIR)/package.mk
 
