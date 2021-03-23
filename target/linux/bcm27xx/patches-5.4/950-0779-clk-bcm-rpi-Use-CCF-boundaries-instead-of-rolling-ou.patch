@@ -1,0 +1,134 @@
+From cd72d75cfb216a7ef15ec8649e57b03b4fc48b62 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Wed, 27 May 2020 11:13:52 +0200
+Subject: [PATCH] clk: bcm: rpi: Use CCF boundaries instead of
+ rolling our own
+
+The raspberrypi firmware clock driver has a min_rate / max_rate clamping by
+storing the info it needs in a private structure.
+
+However, the CCF already provides such a facility, so we can switch to it
+to remove the boilerplate.
+
+Reviewed-by: Nicolas Saenz Julienne <nsaenzjulienne@suse.de>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/clk/bcm/clk-raspberrypi.c | 49 ++++++++++++++++++++-----------
+ 1 file changed, 32 insertions(+), 17 deletions(-)
+
+--- a/drivers/clk/bcm/clk-raspberrypi.c
++++ b/drivers/clk/bcm/clk-raspberrypi.c
+@@ -57,9 +57,6 @@ struct raspberrypi_clk_data {
+ 	struct clk_hw hw;
+ 	unsigned id;
+ 
+-	unsigned long min_rate;
+-	unsigned long max_rate;
+-
+ 	struct raspberrypi_clk *rpi;
+ };
+ 
+@@ -177,13 +174,11 @@ static int raspberrypi_fw_pll_set_rate(s
+ static int raspberrypi_pll_determine_rate(struct clk_hw *hw,
+ 					  struct clk_rate_request *req)
+ {
+-	struct raspberrypi_clk_data *data =
+-		container_of(hw, struct raspberrypi_clk_data, hw);
+ 	u64 div, final_rate;
+ 	u32 ndiv, fdiv;
+ 
+ 	/* We can't use req->rate directly as it would overflow */
+-	final_rate = clamp(req->rate, data->min_rate, data->max_rate);
++	final_rate = clamp(req->rate, req->min_rate, req->max_rate);
+ 
+ 	div = (u64)final_rate << A2W_PLL_FRAC_BITS;
+ 	do_div(div, req->best_parent_rate);
+@@ -254,16 +249,15 @@ static struct clk_hw *raspberrypi_regist
+ 	dev_info(rpi->dev, "CPU frequency range: min %u, max %u\n",
+ 		 min_rate, max_rate);
+ 
+-	data->min_rate = min_rate * RPI_FIRMWARE_PLLB_ARM_DIV_RATE;
+-	data->max_rate = max_rate * RPI_FIRMWARE_PLLB_ARM_DIV_RATE;
+-
+ 	data->hw.init = &init;
+ 
+ 	ret = devm_clk_hw_register(rpi->dev, &data->hw);
+-	if (ret)
+-		return ERR_PTR(ret);
++	if (!ret)
++		clk_hw_set_rate_range(&data->hw,
++				      min_rate * RPI_FIRMWARE_PLLB_ARM_DIV_RATE,
++				      max_rate * RPI_FIRMWARE_PLLB_ARM_DIV_RATE);
+ 
+-	return &data->hw;
++	return ret;
+ }
+ 
+ static struct clk_fixed_factor raspberrypi_clk_pllb_arm = {
+@@ -299,22 +293,22 @@ static struct clk_hw *raspberrypi_regist
+ 	return &raspberrypi_clk_pllb_arm.hw;
+ }
+ 
+-static long raspberrypi_fw_dumb_round_rate(struct clk_hw *hw,
+-					   unsigned long rate,
+-					   unsigned long *parent_rate)
++static int raspberrypi_fw_dumb_determine_rate(struct clk_hw *hw,
++					      struct clk_rate_request *req)
+ {
+ 	/*
+ 	 * The firmware will do the rounding but that isn't part of
+ 	 * the interface with the firmware, so we just do our best
+ 	 * here.
+ 	 */
+-	return rate;
++	req->rate = clamp(req->rate, req->min_rate, req->max_rate);
++	return 0;
+ }
+ 
+ static const struct clk_ops raspberrypi_firmware_clk_ops = {
+ 	.is_prepared	= raspberrypi_fw_is_prepared,
+ 	.recalc_rate	= raspberrypi_fw_get_rate,
+-	.round_rate	= raspberrypi_fw_dumb_round_rate,
++	.determine_rate	= raspberrypi_fw_dumb_determine_rate,
+ 	.set_rate	= raspberrypi_fw_set_rate,
+ };
+ 
+@@ -324,6 +318,7 @@ static struct clk_hw *raspberrypi_clk_re
+ {
+ 	struct raspberrypi_clk_data *data;
+ 	struct clk_init_data init = {};
++	u32 min_rate, max_rate;
+ 	int ret;
+ 
+ 	if (id == RPI_FIRMWARE_ARM_CLK_ID) {
+@@ -351,10 +346,30 @@ static struct clk_hw *raspberrypi_clk_re
+ 
+ 	data->hw.init = &init;
+ 
++	ret = raspberrypi_clock_property(rpi->firmware, data,
++					 RPI_FIRMWARE_GET_MIN_CLOCK_RATE,
++					 &min_rate);
++	if (ret) {
++		dev_err(rpi->dev, "Failed to get %s min freq: %d\n",
++			init.name, ret);
++		return ERR_PTR(ret);
++	}
++
++	ret = raspberrypi_clock_property(rpi->firmware, data,
++					 RPI_FIRMWARE_GET_MAX_CLOCK_RATE,
++					 &max_rate);
++	if (ret) {
++		dev_err(rpi->dev, "Failed to get %s max freq: %d\n",
++			init.name, ret);
++		return ERR_PTR(ret);
++	}
++
+ 	ret = devm_clk_hw_register(rpi->dev, &data->hw);
+ 	if (ret)
+ 		return ERR_PTR(ret);
+ 
++	clk_hw_set_rate_range(&data->hw, min_rate, max_rate);
++
+ 	return &data->hw;
+ }
+ 

@@ -22,8 +22,8 @@ o.title = translate("Block Apple iOS OTA update")
 o.default = 0
 o.rmempty = false
 
-o = s:option(Flag, "block_douyin")
-o.title = translate("Block Douyin APP and Website")
+o = s:option(Flag, "block_cnshort")
+o.title = translate("Block CNshort APP and Website")
 o.default = 0
 o.rmempty = false
 

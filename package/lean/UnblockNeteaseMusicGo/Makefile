@@ -1,12 +1,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=UnblockNeteaseMusicGo
-PKG_VERSION:=0.2.6
+PKG_VERSION:=0.2.9
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/cnsilvan/UnblockNeteaseMusic.git
-PKG_SOURCE_VERSION:=7ff431267eb2b2683ea25e1b3860447aa7b482e9
+PKG_SOURCE_VERSION:=92f58deedfc13ffc0fcd8636ba0be2f3250254bb
 PKG_MAINTAINER:=Silvan <cnsilvan@gmail.com>
 
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)
@@ -34,8 +34,7 @@ endef
 
 ifeq ($(CONFIG_$(PKG_NAME)_INCLUDE_GOPROXY),y)
 export GO111MODULE=on
-export GOPROXY=https://goproxy.io
-#export GOPROXY=https://mirrors.aliyun.com/goproxy/
+export GOPROXY=https://goproxy.cn
 endif
 
 define Package/$(PKG_NAME)
@@ -63,7 +62,7 @@ define Build/Compile
 	$(eval GO_PKG_BUILD_PKG:=$(GO_PKG))
 	$(call GoPackage/Build/Configure)
 	$(call GoPackage/Build/Compile)
-	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/UnblockNeteaseMusic
+	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/UnblockNeteaseMusic || true
 	chmod +wx $(GO_PKG_BUILD_BIN_DIR)/UnblockNeteaseMusic
 endef
 
@@ -73,5 +72,6 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/share/UnblockNeteaseMusicGo
 	$(CP) ./files/* $(1)/usr/share/UnblockNeteaseMusicGo/
 endef
+
 $(eval $(call GoBinPackage,$(PKG_NAME)))
 $(eval $(call BuildPackage,$(PKG_NAME)))

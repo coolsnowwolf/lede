@@ -8,13 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=v2ray-plugin
-PKG_VERSION:=1.4.3
+PKG_VERSION:=4.36.2
 PKG_RELEASE:=1
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/teddysun/v2ray-plugin/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=2979dd5f27eda819033c330f1cf8f56fc675acece067a83c158e47789a85aa19
+PKG_HASH:=70cf85958a5233c8798990f4b7de57ce6f2e9a4535345260df06a4962a21e85a
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
@@ -26,6 +25,8 @@ PKG_USE_MIPS16:=0
 
 GO_PKG:=github.com/shadowsocks/v2ray-plugin
 GO_PKG_LDFLAGS:=-s -w
+GO_PKG_LDFLAGS_X:=main.VERSION=v$(PKG_VERSION)
+
 PKG_CONFIG_DEPENDS := CONFIG_$(PKG_NAME)_INCLUDE_GOPROXY
 
 include $(INCLUDE_DIR)/package.mk
@@ -40,8 +41,7 @@ endef
 
 ifeq ($(CONFIG_$(PKG_NAME)_INCLUDE_GOPROXY),y)
 export GO111MODULE=on
-export GOPROXY=https://goproxy.io
-#export GOPROXY=https://mirrors.aliyun.com/goproxy/
+export GOPROXY=https://goproxy.cn
 endif
 
 define Package/$(PKG_NAME)
@@ -49,7 +49,7 @@ define Package/$(PKG_NAME)
 	CATEGORY:=Network
 	SUBMENU:=Project V
 	TITLE:=SIP003 plugin for shadowsocks, based on v2ray
-	URL:=https://github.com/shadowsocks/v2ray-plugin
+	URL:=https://github.com/teddysun/v2ray-plugin
 	DEPENDS:=$(GO_ARCH_DEPENDS) +ca-certificates
 endef
 
@@ -57,18 +57,15 @@ define Package/$(PKG_NAME)/description
 	Yet another SIP003 plugin for shadowsocks, based on v2ray
 endef
 
-define Build/Prepare
-	$(call Build/Prepare/Default)
-endef
-
 define Build/Compile
 	$(call GoPackage/Build/Compile)
-	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/v2ray-plugin
+	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/v2ray-plugin || true
 endef
 
 define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/v2ray-plugin $(1)/usr/bin/v2ray-plugin
 endef
+
 $(eval $(call GoBinPackage,$(PKG_NAME)))
 $(eval $(call BuildPackage,$(PKG_NAME)))

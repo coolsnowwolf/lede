@@ -19,11 +19,6 @@ define Build/loader-kernel
 	$(call Build/loader-common,LOADER_DATA="$@")
 endef
 
-define Build/loader-kernel-cmdline
-	$(call Build/loader-common,LOADER_DATA="$@")
-endef
-
-
 define Build/loader-okli-compile
 	$(call Build/loader-common,FLASH_OFFS=$(LOADER_FLASH_OFFS) FLASH_MAX=0)
 endef
