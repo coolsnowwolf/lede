@@ -16,7 +16,7 @@ include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
 
 define U-Boot/Default
-  BUILD_TARGET:=imx6
+  BUILD_TARGET:=imx
   UBOOT_IMAGE:=u-boot.imx
 endef
 
