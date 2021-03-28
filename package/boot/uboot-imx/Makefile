@@ -24,6 +24,7 @@ define U-Boot/apalis_imx6
   NAME:=Toradex Apalis
   UBOOT_IMAGE:=SPL u-boot.img u-boot-with-spl.imx
   UBOOT_MAKE_FLAGS:=SPL u-boot.img u-boot-with-spl.imx
+  BUILD_SUBTARGET:=cortexa9
   BUILD_DEVICES:=toradex_apalis
 endef
 
@@ -31,11 +32,13 @@ define U-Boot/mx6cuboxi
   NAME:=SolidRun Cubox-i boards
   UBOOT_IMAGE:=SPL u-boot.img
   UBOOT_MAKE_FLAGS:=SPL u-boot.img
+  BUILD_SUBTARGET:=cortexa9
   BUILD_DEVICES:=solidrun_cubox-i
 endef
 
 define U-Boot/wandboard
   NAME:=Wandboard Dual Lite/Quad/Solo
+  BUILD_SUBTARGET:=cortexa9
   BUILD_DEVICES:=wandboard_dual
 endef
 
