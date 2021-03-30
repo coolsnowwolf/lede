@@ -10,7 +10,7 @@ s.anonymous = true
 
 o = s:option(DynamicList, "Cookies", translate("账号 Cookie 列表"))
 o.rmempty = false
-o.description = translate('双击输入框即可调出二维码，扫描后自动填入。')
+o.description = translate('双击输入框或点击添加图标即可调出二维码，扫码后自动填入。')
 
 o = s:option(DummyValue, '', '')
 o.rawhtml = true
@@ -39,6 +39,12 @@ o.description = translate('选择Server酱的推送接口')
 o = s:option(Value, 'serverchan', translate('Server酱 SCKEY'))
 o.rmempty = true
 o.description = translate('微信推送，基于Server酱服务，请自行登录 http://sc.ftqq.com/ 绑定并获取 SCKEY。')
+
+-- Dingding
+
+o = s:option(Value, 'dd_token', translate('Dingding Bot Token'))
+o.rmempty = true
+o.description = translate('创建一个群机器人并获取API Token，设置安全关键字为:京东')
 
 -- telegram
 
