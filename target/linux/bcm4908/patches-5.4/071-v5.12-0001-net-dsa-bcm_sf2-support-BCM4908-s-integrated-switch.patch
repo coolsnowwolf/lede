@@ -1,0 +1,131 @@
+From 73b7a6047971aa6ce4a70fc4901964d14f077171 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Wed, 6 Jan 2021 22:32:02 +0100
+Subject: [PATCH] net: dsa: bcm_sf2: support BCM4908's integrated switch
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BCM4908 family SoCs come with integrated Starfighter 2 switch. Its
+registers layout it a mix of BCM7278 and BCM7445. It has 5 integrated
+PHYs and 8 ports. It also supports RGMII and SerDes.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Acked-by: Florian Fainelli <f.fainelli@gmail.com>
+Link: https://lore.kernel.org/r/20210106213202.17459-3-zajec5@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/b53/b53_common.c | 14 +++++++++++++
+ drivers/net/dsa/b53/b53_priv.h   |  1 +
+ drivers/net/dsa/bcm_sf2.c        | 36 +++++++++++++++++++++++++++++---
+ drivers/net/dsa/bcm_sf2_regs.h   |  1 +
+ 4 files changed, 49 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -2278,6 +2278,22 @@ static const struct b53_chip_data b53_sw
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
+ 	},
++	/* Starfighter 2 */
++	{
++		.chip_id = BCM4908_DEVICE_ID,
++		.dev_name = "BCM4908",
++		.vlans = 4096,
++		.enabled_ports = 0x1bf,
++#if 0
++		.arl_bins = 4,
++		.arl_buckets = 256,
++#endif
++		.cpu_port = 8, /* TODO: ports 4, 5, 8 */
++		.vta_regs = B53_VTA_REGS,
++		.duplex_reg = B53_DUPLEX_STAT_GE,
++		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
++		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++	},
+ 	{
+ 		.chip_id = BCM7445_DEVICE_ID,
+ 		.dev_name = "BCM7445",
+--- a/drivers/net/dsa/b53/b53_priv.h
++++ b/drivers/net/dsa/b53/b53_priv.h
+@@ -64,6 +64,7 @@ struct b53_io_ops {
+ #define B53_INVALID_LANE	0xff
+ 
+ enum {
++	BCM4908_DEVICE_ID = 0x4908,
+ 	BCM5325_DEVICE_ID = 0x25,
+ 	BCM5365_DEVICE_ID = 0x65,
+ 	BCM5389_DEVICE_ID = 0x89,
+--- a/drivers/net/dsa/bcm_sf2.c
++++ b/drivers/net/dsa/bcm_sf2.c
+@@ -61,7 +61,8 @@ static void bcm_sf2_imp_setup(struct dsa
+ 	b53_brcm_hdr_setup(ds, port);
+ 
+ 	if (port == 8) {
+-		if (priv->type == BCM7445_DEVICE_ID)
++		if (priv->type == BCM4908_DEVICE_ID ||
++		    priv->type == BCM7445_DEVICE_ID)
+ 			offset = CORE_STS_OVERRIDE_IMP;
+ 		else
+ 			offset = CORE_STS_OVERRIDE_IMP2;
+@@ -541,7 +542,8 @@ static void bcm_sf2_sw_mac_config(struct
+ 	if (port == core_readl(priv, CORE_IMP0_PRT_ID))
+ 		return;
+ 
+-	if (priv->type == BCM7445_DEVICE_ID)
++	if (priv->type == BCM4908_DEVICE_ID ||
++	    priv->type == BCM7445_DEVICE_ID)
+ 		offset = CORE_STS_OVERRIDE_GMIIP_PORT(port);
+ 	else
+ 		offset = CORE_STS_OVERRIDE_GMIIP2_PORT(port);
+@@ -983,6 +985,30 @@ struct bcm_sf2_of_data {
+ 	unsigned int num_cfp_rules;
+ };
+ 
++static const u16 bcm_sf2_4908_reg_offsets[] = {
++	[REG_SWITCH_CNTRL]	= 0x00,
++	[REG_SWITCH_STATUS]	= 0x04,
++	[REG_DIR_DATA_WRITE]	= 0x08,
++	[REG_DIR_DATA_READ]	= 0x0c,
++	[REG_SWITCH_REVISION]	= 0x10,
++	[REG_PHY_REVISION]	= 0x14,
++	[REG_SPHY_CNTRL]	= 0x24,
++	[REG_CROSSBAR]		= 0xc8,
++	[REG_RGMII_0_CNTRL]	= 0xe0,
++	[REG_RGMII_1_CNTRL]	= 0xec,
++	[REG_RGMII_2_CNTRL]	= 0xf8,
++	[REG_LED_0_CNTRL]	= 0x40,
++	[REG_LED_1_CNTRL]	= 0x4c,
++	[REG_LED_2_CNTRL]	= 0x58,
++};
++
++static const struct bcm_sf2_of_data bcm_sf2_4908_data = {
++	.type		= BCM4908_DEVICE_ID,
++	.core_reg_align	= 0,
++	.reg_offsets	= bcm_sf2_4908_reg_offsets,
++	.num_cfp_rules	= 0, /* FIXME */
++};
++
+ /* Register offsets for the SWITCH_REG_* block */
+ static const u16 bcm_sf2_7445_reg_offsets[] = {
+ 	[REG_SWITCH_CNTRL]	= 0x00,
+@@ -1031,6 +1057,9 @@ static const struct bcm_sf2_of_data bcm_
+ };
+ 
+ static const struct of_device_id bcm_sf2_of_match[] = {
++	{ .compatible = "brcm,bcm4908-switch",
++	  .data = &bcm_sf2_4908_data
++	},
+ 	{ .compatible = "brcm,bcm7445-switch-v4.0",
+ 	  .data = &bcm_sf2_7445_data
+ 	},
+--- a/drivers/net/dsa/bcm_sf2_regs.h
++++ b/drivers/net/dsa/bcm_sf2_regs.h
+@@ -17,6 +17,7 @@ enum bcm_sf2_reg_offs {
+ 	REG_SWITCH_REVISION,
+ 	REG_PHY_REVISION,
+ 	REG_SPHY_CNTRL,
++	REG_CROSSBAR,
+ 	REG_RGMII_0_CNTRL,
+ 	REG_RGMII_1_CNTRL,
+ 	REG_RGMII_2_CNTRL,
