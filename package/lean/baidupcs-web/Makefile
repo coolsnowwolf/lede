@@ -10,7 +10,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=baidupcs-web
 PKG_VERSION:=3.7.3
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/Erope/BaiduPCS-Go.git
@@ -29,7 +29,7 @@ GO_PKG_LDFLAGS:=-s -w
 GO_PKG_LDFLAGS_X:=main.Version=v$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/package.mk
-include ../../lang/golang/golang-package.mk
+include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
 define Package/$(PKG_NAME)
 	SECTION:=net
@@ -50,6 +50,7 @@ define Build/Compile
   "$$$$(go env GOPATH)/bin/rice" embed-go ; \
 )
 	$(call GoPackage/Build/Compile)
+	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/BaiduPCS-Go
 endef
 
 define Package/$(PKG_NAME)/install
