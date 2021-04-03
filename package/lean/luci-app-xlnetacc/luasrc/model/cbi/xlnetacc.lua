@@ -2,7 +2,7 @@ local m, s, o
 local uci = luci.model.uci.cursor()
 
 m = Map("xlnetacc", "%s - %s" %{translate("XLNetAcc"), translate("Settings")}, translate("XLNetAcc is a Thunder joint broadband operators launched a commitment to help users solve the low broadband, slow Internet access, poor Internet experience of professional-grade broadband upgrade software."))
-m:append(Template("xlnetacc/status"))
+m:append(Template("xlnetacc/xlnetacc_status"))
 
 s = m:section(NamedSection, "general", "general", translate("General Settings"))
 s.anonymous = true
