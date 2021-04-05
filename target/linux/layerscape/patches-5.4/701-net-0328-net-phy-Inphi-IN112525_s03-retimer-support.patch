@@ -1,0 +1,620 @@
+From 630ee8f358d961a7c8295d60a112e27cbfe4478d Mon Sep 17 00:00:00 2001
+From: Florin Chiculita <florinlaurentiu.chiculita@nxp.com>
+Date: Fri, 9 Nov 2018 06:20:36 +0200
+Subject: [PATCH] net/phy: Inphi IN112525_s03 retimer support
+
+Software controller for IN112525_s03 retimer
+
+Signed-off-by: Florin Chiculita <florinlaurentiu.chiculita@nxp.com>
+---
+ drivers/net/phy/Kconfig  |   5 +
+ drivers/net/phy/Makefile |   1 +
+ drivers/net/phy/inphi.c  | 578 +++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 584 insertions(+)
+ create mode 100644 drivers/net/phy/inphi.c
+
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -475,6 +475,11 @@ config ICPLUS_PHY
+ 	---help---
+ 	  Currently supports the IP175C and IP1001 PHYs.
+ 
++config INPHI_PHY
++	tristate "Inphi CDR 10G/25G Ethernet PHY"
++	---help---
++	  Currently supports the IN112525_S03 part @ 25G
++
+ config INTEL_XWAY_PHY
+ 	tristate "Intel XWAY PHYs"
+ 	---help---
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -87,6 +87,7 @@ obj-$(CONFIG_DP83848_PHY)	+= dp83848.o
+ obj-$(CONFIG_DP83867_PHY)	+= dp83867.o
+ obj-$(CONFIG_FIXED_PHY)		+= fixed_phy.o
+ obj-$(CONFIG_ICPLUS_PHY)	+= icplus.o
++obj-$(CONFIG_INPHI_PHY)	+= inphi.o
+ obj-$(CONFIG_INTEL_XWAY_PHY)	+= intel-xway.o
+ obj-$(CONFIG_LSI_ET1011C_PHY)	+= et1011c.o
+ obj-$(CONFIG_LXT_PHY)		+= lxt.o
+--- /dev/null
++++ b/drivers/net/phy/inphi.c
+@@ -0,0 +1,578 @@
++/*
++ * Copyright 2018 NXP
++ * Copyright 2018 INPHI
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ *
++ * 1. Redistributions of source code must retain the above copyright notice,
++ * this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ * this list of conditions and the following disclaimer in the documentation
++ * and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ *
++ * Inphi is a registered trademark of Inphi Corporation
++ *
++ */
++
++#include <linux/module.h>
++#include <linux/phy.h>
++#include <linux/mdio.h>
++#include <linux/interrupt.h>
++#include <linux/platform_device.h>
++#include <linux/of_irq.h>
++#include <linux/workqueue.h>
++#include <linux/i2c.h>
++#include <linux/timer.h>
++#include <linux/delay.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/fs.h>
++#include <linux/cdev.h>
++#include <linux/device.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++
++#define PHY_ID_IN112525  0x02107440
++
++#define INPHI_S03_DEVICE_ID_MSB 0x2
++#define INPHI_S03_DEVICE_ID_LSB 0x3
++
++#define ALL_LANES		4
++#define INPHI_POLL_DELAY	2500
++
++#define PHYCTRL_REG1	0x0012
++#define PHYCTRL_REG2	0x0014
++#define PHYCTRL_REG3	0x0120
++#define PHYCTRL_REG4	0x0121
++#define PHYCTRL_REG5	0x0180
++#define PHYCTRL_REG6	0x0580
++#define PHYCTRL_REG7	0x05C4
++#define PHYCTRL_REG8	0x01C8
++#define PHYCTRL_REG9	0x0521
++
++#define PHYSTAT_REG1	0x0021
++#define PHYSTAT_REG2	0x0022
++#define PHYSTAT_REG3	0x0123
++
++#define PHYMISC_REG1	0x0025
++#define PHYMISC_REG2	0x002c
++#define PHYMISC_REG3	0x00b3
++#define PHYMISC_REG4	0x0181
++#define PHYMISC_REG5	0x019D
++#define PHYMISC_REG6	0x0198
++#define PHYMISC_REG7	0x0199
++#define PHYMISC_REG8	0x0581
++#define PHYMISC_REG9	0x0598
++#define PHYMISC_REG10	0x059c
++#define PHYMISC_REG20	0x01B0
++#define PHYMISC_REG21	0x01BC
++#define PHYMISC_REG22	0x01C0
++
++#define RX_VCO_CODE_OFFSET	5
++
++#define mdio_wr(a, b)	phy_write_mmd(inphi_phydev, MDIO_MMD_VEND1, (a), (b))
++#define mdio_rd(a)	phy_read_mmd(inphi_phydev, MDIO_MMD_VEND1, (a))
++
++#define VCO_CODE  390
++
++int vco_codes[ALL_LANES] = {
++	VCO_CODE,
++	VCO_CODE,
++	VCO_CODE,
++	VCO_CODE
++};
++
++static void mykmod_work_handler(struct work_struct *w);
++
++static struct workqueue_struct *wq;
++static DECLARE_DELAYED_WORK(mykmod_work, mykmod_work_handler);
++static unsigned long onesec;
++struct phy_device *inphi_phydev;
++
++int bit_test(int value, int bit_field)
++{
++	int result;
++	int bit_mask = (1 << bit_field);
++
++	result = ((value & bit_mask) == bit_mask);
++	return result;
++}
++
++int tx_pll_lock_test(int lane)
++{
++	int i, val, locked = 1;
++
++	if (lane == ALL_LANES) {
++		for (i = 0; i < ALL_LANES; i++) {
++			val = mdio_rd(i * 0x100 + PHYSTAT_REG3);
++			locked = locked & bit_test(val, 15);
++		}
++	} else {
++		val = mdio_rd(lane * 0x100 + PHYSTAT_REG3);
++		locked = locked & bit_test(val, 15);
++	}
++
++	return locked;
++}
++
++void rx_reset_assert(int lane)
++{
++	int mask, val;
++
++	if (lane == ALL_LANES) {
++		val = mdio_rd(PHYMISC_REG2);
++		mask = (1 << 15);
++		mdio_wr(PHYMISC_REG2, val + mask);
++	} else {
++		val = mdio_rd(lane * 0x100 + PHYCTRL_REG8);
++		mask = (1 << 6);
++		mdio_wr(lane * 0x100 + PHYCTRL_REG8, val + mask);
++	}
++}
++
++void rx_reset_de_assert(int lane)
++{
++	int mask, val;
++
++	if (lane == ALL_LANES) {
++		val = mdio_rd(PHYMISC_REG2);
++		mask = 0xffff - (1 << 15);
++		mdio_wr(PHYMISC_REG2, val & mask);
++	} else {
++		val = mdio_rd(lane * 0x100 + PHYCTRL_REG8);
++		mask = 0xffff - (1 << 6);
++		mdio_wr(lane * 0x100 + PHYCTRL_REG8, val & mask);
++	}
++}
++
++void rx_powerdown_assert(int lane)
++{
++	int mask, val;
++
++	val = mdio_rd(lane * 0x100 + PHYCTRL_REG8);
++	mask = (1 << 5);
++	mdio_wr(lane * 0x100 + PHYCTRL_REG8, val + mask);
++}
++
++void rx_powerdown_de_assert(int lane)
++{
++	int mask, val;
++
++	val = mdio_rd(lane * 0x100 + PHYCTRL_REG8);
++	mask = 0xffff - (1 << 5);
++	mdio_wr(lane * 0x100 + PHYCTRL_REG8, val & mask);
++}
++
++void tx_pll_assert(int lane)
++{
++	int val, recal;
++
++	if (lane == ALL_LANES) {
++		val = mdio_rd(PHYMISC_REG2);
++		recal = (1 << 12);
++		mdio_wr(PHYMISC_REG2, val | recal);
++	} else {
++		val = mdio_rd(lane * 0x100 + PHYCTRL_REG4);
++		recal = (1 << 15);
++		mdio_wr(lane * 0x100 + PHYCTRL_REG4, val | recal);
++	}
++}
++
++void tx_pll_de_assert(int lane)
++{
++	int recal, val;
++
++	if (lane == ALL_LANES) {
++		val = mdio_rd(PHYMISC_REG2);
++		recal = 0xefff;
++		mdio_wr(PHYMISC_REG2, val & recal);
++	} else {
++		val = mdio_rd(lane * 0x100 + PHYCTRL_REG4);
++		recal = 0x7fff;
++		mdio_wr(lane * 0x100 + PHYCTRL_REG4, val & recal);
++	}
++}
++
++void tx_core_assert(int lane)
++{
++	int recal, val, val2, core_reset;
++
++	if (lane == 4) {
++		val = mdio_rd(PHYMISC_REG2);
++		recal = 1 << 10;
++		mdio_wr(PHYMISC_REG2, val | recal);
++	} else {
++		val2 = mdio_rd(PHYMISC_REG3);
++		core_reset = (1 << (lane + 8));
++		mdio_wr(PHYMISC_REG3, val2 | core_reset);
++	}
++}
++
++void lol_disable(int lane)
++{
++	int val, mask;
++
++	val = mdio_rd(PHYMISC_REG3);
++	mask = 1 << (lane + 4);
++	mdio_wr(PHYMISC_REG3, val | mask);
++}
++
++void tx_core_de_assert(int lane)
++{
++	int val, recal, val2, core_reset;
++
++	if (lane == ALL_LANES) {
++		val = mdio_rd(PHYMISC_REG2);
++		recal = 0xffff - (1 << 10);
++		mdio_wr(PHYMISC_REG2, val & recal);
++	} else {
++		val2 = mdio_rd(PHYMISC_REG3);
++		core_reset = 0xffff - (1 << (lane + 8));
++		mdio_wr(PHYMISC_REG3, val2 & core_reset);
++	}
++}
++
++void tx_restart(int lane)
++{
++	tx_core_assert(lane);
++	tx_pll_assert(lane);
++	tx_pll_de_assert(lane);
++	usleep_range(1500, 1600);
++	tx_core_de_assert(lane);
++}
++
++void disable_lane(int lane)
++{
++	rx_reset_assert(lane);
++	rx_powerdown_assert(lane);
++	tx_core_assert(lane);
++	lol_disable(lane);
++}
++
++void toggle_reset(int lane)
++{
++	int reg, val, orig;
++
++	if (lane == ALL_LANES) {
++		mdio_wr(PHYMISC_REG2, 0x8000);
++		udelay(100);
++		mdio_wr(PHYMISC_REG2, 0x0000);
++	} else {
++		reg = lane * 0x100 + PHYCTRL_REG8;
++		val = (1 << 6);
++		orig = mdio_rd(reg);
++		mdio_wr(reg, orig + val);
++		udelay(100);
++		mdio_wr(reg, orig);
++	}
++}
++
++int az_complete_test(int lane)
++{
++	int success = 1, value;
++
++	if (lane == 0 || lane == ALL_LANES) {
++		value = mdio_rd(PHYCTRL_REG5);
++		success = success & bit_test(value, 2);
++	}
++	if (lane == 1 || lane == ALL_LANES) {
++		value = mdio_rd(PHYCTRL_REG5 + 0x100);
++		success = success & bit_test(value, 2);
++	}
++	if (lane == 2 || lane == ALL_LANES) {
++		value = mdio_rd(PHYCTRL_REG5 + 0x200);
++		success = success & bit_test(value, 2);
++	}
++	if (lane == 3 || lane == ALL_LANES) {
++		value = mdio_rd(PHYCTRL_REG5 + 0x300);
++		success = success & bit_test(value, 2);
++	}
++
++	return success;
++}
++
++void save_az_offsets(int lane)
++{
++	int i;
++
++#define AZ_OFFSET_LANE_UPDATE(reg, lane) \
++	mdio_wr((reg) + (lane) * 0x100,  \
++		(mdio_rd((reg) + (lane) * 0x100) >> 8))
++
++	if (lane == ALL_LANES) {
++		for (i = 0; i < ALL_LANES; i++) {
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20 + 1, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20 + 2, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20 + 3, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21 + 1, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21 + 2, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21 + 3, i);
++			AZ_OFFSET_LANE_UPDATE(PHYMISC_REG22, i);
++		}
++	} else {
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20 + 1, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20 + 2, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG20 + 3, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21 + 1, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21 + 2, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG21 + 3, lane);
++		AZ_OFFSET_LANE_UPDATE(PHYMISC_REG22, lane);
++	}
++
++	mdio_wr(PHYCTRL_REG7, 0x0001);
++}
++
++void save_vco_codes(int lane)
++{
++	int i;
++
++	if (lane == ALL_LANES) {
++		for (i = 0; i < ALL_LANES; i++) {
++			vco_codes[i] = mdio_rd(PHYMISC_REG5 + i * 0x100);
++			mdio_wr(PHYMISC_REG5 + i * 0x100,
++				vco_codes[i] + RX_VCO_CODE_OFFSET);
++		}
++	} else {
++		vco_codes[lane] = mdio_rd(PHYMISC_REG5 + lane * 0x100);
++		mdio_wr(PHYMISC_REG5 + lane * 0x100,
++			vco_codes[lane] + RX_VCO_CODE_OFFSET);
++	}
++}
++
++int inphi_lane_recovery(int lane)
++{
++	int i, value, az_pass;
++
++	switch (lane) {
++	case 0:
++	case 1:
++	case 2:
++	case 3:
++		rx_reset_assert(lane);
++		mdelay(20);
++		break;
++	case ALL_LANES:
++		mdio_wr(PHYMISC_REG2, 0x9C00);
++		mdelay(20);
++		do {
++			value = mdio_rd(PHYMISC_REG2);
++			udelay(10);
++		} while (!bit_test(value, 4));
++		break;
++	default:
++		dev_err(&inphi_phydev->mdio.dev,
++			"Incorrect usage of APIs in %s driver\n",
++			inphi_phydev->drv->name);
++		break;
++	}
++
++	if (lane == ALL_LANES) {
++		for (i = 0; i < ALL_LANES; i++)
++			mdio_wr(PHYMISC_REG7 + i * 0x100, VCO_CODE);
++	} else {
++		mdio_wr(PHYMISC_REG7 + lane * 0x100, VCO_CODE);
++	}
++
++	if (lane == ALL_LANES)
++		for (i = 0; i < ALL_LANES; i++)
++			mdio_wr(PHYCTRL_REG5 + i * 0x100, 0x0418);
++	else
++		mdio_wr(PHYCTRL_REG5 + lane * 0x100, 0x0418);
++
++	mdio_wr(PHYCTRL_REG7,   0x0000);
++
++	rx_reset_de_assert(lane);
++
++	if (lane == ALL_LANES) {
++		for (i = 0; i < ALL_LANES; i++) {
++			mdio_wr(PHYCTRL_REG5 + i * 0x100, 0x0410);
++			mdio_wr(PHYCTRL_REG5 + i * 0x100, 0x0412);
++		}
++	} else {
++		mdio_wr(PHYCTRL_REG5 + lane * 0x100, 0x0410);
++		mdio_wr(PHYCTRL_REG5 + lane * 0x100, 0x0412);
++	}
++
++	for (i = 0; i < 64; i++) {
++		mdelay(100);
++		az_pass = az_complete_test(lane);
++		if (az_pass) {
++			save_az_offsets(lane);
++			break;
++		}
++	}
++
++	if (!az_pass) {
++		pr_info("in112525: AZ calibration fail @ lane=%d\n", lane);
++		return -1;
++	}
++
++	if (lane == ALL_LANES) {
++		mdio_wr(PHYMISC_REG8, 0x0002);
++		mdio_wr(PHYMISC_REG9, 0x2028);
++		mdio_wr(PHYCTRL_REG6, 0x0010);
++		usleep_range(1000, 1200);
++		mdio_wr(PHYCTRL_REG6, 0x0110);
++		mdelay(30);
++		mdio_wr(PHYMISC_REG9, 0x3020);
++	} else {
++		mdio_wr(PHYMISC_REG4 + lane * 0x100, 0x0002);
++		mdio_wr(PHYMISC_REG6 + lane * 0x100, 0x2028);
++		mdio_wr(PHYCTRL_REG5 + lane * 0x100, 0x0010);
++		usleep_range(1000, 1200);
++		mdio_wr(PHYCTRL_REG5 + lane * 0x100, 0x0110);
++		mdelay(30);
++		mdio_wr(PHYMISC_REG6 + lane * 0x100, 0x3020);
++	}
++
++	if (lane == ALL_LANES) {
++		mdio_wr(PHYMISC_REG2, 0x1C00);
++		mdio_wr(PHYMISC_REG2, 0x0C00);
++	} else {
++		tx_restart(lane);
++		mdelay(11);
++	}
++
++	if (lane == ALL_LANES) {
++		if (bit_test(mdio_rd(PHYMISC_REG2), 6) == 0)
++			return -1;
++	} else {
++		if (tx_pll_lock_test(lane) == 0)
++			return -1;
++	}
++
++	save_vco_codes(lane);
++
++	if (lane == ALL_LANES) {
++		mdio_wr(PHYMISC_REG2, 0x0400);
++		mdio_wr(PHYMISC_REG2, 0x0000);
++		value = mdio_rd(PHYCTRL_REG1);
++		value = value & 0xffbf;
++		mdio_wr(PHYCTRL_REG2, value);
++	} else {
++		tx_core_de_assert(lane);
++	}
++
++	if (lane == ALL_LANES) {
++		mdio_wr(PHYMISC_REG1, 0x8000);
++		mdio_wr(PHYMISC_REG1, 0x0000);
++	}
++	mdio_rd(PHYMISC_REG1);
++	mdio_rd(PHYMISC_REG1);
++	usleep_range(1000, 1200);
++	mdio_rd(PHYSTAT_REG1);
++	mdio_rd(PHYSTAT_REG2);
++
++	return 0;
++}
++
++static void mykmod_work_handler(struct work_struct *w)
++{
++	int all_lanes_lock, lane0_lock, lane1_lock, lane2_lock, lane3_lock;
++
++	lane0_lock = bit_test(mdio_rd(0x123), 15);
++	lane1_lock = bit_test(mdio_rd(0x223), 15);
++	lane2_lock = bit_test(mdio_rd(0x323), 15);
++	lane3_lock = bit_test(mdio_rd(0x423), 15);
++
++	/* check if the chip had any successful lane lock from the previous
++	 * stage (e.g. u-boot)
++	 */
++	all_lanes_lock = lane0_lock | lane1_lock | lane2_lock | lane3_lock;
++
++	if (!all_lanes_lock) {
++		/* start fresh */
++		inphi_lane_recovery(ALL_LANES);
++	} else {
++		if (!lane0_lock)
++			inphi_lane_recovery(0);
++		if (!lane1_lock)
++			inphi_lane_recovery(1);
++		if (!lane2_lock)
++			inphi_lane_recovery(2);
++		if (!lane3_lock)
++			inphi_lane_recovery(3);
++	}
++
++	queue_delayed_work(wq, &mykmod_work, onesec);
++}
++
++int inphi_probe(struct phy_device *phydev)
++{
++	int phy_id = 0, id_lsb = 0, id_msb = 0;
++
++	/* Read device id from phy registers */
++	id_lsb = phy_read_mmd(phydev, MDIO_MMD_VEND1, INPHI_S03_DEVICE_ID_MSB);
++	if (id_lsb < 0)
++		return -ENXIO;
++
++	phy_id = id_lsb << 16;
++
++	id_msb = phy_read_mmd(phydev, MDIO_MMD_VEND1, INPHI_S03_DEVICE_ID_LSB);
++	if (id_msb < 0)
++		return -ENXIO;
++
++	phy_id |= id_msb;
++
++	/* Make sure the device tree binding matched the driver with the
++	 * right device.
++	 */
++	if (phy_id != phydev->drv->phy_id) {
++		dev_err(&phydev->mdio.dev,
++			"Error matching phy with %s driver\n",
++			phydev->drv->name);
++		return -ENODEV;
++	}
++
++	/* update the local phydev pointer, used inside all APIs */
++	inphi_phydev = phydev;
++	onesec = msecs_to_jiffies(INPHI_POLL_DELAY);
++
++	wq = create_singlethread_workqueue("inphi_kmod");
++	if (wq) {
++		queue_delayed_work(wq, &mykmod_work, onesec);
++	} else {
++		dev_err(&phydev->mdio.dev,
++			"Error creating kernel workqueue for %s driver\n",
++			phydev->drv->name);
++		return -ENOMEM;
++	}
++
++	return 0;
++}
++
++static struct phy_driver inphi_driver[] = {
++{
++	.phy_id		= PHY_ID_IN112525,
++	.phy_id_mask	= 0x0ff0fff0,
++	.name		= "Inphi 112525_S03",
++	.features	= PHY_GBIT_FEATURES,
++	.probe		= &inphi_probe,
++},
++};
++
++module_phy_driver(inphi_driver);
++
++static struct mdio_device_id __maybe_unused inphi_tbl[] = {
++	{ PHY_ID_IN112525, 0x0ff0fff0},
++	{},
++};
++
++MODULE_DEVICE_TABLE(mdio, inphi_tbl);

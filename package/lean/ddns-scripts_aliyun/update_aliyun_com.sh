@@ -17,6 +17,7 @@
 [ -z "$password" ] && write_log 14 "配置错误！保存阿里云API访问密钥的'密码'不能为空"
 
 # 检查外部调用工具
+WGET_SSL='wget'
 [ -n "$WGET_SSL" ] || write_log 13 "使用阿里云API需要 GNU Wget 支持，请先安装"
 command -v sed >/dev/null 2>&1 || write_log 13 "使用阿里云API需要 sed 支持，请先安装"
 command -v openssl >/dev/null 2>&1 || write_log 13 "使用阿里云API需要 openssl-util 支持，请先安装"
@@ -41,7 +42,7 @@ __DOMAIN="${domain#*@}"
 
 # 构造基本通信命令
 build_command() {
-	__CMDBASE="$WGET_SSL -nv -t 1 -O $DATFILE -o $ERRFILE"
+	__CMDBASE="$WGET_SSL --no-hsts -nv -t 1 -O $DATFILE -o $ERRFILE"
 	# 绑定用于通信的主机/IP
 	if [ -n "$bind_network" ]; then
 		local bind_ip run_prog
@@ -133,7 +134,7 @@ build_Request() {
 	__URLARGS=
 	for string in $args; do
 		case "${string%%=*}" in
-			Format|Version|AccessKeyId|SignatureMethod|Timestamp|SignatureVersion|SignatureNonce|Signature) ;; # 过滤公共参数
+			Format|TTL|Version|AccessKeyId|SignatureMethod|Timestamp|SignatureVersion|SignatureNonce|Signature) ;; # 过滤公共参数
 			*) __URLARGS="$__URLARGS${__SEPARATOR}"$(percentEncode "${string%%=*}")"="$(percentEncode "${string#*=}");;
 		esac
 	done
@@ -141,6 +142,7 @@ build_Request() {
 
 	# 附加公共参数
 	string="Format=JSON"; __URLARGS="$__URLARGS${__SEPARATOR}"$(percentEncode "${string%%=*}")"="$(percentEncode "${string#*=}")
+	string="TTL=600";__URLARGS="$__URLARGS${__SEPARATOR}"$(percentEncode "${string%%=*}")"="$(percentEncode "${string#*=}")
 	string="Version=2015-01-09"; __URLARGS="$__URLARGS${__SEPARATOR}"$(percentEncode "${string%%=*}")"="$(percentEncode "${string#*=}")
 	string="AccessKeyId=$username"; __URLARGS="$__URLARGS${__SEPARATOR}"$(percentEncode "${string%%=*}")"="$(percentEncode "${string#*=}")
 	string="SignatureMethod=HMAC-SHA1"; __URLARGS="$__URLARGS${__SEPARATOR}"$(percentEncode "${string%%=*}")"="$(percentEncode "${string#*=}")

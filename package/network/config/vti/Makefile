@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vti
 PKG_VERSION:=1
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_LICENSE:=GPL-2.0
 
 include $(INCLUDE_DIR)/package.mk
@@ -18,6 +18,7 @@ define Package/vti/Default
   SECTION:=net
   CATEGORY:=Network
   MAINTAINER:=Andre Valentin <avalentin@marcant.net>
+  PKGARCH:=all
 endef
 
 define Package/vti

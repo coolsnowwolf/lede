@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libusb
 PKG_VERSION:=1.0.22
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=\
@@ -31,6 +31,7 @@ define Package/libusb-1.0
   TITLE:=A library for accessing Linux USB devices
   DEPENDS:=+libpthread +librt
   URL:=http://libusb.info/
+  ABI_VERSION:=0
 endef
 
 define Package/libusb-1.0/description
@@ -49,7 +50,7 @@ endef
 
 define Package/libusb-1.0/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libusb*.so* $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libusb*.so.* $(1)/usr/lib/
 endef
 
 $(eval $(call BuildPackage,libusb-1.0))

@@ -1,0 +1,348 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Eneas U de Queiroz <cote2004-github@yahoo.com>
+Date: Tue, 6 Nov 2018 10:57:03 -0200
+Subject: e_devcrypto: make the /dev/crypto engine dynamic
+
+Engine has been moved from crypto/engine/eng_devcrypto.c to
+engines/e_devcrypto.c.
+
+Signed-off-by: Eneas U de Queiroz <cote2004-github@yahoo.com>
+
+diff --git a/crypto/engine/build.info b/crypto/engine/build.info
+index e00802a3fd..47fe948966 100644
+--- a/crypto/engine/build.info
++++ b/crypto/engine/build.info
+@@ -6,6 +6,3 @@ SOURCE[../../libcrypto]=\
+         tb_cipher.c tb_digest.c tb_pkmeth.c tb_asnmth.c tb_eckey.c \
+         eng_openssl.c eng_cnf.c eng_dyn.c \
+         eng_rdrand.c
+-IF[{- !$disabled{devcryptoeng} -}]
+-  SOURCE[../../libcrypto]=eng_devcrypto.c
+-ENDIF
+diff --git a/crypto/init.c b/crypto/init.c
+index 1b0d523bea..ee3e2eb075 100644
+--- a/crypto/init.c
++++ b/crypto/init.c
+@@ -329,18 +329,6 @@ DEFINE_RUN_ONCE_STATIC(ossl_init_engine_openssl)
+     engine_load_openssl_int();
+     return 1;
+ }
+-# ifndef OPENSSL_NO_DEVCRYPTOENG
+-static CRYPTO_ONCE engine_devcrypto = CRYPTO_ONCE_STATIC_INIT;
+-DEFINE_RUN_ONCE_STATIC(ossl_init_engine_devcrypto)
+-{
+-#  ifdef OPENSSL_INIT_DEBUG
+-    fprintf(stderr, "OPENSSL_INIT: ossl_init_engine_devcrypto: "
+-                    "engine_load_devcrypto_int()\n");
+-#  endif
+-    engine_load_devcrypto_int();
+-    return 1;
+-}
+-# endif
+ 
+ # ifndef OPENSSL_NO_RDRAND
+ static CRYPTO_ONCE engine_rdrand = CRYPTO_ONCE_STATIC_INIT;
+@@ -365,6 +353,18 @@ DEFINE_RUN_ONCE_STATIC(ossl_init_engine_dynamic)
+     return 1;
+ }
+ # ifndef OPENSSL_NO_STATIC_ENGINE
++#  ifndef OPENSSL_NO_DEVCRYPTOENG
++static CRYPTO_ONCE engine_devcrypto = CRYPTO_ONCE_STATIC_INIT;
++DEFINE_RUN_ONCE_STATIC(ossl_init_engine_devcrypto)
++{
++#   ifdef OPENSSL_INIT_DEBUG
++    fprintf(stderr, "OPENSSL_INIT: ossl_init_engine_devcrypto: "
++                    "engine_load_devcrypto_int()\n");
++#   endif
++    engine_load_devcrypto_int();
++    return 1;
++}
++#  endif
+ #  if !defined(OPENSSL_NO_HW) && !defined(OPENSSL_NO_HW_PADLOCK)
+ static CRYPTO_ONCE engine_padlock = CRYPTO_ONCE_STATIC_INIT;
+ DEFINE_RUN_ONCE_STATIC(ossl_init_engine_padlock)
+@@ -713,11 +713,6 @@ int OPENSSL_init_crypto(uint64_t opts, const OPENSSL_INIT_SETTINGS *settings)
+     if ((opts & OPENSSL_INIT_ENGINE_OPENSSL)
+             && !RUN_ONCE(&engine_openssl, ossl_init_engine_openssl))
+         return 0;
+-# if !defined(OPENSSL_NO_HW) && !defined(OPENSSL_NO_DEVCRYPTOENG)
+-    if ((opts & OPENSSL_INIT_ENGINE_CRYPTODEV)
+-            && !RUN_ONCE(&engine_devcrypto, ossl_init_engine_devcrypto))
+-        return 0;
+-# endif
+ # ifndef OPENSSL_NO_RDRAND
+     if ((opts & OPENSSL_INIT_ENGINE_RDRAND)
+             && !RUN_ONCE(&engine_rdrand, ossl_init_engine_rdrand))
+@@ -727,6 +722,11 @@ int OPENSSL_init_crypto(uint64_t opts, const OPENSSL_INIT_SETTINGS *settings)
+             && !RUN_ONCE(&engine_dynamic, ossl_init_engine_dynamic))
+         return 0;
+ # ifndef OPENSSL_NO_STATIC_ENGINE
++#  ifndef OPENSSL_NO_DEVCRYPTOENG
++    if ((opts & OPENSSL_INIT_ENGINE_CRYPTODEV)
++            && !RUN_ONCE(&engine_devcrypto, ossl_init_engine_devcrypto))
++        return 0;
++#  endif
+ #  if !defined(OPENSSL_NO_HW) && !defined(OPENSSL_NO_HW_PADLOCK)
+     if ((opts & OPENSSL_INIT_ENGINE_PADLOCK)
+             && !RUN_ONCE(&engine_padlock, ossl_init_engine_padlock))
+diff --git a/engines/build.info b/engines/build.info
+index 1db771971c..33a25d7004 100644
+--- a/engines/build.info
++++ b/engines/build.info
+@@ -11,6 +11,9 @@ IF[{- !$disabled{"engine"} -}]
+     IF[{- !$disabled{afalgeng} -}]
+       SOURCE[../libcrypto]=e_afalg.c
+     ENDIF
++    IF[{- !$disabled{"devcryptoeng"} -}]
++      SOURCE[../libcrypto]=e_devcrypto.c
++    ENDIF
+   ELSE
+     IF[{- !$disabled{hw} && !$disabled{'hw-padlock'} -}]
+       ENGINES=padlock
+@@ -30,6 +33,12 @@ IF[{- !$disabled{"engine"} -}]
+       DEPEND[afalg]=../libcrypto
+       INCLUDE[afalg]= ../include
+     ENDIF
++    IF[{- !$disabled{"devcryptoeng"} -}]
++      ENGINES=devcrypto
++      SOURCE[devcrypto]=e_devcrypto.c
++      DEPEND[devcrypto]=../libcrypto
++      INCLUDE[devcrypto]=../include
++    ENDIF
+ 
+     ENGINES_NO_INST=ossltest dasync
+     SOURCE[dasync]=e_dasync.c
+diff --git a/crypto/engine/eng_devcrypto.c b/engines/e_devcrypto.c
+similarity index 95%
+rename from crypto/engine/eng_devcrypto.c
+rename to engines/e_devcrypto.c
+index 2c1b52d572..eff1ed3a7d 100644
+--- a/crypto/engine/eng_devcrypto.c
++++ b/engines/e_devcrypto.c
+@@ -7,7 +7,7 @@
+  * https://www.openssl.org/source/license.html
+  */
+ 
+-#include "e_os.h"
++#include "../e_os.h"
+ #include <string.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
+@@ -31,18 +31,20 @@
+ # define CHECK_BSD_STYLE_MACROS
+ #endif
+ 
++#define engine_devcrypto_id "devcrypto"
++
+ /*
+  * ONE global file descriptor for all sessions.  This allows operations
+  * such as digest session data copying (see digest_copy()), but is also
+  * saner...  why re-open /dev/crypto for every session?
+  */
+-static int cfd;
++static int cfd = -1;
+ #define DEVCRYPTO_REQUIRE_ACCELERATED 0 /* require confirmation of acceleration */
+ #define DEVCRYPTO_USE_SOFTWARE        1 /* allow software drivers */
+ #define DEVCRYPTO_REJECT_SOFTWARE     2 /* only disallow confirmed software drivers */
+ 
+-#define DEVCRYPTO_DEFAULT_USE_SOFDTRIVERS DEVCRYPTO_REJECT_SOFTWARE
+-static int use_softdrivers = DEVCRYPTO_DEFAULT_USE_SOFDTRIVERS;
++#define DEVCRYPTO_DEFAULT_USE_SOFTDRIVERS DEVCRYPTO_REJECT_SOFTWARE
++static int use_softdrivers = DEVCRYPTO_DEFAULT_USE_SOFTDRIVERS;
+ 
+ /*
+  * cipher/digest status & acceleration definitions
+@@ -1058,7 +1060,7 @@ static const ENGINE_CMD_DEFN devcrypto_cmds[] = {
+         OPENSSL_MSTR(DEVCRYPTO_USE_SOFTWARE) "=allow all drivers, "
+         OPENSSL_MSTR(DEVCRYPTO_REJECT_SOFTWARE)
+         "=use if acceleration can't be determined) [default="
+-        OPENSSL_MSTR(DEVCRYPTO_DEFAULT_USE_SOFDTRIVERS) "]",
++        OPENSSL_MSTR(DEVCRYPTO_DEFAULT_USE_SOFTDRIVERS) "]",
+     ENGINE_CMD_FLAG_NUMERIC},
+ #endif
+ 
+@@ -1166,32 +1168,22 @@ static int devcrypto_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f) (void))
+  *
+  *****/
+ 
+-static int devcrypto_unload(ENGINE *e)
+-{
+-    destroy_all_cipher_methods();
+-#ifdef IMPLEMENT_DIGEST
+-    destroy_all_digest_methods();
+-#endif
+-
+-    close(cfd);
+-
+-    return 1;
+-}
+ /*
+- * This engine is always built into libcrypto, so it doesn't offer any
+- * ability to be dynamically loadable.
++ * Opens /dev/crypto
+  */
+-void engine_load_devcrypto_int()
++static int open_devcrypto(void)
+ {
+-    ENGINE *e = NULL;
+     int fd;
+ 
++    if (cfd >= 0)
++        return 1;
++
+     if ((fd = open("/dev/crypto", O_RDWR, 0)) < 0) {
+ #ifndef ENGINE_DEVCRYPTO_DEBUG
+         if (errno != ENOENT)
+ #endif
+             fprintf(stderr, "Could not open /dev/crypto: %s\n", strerror(errno));
+-        return;
++        return 0;
+     }
+ 
+ #ifdef CRIOGET
+@@ -1199,35 +1191,61 @@ void engine_load_devcrypto_int()
+         fprintf(stderr, "Could not create crypto fd: %s\n", strerror(errno));
+         close(fd);
+         cfd = -1;
+-        return;
++        return 0;
+     }
+     close(fd);
+ #else
+     cfd = fd;
+ #endif
+ 
+-    if ((e = ENGINE_new()) == NULL
+-        || !ENGINE_set_destroy_function(e, devcrypto_unload)) {
+-        ENGINE_free(e);
+-        /*
+-         * We know that devcrypto_unload() won't be called when one of the
+-         * above two calls have failed, so we close cfd explicitly here to
+-         * avoid leaking resources.
+-         */
+-        close(cfd);
+-        return;
++    return 1;
++}
++
++static int close_devcrypto(void)
++{
++    int ret;
++
++    if (cfd < 0)
++        return 1;
++    ret = close(cfd);
++    cfd = -1;
++    if (ret != 0) {
++        fprintf(stderr, "Error closing /dev/crypto: %s\n", strerror(errno));
++        return 0;
+     }
++    return 1;
++}
+ 
+-    prepare_cipher_methods();
++static int devcrypto_unload(ENGINE *e)
++{
++    destroy_all_cipher_methods();
+ #ifdef IMPLEMENT_DIGEST
+-    prepare_digest_methods();
++    destroy_all_digest_methods();
+ #endif
+ 
+-    if (!ENGINE_set_id(e, "devcrypto")
++    close_devcrypto();
++
++    return 1;
++}
++
++static int bind_devcrypto(ENGINE *e) {
++
++    if (!ENGINE_set_id(e, engine_devcrypto_id)
+         || !ENGINE_set_name(e, "/dev/crypto engine")
++        || !ENGINE_set_destroy_function(e, devcrypto_unload)
+         || !ENGINE_set_cmd_defns(e, devcrypto_cmds)
+-        || !ENGINE_set_ctrl_function(e, devcrypto_ctrl)
++        || !ENGINE_set_ctrl_function(e, devcrypto_ctrl))
++        return 0;
+ 
++    prepare_cipher_methods();
++#ifdef IMPLEMENT_DIGEST
++    prepare_digest_methods();
++#endif
++
++    return (ENGINE_set_ciphers(e, devcrypto_ciphers)
++#ifdef IMPLEMENT_DIGEST
++        && ENGINE_set_digests(e, devcrypto_digests)
++#endif
+ /*
+  * Asymmetric ciphers aren't well supported with /dev/crypto.  Among the BSD
+  * implementations, it seems to only exist in FreeBSD, and regarding the
+@@ -1250,23 +1268,36 @@ void engine_load_devcrypto_int()
+  */
+ #if 0
+ # ifndef OPENSSL_NO_RSA
+-        || !ENGINE_set_RSA(e, devcrypto_rsa)
++        && ENGINE_set_RSA(e, devcrypto_rsa)
+ # endif
+ # ifndef OPENSSL_NO_DSA
+-        || !ENGINE_set_DSA(e, devcrypto_dsa)
++        && ENGINE_set_DSA(e, devcrypto_dsa)
+ # endif
+ # ifndef OPENSSL_NO_DH
+-        || !ENGINE_set_DH(e, devcrypto_dh)
++        && ENGINE_set_DH(e, devcrypto_dh)
+ # endif
+ # ifndef OPENSSL_NO_EC
+-        || !ENGINE_set_EC(e, devcrypto_ec)
++        && ENGINE_set_EC(e, devcrypto_ec)
+ # endif
+ #endif
+-        || !ENGINE_set_ciphers(e, devcrypto_ciphers)
+-#ifdef IMPLEMENT_DIGEST
+-        || !ENGINE_set_digests(e, devcrypto_digests)
+-#endif
+-        ) {
++        );
++}
++
++#ifdef OPENSSL_NO_DYNAMIC_ENGINE
++/*
++ * In case this engine is built into libcrypto, then it doesn't offer any
++ * ability to be dynamically loadable.
++ */
++void engine_load_devcrypto_int(void)
++{
++    ENGINE *e = NULL;
++
++    if (!open_devcrypto())
++        return;
++
++    if ((e = ENGINE_new()) == NULL
++        || !bind_devcrypto(e)) {
++        close_devcrypto();
+         ENGINE_free(e);
+         return;
+     }
+@@ -1275,3 +1306,22 @@ void engine_load_devcrypto_int()
+     ENGINE_free(e);          /* Loose our local reference */
+     ERR_clear_error();
+ }
++
++#else
++
++static int bind_helper(ENGINE *e, const char *id)
++{
++    if ((id && (strcmp(id, engine_devcrypto_id) != 0))
++        || !open_devcrypto())
++        return 0;
++    if (!bind_devcrypto(e)) {
++        close_devcrypto();
++        return 0;
++    }
++    return 1;
++}
++
++IMPLEMENT_DYNAMIC_CHECK_FN()
++IMPLEMENT_DYNAMIC_BIND_FN(bind_helper)
++
++#endif

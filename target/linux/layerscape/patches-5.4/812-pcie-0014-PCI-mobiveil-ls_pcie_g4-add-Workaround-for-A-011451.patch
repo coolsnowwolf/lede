@@ -1,0 +1,73 @@
+From 5f1673ff67d5e8acf590fb5a4cc2d0d5d4115927 Mon Sep 17 00:00:00 2001
+From: Hou Zhiqiang <Zhiqiang.Hou@nxp.com>
+Date: Tue, 6 Nov 2018 10:14:57 +0800
+Subject: [PATCH] PCI: mobiveil: ls_pcie_g4: add Workaround for A-011451
+
+When LX2 PCIe controller is sending multiple split completions and
+ACK latency expires indicating that ACK should be send at priority.
+But because of large number of split completions and FC update DLLP,
+the controller does not give priority to ACK transmission. This
+results into ACK latency timer timeout error at the link partner and
+the pending TLPs are replayed by the link partner again.
+
+Workaround:
+1. Reduce the ACK latency timeout value to a very small value.
+2. Restrict the number of completions from the LX2 PCIe controller
+   to 1, by changing the Max Read Request Size (MRRS) of link partner
+   to the same value as Max Packet size (MPS).
+
+This patch implemented part 1, the part 2 can be set by kernel parameter
+'pci=pcie_bus_perf'
+
+This ERRATA is only for LX2160A Rev1.0, and it will be fixed
+in Rev2.0.
+
+Signed-off-by: Hou Zhiqiang <Zhiqiang.Hou@nxp.com>
+---
+ drivers/pci/controller/mobiveil/pcie-layerscape-gen4.c | 15 +++++++++++++++
+ drivers/pci/controller/mobiveil/pcie-mobiveil.h        |  4 ++++
+ 2 files changed, 19 insertions(+)
+
+--- a/drivers/pci/controller/mobiveil/pcie-layerscape-gen4.c
++++ b/drivers/pci/controller/mobiveil/pcie-layerscape-gen4.c
+@@ -80,12 +80,27 @@ static bool ls_pcie_g4_is_bridge(struct
+ 	return header_type == PCI_HEADER_TYPE_BRIDGE;
+ }
+ 
++static void workaround_A011451(struct ls_pcie_g4 *pcie)
++{
++	struct mobiveil_pcie *mv_pci = &pcie->pci;
++	u32 val;
++
++	/* Set ACK latency timeout */
++	val = csr_readl(mv_pci, GPEX_ACK_REPLAY_TO);
++	val &= ~(ACK_LAT_TO_VAL_MASK << ACK_LAT_TO_VAL_SHIFT);
++	val |= (4 << ACK_LAT_TO_VAL_SHIFT);
++	csr_writel(mv_pci, val, GPEX_ACK_REPLAY_TO);
++}
++
+ static int ls_pcie_g4_host_init(struct mobiveil_pcie *pci)
+ {
+ 	struct ls_pcie_g4 *pcie = to_ls_pcie_g4(pci);
+ 
+ 	pcie->rev = csr_readb(pci, PCI_REVISION_ID);
+ 
++	if (pcie->rev == REV_1_0)
++		workaround_A011451(pcie);
++
+ 	return 0;
+ }
+ 
+--- a/drivers/pci/controller/mobiveil/pcie-mobiveil.h
++++ b/drivers/pci/controller/mobiveil/pcie-mobiveil.h
+@@ -86,6 +86,10 @@
+ #define PAB_AXI_AMAP_PEX_WIN_H(win)	PAB_REG_ADDR(0x0bac, win)
+ #define PAB_INTP_AXI_PIO_CLASS		0x474
+ 
++#define GPEX_ACK_REPLAY_TO		0x438
++#define  ACK_LAT_TO_VAL_MASK		0x1fff
++#define  ACK_LAT_TO_VAL_SHIFT		0
++
+ #define PAB_PEX_AMAP_CTRL(win)		PAB_REG_ADDR(0x4ba0, win)
+ #define  AMAP_CTRL_EN_SHIFT		0
+ #define  AMAP_CTRL_TYPE_SHIFT		1

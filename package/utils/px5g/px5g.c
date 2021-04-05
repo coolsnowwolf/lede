@@ -32,6 +32,7 @@
 
 #include <mbedtls/bignum.h>
 #include <mbedtls/x509_crt.h>
+#include <mbedtls/ecp.h>
 #include <mbedtls/rsa.h>
 #include <mbedtls/pk.h>
 
@@ -73,6 +74,23 @@ static void write_file(const char *path, int len, bool pem)
 	fclose(f);
 }
 
+static mbedtls_ecp_group_id ecp_curve(const char *name)
+{
+	const mbedtls_ecp_curve_info *curve_info;
+
+	if (!strcmp(name, "P-256"))
+		return MBEDTLS_ECP_DP_SECP256R1;
+	else if (!strcmp(name, "P-384"))
+		return MBEDTLS_ECP_DP_SECP384R1;
+	else if (!strcmp(name, "P-521"))
+		return MBEDTLS_ECP_DP_SECP521R1;
+	curve_info = mbedtls_ecp_curve_info_from_name(name);
+	if (curve_info == NULL)
+		return MBEDTLS_ECP_DP_NONE;
+	else
+		return curve_info->grp_id;
+}
+
 static void write_key(mbedtls_pk_context *key, const char *path, bool pem)
 {
 	int len = 0;
@@ -89,24 +107,33 @@ static void write_key(mbedtls_pk_context *key, const char *path, bool pem)
 	write_file(path, len, pem);
 }
 
-static void gen_key(mbedtls_pk_context *key, int ksize, int exp, bool pem)
+static void gen_key(mbedtls_pk_context *key, bool rsa, int ksize, int exp,
+		    mbedtls_ecp_group_id curve, bool pem)
 {
 	mbedtls_pk_init(key);
-	fprintf(stderr, "Generating RSA private key, %i bit long modulus\n", ksize);
-	mbedtls_pk_setup(key, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA));
-	if (mbedtls_rsa_gen_key(mbedtls_pk_rsa(*key), _urandom, NULL, ksize, exp)) {
-		fprintf(stderr, "error: key generation failed\n");
-		exit(1);
+	if (rsa) {
+		fprintf(stderr, "Generating RSA private key, %i bit long modulus\n", ksize);
+		mbedtls_pk_setup(key, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA));
+		if (!mbedtls_rsa_gen_key(mbedtls_pk_rsa(*key), _urandom, NULL, ksize, exp))
+			return;
+	} else {
+		fprintf(stderr, "Generating EC private key\n");
+		mbedtls_pk_setup(key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
+		if (!mbedtls_ecp_gen_key(curve, mbedtls_pk_ec(*key), _urandom, NULL))
+			return;
 	}
+	fprintf(stderr, "error: key generation failed\n");
+	exit(1);
 }
 
-int rsakey(char **arg)
+int dokey(bool rsa, char **arg)
 {
 	mbedtls_pk_context key;
 	unsigned int ksize = 512;
 	int exp = 65537;
 	char *path = NULL;
 	bool pem = true;
+	mbedtls_ecp_group_id curve = MBEDTLS_ECP_DP_SECP256R1;
 
 	while (*arg && **arg == '-') {
 		if (!strcmp(*arg, "-out") && arg[1]) {
@@ -120,10 +147,17 @@ int rsakey(char **arg)
 		arg++;
 	}
 
-	if (*arg)
+	if (*arg && rsa) {
 		ksize = (unsigned int)atoi(*arg);
+	} else if (*arg) {
+		curve = ecp_curve((const char *)*arg);
+		if (curve == MBEDTLS_ECP_DP_NONE) {
+			fprintf(stderr, "error: invalid curve name: %s\n", *arg);
+			return 1;
+		}
+	}
 
-	gen_key(&key, ksize, exp, pem);
+	gen_key(&key, rsa, ksize, exp, curve, pem);
 	write_key(&key, path, pem);
 
 	mbedtls_pk_free(&key);
@@ -146,19 +180,36 @@ int selfsigned(char **arg)
 	time_t from = time(NULL), to;
 	char fstr[20], tstr[20], sstr[17];
 	int len;
+	bool rsa = true;
+	mbedtls_ecp_group_id curve = MBEDTLS_ECP_DP_SECP256R1;
 
 	while (*arg && **arg == '-') {
 		if (!strcmp(*arg, "-der")) {
 			pem = false;
 		} else if (!strcmp(*arg, "-newkey") && arg[1]) {
-			if (strncmp(arg[1], "rsa:", 4)) {
-				fprintf(stderr, "error: invalid algorithm");
+			if (!strncmp(arg[1], "rsa:", 4)) {
+				rsa = true;
+				ksize = (unsigned int)atoi(arg[1] + 4);
+			} else if (!strcmp(arg[1], "ec")) {
+				rsa = false;
+			} else {
+				fprintf(stderr, "error: invalid algorithm\n");
 				return 1;
 			}
-			ksize = (unsigned int)atoi(arg[1] + 4);
 			arg++;
 		} else if (!strcmp(*arg, "-days") && arg[1]) {
 			days = (unsigned int)atoi(arg[1]);
+			arg++;
+		} else if (!strcmp(*arg, "-pkeyopt") && arg[1]) {
+			if (strncmp(arg[1], "ec_paramgen_curve:", 18)) {
+				fprintf(stderr, "error: invalid pkey option: %s\n", arg[1]);
+				return 1;
+			}
+			curve = ecp_curve((const char *)(arg[1] + 18));
+			if (curve == MBEDTLS_ECP_DP_NONE) {
+				fprintf(stderr, "error: invalid curve name: %s\n", arg[1] + 18);
+				return 1;
+			}
 			arg++;
 		} else if (!strcmp(*arg, "-keyout") && arg[1]) {
 			keypath = arg[1];
@@ -196,8 +247,7 @@ int selfsigned(char **arg)
 		}
 		arg++;
 	}
-
-	gen_key(&key, ksize, exp, pem);
+	gen_key(&key, rsa, ksize, exp, curve, pem);
 
 	if (keypath)
 		write_key(&key, keypath, pem);
@@ -223,7 +273,7 @@ int selfsigned(char **arg)
 	mbedtls_x509write_crt_set_subject_key_identifier(&cert);
 	mbedtls_x509write_crt_set_authority_key_identifier(&cert);
 
-	_urandom(NULL, buf, 8);
+	_urandom(NULL, (void *) buf, 8);
 	for (len = 0; len < 8; len++)
 		sprintf(sstr + len*2, "%02x", (unsigned char) buf[len]);
 
@@ -260,8 +310,10 @@ int main(int argc, char *argv[])
 
 	if (!argv[1]) {
 		//Usage
+	} else if (!strcmp(argv[1], "eckey")) {
+		return dokey(false, argv+2);
 	} else if (!strcmp(argv[1], "rsakey")) {
-		return rsakey(argv+2);
+		return dokey(true, argv+2);
 	} else if (!strcmp(argv[1], "selfsigned")) {
 		return selfsigned(argv+2);
 	}
@@ -269,6 +321,6 @@ int main(int argc, char *argv[])
 	fprintf(stderr,
 		"PX5G X.509 Certificate Generator Utility v" PX5G_VERSION "\n" PX5G_COPY
 		"\nbased on PolarSSL by Christophe Devine and Paul Bakker\n\n");
-	fprintf(stderr, "Usage: %s [rsakey|selfsigned]\n", *argv);
+	fprintf(stderr, "Usage: %s [eckey|rsakey|selfsigned]\n", *argv);
 	return 1;
 }

@@ -17,7 +17,7 @@ for pkg in `find $pkg_dir -name '*.ipk' | sort`; do
 	[[ "$name" = "kernel" ]] && continue
 	[[ "$name" = "libc" ]] && continue
 	echo "Generating index for package $pkg" >&2
-	file_size=$(ls -l $pkg | awk '{print $5}')
+	file_size=$(stat -L -c%s $pkg)
 	sha256sum=$(mkhash sha256 $pkg)
 	# Take pains to make variable value sed-safe
 	sed_safe_pkg=`echo $pkg | sed -e 's/^\.\///g' -e 's/\\//\\\\\\//g'`

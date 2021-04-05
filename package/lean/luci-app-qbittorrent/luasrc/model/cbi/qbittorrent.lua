@@ -1,11 +1,11 @@
-local e=require"luci.model.uci".cursor()
-local o=e:get_first("qbittorrent","main","Port") or 8080
+
+local o=luci.sys.exec("uci get qbittorrent.main.Port | xargs echo -n") or 8080
 
 local a=(luci.sys.call("pidof qbittorrent-nox > /dev/null")==0)
 
 local t=""
 if a then
-t="<br /><br /><input class=\"cbi-button cbi-button-apply\" type=\"submit\" value=\" "..translate("Open Web Interface").." \" onclick=\"window.open('http://'+window.location.hostname+':"..o.."')\"/>"
+t="<br /><br /><input class=\"cbi-button cbi-button-apply\" type=\"button\" value=\" "..translate("Open Web Interface").." \" onclick=\"window.open('//'+window.location.hostname+':"..o.."')\"/>"
 end
 
 function titlesplit(Value)
@@ -27,43 +27,25 @@ for u in luci.util.execi("cat /etc/passwd | cut -d ':' -f1") do
 	o:value(u)
 end
 
-o = s:taboption("basic", Value, "profile", translate("Parent Path for Profile Folder"), translate("The path for storing profile folder using by command: <b>--profile [PATH]</b>."))
+o = s:taboption("basic", Value, "profile", translate("Store configuration files in the Path"))
 o.default = '/tmp'
 
-o = s:taboption("basic", Value, "configuration", translate("Profile Folder Suffix"), translate("Suffix for profile folder, for example, <b>qBittorrent_[NAME]</b>."))
+o = s:taboption("basic", Value, "SavePath", translate("Store download files in the Path"))
+o.placeholder = "/tmp/download"
 
-o = s:taboption("basic", Value, "Locale", translate("Locale Language"))
-o:value("en", translate("English"))
-o:value("zh", translate("Chinese"))
-o.default = "en"
+o = s:taboption("basic", Value, "Port", translate("WEBUI listening port"))
+o.datatype = "port"
+o.placeholder = "8080"
 
-o = s:taboption("basic", Flag, "Enabled", translate("Enable Log"), translate("Enable logger to log file."))
+o = s:taboption("basic", Flag, "UseRandomPort", translate("Use Random Port"), translate("Randomly assigns a different port every time qBittorrent starts up"))
 o.enabled = "true"
 o.disabled = "false"
 o.default = o.enabled
 
-o = s:taboption("basic", Value, "Path", translate("Log Path"), translate("The path for qbittorrent log."))
-o:depends("Enabled", "true")
+o = s:taboption("basic", Value, "PortRangeMin", translate("Connection Port"), translate("Incoming connection port"))
+o:depends("UseRandomPort", false)
+o.datatype = "range(1024,65535)"
 
-o = s:taboption("basic", Flag, "Backup", translate("Enable Backup"), translate("Backup log file when oversize the given size."))
-o:depends("Enabled", "true")
-o.enabled = "true"
-o.disabled = "false"
-o.default = o.enabled
-
-o = s:taboption("basic", Flag, "DeleteOld", translate("Delete Old Backup"), translate("Delete the old log file."))
-o:depends("Enabled", "true")
-o.enabled = "true"
-o.disabled = "false"
-o.default = o.enabled
-
-o = s:taboption("basic", Value, "MaxSizeBytes", translate("Log Max Size"), translate("The max size for qbittorrent log (Unit: Bytes)."))
-o:depends("Enabled", "true")
-o.placeholder = "66560"
-
-o = s:taboption("basic", Value, "SaveTime", translate("Log Saving Period"), translate("The log file will be deteted after given time. 1d -- 1 day, 1m -- 1 month, 1y -- 1 year"))
-o:depends("Enabled", "true")
-o.datatype = "string"
 
 s:tab("connection", translate("Connection Settings"))
 
@@ -73,17 +55,6 @@ o.enabled = "true"
 o.disabled = "false"
 o.default = o.enabled
 
-o = s:taboption("connection", Flag, "UseRandomPort", translate("Use Random Port"), translate("Use different port on each startup voids the first"
-			.. " option, and randomly assigns a different port every time qBittorrent starts up."))
-o.enabled = "true"
-o.disabled = "false"
-o.default = o.enabled
-
-o = s:taboption("connection", Value, "PortRangeMin", translate("Connection Port"), translate("Generate Randomly"))
-o:depends("UseRandomPort", false)
-o.datatype = "range(1024,65535)"
-o.template = "qbittorrent/qbt_value"
-o.btnclick = "randomToken();"
 
 o = s:taboption("connection", Value, "GlobalDLLimit", translate("Global Download Speed"), translate("Global Download Speed Limit(KiB/s)."))
 o.datatype = "float"
@@ -109,7 +80,7 @@ o.default = "Both"
 
 o = s:taboption("connection", Value, "InetAddress", translate("Inet Address"), translate("The address that respond to the trackers."))
 
-s:tab("downloads", translate("Downloads Settings"))
+s:tab("downloads", translate("Download Settings"))
 
 o = s:taboption("downloads", Flag, "CreateTorrentSubfolder", translate("Create Subfolder"), translate("Create subfolder for torrents with multiple files."))
 o.enabled = "true"
@@ -135,9 +106,6 @@ o = s:taboption("downloads", Flag, "UseIncompleteExtension", translate("Use Inco
 o.enabled = "true"
 o.disabled = "false"
 o.default = o.disabled
-
-o = s:taboption("downloads", Value, "SavePath", translate("Save Path"))
-o.placeholder = "/tmp/download"
 
 o = s:taboption("downloads", Flag, "TempPathEnabled", translate("Temp Path Enabled"))
 o.enabled = "true"
@@ -199,7 +167,7 @@ o.enabled = "true"
 o.disabled = "false"
 o.default = o.disabled
 
-o = s:taboption("bittorrent", Flag, "uTP_rate_limited", translate("uTP Rate Limit"), translate("Apply rate limit to µTP protocol."))
+o = s:taboption("bittorrent", Flag, "uTP_rate_limited", translate("uTP Rate Limit"), translate("Apply rate limit to μTP protocol."))
 o.enabled = "true"
 o.disabled = "false"
 o.default = o.enabled
@@ -281,15 +249,16 @@ o.enabled = "true"
 o.disabled = "false"
 o.default = o.disabled
 
-o = s:taboption("webgui", Value, "Username", translate("Username"), translate("The login name for WebUI."))
-o.placeholder = "admin"
+--o = s:taboption("webgui", Value, "Username", translate("Username"), translate("The login name for WebUI."))
+--o.placeholder = "admin"
 
-o = s:taboption("webgui", Value, "Password", translate("Password"), translate("The login password for WebUI."))
-o.password  =  true
+--o = s:taboption("webgui", Value, "Password", translate("Password"), translate("The login password for WebUI."))
+--o.password  =  true
 
-o = s:taboption("webgui", Value, "Port", translate("Listen Port"), translate("The listening port for WebUI."))
-o.datatype = "port"
-o.placeholder = "8080"
+o = s:taboption("webgui", Value, "Locale", translate("Locale Language"))
+o:value("en", translate("English"))
+o:value("zh", translate("Chinese"))
+o.default = "en"
 
 o = s:taboption("webgui", Flag, "CSRFProtection", translate("CSRF Protection"), translate("Enable Cross-Site Request Forgery (CSRF) protection."))
 o.enabled = "true"
@@ -332,6 +301,8 @@ o.enabled = "true"
 o.disabled = "false"
 o.default = o.disabled
 
+o = s:taboption("advanced", Value, "configuration", translate("Profile Folder Suffix"), translate("Suffix for profile folder"))
+
 o = s:taboption("advanced", Flag, "IncludeOverhead", translate("Limit Overhead Usage"), translate("The overhead usage is been limitted."))
 o.enabled = "true"
 o.disabled = "false"
@@ -368,5 +339,33 @@ o = s:taboption("advanced", Flag, "AnnounceToAllTiers", translate("Announce To A
 o.enabled = "true"
 o.disabled = "false"
 o.default = o.enabled
+
+o = s:taboption("advanced", Flag, "Enabled", translate("Enable Log"), translate("Enable logger to log file."))
+o.enabled = "true"
+o.disabled = "false"
+o.default = o.enabled
+
+o = s:taboption("advanced", Value, "Path", translate("Log Path"), translate("The path for qbittorrent log."))
+o:depends("Enabled", "true")
+
+o = s:taboption("advanced", Flag, "Backup", translate("Enable Backup"), translate("Backup log file when oversize the given size."))
+o:depends("Enabled", "true")
+o.enabled = "true"
+o.disabled = "false"
+o.default = o.enabled
+
+o = s:taboption("advanced", Flag, "DeleteOld", translate("Delete Old Backup"), translate("Delete the old log file."))
+o:depends("Enabled", "true")
+o.enabled = "true"
+o.disabled = "false"
+o.default = o.enabled
+
+o = s:taboption("advanced", Value, "MaxSizeBytes", translate("Log Max Size"), translate("The max size for qbittorrent log (Unit: Bytes)."))
+o:depends("Enabled", "true")
+o.placeholder = "66560"
+
+o = s:taboption("advanced", Value, "SaveTime", translate("Log Saving Period"), translate("The log file will be deteted after given time. 1d -- 1 day, 1m -- 1 month, 1y -- 1 year"))
+o:depends("Enabled", "true")
+o.datatype = "string"
 
 return m

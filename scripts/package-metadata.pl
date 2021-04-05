@@ -191,9 +191,9 @@ sub mconf_depends {
 				$depend = shift @vdeps;
 
 				if (@vdeps > 1) {
-					$condition = ($condition ? "$condition && " : '') . '!('.join("||", map { "PACKAGE_".$_ } @vdeps).')';
+					$condition = ($condition ? "$condition && " : '') . join("&&", map { "PACKAGE_$_<PACKAGE_$pkgname" } @vdeps);
 				} elsif (@vdeps > 0) {
-					$condition = ($condition ? "$condition && " : '') . '!PACKAGE_'.$vdeps[0];
+					$condition = ($condition ? "$condition && " : '') . "PACKAGE_${vdeps[0]}<PACKAGE_$pkgname";
 				}
 			}
 
@@ -358,14 +358,30 @@ sub gen_package_config() {
 	print_package_overrides();
 }
 
+sub and_condition($) {
+	my $condition = shift;
+	my @spl_and = split('\&\&', $condition);
+	if (@spl_and == 1) {
+		return "\$(CONFIG_$spl_and[0])";
+	}
+	return "\$(and " . join (',', map("\$(CONFIG_$_)", @spl_and)) . ")";
+}
+
+sub gen_condition ($) {
+	my $condition = shift;
+	# remove '!()', just as include/package-ipkg.mk does
+	$condition =~ s/[()!]//g;
+	return join("", map(and_condition($_), split('\|\|', $condition)));
+}
+
 sub get_conditional_dep($$) {
 	my $condition = shift;
 	my $depstr = shift;
 	if ($condition) {
 		if ($condition =~ /^!(.+)/) {
-			return "\$(if \$(CONFIG_$1),,$depstr)";
+			return "\$(if " . gen_condition($1) . ",,$depstr)";
 		} else {
-			return "\$(if \$(CONFIG_$condition),$depstr)";
+			return "\$(if " . gen_condition($condition) . ",$depstr)";
 		}
 	} else {
 		return $depstr;
@@ -509,12 +525,39 @@ sub gen_package_source() {
 	}
 }
 
-sub gen_package_subdirs() {
+sub gen_package_auxiliary() {
 	parse_package_metadata($ARGV[0]) or exit 1;
 	foreach my $name (sort {uc($a) cmp uc($b)} keys %package) {
 		my $pkg = $package{$name};
 		if ($pkg->{name} && $pkg->{repository}) {
 			print "Package/$name/subdir = $pkg->{repository}\n";
+		}
+		if ($pkg->{name} && defined($pkg->{abiversion}) && length($pkg->{abiversion})) {
+			my $abiv;
+
+			if ($pkg->{abiversion} =~ m!^(\d{4})-(\d{2})-(\d{2})-[0-9a-f]{7,40}$!) {
+				print STDERR "WARNING: Reducing ABI version '$pkg->{abiversion}' of package '$name' to '$1$2$3'\n";
+				$abiv = "$1$2$3";
+			}
+			else {
+				$abiv = $pkg->{abiversion};
+			}
+
+			foreach my $n (@{$pkg->{provides}}) {
+				print "Package/$n/abiversion = $abiv\n";
+			}
+		}
+		my %depends;
+		foreach my $dep (@{$pkg->{depends} || []}) {
+			if ($dep =~ m!^\+?(?:[^:]+:)?([^@]+)$!) {
+				$depends{$1}++;
+			}
+		}
+		my @depends = sort keys %depends;
+		if (@depends > 0) {
+			foreach my $n (@{$pkg->{provides}}) {
+				print "Package/$n/depends = @depends\n";
+			}
 		}
 	}
 }
@@ -565,7 +608,7 @@ sub parse_command() {
 		/^config$/ and return gen_package_config();
 		/^kconfig/ and return gen_kconfig_overrides();
 		/^source$/ and return gen_package_source();
-		/^subdirs$/ and return gen_package_subdirs();
+		/^pkgaux$/ and return gen_package_auxiliary();
 		/^license$/ and return gen_package_license(0);
 		/^licensefull$/ and return gen_package_license(1);
 		/^usergroup$/ and return gen_usergroup_list();
@@ -577,7 +620,7 @@ Available Commands:
 	$0 config [file] 			Package metadata in Kconfig format
 	$0 kconfig [file] [config] [patchver]	Kernel config overrides
 	$0 source [file] 			Package source file information
-	$0 subdirs [file]			Package subdir information in makefile format
+	$0 pkgaux [file]			Package auxiliary variables in makefile format
 	$0 license [file] 			Package license information
 	$0 licensefull [file] 			Package license information (full list)
 	$0 usergroup [file]			Package usergroup allocation list

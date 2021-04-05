@@ -15,10 +15,10 @@ platform_do_upgrade() {
 	case "$board" in
 	ocedo,panda|\
 	sophos,red-15w-rev1)
-		nand_do_upgrade "$ARGV"
+		nand_do_upgrade "$1"
 		;;
 	*)
-		default_do_upgrade "$ARGV"
+		default_do_upgrade "$1"
 		;;
 	esac
 }

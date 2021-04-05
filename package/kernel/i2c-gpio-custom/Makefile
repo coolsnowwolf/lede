@@ -9,14 +9,14 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=i2c-gpio-custom
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 include $(INCLUDE_DIR)/package.mk
 
 define KernelPackage/i2c-gpio-custom
   SUBMENU:=I2C support
   TITLE:=Custom GPIO-based I2C device
-  DEPENDS:=@GPIO_SUPPORT +kmod-i2c-core +kmod-i2c-gpio @!LINUX_4_19
+  DEPENDS:=@GPIO_SUPPORT +kmod-i2c-core +kmod-i2c-gpio @LINUX_4_14
   FILES:=$(PKG_BUILD_DIR)/i2c-gpio-custom.ko
   KCONFIG:=
 endef
@@ -34,7 +34,7 @@ EXTRA_CFLAGS:= \
 
 MAKE_OPTS:= \
 	$(KERNEL_MAKE_FLAGS) \
-	SUBDIRS="$(PKG_BUILD_DIR)" \
+	M="$(PKG_BUILD_DIR)" \
 	EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
 	$(EXTRA_KCONFIG)
 

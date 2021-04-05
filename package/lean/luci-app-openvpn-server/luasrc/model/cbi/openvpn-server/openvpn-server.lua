@@ -14,8 +14,10 @@ s:tab("basic",  translate("Base Setting"))
 o = s:taboption("basic", Flag, "enabled", translate("Enable"))
 
 proto = s:taboption("basic",Value,"proto", translate("Proto"))
-proto:value("tcp", translate("TCP Server"))
-proto:value("udp", translate("UDP Server"))
+proto:value("tcp4", translate("TCP Server IPv4"))
+proto:value("udp4", translate("UDP Server IPv4"))
+proto:value("tcp6", translate("TCP Server IPv6"))
+proto:value("udp6", translate("UDP Server IPv6"))
 
 port = s:taboption("basic", Value, "port", translate("Port"))
 port.datatype = "range(1,65535)"
@@ -96,6 +98,7 @@ end
 
 function mp.on_after_commit(self)
   os.execute("uci set firewall.openvpn.dest_port=$(uci get openvpn.myvpn.port) && uci commit firewall &&  /etc/init.d/firewall restart")
+  os.execute("/etc/openvpncert.sh > /dev/null")
   os.execute("/etc/init.d/openvpn restart")
 end
 

@@ -1,0 +1,112 @@
+From 3b4d888114a5f6c1e848f892a2236db4ccf8345f Mon Sep 17 00:00:00 2001
+From: Angelo Ruocco <angeloruocco90@gmail.com>
+Date: Tue, 21 May 2019 10:01:54 +0200
+Subject: [PATCH] cgroup: let a symlink too be created with a cftype file
+
+This commit enables a cftype to have a symlink (of any name) that
+points to the file associated with the cftype.
+
+Signed-off-by: Angelo Ruocco <angeloruocco90@gmail.com>
+Signed-off-by: Paolo Valente <paolo.valente@linaro.org>
+Signed-off-by: Jens Axboe <axboe@kernel.dk>
+(cherry picked from commit 54b7b868e826b294687c439b68ec55fe20cafe5b)
+Signed-off-by: Li Yang <leoyang.li@nxp.com>
+---
+ include/linux/cgroup-defs.h |  3 +++
+ kernel/cgroup/cgroup.c      | 33 +++++++++++++++++++++++++++++----
+ 2 files changed, 32 insertions(+), 4 deletions(-)
+
+--- a/include/linux/cgroup-defs.h
++++ b/include/linux/cgroup-defs.h
+@@ -106,6 +106,8 @@ enum {
+ 	CFTYPE_WORLD_WRITABLE	= (1 << 4),	/* (DON'T USE FOR NEW FILES) S_IWUGO */
+ 	CFTYPE_DEBUG		= (1 << 5),	/* create when cgroup_debug */
+ 
++	CFTYPE_SYMLINKED	= (1 << 6),	/* pointed to by symlink too */
++
+ 	/* internal flags, do not use outside cgroup core proper */
+ 	__CFTYPE_ONLY_ON_DFL	= (1 << 16),	/* only on default hierarchy */
+ 	__CFTYPE_NOT_ON_DFL	= (1 << 17),	/* not on default hierarchy */
+@@ -544,6 +546,7 @@ struct cftype {
+ 	 * end of cftype array.
+ 	 */
+ 	char name[MAX_CFTYPE_NAME];
++	char link_name[MAX_CFTYPE_NAME];
+ 	unsigned long private;
+ 
+ 	/*
+--- a/kernel/cgroup/cgroup.c
++++ b/kernel/cgroup/cgroup.c
+@@ -1465,8 +1465,8 @@ struct cgroup *task_cgroup_from_root(str
+ 
+ static struct kernfs_syscall_ops cgroup_kf_syscall_ops;
+ 
+-static char *cgroup_file_name(struct cgroup *cgrp, const struct cftype *cft,
+-			      char *buf)
++static char *cgroup_fill_name(struct cgroup *cgrp, const struct cftype *cft,
++			      char *buf, bool write_link_name)
+ {
+ 	struct cgroup_subsys *ss = cft->ss;
+ 
+@@ -1476,13 +1476,26 @@ static char *cgroup_file_name(struct cgr
+ 
+ 		snprintf(buf, CGROUP_FILE_NAME_MAX, "%s%s.%s",
+ 			 dbg, cgroup_on_dfl(cgrp) ? ss->name : ss->legacy_name,
+-			 cft->name);
++			 write_link_name ? cft->link_name : cft->name);
+ 	} else {
+-		strscpy(buf, cft->name, CGROUP_FILE_NAME_MAX);
++		strscpy(buf, write_link_name ? cft->link_name : cft->name,
++			CGROUP_FILE_NAME_MAX);
+ 	}
+ 	return buf;
+ }
+ 
++static char *cgroup_file_name(struct cgroup *cgrp, const struct cftype *cft,
++			      char *buf)
++{
++	return cgroup_fill_name(cgrp, cft, buf, false);
++}
++
++static char *cgroup_link_name(struct cgroup *cgrp, const struct cftype *cft,
++			      char *buf)
++{
++	return cgroup_fill_name(cgrp, cft, buf, true);
++}
++
+ /**
+  * cgroup_file_mode - deduce file mode of a control file
+  * @cft: the control file in question
+@@ -1641,6 +1654,9 @@ static void cgroup_rm_file(struct cgroup
+ 	}
+ 
+ 	kernfs_remove_by_name(cgrp->kn, cgroup_file_name(cgrp, cft, name));
++	if (cft->flags & CFTYPE_SYMLINKED)
++		kernfs_remove_by_name(cgrp->kn,
++				      cgroup_link_name(cgrp, cft, name));
+ }
+ 
+ /**
+@@ -3873,6 +3889,7 @@ static int cgroup_add_file(struct cgroup
+ {
+ 	char name[CGROUP_FILE_NAME_MAX];
+ 	struct kernfs_node *kn;
++	struct kernfs_node *kn_link;
+ 	struct lock_class_key *key = NULL;
+ 	int ret;
+ 
+@@ -3903,6 +3920,14 @@ static int cgroup_add_file(struct cgroup
+ 		spin_unlock_irq(&cgroup_file_kn_lock);
+ 	}
+ 
++	if (cft->flags & CFTYPE_SYMLINKED) {
++		kn_link = kernfs_create_link(cgrp->kn,
++					     cgroup_link_name(cgrp, cft, name),
++					     kn);
++		if (IS_ERR(kn_link))
++			return PTR_ERR(kn_link);
++	}
++
+ 	return 0;
+ }
+ 

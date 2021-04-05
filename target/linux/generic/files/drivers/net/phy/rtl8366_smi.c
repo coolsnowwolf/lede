@@ -1035,14 +1035,6 @@ static int rtl8366_smi_mii_init(struct rtl8366_smi *smi)
 		 dev_name(smi->parent));
 	smi->mii_bus->parent = smi->parent;
 	smi->mii_bus->phy_mask = ~(0x1f);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,5,0)
-	{
-		int i;
-		smi->mii_bus->irq = smi->mii_irq;
-		for (i = 0; i < PHY_MAX_ADDR; i++)
-			smi->mii_irq[i] = PHY_POLL;
-	}
-#endif
 
 #ifdef CONFIG_OF
 	if (np)

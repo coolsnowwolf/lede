@@ -1,0 +1,274 @@
+From b8ae9d55d468a9f55524296247dba93531c29c99 Mon Sep 17 00:00:00 2001
+From: John Cox <jc@kynesim.co.uk>
+Date: Thu, 5 Mar 2020 14:46:54 +0000
+Subject: [PATCH] media: v4l2-mem2mem: allow request job buffer
+ processing after job finish
+
+Allow the capture buffer to be detached from a v4l2 request job such
+that another job can start before the capture buffer is returned. This
+allows h/w codecs that can process multiple requests at the same time
+to operate more efficiently.
+
+Signed-off-by: John Cox <jc@kynesim.co.uk>
+---
+ drivers/media/v4l2-core/v4l2-mem2mem.c | 105 +++++++++++++++++++++++--
+ include/media/v4l2-mem2mem.h           |  47 +++++++++++
+ include/media/videobuf2-v4l2.h         |   3 +
+ 3 files changed, 149 insertions(+), 6 deletions(-)
+
+--- a/drivers/media/v4l2-core/v4l2-mem2mem.c
++++ b/drivers/media/v4l2-core/v4l2-mem2mem.c
+@@ -399,15 +399,18 @@ static void v4l2_m2m_cancel_job(struct v
+ {
+ 	struct v4l2_m2m_dev *m2m_dev;
+ 	unsigned long flags;
++	bool det_abort_req;
+ 
+ 	m2m_dev = m2m_ctx->m2m_dev;
+ 	spin_lock_irqsave(&m2m_dev->job_spinlock, flags);
+ 
++	det_abort_req = !list_empty(&m2m_ctx->det_list);
+ 	m2m_ctx->job_flags |= TRANS_ABORT;
+ 	if (m2m_ctx->job_flags & TRANS_RUNNING) {
+ 		spin_unlock_irqrestore(&m2m_dev->job_spinlock, flags);
+ 		if (m2m_dev->m2m_ops->job_abort)
+ 			m2m_dev->m2m_ops->job_abort(m2m_ctx->priv);
++		det_abort_req = false;
+ 		dprintk("m2m_ctx %p running, will wait to complete\n", m2m_ctx);
+ 		wait_event(m2m_ctx->finished,
+ 				!(m2m_ctx->job_flags & TRANS_RUNNING));
+@@ -421,6 +424,11 @@ static void v4l2_m2m_cancel_job(struct v
+ 		/* Do nothing, was not on queue/running */
+ 		spin_unlock_irqrestore(&m2m_dev->job_spinlock, flags);
+ 	}
++
++	/* Wait for detached buffers to come back too */
++	if (det_abort_req && m2m_dev->m2m_ops->job_abort)
++		m2m_dev->m2m_ops->job_abort(m2m_ctx->priv);
++	wait_event(m2m_ctx->det_empty, list_empty(&m2m_ctx->det_list));
+ }
+ 
+ /*
+@@ -458,6 +466,7 @@ static bool _v4l2_m2m_job_finish(struct
+ 
+ 	list_del(&m2m_dev->curr_ctx->queue);
+ 	m2m_dev->curr_ctx->job_flags &= ~(TRANS_QUEUED | TRANS_RUNNING);
++	m2m_ctx->cap_detached = false;
+ 	wake_up(&m2m_dev->curr_ctx->finished);
+ 	m2m_dev->curr_ctx = NULL;
+ 	return true;
+@@ -485,6 +494,80 @@ void v4l2_m2m_job_finish(struct v4l2_m2m
+ }
+ EXPORT_SYMBOL(v4l2_m2m_job_finish);
+ 
++struct vb2_v4l2_buffer *_v4l2_m2m_cap_buf_detach(struct v4l2_m2m_ctx *m2m_ctx)
++{
++	struct vb2_v4l2_buffer *buf;
++
++	buf = v4l2_m2m_dst_buf_remove(m2m_ctx);
++	list_add_tail(&container_of(buf, struct v4l2_m2m_buffer, vb)->list,
++		      &m2m_ctx->det_list);
++	m2m_ctx->cap_detached = true;
++	buf->is_held = true;
++	buf->det_state = VB2_BUF_STATE_ACTIVE;
++
++	return buf;
++}
++
++struct vb2_v4l2_buffer *v4l2_m2m_cap_buf_detach(struct v4l2_m2m_dev *m2m_dev,
++						struct v4l2_m2m_ctx *m2m_ctx)
++{
++	unsigned long flags;
++	struct vb2_v4l2_buffer *src_buf, *dst_buf;
++
++	spin_lock_irqsave(&m2m_dev->job_spinlock, flags);
++
++	dst_buf = NULL;
++	src_buf = v4l2_m2m_next_src_buf(m2m_ctx);
++
++	if (!(src_buf->flags & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF) &&
++	    !m2m_ctx->cap_detached)
++		dst_buf = _v4l2_m2m_cap_buf_detach(m2m_ctx);
++
++	spin_unlock_irqrestore(&m2m_dev->job_spinlock, flags);
++	return dst_buf;
++}
++EXPORT_SYMBOL(v4l2_m2m_cap_buf_detach);
++
++static void _v4l2_m2m_cap_buf_return(struct v4l2_m2m_ctx *m2m_ctx,
++				     struct vb2_v4l2_buffer *buf,
++				     enum vb2_buffer_state state)
++{
++	buf->det_state = state;
++
++	/*
++	 * Always signal done in the order we got stuff
++	 * Stop if we find a buf that is still in use
++	 */
++	while (!list_empty(&m2m_ctx->det_list)) {
++		buf = &list_first_entry(&m2m_ctx->det_list,
++					struct v4l2_m2m_buffer, list)->vb;
++		state = buf->det_state;
++		if (state != VB2_BUF_STATE_DONE &&
++		    state != VB2_BUF_STATE_ERROR)
++			return;
++		list_del(&container_of(buf, struct v4l2_m2m_buffer, vb)->list);
++		buf->det_state = VB2_BUF_STATE_DEQUEUED;
++		v4l2_m2m_buf_done(buf, state);
++	}
++	wake_up(&m2m_ctx->det_empty);
++}
++
++void v4l2_m2m_cap_buf_return(struct v4l2_m2m_dev *m2m_dev,
++			     struct v4l2_m2m_ctx *m2m_ctx,
++			     struct vb2_v4l2_buffer *buf,
++			     enum vb2_buffer_state state)
++{
++	unsigned long flags;
++
++	if (!buf)
++		return;
++
++	spin_lock_irqsave(&m2m_dev->job_spinlock, flags);
++	_v4l2_m2m_cap_buf_return(m2m_ctx, buf, state);
++	spin_unlock_irqrestore(&m2m_dev->job_spinlock, flags);
++}
++EXPORT_SYMBOL(v4l2_m2m_cap_buf_return);
++
+ void v4l2_m2m_buf_done_and_job_finish(struct v4l2_m2m_dev *m2m_dev,
+ 				      struct v4l2_m2m_ctx *m2m_ctx,
+ 				      enum vb2_buffer_state state)
+@@ -495,15 +578,23 @@ void v4l2_m2m_buf_done_and_job_finish(st
+ 
+ 	spin_lock_irqsave(&m2m_dev->job_spinlock, flags);
+ 	src_buf = v4l2_m2m_src_buf_remove(m2m_ctx);
+-	dst_buf = v4l2_m2m_next_dst_buf(m2m_ctx);
+ 
+-	if (WARN_ON(!src_buf || !dst_buf))
++	if (WARN_ON(!src_buf))
+ 		goto unlock;
+ 	v4l2_m2m_buf_done(src_buf, state);
+-	dst_buf->is_held = src_buf->flags & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF;
+-	if (!dst_buf->is_held) {
+-		v4l2_m2m_dst_buf_remove(m2m_ctx);
+-		v4l2_m2m_buf_done(dst_buf, state);
++
++	if (!m2m_ctx->cap_detached) {
++		dst_buf = v4l2_m2m_next_dst_buf(m2m_ctx);
++		if (WARN_ON(!dst_buf))
++			goto unlock;
++
++		dst_buf->is_held = src_buf->flags
++				    & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF;
++
++		if (!dst_buf->is_held) {
++			dst_buf = _v4l2_m2m_cap_buf_detach(m2m_ctx);
++			_v4l2_m2m_cap_buf_return(m2m_ctx, dst_buf, state);
++		}
+ 	}
+ 	schedule_next = _v4l2_m2m_job_finish(m2m_dev, m2m_ctx);
+ unlock:
+@@ -983,12 +1074,14 @@ struct v4l2_m2m_ctx *v4l2_m2m_ctx_init(s
+ 	m2m_ctx->priv = drv_priv;
+ 	m2m_ctx->m2m_dev = m2m_dev;
+ 	init_waitqueue_head(&m2m_ctx->finished);
++	init_waitqueue_head(&m2m_ctx->det_empty);
+ 
+ 	out_q_ctx = &m2m_ctx->out_q_ctx;
+ 	cap_q_ctx = &m2m_ctx->cap_q_ctx;
+ 
+ 	INIT_LIST_HEAD(&out_q_ctx->rdy_queue);
+ 	INIT_LIST_HEAD(&cap_q_ctx->rdy_queue);
++	INIT_LIST_HEAD(&m2m_ctx->det_list);
+ 	spin_lock_init(&out_q_ctx->rdy_spinlock);
+ 	spin_lock_init(&cap_q_ctx->rdy_spinlock);
+ 
+--- a/include/media/v4l2-mem2mem.h
++++ b/include/media/v4l2-mem2mem.h
+@@ -88,6 +88,9 @@ struct v4l2_m2m_queue_ctx {
+  *		%TRANS_QUEUED, %TRANS_RUNNING and %TRANS_ABORT.
+  * @finished: Wait queue used to signalize when a job queue finished.
+  * @priv: Instance private data
++ * @cap_detached: Current job's capture buffer has been detached
++ * @det_list: List of detached (post-job but still in flight) capture buffers
++ * @det_empty: Wait queue signalled when det_list goes empty
+  *
+  * The memory to memory context is specific to a file handle, NOT to e.g.
+  * a device.
+@@ -111,6 +114,11 @@ struct v4l2_m2m_ctx {
+ 	wait_queue_head_t		finished;
+ 
+ 	void				*priv;
++
++	/* Detached buffer handling */
++	bool	cap_detached;
++	struct list_head		det_list;
++	wait_queue_head_t		det_empty;
+ };
+ 
+ /**
+@@ -216,6 +224,45 @@ v4l2_m2m_buf_done(struct vb2_v4l2_buffer
+ }
+ 
+ /**
++ * v4l2_m2m_cap_buf_detach() - detach the capture buffer from the job and
++ * return it.
++ *
++ * @m2m_dev: opaque pointer to the internal data to handle M2M context
++ * @m2m_ctx: m2m context assigned to the instance given by struct &v4l2_m2m_ctx
++ *
++ * This function is designed to be used in conjunction with
++ * v4l2_m2m_buf_done_and_job_finish(). It allows the next job to start
++ * execution before the capture buffer is returned to the user which can be
++ * important if the underlying processing has multiple phases that are more
++ * efficiently executed in parallel.
++ *
++ * If used then it must be called before v4l2_m2m_buf_done_and_job_finish()
++ * as otherwise the buffer will have already gone.
++ *
++ * It is the callers reponsibilty to ensure that all detached buffers are
++ * returned.
++ */
++struct vb2_v4l2_buffer *v4l2_m2m_cap_buf_detach(struct v4l2_m2m_dev *m2m_dev,
++						struct v4l2_m2m_ctx *m2m_ctx);
++
++/**
++ * v4l2_m2m_cap_buf_return() - return a capture buffer, previously detached
++ * with v4l2_m2m_cap_buf_detach() to the user.
++ *
++ * @m2m_dev: opaque pointer to the internal data to handle M2M context
++ * @m2m_ctx: m2m context assigned to the instance given by struct &v4l2_m2m_ctx
++ * @buf: the buffer to return
++ * @state: vb2 buffer state passed to v4l2_m2m_buf_done().
++ *
++ * Buffers returned by this function will be returned to the user in the order
++ * of the original jobs rather than the order in which this function is called.
++ */
++void v4l2_m2m_cap_buf_return(struct v4l2_m2m_dev *m2m_dev,
++			     struct v4l2_m2m_ctx *m2m_ctx,
++			     struct vb2_v4l2_buffer *buf,
++			     enum vb2_buffer_state state);
++
++/**
+  * v4l2_m2m_reqbufs() - multi-queue-aware REQBUFS multiplexer
+  *
+  * @file: pointer to struct &file
+--- a/include/media/videobuf2-v4l2.h
++++ b/include/media/videobuf2-v4l2.h
+@@ -35,6 +35,8 @@
+  * @request_fd:	the request_fd associated with this buffer
+  * @is_held:	if true, then this capture buffer was held
+  * @planes:	plane information (userptr/fd, length, bytesused, data_offset).
++ * @det_state:	if a detached request capture buffer then this contains its
++ *		current state
+  *
+  * Should contain enough information to be able to cover all the fields
+  * of &struct v4l2_buffer at ``videodev2.h``.
+@@ -49,6 +51,7 @@ struct vb2_v4l2_buffer {
+ 	__s32			request_fd;
+ 	bool			is_held;
+ 	struct vb2_plane	planes[VB2_MAX_PLANES];
++	enum vb2_buffer_state	det_state;
+ };
+ 
+ /* VB2 V4L2 flags as set in vb2_queue.subsystem_flags */

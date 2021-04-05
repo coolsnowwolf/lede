@@ -1,0 +1,205 @@
+From 9821d27a36704d19c57d4b6c52585b9868703633 Mon Sep 17 00:00:00 2001
+From: Camelia Groza <camelia.groza@nxp.com>
+Date: Mon, 4 Sep 2017 13:41:17 +0300
+Subject: [PATCH] sdk_dpaa: ls1043a errata: realign and linearize egress skbs
+
+Allocate a new page and copy the skb's contents to it in order to
+guarantee that 4k boundary crossings do not occur.
+
+Signed-off-by: Camelia Groza <camelia.groza@nxp.com>
+---
+ .../net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c  | 159 +++++++++++----------
+ 1 file changed, 84 insertions(+), 75 deletions(-)
+
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
+@@ -742,86 +742,94 @@ int __hot skb_to_contig_fd(struct dpa_pr
+ EXPORT_SYMBOL(skb_to_contig_fd);
+ 
+ #ifndef CONFIG_PPC
+-struct sk_buff *split_skb_at_4k_boundaries(struct sk_buff *skb)
++/* Verify the conditions that trigger the A010022 errata: 4K memory address
++ * crossings.
++ */
++bool a010022_check_skb(struct sk_buff *skb)
+ {
+-	unsigned int length, nr_frags, moved_len = 0;
+-	u64 page_start;
+-	struct page *page;
++	int nr_frags, i = 0;
+ 	skb_frag_t *frag;
+-	int i = 0, j = 0;
+ 
+-	/* make sure skb is not shared */
+-	skb = skb_share_check(skb, GFP_ATOMIC);
+-	if (!skb)
+-		return NULL;
++	/* Check if the headroom crosses a boundary */
++	if (HAS_DMA_ISSUE(skb->head, skb_headroom(skb)))
++		return true;
++
++	/* Check if the non-paged data crosses a boundary */
++	if (HAS_DMA_ISSUE(skb->data, skb_headlen(skb)))
++		return true;
++
++	/* Check if the entire linear skb crosses a boundary */
++	if (HAS_DMA_ISSUE(skb->head, skb_end_offset(skb)))
++		return true;
+ 
+ 	nr_frags = skb_shinfo(skb)->nr_frags;
+-	page_start = (u64)skb->data;
+ 
+-	/* split the linear part at the first 4k boundary and create one (big)
+-	 * fragment with the rest
+-	 */
+-	if (HAS_DMA_ISSUE(skb->data, skb_headlen(skb))) {
+-		/* we'll add one more frag, make sure there's room */
+-		if (nr_frags + 1 > DPA_SGT_MAX_ENTRIES)
+-			return NULL;
+-
+-		/* next page boundary */
+-		page_start = (page_start + 0x1000) & ~0xFFF;
+-		page = virt_to_page(page_start);
+-
+-		/* move the rest of fragments to make room for a new one at j */
+-		for (i = nr_frags - 1; i >= j;  i--)
+-			skb_shinfo(skb)->frags[i + 1] = skb_shinfo(skb)->frags[i];
+-
+-		/* move length bytes to a paged fragment at j */
+-		length = min((u64)0x1000,
+-			     (u64)skb->data + skb_headlen(skb) - page_start);
+-		skb->data_len += length;
+-		moved_len += length;
+-		skb_fill_page_desc(skb, j++, page, 0, length);
+-		get_page(page);
+-		skb_shinfo(skb)->nr_frags = ++nr_frags;
++	while (i < nr_frags) {
++		frag = &skb_shinfo(skb)->frags[i];
++
++		/* Check if the paged fragment crosses a boundary from its
++		 * offset to its end.
++		 */
++		if (HAS_DMA_ISSUE(frag->page_offset, frag->size))
++			return true;
++
++		i++;
+ 	}
+-	/* adjust the tail pointer */
+-	skb->tail -= moved_len;
+-	j = 0;
+-
+-	/* split any paged fragment that crosses a 4K boundary */
+-	while (j < nr_frags) {
+-		frag = &skb_shinfo(skb)->frags[j];
+-
+-		/* if there is a 4K boundary between the fragment's offset and end */
+-		if (HAS_DMA_ISSUE(frag->page_offset, frag->size)) {
+-			/* we'll add one more frag, make sure there's room */
+-			if (nr_frags + 1 > DPA_SGT_MAX_ENTRIES)
+-				return NULL;
+-
+-			/* new page boundary */
+-			page_start = (u64)page_address(skb_frag_page(frag)) +
+-						  frag->page_offset + 0x1000;
+-			page_start = (u64)page_start & ~0xFFF;
+-			page = virt_to_page(page_start);
+-
+-			/* move the rest of fragments to make room for a new one at j+1 */
+-			for (i = nr_frags - 1; i > j;  i--)
+-				skb_shinfo(skb)->frags[i + 1] =
+-						skb_shinfo(skb)->frags[i];
+-
+-			/* move length bytes to a new paged fragment at j+1 */
+-			length = (u64)page_address(skb_frag_page(frag)) +
+-				 frag->page_offset + frag->size - page_start;
+-			frag->size -= length;
+-			skb_fill_page_desc(skb, j + 1, page, 0, length);
+-			get_page(page);
+-			skb_shinfo(skb)->nr_frags = ++nr_frags;
+-		}
+ 
+-		/* move to next frag */
+-		j++;
++	return false;
++}
++
++/* Realign the skb by copying its contents at the start of a newly allocated
++ * page. Build a new skb around the new buffer and release the old one.
++ * A performance drop should be expected.
++ */
++struct sk_buff *a010022_realign_skb(struct sk_buff *skb)
++{
++	int headroom = skb_headroom(skb);
++	struct sk_buff *nskb = NULL;
++	struct page *npage;
++	void *npage_addr;
++	int nsize;
++
++	npage = alloc_page(GFP_ATOMIC);
++	if (unlikely(!npage)) {
++		WARN_ONCE(1, "Memory allocation failure\n");
++		return NULL;
++	}
++	npage_addr = page_address(npage);
++
++	/* For the new skb we only need the old one's data (both non-paged and
++	 * paged) and a headroom large enough to fit our private info. We can
++	 * skip the old tailroom.
++	 *
++	 * Make sure the new linearized buffer will not exceed a page's size.
++	 */
++	nsize = headroom + skb->len +
++		SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
++	if (unlikely(nsize > 4096))
++		goto err;
++
++	nskb = build_skb(npage_addr, nsize);
++	if (unlikely(!nskb))
++		goto err;
++
++	/* Code borrowed and adapted from skb_copy() */
++	skb_reserve(nskb, headroom);
++	skb_put(nskb, skb->len);
++	if (skb_copy_bits(skb, 0, nskb->data, skb->len)) {
++		WARN_ONCE(1, "skb parsing failure\n");
++		goto err;
+ 	}
++	copy_skb_header(nskb, skb);
++
++	dev_kfree_skb(skb);
++	return nskb;
+ 
+-	return skb;
++err:
++	if (nskb)
++		dev_kfree_skb(nskb);
++	put_page(npage);
++	return NULL;
+ }
+ #endif
+ 
+@@ -1016,9 +1024,9 @@ int __hot dpa_tx_extended(struct sk_buff
+ #endif /* CONFIG_FSL_DPAA_TS */
+ 
+ #ifndef CONFIG_PPC
+-resplit_4k:
+-	if (unlikely(dpaa_errata_a010022)) {
+-		skb = split_skb_at_4k_boundaries(skb);
++realign_4k:
++	if (unlikely(dpaa_errata_a010022) && a010022_check_skb(skb)) {
++		skb = a010022_realign_skb(skb);
+ 		if (!skb)
+ 			goto skb_to_fd_failed;
+ 	}
+@@ -1064,8 +1072,9 @@ resplit_4k:
+ 			kfree_skb(skb);
+ 			skb = nskb;
+ #ifndef CONFIG_PPC
+-			if (unlikely(dpaa_errata_a010022))
+-				goto resplit_4k;
++			if (unlikely(dpaa_errata_a010022) &&
++			    a010022_check_skb(skb))
++				goto realign_4k;
+ #endif
+ 			/* skb_copy() has now linearized the skbuff. */
+ 		} else if (unlikely(nonlinear)) {

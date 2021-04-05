@@ -7,10 +7,10 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_VERSION:=2018.03
+PKG_VERSION:=2020.04
 PKG_RELEASE:=1
 
-PKG_HASH:=7e7477534409d5368eb1371ffde6820f0f79780a1a1f676161c48442cb303dfd
+PKG_HASH:=fe732aaf037d9cc3c0909bad8362af366ae964bbdac6913a34081ff4ad565372
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
@@ -54,9 +54,24 @@ define U-Boot/iconnect_second_stage
   BUILD_DEVICES:=iom_iconnect-1.1
 endef
 
+define U-Boot/l-50
+  NAME:=CheckPoint L-50
+  BUILD_DEVICES:=checkpoint_l-50
+endef
+
+define U-Boot/nas220
+  NAME:=Seagate Blackarmor NAS220
+  BUILD_DEVICES:=seagate_blackarmor-nas220
+endef
+
 define U-Boot/nsa310
   NAME:=Zyxel NSA310
   BUILD_DEVICES:=zyxel_nsa310b
+endef
+
+define U-Boot/nsa310s
+  NAME:=Zyxel NSA310S
+  BUILD_DEVICES:=zyxel_nsa310s
 endef
 
 define U-Boot/nsa325
@@ -84,7 +99,10 @@ UBOOT_TARGETS := \
 	goflexhome \
 	ib62x0 ib62x0_second_stage \
 	iconnect iconnect_second_stage \
+	l-50 \
+	nas220 \
 	nsa310 \
+	nsa310s \
 	nsa325 \
 	pogo_e02 pogo_e02_second_stage \
 	pogoplugv4

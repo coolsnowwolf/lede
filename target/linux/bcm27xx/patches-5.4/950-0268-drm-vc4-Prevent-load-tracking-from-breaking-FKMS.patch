@@ -1,0 +1,74 @@
+From 907dc84e0c7208b79ad57e0e2a7964dbc9155f50 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Thu, 15 Aug 2019 08:39:08 +0100
+Subject: [PATCH] drm/vc4: Prevent load tracking from breaking FKMS
+
+Firmware KMS uses a mixture of VC4 processing and dedicated code. The
+load tracking support in VC4 assumes it is dealing with vc4_plane_state
+objects when up-casting with container_of, but FKMS uses unadorned
+drm_plane_state structures causing the VC4 code to read off the end
+into random portions of memory. Work around the problem in a minimally-
+invasive way by over-allocating the FKMS plane state structures to be
+large enough to contain a vc4_plane_state, filling the remainder with
+zeroes.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ drivers/gpu/drm/vc4/vc4_firmware_kms.c | 34 ++++++++++++++++++++++++--
+ 1 file changed, 32 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_firmware_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_firmware_kms.c
+@@ -561,6 +561,20 @@ static int vc4_plane_atomic_check(struct
+ 	return 0;
+ }
+ 
++/* Called during init to allocate the plane's atomic state. */
++static void vc4_plane_reset(struct drm_plane *plane)
++{
++	struct vc4_plane_state *vc4_state;
++
++	WARN_ON(plane->state);
++
++	vc4_state = kzalloc(sizeof(*vc4_state), GFP_KERNEL);
++	if (!vc4_state)
++		return;
++
++	__drm_atomic_helper_plane_reset(plane, &vc4_state->base);
++}
++
+ static void vc4_plane_destroy(struct drm_plane *plane)
+ {
+ 	drm_plane_cleanup(plane);
+@@ -602,13 +616,29 @@ static bool vc4_fkms_format_mod_supporte
+ 	}
+ }
+ 
++static struct drm_plane_state *vc4_plane_duplicate_state(struct drm_plane *plane)
++{
++	struct vc4_plane_state *vc4_state;
++
++	if (WARN_ON(!plane->state))
++		return NULL;
++
++	vc4_state = kzalloc(sizeof(*vc4_state), GFP_KERNEL);
++	if (!vc4_state)
++		return NULL;
++
++	__drm_atomic_helper_plane_duplicate_state(plane, &vc4_state->base);
++
++	return &vc4_state->base;
++}
++
+ static const struct drm_plane_funcs vc4_plane_funcs = {
+ 	.update_plane = drm_atomic_helper_update_plane,
+ 	.disable_plane = drm_atomic_helper_disable_plane,
+ 	.destroy = vc4_plane_destroy,
+ 	.set_property = NULL,
+-	.reset = drm_atomic_helper_plane_reset,
+-	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
++	.reset = vc4_plane_reset,
++	.atomic_duplicate_state = vc4_plane_duplicate_state,
+ 	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,
+ 	.format_mod_supported = vc4_fkms_format_mod_supported,
+ };

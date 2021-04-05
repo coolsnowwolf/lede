@@ -8,12 +8,11 @@ include $(TOPDIR)/rules.mk
 
 ARCH:=arm
 BOARD:=at91
-MAINTAINER:=Claudio Mignanti <c.mignanti@gmail.com>
 BOARDNAME:=Microchip (Atmel AT91)
 FEATURES:=ext4 squashfs targz usb usbgadget ubifs
-SUBTARGETS:=sama5d2 sama5d3 sama5d4 legacy
+SUBTARGETS:=sama5 sam9x
 
-KERNEL_PATCHVER:=4.9
+KERNEL_PATCHVER:=5.4
 
 include $(INCLUDE_DIR)/target.mk
 

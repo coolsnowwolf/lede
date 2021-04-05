@@ -1,12 +1,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=qbittorrent
-PKG_VERSION:=4.1.9.1
+PKG_VERSION:=4.3.4.1
 PKG_RELEASE=1
 
 PKG_SOURCE:=$(PKG_NAME)-release-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/qbittorrent/qBittorrent/tar.gz/release-$(PKG_VERSION)?
-PKG_HASH:=18688c4bf50eb285d5ee1bdae771f301308059b31ac9f1b4aeff117ae7a12db2
+PKG_HASH:=8f615aa06f77286881d40b5f769f648221128b46f0bffc1f2fa101068f99ebe8
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/qBittorrent-release-$(PKG_VERSION)
 
@@ -25,7 +25,7 @@ define Package/qBittorrent
   CATEGORY:=Network
   TITLE:=bittorrent client programmed in C++ / Qt
   URL:=https://www.qbittorrent.org/
-  DEPENDS:=+qt5-core +qt5-network +qt5-xml +rblibtorrent
+  DEPENDS:=+qt5-core +qt5-network +qt5-sql +qt5-xml +rblibtorrent
 endef
 
 define Package/qBittorrent/description
@@ -37,16 +37,21 @@ well as many features.
 endef
 
 CONFIGURE_VARS += \
-	QT_QMAKE="$(TOOLCHAIN_DIR)/bin" \
+  	QT_QMAKE="$(TOOLCHAIN_DIR)/bin" \
 	PKG_CONFIG_PATH="$(TOOLCHAIN_DIR)/lib/pkgconfig"
 
 CONFIGURE_ARGS += \
 	--disable-gui \
 	--enable-stacktrace=no \
-	--with-boost=$(STAGING_DIR)/usr
+	--with-boost="$(STAGING_DIR)/usr"
 
 MAKE_VARS += \
 	INSTALL_ROOT="$(PKG_INSTALL_DIR)"
+
+define Build/Prepare
+	$(call Build/Prepare/Default)
+	$(SED) '/<context>/{:a;N;/<\/context>/!ba;/\/gui\//d}' `ls $(PKG_BUILD_DIR)/src/lang/qbittorrent_*.ts`
+endef
 
 define Package/qBittorrent/install
 	$(INSTALL_DIR) $(1)/usr/man/man1

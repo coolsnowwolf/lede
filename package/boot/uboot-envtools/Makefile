@@ -9,16 +9,17 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uboot-envtools
 PKG_DISTNAME:=u-boot
-PKG_VERSION:=2018.03
-PKG_RELEASE:=3
+PKG_VERSION:=2020.04
+PKG_RELEASE:=8
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE:=$(PKG_DISTNAME)-$(PKG_VERSION).tar.xz
+PKG_SOURCE:=$(PKG_DISTNAME)-$(PKG_VERSION).tar.bz2
+PKG_SOURCE_URL:= \
+    https://ftp.denx.de/pub/u-boot \
+    https://mirror.cyberbits.eu/u-boot \
+    ftp://ftp.denx.de/pub/u-boot
+PKG_HASH:=fe732aaf037d9cc3c0909bad8362af366ae964bbdac6913a34081ff4ad565372
 PKG_SOURCE_SUBDIR:=$(PKG_DISTNAME)-$(PKG_VERSION)
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_DISTNAME)-$(PKG_VERSION)
-PKG_SOURCE_URL:=https://git.denx.de/u-boot.git
-PKG_SOURCE_VERSION:=f95ab1fb6e37f0601f397091bb011edf7a98b890
-PKG_MIRROR_HASH:=b50d8b6fe0d90b92c8c147457b1b4c2ed1cdb03191085cfc57fdad77c0bfffab
 
 PKG_BUILD_DEPENDS:=fstools
 
@@ -51,16 +52,11 @@ define Build/Configure
 	touch $(PKG_BUILD_DIR)/include/generated/autoconf.h
 endef
 
-TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include
-
-define Build/Compile
-	$(MAKE) -C $(PKG_BUILD_DIR) \
-		CROSS_COMPILE="$(TARGET_CROSS)" \
-		TARGET_CFLAGS="$(TARGET_CFLAGS)" \
-		HOSTLDFLAGS= \
-		no-dot-config-targets=envtools \
-		envtools
-endef
+MAKE_FLAGS += \
+	TARGET_CFLAGS="$(TARGET_CFLAGS)" \
+	TARGET_LDFLAGS="$(TARGET_LDFLAGS)" \
+	no-dot-config-targets=envtools \
+	envtools
 
 define Package/uboot-envtools/conffiles
 /etc/config/ubootenv

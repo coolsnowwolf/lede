@@ -136,6 +136,7 @@ static struct mdio_board_info cr5000_mdio0_info[] = {
 static void __init cr5000_setup(void)
 {
 	u8 *art = (u8 *) KSEG1ADDR(0x1fff0000);
+	struct ath9k_platform_data *pdata;
 
 	ath79_gpio_function_enable(AR934X_GPIO_FUNC_JTAG_DISABLE);
 	gpio_request_one(CR5000_GPIO_LED_POWER_ENABLE,
@@ -153,10 +154,12 @@ static void __init cr5000_setup(void)
 					cr5000_gpio_keys);
 	ath79_register_usb();
 	ath79_register_wmac(art + CR5000_WMAC_CALDATA_OFFSET, art + CR5000_WMAC_MAC_OFFSET);
-	ap94_pci_init(NULL, NULL, NULL, art + CR5000_PCIE_WMAC_OFFSET);
+	ap91_pci_init(NULL, art + CR5000_PCIE_WMAC_OFFSET);
+	pdata = ap9x_pci_get_wmac_data(0);
+	if (pdata)
+		pdata->use_eeprom = true;
 
-        ath79_setup_ar934x_eth_cfg(AR934X_ETH_CFG_RGMII_GMAC0);
-
+	ath79_setup_ar934x_eth_cfg(AR934X_ETH_CFG_RGMII_GMAC0);
 	ath79_register_mdio(0, 0x0);
 
 	ath79_init_mac(ath79_eth0_data.mac_addr, art + CR5000_MAC0_OFFSET, 0);

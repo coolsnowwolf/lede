@@ -1,0 +1,212 @@
+From eda40b8c8c82e0f2789d6bc8bf63846dce2e8f32 Mon Sep 17 00:00:00 2001
+From: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
+Date: Sat, 23 Mar 2019 09:29:49 +0000
+Subject: [PATCH] netfilter: connmark: introduce set-dscpmark
+
+set-dscpmark is a method of storing the DSCP of an ip packet into
+conntrack mark.  In combination with a suitable tc filter action
+(act_ctinfo) DSCP values are able to be stored in the mark on egress and
+restored on ingress across links that otherwise alter or bleach DSCP.
+
+This is useful for qdiscs such as CAKE which are able to shape according
+to policies based on DSCP.
+
+Ingress classification is traditionally a challenging task since
+iptables rules haven't yet run and tc filter/eBPF programs are pre-NAT
+lookups, hence are unable to see internal IPv4 addresses as used on the
+typical home masquerading gateway.
+
+x_tables CONNMARK set-dscpmark target solves the problem of storing the
+DSCP to the conntrack mark in a way suitable for the new act_ctinfo tc
+action to restore.
+
+The set-dscpmark option accepts 2 parameters, a 32bit 'dscpmask' and a
+32bit 'statemask'.  The dscp mask must be 6 contiguous bits and
+represents the area where the DSCP will be stored in the connmark.  The
+state mask is a minimum 1 bit length mask that must not overlap with the
+dscpmask.  It represents a flag which is set when the DSCP has been
+stored in the conntrack mark. This is useful to implement a 'one shot'
+iptables based classification where the 'complicated' iptables rules are
+only run once to classify the connection on initial (egress) packet and
+subsequent packets are all marked/restored with the same DSCP.  A state
+mask of zero disables the setting of a status bit/s.
+
+example syntax with a suitably modified iptables user space application:
+
+iptables -A QOS_MARK_eth0 -t mangle -j CONNMARK --set-dscpmark 0xfc000000/0x01000000
+
+Would store the DSCP in the top 6 bits of the 32bit mark field, and use
+the LSB of the top byte as the 'DSCP has been stored' marker.
+
+|----0xFC----conntrack mark----000000---|
+| Bits 31-26 | bit 25 | bit24 |~~~ Bit 0|
+| DSCP       | unused | flag  |unused   |
+|-----------------------0x01---000000---|
+      ^                   ^
+      |                   |
+      ---|             Conditional flag
+         |             set this when dscp
+|-ip diffserv-|        stored in mark
+| 6 bits      |
+|-------------|
+
+an identically configured tc action to restore looks like:
+
+tc filter show dev eth0 ingress
+filter parent ffff: protocol all pref 10 u32 chain 0
+filter parent ffff: protocol all pref 10 u32 chain 0 fh 800: ht divisor 1
+filter parent ffff: protocol all pref 10 u32 chain 0 fh 800::800 order 2048 key ht 800 bkt 0 flowid 1: not_in_hw
+  match 00000000/00000000 at 0
+	action order 1: ctinfo zone 0 pipe
+	 index 2 ref 1 bind 1 dscp 0xfc000000/0x1000000
+
+	action order 2: mirred (Egress Redirect to device ifb4eth0) stolen
+	index 1 ref 1 bind 1
+
+|----0xFC----conntrack mark----000000---|
+| Bits 31-26 | bit 25 | bit24 |~~~ Bit 0|
+| DSCP       | unused | flag  |unused   |
+|-----------------------0x01---000000---|
+      |                   |
+      |                   |
+      ---|             Conditional flag
+         v             only restore if set
+|-ip diffserv-|
+| 6 bits      |
+|-------------|
+
+Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
+---
+ include/uapi/linux/netfilter/xt_connmark.h | 10 ++++
+ net/netfilter/xt_connmark.c                | 55 ++++++++++++++++++----
+ 2 files changed, 57 insertions(+), 8 deletions(-)
+
+--- a/include/uapi/linux/netfilter/xt_connmark.h
++++ b/include/uapi/linux/netfilter/xt_connmark.h
+@@ -20,6 +20,11 @@ enum {
+ };
+ 
+ enum {
++	XT_CONNMARK_VALUE = (1 << 0),
++	XT_CONNMARK_DSCP = (1 << 1)
++};
++
++enum {
+ 	D_SHIFT_LEFT = 0,
+ 	D_SHIFT_RIGHT,
+ };
+@@ -34,6 +39,11 @@ struct xt_connmark_tginfo2 {
+ 	__u8 shift_dir, shift_bits, mode;
+ };
+ 
++struct xt_connmark_tginfo3 {
++	__u32 ctmark, ctmask, nfmask;
++	__u8 shift_dir, shift_bits, mode, func;
++};
++
+ struct xt_connmark_mtinfo1 {
+ 	__u32 mark, mask;
+ 	__u8 invert;
+--- a/net/netfilter/xt_connmark.c
++++ b/net/netfilter/xt_connmark.c
+@@ -36,12 +36,13 @@ MODULE_ALIAS("ipt_connmark");
+ MODULE_ALIAS("ip6t_connmark");
+ 
+ static unsigned int
+-connmark_tg_shift(struct sk_buff *skb, const struct xt_connmark_tginfo2 *info)
++connmark_tg_shift(struct sk_buff *skb, const struct xt_connmark_tginfo3 *info)
+ {
+ 	enum ip_conntrack_info ctinfo;
+ 	u_int32_t new_targetmark;
+ 	struct nf_conn *ct;
+ 	u_int32_t newmark;
++	u_int8_t dscp;
+ 
+ 	ct = nf_ct_get(skb, &ctinfo);
+ 	if (ct == NULL)
+@@ -49,12 +50,24 @@ connmark_tg_shift(struct sk_buff *skb, c
+ 
+ 	switch (info->mode) {
+ 	case XT_CONNMARK_SET:
+-		newmark = (ct->mark & ~info->ctmask) ^ info->ctmark;
+-		if (info->shift_dir == D_SHIFT_RIGHT)
+-			newmark >>= info->shift_bits;
+-		else
+-			newmark <<= info->shift_bits;
++		newmark = ct->mark;
++		if (info->func & XT_CONNMARK_VALUE) {
++			newmark = (newmark & ~info->ctmask) ^ info->ctmark;
++			if (info->shift_dir == D_SHIFT_RIGHT)
++				newmark >>= info->shift_bits;
++			else
++				newmark <<= info->shift_bits;
++		} else if (info->func & XT_CONNMARK_DSCP) {
++			if (skb->protocol == htons(ETH_P_IP))
++				dscp = ipv4_get_dsfield(ip_hdr(skb)) >> 2;
++			else if (skb->protocol == htons(ETH_P_IPV6))
++				dscp = ipv6_get_dsfield(ipv6_hdr(skb)) >> 2;
++			else	/* protocol doesn't have diffserv */
++				break;
+ 
++			newmark = (newmark & ~info->ctmark) |
++				  (info->ctmask | (dscp << info->shift_bits));
++		}
+ 		if (ct->mark != newmark) {
+ 			ct->mark = newmark;
+ 			nf_conntrack_event_cache(IPCT_MARK, ct);
+@@ -93,20 +106,36 @@ static unsigned int
+ connmark_tg(struct sk_buff *skb, const struct xt_action_param *par)
+ {
+ 	const struct xt_connmark_tginfo1 *info = par->targinfo;
+-	const struct xt_connmark_tginfo2 info2 = {
++	const struct xt_connmark_tginfo3 info3 = {
+ 		.ctmark	= info->ctmark,
+ 		.ctmask	= info->ctmask,
+ 		.nfmask	= info->nfmask,
+ 		.mode	= info->mode,
++		.func	= XT_CONNMARK_VALUE
+ 	};
+ 
+-	return connmark_tg_shift(skb, &info2);
++	return connmark_tg_shift(skb, &info3);
+ }
+ 
+ static unsigned int
+ connmark_tg_v2(struct sk_buff *skb, const struct xt_action_param *par)
+ {
+ 	const struct xt_connmark_tginfo2 *info = par->targinfo;
++	const struct xt_connmark_tginfo3 info3 = {
++		.ctmark	= info->ctmark,
++		.ctmask	= info->ctmask,
++		.nfmask	= info->nfmask,
++		.mode	= info->mode,
++		.func	= XT_CONNMARK_VALUE
++	};
++
++	return connmark_tg_shift(skb, &info3);
++}
++
++static unsigned int
++connmark_tg_v3(struct sk_buff *skb, const struct xt_action_param *par)
++{
++	const struct xt_connmark_tginfo3 *info = par->targinfo;
+ 
+ 	return connmark_tg_shift(skb, info);
+ }
+@@ -177,6 +206,16 @@ static struct xt_target connmark_tg_reg[
+ 		.targetsize     = sizeof(struct xt_connmark_tginfo2),
+ 		.destroy        = connmark_tg_destroy,
+ 		.me             = THIS_MODULE,
++	},
++	{
++		.name           = "CONNMARK",
++		.revision       = 3,
++		.family         = NFPROTO_UNSPEC,
++		.checkentry     = connmark_tg_check,
++		.target         = connmark_tg_v3,
++		.targetsize     = sizeof(struct xt_connmark_tginfo3),
++		.destroy        = connmark_tg_destroy,
++		.me             = THIS_MODULE,
+ 	}
+ };
+ 

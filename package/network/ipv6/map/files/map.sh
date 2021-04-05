@@ -33,7 +33,7 @@ proto_map_setup() {
 	json_get_vars type mtu ttl tunlink zone encaplimit
 	json_get_vars rule ipaddr ip4prefixlen ip6prefix ip6prefixlen peeraddr ealen psidlen psid offset
 
-	[ -z "$zone" ] && zone="wan"
+	[ "$zone" = "-" ] && zone=""
 	[ -z "$type" ] && type="map-e"
 	[ -z "$ip4prefixlen" ] && ip4prefixlen=32
 
@@ -129,7 +129,7 @@ proto_map_setup() {
 
 	proto_add_ipv4_route "0.0.0.0" 0
 	proto_add_data
-	[ "$zone" != "-" ] && json_add_string zone "$zone"
+	[ -n "$zone" ] && json_add_string zone "$zone"
 
 	json_add_array firewall
 	  if [ -z "$(eval "echo \$RULE_${k}_PORTSETS")" ]; then
@@ -155,26 +155,30 @@ proto_map_setup() {
 	    done
 	  fi
 	  if [ "$type" = "map-t" ]; then
-	  	json_add_object ""
-	  		json_add_string type rule
-	  		json_add_string family inet6
-	  		json_add_string proto all
-	  		json_add_string direction in
-			json_add_string dest "$zone"
-			json_add_string src "$zone"
-	  		json_add_string src_ip $(eval "echo \$RULE_${k}_IPV6ADDR")
-	  		json_add_string target ACCEPT
-	  	json_close_object
-	  	json_add_object ""
-	  		json_add_string type rule
-	  		json_add_string family inet6
-	  		json_add_string proto all
-	  		json_add_string direction out
-			json_add_string dest "$zone"
-			json_add_string src "$zone"
-	  		json_add_string dest_ip $(eval "echo \$RULE_${k}_IPV6ADDR")
-	  		json_add_string target ACCEPT
-	  	json_close_object
+		[ -z "$zone" ] && zone=$(fw3 -q network $iface 2>/dev/null)
+
+		[ -n "$zone" ] && {
+			json_add_object ""
+				json_add_string type rule
+				json_add_string family inet6
+				json_add_string proto all
+				json_add_string direction in
+				json_add_string dest "$zone"
+				json_add_string src "$zone"
+				json_add_string src_ip $(eval "echo \$RULE_${k}_IPV6ADDR")
+				json_add_string target ACCEPT
+			json_close_object
+			json_add_object ""
+				json_add_string type rule
+				json_add_string family inet6
+				json_add_string proto all
+				json_add_string direction out
+				json_add_string dest "$zone"
+				json_add_string src "$zone"
+				json_add_string dest_ip $(eval "echo \$RULE_${k}_IPV6ADDR")
+				json_add_string target ACCEPT
+			json_close_object
+		}
 		proto_add_ipv6_route $(eval "echo \$RULE_${k}_IPV6ADDR") 128
 	  fi
 	json_close_array

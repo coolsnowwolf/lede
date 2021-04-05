@@ -33,6 +33,10 @@
 #define SCH2_MAGIC 0x2124
 #define SCH2_VER 0x02
 
+/*
+ * compression type values in the header
+ * so far onlysupport for LZMA is added
+ */
 #define FLAT 0
 #define JZ 1
 #define GZIP 2
@@ -48,8 +52,6 @@
 
 #define FACTORY 0
 #define SYSUPGRADE 1
-
-#define ALIGN(x, a) ({ typeof(a) __a = (a); (((x) + __a - 1) & ~(__a - 1)); })
 
 #define ERR(fmt, ...) do { \
 	fflush(0); \
@@ -77,7 +79,6 @@ uint32_t jboot_timestamp(void);
 uint16_t jboot_checksum(uint16_t start_val, uint16_t *data, int size);
 int get_file_stat(struct file_info *fdata);
 int read_to_buf(const struct file_info *fdata, char *buf);
-int pad_jffs2(char *buf, int currlen, int maxlen);
 int write_fw(const char *ofname, const char *data, int len);
 
 #endif				/* mkdlinkfw_lib_h */

@@ -86,6 +86,8 @@ void write_img(unsigned char* img, const char *fname)
     fclose(fp);
     exit(-1);
   }
+
+  fclose(fp);
 }
 
 
@@ -104,6 +106,8 @@ void write_rootfs(unsigned char* img, const char *fname)
     fclose(fp);
     exit(-1);
   }
+
+  fclose(fp);
 }
 
 
@@ -122,6 +126,8 @@ void write_kernel(unsigned char* img, const char *fname)
     fclose(fp);
     exit(-1);
   }
+
+  fclose(fp);
 }
 
 

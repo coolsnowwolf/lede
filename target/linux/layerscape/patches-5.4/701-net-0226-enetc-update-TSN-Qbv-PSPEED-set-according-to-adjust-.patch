@@ -1,0 +1,171 @@
+From 877119a3f6bce2d9091faa4e51490917be8a3158 Mon Sep 17 00:00:00 2001
+From: Po Liu <po.liu@nxp.com>
+Date: Fri, 15 Nov 2019 03:33:41 +0000
+Subject: [PATCH] enetc: update TSN Qbv PSPEED set according to adjust link
+ speed
+
+ENETC has a register PSPEED to indicate the link speed of hardware.
+It is need to update accordingly. PSPEED field needs to be updated
+with the port speed for QBV scheduling purposes. Or else there is
+chance for gate slot not free by frame taking the MAC if PSPEED and
+phy speed not match. So update PSPEED when link adjust. This is
+implement by the adjust_link.
+
+Signed-off-by: Po Liu <Po.Liu@nxp.com>
+Signed-off-by: Claudiu Manoil <claudiu.manoil@nxp.com>
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/ethernet/freescale/enetc/enetc.c     | 13 +++++++--
+ drivers/net/ethernet/freescale/enetc/enetc.h     |  8 ++++++
+ drivers/net/ethernet/freescale/enetc/enetc_hw.h  |  5 ++++
+ drivers/net/ethernet/freescale/enetc/enetc_pf.c  |  3 +++
+ drivers/net/ethernet/freescale/enetc/enetc_qos.c | 34 ++++++++++++++++++++++++
+ 5 files changed, 61 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/ethernet/freescale/enetc/enetc.c
++++ b/drivers/net/ethernet/freescale/enetc/enetc.c
+@@ -742,9 +742,14 @@ void enetc_get_si_caps(struct enetc_si *
+ 	si->num_rss = 0;
+ 	val = enetc_rd(hw, ENETC_SIPCAPR0);
+ 	if (val & ENETC_SIPCAPR0_RSS) {
+-		val = enetc_rd(hw, ENETC_SIRSSCAPR);
+-		si->num_rss = ENETC_SIRSSCAPR_GET_NUM_RSS(val);
++		u32 rss;
++
++		rss = enetc_rd(hw, ENETC_SIRSSCAPR);
++		si->num_rss = ENETC_SIRSSCAPR_GET_NUM_RSS(rss);
+ 	}
++
++	if (val & ENETC_SIPCAPR0_QBV)
++		si->hw_features |= ENETC_SI_F_QBV;
+ }
+ 
+ static int enetc_dma_alloc_bdr(struct enetc_bdr *r, size_t bd_size)
+@@ -1309,8 +1314,12 @@ static void enetc_disable_interrupts(str
+ 
+ static void adjust_link(struct net_device *ndev)
+ {
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
+ 	struct phy_device *phydev = ndev->phydev;
+ 
++	if (priv->active_offloads & ENETC_F_QBV)
++		enetc_sched_speed_set(ndev);
++
+ 	phy_print_status(phydev);
+ }
+ 
+--- a/drivers/net/ethernet/freescale/enetc/enetc.h
++++ b/drivers/net/ethernet/freescale/enetc/enetc.h
+@@ -118,6 +118,8 @@ enum enetc_errata {
+ 	ENETC_ERR_UCMCSWP	= BIT(2),
+ };
+ 
++#define ENETC_SI_F_QBV BIT(0)
++
+ /* PCI IEP device data */
+ struct enetc_si {
+ 	struct pci_dev *pdev;
+@@ -133,6 +135,7 @@ struct enetc_si {
+ 	int num_fs_entries;
+ 	int num_rss; /* number of RSS buckets */
+ 	unsigned short pad;
++	int hw_features;
+ };
+ 
+ #define ENETC_SI_ALIGN	32
+@@ -173,6 +176,7 @@ struct enetc_cls_rule {
+ enum enetc_active_offloads {
+ 	ENETC_F_RX_TSTAMP	= BIT(0),
+ 	ENETC_F_TX_TSTAMP	= BIT(1),
++	ENETC_F_QBV             = BIT(2),
+ };
+ 
+ struct enetc_ndev_priv {
+@@ -188,6 +192,8 @@ struct enetc_ndev_priv {
+ 	u16 msg_enable;
+ 	int active_offloads;
+ 
++	u32 speed; /* store speed for compare update pspeed */
++
+ 	struct enetc_bdr *tx_ring[16];
+ 	struct enetc_bdr *rx_ring[16];
+ 
+@@ -253,6 +259,8 @@ int enetc_send_cmd(struct enetc_si *si,
+ 
+ #ifdef CONFIG_FSL_ENETC_QOS
+ int enetc_setup_tc_taprio(struct net_device *ndev, void *type_data);
++void enetc_sched_speed_set(struct net_device *ndev);
+ #else
+ #define enetc_setup_tc_taprio(ndev, type_data) -EOPNOTSUPP
++#define enetc_sched_speed_set(ndev) (void)0
+ #endif
+--- a/drivers/net/ethernet/freescale/enetc/enetc_hw.h
++++ b/drivers/net/ethernet/freescale/enetc/enetc_hw.h
+@@ -149,6 +149,11 @@ enum enetc_bdr_type {TX, RX};
+ #define ENETC_PORT_BASE		0x10000
+ #define ENETC_PMR		0x0000
+ #define ENETC_PMR_EN	GENMASK(18, 16)
++#define ENETC_PMR_PSPEED_MASK GENMASK(11, 8)
++#define ENETC_PMR_PSPEED_10M	0
++#define ENETC_PMR_PSPEED_100M	BIT(8)
++#define ENETC_PMR_PSPEED_1000M	BIT(9)
++#define ENETC_PMR_PSPEED_2500M	BIT(10)
+ #define ENETC_PSR		0x0004 /* RO */
+ #define ENETC_PSIPMR		0x0018
+ #define ENETC_PSIPMR_SET_UP(n)	BIT(n) /* n = SI index */
+--- a/drivers/net/ethernet/freescale/enetc/enetc_pf.c
++++ b/drivers/net/ethernet/freescale/enetc/enetc_pf.c
+@@ -742,6 +742,9 @@ static void enetc_pf_netdev_setup(struct
+ 
+ 	ndev->priv_flags |= IFF_UNICAST_FLT;
+ 
++	if (si->hw_features & ENETC_SI_F_QBV)
++		priv->active_offloads |= ENETC_F_QBV;
++
+ 	/* pick up primary MAC address from SI */
+ 	enetc_get_primary_mac_addr(&si->hw, ndev->dev_addr);
+ }
+--- a/drivers/net/ethernet/freescale/enetc/enetc_qos.c
++++ b/drivers/net/ethernet/freescale/enetc/enetc_qos.c
+@@ -11,6 +11,40 @@ static u16 enetc_get_max_gcl_len(struct
+ 		& ENETC_QBV_MAX_GCL_LEN_MASK;
+ }
+ 
++void enetc_sched_speed_set(struct net_device *ndev)
++{
++	struct enetc_ndev_priv *priv = netdev_priv(ndev);
++	struct phy_device *phydev = ndev->phydev;
++	u32 old_speed = priv->speed;
++	u32 speed, pspeed;
++
++	if (phydev->speed == old_speed)
++		return;
++
++	speed = phydev->speed;
++	switch (speed) {
++	case SPEED_1000:
++		pspeed = ENETC_PMR_PSPEED_1000M;
++		break;
++	case SPEED_2500:
++		pspeed = ENETC_PMR_PSPEED_2500M;
++		break;
++	case SPEED_100:
++		pspeed = ENETC_PMR_PSPEED_100M;
++		break;
++	case SPEED_10:
++	default:
++		pspeed = ENETC_PMR_PSPEED_10M;
++		netdev_err(ndev, "Qbv PSPEED set speed link down.\n");
++	}
++
++	priv->speed = speed;
++	enetc_port_wr(&priv->si->hw, ENETC_PMR,
++		      (enetc_port_rd(&priv->si->hw, ENETC_PMR)
++		      & (~ENETC_PMR_PSPEED_MASK))
++		      | pspeed);
++}
++
+ static int enetc_setup_taprio(struct net_device *ndev,
+ 			      struct tc_taprio_qopt_offload *admin_conf)
+ {

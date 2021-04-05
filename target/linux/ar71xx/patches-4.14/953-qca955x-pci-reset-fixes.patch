@@ -1,0 +1,120 @@
+--- a/arch/mips/ath79/common.c
++++ b/arch/mips/ath79/common.c
+@@ -153,6 +153,24 @@ void ath79_device_reset_clear(u32 mask)
+ }
+ EXPORT_SYMBOL_GPL(ath79_device_reset_clear);
+ 
++void ath79_device_reset2_clear(u32 mask)
++{
++	unsigned long flags;
++	u32 reg;
++	u32 t;
++
++	if (soc_is_qca955x())
++		reg = QCA955X_RESET_REG_RESET2_MODULE;
++	else
++		panic("Reset register not defined for this SOC");
++
++	spin_lock_irqsave(&ath79_device_reset_lock, flags);
++	t = ath79_reset_rr(reg);
++	ath79_reset_wr(reg, t & ~mask);
++	spin_unlock_irqrestore(&ath79_device_reset_lock, flags);
++}
++EXPORT_SYMBOL_GPL(ath79_device_reset2_clear);
++
+ u32 ath79_device_reset_get(u32 mask)
+ {
+ 	unsigned long flags;
+--- a/arch/mips/include/asm/mach-ath79/ar71xx_regs.h
++++ b/arch/mips/include/asm/mach-ath79/ar71xx_regs.h
+@@ -411,6 +411,7 @@
+ #define QCA955X_PLL_CPU_CONFIG_REG		0x00
+ #define QCA955X_PLL_DDR_CONFIG_REG		0x04
+ #define QCA955X_PLL_CLK_CTRL_REG		0x08
++#define QCA955X_PLL_PCIE_CONFIG_REG		0x0c
+ #define QCA955X_PLL_ETH_XMII_CONTROL_REG	0x28
+ #define QCA955X_PLL_ETH_SGMII_CONTROL_REG	0x48
+ #define QCA955X_PLL_ETH_SGMII_SERDES_REG	0x4c
+@@ -565,6 +566,7 @@
+ #define QCA953X_RESET_REG_PCIE_WMAC_INT_STATUS	0xac
+ 
+ #define QCA955X_RESET_REG_RESET_MODULE		0x1c
++#define QCA955X_RESET_REG_RESET2_MODULE		0xc4
+ #define QCA955X_RESET_REG_BOOTSTRAP		0xb0
+ #define QCA955X_RESET_REG_EXT_INT_STATUS	0xac
+ 
+--- a/arch/mips/include/asm/mach-ath79/ath79.h
++++ b/arch/mips/include/asm/mach-ath79/ath79.h
+@@ -178,6 +178,7 @@ static inline u32 ath79_reset_rr(unsigne
+ 
+ void ath79_device_reset_set(u32 mask);
+ void ath79_device_reset_clear(u32 mask);
++void ath79_device_reset2_clear(u32 mask);
+ u32 ath79_device_reset_get(u32 mask);
+ 
+ void ath79_cpu_irq_init(unsigned irq_wb_chan2, unsigned irq_wb_chan3);
+--- a/arch/mips/pci/pci-ar724x.c
++++ b/arch/mips/pci/pci-ar724x.c
+@@ -335,18 +335,37 @@ static void ar724x_pci_hw_init(struct ar
+ 	int wait = 0;
+ 
+ 	/* deassert PCIe host controller and PCIe PHY reset */
+-	ath79_device_reset_clear(AR724X_RESET_PCIE);
+-	ath79_device_reset_clear(AR724X_RESET_PCIE_PHY);
++	if (soc_is_qca955x()) {
++		ath79_device_reset_clear(QCA955X_RESET_PCIE);
++		mdelay(10);
++		ath79_device_reset_clear(QCA955X_RESET_PCIE_PHY);
++		mdelay(10);
++		ath79_device_reset2_clear(QCA955X_RESET_PCIE);
++		mdelay(10);
++		ath79_device_reset2_clear(QCA955X_RESET_PCIE_PHY);
++		mdelay(10);
++	} else {
++		ath79_device_reset_clear(AR724X_RESET_PCIE);
++		ath79_device_reset_clear(AR724X_RESET_PCIE_PHY);
++	}
+ 
+ 	/* remove the reset of the PCIE PLL */
+-	ppl = ath79_pll_rr(AR724X_PLL_REG_PCIE_CONFIG);
+-	ppl &= ~AR724X_PLL_REG_PCIE_CONFIG_PPL_RESET;
+-	ath79_pll_wr(AR724X_PLL_REG_PCIE_CONFIG, ppl);
++	if (!soc_is_qca955x()) {
++		ppl = ath79_pll_rr(AR724X_PLL_REG_PCIE_CONFIG);
++		ppl &= ~AR724X_PLL_REG_PCIE_CONFIG_PPL_RESET;
++		ath79_pll_wr(AR724X_PLL_REG_PCIE_CONFIG, ppl);
++	}
+ 
+ 	/* deassert bypass for the PCIE PLL */
+-	ppl = ath79_pll_rr(AR724X_PLL_REG_PCIE_CONFIG);
+-	ppl &= ~AR724X_PLL_REG_PCIE_CONFIG_PPL_BYPASS;
+-	ath79_pll_wr(AR724X_PLL_REG_PCIE_CONFIG, ppl);
++	if (soc_is_qca955x()) {
++		ppl = ath79_pll_rr(QCA955X_PLL_PCIE_CONFIG_REG);
++		ppl &= ~AR724X_PLL_REG_PCIE_CONFIG_PPL_BYPASS;
++		ath79_pll_wr(QCA955X_PLL_PCIE_CONFIG_REG, ppl);
++	} else {
++		ppl = ath79_pll_rr(AR724X_PLL_REG_PCIE_CONFIG);
++		ppl &= ~AR724X_PLL_REG_PCIE_CONFIG_PPL_BYPASS;
++		ath79_pll_wr(AR724X_PLL_REG_PCIE_CONFIG, ppl);
++	}
+ 
+ 	/* set PCIE Application Control to ready */
+ 	app = __raw_readl(apc->ctrl_base + AR724X_PCI_REG_APP);
+@@ -422,8 +441,14 @@ static int ar724x_pci_probe(struct platf
+ 	 * Do the full PCIE Root Complex Initialization Sequence if the PCIe
+ 	 * host controller is in reset.
+ 	 */
+-	if (ath79_reset_rr(AR724X_RESET_REG_RESET_MODULE) & AR724X_RESET_PCIE)
+-		ar724x_pci_hw_init(apc);
++	if (soc_is_qca955x()) {
++		if (ath79_reset_rr(QCA955X_RESET_REG_RESET_MODULE) & QCA955X_RESET_PCIE ||
++		    ath79_reset_rr(QCA955X_RESET_REG_RESET2_MODULE) & QCA955X_RESET_PCIE)
++			ar724x_pci_hw_init(apc);
++	} else {
++		if (ath79_reset_rr(AR724X_RESET_REG_RESET_MODULE) & AR724X_RESET_PCIE)
++			ar724x_pci_hw_init(apc);
++	}
+ 
+ 	apc->link_up = ar724x_pci_check_link(apc);
+ 	if (!apc->link_up)

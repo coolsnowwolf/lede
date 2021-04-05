@@ -1,0 +1,397 @@
+From ea2e3b62b170e0f896aa837c8fec8085fb1063f8 Mon Sep 17 00:00:00 2001
+From: Ioana Radulescu <ruxandra.radulescu@nxp.com>
+Date: Tue, 3 Sep 2019 21:11:35 +0300
+Subject: [PATCH] dpaa2-eth: Distribute ingress frames based on VLAN prio
+
+Configure static ingress classification based on VLAN PCP field.
+If the DPNI doesn't have enough traffic classes to accommodate all
+priority levels, the lowest ones end up on TC 0 (default on miss).
+
+Signed-off-by: Ioana Radulescu <ruxandra.radulescu@nxp.com>
+---
+ drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.c | 116 ++++++++++++++++++++
+ drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.h |   1 +
+ drivers/net/ethernet/freescale/dpaa2/dpni-cmd.h  |  34 ++++++
+ drivers/net/ethernet/freescale/dpaa2/dpni.c      | 131 +++++++++++++++++++++++
+ drivers/net/ethernet/freescale/dpaa2/dpni.h      |  36 +++++++
+ 5 files changed, 318 insertions(+)
+
+--- a/drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.c
++++ b/drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.c
+@@ -2608,6 +2608,118 @@ out_err:
+ 	priv->enqueue = dpaa2_eth_enqueue_qd;
+ }
+ 
++/* Configure ingress classification based on VLAN PCP */
++static int set_vlan_qos(struct dpaa2_eth_priv *priv)
++{
++	struct device *dev = priv->net_dev->dev.parent;
++	struct dpkg_profile_cfg kg_cfg = {0};
++	struct dpni_qos_tbl_cfg qos_cfg = {0};
++	struct dpni_rule_cfg key_params;
++	void *dma_mem, *key, *mask;
++	u8 key_size = 2;	/* VLAN TCI field */
++	int i, pcp, err;
++
++	/* VLAN-based classification only makes sense if we have multiple
++	 * traffic classes.
++	 * Also, we need to extract just the 3-bit PCP field from the VLAN
++	 * header and we can only do that by using a mask
++	 */
++	if (dpaa2_eth_tc_count(priv) == 1 || !dpaa2_eth_fs_mask_enabled(priv)) {
++		dev_dbg(dev, "VLAN-based QoS classification not supported\n");
++		return -ENOTSUPP;
++	}
++
++	dma_mem = kzalloc(DPAA2_CLASSIFIER_DMA_SIZE, GFP_KERNEL);
++	if (!dma_mem)
++		return -ENOMEM;
++
++	kg_cfg.num_extracts = 1;
++	kg_cfg.extracts[0].type = DPKG_EXTRACT_FROM_HDR;
++	kg_cfg.extracts[0].extract.from_hdr.prot = NET_PROT_VLAN;
++	kg_cfg.extracts[0].extract.from_hdr.type = DPKG_FULL_FIELD;
++	kg_cfg.extracts[0].extract.from_hdr.field = NH_FLD_VLAN_TCI;
++
++	err =  dpni_prepare_key_cfg(&kg_cfg, dma_mem);
++	if (err) {
++		dev_err(dev, "dpni_prepare_key_cfg failed\n");
++		goto out_free_tbl;
++	}
++
++	/* set QoS table */
++	qos_cfg.default_tc = 0;
++	qos_cfg.discard_on_miss = 0;
++	qos_cfg.key_cfg_iova = dma_map_single(dev, dma_mem,
++					      DPAA2_CLASSIFIER_DMA_SIZE,
++					      DMA_TO_DEVICE);
++	if (dma_mapping_error(dev, qos_cfg.key_cfg_iova)) {
++		dev_err(dev, "QoS table DMA mapping failed\n");
++		err = -ENOMEM;
++		goto out_free_tbl;
++	}
++
++	err = dpni_set_qos_table(priv->mc_io, 0, priv->mc_token, &qos_cfg);
++	if (err) {
++		dev_err(dev, "dpni_set_qos_table failed\n");
++		goto out_unmap_tbl;
++	}
++
++	/* Add QoS table entries */
++	key = kzalloc(key_size * 2, GFP_KERNEL);
++	if (!key) {
++		err = -ENOMEM;
++		goto out_unmap_tbl;
++	}
++	mask = key + key_size;
++	*(u16 *)mask = cpu_to_be16(VLAN_PRIO_MASK);
++
++	key_params.key_iova = dma_map_single(dev, key, key_size * 2,
++					     DMA_TO_DEVICE);
++	if (dma_mapping_error(dev, key_params.key_iova)) {
++		dev_err(dev, "Qos table entry DMA mapping failed\n");
++		err = -ENOMEM;
++		goto out_free_key;
++	}
++
++	key_params.mask_iova = key_params.key_iova + key_size;
++	key_params.key_size = key_size;
++
++	/* We add rules for PCP-based distribution starting with highest
++	 * priority (VLAN PCP = 7). If this DPNI doesn't have enough traffic
++	 * classes to accommodate all priority levels, the lowest ones end up
++	 * on TC 0 which was configured as default
++	 */
++	for (i = dpaa2_eth_tc_count(priv) - 1, pcp = 7; i >= 0; i--, pcp--) {
++		*(u16 *)key = cpu_to_be16(pcp << VLAN_PRIO_SHIFT);
++		dma_sync_single_for_device(dev, key_params.key_iova,
++					   key_size * 2, DMA_TO_DEVICE);
++
++		err = dpni_add_qos_entry(priv->mc_io, 0, priv->mc_token,
++					 &key_params, i, i);
++		if (err) {
++			dev_err(dev, "dpni_add_qos_entry failed\n");
++			dpni_clear_qos_table(priv->mc_io, 0, priv->mc_token);
++			goto out_unmap_key;
++		}
++	}
++
++	priv->vlan_cls_enabled = true;
++
++	/* Table and key memory is not persistent, clean everything up after
++	 * configuration is finished
++	 */
++out_unmap_key:
++	dma_unmap_single(dev, key_params.key_iova, key_size * 2, DMA_TO_DEVICE);
++out_free_key:
++	kfree(key);
++out_unmap_tbl:
++	dma_unmap_single(dev, qos_cfg.key_cfg_iova, DPAA2_CLASSIFIER_DMA_SIZE,
++			 DMA_TO_DEVICE);
++out_free_tbl:
++	kfree(dma_mem);
++
++	return err;
++}
++
+ /* Configure the DPNI object this interface is associated with */
+ static int setup_dpni(struct fsl_mc_device *ls_dev)
+ {
+@@ -2670,6 +2782,10 @@ static int setup_dpni(struct fsl_mc_devi
+ 			goto close;
+ 	}
+ 
++	err = set_vlan_qos(priv);
++	if (err && err != -ENOTSUPP)
++		goto close;
++
+ 	priv->cls_rules = devm_kzalloc(dev, sizeof(struct dpaa2_eth_cls_rule) *
+ 				       dpaa2_eth_fs_count(priv), GFP_KERNEL);
+ 	if (!priv->cls_rules) {
+--- a/drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.h
++++ b/drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.h
+@@ -414,6 +414,7 @@ struct dpaa2_eth_priv {
+ 	u64 rx_cls_fields;
+ 	struct dpaa2_eth_cls_rule *cls_rules;
+ 	u8 rx_cls_enabled;
++	u8 vlan_cls_enabled;
+ 	struct bpf_prog *xdp_prog;
+ #ifdef CONFIG_DEBUG_FS
+ 	struct dpaa2_debugfs dbg;
+--- a/drivers/net/ethernet/freescale/dpaa2/dpni-cmd.h
++++ b/drivers/net/ethernet/freescale/dpaa2/dpni-cmd.h
+@@ -59,6 +59,10 @@
+ 
+ #define DPNI_CMDID_SET_RX_TC_DIST			DPNI_CMD(0x235)
+ 
++#define DPNI_CMDID_SET_QOS_TBL				DPNI_CMD(0x240)
++#define DPNI_CMDID_ADD_QOS_ENT				DPNI_CMD(0x241)
++#define DPNI_CMDID_REMOVE_QOS_ENT			DPNI_CMD(0x242)
++#define DPNI_CMDID_CLR_QOS_TBL				DPNI_CMD(0x243)
+ #define DPNI_CMDID_ADD_FS_ENT				DPNI_CMD(0x244)
+ #define DPNI_CMDID_REMOVE_FS_ENT			DPNI_CMD(0x245)
+ #define DPNI_CMDID_CLR_FS_ENT				DPNI_CMD(0x246)
+@@ -567,4 +571,34 @@ struct dpni_cmd_remove_fs_entry {
+ 	__le64 mask_iova;
+ };
+ 
++#define DPNI_DISCARD_ON_MISS_SHIFT	0
++#define DPNI_DISCARD_ON_MISS_SIZE	1
++
++struct dpni_cmd_set_qos_table {
++	__le32 pad;
++	u8 default_tc;
++	/* only the LSB */
++	u8 discard_on_miss;
++	__le16 pad1[21];
++	__le64 key_cfg_iova;
++};
++
++struct dpni_cmd_add_qos_entry {
++	__le16 pad;
++	u8 tc_id;
++	u8 key_size;
++	__le16 index;
++	__le16 pad1;
++	__le64 key_iova;
++	__le64 mask_iova;
++};
++
++struct dpni_cmd_remove_qos_entry {
++	u8 pad[3];
++	u8 key_size;
++	__le32 pad1;
++	__le64 key_iova;
++	__le64 mask_iova;
++};
++
+ #endif /* _FSL_DPNI_CMD_H */
+--- a/drivers/net/ethernet/freescale/dpaa2/dpni.c
++++ b/drivers/net/ethernet/freescale/dpaa2/dpni.c
+@@ -1786,3 +1786,134 @@ int dpni_remove_fs_entry(struct fsl_mc_i
+ 	/* send command to mc*/
+ 	return mc_send_command(mc_io, &cmd);
+ }
++
++/**
++ * dpni_set_qos_table() - Set QoS mapping table
++ * @mc_io:	Pointer to MC portal's I/O object
++ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
++ * @token:	Token of DPNI object
++ * @cfg:	QoS table configuration
++ *
++ * This function and all QoS-related functions require that
++ *'max_tcs > 1' was set at DPNI creation.
++ *
++ * warning: Before calling this function, call dpkg_prepare_key_cfg() to
++ *			prepare the key_cfg_iova parameter
++ *
++ * Return:	'0' on Success; Error code otherwise.
++ */
++int dpni_set_qos_table(struct fsl_mc_io *mc_io,
++		       u32 cmd_flags,
++		       u16 token,
++		       const struct dpni_qos_tbl_cfg *cfg)
++{
++	struct dpni_cmd_set_qos_table *cmd_params;
++	struct fsl_mc_command cmd = { 0 };
++
++	/* prepare command */
++	cmd.header = mc_encode_cmd_header(DPNI_CMDID_SET_QOS_TBL,
++					  cmd_flags,
++					  token);
++	cmd_params = (struct dpni_cmd_set_qos_table *)cmd.params;
++	cmd_params->default_tc = cfg->default_tc;
++	cmd_params->key_cfg_iova = cpu_to_le64(cfg->key_cfg_iova);
++	dpni_set_field(cmd_params->discard_on_miss, DISCARD_ON_MISS,
++		       cfg->discard_on_miss);
++
++	/* send command to mc*/
++	return mc_send_command(mc_io, &cmd);
++}
++
++/**
++ * dpni_add_qos_entry() - Add QoS mapping entry (to select a traffic class)
++ * @mc_io:	Pointer to MC portal's I/O object
++ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
++ * @token:	Token of DPNI object
++ * @cfg:	QoS rule to add
++ * @tc_id:	Traffic class selection (0-7)
++ * @index:	Location in the QoS table where to insert the entry.
++ *		Only relevant if MASKING is enabled for QoS classification on
++ *		this DPNI, it is ignored for exact match.
++ *
++ * Return:	'0' on Success; Error code otherwise.
++ */
++int dpni_add_qos_entry(struct fsl_mc_io *mc_io,
++		       u32 cmd_flags,
++		       u16 token,
++		       const struct dpni_rule_cfg *cfg,
++		       u8 tc_id,
++		       u16 index)
++{
++	struct dpni_cmd_add_qos_entry *cmd_params;
++	struct fsl_mc_command cmd = { 0 };
++
++	/* prepare command */
++	cmd.header = mc_encode_cmd_header(DPNI_CMDID_ADD_QOS_ENT,
++					  cmd_flags,
++					  token);
++	cmd_params = (struct dpni_cmd_add_qos_entry *)cmd.params;
++	cmd_params->tc_id = tc_id;
++	cmd_params->key_size = cfg->key_size;
++	cmd_params->index = cpu_to_le16(index);
++	cmd_params->key_iova = cpu_to_le64(cfg->key_iova);
++	cmd_params->mask_iova = cpu_to_le64(cfg->mask_iova);
++
++	/* send command to mc*/
++	return mc_send_command(mc_io, &cmd);
++}
++
++/**
++ * dpni_remove_qos_entry() - Remove QoS mapping entry
++ * @mc_io:	Pointer to MC portal's I/O object
++ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
++ * @token:	Token of DPNI object
++ * @cfg:	QoS rule to remove
++ *
++ * Return:	'0' on Success; Error code otherwise.
++ */
++int dpni_remove_qos_entry(struct fsl_mc_io *mc_io,
++			  u32 cmd_flags,
++			  u16 token,
++			  const struct dpni_rule_cfg *cfg)
++{
++	struct dpni_cmd_remove_qos_entry *cmd_params;
++	struct fsl_mc_command cmd = { 0 };
++
++	/* prepare command */
++	cmd.header = mc_encode_cmd_header(DPNI_CMDID_REMOVE_QOS_ENT,
++					  cmd_flags,
++					  token);
++	cmd_params = (struct dpni_cmd_remove_qos_entry *)cmd.params;
++	cmd_params->key_size = cfg->key_size;
++	cmd_params->key_iova = cpu_to_le64(cfg->key_iova);
++	cmd_params->mask_iova = cpu_to_le64(cfg->mask_iova);
++
++	/* send command to mc*/
++	return mc_send_command(mc_io, &cmd);
++}
++
++/**
++ * dpni_clear_qos_table() - Clear all QoS mapping entries
++ * @mc_io:	Pointer to MC portal's I/O object
++ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
++ * @token:	Token of DPNI object
++ *
++ * Following this function call, all frames are directed to
++ * the default traffic class (0)
++ *
++ * Return:	'0' on Success; Error code otherwise.
++ */
++int dpni_clear_qos_table(struct fsl_mc_io *mc_io,
++			 u32 cmd_flags,
++			 u16 token)
++{
++	struct fsl_mc_command cmd = { 0 };
++
++	/* prepare command */
++	cmd.header = mc_encode_cmd_header(DPNI_CMDID_CLR_QOS_TBL,
++					  cmd_flags,
++					  token);
++
++	/* send command to mc*/
++	return mc_send_command(mc_io, &cmd);
++}
+--- a/drivers/net/ethernet/freescale/dpaa2/dpni.h
++++ b/drivers/net/ethernet/freescale/dpaa2/dpni.h
+@@ -716,6 +716,26 @@ int dpni_set_rx_hash_dist(struct fsl_mc_
+ 			  const struct dpni_rx_dist_cfg *cfg);
+ 
+ /**
++ * struct dpni_qos_tbl_cfg - Structure representing QOS table configuration
++ * @key_cfg_iova: I/O virtual address of 256 bytes DMA-able memory filled with
++ *		key extractions to be used as the QoS criteria by calling
++ *		dpkg_prepare_key_cfg()
++ * @discard_on_miss: Set to '1' to discard frames in case of no match (miss);
++ *		'0' to use the 'default_tc' in such cases
++ * @default_tc: Used in case of no-match and 'discard_on_miss'= 0
++ */
++struct dpni_qos_tbl_cfg {
++	u64 key_cfg_iova;
++	int discard_on_miss;
++	u8 default_tc;
++};
++
++int dpni_set_qos_table(struct fsl_mc_io *mc_io,
++		       u32 cmd_flags,
++		       u16 token,
++		       const struct dpni_qos_tbl_cfg *cfg);
++
++/**
+  * enum dpni_dest - DPNI destination types
+  * @DPNI_DEST_NONE: Unassigned destination; The queue is set in parked mode and
+  *		does not generate FQDAN notifications; user is expected to
+@@ -961,6 +981,22 @@ int dpni_remove_fs_entry(struct fsl_mc_i
+ 			 u8 tc_id,
+ 			 const struct dpni_rule_cfg *cfg);
+ 
++int dpni_add_qos_entry(struct fsl_mc_io *mc_io,
++		       u32 cmd_flags,
++		       u16 token,
++		       const struct dpni_rule_cfg *cfg,
++		       u8 tc_id,
++		       u16 index);
++
++int dpni_remove_qos_entry(struct fsl_mc_io *mc_io,
++			  u32 cmd_flags,
++			  u16 token,
++			  const struct dpni_rule_cfg *cfg);
++
++int dpni_clear_qos_table(struct fsl_mc_io *mc_io,
++			 u32 cmd_flags,
++			 u16 token);
++
+ int dpni_get_api_version(struct fsl_mc_io *mc_io,
+ 			 u32 cmd_flags,
+ 			 u16 *major_ver,

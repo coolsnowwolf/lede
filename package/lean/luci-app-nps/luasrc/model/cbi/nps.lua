@@ -43,5 +43,3 @@ log_level:value(7,"Debug")
 log_level.default="3"
 
 return m
-
-

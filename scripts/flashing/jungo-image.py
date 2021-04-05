@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Copyright 2008, 2009 (C) Jose Vasconcellos <jvasco@verizon.net>
 #
@@ -32,9 +32,9 @@ import telnetlib
 import string
 import binascii
 import socket
-import thread
-import SocketServer
-import SimpleHTTPServer
+import _thread
+import socketserver
+import http.server
 
 reboot = 0
 HOST = "192.168.1.1"
@@ -56,8 +56,8 @@ device="ixp0"
 ####################
 
 def start_server(server):
-    httpd = SocketServer.TCPServer((server,PORT),SimpleHTTPServer.SimpleHTTPRequestHandler)
-    thread.start_new_thread(httpd.serve_forever,())
+    httpd = socketserver.TCPServer((server,PORT),http.server.SimpleHTTPRequestHandler)
+    _thread.start_new_thread(httpd.serve_forever,())
 
 ####################
 
@@ -66,11 +66,11 @@ def get_flash_size():
     tn.write("cat /proc/cpuinfo\n")
     buf = tn.read_until("Returned 0", 3)
     if not buf:
-        print "Unable to obtain CPU information; make sure to not use A0 stepping!"
+        print("Unable to obtain CPU information; make sure to not use A0 stepping!")
     elif buf.find('rev 0') > 0:
-        print "Warning: IXP42x stepping A0 detected!"
+        print("Warning: IXP42x stepping A0 detected!")
         if imagefile or url:
-            print "Error: No linux support for A0 stepping!"
+            print("Error: No linux support for A0 stepping!")
             sys.exit(2)
 
     # now get flash size
@@ -86,9 +86,9 @@ def get_flash_size():
         i = buf.rfind('Range ')
         if i > 0:
             return int(buf[i+17:].split()[0],16)
-        print "Can't determine flash size!"
+        print("Can't determine flash size!")
     else:
-        print "Unable to obtain flash size!"
+        print("Unable to obtain flash size!")
     sys.exit(2)
 
 def image_dump(tn, dumpfile):
@@ -110,13 +110,13 @@ def image_dump(tn, dumpfile):
 	if i > 0:
 	    i += 4
 	else:
-	    print "No MAC address found! (use -f option)"
+	    print("No MAC address found! (use -f option)")
 	    sys.exit(1)
         dumpfile = "%s-%s.bin" % (platform, buf[i:i+17].replace(':',''))
     else:
         tn.write("\n")
 
-    print "Dumping flash contents (%dMB) to %s" % (flashsize/1048576, dumpfile)
+    print("Dumping flash contents (%dMB) to %s" % (flashsize/1048576, dumpfile))
     f = open(dumpfile, "wb")
 
     t=flashsize/dumplen
@@ -137,7 +137,7 @@ def image_dump(tn, dumpfile):
             if s and s[0][-1] == ':':
 		a=int(s[0][:-1],16)
 		if a != count:
-		    print "Format error: %x != %x"%(a,count)
+		    print("Format error: %x != %x"%(a,count))
 		    sys.exit(2)
 	    	count += 16
 		f.write(binascii.a2b_hex(string.join(s[1:],'')))
@@ -145,7 +145,7 @@ def image_dump(tn, dumpfile):
 
     f.close()
     if verbose:
-	print ""
+	print("")
 
 def telnet_option(sock,cmd,option):
     #print "Option: %d %d" % (ord(cmd), ord(option))
@@ -156,11 +156,11 @@ def telnet_option(sock,cmd,option):
     sock.sendall(telnetlib.IAC + c + option)
 
 def telnet_timeout():
-    print "Fatal error: telnet timeout!"
+    print("Fatal error: telnet timeout!")
     sys.exit(1)
 
 def usage():
-    print __doc__ % os.path.basename(sys.argv[0])
+    print(__doc__ % os.path.basename(sys.argv[0]))
 
 ####################
 
@@ -178,7 +178,7 @@ for o, a in opts:
 	usage()
 	sys.exit(1)
     elif o in ("-V", "--version"):
-	print "%s: 0.11" % sys.argv[0]
+	print("%s: 0.11" % sys.argv[0])
 	sys.exit(1)
     elif o in ("-d", "--no-dump"):
 	do_dump = 1
@@ -213,8 +213,8 @@ else:
 # create a telnet session to the router
 try:
     tn = telnetlib.Telnet(HOST)
-except socket.error, msg:
-    print "Unable to establish telnet session to %s: %s" % (HOST, msg)
+except socket.error as msg:
+    print("Unable to establish telnet session to %s: %s" % (HOST, msg))
     sys.exit(1)
 
 tn.set_option_negotiation_callback(telnet_option)
@@ -250,7 +250,7 @@ if imagefile or url:
         cmd = "load -u http://%s:%d/%s -r 0\n" % (server, PORT, splitpath[1])
 
         if not os.access(imagefile, os.R_OK):
-            print "File access error: %s" % (imagefile)
+            print("File access error: %s" % (imagefile))
             sys.exit(3)
 
         # make sure we're in the directory where the image is located
@@ -260,23 +260,23 @@ if imagefile or url:
         start_server(server)
 
     if verbose:
-	print "Unlocking flash..."
+	print("Unlocking flash...")
     tn.write("unlock 0 0x%x\n" % flashsize)
     buf = tn.read_until("Returned 0",5)
 
     if verbose:
-	print "Writing new image..."
-    print cmd,
+	print("Writing new image...")
+    print(cmd, end=' ')
     tn.write(cmd)
     buf = tn.read_until("Returned 0",10)
 
     # wait till the transfer completed
     buf = tn.read_until("Download completed successfully",20)
     if buf:
-	print "Flash update complete!"
+	print("Flash update complete!")
         if reboot:
             tn.write("reboot\n")
-            print "Rebooting..."
+            print("Rebooting...")
 
 tn.write("exit\n")
 tn.close()

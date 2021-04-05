@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #
 # Copyright (C) 2012 OpenWrt.org
 #
@@ -24,8 +24,8 @@ find $TARGETS -type f -a -exec file {} \; | \
   awk '$2 ~ /NEEDED/ && $NF !~ /interpreter/ && $NF ~ /^\[?lib.*\.so/ { gsub(/[\[\]]/, "", $NF); print $NF }' | \
   sort -u
 
-tmp=`mktemp $TMP_DIR/dep.XXXXXXXX`
-for kmod in `find $TARGETS -type f -name \*.ko`; do
+tmp=$(mktemp $TMP_DIR/dep.XXXXXXXX)
+for kmod in $(find $TARGETS -type f -name \*.ko); do
 	$OBJCOPY -O binary -j .modinfo $kmod $tmp
 	sed -e 's,\x00,\n,g' $tmp | \
 		sed -ne '/^depends=.\+/ { s/^depends=//; s/,/.ko\n/g; s/$/.ko/p; q }'

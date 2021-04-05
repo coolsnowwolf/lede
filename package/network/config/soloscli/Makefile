@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=soloscli
 PKG_VERSION:=1.04
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE:=solos-pci-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@SF/openadsl

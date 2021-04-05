@@ -3,7 +3,8 @@ PKG_NAME ?= u-boot
 ifndef PKG_SOURCE_PROTO
 PKG_SOURCE = $(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL = \
-	http://sources.lede-project.org \
+	https://mirror.cyberbits.eu/u-boot \
+	https://ftp.denx.de/pub/u-boot \
 	ftp://ftp.denx.de/pub/u-boot
 endif
 
@@ -42,7 +43,7 @@ TARGET_DEP = TARGET_$(BUILD_TARGET)$(if $(BUILD_SUBTARGET),_$(BUILD_SUBTARGET))
 
 UBOOT_MAKE_FLAGS = \
 	HOSTCC="$(HOSTCC)" \
-	HOSTCFLAGS="$(HOST_CFLAGS) $(HOST_CPPFLAGS)" \
+	HOSTCFLAGS="$(HOST_CFLAGS) $(HOST_CPPFLAGS) -std=gnu11" \
 	HOSTLDFLAGS="$(HOST_LDFLAGS)"
 
 define Build/U-Boot/Target

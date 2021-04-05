@@ -434,7 +434,7 @@ static int rb91x_nand_probe(struct platform_device *pdev)
 	return 0;
 
 err_release_nand:
-	nand_release(mtd);
+	nand_release(&rbni->chip);
 	return ret;
 }
 
@@ -442,7 +442,7 @@ static int rb91x_nand_remove(struct platform_device *pdev)
 {
 	struct rb91x_nand_info *info = platform_get_drvdata(pdev);
 
-	nand_release(rbinfo_to_mtd(info));
+	nand_release(&rbni->chip);
 
 	return 0;
 }

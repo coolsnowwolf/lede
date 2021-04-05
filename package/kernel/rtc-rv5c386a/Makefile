@@ -15,7 +15,7 @@ include $(INCLUDE_DIR)/package.mk
 
 define KernelPackage/rtc-rv5c386a
   SUBMENU:=Other modules
-  DEPENDS:=@TARGET_brcm47xx @!IN_SDK
+  DEPENDS:=@TARGET_bcm47xx @!IN_SDK
   TITLE:=Driver for RTC RV5C386A (used in WL-700gE and WL-HDD)
   AUTOLOAD:=$(call AutoLoad,70,rtc)
   FILES:=$(PKG_BUILD_DIR)/rtc.ko
@@ -24,7 +24,7 @@ endef
 define Build/Compile
 	$(MAKE) -C "$(LINUX_DIR)" \
 		$(KERNEL_MAKE_FLAGS) \
-		SUBDIRS="$(PKG_BUILD_DIR)" \
+		M="$(PKG_BUILD_DIR)" \
 		EXTRA_CFLAGS="$(BUILDFLAGS)" \
 		modules
 endef

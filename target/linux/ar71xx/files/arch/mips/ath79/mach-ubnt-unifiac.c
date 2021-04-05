@@ -176,4 +176,4 @@ static void __init ubnt_unifiac_pro_setup(void)
 
 
 MIPS_MACHINE(ATH79_MACH_UBNT_UNIFIAC_PRO, "UBNT-UF-AC-PRO",
-	     "Ubiquiti UniFi-AC-PRO", ubnt_unifiac_pro_setup);
+	     "Ubiquiti UniFi-AC-PRO/MESH-PRO", ubnt_unifiac_pro_setup);

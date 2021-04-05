@@ -98,7 +98,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  obj-$(CONFIG_NETFILTER_XT_TARGET_LED) += xt_LED.o
 --- /dev/null
 +++ b/net/netfilter/xt_FLOWOFFLOAD.c
-@@ -0,0 +1,421 @@
+@@ -0,0 +1,422 @@
 +/*
 + * Copyright (C) 2018 Felix Fietkau <nbd@nbd.name>
 + *
@@ -330,14 +330,15 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +
 +	this_dst = xt_flowoffload_dst(ct, !dir, par, xt_out(par)->ifindex);
 +	other_dst = xt_flowoffload_dst(ct, dir, par, xt_in(par)->ifindex);
++
++	route->tuple[dir].dst		= this_dst;
++	route->tuple[!dir].dst		= other_dst;
++
 +	if (!this_dst || !other_dst)
 +		return -ENOENT;
 +
 +	if (dst_xfrm(this_dst) || dst_xfrm(other_dst))
 +		return -EINVAL;
-+
-+	route->tuple[dir].dst		= this_dst;
-+	route->tuple[!dir].dst		= other_dst;
 +
 +	return 0;
 +}
@@ -350,7 +351,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +	enum ip_conntrack_info ctinfo;
 +	enum ip_conntrack_dir dir;
 +	struct nf_flow_route route;
-+	struct flow_offload *flow;
++	struct flow_offload *flow = NULL;
 +	struct nf_conn *ct;
 +	struct net *net;
 +
@@ -392,12 +393,14 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +
 +	dir = CTINFO2DIR(ctinfo);
 +
-+	if (xt_flowoffload_route(skb, ct, par, &route, dir) < 0)
-+		goto err_flow_route;
++	if (xt_flowoffload_route(skb, ct, par, &route, dir) == 0)
++		flow = flow_offload_alloc(ct, &route);
 +
-+	flow = flow_offload_alloc(ct, &route);
++	dst_release(route.tuple[dir].dst);
++	dst_release(route.tuple[!dir].dst);
++
 +	if (!flow)
-+		goto err_flow_alloc;
++		goto err_flow_route;
 +
 +	if (tcph) {
 +		ct->proto.tcp.seen[0].flags |= IP_CT_TCP_FLAG_BE_LIBERAL;
@@ -421,8 +424,6 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +
 +err_flow_add:
 +	flow_offload_free(flow);
-+err_flow_alloc:
-+	dst_release(route.tuple[!dir].dst);
 +err_flow_route:
 +	clear_bit(IPS_OFFLOAD_BIT, &ct->status);
 +	return XT_CONTINUE;

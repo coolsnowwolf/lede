@@ -20,7 +20,7 @@ define KernelPackage/pwm-mediatek-ramips
   AUTOLOAD:=$(call AutoProbe,pwm-mediatek-ramips)
 endef
 
-define KernelPackage/pwm-mediatek/description
+define KernelPackage/pwm-mediatek-ramips/description
   Kernel modules for MediaTek Pulse Width Modulator
 endef
 
@@ -47,7 +47,7 @@ I2C_RALINK_MODULES:= \
 define KernelPackage/i2c-ralink
   $(call i2c_defaults,$(I2C_RALINK_MODULES),59)
   TITLE:=Ralink I2C Controller
-  DEPENDS:=kmod-i2c-core @TARGET_ramips \
+  DEPENDS:=+kmod-i2c-core @TARGET_ramips \
 	@!(TARGET_ramips_mt7621||TARGET_ramips_mt76x8)
 endef
 
@@ -64,7 +64,7 @@ I2C_MT7621_MODULES:= \
 define KernelPackage/i2c-mt7628
   $(call i2c_defaults,$(I2C_MT7621_MODULES),59)
   TITLE:=MT7628/88 I2C Controller
-  DEPENDS:=kmod-i2c-core \
+  DEPENDS:=+kmod-i2c-core \
 	@(TARGET_ramips_mt76x8)
 endef
 
@@ -84,7 +84,8 @@ define KernelPackage/dma-ralink
 	CONFIG_DMA_RALINK
   FILES:= \
 	$(LINUX_DIR)/drivers/dma/virt-dma.ko \
-	$(LINUX_DIR)/drivers/dma/ralink-gdma.ko
+	$(LINUX_DIR)/drivers/dma/ralink-gdma.ko@lt5.4 \
+	$(LINUX_DIR)/drivers/staging/ralink-gdma/ralink-gdma.ko@ge5.4
   AUTOLOAD:=$(call AutoLoad,52,ralink-gdma)
 endef
 
@@ -104,8 +105,9 @@ define KernelPackage/hsdma-mtk
 	CONFIG_MTK_HSDMA
   FILES:= \
 	$(LINUX_DIR)/drivers/dma/virt-dma.ko \
-	$(LINUX_DIR)/drivers/dma/mtk-hsdma.ko
-  AUTOLOAD:=$(call AutoLoad,53,mtk-hsdma)
+	$(LINUX_DIR)/drivers/dma/hsdma-mt7621.ko@lt5.4 \
+	$(LINUX_DIR)/drivers/staging/mt7621-dma/hsdma-mt7621.ko@ge5.4
+  AUTOLOAD:=$(call AutoLoad,53,hsdma-mt7621)
 endef
 
 define KernelPackage/hsdma-mtk/description
@@ -136,18 +138,3 @@ define KernelPackage/sound-mt7620/description
 endef
 
 $(eval $(call KernelPackage,sound-mt7620))
-
-define KernelPackage/sound-mt76x8-wm8960
-  TITLE:=MT76x8 WM8960 ALSA SoC Machine Driver
-  DEPENDS:=@TARGET_ramips +kmod-sound-mt7620 +kmod-i2c-mt7628 @!TARGET_ramips_rt288x
-  KCONFIG:=CONFIG_SND_SOC_MT76X8_WM8960
-  FILES:=$(LINUX_DIR)/sound/soc/ralink/snd-soc-mt76x8-wm8960.ko
-  AUTOLOAD:=$(call AutoLoad,91,snd-soc-mt76x8-wm8960)
-  $(call AddDepends/sound)
-endef
-
-define KernelPackage/sound-mt76x8-wm8960/description
- ASoC Audio driver for Ralink SoC with WM8960 codec.
-endef
-
-$(eval $(call KernelPackage,sound-mt76x8-wm8960))

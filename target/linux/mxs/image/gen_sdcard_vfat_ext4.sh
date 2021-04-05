@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #
 # Copyright (C) 2015 OpenWrt.org
 #
@@ -23,7 +23,7 @@ head=4
 sect=63
 
 # Set the u-boot storage to 2M
-set `ptgen -o $OUTPUT -h $head -s $sect -l 1024 -t 53 -p 2M -t c -p ${BOOTFSSIZE}M -t 83 -p ${ROOTFSSIZE}M`
+set $(ptgen -o $OUTPUT -h $head -s $sect -l 1024 -t 53 -p 2M -t c -p ${BOOTFSSIZE}M -t 83 -p ${ROOTFSSIZE}M)
 
 UBOOTOFFSET="$(($1 / 512))"
 UBOOTSIZE="$(($2 / 512))"
