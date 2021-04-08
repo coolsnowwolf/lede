@@ -564,7 +564,7 @@ static inline u32 fe_empty_txd(struct fe_tx_ring *ring)
 	barrier();
 	return (u32)(ring->tx_ring_size -
 			((ring->tx_next_idx - ring->tx_free_idx) &
-			 (ring->tx_ring_size - 1)));
+			 (ring->tx_ring_size - 1)) - 1);
 }
 
 struct fe_map_state {
@@ -961,7 +961,7 @@ static int fe_poll_rx(struct napi_struct *napi, int budget,
 					       RX_DMA_VID(trxd.rxd3));
 
 #ifdef CONFIG_NET_RALINK_OFFLOAD
-		if (mtk_offload_check_rx(priv, skb, trxd.rxd4) == 0) {
+		if (ra_offload_check_rx(priv, skb, trxd.rxd4) == 0) {
 #endif
 			stats->rx_packets++;
 			stats->rx_bytes += pktlen;
@@ -1309,7 +1309,7 @@ static int fe_open(struct net_device *dev)
 	fe_int_enable(priv->soc->tx_int | priv->soc->rx_int);
 	netif_start_queue(dev);
 #ifdef CONFIG_NET_RALINK_OFFLOAD
-	mtk_ppe_probe(priv);
+	ra_ppe_probe(priv);
 #endif
 
 	return 0;
@@ -1348,7 +1348,7 @@ static int fe_stop(struct net_device *dev)
 	fe_free_dma(priv);
 
 #ifdef CONFIG_NET_RALINK_OFFLOAD
-	mtk_ppe_remove(priv);
+	ra_ppe_remove(priv);
 #endif
 
 	return 0;

@@ -99,9 +99,12 @@ hostapd_common_add_device_config() {
 	config_add_string require_mode
 	config_add_boolean legacy_rates
 	config_add_boolean vendor_vht
+	config_add_int cell_density
 
 	config_add_string acs_chan_bias
 	config_add_array hostapd_options
+
+	config_add_int airtime_mode
 
 	hostapd_add_log_config
 }
@@ -114,17 +117,16 @@ hostapd_prepare_device_config() {
 	local base_cfg=
 
 	json_get_vars country country_ie beacon_int:100 dtim_period:2 doth require_mode legacy_rates \
-		acs_chan_bias local_pwr_constraint spectrum_mgmt_required airtime_mode vendor_vht
+		acs_chan_bias local_pwr_constraint spectrum_mgmt_required airtime_mode cell_density vendor_vht
 
 	hostapd_set_log_options base_cfg
 
 	set_default country_ie 1
 	set_default spectrum_mgmt_required 0
 	set_default doth 1
-	set_default legacy_rates 1
+	set_default legacy_rates 0
 	set_default airtime_mode 0
-
-	[ "$hwmode" = "b" ] && legacy_rates=1
+	set_default cell_density 0
 
 	[ -n "$country" ] && {
 		append base_cfg "country_code=$country" "$N"
@@ -145,17 +147,58 @@ hostapd_prepare_device_config() {
 	json_get_values rate_list supported_rates
 
 	[ -n "$hwmode" ] && append base_cfg "hw_mode=$hwmode" "$N"
-	[ "$legacy_rates" -eq 0 ] && set_default require_mode g
-
-	[ "$hwmode" = "g" ] && {
-		[ "$legacy_rates" -eq 0 ] && set_default rate_list "6000 9000 12000 18000 24000 36000 48000 54000"
-		[ -n "$require_mode" ] && set_default basic_rate_list "6000 12000 24000"
-		[ -n "$vendor_vht" ] && append base_cfg "vendor_vht=$vendor_vht" "$N"
-	}
-
-	case "$require_mode" in
-		n) append base_cfg "require_ht=1" "$N";;
-		ac) append base_cfg "require_vht=1" "$N";;
+	if [ "$hwmode" = "g" ] || [ "$hwmode" = "a" ]; then
+		[ -n "$require_mode" ] && legacy_rates=0
+		case "$require_mode" in
+			n) append base_cfg "require_ht=1" "$N";;
+			ac) append base_cfg "require_vht=1" "$N";;
+		esac
+	fi
+	case "$hwmode" in
+		b)
+			if [ "$cell_density" -eq 1 ]; then
+				set_default rate_list "5500 11000"
+				set_default basic_rate_list "5500 11000"
+			elif [ "$cell_density" -ge 2 ]; then
+				set_default rate_list "11000"
+				set_default basic_rate_list "11000"
+			fi
+		;;
+		g)
+			if [ "$cell_density" -eq 0 ] || [ "$cell_density" -eq 1 ]; then
+				if [ "$legacy_rates" -eq 0 ]; then
+					set_default rate_list "6000 9000 12000 18000 24000 36000 48000 54000"
+					set_default basic_rate_list "6000 12000 24000"
+				elif [ "$cell_density" -eq 1 ]; then
+					set_default rate_list "5500 6000 9000 11000 12000 18000 24000 36000 48000 54000"
+					set_default basic_rate_list "5500 11000"
+				fi
+			elif [ "$cell_density" -ge 3 ] && [ "$legacy_rates" -ne 0 ] || [ "$cell_density" -eq 2 ]; then
+				if [ "$legacy_rates" -eq 0 ]; then
+					set_default rate_list "12000 18000 24000 36000 48000 54000"
+					set_default basic_rate_list "12000 24000"
+				else
+					set_default rate_list "11000 12000 18000 24000 36000 48000 54000"
+					set_default basic_rate_list "11000"
+				fi
+			elif [ "$cell_density" -ge 3 ]; then
+				set_default rate_list "24000 36000 48000 54000"
+				set_default basic_rate_list "24000"
+			fi
+			[ -n "$vendor_vht" ] && append base_cfg "vendor_vht=$vendor_vht" "$N"
+		;;
+		a)
+			if [ "$cell_density" -eq 1 ]; then
+				set_default rate_list "6000 9000 12000 18000 24000 36000 48000 54000"
+				set_default basic_rate_list "6000 12000 24000"
+			elif [ "$cell_density" -eq 2 ]; then
+				set_default rate_list "12000 18000 24000 36000 48000 54000"
+				set_default basic_rate_list "12000 24000"
+			elif [ "$cell_density" -ge 3 ]; then
+				set_default rate_list "24000 36000 48000 54000"
+				set_default basic_rate_list "24000"
+			fi
+		;;
 	esac
 
 	for r in $rate_list; do
@@ -188,7 +231,7 @@ hostapd_common_add_bss_config() {
 	config_add_boolean wds wmm uapsd hidden utf8_ssid
 
 	config_add_int maxassoc max_inactivity
-	config_add_boolean disassoc_low_ack isolate short_preamble
+	config_add_boolean disassoc_low_ack isolate short_preamble skip_inactivity_poll
 
 	config_add_int \
 		wep_rekey eap_reauth_period \
@@ -241,11 +284,14 @@ hostapd_common_add_bss_config() {
 	config_add_string wps_device_type wps_device_name wps_manufacturer wps_pin
 	config_add_string multi_ap_backhaul_ssid multi_ap_backhaul_key
 
-	config_add_boolean ieee80211v wnm_sleep_mode bss_transition
+	config_add_boolean wnm_sleep_mode bss_transition
 	config_add_int time_advertisement
 	config_add_string time_zone
 
 	config_add_boolean ieee80211k rrm_neighbor_report rrm_beacon_report
+
+	config_add_boolean ftm_responder stationary_ap
+	config_add_string lci civic
 
 	config_add_boolean ieee80211r pmk_r1_push ft_psk_generate_local ft_over_ds
 	config_add_int r0_key_lifetime reassociation_deadline
@@ -268,6 +314,13 @@ hostapd_common_add_bss_config() {
 
 	config_add_string 'owe_transition_bssid:macaddr' 'owe_transition_ssid:string'
 
+	config_add_boolean iw_enabled iw_internet iw_asra iw_esr iw_uesa
+	config_add_int iw_access_network_type iw_venue_group iw_venue_type
+	config_add_int iw_ipaddr_type_availability iw_gas_address3
+	config_add_string iw_hessid iw_network_auth_type iw_qos_map_set
+	config_add_array iw_roaming_consortium iw_domain_name iw_anqp_3gpp_cell_net iw_nai_realm
+	config_add_array iw_anqp_elem
+
 	config_add_boolean hs20 disable_dgaf osen
 	config_add_int anqp_domain_id
 	config_add_int hs20_deauth_req_timeout
@@ -277,7 +330,10 @@ hostapd_common_add_bss_config() {
 	config_add_array hs20_conn_capab
 	config_add_string osu_ssid hs20_wan_metrics hs20_operating_class hs20_t_c_filename hs20_t_c_timestamp
 
+	config_add_array airtime_sta_weight
 	config_add_int airtime_bss_weight airtime_bss_limit
+
+	config_add_array hostapd_bss_options
 }
 
 hostapd_set_vlan_file() {
@@ -311,6 +367,34 @@ hostapd_set_psk() {
 
 	rm -f /var/run/hostapd-${ifname}.psk
 	for_each_station hostapd_set_psk_file ${ifname}
+}
+
+append_iw_roaming_consortium() {
+	[ -n "$1" ] && append bss_conf "roaming_consortium=$1" "$N"
+}
+
+append_iw_domain_name() {
+	if [ -z "$iw_domain_name_conf" ]; then
+		iw_domain_name_conf="$1"
+	else
+		iw_domain_name_conf="$iw_domain_name_conf,$1"
+	fi
+}
+
+append_iw_anqp_3gpp_cell_net() {
+	if [ -z "$iw_anqp_3gpp_cell_net_conf" ]; then
+		iw_anqp_3gpp_cell_net_conf="$1"
+	else
+		iw_anqp_3gpp_cell_net_conf="$iw_anqp_3gpp_cell_net_conf:$1"
+	fi
+}
+
+append_iw_anqp_elem() {
+	[ -n "$1" ] && append bss_conf "anqp_elem=$1" "$N"
+}
+
+append_iw_nai_realm() {
+	[ -n "$1" ] && append bss_conf "nai_realm=$1" "$N"
 }
 
 append_hs20_oper_friendly_name() {
@@ -373,6 +457,10 @@ append_hs20_conn_capab() {
 	[ -n "$1" ] && append bss_conf "hs20_conn_capab=$1" "$N"
 }
 
+append_airtime_sta_weight() {
+	[ -n "$1" ] && append bss_conf "airtime_sta_weight=$1" "$N"
+}
+
 hostapd_set_bss_options() {
 	local var="$1"
 	local phy="$2"
@@ -393,20 +481,21 @@ hostapd_set_bss_options() {
 		iapp_interface eapol_version dynamic_vlan ieee80211w nasid \
 		acct_server acct_secret acct_port acct_interval \
 		bss_load_update_period chan_util_avg_period sae_require_mfp \
-		multi_ap multi_ap_backhaul_ssid multi_ap_backhaul_key \
-		airtime_bss_weight airtime_bss_limit
+		multi_ap multi_ap_backhaul_ssid multi_ap_backhaul_key skip_inactivity_poll \
+		airtime_bss_weight airtime_bss_limit airtime_sta_weight
 
 	set_default isolate 0
 	set_default maxassoc 0
 	set_default max_inactivity 0
 	set_default short_preamble 1
 	set_default disassoc_low_ack 1
+	set_default skip_inactivity_poll 0
 	set_default hidden 0
 	set_default wmm 1
 	set_default uapsd 1
 	set_default wpa_disable_eapol_key_retries 0
 	set_default tdls_prohibit 0
-	set_default eapol_version 0
+	set_default eapol_version $((wpa & 1))
 	set_default acct_port 1813
 	set_default bss_load_update_period 60
 	set_default chan_util_avg_period 600
@@ -428,10 +517,12 @@ hostapd_set_bss_options() {
 
 	[ "$airtime_bss_weight" -gt 0 ] && append bss_conf "airtime_bss_weight=$airtime_bss_weight" "$N"
 	[ "$airtime_bss_limit" -gt 0 ] && append bss_conf "airtime_bss_limit=$airtime_bss_limit" "$N"
+	json_for_each_item append_airtime_sta_weight airtime_sta_weight
 
 	append bss_conf "bss_load_update_period=$bss_load_update_period" "$N"
 	append bss_conf "chan_util_avg_period=$chan_util_avg_period" "$N"
 	append bss_conf "disassoc_low_ack=$disassoc_low_ack" "$N"
+	append bss_conf "skip_inactivity_poll=$skip_inactivity_poll" "$N"
 	append bss_conf "preamble=$short_preamble" "$N"
 	append bss_conf "wmm_enabled=$wmm" "$N"
 	append bss_conf "ignore_broadcast_ssid=$hidden" "$N"
@@ -612,30 +703,38 @@ hostapd_set_bss_options() {
 		append bss_conf "iapp_interface=$ifname" "$N"
 	}
 
-	json_get_vars ieee80211v
-	set_default ieee80211v 0
-	if [ "$ieee80211v" -eq "1" ]; then
-		json_get_vars time_advertisement time_zone wnm_sleep_mode bss_transition
+	json_get_vars time_advertisement time_zone wnm_sleep_mode bss_transition
+	set_default bss_transition 0
+	set_default wnm_sleep_mode 0
 
-		set_default time_advertisement 0
-		set_default wnm_sleep_mode 0
-		set_default bss_transition 0
+	[ -n "$time_advertisement" ] && append bss_conf "time_advertisement=$time_advertisement" "$N"
+	[ -n "$time_zone" ] && append bss_conf "time_zone=$time_zone" "$N"
+	[ "$wnm_sleep_mode" -eq "1" ] && append bss_conf "wnm_sleep_mode=1" "$N"
+	[ "$bss_transition" -eq "1" ] && append bss_conf "bss_transition=1" "$N"
 
-		append bss_conf "time_advertisement=$time_advertisement" "$N"
-		[ -n "$time_zone" ] && append bss_conf "time_zone=$time_zone" "$N"
-		append bss_conf "wnm_sleep_mode=$wnm_sleep_mode" "$N"
-		append bss_conf "bss_transition=$bss_transition" "$N"
-	fi
-
-	json_get_vars ieee80211k
+	json_get_vars ieee80211k rrm_neighbor_report rrm_beacon_report
 	set_default ieee80211k 0
 	if [ "$ieee80211k" -eq "1" ]; then
-		json_get_vars rrm_neighbor_report rrm_beacon_report
-
 		set_default rrm_neighbor_report 1
 		set_default rrm_beacon_report 1
-		append bss_conf "rrm_neighbor_report=$rrm_neighbor_report" "$N"
-		append bss_conf "rrm_beacon_report=$rrm_beacon_report" "$N"
+	else
+		set_default rrm_neighbor_report 0
+		set_default rrm_beacon_report 0
+	fi
+
+	[ "$rrm_neighbor_report" -eq "1" ] && append bss_conf "rrm_neighbor_report=1" "$N"
+	[ "$rrm_beacon_report" -eq "1" ] && append bss_conf "rrm_beacon_report=1" "$N"
+
+	json_get_vars ftm_responder stationary_ap lci civic
+	set_default ftm_responder 0
+	if [ "$ftm_responder" -eq "1" ]; then
+		set_default stationary_ap 0
+		iw phy "$phy" info | grep -q "ENABLE_FTM_RESPONDER" && {
+			append bss_conf "ftm_responder=1" "$N"
+			[ "$stationary_ap" -eq "1" ] && append bss_conf "stationary_ap=1" "$N"
+			[ -n "$lci" ] && append bss_conf "lci=$lci" "$N"
+			[ -n "$civic" ] && append bss_conf "lci=$civic" "$N"
+		}
 	fi
 
 	if [ "$wpa" -ge "1" ]; then
@@ -772,6 +871,51 @@ hostapd_set_bss_options() {
 		}
 	}
 
+	json_get_vars iw_enabled iw_internet iw_asra iw_esr iw_uesa iw_access_network_type
+	json_get_vars iw_hessid iw_venue_group iw_venue_type iw_network_auth_type
+	json_get_vars iw_roaming_consortium iw_domain_name iw_anqp_3gpp_cell_net iw_nai_realm
+	json_get_vars iw_anqp_elem iw_qos_map_set iw_ipaddr_type_availability iw_gas_address3
+
+	set_default iw_enabled 0
+	if [ "$iw_enabled" = "1" ]; then
+		append bss_conf "interworking=1" "$N"
+		set_default iw_internet 1
+		set_default iw_asra 0
+		set_default iw_esr 0
+		set_default iw_uesa 0
+
+		append bss_conf "internet=$iw_internet" "$N"
+		append bss_conf "asra=$iw_asra" "$N"
+		append bss_conf "esr=$iw_esr" "$N"
+		append bss_conf "uesa=$iw_uesa" "$N"
+
+		[ -n "$iw_access_network_type" ] && \
+			append bss_conf "access_network_type=$iw_access_network_type" "$N"
+		[ -n "$iw_hessid" ] && append bss_conf "hessid=$iw_hessid" "$N"
+		[ -n "$iw_venue_group" ] && \
+			append bss_conf "venue_group=$iw_venue_group" "$N"
+		[ -n "$iw_venue_type" ] && append bss_conf "venue_type=$iw_venue_type" "$N"
+		[ -n "$iw_network_auth_type" ] && \
+			append bss_conf "network_auth_type=$iw_network_auth_type" "$N"
+		[ -n "$iw_gas_address3" ] && append bss_conf "gas_address3=$iw_gas_address3" "$N"
+		[ -n "$iw_qos_map_set" ] && append bss_conf "qos_map_set=$iw_qos_map_set" "$N"
+
+		json_for_each_item append_iw_roaming_consortium iw_roaming_consortium
+		json_for_each_item append_iw_anqp_elem iw_anqp_elem
+		json_for_each_item append_iw_nai_realm iw_nai_realm
+
+		iw_domain_name_conf=
+		json_for_each_item append_iw_domain_name iw_domain_name
+		[ -n "$iw_domain_name_conf" ] && \
+			append bss_conf "domain_name=$iw_domain_name_conf" "$N"
+
+		iw_anqp_3gpp_cell_net_conf=
+		json_for_each_item append_iw_anqp_3gpp_cell_net iw_anqp_3gpp_cell_net
+		[ -n "$iw_anqp_3gpp_cell_net_conf" ] && \
+			append bss_conf "anqp_3gpp_cell_net=$iw_anqp_3gpp_cell_net_conf" "$N"
+	fi
+
+
 	local hs20 disable_dgaf osen anqp_domain_id hs20_deauth_req_timeout \
 		osu_ssid hs20_wan_metrics hs20_operating_class hs20_t_c_filename hs20_t_c_timestamp
 	json_get_vars hs20 disable_dgaf osen anqp_domain_id hs20_deauth_req_timeout \
@@ -799,6 +943,11 @@ hostapd_set_bss_options() {
 		json_for_each_item append_osu_provider osu_provider
 		json_for_each_item append_operator_icon operator_icon
 	fi
+
+	json_get_values opts hostapd_bss_options
+	for val in $opts; do
+		append bss_conf "$val" "$N"
+	done
 
 	bss_md5sum=$(echo $bss_conf | md5sum | cut -d" " -f1)
 	append bss_conf "config_id=$bss_md5sum" "$N"
@@ -898,6 +1047,7 @@ wpa_supplicant_prepare_interface() {
 	fi
 	wpa_supplicant_teardown_interface "$ifname"
 	cat > "$_config" <<EOF
+${scan_list:+freq_list=$scan_list}
 $ap_scan
 $country_str
 EOF
@@ -1164,6 +1314,11 @@ wpa_supplicant_add_network() {
 		;;
 	esac
 
+	[ "$wpa_cipher" = GCMP ] && {
+		append network_data "pairwise=GCMP" "$N$T"
+		append network_data "group=GCMP" "$N$T"
+	}
+
 	[ "$mode" = mesh ] || {
 		case "$wpa" in
 			1)
@@ -1226,19 +1381,18 @@ wpa_supplicant_run() {
 	_wpa_supplicant_common "$ifname"
 
 	ubus wait_for wpa_supplicant
-	ubus call wpa_supplicant config_add "{ \
+	local supplicant_pid=$(ubus call wpa_supplicant config_add "{ \
 		\"driver\": \"${_w_driver:-wext}\", \"ctrl\": \"$_rpath\", \
 		\"iface\": \"$ifname\", \"config\": \"$_config\" \
 		${network_bridge:+, \"bridge\": \"$network_bridge\"} \
 		${hostapd_ctrl:+, \"hostapd_ctrl\": \"$hostapd_ctrl\"} \
-		}"
+		}" | jsonfilter -l 1 -e @.pid)
 
 	ret="$?"
 
 	[ "$ret" != 0 ] && wireless_setup_vif_failed WPA_SUPPLICANT_FAILED
 
-	local supplicant_pid=$(ubus call service list '{"name": "wpad"}' | jsonfilter -l 1 -e "@['wpad'].instances['supplicant'].pid")
-	wireless_add_process "$supplicant_pid" "/usr/sbin/wpa_supplicant" 1
+	wireless_add_process "$supplicant_pid" "/usr/sbin/wpa_supplicant" 1 1
 
 	return $ret
 }

@@ -1073,12 +1073,6 @@ define Device/meraki_mr16
   IMAGE_SIZE := 15616k
   DEVICE_PACKAGES := kmod-owl-loader
   SUPPORTED_DEVICES += mr16
-  DEVICE_COMPAT_VERSION := 2.0
-  DEVICE_COMPAT_MESSAGE := Partitions differ from ar71xx version of MR16. Image format is incompatible. \
-	To use sysupgrade, you must change /lib/update/common.sh::get_image to prepend 128K zeroes to this image, \
-	and change the bootcmd in u-boot to "bootm 0xbf0a0000". After that, you can use "sysupgrade -F". \
-	For more details, see the OpenWrt Wiki: https://openwrt.org/toh/meraki/mr16, \
-	or the commit message of the MR16 ath79 port on git.openwrt.org.
 endef
 TARGET_DEVICES += meraki_mr16
 

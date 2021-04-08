@@ -59,6 +59,11 @@ define U-Boot/l-50
   BUILD_DEVICES:=checkpoint_l-50
 endef
 
+define U-Boot/nas220
+  NAME:=Seagate Blackarmor NAS220
+  BUILD_DEVICES:=seagate_blackarmor-nas220
+endef
+
 define U-Boot/nsa310
   NAME:=Zyxel NSA310
   BUILD_DEVICES:=zyxel_nsa310b
@@ -95,6 +100,7 @@ UBOOT_TARGETS := \
 	ib62x0 ib62x0_second_stage \
 	iconnect iconnect_second_stage \
 	l-50 \
+	nas220 \
 	nsa310 \
 	nsa310s \
 	nsa325 \

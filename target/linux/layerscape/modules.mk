@@ -5,6 +5,22 @@
 # See /LICENSE for more information.
 #
 
+define KernelPackage/ahci-qoriq
+  SUBMENU:=$(BLOCK_MENU)
+  TITLE:=Freescale QorIQ AHCI SATA support
+  KCONFIG:=CONFIG_AHCI_QORIQ
+  FILES:=$(LINUX_DIR)/drivers/ata/ahci_qoriq.ko
+  AUTOLOAD:=$(call AutoLoad,40,ahci-qoriq,1)
+  $(call AddDepends/ata,+kmod-ata-ahci-platform @TARGET_layerscape)
+endef
+
+define KernelPackage/ahci-qoriq/description
+ This option enables support for the Freescale QorIQ AHCI SoC's
+ onboard AHCI SATA.
+endef
+
+$(eval $(call KernelPackage,ahci-qoriq))
+
 define KernelPackage/ppfe
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Freescale PPFE Driver support

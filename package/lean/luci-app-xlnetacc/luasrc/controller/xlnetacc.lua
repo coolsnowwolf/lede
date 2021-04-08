@@ -18,14 +18,10 @@ function index()
 	entry({"admin", "services", "xlnetacc", "logdata"}, call("action_log"))
 end
 
-local function is_running()
-	return luci.sys.call("(ps | grep xlnetacc.sh | grep -v 'grep') >/dev/null" ) == 0
-end
-
 function action_status()
 	luci.http.prepare_content("application/json")
 	luci.http.write_json({
-		run_state = is_running(),
+		run_state = luci.sys.call("(ps | grep xlnetacc | grep -v 'grep') >/dev/null" ) == 0,
 		down_state = nixio.fs.readfile("/var/state/xlnetacc_down_state") or "",
 		up_state = nixio.fs.readfile("/var/state/xlnetacc_up_state") or ""
 	})
