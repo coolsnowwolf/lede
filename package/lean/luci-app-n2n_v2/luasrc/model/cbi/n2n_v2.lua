@@ -60,10 +60,20 @@ mtu.optional = false
 supernode = s:option(Value, "supernode", translate("Supernode Host"))
 supernode.datatype = "host"
 supernode.optional = false
+supernode.rmempty = false
 
 port = s:option(Value, "port", translate("Supernode Port"))
 port.datatype = "port"
 port.optional = false
+port.rmempty = false
+
+second_supernode = s:option(Value, "second_supernode", translate("Second Supernode Host"))
+second_supernode.datatype = "host"
+second_supernode.optional = false
+
+second_port = s:option(Value, "second_port", translate("Second Supernode Port"))
+second_port.datatype = "port"
+second_port.optional = false
 
 community = s:option(Value, "community", translate("N2N Community name"))
 community.optional = false
