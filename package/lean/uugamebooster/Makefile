@@ -12,8 +12,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uugamebooster
-PKG_VERSION:=v2.9.0
-PKG_RELEASE:=7
+PKG_VERSION:=v2.10.0
+PKG_RELEASE:=8
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -31,27 +31,27 @@ endef
 
 ifeq ($(ARCH),x86_64)
 	UU_ARCH:=x86_64
-	PKG_MD5SUM:=136c6e63745b385ab986df60ff8b2ff0
+	PKG_MD5SUM:=a856aebe19b9c663bdc08b257a591b40
 endif
 
 ifeq ($(ARCH),mipsel)
 	UU_ARCH:=mipsel
-	PKG_MD5SUM:=7bec7f1df806d511f93e90e677aa830a
+	PKG_MD5SUM:=90e895012e5a03391a0c0f4759a4422c
 endif
 
 ifeq ($(ARCH),mips)
 	UU_ARCH:=mipsel
-	PKG_MD5SUM:=7bec7f1df806d511f93e90e677aa830a
+	PKG_MD5SUM:=90e895012e5a03391a0c0f4759a4422c
 endif
 
 ifeq ($(ARCH),arm)
 	UU_ARCH:=arm
-	PKG_MD5SUM:=ceefdf84f8ce3e1eb87d22200373900a
+	PKG_MD5SUM:=acc7e564b1718009cd2d94335ace1bcd
 endif
 
 ifeq ($(ARCH),aarch64)
 	UU_ARCH:=aarch64
-	PKG_MD5SUM:=a4c82d58416aa604c143053023aca71d
+	PKG_MD5SUM:=262cc28ba07d7cf84a3f487ff4fd146c
 endif
 
 PKG_SOURCE_URL:=http://uu.gdl.netease.com/openwrt-$(UU_ARCH)/$(PKG_VERSION)/uu.tar.gz?
