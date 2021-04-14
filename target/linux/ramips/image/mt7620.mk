@@ -1130,6 +1130,7 @@ define Device/whtlink_wht-rx-01
   IMAGE_SIZE := 7552k
   DEVICE_VENDOR := whtlink
   DEVICE_MODEL := WHT-rx-01
+  DEVICE_VARIANT := 16M
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
   SUPPORTED_DEVICES += zbt-rx-01
 endef
