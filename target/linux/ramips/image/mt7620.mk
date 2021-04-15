@@ -1119,8 +1119,7 @@ define Device/zbtlink_zbt-wa05
   SOC := mt7620n
   IMAGE_SIZE := 16064k
   DEVICE_VENDOR := Zbtlink
-  DEVICE_MODEL := ZBT-WA05
-  DEVICE_VARIANT := 16M
+  DEVICE_MODEL := ZBT-WA05  
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
   SUPPORTED_DEVICES += zbt-wa05
 endef
