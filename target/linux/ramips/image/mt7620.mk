@@ -1126,17 +1126,6 @@ define Device/zbtlink_zbt-wa05
 endef
 TARGET_DEVICES += zbtlink_zbt-wa05
 
-define Device/whtlink_wht-rx01
-  SOC := mt7620n
-  IMAGE_SIZE := 16064k
-  DEVICE_VENDOR := whtlink
-  DEVICE_MODEL := WHT-rx01
-  DEVICE_VARIANT := 16M
-  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
-  SUPPORTED_DEVICES += wht-rx01
-endef
-TARGET_DEVICES += whtlink_wht-rx-01
-
 define Device/zbtlink_zbt-we1026-5g-16m
   SOC := mt7620a
   IMAGE_SIZE := 16064k
