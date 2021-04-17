@@ -1095,6 +1095,16 @@ define Device/yukai_bocco
 endef
 TARGET_DEVICES += yukai_bocco
 
+define Device/whtlink_rx01
+  SOC := mt7620n
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := whtlink
+  DEVICE_MODEL := WHT-RX01
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
+  SUPPORTED_DEVICES += wht-rx01
+endef
+TARGET_DEVICES += whtlink_wht-rx01
+
 define Device/zbtlink_zbt-ape522ii
   SOC := mt7620a
   IMAGE_SIZE := 15872k
