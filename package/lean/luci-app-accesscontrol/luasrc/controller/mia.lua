@@ -11,8 +11,8 @@ function index()
 end
 
 function act_status()
-  local e={}
-	e.running=luci.sys.call("iptables -L INPUT |grep MIA >/dev/null")==0
-  luci.http.prepare_content("application/json")
-  luci.http.write_json(e)
+  	local e={}
+ 	e.running=luci.sys.call("iptables -L INPUT |grep MIA >/dev/null")==0
+	luci.http.prepare_content("application/json")
+	luci.http.write_json(e)
 end
