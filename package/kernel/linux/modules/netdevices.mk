@@ -1272,3 +1272,18 @@ define KernelPackage/sfc-falcon/description
 endef
 
 $(eval $(call KernelPackage,sfc-falcon))
+
+define KernelPackage/jme
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=JMicron(R) PCI-Express Gigabit Ethernet support
+  DEPENDS:=@PCI_SUPPORT +kmod-mii
+  KCONFIG:=CONFIG_JME
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/jme.ko
+  AUTOLOAD:=$(call AutoProbe,jme)
+endef
+
+define KernelPackage/jme/description
+ Kernel modules for JMicron(R) PCI-Express Gigabit Ethernet adapters
+endef
+
+$(eval $(call KernelPackage,jme))
