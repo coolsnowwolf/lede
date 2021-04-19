@@ -4,11 +4,8 @@ function index()
 	if not nixio.fs.access("/etc/config/sfe") then
 		return
 	end
-	local page
-	page = entry({"admin", "network", "sfe"}, cbi("sfe"), _("Turbo ACC Center"), 1000)
-	page.i18n = "sfe"
-	page.dependent = true
-	
+
+	entry({"admin", "network", "sfe"}, cbi("sfe"), _("Turbo ACC Center"), 1000).dependent = true	
 	entry({"admin", "network", "sfe", "status"}, call("action_status"))
 end
 
