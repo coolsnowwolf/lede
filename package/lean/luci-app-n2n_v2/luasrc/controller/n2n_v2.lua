@@ -12,10 +12,7 @@ function index()
 	
 	entry({"admin", "vpn"}, firstchild(), "VPN", 45).dependent = false
 	entry({"admin", "vpn", "n2n_v2", "status"}, call("n2n_status")).leaf = true
-
-	local page
-	page = entry({"admin", "vpn", "n2n_v2"}, cbi("n2n_v2"), _("N2N v2 VPN"), 45)
-	page.dependent = true
+	entry({"admin", "vpn", "n2n_v2"}, cbi("n2n_v2"), _("N2N v2 VPN"), 45).dependent = true
 end
 
 function n2n_status()
