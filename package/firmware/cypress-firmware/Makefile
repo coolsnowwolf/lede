@@ -10,13 +10,13 @@ include $(TOPDIR)/rules.mk
 UNPACK_CMD=unzip -q -p $(DL_DIR)/$(PKG_SOURCE) $(PKG_SOURCE_UNZIP) | gzip -dc | $(HOST_TAR) -C $(1) $(TAR_OPTIONS)
 
 PKG_NAME:=cypress-firmware
-PKG_VERSION:=v5.4.18-2020_0925
+PKG_VERSION:=v5.4.18-2021_0114
 PKG_RELEASE:=1
 
 PKG_SOURCE_UNZIP:=cypress-firmware-$(PKG_VERSION).tar.gz
 PKG_SOURCE:=cypress-fmac-$(PKG_VERSION).zip
-PKG_SOURCE_URL:=https://community.cypress.com/gfawx74859/attachments/gfawx74859/resourcelibrary/1030/1/
-PKG_HASH:=fb71c344e705f5bc9fdae3ce0fbfa299f0af0939ff3ec782aeca0308911d830d
+PKG_SOURCE_URL:=https://community.cypress.com/gfawx74859/attachments/gfawx74859/WiFiBluetoothLinux/1738/1/
+PKG_HASH:=a3e914ed8e3b2e5057cdd3c6ab09ff2771a745bd767ba7aada33efe872b57899
 
 PKG_MAINTAINER:=Álvaro Fernández Rojas <noltari@gmail.com>
 
