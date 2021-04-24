@@ -4,11 +4,8 @@ function index()
 	if not nixio.fs.access("/etc/config/flowoffload") then
 		return
 	end
-	local page
-	page = entry({"admin", "network", "flowoffload"}, cbi("flowoffload"), _("Turbo ACC Center"), 1001)
-	page.i18n = "flowoffload"
-	page.dependent = true
 	
+	entry({"admin", "network", "flowoffload"}, cbi("flowoffload"), _("Turbo ACC Center"), 1001).dependent = true
 	entry({"admin", "network", "flowoffload", "status"}, call("action_status"))
 end
 
