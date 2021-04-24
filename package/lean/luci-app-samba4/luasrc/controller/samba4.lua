@@ -7,8 +7,5 @@ function index()
 		return
 	end
 
-	local page
-
-	page = entry({"admin", "services", "samba4"}, cbi("samba4"), _("Network Shares"))
-	page.dependent = true
+	entry({"admin", "services", "samba4"}, cbi("samba4"), _("Network Shares")).dependent = true
 end

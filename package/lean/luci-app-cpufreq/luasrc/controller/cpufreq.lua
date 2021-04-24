@@ -6,5 +6,5 @@ function index()
 		return
 	end
 
-	entry({"admin", "services", "cpufreq"}, cbi("cpufreq"), _("CPU Freq"), 900).dependent=false
+	entry({"admin", "services", "cpufreq"}, cbi("cpufreq"), _("CPU Freq"), 900).dependent = false
 end
