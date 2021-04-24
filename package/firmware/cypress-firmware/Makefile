@@ -209,42 +209,6 @@ endef
 
 $(eval $(call BuildPackage,cypress-firmware-43570-pcie))
 
-# Cypress 4359 PCIe Firmware
-define Package/cypress-firmware-4359-pcie
-  $(Package/cypress-firmware-default)
-  TITLE:=CYW4359 FullMac PCIe firmware
-endef
-
-define Package/cypress-firmware-4359-pcie/install
-	$(INSTALL_DIR) $(1)/lib/firmware/brcm
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/firmware/cyfmac4359-pcie.bin \
-		$(1)/lib/firmware/brcm/brcmfmac4359-pcie.bin
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/firmware/cyfmac4359-pcie.clm_blob \
-		$(1)/lib/firmware/brcm/brcmfmac4359-pcie.clm_blob
-endef
-
-$(eval $(call BuildPackage,cypress-firmware-4359-pcie))
-
-# Cypress 4359 SDIO Firmware
-define Package/cypress-firmware-4359-sdio
-  $(Package/cypress-firmware-default)
-  TITLE:=CYW4359 FullMac SDIO firmware
-endef
-
-define Package/cypress-firmware-4359-sdio/install
-	$(INSTALL_DIR) $(1)/lib/firmware/brcm
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/firmware/cyfmac4359-sdio.bin \
-		$(1)/lib/firmware/brcm/brcmfmac4359-sdio.bin
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/firmware/cyfmac4359-sdio.clm_blob \
-		$(1)/lib/firmware/brcm/brcmfmac4359-sdio.clm_blob
-endef
-
-$(eval $(call BuildPackage,cypress-firmware-4359-sdio))
-
 # Cypress 4373 SDIO Firmware
 define Package/cypress-firmware-4373-sdio
   $(Package/cypress-firmware-default)
@@ -299,20 +263,3 @@ endef
 
 $(eval $(call BuildPackage,cypress-firmware-54591-pcie))
 
-# Cypress 89459 PCIe Firmware
-define Package/cypress-firmware-89459-pcie
-  $(Package/cypress-firmware-default)
-  TITLE:=CYW89459 FullMac PCIe firmware
-endef
-
-define Package/cypress-firmware-89459-pcie/install
-	$(INSTALL_DIR) $(1)/lib/firmware/brcm
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/firmware/cyfmac89459-pcie.bin \
-		$(1)/lib/firmware/brcm/brcmfmac89459-pcie.bin
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/firmware/cyfmac89459-pcie.clm_blob \
-		$(1)/lib/firmware/brcm/brcmfmac89459-pcie.clm_blob
-endef
-
-$(eval $(call BuildPackage,cypress-firmware-89459-pcie))
