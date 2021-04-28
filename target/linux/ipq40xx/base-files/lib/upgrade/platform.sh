@@ -180,6 +180,7 @@ platform_do_upgrade() {
 	century,wr142ac-nand |\
 	cilab,meshpoint-one |\
 	engenius,eap2200 |\
+	hiwifi,c526a |\
 	mobipromo,cm520-79f |\
 	qxwlan,e2600ac-c2)
 		nand_do_upgrade "$1"
