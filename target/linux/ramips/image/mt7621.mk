@@ -1065,8 +1065,6 @@ define Device/xiaomi_mir4
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Mi Router 4
-  SUPPORTED_DEVICES += R4
-  SUPPORTED_DEVICES += mir4
   DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += xiaomi_mir4
@@ -1094,29 +1092,18 @@ endef
 TARGET_DEVICES += xiaomi_mi-router-ac2100
 
 define Device/xiaomi_mi-router-cr6606
-  $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
-  DEVICE_VENDOR := Xiaomi
-  DEVICE_MODEL := Mi Router CR6606
-  DEVICE_ALT0_VENDOR := Xiaomi
-  DEVICE_ALT0_MODEL := Mi Router CR6606
-  DEVICE_ALT0_VARIANT := China Unicom
-  DEVICE_ALT1_VENDOR := Xiaomi
-  DEVICE_ALT1_MODEL := Mi Router CR6608
-  DEVICE_ALT1_VARIANT := China Mobile
-  DEVICE_ALT2_VENDOR := Xiaomi
-  DEVICE_ALT2_MODEL := Mi Router CR6609
-  DEVICE_ALT2_VARIANT := China Telecom
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   UBINIZE_OPTS := -E 5
   IMAGE_SIZE := 51200k
   IMAGES += firmware.bin overlay.bin
-  IMAGE/firmware.bin := append-kernel | pad-to 128k | append-rootfs | \
-  pad-rootfs
+  IMAGE/firmware.bin := append-kernel | pad-to 128k | append-rootfs | pad-rootfs
   IMAGE/overlay.bin := append-ubi | check-size
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  DEVICE_PACKAGES += uboot-envtools kmod-mt7915e
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := Mi Router CR6606
+  DEVICE_PACKAGES += uboot-envtools kmod-mt7915e wpad-openssl
 endef
 TARGET_DEVICES += xiaomi_mi-router-cr6606
 
