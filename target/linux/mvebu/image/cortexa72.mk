@@ -38,7 +38,7 @@ define Device/marvell_macchiatobin-singleshot
   DEVICE_ALT0_VENDOR := SolidRun
   DEVICE_ALT0_MODEL := Armada 8040 Community Board
   DEVICE_ALT0_VARIANT := Single Shot
-  DEVICE_PACKAGES += kmod-i2c-mux-pca954x kmod-ledtrig-heartbeat
+  DEVICE_PACKAGES += kmod-i2c-mux-pca954x
   DEVICE_DTS := armada-8040-mcbin-singleshot
   SUPPORTED_DEVICES := marvell,armada8040-mcbin-singleshot
 endef
