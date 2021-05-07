@@ -136,6 +136,28 @@ endef
 $(eval $(call KernelPackage,sound-soc-allo-boss-dac))
 
 
+define KernelPackage/sound-soc-allo-boss2-dac
+  TITLE:=Support for Allo Boss2 DAC
+  KCONFIG:= \
+    CONFIG_SND_AUDIO_GRAPH_CARD \
+    CONFIG_SND_BCM2708_SOC_ALLO_BOSS2_DAC
+  FILES:= \
+    $(LINUX_DIR)/sound/soc/bcm/snd-soc-allo-boss2-dac.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-allo-boss2-dac)
+  DEPENDS:= \
+    kmod-sound-soc-bcm2835-i2s \
+    +kmod-i2c-bcm2835 \
+    +kmod-regmap-i2c
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-allo-boss2-dac/description
+  This package contains support for Allo Boss2 DAC
+endef
+
+$(eval $(call KernelPackage,sound-soc-allo-boss2-dac))
+
+
 define KernelPackage/sound-soc-allo-digione
   TITLE:=Support for Allo Piano DigiOne
   KCONFIG:= \
@@ -826,6 +848,28 @@ define KernelPackage/sound-soc-justboom-digi/description
 endef
 
 $(eval $(call KernelPackage,sound-soc-justboom-digi))
+
+
+define KernelPackage/sound-soc-pifi-40-amp
+  TITLE:=Support for PiFi-40 amp
+  KCONFIG:= \
+    CONFIG_SND_BCM2708_SOC_PIFI_40 \
+    CONFIG_SND_PIFI_40 \
+    CONFIG_SND_SOC_TAS571X
+  FILES:= \
+    $(LINUX_DIR)/sound/soc/bcm/snd-soc-pifi-40.ko \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-tas571x.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-tas571x)
+  DEPENDS:= \
+    kmod-sound-soc-bcm2835-i2s
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-pifi-40-amp/description
+  This package contains support for PiFi-40 amp
+endef
+
+$(eval $(call KernelPackage,sound-soc-pifi-40-amp))
 
 
 define KernelPackage/sound-soc-pisound

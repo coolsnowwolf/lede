@@ -28,7 +28,8 @@ define KernelPackage/can
 	CONFIG_CAN_SOFTING=n \
 	CONFIG_NET_EMATCH_CANID=n \
 	CONFIG_CAN_DEBUG_DEVICES=n
-  FILES:=$(LINUX_DIR)/drivers/net/can/can-dev.ko \
+  FILES:=$(LINUX_DIR)/drivers/net/can/can-dev.ko@lt5.4 \
+	 $(LINUX_DIR)/drivers/net/can/dev/can-dev.ko@ge5.4 \
 	 $(LINUX_DIR)/net/can/can.ko
   AUTOLOAD:=$(call AutoProbe,can can-dev)
 endef

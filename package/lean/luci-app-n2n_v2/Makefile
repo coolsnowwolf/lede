@@ -9,8 +9,8 @@ include $(TOPDIR)/rules.mk
 LUCI_TITLE:=n2n_v2 VPN Configuration module
 LUCI_DEPENDS:=+n2n-edge +n2n-supernode
 LUCI_PKGARCH:=all
-PKG_VERSION:=2.8.0
-PKG_RELEASE:=2
+PKG_VERSION:=2.8.1
+PKG_RELEASE:=3
 
 include $(TOPDIR)/feeds/luci/luci.mk
 

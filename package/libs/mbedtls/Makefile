@@ -8,20 +8,24 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mbedtls
-PKG_VERSION:=2.16.7
+PKG_VERSION:=2.16.10
 PKG_RELEASE:=1
 PKG_USE_MIPS16:=0
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/ARMmbed/mbedtls/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=c95b11557ee97d2bdfd48cd57cf9b648a6cddd2ca879e3c35c4e7525f2871992
+PKG_HASH:=96257bb03b30300b2f35f861ffe204ed957e9fd0329d80646fe57fc49f589b29
 
 PKG_BUILD_PARALLEL:=1
 PKG_LICENSE:=GPL-2.0-or-later
 PKG_LICENSE_FILES:=gpl-2.0.txt
 PKG_CPE_ID:=cpe:/a:arm:mbed_tls
 
-PKG_CONFIG_DEPENDS:=CONFIG_LIBMBEDTLS_DEBUG_C
+PKG_CONFIG_DEPENDS := \
+	CONFIG_LIBMBEDTLS_DEBUG_C \
+	CONFIG_LIBMBEDTLS_HAVE_ARMV8CE_AES \
+	CONFIG_LIBMBEDTLS_HAVE_SSE2 \
+	CONFIG_LIBMBEDTLS_HKDF_C
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
@@ -57,6 +61,42 @@ config LIBMBEDTLS_DEBUG_C
 	 by around 60 KiB (for an ARMv5 platform).
 
 	 Usually, you don't need this, so don't select this if you're unsure.
+
+config LIBMBEDTLS_HAVE_ARMV8CE_AES
+	depends on PACKAGE_libmbedtls
+	bool
+	default y
+	prompt "Enable use of the ARMv8 Crypto Extensions"
+	depends on aarch64 && !TARGET_bcm27xx && !TARGET_bcm4908
+	help
+	 Use of the ARMv8 Crypto Extensions greatly increase performance
+	 (up to 4x faster on AES-GCM while 10x faster on raw AES).
+
+	 Related instructions should be included in all modern Aarch64
+	 devices, except some wastes like Broadcom.
+	 If you don't sure, say Y here.
+
+config LIBMBEDTLS_HAVE_SSE2
+	depends on PACKAGE_libmbedtls
+	bool
+	default y if !TARGET_x86_legacy && !TARGET_x86_geode
+	prompt "Enable use of x86 SSE2 instructions"
+	depends on x86_64 || i386
+	help
+	 Use of SSE2 instructions greatly increase performance (up to
+	 3x faster) with a minimum (~0.2%, or 23KB) increase in package
+	 size, but it will bring no benefit if your hardware does not
+	 support them, such as Geode GX and LX.  In this case you may
+	 save 23KB by saying yes here.  AMD Geode NX, and Intel
+	 Pentium 4 and above support SSE2.
+
+config LIBMBEDTLS_HKDF_C
+	depends on PACKAGE_libmbedtls
+	bool "Enable the HKDF algorithm (RFC 5869)"
+	default n
+	help
+	 This option adds support for the Hashed Message Authentication Code
+	 (HMAC)-based key derivation function (HKDF).
 endef
 
 define Package/mbedtls-util
@@ -82,6 +122,9 @@ PKG_INSTALL:=1
 
 TARGET_CFLAGS += -ffunction-sections -fdata-sections
 TARGET_CFLAGS := $(filter-out -O%,$(TARGET_CFLAGS))
+ifneq ($(CONFIG_LIBMBEDTLS_HAVE_ARMV8CE_AES),)
+  TARGET_CFLAGS := $(filter-out -march=%,$(TARGET_CFLAGS)) -march=armv8-a+crypto
+endif
 
 CMAKE_OPTIONS += \
 	-DUSE_SHARED_MBEDTLS_LIBRARY:Bool=ON \
@@ -93,6 +136,15 @@ define Build/Configure
 
 	awk 'BEGIN { rc = 1 } \
 	     /#define MBEDTLS_DEBUG_C/ { $$$$0 = "$(if $(CONFIG_LIBMBEDTLS_DEBUG_C),,// )#define MBEDTLS_DEBUG_C"; rc = 0 } \
+	     /#define MBEDTLS_ARMV8CE_AES_C/ { $$$$0 = "$(if $(CONFIG_LIBMBEDTLS_HAVE_ARMV8CE_AES),,// )#define MBEDTLS_ARMV8CE_AES_C"; rc = 0 } \
+	     /#define MBEDTLS_HAVE_SSE2/ { $$$$0 = "$(if $(CONFIG_LIBMBEDTLS_HAVE_SSE2),,// )#define MBEDTLS_HAVE_SSE2"; rc = 0 } \
+	     { print } \
+	     END { exit(rc) }' $(PKG_BUILD_DIR)/include/mbedtls/config.h \
+	     >$(PKG_BUILD_DIR)/include/mbedtls/config.h.new && \
+	mv $(PKG_BUILD_DIR)/include/mbedtls/config.h.new $(PKG_BUILD_DIR)/include/mbedtls/config.h
+
+	awk 'BEGIN { rc = 1 } \
+	     /#define MBEDTLS_HKDF_C/ { $$$$0 = "$(if $(CONFIG_LIBMBEDTLS_HKDF_C),,// )#define MBEDTLS_HKDF_C"; rc = 0 } \
 	     { print } \
 	     END { exit(rc) }' $(PKG_BUILD_DIR)/include/mbedtls/config.h \
 	     >$(PKG_BUILD_DIR)/include/mbedtls/config.h.new && \
