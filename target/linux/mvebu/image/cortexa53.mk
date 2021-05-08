@@ -86,7 +86,7 @@ define Device/methode_udpu
   KERNEL_INITRAMFS := kernel-bin | gzip | fit gzip $$(KDIR)/image-$$(DEVICE_DTS).dtb
   KERNEL_INITRAMFS_SUFFIX := .itb
   DEVICE_PACKAGES += f2fs-tools fdisk kmod-i2c-pxa
-  DEVICE_IMG_NAME = $$(DEVICE_IMG_PREFIX)-$$(2)
+  IMAGE_NAME = $$(IMAGE_PREFIX)-$$(2)
   IMAGES := firmware.tgz
   IMAGE/firmware.tgz := boot-scr | boot-img-ext4 | uDPU-firmware | append-metadata
   BOOT_SCRIPT := udpu
