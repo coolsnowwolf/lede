@@ -80,7 +80,7 @@ endef
 
 define Build/uDPU-firmware
 	(rm -fR $@-fw; mkdir -p $@-fw)
-	$(CP) $(BIN_DIR)/$(DEVICE_IMG_PREFIX)-initramfs.itb $@-fw/recovery.itb
+	$(CP) $(BIN_DIR)/$(IMAGE_PREFIX)-initramfs.itb $@-fw/recovery.itb
 	$(CP) $@-boot.scr $@-fw/boot.scr
 	$(TAR) -cvzp --numeric-owner --owner=0 --group=0 --sort=name \
 		$(if $(SOURCE_DATE_EPOCH),--mtime="@$(SOURCE_DATE_EPOCH)") \
@@ -90,7 +90,7 @@ define Build/uDPU-firmware
 		-f $@-fw/boot.tgz -C $@.boot .
 	$(TAR) -cvzp --numeric-owner --owner=0 --group=0 --sort=name \
 		$(if $(SOURCE_DATE_EPOCH),--mtime="@$(SOURCE_DATE_EPOCH)") \
-		-f $(KDIR_TMP)/$(DEVICE_IMG_PREFIX)-firmware.tgz -C $@-fw .
+		-f $(KDIR_TMP)/$(IMAGE_PREFIX)-firmware.tgz -C $@-fw .
 endef
 
 define Device/Default
@@ -102,6 +102,7 @@ define Device/Default
   KERNEL := kernel-bin | append-dtb | uImage none
   IMAGES := sysupgrade.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  SUPPORTED_DEVICES = $(subst _,$(comma),$(1))
   UBINIZE_OPTS := -E 5
   UBOOT :=
   BOOT_SCRIPT :=
