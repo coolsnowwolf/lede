@@ -21,6 +21,7 @@ PKG_MIRROR_HASH:=0eda0e774a87e58e611d6436350e1cf2be3de50fddde334909a07a15b0c9862
 
 PKG_MAINTAINER:=Imre Kaloz <kaloz@openwrt.org>
 PKG_BUILD_PARALLEL:=1
+PKG_FLAGS:=nonshared
 
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
