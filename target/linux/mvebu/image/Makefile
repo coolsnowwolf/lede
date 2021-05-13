@@ -1,10 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2012-2016 OpenWrt.org
 # Copyright (C) 2016 LEDE-project.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 JFFS2_BLOCKSIZE = 128k
 
