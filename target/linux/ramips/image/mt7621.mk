@@ -1065,8 +1065,6 @@ define Device/xiaomi_mir4
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Mi Router 4
-  SUPPORTED_DEVICES += R4
-  SUPPORTED_DEVICES += mir4
   DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e luci-app-mtwifi uboot-envtools
 endef
 TARGET_DEVICES += xiaomi_mir4
@@ -1092,6 +1090,22 @@ define Device/xiaomi_mi-router-ac2100
   DEVICE_MODEL := Mi Router AC2100
 endef
 TARGET_DEVICES += xiaomi_mi-router-ac2100
+
+define Device/xiaomi_mi-router-cr6606
+  $(Device/uimage-lzma-loader)
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBINIZE_OPTS := -E 5
+  IMAGE_SIZE := 51200k
+  IMAGES += firmware.bin overlay.bin
+  IMAGE/firmware.bin := append-kernel | pad-to 128k | append-rootfs | pad-rootfs
+  IMAGE/overlay.bin := append-ubi | check-size
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := Mi Router CR6606
+  DEVICE_PACKAGES += uboot-envtools kmod-mt7915e wpad-openssl
+endef
+TARGET_DEVICES += xiaomi_mi-router-cr6606
 
 define Device/xiaomi_redmi-router-ac2100
   $(Device/xiaomi-ac2100)
