@@ -5,7 +5,7 @@ How to build your Openwrt firmware.
 -
 Note:
 --
-1. DO **NOT** USE **root** USER!!!
+1. DO **NOT** USE **root** USER FOR COMPILING!!!
 
 2. Users within China should prepare proxy before building.
 
@@ -20,7 +20,7 @@ Let's start!
     sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 python2.7 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib antlr3 gperf wget curl swig rsync
     `
 
-3. Run `git clone https://github.com/coolsnowwolf/lede` to clone the source, and then `cd lede` to enter the directory
+3. Run `git clone https://github.com/coolsnowwolf/lede` to clone the source code, and then `cd lede` to enter the directory
 
 4. ```bash
    ./scripts/feeds update -a
@@ -28,7 +28,7 @@ Let's start!
    make menuconfig
    ```
 
-5. Run `make -j8 download V=s` to download libraries and dependencies (please use global proxy when possible)
+5. Run `make -j8 download V=s` to download libraries and dependencies (user in China should use global proxy when possible)
 
 6. Run `make -j1 V=s` (integer following -j is the thread count, single-thread is recommended for the first build) to start building your firmware.
 
@@ -58,11 +58,11 @@ Build result will be produced to `bin/targets` directory.
 
 Special tips:
 ------
-1. This source code doesn't contain any backdoors or close source applications that can monitor/capture your HTTPS traffic, SSL is the final castle of cyber security. Safe is what a firmware should archive.
+1. This source code doesn't contain any backdoors or close source applications that can monitor/capture your HTTPS traffic, SSL is the final castle of cyber security. Safety is what a firmware should achieve.
 
 2. If you have any technical problem, you may join the QQ discussion group: 297253733, link: click [here](https://jq.qq.com/?_wv=1027&k=5yCRuXL)
 
-3. Want to learn OpenWrt development but don't know how? Can't hold long for self-learning? Not enough fundamental knowledge? Learn OpenWrt development with Mr. Zuo through his Beginner OpenWrt Training Course. Click [here](http://forgotfun.org/2018/04/openwrt-training-2018.html) to register.
+3. Want to learn OpenWrt development but don't know how? Can't motivate yourself for self-learning? Not enough fundamental knowledge? Learn OpenWrt development with Mr. Zuo through his Beginner OpenWrt Training Course. Click [here](http://forgotfun.org/2018/04/openwrt-training-2018.html) to register.
 
 ## Router Recommendation
 Not Sponsored: If you are finding a low power consumption, small and performance promising x86/x64 router, I personally recommend the 
