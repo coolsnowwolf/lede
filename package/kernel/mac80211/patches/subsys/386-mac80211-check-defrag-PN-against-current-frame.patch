@@ -1,0 +1,109 @@
+From: Johannes Berg <johannes.berg@intel.com>
+Date: Tue, 11 May 2021 20:02:48 +0200
+Subject: [PATCH] mac80211: check defrag PN against current frame
+
+As pointed out by Mathy Vanhoef, we implement the RX PN check
+on fragmented frames incorrectly - we check against the last
+received PN prior to the new frame, rather than to the one in
+this frame itself.
+
+Prior patches addressed the security issue here, but in order
+to be able to reason better about the code, fix it to really
+compare against the current frame's PN, not the last stored
+one.
+
+Cc: stable@vger.kernel.org
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -227,8 +227,15 @@ struct ieee80211_rx_data {
+ 	 */
+ 	int security_idx;
+ 
+-	u32 tkip_iv32;
+-	u16 tkip_iv16;
++	union {
++		struct {
++			u32 iv32;
++			u16 iv16;
++		} tkip;
++		struct {
++			u8 pn[IEEE80211_CCMP_PN_LEN];
++		} ccm_gcm;
++	};
+ };
+ 
+ struct ieee80211_csa_settings {
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -2318,7 +2318,6 @@ ieee80211_rx_h_defragment(struct ieee802
+ 	if (entry->check_sequential_pn) {
+ 		int i;
+ 		u8 pn[IEEE80211_CCMP_PN_LEN], *rpn;
+-		int queue;
+ 
+ 		if (!requires_sequential_pn(rx, fc))
+ 			return RX_DROP_UNUSABLE;
+@@ -2333,8 +2332,8 @@ ieee80211_rx_h_defragment(struct ieee802
+ 			if (pn[i])
+ 				break;
+ 		}
+-		queue = rx->security_idx;
+-		rpn = rx->key->u.ccmp.rx_pn[queue];
++
++		rpn = rx->ccm_gcm.pn;
+ 		if (memcmp(pn, rpn, IEEE80211_CCMP_PN_LEN))
+ 			return RX_DROP_UNUSABLE;
+ 		memcpy(entry->last_pn, pn, IEEE80211_CCMP_PN_LEN);
+--- a/net/mac80211/wpa.c
++++ b/net/mac80211/wpa.c
+@@ -3,6 +3,7 @@
+  * Copyright 2002-2004, Instant802 Networks, Inc.
+  * Copyright 2008, Jouni Malinen <j@w1.fi>
+  * Copyright (C) 2016-2017 Intel Deutschland GmbH
++ * Copyright (C) 2020-2021 Intel Corporation
+  */
+ 
+ #include <linux/netdevice.h>
+@@ -167,8 +168,8 @@ ieee80211_rx_h_michael_mic_verify(struct
+ 
+ update_iv:
+ 	/* update IV in key information to be able to detect replays */
+-	rx->key->u.tkip.rx[rx->security_idx].iv32 = rx->tkip_iv32;
+-	rx->key->u.tkip.rx[rx->security_idx].iv16 = rx->tkip_iv16;
++	rx->key->u.tkip.rx[rx->security_idx].iv32 = rx->tkip.iv32;
++	rx->key->u.tkip.rx[rx->security_idx].iv16 = rx->tkip.iv16;
+ 
+ 	return RX_CONTINUE;
+ 
+@@ -294,8 +295,8 @@ ieee80211_crypto_tkip_decrypt(struct iee
+ 					  key, skb->data + hdrlen,
+ 					  skb->len - hdrlen, rx->sta->sta.addr,
+ 					  hdr->addr1, hwaccel, rx->security_idx,
+-					  &rx->tkip_iv32,
+-					  &rx->tkip_iv16);
++					  &rx->tkip.iv32,
++					  &rx->tkip.iv16);
+ 	if (res != TKIP_DECRYPT_OK)
+ 		return RX_DROP_UNUSABLE;
+ 
+@@ -552,6 +553,8 @@ ieee80211_crypto_ccmp_decrypt(struct iee
+ 		}
+ 
+ 		memcpy(key->u.ccmp.rx_pn[queue], pn, IEEE80211_CCMP_PN_LEN);
++		if (unlikely(ieee80211_is_frag(hdr)))
++			memcpy(rx->ccm_gcm.pn, pn, IEEE80211_CCMP_PN_LEN);
+ 	}
+ 
+ 	/* Remove CCMP header and MIC */
+@@ -782,6 +785,8 @@ ieee80211_crypto_gcmp_decrypt(struct iee
+ 		}
+ 
+ 		memcpy(key->u.gcmp.rx_pn[queue], pn, IEEE80211_GCMP_PN_LEN);
++		if (unlikely(ieee80211_is_frag(hdr)))
++			memcpy(rx->ccm_gcm.pn, pn, IEEE80211_CCMP_PN_LEN);
+ 	}
+ 
+ 	/* Remove GCMP header and MIC */
