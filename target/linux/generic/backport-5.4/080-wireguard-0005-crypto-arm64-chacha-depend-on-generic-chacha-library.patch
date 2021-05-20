@@ -1,0 +1,129 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ard Biesheuvel <ardb@kernel.org>
+Date: Fri, 8 Nov 2019 13:22:11 +0100
+Subject: [PATCH] crypto: arm64/chacha - depend on generic chacha library
+ instead of crypto driver
+
+commit c77da4867cbb7841177275dbb250f5c09679fae4 upstream.
+
+Depend on the generic ChaCha library routines instead of pulling in the
+generic ChaCha skcipher driver, which is more than we need, and makes
+managing the dependencies between the generic library, generic driver,
+accelerated library and driver more complicated.
+
+While at it, drop the logic to prefer the scalar code on short inputs.
+Turning the NEON on and off is cheap these days, and one major use case
+for ChaCha20 is ChaCha20-Poly1305, which is guaranteed to hit the scalar
+path upon every invocation  (when doing the Poly1305 nonce generation)
+
+Signed-off-by: Ard Biesheuvel <ardb@kernel.org>
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ arch/arm64/crypto/Kconfig            |  2 +-
+ arch/arm64/crypto/chacha-neon-glue.c | 40 +++++++++++++++-------------
+ 2 files changed, 23 insertions(+), 19 deletions(-)
+
+--- a/arch/arm64/crypto/Kconfig
++++ b/arch/arm64/crypto/Kconfig
+@@ -103,7 +103,7 @@ config CRYPTO_CHACHA20_NEON
+ 	tristate "ChaCha20, XChaCha20, and XChaCha12 stream ciphers using NEON instructions"
+ 	depends on KERNEL_MODE_NEON
+ 	select CRYPTO_BLKCIPHER
+-	select CRYPTO_CHACHA20
++	select CRYPTO_LIB_CHACHA_GENERIC
+ 
+ config CRYPTO_NHPOLY1305_NEON
+ 	tristate "NHPoly1305 hash function using NEON instructions (for Adiantum)"
+--- a/arch/arm64/crypto/chacha-neon-glue.c
++++ b/arch/arm64/crypto/chacha-neon-glue.c
+@@ -68,7 +68,7 @@ static int chacha_neon_stream_xor(struct
+ 
+ 	err = skcipher_walk_virt(&walk, req, false);
+ 
+-	crypto_chacha_init(state, ctx, iv);
++	chacha_init_generic(state, ctx->key, iv);
+ 
+ 	while (walk.nbytes > 0) {
+ 		unsigned int nbytes = walk.nbytes;
+@@ -76,10 +76,16 @@ static int chacha_neon_stream_xor(struct
+ 		if (nbytes < walk.total)
+ 			nbytes = rounddown(nbytes, walk.stride);
+ 
+-		kernel_neon_begin();
+-		chacha_doneon(state, walk.dst.virt.addr, walk.src.virt.addr,
+-			      nbytes, ctx->nrounds);
+-		kernel_neon_end();
++		if (!crypto_simd_usable()) {
++			chacha_crypt_generic(state, walk.dst.virt.addr,
++					     walk.src.virt.addr, nbytes,
++					     ctx->nrounds);
++		} else {
++			kernel_neon_begin();
++			chacha_doneon(state, walk.dst.virt.addr,
++				      walk.src.virt.addr, nbytes, ctx->nrounds);
++			kernel_neon_end();
++		}
+ 		err = skcipher_walk_done(&walk, walk.nbytes - nbytes);
+ 	}
+ 
+@@ -91,9 +97,6 @@ static int chacha_neon(struct skcipher_r
+ 	struct crypto_skcipher *tfm = crypto_skcipher_reqtfm(req);
+ 	struct chacha_ctx *ctx = crypto_skcipher_ctx(tfm);
+ 
+-	if (req->cryptlen <= CHACHA_BLOCK_SIZE || !crypto_simd_usable())
+-		return crypto_chacha_crypt(req);
+-
+ 	return chacha_neon_stream_xor(req, ctx, req->iv);
+ }
+ 
+@@ -105,14 +108,15 @@ static int xchacha_neon(struct skcipher_
+ 	u32 state[16];
+ 	u8 real_iv[16];
+ 
+-	if (req->cryptlen <= CHACHA_BLOCK_SIZE || !crypto_simd_usable())
+-		return crypto_xchacha_crypt(req);
+-
+-	crypto_chacha_init(state, ctx, req->iv);
++	chacha_init_generic(state, ctx->key, req->iv);
+ 
+-	kernel_neon_begin();
+-	hchacha_block_neon(state, subctx.key, ctx->nrounds);
+-	kernel_neon_end();
++	if (crypto_simd_usable()) {
++		kernel_neon_begin();
++		hchacha_block_neon(state, subctx.key, ctx->nrounds);
++		kernel_neon_end();
++	} else {
++		hchacha_block_generic(state, subctx.key, ctx->nrounds);
++	}
+ 	subctx.nrounds = ctx->nrounds;
+ 
+ 	memcpy(&real_iv[0], req->iv + 24, 8);
+@@ -134,7 +138,7 @@ static struct skcipher_alg algs[] = {
+ 		.ivsize			= CHACHA_IV_SIZE,
+ 		.chunksize		= CHACHA_BLOCK_SIZE,
+ 		.walksize		= 5 * CHACHA_BLOCK_SIZE,
+-		.setkey			= crypto_chacha20_setkey,
++		.setkey			= chacha20_setkey,
+ 		.encrypt		= chacha_neon,
+ 		.decrypt		= chacha_neon,
+ 	}, {
+@@ -150,7 +154,7 @@ static struct skcipher_alg algs[] = {
+ 		.ivsize			= XCHACHA_IV_SIZE,
+ 		.chunksize		= CHACHA_BLOCK_SIZE,
+ 		.walksize		= 5 * CHACHA_BLOCK_SIZE,
+-		.setkey			= crypto_chacha20_setkey,
++		.setkey			= chacha20_setkey,
+ 		.encrypt		= xchacha_neon,
+ 		.decrypt		= xchacha_neon,
+ 	}, {
+@@ -166,7 +170,7 @@ static struct skcipher_alg algs[] = {
+ 		.ivsize			= XCHACHA_IV_SIZE,
+ 		.chunksize		= CHACHA_BLOCK_SIZE,
+ 		.walksize		= 5 * CHACHA_BLOCK_SIZE,
+-		.setkey			= crypto_chacha12_setkey,
++		.setkey			= chacha12_setkey,
+ 		.encrypt		= xchacha_neon,
+ 		.decrypt		= xchacha_neon,
+ 	}
