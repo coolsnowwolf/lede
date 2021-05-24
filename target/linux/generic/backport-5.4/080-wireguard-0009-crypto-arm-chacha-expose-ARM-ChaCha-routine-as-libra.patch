@@ -1,0 +1,108 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ard Biesheuvel <ardb@kernel.org>
+Date: Fri, 8 Nov 2019 13:22:15 +0100
+Subject: [PATCH] crypto: arm/chacha - expose ARM ChaCha routine as library
+ function
+
+commit a44a3430d71bad4ee56788a59fff099b291ea54c upstream.
+
+Expose the accelerated NEON ChaCha routine directly as a symbol
+export so that users of the ChaCha library API can use it directly.
+
+Given that calls into the library API will always go through the
+routines in this module if it is enabled, switch to static keys
+to select the optimal implementation available (which may be none
+at all, in which case we defer to the generic implementation for
+all invocations).
+
+Signed-off-by: Ard Biesheuvel <ardb@kernel.org>
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ arch/arm/crypto/Kconfig       |  1 +
+ arch/arm/crypto/chacha-glue.c | 41 ++++++++++++++++++++++++++++++++++-
+ 2 files changed, 41 insertions(+), 1 deletion(-)
+
+--- a/arch/arm/crypto/Kconfig
++++ b/arch/arm/crypto/Kconfig
+@@ -129,6 +129,7 @@ config CRYPTO_CRC32_ARM_CE
+ config CRYPTO_CHACHA20_NEON
+ 	tristate "NEON and scalar accelerated ChaCha stream cipher algorithms"
+ 	select CRYPTO_BLKCIPHER
++	select CRYPTO_ARCH_HAVE_LIB_CHACHA
+ 
+ config CRYPTO_NHPOLY1305_NEON
+ 	tristate "NEON accelerated NHPoly1305 hash function (for Adiantum)"
+--- a/arch/arm/crypto/chacha-glue.c
++++ b/arch/arm/crypto/chacha-glue.c
+@@ -11,6 +11,7 @@
+ #include <crypto/internal/chacha.h>
+ #include <crypto/internal/simd.h>
+ #include <crypto/internal/skcipher.h>
++#include <linux/jump_label.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ 
+@@ -29,9 +30,11 @@ asmlinkage void hchacha_block_neon(const
+ asmlinkage void chacha_doarm(u8 *dst, const u8 *src, unsigned int bytes,
+ 			     const u32 *state, int nrounds);
+ 
++static __ro_after_init DEFINE_STATIC_KEY_FALSE(use_neon);
++
+ static inline bool neon_usable(void)
+ {
+-	return crypto_simd_usable();
++	return static_branch_likely(&use_neon) && crypto_simd_usable();
+ }
+ 
+ static void chacha_doneon(u32 *state, u8 *dst, const u8 *src,
+@@ -60,6 +63,40 @@ static void chacha_doneon(u32 *state, u8
+ 	}
+ }
+ 
++void hchacha_block_arch(const u32 *state, u32 *stream, int nrounds)
++{
++	if (!IS_ENABLED(CONFIG_KERNEL_MODE_NEON) || !neon_usable()) {
++		hchacha_block_arm(state, stream, nrounds);
++	} else {
++		kernel_neon_begin();
++		hchacha_block_neon(state, stream, nrounds);
++		kernel_neon_end();
++	}
++}
++EXPORT_SYMBOL(hchacha_block_arch);
++
++void chacha_init_arch(u32 *state, const u32 *key, const u8 *iv)
++{
++	chacha_init_generic(state, key, iv);
++}
++EXPORT_SYMBOL(chacha_init_arch);
++
++void chacha_crypt_arch(u32 *state, u8 *dst, const u8 *src, unsigned int bytes,
++		       int nrounds)
++{
++	if (!IS_ENABLED(CONFIG_KERNEL_MODE_NEON) || !neon_usable() ||
++	    bytes <= CHACHA_BLOCK_SIZE) {
++		chacha_doarm(dst, src, bytes, state, nrounds);
++		state[12] += DIV_ROUND_UP(bytes, CHACHA_BLOCK_SIZE);
++		return;
++	}
++
++	kernel_neon_begin();
++	chacha_doneon(state, dst, src, bytes, nrounds);
++	kernel_neon_end();
++}
++EXPORT_SYMBOL(chacha_crypt_arch);
++
+ static int chacha_stream_xor(struct skcipher_request *req,
+ 			     const struct chacha_ctx *ctx, const u8 *iv,
+ 			     bool neon)
+@@ -269,6 +306,8 @@ static int __init chacha_simd_mod_init(v
+ 			for (i = 0; i < ARRAY_SIZE(neon_algs); i++)
+ 				neon_algs[i].base.cra_priority = 0;
+ 			break;
++		default:
++			static_branch_enable(&use_neon);
+ 		}
+ 
+ 		err = crypto_register_skciphers(neon_algs, ARRAY_SIZE(neon_algs));
