@@ -508,6 +508,22 @@ define Device/jcg_jhr-ac876m
 endef
 TARGET_DEVICES += jcg_jhr-ac876m
 
+define Device/jcg_q20
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBINIZE_OPTS := -E 5
+  KERNEL_SIZE := 4096k
+  IMAGE_SIZE := 91136k
+  IMAGES += factory.bin
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
+	check-size
+  DEVICE_VENDOR := JCG
+  DEVICE_MODEL := Q20
+  DEVICE_PACKAGES := kmod-mt7915e wpad-openssl uboot-envtools
+endef
+TARGET_DEVICES += jcg_q20
+
 define Device/jcg_y2
   $(Device/uimage-lzma-loader)
   IMAGE_SIZE := 16064k
