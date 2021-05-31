@@ -1,0 +1,66 @@
+From: Mathy Vanhoef <Mathy.Vanhoef@kuleuven.be>
+Date: Tue, 11 May 2021 20:02:44 +0200
+Subject: [PATCH] mac80211: properly handle A-MSDUs that start with an
+ RFC 1042 header
+
+Properly parse A-MSDUs whose first 6 bytes happen to equal a rfc1042
+header. This can occur in practice when the destination MAC address
+equals AA:AA:03:00:00:00. More importantly, this simplifies the next
+patch to mitigate A-MSDU injection attacks.
+
+Cc: stable@vger.kernel.org
+Signed-off-by: Mathy Vanhoef <Mathy.Vanhoef@kuleuven.be>
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/include/net/cfg80211.h
++++ b/include/net/cfg80211.h
+@@ -5628,7 +5628,7 @@ unsigned int ieee80211_get_mesh_hdrlen(s
+  */
+ int ieee80211_data_to_8023_exthdr(struct sk_buff *skb, struct ethhdr *ehdr,
+ 				  const u8 *addr, enum nl80211_iftype iftype,
+-				  u8 data_offset);
++				  u8 data_offset, bool is_amsdu);
+ 
+ /**
+  * ieee80211_data_to_8023 - convert an 802.11 data frame to 802.3
+@@ -5640,7 +5640,7 @@ int ieee80211_data_to_8023_exthdr(struct
+ static inline int ieee80211_data_to_8023(struct sk_buff *skb, const u8 *addr,
+ 					 enum nl80211_iftype iftype)
+ {
+-	return ieee80211_data_to_8023_exthdr(skb, NULL, addr, iftype, 0);
++	return ieee80211_data_to_8023_exthdr(skb, NULL, addr, iftype, 0, false);
+ }
+ 
+ /**
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -2696,7 +2696,7 @@ __ieee80211_rx_h_amsdu(struct ieee80211_
+ 	if (ieee80211_data_to_8023_exthdr(skb, &ethhdr,
+ 					  rx->sdata->vif.addr,
+ 					  rx->sdata->vif.type,
+-					  data_offset))
++					  data_offset, true))
+ 		return RX_DROP_UNUSABLE;
+ 
+ 	ieee80211_amsdu_to_8023s(skb, &frame_list, dev->dev_addr,
+--- a/net/wireless/util.c
++++ b/net/wireless/util.c
+@@ -541,7 +541,7 @@ EXPORT_SYMBOL(ieee80211_get_mesh_hdrlen)
+ 
+ int ieee80211_data_to_8023_exthdr(struct sk_buff *skb, struct ethhdr *ehdr,
+ 				  const u8 *addr, enum nl80211_iftype iftype,
+-				  u8 data_offset)
++				  u8 data_offset, bool is_amsdu)
+ {
+ 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
+ 	struct {
+@@ -629,7 +629,7 @@ int ieee80211_data_to_8023_exthdr(struct
+ 	skb_copy_bits(skb, hdrlen, &payload, sizeof(payload));
+ 	tmp.h_proto = payload.proto;
+ 
+-	if (likely((ether_addr_equal(payload.hdr, rfc1042_header) &&
++	if (likely((!is_amsdu && ether_addr_equal(payload.hdr, rfc1042_header) &&
+ 		    tmp.h_proto != htons(ETH_P_AARP) &&
+ 		    tmp.h_proto != htons(ETH_P_IPX)) ||
+ 		   ether_addr_equal(payload.hdr, bridge_tunnel_header)))

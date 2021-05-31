@@ -1,0 +1,100 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Jason A. Donenfeld" <Jason@zx2c4.com>
+Date: Wed, 18 Mar 2020 18:30:45 -0600
+Subject: [PATCH] wireguard: queueing: account for skb->protocol==0
+
+commit a5588604af448664e796daf3c1d5a4523c60667b upstream.
+
+We carry out checks to the effect of:
+
+  if (skb->protocol != wg_examine_packet_protocol(skb))
+    goto err;
+
+By having wg_skb_examine_untrusted_ip_hdr return 0 on failure, this
+means that the check above still passes in the case where skb->protocol
+is zero, which is possible to hit with AF_PACKET:
+
+  struct sockaddr_pkt saddr = { .spkt_device = "wg0" };
+  unsigned char buffer[5] = { 0 };
+  sendto(socket(AF_PACKET, SOCK_PACKET, /* skb->protocol = */ 0),
+         buffer, sizeof(buffer), 0, (const struct sockaddr *)&saddr, sizeof(saddr));
+
+Additional checks mean that this isn't actually a problem in the code
+base, but I could imagine it becoming a problem later if the function is
+used more liberally.
+
+I would prefer to fix this by having wg_examine_packet_protocol return a
+32-bit ~0 value on failure, which will never match any value of
+skb->protocol, which would simply change the generated code from a mov
+to a movzx. However, sparse complains, and adding __force casts doesn't
+seem like a good idea, so instead we just add a simple helper function
+to check for the zero return value. Since wg_examine_packet_protocol
+itself gets inlined, this winds up not adding an additional branch to
+the generated code, since the 0 return value already happens in a
+mergable branch.
+
+Reported-by: Fabian Freyer <fabianfreyer@radicallyopensecurity.com>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ drivers/net/wireguard/device.c   | 2 +-
+ drivers/net/wireguard/queueing.h | 8 +++++++-
+ drivers/net/wireguard/receive.c  | 4 ++--
+ 3 files changed, 10 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/wireguard/device.c
++++ b/drivers/net/wireguard/device.c
+@@ -122,7 +122,7 @@ static netdev_tx_t wg_xmit(struct sk_buf
+ 	u32 mtu;
+ 	int ret;
+ 
+-	if (unlikely(wg_skb_examine_untrusted_ip_hdr(skb) != skb->protocol)) {
++	if (unlikely(!wg_check_packet_protocol(skb))) {
+ 		ret = -EPROTONOSUPPORT;
+ 		net_dbg_ratelimited("%s: Invalid IP packet\n", dev->name);
+ 		goto err;
+--- a/drivers/net/wireguard/queueing.h
++++ b/drivers/net/wireguard/queueing.h
+@@ -66,7 +66,7 @@ struct packet_cb {
+ #define PACKET_PEER(skb) (PACKET_CB(skb)->keypair->entry.peer)
+ 
+ /* Returns either the correct skb->protocol value, or 0 if invalid. */
+-static inline __be16 wg_skb_examine_untrusted_ip_hdr(struct sk_buff *skb)
++static inline __be16 wg_examine_packet_protocol(struct sk_buff *skb)
+ {
+ 	if (skb_network_header(skb) >= skb->head &&
+ 	    (skb_network_header(skb) + sizeof(struct iphdr)) <=
+@@ -81,6 +81,12 @@ static inline __be16 wg_skb_examine_untr
+ 	return 0;
+ }
+ 
++static inline bool wg_check_packet_protocol(struct sk_buff *skb)
++{
++	__be16 real_protocol = wg_examine_packet_protocol(skb);
++	return real_protocol && skb->protocol == real_protocol;
++}
++
+ static inline void wg_reset_packet(struct sk_buff *skb)
+ {
+ 	skb_scrub_packet(skb, true);
+--- a/drivers/net/wireguard/receive.c
++++ b/drivers/net/wireguard/receive.c
+@@ -56,7 +56,7 @@ static int prepare_skb_header(struct sk_
+ 	size_t data_offset, data_len, header_len;
+ 	struct udphdr *udp;
+ 
+-	if (unlikely(wg_skb_examine_untrusted_ip_hdr(skb) != skb->protocol ||
++	if (unlikely(!wg_check_packet_protocol(skb) ||
+ 		     skb_transport_header(skb) < skb->head ||
+ 		     (skb_transport_header(skb) + sizeof(struct udphdr)) >
+ 			     skb_tail_pointer(skb)))
+@@ -388,7 +388,7 @@ static void wg_packet_consume_data_done(
+ 	 */
+ 	skb->ip_summed = CHECKSUM_UNNECESSARY;
+ 	skb->csum_level = ~0; /* All levels */
+-	skb->protocol = wg_skb_examine_untrusted_ip_hdr(skb);
++	skb->protocol = wg_examine_packet_protocol(skb);
+ 	if (skb->protocol == htons(ETH_P_IP)) {
+ 		len = ntohs(ip_hdr(skb)->tot_len);
+ 		if (unlikely(len < sizeof(struct iphdr)))

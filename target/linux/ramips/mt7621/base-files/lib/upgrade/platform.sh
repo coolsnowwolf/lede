@@ -45,6 +45,7 @@ platform_do_upgrade() {
 	asus,rt-ac65p|\
 	asus,rt-ac85p|\
 	hiwifi,hc5962|\
+	jcg,q20|\
 	linksys,ea7500-v2|\
 	netgear,r6220|\
 	netgear,r6260|\
@@ -59,6 +60,7 @@ platform_do_upgrade() {
 	xiaomi,mir3p|\
 	xiaomi,mir4|\
 	xiaomi,mi-router-ac2100|\
+	xiaomi,mi-router-cr6606|\
 	xiaomi,redmi-router-ac2100)
 		nand_do_upgrade "$1"
 		;;

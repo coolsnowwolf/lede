@@ -1,0 +1,127 @@
+From 55cfeb396965c3906a84d09a9c487d065e37773b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Thu, 18 Mar 2021 09:01:42 +0100
+Subject: [PATCH 1/2] net: dsa: bcm_sf2: add function finding RGMII register
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Simple macro like REG_RGMII_CNTRL_P() is insufficient as:
+1. It doesn't validate port argument
+2. It doesn't support chipsets with non-lineral RGMII regs layout
+
+Missing port validation could result in getting register offset from out
+of array. Random memory -> random offset -> random reads/writes. It
+affected e.g. BCM4908 for REG_RGMII_CNTRL_P(7).
+
+Fixes: a78e86ed586d ("net: dsa: bcm_sf2: Prepare for different register layouts")
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Acked-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/bcm_sf2.c      | 49 +++++++++++++++++++++++++++++-----
+ drivers/net/dsa/bcm_sf2_regs.h |  2 --
+ 2 files changed, 42 insertions(+), 9 deletions(-)
+
+--- a/drivers/net/dsa/bcm_sf2.c
++++ b/drivers/net/dsa/bcm_sf2.c
+@@ -31,6 +31,31 @@
+ #include "b53/b53_priv.h"
+ #include "b53/b53_regs.h"
+ 
++static u16 bcm_sf2_reg_rgmii_cntrl(struct bcm_sf2_priv *priv, int port)
++{
++	switch (priv->type) {
++	case BCM4908_DEVICE_ID:
++		/* TODO */
++		break;
++	default:
++		switch (port) {
++		case 0:
++			return REG_RGMII_0_CNTRL;
++		case 1:
++			return REG_RGMII_1_CNTRL;
++		case 2:
++			return REG_RGMII_2_CNTRL;
++		default:
++			break;
++		}
++	}
++
++	WARN_ONCE(1, "Unsupported port %d\n", port);
++
++	/* RO fallback reg */
++	return REG_SWITCH_STATUS;
++}
++
+ static void bcm_sf2_imp_setup(struct dsa_switch *ds, int port)
+ {
+ 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
+@@ -588,6 +613,7 @@ static void bcm_sf2_sw_mac_config(struct
+ {
+ 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
+ 	u32 id_mode_dis = 0, port_mode;
++	u32 reg_rgmii_ctrl;
+ 	u32 reg, offset;
+ 
+ 	if (port == core_readl(priv, CORE_IMP0_PRT_ID))
+@@ -617,10 +643,12 @@ static void bcm_sf2_sw_mac_config(struct
+ 		goto force_link;
+ 	}
+ 
++	reg_rgmii_ctrl = bcm_sf2_reg_rgmii_cntrl(priv, port);
++
+ 	/* Clear id_mode_dis bit, and the existing port mode, let
+ 	 * RGMII_MODE_EN bet set by mac_link_{up,down}
+ 	 */
+-	reg = reg_readl(priv, REG_RGMII_CNTRL_P(port));
++	reg = reg_readl(priv, reg_rgmii_ctrl);
+ 	reg &= ~ID_MODE_DIS;
+ 	reg &= ~(PORT_MODE_MASK << PORT_MODE_SHIFT);
+ 	reg &= ~(RX_PAUSE_EN | TX_PAUSE_EN);
+@@ -635,7 +663,7 @@ static void bcm_sf2_sw_mac_config(struct
+ 		reg |= RX_PAUSE_EN;
+ 	}
+ 
+-	reg_writel(priv, reg, REG_RGMII_CNTRL_P(port));
++	reg_writel(priv, reg, reg_rgmii_ctrl);
+ 
+ force_link:
+ 	/* Force link settings detected from the PHY */
+@@ -661,6 +689,7 @@ static void bcm_sf2_sw_mac_link_set(stru
+ 				    phy_interface_t interface, bool link)
+ {
+ 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
++	u32 reg_rgmii_ctrl;
+ 	u32 reg;
+ 
+ 	if (!phy_interface_mode_is_rgmii(interface) &&
+@@ -668,13 +697,15 @@ static void bcm_sf2_sw_mac_link_set(stru
+ 	    interface != PHY_INTERFACE_MODE_REVMII)
+ 		return;
+ 
++	reg_rgmii_ctrl = bcm_sf2_reg_rgmii_cntrl(priv, port);
++
+ 	/* If the link is down, just disable the interface to conserve power */
+-	reg = reg_readl(priv, REG_RGMII_CNTRL_P(port));
++	reg = reg_readl(priv, reg_rgmii_ctrl);
+ 	if (link)
+ 		reg |= RGMII_MODE_EN;
+ 	else
+ 		reg &= ~RGMII_MODE_EN;
+-	reg_writel(priv, reg, REG_RGMII_CNTRL_P(port));
++	reg_writel(priv, reg, reg_rgmii_ctrl);
+ }
+ 
+ static void bcm_sf2_sw_mac_link_down(struct dsa_switch *ds, int port,
+--- a/drivers/net/dsa/bcm_sf2_regs.h
++++ b/drivers/net/dsa/bcm_sf2_regs.h
+@@ -55,8 +55,6 @@ enum bcm_sf2_reg_offs {
+ #define CROSSBAR_BCM4908_EXT_GPHY4	1
+ #define CROSSBAR_BCM4908_EXT_RGMII	2
+ 
+-#define REG_RGMII_CNTRL_P(x)		(REG_RGMII_0_CNTRL + (x))
+-
+ /* Relative to REG_RGMII_CNTRL */
+ #define  RGMII_MODE_EN			(1 << 0)
+ #define  ID_MODE_DIS			(1 << 1)
