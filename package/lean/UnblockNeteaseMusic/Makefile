@@ -9,13 +9,13 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=UnblockNeteaseMusic
 PKG_VERSION:=0.25.3
-PKG_RELEASE:=5
+PKG_RELEASE:=6
 
 PKG_LICENSE:=MIT
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/nondanee/UnblockNeteaseMusic.git
-PKG_SOURCE_VERSION:=1193e29a2c8f72c738d2988d5cf5afbb2fee7463
+PKG_SOURCE_URL:=https://github.com/1715173329/UnblockNeteaseMusic.git
+PKG_SOURCE_VERSION:=7fe969342c2a977f00a4a7b6a275ffae04ffffea
 
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)
 PKG_SOURCE:=$(PKG_SOURCE_SUBDIR)-$(PKG_VERSION).tar.gz
