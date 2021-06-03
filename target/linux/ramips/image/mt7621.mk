@@ -508,6 +508,22 @@ define Device/jcg_jhr-ac876m
 endef
 TARGET_DEVICES += jcg_jhr-ac876m
 
+define Device/jcg_q20
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBINIZE_OPTS := -E 5
+  KERNEL_SIZE := 4096k
+  IMAGE_SIZE := 91136k
+  IMAGES += factory.bin
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
+	check-size
+  DEVICE_VENDOR := JCG
+  DEVICE_MODEL := Q20
+  DEVICE_PACKAGES := kmod-mt7915e wpad-openssl uboot-envtools
+endef
+TARGET_DEVICES += jcg_q20
+
 define Device/jcg_y2
   $(Device/uimage-lzma-loader)
   IMAGE_SIZE := 16064k
@@ -1096,14 +1112,14 @@ define Device/xiaomi_mi-router-cr6606
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   UBINIZE_OPTS := -E 5
-  IMAGE_SIZE := 51200k
-  IMAGES += firmware.bin overlay.bin
-  IMAGE/firmware.bin := append-kernel | pad-to 128k | append-rootfs | pad-rootfs
-  IMAGE/overlay.bin := append-ubi | check-size
+  KERNEL_SIZE := 4096k
+  IMAGE_SIZE := 128512k
+  IMAGES += factory.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | check-size
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Mi Router CR6606
-  DEVICE_PACKAGES += uboot-envtools kmod-mt7915e wpad-openssl
+  DEVICE_PACKAGES += kmod-mt7915e wpad-openssl uboot-envtools
 endef
 TARGET_DEVICES += xiaomi_mi-router-cr6606
 
