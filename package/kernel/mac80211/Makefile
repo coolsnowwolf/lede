@@ -10,10 +10,10 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mac80211
 
-PKG_VERSION:=5.8.18-1
-PKG_RELEASE:=3
-PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v5.8.18/
-PKG_HASH:=f04a8172423c6a945fc7d9844b04f33fda9ae574e552f8f18ee3bdfcfb494563
+PKG_VERSION:=5.10.42-1
+PKG_RELEASE:=1
+PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v5.10.42/
+PKG_HASH:=6876520105240844fdb32d1dcdf2bfdea291a37a96f16c892fda3776ba714fcb
 
 PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/backports-$(PKG_VERSION)
@@ -265,7 +265,7 @@ endef
 define KernelPackage/mac80211-hwsim
   $(call KernelPackage/mac80211/Default)
   TITLE:=mac80211 HW simulation device
-  DEPENDS+= +kmod-mac80211 +@DRIVER_11AC_SUPPORT +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT
+  DEPENDS+= +kmod-mac80211 +@DRIVER_11AC_SUPPORT +@DRIVER_11N_SUPPORT
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/mac80211_hwsim.ko
   AUTOLOAD:=$(call AutoProbe,mac80211_hwsim)
 endef
@@ -274,7 +274,7 @@ endef
 define KernelPackage/mt7601u
   $(call KernelPackage/mac80211/Default)
   TITLE:=MT7601U-based USB dongles Wireless Driver
-  DEPENDS+= +kmod-mac80211 +@DRIVER_11N_SUPPORT +@DRIVER_11W_SUPPORT @USB_SUPPORT +kmod-usb-core +mt7601u-firmware
+  DEPENDS+= +kmod-mac80211 +@DRIVER_11N_SUPPORT @USB_SUPPORT +kmod-usb-core +mt7601u-firmware
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/mediatek/mt7601u/mt7601u.ko
   AUTOLOAD:=$(call AutoProbe,mt7601u)
 endef
@@ -290,7 +290,7 @@ endef
 
 define KernelPackage/p54-common
   $(call KernelPackage/p54/Default)
-  DEPENDS+= @(PCI_SUPPORT||USB_SUPPORT) +kmod-mac80211 +kmod-lib-crc-ccitt +@DRIVER_11W_SUPPORT
+  DEPENDS+= @(PCI_SUPPORT||USB_SUPPORT) +kmod-mac80211 +kmod-lib-crc-ccitt
   TITLE+= (COMMON)
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/intersil/p54/p54common.ko
 endef
@@ -388,7 +388,7 @@ $(eval $(call Download,zd1211rw))
 define KernelPackage/zd1211rw
   $(call KernelPackage/mac80211/Default)
   TITLE:=Zydas ZD1211 support
-  DEPENDS+= @USB_SUPPORT +kmod-usb-core +kmod-mac80211 +@DRIVER_11W_SUPPORT
+  DEPENDS+= @USB_SUPPORT +kmod-usb-core +kmod-mac80211
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/zydas/zd1211rw/zd1211rw.ko
   AUTOLOAD:=$(call AutoProbe,zd1211rw)
 endef
@@ -501,9 +501,14 @@ define Build/Patch
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/build,build/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/subsys,subsys/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath,ath/)
+	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath5k,ath5k/)
+	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath9k,ath9k/)
+	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath10k,ath10k/)
+	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath11k,ath11k/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rt2x00,rt2x00/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/mwl,mwl/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/brcm,brcm/)
+	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rtl,rtl/)
 	$(if $(QUILT),touch $(PKG_BUILD_DIR)/.quilt_used)
 endef
 
@@ -511,9 +516,14 @@ define Quilt/Refresh/Package
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/build,build/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/subsys,subsys/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath,ath/)
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath5k,ath5k/)
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath9k,ath9k/)
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath10k,ath10k/)
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath11k,ath11k/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rt2x00,rt2x00/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/mwl,mwl/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/brcm,brcm/)
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rtl,rtl/)
 endef
 
 define Build/Compile
@@ -539,7 +549,6 @@ endef
 define KernelPackage/cfg80211/install
 	$(INSTALL_DIR) $(1)/lib/wifi $(1)/lib/netifd/wireless
 	$(INSTALL_DATA) ./files/lib/wifi/mac80211.sh $(1)/lib/wifi
-	$(INSTALL_DATA) ./files/lib/netifd/mac80211.sh $(1)/lib/netifd
 	$(INSTALL_BIN) ./files/lib/netifd/wireless/mac80211.sh $(1)/lib/netifd/wireless
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/ieee80211
 	$(INSTALL_DATA) ./files/mac80211.hotplug $(1)/etc/hotplug.d/ieee80211/10-wifi-detect

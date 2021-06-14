@@ -8,23 +8,24 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gettext-full
-PKG_VERSION:=0.19.8.1
+PKG_VERSION:=0.21
 PKG_RELEASE:=2
 
 PKG_SOURCE:=gettext-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/gettext
-PKG_HASH:=105556dbc5c3fbbc2aa0edb46d22d055748b6f5c7cd7a8d99f8e7eb84e938be4
+PKG_HASH:=d20fcbb537e02dcf1383197ba05bd0734ef7bf5db06bdb241eb69b7d16b73192
 PKG_BUILD_DIR:=$(BUILD_DIR)/gettext-$(PKG_VERSION)
 HOST_BUILD_DIR:=$(BUILD_DIR_HOST)/gettext-$(PKG_VERSION)
 
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
-PKG_LICENSE:=GPL-3.0+
+PKG_LICENSE:=GPL-3.0-or-later
 PKG_CPE_ID:=cpe:/a:gnu:gettext
 
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
-PKG_BUILD_PARALLEL:=0
 PKG_BUILD_DEPENDS:=gettext-full/host
+PKG_BUILD_PARALLEL:=1
+HOST_BUILD_PARALLEL:=1
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/host-build.mk
@@ -41,9 +42,6 @@ TARGET_CFLAGS += $(FPIC)
 ifneq ($(HOST_OS),Linux)
   TARGET_CFLAGS += -I$(STAGING_DIR_HOSTPKG)/include
 endif
-ifdef CONFIG_USE_MUSL
-  TARGET_CFLAGS += -D__UCLIBC__
-endif
 
 CONFIGURE_ARGS += \
 	--enable-shared \
@@ -52,7 +50,6 @@ CONFIGURE_ARGS += \
 	--disable-rpath \
 	--enable-nls \
 	--disable-java \
-	--disable-native-java \
 	--disable-openmp \
 	--disable-curses \
 	--with-included-gettext \
@@ -66,11 +63,9 @@ HOST_CONFIGURE_ARGS += \
 	--disable-libasprintf \
 	--disable-rpath \
 	--disable-java \
-	--disable-native-java \
 	--disable-openmp \
 	--without-emacs \
 	--without-libxml2-prefix
-
 
 HOST_CONFIGURE_VARS += \
 	EMACS="no" \

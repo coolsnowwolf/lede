@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=procd
-PKG_RELEASE:=2
+PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/procd.git
-PKG_SOURCE_DATE:=2020-05-28
-PKG_SOURCE_VERSION:=b9b39e2061d7035a9d84eecbb4a4613deaf6d03f
-PKG_MIRROR_HASH:=0d6a96a2fb38f72c72b457a2a8638bee22f91009f9686152fcf4aee97846fc84
+PKG_SOURCE_DATE:=2020-11-06
+PKG_SOURCE_VERSION:=b0de894830a93da5b303a3d89a42baf163d0a58c
+PKG_MIRROR_HASH:=ba7f7631fa74d3bede0241f5d96ee4939f15164e79290d1ac7fd15fc8ed628d9
 CMAKE_INSTALL:=1
 
 PKG_LICENSE:=GPL-2.0
@@ -32,7 +32,7 @@ include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
 
 ifeq ($(DUMP),)
-  STAMP_CONFIGURED:=$(strip $(STAMP_CONFIGURED))_$(shell echo $(CONFIG_TARGET_INIT_PATH) | mkhash md5)
+  STAMP_CONFIGURED:=$(strip $(STAMP_CONFIGURED))_$(shell echo $(CONFIG_TARGET_INIT_PATH) | $(MKHASH) md5)
 endif
 
 CMAKE_OPTIONS += -DEARLY_PATH="$(TARGET_INIT_PATH)"
@@ -41,18 +41,34 @@ TARGET_LDFLAGS += $(if $(CONFIG_USE_GLIBC),-lrt)
 TARGET_CFLAGS += -flto
 TARGET_LDFLAGS += -flto
 
-define Package/procd
+define Package/procd/Default
   SECTION:=base
   CATEGORY:=Base system
-  DEPENDS:=+ubusd +ubus +libjson-script +ubox +USE_GLIBC:librt +libubox +libubus +libblobmsg-json +libjson-c
+  DEPENDS:=+ubusd +ubus +libjson-script +ubox +USE_GLIBC:librt +libubox \
+	  +libubus +libblobmsg-json +libjson-c
   TITLE:=OpenWrt system process manager
   USERID:=:dialout=20 :audio=29
+endef
+
+define Package/procd
+  $(call Package/procd/Default)
+  VARIANT:=default
+  CONFLICTS:=procd-selinux
+endef
+
+define Package/procd-selinux
+  $(call Package/procd/Default)
+  DEPENDS += +libselinux
+  TITLE += with SELinux support
+  PROVIDES:=procd
+  VARIANT:=selinux
 endef
 
 define Package/procd-ujail
   SECTION:=base
   CATEGORY:=Base system
-  DEPENDS:=@KERNEL_NAMESPACES +@KERNEL_UTS_NS +@KERNEL_IPC_NS +@KERNEL_PID_NS +libubox +libubus +libblobmsg-json
+  DEPENDS:=@KERNEL_NAMESPACES +@KERNEL_UTS_NS +@KERNEL_IPC_NS +@KERNEL_PID_NS \
+	  +libubox +libubus +libblobmsg-json
   TITLE:=OpenWrt process jail helper
 endef
 
@@ -66,13 +82,22 @@ endef
 define Package/procd-seccomp
   SECTION:=base
   CATEGORY:=Base system
-  DEPENDS:=@(arm||armeb||mips||mipsel||i386||powerpc||x86_64) @!TARGET_uml @KERNEL_SECCOMP +libubox +libblobmsg-json
+  DEPENDS:=@(arm||armeb||mips||mipsel||i386||powerpc||x86_64) @!TARGET_uml \
+	  @KERNEL_SECCOMP +libubox +libblobmsg-json
   TITLE:=OpenWrt process seccomp helper + utrace
+endef
+
+define Package/uxc
+  SECTION:=base
+  CATEGORY:=Base system
+  DEPENDS:=+procd-ujail +libubus +libubox +libblobmsg-json
+  TITLE:=OpenWrt container management
+  MAINTAINER:=Daniel Golle <daniel@makrotopia.org>
 endef
 
 define Package/procd/config
 menu "Configuration"
-	depends on PACKAGE_procd
+	depends on PACKAGE_procd || PACKAGE_procd-selinux
 
 config PROCD_SHOW_BOOT
 	bool
@@ -86,6 +111,9 @@ config PROCD_ZRAM_TMPFS
 endmenu
 endef
 
+ifeq ($(BUILD_VARIANT),selinux)
+  CMAKE_OPTIONS += -DSELINUX=1
+endif
 
 ifeq ($(CONFIG_PROCD_SHOW_BOOT),y)
   CMAKE_OPTIONS += -DSHOW_BOOT_ON_CONSOLE=1
@@ -112,6 +140,8 @@ define Package/procd/install
 	$(INSTALL_DATA) ./files/procd.sh $(1)/lib/functions/
 endef
 
+Package/procd-selinux/install = $(Package/procd/install)
+
 define Package/procd-ujail/install
 	$(INSTALL_DIR) $(1)/sbin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/ujail $(1)/sbin/
@@ -130,7 +160,20 @@ define Package/procd-seccomp/install
 	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/lib/libpreload-trace.so $(1)/lib
 endef
 
+define Package/uxc/conffiles
+/etc/uxc
+endef
+
+define Package/uxc/install
+	$(INSTALL_DIR) $(1)/sbin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/uxc $(1)/sbin/
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/uxc.init $(1)/etc/init.d/uxc
+endef
+
 $(eval $(call BuildPackage,procd))
+$(eval $(call BuildPackage,procd-selinux))
 $(eval $(call BuildPackage,procd-ujail))
 $(eval $(call BuildPackage,procd-ujail-console))
 $(eval $(call BuildPackage,procd-seccomp))
+$(eval $(call BuildPackage,uxc))

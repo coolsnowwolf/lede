@@ -15,20 +15,20 @@ PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 
 TAR_OPTIONS += --exclude='*.rej'
 
-ifeq ($(PKG_VERSION),2.29.1)
-  PKG_HASH:=e7010a46969f9d3e53b650a518663f98a5dde3c3ae21b7d71e5e6803bc36b577
-endif
-
-ifeq ($(PKG_VERSION),2.31.1)
-  PKG_HASH:=5d20086ecf5752cc7d9134246e9588fa201740d540f7eb84d795b1f7a93bca86
-endif
-
 ifeq ($(PKG_VERSION),2.32)
   PKG_HASH:=0ab6c55dd86a92ed561972ba15b9b70a8b9f75557f896446c82e8b36e473ee04
 endif
 
 ifeq ($(PKG_VERSION),2.34)
   PKG_HASH:=f00b0e8803dc9bab1e2165bd568528135be734df3fabf8d0161828cd56028952
+endif
+
+ifeq ($(PKG_VERSION),2.35.2)
+  PKG_HASH:=dcd5b0416e7b0a9b24bed76cd8c6c132526805761863150a26d016415b8bdc7b
+endif
+
+ifeq ($(PKG_VERSION),2.36.1)
+  PKG_HASH:=e81d9edf373f193af428a0f256674aea62a9d74dfe93f65192d4eae030b0f3b0
 endif
 
 HOST_BUILD_PARALLEL:=1
@@ -66,6 +66,9 @@ ifneq ($(CONFIG_EXTRA_TARGET_ARCH),)
   HOST_CONFIGURE_ARGS+= \
 		--enable-targets=$(call qstrip,$(CONFIG_EXTRA_TARGET_ARCH_NAME))-linux-$(TARGET_SUFFIX)
 endif
+
+HOST_CONFIGURE_VARS += \
+	acx_cv_cc_gcc_supports_ada=false
 
 define Host/Prepare
 	$(call Host/Prepare/Default)

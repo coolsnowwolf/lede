@@ -1,0 +1,138 @@
+--- a/libfakeroot.c
++++ b/libfakeroot.c
+@@ -112,8 +112,16 @@
+ #define INT_SEND_STAT(a,b) SEND_STAT(a,b,_STAT_VER)
+ #define INT_SEND_GET_XATTR(a,b) SEND_GET_XATTR(a,b,_STAT_VER)
+ #define INT_SEND_GET_STAT(a,b) SEND_GET_STAT(a,b)
++
++/* 10.10 uses id_t in getpriority/setpriority calls, so pretend
++   id_t is used everywhere, just happens to be int on some OSes */
++#ifndef _ID_T
++#define _ID_T
++typedef int id_t;
++#endif
+ #endif
+ 
++#include <sys/types.h>
+ #include <stdlib.h>
+ #include <sys/ipc.h>
+ #include <sys/msg.h>
+@@ -125,7 +133,6 @@
+ #include <unistd.h>
+ #include <dirent.h>
+ #include <errno.h>
+-#include <sys/types.h>
+ #ifdef HAVE_SYS_ACL_H
+ #include <sys/acl.h>
+ #endif /* HAVE_SYS_ACL_H */
+@@ -188,6 +195,15 @@ extern int unsetenv (const char *name);
+ #undef __lxstat64
+ #undef _FILE_OFFSET_BITS
+ 
++
++#ifndef AT_EMPTY_PATH
++#define AT_EMPTY_PATH 0
++#endif
++
++#ifndef AT_NO_AUTOMOUNT
++#define AT_NO_AUTOMOUNT 0
++#endif
++
+ /*
+ // next_wrap_st:
+ // this structure is used in next_wrap, which is defined in
+@@ -1911,7 +1927,7 @@ ssize_t fremovexattr(int fd, const char
+ }
+ #endif /* HAVE_FREMOVEXATTR */
+ 
+-int setpriority(int which, int who, int prio){
++int setpriority(int which, id_t who, int prio){
+   if (fakeroot_disabled)
+     return next_setpriority(which, who, prio);
+   next_setpriority(which, who, prio);
+@@ -2520,3 +2536,19 @@ int sysinfo(int command, char *buf, long
+     }
+ }
+ #endif
++
++#ifdef HAVE_OPENAT
++int openat(int dir_fd, const char *pathname, int flags, ...)
++{
++	mode_t mode;
++
++    if (flags & O_CREAT) {
++        va_list args;
++        va_start(args, flags);
++        mode = va_arg(args, int);
++        va_end(args);
++    }
++
++    return next_openat(dir_fd, pathname, flags, mode);
++}
++#endif
+--- a/wrapfunc.inp
++++ b/wrapfunc.inp
+@@ -146,7 +146,7 @@ setfsgid;gid_t;(gid_t fsgid);(fsgid)
+ initgroups;int;(const char *user, INITGROUPS_SECOND_ARG group);(user, group)
+ getgroups;int;(int size, gid_t list[]);(size, list)
+ setgroups;int;(SETGROUPS_SIZE_TYPE size, const gid_t *list);(size, list)
+-setpriority;int;(int which, int who, int prio);(which, who, prio)
++setpriority;int;(int which, id_t who, int prio);(which, who, prio)
+ #ifdef HAVE_CAPSET
+ capset;int;(cap_user_header_t hdrp, const cap_user_data_t datap);(hdrp, datap)
+ #endif /* HAVE_CAPSET */
+@@ -198,7 +198,7 @@ fchownat;int;(int dir_fd, const char *pa
+ mkdirat;int;(int dir_fd, const char *pathname, mode_t mode);(dir_fd, pathname, mode)
+ #endif /* HAVE_MKDIRAT */
+ #ifdef HAVE_OPENAT
+-openat;int;(int dir_fd, const char *pathname, int flags);(dir_fd, pathname, flags)
++openat;int;(int dir_fd, const char *pathname, int flags, mode_t mode);(dir_fd, pathname, flags, mode);;(int dir_fd, const char *pathname, int flags, ...)
+ #endif /* HAVE_OPENAT */
+ #ifdef HAVE_RENAMEAT
+ renameat;int;(int olddir_fd, const char *oldpath, int newdir_fd, const char *newpath);(olddir_fd, oldpath, newdir_fd, newpath)
+--- a/wrapawk_macosx
++++ b/wrapawk_macosx
+@@ -46,26 +46,30 @@ BEGIN{
+   argtype=$3;
+   argname=$4;
+   MACRO=$5;
++  argtype_def=$6
++  if(!argtype_def) {
++    argtype_def = argtype
++  }
+   if(MACRO){
+     print "extern " ret " MY_DEF(" name ")" argtype " __attribute__((visibility(\"hidden\")));" > headerfile;
+     print "INTERPOSE(MY_DEF(" name "_RAW)," name "_RAW);"   > structfile;
+     print "#undef " name                      > deffile
+     print "#define " name " MY_DEF(" name "_RAW)" > deffile
+ 
+-    print "extern " ret, name, argtype ";"              > tmpffile;
++    print "extern " ret, name, argtype_def ";"          > tmpffile;
+     print "static __inline__ " ret " NEXT_" MACRO "_NOARG " argtype " __attribute__((always_inline));" > tmpffile;
+     print "static __inline__ " ret " NEXT_" MACRO "_NOARG " argtype " {" > tmpffile;
+     print "  return " name, argname ";"                 > tmpffile;
+     print "}"                                           > tmpffile;
+     print ""                                            > tmpffile;
+   } else {
+-    print "extern " ret " my_" name, argtype " __attribute__((visibility(\"hidden\")));" > headerfile;
++    print "extern " ret " my_" name, argtype_def " __attribute__((visibility(\"hidden\")));" > headerfile;
+     print "#undef " name                                > structfile;
+     print "INTERPOSE(my_" name "," name ");"            > structfile;
+     print "#define " name " my_" name                   > structfile
+     print "#define " name " my_" name                   > deffile
+ 
+-    print "extern " ret, name, argtype ";"              > tmpffile;
++    print "extern " ret, name, argtype_def ";"          > tmpffile;
+     if(argname){
+         print "static __inline__ " ret " next_" name, argtype " __attribute__((always_inline));" > tmpffile;
+         print "static __inline__ " ret " next_" name, argtype " {" > tmpffile;
+--- a/configure.ac
++++ b/configure.ac
+@@ -146,6 +146,7 @@ for first in size_t int; do
+ #include <sys/types.h>
+ #endif
+ #include <unistd.h>
++#include <stdio.h>
+ #ifdef HAVE_GRP_H
+ #include <grp.h>
+ #endif

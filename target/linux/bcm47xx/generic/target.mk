@@ -1,7 +1,7 @@
 BOARDNAME:=Generic
 FEATURES+=pcmcia
 
-DEFAULT_PACKAGES += wpad-basic-wolfssl
+DEFAULT_PACKAGES += wpad-basic
 
 define Target/Description
 	Build generic firmware for all Broadcom BCM47xx and BCM53xx MIPS

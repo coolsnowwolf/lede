@@ -1,5 +1,4 @@
 BOARDNAME:=Generic
-FEATURES += squashfs
 
 DEFAULT_PACKAGES += wpad-basic-wolfssl
 

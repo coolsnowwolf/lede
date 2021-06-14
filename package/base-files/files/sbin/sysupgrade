@@ -5,7 +5,6 @@
 . /usr/share/libubox/jshn.sh
 
 # initialize defaults
-export MTD_ARGS=""
 export MTD_CONFIG_ARGS=""
 export INTERACTIVE=0
 export VERBOSE=1
@@ -127,16 +126,23 @@ list_changed_conffiles() {
 	list_conffiles | while read file csum; do
 		[ -r "$file" ] || continue
 
-		echo "${csum}  ${file}" | busybox sha256sum -sc - || echo "$file"
+		echo "${csum}  ${file}" | sha256sum -sc - || echo "$file"
 	done
+}
+
+list_static_conffiles() {
+	local filter=$1
+
+	find $(sed -ne '/^[[:space:]]*$/d; /^#/d; p' \
+		/etc/sysupgrade.conf /lib/upgrade/keep.d/* 2>/dev/null) \
+		\( -type f -o -type l \) $filter 2>/dev/null
 }
 
 add_conffiles() {
 	local file="$1"
-	( find $(sed -ne '/^[[:space:]]*$/d; /^#/d; p' \
-		/etc/sysupgrade.conf /lib/upgrade/keep.d/* 2>/dev/null) \
-		\( -type f -o -type l \) $find_filter 2>/dev/null;
-	  list_changed_conffiles ) | sort -u > "$file"
+
+	( list_static_conffiles "$find_filter"; list_changed_conffiles ) |
+		sort -u > "$file"
 	return 0
 }
 
@@ -154,9 +160,7 @@ add_overlayfiles() {
 
 		# backup files from /etc/sysupgrade.conf and /lib/upgrade/keep.d, but
 		# ignore those aready controlled by opkg conffiles
-		find $(sed -ne '/^[[:space:]]*$/d; /^#/d; p' \
-			/etc/sysupgrade.conf /lib/upgrade/keep.d/* 2>/dev/null) \
-			\( -type f -o -type l \) 2>/dev/null | sort -u |
+		list_static_conffiles | sort -u |
 			grep -h -v -x -F -f $conffiles > "$keepfiles"
 
 		# backup conffiles, but only those changed if '-u'
@@ -191,6 +195,9 @@ add_overlayfiles() {
 
 	return 0
 }
+
+# hooks
+sysupgrade_image_check="fwtool_check_signature fwtool_check_image platform_check_image"
 
 if [ $SAVE_OVERLAY = 1 ]; then
 	[ ! -d /overlay/upper/etc ] && {
@@ -248,7 +255,7 @@ do_save_conffiles() {
 
 	v "Saving config files..."
 	[ "$VERBOSE" -gt 1 ] && TAR_V="v" || TAR_V=""
-	tar c${TAR_V}zf "$conf_tar" -T "$CONFFILES" 2>/dev/null
+	tar c${TAR_V}zpf "$conf_tar" -T "$CONFFILES" 2>/dev/null
 	if [ "$?" -ne 0 ]; then
 		echo "Failed to create the configuration backup."
 		rm -f "$conf_tar"
@@ -282,6 +289,7 @@ if [ -n "$CONF_RESTORE" ]; then
 	fi
 
 	[ "$VERBOSE" -gt 1 ] && TAR_V="v" || TAR_V=""
+	v "Restoring config files..."
 	tar -C / -x${TAR_V}zf "$CONF_RESTORE"
 	exit $?
 fi
@@ -294,7 +302,7 @@ type platform_check_image >/dev/null 2>/dev/null || {
 case "$IMAGE" in
 	http://*|\
 	https://*)
-		wget -O/tmp/sysupgrade.img "$IMAGE" || exit 1
+		wget -O/tmp/sysupgrade.img "$IMAGE"
 		IMAGE=/tmp/sysupgrade.img
 		;;
 esac
@@ -314,19 +322,20 @@ case "$IMAGE" in
 		;;
 esac
 
-json_load "$(/usr/libexec/validate_firmware_image "$IMAGE")" || {
-	echo "Failed to check image"
-	exit 1
-}
-json_get_var valid "valid"
-[ "$valid" -eq 0 ] && {
-	if [ $FORCE -eq 1 ]; then
-		echo "Image check failed but --force given - will update anyway!" >&2
-	else
-		echo "Image check failed." >&2
-		exit 1
-	fi
-}
+export ARGV="$IMAGE"
+export ARGC=1
+
+for check in $sysupgrade_image_check; do
+	( $check "$IMAGE" ) || {
+		if [ $FORCE -eq 1 ]; then
+			echo "Image check '$check' failed but --force given - will update anyway!" >&2
+			break
+		else
+			echo "Image check '$check' failed." >&2
+			exit 1
+		fi
+	}
+done
 
 if [ -n "$CONF_IMAGE" ]; then
 	case "$(get_magic_word $CONF_IMAGE cat)" in
@@ -351,10 +360,16 @@ if [ $TEST -eq 1 ]; then
 	exit 0
 fi
 
+if [ $SAVE_PARTITIONS -eq 0 ]; then
+	touch /tmp/sysupgrade.always.overwrite.bootdisk.partmap
+else
+	rm -f /tmp/sysupgrade.always.overwrite.bootdisk.partmap
+fi
+
 install_bin /sbin/upgraded
 v "Commencing upgrade. Closing all shell sessions."
 
-COMMAND='/lib/upgrade/do_stage2'
+COMMAND='. /lib/functions.sh; include /lib/upgrade; do_upgrade_stage2'
 
 if [ -n "$FAILSAFE" ]; then
 	printf '%s\x00%s\x00%s' "$RAM_ROOT" "$IMAGE" "$COMMAND" >/tmp/sysupgrade

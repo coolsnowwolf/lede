@@ -1,0 +1,180 @@
+From ea92cbb50a78404e29de2cc3999a240615ffb1c8 Mon Sep 17 00:00:00 2001
+From: Chuanhong Guo <gch981213@gmail.com>
+Date: Mon, 6 Apr 2020 17:58:48 +0800
+Subject: [PATCH] mtd: spi-nor: rework broken-flash-reset support
+
+Instead of resetting flash to 3B address on remove hook, this
+implementation only enters 4B mode when needed, which prevents
+more unexpected reboot stuck. This implementation makes it only
+break when a kernel panic happens during flash operation on 16M+
+areas.
+*OpenWrt only*: silent broken-flash-reset warning. We are not dealing
+with vendors and it's unpleasant for users to se that unnecessary
+and long WARN_ON print.
+
+Signed-off-by: Chuanhong Guo <gch981213@gmail.com>
+---
+ drivers/mtd/spi-nor/spi-nor.c | 52 +++++++++++++++++++++++++++++++++--
+ 1 file changed, 49 insertions(+), 3 deletions(-)
+
+--- a/drivers/mtd/spi-nor/core.c
++++ b/drivers/mtd/spi-nor/core.c
+@@ -1447,6 +1447,23 @@ destroy_erase_cmd_list:
+ 	return ret;
+ }
+ 
++int spi_nor_check_set_addr_width(struct spi_nor *nor, loff_t addr)
++{
++	u8 addr_width;
++
++	if ((nor->flags & (SNOR_F_4B_OPCODES | SNOR_F_BROKEN_RESET)) !=
++	    SNOR_F_BROKEN_RESET)
++		return 0;
++
++	addr_width = addr & 0xff000000 ? 4 : 3;
++	if (nor->addr_width == addr_width)
++		return 0;
++
++	nor->addr_width = addr_width;
++
++	return nor->params->set_4byte_addr_mode(nor, addr_width == 4);
++}
++
+ /*
+  * Erase an address range on the nor chip.  The address range may extend
+  * one or more erase sectors.  Return an error is there is a problem erasing.
+@@ -1474,6 +1491,10 @@ static int spi_nor_erase(struct mtd_info
+ 	if (ret)
+ 		return ret;
+ 
++	ret = spi_nor_check_set_addr_width(nor, instr->addr + instr->len);
++	if (ret < 0)
++		return ret;
++
+ 	/* whole-chip erase? */
+ 	if (len == mtd->size && !(nor->flags & SNOR_F_NO_OP_CHIP_ERASE)) {
+ 		unsigned long timeout;
+@@ -1533,6 +1554,7 @@ static int spi_nor_erase(struct mtd_info
+ 	ret = spi_nor_write_disable(nor);
+ 
+ erase_err:
++	spi_nor_check_set_addr_width(nor, 0);
+ 	spi_nor_unlock_and_unprep(nor);
+ 
+ 	return ret;
+@@ -1872,7 +1894,9 @@ static int spi_nor_lock(struct mtd_info
+ 	if (ret)
+ 		return ret;
+ 
++	spi_nor_check_set_addr_width(nor, ofs + len);
+ 	ret = nor->params->locking_ops->lock(nor, ofs, len);
++	spi_nor_check_set_addr_width(nor, 0);
+ 
+ 	spi_nor_unlock_and_unprep(nor);
+ 	return ret;
+@@ -1887,7 +1911,9 @@ static int spi_nor_unlock(struct mtd_inf
+ 	if (ret)
+ 		return ret;
+ 
++	spi_nor_check_set_addr_width(nor, ofs + len);
+ 	ret = nor->params->locking_ops->unlock(nor, ofs, len);
++	spi_nor_check_set_addr_width(nor, 0);
+ 
+ 	spi_nor_unlock_and_unprep(nor);
+ 	return ret;
+@@ -1902,7 +1928,9 @@ static int spi_nor_is_locked(struct mtd_
+ 	if (ret)
+ 		return ret;
+ 
++	spi_nor_check_set_addr_width(nor, ofs + len);
+ 	ret = nor->params->locking_ops->is_locked(nor, ofs, len);
++	spi_nor_check_set_addr_width(nor, 0);
+ 
+ 	spi_nor_unlock_and_unprep(nor);
+ 	return ret;
+@@ -2095,6 +2123,10 @@ static int spi_nor_read(struct mtd_info
+ 	if (ret)
+ 		return ret;
+ 
++	ret = spi_nor_check_set_addr_width(nor, from + len);
++	if (ret < 0)
++		return ret;
++
+ 	while (len) {
+ 		loff_t addr = from;
+ 
+@@ -2118,6 +2150,7 @@ static int spi_nor_read(struct mtd_info
+ 	ret = 0;
+ 
+ read_err:
++	spi_nor_check_set_addr_width(nor, 0);
+ 	spi_nor_unlock_and_unprep(nor);
+ 	return ret;
+ }
+@@ -2140,6 +2173,10 @@ static int spi_nor_write(struct mtd_info
+ 	if (ret)
+ 		return ret;
+ 
++	ret = spi_nor_check_set_addr_width(nor, to + len);
++	if (ret < 0)
++		return ret;
++
+ 	for (i = 0; i < len; ) {
+ 		ssize_t written;
+ 		loff_t addr = to + i;
+@@ -2182,6 +2219,7 @@ static int spi_nor_write(struct mtd_info
+ 	}
+ 
+ write_err:
++	spi_nor_check_set_addr_width(nor, 0);
+ 	spi_nor_unlock_and_unprep(nor);
+ 	return ret;
+ }
+@@ -2977,9 +3015,13 @@ static int spi_nor_init(struct spi_nor *
+ 		 * reboots (e.g., crashes). Warn the user (or hopefully, system
+ 		 * designer) that this is bad.
+ 		 */
+-		WARN_ONCE(nor->flags & SNOR_F_BROKEN_RESET,
+-			  "enabling reset hack; may not recover from unexpected reboots\n");
+-		nor->params->set_4byte_addr_mode(nor, true);
++		if (nor->flags & SNOR_F_BROKEN_RESET) {
++			dev_warn(nor->dev,
++				"enabling reset hack; may not recover from unexpected reboots\n");
++			nor->addr_width = 3;
++		} else {
++			nor->params->set_4byte_addr_mode(nor, true);
++		}
+ 	}
+ 
+ 	return 0;
+--- a/drivers/mtd/spi-nor/core.h
++++ b/drivers/mtd/spi-nor/core.h
+@@ -400,6 +400,7 @@ extern const struct spi_nor_manufacturer
+ extern const struct spi_nor_manufacturer spi_nor_xmc;
+ extern const struct spi_nor_manufacturer spi_nor_xtx;
+ 
++int spi_nor_check_set_addr_width(struct spi_nor *nor, loff_t addr);
+ int spi_nor_write_enable(struct spi_nor *nor);
+ int spi_nor_write_disable(struct spi_nor *nor);
+ int spi_nor_set_4byte_addr_mode(struct spi_nor *nor, bool enable);
+--- a/drivers/mtd/spi-nor/sst.c
++++ b/drivers/mtd/spi-nor/sst.c
+@@ -55,6 +55,10 @@ static int sst_write(struct mtd_info *mt
+ 	if (ret)
+ 		return ret;
+ 
++	ret = spi_nor_check_set_addr_width(nor, to + len);
++	if (ret < 0)
++		return ret;
++
+ 	ret = spi_nor_write_enable(nor);
+ 	if (ret)
+ 		goto out;
+@@ -124,6 +128,7 @@ static int sst_write(struct mtd_info *mt
+ 	}
+ out:
+ 	*retlen += actual;
++	spi_nor_check_set_addr_width(nor, 0);
+ 	spi_nor_unlock_and_unprep(nor);
+ 	return ret;
+ }

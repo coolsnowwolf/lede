@@ -27,7 +27,14 @@ platform_do_upgrade() {
 			fi
 		}
 		;;
+	ampedwireless,ally-00x19k|\
+	ampedwireless,ally-r1900k)
+		if [ "$(fw_printenv --lock / -n bootImage 2>/dev/null)" != "0" ]; then
+			fw_setenv --lock / bootImage 0 || exit 1
+		fi
+		;;
 	mikrotik,routerboard-750gr3|\
+	mikrotik,routerboard-760igs|\
 	mikrotik,routerboard-m11g|\
 	mikrotik,routerboard-m33g)
 		[ -z "$(rootfs_type)" ] && mtd erase firmware
@@ -42,11 +49,19 @@ platform_do_upgrade() {
 	esac
 
 	case "$board" in
+	ampedwireless,ally-00x19k|\
+	ampedwireless,ally-r1900k|\
 	asus,rt-ac65p|\
 	asus,rt-ac85p|\
+	dlink,dir-1960-a1|\
+	dlink,dir-2640-a1|\
+	dlink,dir-2660-a1|\
 	hiwifi,hc5962|\
 	jcg,q20|\
+	linksys,e5600|\
+	linksys,ea7300-v1|\
 	linksys,ea7500-v2|\
+	linksys,ea8100-v1|\
 	netgear,r6220|\
 	netgear,r6260|\
 	netgear,r6350|\
@@ -56,6 +71,7 @@ platform_do_upgrade() {
 	netgear,wac104|\
 	netgear,wac124|\
 	netis,wf2881|\
+	sercomm,na502|\
 	xiaomi,mir3g|\
 	xiaomi,mir3p|\
 	xiaomi,mir4|\
@@ -67,12 +83,31 @@ platform_do_upgrade() {
 	iodata,wn-ax1167gr2|\
 	iodata,wn-ax2033gr|\
 	iodata,wn-dx1167r)
-		iodata_mstc_upgrade_prepare
+		iodata_mstc_upgrade_prepare "0xfe75"
+		nand_do_upgrade "$1"
+		;;
+	iodata,wn-dx1200gr)
+		iodata_mstc_upgrade_prepare "0x1fe75"
 		nand_do_upgrade "$1"
 		;;
 	ubnt,edgerouter-x|\
 	ubnt,edgerouter-x-sfp)
 		platform_upgrade_ubnt_erx "$1"
+		;;
+	zyxel,nr7101)
+		fw_setenv CheckBypass 0
+		fw_setenv Image1Stable 0
+		CI_KERNPART="Kernel"
+		nand_do_upgrade "$1"
+		;;
+	zyxel,wap6805)
+		local kernel2_mtd="$(find_mtd_part Kernel2)"
+		[ "$(hexdump -n 4 -e '"%x"' $kernel2_mtd)" = "56190527" ] &&\
+		[ "$(hexdump -n 4 -s 104 -e '"%x"' $kernel2_mtd)" != "0" ] &&\
+		dd bs=4 count=1 seek=26 conv=notrunc if=/dev/zero of=$kernel2_mtd 2>/dev/null &&\
+		echo "Kernel2 sequence number was reset to 0"
+		CI_KERNPART="Kernel"
+		nand_do_upgrade "$1"
 		;;
 	*)
 		default_do_upgrade "$1"

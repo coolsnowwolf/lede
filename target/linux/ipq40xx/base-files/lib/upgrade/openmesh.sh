@@ -74,7 +74,7 @@ platform_do_upgrade_openmesh() {
 	#
 
 	# take care of restoring a saved config
-	[ -n "$UPGRADE_BACKUP" ] && restore_backup="${MTD_CONFIG_ARGS} -j ${UPGRADE_BACKUP}"
+	[ "$SAVE_CONFIG" -eq 1 ] && restore_backup="${MTD_CONFIG_ARGS} -j ${CONF_TAR}"
 
 	mtd -q erase inactive
 	tar xf $tar_file ${board_dir}/root -O | mtd -n -p $kernel_length $restore_backup write - $PART_NAME

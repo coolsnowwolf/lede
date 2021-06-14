@@ -8,22 +8,20 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libpcap
-PKG_VERSION:=1.9.1
-PKG_RELEASE:=2
+PKG_VERSION:=1.10.0
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=http://www.us.tcpdump.org/release/ \
         http://www.tcpdump.org/release/
-PKG_HASH:=635237637c5b619bcceba91900666b64d56ecb7be63f298f601ec786ce087094
+PKG_HASH:=8d12b42623eeefee872f123bd0dc85d535b00df4d42e865f993c40f7bfc92b1e
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
-
-CMAKE_INSTALL:=1
-PKG_ASLR_PIE_REGULAR:=1
-PKG_BUILD_PARALLEL:=1
-
 PKG_LICENSE:=BSD-3-Clause
 PKG_LICENSE_FILES:=LICENSE
+
+PKG_ASLR_PIE_REGULAR:=1
+PKG_BUILD_PARALLEL:=1
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
@@ -49,11 +47,16 @@ endef
 CMAKE_OPTIONS += \
 	-DBUILD_SHARED_LIBS=ON \
 	-DBUILD_WITH_LIBNL=OFF \
+	-DINET6=O$(if $(CONFIG_IPV6),N,FF) \
+	-DPCAP_SUPPORT_NETFILTER=O$(if $(CONFIG_PCAP_HAS_NETFILTER),N,FF)
 
 # grep 'option(DISABLE_' CMakeLists.txt | cut -f2 -d'(' | cut -f1 -d' ' | sort --unique
 CMAKE_OPTIONS += \
+	-DDISABLE_BLUETOOTH=O$(if $(CONFIG_PCAP_HAS_BT),FF,N) \
 	-DDISABLE_DAG=ON \
 	-DDISABLE_DBUS=ON \
+	-DDISABLE_DPDK=ON \
+	-DDISABLE_LINUX_USBMON=O$(if $(CONFIG_PCAP_HAS_USB),FF,N) \
 	-DDISABLE_NETMAP=ON \
 	-DDISABLE_RDMA=ON \
 	-DDISABLE_SEPTEL=ON \
@@ -65,11 +68,14 @@ CMAKE_OPTIONS += \
 	-DBDEBUG=OFF \
 	-DYYDEBUG=OFF \
 
-CMAKE_OPTIONS += $(if $(CONFIG_PCAP_HAS_USB)       ,,-DDISABLE_USB=ON)
-CMAKE_OPTIONS += $(if $(CONFIG_PCAP_HAS_BT)        ,,-DDISABLE_BLUETOOTH=ON)
-CMAKE_OPTIONS += $(if $(CONFIG_PCAP_HAS_NETFILTER) ,,-DPCAP_SUPPORT_NETFILTER=OFF)
-
-CMAKE_OPTIONS += $(if $(CONFIG_IPV6),-DINET6=ON,-DINET6=OFF)
+define Build/InstallDev
+	$(call Build/InstallDev/cmake,$(1))
+	$(SED) \
+		's,^\(prefix\|exec_prefix\)=.*,\1=$(STAGING_DIR)/usr,g' \
+		$(1)/usr/bin/pcap-config
+	$(INSTALL_DIR) $(2)/bin
+	$(LN) ../../usr/bin/pcap-config $(2)/bin/pcap-config
+endef
 
 define Package/libpcap/install
 	$(INSTALL_DIR) $(1)/usr/lib

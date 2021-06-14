@@ -81,15 +81,9 @@ static const struct mtd_ooblayout_ops rb4xx_nand_ecclayout_ops = {
 	.free = rb4xx_ooblayout_free,
 };
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,20,0)
-static uint8_t rb4xx_nand_read_byte(struct mtd_info *mtd)
-{
-	struct rb4xx_nand *nand = mtd->priv;
-#else
 static u8 rb4xx_nand_read_byte(struct nand_chip *chip)
 {
 	struct rb4xx_nand *nand = chip->priv;
-#endif
 	struct rb4xx_cpld *cpld = nand->cpld;
 	u8 data;
 	int ret;
@@ -101,45 +95,26 @@ static u8 rb4xx_nand_read_byte(struct nand_chip *chip)
 	return data;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,20,0)
-static void rb4xx_nand_write_buf(struct mtd_info *mtd, const uint8_t *buf,
-				 int len)
-{
-	struct rb4xx_nand *nand = mtd->priv;
-#else
 static void rb4xx_nand_write_buf(struct nand_chip *chip, const u8 *buf, int len)
 {
 	struct rb4xx_nand *nand = chip->priv;
-#endif
 	struct rb4xx_cpld *cpld = nand->cpld;
 
 	cpld->write_nand(cpld, buf, len);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,20,0)
-static void rb4xx_nand_read_buf(struct mtd_info *mtd, uint8_t *buf, int len)
-{
-	struct rb4xx_nand *nand = mtd->priv;
-#else
 static void rb4xx_nand_read_buf(struct nand_chip *chip, u8 *buf, int len)
 {
 	struct rb4xx_nand *nand = chip->priv;
-#endif
 	struct rb4xx_cpld *cpld = nand->cpld;
 
 	cpld->read_nand(cpld, buf, len);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,20,0)
-static void rb4xx_nand_cmd_ctrl(struct mtd_info *mtd, int dat, unsigned int ctrl)
-{
-	struct rb4xx_nand *nand = mtd->priv;
-#else
 static void rb4xx_nand_cmd_ctrl(struct nand_chip *chip, int dat,
 				unsigned int ctrl)
 {
 	struct rb4xx_nand *nand = chip->priv;
-#endif
 	struct rb4xx_cpld *cpld = nand->cpld;
 	u8 data = dat;
 
@@ -153,15 +128,9 @@ static void rb4xx_nand_cmd_ctrl(struct nand_chip *chip, int dat,
 		cpld->write_nand(cpld, &data, 1);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,20,0)
-static int rb4xx_nand_dev_ready(struct mtd_info *mtd)
-{
-	struct rb4xx_nand *nand = mtd->priv;
-#else
 static int rb4xx_nand_dev_ready(struct nand_chip *chip)
 {
 	struct rb4xx_nand *nand = chip->priv;
-#endif
 
 	return gpiod_get_value_cansleep(nand->rdy);
 }
@@ -219,25 +188,16 @@ static int rb4xx_nand_probe(struct platform_device *pdev)
 	if (mtd->writesize == 512)
 		mtd_set_ooblayout(mtd, &rb4xx_nand_ecclayout_ops);
 
-	nand->chip.ecc.mode	= NAND_ECC_SOFT;
-	nand->chip.ecc.algo	= NAND_ECC_HAMMING;
-	nand->chip.options	= NAND_NO_SUBPAGE_WRITE;
-	nand->chip.priv		= nand;
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,20,0)
-	nand->chip.read_byte	= rb4xx_nand_read_byte;
-	nand->chip.write_buf	= rb4xx_nand_write_buf;
-	nand->chip.read_buf	= rb4xx_nand_read_buf;
-	nand->chip.cmd_ctrl	= rb4xx_nand_cmd_ctrl;
-	nand->chip.dev_ready	= rb4xx_nand_dev_ready;
-	nand->chip.chip_delay	= 25;
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,130)
-	ret = nand_scan(mtd, 1);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,9,0)
+	nand->chip.ecc.engine_type	= NAND_ECC_ENGINE_TYPE_SOFT;
+	nand->chip.ecc.algo		= NAND_ECC_ALGO_HAMMING;
 #else
-	ret = nand_scan(&nand->chip, 1);
+	nand->chip.ecc.mode		= NAND_ECC_SOFT;
+	nand->chip.ecc.algo		= NAND_ECC_HAMMING;
 #endif
-#else
+	nand->chip.options		= NAND_NO_SUBPAGE_WRITE;
+	nand->chip.priv			= nand;
+
 	nand->chip.legacy.read_byte	= rb4xx_nand_read_byte;
 	nand->chip.legacy.write_buf	= rb4xx_nand_write_buf;
 	nand->chip.legacy.read_buf	= rb4xx_nand_read_buf;
@@ -246,13 +206,17 @@ static int rb4xx_nand_probe(struct platform_device *pdev)
 	nand->chip.legacy.chip_delay	= 25;
 
 	ret = nand_scan(&nand->chip, 1);
-#endif
 	if (ret)
 		return -ENXIO;
 
 	ret = mtd_device_register(mtd, NULL, 0);
 	if (ret) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,8,0)
+		mtd_device_unregister(nand_to_mtd(&nand->chip));
+		nand_cleanup(&nand->chip);
+#else
 		nand_release(&nand->chip);
+#endif
 		return ret;
 	}
 
@@ -263,7 +227,12 @@ static int rb4xx_nand_remove(struct platform_device *pdev)
 {
 	struct rb4xx_nand *nand = platform_get_drvdata(pdev);
 
-	nand_release(&nand->chip);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,8,0)
+		mtd_device_unregister(nand_to_mtd(&nand->chip));
+		nand_cleanup(&nand->chip);
+#else
+		nand_release(&nand->chip);
+#endif
 
 	return 0;
 }

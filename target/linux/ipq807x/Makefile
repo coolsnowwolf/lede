@@ -4,6 +4,7 @@ ARCH:=aarch64
 BOARD:=ipq807x
 BOARDNAME:=Qualcomm Atheros IPQ807x
 FEATURES:=squashfs ramdisk source-only
+MAINTAINER:=John Crispin <john@phrozen.org>
 KERNELNAME:=Image dtbs
 CPU_TYPE:=cortex-a53
 

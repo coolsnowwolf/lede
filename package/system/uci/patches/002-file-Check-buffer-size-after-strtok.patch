@@ -1,0 +1,112 @@
+From eae126f66663e5c73e5d290b8e3134449489340f Mon Sep 17 00:00:00 2001
+From: Hauke Mehrtens <hauke@hauke-m.de>
+Date: Sun, 4 Oct 2020 17:14:49 +0200
+Subject: [PATCH] file: Check buffer size after strtok()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This fixes a heap overflow in the parsing of the uci line.
+
+The line which is parsed and put into pctx->buf is null terminated and
+stored on the heap. In the uci_parse_line() function we use strtok() to
+split this string in multiple parts after divided by a space or tab.
+strtok() replaces these characters with a NULL byte. If the next byte is
+NULL we assume that this NULL byte was added by strtok() and try to
+parse the string after this NULL byte. If this NULL byte was not added
+by strtok(), but by fgets() to mark the end of the string we would read
+over this end of the string in uninitialized memory and later over the
+allocated buffer.
+
+Fix this problem by storing how long the line we read was and check if
+we would read over the end of the string here.
+
+This also adds the input which detected this crash to the corpus of the
+fuzzer.
+
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+[fixed merge conflict in tests]
+Signed-off-by: Petr Štetiar <ynezz@true.cz>
+---
+ file.c                                        | 19 ++++++++++++++++---
+ tests/cram/test-san_uci_import.t              |  1 +
+ tests/cram/test_uci_import.t                  |  1 +
+ .../2e18ecc3a759dedc9357b1298e9269eccc5c5a6b  |  1 +
+ uci_internal.h                                |  1 +
+ 5 files changed, 20 insertions(+), 3 deletions(-)
+ create mode 100644 tests/fuzz/corpus/2e18ecc3a759dedc9357b1298e9269eccc5c5a6b
+
+--- a/file.c
++++ b/file.c
+@@ -28,6 +28,7 @@
+ #include <glob.h>
+ #include <string.h>
+ #include <stdlib.h>
++#include <errno.h>
+ 
+ #include "uci.h"
+ #include "uci_internal.h"
+@@ -63,6 +64,7 @@ __private void uci_getln(struct uci_cont
+ 			return;
+ 
+ 		ofs += strlen(p);
++		pctx->buf_filled = ofs;
+ 		if (pctx->buf[ofs - 1] == '\n') {
+ 			pctx->line++;
+ 			return;
+@@ -120,6 +122,15 @@ static inline void addc(struct uci_conte
+ 	*pos_src += 1;
+ }
+ 
++static int uci_increase_pos(struct uci_parse_context *pctx, size_t add)
++{
++	if (pctx->pos + add > pctx->buf_filled)
++		return -EINVAL;
++
++	pctx->pos += add;
++	return 0;
++}
++
+ /*
+  * parse a double quoted string argument from the command line
+  */
+@@ -384,7 +395,8 @@ static void uci_parse_package(struct uci
+ 	char *name;
+ 
+ 	/* command string null-terminated by strtok */
+-	pctx->pos += strlen(pctx_cur_str(pctx)) + 1;
++	if (uci_increase_pos(pctx, strlen(pctx_cur_str(pctx)) + 1))
++		uci_parse_error(ctx, "package without name");
+ 
+ 	ofs_name = next_arg(ctx, true, true, true);
+ 	assert_eol(ctx);
+@@ -416,7 +428,8 @@ static void uci_parse_config(struct uci_
+ 	}
+ 
+ 	/* command string null-terminated by strtok */
+-	pctx->pos += strlen(pctx_cur_str(pctx)) + 1;
++	if (uci_increase_pos(pctx, strlen(pctx_cur_str(pctx)) + 1))
++		uci_parse_error(ctx, "config without name");
+ 
+ 	ofs_type = next_arg(ctx, true, false, false);
+ 	type = pctx_str(pctx, ofs_type);
+@@ -466,7 +479,8 @@ static void uci_parse_option(struct uci_
+ 		uci_parse_error(ctx, "option/list command found before the first section");
+ 
+ 	/* command string null-terminated by strtok */
+-	pctx->pos += strlen(pctx_cur_str(pctx)) + 1;
++	if (uci_increase_pos(pctx, strlen(pctx_cur_str(pctx)) + 1))
++		uci_parse_error(ctx, "option without name");
+ 
+ 	ofs_name = next_arg(ctx, true, true, false);
+ 	ofs_value = next_arg(ctx, false, false, false);
+--- a/uci_internal.h
++++ b/uci_internal.h
+@@ -33,6 +33,7 @@ struct uci_parse_context
+ 	const char *name;
+ 	char *buf;
+ 	int bufsz;
++	size_t buf_filled;
+ 	int pos;
+ };
+ #define pctx_pos(pctx)		((pctx)->pos)

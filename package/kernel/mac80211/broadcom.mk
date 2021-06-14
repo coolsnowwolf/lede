@@ -51,7 +51,7 @@ ifneq ($(CONFIG_B43_FW_5_10),)
   PKG_B43_FWV4_VERSION:=5.10.56.27.3
   PKG_B43_FWV4_OBJECT:=$(PKG_B43_FWV4_NAME)-$(PKG_B43_FWV4_VERSION)/driver/wl_apsta/wl_prebuilt.o
   PKG_B43_FWV4_SOURCE:=$(PKG_B43_FWV4_NAME)-$(PKG_B43_FWV4_VERSION)_mipsel.tar.bz2
-  PKG_B43_FWV4_SOURCE_URL:=http://mirror2.openwrt.org/sources/
+  PKG_B43_FWV4_SOURCE_URL:=@OPENWRT
   PKG_B43_FWV4_HASH:=26a8c370f48fc129d0731cfd751c36cae1419b0bc8ca35781126744e60eae009
 else
 ifneq ($(CONFIG_B43_FW_4_178),)
@@ -59,7 +59,7 @@ ifneq ($(CONFIG_B43_FW_4_178),)
   PKG_B43_FWV4_VERSION:=4.178.10.4
   PKG_B43_FWV4_OBJECT:=$(PKG_B43_FWV4_NAME)-$(PKG_B43_FWV4_VERSION)/linux/wl_apsta.o
   PKG_B43_FWV4_SOURCE:=$(PKG_B43_FWV4_NAME)-$(PKG_B43_FWV4_VERSION).tar.bz2
-  PKG_B43_FWV4_SOURCE_URL:=http://mirror2.openwrt.org/sources/
+  PKG_B43_FWV4_SOURCE_URL:=@OPENWRT
   PKG_B43_FWV4_HASH:=32f6ad98facbb9045646fdc8b54bb03086d204153253f9c65d0234a5d90ae53f
 else
 ifneq ($(CONFIG_B43_FW_5_100_138),)
@@ -74,7 +74,7 @@ else
   PKG_B43_FWV4_VERSION:=4.150.10.5
   PKG_B43_FWV4_OBJECT:=$(PKG_B43_FWV4_NAME)-$(PKG_B43_FWV4_VERSION)/driver/wl_apsta_mimo.o
   PKG_B43_FWV4_SOURCE:=$(PKG_B43_FWV4_NAME)-$(PKG_B43_FWV4_VERSION).tar.bz2
-  PKG_B43_FWV4_SOURCE_URL:=http://mirror2.openwrt.org/sources/
+  PKG_B43_FWV4_SOURCE_URL:=@OPENWRT
   PKG_B43_FWV4_HASH:=a9f4e276a4d8d3a1cd0f2eb87080ae89b77f0a7140f06d4e9e2135fc44fdd533
 endif
 endif
@@ -105,7 +105,7 @@ define KernelPackage/b43
   	CONFIG_HW_RANDOM=y
   # Depend on PCI_SUPPORT to make sure we can select kmod-bcma or kmod-ssb
   DEPENDS += \
-	@PCI_SUPPORT +@DRIVER_11W_SUPPORT +kmod-mac80211 +kmod-lib-cordic \
+	@PCI_SUPPORT +kmod-mac80211 +kmod-lib-cordic \
 	$(if $(CONFIG_PACKAGE_B43_USE_SSB),+kmod-ssb) \
 	$(if $(CONFIG_PACKAGE_B43_USE_BCMA),+kmod-bcma)
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/broadcom/b43/b43.ko
@@ -209,7 +209,7 @@ config PACKAGE_B43_USE_BCMA
 		default "16,28,29,30" if TARGET_bcm47xx_mips74k
 		default "5,6,7,8,9,10,11,13,15,16,28,29,30"
 		help
-		  This is a comma seperated list of core revision numbers.
+		  This is a comma separated list of core revision numbers.
 
 		  Example (keep files for rev5 only):
 		    5
@@ -224,7 +224,7 @@ config PACKAGE_B43_USE_BCMA
 		default "N,HT" if TARGET_bcm47xx_mips74k
 		default "G,N,LP,HT"
 		help
-		  This is a comma seperated list of PHY types:
+		  This is a comma separated list of PHY types:
 		    A  => A-PHY
 		    AG => Dual A-PHY G-PHY
 		    G  => G-PHY
@@ -347,7 +347,7 @@ define KernelPackage/b43legacy
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/b43
   KCONFIG:= \
   	CONFIG_HW_RANDOM=y
-  DEPENDS+= +kmod-mac80211 +!(TARGET_bcm47xx||TARGET_bcm63xx):kmod-ssb @!TARGET_bcm47xx_mips74k +b43legacy-firmware +@DRIVER_11W_SUPPORT
+  DEPENDS+= +kmod-mac80211 +!(TARGET_bcm47xx||TARGET_bcm63xx):kmod-ssb @!TARGET_bcm47xx_mips74k +b43legacy-firmware
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/broadcom/b43legacy/b43legacy.ko
   AUTOLOAD:=$(call AutoProbe,b43legacy)
   MENU:=1
@@ -433,7 +433,7 @@ define KernelPackage/brcmfmac
   $(call KernelPackage/mac80211/Default)
   TITLE:=Broadcom IEEE802.11n USB FullMAC WLAN driver
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/brcm80211
-  DEPENDS+= @USB_SUPPORT +kmod-cfg80211 +@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT +@DRIVER_11W_SUPPORT \
+  DEPENDS+= @USB_SUPPORT +kmod-cfg80211 +@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT \
   	+kmod-brcmutil +BRCMFMAC_SDIO:kmod-mmc @!TARGET_uml \
 	+BRCMFMAC_USB:kmod-usb-core +BRCMFMAC_USB:brcmfmac-firmware-usb
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/broadcom/brcm80211/brcmfmac/brcmfmac.ko
@@ -450,6 +450,7 @@ define KernelPackage/brcmfmac/config
 	config BRCMFMAC_SDIO
 		bool "Enable SDIO bus interface support"
 		default y if TARGET_bcm27xx
+		default y if TARGET_rockchip
 		default y if TARGET_sunxi
 		default n
 		help

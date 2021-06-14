@@ -1,0 +1,123 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Wed, 24 Mar 2021 02:30:48 +0100
+Subject: [PATCH] netfilter: flowtable: bridge vlan hardware offload and
+ switchdev
+
+The switch might have already added the VLAN tag through PVID hardware
+offload. Keep this extra VLAN in the flowtable but skip it on egress.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -849,6 +849,7 @@ struct net_device_path {
+ 				DEV_PATH_BR_VLAN_KEEP,
+ 				DEV_PATH_BR_VLAN_TAG,
+ 				DEV_PATH_BR_VLAN_UNTAG,
++				DEV_PATH_BR_VLAN_UNTAG_HW,
+ 			}		vlan_mode;
+ 			u16		vlan_id;
+ 			__be16		vlan_proto;
+--- a/include/net/netfilter/nf_flow_table.h
++++ b/include/net/netfilter/nf_flow_table.h
+@@ -123,9 +123,10 @@ struct flow_offload_tuple {
+ 	/* All members above are keys for lookups, see flow_offload_hash(). */
+ 	struct { }			__hash;
+ 
+-	u8				dir:4,
++	u8				dir:2,
+ 					xmit_type:2,
+-					encap_num:2;
++					encap_num:2,
++					in_vlan_ingress:2;
+ 	u16				mtu;
+ 	union {
+ 		struct dst_entry	*dst_cache;
+@@ -184,7 +185,8 @@ struct nf_flow_route {
+ 				u16		id;
+ 				__be16		proto;
+ 			} encap[NF_FLOW_TABLE_ENCAP_MAX];
+-			u8			num_encaps;
++			u8			num_encaps:2,
++						ingress_vlans:2;
+ 		} in;
+ 		struct {
+ 			u32			ifindex;
+--- a/net/bridge/br_device.c
++++ b/net/bridge/br_device.c
+@@ -435,6 +435,7 @@ static int br_fill_forward_path(struct n
+ 		ctx->vlan[ctx->num_vlans].proto = path->bridge.vlan_proto;
+ 		ctx->num_vlans++;
+ 		break;
++	case DEV_PATH_BR_VLAN_UNTAG_HW:
+ 	case DEV_PATH_BR_VLAN_UNTAG:
+ 		ctx->num_vlans--;
+ 		break;
+--- a/net/bridge/br_vlan.c
++++ b/net/bridge/br_vlan.c
+@@ -1374,6 +1374,8 @@ int br_vlan_fill_forward_path_mode(struc
+ 
+ 	if (path->bridge.vlan_mode == DEV_PATH_BR_VLAN_TAG)
+ 		path->bridge.vlan_mode = DEV_PATH_BR_VLAN_KEEP;
++	else if (v->priv_flags & BR_VLFLAG_ADDED_BY_SWITCHDEV)
++		path->bridge.vlan_mode = DEV_PATH_BR_VLAN_UNTAG_HW;
+ 	else
+ 		path->bridge.vlan_mode = DEV_PATH_BR_VLAN_UNTAG;
+ 
+--- a/net/netfilter/nf_flow_table_core.c
++++ b/net/netfilter/nf_flow_table_core.c
+@@ -95,6 +95,8 @@ static int flow_offload_fill_route(struc
+ 	for (i = route->tuple[dir].in.num_encaps - 1; i >= 0; i--) {
+ 		flow_tuple->encap[j].id = route->tuple[dir].in.encap[i].id;
+ 		flow_tuple->encap[j].proto = route->tuple[dir].in.encap[i].proto;
++		if (route->tuple[dir].in.ingress_vlans & BIT(i))
++			flow_tuple->in_vlan_ingress |= BIT(j);
+ 		j++;
+ 	}
+ 	flow_tuple->encap_num = route->tuple[dir].in.num_encaps;
+--- a/net/netfilter/nf_flow_table_offload.c
++++ b/net/netfilter/nf_flow_table_offload.c
+@@ -594,8 +594,12 @@ nf_flow_rule_route_common(struct net *ne
+ 	other_tuple = &flow->tuplehash[!dir].tuple;
+ 
+ 	for (i = 0; i < other_tuple->encap_num; i++) {
+-		struct flow_action_entry *entry = flow_action_entry_next(flow_rule);
++		struct flow_action_entry *entry;
+ 
++		if (other_tuple->in_vlan_ingress & BIT(i))
++			continue;
++
++		entry = flow_action_entry_next(flow_rule);
+ 		entry->id = FLOW_ACTION_VLAN_PUSH;
+ 		entry->vlan.vid = other_tuple->encap[i].id;
+ 		entry->vlan.proto = other_tuple->encap[i].proto;
+--- a/net/netfilter/nft_flow_offload.c
++++ b/net/netfilter/nft_flow_offload.c
+@@ -72,6 +72,7 @@ struct nft_forward_info {
+ 		__be16	proto;
+ 	} encap[NF_FLOW_TABLE_ENCAP_MAX];
+ 	u8 num_encaps;
++	u8 ingress_vlans;
+ 	u8 h_source[ETH_ALEN];
+ 	u8 h_dest[ETH_ALEN];
+ 	enum flow_offload_xmit_type xmit_type;
+@@ -130,6 +131,9 @@ static void nft_dev_path_info(const stru
+ 				memcpy(info->h_source, path->dev->dev_addr, ETH_ALEN);
+ 
+ 			switch (path->bridge.vlan_mode) {
++			case DEV_PATH_BR_VLAN_UNTAG_HW:
++				info->ingress_vlans |= BIT(info->num_encaps - 1);
++				break;
+ 			case DEV_PATH_BR_VLAN_TAG:
+ 				info->encap[info->num_encaps].id = path->bridge.vlan_id;
+ 				info->encap[info->num_encaps].proto = path->bridge.vlan_proto;
+@@ -198,6 +202,7 @@ static void nft_dev_forward_path(struct
+ 		route->tuple[!dir].in.encap[i].proto = info.encap[i].proto;
+ 	}
+ 	route->tuple[!dir].in.num_encaps = info.num_encaps;
++	route->tuple[!dir].in.ingress_vlans = info.ingress_vlans;
+ 
+ 	if (info.xmit_type == FLOW_OFFLOAD_XMIT_DIRECT) {
+ 		memcpy(route->tuple[dir].out.h_source, info.h_source, ETH_ALEN);

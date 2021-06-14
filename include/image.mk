@@ -1,9 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# Copyright (C) 2006-2010 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+# Copyright (C) 2006-2020 OpenWrt.org
 
 override TARGET_BUILD=
 include $(INCLUDE_DIR)/prereq.mk
@@ -17,7 +14,6 @@ ifndef IB
   endif
 endif
 
-include $(INCLUDE_DIR)/image-legacy.mk
 include $(INCLUDE_DIR)/feeds.mk
 include $(INCLUDE_DIR)/rootfs.mk
 
@@ -30,7 +26,7 @@ param_get_default = $(firstword $(call param_get,$(1),$(2)) $(3))
 param_mangle = $(subst $(space),_,$(strip $(1)))
 param_unmangle = $(subst _,$(space),$(1))
 
-mkfs_packages_id = $(shell echo $(sort $(1)) | mkhash md5 | cut -b1-8)
+mkfs_packages_id = $(shell echo $(sort $(1)) | $(MKHASH) md5 | cut -b1-8)
 mkfs_target_dir = $(if $(call param_get,pkg,$(1)),$(KDIR)/target-dir-$(call param_get,pkg,$(1)),$(TARGET_DIR))
 
 KDIR=$(KERNEL_BUILD_DIR)
@@ -44,8 +40,7 @@ IMG_PREFIX_VERCODE:=$(if $(CONFIG_VERSION_CODE_FILENAMES),$(call sanitize,$(VERS
 IMG_PREFIX:=$(VERSION_DIST_SANITIZED)-$(IMG_PREFIX_VERNUM)$(IMG_PREFIX_VERCODE)$(IMG_PREFIX_EXTRA)$(BOARD)$(if $(SUBTARGET),-$(SUBTARGET))
 IMG_ROOTFS:=$(IMG_PREFIX)-rootfs
 IMG_COMBINED:=$(IMG_PREFIX)-combined
-IMG_PART_SIGNATURE:=$(shell echo $(SOURCE_DATE_EPOCH)$(LINUX_VERMAGIC) | mkhash md5 | cut -b1-8)
-IMG_PART_DISKGUID:=$(shell echo $(SOURCE_DATE_EPOCH)$(LINUX_VERMAGIC) | mkhash md5 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{10})../\1-\2-\3-\4-\500/')
+IMG_PART_SIGNATURE:=$(shell echo $(SOURCE_DATE_EPOCH)$(LINUX_VERMAGIC) | $(MKHASH) md5 | cut -b1-8)
 
 MKFS_DEVTABLE_OPT := -D $(INCLUDE_DIR)/device_table.txt
 
@@ -94,6 +89,7 @@ fs-types-$(CONFIG_TARGET_ROOTFS_SQUASHFS) += squashfs
 fs-types-$(CONFIG_TARGET_ROOTFS_JFFS2) += $(addprefix jffs2-,$(JFFS2_BLOCKSIZE))
 fs-types-$(CONFIG_TARGET_ROOTFS_JFFS2_NAND) += $(addprefix jffs2-nand-,$(NAND_BLOCKSIZE))
 fs-types-$(CONFIG_TARGET_ROOTFS_EXT4FS) += ext4
+fs-types-$(CONFIG_TARGET_ROOTFS_ISO) += iso
 fs-types-$(CONFIG_TARGET_ROOTFS_UBIFS) += ubifs
 fs-subtypes-$(CONFIG_TARGET_ROOTFS_JFFS2) += $(addsuffix -raw,$(addprefix jffs2-,$(JFFS2_BLOCKSIZE)))
 
@@ -143,7 +139,7 @@ endef
 define Image/BuildKernel/MkFIT
 	$(TOPDIR)/scripts/mkits.sh \
 		-D $(1) -o $(KDIR)/fit-$(1).its -k $(2) $(if $(3),-d $(3)) -C $(4) -a $(5) -e $(6) \
-		-c $(if $(DEVICE_DTS_CONFIG),$(DEVICE_DTS_CONFIG),"config@1") \
+		-c $(if $(DEVICE_DTS_CONFIG),$(DEVICE_DTS_CONFIG),"config-1") \
 		-A $(LINUX_KARCH) -v $(LINUX_VERSION)
 	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage -f $(KDIR)/fit-$(1).its $(KDIR)/fit-$(1)$(7).itb
 endef
@@ -163,18 +159,12 @@ DTC_FLAGS += \
   -Wno-unit_address_format \
   -Wno-pci_bridge \
   -Wno-pci_device_bus_num \
-  -Wno-pci_device_reg
-ifeq ($(strip $(call kernel_patchver_ge,4.17.0)),1)
-  DTC_FLAGS += \
-	-Wno-avoid_unnecessary_addr_size \
-	-Wno-alias_paths
-endif
-ifeq ($(strip $(call kernel_patchver_ge,4.18.0)),1)
-  DTC_FLAGS += \
-	-Wno-graph_child_address \
-	-Wno-graph_port \
-	-Wno-unique_unit_address
-endif
+  -Wno-pci_device_reg \
+  -Wno-avoid_unnecessary_addr_size \
+  -Wno-alias_paths \
+  -Wno-graph_child_address \
+  -Wno-graph_port \
+  -Wno-unique_unit_address
 
 define Image/pad-to
 	dd if=$(1) of=$(1).new bs=$(2) conv=sync
@@ -200,6 +190,7 @@ define Image/BuildDTB
 		-o $(2).tmp $(1)
 	$(LINUX_DIR)/scripts/dtc/dtc -O dtb \
 		-i$(dir $(1)) $(DTC_FLAGS) $(4) \
+	$(if $(CONFIG_HAS_DT_OVERLAY_SUPPORT),-@) \
 		-o $(2) $(2).tmp
 	$(RM) $(2).tmp
 endef
@@ -234,40 +225,28 @@ endef
 $(eval $(foreach S,$(JFFS2_BLOCKSIZE),$(call Image/mkfs/jffs2/template,$(S))))
 $(eval $(foreach S,$(NAND_BLOCKSIZE),$(call Image/mkfs/jffs2-nand/template,$(S))))
 
-define Image/mkfs/squashfs
+define Image/mkfs/squashfs-common
 	$(STAGING_DIR_HOST)/bin/mksquashfs4 $(call mkfs_target_dir,$(1)) $@ \
 		-nopad -noappend -root-owned \
 		-comp $(SQUASHFSCOMP) $(SQUASHFSOPT) \
 		-processors $(shell nproc)
 endef
 
-# $(1): board name
-# $(2): rootfs type
-# $(3): kernel image
-# $(4): compat string
-ifneq ($(CONFIG_NAND_SUPPORT),)
-   define Image/Build/SysupgradeNAND
-	mkdir -p "$(KDIR_TMP)/sysupgrade-$(if $(4),$(4),$(1))/"
-	echo "BOARD=$(if $(4),$(4),$(1))" > "$(KDIR_TMP)/sysupgrade-$(if $(4),$(4),$(1))/CONTROL"
-	[ -z "$(2)" ] || $(CP) "$(KDIR)/root.$(2)" "$(KDIR_TMP)/sysupgrade-$(if $(4),$(4),$(1))/root"
-	[ -z "$(3)" ] || $(CP) "$(3)" "$(KDIR_TMP)/sysupgrade-$(if $(4),$(4),$(1))/kernel"
-	(cd "$(KDIR_TMP)"; $(TAR) cvf \
-		"$(BIN_DIR)/$(IMG_PREFIX)-$(1)-$(2)-sysupgrade.tar" sysupgrade-$(if $(4),$(4),$(1)) \
-			$(if $(SOURCE_DATE_EPOCH),--mtime="@$(SOURCE_DATE_EPOCH)") \
-	)
-   endef
-
-# $(1) board name
-# $(2) ubinize-image options (e.g. --uboot-env and/or --kernel kernelimage)
-# $(3) rootfstype (e.g. squashfs or ubifs)
-# $(4) options to pass-through to ubinize (i.e. $($(PROFILE)_UBI_OPTS)))
-   define Image/Build/UbinizeImage
-	sh $(TOPDIR)/scripts/ubinize-image.sh $(2) \
-		"$(KDIR)/root.$(3)" \
-		"$(KDIR)/$(IMG_PREFIX)-$(1)-$(3)-ubinized.bin" \
-		$(4)
-   endef
-
+ifeq ($(CONFIG_TARGET_ROOTFS_SECURITY_LABELS),y)
+define Image/mkfs/squashfs
+	echo ". $(call mkfs_target_dir,$(1))/etc/selinux/config" > $@.fakeroot-script
+	echo "$(STAGING_DIR_HOST)/bin/setfiles -r" \
+	     "$(call mkfs_target_dir,$(1))" \
+	     "$(call mkfs_target_dir,$(1))/etc/selinux/\$${SELINUXTYPE}/contexts/files/file_contexts " \
+	     "$(call mkfs_target_dir,$(1))" >> $@.fakeroot-script
+	echo "$(Image/mkfs/squashfs-common)" >> $@.fakeroot-script
+	chmod +x $@.fakeroot-script
+	$(FAKEROOT) "$@.fakeroot-script"
+endef
+else
+define Image/mkfs/squashfs
+	$(call Image/mkfs/squashfs-common,$(1))
+endef
 endif
 
 define Image/mkfs/ubifs
@@ -415,18 +394,20 @@ define Device/Init
   DEVICE_DTS :=
   DEVICE_DTS_CONFIG :=
   DEVICE_DTS_DIR :=
+  DEVICE_DTS_OVERLAY :=
+  DEVICE_FDT_NUM :=
   SOC :=
 
   BOARD_NAME :=
+  UIMAGE_MAGIC :=
   UIMAGE_NAME :=
-  SUPPORTED_DEVICES :=
+  SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
   IMAGE_METADATA :=
 
   FILESYSTEMS := $(TARGET_FILESYSTEMS)
 
   UBOOT_PATH :=  $(STAGING_DIR_IMAGE)/uboot-$(1)
 
-  BROKEN :=
   DEFAULT :=
 endef
 
@@ -434,9 +415,10 @@ DEFAULT_DEVICE_VARS := \
   DEVICE_NAME KERNEL KERNEL_INITRAMFS KERNEL_INITRAMFS_IMAGE KERNEL_SIZE \
   CMDLINE UBOOTENV_IN_UBI KERNEL_IN_UBI BLOCKSIZE PAGESIZE SUBPAGESIZE \
   VID_HDR_OFFSET UBINIZE_OPTS UBINIZE_PARTS MKUBIFS_OPTS DEVICE_DTS \
-  DEVICE_DTS_CONFIG DEVICE_DTS_DIR SOC BOARD_NAME UIMAGE_NAME SUPPORTED_DEVICES \
-  IMAGE_METADATA KERNEL_ENTRY KERNEL_LOADADDR UBOOT_PATH IMAGE_SIZE \
-  DEVICE_VENDOR DEVICE_MODEL DEVICE_VARIANT \
+  DEVICE_DTS_CONFIG DEVICE_DTS_DIR DEVICE_DTS_OVERLAY DEVICE_FDT_NUM \
+  SOC BOARD_NAME UIMAGE_MAGIC UIMAGE_NAME \
+  SUPPORTED_DEVICES IMAGE_METADATA KERNEL_ENTRY KERNEL_LOADADDR UBOOT_PATH \
+  IMAGE_SIZE DEVICE_PACKAGES DEVICE_VENDOR DEVICE_MODEL DEVICE_VARIANT \
   DEVICE_ALT0_VENDOR DEVICE_ALT0_MODEL DEVICE_ALT0_VARIANT \
   DEVICE_ALT1_VENDOR DEVICE_ALT1_MODEL DEVICE_ALT1_VARIANT \
   DEVICE_ALT2_VENDOR DEVICE_ALT2_MODEL DEVICE_ALT2_VARIANT
@@ -487,7 +469,8 @@ endef
 ifndef IB
 define Device/Build/initramfs
   $(call Device/Export,$(KDIR)/tmp/$$(KERNEL_INITRAMFS_IMAGE),$(1))
-  $$(_TARGET): $$(if $$(KERNEL_INITRAMFS),$(BIN_DIR)/$$(KERNEL_INITRAMFS_IMAGE))
+  $$(_TARGET): $$(if $$(KERNEL_INITRAMFS),$(BIN_DIR)/$$(KERNEL_INITRAMFS_IMAGE) \
+	  $$(if $$(CONFIG_JSON_OVERVIEW_IMAGE_INFO), $(BUILD_DIR)/json_info_files/$$(KERNEL_INITRAMFS_IMAGE).json,))
 
   $(KDIR)/$$(KERNEL_INITRAMFS_NAME):: image_prepare
   $(BIN_DIR)/$$(KERNEL_INITRAMFS_IMAGE): $(KDIR)/tmp/$$(KERNEL_INITRAMFS_IMAGE)
@@ -496,6 +479,38 @@ define Device/Build/initramfs
   $(KDIR)/tmp/$$(KERNEL_INITRAMFS_IMAGE): $(KDIR)/$$(KERNEL_INITRAMFS_NAME) $(CURDIR)/Makefile $$(KERNEL_DEPENDS) image_prepare
 	@rm -f $$@
 	$$(call concat_cmd,$$(KERNEL_INITRAMFS))
+
+  $(call Device/Export,$(BUILD_DIR)/json_info_files/$$(KERNEL_INITRAMFS_IMAGE).json,$(1))
+
+  $(BUILD_DIR)/json_info_files/$$(KERNEL_INITRAMFS_IMAGE).json: $(BIN_DIR)/$$(KERNEL_INITRAMFS_IMAGE)
+	@mkdir -p $$(shell dirname $$@)
+	DEVICE_ID="$(1)" \
+	BIN_DIR="$(BIN_DIR)" \
+	SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
+	IMAGE_NAME="$$(notdir $$^)" \
+	IMAGE_TYPE="kernel" \
+	IMAGE_FILESYSTEM="initramfs" \
+	IMAGE_PREFIX="$$(IMAGE_PREFIX)" \
+	DEVICE_VENDOR="$$(DEVICE_VENDOR)" \
+	DEVICE_MODEL="$$(DEVICE_MODEL)" \
+	DEVICE_VARIANT="$$(DEVICE_VARIANT)" \
+	DEVICE_ALT0_VENDOR="$$(DEVICE_ALT0_VENDOR)" \
+	DEVICE_ALT0_MODEL="$$(DEVICE_ALT0_MODEL)" \
+	DEVICE_ALT0_VARIANT="$$(DEVICE_ALT0_VARIANT)" \
+	DEVICE_ALT1_VENDOR="$$(DEVICE_ALT1_VENDOR)" \
+	DEVICE_ALT1_MODEL="$$(DEVICE_ALT1_MODEL)" \
+	DEVICE_ALT1_VARIANT="$$(DEVICE_ALT1_VARIANT)" \
+	DEVICE_ALT2_VENDOR="$$(DEVICE_ALT2_VENDOR)" \
+	DEVICE_ALT2_MODEL="$$(DEVICE_ALT2_MODEL)" \
+	DEVICE_ALT2_VARIANT="$$(DEVICE_ALT2_VARIANT)" \
+	DEVICE_TITLE="$$(DEVICE_TITLE)" \
+	DEVICE_PACKAGES="$$(DEVICE_PACKAGES)" \
+	TARGET="$(BOARD)" \
+	SUBTARGET="$(if $(SUBTARGET),$(SUBTARGET),generic)" \
+	VERSION_NUMBER="$(VERSION_NUMBER)" \
+	VERSION_CODE="$(VERSION_CODE)" \
+	SUPPORTED_DEVICES="$$(SUPPORTED_DEVICES)" \
+	$(TOPDIR)/scripts/json_add_image_info.py $$@
 endef
 endif
 
@@ -521,7 +536,7 @@ endef
 endif
 
 define Device/Build/kernel
-  $$(eval $$(foreach dts,$$(DEVICE_DTS), \
+  $$(eval $$(foreach dts,$$(DEVICE_DTS) $$(DEVICE_DTS_OVERLAY), \
 	$$(call Device/Build/dtb,$$(notdir $$(dts)), \
 		$$(if $$(DEVICE_DTS_DIR),$$(DEVICE_DTS_DIR),$$(DTS_DIR)), \
 		$$(dts) \
@@ -577,8 +592,10 @@ define Device/Build/image
 	@mkdir -p $$(shell dirname $$@)
 	DEVICE_ID="$(DEVICE_NAME)" \
 	BIN_DIR="$(BIN_DIR)" \
+	SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
 	IMAGE_NAME="$(IMAGE_NAME)" \
 	IMAGE_TYPE=$(word 1,$(subst ., ,$(2))) \
+	IMAGE_FILESYSTEM="$(1)" \
 	IMAGE_PREFIX="$(IMAGE_PREFIX)" \
 	DEVICE_VENDOR="$(DEVICE_VENDOR)" \
 	DEVICE_MODEL="$(DEVICE_MODEL)" \
@@ -639,7 +656,6 @@ Target-Profile-Name: $(DEVICE_DISPLAY)
 Target-Profile-Packages: $(DEVICE_PACKAGES)
 Target-Profile-hasImageMetadata: $(if $(foreach image,$(IMAGES),$(findstring append-metadata,$(IMAGE/$(image)))),1,0)
 Target-Profile-SupportedDevices: $(SUPPORTED_DEVICES)
-$(if $(BROKEN),Target-Profile-Broken: $(BROKEN))
 $(if $(DEFAULT),Target-Profile-Default: $(DEFAULT))
 Target-Profile-Description:
 $(DEVICE_DESCRIPTION)
@@ -690,8 +706,6 @@ define BuildImage
   prepare:
   compile:
   clean:
-  legacy-images-prepare:
-  legacy-images:
   image_prepare:
 
   ifeq ($(IB),)
@@ -707,9 +721,6 @@ define BuildImage
 		rm -rf $(BUILD_DIR)/json_info_files
 		$(call Image/Prepare)
 
-    legacy-images-prepare-make: image_prepare
-		$(MAKE) legacy-images-prepare BIN_DIR="$(BIN_DIR)"
-
   else
     image_prepare:
 		mkdir -p $(BIN_DIR) $(KDIR)/tmp
@@ -723,16 +734,11 @@ define BuildImage
 	$(call Image/InstallKernel)
 
   $(foreach device,$(TARGET_DEVICES),$(call Device,$(device)))
-  $(foreach device,$(LEGACY_DEVICES),$(call LegacyDevice,$(device)))
 
   install-images: kernel_prepare $(foreach fs,$(filter-out $(if $(UBIFS_OPTS),,ubifs),$(TARGET_FILESYSTEMS) $(fs-subtypes-y)),$(KDIR)/root.$(fs))
 	$(foreach fs,$(TARGET_FILESYSTEMS),
 		$(call Image/Build,$(fs))
 	)
-
-  legacy-images-make: install-images
-	$(call Image/mkfs/ubifs/legacy)
-	$(MAKE) legacy-images BIN_DIR="$(BIN_DIR)"
 
   install: install-images
 	$(call Image/Manifest)

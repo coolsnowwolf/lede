@@ -1,9 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2006-2011 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 
 # UML only makes sense on linux
@@ -27,7 +25,7 @@ include $(INCLUDE_DIR)/target.mk
 
 LINUX_TARGET_CONFIG:=$(CURDIR)/config/$(ARCH)
 
-DEFAULT_PACKAGES += wpad-basic-wolfssl kmod-mac80211-hwsim mkf2fs e2fsprogs
+DEFAULT_PACKAGES += wpad-openssl kmod-mac80211-hwsim mkf2fs e2fsprogs
 
 endif
 
