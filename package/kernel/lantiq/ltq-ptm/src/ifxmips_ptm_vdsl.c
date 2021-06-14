@@ -77,7 +77,11 @@ static int ptm_stop(struct net_device *);
   static int ptm_napi_poll(struct napi_struct *, int);
 static int ptm_hard_start_xmit(struct sk_buff *, struct net_device *);
 static int ptm_ioctl(struct net_device *, struct ifreq *, int);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,6,0)
 static void ptm_tx_timeout(struct net_device *);
+#else
+static void ptm_tx_timeout(struct net_device *, unsigned int txqueue);
+#endif
 
 static inline struct sk_buff* alloc_skb_rx(void);
 static inline struct sk_buff* alloc_skb_tx(unsigned int);
@@ -125,7 +129,11 @@ static char *g_net_dev_name[1] = {"dsl0"};
 
 static int g_ptm_prio_queue_map[8];
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,9,0)
 static DECLARE_TASKLET(g_swap_desc_tasklet, do_swap_desc_tasklet, 0);
+#else
+static DECLARE_TASKLET_OLD(g_swap_desc_tasklet, do_swap_desc_tasklet);
+#endif
 
 
 unsigned int ifx_ptm_dbg_enable = DBG_ENABLE_MASK_ERR;
@@ -451,7 +459,11 @@ static int ptm_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
     return 0;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,6,0)
 static void ptm_tx_timeout(struct net_device *dev)
+#else
+static void ptm_tx_timeout(struct net_device *dev, unsigned int txqueue)
+#endif
 {
     ASSERT(dev == g_net_dev[0], "incorrect device");
 
@@ -621,12 +633,15 @@ static void do_swap_desc_tasklet(unsigned long arg)
 static inline int ifx_ptm_version(char *buf)
 {
     int len = 0;
-    unsigned int major, minor;
+    unsigned int major, mid, minor;
 
-    ifx_ptm_get_fw_ver(&major, &minor);
+    ifx_ptm_get_fw_ver(&major, &mid, &minor);
 
-    len += sprintf(buf + len, "PTM %d.%d.%d", IFX_PTM_VER_MAJOR, IFX_PTM_VER_MID, IFX_PTM_VER_MINOR);
-    len += sprintf(buf + len, "    PTM (E1) firmware version %d.%d\n", major, minor);
+    len += ifx_drv_ver(buf + len, "PTM", IFX_PTM_VER_MAJOR, IFX_PTM_VER_MID, IFX_PTM_VER_MINOR);
+    if ( mid == ~0 )
+        len += sprintf(buf + len, "    PTM (E1) firmware version %u.%u\n", major, minor);
+    else
+        len += sprintf(buf + len, "    PTM (E1) firmware version %u.%u.%u\n", major, mid, minor);
 
     return len;
 }
@@ -963,7 +978,7 @@ static int ltq_ptm_probe(struct platform_device *pdev)
 {
     int ret;
     int i;
-    char ver_str[128];
+    char ver_str[256];
     struct port_cell_info port_cell = {0};
 
     ret = init_priv_data();

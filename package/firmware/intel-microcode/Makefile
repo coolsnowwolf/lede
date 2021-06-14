@@ -12,7 +12,7 @@ PKG_VERSION:=20200616
 PKG_RELEASE:=1
 
 PKG_SOURCE:=intel-microcode_3.$(PKG_VERSION).$(PKG_RELEASE).tar.xz
-PKG_SOURCE_URL:=http://ftp.debian.org/debian/pool/non-free/i/intel-microcode/
+PKG_SOURCE_URL:=@DEBIAN/pool/non-free/i/intel-microcode/
 PKG_HASH:=bcc3b81c452fe4649a948c022475d76c1cdfbb730f36749a082f412f1406a3b9
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-3.$(PKG_VERSION).$(PKG_RELEASE)
 
@@ -23,6 +23,8 @@ ifdef CONFIG_TARGET_x86_64
 else
 	MICROCODE:="intel-microcode"
 endif
+
+PKG_FLAGS:=nonshared
 
 include $(INCLUDE_DIR)/package.mk
 

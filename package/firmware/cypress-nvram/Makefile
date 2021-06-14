@@ -18,6 +18,8 @@ PKG_SOURCE_URL:=https://github.com/openwrt/cypress-nvram.git
 
 PKG_MAINTAINER:=Álvaro Fernández Rojas <noltari@gmail.com>
 
+PKG_FLAGS:=nonshared
+
 include $(INCLUDE_DIR)/package.mk
 
 define Package/cypress-nvram-default

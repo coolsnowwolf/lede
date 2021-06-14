@@ -149,6 +149,6 @@ proto_vti6_init_config() {
 }
 
 [ -n "$INCLUDE_ONLY" ] || {
-	[ -f /lib/modules/$(uname -r)/ip_vti.ko ] && add_protocol vti
-	[ -f /lib/modules/$(uname -r)/ip6_vti.ko ] && add_protocol vti6
+	[ -d /sys/module/ip_vti ] && add_protocol vti
+	[ -d /sys/module/ip6_vti ] && add_protocol vti6
 }

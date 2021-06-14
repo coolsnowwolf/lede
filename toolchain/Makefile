@@ -30,9 +30,6 @@ curdir:=toolchain
 
 # subdirectories to descend into
 $(curdir)/builddirs := $(if $(CONFIG_GDB),gdb) $(if $(CONFIG_EXTERNAL_TOOLCHAIN),wrapper,kernel-headers binutils gcc/initial gcc/final $(LIBC) fortify-headers) $(if $(CONFIG_NASM),nasm)
-ifdef CONFIG_USE_UCLIBC
-  $(curdir)/builddirs += $(LIBC)/utils
-endif
 
 # builddir dependencies
 ifeq ($(CONFIG_EXTERNAL_TOOLCHAIN),)

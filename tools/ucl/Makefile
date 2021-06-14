@@ -43,8 +43,6 @@ define Host/Install
 endef
 
 define Host/Clean
-	$(MAKE) -C $(HOST_BUILD_DIR) uninstall
-	rm -rf $(HOST_BUILD_DIR)
 	rm -rf $(STAGING_DIR_HOST)/include/ucl
 endef
 

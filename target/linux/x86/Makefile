@@ -1,19 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2006-2011 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 
 ARCH:=i386
 BOARD:=x86
 BOARDNAME:=x86
-FEATURES:=squashfs vdi vmdk pcmcia fpu boot-part rootfs-part
-SUBTARGETS:=64 generic legacy geode
+FEATURES:=squashfs vdi vmdk pcmcia fpu
+SUBTARGETS:=64 generic zen legacy geode 
+MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
 KERNEL_PATCHVER:=5.4
-KERNEL_TESTING_PATCHVER:=5.4
+KERNEL_TESTING_PATCHVER:=5.10
 
 KERNELNAME:=bzImage
 
@@ -29,9 +28,6 @@ kmod-usb-net kmod-usb-net-asix kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8150 km
 
 $(eval $(call BuildTarget))
 
-$(eval $(call $(if $(CONFIG_ISO_IMAGES),SetupHostCommand,Ignore),mkisofs, \
-	Please install mkisofs. , \
-	mkisofs -v 2>&1 , \
-	genisoimage -v 2>&1 | grep genisoimage, \
-	xorrisofs -v 2>&1 | grep xorriso \
+$(eval $(call $(if $(CONFIG_TARGET_ROOTFS_ISO),RequireCommand,Ignore),mkisofs, \
+   	Please install mkisofs. \
 ))

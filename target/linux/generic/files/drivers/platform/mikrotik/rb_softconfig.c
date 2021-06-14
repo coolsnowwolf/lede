@@ -64,7 +64,7 @@
  * Also make the driver act read-only if 4K_SECTORS are not enabled, since they
  * are require to handle partial erasing of the small soft_config partition.
  */
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)) && defined(CONFIG_MTD_SPI_NOR_USE_4K_SECTORS)
+#if defined(CONFIG_MTD_SPI_NOR_USE_4K_SECTORS)
  #define RB_SC_HAS_WRITE_SUPPORT	true
  #define RB_SC_WMODE			S_IWUSR
  #define RB_SC_RMODE			S_IRUSR
@@ -686,6 +686,8 @@ static ssize_t sc_commit_store(struct kobject *kobj, struct kobj_attribute *attr
 	}
 	write_unlock(&sc_bufrwl);
 
+	put_mtd_device(mtd);
+
 	if (ret)
 		goto mtdfail;
 
@@ -721,10 +723,13 @@ int __init rb_softconfig_init(struct kobject *rb_kobj)
 
 	sc_buflen = mtd->size;
 	sc_buf = kmalloc(sc_buflen, GFP_KERNEL);
-	if (!sc_buf)
+	if (!sc_buf) {
+		put_mtd_device(mtd);
 		return -ENOMEM;
+	}
 
 	ret = mtd_read(mtd, 0, sc_buflen, &bytes_read, sc_buf);
+	put_mtd_device(mtd);
 
 	if (ret)
 		goto fail;

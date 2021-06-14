@@ -2,7 +2,7 @@
 
 from os import getenv, environ
 from pathlib import Path
-from subprocess import run
+from subprocess import run, PIPE
 from sys import argv
 import json
 
@@ -32,22 +32,25 @@ for json_file in work_dir.glob("*.json"):
                 image_info["profiles"][device_id]["images"][0]
             )
 
-
-output["default_packages"] = run(
-    [
-        "make",
-        "--no-print-directory",
-        "-C",
-        f"target/linux/{output['target'].split('/')[0]}",
-        "val.DEFAULT_PACKAGES",
-    ],
-    capture_output=True,
-    check=True,
-    env=environ.copy().update({"TOPDIR": Path().cwd()}),
-    text=True,
-).stdout.split()
-
 if output:
+    default_packages, output["arch_packages"] = run(
+        [
+            "make",
+            "--no-print-directory",
+            "-C",
+            "target/linux/",
+            "val.DEFAULT_PACKAGES",
+            "val.ARCH_PACKAGES",
+        ],
+        stdout=PIPE,
+        stderr=PIPE,
+        check=True,
+        env=environ.copy().update({"TOPDIR": Path().cwd()}),
+        universal_newlines=True,
+    ).stdout.splitlines()
+
+    output["default_packages"] = sorted(default_packages.split())
+
     output_path.write_text(json.dumps(output, sort_keys=True, separators=(",", ":")))
 else:
     print("JSON info file script could not find any JSON files for target")

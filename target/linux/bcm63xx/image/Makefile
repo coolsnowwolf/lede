@@ -1,10 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2006-2015 OpenWrt.org
 # Copyright (C) 2016 LEDE project
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
@@ -86,10 +84,6 @@ endef
 define rootfspad/squashfs
 endef
 
-define Image/LimitName16
-$(shell expr substr "$(1)" 1 16)
-endef
-
 define Image/FileSystemStrip
 $(firstword $(subst +,$(space),$(subst root.,,$(notdir $(1)))))
 endef
@@ -98,7 +92,7 @@ define Build/cfe-bin
 	$(STAGING_DIR_HOST)/bin/imagetag -i $(IMAGE_KERNEL) -f $(IMAGE_ROOTFS) \
 		--output $@ --boardid $(CFE_BOARD_ID) --chipid $(CHIP_ID) \
 		--entry $(LOADER_ENTRY) --load-addr $(LOADER_ENTRY) \
-		--info1 "$(call Image/LimitName16,$(DEVICE_NAME))" \
+		--info1 "$(call ModelNameLimit16,$(DEVICE_NAME))" \
 		--info2 "$(call Image/FileSystemStrip,$(IMAGE_ROOTFS))" \
 		$(call rootfspad/$(call Image/FileSystemStrip,$(IMAGE_ROOTFS))) \
 		$(CFE_EXTRAS) $(1)

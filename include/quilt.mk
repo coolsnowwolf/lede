@@ -1,8 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# Copyright (C) 2007-2009 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
+# Copyright (C) 2007-2020 OpenWrt.org
 
 ifeq ($(TARGET_BUILD),1)
   PKG_BUILD_DIR:=$(LINUX_DIR)
@@ -161,7 +159,7 @@ define Quilt/Template
 		false; \
 	}
 	@[ -n "$$$$(ls $(1)/patches/series)" -o \
-	   "$$$$(cat $(1)/patches/series | mkhash md5)" = "$$(sort $(1)/patches/series | mkhash md5)" ] || { \
+	   "$$$$(cat $(1)/patches/series | $(MKHASH) md5)" = "$$(sort $(1)/patches/series | $(MKHASH) md5)" ] || { \
 		echo "The patches are not sorted in the right order. Please fix."; \
 		false; \
 	}

@@ -182,7 +182,7 @@ macaddr_unsetbit_mc() {
 
 macaddr_random() {
 	local randsrc=$(get_mac_binary /dev/urandom 0)
-
+	
 	echo "$(macaddr_unsetbit_mc "$(macaddr_setbit_la "${randsrc}")")"
 }
 

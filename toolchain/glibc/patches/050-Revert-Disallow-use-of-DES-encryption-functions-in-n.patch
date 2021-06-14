@@ -1,11 +1,11 @@
-From cfc93329e00cd23c226f34b3ffd5552a93c35bd7 Mon Sep 17 00:00:00 2001
-From: Hauke Mehrtens <hauke@hauke-m.de>
-Date: Mon, 23 Mar 2020 22:33:46 +0100
+From 08f5e0df46ce1ad617bcde1fd5542545397630b9 Mon Sep 17 00:00:00 2001
+From: Hans Dedecker <dedeckeh@gmail.com>
+Date: Sat, 24 Oct 2020 21:13:30 +0200
 Subject: Revert "Disallow use of DES encryption functions in new programs."
 
 This reverts commit b10a0accee709a5efff2fadf0b0bbb79ff0ad759.
 
-ppp still uses the encrypt functions from the libc. musl libc also
+ppp still uses the encrypt functions from the libc while musl libc also
 provides them.
 ---
  conform/data/stdlib.h-data |   3 +
@@ -15,14 +15,13 @@ provides them.
  crypt/crypt.h              |  16 +++
  crypt/crypt_util.c         |   9 --
  manual/conf.texi           |   2 -
- manual/crypt.texi          | 201 +++++++++++++++++++++++++++++++++++++
+ manual/crypt.texi          | 204 +++++++++++++++++++++++++++++++++++++
  manual/string.texi         |  82 +++++++--------
- posix/unistd.h             |  22 ++--
+ posix/unistd.h             |  17 +++-
  stdlib/stdlib.h            |   6 ++
- sunrpc/Makefile            |   2 +-
  sunrpc/des_crypt.c         |   7 +-
  sunrpc/des_soft.c          |   2 +-
- 14 files changed, 303 insertions(+), 96 deletions(-)
+ 13 files changed, 305 insertions(+), 90 deletions(-)
 
 --- a/conform/data/stdlib.h-data
 +++ b/conform/data/stdlib.h-data
@@ -253,12 +252,12 @@ provides them.
 +
  @menu
  * Passphrase Storage::          One-way hashing for passphrases.
-+* DES Encryption::              Routines for DES encryption.
++* crypt::                       A one-way function for passwords.
  * Unpredictable Bytes::         Randomness for cryptographic purposes.
  @end menu
  
-@@ -200,6 +211,196 @@ hashes for the same passphrase.
- @include testpass.c.texi
+@@ -190,6 +201,199 @@ unpredictable as possible; @pxref{Unpred
+ @include genpass.c.texi
  @end smallexample
  
 +@node DES Encryption
@@ -451,9 +450,12 @@ provides them.
 +functions and their accompanying macros are all defined in the header
 +@file{rpc/des_crypt.h}.
 +
- @node Unpredictable Bytes
- @section Generating Unpredictable Bytes
- @cindex randomness source
++@node Unpredictable Bytes
++@section Generating Unpredictable Bytes
++
+ The next program demonstrates how to verify a passphrase.  It checks a
+ hash hardcoded into the program, because looking up real users' hashed
+ passphrases may require special privileges (@pxref{User Database}).
 --- a/manual/string.texi
 +++ b/manual/string.texi
 @@ -36,8 +36,8 @@ too.
@@ -594,20 +596,20 @@ provides them.
  /* The enhanced internationalization capabilities according to XPG4.2
     are present.  */
  #define	_XOPEN_ENH_I18N	1
-@@ -1115,17 +1118,20 @@ ssize_t copy_file_range (int __infd, __o
+@@ -1129,17 +1132,25 @@ ssize_t copy_file_range (int __infd, __o
  extern int fdatasync (int __fildes);
  #endif /* Use POSIX199309 */
  
 -#ifdef __USE_MISC
--/* One-way hash PHRASE, returning a string suitable for storage in the
--   user database.  SALT selects the one-way function to use, and
--   ensures that no two users' hashes are the same, even if they use
--   the same passphrase.  The return value points to static storage
--   which will be overwritten by the next call to crypt.  */
-+
 +/* XPG4.2 specifies that prototypes for the encryption functions must
 +   be defined here.  */
 +#ifdef	__USE_XOPEN
+ /* One-way hash PHRASE, returning a string suitable for storage in the
+    user database.  SALT selects the one-way function to use, and
+    ensures that no two users' hashes are the same, even if they use
+    the same passphrase.  The return value points to static storage
+    which will be overwritten by the next call to crypt.  */
++
 +/* Encrypt at most 8 characters from KEY using salt to perturb DES.  */
  extern char *crypt (const char *__key, const char *__salt)
       __THROW __nonnull ((1, 2));
@@ -625,7 +627,7 @@ provides them.
     range [FROM - N + 1, FROM - 1].  If N is odd the first byte in FROM
 --- a/stdlib/stdlib.h
 +++ b/stdlib/stdlib.h
-@@ -961,6 +961,12 @@ extern int getsubopt (char **__restrict
+@@ -962,6 +962,12 @@ extern int getsubopt (char **__restrict
  #endif
  
  
@@ -638,17 +640,6 @@ provides them.
  /* X/Open pseudo terminal handling.  */
  
  #ifdef __USE_XOPEN2KXSI
---- a/sunrpc/Makefile
-+++ b/sunrpc/Makefile
-@@ -51,7 +51,7 @@ rpcsvc = bootparam_prot.x nlm_prot.x rst
- headers-sunrpc = $(addprefix rpc/,auth.h auth_unix.h clnt.h pmap_clnt.h \
- 				  pmap_prot.h pmap_rmt.h rpc.h rpc_msg.h \
- 				  svc.h svc_auth.h types.h xdr.h auth_des.h \
--				  key_prot.h) \
-+				  des_crypt.h key_prot.h rpc_des.h) \
- 		       $(rpcsvc:%=rpcsvc/%) rpcsvc/bootparam.h
- headers = rpc/netdb.h
- install-others = $(inst_sysconfdir)/rpc
 --- a/sunrpc/des_crypt.c
 +++ b/sunrpc/des_crypt.c
 @@ -86,9 +86,6 @@ common_crypt (char *key, char *buf, regi

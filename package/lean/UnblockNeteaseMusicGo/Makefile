@@ -4,13 +4,12 @@ PKG_NAME:=UnblockNeteaseMusicGo
 PKG_VERSION:=0.2.10
 PKG_RELEASE:=1
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/cnsilvan/UnblockNeteaseMusic.git
-PKG_SOURCE_VERSION:=d8a24e8ee2f4e3a76ee6be9217b9a96ca608158a
-PKG_MAINTAINER:=Silvan <cnsilvan@gmail.com>
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://codeload.github.com/cnsilvan/UnblockNeteaseMusic/tar.gz/$(PKG_VERSION)?
+PKG_HASH:=2103562e399d04fcce0aa017057357e6fcec8beb6dc65c17ad1bdc06f38d6b7a
 
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)
-PKG_SOURCE:=$(PKG_SOURCE_SUBDIR)-$(PKG_VERSION)-$(PKG_SOURCE_VERSION).tar.gz
+
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
 PKG_BUILD_DEPENDS:=golang/host

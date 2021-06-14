@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vxlan
-PKG_VERSION:=2
+PKG_RELEASE:=7
 PKG_LICENSE:=GPL-2.0
 
 include $(INCLUDE_DIR)/package.mk
@@ -12,7 +12,6 @@ define Package/vxlan
   MAINTAINER:=Matthias Schiffer <mschiffer@universe-factory.net>
   TITLE:=Virtual eXtensible LAN config support
   DEPENDS:=+kmod-vxlan
-  PKGARCH:=all
 endef
 
 define Package/vxlan/description

@@ -900,6 +900,8 @@ dnsmasq_start()
 
 	append_parm "$cfg" logfacility "--log-facility"
 
+	append_parm "$cfg" mini_ttl "--min-ttl"
+
 	append_parm "$cfg" cachesize "--cache-size"
 	append_parm "$cfg" dnsforwardmax "--dns-forward-max"
 	append_parm "$cfg" port "--port"
@@ -1014,7 +1016,12 @@ dnsmasq_start()
 
 	xappend "--dhcp-broadcast=tag:needs-broadcast"
 
-	xappend "--addn-hosts=$(dirname $HOSTFILE)"
+	config_get_bool ignore_hosts_dir "$cfg" ignore_hosts_dir 0
+	if [ "$ignore_hosts_dir" = "1" ]; then
+		xappend "--addn-hosts=$HOSTFILE"
+	else
+		xappend "--addn-hosts=$(dirname $HOSTFILE)"
+	fi
 
 	config_get dnsmasqconfdir "$cfg" confdir "/tmp/dnsmasq.d"
 	xappend "--conf-dir=$dnsmasqconfdir"
@@ -1095,7 +1102,6 @@ dnsmasq_start()
 			echo "search $DOMAIN" >> /tmp/resolv.conf
 		}
 		DNS_SERVERS="$DNS_SERVERS 127.0.0.1"
-		[ -e /proc/sys/net/ipv6 ] && DNS_SERVERS="$DNS_SERVERS ::1"
 		for DNS_SERVER in $DNS_SERVERS ; do
 			echo "nameserver $DNS_SERVER" >> /tmp/resolv.conf
 		done
@@ -1112,6 +1118,10 @@ dnsmasq_start()
 	procd_add_jail_mount_rw /var/run/dnsmasq/ $leasefile
 
 	procd_close_instance
+
+	config_get_bool dns_redirect "$cfg" dns_redirect 0
+	config_get dns_port "$cfg" port 53
+	[ "$dns_redirect" = 1 ] && iptables -t nat -A PREROUTING -m comment --comment "DNSMASQ" -p udp --dport 53 -j REDIRECT --to-ports $dns_port
 }
 
 dnsmasq_stop()
@@ -1127,6 +1137,23 @@ dnsmasq_stop()
 	[ "$localuse" -gt 0 ] && ln -sf "/tmp/resolv.conf.d/resolv.conf.auto" /tmp/resolv.conf
 
 	rm -f ${BASEDHCPSTAMPFILE}.${cfg}.*.dhcp
+}
+
+iptables_clear()
+{
+	nums=$(iptables -t nat -n -L PREROUTING 2>/dev/null | grep -c "DNSMASQ")
+	if [ -n "$nums" ]; then
+		until [ "$nums" = 0 ]
+		do
+			rules=$(iptables -t nat -n -L PREROUTING --line-num 2>/dev/null | grep "DNSMASQ" | awk '{print $1}')
+			for rule in $rules
+			do
+				iptables -t nat -D PREROUTING $rule 2> /dev/null
+				break
+			done
+			nums=$(expr $nums - 1)
+		done
+	fi
 }
 
 add_interface_trigger()
@@ -1181,6 +1208,7 @@ start_service() {
 }
 
 reload_service() {
+	iptables_clear
 	rc_procd start_service "$@"
 	procd_send_signal dnsmasq "$@"
 }
@@ -1207,4 +1235,5 @@ stop_service() {
 	else
 		config_foreach dnsmasq_stop dnsmasq
 	fi
+	iptables_clear
 }

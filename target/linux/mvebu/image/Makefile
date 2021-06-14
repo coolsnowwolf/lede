@@ -102,7 +102,6 @@ define Device/Default
   KERNEL := kernel-bin | append-dtb | uImage none
   IMAGES := sysupgrade.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  SUPPORTED_DEVICES = $(subst _,$(comma),$(1))
   UBINIZE_OPTS := -E 5
   UBOOT :=
   BOOT_SCRIPT :=
