@@ -60,7 +60,7 @@ platform_copy_config_sdboot() {
 	if export_partdevice partdev 1; then
 		mount -t $parttype -o rw,noatime "/dev/$partdev" /mnt 2>&1
 		echo "Saving config backup..."
-		cp -af "$UPGRADE_BACKUP" "/mnt/$BACKUP_FILE"
+		cp -af "$CONF_TAR" "/mnt/sysupgrade.tgz"
 		umount /mnt
 	fi
 }
@@ -72,8 +72,10 @@ platform_copy_config() {
 	fsl,ls1021a-iot-sdboot | \
 	fsl,ls1021a-twr-sdboot | \
 	fsl,ls1043a-rdb-sdboot | \
+	fsl,ls1046a-frwy-sdboot | \
 	fsl,ls1046a-rdb-sdboot | \
-	fsl,ls1088a-rdb-sdboot)
+	fsl,ls1088a-rdb-sdboot | \
+	fsl,lx2160a-rdb-sdboot)
 		platform_copy_config_sdboot
 		;;
 	esac
@@ -95,11 +97,15 @@ platform_check_image() {
 	fsl,ls1021a-twr-sdboot | \
 	fsl,ls1043a-rdb | \
 	fsl,ls1043a-rdb-sdboot | \
+	fsl,ls1046a-frwy | \
+	fsl,ls1046a-frwy-sdboot | \
 	fsl,ls1046a-rdb | \
 	fsl,ls1046a-rdb-sdboot | \
 	fsl,ls1088a-rdb | \
 	fsl,ls1088a-rdb-sdboot | \
-	fsl,ls2088a-rdb)
+	fsl,ls2088a-rdb | \
+	fsl,lx2160a-rdb | \
+	fsl,lx2160a-rdb-sdboot)
 		return 0
 		;;
 	*)
@@ -125,9 +131,11 @@ platform_do_upgrade() {
 	fsl,ls1012a-rdb | \
 	fsl,ls1021a-twr | \
 	fsl,ls1043a-rdb | \
+	fsl,ls1046a-frwy | \
 	fsl,ls1046a-rdb | \
 	fsl,ls1088a-rdb | \
-	fsl,ls2088a-rdb)
+	fsl,ls2088a-rdb | \
+	fsl,lx2160a-rdb)
 		PART_NAME=firmware
 		default_do_upgrade "$1"
 		;;
@@ -135,8 +143,10 @@ platform_do_upgrade() {
 	fsl,ls1021a-iot-sdboot | \
 	fsl,ls1021a-twr-sdboot | \
 	fsl,ls1043a-rdb-sdboot | \
+	fsl,ls1046a-frwy-sdboot | \
 	fsl,ls1046a-rdb-sdboot | \
-	fsl,ls1088a-rdb-sdboot)
+	fsl,ls1088a-rdb-sdboot | \
+	fsl,lx2160a-rdb-sdboot)
 		platform_do_upgrade_sdboot "$1"
 		return 0
 		;;

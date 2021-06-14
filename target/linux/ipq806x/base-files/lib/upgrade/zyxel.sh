@@ -60,7 +60,7 @@ zyxel_do_flash() {
 	mkdir /tmp/new_root
 	mount -t ext4 $loopdev /tmp/new_root && {
 		echo "Saving config to rootfs_data at position ${offset}."
-		cp -v "$UPGRADE_BACKUP" "/tmp/new_root/$BACKUP_FILE"
+		cp -v /tmp/sysupgrade.tgz /tmp/new_root/
 		umount /tmp/new_root
 	}
 
@@ -90,7 +90,10 @@ zyxel_do_upgrade() {
 	[ -b "${rootfs}" ] || return 1
 	case "$board" in
 	zyxel,nbg6817)
-		local dualflagmtd="$(find_mtd_part 0:DUAL_FLAG)"
+		local dualflagmtd="$(find_mtd_part 0:dual_flag)"
+		# XXX: drop upper case after kernel v5.4 is gone (qcom-smem)
+		[ -b $dualflagmtd ] || \
+			dualflagmtd="$(find_mtd_part 0:DUAL_FLAG)"
 		[ -b $dualflagmtd ] || return 1
 
 		case "$rootfs" in

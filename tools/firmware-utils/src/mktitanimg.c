@@ -40,7 +40,6 @@ void print_help(void)
 void mknspimg_print_hdr(struct nsp_img_hdr *hdr)
 {
 	struct nsp_img_hdr_chksum	*chksum;
-	struct nsp_img_hdr_section_info	*sect_info;
 	struct nsp_img_hdr_sections	*section;
 	int i;
 
@@ -118,14 +117,11 @@ int main(int argc, char* argv[], char* env[])
 	int	cmdline_err;
 	char*	cmdline_error_msg;
 
-	char*	filen_kernel;
-	char*	filen_files;
 	char*	filen_out;
 
 	int	i,count;			/* loop variables */
 	int	num_sects = 2;			/* We require exactly two image with -i option
 							   (see CMDLINE_CFG structure above) */
-	int	desc_count=0;
 	int	total = 0;
 
 	int	header_size=0;
@@ -158,8 +154,6 @@ int main(int argc, char* argv[], char* env[])
 		header_version=atoi(argv[cmdline_getarg(cmdline_getarg_list('h'),0)]);
 	}
 	/* Set up arguments */
-	filen_kernel	= argv[cmdline_getarg(cmdline_getarg_list('i'),0)];
-	filen_files	= argv[cmdline_getarg(cmdline_getarg_list('i'),1)];
 	filen_out	= argv[cmdline_getarg(cmdline_getarg_list('o'),0)];
 	/* Command line arguments have been parsed. Start doing our work. */
 
@@ -290,7 +284,7 @@ int main(int argc, char* argv[], char* env[])
 			else
 				padding = align - ((section->raw_size+ section->offset) % align);
 
-				section->total_size=section->raw_size + padding;
+			section->total_size=section->raw_size + padding;
 		}
 		else{
 			#define EXTRA_BLOCK 0x10000

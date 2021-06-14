@@ -43,5 +43,8 @@ platform_copy_config() {
 	wd,mybooklive-duo)
 		mbl_copy_config
 		;;
+
+	*)
+		;;
 	esac
 }

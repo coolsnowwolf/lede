@@ -13,6 +13,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/mii.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/platform_device.h>
@@ -168,9 +169,10 @@ static void mt7620_hw_init(struct mt7620_gsw *gsw, int mdio_mode)
 
 		/* turn on all PHYs */
 		for (i = 0; i <= 4; i++) {
-			val = _mt7620_mii_read(gsw, gsw->ephy_base + i, 0);
-			val &= ~BIT(11);
-			_mt7620_mii_write(gsw, gsw->ephy_base + i, 0, val);
+			val = _mt7620_mii_read(gsw, gsw->ephy_base + i, MII_BMCR);
+			val &= ~BMCR_PDOWN;
+			val |= BMCR_ANRESTART | BMCR_ANENABLE | BMCR_SPEED100;
+			_mt7620_mii_write(gsw, gsw->ephy_base + i, MII_BMCR, val);
 		}
 	}
 

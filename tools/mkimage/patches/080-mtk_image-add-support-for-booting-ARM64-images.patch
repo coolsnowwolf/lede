@@ -1,0 +1,134 @@
+From 44165e4c676d266f73fda2e6ba82b4bf3262daf2 Mon Sep 17 00:00:00 2001
+From: Fabien Parent <fparent@baylibre.com>
+Date: Fri, 16 Oct 2020 19:52:37 +0200
+Subject: [PATCH] tools: mtk_image: add support for booting ARM64 images
+
+mkimage is only able to package aarch32 binaries. Add support for
+AArch64 images.
+
+One can create a ARM64 image using the following command line:
+mkimage -T mtk_image -a 0x201000 -e 0x201000 -n "media=emmc;arm64=1"
+-d bl2.bin bl2.img
+
+Signed-off-by: Fabien Parent <fparent@baylibre.com>
+---
+ tools/mtk_image.c | 28 ++++++++++++++++++++++++----
+ tools/mtk_image.h |  6 +++++-
+ 2 files changed, 29 insertions(+), 5 deletions(-)
+
+diff --git a/tools/mtk_image.c b/tools/mtk_image.c
+index 2ca519483d..bde1e5da4b 100644
+--- a/tools/mtk_image.c
++++ b/tools/mtk_image.c
+@@ -246,6 +246,7 @@ static const struct brom_img_type {
+ /* Image type selected by user */
+ static enum brlyt_img_type hdr_media;
+ static int use_lk_hdr;
++static bool is_arm64_image;
+ 
+ /* LK image name */
+ static char lk_name[32] = "U-Boot";
+@@ -276,6 +277,7 @@ static int mtk_brom_parse_imagename(const char *imagename)
+ 	static const char *media = "";
+ 	static const char *nandinfo = "";
+ 	static const char *lk = "";
++	static const char *arm64_param = "";
+ 
+ 	key = buf;
+ 	while (key) {
+@@ -323,6 +325,9 @@ static int mtk_brom_parse_imagename(const char *imagename)
+ 
+ 			if (!strcmp(key, "lkname"))
+ 				snprintf(lk_name, sizeof(lk_name), "%s", val);
++
++			if (!strcmp(key, "arm64"))
++				arm64_param = val;
+ 		}
+ 
+ 		if (next)
+@@ -354,6 +359,9 @@ static int mtk_brom_parse_imagename(const char *imagename)
+ 		}
+ 	}
+ 
++	if (arm64_param && arm64_param[0] == '1')
++		is_arm64_image = true;
++
+ 	free(buf);
+ 
+ 	if (hdr_media == BRLYT_TYPE_INVALID) {
+@@ -458,6 +466,9 @@ static int mtk_image_verify_gen_header(const uint8_t *ptr, int print)
+ 		       le32_to_cpu(gfh->file_info.load_addr) +
+ 		       le32_to_cpu(gfh->file_info.jump_offset));
+ 
++	if (print)
++		printf("Architecture: %s\n", is_arm64_image ? "ARM64" : "ARM");
++
+ 	return 0;
+ }
+ 
+@@ -523,6 +534,9 @@ static int mtk_image_verify_nand_header(const uint8_t *ptr, int print)
+ 		       le32_to_cpu(gfh->file_info.load_addr) +
+ 		       le32_to_cpu(gfh->file_info.jump_offset));
+ 
++	if (print)
++		printf("Architecture: %s\n", is_arm64_image ? "ARM64" : "ARM");
++
+ 	return 0;
+ }
+ 
+@@ -581,6 +595,8 @@ static void put_ghf_common_header(struct gfh_common_header *gfh, int size,
+ static void put_ghf_header(struct gfh_header *gfh, int file_size,
+ 			   int dev_hdr_size, int load_addr, int flash_type)
+ {
++	uint32_t cfg_bits;
++
+ 	memset(gfh, 0, sizeof(struct gfh_header));
+ 
+ 	/* GFH_FILE_INFO header */
+@@ -608,11 +624,15 @@ static void put_ghf_header(struct gfh_header *gfh, int file_size,
+ 	/* GFH_BROM_CFG header */
+ 	put_ghf_common_header(&gfh->brom_cfg.gfh, sizeof(gfh->brom_cfg),
+ 			      GFH_TYPE_BROM_CFG, 3);
+-	gfh->brom_cfg.cfg_bits = cpu_to_le32(
+-		GFH_BROM_CFG_USBDL_AUTO_DETECT_DIS |
+-		GFH_BROM_CFG_USBDL_BY_KCOL0_TIMEOUT_EN |
+-		GFH_BROM_CFG_USBDL_BY_FLAG_TIMEOUT_EN);
++	cfg_bits = GFH_BROM_CFG_USBDL_AUTO_DETECT_DIS |
++		   GFH_BROM_CFG_USBDL_BY_KCOL0_TIMEOUT_EN |
++		   GFH_BROM_CFG_USBDL_BY_FLAG_TIMEOUT_EN;
+ 	gfh->brom_cfg.usbdl_by_kcol0_timeout_ms = cpu_to_le32(5000);
++	if (is_arm64_image) {
++		gfh->brom_cfg.jump_bl_arm64 = GFH_BROM_CFG_JUMP_BL_ARM64;
++		cfg_bits |= GFH_BROM_CFG_JUMP_BL_ARM64_EN;
++	}
++	gfh->brom_cfg.cfg_bits = cpu_to_le32(cfg_bits);
+ 
+ 	/* GFH_BL_SEC_KEY header */
+ 	put_ghf_common_header(&gfh->bl_sec_key.gfh, sizeof(gfh->bl_sec_key),
+diff --git a/tools/mtk_image.h b/tools/mtk_image.h
+index 4e78b3d0ff..7dda71ce88 100644
+--- a/tools/mtk_image.h
++++ b/tools/mtk_image.h
+@@ -136,7 +136,9 @@ struct gfh_brom_cfg {
+ 	struct gfh_common_header gfh;
+ 	uint32_t cfg_bits;
+ 	uint32_t usbdl_by_auto_detect_timeout_ms;
+-	uint8_t unused[0x48];
++	uint8_t unused[0x45];
++	uint8_t jump_bl_arm64;
++	uint8_t unused2[2];
+ 	uint32_t usbdl_by_kcol0_timeout_ms;
+ 	uint32_t usbdl_by_flag_timeout_ms;
+ 	uint32_t pad;
+@@ -146,6 +148,8 @@ struct gfh_brom_cfg {
+ #define GFH_BROM_CFG_USBDL_AUTO_DETECT_DIS		0x10
+ #define GFH_BROM_CFG_USBDL_BY_KCOL0_TIMEOUT_EN		0x80
+ #define GFH_BROM_CFG_USBDL_BY_FLAG_TIMEOUT_EN		0x100
++#define GFH_BROM_CFG_JUMP_BL_ARM64_EN			0x1000
++#define GFH_BROM_CFG_JUMP_BL_ARM64			0x64
+ 
+ struct gfh_bl_sec_key {
+ 	struct gfh_common_header gfh;
+-- 
+2.30.1
+

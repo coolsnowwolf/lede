@@ -1,0 +1,315 @@
+--- a/libblkid-tiny/blkidP.h
++++ b/libblkid-tiny/blkidP.h
+@@ -557,4 +557,16 @@ extern size_t blkid_encode_to_utf8(int e
+ #define BLKID_ENC_UTF16BE	0
+ #define BLKID_ENC_UTF16LE	1
+ 
++enum uuid_format {
++	UUID_DOS = 0,		/* 4 bytes */
++	UUID_NTFS = 1,		/* 8 bytes */
++	UUID_DCE = 2,		/* 16 bytes */
++	UUID_DCE_STRING = 3,	/* 36 bytes (VOLUME_ID_UUID_SIZE) */
++};
++
++enum endian {
++	LE = 0,
++	BE = 1
++};
++
+ #endif /* _BLKID_BLKIDP_H */
+--- /dev/null
++++ b/libblkid-tiny/exfat.c
+@@ -0,0 +1,155 @@
++ /*
++ * Copyright (C) 1999 by Andries Brouwer
++ * Copyright (C) 1999, 2000, 2003 by Theodore Ts'o
++ * Copyright (C) 2001 by Andreas Dilger
++ * Copyright (C) 2004 Kay Sievers <kay.sievers@vrfy.org>
++ * Copyright (C) 2008 Karel Zak <kzak@redhat.com>
++ * Copyright (C) 2012 S-G Bergh <sgb@systemasis.org>
++ * Copyright (C) 2018 rosysong <rosysong@rosinson.com>
++ *
++ * This file may be redistributed under the terms of the
++ * GNU Lesser General Public License.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <string.h>
++#include <errno.h>
++#include <ctype.h>
++#include <stdint.h>
++
++#if 0
++#include "pt-mbr.h"
++#endif
++
++#include "superblocks.h"
++
++#define EXFAT_SB_OFFSET		0
++#define EXFAT_DIR_ENTRY_SZ	32
++#define EXFAT_MAX_DIR_ENTRIES	100
++
++struct exfat_super_block {
++/* 0x00 */	uint8_t		boot_jump[3];
++/* 0x03 */	uint8_t		fs_name[8];
++/* 0x0B */	uint8_t		must_be_zero[53];
++/* 0x40 */	uint64_t	partition_offset;
++/* 0x48 */	uint64_t	volume_length;
++/* 0x50 */	uint32_t	fat_offset;		// Sector address of 1st FAT
++/* 0x54 */	uint32_t	fat_size;		// In sectors
++/* 0x58 */	uint32_t	cluster_heap_offset;	// Sector address of Data Region
++/* 0x5C */	uint32_t	cluster_count;
++/* 0x60 */	uint32_t	root_dir;		// Cluster address of Root Directory
++/* 0x64 */	uint8_t		vol_serial_nr[4];	// Volume ID
++/* 0x68 */	uint16_t	fs_revision;		// VV.MM
++/* 0x6A */	uint16_t	vol_flags;
++/* 0x6C */	uint8_t		bytes_per_sector;	// Power of 2: 9 => 512, 12 => 4096
++/* 0x6D */	uint8_t		sectors_per_cluster;	// Power of 2
++/* 0x6E */	uint8_t		nr_of_fats;		// 2 for TexFAT
++/* 0x6F */	// ...
++} __attribute__((packed));
++
++struct exfat_dir_entry {
++/* 0x00 */	uint8_t		entry_type;
++		union {
++			struct volume_label {
++/* 0x01 */			uint8_t		char_count;		// Length of label
++/* 0x02 */			uint16_t	vol_label[11];		// UTF16 string without null termination
++/* 0x18 */			uint8_t		reserved[8];
++/* 0x20 */		} __attribute__((packed)) label;
++			struct volume_guid {
++/* 0x01 */			uint8_t		sec_count;
++/* 0x02 */			uint16_t	set_checksum;
++/* 0x04 */			uint16_t	flags;
++/* 0x06 */			uint8_t		vol_guid[16];
++/* 0x16 */			uint8_t		reserved[10];
++/* 0x20 */		} __attribute__((packed)) guid;
++		} __attribute__((packed)) type;
++} __attribute__((packed));
++
++static int probe_exfat(blkid_probe pr, const struct blkid_idmag *mag)
++{
++	struct exfat_super_block *sb;
++	struct exfat_dir_entry *de;
++	unsigned char *vol_label = 0;
++	unsigned char *vol_serno = NULL;
++	unsigned	sector_sz;
++	unsigned	cluster_sz;
++	uint64_t	root_dir_off;
++	unsigned	count;
++	unsigned	need_lbl_guid;
++	const char *version = "EXFAT";
++
++	// Primary super block
++	DBG(LOWPROBE, ul_debug("exFAT: probing at offset 0x%x", EXFAT_SB_OFFSET));
++	sb = blkid_probe_get_sb(pr, mag, struct exfat_super_block);
++	if (!sb)
++		return errno ? -errno : 1;
++
++	if (memcmp(sb->fs_name, "EXFAT   ", 8) != 0)
++		return -1;
++
++	sector_sz = 1 << sb->bytes_per_sector;
++	cluster_sz = sector_sz << sb->sectors_per_cluster;
++	// There are no clusters 0 and 1, so the first cluster is 2.
++	root_dir_off = (uint64_t)EXFAT_SB_OFFSET +
++		// Hmm... should we cast sector_sz/cluster_sz to uint64_t?
++		(le32_to_cpu(sb->cluster_heap_offset)) * sector_sz +
++		(le32_to_cpu(sb->root_dir) - 2) * cluster_sz;
++	DBG(LOWPROBE, ul_debug("exFAT: sector size 0x%x bytes", sector_sz));
++	DBG(LOWPROBE, ul_debug("exFAT: cluster size 0x%x bytes", cluster_sz));
++	DBG(LOWPROBE, ul_debug("exFAT: root dir is at 0x%llx", (long long)root_dir_off));
++
++	// Use DOS uuid(UUID_DOS) as fallback, if no GUID set
++	vol_serno = sb->vol_serial_nr;
++	blkid_probe_sprintf_uuid_exfat(pr, vol_serno, UUID_DOS);
++
++	// EXFAT_MAX_DIR_ENTRIES is used as a safety belt.
++	// The Root Directory may hold an unlimited number of entries,
++	// so we do not want to check all. Usually label and GUID
++	// are in the beginning, but there are no guarantees.
++	need_lbl_guid = (1 << 0) | (1 << 1);
++	for (count = 0; count < EXFAT_MAX_DIR_ENTRIES; count++) {
++		de = (struct exfat_dir_entry *)
++		blkid_probe_get_buffer(pr, root_dir_off + (count * EXFAT_DIR_ENTRY_SZ), EXFAT_DIR_ENTRY_SZ);
++		if (de == NULL)
++			break;
++		if (de->entry_type == 0x00) {
++			// End of Directory Marker
++			DBG(LOWPROBE, ul_debug("exFAT: End of root directory reached after %u entries", count));
++			break;
++		}
++		if (de->entry_type == 0x83) {
++			// Volume Label Directory Entry
++			vol_label = (unsigned char *)de->type.label.vol_label;
++			blkid_probe_set_unicode16label(pr, vol_label, LE, 2 * de->type.label.char_count);
++			need_lbl_guid &= ~(1 << 0);
++		}
++		if (de->entry_type == 0xA0) {
++			// Volume GUID Directory Entry (UUID_DCE)
++			vol_serno = de->type.guid.vol_guid;
++			blkid_probe_sprintf_uuid_exfat(pr, vol_serno, UUID_DCE);
++			need_lbl_guid &= ~(1 << 1);
++		}
++		if (!need_lbl_guid)
++			break;
++	}
++
++	if (version)
++		blkid_probe_set_version(pr, version);
++
++	return 0;
++}
++
++const struct blkid_idinfo exfat_idinfo =
++{
++	.name		= "exfat",
++	.usage		= BLKID_USAGE_FILESYSTEM,
++	.probefunc	= probe_exfat,
++	.magics		=
++	{
++		{ .magic = "EXFAT   ", .len = 8, .sboff = 0x03 },
++		{ NULL }
++	}
++};
++
+--- a/libblkid-tiny/libblkid-tiny.c
++++ b/libblkid-tiny/libblkid-tiny.c
+@@ -121,6 +121,51 @@ int blkid_probe_set_label(blkid_probe pr
+ 	return 0;
+ }
+ 
++int blkid_probe_set_unicode16(char *str, size_t len, const unsigned char *buf, enum endian endianess, size_t count)
++{
++	unsigned i, j;
++	unsigned c;
++
++	j = 0;
++	for (i = 0; i + 2 <= count; i += 2) {
++		if (endianess == LE)
++			c = (buf[i+1] << 8) | buf[i];
++		else
++			c = (buf[i] << 8) | buf[i+1];
++		if (c == 0)
++			break;
++		if (j+1 >= len)
++			break;
++		if (c < 0x80) {
++			/* 0xxxxxxx */
++		} else {
++			unsigned char topbits = 0xc0;
++			if (j+2 >= len)
++				break;
++			if (c < 0x800) {
++				/* 110yyyxx 10xxxxxx */
++			} else {
++				if (j+3 >= len)
++					break;
++				/* 1110yyyy 10yyyyxx 10xxxxxx */
++				str[j++] = (unsigned char) (0xe0 | (c >> 12));
++				topbits = 0x80;
++			}
++			str[j++] = (unsigned char) (topbits | ((c >> 6) & 0x3f));
++			c = 0x80 | (c & 0x3f);
++		}
++		str[j++] = (unsigned char) c;
++	}
++	str[j] = '\0';
++
++	return j;
++}
++
++int blkid_probe_set_unicode16label(blkid_probe pr, unsigned char *label, enum endian endianess, size_t len)
++{
++	return blkid_probe_set_unicode16(pr->label, sizeof(pr->label), label, endianess, len);
++}
++
+ int blkid_probe_set_uuid_as(blkid_probe pr, unsigned char *uuid, const char *name)
+ {
+ 	short unsigned int*u = (short unsigned int*) uuid;
+@@ -135,6 +180,47 @@ int blkid_probe_set_uuid_as(blkid_probe
+ 	return 0;
+ }
+ 
++int blkid_probe_sprintf_uuid_exfat(blkid_probe pr, unsigned char *buf, enum uuid_format format)
++{
++	unsigned i;
++	unsigned count = 4 << format;
++
++	/* if set, create string in the same format, the native platform uses */
++	for (i = 0; i < count; i++)
++		if (buf[i] != 0)
++			goto set;
++
++	/* all bytes are zero, leave it empty ("") */
++	return 0;
++
++set:
++	switch (format) {
++	case UUID_DOS:
++		blkid_probe_sprintf_uuid(pr, buf, count, "%02X%02X-%02X%02X",
++			buf[3], buf[2], buf[1], buf[0]);
++		break;
++	case UUID_NTFS:
++		blkid_probe_sprintf_uuid(pr, buf, count, "%02X%02X%02X%02X%02X%02X%02X%02X",
++			buf[7], buf[6], buf[5], buf[4],
++			buf[3], buf[2], buf[1], buf[0]);
++		break;
++	case UUID_DCE:
++		blkid_probe_sprintf_uuid(pr, buf, count,
++			"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
++			buf[0], buf[1], buf[2], buf[3],
++			buf[4], buf[5], buf[6], buf[7],
++			buf[8], buf[9], buf[10], buf[11],
++			buf[12], buf[13], buf[14], buf[15]);
++		break;
++	case UUID_DCE_STRING:
++		memcpy(pr->uuid, buf, count);
++		pr->uuid[count] = '\0';
++		break;
++	}
++
++	return count;
++}
++
+ int blkid_probe_set_uuid(blkid_probe pr, unsigned char *uuid)
+ {
+ 	return blkid_probe_set_uuid_as(pr, uuid, NULL);
+@@ -155,6 +241,7 @@ int blkid_probe_sprintf_uuid(blkid_probe
+ static const struct blkid_idinfo *idinfos[] =
+ {
+ 	&vfat_idinfo,
++	&exfat_idinfo,
+ 	&swsuspend_idinfo,
+ 	&swap_idinfo,
+ 	&ext4dev_idinfo,
+--- a/libblkid-tiny/superblocks.h
++++ b/libblkid-tiny/superblocks.h
+@@ -88,9 +88,15 @@ extern int blkid_probe_sprintf_version(b
+ extern int blkid_probe_set_label(blkid_probe pr, unsigned char *label, size_t len);
+ extern int blkid_probe_set_utf8label(blkid_probe pr, unsigned char *label,
+                 size_t len, int enc);
++extern int blkid_probe_set_unicode16(char *str, size_t len, const unsigned char *buf,
++                enum endian endianess, size_t count);
++extern int blkid_probe_set_unicode16label(blkid_probe pr, unsigned char *label,
++                enum endian endianess, size_t len);
+ extern int blkid_probe_sprintf_uuid(blkid_probe pr, unsigned char *uuid,
+                 size_t len, const char *fmt, ...)
+ 		__attribute__ ((__format__ (__printf__, 4, 5)));
++extern int blkid_probe_sprintf_uuid_exfat(blkid_probe pr, unsigned char *buf,
++                enum uuid_format format);
+ extern int blkid_probe_strncpy_uuid(blkid_probe pr, unsigned char *str, size_t len);
+ 
+ extern int blkid_probe_set_uuid(blkid_probe pr, unsigned char *uuid);
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -24,6 +24,7 @@ ADD_LIBRARY(blkid-tiny SHARED
+ 		libblkid-tiny/ext.c
+ 		libblkid-tiny/jffs2.c
+ 		libblkid-tiny/vfat.c
++		libblkid-tiny/exfat.c
+ 		libblkid-tiny/ntfs.c
+ 		libblkid-tiny/hfs.c
+ 		libblkid-tiny/swap.c

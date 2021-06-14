@@ -9,13 +9,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uci
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/uci.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE=2018-08-11
-PKG_SOURCE_VERSION:=4c8b4d6efc8302b508d261573351fffb75bd98c2
-PKG_MIRROR_HASH:=c1f0f565921c71ff9231508c7c249baacad4c3ae1a3fade25c37bcb2bf7a7b5f
+PKG_SOURCE_DATE=2019-05-17
+PKG_SOURCE_VERSION:=f199b961c2970b63cc83947ad49b327b3f48f05f
+PKG_MIRROR_HASH:=bd860a1a97a5c8f1cd77875afcadba9dafff0c4a0d6743ba0c915d76e1c624cd
 
 PKG_LICENSE:=LGPL-2.1
 PKG_LICENSE_FILES:=
@@ -35,6 +35,7 @@ define Package/libuci
   CATEGORY:=Libraries
   TITLE:=C library for the Unified Configuration Interface (UCI)
   DEPENDS:=+libubox
+  ABI_VERSION:=20130104
 endef
 
 define Package/uci
@@ -83,6 +84,6 @@ define Build/InstallDev
 	$(CP) $(PKG_BUILD_DIR)/libucimap.a $(1)/usr/lib
 endef
 
-$(eval $(call BuildPackage,uci))
 $(eval $(call BuildPackage,libuci))
 $(eval $(call BuildPackage,libuci-lua))
+$(eval $(call BuildPackage,uci))

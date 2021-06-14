@@ -1,13 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2010-2013 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 define Profile/Broadcom-b44-wl
   NAME:=Broadcom SoC, b44 Ethernet, BCM43xx WiFi (wl, proprietary)
-  PACKAGES:=-wpad-basic-wolfssl kmod-b44 kmod-brcm-wl wlc nas
+  PACKAGES:=-wpad-basic kmod-b44 kmod-brcm-wl wlc nas
 endef
 
 define Profile/Broadcom-b44-wl/Description

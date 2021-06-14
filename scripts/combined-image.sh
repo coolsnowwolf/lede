@@ -16,7 +16,7 @@ dd if="$1" of="$kern" bs=$BLKSZ conv=sync 2>/dev/null
 dd if="$2" of="$root" bs=$BLKSZ conv=sync 2>/dev/null
 
 # Calculate md5sum over combined kernel and rootfs image.
-md5=$(cat "$kern" "$root" | mkhash md5)
+md5=$(cat "$kern" "$root" | $MKHASH md5)
 
 # Write image header followed by kernel and rootfs image.
 # The header is padded to 64k, format is:

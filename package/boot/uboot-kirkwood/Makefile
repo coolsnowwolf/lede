@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_VERSION:=2020.04
-PKG_RELEASE:=1
+PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_HASH:=fe732aaf037d9cc3c0909bad8362af366ae964bbdac6913a34081ff4ad565372
 
@@ -94,6 +94,11 @@ define U-Boot/pogoplugv4
   BUILD_DEVICES:=cloudengines_pogoplugv4
 endef
 
+define U-Boot/sheevaplug
+  NAME:=Globalscale SheevaPlug
+  BUILD_DEVICES:=globalscale_sheevaplug
+endef
+
 UBOOT_TARGETS := \
 	dockstar dockstar_second_stage \
 	goflexhome \
@@ -105,7 +110,8 @@ UBOOT_TARGETS := \
 	nsa310s \
 	nsa325 \
 	pogo_e02 pogo_e02_second_stage \
-	pogoplugv4
+	pogoplugv4 \
+	sheevaplug
 
 define Build/Configure
 	$(if $(findstring _second_stage,$(BUILD_VARIANT)),

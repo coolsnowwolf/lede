@@ -63,6 +63,7 @@ define Device/unielec_u7623-emmc
   # When we use FIT images, U-Boot will populate the /memory node with the correct
   # memory size discovered from the preloader, so we don't need separate builds.
   DEVICE_DTS := mt7623a-unielec-u7623-02-emmc-512m
+  DEVICE_DTS_DIR := ../dts
   SUPPORTED_DEVICES := unielec,u7623-02-emmc-512m
   UBOOT_ENVSIZE := 0x1000
   UBOOT_OFFSET := 256k
@@ -83,6 +84,7 @@ define Device/unielec_u7623-02-emmc-512m-legacy
   DEVICE_MODEL := U7623-02
   DEVICE_VARIANT := eMMC/512MiB RAM (legacy image)
   DEVICE_DTS := mt7623a-unielec-u7623-02-emmc-512m
+  DEVICE_DTS_DIR := ../dts
   KERNEL_NAME := zImage
   KERNEL := kernel-bin | append-dtb | uImage none
   KERNEL_INITRAMFS := kernel-bin | append-dtb | uImage none

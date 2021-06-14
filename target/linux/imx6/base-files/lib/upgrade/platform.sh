@@ -19,7 +19,7 @@ enable_image_metadata_check
 
 apalis_copy_config() {
 	apalis_mount_boot
-	cp -af "$UPGRADE_BACKUP" "/boot/$BACKUP_FILE"
+	cp -af "$CONF_TAR" /boot/
 	sync
 	umount /boot
 }
@@ -133,7 +133,7 @@ platform_pre_upgrade() {
 	toradex,apalis_imx6q-eval |\
 	toradex,apalis_imx6q-ixora |\
 	toradex,apalis_imx6q-ixora-v1.1 )
-		[ -z "$UPGRADE_BACKUP" ] && {
+		[ -z "$CONF_TAR" ] && {
 			jffs2reset -y
 			umount /overlay
 		}

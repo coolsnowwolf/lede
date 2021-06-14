@@ -20,10 +20,6 @@
 #include <linux/rtnetlink.h>
 #include <linux/debugfs.h>
 
-#define trelay_log(loglevel, tr, fmt, ...) \
-	printk(loglevel "trelay: %s <-> %s: " fmt "\n", \
-		tr->dev1->name, tr->dev2->name, ##__VA_ARGS__);
-
 static LIST_HEAD(trelay_devs);
 static struct dentry *debugfs_dir;
 
@@ -31,7 +27,6 @@ struct trelay {
 	struct list_head list;
 	struct net_device *dev1, *dev2;
 	struct dentry *debugfs;
-	int to_remove;
 	char name[];
 };
 
@@ -65,18 +60,13 @@ static int trelay_do_remove(struct trelay *tr)
 {
 	list_del(&tr->list);
 
-	/* First and before all, ensure that the debugfs file is removed
-	 * to prevent dangling pointer in file->private_data */
-	debugfs_remove_recursive(tr->debugfs);
-
 	dev_put(tr->dev1);
 	dev_put(tr->dev2);
 
 	netdev_rx_handler_unregister(tr->dev1);
 	netdev_rx_handler_unregister(tr->dev2);
 
-	trelay_log(KERN_INFO, tr, "stopped");
-
+	debugfs_remove_recursive(tr->debugfs);
 	kfree(tr);
 
 	return 0;
@@ -96,7 +86,7 @@ static struct trelay *trelay_find(struct net_device *dev)
 static int tr_device_event(struct notifier_block *unused, unsigned long event,
 			   void *ptr)
 {
-	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+	struct net_device *dev = ptr;
 	struct trelay *tr;
 
 	if (event != NETDEV_UNREGISTER)
@@ -116,25 +106,16 @@ static ssize_t trelay_remove_write(struct file *file, const char __user *ubuf,
 				   size_t count, loff_t *ppos)
 {
 	struct trelay *tr = file->private_data;
-	tr->to_remove = 1;
+	int ret;
 
-	return count;
-}
-
-static int trelay_remove_release(struct inode *inode, struct file *file)
-{
-	struct trelay *tr, *tmp;
-
-	/* This is the only file op that is called outside debugfs_use_file_*()
-	 * context which means that: (1) this file can be removed and
-	 * (2) file->private_data may no longer be valid */
 	rtnl_lock();
-	list_for_each_entry_safe(tr, tmp, &trelay_devs, list)
-		if (tr->to_remove)
-			trelay_do_remove(tr);
+	ret = trelay_do_remove(tr);
 	rtnl_unlock();
 
-	return 0;
+	if (ret < 0)
+		 return ret;
+
+	return count;
 }
 
 static const struct file_operations fops_remove = {
@@ -142,7 +123,6 @@ static const struct file_operations fops_remove = {
 	.open = trelay_open,
 	.write = trelay_remove_write,
 	.llseek = default_llseek,
-	.release = trelay_remove_release,
 };
 
 
@@ -188,8 +168,6 @@ static int trelay_do_add(char *name, char *devn1, char *devn2)
 	tr->dev1 = dev1;
 	tr->dev2 = dev2;
 	list_add_tail(&tr->list, &trelay_devs);
-
-	trelay_log(KERN_INFO, tr, "started");
 
 	tr->debugfs = debugfs_create_dir(name, debugfs_dir);
 	debugfs_create_file("remove", S_IWUSR, tr->debugfs, tr, &fops_remove);

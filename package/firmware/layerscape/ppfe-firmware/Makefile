@@ -16,6 +16,8 @@ PKG_SOURCE_URL:=https://github.com/NXP/qoriq-engine-pfe-bin.git
 PKG_SOURCE_VERSION:=d3a8ef0760c54ddc243039c86389497e37be90ab
 PKG_MIRROR_HASH:=64be93b8249d298e7b5fd0846787835f0659b6ab6c55b40b809366c79e272eb8
 
+PKG_FLAGS:=nonshared
+
 include $(INCLUDE_DIR)/package.mk
 
 RSTRIP:=:

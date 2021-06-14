@@ -92,7 +92,8 @@ main(int ac, char *av[])
 	char region[MAX_REG_LEN];
 	int kernel = 0;
 
-	FILE *ifile, *ofile;
+	FILE *ifile = NULL;
+	FILE *ofile = NULL;
 	int c;
 
 	uint32_t cksum;

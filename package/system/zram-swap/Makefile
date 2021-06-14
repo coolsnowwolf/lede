@@ -8,7 +8,6 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=zram-swap
-PKG_VERSION:=1.1
 PKG_RELEASE:=8
 
 PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)

@@ -1,4 +1,3 @@
-#!/bin/sh
 # Copyright (C) 2006-2013 OpenWrt.org
 # Copyright (C) 2010 Vertical Communications
 

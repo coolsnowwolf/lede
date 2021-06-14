@@ -132,7 +132,7 @@ static void parse_options(int argc, char **argv) {
 			productid = optarg;
 			break;
 		case 'v':
-			if (sscanf(optarg, "%hu.%hu.%hu.%hu", &version[0], &version[1], &version[2], &version[3]) != 4)
+			if (sscanf(optarg, "%hhu.%hhu.%hhu.%hhu", &version[0], &version[1], &version[2], &version[3]) != 4)
 				fprintf(stderr, "Version %s doesn't match suppored 4-digits format\n", optarg);
 			break;
 		}
@@ -150,7 +150,8 @@ static void usage() {
 int main(int argc, char **argv) {
 	struct trx_header hdr;
 	struct asustrx_tail tail = { };
-	FILE *in, *out;
+	FILE *out = NULL;
+	FILE *in = NULL;
 	uint8_t buf[1024];
 	size_t bytes;
 	size_t length = 0;
