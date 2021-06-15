@@ -5,6 +5,7 @@
 . /usr/share/libubox/jshn.sh
 
 # initialize defaults
+export MTD_ARGS=""
 export MTD_CONFIG_ARGS=""
 export INTERACTIVE=0
 export VERBOSE=1
@@ -126,7 +127,7 @@ list_changed_conffiles() {
 	list_conffiles | while read file csum; do
 		[ -r "$file" ] || continue
 
-		echo "${csum}  ${file}" | sha256sum -sc - || echo "$file"
+		echo "${csum}  ${file}" | busybox sha256sum -sc - || echo "$file"
 	done
 }
 
@@ -196,9 +197,6 @@ add_overlayfiles() {
 	return 0
 }
 
-# hooks
-sysupgrade_image_check="fwtool_check_signature fwtool_check_image platform_check_image"
-
 if [ $SAVE_OVERLAY = 1 ]; then
 	[ ! -d /overlay/upper/etc ] && {
 		echo "Cannot find '/overlay/upper/etc', required for '-c'" >&2
@@ -223,7 +221,7 @@ include /lib/upgrade
 do_save_conffiles() {
 	local conf_tar="$1"
 
-	[ -z "$(rootfs_type)" ] && {
+	[ "$(rootfs_type)" = "tmpfs" ] && {
 		echo "Cannot save config while running from ramdisk." >&2
 		ask_bool 0 "Abort" && exit
 		rm -f "$conf_tar"
@@ -255,7 +253,7 @@ do_save_conffiles() {
 
 	v "Saving config files..."
 	[ "$VERBOSE" -gt 1 ] && TAR_V="v" || TAR_V=""
-	tar c${TAR_V}zpf "$conf_tar" -T "$CONFFILES" 2>/dev/null
+	tar c${TAR_V}zf "$conf_tar" -T "$CONFFILES" 2>/dev/null
 	if [ "$?" -ne 0 ]; then
 		echo "Failed to create the configuration backup."
 		rm -f "$conf_tar"
@@ -302,7 +300,7 @@ type platform_check_image >/dev/null 2>/dev/null || {
 case "$IMAGE" in
 	http://*|\
 	https://*)
-		wget -O/tmp/sysupgrade.img "$IMAGE"
+		wget -O/tmp/sysupgrade.img "$IMAGE" || exit 1
 		IMAGE=/tmp/sysupgrade.img
 		;;
 esac
@@ -322,20 +320,19 @@ case "$IMAGE" in
 		;;
 esac
 
-export ARGV="$IMAGE"
-export ARGC=1
-
-for check in $sysupgrade_image_check; do
-	( $check "$IMAGE" ) || {
-		if [ $FORCE -eq 1 ]; then
-			echo "Image check '$check' failed but --force given - will update anyway!" >&2
-			break
-		else
-			echo "Image check '$check' failed." >&2
-			exit 1
-		fi
-	}
-done
+json_load "$(/usr/libexec/validate_firmware_image "$IMAGE")" || {
+	echo "Failed to check image"
+	exit 1
+}
+json_get_var valid "valid"
+[ "$valid" -eq 0 ] && {
+	if [ $FORCE -eq 1 ]; then
+		echo "Image check failed but --force given - will update anyway!" >&2
+	else
+		echo "Image check failed." >&2
+		exit 1
+	fi
+}
 
 if [ -n "$CONF_IMAGE" ]; then
 	case "$(get_magic_word $CONF_IMAGE cat)" in
@@ -360,16 +357,10 @@ if [ $TEST -eq 1 ]; then
 	exit 0
 fi
 
-if [ $SAVE_PARTITIONS -eq 0 ]; then
-	touch /tmp/sysupgrade.always.overwrite.bootdisk.partmap
-else
-	rm -f /tmp/sysupgrade.always.overwrite.bootdisk.partmap
-fi
-
 install_bin /sbin/upgraded
 v "Commencing upgrade. Closing all shell sessions."
 
-COMMAND='. /lib/functions.sh; include /lib/upgrade; do_upgrade_stage2'
+COMMAND='/lib/upgrade/do_stage2'
 
 if [ -n "$FAILSAFE" ]; then
 	printf '%s\x00%s\x00%s' "$RAM_ROOT" "$IMAGE" "$COMMAND" >/tmp/sysupgrade

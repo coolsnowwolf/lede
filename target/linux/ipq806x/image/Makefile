@@ -26,8 +26,6 @@ endef
 define Device/Default
 	PROFILES := Default
 	KERNEL_DEPENDS = $$(wildcard $(DTS_DIR)/$$(DEVICE_DTS).dts)
-	KERNEL_INITRAMFS_PREFIX := $$(IMG_PREFIX)-$(1)-initramfs
-	KERNEL_PREFIX := $$(IMAGE_PREFIX)
 	KERNEL_LOADADDR = 0x42208000
 	DEVICE_DTS = $$(SOC)-$(lastword $(subst _, ,$(1)))
 	DEVICE_DTS_CONFIG := config@1
@@ -100,8 +98,8 @@ define Device/askey_rt4230w-rev6
 	SOC := qcom-ipq8065
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
-	KERNEL_IN_UBI := 1
 	DEVICE_PACKAGES := ath10k-firmware-qca9984-ct
+	KERNEL_IN_UBI := 1
 endef
 TARGET_DEVICES += askey_rt4230w-rev6
 
@@ -345,26 +343,6 @@ define Device/qcom_ipq8064-db149
 	DEVICE_PACKAGES := ath10k-firmware-qca99x0-ct
 endef
 TARGET_DEVICES += qcom_ipq8064-db149
-
-define Device/ruijie_rg-mtfi-m520
-	DEVICE_VENDOR := Ruijie
-	DEVICE_MODEL := RG-MTFi-M520
-	SOC := qcom-ipq8064
-	KERNEL_SIZE := 4096k
-	BLOCKSIZE := 64k
-	BOARD_NAME := rg-mtfi-m520
-	KERNEL_SUFFIX := -uImage
-	KERNEL = kernel-bin | append-dtb | uImage none | pad-to $${KERNEL_SIZE}
-	KERNEL_NAME := zImage
-	IMAGES := factory.bin sysupgrade.bin mmcblk0p2-kernel.bin mmcblk0p3-rootfs.bin
-	IMAGE/factory.bin := qsdk-ipq-factory-mmc
-	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to $$$${BLOCKSIZE} | sysupgrade-tar rootfs=$$$$@ | append-metadata
-	IMAGE/mmcblk0p2-kernel.bin := append-kernel | pad-to $$$${KERNEL_SIZE}
-	IMAGE/mmcblk0p3-rootfs.bin := append-rootfs | pad-rootfs
-	DEVICE_PACKAGES := ath10k-firmware-qca988x-ct e2fsprogs f2fs-tools \
-	kmod-gpio-pca953x kmod-hwmon-lm75 kmod-fs-ext4 kmod-fs-f2fs kmod-rtc-pcf8563 losetup
-endef
-TARGET_DEVICES += ruijie_rg-mtfi-m520
 
 define Device/tplink_ad7200
 	$(call Device/TpSafeImage)

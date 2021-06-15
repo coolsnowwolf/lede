@@ -7,12 +7,11 @@ include $(TOPDIR)/rules.mk
 ARCH:=arc
 BOARD:=arc770
 BOARDNAME:=Synopsys DesignWare ARC 770D
-MAINTAINER:=Alexey Brodkin <abrodkin@synopsys.com>
 SUBTARGETS:=generic
 
 KERNEL_PATCHVER:=5.4
 
-DEVICE_TYPE:=developerboard
+DEVICE_TYPE:=basic
 
 define Target/Description
 	Synopsys DesignWare boards

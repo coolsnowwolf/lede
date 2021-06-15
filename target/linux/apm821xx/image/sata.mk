@@ -6,7 +6,7 @@ endef
 define Device/wd_mybooklive
   DEVICE_VENDOR := Western Digital
   DEVICE_MODEL := My Book Live Series (Single + Duo)
-  DEVICE_PACKAGES := kmod-usb-dwc2 kmod-usb-ledtrig-usbport kmod-usb-storage kmod-fs-vfat wpad-basic
+  DEVICE_PACKAGES := kmod-usb-dwc2 kmod-usb-ledtrig-usbport kmod-usb-storage kmod-fs-vfat wpad-basic-wolfssl
   SUPPORTED_DEVICES += mbl wd,mybooklive-duo
   BLOCKSIZE := 1k
   DTB_SIZE := 16384

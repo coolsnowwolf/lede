@@ -69,7 +69,7 @@ config () {
 	local cfgtype="$1"
 	local name="$2"
 
-	export ${NO_EXPORT:+-n} CONFIG_NUM_SECTIONS=$(($CONFIG_NUM_SECTIONS + 1))
+	export ${NO_EXPORT:+-n} CONFIG_NUM_SECTIONS=$((CONFIG_NUM_SECTIONS + 1))
 	name="${name:-cfg$CONFIG_NUM_SECTIONS}"
 	append CONFIG_SECTIONS "$name"
 	export ${NO_EXPORT:+-n} CONFIG_SECTION="$name"
@@ -92,7 +92,7 @@ list() {
 
 	config_get len "$CONFIG_SECTION" "${varname}_LENGTH" 0
 	[ $len = 0 ] && append CONFIG_LIST_STATE "${CONFIG_SECTION}_${varname}"
-	len=$(($len + 1))
+	len=$((len + 1))
 	config_set "$CONFIG_SECTION" "${varname}_ITEM$len" "$value"
 	config_set "$CONFIG_SECTION" "${varname}_LENGTH" "$len"
 	append "CONFIG_${CONFIG_SECTION}_${varname}" "$value" "$LIST_SEP"
@@ -106,9 +106,14 @@ config_unset() {
 # config_get <variable> <section> <option> [<default>]
 # config_get <section> <option>
 config_get() {
-	case "$3" in
-		"") eval echo "\${CONFIG_${1}_${2}:-\${4}}";;
-		*)  eval export ${NO_EXPORT:+-n} -- "${1}=\${CONFIG_${2}_${3}:-\${4}}";;
+	case "$2${3:-$1}" in
+		*[!A-Za-z0-9_]*) : ;;
+		*)
+			case "$3" in
+				"") eval echo "\"\${CONFIG_${1}_${2}:-\${4}}\"";;
+				*)  eval export ${NO_EXPORT:+-n} -- "${1}=\${CONFIG_${2}_${3}:-\${4}}";;
+			esac
+		;;
 	esac
 }
 
@@ -149,7 +154,7 @@ config_foreach() {
 	[ -z "$CONFIG_SECTIONS" ] && return 0
 	for section in ${CONFIG_SECTIONS}; do
 		config_get cfgtype "$section" TYPE
-		[ -n "$___type" -a "x$cfgtype" != "x$___type" ] && continue
+		[ -n "$___type" ] && [ "x$cfgtype" != "x$___type" ] && continue
 		eval "$___function \"\$section\" \"\$@\""
 	done
 }
@@ -168,7 +173,7 @@ config_list_foreach() {
 	while [ $c -le "$len" ]; do
 		config_get val "${section}" "${option}_ITEM$c"
 		eval "$function \"\$val\" \"\$@\""
-		c="$(($c + 1))"
+		c="$((c + 1))"
 	done
 }
 
@@ -235,6 +240,7 @@ add_group_and_user() {
 default_postinst() {
 	local root="${IPKG_INSTROOT}"
 	local pkgname="$(basename ${1%.*})"
+	local filelist="/usr/lib/opkg/info/${pkgname}.list"
 	local ret=0
 
 	add_group_and_user "${pkgname}"
@@ -249,23 +255,28 @@ default_postinst() {
 		rm -fR $root/rootfs-overlay/
 	fi
 
-	if [ -z "$root" ] && grep -q -s "^/etc/modules.d/" "/usr/lib/opkg/info/${pkgname}.list"; then
-		kmodloader
-	fi
+	if [ -z "$root" ]; then
+		if grep -m1 -q -s "^/etc/modules.d/" "$filelist"; then
+			kmodloader
+		fi
 
-	if [ -z "$root" ] && grep -q -s "^/etc/uci-defaults/" "/usr/lib/opkg/info/${pkgname}.list"; then
-		. /lib/functions/system.sh
-		[ -d /tmp/.uci ] || mkdir -p /tmp/.uci
-		for i in $(grep -s "^/etc/uci-defaults/" "/usr/lib/opkg/info/${pkgname}.list"); do
-			( [ -f "$i" ] && cd "$(dirname $i)" && . "$i" ) && rm -f "$i"
-		done
-		uci commit
-	fi
+		if grep -m1 -q -s "^/etc/sysctl.d/" "$filelist"; then
+			/etc/init.d/sysctl restart
+		fi
 
-	[ -n "$root" ] || rm -f /tmp/luci-indexcache 2>/dev/null
+		if grep -m1 -q -s "^/etc/uci-defaults/" "$filelist"; then
+			[ -d /tmp/.uci ] || mkdir -p /tmp/.uci
+			for i in $(grep -s "^/etc/uci-defaults/" "$filelist"); do
+				( [ -f "$i" ] && cd "$(dirname $i)" && . "$i" ) && rm -f "$i"
+			done
+			uci commit
+		fi
+
+		rm -f /tmp/luci-indexcache
+	fi
 
 	local shell="$(command -v bash)"
-	for i in $(grep -s "^/etc/init.d/" "$root/usr/lib/opkg/info/${pkgname}.list"); do
+	for i in $(grep -s "^/etc/init.d/" "$root$filelist"); do
 		if [ -n "$root" ]; then
 			${shell:-/bin/sh} "$root/etc/rc.common" "$root$i" enable
 		else
@@ -323,9 +334,9 @@ group_add_next() {
 		echo $gid
 		return
 	fi
-	gids=$(cat ${IPKG_INSTROOT}/etc/group | cut -d: -f3)
+	gids=$(cut -d: -f3 ${IPKG_INSTROOT}/etc/group)
 	gid=65536
-	while [ -n "$(echo "$gids" | grep "^$gid$")" ] ; do
+	while echo "$gids" | grep -q "^$gid$"; do
 		gid=$((gid + 1))
 	done
 	group_add $1 $gid
@@ -335,8 +346,8 @@ group_add_next() {
 group_add_user() {
 	local grp delim=","
 	grp=$(grep -s "^${1}:" ${IPKG_INSTROOT}/etc/group)
-	[ -z "$(echo $grp | cut -d: -f4 | grep $2)" ] || return
-	[ -n "$(echo $grp | grep ":$")" ] && delim=""
+	echo "$grp" | cut -d: -f4 | grep -q $2 && return
+	echo "$grp" | grep -q ":$" && delim=""
 	[ -n "$IPKG_INSTROOT" ] || lock /var/lock/passwd
 	sed -i "s/$grp/$grp$delim$2/g" ${IPKG_INSTROOT}/etc/group
 	[ -n "$IPKG_INSTROOT" ] || lock -u /var/lock/passwd
@@ -351,9 +362,9 @@ user_add() {
 	local shell="${6:-/bin/false}"
 	local rc
 	[ -z "$uid" ] && {
-		uids=$(cat ${IPKG_INSTROOT}/etc/passwd | cut -d: -f3)
+		uids=$(cut -d: -f3 ${IPKG_INSTROOT}/etc/passwd)
 		uid=65536
-		while [ -n "$(echo "$uids" | grep "^$uid$")" ] ; do
+		while echo "$uids" | grep -q "^$uid$"; do
 			uid=$((uid + 1))
 		done
 	}
@@ -373,4 +384,14 @@ board_name() {
 	[ -e /tmp/sysinfo/board_name ] && cat /tmp/sysinfo/board_name || echo "generic"
 }
 
-[ -z "$IPKG_INSTROOT" -a -f /lib/config/uci.sh ] && . /lib/config/uci.sh
+cmdline_get_var() {
+	local var=$1
+	local cmdlinevar tmp
+
+	for cmdlinevar in $(cat /proc/cmdline); do
+		tmp=${cmdlinevar##${var}}
+		[ "=" = "${tmp:0:1}" ] && echo ${tmp:1}
+	done
+}
+
+[ -z "$IPKG_INSTROOT" ] && [ -f /lib/config/uci.sh ] && . /lib/config/uci.sh

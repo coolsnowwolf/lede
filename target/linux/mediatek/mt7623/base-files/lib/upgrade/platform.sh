@@ -188,7 +188,7 @@ platform_copy_config() {
 		if [ -n "$recoverydev" ]; then
 			mkdir -p /tmp/recovery
 			mount -o rw,noatime "/dev/$recoverydev" -t vfat /tmp/recovery
-			cp -af "$CONF_TAR" "/tmp/recovery/sysupgrade.tgz"
+			cp -af "$UPGRADE_BACKUP" "/tmp/recovery/$BACKUP_FILE"
 			sync
 			umount /tmp/recovery
 		fi

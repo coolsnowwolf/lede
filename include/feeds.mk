@@ -43,5 +43,11 @@ endef
 
 # 1: package name
 define GetABISuffix
-$(if $(filter-out kmod-%,$(1)),$(if $(ABIV_$(1)),$(ABIV_$(1)),$(foreach v,$(wildcard $(STAGING_DIR)/pkginfo/$(1).version),$(shell cat $(v)))))
+$(call FormatABISuffix,$(1),$(if $(ABIV_$(1)),$(ABIV_$(1)),$(foreach v,$(wildcard $(STAGING_DIR)/pkginfo/$(1).version),$(shell cat $(v)))))
+endef
+
+# 1: package name
+# 2: abi version
+define FormatABISuffix
+$(if $(filter-out kmod-%,$(1)),$(if $(2),$(if $(filter %0 %1 %2 %3 %4 %5 %6 %7 %8 %9,$(1)),-)$(2)))
 endef

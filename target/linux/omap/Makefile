@@ -13,8 +13,6 @@ CPU_SUBTYPE:=vfpv3
 
 KERNEL_PATCHVER:=5.4
 
-MAINTAINER:=Alexander Couzens <lynxis@fe80.eu>
-
 KERNELNAME:=zImage dtbs
 
 define Target/Description

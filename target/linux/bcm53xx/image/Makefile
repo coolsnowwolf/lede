@@ -111,11 +111,11 @@ DEVICE_VARS += SIGNATURE
 DEVICE_VARS += NETGEAR_BOARD_ID NETGEAR_REGION TPLINK_BOARD
 DEVICE_VARS += LUXUL_BOARD
 
-IEEE8021X := wpad-basic
+IEEE8021X := wpad-basic-wolfssl
 B43 := $(IEEE8021X) kmod-b43
 BRCMFMAC_43602A1 := $(IEEE8021X) kmod-brcmfmac brcmfmac-firmware-43602a1-pcie
 BRCMFMAC_4366B1 := $(IEEE8021X) kmod-brcmfmac brcmfmac-firmware-4366b1-pcie
-BRCMFMAC_4366C0 := $(IEEE8021X) kmod-brcmfmac brcmfmac-firmware-4366c0-pcie-vendor
+BRCMFMAC_4366C0 := $(IEEE8021X) kmod-brcmfmac brcmfmac-firmware-4366c0-pcie
 USB2_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-phy-bcm-ns-usb2
 USB2_PACKAGES += kmod-usb-ledtrig-usbport
 USB3_PACKAGES := $(USB2_PACKAGES) kmod-usb3 kmod-phy-bcm-ns-usb3
@@ -123,14 +123,14 @@ USB3_PACKAGES := $(USB2_PACKAGES) kmod-usb3 kmod-phy-bcm-ns-usb3
 define Device/Default
   # .dtb files are prefixed by SoC type, e.g. bcm4708- which is not included in device/image names
   # extract the full dtb name based on the device info
-  DEVICE_DTS := $(patsubst %.dtb,%,$(notdir $(wildcard $(if $(IB),$(KDIR),$(DTS_DIR))/*-$(1).dtb)))
+  DEVICE_DTS := $(patsubst %.dtb,%,$(notdir $(wildcard $(if $(IB),$(KDIR),$(DTS_DIR))/*-$(subst _,-,$(1)).dtb)))
   KERNEL := kernel-bin | append-dtb | lzma-d16
   KERNEL_DEPENDS = $$(wildcard $(DTS_DIR)/$$(DEVICE_DTS).dts)
   KERNEL_INITRAMFS_SUFFIX := .trx
   KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma-d16 | trx
   FILESYSTEMS := squashfs
   KERNEL_NAME := zImage
-  IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1).$$(2)
+  DEVICE_IMG_NAME = $$(DEVICE_IMG_PREFIX)-$$(1).$$(2)
   IMAGES := trx
   BLOCKSIZE := 128k
   PAGESIZE := 2048
@@ -143,37 +143,37 @@ define Device/asus
   IMAGE/trx := append-ubi | trx-nand | asus-trx
 endef
 
-define Device/asus-rt-ac56u
+define Device/asus_rt-ac56u
   $(call Device/asus)
   DEVICE_MODEL := RT-AC56U
   DEVICE_PACKAGES := $(B43) $(USB3_PACKAGES)
   ASUS_PRODUCTID := RT-AC56U
 endef
-TARGET_DEVICES += asus-rt-ac56u
+TARGET_DEVICES += asus_rt-ac56u
 
-define Device/asus-rt-ac68u
+define Device/asus_rt-ac68u
   $(call Device/asus)
   DEVICE_MODEL := RT-AC68U
   DEVICE_PACKAGES := $(USB3_PACKAGES)
   ASUS_PRODUCTID := RT-AC68U
 endef
-TARGET_DEVICES += asus-rt-ac68u
+TARGET_DEVICES += asus_rt-ac68u
 
-define Device/asus-rt-ac87u
+define Device/asus_rt-ac87u
   $(call Device/asus)
   DEVICE_MODEL := RT-AC87U
   DEVICE_PACKAGES := $(USB3_PACKAGES)
   ASUS_PRODUCTID := RT-AC87U
 endef
-TARGET_DEVICES += asus-rt-ac87u
+TARGET_DEVICES += asus_rt-ac87u
 
-define Device/asus-rt-n18u
+define Device/asus_rt-n18u
   $(call Device/asus)
   DEVICE_MODEL := RT-N18U
   DEVICE_PACKAGES := $(USB3_PACKAGES)
   ASUS_PRODUCTID := RT-N18U
 endef
-TARGET_DEVICES += asus-rt-n18u
+TARGET_DEVICES += asus_rt-n18u
 
 # Buffalo devices have TFTP recovery mode which can work nicely with initramfs
 # kernels.
@@ -186,21 +186,21 @@ define Device/buffalo/Default
   KERNEL_INITRAMFS = $$(KERNEL)
 endef
 
-define Device/buffalo-wxr-1900dhp
+define Device/buffalo_wxr-1900dhp
   $(call Device/buffalo/Default)
   DEVICE_MODEL := WXR-1900DHP
   DEVICE_PACKAGES := $(USB3_PACKAGES)
 endef
-TARGET_DEVICES += buffalo-wxr-1900dhp
+TARGET_DEVICES += buffalo_wxr-1900dhp
 
-define Device/buffalo-wzr-600dhp2
+define Device/buffalo_wzr-600dhp2
   $(call Device/buffalo/Default)
   DEVICE_MODEL := WZR-600DHP2
   DEVICE_PACKAGES := $(B43) $(USB2_PACKAGES)
 endef
-TARGET_DEVICES += buffalo-wzr-600dhp2
+TARGET_DEVICES += buffalo_wzr-600dhp2
 
-define Device/buffalo-wzr-900dhp
+define Device/buffalo_wzr-900dhp
   $(call Device/buffalo/Default)
   DEVICE_MODEL := WZR-900DHP
   DEVICE_PACKAGES := $(B43) $(USB3_PACKAGES)
@@ -219,14 +219,14 @@ define Device/buffalo-wzr-900dhp
 	buffalo-tag-dhp WZR-900DHP2 JP jp | buffalo-enc-tag | \
 	buffalo-dhp-image
 endef
-TARGET_DEVICES += buffalo-wzr-900dhp
+TARGET_DEVICES += buffalo_wzr-900dhp
 
-define Device/buffalo-wzr-1750dhp
+define Device/buffalo_wzr-1750dhp
   $(call Device/buffalo/Default)
   DEVICE_MODEL := WZR-1750DHP
   DEVICE_PACKAGES := $(B43) $(USB3_PACKAGES)
 endef
-TARGET_DEVICES += buffalo-wzr-1750dhp
+TARGET_DEVICES += buffalo_wzr-1750dhp
 
 define Device/dlink
   DEVICE_VENDOR := D-Link
@@ -234,46 +234,48 @@ define Device/dlink
   IMAGE/bin := append-ubi | seama-nand
 endef
 
-define Device/dlink-dir-885l
+define Device/dlink_dir-885l
   DEVICE_MODEL := DIR-885L
   DEVICE_PACKAGES := $(BRCMFMAC_4366B1) $(USB3_PACKAGES)
   $(Device/dlink)
   SIGNATURE := wrgac42_dlink.2015_dir885l
 endef
-TARGET_DEVICES += dlink-dir-885l
+TARGET_DEVICES += dlink_dir-885l
 
 # Linksys devices are disabled due to problem with 2 TRX partitions
-define Device/linksys-ea6300-v1
+define Device/linksys_ea6300-v1
   DEVICE_VENDOR := Linksys
   DEVICE_MODEL := EA6300
   DEVICE_VARIANT := v1
   DEVICE_PACKAGES := $(B43) $(USB3_PACKAGES)
+  BROKEN := y
 endef
-# TARGET_DEVICES += linksys-ea6300-v1
+TARGET_DEVICES += linksys_ea6300-v1
 
-define Device/linksys-ea6500-v2
+define Device/linksys_ea6500-v2
   DEVICE_VENDOR := Linksys
   DEVICE_MODEL := EA6500
   DEVICE_VARIANT := v2
   DEVICE_PACKAGES := $(B43) $(USB3_PACKAGES)
 endef
-TARGET_DEVICES += linksys-ea6500-v2
+TARGET_DEVICES += linksys_ea6500-v2
 
-define Device/linksys-ea9200
+define Device/linksys_ea9200
   DEVICE_VENDOR := Linksys
   DEVICE_MODEL := EA9200
   DEVICE_VARIANT := v1
   DEVICE_PACKAGES := $(BRCMFMAC_43602A1) $(USB3_PACKAGES)
+  BROKEN := y
 endef
-# TARGET_DEVICES += linksys-ea9200
+TARGET_DEVICES += linksys_ea9200
 
-define Device/linksys-ea9500
+define Device/linksys_ea9500
   DEVICE_VENDOR := Linksys
   DEVICE_MODEL := EA9500
   DEVICE_PACKAGES := $(BRCMFMAC_4366C0) $(USB3_PACKAGES)
   DEVICE_DTS := bcm47094-linksys-panamera
 endef
-# TARGET_DEVICES += linksys-ea9500
+TARGET_DEVICES += linksys_ea9500
 
 define Device/luxul
   DEVICE_VENDOR := Luxul
@@ -281,39 +283,64 @@ define Device/luxul
   IMAGE/lxl := append-ubi | trx-nand | luxul-lxl
 endef
 
-define Device/luxul-abr-4500
+define Device/luxul_abr-4500
   $(Device/luxul)
   DEVICE_MODEL := ABR-4500
   DEVICE_PACKAGES := $(USB3_PACKAGES)
   LUXUL_BOARD := ABR-4500
 endef
-TARGET_DEVICES += luxul-abr-4500
+TARGET_DEVICES += luxul_abr-4500
 
-define Device/luxul-xap-1610
+define Device/luxul_xap-1610
   $(Device/luxul)
   DEVICE_MODEL := XAP-1610
   DEVICE_PACKAGES := $(BRCMFMAC_4366C0)
   IMAGE/lxl := append-rootfs | trx-serial | luxul-lxl
   LUXUL_BOARD := XAP-1610
 endef
-TARGET_DEVICES += luxul-xap-1610
+TARGET_DEVICES += luxul_xap-1610
 
-define Device/luxul-xbr-4500
+define Device/luxul_xbr-4500
   $(Device/luxul)
   DEVICE_MODEL := XBR-4500
   DEVICE_PACKAGES := $(USB3_PACKAGES)
   LUXUL_BOARD := XBR-4500
 endef
-TARGET_DEVICES += luxul-xbr-4500
+TARGET_DEVICES += luxul_xbr-4500
 
-define Device/luxul-xwr-3150
+define Device/luxul_xwr-3150
   $(Device/luxul)
   DEVICE_MODEL := XWR-3150
   DEVICE_PACKAGES := $(BRCMFMAC_4366C0) $(USB3_PACKAGES)
   DEVICE_DTS := bcm47094-luxul-xwr-3150-v1
   LUXUL_BOARD := XWR-3150
 endef
-TARGET_DEVICES += luxul-xwr-3150
+TARGET_DEVICES += luxul_xwr-3150
+
+define Device/meraki_mr32
+  DEVICE_VENDOR := Meraki
+  DEVICE_MODEL := MR32
+  DEVICE_PACKAGES := $(B43) kmod-i2c-bcm-iproc kmod-i2c-gpio kmod-eeprom-at24 \
+	kmod-leds-pwm kmod-hwmon-ina2xx kmod-bluetooth
+  DEVICE_DTS := bcm53016-meraki-mr32
+# Meraki FW r23 tries to resize the part.safe partition before it will
+# flash the image. This is a bit of a problem, since resizing will fail
+# if the partition is smaller than the old one.
+  KERNEL_LOADADDR := 0x00008000
+  KERNEL_INITRAMFS_SUFFIX := .bin
+  KERNEL_INITRAMFS := kernel-bin | fit none $$(DTS_DIR)/$$(DEVICE_DTS).dtb | \
+	pad-to 10362880
+  KERNEL := kernel-bin | fit none $$(DTS_DIR)/$$(DEVICE_DTS).dtb
+  IMAGES := sysupgrade.bin
+# Currently the only device that uses the new image check
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+
+# The loader is specifically looking for fdt@2:
+# [    3.190000] find_itb_subimage: error finding fdt@2: FDT_ERR_NOTFOUND
+# The image won't boot, if it isn't found. :(
+  DEVICE_FDT_NUM := 2
+endef
+TARGET_DEVICES += meraki_mr32
 
 define Device/netgear
   DEVICE_VENDOR := NETGEAR
@@ -322,56 +349,57 @@ define Device/netgear
   NETGEAR_REGION := 1
 endef
 
-define Device/netgear-r6250
+define Device/netgear_r6250
   DEVICE_MODEL := R6250
   DEVICE_PACKAGES := $(B43) $(USB3_PACKAGES)
   $(Device/netgear)
   NETGEAR_BOARD_ID := U12H245T00_NETGEAR
 endef
-TARGET_DEVICES += netgear-r6250
+TARGET_DEVICES += netgear_r6250
 
-define Device/netgear-r6300-v2
+define Device/netgear_r6300-v2
   DEVICE_MODEL := R6300
   DEVICE_VARIANT := v2
   DEVICE_PACKAGES := $(B43) $(USB3_PACKAGES)
   $(Device/netgear)
   NETGEAR_BOARD_ID := U12H240T00_NETGEAR
 endef
-TARGET_DEVICES += netgear-r6300-v2
+TARGET_DEVICES += netgear_r6300-v2
 
-define Device/netgear-r7000
+define Device/netgear_r7000
   DEVICE_MODEL := R7000
   DEVICE_PACKAGES := $(USB3_PACKAGES)
   $(Device/netgear)
   NETGEAR_BOARD_ID := U12H270T00_NETGEAR
 endef
-TARGET_DEVICES += netgear-r7000
+TARGET_DEVICES += netgear_r7000
 
-define Device/netgear-r7900
+define Device/netgear_r7900
   DEVICE_MODEL := R7900
   DEVICE_PACKAGES := $(BRCMFMAC_43602A1) $(USB3_PACKAGES)
   $(Device/netgear)
   NETGEAR_BOARD_ID := U12H315T30_NETGEAR
 endef
-TARGET_DEVICES += netgear-r7900
+TARGET_DEVICES += netgear_r7900
 
-define Device/netgear-r8000
+define Device/netgear_r8000
   DEVICE_MODEL := R8000
   DEVICE_PACKAGES := $(BRCMFMAC_43602A1) $(USB3_PACKAGES)
   $(Device/netgear)
   NETGEAR_BOARD_ID := U12H315T00_NETGEAR
 endef
-TARGET_DEVICES += netgear-r8000
+TARGET_DEVICES += netgear_r8000
 
-define Device/netgear-r8500
+define Device/netgear_r8500
   DEVICE_MODEL := R8500
   DEVICE_PACKAGES := $(BRCMFMAC_4366B1) $(USB3_PACKAGES)
   $(Device/netgear)
   NETGEAR_BOARD_ID := U12H334T00_NETGEAR
+  DEFAULT := n
 endef
-# TARGET_DEVICES += netgear-r8500
+TARGET_DEVICES += netgear_r8500
 
-define Device/smartrg-sr400ac
+define Device/smartrg_sr400ac
   DEVICE_VENDOR := SmartRG
   DEVICE_MODEL := SR400ac
   DEVICE_PACKAGES := $(BRCMFMAC_43602A1) $(USB3_PACKAGES)
@@ -380,40 +408,26 @@ define Device/smartrg-sr400ac
   KERNEL_INITRAMFS_SUFFIX := .bin
   KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma-d16
 endef
-TARGET_DEVICES += smartrg-sr400ac
+TARGET_DEVICES += smartrg_sr400ac
 
-define Device/phicomm-k3
+define Device/phicomm_k3
   DEVICE_VENDOR := PHICOMM
   DEVICE_MODEL := K3
-  DEVICE_PACKAGES := $(USB3_PACKAGES) wpad kmod-brcmfmac k3wifi luci-app-k3screenctrl
+  DEVICE_PACKAGES := $(BRCMFMAC_4366C0) $(USB3_PACKAGES)
   IMAGES := trx
 endef
-TARGET_DEVICES += phicomm-k3
+TARGET_DEVICES += phicomm_k3
 
-define Device/arris-sbr-ac1900p
-  DEVICE_VENDOR := ARRIS
-  DEVICE_MODEL := SBR-AC1900P
-  DEVICE_PACKAGES := $(USB3_PACKAGES)
-endef
-TARGET_DEVICES += arris-sbr-ac1900p
-
-define Device/arris-sbr-ac3200p
-  DEVICE_VENDOR := ARRIS
-  DEVICE_MODEL := SBR-AC3200P
-  DEVICE_PACKAGES := $(BRCMFMAC_43602A1) $(USB3_PACKAGES)
-endef
-TARGET_DEVICES += arris-sbr-ac3200p
-
-define Device/tenda-ac9
+define Device/tenda_ac9
   DEVICE_VENDOR := Tenda
   DEVICE_MODEL := AC9
   DEVICE_PACKAGES := $(B43) $(USB2_PACKAGES)
   IMAGES := trx
   IMAGE/trx := append-rootfs | trx-serial
 endef
-TARGET_DEVICES += tenda-ac9
+TARGET_DEVICES += tenda_ac9
 
-define Device/tplink-archer-c5-v2
+define Device/tplink_archer-c5-v2
   DEVICE_VENDOR := TP-Link
   DEVICE_MODEL := Archer C5
   DEVICE_VARIANT := v2
@@ -421,10 +435,11 @@ define Device/tplink-archer-c5-v2
   IMAGES := bin
   IMAGE/bin := append-rootfs | bcm53xx-tplink-safeloader
   TPLINK_BOARD := ARCHER-C5-V2
+  BROKEN := y
 endef
-#TARGET_DEVICES += tplink-archer-c5-v2
+TARGET_DEVICES += tplink_archer-c5-v2
 
-define Device/tplink-archer-c9-v1
+define Device/tplink_archer-c9-v1
   DEVICE_VENDOR := TP-Link
   DEVICE_MODEL := Archer C9
   DEVICE_VARIANT := v1
@@ -432,7 +447,8 @@ define Device/tplink-archer-c9-v1
   IMAGES := bin
   IMAGE/bin := append-rootfs | bcm53xx-tplink-safeloader
   TPLINK_BOARD := ARCHERC9
+  BROKEN := y
 endef
-#TARGET_DEVICES += tplink-archer-c9-v1
+TARGET_DEVICES += tplink_archer-c9-v1
 
 $(eval $(call BuildImage))

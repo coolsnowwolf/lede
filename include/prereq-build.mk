@@ -102,9 +102,9 @@ $(eval $(call SetupHostCommand,patch,Please install GNU 'patch', \
 	gpatch --version 2>&1 | grep 'Free Software Foundation', \
 	patch --version 2>&1 | grep 'Free Software Foundation'))
 
-$(eval $(call SetupHostCommand,diff,Please install diffutils, \
-	gdiff --version 2>&1 | grep diff, \
-	diff --version 2>&1 | grep diff))
+$(eval $(call SetupHostCommand,diff,Please install GNU diffutils, \
+	gdiff --version 2>&1 | grep GNU, \
+	diff --version 2>&1 | grep GNU))
 
 $(eval $(call SetupHostCommand,cp,Please install GNU fileutils, \
 	gcp --help 2>&1 | grep 'Copy SOURCE', \

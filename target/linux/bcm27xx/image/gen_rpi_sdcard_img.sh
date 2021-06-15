@@ -24,3 +24,6 @@ ROOTFSSIZE="$(($4 / 512))"
 
 dd bs=512 if="$BOOTFS" of="$OUTPUT" seek="$BOOTOFFSET" conv=notrunc
 dd bs=512 if="$ROOTFS" of="$OUTPUT" seek="$ROOTFSOFFSET" conv=notrunc
+
+
+
