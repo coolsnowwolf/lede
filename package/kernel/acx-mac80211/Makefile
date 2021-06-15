@@ -26,9 +26,10 @@ include $(INCLUDE_DIR)/package.mk
 define KernelPackage/acx-mac80211
   SUBMENU:=Wireless Drivers
   TITLE:=ACX1xx mac80211 driver
-  DEPENDS:=@PCI_SUPPORT @mipsel +kmod-mac80211
+  DEPENDS:=@(PCI_SUPPORT||TARGET_ar7) @mipsel +kmod-mac80211
   FILES:=$(PKG_BUILD_DIR)/acx-mac80211.ko
   AUTOLOAD:=$(call AutoProbe,acx-mac80211)
+  MAINTAINER:=Florian Fainelli <florian@openwrt.org>
   MENU:=1
 endef
 
@@ -64,7 +65,8 @@ define KernelPackage/acx-mac80211/config
 	choice
 		prompt "ACX111 firmware version"
 		depends on ACX_ID_16
-		default ACX_DEFAULT
+		default ACX_DEFAULT if !TARGET_adm5120
+		default ACX_1_2_1_34 if TARGET_adm5120
 		help
 		  This option allows you to select the version of the acx firmware.
 
@@ -112,55 +114,55 @@ endef
 
 define Download/tiacx100
 	FILE:=tiacx100
-	URL:=http://acx100.erley.org/fw/acx100_1.9.8.b/
+	URL:=@OPENWRT
 	HASH:=4f05913c940c2455b267545b12d93ad81fa5eebb0cbee22a2c7588c50525b4f0
 endef
 
 define Download/tiacx100r0d
 	FILE:=tiacx100r0D
-	URL:=http://acx100.erley.org/fw/acx100_1.9.8.b/
+	URL:=@OPENWRT
 	HASH:=6a4a7fbb24a328a88261bc2a507b2a0bf63c91e831e3f1a8caa4f6599b2215e6
 endef
 
 define Download/tiacx100r11
 	FILE:=tiacx100r11
-	URL:=http://acx100.erley.org/fw/acx100_1.9.8.b/
+	URL:=@OPENWRT
 	HASH:=e005a93a0b463e01edba2b79038b54c29a7932efee61c851a2ac644b8a4e5dd4
 endef
 
 define Download/tiacx100r15
 	FILE:=tiacx100r15
-	URL:=http://acx100.erley.org/fw/acx100_1.9.8.b/
+	URL:=@OPENWRT
 	HASH:=c6f40bead5ef45720e2d72bbe4d998367c2c7857eb7716234aedeb2ad98bcdde
 endef
 
 define Download/tiacx111c16
 	FILE:=tiacx111c16
-	URL:=http://acx100.erley.org/fw/acx111_2.3.1.31/
+	URL:=@OPENWRT
 	HASH:=cc6108d577ebc55b924ff6bab44eeee3456d284c63819277cb5460338b2f1bd7
 endef
 
 define Download/tiacx111c16_1
 	FILE:=tiacx111c16_1.2.1_34
-	URL:=http://sites.google.com/site/atorkhov/files/
+	URL:=@OPENWRT
 	HASH:=672ed9d02565ab44da450c52f0ced3be99a3a3901f73454455da8e1f98ada220
 endef
 
 define Download/tiacx111c17
 	FILE:=tiacx111c17
-	URL:=http://acx100.erley.org/fw/acx111_2.3.1.31/
+	URL:=@OPENWRT
 	HASH:=2bb900a5886dbea2d3504623d9f3ac8abbb2e9fdfcf0fe233e77951dff748a40
 endef
 
 define Download/tiacx111c19
 	FILE:=tiacx111c19
-	URL:=http://acx100.erley.org/fw/acx111_2.3.1.31/
+	URL:=@OPENWRT
 	HASH:=383d86a8cfddf92400d661b4e43a9b855350fa656edd4f75b4aff7fab2d00e90
 endef
 
 define Download/tiacx111usbc1b
 	FILE:=tiacx111usbc1B
-	URL:=http://acx100.erley.org/fw/acx111_2.4.0.70-USB/
+	URL:=@OPENWRT
 	HASH:=f3c9e574de7073014ab6eef9a0f6412c53ae521b67723360af753c41401ed4d5
 endef
 

@@ -1,12 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2013-2016 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
 
 define KernelPackage/rtc-sunxi
     SUBMENU:=$(OTHER_MENU)
-    TITLE:=Sunxi SoC built-in RTC support
+    TITLE:=Allwinner A10/A20 built-in RTC support
     DEPENDS:=@TARGET_sunxi
     $(call AddDepends/rtc)
     KCONFIG:= \

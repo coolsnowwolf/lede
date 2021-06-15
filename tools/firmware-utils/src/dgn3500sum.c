@@ -104,7 +104,7 @@ int main(int argc, char** argv)
   char *endptr, *buffer, *p;
   int count;  // size of file in bytes
   unsigned short sum = 0, sum1 = 0;
-  char sumbuf[9];
+  char sumbuf[8 + 8 + 1];
 
   if(argc < 3) {
     printf("ERROR: Argument missing!\n\nUsage %s filename starting offset in hex [PID code]\n\n", argv[0]);

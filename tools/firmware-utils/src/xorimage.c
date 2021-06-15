@@ -29,15 +29,17 @@ static char default_pattern[] = "12345678";
 static int is_hex_pattern;
 
 
-int xor_data(uint8_t *data, size_t len, const uint8_t *pattern, int p_len, int p_off)
+int xor_data(void *data, size_t len, const void *pattern, int p_len, int p_off)
 {
-	int offset = p_off;
+	const uint8_t *key = pattern;
+	uint8_t *d = data;
+
 	while (len--) {
-		*data ^= pattern[offset];
-		data++;
-		offset = (offset + 1) % p_len;
+		*d ^= key[p_off];
+		d++;
+		p_off = (p_off + 1) % p_len;
 	}
-	return offset;
+	return p_off;
 }
 
 
@@ -61,7 +63,6 @@ int main(int argc, char **argv)
 	char hex_pattern[128];
 	unsigned int hex_buf;
 	int c;
-	int v0, v1, v2;
 	size_t n;
 	int p_len, p_off = 0;
 

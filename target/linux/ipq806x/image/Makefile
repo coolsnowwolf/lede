@@ -13,6 +13,16 @@ define Build/buffalo-rootfs-cksum
 	) >> $@
 endef
 
+define Build/edimax-header
+	$(eval edimax_model=$(word 1,$(1)))
+
+	$(STAGING_DIR_HOST)/bin/mkedimaximg \
+	-b -s CSYS -m $(edimax_model) \
+	-f 0x70000 -S 0x1200000 \
+	-i $@ -o $@.new
+	@mv $@.new $@
+endef
+
 define Device/Default
 	PROFILES := Default
 	KERNEL_DEPENDS = $$(wildcard $(DTS_DIR)/$$(DEVICE_DTS).dts)
@@ -20,7 +30,7 @@ define Device/Default
 	KERNEL_PREFIX := $$(IMAGE_PREFIX)
 	KERNEL_LOADADDR = 0x42208000
 	DEVICE_DTS = $$(SOC)-$(lastword $(subst _, ,$(1)))
-	SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
+	DEVICE_DTS_CONFIG := config@1
 	IMAGES := sysupgrade.bin
 	IMAGE/sysupgrade.bin = sysupgrade-tar | append-metadata
 	IMAGE/sysupgrade.bin/squashfs :=
@@ -82,6 +92,33 @@ define Device/ZyXELImage
 	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to $$$$(BLOCKSIZE) | sysupgrade-tar rootfs=$$$$@ | append-metadata
 endef
 
+define Device/askey_rt4230w-rev6
+	$(call Device/LegacyImage)
+	DEVICE_VENDOR := Askey
+	DEVICE_MODEL := RT4230W
+	DEVICE_VARIANT := REV6
+	SOC := qcom-ipq8065
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	KERNEL_IN_UBI := 1
+	DEVICE_PACKAGES := ath10k-firmware-qca9984-ct
+endef
+TARGET_DEVICES += askey_rt4230w-rev6
+
+define Device/asrock_g10
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	SOC := qcom-ipq8064
+	DEVICE_VENDOR := ASRock
+	DEVICE_MODEL := G10
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	KERNEL_SIZE := 5332k
+	DEVICE_PACKAGES := kmod-i2c-gpio ath10k-firmware-qca99x0-ct
+	IMAGE/nand-factory.bin := append-ubi | edimax-header RN67
+endef
+TARGET_DEVICES += asrock_g10
+
 define Device/buffalo_wxr-2533dhp
 	$(call Device/LegacyImage)
 	SOC := qcom-ipq8064
@@ -108,6 +145,19 @@ define Device/compex_wpq864
 	DEVICE_PACKAGES := kmod-gpio-beeper
 endef
 TARGET_DEVICES += compex_wpq864
+
+define Device/edgecore_ecw5410
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Edgecore
+	DEVICE_MODEL := ECW5410
+	SOC := qcom-ipq8068
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_DTS_CONFIG := config@v2.0-ap160
+	DEVICE_PACKAGES := ath10k-firmware-qca9984-ct ipq-wifi-edgecore_ecw5410
+endef
+TARGET_DEVICES += edgecore_ecw5410
 
 define Device/linksys_ea7500-v1
 	$(call Device/LegacyImage)
@@ -155,6 +205,20 @@ define Device/nec_wg2600hp
 	DEVICE_PACKAGES := ath10k-firmware-qca99x0-ct
 endef
 TARGET_DEVICES += nec_wg2600hp
+
+define Device/nec_wg2600hp3
+	$(call Device/LegacyImage)
+	DEVICE_VENDOR := NEC Platforms
+	DEVICE_MODEL := Aterm WG2600HP3
+	SOC := qcom-ipq8062
+	BLOCKSIZE := 64k
+	IMAGES := sysupgrade.bin
+	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
+	DEVICE_PACKAGES := -kmod-ata-ahci -kmod-ata-ahci-platform -kmod-usb-ohci -kmod-usb2 \
+		-kmod-usb-ledtrig-usbport -kmod-usb-phy-qcom-dwc3 -kmod-usb3 -kmod-usb-dwc3-qcom \
+		ath10k-firmware-qca9984-ct ipq-wifi-nec_wg2600hp3
+endef
+TARGET_DEVICES += nec_wg2600hp3
 
 define Device/netgear_d7800
 	$(call Device/DniImage)
@@ -302,6 +366,22 @@ define Device/ruijie_rg-mtfi-m520
 endef
 TARGET_DEVICES += ruijie_rg-mtfi-m520
 
+define Device/tplink_ad7200
+	$(call Device/TpSafeImage)
+	DEVICE_VENDOR := TP-Link
+	DEVICE_MODEL := AD7200
+	DEVICE_VARIANT := v1/v2
+	DEVICE_ALT0_VENDOR := TP-Link
+	DEVICE_ALT0_MODEL := Talon AD7200
+	DEVICE_ALT0_VARIANT := v1/v2
+	SOC := qcom-ipq8064
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	TPLINK_BOARD_ID := AD7200
+	DEVICE_PACKAGES := ath10k-firmware-qca99x0-ct kmod-wil6210
+endef
+TARGET_DEVICES += tplink_ad7200
+
 define Device/tplink_c2600
 	$(call Device/TpSafeImage)
 	DEVICE_VENDOR := TP-Link
@@ -334,6 +414,18 @@ define Device/tplink_vr2600v
 	IMAGE/sysupgrade.bin := pad-extra 512 | append-kernel | pad-to $$$$(KERNEL_SIZE) | append-rootfs | pad-rootfs | append-metadata
 endef
 TARGET_DEVICES += tplink_vr2600v
+
+define Device/ubnt_unifi-ac-hd
+	$(call Device/FitImageLzma)
+	DEVICE_VENDOR := Ubiquiti
+	DEVICE_MODEL := UniFi AC HD
+	SOC := qcom-ipq8064
+	BLOCKSIZE := 64k
+	IMAGE_SIZE := 14784k
+	DEVICE_PACKAGES := ath10k-firmware-qca9984-ct
+	IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | append-metadata | check-size
+endef
+TARGET_DEVICES += ubnt_unifi-ac-hd
 
 define Device/zyxel_nbg6817
 	DEVICE_VENDOR := ZyXEL

@@ -1,7 +1,7 @@
 platform_check_image() {
 	local diskdev partdev diff
 
-	export_bootdevice && export_partdevice diskdev 0 || {
+	export_bootdevice && export_partdevice diskdev -2 || {
 		echo "Unable to determine upgrade device"
 		return 1
 	}
@@ -28,9 +28,9 @@ platform_check_image() {
 platform_copy_config() {
 	local partdev
 
-	if export_partdevice partdev 1; then
+	if export_partdevice partdev -1; then
 		mount -t vfat -o rw,noatime "/dev/$partdev" /mnt
-		cp -af "$UPGRADE_BACKUP" "/mnt/$BACKUP_FILE"
+		cp -af "$CONF_TAR" /mnt/
 		umount /mnt
 	fi
 }
@@ -38,14 +38,14 @@ platform_copy_config() {
 platform_do_upgrade() {
 	local diskdev partdev diff
 
-	export_bootdevice && export_partdevice diskdev 0 || {
+	export_bootdevice && export_partdevice diskdev -2 || {
 		echo "Unable to determine upgrade device"
 		return 1
 	}
 
 	sync
 
-	if [ "$UPGRADE_OPT_SAVE_PARTITIONS" = "1" ]; then
+	if [ "$SAVE_PARTITIONS" = "1" ]; then
 		get_partitions "/dev/$diskdev" bootdisk
 
 		#extract the boot sector from the image
@@ -74,6 +74,7 @@ platform_do_upgrade() {
 	get_image "$@" | dd of="$diskdev" bs=1024 skip=8 seek=8 count=1016 conv=fsync
 	#iterate over each partition from the image and write it to the boot disk
 	while read part start size; do
+		part="$(($part - 2))"
 		if export_partdevice partdev $part; then
 			echo "Writing image to /dev/$partdev..."
 			get_image "$@" | dd of="/dev/$partdev" ibs="512" obs=1M skip="$start" count="$size" conv=fsync

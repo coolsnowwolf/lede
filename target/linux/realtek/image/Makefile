@@ -72,6 +72,15 @@ define Device/d-link_dgs-1210-28
 endef
 TARGET_DEVICES += d-link_dgs-1210-28
 
+define Device/inaba_aml2-17gp
+  SOC := rtl8382
+  IMAGE_SIZE := 13504k
+  DEVICE_VENDOR := INABA
+  DEVICE_MODEL := Abaniact AML2-17GP
+  UIMAGE_MAGIC := 0x83800000
+endef
+TARGET_DEVICES += inaba_aml2-17gp
+
 define Device/netgear_gs108t-v3
   $(Device/netgear_nge)
   DEVICE_MODEL := GS108T
@@ -85,6 +94,23 @@ define Device/netgear_gs110tpp-v1
   DEVICE_VARIANT := v1
 endef
 TARGET_DEVICES += netgear_gs110tpp-v1
+
+define Device/netgear_gs308t-v1
+  $(Device/netgear_nge)
+  DEVICE_MODEL := GS308T
+  DEVICE_VARIANT := v1
+  UIMAGE_MAGIC := 0x4e474335
+endef
+TARGET_DEVICES += netgear_gs308t-v1
+
+define Device/netgear_gs310tp-v1
+  $(Device/netgear_nge)
+  DEVICE_MODEL := GS310TP
+  DEVICE_VARIANT := v1
+  UIMAGE_MAGIC := 0x4e474335
+  DEVICE_PACKAGES += lua-rs232
+endef
+TARGET_DEVICES += netgear_gs310tp-v1
 
 define Device/zyxel_gs1900
   SOC := rtl8380

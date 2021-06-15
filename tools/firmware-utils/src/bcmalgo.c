@@ -98,7 +98,6 @@ uint16_t get_hcs ( ldr_header_t* hd )
 	uint8_t hcs_minor;
 	uint8_t hcs_major;
 	uint16_t n = 0xffff;
-	uint16_t m = 0;
 	int state = 0;
 	int i,j;
 	for ( i = 0; i < 0x54; i++ )
@@ -226,7 +225,7 @@ int dump_header ( ldr_header_t* hd )
 	printf ( "HNW:\t\t0x%04X\n",reverse_endian16 ( hd->her_znaet_chto ) ); //Hell knows what
 	printf ( "CRC:\t\t0x%08X\n",reverse_endian32 ( hd->crc ) );
 	printf ( "=== Binary Header Dump===\n" );
-	int i,j;
+	int i;
 	uint8_t* head = ( uint8_t* ) hd;
 	for ( i=0;i<=sizeof ( ldr_header_t );i++ )
 	{

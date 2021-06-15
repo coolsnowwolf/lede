@@ -159,7 +159,7 @@ $(eval $(call KernelPackage,iio-dht11))
 define KernelPackage/iio-bme680
   SUBMENU:=$(IIO_MENU)
   TITLE:=BME680 gas/humidity/pressure/temperature sensor
-  DEPENDS:=@!LINUX_4_14 +kmod-iio-core +kmod-regmap-core
+  DEPENDS:=+kmod-iio-core +kmod-regmap-core
   KCONFIG:=CONFIG_BME680
   FILES:=$(LINUX_DIR)/drivers/iio/chemical/bme680_core.ko
 endef
@@ -414,7 +414,7 @@ $(eval $(call KernelPackage,iio-lsm6dsx-spi))
 
 define KernelPackage/iio-sps30
   SUBMENU:=$(IIO_MENU)
-  DEPENDS:=@!LINUX_4_14 +kmod-i2c-core +kmod-iio-core +kmod-industrialio-triggered-buffer +kmod-lib-crc8
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core +kmod-industrialio-triggered-buffer +kmod-lib-crc8
   TITLE:=Sensirion SPS30 particulate matter sensor
   KCONFIG:=CONFIG_SPS30
   FILES:=$(LINUX_DIR)/drivers/iio/chemical/sps30.ko

@@ -12,11 +12,13 @@ PKG_VERSION:=20191218
 PKG_RELEASE:=1
 
 PKG_SOURCE:=amd64-microcode_3.$(PKG_VERSION).$(PKG_RELEASE).tar.xz
-PKG_SOURCE_URL:=http://ftp.debian.org/debian/pool/non-free/a/amd64-microcode/
+PKG_SOURCE_URL:=@DEBIAN/pool/non-free/a/amd64-microcode/
 PKG_HASH:=f469b79348097c5f04641b67a39d0ee5a2a1916c9556281626c04f2275d4132d
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-3.$(PKG_VERSION).$(PKG_RELEASE)
 
 PKG_LICENSE_FILE:=LICENSE.amd-ucode
+
+PKG_FLAGS:=nonshared
 
 include $(INCLUDE_DIR)/package.mk
 

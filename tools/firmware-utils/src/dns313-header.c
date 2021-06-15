@@ -102,9 +102,11 @@ static const uint32_t crc32_table[256] = {
 };
 
 static uint32_t crc32(uint32_t crc,
-		      const unsigned char *buf,
+		      const void *data,
 		      unsigned int len)
 {
+	const uint8_t *buf = data;
+
 	crc = crc ^ 0xffffffffUL;
 	do {
 		crc = crc32_table[((int)crc ^ (*buf++)) & 0xff] ^ (crc >> 8);
@@ -112,7 +114,7 @@ static uint32_t crc32(uint32_t crc,
 	return crc ^ 0xffffffffUL;
 }
 
-static void be_wr(unsigned char *buf, uint32_t val)
+static void be_wr(char *buf, uint32_t val)
 {
 	buf[0] = (val >> 24) & 0xFFU;
 	buf[1] = (val >> 16) & 0xFFU;
@@ -126,16 +128,13 @@ int main(int argc, char **argv)
 	int fdout;
 	struct stat sb;
 	uint32_t filesize;
-	uint32_t padding;
 	int ret = 0;
 	const char *pathin;
 	const char *pathout;
-	unsigned char *buffer;
-	unsigned char *infop;
+	char *buffer;
 	uint32_t sum;
 	size_t bufsize;
 	size_t bytes;
-	int i;
 
 	if (argc < 3) {
 		printf("Too few arguments.\n");
@@ -150,12 +149,11 @@ int main(int argc, char **argv)
 		return ret;
 
 	filesize = sb.st_size;
-	padding = filesize % 4;
 	printf("INFILE: %s, size: %08x bytes\n", pathin, filesize);
 	/* File + extended header size */
 	bufsize = filesize + HEADER_SIZE;
 
-	printf("Allocate %08x bytes\n", bufsize);
+	printf("Allocate %08zx bytes\n", bufsize);
 	buffer = malloc(bufsize);
 	if (!buffer) {
 		printf("OOM: could not allocate buffer\n");
@@ -179,9 +177,6 @@ int main(int argc, char **argv)
 		return 0;
 	}
 	close(fdin);
-
-	/* PREP HEADER AND FOOTER */
-	infop = buffer;
 
 	be_wr(buffer + OFFSET_MAGIC, IH_MAGIC);
 
@@ -223,7 +218,7 @@ int main(int argc, char **argv)
 	be_wr(buffer + OFFSET_HCRC, sum);
 	printf("header checksum: 0x%08x\n", sum);
 
-	printf("OUTFILE: %s, size: %08x bytes\n", pathout, bufsize);
+	printf("OUTFILE: %s, size: %08zx bytes\n", pathout, bufsize);
 	fdout = open(pathout, O_RDWR|O_CREAT|O_TRUNC,S_IRWXU|S_IRGRP);
 	if (!fdout) {
 		printf("ERROR: could not open output file\n");

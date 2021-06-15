@@ -7,6 +7,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME := flock
+PKG_VERSION := 2.18
+PKG_RELEASE := 1
 
 include $(INCLUDE_DIR)/host-build.mk
 

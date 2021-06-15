@@ -162,6 +162,16 @@
 #define RTL838X_EEE_TX_TIMER_GIGA_CTRL		(0xaa04)
 #define RTL838X_EEE_TX_TIMER_GELITE_CTRL	(0xaa08)
 
+#define RTL839X_EEE_TX_TIMER_GELITE_CTRL	(0x042C)
+#define RTL839X_EEE_TX_TIMER_GIGA_CTRL		(0x0430)
+#define RTL839X_EEE_TX_TIMER_10G_CTRL		(0x0434)
+#define RTL839X_EEE_CTRL(p)			(0x8008 + ((p) << 7))
+#define RTL839X_MAC_EEE_ABLTY			(0x03C8)
+
+#define RTL930X_MAC_EEE_ABLTY			(0xCB34)
+#define RTL930X_EEE_CTRL(p)			(0x3274 + ((p) << 6))
+#define RTL930X_EEEP_PORT_CTRL(p)		(0x3278 + ((p) << 6))
+
 /* L2 functionality */
 #define RTL838X_L2_CTRL_0			(0x3200)
 #define RTL839X_L2_CTRL_0			(0x3800)
@@ -205,6 +215,12 @@
 #define RTL930X_RMA_BPDU_FLD_PMSK		(0x9F18)
 #define RTL931X_RMA_BPDU_FLD_PMSK		(0x8950)
 #define RTL839X_RMA_BPDU_FLD_PMSK		(0x125C)
+
+#define RTL838X_L2_PORT_LM_ACT(p)		(0x3208 + ((p) << 2))
+#define RTL838X_VLAN_PORT_FWD			(0x3A78)
+#define RTL839X_VLAN_PORT_FWD			(0x27AC)
+#define RTL930X_VLAN_PORT_FWD			(0x834C)
+#define RTL838X_VLAN_FID_CTRL			(0x3aa8)
 
 /* Port Mirroring */
 #define RTL838X_MIR_CTRL			(0x5D00)
@@ -322,8 +338,12 @@
 /* Debug features */
 #define RTL930X_STAT_PRVTE_DROP_COUNTER0	(0xB5B8)
 
+#define MAX_VLANS 4096
 #define MAX_LAGS 16
 #define MAX_PRIOS 8
+#define RTL930X_PORT_IGNORE 0x3f
+#define MAX_MC_GROUPS 512
+#define UNKNOWN_MC_PMASK (MAX_MC_GROUPS - 1)
 
 enum phy_type {
 	PHY_NONE = 0,
@@ -379,8 +399,27 @@ struct rtl838x_l2_entry {
 	bool next_hop;
 	int age;
 	u8 trunk;
-	u8 stackDev;
+	bool is_trunk;
+	u8 stack_dev;
 	u16 mc_portmask_index;
+	u32 mc_gip;
+	u32 mc_sip;
+	u16 mc_mac_index;
+	u16 nh_route_id;
+	bool nh_vlan_target;  // Only RTL83xx: VLAN used for next hop
+};
+
+struct rtl838x_nexthop {
+	u16 id;		// ID in HW Nexthop table
+	u32 ip;		// IP Addres of nexthop
+	u32 dev_id;
+	u16 port;
+	u16 vid;
+	u16 fid;
+	u64 mac;
+	u16 mac_id;
+	u16 l2_id;	// Index of this next hop forwarding entry in L2 FIB table
+	u16 if_id;
 };
 
 struct rtl838x_switch_priv;
@@ -416,6 +455,7 @@ struct rtl838x_reg {
 	void (*vlan_set_tagged)(u32 vlan, struct rtl838x_vlan_info *info);
 	void (*vlan_set_untagged)(u32 vlan, u64 portmask);
 	void (*vlan_profile_dump)(int index);
+	void (*vlan_profile_setup)(int profile);
 	void (*stp_get)(struct rtl838x_switch_priv *priv, u16 msti, u32 port_state[]);
 	void (*stp_set)(struct rtl838x_switch_priv *priv, u16 msti, u32 port_state[]);
 	int  (*mac_force_mode_ctrl)(int port);
@@ -431,7 +471,9 @@ struct rtl838x_reg {
 	int mac_rx_pause_sts;
 	int mac_tx_pause_sts;
 	u64 (*read_l2_entry_using_hash)(u32 hash, u32 position, struct rtl838x_l2_entry *e);
+	void (*write_l2_entry_using_hash)(u32 hash, u32 pos, struct rtl838x_l2_entry *e);
 	u64 (*read_cam)(int idx, struct rtl838x_l2_entry *e);
+	void (*write_cam)(int idx, struct rtl838x_l2_entry *e);
 	int vlan_port_egr_filter;
 	int vlan_port_igr_filter;
 	int vlan_port_pb;
@@ -440,6 +482,15 @@ struct rtl838x_reg {
 	int (*trk_mbr_ctr)(int group);
 	int rma_bpdu_fld_pmask;
 	int spcl_trap_eapol_ctrl;
+	void (*init_eee)(struct rtl838x_switch_priv *priv, bool enable);
+	void (*port_eee_set)(struct rtl838x_switch_priv *priv, int port, bool enable);
+	int (*eee_port_ability)(struct rtl838x_switch_priv *priv,
+				struct ethtool_eee *e, int port);
+	u64 (*l2_hash_seed)(u64 mac, u32 vid);
+	u32 (*l2_hash_key)(struct rtl838x_switch_priv *priv, u64 seed);
+	u64 (*read_mcast_pmask)(int idx);
+	void (*write_mcast_pmask)(int idx, u64 portmask);
+	void (*vlan_fwd_on_inner)(int port, bool is_set);
 };
 
 struct rtl838x_switch_priv {
@@ -460,11 +511,14 @@ struct rtl838x_switch_priv {
 	u8 port_width;
 	u64 irq_mask;
 	u32 fib_entries;
+	int l2_bucket_size;
 	struct dentry *dbgfs_dir;
 	int n_lags;
 	u64 lags_port_members[MAX_LAGS];
 	struct net_device *lag_devs[MAX_LAGS];
 	struct notifier_block nb;
+	bool eee_enabled;
+	unsigned long int mc_group_bm[MAX_MC_GROUPS >> 5];
 };
 
 void rtl838x_dbgfs_init(struct rtl838x_switch_priv *priv);

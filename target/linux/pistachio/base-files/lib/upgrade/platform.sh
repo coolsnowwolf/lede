@@ -1,9 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2017 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 RAMFS_COPY_BIN='fw_printenv fw_setenv dmesg'
 RAMFS_COPY_DATA="/etc/fw_env.config"
@@ -25,7 +22,10 @@ platform_do_upgrade() {
 	# stage2 directly but need to refactor nand_upgrade_success
 	# for this to work.
 	#   Also the nand functions don't allow url to be used
+	nand_do_upgrade $1
+}
 
+platform_nand_pre_upgrade() {
 	local board=$(board_name)
 
 	case "$board" in
@@ -44,6 +44,4 @@ platform_do_upgrade() {
 		echo "Upgrading partition $CI_UBIPART (/dev/mtd$(find_mtd_index $CI_UBIPART))"
 		;;
 	esac
-
-	nand_do_upgrade $1
 }

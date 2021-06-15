@@ -25,30 +25,30 @@ proto_map_setup() {
 	local iface="$2"
 	local link="map-$cfg"
 
-	# uncomment for legacy MAP0 mode
-	#export LEGACY=1
-
-	local type mtu ttl tunlink zone encaplimit
+	local maptype type legacymap mtu ttl tunlink zone encaplimit
 	local rule ipaddr ip4prefixlen ip6prefix ip6prefixlen peeraddr ealen psidlen psid offset
-	json_get_vars type mtu ttl tunlink zone encaplimit
+	json_get_vars maptype type legacymap mtu ttl tunlink zone encaplimit
 	json_get_vars rule ipaddr ip4prefixlen ip6prefix ip6prefixlen peeraddr ealen psidlen psid offset
 
 	[ "$zone" = "-" ] && zone=""
-	[ -z "$type" ] && type="map-e"
+
+	# Compatibility with older config: use $type if $maptype is missing
+	[ -z "$maptype" ] && maptype="$type"
+	[ -z "$maptype" ] && maptype="map-e"
 	[ -z "$ip4prefixlen" ] && ip4prefixlen=32
 
 	( proto_add_host_dependency "$cfg" "::" "$tunlink" )
 
 	# fixme: handle RA/DHCPv6 address race for LW
-	[ "$type" = lw4o6 ] && sleep 5
+	[ "$maptype" = lw4o6 ] && sleep 5
 
 	if [ -z "$rule" ]; then
-		rule="type=$type,ipv6prefix=$ip6prefix,prefix6len=$ip6prefixlen,ipv4prefix=$ipaddr,prefix4len=$ip4prefixlen"
+		rule="type=$maptype,ipv6prefix=$ip6prefix,prefix6len=$ip6prefixlen,ipv4prefix=$ipaddr,prefix4len=$ip4prefixlen"
 		[ -n "$psid" ] && rule="$rule,psid=$psid"
 		[ -n "$psidlen" ] && rule="$rule,psidlen=$psidlen"
 		[ -n "$offset" ] && rule="$rule,offset=$offset"
 		[ -n "$ealen" ] && rule="$rule,ealen=$ealen"
-		if [ "$type" = "map-t" ]; then
+		if [ "$maptype" = "map-t" ]; then
 			rule="$rule,dmr=$peeraddr"
 		else
 			rule="$rule,br=$peeraddr"
@@ -56,7 +56,7 @@ proto_map_setup() {
 	fi
 
 	echo "rule=$rule" > /tmp/map-$cfg.rules
-	RULE_DATA=$(mapcalc ${tunlink:-\*} $rule)
+	RULE_DATA=$(LEGACY="$legacymap" mapcalc ${tunlink:-\*} $rule)
 	if [ "$?" != 0 ]; then
 		proto_notify_error "$cfg" "INVALID_MAP_RULE"
 		proto_block_restart "$cfg"
@@ -73,7 +73,7 @@ proto_map_setup() {
 	fi
 
 	k=$RULE_BMR
-	if [ "$type" = "lw4o6" -o "$type" = "map-e" ]; then
+	if [ "$maptype" = "lw4o6" -o "$maptype" = "map-e" ]; then
 		proto_init_update "$link" 1
 		proto_add_ipv4_address $(eval "echo \$RULE_${k}_IPV4ADDR") "" "" ""
 
@@ -86,7 +86,7 @@ proto_map_setup() {
 		json_add_string link $(eval "echo \$RULE_${k}_PD6IFACE")
 		json_add_object "data"
 			[ -n "$encaplimit" ] && json_add_string encaplimit "$encaplimit"
-			if [ "$type" = "map-e" ]; then
+			if [ "$maptype" = "map-e" ]; then
 				json_add_array "fmrs"
 				for i in $(seq $RULE_COUNT); do
 					[ "$(eval "echo \$RULE_${i}_FMR")" != 1 ] && continue
@@ -103,10 +103,10 @@ proto_map_setup() {
 
 
 		proto_close_tunnel
-	elif [ "$type" = "map-t" -a -f "/proc/net/nat46/control" ]; then
+	elif [ "$maptype" = "map-t" -a -f "/proc/net/nat46/control" ]; then
 		proto_init_update "$link" 1
 		local style="MAP"
-		[ "$LEGACY" = 1 ] && style="MAP0"
+		[ "$legacymap" = 1 ] && style="MAP0"
 
 		echo add $link > /proc/net/nat46/control
 		local cfgstr="local.style $style local.v4 $(eval "echo \$RULE_${k}_IPV4PREFIX")/$(eval "echo \$RULE_${k}_PREFIX4LEN")"
@@ -154,7 +154,7 @@ proto_map_setup() {
               done
 	    done
 	  fi
-	  if [ "$type" = "map-t" ]; then
+	  if [ "$maptype" = "map-t" ]; then
 		[ -z "$zone" ] && zone=$(fw3 -q network $iface 2>/dev/null)
 
 		[ -n "$zone" ] && {
@@ -186,7 +186,7 @@ proto_map_setup() {
 
 	proto_send_update "$cfg"
 
-	if [ "$type" = "lw4o6" -o "$type" = "map-e" ]; then
+	if [ "$maptype" = "lw4o6" -o "$maptype" = "map-e" ]; then
 		json_init
 		json_add_string name "${cfg}_"
 		json_add_string ifname "@$(eval "echo \$RULE_${k}_PD6IFACE")"
@@ -205,9 +205,10 @@ proto_map_teardown() {
 
 	json_get_var type type
 
-	[ -z "$type" ] && type="map-e"
+	[ -z "$maptype" ] && maptype="$type"
+	[ -z "$maptype" ] && maptype="map-e"
 
-	case "$type" in
+	case "$maptype" in
 		"map-e"|"lw4o6") ifdown "${cfg}_" ;;
 		"map-t") [ -f "/proc/net/nat46/control" ] && echo del $link > /proc/net/nat46/control ;;
 	esac
@@ -219,6 +220,7 @@ proto_map_init_config() {
 	no_device=1
 	available=1
 
+	proto_config_add_string "maptype"
 	proto_config_add_string "rule"
 	proto_config_add_string "ipaddr"
 	proto_config_add_int "ip4prefixlen"
@@ -229,6 +231,7 @@ proto_map_init_config() {
 	proto_config_add_int "psidlen"
 	proto_config_add_int "psid"
 	proto_config_add_int "offset"
+	proto_config_add_boolean "legacymap"
 
 	proto_config_add_string "tunlink"
 	proto_config_add_int "mtu"

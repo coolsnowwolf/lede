@@ -48,6 +48,15 @@ _PROCD_SERVICE=
 procd_lock() {
 	local basescript=$(readlink "$initscript")
 	local service_name="$(basename ${basescript:-$initscript})"
+
+	flock -n 1000 &> /dev/null
+	if [ "$?" != "0" ]; then
+		exec 1000>"$IPKG_INSTROOT/var/lock/procd_${service_name}.lock"
+		flock 1000
+		if [ "$?" != "0" ]; then
+			logger "warning: procd flock for $service_name failed"
+		fi
+	fi
 }
 
 _procd_call() {
@@ -238,7 +247,7 @@ _procd_set_param() {
 		env|data|limits)
 			_procd_add_table "$type" "$@"
 		;;
-		command|netdev|file|respawn|watch)
+		command|netdev|file|respawn|watch|watchdog)
 			_procd_add_array "$type" "$@"
 		;;
 		error)
@@ -369,7 +378,7 @@ _procd_append_param() {
 		env|data|limits)
 			_procd_add_table_data "$@"
 		;;
-		command|netdev|file|respawn|watch)
+		command|netdev|file|respawn|watch|watchdog)
 			_procd_add_array_data "$@"
 		;;
 		error)

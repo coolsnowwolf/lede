@@ -1,5 +1,3 @@
-#!/bin/ash
-
 . /lib/functions.sh
 . /usr/share/libubox/jshn.sh
 
@@ -41,7 +39,13 @@ ucidef_set_interface() {
 
 		[ -n "$opt" -a -n "$val" ] || break
 
-		json_add_string "$opt" "$val"
+		[ "$opt" = "ifname" -a "$val" != "${val/ //}" ] && {
+			json_select_array "ports"
+			for e in $val; do json_add_string "" "$e"; done
+			json_close_array
+		} || {
+			json_add_string "$opt" "$val"
+		}
 	done
 
 	if ! json_is_a protocol string; then
@@ -82,6 +86,26 @@ ucidef_set_interfaces_lan_wan() {
 
 	ucidef_set_interface_lan "$lan_if"
 	ucidef_set_interface_wan "$wan_if"
+}
+
+ucidef_set_bridge_device() {
+	json_select_object bridge
+	json_add_string name "${1:switch0}"
+	json_select ..
+}
+
+ucidef_set_bridge_mac() {
+	json_select_object bridge
+	json_add_string macaddr "${1}"
+	json_select ..
+}
+
+ucidef_set_network_device_mac() {
+	json_select_object "network-device"
+	json_select_object "${1}"
+	json_add_string macaddr "${2}"
+	json_select ..
+	json_select ..
 }
 
 _ucidef_add_switch_port() {
@@ -615,5 +639,6 @@ board_config_update() {
 }
 
 board_config_flush() {
-	json_dump -i -o ${CFG}
+	json_dump -i > /tmp/.board.json
+	mv /tmp/.board.json ${CFG}
 }

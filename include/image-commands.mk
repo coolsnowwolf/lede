@@ -3,16 +3,12 @@
 IMAGE_KERNEL = $(word 1,$^)
 IMAGE_ROOTFS = $(word 2,$^)
 
-define rootfs_align
-$(patsubst %-256k,0x40000,$(patsubst %-128k,0x20000,$(patsubst %-64k,0x10000,$(patsubst squashfs%,0x4,$(patsubst root.%,%,$(1))))))
+define ModelNameLimit16
+$(shell expr substr "$(word 2, $(subst _, ,$(1)))" 1 16)
 endef
 
-define Build/uImage
-	mkimage -A $(LINUX_KARCH) \
-		-O linux -T kernel \
-		-C $(1) -a $(KERNEL_LOADADDR) -e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
-		-n '$(if $(UIMAGE_NAME),$(UIMAGE_NAME),$(call toupper,$(LINUX_KARCH)) $(VERSION_DIST) Linux-$(LINUX_VERSION))' -d $@ $@.new
-	mv $@.new $@
+define rootfs_align
+$(patsubst %-256k,0x40000,$(patsubst %-128k,0x20000,$(patsubst %-64k,0x10000,$(patsubst squashfs%,0x4,$(patsubst root.%,%,$(1))))))
 endef
 
 define Build/buffalo-enc
@@ -46,6 +42,26 @@ endef
 define Build/buffalo-dhp-image
 	$(STAGING_DIR_HOST)/bin/mkdhpimg $@ $@.new
 	mv $@.new $@
+endef
+
+define Build/elx-header
+	$(eval hw_id=$(word 1,$(1)))
+	$(eval xor_pattern=$(word 2,$(1)))
+	( \
+		echo -ne "\x00\x00\x00\x00\x00\x00\x00\x03" | \
+			dd bs=42 count=1 conv=sync; \
+		hw_id="$(hw_id)"; \
+		echo -ne "\x$${hw_id:0:2}\x$${hw_id:2:2}\x$${hw_id:4:2}\x$${hw_id:6:2}" | \
+			dd bs=20 count=1 conv=sync; \
+		echo -ne "$$(printf '%08x' $$(stat -c%s $@) | fold -s2 | xargs -I {} echo \\x{} | tr -d '\n')" | \
+			dd bs=8 count=1 conv=sync; \
+		echo -ne "$$($(MKHASH) md5 $@ | fold -s2 | xargs -I {} echo \\x{} | tr -d '\n')" | \
+			dd bs=58 count=1 conv=sync; \
+	) > $(KDIR)/tmp/$(DEVICE_NAME).header
+	$(call Build/xor-image,-p $(xor_pattern) -x)
+	cat $(KDIR)/tmp/$(DEVICE_NAME).header $@ > $@.new
+	mv $@.new $@
+	rm -rf $(KDIR)/tmp/$(DEVICE_NAME).header
 endef
 
 define Build/eva-image
@@ -142,6 +158,13 @@ define Build/append-dtb
 	cat $(KDIR)/image-$(firstword $(DEVICE_DTS)).dtb >> $@
 endef
 
+define Build/append-dtb-elf
+	$(TARGET_CROSS)objcopy \
+		--set-section-flags=.appended_dtb=alloc,contents \
+		--update-section \
+		.appended_dtb=$(KDIR)/image-$(firstword $(DEVICE_DTS)).dtb $@
+endef
+
 define Build/install-dtb
 	$(call locked, \
 		$(foreach dts,$(DEVICE_DTS), \
@@ -153,14 +176,31 @@ define Build/install-dtb
 	)
 endef
 
+define Build/initrd_compression
+	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_BZIP2),.bzip2) \
+	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_GZIP),.gzip) \
+	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_LZMA),.lzma) \
+	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_XZ),.xz) \
+	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_ZSTD),.zstd)
+endef
+
 define Build/fit
 	$(TOPDIR)/scripts/mkits.sh \
 		-D $(DEVICE_NAME) -o $@.its -k $@ \
-		$(if $(word 2,$(1)),-d $(word 2,$(1))) -C $(word 1,$(1)) \
+		-C $(word 1,$(1)) $(if $(word 2,$(1)),\
+		$(if $(DEVICE_DTS_OVERLAY),-d $(KERNEL_BUILD_DIR)/image-$$(basename $(word 2,$(1))),\
+			-d $(word 2,$(1)))) \
+		$(if $(findstring with-rootfs,$(word 3,$(1))),-r $(IMAGE_ROOTFS)) \
+		$(if $(findstring with-initrd,$(word 3,$(1))), \
+			$(if $(CONFIG_TARGET_ROOTFS_INITRAMFS_SEPARATE), \
+				-i $(KERNEL_BUILD_DIR)/initrd.cpio$(strip $(call Build/initrd_compression)))) \
 		-a $(KERNEL_LOADADDR) -e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
-		-c $(if $(DEVICE_DTS_CONFIG),$(DEVICE_DTS_CONFIG),"config@1") \
+		$(if $(DEVICE_FDT_NUM),-n $(DEVICE_FDT_NUM)) \
+		$(if $(DEVICE_DTS_OVERLAY),$(foreach dtso,$(DEVICE_DTS_OVERLAY), -O $(dtso):$(KERNEL_BUILD_DIR)/image-$(dtso).dtb)) \
+		-c $(if $(DEVICE_DTS_CONFIG),$(DEVICE_DTS_CONFIG),"config-1") \
 		-A $(LINUX_KARCH) -v $(LINUX_VERSION)
-	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage -f $@.its $@.new
+	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage $(if $(findstring external,$(word 3,$(1))),\
+		-E -B 0x1000 $(if $(findstring static,$(word 3,$(1))),-p 0x1000)) -f $@.its $@.new
 	@mv $@.new $@
 endef
 
@@ -201,6 +241,14 @@ define Build/jffs2
 		$(STAGING_DIR_HOST)/bin/padjffs2 $@.new -J $(patsubst %k,,$(BLOCKSIZE))
 	-rm -rf $(KDIR_TMP)/$(DEVICE_NAME)/jffs2/
 	@mv $@.new $@
+endef
+
+define Build/kernel2minor
+	$(eval temp_file := $(shell mktemp))
+	cp $@ $(temp_file)
+	kernel2minor -k $(temp_file) -r $(temp_file).new $(1)
+	mv $(temp_file).new $@
+	rm -f $(temp_file)
 endef
 
 define Build/kernel-bin
@@ -269,25 +317,12 @@ define Build/xor-image
 endef
 
 define Build/check-size
-	@[ $$(($(subst k,* 1024,$(subst m, * 1024k,$(if $(1),$(1),$(IMAGE_SIZE)))))) -ge "$$(stat -c%s $@)" ] || { \
-		echo "WARNING: Image file $@ is too big" >&2; \
+	@imagesize="$$(stat -c%s $@)"; \
+	limitsize="$$(($(subst k,* 1024,$(subst m, * 1024k,$(if $(1),$(1),$(IMAGE_SIZE))))))"; \
+	[ $$limitsize -ge $$imagesize ] || { \
+		echo "WARNING: Image file $@ is too big: $$imagesize > $$limitsize" >&2; \
 		rm -f $@; \
 	}
-endef
-
-define Build/check-kernel-size
-	@[ $$(($(subst k,* 1024,$(subst m, * 1024k,$(1))))) -ge "$$(stat -c%s $(IMAGE_KERNEL))" ] || { \
-		echo "WARNING: Kernel for $@ is too big > $(1)" >&2; \
-		rm -f $@; \
-	}
-endef
-
-define Build/combined-image
-	-sh $(TOPDIR)/scripts/combined-image.sh \
-		"$(IMAGE_KERNEL)" \
-		"$@" \
-		"$@.new"
-	@mv $@.new $@
 endef
 
 define Build/linksys-image
@@ -407,6 +442,21 @@ metadata_json = \
 		} \
 	}'
 
+define Build/uImage
+	mkimage \
+		-A $(LINUX_KARCH) \
+		-O linux \
+		-T kernel \
+		-C $(word 1,$(1)) \
+		-a $(KERNEL_LOADADDR) \
+		-e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
+		-n '$(if $(UIMAGE_NAME),$(UIMAGE_NAME),$(call toupper,$(LINUX_KARCH)) $(VERSION_DIST) Linux-$(LINUX_VERSION))' \
+		$(if $(UIMAGE_MAGIC),-M $(UIMAGE_MAGIC)) \
+		$(wordlist 2,$(words $(1)),$(1)) \
+		-d $@ $@.new
+	mv $@.new $@
+endef
+
 define Build/append-metadata
 	$(if $(SUPPORTED_DEVICES),-echo $(call metadata_json,$(SUPPORTED_DEVICES)) | fwtool -I - $@)
 	[ ! -s "$(BUILD_KEY)" -o ! -s "$(BUILD_KEY).ucert" -o ! -s "$@" ] || { \
@@ -415,16 +465,4 @@ define Build/append-metadata
 		ucert -A -c "$@.ucert" -x "$@.sig" ;\
 		fwtool -S "$@.ucert" "$@" ;\
 	}
-endef
-
-define Build/kernel2minor
-	kernel2minor -k $@ -r $@.new $(1)
-	mv $@.new $@
-endef
-
-# Convert a raw image into a $1 type image.
-# E.g. | qemu-image vdi
-define Build/qemu-image
-	qemu-img convert -f raw -O $1 $@ $@.new
-	@mv $@.new $@
 endef
