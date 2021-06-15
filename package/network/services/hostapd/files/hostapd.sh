@@ -263,6 +263,8 @@ hostapd_common_add_bss_config() {
 	config_add_int acct_port
 	config_add_int acct_interval
 
+	config_add_int bss_load_update_period chan_util_avg_period
+
 	config_add_string dae_client
 	config_add_string dae_secret
 	config_add_int dae_port
