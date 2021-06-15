@@ -110,7 +110,7 @@ static int nxp_74hc153_probe(struct platform_device *pdev)
 	unsigned gpio_s0;
 	unsigned gpio_s1;
 	unsigned gpio_1y;
-	unsigned gpio_2y;
+        unsigned gpio_2y;
 
 	nxp = kzalloc(sizeof(struct nxp_74hc153_chip), GFP_KERNEL);
 	if (nxp == NULL) {

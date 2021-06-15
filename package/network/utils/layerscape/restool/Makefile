@@ -18,8 +18,6 @@ PKG_MIRROR_HASH:=1863acfaef319e6b277671fead51df0a31bdddb59022080d86b7d81da0bc849
 
 PKG_FLAGS:=nonshared
 
-PKG_FLAGS:=nonshared
-
 include $(INCLUDE_DIR)/package.mk
 
 define Package/restool

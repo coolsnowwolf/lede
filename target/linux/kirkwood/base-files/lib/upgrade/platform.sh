@@ -14,10 +14,10 @@ platform_do_upgrade() {
 	linksys,e4200-v2|\
 	linksys,ea3500|\
 	linksys,ea4500)
-		platform_do_upgrade_linksys "$ARGV"
+		platform_do_upgrade_linksys "$1"
 		;;
 	*)
-		nand_do_upgrade "$ARGV"
+		nand_do_upgrade "$1"
 		;;
 	esac
 }

@@ -4,7 +4,7 @@
 
 define Profile/Broadcom-none
   NAME:=Broadcom SoC, all Ethernet, No WiFi
-  PACKAGES:=-wpad-basic kmod-b44 kmod-tg3 kmod-bgmac
+  PACKAGES:=-wpad-basic-wolfssl kmod-b44 kmod-tg3 kmod-bgmac
 endef
 
 define Profile/Broadcom-none/Description

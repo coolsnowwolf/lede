@@ -30,7 +30,7 @@ platform_copy_config() {
 
 	if export_partdevice partdev 1; then
 		mount -t vfat -o rw,noatime "/dev/$partdev" /mnt
-		cp -af "$CONF_TAR" /mnt/
+		cp -af "$UPGRADE_BACKUP" "/mnt/$BACKUP_FILE"
 		umount /mnt
 	fi
 }
@@ -45,7 +45,7 @@ platform_do_upgrade() {
 
 	sync
 
-	if [ "$SAVE_PARTITIONS" = "1" ]; then
+	if [ "$UPGRADE_OPT_SAVE_PARTITIONS" = "1" ]; then
 		get_partitions "/dev/$diskdev" bootdisk
 
 		#extract the boot sector from the image

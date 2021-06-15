@@ -99,7 +99,7 @@ _endef=endef
 
 ifeq ($(DUMP),)
   define BuildTarget/ipkg
-    ABIV_$(1):=$(if $(filter-out kmod-%,$(1)),$(ABI_VERSION))
+    ABIV_$(1):=$(call FormatABISuffix,$(1),$(ABI_VERSION))
     PDIR_$(1):=$(call FeedPackageDir,$(1))
     IPKG_$(1):=$$(PDIR_$(1))/$(1)$$(ABIV_$(1))_$(VERSION)_$(PKGARCH).ipk
     IDIR_$(1):=$(PKG_BUILD_DIR)/ipkg-$(PKGARCH)/$(1)

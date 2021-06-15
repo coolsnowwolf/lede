@@ -4,7 +4,7 @@
 
 define Profile/Default
 	NAME:=Default Profile (all drivers)
-	PACKAGES:= kmod-usb-core kmod-usb2 kmod-ath9k-htc wpad-basic
+	PACKAGES:= kmod-usb2 kmod-ath9k-htc wpad-basic-wolfssl
 endef
 
 define Profile/Default/Description

@@ -4,7 +4,7 @@
 
 define Profile/Broadcom-tg3-none
   NAME:=Broadcom SoC, tg3 Ethernet, no WiFi
-  PACKAGES:=-wpad-basic kmod-tg3
+  PACKAGES:=-wpad-basic-wolfssl kmod-tg3
 endef
 
 define Profile/Broadcom-tg3-none/Description

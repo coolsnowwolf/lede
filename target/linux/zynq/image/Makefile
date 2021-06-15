@@ -31,8 +31,6 @@ define Device/Default
 	PROFILES := Default
 	DEVICE_DTS := $(lastword $(subst _, ,$(1)))
 	KERNEL_DEPENDS = $$(wildcard $(DTS_DIR)/$$(DEVICE_DTS).dts)
-	KERNEL_INITRAMFS_PREFIX := $$(IMG_PREFIX)-$(1)-initramfs
-	KERNEL_PREFIX := $$(IMAGE_PREFIX)
 	KERNEL_LOADADDR := 0x8000
 	IMAGES := sdcard.img.gz
 	IMAGE/sdcard.img.gz := zynq-sdcard | gzip

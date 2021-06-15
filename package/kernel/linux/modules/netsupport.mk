@@ -766,7 +766,6 @@ define KernelPackage/sched-cake
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=Cake fq_codel/blue derived shaper
   DEPENDS:=+kmod-sched-core
-  PROVIDES:=kmod-sched-cake-oot
   KCONFIG:=CONFIG_NET_SCH_CAKE
   FILES:=$(LINUX_DIR)/net/sched/sch_cake.ko
   AUTOLOAD:=$(call AutoProbe,sch_cake)

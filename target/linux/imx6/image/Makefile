@@ -116,7 +116,6 @@ define Device/Default
   KERNEL_INSTALL := 1
   KERNEL_SUFFIX := -uImage
   KERNEL_NAME := zImage
-  KERNEL_PREFIX := $$(IMAGE_PREFIX)
   KERNEL := kernel-bin | uImage none
   IMAGES :=
 endef
@@ -210,7 +209,7 @@ define Device/toradex_apalis
 	kmod-pps-gpio kmod-rtc-ds1307
   FILESYSTEMS := squashfs
   IMAGES := combined.bin sysupgrade.bin
-  IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1).$$(2)
+  DEVICE_IMG_NAME = $$(DEVICE_IMG_PREFIX)-$$(1).$$(2)
   IMAGE/combined.bin := append-rootfs | pad-extra 128k | apalis-emmc
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   ARTIFACTS := recovery.scr

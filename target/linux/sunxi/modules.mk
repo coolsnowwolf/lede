@@ -4,7 +4,7 @@
 
 define KernelPackage/rtc-sunxi
     SUBMENU:=$(OTHER_MENU)
-    TITLE:=Allwinner A10/A20 built-in RTC support
+    TITLE:=Sunxi SoC built-in RTC support
     DEPENDS:=@TARGET_sunxi
     $(call AddDepends/rtc)
     KCONFIG:= \

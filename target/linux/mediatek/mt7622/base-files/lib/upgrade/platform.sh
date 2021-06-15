@@ -88,7 +88,7 @@ platform_copy_config_mmc() {
 	[ -e "$UPGRADE_BACKUP" ] || return
 	local datapart=$(cat /tmp/sysupgrade.datapart)
 	[ "$datapart" ] || echo "no rootfs_data partition, cannot keep configuration." >&2
-	dd if="$CONF_TAR" of=/dev/$datapart
+	dd if="$UPGRADE_BACKUP" of=/dev/$datapart
 	sync
 }
 

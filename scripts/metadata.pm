@@ -158,6 +158,10 @@ sub parse_target_metadata($) {
 		};
 		/^Target-Profile-Packages:\s*(.*)\s*$/ and $profile->{packages} = [ split(/\s+/, $1) ];
 		/^Target-Profile-Description:\s*(.*)\s*/ and $profile->{desc} = get_multiline(*FILE);
+		/^Target-Profile-Broken:\s*(.+)\s*$/ and do {
+			$profile->{broken} = 1;
+			$profile->{default} = "n";
+		};
 		/^Target-Profile-Default:\s*(.+)\s*$/ and $profile->{default} = $1;
 	}
 	close FILE;

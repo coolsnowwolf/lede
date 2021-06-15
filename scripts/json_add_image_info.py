@@ -12,7 +12,7 @@ if len(argv) != 2:
 
 json_path = Path(argv[1])
 bin_dir = Path(getenv("BIN_DIR"))
-image_file = bin_dir / getenv("IMAGE_NAME")
+image_file = bin_dir / getenv("DEVICE_IMG_NAME")
 
 if not image_file.is_file():
     print("Skip JSON creation for non existing image ", image_file)
@@ -47,12 +47,12 @@ image_info = {
     "source_date_epoch": getenv("SOURCE_DATE_EPOCH"),
     "profiles": {
         device_id: {
-            "image_prefix": getenv("IMAGE_PREFIX"),
+            "image_prefix": getenv("DEVICE_IMG_PREFIX"),
             "images": [
                 {
                     "type": getenv("IMAGE_TYPE"),
                     "filesystem": getenv("IMAGE_FILESYSTEM"),
-                    "name": getenv("IMAGE_NAME"),
+                    "name": getenv("DEVICE_IMG_NAME"),
                     "sha256": image_hash,
                 }
             ],

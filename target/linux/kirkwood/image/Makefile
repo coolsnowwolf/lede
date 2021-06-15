@@ -7,6 +7,11 @@ include $(INCLUDE_DIR)/image.mk
 
 KERNEL_LOADADDR:=0x8000
 
+define Device/dsa-migration
+  DEVICE_COMPAT_VERSION := 1.1
+  DEVICE_COMPAT_MESSAGE := Config cannot be migrated from swconfig to DSA
+endef
+
 define Device/Default
   PROFILES := Default
   DEVICE_DTS = kirkwood-$(lastword $(subst _, ,$(1)))
@@ -105,6 +110,7 @@ endef
 
 define Device/linksys_e4200-v2
   $(Device/linksys)
+  $(Device/dsa-migration)
   DEVICE_MODEL := E4200
   DEVICE_VARIANT := v2
   KERNEL_SIZE := 2688k
@@ -114,6 +120,7 @@ TARGET_DEVICES += linksys_e4200-v2
 
 define Device/linksys_ea3500
   $(Device/linksys)
+  $(Device/dsa-migration)
   DEVICE_MODEL := EA3500
   PAGESIZE := 512
   SUBPAGESIZE := 256
@@ -125,6 +132,7 @@ TARGET_DEVICES += linksys_ea3500
 
 define Device/linksys_ea4500
   $(Device/linksys)
+  $(Device/dsa-migration)
   DEVICE_MODEL := EA4500
   KERNEL_SIZE := 2688k
   SUPPORTED_DEVICES += linksys,viper linksys-viper

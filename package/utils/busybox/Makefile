@@ -154,8 +154,9 @@ endif
 ifneq ($(CONFIG_BUSYBOX_$(BUSYBOX_SYM)_NTPD),)
 	$(INSTALL_BIN) ./files/sysntpd $(1)/etc/init.d/sysntpd
 	$(INSTALL_BIN) ./files/ntpd-hotplug $(1)/usr/sbin/ntpd-hotplug
-	$(INSTALL_DIR) $(1)/etc/capabilities/
+	$(INSTALL_DIR) $(1)/etc/capabilities $(1)/usr/share/acl.d
 	$(INSTALL_DATA) ./files/ntpd.capabilities $(1)/etc/capabilities/ntpd.json
+	$(INSTALL_DATA) ./files/ntpd_acl.json $(1)/usr/share/acl.d/ntpd.json
 endif
 	-rm -rf $(1)/lib64
 endef

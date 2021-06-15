@@ -36,6 +36,10 @@ define Build/dtb
 	$(call Image/BuildDTB,../dts/$(DEVICE_DTS).dts,$@.dtb,,--space $(DTB_SIZE))
 endef
 
+define Build/export-dtb
+	cp $(IMAGE_KERNEL).dtb $@
+endef
+
 define Build/MuImage-initramfs
 	rm -rf $@.fakerd $@.new
 

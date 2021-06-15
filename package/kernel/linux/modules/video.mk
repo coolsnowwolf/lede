@@ -220,7 +220,6 @@ endef
 
 $(eval $(call KernelPackage,fb-tft-ili9486))
 
-
 define KernelPackage/multimedia-input
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Multimedia input support
@@ -237,7 +236,6 @@ define KernelPackage/multimedia-input/description
 endef
 
 $(eval $(call KernelPackage,multimedia-input))
-
 
 define KernelPackage/drm
   SUBMENU:=$(VIDEO_MENU)
