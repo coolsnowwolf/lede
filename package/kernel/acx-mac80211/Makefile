@@ -26,10 +26,9 @@ include $(INCLUDE_DIR)/package.mk
 define KernelPackage/acx-mac80211
   SUBMENU:=Wireless Drivers
   TITLE:=ACX1xx mac80211 driver
-  DEPENDS:=@(PCI_SUPPORT||TARGET_ar7) @mipsel +kmod-mac80211
+  DEPENDS:=@PCI_SUPPORT @mipsel +kmod-mac80211
   FILES:=$(PKG_BUILD_DIR)/acx-mac80211.ko
   AUTOLOAD:=$(call AutoProbe,acx-mac80211)
-  MAINTAINER:=Florian Fainelli <florian@openwrt.org>
   MENU:=1
 endef
 
@@ -65,8 +64,7 @@ define KernelPackage/acx-mac80211/config
 	choice
 		prompt "ACX111 firmware version"
 		depends on ACX_ID_16
-		default ACX_DEFAULT if !TARGET_adm5120
-		default ACX_1_2_1_34 if TARGET_adm5120
+		default ACX_DEFAULT
 		help
 		  This option allows you to select the version of the acx firmware.
 

@@ -137,7 +137,7 @@ DEVICE_VARS += BIN_TAIL
 
 define Device/Default
 	KERNEL := kernel-bin
-	IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1).$$(2)
+	DEVICE_IMG_NAME = $$(DEVICE_IMG_PREFIX)-$$(1).$$(2)
 	KERNEL_NAME = vmlinux.lzma
 	KERNEL_INITRAMFS_NAME = vmlinux-initramfs.lzma
 	FILESYSTEMS := $(FS_64K)

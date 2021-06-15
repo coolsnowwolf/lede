@@ -22,7 +22,7 @@ TARGET_DEVICES += cubietech_cubietruck
 define Device/friendlyarm_nanopi-m1-plus
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi M1 Plus
-  DEVICE_PACKAGES:= kmod-leds-gpio kmod-brcmfmac \
+  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-leds-gpio kmod-brcmfmac \
 	cypress-firmware-43430-sdio wpad-basic-wolfssl
   SOC := sun8i-h3
 endef
@@ -38,7 +38,7 @@ TARGET_DEVICES += friendlyarm_nanopi-neo
 define Device/friendlyarm_nanopi-neo-air
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi NEO Air
-  DEVICE_PACKAGES := kmod-leds-gpio kmod-brcmfmac \
+  DEVICE_PACKAGES := kmod-rtc-sunxi kmod-leds-gpio kmod-brcmfmac \
 	cypress-firmware-43430-sdio wpad-basic-wolfssl
   SOC := sun8i-h3
 endef
@@ -47,8 +47,8 @@ TARGET_DEVICES += friendlyarm_nanopi-neo-air
 define Device/friendlyarm_nanopi-r1
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R1
-  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-leds-gpio \
-	kmod-brcmfmac cypress-firmware-43430-sdio wpad-basic-wolfssl	
+  DEVICE_PACKAGES := kmod-rtc-sunxi kmod-usb-net-rtl8152 kmod-leds-gpio \
+	kmod-brcmfmac cypress-firmware-43430-sdio wpad-basic-wolfssl
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r1
@@ -56,6 +56,7 @@ TARGET_DEVICES += friendlyarm_nanopi-r1
 define Device/friendlyarm_zeropi
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := ZeroPi
+  DEVICE_PACKAGES := kmod-rtc-sunxi
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += friendlyarm_zeropi
@@ -89,7 +90,7 @@ TARGET_DEVICES += sinovoip_bananapi-m2-berry
 define Device/sinovoip_bananapi-m2-ultra
   DEVICE_VENDOR := Sinovoip
   DEVICE_MODEL := Banana Pi M2 Ultra
-  DEVICE_PACKAGES:=kmod-ata-sunxi kmod-brcmfmac \
+  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-ata-sunxi kmod-brcmfmac \
 	brcmfmac-firmware-43430a0-sdio wpad-basic-wolfssl
   SUPPORTED_DEVICES:=lemaker,bananapi-m2-ultra
   SOC := sun8i-r40
@@ -124,7 +125,7 @@ TARGET_DEVICES += linksprite_pcduino3-nano
 define Device/mele_m9
   DEVICE_VENDOR := Mele
   DEVICE_MODEL := M9
-  DEVICE_PACKAGES:=kmod-sun4i-emac kmod-rtl8192cu
+  DEVICE_PACKAGES:=kmod-sun4i-emac kmod-rtc-sunxi kmod-rtl8192cu
   SOC := sun6i-a31
 endef
 TARGET_DEVICES += mele_m9
@@ -165,7 +166,7 @@ TARGET_DEVICES += olimex_a20-olinuxino-micro
 define Device/sinovoip_bananapi-m2-plus
   DEVICE_VENDOR := Sinovoip
   DEVICE_MODEL := Banana Pi M2+
-  DEVICE_PACKAGES:=kmod-leds-gpio kmod-brcmfmac \
+  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-leds-gpio kmod-brcmfmac \
 	brcmfmac-firmware-43430a0-sdio wpad-basic-wolfssl
   SOC := sun8i-h3
 endef
@@ -174,6 +175,7 @@ TARGET_DEVICES += sinovoip_bananapi-m2-plus
 define Device/xunlong_orangepi-one
   DEVICE_VENDOR := Xunlong
   DEVICE_MODEL := Orange Pi One
+  DEVICE_PACKAGES:=kmod-rtc-sunxi
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += xunlong_orangepi-one
@@ -181,7 +183,7 @@ TARGET_DEVICES += xunlong_orangepi-one
 define Device/xunlong_orangepi-pc
   DEVICE_VENDOR := Xunlong
   DEVICE_MODEL := Orange Pi PC
-  DEVICE_PACKAGES:=kmod-gpio-button-hotplug
+  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-gpio-button-hotplug
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += xunlong_orangepi-pc
@@ -189,7 +191,7 @@ TARGET_DEVICES += xunlong_orangepi-pc
 define Device/xunlong_orangepi-pc-plus
   DEVICE_VENDOR := Xunlong
   DEVICE_MODEL := Orange Pi PC Plus
-  DEVICE_PACKAGES:=kmod-gpio-button-hotplug
+  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-gpio-button-hotplug
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += xunlong_orangepi-pc-plus
@@ -197,6 +199,7 @@ TARGET_DEVICES += xunlong_orangepi-pc-plus
 define Device/xunlong_orangepi-plus
   DEVICE_VENDOR := Xunlong
   DEVICE_MODEL := Orange Pi Plus
+  DEVICE_PACKAGES:=kmod-rtc-sunxi
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += xunlong_orangepi-plus
@@ -204,7 +207,7 @@ TARGET_DEVICES += xunlong_orangepi-plus
 define Device/xunlong_orangepi-r1
   DEVICE_VENDOR := Xunlong
   DEVICE_MODEL := Orange Pi R1
-  DEVICE_PACKAGES:=kmod-usb-net-rtl8152
+  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-usb-net-rtl8152
   SOC := sun8i-h2-plus
 endef
 TARGET_DEVICES += xunlong_orangepi-r1
@@ -212,6 +215,7 @@ TARGET_DEVICES += xunlong_orangepi-r1
 define Device/xunlong_orangepi-zero
   DEVICE_VENDOR := Xunlong
   DEVICE_MODEL := Orange Pi Zero
+  DEVICE_PACKAGES:=kmod-rtc-sunxi
   SOC := sun8i-h2-plus
 endef
 TARGET_DEVICES += xunlong_orangepi-zero
@@ -219,6 +223,7 @@ TARGET_DEVICES += xunlong_orangepi-zero
 define Device/xunlong_orangepi-2
   DEVICE_VENDOR := Xunlong
   DEVICE_MODEL := Orange Pi 2
+  DEVICE_PACKAGES:=kmod-rtc-sunxi
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += xunlong_orangepi-2

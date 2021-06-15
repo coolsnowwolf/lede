@@ -57,6 +57,7 @@ define Device/lantiq_easy98000-nand
   DEVICE_VARIANT := NAND
   IMAGE_SIZE := 3904k
   DEVICE_PACKAGES := kmod-dm9000 kmod-i2c-lantiq kmod-eeprom-at24
+  DEFAULT := n
 endef
 TARGET_DEVICES += lantiq_easy98000-nand
 
@@ -66,6 +67,7 @@ define Device/lantiq_easy98000-nor
   DEVICE_VARIANT := NOR
   IMAGE_SIZE := 3904k
   DEVICE_PACKAGES := kmod-dm9000 kmod-i2c-lantiq kmod-eeprom-at24
+  DEFAULT := n
 endef
 TARGET_DEVICES += lantiq_easy98000-nor
 

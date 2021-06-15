@@ -659,6 +659,50 @@ static struct device_info boards[] = {
 		.last_sysupgrade_partition = "support-list",
 	},
 
+	/** Firmware layout for the AD7200 */
+	{
+		.id = "AD7200",
+		.vendor = "",
+		.support_list =
+			"SupportList:\r\n"
+			"{product_name:AD7200,product_ver:1.0.0,special_id:00000000}\r\n",
+		.part_trail = 0x00,
+		.soft_ver = NULL,
+
+		.partitions = {
+			{"SBL1", 0x00000, 0x20000},
+			{"MIBIB", 0x20000, 0x20000},
+			{"SBL2", 0x40000, 0x20000},
+			{"SBL3", 0x60000, 0x30000},
+			{"DDRCONFIG", 0x90000, 0x10000},
+			{"SSD", 0xa0000, 0x10000},
+			{"TZ", 0xb0000, 0x30000},
+			{"RPM", 0xe0000, 0x20000},
+			{"fs-uboot", 0x100000, 0x70000},
+			{"uboot-env", 0x170000, 0x40000},
+			{"radio", 0x1b0000, 0x40000},
+			{"os-image", 0x1f0000, 0x400000},
+			{"file-system", 0x5f0000, 0x1900000},
+			{"default-mac", 0x1ef0000, 0x00200},
+			{"pin", 0x1ef0200, 0x00200},
+			{"device-id", 0x1ef0400, 0x00200},
+			{"product-info", 0x1ef0600, 0x0fa00},
+			{"partition-table", 0x1f00000, 0x10000},
+			{"soft-version", 0x1f10000, 0x10000},
+			{"support-list", 0x1f20000, 0x10000},
+			{"profile", 0x1f30000, 0x10000},
+			{"default-config", 0x1f40000, 0x10000},
+			{"user-config", 0x1f50000, 0x40000},
+			{"qos-db", 0x1f90000, 0x40000},
+			{"usb-config", 0x1fd0000, 0x10000},
+			{"log", 0x1fe0000, 0x20000},
+			{NULL, 0, 0}
+		},
+
+		.first_sysupgrade_partition = "os-image",
+		.last_sysupgrade_partition = "file-system"
+	},
+
 	/** Firmware layout for the C2600 */
 	{
 		.id     = "C2600",

@@ -17,7 +17,7 @@ redboot_fis_do_upgrade() {
 	if [ "$magic" = "4349" ]; then
 		local kern_length=0x$(dd if="$sysup_file" bs=2 skip=1 count=4 2>/dev/null)
 
-		[ -f "$CONF_TAR" ] && append="-j $CONF_TAR"
+		[ -f "$UPGRADE_BACKUP" ] && append="-j $UPGRADE_BACKUP"
 		dd if="$sysup_file" bs=64k skip=1 2>/dev/null | \
 			mtd -r $append -F$kern_part:$kern_length:0x80060000,rootfs write - $kern_part:rootfs
 
@@ -25,7 +25,7 @@ redboot_fis_do_upgrade() {
 		local board_dir=$(tar tf $sysup_file | grep -m 1 '^sysupgrade-.*/$')
 		local kern_length=$(tar xf $sysup_file ${board_dir}kernel -O | wc -c)
 
-		[ -f "$CONF_TAR" ] && append="-j $CONF_TAR"
+		[ -f "$UPGRADE_BACKUP" ] && append="-j $UPGRADE_BACKUP"
 		tar xf $sysup_file ${board_dir}kernel ${board_dir}root -O | \
 			mtd -r $append -F$kern_part:$kern_length:0x80060000,rootfs write - $kern_part:rootfs
 
@@ -67,6 +67,12 @@ platform_do_upgrade() {
 		;;
 	openmesh,a40|\
 	openmesh,a60|\
+	openmesh,mr600-v1|\
+	openmesh,mr600-v2|\
+	openmesh,mr900-v1|\
+	openmesh,mr900-v2|\
+	openmesh,mr1750-v1|\
+	openmesh,mr1750-v2|\
 	openmesh,om2p-v2|\
 	openmesh,om2p-v4|\
 	openmesh,om2p-hs-v1|\

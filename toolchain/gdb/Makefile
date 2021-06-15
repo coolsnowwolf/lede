@@ -46,7 +46,7 @@ HOST_CONFIGURE_ARGS = \
 ifneq ($(CONFIG_GDB_PYTHON),)
   HOST_CONFIGURE_ARGS+= --with-python
 else
-  HOST_CONFIGURE_ARGS:= --without-python
+  HOST_CONFIGURE_ARGS+= --without-python
 endif
 
 define Host/Install

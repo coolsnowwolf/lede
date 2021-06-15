@@ -9,7 +9,7 @@ platform_check_image() {
 
 	[ "$#" -gt 1 ] && return 1
 
-	export_bootdevice && export_partdevice diskdev -2 || {
+	export_bootdevice && export_partdevice diskdev 0 || {
 		echo "Unable to determine upgrade device"
 		return 1
 	}
@@ -38,14 +38,14 @@ platform_check_image() {
 platform_do_upgrade() {
 	local diskdev partdev diff
 
-	export_bootdevice && export_partdevice diskdev -2 || {
+	export_bootdevice && export_partdevice diskdev 0 || {
 		echo "Unable to determine upgrade device"
 		return 1
 	}
 
 	sync
 
-	if [ "$SAVE_PARTITIONS" = "1" ]; then
+	if [ "$UPGRADE_OPT_SAVE_PARTITIONS" = "1" ]; then
 		get_partitions "/dev/$diskdev" bootdisk
 
 		#extract the boot sector from the image
@@ -72,10 +72,6 @@ platform_do_upgrade() {
 
 	#iterate over each partition from the image and write it to the boot disk
 	while read part start size; do
-		# root is /dev/sd[a|b]2 and not /dev/sd[a|b] this causes some problem
-		# one of which is this offset, I'm not sure what's the best fix, so
-		# here's a WA.
-		let part=$((part - 2))
 		if export_partdevice partdev $part; then
 			echo "Writing image to /dev/$partdev..."
 			get_image "$@" | dd of="/dev/$partdev" ibs="512" obs=1M skip="$start" count="$size" conv=fsync
@@ -92,12 +88,11 @@ platform_do_upgrade() {
 platform_copy_config() {
 	local partdev
 
-	# Same as above /dev/sd[a|b]2 is root, so /boot is -1
-	if export_partdevice partdev -1; then
+	if export_partdevice partdev 1; then
 		mkdir -p /boot
 		[ -f /boot/kernel.img ] || mount -t vfat -o rw,noatime "/dev/$partdev" /boot
-		cp -af "$CONF_TAR" /boot/
-		tar -C / -zxvf "$CONF_TAR" boot/cmdline.txt boot/config.txt
+		cp -af "$UPGRADE_BACKUP" "/boot/$BACKUP_FILE"
+		tar -C / -zxvf "$UPGRADE_BACKUP" boot/cmdline.txt boot/config.txt
 		sync
 		umount /boot
 	fi

@@ -21,7 +21,7 @@ platform_copy_config_helper() {
 	local device=$1
 
 	mount -t vfat "$device" /mnt
-	cp -af "$CONF_TAR" /mnt/
+	cp -af "$UPGRADE_BACKUP" "/mnt/$BACKUP_FILE"
 	umount /mnt
 }
 

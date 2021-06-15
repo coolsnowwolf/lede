@@ -59,47 +59,57 @@ define Device/Default
 endef
 
 define Device/generic
-  DEVICE_TITLE := Generic Images
+  DEVICE_VENDOR := Atheros
+  DEVICE_MODEL := Generic AR2xxx board
   IMAGES := kernel.lzma kernel.elf kernel.gz rootfs.bin sysupgrade.bin
   IMAGE/kernel.gz := elf-kernel | gzip-kernel
   IMAGE/kernel.elf := elf-kernel
   IMAGE/kernel.lzma := elf-kernel | lzma-kernel
   IMAGE/rootfs.bin := append-rootfs | pad-rootfs | pad-to 128k
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to 128k | combined-image
-  IMAGE_NAME = $$(IMAGE_PREFIX)-$$(if $$(findstring kernel,$$(2)),,$$(1)-)$$(2)
+  DEVICE_IMG_NAME = $$(DEVICE_IMG_PREFIX)-$$(if $$(findstring kernel,$$(2)),,$$(1)-)$$(2)
 endef
 TARGET_DEVICES += generic
 
-define Device/ubnt2-pico2
-  DEVICE_TITLE := Ubiquiti XS2-8
+define Device/ubnt_picostation-2
+  DEVICE_VENDOR := Ubiquiti
+  DEVICE_MODEL := Picostation 2 (XS2-8)
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to 128k | mkfwimage XS2-8 -v XS2.ar2316
 endef
-TARGET_DEVICES += ubnt2-pico2
+TARGET_DEVICES += ubnt_picostation-2
 
-define Device/ubnt2
-  DEVICE_TITLE := Ubiquiti XS2
+define Device/ubnt_nanostation-2
+  DEVICE_VENDOR := Ubiquiti
+  DEVICE_MODEL := Nanostation 2 (XS2)
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to 128k | mkfwimage XS2 -v XS2.ar2316
+  DEFAULT := n
 endef
-TARGET_DEVICES += ubnt2
+TARGET_DEVICES += ubnt_nanostation-2
 
-define Device/ubnt5
-  DEVICE_TITLE := Ubiquiti XS5
+define Device/ubnt_nanostation-5
+  DEVICE_VENDOR := Ubiquiti
+  DEVICE_MODEL := Nanostation 5 (XS5)
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to 128k | mkfwimage XS5 -v XS5.ar2313
+  DEFAULT := n
 endef
-TARGET_DEVICES += ubnt5
+TARGET_DEVICES += ubnt_nanostation-5
 
-define Device/np25g
-  DEVICE_TITLE := np25g
+define Device/compex_np25g
+  DEVICE_VENDOR := Compex
+  DEVICE_MODEL := NP25G
   KERNEL := kernel-bin | gzip-kernel
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to 128k | mkmylofw np25g
+  BROKEN := y
 endef
-#TARGET_DEVICES += np25g
+TARGET_DEVICES += compex_np25g
 
-define Device/wpe53g
-  DEVICE_TITLE := wpe53g
+define Device/compex_wpe53g
+  DEVICE_VENDOR := Compex
+  DEVICE_MODEL := WPE53G
   KERNEL := kernel-bin | gzip-kernel
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to 128k | mkmylofw wpe53g
+  BROKEN := y
 endef
-#TARGET_DEVICES += wpe53g
+TARGET_DEVICES += compex_wpe53g
 
 $(eval $(call BuildImage))

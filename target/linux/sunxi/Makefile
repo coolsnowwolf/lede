@@ -11,6 +11,7 @@ FEATURES:=fpu usb ext4 display rtc squashfs
 SUBTARGETS:=cortexa8 cortexa7 cortexa53
 
 KERNEL_PATCHVER:=5.4
+KERNEL_TESTING_PATCHVER:=5.4
 KERNELNAME:=zImage dtbs
 
 # A10: Cortex-A8
@@ -23,7 +24,7 @@ KERNELNAME:=zImage dtbs
 
 include $(INCLUDE_DIR)/target.mk
 
-DEFAULT_PACKAGES += autocore-arm uboot-envtools
+DEFAULT_PACKAGES += uboot-envtools
 DEFAULT_PACKAGES += partx-utils mkf2fs e2fsprogs
 
 $(eval $(call BuildTarget))

@@ -57,7 +57,7 @@ platform_do_upgrade_linksys() {
 
 	if [ ! -n "$part_label" ]
 	then
-		echo "cannot find target partition"
+		v "cannot find target partition"
 		exit 1
 	fi
 
@@ -93,6 +93,6 @@ platform_do_upgrade_linksys() {
 }
 
 platform_copy_config_linksys() {
-	cp -f /tmp/sysupgrade.tgz /tmp/syscfg/sysupgrade.tgz
+	cp -f "$UPGRADE_BACKUP" "/tmp/syscfg/$BACKUP_FILE"
 	sync
 }

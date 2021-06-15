@@ -7,8 +7,6 @@ SUBTARGETS:=ox810se ox820
 FEATURES:=gpio ramdisk rtc squashfs
 DEVICE_TYPE:=nas
 
-MAINTAINER:=Daniel Golle <daniel@makrotopia.org>
-
 KERNEL_PATCHVER:=5.4
 KERNEL_TESTING_PATCHVER:=5.10
 

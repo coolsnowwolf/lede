@@ -40,7 +40,7 @@ ifeq ($(strip $(UNPACK_CMD)),)
       UNPACK_CMD=$(DECOMPRESS_CMD) $(TAR_CMD)
     endif
     ifeq ($(EXT),cpio)
-      UNPACK_CMD=$(DECOMPRESS_CMD) (cd $(1)/..; cpio -i -d)
+      UNPACK_CMD=$(DECOMPRESS_CMD) (cd $(1)/..; $(STAGING_DIR_HOST)/bin/cpio -i -d)
     endif
     ifeq ($(EXT),zip)
       UNPACK_CMD=$(UNZIP_CMD)

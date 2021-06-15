@@ -30,7 +30,7 @@ proto_qmi_init_config() {
 
 proto_qmi_setup() {
 	local interface="$1"
-	local dataformat connstat
+	local dataformat connstat plmn_mode mcc mnc
 	local device apn auth username password pincode delay modes pdptype
 	local profile dhcp dhcpv6 autoconnect plmn timeout mtu $PROTO_DEFAULT_OPTIONS
 	local ip4table ip6table
@@ -152,24 +152,38 @@ proto_qmi_setup() {
 		esac
 	fi
 
-	[ -n "$plmn" ] && {
-		local mcc mnc
-		if [ "$plmn" = 0 ]; then
+	if [ -n "$plmn" ]; then
+		json_load "$(uqmi -s -d "$device" --get-plmn)"
+		json_get_var plmn_mode mode
+		json_get_vars mcc mnc || {
 			mcc=0
 			mnc=0
-			echo "Setting PLMN to auto"
-		else
+		}
+
+		if [ "$plmn" = "0" ]; then
+			if [ "$plmn_mode" != "automatic" ]; then
+				mcc=0
+				mnc=0
+				echo "Setting PLMN to auto"
+			fi
+		elif [ "$mcc" -ne "${plmn:0:3}" -o "$mnc" -ne "${plmn:3}" ]; then
 			mcc=${plmn:0:3}
 			mnc=${plmn:3}
 			echo "Setting PLMN to $plmn"
+		else
+			mcc=""
+			mnc=""
 		fi
+	fi
+
+	if [ -n "$mcc" -a -n "$mnc" ]; then
 		uqmi -s -d "$device" --set-plmn --mcc "$mcc" --mnc "$mnc" > /dev/null 2>&1 || {
 			echo "Unable to set PLMN"
 			proto_notify_error "$interface" PLMN_FAILED
 			proto_block_restart "$interface"
 			return 1
 		}
-	}
+	fi
 
 	# Cleanup current state if any
 	uqmi -s -d "$device" --stop-network 0xffffffff --autoconnect > /dev/null 2>&1

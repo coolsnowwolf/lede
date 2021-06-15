@@ -4,7 +4,7 @@
 
 define Profile/Ps1208mfg
   NAME:=Edimax PS-1208MFG
-  PACKAGES:=-firewall -dropbear -dnsmasq -mtd -ppp -wpad-basic kmod-b44 block-mount kmod-usb-storage kmod-usb2 kmod-usb-ohci -iptables -swconfig kmod-fs-ext4
+  PACKAGES:=-firewall -dropbear -dnsmasq -mtd -ppp -wpad-basic-wolfssl kmod-b44 block-mount kmod-usb-storage kmod-usb2 kmod-usb-ohci -iptables -swconfig kmod-fs-ext4
 endef
 
 define Profile/Ps1208mfg/Description

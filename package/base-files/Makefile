@@ -47,6 +47,7 @@ define Package/base-files/conffiles
 /etc/config/
 /etc/config/network
 /etc/config/system
+/etc/crontabs/
 /etc/dropbear/
 /etc/ethers
 /etc/group
@@ -108,11 +109,13 @@ ifdef CONFIG_SIGNED_PACKAGES
 
   endef
 
+ifndef CONFIG_BUILDBOT
   define Package/base-files/install-key
 	mkdir -p $(1)/etc/opkg/keys
 	$(CP) $(BUILD_KEY).pub $(1)/etc/opkg/keys/`$(STAGING_DIR_HOST)/bin/usign -F -p $(BUILD_KEY).pub`
 
   endef
+endif
 endif
 
 ifeq ($(CONFIG_NAND_SUPPORT),)
@@ -189,12 +192,19 @@ define Package/base-files/install
 
 	$(if $(CONFIG_INCLUDE_CONFIG), \
 		echo -e "# Build configuration for board $(BOARD)/$(SUBTARGET)/$(PROFILE)\n" >$(1)/etc/build.config; \
-		cat $(BIN_DIR)/config.seed >>$(1)/etc/build.config)
+		cat $(BIN_DIR)/config.buildinfo >>$(1)/etc/build.config; \
+		cat $(BIN_DIR)/feeds.buildinfo >>$(1)/etc/build.feeds; \
+		cat $(BIN_DIR)/version.buildinfo >>$(1)/etc/build.version)
 
 	$(if $(CONFIG_CLEAN_IPKG),, \
 		mkdir -p $(1)/etc/opkg; \
 		$(call FeedSourcesAppend,$(1)/etc/opkg/distfeeds.conf); \
 		$(VERSION_SED_SCRIPT) $(1)/etc/opkg/distfeeds.conf)
+	$(if $(CONFIG_IPK_FILES_CHECKSUMS),, \
+		rm -f $(1)/sbin/pkg_check)
+
+	$(if $(CONFIG_TARGET_PREINIT_DISABLE_FAILSAFE), \
+		rm -f $(1)/etc/banner.failsafe,)
 endef
 
 ifneq ($(DUMP),1)

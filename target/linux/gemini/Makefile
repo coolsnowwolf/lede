@@ -9,7 +9,6 @@ BOARD:=gemini
 BOARDNAME:=Cortina Systems CS351x
 FEATURES:=squashfs pci rtc usb dt gpio display ext4 rootfs-part boot-part
 CPU_TYPE:=fa526
-MAINTAINER:=Roman Yeryomin <roman@advem.lv>
 
 KERNEL_PATCHVER:=5.10
 
@@ -24,7 +23,7 @@ include $(INCLUDE_DIR)/target.mk
 DEFAULT_PACKAGES += \
 	kmod-usb-fotg210 \
 	kmod-usb-ledtrig-usbport \
-	kmod-leds-gpio kmod-ledtrig-heartbeat \
+	kmod-leds-gpio \
 	kmod-gpio-button-hotplug
 
 $(eval $(call BuildTarget))
