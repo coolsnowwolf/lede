@@ -160,7 +160,11 @@ define BuildKernel
 	rm -f $(STAMP_CONFIGURED)
 	$(LINUX_RECONF_CMD) > $(LINUX_DIR)/.config
 	$(_SINGLE)$(KERNEL_MAKE) \
-		$(if $(findstring Darwin,$(HOST_OS)),HOST_LOADLIBES="-L$(STAGING_DIR_HOST)/lib -lncurses") \
+		$(if $(findstring Darwin,$(HOST_OS)), \
+			HOST_LOADLIBES="-L$(STAGING_DIR_HOST)/lib -lncurses" \
+			HOSTLDLIBS_mconf="-L$(STAGING_DIR_HOST)/lib -lncurses" \
+			filechk_conf_cfg="	:" \
+		) \
 		YACC=$(STAGING_DIR_HOST)/bin/bison \
 		$$@
 	$(call LINUX_RECONF_DIFF,$(LINUX_DIR)/.config) > $(LINUX_RECONFIG_TARGET)

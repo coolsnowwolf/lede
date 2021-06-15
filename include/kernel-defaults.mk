@@ -170,7 +170,7 @@ ifeq ($(CONFIG_TARGET_ROOTFS_INITRAMFS_SEPARATE),y)
 ifeq ($(CONFIG_EXTERNAL_CPIO),y)
 	$(CP) $(CONFIG_EXTERNAL_CPIO) $(KERNEL_BUILD_DIR)/initrd.cpio
 else
-	( cd $(TARGET_DIR); find . | cpio -o -H newc -R root:root > $(KERNEL_BUILD_DIR)/initrd.cpio )
+	( cd $(TARGET_DIR); find . | $(STAGING_DIR_HOST)/bin/cpio -o -H newc -R 0:0 > $(KERNEL_BUILD_DIR)/initrd.cpio )
 endif
 	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_BZIP2),bzip2 -9 -c < $(KERNEL_BUILD_DIR)/initrd.cpio > $(KERNEL_BUILD_DIR)/initrd.cpio.bzip2)
 	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_GZIP),gzip -f -S .gzip -9n $(KERNEL_BUILD_DIR)/initrd.cpio)

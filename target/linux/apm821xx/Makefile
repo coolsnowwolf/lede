@@ -6,9 +6,7 @@ ARCH:=powerpc
 BOARD:=apm821xx
 BOARDNAME:=AppliedMicro APM821xx
 CPU_TYPE:=464fp
-FEATURES:=fpu dt gpio
-MAINTAINER:=Chris Blake <chrisrblake93@gmail.com>, \
-	    Christian Lamparter <chunkeey@gmail.com>
+FEATURES:=fpu dt gpio ramdisk squashfs usb
 SUBTARGETS:=nand sata
 
 KERNEL_PATCHVER:=5.4

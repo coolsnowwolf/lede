@@ -72,6 +72,12 @@ ucidef_set_model_name() {
 	json_select ..
 }
 
+ucidef_set_compat_version() {
+	json_select_object system
+	json_add_string compat_version "${1:-1.0}"
+	json_select ..
+}
+
 ucidef_set_interface_lan() {
 	ucidef_set_interface "lan" ifname "$1" protocol "${2:-static}"
 }
@@ -639,6 +645,5 @@ board_config_update() {
 }
 
 board_config_flush() {
-	json_dump -i > /tmp/.board.json
-	mv /tmp/.board.json ${CFG}
+	json_dump -i -o ${CFG}
 }

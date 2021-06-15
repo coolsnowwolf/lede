@@ -111,7 +111,6 @@ $(eval $(call KernelPackage,libphy))
 define KernelPackage/phylink
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Model for MAC to optional PHY connection
-  DEPENDS:=+kmod-libphy
   KCONFIG:=CONFIG_PHYLINK
   FILES:=$(LINUX_DIR)/drivers/net/phy/phylink.ko
   AUTOLOAD:=$(call AutoLoad,15,phylink,1)
@@ -870,36 +869,6 @@ endef
 $(eval $(call KernelPackage,hfcmulti))
 
 
-define KernelPackage/gigaset
-  SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=Siemens Gigaset support for isdn4linux
-  DEPENDS:=@USB_SUPPORT +kmod-isdn4linux +kmod-lib-crc-ccitt +kmod-usb-core @!LINUX_5_4
-  URL:=http://gigaset307x.sourceforge.net/
-  KCONFIG:= \
-    CONFIG_ISDN_DRV_GIGASET \
-    CONFIG_GIGASET_BASE \
-    CONFIG_GIGASET_M101 \
-    CONFIG_GIGASET_M105 \
-    CONFIG_GIGASET_UNDOCREQ=y \
-    CONFIG_GIGASET_I4L=y
-  FILES:= \
-    $(LINUX_DIR)/drivers/isdn/gigaset/gigaset.ko \
-    $(LINUX_DIR)/drivers/isdn/gigaset/bas_gigaset.ko \
-    $(LINUX_DIR)/drivers/isdn/gigaset/ser_gigaset.ko \
-    $(LINUX_DIR)/drivers/isdn/gigaset/usb_gigaset.ko
-  AUTOLOAD:=$(call AutoProbe,gigaset bas_gigaset ser_gigaset usb_gigaset)
-endef
-
-define KernelPackage/gigaset/description
- This driver supports the Siemens Gigaset SX205/255 family of
- ISDN DECT bases, including the predecessors Gigaset 3070/3075
- and 4170/4175 and their T-Com versions Sinus 45isdn and Sinus
- 721X.
-endef
-
-$(eval $(call KernelPackage,gigaset))
-
-
 define KernelPackage/macvlan
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=MAC-VLAN support
@@ -1243,6 +1212,41 @@ endef
 $(eval $(call KernelPackage,qlcnic))
 
 
+define KernelPackage/sfp
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=SFP cage support
+  DEPENDS:=+kmod-i2c-core +kmod-hwmon-core +kmod-phylink
+  KCONFIG:= \
+	CONFIG_SFP \
+	CONFIG_MDIO_I2C
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/phy/sfp.ko \
+	$(LINUX_DIR)/drivers/net/phy/mdio-i2c.ko@lt5.10 \
+	$(LINUX_DIR)/drivers/net/mdio/mdio-i2c.ko@ge5.10
+  AUTOLOAD:=$(call AutoProbe,mdio-i2c sfp)
+endef
+
+define KernelPackage/sfp/description
+ Kernel module to support SFP cages
+endef
+
+$(eval $(call KernelPackage,sfp))
+
+define KernelPackage/igc
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Intel(R) Ethernet Controller I225 Series support
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp
+  KCONFIG:=CONFIG_IGC
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/igc/igc.ko
+  AUTOLOAD:=$(call AutoProbe,igc)
+endef
+
+define KernelPackage/igc/description
+  Kernel modules for Intel(R) Ethernet Controller I225 Series
+endef
+
+$(eval $(call KernelPackage,igc))
+
 define KernelPackage/sfc
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Solarflare SFC9000/SFC9100/EF100-family support
@@ -1280,53 +1284,3 @@ define KernelPackage/sfc-falcon/description
 endef
 
 $(eval $(call KernelPackage,sfc-falcon))
-
-define KernelPackage/sfp
-  SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=SFP cage support
-  DEPENDS:=+kmod-i2c-core +kmod-hwmon-core +kmod-phylink +kmod-libphy
-  KCONFIG:= \
-	CONFIG_SFP \
-	CONFIG_MDIO_I2C
-  FILES:= \
-	$(LINUX_DIR)/drivers/net/phy/sfp.ko \
-	$(LINUX_DIR)/drivers/net/phy/mdio-i2c.ko@lt5.10 \
-	$(LINUX_DIR)/drivers/net/mdio/mdio-i2c.ko@ge5.10
-  AUTOLOAD:=$(call AutoProbe,mdio-i2c sfp)
-endef
-
-define KernelPackage/sfp/description
- Kernel module to support SFP cages
-endef
-
-$(eval $(call KernelPackage,sfp))
-
-define KernelPackage/igc
-  SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=Intel(R) Ethernet Controller I225 Series support
-  DEPENDS:=@PCI_SUPPORT +kmod-ptp
-  KCONFIG:=CONFIG_IGC
-  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/igc/igc.ko
-  AUTOLOAD:=$(call AutoProbe,igc)
-endef
-
-define KernelPackage/igc/description
-  Kernel modules for Intel(R) Ethernet Controller I225 Series
-endef
-
-$(eval $(call KernelPackage,igc))
-
-define KernelPackage/jme
-  SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=JMicron(R) PCI-Express Gigabit Ethernet support
-  DEPENDS:=@PCI_SUPPORT +kmod-mii
-  KCONFIG:=CONFIG_JME
-  FILES:=$(LINUX_DIR)/drivers/net/ethernet/jme.ko
-  AUTOLOAD:=$(call AutoProbe,jme)
-endef
-
-define KernelPackage/jme/description
-  Supports JMicron(R) PCI-Express Gigabit Ethernet adapters
-endef
-
-$(eval $(call KernelPackage,jme))

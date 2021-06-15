@@ -108,7 +108,7 @@ nand_restore_config() {
 		rmdir /tmp/new_root
 		return 1
 	fi
-	mv "$1" "/tmp/new_root/sysupgrade.tgz"
+	mv "$1" "/tmp/new_root/$BACKUP_FILE"
 	umount /tmp/new_root
 	sync
 	rmdir /tmp/new_root
@@ -117,10 +117,11 @@ nand_restore_config() {
 nand_upgrade_prepare_ubi() {
 	local rootfs_length="$1"
 	local rootfs_type="$2"
+	local rootfs_data_max="$(fw_printenv -n rootfs_data_max 2>/dev/null)"
+	[ -n "$rootfs_data_max" ] && rootfs_data_max=$((rootfs_data_max))
+
 	local kernel_length="$3"
 	local has_env="${4:-0}"
-	local rootfs_data_max="$(fw_printenv -n rootfs_data_max 2>/dev/null)"
-	[ -n "$rootfs_data_max" ] && rootfs_data_max=$(($rootfs_data_max))
 
 	[ -n "$rootfs_length" -o -n "$kernel_length" ] || return 1
 
@@ -194,7 +195,7 @@ nand_upgrade_prepare_ubi() {
 	if [ "$rootfs_type" != "ubifs" ]; then
 		local availeb=$(cat /sys/devices/virtual/ubi/$ubidev/avail_eraseblocks)
 		local ebsize=$(cat /sys/devices/virtual/ubi/$ubidev/eraseblock_size)
-		local avail_size=$(( $availeb * $ebsize ))
+		local avail_size=$((availeb * ebsize))
 		local rootfs_data_size_param="-m"
 		if [ -n "$rootfs_data_max" ] &&
 		   [ "$rootfs_data_max" != "0" ] &&
@@ -315,20 +316,7 @@ nand_upgrade_tar() {
 
 # Recognize type of passed file and start the upgrade process
 nand_do_upgrade() {
-	if [ -n "$IS_PRE_UPGRADE" ]; then
-		# Previously, nand_do_upgrade was called from the platform_pre_upgrade
-		# hook; this piece of code handles scripts that haven't been
-		# updated. All scripts should gradually move to call nand_do_upgrade
-		# from platform_do_upgrade instead.
-		export do_upgrade="nand_do_upgrade '$1'"
-		return
-	fi
-
 	local file_type=$(identify $1)
-
-	if type 'platform_nand_pre_upgrade' >/dev/null 2>/dev/null; then
-		platform_nand_pre_upgrade "$1"
-	fi
 
 	[ ! "$(find_mtd_index "$CI_UBIPART")" ] && CI_UBIPART="rootfs"
 

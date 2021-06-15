@@ -56,7 +56,7 @@ define Device/bcm63xx_redboot
   KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | loader-lzma elf
   IMAGES := redboot.bin
   IMAGE/redboot.bin := redboot-bin
-  REDBOOT_PREFIX := $$(IMAGE_PREFIX)
+  REDBOOT_PREFIX := $$(DEVICE_IMG_PREFIX)
 endef
 
 ### Generic ###

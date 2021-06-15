@@ -4,7 +4,7 @@
 
 define Profile/Broadcom-tg3-wl
   NAME:=Broadcom SoC, tg3 Ethernet, BCM43xx WiFi (wl, proprietary)
-  PACKAGES:=-wpad-basic kmod-brcm-wl wlc nas kmod-tg3
+  PACKAGES:=-wpad-basic-wolfssl kmod-brcm-wl wlc nas kmod-tg3
 endef
 
 define Profile/Broadcom-tg3-wl/Description

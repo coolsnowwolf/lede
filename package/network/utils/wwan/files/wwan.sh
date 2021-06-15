@@ -58,7 +58,7 @@ proto_wwan_setup() {
 		fi
 	else
 		echo "wwan[$$]" "Searching for a valid wwan usb device..."
-		for a in `ls /sys/bus/usb/devices`; do
+		for a in $(ls /sys/bus/usb/devices); do
 			local vendor product
 			[ -z "$usb" -a -f /sys/bus/usb/devices/$a/idVendor -a  -f /sys/bus/usb/devices/$a/idProduct ] || continue
 			vendor=$(cat /sys/bus/usb/devices/$a/idVendor)
