@@ -41,6 +41,7 @@ $(curdir)/autoconf/compile := $(curdir)/m4/compile
 $(curdir)/automake/compile := $(curdir)/m4/compile $(curdir)/autoconf/compile $(curdir)/pkgconf/compile $(curdir)/xz/compile
 $(curdir)/b43-tools/compile := $(curdir)/bison/compile
 $(curdir)/bc/compile := $(curdir)/bison/compile $(curdir)/libtool/compile
+$(curdir)/upx/compile := $(curdir)/ucl/compile
 $(curdir)/bison/compile := $(curdir)/flex/compile
 $(curdir)/cbootimage/compile += $(curdir)/automake/compile
 $(curdir)/cmake/compile += $(curdir)/libressl/compile $(curdir)/ninja/compile
