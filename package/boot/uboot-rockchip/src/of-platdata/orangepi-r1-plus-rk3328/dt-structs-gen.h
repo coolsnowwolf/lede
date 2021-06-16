@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * DO NOT MODIFY
  *
@@ -7,6 +8,10 @@
 
 #include <stdbool.h>
 #include <linux/libfdt.h>
+struct dtd_jedec_spi_nor {
+	fdt64_t		reg[2];
+	fdt32_t		spi_max_frequency;
+};
 struct dtd_ns16550_serial {
 	fdt32_t		clock_frequency;
 	struct phandle_1_arg clocks[2];
@@ -30,13 +35,8 @@ struct dtd_rockchip_rk3288_dw_mshc {
 	fdt32_t		pinctrl_0[4];
 	const char *	pinctrl_names;
 	fdt64_t		reg[2];
-	bool		sd_uhs_sdr104;
-	bool		sd_uhs_sdr12;
-	bool		sd_uhs_sdr25;
-	bool		sd_uhs_sdr50;
 	bool		u_boot_spl_fifo_mode;
 	fdt32_t		vmmc_supply;
-	fdt32_t		vqmmc_supply;
 };
 struct dtd_rockchip_rk3328_cru {
 	fdt64_t		reg[2];
@@ -47,5 +47,14 @@ struct dtd_rockchip_rk3328_dmc {
 	fdt32_t		rockchip_sdram_params[196];
 };
 struct dtd_rockchip_rk3328_grf {
+	fdt64_t		reg[2];
+};
+struct dtd_rockchip_rk3328_spi {
+	struct phandle_1_arg clocks[2];
+	const char *	dma_names[2];
+	fdt32_t		dmas[4];
+	fdt32_t		interrupts[3];
+	fdt32_t		pinctrl_0[4];
+	const char *	pinctrl_names;
 	fdt64_t		reg[2];
 };
