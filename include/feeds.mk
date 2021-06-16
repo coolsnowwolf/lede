@@ -43,7 +43,7 @@ endef
 
 # 1: package name
 define GetABISuffix
-$(call FormatABISuffix,$(1),$(if $(ABIV_$(1)),$(ABIV_$(1)),$(foreach v,$(wildcard $(STAGING_DIR)/pkginfo/$(1).version),$(shell cat $(v)))))
+$(if $(ABIV_$(1)),$(ABIV_$(1)),$(call FormatABISuffix,$(1),$(foreach v,$(wildcard $(STAGING_DIR)/pkginfo/$(1).version),$(shell cat $(v)))))
 endef
 
 # 1: package name
