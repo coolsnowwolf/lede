@@ -47,7 +47,7 @@ CONFIGURE_ARGS += \
 	--with-target=Linux
 
 define Package/pdnsd-alt/install
-	$(INSTALL_DIR) $(1)/usr/sbin
+	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/pdnsd $(1)/usr/bin/pdnsd
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/pdnsd-ctl $(1)/usr/bin/pdnsd-ctl
 
