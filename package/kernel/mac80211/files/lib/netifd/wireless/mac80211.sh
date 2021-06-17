@@ -116,7 +116,7 @@ mac80211_add_he_capabilities() {
 		set -- $capab
 		[ "$(($4))" -gt 0 ] || continue
 		[ "$(((0x$2) & $3))" -gt 0 ] || {
-			eval "$4=0"
+			eval "$1=0"
 			continue
 		}
 		append base_cfg "$1=1" "$N"
