@@ -31,6 +31,7 @@ ALLWIFIBOARDS:= \
 	avm_fritzrepeater-1200 \
 	buffalo_wtr-m2133hp \
 	cellc_rtl30vw \
+	century_wr142ac \
 	devolo_magic-2-wifi-next \
 	dlink_dap2610 \
 	edgecore_ecw5410 \
@@ -41,6 +42,7 @@ ALLWIFIBOARDS:= \
 	ezviz_cs-w3-wd1200g-eup \
 	glinet_gl-ap1300 \
 	glinet_gl-s1300 \
+	hiwifi_c526a \
 	linksys_ea8300 \
 	linksys_mr8300-v0 \
 	luma_wrtq-329acn \
@@ -119,6 +121,7 @@ $(eval $(call generate-ipq-wifi-package,asus_rt-acrh17,ASUS RT-ACRH17/RT-AC82U/R
 $(eval $(call generate-ipq-wifi-package,avm_fritzrepeater-1200,AVM FRITZRepeater 1200))
 $(eval $(call generate-ipq-wifi-package,buffalo_wtr-m2133hp,Buffalo WTR-M2133HP))
 $(eval $(call generate-ipq-wifi-package,cellc_rtl30vw, Cell C RTL30VW))
+$(eval $(call generate-ipq-wifi-package,century_wr142ac,Century WR142AC))
 $(eval $(call generate-ipq-wifi-package,devolo_magic-2-wifi-next,devolo Magic 2 WiFi next))
 $(eval $(call generate-ipq-wifi-package,dlink_dap2610,D-Link DAP-2610))
 $(eval $(call generate-ipq-wifi-package,edgecore_ecw5410,Edgecore ECW5410))
@@ -129,6 +132,7 @@ $(eval $(call generate-ipq-wifi-package,engenius_emr3500,EnGenius EMR3500))
 $(eval $(call generate-ipq-wifi-package,ezviz_cs-w3-wd1200g-eup,EZVIZ CS-W3-WD1200G EUP))
 $(eval $(call generate-ipq-wifi-package,glinet_gl-ap1300,GL.iNet GL-AP1300))
 $(eval $(call generate-ipq-wifi-package,glinet_gl-s1300,GL.iNet GL-S1300))
+$(eval $(call generate-ipq-wifi-package,hiwifi_c526a,HiWiFi C526A))
 $(eval $(call generate-ipq-wifi-package,linksys_ea8300,Linksys EA8300))
 $(eval $(call generate-ipq-wifi-package,linksys_mr8300-v0,Linksys MR8300))
 $(eval $(call generate-ipq-wifi-package,luma_wrtq-329acn,Luma WRTQ-329ACN))
