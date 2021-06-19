@@ -12,7 +12,6 @@ PKG_LICENSE_FILES:=LICENSE
 PKG_CPE_ID:=cpe:/a:facebook:zstandard
 
 CMAKE_SOURCE_SUBDIR:=build/cmake
-HOST_BUILD_PARALLEL:=1
 
 include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/cmake.mk

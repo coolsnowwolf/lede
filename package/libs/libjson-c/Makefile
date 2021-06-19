@@ -21,7 +21,6 @@ PKG_LICENSE_FILES:=COPYING
 PKG_CPE_ID:=cpe:/a:json-c_project:json-c
 
 PKG_FLAGS := nonshared
-PKG_BUILD_PARALLEL:=1
 HOST_BUILD_PREFIX:=$(STAGING_DIR_HOST)
 
 include $(INCLUDE_DIR)/package.mk
