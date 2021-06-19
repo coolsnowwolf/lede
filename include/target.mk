@@ -52,7 +52,7 @@ DEFAULT_PACKAGES.router:=\
 	luci-app-filetransfer luci-app-vsftpd luci-app-ssr-plus luci-app-unblockmusic \
 	luci-app-arpbind luci-app-vlmcsd luci-app-wol luci-app-ramfree \
 	luci-app-flowoffload luci-app-nlbwmon luci-app-accesscontrol luci-app-cpufreq \
-	ddns-scripts_aliyun ddns-scripts_dnspod
+	ddns-scripts_dnspod
 
 ifneq ($(DUMP),)
   all: dumpinfo
