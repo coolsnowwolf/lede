@@ -111,7 +111,7 @@ DEVICE_VARS += SIGNATURE
 DEVICE_VARS += NETGEAR_BOARD_ID NETGEAR_REGION TPLINK_BOARD
 DEVICE_VARS += LUXUL_BOARD
 
-IEEE8021X := wpad-basic-wolfssl
+IEEE8021X := wpad-openssl
 B43 := $(IEEE8021X) kmod-b43
 BRCMFMAC_43602A1 := $(IEEE8021X) kmod-brcmfmac brcmfmac-firmware-43602a1-pcie
 BRCMFMAC_4366B1 := $(IEEE8021X) kmod-brcmfmac brcmfmac-firmware-4366b1-pcie
@@ -413,7 +413,7 @@ TARGET_DEVICES += smartrg_sr400ac
 define Device/phicomm_k3
   DEVICE_VENDOR := PHICOMM
   DEVICE_MODEL := K3
-  DEVICE_PACKAGES := $(BRCMFMAC_4366C0) $(USB3_PACKAGES)
+  DEVICE_PACKAGES := $(IEEE8021X) kmod-brcmfmac k3wifi $(USB3_PACKAGES) k3screenctrl
   IMAGES := trx
 endef
 TARGET_DEVICES += phicomm_k3
@@ -425,7 +425,7 @@ define Device/tenda_ac9
   IMAGES := trx
   IMAGE/trx := append-rootfs | trx-serial
 endef
-TARGET_DEVICES += tenda_ac9
+#TARGET_DEVICES += tenda_ac9
 
 define Device/tplink_archer-c5-v2
   DEVICE_VENDOR := TP-Link
@@ -437,7 +437,7 @@ define Device/tplink_archer-c5-v2
   TPLINK_BOARD := ARCHER-C5-V2
   BROKEN := y
 endef
-TARGET_DEVICES += tplink_archer-c5-v2
+#TARGET_DEVICES += tplink_archer-c5-v2
 
 define Device/tplink_archer-c9-v1
   DEVICE_VENDOR := TP-Link
@@ -449,6 +449,6 @@ define Device/tplink_archer-c9-v1
   TPLINK_BOARD := ARCHERC9
   BROKEN := y
 endef
-TARGET_DEVICES += tplink_archer-c9-v1
+#TARGET_DEVICES += tplink_archer-c9-v1
 
 $(eval $(call BuildImage))

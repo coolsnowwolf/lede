@@ -16,36 +16,26 @@ include $(INCLUDE_DIR)/host-build.mk
 include $(TOPDIR)/feeds/packages/devel/meson/meson.mk
 include $(TOPDIR)/feeds/packages/devel/ninja/ninja.mk
 
-ifeq ($(CONFIG_LIBC),"glibc")
-	PKG_CONFIG := $(PKG_BUILD_DIR)/config/arm/arm_armv7a_linux_glibc_gcc
-else
-	PKG_CONFIG := $(PKG_BUILD_DIR)/config/arm/arm_armv7a_linux_musl_gcc
-endif
-
 TARGET_CFLAGS += -D_GNU_SOURCE -Wno-unused-result -Wno-format-nonliteral
 
 define Package/dpdk
   SECTION    := net
   CATEGORY   := Network
-  TITLE      := Data Plane Development Kit (DPDK) 
-  DEPENDS    := @(arm) +librt +libpthread +libbpf +libpcap	
+  TITLE      := Data Plane Development Kit (DPDK)
+  DEPENDS    := @(x86_64||arm||aarch64) +librt +libpthread +libbpf +libpcap +libopenssl
 endef
 
 define Package/dpdk/description
-  DPDK consists of libraries to accelerate packet processing 
-  workloads running on a wide variety of CPU architectures. 
-endef
-
-define Build/Configure
-	$(call Build/Configure/Meson) --cross-file $(PKG_CONFIG)
+  DPDK consists of libraries to accelerate packet processing
+  workloads running on a wide variety of CPU architectures.
 endef
 
 define Package/dpdk/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/bin/dpdk-testpmd $(1)/usr/bin/
-	$(CP) $(PKG_INSTALL_DIR)/usr/bin/dpdk-proc-info $(1)/usr/bin/
-	$(CP) $(PKG_INSTALL_DIR)/usr/bin/dpdk-test-flow-perf $(1)/usr/bin/
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/dpdk-testpmd $(1)/usr/bin/
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/dpdk-proc-info $(1)/usr/bin/
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/dpdk-test-flow-perf $(1)/usr/bin/
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/lib* $(1)/usr/lib/
 endef
 

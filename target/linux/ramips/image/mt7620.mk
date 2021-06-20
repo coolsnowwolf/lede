@@ -1011,7 +1011,8 @@ endef
 TARGET_DEVICES += tplink_archer-c2-v1
 
 define Device/tplink_archer-c5-v4
-  $(Device/Archer)
+  $(Device/tplink-v2)
+  SOC := mt7620a
   TPLINK_FLASHLAYOUT := 8Mmtk
   TPLINK_HWID := 0x04DA857C
   TPLINK_HWREV := 0x0C000600
