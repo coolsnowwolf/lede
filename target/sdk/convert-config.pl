@@ -9,7 +9,13 @@ while (<>) {
 	chomp;
 	next if /^CONFIG_SIGNED_PACKAGES/;
 
-	if (/^CONFIG_([^=]+)=(.*)$/) {
+	if (/^CONFIG_((BINARY)|(DOWNLOAD))_FOLDER=(.*)$/) {
+		# We don't want to preserve the build setting of
+		# BINARY_FOLDER and DOWNLOAD_FOLDER.
+		$var = "$1_FOLDER";
+		$val = '""';
+		$type = "string";
+	} elsif (/^CONFIG_([^=]+)=(.*)$/) {
 		$var = $1;
 		$val = $2;
 

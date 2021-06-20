@@ -1,40 +1,48 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
-IPQ807X_KERNEL_LOADADDR = 0x41080000
-DEVICE_DTS_CONFIG = "config@hk01"
-
-define Image/BuildKernel/FIT
-	gzip -9 -c $(KDIR)/Image > $(KDIR)/Image.gz
-	$(call CompressLzma,$(KDIR)/Image,$(KDIR)/Image.gz)
-	$(call Image/BuildKernel/MkFIT,$(1), $(KDIR)/Image.gz, $(DTS_DIR)/qcom/$(1).dtb,gzip,$(2),$(2))
-	$(CP) $(KDIR)/fit-$(1).itb $(BIN_DIR)/$(IMG_PREFIX)-$(1)-fit-uImage.itb
-	mkdir -p $(BIN_DIR)/dtbs/
-	$(CP) $(DTS_DIR)/qcom/ipq*.dtb $(BIN_DIR)/dtbs/
-	$(CP) $(KDIR)/Image $(BIN_DIR)/dtbs/
+define Device/Default
+	PROFILES := Default
+	KERNEL_DEPENDS = $$(wildcard $(DEVICE_DTS_DIR)/$$(DEVICE_DTS).dts)
+	KERNEL_INITRAMFS_PREFIX := $$(IMG_PREFIX)-$(1)-initramfs
+	KERNEL_PREFIX := $$(IMAGE_PREFIX)
+	KERNEL_LOADADDR := 0x41080000
+	DEVICE_DTS_DIR := $(DTS_DIR)/qcom
+	DEVICE_DTS = $$(SOC)-$(lastword $(subst _, ,$(1)))
+	SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
+	IMAGE/sysupgrade.bin = sysupgrade-tar | append-metadata
+	IMAGE/sysupgrade.bin/squashfs :=
 endef
 
-define Image/BuildKernel/FITInitramfs
-	$(CP) $(KDIR)/Image-initramfs $(BIN_DIR)/dtbs/
-	$(CP) $(KDIR)/Image-initramfs $(BIN_DIR)/$(IMG_PREFIX)-vmlinux-initramfs.bin
-	$(call Image/BuildKernel/MkFIT,$(1), $(KDIR)/Image-initramfs, $(DTS_DIR)/qcom/$(1).dtb, none,$(2),$(2),-initramfs)
-	$(CP) $(KDIR)/fit-$(1)-initramfs.itb $(BIN_DIR)/$(IMG_PREFIX)-$(1)-fit-uImage-initramfs.itb
+define Device/FitImage
+	KERNEL_SUFFIX := -fit-uImage.itb
+	KERNEL = kernel-bin | gzip | fit gzip $$(DEVICE_DTS_DIR)/$$(DEVICE_DTS).dtb
+	KERNEL_NAME := Image
 endef
 
-define Image/Build/squashfs
-	$(call prepare_generic_squashfs,$(KDIR)/root.squashfs)
+define Device/FitImageLzma
+	KERNEL_SUFFIX := -fit-uImage.itb
+	KERNEL = kernel-bin | lzma | fit lzma $$(DEVICE_DTS_DIR)/$$(DEVICE_DTS).dtb
+	KERNEL_NAME := Image
 endef
 
-define Image/BuildKernel
-	$(call Image/BuildKernel/FIT,ipq8074-hk01,$(IPQ807X_KERNEL_LOADADDR))
+define Device/UbiFit
+	KERNEL_IN_UBI := 1
+	IMAGES := nand-factory.ubi nand-sysupgrade.bin
+	IMAGE/nand-factory.ubi := append-ubi
+	IMAGE/nand-sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 
-define Image/BuildKernel/Initramfs
-	$(call Image/BuildKernel/FITInitramfs,ipq8074-hk01,$(IPQ807X_KERNEL_LOADADDR))
+define Device/xiaomi_ax3600
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Xiaomi
+	DEVICE_MODEL := Mi AIoT Router AX3600
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_DTS_CONFIG := config@ac04
+	SOC := ipq8071
 endef
-
-define Image/Build
-	$(call Image/Build/$(1),$(1))
-endef
+TARGET_DEVICES += xiaomi_ax3600
 
 $(eval $(call BuildImage))

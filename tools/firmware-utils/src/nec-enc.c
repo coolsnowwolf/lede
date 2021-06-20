@@ -47,7 +47,7 @@ static unsigned char buf_pattern[4096], buf[4096];
 
 int main(int argc, char **argv)
 {
-	int k_off = 0, ptn = 0, c, ret = EXIT_SUCCESS;
+	int k_off = 0, ptn = 1, c, ret = EXIT_SUCCESS;
 	char *ifn = NULL, *ofn = NULL, *key = NULL;
 	size_t n, k_len;
 	FILE *out, *in;
@@ -99,11 +99,11 @@ int main(int argc, char **argv)
 
 	while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
 		for (int i = 0; i < n; i++) {
-			buf_pattern[i] = ptn + 1;
+			buf_pattern[i] = ptn;
 			ptn++;
 
-			if (ptn > 250)
-				ptn = 0;
+			if (ptn > PATTERN_LEN)
+				ptn = 1;
 		}
 
 		k_off = xor_pattern(buf_pattern, n, key, k_len, k_off);

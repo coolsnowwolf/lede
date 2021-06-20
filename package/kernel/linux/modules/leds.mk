@@ -38,20 +38,20 @@ endef
 
 $(eval $(call KernelPackage,ledtrig-activity))
 
-define KernelPackage/ledtrig-heartbeat
+define KernelPackage/ledtrig-audio
   SUBMENU:=$(LEDS_MENU)
-  TITLE:=LED Heartbeat Trigger
-  KCONFIG:=CONFIG_LEDS_TRIGGER_HEARTBEAT
-  FILES:=$(LED_TRIGGER_DIR)/ledtrig-heartbeat.ko
-  AUTOLOAD:=$(call AutoLoad,50,ledtrig-heartbeat)
+  TITLE:=LED Audio Mute Trigger
+  KCONFIG:=CONFIG_LEDS_TRIGGER_AUDIO
+  FILES:=$(LED_TRIGGER_DIR)/ledtrig-audio.ko
+  AUTOLOAD:=$(call AutoLoad,50,ledtrig-audio)
 endef
 
-define KernelPackage/ledtrig-heartbeat/description
- Kernel module that allows LEDs to blink like heart beat
+define KernelPackage/ledtrig-audio/description
+ Kernel module that allows LEDs to be controlled by audio drivers
+ to follow audio mute and mic-mute changes.
 endef
 
-$(eval $(call KernelPackage,ledtrig-heartbeat))
-
+$(eval $(call KernelPackage,ledtrig-audio))
 
 define KernelPackage/ledtrig-gpio
   SUBMENU:=$(LEDS_MENU)
@@ -66,52 +66,6 @@ define KernelPackage/ledtrig-gpio/description
 endef
 
 $(eval $(call KernelPackage,ledtrig-gpio))
-
-
-define KernelPackage/ledtrig-netdev
-  SUBMENU:=$(LEDS_MENU)
-  TITLE:=LED NETDEV Trigger
-  KCONFIG:=CONFIG_LEDS_TRIGGER_NETDEV
-  FILES:=$(LINUX_DIR)/drivers/leds/trigger/ledtrig-netdev.ko
-  AUTOLOAD:=$(call AutoLoad,50,ledtrig-netdev)
-endef
-
-define KernelPackage/ledtrig-netdev/description
- Kernel module to drive LEDs based on network activity
-endef
-
-$(eval $(call KernelPackage,ledtrig-netdev))
-
-
-define KernelPackage/ledtrig-default-on
-  SUBMENU:=$(LEDS_MENU)
-  TITLE:=LED Default ON Trigger
-  KCONFIG:=CONFIG_LEDS_TRIGGER_DEFAULT_ON
-  FILES:=$(LED_TRIGGER_DIR)/ledtrig-default-on.ko
-  AUTOLOAD:=$(call AutoLoad,50,ledtrig-default-on,1)
-endef
-
-define KernelPackage/ledtrig-default-on/description
- Kernel module that allows LEDs to be initialised in the ON state
-endef
-
-$(eval $(call KernelPackage,ledtrig-default-on))
-
-
-define KernelPackage/ledtrig-timer
-  SUBMENU:=$(LEDS_MENU)
-  TITLE:=LED Timer Trigger
-  KCONFIG:=CONFIG_LEDS_TRIGGER_TIMER
-  FILES:=$(LED_TRIGGER_DIR)/ledtrig-timer.ko
-  AUTOLOAD:=$(call AutoLoad,50,ledtrig-timer,1)
-endef
-
-define KernelPackage/ledtrig-timer/description
- Kernel module that allows LEDs to be controlled by a programmable timer
- via sysfs
-endef
-
-$(eval $(call KernelPackage,ledtrig-timer))
 
 
 define KernelPackage/ledtrig-transient
@@ -145,6 +99,22 @@ endef
 $(eval $(call KernelPackage,ledtrig-oneshot))
 
 
+define KernelPackage/leds-apu
+  SUBMENU:=$(LEDS_MENU)
+  TITLE:=PC Engines APU1 LED support
+  DEPENDS:= @GPIO_SUPPORT @TARGET_x86
+  KCONFIG:=CONFIG_LEDS_APU
+  FILES:=$(LINUX_DIR)/drivers/leds/leds-apu.ko
+  AUTOLOAD:=$(call AutoLoad,60,leds-apu,1)
+endef
+
+define KernelPackage/leds-apu/description
+  Driver for the PC Engines APU1 LEDs.
+endef
+
+$(eval $(call KernelPackage,leds-apu))
+
+
 define KernelPackage/leds-pca963x
   SUBMENU:=$(LEDS_MENU)
   TITLE:=PCA963x LED support
@@ -175,3 +145,34 @@ define KernelPackage/leds-pwm/description
 endef
 
 $(eval $(call KernelPackage,leds-pwm))
+
+define KernelPackage/leds-uleds
+  SUBMENU:=$(LEDS_MENU)
+  TITLE:=Userspace LEDs
+  KCONFIG:=CONFIG_LEDS_USER
+  FILES:=$(LINUX_DIR)/drivers/leds/uleds.ko
+  AUTOLOAD:=$(call AutoLoad,60,uleds,1)
+endef
+
+define KernelPackage/leds-uleds/description
+ This option enables support for userspace LEDs.
+endef
+
+$(eval $(call KernelPackage,leds-uleds))
+
+
+define KernelPackage/input-leds
+  SUBMENU:=$(LEDS_MENU)
+  TITLE:=Input device LED support
+  DEPENDS:=+kmod-input-core
+  KCONFIG:=CONFIG_INPUT_LEDS
+  FILES:=$(LINUX_DIR)/drivers/input/input-leds.ko
+  AUTOLOAD:=$(call AutoLoad,50,input-leds,1)
+endef
+
+define KernelPackage/input-leds/description
+ Provides support for LEDs on input devices- for example,
+ keyboard num/caps/scroll lock.
+endef
+
+$(eval $(call KernelPackage,input-leds))

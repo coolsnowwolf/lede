@@ -7,6 +7,50 @@
 	init_proto "$@"
 }
 
+proto_vxlan_setup_peer() {
+	type bridge &> /dev/null || {
+		proto_notify_error "$cfg" "MISSING_BRIDGE_COMMAND"
+		exit
+	}
+
+	local peer_config="$1"
+
+	local vxlan
+	local lladdr
+	local dst
+	local src_vni
+	local vni
+	local port
+	local via
+
+	config_get vxlan   "${peer_config}" "vxlan"
+	config_get lladdr  "${peer_config}" "lladdr"
+	config_get dst     "${peer_config}" "dst"
+	config_get src_vni "${peer_config}" "src_vni"
+	config_get vni     "${peer_config}" "vni"
+	config_get port    "${peer_config}" "port"
+	config_get via     "${peer_config}" "via"
+
+	[ "$cfg" = "$vxlan" ] || {
+		# This peer section belongs to another device
+		return
+	}
+
+	[ -n "${dst}" ] || {
+		proto_notify_error "$cfg" "MISSING_PEER_ADDRESS"
+		exit
+	}
+
+	bridge fdb append \
+		${lladdr:-00:00:00:00:00:00} \
+		dev ${cfg}                   \
+		dst ${dst}                   \
+		${src_vni:+src_vni $src_vni} \
+		${vni:+vni $vni}             \
+		${port:+port $port}          \
+		${via:+via $via}
+}
+
 vxlan_generic_setup() {
 	local cfg="$1"
 	local mode="$2"
@@ -15,9 +59,8 @@ vxlan_generic_setup() {
 
 	local link="$cfg"
 
-	local port vid ttl tos mtu macaddr zone rxcsum txcsum
-	json_get_vars port vid ttl tos mtu macaddr zone rxcsum txcsum
-
+	local port vid ttl tos mtu macaddr zone rxcsum txcsum srcportmin srcportmax ageing maxaddress learning rsc proxy l2miss l3miss gbp
+	json_get_vars port vid ttl tos mtu macaddr zone rxcsum txcsum srcportmin srcportmax ageing maxaddress learning rsc proxy l2miss l3miss gbp
 
 	proto_init_update "$link" 1
 
@@ -35,9 +78,20 @@ vxlan_generic_setup() {
 	json_add_object 'data'
 	[ -n "$port" ] && json_add_int port "$port"
 	[ -n "$vid" ] && json_add_int id "$vid"
+	[ -n "$srcportmin" ] && json_add_int srcportmin "$srcportmin"
+	[ -n "$srcportmax" ] && json_add_int srcportmax "$srcportmax"
+	[ -n "$ageing" ] && json_add_int ageing "$ageing"
+	[ -n "$maxaddress" ] && json_add_int maxaddress "$maxaddress"
 	[ -n "$macaddr" ] && json_add_string macaddr "$macaddr"
 	[ -n "$rxcsum" ] && json_add_boolean rxcsum "$rxcsum"
 	[ -n "$txcsum" ] && json_add_boolean txcsum "$txcsum"
+	[ -n "$learning" ] && json_add_boolean learning "$learning"
+	[ -n "$rsc" ] && json_add_boolean rsc "$rsc"
+	[ -n "$proxy" ] && json_add_boolean proxy "$proxy"
+	[ -n "$l2miss" ] && json_add_boolean l2miss "$l2miss"
+	[ -n "$l3miss" ] && json_add_boolean l3miss "$l3miss"
+	[ -n "$gbp" ] && json_add_boolean gbp "$gbp"
+
 	json_close_object
 
 	proto_close_tunnel
@@ -47,6 +101,9 @@ vxlan_generic_setup() {
 	proto_close_data
 
 	proto_send_update "$cfg"
+
+	config_load network
+	config_foreach proto_vxlan_setup_peer "vxlan_peer"
 }
 
 proto_vxlan_setup() {
@@ -55,26 +112,13 @@ proto_vxlan_setup() {
 	local ipaddr peeraddr
 	json_get_vars ipaddr peeraddr tunlink
 
-	[ -z "$peeraddr" ] && {
-		proto_notify_error "$cfg" "MISSING_ADDRESS"
-		proto_block_restart "$cfg"
-		exit
-	}
-
 	( proto_add_host_dependency "$cfg" '' "$tunlink" )
 
-	[ -z "$ipaddr" ] && {
-		local wanif="$tunlink"
-		if [ -z "$wanif" ] && ! network_find_wan wanif; then
-			proto_notify_error "$cfg" "NO_WAN_LINK"
-			exit
-		fi
-
-		if ! network_get_ipaddr ipaddr "$wanif"; then
-			proto_notify_error "$cfg" "NO_WAN_LINK"
-			exit
-		fi
-	}
+	case "$ipaddr" in
+		"auto"|"")
+			ipaddr="0.0.0.0"
+			;;
+	esac
 
 	vxlan_generic_setup "$cfg" 'vxlan' "$ipaddr" "$peeraddr"
 }
@@ -85,26 +129,14 @@ proto_vxlan6_setup() {
 	local ip6addr peer6addr
 	json_get_vars ip6addr peer6addr tunlink
 
-	[ -z "$peer6addr" ] && {
-		proto_notify_error "$cfg" "MISSING_ADDRESS"
-		proto_block_restart "$cfg"
-		exit
-	}
-
 	( proto_add_host_dependency "$cfg" '' "$tunlink" )
 
-	[ -z "$ip6addr" ] && {
-		local wanif="$tunlink"
-		if [ -z "$wanif" ] && ! network_find_wan6 wanif; then
-			proto_notify_error "$cfg" "NO_WAN_LINK"
-			exit
-		fi
-
-		if ! network_get_ipaddr6 ip6addr "$wanif"; then
-			proto_notify_error "$cfg" "NO_WAN_LINK"
-			exit
-		fi
-	}
+	case "$ip6addr" in
+		"auto"|"")
+			# ensure tunnel via ipv6
+			ip6addr="::"
+			;;
+	esac
 
 	vxlan_generic_setup "$cfg" 'vxlan6' "$ip6addr" "$peer6addr"
 }
@@ -129,7 +161,20 @@ vxlan_generic_init_config() {
 	proto_config_add_int "ttl"
 	proto_config_add_int "tos"
 	proto_config_add_int "mtu"
+	proto_config_add_int "srcportmin"
+	proto_config_add_int "srcportmax"
+	proto_config_add_int "ageing"
+	proto_config_add_int "maxaddress"
+	proto_config_add_boolean "rxcsum"
+	proto_config_add_boolean "txcsum"
+	proto_config_add_boolean "learning"
+	proto_config_add_boolean "rsc"
+	proto_config_add_boolean "proxy"
+	proto_config_add_boolean "l2miss"
+	proto_config_add_boolean "l3miss"
+	proto_config_add_boolean "gbp"
 	proto_config_add_string "macaddr"
+
 }
 
 proto_vxlan_init_config() {

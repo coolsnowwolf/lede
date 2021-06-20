@@ -3,6 +3,16 @@
 . /lib/functions.sh
 . /lib/functions/system.sh
 
+caldata_dd() {
+	local source=$1
+	local target=$2
+	local count=$(($3))
+	local offset=$(($4))
+
+	dd if=$source of=$target iflag=skip_bytes,fullblock bs=$count skip=$offset count=1 2>/dev/null
+	return $?
+}
+
 caldata_die() {
 	echo "caldata: " "$*"
 	exit 1
@@ -17,7 +27,7 @@ caldata_extract() {
 	mtd=$(find_mtd_chardev $part)
 	[ -n "$mtd" ] || caldata_die "no mtd device found for partition $part"
 
-	dd if=$mtd of=/lib/firmware/$FIRMWARE iflag=skip_bytes bs=$count skip=$offset count=1 2>/dev/null || \
+	caldata_dd $mtd /lib/firmware/$FIRMWARE $count $offset || \
 		caldata_die "failed to extract calibration data from $mtd"
 }
 
@@ -34,7 +44,7 @@ caldata_extract_ubi() {
 	ubi=$(nand_find_volume $ubidev $part)
 	[ -n "$ubi" ] || caldata_die "no UBI volume found for $part"
 
-	dd if=/dev/$ubi of=/lib/firmware/$FIRMWARE iflag=skip_bytes bs=$count skip=$offset count=1 2>/dev/null || \
+	caldata_dd /dev/$ubi /lib/firmware/$FIRMWARE $count $offset || \
 		caldata_die "failed to extract calibration data from $ubi"
 }
 
@@ -64,8 +74,7 @@ caldata_from_file() {
 
 	[ -n "$target" ] || target=/lib/firmware/$FIRMWARE
 
-	# dd doesn't handle partial reads from special files: use cat
-	cat $source | dd of=$target iflag=skip_bytes bs=$count skip=$offset count=1 2>/dev/null || \
+	caldata_dd $source $target $count $offset || \
 		caldata_die "failed to extract calibration data from $source"
 }
 
@@ -73,16 +82,20 @@ caldata_sysfsload_from_file() {
 	local source=$1
 	local offset=$(($2))
 	local count=$(($3))
+	local target_dir="/sys/$DEVPATH"
+	local target="$target_dir/data"
 
-	# dd doesn't handle partial reads from special files: use cat
-	# test extract to /dev/null first
-	cat $source | dd of=/dev/null iflag=skip_bytes bs=$count skip=$offset count=1 2>/dev/null || \
+	[ -d "$target_dir" ] || \
+		caldata_die "no sysfs dir to write: $target"
+
+	echo 1 > "$target_dir/loading"
+	caldata_dd $source $target $count $offset
+	if [ $? != 0 ]; then
+		echo 1 > "$target_dir/loading"
 		caldata_die "failed to extract calibration data from $source"
-
-	# can't fail now
-	echo 1 > /sys/$DEVPATH/loading
-	cat $source | dd of=/sys/$DEVPATH/data iflag=skip_bytes bs=$count skip=$offset count=1 2>/dev/null
-	echo 0 > /sys/$DEVPATH/loading
+	else
+		echo 0 > "$target_dir/loading"
+	fi
 }
 
 caldata_valid() {

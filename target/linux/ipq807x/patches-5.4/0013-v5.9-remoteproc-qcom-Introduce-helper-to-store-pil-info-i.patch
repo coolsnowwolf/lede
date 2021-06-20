@@ -1,0 +1,190 @@
+From 549b67da660d634e3a4a50a325bd1f5609ddb84b Mon Sep 17 00:00:00 2001
+From: Bjorn Andersson <bjorn.andersson@linaro.org>
+Date: Mon, 22 Jun 2020 12:19:39 -0700
+Subject: [PATCH] remoteproc: qcom: Introduce helper to store pil info in IMEM
+
+A region in IMEM is used to communicate load addresses of remoteproc to
+post mortem debug tools. Implement a helper function that can be used to
+store this information in order to enable these tools to process
+collected ramdumps.
+
+Reviewed-by: Mathieu Poirier <mathieu.poirier@linaro.org>
+Reviewed-by: Vinod Koul <vkoul@kernel.org>
+Signed-off-by: Bjorn Andersson <bjorn.andersson@linaro.org>
+Link: https://lore.kernel.org/r/20200622191942.255460-3-bjorn.andersson@linaro.org
+Signed-off-by: Bjorn Andersson <bjorn.andersson@linaro.org>
+---
+ drivers/remoteproc/Kconfig         |   3 +
+ drivers/remoteproc/Makefile        |   1 +
+ drivers/remoteproc/qcom_pil_info.c | 129 +++++++++++++++++++++++++++++
+ drivers/remoteproc/qcom_pil_info.h |   9 ++
+ 4 files changed, 142 insertions(+)
+ create mode 100644 drivers/remoteproc/qcom_pil_info.c
+ create mode 100644 drivers/remoteproc/qcom_pil_info.h
+
+--- a/drivers/remoteproc/Kconfig
++++ b/drivers/remoteproc/Kconfig
+@@ -85,6 +85,9 @@ config KEYSTONE_REMOTEPROC
+ 	  It's safe to say N here if you're not interested in the Keystone
+ 	  DSPs or just want to use a bare minimum kernel.
+ 
++config QCOM_PIL_INFO
++	tristate
++
+ config QCOM_RPROC_COMMON
+ 	tristate
+ 
+--- a/drivers/remoteproc/Makefile
++++ b/drivers/remoteproc/Makefile
+@@ -14,6 +14,7 @@ obj-$(CONFIG_OMAP_REMOTEPROC)		+= omap_r
+ obj-$(CONFIG_WKUP_M3_RPROC)		+= wkup_m3_rproc.o
+ obj-$(CONFIG_DA8XX_REMOTEPROC)		+= da8xx_remoteproc.o
+ obj-$(CONFIG_KEYSTONE_REMOTEPROC)	+= keystone_remoteproc.o
++obj-$(CONFIG_QCOM_PIL_INFO)		+= qcom_pil_info.o
+ obj-$(CONFIG_QCOM_RPROC_COMMON)		+= qcom_common.o
+ obj-$(CONFIG_QCOM_Q6V5_COMMON)		+= qcom_q6v5.o
+ obj-$(CONFIG_QCOM_Q6V5_ADSP)		+= qcom_q6v5_adsp.o
+--- /dev/null
++++ b/drivers/remoteproc/qcom_pil_info.c
+@@ -0,0 +1,129 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (c) 2019-2020 Linaro Ltd.
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of_address.h>
++#include "qcom_pil_info.h"
++
++/*
++ * The PIL relocation information region is used to communicate memory regions
++ * occupied by co-processor firmware for post mortem crash analysis.
++ *
++ * It consists of an array of entries with an 8 byte textual identifier of the
++ * region followed by a 64 bit base address and 32 bit size, both little
++ * endian.
++ */
++#define PIL_RELOC_NAME_LEN	8
++#define PIL_RELOC_ENTRY_SIZE	(PIL_RELOC_NAME_LEN + sizeof(__le64) + sizeof(__le32))
++
++struct pil_reloc {
++	void __iomem *base;
++	size_t num_entries;
++};
++
++static struct pil_reloc _reloc __read_mostly;
++static DEFINE_MUTEX(pil_reloc_lock);
++
++static int qcom_pil_info_init(void)
++{
++	struct device_node *np;
++	struct resource imem;
++	void __iomem *base;
++	int ret;
++
++	/* Already initialized? */
++	if (_reloc.base)
++		return 0;
++
++	np = of_find_compatible_node(NULL, NULL, "qcom,pil-reloc-info");
++	if (!np)
++		return -ENOENT;
++
++	ret = of_address_to_resource(np, 0, &imem);
++	of_node_put(np);
++	if (ret < 0)
++		return ret;
++
++	base = ioremap(imem.start, resource_size(&imem));
++	if (!base) {
++		pr_err("failed to map PIL relocation info region\n");
++		return -ENOMEM;
++	}
++
++	memset_io(base, 0, resource_size(&imem));
++
++	_reloc.base = base;
++	_reloc.num_entries = resource_size(&imem) / PIL_RELOC_ENTRY_SIZE;
++
++	return 0;
++}
++
++/**
++ * qcom_pil_info_store() - store PIL information of image in IMEM
++ * @image:	name of the image
++ * @base:	base address of the loaded image
++ * @size:	size of the loaded image
++ *
++ * Return: 0 on success, negative errno on failure
++ */
++int qcom_pil_info_store(const char *image, phys_addr_t base, size_t size)
++{
++	char buf[PIL_RELOC_NAME_LEN];
++	void __iomem *entry;
++	int ret;
++	int i;
++
++	mutex_lock(&pil_reloc_lock);
++	ret = qcom_pil_info_init();
++	if (ret < 0) {
++		mutex_unlock(&pil_reloc_lock);
++		return ret;
++	}
++
++	for (i = 0; i < _reloc.num_entries; i++) {
++		entry = _reloc.base + i * PIL_RELOC_ENTRY_SIZE;
++
++		memcpy_fromio(buf, entry, PIL_RELOC_NAME_LEN);
++
++		/*
++		 * An empty record means we didn't find it, given that the
++		 * records are packed.
++		 */
++		if (!buf[0])
++			goto found_unused;
++
++		if (!strncmp(buf, image, PIL_RELOC_NAME_LEN))
++			goto found_existing;
++	}
++
++	pr_warn("insufficient PIL info slots\n");
++	mutex_unlock(&pil_reloc_lock);
++	return -ENOMEM;
++
++found_unused:
++	memcpy_toio(entry, image, PIL_RELOC_NAME_LEN);
++found_existing:
++	/* Use two writel() as base is only aligned to 4 bytes on odd entries */
++	writel(base, entry + PIL_RELOC_NAME_LEN);
++	writel(base >> 32, entry + PIL_RELOC_NAME_LEN + 4);
++	writel(size, entry + PIL_RELOC_NAME_LEN + sizeof(__le64));
++	mutex_unlock(&pil_reloc_lock);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(qcom_pil_info_store);
++
++static void __exit pil_reloc_exit(void)
++{
++	mutex_lock(&pil_reloc_lock);
++	iounmap(_reloc.base);
++	_reloc.base = NULL;
++	mutex_unlock(&pil_reloc_lock);
++}
++module_exit(pil_reloc_exit);
++
++MODULE_DESCRIPTION("Qualcomm PIL relocation info");
++MODULE_LICENSE("GPL v2");
+--- /dev/null
++++ b/drivers/remoteproc/qcom_pil_info.h
+@@ -0,0 +1,9 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __QCOM_PIL_INFO_H__
++#define __QCOM_PIL_INFO_H__
++
++#include <linux/types.h>
++
++int qcom_pil_info_store(const char *image, phys_addr_t base, size_t size);
++
++#endif

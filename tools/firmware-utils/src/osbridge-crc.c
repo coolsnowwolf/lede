@@ -58,7 +58,6 @@ static char *ofname;
 void usage(int status)
 {
 	FILE *stream = (status != EXIT_SUCCESS) ? stderr : stdout;
-	struct board_info *board;
 
 	fprintf(stream, "Usage: %s [OPTIONS...]\n", progname);
 	fprintf(stream,
@@ -164,7 +163,6 @@ int main(int argc, char *argv[])
 
 	res = EXIT_SUCCESS;
 
- out_flush:
 	fflush(outfile);
 
  err_close_out:

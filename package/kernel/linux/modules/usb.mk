@@ -179,6 +179,23 @@ endef
 
 $(eval $(call KernelPackage,usb-gadget-eth))
 
+define KernelPackage/usb-gadget-ncm
+  TITLE:=USB Network Control Model (NCM) Gadget support
+  KCONFIG:=CONFIG_USB_G_NCM
+  DEPENDS:=+kmod-usb-gadget +kmod-usb-lib-composite \
+	+kmod-usb-gadget-eth
+  FILES:= \
+	$(LINUX_DIR)/drivers/usb/gadget/function/usb_f_ncm.ko \
+	$(LINUX_DIR)/drivers/usb/gadget/legacy/g_ncm.ko
+  AUTOLOAD:=$(call AutoLoad,52,usb_f_ncm)
+  $(call AddDepends/usb)
+endef
+
+define KernelPackage/usb-gadget-ncm/description
+  Kernel support for USB Network Control Model (NCM) Gadget
+endef
+
+$(eval $(call KernelPackage,usb-gadget-ncm))
 
 define KernelPackage/usb-gadget-serial
   TITLE:=USB Serial Gadget support
@@ -412,7 +429,7 @@ $(eval $(call KernelPackage,usb2-pci))
 
 define KernelPackage/usb-dwc2
   TITLE:=DWC2 USB controller driver
-  DEPENDS:=+USB_GADGET_SUPPORT:kmod-usb-gadget
+  DEPENDS:=+USB_GADGET_SUPPORT:kmod-usb-gadget +kmod-usb-roles
   KCONFIG:= \
 	CONFIG_USB_PCI=y \
 	CONFIG_USB_DWC2 \
@@ -458,27 +475,9 @@ endef
 $(eval $(call KernelPackage,usb-dwc3))
 
 
-define KernelPackage/usb-dwc3-of-simple
-  TITLE:=DWC3 USB simple OF driver
-  DEPENDS:=@LINUX_4_14 @(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3
-  KCONFIG:= CONFIG_USB_DWC3_OF_SIMPLE
-  FILES:= $(LINUX_DIR)/drivers/usb/dwc3/dwc3-of-simple.ko
-  AUTOLOAD:=$(call AutoLoad,53,dwc3-of-simple,1)
-  $(call AddDepends/usb)
-endef
-
-define KernelPackage/usb-dwc3-of-simple/description
- This driver provides generic platform glue for the integrated DesignWare
- USB3 IP Core.
-endef
-
-
-$(eval $(call KernelPackage,usb-dwc3-of-simple))
-
-
 define KernelPackage/usb-dwc3-qcom
   TITLE:=DWC3 Qualcomm USB driver
-  DEPENDS:=@(!LINUX_4_14) @(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3
+  DEPENDS:=@(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3
   KCONFIG:= CONFIG_USB_DWC3_QCOM
   FILES:= $(LINUX_DIR)/drivers/usb/dwc3/dwc3-qcom.ko
   AUTOLOAD:=$(call AutoLoad,53,dwc3-qcom,1)
@@ -579,7 +578,7 @@ $(eval $(call KernelPackage,usb-serial))
 
 define AddDepends/usb-serial
   SUBMENU:=$(USB_MENU)
-  DEPENDS+=kmod-usb-serial $(1)
+  DEPENDS+=+kmod-usb-serial $(1)
 endef
 
 
@@ -1234,6 +1233,7 @@ $(eval $(call KernelPackage,usb-net-mcs7830))
 
 define KernelPackage/usb-net-smsc95xx
   TITLE:=SMSC LAN95XX based USB 2.0 10/100 ethernet devices
+  DEPENDS:=+LINUX_5_10:kmod-libphy
   KCONFIG:=CONFIG_USB_NET_SMSC95XX
   FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/smsc95xx.ko
   AUTOLOAD:=$(call AutoProbe,smsc95xx)
@@ -1343,7 +1343,7 @@ define KernelPackage/usb-net-rtl8152
   KCONFIG:=CONFIG_USB_RTL8152
   FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/r8152.ko
   AUTOLOAD:=$(call AutoProbe,r8152)
-  $(call AddDepends/usb-net)
+  $(call AddDepends/usb-net, +LINUX_5_10:kmod-crypto-hash)
 endef
 
 define KernelPackage/usb-net-rtl8152/description
@@ -1405,7 +1405,7 @@ define KernelPackage/usb-net-cdc-ncm
   KCONFIG:=CONFIG_USB_NET_CDC_NCM
   FILES:= $(LINUX_DIR)/drivers/$(USBNET_DIR)/cdc_ncm.ko
   AUTOLOAD:=$(call AutoProbe,cdc_ncm)
-  $(call AddDepends/usb-net)
+  $(call AddDepends/usb-net,+!LINUX_5_4:kmod-usb-net-cdc-ether)
 endef
 
 define KernelPackage/usb-net-cdc-ncm/description
@@ -1504,6 +1504,23 @@ endef
 $(eval $(call KernelPackage,usb-hid))
 
 
+define KernelPackage/usb-hid-cp2112
+  SUBMENU:=$(USB_MENU)
+  TITLE:=Silicon Labs CP2112 HID USB to SMBus Master Bridge
+  KCONFIG:=CONFIG_GPIOLIB=y CONFIG_HID_CP2112
+  DEPENDS:=+kmod-usb-hid +kmod-i2c-core
+  FILES:=$(LINUX_DIR)/drivers/hid/hid-cp2112.ko
+  AUTOLOAD:=$(call AutoProbe,hid-cp2112)
+endef
+
+define KernelPackage/usb-hid-cp2112/description
+ HID device driver which registers as an i2c adapter and gpiochip to expose
+ these functions of the CP2112.
+endef
+
+$(eval $(call KernelPackage,usb-hid-cp2112))
+
+
 define KernelPackage/usb-yealink
   TITLE:=USB Yealink VOIP phone
   DEPENDS:=+kmod-input-evdev
@@ -1588,21 +1605,20 @@ endef
 
 $(eval $(call KernelPackage,usbip-server))
 
-
 define KernelPackage/usb-chipidea
   TITLE:=Host and device support for Chipidea controllers
-  DEPENDS:=+USB_GADGET_SUPPORT:kmod-usb-gadget @TARGET_ar71xx||TARGET_ath79 +kmod-usb-ehci +kmod-usb-phy-nop
+  DEPENDS:=+USB_GADGET_SUPPORT:kmod-usb-gadget @TARGET_ath79 +kmod-usb-ehci +kmod-usb-phy-nop +kmod-usb-roles
   KCONFIG:= \
 	CONFIG_EXTCON \
 	CONFIG_USB_CHIPIDEA \
+	CONFIG_USB_CHIPIDEA_GENERIC \
 	CONFIG_USB_CHIPIDEA_HOST=y \
 	CONFIG_USB_CHIPIDEA_UDC=y \
 	CONFIG_USB_CHIPIDEA_DEBUG=y
   FILES:= \
 	$(LINUX_DIR)/drivers/extcon/extcon-core.ko \
 	$(LINUX_DIR)/drivers/usb/chipidea/ci_hdrc.ko \
-	$(LINUX_DIR)/drivers/usb/common/ulpi.ko@ge4.18 \
-	$(LINUX_DIR)/drivers/usb/roles/roles.ko@ge5.0
+	$(LINUX_DIR)/drivers/usb/common/ulpi.ko
   AUTOLOAD:=$(call AutoLoad,39,ci_hdrc,1)
   $(call AddDepends/usb)
 endef
@@ -1651,25 +1667,22 @@ endef
 
 $(eval $(call KernelPackage,usbmon))
 
-XHCI_MODULES := xhci-hcd xhci-pci xhci-plat-hcd
-ifdef CONFIG_TARGET_ramips_mt7621
-  XHCI_MODULES += xhci-mtk
-endif
+XHCI_MODULES := xhci-pci xhci-plat-hcd
 XHCI_FILES := $(wildcard $(patsubst %,$(LINUX_DIR)/drivers/usb/host/%.ko,$(XHCI_MODULES)))
 XHCI_AUTOLOAD := $(patsubst $(LINUX_DIR)/drivers/usb/host/%.ko,%,$(XHCI_FILES))
 
 define KernelPackage/usb3
   TITLE:=Support for USB3 controllers
   DEPENDS:= \
+	+kmod-usb-xhci-hcd \
 	+TARGET_bcm53xx:kmod-usb-bcma \
-	+TARGET_bcm53xx:kmod-phy-bcm-ns-usb3
+	+TARGET_bcm53xx:kmod-phy-bcm-ns-usb3 \
+	+TARGET_ramips_mt7621:kmod-usb-xhci-mtk \
+	+(TARGET_apm821xx_nand&&LINUX_5_10):kmod-usb-xhci-pci-renesas
   KCONFIG:= \
 	CONFIG_USB_PCI=y \
-	CONFIG_USB_XHCI_HCD \
 	CONFIG_USB_XHCI_PCI \
-	CONFIG_USB_XHCI_PLATFORM \
-	CONFIG_USB_XHCI_MTK \
-	CONFIG_USB_XHCI_HCD_DEBUGGING=n
+	CONFIG_USB_XHCI_PLATFORM
   FILES:= \
 	$(XHCI_FILES)
   AUTOLOAD:=$(call AutoLoad,54,$(XHCI_AUTOLOAD),1)
@@ -1699,6 +1712,75 @@ define KernelPackage/usb-net2280/description
 endef
 
 $(eval $(call KernelPackage,usb-net2280))
+
+define KernelPackage/usb-roles
+  TITLE:=USB Role Switch Library Module
+  KCONFIG:=CONFIG_USB_ROLE_SWITCH
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/drivers/usb/roles/roles.ko
+  $(call AddDepends/usb)
+endef
+
+define KernelPackage/usb-roles/description
+  Support for USB Role Switch
+endef
+
+$(eval $(call KernelPackage,usb-roles))
+
+
+define KernelPackage/usb-xhci-hcd
+  TITLE:=xHCI HCD (USB 3.0) support
+  KCONFIG:= \
+	  CONFIG_USB_XHCI_HCD \
+	  CONFIG_USB_XHCI_HCD_DEBUGGING=n
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/drivers/usb/host/xhci-hcd.ko
+  AUTOLOAD:=$(call AutoLoad,54,xhci-hcd,1)
+  $(call AddDepends/usb)
+endef
+
+define KernelPackage/usb-xhci-hcd/description
+  The eXtensible Host Controller Interface (xHCI) is standard for USB 3.0
+  "SuperSpeed" host controller hardware.
+endef
+
+$(eval $(call KernelPackage,usb-xhci-hcd))
+
+
+define KernelPackage/usb-xhci-mtk
+  TITLE:=xHCI support for MediaTek SoCs
+  DEPENDS:=+kmod-usb-xhci-hcd
+  KCONFIG:=CONFIG_USB_XHCI_MTK
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/drivers/usb/host/xhci-mtk.ko
+  AUTOLOAD:=$(call AutoLoad,54,xhci-mtk,1)
+  $(call AddDepends/usb)
+endef
+
+define KernelPackage/usb-xhci-mtk/description
+  Kernel support for the xHCI host controller found in MediaTek SoCs.
+endef
+
+$(eval $(call KernelPackage,usb-xhci-mtk))
+
+
+define KernelPackage/usb-xhci-pci-renesas
+  TITLE:=Support for additional Renesas xHCI controller with firmware
+  DEPENDS:=@LINUX_5_10
+  KCONFIG:=CONFIG_USB_XHCI_PCI_RENESAS
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/drivers/usb/host/xhci-pci-renesas.ko
+  AUTOLOAD:=$(call AutoLoad,54,xhci-pci-renesas,1)
+  $(call AddDepends/usb)
+endef
+
+define KernelPackage/usb-xhci-pci-renesas/description
+  Kernel support for the Renesas xHCI controller with firmware. Make sure you have
+  the firwmare for the device and installed on your system for this device to work.
+endef
+
+$(eval $(call KernelPackage,usb-xhci-pci-renesas))
+
 
 define KernelPackage/chaoskey
   SUBMENU:=$(USB_MENU)

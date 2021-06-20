@@ -41,6 +41,7 @@
 #include <linux/atm.h>
 #include <linux/clk.h>
 #include <linux/interrupt.h>
+#include <linux/version.h>
 #ifdef CONFIG_XFRM
   #include <net/xfrm.h>
 #endif
@@ -199,7 +200,11 @@ static inline void mailbox_aal_rx_handler(void);
 static irqreturn_t mailbox_irq_handler(int, void *);
 static inline void mailbox_signal(unsigned int, int);
 static void do_ppe_tasklet(unsigned long);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,9,0)
 DECLARE_TASKLET(g_dma_tasklet, do_ppe_tasklet, 0);
+#else
+DECLARE_TASKLET_OLD(g_dma_tasklet, do_ppe_tasklet);
+#endif
 
 /*
  *  QSB & HTU setting functions
@@ -289,17 +294,9 @@ static int ppe_ioctl(struct atm_dev *dev, unsigned int cmd, void *arg)
 		return -ENOTTY;
 
 	if ( _IOC_DIR(cmd) & _IOC_READ )
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
 		ret = !access_ok(arg, _IOC_SIZE(cmd));
-#else
-		ret = !access_ok(VERIFY_WRITE, arg, _IOC_SIZE(cmd));
-#endif
 	else if ( _IOC_DIR(cmd) & _IOC_WRITE )
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
 		ret = !access_ok(arg, _IOC_SIZE(cmd));
-#else
-		ret = !access_ok(VERIFY_READ, arg, _IOC_SIZE(cmd));
-#endif
 	if ( ret )
 		return -EFAULT;
 

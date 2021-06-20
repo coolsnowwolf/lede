@@ -46,6 +46,7 @@ ENABLE_PTP_SUPPORT = n
 ENABLE_PTP_MASTER_MODE = n
 ENABLE_RSS_SUPPORT = y
 ENABLE_LIB_SUPPORT = n
+ENABLE_USE_FIRMWARE_FILE = n
 
 ifneq ($(KERNELRELEASE),)
 	obj-m := r8125.o
@@ -105,6 +106,10 @@ ifneq ($(KERNELRELEASE),)
 	ifeq ($(ENABLE_LIB_SUPPORT), y)
 		r8125-objs += r8125_lib.o
 		EXTRA_CFLAGS += -DENABLE_LIB_SUPPORT
+	endif
+	ifeq ($(ENABLE_USE_FIRMWARE_FILE), y)
+		r8125-objs += r8125_firmware.o
+		EXTRA_CFLAGS += -DENABLE_USE_FIRMWARE_FILE
 	endif
 else
 	BASEDIR := /lib/modules/$(shell uname -r)

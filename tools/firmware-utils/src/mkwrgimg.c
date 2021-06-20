@@ -100,7 +100,7 @@ static void get_digest(struct wrg_header *header, char *data, int size)
 	MD5_Update(&ctx, (char *)&header->devname, sizeof(header->devname));
 	MD5_Update(&ctx, data, size);
 
-	MD5_Final(header->digest, &ctx);
+	MD5_Final((unsigned char *)header->digest, &ctx);
 }
 
 int main(int argc, char *argv[])

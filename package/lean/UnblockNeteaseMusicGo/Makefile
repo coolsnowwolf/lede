@@ -1,16 +1,15 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=UnblockNeteaseMusicGo
-PKG_VERSION:=0.2.10
+PKG_VERSION:=0.2.11
 PKG_RELEASE:=1
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/cnsilvan/UnblockNeteaseMusic.git
-PKG_SOURCE_VERSION:=d8a24e8ee2f4e3a76ee6be9217b9a96ca608158a
-PKG_MAINTAINER:=Silvan <cnsilvan@gmail.com>
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://codeload.github.com/cnsilvan/UnblockNeteaseMusic/tar.gz/$(PKG_VERSION)?
+PKG_HASH:=0c2d06ba53d22f0277478737616ec65e6e2e258fc9e9fec7df75e0332605446d
 
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)
-PKG_SOURCE:=$(PKG_SOURCE_SUBDIR)-$(PKG_VERSION)-$(PKG_SOURCE_VERSION).tar.gz
+
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
 PKG_BUILD_DEPENDS:=golang/host

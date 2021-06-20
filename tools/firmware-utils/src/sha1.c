@@ -225,8 +225,9 @@ void sha1_process( sha1_context *ctx, uchar data[64] )
     ctx->state[4] += E;
 }
 
-void sha1_update( sha1_context *ctx, uchar *input, uint length )
+void sha1_update( sha1_context *ctx, void *data, uint length )
 {
+    uchar *input = data;
     ulong left, fill;
 
     if( ! length ) return;

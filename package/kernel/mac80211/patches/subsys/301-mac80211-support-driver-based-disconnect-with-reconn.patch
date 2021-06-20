@@ -1,0 +1,271 @@
+From: Johannes Berg <johannes.berg@intel.com>
+Date: Sun, 6 Dec 2020 14:54:43 +0200
+Subject: [PATCH] mac80211: support driver-based disconnect with reconnect hint
+
+Support the driver indicating that a disconnection needs
+to be performed, and pass through the reconnect hint in
+this case.
+
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+Signed-off-by: Luca Coelho <luciano.coelho@intel.com>
+Link: https://lore.kernel.org/r/iwlwifi.20201206145305.5c8dab7a22a0.I58459fdf6968b16c90cab9c574f0f04ca22b0c79@changeid
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -5885,6 +5885,17 @@ void ieee80211_beacon_loss(struct ieee80
+ void ieee80211_connection_loss(struct ieee80211_vif *vif);
+ 
+ /**
++ * ieee80211_disconnect - request disconnection
++ *
++ * @vif: &struct ieee80211_vif pointer from the add_interface callback.
++ * @reconnect: immediate reconnect is desired
++ *
++ * Request disconnection from the current network and, if enabled, send a
++ * hint to the higher layers that immediate reconnect is desired.
++ */
++void ieee80211_disconnect(struct ieee80211_vif *vif, bool reconnect);
++
++/**
+  * ieee80211_resume_disconnect - disconnect from AP after resume
+  *
+  * @vif: &struct ieee80211_vif pointer from the add_interface callback.
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -450,7 +450,9 @@ struct ieee80211_if_managed {
+ 	unsigned long probe_timeout;
+ 	int probe_send_count;
+ 	bool nullfunc_failed;
+-	bool connection_loss;
++	u8 connection_loss:1,
++	   driver_disconnect:1,
++	   reconnect:1;
+ 
+ 	struct cfg80211_bss *associated;
+ 	struct ieee80211_mgd_auth_data *auth_data;
+--- a/net/mac80211/mlme.c
++++ b/net/mac80211/mlme.c
+@@ -2725,7 +2725,7 @@ EXPORT_SYMBOL(ieee80211_ap_probereq_get)
+ 
+ static void ieee80211_report_disconnect(struct ieee80211_sub_if_data *sdata,
+ 					const u8 *buf, size_t len, bool tx,
+-					u16 reason)
++					u16 reason, bool reconnect)
+ {
+ 	struct ieee80211_event event = {
+ 		.type = MLME_EVENT,
+@@ -2734,7 +2734,7 @@ static void ieee80211_report_disconnect(
+ 	};
+ 
+ 	if (tx)
+-		cfg80211_tx_mlme_mgmt(sdata->dev, buf, len, false);
++		cfg80211_tx_mlme_mgmt(sdata->dev, buf, len, reconnect);
+ 	else
+ 		cfg80211_rx_mlme_mgmt(sdata->dev, buf, len);
+ 
+@@ -2756,13 +2756,18 @@ static void __ieee80211_disconnect(struc
+ 
+ 	tx = !sdata->csa_block_tx;
+ 
+-	/* AP is probably out of range (or not reachable for another reason) so
+-	 * remove the bss struct for that AP.
+-	 */
+-	cfg80211_unlink_bss(local->hw.wiphy, ifmgd->associated);
++	if (!ifmgd->driver_disconnect) {
++		/*
++		 * AP is probably out of range (or not reachable for another
++		 * reason) so remove the bss struct for that AP.
++		 */
++		cfg80211_unlink_bss(local->hw.wiphy, ifmgd->associated);
++	}
+ 
+ 	ieee80211_set_disassoc(sdata, IEEE80211_STYPE_DEAUTH,
+-			       WLAN_REASON_DISASSOC_DUE_TO_INACTIVITY,
++			       ifmgd->driver_disconnect ?
++					WLAN_REASON_DEAUTH_LEAVING :
++					WLAN_REASON_DISASSOC_DUE_TO_INACTIVITY,
+ 			       tx, frame_buf);
+ 	mutex_lock(&local->mtx);
+ 	sdata->vif.csa_active = false;
+@@ -2775,7 +2780,9 @@ static void __ieee80211_disconnect(struc
+ 	mutex_unlock(&local->mtx);
+ 
+ 	ieee80211_report_disconnect(sdata, frame_buf, sizeof(frame_buf), tx,
+-				    WLAN_REASON_DISASSOC_DUE_TO_INACTIVITY);
++				    WLAN_REASON_DISASSOC_DUE_TO_INACTIVITY,
++				    ifmgd->reconnect);
++	ifmgd->reconnect = false;
+ 
+ 	sdata_unlock(sdata);
+ }
+@@ -2794,6 +2801,13 @@ static void ieee80211_beacon_connection_
+ 		sdata_info(sdata, "Connection to AP %pM lost\n",
+ 			   ifmgd->bssid);
+ 		__ieee80211_disconnect(sdata);
++		ifmgd->connection_loss = false;
++	} else if (ifmgd->driver_disconnect) {
++		sdata_info(sdata,
++			   "Driver requested disconnection from AP %pM\n",
++			   ifmgd->bssid);
++		__ieee80211_disconnect(sdata);
++		ifmgd->driver_disconnect = false;
+ 	} else {
+ 		ieee80211_mgd_probe_ap(sdata, true);
+ 	}
+@@ -2832,6 +2846,21 @@ void ieee80211_connection_loss(struct ie
+ }
+ EXPORT_SYMBOL(ieee80211_connection_loss);
+ 
++void ieee80211_disconnect(struct ieee80211_vif *vif, bool reconnect)
++{
++	struct ieee80211_sub_if_data *sdata = vif_to_sdata(vif);
++	struct ieee80211_hw *hw = &sdata->local->hw;
++
++	trace_api_disconnect(sdata, reconnect);
++
++	if (WARN_ON(sdata->vif.type != NL80211_IFTYPE_STATION))
++		return;
++
++	sdata->u.mgd.driver_disconnect = true;
++	sdata->u.mgd.reconnect = reconnect;
++	ieee80211_queue_work(hw, &sdata->u.mgd.beacon_connection_loss_work);
++}
++EXPORT_SYMBOL(ieee80211_disconnect);
+ 
+ static void ieee80211_destroy_auth_data(struct ieee80211_sub_if_data *sdata,
+ 					bool assoc)
+@@ -3135,7 +3164,7 @@ static void ieee80211_rx_mgmt_deauth(str
+ 		ieee80211_set_disassoc(sdata, 0, 0, false, NULL);
+ 
+ 		ieee80211_report_disconnect(sdata, (u8 *)mgmt, len, false,
+-					    reason_code);
++					    reason_code, false);
+ 		return;
+ 	}
+ 
+@@ -3184,7 +3213,8 @@ static void ieee80211_rx_mgmt_disassoc(s
+ 
+ 	ieee80211_set_disassoc(sdata, 0, 0, false, NULL);
+ 
+-	ieee80211_report_disconnect(sdata, (u8 *)mgmt, len, false, reason_code);
++	ieee80211_report_disconnect(sdata, (u8 *)mgmt, len, false, reason_code,
++				    false);
+ }
+ 
+ static void ieee80211_get_rates(struct ieee80211_supported_band *sband,
+@@ -4204,7 +4234,8 @@ static void ieee80211_rx_mgmt_beacon(str
+ 				       true, deauth_buf);
+ 		ieee80211_report_disconnect(sdata, deauth_buf,
+ 					    sizeof(deauth_buf), true,
+-					    WLAN_REASON_DEAUTH_LEAVING);
++					    WLAN_REASON_DEAUTH_LEAVING,
++					    false);
+ 		return;
+ 	}
+ 
+@@ -4349,7 +4380,7 @@ static void ieee80211_sta_connection_los
+ 			       tx, frame_buf);
+ 
+ 	ieee80211_report_disconnect(sdata, frame_buf, sizeof(frame_buf), true,
+-				    reason);
++				    reason, false);
+ }
+ 
+ static int ieee80211_auth(struct ieee80211_sub_if_data *sdata)
+@@ -5439,7 +5470,8 @@ int ieee80211_mgd_auth(struct ieee80211_
+ 
+ 		ieee80211_report_disconnect(sdata, frame_buf,
+ 					    sizeof(frame_buf), true,
+-					    WLAN_REASON_UNSPECIFIED);
++					    WLAN_REASON_UNSPECIFIED,
++					    false);
+ 	}
+ 
+ 	sdata_info(sdata, "authenticate with %pM\n", req->bss->bssid);
+@@ -5511,7 +5543,8 @@ int ieee80211_mgd_assoc(struct ieee80211
+ 
+ 		ieee80211_report_disconnect(sdata, frame_buf,
+ 					    sizeof(frame_buf), true,
+-					    WLAN_REASON_UNSPECIFIED);
++					    WLAN_REASON_UNSPECIFIED,
++					    false);
+ 	}
+ 
+ 	if (ifmgd->auth_data && !ifmgd->auth_data->done) {
+@@ -5810,7 +5843,7 @@ int ieee80211_mgd_deauth(struct ieee8021
+ 		ieee80211_destroy_auth_data(sdata, false);
+ 		ieee80211_report_disconnect(sdata, frame_buf,
+ 					    sizeof(frame_buf), true,
+-					    req->reason_code);
++					    req->reason_code, false);
+ 
+ 		return 0;
+ 	}
+@@ -5830,7 +5863,7 @@ int ieee80211_mgd_deauth(struct ieee8021
+ 		ieee80211_destroy_assoc_data(sdata, false, true);
+ 		ieee80211_report_disconnect(sdata, frame_buf,
+ 					    sizeof(frame_buf), true,
+-					    req->reason_code);
++					    req->reason_code, false);
+ 		return 0;
+ 	}
+ 
+@@ -5845,7 +5878,7 @@ int ieee80211_mgd_deauth(struct ieee8021
+ 				       req->reason_code, tx, frame_buf);
+ 		ieee80211_report_disconnect(sdata, frame_buf,
+ 					    sizeof(frame_buf), true,
+-					    req->reason_code);
++					    req->reason_code, false);
+ 		return 0;
+ 	}
+ 
+@@ -5878,7 +5911,7 @@ int ieee80211_mgd_disassoc(struct ieee80
+ 			       frame_buf);
+ 
+ 	ieee80211_report_disconnect(sdata, frame_buf, sizeof(frame_buf), true,
+-				    req->reason_code);
++				    req->reason_code, false);
+ 
+ 	return 0;
+ }
+--- a/net/mac80211/trace.h
++++ b/net/mac80211/trace.h
+@@ -2,7 +2,7 @@
+ /*
+ * Portions of this file
+ * Copyright(c) 2016-2017 Intel Deutschland GmbH
+-* Copyright (C) 2018 - 2019 Intel Corporation
++* Copyright (C) 2018 - 2020 Intel Corporation
+ */
+ 
+ #if !defined(__MAC80211_DRIVER_TRACE) || defined(TRACE_HEADER_MULTI_READ)
+@@ -2086,6 +2086,27 @@ TRACE_EVENT(api_connection_loss,
+ 	)
+ );
+ 
++TRACE_EVENT(api_disconnect,
++	TP_PROTO(struct ieee80211_sub_if_data *sdata, bool reconnect),
++
++	TP_ARGS(sdata, reconnect),
++
++	TP_STRUCT__entry(
++		VIF_ENTRY
++		__field(int, reconnect)
++	),
++
++	TP_fast_assign(
++		VIF_ASSIGN;
++		__entry->reconnect = reconnect;
++	),
++
++	TP_printk(
++		VIF_PR_FMT " reconnect:%d",
++		VIF_PR_ARG, __entry->reconnect
++	)
++);
++
+ TRACE_EVENT(api_cqm_rssi_notify,
+ 	TP_PROTO(struct ieee80211_sub_if_data *sdata,
+ 		 enum nl80211_cqm_rssi_threshold_event rssi_event,
