@@ -1,0 +1,84 @@
+From 1cacd0f7b0d35f8e3d3f8a69ecb3b5e436d6b9e8 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jogo@openwrt.org>
+Date: Sun, 22 Dec 2013 13:25:25 +0100
+Subject: [PATCH 52/56] MIPS: BCM63XX: fixup mapped SPI flash access on boot
+
+Some bootloaders leave the flash access in an invalid state with dual
+read enabled; fix it by disabling it and falling back to simple fast
+reads.
+
+Signed-off-by: Jonas Gorski <jogo@openwrt.org>
+---
+ arch/mips/bcm63xx/dev-flash.c | 51 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 51 insertions(+)
+
+--- a/arch/mips/bcm63xx/dev-flash.c
++++ b/arch/mips/bcm63xx/dev-flash.c
+@@ -16,6 +16,7 @@
+ #include <linux/mtd/mtd.h>
+ #include <linux/mtd/partitions.h>
+ #include <linux/mtd/physmap.h>
++#include <linux/mtd/spi-nor.h>
+ 
+ #include <bcm63xx_cpu.h>
+ #include <bcm63xx_dev_flash.h>
+@@ -111,9 +112,59 @@ static int __init bcm63xx_detect_flash_t
+ 	}
+ }
+ 
++#define HSSPI_FLASH_CTRL_REG		0x14
++#define FLASH_CTRL_READ_OPCODE_MASK	0xff
++#define FLASH_CTRL_ADDR_BYTES_MASK	(0x3 << 8)
++#define FLASH_CTRL_ADDR_BYTES_2		(0 << 8)
++#define FLASH_CTRL_ADDR_BYTES_3		(1 << 8)
++#define FLASH_CTRL_ADDR_BYTES_4		(2 << 8)
++#define FLASH_CTRL_DUMMY_BYTES_SHIFT	10
++#define FLASH_CTRL_DUMMY_BYTES_MASK	(0x3 << FLASH_CTRL_DUMMY_BYTES_SHIFT)
++#define FLASH_CTRL_MB_EN		(1 << 23)
++
+ void __init bcm63xx_flash_detect(void)
+ {
+ 	flash_type = bcm63xx_detect_flash_type();
++
++	/* ensure flash mapping has sane values */
++	if (flash_type == BCM63XX_FLASH_TYPE_SERIAL &&
++	    (BCMCPU_IS_6318() || BCMCPU_IS_6328() || BCMCPU_IS_6362() ||
++	     BCMCPU_IS_63268())) {
++		u32 val = bcm_rset_readl(RSET_HSSPI, HSSPI_FLASH_CTRL_REG);
++
++		if (val & FLASH_CTRL_MB_EN) {
++			/* cfe might configure non working dual-io mode */
++			val &= ~FLASH_CTRL_MB_EN;
++			val &= ~FLASH_CTRL_READ_OPCODE_MASK;
++			val &= ~FLASH_CTRL_DUMMY_BYTES_MASK;
++			val |= 1 << FLASH_CTRL_DUMMY_BYTES_SHIFT;
++
++			switch (val & FLASH_CTRL_ADDR_BYTES_MASK) {
++			case FLASH_CTRL_ADDR_BYTES_3:
++				val |= SPINOR_OP_READ_FAST;
++				break;
++			case FLASH_CTRL_ADDR_BYTES_4:
++				val |= SPINOR_OP_READ_FAST_4B;
++				break;
++			case FLASH_CTRL_ADDR_BYTES_2:
++			default:
++				pr_warn("unsupported address byte mode (%x), not fixing up\n",
++					val & FLASH_CTRL_ADDR_BYTES_MASK);
++				return;
++			}
++		} else {
++			/* ensure dummy bytes is set to 1 for _FAST reads */
++			u8 cmd = val & FLASH_CTRL_READ_OPCODE_MASK;
++
++			if (cmd != SPINOR_OP_READ_FAST && cmd != SPINOR_OP_READ_FAST_4B)
++				return;
++
++			val &= ~FLASH_CTRL_DUMMY_BYTES_MASK;
++			val |= 1 << FLASH_CTRL_DUMMY_BYTES_SHIFT;
++		}
++
++		bcm_rset_writel(RSET_HSSPI, val, HSSPI_FLASH_CTRL_REG);
++	}
+ }
+ 
+ int __init bcm63xx_flash_register(void)

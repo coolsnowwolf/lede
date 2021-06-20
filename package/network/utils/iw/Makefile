@@ -8,12 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=iw
-PKG_VERSION:=5.8
-PKG_RELEASE:=1
+PKG_VERSION:=5.9-8fab0c9e
+PKG_RELEASE:=$(AUTORELEASE)
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
-PKG_SOURCE_URL:=@KERNEL/software/network/iw
-PKG_HASH:=b59c4bacb0b6675cc09f2f30ebdceb91174cb65443d0a062fba2c09fad772db4
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://git.kernel.org/pub/scm/linux/kernel/git/jberg/iw.git
+PKG_SOURCE_VERSION:=8fab0c9ee9db217587a58efcc37421c86edcb638
+PKG_MIRROR_HASH:=797b322bc03952f3127ae0a7da476c14ada1bbe9a9ae234a56dd6f864c568e16
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=GPL-2.0

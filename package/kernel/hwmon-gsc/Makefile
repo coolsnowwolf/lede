@@ -8,7 +8,7 @@ include $(INCLUDE_DIR)/package.mk
 
 define KernelPackage/hwmon-gsc
   SUBMENU:=Hardware Monitoring Support
-  DEPENDS:=@TARGET_imx6||TARGET_cns3xxx +kmod-hwmon-core +kmod-i2c-core
+  DEPENDS:=@TARGET_imx6 +kmod-hwmon-core +kmod-i2c-core
   TITLE:=Driver for the Gateworks System Controller
   AUTOLOAD:=$(call AutoLoad,60,gsc)
   FILES:=$(PKG_BUILD_DIR)/gsc.ko

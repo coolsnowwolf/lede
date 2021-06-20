@@ -9,7 +9,7 @@ include $(INCLUDE_DIR)/target.mk
 
 PKG_NAME:=musl
 PKG_VERSION:=1.1.24
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://musl.libc.org/releases/

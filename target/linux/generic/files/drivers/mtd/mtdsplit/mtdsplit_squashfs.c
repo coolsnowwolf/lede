@@ -36,7 +36,7 @@ mtdsplit_parse_squashfs(struct mtd_info *master,
 	if (err)
 		return err;
 
-	parent_mtd = mtdpart_get_master(master);
+	parent_mtd = mtd_get_master(master);
 	part_offset = mtdpart_get_offset(master);
 
 	part = kzalloc(sizeof(*part), GFP_KERNEL);

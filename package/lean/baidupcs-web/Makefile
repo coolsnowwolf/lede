@@ -9,16 +9,20 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=baidupcs-web
-PKG_VERSION:=3.7.3
-PKG_RELEASE:=3
+PKG_VERSION:=3.7.4
+PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/Erope/BaiduPCS-Go.git
-PKG_SOURCE_VERSION:=b2f5436699d1acd6dc3d90f2066bf1e36c373cd5
-PKG_MIRROR_HASH:=815410a7c348c82eea638f6d34fd4dfab59286e16b172c434ff0008de24676dc
+PKG_SOURCE_VERSION:=5649b562ef4d5390fa18a996042f5f7d27b2ef8d
+PKG_MIRROR_HASH:=5cdff81544f52cbadc8eb0eb7a855a41ad8f751edd702e9da5f3a05041baf81d
 
 PKG_LICENSE:=Apache-2.0
 PKG_LICENSE_FILES:=LICENSE
+
+PKG_CONFIG_DEPENDS:= \
+	CONFIG_BAIDUPCS_WEB_COMPRESS_GOPROXY \
+	CONFIG_BAIDUPCS_WEB_COMPRESS_UPX
 
 PKG_BUILD_DEPENDS:=golang/host
 PKG_BUILD_PARALLEL:=1
@@ -43,6 +47,21 @@ define Package/$(PKG_NAME)/description
 BaiduPCS-Web is a web controller for BaiduPCS-Go
 endef
 
+define Package/$(PKG_NAME)/config
+config BAIDUPCS_WEB_COMPRESS_GOPROXY
+	bool "Compiling with GOPROXY proxy"
+	default n
+
+config BAIDUPCS_WEB_COMPRESS_UPX
+	bool "Compress executable files with UPX"
+	default y
+endef
+
+ifeq ($(CONFIG_BAIDUPCS_WEB_COMPRESS_GOPROXY),y)
+	export GO111MODULE=on
+	export GOPROXY=https://goproxy.baidu.com
+endif
+
 define Build/Compile
 ( \
   GOOS=$$$$(go env GOOS) GOARCH=$$$$(go env GOARCH) go get -v github.com/GeertJohan/go.rice/rice/... ; \
@@ -50,7 +69,9 @@ define Build/Compile
   "$$$$(go env GOPATH)/bin/rice" embed-go ; \
 )
 	$(call GoPackage/Build/Compile)
+ifeq ($(CONFIG_BAIDUPCS_WEB_COMPRESS_UPX),y)
 	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/BaiduPCS-Go
+endif
 endef
 
 define Package/$(PKG_NAME)/install

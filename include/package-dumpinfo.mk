@@ -1,9 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# Copyright (C) 2006 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+# Copyright (C) 2006-2020 OpenWrt.org
 
 ifneq ($(DUMP),)
 
@@ -24,8 +21,7 @@ $(if $(MENU),Menu: $(MENU)
 )$(if $(DEFAULT),Default: $(DEFAULT)
 )$(if $(findstring $(PREREQ_CHECK),1),Prereq-Check: 1
 )Version: $(VERSION)
-$(if $(ABI_VERSION),ABIVersion: $(ABI_VERSION)
-)Depends: $(call PKG_FIXUP_DEPENDS,$(1),$(DEPENDS))
+Depends: $(call PKG_FIXUP_DEPENDS,$(1),$(DEPENDS))
 Conflicts: $(CONFLICTS)
 Menu-Depends: $(MDEPENDS)
 Provides: $(PROVIDES)

@@ -1,11 +1,8 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright © 2019 Alexey Loukianov <lx2@lexa2.ru>
 # Copyright © 2020 David Woodhouse <dwmw2@infradead.org>
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 # Generates a bootable SD card image for Banana Pi R2 (and probably
 # other similar boards) as documented at

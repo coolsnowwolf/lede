@@ -1,9 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2006-2016 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 OTHER_MENU:=Other modules
 
@@ -105,8 +102,7 @@ define KernelPackage/hsdma-mtk
 	CONFIG_MTK_HSDMA
   FILES:= \
 	$(LINUX_DIR)/drivers/dma/virt-dma.ko \
-	$(LINUX_DIR)/drivers/dma/hsdma-mt7621.ko@lt5.4 \
-	$(LINUX_DIR)/drivers/staging/mt7621-dma/hsdma-mt7621.ko@ge5.4
+	$(LINUX_DIR)/drivers/staging/mt7621-dma/hsdma-mt7621.ko
   AUTOLOAD:=$(call AutoLoad,53,hsdma-mt7621)
 endef
 

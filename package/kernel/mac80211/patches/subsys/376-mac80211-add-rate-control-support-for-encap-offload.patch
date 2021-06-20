@@ -1,0 +1,119 @@
+From: Ryder Lee <ryder.lee@mediatek.com>
+Date: Fri, 28 May 2021 14:05:43 +0800
+Subject: [PATCH] mac80211: add rate control support for encap offload
+
+The software rate control cannot deal with encap offload, so fix it.
+
+Signed-off-by: Ryder Lee <ryder.lee@mediatek.com>
+---
+
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -2024,6 +2024,15 @@ static inline void ieee80211_tx_skb(stru
+ 	ieee80211_tx_skb_tid(sdata, skb, 7);
+ }
+ 
++static inline bool ieee80211_is_tx_data(struct sk_buff *skb)
++{
++	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
++	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
++
++	return info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP ||
++	       ieee80211_is_data(hdr->frame_control);
++}
++
+ u32 ieee802_11_parse_elems_crc(const u8 *start, size_t len, bool action,
+ 			       struct ieee802_11_elems *elems,
+ 			       u64 filter, u32 crc, u8 *transmitter_bssid,
+--- a/net/mac80211/rate.c
++++ b/net/mac80211/rate.c
+@@ -297,15 +297,11 @@ void ieee80211_check_rate_mask(struct ie
+ static bool rc_no_data_or_no_ack_use_min(struct ieee80211_tx_rate_control *txrc)
+ {
+ 	struct sk_buff *skb = txrc->skb;
+-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+-	__le16 fc;
+-
+-	fc = hdr->frame_control;
+ 
+ 	return (info->flags & (IEEE80211_TX_CTL_NO_ACK |
+ 			       IEEE80211_TX_CTL_USE_MINRATE)) ||
+-		!ieee80211_is_data(fc);
++		!ieee80211_is_tx_data(skb);
+ }
+ 
+ static void rc_send_low_basicrate(struct ieee80211_tx_rate *rate,
+@@ -870,7 +866,6 @@ void ieee80211_get_tx_rates(struct ieee8
+ 			    int max_rates)
+ {
+ 	struct ieee80211_sub_if_data *sdata;
+-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	struct ieee80211_supported_band *sband;
+ 
+@@ -882,7 +877,7 @@ void ieee80211_get_tx_rates(struct ieee8
+ 	sdata = vif_to_sdata(vif);
+ 	sband = sdata->local->hw.wiphy->bands[info->band];
+ 
+-	if (ieee80211_is_data(hdr->frame_control))
++	if (ieee80211_is_tx_data(skb))
+ 		rate_control_apply_mask(sdata, sta, sband, dest, max_rates);
+ 
+ 	if (dest[0].idx < 0)
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -679,6 +679,7 @@ ieee80211_tx_h_rate_ctrl(struct ieee8021
+ 	u32 len;
+ 	struct ieee80211_tx_rate_control txrc;
+ 	struct ieee80211_sta_rates *ratetbl = NULL;
++	bool encap = info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP;
+ 	bool assoc = false;
+ 
+ 	memset(&txrc, 0, sizeof(txrc));
+@@ -720,7 +721,7 @@ ieee80211_tx_h_rate_ctrl(struct ieee8021
+ 	 * just wants a probe response.
+ 	 */
+ 	if (tx->sdata->vif.bss_conf.use_short_preamble &&
+-	    (ieee80211_is_data(hdr->frame_control) ||
++	    (ieee80211_is_tx_data(tx->skb) ||
+ 	     (tx->sta && test_sta_flag(tx->sta, WLAN_STA_SHORT_PREAMBLE))))
+ 		txrc.short_preamble = true;
+ 
+@@ -742,7 +743,8 @@ ieee80211_tx_h_rate_ctrl(struct ieee8021
+ 		 "%s: Dropped data frame as no usable bitrate found while "
+ 		 "scanning and associated. Target station: "
+ 		 "%pM on %d GHz band\n",
+-		 tx->sdata->name, hdr->addr1,
++		 tx->sdata->name,
++		 encap ? ((struct ethhdr *)hdr)->h_dest : hdr->addr1,
+ 		 info->band ? 5 : 2))
+ 		return TX_DROP;
+ 
+@@ -776,7 +778,7 @@ ieee80211_tx_h_rate_ctrl(struct ieee8021
+ 
+ 	if (txrc.reported_rate.idx < 0) {
+ 		txrc.reported_rate = tx->rate;
+-		if (tx->sta && ieee80211_is_data(hdr->frame_control))
++		if (tx->sta && ieee80211_is_tx_data(tx->skb))
+ 			tx->sta->tx_stats.last_rate = txrc.reported_rate;
+ 	} else if (tx->sta)
+ 		tx->sta->tx_stats.last_rate = txrc.reported_rate;
+@@ -3662,8 +3664,16 @@ begin:
+ 	else
+ 		info->flags &= ~IEEE80211_TX_CTL_AMPDU;
+ 
+-	if (info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP)
++	if (info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) {
++		if (!ieee80211_hw_check(&local->hw, HAS_RATE_CONTROL)) {
++			r = ieee80211_tx_h_rate_ctrl(&tx);
++			if (r != TX_CONTINUE) {
++				ieee80211_free_txskb(&local->hw, skb);
++				goto begin;
++			}
++		}
+ 		goto encap_out;
++	}
+ 
+ 	if (info->control.flags & IEEE80211_TX_CTRL_FAST_XMIT) {
+ 		struct sta_info *sta = container_of(txq->sta, struct sta_info,

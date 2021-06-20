@@ -82,8 +82,8 @@ int tagfile(const char *kernel, const char *rootfs, const char *bin, \
 	struct bcm_tag tag;
 	struct kernelhdr khdr;
 	FILE *kernelfile = NULL, *rootfsfile = NULL, *binfile = NULL, *cfefile = NULL;
-	size_t cfeoff, cfelen, kerneloff, kernellen, rootfsoff, rootfslen, \
-	  read, imagelen, rootfsoffpadlen = 0, kernelfslen, kerneloffpadlen = 0, oldrootfslen, \
+	size_t cfelen, kerneloff, kernellen, rootfsoff, rootfslen, \
+	  read, imagelen, rootfsoffpadlen = 0, oldrootfslen, \
 	  rootfsend;
 	uint8_t readbuf[1024];
 	uint32_t imagecrc = IMAGETAG_CRC_START;
@@ -91,7 +91,6 @@ int tagfile(const char *kernel, const char *rootfs, const char *bin, \
 	uint32_t rootfscrc = IMAGETAG_CRC_START;
 	uint32_t kernelfscrc = IMAGETAG_CRC_START;
 	uint32_t fwaddr = 0;
-	uint8_t crc_val;
 	const uint32_t deadcode = htonl(DEADCODE);
 	int i;
 	int is_pirelli = 0;
@@ -126,7 +125,6 @@ int tagfile(const char *kernel, const char *rootfs, const char *bin, \
 
 	fwaddr = flash_start + image_offset;
 	if (cfefile) {
-	  cfeoff = flash_start;		  
 	  cfelen = getlen(cfefile);
 	  /* Seek to the start of the file after tag */
 	  fseek(binfile, sizeof(tag), SEEK_SET);
@@ -138,7 +136,6 @@ int tagfile(const char *kernel, const char *rootfs, const char *bin, \
 	  }
 
 	} else {
-	  cfeoff = 0;
 	  cfelen = 0;
 	}
 
@@ -239,7 +236,6 @@ int tagfile(const char *kernel, const char *rootfs, const char *bin, \
 	  oldrootfslen = getlen(rootfsfile);
 	  rootfslen = oldrootfslen;
 	  rootfslen = ( (rootfslen % block_size) > 0 ? (((rootfslen / block_size) + 1) * block_size) : rootfslen );
-	  kerneloffpadlen = rootfslen - oldrootfslen;
 	  oldrootfslen = rootfslen;
 
 	  kerneloff = rootfsoff + rootfslen;
@@ -391,7 +387,6 @@ int tagfile(const char *kernel, const char *rootfs, const char *bin, \
 
 int main(int argc, char **argv)
 {
-    int c, i;
 	char *kernel, *rootfs, *bin;
 	uint32_t flash_start, image_offset, block_size, load_address, entry;
 	flash_start = image_offset = block_size = load_address = entry = 0;
