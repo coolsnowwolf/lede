@@ -522,13 +522,6 @@ define Device/hiwifi_c526a
 endef
 TARGET_DEVICES += hiwifi_c526a
 
-define Device/hiwifi_c526a-128m
-	$(call Device/hiwifi_c526a)
-	DEVICE_VARIANT := 128M
-	DEVICE_DTS := qcom-ipq4019-c526a-128m
-endef
-TARGET_DEVICES += hiwifi_c526a-128m
-
 define Device/hugo_ac1200
 	$(call Device/FitImage)
 	DEVICE_VENDOR := Hugo
@@ -686,18 +679,31 @@ define Device/openmesh_a62
 endef
 TARGET_DEVICES += openmesh_a62
 
-define Device/p2w_r619ac
+define Device/p2w_r619ac-common
 	$(call Device/FitzImage)
 	$(call Device/UbiFit)
 	DEVICE_VENDOR := P&W
 	DEVICE_MODEL := R619AC
-	DEVICE_DTS := qcom-ipq4019-r619ac
 	DEVICE_DTS_CONFIG := config@10
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
 	DEVICE_PACKAGES := ipq-wifi-p2w_r619ac
 endef
+
+define Device/p2w_r619ac
+	$(call Device/p2w_r619ac-common)
+	DEVICE_DTS := qcom-ipq4019-r619ac
+	IMAGES += nand-factory.bin
+	IMAGE/nand-factory.bin := append-ubi | qsdk-ipq-factory-nand
+endef
 TARGET_DEVICES += p2w_r619ac
+
+define Device/p2w_r619ac-128m
+	$(call Device/p2w_r619ac-common)
+	DEVICE_VARIANT := 128M
+	DEVICE_DTS := qcom-ipq4019-r619ac-128m
+endef
+TARGET_DEVICES += p2w_r619ac-128m
 
 define Device/qcom_ap-dk01.1-c1
 	DEVICE_VENDOR := Qualcomm Atheros
