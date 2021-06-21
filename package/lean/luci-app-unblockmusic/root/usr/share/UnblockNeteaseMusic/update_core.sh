@@ -10,7 +10,7 @@ function clean_log(){
 }
 
 function check_latest_version(){
-	latest_ver="$(wget-ssl --no-check-certificate -O- https://github.com/1715173329/UnblockNeteaseMusic/commits/enhanced |tr -d '\n' |grep -Eo 'commit\/[0-9a-z]+' |sed -n 1p |sed 's#commit/##g')"
+	latest_ver="$(uclient-fetch --no-check-certificate -O- https://github.com/1715173329/UnblockNeteaseMusic/commits/enhanced |tr -d '\n' |grep -Eo 'commit\/[0-9a-z]+' |sed -n 1p |sed 's#commit/##g')"
 	[ -z "${latest_ver}" ] && echo -e "\nFailed to check latest version, please try again later." >>/tmp/unblockmusic_update.log && exit 1
 	if [ ! -e "/usr/share/UnblockNeteaseMusic/local_ver" ]; then
 		clean_log
@@ -36,7 +36,7 @@ function update_core(){
 	mkdir -p "/tmp/unblockneteasemusic/core" >/dev/null 2>&1
 	rm -rf /tmp/unblockneteasemusic/core/* >/dev/null 2>&1
 
-	wget-ssl --no-check-certificate -t 1 -T 10 -O  /tmp/unblockneteasemusic/core/core.tar.gz "https://github.com/1715173329/UnblockNeteaseMusic/archive/enhanced.tar.gz"  >/dev/null 2>&1
+	uclient-fetch --no-check-certificate -T 10 -O  /tmp/unblockneteasemusic/core/core.tar.gz "https://github.com/1715173329/UnblockNeteaseMusic/archive/enhanced.tar.gz"  >/dev/null 2>&1
 	tar -zxf "/tmp/unblockneteasemusic/core/core.tar.gz" -C "/tmp/unblockneteasemusic/core/" >/dev/null 2>&1
 	if [ -e "/usr/share/UnblockNeteaseMusic/ca.crt" ] && [ -e "/usr/share/UnblockNeteaseMusic/server.crt" ] && [ -e "/usr/share/UnblockNeteaseMusic/server.key" ] ; then
 		rm -f /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-enhanced/ca.crt /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-enhanced/server.crt /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-enhanced/server.key
