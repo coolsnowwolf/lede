@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uclient
-PKG_RELEASE=3
+PKG_RELEASE=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/uclient.git
@@ -45,8 +45,6 @@ endef
 define Package/uclient-fetch/install
 	$(INSTALL_DIR) $(1)/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/uclient-fetch $(1)/bin/
-	$(INSTALL_DIR) $(1)/usr/bin
-	$(LN) /bin/uclient-fetch $(1)/usr/bin/wget-ssl
 endef
 
 $(eval $(call BuildPackage,libuclient))
