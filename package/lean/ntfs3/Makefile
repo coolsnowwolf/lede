@@ -8,7 +8,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=ntfs3
 PKG_VERSION:=5.1.1
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/LGA1150/ntfs3-oot.git
@@ -28,7 +28,7 @@ define KernelPackage/fs-ntfs3
   TITLE:=Kernel module for NTFS Read-Write file system support
   FILES:=$(PKG_BUILD_DIR)/ntfs3.ko
   AUTOLOAD:=$(call AutoProbe,ntfs3)
-  DEPENDS:=+kmod-nls-base
+  DEPENDS:=+kmod-nls-base +kmod-nls-utf8
 endef
 
 define KernelPackage/ntfs3/description
