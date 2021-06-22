@@ -42,7 +42,7 @@ __DOMAIN="${domain#*@}"
 
 # 构造基本通信命令
 build_command() {
-	__CMDBASE="$WGET_SSL --no-hsts -nv -t 1 -O $DATFILE -o $ERRFILE"
+	__CMDBASE="$WGET_SSL -O $DATFILE -o $ERRFILE"
 	# 绑定用于通信的主机/IP
 	if [ -n "$bind_network" ]; then
 		local bind_ip run_prog

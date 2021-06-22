@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ddns-scripts_aliyun
 PKG_VERSION:=1.0.3
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_LICENSE:=GPLv2
 PKG_MAINTAINER:=Sense <sensec@gmail.com>
@@ -17,7 +17,7 @@ define Package/$(PKG_NAME)
 	SUBMENU:=IP Addresses and Names
 	TITLE:=DDNS extension for AliYun.com
 	PKGARCH:=all
-	DEPENDS:=+ddns-scripts +wget +openssl-util
+	DEPENDS:=+ddns-scripts +uclient-fetch +libustream-openssl +openssl-util
 endef
 
 define Package/$(PKG_NAME)/description
