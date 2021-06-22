@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=autocore
 PKG_VERSION:=1
-PKG_RELEASE:=37
+PKG_RELEASE:=38
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -18,7 +18,7 @@ define Package/autocore-arm
   MAINTAINER:=CN_SZTL
   DEPENDS:=@(TARGET_bcm27xx||TARGET_bcm53xx||TARGET_ipq40xx||TARGET_ipq806x||TARGET_mvebu||TARGET_rockchip) \
     +TARGET_bcm27xx:bcm27xx-userland +TARGET_bcm53xx:nvram \
-    +(TARGET_ipq40xx||TARGET_ipq806x):lm-sensors
+    +TARGET_ipq806x:lm-sensors
   VARIANT:=arm
 endef
 
