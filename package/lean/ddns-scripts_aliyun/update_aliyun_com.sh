@@ -17,8 +17,8 @@
 [ -z "$password" ] && write_log 14 "配置错误！保存阿里云API访问密钥的'密码'不能为空"
 
 # 检查外部调用工具
-WGET_SSL='wget'
-[ -n "$WGET_SSL" ] || write_log 13 "使用阿里云API需要 GNU Wget 支持，请先安装"
+WGET_SSL='uclient-fetch'
+[ -n "$WGET_SSL" ] || write_log 13 "使用阿里云API需要 uclient-fetch 支持，请先安装"
 command -v sed >/dev/null 2>&1 || write_log 13 "使用阿里云API需要 sed 支持，请先安装"
 command -v openssl >/dev/null 2>&1 || write_log 13 "使用阿里云API需要 openssl-util 支持，请先安装"
 
@@ -42,7 +42,7 @@ __DOMAIN="${domain#*@}"
 
 # 构造基本通信命令
 build_command() {
-	__CMDBASE="$WGET_SSL -O $DATFILE -o $ERRFILE"
+	__CMDBASE="$WGET_SSL -q -O $DATFILE"
 	# 绑定用于通信的主机/IP
 	if [ -n "$bind_network" ]; then
 		local bind_ip run_prog
@@ -50,7 +50,7 @@ build_command() {
 		eval "$run_prog bind_ip $bind_network" || \
 			write_log 13 "无法使用 '$run_prog $bind_network' 获取本地IP地址 - 错误代码: '$?'"
 		write_log 7 "强制使用IP '$bind_ip' 通信"
-		__CMDBASE="$__CMDBASE --bind-address=$bind_ip"
+		write_log 14 "uclient-fetch: FORCE binding to specific address not supported"
 	fi
 	# 强制设定IP版本
 	if [ $force_ipversion -eq 1 ]; then
@@ -82,7 +82,7 @@ aliyun_transfer() {
 
 	while : ; do
 		build_Request $__PARAM
-		__RUNPROG="$__CMDBASE '${__URLBASE}?${__URLARGS}'"
+		__RUNPROG="$__CMDBASE '${__URLBASE}?${__URLARGS}' 2>$ERRFILE"
 
 		write_log 7 "#> $__RUNPROG"
 		eval $__RUNPROG
