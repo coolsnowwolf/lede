@@ -1117,6 +1117,7 @@ drv_mac80211_setup() {
 	[ -n "$hostapd_ctrl" ] && {
 		local no_reload=1
 		if [ -n "$(ubus list | grep hostapd.$primary_ap)" ]; then
+			no_reload=0
 			[ "${NEW_MD5}" = "${OLD_MD5}" ] || {
 				ubus call hostapd.$primary_ap reload
 				no_reload=$?
