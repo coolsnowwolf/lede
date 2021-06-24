@@ -350,6 +350,7 @@ hostapd_common_add_bss_config() {
 	config_add_boolean multicast_to_unicast proxy_arp per_sta_vif
 
 	config_add_array hostapd_bss_options
+	config_add_boolean default_disabled
 
 	config_add_boolean request_cui
 	config_add_array radius_auth_req_attr
@@ -534,7 +535,7 @@ hostapd_set_bss_options() {
 	set_default maxassoc 0
 	set_default max_inactivity 0
 	set_default short_preamble 1
-	set_default disassoc_low_ack 1
+	set_default disassoc_low_ack 0
 	set_default skip_inactivity_poll 0
 	set_default hidden 0
 	set_default wmm 1
@@ -1188,7 +1189,8 @@ wpa_supplicant_add_network() {
 		ssid bssid key \
 		basic_rate mcast_rate \
 		ieee80211w ieee80211r \
-		multi_ap
+		multi_ap \
+		default_disabled
 
 	case "$auth_type" in
 		sae|owe|eap192|eap-eap192)
@@ -1201,6 +1203,7 @@ wpa_supplicant_add_network() {
 
 	set_default ieee80211r 0
 	set_default multi_ap 0
+	set_default default_disabled 0
 
 	local key_mgmt='NONE'
 	local network_data=
@@ -1232,7 +1235,10 @@ wpa_supplicant_add_network() {
 		scan_ssid=""
 	}
 
-	[ "$multi_ap" = 1 -a "$_w_mode" = "sta" ] && append network_data "multi_ap_backhaul_sta=1" "$N$T"
+	[ "$_w_mode" = "sta" ] && {
+		[ "$multi_ap" = 1 ] && append network_data "multi_ap_backhaul_sta=1" "$N$T"
+		[ "$default_disabled" = 1 ] && append network_data "disabled=1" "$N$T"
+	}
 
 	case "$auth_type" in
 		none) ;;

@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ddns-scripts_dnspod
 PKG_VERSION:=1.0.2
-PKG_RELEASE:=2
+PKG_RELEASE:=1
 
 PKG_LICENSE:=GPLv2
 PKG_MAINTAINER:=Small_5
@@ -17,7 +17,7 @@ define Package/$(PKG_NAME)
 	SUBMENU:=IP Addresses and Names
 	TITLE:=DDNS extension for Dnspod.com/Dnspod.cn
 	PKGARCH:=all
-	DEPENDS:=+ddns-scripts +wget
+	DEPENDS:=+ddns-scripts +wget-ssl +ca-bundle
 endef
 
 define Package/$(PKG_NAME)/description
