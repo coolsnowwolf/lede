@@ -1021,10 +1021,8 @@ drv_mac80211_setup() {
 		return 1
 	}
 
-	[ -z "$(uci -q -P /var/state show wireless._${phy})" ] && {
-		uci -q -P /var/state set wireless._${phy}=phy
-		wireless_set_data phy="$phy"
-	}
+	wireless_set_data phy="$phy"
+	[ -z "$(uci -q -P /var/state show wireless._${phy})" ] && uci -q -P /var/state set wireless._${phy}=phy
 
 	OLDAPLIST=$(uci -q -P /var/state get wireless._${phy}.aplist)
 	OLDSPLIST=$(uci -q -P /var/state get wireless._${phy}.splist)
