@@ -1190,6 +1190,10 @@ drv_mac80211_teardown() {
 	json_select data
 	json_get_vars phy
 	json_select ..
+	[ -n "$phy" ] || {
+		echo "Bug: PHY is undefined for device '$1'"
+		return 1
+	}
 
 	mac80211_interface_cleanup "$phy"
 	uci -q -P /var/state revert wireless._${phy}
