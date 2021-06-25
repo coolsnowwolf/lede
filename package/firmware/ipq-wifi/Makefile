@@ -54,6 +54,8 @@ ALLWIFIBOARDS:= \
 	netgear_wac510 \
 	plasmacloud_pa1200 \
 	plasmacloud_pa2200 \
+	p2w_r619ac \
+	qxwlan_e2600ac \
 	redmi_ax6 \
 	xiaomi_ax3600 \
 	xiaomi_ax9000
