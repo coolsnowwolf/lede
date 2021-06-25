@@ -408,7 +408,6 @@ hostapd_bss_get_status(struct ubus_context *ctx, struct ubus_object *obj,
 	struct os_reltime now;
 	char ssid[SSID_MAX_LEN + 1];
 	char phy_name[17];
-	char mac_buf[20];
 	size_t ssid_len = SSID_MAX_LEN;
 
 	if (hapd->conf->ssid.ssid_len < SSID_MAX_LEN)
