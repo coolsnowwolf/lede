@@ -298,6 +298,7 @@ hostapd_common_add_bss_config() {
 	config_add_boolean wnm_sleep_mode wnm_sleep_mode_no_keys bss_transition
 	config_add_int time_advertisement
 	config_add_string time_zone
+	config_add_string vendor_elements
 
 	config_add_boolean ieee80211k rrm_neighbor_report rrm_beacon_report
 
@@ -529,7 +530,8 @@ hostapd_set_bss_options() {
 		multi_ap multi_ap_backhaul_ssid multi_ap_backhaul_key skip_inactivity_poll \
 		airtime_bss_weight airtime_bss_limit airtime_sta_weight \
 		multicast_to_unicast proxy_arp per_sta_vif \
-		eap_server eap_user_file ca_cert server_cert private_key private_key_passwd server_id
+		eap_server eap_user_file ca_cert server_cert private_key private_key_passwd server_id \
+		vendor_elements
 
 	set_default isolate 0
 	set_default maxassoc 0
@@ -577,6 +579,7 @@ hostapd_set_bss_options() {
 	append bss_conf "uapsd_advertisement_enabled=$uapsd" "$N"
 	append bss_conf "utf8_ssid=$utf8_ssid" "$N"
 	append bss_conf "multi_ap=$multi_ap" "$N"
+	[ -n "$vendor_elements" ] && append bss_conf "vendor_elements=$vendor_elements" "$N"
 
 	[ "$tdls_prohibit" -gt 0 ] && append bss_conf "tdls_prohibit=$tdls_prohibit" "$N"
 
