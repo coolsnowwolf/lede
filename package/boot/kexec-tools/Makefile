@@ -8,14 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kexec-tools
-PKG_VERSION:=2.0.16
+PKG_VERSION:=2.0.21
 PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/utils/kernel/kexec
-PKG_HASH:=5b103351ad752c9badd1d65b00eb6de4bce579f944f4df4e3ef3a755ba567010
-
-PKG_FIXUP:=autoreconf
+PKG_HASH:=e113142dee891638ad96e0f72cf9277b244477619470b30c41999d312e8e8702
 
 PKG_CONFIG_DEPENDS := CONFIG_KEXEC_ZLIB CONFIG_KEXEC_LZMA
 
@@ -49,17 +47,6 @@ endef
 
 define Package/kexec/description
  The kexec utility allows to load and boot another kernel.
-endef
-
-define Package/kdump
-  $(call Package/kexec-tools/Default)
-  TITLE:=Kernel crash analysis
-  DEPENDS:=+kexec @(i386||x86_64||arm) @KERNEL_CRASH_DUMP
-endef
-
-define Package/kdump/description
- The kdump package allows to automatically boot into a
- special kernel for analyzing kernel crashes using kdump.
 endef
 
 define Package/kexec/config
@@ -108,28 +95,5 @@ define Package/kexec/install
 	$(LN) ../usr/sbin/kexec $(1)/sbin/kexec
 endef
 
-define Package/kdump/install
-	$(INSTALL_DIR) $(1)/usr/sbin $(1)/etc/init.d $(1)/etc/config $(1)/etc/uci-defaults
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/kdump $(PKG_INSTALL_DIR)/usr/sbin/vmcore-dmesg $(1)/usr/sbin
-	$(INSTALL_BIN) ./files/kdump.init $(1)/etc/init.d/kdump
-	$(INSTALL_BIN) ./files/kdump.defaults $(1)/etc/uci-defaults/kdump
-	$(INSTALL_CONF) ./files/kdump.config $(1)/etc/config/kdump
-endef
-
-define Package/kdump/prerm
-#!/bin/sh
-
-case $$(uname -m) in
-	i?86|x86_64)
-		if grep -q " crashkernel=" /boot/grub/grub.cfg; then
-			mount /boot -o remount,rw
-			sed -i 's/ crashkernel=[^ ]*//' /boot/grub/grub.cfg
-			mount /boot -o remount,ro
-		fi
-		;;
-esac
-endef
-
 $(eval $(call BuildPackage,kexec-tools))
 $(eval $(call BuildPackage,kexec))
-$(eval $(call BuildPackage,kdump))

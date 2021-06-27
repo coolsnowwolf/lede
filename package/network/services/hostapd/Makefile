@@ -1,19 +1,17 @@
-# Copyright (C) 2006-2014 OpenWrt.org
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+# Copyright (C) 2006-2021 OpenWrt.org
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=hostapd
-PKG_RELEASE:=22
+PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE_URL:=http://w1.fi/hostap.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2020-06-08
-PKG_SOURCE_VERSION:=5a8b366233f5585e68a4ffbb604fbb4a848eb325
-PKG_MIRROR_HASH:=1b2a4947034142587a3f81eac2ea27dd64650e77f8943d973623b47533be2393
+PKG_SOURCE_DATE:=2021-05-22
+PKG_SOURCE_VERSION:=b102f19bcc53c7f7db3951424d4d46709b4f1986
+PKG_MIRROR_HASH:=cb3cb968883042fc582752be1607586696c18e6ecf9808c9a8ac50e204584367
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=BSD-3-Clause
@@ -94,10 +92,6 @@ DRIVER_MAKEOPTS= \
 	CONFIG_IEEE80211AX=$(HOSTAPD_IEEE80211AX) \
 	CONFIG_DRIVER_WEXT=$(CONFIG_DRIVER_WEXT_SUPPORT) \
 
-ifneq ($(LOCAL_VARIANT),mini)
-  DRIVER_MAKEOPTS += CONFIG_IEEE80211W=$(CONFIG_DRIVER_11W_SUPPORT)
-endif
-
 ifeq ($(SSL_VARIANT),openssl)
   DRIVER_MAKEOPTS += CONFIG_TLS=openssl CONFIG_SAE=y
   TARGET_LDFLAGS += -lcrypto -lssl
@@ -149,6 +143,7 @@ define Package/hostapd/Default
   TITLE:=IEEE 802.1x Authenticator
   URL:=http://hostap.epitest.fi/
   DEPENDS:=$(DRV_DEPENDS) +hostapd-common +libubus
+  USERID:=network=101:network=101
   PROVIDES:=hostapd
   CONFLICTS:=$(HOSTAPD_PROVIDERS)
   HOSTAPD_PROVIDERS+=$(1)
@@ -232,6 +227,7 @@ define Package/wpad/Default
   SUBMENU:=WirelessAPD
   TITLE:=IEEE 802.1x Auth/Supplicant
   DEPENDS:=$(DRV_DEPENDS) +hostapd-common +libubus
+  USERID:=network=101:network=101
   URL:=http://hostap.epitest.fi/
   PROVIDES:=hostapd wpa-supplicant
   CONFLICTS:=$(HOSTAPD_PROVIDERS) $(SUPPLICANT_PROVIDERS)
@@ -346,6 +342,7 @@ define Package/wpa-supplicant/Default
   TITLE:=WPA Supplicant
   URL:=http://hostap.epitest.fi/wpa_supplicant/
   DEPENDS:=$(DRV_DEPENDS) +hostapd-common +libubus
+  USERID:=network=101:network=101
   PROVIDES:=wpa-supplicant
   CONFLICTS:=$(SUPPLICANT_PROVIDERS)
   SUPPLICANT_PROVIDERS+=$(1)
@@ -525,6 +522,7 @@ define Build/RunMake
 		LIBS_c="$(TARGET_LDFLAGS_C)" \
 		AR="$(TARGET_CROSS)gcc-ar" \
 		BCHECK= \
+		$(if $(findstring s,$(OPENWRT_VERBOSE)),V=1) \
 		$(2)
 endef
 
@@ -597,10 +595,12 @@ define Install/supplicant
 endef
 
 define Package/hostapd-common/install
-	$(INSTALL_DIR) $(1)/lib/netifd $(1)/etc/rc.button $(1)/etc/hotplug.d/ieee80211 $(1)/etc/init.d
+	$(INSTALL_DIR) $(1)/etc/capabilities $(1)/etc/rc.button $(1)/etc/hotplug.d/ieee80211 $(1)/etc/init.d $(1)/lib/netifd  $(1)/usr/share/acl.d
 	$(INSTALL_DATA) ./files/hostapd.sh $(1)/lib/netifd/hostapd.sh
 	$(INSTALL_BIN) ./files/wpad.init $(1)/etc/init.d/wpad
 	$(INSTALL_BIN) ./files/wps-hotplug.sh $(1)/etc/rc.button/wps
+	$(INSTALL_DATA) ./files/wpad_acl.json $(1)/usr/share/acl.d
+	$(INSTALL_DATA) ./files/wpad.json $(1)/etc/capabilities
 endef
 
 define Package/hostapd/install

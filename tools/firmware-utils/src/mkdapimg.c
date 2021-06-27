@@ -68,7 +68,8 @@ main(int ac, char *av[])
 	int fixmode = 0;
 	int have_regionversion = 0;
 
-	FILE *ifile, *ofile;
+	FILE *ifile = NULL;
+	FILE *ofile = NULL;
 	int c;
 	uint32_t cksum;
 	uint32_t bcnt;

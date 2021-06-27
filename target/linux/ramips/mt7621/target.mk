@@ -6,9 +6,11 @@ SUBTARGET:=mt7621
 BOARDNAME:=MT7621 based boards
 FEATURES+=nand ramdisk rtc usb minor
 CPU_TYPE:=24kc
+KERNELNAME:=vmlinux vmlinuz
+# make Kernel/CopyImage use $LINUX_DIR/vmlinuz
+IMAGES_DIR:=../../..
 
-KERNEL_PATCHVER:=5.4
-DEFAULT_PACKAGES += swconfig
+DEFAULT_PACKAGES += kmod-crypto-hw-eip93 wpad-openssl swconfig
 
 define Target/Description
 	Build firmware images for Ralink MT7621 based boards.

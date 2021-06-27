@@ -56,7 +56,7 @@ define Device/bcm63xx_redboot
   KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | loader-lzma elf
   IMAGES := redboot.bin
   IMAGE/redboot.bin := redboot-bin
-  REDBOOT_PREFIX := $$(IMAGE_PREFIX)
+  REDBOOT_PREFIX := $$(DEVICE_IMG_PREFIX)
 endef
 
 ### Generic ###
@@ -236,6 +236,18 @@ define Device/adb_pdg-a4001n-a-000-1a1-ax
   DEVICE_PACKAGES := $(USB2_PACKAGES) $(B43_PACKAGES)
 endef
 TARGET_DEVICES += adb_pdg-a4001n-a-000-1a1-ax
+
+define Device/adb_pdg-a4101n-a-000-1a1-ae
+  $(Device/bcm63xx)
+  DEVICE_VENDOR := ADB
+  DEVICE_MODEL := P.DG A4101N A-000-1A1-AE
+  IMAGES += sysupgrade.bin
+  CFE_BOARD_ID := 96328avngv
+  CHIP_ID := 6328
+  FLASH_MB := 16
+  DEVICE_PACKAGES := $(USB2_PACKAGES) $(B43_PACKAGES)
+endef
+TARGET_DEVICES += adb_pdg-a4101n-a-000-1a1-ae
 
 define Device/adb_av4202n
   $(Device/bcm63xx)
@@ -571,6 +583,19 @@ define Device/d-link_dsl-274xb-f1
 endef
 TARGET_DEVICES += d-link_dsl-274xb-f1
 
+define Device/d-link_dsl-2750u-c1
+  $(Device/bcm63xx)
+  DEVICE_VENDOR := D-Link
+  DEVICE_MODEL := DSL-2750U
+  DEVICE_VARIANT := C1
+  IMAGES += sysupgrade.bin
+  CFE_BOARD_ID := 963281TAVNG
+  CHIP_ID := 6328
+  FLASH_MB := 8
+  DEVICE_PACKAGES := $(USB2_PACKAGES) $(B43_PACKAGES)
+endef
+TARGET_DEVICES += d-link_dsl-2750u-c1
+
 define Device/d-link_dsl-275xb-d1
   $(Device/bcm63xx)
   DEVICE_VENDOR := D-Link
@@ -755,6 +780,18 @@ define Device/huawei_echolife-hg655b
   DEVICE_PACKAGES := $(RT28_PACKAGES) $(USB2_PACKAGES)
 endef
 TARGET_DEVICES += huawei_echolife-hg655b
+
+### Innacomm ###
+define Device/innacomm_w3400v6
+  $(Device/bcm63xx)
+  DEVICE_VENDOR := Innacomm
+  DEVICE_MODEL := W3400V6
+  CFE_BOARD_ID := 96328ang
+  CHIP_ID := 6328
+  FLASH_MB := 8
+  DEVICE_PACKAGES := $(B43_PACKAGES)
+endef
+TARGET_DEVICES += innacomm_w3400v6
 
 ### Inteno ###
 define Device/inteno_vg50
@@ -1072,6 +1109,32 @@ define Device/t-com_speedport-w-500v
   DEFAULT := n
 endef
 TARGET_DEVICES += t-com_speedport-w-500v
+
+### Technicolor ###
+define Device/technicolor_tg582n
+  $(Device/bcm63xx)
+  DEVICE_VENDOR := Technicolor
+  DEVICE_MODEL := TG582n
+  IMAGES += sysupgrade.bin
+  CFE_BOARD_ID := DANT-1
+  CHIP_ID := 6328
+  FLASH_MB := 16
+  DEVICE_PACKAGES := $(USB2_PACKAGES) $(B43_PACKAGES)
+endef
+TARGET_DEVICES += technicolor_tg582n
+
+define Device/technicolor_tg582n-telecom-italia
+  $(Device/bcm63xx)
+  DEVICE_VENDOR := Technicolor
+  DEVICE_MODEL := TG582n
+  DEVICE_VARIANT := Telecom Italia
+  IMAGES += sysupgrade.bin
+  CFE_BOARD_ID := DANT-V
+  CHIP_ID := 6328
+  FLASH_MB := 16
+  DEVICE_PACKAGES := $(USB2_PACKAGES) $(B43_PACKAGES)
+endef
+TARGET_DEVICES += technicolor_tg582n-telecom-italia
 
 ### Tecom ###
 define Device/tecom_gw6000

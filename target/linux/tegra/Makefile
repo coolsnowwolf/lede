@@ -1,9 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2017-2019 Tomasz Maciej Nowak <tmn505@gmail.com>
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 
 ARCH := arm
@@ -14,7 +12,7 @@ CPU_TYPE := cortex-a9
 CPU_SUBTYPE := vfpv3-d16
 
 KERNEL_PATCHVER := 5.4
-KERNEL_TESTING_PATCHVER := 5.4
+KERNEL_TESTING_PATCHVER := 5.10
 
 include $(INCLUDE_DIR)/target.mk
 

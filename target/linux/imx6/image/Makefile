@@ -1,9 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2013 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
@@ -11,7 +9,7 @@ include $(INCLUDE_DIR)/image.mk
 # Images
 #################################################
 
-DEVICE_VARS += MKUBIFS_OPTS UBOOT BOOT_SCRIPT
+DEVICE_VARS += MKUBIFS_OPTS UBOOT
 
 define Build/boot-overlay
 	rm -rf $@.boot
@@ -51,13 +49,6 @@ define Build/bootfs.tar.gz
 		-czvf $@ .
 endef
 
-define Build/boot-scr
-	mkimage -A arm -O linux -T script -C none -a 0 -e 0 \
-	-n '$(DEVICE_ID) OpenWrt bootscript' \
-	-d ./bootscript-$(DEVICE_NAME) \
-	$(BIN_DIR)/boot.scr
-endef
-
 define Build/recovery-scr
 	mkimage -A arm -O linux -T script -C none -a 0 -e 0 \
 	-n '$(DEVICE_ID) OpenWrt recovery bootscript' \
@@ -84,7 +75,7 @@ define Build/imx6-combined-image
 
 	mkimage -A arm -O linux -T script -C none -a 0 -e 0 \
 		-n '$(DEVICE_ID) OpenWrt bootscript' \
-		-d $(BOOT_SCRIPT) \
+		-d bootscript-$(DEVICE_NAME) \
 		$@.boot/boot.scr
 
 	cp $@ $@.fs
@@ -125,15 +116,15 @@ define Device/Default
   KERNEL_INSTALL := 1
   KERNEL_SUFFIX := -uImage
   KERNEL_NAME := zImage
-  KERNEL_PREFIX := $$(IMAGE_PREFIX)
   KERNEL := kernel-bin | uImage none
   IMAGES :=
 endef
 
-define Device/ventana
+define Device/gateworks_ventana
   DEVICE_VENDOR := Gateworks
   DEVICE_MODEL := Ventana family
   DEVICE_VARIANT := normal NAND flash
+  DEVICE_NAME := gateworks_ventana
   DEVICE_DTS:= \
 	imx6dl-gw51xx \
 	imx6dl-gw52xx \
@@ -160,84 +151,77 @@ define Device/ventana
 	imx6q-gw5910 \
 	imx6q-gw5912 \
 	imx6q-gw5913
-  DEVICE_PACKAGES := kmod-sky2 kmod-sound-core kmod-sound-soc-imx kmod-sound-soc-imx-sgtl5000 \
-	kmod-can kmod-can-flexcan kmod-can-raw \
-	kmod-hwmon-gsc \
-	kmod-leds-gpio kmod-pps-gpio \
-	kobs-ng
+  DEVICE_PACKAGES := kmod-sky2 kmod-sound-core kmod-sound-soc-imx \
+	kmod-sound-soc-imx-sgtl5000 kmod-can kmod-can-flexcan kmod-can-raw \
+	kmod-hwmon-gsc kmod-leds-gpio kmod-pps-gpio kobs-ng
   KERNEL += | boot-overlay
   IMAGES := nand.ubi bootfs.tar.gz dtb
-  IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1).$$(2)
-  UBINIZE_PARTS = boot=$$(KDIR_KERNEL_IMAGE).boot.ubifs=15
-  BOOT_SCRIPT := bootscript-ventana
   IMAGE/nand.ubi := append-ubi
   IMAGE/bootfs.tar.gz := bootfs.tar.gz
   IMAGE/dtb := install-dtb
-  IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1)-$$(2)
+  UBINIZE_PARTS = boot=$$(KDIR_KERNEL_IMAGE).boot.ubifs=15
   PAGESIZE := 2048
   BLOCKSIZE := 128k
   MKUBIFS_OPTS := -m $$(PAGESIZE) -e 124KiB
 endef
-TARGET_DEVICES += ventana
+TARGET_DEVICES += gateworks_ventana
 
-define Device/ventana-large
-  $(Device/ventana)
-  DEVICE_VENDOR := Gateworks
-  DEVICE_MODEL := Ventana family
+define Device/gateworks_ventana-large
+  $(Device/gateworks_ventana)
   DEVICE_VARIANT := large NAND flash
-  DEVICE_NAME := ventana
   IMAGES := nand.ubi
   PAGESIZE := 4096
   BLOCKSIZE := 256k
   MKUBIFS_OPTS := -m $$(PAGESIZE) -e 248KiB
 endef
-TARGET_DEVICES += ventana-large
+TARGET_DEVICES += gateworks_ventana-large
 
-define Device/wandboard
-  DEVICE_VENDOR := Wandboard
-  DEVICE_MODEL := Dual
-  DEVICE_DTS := imx6dl-wandboard
-endef
-TARGET_DEVICES += wandboard
-
-define Device/cubox-i
+define Device/solidrun_cubox-i
   DEVICE_VENDOR := SolidRun
   DEVICE_MODEL := CuBox-i
-  KERNEL := kernel-bin
-  UBOOT := mx6cuboxi
-  BOOT_SCRIPT = bootscript-cubox
-  DEVICE_NAME := cubox
+  DEVICE_DTS := \
+	imx6q-cubox-i \
+	imx6dl-cubox-i \
+	imx6q-hummingboard \
+	imx6dl-hummingboard
   DEVICE_PACKAGES := kmod-drm-imx kmod-drm-imx-hdmi kmod-usb-hid
-  DEVICE_DTS := imx6q-cubox-i imx6dl-cubox-i imx6q-hummingboard imx6dl-hummingboard
-  IMAGES := combined.bin dtb
+  UBOOT := mx6cuboxi
+  KERNEL := kernel-bin
+  KERNEL_SUFFIX := -zImage
   FILESYSTEMS := squashfs
+  IMAGES := combined.bin dtb
   IMAGE/combined.bin := append-rootfs | pad-extra 128k | imx6-sdcard
   IMAGE/dtb := install-dtb
 endef
-TARGET_DEVICES += cubox-i
+TARGET_DEVICES += solidrun_cubox-i
 
-define Device/apalis
+define Device/toradex_apalis
   DEVICE_VENDOR := Toradex
   DEVICE_MODEL := Apalis family
   SUPPORTED_DEVICES := apalis,ixora apalis,eval
   DEVICE_DTS := \
-	  imx6q-apalis-eval \
-	  imx6q-apalis-ixora \
-	  imx6q-apalis-ixora-v1.1
+	imx6q-apalis-eval \
+	imx6q-apalis-ixora \
+	imx6q-apalis-ixora-v1.1
   DEVICE_PACKAGES := \
 	kmod-can kmod-can-flexcan kmod-can-raw \
 	kmod-leds-gpio kmod-gpio-button-hotplug \
 	kmod-pps-gpio kmod-rtc-ds1307
-  BOOT_SCRIPT := bootscript-apalis
-  UBOOT := apalis_imx6
   FILESYSTEMS := squashfs
   IMAGES := combined.bin sysupgrade.bin
-  IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1).$$(2)
+  DEVICE_IMG_NAME = $$(DEVICE_IMG_PREFIX)-$$(1).$$(2)
   IMAGE/combined.bin := append-rootfs | pad-extra 128k | apalis-emmc
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   ARTIFACTS := recovery.scr
   ARTIFACT/recovery.scr := recovery-scr
 endef
-TARGET_DEVICES += apalis
+TARGET_DEVICES += toradex_apalis
+
+define Device/wandboard_dual
+  DEVICE_VENDOR := Wandboard
+  DEVICE_MODEL := Dual
+  DEVICE_DTS := imx6dl-wandboard
+endef
+TARGET_DEVICES += wandboard_dual
 
 $(eval $(call BuildImage))

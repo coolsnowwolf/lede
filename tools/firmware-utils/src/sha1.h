@@ -26,7 +26,7 @@ sha1_context;
  * Core SHA-1 functions
  */
 void sha1_starts( sha1_context *ctx );
-void sha1_update( sha1_context *ctx, uchar *input, uint length );
+void sha1_update( sha1_context *ctx, void *input, uint length );
 void sha1_finish( sha1_context *ctx, uchar digest[20] );
 
 /*

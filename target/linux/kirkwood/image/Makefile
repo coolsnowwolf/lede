@@ -1,14 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2009-2013 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
 KERNEL_LOADADDR:=0x8000
+
+define Device/dsa-migration
+  DEVICE_COMPAT_VERSION := 1.1
+  DEVICE_COMPAT_MESSAGE := Config cannot be migrated from swconfig to DSA
+endef
 
 define Device/Default
   PROFILES := Default
@@ -25,7 +27,6 @@ define Device/Default
   IMAGES := sysupgrade.bin factory.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   IMAGE/factory.bin := append-ubi
-  SUPPORTED_DEVICES = $(subst _,$(comma),$(1))
 endef
 
 define Device/checkpoint_l-50
@@ -66,6 +67,13 @@ define Device/cloudengines_pogoplugv4
 endef
 TARGET_DEVICES += cloudengines_pogoplugv4
 
+define Device/globalscale_sheevaplug
+  DEVICE_VENDOR := Globalscale
+  DEVICE_MODEL := Sheevaplug
+  DEVICE_PACKAGES := kmod-mvsdio
+endef
+TARGET_DEVICES += globalscale_sheevaplug
+
 define Device/iom_iconnect-1.1
   DEVICE_VENDOR := Iomega
   DEVICE_MODEL := Iconnect
@@ -102,6 +110,7 @@ endef
 
 define Device/linksys_e4200-v2
   $(Device/linksys)
+  $(Device/dsa-migration)
   DEVICE_MODEL := E4200
   DEVICE_VARIANT := v2
   KERNEL_SIZE := 2688k
@@ -111,6 +120,7 @@ TARGET_DEVICES += linksys_e4200-v2
 
 define Device/linksys_ea3500
   $(Device/linksys)
+  $(Device/dsa-migration)
   DEVICE_MODEL := EA3500
   PAGESIZE := 512
   SUBPAGESIZE := 256
@@ -122,6 +132,7 @@ TARGET_DEVICES += linksys_ea3500
 
 define Device/linksys_ea4500
   $(Device/linksys)
+  $(Device/dsa-migration)
   DEVICE_MODEL := EA4500
   KERNEL_SIZE := 2688k
   SUPPORTED_DEVICES += linksys,viper linksys-viper

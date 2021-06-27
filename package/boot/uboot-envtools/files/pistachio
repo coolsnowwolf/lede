@@ -1,4 +1,3 @@
-#!/bin/sh
 #
 # Copyright (C) 2017 OpenWrt.org
 #

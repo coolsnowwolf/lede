@@ -8,14 +8,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libnl-tiny
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/libnl-tiny.git
-PKG_SOURCE_DATE:=2019-10-29
-PKG_SOURCE_VERSION:=0219008cc8767655d7e747497e8e1133a3e8f840
-PKG_MIRROR_HASH:=b84fab21374c6ddbf992acc4ec1c9c6896b32af97603027ca5c866d69d95780f
+PKG_SOURCE_DATE:=2020-08-05
+PKG_SOURCE_VERSION:=c291088f631d1694f7ba0444b59677b194348da8
+PKG_MIRROR_HASH:=99bcce12701bb34dadb39689d95c2c5cf1e27719d0ecfd645d3957a8947025ac
 CMAKE_INSTALL:=1
+
+PKG_FLAGS := nonshared
 
 PKG_LICENSE:=LGPL-2.1
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
@@ -27,6 +29,7 @@ define Package/libnl-tiny
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=netlink socket library
+  ABI_VERSION:=1
 endef
 
 define Package/libnl-tiny/description

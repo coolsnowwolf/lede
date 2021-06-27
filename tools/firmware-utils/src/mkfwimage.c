@@ -148,7 +148,7 @@ struct fw_info fw_info[] = {
 		.sign = true,
 	},
 	{
-		.name = "ACB-ISP",
+		.name = "ACB",
 		.fw_layout = {
 			.kern_start	=	0x9f050000,
 			.kern_entry	=	0x80002000,

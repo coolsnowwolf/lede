@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 LUCI_TITLE:=LuCI for FRPC
 LUCI_DEPENDS:=+wget +frpc
 LUCI_PKGARCH:=all
-PKG_VERSION:=1.3
+PKG_VERSION:=1.4
 PKG_RELEASE:=1
 
 include $(TOPDIR)/feeds/luci/luci.mk

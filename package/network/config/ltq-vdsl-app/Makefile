@@ -9,10 +9,10 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=ltq-vdsl-app
 PKG_VERSION:=4.17.18.6
-PKG_RELEASE:=3
+PKG_RELEASE:=8
 PKG_BASE_NAME:=dsl_cpe_control
 PKG_SOURCE:=$(PKG_BASE_NAME)_vrx-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources
+PKG_SOURCE_URL:=@OPENWRT
 PKG_HASH:=da8bb929526a61aea0e153ef524331fcd472a1ebbc6d88ca017735a4f82ece02
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_BASE_NAME)-$(PKG_VERSION)
 PKG_LICENSE:=BSD-2-Clause
@@ -20,6 +20,7 @@ PKG_LICENSE:=BSD-2-Clause
 PKG_BUILD_DEPENDS:=ltq-vdsl
 
 PKG_FLAGS:=nonshared
+PKG_FIXUP:=autoreconf
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -28,12 +29,24 @@ define Package/ltq-vdsl-app
   CATEGORY:=Network
   TITLE:=Lantiq VDSL userland tool
   URL:=http://www.lantiq.com/
-  DEPENDS:=@TARGET_lantiq_xrx200 +libpthread +librt
+  DEPENDS:=@TARGET_lantiq_xrx200 +libpthread +librt +ltq-dsl-base +libubox +libubus
 endef
 
 define Package/ltq-vdsl-app/description
   Userland tool needed to control Lantiq VDSL CPE
 endef
+
+# ltq-vdsl-app uses a header provided by the MEI driver which has some
+# conditionals.
+#
+# Define them here with the default values they would get in the MEI driver,
+# have the same view on both sides.
+#
+# If you change them, you need to change them for the ltq-vdsl-app as well
+VDSL_APP_CFLAGS = \
+	-DMAX_CLI_PIPES=1 \
+	-DMEI_SUPPORT_DEBUG_STREAMS=1 \
+	-DMEI_SUPPORT_OPTIMIZED_FW_DL=1
 
 CONFIGURE_ARGS += \
 	--enable-vrx \
@@ -43,10 +56,10 @@ CONFIGURE_ARGS += \
 	--enable-ifxos \
 	--enable-ifxos-include="-I$(STAGING_DIR)/usr/include/ifxos" \
 	--enable-ifxos-library="-I$(STAGING_DIR)/usr/lib" \
-	--enable-add-appl-cflags="-DMAX_CLI_PIPES=1"  \
+	--enable-add-appl-cflags="$(VDSL_APP_CFLAGS)"  \
 	--enable-debug \
 	--disable-dti \
-	--with-channels-per-line="1" \
+	--with-channels-per-line="1"
 
 #CONFIGURE_ARGS += --enable-model=full
 #CONFIGURE_ARGS += --enable-model=lite
@@ -54,7 +67,9 @@ CONFIGURE_ARGS += \
 CONFIGURE_ARGS += \
 	--enable-model=typical \
 	--enable-dsl-pm-showtime \
-	--disable-dsl-ceoc
+	--disable-dsl-ceoc \
+	--enable-dsl-pm-retx-counters \
+	--enable-dsl-pm-retx-thresholds
 #CONFIGURE_ARGS += --enable-model=debug
 
 define Package/ltq-vdsl-app/install

@@ -8,17 +8,17 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=nettle
-PKG_VERSION:=3.5.1
-PKG_RELEASE:=2
+PKG_VERSION:=3.6
+PKG_RELEASE:=1
 PKG_USE_MIPS16:=0
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@GNU/nettle
-PKG_HASH:=75cca1998761b02e16f2db56da52992aef622bf55a3b45ec538bc2eedadc9419
+PKG_HASH:=d24c0d0f2abffbc8f4f34dcf114b0f131ec3774895f3555922fe2f40f3d5e3f1
 
-PKG_LICENSE:=GPL-2.0+
+PKG_LICENSE:=GPL-2.0-or-later
 PKG_LICENSE_FILES:=COPYING
-PKG_BUILD_PARALLEL:=0
+PKG_BUILD_PARALLEL:=1
 
 PKG_CONFIG_DEPENDS := CONFIG_LIBNETTLE_MINI
 
@@ -30,7 +30,7 @@ define Package/libnettle
   TITLE:=GNU crypto library
   URL:=http://www.lysator.liu.se/~nisse/nettle/
   DEPENDS+= +!LIBNETTLE_MINI:libgmp
-  ABI_VERSION:=7
+  ABI_VERSION:=8
 endef
 
 define Package/libnettle/config
