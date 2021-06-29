@@ -1,0 +1,357 @@
+From 594992a7ef169aa406e7fc025df2455af5d226be Mon Sep 17 00:00:00 2001
+From: P Praneesh <ppranees@codeaurora.org>
+Date: Tue, 15 Dec 2020 10:31:30 +0530
+Subject: [PATCH] ath11k: Allow fast rx by bypassing stats update
+
+Add a provision to disable stats and enable fast rx support
+for a peer when it is connected to an AP with ethernet decap support.
+All valid IP packets are directly passed to the net core stack
+bypassing mac80211 stats update
+
+Signed-off-by: Sriram R <srirrama@codeaurora.org>
+Signed-off-by: P Praneesh <ppranees@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/core.h  |  3 ++
+ drivers/net/wireless/ath/ath11k/debugfs.c | 76 +++++++++++++++++++++++++++++++++
+ drivers/net/wireless/ath/ath11k/dp.c    | 45 +++++++++++++++++++
+ drivers/net/wireless/ath/ath11k/dp_rx.c | 54 ++++++++++++++++++++---
+ drivers/net/wireless/ath/ath11k/hw.c    | 25 +++++++++++
+ drivers/net/wireless/ath/ath11k/hw.h    |  1 +
+ drivers/net/wireless/ath/ath11k/mac.c   |  2 +
+ drivers/net/wireless/ath/ath11k/peer.h  |  1 +
+ 8 files changed, 201 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -123,6 +123,7 @@ struct ath11k_skb_rxcb {
+ 	u8 tid;
+ 	u16 peer_id;
+ 	u16 seq_no;
++	struct napi_struct *napi;
+ };
+ 
+ enum ath11k_hw_rev {
+@@ -968,6 +969,7 @@ struct ath11k_base {
+ 
+ 	struct ath11k_dbring_cap *db_caps;
+ 	u32 num_db_cap;
++	bool stats_disable;
+ 
+ 	struct timer_list mon_reap_timer;
+ 	/* must be last */
+--- a/drivers/net/wireless/ath/ath11k/debugfs.c
++++ b/drivers/net/wireless/ath/ath11k/debugfs.c
+@@ -1463,6 +1463,79 @@ static const struct file_operations fops
+ 	.open = simple_open
+ };
+ 
++static void ath11k_debug_config_mon_status(struct ath11k *ar, bool enable)
++{
++	struct htt_rx_ring_tlv_filter tlv_filter = {0};
++	struct ath11k_base *ab = ar->ab;
++	int i;
++	u32 ring_id;
++
++	if (enable)
++		tlv_filter = ath11k_mac_mon_status_filter_default;
++
++	for (i = 0; i < ab->hw_params.num_rxmda_per_pdev; i++) {
++		ring_id = ar->dp.rx_mon_status_refill_ring[i].refill_buf_ring.ring_id;
++		ath11k_dp_tx_htt_rx_filter_setup(ar->ab, ring_id,
++						 ar->dp.mac_id + i,
++						 HAL_RXDMA_MONITOR_STATUS,
++						 DP_RX_BUFFER_SIZE,
++						 &tlv_filter);
++	}
++}
++
++static ssize_t ath11k_write_stats_disable(struct file *file,
++					  const char __user *user_buf,
++					  size_t count, loff_t *ppos)
++{
++	struct ath11k_base *ab = file->private_data;
++	struct ath11k_pdev *pdev;
++	bool disable;
++	int ret, i, radioup = 0;
++	u32 mask = 0;
++
++	for (i = 0; i < ab->num_radios; i++) {
++		pdev = &ab->pdevs[i];
++		if (pdev && pdev->ar) {
++			radioup = 1;
++			break;
++		}
++	}
++
++	if (radioup == 0) {
++		ath11k_err(ab, "radio is not up\n");
++		ret = -ENETDOWN;
++		goto exit;
++	}
++
++	if (kstrtobool_from_user(user_buf, count, &disable))
++		 return -EINVAL;
++
++	 if (disable != ab->stats_disable) {
++		ab->stats_disable = disable;
++		for (i = 0; i < ab->num_radios; i++) {
++			pdev = &ab->pdevs[i];
++			if (pdev && pdev->ar) {
++				ath11k_debug_config_mon_status(pdev->ar, !disable);
++
++				if (!disable)
++					mask = HTT_PPDU_STATS_TAG_DEFAULT;
++
++				ath11k_dp_tx_htt_h2t_ppdu_stats_req(pdev->ar, mask);
++			}
++		}
++	 }
++
++	ret = count;
++
++exit:
++	return ret;
++}
++
++static const struct file_operations fops_soc_stats_disable = {
++	.open = simple_open,
++	.write = ath11k_write_stats_disable,
++};
++
+ int ath11k_debugfs_register(struct ath11k *ar)
+ {
+ 	struct ath11k_base *ab = ar->ab;
+@@ -1774,6 +1847,9 @@ int ath11k_debugfs_soc_create(struct ath
+ 	debugfs_create_file("soc_dp_stats", 0600, ab->debugfs_soc, ab,
+ 			    &fops_soc_dp_stats);
+ 
++	debugfs_create_file("stats_disable", 0600, ab->debugfs_soc, ab,
++			    &fops_soc_stats_disable);
++
+ 	return 0;
+ }
+ 
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -352,6 +352,16 @@ static void ath11k_dp_rx_desc_get_crypto
+ 	ab->hw_params.hw_ops->rx_desc_get_crypto_header(desc, crypto_hdr, enctype);
+ }
+ 
++static inline u8 ath11k_dp_rx_h_msdu_start_ip_valid(struct hal_rx_desc *desc)
++{
++	bool ipv4, ipv6;
++	ipv4 = FIELD_GET(RX_MSDU_START_INFO2_IPV4,
++			 __le32_to_cpu(desc->msdu_start.info2));
++	ipv6 = FIELD_GET(RX_MSDU_START_INFO2_IPV6,
++			 __le32_to_cpu(desc->msdu_start.info2));
++	return (ipv4 || ipv6);
++}
++
+ /* Returns number of Rx buffers replenished */
+ int ath11k_dp_rxbufs_replenish(struct ath11k_base *ab, int mac_id,
+ 			       struct dp_rxdma_ring *rx_ring,
+@@ -2479,10 +2485,60 @@ ath11k_dp_rx_h_find_peer(struct ath11k_b
+ 	return peer;
+ }
+ 
++static bool ath11k_dp_rx_check_fast_rx(struct ath11k *ar,
++				       struct sk_buff *msdu,
++				       struct hal_rx_desc *rx_desc,
++				       struct ath11k_peer *peer)
++{
++	struct ethhdr *ehdr;
++	struct ath11k_peer *f_peer;
++	struct ath11k_skb_rxcb *rxcb;
++	u8 decap;
++
++	lockdep_assert_held(&ar->ab->base_lock);
++
++	decap = ath11k_dp_rx_h_msdu_start_decap_type(rx_desc);
++	rxcb = ATH11K_SKB_RXCB(msdu);
++
++	if (!ar->ab->stats_disable ||
++	    decap != DP_RX_DECAP_TYPE_ETHERNET2_DIX ||
++	    peer->vif->type != NL80211_IFTYPE_AP)
++		return false;
++
++	/* mcbc packets go through mac80211 for PN validation */
++	if (rxcb->is_mcbc)
++		return false;
++
++	if (!peer->is_authorized)
++		return false;
++
++	if (!ath11k_dp_rx_h_msdu_start_ip_valid(rx_desc))
++		return false;
++
++	/* fast rx is supported only on ethernet decap, so
++	 * we can directly gfet the ethernet header
++	 */
++	ehdr = (struct ethhdr *)msdu->data;
++
++	/* requires rebroadcast from mac80211 */
++	if (is_multicast_ether_addr(ehdr->h_dest))
++		return false;
++
++	/* check if the msdu needs to be bridged to our connected peer */
++	f_peer = ath11k_peer_find_by_addr(ar->ab, ehdr->h_dest);
++
++	if (f_peer && f_peer != peer)
++		return false;
++
++	/* allow direct rx */
++	return true;
++}
++
+ static void ath11k_dp_rx_h_mpdu(struct ath11k *ar,
+ 				struct sk_buff *msdu,
+ 				struct hal_rx_desc *rx_desc,
+-				struct ieee80211_rx_status *rx_status)
++				struct ieee80211_rx_status *rx_status,
++				bool *fast_rx)
+ {
+ 	bool  fill_crypto_hdr;
+ 	enum hal_encrypt_type enctype;
+@@ -2492,6 +2548,7 @@ static void ath11k_dp_rx_h_mpdu(struct a
+ 	struct ath11k_peer *peer;
+ 	struct rx_attention *rx_attention;
+ 	u32 err_bitmap;
++	struct wireless_dev *wdev = NULL;
+ 
+ 	/* PN for multicast packets will be checked in mac80211 */
+ 	rxcb = ATH11K_SKB_RXCB(msdu);
+@@ -2505,6 +2562,25 @@ static void ath11k_dp_rx_h_mpdu(struct a
+ 	spin_lock_bh(&ar->ab->base_lock);
+ 	peer = ath11k_dp_rx_h_find_peer(ar->ab, msdu);
+ 	if (peer) {
++		/* If the pkt is a valid IP packet and peer supports
++		 * fast rx, deliver directly to net, also note that
++		 * pkts with crypto error are not expected to arrive in this
++		 * path, so its safe to skip checking errors here */
++		if (*fast_rx &&
++		    ath11k_dp_rx_check_fast_rx(ar, msdu, rx_desc, peer)) {
++			wdev = ieee80211_vif_to_wdev(peer->vif);
++			if (wdev) {
++		        	spin_unlock_bh(&ar->ab->base_lock);
++				ath11k_dp_rx_h_csum_offload(msdu);
++				msdu->dev = wdev->netdev;
++				msdu->protocol = eth_type_trans(msdu, msdu->dev);
++				napi_gro_receive(rxcb->napi, msdu);
++				return;
++			}
++		}
++
++		*fast_rx = false;
++
+ 		if (rxcb->is_mcbc)
+ 			enctype = peer->sec_type_grp;
+ 		else
+@@ -2766,7 +2842,8 @@ static void ath11k_dp_rx_deliver_msdu(st
+ static int ath11k_dp_rx_process_msdu(struct ath11k *ar,
+ 				     struct sk_buff *msdu,
+ 				     struct sk_buff_head *msdu_list,
+-				     struct ieee80211_rx_status *rx_status)
++				     struct ieee80211_rx_status *rx_status,
++				     bool *fast_rx)
+ {
+ 	struct ath11k_base *ab = ar->ab;
+ 	struct hal_rx_desc *rx_desc, *lrx_desc;
+@@ -2842,8 +2919,13 @@ static int ath11k_dp_rx_process_msdu(str
+ 		}
+ 	}
+ 
++	ath11k_dp_rx_h_mpdu(ar, msdu, rx_desc, rx_status, fast_rx);
++	if (*fast_rx) {
++		ar->ab->soc_stats.invalid_rbm++;
++		return 0;
++	}
++
+ 	ath11k_dp_rx_h_ppdu(ar, rx_desc, rx_status);
+-	ath11k_dp_rx_h_mpdu(ar, msdu, rx_desc, rx_status);
+ 
+ 	rx_status->flag |= RX_FLAG_SKIP_MONITOR | RX_FLAG_DUP_VALIDATED;
+ 
+@@ -2864,6 +2946,7 @@ static void ath11k_dp_rx_process_receive
+ 	struct ieee80211_rx_status rx_status = {0};
+ 	u8 mac_id;
+ 	int ret;
++	bool fast_rx;
+ 
+ 	if (skb_queue_empty(msdu_list))
+ 		return;
+@@ -2884,7 +2967,11 @@ static void ath11k_dp_rx_process_receive
+ 			continue;
+ 		}
+ 
+-		ret = ath11k_dp_rx_process_msdu(ar, msdu, msdu_list, &rx_status);
++		/* Enable fast rx by default, the value will cahnge based on peer cap
++		 * and packet type */
++		fast_rx = true;
++		rxcb->napi = napi;
++		ret = ath11k_dp_rx_process_msdu(ar, msdu, msdu_list, &rx_status, &fast_rx);
+ 		if (ret) {
+ 			ath11k_dbg(ab, ATH11K_DBG_DATA,
+ 				   "Unable to process msdu %d", ret);
+@@ -2892,7 +2979,10 @@ static void ath11k_dp_rx_process_receive
+ 			continue;
+ 		}
+ 
+-		ath11k_dp_rx_deliver_msdu(ar, napi, msdu, &rx_status);
++		/* msdu is already delivered directectly */
++		if (!fast_rx)
++			ath11k_dp_rx_deliver_msdu(ar, napi, msdu, &rx_status);
++
+ 		(*quota)--;
+ 	}
+ 
+@@ -4484,6 +4574,7 @@ static int ath11k_dp_rx_h_null_q_desc(st
+ 	struct hal_rx_desc *desc = (struct hal_rx_desc *)msdu->data;
+ 	u8 l3pad_bytes;
+ 	struct ath11k_skb_rxcb *rxcb = ATH11K_SKB_RXCB(msdu);
++	bool fast_rx;
+ 
+ 	msdu_len = ath11k_dp_rx_h_msdu_start_msdu_len(desc);
+ 
+@@ -4527,7 +4618,8 @@ static int ath11k_dp_rx_h_null_q_desc(st
+ 	}
+ 	ath11k_dp_rx_h_ppdu(ar, desc, status);
+ 
+-	ath11k_dp_rx_h_mpdu(ar, msdu, desc, status);
++	fast_rx = false;
++	ath11k_dp_rx_h_mpdu(ar, msdu, desc, status, &fast_rx);
+ 
+ 	rxcb->tid = ath11k_dp_rx_h_mpdu_start_tid(desc);
+ 
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -4873,6 +4873,20 @@ static int ath11k_mac_op_sta_state(struc
+ 		if (ret)
+ 			ath11k_warn(ar->ab, "Failed to disassociate station: %pM\n",
+ 				    sta->addr);
++	} else if (old_state == IEEE80211_STA_AUTHORIZED &&
++		   new_state == IEEE80211_STA_ASSOC) {
++		spin_lock_bh(&ar->ab->base_lock);
++		peer = ath11k_peer_find(ar->ab, arvif->vdev_id, sta->addr);
++		if (peer && peer->sta)
++			peer->is_authorized = false;
++		spin_unlock_bh(&ar->ab->base_lock);
++	} else if (old_state == IEEE80211_STA_ASSOC &&
++		   new_state == IEEE80211_STA_AUTHORIZED) {
++		spin_lock_bh(&ar->ab->base_lock);
++		peer = ath11k_peer_find(ar->ab, arvif->vdev_id, sta->addr);
++		if (peer && peer->sta)
++			peer->is_authorized = true;
++		spin_unlock_bh(&ar->ab->base_lock);
+ 	}
+ 
+ 	mutex_unlock(&ar->conf_mutex);
+--- a/drivers/net/wireless/ath/ath11k/peer.h
++++ b/drivers/net/wireless/ath/ath11k/peer.h
+@@ -91,6 +91,7 @@ struct ath11k_peer {
+ 	u8 ucast_keyidx;
+ 	u16 sec_type;
+ 	u16 sec_type_grp;
++	bool is_authorized;
+ };
+ 
+ void ath11k_peer_unmap_event(struct ath11k_base *ab, u16 peer_id);
