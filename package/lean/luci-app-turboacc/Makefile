@@ -50,6 +50,6 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_TURBOACC_INCLUDE_OFFLOADING \
 	CONFIG_PACKAGE_TURBOACC_INCLUDE_SHORTCUT_FE
 
-include ../../luci.mk
+include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
