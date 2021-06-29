@@ -297,6 +297,7 @@ hostapd_bss_get_clients(struct ubus_context *ctx, struct ubus_object *obj,
 		{ "wmm", WLAN_STA_WMM },
 		{ "ht", WLAN_STA_HT },
 		{ "vht", WLAN_STA_VHT },
+		{ "he", WLAN_STA_HE },
 		{ "wps", WLAN_STA_WPS },
 		{ "mfp", WLAN_STA_MFP },
 	};
