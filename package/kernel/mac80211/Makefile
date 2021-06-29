@@ -478,6 +478,7 @@ define Build/Prepare
 	echo 'compat-wireless-$(PKG_VERSION)-$(PKG_RELEASE)-$(REVISION)' > $(PKG_BUILD_DIR)/compat_version
 	
 	mkdir -p $(STAGING_DIR)/usr/include/qca-nss-drv
+	echo 'compat-wireless-$(PKG_VERSION)-$(PKG_RELEASE)-$(REVISION)' > $(STAGING_DIR)/usr/include/qca-nss-drv/compat_version
 	$(CP) $(STAGING_DIR)/usr/include/qca-nss-drv/* $(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath11k/
 endef
 
