@@ -189,7 +189,11 @@ static void lzma_init_data(void)
 
 		p = flash_base + flash_ofs;
 		magic = get_be32(p);
+#ifdef CONFIG_KERNEL_MAGIC
+		if (magic == CONFIG_KERNEL_MAGIC) {
+#else
 		if (magic == IH_MAGIC_OKLI) {
+#endif
 			hdr = (struct image_header *) p;
 			break;
 		}

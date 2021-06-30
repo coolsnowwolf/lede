@@ -1,0 +1,648 @@
+From afbef8efb591792579c633a7c545f914c6165f82 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Thu, 11 Feb 2021 23:04:27 +0100
+Subject: [PATCH] mtd: parsers: ofpart: support BCM4908 fixed partitions
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Some devices use fixed partitioning with some partitions requiring some
+extra logic. E.g. BCM4908 may have multiple firmware partitions but
+detecting currently used one requires checking bootloader parameters.
+
+To support such cases without duplicating a lot of code (without copying
+most of the ofpart.c code) support for post-parsing callback was added.
+
+BCM4908 support in ofpart can be enabled using config option and results
+in compiling & executing a specific callback. It simply reads offset of
+currently used firmware partition from the DT. Bootloader specifies it
+using the "brcm_blparms" property.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+---
+ drivers/mtd/parsers/Kconfig                   |  9 +++
+ drivers/mtd/parsers/Makefile                  |  2 +
+ drivers/mtd/parsers/ofpart_bcm4908.c          | 64 +++++++++++++++++++
+ drivers/mtd/parsers/ofpart_bcm4908.h          | 15 +++++
+ .../mtd/parsers/{ofpart.c => ofpart_core.c}   | 28 +++++++-
+ 5 files changed, 116 insertions(+), 2 deletions(-)
+ create mode 100644 drivers/mtd/parsers/ofpart_bcm4908.c
+ create mode 100644 drivers/mtd/parsers/ofpart_bcm4908.h
+ rename drivers/mtd/parsers/{ofpart.c => ofpart_core.c} (88%)
+
+--- a/drivers/mtd/parsers/Kconfig
++++ b/drivers/mtd/parsers/Kconfig
+@@ -67,6 +67,15 @@ config MTD_OF_PARTS
+ 	  flash memory node, as described in
+ 	  Documentation/devicetree/bindings/mtd/partition.txt.
+ 
++config MTD_OF_PARTS_BCM4908
++	bool "BCM4908 partitioning support"
++	depends on MTD_OF_PARTS && (ARCH_BCM4908 || COMPILE_TEST)
++	default ARCH_BCM4908
++	help
++	  This provides partitions parser for BCM4908 family devices
++	  that can have multiple "firmware" partitions. It takes care of
++	  finding currently used one and backup ones.
++
+ config MTD_PARSER_IMAGETAG
+ 	tristate "Parser for BCM963XX Image Tag format partitions"
+ 	depends on BCM63XX || BMIPS_GENERIC || COMPILE_TEST
+--- a/drivers/mtd/parsers/Makefile
++++ b/drivers/mtd/parsers/Makefile
+@@ -4,6 +4,8 @@ obj-$(CONFIG_MTD_BCM47XX_PARTS)		+= bcm4
+ obj-$(CONFIG_MTD_BCM63XX_PARTS)		+= bcm63xxpart.o
+ obj-$(CONFIG_MTD_CMDLINE_PARTS)		+= cmdlinepart.o
+ obj-$(CONFIG_MTD_OF_PARTS)		+= ofpart.o
++ofpart-y				+= ofpart_core.o
++ofpart-$(CONFIG_MTD_OF_PARTS_BCM4908)	+= ofpart_bcm4908.o
+ obj-$(CONFIG_MTD_PARSER_IMAGETAG)	+= parser_imagetag.o
+ obj-$(CONFIG_MTD_AFS_PARTS)		+= afs.o
+ obj-$(CONFIG_MTD_PARSER_TRX)		+= parser_trx.o
+--- /dev/null
++++ b/drivers/mtd/parsers/ofpart_bcm4908.c
+@@ -0,0 +1,64 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) 2021 Rafał Miłecki <rafal@milecki.pl>
++ */
++
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/of.h>
++#include <linux/mtd/mtd.h>
++#include <linux/slab.h>
++#include <linux/mtd/partitions.h>
++
++#include "ofpart_bcm4908.h"
++
++#define BLPARAMS_FW_OFFSET		"NAND_RFS_OFS"
++
++static long long bcm4908_partitions_fw_offset(void)
++{
++	struct device_node *root;
++	struct property *prop;
++	const char *s;
++
++	root = of_find_node_by_path("/");
++	if (!root)
++		return -ENOENT;
++
++	of_property_for_each_string(root, "brcm_blparms", prop, s) {
++		size_t len = strlen(BLPARAMS_FW_OFFSET);
++		unsigned long offset;
++		int err;
++
++		if (strncmp(s, BLPARAMS_FW_OFFSET, len) || s[len] != '=')
++			continue;
++
++		err = kstrtoul(s + len + 1, 0, &offset);
++		if (err) {
++			pr_err("failed to parse %s\n", s + len + 1);
++			return err;
++		}
++
++		return offset << 10;
++	}
++
++	return -ENOENT;
++}
++
++int bcm4908_partitions_post_parse(struct mtd_info *mtd, struct mtd_partition *parts, int nr_parts)
++{
++	long long fw_offset;
++	int i;
++
++	fw_offset = bcm4908_partitions_fw_offset();
++
++	for (i = 0; i < nr_parts; i++) {
++		if (of_device_is_compatible(parts[i].of_node, "brcm,bcm4908-firmware")) {
++			if (fw_offset < 0 || parts[i].offset == fw_offset)
++				parts[i].name = "firmware";
++			else
++				parts[i].name = "backup";
++		}
++	}
++
++	return 0;
++}
+--- /dev/null
++++ b/drivers/mtd/parsers/ofpart_bcm4908.h
+@@ -0,0 +1,15 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __BCM4908_PARTITIONS_H
++#define __BCM4908_PARTITIONS_H
++
++#ifdef CONFIG_MTD_OF_PARTS_BCM4908
++int bcm4908_partitions_post_parse(struct mtd_info *mtd, struct mtd_partition *parts, int nr_parts);
++#else
++static inline int bcm4908_partitions_post_parse(struct mtd_info *mtd, struct mtd_partition *parts,
++						int nr_parts)
++{
++	return -EOPNOTSUPP;
++}
++#endif
++
++#endif
+--- a/drivers/mtd/parsers/ofpart.c
++++ /dev/null
+@@ -1,236 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0-or-later
+-/*
+- * Flash partitions described by the OF (or flattened) device tree
+- *
+- * Copyright © 2006 MontaVista Software Inc.
+- * Author: Vitaly Wool <vwool@ru.mvista.com>
+- *
+- * Revised to handle newer style flash binding by:
+- *   Copyright © 2007 David Gibson, IBM Corporation.
+- */
+-
+-#include <linux/module.h>
+-#include <linux/init.h>
+-#include <linux/of.h>
+-#include <linux/mtd/mtd.h>
+-#include <linux/slab.h>
+-#include <linux/mtd/partitions.h>
+-
+-static bool node_has_compatible(struct device_node *pp)
+-{
+-	return of_get_property(pp, "compatible", NULL);
+-}
+-
+-static int parse_fixed_partitions(struct mtd_info *master,
+-				  const struct mtd_partition **pparts,
+-				  struct mtd_part_parser_data *data)
+-{
+-	struct mtd_partition *parts;
+-	struct device_node *mtd_node;
+-	struct device_node *ofpart_node;
+-	const char *partname;
+-	struct device_node *pp;
+-	int nr_parts, i, ret = 0;
+-	bool dedicated = true;
+-
+-
+-	/* Pull of_node from the master device node */
+-	mtd_node = mtd_get_of_node(master);
+-	if (!mtd_node)
+-		return 0;
+-
+-	ofpart_node = of_get_child_by_name(mtd_node, "partitions");
+-	if (!ofpart_node) {
+-		/*
+-		 * We might get here even when ofpart isn't used at all (e.g.,
+-		 * when using another parser), so don't be louder than
+-		 * KERN_DEBUG
+-		 */
+-		pr_debug("%s: 'partitions' subnode not found on %pOF. Trying to parse direct subnodes as partitions.\n",
+-			 master->name, mtd_node);
+-		ofpart_node = mtd_node;
+-		dedicated = false;
+-	} else if (!of_device_is_compatible(ofpart_node, "fixed-partitions")) {
+-		/* The 'partitions' subnode might be used by another parser */
+-		return 0;
+-	}
+-
+-	/* First count the subnodes */
+-	nr_parts = 0;
+-	for_each_child_of_node(ofpart_node,  pp) {
+-		if (!dedicated && node_has_compatible(pp))
+-			continue;
+-
+-		nr_parts++;
+-	}
+-
+-	if (nr_parts == 0)
+-		return 0;
+-
+-	parts = kcalloc(nr_parts, sizeof(*parts), GFP_KERNEL);
+-	if (!parts)
+-		return -ENOMEM;
+-
+-	i = 0;
+-	for_each_child_of_node(ofpart_node,  pp) {
+-		const __be32 *reg;
+-		int len;
+-		int a_cells, s_cells;
+-
+-		if (!dedicated && node_has_compatible(pp))
+-			continue;
+-
+-		reg = of_get_property(pp, "reg", &len);
+-		if (!reg) {
+-			if (dedicated) {
+-				pr_debug("%s: ofpart partition %pOF (%pOF) missing reg property.\n",
+-					 master->name, pp,
+-					 mtd_node);
+-				goto ofpart_fail;
+-			} else {
+-				nr_parts--;
+-				continue;
+-			}
+-		}
+-
+-		a_cells = of_n_addr_cells(pp);
+-		s_cells = of_n_size_cells(pp);
+-		if (len / 4 != a_cells + s_cells) {
+-			pr_debug("%s: ofpart partition %pOF (%pOF) error parsing reg property.\n",
+-				 master->name, pp,
+-				 mtd_node);
+-			goto ofpart_fail;
+-		}
+-
+-		parts[i].offset = of_read_number(reg, a_cells);
+-		parts[i].size = of_read_number(reg + a_cells, s_cells);
+-		parts[i].of_node = pp;
+-
+-		partname = of_get_property(pp, "label", &len);
+-		if (!partname)
+-			partname = of_get_property(pp, "name", &len);
+-		parts[i].name = partname;
+-
+-		if (of_get_property(pp, "read-only", &len))
+-			parts[i].mask_flags |= MTD_WRITEABLE;
+-
+-		if (of_get_property(pp, "lock", &len))
+-			parts[i].mask_flags |= MTD_POWERUP_LOCK;
+-
+-		i++;
+-	}
+-
+-	if (!nr_parts)
+-		goto ofpart_none;
+-
+-	*pparts = parts;
+-	return nr_parts;
+-
+-ofpart_fail:
+-	pr_err("%s: error parsing ofpart partition %pOF (%pOF)\n",
+-	       master->name, pp, mtd_node);
+-	ret = -EINVAL;
+-ofpart_none:
+-	of_node_put(pp);
+-	kfree(parts);
+-	return ret;
+-}
+-
+-static const struct of_device_id parse_ofpart_match_table[] = {
+-	{ .compatible = "fixed-partitions" },
+-	{},
+-};
+-MODULE_DEVICE_TABLE(of, parse_ofpart_match_table);
+-
+-static struct mtd_part_parser ofpart_parser = {
+-	.parse_fn = parse_fixed_partitions,
+-	.name = "fixed-partitions",
+-	.of_match_table = parse_ofpart_match_table,
+-};
+-
+-static int parse_ofoldpart_partitions(struct mtd_info *master,
+-				      const struct mtd_partition **pparts,
+-				      struct mtd_part_parser_data *data)
+-{
+-	struct mtd_partition *parts;
+-	struct device_node *dp;
+-	int i, plen, nr_parts;
+-	const struct {
+-		__be32 offset, len;
+-	} *part;
+-	const char *names;
+-
+-	/* Pull of_node from the master device node */
+-	dp = mtd_get_of_node(master);
+-	if (!dp)
+-		return 0;
+-
+-	part = of_get_property(dp, "partitions", &plen);
+-	if (!part)
+-		return 0; /* No partitions found */
+-
+-	pr_warn("Device tree uses obsolete partition map binding: %pOF\n", dp);
+-
+-	nr_parts = plen / sizeof(part[0]);
+-
+-	parts = kcalloc(nr_parts, sizeof(*parts), GFP_KERNEL);
+-	if (!parts)
+-		return -ENOMEM;
+-
+-	names = of_get_property(dp, "partition-names", &plen);
+-
+-	for (i = 0; i < nr_parts; i++) {
+-		parts[i].offset = be32_to_cpu(part->offset);
+-		parts[i].size   = be32_to_cpu(part->len) & ~1;
+-		/* bit 0 set signifies read only partition */
+-		if (be32_to_cpu(part->len) & 1)
+-			parts[i].mask_flags = MTD_WRITEABLE;
+-
+-		if (names && (plen > 0)) {
+-			int len = strlen(names) + 1;
+-
+-			parts[i].name = names;
+-			plen -= len;
+-			names += len;
+-		} else {
+-			parts[i].name = "unnamed";
+-		}
+-
+-		part++;
+-	}
+-
+-	*pparts = parts;
+-	return nr_parts;
+-}
+-
+-static struct mtd_part_parser ofoldpart_parser = {
+-	.parse_fn = parse_ofoldpart_partitions,
+-	.name = "ofoldpart",
+-};
+-
+-static int __init ofpart_parser_init(void)
+-{
+-	register_mtd_parser(&ofpart_parser);
+-	register_mtd_parser(&ofoldpart_parser);
+-	return 0;
+-}
+-
+-static void __exit ofpart_parser_exit(void)
+-{
+-	deregister_mtd_parser(&ofpart_parser);
+-	deregister_mtd_parser(&ofoldpart_parser);
+-}
+-
+-module_init(ofpart_parser_init);
+-module_exit(ofpart_parser_exit);
+-
+-MODULE_LICENSE("GPL");
+-MODULE_DESCRIPTION("Parser for MTD partitioning information in device tree");
+-MODULE_AUTHOR("Vitaly Wool, David Gibson");
+-/*
+- * When MTD core cannot find the requested parser, it tries to load the module
+- * with the same name. Since we provide the ofoldpart parser, we should have
+- * the corresponding alias.
+- */
+-MODULE_ALIAS("fixed-partitions");
+-MODULE_ALIAS("ofoldpart");
+--- /dev/null
++++ b/drivers/mtd/parsers/ofpart_core.c
+@@ -0,0 +1,260 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Flash partitions described by the OF (or flattened) device tree
++ *
++ * Copyright © 2006 MontaVista Software Inc.
++ * Author: Vitaly Wool <vwool@ru.mvista.com>
++ *
++ * Revised to handle newer style flash binding by:
++ *   Copyright © 2007 David Gibson, IBM Corporation.
++ */
++
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/of.h>
++#include <linux/mtd/mtd.h>
++#include <linux/slab.h>
++#include <linux/mtd/partitions.h>
++
++#include "ofpart_bcm4908.h"
++
++struct fixed_partitions_quirks {
++	int (*post_parse)(struct mtd_info *mtd, struct mtd_partition *parts, int nr_parts);
++};
++
++struct fixed_partitions_quirks bcm4908_partitions_quirks = {
++	.post_parse = bcm4908_partitions_post_parse,
++};
++
++static const struct of_device_id parse_ofpart_match_table[];
++
++static bool node_has_compatible(struct device_node *pp)
++{
++	return of_get_property(pp, "compatible", NULL);
++}
++
++static int parse_fixed_partitions(struct mtd_info *master,
++				  const struct mtd_partition **pparts,
++				  struct mtd_part_parser_data *data)
++{
++	const struct fixed_partitions_quirks *quirks;
++	const struct of_device_id *of_id;
++	struct mtd_partition *parts;
++	struct device_node *mtd_node;
++	struct device_node *ofpart_node;
++	const char *partname;
++	struct device_node *pp;
++	int nr_parts, i, ret = 0;
++	bool dedicated = true;
++
++	/* Pull of_node from the master device node */
++	mtd_node = mtd_get_of_node(master);
++	if (!mtd_node)
++		return 0;
++
++	ofpart_node = of_get_child_by_name(mtd_node, "partitions");
++	if (!ofpart_node) {
++		/*
++		 * We might get here even when ofpart isn't used at all (e.g.,
++		 * when using another parser), so don't be louder than
++		 * KERN_DEBUG
++		 */
++		pr_debug("%s: 'partitions' subnode not found on %pOF. Trying to parse direct subnodes as partitions.\n",
++			 master->name, mtd_node);
++		ofpart_node = mtd_node;
++		dedicated = false;
++	}
++
++	of_id = of_match_node(parse_ofpart_match_table, ofpart_node);
++	if (dedicated && !of_id) {
++		/* The 'partitions' subnode might be used by another parser */
++		return 0;
++	}
++
++	quirks = of_id ? of_id->data : NULL;
++
++	/* First count the subnodes */
++	nr_parts = 0;
++	for_each_child_of_node(ofpart_node,  pp) {
++		if (!dedicated && node_has_compatible(pp))
++			continue;
++
++		nr_parts++;
++	}
++
++	if (nr_parts == 0)
++		return 0;
++
++	parts = kcalloc(nr_parts, sizeof(*parts), GFP_KERNEL);
++	if (!parts)
++		return -ENOMEM;
++
++	i = 0;
++	for_each_child_of_node(ofpart_node,  pp) {
++		const __be32 *reg;
++		int len;
++		int a_cells, s_cells;
++
++		if (!dedicated && node_has_compatible(pp))
++			continue;
++
++		reg = of_get_property(pp, "reg", &len);
++		if (!reg) {
++			if (dedicated) {
++				pr_debug("%s: ofpart partition %pOF (%pOF) missing reg property.\n",
++					 master->name, pp,
++					 mtd_node);
++				goto ofpart_fail;
++			} else {
++				nr_parts--;
++				continue;
++			}
++		}
++
++		a_cells = of_n_addr_cells(pp);
++		s_cells = of_n_size_cells(pp);
++		if (len / 4 != a_cells + s_cells) {
++			pr_debug("%s: ofpart partition %pOF (%pOF) error parsing reg property.\n",
++				 master->name, pp,
++				 mtd_node);
++			goto ofpart_fail;
++		}
++
++		parts[i].offset = of_read_number(reg, a_cells);
++		parts[i].size = of_read_number(reg + a_cells, s_cells);
++		parts[i].of_node = pp;
++
++		partname = of_get_property(pp, "label", &len);
++		if (!partname)
++			partname = of_get_property(pp, "name", &len);
++		parts[i].name = partname;
++
++		if (of_get_property(pp, "read-only", &len))
++			parts[i].mask_flags |= MTD_WRITEABLE;
++
++		if (of_get_property(pp, "lock", &len))
++			parts[i].mask_flags |= MTD_POWERUP_LOCK;
++
++		i++;
++	}
++
++	if (!nr_parts)
++		goto ofpart_none;
++
++	if (quirks && quirks->post_parse)
++		quirks->post_parse(master, parts, nr_parts);
++
++	*pparts = parts;
++	return nr_parts;
++
++ofpart_fail:
++	pr_err("%s: error parsing ofpart partition %pOF (%pOF)\n",
++	       master->name, pp, mtd_node);
++	ret = -EINVAL;
++ofpart_none:
++	of_node_put(pp);
++	kfree(parts);
++	return ret;
++}
++
++static const struct of_device_id parse_ofpart_match_table[] = {
++	/* Generic */
++	{ .compatible = "fixed-partitions" },
++	/* Customized */
++	{ .compatible = "brcm,bcm4908-partitions", .data = &bcm4908_partitions_quirks, },
++	{},
++};
++MODULE_DEVICE_TABLE(of, parse_ofpart_match_table);
++
++static struct mtd_part_parser ofpart_parser = {
++	.parse_fn = parse_fixed_partitions,
++	.name = "fixed-partitions",
++	.of_match_table = parse_ofpart_match_table,
++};
++
++static int parse_ofoldpart_partitions(struct mtd_info *master,
++				      const struct mtd_partition **pparts,
++				      struct mtd_part_parser_data *data)
++{
++	struct mtd_partition *parts;
++	struct device_node *dp;
++	int i, plen, nr_parts;
++	const struct {
++		__be32 offset, len;
++	} *part;
++	const char *names;
++
++	/* Pull of_node from the master device node */
++	dp = mtd_get_of_node(master);
++	if (!dp)
++		return 0;
++
++	part = of_get_property(dp, "partitions", &plen);
++	if (!part)
++		return 0; /* No partitions found */
++
++	pr_warn("Device tree uses obsolete partition map binding: %pOF\n", dp);
++
++	nr_parts = plen / sizeof(part[0]);
++
++	parts = kcalloc(nr_parts, sizeof(*parts), GFP_KERNEL);
++	if (!parts)
++		return -ENOMEM;
++
++	names = of_get_property(dp, "partition-names", &plen);
++
++	for (i = 0; i < nr_parts; i++) {
++		parts[i].offset = be32_to_cpu(part->offset);
++		parts[i].size   = be32_to_cpu(part->len) & ~1;
++		/* bit 0 set signifies read only partition */
++		if (be32_to_cpu(part->len) & 1)
++			parts[i].mask_flags = MTD_WRITEABLE;
++
++		if (names && (plen > 0)) {
++			int len = strlen(names) + 1;
++
++			parts[i].name = names;
++			plen -= len;
++			names += len;
++		} else {
++			parts[i].name = "unnamed";
++		}
++
++		part++;
++	}
++
++	*pparts = parts;
++	return nr_parts;
++}
++
++static struct mtd_part_parser ofoldpart_parser = {
++	.parse_fn = parse_ofoldpart_partitions,
++	.name = "ofoldpart",
++};
++
++static int __init ofpart_parser_init(void)
++{
++	register_mtd_parser(&ofpart_parser);
++	register_mtd_parser(&ofoldpart_parser);
++	return 0;
++}
++
++static void __exit ofpart_parser_exit(void)
++{
++	deregister_mtd_parser(&ofpart_parser);
++	deregister_mtd_parser(&ofoldpart_parser);
++}
++
++module_init(ofpart_parser_init);
++module_exit(ofpart_parser_exit);
++
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("Parser for MTD partitioning information in device tree");
++MODULE_AUTHOR("Vitaly Wool, David Gibson");
++/*
++ * When MTD core cannot find the requested parser, it tries to load the module
++ * with the same name. Since we provide the ofoldpart parser, we should have
++ * the corresponding alias.
++ */
++MODULE_ALIAS("fixed-partitions");
++MODULE_ALIAS("ofoldpart");

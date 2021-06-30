@@ -1,0 +1,337 @@
+/*
+ * Copyright (c) 2016, The Linux Foundation. All rights reserved.
+ *
+ * Permission to use, copy, modify, and/or distribute this software for
+ * any purpose with or without fee is hereby granted, provided that the
+ * above copyright notice and this permission notice appear in all copies.
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+ * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+ #ifndef __AR40XX_H
+#define __AR40XX_H
+
+#define AR40XX_MAX_VLANS	128
+#define AR40XX_NUM_PORTS	6
+#define AR40XX_NUM_PHYS	5
+
+#define BITS(_s, _n)	(((1UL << (_n)) - 1) << _s)
+
+struct ar40xx_priv {
+	struct switch_dev dev;
+
+	u8  __iomem      *hw_addr;
+	u8  __iomem      *psgmii_hw_addr;
+	u32 mac_mode;
+	struct reset_control *ess_rst;
+	u32 cpu_bmp;
+	u32 lan_bmp;
+	u32 wan_bmp;
+
+	struct mii_bus *mii_bus;
+	struct phy_device *phy;
+
+	/* mutex for qm task */
+	struct mutex qm_lock;
+	struct delayed_work qm_dwork;
+	u32 port_link_up[AR40XX_NUM_PORTS];
+	u32 ar40xx_port_old_link[AR40XX_NUM_PORTS];
+	u32 ar40xx_port_qm_buf[AR40XX_NUM_PORTS];
+
+	u32 phy_t_status;
+
+	/* mutex for switch reg access */
+	struct mutex reg_mutex;
+
+	/* mutex for mib task */
+	struct mutex mib_lock;
+	struct delayed_work mib_work;
+	int mib_next_port;
+	u64 *mib_stats;
+
+	char buf[2048];
+
+	/* all fields below will be cleared on reset */
+	bool vlan;
+	u16 vlan_id[AR40XX_MAX_VLANS];
+	u8 vlan_table[AR40XX_MAX_VLANS];
+	u8 vlan_tagged;
+	u16 pvid[AR40XX_NUM_PORTS];
+
+	/* mirror */
+	bool mirror_rx;
+	bool mirror_tx;
+	int source_port;
+	int monitor_port;
+};
+
+#define AR40XX_PORT_LINK_UP 1
+#define AR40XX_PORT_LINK_DOWN 0
+#define AR40XX_QM_NOT_EMPTY  1
+#define AR40XX_QM_EMPTY  0
+
+#define AR40XX_LAN_VLAN	1
+#define AR40XX_WAN_VLAN	2
+
+enum ar40xx_port_wrapper_cfg {
+	PORT_WRAPPER_PSGMII = 0,
+};
+
+struct ar40xx_mib_desc {
+	u32 size;
+	u32 offset;
+	const char *name;
+};
+
+#define AR40XX_PORT_CPU	0
+
+#define AR40XX_PSGMII_MODE_CONTROL	0x1b4
+#define   AR40XX_PSGMII_ATHR_CSCO_MODE_25M	BIT(0)
+
+#define AR40XX_PSGMIIPHY_TX_CONTROL	 0x288
+
+#define AR40XX_MII_ATH_MMD_ADDR		0x0d
+#define AR40XX_MII_ATH_MMD_DATA		0x0e
+#define AR40XX_MII_ATH_DBG_ADDR		0x1d
+#define AR40XX_MII_ATH_DBG_DATA		0x1e
+
+#define AR40XX_STATS_RXBROAD		0x00
+#define AR40XX_STATS_RXPAUSE		0x04
+#define AR40XX_STATS_RXMULTI		0x08
+#define AR40XX_STATS_RXFCSERR		0x0c
+#define AR40XX_STATS_RXALIGNERR		0x10
+#define AR40XX_STATS_RXRUNT		0x14
+#define AR40XX_STATS_RXFRAGMENT		0x18
+#define AR40XX_STATS_RX64BYTE		0x1c
+#define AR40XX_STATS_RX128BYTE		0x20
+#define AR40XX_STATS_RX256BYTE		0x24
+#define AR40XX_STATS_RX512BYTE		0x28
+#define AR40XX_STATS_RX1024BYTE		0x2c
+#define AR40XX_STATS_RX1518BYTE		0x30
+#define AR40XX_STATS_RXMAXBYTE		0x34
+#define AR40XX_STATS_RXTOOLONG		0x38
+#define AR40XX_STATS_RXGOODBYTE		0x3c
+#define AR40XX_STATS_RXBADBYTE		0x44
+#define AR40XX_STATS_RXOVERFLOW		0x4c
+#define AR40XX_STATS_FILTERED		0x50
+#define AR40XX_STATS_TXBROAD		0x54
+#define AR40XX_STATS_TXPAUSE		0x58
+#define AR40XX_STATS_TXMULTI		0x5c
+#define AR40XX_STATS_TXUNDERRUN		0x60
+#define AR40XX_STATS_TX64BYTE		0x64
+#define AR40XX_STATS_TX128BYTE		0x68
+#define AR40XX_STATS_TX256BYTE		0x6c
+#define AR40XX_STATS_TX512BYTE		0x70
+#define AR40XX_STATS_TX1024BYTE		0x74
+#define AR40XX_STATS_TX1518BYTE		0x78
+#define AR40XX_STATS_TXMAXBYTE		0x7c
+#define AR40XX_STATS_TXOVERSIZE		0x80
+#define AR40XX_STATS_TXBYTE		0x84
+#define AR40XX_STATS_TXCOLLISION	0x8c
+#define AR40XX_STATS_TXABORTCOL		0x90
+#define AR40XX_STATS_TXMULTICOL		0x94
+#define AR40XX_STATS_TXSINGLECOL	0x98
+#define AR40XX_STATS_TXEXCDEFER		0x9c
+#define AR40XX_STATS_TXDEFER		0xa0
+#define AR40XX_STATS_TXLATECOL		0xa4
+
+#define AR40XX_REG_MODULE_EN			0x030
+#define   AR40XX_MODULE_EN_MIB			BIT(0)
+
+#define AR40XX_REG_MIB_FUNC			0x034
+#define   AR40XX_MIB_BUSY		BIT(17)
+#define   AR40XX_MIB_CPU_KEEP			BIT(20)
+#define   AR40XX_MIB_FUNC		BITS(24, 3)
+#define   AR40XX_MIB_FUNC_S		24
+#define   AR40XX_MIB_FUNC_NO_OP		0x0
+#define   AR40XX_MIB_FUNC_FLUSH		0x1
+
+#define AR40XX_REG_PORT_STATUS(_i)		(0x07c + (_i) * 4)
+#define   AR40XX_PORT_SPEED			BITS(0, 2)
+#define   AR40XX_PORT_STATUS_SPEED_S	0
+#define   AR40XX_PORT_TX_EN			BIT(2)
+#define   AR40XX_PORT_RX_EN			BIT(3)
+#define   AR40XX_PORT_STATUS_TXFLOW	BIT(4)
+#define   AR40XX_PORT_STATUS_RXFLOW	BIT(5)
+#define   AR40XX_PORT_DUPLEX			BIT(6)
+#define   AR40XX_PORT_TXHALF_FLOW		BIT(7)
+#define   AR40XX_PORT_STATUS_LINK_UP	BIT(8)
+#define   AR40XX_PORT_AUTO_LINK_EN		BIT(9)
+#define   AR40XX_PORT_STATUS_FLOW_CONTROL  BIT(12)
+
+#define AR40XX_REG_MAX_FRAME_SIZE		0x078
+#define   AR40XX_MAX_FRAME_SIZE_MTU		BITS(0, 14)
+
+#define AR40XX_REG_PORT_HEADER(_i)		(0x09c + (_i) * 4)
+
+#define AR40XX_REG_EEE_CTRL			0x100
+#define   AR40XX_EEE_CTRL_DISABLE_PHY(_i)	BIT(4 + (_i) * 2)
+
+#define AR40XX_REG_PORT_VLAN0(_i)		(0x420 + (_i) * 0x8)
+#define   AR40XX_PORT_VLAN0_DEF_SVID		BITS(0, 12)
+#define   AR40XX_PORT_VLAN0_DEF_SVID_S		0
+#define   AR40XX_PORT_VLAN0_DEF_CVID		BITS(16, 12)
+#define   AR40XX_PORT_VLAN0_DEF_CVID_S		16
+
+#define AR40XX_REG_PORT_VLAN1(_i)		(0x424 + (_i) * 0x8)
+#define   AR40XX_PORT_VLAN1_PORT_VLAN_PROP	BIT(6)
+#define   AR40XX_PORT_VLAN1_OUT_MODE		BITS(12, 2)
+#define   AR40XX_PORT_VLAN1_OUT_MODE_S		12
+#define   AR40XX_PORT_VLAN1_OUT_MODE_UNMOD	0
+#define   AR40XX_PORT_VLAN1_OUT_MODE_UNTAG	1
+#define   AR40XX_PORT_VLAN1_OUT_MODE_TAG		2
+#define   AR40XX_PORT_VLAN1_OUT_MODE_UNTOUCH	3
+
+#define AR40XX_REG_VTU_FUNC0			0x0610
+#define   AR40XX_VTU_FUNC0_EG_MODE		BITS(4, 14)
+#define   AR40XX_VTU_FUNC0_EG_MODE_S(_i)	(4 + (_i) * 2)
+#define   AR40XX_VTU_FUNC0_EG_MODE_KEEP		0
+#define   AR40XX_VTU_FUNC0_EG_MODE_UNTAG	1
+#define   AR40XX_VTU_FUNC0_EG_MODE_TAG		2
+#define   AR40XX_VTU_FUNC0_EG_MODE_NOT		3
+#define   AR40XX_VTU_FUNC0_IVL			BIT(19)
+#define   AR40XX_VTU_FUNC0_VALID		BIT(20)
+
+#define AR40XX_REG_VTU_FUNC1			0x0614
+#define   AR40XX_VTU_FUNC1_OP			BITS(0, 3)
+#define   AR40XX_VTU_FUNC1_OP_NOOP		0
+#define   AR40XX_VTU_FUNC1_OP_FLUSH		1
+#define   AR40XX_VTU_FUNC1_OP_LOAD		2
+#define   AR40XX_VTU_FUNC1_OP_PURGE		3
+#define   AR40XX_VTU_FUNC1_OP_REMOVE_PORT	4
+#define   AR40XX_VTU_FUNC1_OP_GET_NEXT		5
+#define   AR40XX7_VTU_FUNC1_OP_GET_ONE		6
+#define   AR40XX_VTU_FUNC1_FULL			BIT(4)
+#define   AR40XX_VTU_FUNC1_PORT			BIT(8, 4)
+#define   AR40XX_VTU_FUNC1_PORT_S		8
+#define   AR40XX_VTU_FUNC1_VID			BIT(16, 12)
+#define   AR40XX_VTU_FUNC1_VID_S		16
+#define   AR40XX_VTU_FUNC1_BUSY			BIT(31)
+
+#define AR40XX_REG_FWD_CTRL0			0x620
+#define   AR40XX_FWD_CTRL0_CPU_PORT_EN		BIT(10)
+#define   AR40XX_FWD_CTRL0_MIRROR_PORT		BITS(4, 4)
+#define   AR40XX_FWD_CTRL0_MIRROR_PORT_S	4
+
+#define AR40XX_REG_FWD_CTRL1			0x624
+#define   AR40XX_FWD_CTRL1_UC_FLOOD		BITS(0, 7)
+#define   AR40XX_FWD_CTRL1_UC_FLOOD_S		0
+#define   AR40XX_FWD_CTRL1_MC_FLOOD		BITS(8, 7)
+#define   AR40XX_FWD_CTRL1_MC_FLOOD_S		8
+#define   AR40XX_FWD_CTRL1_BC_FLOOD		BITS(16, 7)
+#define   AR40XX_FWD_CTRL1_BC_FLOOD_S		16
+#define   AR40XX_FWD_CTRL1_IGMP			BITS(24, 7)
+#define   AR40XX_FWD_CTRL1_IGMP_S		24
+
+#define AR40XX_REG_PORT_LOOKUP(_i)		(0x660 + (_i) * 0xc)
+#define   AR40XX_PORT_LOOKUP_MEMBER		BITS(0, 7)
+#define   AR40XX_PORT_LOOKUP_IN_MODE		BITS(8, 2)
+#define   AR40XX_PORT_LOOKUP_IN_MODE_S		8
+#define   AR40XX_PORT_LOOKUP_STATE		BITS(16, 3)
+#define   AR40XX_PORT_LOOKUP_STATE_S		16
+#define   AR40XX_PORT_LOOKUP_LEARN		BIT(20)
+#define   AR40XX_PORT_LOOKUP_LOOPBACK		BIT(21)
+#define   AR40XX_PORT_LOOKUP_ING_MIRROR_EN	BIT(25)
+
+#define AR40XX_REG_ATU_FUNC			0x60c
+#define   AR40XX_ATU_FUNC_OP			BITS(0, 4)
+#define   AR40XX_ATU_FUNC_OP_NOOP		0x0
+#define   AR40XX_ATU_FUNC_OP_FLUSH		0x1
+#define   AR40XX_ATU_FUNC_OP_LOAD		0x2
+#define   AR40XX_ATU_FUNC_OP_PURGE		0x3
+#define   AR40XX_ATU_FUNC_OP_FLUSH_LOCKED	0x4
+#define   AR40XX_ATU_FUNC_OP_FLUSH_UNICAST	0x5
+#define   AR40XX_ATU_FUNC_OP_GET_NEXT		0x6
+#define   AR40XX_ATU_FUNC_OP_SEARCH_MAC		0x7
+#define   AR40XX_ATU_FUNC_OP_CHANGE_TRUNK	0x8
+#define   AR40XX_ATU_FUNC_BUSY			BIT(31)
+
+#define AR40XX_REG_QM_DEBUG_ADDR		0x820
+#define AR40XX_REG_QM_DEBUG_VALUE		0x824
+#define   AR40XX_REG_QM_PORT0_3_QNUM		0x1d
+#define   AR40XX_REG_QM_PORT4_6_QNUM		0x1e
+
+#define AR40XX_REG_PORT_HOL_CTRL1(_i)		(0x974 + (_i) * 0x8)
+#define   AR40XX_PORT_HOL_CTRL1_EG_MIRROR_EN	BIT(16)
+
+#define AR40XX_REG_PORT_FLOWCTRL_THRESH(_i)	(0x9b0 + (_i) * 0x4)
+#define   AR40XX_PORT0_FC_THRESH_ON_DFLT	0x60
+#define   AR40XX_PORT0_FC_THRESH_OFF_DFLT	0x90
+
+#define AR40XX_PHY_DEBUG_0   0
+#define AR40XX_PHY_MANU_CTRL_EN  BIT(12)
+
+#define AR40XX_PHY_DEBUG_2   2
+
+#define AR40XX_PHY_SPEC_STATUS 0x11
+#define   AR40XX_PHY_SPEC_STATUS_LINK		BIT(10)
+#define   AR40XX_PHY_SPEC_STATUS_DUPLEX		BIT(13)
+#define   AR40XX_PHY_SPEC_STATUS_SPEED		BITS(14, 2)
+
+/* port forwarding state */
+enum {
+	AR40XX_PORT_STATE_DISABLED = 0,
+	AR40XX_PORT_STATE_BLOCK = 1,
+	AR40XX_PORT_STATE_LISTEN = 2,
+	AR40XX_PORT_STATE_LEARN = 3,
+	AR40XX_PORT_STATE_FORWARD = 4
+};
+
+/* ingress 802.1q mode */
+enum {
+	AR40XX_IN_PORT_ONLY = 0,
+	AR40XX_IN_PORT_FALLBACK = 1,
+	AR40XX_IN_VLAN_ONLY = 2,
+	AR40XX_IN_SECURE = 3
+};
+
+/* egress 802.1q mode */
+enum {
+	AR40XX_OUT_KEEP = 0,
+	AR40XX_OUT_STRIP_VLAN = 1,
+	AR40XX_OUT_ADD_VLAN = 2
+};
+
+/* port speed */
+enum {
+	AR40XX_PORT_SPEED_10M = 0,
+	AR40XX_PORT_SPEED_100M = 1,
+	AR40XX_PORT_SPEED_1000M = 2,
+	AR40XX_PORT_SPEED_ERR = 3,
+};
+
+#define AR40XX_MIB_WORK_DELAY	2000 /* msecs */
+
+#define AR40XX_QM_WORK_DELAY    100
+
+#define   AR40XX_MIB_FUNC_CAPTURE	0x3
+
+#define AR40XX_REG_PORT_STATS_START	0x1000
+#define AR40XX_REG_PORT_STATS_LEN		0x100
+
+#define AR40XX_PORTS_ALL	0x3f
+
+#define AR40XX_PSGMII_ID	5
+#define AR40XX_PSGMII_CALB_NUM	100
+#define AR40XX_MALIBU_PSGMII_MODE_CTRL	0x6d
+#define AR40XX_MALIBU_PHY_PSGMII_MODE_CTRL_ADJUST_VAL	0x220c
+#define AR40XX_MALIBU_PHY_MMD7_DAC_CTRL	0x801a
+#define AR40XX_MALIBU_DAC_CTRL_MASK	0x380
+#define AR40XX_MALIBU_DAC_CTRL_VALUE	0x280
+#define AR40XX_MALIBU_PHY_RLP_CTRL       0x805a
+#define AR40XX_PSGMII_TX_DRIVER_1_CTRL	0xb
+#define AR40XX_MALIBU_PHY_PSGMII_REDUCE_SERDES_TX_AMP	0x8a
+#define AR40XX_MALIBU_PHY_LAST_ADDR	4
+
+static inline struct ar40xx_priv *
+swdev_to_ar40xx(struct switch_dev *swdev)
+{
+	return container_of(swdev, struct ar40xx_priv, dev);
+}
+
+#endif

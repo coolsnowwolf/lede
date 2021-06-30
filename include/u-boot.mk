@@ -44,7 +44,8 @@ TARGET_DEP = TARGET_$(BUILD_TARGET)$(if $(BUILD_SUBTARGET),_$(BUILD_SUBTARGET))
 UBOOT_MAKE_FLAGS = \
 	HOSTCC="$(HOSTCC)" \
 	HOSTCFLAGS="$(HOST_CFLAGS) $(HOST_CPPFLAGS) -std=gnu11" \
-	HOSTLDFLAGS="$(HOST_LDFLAGS)"
+	HOSTLDFLAGS="$(HOST_LDFLAGS)" \
+	$(if $(findstring c,$(OPENWRT_VERBOSE)),V=1,V='')
 
 define Build/U-Boot/Target
   $(eval $(call U-Boot/Init,$(1)))

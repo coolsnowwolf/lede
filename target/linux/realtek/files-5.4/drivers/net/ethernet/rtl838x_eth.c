@@ -234,19 +234,21 @@ struct dsa_tag {
 	u16	port;
 	u8	l2_offloaded;
 	u8	prio;
+	bool	crc_error;
 };
 
 bool rtl838x_decode_tag(struct p_hdr *h, struct dsa_tag *t)
 {
 	t->reason = h->cpu_tag[3] & 0xf;
-	if (t->reason != 15)
-	pr_debug("Reason: %d\n", t->reason);
 	t->queue = (h->cpu_tag[0] & 0xe0) >> 5;
+	t->port = h->cpu_tag[1] & 0x1f;
+	t->crc_error = t->reason == 13;
+
+	pr_debug("Reason: %d\n", t->reason);
 	if (t->reason != 4) // NIC_RX_REASON_SPECIAL_TRAP
 		t->l2_offloaded = 1;
 	else
 		t->l2_offloaded = 0;
-	t->port = h->cpu_tag[1] & 0x1f;
 
 	return t->l2_offloaded;
 }
@@ -254,15 +256,31 @@ bool rtl838x_decode_tag(struct p_hdr *h, struct dsa_tag *t)
 bool rtl839x_decode_tag(struct p_hdr *h, struct dsa_tag *t)
 {
 	t->reason = h->cpu_tag[4] & 0x1f;
-	if (t->reason != 31)
+	t->queue = (h->cpu_tag[3] & 0xe000) >> 13;
+	t->port = h->cpu_tag[1] & 0x3f;
+	t->crc_error = h->cpu_tag[3] & BIT(2);
+
 	pr_debug("Reason: %d\n", t->reason);
-		t->queue = (h->cpu_tag[3] & 0xe000) >> 13;
 	if ((t->reason != 7) && (t->reason != 8)) // NIC_RX_REASON_RMA_USR
 		t->l2_offloaded = 1;
 	else
 		t->l2_offloaded = 0;
-	
-	t->port = h->cpu_tag[1] & 0x3f;
+
+	return t->l2_offloaded;
+}
+
+bool rtl930x_decode_tag(struct p_hdr *h, struct dsa_tag *t)
+{
+	t->reason = h->cpu_tag[7] & 0x3f;
+	t->queue =  (h->cpu_tag[2] >> 11) & 0x1f;
+	t->port = (h->cpu_tag[0] >> 8) & 0x1f;
+	t->crc_error = h->cpu_tag[1] & BIT(6);
+
+	pr_debug("Reason %d, port %d, queue %d\n", t->reason, t->port, t->queue);
+	if (t->reason >= 19 && t->reason <= 27)
+		t->l2_offloaded = 0;
+	else
+		t->l2_offloaded = 1;
 
 	return t->l2_offloaded;
 }
@@ -270,21 +288,16 @@ bool rtl839x_decode_tag(struct p_hdr *h, struct dsa_tag *t)
 bool rtl931x_decode_tag(struct p_hdr *h, struct dsa_tag *t)
 {
 	t->reason = h->cpu_tag[7] & 0x3f;
-	pr_debug("Reason %d\n", t->reason);
 	t->queue =  (h->cpu_tag[2] >> 11) & 0x1f;
+	t->port = (h->cpu_tag[0] >> 8) & 0x3f;
+	t->crc_error = h->cpu_tag[1] & BIT(6);
+
+	pr_debug("Reason %d, port %d, queue %d\n", t->reason, t->port, t->queue);
 	if (t->reason >= 19 && t->reason <= 27)
 		t->l2_offloaded = 0;
 	else
 		t->l2_offloaded = 1;
-	t->port = (h->cpu_tag[0] >> 8) & 0x3f;
 
-	return t->l2_offloaded;
-}
-
-bool rtl930x_decode_tag(struct p_hdr *h, struct dsa_tag *t)
-{
-	rtl931x_decode_tag(h, t);
-	t->port &= 0x1f;
 	return t->l2_offloaded;
 }
 
@@ -731,8 +744,9 @@ static void rtl838x_hw_en_rxtx(struct rtl838x_eth_priv *priv)
 	 * | MEDIA_SEL
 	 */
 	sw_w32(0x6192F, priv->r->mac_force_mode_ctrl + priv->cpu_port * 4);
-	/* allow CRC errors on CPU-port */
-	sw_w32_mask(0, 0x8, priv->r->mac_port_ctrl(priv->cpu_port));
+
+	/* Enable CRC checks on CPU-port */
+	sw_w32_mask(0, BIT(3), priv->r->mac_port_ctrl(priv->cpu_port));
 }
 
 static void rtl839x_hw_en_rxtx(struct rtl838x_eth_priv *priv)
@@ -746,8 +760,8 @@ static void rtl839x_hw_en_rxtx(struct rtl838x_eth_priv *priv)
 	/* Enable DMA */
 	sw_w32_mask(0, RX_EN | TX_EN, priv->r->dma_if_ctrl);
 
-	/* Restart TX/RX to CPU port */
-	sw_w32_mask(0x0, 0x3, priv->r->mac_port_ctrl(priv->cpu_port));
+	/* Restart TX/RX to CPU port, enable CRC checking */
+	sw_w32_mask(0x0, 0x3 | BIT(3), priv->r->mac_port_ctrl(priv->cpu_port));
 
 	/* CPU port joins Lookup Miss Flooding Portmask */
 	// TODO: The code below should also work for the RTL838x
@@ -784,8 +798,8 @@ static void rtl93xx_hw_en_rxtx(struct rtl838x_eth_priv *priv)
 	/* Enable DMA */
 	sw_w32_mask(0, RX_EN_93XX | TX_EN_93XX, priv->r->dma_if_ctrl);
 
-	/* Restart TX/RX to CPU port */
-	sw_w32_mask(0x0, 0x3, priv->r->mac_port_ctrl(priv->cpu_port));
+	/* Restart TX/RX to CPU port, enable CRC checking */
+	sw_w32_mask(0x0, 0x3 | BIT(4), priv->r->mac_port_ctrl(priv->cpu_port));
 
 	sw_w32_mask(0, BIT(priv->cpu_port), RTL930X_L2_UNKN_UC_FLD_PMSK);
 	sw_w32(0x217, priv->r->mac_force_mode_ctrl + priv->cpu_port * 4);
@@ -883,28 +897,30 @@ static int rtl838x_eth_open(struct net_device *ndev)
 	switch (priv->family_id) {
 	case RTL8380_FAMILY_ID:
 		rtl838x_hw_en_rxtx(priv);
-		/* Trap IGMP traffic to CPU-Port */
+		/* Trap IGMP/MLD traffic to CPU-Port */
 		sw_w32(0x3, RTL838X_SPCL_TRAP_IGMP_CTRL);
 		/* Flush learned FDB entries on link down of a port */
 		sw_w32_mask(0, BIT(7), RTL838X_L2_CTRL_0);
 		break;
+
 	case RTL8390_FAMILY_ID:
 		rtl839x_hw_en_rxtx(priv);
+		// Trap MLD and IGMP messages to CPU_PORT
 		sw_w32(0x3, RTL839X_SPCL_TRAP_IGMP_CTRL);
 		/* Flush learned FDB entries on link down of a port */
 		sw_w32_mask(0, BIT(7), RTL839X_L2_CTRL_0);
 		break;
+
 	case RTL9300_FAMILY_ID:
 		rtl93xx_hw_en_rxtx(priv);
 		/* Flush learned FDB entries on link down of a port */
 		sw_w32_mask(0, BIT(7), RTL930X_L2_CTRL);
-		sw_w32_mask(BIT(28), 0, RTL930X_L2_PORT_SABLK_CTRL);
-		sw_w32_mask(BIT(28), 0, RTL930X_L2_PORT_DABLK_CTRL);
+		// Trap MLD and IGMP messages to CPU_PORT
+		sw_w32((0x2 << 3) | 0x2,  RTL930X_VLAN_APP_PKT_CTRL);
 		break;
 
 	case RTL9310_FAMILY_ID:
 		rtl93xx_hw_en_rxtx(priv);
-//		TODO: Add trapping of IGMP frames to CPU-port
 		break;
 	}
 
@@ -1115,15 +1131,20 @@ static int rtl838x_eth_tx(struct sk_buff *skb, struct net_device *dev)
 	if (netdev_uses_dsa(dev) && skb->data[len-4] == 0x80 && skb->data[len-3] > 0
 			&& skb->data[len-3] < 28 &&  skb->data[len-2] == 0x10
 			&&  skb->data[len-1] == 0x00) {
-		/* Reuse tag space for CRC */
+		/* Reuse tag space for CRC if possible */
 		dest_port = skb->data[len-3];
 		len -= 4;
 	}
-	if (len < ETH_ZLEN)
-		len = ETH_ZLEN;
 
-	/* ASIC expects that packet includes CRC, so we extend by 4 bytes */
-	len += 4;
+	len += 4; // Add space for CRC
+
+	// On RTL8380 SoCs, the packet needs extra padding
+	if (priv->family_id == RTL8380_FAMILY_ID) {
+		if (len < ETH_ZLEN)
+			len = ETH_ZLEN; // SoC not automatically padding to ETH_ZLEN
+		else
+			len += 4;
+	}
 
 	if (skb_padto(skb, len)) {
 		ret = NETDEV_TX_OK;
@@ -1280,6 +1301,12 @@ static int rtl838x_hw_receive(struct net_device *dev, int r, int budget)
 					 tag.queue, len, tag.reason, tag.port);
 
 			skb->protocol = eth_type_trans(skb, dev);
+			if (dev->features & NETIF_F_RXCSUM) {
+				if (tag.crc_error)
+					skb_checksum_none_assert(skb);
+				else
+					skb->ip_summed = CHECKSUM_UNNECESSARY;
+			}
 			dev->stats.rx_packets++;
 			dev->stats.rx_bytes += len;
 
@@ -1837,6 +1864,40 @@ static int rtl838x_mdio_remove(struct rtl838x_eth_priv *priv)
 	return 0;
 }
 
+static netdev_features_t rtl838x_fix_features(struct net_device *dev,
+					  netdev_features_t features)
+{
+	return features;
+}
+
+static int rtl83xx_set_features(struct net_device *dev, netdev_features_t features)
+{
+	struct rtl838x_eth_priv *priv = netdev_priv(dev);
+
+	if ((features ^ dev->features) & NETIF_F_RXCSUM) {
+		if (!(features & NETIF_F_RXCSUM))
+			sw_w32_mask(BIT(3), 0, priv->r->mac_port_ctrl(priv->cpu_port));
+		else
+			sw_w32_mask(0, BIT(4), priv->r->mac_port_ctrl(priv->cpu_port));
+	}
+
+	return 0;
+}
+
+static int rtl93xx_set_features(struct net_device *dev, netdev_features_t features)
+{
+	struct rtl838x_eth_priv *priv = netdev_priv(dev);
+
+	if ((features ^ dev->features) & NETIF_F_RXCSUM) {
+		if (!(features & NETIF_F_RXCSUM))
+			sw_w32_mask(BIT(4), 0, priv->r->mac_port_ctrl(priv->cpu_port));
+		else
+			sw_w32_mask(0, BIT(4), priv->r->mac_port_ctrl(priv->cpu_port));
+	}
+
+	return 0;
+}
+
 static const struct net_device_ops rtl838x_eth_netdev_ops = {
 	.ndo_open = rtl838x_eth_open,
 	.ndo_stop = rtl838x_eth_stop,
@@ -1846,6 +1907,8 @@ static const struct net_device_ops rtl838x_eth_netdev_ops = {
 	.ndo_validate_addr = eth_validate_addr,
 	.ndo_set_rx_mode = rtl838x_eth_set_multicast_list,
 	.ndo_tx_timeout = rtl838x_eth_tx_timeout,
+	.ndo_set_features = rtl83xx_set_features,
+	.ndo_fix_features = rtl838x_fix_features,
 };
 
 static const struct net_device_ops rtl839x_eth_netdev_ops = {
@@ -1857,6 +1920,8 @@ static const struct net_device_ops rtl839x_eth_netdev_ops = {
 	.ndo_validate_addr = eth_validate_addr,
 	.ndo_set_rx_mode = rtl839x_eth_set_multicast_list,
 	.ndo_tx_timeout = rtl838x_eth_tx_timeout,
+	.ndo_set_features = rtl83xx_set_features,
+	.ndo_fix_features = rtl838x_fix_features,
 };
 
 static const struct net_device_ops rtl930x_eth_netdev_ops = {
@@ -1868,6 +1933,8 @@ static const struct net_device_ops rtl930x_eth_netdev_ops = {
 	.ndo_validate_addr = eth_validate_addr,
 	.ndo_set_rx_mode = rtl930x_eth_set_multicast_list,
 	.ndo_tx_timeout = rtl838x_eth_tx_timeout,
+	.ndo_set_features = rtl93xx_set_features,
+	.ndo_fix_features = rtl838x_fix_features,
 };
 
 static const struct net_device_ops rtl931x_eth_netdev_ops = {
@@ -1879,6 +1946,8 @@ static const struct net_device_ops rtl931x_eth_netdev_ops = {
 	.ndo_validate_addr = eth_validate_addr,
 	.ndo_set_rx_mode = rtl931x_eth_set_multicast_list,
 	.ndo_tx_timeout = rtl838x_eth_tx_timeout,
+	.ndo_set_features = rtl93xx_set_features,
+	.ndo_fix_features = rtl838x_fix_features,
 };
 
 static const struct phylink_mac_ops rtl838x_phylink_ops = {
@@ -1975,6 +2044,8 @@ static int __init rtl838x_eth_probe(struct platform_device *pdev)
 	dev->ethtool_ops = &rtl838x_ethtool_ops;
 	dev->min_mtu = ETH_ZLEN;
 	dev->max_mtu = 1536;
+	dev->features = NETIF_F_RXCSUM | NETIF_F_HW_CSUM;
+	dev->hw_features = NETIF_F_RXCSUM;
 
 	priv->id = soc_info.id;
 	priv->family_id = soc_info.family;

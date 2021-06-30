@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libnfnetlink
 PKG_VERSION:=1.0.1
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:= \
@@ -45,7 +45,7 @@ CONFIGURE_ARGS += \
 	--enable-shared
 
 CONFIGURE_VARS += \
-	lt_prog_compiler_pic=$(FPIC)
+	lt_prog_compiler_pic="$(FPIC)"
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include/libnfnetlink

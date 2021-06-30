@@ -9,7 +9,6 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=trelay
-PKG_VERSION:=0.1
 PKG_RELEASE:=2
 
 include $(INCLUDE_DIR)/package.mk

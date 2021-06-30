@@ -2,6 +2,10 @@
 
 START=60
 
+extra_command "makeconfig"
+extra_command "makegfwlist"
+extra_command "health"
+
 CRON_FILE=/etc/crontabs/root
 PID_PATH=/var/run/dnsforwarder
 PID_FILE=${PID_PATH}/dns.pid
@@ -21,11 +25,11 @@ del_cron()
 	/etc/init.d/cron restart
 }
 
-fixflowoffload(){
-    dns=$(uci get flowoffload.@flow[0].dns 2>/dev/null)
+fixturboacc(){
+    dns=$(uci get turboacc.config.dns_caching 2>/dev/null)
     if [ $dns -eq 1 ];  then
-        uci set flowoffload.@flow[0].dns=0 && uci commit flowoffload
-        /etc/init.d/flowoffload restart
+        uci set turboacc.config.dns_caching=0 && uci commit turboacc
+        /etc/init.d/turboacc restart
     fi
 }
 
@@ -51,7 +55,7 @@ health(){
 }
 
 
-makegfwlist(){	
+makegfwlist(){
 	local GFW_FILE='/etc/dnsforwarder/gfw.txt'
 	local GFW_TMP_FILE='/tmp/dnsforwarder-gfw.old'
 	local TSTIME=`date '+%Y-%m-%d %H:%M:%S'`
@@ -62,7 +66,7 @@ makegfwlist(){
 	sort /tmp/edf.ts  | uniq > /tmp/edf.ts
 	/usr/share/dnsforwarder/gfwlist.sh -i -l -o /tmp/dnsforwarder-gfw.tmp --extra-domain-file /tmp/edf.ts
 	if [ $? != 0 ]; then
-        echo 'Failed to fetch gfwlist'		
+        echo 'Failed to fetch gfwlist'
 		logger -t  Failed to fetch gfwlist
         return 2
     fi
@@ -79,7 +83,7 @@ makegfwlist(){
 		cp ${GFW_TMP_FILE} ${GFW_FILE}
 		sed -i "s/TS_BUILD_TIME/${TSTIME}/g" ${GFW_FILE}
 		printf "[\e[33m%s\e[0m]" "PID"
-		restart		
+		restart
 	fi
 }
 
@@ -88,7 +92,7 @@ makeconfig () {
 
     local log=$(uci get dnsforwarder.@config[0].log 2>/dev/null)
     local log_size=$(uci get dnsforwarder.@config[0].log_size 2>/dev/null)
-	
+
 	local gfw=$(uci get dnsforwarder.@config[0].gfw 2>/dev/null)
 
 	local udp_local=$(uci -d ',' get dnsforwarder.@config[0].udp_local 2>/dev/null)
@@ -105,8 +109,8 @@ makeconfig () {
 	local cache=$(uci get dnsforwarder.@config[0].cache 2>/dev/null)
 	local cache_size=$(uci get dnsforwarder.@config[0].cache_size 2>/dev/null)
 	local cache_ignore=$(uci get dnsforwarder.@config[0].cache_ignore 2>/dev/null)
-	local cache_control=$(uci get dnsforwarder.@config[0].cache_control 2>/dev/null)	
-	
+	local cache_control=$(uci get dnsforwarder.@config[0].cache_control 2>/dev/null)
+
 	local domain_statistic=$(uci get dnsforwarder.@config[0].domain_statistic 2>/dev/null)
 	local udp_local_addr=$(uci get dnsforwarder.@arguments[0].addr 2>/dev/null)
 	udp_local_addr=${udp_local_addr/:/#}
@@ -118,7 +122,7 @@ makeconfig () {
         echo "LogFileThresholdLength ${log_size}" >> $DNSFORWARDER_CONF
         echo "LogFileFolder /var/log" >> $DNSFORWARDER_CONF
     fi
-	
+
     [ -n "$udp_local" ] && echo "UDPLocal ${udp_local}" >> $DNSFORWARDER_CONF
 	[ -n "$udp_local_addr" ] && eval "makelist 'server=' $udp_local_addr" > /tmp/dnsmasq.dnsforwarder.conf
 	sed -i "s/ //g" /tmp/dnsmasq.dnsforwarder.conf
@@ -126,7 +130,7 @@ makeconfig () {
     eval "makelist 'TCPGroup' $tcp_group" >> $DNSFORWARDER_CONF
     eval "makelist 'UDPGroup' $udp_group" >> $DNSFORWARDER_CONF
     eval "makelist 'GroupFile' $group_file" >> $DNSFORWARDER_CONF
-	
+
 	if [ $gfw = "true" ]; then
         echo 'GroupFile /etc/dnsforwarder/gfw.txt' >> $DNSFORWARDER_CONF
     fi
@@ -136,14 +140,14 @@ makeconfig () {
     echo "BlockNegativeResponse ${block_negative_resp}" >> $DNSFORWARDER_CONF
     eval "makelist 'AppendHosts' $append_host" >> $DNSFORWARDER_CONF
     echo "BlockIpv6WhenIpv4Exists ${block_ipv6}" >> $DNSFORWARDER_CONF
-    
+
     echo "UseCache ${cache}" >> $DNSFORWARDER_CONF
     if [ $cache = "true" ]; then
         echo "CacheSize ${cache_size}" >> $DNSFORWARDER_CONF
         echo "MemoryCache false" >> $DNSFORWARDER_CONF
         echo "CacheFile /tmp/dnsforwarder.cache" >> $DNSFORWARDER_CONF
         echo "IgnoreTTL ${cache_ignore}" >> $DNSFORWARDER_CONF
-        eval "makelist 'CacheControl' $cache_control" >> $DNSFORWARDER_CONF        
+        eval "makelist 'CacheControl' $cache_control" >> $DNSFORWARDER_CONF
         echo "ReloadCache true" >> $DNSFORWARDER_CONF
         echo "OverwriteCache true" >> $DNSFORWARDER_CONF
     fi
@@ -168,9 +172,9 @@ start()
     if [ $vt_enabled = 0 ]; then
         echo dnsforwarder is not enabled
         exit
-    fi 	
+    fi
     makeconfig
-	fixflowoffload	
+	fixturboacc
     dnsforwarder -f $DNSFORWARDER_CONF -d
 	sleep 10
     mkdir -p ${PID_PATH}
@@ -182,14 +186,14 @@ start()
     local dnsmasq=$(uci get dnsforwarder.@arguments[0].dnsmasq 2>/dev/null)
     local addr=$(uci get dnsforwarder.@arguments[0].addr 2>/dev/null)
     [ -n "${addr}" ] && addr=${addr/:/#}
-	
+
 	if [ "${dnsmasq}" = "1" ]; then
         uci delete dhcp.@dnsmasq[0].server 2>/dev/null
         # uci add_list dhcp.@dnsmasq[0].server=$addr
         uci delete dhcp.@dnsmasq[0].resolvfile 2>/dev/null
         uci set dhcp.@dnsmasq[0].noresolv=1
 		uci set dhcp.@dnsmasq[0].serversfile=/tmp/dnsmasq.dnsforwarder.conf
-        uci commit dhcp        
+        uci commit dhcp
         /etc/init.d/dnsmasq restart
     fi
     	local dnsmasq_server_addr=$(uci get dhcp.@dnsmasq[0].server 2>/dev/null)
@@ -214,7 +218,7 @@ stop()
     uci set dhcp.@dnsmasq[0].resolvfile=/tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null
     uci delete dhcp.@dnsmasq[0].noresolv 2>/dev/null
 	uci delete dhcp.@dnsmasq[0].serversfile 2>/dev/null
-    uci commit dhcp	
+    uci commit dhcp
     /etc/init.d/dnsmasq restart
     [ -e ${PID_FILE} ] && {
         pid=$(cat ${PID_FILE})
@@ -236,18 +240,18 @@ restart()
         logger -t There is dnsforwarder pid ${pid}
         stop
     } || {
-        logger -t Dnsforwarder is not running	
+        logger -t Dnsforwarder is not running
     }
     sleep 7
     local vt_enabled=$(uci get dnsforwarder.@arguments[0].enabled 2>/dev/null)
-    echo dnsforwarder status is ${vt_enabled} 
+    echo dnsforwarder status is ${vt_enabled}
     logger -t Dnsforwarder is initializing enabled is ${vt_enabled}
     if [ ${vt_enabled} = 1 ]; then
         [ -n "$pid" ] && {
             logger -t There is dnsforwarder pid ${pid}
             stop
         } || {
-            logger -t Dnsforwarder is not running	
+            logger -t Dnsforwarder is not running
         }
 
         logger -t Restarting dnsforwarder
@@ -256,5 +260,3 @@ restart()
         /etc/init.d/dnsforwarder disable
     fi
 }
-
-EXTRA_COMMANDS="makeconfig makegfwlist health"

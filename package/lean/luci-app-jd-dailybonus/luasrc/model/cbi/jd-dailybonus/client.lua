@@ -10,7 +10,7 @@ s.anonymous = true
 
 o = s:option(DynamicList, "Cookies", translate("账号 Cookie 列表"))
 o.rmempty = false
-o.description = translate('双击输入框或点击添加图标即可调出二维码，扫码后自动填入。')
+o.description = translate('双击输入框可调出二维码，扫码后自动填入。')
 
 o = s:option(DummyValue, '', '')
 o.rawhtml = true

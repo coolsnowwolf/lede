@@ -65,7 +65,7 @@ static uint32_t crc32buf(unsigned char *buf, size_t len)
 }
 
 struct header {
-	unsigned char model[16];
+	char model[16];
 	uint32_t crc;
 };
 
