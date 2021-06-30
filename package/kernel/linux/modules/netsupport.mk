@@ -263,7 +263,7 @@ define KernelPackage/ipsec4
 	CONFIG_INET_XFRM_MODE_TRANSPORT \
 	CONFIG_INET_XFRM_MODE_TUNNEL \
 	CONFIG_INET_XFRM_TUNNEL \
-	CONFIG_INET_ESP_OFFLOAD=n
+	CONFIG_INET_ESP_OFFLOAD
   FILES:=$(foreach mod,$(IPSEC4-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoLoad,32,$(notdir $(IPSEC4-m)))
 endef
@@ -303,7 +303,7 @@ define KernelPackage/ipsec6
 	CONFIG_INET6_XFRM_MODE_TRANSPORT \
 	CONFIG_INET6_XFRM_MODE_TUNNEL \
 	CONFIG_INET6_XFRM_TUNNEL \
-	CONFIG_INET6_ESP_OFFLOAD=n
+	CONFIG_INET6_ESP_OFFLOAD
   FILES:=$(foreach mod,$(IPSEC6-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoLoad,32,$(notdir $(IPSEC6-m)))
 endef
