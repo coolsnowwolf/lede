@@ -1,0 +1,116 @@
+From: Markus Theil <markus.theil@tu-ilmenau.de>
+Date: Sat, 6 Feb 2021 12:51:12 +0100
+Subject: [PATCH] mac80211: enable QoS support for nl80211 ctrl port
+
+This patch unifies sending control port frames
+over nl80211 and AF_PACKET sockets a little more.
+
+Before this patch, EAPOL frames got QoS prioritization
+only when using AF_PACKET sockets.
+
+__ieee80211_select_queue only selects a QoS-enabled queue
+for control port frames, when the control port protocol
+is set correctly on the skb. For the AF_PACKET path this
+works, but the nl80211 path used ETH_P_802_3.
+
+Another check for injected frames in wme.c then prevented
+the QoS TID to be copied in the frame.
+
+In order to fix this, get rid of the frame injection marking
+for nl80211 ctrl port and set the correct ethernet protocol.
+
+Please note:
+An erlier version of this path tried to prevent
+frame aggregation for control port frames in order to speed up
+the initial connection setup a little. This seemed to cause
+issues on my older Intel dvm-based hardware, and was therefore
+removed again. Future commits which try to reintroduce this
+have to check carefully how hw behaves with aggregated and
+non-aggregated traffic for the same TID.
+My NIC: Intel(R) Centrino(R) Ultimate-N 6300 AGN, REV=0x74
+
+Reported-by: kernel test robot <lkp@intel.com>
+Signed-off-by: Markus Theil <markus.theil@tu-ilmenau.de>
+Link: https://lore.kernel.org/r/20210206115112.567881-1-markus.theil@tu-ilmenau.de
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/net/mac80211/status.c
++++ b/net/mac80211/status.c
+@@ -628,16 +628,12 @@ static void ieee80211_report_ack_skb(str
+ 		u64 cookie = IEEE80211_SKB_CB(skb)->ack.cookie;
+ 		struct ieee80211_sub_if_data *sdata;
+ 		struct ieee80211_hdr *hdr = (void *)skb->data;
+-		__be16 ethertype = 0;
+-
+-		if (skb->len >= ETH_HLEN && skb->protocol == cpu_to_be16(ETH_P_802_3))
+-			skb_copy_bits(skb, 2 * ETH_ALEN, &ethertype, ETH_TLEN);
+ 
+ 		rcu_read_lock();
+ 		sdata = ieee80211_sdata_from_skb(local, skb);
+ 		if (sdata) {
+-			if (ethertype == sdata->control_port_protocol ||
+-			    ethertype == cpu_to_be16(ETH_P_PREAUTH))
++			if (skb->protocol == sdata->control_port_protocol ||
++			    skb->protocol == cpu_to_be16(ETH_P_PREAUTH))
+ 				cfg80211_control_port_tx_status(&sdata->wdev,
+ 								cookie,
+ 								skb->data,
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -1195,9 +1195,7 @@ ieee80211_tx_prepare(struct ieee80211_su
+ 			tx->sta = rcu_dereference(sdata->u.vlan.sta);
+ 			if (!tx->sta && sdata->wdev.use_4addr)
+ 				return TX_DROP;
+-		} else if (info->flags & (IEEE80211_TX_INTFL_NL80211_FRAME_TX |
+-					  IEEE80211_TX_CTL_INJECTED) ||
+-			   tx->sdata->control_port_protocol == tx->skb->protocol) {
++		} else if (tx->sdata->control_port_protocol == tx->skb->protocol) {
+ 			tx->sta = sta_info_get_bss(sdata, hdr->addr1);
+ 		}
+ 		if (!tx->sta && !is_multicast_ether_addr(hdr->addr1))
+@@ -5421,6 +5419,7 @@ int ieee80211_tx_control_port(struct wip
+ {
+ 	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+ 	struct ieee80211_local *local = sdata->local;
++	struct sta_info *sta;
+ 	struct sk_buff *skb;
+ 	struct ethhdr *ehdr;
+ 	u32 ctrl_flags = 0;
+@@ -5443,8 +5442,7 @@ int ieee80211_tx_control_port(struct wip
+ 	if (cookie)
+ 		ctrl_flags |= IEEE80211_TX_CTL_REQ_TX_STATUS;
+ 
+-	flags |= IEEE80211_TX_INTFL_NL80211_FRAME_TX |
+-		 IEEE80211_TX_CTL_INJECTED;
++	flags |= IEEE80211_TX_INTFL_NL80211_FRAME_TX;
+ 
+ 	skb = dev_alloc_skb(local->hw.extra_tx_headroom +
+ 			    sizeof(struct ethhdr) + len);
+@@ -5461,10 +5459,25 @@ int ieee80211_tx_control_port(struct wip
+ 	ehdr->h_proto = proto;
+ 
+ 	skb->dev = dev;
+-	skb->protocol = htons(ETH_P_802_3);
++	skb->protocol = proto;
+ 	skb_reset_network_header(skb);
+ 	skb_reset_mac_header(skb);
+ 
++	/* update QoS header to prioritize control port frames if possible,
++	 * priorization also happens for control port frames send over
++	 * AF_PACKET
++	 */
++	rcu_read_lock();
++
++	if (ieee80211_lookup_ra_sta(sdata, skb, &sta) == 0 && !IS_ERR(sta)) {
++		u16 queue = __ieee80211_select_queue(sdata, sta, skb);
++
++		skb_set_queue_mapping(skb, queue);
++		skb_get_hash(skb);
++	}
++
++	rcu_read_unlock();
++
+ 	/* mutex lock is only needed for incrementing the cookie counter */
+ 	mutex_lock(&local->mtx);
+ 

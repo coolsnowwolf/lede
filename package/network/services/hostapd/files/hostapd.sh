@@ -93,7 +93,7 @@ hostapd_common_add_device_config() {
 	config_add_array supported_rates
 	config_add_string beacon_rate
 
-	config_add_string country
+	config_add_string country country3
 	config_add_boolean country_ie doth
 	config_add_boolean spectrum_mgmt_required
 	config_add_int local_pwr_constraint
@@ -104,6 +104,7 @@ hostapd_common_add_device_config() {
 	config_add_int rssi_reject_assoc_rssi
 	config_add_int rssi_ignore_probe_request
 	config_add_int maxassoc
+	config_add_boolean vendor_vht
 
 	config_add_string acs_chan_bias
 	config_add_array hostapd_options
@@ -119,9 +120,9 @@ hostapd_prepare_device_config() {
 
 	local base_cfg=
 
-	json_get_vars country country_ie beacon_int:100 dtim_period:2 doth require_mode legacy_rates \
+	json_get_vars country country3 country_ie beacon_int:100 dtim_period:2 doth require_mode legacy_rates \
 		acs_chan_bias local_pwr_constraint spectrum_mgmt_required airtime_mode cell_density \
-		rts_threshold beacon_rate rssi_reject_assoc_rssi rssi_ignore_probe_request maxassoc
+		rts_threshold beacon_rate rssi_reject_assoc_rssi rssi_ignore_probe_request maxassoc vendor_vht
 
 	hostapd_set_log_options base_cfg
 
@@ -134,6 +135,7 @@ hostapd_prepare_device_config() {
 
 	[ -n "$country" ] && {
 		append base_cfg "country_code=$country" "$N"
+		[ -n "$country3" ] && append base_cfg "country3=$country3" "$N"
 
 		[ "$country_ie" -gt 0 ] && {
 			append base_cfg "ieee80211d=1" "$N"
@@ -189,6 +191,7 @@ hostapd_prepare_device_config() {
 				set_default rate_list "24000 36000 48000 54000"
 				set_default basic_rate_list "24000"
 			fi
+			[ -n "$vendor_vht" ] && append base_cfg "vendor_vht=$vendor_vht" "$N"
 		;;
 		a)
 			if [ "$cell_density" -eq 1 ]; then
@@ -262,6 +265,8 @@ hostapd_common_add_bss_config() {
 	config_add_int acct_port
 	config_add_int acct_interval
 
+	config_add_int bss_load_update_period chan_util_avg_period
+
 	config_add_string dae_client
 	config_add_string dae_secret
 	config_add_int dae_port
@@ -292,9 +297,10 @@ hostapd_common_add_bss_config() {
 	config_add_string wps_device_type wps_device_name wps_manufacturer wps_pin
 	config_add_string multi_ap_backhaul_ssid multi_ap_backhaul_key
 
-	config_add_boolean wnm_sleep_mode bss_transition
+	config_add_boolean wnm_sleep_mode wnm_sleep_mode_no_keys bss_transition
 	config_add_int time_advertisement
 	config_add_string time_zone
+	config_add_string vendor_elements
 
 	config_add_boolean ieee80211k rrm_neighbor_report rrm_beacon_report
 
@@ -319,6 +325,7 @@ hostapd_common_add_bss_config() {
 	config_add_array supported_rates
 
 	config_add_boolean sae_require_mfp
+	config_add_int sae_pwe
 
 	config_add_string 'owe_transition_bssid:macaddr' 'owe_transition_ssid:string'
 
@@ -346,6 +353,7 @@ hostapd_common_add_bss_config() {
 	config_add_boolean multicast_to_unicast proxy_arp per_sta_vif
 
 	config_add_array hostapd_bss_options
+	config_add_boolean default_disabled
 
 	config_add_boolean request_cui
 	config_add_array radius_auth_req_attr
@@ -520,17 +528,18 @@ hostapd_set_bss_options() {
 		macfilter ssid utf8_ssid wmm uapsd hidden short_preamble rsn_preauth \
 		iapp_interface eapol_version dynamic_vlan ieee80211w nasid \
 		acct_server acct_secret acct_port acct_interval \
-		bss_load_update_period chan_util_avg_period sae_require_mfp \
+		bss_load_update_period chan_util_avg_period sae_require_mfp sae_pwe \
 		multi_ap multi_ap_backhaul_ssid multi_ap_backhaul_key skip_inactivity_poll \
 		airtime_bss_weight airtime_bss_limit airtime_sta_weight \
 		multicast_to_unicast proxy_arp per_sta_vif \
-		eap_server eap_user_file ca_cert server_cert private_key private_key_passwd server_id
+		eap_server eap_user_file ca_cert server_cert private_key private_key_passwd server_id \
+		vendor_elements
 
 	set_default isolate 0
 	set_default maxassoc 0
 	set_default max_inactivity 0
 	set_default short_preamble 1
-	set_default disassoc_low_ack 1
+	set_default disassoc_low_ack 0
 	set_default skip_inactivity_poll 0
 	set_default hidden 0
 	set_default wmm 1
@@ -572,6 +581,7 @@ hostapd_set_bss_options() {
 	append bss_conf "uapsd_advertisement_enabled=$uapsd" "$N"
 	append bss_conf "utf8_ssid=$utf8_ssid" "$N"
 	append bss_conf "multi_ap=$multi_ap" "$N"
+	[ -n "$vendor_elements" ] && append bss_conf "vendor_elements=$vendor_elements" "$N"
 
 	[ "$tdls_prohibit" -gt 0 ] && append bss_conf "tdls_prohibit=$tdls_prohibit" "$N"
 
@@ -604,6 +614,7 @@ hostapd_set_bss_options() {
 		;;
 	esac
 	[ -n "$sae_require_mfp" ] && append bss_conf "sae_require_mfp=$sae_require_mfp" "$N"
+	[ -n "$sae_pwe" ] && append bss_conf "sae_pwe=$sae_pwe" "$N"
 
 	local vlan_possible=""
 
@@ -751,13 +762,17 @@ hostapd_set_bss_options() {
 		append bss_conf "iapp_interface=$ifname" "$N"
 	}
 
-	json_get_vars time_advertisement time_zone wnm_sleep_mode bss_transition
+	json_get_vars time_advertisement time_zone wnm_sleep_mode wnm_sleep_mode_no_keys bss_transition
 	set_default bss_transition 0
 	set_default wnm_sleep_mode 0
+	set_default wnm_sleep_mode_no_keys 0
 
 	[ -n "$time_advertisement" ] && append bss_conf "time_advertisement=$time_advertisement" "$N"
 	[ -n "$time_zone" ] && append bss_conf "time_zone=$time_zone" "$N"
-	[ "$wnm_sleep_mode" -eq "1" ] && append bss_conf "wnm_sleep_mode=1" "$N"
+	if [ "$wnm_sleep_mode" -eq "1" ]; then
+		append bss_conf "wnm_sleep_mode=1" "$N"
+		[ "$wnm_sleep_mode_no_keys" -eq "1" ] && append bss_conf "wnm_sleep_mode_no_keys=1" "$N"
+	fi
 	[ "$bss_transition" -eq "1" ] && append bss_conf "bss_transition=1" "$N"
 
 	json_get_vars ieee80211k rrm_neighbor_report rrm_beacon_report
@@ -1179,7 +1194,8 @@ wpa_supplicant_add_network() {
 		ssid bssid key \
 		basic_rate mcast_rate \
 		ieee80211w ieee80211r \
-		multi_ap
+		multi_ap \
+		default_disabled
 
 	case "$auth_type" in
 		sae|owe|eap192|eap-eap192)
@@ -1192,6 +1208,7 @@ wpa_supplicant_add_network() {
 
 	set_default ieee80211r 0
 	set_default multi_ap 0
+	set_default default_disabled 0
 
 	local key_mgmt='NONE'
 	local network_data=
@@ -1223,7 +1240,10 @@ wpa_supplicant_add_network() {
 		scan_ssid=""
 	}
 
-	[ "$multi_ap" = 1 -a "$_w_mode" = "sta" ] && append network_data "multi_ap_backhaul_sta=1" "$N$T"
+	[ "$_w_mode" = "sta" ] && {
+		[ "$multi_ap" = 1 ] && append network_data "multi_ap_backhaul_sta=1" "$N$T"
+		[ "$default_disabled" = 1 ] && append network_data "disabled=1" "$N$T"
+	}
 
 	case "$auth_type" in
 		none) ;;

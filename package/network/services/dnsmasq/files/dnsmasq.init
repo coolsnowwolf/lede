@@ -161,7 +161,7 @@ append_server() {
 }
 
 append_rev_server() {
-        xappend "--rev-server=$1"
+	xappend "--rev-server=$1"
 }
 
 append_address() {
@@ -878,8 +878,16 @@ dnsmasq_start()
 	append_bool "$cfg" noresolv "--no-resolv"
 	append_bool "$cfg" localise_queries "--localise-queries"
 	append_bool "$cfg" readethers "--read-ethers"
-	append_bool "$cfg" dbus "--enable-dbus"
-	append_bool "$cfg" ubus "--enable-ubus"	1
+
+	local instance_name="dnsmasq.$cfg"
+	if [ "$cfg" = "$DEFAULT_INSTANCE" ]; then
+		instance_name="dnsmasq"
+	fi
+	config_get_bool dbus "$cfg" "dbus" 0
+	[ $dbus -gt 0 ] && xappend "--enable-dbus=uk.org.thekelleys.$instance_name"
+	config_get_bool ubus "$cfg" "ubus" 1
+	[ $ubus -gt 0 ] && xappend "--enable-ubus=$instance_name"
+
 	append_bool "$cfg" expandhosts "--expand-hosts"
 	config_get tftp_root "$cfg" "tftp_root"
 	[ -n "$tftp_root" ] && mkdir -p "$tftp_root" && append_bool "$cfg" enable_tftp "--enable-tftp"
@@ -895,11 +903,11 @@ dnsmasq_start()
 	append_bool "$cfg" noping "--no-ping"
 	append_bool "$cfg" rapidcommit "--dhcp-rapid-commit"
 	append_bool "$cfg" scriptarp "--script-arp"
-
+	
 	append_bool "$cfg" filter_aaaa "--filter-aaaa"
 
 	append_parm "$cfg" logfacility "--log-facility"
-
+	
 	append_parm "$cfg" mini_ttl "--min-ttl"
 
 	append_parm "$cfg" cachesize "--cache-size"
@@ -1102,6 +1110,7 @@ dnsmasq_start()
 			echo "search $DOMAIN" >> /tmp/resolv.conf
 		}
 		DNS_SERVERS="$DNS_SERVERS 127.0.0.1"
+		[ -e /proc/sys/net/ipv6 ] && DNS_SERVERS="$DNS_SERVERS ::1"
 		for DNS_SERVER in $DNS_SERVERS ; do
 			echo "nameserver $DNS_SERVER" >> /tmp/resolv.conf
 		done
@@ -1118,10 +1127,6 @@ dnsmasq_start()
 	procd_add_jail_mount_rw /var/run/dnsmasq/ $leasefile
 
 	procd_close_instance
-
-	config_get_bool dns_redirect "$cfg" dns_redirect 0
-	config_get dns_port "$cfg" port 53
-	[ "$dns_redirect" = 1 ] && iptables -t nat -A PREROUTING -m comment --comment "DNSMASQ" -p udp --dport 53 -j REDIRECT --to-ports $dns_port
 }
 
 dnsmasq_stop()
@@ -1137,23 +1142,6 @@ dnsmasq_stop()
 	[ "$localuse" -gt 0 ] && ln -sf "/tmp/resolv.conf.d/resolv.conf.auto" /tmp/resolv.conf
 
 	rm -f ${BASEDHCPSTAMPFILE}.${cfg}.*.dhcp
-}
-
-iptables_clear()
-{
-	nums=$(iptables -t nat -n -L PREROUTING 2>/dev/null | grep -c "DNSMASQ")
-	if [ -n "$nums" ]; then
-		until [ "$nums" = 0 ]
-		do
-			rules=$(iptables -t nat -n -L PREROUTING --line-num 2>/dev/null | grep "DNSMASQ" | awk '{print $1}')
-			for rule in $rules
-			do
-				iptables -t nat -D PREROUTING $rule 2> /dev/null
-				break
-			done
-			nums=$(expr $nums - 1)
-		done
-	fi
 }
 
 add_interface_trigger()
@@ -1184,6 +1172,7 @@ boot()
 start_service() {
 	local instance="$1"
 	local instance_found=0
+	local first_instance=""
 
 	. /lib/functions/network.sh
 
@@ -1194,10 +1183,27 @@ start_service() {
 			if [ -n "$instance" ] && [ "$instance" = "$name" ]; then
 				instance_found=1
 			fi
+			if [ -z "$DEFAULT_INSTANCE" ]; then
+				local disabled
+				config_get_bool disabled "$name" disabled 0
+				if [ "$disabled" -eq 0 ]; then
+					# First enabled section will be assigned default instance name.
+					# Unnamed sections get precedence over named sections.
+					if expr "$cfg" : 'cfg[0-9a-f]*$' >/dev/null = "9"; then # See uci_fixup_section.
+						DEFAULT_INSTANCE="$name" # Unnamed config section.
+					elif [ -z "$first_instance" ]; then
+						first_instance="$name"
+					fi
+				fi
+			fi
 		fi
 	}
 
+	DEFAULT_INSTANCE=""
 	config_load dhcp
+	if [ -z "$DEFAULT_INSTANCE" ]; then
+		DEFAULT_INSTANCE="$first_instance" # No unnamed config section was found.
+	fi
 
 	if [ -n "$instance" ]; then
 		[ "$instance_found" -gt 0 ] || return
@@ -1208,7 +1214,6 @@ start_service() {
 }
 
 reload_service() {
-	iptables_clear
 	rc_procd start_service "$@"
 	procd_send_signal dnsmasq "$@"
 }
@@ -1235,5 +1240,4 @@ stop_service() {
 	else
 		config_foreach dnsmasq_stop dnsmasq
 	fi
-	iptables_clear
 }

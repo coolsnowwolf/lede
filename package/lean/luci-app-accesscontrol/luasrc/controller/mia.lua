@@ -1,7 +1,7 @@
 module("luci.controller.mia",package.seeall)
 
 function index()
-	if not nixio.fs.access("/etc/config/mia")then
+	if not nixio.fs.access("/etc/config/mia") then
 		return
 	end
 

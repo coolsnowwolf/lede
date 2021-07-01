@@ -54,7 +54,7 @@ luci.sys.exec("/usr/share/adbyby/rule-update")
 		retstring ="0"
 	end
 else
-refresh_cmd="wget-ssl -q --no-check-certificate -O - 'https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt' > /tmp/adnew.conf"
+refresh_cmd="uclient-fetch -q --no-check-certificate -O - 'https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt' > /tmp/adnew.conf"
 sret=luci.sys.call(refresh_cmd .. " 2>/dev/null")
 if sret== 0 then
 	luci.sys.call("/usr/share/adbyby/ad-update")

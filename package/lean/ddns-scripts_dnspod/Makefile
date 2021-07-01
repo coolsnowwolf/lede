@@ -17,7 +17,7 @@ define Package/$(PKG_NAME)
 	SUBMENU:=IP Addresses and Names
 	TITLE:=DDNS extension for Dnspod.com/Dnspod.cn
 	PKGARCH:=all
-	DEPENDS:=+ddns-scripts +wget +ca-certificates
+	DEPENDS:=+ddns-scripts +wget-ssl +ca-bundle
 endef
 
 define Package/$(PKG_NAME)/description
