@@ -1,7 +1,7 @@
 local SYS=require "luci.sys"
 
 m=Map("dnsfilter")
-m.title=translate("DNSFilter")
+m.title=translate("DNSFilter ADBlock")
 m.description=translate("Support AdGuardHome/Host/DNSMASQ/Domain Rules")
 m:section(SimpleSection).template="dnsfilter/dnsfilter_status"
 
