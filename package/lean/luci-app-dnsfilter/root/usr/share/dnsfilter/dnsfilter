@@ -1,0 +1,103 @@
+#!/bin/sh
+# 防止重复启动
+LOCK=/var/lock/dnsfilter.lock
+if [ -f $LOCK ];then
+	case $1 in
+		gen|addown)X=1;;
+		*)exit 1;;
+	esac
+fi
+touch $LOCK
+
+B="Download Subscribe Rules"
+C=0
+D=0
+E="date +'%Y-%m-%d %H:%M:%S'"
+U=`uci -q get dnsfilter.@dnsfilter[0].url`
+P=/tmp/dnsfilter
+W=`cat /etc/dnsfilter/white.list`
+
+gen(){
+	cat /tmp/adnew.conf | grep ^\|\|[^\*]*\^$ | grep -Ev "^\|\|[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}*" | sed -e 's:||:address=/:' -e 's:\^:/:' > /tmp/ad.conf
+	for i in $W;do sed -i -e "/\/$i\//d" -e "/\.$i\//d" /tmp/ad.conf;done
+	rm -f /tmp/adnew.conf
+}
+
+down(){
+	G=/tmp/ad_tmp
+	F=$G/ad_new.conf
+	rm -rf $G
+	mkdir -p $G $P
+	for i in $U;do
+		X=1
+		while ! uclient-fetch --no-check-certificate --timeout=5 --continue -O $F $i;do
+			[ $X -ge 20 ] && echo "`eval $E` [Download $i Failed]" && continue 2 || let X++
+			sleep 2
+		done
+		X=`md5sum $G/rules.conf 2>/dev/null | awk '{print$1}'`
+		Y=`md5sum $G/host 2>/dev/null | awk '{print$1}'`
+		sed -i -e '/127.0.0.1 #/d' -e '/127.0.0.1 !/d' -e 's:#.*::' -e 's:!.*::' -e 's/\$important//g' -e 's/[ \t]*$//g' -e 's/^[ \t]*//g' -e '/\*/d' -e '/^$/d' $F
+		sed -i "s/\r//g" $F
+		if grep -q "^address=" $F;then
+			cat $F >> $G/rules.conf
+		elif grep -q -e "^0.0.0.0 " -e "^127.0.0.1 " $F;then
+			cat $F >> $G/host
+		elif ! grep -q -e "|" -e "@" $F;then
+			cat $F | sed -e 's:^:address=/:' -e 's:$:/:' >> $G/rules.conf
+		else
+			cat $F | grep ^\|\|[^\*]*\^$ | grep -Ev "^\|\|[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}*" | sed -e 's:||:address=/:' -e 's:\^.*:/:' >> $G/rules.conf
+		fi
+		[ "$X" = "`md5sum $G/rules.conf 2>/dev/null | awk '{print$1}'`" -a "$Y" = "`md5sum $G/host 2>/dev/null | awk '{print$1}'`" ] && echo "`eval $E` [Conversion $i Failed]"
+		echo $i >> $G/url
+	done
+	[ -s $G/host ] && sed -e '/:/d' -e '/ 0.0.0.0/d' -e '/255.255.255.255/d' -e '/ local/d' -e 's:127.0.0.1 :address=/:' -e 's:0.0.0.0 :address=/:' -e 's:$:/:' $G/host >> $G/rules.conf
+	[ -s $G/rules.conf ] && sed -i -e 's:/127.0.0.1$:/:' -e 's:/0.0.0.0$:/:' $G/rules.conf && echo "`sort -u $G/rules.conf`" > $G/rules.conf
+	[ -s $G/url ] && echo "`sort -u $G/url`" > $G/url
+	if [ -s $G/rules.conf ];then
+		echo "`eval $E` [$B Successful]"
+		rm -f $F $G/host $P/failed
+		for i in $W;do sed -i -e "/\/$i\//d" -e "/\.$i\//d" $G/rules.conf;done
+		[ "$1" = 2 ] && rm -f $LOCK && exit
+		X=`uci -q get dnsfilter.@dnsfilter[0].flash`
+		Y=`md5sum $G/* | awk '{print$1}'`
+		[ $X = 0 ] && Z=`md5sum $P/* 2>/dev/null | awk '{print$1}'` || Z=`md5sum /etc/dnsfilter/rules/* 2>/dev/null | awk '{print$1}'`
+		if [ "$Y" != "$Z" ];then
+			[ "$1" = 1 ] || echo "`eval $E` [Subscribe Rules Need Update]"
+			if [ "$X" = 0 ];then
+				rm -f $P/*
+				cp -a $G/* $P
+			else
+				[ ! -d "/etc/dnsfilter/rules" ] &&
+					mkdir /etc/dnsfilter/rules
+				rm -f /etc/dnsfilter/rules/*
+				cp -a $G/* /etc/dnsfilter/rules
+			fi
+			D=1
+		else
+			echo "`eval $E` [Subscribe Rules No Change]"
+		fi
+	else
+		echo "`eval $E` [$B Failed]"
+		echo failed > $P/failed
+		[ "$1" = 2 ] && rm -f $LOCK && exit
+	fi
+	rm -rf $G
+}
+
+case $1 in
+	addown)down 1;exit;;
+	down)down 2;;
+	gen)gen;[ "$X" = 1 ] || rm -f $LOCK;exit;;
+esac
+
+if [ `uci -q get dnsfilter.@dnsfilter[0].enable` = 1 ];then
+	[ -n "$U" ] && down
+	echo `eval $E` > $P/dnsfilter.updated
+fi
+
+if [ $D = 1 ];then
+	echo "`eval $E` [Reload DNSFilter Rules]"
+	/etc/init.d/dnsfilter restart
+fi
+
+rm -f $LOCK
