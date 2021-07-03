@@ -12,7 +12,7 @@ define Package/$(PKG_NAME)
 	SUBMENU:=3. Applications
 	TITLE:=LuCI Support for XLNetAcc
 	PKGARCH:=all
-	DEPENDS:=+jshn +curl +openssl-util +luci-compat
+	DEPENDS:=+jshn +curl +openssl-util
 	MAINTAINER:=Sense <sensec@gmail.com>
 endef
 

@@ -23,8 +23,6 @@ static inline int has_feature(const char *feat)
 	if (!strcmp(feat, "11r"))
 		return 1;
 #endif
-	if (!strcmp(feat, "11w"))
-		return 1;
 #ifdef CONFIG_ACS
 	if (!strcmp(feat, "acs"))
 		return 1;

@@ -1,3 +1,7 @@
+--[[
+LuCI - Lua Configuration Interface
+Copyright 2019 lisaac <https://github.com/lisaac/luci-lib-docker>
+]]--
 require "nixio.util"
 require "luci.util"
 local jsonc = require "luci.jsonc"
@@ -13,46 +17,42 @@ local chunksource = function(sock, buffer)
   buffer = buffer or ""
   return function()
     local output
-    local _, endp, count = buffer:find("^([0-9a-fA-F]+);?.-\r\n")
-    if not count then -- lua  ^ only match start of stirng，not start of line
-      _, endp, count = buffer:find("\r\n([0-9a-fA-F]+);?.-\r\n")
-    end
-    while not count do
+    local _, endp, count = buffer:find("^([0-9a-fA-F]+)\r\n")
+    if not count then
       local newblock, code = sock:recv(1024)
-      if not newblock then
-        return nil, code
-      end
+      if not newblock then return nil, code end
       buffer = buffer .. newblock
-      _, endp, count = buffer:find("^([0-9a-fA-F]+);?.-\r\n")
-      if not count then
-        _, endp, count = buffer:find("\r\n([0-9a-fA-F]+);?.-\r\n")
-      end
+      _, endp, count = buffer:find("^([0-9a-fA-F]+)\r\n")
     end
     count = tonumber(count, 16)
     if not count then
       return nil, -1, "invalid encoding"
     elseif count == 0 then -- finial
       return nil
-    elseif count + 2 <= #buffer - endp then
+    elseif count <= #buffer - endp then
+      --data >= count
       output = buffer:sub(endp + 1, endp + count)
-      buffer = buffer:sub(endp + count + 3) -- don't forget handle buffer
+      if count == #buffer - endp then          -- [data]
+        buffer = buffer:sub(endp + count + 1)
+        count, code = sock:recvall(2) --read \r\n
+        if not count then return nil, code end
+      elseif count + 1 == #buffer - endp then  -- [data]\r
+        buffer = buffer:sub(endp + count + 2)
+        count, code = sock:recvall(1) --read \n
+        if not count then return nil, code end
+      else                                     -- [data]\r\n[count]\r\n[data]...
+        buffer = buffer:sub(endp + count + 3) -- cut buffer
+      end
       return output
     else
+      -- data < count
       output = buffer:sub(endp + 1, endp + count)
-      buffer = ""
-      if count > #output then
-        local remain, code = sock:recvall(count - #output) --need read remaining
-        if not remain then
-          return nil, code
-        end
-        output = output .. remain
-        count, code = sock:recvall(2) --read \r\n
-      else
-        count, code = sock:recvall(count + 2 - #buffer + endp)
-      end
-      if not count then
-        return nil, code
-      end
+      buffer = buffer:sub(endp + count + 1)
+      local remain, code = sock:recvall(count - #output) --need read remaining
+      if not remain then return nil, code end
+      output = output .. remain
+      count, code = sock:recvall(2) --read \r\n
+      if not count then return nil, code end
       return output
     end
   end
@@ -83,18 +83,27 @@ local docker_stream_filter = function(buffer)
   -- return string.sub(buffer, 9, valid_length + 8)
 end
 
-local send_http_socket = function(socket_path, req_header, req_body, callback)
-  local docker_socket = nixio.socket("unix", "stream")
-  if docker_socket:connect(socket_path) ~= true then
-    return {
-      headers = {code=497, message="bad socket path", protocol="HTTP/1.1"},
-      body = {message="can\'t connect to unix socket"}
-    }
+local open_socket = function(req_options)
+  local socket
+  if type(req_options) ~= "table" then return socket end
+  if req_options.socket_path then
+    socket = nixio.socket("unix", "stream")
+    if socket:connect(req_options.socket_path) ~= true then return nil end
+  elseif req_options.host and req_options.port then
+    socket = nixio.connect(req_options.host, req_options.port)
   end
+  if socket then
+    return socket
+  else
+    return nil
+  end
+end
+
+local send_http_socket = function(options, docker_socket, req_header, req_body, callback)
   if docker_socket:send(req_header) == 0 then
     return {
-      headers={code=498,message="bad socket path", protocol="HTTP/1.1"},
-      body={message="can\'t send data to unix socket"}
+      headers={code=498,message="bad path", protocol="HTTP/1.1"},
+      body={message="can\'t send data to socket"}
     }
   end
 
@@ -107,8 +116,10 @@ local send_http_socket = function(socket_path, req_header, req_body, callback)
   elseif req_body and type(req_body) == "table" then
     -- json
     docker_socket:send(json_stringify(req_body))
+    if options.debug then io.popen("echo '".. json_stringify(req_body) .. "' >> " .. options.debug_path) end
   elseif req_body then
     docker_socket:send(req_body)
+    if options.debug then io.popen("echo '".. req_body .. "' >> " .. options.debug_path) end
   end
 
   local linesrc = docker_socket:linesource()
@@ -171,9 +182,7 @@ end
 
 local gen_header = function(options, http_method, api_group, api_action, name_or_id, request)
   local header, query, path
-  options = options or {}
-  options.protocol = options.protocol or "HTTP/1.1"
-  name_or_id = name_or_id ~= "" and name_or_id or nil
+  name_or_id = (name_or_id ~= "") and name_or_id or nil
 
   if request and type(request.query) == "table" then
     local k, v
@@ -187,7 +196,6 @@ local gen_header = function(options, http_method, api_group, api_action, name_or
       end
     end
   end
-
   path = (api_group and ("/" .. api_group) or "") .. (name_or_id and ("/" .. name_or_id) or "") .. (api_action and ("/" .. api_action) or "") .. (query or "")
   header = (http_method or "GET") .. " " .. path .. " " .. options.protocol .. "\r\n"
   header = header .. "Host: " .. options.host .. "\r\n"
@@ -223,8 +231,16 @@ local call_docker = function(options, http_method, api_group, api_action, name_o
 
   local req_header = gen_header(req_options, http_method, api_group, api_action, name_or_id, request)
   local req_body = request and request.body or nil
+  local docker_socket = open_socket(req_options)
 
-  return send_http_socket(req_options.socket_path, req_header, req_body, callback)
+  if docker_socket then
+    return send_http_socket(options, docker_socket, req_header, req_body, callback)
+  else
+    return {
+      headers = {code=497, message="bad socket path or host", protocol="HTTP/1.1"},
+      body = {message="can\'t connect to socket"}
+    }
+  end
 end
 
 local gen_api = function(_table, http_method, api_group, api_action)
@@ -319,7 +335,8 @@ gen_api(_docker, "POST", "exec", "resize")
 gen_api(_docker, "GET", "exec", "inspect")
 gen_api(_docker, "GET", "containers", "get_archive")
 gen_api(_docker, "PUT", "containers", "put_archive")
--- TODO: export,attch
+gen_api(_docker, "GET", "containers", "export")
+-- TODO: attch
 
 gen_api(_docker, "GET", "images", "list")
 gen_api(_docker, "POST", "images", "create")
@@ -329,7 +346,8 @@ gen_api(_docker, "POST", "images", "tag")
 gen_api(_docker, "DELETE", "images", "remove")
 gen_api(_docker, "GET", "images", "search")
 gen_api(_docker, "POST", "images", "prune")
--- TODO: build clear push commit export import
+gen_api(_docker, "GET", "images", "get")
+gen_api(_docker, "POST", "images", "load")
 
 gen_api(_docker, "GET", "networks", "list")
 gen_api(_docker, "GET", "networks", "inspect")
@@ -354,15 +372,18 @@ function _docker.new(options)
   local docker = {}
   local _options = options or {}
   docker.options = {
-    socket_path = _options.socket_path or "/var/run/docker.sock",
-    host = _options.host or "localhost",
+    socket_path = _options.socket_path or nil,
+    host = _options.socket_path and "localhost" or _options.host,
+    port = not _options.socket_path and _options.port or nil,
+    tls = _options.tls or nil,
+    tls_cacert = _options.tls and _options.tls_cacert or nil,
+    tls_cert = _options.tls and _options.tls_cert or nil,
+    tls_key = _options.tls and _options.tls_key or nil,
     version = _options.version or "v1.40",
     user_agent = _options.user_agent or "LuCI",
     protocol = _options.protocol or "HTTP/1.1",
-    -- status_enabled = _options.status_enabled or true,
-    -- status_path = _options.status_path or "/tmp/.docker_action_status",
     debug = _options.debug or false,
-    debug_path = _options.debug_path or "/tmp/.docker_debug"
+    debug_path = _options.debug and _options.debug_path or nil
   }
   setmetatable(
     docker,

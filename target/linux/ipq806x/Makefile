@@ -21,7 +21,7 @@ DEFAULT_PACKAGES += \
 	kmod-ata-ahci kmod-ata-ahci-platform \
 	kmod-usb-ohci kmod-usb2 kmod-usb-ledtrig-usbport \
 	kmod-phy-qcom-ipq806x-usb kmod-usb3 kmod-usb-dwc3-qcom \
-	kmod-ath10k-ct wpad-basic-wolfssl \
-	uboot-envtools
+	kmod-ath10k-ct wpad-openssl uboot-envtools \
+	autocore-arm automount autosamba e2fsprogs htop
 
 $(eval $(call BuildTarget))
