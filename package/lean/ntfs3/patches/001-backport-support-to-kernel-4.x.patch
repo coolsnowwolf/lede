@@ -1,21 +1,37 @@
 From c6f296390b6cd3fdafd26c0dcca6b3aacf7db837 Mon Sep 17 00:00:00 2001
 From: Chukun Pan <amadeus@jmu.edu.cn>
 Date: Sat, 26 Jun 2021 11:20:08 +0800
-Subject: [PATCH 1/3] ntfs3: backport support to kernel 4.19
+Subject: [PATCH] ntfs3: backport support to kernel 4.x
 
 ---
- compat.h | 24 ++++++++++++++++++++++++
- ntfs.h   |  1 +
- 2 files changed, 25 insertions(+)
+ compat.h  | 39 +++++++++++++++++++++++++++++++++++++
+ dir.c     |  6 +++++-
+ file.c    | 19 ++++++++++++++++--
+ frecord.c | 15 +++++++++++++-
+ fslog.c   | 13 +++++++++++++
+ fsntfs.c  | 21 ++++++++++++++++++++
+ inode.c   | 14 +++++++++++++-
+ namei.c   | 18 ++++++++++++++++-
+ ntfs.h    |  1 +
+ ntfs_fs.h |  8 ++++++--
+ run.c     |  8 ++++++++
+ super.c   | 58 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ xattr.c   | 12 ++++++++++++
+ 13 files changed, 223 insertions(+), 9 deletions(-)
  create mode 100644 compat.h
 
-diff --git a/compat.h b/compat.h
-new file mode 100644
-index 0000000..eac4bb9
 --- /dev/null
 +++ b/compat.h
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,39 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
++
++#ifndef __bitmap_set
++#define __bitmap_set(a, b, c)	bitmap_set(a, b, c)
++#endif
++
++#ifndef __bitmap_clear
++#define __bitmap_clear(a, b, c)	bitmap_clear(a, b, c)
++#endif
 +
 +/*
 + * Copy from include/linux/compiler_attributes.h
@@ -39,41 +55,6 @@ index 0000000..eac4bb9
 +#define static_assert(expr, ...) __static_assert(expr, ##__VA_ARGS__, #expr)
 +#define __static_assert(expr, msg, ...) _Static_assert(expr, msg)
 +#endif
-diff --git a/ntfs.h b/ntfs.h
-index 0e71176..1b42239 100644
---- a/ntfs.h
-+++ b/ntfs.h
-@@ -8,6 +8,7 @@
- 
- // clang-format off
- #include <linux/version.h>
-+#include "compat.h"
- 
- /* TODO:
-  * - Check 4K mft record and 512 bytes cluster
-
-From 94086dfcd4a688f5d398841723863c75d2208e8a Mon Sep 17 00:00:00 2001
-From: Chukun Pan <amadeus@jmu.edu.cn>
-Date: Sat, 26 Jun 2021 11:26:24 +0800
-Subject: [PATCH 2/3] ntfs3: backport support to kernel 4.14
-
----
- compat.h |  7 +++++++
- dir.c    |  6 +++++-
- file.c   |  1 +
- inode.c  | 10 +++++++++-
- namei.c  | 18 +++++++++++++++++-
- super.c  |  6 +++++-
- 6 files changed, 44 insertions(+), 4 deletions(-)
-
-diff --git a/compat.h b/compat.h
-index eac4bb9..8c0fee6 100644
---- a/compat.h
-+++ b/compat.h
-@@ -22,3 +22,10 @@
- #define static_assert(expr, ...) __static_assert(expr, ##__VA_ARGS__, #expr)
- #define __static_assert(expr, msg, ...) _Static_assert(expr, msg)
- #endif
 +
 +/*
 + * Copy from include/linux/overflow.h
@@ -81,8 +62,6 @@ index eac4bb9..8c0fee6 100644
 +#ifndef struct_size
 +#define struct_size(p, member, n) (sizeof(*(p)) + n * sizeof(*(p)->member))
 +#endif
-diff --git a/dir.c b/dir.c
-index 9ec6012..b7d8a4c 100644
 --- a/dir.c
 +++ b/dir.c
 @@ -9,8 +9,12 @@
@@ -99,8 +78,6 @@ index 9ec6012..b7d8a4c 100644
  
  #include "debug.h"
  #include "ntfs.h"
-diff --git a/file.c b/file.c
-index 35d38f3..86b1296 100644
 --- a/file.c
 +++ b/file.c
 @@ -12,6 +12,7 @@
@@ -111,161 +88,7 @@ index 35d38f3..86b1296 100644
  
  #include "debug.h"
  #include "ntfs.h"
-diff --git a/inode.c b/inode.c
-index f1d93a2..17d233c 100644
---- a/inode.c
-+++ b/inode.c
-@@ -8,7 +8,6 @@
- #include <linux/blkdev.h>
- #include <linux/buffer_head.h>
- #include <linux/fs.h>
--#include <linux/iversion.h>
- #include <linux/mpage.h>
- #include <linux/namei.h>
- #include <linux/nls.h>
-@@ -16,6 +15,10 @@
- #include <linux/version.h>
- #include <linux/writeback.h>
- 
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
-+#include <linux/iversion.h>
-+#endif
-+
- #include "debug.h"
- #include "ntfs.h"
- #include "ntfs_fs.h"
-@@ -1646,7 +1649,12 @@ struct inode *ntfs_create_inode(
- 	clear_rec_inuse(rec);
- 	clear_nlink(inode);
- 	ni->mi.dirty = false;
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
- 	discard_new_inode(inode);
-+#else
-+	unlock_new_inode(inode);
-+	iput(inode);
-+#endif
- out3:
- 	ntfs_mark_rec_free(sbi, ino);
- 
-diff --git a/namei.c b/namei.c
-index 25aac88..ea65a24 100644
---- a/namei.c
-+++ b/namei.c
-@@ -8,9 +8,13 @@
- #include <linux/blkdev.h>
- #include <linux/buffer_head.h>
- #include <linux/fs.h>
--#include <linux/iversion.h>
- #include <linux/namei.h>
- #include <linux/nls.h>
-+#include <linux/version.h>
-+
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
-+#include <linux/iversion.h>
-+#endif
- 
- #include "debug.h"
- #include "ntfs.h"
-@@ -500,7 +504,11 @@ static int ntfs_rename(struct inode *old_dir,
-  * inode_operations::atomic_open
-  */
- static int ntfs_atomic_open(struct inode *dir, struct dentry *dentry,
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
- 			    struct file *file, u32 flags, umode_t mode)
-+#else
-+			    struct file *file, u32 flags, umode_t mode, int *opened)
-+#endif
- {
- 	int err;
- 	bool excl = !!(flags & O_EXCL);
-@@ -544,7 +552,11 @@ static int ntfs_atomic_open(struct inode *dir, struct dentry *dentry,
- 		goto out2;
- 	}
- 
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
- 	file->f_mode |= FMODE_CREATED;
-+#else
-+	*opened |= FILE_CREATED;
-+#endif
- 
- 	/*fnd contains tree's path to insert to*/
- 	/* TODO: init_user_ns? */
-@@ -555,7 +567,11 @@ static int ntfs_atomic_open(struct inode *dir, struct dentry *dentry,
- #endif
- 				  NULL, 0, excl, fnd);
- 	err = IS_ERR(inode) ? PTR_ERR(inode)
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
- 			    : finish_open(file, dentry, ntfs_file_open);
-+#else
-+			    : finish_open(file, dentry, ntfs_file_open, opened);
-+#endif
- 	dput(d);
- 
- out2:
-diff --git a/super.c b/super.c
-index 0875bfb..7f9e3ea 100644
---- a/super.c
-+++ b/super.c
-@@ -26,12 +26,16 @@
- #include <linux/buffer_head.h>
- #include <linux/exportfs.h>
- #include <linux/fs.h>
--#include <linux/iversion.h>
- #include <linux/module.h>
- #include <linux/nls.h>
- #include <linux/parser.h>
- #include <linux/seq_file.h>
- #include <linux/statfs.h>
-+#include <linux/version.h>
-+
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
-+#include <linux/iversion.h>
-+#endif
- 
- #include "debug.h"
- #include "ntfs.h"
-
-From 0b98b41db2ba568b81a07c67c742f47d7a2a2e30 Mon Sep 17 00:00:00 2001
-From: Chukun Pan <amadeus@jmu.edu.cn>
-Date: Sat, 26 Jun 2021 11:29:31 +0800
-Subject: [PATCH 3/3] ntfs3: backport support to kernel 4.9
-
----
- compat.h  |  8 ++++++++
- file.c    | 18 ++++++++++++++++--
- frecord.c | 13 +++++++++++++
- fslog.c   | 13 +++++++++++++
- fsntfs.c  | 21 +++++++++++++++++++++
- inode.c   |  4 ++++
- ntfs_fs.h |  8 ++++++--
- run.c     |  8 ++++++++
- super.c   | 52 ++++++++++++++++++++++++++++++++++++++++++++++++++++
- xattr.c   | 12 ++++++++++++
- 10 files changed, 153 insertions(+), 4 deletions(-)
-
-diff --git a/compat.h b/compat.h
-index 8c0fee6..7b45550 100644
---- a/compat.h
-+++ b/compat.h
-@@ -1,5 +1,13 @@
- /* SPDX-License-Identifier: GPL-2.0 */
- 
-+#ifndef __bitmap_set
-+#define __bitmap_set(a, b, c)	bitmap_set(a, b, c)
-+#endif
-+
-+#ifndef __bitmap_clear
-+#define __bitmap_clear(a, b, c)	bitmap_clear(a, b, c)
-+#endif
-+
- /*
-  * Copy from include/linux/compiler_attributes.h
-  */
-diff --git a/file.c b/file.c
-index 86b1296..f839afa 100644
---- a/file.c
-+++ b/file.c
-@@ -79,14 +79,23 @@ static long ntfs_compat_ioctl(struct file *filp, u32 cmd, unsigned long arg)
+@@ -78,14 +79,23 @@ static long ntfs_compat_ioctl(struct file *filp, u32 cmd, unsigned long arg)
   */
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
  int ntfs_getattr(struct user_namespace *mnt_userns, const struct path *path,
@@ -291,7 +114,7 @@ index 86b1296..f839afa 100644
  	if (is_compressed(ni))
  		stat->attributes |= STATX_ATTR_COMPRESSED;
  
-@@ -94,6 +103,7 @@ int ntfs_getattr(const struct path *path,
+@@ -93,6 +103,7 @@ int ntfs_getattr(const struct path *path,
  		stat->attributes |= STATX_ATTR_ENCRYPTED;
  
  	stat->attributes_mask |= STATX_ATTR_COMPRESSED | STATX_ATTR_ENCRYPTED;
@@ -299,7 +122,7 @@ index 86b1296..f839afa 100644
  
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
  	generic_fillattr(mnt_userns, inode, stat);
-@@ -101,8 +111,10 @@ int ntfs_getattr(const struct path *path,
+@@ -100,8 +111,10 @@ int ntfs_getattr(const struct path *path,
  	generic_fillattr(inode, stat);
  #endif
  
@@ -310,7 +133,7 @@ index 86b1296..f839afa 100644
  
  	return 0;
  }
-@@ -1022,8 +1034,10 @@ static ssize_t ntfs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
+@@ -1021,8 +1034,10 @@ static ssize_t ntfs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
  	}
  
  	if (!inode_trylock(inode)) {
@@ -321,8 +144,6 @@ index 86b1296..f839afa 100644
  		inode_lock(inode);
  	}
  
-diff --git a/frecord.c b/frecord.c
-index c3121bf..a667c12 100644
 --- a/frecord.c
 +++ b/frecord.c
 @@ -10,6 +10,7 @@
@@ -357,7 +178,7 @@ index c3121bf..a667c12 100644
  		return 0;
  
  	if (!ni_trylock(ni)) {
-@@ -3064,7 +3073,11 @@ int ni_write_inode(struct inode *inode, int sync, const char *hint)
+@@ -3064,7 +3073,11 @@ out:
  		return err;
  	}
  
@@ -369,8 +190,6 @@ index c3121bf..a667c12 100644
  		mark_inode_dirty_sync(inode);
  
  	return 0;
-diff --git a/fslog.c b/fslog.c
-index 53da122..cd04bf3 100644
 --- a/fslog.c
 +++ b/fslog.c
 @@ -13,6 +13,7 @@
@@ -381,7 +200,7 @@ index 53da122..cd04bf3 100644
  
  #include "debug.h"
  #include "ntfs.h"
-@@ -2166,7 +2167,11 @@ static int last_log_lsn(struct ntfs_log *log)
+@@ -2166,7 +2167,11 @@ file_is_valid:
  	if (page_off1 || tail_page) {
  		struct RECORD_PAGE_HDR *tmp_page;
  
@@ -393,7 +212,7 @@ index 53da122..cd04bf3 100644
  			err = -EROFS;
  			goto out;
  		}
-@@ -2223,7 +2228,11 @@ static int last_log_lsn(struct ntfs_log *log)
+@@ -2223,7 +2228,11 @@ file_is_valid:
  	}
  
  	if (part_io_count) {
@@ -417,8 +236,6 @@ index 53da122..cd04bf3 100644
  	u64 t64;
  	u16 t16;
  	u32 t32;
-diff --git a/fsntfs.c b/fsntfs.c
-index ae628ad..890cd84 100644
 --- a/fsntfs.c
 +++ b/fsntfs.c
 @@ -9,6 +9,7 @@
@@ -465,7 +282,7 @@ index ae628ad..890cd84 100644
  		wait = 1;
  
  	for (; bytes; block += 1, off = 0, op = blocksize) {
-@@ -1528,7 +1541,11 @@ int ntfs_bio_pages(struct ntfs_sb_info *sbi, const struct runs_tree *run,
+@@ -1528,7 +1541,11 @@ new_bio:
  			submit_bio(bio);
  		}
  		bio = new;
@@ -477,7 +294,7 @@ index ae628ad..890cd84 100644
  		bio->bi_iter.bi_sector = lbo >> 9;
  		bio->bi_opf = op;
  
-@@ -1634,7 +1651,11 @@ int ntfs_bio_fill_1(struct ntfs_sb_info *sbi, const struct runs_tree *run)
+@@ -1634,7 +1651,11 @@ new_bio:
  			submit_bio(bio);
  		}
  		bio = new;
@@ -489,11 +306,28 @@ index ae628ad..890cd84 100644
  		bio->bi_opf = REQ_OP_WRITE;
  		bio->bi_iter.bi_sector = lbo >> 9;
  
-diff --git a/inode.c b/inode.c
-index 17d233c..6bd6211 100644
 --- a/inode.c
 +++ b/inode.c
-@@ -1600,7 +1600,11 @@ struct inode *ntfs_create_inode(
+@@ -8,7 +8,6 @@
+ #include <linux/blkdev.h>
+ #include <linux/buffer_head.h>
+ #include <linux/fs.h>
+-#include <linux/iversion.h>
+ #include <linux/mpage.h>
+ #include <linux/namei.h>
+ #include <linux/nls.h>
+@@ -16,6 +15,10 @@
+ #include <linux/version.h>
+ #include <linux/writeback.h>
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
++#include <linux/iversion.h>
++#endif
++
+ #include "debug.h"
+ #include "ntfs.h"
+ #include "ntfs_fs.h"
+@@ -1597,7 +1600,11 @@ struct inode *ntfs_create_inode(
  	inode->i_mode = mode;
  
  #ifdef CONFIG_NTFS3_FS_POSIX_ACL
@@ -505,8 +339,82 @@ index 17d233c..6bd6211 100644
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
  		err = ntfs_init_acl(mnt_userns, inode, dir);
  #else
-diff --git a/ntfs_fs.h b/ntfs_fs.h
-index 6d94656..90913cd 100644
+@@ -1646,7 +1653,12 @@ out4:
+ 	clear_rec_inuse(rec);
+ 	clear_nlink(inode);
+ 	ni->mi.dirty = false;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+ 	discard_new_inode(inode);
++#else
++	unlock_new_inode(inode);
++	iput(inode);
++#endif
+ out3:
+ 	ntfs_mark_rec_free(sbi, ino);
+ 
+--- a/namei.c
++++ b/namei.c
+@@ -8,9 +8,13 @@
+ #include <linux/blkdev.h>
+ #include <linux/buffer_head.h>
+ #include <linux/fs.h>
+-#include <linux/iversion.h>
+ #include <linux/namei.h>
+ #include <linux/nls.h>
++#include <linux/version.h>
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
++#include <linux/iversion.h>
++#endif
+ 
+ #include "debug.h"
+ #include "ntfs.h"
+@@ -500,7 +504,11 @@ out:
+  * inode_operations::atomic_open
+  */
+ static int ntfs_atomic_open(struct inode *dir, struct dentry *dentry,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+ 			    struct file *file, u32 flags, umode_t mode)
++#else
++			    struct file *file, u32 flags, umode_t mode, int *opened)
++#endif
+ {
+ 	int err;
+ 	bool excl = !!(flags & O_EXCL);
+@@ -544,7 +552,11 @@ static int ntfs_atomic_open(struct inode *dir, struct dentry *dentry,
+ 		goto out2;
+ 	}
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+ 	file->f_mode |= FMODE_CREATED;
++#else
++	*opened |= FILE_CREATED;
++#endif
+ 
+ 	/*fnd contains tree's path to insert to*/
+ 	/* TODO: init_user_ns? */
+@@ -555,7 +567,11 @@ static int ntfs_atomic_open(struct inode *dir, struct dentry *dentry,
+ #endif
+ 				  NULL, 0, excl, fnd);
+ 	err = IS_ERR(inode) ? PTR_ERR(inode)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+ 			    : finish_open(file, dentry, ntfs_file_open);
++#else
++			    : finish_open(file, dentry, ntfs_file_open, opened);
++#endif
+ 	dput(d);
+ 
+ out2:
+--- a/ntfs.h
++++ b/ntfs.h
+@@ -8,6 +8,7 @@
+ 
+ // clang-format off
+ #include <linux/version.h>
++#include "compat.h"
+ 
+ /* TODO:
+  * - Check 4K mft record and 512 bytes cluster
 --- a/ntfs_fs.h
 +++ b/ntfs_fs.h
 @@ -455,10 +455,14 @@ extern const struct file_operations ntfs_dir_operations;
@@ -526,8 +434,6 @@ index 6d94656..90913cd 100644
  void ntfs_sparse_cluster(struct inode *inode, struct page *page0, CLST vcn,
  			 CLST len);
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
-diff --git a/run.c b/run.c
-index 5cdf6ef..6366136 100644
 --- a/run.c
 +++ b/run.c
 @@ -10,6 +10,8 @@
@@ -539,7 +445,7 @@ index 5cdf6ef..6366136 100644
  
  #include "debug.h"
  #include "ntfs.h"
-@@ -387,7 +389,13 @@ bool run_add_entry(struct runs_tree *run, CLST vcn, CLST lcn, CLST len,
+@@ -387,7 +389,13 @@ requires_new_range:
  
  			WARN_ON(!is_mft && bytes > NTFS3_RUN_MAX_BYTES);
  
@@ -553,19 +459,28 @@ index 5cdf6ef..6366136 100644
  
  			if (!new_ptr)
  				return false;
-diff --git a/super.c b/super.c
-index 7f9e3ea..85f72ef 100644
 --- a/super.c
 +++ b/super.c
-@@ -32,6 +32,7 @@
+@@ -26,12 +26,17 @@
+ #include <linux/buffer_head.h>
+ #include <linux/exportfs.h>
+ #include <linux/fs.h>
+-#include <linux/iversion.h>
+ #include <linux/module.h>
+ #include <linux/nls.h>
+ #include <linux/parser.h>
  #include <linux/seq_file.h>
  #include <linux/statfs.h>
- #include <linux/version.h>
++#include <linux/version.h>
 +#include <linux/vmalloc.h>
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
++#include <linux/iversion.h>
++#endif
  
- #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
- #include <linux/iversion.h>
-@@ -321,14 +322,22 @@ static noinline int ntfs_parse_options(struct super_block *sb, char *options,
+ #include "debug.h"
+ #include "ntfs.h"
+@@ -317,14 +322,22 @@ static noinline int ntfs_parse_options(struct super_block *sb, char *options,
  			break;
  		case Opt_acl:
  #ifdef CONFIG_NTFS3_FS_POSIX_ACL
@@ -588,7 +503,7 @@ index 7f9e3ea..85f72ef 100644
  			break;
  		case Opt_showmeta:
  			opts->showmeta = 1;
-@@ -393,7 +402,11 @@ static int ntfs_remount(struct super_block *sb, int *flags, char *data)
+@@ -389,7 +402,11 @@ static int ntfs_remount(struct super_block *sb, int *flags, char *data)
  	if (err)
  		goto restore_opts;
  
@@ -600,7 +515,7 @@ index 7f9e3ea..85f72ef 100644
  	if (ro_rw && (sbi->flags & NTFS_FLAGS_NEED_REPLAY)) {
  		ntfs_warn(
  			sb,
-@@ -413,8 +426,13 @@ static int ntfs_remount(struct super_block *sb, int *flags, char *data)
+@@ -409,8 +426,13 @@ static int ntfs_remount(struct super_block *sb, int *flags, char *data)
  
  	clear_mount_options(&old_opts);
  
@@ -614,7 +529,7 @@ index 7f9e3ea..85f72ef 100644
  	ntfs_info(sb, "re-mounted. Opts: %s", orig_data);
  	err = 0;
  	goto out;
-@@ -582,9 +600,17 @@ static int ntfs_show_options(struct seq_file *m, struct dentry *root)
+@@ -578,9 +600,17 @@ static int ntfs_show_options(struct seq_file *m, struct dentry *root)
  		seq_puts(m, ",no_acs_rules");
  	if (opts->prealloc)
  		seq_puts(m, ",prealloc");
@@ -632,7 +547,7 @@ index 7f9e3ea..85f72ef 100644
  		seq_puts(m, ",noatime");
  
  	return 0;
-@@ -838,7 +864,11 @@ static int ntfs_init_from_boot(struct super_block *sb, u32 sector_size,
+@@ -834,7 +864,11 @@ static int ntfs_init_from_boot(struct super_block *sb, u32 sector_size,
  			sb,
  			"RAW NTFS volume: Filesystem size %u.%02u Gb > volume size %u.%02u Gb. Mount in read-only",
  			gb, mb, gb0, mb0);
@@ -644,7 +559,7 @@ index 7f9e3ea..85f72ef 100644
  	}
  
  	clusters = sbi->volume.size >> sbi->cluster_bits;
-@@ -930,7 +960,11 @@ static int ntfs_fill_super(struct super_block *sb, void *data, int silent)
+@@ -926,7 +960,11 @@ static int ntfs_fill_super(struct super_block *sb, void *data, int silent)
  
  	sb->s_fs_info = sbi;
  	sbi->sb = sb;
@@ -656,7 +571,7 @@ index 7f9e3ea..85f72ef 100644
  	sb->s_magic = 0x7366746e; // "ntfs"
  	sb->s_op = &ntfs_sops;
  	sb->s_export_op = &ntfs_export_ops;
-@@ -1062,7 +1096,11 @@ static int ntfs_fill_super(struct super_block *sb, void *data, int silent)
+@@ -1058,7 +1096,11 @@ static int ntfs_fill_super(struct super_block *sb, void *data, int silent)
  	iput(inode);
  	inode = NULL;
  
@@ -668,7 +583,7 @@ index 7f9e3ea..85f72ef 100644
  
  	if (sbi->flags & NTFS_FLAGS_NEED_REPLAY) {
  		if (!is_ro) {
-@@ -1256,7 +1294,13 @@ static int ntfs_fill_super(struct super_block *sb, void *data, int silent)
+@@ -1252,7 +1294,13 @@ static int ntfs_fill_super(struct super_block *sb, void *data, int silent)
  		goto out;
  	}
  
@@ -682,7 +597,7 @@ index 7f9e3ea..85f72ef 100644
  	if (!upcase) {
  		err = -ENOMEM;
  		goto out;
-@@ -1358,7 +1402,11 @@ void ntfs_unmap_meta(struct super_block *sb, CLST lcn, CLST len)
+@@ -1354,7 +1402,11 @@ void ntfs_unmap_meta(struct super_block *sb, CLST lcn, CLST len)
  	sector_t devblock = (u64)lcn * sbi->blocks_per_cluster;
  	unsigned long blocks = (u64)len * sbi->blocks_per_cluster;
  	unsigned long cnt = 0;
@@ -694,7 +609,7 @@ index 7f9e3ea..85f72ef 100644
  			      << (PAGE_SHIFT - sb->s_blocksize_bits);
  
  	if (limit >= 0x2000)
-@@ -1369,7 +1417,11 @@ void ntfs_unmap_meta(struct super_block *sb, CLST lcn, CLST len)
+@@ -1365,7 +1417,11 @@ void ntfs_unmap_meta(struct super_block *sb, CLST lcn, CLST len)
  		limit >>= 1;
  
  	while (blocks--) {
@@ -706,8 +621,6 @@ index 7f9e3ea..85f72ef 100644
  		if (cnt++ >= limit) {
  			sync_blockdev(bdev);
  			cnt = 0;
-diff --git a/xattr.c b/xattr.c
-index 0b5fcff..6762116 100644
 --- a/xattr.c
 +++ b/xattr.c
 @@ -659,7 +659,11 @@ static int ntfs_xattr_get_acl(
