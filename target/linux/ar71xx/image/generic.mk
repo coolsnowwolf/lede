@@ -1033,7 +1033,7 @@ endef
 TARGET_DEVICES += tellstick-znet-lite
 
 define Device/ts-d084
-  $(Device/tplink-8mlzma)
+  $(Device/tplink-16mlzma)
   DEVICE_TITLE := PISEN TS-D084
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2
   BOARDNAME := TS-D084
