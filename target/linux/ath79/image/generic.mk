@@ -266,7 +266,7 @@ endef
 TARGET_DEVICES += netgear_wndr3700v2
 
 define Device/pisen_wmm003n
-  $(Device/tplink-8mlzma)
+  $(Device/tplink-16mlzma)
   ATH_SOC := ar9331
   DEVICE_TITLE := Pisen WMM003N (Cloud Easy Power)
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2 kmod-usb-chipidea2
