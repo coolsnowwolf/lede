@@ -65,6 +65,16 @@ define Build/relocate-kernel
 	rm -rf $@.relocate
 endef
 
+define Build/append-okli-kernel
+	dd if="$(KDIR)/loader-$(word 1,$(1)).uImage" >> "$@"
+endef
+
+define Build/prepad-okli-kernel
+  -[ -f "$@" ] && \
+  dd if="$(KDIR)/loader-$(word 1,$(1)).uImage" of="$@".tmp bs=64k conv=sync && \
+  cat "$@" >>"$@".tmp && \
+  mv "$@".tmp "$@"
+endef
 
 define Device/Default
   DEVICE_DTS_DIR := ../dts
