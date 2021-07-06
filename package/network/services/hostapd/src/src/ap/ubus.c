@@ -21,6 +21,7 @@
 #include "rrm.h"
 #include "wnm_ap.h"
 #include "taxonomy.h"
+#include "airtime_policy.h"
 
 static struct ubus_context *ctx;
 static struct blob_buf b;
@@ -1326,11 +1327,68 @@ hostapd_wnm_disassoc_imminent(struct ubus_context *ctx, struct ubus_object *obj,
 }
 #endif
 
+#ifdef CONFIG_AIRTIME_POLICY
+enum {
+	UPDATE_AIRTIME_STA,
+	UPDATE_AIRTIME_WEIGHT,
+	__UPDATE_AIRTIME_MAX,
+};
+
+
+static const struct blobmsg_policy airtime_policy[__UPDATE_AIRTIME_MAX] = {
+	[UPDATE_AIRTIME_STA] = { "sta", BLOBMSG_TYPE_STRING },
+	[UPDATE_AIRTIME_WEIGHT] = { "weight", BLOBMSG_TYPE_INT32 },
+};
+
+static int
+hostapd_bss_update_airtime(struct ubus_context *ctx, struct ubus_object *obj,
+			   struct ubus_request_data *ureq, const char *method,
+			   struct blob_attr *msg)
+{
+	struct hostapd_data *hapd = container_of(obj, struct hostapd_data, ubus.obj);
+	struct blob_attr *tb[__UPDATE_AIRTIME_MAX];
+	struct sta_info *sta = NULL;
+	u8 addr[ETH_ALEN];
+	int weight;
+
+	blobmsg_parse(airtime_policy, __UPDATE_AIRTIME_MAX, tb, blob_data(msg), blob_len(msg));
+
+	if (!tb[UPDATE_AIRTIME_WEIGHT])
+		return UBUS_STATUS_INVALID_ARGUMENT;
+
+	weight = blobmsg_get_u32(tb[UPDATE_AIRTIME_WEIGHT]);
+
+	if (!tb[UPDATE_AIRTIME_STA]) {
+		if (!weight)
+			return UBUS_STATUS_INVALID_ARGUMENT;
+
+		hapd->conf->airtime_weight = weight;
+		return 0;
+	}
+
+	if (hwaddr_aton(blobmsg_data(tb[UPDATE_AIRTIME_STA]), addr))
+		return UBUS_STATUS_INVALID_ARGUMENT;
+
+	sta = ap_get_sta(hapd, addr);
+	if (!sta)
+		return UBUS_STATUS_NOT_FOUND;
+
+	sta->dyn_airtime_weight = weight;
+	airtime_policy_new_sta(hapd, sta);
+
+	return 0;
+}
+#endif
+
+
 static const struct ubus_method bss_methods[] = {
 	UBUS_METHOD_NOARG("reload", hostapd_bss_reload),
 	UBUS_METHOD_NOARG("get_clients", hostapd_bss_get_clients),
 	UBUS_METHOD_NOARG("get_status", hostapd_bss_get_status),
 	UBUS_METHOD("del_client", hostapd_bss_del_client, del_policy),
+#ifdef CONFIG_AIRTIME_POLICY
+	UBUS_METHOD("update_airtime", hostapd_bss_update_airtime, airtime_policy),
+#endif
 	UBUS_METHOD_NOARG("list_bans", hostapd_bss_list_bans),
 #ifdef CONFIG_WPS
 	UBUS_METHOD_NOARG("wps_start", hostapd_bss_wps_start),
