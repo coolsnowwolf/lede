@@ -768,7 +768,15 @@ hostapd_switch_chan(struct ubus_context *ctx, struct ubus_object *obj,
 {
 	struct blob_attr *tb[__CSA_MAX];
 	struct hostapd_data *hapd = get_hapd_from_object(obj);
-	struct csa_settings css;
+	struct hostapd_config *iconf = hapd->iface->conf;
+	struct csa_settings css = {
+		.freq_params = {
+			.ht_enabled = iconf->ieee80211n,
+			.vht_enabled = iconf->ieee80211ac,
+			.he_enabled = iconf->ieee80211ax,
+			.sec_channel_offset = iconf->secondary_channel,
+		}
+	};
 	int ret = UBUS_STATUS_OK;
 	int i;
 
@@ -777,7 +785,21 @@ hostapd_switch_chan(struct ubus_context *ctx, struct ubus_object *obj,
 	if (!tb[CSA_FREQ])
 		return UBUS_STATUS_INVALID_ARGUMENT;
 
-	memset(&css, 0, sizeof(css));
+	switch (iconf->vht_oper_chwidth) {
+	case CHANWIDTH_USE_HT:
+		if (iconf->secondary_channel)
+			css.freq_params.bandwidth = 40;
+		else
+			css.freq_params.bandwidth = 20;
+		break;
+	case CHANWIDTH_160MHZ:
+		css.freq_params.bandwidth = 160;
+		break;
+	default:
+		css.freq_params.bandwidth = 80;
+		break;
+	}
+
 	css.freq_params.freq = blobmsg_get_u32(tb[CSA_FREQ]);
 
 #define SET_CSA_SETTING(name, field, type) \
