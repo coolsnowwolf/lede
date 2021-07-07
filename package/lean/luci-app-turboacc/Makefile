@@ -24,11 +24,11 @@ define Package/luci-app-turboacc/config
 config PACKAGE_TURBOACC_INCLUDE_OFFLOADING
 	bool "Include Flow Offload"
 	depends on PACKAGE_TURBOACC_INCLUDE_SHORTCUT_FE=n
-	default y
+	default y if i386||x86_64||TARGET_ramips_mt7621
 
 config PACKAGE_TURBOACC_INCLUDE_SHORTCUT_FE
 	bool "Include Shortcut-FE"
-	default n
+	default y
 
 config PACKAGE_TURBOACC_INCLUDE_BBR_CCA
 	bool "Include BBR CCA"
