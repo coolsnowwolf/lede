@@ -14,7 +14,7 @@ platform_do_upgrade() {
 	xiaomi,ax3600|\
 	xiaomi,ax9000)
 		part_num="$(fw_printenv -n flag_boot_rootfs)"
-		if [ "$part_num" -eq "0" ]; then
+		if [ "$part_num" -eq "1" ]; then
 			CI_UBIPART="rootfs_1"
 			target_num=1
 			# Reset fail flag for the current partition

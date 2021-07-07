@@ -2,45 +2,52 @@
 
 [ -f "$USER_DHCPSCRIPT" ] && . "$USER_DHCPSCRIPT" "$@"
 
+. /usr/share/libubox/jshn.sh
+
+json_init
+json_add_array env
+hotplugobj=""
+
 case "$1" in
-	add)
-		export ACTION="add"
-		export MACADDR="$2"
-		export IPADDR="$3"
-		export HOSTNAME="$4"
-		exec /sbin/hotplug-call dhcp
-	;;
-	del)
-		export ACTION="remove"
-		export MACADDR="$2"
-		export IPADDR="$3"
-		export HOSTNAME="$4"
-		exec /sbin/hotplug-call dhcp
-	;;
-	old)
-		export ACTION="update"
-		export MACADDR="$2"
-		export IPADDR="$3"
-		export HOSTNAME="$4"
-		exec /sbin/hotplug-call dhcp
-	;;
-	arp-add)
-		export ACTION="add"
-		export MACADDR="$2"
-		export IPADDR="$3"
-		exec /sbin/hotplug-call neigh
-	;;
-	arp-del)
-		export ACTION="remove"
-		export MACADDR="$2"
-		export IPADDR="$3"
-		exec /sbin/hotplug-call neigh
-	;;
-	tftp)
-		export ACTION="add"
-		export TFTP_SIZE="$2"
-		export TFTP_ADDR="$3"
-		export TFTP_PATH="$4"
-		exec /sbin/hotplug-call tftp
+	add | del | old | arp-add | arp-del)
+		json_add_string "" "MACADDR=$2"
+		json_add_string "" "IPADDR=$3"
 	;;
 esac
+
+case "$1" in
+	add)
+		json_add_string "" "ACTION=add"
+		json_add_string "" "HOSTNAME=$4"
+		hotplugobj="dhcp"
+	;;
+	del)
+		json_add_string "" "ACTION=remove"
+		json_add_string "" "HOSTNAME=$4"
+		hotplugobj="dhcp"
+	;;
+	old)
+		json_add_string "" "ACTION=update"
+		json_add_string "" "HOSTNAME=$4"
+		hotplugobj="dhcp"
+	;;
+	arp-add)
+		json_add_string "" "ACTION=add"
+		hotplugobj="neigh"
+	;;
+	arp-del)
+		json_add_string "" "ACTION=remove"
+		hotplugobj="neigh"
+	;;
+	tftp)
+		json_add_string "" "ACTION=add"
+		json_add_string "" "TFTP_SIZE=$2"
+		json_add_string "" "TFTP_ADDR=$3"
+		json_add_string "" "TFTP_PATH=$4"
+		hotplugobj="tftp"
+	;;
+esac
+
+json_close_array env
+
+[ -n "$hotplugobj" ] && ubus call hotplug.${hotplugobj} call "$(json_dump)"

@@ -1021,10 +1021,8 @@ drv_mac80211_setup() {
 		return 1
 	}
 
-	[ -z "$(uci -q -P /var/state show wireless._${phy})" ] && {
-		uci -q -P /var/state set wireless._${phy}=phy
-		wireless_set_data phy="$phy"
-	}
+	wireless_set_data phy="$phy"
+	[ -z "$(uci -q -P /var/state show wireless._${phy})" ] && uci -q -P /var/state set wireless._${phy}=phy
 
 	OLDAPLIST=$(uci -q -P /var/state get wireless._${phy}.aplist)
 	OLDSPLIST=$(uci -q -P /var/state get wireless._${phy}.splist)
@@ -1117,6 +1115,7 @@ drv_mac80211_setup() {
 	[ -n "$hostapd_ctrl" ] && {
 		local no_reload=1
 		if [ -n "$(ubus list | grep hostapd.$primary_ap)" ]; then
+			no_reload=0
 			[ "${NEW_MD5}" = "${OLD_MD5}" ] || {
 				ubus call hostapd.$primary_ap reload
 				no_reload=$?
@@ -1191,6 +1190,10 @@ drv_mac80211_teardown() {
 	json_select data
 	json_get_vars phy
 	json_select ..
+	[ -n "$phy" ] || {
+		echo "Bug: PHY is undefined for device '$1'"
+		return 1
+	}
 
 	mac80211_interface_cleanup "$phy"
 	uci -q -P /var/state revert wireless._${phy}
