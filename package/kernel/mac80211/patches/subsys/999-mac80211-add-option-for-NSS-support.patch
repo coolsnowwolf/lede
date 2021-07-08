@@ -37,12 +37,16 @@
  struct ieee80211_local;
  
  /* Maximum number of broadcast/multicast frames to buffer when some of the
-@@ -988,6 +992,10 @@ struct ieee80211_sub_if_data {
+@@ -988,6 +992,14 @@ struct ieee80211_sub_if_data {
  
  	bool hw_80211_encap;
  
 +#ifdef CPTCFG_MAC80211_NSS_SUPPORT
 +	struct nss_virt_if_handle *nssctx;
++
++	struct tasklet_struct ieee80211_nss_rq_tasklet;
++	struct sk_buff_head rq_for_nss;
++	int nss_rq_tasklet_pending;
 +#endif
 +
  	/* must be last, dynamically sized area in this! */
@@ -71,58 +75,11 @@
  /**
   * DOC: Interface list locking
   *
-@@ -645,6 +652,13 @@
- {
- 	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
- 
-+#ifdef CPTCFG_MAC80211_NSS_SUPPORT
-+	if (sdata->nssctx) {
-+		nss_virt_if_destroy_sync(sdata->nssctx);
-+		sdata_info(sdata, "Destroyed NSS virtual interface\n");
-+	}
-+#endif
-+
- 	ieee80211_do_stop(sdata, true);
- 
- 	return 0;
-@@ -1343,6 +1357,18 @@
- 
- 	ieee80211_recalc_ps(local);
- 
-+#ifdef CPTCFG_MAC80211_NSS_SUPPORT
-+	if (is_nss_enable) {
-+		sdata->nssctx = nss_virt_if_create_sync(dev);
-+		if (sdata->nssctx)
-+			sdata_info(sdata, "Created a NSS virtual interface\n");
-+		else
-+			sdata_err(sdata, "Failed to create a NSS virtual interface\n");
-+	} else {
-+		sdata->nssctx = NULL;
-+	}
-+#endif
-+
- 	if (sdata->vif.type == NL80211_IFTYPE_MONITOR ||
- 	    sdata->vif.type == NL80211_IFTYPE_AP_VLAN ||
- 	    local->ops->wake_tx_queue) {
---- a/net/mac80211/rx.c	2019-01-03 21:09:29.503001000 +0800
-+++ b/net/mac80211/rx.c	2019-01-03 21:17:42.463001000 +0800
-@@ -32,6 +32,10 @@
- #include "wme.h"
- #include "rate.h"
- 
-+#ifdef CPTCFG_MAC80211_NSS_SUPPORT
-+extern bool is_nss_enable;
-+#endif
-+
- static inline void ieee80211_rx_stats(struct net_device *dev, u32 len)
- {
- 	struct pcpu_sw_netstats *tstats = this_cpu_ptr(netdev_tstats(dev));
-@@ -42,6 +46,63 @@
- 	u64_stats_update_end(&tstats->syncp);
+@@ -695,6 +702,96 @@
+ 	ieee80211_teardown_sdata(IEEE80211_DEV_TO_SUB_IF(dev));
  }
  
 +#ifdef CPTCFG_MAC80211_NSS_SUPPORT
-+
 +#define case_rtn_string(val) case val: return #val
 +
 +static const char *nss_tx_status_str(nss_tx_status_t status)
@@ -145,52 +102,117 @@
 +	}
 +}
 +
-+static void netif_rx_nss(struct ieee80211_sub_if_data *sdata,
-+			 struct sk_buff *skb)
++static void ieee80211_nss_rq_tasklet(unsigned long _txp)
 +{
++	struct ieee80211_sub_if_data *sdata = (struct ieee80211_sub_if_data *)_txp;
++	struct sk_buff *skb;
 +	int ret;
-+	int push_mac_header = 0;
 +
-+	if (!sdata->nssctx)
-+		goto out;
-+
-+	if (unlikely((skb->data - skb_mac_header(skb)) == ETH_HLEN)) {
++	while ((skb = __skb_dequeue(&sdata->rq_for_nss)) != NULL) {
 +		skb_push(skb, ETH_HLEN);
-+		push_mac_header = 1;
-+	}
 +
-+	ret = nss_virt_if_tx_buf(sdata->nssctx, skb);
-+	if (ret) {
-+		if (net_ratelimit()) {
++		ret = nss_virt_if_tx_buf(sdata->nssctx, skb);
++		if (unlikely(ret)) {
 +			sdata_err(sdata, "NSS TX failed with error[%d]: %s\n", ret,
 +				  nss_tx_status_str(ret));
++
++			skb_pull(skb, ETH_HLEN);
++			netif_receive_skb(skb);
 +		}
-+		goto out;
 +	}
 +
-+	return;
-+out:
-+	if (unlikely(push_mac_header)) {
-+		skb_pull(skb, ETH_HLEN);
++	skb = skb_peek(&sdata->rq_for_nss);
++	if (!skb) {
++		sdata->nss_rq_tasklet_pending = 0;
 +	}
-+	netif_receive_skb(skb);
++	else {
++		sdata->nss_rq_tasklet_pending = 1;
++		tasklet_schedule(&sdata->ieee80211_nss_rq_tasklet);
++	}
++}
++
++static int ieee80211_init_nss(struct net_device *dev)
++{
++	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
++
++	sdata->nssctx = nss_virt_if_create_sync(dev);
++	if (sdata->nssctx) {
++		sdata_info(sdata, "Created a NSS virtual interface.\n");
++
++		__skb_queue_head_init(&sdata->rq_for_nss);
++		tasklet_init(&sdata->ieee80211_nss_rq_tasklet, ieee80211_nss_rq_tasklet,
++			(unsigned long)sdata);
++		sdata_info(sdata, "RX-Q and tasklet initialized.\n");
++	}
++	else {
++		sdata->nssctx = NULL;
++		sdata_err(sdata, "Failed to create a NSS virtual interface\n");
++	}
++
++	return 0;
++}
++
++static void ieee80211_uninit_nss(struct net_device *dev)
++{
++	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
++
++	ieee80211_uninit(dev);
++
++	if (sdata->nssctx) {
++		nss_virt_if_destroy_sync(sdata->nssctx);
++		sdata_info(sdata, "Destroyed NSS virtual interface\n");
++
++		tasklet_kill(&sdata->ieee80211_nss_rq_tasklet);
++		__skb_queue_purge(&sdata->rq_for_nss);
++		sdata_info(sdata, "RX-Q purged.\n");
++	}
 +}
 +#endif
 +
+ #if LINUX_VERSION_IS_GEQ(5,2,0)
+ static u16 ieee80211_netdev_select_queue(struct net_device *dev,
+ 					 struct sk_buff *skb,
+@@ -742,7 +839,12 @@
+ static const struct net_device_ops ieee80211_dataif_ops = {
+ 	.ndo_open		= ieee80211_open,
+ 	.ndo_stop		= ieee80211_stop,
++#ifdef CPTCFG_MAC80211_NSS_SUPPORT
++	.ndo_init		= ieee80211_init_nss,
++	.ndo_uninit		= ieee80211_uninit_nss,
++#else
+ 	.ndo_uninit		= ieee80211_uninit,
++#endif
+ 	.ndo_start_xmit		= ieee80211_subif_start_xmit,
+ 	.ndo_set_rx_mode	= ieee80211_set_multicast_list,
+ 	.ndo_set_mac_address 	= ieee80211_change_mac,
+--- a/net/mac80211/rx.c	2019-01-03 21:09:29.503001000 +0800
++++ b/net/mac80211/rx.c	2019-01-03 21:17:42.463001000 +0800
+@@ -32,6 +32,10 @@
+ #include "wme.h"
+ #include "rate.h"
+ 
++#ifdef CPTCFG_MAC80211_NSS_SUPPORT
++extern bool is_nss_enable;
++#endif
 +
- /*
-  * monitor mode reception
-  *
-@@ -2604,6 +2665,16 @@
+ static inline void ieee80211_rx_stats(struct net_device *dev, u32 len)
+ {
+ 	struct pcpu_sw_netstats *tstats = this_cpu_ptr(netdev_tstats(dev));
+@@ -2604,6 +2608,21 @@
  			ether_addr_copy(ehdr->h_dest, sdata->vif.addr);
  
  		/* deliver to local stack */
 +#ifdef CPTCFG_MAC80211_NSS_SUPPORT
-+		if (likely(is_nss_enable))
-+			netif_rx_nss(sdata, skb);
++		if (likely(is_nss_enable && sdata->nssctx)) {
++			__skb_queue_tail(&sdata->rq_for_nss, skb);
++			if(!sdata->nss_rq_tasklet_pending) {
++				sdata->nss_rq_tasklet_pending = 1;
++				tasklet_schedule(&sdata->ieee80211_nss_rq_tasklet);
++			}
++		}
 +		else {
-+			if (rx->napi)
-+				napi_gro_receive(rx->napi, skb);
++			if (rx->list)
++				list_add_tail(&skb->list, rx->list);
 +			else
 +				netif_receive_skb(skb);
 +		}
@@ -198,7 +220,7 @@
  		if (rx->list)
  #if LINUX_VERSION_IS_GEQ(4,19,0)
  			list_add_tail(&skb->list, rx->list);
-@@ -2612,6 +2683,7 @@
+@@ -2612,6 +2631,7 @@
  #endif
  		else
  			netif_receive_skb(skb);
@@ -206,16 +228,21 @@
  	}
  }
  
-@@ -4461,6 +4533,16 @@
+@@ -4461,6 +4481,21 @@
  	/* deliver to local stack */
  	skb->protocol = eth_type_trans(skb, fast_rx->dev);
  	memset(skb->cb, 0, sizeof(skb->cb));
 +#ifdef CPTCFG_MAC80211_NSS_SUPPORT
-+	if (likely(is_nss_enable))
-+		netif_rx_nss(rx->sdata, skb);
++	if (likely(is_nss_enable && rx->sdata->nssctx)) {
++		__skb_queue_tail(&rx->sdata->rq_for_nss, skb);
++		if(!rx->sdata->nss_rq_tasklet_pending) {
++			rx->sdata->nss_rq_tasklet_pending = 1;
++			tasklet_schedule(&rx->sdata->ieee80211_nss_rq_tasklet);
++		}
++	}
 +	else {
-+		if (rx->napi)
-+			napi_gro_receive(rx->napi, skb);
++		if (rx->list)
++			list_add_tail(&skb->list, rx->list);
 +		else
 +			netif_receive_skb(skb);
 +	}
@@ -223,7 +250,7 @@
  	if (rx->list)
  #if LINUX_VERSION_IS_GEQ(4,19,0)
  		list_add_tail(&skb->list, rx->list);
-@@ -4469,7 +4551,7 @@
+@@ -4469,7 +4504,7 @@
  #endif
  	else
  		netif_receive_skb(skb);
