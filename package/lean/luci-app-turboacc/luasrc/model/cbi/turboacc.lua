@@ -4,7 +4,7 @@ m = Map("turboacc")
 m.title	= translate("Turbo ACC Acceleration Settings")
 m.description = translate("Opensource Flow Offloading driver (Fast Path or Hardware NAT)")
 
-m:append(Template("turboacc/status"))
+m:append(Template("turboacc/turboacc_status"))
 
 s = m:section(TypedSection, "turboacc", "")
 s.addremove = false

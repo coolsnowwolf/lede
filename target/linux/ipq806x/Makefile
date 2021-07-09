@@ -22,6 +22,7 @@ DEFAULT_PACKAGES += \
 	kmod-usb-ohci kmod-usb2 kmod-usb-ledtrig-usbport \
 	kmod-phy-qcom-ipq806x-usb kmod-usb3 kmod-usb-dwc3-qcom \
 	kmod-ath10k-ct wpad-openssl uboot-envtools \
-	autocore-arm automount autosamba e2fsprogs htop
+	kmod-shortcut-fe kmod-qca-nss-drv kmod-qca-nss-ecm-standard kmod-qca-nss-gmac kmod-nss-ifb kmod-qca-nss-drv-pppoe \
+	autocore-arm automount autosamba
 
 $(eval $(call BuildTarget))
