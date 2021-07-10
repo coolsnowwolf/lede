@@ -1902,6 +1902,16 @@ define Device/pisen_wmm003n
 endef
 TARGET_DEVICES += pisen_wmm003n
 
+define Device/pisen_wpr003n
+  $(Device/tplink-16mlzma)
+  SOC := ar9341
+  DEVICE_VENDOR := PISEN
+  DEVICE_MODEL := WPR003N
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
+  TPLINK_HWID := 0x08410008
+endef
+TARGET_DEVICES += pisen_wpr003n
+
 define Device/plasmacloud_pa300-common
   SOC := qca9533
   DEVICE_VENDOR := Plasma Cloud
@@ -2273,6 +2283,15 @@ define Device/winchannel_wb2000
 	kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += winchannel_wb2000
+
+define Device/xiaomi_aiot-ac2350
+  SOC := qca9563
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := AIoT AC2350
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca9984-ct
+  IMAGE_SIZE := 14336k
+endef
+TARGET_DEVICES += xiaomi_aiot-ac2350
 
 define Device/xiaomi_mi-router-4q
   SOC := qca9561
