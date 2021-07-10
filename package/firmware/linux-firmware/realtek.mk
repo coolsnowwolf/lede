@@ -1,8 +1,21 @@
+Package/r8152-firmware = $(call Package/firmware-default,RealTek RTL8152 firmware)
+define Package/r8152-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/rtl_nic
+	$(CP) \
+		$(PKG_BUILD_DIR)/rtl_nic/rtl8153* \
+		$(PKG_BUILD_DIR)/rtl_nic/rtl8156* \
+		$(1)/lib/firmware/rtl_nic
+endef
+$(eval $(call BuildPackage,r8152-firmware))
+
 Package/r8169-firmware = $(call Package/firmware-default,RealTek RTL8169 firmware)
 define Package/r8169-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/rtl_nic
 	$(CP) \
-		$(PKG_BUILD_DIR)/rtl_nic/* \
+		$(PKG_BUILD_DIR)/rtl_nic/rtl810* \
+		$(PKG_BUILD_DIR)/rtl_nic/rtl8125* \
+		$(PKG_BUILD_DIR)/rtl_nic/rtl8168* \
+		$(PKG_BUILD_DIR)/rtl_nic/rtl84* \
 		$(1)/lib/firmware/rtl_nic
 endef
 $(eval $(call BuildPackage,r8169-firmware))
