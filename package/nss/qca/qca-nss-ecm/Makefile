@@ -44,7 +44,7 @@ define KernelPackage/qca-nss-ecm/Default
 	+TARGET_ipq_ipq50xx:kmod-qca-nss-drv \
 	+TARGET_ipq_ipq50xx_64:kmod-qca-nss-drv \
 	+iptables-mod-extra +kmod-ipt-conntrack \
-	+kmod-pppoe @!LINUX_3_18 \
+	+kmod-pppoe @LINUX_5_4 \
 	+kmod-ipsec
   TITLE:=QCA NSS Enhanced Connection Manager (ECM)
   FILES:=$(PKG_BUILD_DIR)/*.ko $(FILES_EXAMPLES)
@@ -241,6 +241,8 @@ endef
 
 define KernelPackage/qca-nss-ecm-premium/config
 menu "ECM Configuration"
+  depends on PACKAGE_kmod_qca-nss-ecm-premium
+  
 	config QCA_NSS_ECM_EXAMPLES_PCC
 		bool "Build PCC usage example"
 		help

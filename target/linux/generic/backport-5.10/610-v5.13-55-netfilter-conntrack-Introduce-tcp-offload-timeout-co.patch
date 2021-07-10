@@ -1,0 +1,94 @@
+From: Oz Shlomo <ozsh@nvidia.com>
+Date: Thu, 3 Jun 2021 15:12:33 +0300
+Subject: [PATCH] netfilter: conntrack: Introduce tcp offload timeout
+ configuration
+
+TCP connections may be offloaded from nf conntrack to nf flow table.
+Offloaded connections are aged after 30 seconds of inactivity.
+Once aged, ownership is returned to conntrack with a hard coded pickup
+time of 120 seconds, after which the connection may be deleted.
+eted. The current aging intervals may be too aggressive for some users.
+
+Provide users with the ability to control the nf flow table offload
+aging and pickup time intervals via sysctl parameter as a pre-step for
+configuring the nf flow table GC timeout intervals.
+
+Signed-off-by: Oz Shlomo <ozsh@nvidia.com>
+Reviewed-by: Paul Blakey <paulb@nvidia.com>
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/include/net/netns/conntrack.h
++++ b/include/net/netns/conntrack.h
+@@ -27,6 +27,10 @@ struct nf_tcp_net {
+ 	int tcp_loose;
+ 	int tcp_be_liberal;
+ 	int tcp_max_retrans;
++#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
++	unsigned int offload_timeout;
++	unsigned int offload_pickup;
++#endif
+ };
+ 
+ enum udp_conntrack {
+--- a/net/netfilter/nf_conntrack_proto_tcp.c
++++ b/net/netfilter/nf_conntrack_proto_tcp.c
+@@ -1438,6 +1438,11 @@ void nf_conntrack_tcp_init_net(struct ne
+ 	tn->tcp_loose = nf_ct_tcp_loose;
+ 	tn->tcp_be_liberal = nf_ct_tcp_be_liberal;
+ 	tn->tcp_max_retrans = nf_ct_tcp_max_retrans;
++
++#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
++	tn->offload_timeout = 30 * HZ;
++	tn->offload_pickup = 120 * HZ;
++#endif
+ }
+ 
+ const struct nf_conntrack_l4proto nf_conntrack_l4proto_tcp =
+--- a/net/netfilter/nf_conntrack_standalone.c
++++ b/net/netfilter/nf_conntrack_standalone.c
+@@ -567,6 +567,10 @@ enum nf_ct_sysctl_index {
+ 	NF_SYSCTL_CT_PROTO_TIMEOUT_TCP_CLOSE,
+ 	NF_SYSCTL_CT_PROTO_TIMEOUT_TCP_RETRANS,
+ 	NF_SYSCTL_CT_PROTO_TIMEOUT_TCP_UNACK,
++#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
++	NF_SYSCTL_CT_PROTO_TIMEOUT_TCP_OFFLOAD,
++	NF_SYSCTL_CT_PROTO_TIMEOUT_TCP_OFFLOAD_PICKUP,
++#endif
+ 	NF_SYSCTL_CT_PROTO_TCP_LOOSE,
+ 	NF_SYSCTL_CT_PROTO_TCP_LIBERAL,
+ 	NF_SYSCTL_CT_PROTO_TCP_MAX_RETRANS,
+@@ -758,6 +762,20 @@ static struct ctl_table nf_ct_sysctl_tab
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_jiffies,
+ 	},
++#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
++	[NF_SYSCTL_CT_PROTO_TIMEOUT_TCP_OFFLOAD] = {
++		.procname	= "nf_flowtable_tcp_timeout",
++		.maxlen		= sizeof(unsigned int),
++		.mode		= 0644,
++		.proc_handler	= proc_dointvec_jiffies,
++	},
++	[NF_SYSCTL_CT_PROTO_TIMEOUT_TCP_OFFLOAD_PICKUP] = {
++		.procname	= "nf_flowtable_tcp_pickup",
++		.maxlen		= sizeof(unsigned int),
++		.mode		= 0644,
++		.proc_handler	= proc_dointvec_jiffies,
++	},
++#endif
+ 	[NF_SYSCTL_CT_PROTO_TCP_LOOSE] = {
+ 		.procname	= "nf_conntrack_tcp_loose",
+ 		.maxlen		= sizeof(int),
+@@ -967,6 +985,12 @@ static void nf_conntrack_standalone_init
+ 	XASSIGN(LIBERAL, &tn->tcp_be_liberal);
+ 	XASSIGN(MAX_RETRANS, &tn->tcp_max_retrans);
+ #undef XASSIGN
++
++#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
++	table[NF_SYSCTL_CT_PROTO_TIMEOUT_TCP_OFFLOAD].data = &tn->offload_timeout;
++	table[NF_SYSCTL_CT_PROTO_TIMEOUT_TCP_OFFLOAD_PICKUP].data = &tn->offload_pickup;
++#endif
++
+ }
+ 
+ static void nf_conntrack_standalone_init_sctp_sysctl(struct net *net,
