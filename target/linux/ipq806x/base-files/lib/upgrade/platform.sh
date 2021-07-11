@@ -44,9 +44,6 @@ platform_do_upgrade() {
 	linksys,ea8500)
 		platform_do_upgrade_linksys "$1"
 		;;
-	ruijie,rg-mtfi-m520)
-		ruijie_do_upgrade "$1"
-		;;
 	tplink,ad7200 |\
 	tplink,c2600)
 		PART_NAME="os-image:rootfs"
@@ -57,6 +54,9 @@ platform_do_upgrade() {
 		PART_NAME="kernel:rootfs"
 		MTD_CONFIG_ARGS="-s 0x200000"
 		default_do_upgrade "$1"
+		;;
+	ruijie,rg-mtfi-m520)
+		ruijie_do_upgrade "$1"
 		;;
 	zyxel,nbg6817)
 		zyxel_do_upgrade "$1"
