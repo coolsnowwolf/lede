@@ -385,6 +385,16 @@ define Device/d-team_newifi-d2
 endef
 TARGET_DEVICES += d-team_newifi-d2
 
+define Device/RX_WT-600
+  $(Device/uimage-lzma-loader)
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := WT
+  DEVICE_MODEL := 600
+  DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb2 kmod-usb3 kmod-usb-storage kmod-usb-storage-extras \
+	kmod-usb-ledtrig-usbport luci-app-mtwifi -wpad-openssl
+endef
+TARGET_DEVICES += RX_WT-600
+
 define Device/d-team_pbr-m1
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := PandoraBox
