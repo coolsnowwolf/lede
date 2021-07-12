@@ -27,16 +27,9 @@
 
 #define MT7620A_CDMA_CSG_CFG	0x400
 #define MT7620_DMA_VID		(MT7620A_CDMA_CSG_CFG | 0x30)
-#define MT7621_CDMP_IG_CTRL	(MT7620A_CDMA_CSG_CFG + 0x00)
-#define MT7621_CDMP_EG_CTRL	(MT7620A_CDMA_CSG_CFG + 0x04)
-#define MT7620A_RESET_FE	BIT(21)
-#define MT7621_RESET_FE		BIT(6)
-#define MT7620A_RESET_ESW	BIT(23)
 #define MT7620_L4_VALID		BIT(23)
-#define MT7621_L4_VALID		BIT(24)
 
 #define MT7620_TX_DMA_UDF	BIT(15)
-#define MT7621_TX_DMA_UDF	BIT(19)
 #define TX_DMA_FP_BMAP		((0xff) << 19)
 
 #define CDMA_ICS_EN		BIT(2)
@@ -53,11 +46,6 @@
 #define MT7620_GDM1_TX_GBCNT	(MT7620_REG_MIB_OFFSET + 0x300)
 #define MT7620_GDM2_TX_GBCNT	(MT7620_GDM1_TX_GBCNT + 0x40)
 
-#define MT7621_REG_MIB_OFFSET	0x2000
-#define MT7621_PPE_AC_BCNT0	(MT7621_REG_MIB_OFFSET + 0x00)
-#define MT7621_GDM1_TX_GBCNT	(MT7621_REG_MIB_OFFSET + 0x400)
-#define MT7621_GDM2_TX_GBCNT	(MT7621_GDM1_TX_GBCNT + 0x40)
-
 #define GSW_REG_GDMA1_MAC_ADRL	0x508
 #define GSW_REG_GDMA1_MAC_ADRH	0x50C
 
@@ -68,8 +56,6 @@
  * but after test it should be BIT(13).
  */
 #define MT7620_FE_GDM1_AF	BIT(13)
-#define MT7621_FE_GDM1_AF	BIT(28)
-#define MT7621_FE_GDM2_AF	BIT(29)
 
 static const u16 mt7620_reg_table[FE_REG_COUNT] = {
 	[FE_REG_PDMA_GLO_CFG] = RT5350_PDMA_GLO_CFG,
@@ -94,11 +80,26 @@ static const u16 mt7620_reg_table[FE_REG_COUNT] = {
 static int mt7620_gsw_config(struct fe_priv *priv)
 {
 	struct mt7620_gsw *gsw = (struct mt7620_gsw *) priv->soc->swpriv;
+	u32 val;
 
 	/* is the mt7530 internal or external */
 	if (priv->mii_bus && mdiobus_get_phy(priv->mii_bus, 0x1f)) {
 		mt7530_probe(priv->dev, gsw->base, NULL, 0);
 		mt7530_probe(priv->dev, NULL, priv->mii_bus, 1);
+
+		/* magic values from original SDK */
+		val = mt7530_mdio_r32(gsw, 0x7830);
+		val &= ~BIT(0);
+		val |= BIT(1);
+		mt7530_mdio_w32(gsw, 0x7830, val);
+
+		val = mt7530_mdio_r32(gsw, 0x7a40);
+		val &= ~BIT(30);
+		mt7530_mdio_w32(gsw, 0x7a40, val);
+
+		mt7530_mdio_w32(gsw, 0x7a78, 0x855);
+
+		pr_info("mt7530: mdio central align\n");
 	} else {
 		mt7530_probe(priv->dev, gsw->base, NULL, 1);
 	}
@@ -153,7 +154,7 @@ static void mt7620_port_init(struct fe_priv *priv, struct device_node *np)
 	u32 val, mask = 0;
 	u32 val_delay = 0;
 	u32 mask_delay = GSW_REG_GPCx_TXDELAY | GSW_REG_GPCx_RXDELAY;
-	int min = (gsw->port4 == PORT4_EPHY) ? (5) : (4);
+	int min = (gsw->port4_ephy) ? (5) : (4);
 
 	if (!_id || (be32_to_cpu(*_id) < min) || (be32_to_cpu(*_id) > 5)) {
 		if (_id)
@@ -175,7 +176,6 @@ static void mt7620_port_init(struct fe_priv *priv, struct device_node *np)
 	    (size != (4 * sizeof(*priv->phy->phy_fixed[id])))) {
 		pr_err("%s: invalid fixed link property\n", np->name);
 		priv->phy->phy_fixed[id] = NULL;
-		return;
 	}
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
@@ -203,7 +203,7 @@ static void mt7620_port_init(struct fe_priv *priv, struct device_node *np)
 		break;
 	case PHY_INTERFACE_MODE_RGMII_TXID:
 		mask = 0;
-		val_delay &= ~GSW_REG_GPCx_TXDELAY;
+		val_delay |= GSW_REG_GPCx_TXDELAY;
 		val_delay |= GSW_REG_GPCx_RXDELAY;
 		break;
 	case PHY_INTERFACE_MODE_MII:
@@ -216,10 +216,6 @@ static void mt7620_port_init(struct fe_priv *priv, struct device_node *np)
 		dev_err(priv->dev, "port %d - invalid phy mode\n", id);
 		return;
 	}
-
-	priv->phy->phy_node[id] = of_parse_phandle(np, "phy-handle", 0);
-	if (!priv->phy->phy_node[id] && !priv->phy->phy_fixed[id])
-		return;
 
 	val = rt_sysc_r32(SYSC_REG_CFG1);
 	val &= ~(3 << shift);
@@ -261,8 +257,8 @@ static void mt7620_port_init(struct fe_priv *priv, struct device_node *np)
 			val = 2;
 			break;
 		default:
-			dev_err(priv->dev, "invalid link speed: %d\n",
-				priv->phy->speed[id]);
+			dev_err(priv->dev, "port %d - invalid link speed: %d\n",
+				id, priv->phy->speed[id]);
 			priv->phy->phy_fixed[id] = 0;
 			return;
 		}
@@ -276,7 +272,13 @@ static void mt7620_port_init(struct fe_priv *priv, struct device_node *np)
 		if (priv->phy->duplex[id])
 			val |= PMCR_DUPLEX;
 		mtk_switch_w32(gsw, val, GSW_REG_PORT_PMCR(id));
-		dev_info(priv->dev, "using fixed link parameters\n");
+		dev_info(priv->dev, "port %d - using fixed link parameters\n", id);
+		return;
+	}
+
+	priv->phy->phy_node[id] = of_parse_phandle(np, "phy-handle", 0);
+	if (!priv->phy->phy_node[id]) {
+		dev_err(priv->dev, "port %d - missing phy handle\n", id);
 		return;
 	}
 
@@ -289,11 +291,10 @@ static void mt7620_port_init(struct fe_priv *priv, struct device_node *np)
 		fe_connect_phy_node(priv, priv->phy->phy_node[id], id);
 		gsw->autopoll |= BIT(be32_to_cpup(phy_addr));
 		mt7620_auto_poll(gsw,id);
-		return;
 	}
 }
 
-static void mt7620_fe_reset(void)
+static void mt7620_fe_reset(struct fe_priv *priv)
 {
 	fe_reset(MT7620A_RESET_FE | MT7620A_RESET_ESW);
 }
