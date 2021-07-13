@@ -283,15 +283,9 @@ TARGET_DEVICES += cudy_wr2100
 
 define Device/dlink_dir-8xx-a1
   $(Device/dsa-migration)
-  IMAGE_SIZE := 16000k
+  IMAGE_SIZE := 16064k
   DEVICE_VENDOR := D-Link
   DEVICE_PACKAGES := kmod-mt7615e kmod-mt7615-firmware
-  KERNEL_INITRAMFS := $$(KERNEL) | uimage-padhdr 96
-  IMAGES += factory.bin
-  IMAGE/sysupgrade.bin := append-kernel | append-rootfs | uimage-padhdr 96 |\
-	pad-rootfs | check-size | append-metadata
-  IMAGE/factory.bin := append-kernel | append-rootfs | uimage-padhdr 96 |\
-	check-size
 endef
 
 define Device/dlink_dir-8xx-r1
