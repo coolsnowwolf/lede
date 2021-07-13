@@ -283,15 +283,9 @@ TARGET_DEVICES += cudy_wr2100
 
 define Device/dlink_dir-8xx-a1
   $(Device/dsa-migration)
-  IMAGE_SIZE := 16000k
+  IMAGE_SIZE := 16064k
   DEVICE_VENDOR := D-Link
   DEVICE_PACKAGES := kmod-mt7615e kmod-mt7615-firmware
-  KERNEL_INITRAMFS := $$(KERNEL) | uimage-padhdr 96
-  IMAGES += factory.bin
-  IMAGE/sysupgrade.bin := append-kernel | append-rootfs | uimage-padhdr 96 |\
-	pad-rootfs | check-size | append-metadata
-  IMAGE/factory.bin := append-kernel | append-rootfs | uimage-padhdr 96 |\
-	check-size
 endef
 
 define Device/dlink_dir-8xx-r1
@@ -1162,7 +1156,7 @@ define Device/phicomm_k2p
   DEVICE_VENDOR := Phicomm
   DEVICE_MODEL := K2P
   SUPPORTED_DEVICES += k2p
-  DEVICE_PACKAGES := -luci-newapi -wpad-openssl kmod-mt7615d_dbdc luci-app-adbyby-plus xray-core UnblockNeteaseMusicGo
+  DEVICE_PACKAGES := kmod-mt7615d_dbdc -luci-newapi -wpad-openssl 
 endef
 TARGET_DEVICES += phicomm_k2p
 
@@ -1567,7 +1561,8 @@ define Device/xiaomi_mi-router-ac2100
 endef
 TARGET_DEVICES += xiaomi_mi-router-ac2100
 
-define Device/xiaomi_mi-router-cr6606
+define Device/xiaomi_mi-router-cr660x
+  $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
   BLOCKSIZE := 128k
   PAGESIZE := 2048
@@ -1576,12 +1571,14 @@ define Device/xiaomi_mi-router-cr6606
   IMAGE_SIZE := 128512k
   IMAGES += factory.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | check-size
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
+	check-size
   DEVICE_VENDOR := Xiaomi
-  DEVICE_MODEL := Mi Router CR6606/CR6608/CR6609
+  DEVICE_MODEL := Mi Router CR660x
   DEVICE_PACKAGES += kmod-mt7915e wpad-openssl uboot-envtools
+  SUPPORTED_DEVICES += xiaomi,mi-router-cr6606
 endef
-TARGET_DEVICES += xiaomi_mi-router-cr6606
+TARGET_DEVICES += xiaomi_mi-router-cr660x
 
 define Device/xiaomi_redmi-router-ac2100
   $(Device/xiaomi_nand_separate)
