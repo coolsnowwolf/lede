@@ -43,10 +43,10 @@ sfe_ipv6.description = translate("Enable IPv6 Acceleration")
 sfe_ipv6:depends("sfe_flow", 1)
 end
 
-if nixio.fs.access("/lib/modules/" .. kernel_version .. "/tcp_bbr.ko") then
-bbr_cca = s:option(Flag, "bbr_cca", translate("BBR CCA"))
+if nixio.fs.access("/lib/modules/" .. kernel_version .. "/tcp_bbrplus.ko") then
+bbr_cca = s:option(Flag, "bbr_cca", translate("BBRPLUS(Better than BBR)"))
 bbr_cca.default = 0
-bbr_cca.description = translate("Using BBR CCA can improve TCP network performance effectively")
+bbr_cca.description = translate("Using BBRPLUS can improve TCP network performance effectively(Thanks:dog250 & cx9208)")
 end 
 
 if nixio.fs.access("/lib/modules/" .. kernel_version .. "/xt_FULLCONENAT.ko") then
