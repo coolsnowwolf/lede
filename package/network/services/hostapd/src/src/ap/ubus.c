@@ -21,6 +21,7 @@
 #include "rrm.h"
 #include "wnm_ap.h"
 #include "taxonomy.h"
+#include "airtime_policy.h"
 
 static struct ubus_context *ctx;
 static struct blob_buf b;
@@ -741,6 +742,7 @@ enum {
 	CSA_SEC_CHANNEL_OFFSET,
 	CSA_HT,
 	CSA_VHT,
+	CSA_HE,
 	CSA_BLOCK_TX,
 	__CSA_MAX
 };
@@ -754,6 +756,7 @@ static const struct blobmsg_policy csa_policy[__CSA_MAX] = {
 	[CSA_SEC_CHANNEL_OFFSET] = { "sec_channel_offset", BLOBMSG_TYPE_INT32 },
 	[CSA_HT] = { "ht", BLOBMSG_TYPE_BOOL },
 	[CSA_VHT] = { "vht", BLOBMSG_TYPE_BOOL },
+	[CSA_HE] = { "he", BLOBMSG_TYPE_BOOL },
 	[CSA_BLOCK_TX] = { "block_tx", BLOBMSG_TYPE_BOOL },
 };
 
@@ -765,7 +768,15 @@ hostapd_switch_chan(struct ubus_context *ctx, struct ubus_object *obj,
 {
 	struct blob_attr *tb[__CSA_MAX];
 	struct hostapd_data *hapd = get_hapd_from_object(obj);
-	struct csa_settings css;
+	struct hostapd_config *iconf = hapd->iface->conf;
+	struct csa_settings css = {
+		.freq_params = {
+			.ht_enabled = iconf->ieee80211n,
+			.vht_enabled = iconf->ieee80211ac,
+			.he_enabled = iconf->ieee80211ax,
+			.sec_channel_offset = iconf->secondary_channel,
+		}
+	};
 	int ret = UBUS_STATUS_OK;
 	int i;
 
@@ -774,7 +785,21 @@ hostapd_switch_chan(struct ubus_context *ctx, struct ubus_object *obj,
 	if (!tb[CSA_FREQ])
 		return UBUS_STATUS_INVALID_ARGUMENT;
 
-	memset(&css, 0, sizeof(css));
+	switch (iconf->vht_oper_chwidth) {
+	case CHANWIDTH_USE_HT:
+		if (iconf->secondary_channel)
+			css.freq_params.bandwidth = 40;
+		else
+			css.freq_params.bandwidth = 20;
+		break;
+	case CHANWIDTH_160MHZ:
+		css.freq_params.bandwidth = 160;
+		break;
+	default:
+		css.freq_params.bandwidth = 80;
+		break;
+	}
+
 	css.freq_params.freq = blobmsg_get_u32(tb[CSA_FREQ]);
 
 #define SET_CSA_SETTING(name, field, type) \
@@ -790,6 +815,7 @@ hostapd_switch_chan(struct ubus_context *ctx, struct ubus_object *obj,
 	SET_CSA_SETTING(CSA_SEC_CHANNEL_OFFSET, freq_params.sec_channel_offset, u32);
 	SET_CSA_SETTING(CSA_HT, freq_params.ht_enabled, bool);
 	SET_CSA_SETTING(CSA_VHT, freq_params.vht_enabled, bool);
+	SET_CSA_SETTING(CSA_HE, freq_params.he_enabled, bool);
 	SET_CSA_SETTING(CSA_BLOCK_TX, block_tx, bool);
 
 	for (i = 0; i < hapd->iface->num_bss; i++) {
@@ -1326,11 +1352,68 @@ hostapd_wnm_disassoc_imminent(struct ubus_context *ctx, struct ubus_object *obj,
 }
 #endif
 
+#ifdef CONFIG_AIRTIME_POLICY
+enum {
+	UPDATE_AIRTIME_STA,
+	UPDATE_AIRTIME_WEIGHT,
+	__UPDATE_AIRTIME_MAX,
+};
+
+
+static const struct blobmsg_policy airtime_policy[__UPDATE_AIRTIME_MAX] = {
+	[UPDATE_AIRTIME_STA] = { "sta", BLOBMSG_TYPE_STRING },
+	[UPDATE_AIRTIME_WEIGHT] = { "weight", BLOBMSG_TYPE_INT32 },
+};
+
+static int
+hostapd_bss_update_airtime(struct ubus_context *ctx, struct ubus_object *obj,
+			   struct ubus_request_data *ureq, const char *method,
+			   struct blob_attr *msg)
+{
+	struct hostapd_data *hapd = container_of(obj, struct hostapd_data, ubus.obj);
+	struct blob_attr *tb[__UPDATE_AIRTIME_MAX];
+	struct sta_info *sta = NULL;
+	u8 addr[ETH_ALEN];
+	int weight;
+
+	blobmsg_parse(airtime_policy, __UPDATE_AIRTIME_MAX, tb, blob_data(msg), blob_len(msg));
+
+	if (!tb[UPDATE_AIRTIME_WEIGHT])
+		return UBUS_STATUS_INVALID_ARGUMENT;
+
+	weight = blobmsg_get_u32(tb[UPDATE_AIRTIME_WEIGHT]);
+
+	if (!tb[UPDATE_AIRTIME_STA]) {
+		if (!weight)
+			return UBUS_STATUS_INVALID_ARGUMENT;
+
+		hapd->conf->airtime_weight = weight;
+		return 0;
+	}
+
+	if (hwaddr_aton(blobmsg_data(tb[UPDATE_AIRTIME_STA]), addr))
+		return UBUS_STATUS_INVALID_ARGUMENT;
+
+	sta = ap_get_sta(hapd, addr);
+	if (!sta)
+		return UBUS_STATUS_NOT_FOUND;
+
+	sta->dyn_airtime_weight = weight;
+	airtime_policy_new_sta(hapd, sta);
+
+	return 0;
+}
+#endif
+
+
 static const struct ubus_method bss_methods[] = {
 	UBUS_METHOD_NOARG("reload", hostapd_bss_reload),
 	UBUS_METHOD_NOARG("get_clients", hostapd_bss_get_clients),
 	UBUS_METHOD_NOARG("get_status", hostapd_bss_get_status),
 	UBUS_METHOD("del_client", hostapd_bss_del_client, del_policy),
+#ifdef CONFIG_AIRTIME_POLICY
+	UBUS_METHOD("update_airtime", hostapd_bss_update_airtime, airtime_policy),
+#endif
 	UBUS_METHOD_NOARG("list_bans", hostapd_bss_list_bans),
 #ifdef CONFIG_WPS
 	UBUS_METHOD_NOARG("wps_start", hostapd_bss_wps_start),

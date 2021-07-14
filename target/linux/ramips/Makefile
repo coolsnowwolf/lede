@@ -9,9 +9,8 @@ BOARD:=ramips
 BOARDNAME:=MediaTek Ralink MIPS
 SUBTARGETS:=mt7620 mt7621 mt76x8 rt288x rt305x rt3883
 FEATURES:=squashfs gpio
-MAINTAINER:=John Crispin <john@phrozen.org>
 
-KERNEL_PATCHVER:=5.4
+KERNEL_PATCHVER:=5.10
 KERNEL_TESTING_PATCHVER:=5.10
 
 define Target/Description

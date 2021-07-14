@@ -17,11 +17,7 @@
 
 #define GSW_REG_PHY_TIMEOUT	(5 * HZ)
 
-#ifdef CONFIG_SOC_MT7621
-#define MT7620A_GSW_REG_PIAC	0x0004
-#else
 #define MT7620A_GSW_REG_PIAC	0x7004
-#endif
 
 #define GSW_NUM_VLANS		16
 #define GSW_NUM_VIDS		4096
@@ -59,17 +55,13 @@
 
 #define SYSC_REG_CHIP_REV_ID	0x0c
 #define SYSC_REG_CFG1		0x14
-#define RST_CTRL_MCM		BIT(2)
+#define PCIE_RC_MODE		BIT(8)
 #define SYSC_PAD_RGMII2_MDIO	0x58
 #define SYSC_GPIO_MODE		0x60
 
 #define PORT_IRQ_ST_CHG		0x7f
 
-#ifdef CONFIG_SOC_MT7621
-#define ESW_PHY_POLLING		0x0000
-#else
 #define ESW_PHY_POLLING		0x7000
-#endif
 
 #define	PMCR_IPG		BIT(18)
 #define	PMCR_MAC_MODE		BIT(16)
@@ -96,16 +88,12 @@ enum {
 	GSW_ATTR_PORT_UNTAG,
 };
 
-enum {
-	PORT4_EPHY = 0,
-	PORT4_EXT,
-};
-
 struct mt7620_gsw {
 	struct device		*dev;
 	void __iomem		*base;
 	int			irq;
-	int			port4;
+	bool			ephy_disable;
+	bool			port4_ephy;
 	unsigned long int	autopoll;
 	u16			ephy_base;
 };

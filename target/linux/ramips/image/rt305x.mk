@@ -500,7 +500,7 @@ define Device/edimax_3g-6200n
   IMAGE_SIZE := 3648k
   IMAGE/sysupgrade.bin := append-kernel | append-rootfs | \
 	edimax-header -s CSYS -m 3G62 -f 0x50000 -S 0x01100000 | pad-rootfs | \
-	append-metadata | check-size
+	check-size | append-metadata
   DEVICE_VENDOR := Edimax
   DEVICE_MODEL := 3g-6200n
   SUPPORTED_DEVICES += 3g-6200n
@@ -513,7 +513,7 @@ define Device/edimax_3g-6200nl
   IMAGE_SIZE := 3648k
   IMAGE/sysupgrade.bin := append-kernel | append-rootfs | \
 	edimax-header -s CSYS -m 3G62 -f 0x50000 -S 0x01100000 | pad-rootfs | \
-	append-metadata | check-size
+	check-size | append-metadata
   DEVICE_VENDOR := Edimax
   DEVICE_MODEL := 3g-6200nl
   SUPPORTED_DEVICES += 3g-6200nl
@@ -1047,7 +1047,7 @@ define Device/trendnet_tew-638apb-v2
   BLOCKSIZE := 64k
   IMAGE_SIZE := 3776k
   IMAGE/sysupgrade.bin := $$(sysupgrade_bin) | umedia-header 0x026382 | \
-	append-metadata | check-size
+	check-size | append-metadata
   DEVICE_VENDOR := TRENDnet
   DEVICE_MODEL := TEW-638APB
   DEVICE_VARIANT := v2
@@ -1071,7 +1071,7 @@ define Device/unbranded_a5-v11
   IMAGES += factory.bin
   IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	poray-header -B A5-V11 -F 4M
-  DEVICE_VENDOR := 
+  DEVICE_VENDOR :=
   DEVICE_MODEL := A5-V11
   DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2
   SUPPORTED_DEVICES += a5-v11
@@ -1190,7 +1190,7 @@ define Device/zte_mf283plus
   DEVICE_VENDOR := ZTE
   DEVICE_MODEL := MF283+
   DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-usb-net-qmi-wwan uqmi \
-	kmod-usb-serial-option
+	kmod-usb-serial kmod-usb-serial-option
 endef
 TARGET_DEVICES += zte_mf283plus
 

@@ -58,13 +58,13 @@ de.rmempty = false
 de.optional = false
 
 if nixio.fs.access("/etc/config/fstab") then
-  ph1.titleref = luci.dispatcher.build_url("admin", "system", "mounts")
-  ph2.titleref = luci.dispatcher.build_url("admin", "system", "mounts")
+	ph1.titleref = luci.dispatcher.build_url("admin", "system", "fstab")
+	ph2.titleref = luci.dispatcher.build_url("admin", "system", "fstab")
 end
 
 local apply = luci.http.formvalue("cbi.apply")
 if apply then
-    io.popen("/etc/init.d/nfs reload")
+	io.popen("/etc/init.d/nfs reload")
 end
 
 return m
