@@ -13,7 +13,7 @@ m:section(SimpleSection).template  = "docker/docker_status"
 s = m:section(TypedSection, "docker")
 s.anonymous = true
 
-wan_mode = s:option(Flag, "wan_mode", translate("Enable WAN access Dokcer"), translate("Enable WAN access docker mapped ports"))
+wan_mode = s:option(Flag, "wan_mode", translate("Enable WAN access Docker"), translate("Enable WAN access docker mapped ports"))
 wan_mode.default = 0
 wan_mode.rmempty = false
 
