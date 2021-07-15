@@ -744,6 +744,7 @@ enum {
 	CSA_VHT,
 	CSA_HE,
 	CSA_BLOCK_TX,
+	CSA_FORCE,
 	__CSA_MAX
 };
 
@@ -758,7 +759,17 @@ static const struct blobmsg_policy csa_policy[__CSA_MAX] = {
 	[CSA_VHT] = { "vht", BLOBMSG_TYPE_BOOL },
 	[CSA_HE] = { "he", BLOBMSG_TYPE_BOOL },
 	[CSA_BLOCK_TX] = { "block_tx", BLOBMSG_TYPE_BOOL },
+	[CSA_FORCE] = { "force", BLOBMSG_TYPE_BOOL },
 };
+
+
+static void switch_chan_fallback_cb(void *eloop_data, void *user_ctx)
+{
+	struct hostapd_iface *iface = eloop_data;
+	struct hostapd_freq_params *freq_params = user_ctx;
+
+	hostapd_switch_channel_fallback(iface, freq_params);
+}
 
 #ifdef NEED_AP_MLME
 static int
@@ -769,6 +780,7 @@ hostapd_switch_chan(struct ubus_context *ctx, struct ubus_object *obj,
 	struct blob_attr *tb[__CSA_MAX];
 	struct hostapd_data *hapd = get_hapd_from_object(obj);
 	struct hostapd_config *iconf = hapd->iface->conf;
+	struct hostapd_freq_params *freq_params;
 	struct csa_settings css = {
 		.freq_params = {
 			.ht_enabled = iconf->ieee80211n,
@@ -825,7 +837,15 @@ hostapd_switch_chan(struct ubus_context *ctx, struct ubus_object *obj,
 			ret = UBUS_STATUS_NOT_SUPPORTED;
 	}
 
-	return ret;
+	if (!ret || !tb[CSA_FORCE] || !blobmsg_get_bool(tb[CSA_FORCE]))
+		return ret;
+
+	freq_params = malloc(sizeof(*freq_params));
+	memcpy(freq_params, &css.freq_params, sizeof(*freq_params));
+	eloop_register_timeout(0, 1, switch_chan_fallback_cb,
+			       hapd->iface, freq_params);
+
+	return 0;
 #undef SET_CSA_SETTING
 }
 #endif
