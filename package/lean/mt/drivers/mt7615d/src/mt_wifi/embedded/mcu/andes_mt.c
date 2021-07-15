@@ -2694,8 +2694,8 @@ static VOID UnsolicitedEventHandler(RTMP_ADAPTER *pAd, UINT8 EID, UINT8 ExtEID,
 		break;
 
 	default:
-		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_OFF,
-				 ("%s: Unknown Event(%x)\n", __func__, EID));
+		/* MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+				 ("%s: Unknown Event(%x)\n", __func__, EID)); */
 		break;
 	}
 }
