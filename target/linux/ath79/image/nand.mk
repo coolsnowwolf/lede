@@ -70,10 +70,9 @@ define Device/arris_sbr-ac1750
   PAGESIZE := 2048
   KERNEL := kernel-bin | append-dtb | gzip | uImage gzip
   KERNEL_INITRAMFS := kernel-bin | append-dtb | uImage none
-  IMAGES += kernel1.bin rootfs1.bin factory-kfs.bin
+  IMAGES += kernel1.bin rootfs1.bin
   IMAGE/kernel1.bin := append-kernel | check-size $$$$(KERNEL_SIZE)
   IMAGE/rootfs1.bin := append-ubi | check-size
-  IMAGE/factory-kfs.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | check-size $$$$(IMAGE_SIZE)
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   UBINIZE_OPTS := -E 5
 endef
@@ -205,8 +204,7 @@ define Device/netgear_ath79_nand
   IMAGES := sysupgrade.bin factory.img
   IMAGE/factory.img := append-kernel | append-ubi | netgear-dni | \
 	check-size
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata | \
-	check-size
+  IMAGE/sysupgrade.bin := sysupgrade-tar | check-size | append-metadata
   UBINIZE_OPTS := -E 5
 endef
 
