@@ -54,8 +54,8 @@ ifeq ($(ARCH),aarch64)
 	PKG_MD5SUM:=01be691af0a2e856be80754d49fa821a
 endif
 
-PKG_SOURCE_URL:=http://uu.gdl.netease.com/uuplugin/openwrt-$(UU_ARCH)/$(PKG_VERSION)/
-PKG_SOURCE:=uu.tar.gz
+PKG_SOURCE_URL:=http://uu.gdl.netease.com/uuplugin/openwrt-$(UU_ARCH)/$(PKG_VERSION)/uu.tar.gz?
+PKG_SOURCE:=$(PKG_NAME)-$(UU_ARCH)-$(PKG_VERSION).tar.gz
 
 STRIP:=true
 
