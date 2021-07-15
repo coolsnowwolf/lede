@@ -1,0 +1,72 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Fri, 2 Jul 2021 06:57:53 +0200
+Subject: [PATCH] mac80211: fix enabling 4-address mode on a sta vif after
+ assoc
+
+Notify the driver about the 4-address mode change and also send a nulldata
+packet to the AP to notify it about the change
+
+Fixes: 1ff4e8f2dec8 ("mac80211: notify the driver when a sta uses 4-address mode")
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -152,6 +152,8 @@ static int ieee80211_change_iface(struct
+ 				  struct vif_params *params)
+ {
+ 	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
++	struct ieee80211_local *local = sdata->local;
++	struct sta_info *sta;
+ 	int ret;
+ 
+ 	ret = ieee80211_if_change_type(sdata, type);
+@@ -162,7 +164,24 @@ static int ieee80211_change_iface(struct
+ 		RCU_INIT_POINTER(sdata->u.vlan.sta, NULL);
+ 		ieee80211_check_fast_rx_iface(sdata);
+ 	} else if (type == NL80211_IFTYPE_STATION && params->use_4addr >= 0) {
++		struct ieee80211_if_managed *ifmgd = &sdata->u.mgd;
++
++		if (params->use_4addr == ifmgd->use_4addr)
++			return 0;
++
+ 		sdata->u.mgd.use_4addr = params->use_4addr;
++		if (!ifmgd->associated)
++			return 0;
++
++		mutex_lock(&local->sta_mtx);
++		sta = sta_info_get(sdata, ifmgd->bssid);
++		if (sta)
++			drv_sta_set_4addr(local, sdata, &sta->sta,
++					  params->use_4addr);
++		mutex_unlock(&local->sta_mtx);
++
++		if (params->use_4addr)
++			ieee80211_send_4addr_nullfunc(local, sdata);
+ 	}
+ 
+ 	if (sdata->vif.type == NL80211_IFTYPE_MONITOR) {
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -2224,6 +2224,8 @@ void ieee80211_dynamic_ps_timer(struct t
+ void ieee80211_send_nullfunc(struct ieee80211_local *local,
+ 			     struct ieee80211_sub_if_data *sdata,
+ 			     bool powersave);
++void ieee80211_send_4addr_nullfunc(struct ieee80211_local *local,
++				   struct ieee80211_sub_if_data *sdata);
+ void ieee80211_sta_tx_notify(struct ieee80211_sub_if_data *sdata,
+ 			     struct ieee80211_hdr *hdr, bool ack, u16 tx_time);
+ 
+--- a/net/mac80211/mlme.c
++++ b/net/mac80211/mlme.c
+@@ -1115,8 +1115,8 @@ void ieee80211_send_nullfunc(struct ieee
+ 	ieee80211_tx_skb(sdata, skb);
+ }
+ 
+-static void ieee80211_send_4addr_nullfunc(struct ieee80211_local *local,
+-					  struct ieee80211_sub_if_data *sdata)
++void ieee80211_send_4addr_nullfunc(struct ieee80211_local *local,
++				   struct ieee80211_sub_if_data *sdata)
+ {
+ 	struct sk_buff *skb;
+ 	struct ieee80211_hdr *nullfunc;

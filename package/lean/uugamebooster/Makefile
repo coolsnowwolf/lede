@@ -13,14 +13,14 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uugamebooster
 PKG_VERSION:=v2.12.0
-PKG_RELEASE:=9
+PKG_RELEASE:=10
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
-	DEPENDS:=@(aarch64||arm||mips||mipsel||x86_64) +kmod-tun
+	DEPENDS:=@(aarch64||arm||mipsel||x86_64) +kmod-tun
 	TITLE:=NetEase UU Game Booster
 	URL:=https://uu.163.com
 endef
@@ -39,11 +39,6 @@ ifeq ($(ARCH),mipsel)
 	PKG_MD5SUM:=e72e9fa1761648113e9437f0e438f801
 endif
 
-ifeq ($(ARCH),mips)
-	UU_ARCH:=mipsel
-	PKG_MD5SUM:=e72e9fa1761648113e9437f0e438f801
-endif
-
 ifeq ($(ARCH),arm)
 	UU_ARCH:=arm
 	PKG_MD5SUM:=3c24b9c6fceab1d2b08dfd3bd027fdf5
@@ -54,7 +49,7 @@ ifeq ($(ARCH),aarch64)
 	PKG_MD5SUM:=01be691af0a2e856be80754d49fa821a
 endif
 
-PKG_SOURCE_URL:=http://uu.gdl.netease.com/openwrt-$(UU_ARCH)/$(PKG_VERSION)/uu.tar.gz?
+PKG_SOURCE_URL:=http://uu.gdl.netease.com/uuplugin/openwrt-$(UU_ARCH)/$(PKG_VERSION)/uu.tar.gz?
 PKG_SOURCE:=$(PKG_NAME)-$(UU_ARCH)-$(PKG_VERSION).tar.gz
 
 STRIP:=true
