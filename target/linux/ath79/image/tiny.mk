@@ -21,8 +21,7 @@ define Device/dlink_dir-615-e4
   FACTORY_IMAGE_SIZE := 3456k
   IMAGES += factory.bin
   IMAGE/default := append-kernel | append-rootfs | pad-rootfs
-  IMAGE/sysupgrade.bin := $$(IMAGE/default) | append-metadata | \
-	check-size
+  IMAGE/sysupgrade.bin := $$(IMAGE/default) | check-size | append-metadata
   IMAGE/factory.bin := $$(IMAGE/default) | \
 	check-size $$$$(FACTORY_IMAGE_SIZE) | pad-to $$$$(FACTORY_IMAGE_SIZE) | \
 	append-string "AP99-AR7240-RT-091105-05"
