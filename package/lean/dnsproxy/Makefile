@@ -61,8 +61,6 @@ define Package/dnsproxy/description
   work as a DNS-over-HTTPS, DNS-over-TLS or DNS-over-QUIC server.
 endef
 
-GO_PKG_INSTALL_ARGS+= -mod vendor
-
 define Build/Compile
 	$(call GoPackage/Build/Compile)
 ifeq ($(CONFIG_DNSPROXY_COMPRESS_UPX),y)
