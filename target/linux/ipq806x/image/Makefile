@@ -287,7 +287,7 @@ TARGET_DEVICES += netgear_r7800
 define Device/netgear_xr500
 	$(call Device/DniImage)
 	DEVICE_VENDOR := NETGEAR
-	DEVICE_MODEL := XR500
+	DEVICE_MODEL := Nighthawk Pro Gaming XR500
 	SOC := qcom-ipq8065
 	KERNEL_SIZE := 4096k
 	NETGEAR_BOARD_ID := XR500
