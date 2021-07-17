@@ -7,7 +7,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mt7615d
-P4REV:=8
+P4REV:=9
 PKG_VERSION:=5.0.4.0
 
 PKG_BUILD_PARALLEL:=1

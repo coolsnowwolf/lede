@@ -128,7 +128,7 @@ define Device/ubnt-unifi-jffs2
   KERNEL := kernel-bin | append-dtb | lzma | uImage lzma | jffs2 kernel0
   IMAGES := sysupgrade.bin factory.bin
   IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-rootfs |\
-	pad-rootfs | append-metadata | check-size
+	pad-rootfs | check-size | append-metadata
   IMAGE/factory.bin := $$(IMAGE/sysupgrade.bin) | mkubntimage2
 endef
 
@@ -328,6 +328,14 @@ define Device/ubnt_powerbeam-5ac-gen2
 endef
 TARGET_DEVICES += ubnt_powerbeam-5ac-gen2
 
+define Device/ubnt_powerbeam-m-xw
+  $(Device/ubnt-xw)
+  DEVICE_MODEL := PowerBeam M
+  DEVICE_PACKAGES += rssileds
+  SUPPORTED_DEVICES += loco-m-xw
+endef
+TARGET_DEVICES += ubnt_powerbeam-m-xw
+
 define Device/ubnt_powerbridge-m
   $(Device/ubnt-xm)
   SOC := ar7241
@@ -365,7 +373,7 @@ define Device/ubnt_routerstation_common
   IMAGE/factory.bin := append-rootfs | pad-rootfs | mkubntimage | \
 	check-size
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | combined-image | \
-	append-metadata | check-size
+	check-size | append-metadata
   KERNEL := kernel-bin | append-dtb | lzma | pad-to $$(BLOCKSIZE)
   KERNEL_INITRAMFS := kernel-bin | append-dtb
 endef
