@@ -16,6 +16,7 @@ platform_do_upgrade() {
 	netgear,r7500 |\
 	netgear,r7500v2 |\
 	netgear,r7800 |\
+	netgear,xr500 |\
 	qcom,ipq8064-ap148 |\
 	qcom,ipq8064-ap161)
 		nand_do_upgrade "$1"
