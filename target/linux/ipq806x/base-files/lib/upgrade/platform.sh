@@ -16,6 +16,7 @@ platform_do_upgrade() {
 	netgear,r7500 |\
 	netgear,r7500v2 |\
 	netgear,r7800 |\
+	netgear,xr500 |\
 	qcom,ipq8064-ap148 |\
 	qcom,ipq8064-ap161)
 		nand_do_upgrade "$1"
@@ -54,6 +55,9 @@ platform_do_upgrade() {
 		PART_NAME="kernel:rootfs"
 		MTD_CONFIG_ARGS="-s 0x200000"
 		default_do_upgrade "$1"
+		;;
+	ruijie,rg-mtfi-m520)
+		ruijie_do_upgrade "$1"
 		;;
 	zyxel,nbg6817)
 		zyxel_do_upgrade "$1"
