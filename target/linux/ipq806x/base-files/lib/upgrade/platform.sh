@@ -1,7 +1,7 @@
 PART_NAME=firmware
 REQUIRE_IMAGE_METADATA=1
 
-RAMFS_COPY_BIN='fw_printenv fw_setenv'
+RAMFS_COPY_BIN='fw_printenv fw_setenv fwtool'
 RAMFS_COPY_DATA='/etc/fw_env.config /var/lock/fw_printenv.lock'
 
 platform_check_image() {
@@ -12,6 +12,7 @@ platform_do_upgrade() {
 	case "$(board_name)" in
 	askey,rt4230w-rev6 |\
 	compex,wpq864|\
+	linksys,e8350-v1|\
 	netgear,d7800 |\
 	netgear,r7500 |\
 	netgear,r7500v2 |\
