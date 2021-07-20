@@ -25,11 +25,11 @@ LUCI_DEPENDS:=+dnsmasq-full +ipset +uclient-fetch \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_UnblockNeteaseMusic_NodeJS:UnblockNeteaseMusic
 
 define Package/$(PKG_NAME)/config
-config PACKAGE_$(PKG_NAME)_INCLUDE_INCLUDE_UnblockNeteaseMusic_Go
+config PACKAGE_$(PKG_NAME)_INCLUDE_UnblockNeteaseMusic_Go
 	bool "UnblockNeteaseMusic Golang Version"
 	default y if i386||x86_64||arm||aarch64
 
-config PACKAGE_$(PKG_NAME)_INCLUDE_INCLUDE_UnblockNeteaseMusic_NodeJS
+config PACKAGE_$(PKG_NAME)_INCLUDE_UnblockNeteaseMusic_NodeJS
 	bool "UnblockNeteaseMusic NodeJS Version"
 	depends on HAS_FPU || KERNEL_MIPS_FPU_EMULATOR || SOFT_FLOAT
 	default n
