@@ -1,0 +1,128 @@
+From 639dba857aa554f2a78572adc4cf3c32de9ec2e2 Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Tue, 30 Mar 2021 18:21:14 +0200
+Subject: [PATCH 2/2] of_net: add mac-address-increment support
+
+Lots of embedded devices use the mac-address of other interface
+extracted from nvmem cells and increments it by one or two. Add two
+bindings to integrate this and directly use the right mac-address for
+the interface. Some example are some routers that use the gmac
+mac-address stored in the art partition and increments it by one for the
+wifi. mac-address-increment-byte bindings is used to tell what byte of
+the mac-address has to be increased (if not defined the last byte is
+increased) and mac-address-increment tells how much the byte decided
+early has to be increased.
+
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+---
+ drivers/of/of_net.c | 59 ++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 45 insertions(+), 14 deletions(-)
+
+--- a/drivers/of/of_net.c
++++ b/drivers/of/of_net.c
+@@ -55,31 +55,36 @@ static void *of_get_mac_addr(struct devi
+ 	return NULL;
+ }
+ 
+-static const void *of_get_mac_addr_nvmem(struct device_node *np)
++static void *of_get_mac_addr_nvmem(struct device_node *np, int *err)
+ {
+ 	int ret;
+-	const void *mac;
++	void *mac;
+ 	u8 nvmem_mac[ETH_ALEN];
+ 	struct platform_device *pdev = of_find_device_by_node(np);
+ 
+-	if (!pdev)
+-		return ERR_PTR(-ENODEV);
++	if (!pdev) {
++		*err = -ENODEV;
++		return NULL;
++	}
+ 
+ 	ret = nvmem_get_mac_address(&pdev->dev, &nvmem_mac);
+ 	if (ret) {
+ 		put_device(&pdev->dev);
+-		return ERR_PTR(ret);
++		*err = ret;
++		return NULL;
+ 	}
+ 
+ 	mac = devm_kmemdup(&pdev->dev, nvmem_mac, ETH_ALEN, GFP_KERNEL);
+ 	put_device(&pdev->dev);
+-	if (!mac)
+-		return ERR_PTR(-ENOMEM);
++	if (!mac) {
++		*err = -ENOMEM;
++		return NULL;
++	}
+ 
+ 	return mac;
+ }
+ 
+-static const void *of_get_mac_address_mtd(struct device_node *np)
++static void *of_get_mac_address_mtd(struct device_node *np)
+ {
+ #ifdef CONFIG_MTD
+ 	struct device_node *mtd_np = NULL;
+@@ -167,28 +172,54 @@ free:
+  * If a mtd-mac-address property exists, try to fetch the MAC address from the
+  * specified mtd device, and store it as a 'mac-address' property
+  *
++ * DT can tell the system to increment the mac-address after is extracted by
++ * using:
++ * - mac-address-increment-byte to decide what byte to increase
++ *   (if not defined is increased the last byte)
++ * - mac-address-increment to decide how much to increase. The value will
++ *   not overflow to other bytes if the increment is over 255.
++ *   (example 00:01:02:03:04:ff + 1 == 00:01:02:03:04:00)
++ *
+  * Return: Will be a valid pointer on success and ERR_PTR in case of error.
+ */
+ const void *of_get_mac_address(struct device_node *np)
+ {
+-	const void *addr;
++	u32 inc_idx, mac_inc;
++	int ret = 0;
++	u8 *addr;
++
++	/* Check first if the increment byte is present and valid.
++	 * If not set assume to increment the last byte if found.
++	 */
++	if (of_property_read_u32(np, "mac-address-increment-byte", &inc_idx))
++		inc_idx = 5;
++	if (inc_idx < 3 || inc_idx > 5)
++		return ERR_PTR(-EINVAL);
+ 
+ 	addr = of_get_mac_addr(np, "mac-address");
+ 	if (addr)
+-		return addr;
++		goto found;
+ 
+ 	addr = of_get_mac_addr(np, "local-mac-address");
+ 	if (addr)
+-		return addr;
++		goto found;
+ 
+ 	addr = of_get_mac_addr(np, "address");
+ 	if (addr)
+-		return addr;
++		goto found;
+ 
+ 	addr = of_get_mac_address_mtd(np);
+ 	if (addr)
+-		return addr;
++		goto found;
++
++	addr = of_get_mac_addr_nvmem(np, &ret);
++	if (ret)
++		return ERR_PTR(ret);
++
++found:
++	if (!of_property_read_u32(np, "mac-address-increment", &mac_inc))
++		addr[inc_idx] += mac_inc;
+ 
+-	return of_get_mac_addr_nvmem(np);
++	return addr;
+ }
+ EXPORT_SYMBOL(of_get_mac_address);
