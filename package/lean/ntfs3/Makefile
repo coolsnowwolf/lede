@@ -25,7 +25,6 @@ define KernelPackage/fs-ntfs3
   CATEGORY:=Kernel modules
   SUBMENU:=Filesystems
   TITLE:=Fully functional NTFS Read-Write driver
-  KCONFIG:=CONFIG_NLS_DEFAULT="utf8"
   FILES:=$(PKG_BUILD_DIR)/ntfs3.ko
   AUTOLOAD:=$(call AutoProbe,ntfs3)
   DEPENDS:=+kmod-nls-utf8
