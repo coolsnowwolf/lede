@@ -23,15 +23,10 @@ define Build/edimax-header
 	@mv $@.new $@
 endef
 
-# tune addpattern for Linksys E8350-V1 fw pattern generation
-define Build/linksys-bin
-        $(STAGING_DIR_HOST)/bin/addpattern -p $(FW_DEVICE_ID) -v $(FW_VERSION) $(if $(SERIAL),-s $(SERIAL)) -i $@ -o $@.new
-        mv $@.new $@
-endef
-# Use Linksys fw header generator to upgrade openwrt factory image over the native Linksys WEB interface
-define Build/linksys-addfwhdr
-        -$(STAGING_DIR_HOST)/bin/linksys/addfwhdr -i $@ -o $@.new \
-       	;mv "$@.new" "$@"
+define Build/prepare-ea8350-factory
+	$(STAGING_DIR_HOST)/bin/addfwhdr-e8350 -i $@ -o $@.hdr
+	$(STAGING_DIR_HOST)/bin/addpattern-e8350 -i $@.hdr -o $@ -s -g
+	rm -rf $@.hdr
 endef
 
 define Device/Default
@@ -196,9 +191,9 @@ define Device/linksys_e8350-v1
 	PAGESIZE := 2048
 	BLOCKSIZE := 128k
 	KERNEL_IN_UBI := 1
-	IMAGES = factory.bin sysupgrade.ubi
-	IMAGE/sysupgrade.ubi := append-ubi | check-size 0x04000000 | append-metadata
-	IMAGE/factory.bin := append-ubi | check-size 0x04000000 | linksys-addfwhdr | linksys-bin
+	IMAGES = factory.bin sysupgrade.bin
+	IMAGE/sysupgrade.bin := append-ubi | check-size 0x04000000 | append-metadata
+	IMAGE/factory.bin := append-ubi | check-size 0x04000000 | prepare-ea8350-factory
 	DEVICE_PACKAGES := ath10k-firmware-qca988x-ct
 endef
 TARGET_DEVICES += linksys_e8350-v1
