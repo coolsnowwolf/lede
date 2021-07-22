@@ -25,6 +25,7 @@ endef
 define Host/Compile
 	mkdir -p $(HOST_BUILD_DIR)/bin
 	$(call cc,add_header,-Wall)
+	$(call cc,addfwhdr cyg_crc32,-Wall)
 	$(call cc,addpattern,-Wall)
 	$(call cc,asustrx,-Wall)
 	$(call cc,bcm4908asus,-Wall)
